@@ -12,6 +12,9 @@ rust_library(
     name = "shcore",
     srcs = glob(["src/**/*.rs"]),
     edition = "2021",
+    # The `mc` signal/tier/stopped constants come straight from the generated
+    # contract (single source of truth, B2) — os.rs consumes them, no duplication.
+    deps = ["//contracts:constants_rust"],
     visibility = ["//visibility:public"],
 )
 

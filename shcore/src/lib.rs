@@ -18,14 +18,29 @@
 //! tests. Constants shared with the kernel ABI are drift-checked against
 //! `//contracts:constants_rust` rather than re-asserted by hand (B2).
 //!
-//! Port status: the lexer (`word`, `token`) has landed. `ast`, `parser`, `expand`,
-//! `glob`, `arith`, `exec`, and `os` follow as subsequent module groups.
+//! Port complete: front-end (`word`, `token`, `ast`, `parser`), expansion (`expand`,
+//! `glob`, `arith`), the OS seam (`os`), and the tree-walking executor (`exec`).
 #![cfg_attr(not(test), no_std)]
 
 extern crate alloc;
 
+pub mod arith;
+pub mod ast;
+pub mod echo;
+pub mod exec;
+pub mod expand;
+pub mod glob;
+pub mod os;
+pub mod parser;
+pub mod printf;
+pub mod testexpr;
 pub mod token;
 pub mod word;
 
+pub use ast::Script;
+pub use exec::{Flow, Interp};
+pub use expand::ExpandCtx;
+pub use os::{Fd, FileStat, OsError, Pid, ShellOs, Signal};
+pub use parser::{parse, ParseError};
 pub use token::{tokenize, LexError, Operator, Token};
 pub use word::{ParamOp, Word, WordPart};
