@@ -12,7 +12,7 @@ is the quickstart and a map of the scaffold.
 
 ```sh
 bazel test //...        # builds every artifact and runs every suite, always fresh (B1)
-bazel build //tools/smoke:smoke_wasm   # the wasm spine: Zig -> wasm32-freestanding
+bazel build //tools/smoke/zig:wasm    # the wasm spine: Zig -> wasm32-freestanding
 ```
 
 There is no `xtask`, no "did you rebuild?", no manual staging. If a test needs a

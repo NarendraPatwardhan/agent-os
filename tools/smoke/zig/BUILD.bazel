@@ -8,10 +8,10 @@ load("@bazel_skylib//rules:build_test.bzl", "build_test")
 # and guest uses (§5.2). Remove when kernel/ and programs/ supply real wasm targets.
 
 # Reactor-style module: exports only, no `_start`. Tagged `manual` because it is
-# only meaningful under the wasm transition below — building it for the host musl
+# only meaningful under the wasm transition below — building it for the host
 # platform would fail for lack of an entry point (so `//...` must not pick it up).
 zig_binary(
-    name = "smoke",
+    name = "obj",
     main = "smoke.zig",
     linkopts = [
         "-fno-entry",
@@ -21,10 +21,10 @@ zig_binary(
 )
 
 # Transition the module to wasm32-freestanding and build it size-optimised. The
-# output is a real `.wasm` binary regardless of the .bazelrc default platform.
+# output is a real `.wasm` binary regardless of the default platform.
 zig_configure_binary(
-    name = "smoke_wasm",
-    actual = ":smoke",
+    name = "wasm",
+    actual = ":obj",
     mode = "release_small",
     target = "//platforms:wasm32_freestanding",
 )
@@ -32,6 +32,6 @@ zig_configure_binary(
 # Asserts the wasm artifact actually builds — exercises rules_zig, the Zig 0.16
 # toolchain download, the wasm platform, and the transition end to end.
 build_test(
-    name = "smoke_test",
-    targets = [":smoke_wasm"],
+    name = "test",
+    targets = [":wasm"],
 )

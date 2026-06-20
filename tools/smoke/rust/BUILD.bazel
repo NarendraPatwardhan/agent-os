@@ -4,13 +4,13 @@ load("@bazel_skylib//rules:build_test.bzl", "build_test")
 
 # Bootstrap Rust→wasm smoke — proves rules_rust compiles a no_std cdylib to
 # wasm32-unknown-unknown, the exact shape kernel/rust takes (Step 2 spine). The Rust
-# analog of //tools/smoke (Zig→wasm). Remove once kernel/rust provides a real wasm
+# counterpart of //tools/smoke/zig. Remove once kernel/rust provides a real wasm
 # target to anchor the spine.
 
 # The cdylib. Tagged manual: it is only meaningful under the wasm transition below
 # (a host-default build of a no_std cdylib has no runtime), so `//...` must not take it.
 rust_shared_library(
-    name = "smoke_lib",
+    name = "lib",
     srcs = ["lib.rs"],
     edition = "2021",
     tags = ["manual"],
@@ -19,13 +19,13 @@ rust_shared_library(
 # Transition the cdylib to wasm32-unknown-unknown so it builds under `bazel test //...`
 # with no command-line flag — the Rust counterpart of zig_configure_binary.
 platform_transition_filegroup(
-    name = "wasm_rust_smoke",
-    srcs = [":smoke_lib"],
+    name = "wasm",
+    srcs = [":lib"],
     target_platform = "//platforms:wasm32_freestanding",
 )
 
 # Anchors the Rust→wasm spine in the test graph: asserts the wasm artifact builds.
 build_test(
-    name = "wasm_rust_smoke_test",
-    targets = [":wasm_rust_smoke"],
+    name = "test",
+    targets = [":wasm"],
 )

@@ -19,7 +19,7 @@ rust_library(
 # the kernel (A2). Builds the crate with cfg(test) (so std is available) and runs the
 # in-module #[cfg(test)] tests.
 rust_test(
-    name = "shcore_test",
+    name = "test",
     crate = ":shcore",
     edition = "2021",
     size = "small",

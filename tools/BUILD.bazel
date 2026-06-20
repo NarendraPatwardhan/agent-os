@@ -7,5 +7,6 @@
 #   //tools:fmt    — run rustfmt + zig fmt + prettier over the tree (a multirun)
 #   //tools:demo   — boot a kernel in hosts/wasmtime and drop into a shell
 #
-# //tools/smoke is the live bootstrap toolchain proof (delete once real wasm
-# targets exist to anchor `bazel test //...`).
+# //tools/smoke/{zig,rust} are the live bootstrap toolchain proofs — each compiles a
+# tiny module to wasm to anchor that language's spine in `bazel test //...` (delete
+# once real wasm targets from kernel/ and programs/ exist).
