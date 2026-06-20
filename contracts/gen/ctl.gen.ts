@@ -30,9 +30,9 @@ export const CONTROL_EXPORTS = [
 export const EXPORTS = [
   { name: "mc_init", variant: "Init", args: [], ret: "i32" },
   { name: "mc_tick", variant: "Tick", args: [], ret: "i32" },
-  { name: "mc_input", variant: "Input", args: [{ name: "ptr", type: "ptr" }, { name: "len", type: "len" }], ret: "i32" },
-  { name: "mc_resize", variant: "Resize", args: [{ name: "cols", type: "i32" }, { name: "rows", type: "i32" }], ret: "i32" },
-  { name: "mc_ctl_buf", variant: "Buf", args: [{ name: "len", type: "len" }], ret: "ptr" },
+  { name: "mc_input", variant: "Input", args: [{ name: "ptr", type: "cptr" }, { name: "len", type: "len" }], ret: "void" },
+  { name: "mc_resize", variant: "Resize", args: [{ name: "cols", type: "i32" }, { name: "rows", type: "i32" }], ret: "void" },
+  { name: "mc_ctl_buf", variant: "Buf", args: [{ name: "len", type: "len" }], ret: "mptr" },
   { name: "mc_ctl_read", variant: "Read", args: [{ name: "path_ptr", type: "u32" }, { name: "path_len", type: "u32" }], ret: "i32" },
   { name: "mc_ctl_write", variant: "Write", args: [{ name: "path_ptr", type: "u32" }, { name: "path_len", type: "u32" }, { name: "data_ptr", type: "u32" }, { name: "data_len", type: "u32" }], ret: "i32" },
   { name: "mc_ctl_readdir", variant: "Readdir", args: [{ name: "path_ptr", type: "u32" }, { name: "path_len", type: "u32" }], ret: "i32" },

@@ -6,9 +6,9 @@ pub const Desc = struct { name: []const u8, variant: []const u8, args: []const A
 pub const EXPORTS = [_]Desc{
     .{ .name = "mc_init", .variant = "Init", .args = &.{  }, .ret = "i32" },
     .{ .name = "mc_tick", .variant = "Tick", .args = &.{  }, .ret = "i32" },
-    .{ .name = "mc_input", .variant = "Input", .args = &.{ .{ .name = "ptr", .ty = "ptr" }, .{ .name = "len", .ty = "len" } }, .ret = "i32" },
-    .{ .name = "mc_resize", .variant = "Resize", .args = &.{ .{ .name = "cols", .ty = "i32" }, .{ .name = "rows", .ty = "i32" } }, .ret = "i32" },
-    .{ .name = "mc_ctl_buf", .variant = "Buf", .args = &.{ .{ .name = "len", .ty = "len" } }, .ret = "ptr" },
+    .{ .name = "mc_input", .variant = "Input", .args = &.{ .{ .name = "ptr", .ty = "cptr" }, .{ .name = "len", .ty = "len" } }, .ret = "void" },
+    .{ .name = "mc_resize", .variant = "Resize", .args = &.{ .{ .name = "cols", .ty = "i32" }, .{ .name = "rows", .ty = "i32" } }, .ret = "void" },
+    .{ .name = "mc_ctl_buf", .variant = "Buf", .args = &.{ .{ .name = "len", .ty = "len" } }, .ret = "mptr" },
     .{ .name = "mc_ctl_read", .variant = "Read", .args = &.{ .{ .name = "path_ptr", .ty = "u32" }, .{ .name = "path_len", .ty = "u32" } }, .ret = "i32" },
     .{ .name = "mc_ctl_write", .variant = "Write", .args = &.{ .{ .name = "path_ptr", .ty = "u32" }, .{ .name = "path_len", .ty = "u32" }, .{ .name = "data_ptr", .ty = "u32" }, .{ .name = "data_len", .ty = "u32" } }, .ret = "i32" },
     .{ .name = "mc_ctl_readdir", .variant = "Readdir", .args = &.{ .{ .name = "path_ptr", .ty = "u32" }, .{ .name = "path_len", .ty = "u32" } }, .ret = "i32" },

@@ -392,6 +392,13 @@ struct Row {
     args: Vec<(String, String)>, // (name, type)
     ret: String,
     doc: String,
+    /// Optional `cfg="<feature>"` on the row — projected as a Rust `#[cfg(feature=…)]`
+    /// the consumer's `$emit` applies to its generated item, so a build flavor's
+    /// exports/handlers (e.g. the threads-only control exports) generate ONLY under that
+    /// feature while the contract still describes the complete ABI. This is the first of
+    /// the per-row metadata the contract carries; capability (§15.4) and tracepoint
+    /// (§15.3) annotations slot in beside it next, while the contract is still soft.
+    cfg: Option<String>,
 }
 
 fn collect_rows(nodes: &[Node], node_name: &str) -> Vec<Row> {
@@ -414,6 +421,7 @@ fn collect_rows(nodes: &[Node], node_name: &str) -> Vec<Row> {
                 args,
                 ret: n.ret_type().unwrap_or_else(|| "i32".to_string()),
                 doc: n.doc(),
+                cfg: n.prop_str("cfg").map(String::from),
             }
         })
         .collect()
@@ -458,9 +466,16 @@ fn emit_table(lang: &str, contract: &str, rows: &[Row], macro_name: &str, names_
                     .map(|(n, t)| format!("{n}: {t}"))
                     .collect::<Vec<_>>()
                     .join(", ");
+                // Per-row metadata → a Rust attribute the consumer's `$emit` applies to
+                // its generated item (only rows that carry the property change, so the
+                // mc/env macros are untouched).
+                let attr = match &r.cfg {
+                    Some(f) => format!("#[cfg(feature = \"{f}\")] "),
+                    None => String::new(),
+                };
                 o.push_str(&format!(
-                    "        {} => {} ({}) [{}];\n",
-                    r.name, r.variant, args, r.ret
+                    "        {}{} => {} ({}) [{}];\n",
+                    attr, r.name, r.variant, args, r.ret
                 ));
             }
             o.push_str("    } };\n}\n");

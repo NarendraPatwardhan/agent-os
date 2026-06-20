@@ -35,9 +35,9 @@ macro_rules! mc_control_table {
     ($emit:path) => { $emit! {
         mc_init => Init () [i32];
         mc_tick => Tick () [i32];
-        mc_input => Input (ptr: ptr, len: len) [i32];
-        mc_resize => Resize (cols: i32, rows: i32) [i32];
-        mc_ctl_buf => Buf (len: len) [ptr];
+        mc_input => Input (ptr: cptr, len: len) [void];
+        mc_resize => Resize (cols: i32, rows: i32) [void];
+        mc_ctl_buf => Buf (len: len) [mptr];
         mc_ctl_read => Read (path_ptr: u32, path_len: u32) [i32];
         mc_ctl_write => Write (path_ptr: u32, path_len: u32, data_ptr: u32, data_len: u32) [i32];
         mc_ctl_readdir => Readdir (path_ptr: u32, path_len: u32) [i32];
@@ -54,8 +54,8 @@ macro_rules! mc_control_table {
         mc_commit_layer => CommitLayer () [i32];
         mc_inflight_egress => InflightEgress () [i32];
         mc_pending_commits => PendingCommits () [i32];
-        mc_quiesce_request => QuiesceRequest () [i32];
-        mc_quiesce_release => QuiesceRelease () [i32];
-        mc_worker_entry => WorkerEntry (arg: i32) [i32];
+        #[cfg(feature = "threads")] mc_quiesce_request => QuiesceRequest () [i32];
+        #[cfg(feature = "threads")] mc_quiesce_release => QuiesceRelease () [i32];
+        #[cfg(feature = "threads")] mc_worker_entry => WorkerEntry (arg: i32) [i32];
     } };
 }

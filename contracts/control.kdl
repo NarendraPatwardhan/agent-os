@@ -20,11 +20,11 @@
 // ── lifecycle / hot path (§4.4) ──────────────────────────────────────────────
 export "mc_init"   group="lifecycle" { ret "i32"; doc "Boot the kernel (load base image, start pid 1). 0 on success." }
 export "mc_tick"   group="lifecycle" { ret "i32"; doc "Run one bounded slice of kernel work. The host drives this loop; the kernel never blocks it." }
-export "mc_input"  group="lifecycle" { arg "ptr" type="ptr"; arg "len" type="len"; doc "Feed len bytes of terminal input to the foreground task." }
-export "mc_resize" group="lifecycle" { arg "cols" type="i32"; arg "rows" type="i32"; doc "Notify the kernel of a terminal resize." }
+export "mc_input"  group="lifecycle" { arg "ptr" type="cptr"; arg "len" type="len"; ret "void"; doc "Feed len bytes of terminal input to the foreground task." }
+export "mc_resize" group="lifecycle" { arg "cols" type="i32"; arg "rows" type="i32"; ret "void"; doc "Notify the kernel of a terminal resize." }
 
 // ── shared scratch buffer ────────────────────────────────────────────────────
-export "mc_ctl_buf" group="buffer" { arg "len" type="len"; ret "ptr"; doc "Resize the control scratch buffer to len and return its pointer; mc_ctl_buf(0) returns the current pointer for reading results." }
+export "mc_ctl_buf" group="buffer" { arg "len" type="len"; ret "mptr"; doc "Resize the control scratch buffer to len and return its pointer; mc_ctl_buf(0) returns the current pointer for reading results." }
 
 // ── out-of-band VFS access (image staging, snapshot inspection) ──────────────
 export "mc_ctl_read"    group="vfs" { arg "path_ptr" type="u32"; arg "path_len" type="u32"; ret "i32"; doc "Read file `path` into the scratch buffer; byte length or negative errno." }
@@ -48,8 +48,11 @@ export "mc_ctl_exec_close" group="exec" { arg "job_id" type="u32"; ret "i32"; do
 export "mc_commit_layer"     group="snapshot" { ret "i32"; doc "Commit the current writable layer into a content-addressed image layer." }
 export "mc_inflight_egress"  group="snapshot" { ret "i32"; doc "Count of in-flight egress operations (a snapshot must wait for 0)." }
 export "mc_pending_commits"  group="snapshot" { ret "i32"; doc "Count of pending layer commits." }
-export "mc_quiesce_request"  group="snapshot" { ret "i32"; doc "Ask the kernel to reach a quiescent point safe to snapshot/fork." }
-export "mc_quiesce_release"  group="snapshot" { ret "i32"; doc "Resume from a quiesced state." }
+// Quiescence is only meaningful with worker threads (a coop kernel is already quiescent
+// between ticks), so these exist only in the threads build — cfg-gated, but still part of
+// the canonical control surface the contract describes.
+export "mc_quiesce_request"  group="snapshot" cfg="threads" { ret "i32"; doc "Ask the kernel to reach a quiescent point safe to snapshot/fork." }
+export "mc_quiesce_release"  group="snapshot" cfg="threads" { ret "i32"; doc "Resume from a quiesced state." }
 
 // ── threading worker entry (real-OS-thread build) ────────────────────────────
-export "mc_worker_entry" group="threading" { arg "arg" type="i32"; ret "i32"; doc "Entry point a host worker thread calls to join the kernel scheduler." }
+export "mc_worker_entry" group="threading" cfg="threads" { arg "arg" type="i32"; ret "i32"; doc "Entry point a host worker thread calls to join the kernel scheduler." }

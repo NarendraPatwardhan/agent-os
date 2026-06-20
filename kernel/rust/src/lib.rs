@@ -5,6 +5,7 @@ extern crate alloc;
 
 mod bridge;
 mod builtins;
+mod exports;
 mod fs;
 mod host_call;
 mod init;
@@ -901,14 +902,12 @@ pub(crate) fn wall_now_ms() -> i64 {
     unsafe { *STATE.wall_ms.get() }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_init() -> i32 {
+pub(crate) fn mc_init() -> i32 {
     init_system();
     0
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_tick() -> i32 {
+pub(crate) fn mc_tick() -> i32 {
     // Hold the Big Kernel Lock for the whole tick. No-op on the
     // cooperative-only build; serializes against `mc_worker_entry` and
     // `mc_input` on the threaded build.
@@ -1534,8 +1533,7 @@ fn apply_profile_exports(ns: &Namespace, env: &mut BTreeMap<String, String>) {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_input(ptr: *const u8, len: usize) {
+pub(crate) fn mc_input(ptr: *const u8, len: usize) {
     let _bkl = sync::lock_kernel();
     unsafe {
         let bytes = core::slice::from_raw_parts(ptr, len);
@@ -1543,8 +1541,7 @@ pub extern "C" fn mc_input(ptr: *const u8, len: usize) {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_resize(_cols: i32, _rows: i32) {
+pub(crate) fn mc_resize(_cols: i32, _rows: i32) {
     // Known gap — no-op until the kernel does line wrapping.
 }
 
@@ -1568,8 +1565,7 @@ pub extern "C" fn mc_resize(_cols: i32, _rows: i32) {
 
 /// Ensure the control buffer is at least `len` bytes and return its address in
 /// linear memory. The host writes its request bytes here, then invokes an op.
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_ctl_buf(len: usize) -> *mut u8 {
+pub(crate) fn mc_ctl_buf(len: usize) -> *mut u8 {
     let _bkl = sync::lock_kernel();
     unsafe {
         let buf = CTL_BUFFER.get();
@@ -1609,8 +1605,7 @@ unsafe fn ctl_str(ptr: u32, len: u32) -> Option<String> {
 /// `[path_ptr..path_ptr+path_len]`. On success the buffer is REPLACED with the
 /// file's contents and its length (>= 0) is returned; otherwise a negative
 /// errno. Runs as SYSTEM_CALLER against the root namespace.
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_ctl_read(path_ptr: u32, path_len: u32) -> i32 {
+pub(crate) fn mc_ctl_read(path_ptr: u32, path_len: u32) -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
         if !STATE.is_initialized() {
@@ -1648,8 +1643,7 @@ pub extern "C" fn mc_ctl_read(path_ptr: u32, path_len: u32) -> i32 {
 /// layer (the `commit` primitive — inverse of `tarfs`): write the bytes to
 /// the control buffer and return their length. `-EINVAL` if root isn't an overlay,
 /// `-EIO` before init. The host reads it via `mc_ctl_buf(0)`, like `mc_ctl_read`.
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_commit_layer() -> i32 {
+pub(crate) fn mc_commit_layer() -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
         if !STATE.is_initialized() {
@@ -1668,8 +1662,7 @@ pub extern "C" fn mc_commit_layer() -> i32 {
 /// Write a file, truncating it first. The control buffer holds the path at
 /// `[path_ptr..+path_len]` and the data at `[data_ptr..+data_len]`. Returns the
 /// number of bytes written (>= 0) or a negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_ctl_write(path_ptr: u32, path_len: u32, data_ptr: u32, data_len: u32) -> i32 {
+pub(crate) fn mc_ctl_write(path_ptr: u32, path_len: u32, data_ptr: u32, data_len: u32) -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
         if !STATE.is_initialized() {
@@ -1707,8 +1700,7 @@ pub extern "C" fn mc_ctl_write(path_ptr: u32, path_len: u32, data_ptr: u32, data
 /// is REPLACED with a sequence of entries — each `name` bytes, a NUL, then one
 /// kind byte (`b'd'` for a directory, `b'f'` otherwise) — and the total length
 /// is returned; otherwise a negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_ctl_readdir(path_ptr: u32, path_len: u32) -> i32 {
+pub(crate) fn mc_ctl_readdir(path_ptr: u32, path_len: u32) -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
         if !STATE.is_initialized() {
@@ -1741,8 +1733,7 @@ pub extern "C" fn mc_ctl_readdir(path_ptr: u32, path_len: u32) -> i32 {
 /// Stat a path. On success the buffer is REPLACED with a 16-byte record —
 /// `size: u64` (LE), `kind: u32` (1 = dir, 0 = file, 2 = symlink), `nlink: u32`
 /// — and 16 is returned; otherwise a negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_ctl_stat(path_ptr: u32, path_len: u32) -> i32 {
+pub(crate) fn mc_ctl_stat(path_ptr: u32, path_len: u32) -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
         if !STATE.is_initialized() {
@@ -1777,8 +1768,7 @@ pub extern "C" fn mc_ctl_stat(path_ptr: u32, path_len: u32) -> i32 {
 }
 
 /// Create a directory. Returns 0 or a negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_ctl_mkdir(path_ptr: u32, path_len: u32) -> i32 {
+pub(crate) fn mc_ctl_mkdir(path_ptr: u32, path_len: u32) -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
         if !STATE.is_initialized() {
@@ -1796,8 +1786,7 @@ pub extern "C" fn mc_ctl_mkdir(path_ptr: u32, path_len: u32) -> i32 {
 }
 
 /// Remove a file or empty directory. Returns 0 or a negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_ctl_unlink(path_ptr: u32, path_len: u32) -> i32 {
+pub(crate) fn mc_ctl_unlink(path_ptr: u32, path_len: u32) -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
         if !STATE.is_initialized() {
@@ -1818,8 +1807,7 @@ pub extern "C" fn mc_ctl_unlink(path_ptr: u32, path_len: u32) -> i32 {
 /// holds the target at `[target_ptr..+target_len]` and the link path at
 /// `[link_ptr..+link_len]` (the two-region layout `mc_ctl_write` uses). Returns 0
 /// or a negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_ctl_symlink(
+pub(crate) fn mc_ctl_symlink(
     target_ptr: u32,
     target_len: u32,
     link_ptr: u32,
@@ -1851,8 +1839,7 @@ pub extern "C" fn mc_ctl_symlink(
 /// `read_only != 0` mounts it read-only (the namespace rejects writes). The mount
 /// goes into the ROOT namespace, so every subsequent `vm.exec`/`vm.session` (which
 /// forks root) and every `vm.fs.*` op resolves it. Returns 0 or a negative errno.
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_ctl_mount(path_ptr: u32, path_len: u32, read_only: i32) -> i32 {
+pub(crate) fn mc_ctl_mount(path_ptr: u32, path_len: u32, read_only: i32) -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
         if !STATE.is_initialized() {
@@ -1878,8 +1865,7 @@ pub extern "C" fn mc_ctl_mount(path_ptr: u32, path_len: u32, read_only: i32) -> 
 
 /// Unmount a host-backed mount at `path`. Returns 0 or a negative errno (`EBUSY`-
 /// style `NotEmpty` if a child mount still lives beneath it).
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_ctl_unmount(path_ptr: u32, path_len: u32) -> i32 {
+pub(crate) fn mc_ctl_unmount(path_ptr: u32, path_len: u32) -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
         if !STATE.is_initialized() {
@@ -1981,8 +1967,7 @@ fn task_subtree(scheduler: &Scheduler, root: TaskId) -> Vec<TaskId> {
 /// Begin a host-initiated exec. The command line is in the control buffer at
 /// `[0..cmd_len]`. Returns a job id (> 0) or a negative errno; drive ticks and
 /// `mc_ctl_exec_poll` until the job reports done.
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_ctl_exec_start(cmd_len: u32) -> i32 {
+pub(crate) fn mc_ctl_exec_start(cmd_len: u32) -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
         if !STATE.is_initialized() {
@@ -2066,8 +2051,7 @@ pub extern "C" fn mc_ctl_exec_start(cmd_len: u32) -> i32 {
 /// [stderr_len: u32]` followed by the stdout then stderr bytes, the job is
 /// freed, and the host reads it via `mc_ctl_buf(0)`. A negative errno is
 /// returned for an unknown job id.
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_ctl_exec_poll(job_id: u32) -> i32 {
+pub(crate) fn mc_ctl_exec_poll(job_id: u32) -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
         let jobs = STATE.ctl_jobs();
@@ -2097,8 +2081,7 @@ pub extern "C" fn mc_ctl_exec_poll(job_id: u32) -> i32 {
 /// their length; the job keeps running. Lets the host tail a long-running command
 /// (e.g. an agent session emitting framed events) and stream output incrementally.
 /// A negative errno is returned for an unknown job id.
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_ctl_exec_peek(job_id: u32) -> i32 {
+pub(crate) fn mc_ctl_exec_peek(job_id: u32) -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
         let jobs = STATE.ctl_jobs();
@@ -2117,8 +2100,7 @@ pub extern "C" fn mc_ctl_exec_peek(job_id: u32) -> i32 {
 }
 
 /// Abandon a host exec job, freeing it without reading its result. Returns 0.
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_ctl_exec_close(job_id: u32) -> i32 {
+pub(crate) fn mc_ctl_exec_close(job_id: u32) -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
         if let Some(job) = STATE.ctl_jobs().remove(&job_id) {
@@ -2164,8 +2146,7 @@ pub extern "C" fn mc_ctl_exec_close(job_id: u32) -> i32 {
 /// restore). The host reads this before a snapshot and refuses while it is
 /// non-zero, so a snapshot is always taken at a no-egress-in-flight boundary
 /// (eviction correctness).
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_inflight_egress() -> i32 {
+pub(crate) fn mc_inflight_egress() -> i32 {
     net::inflight_egress()
 }
 
@@ -2173,8 +2154,7 @@ pub extern "C" fn mc_inflight_egress() -> i32 {
 /// their drivers. The host polls this (driving ticks to drain them) to make a
 /// mount write durable on return WITHOUT waiting on unrelated egress — a write's
 /// durability must not block on an open WebSocket or a concurrent fetch.
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_pending_commits() -> i32 {
+pub(crate) fn mc_pending_commits() -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
         if !STATE.is_initialized() {
@@ -2202,8 +2182,7 @@ pub extern "C" fn mc_pending_commits() -> i32 {
 /// pop-one-task loop so N threads distribute work through the shared ready
 /// queue; the cooperative-backed build needs only the bounded round.
 #[cfg(feature = "threads")]
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_worker_entry(_arg: i32) -> i32 {
+pub(crate) fn mc_worker_entry(_arg: i32) -> i32 {
     let _bkl = sync::lock_kernel();
     // Safe point for snapshotting: while a quiesce is pending
     // a worker does no work and returns, so its wasm stack unwinds and the
@@ -2229,16 +2208,14 @@ pub extern "C" fn mc_worker_entry(_arg: i32) -> i32 {
 /// behind a worker that is mid-step; it only flips an atomic flag the
 /// workers poll at their loop top.
 #[cfg(feature = "threads")]
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_quiesce_request() -> i32 {
+pub(crate) fn mc_quiesce_request() -> i32 {
     sync::request_quiesce();
     0
 }
 
 /// Resume workers after a snapshot.
 #[cfg(feature = "threads")]
-#[unsafe(no_mangle)]
-pub extern "C" fn mc_quiesce_release() -> i32 {
+pub(crate) fn mc_quiesce_release() -> i32 {
     sync::release_quiesce();
     0
 }
