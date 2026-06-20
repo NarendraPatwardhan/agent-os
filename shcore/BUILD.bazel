@@ -1,11 +1,26 @@
-# shcore — the OS-agnostic shell engine (Rust, ported from memcontainers crates/shcore).
-# Pure logic: parsing, expansion, the job/pipeline state machine — no kernel, no syscalls.
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# shcore — the OS-agnostic shell engine (VISION §9.4: the one legitimate native-test
+# home). Pure logic — no kernel, no syscalls — so it builds for the host and its
+# layers are unit-tested directly. `no_std` for the guest build (#![cfg_attr(not(test),
+# no_std)]); `std` under cfg(test) so the same sources run on the host test runner.
 #
-# This is the ONE legitimate home for NATIVE unit tests (VISION §9.4): it is not the
-# kernel, so A2 ("wasm only, even for tests") does not bind it. Everywhere else there is
-# no native build to unit-test; tests drive the real kernel through a real host (B6).
-#
-# Phase A:
-#   load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
-#   rust_library(name = "shcore", srcs = glob(["src/**/*.rs"], exclude = ["src/**/tests.rs"]))
-#   rust_test(name = "shcore_test", crate = ":shcore")   # native — legitimate here only.
+# Port status (Step 2): the lexer (word, token) has landed; ast/parser/expand/glob/
+# arith/exec/os follow. The library grows as each module group is ported.
+
+rust_library(
+    name = "shcore",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2021",
+    visibility = ["//visibility:public"],
+)
+
+# Native unit tests for the pure layers — legitimate here ONLY because shcore is not
+# the kernel (A2). Builds the crate with cfg(test) (so std is available) and runs the
+# in-module #[cfg(test)] tests.
+rust_test(
+    name = "shcore_test",
+    crate = ":shcore",
+    edition = "2021",
+    size = "small",
+)
