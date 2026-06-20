@@ -48,7 +48,10 @@ register_toolchains("//platforms:wasm32_freestanding_zig_toolchain")
 # with crate_universe in Step 2 (§5.2).
 bazel_dep(name = "rules_rust", version = "0.70.0")
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
-rust.toolchain(edition = "2021")  # default toolchain version; MODULE.bazel.lock pins the resolution
+# wasm32-unknown-unknown is the kernel's real rustc target (the VISION's "freestanding"
+# is the Zig triple); the guests (sysroot/programs) compile there too. The host triple
+# stays for the projector and, later, the server + wasmtime host.
+rust.toolchain(edition = "2021", extra_target_triples = ["wasm32-unknown-unknown"])
 use_repo(rust, "rust_toolchains")
 
 # crate_universe — Step 2 (kernel/rust needs wasmi etc. from one lockfile):
