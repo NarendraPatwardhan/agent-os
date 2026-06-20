@@ -1,14 +1,24 @@
-# images — base + flavor images via pkg_tar, NO manual staging (VISION §7.3, §10, B1).
-# An image is a pure function of its inputs: no remove_dir_all, no ordering hazard, no
-# fs::copy into a source tree — the three memcontainers build wounds, all closed by the
-# dependency graph. ONE pkg_tar is consumed by both the image and the tests, so the two
-# byte-identical tar implementations collapse into one. Deterministic tar (fixed
-# mtime/uid/gid) makes the image content-addressed and snapshots exact (A8, §10).
+load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+
+# images — the base + flavor images, built as DETERMINISTIC pkg_tar with NO manual staging:
+# no remove_dir_all, no ordering hazard, no fs::copy into a source tree — the three
+# memcontainers build wounds, all closed by the dependency graph (§7.3, B1). Fixed
+# mtime/uid/gid makes the image content-addressed and snapshots exact (A8, §10). ONE
+# pkg_tar is consumed by both the host CLI and the e2e tests, so the two byte-identical tar
+# implementations collapse into one.
 #
-# Phase A:
-#   load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
-#   pkg_tar(
-#       name = "base_tar",                  # /bin, /etc/mc-services.json, /usr/share, ...
-#       srcs = ["//programs:all", "//third_party/sqlite:sqlite", "//third_party/luau:luau"],
-#       # content-addressed; a flavor = base + domain packs layered by more pkg_tar.
-#   )
+# Minimal for now: a rootfs carrying just /etc/profile. The kernel's in-kernel rescue shell
+# boots without any guest programs, so first boot needs almost nothing; the guest /bin
+# (//programs, //third_party/{sqlite,luau}) layers in as those Step-2 components land — a
+# flavor image is `base` + domain packs stacked by more pkg_tar.
+pkg_tar(
+    name = "base",
+    srcs = glob(["rootfs/**"]),
+    # Map rootfs/etc/profile → /etc/profile in the tar (the kernel mounts it at /).
+    strip_prefix = "rootfs",
+    # Determinism (§10): root.root ownership and pkg_tar's default `portable_mtime` (a
+    # fixed epoch), so the tar bytes are a pure function of the content — reproducible and
+    # content-addressable.
+    owner = "0.0",
+    visibility = ["//visibility:public"],
+)

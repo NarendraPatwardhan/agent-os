@@ -82,7 +82,7 @@ bazel_dep(name = "aspect_bazel_lib", version = "2.22.5")
 # bazel_dep(name = "aspect_rules_ts", version = "3.X")
 
 # Images + contract drift gates.
-# bazel_dep(name = "rules_pkg", version = "1.X")         # pkg_tar — images, no manual staging
+bazel_dep(name = "rules_pkg", version = "1.0.1")  # pkg_tar — deterministic images, no manual staging
 # bazel_dep(name = "aspect_bazel_lib", version = "2.X")  # write_source_files + diff_test (B2)
 
 # Third-party guests — vendor LESS, patch in place (B3). Upstream source via

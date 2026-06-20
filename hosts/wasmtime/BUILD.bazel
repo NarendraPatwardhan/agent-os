@@ -1,24 +1,74 @@
-load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 
 # hosts/wasmtime — the Rust host driver (ported from memcontainers crates/host). Loads
-# kernel.wasm, implements the `env` bridge + the `mc_ctl_*` control channel, terminates
-# TLS for guest egress, and ticks the kernel (VISION §4.1, A3). A NATIVE library + CLI —
-# no wasm transition. The SAME kernel.wasm runs here and under hosts/js (A3); both kernels
-# run under this host in the parity matrix (B7, §9.6). This is the host every e2e test
-# boots — real bytes, no mocks (B6).
+# kernel.wasm, implements the `env` bridge + the `mc_ctl_*` control channel, terminates TLS
+# for guest egress, and ticks the kernel (VISION §4.1, A3). A NATIVE library + CLI. The
+# SAME kernel.wasm runs here and under hosts/js (A3); both kernels run under this host in
+# the parity matrix (B7). This is the host every e2e test boots — real bytes, no mocks (B6).
 #
-# Foundation slice: links wasmtime to prove it builds natively under crate_universe (the
-# host analog of the kernel's wasmi de-risk). The real HostState / register_bridge /
-# KernelHost — and the env/ctl contract consumers — transplant in.
+# Both ABI boundaries the host touches are GENERATED from the contracts, never hand-written
+# (B2): the `env` host side from //contracts:env_rust (src/bridge.rs) and the `mc_*` export
+# lookups from //contracts:ctl_rust (src/exports.rs).
+#
+# (Targets the native host. host_musl per §8.1 — hermetic static linking — is a follow-up.)
+
+_RUSTC_FLAGS = [
+    # `tokio-net` is an optional feature (the async TokioNet egress the mc-server enables).
+    # Declare it as a KNOWN cfg so the off-by-default `cfg(feature = "tokio-net")` does not
+    # trip the unexpected-cfgs lint.
+    "--check-cfg=cfg(feature, values(\"tokio-net\"))",
+    # The capability ports carry their `#[cfg(test)]` unit tests; we don't make the host a
+    # native test target (§9.4 — that's shcore's role; the host is validated by e2e), so
+    # declare `test` known to silence the lint on the (cfg'd-out) modules in the lib build.
+    "--check-cfg=cfg(test)",
+]
+
 rust_library(
     name = "host",
-    srcs = glob(["src/**/*.rs"]),
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = [
+            "src/main.rs",      # the `mc` binary crate root
+            "src/terminal.rs",  # raw-TTY handling, used only by the binary
+        ],
+    ),
     edition = "2021",
-    deps = ["@host_crates//:wasmtime"],
+    rustc_flags = _RUSTC_FLAGS,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@host_crates//:wasmtime",
+        "@host_crates//:anyhow",
+        "@host_crates//:sha2",
+        "@host_crates//:rand",
+        "@host_crates//:ureq",
+        "@host_crates//:tungstenite",
+        "//contracts:env_rust",  # the mc_bridge_table! macro → the host's env impls (B2)
+        "//contracts:ctl_rust",  # the mc_control_table! macro → the kernel-export lookups (B2)
+    ],
+)
+
+# The `mc` runtime CLI (the running system's identity, §8.2 — not agent-os-*).
+rust_binary(
+    name = "mc",
+    srcs = [
+        "src/main.rs",
+        "src/terminal.rs",
+    ],
+    crate_root = "src/main.rs",
+    edition = "2021",
+    deps = [
+        ":host",
+        "@host_crates//:anyhow",
+        "@host_crates//:clap",
+        "@host_crates//:crossterm",
+    ],
 )
 
 build_test(
     name = "test",
-    targets = [":host"],
+    targets = [
+        ":host",
+        ":mc",
+    ],
 )

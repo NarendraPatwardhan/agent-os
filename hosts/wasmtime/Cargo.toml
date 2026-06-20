@@ -1,8 +1,8 @@
 # Manifest for crate_universe dependency resolution only — the host BUILDS via Bazel
 # (rust_library + rust_binary), not cargo. Versions kept in lockstep with memcontainers
-# crates/host. A member of the workspace (//Cargo.toml) so every crate shares one
-# lockfile (VISION §7.1). Deps grow as the port lands; this foundation slice links only
-# wasmtime, to prove it compiles natively under crate_universe.
+# crates/host. Resolved into hosts/wasmtime/Cargo.lock SEPARATELY from the kernel's
+# (//MODULE.bazel): a no_std wasm crate and a std native crate cannot share one Cargo
+# resolution without feature unification turning on std features that break the kernel.
 [package]
 name = "host"
 version = "0.1.0"
@@ -12,5 +12,28 @@ edition = "2021"
 name = "host"
 path = "src/lib.rs"
 
+[[bin]]
+name = "mc"
+path = "src/main.rs"
+
 [dependencies]
 wasmtime = "43.0.0"
+anyhow = "1.0.102"
+clap = { version = "4.6.0", features = ["derive"] }
+crossterm = "0.29.0"
+rand = "0.10.0"
+sha2 = "0.10"
+tungstenite = { version = "0.29.0", default-features = false, features = ["rustls-tls-webpki-roots", "handshake"] }
+ureq = "^2.12"
+
+# Optional async egress (TokioNet) — the mc-server's runtime-integrated net capability,
+# kept OFF by default so the CLI/e2e build never pulls an async HTTP client. The server
+# enables `tokio-net`.
+tokio = { version = "1", features = ["rt"], optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"], optional = true }
+
+[features]
+# Swap the sync RealNet (ureq/tungstenite) for the async TokioNet (reqwest on a Tokio
+# runtime). Declared here so `cfg(feature = "tokio-net")` is a KNOWN cfg (no warning) and
+# the TokioNet code is preserved, compiled only when a consumer (the server) opts in.
+tokio-net = ["dep:tokio", "dep:reqwest"]
