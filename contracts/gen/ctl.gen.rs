@@ -1,4 +1,5 @@
 // @generated from contracts/control.kdl by //contracts/codegen:projector — do not edit.
+#![no_std]
 
 pub const CONTROL_EXPORTS: &[&str] = &[
     "mc_init",

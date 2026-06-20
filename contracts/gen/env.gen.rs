@@ -1,4 +1,5 @@
 // @generated from contracts/bridge.kdl by //contracts/codegen:projector — do not edit.
+#![no_std]
 
 pub const BRIDGE_IMPORTS: &[&str] = &[
     "mc_stdout_write",

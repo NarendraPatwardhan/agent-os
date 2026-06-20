@@ -44,8 +44,8 @@ errno {
 
 // ---------------------------------------------------------------------------
 // Capability tiers — the `tier` argument to mc_sys_spawn. Computed at exec as
-// parent ∩ binary ∩ requested, monotonically narrowing (§4.3). 0 = inherit.
-// `Isolated` is the only fully deterministic tier (A7).
+// parent ∩ binary ∩ requested, monotonically narrowing. 0 = inherit.
+// `Isolated` is the only fully deterministic tier.
 // ---------------------------------------------------------------------------
 tier {
     TIER_INHERIT    0
@@ -53,6 +53,34 @@ tier {
     TIER_READ_WRITE 2
     TIER_READ_ONLY  3
     TIER_ISOLATED   4
+}
+
+// ---------------------------------------------------------------------------
+// Capabilities — the kernel-side policy bitset (a u8: eight bits exactly fill
+// the byte; a ninth is the moment to ask whether it is a genuinely new authority).
+// A privileged syscall checks the relevant bit and returns EPERM if it is absent.
+// Capabilities only ever NARROW down the process tree: a child's set is
+// parent ∩ binary-tier ∩ requested-tier. The `tier` values above name bundles of
+// these bits (the kernel maps each tier to its capability ceiling).
+// ---------------------------------------------------------------------------
+capability {
+    CAP_FS_READ   1    // read any file the VFS exposes
+    CAP_FS_WRITE  2    // create / write / delete / rename in the VFS
+    CAP_SPAWN     4    // spawn child processes (mc_sys_spawn)
+    CAP_NET       8    // network egress (mc_sys_http_get; the fetch/wscat tools)
+    CAP_PERSIST   16   // persistent storage (the /var/persist filesystem)
+    // Observe the ambient host: the clock (mc_sys_time_*/mc_sys_sleep_ms) and
+    // entropy (mc_sys_random). Both are nondeterminism sources, so they share one
+    // bit — the deterministic isolated tier denies it (which is why date/shuf need it).
+    CAP_AMBIENT   32
+    // Write within a private per-task /scratch tmpfs and ONLY there — a least-
+    // privilege authority distinct from CAP_FS_WRITE (write-anywhere): a read-only
+    // tool can spill working files without authority over the rest of the FS.
+    // Enforced per-mount (the scratch mount declares it), not by a path test.
+    CAP_SCRATCH   64
+    // Mutate this task's own namespace (mc_sys_bind/unmount/serve): reshape the view
+    // and serve synthetic files to children. Spatial confinement still applies on top.
+    CAP_MOUNT     128
 }
 
 // Open flags for mc_sys_open (a bitmask).
@@ -85,7 +113,7 @@ poll {
     POLL_BLOCK -1  // timeout_ms sentinel: block until ready
 }
 
-// Signals + dispositions (minimal job control, §13). Numbers match POSIX. A
+// Signals + dispositions (minimal job control). Numbers match POSIX. A
 // terminated task's exit status is 128 + signo; a stopped child's waitpid status
 // is STOPPED_STATUS_BASE + signo (out of the 0..=255 exit range, a WIFSTOPPED stand-in).
 signal {
@@ -101,7 +129,7 @@ signal {
     STOPPED_STATUS_BASE 65536  // 0x1_0000
 }
 
-// Guest-served filesystem opcodes (servedfs, R3.4) + READDIR entry kinds. A served
+// Guest-served filesystem opcodes (servedfs) + READDIR entry kinds. A served
 // guest learns which VFS op a request asks of it from the `op` field.
 serve-op {
     SERVE_OP_OPEN    0
@@ -115,7 +143,7 @@ serve-op {
     SERVE_DIRENT_SYMLINK 2
 }
 
-// Host-backed mount opcodes (mountfs, Phase 2). A MountFs proxies each VFS op to a
+// Host-backed mount opcodes (mountfs). A MountFs proxies each VFS op to a
 // host-resident driver over the mc_host_call bridge; STAT/READDIR reuse the servedfs
 // layout so the two host-backed filesystems never drift.
 mount-op {

@@ -300,15 +300,22 @@ fn sanitize(s: &str) -> String {
 
 fn banner(lang: &str, contract: &str) -> String {
     let line = "@generated";
+    let comment =
+        format!("// {line} from contracts/{contract} by //contracts/codegen:projector — do not edit.\n");
     match lang {
         "asyncapi" => format!("# {line} from contracts/{contract} by //contracts/codegen:projector — do not edit.\n"),
-        _ => format!("// {line} from contracts/{contract} by //contracts/codegen:projector — do not edit.\n"),
+        // Rust projections are `no_std`: just consts/macros, usable by the no_std kernel
+        // AND std hosts. Without this a std dependency would drag std's lang items
+        // (panic_impl) into the kernel cdylib and collide with its `#[panic_handler]`.
+        "rust" => format!("{comment}#![no_std]\n"),
+        _ => comment,
     }
 }
 
 /// Rust/Zig integer type for a constants group (faithful to memcontainers types).
 fn const_ty(group: &str) -> &'static str {
     match group {
+        "capability" => "u8", // the policy bitset packs into one byte (eight bits)
         "serve-op" | "mount-op" => "u32",
         "wire-version" => "u32",
         "abi-version" => "i64",

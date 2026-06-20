@@ -34,6 +34,16 @@ export const TIER_READ_WRITE = 2;
 export const TIER_READ_ONLY = 3;
 export const TIER_ISOLATED = 4;
 
+// capability
+export const CAP_FS_READ = 1;
+export const CAP_FS_WRITE = 2;
+export const CAP_SPAWN = 4;
+export const CAP_NET = 8;
+export const CAP_PERSIST = 16;
+export const CAP_AMBIENT = 32;
+export const CAP_SCRATCH = 64;
+export const CAP_MOUNT = 128;
+
 // open-flags
 export const O_READ = 1;
 export const O_WRITE = 2;

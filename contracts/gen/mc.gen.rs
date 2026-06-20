@@ -1,4 +1,5 @@
 // @generated from contracts/syscalls.kdl by //contracts/codegen:projector — do not edit.
+#![no_std]
 
 pub const SYSCALL_NAMES: &[&str] = &[
     "mc_sys_write",

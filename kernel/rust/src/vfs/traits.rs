@@ -6,7 +6,7 @@
 //! kernel path type [`KPath`]. It depends on nothing else in the kernel (only `alloc`/
 //! `core`), so it is the dependency root for `fs/*` and the namespace.
 //!
-//! Design notes worth keeping (C1): a `caller` id is threaded through the mutating ops
+//! Design notes worth keeping: a `caller` id is threaded through the mutating ops
 //! so identity-aware filesystems (procfs, netfs, guest file servers) can check who is
 //! acting without the VFS depending on `task`; [`FsError::WouldBlock`] lets a handle
 //! backed by an in-flight resource ask the cooperative scheduler to re-poll it later;
@@ -384,7 +384,7 @@ pub trait FileSystem {
 
     /// Serialize this filesystem's writable diff — the CoW overlay (live writes since
     /// boot) plus deletions as OCI `.wh.` whiteouts — into a POSIX-ustar `.tar` layer
-    /// (the `commit` primitive, §7.4; inverse of `TarFs`). Only `CowFs` produces one;
+    /// (the `commit` primitive; inverse of `TarFs`). Only `CowFs` produces one;
     /// everything else has no diff concept (`None`).
     fn commit_layer(&mut self) -> Option<Vec<u8>> {
         None

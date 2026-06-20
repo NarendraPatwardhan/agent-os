@@ -34,6 +34,16 @@ pub const TIER_READ_WRITE: i32 = 2;
 pub const TIER_READ_ONLY: i32 = 3;
 pub const TIER_ISOLATED: i32 = 4;
 
+// capability
+pub const CAP_FS_READ: u8 = 1;
+pub const CAP_FS_WRITE: u8 = 2;
+pub const CAP_SPAWN: u8 = 4;
+pub const CAP_NET: u8 = 8;
+pub const CAP_PERSIST: u8 = 16;
+pub const CAP_AMBIENT: u8 = 32;
+pub const CAP_SCRATCH: u8 = 64;
+pub const CAP_MOUNT: u8 = 128;
+
 // open-flags
 pub const O_READ: i32 = 1;
 pub const O_WRITE: i32 = 2;
