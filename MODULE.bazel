@@ -43,16 +43,21 @@ register_toolchains("//platforms:wasm32_freestanding_zig_toolchain")
 # block together with the package that consumes it so green is preserved (B1).
 # ---------------------------------------------------------------------------
 
-# Rust — the Phase-A kernel (wasmi as a native crate), sysroot, shcore, programs,
-# wasi-adapter, hosts/wasmtime, server, and the contracts projector. crate_universe
-# pins every crate from one lockfile (§5.2).
-# bazel_dep(name = "rules_rust", version = "0.X.0")
-# rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
-# rust.toolchain(edition = "2021", versions = ["1.96.0"])
-# use_repo(rust, "rust_toolchains")
+# Rust — ACTIVE for the contracts projector (a dependency-light host tool: no external
+# crates, so no crate_universe needed yet). The wasm kernel port and its crates arrive
+# with crate_universe in Step 2 (§5.2).
+bazel_dep(name = "rules_rust", version = "0.70.0")
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(edition = "2021")  # default toolchain version; MODULE.bazel.lock pins the resolution
+use_repo(rust, "rust_toolchains")
+
+# crate_universe — Step 2 (kernel/rust needs wasmi etc. from one lockfile):
 # crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 # crate.from_cargo(name = "crates", cargo_lockfile = "//:Cargo.lock", manifests = ["//:Cargo.toml"])
 # use_repo(crate, "crates")
+
+# aspect_bazel_lib — write_source_files + diff_test for the contract drift gate (B2).
+bazel_dep(name = "aspect_bazel_lib", version = "2.22.5")
 
 # JS/TS — the bun/browser host family (A3) and the @mc/* SDK (sdk-js/, hosts/js).
 # bazel_dep(name = "aspect_rules_js", version = "2.X")

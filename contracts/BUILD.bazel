@@ -19,17 +19,16 @@ filegroup(
 )
 
 # ---------------------------------------------------------------------------
-# Projections (VISION §6.2). Enabled in Phase A step 3, once
-# //contracts/codegen:projector builds (needs the rules_rust lane). Each row turns
-# one contract into the languages that consume it; drift becomes a failed test (B2).
-# The language set per boundary mirrors §14.1:
-#
-# load("//contracts/codegen:defs.bzl", "abi_library")
-# abi_library(name = "mc",   contract = "syscalls.kdl", langs = ["rust", "zig", "ts", "md"])
-# abi_library(name = "env",  contract = "bridge.kdl",   langs = ["rust", "zig", "ts"])
-# abi_library(name = "ctl",  contract = "control.kdl",  langs = ["rust", "zig", "ts"])
-# abi_library(name = "wire", contract = "wire.kdl",     langs = ["rust", "ts", "asyncapi"])
-#
-# `abi_library` is loaded above so enabling these is a pure uncomment — the macro,
-# the projector interface, and the .kdl inputs already exist.
+# Projections (VISION §6.2, §14.1). One contract → the languages that consume it.
+# Each call generates the bindings, compile-validates the rust/zig ones, and gates
+# drift via gen/ + diff_test (B2). Consumers depend on the library targets
+# (:mc_rust, :env_zig, …); update the committed gen/ copies with
+# `bazel run //contracts:<name>_sync`.
 # ---------------------------------------------------------------------------
+load("//contracts/codegen:defs.bzl", "abi_library")
+
+abi_library(name = "constants", contract = "constants.kdl", langs = ["rust", "zig", "ts"])
+abi_library(name = "mc", contract = "syscalls.kdl", langs = ["rust", "zig", "ts", "md"])
+abi_library(name = "env", contract = "bridge.kdl", langs = ["rust", "zig", "ts"])
+abi_library(name = "ctl", contract = "control.kdl", langs = ["rust", "zig", "ts"])
+abi_library(name = "wire", contract = "wire.kdl", langs = ["rust", "ts", "asyncapi"])

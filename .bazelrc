@@ -20,11 +20,12 @@ common --incompatible_strict_action_env
 common --copt=-w
 common --host_copt=-w
 
-# Default build platform. Native host drivers (hosts/wasmtime, server) link musl to
-# match a prebuilt libwasmtime.a; kernel and guest targets transition to
-# //platforms:wasm32_freestanding via the Zig wasm toolchain, so this default only
-# governs host-side targets (§8.1).
-build --platforms=//platforms:host_musl
+# No global target platform: host-side tools (the contracts projector, later the
+# server) build for the autodetected host. musl is a property of the ONE binary that
+# links a prebuilt libwasmtime.a — hosts/wasmtime — and is applied there per-target in
+# Step 2 (//platforms:host_musl), not forced on the whole repo (VISION §8.1). Kernel
+# and guest targets transition to //platforms:wasm32_freestanding via the Zig wasm
+# toolchain regardless of this default.
 
 # Zig 0.16's `zig translate-c` (used by @cImport) resolves its cache from the
 # environment; rules_zig points ZIG_GLOBAL_CACHE_DIR under /tmp. Mount the real

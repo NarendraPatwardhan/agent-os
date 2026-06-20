@@ -1,47 +1,76 @@
-"""abi_library — project one contract file into many languages (VISION §6.2, B2).
+"""abi_library — project one contract into many languages, compile-validate the code
+projections, and gate drift (VISION §6.2, B2).
 
-For each requested language, run the projector over the contract to emit a binding
-(`<name>.gen.<ext>`), and wire a `write_source_files` drift gate so a stale checked-in
-copy is a failed `diff_test` — in every language at once. This is the mechanism that
-makes the four boundaries impossible to drift across the Rust kernel, the Zig kernel,
-the hosts, and the TS client.
+For each language it:
+  1. runs the projector over the contract → `<name>.gen.<ext>` (always fresh — B1),
+  2. for rust/zig, wraps the output in a library + a build_test, so an invalid
+     projection is a failed build (the compiler validates the generator's output),
+  3. mirrors every projection into `gen/` behind a `write_source_files` diff gate, so
+     an editor-visible copy stays honest and any hand-edit is a failed test (B2).
 
-Inert until //contracts/codegen:projector exists (Phase A step 3). The macro is
-written now — the contract's intended projection shape — so turning it on is a
-one-line edit to contracts/BUILD.bazel, not a design task.
+Consumers depend on the library target (`//contracts:mc_rust`, …) — the fresh genrule
+output — never the committed `gen/` copy, so the binding a build uses is never stale.
 """
+
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@rules_zig//zig:defs.bzl", "zig_library")
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@aspect_bazel_lib//lib:write_source_files.bzl", "write_source_files")
 
 _EXT = {
     "rust": "rs",
     "zig": "zig",
     "ts": "ts",
-    "asyncapi": "yaml",
     "md": "md",
+    "asyncapi": "yaml",
 }
 
 def abi_library(name, contract, langs):
-    """Generate <name>.gen.<ext> for each lang from `contract`, each behind a drift gate.
-
-    Args:
-        name: projection group name (e.g. "mc", "env", "ctl", "wire").
-        contract: the source .kdl label (e.g. "syscalls.kdl").
-        langs: languages to project into; keys of _EXT.
-    """
+    """Project `contract` into each of `langs`. `name` is the module id (mc/env/ctl/wire/constants)."""
+    sync_files = {}
     for lang in langs:
-        native.genrule(
-            name = "%s_%s_gen" % (name, lang),
-            srcs = [contract, "constants.kdl"],
-            outs = ["%s.gen.%s" % (name, _EXT[lang])],
-            tools = ["//contracts/codegen:projector"],
-            # The projector reads the contract (+ shared constants) and emits one
-            # language to stdout. Deterministic: same inputs → byte-identical output.
-            cmd = "$(location //contracts/codegen:projector) --lang %s --contract $(location %s) > $@" % (lang, contract),
-        )
+        ext = _EXT[lang]
+        gen = "%s_%s_gen" % (name, lang)
+        out = "%s.gen.%s" % (name, ext)
 
-        # B2 drift gate — keep an editor-visible <name>.gen.<ext> honest. Enabled
-        # with aspect_bazel_lib in Phase A:
-        #   load("@aspect_bazel_lib//lib:write_source_files.bzl", "write_source_files")
-        #   write_source_files(
-        #       name = "%s_%s" % (name, lang),
-        #       files = {"gen/%s.gen.%s" % (name, _EXT[lang]): ":%s_%s_gen" % (name, lang)},
-        #   )
+        # The projector emits one (module, lang) to stdout. Deterministic: same inputs
+        # → byte-identical output, so the diff gate below is stable (A7/B2).
+        native.genrule(
+            name = gen,
+            srcs = [contract],
+            outs = [out],
+            tools = ["//contracts/codegen:projector"],
+            cmd = "$(location //contracts/codegen:projector) --module {m} --lang {l} --contract $(location {c}) > $@".format(
+                m = name,
+                l = lang,
+                c = contract,
+            ),
+        )
+        sync_files["gen/%s" % out] = ":%s" % gen
+
+        # Compile-validate the code projections (the generator's output must be real
+        # source). Text projections (ts/md/asyncapi) are gated by diff only until their
+        # compiler lane lands (ts: the JS host; §6.3).
+        if lang == "rust":
+            rust_library(
+                name = "%s_rust" % name,
+                srcs = [":%s" % gen],
+                crate_root = ":%s" % gen,
+                edition = "2021",
+                visibility = ["//visibility:public"],
+            )
+            build_test(name = "%s_rust_build_test" % name, targets = [":%s_rust" % name])
+        elif lang == "zig":
+            zig_library(
+                name = "%s_zig" % name,
+                main = ":%s" % gen,
+                visibility = ["//visibility:public"],
+            )
+            build_test(name = "%s_zig_build_test" % name, targets = [":%s_zig" % name])
+
+    # B2 drift gate. Update the committed copies with `bazel run //contracts:<name>_sync`.
+    write_source_files(
+        name = "%s_sync" % name,
+        files = sync_files,
+        visibility = ["//visibility:public"],
+    )

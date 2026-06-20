@@ -20,7 +20,8 @@ kernel, it `data`-depends on the kernel target, so the artifact is never stale.
 
 ## Status: bootstrapped skeleton (Phase A, step 1)
 
-This is the **structure**, stood up per VISION §8, not the port. What exists:
+This is the **structure** plus the **contract projector** (Phase A steps 1 and 3),
+not yet the port. What exists:
 
 - The Bazel module and the validated **wasm32-freestanding** toolchain spine
   (`MODULE.bazel`, `.bazelrc`, `platforms/`, `tools/smoke/` — a real Zig→wasm build
@@ -28,6 +29,12 @@ This is the **structure**, stood up per VISION §8, not the port. What exists:
 - The four boundary **contracts** as the single source of truth (`contracts/*.kdl`),
   populated from the frozen `mc` ABI (52 syscalls at ABI 1.3, the `env` bridge, the
   `mc_ctl_*` control channel, the wire protocol).
+- The **projector** (`contracts/codegen`, Step 3): a dependency-light Rust tool that
+  reads the `.kdl` and emits Rust, Zig, TS, Markdown, and AsyncAPI. Every boundary is
+  generated into `contracts/gen/` and consumable as `//contracts:mc_rust`,
+  `:env_zig`, etc. The Rust/Zig projections are compile-validated by `build_test`; all
+  are drift-gated by `diff_test` (B2). Add or change a syscall by editing one `.kdl`
+  line and running `bazel run //contracts:mc_sync`.
 - A **package home for every Phase-A component**, each `BUILD.bazel` documenting
   what it will hold, its language, its target world, and the VISION section that
   governs it.
@@ -35,8 +42,8 @@ This is the **structure**, stood up per VISION §8, not the port. What exists:
 What does **not** exist yet (the next steps, VISION §11 Phase A):
 
 - Step 2 — porting memcontainers' Rust into `kernel/rust`, `sysroot`, `shcore`,
-  `programs`, `wasi-adapter`, `hosts/wasmtime`, `server`, `conformance`, `tests/e2e`.
-- Step 3 — the `contracts` projector that emits Rust/Zig/TS from the `.kdl` files.
+  `programs`, `wasi-adapter`, `hosts/wasmtime`, `server`, `conformance`, `tests/e2e`,
+  consuming the generated `//contracts:*_rust` bindings.
 - Step 4 — the C/C++ guest lane (sqlite, luau) via `http_archive` + Zig glue.
 
 ## Layout (see VISION §8 for the rationale)

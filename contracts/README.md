@@ -39,10 +39,17 @@ contracts/syscalls.kdl ──(//contracts/codegen:projector)──> mc.gen.rs   
 3. Conformance fails until a guest exercises the new syscall (or it carries a
    documented exclusion).
 
-## Status
+## Status — projector live (Phase A step 3 done)
 
-The `.kdl` files are complete and authoritative. The **projector** is a documented
-seed (`codegen/src/projector.rs`); standing it up is Phase A step 3 (VISION §11) —
-port the table logic from memcontainers `crates/abi`, then uncomment the
-`abi_library()` calls in `BUILD.bazel`. Capability annotations per syscall (§15.4)
-are the planned next pass.
+The `.kdl` files are complete and authoritative, and the **projector**
+(`codegen/src/projector.rs`) is implemented: a dependency-light KDL reader plus
+emitters for Rust, Zig, TS, Markdown, and AsyncAPI. The `abi_library()` calls in
+`BUILD.bazel` are live — every boundary is generated into `gen/`, the Rust and Zig
+projections are compile-validated by `build_test`, and all are drift-gated by
+`diff_test`. Consume them as `//contracts:mc_rust`, `:env_zig`, `:wire_ts`, …
+
+The generated Rust is a `macro_rules!` callback table (memcontainers'
+`mc_syscall_table!` pattern, generalized to all four boundaries); the kernel, host,
+and sysroot supply their own `$emit` in Step 2, so no ABI is ever hand-written (B2).
+TS is generated but compile-validated only when the JS lane lands; capability
+annotations per syscall (§15.4) are the planned next pass.

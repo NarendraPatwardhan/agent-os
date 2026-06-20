@@ -1,0 +1,63 @@
+# @generated from contracts/wire.kdl by //contracts/codegen:projector — do not edit.
+asyncapi: 3.0.0
+info:
+  title: mc wire protocol
+  version: "1"
+channels:
+  vm:
+    messages:
+      HELLO:
+        x-tag: 0
+        x-direction: "client->server"
+        x-body: "json"
+        summary: "Client handshake: wire version + auth + requested VM."
+      WELCOME:
+        x-tag: 1
+        x-direction: "server->client"
+        x-body: "json"
+        summary: "Server handshake reply: accepted version, VM id, capabilities."
+      SHELL_IN:
+        x-tag: 16
+        x-direction: "client->server"
+        x-body: "binary"
+        summary: "Terminal input bytes for the VM's foreground task."
+      SHELL_OUT:
+        x-tag: 17
+        x-direction: "server->client"
+        x-body: "binary"
+        summary: "Terminal output bytes from the VM."
+      HOST_CALL:
+        x-tag: 32
+        x-direction: "server->client"
+        x-body: "binary"
+        summary: "Relayed host-call request the client must service (tool / mount driver)."
+      HOST_RESULT:
+        x-tag: 33
+        x-direction: "client->server"
+        x-body: "binary"
+        summary: "The client's result for a relayed host call."
+      SESSION_START:
+        x-tag: 48
+        x-direction: "client->server"
+        x-body: "json"
+        summary: "Begin an agent session."
+      SESSION_EVENT:
+        x-tag: 49
+        x-direction: "server->client"
+        x-body: "json"
+        summary: "A streamed session event (agent step, output, status)."
+      SESSION_END:
+        x-tag: 50
+        x-direction: "server->client"
+        x-body: "json"
+        summary: "Session terminated, with a final status."
+      PERMISSION_REQUEST:
+        x-tag: 64
+        x-direction: "server->client"
+        x-body: "json"
+        summary: "The kernel asks for a capability the agent currently lacks (Â§13 open Q6)."
+      PERMISSION_RESPONSE:
+        x-tag: 65
+        x-direction: "client->server"
+        x-body: "json"
+        summary: "The client's grant/deny decision."
