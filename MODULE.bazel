@@ -54,10 +54,16 @@ rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(edition = "2021", extra_target_triples = ["wasm32-unknown-unknown"])
 use_repo(rust, "rust_toolchains")
 
-# crate_universe — Step 2 (kernel/rust needs wasmi etc. from one lockfile):
-# crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
-# crate.from_cargo(name = "crates", cargo_lockfile = "//:Cargo.lock", manifests = ["//:Cargo.toml"])
-# use_repo(crate, "crates")
+# crate_universe — external crates.io deps from one lockfile (the kernel's wasmi + talc;
+# more manifests join as the Rust lanes land). The `abi` role is filled by the generated
+# //contracts:*_rust bindings, not a crate.
+crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+crate.from_cargo(
+    name = "crates",
+    cargo_lockfile = "//kernel/rust:Cargo.lock",
+    manifests = ["//kernel/rust:Cargo.toml"],
+)
+use_repo(crate, "crates")
 
 # aspect_bazel_lib — write_source_files + diff_test for the contract drift gate (B2).
 bazel_dep(name = "aspect_bazel_lib", version = "2.22.5")

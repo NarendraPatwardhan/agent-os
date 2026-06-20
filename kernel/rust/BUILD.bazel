@@ -1,21 +1,41 @@
+load("@rules_rust//rust:defs.bzl", "rust_shared_library")
+load("@aspect_bazel_lib//lib:transitions.bzl", "platform_transition_filegroup")
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+
 # kernel/rust — the Phase-A kernel, PORTED from memcontainers crates/kernel, not
-# rewritten (VISION §5, §11 Phase A step 2). Compiles to wasm32-freestanding; wasmi is
-# an ordinary native Rust crate here — NO C seam in Phase A (the seam is Phase B's
+# rewritten (VISION §5, §11 Phase A step 2). Compiles to wasm32-unknown-unknown; wasmi
+# is an ordinary NATIVE crate here — no C seam in Phase A (the seam is Phase B's
 # //interpreter, kernel/zig only). This kernel sets the behavior bar the Zig kernel
 # must match (B7).
 #
-# Produces kernel.wasm: scheduler · capabilities · VFS + namespaces · pipes · net · the
-# guest runtime (wasmi) · the env bridge · mc syscall dispatch.
-#
-# Phase A:
-#   load("@rules_rust//rust:defs.bzl", "rust_shared_library")
-#   rust_shared_library(                       # cdylib → kernel.wasm
-#       name = "kernel",
-#       srcs = glob(["src/**/*.rs"]),
-#       deps = [
-#           "@crates//:wasmi",                 # NATIVE crate, EAGER mode (the §2.1 landmine)
-#           "//contracts:mc_rust",             # generated mc dispatch + wasmi registration
-#           "//contracts:env_rust",            # generated env bridge imports
-#           "//contracts:ctl_rust",            # generated mc_ctl_* exports
-#       ],
-#   )  # transitioned to //platforms:wasm32_freestanding; size_test on the output (B5).
+# Status: build-foundation slice (no_std cdylib that links wasmi + talc, proving the
+# toolchain). The real modules (scheduler, VFS, syscall dispatch, boot) transplant in.
+
+# The cdylib. Tagged manual: a no_std cdylib has no host runtime, so it is only
+# meaningful under the wasm transition below — `//...` must not build it for the host.
+rust_shared_library(
+    name = "lib",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    deps = [
+        "@crates//:wasmi",  # eager-mode =1.0.9 (the §2.1 landmine), native dep
+        "@crates//:talc",   # wasm linear-memory allocator (A8: all state in linear mem)
+        # //contracts:{mc,env,ctl}_rust — wired in as the ABI seam lands (B2).
+    ],
+    tags = ["manual"],
+)
+
+# Transition the cdylib to wasm32-unknown-unknown → the real kernel.wasm artifact. The
+# rest of the graph consumes //kernel/rust:kernel (§5.2); tests data-depend on it (B1).
+platform_transition_filegroup(
+    name = "kernel",
+    srcs = [":lib"],
+    target_platform = "//platforms:wasm32_freestanding",
+)
+
+# Anchors the kernel in the test graph: asserts kernel.wasm builds. A size_test (B5)
+# joins it once the kernel is real.
+build_test(
+    name = "test",
+    targets = [":kernel"],
+)
