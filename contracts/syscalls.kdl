@@ -1,0 +1,261 @@
+// contracts/syscalls.kdl — the `mc` SYSCALL boundary (guest → kernel).
+//
+// The single source of truth for the user-space contract between a wasm guest and
+// the kernel (§4.2, §6). Transcribed from memcontainers crates/abi/src/lib.rs — the
+// frozen ABI at version 1.3 (52 syscalls). The projector emits from this one file:
+//   - the Rust kernel's `Pending` enum + wasmi `register_syscalls` bindings,
+//   - the Rust guest sysroot's `extern "C"` import block,
+//   - (Phase B) the Zig kernel's dispatch `switch` + Zig sysroot,
+//   - the Zig C/C++-guest shims, and the conformance import-section oracle.
+// Adding a syscall is a one-line edit here; every consumer's exhaustive match/switch
+// then fails to compile until it has a handler (drift = compile error, in every
+// language — §6.3).
+//
+// Shape of a row:
+//   syscall "mc_sys_<name>" variant="<Variant>" group="<group>" { arg "<n>" type="<t>"; ... doc "..." }
+//
+//   - the node name is the exact wasm import symbol (module "mc").
+//   - `variant` is the kernel's Pending enum variant.
+//   - each arg's `type` is its KERNEL storage type: u32 for guest pointers, lengths,
+//     and out-pointers; i32 for fds, pids, flags, and small scalars. On the wire
+//     EVERY argument is a wasm i32 and the guest `extern` declares it i32; the kernel
+//     records it as `type` via a bit-preserving cast.
+//   - every syscall returns i32 (an errno), except where `ret` says otherwise.
+//
+// Capability annotations (§15.4 — project a capability×syscall matrix) are a
+// deliberate next pass; this file is kept to verified ABI facts only.
+
+// ── io / fs ────────────────────────────────────────────────────────────────
+syscall "mc_sys_write" variant="Write" group="io" {
+    arg "fd" type="i32"; arg "ptr" type="u32"; arg "len" type="u32"; arg "ret_n" type="u32"
+    doc "Write len bytes from guest ptr to fd; the count is written to ret_n."
+}
+syscall "mc_sys_read" variant="Read" group="io" {
+    arg "fd" type="i32"; arg "ptr" type="u32"; arg "len" type="u32"; arg "ret_n" type="u32"
+    doc "Read up to len bytes from fd into guest ptr; the count is written to ret_n."
+}
+syscall "mc_sys_open" variant="Open" group="fs" {
+    arg "path_ptr" type="u32"; arg "path_len" type="u32"; arg "flags" type="i32"; arg "ret_fd" type="u32"
+    doc "Open path with O_* flags; the new fd is written to ret_fd."
+}
+syscall "mc_sys_close" variant="Close" group="fs" {
+    arg "fd" type="i32"
+    doc "Close fd."
+}
+syscall "mc_sys_args" variant="Args" group="process" {
+    arg "ptr" type="u32"; arg "len" type="u32"; arg "ret_len" type="u32"
+    doc "Copy this task's NUL-separated argv into guest ptr; full length to ret_len."
+}
+syscall "mc_sys_stat" variant="Stat" group="fs" {
+    arg "path_ptr" type="u32"; arg "path_len" type="u32"; arg "ret_stat" type="u32"
+    doc "Write a stat record for path (follows symlinks) to ret_stat."
+}
+syscall "mc_sys_readdir" variant="Readdir" group="fs" {
+    arg "path_ptr" type="u32"; arg "path_len" type="u32"; arg "buf" type="u32"; arg "buf_len" type="u32"; arg "ret_len" type="u32"
+    doc "Write typed directory entries for path into buf; full length to ret_len."
+}
+syscall "mc_sys_mkdir" variant="Mkdir" group="fs" {
+    arg "path_ptr" type="u32"; arg "path_len" type="u32"
+    doc "Create directory path."
+}
+syscall "mc_sys_unlink" variant="Unlink" group="fs" {
+    arg "path_ptr" type="u32"; arg "path_len" type="u32"
+    doc "Remove the file (or empty directory) at path."
+}
+syscall "mc_sys_rename" variant="Rename" group="fs" {
+    arg "from_ptr" type="u32"; arg "from_len" type="u32"; arg "to_ptr" type="u32"; arg "to_len" type="u32"
+    doc "Rename from → to (EXDEV across mounts)."
+}
+
+// ── symbolic & hard links ────────────────────────────────────────────────────
+syscall "mc_sys_symlink" variant="Symlink" group="fs" {
+    arg "target_ptr" type="u32"; arg "target_len" type="u32"; arg "link_ptr" type="u32"; arg "link_len" type="u32"
+    doc "Create symlink `link` pointing at `target`."
+}
+syscall "mc_sys_link" variant="Link" group="fs" {
+    arg "old_ptr" type="u32"; arg "old_len" type="u32"; arg "new_ptr" type="u32"; arg "new_len" type="u32"
+    doc "Create hard link `new` referring to the same inode as `old`."
+}
+syscall "mc_sys_readlink" variant="Readlink" group="fs" {
+    arg "path_ptr" type="u32"; arg "path_len" type="u32"; arg "buf" type="u32"; arg "buf_len" type="u32"; arg "ret_len" type="u32"
+    doc "Write a symlink's target text into buf (no trailing NUL); full length to ret_len."
+}
+syscall "mc_sys_lstat" variant="Lstat" group="fs" {
+    arg "path_ptr" type="u32"; arg "path_len" type="u32"; arg "ret_stat" type="u32"
+    doc "Like stat, but does NOT follow a trailing symlink."
+}
+
+// ── file-metadata mutation ───────────────────────────────────────────────────
+syscall "mc_sys_chmod" variant="Chmod" group="fs" {
+    arg "path_ptr" type="u32"; arg "path_len" type="u32"; arg "mode" type="u32"
+    doc "Set path's permission bits (CAP_FS_WRITE)."
+}
+syscall "mc_sys_utimes" variant="Utimes" group="fs" {
+    arg "path_ptr" type="u32"; arg "path_len" type="u32"; arg "times_ptr" type="u32"
+    doc "Set path's atime+mtime (ms since epoch); NULL times_ptr means now (CAP_FS_WRITE)."
+}
+syscall "mc_sys_getcwd" variant="Getcwd" group="fs" {
+    arg "buf" type="u32"; arg "buf_len" type="u32"; arg "ret_len" type="u32"
+    doc "Write the current working directory into buf; full length to ret_len."
+}
+syscall "mc_sys_chdir" variant="Chdir" group="fs" {
+    arg "path_ptr" type="u32"; arg "path_len" type="u32"
+    doc "Change the current working directory to path."
+}
+syscall "mc_sys_lseek" variant="Lseek" group="fs" {
+    arg "fd" type="i32"; arg "off_ptr" type="u32"; arg "whence" type="i32"
+    doc "Reposition fd by the i64 offset at off_ptr relative to SEEK_*; new offset back to off_ptr."
+}
+syscall "mc_sys_ftruncate" variant="Ftruncate" group="fs" {
+    arg "fd" type="i32"; arg "size_lo" type="u32"; arg "size_hi" type="u32"
+    doc "Truncate/extend fd to the 64-bit size (size_hi:size_lo)."
+}
+syscall "mc_sys_poll" variant="Poll" group="io" {
+    arg "fds_ptr" type="u32"; arg "nfds" type="u32"; arg "timeout_ms" type="i32"; arg "ret_ready" type="u32"
+    doc "Wait on nfds pollfd records for POLL* events; ready count to ret_ready (POLL_BLOCK = block)."
+}
+
+// ── per-process namespace (Plan 9 bind/unmount, R3.2) ────────────────────────
+syscall "mc_sys_bind" variant="Bind" group="namespace" {
+    arg "old_ptr" type="u32"; arg "old_len" type="u32"; arg "new_ptr" type="u32"; arg "new_len" type="u32"
+    doc "Bind `old` onto `new` in this process's copy-on-write mount table."
+}
+syscall "mc_sys_unmount" variant="Unmount" group="namespace" {
+    arg "path_ptr" type="u32"; arg "path_len" type="u32"
+    doc "Remove the binding at path from this process's namespace."
+}
+
+// ── guest-served file servers (9P-ish mount-a-guest, R3.4) ───────────────────
+syscall "mc_sys_serve" variant="Serve" group="service" {
+    arg "path_ptr" type="u32"; arg "path_len" type="u32"; arg "ret_fd" type="u32"
+    doc "Register this guest as the file server for the subtree at path; server fd to ret_fd."
+}
+syscall "mc_sys_serve_recv" variant="ServeRecv" group="service" {
+    arg "fd" type="i32"; arg "buf" type="u32"; arg "buf_len" type="u32"; arg "ret_len" type="u32"
+    doc "Receive the next served VFS request on fd (SERVE_OP_* envelope) into buf; length to ret_len."
+}
+syscall "mc_sys_serve_respond" variant="ServeRespond" group="service" {
+    arg "fd" type="i32"; arg "req_id" type="u32"; arg "status" type="i32"; arg "data_ptr" type="u32"; arg "data_len" type="u32"
+    doc "Answer request req_id with a WASI errno status plus op-specific data."
+}
+
+// ── fds ──────────────────────────────────────────────────────────────────────
+syscall "mc_sys_pipe" variant="Pipe" group="ipc" {
+    arg "ret_r" type="u32"; arg "ret_w" type="u32"
+    doc "Create a pipe; read end to ret_r, write end to ret_w."
+}
+syscall "mc_sys_dup" variant="Dup" group="ipc" {
+    arg "fd" type="i32"; arg "ret_fd" type="u32"
+    doc "Duplicate fd onto the lowest free descriptor; written to ret_fd."
+}
+syscall "mc_sys_dup2" variant="Dup2" group="ipc" {
+    arg "old_fd" type="i32"; arg "new_fd" type="i32"
+    doc "Duplicate old_fd onto new_fd (closing new_fd first)."
+}
+syscall "mc_sys_isatty" variant="Isatty" group="io" {
+    arg "fd" type="i32"; arg "ret" type="u32"
+    doc "Write 1 to ret iff fd is the terminal (not a pipe/file)."
+}
+
+// ── process ──────────────────────────────────────────────────────────────────
+syscall "mc_sys_getpid" variant="Getpid" group="process" {
+    arg "ret" type="u32"
+    doc "Write this task's pid to ret."
+}
+syscall "mc_sys_getppid" variant="Getppid" group="process" {
+    arg "ret" type="u32"
+    doc "Write this task's parent pid to ret."
+}
+syscall "mc_sys_spawn" variant="Spawn" group="process" {
+    arg "argv_ptr" type="u32"; arg "argv_len" type="u32"; arg "in_fd" type="i32"; arg "out_fd" type="i32"; arg "err_fd" type="i32"; arg "tier" type="i32"; arg "ret_pid" type="u32"
+    doc "Spawn a child from NUL-separated argv with the given stdio fds and capability tier; pid to ret_pid."
+}
+syscall "mc_sys_waitpid" variant="Waitpid" group="process" {
+    arg "pid" type="i32"; arg "opts" type="i32"; arg "ret_status" type="u32"; arg "ret_pid" type="u32"
+    doc "Wait for child pid (WNOHANG optional); status to ret_status, reaped pid to ret_pid."
+}
+syscall "mc_sys_nice" variant="Nice" group="process" {
+    arg "inc" type="i32"; arg "ret" type="u32"
+    doc "Adjust scheduling niceness by inc (clamped -20..=19); resulting value to ret. Inherited across spawn."
+}
+
+// ── signals / job control (§13) ──────────────────────────────────────────────
+syscall "mc_sys_kill" variant="Kill" group="signal" {
+    arg "pid" type="i32"; arg "sig" type="i32"
+    doc "Send signal sig to pid (or a process group when pid < 0)."
+}
+syscall "mc_sys_sigdisp" variant="Sigdisp" group="signal" {
+    arg "sig" type="i32"; arg "disp" type="i32"
+    doc "Set this task's disposition for sig (SIG_DFL or SIG_IGN)."
+}
+syscall "mc_sys_setpgid" variant="Setpgid" group="signal" {
+    arg "pid" type="i32"; arg "pgid" type="i32"
+    doc "Set pid's process group to pgid (0 = self)."
+}
+syscall "mc_sys_tcsetpgrp" variant="Tcsetpgrp" group="signal" {
+    arg "pgid" type="i32"
+    doc "Make pgid the terminal's foreground process group."
+}
+
+// ── capability egress ────────────────────────────────────────────────────────
+syscall "mc_sys_http_get" variant="HttpGet" group="egress" {
+    arg "url_ptr" type="u32"; arg "url_len" type="u32"; arg "ret_fd" type="u32"
+    doc "Start a GET for url (host terminates TLS); a readable result fd to ret_fd."
+}
+syscall "mc_sys_http_request" variant="HttpRequest" group="egress" {
+    arg "req_ptr" type="u32"; arg "req_len" type="u32"; arg "ret_fd" type="u32"
+    doc "Start an arbitrary HTTP request from the blob at req_ptr; readable result fd to ret_fd."
+}
+syscall "mc_sys_http_status" variant="HttpStatus" group="egress" {
+    arg "fd" type="i32"; arg "ret_status" type="u32"
+    doc "Write the HTTP status code of request fd to ret_status (once headers arrive)."
+}
+syscall "mc_sys_ws_open" variant="WsOpen" group="egress" {
+    arg "url_ptr" type="u32"; arg "url_len" type="u32"; arg "ret_fd" type="u32"
+    doc "Open a WebSocket to url (host does the handshake + TLS); a duplex fd to ret_fd."
+}
+syscall "mc_sys_host_call" variant="HostCall" group="egress" {
+    arg "req_ptr" type="u32"; arg "req_len" type="u32"; arg "ret_fd" type="u32"
+    doc "Invoke a host-resident function (the mc-tool shim, host-backed mounts); readable result fd to ret_fd."
+}
+
+// ── misc ─────────────────────────────────────────────────────────────────────
+syscall "mc_sys_time_monotonic" variant="TimeMonotonic" group="misc" {
+    arg "ret" type="u32"
+    doc "Write a monotonic timestamp (ms) to ret (CAP_AMBIENT)."
+}
+syscall "mc_sys_time_realtime" variant="TimeRealtime" group="misc" {
+    arg "ret" type="u32"
+    doc "Write wall-clock ms since the Unix epoch to ret; can jump (NTP) (CAP_AMBIENT)."
+}
+syscall "mc_sys_sleep_ms" variant="SleepMs" group="misc" {
+    arg "ms" type="i32"
+    doc "Park this task for ms milliseconds."
+}
+syscall "mc_sys_random" variant="Random" group="misc" {
+    arg "ptr" type="u32"; arg "len" type="u32"
+    doc "Fill len bytes at ptr with entropy (CAP_AMBIENT)."
+}
+syscall "mc_sys_abi_version" variant="AbiVersion" group="misc" {
+    arg "ret" type="u32"
+    doc "Write the packed syscall ABI version (major<<16|minor) to ret."
+}
+syscall "mc_sys_exit" variant="Exit" group="process" ret="noreturn" {
+    arg "code" type="i32"
+    doc "Terminate this task with exit code (never returns)."
+}
+
+// ── VM-runtime support for C/C++ guests (kernel-mediated non-local exit) ──────
+// wasmi has no exception proposal, so neither setjmp/longjmp nor C++ EH is
+// available. The kernel provides the unwind: `pcall` runs the guest's stashed thunk
+// (exported __mc_pcall_run) as a NESTED guest call — a trap boundary. To "throw", a
+// guest records its code via set_throw then executes `unreachable`; wasmi unwinds the
+// nested call and the kernel returns the code as pcall's result (0 = returned
+// normally). See loom (the Luau guest) and memcontainers ctx/LUAU.md §4.4.
+syscall "mc_sys_pcall" variant="Pcall" group="vm" ret="throw-code" {
+    doc "Run the guest's stashed thunk as a nested call; return its throw code (0 = normal return)."
+}
+syscall "mc_sys_set_throw" variant="SetThrow" group="vm" {
+    arg "code" type="i32"
+    doc "Record the throw code to be surfaced by the enclosing pcall after `unreachable`."
+}

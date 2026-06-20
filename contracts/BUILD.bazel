@@ -1,0 +1,35 @@
+# The four boundaries, single source of truth (VISION §6, B2). The .kdl files here
+# are DEFINED once; every Rust/Zig/TS reference elsewhere is a generated *.gen.*
+# projection, never a hand-written copy.
+package(default_visibility = ["//visibility:public"])
+
+# Let consumers data-depend on a raw contract (e.g. the conformance import oracle
+# reads syscalls.kdl) and on the whole set.
+exports_files([
+    "syscalls.kdl",
+    "bridge.kdl",
+    "control.kdl",
+    "wire.kdl",
+    "constants.kdl",
+])
+
+filegroup(
+    name = "contracts",
+    srcs = glob(["*.kdl"]),
+)
+
+# ---------------------------------------------------------------------------
+# Projections (VISION §6.2). Enabled in Phase A step 3, once
+# //contracts/codegen:projector builds (needs the rules_rust lane). Each row turns
+# one contract into the languages that consume it; drift becomes a failed test (B2).
+# The language set per boundary mirrors §14.1:
+#
+# load("//contracts/codegen:defs.bzl", "abi_library")
+# abi_library(name = "mc",   contract = "syscalls.kdl", langs = ["rust", "zig", "ts", "md"])
+# abi_library(name = "env",  contract = "bridge.kdl",   langs = ["rust", "zig", "ts"])
+# abi_library(name = "ctl",  contract = "control.kdl",  langs = ["rust", "zig", "ts"])
+# abi_library(name = "wire", contract = "wire.kdl",     langs = ["rust", "ts", "asyncapi"])
+#
+# `abi_library` is loaded above so enabling these is a pure uncomment — the macro,
+# the projector interface, and the .kdl inputs already exist.
+# ---------------------------------------------------------------------------

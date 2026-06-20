@@ -1,0 +1,20 @@
+# Root package — the user-facing entry points (VISION §8).
+#
+# These aliases are the stable names the README and humans type; each resolves to
+# whichever package currently owns the artifact, so callers never chase a moved
+# target. They are enabled in Phase A as each target lands, keeping `bazel test
+# //...` green at every step (B1):
+#
+#   alias(name = "kernel", actual = "//kernel/rust:kernel")  # //kernel:impl flips rust|zig (§5.2)
+#   alias(name = "server", actual = "//server:mc-server")
+#   alias(name = "e2e",    actual = "//tests/e2e:e2e")
+#   alias(name = "web",    actual = "//web:app")
+#
+# The kernel-implementation selector (Phase B): one flag flips every kernel-
+# consuming edge between the Rust and Zig builds, so the test matrix (§9.6) can run
+# both from the same graph.
+#   load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
+#   string_flag(name = "kernel_impl", build_setting_default = "rust", values = ["rust", "zig"])
+#
+# zig_index.json is referenced by MODULE.bazel's Zig toolchain pin.
+exports_files(["zig_index.json"])

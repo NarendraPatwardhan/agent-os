@@ -1,0 +1,18 @@
+# interpreter — wasmi compiled to a wasm32 staticlib behind a small C ABI, consumed by
+# kernel/zig ONLY (VISION §5.3, §8). The Rust kernel takes wasmi as a plain crate, so
+# this C seam is visible, isolated, and Phase-B-only. zmc proved the integration works
+# e2e (5 C exports + 2 callbacks). The resumable/fuel state machine stays FAT on the
+# Rust side of the shim, so the Zig kernel sees a clean verb ("run this guest until it
+# syscalls / blocks / exits"), not raw wasmi.
+#
+# The load-bearing landmine (VISION §2.1): wasmi = "=1.0.9" in EAGER compilation mode.
+# Lazy translation charges *guest* fuel and corrupts the host on a dry-fuel resume
+# (memcontainers ctx/WASMI.md). Both kernels inherit this verbatim.
+#
+# Phase B:
+#   load("@rules_rust//rust:defs.bzl", "rust_static_library")
+#   rust_static_library(
+#       name = "wasmi_shim",
+#       srcs = glob(["src/*.rs"]),             # incl. src/mc_register.gen.rs ← contracts/syscalls.kdl
+#       deps = ["@crates//:wasmi"],
+#   )  # built for //platforms:wasm32_unknown.

@@ -1,0 +1,14 @@
+# Bazel outputs — every artifact is a pure function of its declared inputs (B1),
+# so nothing under bazel-* is ever committed; `bazel test //...` regenerates it.
+/bazel-*
+
+# Local toolchain caches (zig translate-c, direct `zig build` experiments).
+.zig-cache/
+zig-out/
+
+# Editor / OS noise
+*.swp
+*~
+.DS_Store
+
+# NB: MODULE.bazel.lock IS committed (hermetic, reproducible resolution — B4).

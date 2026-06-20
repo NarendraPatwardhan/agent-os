@@ -1,0 +1,14 @@
+# images — base + flavor images via pkg_tar, NO manual staging (VISION §7.3, §10, B1).
+# An image is a pure function of its inputs: no remove_dir_all, no ordering hazard, no
+# fs::copy into a source tree — the three memcontainers build wounds, all closed by the
+# dependency graph. ONE pkg_tar is consumed by both the image and the tests, so the two
+# byte-identical tar implementations collapse into one. Deterministic tar (fixed
+# mtime/uid/gid) makes the image content-addressed and snapshots exact (A8, §10).
+#
+# Phase A:
+#   load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+#   pkg_tar(
+#       name = "base_tar",                  # /bin, /etc/mc-services.json, /usr/share, ...
+#       srcs = ["//programs:all", "//third_party/sqlite:sqlite", "//third_party/luau:luau"],
+#       # content-addressed; a flavor = base + domain packs layered by more pkg_tar.
+#   )

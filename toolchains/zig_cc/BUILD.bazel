@@ -1,0 +1,7 @@
+# `zig cc` / `zig c++` as the hermetic C/C++ cross-compiler for the third_party guests
+# (sqlite, luau), compiled to wasm (VISION §5.1, §8). This is where Zig "earns its keep
+# first" in Phase A: one toolchain unifies the C, C++, and Zig-glue compiles, replacing
+# memcontainers' bare-`zig` / hand-`-fno-exceptions` glue with hermetic, declared actions.
+#
+# Phase A step 4: a cc_toolchain wrapping the rules_zig `zig cc` driver, registered for
+# the wasm32 target worlds, consumed by //third_party/{sqlite,luau}.

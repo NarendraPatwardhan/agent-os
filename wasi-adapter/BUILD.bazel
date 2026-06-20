@@ -1,0 +1,14 @@
+# wasi-adapter — translates a guest's WASI (preview1) imports into `mc` syscalls
+# (Rust, ported from memcontainers crates/wasi), so a tool compiled against WASI can run
+# under the kernel without WASI ever touching the kernel itself (A4: WASI exists ONLY as
+# a guest adapter). The per-tool C/C++ compat shims it links into are written in ZIG.
+#
+# The link-injection / fixpoint-relink that rewrites a wasm module's imports is the
+# subject of VISION §13 open Q4 — a hermetic Bazel custom rule with explicit intermediate
+# outputs (no in-place mutation).
+#
+# Phase A:
+#   load("@rules_rust//rust:defs.bzl", "rust_library")
+#   rust_library(name = "wasi_adapter", srcs = glob(["src/**/*.rs"]),
+#       deps = ["//contracts:mc_rust"])
+#   # + a wasi_to_mc(name, wasm) custom rule producing a rewritten .wasm.

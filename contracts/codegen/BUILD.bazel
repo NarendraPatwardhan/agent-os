@@ -1,0 +1,23 @@
+# The projector — contracts/*.kdl → one target language (VISION §6.2). A single
+# rust_binary behind every projection; `abi_library` (defs.bzl) invokes it once per
+# (contract, language) pair.
+#
+# Enabled in Phase A step 3 with the rules_rust lane. The source (src/projector.rs)
+# and the macro (defs.bzl) already define the interface, so standing this up is:
+#   1. uncomment the rules_rust block in MODULE.bazel,
+#   2. uncomment this target,
+#   3. uncomment the abi_library() calls in //contracts:BUILD.bazel.
+#
+# load("@rules_rust//rust:defs.bzl", "rust_binary")
+# rust_binary(
+#     name = "projector",
+#     srcs = glob(["src/**/*.rs"]),
+#     edition = "2021",
+#     # KDL parser crate pinned via crate_universe (or a tiny hand-rolled reader to
+#     # stay dependency-light on the build's critical path — see src/projector.rs).
+#     # deps = ["@crates//:kdl"],
+#     visibility = ["//visibility:public"],
+# )
+
+# defs.bzl is consumed by //contracts:BUILD.bazel; expose it explicitly.
+exports_files(["defs.bzl"])

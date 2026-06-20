@@ -1,0 +1,13 @@
+# lib/stdx — freestanding-clean Zig support primitives for the Phase-B Zig kernel and
+# guests (VISION §8, §8.1). Seeded by cherry-picking ZML's stdx (Apache-2.0 — keep a
+# NOTICE): the parts a freestanding kernel actually needs — no-alloc BoundedArray,
+# intrusive SPSC/MPSC queue, SegmentedList, comptime meta/signature, the crypto
+# MacWriter. Links NO libc and imports NO std.os/std.posix (a CI grep enforces this);
+# the host-leaning modules (Io, process, time, flags, json, fmt) are deliberately left out.
+#
+# ZML moves fast and is our reference Bazel+Zig repo, so the exact cherry-pick is
+# RE-VERIFIED against the latest ZML when this lib is manifested — not frozen to a snapshot.
+#
+# Phase B:
+#   load("@rules_zig//zig:defs.bzl", "zig_library")
+#   zig_library(name = "stdx", main = "stdx.zig", srcs = glob(["*.zig"]))

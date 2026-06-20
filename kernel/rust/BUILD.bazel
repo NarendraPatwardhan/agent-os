@@ -1,0 +1,21 @@
+# kernel/rust — the Phase-A kernel, PORTED from memcontainers crates/kernel, not
+# rewritten (VISION §5, §11 Phase A step 2). Compiles to wasm32-freestanding; wasmi is
+# an ordinary native Rust crate here — NO C seam in Phase A (the seam is Phase B's
+# //interpreter, kernel/zig only). This kernel sets the behavior bar the Zig kernel
+# must match (B7).
+#
+# Produces kernel.wasm: scheduler · capabilities · VFS + namespaces · pipes · net · the
+# guest runtime (wasmi) · the env bridge · mc syscall dispatch.
+#
+# Phase A:
+#   load("@rules_rust//rust:defs.bzl", "rust_shared_library")
+#   rust_shared_library(                       # cdylib → kernel.wasm
+#       name = "kernel",
+#       srcs = glob(["src/**/*.rs"]),
+#       deps = [
+#           "@crates//:wasmi",                 # NATIVE crate, EAGER mode (the §2.1 landmine)
+#           "//contracts:mc_rust",             # generated mc dispatch + wasmi registration
+#           "//contracts:env_rust",            # generated env bridge imports
+#           "//contracts:ctl_rust",            # generated mc_ctl_* exports
+#       ],
+#   )  # transitioned to //platforms:wasm32_freestanding; size_test on the output (B5).

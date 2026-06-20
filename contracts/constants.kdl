@@ -1,0 +1,132 @@
+// contracts/constants.kdl — shared constants for all four boundaries.
+//
+// Single source of truth (B2). The projector (//contracts/codegen:projector) emits
+// these into Rust, Zig, and TS; drift is a failed diff_test, in every language.
+//
+// Values are the FROZEN `mc` ABI, transcribed from memcontainers crates/abi/src/lib.rs.
+// Do NOT renumber: the `mc` surface is a compatibility contract shared with
+// memcontainers (which acts as a third parity cross-check — VISION §8.2, §11).
+//
+// Format note: KDL, per the VISION §13.1 lean ("KDL + a Rust projector"). Each node
+// is `NAME value` or a grouping node with children. Bare integers are the constant's
+// value; comments carry the local "why" (C1).
+
+// Syscall ABI version, reported by mc_sys_abi_version as (major << 16) | minor.
+// Bump MINOR for additive changes (new syscalls); MAJOR only for a breaking change.
+abi-version major=1 minor=3
+
+// ---------------------------------------------------------------------------
+// Errno — WASI-style; 0 = success. A syscall returns 0 or a positive errno; any
+// value it produces is written through a guest out-pointer argument.
+// ---------------------------------------------------------------------------
+errno {
+    ESUCCESS    0
+    EACCES      2   // permission denied (file-mode bit check failed)
+    EAGAIN      6   // would block
+    EBADF       8   // bad file descriptor
+    ECHILD      10  // no child processes
+    EEXIST      20  // file exists
+    EINTR       27  // interrupted by a signal
+    EINVAL      28  // invalid argument
+    EIO         29  // I/O error
+    EISDIR      31  // is a directory
+    ELOOP       32  // too many levels of symbolic links
+    EMFILE      33  // too many open files (per-VM fd budget)
+    ENOENT      44  // no such file or directory
+    ENOSYS      52  // function not implemented
+    ENOTDIR     54  // not a directory
+    ENOTEMPTY   55  // directory not empty
+    EPERM       63  // operation not permitted (capability denied)
+    EPIPE       64  // broken pipe
+    ESRCH       71  // no such process
+    EXDEV       75  // cross-device link (rename across mounts)
+}
+
+// ---------------------------------------------------------------------------
+// Capability tiers — the `tier` argument to mc_sys_spawn. Computed at exec as
+// parent ∩ binary ∩ requested, monotonically narrowing (§4.3). 0 = inherit.
+// `Isolated` is the only fully deterministic tier (A7).
+// ---------------------------------------------------------------------------
+tier {
+    TIER_INHERIT    0
+    TIER_FULL       1
+    TIER_READ_WRITE 2
+    TIER_READ_ONLY  3
+    TIER_ISOLATED   4
+}
+
+// Open flags for mc_sys_open (a bitmask).
+open-flags {
+    O_READ   1
+    O_WRITE  2
+    O_CREATE 4
+    O_TRUNC  8
+    O_APPEND 16
+}
+
+// `whence` values for mc_sys_lseek.
+seek {
+    SEEK_SET 0
+    SEEK_CUR 1
+    SEEK_END 2
+}
+
+// mc_sys_waitpid option bit: return immediately (pid 0) when no child has exited.
+waitpid {
+    WNOHANG 1
+}
+
+// mc_sys_poll event/result bits. POLLERR/POLLHUP are output-only.
+poll {
+    POLLIN     1   // readable without blocking
+    POLLOUT    4   // writable without blocking
+    POLLERR    8   // error condition (output-only)
+    POLLHUP    16  // peer hung up / EOF (output-only)
+    POLL_BLOCK -1  // timeout_ms sentinel: block until ready
+}
+
+// Signals + dispositions (minimal job control, §13). Numbers match POSIX. A
+// terminated task's exit status is 128 + signo; a stopped child's waitpid status
+// is STOPPED_STATUS_BASE + signo (out of the 0..=255 exit range, a WIFSTOPPED stand-in).
+signal {
+    SIGHUP  1
+    SIGINT  2
+    SIGKILL 9
+    SIGTERM 15
+    SIGCHLD 17
+    SIGCONT 18
+    SIGTSTP 20
+    SIG_DFL 0   // default action
+    SIG_IGN 1   // ignore
+    STOPPED_STATUS_BASE 65536  // 0x1_0000
+}
+
+// Guest-served filesystem opcodes (servedfs, R3.4) + READDIR entry kinds. A served
+// guest learns which VFS op a request asks of it from the `op` field.
+serve-op {
+    SERVE_OP_OPEN    0
+    SERVE_OP_READDIR 1
+    SERVE_OP_MKDIR   2
+    SERVE_OP_UNLINK  3
+    SERVE_OP_RENAME  4
+    SERVE_OP_STAT    5
+    SERVE_DIRENT_FILE    0
+    SERVE_DIRENT_DIR     1
+    SERVE_DIRENT_SYMLINK 2
+}
+
+// Host-backed mount opcodes (mountfs, Phase 2). A MountFs proxies each VFS op to a
+// host-resident driver over the mc_host_call bridge; STAT/READDIR reuse the servedfs
+// layout so the two host-backed filesystems never drift.
+mount-op {
+    MOUNT_OP_OPEN    0
+    MOUNT_OP_READDIR 1
+    MOUNT_OP_MKDIR   2
+    MOUNT_OP_UNLINK  3
+    MOUNT_OP_RENAME  4
+    MOUNT_OP_STAT    5
+    MOUNT_OP_WRITE   6
+}
+
+// Wire protocol version (server↔client), versioned separately from the syscall ABI.
+wire-version 1

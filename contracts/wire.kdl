@@ -1,0 +1,36 @@
+// contracts/wire.kdl — the `wire` boundary (mc-server ↔ client).
+//
+// The per-VM typed WebSocket + REST surface (§4.2). Distinct from the syscall ABI:
+// this is the `std`, over-the-network contract, versioned separately (wire-version
+// vs the syscall abi-version). Transcribed from memcontainers crates/wire/src/lib.rs.
+//
+// The projector emits the Rust server's message structs + tag constants, the TS
+// client (sdk-js/core), the AsyncAPI/OpenAPI specs (spec/), and a golden-vector
+// corpus (spec/wire-vectors.json) that pins the byte layout across languages.
+//
+// Frame: [kind:u8][seq:u64 LE][body…]. CONTROL kinds carry a JSON tail; BULK kinds
+// (shell, host-call relay) carry length-prefixed binary — no base64 on the two
+// highest-volume paths (terminal + mount content). The server stamps a monotonic
+// `seq` on every frame it sends and skips the client's inbound seq.
+
+version 1   // bump MINOR for additive changes; MAJOR for a breaking change. The handshake carries it; a server accepts only its own major.
+header-len 9   // [kind:u8][seq:u64 LE]
+
+// Kind tags (the frame's first byte). Numeric ranges are intentional:
+//   0x0x handshake · 0x1x shell · 0x2x host-call relay · 0x3x sessions · 0x4x permissions.
+// A message is CONTROL (JSON body) or BULK (length-prefixed binary).
+message "HELLO"               tag=0x00 dir="client->server" body="json"   { doc "Client handshake: wire version + auth + requested VM." }
+message "WELCOME"             tag=0x01 dir="server->client" body="json"   { doc "Server handshake reply: accepted version, VM id, capabilities." }
+message "SHELL_IN"            tag=0x10 dir="client->server" body="binary" { doc "Terminal input bytes for the VM's foreground task." }
+message "SHELL_OUT"           tag=0x11 dir="server->client" body="binary" { doc "Terminal output bytes from the VM." }
+message "HOST_CALL"           tag=0x20 dir="server->client" body="binary" { doc "Relayed host-call request the client must service (tool / mount driver)." }
+message "HOST_RESULT"         tag=0x21 dir="client->server" body="binary" { doc "The client's result for a relayed host call." }
+message "SESSION_START"       tag=0x30 dir="client->server" body="json"   { doc "Begin an agent session." }
+message "SESSION_EVENT"       tag=0x31 dir="server->client" body="json"   { doc "A streamed session event (agent step, output, status)." }
+message "SESSION_END"         tag=0x32 dir="server->client" body="json"   { doc "Session terminated, with a final status." }
+message "PERMISSION_REQUEST"  tag=0x40 dir="server->client" body="json"   { doc "The kernel asks for a capability the agent currently lacks (§13 open Q6)." }
+message "PERMISSION_RESPONSE" tag=0x41 dir="client->server" body="json"   { doc "The client's grant/deny decision." }
+
+// REST routes (the non-streaming surface). Filled out with the server in Phase A;
+// projected to spec/openapi.yaml. Shape:
+//   route "POST" "/v1/vms" req="CreateVm" res="Vm" { doc "..." }

@@ -1,0 +1,8 @@
+# @mc/core — the Vm API and the wire client (ported from memcontainers packages/core).
+# Published under the @mc/* scope (VISION §8.2). Its wire half is GENERATED from
+# contracts/wire.kdl (//contracts:wire_ts), so it cannot drift from the server (B2).
+#
+# Phase A:
+#   load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+#   ts_project(name = "core", srcs = glob(["src/**/*.ts"]),
+#       deps = ["//hosts/js:host", "//contracts:wire_ts"])

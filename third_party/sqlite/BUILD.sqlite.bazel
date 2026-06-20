@@ -1,0 +1,23 @@
+# build_file for the extracted, patched sqlite source — referenced from
+# http_archive(build_file = "//third_party/sqlite:BUILD.sqlite.bazel"). It is evaluated
+# in the @sqlite repo context, NOT this package, so it stays inert in `bazel test //...`
+# until the archive is enabled in Phase A step 4. Sketch:
+#
+#   load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
+#
+#   zig_binary(
+#       name = "sqlite_obj",
+#       csrcs = ["sqlite3.c"],                       # hermetic `zig cc` (B4)
+#       copts = ["-DSQLITE_THREADSAFE=0", "-DSQLITE_OMIT_LOAD_EXTENSION"],
+#       main = "@agent-os//third_party/sqlite:glue/entry.zig",
+#       deps = ["@agent-os//third_party/sqlite:glue"],   # the ZIG wasi_compat shim
+#       linkopts = ["-fno-entry", "-rdynamic"],
+#       tags = ["manual"],
+#   )
+#   zig_configure_binary(
+#       name = "sqlite",                              # → sqlite.wasm (a guest)
+#       actual = ":sqlite_obj",
+#       mode = "release_small",
+#       target = "@agent-os//platforms:wasm32_freestanding",
+#       visibility = ["//visibility:public"],
+#   )

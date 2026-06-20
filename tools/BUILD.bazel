@@ -1,0 +1,11 @@
+# Developer conveniences (VISION §7.4). Thin wrappers that orchestrate *nothing
+# about correctness* — every artifact they touch is already a hermetic target.
+# This is where the 2,384-line memcontainers `xtask` goes to die: a handful of
+# `bazel run` aliases, not an imperative build orchestrator.
+#
+# Phase A adds, e.g.:
+#   //tools:fmt    — run rustfmt + zig fmt + prettier over the tree (a multirun)
+#   //tools:demo   — boot a kernel in hosts/wasmtime and drop into a shell
+#
+# //tools/smoke is the live bootstrap toolchain proof (delete once real wasm
+# targets exist to anchor `bazel test //...`).

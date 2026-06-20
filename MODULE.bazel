@@ -1,0 +1,74 @@
+"""agent-os — one build graph, zero staleness (VISION §7.1 / invariant B1).
+
+Every artifact in this repo is a Bazel target with declared inputs; the packages
+under this module declare those targets, and this file pins the toolchains they
+build with. `agent-os` is the name of the *repository and build* and appears here
+and nowhere else — the running system's identity is `mc`, frozen into the ABI
+(VISION §8.2). Do not prefix anything `agent-os-*`.
+
+Toolchains land in two waves so that `bazel test //...` is green at every step:
+  - ACTIVE now: the validated wasm32-freestanding spine (platforms + Zig 0.16 +
+    rules_cc) that both kernels and every guest compile against, plus skylib for
+    build/diff tests.
+  - PHASE-A lanes (Rust kernel/host/server/projector, the JS host + SDK, images,
+    drift gates, the vendored C/C++ guests): declared as the VISION specifies but
+    commented until the first target in each lane lands (then uncomment with it).
+"""
+
+module(name = "agent-os")
+
+# ---------------------------------------------------------------------------
+# ACTIVE — the validated core (bazel-experiments/compile-zig-wasm).
+# ---------------------------------------------------------------------------
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "rules_zig", version = "0.16.0")    # in from day one — C/C++ shim lane (§0.2)
+bazel_dep(name = "rules_cc", version = "0.2.18")     # cc_import/cc_library for vendored headers
+bazel_dep(name = "bazel_skylib", version = "1.9.0")  # build_test / diff_test / write_file
+
+# Zig 0.16.0 toolchain, pinned via the local sha-locked index.
+zig = use_extension("@rules_zig//zig:extensions.bzl", "zig")
+zig.index(file = "//:zig_index.json")
+zig.toolchain(zig_version = "0.16.0")
+use_repo(zig, "zig_toolchains")
+
+register_toolchains("@rules_zig//zig/target:all")
+register_toolchains("@zig_toolchains//:all")
+
+# Cross-compile-to-wasm toolchain, selected by //platforms:wasm32_freestanding.
+register_toolchains("//platforms:wasm32_freestanding_zig_toolchain")
+
+# ---------------------------------------------------------------------------
+# PHASE-A lanes — declared per VISION §7.1, enabled as each lane's first target
+# lands. Every block below is intended-final shape, not a guess; uncomment the
+# block together with the package that consumes it so green is preserved (B1).
+# ---------------------------------------------------------------------------
+
+# Rust — the Phase-A kernel (wasmi as a native crate), sysroot, shcore, programs,
+# wasi-adapter, hosts/wasmtime, server, and the contracts projector. crate_universe
+# pins every crate from one lockfile (§5.2).
+# bazel_dep(name = "rules_rust", version = "0.X.0")
+# rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+# rust.toolchain(edition = "2021", versions = ["1.96.0"])
+# use_repo(rust, "rust_toolchains")
+# crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+# crate.from_cargo(name = "crates", cargo_lockfile = "//:Cargo.lock", manifests = ["//:Cargo.toml"])
+# use_repo(crate, "crates")
+
+# JS/TS — the bun/browser host family (A3) and the @mc/* SDK (sdk-js/, hosts/js).
+# bazel_dep(name = "aspect_rules_js", version = "2.X")
+# bazel_dep(name = "aspect_rules_ts", version = "3.X")
+
+# Images + contract drift gates.
+# bazel_dep(name = "rules_pkg", version = "1.X")         # pkg_tar — images, no manual staging
+# bazel_dep(name = "aspect_bazel_lib", version = "2.X")  # write_source_files + diff_test (B2)
+
+# Third-party guests — vendor LESS, patch in place (B3). Upstream source via
+# http_archive; only patch files live in third_party/<lib>/patches.
+# http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+# http_archive(name = "sqlite",   urls = ["..."], sha256 = "...",
+#              patches = ["//third_party/sqlite:patches/0001-mc.patch"],
+#              build_file = "//third_party/sqlite:BUILD.sqlite.bazel")
+# http_archive(name = "luau",     urls = ["..."], sha256 = "...",
+#              patches = ["//third_party/luau:patches/0001-mc.patch"],
+#              build_file = "//third_party/luau:BUILD.luau.bazel")
+# http_archive(name = "wasmtime", urls = ["..."], sha256 = "...")  # for hosts/wasmtime

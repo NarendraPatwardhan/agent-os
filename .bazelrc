@@ -1,0 +1,35 @@
+# agent-os build configuration.
+#
+# Seeded from bazel-experiments/compile-zig-wasm — the validated Zig-0.16-on-Bazel
+# setup the VISION (§7.1) tells us to reuse. Each line is load-bearing; the comment
+# says WHY so the next reader can extend without re-deriving it (C1).
+
+# Bzlmod only — no legacy WORKSPACE. The whole graph is declared in MODULE.bazel.
+common --enable_workspace=false
+
+# Tests and tools locate inputs via runfiles, never hardcoded paths. This is what
+# kills the memcontainers `../../target/...` staleness class at the source (§2.2).
+common --enable_runfiles
+
+# Hermetic actions: the action environment is the declared one, not the caller's
+# shell. No tool leaks in from $PATH (B4).
+common --incompatible_strict_action_env
+
+# Third-party C/C++ (sqlite, luau) is compiled by the hermetic `zig cc`; silence
+# upstream warnings so they don't drown our own diagnostics.
+common --copt=-w
+common --host_copt=-w
+
+# Default build platform. Native host drivers (hosts/wasmtime, server) link musl to
+# match a prebuilt libwasmtime.a; kernel and guest targets transition to
+# //platforms:wasm32_freestanding via the Zig wasm toolchain, so this default only
+# governs host-side targets (§8.1).
+build --platforms=//platforms:host_musl
+
+# Zig 0.16's `zig translate-c` (used by @cImport) resolves its cache from the
+# environment; rules_zig points ZIG_GLOBAL_CACHE_DIR under /tmp. Mount the real
+# /tmp into the sandbox so that cache is writable and shared across actions.
+build --sandbox_add_mount_pair=/tmp
+
+# Show what actually failed, not a wall of passing output.
+test --test_output=errors

@@ -1,0 +1,65 @@
+// contracts/bridge.kdl — the `env` BRIDGE boundary (kernel → host).
+//
+// The ONLY surface the kernel imports (A4): no WASI, no bindgen, no Component Model.
+// Every host (wasmtime, browser) must implement all of these; the same kernel.wasm
+// runs under both (A3). Transcribed from memcontainers crates/kernel/src/bridge.rs.
+//
+// The projector emits the Rust kernel's `#[link(wasm_import_module = "env")] extern`
+// block, the Zig kernel's `extern "env"` block (Phase B), and the Rust + JS host
+// import tables — so kernel and hosts cannot drift.
+//
+// Shape: `import "<name>" { arg "<n>" type="<t>"; ... ret "<t>"; doc "..." }`.
+// Types are host-call ABI types: ptr (guest u32 address), len (usize), i32, i64.
+// Capability-gated imports (egress, persist) MUST be deniable: denial surfaces as an
+// in-kernel errno, never a host exception (A9). A gateable import returns -1 to refuse.
+
+// ── terminal I/O ─────────────────────────────────────────────────────────────
+import "mc_stdout_write" { arg "ptr" type="ptr"; arg "len" type="len"; doc "Write len bytes to the host's stdout." }
+import "mc_stderr_write" { arg "ptr" type="ptr"; arg "len" type="len"; doc "Write len bytes to the host's stderr." }
+import "mc_stdin_read"   { arg "buf" type="ptr"; arg "len" type="len"; ret "len"; doc "Read up to len bytes of host stdin into buf; returns count." }
+
+// ── time (CAP_AMBIENT) ───────────────────────────────────────────────────────
+import "mc_time_now"       { ret "i64"; doc "Wall-clock ms since the Unix epoch." }
+import "mc_time_monotonic" { ret "i64"; doc "A monotonic clock in ms." }
+
+// ── randomness (CAP_AMBIENT) ─────────────────────────────────────────────────
+import "mc_random" { arg "buf" type="ptr"; arg "len" type="len"; doc "Fill len bytes at buf with host entropy." }
+
+// ── HTTP (poll-based; host performs the request and TLS) ─────────────────────
+import "mc_http_request"       { arg "req_ptr" type="ptr"; arg "req_len" type="len"; ret "i32"; doc "Parse `METHOD URL\\n<headers>\\n\\n<body>`, start the fetch; opaque handle >=0, or -1 to refuse." }
+import "mc_http_response_poll" { arg "handle" type="i32"; arg "buf" type="ptr"; arg "buf_len" type="len"; ret "i32"; doc "0 while in flight; once complete writes the head and returns its length (>0); -1 on transport failure." }
+import "mc_http_response_body" { arg "handle" type="i32"; arg "buf" type="ptr"; arg "buf_len" type="len"; ret "i32"; doc "After poll: body bytes (>0), 0 = EOF, -1 = error." }
+import "mc_http_request_close" { arg "handle" type="i32"; doc "Release the request handle." }
+
+// ── WebSocket (host does handshake + TLS for wss) ────────────────────────────
+import "mc_ws_connect" { arg "url_ptr" type="ptr"; arg "url_len" type="len"; ret "i32"; doc "Connect; handle >=0, or -1 to refuse." }
+import "mc_ws_send"    { arg "handle" type="i32"; arg "ptr" type="ptr"; arg "len" type="len"; ret "i32"; doc "Send bytes; count, or -1." }
+import "mc_ws_recv"    { arg "handle" type="i32"; arg "buf" type="ptr"; arg "len" type="len"; ret "i32"; doc "n(>0) received / 0 none pending / -1 closed." }
+import "mc_ws_close"   { arg "handle" type="i32"; doc "Close the WebSocket." }
+
+// ── host call (§8): a guest-invoked host-resident function (mc-tool, mounts) ──
+import "mc_host_call"       { arg "req_ptr" type="ptr"; arg "req_len" type="len"; ret "i32"; doc "Route the opaque request blob to a registered handler; handle >=0, or -1 to refuse (A9)." }
+import "mc_host_call_poll"  { arg "handle" type="i32"; arg "buf" type="ptr"; arg "buf_len" type="len"; ret "i32"; doc "0 in flight; >0 result ready; -1 on failure." }
+import "mc_host_call_body"  { arg "handle" type="i32"; arg "buf" type="ptr"; arg "buf_len" type="len"; ret "i32"; doc "Result bytes (>0), 0 = EOF, -1 = error." }
+import "mc_host_call_close" { arg "handle" type="i32"; doc "Release the call handle." }
+
+// ── persistence (host key/value store → /var/persist; gateable) ──────────────
+import "mc_persist_get"    { arg "kp" type="ptr"; arg "kl" type="len"; arg "vp" type="ptr"; arg "vl" type="len"; ret "i32"; doc "-1 denied/error; -2 not-found; n>=0 the FULL value length (writes min(n,vl); resize+retry when n>vl)." }
+import "mc_persist_put"    { arg "kp" type="ptr"; arg "kl" type="len"; arg "vp" type="ptr"; arg "vl" type="len"; ret "i32"; doc "-1 denied/error; >=0 ok." }
+import "mc_persist_delete" { arg "kp" type="ptr"; arg "kl" type="len"; ret "i32"; doc "-1 denied/error; 0 ok (deleting a missing key is ok)." }
+import "mc_persist_list"   { arg "pp" type="ptr"; arg "pl" type="len"; arg "bp" type="ptr"; arg "bl" type="len"; ret "i32"; doc "-1 denied/error; n>=0 FULL byte length of NUL-separated matching keys (resize+retry)." }
+
+// ── threading (§5.2; gateable, host returns -1/0 to refuse) ──────────────────
+import "mc_threads_init"  { arg "max_workers" type="i32"; ret "i32"; doc "Called once at boot to negotiate a worker count." }
+import "mc_thread_spawn"  { arg "entry" type="i32"; arg "arg" type="i32"; ret "i32"; doc "Declared for ABI completeness; live only under the real-OS-thread build." }
+import "mc_thread_park"   { arg "timeout_ms" type="i32"; ret "i32"; doc "Park the calling worker." }
+import "mc_thread_unpark" { arg "handle" type="i32"; doc "Unpark a parked worker." }
+
+// ── control ──────────────────────────────────────────────────────────────────
+import "mc_yield" { doc "Cooperatively yield the host's tick." }
+import "mc_exit"  { arg "code" type="i32"; ret "noreturn"; doc "Terminate the kernel with code (never returns)." }
+import "mc_log"   { arg "level" type="i32"; arg "ptr" type="ptr"; arg "len" type="len"; doc "Emit a host-side log line at level." }
+
+// ── boot / image loading ─────────────────────────────────────────────────────
+import "mc_load_base_image" { arg "buf" type="ptr"; arg "buf_len" type="len"; ret "i32"; doc "Load the base image (tar.gz) into buf; bytes written, or -1." }
+import "mc_boot_contract"   { arg "buf" type="ptr"; arg "buf_len" type="len"; ret "i32"; doc "Write [i32 tier][i32 mem_mib][i64 fuel] (16 bytes LE); bytes written, or <=0 if none (gateable)." }

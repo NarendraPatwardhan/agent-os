@@ -1,0 +1,23 @@
+# build_file for the extracted, patched luau source — referenced from
+# http_archive(build_file = "//third_party/luau:BUILD.luau.bazel"). Evaluated in the
+# @luau repo context, NOT this package, so it stays inert in `bazel test //...` until the
+# archive is enabled in Phase A step 4. Sketch:
+#
+#   load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
+#
+#   zig_binary(
+#       name = "luau_obj",
+#       cppsrcs = glob(["VM/src/*.cpp", "Compiler/src/*.cpp", "Ast/src/*.cpp"]),
+#       copts = ["-fno-exceptions", "-fno-rtti"],     # EH is kernel-mediated (pcall), not native
+#       main = "@agent-os//third_party/luau:glue/entry.zig",
+#       deps = ["@agent-os//third_party/luau:glue"],  # mc_runtime + sys_bindings (ZIG)
+#       linkopts = ["-fno-entry", "-rdynamic"],
+#       tags = ["manual"],
+#   )
+#   zig_configure_binary(
+#       name = "luau",                                # → luau.wasm (a guest)
+#       actual = ":luau_obj",
+#       mode = "release_small",
+#       target = "@agent-os//platforms:wasm32_freestanding",
+#       visibility = ["//visibility:public"],
+#   )

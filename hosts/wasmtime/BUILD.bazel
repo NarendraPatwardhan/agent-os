@@ -1,0 +1,13 @@
+# hosts/wasmtime — the Rust host driver (ported from memcontainers crates/host). Loads
+# kernel.wasm, implements the `env` bridge + the `mc_ctl_*` control channel, terminates
+# TLS for guest egress, and ticks the kernel (VISION §4.1, A3). A library + a CLI.
+#
+# The SAME kernel.wasm runs here and under hosts/js (A3); both kernels run under this
+# host in the parity matrix (B7, §9.6). This is also the host every e2e test boots
+# (§9.1) — no mocks, real bytes, real internet (B6).
+#
+# Phase A:
+#   load("@rules_rust//rust:defs.bzl", "rust_library", "rust_binary")
+#   rust_library(name = "host", srcs = glob(["src/**/*.rs"]),
+#       deps = ["@crates//:wasmtime", "//contracts:env_rust", "//contracts:ctl_rust"])
+#   rust_binary(name = "mc", srcs = ["src/main.rs"], deps = [":host"])

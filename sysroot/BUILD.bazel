@@ -1,0 +1,9 @@
+# sysroot — the guest sysroot (Rust, ported from memcontainers crates/sysroot). The
+# no_std/no-alloc support a wasm guest links against: the safe `mc` syscall wrappers
+# (generated extern block + ergonomic API), `_start`, and the custom-section stamps
+# (mc_tier / mc_budget / mc_service). Compiles to wasm32-freestanding (A6).
+#
+# Phase A (VISION §11 step 2):
+#   load("@rules_rust//rust:defs.bzl", "rust_library")
+#   rust_library(name = "sysroot", srcs = glob(["src/**/*.rs"]),
+#       deps = ["//contracts:mc_rust"])   # the generated syscall extern block.

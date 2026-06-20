@@ -1,0 +1,11 @@
+# shcore — the OS-agnostic shell engine (Rust, ported from memcontainers crates/shcore).
+# Pure logic: parsing, expansion, the job/pipeline state machine — no kernel, no syscalls.
+#
+# This is the ONE legitimate home for NATIVE unit tests (VISION §9.4): it is not the
+# kernel, so A2 ("wasm only, even for tests") does not bind it. Everywhere else there is
+# no native build to unit-test; tests drive the real kernel through a real host (B6).
+#
+# Phase A:
+#   load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+#   rust_library(name = "shcore", srcs = glob(["src/**/*.rs"], exclude = ["src/**/tests.rs"]))
+#   rust_test(name = "shcore_test", crate = ":shcore")   # native — legitimate here only.

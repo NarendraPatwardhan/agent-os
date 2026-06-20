@@ -1,0 +1,9 @@
+# web — the browser app + real-browser e2e (ported from memcontainers web/). Assets are
+# DEPS, not `cp` (VISION §7.3): the app bundles the @mc/* SDK as build dependencies, and
+# the CDP scripts under cdp/ run against a PINNED, hermetic chromium (B4) — never
+# /usr/bin/chromium. This is the in-browser proof that the JS host family works (A3).
+#
+# Phase A:
+#   load("@aspect_rules_js//js:defs.bzl", "js_binary")
+#   # app bundle deps //sdk-js/core //sdk-js/agent //sdk-js/elements
+#   # //web:cdp_test — a browser e2e against the hermetic chromium toolchain.

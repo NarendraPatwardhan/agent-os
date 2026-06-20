@@ -1,0 +1,37 @@
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+
+# Bootstrap smoke target — the green anchor for `bazel test //...` while the real
+# wasm targets (kernel/, programs/) are still being ported. It proves the spine the
+# whole VISION rests on: a Zig source compiled to a real wasm32-freestanding `.wasm`
+# by the hermetic Zig 0.16 toolchain (B4), through the exact transition every kernel
+# and guest uses (§5.2). Remove when kernel/ and programs/ supply real wasm targets.
+
+# Reactor-style module: exports only, no `_start`. Tagged `manual` because it is
+# only meaningful under the wasm transition below — building it for the host musl
+# platform would fail for lack of an entry point (so `//...` must not pick it up).
+zig_binary(
+    name = "smoke",
+    main = "smoke.zig",
+    linkopts = [
+        "-fno-entry",
+        "-rdynamic",
+    ],
+    tags = ["manual"],
+)
+
+# Transition the module to wasm32-freestanding and build it size-optimised. The
+# output is a real `.wasm` binary regardless of the .bazelrc default platform.
+zig_configure_binary(
+    name = "smoke_wasm",
+    actual = ":smoke",
+    mode = "release_small",
+    target = "//platforms:wasm32_freestanding",
+)
+
+# Asserts the wasm artifact actually builds — exercises rules_zig, the Zig 0.16
+# toolchain download, the wasm platform, and the transition end to end.
+build_test(
+    name = "smoke_test",
+    targets = [":smoke_wasm"],
+)
