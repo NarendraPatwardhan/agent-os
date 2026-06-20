@@ -106,6 +106,6 @@ export const SYSCALLS = [
   { name: "mc_sys_random", variant: "Random", args: [{ name: "ptr", type: "u32" }, { name: "len", type: "u32" }], ret: "i32" },
   { name: "mc_sys_abi_version", variant: "AbiVersion", args: [{ name: "ret", type: "u32" }], ret: "i32" },
   { name: "mc_sys_exit", variant: "Exit", args: [{ name: "code", type: "i32" }], ret: "noreturn" },
-  { name: "mc_sys_pcall", variant: "Pcall", args: [], ret: "throw-code" },
+  { name: "mc_sys_pcall", variant: "Pcall", args: [], ret: "i32" },
   { name: "mc_sys_set_throw", variant: "SetThrow", args: [{ name: "code", type: "i32" }], ret: "i32" },
 ] as const;

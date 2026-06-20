@@ -55,5 +55,5 @@
 | 48 | `mc_sys_random` | Random | ptr: u32, len: u32 | i32 | Fill len bytes at ptr with entropy (CAP_AMBIENT). |
 | 49 | `mc_sys_abi_version` | AbiVersion | ret: u32 | i32 | Write the packed syscall ABI version (major<<16|minor) to ret. |
 | 50 | `mc_sys_exit` | Exit | code: i32 | noreturn | Terminate this task with exit code (never returns). |
-| 51 | `mc_sys_pcall` | Pcall |  | throw-code | Run the guest's stashed thunk as a nested call; return its throw code (0 = normal return). |
+| 51 | `mc_sys_pcall` | Pcall |  | i32 | Run the guest's stashed thunk as a nested call; return its throw code (0 = normal return). |
 | 52 | `mc_sys_set_throw` | SetThrow | code: i32 | i32 | Record the throw code to be surfaced by the enclosing pcall after `unreachable`. |

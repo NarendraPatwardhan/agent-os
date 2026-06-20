@@ -649,7 +649,7 @@ fn suspend() -> wasmi::Error {
 /// to the table adds a variant here, which makes the exhaustive `fulfill` match
 /// fail to compile until its handler is wired — drift is impossible.
 macro_rules! mc_pending_enum {
-    ( $( $ident:ident => $Variant:ident ( $($arg:ident : $ty:ty),* ); )* ) => {
+    ( $( $ident:ident => $Variant:ident ( $($arg:ident : $ty:tt),* ) [$ret:tt]; )* ) => {
         #[derive(Clone, Copy)]
         enum Pending {
             $( $Variant { $($arg: $ty),* } ),*
@@ -3705,7 +3705,7 @@ impl Builtin for GuestProgram {
 /// `step()` fulfills against the kernel. Name, arity, and types come from the
 /// one table, so the kernel side and the guest `extern` block cannot disagree.
 macro_rules! mc_register_syscalls {
-    ( $( $ident:ident => $Variant:ident ( $($arg:ident : $ty:ty),* ); )* ) => {
+    ( $( $ident:ident => $Variant:ident ( $($arg:ident : $ty:tt),* ) [$ret:tt]; )* ) => {
         fn register_syscalls(linker: &mut Linker<GuestState>) -> Result<(), wasmi::Error> {
             $(
                 linker.func_wrap(

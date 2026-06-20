@@ -459,7 +459,7 @@ fn emit_table(lang: &str, contract: &str, rows: &[Row], macro_name: &str, names_
                     .collect::<Vec<_>>()
                     .join(", ");
                 o.push_str(&format!(
-                    "        {} => {} ({});  // -> {}\n",
+                    "        {} => {} ({}) [{}];\n",
                     r.name, r.variant, args, r.ret
                 ));
             }

@@ -252,7 +252,7 @@ syscall "mc_sys_exit" variant="Exit" group="process" ret="noreturn" {
 // guest records its code via set_throw then executes `unreachable`; wasmi unwinds the
 // nested call and the kernel returns the code as pcall's result (0 = returned
 // normally). See loom (the Luau guest) and memcontainers ctx/LUAU.md §4.4.
-syscall "mc_sys_pcall" variant="Pcall" group="vm" ret="throw-code" {
+syscall "mc_sys_pcall" variant="Pcall" group="vm" ret="i32" {
     doc "Run the guest's stashed thunk as a nested call; return its throw code (0 = normal return)."
 }
 syscall "mc_sys_set_throw" variant="SetThrow" group="vm" {

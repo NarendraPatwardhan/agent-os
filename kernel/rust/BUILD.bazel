@@ -33,6 +33,7 @@ rust_shared_library(
         "@crates//:talc",   # wasm linear-memory allocator (A8: all state in linear mem)
         "//contracts:constants_rust",  # errno / caps / tiers / flags / signals (B2)
         "//contracts:mc_rust",         # the mc_syscall_table! macro + SYSCALL_NAMES (B2)
+        "//contracts:env_rust",        # the mc_bridge_table! macro → the env extern block (B2)
     ],
 )
 
