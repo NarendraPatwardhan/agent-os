@@ -1,0 +1,16 @@
+# Manifest for crate_universe dependency resolution only — the host BUILDS via Bazel
+# (rust_library + rust_binary), not cargo. Versions kept in lockstep with memcontainers
+# crates/host. A member of the workspace (//Cargo.toml) so every crate shares one
+# lockfile (VISION §7.1). Deps grow as the port lands; this foundation slice links only
+# wasmtime, to prove it compiles natively under crate_universe.
+[package]
+name = "host"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "host"
+path = "src/lib.rs"
+
+[dependencies]
+wasmtime = "43.0.0"

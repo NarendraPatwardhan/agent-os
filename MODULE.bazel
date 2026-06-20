@@ -54,16 +54,25 @@ rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(edition = "2021", extra_target_triples = ["wasm32-unknown-unknown"])
 use_repo(rust, "rust_toolchains")
 
-# crate_universe — external crates.io deps from one lockfile (the kernel's wasmi + talc;
-# more manifests join as the Rust lanes land). The `abi` role is filled by the generated
-# //contracts:*_rust bindings, not a crate.
+# crate_universe — external crates.io deps, PINNED. The kernel (no_std, wasm32) and the
+# host (std, native) resolve from SEPARATE lockfiles, on purpose: a single shared Cargo
+# resolution feature-unifies their common deps and turns on std features (e.g.
+# bitflags/std via wasmtime) that drag std's lang items into the no_std kernel and break
+# it. So two pinned locks — each its own source of truth — rather than the single
+# workspace lock VISION §7.1 first imagined (a candidate VISION refinement). The `abi`
+# role is filled by the generated //contracts:*_rust bindings, not a crate.
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 crate.from_cargo(
     name = "crates",
     cargo_lockfile = "//kernel/rust:Cargo.lock",
     manifests = ["//kernel/rust:Cargo.toml"],
 )
-use_repo(crate, "crates")
+crate.from_cargo(
+    name = "host_crates",
+    cargo_lockfile = "//hosts/wasmtime:Cargo.lock",
+    manifests = ["//hosts/wasmtime:Cargo.toml"],
+)
+use_repo(crate, "crates", "host_crates")
 
 # aspect_bazel_lib — write_source_files + diff_test for the contract drift gate (B2).
 bazel_dep(name = "aspect_bazel_lib", version = "2.22.5")
