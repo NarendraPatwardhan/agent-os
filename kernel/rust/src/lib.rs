@@ -13,8 +13,16 @@
 //! the syscall dispatch, the boot in `mc_init`/`mc_tick`) transplant onto it.
 #![no_std]
 #![no_main]
+// Port-time scaffold: while the kernel is transplanted module-by-module, a not-yet-wired
+// module's items and re-exports read as dead/unused. Removed once the crate is whole and
+// every module has its consumer.
+#![allow(dead_code, unused_imports)]
 
 extern crate alloc;
+
+// Modules transplant in dependency order; each is added here as it lands so the crate
+// stays compiling at every step. (vfs is the dependency root: the FS trait layer.)
+mod vfs;
 
 use alloc::format;
 
