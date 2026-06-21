@@ -23,5 +23,8 @@ rust_e2e_test(
     # kernel defaults to //kernel/rust:kernel (the macro adds it as a data-dep and passes its
     # runfiles path via MC_KERNEL_WASM). The Zig kernel gets its own target — same srcs,
     # kernel = //kernel/zig:kernel — under the B7 parity gate (§9.6).
-    data = ["//images:base"],
+    data = [
+        "//images:base",
+        "//images:posix",  # base + guest /bin/sh + the coreutils box (the coreutils tests)
+    ],
 )

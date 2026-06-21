@@ -1,4 +1,5 @@
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+load("//kernel/rust:defs.bzl", "release_wasm")
 
 # images — the base + flavor images, built as DETERMINISTIC pkg_tar with NO manual staging:
 # no remove_dir_all, no ordering hazard, no fs::copy into a source tree — the three
@@ -7,10 +8,9 @@ load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 # pkg_tar is consumed by both the host CLI and the e2e tests, so the two byte-identical tar
 # implementations collapse into one.
 #
-# Minimal for now: a rootfs carrying just /etc/profile. The kernel's in-kernel rescue shell
-# boots without any guest programs, so first boot needs almost nothing; the guest /bin
-# (//programs, //third_party/{sqlite,luau}) layers in as those Step-2 components land — a
-# flavor image is `base` + domain packs stacked by more pkg_tar.
+# `base` is a rootfs carrying just /etc/profile (the in-kernel rescue shell boots without any
+# guest programs). `posix` layers the guest shell + the coreutils boxes on top — a flavor image
+# is `base` + packs stacked by more pkg_tar.
 pkg_tar(
     name = "base",
     srcs = glob(["rootfs/**"]),
@@ -20,5 +20,42 @@ pkg_tar(
     # fixed epoch), so the tar bytes are a pure function of the content — reproducible and
     # content-addressable.
     owner = "0.0",
+    visibility = ["//visibility:public"],
+)
+
+# Surface the guest programs at their target platforms + opt (reusing the kernel's wasm
+# transition): /bin/sh is wasm32-freestanding (sysroot-native, pure-mc); the coreutils box is
+# wasm32-wasi, converted to pure-mc by mc_box under the same transition.
+release_wasm(
+    name = "sh_wasm",
+    lib = "//programs/sh:sh",
+    platform = "//platforms:wasm32_freestanding",
+)
+
+release_wasm(
+    name = "mcbox_readonly_wasm",
+    lib = "//programs/coreutils:mcbox-readonly",
+    platform = "//platforms:wasm32_wasi",
+)
+
+# posix — base + the guest shell (pid 1) + the read-only coreutils box, with the roster's /bin
+# symlinks (cat/base64/grep → the box; argv[0]-basename dispatch runs the right applet). The
+# bulk image adds the other tier boxes + their symlinks as the port grows.
+pkg_tar(
+    name = "posix",
+    files = {
+        ":sh_wasm": "/bin/sh",
+        ":mcbox_readonly_wasm": "/bin/mcbox-readonly",
+    },
+    # cat/base64/grep are applets of the read-only box; the shell spawns /bin/<name>, and the
+    # box dispatches on argv[0]. (Generating these from the box's mc_applets roster — instead of
+    # this hand list — is the roster→symlink rule still to land.)
+    symlinks = {
+        "/bin/cat": "mcbox-readonly",
+        "/bin/base64": "mcbox-readonly",
+        "/bin/grep": "mcbox-readonly",
+    },
+    owner = "0.0",
+    deps = [":base"],
     visibility = ["//visibility:public"],
 )

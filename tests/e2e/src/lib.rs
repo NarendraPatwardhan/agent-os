@@ -202,3 +202,77 @@ fn restoring_a_snapshot_twice_forks_independent_vms() {
     assert_eq!(a.read_file("/tmp/fork").expect("read a"), b"branch-a");
     assert_eq!(b.read_file("/tmp/fork").expect("read b"), b"branch-b");
 }
+
+// ---------------------------------------------------------------------------
+// Coreutils: the full guest stack end to end. Each boots the `posix` image (base + the guest
+// /bin/sh + the read-only coreutils box, with /bin/{cat,base64,grep} symlinked to the box), then
+// runs a command through `mc_ctl_exec` — which spawns the guest `/bin/sh -c`, which spawns
+// `/bin/<cmd>`, the wasm32-wasi multicall box CONVERTED to pure-mc, dispatched on argv[0]. The
+// asserted bytes prove the whole pipeline — std uutils/ripgrep over the WASI→mc adapter, the
+// trampoline fixpoint, the per-tier box, the sysroot shell — actually executes on the kernel.
+// ---------------------------------------------------------------------------
+
+/// Same configuration as [`builder`] but with the `posix` image, for tests that run real guest
+/// programs through the shell.
+fn builder_posix() -> (KernelHostBuilder, Arc<Mutex<Vec<u8>>>) {
+    let (sink, stdout) = CaptureSink::new();
+    let b = KernelHostBuilder::new(runfile(&kernel_rlocation()))
+        .with_base_image(Some(runfile("_main/images/posix.tar")))
+        .with_stdout(Box::new(sink))
+        .deterministic();
+    (b, stdout)
+}
+
+/// WHY: `cat` is the "from programs" representative — hand-written, clap+facade over //sysroot
+/// (mc-direct). GUARANTEES: `cat FILE` through the shell spawns the box as `/bin/cat`, dispatches
+/// to the cat applet, and streams the file back byte-for-byte.
+#[test]
+fn posix_cat_streams_a_file_verbatim() {
+    let (b, _stdout) = builder_posix();
+    let mut host = b.build().expect("kernel booted with posix image");
+    host.write_file("/tmp/note", b"agent-os e2e\n").expect("write /tmp/note");
+    let r = host.exec("cat /tmp/note", 200_000).expect("exec cat");
+    assert_eq!(r.exit_code, 0, "cat exit code");
+    assert_eq!(
+        r.stdout,
+        b"agent-os e2e\n",
+        "cat stdout: {:?}",
+        String::from_utf8_lossy(&r.stdout)
+    );
+}
+
+/// WHY: `base64` is the "mcbox/uutils" representative — the REAL `uu_base64::uumain`, std + clap,
+/// run over the WASI→mc adapter. GUARANTEES: `base64 FILE` produces uutils' exact encoding,
+/// proving the converted box executes correctly.
+#[test]
+fn posix_base64_encodes_via_real_uutils() {
+    let (b, _stdout) = builder_posix();
+    let mut host = b.build().expect("kernel booted with posix image");
+    host.write_file("/tmp/in", b"hello").expect("write /tmp/in");
+    let r = host.exec("base64 /tmp/in", 200_000).expect("exec base64");
+    assert_eq!(r.exit_code, 0, "base64 exit code");
+    // base64("hello") == "aGVsbG8=" (uutils appends a newline).
+    assert_eq!(
+        String::from_utf8_lossy(&r.stdout).trim_end(),
+        "aGVsbG8=",
+        "base64 stdout: {:?}",
+        String::from_utf8_lossy(&r.stdout)
+    );
+}
+
+/// WHY: `grep` is the "external-crate" representative — ripgrep's engine (grep-searcher +
+/// grep-regex), std I/O over the adapter. GUARANTEES: `grep PAT FILE` selects exactly the
+/// matching lines, proving a third-party Rust crate stack runs in a converted box.
+#[test]
+fn posix_grep_selects_matching_lines() {
+    let (b, _stdout) = builder_posix();
+    let mut host = b.build().expect("kernel booted with posix image");
+    host.write_file("/tmp/lines", b"foo\nbar\nbaz\nqux\n").expect("write /tmp/lines");
+    let r = host.exec("grep ba /tmp/lines", 200_000).expect("exec grep");
+    assert_eq!(
+        String::from_utf8_lossy(&r.stdout),
+        "bar\nbaz\n",
+        "grep stdout: {:?}",
+        String::from_utf8_lossy(&r.stdout)
+    );
+}
