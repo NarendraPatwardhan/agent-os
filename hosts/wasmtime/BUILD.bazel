@@ -1,5 +1,6 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load(":defs.bzl", "host_release_binary")
 
 # hosts/wasmtime — the Rust host driver (ported from memcontainers crates/host). Loads
 # kernel.wasm, implements the `env` bridge + the `mc_ctl_*` control channel, terminates TLS
@@ -11,17 +12,15 @@ load("@bazel_skylib//rules:build_test.bzl", "build_test")
 # (B2): the `env` host side from //contracts:env_rust (src/bridge.rs) and the `mc_*` export
 # lookups from //contracts:ctl_rust (src/exports.rs).
 #
-# (Targets the native host. host_musl per §8.1 — hermetic static linking — is a follow-up.)
+# The shipped `mc` is always opt (see defs.bzl): debug wasmtime JITs kernel.wasm an order of
+# magnitude slower, which would make e2e crawl. (host_musl static linking, §8.1, is deferred
+# — defs.bzl explains why it's a real toolchain integration, not just a platform string.)
 
 _RUSTC_FLAGS = [
     # `tokio-net` is an optional feature (the async TokioNet egress the mc-server enables).
     # Declare it as a KNOWN cfg so the off-by-default `cfg(feature = "tokio-net")` does not
     # trip the unexpected-cfgs lint.
     "--check-cfg=cfg(feature, values(\"tokio-net\"))",
-    # The capability ports carry their `#[cfg(test)]` unit tests; we don't make the host a
-    # native test target (§9.4 — that's shcore's role; the host is validated by e2e), so
-    # declare `test` known to silence the lint on the (cfg'd-out) modules in the lib build.
-    "--check-cfg=cfg(test)",
 ]
 
 rust_library(
@@ -48,9 +47,11 @@ rust_library(
     ],
 )
 
-# The `mc` runtime CLI (the running system's identity, §8.2 — not agent-os-*).
+# The raw `mc` binary. Built in whatever config its consumer is in — the public `mc` below
+# wraps it to force opt + host_musl. Kept separate so the build_test can compile-check it
+# fast (fastbuild) without dragging in an opt wasmtime compile.
 rust_binary(
-    name = "mc",
+    name = "mc_bin",
     srcs = [
         "src/main.rs",
         "src/terminal.rs",
@@ -65,10 +66,20 @@ rust_binary(
     ],
 )
 
+# The shipped runtime CLI (the running system's identity, §8.2 — not agent-os-*): always
+# opt, statically linked on host_musl. This is the `mc` e2e and humans run.
+host_release_binary(
+    name = "mc",
+    bin = ":mc_bin",
+    visibility = ["//visibility:public"],
+)
+
+# Compile-check the library + the binary's own sources fast (fastbuild). The opt+musl `mc`
+# is exercised when built directly and, structurally, by every e2e boot.
 build_test(
     name = "test",
     targets = [
         ":host",
-        ":mc",
+        ":mc_bin",
     ],
 )

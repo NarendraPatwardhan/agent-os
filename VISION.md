@@ -351,8 +351,12 @@ bazel_dep(name = "aspect_bazel_lib", version = "…")  # write_source_files, dif
 bazel_dep(name = "rules_pkg",  version = "…")        # pkg_tar for images
 bazel_dep(name = "platforms",  version = "1.1.0")
 
-# Rust: host (native musl) + guest/kernel (wasm32-unknown-unknown / freestanding) targets;
-#   crate_universe pins ALL deps from one lockfile (incl. wasmi for the Rust kernel).
+# Rust: host (native musl) + guest/kernel (wasm32-unknown-unknown / freestanding) targets.
+#   crate_universe pins deps from TWO lockfiles, not one: @crates (kernel — wasmi/talc,
+#   no_std/wasm32, //kernel/rust:Cargo.lock) and @host_crates (host — wasmtime, std/native,
+#   //hosts/wasmtime:Cargo.lock). They MUST stay separate: a single shared Cargo resolution
+#   feature-unifies common deps and switches on std features (wasmtime pulls bitflags/std)
+#   that break the no_std kernel (duplicate #[panic_handler]).
 # Zig 0.16.0 pinned via the custom index (see bazel-experiments/compile-zig-wasm).
 zig = use_extension("@rules_zig//zig:extensions.bzl", "zig")
 zig.toolchain(zig_version = "0.16.0")
@@ -660,7 +664,7 @@ memcontainers runs throughout and shares the contracts, so a memcontainers guest
 
 ### 14.3 Bazel rules we rely on
 
-`rules_rust` (rust_library/rust_binary/rust_shared_library/rust_static_library/rust_test, `crate_universe` for one-lockfile deps — incl. wasmi for the Rust kernel), `rules_zig` 0.16 (zig_binary/zig_library/zig_test, the `wasm32-freestanding` transition + `zig cc`/`c++` toolchain — validated in `bazel-experiments`), `rules_js`/`rules_ts` (ts_project), `rules_pkg` (pkg_tar), `aspect_bazel_lib` (write_source_files + diff_test for §6), `http_archive` with `patches=` (B3), hermetic toolchains for rust/zig/node + a pinned browser for `web/` CDP tests.
+`rules_rust` (rust_library/rust_binary/rust_shared_library/rust_static_library/rust_test, `crate_universe` for deps from two separate lockfiles — `@crates` for the kernel/wasmi, `@host_crates` for the host/wasmtime, kept apart so std feature-unification can't break the no_std kernel), `rules_zig` 0.16 (zig_binary/zig_library/zig_test, the `wasm32-freestanding` transition + `zig cc`/`c++` toolchain — validated in `bazel-experiments`), `rules_js`/`rules_ts` (ts_project), `rules_pkg` (pkg_tar), `aspect_bazel_lib` (write_source_files + diff_test for §6), `http_archive` with `patches=` (B3), hermetic toolchains for rust/zig/node + a pinned browser for `web/` CDP tests.
 
 ---
 

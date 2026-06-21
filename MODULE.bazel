@@ -50,7 +50,10 @@ bazel_dep(name = "rules_rust", version = "0.70.0")
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 # wasm32-unknown-unknown is the kernel's real rustc target (the VISION's "freestanding"
 # is the Zig triple); the guests (sysroot/programs) compile there too. The host triple
-# stays for the projector and, later, the server + wasmtime host.
+# stays for the projector and the wasmtime host (native, autodetected). A musl target
+# triple lands when the host goes static for distribution (§8.1) — deferred (see
+# hosts/wasmtime/defs.bzl: it needs a libc constraint + a musl C toolchain, not just a
+# triple, and the "match a prebuilt libwasmtime.a" premise is moot under source builds).
 rust.toolchain(edition = "2021", extra_target_triples = ["wasm32-unknown-unknown"])
 use_repo(rust, "rust_toolchains")
 
