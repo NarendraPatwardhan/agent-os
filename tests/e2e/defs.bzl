@@ -47,13 +47,21 @@ _opt_test = rule(
     },
 )
 
-def rust_e2e_test(name, size = "small", **kwargs):
+def rust_e2e_test(name, kernel = "//kernel/rust:kernel", size = "small", **kwargs):
     """A rust_test whose host subgraph (wasmtime) builds at compilation_mode=opt.
 
     Keep the WHOLE suite in ONE such target. Measured: the host compiles kernel.wasm once
     per process (~0.9s, cranelift) and every boot after that is ~1.6ms (MODULE_CACHE), so a
     single binary runs the entire suite in ~1s. Splitting into many targets would re-pay the
     ~0.9s compile each time — the one thing to NOT do given the sub-second-per-test bar.
+
+    `kernel` is the kernel.wasm under test: a data-dep whose RUNFILES path the suite reads
+    from the MC_KERNEL_WASM env. So the SAME source boots ANY kernel — the Rust kernel by
+    default, the Zig kernel under the B7 parity gate (§9.6) — by pointing `kernel` elsewhere,
+    with no edit to the tests. This is the lever that makes the suite the shared parity oracle.
     """
-    rust_test(name = name + "_inner", tags = ["manual"], **kwargs)
+    data = kwargs.pop("data", []) + [kernel]
+    env = dict(kwargs.pop("env", {}))
+    env["MC_KERNEL_WASM"] = "$(rlocationpath %s)" % kernel
+    rust_test(name = name + "_inner", tags = ["manual"], data = data, env = env, **kwargs)
     _opt_test(name = name, inner = ":" + name + "_inner", size = size)

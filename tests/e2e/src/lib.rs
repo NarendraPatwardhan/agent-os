@@ -27,12 +27,22 @@ fn runfile(path: &str) -> Vec<u8> {
     std::fs::read(&p).unwrap_or_else(|e| panic!("reading {}: {e}", p.display()))
 }
 
+/// The kernel.wasm under test, as a runfiles path — supplied by `rust_e2e_test` via the
+/// MC_KERNEL_WASM env (the `$(rlocationpath)` of its `kernel` target). The suite is kernel-
+/// AGNOSTIC: it boots the Rust kernel by default and the Zig kernel under the B7 parity gate
+/// (§9.6) with no source edit, just a different `kernel=` on the target. A single hardcoded
+/// path would have pinned this suite to one kernel — the one thing a parity oracle must not be.
+fn kernel_rlocation() -> String {
+    std::env::var("MC_KERNEL_WASM")
+        .expect("MC_KERNEL_WASM unset — rust_e2e_test sets it from the `kernel` target")
+}
+
 /// A builder wired to the real kernel + base image, deterministic clock+rng (§15.1), and a
 /// captured stdout. Returned (not built) so callers can either `.build()` a fresh boot or
 /// `.restore(snapshot)` a rehydrated VM from the same configuration.
 fn builder() -> (KernelHostBuilder, Arc<Mutex<Vec<u8>>>) {
     let (sink, stdout) = CaptureSink::new();
-    let b = KernelHostBuilder::new(runfile("_main/kernel/rust/kernel.wasm"))
+    let b = KernelHostBuilder::new(runfile(&kernel_rlocation()))
         .with_base_image(Some(runfile("_main/images/base.tar")))
         .with_stdout(Box::new(sink))
         .deterministic();
