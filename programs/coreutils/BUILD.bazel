@@ -1,12 +1,10 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//wasi-adapter:defs.bzl", "mc_box")
 
 # programs/coreutils — ONE std Rust coreutils crate compiled four times into the per-tier
 # mcbox-{isolated,readonly,readwrite,full} boxes (VISION §16.3). It builds for wasm32-wasi (the
-# uutils + ripgrep crates it links are std); the //wasi-adapter then rewrites each box's
-# wasi_snapshot_preview1 imports to `mc`, so the shipped box imports only `mc` and is attested
-# (§16.4) against its tier's syscalls. Here we build the four boxes (the compile + link gate);
-# the wasi-adapter conversion, the mc_attest gate, size_limit, and the roster→/bin-symlink rule
-# land in //programs:defs.bzl. @guest_crates resolves the guests' std external deps.
+# uutils + ripgrep crates it links are std); `mc_box` then link-injects the //wasi-adapter and
+# drives the trampoline fixpoint, so each shipped box imports ONLY `mc` and is attestable (§16.4)
+# against its tier's syscalls. @guest_crates resolves the guests' std external deps.
 exports_files(["Cargo.toml", "Cargo.lock"])
 
 # The std crates every box links (uutils + ripgrep), plus //sysroot for the hand-written tools'
@@ -30,17 +28,15 @@ _TIERS = {
     "full": ["tier_isolated", "tier_readonly", "tier_readwrite", "tier_full"],
 }
 
+# Each box: build the crate for wasm32-wasi, link-inject the adapter, and trampoline-relink to a
+# pure-`mc` fixpoint (//wasi-adapter:defs.bzl). Built under --platforms=//platforms:wasm32_wasi.
 [
-    rust_binary(
+    mc_box(
         name = "mcbox-" + tier,
         srcs = glob(["src/**/*.rs"]),
-        crate_name = "coreutils",
         crate_root = "src/main.rs",
-        edition = "2021",
+        crate_name = "coreutils",
         crate_features = feats,
-        # Built under --platforms=//platforms:wasm32_wasi (a std/wasi crate has no native build);
-        # //... reaches it through the wasi-adapter conversion target in //programs:defs.bzl.
-        tags = ["manual"],
         deps = _BOX_DEPS,
         visibility = ["//visibility:public"],
     )

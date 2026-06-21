@@ -3,19 +3,19 @@ load("//sysroot:defs.bzl", "wasm32_build_test")
 
 # wasi-adapter — a guest-side WASI preview1 shim implemented over `mc_sys_*` (VISION §13.4/§16.3),
 # ported from memcontainers crates/wasi/adapter. It DEFINES the `wasi_snapshot_preview1` functions
-# so the conversion (link-injection + fixpoint-relink) can rewrite a wasm32-wasi box's WASI
-# imports to `mc` — the box then imports ONLY `mc` (A4: WASI exists only as a guest adapter, never
-# in the kernel). It uses the dependency-free generated bindings (constants_rust + mc_rust), never
-# //sysroot, whose `#[panic_handler]` would collide with a tool's std at link time. The default
-# lane link-injects the adapter OBJECT into a Rust tool whose std supplies the panic handler, so
-# the `standalone` feature (which adds one, for the C/Zig staticlib lane) stays off here.
+# so the conversion link-injects it into a wasm32-wasi box and rewrites the box's WASI imports to
+# `mc` — the box then imports ONLY `mc` (A4: WASI exists only as a guest adapter, never in the
+# kernel). It uses the dependency-free generated bindings (constants_rust + mc_rust), never
+# //sysroot, whose `#[panic_handler]` would collide with a tool's std at link time.
 rust_library(
     name = "wasi_adapter",
     srcs = glob(["src/**/*.rs"]),
     crate_name = "wasi",
     edition = "2021",
-    # No native build (no_std + mc imports + wasi exports); the conversion rule re-emits it as an
-    # object and injects it into a box. //... reaches it through that rule + this compile gate.
+    # codegen-units=1 ⇒ the rlib holds a SINGLE relocatable object, which the conversion extracts
+    # and link-injects (memcontainers does the same via `cargo rustc --emit=obj`).
+    rustc_flags = ["-Ccodegen-units=1"],
+    # No native build (no_std + mc imports + wasi exports); reached via the conversion + the gate.
     tags = ["manual"],
     visibility = ["//visibility:public"],
     deps = [
@@ -24,8 +24,21 @@ rust_library(
     ],
 )
 
-# Assert the adapter compiles for wasm32 (the conversion rule emits it as an object + injects it
-# into a box; this is the standalone compile gate, mirroring the sysroot's).
+# The adapter's single relocatable wasm object, pulled out of the rlib (an ar archive). This is
+# the link-injection input: passed to a box's link via -Clink-arg, wasm-ld merges it (correctly
+# relocating the adapter's FD-table state into the box's memory) and resolves the box's
+# __imported_wasi_* imports to the adapter's definitions.
+genrule(
+    name = "wasi_adapter_obj",
+    srcs = [":wasi_adapter"],
+    outs = ["wasi_adapter.o"],
+    cmd = "RL=$$(realpath $(execpath :wasi_adapter)); D=$$(mktemp -d); (cd $$D && ar x $$RL); cp $$D/*.o $@",
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+)
+
+# Assert the adapter compiles for wasm32 (this is the standalone compile gate, mirroring the
+# sysroot's; the object + the conversion bring it into the box build).
 wasm32_build_test(
     name = "wasi_adapter_wasm32",
     lib = ":wasi_adapter",
