@@ -324,9 +324,9 @@ impl Drop for ProcCtlHandle {
 impl FileSystem for ProcFs {
     fn open(
         &mut self,
+        caller: CallerId,
         path: &KPath,
         flags: OpenFlags,
-        caller: CallerId,
     ) -> Result<Box<dyn FileHandle>> {
         let writes = flags.write || flags.create || flags.truncate || flags.append;
 
@@ -388,7 +388,7 @@ impl FileSystem for ProcFs {
         })
     }
 
-    fn readdir(&self, path: &KPath, _caller: CallerId) -> Result<Vec<DirEntry>> {
+    fn readdir(&self, _caller: CallerId, path: &KPath) -> Result<Vec<DirEntry>> {
         let rel = self.rel(path.as_str());
         // /proc root
         if rel.is_empty() {
@@ -437,13 +437,13 @@ impl FileSystem for ProcFs {
         Err(FsError::NotFound)
     }
 
-    fn mkdir(&mut self, _path: &KPath, _caller: CallerId) -> Result<()> {
+    fn mkdir(&mut self, _caller: CallerId, _path: &KPath) -> Result<()> {
         Err(FsError::PermissionDenied)
     }
-    fn unlink(&mut self, _path: &KPath, _caller: CallerId) -> Result<()> {
+    fn unlink(&mut self, _caller: CallerId, _path: &KPath) -> Result<()> {
         Err(FsError::PermissionDenied)
     }
-    fn rename(&mut self, _from: &KPath, _to: &KPath, _caller: CallerId) -> Result<()> {
+    fn rename(&mut self, _caller: CallerId, _from: &KPath, _to: &KPath) -> Result<()> {
         Err(FsError::PermissionDenied)
     }
 }

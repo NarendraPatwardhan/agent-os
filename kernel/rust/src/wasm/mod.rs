@@ -1508,7 +1508,7 @@ impl GuestProgram {
         };
         // `stat` follows symlinks (the resolver canonicalized with follow=true),
         // so a symlink reports its target's metadata; `lstat` reports the link.
-        match ctx.ns.stat_as(&path, ctx.pid) {
+        match ctx.ns.stat_as(ctx.pid, &path) {
             Ok(md) => {
                 self.store.data_mut().pending = None;
                 self.write_stat_buf(ret_stat, &md)
@@ -1534,7 +1534,7 @@ impl GuestProgram {
             Ok(p) => p,
             Err(e) => return self.done(e),
         };
-        let entries = match ctx.ns.readdir(&path, ctx.pid) {
+        let entries = match ctx.ns.readdir(ctx.pid, &path) {
             Ok(es) => es,
             // A served directory is still fetching its listing: keep `pending`
             // and re-read next tick.
@@ -1573,7 +1573,7 @@ impl GuestProgram {
             Ok(p) => p,
             Err(e) => return self.done(e),
         };
-        let r = ctx.ns.mkdir(&path, ctx.pid);
+        let r = ctx.ns.mkdir(ctx.pid, &path);
         self.settle(ESUCCESS, r)
     }
 
@@ -1587,7 +1587,7 @@ impl GuestProgram {
             Ok(p) => p,
             Err(e) => return self.done(e),
         };
-        let r = ctx.ns.unlink(&path, ctx.pid);
+        let r = ctx.ns.unlink(ctx.pid, &path);
         self.settle(ESUCCESS, r)
     }
 
@@ -1608,7 +1608,7 @@ impl GuestProgram {
             Ok(p) => p,
             Err(e) => return self.done(e),
         };
-        let r = ctx.ns.rename(&from, &to, ctx.pid);
+        let r = ctx.ns.rename(ctx.pid, &from, &to);
         self.settle(ESUCCESS, r)
     }
 
@@ -1760,7 +1760,7 @@ impl GuestProgram {
             Ok(p) => p,
             Err(e) => return self.done(e),
         };
-        match ctx.ns.stat_as(&path, ctx.pid) {
+        match ctx.ns.stat_as(ctx.pid, &path) {
             Ok(md) => {
                 self.store.data_mut().pending = None;
                 self.write_stat_buf(ret_stat, &md)
@@ -1885,7 +1885,7 @@ impl GuestProgram {
         if !path_within(root.as_deref(), path.as_str()) {
             return self.done(EPERM);
         }
-        match ctx.ns.stat_as(&path, ctx.pid) {
+        match ctx.ns.stat_as(ctx.pid, &path) {
             Ok(md) if md.node_type == NodeType::Dir => {
                 if !md.owner_executable() {
                     return self.done(EACCES);

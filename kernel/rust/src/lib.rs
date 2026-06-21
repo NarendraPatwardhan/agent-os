@@ -1615,14 +1615,18 @@ pub(crate) fn mc_ctl_read(path_ptr: u32, path_len: u32) -> i32 {
             Some(p) => p,
             None => return -EINVAL,
         };
-        let mut h =
-            match STATE
-                .ns()
-                .open_as(vfs::SYSTEM_CALLER, &KPath::new(&path), OpenFlags::READ)
-            {
-                Ok(h) => h,
-                Err(e) => return ctl_neg_errno(e),
-            };
+        // `read` follows the final symlink — POSIX `open` semantics — so a ctl read of a
+        // symlink path returns the TARGET's content. Canonicalize through the link before
+        // opening; `stat`/`readdir` stay lstat (the namespace is the kernel's only
+        // symlink-following site, so the following must be requested here).
+        let real = match STATE.ns().canonicalize(&KPath::new(&path), true) {
+            Ok(c) => c,
+            Err(e) => return ctl_neg_errno(e),
+        };
+        let mut h = match STATE.ns().open_as(vfs::SYSTEM_CALLER, &real, OpenFlags::READ) {
+            Ok(h) => h,
+            Err(e) => return ctl_neg_errno(e),
+        };
         let mut out = Vec::new();
         let mut tmp = [0u8; 4096];
         loop {
@@ -1710,7 +1714,7 @@ pub(crate) fn mc_ctl_readdir(path_ptr: u32, path_len: u32) -> i32 {
             Some(p) => p,
             None => return -EINVAL,
         };
-        let entries = match STATE.ns().readdir(&KPath::new(&path), vfs::SYSTEM_CALLER) {
+        let entries = match STATE.ns().readdir(vfs::SYSTEM_CALLER, &KPath::new(&path)) {
             Ok(e) => e,
             Err(e) => return ctl_neg_errno(e),
         };
@@ -1748,7 +1752,7 @@ pub(crate) fn mc_ctl_stat(path_ptr: u32, path_len: u32) -> i32 {
         // instead of returning the provisional directory it uses for resolution. It
         // may yield (`WouldBlock` → `-EAGAIN`); the host retries. Plain filesystems
         // fall back to the synchronous path, so this is transparent for them.
-        let md = match STATE.ns().stat_as(&KPath::new(&path), vfs::SYSTEM_CALLER) {
+        let md = match STATE.ns().stat_as(vfs::SYSTEM_CALLER, &KPath::new(&path)) {
             Ok(m) => m,
             Err(vfs::FsError::WouldBlock) => return -EAGAIN,
             Err(e) => return ctl_neg_errno(e),
@@ -1778,7 +1782,7 @@ pub(crate) fn mc_ctl_mkdir(path_ptr: u32, path_len: u32) -> i32 {
             Some(p) => p,
             None => return -EINVAL,
         };
-        match STATE.ns().mkdir(&KPath::new(&path), vfs::SYSTEM_CALLER) {
+        match STATE.ns().mkdir(vfs::SYSTEM_CALLER, &KPath::new(&path)) {
             Ok(()) => 0,
             Err(e) => ctl_neg_errno(e),
         }
@@ -1796,7 +1800,7 @@ pub(crate) fn mc_ctl_unlink(path_ptr: u32, path_len: u32) -> i32 {
             Some(p) => p,
             None => return -EINVAL,
         };
-        match STATE.ns().unlink(&KPath::new(&path), vfs::SYSTEM_CALLER) {
+        match STATE.ns().unlink(vfs::SYSTEM_CALLER, &KPath::new(&path)) {
             Ok(()) => 0,
             Err(e) => ctl_neg_errno(e),
         }

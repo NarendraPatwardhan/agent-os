@@ -94,10 +94,10 @@ pub fn boot_system() -> Result<(Namespace, Scheduler, Executor), BootError> {
     }
     namespace.mount_labeled("/dev", Box::new(DevFs::new()), "devfs", false);
 
-    let _ = namespace.mkdir(&KPath::new("/home"), SYSTEM_CALLER);
-    let _ = namespace.mkdir(&KPath::new("/home/user"), SYSTEM_CALLER);
+    let _ = namespace.mkdir(SYSTEM_CALLER, &KPath::new("/home"));
+    let _ = namespace.mkdir(SYSTEM_CALLER, &KPath::new("/home/user"));
 
-    let _ = namespace.mkdir(&KPath::new("/tmp"), SYSTEM_CALLER);
+    let _ = namespace.mkdir(SYSTEM_CALLER, &KPath::new("/tmp"));
     let tmp_msg = "Mounting /tmp (tmpfs)... ok\r\n";
     unsafe {
         bridge::mc_stdout_write(tmp_msg.as_ptr(), tmp_msg.len());
@@ -107,8 +107,8 @@ pub fn boot_system() -> Result<(Namespace, Scheduler, Executor), BootError> {
     // /var/persist — capability-backed persistence. The mount
     // is always present; when the host denies the capability, operations
     // surface as PermissionDenied.
-    let _ = namespace.mkdir(&KPath::new("/var"), SYSTEM_CALLER);
-    let _ = namespace.mkdir(&KPath::new("/var/persist"), SYSTEM_CALLER);
+    let _ = namespace.mkdir(SYSTEM_CALLER, &KPath::new("/var"));
+    let _ = namespace.mkdir(SYSTEM_CALLER, &KPath::new("/var/persist"));
     let persist_msg = "Mounting /var/persist (persistfs)... ok\r\n";
     unsafe {
         bridge::mc_stdout_write(persist_msg.as_ptr(), persist_msg.len());
@@ -121,7 +121,7 @@ pub fn boot_system() -> Result<(Namespace, Scheduler, Executor), BootError> {
     );
 
     let scheduler = Scheduler::new();
-    let _ = namespace.mkdir(&KPath::new("/proc"), SYSTEM_CALLER);
+    let _ = namespace.mkdir(SYSTEM_CALLER, &KPath::new("/proc"));
 
     let mut executor = Executor::new();
     register_builtins(&mut executor);

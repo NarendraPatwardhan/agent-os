@@ -154,9 +154,9 @@ impl FileHandle for DevFileHandle {
 impl FileSystem for DevFs {
     fn open(
         &mut self,
+        _caller: CallerId,
         path: &KPath,
         flags: OpenFlags,
-        _caller: CallerId,
     ) -> Result<Box<dyn FileHandle>> {
         let path_str = self.normalize_path(path);
 
@@ -194,7 +194,7 @@ impl FileSystem for DevFs {
         Ok(Metadata::file(size))
     }
 
-    fn readdir(&self, _path: &KPath, _caller: CallerId) -> Result<Vec<DirEntry>> {
+    fn readdir(&self, _caller: CallerId, _path: &KPath) -> Result<Vec<DirEntry>> {
         // List all devices
         let mut result = Vec::new();
 
@@ -214,15 +214,15 @@ impl FileSystem for DevFs {
         Ok(result)
     }
 
-    fn mkdir(&mut self, _path: &KPath, _caller: CallerId) -> Result<()> {
+    fn mkdir(&mut self, _caller: CallerId, _path: &KPath) -> Result<()> {
         Err(FsError::PermissionDenied) // Cannot create directories in /dev
     }
 
-    fn unlink(&mut self, _path: &KPath, _caller: CallerId) -> Result<()> {
+    fn unlink(&mut self, _caller: CallerId, _path: &KPath) -> Result<()> {
         Err(FsError::PermissionDenied) // Cannot delete devices
     }
 
-    fn rename(&mut self, _from: &KPath, _to: &KPath, _caller: CallerId) -> Result<()> {
+    fn rename(&mut self, _caller: CallerId, _from: &KPath, _to: &KPath) -> Result<()> {
         Err(FsError::PermissionDenied) // Cannot rename devices
     }
 }

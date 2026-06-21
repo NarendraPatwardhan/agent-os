@@ -1,18 +1,27 @@
-# tests/e2e — the no-mocks end-to-end suite (ported from memcontainers crates/e2e).
-# Each test boots the real kernel.wasm in hosts/wasmtime with capture sinks and
-# .deterministic() (fixed clock + seeded rng), runs commands, and asserts on REAL
-# stdout/stderr bytes and REAL exit codes; network tests hit the REAL internet (VISION
-# §9.1, B6). Booting is itself a test — a kernel trap surfaces as a host error.
+load(":defs.bzl", "rust_e2e_test")
+
+# tests/e2e — the no-mocks end-to-end suite. Each test boots the REAL kernel.wasm in the
+# REAL wasmtime host with capture sinks and .deterministic() (fixed clock + seeded rng), and
+# asserts on REAL stdout bytes / REAL control-channel reads (VISION §9.1, B6). Booting is
+# itself a test — a kernel trap or a generated-bridge mismatch surfaces as a host error.
 #
-# THE load-bearing edge (B1, §7.2): the test `data`-depends on the kernel target, so the
-# kernel a test runs is ALWAYS the one its sources produce. This is the death of the
+# THE load-bearing edge (B1, §7.2): the test `data`-depends on the kernel + image targets,
+# so the artifacts a test runs are ALWAYS the ones its sources produce — the death of the
 # memcontainers staleness class. In Phase B this edge fans out to BOTH kernels (§9.6).
 #
-# Phase A:
-#   load("@rules_rust//rust:defs.bzl", "rust_test")
-#   rust_test(
-#       name = "e2e",
-#       srcs = glob(["src/**/*.rs"]),       # boot, pipes, net, persist, control, snapshot, services, sqlite, luau
-#       deps = ["//hosts/wasmtime:host"],
-#       data = ["//kernel/rust:kernel", "//images:base_tar"],   # never stale (B1)
-#   )
+# Always RELEASE wasmtime: rust_e2e_test pins the host subgraph to compilation_mode=opt
+# (defs.bzl), so a debug wasmtime never makes the suite crawl.
+
+rust_e2e_test(
+    name = "e2e",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2021",
+    deps = [
+        "//hosts/wasmtime:host",
+        "@rules_rust//rust/runfiles",
+    ],
+    data = [
+        "//kernel/rust:kernel",
+        "//images:base",
+    ],
+)

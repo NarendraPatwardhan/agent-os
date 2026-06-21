@@ -327,9 +327,9 @@ pub trait FileSystem {
     /// identity-aware ones (procfs/netfs/served) check it.
     fn open(
         &mut self,
+        caller: CallerId,
         path: &KPath,
         flags: OpenFlags,
-        caller: CallerId,
     ) -> Result<Box<dyn FileHandle>>;
     /// Synchronous metadata used by namespace path resolution and permission checks.
     /// Implementations must not yield from this path.
@@ -337,7 +337,7 @@ pub trait FileSystem {
     /// User-visible terminal metadata. Plain filesystems use the synchronous metadata
     /// path; identity-aware filesystems such as `ServedFs` may use `caller` to route a
     /// request and return `WouldBlock` for cooperative retry.
-    fn stat_as(&self, path: &KPath, _caller: CallerId) -> Result<Metadata> {
+    fn stat_as(&self, _caller: CallerId, path: &KPath) -> Result<Metadata> {
         self.stat(path)
     }
     /// List `path`. `caller` is threaded like [`FileSystem::open`]'s: plain filesystems
@@ -345,10 +345,10 @@ pub trait FileSystem {
     /// state on it so a cooperative re-poll after [`FsError::WouldBlock`] is not
     /// mistaken for a second request. The mutating ops below carry it for the same
     /// reason.
-    fn readdir(&self, path: &KPath, caller: CallerId) -> Result<Vec<DirEntry>>;
-    fn mkdir(&mut self, path: &KPath, caller: CallerId) -> Result<()>;
-    fn unlink(&mut self, path: &KPath, caller: CallerId) -> Result<()>;
-    fn rename(&mut self, from: &KPath, to: &KPath, caller: CallerId) -> Result<()>;
+    fn readdir(&self, caller: CallerId, path: &KPath) -> Result<Vec<DirEntry>>;
+    fn mkdir(&mut self, caller: CallerId, path: &KPath) -> Result<()>;
+    fn unlink(&mut self, caller: CallerId, path: &KPath) -> Result<()>;
+    fn rename(&mut self, caller: CallerId, from: &KPath, to: &KPath) -> Result<()>;
 
     /// Create a symbolic link at `link` whose stored target text is `target` (verbatim
     /// — symlinks are never resolved by the filesystem). Defaults to `NotImplemented`,

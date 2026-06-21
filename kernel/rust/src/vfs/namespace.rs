@@ -309,7 +309,7 @@ impl Namespace {
             // the real error (NotFound, etc.).
             Err(_) => {}
         }
-        r.fs.borrow_mut().open(&r.fs_path, flags, caller)
+        r.fs.borrow_mut().open(caller, &r.fs_path, flags)
     }
 
     /// Convenience open as the namespace's own owner (a task's operations act as that
@@ -323,12 +323,12 @@ impl Namespace {
         r.fs.borrow().stat(&r.fs_path)
     }
 
-    pub fn stat_as(&self, path: &KPath, caller: CallerId) -> Result<Metadata> {
+    pub fn stat_as(&self, caller: CallerId, path: &KPath) -> Result<Metadata> {
         let r = self.resolve(path).ok_or(FsError::NotFound)?;
-        r.fs.borrow().stat_as(&r.fs_path, caller)
+        r.fs.borrow().stat_as(caller, &r.fs_path)
     }
 
-    pub fn readdir(&self, path: &KPath, caller: CallerId) -> Result<Vec<DirEntry>> {
+    pub fn readdir(&self, caller: CallerId, path: &KPath) -> Result<Vec<DirEntry>> {
         let r = self.resolve(path).ok_or(FsError::NotFound)?;
         // Listing a directory requires owner-`r` and owner-`x` on the directory itself.
         // (If the dir exists only as a mount parent its `stat` may fail — fall through
@@ -338,7 +338,7 @@ impl Namespace {
                 return Err(FsError::AccessDenied);
             }
         }
-        let fs_entries = r.fs.borrow().readdir(&r.fs_path, caller);
+        let fs_entries = r.fs.borrow().readdir(caller, &r.fs_path);
         let children = self.child_mount_basenames(path.as_str());
 
         let mut merged: BTreeMap<String, DirEntry> = BTreeMap::new();
@@ -371,25 +371,25 @@ impl Namespace {
         Ok(merged.into_values().collect())
     }
 
-    pub fn mkdir(&self, path: &KPath, caller: CallerId) -> Result<()> {
+    pub fn mkdir(&self, caller: CallerId, path: &KPath) -> Result<()> {
         let r = self.resolve(path).ok_or(FsError::NotFound)?;
         if r.read_only {
             return Err(FsError::PermissionDenied);
         }
         require_parent_writable(&r)?;
-        r.fs.borrow_mut().mkdir(&r.fs_path, caller)
+        r.fs.borrow_mut().mkdir(caller, &r.fs_path)
     }
 
-    pub fn unlink(&self, path: &KPath, caller: CallerId) -> Result<()> {
+    pub fn unlink(&self, caller: CallerId, path: &KPath) -> Result<()> {
         let r = self.resolve(path).ok_or(FsError::NotFound)?;
         if r.read_only {
             return Err(FsError::PermissionDenied);
         }
         require_parent_writable(&r)?;
-        r.fs.borrow_mut().unlink(&r.fs_path, caller)
+        r.fs.borrow_mut().unlink(caller, &r.fs_path)
     }
 
-    pub fn rename(&self, from: &KPath, to: &KPath, caller: CallerId) -> Result<()> {
+    pub fn rename(&self, caller: CallerId, from: &KPath, to: &KPath) -> Result<()> {
         let rf = self.resolve(from).ok_or(FsError::NotFound)?;
         let rt = self.resolve(to).ok_or(FsError::NotFound)?;
         if rf.mount_point != rt.mount_point {
@@ -401,7 +401,7 @@ impl Namespace {
         // Both the source and destination directory entries are mutated.
         require_parent_writable(&rf)?;
         require_parent_writable(&rt)?;
-        rf.fs.borrow_mut().rename(&rf.fs_path, &rt.fs_path, caller)
+        rf.fs.borrow_mut().rename(caller, &rf.fs_path, &rt.fs_path)
     }
 
     /// Read the target text of the symlink at `path` (no following).

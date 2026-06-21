@@ -135,7 +135,7 @@ impl CowFs {
             // `_ =` so a race or harmless AlreadyExists does not bubble up.
             // Copy-up bookkeeping acts as the kernel itself (SYSTEM_CALLER), not
             // the requesting task — the overlay (a MemFs) ignores it regardless.
-            let _ = self.overlay.mkdir(&KPath::new(&parent), SYSTEM_CALLER);
+            let _ = self.overlay.mkdir(SYSTEM_CALLER, &KPath::new(&parent));
         }
         Ok(())
     }
@@ -208,9 +208,9 @@ impl FileHandle for CowFileHandle {
 impl FileSystem for CowFs {
     fn open(
         &mut self,
+        caller: CallerId,
         path: &KPath,
         flags: OpenFlags,
-        caller: CallerId,
     ) -> Result<Box<dyn FileHandle>> {
         let path_str = self.normalize_path(path);
 
@@ -219,7 +219,7 @@ impl FileSystem for CowFs {
             if flags.create {
                 // Create in overlay
                 self.remove_tombstone(&path_str);
-                return self.overlay.open(path, flags, caller);
+                return self.overlay.open(caller, path, flags);
             }
             return Err(FsError::NotFound);
         }
@@ -227,7 +227,7 @@ impl FileSystem for CowFs {
         // Check if exists in overlay
         if let Ok(_) = self.overlay.stat(path) {
             // File exists in overlay, use it
-            return self.overlay.open(path, flags, caller);
+            return self.overlay.open(caller, path, flags);
         }
 
         // Check if exists in base
@@ -239,9 +239,9 @@ impl FileSystem for CowFs {
                     // First, copy base file to overlay
                     if meta.node_type == NodeType::File {
                         self.ensure_overlay_parents(&path_str)?;
-                        let mut base_handle = self.base.open(path, OpenFlags::READ, caller)?;
+                        let mut base_handle = self.base.open(caller, path, OpenFlags::READ)?;
                         let mut overlay_handle =
-                            self.overlay.open(path, OpenFlags::CREATE, caller)?;
+                            self.overlay.open(caller, path, OpenFlags::CREATE)?;
 
                         // Copy data
                         let mut buf = [0u8; 4096];
@@ -262,17 +262,17 @@ impl FileSystem for CowFs {
                         let _ = self.overlay.set_times(path, meta.atime, meta.mtime);
 
                         // Re-open with requested flags
-                        return self.overlay.open(path, flags, caller);
+                        return self.overlay.open(caller, path, flags);
                     } else {
                         // For directories, just create in overlay
-                        return self.overlay.open(path, flags, caller);
+                        return self.overlay.open(caller, path, flags);
                     }
                 } else {
                     // Read-only access to base
                     let handle = CowFileHandle {
                         is_overlay: false,
                         path: path_str,
-                        handle: Some(self.base.open(path, flags, caller)?),
+                        handle: Some(self.base.open(caller, path, flags)?),
                     };
                     return Ok(Box::new(handle));
                 }
@@ -283,7 +283,7 @@ impl FileSystem for CowFs {
                     let path_str_create = self.normalize_path(path);
                     self.ensure_overlay_parents(&path_str_create)?;
                     // Create in overlay
-                    return self.overlay.open(path, flags, caller);
+                    return self.overlay.open(caller, path, flags);
                 }
                 Err(FsError::NotFound)
             }
@@ -306,7 +306,7 @@ impl FileSystem for CowFs {
         self.base.stat(path)
     }
 
-    fn readdir(&self, path: &KPath, caller: CallerId) -> Result<Vec<DirEntry>> {
+    fn readdir(&self, caller: CallerId, path: &KPath) -> Result<Vec<DirEntry>> {
         let path_str = self.normalize_path(path);
 
         if self.is_tombstoned(&path_str) {
@@ -318,8 +318,8 @@ impl FileSystem for CowFs {
         // writable overlay still list — a `stat`-gate missed those and returned
         // NotFound. The directory exists iff at least one layer's `readdir`
         // succeeds; an existing-but-empty dir returns Ok([]).
-        let base_result = self.base.readdir(path, caller);
-        let overlay_result = self.overlay.readdir(path, caller);
+        let base_result = self.base.readdir(caller, path);
+        let overlay_result = self.overlay.readdir(caller, path);
         if base_result.is_err() && overlay_result.is_err() {
             return Err(FsError::NotFound);
         }
@@ -348,7 +348,7 @@ impl FileSystem for CowFs {
         Ok(result.into_values().collect())
     }
 
-    fn mkdir(&mut self, path: &KPath, caller: CallerId) -> Result<()> {
+    fn mkdir(&mut self, caller: CallerId, path: &KPath) -> Result<()> {
         let path_str = self.normalize_path(path);
 
         if self.is_tombstoned(&path_str) {
@@ -363,10 +363,10 @@ impl FileSystem for CowFs {
         // provide an ancestor (e.g. `/home`) the overlay has never seen, which
         // otherwise makes `mkdir /home/user` (and the boot cwd) fail.
         self.ensure_overlay_parents(&path_str)?;
-        self.overlay.mkdir(path, caller)
+        self.overlay.mkdir(caller, path)
     }
 
-    fn unlink(&mut self, path: &KPath, caller: CallerId) -> Result<()> {
+    fn unlink(&mut self, caller: CallerId, path: &KPath) -> Result<()> {
         let path_str = self.normalize_path(path);
 
         // Check if exists
@@ -376,7 +376,7 @@ impl FileSystem for CowFs {
 
         // Remove from overlay if present
         if self.overlay.stat(path).is_ok() {
-            self.overlay.unlink(path, caller)?;
+            self.overlay.unlink(caller, path)?;
         }
 
         // Add tombstone
@@ -385,7 +385,7 @@ impl FileSystem for CowFs {
         Ok(())
     }
 
-    fn rename(&mut self, from: &KPath, to: &KPath, caller: CallerId) -> Result<()> {
+    fn rename(&mut self, caller: CallerId, from: &KPath, to: &KPath) -> Result<()> {
         let from_str = self.normalize_path(from);
         let to_str = self.normalize_path(to);
 
@@ -405,7 +405,7 @@ impl FileSystem for CowFs {
 
         // POSIX rename within the overlay (overwrite, EISDIR/ENOTDIR/ENOTEMPTY,
         // and directory subtree re-keying all live in MemFs::rename).
-        self.overlay.rename(from, to, caller)?;
+        self.overlay.rename(caller, from, to)?;
 
         // The base still holds the old source path (and its subtree) — tombstone
         // it so nothing re-surfaces under the old name. The destination is now
@@ -492,8 +492,8 @@ impl CowFs {
         match meta.node_type {
             NodeType::File => {
                 if self.overlay.stat(&kp).is_err() {
-                    let mut bh = self.base.open(&kp, OpenFlags::READ, SYSTEM_CALLER)?;
-                    let mut oh = self.overlay.open(&kp, OpenFlags::CREATE, SYSTEM_CALLER)?;
+                    let mut bh = self.base.open(SYSTEM_CALLER, &kp, OpenFlags::READ)?;
+                    let mut oh = self.overlay.open(SYSTEM_CALLER, &kp, OpenFlags::CREATE)?;
                     let mut buf = [0u8; 4096];
                     loop {
                         match bh.read(&mut buf) {
@@ -513,11 +513,11 @@ impl CowFs {
             }
             NodeType::Dir => {
                 if self.overlay.stat(&kp).is_err() {
-                    self.overlay.mkdir(&kp, SYSTEM_CALLER)?;
+                    self.overlay.mkdir(SYSTEM_CALLER, &kp)?;
                     let _ = self.overlay.set_mode(&kp, meta.mode);
                     let _ = self.overlay.set_times(&kp, meta.atime, meta.mtime);
                 }
-                for e in self.readdir(&kp, SYSTEM_CALLER)? {
+                for e in self.readdir(SYSTEM_CALLER, &kp)? {
                     let child = join_path(path, &e.name);
                     self.copy_up(&child)?;
                 }
@@ -538,7 +538,7 @@ impl CowFs {
     /// Tombstone `path` and every base descendant of it, so a moved/removed
     /// base subtree cannot re-surface under the old path.
     fn tombstone_subtree(&mut self, path: &str) {
-        if let Ok(entries) = self.base.readdir(&KPath::new(path), SYSTEM_CALLER) {
+        if let Ok(entries) = self.base.readdir(SYSTEM_CALLER, &KPath::new(path)) {
             for e in entries {
                 let child = join_path(path, &e.name);
                 self.tombstone_subtree(&child);
@@ -594,7 +594,7 @@ impl CowFs {
     /// files also carry their inode id (via `MemFs::inode_id`) for hard-link
     /// detection.
     fn collect_overlay(&self, dir: &str, out: &mut Vec<OverlayNode>) {
-        let Ok(mut entries) = self.overlay.readdir(&KPath::new(dir), SYSTEM_CALLER) else {
+        let Ok(mut entries) = self.overlay.readdir(SYSTEM_CALLER, &KPath::new(dir)) else {
             return;
         };
         entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -634,7 +634,7 @@ impl CowFs {
         let mut bytes = Vec::new();
         if let Ok(mut h) = self
             .overlay
-            .open(&KPath::new(path), OpenFlags::READ, SYSTEM_CALLER)
+            .open(SYSTEM_CALLER, &KPath::new(path), OpenFlags::READ)
         {
             let mut buf = [0u8; 4096];
             loop {

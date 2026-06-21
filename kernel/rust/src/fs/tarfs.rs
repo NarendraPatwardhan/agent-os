@@ -328,9 +328,9 @@ fn tar_path(name: &str) -> String {
 impl FileSystem for TarFs {
     fn open(
         &mut self,
+        _caller: CallerId,
         path: &KPath,
         flags: OpenFlags,
-        _caller: CallerId,
     ) -> Result<Box<dyn FileHandle>> {
         let path_str = self.normalize_path(path);
 
@@ -369,7 +369,7 @@ impl FileSystem for TarFs {
         Ok(entry_meta(entry))
     }
 
-    fn readdir(&self, path: &KPath, _caller: CallerId) -> Result<Vec<DirEntry>> {
+    fn readdir(&self, _caller: CallerId, path: &KPath) -> Result<Vec<DirEntry>> {
         let path_str = self.normalize_path(path);
 
         // Find entries that are direct children of this path
@@ -403,15 +403,15 @@ impl FileSystem for TarFs {
         Ok(result)
     }
 
-    fn mkdir(&mut self, _path: &KPath, _caller: CallerId) -> Result<()> {
+    fn mkdir(&mut self, _caller: CallerId, _path: &KPath) -> Result<()> {
         Err(FsError::PermissionDenied) // Read-only
     }
 
-    fn unlink(&mut self, _path: &KPath, _caller: CallerId) -> Result<()> {
+    fn unlink(&mut self, _caller: CallerId, _path: &KPath) -> Result<()> {
         Err(FsError::PermissionDenied) // Read-only
     }
 
-    fn rename(&mut self, _from: &KPath, _to: &KPath, _caller: CallerId) -> Result<()> {
+    fn rename(&mut self, _caller: CallerId, _from: &KPath, _to: &KPath) -> Result<()> {
         Err(FsError::PermissionDenied) // Read-only
     }
 

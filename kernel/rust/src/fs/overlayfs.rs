@@ -48,15 +48,15 @@ impl OverlayFs {
 impl FileSystem for OverlayFs {
     fn open(
         &mut self,
+        caller: CallerId,
         path: &KPath,
         flags: crate::vfs::traits::OpenFlags,
-        caller: CallerId,
     ) -> Result<Box<dyn FileHandle>> {
         if flags.write || flags.create || flags.truncate {
             return Err(FsError::PermissionDenied); // read-only; CowFs provides writes
         }
         match self.provider(path.as_str()) {
-            Some(i) => self.layers[i].open(path, flags, caller),
+            Some(i) => self.layers[i].open(caller, path, flags),
             None => Err(FsError::NotFound),
         }
     }
@@ -68,7 +68,7 @@ impl FileSystem for OverlayFs {
         }
     }
 
-    fn readdir(&self, path: &KPath, caller: CallerId) -> Result<Vec<DirEntry>> {
+    fn readdir(&self, caller: CallerId, path: &KPath) -> Result<Vec<DirEntry>> {
         let p = path.as_str();
         // The directory itself must exist and not be whited-out.
         if self.provider(p).is_none() {
@@ -79,7 +79,7 @@ impl FileSystem for OverlayFs {
         // themselves hidden from the listing.
         let mut merged: BTreeMap<String, DirEntry> = BTreeMap::new();
         for layer in self.layers.iter() {
-            let Ok(entries) = layer.readdir(path, caller) else {
+            let Ok(entries) = layer.readdir(caller, path) else {
                 continue;
             };
             for e in entries {
@@ -100,13 +100,13 @@ impl FileSystem for OverlayFs {
         }
     }
 
-    fn mkdir(&mut self, _path: &KPath, _caller: CallerId) -> Result<()> {
+    fn mkdir(&mut self, _caller: CallerId, _path: &KPath) -> Result<()> {
         Err(FsError::PermissionDenied)
     }
-    fn unlink(&mut self, _path: &KPath, _caller: CallerId) -> Result<()> {
+    fn unlink(&mut self, _caller: CallerId, _path: &KPath) -> Result<()> {
         Err(FsError::PermissionDenied)
     }
-    fn rename(&mut self, _from: &KPath, _to: &KPath, _caller: CallerId) -> Result<()> {
+    fn rename(&mut self, _caller: CallerId, _from: &KPath, _to: &KPath) -> Result<()> {
         Err(FsError::PermissionDenied)
     }
 }

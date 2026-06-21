@@ -82,9 +82,9 @@ impl EnvFs {
 impl FileSystem for EnvFs {
     fn open(
         &mut self,
+        caller: CallerId,
         path: &KPath,
         flags: OpenFlags,
-        caller: CallerId,
     ) -> Result<Box<dyn FileHandle>> {
         let name = Self::var_name(path.as_str()).ok_or(FsError::IsDir)?;
         let writes = flags.write || flags.create || flags.truncate || flags.append;
@@ -130,7 +130,7 @@ impl FileSystem for EnvFs {
         }
     }
 
-    fn readdir(&self, path: &KPath, _caller: CallerId) -> Result<Vec<DirEntry>> {
+    fn readdir(&self, _caller: CallerId, path: &KPath) -> Result<Vec<DirEntry>> {
         if Self::var_name(path.as_str()).is_some()
             || !path.as_str().trim_start_matches('/').is_empty()
         {
@@ -146,11 +146,11 @@ impl FileSystem for EnvFs {
             .collect())
     }
 
-    fn mkdir(&mut self, _path: &KPath, _caller: CallerId) -> Result<()> {
+    fn mkdir(&mut self, _caller: CallerId, _path: &KPath) -> Result<()> {
         Err(FsError::PermissionDenied)
     }
 
-    fn unlink(&mut self, path: &KPath, _caller: CallerId) -> Result<()> {
+    fn unlink(&mut self, _caller: CallerId, path: &KPath) -> Result<()> {
         let name = Self::var_name(path.as_str()).ok_or(FsError::IsDir)?;
         let map = self.map_ptr(SYSTEM_CALLER);
         if unsafe { (*map).remove(name) }.is_some() {
@@ -160,7 +160,7 @@ impl FileSystem for EnvFs {
         }
     }
 
-    fn rename(&mut self, _from: &KPath, _to: &KPath, _caller: CallerId) -> Result<()> {
+    fn rename(&mut self, _caller: CallerId, _from: &KPath, _to: &KPath) -> Result<()> {
         Err(FsError::PermissionDenied)
     }
 }

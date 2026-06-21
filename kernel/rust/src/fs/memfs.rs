@@ -417,9 +417,9 @@ impl FileHandle for MemFileHandle {
 impl FileSystem for MemFs {
     fn open(
         &mut self,
+        _caller: CallerId,
         path: &KPath,
         flags: OpenFlags,
-        _caller: CallerId,
     ) -> Result<Box<dyn FileHandle>> {
         let path_str = self.normalize_path(path);
         let inodes_ptr = &mut self.inodes as *mut BTreeMap<Ino, Inode>;
@@ -501,7 +501,7 @@ impl FileSystem for MemFs {
         Ok(self.meta_of(&path_str, inode))
     }
 
-    fn readdir(&self, path: &KPath, _caller: CallerId) -> Result<Vec<DirEntry>> {
+    fn readdir(&self, _caller: CallerId, path: &KPath) -> Result<Vec<DirEntry>> {
         let path_str = self.normalize_path(path);
         match self.node(&path_str) {
             Some(Inode {
@@ -530,7 +530,7 @@ impl FileSystem for MemFs {
         }
     }
 
-    fn mkdir(&mut self, path: &KPath, _caller: CallerId) -> Result<()> {
+    fn mkdir(&mut self, _caller: CallerId, path: &KPath) -> Result<()> {
         let path_str = self.normalize_path(path);
         if self.paths.contains_key(&path_str) {
             return Err(FsError::AlreadyExists);
@@ -556,7 +556,7 @@ impl FileSystem for MemFs {
         Ok(())
     }
 
-    fn unlink(&mut self, path: &KPath, _caller: CallerId) -> Result<()> {
+    fn unlink(&mut self, _caller: CallerId, path: &KPath) -> Result<()> {
         let path_str = self.normalize_path(path);
         match self.node(&path_str) {
             Some(Inode {
@@ -573,7 +573,7 @@ impl FileSystem for MemFs {
         Ok(())
     }
 
-    fn rename(&mut self, from: &KPath, to: &KPath, _caller: CallerId) -> Result<()> {
+    fn rename(&mut self, _caller: CallerId, from: &KPath, to: &KPath) -> Result<()> {
         let from_str = self.normalize_path(from);
         let to_str = self.normalize_path(to);
 

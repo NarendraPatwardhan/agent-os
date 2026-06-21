@@ -404,16 +404,22 @@ fn get_or_compile(wasm: &[u8]) -> Result<(Engine, Module)> {
     wasm.hash(&mut h);
     let key = h.finish();
 
-    let cache = MODULE_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Some((e, m)) = cache.lock().unwrap().get(&key) {
+    // Hold the lock ACROSS the compile, not just around the lookup. A test binary runs its
+    // cases in parallel (one thread per core), so they boot at once; if the lock were
+    // released between the miss and the insert, every case would see an empty cache and
+    // redundantly cranelift-compile kernel.wasm (~0.9s each — the cost that dominates a
+    // boot). Held across `Module::new`, the first caller compiles and the rest block here
+    // and reuse it: the module is compiled exactly once.
+    let mut cache = MODULE_CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap();
+    if let Some((e, m)) = cache.get(&key) {
         return Ok((e.clone(), m.clone()));
     }
     let engine = Engine::default();
     let module = wt(Module::new(&engine, wasm), "compiling kernel.wasm")?;
-    cache
-        .lock()
-        .unwrap()
-        .insert(key, (engine.clone(), module.clone()));
+    cache.insert(key, (engine.clone(), module.clone()));
     Ok((engine, module))
 }
 

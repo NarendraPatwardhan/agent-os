@@ -72,9 +72,9 @@ impl Default for PersistFs {
 impl FileSystem for PersistFs {
     fn open(
         &mut self,
+        _caller: CallerId,
         path: &KPath,
         flags: OpenFlags,
-        _caller: CallerId,
     ) -> Result<Box<dyn FileHandle>> {
         let key = key_of(path);
         if key.is_empty() {
@@ -116,7 +116,7 @@ impl FileSystem for PersistFs {
         }
     }
 
-    fn readdir(&self, path: &KPath, _caller: CallerId) -> Result<Vec<DirEntry>> {
+    fn readdir(&self, _caller: CallerId, path: &KPath) -> Result<Vec<DirEntry>> {
         let key = key_of(path);
         if !key.is_empty() && persist::get(&key).map_err(fs_err)?.is_some() {
             return Err(FsError::NotDir);
@@ -162,7 +162,7 @@ impl FileSystem for PersistFs {
             .collect())
     }
 
-    fn mkdir(&mut self, path: &KPath, _caller: CallerId) -> Result<()> {
+    fn mkdir(&mut self, _caller: CallerId, path: &KPath) -> Result<()> {
         let key = key_of(path);
         if key.is_empty() {
             return Ok(());
@@ -174,7 +174,7 @@ impl FileSystem for PersistFs {
         persist::put(&marker, &[]).map_err(fs_err)
     }
 
-    fn unlink(&mut self, path: &KPath, _caller: CallerId) -> Result<()> {
+    fn unlink(&mut self, _caller: CallerId, path: &KPath) -> Result<()> {
         let key = key_of(path);
         if key.is_empty() {
             return Err(FsError::IsDir);
@@ -188,7 +188,7 @@ impl FileSystem for PersistFs {
         Err(FsError::NotFound)
     }
 
-    fn rename(&mut self, from: &KPath, to: &KPath, _caller: CallerId) -> Result<()> {
+    fn rename(&mut self, _caller: CallerId, from: &KPath, to: &KPath) -> Result<()> {
         let from_key = key_of(from);
         let to_key = key_of(to);
         if from_key.is_empty() || to_key.is_empty() {

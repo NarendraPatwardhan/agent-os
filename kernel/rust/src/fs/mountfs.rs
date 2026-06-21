@@ -349,9 +349,9 @@ impl MountFs {
 impl FileSystem for MountFs {
     fn open(
         &mut self,
+        caller: CallerId,
         path: &KPath,
         flags: OpenFlags,
-        caller: CallerId,
     ) -> Result<Box<dyn FileHandle>> {
         let writes = flags.write || flags.create || flags.truncate || flags.append;
         if writes {
@@ -438,7 +438,7 @@ impl FileSystem for MountFs {
         Ok(Metadata::dir())
     }
 
-    fn stat_as(&self, path: &KPath, caller: CallerId) -> Result<Metadata> {
+    fn stat_as(&self, caller: CallerId, path: &KPath) -> Result<Metadata> {
         let (status, body) = self.request(MOUNT_OP_STAT, path.as_str(), "", &[], caller)?;
         self.check_status(status, path.as_str())?;
         let meta = proxy::parse_metadata(&body)?;
@@ -446,7 +446,7 @@ impl FileSystem for MountFs {
         Ok(meta)
     }
 
-    fn readdir(&self, path: &KPath, caller: CallerId) -> Result<Vec<DirEntry>> {
+    fn readdir(&self, caller: CallerId, path: &KPath) -> Result<Vec<DirEntry>> {
         let (status, body) = self.request(MOUNT_OP_READDIR, path.as_str(), "", &[], caller)?;
         self.check_status(status, path.as_str())?;
         let parsed = proxy::parse_dirents(&body, path.as_str())?;
@@ -462,21 +462,21 @@ impl FileSystem for MountFs {
         Ok(entries)
     }
 
-    fn mkdir(&mut self, path: &KPath, caller: CallerId) -> Result<()> {
+    fn mkdir(&mut self, caller: CallerId, path: &KPath) -> Result<()> {
         let (status, _) = self.request(MOUNT_OP_MKDIR, path.as_str(), "", &[], caller)?;
         fs_result_from_errno(status)?;
         self.remember_meta(path.as_str(), Metadata::dir());
         Ok(())
     }
 
-    fn unlink(&mut self, path: &KPath, caller: CallerId) -> Result<()> {
+    fn unlink(&mut self, caller: CallerId, path: &KPath) -> Result<()> {
         let (status, _) = self.request(MOUNT_OP_UNLINK, path.as_str(), "", &[], caller)?;
         fs_result_from_errno(status)?;
         self.forget_path(path.as_str());
         Ok(())
     }
 
-    fn rename(&mut self, from: &KPath, to: &KPath, caller: CallerId) -> Result<()> {
+    fn rename(&mut self, caller: CallerId, from: &KPath, to: &KPath) -> Result<()> {
         let (status, _) = self.request(MOUNT_OP_RENAME, from.as_str(), to.as_str(), &[], caller)?;
         fs_result_from_errno(status)?;
         proxy::rename_path(

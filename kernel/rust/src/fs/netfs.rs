@@ -80,9 +80,9 @@ impl NetFs {
 impl FileSystem for NetFs {
     fn open(
         &mut self,
+        caller: CallerId,
         path: &KPath,
         _flags: OpenFlags,
-        caller: CallerId,
     ) -> Result<Box<dyn FileHandle>> {
         // Capability gate: denial reads as an ordinary fs error.
         if !self.caller_has_net(caller) {
@@ -128,7 +128,7 @@ impl FileSystem for NetFs {
         Err(FsError::NotFound)
     }
 
-    fn readdir(&self, path: &KPath, _caller: CallerId) -> Result<Vec<DirEntry>> {
+    fn readdir(&self, _caller: CallerId, path: &KPath) -> Result<Vec<DirEntry>> {
         let rel = path.as_str().trim_start_matches('/');
         if rel.is_empty() {
             // `/net` lists the supported schemes.
@@ -152,13 +152,13 @@ impl FileSystem for NetFs {
         Err(FsError::NotFound)
     }
 
-    fn mkdir(&mut self, _path: &KPath, _caller: CallerId) -> Result<()> {
+    fn mkdir(&mut self, _caller: CallerId, _path: &KPath) -> Result<()> {
         Err(FsError::PermissionDenied)
     }
-    fn unlink(&mut self, _path: &KPath, _caller: CallerId) -> Result<()> {
+    fn unlink(&mut self, _caller: CallerId, _path: &KPath) -> Result<()> {
         Err(FsError::PermissionDenied)
     }
-    fn rename(&mut self, _from: &KPath, _to: &KPath, _caller: CallerId) -> Result<()> {
+    fn rename(&mut self, _caller: CallerId, _from: &KPath, _to: &KPath) -> Result<()> {
         Err(FsError::PermissionDenied)
     }
 }

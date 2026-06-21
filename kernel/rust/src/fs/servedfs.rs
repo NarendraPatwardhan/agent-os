@@ -195,9 +195,9 @@ impl ServedFs {
 impl FileSystem for ServedFs {
     fn open(
         &mut self,
+        caller: CallerId,
         path: &KPath,
         _flags: OpenFlags,
-        caller: CallerId,
     ) -> Result<Box<dyn FileHandle>> {
         let resp = self.request(SERVE_OP_OPEN, path.as_str(), "", caller)?;
         if let Err(e) = fs_result_from_errno(resp.status) {
@@ -229,7 +229,7 @@ impl FileSystem for ServedFs {
         Ok(Metadata::dir())
     }
 
-    fn stat_as(&self, path: &KPath, caller: CallerId) -> Result<Metadata> {
+    fn stat_as(&self, caller: CallerId, path: &KPath) -> Result<Metadata> {
         let resp = self.request(SERVE_OP_STAT, path.as_str(), "", caller)?;
         if let Err(e) = fs_result_from_errno(resp.status) {
             if e == FsError::NotFound {
@@ -244,7 +244,7 @@ impl FileSystem for ServedFs {
         Ok(meta)
     }
 
-    fn readdir(&self, path: &KPath, caller: CallerId) -> Result<Vec<DirEntry>> {
+    fn readdir(&self, caller: CallerId, path: &KPath) -> Result<Vec<DirEntry>> {
         let resp = self.request(SERVE_OP_READDIR, path.as_str(), "", caller)?;
         if let Err(e) = fs_result_from_errno(resp.status) {
             if e == FsError::NotFound {
@@ -265,7 +265,7 @@ impl FileSystem for ServedFs {
         Ok(entries)
     }
 
-    fn mkdir(&mut self, path: &KPath, caller: CallerId) -> Result<()> {
+    fn mkdir(&mut self, caller: CallerId, path: &KPath) -> Result<()> {
         let resp = self.request(SERVE_OP_MKDIR, path.as_str(), "", caller)?;
         fs_result_from_errno(resp.status)?;
         self.channel
@@ -274,14 +274,14 @@ impl FileSystem for ServedFs {
         Ok(())
     }
 
-    fn unlink(&mut self, path: &KPath, caller: CallerId) -> Result<()> {
+    fn unlink(&mut self, caller: CallerId, path: &KPath) -> Result<()> {
         let resp = self.request(SERVE_OP_UNLINK, path.as_str(), "", caller)?;
         fs_result_from_errno(resp.status)?;
         self.channel.borrow_mut().forget_path(path.as_str());
         Ok(())
     }
 
-    fn rename(&mut self, from: &KPath, to: &KPath, caller: CallerId) -> Result<()> {
+    fn rename(&mut self, caller: CallerId, from: &KPath, to: &KPath) -> Result<()> {
         let resp = self.request(SERVE_OP_RENAME, from.as_str(), to.as_str(), caller)?;
         fs_result_from_errno(resp.status)?;
         self.channel

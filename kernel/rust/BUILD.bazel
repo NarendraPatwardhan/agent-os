@@ -43,6 +43,8 @@ rust_shared_library(
 release_wasm(
     name = "kernel",
     lib = ":lib",
+    # The shipped artifact: e2e / parity / conformance all data-dep it (B1, §7.2).
+    visibility = ["//visibility:public"],
 )
 
 # B5 size budget gate — a regression past the ceiling fails CI rather than silently
