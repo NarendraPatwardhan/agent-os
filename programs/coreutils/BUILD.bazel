@@ -74,17 +74,29 @@ _TIERS = {
     "full": ["tier_full"],
 }
 
-# Each box: build the crate for wasm32-wasi, link-inject the adapter, and trampoline-relink to a
-# pure-`mc` fixpoint (//wasi-adapter:defs.bzl). Built under --platforms=//platforms:wasm32_wasi.
+# The SECOND axis (mcbox.rs): two applet SETS over the same tiers. `set_full` = posix (every
+# applet); `set_min` = the `minimal` flavor (ONLY the `["set_min"]`-tagged applets — the curated
+# ~15: the carry-both builtin twins + core file ops). Same crate, same macro, same attest gate; the
+# set feature picks the applets. The posix boxes keep `mcbox-<tier>` (stable image/e2e refs); the
+# minimal boxes take a `min-` infix.
+_SETS = {
+    "": ["set_full"],
+    "min-": ["set_min"],
+}
+
+# Eight boxes (4 tiers × 2 sets). Each: build the crate for wasm32-wasi, link-inject the adapter,
+# trampoline-relink to a pure-`mc` fixpoint, attest imports ⊆ tier (//wasi-adapter:defs.bzl). Built
+# under --platforms=//platforms:wasm32_wasi.
 [
     mc_box(
-        name = "mcbox-" + tier,
+        name = "mcbox-" + infix + tier,
         srcs = glob(["src/**/*.rs"]),
         crate_root = "src/main.rs",
         crate_name = "coreutils",
-        crate_features = feats,
+        crate_features = tier_feats + set_feats,
         deps = _BOX_DEPS,
         visibility = ["//visibility:public"],
     )
-    for tier, feats in _TIERS.items()
+    for tier, tier_feats in _TIERS.items()
+    for infix, set_feats in _SETS.items()
 ]

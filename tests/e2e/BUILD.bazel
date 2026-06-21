@@ -25,7 +25,8 @@ rust_e2e_test(
     # runfiles path via MC_KERNEL_WASM). The Zig kernel gets its own target — same srcs,
     # kernel = //kernel/zig:kernel — under the B7 parity gate (§9.6).
     data = [
-        "//images:base",
-        "//images:posix",  # base + guest /bin/sh + the coreutils box (the coreutils tests)
+        "//images:base",  # rootfs + sh/pkgfsd/invoke (the boot + kernel/control-channel tests)
+        "//images:minimal",  # base + the curated minimal coreutils set (the flavor test)
+        "//images:posix",  # base + the full coreutils set (the shell / coreutils / system tests)
     ],
 )

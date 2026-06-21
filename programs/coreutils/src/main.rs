@@ -1,7 +1,8 @@
-//! `coreutils` — the per-tier multicall `/bin` (VISION §16.3). ONE std crate, built for
-//! `wasm32-wasi` and compiled four times (cfg tiers) into `mcbox-{isolated,readonly,readwrite,
-//! full}`; the `//wasi-adapter` then rewrites each box's `wasi_snapshot_preview1` imports to
-//! `mc`. `argv[0]` (or `argv[1]`) selects an applet and calls its `uumain` — hand-written
+//! `coreutils` — the multicall `/bin` (VISION §16.3). ONE std crate, built for `wasm32-wasi` and
+//! compiled per (tier × set): the FULL set → `mcbox-{isolated,readonly,readwrite,full}` (posix,
+//! every applet), the MINIMAL set → `mcbox-min-{…}` (the curated ~15 the `["set_min"]`-tagged
+//! applets opt into). The `//wasi-adapter` then rewrites each box's `wasi_snapshot_preview1`
+//! imports to `mc`. `argv[0]` (or `argv[1]`) selects an applet and calls its `uumain` — hand-written
 //! (`cat`, over `//sysroot` + the facade), external-crate (`grep`, over ripgrep), or uutils
 //! (`base64` = `uu_base64::uumain`, as-is). clap + uucore are linked for the uutils applets
 //! regardless, so the hand-written tools REUSE them (no parallel CLI); the facade
@@ -26,7 +27,7 @@ mod prelude;
 // facade), external-crate (`grep`, over ripgrep), and uutils used AS-IS (`uu_<name>::uumain`).
 mcbox! {
     // hand-written + external-crate slice
-    "cat" @ "tier_readonly" => applets::cat::uumain,
+    "cat" @ "tier_readonly" ["set_min"] => applets::cat::uumain,
     "grep" @ "tier_readonly" => applets::grep::uumain,
     "diff" @ "tier_readonly" => applets::diff::uumain,
     "file" @ "tier_readonly" => applets::file::uumain,
@@ -71,22 +72,22 @@ mcbox! {
     // isolated — pure compute / cwd-confined
     "basename" @ "tier_isolated" => applets::basename::uumain,
     "dirname" @ "tier_isolated" => applets::dirname::uumain,
-    "echo" @ "tier_isolated" => applets::echo::uumain,
-    "false" @ "tier_isolated" => applets::r#false::uumain,
-    "printf" @ "tier_isolated" => applets::printf::uumain,
+    "echo" @ "tier_isolated" ["set_min"] => applets::echo::uumain,
+    "false" @ "tier_isolated" ["set_min"] => applets::r#false::uumain,
+    "printf" @ "tier_isolated" ["set_min"] => applets::printf::uumain,
     "seq" @ "tier_isolated" => applets::seq::uumain,
     "tr" @ "tier_isolated" => applets::tr::uumain,
-    "true" @ "tier_isolated" => applets::r#true::uumain,
+    "true" @ "tier_isolated" ["set_min"] => applets::r#true::uumain,
     "clear" @ "tier_isolated" => applets::clear::uumain,
     "yes" @ "tier_isolated" => applets::yes::uumain,
     // read-only — read arbitrary paths, no mutation
     "cut" @ "tier_readonly" => applets::cut::uumain,
     "fold" @ "tier_readonly" => applets::fold::uumain,
     "head" @ "tier_readonly" => applets::head::uumain,
-    "ls" @ "tier_readonly" => applets::ls::uumain,
+    "ls" @ "tier_readonly" ["set_min"] => applets::ls::uumain,
     "nl" @ "tier_readonly" => applets::nl::uumain,
     "printenv" @ "tier_readonly" => applets::printenv::uumain,
-    "pwd" @ "tier_readonly" => applets::pwd::uumain,
+    "pwd" @ "tier_readonly" ["set_min"] => applets::pwd::uumain,
     "readlink" @ "tier_readonly" => applets::readlink::uumain,
     "realpath" @ "tier_readonly" => applets::realpath::uumain,
     "rev" @ "tier_readonly" => applets::rev::uumain,
@@ -94,18 +95,18 @@ mcbox! {
     "stat" @ "tier_readonly" => applets::stat::uumain,
     "tac" @ "tier_readonly" => applets::tac::uumain,
     "tail" @ "tier_readonly" => applets::tail::uumain,
-    "test" @ "tier_readonly" => applets::test::uumain,
-    "[" @ "tier_readonly" => applets::test::uumain,
+    "test" @ "tier_readonly" ["set_min"] => applets::test::uumain,
+    "[" @ "tier_readonly" ["set_min"] => applets::test::uumain,
     "tree" @ "tier_readonly" => applets::tree::uumain,
     "wc" @ "tier_readonly" => applets::wc::uumain,
     "which" @ "tier_readonly" => applets::which::uumain,
     // read-write — mutate the filesystem
     "chmod" @ "tier_readwrite" => applets::chmod::uumain,
-    "cp" @ "tier_readwrite" => applets::cp::uumain,
-    "ln" @ "tier_readwrite" => applets::ln::uumain,
-    "mkdir" @ "tier_readwrite" => applets::mkdir::uumain,
-    "mv" @ "tier_readwrite" => applets::mv::uumain,
-    "rm" @ "tier_readwrite" => applets::rm::uumain,
+    "cp" @ "tier_readwrite" ["set_min"] => applets::cp::uumain,
+    "ln" @ "tier_readwrite" ["set_min"] => applets::ln::uumain,
+    "mkdir" @ "tier_readwrite" ["set_min"] => applets::mkdir::uumain,
+    "mv" @ "tier_readwrite" ["set_min"] => applets::mv::uumain,
+    "rm" @ "tier_readwrite" ["set_min"] => applets::rm::uumain,
     "rmdir" @ "tier_readwrite" => applets::rmdir::uumain,
     "sort" @ "tier_readwrite" => applets::sort::uumain,
     "tee" @ "tier_readwrite" => applets::tee::uumain,
@@ -116,7 +117,7 @@ mcbox! {
     "env" @ "tier_full" => applets::env::uumain,
     "fetch" @ "tier_full" => applets::fetch::uumain,
     "find" @ "tier_full" => applets::find::uumain,
-    "kill" @ "tier_full" => applets::kill::uumain,
+    "kill" @ "tier_full" ["set_min"] => applets::kill::uumain,
     "nice" @ "tier_full" => applets::nice::uumain,
     "nohup" @ "tier_full" => applets::nohup::uumain,
     "time" @ "tier_full" => applets::time::uumain,

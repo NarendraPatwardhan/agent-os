@@ -14,13 +14,19 @@ pub fn basename(p: &OsString) -> String {
     s.rsplit(['/', '\\']).next().unwrap_or("").to_string()
 }
 
-/// Assemble a per-tier multicall box from an applet list `"<name>" @ "<tier_feature>" =>
-/// <uumain_path>`. Names are string literals (keyword-safe: `"true"`/`"false"` are real
-/// applets); the path is the applet's `uumain` — `applets::cat::uumain`, `uu_base64::uumain`,
-/// `applets::grep::uumain`, …
+/// Assemble a multicall box from an applet list `"<name>" @ "<tier_feature>" ["<set_feature>"]? =>
+/// <uumain_path>`. Names are string literals (keyword-safe: `"true"`/`"false"` are real applets);
+/// the path is the applet's `uumain` — `applets::cat::uumain`, `uu_base64::uumain`, …
+///
+/// TWO selection axes, both cfg features the box build sets:
+///   - tier  (`tier_isolated`…`tier_full`) — least privilege; each box enables exactly one.
+///   - set   (`set_full` = posix / everything, `set_min` = the minimal flavor's curated subset).
+/// Every applet is in `set_full`; an optional `["set_min"]` tag ALSO puts it in `set_min`. A box
+/// carries `<name>` iff its tier feature matches AND its set feature is one the applet belongs to —
+/// so the same crate + macro yields the posix boxes (`set_full`) and the minimal boxes (`set_min`).
 #[macro_export]
 macro_rules! mcbox {
-    ( $( $name:literal @ $tier:literal => $run:path ),+ $(,)? ) => {
+    ( $( $name:literal @ $tier:literal $( [ $set:literal ] )? => $run:path ),+ $(,)? ) => {
         // The box's tier = the HIGHEST enabled tier feature → the `mc_tier` section the kernel
         // reads at exec to narrow this box's capabilities (§4.3, §16.3).
         #[cfg(feature = "tier_full")]
@@ -49,7 +55,7 @@ macro_rules! mcbox {
         // concatenates them, so the roster — and the generated /bin symlinks — come from this
         // one list, never a hand-kept copy. Each entry lives in its own anonymous const block.
         $(
-            #[cfg(feature = $tier)]
+            #[cfg(all(feature = $tier, any(feature = "set_full" $(, feature = $set)?)))]
             const _: () = {
                 #[link_section = "mc_applets"]
                 #[used]
@@ -68,7 +74,8 @@ macro_rules! mcbox {
         )+
 
         fn main() {
-            const NAMES: &[&str] = &[$( #[cfg(feature = $tier)] $name, )+];
+            const NAMES: &[&str] =
+                &[$( #[cfg(all(feature = $tier, any(feature = "set_full" $(, feature = $set)?)))] $name, )+];
             let argv: ::std::vec::Vec<::std::ffi::OsString> = ::std::env::args_os().collect();
             let arg0 = argv.first().cloned().unwrap_or_default();
             let base = $crate::mcbox::basename(&arg0);
@@ -98,7 +105,8 @@ macro_rules! mcbox {
             // `args`; touch it so that case does not warn.
             let _ = &args;
             let code = match applet.as_str() {
-                $( #[cfg(feature = $tier)] $name => $run(args.into_iter()), )+
+                $( #[cfg(all(feature = $tier, any(feature = "set_full" $(, feature = $set)?)))]
+                   $name => $run(args.into_iter()), )+
                 other => {
                     ::std::eprintln!("{other}: applet not in this box");
                     127

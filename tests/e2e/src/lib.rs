@@ -25,6 +25,7 @@ use host::{CaptureSink, DirEntry, DiskPersist, KernelHost, KernelHostBuilder, Ma
 
 mod boot;
 mod coreutils;
+mod flavors;
 mod kernel;
 mod shell;
 mod system;
@@ -78,6 +79,14 @@ pub fn boot() -> Session {
 pub fn boot_posix() -> Session {
     let (b, stdout) = builder("_main/images/posix.tar");
     let host = b.build().expect("kernel booted under the host (posix image)");
+    Session { host, stdout }
+}
+
+/// Boot the `minimal` image (base + the curated minimal coreutils boxes). For flavor tests that
+/// assert the minimal SET boundary holds at runtime.
+pub fn boot_minimal() -> Session {
+    let (b, stdout) = builder("_main/images/minimal.tar");
+    let host = b.build().expect("kernel booted (minimal image)");
     Session { host, stdout }
 }
 
