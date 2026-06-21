@@ -1,0 +1,21 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+# programs/sh — /bin/sh, the guest shell. A no_std wasm32-freestanding binary that runs the
+# OS-agnostic //shcore engine over //sysroot's mc syscalls. It is NOT part of the mcbox multicall
+# (VISION §16.3): it spawns the coreutils boxes, drives pipelines/redirections/job control, and
+# boots as pid 1 (the login shell). Three modes — interactive REPL, `sh -c COMMAND`, and
+# `sh FILE ARGS`. Ported from memcontainers crates/programs/src/bin/sh.rs. Being sysroot-native it
+# imports ONLY `mc` (no WASI, no conversion); built under --platforms=//platforms:wasm32_freestanding.
+rust_binary(
+    name = "sh",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/main.rs",
+    edition = "2021",
+    tags = ["manual"],
+    deps = [
+        "//shcore",  # the OS-agnostic shell engine (parser/expand/exec over the ShellOs trait)
+        "//sysroot",  # mc syscall wrappers + the _start/declare_tier!/panic_handler runtime
+        "@crates//:talc",  # the no_std wasm linear-memory allocator (same as the kernel, A8)
+    ],
+    visibility = ["//visibility:public"],
+)
