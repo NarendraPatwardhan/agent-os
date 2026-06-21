@@ -54,7 +54,7 @@ rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 # triple lands when the host goes static for distribution (§8.1) — deferred (see
 # hosts/wasmtime/defs.bzl: it needs a libc constraint + a musl C toolchain, not just a
 # triple, and the "match a prebuilt libwasmtime.a" premise is moot under source builds).
-rust.toolchain(edition = "2021", extra_target_triples = ["wasm32-unknown-unknown"])
+rust.toolchain(edition = "2021", extra_target_triples = ["wasm32-unknown-unknown", "wasm32-wasip1"])
 use_repo(rust, "rust_toolchains")
 
 # crate_universe — external crates.io deps, PINNED. The kernel (no_std, wasm32) and the
@@ -75,7 +75,16 @@ crate.from_cargo(
     cargo_lockfile = "//hosts/wasmtime:Cargo.lock",
     manifests = ["//hosts/wasmtime:Cargo.toml"],
 )
-use_repo(crate, "crates", "host_crates")
+# The GUEST universe (no_std, wasm32-freestanding): the coreutils boxes + future guests
+# resolve their external crates (talc; regex for grep; …) from a THIRD lock, kept apart from
+# @crates (kernel) and @host_crates (host) for the same reason those two are split — a shared
+# Cargo resolution would feature-unify std on and break the no_std guests (§7.1, §16.3).
+crate.from_cargo(
+    name = "guest_crates",
+    cargo_lockfile = "//programs/coreutils:Cargo.lock",
+    manifests = ["//programs/coreutils:Cargo.toml"],
+)
+use_repo(crate, "crates", "host_crates", "guest_crates")
 
 # aspect_bazel_lib — write_source_files + diff_test for the contract drift gate (B2).
 bazel_dep(name = "aspect_bazel_lib", version = "2.22.5")

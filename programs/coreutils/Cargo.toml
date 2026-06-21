@@ -1,0 +1,23 @@
+# Manifest for crate_universe (@guest_crates) dependency resolution — the coreutils crate
+# BUILDS via Bazel (rust_binary → four per-tier mcbox.wasm), not cargo. It is a STD crate built
+# for wasm32-wasi (VISION §16.3): the uutils + external tools it links are std, and the
+# //wasi-adapter rewrites the box's wasi_snapshot_preview1 imports to mc_sys_* afterward. The
+# guests resolve from their OWN lock, separate from @crates (kernel) and @host_crates (host).
+[package]
+name = "coreutils"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# uutils — used AS-IS (base64 = uu_base64::uumain); uucore + clap are linked by every uu_*
+# anyway, so the hand-written tools REUSE them for flag-parsing + help (no parallel CLI).
+uucore = "0.9.0"
+uu_base64 = "0.9.0"
+clap = "4"
+# external-crate tools — ripgrep's engine for grep (in-memory search; no mmap on wasi).
+grep-searcher = { version = "0.1", default-features = false }
+grep-regex = "0.1"
+walkdir = "2"

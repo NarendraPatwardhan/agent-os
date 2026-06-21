@@ -16,6 +16,7 @@
 // redeclares the extern block or any constant — it consumes them.
 use crate::*;
 
+#[cfg(not(target_os = "wasi"))]
 use core::panic::PanicInfo;
 
 // Standard fds — a guest convention, not part of the marshaled syscall ABI.
@@ -997,6 +998,11 @@ pub fn exit(code: i32) -> ! {
     loop {}
 }
 
+// A standalone no_std guest (wasm32-unknown) needs this panic handler. A coreutils box (§16.3)
+// is std-on-wasi — std already provides `panic_impl` there — so suppress ours under wasi to
+// avoid a duplicate lang item. The box still reaches the mc wrappers below; only the runtime
+// item differs.
+#[cfg(not(target_os = "wasi"))]
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     eprint("guest panic\n");
