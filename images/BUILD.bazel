@@ -23,30 +23,54 @@ pkg_tar(
     visibility = ["//visibility:public"],
 )
 
-# /bin/sh — surfaced at wasm32-freestanding + opt (sysroot-native, pure-mc). The coreutils box +
-# its roster symlinks come from mc_box (//programs/coreutils): `mcbox-readonly_opt` is the box
-# surfaced + attested at wasm32-wasi, `mcbox-readonly_symlinks` is the /bin/<applet> → box tar
-# generated from the box's own mc_applets roster.
+# /bin/sh — surfaced at wasm32-freestanding + opt (sysroot-native, pure-mc). The coreutils boxes
+# come from mc_box (//programs/coreutils): each `mcbox-<tier>_opt` is the box surfaced + attested at
+# wasm32-wasi; their /bin symlinks are generated below from the boxes' mc_applets rosters.
 release_wasm(
     name = "sh_wasm",
     lib = "//programs/sh:sh",
     platform = "//platforms:wasm32_freestanding",
 )
 
-# posix — base + the guest shell (pid 1) + the read-only coreutils box, with the /bin/{cat,base64,
-# grep} symlinks GENERATED from the box's mc_applets roster (the shell spawns /bin/<name>; the box
-# dispatches on argv[0]). The bulk image adds the other tier boxes + their roster tars as the port
-# grows.
+# /bin/<applet> → its LEAST-PRIVILEGE box, generated from the four boxes' mc_applets rosters
+# (mc-roster, given the boxes in ASCENDING tier order → the first/lowest box wins each applet):
+# echo → mcbox-isolated, cat → mcbox-readonly, rm → mcbox-readwrite, find → mcbox-full. A single
+# source, so /bin can't drift from what the boxes dispatch (§16.3).
+genrule(
+    name = "coreutils_symlinks",
+    srcs = [
+        "//programs/coreutils:mcbox-isolated_opt",
+        "//programs/coreutils:mcbox-readonly_opt",
+        "//programs/coreutils:mcbox-readwrite_opt",
+        "//programs/coreutils:mcbox-full_opt",
+    ],
+    outs = ["coreutils_symlinks.tar"],
+    cmd = "$(execpath //tools/mc-roster) " +
+          "$(execpath //programs/coreutils:mcbox-isolated_opt) mcbox-isolated " +
+          "$(execpath //programs/coreutils:mcbox-readonly_opt) mcbox-readonly " +
+          "$(execpath //programs/coreutils:mcbox-readwrite_opt) mcbox-readwrite " +
+          "$(execpath //programs/coreutils:mcbox-full_opt) mcbox-full $@",
+    tools = ["//tools/mc-roster"],
+)
+
+# posix — base + the guest shell (pid 1) + ALL FOUR per-tier coreutils boxes, every command's /bin
+# symlink routed to its least-privilege box (coreutils_symlinks). The boxes are cumulative
+# (full ⊇ readwrite ⊇ readonly ⊇ isolated); the redundancy is the price of per-tool least privilege
+# — the same applet runs isolated from mcbox-isolated, full from mcbox-full, so each command is
+# staged from the lowest box that carries it.
 pkg_tar(
     name = "posix",
     files = {
         ":sh_wasm": "/bin/sh",
+        "//programs/coreutils:mcbox-isolated_opt": "/bin/mcbox-isolated",
         "//programs/coreutils:mcbox-readonly_opt": "/bin/mcbox-readonly",
+        "//programs/coreutils:mcbox-readwrite_opt": "/bin/mcbox-readwrite",
+        "//programs/coreutils:mcbox-full_opt": "/bin/mcbox-full",
     },
     owner = "0.0",
     deps = [
         ":base",
-        "//programs/coreutils:mcbox-readonly_symlinks",  # roster → /bin/<applet> → box symlinks
+        ":coreutils_symlinks",  # /bin/<applet> → least-privilege box
     ],
     visibility = ["//visibility:public"],
 )
