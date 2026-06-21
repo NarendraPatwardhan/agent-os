@@ -351,7 +351,7 @@ bazel_dep(name = "aspect_bazel_lib", version = "…")  # write_source_files, dif
 bazel_dep(name = "rules_pkg",  version = "…")        # pkg_tar for images
 bazel_dep(name = "platforms",  version = "1.1.0")
 
-# Rust: host (native musl) + guest/kernel (wasm32-unknown-unknown / freestanding) targets.
+# Rust: host (native) + guest/kernel (wasm32-unknown-unknown / freestanding) targets.
 #   crate_universe pins deps from TWO lockfiles, not one: @crates (kernel — wasmi/talc,
 #   no_std/wasm32, //kernel/rust:Cargo.lock) and @host_crates (host — wasmtime, std/native,
 #   //hosts/wasmtime:Cargo.lock). They MUST stay separate: a single shared Cargo resolution
@@ -364,13 +364,17 @@ zig.toolchain(zig_version = "0.16.0")
 # B3 — vendor less, patch in place (the C/C++ guests + wasmtime):
 http_archive(name = "luau",     urls = […], sha256 = "…", patches = ["//third_party/luau:patches/…"])
 http_archive(name = "sqlite",   urls = […], sha256 = "…", patches = ["//third_party/sqlite:patches/…"])
-http_archive(name = "wasmtime", urls = […], sha256 = "…")   # for the host
+# wasmtime is NOT http_archived (so there is no prebuilt libwasmtime.a): it is pinned in
+# @host_crates and built from SOURCE via crate_universe (§7.1). That is why host_musl static
+# linking buys little and is deferred (§8.1).
 ```
 
 `.bazelrc` carries the two settings proven in `bazel-experiments`:
 
 ```
-build --platforms=//platforms:host_musl
+# No global --platforms: host-side tools build for the autodetected native host; wasm
+# targets transition to //platforms:wasm32_freestanding, and the host binary transitions to
+# compilation_mode=opt. (host_musl static linking is deferred — §8.1.)
 build --sandbox_add_mount_pair=/tmp        # zig cache writable in the sandbox
 # (rules_zig 0.16 sets ZIG_GLOBAL_CACHE_DIR on the translate-c action — see the memory note)
 ```
@@ -524,7 +528,7 @@ agent-os/
 ### 8.1 Why this layout (the rules behind it)
 
 - **One boundary, one home.** `contracts/` is the only place the four ABIs are *defined*; every other reference is a generated `*.gen.*` file.
-- **Target is visible in the path + the `platform`.** `kernel/*` and `programs/` are `wasm32_freestanding`; `interpreter/` is `wasm32_unknown`; `hosts/wasmtime` and `server/` are `host_musl`. No "excluded from default-members" footnotes.
+- **Target is visible in the path + the `platform`.** `kernel/*` and `programs/` are `wasm32_freestanding`; `interpreter/` is `wasm32_unknown`; `hosts/wasmtime` and `server/` build for the native host, always opt (release wasmtime, so e2e isn't crawling) — `host_musl` static linking is deferred since wasmtime is built from source, not a prebuilt `libwasmtime.a` (§7.1, hosts/wasmtime/defs.bzl). No "excluded from default-members" footnotes.
 - **The two kernels sit side by side.** `kernel/rust` and `kernel/zig` are sibling packages producing the same artifact; the parity matrix (§9.6) tests both. The C-ABI `interpreter` exists only for `kernel/zig`; the Rust kernel takes `wasmi` as a plain crate dep — so the C seam is visible, isolated, and Phase-B-only.
 - **Third-party is patches-only, glue is Zig.** `third_party/<lib>/{patches,glue}` + a `BUILD.<lib>.bazel`; upstream source is an `http_archive`, the compat/glue shims are Zig compiled by `zig cc`/`c++`.
 - **Generated artifacts are outputs, not commits.** `base.tar`, the `*.gen.*` bindings, `spec/*` are build outputs; `write_source_files` keeps an editor-visible copy honest via `diff_test`.
