@@ -32,6 +32,14 @@ release_wasm(
     platform = "//platforms:wasm32_freestanding",
 )
 
+# /bin/invoke — the host-tool bridge (sysroot-native, pure-mc). A guest's gateway to host-registered
+# tools via mc_host_call; a /bin/<name> symlink to it would dispatch a registered tool on argv[0].
+release_wasm(
+    name = "invoke_wasm",
+    lib = "//programs/invoke:invoke",
+    platform = "//platforms:wasm32_freestanding",
+)
+
 # /bin/<applet> → its LEAST-PRIVILEGE box, generated from the four boxes' mc_applets rosters
 # (mc-roster, given the boxes in ASCENDING tier order → the first/lowest box wins each applet):
 # echo → mcbox-isolated, cat → mcbox-readonly, rm → mcbox-readwrite, find → mcbox-full. A single
@@ -62,6 +70,7 @@ pkg_tar(
     name = "posix",
     files = {
         ":sh_wasm": "/bin/sh",
+        ":invoke_wasm": "/bin/invoke",
         "//programs/coreutils:mcbox-isolated_opt": "/bin/mcbox-isolated",
         "//programs/coreutils:mcbox-readonly_opt": "/bin/mcbox-readonly",
         "//programs/coreutils:mcbox-readwrite_opt": "/bin/mcbox-readwrite",

@@ -1,0 +1,20 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+# programs/invoke — /bin/invoke, the host-tool bridge. A no_std wasm32-freestanding binary that
+# packs `name\0args` and fires `mc_sys_host_call`, streaming the host handler's result to stdout —
+# the guest's gateway to host-registered tools (`vm.tool()`). NOT part of the mcbox multicall: it is
+# its own binary (like /bin/sh), and a `/bin/<name>` symlink to it dispatches a registered tool on
+# argv[0]. Allocator-free (fixed buffers), so it needs only //sysroot. Imports ONLY `mc` (no WASI,
+# no conversion); built under --platforms=//platforms:wasm32_freestanding. Ported from
+# memcontainers' mc-tool.
+rust_binary(
+    name = "invoke",
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
+    edition = "2021",
+    tags = ["manual"],
+    deps = [
+        "//sysroot",  # mc syscall wrappers + the _start/declare_tier!/panic_handler runtime
+    ],
+    visibility = ["//visibility:public"],
+)

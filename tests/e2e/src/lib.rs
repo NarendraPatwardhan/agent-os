@@ -21,12 +21,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use host::{CaptureSink, DirEntry, KernelHost, KernelHostBuilder};
+use host::{CaptureSink, DirEntry, KernelHost, KernelHostBuilder, MapHostCall};
 
 mod boot;
 mod coreutils;
 mod kernel;
 mod shell;
+mod system;
 mod tty;
 
 /// Generous tick budget for one shell operation (a pipeline can yield across many ticks).
@@ -77,6 +78,14 @@ pub fn boot() -> Session {
 pub fn boot_posix() -> Session {
     let (b, stdout) = builder("_main/images/posix.tar");
     let host = b.build().expect("kernel booted under the host (posix image)");
+    Session { host, stdout }
+}
+
+/// Boot the `posix` image with a host-call tool registry installed (the `invoke` tests). The host
+/// refuses host calls by default (A9, `DeniedHostCall`); this opts in with a tool map.
+pub fn boot_posix_with_tools(tools: MapHostCall) -> Session {
+    let (b, stdout) = builder("_main/images/posix.tar");
+    let host = b.with_host_call(Box::new(tools)).build().expect("kernel booted with host tools");
     Session { host, stdout }
 }
 
