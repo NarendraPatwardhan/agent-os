@@ -28,6 +28,9 @@ mcbox! {
     // hand-written + external-crate slice
     "cat" @ "tier_readonly" => applets::cat::uumain,
     "grep" @ "tier_readonly" => applets::grep::uumain,
+    "diff" @ "tier_readonly" => applets::diff::uumain,
+    "file" @ "tier_readonly" => applets::file::uumain,
+    "jq" @ "tier_readonly" => applets::jq::uumain,
     // uutils, read-only family — hash/checksum, base-N, text format/join, compute, misc
     "base64" @ "tier_readonly" => uu_base64::uumain,
     "sha256sum" @ "tier_readonly" => uu_sha256sum::uumain,
@@ -57,6 +60,12 @@ mcbox! {
     "csplit" @ "tier_readwrite" => uu_csplit::uumain,
     // external-crate (vendored): uutils sed — its own clap CLI (uu_app) gives the detailed --help
     "sed" @ "tier_readwrite" => sed::sed::uumain,
+    // crates.io external tools (clap CLI over a library crate, like grep)
+    "awk" @ "tier_readwrite" => applets::awk::uumain,
+    "gzip" @ "tier_readwrite" => applets::gzip::uumain,
+    "tar" @ "tier_readwrite" => applets::tar::uumain,
+    "zip" @ "tier_readwrite" => applets::zip::uumain,
+    "unzip" @ "tier_readwrite" => applets::unzip::uumain,
 
     // ---- hand-written (ported from memcontainers' programs::*), by tier ----
     // isolated — pure compute / cwd-confined

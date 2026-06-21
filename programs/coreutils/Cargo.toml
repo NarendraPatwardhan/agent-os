@@ -58,3 +58,18 @@ once_cell = "1.21"
 phf = "0.13"
 regex = "1.10"
 tempfile = "3.10"
+# crates.io external tools (each a clap CLI over a library crate, like grep): awk/jq/gzip/diff/
+# file/tar/zip/unzip. Decoder-only where the encoder is unix-bound; default-features off keeps the
+# wasm lean.
+awk-rs = "0.1.0"
+jaq-core = "2"
+jaq-std = "2"
+jaq-json = { version = "1", features = ["serde_json"] }
+serde_json = "1"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+similar = "2"
+infer = "0.16"
+tar = { version = "0.4", default-features = false }
+bzip2-rs = "0.1"
+lzma-rs = "0.3"
+zip = { version = "0.6", default-features = false, features = ["deflate"] }

@@ -43,6 +43,20 @@ _BOX_DEPS = [
     "@guest_crates//:uu_pathchk",
     "@guest_crates//:uu_split",
     "@guest_crates//:uu_csplit",
+    # crates.io external tools (each a clap CLI over a library, like grep): awk/jq/gzip/diff/file/
+    # tar/zip/unzip. Unused ones GC out of a box whose tier doesn't enable them.
+    "@guest_crates//:awk-rs",
+    "@guest_crates//:jaq-core",
+    "@guest_crates//:jaq-std",
+    "@guest_crates//:jaq-json",
+    "@guest_crates//:serde_json",
+    "@guest_crates//:flate2",
+    "@guest_crates//:similar",
+    "@guest_crates//:infer",
+    "@guest_crates//:tar",
+    "@guest_crates//:bzip2-rs",
+    "@guest_crates//:lzma-rs",
+    "@guest_crates//:zip",
     # external-crate (vendored): uutils `sed`, fetched + WASI-patched by the //MODULE.bazel
     # http_archive, built lib-only by //third_party/sed. Routed at tier_readwrite (sed -i).
     "@uutils_sed//:sed",

@@ -40,6 +40,13 @@ pub mod cut;
 pub mod fold;
 #[cfg(feature = "tier_readonly")]
 pub mod grep;
+// external-crate read-only tools (clap CLI over a library crate)
+#[cfg(feature = "tier_readonly")]
+pub mod diff;
+#[cfg(feature = "tier_readonly")]
+pub mod file;
+#[cfg(feature = "tier_readonly")]
+pub mod jq;
 #[cfg(feature = "tier_readonly")]
 pub mod head;
 #[cfg(feature = "tier_readonly")]
@@ -74,7 +81,18 @@ pub mod wc;
 pub mod which;
 
 // read-write — mutate the filesystem (FS_WRITE: mkdir/unlink/rename/symlink/link/chmod/utimes/
-// open+O_CREATE; the splitters + sort -o / uniq -o write output files).
+// open+O_CREATE; the splitters + sort -o / uniq -o write output files). External-crate tools that
+// write (awk `print >`, gzip, tar, zip, unzip) live here too.
+#[cfg(feature = "tier_readwrite")]
+pub mod awk;
+#[cfg(feature = "tier_readwrite")]
+pub mod gzip;
+#[cfg(feature = "tier_readwrite")]
+pub mod tar;
+#[cfg(feature = "tier_readwrite")]
+pub mod unzip;
+#[cfg(feature = "tier_readwrite")]
+pub mod zip;
 #[cfg(feature = "tier_readwrite")]
 pub mod chmod;
 #[cfg(feature = "tier_readwrite")]

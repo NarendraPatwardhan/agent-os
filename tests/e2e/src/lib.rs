@@ -296,3 +296,39 @@ fn posix_sed_substitutes_via_vendored_uutils() {
         String::from_utf8_lossy(&r.stdout)
     );
 }
+
+/// WHY: `jq` is a crates.io external tool (the jaq engine), read-only. GUARANTEES: a JSON filter
+/// runs in the converted read-only box and prints the selected value.
+#[test]
+fn posix_jq_filters_json_via_jaq() {
+    let (b, _stdout) = builder_posix();
+    let mut host = b.build().expect("kernel booted with posix image");
+    host.write_file("/tmp/j.json", b"{\"name\":\"agent-os\",\"n\":42}").expect("write json");
+    let r = host.exec("jq .n /tmp/j.json", 200_000).expect("exec jq");
+    assert_eq!(r.exit_code, 0, "jq exit code");
+    assert_eq!(
+        String::from_utf8_lossy(&r.stdout).trim_end(),
+        "42",
+        "jq stdout: {:?}",
+        String::from_utf8_lossy(&r.stdout)
+    );
+}
+
+/// WHY: `gzip` is a crates.io external tool (flate2), read-WRITE — it writes/removes files. The
+/// state persists across exec calls (one VM), so a compress→decompress→cat round-trip proves the
+/// converted read-write box both writes and reads correctly.
+#[test]
+fn posix_gzip_round_trips_via_flate2() {
+    let (b, _stdout) = builder_posix();
+    let mut host = b.build().expect("kernel booted with posix image");
+    host.write_file("/tmp/gz", b"hello flate2 round-trip\n").expect("write");
+    assert_eq!(host.exec("gzip /tmp/gz", 200_000).expect("gzip").exit_code, 0, "gzip compress");
+    assert_eq!(host.exec("gzip -d /tmp/gz.gz", 200_000).expect("gunzip").exit_code, 0, "gzip -d");
+    let r = host.exec("cat /tmp/gz", 200_000).expect("cat");
+    assert_eq!(
+        String::from_utf8_lossy(&r.stdout),
+        "hello flate2 round-trip\n",
+        "gzip round-trip: {:?}",
+        String::from_utf8_lossy(&r.stdout)
+    );
+}
