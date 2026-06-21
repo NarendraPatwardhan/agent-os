@@ -1,0 +1,9 @@
+# //third_party/sed — the vendoring inputs for the external `sed` tool (VISION §16.3, the
+# external-crate kind). NOTHING is built here: the crate SOURCE is fetched from crates.io by the
+# `uutils_sed` http_archive in //MODULE.bazel, which applies patches/0001-wasi-compat.patch and
+# uses sed.BUILD.bazel as its build file. We only export those two inputs so the repo rule can
+# reference them as labels — the honest "fetch original + apply patch" path, never a vendored copy.
+exports_files([
+    "sed.BUILD.bazel",
+    "patches/0001-wasi-compat.patch",
+])

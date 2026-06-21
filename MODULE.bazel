@@ -97,9 +97,24 @@ bazel_dep(name = "aspect_bazel_lib", version = "2.22.5")
 bazel_dep(name = "rules_pkg", version = "1.0.1")  # pkg_tar — deterministic images, no manual staging
 # bazel_dep(name = "aspect_bazel_lib", version = "2.X")  # write_source_files + diff_test (B2)
 
-# Third-party guests — vendor LESS, patch in place (B3). Upstream source via
-# http_archive; only patch files live in third_party/<lib>/patches.
-# http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+# Third-party guests — vendor LESS, patch in place (B3). Upstream SOURCE via http_archive (never a
+# vendored copy in-tree); only the patch + BUILD file live under third_party/<lib>/.
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+# sed — uutils `sed` v0.1.1 fetched from crates.io, WASI-patched (terminal_size stub + an -i fix)
+# and built LIB-ONLY; the coreutils read-write box calls `sed::sed::uumain` (its own clap CLI).
+http_archive(
+    name = "uutils_sed",
+    urls = ["https://static.crates.io/crates/sed/sed-0.1.1.crate"],
+    sha256 = "f5a00cdbffacbccf02decb7577da5e298c091bdee492a2a1b87a3d8b0cc5b7c5",
+    strip_prefix = "sed-0.1.1",
+    type = "tar.gz",
+    patches = ["//third_party/sed:patches/0001-wasi-compat.patch"],
+    patch_tool = "patch",  # GNU patch; Bazel's native parser mis-handles the multi-file diff
+    patch_args = ["-p1"],
+    build_file = "//third_party/sed:sed.BUILD.bazel",
+)
+
 # http_archive(name = "sqlite",   urls = ["..."], sha256 = "...",
 #              patches = ["//third_party/sqlite:patches/0001-mc.patch"],
 #              build_file = "//third_party/sqlite:BUILD.sqlite.bazel")

@@ -48,3 +48,13 @@ uu_csplit = "0.9.0"
 grep-searcher = { version = "0.1", default-features = false }
 grep-regex = "0.1"
 walkdir = "2"
+# sed (uutils `sed`, fetched + patched by the //MODULE.bazel http_archive) links these from
+# @guest_crates; declared here (the @guest_crates manifest) so they're exposed as direct targets
+# for the //third_party/sed rust_library — the coreutils crate itself doesn't use them.
+fancy-regex = "0.17"
+memchr = "2.7"
+memmap2 = "0.9"
+once_cell = "1.21"
+phf = "0.13"
+regex = "1.10"
+tempfile = "3.10"

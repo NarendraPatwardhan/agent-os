@@ -276,3 +276,23 @@ fn posix_grep_selects_matching_lines() {
         String::from_utf8_lossy(&r.stdout)
     );
 }
+
+/// WHY: `sed` is the "external-crate (VENDORED + patched)" representative — the uutils `sed` crate
+/// FETCHED from crates.io and WASI-patched by the //MODULE.bazel http_archive (no copy in-tree),
+/// built lib-only and routed as `sed::sed::uumain` (its own clap CLI). GUARANTEES: `sed s/A/B/ FILE`
+/// performs the real stream-edit, proving a fetched+patched third-party crate converts to pure-mc
+/// and runs in the read-write box.
+#[test]
+fn posix_sed_substitutes_via_vendored_uutils() {
+    let (b, _stdout) = builder_posix();
+    let mut host = b.build().expect("kernel booted with posix image");
+    host.write_file("/tmp/sed-in", b"hello world\n").expect("write /tmp/sed-in");
+    let r = host.exec("sed s/world/agent-os/ /tmp/sed-in", 200_000).expect("exec sed");
+    assert_eq!(r.exit_code, 0, "sed exit code");
+    assert_eq!(
+        String::from_utf8_lossy(&r.stdout),
+        "hello agent-os\n",
+        "sed stdout: {:?}",
+        String::from_utf8_lossy(&r.stdout)
+    );
+}

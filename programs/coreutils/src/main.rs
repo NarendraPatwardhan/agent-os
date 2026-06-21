@@ -55,6 +55,8 @@ mcbox! {
     // uutils, read-write family — the splitters write output files
     "split" @ "tier_readwrite" => uu_split::uumain,
     "csplit" @ "tier_readwrite" => uu_csplit::uumain,
+    // external-crate (vendored): uutils sed — its own clap CLI (uu_app) gives the detailed --help
+    "sed" @ "tier_readwrite" => sed::sed::uumain,
 
     // ---- hand-written (ported from memcontainers' programs::*), by tier ----
     // isolated — pure compute / cwd-confined

@@ -43,6 +43,9 @@ _BOX_DEPS = [
     "@guest_crates//:uu_pathchk",
     "@guest_crates//:uu_split",
     "@guest_crates//:uu_csplit",
+    # external-crate (vendored): uutils `sed`, fetched + WASI-patched by the //MODULE.bazel
+    # http_archive, built lib-only by //third_party/sed. Routed at tier_readwrite (sed -i).
+    "@uutils_sed//:sed",
 ]
 
 # Disjoint tier features: each box carries ONLY its own tier's applets (a tier_readonly applet is

@@ -1,0 +1,27 @@
+# BUILD file for @uutils_sed — the crates.io `sed` v0.1.1 source, fetched + WASI-patched by the
+# http_archive in //MODULE.bazel. Built LIB-ONLY: the crate's build.rs + src/bin are the standalone
+# multicall (a phf `uutils_map`), which we don't use — the coreutils box calls `sed::sed::uumain`
+# (the entry's clap CLI is the crate's own `uu_app`, so the detailed --help comes for free). Deps
+# resolve from @guest_crates (the guests' std wasm32-wasi lock); the test-only / TTY crates the
+# upstream manifest lists (assert_fs, sysinfo, terminal_size, …) are simply not depended on here.
+
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+rust_library(
+    name = "sed",
+    srcs = glob(["src/lib.rs", "src/sed/*.rs"], exclude = ["src/sed/main.rs"]),
+    crate_name = "sed",
+    edition = "2024",
+    visibility = ["//visibility:public"],
+    deps = [
+        "@guest_crates//:clap",
+        "@guest_crates//:fancy-regex",
+        "@guest_crates//:memchr",
+        "@guest_crates//:memmap2",
+        "@guest_crates//:once_cell",
+        "@guest_crates//:phf",
+        "@guest_crates//:regex",
+        "@guest_crates//:tempfile",
+        "@guest_crates//:uucore",
+    ],
+)
