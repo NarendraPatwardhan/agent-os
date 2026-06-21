@@ -167,6 +167,21 @@ impl Session {
             .unwrap_or_else(|| panic!("no trailing prompt in response:\n{response:?}"));
         body_and_prompt[..prompt_at].to_string()
     }
+
+    /// Send `line` + Enter and drive a FIXED tick budget — NOT waiting for a prompt. For daemons
+    /// (e.g. `pkgfsd`) that serve forever and never return the shell to a prompt: capture what the
+    /// consumer they spawn emits within the budget. Returns the terminal slice since entry.
+    pub fn send_line_async(&mut self, line: &str, ticks: usize) -> String {
+        let before = self.len();
+        self.send_raw(line.as_bytes());
+        self.send_raw(b"\n");
+        for _ in 0..ticks {
+            if !self.host.tick().expect("tick") {
+                break;
+            }
+        }
+        self.since(before)
+    }
 }
 
 /// The names in a control-channel directory listing.

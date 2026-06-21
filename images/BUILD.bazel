@@ -40,6 +40,15 @@ release_wasm(
     platform = "//platforms:wasm32_freestanding",
 )
 
+# /bin/pkgfsd — the /pkg demand-load file server (sysroot-native, pure-mc). `pkgfsd <consumer>`
+# serve("/pkg")s, spawns the consumer in its namespace, and demand-loads tools from the catalog
+# (cache /var/persist, fetch /net) on read. The only CAP_NET+CAP_PERSIST holder (§7.1).
+release_wasm(
+    name = "pkgfsd_wasm",
+    lib = "//programs/pkgfsd:pkgfsd",
+    platform = "//platforms:wasm32_freestanding",
+)
+
 # /bin/<applet> → its LEAST-PRIVILEGE box, generated from the four boxes' mc_applets rosters
 # (mc-roster, given the boxes in ASCENDING tier order → the first/lowest box wins each applet):
 # echo → mcbox-isolated, cat → mcbox-readonly, rm → mcbox-readwrite, find → mcbox-full. A single
@@ -71,6 +80,7 @@ pkg_tar(
     files = {
         ":sh_wasm": "/bin/sh",
         ":invoke_wasm": "/bin/invoke",
+        ":pkgfsd_wasm": "/bin/pkgfsd",
         "//programs/coreutils:mcbox-isolated_opt": "/bin/mcbox-isolated",
         "//programs/coreutils:mcbox-readonly_opt": "/bin/mcbox-readonly",
         "//programs/coreutils:mcbox-readwrite_opt": "/bin/mcbox-readwrite",

@@ -1,0 +1,21 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# pkgcore — pure no_std logic (SHA-256 + the package catalog parser + path/URL helpers) shared by
+# //programs/pkgfsd. No syscalls, no deps; the guest binary supplies the heap (alloc). Under
+# `--test` the crate links std (the source is `#![cfg_attr(not(test), no_std)]`), so the unit tests
+# run natively. Ported from memcontainers' pkgcore.
+rust_library(
+    name = "pkgcore",
+    srcs = ["src/lib.rs"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+)
+
+# The pure logic, unit-tested natively: SHA-256 against known FIPS vectors, the catalog round-trip +
+# lookup, the cache/registry path joins.
+rust_test(
+    name = "test",
+    crate = ":pkgcore",
+    edition = "2021",
+    size = "small",
+)
