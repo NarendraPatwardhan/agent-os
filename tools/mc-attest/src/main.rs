@@ -1,0 +1,273 @@
+//! `mc-attest <box.wasm>` — §16.4 capability attestation, run at build (drift = build error).
+//!
+//! A box DECLARES its tier (the `mc_tier` custom section); this checks its ACTUAL `mc` imports fit
+//! that tier. For each imported syscall, `SYSCALL_CAPS` (projected from syscalls.kdl) gives the
+//! cap-FLOOR — the caps ANY of which authorizes it — and `tier_caps(tier)` (projected from
+//! constants.kdl) is the tier's cap bitmask; the syscall is permitted iff the tier holds at least
+//! one floor cap. Importing a syscall the tier cannot use AT ALL (spawn/bind/net/persist in a
+//! read-only box, …) fails the build — the §16.4 extension of §9.3 conformance from
+//! `imports ⊆ declared syscalls` to `imports ⊆ the tier's syscalls`, enforcing default-deny (A9)
+//! at authoring time. Both matrices come straight from the contract (B2): no hardcoded caps here,
+//! only the projected `SYSCALL_CAPS` + `tier_caps` + `CAP_*`/`TIER_*`.
+//!
+//! Exit 0 = attested. Exit 1 = a violation (listed). Exit 2 = a usage/parse error.
+
+use std::process::ExitCode;
+
+use constants_rust::{
+    tier_caps, CAP_AMBIENT, CAP_FS_READ, CAP_FS_WRITE, CAP_MOUNT, CAP_NET, CAP_PERSIST, CAP_SCRATCH,
+    CAP_SPAWN, TIER_FULL, TIER_ISOLATED, TIER_READ_ONLY, TIER_READ_WRITE,
+};
+use mc_rust::SYSCALL_CAPS;
+
+/// Minimal unsigned-LEB128 decode: `(value, bytes_consumed)`.
+fn uleb(b: &[u8], at: usize) -> (u64, usize) {
+    let (mut res, mut shift, mut n) = (0u64, 0u32, 0usize);
+    loop {
+        let byte = b[at + n];
+        n += 1;
+        res |= ((byte & 0x7f) as u64) << shift;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+    }
+    (res, n)
+}
+
+/// Every import's `(module, name)` (kinds other than func are walked-over for the offset).
+fn imports(wasm: &[u8]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut i = 8;
+    while i < wasm.len() {
+        let id = wasm[i];
+        i += 1;
+        let (size, adv) = uleb(wasm, i);
+        i += adv;
+        let end = i + size as usize;
+        if id == 2 {
+            let mut p = i;
+            let (count, a) = uleb(wasm, p);
+            p += a;
+            for _ in 0..count {
+                let (ml, a) = uleb(wasm, p);
+                p += a;
+                let module = String::from_utf8_lossy(&wasm[p..p + ml as usize]).into_owned();
+                p += ml as usize;
+                let (nl, a) = uleb(wasm, p);
+                p += a;
+                let name = String::from_utf8_lossy(&wasm[p..p + nl as usize]).into_owned();
+                p += nl as usize;
+                let kind = wasm[p];
+                p += 1;
+                match kind {
+                    0 => {
+                        let (_t, a) = uleb(wasm, p);
+                        p += a;
+                    }
+                    1 => {
+                        p += 1;
+                        let (_min, a) = uleb(wasm, p);
+                        p += a;
+                        if wasm[p - a - 1] & 1 != 0 {
+                            let (_max, a) = uleb(wasm, p);
+                            p += a;
+                        }
+                    }
+                    2 => {
+                        let flag = wasm[p];
+                        p += 1;
+                        let (_min, a) = uleb(wasm, p);
+                        p += a;
+                        if flag & 1 != 0 {
+                            let (_max, a) = uleb(wasm, p);
+                            p += a;
+                        }
+                    }
+                    3 => p += 2,
+                    other => panic!("unexpected import kind {other}"),
+                }
+                out.push((module, name));
+            }
+        }
+        i = end;
+    }
+    out
+}
+
+/// A custom section's payload by name (`mc_tier` here), or `None`.
+fn custom_section(wasm: &[u8], want: &str) -> Option<Vec<u8>> {
+    let mut i = 8;
+    while i < wasm.len() {
+        let id = wasm[i];
+        i += 1;
+        let (size, adv) = uleb(wasm, i);
+        i += adv;
+        let body = i;
+        let end = body + size as usize;
+        if id == 0 {
+            let (nlen, a) = uleb(wasm, body);
+            let nstart = body + a;
+            let nend = nstart + nlen as usize;
+            if &wasm[nstart..nend] == want.as_bytes() {
+                return Some(wasm[nend..end].to_vec());
+            }
+        }
+        i = end;
+    }
+    None
+}
+
+/// A floor cap NAME → its projected bit (values from the contract; only the name match lives
+/// here, and an unknown name is a hard error so a contract rename can't silently pass).
+fn cap_bit(name: &str) -> u8 {
+    match name {
+        "CAP_FS_READ" => CAP_FS_READ,
+        "CAP_FS_WRITE" => CAP_FS_WRITE,
+        "CAP_SPAWN" => CAP_SPAWN,
+        "CAP_NET" => CAP_NET,
+        "CAP_PERSIST" => CAP_PERSIST,
+        "CAP_AMBIENT" => CAP_AMBIENT,
+        "CAP_SCRATCH" => CAP_SCRATCH,
+        "CAP_MOUNT" => CAP_MOUNT,
+        other => panic!("mc-attest: unknown cap `{other}` in SYSCALL_CAPS"),
+    }
+}
+
+/// The declared tier string (`mc_tier` payload) → its projected tier id.
+fn tier_id(s: &str) -> Option<i32> {
+    Some(match s {
+        "isolated" => TIER_ISOLATED,
+        "read-only" => TIER_READ_ONLY,
+        "read-write" => TIER_READ_WRITE,
+        "full" => TIER_FULL,
+        _ => return None,
+    })
+}
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() != 2 {
+        eprintln!("usage: mc-attest <box.wasm>");
+        return ExitCode::from(2);
+    }
+    let wasm = match std::fs::read(&args[1]) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("mc-attest: reading {}: {e}", args[1]);
+            return ExitCode::from(2);
+        }
+    };
+    if wasm.len() < 8 || &wasm[..4] != b"\0asm" {
+        eprintln!("mc-attest: {} is not a wasm module", args[1]);
+        return ExitCode::from(2);
+    }
+
+    match attest(&wasm) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(msg) => {
+            eprintln!("mc-attest: {} — {msg}", args[1]);
+            eprintln!("  fix the applet's tier or its syscalls (§16.4 / A9 default-deny).");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// Attest a box's wasm bytes against its DECLARED tier (the `mc_tier` section): `Ok` if every `mc`
+/// import's cap-floor (`SYSCALL_CAPS`) intersects `tier_caps(tier)`, else `Err` naming the
+/// over-reach. Pure (no I/O), so the gate's logic is unit-tested below.
+fn attest(wasm: &[u8]) -> Result<(), String> {
+    let tier_str = match custom_section(wasm, "mc_tier") {
+        Some(b) => String::from_utf8_lossy(&b).into_owned(),
+        None => return Err("has no mc_tier section (undeclared tier)".to_string()),
+    };
+    let tier = tier_id(&tier_str).ok_or_else(|| format!("declares unknown tier `{tier_str}`"))?;
+    let caps = tier_caps(tier);
+
+    let mut violations: Vec<String> = Vec::new();
+    for (module, name) in imports(wasm) {
+        if module != "mc" {
+            continue;
+        }
+        let floor = match SYSCALL_CAPS.iter().find(|(s, _)| *s == name) {
+            Some((_, f)) => *f,
+            None => continue, // no cap floor → unconditionally permitted (read/write/args/exit/…)
+        };
+        if floor.is_empty() {
+            continue;
+        }
+        let floor_bits = floor.iter().fold(0u8, |acc, c| acc | cap_bit(c));
+        if caps & floor_bits == 0 {
+            violations.push(format!("{name} (needs one of {floor:?})"));
+        }
+    }
+
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("tier `{tier_str}` cannot use: {}", violations.join(", ")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A minimal wasm importing `mc.<syscall>` and carrying an `mc_tier` section — exactly the two
+    /// things `attest` reads (sizes stay < 128, so each LEB length is one byte).
+    fn craft(syscall: &str, tier: &str) -> Vec<u8> {
+        let mut w = vec![0x00, 0x61, 0x73, 0x6d, 1, 0, 0, 0]; // \0asm + version
+        w.extend_from_slice(&[1, 4, 1, 0x60, 0, 0]); // type section: one () -> ()
+        let mut imp = vec![1u8]; // import count
+        imp.push(2);
+        imp.extend_from_slice(b"mc");
+        imp.push(syscall.len() as u8);
+        imp.extend_from_slice(syscall.as_bytes());
+        imp.extend_from_slice(&[0x00, 0x00]); // func kind, type idx 0
+        w.push(2);
+        w.push(imp.len() as u8);
+        w.extend_from_slice(&imp);
+        let mut cust = vec![7u8]; // "mc_tier" name length
+        cust.extend_from_slice(b"mc_tier");
+        cust.extend_from_slice(tier.as_bytes());
+        w.push(0);
+        w.push(cust.len() as u8);
+        w.extend_from_slice(&cust);
+        w
+    }
+
+    #[test]
+    fn read_only_box_importing_spawn_is_rejected() {
+        // spawn needs CAP_SPAWN; read-only is FS_READ|AMBIENT|SCRATCH → the gate must bite.
+        assert!(attest(&craft("mc_sys_spawn", "read-only")).is_err());
+    }
+
+    #[test]
+    fn read_only_box_importing_net_is_rejected() {
+        assert!(attest(&craft("mc_sys_http_get", "read-only")).is_err());
+    }
+
+    #[test]
+    fn isolated_box_importing_ambient_is_rejected() {
+        // isolated = FS_READ only; random needs CAP_AMBIENT.
+        assert!(attest(&craft("mc_sys_random", "isolated")).is_err());
+    }
+
+    #[test]
+    fn read_only_box_importing_read_paths_is_accepted() {
+        assert!(attest(&craft("mc_sys_open", "read-only")).is_ok());
+        assert!(attest(&craft("mc_sys_readdir", "read-only")).is_ok());
+    }
+
+    #[test]
+    fn read_write_box_importing_unlink_is_accepted() {
+        // unlink needs FS_WRITE|SCRATCH; read-write has FS_WRITE.
+        assert!(attest(&craft("mc_sys_unlink", "read-write")).is_ok());
+    }
+
+    #[test]
+    fn uncapped_syscall_is_always_accepted() {
+        // write/read/args/exit have no cap floor → fine even at the most restrictive tier.
+        assert!(attest(&craft("mc_sys_write", "isolated")).is_ok());
+    }
+}

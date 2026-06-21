@@ -23,39 +23,30 @@ pkg_tar(
     visibility = ["//visibility:public"],
 )
 
-# Surface the guest programs at their target platforms + opt (reusing the kernel's wasm
-# transition): /bin/sh is wasm32-freestanding (sysroot-native, pure-mc); the coreutils box is
-# wasm32-wasi, converted to pure-mc by mc_box under the same transition.
+# /bin/sh — surfaced at wasm32-freestanding + opt (sysroot-native, pure-mc). The coreutils box +
+# its roster symlinks come from mc_box (//programs/coreutils): `mcbox-readonly_opt` is the box
+# surfaced + attested at wasm32-wasi, `mcbox-readonly_symlinks` is the /bin/<applet> → box tar
+# generated from the box's own mc_applets roster.
 release_wasm(
     name = "sh_wasm",
     lib = "//programs/sh:sh",
     platform = "//platforms:wasm32_freestanding",
 )
 
-release_wasm(
-    name = "mcbox_readonly_wasm",
-    lib = "//programs/coreutils:mcbox-readonly",
-    platform = "//platforms:wasm32_wasi",
-)
-
-# posix — base + the guest shell (pid 1) + the read-only coreutils box, with the roster's /bin
-# symlinks (cat/base64/grep → the box; argv[0]-basename dispatch runs the right applet). The
-# bulk image adds the other tier boxes + their symlinks as the port grows.
+# posix — base + the guest shell (pid 1) + the read-only coreutils box, with the /bin/{cat,base64,
+# grep} symlinks GENERATED from the box's mc_applets roster (the shell spawns /bin/<name>; the box
+# dispatches on argv[0]). The bulk image adds the other tier boxes + their roster tars as the port
+# grows.
 pkg_tar(
     name = "posix",
     files = {
         ":sh_wasm": "/bin/sh",
-        ":mcbox_readonly_wasm": "/bin/mcbox-readonly",
-    },
-    # cat/base64/grep are applets of the read-only box; the shell spawns /bin/<name>, and the
-    # box dispatches on argv[0]. (Generating these from the box's mc_applets roster — instead of
-    # this hand list — is the roster→symlink rule still to land.)
-    symlinks = {
-        "/bin/cat": "mcbox-readonly",
-        "/bin/base64": "mcbox-readonly",
-        "/bin/grep": "mcbox-readonly",
+        "//programs/coreutils:mcbox-readonly_opt": "/bin/mcbox-readonly",
     },
     owner = "0.0",
-    deps = [":base"],
+    deps = [
+        ":base",
+        "//programs/coreutils:mcbox-readonly_symlinks",  # roster → /bin/<applet> → box symlinks
+    ],
     visibility = ["//visibility:public"],
 )

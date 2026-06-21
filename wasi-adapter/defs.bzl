@@ -14,6 +14,7 @@ convert_wasi_tool,generate_trampoline}` + `conformance::func_imports_full`.
 """
 
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("//kernel/rust:defs.bzl", "release_wasm")
 
 # Trampoline+relink rounds before giving up. Matches memcontainers' xtask MAX_ROUNDS; a high cap
 # is cheap because post-convergence rounds are cached.
@@ -84,3 +85,28 @@ def mc_box(name, srcs, crate_root, crate_name, crate_features, deps, edition = "
         rname = name if last else "%s_r%d" % (name, k)
         _round(rname, objs, visibility if last else None)
         prev = rname
+
+    # §16.4 attestation: surface the converged box opt+wasm32-wasi, then FAIL THE BUILD if its mc
+    # imports exceed its declared tier. //... reaches `<name>.attest`, so a mis-tiered box (an
+    # applet importing a syscall its tier cannot use — spawn/net/mount in read-only, …) is a build
+    # error, not a runtime surprise (the §16.4 / A9 default-deny gate, drift = build error).
+    release_wasm(name = name + "_opt", lib = name, platform = "//platforms:wasm32_wasi", visibility = visibility)
+    native.genrule(
+        name = name + ".attest",
+        srcs = [name + "_opt"],
+        outs = [name + ".attested"],
+        tools = ["//tools/mc-attest"],
+        cmd = "$(execpath //tools/mc-attest) $(execpath :%s_opt) && touch $@" % name,
+    )
+
+    # The roster → /bin symlinks: read the converged box's mc_applets section and emit
+    # /bin/<applet> → <box> symlinks — the SINGLE source for the staged /bin (no hand list, no
+    # drift from what the box dispatches; §16.3). A flavor image layers `<name>_symlinks`.
+    native.genrule(
+        name = name + "_symlinks",
+        srcs = [name + "_opt"],
+        outs = [name + "_symlinks.tar"],
+        tools = ["//tools/mc-roster"],
+        cmd = "$(execpath //tools/mc-roster) $(execpath :%s_opt) %s $@" % (name, name),
+        visibility = visibility,
+    )
