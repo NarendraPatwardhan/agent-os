@@ -151,22 +151,26 @@ impl Tier {
         }
     }
 
-    /// The capability ceiling this tier permits. Ambient *observation* (`CAP_AMBIENT`:
-    /// clock + entropy) and private scratch (`CAP_SCRATCH`) are read-like / least-
-    /// privilege authorities granted from `ReadOnly` up — so `date`/`shuf` and spill-to-
-    /// `/scratch` work at those tiers — while `CAP_MOUNT` and spawn/net/persist stay
-    /// `Full`-only. `Isolated` is the sole fully deterministic tier: reads confined to
-    /// the cwd subtree, no ambient and no scratch — a writable scratch would re-introduce
-    /// nondeterminism (file mtimes are clock-derived), so it is withheld there.
+    /// The capability ceiling this tier permits — GENERATED from
+    /// `contracts/constants.kdl` (`tier-caps`, projected to `constants_rust::tier_caps`),
+    /// so this kernel and the Phase-B Zig kernel grant IDENTICAL ceilings (a parity
+    /// invariant, §16 / §15.4) with no hand-maintained duplicate. The rationale lives with
+    /// the data, in the contract: ambient observation (`CAP_AMBIENT`) and private scratch
+    /// (`CAP_SCRATCH`) are granted from `ReadOnly` up — so `date`/`shuf` and spill-to-
+    /// `/scratch` work there — while `CAP_MOUNT` and spawn/net/persist stay `Full`-only;
+    /// `Isolated` withholds ambient + scratch (the sole deterministic tier — a writable
+    /// scratch would re-introduce clock-derived mtimes).
     pub fn caps(self) -> Capabilities {
-        match self {
-            Tier::Full => Capabilities::all(),
-            Tier::ReadWrite => {
-                Capabilities::from_bits(CAP_FS_READ | CAP_FS_WRITE | CAP_AMBIENT | CAP_SCRATCH)
-            }
-            Tier::ReadOnly => Capabilities::from_bits(CAP_FS_READ | CAP_AMBIENT | CAP_SCRATCH),
-            Tier::Isolated => Capabilities::from_bits(CAP_FS_READ),
-        }
+        use constants_rust::{
+            TIER_FULL, TIER_ISOLATED, TIER_READ_ONLY, TIER_READ_WRITE, tier_caps,
+        };
+        let ordinal = match self {
+            Tier::Full => TIER_FULL,
+            Tier::ReadWrite => TIER_READ_WRITE,
+            Tier::ReadOnly => TIER_READ_ONLY,
+            Tier::Isolated => TIER_ISOLATED,
+        };
+        Capabilities::from_bits(tier_caps(ordinal))
     }
 
     /// Whether this tier confines filesystem access to the cwd subtree.

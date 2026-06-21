@@ -83,6 +83,24 @@ capability {
     CAP_MOUNT     128
 }
 
+// ---------------------------------------------------------------------------
+// Tier → capability ceiling. THE single source of the tier policy: the kernel's
+// `Tier::caps()` is GENERATED from this (no hand-maintained duplicate), so the Rust
+// and the Zig kernel derive identical ceilings — a parity invariant, not a
+// coincidence (§16, §15.4). A tier grants a BUNDLE of the bits above; a spawn
+// computes parent ∩ binary-tier ∩ requested-tier. `TIER_INHERIT` grants nothing of
+// its own (the child takes the parent's set). Path-contextual authority
+// (`CAP_PERSIST` on /var/persist, `CAP_SCRATCH` on /scratch) appears in a tier's
+// ceiling here, then is enforced per-mount on top — it is not a per-syscall gate.
+// ---------------------------------------------------------------------------
+tier-caps {
+    TIER_INHERIT    ""
+    TIER_FULL       "CAP_FS_READ CAP_FS_WRITE CAP_SPAWN CAP_NET CAP_PERSIST CAP_AMBIENT CAP_SCRATCH CAP_MOUNT"
+    TIER_READ_WRITE "CAP_FS_READ CAP_FS_WRITE CAP_AMBIENT CAP_SCRATCH"
+    TIER_READ_ONLY  "CAP_FS_READ CAP_AMBIENT CAP_SCRATCH"
+    TIER_ISOLATED   "CAP_FS_READ"
+}
+
 // Open flags for mc_sys_open (a bitmask).
 open-flags {
     O_READ   1

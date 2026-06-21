@@ -44,6 +44,18 @@ export const CAP_AMBIENT = 32;
 export const CAP_SCRATCH = 64;
 export const CAP_MOUNT = 128;
 
+// tier → capability ceiling — the kernel's Tier::caps() consumes this (single source, §16 / §15.4)
+export function tierCaps(tier: number): number {
+  switch (tier) {
+    case TIER_INHERIT: return 0;
+    case TIER_FULL: return CAP_FS_READ | CAP_FS_WRITE | CAP_SPAWN | CAP_NET | CAP_PERSIST | CAP_AMBIENT | CAP_SCRATCH | CAP_MOUNT;
+    case TIER_READ_WRITE: return CAP_FS_READ | CAP_FS_WRITE | CAP_AMBIENT | CAP_SCRATCH;
+    case TIER_READ_ONLY: return CAP_FS_READ | CAP_AMBIENT | CAP_SCRATCH;
+    case TIER_ISOLATED: return CAP_FS_READ;
+    default: return 0;
+  }
+}
+
 // open-flags
 export const O_READ = 1;
 export const O_WRITE = 2;

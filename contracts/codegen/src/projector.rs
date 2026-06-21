@@ -364,6 +364,53 @@ fn emit_constants(lang: &str, nodes: &[Node], contract: &str) -> String {
                     _ => {}
                 }
             }
+            // tier → capability ceiling: each child is `TIER_X "CAP_A CAP_B …"`; emit a
+            // resolver that ORs the named cap bits (the CAP_* consts emitted above), so the
+            // kernel's Tier::caps() derives from this one place and both kernels agree.
+            "tier-caps" => {
+                comment(&mut o, "tier → capability ceiling — the kernel's Tier::caps() consumes this (single source, §16 / §15.4)");
+                let arms: Vec<(String, String)> = n
+                    .children
+                    .iter()
+                    .map(|c| {
+                        let names = c.arg_str(0);
+                        let expr = if names.trim().is_empty() {
+                            "0".to_string()
+                        } else {
+                            names.split_whitespace().collect::<Vec<_>>().join(" | ")
+                        };
+                        (c.name.clone(), expr)
+                    })
+                    .collect();
+                match lang {
+                    "rust" => {
+                        // `tier` is matched against the TIER_* consts, which are emitted i32
+                        // (const_ty's default) — so the scrutinee is i32, not i64, else the
+                        // match arms type-mismatch (E0308).
+                        o.push_str("pub const fn tier_caps(tier: i32) -> u8 {\n    match tier {\n");
+                        for (name, expr) in &arms {
+                            o.push_str(&format!("        {name} => {expr},\n"));
+                        }
+                        o.push_str("        _ => 0,\n    }\n}\n");
+                    }
+                    "zig" => {
+                        // Match the Rust projection: TIER_* consts are i32, so is the param.
+                        o.push_str("pub fn tier_caps(tier: i32) u8 {\n    return switch (tier) {\n");
+                        for (name, expr) in &arms {
+                            o.push_str(&format!("        {name} => {expr},\n"));
+                        }
+                        o.push_str("        else => 0,\n    };\n}\n");
+                    }
+                    "ts" => {
+                        o.push_str("export function tierCaps(tier: number): number {\n  switch (tier) {\n");
+                        for (name, expr) in &arms {
+                            o.push_str(&format!("    case {name}: return {expr};\n"));
+                        }
+                        o.push_str("    default: return 0;\n  }\n}\n");
+                    }
+                    _ => {}
+                }
+            }
             // grouping nodes: errno, tier, open-flags, seek, waitpid, poll, signal, serve-op, mount-op
             g if !n.children.is_empty() => {
                 let ty = const_ty(g);

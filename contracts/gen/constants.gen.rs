@@ -45,6 +45,18 @@ pub const CAP_AMBIENT: u8 = 32;
 pub const CAP_SCRATCH: u8 = 64;
 pub const CAP_MOUNT: u8 = 128;
 
+// tier → capability ceiling — the kernel's Tier::caps() consumes this (single source, §16 / §15.4)
+pub const fn tier_caps(tier: i32) -> u8 {
+    match tier {
+        TIER_INHERIT => 0,
+        TIER_FULL => CAP_FS_READ | CAP_FS_WRITE | CAP_SPAWN | CAP_NET | CAP_PERSIST | CAP_AMBIENT | CAP_SCRATCH | CAP_MOUNT,
+        TIER_READ_WRITE => CAP_FS_READ | CAP_FS_WRITE | CAP_AMBIENT | CAP_SCRATCH,
+        TIER_READ_ONLY => CAP_FS_READ | CAP_AMBIENT | CAP_SCRATCH,
+        TIER_ISOLATED => CAP_FS_READ,
+        _ => 0,
+    }
+}
+
 // open-flags
 pub const O_READ: i32 = 1;
 pub const O_WRITE: i32 = 2;
