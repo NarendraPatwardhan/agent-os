@@ -1,334 +1,166 @@
-//! End-to-end suite (B6, §9.1): every test boots the REAL kernel.wasm inside the REAL
-//! wasmtime host and asserts on REAL bytes — no mocks. Booting is itself the first
-//! assertion: a kernel trap or a generated-bridge mismatch surfaces here as a host error,
-//! not a silent skip. The kernel + base image are `data` deps (B1, §7.2), so a test always
-//! runs the artifact its sources produce — the death of the memcontainers staleness class.
+//! End-to-end suite (B6, §9.1) — the testing constitution every test here obeys:
 //!
-//! Scope: this exercises what the system supports WITHOUT guest programs — boot (the `env`
-//! bridge), the structured control channel (the generated `ctl` exports), the base image
-//! (TarFs), and snapshot/restore (A8). Shell/coreutils/luau/sqlite tests arrive with their
-//! guests; we don't port tests we can't yet run (they'd be `command not found`).
+//! 1. **No mocks.** Each test boots the REAL `kernel.wasm` inside the REAL wasmtime host and
+//!    asserts on REAL bytes. Booting is itself the first assertion: a kernel trap or a
+//!    generated-bridge mismatch surfaces as a host error, never a silent skip.
+//! 2. **Load-bearing data edge (B1, §7.2).** The kernel + images are `data` deps, so a test always
+//!    runs the artifact its sources produce — the death of the memcontainers staleness class.
+//! 3. **Deterministic.** Fixed clock + seeded rng (`.deterministic()`), so bytes are reproducible.
+//! 4. **One invariant per test**, named `<subject>_<behavior>`, with a WHY/GUARANTEES note.
+//! 5. **One binary** (kernel compiled once, ~1.6 ms per boot), grouped into modules by layer.
 //!
-//! Performance: the whole suite lives in ONE binary on purpose. The host compiles
-//! kernel.wasm once per process (~0.9s) and every boot after is ~1.6ms (MODULE_CACHE), so
-//! the entire suite runs in ~1s. See defs.bzl.
+//! TWO output paths, tested where each is correct (NOT interchangeable):
+//!   - the **console / TTY** (`Session::run_for_output`, `send_raw`) — the interactive terminal,
+//!     which applies ONLCR (`\n`→`\r\n`, kernel `io.rs`) for the agent's xterm.js. CRLF here is
+//!     deliberate; the `tty`/`shell`/`coreutils` groups drive it and assert CRLF.
+//!   - the **control channel** (`Session::host.exec`/`read_file`/`snapshot`) — a structured pipe,
+//!     pure LF. The `kernel` group exercises it.
 //!
-//! Naming: `<subject>_<behavior>`, one invariant per test, each with a WHY/GUARANTEES note.
+//! Groups: [`boot`] (the nest is alive), [`tty`] (line discipline + ONLCR), [`shell`] (sh control
+//! flow), [`coreutils`] (the guest /bin behaviors), [`kernel`] (control channel + snapshot).
+
+use std::sync::{Arc, Mutex};
 
 use host::{CaptureSink, DirEntry, KernelHost, KernelHostBuilder};
-use std::sync::{Arc, Mutex};
+
+mod boot;
+mod coreutils;
+mod kernel;
+mod shell;
+mod tty;
+
+/// Generous tick budget for one shell operation (a pipeline can yield across many ticks).
+const MAX_TICKS_PER_OP: usize = 200_000;
 
 /// Locate a `data`-dep artifact in the test's runfiles by its workspace-relative path.
 fn runfile(path: &str) -> Vec<u8> {
     let r = runfiles::Runfiles::create().expect("runfiles unavailable");
-    let p = r
-        .rlocation(path)
-        .unwrap_or_else(|| panic!("{path} not found in runfiles"));
+    let p = r.rlocation(path).unwrap_or_else(|| panic!("{path} not found in runfiles"));
     std::fs::read(&p).unwrap_or_else(|e| panic!("reading {}: {e}", p.display()))
 }
 
-/// The kernel.wasm under test, as a runfiles path — supplied by `rust_e2e_test` via the
-/// MC_KERNEL_WASM env (the `$(rlocationpath)` of its `kernel` target). The suite is kernel-
-/// AGNOSTIC: it boots the Rust kernel by default and the Zig kernel under the B7 parity gate
-/// (§9.6) with no source edit, just a different `kernel=` on the target. A single hardcoded
-/// path would have pinned this suite to one kernel — the one thing a parity oracle must not be.
+/// The kernel.wasm under test, as a runfiles path — `rust_e2e_test` sets `MC_KERNEL_WASM` from the
+/// `kernel` target, so the suite is kernel-AGNOSTIC (Rust by default, Zig under the §9.6 gate).
 fn kernel_rlocation() -> String {
     std::env::var("MC_KERNEL_WASM")
         .expect("MC_KERNEL_WASM unset — rust_e2e_test sets it from the `kernel` target")
 }
 
-/// A builder wired to the real kernel + base image, deterministic clock+rng (§15.1), and a
-/// captured stdout. Returned (not built) so callers can either `.build()` a fresh boot or
-/// `.restore(snapshot)` a rehydrated VM from the same configuration.
-fn builder() -> (KernelHostBuilder, Arc<Mutex<Vec<u8>>>) {
+/// A booted VM under the real host: the kernel plus its captured terminal stdout. The console
+/// methods drive the interactive TTY (CRLF); `host` is the structured control channel (LF).
+pub struct Session {
+    pub host: KernelHost,
+    stdout: Arc<Mutex<Vec<u8>>>,
+}
+
+/// A host builder wired to a real image + deterministic clock/rng + a captured stdout. Internal —
+/// the public entry points are [`boot`]/[`boot_posix`]/[`restore`].
+fn builder(image: &str) -> (KernelHostBuilder, Arc<Mutex<Vec<u8>>>) {
     let (sink, stdout) = CaptureSink::new();
     let b = KernelHostBuilder::new(runfile(&kernel_rlocation()))
-        .with_base_image(Some(runfile("_main/images/base.tar")))
+        .with_base_image(Some(runfile(image)))
         .with_stdout(Box::new(sink))
         .deterministic();
     (b, stdout)
 }
 
-/// Boot the real kernel under the real host. The returned stdout buffer already holds the
-/// boot transcript, since `build()` drives ticks to the first prompt.
-fn boot() -> (KernelHost, Arc<Mutex<Vec<u8>>>) {
-    let (b, stdout) = builder();
-    (b.build().expect("kernel booted under the host"), stdout)
+/// Boot the base image (rootfs only: /etc/profile + the in-kernel rescue shell). For kernel /
+/// control-channel tests that need no guest programs.
+pub fn boot() -> Session {
+    let (b, stdout) = builder("_main/images/base.tar");
+    let host = b.build().expect("kernel booted under the host (base image)");
+    Session { host, stdout }
 }
 
-fn names(entries: &[DirEntry]) -> Vec<&str> {
-    entries.iter().map(|e| e.name.as_str()).collect()
+/// Boot the `posix` image (base + the guest /bin/sh + the coreutils boxes). For shell / coreutils /
+/// tty tests that run real guest programs through the interactive shell.
+pub fn boot_posix() -> Session {
+    let (b, stdout) = builder("_main/images/posix.tar");
+    let host = b.build().expect("kernel booted under the host (posix image)");
+    Session { host, stdout }
 }
 
-/// WHY: the load-bearing edge of the whole project (A3) is "the kernel runs ONLY as wasm,
-/// under the host." GUARANTEES: wasmtime instantiates kernel.wasm, the generated `env`
-/// bridge services its stdout/boot calls, the base image loads, the filesystems mount, and
-/// pid 1 reaches an interactive prompt — the entire nest (wasmtime → kernel → wasmi) is
-/// alive, not merely compiling.
-#[test]
-fn boot_reaches_login_prompt() {
-    let (host, stdout) = boot();
-    assert!(host.at_prompt(), "shell did not settle at a prompt");
-    let out = String::from_utf8_lossy(&stdout.lock().unwrap()).into_owned();
-    for marker in ["Booting", "Loading image", "Mounting /dev", "Sourcing /etc/profile"] {
-        assert!(out.contains(marker), "boot transcript missing {marker:?}; got:\n{out}");
+/// Rehydrate a fresh VM from a snapshot blob — a new host (new sinks + deterministic sources) whose
+/// kernel state IS the snapshot, not a boot. No image: the rootfs already lives in the snapshot.
+pub fn restore(snapshot: &[u8]) -> Session {
+    let (sink, stdout) = CaptureSink::new();
+    let host = KernelHostBuilder::new(runfile(&kernel_rlocation()))
+        .with_stdout(Box::new(sink))
+        .deterministic()
+        .restore(snapshot)
+        .expect("restore from snapshot");
+    Session { host, stdout }
+}
+
+impl Session {
+    /// The full terminal transcript so far (CRLF and all).
+    pub fn transcript(&self) -> String {
+        String::from_utf8_lossy(&self.stdout.lock().unwrap()).into_owned()
+    }
+
+    fn len(&self) -> usize {
+        self.stdout.lock().unwrap().len()
+    }
+
+    /// Mark the current transcript length, to capture a slice across several raw sends.
+    pub fn mark(&self) -> usize {
+        self.len()
+    }
+
+    /// The terminal slice from a [`mark`](Self::mark) to now (CRLF and control bytes intact).
+    pub fn since(&self, mark: usize) -> String {
+        String::from_utf8_lossy(&self.stdout.lock().unwrap()[mark..]).into_owned()
+    }
+
+    /// Send raw bytes to the terminal as if typed (no implicit newline). The caller drives ticks.
+    pub fn send_raw(&mut self, bytes: &[u8]) {
+        self.host.send_input(bytes).expect("send_input");
+    }
+
+    /// Pump ticks until stdout has grown since `baseline` and ends in the prompt `"$ "`, or until
+    /// the budget is exhausted (a panic with the transcript — a hang is a test failure, not a skip).
+    pub fn drive_until_prompt(&mut self, baseline: usize) {
+        for _ in 0..MAX_TICKS_PER_OP {
+            if !self.host.tick().expect("tick") {
+                return;
+            }
+            let buf = self.stdout.lock().unwrap();
+            if buf.len() > baseline && buf.ends_with(b"$ ") {
+                return;
+            }
+        }
+        panic!("timed out waiting for the shell prompt; transcript:\n{}", self.transcript());
+    }
+
+    /// Type `line` + Enter at the console and wait for the next prompt; return the raw terminal
+    /// slice emitted after entry (the echo + the output + the next prompt, CRLF).
+    pub fn send_line(&mut self, line: &str) -> String {
+        let before = self.len();
+        self.send_raw(line.as_bytes());
+        self.send_raw(b"\n");
+        self.drive_until_prompt(before);
+        String::from_utf8_lossy(&self.stdout.lock().unwrap()[before..]).into_owned()
+    }
+
+    /// Run `line` through the interactive shell and return JUST the command's output — the bytes
+    /// between the line-discipline echo (`{line}\r\n`) and the trailing prompt (`$ `). This is what
+    /// the agent's terminal actually shows as the response, CRLF intact.
+    pub fn run_for_output(&mut self, line: &str) -> String {
+        let response = self.send_line(line);
+        let echo = format!("{line}\r\n");
+        let after_echo = response
+            .find(&echo)
+            .map(|i| i + echo.len())
+            .unwrap_or_else(|| panic!("no typed-line echo {echo:?} in response:\n{response:?}"));
+        let body_and_prompt = &response[after_echo..];
+        let prompt_at = body_and_prompt
+            .rfind("$ ")
+            .unwrap_or_else(|| panic!("no trailing prompt in response:\n{response:?}"));
+        body_and_prompt[..prompt_at].to_string()
     }
 }
 
-/// WHY: the base image is a deterministic pkg_tar (§10) the kernel mounts as its lowest
-/// layer; the structured control channel (`mc_ctl_read`, generated in exports.rs) is how
-/// the host reads guest files out-of-band. GUARANTEES: the image's /etc/profile is present
-/// in the mounted TarFs AND the generated ctl `read` export round-trips its bytes to the
-/// host.
-#[test]
-fn base_image_profile_is_readable_over_control_channel() {
-    let (mut host, _stdout) = boot();
-    let profile = host.read_file("/etc/profile").expect("read /etc/profile");
-    let text = String::from_utf8_lossy(&profile);
-    assert!(
-        text.contains("export PATH=/bin:/usr/bin"),
-        "/etc/profile content unexpected: {text:?}"
-    );
-}
-
-/// WHY: a guest's writes land in the CoW/tmpfs overlay, and the control channel must both
-/// write and read them (the host halves of `mc_ctl_write` + `mc_ctl_read`). GUARANTEES: a
-/// write through the generated ctl bridge is durable within the VM and reads back
-/// byte-identical — the write/read seam is wired end to end.
-#[test]
-fn control_channel_write_then_read_roundtrips() {
-    let (mut host, _stdout) = boot();
-    host.write_file("/tmp/note", b"agent-os e2e").expect("write /tmp/note");
-    assert_eq!(host.read_file("/tmp/note").expect("read /tmp/note"), b"agent-os e2e");
-}
-
-/// WHY: directories, metadata, and listing are distinct ctl exports
-/// (`mc_ctl_mkdir`/`stat`/`readdir`). GUARANTEES: a created directory reports `is_dir`
-/// through `stat`, and a file written inside it shows up in `readdir` — the directory
-/// surface of the control channel agrees with the VFS.
-#[test]
-fn control_channel_mkdir_stat_and_readdir() {
-    let (mut host, _stdout) = boot();
-    host.mkdir("/tmp/work").expect("mkdir /tmp/work");
-    host.write_file("/tmp/work/a.txt", b"x").expect("write a.txt");
-
-    let st = host.stat("/tmp/work").expect("stat /tmp/work");
-    assert!(st.is_dir && !st.is_symlink, "stat of a dir: {st:?}");
-
-    let listing = host.readdir("/tmp/work").expect("readdir /tmp/work");
-    assert!(names(&listing).contains(&"a.txt"), "readdir missing a.txt: {listing:?}");
-}
-
-/// WHY: removal must actually remove (`mc_ctl_unlink`), and a read of a missing path must
-/// fail rather than return stale bytes. GUARANTEES: after `unlink`, the path is gone and
-/// the ctl `read` reports an error — deletions are real, and errno surfaces as a host error.
-#[test]
-fn control_channel_unlink_then_read_errors() {
-    let (mut host, _stdout) = boot();
-    host.write_file("/tmp/gone", b"temporary").expect("write /tmp/gone");
-    host.unlink("/tmp/gone").expect("unlink /tmp/gone");
-    assert!(host.read_file("/tmp/gone").is_err(), "read of an unlinked file should error");
-}
-
-/// WHY: symlinks carry their own metadata AND resolve POSIX-style — `stat` is lstat (the
-/// LINK itself: symlink kind, size = target-text length, nlink 1), while a `read` of a
-/// symlink path FOLLOWS the link to the target's bytes (like `open`). GUARANTEES: the
-/// generated `mc_ctl_symlink`/`stat`/`readdir` expose the link's metadata, and the ctl
-/// `read` path resolves through the link to its target content.
-#[test]
-fn control_channel_symlink_lstat_metadata_and_read_follows() {
-    let (mut host, _stdout) = boot();
-    host.write_file("/tmp/target", b"pointee").expect("write target");
-    host.symlink("/tmp/target", "/tmp/link").expect("symlink");
-
-    let st = host.stat("/tmp/link").expect("stat /tmp/link");
-    assert!(st.is_symlink && !st.is_dir, "lstat should report a symlink: {st:?}");
-    assert_eq!(st.size, "/tmp/target".len() as u64, "symlink size = target-text length");
-    assert_eq!(st.nlink, 1, "fresh symlink link count");
-
-    let entries = host.readdir("/tmp").expect("readdir /tmp");
-    assert!(
-        entries.iter().any(|e| e.name == "link" && e.is_symlink && !e.is_dir),
-        "readdir must expose symlink kind; got {entries:?}"
-    );
-
-    // A read of the link path follows it to the target (POSIX open semantics).
-    assert_eq!(host.read_file("/tmp/link").expect("read through link"), b"pointee");
-}
-
-/// WHY: the ctl read path negotiates buffer size — the kernel returns the FULL length so
-/// the host grows its buffer and retries when the data exceeds the initial control buffer.
-/// GUARANTEES: a payload far larger than the control buffer round-trips intact — the
-/// resize-and-retry handshake works, not just small reads.
-#[test]
-fn control_channel_large_file_roundtrips() {
-    let (mut host, _stdout) = boot();
-    let big = vec![b'Z'; 256 * 1024];
-    host.write_file("/tmp/big", &big).expect("write big");
-    assert_eq!(host.read_file("/tmp/big").expect("read big"), big);
-}
-
-/// WHY: A8 — the entire VM is a portable value: `snapshot` captures linear memory, and
-/// `restore` rehydrates a fresh VM from it. GUARANTEES: state written before a snapshot is
-/// present in a VM restored from it — the snapshot/restore round-trip preserves the
-/// filesystem, with no re-boot.
-#[test]
-fn snapshot_then_restore_preserves_a_written_file() {
-    let (mut host, _stdout) = boot();
-    host.write_file("/tmp/keep", b"survives a snapshot").expect("write /tmp/keep");
-    let snap = host.snapshot().expect("snapshot");
-
-    let (b, _stdout) = builder();
-    let mut restored = b.restore(&snap).expect("restore from snapshot");
-    assert_eq!(
-        restored.read_file("/tmp/keep").expect("read in restored VM"),
-        b"survives a snapshot"
-    );
-}
-
-/// WHY: A8 forking — restoring one snapshot twice must yield two INDEPENDENT VMs, not two
-/// views of one. GUARANTEES: divergent writes to the same path in each restored VM do not
-/// bleed across — the restore path gives each VM its own linear memory.
-#[test]
-fn restoring_a_snapshot_twice_forks_independent_vms() {
-    let (mut host, _stdout) = boot();
-    let snap = host.snapshot().expect("snapshot");
-
-    let mut a = builder().0.restore(&snap).expect("restore a");
-    let mut b = builder().0.restore(&snap).expect("restore b");
-    a.write_file("/tmp/fork", b"branch-a").expect("write a");
-    b.write_file("/tmp/fork", b"branch-b").expect("write b");
-
-    assert_eq!(a.read_file("/tmp/fork").expect("read a"), b"branch-a");
-    assert_eq!(b.read_file("/tmp/fork").expect("read b"), b"branch-b");
-}
-
-// ---------------------------------------------------------------------------
-// Coreutils: the full guest stack end to end. Each boots the `posix` image (base + the guest
-// /bin/sh + the read-only coreutils box, with /bin/{cat,base64,grep} symlinked to the box), then
-// runs a command through `mc_ctl_exec` — which spawns the guest `/bin/sh -c`, which spawns
-// `/bin/<cmd>`, the wasm32-wasi multicall box CONVERTED to pure-mc, dispatched on argv[0]. The
-// asserted bytes prove the whole pipeline — std uutils/ripgrep over the WASI→mc adapter, the
-// trampoline fixpoint, the per-tier box, the sysroot shell — actually executes on the kernel.
-// ---------------------------------------------------------------------------
-
-/// Same configuration as [`builder`] but with the `posix` image, for tests that run real guest
-/// programs through the shell.
-fn builder_posix() -> (KernelHostBuilder, Arc<Mutex<Vec<u8>>>) {
-    let (sink, stdout) = CaptureSink::new();
-    let b = KernelHostBuilder::new(runfile(&kernel_rlocation()))
-        .with_base_image(Some(runfile("_main/images/posix.tar")))
-        .with_stdout(Box::new(sink))
-        .deterministic();
-    (b, stdout)
-}
-
-/// WHY: `cat` is the "from programs" representative — hand-written, clap+facade over //sysroot
-/// (mc-direct). GUARANTEES: `cat FILE` through the shell spawns the box as `/bin/cat`, dispatches
-/// to the cat applet, and streams the file back byte-for-byte.
-#[test]
-fn posix_cat_streams_a_file_verbatim() {
-    let (b, _stdout) = builder_posix();
-    let mut host = b.build().expect("kernel booted with posix image");
-    host.write_file("/tmp/note", b"agent-os e2e\n").expect("write /tmp/note");
-    let r = host.exec("cat /tmp/note", 200_000).expect("exec cat");
-    assert_eq!(r.exit_code, 0, "cat exit code");
-    assert_eq!(
-        r.stdout,
-        b"agent-os e2e\n",
-        "cat stdout: {:?}",
-        String::from_utf8_lossy(&r.stdout)
-    );
-}
-
-/// WHY: `base64` is the "mcbox/uutils" representative — the REAL `uu_base64::uumain`, std + clap,
-/// run over the WASI→mc adapter. GUARANTEES: `base64 FILE` produces uutils' exact encoding,
-/// proving the converted box executes correctly.
-#[test]
-fn posix_base64_encodes_via_real_uutils() {
-    let (b, _stdout) = builder_posix();
-    let mut host = b.build().expect("kernel booted with posix image");
-    host.write_file("/tmp/in", b"hello").expect("write /tmp/in");
-    let r = host.exec("base64 /tmp/in", 200_000).expect("exec base64");
-    assert_eq!(r.exit_code, 0, "base64 exit code");
-    // base64("hello") == "aGVsbG8=" (uutils appends a newline).
-    assert_eq!(
-        String::from_utf8_lossy(&r.stdout).trim_end(),
-        "aGVsbG8=",
-        "base64 stdout: {:?}",
-        String::from_utf8_lossy(&r.stdout)
-    );
-}
-
-/// WHY: `grep` is the "external-crate" representative — ripgrep's engine (grep-searcher +
-/// grep-regex), std I/O over the adapter. GUARANTEES: `grep PAT FILE` selects exactly the
-/// matching lines, proving a third-party Rust crate stack runs in a converted box.
-#[test]
-fn posix_grep_selects_matching_lines() {
-    let (b, _stdout) = builder_posix();
-    let mut host = b.build().expect("kernel booted with posix image");
-    host.write_file("/tmp/lines", b"foo\nbar\nbaz\nqux\n").expect("write /tmp/lines");
-    let r = host.exec("grep ba /tmp/lines", 200_000).expect("exec grep");
-    assert_eq!(
-        String::from_utf8_lossy(&r.stdout),
-        "bar\nbaz\n",
-        "grep stdout: {:?}",
-        String::from_utf8_lossy(&r.stdout)
-    );
-}
-
-/// WHY: `sed` is the "external-crate (VENDORED + patched)" representative — the uutils `sed` crate
-/// FETCHED from crates.io and WASI-patched by the //MODULE.bazel http_archive (no copy in-tree),
-/// built lib-only and routed as `sed::sed::uumain` (its own clap CLI). GUARANTEES: `sed s/A/B/ FILE`
-/// performs the real stream-edit, proving a fetched+patched third-party crate converts to pure-mc
-/// and runs in the read-write box.
-#[test]
-fn posix_sed_substitutes_via_vendored_uutils() {
-    let (b, _stdout) = builder_posix();
-    let mut host = b.build().expect("kernel booted with posix image");
-    host.write_file("/tmp/sed-in", b"hello world\n").expect("write /tmp/sed-in");
-    let r = host.exec("sed s/world/agent-os/ /tmp/sed-in", 200_000).expect("exec sed");
-    assert_eq!(r.exit_code, 0, "sed exit code");
-    assert_eq!(
-        String::from_utf8_lossy(&r.stdout),
-        "hello agent-os\n",
-        "sed stdout: {:?}",
-        String::from_utf8_lossy(&r.stdout)
-    );
-}
-
-/// WHY: `jq` is a crates.io external tool (the jaq engine), read-only. GUARANTEES: a JSON filter
-/// runs in the converted read-only box and prints the selected value.
-#[test]
-fn posix_jq_filters_json_via_jaq() {
-    let (b, _stdout) = builder_posix();
-    let mut host = b.build().expect("kernel booted with posix image");
-    host.write_file("/tmp/j.json", b"{\"name\":\"agent-os\",\"n\":42}").expect("write json");
-    let r = host.exec("jq .n /tmp/j.json", 200_000).expect("exec jq");
-    assert_eq!(r.exit_code, 0, "jq exit code");
-    assert_eq!(
-        String::from_utf8_lossy(&r.stdout).trim_end(),
-        "42",
-        "jq stdout: {:?}",
-        String::from_utf8_lossy(&r.stdout)
-    );
-}
-
-/// WHY: `gzip` is a crates.io external tool (flate2), read-WRITE — it writes/removes files. The
-/// state persists across exec calls (one VM), so a compress→decompress→cat round-trip proves the
-/// converted read-write box both writes and reads correctly.
-#[test]
-fn posix_gzip_round_trips_via_flate2() {
-    let (b, _stdout) = builder_posix();
-    let mut host = b.build().expect("kernel booted with posix image");
-    host.write_file("/tmp/gz", b"hello flate2 round-trip\n").expect("write");
-    assert_eq!(host.exec("gzip /tmp/gz", 200_000).expect("gzip").exit_code, 0, "gzip compress");
-    assert_eq!(host.exec("gzip -d /tmp/gz.gz", 200_000).expect("gunzip").exit_code, 0, "gzip -d");
-    let r = host.exec("cat /tmp/gz", 200_000).expect("cat");
-    assert_eq!(
-        String::from_utf8_lossy(&r.stdout),
-        "hello flate2 round-trip\n",
-        "gzip round-trip: {:?}",
-        String::from_utf8_lossy(&r.stdout)
-    );
+/// The names in a control-channel directory listing.
+pub(crate) fn names(entries: &[DirEntry]) -> Vec<&str> {
+    entries.iter().map(|e| e.name.as_str()).collect()
 }
