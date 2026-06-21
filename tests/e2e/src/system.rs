@@ -2,9 +2,11 @@
 //! (the host-tool bridge over `mc_host_call`) and, as it lands, `pkgfsd` (the `/pkg` serve daemon).
 //! These exercise the host_call + serve machinery, not just a tool's output.
 
+use std::path::PathBuf;
+
 use host::MapHostCall;
 
-use crate::{boot_posix, boot_posix_with_tools};
+use crate::{boot_posix, boot_posix_with_persist, boot_posix_with_tools};
 
 /// WHY: `invoke` is the guest→host tool bridge — it packs `name\0args`, fires `mc_host_call`, and
 /// streams the host handler's result. GUARANTEES: with a tool registered on the host (MapHostCall),
@@ -48,4 +50,29 @@ fn pkgfsd_serves_the_catalog_over_pkg() {
         out.contains("alpha") && out.contains("beta"),
         "pkgfsd should serve the catalog at /pkg/bin; got {out:?}"
     );
+}
+
+/// WHY: the demand-load READ path (§7.1) — a tool's BYTES are fetched only on open; a cache hit is
+/// served from `/var/persist/pkg/<sha>` after a sha256 RE-verify (which defends a corrupted/
+/// truncated cache). GUARANTEES: given a catalog row and a matching cached blob, `pkgfsd cat
+/// /pkg/bin/<name>` serves the REAL bytes through the serve channel — the demand-load, sha-verified,
+/// end to end. (This is the cache-hit branch; the cold-start fetch over /net is netfs's layer and
+/// needs a registry, so it is exercised separately.)
+#[test]
+fn pkgfsd_serves_a_cached_package_on_read() {
+    let payload = b"demo package payload\n";
+    let sha = pkgcore::sha256_hex(payload); // the content-addressed digest, as the catalog records it
+    let dir = PathBuf::from(std::env::var("TEST_TMPDIR").expect("TEST_TMPDIR set by bazel")).join("pkgfsd-cache");
+    let mut s = boot_posix_with_persist(dir);
+
+    s.host.mkdir("/etc/pkg").ok();
+    let catalog = format!("demo\t{sha}\t{}\tdemo.wasm\n", payload.len());
+    s.host.write_file("/etc/pkg/catalog", catalog.as_bytes()).expect("write catalog");
+    s.host.mkdir("/var/persist/pkg").ok();
+    s.host.write_file(&format!("/var/persist/pkg/{sha}"), payload).expect("seed the cache");
+
+    // pkgfsd serves /pkg + spawns `cat /pkg/bin/demo`; cat reads the SERVED file — pkgfsd resolves
+    // it to the cache hit, re-verifies the sha, and streams the bytes back.
+    let out = s.send_line_async("pkgfsd cat /pkg/bin/demo", 50_000);
+    assert!(out.contains("demo package payload"), "pkgfsd should serve the cached package; got {out:?}");
 }

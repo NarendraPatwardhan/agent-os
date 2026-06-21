@@ -18,6 +18,7 @@ rust_e2e_test(
     edition = "2021",
     deps = [
         "//hosts/wasmtime:host",
+        "//pkgcore",  # sha256_hex — to build a consistent catalog + cache fixture for the pkgfsd read test
         "@rules_rust//rust/runfiles",
     ],
     # kernel defaults to //kernel/rust:kernel (the macro adds it as a data-dep and passes its

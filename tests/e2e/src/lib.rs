@@ -21,7 +21,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use host::{CaptureSink, DirEntry, KernelHost, KernelHostBuilder, MapHostCall};
+use host::{CaptureSink, DirEntry, DiskPersist, KernelHost, KernelHostBuilder, MapHostCall};
 
 mod boot;
 mod coreutils;
@@ -86,6 +86,16 @@ pub fn boot_posix() -> Session {
 pub fn boot_posix_with_tools(tools: MapHostCall) -> Session {
     let (b, stdout) = builder("_main/images/posix.tar");
     let host = b.with_host_call(Box::new(tools)).build().expect("kernel booted with host tools");
+    Session { host, stdout }
+}
+
+/// Boot the `posix` image with a disk-backed persist capability over `dir` (the `pkgfsd` cache
+/// test). The host denies persistence by default (A9, `DeniedPersist`); this opts in so writes to
+/// `/var/persist` round-trip through real disk.
+pub fn boot_posix_with_persist(dir: std::path::PathBuf) -> Session {
+    std::fs::create_dir_all(&dir).expect("create persist backing dir");
+    let (b, stdout) = builder("_main/images/posix.tar");
+    let host = b.with_persist(Box::new(DiskPersist::new(dir))).build().expect("kernel booted with persist");
     Session { host, stdout }
 }
 
