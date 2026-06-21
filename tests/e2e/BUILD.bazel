@@ -13,7 +13,7 @@ load(":defs.bzl", "rust_e2e_test")
 # (defs.bzl), so a debug wasmtime never makes the suite crawl.
 
 rust_e2e_test(
-    name = "e2e",
+    name = "suite",
     srcs = glob(["src/**/*.rs"]),
     edition = "2021",
     deps = [

@@ -7,7 +7,7 @@
 #
 #   alias(name = "kernel", actual = "//kernel/rust:kernel")  # //kernel:impl flips rust|zig (§5.2)
 #   alias(name = "server", actual = "//server:mc-server")
-#   alias(name = "e2e",    actual = "//tests/e2e:e2e")
+#   alias(name = "e2e",    actual = "//tests/e2e:suite")
 #   alias(name = "web",    actual = "//web:app")
 #
 # The kernel-implementation selector (Phase B): one flag flips every kernel-
