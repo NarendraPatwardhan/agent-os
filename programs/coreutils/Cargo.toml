@@ -12,11 +12,38 @@ edition = "2021"
 path = "src/lib.rs"
 
 [dependencies]
-# uutils — used AS-IS (base64 = uu_base64::uumain); uucore + clap are linked by every uu_*
-# anyway, so the hand-written tools REUSE them for flag-parsing + help (no parallel CLI).
+# uutils — used AS-IS (`<name>` routes to `uu_<name>::uumain` in the mcbox! list); uucore + clap
+# are linked by every uu_* anyway, so the hand-written tools REUSE them for flag-parsing + help
+# (no parallel CLI). Tiers are stamped by the mcbox! registration in src/main.rs.
 uucore = "0.9.0"
-uu_base64 = "0.9.0"
 clap = "4"
+uu_base64 = "0.9.0"
+# read-only uutils family (hash/checksum, base-N, text format/join, compute, misc).
+uu_sha256sum = "0.9.0"
+uu_sha1sum = "0.9.0"
+uu_sha512sum = "0.9.0"
+uu_md5sum = "0.9.0"
+uu_b2sum = "0.9.0"
+uu_cksum = "0.9.0"
+uu_sum = "0.9.0"
+uu_base32 = "0.9.0"
+uu_basenc = "0.9.0"
+uu_comm = "0.9.0"
+uu_join = "0.9.0"
+uu_paste = "0.9.0"
+uu_fmt = "0.9.0"
+uu_expand = "0.9.0"
+uu_unexpand = "0.9.0"
+uu_od = "0.9.0"
+uu_factor = "0.9.0"
+uu_numfmt = "0.9.0"
+uu_tsort = "0.9.0"
+uu_date = "0.9.0"
+uu_shuf = "0.9.0"
+uu_pathchk = "0.9.0"
+# read-write uutils (the splitters).
+uu_split = "0.9.0"
+uu_csplit = "0.9.0"
 # external-crate tools — ripgrep's engine for grep (in-memory search; no mmap on wasi).
 grep-searcher = { version = "0.1", default-features = false }
 grep-regex = "0.1"
