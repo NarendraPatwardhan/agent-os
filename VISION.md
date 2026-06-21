@@ -704,4 +704,44 @@ The bridge passes `(ptr, len)` and the host copies. For RAG corpora, model tenso
 
 ---
 
+## §16 — The guest userland: `sysroot`, a multicall `/bin`, and flavor layering
+
+> Settled by mapping memcontainers' as-built userland (`sysroot` + `programs` + `images/flavors`) against this document. The kernel boundary is frozen; these are the *userland* shapes — what `/bin` is, how a flavor is assembled, where a service lives — fixed now, before ~55 programs are ported against them. Each is a departure *from* memcontainers, justified by this document, not a copy of it.
+
+### 16.1 Flavors are products, layered by content
+
+A **flavor** is a content-addressed image (§7.3, §10) *and* a product surface. The hierarchy:
+
+| flavor | layers | for |
+|---|---|---|
+| **minimal** | `sh`, the integral builtins, `pkgfsd`, `agent`, `mc-tool` | building your own harness — complete control |
+| **posix** | minimal + coreutils | a shell for agents; common cases (e.g. RAG) |
+| **loom** | posix + `luau` + `luau-analyze` | programmability |
+| **paper** | loom + `kreuzenberg` + `typst` | the document domain |
+| **atlas** | loom + `sqlite` + `duckdb` | the data domain |
+
+Each flavor is the **base plus domain packs**, assembled by `pkg_tar`, never staged by hand — this is precisely the death of memcontainers' 2,384-line `xtask` and its build wounds (§7.3). The packs are **shared by content**: loom's `luau` layers are byte-identical inputs to paper and atlas, so Bazel builds and stores them once and both flavors reference the same hash.
+
+### 16.2 `sysroot`: generate the boundary, port the comfort
+
+The guest's `mc` import block is **generated** from `contracts/syscalls.kdl` — a guest `$emit` on the same `mc_syscall_table!` the kernel's dispatch derives from, so a guest can never import a syscall the kernel doesn't serve (drift = compile error, B2). On top sits a **ported, hand-written** safe-wrapper skin (`read`/`write_all`/`open`/`spawn`/… as `Result<T, errno>`), plus the `entry!`/`declare_tier!`/`declare_budget!` macros and the panic handler.
+
+We **deliberately do not generate the wrappers.** The generated externs already catch drift; the wrappers are a stable, frozen-ABI ergonomic layer, and generating them would demand rich per-argument metadata (out-pointer vs buffer vs path vs scalar) in the contract for no benefit the externs don't already buy. **Generate the boundary; port the comfort** — generating-for-its-own-sake is complexity the invariants don't ask for.
+
+### 16.3 `/bin` is a per-tier multicall, not 55 binaries
+
+memcontainers ships its Rust coreutils as **55 separate `.wasm`** (a ~19 MB layer) while *already* collapsing its WASI tools into per-tier multicalls (`mcbox-ro`/`mcbox-rw`: one binary, `argv[0]` dispatch, an `mc_applets` custom-section roster — "the uutils stack links once"). **agent-os applies the multicall to everything.** `/bin` is **four** tier-grouped boxes — `mcbox-isolated`/`-readonly`/`-readwrite`/`-full` — each carrying one `mc_tier` (§4.3) and its `mc_applets` roster; `/bin/cat`, `/bin/echo`, … are tar **symlinks** to their tier's box, dispatched on `argv[0]`.
+
+The win is threefold: the coreutils layer drops from ~19 MB to a few; 55 guest compiles become 4; and — the lever proven on the host's module cache — a session cranelift-compiles **≤4 distinct guest modules**, not dozens (B5-adjacent: this is a *boot-time* size/speed lever). The applet roster is single-source — the `mc_applets` section — so the `/bin` symlink set is **generated** from it, never hand-listed. The big domain tools (`luau`, `sqlite`, `typst`, `duckdb`, `kreuzenberg`) stay one-binary-each: they are individually large and are services (§16.5), not coreutils.
+
+### 16.4 Capability attestation at build (drift = build error)
+
+A program **declares** its tier (`declare_tier!` → `mc_tier`), but nothing checks that its *actual* syscalls fit. The `mc_program`/`mcbox` rules **attest** it: walk the binary's wasm `mc` imports against the tier's allowed syscalls (the capability × syscall matrix of §15.4) and **fail the build** if a `read-only` applet imports a write syscall. This extends conformance (§9.3) from *imports ⊆ declared syscalls* to *imports ⊆ the tier's syscalls* — capability drift caught at `bazel build`, an enforcement of the default-deny axiom (A9) at authoring time, not just at exec.
+
+### 16.5 Services are a per-flavor property, not a POSIX one
+
+The resident-service mechanism (§4.5) exists for the **domain tools that pay a cold-start tax** — `luau`, `kreuzenberg`/`typst`, `sqlite`/`duckdb` — not for `cat`. So service-capability is a **per-flavor** concern: the `mc_service` custom section plus an `/etc/mc-services.json` **carried by the domain pack** (loom's, paper's, atlas's), never by minimal or posix. One binary, two activation modes — the kernel enters the generated `svc_serve` path for resident mode and `_start` for one-shot — composed into a flavor by the same `pkg_tar` layering as the tool itself. `mc-services.json` is therefore not one global file but a per-flavor fragment, merged by the layer stack.
+
+---
+
 > **Closing.** memcontainers proved the design and the discipline; zmc proved a Zig kernel is viable and smaller. agent-os sequences the bet: put everything on a zero-staleness Bazel graph with language-neutral contracts, ship the kernel **Rust-first by porting** what already works, bring **Zig in immediately for the C/C++ shim lane**, and migrate the kernel to **Zig on a branch that must prove behavior parity** against the Rust one before it can win. The payoff is that "is it correct, and is it fresh?" is answered by `bazel test //...` — and "is the rewrite faithful?" is answered by a parity grid, not by hope. Keep this document honest: if the system changes, change the relevant § in the same commit.
