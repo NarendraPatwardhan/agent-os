@@ -442,10 +442,16 @@ struct Row {
     /// Optional `cfg="<feature>"` on the row — projected as a Rust `#[cfg(feature=…)]`
     /// the consumer's `$emit` applies to its generated item, so a build flavor's
     /// exports/handlers (e.g. the threads-only control exports) generate ONLY under that
-    /// feature while the contract still describes the complete ABI. This is the first of
-    /// the per-row metadata the contract carries; capability (§15.4) and tracepoint
-    /// (§15.3) annotations slot in beside it next, while the contract is still soft.
+    /// feature while the contract still describes the complete ABI. The first of the per-row
+    /// metadata the contract carries; the `cap` floor (§15.4) now sits beside it, and a
+    /// tracepoint (§15.3) annotation can slot in next.
     cfg: Option<String>,
+    /// Optional `cap="CAP_A CAP_B …"` on a syscall row — the capability FLOOR (§15.4): the
+    /// caps any ONE of which a caller's tier must hold to invoke it (a write op lists both
+    /// CAP_FS_WRITE and the /scratch-only CAP_SCRATCH). Projected (mc only) to the
+    /// `SYSCALL_CAPS` matrix the attestation (§16.4) and /sys/abi (§15.5) read; the kernel's
+    /// contextual refinements (open's O_WRITE, per-mount FS caps) sit on top.
+    cap: Option<String>,
 }
 
 fn collect_rows(nodes: &[Node], node_name: &str) -> Vec<Row> {
@@ -469,6 +475,7 @@ fn collect_rows(nodes: &[Node], node_name: &str) -> Vec<Row> {
                 ret: n.ret_type().unwrap_or_else(|| "i32".to_string()),
                 doc: n.doc(),
                 cfg: n.prop_str("cfg").map(String::from),
+                cap: n.prop_str("cap").map(String::from),
             }
         })
         .collect()
@@ -526,6 +533,24 @@ fn emit_table(lang: &str, contract: &str, rows: &[Row], macro_name: &str, names_
                 ));
             }
             o.push_str("    } };\n}\n");
+            // Capability matrix (mc only): the syscalls that declare a `cap` floor, as
+            // (symbol, &[cap-name]). Self-contained — a consumer resolves the names against
+            // constants_rust::CAP_* (the kernel cap-gate, the attestation) or renders them
+            // (/sys/abi). A syscall absent here requires no capability.
+            if rows.iter().any(|r| r.cap.is_some()) {
+                o.push_str("\npub const SYSCALL_CAPS: &[(&str, &[&str])] = &[\n");
+                for r in rows {
+                    if let Some(cap) = &r.cap {
+                        let names = cap
+                            .split_whitespace()
+                            .map(|c| format!("\"{c}\""))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        o.push_str(&format!("    (\"{}\", &[{}]),\n", r.name, names));
+                    }
+                }
+                o.push_str("];\n");
+            }
         }
         "zig" => {
             o.push_str("\npub const Arg = struct { name: []const u8, ty: []const u8 };\n");

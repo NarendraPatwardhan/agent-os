@@ -12,7 +12,7 @@
 // language — §6.3).
 //
 // Shape of a row:
-//   syscall "mc_sys_<name>" variant="<Variant>" group="<group>" { arg "<n>" type="<t>"; ... doc "..." }
+//   syscall "mc_sys_<name>" variant="<Variant>" group="<group>" [cap="CAP_…"] { arg "<n>" type="<t>"; ... doc "..." }
 //
 //   - the node name is the exact wasm import symbol (module "mc").
 //   - `variant` is the kernel's Pending enum variant.
@@ -22,8 +22,12 @@
 //     records it as `type` via a bit-preserving cast.
 //   - every syscall returns i32 (an errno), except where `ret` says otherwise.
 //
-// Capability annotations (§15.4 — project a capability×syscall matrix) are a
-// deliberate next pass; this file is kept to verified ABI facts only.
+// Capability floor (§15.4): optional `cap="CAP_A CAP_B …"` names the caps any ONE of which a
+// caller's tier must hold to invoke the syscall — a write op lists both CAP_FS_WRITE and the
+// /scratch-only CAP_SCRATCH, since either authorizes it; a syscall with no `cap` needs none.
+// Contextual refinements (open's O_WRITE → CAP_FS_WRITE, per-mount FS caps) stay in the
+// kernel. Projected to the SYSCALL_CAPS matrix the attestation (§16.4) and /sys/abi (§15.5)
+// read; the kernel's runtime enforcement is verified against it.
 
 // ── io / fs ────────────────────────────────────────────────────────────────
 syscall "mc_sys_write" variant="Write" group="io" {
@@ -34,7 +38,7 @@ syscall "mc_sys_read" variant="Read" group="io" {
     arg "fd" type="i32"; arg "ptr" type="u32"; arg "len" type="u32"; arg "ret_n" type="u32"
     doc "Read up to len bytes from fd into guest ptr; the count is written to ret_n."
 }
-syscall "mc_sys_open" variant="Open" group="fs" {
+syscall "mc_sys_open" variant="Open" group="fs" cap="CAP_FS_READ" {
     arg "path_ptr" type="u32"; arg "path_len" type="u32"; arg "flags" type="i32"; arg "ret_fd" type="u32"
     doc "Open path with O_* flags; the new fd is written to ret_fd."
 }
@@ -46,51 +50,51 @@ syscall "mc_sys_args" variant="Args" group="process" {
     arg "ptr" type="u32"; arg "len" type="u32"; arg "ret_len" type="u32"
     doc "Copy this task's NUL-separated argv into guest ptr; full length to ret_len."
 }
-syscall "mc_sys_stat" variant="Stat" group="fs" {
+syscall "mc_sys_stat" variant="Stat" group="fs" cap="CAP_FS_READ" {
     arg "path_ptr" type="u32"; arg "path_len" type="u32"; arg "ret_stat" type="u32"
     doc "Write a stat record for path (follows symlinks) to ret_stat."
 }
-syscall "mc_sys_readdir" variant="Readdir" group="fs" {
+syscall "mc_sys_readdir" variant="Readdir" group="fs" cap="CAP_FS_READ" {
     arg "path_ptr" type="u32"; arg "path_len" type="u32"; arg "buf" type="u32"; arg "buf_len" type="u32"; arg "ret_len" type="u32"
     doc "Write typed directory entries for path into buf; full length to ret_len."
 }
-syscall "mc_sys_mkdir" variant="Mkdir" group="fs" {
+syscall "mc_sys_mkdir" variant="Mkdir" group="fs" cap="CAP_FS_WRITE CAP_SCRATCH" {
     arg "path_ptr" type="u32"; arg "path_len" type="u32"
     doc "Create directory path."
 }
-syscall "mc_sys_unlink" variant="Unlink" group="fs" {
+syscall "mc_sys_unlink" variant="Unlink" group="fs" cap="CAP_FS_WRITE CAP_SCRATCH" {
     arg "path_ptr" type="u32"; arg "path_len" type="u32"
     doc "Remove the file (or empty directory) at path."
 }
-syscall "mc_sys_rename" variant="Rename" group="fs" {
+syscall "mc_sys_rename" variant="Rename" group="fs" cap="CAP_FS_WRITE CAP_SCRATCH" {
     arg "from_ptr" type="u32"; arg "from_len" type="u32"; arg "to_ptr" type="u32"; arg "to_len" type="u32"
     doc "Rename from → to (EXDEV across mounts)."
 }
 
 // ── symbolic & hard links ────────────────────────────────────────────────────
-syscall "mc_sys_symlink" variant="Symlink" group="fs" {
+syscall "mc_sys_symlink" variant="Symlink" group="fs" cap="CAP_FS_WRITE CAP_SCRATCH" {
     arg "target_ptr" type="u32"; arg "target_len" type="u32"; arg "link_ptr" type="u32"; arg "link_len" type="u32"
     doc "Create symlink `link` pointing at `target`."
 }
-syscall "mc_sys_link" variant="Link" group="fs" {
+syscall "mc_sys_link" variant="Link" group="fs" cap="CAP_FS_WRITE CAP_SCRATCH" {
     arg "old_ptr" type="u32"; arg "old_len" type="u32"; arg "new_ptr" type="u32"; arg "new_len" type="u32"
     doc "Create hard link `new` referring to the same inode as `old`."
 }
-syscall "mc_sys_readlink" variant="Readlink" group="fs" {
+syscall "mc_sys_readlink" variant="Readlink" group="fs" cap="CAP_FS_READ" {
     arg "path_ptr" type="u32"; arg "path_len" type="u32"; arg "buf" type="u32"; arg "buf_len" type="u32"; arg "ret_len" type="u32"
     doc "Write a symlink's target text into buf (no trailing NUL); full length to ret_len."
 }
-syscall "mc_sys_lstat" variant="Lstat" group="fs" {
+syscall "mc_sys_lstat" variant="Lstat" group="fs" cap="CAP_FS_READ" {
     arg "path_ptr" type="u32"; arg "path_len" type="u32"; arg "ret_stat" type="u32"
     doc "Like stat, but does NOT follow a trailing symlink."
 }
 
 // ── file-metadata mutation ───────────────────────────────────────────────────
-syscall "mc_sys_chmod" variant="Chmod" group="fs" {
+syscall "mc_sys_chmod" variant="Chmod" group="fs" cap="CAP_FS_WRITE CAP_SCRATCH" {
     arg "path_ptr" type="u32"; arg "path_len" type="u32"; arg "mode" type="u32"
     doc "Set path's permission bits (CAP_FS_WRITE)."
 }
-syscall "mc_sys_utimes" variant="Utimes" group="fs" {
+syscall "mc_sys_utimes" variant="Utimes" group="fs" cap="CAP_FS_WRITE CAP_SCRATCH" {
     arg "path_ptr" type="u32"; arg "path_len" type="u32"; arg "times_ptr" type="u32"
     doc "Set path's atime+mtime (ms since epoch); NULL times_ptr means now (CAP_FS_WRITE)."
 }
@@ -98,7 +102,7 @@ syscall "mc_sys_getcwd" variant="Getcwd" group="fs" {
     arg "buf" type="u32"; arg "buf_len" type="u32"; arg "ret_len" type="u32"
     doc "Write the current working directory into buf; full length to ret_len."
 }
-syscall "mc_sys_chdir" variant="Chdir" group="fs" {
+syscall "mc_sys_chdir" variant="Chdir" group="fs" cap="CAP_FS_READ" {
     arg "path_ptr" type="u32"; arg "path_len" type="u32"
     doc "Change the current working directory to path."
 }
@@ -116,17 +120,17 @@ syscall "mc_sys_poll" variant="Poll" group="io" {
 }
 
 // ── per-process namespace (Plan 9 bind/unmount, R3.2) ────────────────────────
-syscall "mc_sys_bind" variant="Bind" group="namespace" {
+syscall "mc_sys_bind" variant="Bind" group="namespace" cap="CAP_MOUNT" {
     arg "old_ptr" type="u32"; arg "old_len" type="u32"; arg "new_ptr" type="u32"; arg "new_len" type="u32"
     doc "Bind `old` onto `new` in this process's copy-on-write mount table."
 }
-syscall "mc_sys_unmount" variant="Unmount" group="namespace" {
+syscall "mc_sys_unmount" variant="Unmount" group="namespace" cap="CAP_MOUNT" {
     arg "path_ptr" type="u32"; arg "path_len" type="u32"
     doc "Remove the binding at path from this process's namespace."
 }
 
 // ── guest-served file servers (9P-ish mount-a-guest, R3.4) ───────────────────
-syscall "mc_sys_serve" variant="Serve" group="service" {
+syscall "mc_sys_serve" variant="Serve" group="service" cap="CAP_MOUNT" {
     arg "path_ptr" type="u32"; arg "path_len" type="u32"; arg "ret_fd" type="u32"
     doc "Register this guest as the file server for the subtree at path; server fd to ret_fd."
 }
@@ -166,7 +170,7 @@ syscall "mc_sys_getppid" variant="Getppid" group="process" {
     arg "ret" type="u32"
     doc "Write this task's parent pid to ret."
 }
-syscall "mc_sys_spawn" variant="Spawn" group="process" {
+syscall "mc_sys_spawn" variant="Spawn" group="process" cap="CAP_SPAWN" {
     arg "argv_ptr" type="u32"; arg "argv_len" type="u32"; arg "in_fd" type="i32"; arg "out_fd" type="i32"; arg "err_fd" type="i32"; arg "tier" type="i32"; arg "ret_pid" type="u32"
     doc "Spawn a child from NUL-separated argv with the given stdio fds and capability tier; pid to ret_pid."
 }
@@ -198,11 +202,11 @@ syscall "mc_sys_tcsetpgrp" variant="Tcsetpgrp" group="signal" {
 }
 
 // ── capability egress ────────────────────────────────────────────────────────
-syscall "mc_sys_http_get" variant="HttpGet" group="egress" {
+syscall "mc_sys_http_get" variant="HttpGet" group="egress" cap="CAP_NET" {
     arg "url_ptr" type="u32"; arg "url_len" type="u32"; arg "ret_fd" type="u32"
     doc "Start a GET for url (host terminates TLS); a readable result fd to ret_fd."
 }
-syscall "mc_sys_http_request" variant="HttpRequest" group="egress" {
+syscall "mc_sys_http_request" variant="HttpRequest" group="egress" cap="CAP_NET" {
     arg "req_ptr" type="u32"; arg "req_len" type="u32"; arg "ret_fd" type="u32"
     doc "Start an arbitrary HTTP request from the blob at req_ptr; readable result fd to ret_fd."
 }
@@ -210,29 +214,29 @@ syscall "mc_sys_http_status" variant="HttpStatus" group="egress" {
     arg "fd" type="i32"; arg "ret_status" type="u32"
     doc "Write the HTTP status code of request fd to ret_status (once headers arrive)."
 }
-syscall "mc_sys_ws_open" variant="WsOpen" group="egress" {
+syscall "mc_sys_ws_open" variant="WsOpen" group="egress" cap="CAP_NET" {
     arg "url_ptr" type="u32"; arg "url_len" type="u32"; arg "ret_fd" type="u32"
     doc "Open a WebSocket to url (host does the handshake + TLS); a duplex fd to ret_fd."
 }
-syscall "mc_sys_host_call" variant="HostCall" group="egress" {
+syscall "mc_sys_host_call" variant="HostCall" group="egress" cap="CAP_NET" {
     arg "req_ptr" type="u32"; arg "req_len" type="u32"; arg "ret_fd" type="u32"
     doc "Invoke a host-resident function (the mc-tool shim, host-backed mounts); readable result fd to ret_fd."
 }
 
 // ── misc ─────────────────────────────────────────────────────────────────────
-syscall "mc_sys_time_monotonic" variant="TimeMonotonic" group="misc" {
+syscall "mc_sys_time_monotonic" variant="TimeMonotonic" group="misc" cap="CAP_AMBIENT" {
     arg "ret" type="u32"
     doc "Write a monotonic timestamp (ms) to ret (CAP_AMBIENT)."
 }
-syscall "mc_sys_time_realtime" variant="TimeRealtime" group="misc" {
+syscall "mc_sys_time_realtime" variant="TimeRealtime" group="misc" cap="CAP_AMBIENT" {
     arg "ret" type="u32"
     doc "Write wall-clock ms since the Unix epoch to ret; can jump (NTP) (CAP_AMBIENT)."
 }
-syscall "mc_sys_sleep_ms" variant="SleepMs" group="misc" {
+syscall "mc_sys_sleep_ms" variant="SleepMs" group="misc" cap="CAP_AMBIENT" {
     arg "ms" type="i32"
     doc "Park this task for ms milliseconds."
 }
-syscall "mc_sys_random" variant="Random" group="misc" {
+syscall "mc_sys_random" variant="Random" group="misc" cap="CAP_AMBIENT" {
     arg "ptr" type="u32"; arg "len" type="u32"
     doc "Fill len bytes at ptr with entropy (CAP_AMBIENT)."
 }

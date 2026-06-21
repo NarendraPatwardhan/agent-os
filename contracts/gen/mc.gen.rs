@@ -115,3 +115,31 @@ macro_rules! mc_syscall_table {
         mc_sys_set_throw => SetThrow (code: i32) [i32];
     } };
 }
+
+pub const SYSCALL_CAPS: &[(&str, &[&str])] = &[
+    ("mc_sys_open", &["CAP_FS_READ"]),
+    ("mc_sys_stat", &["CAP_FS_READ"]),
+    ("mc_sys_readdir", &["CAP_FS_READ"]),
+    ("mc_sys_mkdir", &["CAP_FS_WRITE", "CAP_SCRATCH"]),
+    ("mc_sys_unlink", &["CAP_FS_WRITE", "CAP_SCRATCH"]),
+    ("mc_sys_rename", &["CAP_FS_WRITE", "CAP_SCRATCH"]),
+    ("mc_sys_symlink", &["CAP_FS_WRITE", "CAP_SCRATCH"]),
+    ("mc_sys_link", &["CAP_FS_WRITE", "CAP_SCRATCH"]),
+    ("mc_sys_readlink", &["CAP_FS_READ"]),
+    ("mc_sys_lstat", &["CAP_FS_READ"]),
+    ("mc_sys_chmod", &["CAP_FS_WRITE", "CAP_SCRATCH"]),
+    ("mc_sys_utimes", &["CAP_FS_WRITE", "CAP_SCRATCH"]),
+    ("mc_sys_chdir", &["CAP_FS_READ"]),
+    ("mc_sys_bind", &["CAP_MOUNT"]),
+    ("mc_sys_unmount", &["CAP_MOUNT"]),
+    ("mc_sys_serve", &["CAP_MOUNT"]),
+    ("mc_sys_spawn", &["CAP_SPAWN"]),
+    ("mc_sys_http_get", &["CAP_NET"]),
+    ("mc_sys_http_request", &["CAP_NET"]),
+    ("mc_sys_ws_open", &["CAP_NET"]),
+    ("mc_sys_host_call", &["CAP_NET"]),
+    ("mc_sys_time_monotonic", &["CAP_AMBIENT"]),
+    ("mc_sys_time_realtime", &["CAP_AMBIENT"]),
+    ("mc_sys_sleep_ms", &["CAP_AMBIENT"]),
+    ("mc_sys_random", &["CAP_AMBIENT"]),
+];
