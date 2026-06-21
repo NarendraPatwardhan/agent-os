@@ -45,13 +45,16 @@ _BOX_DEPS = [
     "@guest_crates//:uu_csplit",
 ]
 
-# Cumulative tier features: a box at tier T enables T and every lower tier, so a
-# #[cfg(feature = "tier_readonly")] applet lands in readonly/readwrite/full — never isolated.
+# Disjoint tier features: each box carries ONLY its own tier's applets (a tier_readonly applet is
+# in mcbox-readonly alone). The /bin routing spawns every command from its least-privilege box, so
+# the higher boxes never run the lower applets — putting them there would just duplicate the bulk
+# (ripgrep + the 22 uutils, ~7.7 MiB) the routing can't reach. Each box has exactly one tier
+# feature, which the mcbox! macro stamps as its mc_tier (its `not(higher)` guards still resolve).
 _TIERS = {
     "isolated": ["tier_isolated"],
-    "readonly": ["tier_isolated", "tier_readonly"],
-    "readwrite": ["tier_isolated", "tier_readonly", "tier_readwrite"],
-    "full": ["tier_isolated", "tier_readonly", "tier_readwrite", "tier_full"],
+    "readonly": ["tier_readonly"],
+    "readwrite": ["tier_readwrite"],
+    "full": ["tier_full"],
 }
 
 # Each box: build the crate for wasm32-wasi, link-inject the adapter, and trampoline-relink to a
