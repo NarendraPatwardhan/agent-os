@@ -1,4 +1,4 @@
-"""Always-release wasm kernel + a size budget gate.
+"""Always-release wasm kernel.
 
 The kernel is meaningless as a debug artifact — the multi-MB unoptimized build is never
 what ships, and we never want it. `release_wasm` pins the WHOLE kernel subgraph (wasmi,
@@ -7,8 +7,8 @@ transitions it onto the wasm32 platform, then surfaces the single optimized `.wa
 cdylib is additionally built symbol-stripped (`-Cstrip=symbols`, in BUILD), so the default
 `bazel build //kernel/rust:kernel` is the small, stripped artifact every time.
 
-`kernel_size_test` is the B5 budget gate: the shipped wasm must stay under a byte ceiling,
-so a size regression fails CI instead of silently bloating the agent's footprint.
+The B5 size-budget gate is now the reusable `//tools/size:defs.bzl` `size_limit` rule, so the
+kernel.wasm, the per-tier mcboxes, and the flavor layer tars all share one gate.
 """
 
 # Pin opt + the wasm platform for everything reachable from the kernel cdylib.
@@ -50,13 +50,3 @@ release_wasm = rule(
         ),
     },
 )
-
-def kernel_size_limit(name, wasm, max_bytes):
-    """A B5 budget gate: fail if `wasm` exceeds `max_bytes`."""
-    native.sh_test(
-        name = name,
-        size = "small",
-        srcs = ["//kernel/rust:size-limit.sh"],
-        args = ["$(rootpath %s)" % wasm, str(max_bytes)],
-        data = [wasm],
-    )

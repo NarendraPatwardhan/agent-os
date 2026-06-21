@@ -1,0 +1,6 @@
+# tools/size — a reusable B5 size-budget gate (the `size_limit` rule in defs.bzl). Any
+# shipped artifact — kernel.wasm, the per-tier mcbox binaries, the flavor layer tars — wires
+# its byte ceiling through one Starlark rule, so a regression fails CI instead of bloating
+# silently. Pure Bazel: the rule's only shell is the `wc -c` byte count (which only the
+# execution phase can do), wrapped in build_test. No target to declare here — consumers just
+# `load("//tools/size:defs.bzl", "size_limit")`.
