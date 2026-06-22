@@ -33,9 +33,9 @@ comptime {
 const kVersion = "luau (agent-os) — Luau 0.725";
 
 // Exit codes (§8.4): 0 ok · 1 runtime error · 2 syntax/usage error.
-const EXIT_OK: u8 = 0;
-const EXIT_RUNTIME: u8 = 1;
-const EXIT_USAGE: u8 = 2;
+const EXIT_OK: c_int = 0;
+const EXIT_RUNTIME: c_int = 1;
+const EXIT_USAGE: c_int = 2;
 
 fn newState() ?*c.lua_State {
     const L = c.luaL_newstate();
@@ -45,15 +45,13 @@ fn newState() ?*c.lua_State {
     return L;
 }
 
-// Raw wasi fd writes — std.posix.write / std.fs.File churned across 0.16; the wasi imports are
-// stable and the adapter rewrites fd_write to mc. (Luau's own `print` uses libc fwrite separately.)
-const Ciovec = extern struct { buf: [*]const u8, buf_len: usize };
-extern "wasi_snapshot_preview1" fn fd_write(fd: i32, iovs: [*]const Ciovec, iovs_len: usize, nwritten: *usize) u16;
+// Output via libc write() (std.posix.write / std.fs.File churned across 0.16). libc routes through
+// wasi-libc's __imported_wasi_* symbols, which the adapter rewrites to mc — a DIRECT wasi import
+// would bypass the adapter and stay a wasi import. (Luau's own `print` uses libc fwrite separately.)
+extern fn write(fd: c_int, buf: [*]const u8, len: usize) isize;
 
-fn writeFd(fd: i32, bytes: []const u8) void {
-    const iovs = [1]Ciovec{.{ .buf = bytes.ptr, .buf_len = bytes.len }};
-    var n: usize = 0;
-    _ = fd_write(fd, &iovs, 1, &n);
+fn writeFd(fd: c_int, bytes: []const u8) void {
+    _ = write(fd, bytes.ptr, bytes.len);
 }
 
 fn eprint(s: []const u8) void {
@@ -114,7 +112,7 @@ fn pushVarargs(L: ?*c.lua_State, operands: [][*:0]u8) c_int {
     return @intCast(operands.len);
 }
 
-fn runSource(L: ?*c.lua_State, chunkname: [*:0]const u8, src: [*]const u8, len: usize, operands: [][*:0]u8) u8 {
+fn runSource(L: ?*c.lua_State, chunkname: [*:0]const u8, src: [*]const u8, len: usize, operands: [][*:0]u8) c_int {
     if (loadChunk(L, chunkname, src, len) != 0) {
         reportError(L);
         return EXIT_USAGE;
@@ -125,22 +123,6 @@ fn runSource(L: ?*c.lua_State, chunkname: [*:0]const u8, src: [*]const u8, len: 
         return EXIT_RUNTIME;
     }
     return EXIT_OK;
-}
-
-// argv via the wasi args syscalls directly. std.os.argv was removed in 0.16, and std.process.Args
-// needs the Io-threaded global; reading the wasi imports is self-contained. The wasi-adapter
-// rewrites these to mc_sys_args.
-extern "wasi_snapshot_preview1" fn args_sizes_get(argc: *usize, buf_size: *usize) u16;
-extern "wasi_snapshot_preview1" fn args_get(argv: [*][*:0]u8, buf: [*]u8) u16;
-
-fn readArgs() ![][*:0]u8 {
-    var argc: usize = 0;
-    var buf_size: usize = 0;
-    _ = args_sizes_get(&argc, &buf_size);
-    const argv = try std.heap.c_allocator.alloc([*:0]u8, argc);
-    const buf = try std.heap.c_allocator.alloc(u8, buf_size);
-    _ = args_get(argv.ptr, buf.ptr);
-    return argv;
 }
 
 // File reading via libc (std.fs churned across 0.16). Caller owns the returned buffer.
@@ -161,8 +143,11 @@ fn readFile(path: [*:0]const u8) ?[]u8 {
     return buf[0..got];
 }
 
-pub fn main() u8 {
-    const argv = readArgs() catch return EXIT_RUNTIME;
+// wasi-libc's _start calls __main_argc_argv; its argv comes from wasi-libc's own __imported_wasi_
+// args_get (→ the adapter → mc), so our code needs no direct wasi args import. (std.os.argv was
+// removed in 0.16 and std.process.Args needs the Io-threaded global.)
+export fn __main_argc_argv(argc: c_int, c_argv: [*][*:0]u8) c_int {
+    const argv = c_argv[0..@intCast(argc)];
 
     if (argv.len >= 2 and std.mem.eql(u8, std.mem.span(argv[1]), "--version")) {
         writeFd(1, kVersion ++ "\n");

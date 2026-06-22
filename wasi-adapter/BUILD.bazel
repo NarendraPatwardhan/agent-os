@@ -1,4 +1,4 @@
-load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_static_library")
 load("//sysroot:defs.bzl", "wasm32_build_test")
 
 # wasi-adapter — a guest-side WASI preview1 shim implemented over `mc_sys_*` (VISION §13.4/§16.3),
@@ -35,6 +35,28 @@ genrule(
     cmd = "RL=$$(realpath $(execpath :wasi_adapter)); D=$$(mktemp -d); (cd $$D && ar x $$RL); cp $$D/*.o $@",
     tags = ["manual"],
     visibility = ["//visibility:public"],
+)
+
+# A SELF-CONTAINED staticlib of the adapter (crate-type=staticlib): rustc bundles the core funcs it
+# references (slice_index_fail, unwrap_failed, …) alongside its #[panic_handler], with NO liballoc
+# (the adapter is no_std + dependency-free). The rust mc_box link-injects the bare OBJECT (its Rust
+# box supplies core/alloc); the NON-Rust domain tools (luau/sqlite/typst) have no Rust runtime, so
+# they link THIS instead — luau's wasi imports pull the adapter member, which self-resolves.
+rust_static_library(
+    name = "wasi_adapter_staticlib",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "wasi",
+    # `standalone` turns on the adapter's own #[panic_handler] — required for a final staticlib with
+    # no surrounding Rust runtime (the no-Rust domain tools).
+    crate_features = ["standalone"],
+    edition = "2021",
+    rustc_flags = ["-Ccodegen-units=1"],
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//contracts:constants_rust",
+        "//contracts:mc_rust",
+    ],
 )
 
 # Assert the adapter compiles for wasm32 (this is the standalone compile gate, mirroring the
