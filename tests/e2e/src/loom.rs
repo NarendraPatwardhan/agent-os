@@ -123,7 +123,7 @@ fn luau_check_passes_clean() {
             b"--!strict\nlocal function add(a: number, b: number): number\n    return a + b\nend\nprint(add(2, 3))\n",
         )
         .expect("seed /demo/typed_ok.luau");
-    let out = s.run_for_output("luau-analyze /demo/typed_ok.luau");
+    let out = s.run_for_output("luau --check /demo/typed_ok.luau");
     assert!(!out.to_lowercase().contains("error"), "expected no diagnostics:\n{out}");
 }
 
@@ -137,7 +137,7 @@ fn luau_check_reports_type_error() {
             b"--!strict\nlocal x: number = \"not a number\"\nprint(x)\n",
         )
         .expect("seed /demo/typed_bad.luau");
-    let out = s.run_for_output("luau-analyze /demo/typed_bad.luau");
+    let out = s.run_for_output("luau --check /demo/typed_bad.luau");
     assert!(out.contains("/demo/typed_bad.luau:2:"), "expected a file:line:col diagnostic at line 2:\n{out}");
     assert!(out.contains("'number'") && out.contains("'string'"), "expected the number-vs-string error:\n{out}");
 }

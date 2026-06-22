@@ -5,6 +5,7 @@
 //! lua_* convenience MACROS are not exposed through translate-c. See third_party/luau/PLAN.md.
 
 const std = @import("std");
+const mc = @import("mc.zig"); // mc_sys_spawn / waitpid — `luau --check` runs /bin/luau-analyze
 const c = @cImport({
     @cInclude("lua.h");
     @cInclude("lualib.h");
@@ -162,6 +163,35 @@ extern fn setvbuf(stream: ?*anyopaque, buf: ?[*]u8, mode: c_int, size: usize) c_
 // wasi-libc's _start calls __main_argc_argv; its argv comes from wasi-libc's own __imported_wasi_
 // args_get (→ the adapter → mc), so our code needs no direct wasi args import. (std.os.argv was
 // removed in 0.16 and std.process.Args needs the Io-threaded global.)
+// `luau --check FILE…` runs the type checker — it spawns /bin/luau-analyze with the operands and
+// forwards its exit (the engine is a separate binary; this is the ergonomic front door, like tsc).
+fn runAnalyze(operands: [][*:0]u8) c_int {
+    var blob: [8192]u8 = undefined;
+    var off: usize = 0;
+    const prog = "luau-analyze";
+    @memcpy(blob[0..prog.len], prog);
+    off = prog.len;
+    blob[off] = 0;
+    off += 1;
+    for (operands) |op| {
+        const s = std.mem.span(op);
+        if (off + s.len + 1 > blob.len) return EXIT_USAGE;
+        @memcpy(blob[off .. off + s.len], s);
+        off += s.len;
+        blob[off] = 0;
+        off += 1;
+    }
+    var pid: u32 = 0;
+    if (mc.mc_sys_spawn(mc.addr(&blob), @intCast(off), 0, 1, 2, 0, mc.addr(&pid)) != 0) {
+        eprint("luau: cannot run luau-analyze\n");
+        return EXIT_RUNTIME;
+    }
+    var status: u32 = 0;
+    var got: u32 = 0;
+    _ = mc.mc_sys_waitpid(@intCast(pid), 0, mc.addr(&status), mc.addr(&got));
+    return @intCast(@as(i32, @bitCast(status)) & 0xff);
+}
+
 export fn __main_argc_argv(argc: c_int, c_argv: [*][*:0]u8) c_int {
     const argv = c_argv[0..@intCast(argc)];
     _ = setvbuf(stdout, null, 1, 4096); // _IOLBF
@@ -169,6 +199,9 @@ export fn __main_argc_argv(argc: c_int, c_argv: [*][*:0]u8) c_int {
     if (argv.len >= 2 and std.mem.eql(u8, std.mem.span(argv[1]), "--version")) {
         writeFd(1, kVersion ++ "\n");
         return EXIT_OK;
+    }
+    if (argv.len >= 2 and std.mem.eql(u8, std.mem.span(argv[1]), "--check")) {
+        return runAnalyze(argv[2..]);
     }
 
     const L = newState();

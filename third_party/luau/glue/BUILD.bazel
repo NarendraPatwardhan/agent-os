@@ -28,12 +28,21 @@ build_test(
 zig_library(
     name = "glue",
     main = "glue.zig",
+    # In lockstep with :luau_obj's srcs (minus entry.zig, the binary's main) so this gate compiles
+    # exactly what the binary compiles.
     srcs = [
+        "deflate.zig",
+        "encoding.zig",
+        "hash.zig",
+        "json.zig",
+        "lua.zig",
         "mc.zig",
         "stdlib.zig",
         "sys.zig",
         "trap.zig",
+        "wasi_shim.zig",
     ],
+    extra_srcs = glob(["lib/*.luau"]),  # @embedFile'd by stdlib.zig
     deps = ["@luau//:interp_headers"],
     visibility = ["//visibility:public"],
 )
