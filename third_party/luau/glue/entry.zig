@@ -207,7 +207,7 @@ export fn __main_argc_argv(argc: c_int, c_argv: [*][*:0]u8) c_int {
         const code = std.mem.span(argv[2]);
         setArgTable(L, "-e", argv[3..]);
         return runSource(L, "=(command line)", code.ptr, code.len, argv[3..]);
-    } else if (argv.len >= 2) {
+    } else if (argv.len >= 2 and !std.mem.eql(u8, std.mem.span(argv[1]), "-")) {
         // Script file: read it, skip a shebang, run it.
         const src = readFile(argv[1]) orelse {
             eprint("luau: cannot open ");
@@ -223,6 +223,28 @@ export fn __main_argc_argv(argc: c_int, c_argv: [*][*:0]u8) c_int {
         return runSource(L, "=script", src.ptr + off, src.len - off, argv[2..]);
     }
 
-    eprint("luau: REPL not yet wired in this build\n");
-    return EXIT_OK;
+    // Bare `luau` or `luau -`: read the whole of stdin and run it as one chunk (a non-interactive
+    // REPL — the testable, pipe-friendly shape; a line-by-line TTY loop can layer on later).
+    const code = readStdin() orelse return EXIT_OK; // empty stdin → nothing to do
+    defer std.heap.c_allocator.free(code);
+    const operands = if (argv.len >= 2) argv[2..] else argv[1..1];
+    setArgTable(L, "luau", operands);
+    return runSource(L, "=stdin", code.ptr, code.len, operands);
+}
+
+// Read all of stdin (fd 0) via the mc syscall. Returns null on empty (or read error).
+fn readStdin() ?[]u8 {
+    var list: std.ArrayList(u8) = .empty;
+    var buf: [8192]u8 = undefined;
+    while (true) {
+        var n: u32 = 0;
+        if (mc.mc_sys_read(0, mc.addr(&buf), buf.len, mc.addr(&n)) != 0) break;
+        if (n == 0) break;
+        list.appendSlice(std.heap.c_allocator, buf[0..n]) catch return null;
+    }
+    if (list.items.len == 0) {
+        list.deinit(std.heap.c_allocator);
+        return null;
+    }
+    return list.toOwnedSlice(std.heap.c_allocator) catch null;
 }

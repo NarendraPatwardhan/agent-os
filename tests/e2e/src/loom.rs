@@ -25,6 +25,13 @@ fn luau_reports_version() {
     assert!(s.run_for_output("luau --version").contains("Luau 0.725"));
 }
 
+/// Bare `luau` reads + runs stdin (the non-interactive REPL) — `echo 'code' | luau`.
+#[test]
+fn luau_runs_stdin() {
+    let mut s = boot_loom();
+    assert_eq!(s.run_for_output("echo 'print(6*7)' | luau"), "42\r\n");
+}
+
 // ── the REAL bar (memcontainers/web cdp-luau-verify.ts) — verbatim fixtures.
 
 /// The batteries demo: require("json"/"hash"/"time") + the string :split/:trim extensions, under the
