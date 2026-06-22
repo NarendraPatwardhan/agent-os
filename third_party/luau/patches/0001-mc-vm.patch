@@ -9,9 +9,9 @@ index 1960cc4..769b23b 100644
 +// mc PATCH: route the Parser's ParseError throw/catch through a trap-backed channel.
 +// The Luau guest is built -fno-exceptions (Zig's wasm32-wasi libc++ ships no C++
 +// exception runtime; the kernel's wasmi has no EH proposal). See
-+// loom/src/mc_eh.h and loom/PATCHES.md for the rationale and the
++// third_party/luau/glue/error_channel.h and third_party/luau/PLAN.md for the rationale and the
 +// complete list of upstream edits.
-+#include "mc_eh.h"
++#include "error_channel.h"
 +
  LUAU_FASTINTVARIABLE(LuauRecursionLimit, 1000)
  LUAU_FASTINTVARIABLE(LuauTypeLengthLimit, 1000)
@@ -51,7 +51,7 @@ index 1960cc4..769b23b 100644
 -    catch (ParseError& err)
 +    // mc PATCH: was `try { … } catch (ParseError& err) { … }`. Run the protected
 +    // body under a kernel trap boundary (the guest has no C++ EH / longjmp — see
-+    // loom/PATCHES.md); a ParseError::raise inside traps to here.
++    // third_party/luau/PLAN.md); a ParseError::raise inside traps to here.
 +    AstStatBlock* root = nullptr;
 +    size_t lines = 0;
 +    bool raised = mcParserEh.run([&] {
@@ -132,9 +132,9 @@ index 6aa1193..2c9c430 100644
  #include <math.h>
  
 +// mc PATCH: route the Compiler's CompileError/ParseErrors throw/catch through a
-+// trap-backed channel (the guest is built -fno-exceptions). See loom/src/mc_eh.h
-+// and loom/PATCHES.md.
-+#include "mc_eh.h"
++// trap-backed channel (the guest is built -fno-exceptions). See third_party/luau/glue/error_channel.h
++// and third_party/luau/PLAN.md.
++#include "error_channel.h"
 +
  LUAU_FASTINTVARIABLE(LuauCompileLoopUnrollThreshold, 25)
  LUAU_FASTINTVARIABLE(LuauCompileLoopUnrollThresholdMaxBoost, 300)
@@ -214,8 +214,8 @@ index 038ada3..49d11c6 100644
 +// mc PATCH: the guest has neither a C++ exception runtime nor working
 +// setjmp/longjmp (both need wasm exception-handling, which wasmi lacks). The
 +// error-recovery functions below route Lua's protected calls and errors through
-+// the kernel trap-unwind shim instead. See loom/PATCHES.md and ctx/LUAU.md §4.4.
-+#include "mc_runtime.h"
++// the kernel trap-unwind shim instead. See third_party/luau/PLAN.md and ctx/LUAU.md §4.4.
++#include "trap.h"
  #include <stdlib.h>
 -#else
 -#include <stdexcept>
