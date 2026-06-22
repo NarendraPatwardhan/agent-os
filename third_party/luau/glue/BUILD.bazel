@@ -1,6 +1,6 @@
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary", "zig_library")
-load("//third_party/luau:defs.bzl", "cc_headers", "cc_object")
+load("//third_party/luau:defs.bzl", "cc_headers", "cc_object", "mc_program")
 
 # The Luau glue, written in ZIG (the C/C++ → Zig rewrite, VISION §0.2). The patched upstream Luau
 # (C++, fetched by the @luau http_archive) links against this. trap + the mc syscall shim are
@@ -113,7 +113,7 @@ zig_binary(
 )
 
 zig_configure_binary(
-    name = "luau",
+    name = "luau_wasm",
     actual = ":luau_obj",
     mode = "release_small",
     # wasm is single-threaded — std.heap.c_allocator's WasmAllocator is only implemented for
@@ -121,5 +121,17 @@ zig_configure_binary(
     threaded = "single",
     target = "//platforms:wasm32_wasi",
     tags = ["manual"],
+    visibility = ["//visibility:public"],
+)
+
+# /bin/luau — the load-ready guest: the wasm32-wasi build stamped with its mc_tier (full) + mc_budget
+# (256 MiB · 2T fuel · 40k table, §16.5) custom sections the kernel reads at exec.
+mc_program(
+    name = "luau",
+    wasm = ":luau_wasm",
+    tier = "full",
+    mem = 256 * 1024 * 1024,
+    fuel = 2000000000000,
+    table = 40000,
     visibility = ["//visibility:public"],
 )

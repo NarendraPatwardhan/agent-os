@@ -1,0 +1,15 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+# tools/mc-stamp — append the load-time `mc_tier` + `mc_budget` WASM CUSTOM SECTIONS that the kernel
+# reads at exec (kernel/rust/src/wasm/mod.rs `declared_tier` / `declared_budget`). The Rust boxes
+# emit these via the sysroot's declare_tier! / declare_budget! (#[link_section], which rustc lowers
+# to a wasm custom section); the zig/C++ domain tools (luau/sqlite/typst) have NO such mechanism
+# (Zig's linksection makes a data segment, not a custom section), so they are stamped post-link here
+# — the graph-target equivalent of memcontainers' xtask stamping. A NATIVE std CLI (it edits a guest
+# wasm; it is not itself a guest); no deps — a custom section is a trivial byte append.
+rust_binary(
+    name = "mc-stamp",
+    srcs = ["src/main.rs"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+)

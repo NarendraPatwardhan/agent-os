@@ -52,3 +52,23 @@ cc_object = rule(
     attrs = {"obj": attr.label(allow_single_file = True, doc = "A relocatable .o to force-link.")},
     doc = "Force-link a precompiled object via CcInfo, no CC toolchain.",
 )
+
+def mc_program(name, wasm, tier, mem, fuel, table, visibility = None):
+    """Stamp a zig/C++ domain-tool wasm with the kernel's load-time mc_tier + mc_budget custom
+    sections (VISION §16.5). The Rust boxes emit these via declare_tier!/declare_budget!; the
+    zig/C++ tools cannot (Zig's linksection makes a data segment, not a custom section), so they are
+    stamped post-link by //tools/mc-stamp. Produces <name>.wasm — the load-ready guest."""
+    native.genrule(
+        name = name,
+        srcs = [wasm],
+        outs = [name + ".wasm"],
+        tools = ["//tools/mc-stamp"],
+        cmd = "$(execpath //tools/mc-stamp) $(execpath {wasm}) $@ {tier} {mem} {fuel} {table}".format(
+            wasm = wasm,
+            tier = tier,
+            mem = mem,
+            fuel = fuel,
+            table = table,
+        ),
+        visibility = visibility,
+    )
