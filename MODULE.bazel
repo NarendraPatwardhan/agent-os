@@ -34,8 +34,11 @@ use_repo(zig, "zig_toolchains")
 register_toolchains("@rules_zig//zig/target:all")
 register_toolchains("@zig_toolchains//:all")
 
-# Cross-compile-to-wasm toolchain, selected by //platforms:wasm32_freestanding.
+# Cross-compile-to-wasm zig toolchains: //platforms:wasm32_freestanding (kernels + pure guests, no
+# libc) and //platforms:wasm32_wasi (the C/C++ domain tools — luau — whose C++ runtime needs zig's
+# wasi-libc/libc++; the //wasi-adapter then rewrites the syscall imports to mc).
 register_toolchains("//platforms:wasm32_freestanding_zig_toolchain")
+register_toolchains("//platforms:wasm32_wasi_zig_toolchain")
 
 # ---------------------------------------------------------------------------
 # PHASE-A lanes — declared per VISION §7.1, enabled as each lane's first target
@@ -118,7 +121,22 @@ http_archive(
 # http_archive(name = "sqlite",   urls = ["..."], sha256 = "...",
 #              patches = ["//third_party/sqlite:patches/0001-mc.patch"],
 #              build_file = "//third_party/sqlite:BUILD.sqlite.bazel")
-# http_archive(name = "luau",     urls = ["..."], sha256 = "...",
-#              patches = ["//third_party/luau:patches/0001-mc.patch"],
-#              build_file = "//third_party/luau:BUILD.luau.bazel")
+# luau — upstream Luau 0.725 fetched from GitHub, patched `-fno-exceptions`-clean (the `// mc PATCH`
+# set extracted to real .patch files: VM/Parser/Compiler trap-backed error channels + the Analysis
+# EH shim, B3), built to two guest wasms (/bin/luau interpreter, /bin/luau-analyze type checker) by
+# `zig c++` at wasm32-wasi. See third_party/luau/PLAN.md.
+http_archive(
+    name = "luau",
+    urls = ["https://github.com/luau-lang/luau/archive/refs/tags/0.725.tar.gz"],
+    sha256 = "e51ead5f541633693d548057e0431927f3036c13b185fdb37fbc3f5a261e6676",
+    strip_prefix = "luau-0.725",
+    type = "tar.gz",
+    patches = [
+        "//third_party/luau:patches/0001-mc-vm.patch",  # VM/Parser/Compiler → trap-backed error channels
+        "//third_party/luau:patches/0002-mc-analysis.patch",  # Analysis throw → mc_analysis_abort
+    ],
+    patch_tool = "patch",  # GNU patch (matches sed; the native parser mis-handles multi-file diffs)
+    patch_args = ["-p1"],
+    build_file = "//third_party/luau:BUILD.luau.bazel",
+)
 # http_archive(name = "wasmtime", urls = ["..."], sha256 = "...")  # for hosts/wasmtime

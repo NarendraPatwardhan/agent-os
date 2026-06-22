@@ -1,11 +1,19 @@
-# luau as a guest — vendor LESS, patch in place (VISION §8, B3). Upstream source enters
-# via http_archive(urls, sha256, patches=[...]) in MODULE.bazel; ONLY our deltas in-tree:
-#   patches/           — the `// mc PATCH` set as real .patch files (B3).
-#   glue/              — mc_runtime, sys_bindings, compat — written in ZIG, not C/C++.
-#   BUILD.luau.bazel   — the build_file http_archive applies to the extracted source.
+# luau as a guest — vendor LESS, patch in place (VISION §8, B3). Upstream source enters via
+# http_archive(urls, sha256, patches=[...]) in MODULE.bazel; ONLY our deltas live in-tree:
+#   patches/           — the `// mc PATCH` set as real .patch files (0001 = VM/Parser/Compiler,
+#                        0002 = Analysis), applied to the fetched upstream 0.725 (B3).
+#   glue/              — trap / sys / stdlib / the batteries / entry, written in ZIG; three C++
+#                        holdouts (error_channel.h, analysis_eh_shim.h, analyze_main.cpp).
+#   BUILD.luau.bazel   — the build_file http_archive applies to the extracted source (Phase 4).
+# See third_party/luau/PLAN.md.
 #
-# luau needs the kernel-mediated non-local exit (mc_sys_pcall / mc_sys_set_throw) because
-# wasmi has no exception proposal — Lua `error`/`pcall` and C++ EH unwind through the
-# kernel's nested-call trap boundary (VISION §4.1, syscalls.kdl `vm` group, mc ctx/LUAU.md).
-#
-# Phase A step 4: enable the http_archive(name = "luau", ...) block in MODULE.bazel.
+# luau needs the kernel-mediated non-local exit because wasmi has no exception proposal — Lua
+# `error`/`pcall` and C++ EH unwind through the kernel's trap boundary (VISION §4.1, ctx/LUAU.md).
+
+# The patch files + the build_file are referenced as labels by the http_archive (resolved in the
+# @luau repo context), so they must be exported from this package.
+exports_files([
+    "BUILD.luau.bazel",
+    "patches/0001-mc-vm.patch",
+    "patches/0002-mc-analysis.patch",
+])

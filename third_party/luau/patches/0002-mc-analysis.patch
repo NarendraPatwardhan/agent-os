@@ -1,0 +1,402 @@
+diff --git a/Analysis/include/Luau/TypedAllocator.h b/Analysis/include/Luau/TypedAllocator.h
+index 98f0cad..6f4a58e 100644
+--- a/Analysis/include/Luau/TypedAllocator.h
++++ b/Analysis/include/Luau/TypedAllocator.h
+@@ -124,7 +124,7 @@ private:
+     {
+         void* block = pagedAllocate(kBlockSizeBytes);
+         if (!block)
+-            throw std::bad_alloc();
++            mc_analysis_abort("luau-analyze: container limit"); // mc PATCH: was throw (-fno-exceptions)
+ 
+         stuff.emplace_back(static_cast<T*>(block));
+         currentBlockSize = 0;
+diff --git a/Analysis/src/ConstraintSolver.cpp b/Analysis/src/ConstraintSolver.cpp
+index 9da6b85..7b0d957 100644
+--- a/Analysis/src/ConstraintSolver.cpp
++++ b/Analysis/src/ConstraintSolver.cpp
+@@ -4236,12 +4236,12 @@ TypePackId ConstraintSolver::anyifyModuleReturnTypePackGenerics(TypePackId tp)
+ 
+ LUAU_NOINLINE void ConstraintSolver::throwTimeLimitError() const
+ {
+-    throw TimeLimitError(module->name);
++    mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+ }
+ 
+ LUAU_NOINLINE void ConstraintSolver::throwUserCancelError() const
+ {
+-    throw UserCancelError(module->name);
++    mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+ }
+ 
+ // Instantiate private template implementations for external callers
+diff --git a/Analysis/src/Error.cpp b/Analysis/src/Error.cpp
+index 6df8b3d..b6d14d9 100644
+--- a/Analysis/src/Error.cpp
++++ b/Analysis/src/Error.cpp
+@@ -1727,7 +1727,7 @@ void InternalErrorReporter::ice(const std::string& message, const Location& loca
+     if (onInternalError)
+         onInternalError(error.what());
+ 
+-    throw error;
++    mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+ }
+ 
+ void InternalErrorReporter::ice(const std::string& message) const
+@@ -1737,7 +1737,7 @@ void InternalErrorReporter::ice(const std::string& message) const
+     if (onInternalError)
+         onInternalError(error.what());
+ 
+-    throw error;
++    mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+ }
+ 
+ const char* InternalCompilerError::what() const throw()
+diff --git a/Analysis/src/Frontend.cpp b/Analysis/src/Frontend.cpp
+index 8f0adc4..552ba77 100644
+--- a/Analysis/src/Frontend.cpp
++++ b/Analysis/src/Frontend.cpp
+@@ -82,8 +82,8 @@ struct BuildQueueWorkState
+ 
+     std::vector<BuildQueueItem> buildQueueItems;
+ 
+-    std::mutex mtx;
+-    std::condition_variable cv;
++    mc_nothread::mutex mtx;
++    mc_nothread::condition_variable cv;
+     std::vector<size_t> readyQueueItems;
+ 
+     size_t processing = 0;
+@@ -685,7 +685,7 @@ std::vector<ModuleName> Frontend::checkQueuedModules(
+     while (state->remaining != 0)
+     {
+         {
+-            std::unique_lock guard(state->mtx);
++            mc_nothread::unique_lock guard(state->mtx);
+ 
+             // If nothing is ready yet, wait
+             state->cv.wait(
+@@ -788,7 +788,7 @@ std::optional<CheckResult> Frontend::getCheckResult(const ModuleName& name, bool
+     ModulePtr module = resolver.getModule(name);
+ 
+     if (module == nullptr)
+-        throw InternalCompilerError("Frontend does not have module: " + name, name);
++        mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+ 
+     CheckResult checkResult;
+ 
+@@ -1247,7 +1247,7 @@ void Frontend::performQueueItemTask(std::shared_ptr<BuildQueueWorkState> state,
+     }
+ 
+     {
+-        std::unique_lock guard(state->mtx);
++        mc_nothread::unique_lock guard(state->mtx);
+         state->readyQueueItems.push_back(itemPos);
+     }
+ 
+@@ -1750,9 +1750,9 @@ ModulePtr Frontend::check(
+         }
+         catch (const InternalCompilerError& err)
+         {
+-            InternalCompilerError augmented = err.location.has_value() ? InternalCompilerError{err.message, sourceModule.name, *err.location}
+-                                                                       : InternalCompilerError{err.message, sourceModule.name};
+-            throw augmented;
++            // mc PATCH (-fno-exceptions): catch is dead (compat macro -> else if(false)); dropped the
++            // `err`-referencing body (was: rebuild an augmented ICE and rethrow).
++            mc_analysis_abort("luau-analyze: internal compiler error");
+         }
+     }
+     else
+@@ -1948,7 +1948,7 @@ std::optional<ModuleInfo> FrontendModuleResolver::resolveModuleInfo(const Module
+ 
+ const ModulePtr FrontendModuleResolver::getModule(const ModuleName& moduleName) const
+ {
+-    std::scoped_lock lock(moduleMutex);
++    mc_nothread::scoped_lock lock(moduleMutex);
+ 
+     auto it = modules.find(moduleName);
+     if (it != modules.end())
+@@ -1969,7 +1969,7 @@ std::string FrontendModuleResolver::getHumanReadableModuleName(const ModuleName&
+ 
+ bool FrontendModuleResolver::setModule(const ModuleName& moduleName, ModulePtr module)
+ {
+-    std::scoped_lock lock(moduleMutex);
++    mc_nothread::scoped_lock lock(moduleMutex);
+ 
+     bool replaced = modules.count(moduleName) > 0;
+     modules[moduleName] = std::move(module);
+@@ -1978,7 +1978,7 @@ bool FrontendModuleResolver::setModule(const ModuleName& moduleName, ModulePtr m
+ 
+ void FrontendModuleResolver::clearModules()
+ {
+-    std::scoped_lock lock(moduleMutex);
++    mc_nothread::scoped_lock lock(moduleMutex);
+ 
+     modules.clear();
+ }
+diff --git a/Analysis/src/Normalize.cpp b/Analysis/src/Normalize.cpp
+index 38f7828..6cbff4e 100644
+--- a/Analysis/src/Normalize.cpp
++++ b/Analysis/src/Normalize.cpp
+@@ -3732,7 +3732,7 @@ void Normalizer::consumeFuel()
+     {
+         (*fuel)--;
+         if (fuel <= 0)
+-            throw NormalizerHitLimits();
++            mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+     }
+ }
+ 
+diff --git a/Analysis/src/RecursionCounter.cpp b/Analysis/src/RecursionCounter.cpp
+index 5b4920c..9adf193 100644
+--- a/Analysis/src/RecursionCounter.cpp
++++ b/Analysis/src/RecursionCounter.cpp
+@@ -28,12 +28,12 @@ RecursionLimiter::RecursionLimiter(const std::string& system, int* count, int li
+ {
+     if (!nativeStackGuard.isOk())
+     {
+-        throw InternalCompilerError("Stack overflow in " + system);
++        mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+     }
+ 
+     if (limit > 0 && *count > limit)
+     {
+-        throw RecursionLimitException(system);
++        mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+     }
+ }
+ 
+diff --git a/Analysis/src/ToString.cpp b/Analysis/src/ToString.cpp
+index 15c2457..f71bda5 100644
+--- a/Analysis/src/ToString.cpp
++++ b/Analysis/src/ToString.cpp
+@@ -619,7 +619,7 @@ struct TypeStringifier
+             [[fallthrough]];
+         default:
+             LUAU_ASSERT(!"Unknown primitive type");
+-            throw InternalCompilerError("Unknown primitive type " + std::to_string(ptv.type));
++            mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+         }
+     }
+ 
+@@ -636,7 +636,7 @@ struct TypeStringifier
+         else
+         {
+             LUAU_ASSERT(!"Unknown singleton type");
+-            throw InternalCompilerError("Unknown singleton type");
++            mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+         }
+     }
+ 
+diff --git a/Analysis/src/TopoSortStatements.cpp b/Analysis/src/TopoSortStatements.cpp
+index 0a3750d..cd74db6 100644
+--- a/Analysis/src/TopoSortStatements.cpp
++++ b/Analysis/src/TopoSortStatements.cpp
+@@ -150,7 +150,7 @@ Identifier mkName(const AstStatFunction& function)
+     auto name = mkName(*function.name);
+     LUAU_ASSERT(bool(name));
+     if (!name)
+-        throw InternalCompilerError("Internal error: Function declaration has a bad name");
++        mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+ 
+     return *name;
+ }
+@@ -256,7 +256,7 @@ struct ArcCollector : public AstVisitor
+     {
+         auto name = mkName(*node->name);
+         if (!name)
+-            throw InternalCompilerError("Internal error: AstStatFunction has a bad name");
++            mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+ 
+         add(*name);
+         return true;
+diff --git a/Analysis/src/Type.cpp b/Analysis/src/Type.cpp
+index 04b40a3..22cf391 100644
+--- a/Analysis/src/Type.cpp
++++ b/Analysis/src/Type.cpp
+@@ -45,10 +45,10 @@ static LUAU_NOINLINE TypeId unwrapLazy(LazyType* ltv)
+     unwrapped = ltv->unwrapped.load();
+ 
+     if (!unwrapped)
+-        throw InternalCompilerError("Lazy Type didn't fill in unwrapped type field");
++        mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+ 
+     if (get<LazyType>(unwrapped))
+-        throw InternalCompilerError("Lazy Type cannot resolve to another Lazy Type");
++        mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+ 
+     return unwrapped;
+ }
+@@ -126,7 +126,7 @@ TypeId follow(TypeId t, FollowOption followOption, const void* context, TypeId (
+                 cycleTester = nullptr;
+ 
+             if (t == cycleTester)
+-                throw InternalCompilerError("Luau::follow detected a Type cycle!!");
++                mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+         }
+     }
+ }
+diff --git a/Analysis/src/TypeInfer.cpp b/Analysis/src/TypeInfer.cpp
+index aa829df..f6c1999 100644
+--- a/Analysis/src/TypeInfer.cpp
++++ b/Analysis/src/TypeInfer.cpp
+@@ -5364,12 +5364,12 @@ LUAU_NOINLINE void TypeChecker::ice(const std::string& message)
+ 
+ LUAU_NOINLINE void TypeChecker::throwTimeLimitError()
+ {
+-    throw TimeLimitError(iceHandler->moduleName);
++    mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+ }
+ 
+ LUAU_NOINLINE void TypeChecker::throwUserCancelError()
+ {
+-    throw UserCancelError(iceHandler->moduleName);
++    mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+ }
+ 
+ void TypeChecker::prepareErrorsForDisplay(ErrorVec& errVec)
+diff --git a/Analysis/src/TypePack.cpp b/Analysis/src/TypePack.cpp
+index 8679854..16484d8 100644
+--- a/Analysis/src/TypePack.cpp
++++ b/Analysis/src/TypePack.cpp
+@@ -169,7 +169,7 @@ TypePackIterator& TypePackIterator::operator++()
+             tailCycleCheck = tp->tail ? log->follow(*tp->tail) : nullptr;
+ 
+             if (currentTypePack == tailCycleCheck)
+-                throw InternalCompilerError("TypePackIterator detected a type pack cycle");
++                mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+         }
+ 
+         currentIndex = 0;
+@@ -300,7 +300,7 @@ TypePackId follow(TypePackId tp, const void* context, TypePackId (*mapper)(const
+                 cycleTester = nullptr;
+ 
+             if (tp == cycleTester)
+-                throw InternalCompilerError("Luau::follow detected a Type cycle!!");
++                mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+         }
+     }
+ }
+diff --git a/Analysis/src/TypedAllocator.cpp b/Analysis/src/TypedAllocator.cpp
+index 5fb1020..c70bf8f 100644
+--- a/Analysis/src/TypedAllocator.cpp
++++ b/Analysis/src/TypedAllocator.cpp
+@@ -13,6 +13,11 @@
+ #include <windows.h>
+ 
+ const size_t kPageSize = 4096;
++#elif defined(__wasi__)
++// mc PATCH: wasm/wasi has no mmap/mprotect arena. pagedAllocate uses operator new
++// by default (DebugLuauFreezeArena is off), so the paged path below is compiled but
++// never taken; give it a fixed page size + malloc/no-op fallbacks.
++const size_t kPageSize = 65536;
+ #else
+ #include <sys/mman.h>
+ #include <unistd.h>
+@@ -51,6 +56,8 @@ void* pagedAllocate(size_t size)
+     return _aligned_malloc(size, kPageSize);
+ #elif defined(__FreeBSD__)
+     return aligned_alloc(kPageSize, size);
++#elif defined(__wasi__)
++    return malloc(pageAlign(size)); // mc PATCH: no mmap on wasi (path is unused)
+ #else
+     return mmap(nullptr, pageAlign(size), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+ #endif
+@@ -66,6 +73,9 @@ void pagedDeallocate(void* ptr, size_t size)
+     _aligned_free(ptr);
+ #elif defined(__FreeBSD__)
+     free(ptr);
++#elif defined(__wasi__)
++    (void)size; // mc PATCH: malloc/free pairing (no munmap on wasi)
++    free(ptr);
+ #else
+     int rc = munmap(ptr, size);
+     LUAU_ASSERT(rc == 0);
+@@ -81,6 +91,8 @@ void pagedFreeze(void* ptr, size_t size)
+     DWORD oldProtect;
+     BOOL rc = VirtualProtect(ptr, pageAlign(size), PAGE_READONLY, &oldProtect);
+     LUAU_ASSERT(rc);
++#elif defined(__wasi__)
++    (void)ptr, (void)size; // mc PATCH: no mprotect on wasi (freeze is a debug-only no-op)
+ #else
+     int rc = mprotect(ptr, pageAlign(size), PROT_READ);
+     LUAU_ASSERT(rc == 0);
+@@ -96,6 +108,8 @@ void pagedUnfreeze(void* ptr, size_t size)
+     DWORD oldProtect;
+     BOOL rc = VirtualProtect(ptr, pageAlign(size), PAGE_READWRITE, &oldProtect);
+     LUAU_ASSERT(rc);
++#elif defined(__wasi__)
++    (void)ptr, (void)size; // mc PATCH: no mprotect on wasi (unfreeze is a debug-only no-op)
+ #else
+     int rc = mprotect(ptr, pageAlign(size), PROT_READ | PROT_WRITE);
+     LUAU_ASSERT(rc == 0);
+diff --git a/Analysis/src/Unifier.cpp b/Analysis/src/Unifier.cpp
+index 8b395d7..da3d640 100644
+--- a/Analysis/src/Unifier.cpp
++++ b/Analysis/src/Unifier.cpp
+@@ -285,7 +285,7 @@ TypeId Widen::clean(TypeId ty)
+ 
+ TypePackId Widen::clean(TypePackId)
+ {
+-    throw InternalCompilerError("Widen attempted to clean a dirty type pack?");
++    mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+ }
+ 
+ bool Widen::ignoreChildren(TypeId ty)
+diff --git a/Analysis/src/UserDefinedTypeFunction.cpp b/Analysis/src/UserDefinedTypeFunction.cpp
+index 940828b..a244f1c 100644
+--- a/Analysis/src/UserDefinedTypeFunction.cpp
++++ b/Analysis/src/UserDefinedTypeFunction.cpp
+@@ -431,10 +431,10 @@ TypeFunctionReductionResult<TypeId> userDefinedTypeFunction(
+     {
+         auto ctx = static_cast<const TypeFunctionRuntime*>(lua_getthreaddata(lua_mainthread(L)));
+         if (ctx->limits->finishTime && TimeTrace::getClock() > *ctx->limits->finishTime)
+-            throw TimeLimitError(ctx->ice->moduleName);
++            mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+ 
+         if (ctx->limits->cancellationToken && ctx->limits->cancellationToken->requested())
+-            throw UserCancelError(ctx->ice->moduleName);
++            mc_analysis_abort("luau-analyze: internal/limit error"); // mc PATCH: was throw (-fno-exceptions)
+     };
+ 
+     ctx->typeFunctionRuntime->messages.clear();
+diff --git a/Common/include/Luau/VecDeque.h b/Common/include/Luau/VecDeque.h
+index 0b3d88e..82826aa 100644
+--- a/Common/include/Luau/VecDeque.h
++++ b/Common/include/Luau/VecDeque.h
+@@ -79,7 +79,7 @@ private:
+ 
+         // check that it's a legal allocation
+         if (new_capacity > max_size())
+-            throw std::bad_array_new_length();
++            mc_analysis_abort("luau-analyze: container limit"); // mc PATCH: was throw (-fno-exceptions)
+ 
+         // allocate a new backing buffer
+         T* new_buffer = this->allocate(new_capacity);
+@@ -263,7 +263,7 @@ public:
+     T& at(size_t pos)
+     {
+         if (pos >= queue_size)
+-            throw std::out_of_range("VecDeque");
++            mc_analysis_abort("luau-analyze: container limit"); // mc PATCH: was throw (-fno-exceptions)
+ 
+         return buffer[logicalToPhysical(pos)];
+     }
+@@ -271,7 +271,7 @@ public:
+     const T& at(size_t pos) const
+     {
+         if (pos >= queue_size)
+-            throw std::out_of_range("VecDeque");
++            mc_analysis_abort("luau-analyze: container limit"); // mc PATCH: was throw (-fno-exceptions)
+ 
+         return buffer[logicalToPhysical(pos)];
+     }
+@@ -341,7 +341,7 @@ public:
+     {
+         // error if this allocation would be illegal
+         if (new_capacity > max_size())
+-            throw std::length_error("too large");
++            mc_analysis_abort("luau-analyze: container limit"); // mc PATCH: was throw (-fno-exceptions)
+ 
+         size_t old_capacity = capacity();
+ 
