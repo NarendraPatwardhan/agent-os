@@ -99,6 +99,11 @@ zig_binary(
     linkopts = [
         "-lc",
         "-lc++",
+        # The kernel's trap-unwind re-enters the guest via __mc_pcall_run and reads __stack_pointer
+        # (kernel/rust/src/wasm/mod.rs); without these EXPORTED, --gc-sections drops __mc_pcall_run
+        # (it's called only from outside) and lua_pcall can't unwind. memcontainers' xtask did the same.
+        "--export=__mc_pcall_run",
+        "--export=__stack_pointer",
     ],
     deps = [
         "@luau//:interp_headers",

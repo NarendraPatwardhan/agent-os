@@ -27,6 +27,7 @@ mod boot;
 mod coreutils;
 mod flavors;
 mod kernel;
+mod loom;
 mod shell;
 mod system;
 mod tty;
@@ -87,6 +88,14 @@ pub fn boot_posix() -> Session {
 pub fn boot_minimal() -> Session {
     let (b, stdout) = builder("_main/images/minimal.tar");
     let host = b.build().expect("kernel booted (minimal image)");
+    Session { host, stdout }
+}
+
+/// Boot the `loom` image (posix + /bin/luau — the stamped, pure-mc Luau interpreter, §16.5). For the
+/// domain-tool tests that run real Luau bytecode on the real kernel via the trap-unwind.
+pub fn boot_loom() -> Session {
+    let (b, stdout) = builder("_main/images/loom.tar");
+    let host = b.build().expect("kernel booted (loom image)");
     Session { host, stdout }
 }
 
