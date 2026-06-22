@@ -30,7 +30,6 @@ fn luau_reports_version() {
 /// The batteries demo: require("json"/"hash"/"time") + the string :split/:trim extensions, under the
 /// mc_budget fuel cap. The exact script + assertions from cdp-luau-verify.ts.
 #[test]
-#[ignore = "needs the batteries: sys/json/hash native bindings + the require loader + embedded .luau libs (sys.zig/stdlib.zig are stubs)"]
 fn luau_runs_the_batteries_demo() {
     let mut s = boot_loom();
     s.host

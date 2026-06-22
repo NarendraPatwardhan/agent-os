@@ -71,6 +71,9 @@ zig_binary(
     name = "luau_obj",
     main = "entry.zig",
     srcs = [
+        "hash.zig",
+        "json.zig",
+        "lua.zig",
         "mc.zig",
         "stdlib.zig",
         "sys.zig",
@@ -78,7 +81,7 @@ zig_binary(
         "wasi_shim.zig",
     ],
     csrcs = ["@luau//:interp_srcs"],
-    extra_srcs = [
+    extra_srcs = glob(["lib/*.luau"]) + [  # the .luau batteries, @embedFile'd by stdlib.zig
         "@luau//:interp_all_hdrs",
         "error_channel.h",
         "force_extern_c.h",

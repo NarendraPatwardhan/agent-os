@@ -28,6 +28,8 @@ comptime {
     _ = @import("trap.zig");
     _ = @import("sys.zig");
     _ = @import("stdlib.zig");
+    _ = @import("json.zig"); // mc_open_json (the require'd native module)
+    _ = @import("hash.zig"); // mc_open_hash
     _ = @import("wasi_shim.zig"); // residual wasi import forwarders (fd_close)
 }
 
@@ -126,29 +128,41 @@ fn runSource(L: ?*c.lua_State, chunkname: [*:0]const u8, src: [*]const u8, len: 
     return EXIT_OK;
 }
 
-// File reading via libc (std.fs churned across 0.16). Caller owns the returned buffer.
+// File reading via wasi-libc's RAW read() syscall, NOT stdio. fopen resolves the path through
+// wasi-libc's preopens and hands us a fd (fileno); we then read() it directly. Three wasi-libc traps
+// are sidestepped: stdio fread (its __stdio_read does a two-iovec readv into the FILE buffer that
+// faults under the adapter); the variadic open() (its `...mode` ABI); and CLOSE — mc's file model
+// has NO close syscall (luau imports mc_sys_open/read but not mc_sys_close; handles are reclaimed at
+// exit), so the adapter's fd_close→mc_sys_close resolves to a trap stub. read() → __wasi_fd_read →
+// mc_sys_read is exactly cat's path. The fd is not closed (the mc way); the kernel reclaims it.
 extern fn fopen(path: [*:0]const u8, mode: [*:0]const u8) ?*anyopaque;
-extern fn fseek(f: ?*anyopaque, off: c_long, whence: c_int) c_int;
-extern fn ftell(f: ?*anyopaque) c_long;
-extern fn fread(ptr: [*]u8, size: usize, n: usize, f: ?*anyopaque) usize;
-extern fn fclose(f: ?*anyopaque) c_int;
+extern fn fileno(f: ?*anyopaque) c_int;
+extern fn read(fd: c_int, buf: [*]u8, len: usize) isize;
 
 fn readFile(path: [*:0]const u8) ?[]u8 {
     const f = fopen(path, "rb") orelse return null;
-    defer _ = fclose(f);
-    _ = fseek(f, 0, 2); // SEEK_END
-    const size: usize = @intCast(ftell(f));
-    _ = fseek(f, 0, 0); // SEEK_SET
-    const buf = std.heap.c_allocator.alloc(u8, size) catch return null;
-    const got = fread(buf.ptr, 1, size, f);
-    return buf[0..got];
+    const fd = fileno(f);
+    var list: std.ArrayList(u8) = .empty;
+    var buf: [8192]u8 = undefined;
+    while (true) {
+        const n = read(fd, &buf, buf.len);
+        if (n <= 0) break;
+        list.appendSlice(std.heap.c_allocator, buf[0..@intCast(n)]) catch return null;
+    }
+    return list.toOwnedSlice(std.heap.c_allocator) catch null;
 }
+
+// Line-buffer stdout so Luau's print() (fwrite, no flush) reaches the capture pipe per line, not only
+// at exit — and so output survives if the script later traps (cf. luau_cli.cpp).
+extern var stdout: ?*anyopaque;
+extern fn setvbuf(stream: ?*anyopaque, buf: ?[*]u8, mode: c_int, size: usize) c_int;
 
 // wasi-libc's _start calls __main_argc_argv; its argv comes from wasi-libc's own __imported_wasi_
 // args_get (→ the adapter → mc), so our code needs no direct wasi args import. (std.os.argv was
 // removed in 0.16 and std.process.Args needs the Io-threaded global.)
 export fn __main_argc_argv(argc: c_int, c_argv: [*][*:0]u8) c_int {
     const argv = c_argv[0..@intCast(argc)];
+    _ = setvbuf(stdout, null, 1, 4096); // _IOLBF
 
     if (argv.len >= 2 and std.mem.eql(u8, std.mem.span(argv[1]), "--version")) {
         writeFd(1, kVersion ++ "\n");
