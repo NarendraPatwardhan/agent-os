@@ -1,0 +1,11 @@
+--- a/Analysis/include/Luau/Frontend.h
++++ b/Analysis/include/Luau/Frontend.h
+@@ -146,7 +146,7 @@
+ private:
+     Frontend* frontend;
+ 
+-    mutable std::mutex moduleMutex;
++    mutable mc_nothread::mutex moduleMutex; // mc: single-threaded wasm has no std::mutex (analysis_eh_shim.h)
+     std::unordered_map<ModuleName, ModulePtr> modules;
+ };
+ 

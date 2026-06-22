@@ -1,4 +1,4 @@
-// mc_analysis_compat.h — force-included into every vendored Luau Analysis TU so the
+// analysis_eh_shim.h — force-included into every vendored Luau Analysis TU so the
 // 80kLOC type checker compiles `-fno-exceptions -fno-rtti` for the wasm guest
 // (ctx/LUAU.md §8.6 / PATCHES.md). Three mechanisms:
 //
@@ -59,15 +59,6 @@ struct unique_lock {
     void unlock() {}
 };
 }  // namespace mc_nothread
-
-// Redirect Frontend.{h,cpp}'s std threading types to the no-op stand-ins above (zig's wasm32-wasi
-// libc++ has no std::mutex — single-threaded). Using-declarations into std, rather than a line-by-line
-// patch of the upstream Analysis headers: the uses are CTAD / non-templated, so the alias suffices,
-// and luau-analyze never takes Frontend's parallel-check path (it checks one file synchronously).
-namespace std {
-using ::mc_nothread::condition_variable;
-using ::mc_nothread::mutex;
-using ::mc_nothread::scoped_lock;
-using ::mc_nothread::unique_lock;
-}  // namespace std
+// Frontend's one std::mutex use is redirected to mc_nothread::mutex by 0004-mc-frontend-nothread.patch
+// (a proper upstream patch, B3 — not a using-declaration into namespace std, which is UB).
 #endif

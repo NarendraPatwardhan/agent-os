@@ -135,6 +135,7 @@ http_archive(
         "//third_party/luau:patches/0001-mc-vm.patch",  # VM/Parser/Compiler → trap-backed error channels
         "//third_party/luau:patches/0002-mc-analysis.patch",  # Analysis throw → mc_analysis_abort
         "//third_party/luau:patches/0003-mc-analysis-named-catch.patch",  # dead named-catch bodies: drop e.what()
+        "//third_party/luau:patches/0004-mc-frontend-nothread.patch",  # Frontend std::mutex → mc_nothread (B3, not a std-inject)
     ],
     patch_tool = "patch",  # GNU patch (matches sed; the native parser mis-handles multi-file diffs)
     patch_args = ["-p1"],
