@@ -140,3 +140,72 @@ mc_program(
     table = 40000,
     visibility = ["//visibility:public"],
 )
+
+# /bin/luau-analyze — the Luau type checker (§8.6). Same zig c++ recipe as luau, but the csrcs are
+# Ast + Common + Config + Analysis (no VM/Compiler — it never executes), the C++ entry is
+# analyze_main.cpp (a holdout: int-main-renamed mc_analyze_run that analyze_entry.zig forwards to),
+# and analysis_eh_shim.h is force-included into every Analysis TU (the type checker's throw sites are
+# patched to mc_analysis_abort, its try/catch neutralized — Luau type errors are DATA, not
+# exceptions). The Ast Parser still routes parse errors through the trap, so trap.zig + the
+# __mc_pcall_run/__stack_pointer exports are kept.
+zig_binary(
+    name = "luau_analyze_obj",
+    main = "analyze_entry.zig",
+    srcs = [
+        "mc.zig",
+        "trap.zig",
+        "wasi_shim.zig",
+    ],
+    csrcs = [
+        "@luau//:analyze_srcs",
+        "analyze_main.cpp",
+    ],
+    extra_srcs = [
+        "@luau//:analysis_all_hdrs",
+        "@luau//:interp_all_hdrs",
+        "analysis_eh_shim.h",
+        "error_channel.h",
+        "trap.h",
+    ],
+    copts = [
+        # Force-include the analysis EH shim into every TU (mc_analysis_abort + try/catch neutralize).
+        "-include",
+        "third_party/luau/glue/analysis_eh_shim.h",
+        "-fno-exceptions",
+        "-fno-rtti",
+    ],
+    linkopts = [
+        "-lc",
+        "-lc++",
+        "--export=__mc_pcall_run",
+        "--export=__stack_pointer",
+    ],
+    deps = [
+        "@luau//:analysis_incs",
+        "@luau//:interp_incs",
+        ":glue_incs",
+        ":wasi_adapter_link",
+    ],
+    tags = ["manual"],
+)
+
+zig_configure_binary(
+    name = "luau_analyze_wasm",
+    actual = ":luau_analyze_obj",
+    mode = "release_small",
+    threaded = "single",
+    target = "//platforms:wasm32_wasi",
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+)
+
+# luau-analyze's budget: 256 MiB · 400B fuel (type inference is bounded, not a runtime) · 40k table.
+mc_program(
+    name = "luau-analyze",
+    wasm = ":luau_analyze_wasm",
+    tier = "full",
+    mem = 256 * 1024 * 1024,
+    fuel = 400000000000,
+    table = 40000,
+    visibility = ["//visibility:public"],
+)

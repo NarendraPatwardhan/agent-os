@@ -18,12 +18,19 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
-# luau-analyze adds Config + the Analysis type-inference engine (Autocomplete/Fragment excluded —
-# editor-only, not needed for --check).
+# luau-analyze's translation units: the full interp set (VM + Compiler + Ast + Bytecode + Common) +
+# Config + the Analysis type-inference engine — matching memcontainers' xtask (the Analysis engine
+# references VM/Compiler symbols even though it never executes). Autocomplete/Fragment excluded —
+# editor-only, not needed for --check.
 filegroup(
-    name = "analysis_srcs",
+    name = "analyze_srcs",
     srcs = glob(
         [
+            "VM/src/*.cpp",
+            "Compiler/src/*.cpp",
+            "Ast/src/*.cpp",
+            "Bytecode/src/*.cpp",
+            "Common/src/*.cpp",
             "Config/src/*.cpp",
             "Analysis/src/*.cpp",
         ],
@@ -33,6 +40,50 @@ filegroup(
             "Analysis/src/FragmentAutocomplete.cpp",
         ],
     ),
+    visibility = ["//visibility:public"],
+)
+
+# All Config + Analysis headers, as plain files for the analyze csrcs compile (extra_srcs); the
+# Ast/Common headers come from :interp_all_hdrs.
+filegroup(
+    name = "analysis_all_hdrs",
+    srcs = glob([
+        "Config/**/*.h",
+        "Analysis/**/*.h",
+    ]),
+    visibility = ["//visibility:public"],
+)
+
+# -I-only header sets (NO direct_public_headers) for the analyze build, which has NO @cImport. A
+# zig_binary with cc cdeps still runs translate-c over their public headers, and translate-c (C-only)
+# cannot parse Luau's C++ Analysis headers. With hdrs=[] it #includes nothing; the header FILES reach
+# the csrcs compile via :interp_all_hdrs / :analysis_all_hdrs.
+cc_headers(
+    name = "interp_incs",
+    hdrs = [],
+    includes = [
+        "Ast/include",
+        "Ast/src",
+        "Bytecode/include",
+        "Bytecode/src",
+        "Common/include",
+        "Common/src",
+        "Compiler/include",
+        "Compiler/src",
+        "VM/include",
+        "VM/src",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+cc_headers(
+    name = "analysis_incs",
+    hdrs = [],
+    includes = [
+        "Analysis/include",
+        "Analysis/src",
+        "Config/include",
+    ],
     visibility = ["//visibility:public"],
 )
 
