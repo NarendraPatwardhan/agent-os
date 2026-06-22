@@ -58,6 +58,27 @@ fn luau_runs_the_batteries_demo() {
     assert!(out.contains("split2 =\tb"), "string :split:\n{out}");
 }
 
+/// sys.fs is the real syscall surface: a guest writes a file via sys.fs.write + reads it back via
+/// sys.fs.read, and the HOST sees the same bytes in the kernel VFS — proving sys.zig drives mc_sys_*
+/// (open/write/read/close) for real, not a stub.
+#[test]
+fn sys_fs_writes_a_file_the_host_can_read() {
+    let mut s = boot_loom();
+    s.host
+        .write_file(
+            "/demo/syswrite.luau",
+            b"assert(sys.fs.write(\"/tmp/sysout.txt\", \"written-by-sys-fs\"))\nlocal c = assert(sys.fs.read(\"/tmp/sysout.txt\"))\nprint(\"readback=\" .. c)\n",
+        )
+        .expect("seed");
+    let out = s.run_for_output("luau /demo/syswrite.luau");
+    assert_eq!(out, "readback=written-by-sys-fs\r\n", "sys.fs read-back:\n{out}");
+    assert_eq!(
+        s.host.read_file("/tmp/sysout.txt").expect("host reads the guest-written file"),
+        b"written-by-sys-fs",
+        "the guest's sys.fs.write must reach the kernel VFS",
+    );
+}
+
 /// Well-typed strict module: luau-analyze reports nothing.
 #[test]
 fn luau_check_passes_clean() {
