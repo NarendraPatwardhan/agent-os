@@ -1,16 +1,15 @@
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
-load("@rules_zig//zig:defs.bzl", "zig_library")
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary", "zig_library")
+load("//third_party/luau:defs.bzl", "cc_headers")
 
 # The Luau glue, written in ZIG (the C/C++ → Zig rewrite, VISION §0.2). The patched upstream Luau
-# (C++, fetched by the @luau http_archive) links against this. `trap` + the `mc` syscall shim are
-# self-contained (no Lua C API) and compile standalone — the trap foundation. The bindings
-# (sys/json/hash/re/encoding/deflate + the stdlib loader + the entry — Phase 2 cont.) @cImport
-# Luau's Lua C API from @luau and land here too. The C/C++ headers (trap.h, error_channel.h) are
+# (C++, fetched by the @luau http_archive) links against this. trap + the mc syscall shim are
+# self-contained (no Lua C API); the bindings (sys/stdlib + json/hash/re/encoding/deflate + the
+# entry) @cImport Luau's Lua C API from @luau. The C/C++ headers (trap.h, error_channel.h) are
 # #included by the patched Luau source. See third_party/luau/PLAN.md.
 
-# trap + mc — the kernel-trap-unwind primitives (mc_protected_call / mc_raise / __mc_pcall_run) over
-# the mc_sys_pcall / mc_sys_set_throw imports. No Lua C API, so this compiles standalone (the
-# foundation's compile-check). Built for wasm32-wasi (the luau target world).
+# trap + mc — the kernel-trap-unwind primitives over the mc_sys_pcall / mc_sys_set_throw imports. No
+# Lua C API, so this compiles standalone (a foundation compile-check, gated below).
 zig_library(
     name = "trap",
     main = "trap.zig",
@@ -18,17 +17,95 @@ zig_library(
     visibility = ["//visibility:public"],
 )
 
-# Compile-gate the foundation (matches the contracts' zig_library + build_test): the validation
-# action compiles trap.zig + mc.zig, so an invalid edit fails `bazel test //...`. The wasm-specific
-# link (extern "mc" resolving to the kernel's syscalls) is validated by the Phase-4 luau binary.
 build_test(
     name = "trap_build_test",
     targets = [":trap"],
 )
 
-# Headers #included by the patched Luau source: trap.h (ldo.cpp), error_channel.h (Parser.cpp +
-# Compiler.cpp). Exported so the @luau build can put this dir on its include path.
-exports_files([
-    "trap.h",
-    "error_channel.h",
-])
+# The full glue library: trap + the sys/stdlib bindings (which @cImport the Lua C API). Linked into
+# the luau binary; its export fns (mc_protected_call, mc_open_sys, …) resolve the patched Luau C++ +
+# entry.zig. cdeps brings @luau's headers so the bindings' @cImport "lua.h" resolves.
+zig_library(
+    name = "glue",
+    main = "glue.zig",
+    srcs = [
+        "mc.zig",
+        "stdlib.zig",
+        "sys.zig",
+        "trap.zig",
+    ],
+    deps = ["@luau//:interp_headers"],
+    visibility = ["//visibility:public"],
+)
+
+# Compile-gate the glue (trap + sys + stdlib + the Lua C API @cImport) in `bazel test //...`. The
+# luau binary itself is `manual` (a large C++ build), so this keeps the Zig glue honest on every run.
+build_test(
+    name = "glue_build_test",
+    targets = [":glue"],
+)
+
+# Puts this dir (trap.h, error_channel.h — #included by the patched Luau source) on the build's -I
+# path. INCLUDE-ONLY (no hdrs): error_channel.h is C++ (<new>), so it must NOT become an @cImport
+# direct_public_header. The header FILES reach the csrcs compile via the binary's extra_srcs.
+cc_headers(
+    name = "glue_incs",
+    hdrs = [],
+    includes = ["."],
+    visibility = ["//visibility:public"],
+)
+
+# /bin/luau — `zig c++` compiles the patched upstream Luau (VM/Compiler/Ast/Bytecode/Common from
+# @luau) + the Zig glue + entry.zig into a wasm32-wasi guest. -fno-exceptions/-fno-rtti: the EH is
+# kernel-mediated via the trap glue. (The wasi-adapter conversion to mc + the budget/tier/service
+# stamping + the import verify are layered on next.) See third_party/luau/PLAN.md.
+zig_binary(
+    name = "luau_obj",
+    main = "entry.zig",
+    srcs = [
+        "mc.zig",
+        "stdlib.zig",
+        "sys.zig",
+        "trap.zig",
+    ],
+    csrcs = ["@luau//:interp_srcs"],
+    extra_srcs = [
+        "@luau//:interp_all_hdrs",
+        "error_channel.h",
+        "force_extern_c.h",
+        "trap.h",
+    ],
+    copts = [
+        # Force Luau's public C API to extern "C" so the Zig entry's C-mode @cImport links it (else
+        # the API is C++-mangled, resolves to `env` imports, and the VM is dead-stripped).
+        "-include",
+        "third_party/luau/glue/force_extern_c.h",
+        "-fno-exceptions",
+        "-fno-rtti",
+    ],
+    # -lc / -lc++ reach the global zig build args (zig_build.bzl:500), enabling wasi-libc + libc++
+    # for the csrcs compile (Luau #includes <string.h>, <cstdint>, <vector>, …) AND making argv
+    # available (Args.zig:17-19), without cc_common.link (which would demand a CC toolchain we don't
+    # register).
+    linkopts = [
+        "-lc",
+        "-lc++",
+    ],
+    deps = [
+        "@luau//:interp_headers",
+        ":glue_incs",
+    ],
+    tags = ["manual"],
+)
+
+zig_configure_binary(
+    name = "luau",
+    actual = ":luau_obj",
+    mode = "release_small",
+    # wasm is single-threaded — std.heap.c_allocator's WasmAllocator is only implemented for
+    # -fsingle-threaded (else @compileError("unimplemented")).
+    threaded = "single",
+    target = "//platforms:wasm32_wasi",
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+)
