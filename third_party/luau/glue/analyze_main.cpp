@@ -18,11 +18,13 @@
 #include "Luau/ParseOptions.h"
 #include "Luau/TypeArena.h"
 
+#include <fcntl.h>   // open, O_RDONLY
 #include <optional>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <string>
+#include <unistd.h>  // read
 #include <vector>
 
 // Declared by mc_analysis_compat.h (force-included into the Analysis TUs), defined
@@ -33,25 +35,25 @@ extern "C" __attribute__((noreturn)) void mc_analysis_abort(const char* what) {
     exit(70);
 }
 
+// RAW open/read, never stdio fread/fclose: under the wasi→mc adapter, fread's __stdio_read (a
+// two-iovec readv into the FILE's internal buffer) faults, and mc has no close syscall, so
+// fclose→fd_close→mc_sys_close is a trap stub. The fd is left open — luau-analyze checks one module
+// graph then exits, and the kernel reclaims fds at exit. (Same lesson as luau_cli's readFile.)
 static std::optional<std::string> read_file(const char* path) {
-    FILE* f = fopen(path, "rb");
-    if (!f)
+    int fd = open(path, O_RDONLY);
+    if (fd < 0)
         return std::nullopt;
     std::string s;
     char buf[8192];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
-        s.append(buf, n);
-    fclose(f);
+    ssize_t n;
+    while ((n = read(fd, buf, sizeof(buf))) > 0)
+        s.append(buf, (size_t)n);
     return s;
 }
 
 static bool file_exists(const std::string& p) {
-    FILE* f = fopen(p.c_str(), "rb");
-    if (!f)
-        return false;
-    fclose(f);
-    return true;
+    int fd = open(p.c_str(), O_RDONLY);
+    return fd >= 0; // not closed (see read_file); used only for require resolution
 }
 
 static std::string dir_of(const std::string& p) {

@@ -128,13 +128,14 @@ pkg_tar(
     visibility = ["//visibility:public"],
 )
 
-# loom — posix + /bin/luau, the Luau interpreter as a one-binary domain service (§16.5). The first
-# NON-coreutils flavor: posix's full userland plus the stamped, pure-mc luau guest (mc_tier=full,
-# mc_budget 256 MiB · 2T · 40k). luau-analyze + the batteries layer on top of this.
+# loom — posix + the Luau pair, one-binary domain services (§16.5). The first NON-coreutils flavor:
+# posix's full userland plus the stamped, pure-mc luau interpreter (mc_tier=full, 256 MiB · 2T · 40k,
+# json/hash/time/string batteries embedded) and luau-analyze type checker (256 MiB · 400B · 40k).
 pkg_tar(
     name = "loom",
     files = {
         "//third_party/luau/glue:luau": "/bin/luau",
+        "//third_party/luau/glue:luau-analyze": "/bin/luau-analyze",
     },
     owner = "0.0",
     deps = [":posix"],

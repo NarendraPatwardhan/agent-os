@@ -1,0 +1,20 @@
+--- a/Analysis/src/TypeFunctionRuntime.cpp
++++ b/Analysis/src/TypeFunctionRuntime.cpp
+@@ -102,7 +102,7 @@
+     }
+     catch (CompileError& e)
+     {
+-        return format("'%s' type function failed to compile with error message: %s", name.value, e.what());
++        return format("'%s' type function failed to compile with error message: %s", name.value, "");
+     }
+ 
+     std::string bytecode = builder.getBytecode();
+@@ -188,7 +188,7 @@
+     }
+     catch (CompileError& e)
+     {
+-        return TypeFunctionError{Location{}, FailedToCompile{name.value, e.what()}};
++        return TypeFunctionError{Location{}, FailedToCompile{name.value, ""}};
+     }
+ 
+     std::string bytecode = builder.getBytecode();

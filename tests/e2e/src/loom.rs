@@ -1,13 +1,13 @@
 //! loom — the Luau interpreter (/bin/luau) + type checker (/bin/luau-analyze) as one-binary domain
-//! services (§16.5). The REAL targets are memcontainers/web's cdp-luau-verify.ts recipes: the
-//! `batteries.luau` demo (require-driven json/hash/time + string :split/:trim, under the fuel budget)
-//! and the typed_ok/typed_bad --check pair. Those need the batteries (sys/json/hash bindings + the
-//! require loader + the embedded .luau libs) and luau-analyze; until they land they are #[ignore]'d
-//! with the precise reason — the smoke tests below prove the VM + trap + boot today.
+//! services (§16.5), exercised on memcontainers/web's cdp-luau-verify.ts recipes verbatim: the
+//! `batteries.luau` demo (require-driven json/hash/time + the string :split/:trim extensions, under
+//! the fuel budget) and the typed_ok/typed_bad checks. Both run end-to-end on the real kernel — the
+//! batteries through the embedded .luau libs + the Zig json/hash bindings, the type errors through the
+//! full Luau Analysis engine (file:line:col diagnostics).
 
 use crate::boot_loom;
 
-// ── smoke: the VM, the trap-unwind, and boot work (NOT the complex bar; that's the batteries below).
+// ── smoke: the VM, the trap-unwind, and boot.
 
 /// luau evaluates a `-e` one-liner: parse + compile + run bytecode, the script under lua_pcall so the
 /// kernel trap-unwind (mc_sys_pcall ⇒ __mc_pcall_run) is exercised.
@@ -58,9 +58,8 @@ fn luau_runs_the_batteries_demo() {
     assert!(out.contains("split2 =\tb"), "string :split:\n{out}");
 }
 
-/// Well-typed strict module: luau --check reports nothing.
+/// Well-typed strict module: luau-analyze reports nothing.
 #[test]
-#[ignore = "needs luau-analyze (the analysis patch: Frontend std::→mc_nothread + named-catch)"]
 fn luau_check_passes_clean() {
     let mut s = boot_loom();
     s.host
@@ -69,13 +68,12 @@ fn luau_check_passes_clean() {
             b"--!strict\nlocal function add(a: number, b: number): number\n    return a + b\nend\nprint(add(2, 3))\n",
         )
         .expect("seed /demo/typed_ok.luau");
-    let out = s.run_for_output("luau --check /demo/typed_ok.luau");
+    let out = s.run_for_output("luau-analyze /demo/typed_ok.luau");
     assert!(!out.to_lowercase().contains("error"), "expected no diagnostics:\n{out}");
 }
 
-/// A strict type error: luau --check reports it as file:line:col (here line 2 — the bad assignment).
+/// A strict type error: luau-analyze reports it as file:line:col (here line 2 — the bad assignment).
 #[test]
-#[ignore = "needs luau-analyze (the analysis patch: Frontend std::→mc_nothread + named-catch)"]
 fn luau_check_reports_type_error() {
     let mut s = boot_loom();
     s.host
@@ -84,6 +82,7 @@ fn luau_check_reports_type_error() {
             b"--!strict\nlocal x: number = \"not a number\"\nprint(x)\n",
         )
         .expect("seed /demo/typed_bad.luau");
-    let out = s.run_for_output("luau --check /demo/typed_bad.luau");
+    let out = s.run_for_output("luau-analyze /demo/typed_bad.luau");
     assert!(out.contains("/demo/typed_bad.luau:2:"), "expected a file:line:col diagnostic at line 2:\n{out}");
+    assert!(out.contains("'number'") && out.contains("'string'"), "expected the number-vs-string error:\n{out}");
 }
