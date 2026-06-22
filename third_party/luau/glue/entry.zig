@@ -131,26 +131,22 @@ fn runSource(L: ?*c.lua_State, chunkname: [*:0]const u8, src: [*]const u8, len: 
     return EXIT_OK;
 }
 
-// File reading via wasi-libc's RAW read() syscall, NOT stdio. fopen resolves the path through
-// wasi-libc's preopens and hands us a fd (fileno); we then read() it directly. Three wasi-libc traps
-// are sidestepped: stdio fread (its __stdio_read does a two-iovec readv into the FILE buffer that
-// faults under the adapter); the variadic open() (its `...mode` ABI); and CLOSE — mc's file model
-// has NO close syscall (luau imports mc_sys_open/read but not mc_sys_close; handles are reclaimed at
-// exit), so the adapter's fd_close→mc_sys_close resolves to a trap stub. read() → __wasi_fd_read →
-// mc_sys_read is exactly cat's path. The fd is not closed (the mc way); the kernel reclaims it.
-extern fn fopen(path: [*:0]const u8, mode: [*:0]const u8) ?*anyopaque;
-extern fn fileno(f: ?*anyopaque) c_int;
-extern fn read(fd: c_int, buf: [*]u8, len: usize) isize;
-
+// File reading over the mc syscalls DIRECTLY (mc_sys_open/read/close — the way sys.zig does it),
+// not wasi-libc stdio. This sidesteps the stdio traps (fread's two-iovec readv into the FILE buffer
+// faults under the adapter; the variadic open's `...mode` ABI) AND closes the fd cleanly: mc_sys_close
+// is a real syscall (contracts/gen/mc.gen.rs), the kernel's Close handler frees the file slot.
 fn readFile(path: [*:0]const u8) ?[]u8 {
-    const f = fopen(path, "rb") orelse return null;
-    const fd = fileno(f);
+    var fd: u32 = 0;
+    if (mc.mc_sys_open(mc.addr(path), @intCast(std.mem.span(path).len), 1, mc.addr(&fd)) != 0) // O_READ
+        return null;
+    defer _ = mc.mc_sys_close(@intCast(fd));
     var list: std.ArrayList(u8) = .empty;
     var buf: [8192]u8 = undefined;
     while (true) {
-        const n = read(fd, &buf, buf.len);
-        if (n <= 0) break;
-        list.appendSlice(std.heap.c_allocator, buf[0..@intCast(n)]) catch return null;
+        var n: u32 = 0;
+        if (mc.mc_sys_read(@intCast(fd), mc.addr(&buf), buf.len, mc.addr(&n)) != 0) return null;
+        if (n == 0) break;
+        list.appendSlice(std.heap.c_allocator, buf[0..n]) catch return null;
     }
     return list.toOwnedSlice(std.heap.c_allocator) catch null;
 }

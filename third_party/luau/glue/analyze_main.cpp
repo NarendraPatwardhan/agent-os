@@ -18,13 +18,11 @@
 #include "Luau/ParseOptions.h"
 #include "Luau/TypeArena.h"
 
-#include <fcntl.h>   // open, O_RDONLY
 #include <optional>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <string>
-#include <unistd.h>  // read
 #include <vector>
 
 // Declared by mc_analysis_compat.h (force-included into the Analysis TUs), defined
@@ -35,25 +33,33 @@ extern "C" __attribute__((noreturn)) void mc_analysis_abort(const char* what) {
     exit(70);
 }
 
-// RAW open/read, never stdio fread/fclose: under the wasi→mc adapter, fread's __stdio_read (a
-// two-iovec readv into the FILE's internal buffer) faults, and mc has no close syscall, so
-// fclose→fd_close→mc_sys_close is a trap stub. The fd is left open — luau-analyze checks one module
-// graph then exits, and the kernel reclaims fds at exit. (Same lesson as luau_cli's readFile.)
+// File IO over the mc syscalls DIRECTLY (not stdio: fread's two-iovec readv into the FILE buffer
+// faults under the wasi→mc adapter). mc_sys_close is a real syscall, so the fd is properly closed —
+// and file_exists stats instead of opening, so require resolution can't leak fds across a big graph.
+extern "C" {
+__attribute__((import_module("mc"), import_name("mc_sys_open"))) int mc_sys_open(unsigned, unsigned, int, unsigned);
+__attribute__((import_module("mc"), import_name("mc_sys_read"))) int mc_sys_read(int, unsigned, unsigned, unsigned);
+__attribute__((import_module("mc"), import_name("mc_sys_close"))) int mc_sys_close(int);
+__attribute__((import_module("mc"), import_name("mc_sys_lstat"))) int mc_sys_lstat(unsigned, unsigned, unsigned);
+}
+static inline unsigned a32(const void* p) { return (unsigned)(size_t)p; }
+
 static std::optional<std::string> read_file(const char* path) {
-    int fd = open(path, O_RDONLY);
-    if (fd < 0)
+    unsigned fd = 0;
+    if (mc_sys_open(a32(path), (unsigned)strlen(path), 1 /*O_READ*/, a32(&fd)) != 0)
         return std::nullopt;
     std::string s;
     char buf[8192];
-    ssize_t n;
-    while ((n = read(fd, buf, sizeof(buf))) > 0)
-        s.append(buf, (size_t)n);
+    unsigned n = 0;
+    while (mc_sys_read((int)fd, a32(buf), sizeof(buf), a32(&n)) == 0 && n > 0)
+        s.append(buf, n);
+    mc_sys_close((int)fd);
     return s;
 }
 
 static bool file_exists(const std::string& p) {
-    int fd = open(p.c_str(), O_RDONLY);
-    return fd >= 0; // not closed (see read_file); used only for require resolution
+    unsigned char st[44];
+    return mc_sys_lstat(a32(p.c_str()), (unsigned)p.size(), a32(st)) == 0;
 }
 
 static std::string dir_of(const std::string& p) {

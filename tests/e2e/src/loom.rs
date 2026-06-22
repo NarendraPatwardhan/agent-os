@@ -58,6 +58,22 @@ fn luau_runs_the_batteries_demo() {
     assert!(out.contains("split2 =\tb"), "string :split:\n{out}");
 }
 
+/// json.decode round-trips: parse an object with a nested array + table, read fields back, and
+/// re-encode — exercising the decode path (object/array/number/string/nesting) the batteries demo
+/// (encode-only) didn't cover.
+#[test]
+fn json_decode_round_trips() {
+    let mut s = boot_loom();
+    s.host
+        .write_file(
+            "/demo/jsonrt.luau",
+            b"local json = require(\"json\")\nlocal d = assert(json.decode('{\"a\":1,\"items\":[10,20,30],\"nested\":{\"k\":\"v\"}}'))\nprint(d.a, d.items[2], d.nested.k, json.encode(d.items))\n",
+        )
+        .expect("seed");
+    let out = s.run_for_output("luau /demo/jsonrt.luau");
+    assert!(out.contains("1\t20\tv\t[10,20,30]"), "json.decode round-trip:\n{out}");
+}
+
 /// sys.fs is the real syscall surface: a guest writes a file via sys.fs.write + reads it back via
 /// sys.fs.read, and the HOST sees the same bytes in the kernel VFS — proving sys.zig drives mc_sys_*
 /// (open/write/read/close) for real, not a stub.
