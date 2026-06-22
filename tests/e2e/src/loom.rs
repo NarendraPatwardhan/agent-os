@@ -79,6 +79,40 @@ fn sys_fs_writes_a_file_the_host_can_read() {
     );
 }
 
+/// The real complex example: generate a genuine .xlsx with the embedded xlsx/opc/zip/xml libs +
+/// the deflate binding, write it via sys.fs, and have the HOST verify it's a valid OOXML zip
+/// (PK header + the part names). This is the document-generator path memcontainers/web showcases —
+/// the proof the batteries are real, not a stub. (memcontainers/web app.ts REPORT_SAMPLE_LUA.)
+#[test]
+fn luau_generates_a_real_xlsx() {
+    let mut s = boot_loom();
+    s.host
+        .write_file(
+            "/demo/genxlsx.luau",
+            concat!(
+                "local xlsx = require(\"xlsx\")\n",
+                "local wb = xlsx.new()\n",
+                "local ws = wb:addWorksheet(\"Sales\")\n",
+                "ws:setCell(\"A1\", \"Region\")\n",
+                "ws:setCell(\"B1\", \"Revenue\")\n",
+                "ws:setCell(\"A2\", \"EMEA\")\n",
+                "ws:setCell(\"B2\", 1234)\n",
+                "assert(sys.fs.write(\"/tmp/gen.xlsx\", wb:toBytes()))\n",
+                "print(\"wrote xlsx\")\n",
+            )
+            .as_bytes(),
+        )
+        .expect("seed");
+    let out = s.run_for_output("luau /demo/genxlsx.luau");
+    assert!(out.contains("wrote xlsx"), "generation failed:\n{out}");
+    let xlsx = s.host.read_file("/tmp/gen.xlsx").expect("host reads the generated xlsx");
+    assert!(xlsx.starts_with(b"PK\x03\x04"), "not a zip — head {:?}", &xlsx[..xlsx.len().min(8)]);
+    let body = String::from_utf8_lossy(&xlsx);
+    assert!(body.contains("[Content_Types].xml"), "missing the OOXML content-types part");
+    assert!(body.contains("xl/worksheets/"), "missing the worksheet part");
+    assert!(xlsx.len() > 1000, "xlsx suspiciously small: {} bytes", xlsx.len());
+}
+
 /// Well-typed strict module: luau-analyze reports nothing.
 #[test]
 fn luau_check_passes_clean() {

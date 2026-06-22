@@ -8,9 +8,11 @@ const lua = @import("lua.zig");
 const c = lua.c;
 const State = lua.State;
 
-// The native modules, defined in json.zig / hash.zig (registered into package.loaded below).
+// The native modules (json/hash/encoding/deflate), registered into package.loaded below.
 extern fn mc_open_json(L: ?*State) c_int;
 extern fn mc_open_hash(L: ?*State) c_int;
+extern fn mc_open_encoding(L: ?*State) c_int;
+extern fn mc_open_deflate(L: ?*State) c_int;
 
 // libc, for the VFS read + the rare prelude-error report (std.posix.write changed in 0.16).
 extern fn fopen(path: [*:0]const u8, mode: [*:0]const u8) ?*anyopaque;
@@ -170,8 +172,10 @@ pub export fn mc_open_stdlib(L: ?*State) void {
 
     regC(L, "json", &mc_open_json);
     regC(L, "hash", &mc_open_hash);
+    regC(L, "encoding", &mc_open_encoding);
+    regC(L, "deflate", &mc_open_deflate);
 
-    // Make `sys` require-able too (already a global, possibly nil until sys.zig lands).
+    // Make `sys` require-able too (a global now that sys.zig is real).
     lua.getglobal(L, "package");
     _ = c.lua_getfield(L, -1, "loaded");
     lua.getglobal(L, "sys");

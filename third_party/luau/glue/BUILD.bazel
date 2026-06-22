@@ -71,6 +71,8 @@ zig_binary(
     name = "luau_obj",
     main = "entry.zig",
     srcs = [
+        "deflate.zig",
+        "encoding.zig",
         "hash.zig",
         "json.zig",
         "lua.zig",

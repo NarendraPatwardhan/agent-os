@@ -30,6 +30,8 @@ comptime {
     _ = @import("stdlib.zig");
     _ = @import("json.zig"); // mc_open_json (the require'd native module)
     _ = @import("hash.zig"); // mc_open_hash
+    _ = @import("encoding.zig"); // mc_open_encoding (base64/hex)
+    _ = @import("deflate.zig"); // mc_open_deflate (raw deflate — zip/OOXML)
     _ = @import("wasi_shim.zig"); // residual wasi import forwarders (fd_close)
 }
 
