@@ -75,6 +75,7 @@ zig_binary(
         "stdlib.zig",
         "sys.zig",
         "trap.zig",
+        "wasi_shim.zig",
     ],
     csrcs = ["@luau//:interp_srcs"],
     extra_srcs = [

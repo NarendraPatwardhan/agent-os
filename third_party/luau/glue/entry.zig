@@ -28,6 +28,7 @@ comptime {
     _ = @import("trap.zig");
     _ = @import("sys.zig");
     _ = @import("stdlib.zig");
+    _ = @import("wasi_shim.zig"); // residual wasi import forwarders (fd_close)
 }
 
 const kVersion = "luau (agent-os) — Luau 0.725";
