@@ -18,7 +18,7 @@ use constants_rust::{
     tier_caps, CAP_AMBIENT, CAP_FS_READ, CAP_FS_WRITE, CAP_MOUNT, CAP_NET, CAP_PERSIST, CAP_SCRATCH,
     CAP_SPAWN, TIER_FULL, TIER_ISOLATED, TIER_READ_ONLY, TIER_READ_WRITE,
 };
-use mc_rust::SYSCALL_CAPS;
+use mc_rust::{SYSCALL_CAPS, SYSCALL_NAMES};
 
 /// Minimal unsigned-LEB128 decode: `(value, bytes_consumed)`.
 fn uleb(b: &[u8], at: usize) -> (u64, usize) {
@@ -193,6 +193,10 @@ fn attest(wasm: &[u8]) -> Result<(), String> {
             violations.push(format!("non-mc import `{module}::{name}` (§9.3: a guest imports only `mc`)"));
             continue;
         }
+        if !SYSCALL_NAMES.contains(&name.as_str()) {
+            violations.push(format!("unknown mc import `{name}` (§9.3: imports must be declared syscalls)"));
+            continue;
+        }
         let floor = match SYSCALL_CAPS.iter().find(|(s, _)| *s == name) {
             Some((_, f)) => *f,
             None => continue, // no cap floor → unconditionally permitted (read/write/args/exit/…)
@@ -285,5 +289,11 @@ mod tests {
         // §9.3 purity: a stray wasi/env import fails regardless of tier — the boundary leaked.
         assert!(attest(&craft_import("wasi_snapshot_preview1", "fd_write", "full")).is_err());
         assert!(attest(&craft_import("env", "memcpy", "full")).is_err());
+    }
+
+    #[test]
+    fn unknown_mc_import_is_rejected() {
+        // §9.3 conformance: the module alone is not enough; the symbol must be in the contract.
+        assert!(attest(&craft("mc_sys_not_a_real_call", "full")).is_err());
     }
 }
