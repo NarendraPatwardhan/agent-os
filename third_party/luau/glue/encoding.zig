@@ -1,7 +1,7 @@
 //! encoding.zig — the `encoding` battery (was loom/src/encoding_bindings.cpp; C++ → Zig). base64
 //! (standard + url-safe, optional padding) over std.base64, and hex. API:
 //! encoding.base64.encode(s [,{url=,pad=}]) -> string; encoding.base64.decode(s) -> string?, err
-//! (accepts both alphabets, skips whitespace); encoding.hex.{encode,decode}. third_party/luau/PLAN.md.
+//! (accepts both alphabets, skips whitespace); encoding.hex.{encode,decode}. third_party/luau/SYSTEM.md.
 
 const std = @import("std");
 const lua = @import("lua.zig");

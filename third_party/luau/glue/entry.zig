@@ -2,7 +2,7 @@
 //! script/eval/REPL runner modelled on /bin/sh: `luau SCRIPT [args]`, `luau -e CODE`, `luau`
 //! (REPL), `luau -` (stdin), `--version`/`--help`. Errors are pcall-trapped (printed `luau: <msg>`
 //! + a traceback). Uses the Lua C API directly via @cImport — the underlying functions, since the
-//! lua_* convenience MACROS are not exposed through translate-c. See third_party/luau/PLAN.md.
+//! lua_* convenience MACROS are not exposed through translate-c. See third_party/luau/SYSTEM.md.
 
 const std = @import("std");
 const mc = @import("mc.zig"); // mc_sys_spawn / waitpid — `luau --check` runs /bin/luau-analyze

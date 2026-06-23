@@ -11,7 +11,7 @@
 //                              nearest mc_protected_call boundary. Never returns.
 //
 // Consumers: the patched VM `ldo.cpp` (luaD_rawrunprotected → mc_protected_call, luaD_throw →
-// mc_raise) and error_channel.h's Channel<T>. See third_party/luau/PLAN.md.
+// mc_raise) and error_channel.h's Channel<T>. See third_party/luau/SYSTEM.md.
 #pragma once
 
 #ifdef __cplusplus

@@ -1,7 +1,7 @@
 //! lua.zig — the shared Lua C API for the Zig batteries: the @cImport of lua.h + lualib.h plus thin
 //! wrappers for the lua_* convenience MACROS that translate-c does not expose (lua_newtable,
 //! lua_pushcfunction, lua_pop, lua_setglobal, …). One @cImport so every binding shares the same
-//! lua_State type. See third_party/luau/PLAN.md.
+//! lua_State type. See third_party/luau/SYSTEM.md.
 
 pub const c = @cImport({
     @cInclude("lua.h");

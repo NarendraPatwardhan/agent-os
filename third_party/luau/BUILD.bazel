@@ -5,7 +5,7 @@
 #   glue/              — trap / sys / stdlib / the batteries / entry, written in ZIG; three C++
 #                        holdouts (error_channel.h, analysis_eh_shim.h, analyze_main.cpp).
 #   BUILD.luau.bazel   — the build_file http_archive applies to the extracted source (Phase 4).
-# See third_party/luau/PLAN.md.
+# See third_party/luau/SYSTEM.md.
 #
 # luau needs the kernel-mediated non-local exit because wasmi has no exception proposal — Lua
 # `error`/`pcall` and C++ EH unwind through the kernel's trap boundary (VISION §4.1).

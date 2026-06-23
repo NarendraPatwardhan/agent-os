@@ -1,7 +1,7 @@
 //! deflate.zig — the `deflate` battery (was loom/src/deflate_bindings.cpp; C++ → Zig). RAW DEFLATE
 //! (RFC 1951, no zlib/gzip wrapper) over Zig's std.compress.flate — the codec the `zip`/`opc` libs
 //! use for OOXML (xlsx/docx/pptx) method-8 entries. API: deflate.compress(s [,level]) -> bytes;
-//! deflate.decompress(s [,hint]) -> bytes?, err. See third_party/luau/PLAN.md.
+//! deflate.decompress(s [,hint]) -> bytes?, err. See third_party/luau/SYSTEM.md.
 
 const std = @import("std");
 const lua = @import("lua.zig");

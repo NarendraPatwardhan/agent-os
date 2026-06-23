@@ -6,7 +6,7 @@ load("//third_party/luau:defs.bzl", "cc_headers", "cc_object", "mc_program")
 # (C++, fetched by the @luau http_archive) links against this. trap + the mc syscall shim are
 # self-contained (no Lua C API); the bindings (sys/stdlib + json/hash/re/encoding/deflate + the
 # entry) @cImport Luau's Lua C API from @luau. The C/C++ headers (trap.h, error_channel.h) are
-# #included by the patched Luau source. See third_party/luau/PLAN.md.
+# #included by the patched Luau source. See third_party/luau/SYSTEM.md.
 
 # mc.zig's hand-kept `extern "mc" fn` decls are gated against the projected contract by
 # //tools/mc-abi-gate (which reads this file via include_str!).
@@ -81,7 +81,7 @@ cc_headers(
 # /bin/luau — `zig c++` compiles the patched upstream Luau (VM/Compiler/Ast/Bytecode/Common from
 # @luau) + the Zig glue + entry.zig into a wasm32-wasi guest. -fno-exceptions/-fno-rtti: the EH is
 # kernel-mediated via the trap glue. (The wasi-adapter conversion to mc + the budget/tier/service
-# stamping + the import verify are layered on next.) See third_party/luau/PLAN.md.
+# stamping + the import verify are layered on next.) See third_party/luau/SYSTEM.md.
 zig_binary(
     name = "luau_obj",
     main = "entry.zig",

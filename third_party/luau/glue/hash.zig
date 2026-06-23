@@ -1,7 +1,7 @@
 //! hash.zig — the `hash` battery (was loom/src/hash_bindings.cpp; C++ → Zig). Content-addressing
 //! checksums over Zig's std.crypto / std.hash (no hand-rolled algorithms). API:
 //! hash.sha256/sha1/md5(s [, {raw=true}]) -> hex (or raw bytes); hash.crc32(s) -> number.
-//! See third_party/luau/PLAN.md.
+//! See third_party/luau/SYSTEM.md.
 
 const std = @import("std");
 const lua = @import("lua.zig");

@@ -4,7 +4,7 @@
 //! supplies the unwind: `mc_sys_pcall` runs the stashed thunk as a NESTED guest call (a trap
 //! boundary), and `mc_sys_set_throw` records the code a subsequent trap hands back. The C++ side
 //! (the patched VM `ldo.cpp`, and error_channel.h's Channel<T>) reaches these through trap.h. See
-//! third_party/luau/PLAN.md.
+//! third_party/luau/SYSTEM.md.
 
 const mc = @import("mc.zig");
 

@@ -16,7 +16,7 @@
 // and is freed normally, so the only objects skipped are short-lived STL temporaries on the
 // recursive-descent stack — a bounded, one-shot leak on the *error* path (a syntax/compile error),
 // reclaimed at process exit (script mode) and bounded by `mc_budget.mem` in the REPL. See
-// third_party/luau/PLAN.md.
+// third_party/luau/SYSTEM.md.
 #pragma once
 
 #include "trap.h"

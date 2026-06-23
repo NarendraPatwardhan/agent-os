@@ -2,7 +2,7 @@
 //! (kept in lockstep with :luau_obj's srcs) so the :glue_build_test compile-gate is honest: it builds
 //! exactly the Zig the binary builds, catching errors in `bazel test //...` without the (manual,
 //! expensive) full C++ link. Its `export fn`s (mc_protected_call, mc_open_sys, mc_open_json, …) are
-//! what the patched Luau C++ + entry.zig link against. See third_party/luau/PLAN.md.
+//! what the patched Luau C++ + entry.zig link against. See third_party/luau/SYSTEM.md.
 
 comptime {
     _ = @import("trap.zig"); // mc_protected_call / mc_raise / __mc_pcall_run (patched ldo.cpp)

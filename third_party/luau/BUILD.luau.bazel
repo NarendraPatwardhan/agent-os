@@ -1,7 +1,7 @@
 # build_file for the patched @luau source (http_archive build_file = "//third_party/luau:BUILD.luau.bazel"),
 # evaluated in the @luau repo context. It only EXPOSES the upstream source; the actual zig c++ build
 # (//third_party/luau/glue:luau / :luau-analyze) lives in the main repo and references these. See
-# third_party/luau/PLAN.md.
+# third_party/luau/SYSTEM.md.
 
 load("@agent-os//third_party/luau:defs.bzl", "cc_headers")
 
