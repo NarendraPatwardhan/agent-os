@@ -52,6 +52,11 @@ rust_static_library(
     edition = "2021",
     rustc_flags = ["-Ccodegen-units=1"],
     tags = ["manual"],
+    # The standalone #[panic_handler] calls core::arch::wasm32::unreachable() — this crate only
+    # compiles for wasm32. Without this, `bazel test //...` (host config) builds it via its non-manual
+    # cc_object consumer (//third_party/luau/glue:wasi_adapter_link) and fails; with it, the chain is
+    # skipped as incompatible off-wasm32, while luau's wasm32 transition still builds it.
+    target_compatible_with = ["@platforms//cpu:wasm32"],
     visibility = ["//visibility:public"],
     deps = [
         "//contracts:constants_rust",
