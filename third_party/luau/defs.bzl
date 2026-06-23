@@ -55,15 +55,18 @@ cc_object = rule(
 
 def mc_program(name, wasm, tier, mem, fuel, table, visibility = None):
     """Stamp a zig/C++ domain-tool wasm with the kernel's load-time mc_tier + mc_budget custom
-    sections (VISION §16.5). The Rust boxes emit these via declare_tier!/declare_budget!; the
-    zig/C++ tools cannot (Zig's linksection makes a data segment, not a custom section), so they are
-    stamped post-link by //tools/mc-stamp. Produces <name>.wasm — the load-ready guest."""
+    sections (VISION §16.5), THEN attest it (§9.3 import purity + §16.4 tier-cap fit). The Rust boxes
+    emit the sections via declare_tier!/declare_budget!; the zig/C++ tools cannot (Zig's linksection
+    makes a data segment, not a custom section), so they are stamped post-link by //tools/mc-stamp.
+    //tools/mc-attest then runs on the stamped output: a non-mc import or a syscall the tier cannot
+    use FAILS the build — conformance is enforced, not just observed. Produces <name>.wasm."""
     native.genrule(
         name = name,
         srcs = [wasm],
         outs = [name + ".wasm"],
-        tools = ["//tools/mc-stamp"],
-        cmd = "$(execpath //tools/mc-stamp) $(execpath {wasm}) $@ {tier} {mem} {fuel} {table}".format(
+        tools = ["//tools/mc-stamp", "//tools/mc-attest"],
+        cmd = ("$(execpath //tools/mc-stamp) $(execpath {wasm}) $@ {tier} {mem} {fuel} {table} && " +
+               "$(execpath //tools/mc-attest) $@").format(
             wasm = wasm,
             tier = tier,
             mem = mem,

@@ -186,7 +186,11 @@ fn attest(wasm: &[u8]) -> Result<(), String> {
 
     let mut violations: Vec<String> = Vec::new();
     for (module, name) in imports(wasm) {
+        // §9.3 purity (the base conformance the §16.4 tier check extends): a guest may import ONLY
+        // the `mc` syscall module. A stray wasi/env import means the boundary leaked — fail the build,
+        // don't silently skip it (the gap that let mc_program ship un-attested).
         if module != "mc" {
+            violations.push(format!("non-mc import `{module}::{name}` (§9.3: a guest imports only `mc`)"));
             continue;
         }
         let floor = match SYSCALL_CAPS.iter().find(|(s, _)| *s == name) {
@@ -216,13 +220,18 @@ mod tests {
     /// A minimal wasm importing `mc.<syscall>` and carrying an `mc_tier` section — exactly the two
     /// things `attest` reads (sizes stay < 128, so each LEB length is one byte).
     fn craft(syscall: &str, tier: &str) -> Vec<u8> {
+        craft_import("mc", syscall, tier)
+    }
+
+    /// Like `craft`, but with an explicit import module — to exercise §9.3 purity (a non-`mc` module).
+    fn craft_import(module: &str, name: &str, tier: &str) -> Vec<u8> {
         let mut w = vec![0x00, 0x61, 0x73, 0x6d, 1, 0, 0, 0]; // \0asm + version
         w.extend_from_slice(&[1, 4, 1, 0x60, 0, 0]); // type section: one () -> ()
         let mut imp = vec![1u8]; // import count
-        imp.push(2);
-        imp.extend_from_slice(b"mc");
-        imp.push(syscall.len() as u8);
-        imp.extend_from_slice(syscall.as_bytes());
+        imp.push(module.len() as u8);
+        imp.extend_from_slice(module.as_bytes());
+        imp.push(name.len() as u8);
+        imp.extend_from_slice(name.as_bytes());
         imp.extend_from_slice(&[0x00, 0x00]); // func kind, type idx 0
         w.push(2);
         w.push(imp.len() as u8);
@@ -269,5 +278,12 @@ mod tests {
     fn uncapped_syscall_is_always_accepted() {
         // write/read/args/exit have no cap floor → fine even at the most restrictive tier.
         assert!(attest(&craft("mc_sys_write", "isolated")).is_ok());
+    }
+
+    #[test]
+    fn non_mc_import_is_rejected_even_at_full_tier() {
+        // §9.3 purity: a stray wasi/env import fails regardless of tier — the boundary leaked.
+        assert!(attest(&craft_import("wasi_snapshot_preview1", "fd_write", "full")).is_err());
+        assert!(attest(&craft_import("env", "memcpy", "full")).is_err());
     }
 }
