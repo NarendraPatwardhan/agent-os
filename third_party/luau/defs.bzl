@@ -53,25 +53,102 @@ cc_object = rule(
     doc = "Force-link a precompiled object via CcInfo, no CC toolchain.",
 )
 
-def mc_program(name, wasm, tier, mem, fuel, table, visibility = None):
-    """Stamp a zig/C++ domain-tool wasm with the kernel's load-time mc_tier + mc_budget custom
-    sections (VISION §16.5), THEN attest it (§9.3 import purity + §16.4 tier-cap fit). The Rust boxes
-    emit the sections via declare_tier!/declare_budget!; the zig/C++ tools cannot (Zig's linksection
-    makes a data segment, not a custom section), so they are stamped post-link by //tools/mc-stamp.
-    //tools/mc-attest then runs on the stamped output: a non-mc import or a syscall the tier cannot
-    use FAILS the build — conformance is enforced, not just observed. Produces <name>.wasm."""
-    native.genrule(
-        name = name,
-        srcs = [wasm],
-        outs = [name + ".wasm"],
-        tools = ["//tools/mc-stamp", "//tools/mc-attest"],
-        cmd = ("$(execpath //tools/mc-stamp) $(execpath {wasm}) $@ {tier} {mem} {fuel} {table} && " +
-               "$(execpath //tools/mc-attest) $@").format(
-            wasm = wasm,
-            tier = tier,
-            mem = mem,
-            fuel = fuel,
-            table = table,
+McProgramInfo = provider(
+    doc = "A stamped, attested mc guest program — the load-ready wasm plus its declared metadata, " +
+          "so downstream rules (images, service manifests) read tier/budget from the graph rather " +
+          "than re-parsing the wasm.",
+    fields = {
+        "wasm": "The stamped .wasm File (mc_tier + mc_budget custom sections appended).",
+        "tier": "The capability tier string (isolated / read-only / read-write / full).",
+        "budget": "struct(mem, fuel, table) — the declared resource budget (VISION §16.5).",
+    },
+)
+
+def _mc_program_impl(ctx):
+    # 1. STAMP — append the kernel's load-time mc_tier + mc_budget custom sections. The Rust boxes
+    #    emit these via declare_tier!/declare_budget!; the zig/C++ tools cannot (Zig's linksection
+    #    makes a data segment, not a custom section), so //tools/mc-stamp does it post-link.
+    stamped = ctx.actions.declare_file(ctx.label.name + ".wasm")
+    ctx.actions.run(
+        outputs = [stamped],
+        inputs = [ctx.file.wasm],
+        executable = ctx.executable._stamp,
+        arguments = [
+            ctx.file.wasm.path,
+            stamped.path,
+            ctx.attr.tier,
+            ctx.attr.mem,
+            ctx.attr.fuel,
+            ctx.attr.table,
+        ],
+        mnemonic = "McStamp",
+        progress_message = "Stamping mc guest %{label}",
+    )
+
+    # 2. ATTEST — §9.3 import purity + §16.4 tier-cap fit, as a VALIDATION action: Bazel runs it for
+    #    every target built (--run_validations, on by default) and fails the build on a violation,
+    #    WITHOUT being an input to the stamped wasm. Attestation is a check on the artifact, not a
+    #    transform of it, so the graph says exactly that — conformance enforced as a graph edge, not
+    #    a shell `&&` hidden in a genrule cmd.
+    attested = ctx.actions.declare_file(ctx.label.name + ".attested")
+    ctx.actions.run_shell(
+        outputs = [attested],
+        inputs = [stamped],
+        tools = [ctx.executable._attest],
+        command = "{attest} {wasm} && touch {marker}".format(
+            attest = ctx.executable._attest.path,
+            wasm = stamped.path,
+            marker = attested.path,
         ),
+        mnemonic = "McAttest",
+        progress_message = "Attesting mc guest %{label}",
+    )
+
+    return [
+        DefaultInfo(files = depset([stamped])),
+        McProgramInfo(
+            wasm = stamped,
+            tier = ctx.attr.tier,
+            budget = struct(
+                mem = int(ctx.attr.mem),
+                fuel = int(ctx.attr.fuel),
+                table = int(ctx.attr.table),
+            ),
+        ),
+        OutputGroupInfo(_validation = depset([attested])),
+    ]
+
+_mc_program = rule(
+    implementation = _mc_program_impl,
+    doc = "Stamp a zig/C++ domain-tool wasm with its mc_tier + mc_budget custom sections (VISION " +
+          "§16.5) and attest it (§9.3 import purity + §16.4 tier-cap fit). Yields the load-ready " +
+          "<name>.wasm + an McProgramInfo; a non-mc/unknown import or an over-tier syscall fails the build.",
+    attrs = {
+        "wasm": attr.label(
+            allow_single_file = True,
+            mandatory = True,
+            doc = "The linked guest wasm to stamp + attest.",
+        ),
+        "tier": attr.string(mandatory = True, doc = "Capability tier (isolated/read-only/read-write/full)."),
+        # Budgets are strings because attr.int caps at signed 32-bit but `fuel` is ~2e12; mc-stamp
+        # parses them and the provider exposes them back as ints.
+        "mem": attr.string(mandatory = True, doc = "Memory budget, bytes."),
+        "fuel": attr.string(mandatory = True, doc = "Fuel budget (interpreter steps)."),
+        "table": attr.string(mandatory = True, doc = "Table-elements budget."),
+        "_stamp": attr.label(default = "//tools/mc-stamp", executable = True, cfg = "exec"),
+        "_attest": attr.label(default = "//tools/mc-attest", executable = True, cfg = "exec"),
+    },
+)
+
+def mc_program(name, wasm, tier, mem, fuel, table, visibility = None):
+    """Thin ergonomic wrapper over the `_mc_program` rule: takes INT budgets (e.g. 256 * 1024 * 1024)
+    so call sites stay self-documenting, and forwards them as strings (attr.int is 32-bit; fuel is ~2e12)."""
+    _mc_program(
+        name = name,
+        wasm = wasm,
+        tier = tier,
+        mem = str(mem),
+        fuel = str(fuel),
+        table = str(table),
         visibility = visibility,
     )
