@@ -650,16 +650,25 @@ const VM = struct {
     len: i32,
     seen: []i32,
     gen: i32 = 0,
+    oom: bool = false, // an allocation failed mid-match → abort the run; the binding raises a Lua error
 
-    fn dupSaves(saves: []const i32) []i32 {
-        const s = alloc.alloc(i32, saves.len) catch unreachable;
+    // Both return null on OOM (setting .oom) — they never trap. A Pike-VM exists to run untrusted,
+    // model-authored patterns safely; a resource limit must surface as a catchable error, not a crash.
+    fn dupSaves(self: *VM, saves: []const i32) ?[]i32 {
+        const s = alloc.alloc(i32, saves.len) catch {
+            self.oom = true;
+            return null;
+        };
         @memcpy(s, saves);
         return s;
     }
 
     // A fresh saves slice filled with -1.
-    fn initSaves(n: usize) []i32 {
-        const s = alloc.alloc(i32, n) catch unreachable;
+    fn initSaves(self: *VM, n: usize) ?[]i32 {
+        const s = alloc.alloc(i32, n) catch {
+            self.oom = true;
+            return null;
+        };
         @memset(s, -1);
         return s;
     }
@@ -677,15 +686,19 @@ const VM = struct {
                 self.addThread(list, I.x, saves, sp);
             },
             .I_SPLIT => {
-                self.addThread(list, I.x, dupSaves(saves), sp);
+                if (self.dupSaves(saves)) |d|
+                    self.addThread(list, I.x, d, sp); // (on OOM self.oom is set; saves still feeds y)
                 self.addThread(list, I.y, saves, sp);
             },
             .I_SAVE => {
-                const s2 = dupSaves(saves);
-                if (I.n < @as(i32, @intCast(s2.len)))
-                    s2[@intCast(I.n)] = sp;
-                alloc.free(saves);
-                self.addThread(list, pc + 1, s2, sp);
+                if (self.dupSaves(saves)) |s2| {
+                    if (I.n < @as(i32, @intCast(s2.len)))
+                        s2[@intCast(I.n)] = sp;
+                    alloc.free(saves);
+                    self.addThread(list, pc + 1, s2, sp);
+                } else {
+                    alloc.free(saves); // OOM: drop this thread, the run aborts
+                }
             },
             .I_BOL => {
                 if (sp == 0 or (self.prog.multiline and sp > 0 and self.in[@intCast(sp - 1)] == '\n'))
@@ -701,6 +714,7 @@ const VM = struct {
             },
             else => {
                 list.append(alloc, Thread{ .pc = pc, .saves = saves }) catch {
+                    self.oom = true;
                     alloc.free(saves);
                 };
             },
@@ -716,9 +730,12 @@ const VM = struct {
 
 // Search for the leftmost match at or after `start`; fill `out` (size nsaves).
 // Returns true on a match (and out is populated); false otherwise.
-fn run(prog: *const Prog, in: [*]const u8, len: i32, start: i32, out: []i32) bool {
+fn run(prog: *const Prog, in: [*]const u8, len: i32, start: i32, out: []i32, oom: *bool) bool {
     const npc = prog.insts.items.len;
-    const seen = alloc.alloc(i32, npc) catch return false;
+    const seen = alloc.alloc(i32, npc) catch {
+        oom.* = true;
+        return false;
+    };
     defer alloc.free(seen);
     @memset(seen, -1);
 
@@ -737,7 +754,7 @@ fn run(prog: *const Prog, in: [*]const u8, len: i32, start: i32, out: []i32) boo
     var matched = false;
 
     vm.gen += 1;
-    vm.addThread(&clist, 0, VM.initSaves(nsaves), start);
+    if (vm.initSaves(nsaves)) |s| vm.addThread(&clist, 0, s, start);
 
     var sp = start;
     while (true) : (sp += 1) {
@@ -761,16 +778,16 @@ fn run(prog: *const Prog, in: [*]const u8, len: i32, start: i32, out: []i32) boo
                             b = lowerAscii(b);
                         }
                         if (a == b)
-                            vm.addThread(&nlist, t.pc + 1, VM.dupSaves(t.saves), sp + 1);
+                            if (vm.dupSaves(t.saves)) |s| vm.addThread(&nlist, t.pc + 1, s, sp + 1);
                     }
                 },
                 .I_ANY => {
                     if (ch >= 0 and (prog.dotall or ch != '\n'))
-                        vm.addThread(&nlist, t.pc + 1, VM.dupSaves(t.saves), sp + 1);
+                        if (vm.dupSaves(t.saves)) |s| vm.addThread(&nlist, t.pc + 1, s, sp + 1);
                 },
                 .I_CLASS => {
                     if (ch >= 0 and classMatch(&prog.classes.items[@intCast(I.cls)], @intCast(ch), prog.icase))
-                        vm.addThread(&nlist, t.pc + 1, VM.dupSaves(t.saves), sp + 1);
+                        if (vm.dupSaves(t.saves)) |s| vm.addThread(&nlist, t.pc + 1, s, sp + 1);
                 },
                 .I_MATCH => {
                     @memcpy(out, t.saves);
@@ -785,7 +802,7 @@ fn run(prog: *const Prog, in: [*]const u8, len: i32, start: i32, out: []i32) boo
         // Unanchored search: seed a fresh start at the next position (lowest priority)
         // until we have a match, so the leftmost start wins.
         if (!matched and sp < len)
-            vm.addThread(&nlist, 0, VM.initSaves(nsaves), sp + 1);
+            if (vm.initSaves(nsaves)) |s| vm.addThread(&nlist, 0, s, sp + 1);
         // swap clist <-> nlist; the old clist threads are freed next iter via freeList(nlist).
         const tmp = clist;
         clist = nlist;
@@ -793,6 +810,16 @@ fn run(prog: *const Prog, in: [*]const u8, len: i32, start: i32, out: []i32) boo
         if (sp >= len)
             break;
     }
+    if (vm.oom) oom.* = true;
+    return matched;
+}
+
+// run() + raise a catchable Lua error on OOM (instead of returning a bogus no-match). All the
+// bindings go through this, so a resource limit is always a `re: out of memory` error, never a trap.
+fn runChecked(L: ?*State, prog: *const Prog, in: [*]const u8, len: i32, start: i32, out: []i32) bool {
+    var oom = false;
+    const matched = run(prog, in, len, start, out, &oom);
+    if (oom) _ = c.luaL_errorL(L, "re: out of memory"); // raises (mc trap → pcall); does not return
     return matched;
 }
 
@@ -881,7 +908,7 @@ fn lMatch(L: ?*State) callconv(.c) c_int {
         return c.luaL_errorL(L, "re: out of memory");
     };
     defer alloc.free(sv);
-    if (!run(prog, s, @intCast(n), init - 1, sv)) {
+    if (!runChecked(L, prog, s, @intCast(n), init - 1, sv)) {
         c.lua_pushnil(L);
         return 1;
     }
@@ -901,7 +928,7 @@ fn lFind(L: ?*State) callconv(.c) c_int {
         return c.luaL_errorL(L, "re: out of memory");
     };
     defer alloc.free(sv);
-    if (init > @as(c_int, @intCast(n)) + 1 or !run(prog, s, @intCast(n), init - 1, sv)) {
+    if (init > @as(c_int, @intCast(n)) + 1 or !runChecked(L, prog, s, @intCast(n), init - 1, sv)) {
         c.lua_pushnil(L);
         return 1;
     }
@@ -919,7 +946,7 @@ fn lTest(L: ?*State) callconv(.c) c_int {
         return c.luaL_errorL(L, "re: out of memory");
     };
     defer alloc.free(sv);
-    c.lua_pushboolean(L, @intFromBool(run(prog, s, @intCast(n), 0, sv)));
+    c.lua_pushboolean(L, @intFromBool(runChecked(L, prog, s, @intCast(n), 0, sv)));
     return 1;
 }
 
@@ -937,7 +964,7 @@ fn lGmatchIter(L: ?*State) callconv(.c) c_int {
         return c.luaL_errorL(L, "re: out of memory");
     };
     defer alloc.free(sv);
-    if (!run(prog, s, @intCast(n), pos, sv)) {
+    if (!runChecked(L, prog, s, @intCast(n), pos, sv)) {
         c.lua_pushnil(L);
         return 1;
     }
@@ -1019,7 +1046,7 @@ fn lReplace(L: ?*State) callconv(.c) c_int {
     while (pos <= nlen) {
         if (limit >= 0 and count >= limit)
             break;
-        if (!run(prog, s, nlen, pos, sv))
+        if (!runChecked(L, prog, s, nlen, pos, sv))
             break;
         // text before the match
         out.appendSlice(alloc, (s + @as(usize, @intCast(pos)))[0..@intCast(sv[0] - pos)]) catch {};
@@ -1079,7 +1106,7 @@ fn lModMatch(L: ?*State) callconv(.c) c_int {
         return c.luaL_errorL(L, "re: out of memory");
     };
     defer alloc.free(sv);
-    if (run(prog, s, @intCast(sn), 0, sv))
+    if (runChecked(L, prog, s, @intCast(sn), 0, sv))
         pushMatch(L, prog, s, sv)
     else
         c.lua_pushnil(L);
@@ -1101,7 +1128,7 @@ fn lModTest(L: ?*State) callconv(.c) c_int {
         return c.luaL_errorL(L, "re: out of memory");
     };
     defer alloc.free(sv);
-    c.lua_pushboolean(L, @intFromBool(run(prog, s, @intCast(sn), 0, sv)));
+    c.lua_pushboolean(L, @intFromBool(runChecked(L, prog, s, @intCast(sn), 0, sv)));
     return 1;
 }
 
