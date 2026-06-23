@@ -9,3 +9,63 @@
      std::unordered_map<ModuleName, ModulePtr> modules;
  };
  
+diff --git a/Analysis/src/Frontend.cpp b/Analysis/src/Frontend.cpp
+index 8f0adc4..552ba77 100644
+--- a/Analysis/src/Frontend.cpp
++++ b/Analysis/src/Frontend.cpp
+@@ -82,8 +82,8 @@ struct BuildQueueWorkState
+ 
+     std::vector<BuildQueueItem> buildQueueItems;
+ 
+-    std::mutex mtx;
+-    std::condition_variable cv;
++    mc_nothread::mutex mtx;
++    mc_nothread::condition_variable cv;
+     std::vector<size_t> readyQueueItems;
+ 
+     size_t processing = 0;
+@@ -685,7 +685,7 @@ std::vector<ModuleName> Frontend::checkQueuedModules(
+     while (state->remaining != 0)
+     {
+         {
+-            std::unique_lock guard(state->mtx);
++            mc_nothread::unique_lock guard(state->mtx);
+ 
+             // If nothing is ready yet, wait
+             state->cv.wait(
+@@ -1247,7 +1247,7 @@ void Frontend::performQueueItemTask(std::shared_ptr<BuildQueueWorkState> state,
+     }
+ 
+     {
+-        std::unique_lock guard(state->mtx);
++        mc_nothread::unique_lock guard(state->mtx);
+         state->readyQueueItems.push_back(itemPos);
+     }
+ 
+@@ -1948,7 +1948,7 @@ std::optional<ModuleInfo> FrontendModuleResolver::resolveModuleInfo(const Module
+ 
+ const ModulePtr FrontendModuleResolver::getModule(const ModuleName& moduleName) const
+ {
+-    std::scoped_lock lock(moduleMutex);
++    mc_nothread::scoped_lock lock(moduleMutex);
+ 
+     auto it = modules.find(moduleName);
+     if (it != modules.end())
+@@ -1969,7 +1969,7 @@ std::string FrontendModuleResolver::getHumanReadableModuleName(const ModuleName&
+ 
+ bool FrontendModuleResolver::setModule(const ModuleName& moduleName, ModulePtr module)
+ {
+-    std::scoped_lock lock(moduleMutex);
++    mc_nothread::scoped_lock lock(moduleMutex);
+ 
+     bool replaced = modules.count(moduleName) > 0;
+     modules[moduleName] = std::move(module);
+@@ -1978,7 +1978,7 @@ bool FrontendModuleResolver::setModule(const ModuleName& moduleName, ModulePtr m
+ 
+ void FrontendModuleResolver::clearModules()
+ {
+-    std::scoped_lock lock(moduleMutex);
++    mc_nothread::scoped_lock lock(moduleMutex);
+ 
+     modules.clear();
+ }
