@@ -1,10 +1,10 @@
-// luau_analyze.cpp — `/bin/luau-analyze` (L4, ctx/LUAU.md §8.6): the Luau type checker.
+// analyze_main.cpp — `/bin/luau-analyze` (L4): the Luau type checker.
 // Parse + typecheck a file AND the module graph it `require()`s, printing
 // `file:line:col: message` for each diagnostic across every module; exit non-zero
 // if any. `luau --check f.luau` execs this. Diagnostics go to stdout (like `tsc`).
 //
 // Built from the vendored Luau.Analysis (the real type-inference engine), ported to
-// the wasm guest via mc_analysis_compat.h (force-included, -fno-exceptions): Luau
+// the wasm guest via analysis_eh_shim.h (force-included, -fno-exceptions): Luau
 // type errors are DATA (CheckResult.errors), so ordinary checking is unaffected;
 // only internal/resource-limit conditions (which throw) degrade to a graceful abort.
 
@@ -25,7 +25,7 @@
 #include <string>
 #include <vector>
 
-// Declared by mc_analysis_compat.h (force-included into the Analysis TUs), defined
+// Declared by analysis_eh_shim.h (force-included into the Analysis TUs), defined
 // here: the graceful, noreturn exit the patched throw sites call.
 extern "C" __attribute__((noreturn)) void mc_analysis_abort(const char* what) {
     fputs(what, stderr);

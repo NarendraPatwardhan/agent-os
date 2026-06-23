@@ -19,8 +19,8 @@ const fs = @import("fs.zig"); // the shared mc_sys_*-backed file reader / writer
 
 const Module = struct { name: [*:0]const u8, src: []const u8 };
 
-// The embedded .luau libraries (everything in third_party/luau/lib except the prelude, which runs at
-// startup). Lazy-compiled on first require, so an unused lib's source costs only bytes.
+// The embedded .luau libraries (everything in glue/lib except the prelude, which runs at startup).
+// Lazy-compiled on first require, so an unused lib's source costs only bytes.
 const MODULES = [_]Module{
     .{ .name = "calc", .src = @embedFile("lib/calc.luau") },
     .{ .name = "chart", .src = @embedFile("lib/chart.luau") },

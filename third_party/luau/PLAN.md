@@ -60,7 +60,7 @@ memcontainers' `loom/src/` → agent-os `third_party/luau/glue/`. Cryptic `mc_eh
 | `encoding_bindings.cpp` | base64/hex | **Zig** | `encoding.zig` |
 | `deflate_bindings.cpp` | DEFLATE (puff, no zlib) | **Zig** | `deflate.zig` |
 | `luau_cli.cpp` | interpreter entry / REPL | **Zig** | `entry.zig` |
-| `luau_compat.cpp` | wasi-libc `close()` override (one stray import) | **Zig** | `wasi_libc_shim.zig` |
+| `luau_compat.cpp` | wasi-libc `close()` override (one stray import) | **Zig** | `wasi_shim.zig` |
 | `mc_eh.h` | C++ **template** error channel over the trap | **C++** | `error_channel.h` |
 | `mc_analysis_compat.h` | force-included try/catch + thread shim for Analysis | **C++** | `analysis_eh_shim.h` |
 | `luau_analyze.cpp` | analyzer entry (`Frontend`/`FileResolver`) | **C++** | `analyze_main.cpp` |
@@ -75,8 +75,8 @@ expressible in Zig.
 
 **Phase 1 — Source: fetch + patch + toolchain.**
 - Extract the `// mc PATCH` edits (diff memcontainers' `loom/vendor/luau/` against upstream 0.725)
-  → `third_party/luau/patches/` (`0001-mc-vm.patch` for VM/Parser/Compiler; `0002-mc-analysis.patch`
-  for Analysis). Only patches in-tree (B3) — never the source.
+  → `third_party/luau/patches/` (VM/Parser/Compiler, Analysis EH, named catches, frontend nothread).
+  Only patches in-tree (B3) — never the source.
 - `MODULE.bazel`: the `http_archive(name="luau", urls=[github 0.725 tarball], sha256, strip_prefix,
   patches, patch_tool="patch", patch_args=["-p1"], build_file="//third_party/luau:BUILD.luau.bazel")`.
 - Register a `wasm32-wasi` zig toolchain in `platforms/` (only freestanding is registered today).
@@ -84,7 +84,7 @@ expressible in Zig.
 **Phase 2 — Glue → Zig** in `third_party/luau/glue/` (10 Zig + 3 C++, per the table). The Zig glue
 imports the mc syscall extern shim + `@cImport`s the Lua C API.
 
-**Phase 3 — Assets.** 19 `.luau` → `third_party/luau/lib/*.luau`, embedded via `@embedFile` in
+**Phase 3 — Assets.** 19 `.luau` → `third_party/luau/glue/lib/*.luau`, embedded via `@embedFile` in
 `stdlib.zig` (removes the `mc_lib_embed.h` codegen). 4 skills → `skills/*.md`.
 
 **Phase 4 — Build** `BUILD.luau.bazel` (`zig_binary` / `zig_configure_binary`, target wasm32-wasi):

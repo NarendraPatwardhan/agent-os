@@ -1,6 +1,5 @@
 // analysis_eh_shim.h — force-included into every vendored Luau Analysis TU so the
-// 80kLOC type checker compiles `-fno-exceptions -fno-rtti` for the wasm guest
-// (ctx/LUAU.md §8.6 / PATCHES.md). Three mechanisms:
+// 80kLOC type checker compiles `-fno-exceptions -fno-rtti` for the wasm guest. Three mechanisms:
 //
 //   * Luau's THROW sites are rewritten (patch 0002) to `mc_analysis_abort(...)`: a
 //     noreturn, GRACEFUL exit(70) carrying a CATEGORIZED message — out of memory / time
@@ -26,14 +25,14 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-// Print `what` to stderr and exit non-zero. Defined in luau_analyze.cpp.
+// Print `what` to stderr and exit non-zero. Defined in analyze_main.cpp.
 __attribute__((noreturn)) void mc_analysis_abort(const char* what);
 #ifdef __cplusplus
 }
 #endif
 
 // Neutralize the handful of try/catch sites (all but a few catch NO variable; the
-// few named ones are hand-patched to not reference it — see PATCHES.md).
+// few named ones are hand-patched to not reference it — see patches/0003).
 #define try if (true)
 #define catch(...) else if (false)
 
