@@ -763,6 +763,9 @@ impl GuestProgram {
         path: &str,
     ) -> Result<GuestProgram, String> {
         let module = rt.module_for(bytes)?;
+        // Conformance gate: a duplicate or present-but-malformed mc_tier/mc_budget is a hard load
+        // failure, not a silent fall-through (which would inherit the parent tier / default budget).
+        validate_mc_sections(bytes)?;
         // The guest's effective budget: its declared `mc_budget` (or the default),
         // clamped to the VM ceiling (image manifest) and the hard maximum.
         let budget = effective_budget(declared_budget(bytes));
@@ -3356,92 +3359,101 @@ pub fn exec_policy(
     (caps, root)
 }
 
-/// Read a program's declared resource budget from its `mc_budget` WASM custom
-/// section (emitted by `sysroot::declare_budget!`): little-endian
-/// `[u32 version=1][u64 mem_bytes][u64 fuel][u32 table_elems]`. `None` when
-/// absent/unrecognized (the guest then gets the default budget). Mirrors the
-/// section walk of [`declared_tier`].
-pub fn declared_budget(bytes: &[u8]) -> Option<Budget> {
+/// Find the UNIQUE custom section named `name`: `Ok(None)` absent, `Ok(Some(payload))` exactly one,
+/// `Err` a DUPLICATE (ambiguous — which is authoritative?) or a malformed section boundary. The
+/// single bounds-checked section walk that [`declared_budget`], [`declared_tier`], and the load-time
+/// [`validate_mc_sections`] gate all share.
+fn unique_custom<'a>(bytes: &'a [u8], name: &[u8]) -> Result<Option<&'a [u8]>, &'static str> {
     if bytes.len() < 8 || &bytes[..4] != b"\0asm" {
-        return None;
+        return Ok(None);
     }
+    let mut found: Option<&[u8]> = None;
     let mut i = 8usize;
     while i < bytes.len() {
         let id = bytes[i];
         i += 1;
-        let (size, adv) = read_uleb(bytes, i)?;
+        let (size, adv) = read_uleb(bytes, i).ok_or("truncated section size")?;
         i += adv;
         let body_start = i;
-        let body_end = body_start.checked_add(size as usize)?;
+        let body_end = body_start
+            .checked_add(size as usize)
+            .ok_or("section size overflow")?;
         if body_end > bytes.len() {
-            return None;
+            return Err("section past end of module");
         }
         if id == 0 {
-            let (name_len, nadv) = read_uleb(bytes, body_start)?;
+            let (name_len, nadv) = read_uleb(bytes, body_start).ok_or("truncated custom name")?;
             let name_start = body_start + nadv;
-            let name_end = name_start.checked_add(name_len as usize)?;
-            if name_end <= body_end && &bytes[name_start..name_end] == b"mc_budget" {
-                let p = &bytes[name_end..body_end];
-                if p.len() < 24 {
-                    return None;
+            let name_end = name_start
+                .checked_add(name_len as usize)
+                .ok_or("custom name overflow")?;
+            if name_end <= body_end && &bytes[name_start..name_end] == name {
+                if found.is_some() {
+                    return Err("duplicate section");
                 }
-                if u32::from_le_bytes([p[0], p[1], p[2], p[3]]) != 1 {
-                    return None; // unknown version
-                }
-                let mem = u64::from_le_bytes(p[4..12].try_into().ok()?);
-                let fuel = u64::from_le_bytes(p[12..20].try_into().ok()?);
-                let table = u32::from_le_bytes(p[20..24].try_into().ok()?);
-                let mem_bytes = if mem > usize::MAX as u64 {
-                    usize::MAX
-                } else {
-                    mem as usize
-                };
-                return Some(Budget {
-                    mem_bytes,
-                    fuel,
-                    table: table as usize,
-                });
+                found = Some(&bytes[name_end..body_end]);
             }
         }
         i = body_end;
     }
-    None
+    Ok(found)
 }
 
-/// Read a program's declared capability tier from its `mc_tier` WASM custom
-/// section (emitted by `sysroot::declare_tier!`). Returns `None` when the
-/// section is absent or unrecognized — the program then inherits its parent's
-/// privilege unchanged. The parse is a minimal, bounds-checked walk of the
-/// module's top-level sections; only custom (id 0) sections are inspected.
-pub fn declared_tier(bytes: &[u8]) -> Option<Tier> {
-    // Header: magic "\0asm" + version (8 bytes).
-    if bytes.len() < 8 || &bytes[..4] != b"\0asm" {
-        return None;
-    }
-    let mut i = 8usize;
-    while i < bytes.len() {
-        let id = bytes[i];
-        i += 1;
-        let (size, adv) = read_uleb(bytes, i)?;
-        i += adv;
-        let body_start = i;
-        let body_end = body_start.checked_add(size as usize)?;
-        if body_end > bytes.len() {
-            return None;
-        }
-        if id == 0 {
-            // Custom section: name (uleb len + bytes), then payload.
-            let (name_len, nadv) = read_uleb(bytes, body_start)?;
-            let name_start = body_start + nadv;
-            let name_end = name_start.checked_add(name_len as usize)?;
-            if name_end <= body_end && &bytes[name_start..name_end] == b"mc_tier" {
-                let payload = &bytes[name_end..body_end];
-                return core::str::from_utf8(payload).ok().and_then(Tier::parse);
+/// Reject a guest whose `mc_tier`/`mc_budget` is DUPLICATED or PRESENT-BUT-MALFORMED. Absent is fine
+/// (the guest inherits the parent tier / gets the default budget). This is the load-time gate
+/// ([`GuestProgram::load`]) that turns a corrupt or tampered section into a hard load failure rather
+/// than a silent fall-through — which for `mc_tier` would mean inheriting the PARENT's privilege
+/// instead of the declared restriction (a sandbox escalation), and for `mc_budget` the default ceiling.
+fn validate_mc_sections(bytes: &[u8]) -> Result<(), String> {
+    match unique_custom(bytes, b"mc_tier").map_err(|e| format!("mc_tier: {e}"))? {
+        Some(p) => {
+            let s = core::str::from_utf8(p).map_err(|_| String::from("mc_tier: not UTF-8"))?;
+            if Tier::parse(s).is_none() {
+                return Err(format!("mc_tier: unknown tier `{s}`"));
             }
         }
-        i = body_end;
+        None => {}
     }
-    None
+    match unique_custom(bytes, b"mc_budget").map_err(|e| format!("mc_budget: {e}"))? {
+        Some(p) => {
+            if p.len() < 24 {
+                return Err(String::from("mc_budget: truncated (< 24 bytes)"));
+            }
+            if u32::from_le_bytes([p[0], p[1], p[2], p[3]]) != 1 {
+                return Err(String::from("mc_budget: unknown version"));
+            }
+        }
+        None => {}
+    }
+    Ok(())
+}
+
+/// Read a program's declared resource budget from its (validated) `mc_budget` WASM custom section
+/// (emitted by `sysroot::declare_budget!`): little-endian `[u32 version=1][u64 mem][u64 fuel][u32
+/// table]`. `None` when absent (→ the default budget). Malformed/duplicate is rejected earlier by
+/// [`validate_mc_sections`] at load, so this only sees a well-formed-or-absent section.
+pub fn declared_budget(bytes: &[u8]) -> Option<Budget> {
+    let p = unique_custom(bytes, b"mc_budget").ok().flatten()?;
+    if p.len() < 24 || u32::from_le_bytes([p[0], p[1], p[2], p[3]]) != 1 {
+        return None;
+    }
+    let mem = u64::from_le_bytes(p[4..12].try_into().ok()?);
+    let fuel = u64::from_le_bytes(p[12..20].try_into().ok()?);
+    let table = u32::from_le_bytes(p[20..24].try_into().ok()?);
+    Some(Budget {
+        mem_bytes: if mem > usize::MAX as u64 { usize::MAX } else { mem as usize },
+        fuel,
+        table: table as usize,
+    })
+}
+
+/// Read a program's declared capability tier from its (validated) `mc_tier` WASM custom section
+/// (emitted by `sysroot::declare_tier!`). `None` when absent — the program then inherits its parent's
+/// privilege unchanged. Malformed/duplicate is rejected earlier by [`validate_mc_sections`] at load,
+/// so an absent section here genuinely means "inherit", never "the section was corrupt".
+pub fn declared_tier(bytes: &[u8]) -> Option<Tier> {
+    let p = unique_custom(bytes, b"mc_tier").ok().flatten()?;
+    core::str::from_utf8(p).ok().and_then(Tier::parse)
 }
 
 /// Read an unsigned LEB128 from `bytes` at `at`. Returns `(value, bytes_read)`,

@@ -33,6 +33,50 @@ fn append_custom(name: &[u8], payload: &[u8], out: &mut Vec<u8>) {
     out.extend_from_slice(&body);
 }
 
+fn read_uleb(b: &[u8], at: usize) -> (u64, usize) {
+    let (mut res, mut shift, mut n) = (0u64, 0u32, 0usize);
+    loop {
+        let byte = b[at + n];
+        n += 1;
+        res |= ((byte & 0x7f) as u64) << shift;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+    }
+    (res, n)
+}
+
+/// Rebuild the module dropping any custom section whose name is in `names`. Run before appending so
+/// stamping is IDEMPOTENT — re-stamping (or stamping an already-stamped wasm) can never leave a
+/// duplicate or stale mc_tier/mc_budget for the kernel to choose from. Malformed length → stop,
+/// copying the remainder verbatim (the input is a valid wasm from the linker; this is belt-and-braces).
+fn strip_custom_sections(wasm: &[u8], names: &[&[u8]]) -> Vec<u8> {
+    let mut out = wasm[..8].to_vec(); // \0asm + version
+    let mut i = 8;
+    while i < wasm.len() {
+        let id = wasm[i];
+        let (size, adv) = read_uleb(wasm, i + 1);
+        let body = i + 1 + adv;
+        let end = body + size as usize;
+        if end > wasm.len() {
+            out.extend_from_slice(&wasm[i..]);
+            break;
+        }
+        let drop = id == 0 && {
+            let (nlen, a) = read_uleb(wasm, body);
+            let nstart = body + a;
+            let nend = nstart + nlen as usize;
+            nend <= end && names.iter().any(|n| *n == &wasm[nstart..nend])
+        };
+        if !drop {
+            out.extend_from_slice(&wasm[i..end]);
+        }
+        i = end;
+    }
+    out
+}
+
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     if a.len() != 7 {
@@ -59,6 +103,8 @@ fn main() {
         exit(1);
     }
 
+    // Idempotent: drop any pre-existing mc_tier/mc_budget so we never emit a duplicate.
+    let mut wasm = strip_custom_sections(&wasm, &[b"mc_tier", b"mc_budget"]);
     append_custom(b"mc_tier", tier, &mut wasm);
 
     let mut budget = Vec::with_capacity(24);
@@ -72,4 +118,46 @@ fn main() {
         eprintln!("mc-stamp: write {}: {e}", a[2]);
         exit(1)
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn count(wasm: &[u8], name: &[u8]) -> usize {
+        let (mut c, mut i) = (0usize, 8usize);
+        while i < wasm.len() {
+            let id = wasm[i];
+            let (size, adv) = read_uleb(wasm, i + 1);
+            let body = i + 1 + adv;
+            let end = body + size as usize;
+            if id == 0 {
+                let (nlen, a) = read_uleb(wasm, body);
+                let ns = body + a;
+                if &wasm[ns..ns + nlen as usize] == name {
+                    c += 1;
+                }
+            }
+            i = end;
+        }
+        c
+    }
+
+    // strip-then-append never leaves a duplicate, even when re-stamping an already-stamped module.
+    #[test]
+    fn stamping_is_idempotent() {
+        let header = [0u8, 0x61, 0x73, 0x6d, 1, 0, 0, 0]; // \0asm + version
+        let mut w = strip_custom_sections(&header, &[b"mc_tier", b"mc_budget"]);
+        append_custom(b"mc_tier", b"full", &mut w);
+        append_custom(b"mc_budget", &[0u8; 24], &mut w);
+        assert_eq!(count(&w, b"mc_tier"), 1);
+        assert_eq!(count(&w, b"mc_budget"), 1);
+
+        // Re-stamp the already-stamped wasm — must replace, not duplicate.
+        let mut w2 = strip_custom_sections(&w, &[b"mc_tier", b"mc_budget"]);
+        append_custom(b"mc_tier", b"read-only", &mut w2);
+        append_custom(b"mc_budget", &[1u8; 24], &mut w2);
+        assert_eq!(count(&w2, b"mc_tier"), 1, "re-stamp duplicated mc_tier");
+        assert_eq!(count(&w2, b"mc_budget"), 1, "re-stamp duplicated mc_budget");
+    }
 }
