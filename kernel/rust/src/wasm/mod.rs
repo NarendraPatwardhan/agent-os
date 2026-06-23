@@ -801,6 +801,16 @@ impl GuestProgram {
             .get_typed_func::<(), ()>(&store, "__mc_pcall_run")
             .ok();
         let sp_global = instance.get_global(&store, "__stack_pointer");
+        // All-or-nothing: re-entering via __mc_pcall_run needs the shadow-stack pointer to
+        // save/restore across the trap, and the pointer is meaningless without the dispatcher. A
+        // guest exporting EXACTLY ONE (a mis-linked or hand-crafted shim) would half-arm the unwind
+        // and corrupt the stack on its first mc_sys_pcall — reject it at load instead.
+        if pcall_run.is_some() != sp_global.is_some() {
+            return Err(String::from(
+                "trap-unwind shim incomplete: a guest must export BOTH __mc_pcall_run and \
+                 __stack_pointer, or neither",
+            ));
+        }
 
         Ok(GuestProgram {
             store,

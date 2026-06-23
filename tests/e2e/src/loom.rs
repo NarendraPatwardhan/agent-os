@@ -32,6 +32,45 @@ fn luau_runs_stdin() {
     assert_eq!(s.run_for_output("echo 'print(6*7)' | luau"), "42\r\n");
 }
 
+/// The kernel trap-unwind (mc_sys_pcall ⇒ __mc_pcall_run, restoring __stack_pointer) under
+/// ADVERSARIAL nesting: a pcall inside a pcall, an error raised inside an xpcall HANDLER
+/// (error-in-error), a value-returning pcall, and 100 consecutive pcall failures. Each must unwind
+/// cleanly back to its catcher and leave the VM usable — codex #4 (the unwind path the kernel now
+/// also gates by requiring the __mc_pcall_run/__stack_pointer export PAIR).
+#[test]
+fn luau_pcall_nested_and_error_in_error() {
+    let mut s = boot_loom();
+    s.host
+        .write_file(
+            "/demo/pcall.luau",
+            concat!(
+                "local function deep() error(\"boom\") end\n",
+                "local ok1 = pcall(function()\n",
+                "  local ok2 = pcall(deep)\n",
+                "  assert(not ok2, \"inner pcall should have failed\")\n",
+                "  error(\"rethrow\")\n",
+                "end)\n",
+                "print(\"nested=\" .. tostring(ok1 == false))\n",
+                "local ok3 = xpcall(function() error(\"orig\") end, function() error(\"handler_err\") end)\n",
+                "print(\"errinerr=\" .. tostring(ok3 == false))\n",
+                "local ok4, a, b = pcall(function() return 10, 20 end)\n",
+                "print(\"vals=\" .. tostring(ok4 and a == 10 and b == 20))\n",
+                "local n = 0\n",
+                "for i = 1, 100 do if not pcall(function() error(i) end) then n = n + 1 end end\n",
+                "print(\"stress=\" .. tostring(n == 100))\n",
+                "print(2 + 2)\n", // VM still alive after 100 unwinds
+            )
+            .as_bytes(),
+        )
+        .expect("seed /demo/pcall.luau");
+    let out = s.run_for_output("luau /demo/pcall.luau");
+    assert!(out.contains("nested=true"), "nested pcall unwind:\n{out}");
+    assert!(out.contains("errinerr=true"), "error raised inside xpcall handler:\n{out}");
+    assert!(out.contains("vals=true"), "value-returning pcall:\n{out}");
+    assert!(out.contains("stress=true"), "100 consecutive pcall unwinds:\n{out}");
+    assert!(out.contains("4"), "VM dead after the unwind stress:\n{out}");
+}
+
 // ── the REAL bar (memcontainers/web cdp-luau-verify.ts) — verbatim fixtures.
 
 /// The batteries demo: require("json"/"hash"/"time") + the string :split/:trim extensions, under the
