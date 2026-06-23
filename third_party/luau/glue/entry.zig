@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const mc = @import("mc.zig"); // mc_sys_spawn / waitpid — `luau --check` runs /bin/luau-analyze
+const fs = @import("fs.zig"); // the shared mc_sys_*-backed file reader
 const c = @cImport({
     @cInclude("lua.h");
     @cInclude("lualib.h");
@@ -52,13 +53,11 @@ fn newState() ?*c.lua_State {
     return L;
 }
 
-// Output via libc write() (std.posix.write / std.fs.File churned across 0.16). libc routes through
-// wasi-libc's __imported_wasi_* symbols, which the adapter rewrites to mc — a DIRECT wasi import
-// would bypass the adapter and stay a wasi import. (Luau's own `print` uses libc fwrite separately.)
-extern fn write(fd: c_int, buf: [*]const u8, len: usize) isize;
-
+// The glue's own diagnostics go straight to the mc write syscall (fs.writeAll). Luau's own `print`
+// stays on libc fwrite (the C++ core); both land on the same kernel stdio (fd 0/1/2), so there is no
+// namespace fork — see fs.zig.
 fn writeFd(fd: c_int, bytes: []const u8) void {
-    _ = write(fd, bytes.ptr, bytes.len);
+    fs.writeAll(@intCast(fd), bytes);
 }
 
 fn eprint(s: []const u8) void {
@@ -132,26 +131,6 @@ fn runSource(L: ?*c.lua_State, chunkname: [*:0]const u8, src: [*]const u8, len: 
     return EXIT_OK;
 }
 
-// File reading over the mc syscalls DIRECTLY (mc_sys_open/read/close — the way sys.zig does it),
-// not wasi-libc stdio. This sidesteps the stdio traps (fread's two-iovec readv into the FILE buffer
-// faults under the adapter; the variadic open's `...mode` ABI) AND closes the fd cleanly: mc_sys_close
-// is a real syscall (contracts/gen/mc.gen.rs), the kernel's Close handler frees the file slot.
-fn readFile(path: [*:0]const u8) ?[]u8 {
-    var fd: u32 = 0;
-    if (mc.mc_sys_open(mc.addr(path), @intCast(std.mem.span(path).len), 1, mc.addr(&fd)) != 0) // O_READ
-        return null;
-    defer _ = mc.mc_sys_close(@intCast(fd));
-    var list: std.ArrayList(u8) = .empty;
-    var buf: [8192]u8 = undefined;
-    while (true) {
-        var n: u32 = 0;
-        if (mc.mc_sys_read(@intCast(fd), mc.addr(&buf), buf.len, mc.addr(&n)) != 0) return null;
-        if (n == 0) break;
-        list.appendSlice(std.heap.c_allocator, buf[0..n]) catch return null;
-    }
-    return list.toOwnedSlice(std.heap.c_allocator) catch null;
-}
-
 // Line-buffer stdout so Luau's print() (fwrite, no flush) reaches the capture pipe per line, not only
 // at exit — and so output survives if the script later traps (cf. luau_cli.cpp).
 extern var stdout: ?*anyopaque;
@@ -210,7 +189,7 @@ export fn __main_argc_argv(argc: c_int, c_argv: [*][*:0]u8) c_int {
         return runSource(L, "=(command line)", code.ptr, code.len, argv[3..]);
     } else if (argv.len >= 2 and !std.mem.eql(u8, std.mem.span(argv[1]), "-")) {
         // Script file: read it, skip a shebang, run it.
-        const src = readFile(argv[1]) orelse {
+        const src = fs.slurp(argv[1], null) orelse {
             eprint("luau: cannot open ");
             eprint(std.mem.span(argv[1]));
             eprint("\n");

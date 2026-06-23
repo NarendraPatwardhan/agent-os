@@ -7,6 +7,7 @@
 const std = @import("std");
 const lua = @import("lua.zig");
 const mc = @import("mc.zig");
+const fs = @import("fs.zig");
 const c = lua.c;
 const State = lua.State;
 
@@ -60,23 +61,11 @@ fn setFuncs(L: ?*State, regs: []const Reg) void {
 // ── sys.fs — whole-file read/write, typed readdir/stat, the mutating ops. ─────────────────────────
 
 fn lFsRead(L: ?*State) callconv(.c) c_int {
-    var plen: usize = 0;
-    const path = c.luaL_checklstring(L, 1, &plen);
-    var fd: u32 = 0;
-    var e = mc.mc_sys_open(mc.addr(path), @intCast(plen), O_READ, mc.addr(&fd));
-    if (e != 0) return fail(L, e);
-    defer _ = mc.mc_sys_close(@intCast(fd));
-    var list: std.ArrayList(u8) = .empty;
-    defer list.deinit(alloc);
-    var buf: [8192]u8 = undefined;
-    while (true) {
-        var n: u32 = 0;
-        e = mc.mc_sys_read(@intCast(fd), mc.addr(&buf), buf.len, mc.addr(&n));
-        if (e != 0) return fail(L, e);
-        if (n == 0) break;
-        list.appendSlice(alloc, buf[0..n]) catch return fail(L, EIO);
-    }
-    _ = c.lua_pushlstring(L, list.items.ptr, list.items.len);
+    const path = c.luaL_checklstring(L, 1, null); // Lua strings are NUL-terminated
+    var e: i32 = 0;
+    const bytes = fs.slurp(@ptrCast(path), &e) orelse return fail(L, e);
+    defer alloc.free(bytes);
+    _ = c.lua_pushlstring(L, bytes.ptr, bytes.len);
     return ok1(L);
 }
 

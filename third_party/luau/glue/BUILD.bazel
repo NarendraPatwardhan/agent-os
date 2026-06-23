@@ -33,6 +33,7 @@ zig_library(
     srcs = [
         "deflate.zig",
         "encoding.zig",
+        "fs.zig",
         "hash.zig",
         "json.zig",
         "lua.zig",
@@ -83,6 +84,7 @@ zig_binary(
     srcs = [
         "deflate.zig",
         "encoding.zig",
+        "fs.zig",
         "hash.zig",
         "json.zig",
         "lua.zig",

@@ -15,11 +15,7 @@ extern fn mc_open_encoding(L: ?*State) c_int;
 extern fn mc_open_deflate(L: ?*State) c_int;
 extern fn mc_open_re(L: ?*State) c_int;
 
-// libc, for the VFS read + the rare prelude-error report (std.posix.write changed in 0.16).
-extern fn fopen(path: [*:0]const u8, mode: [*:0]const u8) ?*anyopaque;
-extern fn fread(ptr: [*]u8, size: usize, n: usize, f: ?*anyopaque) usize;
-extern fn fclose(f: ?*anyopaque) c_int;
-extern fn write(fd: c_int, buf: [*]const u8, len: usize) isize;
+const fs = @import("fs.zig"); // the shared mc_sys_*-backed file reader / writer (one fd namespace)
 
 const Module = struct { name: [*:0]const u8, src: []const u8 };
 
@@ -66,18 +62,6 @@ fn findEmbedded(name: []const u8) ?[]const u8 {
     return null;
 }
 
-fn readFile(path: [*:0]const u8, out: *std.ArrayList(u8)) bool {
-    const f = fopen(path, "rb") orelse return false;
-    defer _ = fclose(f);
-    var buf: [8192]u8 = undefined;
-    while (true) {
-        const n = fread(&buf, 1, buf.len, f);
-        if (n == 0) break;
-        out.appendSlice(alloc, buf[0..n]) catch return false;
-    }
-    return true;
-}
-
 // Resolve a dotted module name against package.path; read the first hit into `out`, leaving a
 // NUL-terminated "=<path>" chunkname in `chunk` (the path starts at chunk.items[1]).
 fn resolveVfs(L: ?*State, name: []const u8, out: *std.ArrayList(u8), chunk: *std.ArrayList(u8)) bool {
@@ -107,8 +91,12 @@ fn resolveVfs(L: ?*State, name: []const u8, out: *std.ArrayList(u8), chunk: *std
         } else {
             chunk.appendSlice(alloc, tmpl) catch return false;
         }
-        chunk.append(alloc, 0) catch return false; // NUL for the C path
-        if (readFile(@ptrCast(chunk.items.ptr + 1), out)) return true;
+        chunk.append(alloc, 0) catch return false; // NUL terminator for the path
+        if (fs.slurp(@ptrCast(chunk.items.ptr + 1), null)) |bytes| {
+            defer alloc.free(bytes);
+            out.appendSlice(alloc, bytes) catch return false;
+            return true;
+        }
     }
     return false;
 }
@@ -189,9 +177,9 @@ pub export fn mc_open_stdlib(L: ?*State) void {
     if (loadChunk(L, "=[builtin prelude]", PRELUDE.ptr, PRELUDE.len) != 0 or c.lua_pcall(L, 0, 0, 0) != 0) {
         const msg = c.lua_tolstring(L, -1, null);
         const m = if (msg != null) std.mem.span(msg) else "(unknown)";
-        _ = write(2, "luau: stdlib prelude failed: ", 28);
-        _ = write(2, m.ptr, m.len);
-        _ = write(2, "\n", 1);
+        fs.writeAll(2, "luau: stdlib prelude failed: ");
+        fs.writeAll(2, m);
+        fs.writeAll(2, "\n");
         lua.pop(L, 1);
     }
 
