@@ -12,5 +12,6 @@ comptime {
     _ = @import("hash.zig"); // mc_open_hash
     _ = @import("encoding.zig"); // mc_open_encoding
     _ = @import("deflate.zig"); // mc_open_deflate
+    _ = @import("re.zig"); // mc_open_re
     _ = @import("wasi_shim.zig"); // the residual wasi import forwarders
 }

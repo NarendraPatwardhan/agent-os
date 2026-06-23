@@ -81,6 +81,43 @@ fn json_decode_round_trips() {
     assert!(out.contains("1\t20\tv\t[10,20,30]"), "json.decode round-trip:\n{out}");
 }
 
+/// re — the Pike-VM regex battery (the 3rd native module): anchors, char classes + negation,
+/// quantifiers (?, {m,n}), capture groups, alternation, the `i` flag, replace ($N templates), and
+/// gmatch. The script asserts each case internally; the host checks the summary is all-true.
+#[test]
+fn re_regex_engine() {
+    let mut s = boot_loom();
+    s.host
+        .write_file(
+            "/demo/re.luau",
+            concat!(
+                "local re = require(\"re\")\n",
+                "local out = {}\n",
+                "local function ck(n, c) out[#out+1] = n .. \"=\" .. tostring(c) end\n",
+                "ck(\"anchor\", re.test(\"^a.c$\", \"abc\") and not re.test(\"^a.c$\", \"abXc\"))\n",
+                "ck(\"class\", re.test(\"[a-z]+\", \"hello\") and not re.test(\"^[^0-9]+$\", \"123\"))\n",
+                "ck(\"quest\", re.test(\"colou?r\", \"color\") and re.test(\"colou?r\", \"colour\"))\n",
+                "ck(\"repeat\", re.test(\"^a{2,3}$\", \"aaa\") and not re.test(\"^a{2,3}$\", \"a\"))\n",
+                "ck(\"alt\", re.test(\"cat|dog\", \"dog\"))\n",
+                "ck(\"icase\", re.test(\"hello\", \"HELLO\", \"i\"))\n",
+                "local m = re.match(\"(\\\\w+)@(\\\\w+)\", \"user@host\")\n",
+                "ck(\"groups\", m ~= nil and m.groups[1] == \"user\" and m.groups[2] == \"host\")\n",
+                "local r, c = re.compile(\"\\\\d+\"):replace(\"a1b22c333\", \"#\")\n",
+                "ck(\"replace\", r == \"a#b#c#\" and c == 3)\n",
+                "ck(\"template\", re.compile(\"(\\\\w+)=(\\\\w+)\"):replace(\"a=1 b=2\", \"$2:$1\") == \"1:a 2:b\")\n",
+                "local g = {}\n",
+                "for mm in re.compile(\"\\\\d+\"):gmatch(\"a1b22c333\") do g[#g+1] = mm.match end\n",
+                "ck(\"gmatch\", table.concat(g, \",\") == \"1,22,333\")\n",
+                "print(table.concat(out, \" \"))\n",
+            )
+            .as_bytes(),
+        )
+        .expect("seed");
+    let out = s.run_for_output("luau /demo/re.luau");
+    assert!(!out.contains("=false"), "a re case failed:\n{out}");
+    assert!(out.contains("gmatch=true"), "re did not complete:\n{out}");
+}
+
 /// sys.fs is the real syscall surface: a guest writes a file via sys.fs.write + reads it back via
 /// sys.fs.read, and the HOST sees the same bytes in the kernel VFS — proving sys.zig drives mc_sys_*
 /// (open/write/read/close) for real, not a stub.

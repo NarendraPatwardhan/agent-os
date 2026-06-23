@@ -13,6 +13,7 @@ extern fn mc_open_json(L: ?*State) c_int;
 extern fn mc_open_hash(L: ?*State) c_int;
 extern fn mc_open_encoding(L: ?*State) c_int;
 extern fn mc_open_deflate(L: ?*State) c_int;
+extern fn mc_open_re(L: ?*State) c_int;
 
 // libc, for the VFS read + the rare prelude-error report (std.posix.write changed in 0.16).
 extern fn fopen(path: [*:0]const u8, mode: [*:0]const u8) ?*anyopaque;
@@ -174,6 +175,7 @@ pub export fn mc_open_stdlib(L: ?*State) void {
     regC(L, "hash", &mc_open_hash);
     regC(L, "encoding", &mc_open_encoding);
     regC(L, "deflate", &mc_open_deflate);
+    regC(L, "re", &mc_open_re);
 
     // Make `sys` require-able too (a global now that sys.zig is real).
     lua.getglobal(L, "package");

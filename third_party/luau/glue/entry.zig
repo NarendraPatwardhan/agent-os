@@ -33,6 +33,7 @@ comptime {
     _ = @import("hash.zig"); // mc_open_hash
     _ = @import("encoding.zig"); // mc_open_encoding (base64/hex)
     _ = @import("deflate.zig"); // mc_open_deflate (raw deflate — zip/OOXML)
+    _ = @import("re.zig"); // mc_open_re (Pike-VM regex)
     _ = @import("wasi_shim.zig"); // residual wasi import forwarders (fd_close)
 }
 
