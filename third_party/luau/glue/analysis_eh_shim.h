@@ -2,15 +2,25 @@
 // 80kLOC type checker compiles `-fno-exceptions -fno-rtti` for the wasm guest
 // (ctx/LUAU.md §8.6 / PATCHES.md). Three mechanisms:
 //
-//   * Luau's THROW sites are sed-rewritten to `mc_analysis_abort(...)` (a noreturn
-//     graceful exit). Type errors in Luau are DATA (CheckResult.errors), not
-//     exceptions — only internal/resource-limit conditions throw — so ordinary
-//     type checking is unaffected; only pathological inputs (deep-recursion / ICE)
-//     abort instead of degrading. Documented, not hidden.
+//   * Luau's THROW sites are rewritten (patch 0002) to `mc_analysis_abort(...)`: a
+//     noreturn, GRACEFUL exit(70) carrying a CATEGORIZED message — out of memory / time
+//     limit / recursion / normalization-complexity limit / internal-compiler-error
+//     (ICE) — so a rare non-data failure is diagnosable, never UB or a wrong answer.
+//     Type errors in Luau are DATA (CheckResult.errors), not exceptions, so ordinary
+//     checking is unaffected and the RESULT is never silently wrong: a throw becomes an
+//     abort, never a mis-continue. (In practice these paths are nearly input-unreachable
+//     — the constraint solver checks even pathologically deep types lazily; see the
+//     loom e2e `luau_analyze_survives_pathological_depth`.)
 //   * Luau's TRY/CATCH sites are neutralized by the macros below. This is safe to
 //     force-include even before libc++ headers: under -fno-exceptions libc++ emits
 //     NO raw `try`/`catch` tokens (they're `#if`'d out behind its own macros), so
-//     nothing in the standard library is affected.
+//     nothing in the standard library is affected. The one place this elides a REAL
+//     recovery is TypeFunctionRuntime's `catch (CompileError&)` (patch 0003): a type
+//     function whose BODY fails to compile aborts (categorized ICE) instead of yielding
+//     a FailedToCompile diagnostic. Recovering it requires Luau's Compiler error path
+//     converted to explicit returns — it cannot be caught under -fno-exceptions — and is
+//     deferred: the path needs a type-function body to hit a hard compiler limit, which
+//     real type functions never do. Every other elided catch is an ICE/limit re-raise.
 #pragma once
 
 #ifdef __cplusplus

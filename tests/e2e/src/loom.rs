@@ -233,3 +233,34 @@ fn luau_check_reports_type_error() {
     assert!(out.contains("/demo/typed_bad.luau:2:"), "expected a file:line:col diagnostic at line 2:\n{out}");
     assert!(out.contains("'number'") && out.contains("'string'"), "expected the number-vs-string error:\n{out}");
 }
+
+/// Pathological input degrades GRACEFULLY. The analyzer's only non-data failure modes are the
+/// `-fno-exceptions` throw→mc_analysis_abort sites (resource/recursion/ICE limits, codex #5) — a
+/// CLEAN exit(70) with a categorized message, never UB or a hung guest. An 8000-deep type+value is
+/// the kind of adversarial input that probes those limits; the analyzer must either type-check it
+/// (the constraint solver handles it lazily) or abort gracefully — and the kernel + shell must
+/// survive either way. We prove survival: the deep check returns to a prompt, and a normal command
+/// runs right after (the guest didn't wedge the VM, leak it, or trap uncaught).
+#[test]
+fn luau_analyze_survives_pathological_depth() {
+    let mut s = boot_loom();
+    let n = 8000;
+    let mut src = String::from("--!strict\nlocal d: ");
+    src.push_str(&"{x:".repeat(n));
+    src.push_str("number");
+    src.push_str(&"}".repeat(n));
+    src.push_str(" = ");
+    src.push_str(&"{x=".repeat(n));
+    src.push_str("false"); // a leaf mismatch only deep traversal would find
+    src.push_str(&"}".repeat(n));
+    src.push_str("\nprint(d)\n");
+    s.host.write_file("/demo/deep.luau", src.as_bytes()).expect("seed /demo/deep.luau");
+
+    // No panic here ⇒ luau-analyze returned the shell to a prompt (no hang/crash). If it took an
+    // abort path, the message is a categorized one; either way it's clean.
+    let out = s.run_for_output("luau --check /demo/deep.luau");
+    assert!(!out.contains("internal compiler error"), "deep input must not ICE:\n{out}");
+
+    // The kernel + shell survived the pathological guest: a normal command still works.
+    assert_eq!(s.run_for_output("luau -e 'print(1+1)'"), "2\r\n", "VM dead after deep-input check");
+}
