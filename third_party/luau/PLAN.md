@@ -13,9 +13,12 @@ Two guest wasm binaries from **upstream Luau 0.725** (C++):
 - **`luau-analyze`** — the `--check` type checker (+ the ~80 kLOC Analysis engine + Config), no
   batteries.
 
-Both are **one-binary domain tools** (VISION §16.5): built once → one `.wasm`, service-capability
-stamped as an `mc_service` custom section + an `/etc/mc-services.json` fragment carried by the
-`loom` flavor pack — never in `base`/`minimal`/`posix`.
+Both are **one-binary domain tools** (VISION §16.5) — but CLI ones: a script interpreter and a type
+checker, invoked from the command line, NOT called as resident library services. So they ship
+WITHOUT the resident-service machinery (an `mc_service` custom section + an `/etc/mc-services.json`
+fragment): that mode brings programmability — using a domain tool AS A LIBRARY — and is for the
+library-style domain tools (sqlite/typst), not luau or the posix CLI tools. loom layers `/bin/luau`
++ `/bin/luau-analyze` in the `loom` flavor pack — never in `base`/`minimal`/`posix`.
 
 ## Decisions (locked)
 
@@ -89,12 +92,13 @@ imports the mc syscall extern shim + `@cImport`s the Lua C API.
 
 **Phase 4 — Build** `BUILD.luau.bazel` (`zig_binary` / `zig_configure_binary`, target wasm32-wasi):
 - `luau` = Luau VM/Compiler/Ast/Bytecode/Common (cppsrcs from `@luau`) + the C++ holdouts + the Zig
-  glue → link the `//wasi-adapter` staticlib + wasi-emulated libs → stamp `mc_tier`/`mc_budget`/
-  `mc_service` → verify **mc-only** imports (`//tools/wasm-imports` + `//tools/mc-attest`).
+  glue → link the `//wasi-adapter` staticlib + wasi-emulated libs → stamp `mc_tier`/`mc_budget`
+  (no `mc_service` — CLI-only, see above) → attest **mc-only** imports + tier fit (`//tools/mc-attest`).
 - `luau-analyze` = + Config/Analysis + `analyze_main.cpp` + `-include analysis_eh_shim.h`, no
   batteries, budget per memcontainers (256 MiB / 400B fuel).
-- Likely a new `mc_program()` macro (a zig c++ binary + adapter staticlib link + post-link section
-  stamp + import verify), analogous to `mc_box()` but not the Rust trampoline path.
+- A `mc_program()` rule (in `//third_party/luau:defs.bzl`): post-link section stamp (build action) +
+  attestation (validation action) + an `McProgramInfo` provider, analogous to `mc_box()` but not the
+  Rust trampoline path.
 
 **Phase 5 — Flavor** `images/BUILD.bazel`: `loom = posix + luau_pack + luau_analyze_pack` (+ the
 `/etc/mc-services.json` fragment), per VISION §16.1 layering. (Future: `paper`, `atlas` stack on
