@@ -136,6 +136,11 @@ pkg_tar(
     files = {
         "//third_party/luau/glue:luau": "/bin/luau",
         "//third_party/luau/glue:luau-analyze": "/bin/luau-analyze",
+        # The agent-facing skill docs ride the flavor (not the binary) — luau + the doc generators.
+        "//third_party/luau/skills:luau.md": "/skills/luau.md",
+        "//third_party/luau/skills:docx.md": "/skills/docx.md",
+        "//third_party/luau/skills:xlsx.md": "/skills/xlsx.md",
+        "//third_party/luau/skills:pptx.md": "/skills/pptx.md",
     },
     owner = "0.0",
     deps = [":posix"],

@@ -1,0 +1,4 @@
+# The four agent-facing skill docs the loom flavor ships at /skills: luau (the language) + the
+# docx/xlsx/pptx document-generator guides — the very tools the batteries run. Exported so
+# //images:loom can layer them into the flavor image.
+exports_files(glob(["*.md"]))
