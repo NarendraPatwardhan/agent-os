@@ -19,10 +19,13 @@
 //! That removes all marshalling — `fd_write`'s iovecs are read straight from memory.
 //!
 //! WASI is capability-oriented (no ambient cwd; paths are opened relative to a
-//! *preopened* directory fd). We advertise two preopens that Rust std discovers at
-//! startup: fd 3 = `"/"` (absolute paths) and fd 4 = `"."` (cwd-relative, resolved
-//! against the live mc cwd via `mc_sys_getcwd`). `path_open` resolves the WASI
-//! (dirfd, relative-path) pair to an absolute mc path and calls `mc_sys_open` /
+//! *preopened* directory fd). We advertise ONE preopen that Rust std discovers at
+//! startup: fd 3 = `"/"` — it covers the whole mc filesystem, so wasi-libc resolves
+//! every path (absolute, or relative to its cwd) against it. (fd 4 / PRE_CWD is handled
+//! by `base_for`/`resolve` for an explicit cwd-relative dirfd, but is NOT advertised via
+//! `fd_prestat` — a "." preopen breaks wasi-libc's path resolution for std guests.)
+//! `path_open` resolves the WASI (dirfd, relative-path) pair to an absolute mc path and
+//! calls `mc_sys_open` /
 //! `mc_sys_mkdir` / … The mc errno table is itself WASI-style (`abi` was seeded from
 //! wasi-ext), so errnos pass straight through.
 //!
@@ -872,6 +875,22 @@ pub unsafe extern "C" fn __imported_wasi_snapshot_preview1_fd_filestat_get(
         write_filestat(ret, 0, FT_CHAR_DEVICE, 1, 0, 0, 0);
         return 0;
     }
+    // The preopen dir fds (3 = "/", 4 = cwd) are real directories — stat their resolved base.
+    // Without this, fstat on a preopen returned EBADF, contradicting fd_prestat advertising it.
+    if fd == PRE_ROOT || fd == PRE_CWD {
+        let mut base = [0u8; PATH_MAX];
+        let n = match base_for(fd, &mut base) {
+            Ok(n) => n,
+            Err(e) => return e,
+        };
+        return match mc_stat(&base[..n]) {
+            Ok(st) => {
+                write_filestat(ret, st.size, FT_DIRECTORY, st.nlink, st.atim, st.mtim, st.ctim);
+                0
+            }
+            Err(e) => e,
+        };
+    }
     let path: [u8; PATH_MAX];
     let plen: usize;
     let is_dir;
@@ -1011,8 +1030,30 @@ pub unsafe extern "C" fn __imported_wasi_snapshot_preview1_fd_filestat_set_times
     mc_set_times(&path[..plen], atim, mtim, fst_flags)
 }
 #[no_mangle]
-pub unsafe extern "C" fn __imported_wasi_snapshot_preview1_fd_renumber(_fd: i32, _to: i32) -> i32 {
-    ENOSYS
+pub unsafe extern "C" fn __imported_wasi_snapshot_preview1_fd_renumber(from: i32, to: i32) -> i32 {
+    // dup2 semantics over the adapter's fd table: `to` comes to refer to what `from` did, and `from`
+    // is closed. Only table fds (>= FD_TABLE_BASE) are movable — stdio (0..=2) and the preopens
+    // (3/4) are fixed kernel/preopen handles with no slot to receive the move.
+    let in_table = |fd: i32| fd >= FD_TABLE_BASE && ((fd - FD_TABLE_BASE) as usize) < MAX_FDS;
+    if !in_table(from) || state().get(from).is_none() {
+        return EBADF;
+    }
+    if from == to {
+        return 0;
+    }
+    if !in_table(to) {
+        return ENOSYS; // cannot renumber onto stdio or a preopen
+    }
+    let from_idx = (from - FD_TABLE_BASE) as usize;
+    let to_idx = (to - FD_TABLE_BASE) as usize;
+    let st = state();
+    // dup2 closes whatever `to` held before it takes on `from`.
+    if st.table[to_idx].used && !st.table[to_idx].is_dir && st.table[to_idx].mc_fd >= 0 {
+        mc_sys_close(st.table[to_idx].mc_fd);
+    }
+    st.table[to_idx] = st.table[from_idx];
+    st.table[from_idx].used = false;
+    0
 }
 
 // ---------------------------------------------------------------------------
@@ -1025,8 +1066,11 @@ pub unsafe extern "C" fn __imported_wasi_snapshot_preview1_fd_prestat_get(
     ret: i32,
 ) -> i32 {
     // prestat: tag u8 @0, then (for dir) pr_name_len u32 @4.
-    // A single preopen — "/" — covers the whole mc filesystem. wasi-libc resolves
-    // every path (absolute, or relative to its cwd) against it.
+    // We advertise EXACTLY ONE preopen — fd 3 = "/" — which covers the whole mc filesystem; wasi-libc
+    // resolves every path (absolute, or relative to its cwd) against it. PRE_CWD (fd 4) is NOT
+    // advertised on purpose: a "." preopen makes wasi-libc's longest-prefix path matching ambiguous
+    // and breaks path resolution for std guests. fd 4 stays handled by base_for/resolve only for a
+    // guest that passes it as an explicit dirfd; the discovery scan stops at fd 4's EBADF.
     let name_len: u32 = match fd {
         PRE_ROOT => 1, // "/"
         _ => return EBADF,
@@ -1044,7 +1088,7 @@ pub unsafe extern "C" fn __imported_wasi_snapshot_preview1_fd_prestat_dir_name(
 ) -> i32 {
     let name: &[u8] = match fd {
         PRE_ROOT => b"/",
-        _ => return EBADF,
+        _ => return EBADF, // fd 4 (PRE_CWD) deliberately not advertised — see fd_prestat_get
     };
     if (path_len as usize) < name.len() {
         return EINVAL;
