@@ -524,10 +524,10 @@ fn lNetFetch(L: ?*State) callconv(.c) c_int {
             c.lua_pushnil(L);
             while (c.lua_next(L, -2) != 0) {
                 if (c.lua_type(L, -2) == c.LUA_TSTRING and c.lua_type(L, -1) == c.LUA_TSTRING) {
-                    headers.appendSlice(alloc, std.mem.span(c.lua_tolstring(L, -2, null))) catch {};
-                    headers.appendSlice(alloc, ": ") catch {};
-                    headers.appendSlice(alloc, std.mem.span(c.lua_tolstring(L, -1, null))) catch {};
-                    headers.append(alloc, '\n') catch {};
+                    headers.appendSlice(alloc, std.mem.span(c.lua_tolstring(L, -2, null))) catch return fail(L, EIO);
+                    headers.appendSlice(alloc, ": ") catch return fail(L, EIO);
+                    headers.appendSlice(alloc, std.mem.span(c.lua_tolstring(L, -1, null))) catch return fail(L, EIO);
+                    headers.append(alloc, '\n') catch return fail(L, EIO);
                 }
                 lua.pop(L, 1);
             }
@@ -535,12 +535,12 @@ fn lNetFetch(L: ?*State) callconv(.c) c_int {
         lua.pop(L, 1);
     }
     req.appendSlice(alloc, method) catch return fail(L, EIO);
-    req.append(alloc, ' ') catch {};
-    req.appendSlice(alloc, url[0..ulen]) catch {};
-    req.append(alloc, '\n') catch {};
-    req.appendSlice(alloc, headers.items) catch {};
-    req.append(alloc, '\n') catch {};
-    req.appendSlice(alloc, body) catch {};
+    req.append(alloc, ' ') catch return fail(L, EIO);
+    req.appendSlice(alloc, url[0..ulen]) catch return fail(L, EIO);
+    req.append(alloc, '\n') catch return fail(L, EIO);
+    req.appendSlice(alloc, headers.items) catch return fail(L, EIO);
+    req.append(alloc, '\n') catch return fail(L, EIO);
+    req.appendSlice(alloc, body) catch return fail(L, EIO);
     var fd: u32 = 0;
     var e = mc.mc_sys_http_request(mc.addr(req.items.ptr), @intCast(req.items.len), mc.addr(&fd));
     if (e != 0) return fail(L, e);
@@ -576,8 +576,8 @@ fn lHostCall(L: ?*State) callconv(.c) c_int {
     var req: std.ArrayList(u8) = .empty;
     defer req.deinit(alloc);
     req.appendSlice(alloc, name[0..nlen]) catch return fail(L, EIO);
-    req.append(alloc, 0) catch {};
-    req.appendSlice(alloc, args[0..alen]) catch {};
+    req.append(alloc, 0) catch return fail(L, EIO);
+    req.appendSlice(alloc, args[0..alen]) catch return fail(L, EIO);
     var fd: u32 = 0;
     const e = mc.mc_sys_host_call(mc.addr(req.items.ptr), @intCast(req.items.len), mc.addr(&fd));
     if (e != 0) return fail(L, e);

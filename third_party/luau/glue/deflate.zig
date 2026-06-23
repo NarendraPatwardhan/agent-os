@@ -60,34 +60,42 @@ fn lCompress(L: ?*State) callconv(.c) c_int {
     return 1;
 }
 
+// A hard output ceiling well under the VM's 256 MiB memory budget, used when the caller doesn't pass
+// an exact size. Defuses decompression bombs: a tiny input can never inflate past this.
+const HARD_MAX_OUT: usize = 192 * 1024 * 1024;
+
+fn decFail(L: ?*State, msg: [*:0]const u8) c_int {
+    c.lua_pushnil(L);
+    _ = c.lua_pushstring(L, msg);
+    return 2;
+}
+
 fn lDecompress(L: ?*State) callconv(.c) c_int {
     var n: usize = 0;
     const s = c.luaL_checklstring(L, 1, &n);
 
+    // Output cap: the EXACT uncompressed size when the caller knows it (the zip central directory
+    // passes usize as arg 2), else the hard ceiling. A stream that decodes to more than the cap is a
+    // bomb (or corrupt) → a catchable error, never an unbounded ArrayList → OOM → guest crash.
+    const maxout: usize = if (c.lua_type(L, 2) == c.LUA_TNUMBER) blk: {
+        const want = c.lua_tonumberx(L, 2, null);
+        break :blk if (want <= 0) 0 else @intFromFloat(want);
+    } else HARD_MAX_OUT;
+
     var r: std.Io.Reader = .fixed(s[0..n]);
-    const window = alloc.alloc(u8, flate.max_window_len) catch {
-        c.lua_pushnil(L);
-        _ = c.lua_pushstring(L, "deflate: out of memory");
-        return 2;
-    };
+    const window = alloc.alloc(u8, flate.max_window_len) catch return decFail(L, "deflate: out of memory");
     defer alloc.free(window);
     var dec = flate.Decompress.init(&r, .raw, window);
 
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(alloc);
+    out.ensureTotalCapacity(alloc, @min(maxout, 64 * 1024 * 1024)) catch return decFail(L, "deflate: out of memory");
     var tmp: [8192]u8 = undefined;
     while (true) {
-        const got = dec.reader.readSliceShort(&tmp) catch {
-            c.lua_pushnil(L);
-            _ = c.lua_pushstring(L, "deflate: corrupt stream");
-            return 2;
-        };
+        const got = dec.reader.readSliceShort(&tmp) catch return decFail(L, "deflate: corrupt stream");
         if (got == 0) break;
-        out.appendSlice(alloc, tmp[0..got]) catch {
-            c.lua_pushnil(L);
-            _ = c.lua_pushstring(L, "deflate: out of memory");
-            return 2;
-        };
+        if (out.items.len + got > maxout) return decFail(L, "deflate: output exceeds cap");
+        out.appendSlice(alloc, tmp[0..got]) catch return decFail(L, "deflate: out of memory");
     }
     _ = c.lua_pushlstring(L, out.items.ptr, out.items.len);
     c.lua_pushnil(L);

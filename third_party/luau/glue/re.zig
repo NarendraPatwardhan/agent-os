@@ -988,15 +988,22 @@ fn lGmatch(L: ?*State) callconv(.c) c_int {
     return 1;
 }
 
+// Raise `re: out of memory` (a catchable Lua error). The mc trap unwinds to the enclosing pcall;
+// like runChecked, an allocation failure is surfaced, never silently dropped (which would corrupt the
+// result) and never trapped.
+fn oomRaise(L: ?*State) void {
+    _ = c.luaL_errorL(L, "re: out of memory");
+}
+
 // Expand a `$N` / `$0` / `$$` template against the captures.
-fn expandTemplate(out: *std.ArrayList(u8), repl: [*]const u8, rn: usize, s: [*]const u8, sv: []const i32) void {
+fn expandTemplate(L: ?*State, out: *std.ArrayList(u8), repl: [*]const u8, rn: usize, s: [*]const u8, sv: []const i32) void {
     var i: usize = 0;
     while (i < rn) : (i += 1) {
         const ch = repl[i];
         if (ch == '$' and i + 1 < rn) {
             const d = repl[i + 1];
             if (d == '$') {
-                out.append(alloc, '$') catch {};
+                out.append(alloc, '$') catch oomRaise(L);
                 i += 1;
                 continue;
             }
@@ -1011,13 +1018,13 @@ fn expandTemplate(out: *std.ArrayList(u8), repl: [*]const u8, rn: usize, s: [*]c
                     const a = sv[@intCast(g * 2)];
                     const b = sv[@intCast(g * 2 + 1)];
                     if (a >= 0 and b >= 0)
-                        out.appendSlice(alloc, (s + @as(usize, @intCast(a)))[0..@intCast(b - a)]) catch {};
+                        out.appendSlice(alloc, (s + @as(usize, @intCast(a)))[0..@intCast(b - a)]) catch oomRaise(L);
                 }
                 i = j - 1;
                 continue;
             }
         }
-        out.append(alloc, ch) catch {};
+        out.append(alloc, ch) catch oomRaise(L);
     }
 }
 
@@ -1049,7 +1056,7 @@ fn lReplace(L: ?*State) callconv(.c) c_int {
         if (!runChecked(L, prog, s, nlen, pos, sv))
             break;
         // text before the match
-        out.appendSlice(alloc, (s + @as(usize, @intCast(pos)))[0..@intCast(sv[0] - pos)]) catch {};
+        out.appendSlice(alloc, (s + @as(usize, @intCast(pos)))[0..@intCast(sv[0] - pos)]) catch oomRaise(L);
         if (is_fn) {
             c.lua_pushvalue(L, 3);
             pushMatch(L, prog, s, sv);
@@ -1057,24 +1064,24 @@ fn lReplace(L: ?*State) callconv(.c) c_int {
             var outlen: usize = 0;
             const r = c.lua_tolstring(L, -1, &outlen);
             if (r != null)
-                out.appendSlice(alloc, r[0..outlen]) catch {}
+                out.appendSlice(alloc, r[0..outlen]) catch oomRaise(L)
             else // non-string → keep original
-                out.appendSlice(alloc, (s + @as(usize, @intCast(sv[0])))[0..@intCast(sv[1] - sv[0])]) catch {};
+                out.appendSlice(alloc, (s + @as(usize, @intCast(sv[0])))[0..@intCast(sv[1] - sv[0])]) catch oomRaise(L);
             lua.pop(L, 1);
         } else {
-            expandTemplate(&out, repl.?, rn, s, sv);
+            expandTemplate(L, &out, repl.?, rn, s, sv);
         }
         count += 1;
         var next = sv[1];
         if (next == sv[0]) { // empty match: emit one char and advance
             if (next < nlen)
-                out.append(alloc, s[@intCast(next)]) catch {};
+                out.append(alloc, s[@intCast(next)]) catch oomRaise(L);
             next += 1;
         }
         pos = next;
     }
     if (pos < nlen)
-        out.appendSlice(alloc, (s + @as(usize, @intCast(pos)))[0..@intCast(nlen - pos)]) catch {};
+        out.appendSlice(alloc, (s + @as(usize, @intCast(pos)))[0..@intCast(nlen - pos)]) catch oomRaise(L);
     c.lua_pushlstring(L, out.items.ptr, out.items.len);
     c.lua_pushinteger(L, count);
     return 2;

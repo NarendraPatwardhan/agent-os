@@ -81,6 +81,38 @@ fn json_decode_round_trips() {
     assert!(out.contains("1\t20\tv\t[10,20,30]"), "json.decode round-trip:\n{out}");
 }
 
+/// deflate.decompress is bounded: with the exact size it round-trips; with a cap smaller than the
+/// real output it returns a catchable error (a decompression bomb can't OOM the guest). The cap is
+/// the regression codex flagged — the port had decompressed into an unbounded buffer.
+#[test]
+fn deflate_caps_decompression() {
+    let mut s = boot_loom();
+    s.host
+        .write_file(
+            "/demo/defl.luau",
+            b"local deflate = require(\"deflate\")\nlocal data = string.rep(\"ABCD\", 500)\nlocal packed = deflate.compress(data)\nlocal ok = deflate.decompress(packed, 2000)\nlocal bomb, err = deflate.decompress(packed, 10)\nprint(\"ok=\" .. tostring(ok == data) .. \" capped=\" .. tostring(bomb == nil and err ~= nil))\n",
+        )
+        .expect("seed");
+    let out = s.run_for_output("luau /demo/defl.luau");
+    assert!(out.contains("ok=true capped=true"), "deflate cap:\n{out}");
+}
+
+/// json.decode parses numbers per the JSON grammar and rejects what strtod would over-accept
+/// (inf/nan/bad-exponent). Replaces the strtod-over-a-slice the review flagged.
+#[test]
+fn json_number_grammar() {
+    let mut s = boot_loom();
+    s.host
+        .write_file(
+            "/demo/jsonnum.luau",
+            b"local json = require(\"json\")\nlocal a = assert(json.decode(\"[1, -2.5, 30000, 0.0015, 1e3]\"))\nprint(\"nums=\" .. tostring(a[1]==1 and a[2]==-2.5 and a[3]==30000 and a[4]==0.0015 and a[5]==1000))\nprint(\"rej-exp=\" .. tostring((json.decode(\"[1e]\")) == nil))\nprint(\"rej-inf=\" .. tostring((json.decode(\"[inf]\")) == nil))\nprint(\"rej-nan=\" .. tostring((json.decode(\"[nan]\")) == nil))\n",
+        )
+        .expect("seed");
+    let out = s.run_for_output("luau /demo/jsonnum.luau");
+    assert!(out.contains("nums=true"), "json numbers:\n{out}");
+    assert!(out.contains("rej-exp=true") && out.contains("rej-inf=true") && out.contains("rej-nan=true"), "json grammar:\n{out}");
+}
+
 /// re — the Pike-VM regex battery (the 3rd native module): anchors, char classes + negation,
 /// quantifiers (?, {m,n}), capture groups, alternation, the `i` flag, replace ($N templates), and
 /// gmatch. The script asserts each case internally; the host checks the summary is all-true.

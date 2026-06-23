@@ -118,10 +118,11 @@ fn lRequire(L: ?*State) callconv(.c) c_int {
     defer chunk.deinit(alloc);
 
     if (findEmbedded(name)) |emb| {
-        src.appendSlice(alloc, emb) catch {};
-        chunk.appendSlice(alloc, "=[builtin ") catch {};
-        chunk.appendSlice(alloc, name) catch {};
-        chunk.appendSlice(alloc, "]\x00") catch {};
+        // On OOM, raise rather than load a TRUNCATED module source/chunk name (a silent wrong-code bug).
+        src.appendSlice(alloc, emb) catch return c.luaL_errorL(L, "require: out of memory");
+        chunk.appendSlice(alloc, "=[builtin ") catch return c.luaL_errorL(L, "require: out of memory");
+        chunk.appendSlice(alloc, name) catch return c.luaL_errorL(L, "require: out of memory");
+        chunk.appendSlice(alloc, "]\x00") catch return c.luaL_errorL(L, "require: out of memory");
     } else if (!resolveVfs(L, name, &src, &chunk)) {
         _ = c.luaL_errorL(L, "module '%s' not found", cname);
         return 0;

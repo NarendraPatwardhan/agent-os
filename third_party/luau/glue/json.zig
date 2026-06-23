@@ -365,24 +365,54 @@ fn decValue(d: *Dec) bool {
             }
         },
         else => {
-            if (ch == '-' or (ch >= '0' and ch <= '9')) {
-                var endp: [*c]u8 = undefined;
-                const v = strtod(d.p, &endp);
-                if (endp == @as([*c]u8, @ptrCast(@constCast(d.p)))) {
-                    d.err = "json: bad number";
-                    return false;
-                }
-                d.p = endp;
-                c.lua_pushnumber(d.L, v);
-                return true;
-            }
+            if (ch == '-' or (ch >= '0' and ch <= '9'))
+                return decNumber(d);
         },
     }
     d.err = "json: unexpected token";
     return false;
 }
 
-extern fn strtod(s: [*]const u8, endptr: *[*c]u8) f64;
+fn scanDigits(d: *Dec) void {
+    while (@intFromPtr(d.p) < @intFromPtr(d.end) and d.p[0] >= '0' and d.p[0] <= '9') d.p += 1;
+}
+
+// Scan ONE JSON number per the grammar (-? int (. frac)? ([eE] [+-]? exp)?), bounded by d.end, then
+// parse the exact token. Never strtod over the raw input — that would accept inf/nan/hex/leading-ws
+// and (without a length) scan past the token. std.fmt.parseFloat is JSON-grammar-tight.
+fn decNumber(d: *Dec) bool {
+    const start = d.p;
+    if (d.p[0] == '-') d.p += 1;
+    if (@intFromPtr(d.p) >= @intFromPtr(d.end) or d.p[0] < '0' or d.p[0] > '9') {
+        d.err = "json: bad number";
+        return false;
+    }
+    scanDigits(d);
+    if (@intFromPtr(d.p) < @intFromPtr(d.end) and d.p[0] == '.') {
+        d.p += 1;
+        if (@intFromPtr(d.p) >= @intFromPtr(d.end) or d.p[0] < '0' or d.p[0] > '9') {
+            d.err = "json: bad number";
+            return false;
+        }
+        scanDigits(d);
+    }
+    if (@intFromPtr(d.p) < @intFromPtr(d.end) and (d.p[0] == 'e' or d.p[0] == 'E')) {
+        d.p += 1;
+        if (@intFromPtr(d.p) < @intFromPtr(d.end) and (d.p[0] == '+' or d.p[0] == '-')) d.p += 1;
+        if (@intFromPtr(d.p) >= @intFromPtr(d.end) or d.p[0] < '0' or d.p[0] > '9') {
+            d.err = "json: bad number";
+            return false;
+        }
+        scanDigits(d);
+    }
+    const tok = start[0..(@intFromPtr(d.p) - @intFromPtr(start))];
+    const v = std.fmt.parseFloat(f64, tok) catch {
+        d.err = "json: bad number";
+        return false;
+    };
+    c.lua_pushnumber(d.L, v);
+    return true;
+}
 
 fn lJsonDecode(L: ?*State) callconv(.c) c_int {
     var n: usize = 0;
