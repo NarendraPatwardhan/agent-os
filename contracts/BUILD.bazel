@@ -11,6 +11,9 @@ exports_files([
     "control.kdl",
     "wire.kdl",
     "constants.kdl",
+    # The projected zig descriptor table — //tools/mc-abi-gate gates mc.zig's hand-kept externs
+    # against it via include_str!.
+    "gen/mc.gen.zig",
 ])
 
 filegroup(
