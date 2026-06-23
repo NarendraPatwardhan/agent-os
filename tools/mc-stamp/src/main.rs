@@ -94,7 +94,7 @@ fn main() {
     let fuel = parse(&a[5]);
     let table = parse(&a[6]) as u32;
 
-    let mut wasm = std::fs::read(&a[1]).unwrap_or_else(|e| {
+    let wasm = std::fs::read(&a[1]).unwrap_or_else(|e| {
         eprintln!("mc-stamp: read {}: {e}", a[1]);
         exit(1)
     });
