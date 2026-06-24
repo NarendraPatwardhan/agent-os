@@ -312,6 +312,13 @@ fn startQuery(server: *svc.Server, req: svc.Request, obj: std.json.ObjectMap, re
         respondError(resp, "oom");
         return false;
     };
+    // One call per session at a time is the protocol; if a NEW query arrives while one is still streaming
+    // (a misbehaving client), abandon the old stream so its stmt/heap can't leak — its unfinished response
+    // is reaped by the kernel's drain deadline.
+    if (s.in_progress) |old| {
+        old.deinit();
+        s.in_progress = null;
+    }
     const db = s.db orelse {
         respondError(resp, "no open database (call open first)");
         return false;
