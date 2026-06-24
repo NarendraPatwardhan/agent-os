@@ -270,12 +270,19 @@ fn doQuery(session: u32, obj: std.json.ObjectMap, resp: *std.ArrayList(u8)) void
     };
     defer alloc.free(sql_z);
     var stmt: ?*c.sqlite3_stmt = null;
-    if (c.sqlite3_prepare_v2(db, sql_z.ptr, -1, &stmt, null) != c.SQLITE_OK) {
+    var tail: [*c]const u8 = null;
+    if (c.sqlite3_prepare_v2(db, sql_z.ptr, -1, &stmt, &tail) != c.SQLITE_OK) {
         respondSqliteError(resp, db);
         return;
     }
+    // The unparsed remainder after this statement — so the CLI runs a ;-separated script one statement
+    // at a time, on sqlite's OWN boundary (a hand-rolled split would mis-handle a ; inside a string).
+    const tail_off = @intFromPtr(tail) - @intFromPtr(sql_z.ptr);
+    const tail_str: []const u8 = sql_z[@min(tail_off, sql_z.len)..];
     if (stmt == null) {
-        resp.appendSlice(alloc, "{\"v\":1,\"ok\":true,\"cols\":[],\"rows\":[]}") catch return;
+        resp.appendSlice(alloc, "{\"v\":1,\"ok\":true,\"cols\":[],\"rows\":[],\"tail\":") catch return;
+        writeJsonStr(resp, tail_str);
+        resp.append(alloc, '}') catch return;
         return;
     }
     defer _ = c.sqlite3_finalize(stmt);
@@ -311,7 +318,9 @@ fn doQuery(session: u32, obj: std.json.ObjectMap, resp: *std.ArrayList(u8)) void
         }
         resp.append(alloc, ']') catch return;
     }
-    resp.appendSlice(alloc, "]}") catch return;
+    resp.appendSlice(alloc, "],\"tail\":") catch return;
+    writeJsonStr(resp, tail_str);
+    resp.append(alloc, '}') catch return;
 }
 
 fn doClose(session: u32, resp: *std.ArrayList(u8)) void {
@@ -492,12 +501,11 @@ fn doImport(session: u32, obj: std.json.ObjectMap, handles: []const u32, resp: *
         return;
     }
     var count: i64 = 0;
-    var lines = std.mem.splitScalar(u8, data.items, '\n');
-    while (lines.next()) |raw| {
-        var line = raw;
-        if (line.len > 0 and line[line.len - 1] == '\r') line = line[0 .. line.len - 1]; // CRLF → strip CR
-        if (line.len == 0) continue;
-        if (!importRow(db, table, line)) {
+    var pos: usize = 0;
+    while (nextCsvRecord(data.items, &pos)) |record| {
+        defer freeCsvRecord(record);
+        if (record.len == 1 and record[0].len == 0) continue; // a blank line, not a data row
+        if (!importRecord(db, table, record)) {
             _ = c.sqlite3_exec(db, "ROLLBACK", null, null, null);
             respondSqliteError(resp, db);
             return;
@@ -513,19 +521,14 @@ fn doImport(session: u32, obj: std.json.ObjectMap, handles: []const u32, resp: *
     resp.append(alloc, '}') catch return;
 }
 
-/// INSERT one CSV line (comma-separated fields, each bound as text) into `table`. `false` on error.
-fn importRow(db: ?*c.sqlite3, table: []const u8, line: []const u8) bool {
-    var ncols: usize = 1;
-    for (line) |ch| {
-        if (ch == ',') ncols += 1;
-    }
+/// INSERT one parsed CSV record (each field bound as text) into `table`. `false` on error.
+fn importRecord(db: ?*c.sqlite3, table: []const u8, fields: []const []const u8) bool {
     var sql: std.ArrayList(u8) = .empty;
     defer sql.deinit(alloc);
     sql.appendSlice(alloc, "INSERT INTO ") catch return false;
     sql.appendSlice(alloc, table) catch return false;
     sql.appendSlice(alloc, " VALUES (") catch return false;
-    var k: usize = 0;
-    while (k < ncols) : (k += 1) {
+    for (0..fields.len) |k| {
         sql.appendSlice(alloc, if (k == 0) "?" else ",?") catch return false;
     }
     sql.append(alloc, ')') catch return false;
@@ -534,12 +537,75 @@ fn importRow(db: ?*c.sqlite3, table: []const u8, line: []const u8) bool {
     var stmt: ?*c.sqlite3_stmt = null;
     if (c.sqlite3_prepare_v2(db, sql_z.ptr, -1, &stmt, null) != c.SQLITE_OK) return false;
     defer _ = c.sqlite3_finalize(stmt);
-    var fields = std.mem.splitScalar(u8, line, ',');
-    var idx: c_int = 1;
-    while (fields.next()) |f| : (idx += 1) {
-        if (c.sqlite3_bind_text(stmt, idx, f.ptr, @intCast(f.len), SQLITE_TRANSIENT) != c.SQLITE_OK) return false;
+    for (fields, 1..) |f, idx| {
+        if (c.sqlite3_bind_text(stmt, @intCast(idx), f.ptr, @intCast(f.len), SQLITE_TRANSIENT) != c.SQLITE_OK) return false;
     }
     return c.sqlite3_step(stmt) == c.SQLITE_DONE;
+}
+
+/// Parse the next CSV record from `data` at `*pos` (RFC 4180): fields are comma-separated; a field may
+/// be "quoted" to contain commas, CRs, and newlines; "" inside a quoted field is a literal ". Each field
+/// is heap-owned so quote-unescaping is honored. Returns null at end of input (or on an allocation
+/// failure mid-parse); advances `*pos` past the record. Caller frees with `freeCsvRecord`.
+fn nextCsvRecord(data: []const u8, pos: *usize) ?[][]u8 {
+    if (pos.* >= data.len) return null;
+    var fields: std.ArrayList([]u8) = .empty;
+    var field: std.ArrayList(u8) = .empty;
+    defer field.deinit(alloc);
+    var i = pos.*;
+    var quoted = false;
+    var done = false;
+    while (i < data.len and !done) {
+        const ch = data[i];
+        if (quoted) {
+            if (ch == '"') {
+                if (i + 1 < data.len and data[i + 1] == '"') {
+                    field.append(alloc, '"') catch return abortRecord(&fields);
+                    i += 2;
+                } else {
+                    quoted = false;
+                    i += 1;
+                }
+            } else {
+                field.append(alloc, ch) catch return abortRecord(&fields);
+                i += 1;
+            }
+        } else switch (ch) {
+            '"' => {
+                quoted = true;
+                i += 1;
+            },
+            ',' => {
+                fields.append(alloc, alloc.dupe(u8, field.items) catch return abortRecord(&fields)) catch return abortRecord(&fields);
+                field.clearRetainingCapacity();
+                i += 1;
+            },
+            '\r' => i += 1, // CRLF: drop the CR
+            '\n' => {
+                i += 1;
+                done = true; // record terminator
+            },
+            else => {
+                field.append(alloc, ch) catch return abortRecord(&fields);
+                i += 1;
+            },
+        }
+    }
+    fields.append(alloc, alloc.dupe(u8, field.items) catch return abortRecord(&fields)) catch return abortRecord(&fields);
+    pos.* = i;
+    return fields.toOwnedSlice(alloc) catch return abortRecord(&fields);
+}
+
+/// Free the partial fields and report end-of-records on an allocation failure mid-parse.
+fn abortRecord(fields: *std.ArrayList([]u8)) ?[][]u8 {
+    for (fields.items) |f| alloc.free(f);
+    fields.deinit(alloc);
+    return null;
+}
+
+fn freeCsvRecord(record: [][]u8) void {
+    for (record) |f| alloc.free(f);
+    alloc.free(record);
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -772,7 +838,7 @@ fn die(msg: []const u8) noreturn {
 }
 
 fn usage() noreturn {
-    die("usage: sqlite <db> <sql> | sqlite <db> import <table> <file>\n");
+    die("usage: sqlite <db> [SQL]   (no SQL → a stdin REPL; a SQL arg or a .dot-command runs and exits)\n");
 }
 
 fn writeOut(bytes: []const u8) void {
@@ -833,21 +899,52 @@ fn sendAndCheck(conn: i32, req: []const u8, handles: []const i32) std.json.Parse
     return parsed;
 }
 
-/// Format one typed cell for TSV output.
-fn printCell(out: *std.ArrayList(u8), v: std.json.Value) void {
+// ── the CLI face: sqlite3-like (args or a stdin REPL, | output, dot-commands) ────────────────────────
+
+const Mode = enum { list, csv };
+
+/// CLI rendering state — sqlite3's defaults: list mode (`|` separator), headers off.
+const Cli = struct {
+    conn: i32,
+    headers: bool = false,
+    mode: Mode = .list,
+};
+
+fn writeErr(bytes: []const u8) void {
+    var n: u32 = 0;
+    _ = mc.mc_sys_write(2, mc.addr(bytes.ptr), @intCast(bytes.len), mc.addr(&n));
+}
+
+/// Append `s` to `out`, RFC-4180 quoted iff it contains a comma, quote, CR, or newline (csv mode).
+fn appendCsvField(out: *std.ArrayList(u8), s: []const u8) void {
+    if (std.mem.indexOfAny(u8, s, ",\"\r\n") == null) {
+        out.appendSlice(alloc, s) catch {};
+        return;
+    }
+    out.append(alloc, '"') catch {};
+    for (s) |ch| {
+        if (ch == '"') out.append(alloc, '"') catch {};
+        out.append(alloc, ch) catch {};
+    }
+    out.append(alloc, '"') catch {};
+}
+
+/// Render one typed cell, appended to `out` raw (list) or CSV-quoted (csv).
+fn appendCell(out: *std.ArrayList(u8), mode: Mode, v: std.json.Value) void {
+    var tmp: std.ArrayList(u8) = .empty;
+    defer tmp.deinit(alloc);
     switch (v) {
-        .integer => |x| writeI64(out, x),
-        .float => |x| writeF64(out, x),
-        .string => |s| out.appendSlice(alloc, s) catch {},
-        .object => |o| {
-            // A {"$blob":"<hex>"} cell: print the hex (a CLI line can't carry raw bytes).
-            if (o.get("$blob")) |bv| switch (bv) {
-                .string => |s| out.appendSlice(alloc, s) catch {},
-                else => {},
-            };
+        .integer => |x| writeI64(&tmp, x),
+        .float => |x| writeF64(&tmp, x),
+        .string => |s| tmp.appendSlice(alloc, s) catch {},
+        // A {"$blob":"<hex>"} cell prints its hex (a text line can't carry raw bytes).
+        .object => |o| if (o.get("$blob")) |bv| switch (bv) {
+            .string => |s| tmp.appendSlice(alloc, s) catch {},
+            else => {},
         },
         else => {}, // null / bool → empty cell
     }
+    if (mode == .csv) appendCsvField(out, tmp.items) else out.appendSlice(alloc, tmp.items) catch {};
 }
 
 fn cliOpen(conn: i32, db_path: []const u8) void {
@@ -859,61 +956,78 @@ fn cliOpen(conn: i32, db_path: []const u8) void {
     sendAndCheck(conn, req.items, &.{}).deinit();
 }
 
-/// Run `sql` and print the result as TSV: a header row of column names, then one row per result.
-fn cliQuery(conn: i32, sql: []const u8) void {
-    var req: std.ArrayList(u8) = .empty;
-    defer req.deinit(alloc);
-    req.appendSlice(alloc, "{\"v\":1,\"op\":\"query\",\"sql\":") catch die("sqlite: oom\n");
-    writeJsonStr(&req, sql);
-    req.append(alloc, '}') catch die("sqlite: oom\n");
-    const p = sendAndCheck(conn, req.items, &.{});
-    defer p.deinit();
-    const obj = p.value.object;
-
+/// Print one result set in the active mode: a header row iff `.headers on`, then one line per row,
+/// columns joined by `|` (list) or `,` (csv). A statement with no result columns prints nothing —
+/// silent like sqlite3 for CREATE/INSERT.
+fn printResult(self: *Cli, obj: std.json.ObjectMap) void {
+    const sep: u8 = if (self.mode == .csv) ',' else '|';
     var line: std.ArrayList(u8) = .empty;
     defer line.deinit(alloc);
-    // A header row of column names — skipped for a statement with no result columns (CREATE/INSERT),
-    // which print nothing, so a non-query is silent like the sqlite3 CLI.
-    if (obj.get("cols")) |cv| switch (cv) {
-        .array => |cols| if (cols.items.len > 0) {
+    const cols: ?std.json.Array = if (obj.get("cols")) |cv| switch (cv) {
+        .array => |a| a,
+        else => null,
+    } else null;
+    if (cols) |cs| {
+        if (cs.items.len == 0) return; // a non-query statement prints nothing
+        if (self.headers) {
             line.clearRetainingCapacity();
-            for (cols.items, 0..) |col, i| {
-                if (i > 0) line.append(alloc, '\t') catch {};
+            for (cs.items, 0..) |col, i| {
+                if (i > 0) line.append(alloc, sep) catch {};
                 switch (col) {
-                    .string => |s| line.appendSlice(alloc, s) catch {},
+                    .string => |s| if (self.mode == .csv) appendCsvField(&line, s) else line.appendSlice(alloc, s) catch {},
                     else => {},
                 }
             }
             line.append(alloc, '\n') catch {};
             writeOut(line.items);
-        },
-        else => {},
-    };
+        }
+    }
     if (obj.get("rows")) |rv| switch (rv) {
-        .array => |rows| {
-            for (rows.items) |row| switch (row) {
-                .array => |cells| {
-                    line.clearRetainingCapacity();
-                    for (cells.items, 0..) |cell, i| {
-                        if (i > 0) line.append(alloc, '\t') catch {};
-                        printCell(&line, cell);
-                    }
-                    line.append(alloc, '\n') catch {};
-                    writeOut(line.items);
-                },
-                else => {},
-            };
+        .array => |rows| for (rows.items) |row| switch (row) {
+            .array => |cells| {
+                line.clearRetainingCapacity();
+                for (cells.items, 0..) |cell, i| {
+                    if (i > 0) line.append(alloc, sep) catch {};
+                    appendCell(&line, self.mode, cell);
+                }
+                line.append(alloc, '\n') catch {};
+                writeOut(line.items);
+            },
+            else => {},
         },
         else => {},
     };
 }
 
-/// `sqlite <db> import <table> <file>`: open <file>, DELEGATE the handle to the service, and let it
-/// read the CSV straight from the handle (SERVICES.md §3.4). The service never sees the path.
-fn cliImport(conn: i32, table: []const u8, file: []const u8) void {
+/// Run a (possibly multi-statement) SQL string against the warm service ONE statement at a time: the
+/// service runs each statement and returns the unparsed tail (its own boundary), and we print each
+/// result set. The service holds the warm db, so the CLI stays a thin client (SERVICES.md §3.3).
+fn runSql(self: *Cli, sql: []const u8) void {
+    var remaining: []u8 = alloc.dupe(u8, sql) catch die("sqlite: oom\n");
+    while (std.mem.trim(u8, remaining, " \t\r\n").len > 0) {
+        var req: std.ArrayList(u8) = .empty;
+        req.appendSlice(alloc, "{\"v\":1,\"op\":\"query\",\"sql\":") catch die("sqlite: oom\n");
+        writeJsonStr(&req, remaining);
+        req.append(alloc, '}') catch die("sqlite: oom\n");
+        const p = sendAndCheck(self.conn, req.items, &.{});
+        req.deinit(alloc);
+        printResult(self, p.value.object);
+        // Copy the tail BEFORE freeing p's arena, then advance to it.
+        const tail = alloc.dupe(u8, getStr(p.value.object, "tail") orelse "") catch die("sqlite: oom\n");
+        p.deinit();
+        alloc.free(remaining);
+        remaining = tail;
+    }
+    alloc.free(remaining);
+}
+
+/// `.import FILE TABLE`: open FILE, DELEGATE its handle to the service, and let the service read the CSV
+/// straight from the handle (SERVICES.md §3.4) — the service never sees the path. Silent like sqlite3.
+fn cliImport(conn: i32, file: []const u8, table: []const u8) void {
     var fd: u32 = 0;
     if (mc.mc_sys_open(mc.addr(file.ptr), @intCast(file.len), 0, mc.addr(&fd)) != 0) {
-        die("sqlite: cannot open import file\n");
+        writeErr("sqlite: cannot open import file\n");
+        return;
     }
     defer _ = mc.mc_sys_close(@intCast(fd));
     var req: std.ArrayList(u8) = .empty;
@@ -922,34 +1036,135 @@ fn cliImport(conn: i32, table: []const u8, file: []const u8) void {
     writeJsonStr(&req, table);
     req.append(alloc, '}') catch die("sqlite: oom\n");
     const handles = [_]i32{@intCast(fd)};
-    const p = sendAndCheck(conn, req.items, &handles);
-    defer p.deinit();
-    var line: std.ArrayList(u8) = .empty;
-    defer line.deinit(alloc);
-    line.appendSlice(alloc, "imported ") catch {};
-    writeI64(&line, idOfI64(p.value.object, "changes"));
-    line.appendSlice(alloc, " rows\n") catch {};
-    writeOut(line.items);
+    sendAndCheck(conn, req.items, &handles).deinit();
+}
+
+/// Append `s` as a SQL string literal (`'…'`, embedded `'` doubled).
+fn writeSqlStr(out: *std.ArrayList(u8), s: []const u8) void {
+    out.append(alloc, '\'') catch {};
+    for (s) |ch| {
+        if (ch == '\'') out.append(alloc, '\'') catch {};
+        out.append(alloc, ch) catch {};
+    }
+    out.append(alloc, '\'') catch {};
+}
+
+const DOT_HELP =
+    \\.help            show this help
+    \\.tables          list tables
+    \\.schema [TABLE]  show CREATE statements
+    \\.headers on|off  show column headers (default off)
+    \\.mode list|csv   set the output mode (default list, | separated)
+    \\.import FILE TBL  load a CSV file into a table
+    \\.quit            exit
+    \\
+;
+
+/// Handle a `.`-prefixed meta-command (sqlite3's shell verbs). Returns false on `.quit`/`.exit`.
+fn dotCommand(self: *Cli, line: []const u8) bool {
+    var it = std.mem.tokenizeAny(u8, line, " \t");
+    const cmd = it.next() orelse return true;
+    if (std.mem.eql(u8, cmd, ".quit") or std.mem.eql(u8, cmd, ".exit")) {
+        return false;
+    } else if (std.mem.eql(u8, cmd, ".help")) {
+        writeOut(DOT_HELP);
+    } else if (std.mem.eql(u8, cmd, ".tables")) {
+        runSql(self, "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name");
+    } else if (std.mem.eql(u8, cmd, ".schema")) {
+        if (it.next()) |t| {
+            var q: std.ArrayList(u8) = .empty;
+            defer q.deinit(alloc);
+            q.appendSlice(alloc, "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL AND name=") catch return true;
+            writeSqlStr(&q, t);
+            runSql(self, q.items);
+        } else {
+            runSql(self, "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY name");
+        }
+    } else if (std.mem.eql(u8, cmd, ".headers")) {
+        const arg = it.next() orelse "";
+        self.headers = std.mem.eql(u8, arg, "on") or std.mem.eql(u8, arg, "1") or std.mem.eql(u8, arg, "yes");
+    } else if (std.mem.eql(u8, cmd, ".mode")) {
+        const arg = it.next() orelse "";
+        if (std.mem.eql(u8, arg, "csv")) {
+            self.mode = .csv;
+        } else if (std.mem.eql(u8, arg, "list")) {
+            self.mode = .list;
+        } else {
+            writeErr("sqlite: .mode expects list|csv\n");
+        }
+    } else if (std.mem.eql(u8, cmd, ".import")) {
+        const file = it.next();
+        const table = it.next();
+        if (file == null or table == null) {
+            writeErr("sqlite: usage: .import FILE TABLE\n");
+        } else {
+            cliImport(self.conn, file.?, table.?);
+        }
+    } else {
+        writeErr("sqlite: unknown command (.help for a list)\n");
+    }
+    return true;
+}
+
+/// The interactive face: read SQL + dot-commands from stdin until EOF or `.quit`. A line starting with
+/// `.` is a meta-command; other lines accumulate into a statement that runs at its terminating `;`
+/// (sqlite3's continue prompt). A trailing un-terminated statement runs at EOF.
+fn repl(self: *Cli) void {
+    var input: std.ArrayList(u8) = .empty;
+    defer input.deinit(alloc);
+    var rbuf: [4096]u8 = undefined;
+    while (true) {
+        var n: u32 = 0;
+        if (mc.mc_sys_read(0, mc.addr(&rbuf), rbuf.len, mc.addr(&n)) != 0) break;
+        if (n == 0) break;
+        input.appendSlice(alloc, rbuf[0..n]) catch break;
+    }
+    var sql: std.ArrayList(u8) = .empty;
+    defer sql.deinit(alloc);
+    var lines = std.mem.splitScalar(u8, input.items, '\n');
+    while (lines.next()) |raw| {
+        var line = raw;
+        if (line.len > 0 and line[line.len - 1] == '\r') line = line[0 .. line.len - 1];
+        const trimmed = std.mem.trim(u8, line, " \t");
+        if (sql.items.len == 0 and trimmed.len > 0 and trimmed[0] == '.') {
+            if (!dotCommand(self, trimmed)) return; // .quit
+            continue;
+        }
+        if (trimmed.len == 0 and sql.items.len == 0) continue; // blank line between statements
+        sql.appendSlice(alloc, line) catch break;
+        sql.append(alloc, '\n') catch break;
+        if (std.mem.endsWith(u8, std.mem.trim(u8, sql.items, " \t\r\n"), ";")) {
+            runSql(self, sql.items);
+            sql.clearRetainingCapacity();
+        }
+    }
+    if (std.mem.trim(u8, sql.items, " \t\r\n").len > 0) runSql(self, sql.items); // trailing, no ;
 }
 
 fn cli(args: []const u8) void {
     var it = std.mem.splitScalar(u8, args, 0);
     _ = it.next(); // argv[0]
     const db_path = it.next() orelse usage();
-    const arg2 = it.next() orelse usage();
 
     var conn: u32 = 0;
     if (mc.mc_sys_svc_connect(mc.addr(SERVICE_NAME.ptr), SERVICE_NAME.len, mc.addr(&conn)) != 0) {
         die("sqlite: service unavailable\n");
     }
-    cliOpen(@intCast(conn), db_path);
+    var self = Cli{ .conn = @intCast(conn) };
+    cliOpen(self.conn, db_path);
 
-    if (std.mem.eql(u8, arg2, "import")) {
-        const table = it.next() orelse usage();
-        const file = it.next() orelse usage();
-        cliImport(@intCast(conn), table, file);
+    // sqlite3: a SQL (or dot-command) argument runs and exits; with no argument — or an EMPTY one (a
+    // trailing argv NUL splits to ""), which is not the same as a present arg — read a stdin REPL.
+    const sql_arg = it.next() orelse "";
+    if (sql_arg.len > 0) {
+        const trimmed = std.mem.trim(u8, sql_arg, " \t");
+        if (trimmed.len > 0 and trimmed[0] == '.') {
+            _ = dotCommand(&self, trimmed);
+        } else {
+            runSql(&self, sql_arg);
+        }
     } else {
-        cliQuery(@intCast(conn), arg2);
+        repl(&self);
     }
     _ = mc.mc_sys_exit(0);
 }

@@ -174,49 +174,75 @@ db:close()
 /// The CLI face (#10): `$ sqlite <db> <sql>` is a thin svc_connect/svc_call client of the SAME warm
 /// service the library drives — "three faces, one core" (SERVICES.md §3.3), not "use the library".
 /// Three separate processes share one warm instance; the table persists in the file across them, and a
-/// SELECT prints typed rows as TSV (with a column header). A non-query prints nothing.
+/// The CLI is sqlite3-like: a multi-statement script runs each statement (the service splits on its own
+/// boundary), CREATE/INSERT are silent, and a SELECT prints pipe-separated rows with NO header by
+/// default (sqlite3's "list" mode).
 #[test]
 fn sqlite_cli_runs_sql_over_the_warm_service() {
     let mut s = boot_atlas();
+    // One invocation, three statements: the two non-queries are silent; the SELECT prints | rows.
     assert_eq!(
-        s.run_for_output("sqlite /tmp/cli.db \"CREATE TABLE t (n INTEGER, s TEXT)\""),
-        ""
+        s.run_for_output("sqlite /tmp/cli.db \"CREATE TABLE t (n INTEGER, s TEXT); INSERT INTO t VALUES (1,'a'),(2,'b'); SELECT n,s FROM t ORDER BY n\""),
+        "1|a\r\n2|b\r\n"
     );
-    assert_eq!(
-        s.run_for_output("sqlite /tmp/cli.db \"INSERT INTO t VALUES (1, 'a'), (2, 'b')\""),
-        ""
-    );
+    // The default output is list mode: | separator, no header.
     assert_eq!(
         s.run_for_output("sqlite /tmp/cli.db \"SELECT n, s FROM t ORDER BY n\""),
-        "n\ts\r\n1\ta\r\n2\tb\r\n"
+        "1|a\r\n2|b\r\n"
     );
 }
 
-/// Handle delegation (#2; SERVICES.md §3.4): `$ sqlite <db> import <table> <file>` opens the CSV and
-/// DELEGATES the handle to the service, which reads it straight from the handle — no path, no namespace
-/// reach of its own. The rows land in the table, proving the delegated fd was cloned into the service
-/// and read there.
+/// The CLI is also a stdin REPL with sqlite3 dot-commands: piped statements run; `.headers on` adds a
+/// header row; `.tables` lists user tables; `.mode csv` switches to comma-separated output. The
+/// interactive face of "one binary, three modes" (SERVICES.md §3.3).
+#[test]
+fn sqlite_cli_repl_and_dot_commands() {
+    let mut s = boot_atlas();
+    let _ = s.run_for_output(
+        "sqlite /tmp/r.db \"CREATE TABLE kv (k TEXT, v INTEGER); INSERT INTO kv VALUES ('x',1),('y',2)\"",
+    );
+    // A piped script: a dot-command turns on headers, then a query.
+    s.host
+        .write_file("/tmp/q.sql", b".headers on\nSELECT k, v FROM kv ORDER BY k;\n")
+        .expect("write q.sql");
+    assert_eq!(s.run_for_output("cat /tmp/q.sql | sqlite /tmp/r.db"), "k|v\r\nx|1\r\ny|2\r\n");
+    // .tables lists user tables.
+    s.host.write_file("/tmp/t.sql", b".tables\n").expect("write t.sql");
+    assert_eq!(s.run_for_output("cat /tmp/t.sql | sqlite /tmp/r.db"), "kv\r\n");
+    // .mode csv switches the separator to a comma.
+    s.host
+        .write_file("/tmp/c.sql", b".mode csv\nSELECT k, v FROM kv ORDER BY k;\n")
+        .expect("write c.sql");
+    assert_eq!(s.run_for_output("cat /tmp/c.sql | sqlite /tmp/r.db"), "x,1\r\ny,2\r\n");
+}
+
+/// Handle delegation (#2; SERVICES.md §3.4) + a real CSV parser (#4): `.import FILE TABLE` opens the CSV
+/// and DELEGATES the handle to the service, which reads it straight from the handle — no path, no
+/// namespace reach. The parser is RFC-4180, so a quoted field with an embedded comma stays ONE value
+/// and a doubled "" unescapes to a literal quote — a naive comma/newline split would mangle both.
 #[test]
 fn sqlite_cli_imports_via_a_delegated_handle() {
     let mut s = boot_atlas();
     s.host
-        .write_file("/tmp/data.csv", b"1,alice\n2,bob\n3,carol\n")
+        .write_file(
+            "/tmp/data.csv",
+            b"1,alice,\"Smith, Bob\"\n2,bob,\"say \"\"hi\"\"\"\n",
+        )
         .expect("write csv");
+    let _ = s.run_for_output(
+        "sqlite /tmp/imp.db \"CREATE TABLE people (id INTEGER, name TEXT, note TEXT)\"",
+    );
+    // .import is silent like sqlite3; the rows land via the delegated handle.
+    assert_eq!(s.run_for_output("sqlite /tmp/imp.db \".import /tmp/data.csv people\""), "");
+    assert_eq!(s.run_for_output("sqlite /tmp/imp.db \"SELECT count(*) FROM people\""), "2\r\n");
+    // The quoted comma survived as ONE field; the "" unescaped to a literal quote.
     assert_eq!(
-        s.run_for_output("sqlite /tmp/imp.db \"CREATE TABLE people (id INTEGER, name TEXT)\""),
-        ""
+        s.run_for_output("sqlite /tmp/imp.db \"SELECT note FROM people WHERE id=1\""),
+        "Smith, Bob\r\n"
     );
     assert_eq!(
-        s.run_for_output("sqlite /tmp/imp.db import people /tmp/data.csv"),
-        "imported 3 rows\r\n"
-    );
-    assert_eq!(
-        s.run_for_output("sqlite /tmp/imp.db \"SELECT count(*) FROM people\""),
-        "count(*)\r\n3\r\n"
-    );
-    assert_eq!(
-        s.run_for_output("sqlite /tmp/imp.db \"SELECT name FROM people WHERE id = 2\""),
-        "name\r\nbob\r\n"
+        s.run_for_output("sqlite /tmp/imp.db \"SELECT note FROM people WHERE id=2\""),
+        "say \"hi\"\r\n"
     );
 }
 
