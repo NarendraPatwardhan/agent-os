@@ -139,6 +139,9 @@ pub struct ServiceChannel {
     /// Track request identity, not just a count, so a buggy service cannot make the channel look
     /// quiescent by responding to an unsolicited or duplicate `(session, req_id)`.
     inflight: BTreeSet<(u32, u32)>,
+    /// Round-robin cursor for `next_drain_ready`: the last stream we offered the server to resume, so a
+    /// single big streaming response can't monopolize the serve loop and starve the others.
+    last_drain: Option<(u32, u32)>,
 }
 
 impl ServiceChannel {
@@ -151,6 +154,7 @@ impl ServiceChannel {
             sessions: BTreeMap::new(),
             closed: false,
             inflight: BTreeSet::new(),
+            last_drain: None,
         }))
     }
 
@@ -339,14 +343,6 @@ impl ServiceChannel {
         self.responses.get(&(session, req_id)).map_or(0, |r| r.buf.len())
     }
 
-    /// Whether a blocked buffer has gone undrained past its deadline — the client is stuck, so the
-    /// server fails the call rather than block on it forever.
-    pub fn response_overdue(&self, session: u32, req_id: u32) -> bool {
-        self.responses
-            .get(&(session, req_id))
-            .is_some_and(|r| crate::wall_now_ms() > r.drain_deadline)
-    }
-
     /// Finalize `(session, req_id)`'s answer as a clean failure with `errno` (a stuck client; the
     /// client's `read` surfaces it).
     pub fn fail_response(&mut self, session: u32, req_id: u32, errno: i32) {
@@ -354,6 +350,44 @@ impl ServiceChannel {
             resp.buf.clear();
             resp.status = errno;
             resp.complete = true;
+        }
+    }
+
+    /// An in-progress streaming response the client has drained below the high-water — so the server can
+    /// produce MORE for it without overflowing the kernel buffer. `svc_recv` offers this as a `DrainReady`
+    /// event so the single-threaded server resumes a paused stream instead of blocking on it. Round-robin
+    /// (advance past `last_drain`, wrapping) so a continuously-draining huge result can't starve the rest.
+    pub fn next_drain_ready(&mut self) -> Option<(u32, u32)> {
+        let ready: Vec<(u32, u32)> = self
+            .responses
+            .iter()
+            .filter(|(_, r)| !r.complete && r.status == 0 && r.buf.len() < SVC_RESPONSE_HIGH_WATER)
+            .map(|(&k, _)| k)
+            .collect();
+        let next = ready
+            .iter()
+            .copied()
+            .find(|&k| Some(k) > self.last_drain)
+            .or_else(|| ready.first().copied());
+        self.last_drain = next;
+        next
+    }
+
+    /// Sweep streaming responses a client has stopped draining past their deadline and fail them
+    /// (`ETIMEDOUT`) — freeing the buffer and leaving the quiescence gate. Run on each `svc_recv`, so a
+    /// stuck client is cleaned up WITHOUT ever blocking the single-threaded server (it never waits on one
+    /// client; it just stops being offered that stream and reaps it when the deadline passes).
+    pub fn fail_overdue(&mut self) {
+        let now = crate::wall_now_ms();
+        let stuck: Vec<(u32, u32)> = self
+            .responses
+            .iter()
+            .filter(|(_, r)| !r.complete && r.status == 0 && now > r.drain_deadline)
+            .map(|(&k, _)| k)
+            .collect();
+        for (s, q) in stuck {
+            self.fail_response(s, q, ETIMEDOUT);
+            self.inflight.remove(&(s, q));
         }
     }
 

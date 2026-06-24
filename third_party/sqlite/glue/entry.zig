@@ -30,9 +30,35 @@ const SQLITE_TRANSIENT: c.sqlite3_destructor_type = @ptrFromInt(std.math.maxInt(
 /// Per-session warm state: the open DB handle PLUS the warm PREPARED STATEMENTS (compiled once, run
 /// many) keyed by a per-session id. All in this guest's linear memory, so the connection, sqlite's
 /// page cache, AND the compiled statements stay warm across calls (and ride a kernel snapshot).
+/// A SELECT being STREAMED to a client incrementally: the prepared statement plus where we are in the
+/// JSON being produced. The serve loop pumps chunks into the kernel buffer until it fills (`respond` →
+/// EAGAIN), parks the stream here, and resumes it on the `.drain_ready` the kernel delivers once the
+/// client drains — so producing a huge result for one slow client never blocks serving everyone else.
+const QueryStream = struct {
+    stmt: *c.sqlite3_stmt,
+    db: *c.sqlite3, // for an error message if a step fails mid-stream
+    req_id: u32,
+    ncol: c_int,
+    tail: []u8, // owned copy of the unparsed SQL tail (outlives the request blob)
+    phase: enum { prefix, rows, suffix, done },
+    first: bool, // first row? (drives the comma)
+    chunk: std.ArrayList(u8), // the chunk being built / parked un-sent across an EAGAIN
+    status: i32, // 0 normally; svc.EIO for a mid-stream step error
+    is_last: bool, // the built chunk is the final one
+    sent_any: bool, // any chunk accepted yet? (a later error can't then send a clean JSON error)
+
+    fn deinit(self: *QueryStream) void {
+        _ = c.sqlite3_finalize(self.stmt);
+        alloc.free(self.tail);
+        self.chunk.deinit(alloc);
+        alloc.destroy(self);
+    }
+};
+
 const Session = struct {
     db: ?*c.sqlite3 = null,
     stmts: std.AutoHashMap(u32, *c.sqlite3_stmt),
+    in_progress: ?*QueryStream = null, // an in-flight streaming query (≤1: one call per session at a time)
     next_id: u32 = 1,
 
     fn create() ?*Session {
@@ -40,9 +66,10 @@ const Session = struct {
         s.* = .{ .stmts = std.AutoHashMap(u32, *c.sqlite3_stmt).init(alloc) };
         return s;
     }
-    /// Finalize every warm statement, close the DB, free the session — the teardown on `close` (and
-    /// whenever the kernel evicts a dead client's session and re-`recv`s, the channel having closed).
+    /// Finalize every warm statement (and any in-flight stream), close the DB, free the session — the
+    /// teardown on `close` (and whenever the kernel evicts a dead client's session and re-`recv`s).
     fn destroy(self: *Session) void {
+        if (self.in_progress) |stream| stream.deinit();
         var it = self.stmts.valueIterator();
         while (it.next()) |st| _ = c.sqlite3_finalize(st.*);
         self.stmts.deinit();
@@ -97,14 +124,26 @@ fn serveLoop() void {
             .session_closed => {
                 if (sessions.fetchRemove(req.session)) |kv| kv.value.destroy();
             },
-            else => {
+            // The client drained a streaming response below the high-water — resume producing for it. The
+            // serve loop never blocked on it, so other sessions were served while it drained.
+            .drain_ready => {
+                if (sessions.get(req.session)) |s| {
+                    if (s.in_progress) |stream| {
+                        if (stream.req_id == req.req_id) pumpQuery(&server, req.session, s, stream);
+                    }
+                }
+            },
+            .call => {
                 defer closeDelegated(req.handles);
                 var resp: std.ArrayList(u8) = .empty;
                 defer resp.deinit(alloc);
-                // The serve loop sends the FINAL chunk (last=true); a streaming op (query) may have sent
-                // earlier PARTIAL chunks itself and returns true, so we don't double-answer.
-                if (!handle(&server, req, &resp)) server.respond(req, 0, resp.items, true);
+                // A streaming op (query) drives its own chunked responses and returns true; every other op
+                // builds one bounded answer in `resp` for the serve loop to send in a single chunk.
+                if (!handle(&server, req, &resp)) {
+                    _ = server.respond(req.session, req.req_id, 0, resp.items, true);
+                }
             },
+            else => {}, // unknown inbound kind — ignore
         }
     }
     _ = mc.mc_sys_exit(0); // channel closed — nothing more to serve
@@ -141,7 +180,7 @@ fn handle(server: *svc.Server, req: svc.Request, resp: *std.ArrayList(u8)) bool 
     } else if (std.mem.eql(u8, op, "exec")) {
         doExec(req.session, obj, resp);
     } else if (std.mem.eql(u8, op, "query")) {
-        return doQuery(server, req, obj, resp); // streams large results chunk by chunk (codex #3)
+        return startQuery(server, req, obj, resp); // streams the result chunk by chunk (async, non-blocking)
     } else if (std.mem.eql(u8, op, "prepare")) {
         doPrepare(req.session, obj, resp);
     } else if (std.mem.eql(u8, op, "step")) {
@@ -263,13 +302,17 @@ fn doExec(session: u32, obj: std.json.ObjectMap, resp: *std.ArrayList(u8)) void 
     resp.append(alloc, '}') catch return;
 }
 
-/// Run a SELECT and STREAM its result as JSON (codex #3): cols + rows are built into `resp` and, once a
-/// chunk's worth has accumulated, flushed as a PARTIAL `svc_respond` (the kernel yields so the client
-/// drains before more is built — neither the service nor the kernel holds the whole result). Returns
-/// `true` only if it answered the call itself (a mid-stream error after partial chunks); on the normal
-/// path it leaves the trailing chunk in `resp` for the serve loop to send as the final one.
-fn doQuery(server: *svc.Server, req: svc.Request, obj: std.json.ObjectMap, resp: *std.ArrayList(u8)) bool {
-    const db = sessionDb(req.session) orelse {
+/// Begin streaming a SELECT (codex #3 + the async-loop fix). Prepares and binds synchronously (needs the
+/// request `obj`); for a statement that yields rows it parks a `QueryStream` on the session and PUMPS the
+/// first chunks. Returns `true` — the stream now owns the response — or `false` for a trivial one-shot
+/// answer the serve loop sends (a prepare error, an empty statement). The result pages out incrementally
+/// as the client drains: never materialized whole, and never blocking the serve loop on a slow client.
+fn startQuery(server: *svc.Server, req: svc.Request, obj: std.json.ObjectMap, resp: *std.ArrayList(u8)) bool {
+    const s = sessionFor(req.session) orelse {
+        respondError(resp, "oom");
+        return false;
+    };
+    const db = s.db orelse {
         respondError(resp, "no open database (call open first)");
         return false;
     };
@@ -293,62 +336,122 @@ fn doQuery(server: *svc.Server, req: svc.Request, obj: std.json.ObjectMap, resp:
     const tail_off = @intFromPtr(tail) - @intFromPtr(sql_z.ptr);
     const tail_str: []const u8 = sql_z[@min(tail_off, sql_z.len)..];
     if (stmt == null) {
+        // No statement (empty / whitespace / comment-only SQL) — a trivial one-shot answer.
         resp.appendSlice(alloc, "{\"v\":1,\"ok\":true,\"cols\":[],\"rows\":[],\"tail\":") catch return false;
         writeJsonStr(resp, tail_str);
         resp.append(alloc, '}') catch return false;
         return false;
     }
-    defer _ = c.sqlite3_finalize(stmt);
     if (bindParams(obj, stmt)) |emsg| {
+        _ = c.sqlite3_finalize(stmt);
         respondError(resp, emsg);
         return false;
     }
+    const owned_tail = alloc.dupe(u8, tail_str) catch {
+        _ = c.sqlite3_finalize(stmt);
+        respondError(resp, "oom");
+        return false;
+    };
+    const stream = alloc.create(QueryStream) catch {
+        alloc.free(owned_tail);
+        _ = c.sqlite3_finalize(stmt);
+        respondError(resp, "oom");
+        return false;
+    };
+    stream.* = .{
+        .stmt = stmt.?,
+        .db = db,
+        .req_id = req.req_id,
+        .ncol = c.sqlite3_column_count(stmt),
+        .tail = owned_tail,
+        .phase = .prefix,
+        .first = true,
+        .chunk = .empty,
+        .status = 0,
+        .is_last = false,
+        .sent_any = false,
+    };
+    s.in_progress = stream;
+    pumpQuery(server, req.session, s, stream);
+    return true;
+}
 
-    resp.appendSlice(alloc, "{\"v\":1,\"ok\":true,\"cols\":[") catch return false;
-    const ncol = c.sqlite3_column_count(stmt);
-    var ci: c_int = 0;
-    while (ci < ncol) : (ci += 1) {
-        if (ci > 0) resp.append(alloc, ',') catch return false;
-        writeJsonCStr(resp, c.sqlite3_column_name(stmt, ci));
-    }
-    resp.appendSlice(alloc, "],\"rows\":[") catch return false;
-    var first = true;
-    var streamed = false;
+/// Send chunks for `stream` until the kernel buffer fills (`respond` → EAGAIN, so we PARK the un-sent
+/// chunk and return — the serve loop resumes us on the next `.drain_ready`) or the result is fully sent
+/// (then free the stream). The single-threaded serve loop is NEVER blocked here: a slow client just stops
+/// us, and we serve everyone else until it drains.
+fn pumpQuery(server: *svc.Server, session: u32, s: *Session, stream: *QueryStream) void {
     while (true) {
-        const rc = c.sqlite3_step(stmt);
-        if (rc == c.SQLITE_DONE) break;
-        if (rc != c.SQLITE_ROW) {
-            if (streamed) {
-                // Partial rows already went out — we can't retract sent bytes for a clean JSON error, so
-                // surface a TRANSPORT error; the client discards the partial body and reports the failure.
-                server.respond(req, svc.EIO, "", true);
-                return true;
-            }
-            resp.clearRetainingCapacity();
-            respondSqliteError(resp, db);
-            return false;
-        }
-        if (!first) resp.append(alloc, ',') catch return false;
-        first = false;
-        resp.append(alloc, '[') catch return false;
-        ci = 0;
-        while (ci < ncol) : (ci += 1) {
-            if (ci > 0) resp.append(alloc, ',') catch return false;
-            writeCell(resp, stmt, ci);
-        }
-        resp.append(alloc, ']') catch return false;
-        // Flush a chunk's worth as a PARTIAL response; the kernel yields so the client drains it before
-        // we build more (`first` stays false, so rows stay comma-joined across the chunk boundary).
-        if (resp.items.len >= STREAM_FLUSH_BYTES) {
-            server.respond(req, 0, resp.items, false);
-            resp.clearRetainingCapacity();
-            streamed = true;
+        if (stream.chunk.items.len == 0) buildChunk(stream);
+        const rc = server.respond(session, stream.req_id, stream.status, stream.chunk.items, stream.is_last);
+        if (rc == svc.EAGAIN) return; // buffer full — keep the chunk parked, resume on .drain_ready
+        stream.sent_any = true;
+        stream.chunk.clearRetainingCapacity();
+        if (stream.is_last) {
+            finishStream(s, stream);
+            return;
         }
     }
-    resp.appendSlice(alloc, "],\"tail\":") catch return false;
-    writeJsonStr(resp, tail_str);
-    resp.append(alloc, '}') catch return false;
-    return false; // the serve loop sends this trailing chunk as the final one (last=true)
+}
+
+fn finishStream(s: *Session, stream: *QueryStream) void {
+    s.in_progress = null;
+    stream.deinit();
+}
+
+/// Fill `stream.chunk` with the next piece of the JSON, advancing the phase: the `{… "rows":[` prefix,
+/// then rows until a chunk's worth (or the statement is exhausted), then the `],"tail":…}` suffix on the
+/// final chunk. A step error mid-stream becomes a clean structured error if nothing has gone out yet,
+/// else a transport EIO (already-sent rows can't be retracted) the client surfaces as a failed read.
+fn buildChunk(stream: *QueryStream) void {
+    if (stream.phase == .prefix) {
+        stream.chunk.appendSlice(alloc, "{\"v\":1,\"ok\":true,\"cols\":[") catch {};
+        var ci: c_int = 0;
+        while (ci < stream.ncol) : (ci += 1) {
+            if (ci > 0) stream.chunk.append(alloc, ',') catch {};
+            writeJsonCStr(&stream.chunk, c.sqlite3_column_name(stream.stmt, ci));
+        }
+        stream.chunk.appendSlice(alloc, "],\"rows\":[") catch {};
+        stream.phase = .rows;
+    }
+    if (stream.phase == .rows) {
+        while (stream.chunk.items.len < STREAM_FLUSH_BYTES) {
+            const rc = c.sqlite3_step(stream.stmt);
+            if (rc == c.SQLITE_DONE) {
+                stream.phase = .suffix;
+                break;
+            }
+            if (rc != c.SQLITE_ROW) {
+                stream.chunk.clearRetainingCapacity();
+                if (stream.sent_any) {
+                    stream.status = svc.EIO; // partial rows already out — surface a transport failure
+                } else {
+                    respondSqliteError(&stream.chunk, stream.db); // nothing sent — a clean structured error
+                }
+                stream.phase = .done;
+                stream.is_last = true;
+                return;
+            }
+            if (!stream.first) stream.chunk.append(alloc, ',') catch {};
+            stream.first = false;
+            stream.chunk.append(alloc, '[') catch {};
+            var ci: c_int = 0;
+            while (ci < stream.ncol) : (ci += 1) {
+                if (ci > 0) stream.chunk.append(alloc, ',') catch {};
+                writeCell(&stream.chunk, stream.stmt, ci);
+            }
+            stream.chunk.append(alloc, ']') catch {};
+        }
+    }
+    if (stream.phase == .suffix) {
+        stream.chunk.appendSlice(alloc, "],\"tail\":") catch {};
+        writeJsonStr(&stream.chunk, stream.tail);
+        stream.chunk.append(alloc, '}') catch {};
+        stream.phase = .done;
+        stream.is_last = true;
+        return;
+    }
+    stream.is_last = false; // the chunk filled before the statement was exhausted — more rows to come
 }
 
 fn doClose(session: u32, resp: *std.ArrayList(u8)) void {

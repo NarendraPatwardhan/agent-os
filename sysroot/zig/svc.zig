@@ -16,12 +16,16 @@ pub const SERVICE_MARKER = constants.SERVICE_MARKER;
 /// streamed result that errors mid-flight, after partial chunks are already sent and can't be retracted.
 pub const EIO = constants.EIO;
 
+/// `EAGAIN`, re-exported: `respond` returns it when the kernel buffer is at the high-water and the client
+/// hasn't drained — the server YIELDS the chunk and resumes on the `.drain_ready` event `recv` delivers.
+pub const EAGAIN = constants.EAGAIN;
+
 /// Max fds a single call may delegate (mirrors the kernel's `MAX_DELEGATED_HANDLES`).
 pub const MAX_HANDLES = 8;
 
 /// What `recv` decoded: a call to answer, or a session-closed tombstone (free that session's own warm
 /// state — SERVICES.md §3.5 is silent; the kernel adds the signal, codex #1).
-pub const Kind = enum(u8) { call = 0, session_closed = 1, _ };
+pub const Kind = enum(u8) { call = 0, session_closed = 1, drain_ready = 2, _ };
 
 /// One decoded service inbound. `blob`/`handles` borrow the server's buffers — valid until the next
 /// `recv`. A `.session_closed` tombstone carries only `session` (no `req_id`/`blob`/`handles`, no answer).
@@ -79,11 +83,12 @@ pub const Server = struct {
         }
     }
 
-    /// Answer `req`. `status` 0 = ok (`data` is the response body the client drains); nonzero = a
-    /// transport errno surfaced to the client's `read` (application errors ride inside `data`).
-    /// Answer `req` with a body chunk. `last=true` is the final chunk (the call completes); `last=false`
-    /// a partial chunk the client drains before the server sends the next (bounded-buffer streaming).
-    pub fn respond(self: *Server, req: Request, status: i32, data: []const u8, last: bool) void {
-        _ = mc.mc_sys_svc_respond(self.fd, req.session, req.req_id, status, mc.addr(data.ptr), @intCast(data.len), @intFromBool(last));
+    /// Append a body chunk to call `(session, req_id)`'s answer. `status` 0 = ok (`data` is the body the
+    /// client drains); nonzero = a transport errno surfaced to the client's `read`. `last=true` is the
+    /// final chunk (the call completes). Returns the raw mc errno: 0 on success; `EAGAIN` when the kernel
+    /// buffer is at the high-water (the client hasn't drained — YIELD this chunk and resume on the
+    /// `.drain_ready` event `recv` delivers); or another transport errno.
+    pub fn respond(self: *Server, session: u32, req_id: u32, status: i32, data: []const u8, last: bool) i32 {
+        return mc.mc_sys_svc_respond(self.fd, session, req_id, status, mc.addr(data.ptr), @intCast(data.len), @intFromBool(last));
     }
 };

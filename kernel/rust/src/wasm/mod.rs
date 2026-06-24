@@ -62,6 +62,7 @@ const SVC_ENVELOPE_HEADER: usize = 14;
 /// Envelope `kind`: a call to answer, vs a session-closed tombstone (a one-way notification).
 const SVC_KIND_CALL: u8 = 0;
 const SVC_KIND_SESSION_CLOSED: u8 = 1;
+const SVC_KIND_DRAIN_READY: u8 = 2;
 /// The persistence mount. Access to a path at or under it requires
 /// the `CAP_PERSIST` capability in addition to the usual FS read/write checks.
 const PERSIST_ROOT: &str = "/var/persist";
@@ -2327,13 +2328,39 @@ impl GuestProgram {
                 .get_task(pid)
                 .is_some_and(|t| !matches!(t.state, TaskState::Zombie))
         });
+        // Reap any streaming response a client has stopped draining past its deadline — keeps a stuck
+        // client from pinning the kernel buffer / quiescence gate, without the server ever blocking on it.
+        channel.borrow_mut().fail_overdue();
         // Deliver the next inbound. A call too large for the server's buffers is AUTO-REJECTED — the
         // client's call fails (status != 0), its delegated handles drop, and we advance — so an
         // oversize request can never stall or kill a service. Loop until deliverable or drained.
         loop {
             let inbound = channel.borrow_mut().take_request();
             let req = match inbound {
-                None => return Fulfilled::Block(BuiltinStep::Pending),
+                None => {
+                    // No new call or tombstone. Offer a paused stream the client has drained below the
+                    // high-water (room to produce more) so the server RESUMES it rather than blocking —
+                    // this is what lets one slow client never stall the others. Else yield.
+                    let ready = channel.borrow_mut().next_drain_ready();
+                    if let Some((session, req_id)) = ready {
+                        if SVC_ENVELOPE_HEADER <= buf_len as usize
+                            && self.guest_range_valid(buf, SVC_ENVELOPE_HEADER)
+                        {
+                            self.store.data_mut().pending = None;
+                            return self.write_svc_envelope(
+                                buf,
+                                ret_len,
+                                hbuf,
+                                SVC_KIND_DRAIN_READY,
+                                session,
+                                req_id,
+                                &[],
+                                &[],
+                            );
+                        }
+                    }
+                    return Fulfilled::Block(BuiltinStep::Pending);
+                }
                 Some(ServiceInbound::SessionClosed(session)) => {
                     if SVC_ENVELOPE_HEADER > buf_len as usize
                         || !self.guest_range_valid(buf, SVC_ENVELOPE_HEADER)
@@ -2413,23 +2440,15 @@ impl GuestProgram {
             }
         };
         let is_last = last != 0;
-        // BACKPRESSURE (codex #3): if this call's un-drained buffer is already at the high-water, YIELD so
-        // the client drains before we add more — keeping the kernel buffer near one high-water of bytes,
-        // not the whole result. The chunk is NOT buffered yet, so re-polling re-checks cleanly (leave
-        // `pending` set). A client that won't drain past its deadline is stuck → fail the call cleanly
-        // (`EMSGSIZE`) rather than block the single-threaded server forever.
-        {
-            let ch = channel.borrow();
-            if ch.response_buffered(session, req_id) >= SVC_RESPONSE_HIGH_WATER {
-                if ch.response_overdue(session, req_id) {
-                    drop(ch);
-                    channel.borrow_mut().fail_response(session, req_id, EMSGSIZE);
-                    channel.borrow_mut().mark_answered(session, req_id); // terminal — leave the quiescence gate
-                    self.store.data_mut().pending = None;
-                    return Fulfilled::Resume(EMSGSIZE);
-                }
-                return Fulfilled::Block(BuiltinStep::Pending); // `pending` stays SvcRespond → re-poll
-            }
+        // NON-BLOCKING backpressure: if this call's un-drained buffer is at the high-water, the kernel can
+        // hold no more right now — return EAGAIN so the server YIELDS this chunk and serves other sessions,
+        // resuming on the `DrainReady` that `svc_recv` delivers once the client drains. The single-threaded
+        // server thus NEVER blocks on one client, so a slow client cannot stall the others (the old design
+        // blocked here for up to a 5 s deadline). A client that stops draining entirely is reaped by
+        // `fail_overdue` on that deadline (in `svc_recv`), not by waiting here.
+        if channel.borrow().response_buffered(session, req_id) >= SVC_RESPONSE_HIGH_WATER {
+            self.store.data_mut().pending = None;
+            return Fulfilled::Resume(EAGAIN);
         }
         self.store.data_mut().pending = None;
         let data = match self.read_guest_bytes(data_ptr, data_len) {

@@ -32,9 +32,11 @@ db:close()
     );
 }
 
-/// Result streaming (#3): a wide 1000-row SELECT (~70 KiB) far exceeds the 32 KiB flush chunk, so the
-/// SERVICE flushes partial chunks and the kernel yields so the client drains each before more is built —
-/// neither holds the whole body. The library reassembles the stream into the full, intact result.
+/// Async result streaming (codex #3 + the non-blocking serve loop): a wide 3000-row SELECT (~210 KiB) far
+/// exceeds the kernel's 64 KiB high-water, so the service streams it in chunks — producing until the
+/// buffer fills (`respond` → EAGAIN), then resuming on the `DrainReady` the kernel delivers as the client
+/// drains, NEVER blocking the single-threaded serve loop on one client. The library reassembles the
+/// stream whole and in order: 3000 rows, first n=1, last n=3000, the wide TEXT column intact (60 chars).
 #[test]
 fn sqlite_streams_a_large_query_result() {
     let mut s = boot_atlas();
@@ -44,13 +46,14 @@ fn sqlite_streams_a_large_query_result() {
             br#"local sqlite = require("sqlite")
 local db = assert(sqlite.open("/tmp/big.db"))
 db:exec("CREATE TABLE t (n INTEGER, pad TEXT)")
-db:exec("WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n < 1000) INSERT INTO t SELECT n, printf('%060d', n) FROM r")
-print(#db:query("SELECT n, pad FROM t"))
+db:exec("WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n < 3000) INSERT INTO t SELECT n, printf('%060d', n) FROM r")
+local rows = db:query("SELECT n, pad FROM t")
+print(#rows, rows[1].n, rows[#rows].n, #rows[#rows].pad)
 db:close()
 "#,
         )
         .expect("write big.luau");
-    assert_eq!(s.run_for_output("luau /tmp/big.luau"), "1000\r\n");
+    assert_eq!(s.run_for_output("luau /tmp/big.luau"), "3000\t1\t3000\t60\r\n");
 }
 
 /// `db:transaction` is atomic: the committing transaction adds two rows; the erroring one rolls back

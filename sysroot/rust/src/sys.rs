@@ -871,12 +871,16 @@ pub fn svc_call(fd: i32, req: &[u8], handles: &[i32]) -> Result<i32, i32> {
     }
 }
 
-/// The kind of inbound [`parse_svc_request`] decoded: a typed call to answer, or a notification that a
-/// session closed (its client went away) so the service can free that session's own warm state.
+/// The kind of inbound [`parse_svc_request`] decoded: a typed call to answer; a notification that a
+/// session closed (its client went away) so the service can free that session's own warm state; or a
+/// `DrainReady` — a streaming response the client has drained below the high-water, so the service can
+/// produce more for it (`(session, req_id)` say which; no blob). The async serve loop resumes a paused
+/// stream on `DrainReady` instead of blocking, so one slow client never stalls the others.
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub enum SvcKind {
     Call,
     SessionClosed,
+    DrainReady,
 }
 
 /// An inbound delivered to a resident service, parsed from a [`svc_recv`] buffer by
@@ -901,6 +905,7 @@ pub fn parse_svc_request<'a>(buf: &'a [u8], hbuf: &'a [i32]) -> Option<SvcReques
     let kind = match buf[0] {
         0 => SvcKind::Call,
         1 => SvcKind::SessionClosed,
+        2 => SvcKind::DrainReady,
         _ => return None,
     };
     let nhandles = buf[1] as usize;
