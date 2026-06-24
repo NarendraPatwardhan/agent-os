@@ -53,6 +53,23 @@ db:close()
     assert_eq!(s.run_for_output("luau /tmp/big.luau"), "1000\r\n");
 }
 
+/// WAL (behave like a normal sqlite): the WASI build ships the dotfile VFS, which has no shared memory,
+/// so the service enables WAL via sqlite's documented no-shm path (locking_mode=EXCLUSIVE → the WAL-index
+/// lives in heap). A writable connection reports journal_mode=wal, and the row round-trips across a fresh
+/// reconnect — durable through the write-ahead log, not the rollback journal it shipped with.
+#[test]
+fn sqlite_uses_wal_journal_mode() {
+    let mut s = boot_atlas();
+    assert_eq!(
+        s.run_for_output(
+            "sqlite /tmp/wal.db \"CREATE TABLE t(x); INSERT INTO t VALUES (42); PRAGMA journal_mode\""
+        ),
+        "wal\r\n"
+    );
+    // A fresh session (new connection) sees the data — it persisted through the WAL.
+    assert_eq!(s.run_for_output("sqlite /tmp/wal.db \"SELECT x FROM t\""), "42\r\n");
+}
+
 /// `db:transaction` is atomic: the committing transaction adds two rows; the erroring one rolls back
 /// (its insert is undone) and re-raises (the outer pcall catches it).
 #[test]

@@ -200,7 +200,19 @@ fn doOpen(session: u32, obj: std.json.ObjectMap, resp: *std.ArrayList(u8)) void 
         return;
     }
     s.db = db;
+    if (!readonly) enableWal(db); // WAL for writable connections — behave like a normal sqlite
     respondOk(resp);
+}
+
+/// Put a writable connection into WAL mode. A normal sqlite uses WAL for durability, append-fast writes,
+/// and readers that don't block the writer — so the service should too. The WASI build ships the dotfile
+/// VFS, which has NO shared memory, so we take sqlite's documented no-shm WAL path: set
+/// locking_mode=EXCLUSIVE first, which holds the WAL-index in heap memory instead of the `-shm` mmap WASI
+/// can't provide. This single-process service is the sole opener of each DB, so EXCLUSIVE fits. Best-effort
+/// (the result is ignored): a DB that can't take WAL — `:memory:`, a read-only medium — keeps its default
+/// rollback journal and still works; WAL is a durability/throughput upgrade, never a correctness gate.
+fn enableWal(db: ?*c.sqlite3) void {
+    _ = c.sqlite3_exec(db, "PRAGMA locking_mode=EXCLUSIVE; PRAGMA journal_mode=WAL;", null, null, null);
 }
 
 fn doExec(session: u32, obj: std.json.ObjectMap, resp: *std.ArrayList(u8)) void {

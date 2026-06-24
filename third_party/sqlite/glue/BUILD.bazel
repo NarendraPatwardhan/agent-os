@@ -22,7 +22,8 @@ zig_binary(
         "close_shim.c",  # override close() to route through the adapter — must be C, not Zig (see the file)
     ],
     extra_srcs = ["@sqlite//:sqlite3.h"],
-    # The WASI build defines (memcontainers' proven set): WASI mode (unix-dotfile VFS, no WAL/mmap),
+    # The WASI build defines (memcontainers' proven set): WASI mode (unix-dotfile VFS — no shared memory,
+    # so the service enables WAL per-connection via the no-shm EXCLUSIVE path; see entry.zig `enableWal`),
     # single-threaded, no extension loading / memstatus / URI / deprecated APIs / double-quoted strings.
     copts = [
         "-DSQLITE_WASI",
