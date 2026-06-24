@@ -17,16 +17,15 @@ load(":defs.bzl", "release_wasm")
 # (defs.bzl) pins the whole subgraph to opt and the cdylib is symbol-stripped, so
 # `//kernel/rust:kernel` is the small (~1.7 MB) wasm, never a multi-MB debug build.
 
-# The cdylib. Tagged manual: a no_std cdylib has no host runtime, so `//...` builds it only
-# through the release_wasm transition below. Size-first codegen (`-Copt-level=z`, symbols
-# stripped); the opt LEVEL of the whole subgraph is pinned by the release_wasm transition.
+# The cdylib. Tagged manual: a no_std cdylib has no host runtime, so `//...` builds it only through the
+# release_wasm transition below, which pins the size-opt GRAPH-WIDE (opt-level=z, fat LTO, panic=abort,
+# one codegen unit — VISION §B5); here we only strip the symbol/name tables from the shipped wasm.
 rust_shared_library(
     name = "lib",
     srcs = glob(["src/**/*.rs"]),
     edition = "2024",
     rustc_flags = [
-        "-Copt-level=z",    # optimize for size, not speed
-        "-Cstrip=symbols",  # drop the symbol/name tables from the shipped wasm
+        "-Cstrip=symbols",  # drop the symbol/name tables (opt-level/LTO/panic are pinned by the transition)
     ],
     tags = ["manual"],
     deps = [
@@ -45,17 +44,19 @@ rust_shared_library(
 release_wasm(
     name = "kernel",
     lib = ":lib",
+    size_opt = True,  # the size-gated artifact carries the full §B5 size-opt (LTO + panic=abort)
     # The shipped artifact: e2e / parity / conformance all data-dep it (B1, §7.2).
     visibility = ["//visibility:public"],
 )
 
-# B5 size budget gate (the shared //tools/size rule) — a regression past the ceiling fails CI
-# rather than silently bloating the agent's footprint. memcontainers ships ~1.67 MB; we hold
-# the line near there.
+# B5 size budget gate (the shared //tools/size rule) — a regression past the ceiling fails CI rather than
+# silently bloating the agent's footprint. memcontainers ships ~1.67 MB; we now carry the resident-service
+# (svc) subsystem it lacks — the five svc_* syscalls, servicefs, the activation supervisor, result
+# streaming — so the ceiling is 2 MB, with the §B5 size-opt (LTO + panic=abort) clawing back what svc added.
 size_limit(
     name = "size_limit",
     file = ":kernel",
-    max_bytes = 1900000,
+    max_bytes = 2000000,
 )
 
 # Anchors the kernel in the test graph: asserts kernel.wasm builds.
