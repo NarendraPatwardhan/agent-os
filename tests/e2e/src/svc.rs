@@ -78,6 +78,18 @@ fn svc_lists_an_eager_service_at_boot() {
     assert_eq!(s.run_for_output("ls /svc"), "kv\r\n");
 }
 
+/// pid-1 boot invariant (codex P1): in an image with an EAGER service (svc_test's kv), the LOGIN SHELL —
+/// not the service — owns pid 1. Orphaned tasks reparent to pid 1, which must be init (the shell), never a
+/// resident service (no parent, can't reap). Activating eager services before the shell let kv grab pid 1;
+/// the shell now boots first and reserves it.
+#[test]
+fn the_login_shell_owns_pid_1_not_an_eager_service() {
+    let mut s = boot_svc_test();
+    let status = s.run_for_output("cat /proc/1/status");
+    assert!(status.contains("Name:\tsh"), "pid 1 should be the shell, got: {status:?}");
+    assert!(!status.contains("kv"), "pid 1 must not be the eager kv service, got: {status:?}");
+}
+
 /// Dead-client cleanup: a client that dies mid-session (a Luau trap while holding a `kv` connection)
 /// does NOT wedge or corrupt the warm service. The connection is torn down — the fd Drop on the
 /// universal clear_program, backed by the server's self-healing eviction on `svc_recv` — and the

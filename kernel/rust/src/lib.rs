@@ -730,14 +730,16 @@ fn init_system() {
                 // tier. Must precede any guest load (so the shell is bounded too).
                 apply_boot_contract();
 
-                // Activate resident services declared in /etc/services.json (eager:
-                // each runs its svc_serve loop). Before the login shell, so a first
-                // connect from a user task finds them registered (or briefly blocks).
-                activate_services();
-
-                // Start the login shell: the guest `/bin/sh` as pid 1, or the
-                // in-kernel rescue shell if `/bin/sh` is unavailable (no image).
+                // Start the login shell FIRST so it claims pid 1 (`spawn_with_id(1)`): the init invariant
+                // — an orphaned task reparents to pid 1, which must be the shell, never a resident service
+                // (which has no parent and cannot reap). This only SPAWNS the shell; the scheduler runs it
+                // later, after the grants below are recorded.
                 boot_login_shell();
+
+                // THEN activate eager resident services from /etc/services.json (each runs its svc_serve
+                // loop). They take pid 2+, and their grant `name → pid` is recorded here — before any user
+                // task actually runs — so a first connect still finds them registered (or briefly blocks).
+                activate_services();
 
                 STATE.set_initialized();
 
