@@ -18,6 +18,9 @@ const c = @cImport({
 
 const alloc = std.heap.c_allocator;
 const SERVICE_NAME = "sqlite";
+/// A streamed query flushes its response in chunks of this size (below the kernel's 64 KiB svc-buffer
+/// high-water) so a large result drains incrementally — neither the service nor the kernel holds it whole.
+const STREAM_FLUSH_BYTES = 32 * 1024;
 
 // SQLITE_TRANSIENT (the `(sqlite3_destructor_type)-1` sentinel): tells sqlite to COPY the bound bytes,
 // so a temporary buffer (a hex-decoded BLOB param) can be freed right after the bind. @cImport doesn't
@@ -98,56 +101,61 @@ fn serveLoop() void {
                 defer closeDelegated(req.handles);
                 var resp: std.ArrayList(u8) = .empty;
                 defer resp.deinit(alloc);
-                handle(req.session, req.blob, req.handles, &resp);
-                server.respond(req, 0, resp.items, true);
+                // The serve loop sends the FINAL chunk (last=true); a streaming op (query) may have sent
+                // earlier PARTIAL chunks itself and returns true, so we don't double-answer.
+                if (!handle(&server, req, &resp)) server.respond(req, 0, resp.items, true);
             },
         }
     }
     _ = mc.mc_sys_exit(0); // channel closed — nothing more to serve
 }
 
-fn handle(session: u32, blob: []const u8, handles: []const u32, resp: *std.ArrayList(u8)) void {
-    const parsed = std.json.parseFromSlice(std.json.Value, alloc, blob, .{}) catch {
+/// Dispatch one call, building its answer into `resp`. Returns `true` only if it ANSWERED the call
+/// itself (a streaming op that already sent all its chunks, final included) — then the serve loop must
+/// not respond again. Every other op builds `resp` and returns `false` for the serve loop to send.
+fn handle(server: *svc.Server, req: svc.Request, resp: *std.ArrayList(u8)) bool {
+    const parsed = std.json.parseFromSlice(std.json.Value, alloc, req.blob, .{}) catch {
         respondError(resp, "invalid request json");
-        return;
+        return false;
     };
     defer parsed.deinit();
     const obj = switch (parsed.value) {
         .object => |o| o,
         else => {
             respondError(resp, "request must be a json object");
-            return;
+            return false;
         },
     };
     // Protocol version: the library and this service ship together, but a versioned envelope lets the
     // service reject an incompatible client cleanly instead of misreading it (codex #9).
     if (idOfI64(obj, "v") != 1) {
         respondError(resp, "unsupported protocol version (expected v=1)");
-        return;
+        return false;
     }
     const op = getStr(obj, "op") orelse {
         respondError(resp, "missing op");
-        return;
+        return false;
     };
     if (std.mem.eql(u8, op, "open")) {
-        doOpen(session, obj, resp);
+        doOpen(req.session, obj, resp);
     } else if (std.mem.eql(u8, op, "exec")) {
-        doExec(session, obj, resp);
+        doExec(req.session, obj, resp);
     } else if (std.mem.eql(u8, op, "query")) {
-        doQuery(session, obj, resp);
+        return doQuery(server, req, obj, resp); // streams large results chunk by chunk (codex #3)
     } else if (std.mem.eql(u8, op, "prepare")) {
-        doPrepare(session, obj, resp);
+        doPrepare(req.session, obj, resp);
     } else if (std.mem.eql(u8, op, "step")) {
-        doStep(session, obj, resp);
+        doStep(req.session, obj, resp);
     } else if (std.mem.eql(u8, op, "finalize")) {
-        doFinalize(session, obj, resp);
+        doFinalize(req.session, obj, resp);
     } else if (std.mem.eql(u8, op, "import")) {
-        doImport(session, obj, handles, resp);
+        doImport(req.session, obj, req.handles, resp);
     } else if (std.mem.eql(u8, op, "close")) {
-        doClose(session, resp);
+        doClose(req.session, resp);
     } else {
         respondError(resp, "unknown op");
     }
+    return false;
 }
 
 fn closeDelegated(handles: []const u32) void {
@@ -255,72 +263,92 @@ fn doExec(session: u32, obj: std.json.ObjectMap, resp: *std.ArrayList(u8)) void 
     resp.append(alloc, '}') catch return;
 }
 
-fn doQuery(session: u32, obj: std.json.ObjectMap, resp: *std.ArrayList(u8)) void {
-    const db = sessionDb(session) orelse {
+/// Run a SELECT and STREAM its result as JSON (codex #3): cols + rows are built into `resp` and, once a
+/// chunk's worth has accumulated, flushed as a PARTIAL `svc_respond` (the kernel yields so the client
+/// drains before more is built — neither the service nor the kernel holds the whole result). Returns
+/// `true` only if it answered the call itself (a mid-stream error after partial chunks); on the normal
+/// path it leaves the trailing chunk in `resp` for the serve loop to send as the final one.
+fn doQuery(server: *svc.Server, req: svc.Request, obj: std.json.ObjectMap, resp: *std.ArrayList(u8)) bool {
+    const db = sessionDb(req.session) orelse {
         respondError(resp, "no open database (call open first)");
-        return;
+        return false;
     };
     const sql = getStr(obj, "sql") orelse {
         respondError(resp, "query: missing sql");
-        return;
+        return false;
     };
     const sql_z = alloc.dupeZ(u8, sql) catch {
         respondError(resp, "oom");
-        return;
+        return false;
     };
     defer alloc.free(sql_z);
     var stmt: ?*c.sqlite3_stmt = null;
     var tail: [*c]const u8 = null;
     if (c.sqlite3_prepare_v2(db, sql_z.ptr, -1, &stmt, &tail) != c.SQLITE_OK) {
         respondSqliteError(resp, db);
-        return;
+        return false;
     }
     // The unparsed remainder after this statement — so the CLI runs a ;-separated script one statement
     // at a time, on sqlite's OWN boundary (a hand-rolled split would mis-handle a ; inside a string).
     const tail_off = @intFromPtr(tail) - @intFromPtr(sql_z.ptr);
     const tail_str: []const u8 = sql_z[@min(tail_off, sql_z.len)..];
     if (stmt == null) {
-        resp.appendSlice(alloc, "{\"v\":1,\"ok\":true,\"cols\":[],\"rows\":[],\"tail\":") catch return;
+        resp.appendSlice(alloc, "{\"v\":1,\"ok\":true,\"cols\":[],\"rows\":[],\"tail\":") catch return false;
         writeJsonStr(resp, tail_str);
-        resp.append(alloc, '}') catch return;
-        return;
+        resp.append(alloc, '}') catch return false;
+        return false;
     }
     defer _ = c.sqlite3_finalize(stmt);
     if (bindParams(obj, stmt)) |emsg| {
         respondError(resp, emsg);
-        return;
+        return false;
     }
 
-    resp.appendSlice(alloc, "{\"v\":1,\"ok\":true,\"cols\":[") catch return;
+    resp.appendSlice(alloc, "{\"v\":1,\"ok\":true,\"cols\":[") catch return false;
     const ncol = c.sqlite3_column_count(stmt);
     var ci: c_int = 0;
     while (ci < ncol) : (ci += 1) {
-        if (ci > 0) resp.append(alloc, ',') catch return;
+        if (ci > 0) resp.append(alloc, ',') catch return false;
         writeJsonCStr(resp, c.sqlite3_column_name(stmt, ci));
     }
-    resp.appendSlice(alloc, "],\"rows\":[") catch return;
+    resp.appendSlice(alloc, "],\"rows\":[") catch return false;
     var first = true;
+    var streamed = false;
     while (true) {
         const rc = c.sqlite3_step(stmt);
         if (rc == c.SQLITE_DONE) break;
         if (rc != c.SQLITE_ROW) {
+            if (streamed) {
+                // Partial rows already went out — we can't retract sent bytes for a clean JSON error, so
+                // surface a TRANSPORT error; the client discards the partial body and reports the failure.
+                server.respond(req, svc.EIO, "", true);
+                return true;
+            }
             resp.clearRetainingCapacity();
             respondSqliteError(resp, db);
-            return;
+            return false;
         }
-        if (!first) resp.append(alloc, ',') catch return;
+        if (!first) resp.append(alloc, ',') catch return false;
         first = false;
-        resp.append(alloc, '[') catch return;
+        resp.append(alloc, '[') catch return false;
         ci = 0;
         while (ci < ncol) : (ci += 1) {
-            if (ci > 0) resp.append(alloc, ',') catch return;
+            if (ci > 0) resp.append(alloc, ',') catch return false;
             writeCell(resp, stmt, ci);
         }
-        resp.append(alloc, ']') catch return;
+        resp.append(alloc, ']') catch return false;
+        // Flush a chunk's worth as a PARTIAL response; the kernel yields so the client drains it before
+        // we build more (`first` stays false, so rows stay comma-joined across the chunk boundary).
+        if (resp.items.len >= STREAM_FLUSH_BYTES) {
+            server.respond(req, 0, resp.items, false);
+            resp.clearRetainingCapacity();
+            streamed = true;
+        }
     }
-    resp.appendSlice(alloc, "],\"tail\":") catch return;
+    resp.appendSlice(alloc, "],\"tail\":") catch return false;
     writeJsonStr(resp, tail_str);
-    resp.append(alloc, '}') catch return;
+    resp.append(alloc, '}') catch return false;
+    return false; // the serve loop sends this trailing chunk as the final one (last=true)
 }
 
 fn doClose(session: u32, resp: *std.ArrayList(u8)) void {

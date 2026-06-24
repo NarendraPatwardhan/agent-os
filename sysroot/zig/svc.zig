@@ -12,6 +12,10 @@ const constants = @import("constants_zig"); // the projected contract constants 
 /// re-exported so a service's `_start` selects serve-vs-CLI without copying the literal (codex #5).
 pub const SERVICE_MARKER = constants.SERVICE_MARKER;
 
+/// `EIO`, re-exported for a service that needs a TRANSPORT-level failure status on `respond` — e.g. a
+/// streamed result that errors mid-flight, after partial chunks are already sent and can't be retracted.
+pub const EIO = constants.EIO;
+
 /// Max fds a single call may delegate (mirrors the kernel's `MAX_DELEGATED_HANDLES`).
 pub const MAX_HANDLES = 8;
 

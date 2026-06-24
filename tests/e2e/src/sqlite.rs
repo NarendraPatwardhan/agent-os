@@ -32,6 +32,27 @@ db:close()
     );
 }
 
+/// Result streaming (#3): a wide 1000-row SELECT (~70 KiB) far exceeds the 32 KiB flush chunk, so the
+/// SERVICE flushes partial chunks and the kernel yields so the client drains each before more is built —
+/// neither holds the whole body. The library reassembles the stream into the full, intact result.
+#[test]
+fn sqlite_streams_a_large_query_result() {
+    let mut s = boot_atlas();
+    s.host
+        .write_file(
+            "/tmp/big.luau",
+            br#"local sqlite = require("sqlite")
+local db = assert(sqlite.open("/tmp/big.db"))
+db:exec("CREATE TABLE t (n INTEGER, pad TEXT)")
+db:exec("WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM r WHERE n < 1000) INSERT INTO t SELECT n, printf('%060d', n) FROM r")
+print(#db:query("SELECT n, pad FROM t"))
+db:close()
+"#,
+        )
+        .expect("write big.luau");
+    assert_eq!(s.run_for_output("luau /tmp/big.luau"), "1000\r\n");
+}
+
 /// `db:transaction` is atomic: the committing transaction adds two rows; the erroring one rolls back
 /// (its insert is undone) and re-raises (the outer pcall catches it).
 #[test]
