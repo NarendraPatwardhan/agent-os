@@ -261,6 +261,13 @@ impl ServiceChannel {
                 self.responses.remove(&(session, req_id));
                 return ResponsePoll::Eof;
             }
+            // The server still owes chunks (no final `last` seen) but its channel is gone — it crashed
+            // mid-stream. Crash-only: surface EIO so the client fails cleanly instead of polling the
+            // incomplete buffer forever (a partial `last=0` response left undrained on a server exit).
+            if self.closed {
+                self.responses.remove(&(session, req_id));
+                return ResponsePoll::Failed(EIO);
+            }
             ResponsePoll::Pending
         } else if self.closed || !self.sessions.contains_key(&session) {
             ResponsePoll::Closed

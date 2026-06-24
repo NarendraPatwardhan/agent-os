@@ -181,3 +181,25 @@ fn a_warm_service_survives_snapshot_and_restore() {
     // The warm kv store (linear-memory heap) rode the snapshot — the key is present in the fresh VM.
     assert_eq!(restored.run_for_output("kv get persisted"), "yes\r\n");
 }
+
+/// Streaming crash-only (codex audit): a service that sends a PARTIAL chunk (`last=0`) then dies before
+/// the final chunk must NOT leave the client polling forever. Once the server's channel closes, the
+/// kernel surfaces `EIO` on the still-incomplete response. kv's `_stream_crash` does exactly that, so the
+/// call fails cleanly (nil) instead of hanging — and kv recovers a fresh instance on the next connect.
+#[test]
+fn a_streaming_service_crash_fails_the_call_not_hangs() {
+    let mut s = boot_svc_test();
+    s.host
+        .write_file(
+            "/tmp/streamcrash.luau",
+            br#"local fd = assert(sys.svc.connect("kv"))
+print(sys.svc.call(fd, "_stream_crash") == nil)
+"#,
+        )
+        .expect("write streamcrash.luau");
+    // Without the fix this HANGS (Pending forever on the undrained-but-incomplete buffer).
+    assert_eq!(s.run_for_output("luau /tmp/streamcrash.luau"), "true\r\n");
+    // kv recovers — a fresh instance serves the next connect (crash-only, warm ≠ durable).
+    assert_eq!(s.run_for_output("kv put k v"), "");
+    assert_eq!(s.run_for_output("kv get k"), "v\r\n");
+}

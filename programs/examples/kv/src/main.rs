@@ -118,6 +118,13 @@ fn serve_loop() -> ! {
                 // instance. Crash-only, never a hang.
                 rt::exit(7);
             }
+            b"_stream_crash" => {
+                // Test hook: stream a PARTIAL chunk (last=false), then die before the
+                // final chunk. The in-flight caller must get EIO (crash-only), not
+                // hang — exercises servicefs::drain_response's server-closed path.
+                let _ = rt::svc_respond(server, req.session, req.req_id, 0, b"partial", false);
+                rt::exit(7);
+            }
             _ => {
                 let _ = rt::svc_respond(server, req.session, req.req_id, 0, b"", true);
             }
