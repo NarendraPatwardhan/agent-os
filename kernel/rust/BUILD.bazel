@@ -50,13 +50,13 @@ release_wasm(
 )
 
 # B5 size budget gate (the shared //tools/size rule) — a regression past the ceiling fails CI rather than
-# silently bloating the agent's footprint. memcontainers ships ~1.67 MB; we now carry the resident-service
-# (svc) subsystem it lacks — the five svc_* syscalls, servicefs, the activation supervisor, result
-# streaming — so the ceiling is 2 MB, with the §B5 size-opt (LTO + panic=abort) clawing back what svc added.
+# silently bloating the agent's footprint. memcontainers ships ~1.67 MB; we carry the resident-service
+# (svc) subsystem it lacks, but the §B5 size-opt (LTO + panic=abort) more than pays for it — the artifact
+# is ~1.20 MB. Hold the ceiling TIGHT at 1.4 MB so a real regression trips it, not a slack 2 MB.
 size_limit(
     name = "size_limit",
     file = ":kernel",
-    max_bytes = 2000000,
+    max_bytes = 1400000,
 )
 
 # Anchors the kernel in the test graph: asserts kernel.wasm builds.
