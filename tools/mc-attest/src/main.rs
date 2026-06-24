@@ -381,4 +381,30 @@ mod tests {
         assert!(attest(&with_service(craft("mc_sys_svc_serve", "full"), "KV")).is_err());
         assert!(attest(&with_service(craft("mc_sys_svc_serve", "full"), "1kv")).is_err());
     }
+
+    /// A crafted module with NO `mc_tier` section (drops what `craft` appends) — to exercise the
+    /// undeclared-tier rejection that backstops the kernel's fail-closed activation.
+    fn craft_no_tier(module: &str, name: &str) -> Vec<u8> {
+        let mut w = vec![0x00, 0x61, 0x73, 0x6d, 1, 0, 0, 0]; // \0asm + version
+        w.extend_from_slice(&[1, 4, 1, 0x60, 0, 0]); // type section: one () -> ()
+        let mut imp = vec![1u8];
+        imp.push(module.len() as u8);
+        imp.extend_from_slice(module.as_bytes());
+        imp.push(name.len() as u8);
+        imp.extend_from_slice(name.as_bytes());
+        imp.extend_from_slice(&[0x00, 0x00]); // func kind, type idx 0
+        w.push(2);
+        w.push(imp.len() as u8);
+        w.extend_from_slice(&imp);
+        w // deliberately NO mc_tier section
+    }
+
+    #[test]
+    fn service_binary_without_a_tier_is_rejected() {
+        // A service binary that declares its NAME but no TIER has no ceiling to activate at. The build
+        // rejects it (undeclared tier), so a tierless service can never be produced — the build-side half
+        // of the fail-closed guard the kernel's spawn_service now enforces at activation (a missing tier
+        // fails activation instead of defaulting to Full).
+        assert!(attest(&with_service(craft_no_tier("mc", "mc_sys_svc_serve"), "kv")).is_err());
+    }
 }

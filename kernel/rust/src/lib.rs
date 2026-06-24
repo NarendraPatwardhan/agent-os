@@ -966,8 +966,11 @@ unsafe fn spawn_service(name: &str, binary: &str) -> Option<task::TaskId> {
             Some(declared) if declared == name => {}
             _ => return None,
         }
-        // The binary's DECLARED tier is the source of truth (the manifest carries none).
-        let tier = wasm::declared_tier(&bytes).unwrap_or(task::Tier::Full);
+        // The binary's DECLARED tier is the source of truth — the manifest carries none, and a service
+        // task has no parent tier to inherit. So a binary that declares the service name but NO tier has
+        // no ceiling to activate at: fail closed (A9 default-deny) rather than widen a malformed/stripped
+        // service binary to Full capabilities.
+        let tier = wasm::declared_tier(&bytes)?;
         let argv = alloc::vec![String::from(binary), String::from(SERVICE_MARKER)];
         let prog = wasm::GuestProgram::load(engine, &bytes, argv, &path).ok()?;
         let pid = sched.spawn(
