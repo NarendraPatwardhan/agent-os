@@ -3999,14 +3999,28 @@ fn validate_mc_sections(bytes: &[u8]) -> Result<(), String> {
     // than silently read as "not a service" (which would skip the activation-time name check), or be
     // accepted as a name the runtime `svc_serve`/`svc_connect` gate would then reject.
     match unique_custom(bytes, b"mc_service").map_err(|e| format!("mc_service: {e}"))? {
-        Some(p) => match core::str::from_utf8(p) {
-            Ok(s) if valid_service_name(s) => {}
-            _ => {
-                return Err(String::from(
-                    "mc_service: not a valid service name ([a-z][a-z0-9-]*, <=31 bytes)",
-                ))
+        Some(p) => {
+            match core::str::from_utf8(p) {
+                Ok(s) if valid_service_name(s) => {}
+                _ => {
+                    return Err(String::from(
+                        "mc_service: not a valid service name ([a-z][a-z0-9-]*, <=31 bytes)",
+                    ))
+                }
             }
-        },
+            // §6: a resident service has no parent to inherit a tier from, so a binary that declares a
+            // service name MUST also declare its tier — else activation has no capability ceiling to
+            // apply. Enforce it at LOAD, uniform with the build (mc-attest) and activation (spawn_service)
+            // gates, so the "service ⟹ tier" invariant holds at all three boundaries (codex audit).
+            if unique_custom(bytes, b"mc_tier")
+                .map_err(|e| format!("mc_tier: {e}"))?
+                .is_none()
+            {
+                return Err(String::from(
+                    "mc_service present but mc_tier absent — a resident service must declare its tier",
+                ));
+            }
+        }
         None => {}
     }
     Ok(())
