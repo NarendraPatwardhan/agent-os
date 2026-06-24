@@ -77,7 +77,9 @@ pub const Server = struct {
 
     /// Answer `req`. `status` 0 = ok (`data` is the response body the client drains); nonzero = a
     /// transport errno surfaced to the client's `read` (application errors ride inside `data`).
-    pub fn respond(self: *Server, req: Request, status: i32, data: []const u8) void {
-        _ = mc.mc_sys_svc_respond(self.fd, req.session, req.req_id, status, mc.addr(data.ptr), @intCast(data.len));
+    /// Answer `req` with a body chunk. `last=true` is the final chunk (the call completes); `last=false`
+    /// a partial chunk the client drains before the server sends the next (bounded-buffer streaming).
+    pub fn respond(self: *Server, req: Request, status: i32, data: []const u8, last: bool) void {
+        _ = mc.mc_sys_svc_respond(self.fd, req.session, req.req_id, status, mc.addr(data.ptr), @intCast(data.len), @intFromBool(last));
     }
 };

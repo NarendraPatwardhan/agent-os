@@ -805,15 +805,18 @@ pub fn svc_recv(fd: i32, buf: &mut [u8], hbuf: &mut [i32]) -> Result<usize, i32>
     }
 }
 
-/// Answer service call `(session, req_id)`. `status` 0 = ok (the client drains `data`
-/// from its result fd); nonzero = a transport errno surfaced to the client read.
-/// Application results (rows, errors) ride inside `data` per the service's protocol.
+/// Answer service call `(session, req_id)` with a body CHUNK. `status` 0 = ok (the client drains `data`
+/// from its result fd); nonzero = a transport errno surfaced to the client read. `last=true` is the final
+/// chunk (the call completes); `last=false` a partial chunk the client drains before the server sends the
+/// next — bounded-buffer streaming, so a large result never materializes whole. Application results
+/// (rows, errors) ride inside `data` per the service's protocol.
 pub fn svc_respond(
     fd: i32,
     session: u32,
     req_id: u32,
     status: i32,
     data: &[u8],
+    last: bool,
 ) -> Result<(), i32> {
     errno_to_result(unsafe {
         mc_sys_svc_respond(
@@ -823,6 +826,7 @@ pub fn svc_respond(
             status,
             data.as_ptr() as i32,
             data.len() as i32,
+            last as i32,
         )
     })
 }

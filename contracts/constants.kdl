@@ -16,7 +16,9 @@
 // 1.4 adds the five resident-service syscalls (mc_sys_svc_*) — additive (SERVICES.md).
 // 1.5 widens svc_call/svc_recv with the handle-delegation args (handles_ptr/nhandles,
 // hbuf/hbuf_len) — a reshape of the still-unreleased svc_* layer; the frozen base ABI is unchanged.
-abi-version major=1 minor=5
+// 1.6 adds svc_respond's `last` chunk flag (bounded-buffer result streaming) — another reshape of the
+// still-unreleased svc_* layer (codex #3).
+abi-version major=1 minor=6
 
 // ---------------------------------------------------------------------------
 // Errno — WASI-style; 0 = success. A syscall returns 0 or a positive errno; any

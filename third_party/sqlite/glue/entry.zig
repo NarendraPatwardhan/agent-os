@@ -99,7 +99,7 @@ fn serveLoop() void {
                 var resp: std.ArrayList(u8) = .empty;
                 defer resp.deinit(alloc);
                 handle(req.session, req.blob, req.handles, &resp);
-                server.respond(req, 0, resp.items);
+                server.respond(req, 0, resp.items, true);
             },
         }
     }

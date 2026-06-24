@@ -23,7 +23,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use constants_rust::{EIO, ETIMEDOUT};
+use constants_rust::{EIO, EMSGSIZE, ETIMEDOUT};
 
 use crate::io::{PipeSink, PipeSource};
 use crate::task::TaskId;
@@ -65,13 +65,27 @@ pub enum ServiceInbound {
     SessionClosed(u32),
 }
 
-/// The server guest's answer for one call. `status` is a kernel-level transport
-/// signal (`0` = the response bytes follow; non-zero = an errno for a call that failed before a
-/// body, surfaced to the client's `read`). Application-level results
-/// (rows, errors) ride inside `data` per the service's own protocol.
+/// The un-drained response-buffer cap: past this, a client that isn't draining fails the call cleanly
+/// (`EMSGSIZE`) instead of letting the kernel buffer grow without bound (codex #3).
+pub const MAX_SVC_RESPONSE_BYTES: usize = 1 << 20; // 1 MiB
+/// When the un-drained buffer reaches this, `svc_respond` yields so the client drains before the server
+/// sends more — keeping the kernel buffer near one high-water of bytes, not the whole result.
+pub const SVC_RESPONSE_HIGH_WATER: usize = 64 * 1024;
+/// How long the server waits on a blocked (full) buffer before failing the call — separates a
+/// slow-but-live client (keeps draining, refreshing the deadline) from a stuck one.
+pub const SVC_DRAIN_TIMEOUT_MS: i64 = 5_000;
+
+/// The server guest's answer for one call — a STREAMING buffer (codex #3). The server appends body
+/// chunks via `svc_respond` (`last=0` until the final `last=1`); the client drains `buf` from the front
+/// through its result fd, so a large result never materializes whole. `status` is a kernel-level
+/// transport signal (`0` = body follows; non-zero = an errno surfaced to the client's `read`).
+/// `drain_deadline` is refreshed each time the client drains, so a server blocked on a full buffer can
+/// tell a slow-but-live client from a stuck one. Application results (rows, errors) ride inside the body.
 struct ServiceResponse {
     status: i32,
-    data: Vec<u8>,
+    buf: VecDeque<u8>,
+    complete: bool,
+    drain_deadline: i64,
 }
 
 /// Per-session bookkeeping: the client task that opened it. The connection fd's `Drop` (on the
@@ -82,14 +96,28 @@ struct Session {
     caller: CallerId,
 }
 
-/// Outcome of a client polling for its response.
+/// Outcome of a client draining its streaming response.
 pub enum ResponsePoll {
-    /// The server has not answered yet — yield and retry.
+    /// No bytes buffered yet and the answer isn't complete — yield and retry.
     Pending,
     /// The server guest has exited — fail the call.
     Closed,
-    /// The answer is ready: `(status, data)`.
-    Ready(i32, Vec<u8>),
+    /// Drained `n` bytes into the caller's buffer.
+    Got(usize),
+    /// The answer is complete and fully drained.
+    Eof,
+    /// A terminal transport error (`status != 0`).
+    Failed(i32),
+}
+
+/// Outcome of a server appending a response chunk (`svc_respond`).
+pub enum RespondOutcome {
+    /// The chunk was buffered.
+    Ok,
+    /// The client's session has closed — the answer is dropped.
+    SessionGone,
+    /// The un-drained buffer passed the cap (the client isn't draining) — the call fails cleanly.
+    Overflow,
 }
 
 /// The rendezvous between clients (`svc_connect`/`svc_call`) and one server guest
@@ -135,6 +163,12 @@ impl ServiceChannel {
     /// unsolicited or duplicate answer, which must not decrement snapshot quiescence.
     pub fn mark_answered(&mut self, session: u32, req_id: u32) -> bool {
         self.inflight.remove(&(session, req_id))
+    }
+
+    /// Whether `(session, req_id)` is a delivered, not-yet-finally-answered call — the check a PARTIAL
+    /// `svc_respond` chunk makes (it must not consume the in-flight grant; only the final chunk does).
+    pub fn is_inflight(&self, session: u32, req_id: u32) -> bool {
+        self.inflight.contains(&(session, req_id))
     }
 
     // ── client side ──────────────────────────────────────────────────────────
@@ -205,23 +239,45 @@ impl ServiceChannel {
         Some(id)
     }
 
-    /// Client (its result fd) collects the answer for `(session, req_id)`, if ready.
-    pub fn take_response(&mut self, session: u32, req_id: u32) -> ResponsePoll {
-        if let Some(resp) = self.responses.remove(&(session, req_id)) {
-            return ResponsePoll::Ready(resp.status, resp.data);
+    /// Client (its result fd) drains up to `out.len()` answer bytes for `(session, req_id)` from the
+    /// front of the streaming buffer, refreshing the drain deadline (proof the client is alive). A
+    /// non-zero status is a terminal `Failed`; an empty-but-complete buffer is `Eof`.
+    pub fn drain_response(&mut self, session: u32, req_id: u32, out: &mut [u8]) -> ResponsePoll {
+        if let Some(resp) = self.responses.get_mut(&(session, req_id)) {
+            if resp.status != 0 {
+                let status = resp.status;
+                self.responses.remove(&(session, req_id));
+                return ResponsePoll::Failed(status);
+            }
+            if !resp.buf.is_empty() {
+                let n = resp.buf.len().min(out.len());
+                for (slot, b) in out[..n].iter_mut().zip(resp.buf.drain(..n)) {
+                    *slot = b;
+                }
+                resp.drain_deadline = crate::wall_now_ms() + SVC_DRAIN_TIMEOUT_MS;
+                return ResponsePoll::Got(n);
+            }
+            if resp.complete {
+                self.responses.remove(&(session, req_id));
+                return ResponsePoll::Eof;
+            }
+            ResponsePoll::Pending
+        } else if self.closed || !self.sessions.contains_key(&session) {
+            ResponsePoll::Closed
+        } else {
+            ResponsePoll::Pending
         }
-        if self.closed || !self.sessions.contains_key(&session) {
-            return ResponsePoll::Closed;
-        }
-        ResponsePoll::Pending
     }
 
-    /// Non-destructive readiness for the result fd (`poll`): would a `read` make
-    /// progress (answer present, or the server gone) rather than block?
+    /// Non-destructive readiness for the result fd (`poll`): would a `read` make progress — buffered
+    /// bytes, a complete/failed answer, or the server gone — rather than block?
     pub fn response_ready(&self, session: u32, req_id: u32) -> bool {
         self.closed
             || !self.sessions.contains_key(&session)
-            || self.responses.contains_key(&(session, req_id))
+            || self
+                .responses
+                .get(&(session, req_id))
+                .is_some_and(|r| !r.buf.is_empty() || r.complete || r.status != 0)
     }
 
     // ── server side ──────────────────────────────────────────────────────────
@@ -233,16 +289,65 @@ impl ServiceChannel {
         self.requests.pop_front()
     }
 
-    /// Server `svc_respond`: record the answer for `(session, req_id)`. Ignored
-    /// (returns `false`) if the session has since closed — a late answer to a gone
-    /// client is simply dropped.
-    pub fn respond(&mut self, session: u32, req_id: u32, status: i32, data: Vec<u8>) -> bool {
+    /// Server `svc_respond`: append a body chunk to `(session, req_id)`'s answer (`last` marks the final
+    /// one). `SessionGone` if the client left (the answer is dropped); `Overflow` if the un-drained
+    /// buffer passes the cap (a client that isn't draining — the call fails `EMSGSIZE`, no unbounded
+    /// kernel memory); else `Ok`.
+    pub fn respond(
+        &mut self,
+        session: u32,
+        req_id: u32,
+        status: i32,
+        data: Vec<u8>,
+        last: bool,
+    ) -> RespondOutcome {
         if !self.sessions.contains_key(&session) {
-            return false;
+            return RespondOutcome::SessionGone;
         }
+        let resp = self.responses.entry((session, req_id)).or_insert_with(|| ServiceResponse {
+            status: 0,
+            buf: VecDeque::new(),
+            complete: false,
+            drain_deadline: crate::wall_now_ms() + SVC_DRAIN_TIMEOUT_MS,
+        });
+        if status != 0 {
+            resp.status = status;
+        }
+        resp.buf.extend(data);
+        if last {
+            resp.complete = true;
+        }
+        if resp.buf.len() > MAX_SVC_RESPONSE_BYTES {
+            resp.buf.clear();
+            resp.status = EMSGSIZE;
+            resp.complete = true;
+            return RespondOutcome::Overflow;
+        }
+        RespondOutcome::Ok
+    }
+
+    /// The un-drained byte count for `(session, req_id)` — the backpressure level `svc_respond` reads to
+    /// decide whether to yield before sending more.
+    pub fn response_buffered(&self, session: u32, req_id: u32) -> usize {
+        self.responses.get(&(session, req_id)).map_or(0, |r| r.buf.len())
+    }
+
+    /// Whether a blocked buffer has gone undrained past its deadline — the client is stuck, so the
+    /// server fails the call rather than block on it forever.
+    pub fn response_overdue(&self, session: u32, req_id: u32) -> bool {
         self.responses
-            .insert((session, req_id), ServiceResponse { status, data });
-        true
+            .get(&(session, req_id))
+            .is_some_and(|r| crate::wall_now_ms() > r.drain_deadline)
+    }
+
+    /// Finalize `(session, req_id)`'s answer as a clean failure with `errno` (a stuck client; the
+    /// client's `read` surfaces it).
+    pub fn fail_response(&mut self, session: u32, req_id: u32, errno: i32) {
+        if let Some(resp) = self.responses.get_mut(&(session, req_id)) {
+            resp.buf.clear();
+            resp.status = errno;
+            resp.complete = true;
+        }
     }
 
     /// Server side: the server guest has exited — fail everything pending and to
@@ -513,19 +618,19 @@ impl Drop for SvcConnHandle {
 
 // ── the readable result fd (`svc_call`'s `ret_fd`) ───────────────────────────
 
+#[derive(Clone, Copy)]
 enum SvcPhase {
-    /// Waiting for the server to answer this `(session, req_id)`.
-    Waiting,
-    /// Draining the answered response body.
-    Streaming { data: Vec<u8>, offset: usize },
-    Eof,
+    /// Draining the streaming answer from the channel (Pending until bytes arrive, Eof when complete).
+    Active,
+    /// The answer was fully drained.
+    Done,
     Closed,
     Failed(i32),
 }
 
 /// Outcome of pulling bytes from a `SvcCallSource` (mirrors `HostCallRead`).
 pub enum SvcRead {
-    /// The server has not answered yet — yield and retry.
+    /// The server has not buffered the next bytes yet — yield and retry.
     Pending,
     Got(usize),
     Eof,
@@ -533,9 +638,10 @@ pub enum SvcRead {
     Failed(i32),
 }
 
-/// A readable `svc_call` result, driven by `mc_sys_read`: yield while the answer is
-/// in flight, then stream the response body, then EOF. Holds an `Rc` to the channel,
-/// so the warm service outlives an in-flight call even if the connection fd closes.
+/// A readable `svc_call` result, driven by `mc_sys_read`: yield while the answer is in flight, then
+/// drain the server's response body chunk by chunk from the channel's STREAMING buffer (codex #3), then
+/// EOF. Holds an `Rc` to the channel, so the warm service outlives an in-flight call even if the
+/// connection fd closes.
 pub struct SvcCallSource {
     channel: Rc<RefCell<ServiceChannel>>,
     session: u32,
@@ -549,47 +655,32 @@ impl SvcCallSource {
             channel,
             session,
             req_id,
-            phase: SvcPhase::Waiting,
+            phase: SvcPhase::Active,
         }
     }
 
     pub fn read_into(&mut self, buf: &mut [u8]) -> SvcRead {
-        loop {
-            match &mut self.phase {
-                SvcPhase::Waiting => {
-                    let poll = self
-                        .channel
-                        .borrow_mut()
-                        .take_response(self.session, self.req_id);
-                    match poll {
-                        ResponsePoll::Pending => return SvcRead::Pending,
-                        ResponsePoll::Closed => {
-                            self.phase = SvcPhase::Closed;
-                            return SvcRead::Closed;
-                        }
-                        ResponsePoll::Ready(status, data) => {
-                            if status != 0 {
-                                // Transport-level failure reported by the server.
-                                self.phase = SvcPhase::Failed(status);
-                                return SvcRead::Failed(status);
-                            }
-                            self.phase = SvcPhase::Streaming { data, offset: 0 };
-                        }
-                    }
-                }
-                SvcPhase::Streaming { data, offset } => {
-                    if *offset >= data.len() {
-                        self.phase = SvcPhase::Eof;
-                        return SvcRead::Eof;
-                    }
-                    let n = (data.len() - *offset).min(buf.len());
-                    buf[..n].copy_from_slice(&data[*offset..*offset + n]);
-                    *offset += n;
-                    return SvcRead::Got(n);
-                }
-                SvcPhase::Eof => return SvcRead::Eof,
-                SvcPhase::Closed => return SvcRead::Closed,
-                SvcPhase::Failed(errno) => return SvcRead::Failed(*errno),
+        match self.phase {
+            SvcPhase::Done => return SvcRead::Eof,
+            SvcPhase::Closed => return SvcRead::Closed,
+            SvcPhase::Failed(errno) => return SvcRead::Failed(errno),
+            SvcPhase::Active => {}
+        }
+        // Drain the next bytes from the channel's streaming buffer (the server appends chunks).
+        match self.channel.borrow_mut().drain_response(self.session, self.req_id, buf) {
+            ResponsePoll::Pending => SvcRead::Pending,
+            ResponsePoll::Got(n) => SvcRead::Got(n),
+            ResponsePoll::Eof => {
+                self.phase = SvcPhase::Done;
+                SvcRead::Eof
+            }
+            ResponsePoll::Closed => {
+                self.phase = SvcPhase::Closed;
+                SvcRead::Closed
+            }
+            ResponsePoll::Failed(errno) => {
+                self.phase = SvcPhase::Failed(errno);
+                SvcRead::Failed(errno)
             }
         }
     }
@@ -597,11 +688,11 @@ impl SvcCallSource {
     /// Non-destructive readiness for `poll`: would a `read` make progress?
     pub fn poll_readable(&self) -> bool {
         match self.phase {
-            SvcPhase::Waiting => self
+            SvcPhase::Active => self
                 .channel
                 .borrow()
                 .response_ready(self.session, self.req_id),
-            // Streaming/Eof/Failed all return immediately from `read`.
+            // Done/Closed/Failed all return immediately from `read`.
             _ => true,
         }
     }

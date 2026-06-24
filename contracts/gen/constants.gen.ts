@@ -2,7 +2,7 @@
 
 // syscall ABI version: (major << 16) | minor
 export const SYS_ABI_MAJOR = 1;
-export const SYS_ABI_MINOR = 5;
+export const SYS_ABI_MINOR = 6;
 export function abiVersion(): number { return (SYS_ABI_MAJOR << 16) | SYS_ABI_MINOR; }
 
 // errno

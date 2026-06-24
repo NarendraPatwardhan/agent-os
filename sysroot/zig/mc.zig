@@ -54,7 +54,7 @@ pub extern "mc" fn mc_sys_host_call(req_ptr: u32, req_len: u32, ret_fd: u32) i32
 // (svc_connect/call) — used by a client (luau's Lua binding, a service's thin CLI face).
 pub extern "mc" fn mc_sys_svc_serve(name_ptr: u32, name_len: u32, ret_fd: u32) i32;
 pub extern "mc" fn mc_sys_svc_recv(fd: i32, buf: u32, buf_len: u32, hbuf: u32, hbuf_len: u32, ret_len: u32) i32;
-pub extern "mc" fn mc_sys_svc_respond(fd: i32, session: u32, req_id: u32, status: i32, data_ptr: u32, data_len: u32) i32;
+pub extern "mc" fn mc_sys_svc_respond(fd: i32, session: u32, req_id: u32, status: i32, data_ptr: u32, data_len: u32, last: u32) i32;
 pub extern "mc" fn mc_sys_svc_connect(name_ptr: u32, name_len: u32, ret_fd: u32) i32;
 pub extern "mc" fn mc_sys_svc_call(fd: i32, req_ptr: u32, req_len: u32, handles_ptr: u32, nhandles: u32, ret_fd: u32) i32;
 

@@ -106,11 +106,11 @@ fn serve_loop() -> ! {
         match op {
             b"get" => {
                 let resp = store_get(key).unwrap_or(b"");
-                let _ = rt::svc_respond(server, req.session, req.req_id, 0, resp);
+                let _ = rt::svc_respond(server, req.session, req.req_id, 0, resp, true);
             }
             b"put" => {
                 store_put(key, value);
-                let _ = rt::svc_respond(server, req.session, req.req_id, 0, b"");
+                let _ = rt::svc_respond(server, req.session, req.req_id, 0, b"", true);
             }
             b"_crash" => {
                 // Test hook: a service that dies mid-call. The in-flight caller's
@@ -119,7 +119,7 @@ fn serve_loop() -> ! {
                 rt::exit(7);
             }
             _ => {
-                let _ = rt::svc_respond(server, req.session, req.req_id, 0, b"");
+                let _ = rt::svc_respond(server, req.session, req.req_id, 0, b"", true);
             }
         }
     }

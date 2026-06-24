@@ -34,8 +34,9 @@ use wasmi::{
 use crate::builtins::{Builtin, BuiltinCtx, BuiltinStep};
 use crate::fs::servicefs::{
     clear_activation, grant_holder, lookup_service, mark_failed, register_service,
-    service_registered, service_state, valid_service_name, DelegatedHandle, ServiceChannel,
-    ServiceInbound, ServiceState, SvcCallSource, SvcConnHandle, SvcRead, SvcServeOwner,
+    service_registered, service_state, valid_service_name, DelegatedHandle, RespondOutcome,
+    ServiceChannel, ServiceInbound, ServiceState, SvcCallSource, SvcConnHandle, SvcRead,
+    SvcServeOwner, SVC_RESPONSE_HIGH_WATER,
 };
 use crate::fs::{MemFs, ServeChannel, ServedFs};
 use crate::host_call::{HostCallRead, HostCallSource};
@@ -1239,7 +1240,8 @@ impl GuestProgram {
                 status,
                 data_ptr,
                 data_len,
-            } => self.fulfill_svc_respond(fd, session, req_id, status, data_ptr, data_len),
+                last,
+            } => self.fulfill_svc_respond(fd, session, req_id, status, data_ptr, data_len, last),
             Pending::SvcConnect {
                 name_ptr,
                 name_len,
@@ -2363,7 +2365,7 @@ impl GuestProgram {
                 // Auto-reject: fail the client crash-only; `req` (and its handles) drop here.
                 channel
                     .borrow_mut()
-                    .respond(req.session, req.req_id, EMSGSIZE, Vec::new());
+                    .respond(req.session, req.req_id, EMSGSIZE, Vec::new(), true);
                 continue;
             }
             // Install the delegated handles into THIS server's fd table (slots reserved above).
@@ -2401,29 +2403,67 @@ impl GuestProgram {
         status: i32,
         data_ptr: u32,
         data_len: u32,
+        last: u32,
     ) -> Fulfilled {
-        self.store.data_mut().pending = None;
         let channel = match self.svc_channel(fd) {
             Some(c) => c,
-            None => return Fulfilled::Resume(EBADF),
+            None => {
+                self.store.data_mut().pending = None;
+                return Fulfilled::Resume(EBADF);
+            }
         };
+        let is_last = last != 0;
+        // BACKPRESSURE (codex #3): if this call's un-drained buffer is already at the high-water, YIELD so
+        // the client drains before we add more — keeping the kernel buffer near one high-water of bytes,
+        // not the whole result. The chunk is NOT buffered yet, so re-polling re-checks cleanly (leave
+        // `pending` set). A client that won't drain past its deadline is stuck → fail the call cleanly
+        // (`EMSGSIZE`) rather than block the single-threaded server forever.
+        {
+            let ch = channel.borrow();
+            if ch.response_buffered(session, req_id) >= SVC_RESPONSE_HIGH_WATER {
+                if ch.response_overdue(session, req_id) {
+                    drop(ch);
+                    channel.borrow_mut().fail_response(session, req_id, EMSGSIZE);
+                    channel.borrow_mut().mark_answered(session, req_id); // terminal — leave the quiescence gate
+                    self.store.data_mut().pending = None;
+                    return Fulfilled::Resume(EMSGSIZE);
+                }
+                return Fulfilled::Block(BuiltinStep::Pending); // `pending` stays SvcRespond → re-poll
+            }
+        }
+        self.store.data_mut().pending = None;
         let data = match self.read_guest_bytes(data_ptr, data_len) {
             Some(d) => d,
             None => return Fulfilled::Resume(EINVAL),
         };
-        // Only a call actually delivered by `svc_recv` may be answered. This ties the snapshot
-        // quiescence counter to concrete `(session, req_id)` ownership instead of trusting a service's
-        // arbitrary response ids; duplicate/unsolicited answers fail without making the channel look idle.
-        // A late answer to a closed session is still accepted and dropped (the client left), because the
-        // delivered call's wasm stack is now complete.
-        {
+        // Only a call actually delivered by `svc_recv` may be answered, tying snapshot quiescence to
+        // concrete `(session, req_id)` ownership. A PARTIAL chunk only CHECKS the in-flight grant (the
+        // call stays mid-response); the FINAL chunk CONSUMES it. Duplicate/unsolicited answers fail.
+        let outcome = {
             let mut ch = channel.borrow_mut();
-            if !ch.mark_answered(session, req_id) {
+            let ok = if is_last {
+                ch.mark_answered(session, req_id)
+            } else {
+                ch.is_inflight(session, req_id)
+            };
+            if !ok {
                 return Fulfilled::Resume(EINVAL);
             }
-            ch.respond(session, req_id, status, data);
+            ch.respond(session, req_id, status, data, is_last)
+        };
+        match outcome {
+            // A late chunk to a closed session is accepted and dropped (the client left).
+            RespondOutcome::SessionGone => Fulfilled::Resume(ESUCCESS),
+            // The client isn't draining — the call failed cleanly. A partial chunk's grant is still
+            // in-flight; consume it so the call leaves the quiescence counter.
+            RespondOutcome::Overflow => {
+                if !is_last {
+                    channel.borrow_mut().mark_answered(session, req_id);
+                }
+                Fulfilled::Resume(EMSGSIZE)
+            }
+            RespondOutcome::Ok => Fulfilled::Resume(ESUCCESS),
         }
-        Fulfilled::Resume(ESUCCESS)
     }
 
     /// `mc_sys_svc_connect(name) -> fd`: open a session to the resident service

@@ -94,7 +94,7 @@ macro_rules! mc_syscall_table {
         mc_sys_serve_respond => ServeRespond (fd: i32, req_id: u32, status: i32, data_ptr: u32, data_len: u32) [i32];
         mc_sys_svc_serve => SvcServe (name_ptr: u32, name_len: u32, ret_fd: u32) [i32];
         mc_sys_svc_recv => SvcRecv (fd: i32, buf: u32, buf_len: u32, hbuf: u32, hbuf_len: u32, ret_len: u32) [i32];
-        mc_sys_svc_respond => SvcRespond (fd: i32, session: u32, req_id: u32, status: i32, data_ptr: u32, data_len: u32) [i32];
+        mc_sys_svc_respond => SvcRespond (fd: i32, session: u32, req_id: u32, status: i32, data_ptr: u32, data_len: u32, last: u32) [i32];
         mc_sys_svc_connect => SvcConnect (name_ptr: u32, name_len: u32, ret_fd: u32) [i32];
         mc_sys_svc_call => SvcCall (fd: i32, req_ptr: u32, req_len: u32, handles_ptr: u32, nhandles: u32, ret_fd: u32) [i32];
         mc_sys_pipe => Pipe (ret_r: u32, ret_w: u32) [i32];

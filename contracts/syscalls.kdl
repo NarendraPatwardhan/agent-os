@@ -158,8 +158,8 @@ syscall "mc_sys_svc_recv" variant="SvcRecv" group="service" {
     doc "Receive the next inbound on server fd: the envelope ([kind][nhandles][session][req_id][blob_len][blob]) into buf and any delegated fd numbers into hbuf; envelope length to ret_len. kind=0 is a call, kind=1 a session-closed tombstone."
 }
 syscall "mc_sys_svc_respond" variant="SvcRespond" group="service" {
-    arg "fd" type="i32"; arg "session" type="u32"; arg "req_id" type="u32"; arg "status" type="i32"; arg "data_ptr" type="u32"; arg "data_len" type="u32"
-    doc "Answer call (session, req_id) on server fd with a status plus response bytes."
+    arg "fd" type="i32"; arg "session" type="u32"; arg "req_id" type="u32"; arg "status" type="i32"; arg "data_ptr" type="u32"; arg "data_len" type="u32"; arg "last" type="u32"
+    doc "Answer call (session, req_id) on server fd: a status plus a response-body CHUNK. last=1 marks the final chunk (the call completes); last=0 a partial chunk the client drains before the server sends the next — bounded-buffer streaming, so a large result never materializes whole (the kernel caps the un-drained buffer and a client that won't drain fails the call cleanly)."
 }
 syscall "mc_sys_svc_connect" variant="SvcConnect" group="service" {
     arg "name_ptr" type="u32"; arg "name_len" type="u32"; arg "ret_fd" type="u32"
