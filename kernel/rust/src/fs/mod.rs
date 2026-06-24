@@ -14,6 +14,7 @@ pub mod persistfs;
 pub mod procfs;
 pub mod proxy;
 pub mod servedfs;
+pub mod servicefs;
 pub mod tarfs;
 pub mod utils;
 

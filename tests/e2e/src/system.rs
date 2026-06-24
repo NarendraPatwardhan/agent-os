@@ -31,6 +31,20 @@ fn invoke_refuses_an_unregistered_tool() {
     assert_eq!(s.run_for_output("invoke nope {}"), "", "an unregistered tool must produce no stdout");
 }
 
+/// WHY: the ergonomic flags form must assemble a CORRECT JSON args object (now via //lib/json:serde,
+/// not a hand-rolled writer) — type-inferred values, integer-clean numbers, insertion order, and a
+/// space-joined multi-word name. GUARANTEES: `--flag value` / `--flag=value` / a bare `--flag` become
+/// string / number / bool fields in order; the name is the pre-flag tokens joined by space. The
+/// handler echoes the exact blob it received, so this asserts the byte-exact JSON invoke built.
+#[test]
+fn invoke_flags_form_builds_json_args() {
+    let mut tools = MapHostCall::new();
+    tools.register("api call", Box::new(|args: &str| Ok(format!("{args}\n").into_bytes())));
+    let mut s = boot_posix_with_tools(tools);
+    let out = s.run_for_output("invoke api call --city London --count 3 --live --ratio=0.5");
+    assert_eq!(out, "{\"city\":\"London\",\"count\":3,\"live\":true,\"ratio\":0.5}\r\n");
+}
+
 /// WHY: `pkgfsd` is the demand-load file server for /pkg (§7.1) — a daemon that `serve("/pkg")`s,
 /// then spawns its consumer in that namespace. GUARANTEES: given a baked catalog, `pkgfsd ls
 /// /pkg/bin` spawns `ls` in pkgfsd's namespace, ls reads the SERVED readdir, and the catalog's tools

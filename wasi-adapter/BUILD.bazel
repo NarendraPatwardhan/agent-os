@@ -1,5 +1,5 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_static_library")
-load("//sysroot:defs.bzl", "wasm32_build_test")
+load("//sysroot/rust:defs.bzl", "wasm32_build_test")
 
 # wasi-adapter — a guest-side WASI preview1 shim implemented over `mc_sys_*` (VISION §13.4/§16.3),
 # ported from memcontainers crates/wasi/adapter. It DEFINES the `wasi_snapshot_preview1` functions

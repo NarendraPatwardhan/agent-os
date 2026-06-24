@@ -31,7 +31,7 @@
   (Luau shim / CLI)  ┘   (typed bytes in, bytes out)   (its OWN Store, isolated)     └──────────────────┘
 
   flavor layer (atlas):  /bin/sqlite  (the one binary)        ← service+CLI, mc_service-stamped
-                         /etc/mc-services.json  (name→tier/budget/eager|lazy)
+                         /etc/services.json  (name→tier/budget/eager|lazy)
                          /lib/luau/sqlite.luau  (the require() shim)
 ```
 
@@ -253,7 +253,7 @@ property, not a second artifact**:
 
 - the tool is built once (`mc_program` → one `.wasm`);
 - an **`mc_service` custom section** is stamped alongside `mc_tier`/`mc_budget` (extend the stamper);
-- an `/etc/mc-services.json` entry (name → tier → budget → `eager|lazy`);
+- an `/etc/services.json` entry (name → tier → budget → `eager|lazy`);
 - the **kernel chooses the entry point by the contract**: it enters the generated `svc_serve` loop for
   resident mode, or `_start` for a one-shot CLI invocation — *not* by `argv[0]`.
 
@@ -359,14 +359,14 @@ Why this is the right system design, not a hack:
 A service ships as content in its flavor's `pkg_tar` layer, composed on top of `loom`:
 
 - **`atlas` = loom + sqlite.** Layer: `/bin/sqlite` (the one binary, `mc_service`-stamped) ·
-  `/etc/mc-services.json` (`sqlite → tier/budget`, `lazy`) · `/lib/luau/sqlite.luau` (the `require()`
+  `/etc/services.json` (`sqlite → tier/budget`, `lazy`) · `/lib/luau/sqlite.luau` (the `require()`
   shim — `sys.svc.connect("/svc/sqlite")` + `:call`). `require("sqlite")` returns a warm connection;
   `$ sqlite query …` hits the same engine.
-- **`paper` = loom + typst.** Layer: `/bin/typst` · `/etc/mc-services.json` (`typst → tier/budget`) ·
+- **`paper` = loom + typst.** Layer: `/bin/typst` · `/etc/services.json` (`typst → tier/budget`) ·
   `/lib/luau/typst.luau` · **the font asset layer** at `/usr/share/fonts`. `require("typst").compile(src)`
   returns PDF bytes from a font-warm engine.
 
-`mc-services.json` is **per-flavor**, a fragment merged by the layer stack (§16.5), never a global file.
+`services.json` is **per-flavor**, a fragment merged by the layer stack (§16.5), never a global file.
 The shim name must **not** collide with a universal embedded battery (`json`, `path`, …); `sqlite`/`typst`
 are not embedded, so they load from the layer (`require` order is cache → embedded → VFS).
 
@@ -388,7 +388,7 @@ flavor packaging are all proven before you add typst's size/asset complexity.
    ABI minor. Prove it with a trivial in-tree **`kv`** service (a warm `BTreeMap`) reached as both
    `$ kv get k` and `require("kv").get(k)` — *that* is P1's exit criterion, no engine yet.
 2. **Stamp + manifest.** Extend `//tools/mc-stamp` to append `mc_service`; teach `mc_program` to carry it;
-   add the `/etc/mc-services.json` plumbing (lazy activation: first `svc_connect` spawns the binary in
+   add the `/etc/services.json` plumbing (lazy activation: first `svc_connect` spawns the binary in
    service mode via the existing `Blocked → re-arm` spawn transparency).
 3. **The engine.** Fetch the sqlite amalgamation via `http_archive` + the (small) WASI/`mc` patch set
    (port `crates/wasi/sqlite/PATCHES.md`); `zig cc` to `wasm32-wasi`; link `//wasi-adapter` → pure `mc`.
@@ -438,7 +438,7 @@ flavor packaging are all proven before you add typst's size/asset complexity.
 - [ ] **Route service file IO through the engine's libc/std → adapter path.** No second fd namespace.
 - [ ] **Five `svc_*` rows in `contracts/syscalls.kdl`**, projected — never a per-language macro.
 - [ ] **`servicefs` is session-keyed**, not caller-keyed (the one real change from `servedfs`).
-- [ ] **ONE binary, two activation modes** — `mc_service` section + `/etc/mc-services.json`, not a `-svc`
+- [ ] **ONE binary, two activation modes** — `mc_service` section + `/etc/services.json`, not a `-svc`
       binary, not `argv[0]` dispatch.
 - [ ] **Quiesce-clean snapshots:** the service idles in `svc_recv`; warm state is heap.
 - [ ] **Warm ≠ durable:** write durable data through to `persistfs`.

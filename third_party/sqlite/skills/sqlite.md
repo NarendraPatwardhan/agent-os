@@ -82,7 +82,7 @@ Use `Db:rows()` when a result may be too large to fit comfortably in memory. It 
 
 ## API Surface
 
-- Module: `sqlite.open(path [, opts])` returns a `Db`; options are `mode = "ro"` or `mode = "rw"`; default is read-write.
+- Module: `sqlite.open(path [, opts])` returns a `Db` (options: `mode = "ro"` or `"rw"`, default read-write); `sqlite.blob(bytes)` tags a Lua byte string to bind as a BLOB.
 - `Db`: `exec(sql [, ...])`, `query(sql [, ...])`, `queryone(sql [, ...])`, `queryvalue(sql [, ...])`, `prepare(sql)`, `transaction(fn)`, `rows(sql [, ...])`, and `close()`.
 - `Stmt`: `run(...)`, `query(...)`, `queryone(...)`, and `close()`.
 - Parameters: positional `?` bind from varargs; named `:name` bind from a table.
@@ -114,5 +114,5 @@ For data-producing scripts, validate the data, not just the exit code. Reopen th
 - `require("sqlite")` resolves from the VFS cache, embedded libraries, then `package.path`; sqlite is shipped by the `atlas` flavor layer.
 - `/var/persist` needs `CAP_PERSIST`; read-only reference databases can be opened with `sqlite.open(path, { mode = "ro" })`.
 - `Db:query()` materializes the full result. Use `Db:rows()` for large tables or unbounded scans.
-- BLOB values are raw byte strings. Preserve them as bytes; do not treat them as UTF-8 text unless the schema says so.
+- BLOB columns read back as raw byte strings (any bytes, round-tripped losslessly) — keep them as bytes, not UTF-8 text. To BIND a BLOB, wrap the bytes with `sqlite.blob(bytes)`; a plain Lua string binds as TEXT.
 - The public surface is the Luau library. Do not script the low-level `sys.svc` protocol unless you are changing the sqlite library or service itself.

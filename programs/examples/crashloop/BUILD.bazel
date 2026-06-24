@@ -1,0 +1,17 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+# programs/examples/crashloop — /bin/crashloop, a deliberately-broken resident service used ONLY by the
+# kv-test e2e: in SERVICE mode it crashes before `svc_serve`, so a `svc_connect` to it exercises the
+# kernel's bounded activation-failure path (codex #4 — re-activate a few times, then EIO, never spin
+# forever). Allocator-free, imports ONLY `mc`; built under --platforms=//platforms:wasm32_freestanding.
+rust_binary(
+    name = "crashloop",
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
+    edition = "2021",
+    tags = ["manual"],
+    deps = [
+        "//sysroot/rust",
+    ],
+    visibility = ["//visibility:public"],
+)

@@ -5,7 +5,7 @@
 //! lua_* convenience MACROS are not exposed through translate-c. See third_party/luau/SYSTEM.md.
 
 const std = @import("std");
-const mc = @import("mc.zig"); // mc_sys_spawn / waitpid — `luau --check` runs /bin/luau-analyze
+const mc = @import("mc"); // mc_sys_spawn / waitpid — `luau --check` runs /bin/luau-analyze
 const fs = @import("fs.zig"); // the shared mc_sys_*-backed file reader
 const c = @cImport({
     @cInclude("lua.h");

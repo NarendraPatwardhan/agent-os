@@ -555,6 +555,17 @@ impl Task {
         }
     }
 
+    /// Drop this task's program when it exits, closing every fd it owns (POSIX: fds
+    /// close on exit, not at reap). The zombie keeps only its exit status; this also
+    /// frees the guest's linear memory immediately. Crucially, a server guest's
+    /// served-fs / svc-service channel fds close here, so a crashed service's clients
+    /// fail (`EIO` / `ENOENT`) instead of blocking on it forever.
+    pub fn clear_program(&self) {
+        unsafe {
+            *self.program.get() = None;
+        }
+    }
+
     pub fn has_program(&self) -> bool {
         unsafe { (*self.program.get()).is_some() }
     }

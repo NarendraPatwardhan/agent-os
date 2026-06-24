@@ -10,7 +10,7 @@ rust_test(
     srcs = ["src/main.rs"],
     edition = "2021",
     compile_data = [
-        "//third_party/luau/glue:mc.zig",
+        "//sysroot/zig:mc.zig",
         "//contracts:gen/mc.gen.zig",
     ],
     visibility = ["//visibility:public"],

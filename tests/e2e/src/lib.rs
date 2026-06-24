@@ -29,6 +29,8 @@ mod flavors;
 mod kernel;
 mod loom;
 mod shell;
+mod sqlite;
+mod svc;
 mod system;
 mod tty;
 
@@ -96,6 +98,24 @@ pub fn boot_minimal() -> Session {
 pub fn boot_loom() -> Session {
     let (b, stdout) = builder("_main/images/loom.tar");
     let host = b.build().expect("kernel booted (loom image)");
+    Session { host, stdout }
+}
+
+/// Boot the `kv_test` image (loom + /bin/kv + the `/etc/services.json` that activates `kv` as a
+/// resident service). For the svc-primitive proof: the SAME warm service reached from the CLI
+/// (`kv get`) and from Luau (`sys.svc`), warm across calls, crash-only.
+pub fn boot_kv() -> Session {
+    let (b, stdout) = builder("_main/images/kv_test.tar");
+    let host = b.build().expect("kernel booted (kv_test image)");
+    Session { host, stdout }
+}
+
+/// Boot the `atlas` image (loom + the sqlite resident service + the require("sqlite") library +
+/// /etc/services.json). For the sqlite e2e: the warm typed data layer, transactions, and the
+/// sqlite→xlsx composition.
+pub fn boot_atlas() -> Session {
+    let (b, stdout) = builder("_main/images/atlas.tar");
+    let host = b.build().expect("kernel booted (atlas image)");
     Session { host, stdout }
 }
 

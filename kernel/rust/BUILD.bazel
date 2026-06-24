@@ -36,6 +36,7 @@ rust_shared_library(
         "//contracts:mc_rust",         # the mc_syscall_table! macro + SYSCALL_NAMES (B2)
         "//contracts:env_rust",        # the mc_bridge_table! macro → the env extern block (B2)
         "//contracts:ctl_rust",        # the mc_control_table! macro → the mc_ctl_* exports (B2)
+        "//lib/json:serde",            # no_std JSON: read /etc/services.json for service activation
     ],
 )
 

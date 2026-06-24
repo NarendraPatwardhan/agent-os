@@ -8,16 +8,12 @@ load("//third_party/luau:defs.bzl", "cc_headers", "cc_object", "mc_program")
 # entry) @cImport Luau's Lua C API from @luau. The C/C++ headers (trap.h, error_channel.h) are
 # #included by the patched Luau source. See third_party/luau/SYSTEM.md.
 
-# mc.zig's hand-kept `extern "mc" fn` decls are gated against the projected contract by
-# //tools/mc-abi-gate (which reads this file via include_str!).
-exports_files(["mc.zig"])
-
 # trap + mc — the kernel-trap-unwind primitives over the mc_sys_pcall / mc_sys_set_throw imports. No
 # Lua C API, so this compiles standalone (a foundation compile-check, gated below).
 zig_library(
     name = "trap",
     main = "trap.zig",
-    srcs = ["mc.zig"],
+    deps = ["//sysroot/zig:mc"],
     visibility = ["//visibility:public"],
 )
 
@@ -41,7 +37,6 @@ zig_library(
         "hash.zig",
         "json.zig",
         "lua.zig",
-        "mc.zig",
         "re.zig",
         "stdlib.zig",
         "sys.zig",
@@ -49,7 +44,10 @@ zig_library(
         "wasi_shim.zig",
     ],
     extra_srcs = glob(["lib/*.luau"]),  # @embedFile'd by stdlib.zig
-    deps = ["@luau//:interp_headers"],
+    deps = [
+        "@luau//:interp_headers",
+        "//sysroot/zig:mc",  # the shared mc syscall ABI (was a co-located mc.zig)
+    ],
     visibility = ["//visibility:public"],
 )
 
@@ -92,7 +90,6 @@ zig_binary(
         "hash.zig",
         "json.zig",
         "lua.zig",
-        "mc.zig",
         "re.zig",
         "stdlib.zig",
         "sys.zig",
@@ -129,6 +126,7 @@ zig_binary(
     ],
     deps = [
         "@luau//:interp_headers",
+        "//sysroot/zig:mc",  # the shared mc syscall ABI (was a co-located mc.zig)
         # The wasi→mc adapter, FORCE-LINKED as an object (cc_object): its __imported_wasi_* defs
         # override wasi-libc's import stubs, converting luau's wasi imports (fd_write, args_get, …)
         # to mc syscalls → a pure-mc guest. luau's wasi names are stable (zig wasi-libc), so one
@@ -174,7 +172,6 @@ zig_binary(
     name = "luau_analyze_obj",
     main = "analyze_entry.zig",
     srcs = [
-        "mc.zig",
         "trap.zig",
         "wasi_shim.zig",
     ],
@@ -205,6 +202,7 @@ zig_binary(
     deps = [
         "@luau//:analysis_incs",
         "@luau//:interp_incs",
+        "//sysroot/zig:mc",  # the shared mc syscall ABI (via trap.zig)
         ":glue_incs",
         ":wasi_adapter_link",
     ],

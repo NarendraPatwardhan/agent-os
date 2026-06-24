@@ -6,17 +6,34 @@
 //!   invoke --list | --help        # list registered tools (from /etc/invoke-tools.json)
 //!
 //! The request blob is `name\0args`. The host routes it to the handler registered with `vm.tool()`
-//! — embedded (in-process) or served (the callback crosses the WS). Flag values are type-inferred
-//! (`true`/`false` → bool, numeric → number, else string); the host-side zod schema re-validates.
-//! Runs at the inherited (full) tier, so it carries `CAP_NET`. A registered tool is also reachable
-//! under its own name: a `/bin/<name>` symlink to `invoke` dispatches on argv[0]. Ported from
-//! memcontainers' `mc-tool`.
+//! — embedded (in-process) or served (the callback crosses the WS). For the flags form, the args
+//! object is assembled with the real `//lib/json:serde` crate (`Json::Obj` → `to_string`), not a
+//! hand-rolled writer — so escaping is correct for every byte (a `\0` in a value becomes `\0`
+//! instead of corrupting the `name\0args` split) and integer flags stay integers on the wire. Flag
+//! values are type-inferred (`true`/`false` → bool, a strict number → number, else string); the
+//! host-side zod schema re-validates. Runs at the inherited (full) tier, so it carries `CAP_NET`. A
+//! registered tool is also reachable under its own name: a `/bin/<name>` symlink to `invoke`
+//! dispatches on argv[0]. Ported from memcontainers' `mc-tool`.
 
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
+
+use json::Json;
 use sysroot as rt;
+
 rt::declare_tier!("full");
+
+// Allocator — talc, the SAME wasm linear-memory allocator the kernel uses (A8: all state in linear
+// memory). `WasmDynamicTalc` grows the wasm heap on demand, so there is no fixed arena to size or
+// overflow — uniform with the kernel rather than a bespoke bump. `invoke` needs a heap only to assemble
+// the request object with `json` (the old hand-rolled path used an 8 KiB stack buffer).
+#[global_allocator]
+static ALLOCATOR: talc::wasm::WasmDynamicTalc = talc::wasm::new_wasm_dynamic_allocator();
 
 const MANIFEST: &str = "/etc/invoke-tools.json";
 
@@ -53,49 +70,9 @@ fn fail(msg: &str) -> ! {
     rt::exit(1);
 }
 
-/// A bounded byte sink — builds the request blob / JSON without an allocator.
-struct Buf {
-    data: [u8; 8192],
-    len: usize,
-}
-
-impl Buf {
-    fn new() -> Self {
-        Buf { data: [0u8; 8192], len: 0 }
-    }
-    fn push(&mut self, b: u8) {
-        if self.len < self.data.len() {
-            self.data[self.len] = b;
-            self.len += 1;
-        }
-    }
-    fn extend(&mut self, s: &[u8]) {
-        for &b in s {
-            self.push(b);
-        }
-    }
-    /// Append `s` as a JSON string body (no quotes), escaping `"` and `\`.
-    fn extend_escaped(&mut self, s: &[u8]) {
-        for &b in s {
-            match b {
-                b'"' | b'\\' => {
-                    self.push(b'\\');
-                    self.push(b);
-                }
-                b'\n' => self.extend(b"\\n"),
-                b'\t' => self.extend(b"\\t"),
-                b'\r' => self.extend(b"\\r"),
-                _ => self.push(b),
-            }
-        }
-    }
-    fn as_slice(&self) -> &[u8] {
-        &self.data[..self.len]
-    }
-}
-
 /// Does `v` look like a JSON number (optional `-`, digits, optional fractional part)? Kept stricter
-/// than "numeric-ish" because malformed JSON falls back to `{}` host-side, hiding the real input.
+/// than "numeric-ish" — no exponent, no `inf`/`nan` — so a typo like `1e` or `12x` stays a string
+/// rather than silently changing type (and the host-side schema can reject it as the wrong shape).
 fn looks_numeric(v: &[u8]) -> bool {
     if v.is_empty() {
         return false;
@@ -129,17 +106,23 @@ fn looks_numeric(v: &[u8]) -> bool {
     i == v.len()
 }
 
-/// Append a coerced flag value: `true`/`false` → bool, numeric → bare number, else a quoted string.
-fn write_value(out: &mut Buf, v: &[u8]) {
-    if v == b"true" || v == b"false" {
-        out.extend(v);
-    } else if looks_numeric(v) {
-        out.extend(v);
-    } else {
-        out.push(b'"');
-        out.extend_escaped(v);
-        out.push(b'"');
+/// Coerce a flag value to a JSON value: `true`/`false` → bool, a strict number → number, else a
+/// string (UTF-8, lossily — argv is UTF-8 in practice; the json serializer escapes the rest).
+fn coerce(v: &[u8]) -> Json {
+    if v == b"true" {
+        return Json::Bool(true);
     }
+    if v == b"false" {
+        return Json::Bool(false);
+    }
+    if looks_numeric(v) {
+        if let Ok(s) = core::str::from_utf8(v) {
+            if let Ok(n) = s.parse::<f64>() {
+                return Json::Num(n);
+            }
+        }
+    }
+    Json::Str(String::from_utf8_lossy(v).into_owned())
 }
 
 /// Stream a host-call result (an fd) to stdout.
@@ -197,19 +180,8 @@ fn main() {
     };
     let rest = &argbuf[start..n];
 
-    // Tokenize argv[1..] (NUL-separated) for analysis.
-    let mut toks: [&[u8]; 64] = [b""; 64];
-    let mut ntok = 0usize;
-    for part in rest.split(|&b| b == 0) {
-        if part.is_empty() {
-            continue;
-        }
-        if ntok < toks.len() {
-            toks[ntok] = part;
-            ntok += 1;
-        }
-    }
-    let toks = &toks[..ntok];
+    // Tokenize argv[1..] (NUL-separated). With a real allocator there's no fixed token cap.
+    let toks: Vec<&[u8]> = rest.split(|&b| b == 0).filter(|p| !p.is_empty()).collect();
 
     if !aliased {
         // `invoke …`: argv[1..] carries the name, so it must be present.
@@ -231,11 +203,11 @@ fn main() {
     // args); under an alias we prepend `alias\0` as the name.
     let Some(fidx) = toks.iter().position(|t| t.starts_with(b"--")) else {
         let result = if aliased {
-            let mut req = Buf::new();
-            req.extend(alias);
+            let mut req = Vec::with_capacity(alias.len() + 1 + rest.len());
+            req.extend_from_slice(alias);
             req.push(0); // name\0args
-            req.extend(rest);
-            rt::host_call(req.as_slice())
+            req.extend_from_slice(rest);
+            rt::host_call(&req)
         } else {
             rt::host_call(rest)
         };
@@ -249,23 +221,19 @@ fn main() {
     }
 
     // Flags form: name = [alias?] + the tokens before the first `--flag` (joined by space); args = a
-    // JSON object built from `--flag value` / `--flag=value` / `--bool`.
-    let mut req = Buf::new();
-    let mut name_empty = true;
+    // JSON object built from `--flag value` / `--flag=value` / `--bool`, serialized by //lib/json.
+    let mut name: Vec<u8> = Vec::new();
     if aliased {
-        req.extend(alias);
-        name_empty = false;
+        name.extend_from_slice(alias);
     }
-    for t in toks[..fidx].iter() {
-        if !name_empty {
-            req.push(b' ');
+    for t in &toks[..fidx] {
+        if !name.is_empty() {
+            name.push(b' ');
         }
-        name_empty = false;
-        req.extend(t);
+        name.extend_from_slice(t);
     }
-    req.push(0); // name\0args
-    req.push(b'{');
-    let mut first = true;
+
+    let mut pairs: Vec<(String, Json)> = Vec::new();
     let mut i = fidx;
     while i < toks.len() {
         let tok = toks[i];
@@ -282,27 +250,25 @@ fn main() {
             i += 1;
             continue;
         }
-        if !first {
-            req.push(b',');
-        }
-        first = false;
-        req.push(b'"');
-        req.extend_escaped(key);
-        req.push(b'"');
-        req.push(b':');
-        if let Some(v) = inline {
-            write_value(&mut req, v);
+        let value = if let Some(v) = inline {
+            coerce(v)
         } else if i + 1 < toks.len() && !toks[i + 1].starts_with(b"--") {
-            write_value(&mut req, toks[i + 1]);
             i += 1;
+            coerce(toks[i])
         } else {
-            req.extend(b"true"); // a valueless --flag is a boolean true
-        }
+            Json::Bool(true) // a valueless --flag is a boolean true
+        };
+        pairs.push((String::from_utf8_lossy(key).into_owned(), value));
         i += 1;
     }
-    req.push(b'}');
 
-    match rt::host_call(req.as_slice()) {
+    let args = json::to_string(&Json::Obj(pairs));
+    let mut req: Vec<u8> = Vec::with_capacity(name.len() + 1 + args.len());
+    req.extend_from_slice(&name);
+    req.push(0); // name\0args
+    req.extend_from_slice(args.as_bytes());
+
+    match rt::host_call(&req) {
         Ok(fd) => stream(fd),
         Err(_) => fail("invoke: host tools unavailable\n"),
     }

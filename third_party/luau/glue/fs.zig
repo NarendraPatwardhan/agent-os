@@ -8,7 +8,7 @@
 //! replaces the earlier half-and-half state (entry/sys on raw mc, the loader on libc fopen/fread).
 
 const std = @import("std");
-const mc = @import("mc.zig");
+const mc = @import("mc");
 
 const alloc = std.heap.c_allocator;
 const O_READ: i32 = 1; // contracts/constants.kdl

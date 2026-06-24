@@ -1,20 +1,20 @@
-//! mc.zig — callable wrappers over the `mc` syscall imports the Luau glue uses. The signatures
-//! MIRROR contracts/syscalls.kdl (the generated contracts/gen/mc.gen.zig is DESCRIPTOR data, not
-//! callable externs). wasm32: pointers/lengths are `u32` offsets/sizes into linear memory; each
-//! returns `i32` (0 / negative errno) unless noted. The bindings (sys.zig, …) extend this with the
-//! fs/proc/time/net syscalls as they land.
+//! mc.zig — the shared `mc` syscall ABI for the Zig-lane guest tools (luau, sqlite, …): the
+//! hand-written callable `extern "mc" fn` decls that mirror contracts/syscalls.kdl. This is the
+//! Zig-side counterpart of the Rust //sysroot's generated import block — ONE source of truth both
+//! Zig tools `@import("mc")`, so the ABI can't drift between them. Each tool calls only the subset it
+//! needs; an unreferenced extern is dropped by the linker (no spurious wasm import).
 //!
-//! TODO: a projector `zig-extern` output would GENERATE these decls from the contract ("generate the
-//! boundary", VISION §16.2). Hand-kept in sync for now; a signature mismatch surfaces at the e2e
-//! (the kernel's `mc` provider would reject the call).
+//! wasm32: pointers/lengths are `u32` offsets/sizes into the guest's own linear memory; each returns
+//! `i32` (0 / negative errno) unless noted. The generated contracts/gen/mc.gen.zig is DESCRIPTOR data,
+//! not callable externs, so these are hand-kept — //tools/mc-abi-gate pins every signature here to the
+//! projected contract, failing the build on any drift or typo.
 
-// vm — the trap-unwind boundary (used by trap.zig). `mc_sys_pcall` runs the stashed thunk as a
-// nested guest call and returns the raised code (0 if none); `mc_sys_set_throw` records the code a
-// subsequent trap hands back.
+// vm — the trap-unwind boundary (luau's trap.zig). `mc_sys_pcall` runs the stashed thunk as a nested
+// guest call and returns the raised code (0 if none); `mc_sys_set_throw` records the code a trap hands back.
 pub extern "mc" fn mc_sys_pcall() i32;
 pub extern "mc" fn mc_sys_set_throw(code: i32) i32;
 
-// fs / io — the file + stream syscalls sys.zig drives directly (sys IS the syscall layer, §6).
+// fs / io — the file + stream syscalls.
 pub extern "mc" fn mc_sys_open(path_ptr: u32, path_len: u32, flags: i32, ret_fd: u32) i32;
 pub extern "mc" fn mc_sys_read(fd: i32, ptr: u32, len: u32, ret_n: u32) i32;
 pub extern "mc" fn mc_sys_write(fd: i32, ptr: u32, len: u32, ret_n: u32) i32;
@@ -49,6 +49,15 @@ pub extern "mc" fn mc_sys_http_request(req_ptr: u32, req_len: u32, ret_fd: u32) 
 pub extern "mc" fn mc_sys_http_status(fd: i32, ret_status: u32) i32;
 pub extern "mc" fn mc_sys_host_call(req_ptr: u32, req_len: u32, ret_fd: u32) i32;
 
+// resident services — typed cross-guest calls (the svc_* primitive, SERVICES.md). SERVER side
+// (svc_serve/recv/respond) — used by a service binary's serve loop (see svc.zig). CLIENT side
+// (svc_connect/call) — used by a client (luau's Lua binding, a service's thin CLI face).
+pub extern "mc" fn mc_sys_svc_serve(name_ptr: u32, name_len: u32, ret_fd: u32) i32;
+pub extern "mc" fn mc_sys_svc_recv(fd: i32, buf: u32, buf_len: u32, hbuf: u32, hbuf_len: u32, ret_len: u32) i32;
+pub extern "mc" fn mc_sys_svc_respond(fd: i32, session: u32, req_id: u32, status: i32, data_ptr: u32, data_len: u32) i32;
+pub extern "mc" fn mc_sys_svc_connect(name_ptr: u32, name_len: u32, ret_fd: u32) i32;
+pub extern "mc" fn mc_sys_svc_call(fd: i32, req_ptr: u32, req_len: u32, handles_ptr: u32, nhandles: u32, ret_fd: u32) i32;
+
 // time / rand / introspection.
 pub extern "mc" fn mc_sys_time_realtime(ret: u32) i32;
 pub extern "mc" fn mc_sys_time_monotonic(ret: u32) i32;
@@ -57,7 +66,7 @@ pub extern "mc" fn mc_sys_random(ptr: u32, len: u32) i32;
 pub extern "mc" fn mc_sys_args(ptr: u32, len: u32, ret_len: u32) i32;
 pub extern "mc" fn mc_sys_abi_version(ret: u32) i32;
 
-// A Zig pointer as a wasm linear-memory address (the u32 the mc ABI takes).
+/// A Zig pointer as a wasm linear-memory address (the u32 the mc ABI takes).
 pub inline fn addr(p: anytype) u32 {
     return @intCast(@intFromPtr(p));
 }

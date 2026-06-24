@@ -6,7 +6,7 @@
 
 const std = @import("std");
 const lua = @import("lua.zig");
-const mc = @import("mc.zig");
+const mc = @import("mc");
 const fs = @import("fs.zig");
 const c = lua.c;
 const State = lua.State;
@@ -594,6 +594,50 @@ const host_funcs = [_]Reg{
     .{ .name = "call", .fn_ = &lHostCall },
 };
 
+// ── sys.svc — resident-service CLIENT (connect + call). ─────────────────────────────────────────────
+// The low-level face of a resident service: `connect(name)` opens a session (returns a connection fd),
+// `call(fd, req)` sends a request blob and returns the response bytes (draining the readable result
+// fd, exactly like host.call). Domain libraries (sqlite.luau, …) wrap these into ergonomic objects.
+
+fn lSvcConnect(L: ?*State) callconv(.c) c_int {
+    var nlen: usize = 0;
+    const name = c.luaL_checklstring(L, 1, &nlen);
+    var fd: u32 = 0;
+    const e = mc.mc_sys_svc_connect(mc.addr(name), @intCast(nlen), mc.addr(&fd));
+    if (e != 0) return fail(L, e);
+    c.lua_pushinteger(L, @intCast(fd));
+    return ok1(L);
+}
+
+fn lSvcCall(L: ?*State) callconv(.c) c_int {
+    const fd: i32 = @intCast(c.luaL_checkinteger(L, 1));
+    var rlen: usize = 0;
+    const req = c.luaL_checklstring(L, 2, &rlen);
+    var rfd: u32 = 0;
+    const e = mc.mc_sys_svc_call(fd, mc.addr(req), @intCast(rlen), 0, 0, mc.addr(&rfd));
+    if (e != 0) return fail(L, e);
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(alloc);
+    const re = drainFd(@intCast(rfd), &out);
+    _ = mc.mc_sys_close(@intCast(rfd));
+    if (re != 0) return fail(L, re);
+    _ = c.lua_pushlstring(L, out.items.ptr, out.items.len);
+    return ok1(L);
+}
+
+fn lSvcClose(L: ?*State) callconv(.c) c_int {
+    const fd: i32 = @intCast(c.luaL_checkinteger(L, 1));
+    const e = mc.mc_sys_close(fd);
+    if (e != 0) return fail(L, e);
+    return okTrue(L);
+}
+
+const svc_funcs = [_]Reg{
+    .{ .name = "connect", .fn_ = &lSvcConnect },
+    .{ .name = "call", .fn_ = &lSvcCall },
+    .{ .name = "close", .fn_ = &lSvcClose },
+};
+
 // ── sys.time / sys.rand. ──────────────────────────────────────────────────────────────────────────
 
 fn lTimeNow(L: ?*State) callconv(.c) c_int {
@@ -675,6 +719,7 @@ pub export fn mc_open_sys(L: ?*State) void {
     sub(L, "proc", &proc_funcs);
     sub(L, "net", &net_funcs);
     sub(L, "host", &host_funcs);
+    sub(L, "svc", &svc_funcs);
     sub(L, "time", &time_funcs);
     sub(L, "rand", &rand_funcs);
     lua.pushcfunction(L, &lArgs, "args");

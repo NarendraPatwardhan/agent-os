@@ -145,6 +145,17 @@ fn tier_id(s: &str) -> Option<i32> {
     })
 }
 
+/// Whether `name` is a valid service name — a byte-identical copy of the kernel's grammar
+/// (`kernel/rust/src/fs/servicefs.rs::valid_service_name`): `[a-z][a-z0-9-]{0,30}`, 1..=31 bytes.
+fn valid_service_name(name: &str) -> bool {
+    let b = name.as_bytes();
+    if b.is_empty() || b.len() > 31 || !b[0].is_ascii_lowercase() {
+        return false;
+    }
+    b.iter()
+        .all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 2 {
@@ -184,8 +195,33 @@ fn attest(wasm: &[u8]) -> Result<(), String> {
     let tier = tier_id(&tier_str).ok_or_else(|| format!("declares unknown tier `{tier_str}`"))?;
     let caps = tier_caps(tier);
 
+    let imps = imports(wasm);
+
+    // §6: a binary that SERVES (imports svc_serve) is a resident service and MUST declare its
+    // identity via an mc_service section — service-capability is a stamped property (VISION §6), and
+    // the kernel grants it to serve only that name. A server without the section is malformed; a
+    // section that is present (server or not) must carry a grammar-valid name, the same shape the
+    // kernel's svc_serve/svc_connect gate enforces, so the build catches a bad name before boot.
+    let serves = imps.iter().any(|(m, n)| m == "mc" && n == "mc_sys_svc_serve");
+    match custom_section(wasm, "mc_service") {
+        None if serves => {
+            return Err("imports svc_serve but has no mc_service section (a resident service must \
+                        declare its name, VISION §6)"
+                .to_string());
+        }
+        Some(p) => {
+            let name = String::from_utf8_lossy(&p).into_owned();
+            if !valid_service_name(&name) {
+                return Err(format!(
+                    "mc_service name `{name}` is not a valid service name ([a-z][a-z0-9-]*, <=31 bytes)"
+                ));
+            }
+        }
+        None => {}
+    }
+
     let mut violations: Vec<String> = Vec::new();
-    for (module, name) in imports(wasm) {
+    for (module, name) in imps {
         // §9.3 purity (the base conformance the §16.4 tier check extends): a guest may import ONLY
         // the `mc` syscall module. A stray wasi/env import means the boundary leaked — fail the build,
         // don't silently skip it (the gap that let mc_program ship un-attested).
@@ -295,5 +331,54 @@ mod tests {
     fn unknown_mc_import_is_rejected() {
         // §9.3 conformance: the module alone is not enough; the symbol must be in the contract.
         assert!(attest(&craft("mc_sys_not_a_real_call", "full")).is_err());
+    }
+
+    /// Append an `mc_service` custom section (the service name) to a crafted module — service names
+    /// stay < 128 bytes so each LEB length is a single byte, like `craft`'s `mc_tier`.
+    fn with_service(mut w: Vec<u8>, service: &str) -> Vec<u8> {
+        let mut cust = vec![b"mc_service".len() as u8];
+        cust.extend_from_slice(b"mc_service");
+        cust.extend_from_slice(service.as_bytes());
+        w.push(0);
+        w.push(cust.len() as u8);
+        w.extend_from_slice(&cust);
+        w
+    }
+
+    #[test]
+    fn service_binary_without_mc_service_is_rejected() {
+        // §6: importing svc_serve marks a resident service, which MUST declare its name.
+        assert!(attest(&craft("mc_sys_svc_serve", "full")).is_err());
+    }
+
+    #[test]
+    fn service_binary_with_mc_service_is_accepted() {
+        assert!(attest(&with_service(craft("mc_sys_svc_serve", "full"), "sqlite")).is_ok());
+    }
+
+    #[test]
+    fn a_svc_client_needs_no_mc_service() {
+        // svc_connect/svc_call are the CLIENT side (e.g. luau) — not a service, so no mc_service.
+        assert!(attest(&craft("mc_sys_svc_connect", "full")).is_ok());
+    }
+
+    // The service-name grammar — the same vector lives in mc-stamp and the kernel; keep them in sync.
+    #[test]
+    fn service_name_grammar() {
+        for ok in ["kv", "sqlite", "typst", "a", "a-b", "x9", "svc-1"] {
+            assert!(valid_service_name(ok), "should accept {ok}");
+        }
+        for bad in ["", "1kv", "-kv", "KV", "kv_test", "kv.test", "kv/x", "kv "] {
+            assert!(!valid_service_name(bad), "should reject {bad:?}");
+        }
+        assert!(valid_service_name(&"a".repeat(31)));
+        assert!(!valid_service_name(&"a".repeat(32)));
+    }
+
+    #[test]
+    fn service_binary_with_invalid_name_is_rejected() {
+        // A stamped-but-ungrammatical service name fails attestation, even for a real server.
+        assert!(attest(&with_service(craft("mc_sys_svc_serve", "full"), "KV")).is_err());
+        assert!(attest(&with_service(craft("mc_sys_svc_serve", "full"), "1kv")).is_err());
     }
 }

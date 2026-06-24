@@ -760,6 +760,160 @@ pub fn host_call(req: &[u8]) -> Result<i32, i32> {
     }
 }
 
+// ── resident services (typed cross-guest calls) ──────────────────────────────
+
+/// Register this guest as the resident service `name` (authorized by the kernel's
+/// activation grant — the task it spawned for `name`). Returns a control fd to drive
+/// with [`svc_recv`] / [`svc_respond`]. `Err(EPERM)` if not the granted task.
+pub fn svc_serve(name: &str) -> Result<i32, i32> {
+    let mut fd: u32 = 0;
+    let errno = unsafe {
+        mc_sys_svc_serve(
+            name.as_ptr() as i32,
+            name.len() as i32,
+            (&mut fd as *mut u32) as i32,
+        )
+    };
+    if errno != 0 {
+        Err(errno)
+    } else {
+        Ok(fd as i32)
+    }
+}
+
+/// Receive the next service inbound (blocks until one arrives). Writes the envelope
+/// `[kind: u8][nhandles: u8][session: u32][req_id: u32][blob_len: u32][blob…]` (little-endian) into
+/// `buf` and any delegated fd numbers into `hbuf`, returning the envelope byte length; decode with
+/// [`parse_svc_request`], answer a call with [`svc_respond`]. Pass an empty `hbuf` if the service
+/// accepts no delegated handles.
+pub fn svc_recv(fd: i32, buf: &mut [u8], hbuf: &mut [i32]) -> Result<usize, i32> {
+    let mut len: u32 = 0;
+    let errno = unsafe {
+        mc_sys_svc_recv(
+            fd,
+            buf.as_mut_ptr() as i32,
+            buf.len() as i32,
+            hbuf.as_mut_ptr() as i32,
+            (hbuf.len() * 4) as i32,
+            (&mut len as *mut u32) as i32,
+        )
+    };
+    if errno != 0 {
+        Err(errno)
+    } else {
+        Ok(len as usize)
+    }
+}
+
+/// Answer service call `(session, req_id)`. `status` 0 = ok (the client drains `data`
+/// from its result fd); nonzero = a transport errno surfaced to the client read.
+/// Application results (rows, errors) ride inside `data` per the service's protocol.
+pub fn svc_respond(
+    fd: i32,
+    session: u32,
+    req_id: u32,
+    status: i32,
+    data: &[u8],
+) -> Result<(), i32> {
+    errno_to_result(unsafe {
+        mc_sys_svc_respond(
+            fd,
+            session as i32,
+            req_id as i32,
+            status,
+            data.as_ptr() as i32,
+            data.len() as i32,
+        )
+    })
+}
+
+/// Open a session to the resident service `name`. Returns a connection fd to drive
+/// with [`svc_call`]. `Err(ENOENT)` if no such service is registered.
+pub fn svc_connect(name: &str) -> Result<i32, i32> {
+    let mut fd: u32 = 0;
+    let errno = unsafe {
+        mc_sys_svc_connect(
+            name.as_ptr() as i32,
+            name.len() as i32,
+            (&mut fd as *mut u32) as i32,
+        )
+    };
+    if errno != 0 {
+        Err(errno)
+    } else {
+        Ok(fd as i32)
+    }
+}
+
+/// Send a typed request on a service connection, optionally delegating `handles` (fd numbers — only
+/// `File`/`PipeRead`/`PipeWrite` may travel; SERVICES.md §3.4). Pass `&[]` to delegate nothing. Returns
+/// a readable result fd that streams the service's response — read it like any file, then [`close`] it.
+pub fn svc_call(fd: i32, req: &[u8], handles: &[i32]) -> Result<i32, i32> {
+    let mut ret: u32 = 0;
+    let errno = unsafe {
+        mc_sys_svc_call(
+            fd,
+            req.as_ptr() as i32,
+            req.len() as i32,
+            handles.as_ptr() as i32,
+            handles.len() as i32,
+            (&mut ret as *mut u32) as i32,
+        )
+    };
+    if errno != 0 {
+        Err(errno)
+    } else {
+        Ok(ret as i32)
+    }
+}
+
+/// The kind of inbound [`parse_svc_request`] decoded: a typed call to answer, or a notification that a
+/// session closed (its client went away) so the service can free that session's own warm state.
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum SvcKind {
+    Call,
+    SessionClosed,
+}
+
+/// An inbound delivered to a resident service, parsed from a [`svc_recv`] buffer by
+/// [`parse_svc_request`]. A [`SvcKind::SessionClosed`] tombstone needs no answer; its `req_id`/`blob`
+/// are empty.
+pub struct SvcRequest<'a> {
+    pub kind: SvcKind,
+    pub session: u32,
+    pub req_id: u32,
+    pub blob: &'a [u8],
+    /// Delegated fd numbers installed in this service's fd table (SERVICES.md §3.4), or empty.
+    pub handles: &'a [i32],
+}
+
+/// Parse a [`svc_recv`] envelope —
+/// `[kind: u8][nhandles: u8][session: u32][req_id: u32][blob_len: u32][blob…]` — plus the companion
+/// handle buffer `hbuf`. `None` if too short, truncated, or an unknown kind.
+pub fn parse_svc_request<'a>(buf: &'a [u8], hbuf: &'a [i32]) -> Option<SvcRequest<'a>> {
+    if buf.len() < 14 {
+        return None;
+    }
+    let kind = match buf[0] {
+        0 => SvcKind::Call,
+        1 => SvcKind::SessionClosed,
+        _ => return None,
+    };
+    let nhandles = buf[1] as usize;
+    let session = u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]]);
+    let req_id = u32::from_le_bytes([buf[6], buf[7], buf[8], buf[9]]);
+    let blob_len = u32::from_le_bytes([buf[10], buf[11], buf[12], buf[13]]) as usize;
+    let blob = buf.get(14..14 + blob_len)?;
+    let handles = hbuf.get(..nhandles)?;
+    Some(SvcRequest {
+        kind,
+        session,
+        req_id,
+        blob,
+        handles,
+    })
+}
+
 /// Report the HTTP status of a response-body fd (from [`http_get`] or
 /// [`http_request`]). Blocks until the response head has arrived. `Err(EIO)` on a
 /// transport failure, `Err(EBADF)` if `fd` is not an HTTP fd.
@@ -1079,6 +1233,33 @@ macro_rules! declare_budget {
             while k < 4 {
                 out[20 + k] = tb[k];
                 k += 1;
+            }
+            out
+        };
+    };
+}
+
+/// Declare this program's **service name** — that it is a resident service answering `svc_serve`
+/// for this name. The kernel/attestor reads it from an `mc_service` custom section, stamped exactly
+/// like `mc_tier`/`mc_budget` (VISION §6: service-capability is a *property*, not a second artifact).
+/// A binary that imports `svc_serve` MUST declare this — `mc-attest` fails the build otherwise — and
+/// the kernel grants it to serve only this name. The one-binary/two-modes service declares it
+/// unconditionally; whether it enters the serve loop or the CLI path is decided at runtime by argv.
+///
+/// The section name and payload (the raw UTF-8 service name) are the load-time contract, mirroring
+/// what `//tools/mc-stamp --service` appends for the zig/C++ service tools.
+#[macro_export]
+macro_rules! declare_service {
+    ($name:literal) => {
+        #[link_section = "mc_service"]
+        #[used]
+        static MC_SERVICE: [u8; $name.len()] = {
+            let src = $name.as_bytes();
+            let mut out = [0u8; $name.len()];
+            let mut i = 0;
+            while i < out.len() {
+                out[i] = src[i];
+                i += 1;
             }
             out
         };

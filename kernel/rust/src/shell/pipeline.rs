@@ -349,6 +349,10 @@ pub fn run_next(sched: &Scheduler, ns: &Namespace) -> bool {
             task.close_stdout();
             task.close_stdin();
             task.close_stderr();
+            // POSIX: every fd closes on exit. close_std* handled 0/1/2; dropping the
+            // program closes the guest's OTHER fds — a served-fs / svc-service channel
+            // closes here, so a crashed server's clients fail rather than hang on it.
+            task.clear_program();
             sched.exit_task(pid, code);
         }
         Some(BuiltinStep::BlockedOnStdin) => {
@@ -380,6 +384,7 @@ pub fn run_next(sched: &Scheduler, ns: &Namespace) -> bool {
             sched.block_task(pid, reason);
         }
         None => {
+            task.clear_program();
             sched.exit_task(pid, 0);
         }
     }

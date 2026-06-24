@@ -1,11 +1,12 @@
-# sqlite as a guest — vendor LESS, patch in place (VISION §8, B3). Upstream source
-# enters via http_archive(urls, sha256, patches=[...]) in MODULE.bazel; ONLY our deltas
+# sqlite as a guest — fetch upstream, patch in place (VISION §8, B3; SERVICES.md §3.2). The SQLite
+# amalgamation enters via http_archive(name = "sqlite", urls, sha256) in MODULE.bazel; ONLY our deltas
 # live in-tree:
-#   patches/             — the `// mc PATCH` set as real .patch files (B3).
-#   glue/                — wasi_compat etc., written in ZIG, compiled by `zig cc`.
+#   glue/                — the Zig serve loop + protocol + the close() shim, compiled by `zig cc`.
 #   BUILD.sqlite.bazel   — the build_file http_archive applies to the extracted source.
-#
-# The build stamps mc_tier / mc_budget / mc_service so /bin/sqlite is both a one-shot
+# 3.51.0 has native SQLITE_WASI support, so there are no source patches — just the compile defines in
+# glue/BUILD.bazel. The build stamps mc_tier / mc_budget / mc_service so /bin/sqlite is both a one-shot
 # CLI and a resident service from ONE binary (§4.5).
-#
-# Phase A step 4: enable the http_archive(name = "sqlite", ...) block in MODULE.bazel.
+
+# Exported so http_archive(build_file = "//third_party/sqlite:BUILD.sqlite.bazel") can apply it to the
+# extracted @sqlite source.
+exports_files(["BUILD.sqlite.bazel"])

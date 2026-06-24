@@ -714,10 +714,26 @@ fn init_system() {
                     false,
                 );
 
+                // servicefs: the resident-service registry as a listing at /svc
+                // (observability — `ls /svc` shows the live services; you
+                // `svc_connect` them, never open them). A stateless ZST reading the
+                // snapshot-captured global registry; mount rw (it refuses writes itself).
+                (*STATE.ns.get()).as_ref().unwrap().mount_labeled(
+                    "/svc",
+                    Box::new(crate::fs::servicefs::ServiceFs),
+                    "servicefs",
+                    false,
+                );
+
                 // Apply the image manifest's runtime contract: the budget
                 // ceiling (every guest spawn is capped by it) and the pid-1 boot
                 // tier. Must precede any guest load (so the shell is bounded too).
                 apply_boot_contract();
+
+                // Activate resident services declared in /etc/services.json (eager:
+                // each runs its svc_serve loop). Before the login shell, so a first
+                // connect from a user task finds them registered (or briefly blocks).
+                activate_services();
 
                 // Start the login shell: the guest `/bin/sh` as pid 1, or the
                 // in-kernel rescue shell if `/bin/sh` is unavailable (no image).
@@ -891,6 +907,158 @@ unsafe fn try_guest_login_shell() -> bool {
         *STATE.login_pid.get() = pid;
         true
     }
+}
+
+/// The reserved `argv[1]` the kernel passes when it spawns a binary in SERVICE mode:
+/// the same binary runs its `svc_serve` loop instead of its CLI `_start` (one binary,
+/// two activation modes — VISION §4.5). The resident-service binaries test `argv[1]`
+/// against this string. A small kernel↔guest contract, a candidate to promote into
+/// `contracts/` later.
+const SERVICE_MARKER: &str = "--mc-serve";
+
+/// Look up a declared service's binary path in `/etc/services.json`. `None` if the manifest is
+/// absent/unreadable/malformed, or the name is not declared there. A manifest entry is `name → {
+/// binary, eager? }`; the tier is deliberately NOT there — the binary's own `mc_tier` is the single
+/// source of truth, so a manifest can never widen the privilege a binary declared it needs. (The
+/// `eager` flag is read by [`activate_services`] at boot; lazy activation needs only the path.)
+unsafe fn lookup_service_binary(name: &str) -> Option<String> {
+    unsafe {
+        if !fs::servicefs::valid_service_name(name) {
+            return None;
+        }
+        let manifest = read_kernel_file(STATE.ns(), "/etc/services.json")?;
+        let text = core::str::from_utf8(&manifest).ok()?;
+        let doc = json::parse(text).ok()?;
+        let services = doc.as_obj()?;
+        let (_, spec) = services.iter().find(|(n, _)| n == name)?;
+        Some(
+            spec.get("binary")
+                .and_then(|b| b.as_str())
+                .map(String::from)
+                .unwrap_or_else(|| format!("/bin/{name}")),
+        )
+    }
+}
+
+/// Spawn a service `binary` in SERVICE mode (argv[1] = the marker), at the binary's OWN declared
+/// tier (`mc_tier`), in a fork of the boot namespace, and record its activation grant (`name → pid`).
+/// The service `svc_serve`s on its first tick; a client connecting in the meantime blocks until it
+/// does. `None` if the binary is missing, fails to load, or declares a DIFFERENT service name
+/// (VISION §6 — a binary cannot be activated under a name it did not claim).
+unsafe fn spawn_service(name: &str, binary: &str) -> Option<task::TaskId> {
+    unsafe {
+        let ns = STATE.ns();
+        let engine = STATE.guest_runtime();
+        let sched = STATE.scheduler();
+        let path = STATE
+            .env()
+            .get("PATH")
+            .cloned()
+            .unwrap_or_else(|| String::from("/bin:/usr/bin"));
+        // The manifest binary is an absolute VFS path; resolve it EXACTLY (not basename-on-PATH), so a
+        // service is always the binary its manifest names — a manifest cannot appear to name one path
+        // and silently activate another that happens to share a basename (codex #8).
+        if !binary.starts_with('/') {
+            return None;
+        }
+        let bytes = read_kernel_file(ns, binary)?;
+        // A binary may not be activated unless it declares exactly this service
+        // name (mc_service, VISION §6). Build-time attestation should catch bad
+        // service binaries, but the runtime manifest is still a trust boundary.
+        match wasm::declared_service(&bytes) {
+            Some(declared) if declared == name => {}
+            _ => return None,
+        }
+        // The binary's DECLARED tier is the source of truth (the manifest carries none).
+        let tier = wasm::declared_tier(&bytes).unwrap_or(task::Tier::Full);
+        let argv = alloc::vec![String::from(binary), String::from(SERVICE_MARKER)];
+        let prog = wasm::GuestProgram::load(engine, &bytes, argv, &path).ok()?;
+        let pid = sched.spawn(
+            None,
+            String::from(name),
+            String::from(binary),
+            alloc::vec![String::from(SERVICE_MARKER)],
+            String::from("/"),
+        );
+        let task = sched.get_task(pid)?;
+        task.set_namespace(ns.fork(pid));
+        task.set_program(Box::new(prog));
+        let root = if tier.confines() {
+            Some(String::from("/"))
+        } else {
+            None
+        };
+        sched.set_task_policy(pid, tier.caps(), root);
+        let deadline = wall_now_ms() + fs::servicefs::ACTIVATION_TIMEOUT_MS;
+        fs::servicefs::mark_activating(name, pid, deadline);
+        Some(pid)
+    }
+}
+
+/// EAGER service activation at boot: spawn each service marked `"eager": true` in
+/// `/etc/services.json`. Lazy services (the default) are instead spawned on their first
+/// `svc_connect` ([`activate_service_lazily`]), so a flavor pays a service's cold start only when
+/// something actually uses it. An absent/malformed manifest means no eager services — boot continues.
+unsafe fn activate_services() {
+    unsafe {
+        let Some(manifest) = read_kernel_file(STATE.ns(), "/etc/services.json") else {
+            return;
+        };
+        let Ok(text) = core::str::from_utf8(&manifest) else {
+            return;
+        };
+        let Ok(doc) = json::parse(text) else {
+            return;
+        };
+        let Some(services) = doc.as_obj() else {
+            return;
+        };
+        for (name, spec) in services {
+            if !fs::servicefs::valid_service_name(name) {
+                continue; // a manifest key that isn't a valid service name can't match any binary
+            }
+            if !spec.get("eager").and_then(|e| e.as_bool()).unwrap_or(false) {
+                continue; // lazy (default): activated on first connect, not at boot
+            }
+            let binary = spec
+                .get("binary")
+                .and_then(|b| b.as_str())
+                .map(String::from)
+                .unwrap_or_else(|| format!("/bin/{name}"));
+            spawn_service(name, &binary);
+        }
+    }
+}
+
+/// Lazily (re-)activate a service on its first `svc_connect` (spawn-on-connect): look it up in
+/// `/etc/services.json` and spawn it. Returns whether an activation was STARTED (the connecting
+/// client then blocks until it serves); `false` means the name is not a declared service. This is
+/// also the crash-recovery path — a connect after a service died re-runs it and gets a fresh instance.
+pub(crate) unsafe fn activate_service_lazily(name: &str) -> bool {
+    unsafe {
+        match lookup_service_binary(name) {
+            Some(binary) => spawn_service(name, &binary).is_some(),
+            None => false,
+        }
+    }
+}
+
+/// Read a whole (small) file from the boot namespace. `None` if it is absent or
+/// unreadable.
+fn read_kernel_file(ns: &Namespace, path: &str) -> Option<Vec<u8>> {
+    let kpath = KPath::new(path);
+    ns.stat(&kpath).ok()?;
+    let mut handle = ns.open(&kpath, OpenFlags::READ).ok()?;
+    let mut out = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        match handle.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => out.extend_from_slice(&buf[..n]),
+            Err(_) => return None,
+        }
+    }
+    Some(out)
 }
 
 // ---------- Exported functions ----------
@@ -2144,14 +2312,14 @@ pub(crate) fn mc_ctl_exec_close(job_id: u32) -> i32 {
 // egress operation is in flight, since its raw host handle does not survive the
 // restore. Everything else is just bytes.
 
-/// Number of host-egress operations currently in flight across all guests —
-/// HTTP, WebSocket, AND host calls (so host-backed mount reads and parked
-/// write-commits are counted, since their raw host handles also don't survive a
-/// restore). The host reads this before a snapshot and refuses while it is
-/// non-zero, so a snapshot is always taken at a no-egress-in-flight boundary
-/// (eviction correctness).
+/// Number of operations in flight that a snapshot must not interrupt. Host egress — HTTP, WebSocket,
+/// AND host calls (host-backed mount reads and parked write-commits, whose raw host handles don't
+/// survive a restore) — PLUS resident-service calls mid-flight: a service between `svc_recv` and
+/// `svc_respond` has a live wasm stack a snapshot would lose (SERVICES.md §3.5; codex #5). The host
+/// reads this before a snapshot and refuses (driving ticks to drain) while it is non-zero, so a
+/// snapshot is always taken at a quiescent, no-egress-and-no-service-mid-call boundary.
 pub(crate) fn mc_inflight_egress() -> i32 {
-    net::inflight_egress()
+    net::inflight_egress() + fs::servicefs::svc_inflight() as i32
 }
 
 /// Number of host-backed-mount write-commits parked but not yet acknowledged by

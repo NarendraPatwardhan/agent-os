@@ -13,7 +13,10 @@
 
 // Syscall ABI version, reported by mc_sys_abi_version as (major << 16) | minor.
 // Bump MINOR for additive changes (new syscalls); MAJOR only for a breaking change.
-abi-version major=1 minor=3
+// 1.4 adds the five resident-service syscalls (mc_sys_svc_*) — additive (SERVICES.md).
+// 1.5 widens svc_call/svc_recv with the handle-delegation args (handles_ptr/nhandles,
+// hbuf/hbuf_len) — a reshape of the still-unreleased svc_* layer; the frozen base ABI is unchanged.
+abi-version major=1 minor=5
 
 // ---------------------------------------------------------------------------
 // Errno — WASI-style; 0 = success. A syscall returns 0 or a positive errno; any
@@ -34,11 +37,13 @@ errno {
     EMFILE      33  // too many open files (per-VM fd budget)
     ENOENT      44  // no such file or directory
     ENOSYS      52  // function not implemented
+    EMSGSIZE    53  // message too long (a svc request exceeds the server's buffer)
     ENOTDIR     54  // not a directory
     ENOTEMPTY   55  // directory not empty
     EPERM       63  // operation not permitted (capability denied)
     EPIPE       64  // broken pipe
     ESRCH       71  // no such process
+    ETIMEDOUT   73  // operation timed out (a service activation deadline elapsed)
     EXDEV       75  // cross-device link (rename across mounts)
 }
 

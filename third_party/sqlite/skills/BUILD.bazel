@@ -1,0 +1,2 @@
+# The sqlite agent-facing skill — rides the `atlas` flavor at /skills/sqlite.md (like loom's skills).
+exports_files(["sqlite.md"])

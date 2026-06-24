@@ -32,6 +32,11 @@ use wasmi::{
 };
 
 use crate::builtins::{Builtin, BuiltinCtx, BuiltinStep};
+use crate::fs::servicefs::{
+    activation, clear_activating, grant_holder, lookup_service, register_service,
+    service_registered, valid_service_name, DelegatedHandle, ServiceChannel, ServiceInbound,
+    SvcCallSource, SvcConnHandle, SvcRead, SvcServeOwner, MAX_ACTIVATION_ATTEMPTS,
+};
 use crate::fs::{MemFs, ServeChannel, ServedFs};
 use crate::host_call::{HostCallRead, HostCallSource};
 use crate::io::{EmptySource, PipeSink, PipeSource, ReadSource, TerminalSink, WriteSink};
@@ -46,6 +51,16 @@ use crate::wasm::abi::*;
 /// Cap on a guest's open fd table — the per-VM "maximum open fds" budget.
 /// Standard fds 0/1/2 are not counted; this bounds entries ≥ 3.
 const MAX_OPEN_FDS: usize = 256;
+/// Cap on one resident-service request blob. Results still stream through the
+/// readable result fd; requests are copied into the kernel queue, so bound them.
+const MAX_SVC_REQUEST_BYTES: usize = 1 << 20;
+/// Max fds one `svc_call` may delegate (SERVICES.md §3.4) — bounds the server's handle buffer.
+const MAX_DELEGATED_HANDLES: usize = 8;
+/// svc recv envelope header: `[kind:u8][nhandles:u8][session:u32][req_id:u32][blob_len:u32]` (LE).
+const SVC_ENVELOPE_HEADER: usize = 14;
+/// Envelope `kind`: a call to answer, vs a session-closed tombstone (a one-way notification).
+const SVC_KIND_CALL: u8 = 0;
+const SVC_KIND_SESSION_CLOSED: u8 = 1;
 /// The persistence mount. Access to a path at or under it requires
 /// the `CAP_PERSIST` capability in addition to the usual FS read/write checks.
 const PERSIST_ROOT: &str = "/var/persist";
@@ -75,6 +90,16 @@ enum GuestFd {
     /// host-backed mounts. Owns the kernel `HostCallSource`, so dropping the slot
     /// closes the host handle (R1).
     HostCall(SharedHostCall),
+    /// The server side of a resident service (`mc_sys_svc_serve`). Holds the
+    /// session-keyed channel; dropping it (the server guest exiting) closes the
+    /// channel and deregisters the name, so clients fail rather than block forever.
+    SvcServe(SvcServeOwner),
+    /// A client's connection to a resident service (`mc_sys_svc_connect`). Holds
+    /// the channel and the session; dropping it tears the session down.
+    SvcConn(SvcConnHandle),
+    /// A readable `svc_call` result that drains the server's streamed response.
+    /// Owns an `Rc` to the channel, so the warm service outlives an in-flight call.
+    SvcCall(SharedSvcCall),
 }
 
 /// Owns a serve channel and closes it on drop (server-guest teardown).
@@ -83,6 +108,23 @@ struct ServeOwner(Rc<RefCell<ServeChannel>>);
 impl Drop for ServeOwner {
     fn drop(&mut self) {
         self.0.borrow_mut().close();
+    }
+}
+
+/// A guest fd backed by an in-flight `svc_call` result. Parallels `SharedHostCall`:
+/// yield while the server computes, stream the response body, EOF.
+#[derive(Clone)]
+struct SharedSvcCall(Rc<RefCell<SvcCallSource>>);
+
+impl SharedSvcCall {
+    fn new(src: SvcCallSource) -> Self {
+        SharedSvcCall(Rc::new(RefCell::new(src)))
+    }
+    fn read_into(&self, buf: &mut [u8]) -> SvcRead {
+        self.0.borrow_mut().read_into(buf)
+    }
+    fn poll_readable(&self) -> bool {
+        self.0.borrow().poll_readable()
     }
 }
 
@@ -1177,6 +1219,40 @@ impl GuestProgram {
                 req_len,
                 ret_fd,
             } => self.fulfill_host_call(ctx, req_ptr, req_len, ret_fd),
+            Pending::SvcServe {
+                name_ptr,
+                name_len,
+                ret_fd,
+            } => self.fulfill_svc_serve(ctx, name_ptr, name_len, ret_fd),
+            Pending::SvcRecv {
+                fd,
+                buf,
+                buf_len,
+                hbuf,
+                hbuf_len,
+                ret_len,
+            } => self.fulfill_svc_recv(ctx, fd, buf, buf_len, hbuf, hbuf_len, ret_len),
+            Pending::SvcRespond {
+                fd,
+                session,
+                req_id,
+                status,
+                data_ptr,
+                data_len,
+            } => self.fulfill_svc_respond(fd, session, req_id, status, data_ptr, data_len),
+            Pending::SvcConnect {
+                name_ptr,
+                name_len,
+                ret_fd,
+            } => self.fulfill_svc_connect(ctx, name_ptr, name_len, ret_fd),
+            Pending::SvcCall {
+                fd,
+                req_ptr,
+                req_len,
+                handles_ptr,
+                nhandles,
+                ret_fd,
+            } => self.fulfill_svc_call(fd, req_ptr, req_len, handles_ptr, nhandles, ret_fd),
             Pending::Kill { pid, sig } => self.fulfill_kill(ctx, pid, sig),
             Pending::Sigdisp { sig, disp } => self.fulfill_sigdisp(ctx, sig, disp),
             Pending::Setpgid { pid, pgid } => self.fulfill_setpgid(ctx, pid, pgid),
@@ -1275,12 +1351,23 @@ impl GuestProgram {
                     HostCallRead::Eof => R::Got(0),
                     HostCallRead::Failed => R::Err(EIO),
                 },
+                Some(GuestFd::SvcCall(sc)) => match sc.read_into(&mut tmp) {
+                    SvcRead::Pending => R::Pending,
+                    SvcRead::Got(n) => R::Got(n),
+                    SvcRead::Eof => R::Got(0),
+                    SvcRead::Closed => R::Err(EIO),
+                    SvcRead::Failed(errno) => R::Err(errno),
+                },
                 Some(GuestFd::Ws(ws)) => match ws.read_into(&mut tmp) {
                     WsRead::Got(n) => R::Got(n),
                     WsRead::Pending => R::Pending,
                     WsRead::Eof => R::Got(0),
                 },
-                Some(GuestFd::PipeWrite(_)) | Some(GuestFd::Serve(_)) | None => R::Err(EBADF),
+                Some(GuestFd::PipeWrite(_))
+                | Some(GuestFd::Serve(_))
+                | Some(GuestFd::SvcServe(_))
+                | Some(GuestFd::SvcConn(_))
+                | None => R::Err(EBADF),
             }
         } else {
             R::Err(EBADF)
@@ -2130,6 +2217,422 @@ impl GuestProgram {
         }
     }
 
+    /// The service channel behind a server's control fd (`GuestFd::SvcServe`).
+    fn svc_channel(&self, fd: i32) -> Option<Rc<RefCell<ServiceChannel>>> {
+        if fd < 3 {
+            return None;
+        }
+        match self.files.get((fd - 3) as usize).and_then(|s| s.as_ref()) {
+            Some(GuestFd::SvcServe(owner)) => Some(owner.channel().clone()),
+            _ => None,
+        }
+    }
+
+    /// The `(channel, session)` behind a client's connection fd (`GuestFd::SvcConn`).
+    fn svc_conn(&self, fd: i32) -> Option<(Rc<RefCell<ServiceChannel>>, u32)> {
+        if fd < 3 {
+            return None;
+        }
+        match self.files.get((fd - 3) as usize).and_then(|s| s.as_ref()) {
+            Some(GuestFd::SvcConn(h)) => Some((h.channel().clone(), h.session())),
+            _ => None,
+        }
+    }
+
+    /// `mc_sys_svc_serve(name) -> fd`: register THIS guest as the resident service
+    /// `name`. Installs a session-keyed `ServiceChannel` in the kernel registry and
+    /// returns a control fd the server drives with `svc_recv`/`svc_respond`. One
+    /// server per name; authority comes from the kernel's activation grant for the
+    /// spawned task, not from a broad capability. The fd's `Drop` closes the channel
+    /// and deregisters the name, so a server crash fails its clients rather than
+    /// hanging them.
+    fn fulfill_svc_serve(
+        &mut self,
+        ctx: &mut BuiltinCtx<'_>,
+        name_ptr: u32,
+        name_len: u32,
+        ret_fd: u32,
+    ) -> Fulfilled {
+        self.store.data_mut().pending = None;
+        if !self.guest_range_valid(ret_fd, 4) {
+            return Fulfilled::Resume(EINVAL);
+        }
+        let name = match self.read_guest_str(name_ptr, name_len) {
+            Some(s) if valid_service_name(&s) => s,
+            _ => return Fulfilled::Resume(EINVAL),
+        };
+        // Serve-authority is the kernel's activation grant, not a capability: only the
+        // task the kernel spawned to serve `name` may register it. This lets a service
+        // run at its own narrow tier and stops any other guest squatting a name.
+        if grant_holder(&name) != Some(ctx.pid) {
+            return Fulfilled::Resume(EPERM);
+        }
+        if service_registered(&name) {
+            // A live server already holds this name.
+            return Fulfilled::Resume(EEXIST);
+        }
+        if !self.fd_slots_available(1) {
+            return Fulfilled::Resume(EMFILE);
+        }
+        let channel = ServiceChannel::new();
+        register_service(&name, channel.clone());
+        clear_activating(&name); // grant consumed; the channel is now in the registry
+        // On `alloc_fd` failure the `SvcServeOwner` is dropped here, which closes the
+        // channel and deregisters `name` — no orphaned registration.
+        match self.alloc_fd(GuestFd::SvcServe(SvcServeOwner::new(name, channel))) {
+            Some(fd) => match self.write_guest_u32(ret_fd, fd as u32) {
+                Ok(()) => Fulfilled::Resume(ESUCCESS),
+                Err(e) => Fulfilled::Resume(e),
+            },
+            None => Fulfilled::Resume(EMFILE),
+        }
+    }
+
+    /// `mc_sys_svc_recv(fd, buf, buf_len, hbuf, hbuf_len) -> len`: receive the next inbound for a
+    /// resident service (blocking). Encodes the envelope
+    /// `[kind:u8][nhandles:u8][session:u32][req_id:u32][blob_len:u32][blob…]` (LE) into `buf` and any
+    /// delegated fd numbers (cloned into THIS server's fd table) into `hbuf`, returning the envelope
+    /// length. `kind` is a call (0) or a session-closed tombstone (1, freeing the service's own
+    /// per-session state — codex #1). A call too large for the server's buffers is auto-rejected (the
+    /// client's call fails; the server is never stalled or killed — codex #3). Yields (`Pending`) until
+    /// an inbound is available.
+    fn fulfill_svc_recv(
+        &mut self,
+        ctx: &mut BuiltinCtx<'_>,
+        fd: i32,
+        buf: u32,
+        buf_len: u32,
+        hbuf: u32,
+        hbuf_len: u32,
+        ret_len: u32,
+    ) -> Fulfilled {
+        if !self.guest_range_valid(ret_len, 4) {
+            self.store.data_mut().pending = None;
+            return Fulfilled::Resume(EINVAL);
+        }
+        let channel = match self.svc_channel(fd) {
+            Some(c) => c,
+            None => {
+                self.store.data_mut().pending = None;
+                return Fulfilled::Resume(EBADF);
+            }
+        };
+        // Self-heal before serving: drop sessions whose client task has died (the connection fd's Drop
+        // is the primary teardown; this is defense-in-depth). Each drop also enqueues a SessionClosed
+        // tombstone, which we may deliver below so the service can free that session's own warm state.
+        channel.borrow_mut().evict_dead_sessions(|pid| {
+            ctx.sched
+                .get_task(pid)
+                .is_some_and(|t| !matches!(t.state, TaskState::Zombie))
+        });
+        // Deliver the next inbound. A call too large for the server's buffers is AUTO-REJECTED — the
+        // client's call fails (status != 0), its delegated handles drop, and we advance — so an
+        // oversize request can never stall or kill a service. Loop until deliverable or drained.
+        loop {
+            let inbound = channel.borrow_mut().take_request();
+            let req = match inbound {
+                None => return Fulfilled::Block(BuiltinStep::Pending),
+                Some(ServiceInbound::SessionClosed(session)) => {
+                    if SVC_ENVELOPE_HEADER > buf_len as usize
+                        || !self.guest_range_valid(buf, SVC_ENVELOPE_HEADER)
+                    {
+                        continue; // can't deliver the tombstone here; drop it (the session is gone)
+                    }
+                    self.store.data_mut().pending = None;
+                    return self.write_svc_envelope(
+                        buf,
+                        ret_len,
+                        hbuf,
+                        SVC_KIND_SESSION_CLOSED,
+                        session,
+                        0,
+                        &[],
+                        &[],
+                    );
+                }
+                Some(ServiceInbound::Call(r)) => r,
+            };
+            let nh = req.handles.len();
+            let total = SVC_ENVELOPE_HEADER + req.blob.len();
+            if total > buf_len as usize
+                || nh * 4 > hbuf_len as usize
+                || !self.guest_range_valid(buf, total)
+                || (nh > 0 && !self.guest_range_valid(hbuf, nh * 4))
+                || !self.fd_slots_available(nh)
+            {
+                // Auto-reject: fail the client crash-only; `req` (and its handles) drop here.
+                channel
+                    .borrow_mut()
+                    .respond(req.session, req.req_id, EMSGSIZE, Vec::new());
+                continue;
+            }
+            // Install the delegated handles into THIS server's fd table (slots reserved above).
+            let mut handle_bytes: Vec<u8> = Vec::with_capacity(nh * 4);
+            for dh in req.handles {
+                match self.install_delegated(dh) {
+                    Some(f) => handle_bytes.extend_from_slice(&(f as u32).to_le_bytes()),
+                    None => break, // unreachable given the slot check; envelope stays self-consistent
+                }
+            }
+            channel.borrow_mut().mark_delivered(req.session, req.req_id); // now mid-call (snapshot gate)
+            self.store.data_mut().pending = None;
+            return self.write_svc_envelope(
+                buf,
+                ret_len,
+                hbuf,
+                SVC_KIND_CALL,
+                req.session,
+                req.req_id,
+                &req.blob,
+                &handle_bytes,
+            );
+        }
+    }
+
+    /// `mc_sys_svc_respond(fd, session, req_id, status, data, data_len)`: answer a
+    /// service call. `status` 0 = ok (`data` is the response body the client
+    /// drains); nonzero = a transport errno surfaced to the client's `read`.
+    /// Application results (rows, errors) ride inside `data`.
+    fn fulfill_svc_respond(
+        &mut self,
+        fd: i32,
+        session: u32,
+        req_id: u32,
+        status: i32,
+        data_ptr: u32,
+        data_len: u32,
+    ) -> Fulfilled {
+        self.store.data_mut().pending = None;
+        let channel = match self.svc_channel(fd) {
+            Some(c) => c,
+            None => return Fulfilled::Resume(EBADF),
+        };
+        let data = match self.read_guest_bytes(data_ptr, data_len) {
+            Some(d) => d,
+            None => return Fulfilled::Resume(EINVAL),
+        };
+        // Only a call actually delivered by `svc_recv` may be answered. This ties the snapshot
+        // quiescence counter to concrete `(session, req_id)` ownership instead of trusting a service's
+        // arbitrary response ids; duplicate/unsolicited answers fail without making the channel look idle.
+        // A late answer to a closed session is still accepted and dropped (the client left), because the
+        // delivered call's wasm stack is now complete.
+        {
+            let mut ch = channel.borrow_mut();
+            if !ch.mark_answered(session, req_id) {
+                return Fulfilled::Resume(EINVAL);
+            }
+            ch.respond(session, req_id, status, data);
+        }
+        Fulfilled::Resume(ESUCCESS)
+    }
+
+    /// `mc_sys_svc_connect(name) -> fd`: open a session to the resident service
+    /// `name`, returning a connection fd the client drives with `svc_call`. Lazy
+    /// activation (spawning a registered-but-not-running service) is layered on in a
+    /// later step; for now an unregistered name is `ENOENT`.
+    fn fulfill_svc_connect(
+        &mut self,
+        ctx: &mut BuiltinCtx<'_>,
+        name_ptr: u32,
+        name_len: u32,
+        ret_fd: u32,
+    ) -> Fulfilled {
+        if !self.guest_range_valid(ret_fd, 4) {
+            self.store.data_mut().pending = None;
+            return Fulfilled::Resume(EINVAL);
+        }
+        let name = match self.read_guest_str(name_ptr, name_len) {
+            Some(s) if valid_service_name(&s) => s,
+            _ => {
+                self.store.data_mut().pending = None;
+                return Fulfilled::Resume(EINVAL);
+            }
+        };
+        let channel = match lookup_service(&name) {
+            Some(c) => c,
+            None => {
+                // Not registered. Drive the activation state machine: a live starter within its
+                // deadline → keep re-polling (the connect-before-serve race); a starter hung past its
+                // deadline → kill it and fail (`ETIMEDOUT`); a starter that died before serving →
+                // lazily re-activate it from /etc/services.json, up to `MAX_ACTIVATION_ATTEMPTS`, then
+                // fail (`EIO`). Absent from the manifest → genuinely no such service (`ENOENT`). This
+                // bounds the indefinite busy-poll a hung or crash-looping service used to cause (#4).
+                if let Some(act) = activation(&name) {
+                    let alive = ctx
+                        .sched
+                        .get_task(act.pid)
+                        .is_some_and(|t| !matches!(t.state, TaskState::Zombie));
+                    if alive {
+                        if crate::wall_now_ms() > act.deadline_ms {
+                            ctx.sched.kill_task(act.pid, 124); // hung before serving — reap it
+                            clear_activating(&name);
+                            self.store.data_mut().pending = None;
+                            return Fulfilled::Resume(ETIMEDOUT);
+                        }
+                        return Fulfilled::Block(BuiltinStep::Pending);
+                    }
+                    if act.attempts >= MAX_ACTIVATION_ATTEMPTS {
+                        clear_activating(&name); // crash-looped past its retry budget
+                        self.store.data_mut().pending = None;
+                        return Fulfilled::Resume(EIO);
+                    }
+                    // Died before serving but within budget — re-activate below (attempts carry forward).
+                }
+                if unsafe { crate::activate_service_lazily(&name) } {
+                    return Fulfilled::Block(BuiltinStep::Pending);
+                }
+                self.store.data_mut().pending = None;
+                return Fulfilled::Resume(ENOENT);
+            }
+        };
+        self.store.data_mut().pending = None;
+        if !self.fd_slots_available(1) {
+            return Fulfilled::Resume(EMFILE);
+        }
+        let session = channel.borrow_mut().open_session(ctx.pid);
+        // On `alloc_fd` failure the `SvcConnHandle` is dropped here, tearing the
+        // just-opened session back down.
+        match self.alloc_fd(GuestFd::SvcConn(SvcConnHandle::new(channel, session))) {
+            Some(fd) => match self.write_guest_u32(ret_fd, fd as u32) {
+                Ok(()) => Fulfilled::Resume(ESUCCESS),
+                Err(e) => Fulfilled::Resume(e),
+            },
+            None => Fulfilled::Resume(EMFILE),
+        }
+    }
+
+    /// `mc_sys_svc_call(fd, req, req_len, handles, nhandles) -> ret_fd`: send a typed request on a
+    /// connection (optionally delegating `nhandles` fds) and get a readable result fd that streams the
+    /// server's response. Like `host_call`, the call itself does not block — the client drains the
+    /// result fd, yielding while the answer is in flight. Delegated fds are cloned into the service's
+    /// table at `svc_recv`; only `File`/`PipeRead`/`PipeWrite` may travel (SERVICES.md §3.4).
+    fn fulfill_svc_call(
+        &mut self,
+        fd: i32,
+        req_ptr: u32,
+        req_len: u32,
+        handles_ptr: u32,
+        nhandles: u32,
+        ret_fd: u32,
+    ) -> Fulfilled {
+        self.store.data_mut().pending = None;
+        if !self.guest_range_valid(ret_fd, 4) {
+            return Fulfilled::Resume(EINVAL);
+        }
+        let (channel, session) = match self.svc_conn(fd) {
+            Some(c) => c,
+            None => return Fulfilled::Resume(EBADF),
+        };
+        if req_len as usize > MAX_SVC_REQUEST_BYTES || nhandles as usize > MAX_DELEGATED_HANDLES {
+            return Fulfilled::Resume(EINVAL);
+        }
+        let blob = match self.read_guest_bytes(req_ptr, req_len) {
+            Some(b) => b,
+            None => return Fulfilled::Resume(EINVAL),
+        };
+        // Clone each delegated fd into a transferable handle (refusing non-delegatable fds — egress,
+        // serve, svc, std) BEFORE touching the queue, so a bad handle fails the whole call with nothing
+        // enqueued and no half-delegation.
+        let mut handles: Vec<DelegatedHandle> = Vec::with_capacity(nhandles as usize);
+        if nhandles > 0 {
+            let hb = match self.read_guest_bytes(handles_ptr, nhandles * 4) {
+                Some(b) => b,
+                None => return Fulfilled::Resume(EINVAL),
+            };
+            for i in 0..nhandles as usize {
+                let hfd =
+                    i32::from_le_bytes([hb[i * 4], hb[i * 4 + 1], hb[i * 4 + 2], hb[i * 4 + 3]]);
+                match self.delegate_fd(hfd) {
+                    Some(dh) => handles.push(dh),
+                    None => return Fulfilled::Resume(EINVAL),
+                }
+            }
+        }
+        if !self.fd_slots_available(1) {
+            return Fulfilled::Resume(EMFILE);
+        }
+        let req_id = match channel.borrow_mut().enqueue(session, blob, handles) {
+            Some(id) => id,
+            // The server has exited (or the session is gone): fail crash-only; handles drop (released).
+            None => return Fulfilled::Resume(EIO),
+        };
+        let source = SvcCallSource::new(channel, session, req_id);
+        match self.alloc_fd(GuestFd::SvcCall(SharedSvcCall::new(source))) {
+            Some(fd) => match self.write_guest_u32(ret_fd, fd as u32) {
+                Ok(()) => Fulfilled::Resume(ESUCCESS),
+                Err(e) => Fulfilled::Resume(e),
+            },
+            None => Fulfilled::Resume(EMFILE),
+        }
+    }
+
+    /// Clone a client's fd into a [`DelegatedHandle`] for delegation to a service (`svc_call`). Only
+    /// the delegatable subset travels (SERVICES.md §3.4): an open file (shared `Rc`) or a pipe end (a
+    /// fresh ref-counted endpoint on the same pipe — exactly `inherit_for_child`'s clone). `None` for a
+    /// std fd or an egress/serve/svc fd, so a caller cannot launder those into a callee.
+    fn delegate_fd(&self, fd: i32) -> Option<DelegatedHandle> {
+        if fd < 3 {
+            return None;
+        }
+        match self.files.get((fd - 3) as usize).and_then(|s| s.as_ref()) {
+            Some(GuestFd::File(sf)) => Some(DelegatedHandle::File(sf.0.clone())),
+            Some(GuestFd::PipeRead(ps)) => {
+                Some(DelegatedHandle::PipeRead(PipeSource::new(unsafe { &*ps.pipe })))
+            }
+            Some(GuestFd::PipeWrite(pk)) => {
+                Some(DelegatedHandle::PipeWrite(PipeSink::new(unsafe { &*pk.pipe })))
+            }
+            _ => None,
+        }
+    }
+
+    /// Install a delegated handle into THIS (server) guest's fd table, returning its fresh fd number.
+    fn install_delegated(&mut self, dh: DelegatedHandle) -> Option<i32> {
+        let gfd = match dh {
+            DelegatedHandle::File(rc) => GuestFd::File(SharedFile(rc)),
+            DelegatedHandle::PipeRead(ps) => GuestFd::PipeRead(ps),
+            DelegatedHandle::PipeWrite(pk) => GuestFd::PipeWrite(pk),
+        };
+        self.alloc_fd(gfd)
+    }
+
+    /// Frame a svc inbound envelope into the server's `buf` (header + blob) and its `hbuf` (delegated
+    /// fd numbers), writing the envelope length to `ret_len`. The caller has already validated that the
+    /// buffers are large enough and in range.
+    #[allow(clippy::too_many_arguments)]
+    fn write_svc_envelope(
+        &mut self,
+        buf: u32,
+        ret_len: u32,
+        hbuf: u32,
+        kind: u8,
+        session: u32,
+        req_id: u32,
+        blob: &[u8],
+        handle_bytes: &[u8],
+    ) -> Fulfilled {
+        let total = SVC_ENVELOPE_HEADER + blob.len();
+        let mut out = Vec::with_capacity(total);
+        out.push(kind);
+        out.push((handle_bytes.len() / 4) as u8);
+        out.extend_from_slice(&session.to_le_bytes());
+        out.extend_from_slice(&req_id.to_le_bytes());
+        out.extend_from_slice(&(blob.len() as u32).to_le_bytes());
+        out.extend_from_slice(blob);
+        if let Err(e) = self.write_guest_bytes(buf, &out) {
+            return Fulfilled::Resume(e);
+        }
+        if !handle_bytes.is_empty() {
+            if let Err(e) = self.write_guest_bytes(hbuf, handle_bytes) {
+                return Fulfilled::Resume(e);
+            }
+        }
+        match self.write_guest_u32(ret_len, total as u32) {
+            Ok(()) => Fulfilled::Resume(ESUCCESS),
+            Err(e) => Fulfilled::Resume(e),
+        }
+    }
+
     /// `mc_sys_lseek(fd, off_ptr, whence)`: reposition an open file. `off_ptr`
     /// is an in/out `i64` (LE in guest memory) — the requested offset in, the
     /// resulting absolute position out — which keeps every wire argument an
@@ -2385,6 +2888,11 @@ impl GuestProgram {
                         r |= POLLIN;
                     }
                 }
+                Some(Some(GuestFd::SvcCall(sc))) => {
+                    if want_in && sc.poll_readable() {
+                        r |= POLLIN;
+                    }
+                }
                 Some(Some(GuestFd::Ws(ws))) => {
                     if want_in && ws.poll_readable() {
                         r |= POLLIN;
@@ -2529,6 +3037,9 @@ impl GuestProgram {
                 | Some(GuestFd::Net(_))
                 | Some(GuestFd::HostCall(_))
                 | Some(GuestFd::Serve(_))
+                | Some(GuestFd::SvcServe(_))
+                | Some(GuestFd::SvcConn(_))
+                | Some(GuestFd::SvcCall(_))
                 | None => W::Err(EBADF),
             };
             return match w {
@@ -3435,6 +3946,20 @@ fn validate_mc_sections(bytes: &[u8]) -> Result<(), String> {
         }
         None => {}
     }
+    // mc_service (VISION §6): a corrupt/empty/ungrammatical service name must fail the load rather
+    // than silently read as "not a service" (which would skip the activation-time name check), or be
+    // accepted as a name the runtime `svc_serve`/`svc_connect` gate would then reject.
+    match unique_custom(bytes, b"mc_service").map_err(|e| format!("mc_service: {e}"))? {
+        Some(p) => match core::str::from_utf8(p) {
+            Ok(s) if valid_service_name(s) => {}
+            _ => {
+                return Err(String::from(
+                    "mc_service: not a valid service name ([a-z][a-z0-9-]*, <=31 bytes)",
+                ))
+            }
+        },
+        None => {}
+    }
     Ok(())
 }
 
@@ -3464,6 +3989,15 @@ pub fn declared_budget(bytes: &[u8]) -> Option<Budget> {
 pub fn declared_tier(bytes: &[u8]) -> Option<Tier> {
     let p = unique_custom(bytes, b"mc_tier").ok().flatten()?;
     core::str::from_utf8(p).ok().and_then(Tier::parse)
+}
+
+/// Read a program's declared SERVICE name from its (validated) `mc_service` WASM custom section
+/// (emitted by `sysroot::declare_service!` or `mc-stamp --service`). `None` when absent — the program
+/// is not a resident service. Malformed/duplicate is rejected at load by [`validate_mc_sections`], so
+/// an absent section here genuinely means "not a service", never "the section was corrupt".
+pub fn declared_service(bytes: &[u8]) -> Option<String> {
+    let p = unique_custom(bytes, b"mc_service").ok().flatten()?;
+    core::str::from_utf8(p).ok().map(String::from)
 }
 
 /// Read an unsigned LEB128 from `bytes` at `at`. Returns `(value, bytes_read)`,

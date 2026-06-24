@@ -382,8 +382,8 @@ impl Scheduler {
     }
 
     /// Forcibly terminate `id` (a `/proc/[pid]/ctl` `kill`). Reuses the ordinary exit
-    /// path: removes it from the queues, marks it a zombie with `exit_code`, and wakes a
-    /// parent blocked on `WaitChild`.
+    /// path after closing every fd-owning object immediately, so a killed task cannot
+    /// keep pipes, served-fs channels, or resident-service sessions alive until reap.
     pub fn kill_task(&self, id: TaskId, exit_code: i32) {
         if let Some(task) = self.get_task(id) {
             // A stopped task can still be killed (e.g. `kill %1` on a Ctrl-Z'd job): clear
@@ -391,6 +391,8 @@ impl Scheduler {
             task.set_sig_stopped(false);
             task.close_stdout();
             task.close_stdin();
+            task.close_stderr();
+            task.clear_program();
         }
         self.exit_task(id, exit_code);
     }

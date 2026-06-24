@@ -6,7 +6,7 @@
 //! (the patched VM `ldo.cpp`, and error_channel.h's Channel<T>) reaches these through trap.h. See
 //! third_party/luau/SYSTEM.md.
 
-const mc = @import("mc.zig");
+const mc = @import("mc");
 
 // The C thunk the kernel-invoked dispatcher runs. Single-threaded guest → one global slot, saved and
 // restored across nested protected calls.

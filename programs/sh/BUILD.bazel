@@ -14,7 +14,7 @@ rust_binary(
     tags = ["manual"],
     deps = [
         "//shcore",  # the OS-agnostic shell engine (parser/expand/exec over the ShellOs trait)
-        "//sysroot",  # mc syscall wrappers + the _start/declare_tier!/panic_handler runtime
+        "//sysroot/rust",  # mc syscall wrappers + the _start/declare_tier!/panic_handler runtime
         "@crates//:talc",  # the no_std wasm linear-memory allocator (same as the kernel, A8)
     ],
     visibility = ["//visibility:public"],

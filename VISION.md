@@ -213,7 +213,7 @@ memcontainers' `ctx/SERVICES.md` observes that a heavy tool (sqlite, typst, the 
 
 **Where we depart: there is no `/bin/<tool>-svc`.** SERVICES.md ships *two* binaries per tool (`-svc` resident loop + thin CLI). We reject the dual-binary `-svc` convention: it doubles the `/bin` surface and leaks an implementation mode into the user-visible namespace. agent-os ships **one binary per tool** with two *activation modes*, chosen by the system:
 
-- The tool is built once (`mc_program()` → one `.wasm`). Service-capability is a **property, not a second artifact**: a `mc_service` custom section (stamped like `mc_tier`/`mc_budget`, §6) plus an entry in `/etc/mc-services.json` (name, tier, budget, `eager|lazy`).
+- The tool is built once (`mc_program()` → one `.wasm`). Service-capability is a **property, not a second artifact**: a `mc_service` custom section (stamped like `mc_tier`/`mc_budget`, §6) plus an entry in `/etc/services.json` (name, tier, budget, `eager|lazy`).
 - Invoked normally, `/bin/sqlite foo.db` is a one-shot CLI.
 - The kernel's **service manager** can instead run that *same* binary in resident mode (inetd / socket-activation style): on first `svc_connect("sqlite")` it lazily activates it as a warm server at `/svc/sqlite`; later calls reuse it. `require("sqlite")` is sugar over `svc_connect`.
 - The binary distinguishes the modes through the **contract**, not through `argv[0]`: the kernel enters the generated `svc_serve` path for resident mode and `_start` for one-shot.
@@ -539,7 +539,7 @@ agent-os/
 `agent-os` names the **repository and the build**; it is *not* a prefix. The running system's identity is **`mc`**, inherited from memcontainers and frozen into the ABI itself (`mc` is the syscall import module; calls are `mc_sys_*`, control exports `mc_ctl_*`, custom sections `mc_tier`/`mc_budget`/`mc_service`). Namespace by **domain and lineage, not by repo name**:
 
 - **Do not** prefix anything with `agent-os-` — no `agent-os-server`, no `@agent-os/core`, no `agent-os-tool`.
-- **Binaries / services:** `mc-server`, `mc-tool`; resident services at `/svc/<name>` with `/etc/mc-services.json` (§4.5).
+- **Binaries / services:** `mc-server`, `mc-tool`; resident services at `/svc/<name>` with `/etc/services.json` (§4.5).
 - **JS packages:** the `@mc/*` scope — `@mc/core`, `@mc/agent`, `@mc/elements`, `@mc/host`. Components are `<mc-*>`.
 - **Frozen ABI surface (do not rename):** the `mc` syscall module, `mc_sys_*`, `mc_ctl_*`, the `env` bridge — a compatibility contract shared with memcontainers (and the thing that lets memcontainers act as a third parity cross-check).
 - **Bazel labels need no prefix:** the package path *is* the namespace (`//kernel/rust`, `//contracts:mc_zig`). `module(name = "agent-os")` is the single place the project name appears.
@@ -695,7 +695,7 @@ Expose the ABI version, syscall surface, and capability matrix as files under `/
 Because the host implements every effect, it can deterministically inject real failures (`ENOSPC`, dropped connections, clock skew, fuel starvation) keyed to the replay seed — reproducible chaos, no mocks. Ship as capability wrappers (`FaultyNet`, `FaultyPersist`).
 
 ### 15.7 Crash-only, supervised resident services
-A resident service (§4.5) keeps all state in linear memory, so a fault is recovered by **restarting from a clean snapshot** (A8) under a kernel supervisor (restart policy in `/etc/mc-services.json`). Crash-only + snapshot turns "sqlite panicked" into a sub-millisecond warm restart, invisible to a caller mid-`svc_call`.
+A resident service (§4.5) keeps all state in linear memory, so a fault is recovered by **restarting from a clean snapshot** (A8) under a kernel supervisor (restart policy in `/etc/services.json`). Crash-only + snapshot turns "sqlite panicked" into a sub-millisecond warm restart, invisible to a caller mid-`svc_call`.
 
 ### 15.8 A zero-copy bulk data plane **(ABI-shaped)**
 The bridge passes `(ptr, len)` and the host copies. For RAG corpora, model tensors, and large file I/O, generate an **iovec / shared-buffer** convention from the contract to avoid the double copy. It is an ABI shape — design it into the bridge before the freeze.
@@ -750,7 +750,7 @@ A program **declares** its tier (`declare_tier!` → `mc_tier`), but nothing che
 
 ### 16.5 Services are a per-flavor property, not a POSIX one
 
-The resident-service mechanism (§4.5) exists for the **domain tools that pay a cold-start tax** — `luau`, `kreuzenberg`/`typst`, `sqlite`/`duckdb` — not for `cat`. So service-capability is a **per-flavor** concern: the `mc_service` custom section plus an `/etc/mc-services.json` **carried by the domain pack** (loom's, paper's, atlas's), never by minimal or posix. One binary, two activation modes — the kernel enters the generated `svc_serve` path for resident mode and `_start` for one-shot — composed into a flavor by the same `pkg_tar` layering as the tool itself. `mc-services.json` is therefore not one global file but a per-flavor fragment, merged by the layer stack.
+The resident-service mechanism (§4.5) exists for the **domain tools that pay a cold-start tax** — `luau`, `kreuzenberg`/`typst`, `sqlite`/`duckdb` — not for `cat`. So service-capability is a **per-flavor** concern: the `mc_service` custom section plus an `/etc/services.json` **carried by the domain pack** (loom's, paper's, atlas's), never by minimal or posix. One binary, two activation modes — the kernel enters the generated `svc_serve` path for resident mode and `_start` for one-shot — composed into a flavor by the same `pkg_tar` layering as the tool itself. `services.json` is therefore not one global file but a per-flavor fragment, merged by the layer stack.
 
 ---
 

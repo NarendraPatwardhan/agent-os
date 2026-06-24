@@ -2,7 +2,8 @@
 //
 // The single source of truth for the user-space contract between a wasm guest and
 // the kernel (§4.2, §6). Transcribed from memcontainers crates/abi/src/lib.rs — the
-// frozen ABI at version 1.3 (52 syscalls). The projector emits from this one file:
+// frozen ABI at version 1.3 (52 syscalls), + agent-os's 5 resident-service rows (svc_*) → 1.4 (57).
+// The projector emits from this one file:
 //   - the Rust kernel's `Pending` enum + wasmi `register_syscalls` bindings,
 //   - the Rust guest sysroot's `extern "C"` import block,
 //   - (Phase B) the Zig kernel's dispatch `switch` + Zig sysroot,
@@ -141,6 +142,32 @@ syscall "mc_sys_serve_recv" variant="ServeRecv" group="service" {
 syscall "mc_sys_serve_respond" variant="ServeRespond" group="service" {
     arg "fd" type="i32"; arg "req_id" type="u32"; arg "status" type="i32"; arg "data_ptr" type="u32"; arg "data_len" type="u32"
     doc "Answer request req_id with a WASI errno status plus op-specific data."
+}
+
+// ── resident services (typed cross-guest calls; servicefs at /svc, R-svc) ────
+// A guest `svc_serve`s a NAME and answers typed request/response calls while holding warm state.
+// Clients `svc_connect` a session and `svc_call` typed blobs, draining the response from a readable
+// result fd. Same cooperative re-poll dance as the served-fs rows above, but session-keyed (a caller
+// may hold several sessions) and value-shaped rather than filesystem-shaped. See SERVICES.md.
+syscall "mc_sys_svc_serve" variant="SvcServe" group="service" {
+    arg "name_ptr" type="u32"; arg "name_len" type="u32"; arg "ret_fd" type="u32"
+    doc "Register as the service `name` — authorized by the kernel's activation grant (the task it spawned for `name`), not a capability, so a service runs at its own narrow tier and names can't be squatted; server fd to ret_fd."
+}
+syscall "mc_sys_svc_recv" variant="SvcRecv" group="service" {
+    arg "fd" type="i32"; arg "buf" type="u32"; arg "buf_len" type="u32"; arg "hbuf" type="u32"; arg "hbuf_len" type="u32"; arg "ret_len" type="u32"
+    doc "Receive the next inbound on server fd: the envelope ([kind][nhandles][session][req_id][blob_len][blob]) into buf and any delegated fd numbers into hbuf; envelope length to ret_len. kind=0 is a call, kind=1 a session-closed tombstone."
+}
+syscall "mc_sys_svc_respond" variant="SvcRespond" group="service" {
+    arg "fd" type="i32"; arg "session" type="u32"; arg "req_id" type="u32"; arg "status" type="i32"; arg "data_ptr" type="u32"; arg "data_len" type="u32"
+    doc "Answer call (session, req_id) on server fd with a status plus response bytes."
+}
+syscall "mc_sys_svc_connect" variant="SvcConnect" group="service" {
+    arg "name_ptr" type="u32"; arg "name_len" type="u32"; arg "ret_fd" type="u32"
+    doc "Open a session to the service named `name`; the connection fd goes to ret_fd."
+}
+syscall "mc_sys_svc_call" variant="SvcCall" group="service" {
+    arg "fd" type="i32"; arg "req_ptr" type="u32"; arg "req_len" type="u32"; arg "handles_ptr" type="u32"; arg "nhandles" type="u32"; arg "ret_fd" type="u32"
+    doc "Send a typed request on connection fd, optionally delegating nhandles fds (File/PipeRead/PipeWrite only) listed at handles_ptr into the service's fd table (SCM_RIGHTS-style); a readable result fd (the streamed response) to ret_fd."
 }
 
 // ── fds ──────────────────────────────────────────────────────────────────────

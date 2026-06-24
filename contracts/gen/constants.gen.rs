@@ -3,7 +3,7 @@
 
 // syscall ABI version: (major << 16) | minor
 pub const SYS_ABI_MAJOR: i64 = 1;
-pub const SYS_ABI_MINOR: i64 = 3;
+pub const SYS_ABI_MINOR: i64 = 5;
 pub const fn abi_version() -> i64 { (SYS_ABI_MAJOR << 16) | SYS_ABI_MINOR }
 
 // errno
@@ -21,11 +21,13 @@ pub const ELOOP: i32 = 32;
 pub const EMFILE: i32 = 33;
 pub const ENOENT: i32 = 44;
 pub const ENOSYS: i32 = 52;
+pub const EMSGSIZE: i32 = 53;
 pub const ENOTDIR: i32 = 54;
 pub const ENOTEMPTY: i32 = 55;
 pub const EPERM: i32 = 63;
 pub const EPIPE: i32 = 64;
 pub const ESRCH: i32 = 71;
+pub const ETIMEDOUT: i32 = 73;
 pub const EXDEV: i32 = 75;
 
 // tier

@@ -31,29 +31,34 @@
 | 24 | `mc_sys_serve` | Serve | path_ptr: u32, path_len: u32, ret_fd: u32 | i32 | Register this guest as the file server for the subtree at path; server fd to ret_fd. |
 | 25 | `mc_sys_serve_recv` | ServeRecv | fd: i32, buf: u32, buf_len: u32, ret_len: u32 | i32 | Receive the next served VFS request on fd (SERVE_OP_* envelope) into buf; length to ret_len. |
 | 26 | `mc_sys_serve_respond` | ServeRespond | fd: i32, req_id: u32, status: i32, data_ptr: u32, data_len: u32 | i32 | Answer request req_id with a WASI errno status plus op-specific data. |
-| 27 | `mc_sys_pipe` | Pipe | ret_r: u32, ret_w: u32 | i32 | Create a pipe; read end to ret_r, write end to ret_w. |
-| 28 | `mc_sys_dup` | Dup | fd: i32, ret_fd: u32 | i32 | Duplicate fd onto the lowest free descriptor; written to ret_fd. |
-| 29 | `mc_sys_dup2` | Dup2 | old_fd: i32, new_fd: i32 | i32 | Duplicate old_fd onto new_fd (closing new_fd first). |
-| 30 | `mc_sys_isatty` | Isatty | fd: i32, ret: u32 | i32 | Write 1 to ret iff fd is the terminal (not a pipe/file). |
-| 31 | `mc_sys_getpid` | Getpid | ret: u32 | i32 | Write this task's pid to ret. |
-| 32 | `mc_sys_getppid` | Getppid | ret: u32 | i32 | Write this task's parent pid to ret. |
-| 33 | `mc_sys_spawn` | Spawn | argv_ptr: u32, argv_len: u32, in_fd: i32, out_fd: i32, err_fd: i32, tier: i32, ret_pid: u32 | i32 | Spawn a child from NUL-separated argv with the given stdio fds and capability tier; pid to ret_pid. |
-| 34 | `mc_sys_waitpid` | Waitpid | pid: i32, opts: i32, ret_status: u32, ret_pid: u32 | i32 | Wait for child pid (WNOHANG optional); status to ret_status, reaped pid to ret_pid. |
-| 35 | `mc_sys_nice` | Nice | inc: i32, ret: u32 | i32 | Adjust scheduling niceness by inc (clamped -20..=19); resulting value to ret. Inherited across spawn. |
-| 36 | `mc_sys_kill` | Kill | pid: i32, sig: i32 | i32 | Send signal sig to pid (or a process group when pid < 0). |
-| 37 | `mc_sys_sigdisp` | Sigdisp | sig: i32, disp: i32 | i32 | Set this task's disposition for sig (SIG_DFL or SIG_IGN). |
-| 38 | `mc_sys_setpgid` | Setpgid | pid: i32, pgid: i32 | i32 | Set pid's process group to pgid (0 = self). |
-| 39 | `mc_sys_tcsetpgrp` | Tcsetpgrp | pgid: i32 | i32 | Make pgid the terminal's foreground process group. |
-| 40 | `mc_sys_http_get` | HttpGet | url_ptr: u32, url_len: u32, ret_fd: u32 | i32 | Start a GET for url (host terminates TLS); a readable result fd to ret_fd. |
-| 41 | `mc_sys_http_request` | HttpRequest | req_ptr: u32, req_len: u32, ret_fd: u32 | i32 | Start an arbitrary HTTP request from the blob at req_ptr; readable result fd to ret_fd. |
-| 42 | `mc_sys_http_status` | HttpStatus | fd: i32, ret_status: u32 | i32 | Write the HTTP status code of request fd to ret_status (once headers arrive). |
-| 43 | `mc_sys_ws_open` | WsOpen | url_ptr: u32, url_len: u32, ret_fd: u32 | i32 | Open a WebSocket to url (host does the handshake + TLS); a duplex fd to ret_fd. |
-| 44 | `mc_sys_host_call` | HostCall | req_ptr: u32, req_len: u32, ret_fd: u32 | i32 | Invoke a host-resident function (the mc-tool shim, host-backed mounts); readable result fd to ret_fd. |
-| 45 | `mc_sys_time_monotonic` | TimeMonotonic | ret: u32 | i32 | Write a monotonic timestamp (ms) to ret (CAP_AMBIENT). |
-| 46 | `mc_sys_time_realtime` | TimeRealtime | ret: u32 | i32 | Write wall-clock ms since the Unix epoch to ret; can jump (NTP) (CAP_AMBIENT). |
-| 47 | `mc_sys_sleep_ms` | SleepMs | ms: i32 | i32 | Park this task for ms milliseconds. |
-| 48 | `mc_sys_random` | Random | ptr: u32, len: u32 | i32 | Fill len bytes at ptr with entropy (CAP_AMBIENT). |
-| 49 | `mc_sys_abi_version` | AbiVersion | ret: u32 | i32 | Write the packed syscall ABI version (major<<16|minor) to ret. |
-| 50 | `mc_sys_exit` | Exit | code: i32 | noreturn | Terminate this task with exit code (never returns). |
-| 51 | `mc_sys_pcall` | Pcall |  | i32 | Run the guest's stashed thunk as a nested call; return its throw code (0 = normal return). |
-| 52 | `mc_sys_set_throw` | SetThrow | code: i32 | i32 | Record the throw code to be surfaced by the enclosing pcall after `unreachable`. |
+| 27 | `mc_sys_svc_serve` | SvcServe | name_ptr: u32, name_len: u32, ret_fd: u32 | i32 | Register as the service `name` â authorized by the kernel's activation grant (the task it spawned for `name`), not a capability, so a service runs at its own narrow tier and names can't be squatted; server fd to ret_fd. |
+| 28 | `mc_sys_svc_recv` | SvcRecv | fd: i32, buf: u32, buf_len: u32, hbuf: u32, hbuf_len: u32, ret_len: u32 | i32 | Receive the next inbound on server fd: the envelope ([kind][nhandles][session][req_id][blob_len][blob]) into buf and any delegated fd numbers into hbuf; envelope length to ret_len. kind=0 is a call, kind=1 a session-closed tombstone. |
+| 29 | `mc_sys_svc_respond` | SvcRespond | fd: i32, session: u32, req_id: u32, status: i32, data_ptr: u32, data_len: u32 | i32 | Answer call (session, req_id) on server fd with a status plus response bytes. |
+| 30 | `mc_sys_svc_connect` | SvcConnect | name_ptr: u32, name_len: u32, ret_fd: u32 | i32 | Open a session to the service named `name`; the connection fd goes to ret_fd. |
+| 31 | `mc_sys_svc_call` | SvcCall | fd: i32, req_ptr: u32, req_len: u32, handles_ptr: u32, nhandles: u32, ret_fd: u32 | i32 | Send a typed request on connection fd, optionally delegating nhandles fds (File/PipeRead/PipeWrite only) listed at handles_ptr into the service's fd table (SCM_RIGHTS-style); a readable result fd (the streamed response) to ret_fd. |
+| 32 | `mc_sys_pipe` | Pipe | ret_r: u32, ret_w: u32 | i32 | Create a pipe; read end to ret_r, write end to ret_w. |
+| 33 | `mc_sys_dup` | Dup | fd: i32, ret_fd: u32 | i32 | Duplicate fd onto the lowest free descriptor; written to ret_fd. |
+| 34 | `mc_sys_dup2` | Dup2 | old_fd: i32, new_fd: i32 | i32 | Duplicate old_fd onto new_fd (closing new_fd first). |
+| 35 | `mc_sys_isatty` | Isatty | fd: i32, ret: u32 | i32 | Write 1 to ret iff fd is the terminal (not a pipe/file). |
+| 36 | `mc_sys_getpid` | Getpid | ret: u32 | i32 | Write this task's pid to ret. |
+| 37 | `mc_sys_getppid` | Getppid | ret: u32 | i32 | Write this task's parent pid to ret. |
+| 38 | `mc_sys_spawn` | Spawn | argv_ptr: u32, argv_len: u32, in_fd: i32, out_fd: i32, err_fd: i32, tier: i32, ret_pid: u32 | i32 | Spawn a child from NUL-separated argv with the given stdio fds and capability tier; pid to ret_pid. |
+| 39 | `mc_sys_waitpid` | Waitpid | pid: i32, opts: i32, ret_status: u32, ret_pid: u32 | i32 | Wait for child pid (WNOHANG optional); status to ret_status, reaped pid to ret_pid. |
+| 40 | `mc_sys_nice` | Nice | inc: i32, ret: u32 | i32 | Adjust scheduling niceness by inc (clamped -20..=19); resulting value to ret. Inherited across spawn. |
+| 41 | `mc_sys_kill` | Kill | pid: i32, sig: i32 | i32 | Send signal sig to pid (or a process group when pid < 0). |
+| 42 | `mc_sys_sigdisp` | Sigdisp | sig: i32, disp: i32 | i32 | Set this task's disposition for sig (SIG_DFL or SIG_IGN). |
+| 43 | `mc_sys_setpgid` | Setpgid | pid: i32, pgid: i32 | i32 | Set pid's process group to pgid (0 = self). |
+| 44 | `mc_sys_tcsetpgrp` | Tcsetpgrp | pgid: i32 | i32 | Make pgid the terminal's foreground process group. |
+| 45 | `mc_sys_http_get` | HttpGet | url_ptr: u32, url_len: u32, ret_fd: u32 | i32 | Start a GET for url (host terminates TLS); a readable result fd to ret_fd. |
+| 46 | `mc_sys_http_request` | HttpRequest | req_ptr: u32, req_len: u32, ret_fd: u32 | i32 | Start an arbitrary HTTP request from the blob at req_ptr; readable result fd to ret_fd. |
+| 47 | `mc_sys_http_status` | HttpStatus | fd: i32, ret_status: u32 | i32 | Write the HTTP status code of request fd to ret_status (once headers arrive). |
+| 48 | `mc_sys_ws_open` | WsOpen | url_ptr: u32, url_len: u32, ret_fd: u32 | i32 | Open a WebSocket to url (host does the handshake + TLS); a duplex fd to ret_fd. |
+| 49 | `mc_sys_host_call` | HostCall | req_ptr: u32, req_len: u32, ret_fd: u32 | i32 | Invoke a host-resident function (the mc-tool shim, host-backed mounts); readable result fd to ret_fd. |
+| 50 | `mc_sys_time_monotonic` | TimeMonotonic | ret: u32 | i32 | Write a monotonic timestamp (ms) to ret (CAP_AMBIENT). |
+| 51 | `mc_sys_time_realtime` | TimeRealtime | ret: u32 | i32 | Write wall-clock ms since the Unix epoch to ret; can jump (NTP) (CAP_AMBIENT). |
+| 52 | `mc_sys_sleep_ms` | SleepMs | ms: i32 | i32 | Park this task for ms milliseconds. |
+| 53 | `mc_sys_random` | Random | ptr: u32, len: u32 | i32 | Fill len bytes at ptr with entropy (CAP_AMBIENT). |
+| 54 | `mc_sys_abi_version` | AbiVersion | ret: u32 | i32 | Write the packed syscall ABI version (major<<16|minor) to ret. |
+| 55 | `mc_sys_exit` | Exit | code: i32 | noreturn | Terminate this task with exit code (never returns). |
+| 56 | `mc_sys_pcall` | Pcall |  | i32 | Run the guest's stashed thunk as a nested call; return its throw code (0 = normal return). |
+| 57 | `mc_sys_set_throw` | SetThrow | code: i32 | i32 | Record the throw code to be surfaced by the enclosing pcall after `unreachable`. |

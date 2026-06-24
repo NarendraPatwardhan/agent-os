@@ -1,12 +1,14 @@
-//! mc-stamp — append the kernel's load-time `mc_tier` + `mc_budget` WASM custom sections to a guest.
+//! mc-stamp — append the kernel's load-time `mc_tier` + `mc_budget` (+ optional `mc_service`) WASM
+//! custom sections to a guest.
 //!
-//! Usage: mc-stamp <in.wasm> <out.wasm> <tier> <mem_bytes> <fuel> <table>
+//! Usage: mc-stamp <in.wasm> <out.wasm> <tier> <mem_bytes> <fuel> <table> [service]
 //!
 //! A WASM custom section is `0x00 <uleb body_len> <uleb name_len> <name> <payload>`, appended to the
 //! module (the kernel's parser walks every top-level section, so trailing sections are found). The
 //! payload layouts are the load-time contract with the kernel (mirrors the sysroot's
-//! declare_tier!/declare_budget!): mc_tier = the raw UTF-8 tier; mc_budget =
-//! [u32 version=1][u64 mem][u64 fuel][u32 table], little-endian (24 bytes).
+//! declare_tier!/declare_budget!/declare_service!): mc_tier = the raw UTF-8 tier; mc_budget =
+//! [u32 version=1][u64 mem][u64 fuel][u32 table], little-endian (24 bytes); mc_service = the raw
+//! UTF-8 service name (present only for a resident service, VISION §6).
 
 use std::process::exit;
 
@@ -77,10 +79,22 @@ fn strip_custom_sections(wasm: &[u8], names: &[&[u8]]) -> Vec<u8> {
     out
 }
 
+/// Whether `name` is a valid service name — a byte-identical copy of the kernel's grammar
+/// (`kernel/rust/src/fs/servicefs.rs::valid_service_name`): `[a-z][a-z0-9-]{0,30}`, 1..=31 bytes. The
+/// kernel's check is the boundary; stamping rejects a bad name early so the build fails, not boot.
+fn valid_service_name(name: &str) -> bool {
+    let b = name.as_bytes();
+    if b.is_empty() || b.len() > 31 || !b[0].is_ascii_lowercase() {
+        return false;
+    }
+    b.iter()
+        .all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+}
+
 fn main() {
     let a: Vec<String> = std::env::args().collect();
-    if a.len() != 7 {
-        eprintln!("usage: mc-stamp <in.wasm> <out.wasm> <tier> <mem_bytes> <fuel> <table>");
+    if a.len() != 7 && a.len() != 8 {
+        eprintln!("usage: mc-stamp <in.wasm> <out.wasm> <tier> <mem_bytes> <fuel> <table> [service]");
         exit(2);
     }
     let parse = |s: &str| -> u64 {
@@ -93,6 +107,15 @@ fn main() {
     let mem = parse(&a[4]);
     let fuel = parse(&a[5]);
     let table = parse(&a[6]) as u32;
+    // The optional resident-service name (VISION §6) → an mc_service section. Absent/empty = a
+    // one-shot tool, which carries no such section. A present name must fit the grammar.
+    if let Some(svc) = a.get(7) {
+        if !svc.is_empty() && !valid_service_name(svc) {
+            eprintln!("mc-stamp: invalid service name `{svc}` (must be [a-z][a-z0-9-]*, <=31 bytes)");
+            exit(2);
+        }
+    }
+    let service: &[u8] = a.get(7).map(|s| s.as_bytes()).unwrap_or(b"");
 
     let wasm = std::fs::read(&a[1]).unwrap_or_else(|e| {
         eprintln!("mc-stamp: read {}: {e}", a[1]);
@@ -103,8 +126,8 @@ fn main() {
         exit(1);
     }
 
-    // Idempotent: drop any pre-existing mc_tier/mc_budget so we never emit a duplicate.
-    let mut wasm = strip_custom_sections(&wasm, &[b"mc_tier", b"mc_budget"]);
+    // Idempotent: drop any pre-existing mc_tier/mc_budget/mc_service so we never emit a duplicate.
+    let mut wasm = strip_custom_sections(&wasm, &[b"mc_tier", b"mc_budget", b"mc_service"]);
     append_custom(b"mc_tier", tier, &mut wasm);
 
     let mut budget = Vec::with_capacity(24);
@@ -113,6 +136,11 @@ fn main() {
     budget.extend_from_slice(&fuel.to_le_bytes());
     budget.extend_from_slice(&table.to_le_bytes());
     append_custom(b"mc_budget", &budget, &mut wasm);
+
+    // A resident service also carries its identity (VISION §6); a one-shot tool does not.
+    if !service.is_empty() {
+        append_custom(b"mc_service", service, &mut wasm);
+    }
 
     std::fs::write(&a[2], &wasm).unwrap_or_else(|e| {
         eprintln!("mc-stamp: write {}: {e}", a[2]);
@@ -147,17 +175,35 @@ mod tests {
     #[test]
     fn stamping_is_idempotent() {
         let header = [0u8, 0x61, 0x73, 0x6d, 1, 0, 0, 0]; // \0asm + version
-        let mut w = strip_custom_sections(&header, &[b"mc_tier", b"mc_budget"]);
+        let strip: &[&[u8]] = &[b"mc_tier", b"mc_budget", b"mc_service"];
+        let mut w = strip_custom_sections(&header, strip);
         append_custom(b"mc_tier", b"full", &mut w);
         append_custom(b"mc_budget", &[0u8; 24], &mut w);
+        append_custom(b"mc_service", b"sqlite", &mut w);
         assert_eq!(count(&w, b"mc_tier"), 1);
         assert_eq!(count(&w, b"mc_budget"), 1);
+        assert_eq!(count(&w, b"mc_service"), 1);
 
         // Re-stamp the already-stamped wasm — must replace, not duplicate.
-        let mut w2 = strip_custom_sections(&w, &[b"mc_tier", b"mc_budget"]);
+        let mut w2 = strip_custom_sections(&w, strip);
         append_custom(b"mc_tier", b"read-only", &mut w2);
         append_custom(b"mc_budget", &[1u8; 24], &mut w2);
+        append_custom(b"mc_service", b"kv", &mut w2);
         assert_eq!(count(&w2, b"mc_tier"), 1, "re-stamp duplicated mc_tier");
         assert_eq!(count(&w2, b"mc_budget"), 1, "re-stamp duplicated mc_budget");
+        assert_eq!(count(&w2, b"mc_service"), 1, "re-stamp duplicated mc_service");
+    }
+
+    // The service-name grammar — the same vector lives in mc-attest and the kernel; keep them in sync.
+    #[test]
+    fn service_name_grammar() {
+        for ok in ["kv", "sqlite", "typst", "a", "a-b", "x9", "svc-1"] {
+            assert!(valid_service_name(ok), "should accept {ok}");
+        }
+        for bad in ["", "1kv", "-kv", "KV", "kv_test", "kv.test", "kv/x", "kv "] {
+            assert!(!valid_service_name(bad), "should reject {bad:?}");
+        }
+        assert!(valid_service_name(&"a".repeat(31)));
+        assert!(!valid_service_name(&"a".repeat(32)));
     }
 }

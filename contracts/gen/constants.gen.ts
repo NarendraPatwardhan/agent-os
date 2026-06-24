@@ -2,7 +2,7 @@
 
 // syscall ABI version: (major << 16) | minor
 export const SYS_ABI_MAJOR = 1;
-export const SYS_ABI_MINOR = 3;
+export const SYS_ABI_MINOR = 5;
 export function abiVersion(): number { return (SYS_ABI_MAJOR << 16) | SYS_ABI_MINOR; }
 
 // errno
@@ -20,11 +20,13 @@ export const ELOOP = 32;
 export const EMFILE = 33;
 export const ENOENT = 44;
 export const ENOSYS = 52;
+export const EMSGSIZE = 53;
 export const ENOTDIR = 54;
 export const ENOTEMPTY = 55;
 export const EPERM = 63;
 export const EPIPE = 64;
 export const ESRCH = 71;
+export const ETIMEDOUT = 73;
 export const EXDEV = 75;
 
 // tier

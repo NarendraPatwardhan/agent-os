@@ -29,5 +29,7 @@ rust_e2e_test(
         "//images:minimal",  # base + the curated minimal coreutils set (the flavor test)
         "//images:posix",  # base + the full coreutils set (the shell / coreutils / system tests)
         "//images:loom",  # posix + /bin/luau — the Luau domain-tool boot e2e
+        "//images:kv_test",  # loom + /bin/kv + the svc manifest — the resident-service primitive proof
+        "//images:atlas",  # loom + the sqlite service + require("sqlite") — the sqlite e2e
     ],
 )

@@ -61,6 +61,7 @@ McProgramInfo = provider(
         "wasm": "The stamped .wasm File (mc_tier + mc_budget custom sections appended).",
         "tier": "The capability tier string (isolated / read-only / read-write / full).",
         "budget": "struct(mem, fuel, table) — the declared resource budget (VISION §16.5).",
+        "service": "The mc_service name if this is a resident service (VISION §6), else \"\".",
     },
 )
 
@@ -80,6 +81,7 @@ def _mc_program_impl(ctx):
             ctx.attr.mem,
             ctx.attr.fuel,
             ctx.attr.table,
+            ctx.attr.service,  # "" → no mc_service section; a name → stamp it (resident service, VISION §6)
         ],
         mnemonic = "McStamp",
         progress_message = "Stamping mc guest %{label}",
@@ -114,6 +116,7 @@ def _mc_program_impl(ctx):
                 fuel = int(ctx.attr.fuel),
                 table = int(ctx.attr.table),
             ),
+            service = ctx.attr.service,
         ),
         OutputGroupInfo(_validation = depset([attested])),
     ]
@@ -135,14 +138,16 @@ _mc_program = rule(
         "mem": attr.string(mandatory = True, doc = "Memory budget, bytes."),
         "fuel": attr.string(mandatory = True, doc = "Fuel budget (interpreter steps)."),
         "table": attr.string(mandatory = True, doc = "Table-elements budget."),
+        "service": attr.string(default = "", doc = "Resident-service name → an mc_service section (VISION §6); \"\" for a one-shot tool."),
         "_stamp": attr.label(default = "//tools/mc-stamp", executable = True, cfg = "exec"),
         "_attest": attr.label(default = "//tools/mc-attest", executable = True, cfg = "exec"),
     },
 )
 
-def mc_program(name, wasm, tier, mem, fuel, table, visibility = None):
+def mc_program(name, wasm, tier, mem, fuel, table, service = "", visibility = None):
     """Thin ergonomic wrapper over the `_mc_program` rule: takes INT budgets (e.g. 256 * 1024 * 1024)
-    so call sites stay self-documenting, and forwards them as strings (attr.int is 32-bit; fuel is ~2e12)."""
+    so call sites stay self-documenting, and forwards them as strings (attr.int is 32-bit; fuel is ~2e12).
+    `service` (optional) stamps the mc_service section marking a resident service (VISION §6)."""
     _mc_program(
         name = name,
         wasm = wasm,
@@ -150,5 +155,6 @@ def mc_program(name, wasm, tier, mem, fuel, table, visibility = None):
         mem = str(mem),
         fuel = str(fuel),
         table = str(table),
+        service = service,
         visibility = visibility,
     )

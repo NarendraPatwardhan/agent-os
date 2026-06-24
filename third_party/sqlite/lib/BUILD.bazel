@@ -1,0 +1,4 @@
+# The sqlite Luau library — VFS content shipped by the `atlas` flavor at /lib/luau/sqlite.luau (NOT
+# embedded in the interpreter, unlike json/xlsx). The ergonomic warm/typed face of the sqlite resident
+# service, over sys.svc. See third_party/sqlite/skills/sqlite.md and SERVICES.md §6.2.
+exports_files(["sqlite.luau"])

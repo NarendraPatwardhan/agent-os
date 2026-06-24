@@ -4,8 +4,8 @@
 //! GENERATED from the syscall contract (so a guest can never import a syscall the kernel
 //! doesn't serve — drift = compile error, B2); an ergonomic safe-wrapper skin over those
 //! raw `i32` imports (`read`/`write_all`/`open`/`spawn`/… as `Result<T, errno>`); and the
-//! `entry!`/`declare_tier!`/`declare_budget!` macros that stamp `_start` and the
-//! `mc_tier`/`mc_budget` custom sections the kernel reads at exec. Built for
+//! `entry!`/`declare_tier!`/`declare_budget!`/`declare_service!` macros that stamp `_start`
+//! and the `mc_tier`/`mc_budget`/`mc_service` custom sections the kernel reads at exec. Built for
 //! wasm32-unknown-unknown; every guest pointer is an offset into the guest's OWN linear
 //! memory, never a host object (A6).
 

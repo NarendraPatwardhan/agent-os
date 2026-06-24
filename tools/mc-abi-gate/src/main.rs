@@ -1,4 +1,4 @@
-//! mc-abi-gate — drift gate for the HAND-KEPT Zig syscall externs in third_party/luau/glue/mc.zig.
+//! mc-abi-gate — drift gate for the HAND-KEPT Zig syscall externs in sysroot/zig/mc.zig.
 //!
 //! mc.zig declares `pub extern "mc" fn mc_sys_*` by hand (Zig has no way to GENERATE callable extern
 //! decls, so the projector can't emit them like it does the Rust/zig DESCRIPTOR tables). This test
@@ -10,7 +10,7 @@
 //!
 //! Both files arrive via `compile_data` and are embedded with `include_str!` — no runfiles, no deps.
 
-const MC_ZIG: &str = include_str!("../../../third_party/luau/glue/mc.zig");
+const MC_ZIG: &str = include_str!("../../../sysroot/zig/mc.zig");
 const CONTRACT: &str = include_str!("../../../contracts/gen/mc.gen.zig");
 
 /// One syscall signature: ordered parameter types and the return type, as written.

@@ -146,3 +146,74 @@ pkg_tar(
     deps = [":posix"],
     visibility = ["//visibility:public"],
 )
+
+# kv-test — a resident-SERVICE proof image (SERVICES.md P1): loom (the shell + /bin/luau) + /bin/kv
+# (the kv service binary) + the /etc/services.json manifest that activates it at boot. On LOOM (not
+# base) so the e2e proves DUAL behavior — the SAME warm service reached from the CLI (`kv get`) AND
+# from Luau (`sys.svc`) — plus warm state across calls and crash-only, before sqlite.
+release_wasm(
+    name = "kv_wasm",
+    lib = "//programs/examples/kv:kv",
+    platform = "//platforms:wasm32_freestanding",
+)
+
+# /bin/crashloop — a deliberately-broken service (it crashes before svc_serve) used by the e2e to prove
+# the kernel's BOUNDED activation-failure path (codex #4). lazy, so it is only activated on a connect.
+release_wasm(
+    name = "crashloop_wasm",
+    lib = "//programs/examples/crashloop:crashloop",
+    platform = "//platforms:wasm32_freestanding",
+)
+
+# /etc/services.json — GENERATED from each service binary's own mc_service name (codex #6): mc-svc-manifest
+# reads "kv"/"crashloop" from the stamped wasms, so the manifest can never drift from the binaries. kv is
+# eager (activated at boot — proves eager activation); crashloop is lazy (activated only on a connect).
+genrule(
+    name = "kv_test_services",
+    srcs = [
+        ":kv_wasm",
+        ":crashloop_wasm",
+    ],
+    outs = ["kv_test_services.json"],
+    cmd = "$(execpath //tools/mc-svc-manifest) eager $(execpath :kv_wasm) lazy $(execpath :crashloop_wasm) $@",
+    tools = ["//tools/mc-svc-manifest"],
+)
+
+pkg_tar(
+    name = "kv_test",
+    files = {
+        ":kv_wasm": "/bin/kv",
+        ":crashloop_wasm": "/bin/crashloop",
+        ":kv_test_services": "/etc/services.json",
+    },
+    owner = "0.0",
+    deps = [":loom"],
+    visibility = ["//visibility:public"],
+)
+
+# atlas — the data-intelligence flavor: loom + the sqlite resident SERVICE (the Zig-glue lane). Adds
+# /bin/sqlite (the warm service binary, stamped + attested), the /etc/services.json that activates it
+# at boot, the require("sqlite") library at /lib/luau/sqlite.luau, and the sqlite skill at /skills. The
+# first flavor with a domain SERVICE, not just CLI tools (SERVICES.md). (sqlite-vec lands here later.)
+# /etc/services.json — GENERATED from the sqlite binary's own mc_service name (codex #6). lazy (the
+# default activation model): atlas spawns sqlite on the first svc_connect, not at boot.
+genrule(
+    name = "atlas_services",
+    srcs = ["//third_party/sqlite/glue:sqlite"],
+    outs = ["atlas_services.json"],
+    cmd = "$(execpath //tools/mc-svc-manifest) lazy $(execpath //third_party/sqlite/glue:sqlite) $@",
+    tools = ["//tools/mc-svc-manifest"],
+)
+
+pkg_tar(
+    name = "atlas",
+    files = {
+        "//third_party/sqlite/glue:sqlite": "/bin/sqlite",
+        "//third_party/sqlite/lib:sqlite.luau": "/lib/luau/sqlite.luau",
+        "//third_party/sqlite/skills:sqlite.md": "/skills/sqlite.md",
+        ":atlas_services": "/etc/services.json",
+    },
+    owner = "0.0",
+    deps = [":loom"],
+    visibility = ["//visibility:public"],
+)

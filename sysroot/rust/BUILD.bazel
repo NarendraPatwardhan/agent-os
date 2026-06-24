@@ -1,8 +1,8 @@
 load("@rules_rust//rust:defs.bzl", "rust_library")
 load(":defs.bzl", "wasm32_build_test")
 
-# sysroot — the agent-os guest sysroot (Rust, ported; VISION §16.2): the safe `mc` syscall
-# surface every wasm guest program links. The `mc` import block is GENERATED from
+# sysroot/rust — the RUST lane of the agent-os guest sysroot (VISION §16.2; sibling of //sysroot/zig):
+# the safe `mc` syscall surface every Rust wasm guest links. The `mc` import block is GENERATED from
 # contracts/syscalls.kdl — a guest `$emit` on the SAME `mc_syscall_table!` the kernel's
 # dispatch derives from (B2: a guest can't import a syscall the kernel doesn't serve, drift
 # = compile error). The ergonomic safe wrappers + the `entry!`/`declare_tier!`/
@@ -10,7 +10,8 @@ load(":defs.bzl", "wasm32_build_test")
 # port the comfort). Compiles to wasm32-unknown-unknown; consumed by //programs.
 
 rust_library(
-    name = "sysroot",
+    name = "rust",
+    crate_name = "sysroot",  # the crate stays `sysroot` (guests `use sysroot as rt`); only the label moved
     srcs = glob(["src/**/*.rs"]),
     edition = "2021",
     # A wasm32-only no_std rlib: the `#[link(wasm_import_module = "mc")]` extern block and
@@ -27,5 +28,5 @@ rust_library(
 # Assert the sysroot compiles for its real target, wasm32.
 wasm32_build_test(
     name = "test",
-    lib = ":sysroot",
+    lib = ":rust",
 )

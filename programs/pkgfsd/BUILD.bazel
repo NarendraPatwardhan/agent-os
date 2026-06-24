@@ -15,7 +15,7 @@ rust_binary(
     tags = ["manual"],
     deps = [
         "//pkgcore",  # the SHA-256 + catalog + path logic (unit-tested)
-        "//sysroot",  # mc syscall wrappers (serve / netfs / persistfs) + the _start runtime
+        "//sysroot/rust",  # mc syscall wrappers (serve / netfs / persistfs) + the _start runtime
         "@crates//:talc",  # the no_std wasm allocator (the catalog + pkgcore use alloc)
     ],
     visibility = ["//visibility:public"],

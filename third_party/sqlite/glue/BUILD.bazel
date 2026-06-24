@@ -1,0 +1,69 @@
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
+load("//third_party/luau:defs.bzl", "cc_object", "mc_program")
+
+# /bin/sqlite — the SQLite engine as a resident SERVICE in the Zig-glue lane (SERVICES.md §1.1, §6.2).
+# `zig cc` compiles the fetched amalgamation (@sqlite//:sqlite3.c) for wasm32-wasi and the glue @cImports
+# sqlite3.h to drive the C API directly. sqlite is C (return codes, no C++ EH), so unlike luau there is
+# NO force_extern_c, NO -fno-exceptions/-rtti, NO trap-unwind — just the WASI compile defines + the
+# wasi→mc adapter. SQLITE_WASI selects the unix-dotfile VFS, whose file I/O (open/pread/pwrite/fsync)
+# rides WASI → the adapter → mc_sys_*, so a DB at /var/persist works with no custom sqlite3_vfs.
+
+# The wasi→mc adapter, force-linked (same as luau): sqlite's WASI imports → mc syscalls → pure-mc guest.
+cc_object(
+    name = "wasi_adapter_link",
+    obj = "//wasi-adapter:wasi_adapter_staticlib",
+)
+
+zig_binary(
+    name = "sqlite_obj",
+    main = "entry.zig",
+    csrcs = [
+        "@sqlite//:sqlite3.c",
+        "close_shim.c",  # override close() to route through the adapter — must be C, not Zig (see the file)
+    ],
+    extra_srcs = ["@sqlite//:sqlite3.h"],
+    # The WASI build defines (memcontainers' proven set): WASI mode (unix-dotfile VFS, no WAL/mmap),
+    # single-threaded, no extension loading / memstatus / URI / deprecated APIs / double-quoted strings.
+    copts = [
+        "-DSQLITE_WASI",
+        "-DSQLITE_THREADSAFE=0",
+        "-DSQLITE_OMIT_LOAD_EXTENSION",
+        "-DSQLITE_DEFAULT_MEMSTATUS=0",
+        "-DSQLITE_DQS=0",
+        "-DSQLITE_OMIT_DEPRECATED",
+        "-DSQLITE_USE_URI=0",
+    ],
+    # -lc reaches the global zig build args (wasi-libc for sqlite3.c's <string.h>/<stdlib.h>/… and the
+    # WASI fd I/O the adapter rewrites). No -lc++ (sqlite is C).
+    linkopts = ["-lc"],
+    deps = [
+        "//sysroot/zig:mc",  # the shared mc syscall ABI (was a co-located mc.zig)
+        "//sysroot/zig:svc",  # the shared serve-loop scaffolding (serve / recv-envelope / respond)
+        ":wasi_adapter_link",
+        "@sqlite//:incs",
+    ],
+    tags = ["manual"],
+)
+
+zig_configure_binary(
+    name = "sqlite_wasm",
+    actual = ":sqlite_obj",
+    mode = "release_small",
+    threaded = "single",
+    target = "//platforms:wasm32_wasi",
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
+)
+
+# /bin/sqlite — the load-ready guest, stamped with mc_tier (full: CAP_PERSIST for /var/persist is
+# full-only in the coarse tier model) + mc_budget (64 MiB page cache · 100B fuel · 10k table).
+mc_program(
+    name = "sqlite",
+    wasm = ":sqlite_wasm",
+    tier = "full",
+    service = "sqlite",  # the mc_service section — it serves the "sqlite" name (mc-attest enforces this)
+    mem = 64 * 1024 * 1024,
+    fuel = 100000000000,
+    table = 10000,
+    visibility = ["//visibility:public"],
+)
