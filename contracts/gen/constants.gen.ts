@@ -112,3 +112,6 @@ export const MOUNT_OP_RENAME = 4;
 export const MOUNT_OP_STAT = 5;
 export const MOUNT_OP_WRITE = 6;
 export const WIRE_VERSION = 1;
+
+// the argv[1] marker the kernel passes to spawn a binary in SERVICE mode (SERVICES.md §3.3)
+export const SERVICE_MARKER = "--mc-serve";

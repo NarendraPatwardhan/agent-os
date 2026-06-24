@@ -181,3 +181,12 @@ mount-op {
 
 // Wire protocol version (server↔client), versioned separately from the syscall ABI.
 wire-version 1
+
+// ---------------------------------------------------------------------------
+// Resident services (SERVICES.md). The kernel spawns a service binary with this
+// marker as argv[1]; the binary checks argv[1] against it to enter its svc_serve
+// loop instead of its CLI path (one binary, two modes — §3.3). The ONE place the
+// marker is written, shared by the kernel and every service binary (Rust + Zig),
+// so the spawn side and the check side can never disagree (codex #5).
+// ---------------------------------------------------------------------------
+service-marker "--mc-serve"

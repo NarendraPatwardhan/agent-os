@@ -14,9 +14,6 @@ use sysroot as rt;
 
 rt::entry!(main); // tier (isolated) + service ("kv") are declared in the BUILD (mc_rust_program)
 
-/// The kernel passes this as `argv[1]` when it spawns the binary in SERVICE mode.
-/// Must match the kernel's `SERVICE_MARKER`.
-const SERVICE_MARKER: &[u8] = b"--mc-serve";
 const SERVICE_NAME: &str = "kv";
 
 // ── the warm store (lives in the service's linear memory) ────────────────────
@@ -203,7 +200,7 @@ fn main() {
     let mut parts = argbuf[..n].split(|&b| b == 0);
     let _arg0 = parts.next();
     let arg1 = parts.next().unwrap_or(b"");
-    if arg1 == SERVICE_MARKER {
+    if arg1 == rt::SERVICE_MARKER.as_bytes() {
         serve_loop();
     }
     // CLI: forward everything after argv[0]'s NUL.

@@ -411,6 +411,20 @@ fn emit_constants(lang: &str, nodes: &[Node], contract: &str) -> String {
                     _ => {}
                 }
             }
+            // A standalone STRING constant: `service-marker "--mc-serve"`. The only non-integer constant
+            // — projected as a native string per language so the kernel↔guest SERVICE-mode marker has one
+            // source instead of four hand-copied literals (codex #5).
+            "service-marker" => {
+                let cname = n.name.to_uppercase().replace('-', "_");
+                let value = n.arg_str(0);
+                comment(&mut o, "the argv[1] marker the kernel passes to spawn a binary in SERVICE mode (SERVICES.md §3.3)");
+                match lang {
+                    "rust" => o.push_str(&format!("pub const {cname}: &str = \"{value}\";\n")),
+                    "zig" => o.push_str(&format!("pub const {cname}: []const u8 = \"{value}\";\n")),
+                    "ts" => o.push_str(&format!("export const {cname} = \"{value}\";\n")),
+                    _ => {}
+                }
+            }
             // grouping nodes: errno, tier, open-flags, seek, waitpid, poll, signal, serve-op, mount-op
             g if !n.children.is_empty() => {
                 let ty = const_ty(g);

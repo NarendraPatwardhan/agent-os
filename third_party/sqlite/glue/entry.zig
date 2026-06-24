@@ -17,7 +17,6 @@ const c = @cImport({
 });
 
 const alloc = std.heap.c_allocator;
-const SERVICE_MARKER = "--mc-serve";
 const SERVICE_NAME = "sqlite";
 
 // SQLITE_TRANSIENT (the `(sqlite3_destructor_type)-1` sentinel): tells sqlite to COPY the bound bytes,
@@ -69,7 +68,7 @@ pub fn main() void {
     var it = std.mem.splitScalar(u8, argbuf[0..alen], 0);
     _ = it.next(); // argv[0]
     const arg1 = it.next() orelse "";
-    if (std.mem.eql(u8, arg1, SERVICE_MARKER)) {
+    if (std.mem.eql(u8, arg1, svc.SERVICE_MARKER)) {
         serveLoop();
     } else {
         cli(argbuf[0..alen]);

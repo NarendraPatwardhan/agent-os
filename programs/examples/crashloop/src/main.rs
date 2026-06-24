@@ -11,17 +11,13 @@ use sysroot as rt;
 
 rt::entry!(main); // tier (isolated) + service ("crashloop") are declared in the BUILD (mc_rust_program)
 
-/// The kernel passes this as `argv[1]` when it spawns a binary in SERVICE mode (matches the kernel's
-/// `SERVICE_MARKER`).
-const SERVICE_MARKER: &[u8] = b"--mc-serve";
-
 fn main() {
     let mut argbuf = [0u8; 256];
     let n = rt::args_into(&mut argbuf);
     let mut parts = argbuf[..n].split(|&b| b == 0);
     let _arg0 = parts.next();
     let arg1 = parts.next().unwrap_or(b"");
-    if arg1 == SERVICE_MARKER {
+    if arg1 == rt::SERVICE_MARKER.as_bytes() {
         // …but crashes before ever reaching `svc_serve`. The kernel bounds the retries and fails the
         // connecting client with EIO instead of spinning forever (codex #4).
         rt::exit(1);

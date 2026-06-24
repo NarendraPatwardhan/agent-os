@@ -35,7 +35,7 @@ use shell::{
 };
 use task::{Scheduler, TaskId, TaskState};
 use vfs::{KPath, Namespace, NodeType, OpenFlags};
-use wasm::abi::{EAGAIN, EINVAL, EIO, SIGHUP, SIGINT, SIGTSTP, errno_from_fs};
+use wasm::abi::{EAGAIN, EINVAL, EIO, SERVICE_MARKER, SIGHUP, SIGINT, SIGTSTP, errno_from_fs};
 
 // ---------- ForegroundJob (the rescue shell) ----------
 
@@ -909,12 +909,9 @@ unsafe fn try_guest_login_shell() -> bool {
     }
 }
 
-/// The reserved `argv[1]` the kernel passes when it spawns a binary in SERVICE mode:
-/// the same binary runs its `svc_serve` loop instead of its CLI `_start` (one binary,
-/// two activation modes — VISION §4.5). The resident-service binaries test `argv[1]`
-/// against this string. A small kernel↔guest contract, a candidate to promote into
-/// `contracts/` later.
-const SERVICE_MARKER: &str = "--mc-serve";
+// SERVICE_MARKER (the reserved SERVICE-mode argv[1]) is now the projected contract constant
+// `constants.kdl → service-marker`, imported above via `wasm::abi` — one source for the kernel and
+// every service binary, Rust and Zig (codex #5).
 
 /// Look up a declared service's binary path in `/etc/services.json`. `None` if the manifest is
 /// absent/unreadable/malformed, or the name is not declared there. A manifest entry is `name → {

@@ -6,6 +6,11 @@
 //! selects the serve loop vs the CLI by argv. SERVICES.md §3.
 const std = @import("std");
 const mc = @import("mc");
+const constants = @import("constants_zig"); // the projected contract constants (constants.kdl)
+
+/// The SERVICE-mode argv[1] marker — the projected contract constant (one source: constants.kdl),
+/// re-exported so a service's `_start` selects serve-vs-CLI without copying the literal (codex #5).
+pub const SERVICE_MARKER = constants.SERVICE_MARKER;
 
 /// Max fds a single call may delegate (mirrors the kernel's `MAX_DELEGATED_HANDLES`).
 pub const MAX_HANDLES = 8;

@@ -20,6 +20,9 @@ zig_library(
 zig_library(
     name = "svc",
     main = "svc.zig",
-    deps = [":mc"],
+    deps = [
+        ":mc",
+        "//contracts:constants_zig",  # the projected SERVICE_MARKER (codex #5), re-exported by svc.zig
+    ],
     visibility = ["//visibility:public"],
 )
