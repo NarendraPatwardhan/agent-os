@@ -33,9 +33,9 @@ use wasmi::{
 
 use crate::builtins::{Builtin, BuiltinCtx, BuiltinStep};
 use crate::fs::servicefs::{
-    activation, clear_activating, grant_holder, lookup_service, register_service,
-    service_registered, valid_service_name, DelegatedHandle, ServiceChannel, ServiceInbound,
-    SvcCallSource, SvcConnHandle, SvcRead, SvcServeOwner, MAX_ACTIVATION_ATTEMPTS,
+    clear_activation, grant_holder, lookup_service, mark_failed, register_service,
+    service_registered, service_state, valid_service_name, DelegatedHandle, ServiceChannel,
+    ServiceInbound, ServiceState, SvcCallSource, SvcConnHandle, SvcRead, SvcServeOwner,
 };
 use crate::fs::{MemFs, ServeChannel, ServedFs};
 use crate::host_call::{HostCallRead, HostCallSource};
@@ -2276,7 +2276,7 @@ impl GuestProgram {
         }
         let channel = ServiceChannel::new();
         register_service(&name, channel.clone());
-        clear_activating(&name); // grant consumed; the channel is now in the registry
+        clear_activation(&name); // grant consumed; the channel is now in the registry
         // On `alloc_fd` failure the `SvcServeOwner` is dropped here, which closes the
         // channel and deregisters `name` — no orphaned registration.
         match self.alloc_fd(GuestFd::SvcServe(SvcServeOwner::new(name, channel))) {
@@ -2451,32 +2451,41 @@ impl GuestProgram {
         let channel = match lookup_service(&name) {
             Some(c) => c,
             None => {
-                // Not registered. Drive the activation state machine: a live starter within its
-                // deadline → keep re-polling (the connect-before-serve race); a starter hung past its
-                // deadline → kill it and fail (`ETIMEDOUT`); a starter that died before serving →
-                // lazily re-activate it from /etc/services.json, up to `MAX_ACTIVATION_ATTEMPTS`, then
-                // fail (`EIO`). Absent from the manifest → genuinely no such service (`ENOENT`). This
-                // bounds the indefinite busy-poll a hung or crash-looping service used to cause (#4).
-                if let Some(act) = activation(&name) {
-                    let alive = ctx
-                        .sched
-                        .get_task(act.pid)
-                        .is_some_and(|t| !matches!(t.state, TaskState::Zombie));
-                    if alive {
-                        if crate::wall_now_ms() > act.deadline_ms {
-                            ctx.sched.kill_task(act.pid, 124); // hung before serving — reap it
-                            clear_activating(&name);
-                            self.store.data_mut().pending = None;
-                            return Fulfilled::Resume(ETIMEDOUT);
+                // Not registered. Drive the activation supervisor (codex #6): a live starter within its
+                // deadline → re-poll (the connect-before-serve race); hung past its deadline → kill it
+                // and FAIL with a cooldown (`ETIMEDOUT`); crashed before serving → FAIL with a cooldown
+                // (`EIO`). A service already in its backoff window fails fast with the prior error (no
+                // respawn); past it, the connect retries with the backoff growing each failure. Absent
+                // from the manifest → no such service (`ENOENT`). Bounds the busy-poll / respawn-forever a
+                // hung or crash-looping service used to cause (#4), now with backoff (#6).
+                match service_state(&name) {
+                    Some(ServiceState::Activating { pid, deadline_ms, .. }) => {
+                        let alive = ctx
+                            .sched
+                            .get_task(pid)
+                            .is_some_and(|t| !matches!(t.state, TaskState::Zombie));
+                        if alive {
+                            if crate::wall_now_ms() > deadline_ms {
+                                ctx.sched.kill_task(pid, 124); // hung before serving — reap it
+                                mark_failed(&name, ETIMEDOUT); // → cooldown; meanwhile connects fail fast
+                                self.store.data_mut().pending = None;
+                                return Fulfilled::Resume(ETIMEDOUT);
+                            }
+                            return Fulfilled::Block(BuiltinStep::Pending); // still starting — re-poll
                         }
-                        return Fulfilled::Block(BuiltinStep::Pending);
-                    }
-                    if act.attempts >= MAX_ACTIVATION_ATTEMPTS {
-                        clear_activating(&name); // crash-looped past its retry budget
+                        // Crashed before serving — record the failure (→ backoff) and fail this connect.
+                        mark_failed(&name, EIO);
                         self.store.data_mut().pending = None;
                         return Fulfilled::Resume(EIO);
                     }
-                    // Died before serving but within budget — re-activate below (attempts carry forward).
+                    Some(ServiceState::Failed { until_ms, last_errno, .. }) => {
+                        if crate::wall_now_ms() < until_ms {
+                            self.store.data_mut().pending = None;
+                            return Fulfilled::Resume(last_errno); // in cooldown — fail fast, no respawn
+                        }
+                        // Cooldown elapsed — fall through to retry (attempts carry forward → longer backoff).
+                    }
+                    None => {} // never activated — fall through to first activation
                 }
                 if unsafe { crate::activate_service_lazily(&name) } {
                     return Fulfilled::Block(BuiltinStep::Pending);

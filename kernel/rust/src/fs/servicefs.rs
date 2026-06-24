@@ -23,6 +23,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
+use constants_rust::{EIO, ETIMEDOUT};
+
 use crate::io::{PipeSink, PipeSource};
 use crate::task::TaskId;
 use crate::vfs::traits::{
@@ -317,11 +319,33 @@ pub fn service_registered(name: &str) -> bool {
     registry().contains_key(name)
 }
 
-/// The names of all currently-REGISTERED services (a live server holds each), in sorted order.
-/// Drives the `/svc` listing fs ([`ServiceFs`]); a service mid-activation but not yet serving is not
-/// listed (it has no live channel to connect to).
-pub fn service_names() -> Vec<String> {
-    registry().keys().cloned().collect()
+/// Every service the kernel knows about — REGISTERED (ready) plus mid-ACTIVATION (activating or failed)
+/// — sorted and deduped. Drives the `/svc` listing so a STARTING or FAILED service is observable, not
+/// just the ready ones (codex #6 observability).
+pub fn known_service_names() -> Vec<String> {
+    let mut names: BTreeSet<String> = registry().keys().cloned().collect();
+    names.extend(activation_states().keys().cloned());
+    names.into_iter().collect()
+}
+
+/// A one-line human status for `/svc/<name>` — `ready`, `activating`, or `failed: <why>`. `None` if the
+/// kernel has never heard of `name`. The observability face of the activation supervisor (codex #6): a
+/// `cat /svc/<name>` reports the lifecycle state, so a wedged service is visible, not silent.
+pub fn service_status_line(name: &str) -> Option<String> {
+    if service_registered(name) {
+        return Some(String::from("ready\n"));
+    }
+    match activation_states().get(name)? {
+        ServiceState::Activating { .. } => Some(String::from("activating\n")),
+        ServiceState::Failed { last_errno, .. } => {
+            let why = match *last_errno {
+                ETIMEDOUT => "timed out before serving",
+                EIO => "crashed before serving",
+                _ => "activation failed",
+            };
+            Some(alloc::format!("failed: {why}\n"))
+        }
+    }
 }
 
 /// Total calls in flight across all REGISTERED services (delivered to a server, not yet answered). The
@@ -347,62 +371,90 @@ pub fn svc_inflight() -> u32 {
 //     `CAP_MOUNT`) and no other guest can squat a service name.
 
 /// How long a service has to reach `svc_serve` after the kernel spawns it before a connecting client
-/// gives up (`ETIMEDOUT`) — bounds a service that hangs before serving (codex #4).
+/// gives up (`ETIMEDOUT`) — bounds a service that hangs before serving (codex #4/#6).
 pub const ACTIVATION_TIMEOUT_MS: i64 = 5_000;
-/// How many crash-before-serve respawns to attempt before a connect fails (`EIO`) — bounds a service
-/// that crashes on startup, instead of respawning it forever.
-pub const MAX_ACTIVATION_ATTEMPTS: u32 = 3;
+/// Backoff after a FAILED activation: the n-th consecutive failure puts the service in cooldown for
+/// `min(BASE << min(n-1, SHIFT_CAP), MAX)` ms, during which connects fail FAST (no respawn). So a
+/// permanently-broken service is retried ever more rarely (1s, 2s, 4s, …, capped at MAX) rather than
+/// respawned on every connect — codex #6's backoff, replacing the old fixed attempt budget.
+pub const ACTIVATION_BACKOFF_BASE_MS: i64 = 1_000;
+pub const ACTIVATION_BACKOFF_MAX_MS: i64 = 30_000;
+const ACTIVATION_BACKOFF_SHIFT_CAP: u32 = 5;
 
-/// A service mid-activation: the kernel spawned `pid` to serve the name, which has not `svc_serve`d
-/// yet. `deadline_ms` (a `wall_now_ms` value) bounds how long a connect waits; `attempts` bounds
-/// crash-before-serve respawns. Without these a hung starter makes every client busy-poll forever and
-/// a crash-looping one respawns endlessly (codex #4).
-#[derive(Clone, Copy)]
-pub struct Activation {
-    pub pid: TaskId,
-    pub deadline_ms: i64,
-    pub attempts: u32,
+/// The cooldown a service enters after its `attempts`-th consecutive failed activation.
+fn backoff_ms(attempts: u32) -> i64 {
+    let shift = attempts.saturating_sub(1).min(ACTIVATION_BACKOFF_SHIFT_CAP);
+    (ACTIVATION_BACKOFF_BASE_MS << shift).min(ACTIVATION_BACKOFF_MAX_MS)
 }
 
-static mut ACTIVATING: Option<BTreeMap<String, Activation>> = None;
+/// Where a service sits in its lifecycle, BESIDE the registry (which holds the ready ones). The kernel
+/// spawns a service `Activating`; it goes ready by `svc_serve` (→ registry, this entry cleared), or
+/// `Failed` if it hangs past its deadline (`ETIMEDOUT`) or crashes before serving (`EIO`). A `Failed`
+/// service fails connects fast with `last_errno` until `until_ms` (a backoff growing with `attempts`),
+/// then one retry is allowed — turning the old busy-poll / respawn-forever into a bounded supervisor
+/// (codex #6). `attempts` is the consecutive-failure count (drives the backoff), carried across retries.
+#[derive(Clone, Copy)]
+pub enum ServiceState {
+    Activating { pid: TaskId, deadline_ms: i64, attempts: u32 },
+    Failed { until_ms: i64, last_errno: i32, attempts: u32 },
+}
 
-fn activating() -> &'static mut BTreeMap<String, Activation> {
+impl ServiceState {
+    fn attempts(&self) -> u32 {
+        match self {
+            ServiceState::Activating { attempts, .. } | ServiceState::Failed { attempts, .. } => *attempts,
+        }
+    }
+}
+
+static mut ACTIVATION: Option<BTreeMap<String, ServiceState>> = None;
+
+fn activation_states() -> &'static mut BTreeMap<String, ServiceState> {
     // SAFETY: single-threaded kernel; see `registry()`.
     unsafe {
-        let slot = &mut *core::ptr::addr_of_mut!(ACTIVATING);
+        let slot = &mut *core::ptr::addr_of_mut!(ACTIVATION);
         slot.get_or_insert_with(BTreeMap::new)
     }
 }
 
-/// Record (or re-record) that `pid` is the kernel-designated server for `name`, due to `svc_serve` by
-/// `deadline_ms`. Carries the attempt count forward across a crash-before-serve respawn (so retries are
-/// bounded), starting at 1.
+/// Record that `pid` is the kernel-designated server for `name`, due to `svc_serve` by `deadline_ms`.
+/// Carries the failure count forward (so the backoff keeps growing for a service that keeps failing),
+/// starting at 1 for a first activation.
 pub fn mark_activating(name: &str, pid: TaskId, deadline_ms: i64) {
-    let attempts = activating().get(name).map_or(0, |a| a.attempts) + 1;
-    activating().insert(
+    let attempts = activation_states().get(name).map_or(0, ServiceState::attempts) + 1;
+    activation_states().insert(
         String::from(name),
-        Activation {
-            pid,
-            deadline_ms,
-            attempts,
-        },
+        ServiceState::Activating { pid, deadline_ms, attempts },
     );
 }
 
-/// The task the kernel designated to serve `name`, if any — the `svc_serve` grant.
+/// Move `name` to `Failed` after a hung-past-deadline (`ETIMEDOUT`) or crash-before-serve (`EIO`)
+/// activation: connects fail fast with `errno` until the `attempts`-based backoff elapses.
+pub fn mark_failed(name: &str, errno: i32) {
+    let attempts = activation_states().get(name).map_or(1, ServiceState::attempts);
+    let until_ms = crate::wall_now_ms() + backoff_ms(attempts);
+    activation_states().insert(
+        String::from(name),
+        ServiceState::Failed { until_ms, last_errno: errno, attempts },
+    );
+}
+
+/// The task the kernel designated to serve `name`, if it is mid-activation — the `svc_serve` grant.
 pub fn grant_holder(name: &str) -> Option<TaskId> {
-    activating().get(name).map(|a| a.pid)
+    match activation_states().get(name) {
+        Some(ServiceState::Activating { pid, .. }) => Some(*pid),
+        _ => None,
+    }
 }
 
-/// The full activation record for `name` (pid + deadline + attempts), for the connect state machine.
-pub fn activation(name: &str) -> Option<Activation> {
-    activating().get(name).copied()
+/// `name`'s current lifecycle state, for the connect state machine.
+pub fn service_state(name: &str) -> Option<ServiceState> {
+    activation_states().get(name).copied()
 }
 
-/// Clear `name`'s activation grant (it registered, its starter died and exceeded its retry budget, or
-/// it hung past its deadline).
-pub fn clear_activating(name: &str) {
-    activating().remove(name);
+/// Clear `name`'s activation entry — it registered (now ready, in the registry).
+pub fn clear_activation(name: &str) {
+    activation_states().remove(name);
 }
 
 // ── fd owners (wrapped by `GuestFd` in wasm/mod.rs) ──────────────────────────
@@ -557,11 +609,11 @@ impl SvcCallSource {
 
 // ── the /svc listing fs (observability) ──────────────────────────────────────
 //
-// A read-only synthetic fs mounted at /svc so the registry is observable: `ls /svc` lists the live
-// services (readdir → service_names()), each a 0-byte marker node. You don't READ a service — you
-// `svc_connect` it — so opening an entry yields an empty file (existence + the listing is the point);
-// writes/mkdir/unlink/rename are refused. A ZST: it reads the (snapshot-captured) global registry
-// live, so a kernel snapshot reflects the services without the fs holding any state of its own.
+// A read-only synthetic fs mounted at /svc so the service supervisor is observable (codex #6): `ls /svc`
+// lists every KNOWN service — ready, activating, or failed (readdir → known_service_names()) — and
+// `cat /svc/<name>` reports that one service's status line (open → its live status). You don't READ a
+// service to USE it (you `svc_connect`); this is inspection. Writes/mkdir/unlink/rename are refused. A
+// ZST that reads the (snapshot-captured) registry + activation state live, holding no state of its own.
 
 pub struct ServiceFs;
 
@@ -590,10 +642,9 @@ impl FileSystem for ServiceFs {
                 if flags.write || flags.create || flags.truncate || flags.append {
                     return Err(FsError::PermissionDenied); // read-only: you svc_connect, not write
                 }
-                if service_registered(name) {
-                    Ok(Box::new(EmptyMarker))
-                } else {
-                    Err(FsError::NotFound)
+                match service_status_line(name) {
+                    Some(line) => Ok(Box::new(StatusMarker { data: line.into_bytes(), pos: 0 })),
+                    None => Err(FsError::NotFound),
                 }
             }
         }
@@ -602,8 +653,10 @@ impl FileSystem for ServiceFs {
     fn stat(&self, path: &KPath) -> Result<Metadata> {
         match Self::name(path.as_str()) {
             None => Ok(Metadata::dir()),
-            Some(name) if service_registered(name) => Ok(Metadata::file(0)),
-            Some(_) => Err(FsError::NotFound),
+            Some(name) => match service_status_line(name) {
+                Some(line) => Ok(Metadata::file(line.len() as u64)),
+                None => Err(FsError::NotFound),
+            },
         }
     }
 
@@ -611,7 +664,7 @@ impl FileSystem for ServiceFs {
         if Self::name(path.as_str()).is_some() || !path.as_str().trim_start_matches('/').is_empty() {
             return Err(FsError::NotDir);
         }
-        Ok(service_names()
+        Ok(known_service_names()
             .into_iter()
             .map(|name| DirEntry {
                 name,
@@ -633,21 +686,34 @@ impl FileSystem for ServiceFs {
     }
 }
 
-/// The handle for an open `/svc/<name>`: a 0-byte marker (the listing IS the information; you connect
-/// to the service rather than read this file).
-struct EmptyMarker;
+/// The handle for an open `/svc/<name>`: the service's status line (`ready` / `activating` / `failed:
+/// …`), captured at open, so a `cat /svc/<name>` reports its lifecycle state (codex #6). Read-only — you
+/// `svc_connect` to USE the service; this is for inspection.
+struct StatusMarker {
+    data: Vec<u8>,
+    pos: usize,
+}
 
-impl FileHandle for EmptyMarker {
-    fn read(&mut self, _buf: &mut [u8]) -> Result<usize> {
-        Ok(0) // immediate EOF
+impl FileHandle for StatusMarker {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize> {
+        let n = (self.data.len() - self.pos).min(buf.len());
+        buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
     }
     fn write(&mut self, _buf: &[u8]) -> Result<usize> {
         Err(FsError::PermissionDenied)
     }
-    fn seek(&mut self, _pos: SeekFrom) -> Result<u64> {
-        Ok(0)
+    fn seek(&mut self, pos: SeekFrom) -> Result<u64> {
+        let target = match pos {
+            SeekFrom::Start(n) => n as i64,
+            SeekFrom::Current(n) => self.pos as i64 + n,
+            SeekFrom::End(n) => self.data.len() as i64 + n,
+        };
+        self.pos = target.clamp(0, self.data.len() as i64) as usize;
+        Ok(self.pos as u64)
     }
     fn stat(&self) -> Result<Metadata> {
-        Ok(Metadata::file(0))
+        Ok(Metadata::file(self.data.len() as u64))
     }
 }

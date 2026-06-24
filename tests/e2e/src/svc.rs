@@ -124,10 +124,11 @@ print(r == nil)
     assert_eq!(s.run_for_output("kv get k2"), "v2\r\n");
 }
 
-/// Bounded activation failure (#4): a service that crashes BEFORE `svc_serve`, every time, must not
-/// make a connect spin forever. The kernel re-activates it a bounded number of times, then fails the
-/// connect with `EIO`. `crashloop` is exactly that, so `sys.svc.connect("crashloop")` returns nil — a
-/// clean failure, not a hang — and the kernel keeps serving working services afterward.
+/// Bounded activation failure (#4/#6): a service that crashes BEFORE `svc_serve` must not make a connect
+/// spin forever. The supervisor fails the connect with `EIO` and drops the service into a backoff
+/// cooldown (so a connect storm can't respawn-storm it). `crashloop` is exactly that, so
+/// `sys.svc.connect("crashloop")` returns nil — a clean failure, not a hang — and the kernel keeps
+/// serving working services afterward.
 #[test]
 fn connecting_to_a_crash_looping_service_fails_not_hangs() {
     let mut s = boot_svc_test();
@@ -144,6 +145,26 @@ print(fd == nil)
     // The kernel is unharmed — kv still activates and serves after crashloop's failed activation.
     assert_eq!(s.run_for_output("kv put k v"), "");
     assert_eq!(s.run_for_output("kv get k"), "v\r\n");
+}
+
+/// Supervisor observability (#6): the activation state is visible under /svc, so a wedged service is
+/// observable rather than silent. kv (eager) reads "ready" at boot; after a connect to the broken
+/// crashloop fails, /svc/crashloop reads "failed: …" while kv stays "ready", and the listing shows both.
+#[test]
+fn svc_status_reflects_the_activation_supervisor() {
+    let mut s = boot_svc_test();
+    // The eager service is ready at boot; `cat /svc/<name>` reports its lifecycle state.
+    assert_eq!(s.run_for_output("cat /svc/kv"), "ready\r\n");
+    // Trigger crashloop's activation — it crashes before serving, so the supervisor marks it failed.
+    s.host
+        .write_file("/tmp/c.luau", br#"print(sys.svc.connect("crashloop") == nil)"#)
+        .expect("write c.luau");
+    assert_eq!(s.run_for_output("luau /tmp/c.luau"), "true\r\n");
+    // crashloop is now observably FAILED (not silently gone); kv is unaffected.
+    assert_eq!(s.run_for_output("cat /svc/crashloop"), "failed: crashed before serving\r\n");
+    assert_eq!(s.run_for_output("cat /svc/kv"), "ready\r\n");
+    // The listing shows every known service — ready and failed alike (sorted).
+    assert_eq!(s.run_for_output("ls /svc"), "crashloop\r\nkv\r\n");
 }
 
 /// Snapshot quiescence + warm survival (#5; SERVICES.md §3.5): the in-flight-svc-call counter folds
