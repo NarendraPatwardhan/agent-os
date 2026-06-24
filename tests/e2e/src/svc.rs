@@ -215,3 +215,26 @@ print(sys.svc.call(fd, "_stream_crash") == nil)
     assert_eq!(s.run_for_output("kv put k v"), "");
     assert_eq!(s.run_for_output("kv get k"), "v\r\n");
 }
+
+/// Service-zombie reaping (codex P2): a resident service has no parent, so nothing waitpids its zombie
+/// when it crashes — left alone, every crash/retry leaks a parentless task into the scheduler and /proc.
+/// The supervisor now reaps a service's dead instances when it re-activates, so repeated crash/recover
+/// cycles do NOT accumulate kv zombies in /proc.
+#[test]
+fn crashed_service_instances_are_reaped_not_leaked() {
+    let mut s = boot_svc_test();
+    // Several crash → lazy-recover cycles. Without reaping, each leaves a parentless kv zombie behind.
+    for _ in 0..6 {
+        let _ = s.run_for_output("kv _crash"); // the warm kv dies mid-call
+        assert_eq!(s.run_for_output("kv put k v"), ""); // re-activates a fresh instance (+ reaps the dead one)
+    }
+    // /proc lists every task incl. zombies; count only the numeric pid entries (skip uptime/mounts).
+    let proc = s.run_for_output("ls /proc");
+    let pids = proc
+        .lines()
+        .filter(|l| !l.is_empty() && l.bytes().all(|b| b.is_ascii_digit()))
+        .count();
+    // With reaping only a few live tasks remain (shell, the current kv, the listing) — NOT 6 leaked
+    // zombies. Without the fix this would be ≥ 6 higher.
+    assert!(pids <= 4, "leaked service zombies: /proc lists {pids} pids:\n{proc}");
+}
