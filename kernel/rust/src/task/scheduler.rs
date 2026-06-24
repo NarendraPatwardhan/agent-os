@@ -343,6 +343,15 @@ impl Scheduler {
                     }
                 }
             }
+
+            // A parentless task (a resident service; pid 1 is the exception) has no one to waitpid its
+            // zombie — so the kernel is its reaper of last resort, reaping it on the spot rather than
+            // leaking it into the scheduler and /proc until the name is next re-activated (codex P2). This
+            // is the general rule that subsumes the old activation-time sweep.
+            let parentless = self.get_task(id).is_some_and(|t| t.parent_id.is_none());
+            if parentless && id != 1 {
+                self.reap_zombie(id);
+            }
         }
     }
 
@@ -658,25 +667,6 @@ impl Scheduler {
         }
     }
 
-    /// Reap any leaked ZOMBIE instances of the parentless service `name`. A resident service has no
-    /// parent, so nothing waitpids its zombie when it crashes; left unreaped they pile up in the task
-    /// map and `/proc` across crash/retry cycles (codex P2). Called before (re-)activating a service so
-    /// only its current instance is ever live. Scoped by name AND parentless, so it never touches a user
-    /// task that shares the command (those have a parent that reaps them) nor pid 1.
-    pub fn reap_service_zombies(&self, name: &str) {
-        let dead: Vec<TaskId> = self
-            .task_ids()
-            .into_iter()
-            .filter(|&id| {
-                self.get_task(id).is_some_and(|t| {
-                    t.state == TaskState::Zombie && t.parent_id.is_none() && t.name == name
-                })
-            })
-            .collect();
-        for id in dead {
-            self.reap_zombie(id);
-        }
-    }
 }
 
 // SAFETY: single-threaded cooperative kernel; no aliasing across a yield (see task::mod).

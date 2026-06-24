@@ -975,10 +975,6 @@ unsafe fn spawn_service(name: &str, binary: &str) -> Option<task::TaskId> {
         let tier = wasm::declared_tier(&bytes)?;
         let argv = alloc::vec![String::from(binary), String::from(SERVICE_MARKER)];
         let prog = wasm::GuestProgram::load(engine, &bytes, argv, &path).ok()?;
-        // Reap any prior instance of this service that crashed and was never reaped (a service has no
-        // parent to waitpid it) before spawning the fresh one — so dead instances don't pile up in the
-        // scheduler and /proc across crash/retry cycles (codex P2).
-        sched.reap_service_zombies(name);
         let pid = sched.spawn(
             None,
             String::from(name),
