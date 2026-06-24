@@ -1,4 +1,5 @@
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+load("//third_party/luau:defs.bzl", "mc_service_layer")
 
 # images — the base + flavor images, built as DETERMINISTIC pkg_tar with NO manual staging: no
 # remove_dir_all, no ordering hazard, no fs::copy into a source tree — the three memcontainers build
@@ -131,31 +132,21 @@ pkg_tar(
 # broken negative control), plus the GENERATED /etc/services.json. On LOOM (not base) so the e2e proves
 # DUAL behavior (the SAME warm kv reached from the CLI `kv get` AND from Luau `sys.svc`), warm state
 # across calls, crash-only recovery, oversize survival, and bounded activation failure — before sqlite.
-# /etc/services.json — GENERATED from each service binary's own mc_service name (codex #6):
-# mc-svc-manifest reads "kv"/"crashloop" from the stamped (mc_rust_program) wasms, so the manifest can
-# never drift from the binaries. kv is eager (activated at boot — proves eager activation); crashloop is
-# lazy — a deliberately-broken negative control that crashes before svc_serve, so a connect exercises
-# the kernel's bounded activation-failure path (codex #4).
-genrule(
-    name = "svc_test_services",
-    srcs = [
-        "//programs/examples/kv:kv",
-        "//programs/examples/crashloop:crashloop",
-    ],
-    outs = ["svc_test_services.json"],
-    cmd = "$(execpath //tools/mc-svc-manifest) eager $(execpath //programs/examples/kv:kv) lazy $(execpath //programs/examples/crashloop:crashloop) $@",
-    tools = ["//tools/mc-svc-manifest"],
+# The svc layer — /bin/kv + /bin/crashloop + the GENERATED /etc/services.json, all derived from each
+# service's McProgramInfo (codex #2): the install path and the manifest's binary field are written once,
+# from one name, so they cannot drift. kv is eager (activated at boot — proves eager activation);
+# crashloop is lazy — a deliberately-broken negative control that crashes before svc_serve, so a connect
+# exercises the kernel's bounded activation-failure path (codex #4).
+mc_service_layer(
+    name = "svc_test_layer",
+    eager = ["//programs/examples/kv:kv"],
+    lazy = ["//programs/examples/crashloop:crashloop"],
 )
 
 pkg_tar(
     name = "svc_test",
-    files = {
-        "//programs/examples/kv:kv": "/bin/kv",
-        "//programs/examples/crashloop:crashloop": "/bin/crashloop",
-        ":svc_test_services": "/etc/services.json",
-    },
     owner = "0.0",
-    deps = [":loom"],
+    deps = [":loom", ":svc_test_layer"],
     visibility = ["//visibility:public"],
 )
 
@@ -163,25 +154,21 @@ pkg_tar(
 # /bin/sqlite (the warm service binary, stamped + attested), the /etc/services.json that activates it
 # at boot, the require("sqlite") library at /lib/luau/sqlite.luau, and the sqlite skill at /skills. The
 # first flavor with a domain SERVICE, not just CLI tools (SERVICES.md). (sqlite-vec lands here later.)
-# /etc/services.json — GENERATED from the sqlite binary's own mc_service name (codex #6). lazy (the
-# default activation model): atlas spawns sqlite on the first svc_connect, not at boot.
-genrule(
-    name = "atlas_services",
-    srcs = ["//third_party/sqlite/glue:sqlite"],
-    outs = ["atlas_services.json"],
-    cmd = "$(execpath //tools/mc-svc-manifest) lazy $(execpath //third_party/sqlite/glue:sqlite) $@",
-    tools = ["//tools/mc-svc-manifest"],
+# The sqlite service layer — /bin/sqlite + the GENERATED /etc/services.json, both derived from sqlite's
+# McProgramInfo (codex #2). lazy (the default activation model): atlas spawns sqlite on the first
+# svc_connect, not at boot.
+mc_service_layer(
+    name = "atlas_layer",
+    lazy = ["//third_party/sqlite/glue:sqlite"],
 )
 
 pkg_tar(
     name = "atlas",
     files = {
-        "//third_party/sqlite/glue:sqlite": "/bin/sqlite",
         "//third_party/sqlite/lib:sqlite.luau": "/lib/luau/sqlite.luau",
         "//third_party/sqlite/skills:sqlite.md": "/skills/sqlite.md",
-        ":atlas_services": "/etc/services.json",
     },
     owner = "0.0",
-    deps = [":loom"],
+    deps = [":loom", ":atlas_layer"],
     visibility = ["//visibility:public"],
 )

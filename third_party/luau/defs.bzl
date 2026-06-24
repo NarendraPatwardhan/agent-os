@@ -185,3 +185,45 @@ def mc_rust_program(name, lib, tier, mem = 0, fuel = 0, table = 0, service = "",
         service = service,
         visibility = visibility,
     )
+
+def _mc_service_layer_impl(ctx):
+    # Read the service NAME from each target's McProgramInfo (the graph), not by re-parsing the wasm.
+    # mc-svc-manifest then writes /bin/<service> for both the install and the manifest's "binary" field
+    # from that one name, and asserts the binary's own stamped mc_service matches — so the install path,
+    # the manifest, and the artifact can never disagree (codex #2).
+    tar = ctx.actions.declare_file(ctx.label.name + ".tar")
+    args = [tar.path]
+    inputs = []
+    for policy, targets in [("eager", ctx.attr.eager), ("lazy", ctx.attr.lazy)]:
+        for t in targets:
+            info = t[McProgramInfo]
+            if not info.service:
+                fail("mc_service_layer: {} has no mc_service — not a resident service".format(t.label))
+            args.extend([info.service, policy, info.wasm.path])
+            inputs.append(info.wasm)
+    if not inputs:
+        fail("mc_service_layer: at least one eager or lazy service is required")
+    ctx.actions.run(
+        outputs = [tar],
+        inputs = inputs,
+        executable = ctx.executable._manifest,
+        arguments = args,
+        mnemonic = "McSvcLayer",
+        progress_message = "Building the service layer %{label}",
+    )
+    return [DefaultInfo(files = depset([tar]))]
+
+mc_service_layer = rule(
+    implementation = _mc_service_layer_impl,
+    doc = "Build a resident-service LAYER tar (codex #2): every service's stamped binary installed at " +
+          "/bin/<service> PLUS the /etc/services.json that activates them, both derived from the targets' " +
+          "McProgramInfo.service — so the install path and the manifest's binary field are written ONCE " +
+          "and cannot drift, and the manifest is graph-derived rather than hand-written beside the image. " +
+          "`eager` services start at boot; `lazy` ones on the first svc_connect. Merge into an image with " +
+          "pkg_tar(deps = [..., \":<name>\"]).",
+    attrs = {
+        "eager": attr.label_list(providers = [McProgramInfo], doc = "Services activated at boot."),
+        "lazy": attr.label_list(providers = [McProgramInfo], doc = "Services activated on the first svc_connect."),
+        "_manifest": attr.label(default = "//tools/mc-svc-manifest", executable = True, cfg = "exec"),
+    },
+)
