@@ -3,13 +3,13 @@
 //! The kernel activates `kv` at boot from `/etc/services.json`; these tests drive it through the
 //! real shell on the real kernel (B6, no mocks).
 
-use crate::{boot_kv, restore};
+use crate::{boot_svc_test, restore};
 
 /// The CLI face: `kv put` then `kv get`, two separate processes, hit the SAME warm service — the
 /// store survives across calls because it lives in the service's linear memory.
 #[test]
 fn kv_cli_is_warm_across_calls() {
-    let mut s = boot_kv();
+    let mut s = boot_svc_test();
     assert_eq!(s.run_for_output("kv put greeting hello"), "");
     assert_eq!(s.run_for_output("kv get greeting"), "hello\r\n");
     assert_eq!(s.run_for_output("kv put count 42"), "");
@@ -24,7 +24,7 @@ fn kv_cli_is_warm_across_calls() {
 /// `sys.svc` library, and vice versa — the CLI and the library are clients of the SAME warm service.
 #[test]
 fn kv_dual_cli_and_luau_same_warm_service() {
-    let mut s = boot_kv();
+    let mut s = boot_svc_test();
 
     // Write through the CLI, read through Luau `sys.svc`.
     assert_eq!(s.run_for_output("kv put shared via-cli"), "");
@@ -57,7 +57,7 @@ assert(sys.svc.call(fd, "put\0fromlua\0hi"))
 /// durable), so the old key is absent, but the service is usable again immediately.
 #[test]
 fn kv_crash_recovers_a_fresh_instance() {
-    let mut s = boot_kv();
+    let mut s = boot_svc_test();
     assert_eq!(s.run_for_output("kv put k v"), "");
     assert_eq!(s.run_for_output("kv get k"), "v\r\n");
     let _ = s.run_for_output("kv _crash"); // the warm service exits mid-call
@@ -74,7 +74,7 @@ fn kv_crash_recovers_a_fresh_instance() {
 /// it from the manifest, not on first use.
 #[test]
 fn svc_lists_an_eager_service_at_boot() {
-    let mut s = boot_kv();
+    let mut s = boot_svc_test();
     assert_eq!(s.run_for_output("ls /svc"), "kv\r\n");
 }
 
@@ -84,7 +84,7 @@ fn svc_lists_an_eager_service_at_boot() {
 /// service keeps serving: the pre-existing key survives and a new put/get round-trips.
 #[test]
 fn kv_survives_a_client_dying_mid_session() {
-    let mut s = boot_kv();
+    let mut s = boot_svc_test();
     assert_eq!(s.run_for_output("kv put k v"), "");
     s.host
         .write_file(
@@ -105,7 +105,7 @@ fn kv_survives_a_client_dying_mid_session() {
 /// kv (whose buffer is 1 KiB) fails, and kv keeps serving normally afterward.
 #[test]
 fn kv_survives_an_oversize_request() {
-    let mut s = boot_kv();
+    let mut s = boot_svc_test();
     assert_eq!(s.run_for_output("kv put k v"), "");
     s.host
         .write_file(
@@ -130,7 +130,7 @@ print(r == nil)
 /// clean failure, not a hang — and the kernel keeps serving working services afterward.
 #[test]
 fn connecting_to_a_crash_looping_service_fails_not_hangs() {
-    let mut s = boot_kv();
+    let mut s = boot_svc_test();
     s.host
         .write_file(
             "/tmp/crashloop.luau",
@@ -153,7 +153,7 @@ print(fd == nil)
 /// still served by the instance in a VM restored from it.
 #[test]
 fn a_warm_service_survives_snapshot_and_restore() {
-    let mut s = boot_kv();
+    let mut s = boot_svc_test();
     assert_eq!(s.run_for_output("kv put persisted yes"), ""); // a completed call: inflight 1 → 0
     let snap = s.host.snapshot().expect("snapshot"); // succeeds — quiescent, no service mid-call
     let mut restored = restore(&snap);

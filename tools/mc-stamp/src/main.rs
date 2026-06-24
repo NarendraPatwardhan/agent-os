@@ -130,12 +130,16 @@ fn main() {
     let mut wasm = strip_custom_sections(&wasm, &[b"mc_tier", b"mc_budget", b"mc_service"]);
     append_custom(b"mc_tier", tier, &mut wasm);
 
-    let mut budget = Vec::with_capacity(24);
-    budget.extend_from_slice(&1u32.to_le_bytes()); // version
-    budget.extend_from_slice(&mem.to_le_bytes());
-    budget.extend_from_slice(&fuel.to_le_bytes());
-    budget.extend_from_slice(&table.to_le_bytes());
-    append_custom(b"mc_budget", &budget, &mut wasm);
+    // An all-zero budget means "no declared budget" — emit no mc_budget section so the guest gets the
+    // kernel default, matching a program that declared none. (Real budgets are never all-zero.)
+    if mem != 0 || fuel != 0 || table != 0 {
+        let mut budget = Vec::with_capacity(24);
+        budget.extend_from_slice(&1u32.to_le_bytes()); // version
+        budget.extend_from_slice(&mem.to_le_bytes());
+        budget.extend_from_slice(&fuel.to_le_bytes());
+        budget.extend_from_slice(&table.to_le_bytes());
+        append_custom(b"mc_budget", &budget, &mut wasm);
+    }
 
     // A resident service also carries its identity (VISION §6); a one-shot tool does not.
     if !service.is_empty() {

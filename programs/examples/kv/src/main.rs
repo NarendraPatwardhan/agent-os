@@ -12,9 +12,7 @@
 
 use sysroot as rt;
 
-rt::declare_tier!("isolated"); // an in-memory service: it needs no capabilities
-rt::declare_service!("kv"); // it serves the "kv" name (matches SERVICE_NAME); the kernel grants it
-rt::entry!(main);
+rt::entry!(main); // tier (isolated) + service ("kv") are declared in the BUILD (mc_rust_program)
 
 /// The kernel passes this as `argv[1]` when it spawns the binary in SERVICE mode.
 /// Must match the kernel's `SERVICE_MARKER`.

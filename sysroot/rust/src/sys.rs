@@ -1175,93 +1175,9 @@ macro_rules! entry {
     };
 }
 
-/// Declare this program's **capability tier**. The kernel reads it from a `mc_tier`
-/// custom section at load time and grants the program `parent_caps ∩ tier` — a
-/// binary can only ever narrow, never widen, the privilege of whoever ran it (A9
-/// default-deny). Valid values: `"full"`, `"read-write"`, `"read-only"`,
-/// `"isolated"`. A program with no declaration inherits its parent's capabilities
-/// unchanged.
-///
-/// The section name and payload (the raw UTF-8 tier string) are the load-time
-/// contract: changing either here means changing what the kernel parses at exec.
-#[macro_export]
-macro_rules! declare_tier {
-    ($tier:literal) => {
-        #[link_section = "mc_tier"]
-        #[used]
-        static MC_TIER: [u8; $tier.len()] = {
-            let src = $tier.as_bytes();
-            let mut out = [0u8; $tier.len()];
-            let mut i = 0;
-            while i < out.len() {
-                out[i] = src[i];
-                i += 1;
-            }
-            out
-        };
-    };
-}
-
-/// Declare this program's **resource budget** (the `mc_budget` runtime contract):
-/// `mem_bytes`, lifetime `fuel`, and `table` elements. The kernel reads it from an
-/// `mc_budget` custom section at load time and confines the guest to
-/// `min(declared, vm_ceiling, hard)`. A program with no declaration gets the
-/// default budget. Payload: `[u32 version=1][u64 mem][u64 fuel][u32 table]`
-/// (little-endian, 24 bytes) — this layout is the load-time contract with the
-/// kernel's budget parser.
-#[macro_export]
-macro_rules! declare_budget {
-    ($mem_bytes:expr, $fuel:expr, $table:expr) => {
-        #[link_section = "mc_budget"]
-        #[used]
-        static MC_BUDGET: [u8; 24] = {
-            let mem: u64 = $mem_bytes;
-            let fuel: u64 = $fuel;
-            let table: u32 = $table;
-            let mut out = [0u8; 24];
-            out[0] = 1; // version (LE u32, low byte)
-            let mb = mem.to_le_bytes();
-            let fb = fuel.to_le_bytes();
-            let tb = table.to_le_bytes();
-            let mut i = 0;
-            while i < 8 {
-                out[4 + i] = mb[i];
-                out[12 + i] = fb[i];
-                i += 1;
-            }
-            let mut k = 0;
-            while k < 4 {
-                out[20 + k] = tb[k];
-                k += 1;
-            }
-            out
-        };
-    };
-}
-
-/// Declare this program's **service name** — that it is a resident service answering `svc_serve`
-/// for this name. The kernel/attestor reads it from an `mc_service` custom section, stamped exactly
-/// like `mc_tier`/`mc_budget` (VISION §6: service-capability is a *property*, not a second artifact).
-/// A binary that imports `svc_serve` MUST declare this — `mc-attest` fails the build otherwise — and
-/// the kernel grants it to serve only this name. The one-binary/two-modes service declares it
-/// unconditionally; whether it enters the serve loop or the CLI path is decided at runtime by argv.
-///
-/// The section name and payload (the raw UTF-8 service name) are the load-time contract, mirroring
-/// what `//tools/mc-stamp --service` appends for the zig/C++ service tools.
-#[macro_export]
-macro_rules! declare_service {
-    ($name:literal) => {
-        #[link_section = "mc_service"]
-        #[used]
-        static MC_SERVICE: [u8; $name.len()] = {
-            let src = $name.as_bytes();
-            let mut out = [0u8; $name.len()];
-            let mut i = 0;
-            while i < out.len() {
-                out[i] = src[i];
-                i += 1;
-            }
-            out
-        };
-    };
-}
+// A guest's load-time metadata — `mc_tier` / `mc_budget` / `mc_service` — is no longer declared in
+// source. Both guest lanes now declare it in the BUILD and stamp it post-link (Zig/C++ via
+// `mc_program`, Rust via `mc_rust_program`), so the build graph — not the source — is the single
+// source of a guest's tier/budget/service, every guest is `mc-attest`ed uniformly, and the
+// `McProgramInfo` provider carries the metadata for downstream image/manifest rules. Guests keep only
+// `entry!`.

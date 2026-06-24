@@ -1,4 +1,5 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//third_party/luau:defs.bzl", "mc_rust_program")
 
 # programs/invoke — /bin/invoke, the host-tool bridge. A no_std wasm32-freestanding binary that
 # packs `name\0args` and fires `mc_sys_host_call`, streaming the host handler's result to stdout —
@@ -8,15 +9,23 @@ load("@rules_rust//rust:defs.bzl", "rust_binary")
 # object with the real //lib/json:serde crate. Imports ONLY `mc` (no WASI, no conversion); built under
 # --platforms=//platforms:wasm32_freestanding. Ported from memcontainers' mc-tool.
 rust_binary(
-    name = "invoke",
+    name = "invoke_bin",
     srcs = ["src/main.rs"],
     crate_root = "src/main.rs",
     edition = "2021",
     tags = ["manual"],
     deps = [
-        "//sysroot/rust",         # mc syscall wrappers + the _start/declare_tier!/panic_handler runtime
+        "//sysroot/rust",         # mc syscall wrappers + the _start/panic_handler runtime
         "//lib/json:serde",  # build the args object (Json::Obj → to_string) instead of a hand-rolled writer
         "@crates//:talc",    # the wasm linear-memory allocator (same as the kernel) — json needs a heap
     ],
+)
+
+# /bin/invoke — stamped (tier) + attested from the build graph (mc_rust_program). full tier: it
+# carries CAP_NET to reach host tools.
+mc_rust_program(
+    name = "invoke",
+    lib = ":invoke_bin",
+    tier = "full",
     visibility = ["//visibility:public"],
 )

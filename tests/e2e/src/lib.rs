@@ -101,12 +101,13 @@ pub fn boot_loom() -> Session {
     Session { host, stdout }
 }
 
-/// Boot the `kv_test` image (loom + /bin/kv + the `/etc/services.json` that activates `kv` as a
-/// resident service). For the svc-primitive proof: the SAME warm service reached from the CLI
-/// (`kv get`) and from Luau (`sys.svc`), warm across calls, crash-only.
-pub fn boot_kv() -> Session {
-    let (b, stdout) = builder("_main/images/kv_test.tar");
-    let host = b.build().expect("kernel booted (kv_test image)");
+/// Boot the `svc_test` image (loom + the `kv` + `crashloop` example services + the generated
+/// /etc/services.json). For the svc-primitive proof: kv reached from the CLI (`kv get`) and Luau
+/// (`sys.svc`), warm across calls, crash-only recovery, oversize survival, and crashloop's bounded
+/// activation failure.
+pub fn boot_svc_test() -> Session {
+    let (b, stdout) = builder("_main/images/svc_test.tar");
+    let host = b.build().expect("kernel booted (svc_test image)");
     Session { host, stdout }
 }
 

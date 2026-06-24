@@ -26,7 +26,7 @@ use alloc::vec::Vec;
 use json::Json;
 use sysroot as rt;
 
-rt::declare_tier!("full");
+// invoke's tier (full — it carries CAP_NET to reach host tools) is declared in the BUILD (mc_rust_program).
 
 // Allocator — talc, the SAME wasm linear-memory allocator the kernel uses (A8: all state in linear
 // memory). `WasmDynamicTalc` grows the wasm heap on demand, so there is no fixed arena to size or

@@ -1,4 +1,5 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//third_party/luau:defs.bzl", "mc_rust_program")
 
 # programs/pkgfsd — the /pkg demand-load file server. A no_std wasm32-freestanding daemon: it
 # serve("/pkg")s, then loops serve_recv → dispatch (readdir/stat from the baked catalog; open →
@@ -8,7 +9,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary")
 # Imports ONLY `mc`; built under --platforms=//platforms:wasm32_freestanding. Ported from
 # memcontainers' pkgfsd.
 rust_binary(
-    name = "pkgfsd",
+    name = "pkgfsd_bin",
     srcs = ["src/main.rs"],
     crate_root = "src/main.rs",
     edition = "2021",
@@ -18,5 +19,16 @@ rust_binary(
         "//sysroot/rust",  # mc syscall wrappers (serve / netfs / persistfs) + the _start runtime
         "@crates//:talc",  # the no_std wasm allocator (the catalog + pkgcore use alloc)
     ],
+)
+
+# /bin/pkgfsd — stamped (tier + budget) + attested from the build graph (mc_rust_program). full tier
+# (it needs CAP_NET + CAP_PERSIST to fetch + cache); 64 MiB · 50B fuel · 10k table.
+mc_rust_program(
+    name = "pkgfsd",
+    lib = ":pkgfsd_bin",
+    tier = "full",
+    mem = 64 * 1024 * 1024,
+    fuel = 50000000000,
+    table = 10000,
     visibility = ["//visibility:public"],
 )

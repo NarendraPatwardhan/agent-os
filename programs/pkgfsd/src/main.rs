@@ -23,8 +23,7 @@ use sysroot as rt;
 #[global_allocator]
 static ALLOC: talc::wasm::WasmDynamicTalc = talc::wasm::new_wasm_dynamic_allocator();
 
-rt::declare_tier!("full"); // needs CAP_NET + CAP_PERSIST to fetch + cache
-rt::declare_budget!(64 * 1024 * 1024, 50_000_000_000, 10_000);
+// tier (full — needs CAP_NET + CAP_PERSIST) + budget are declared in the BUILD (mc_rust_program).
 
 /// Fallback registry locator when `/etc/pkg/registry` is absent (a real netfs path shape —
 /// `<scheme>/<host>/<prefix>`; the live host is configured per VM).

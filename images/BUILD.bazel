@@ -1,5 +1,4 @@
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
-load("//kernel/rust:defs.bzl", "release_wasm")
 
 # images — the base + flavor images, built as DETERMINISTIC pkg_tar with NO manual staging: no
 # remove_dir_all, no ordering hazard, no fs::copy into a source tree — the three memcontainers build
@@ -21,37 +20,17 @@ pkg_tar(
     owner = "0.0",  # determinism (§10): root.root + fixed portable_mtime → content-addressable
 )
 
-# The three SYSTEM binaries, each sysroot-native + pure-mc at wasm32-freestanding + opt: /bin/sh (the
-# guest shell, boots as pid 1), /bin/invoke (the host-tool bridge), /bin/pkgfsd (the /pkg daemon).
-release_wasm(
-    name = "sh_wasm",
-    lib = "//programs/sh:sh",
-    platform = "//platforms:wasm32_freestanding",
-)
-
-release_wasm(
-    name = "invoke_wasm",
-    lib = "//programs/invoke:invoke",
-    platform = "//platforms:wasm32_freestanding",
-)
-
-release_wasm(
-    name = "pkgfsd_wasm",
-    lib = "//programs/pkgfsd:pkgfsd",
-    platform = "//platforms:wasm32_freestanding",
-)
-
-# base — rootfs + the three system binaries: a real but command-less shell, the substrate BOTH
-# flavors build on (VISION §16). NOT a shipped flavor on its own (no coreutils — "make your own
-# harness": with sh + pkgfsd + invoke you can bootstrap anything); minimal/posix each add a command
-# set by layering on top. sh boots as pid 1; the in-kernel rescue shell is now only the no-/bin/sh
-# fallback.
+# base — rootfs + the three SYSTEM binaries (each sysroot-native, pure-mc at wasm32-freestanding + opt,
+# stamped + attested via mc_rust_program): /bin/sh (the guest shell, boots as pid 1), /bin/invoke (the
+# host-tool bridge), /bin/pkgfsd (the /pkg daemon). A real but command-less shell, the substrate BOTH
+# flavors build on (VISION §16) — NOT a shipped flavor on its own (no coreutils — "make your own
+# harness"); minimal/posix add a command set by layering on top.
 pkg_tar(
     name = "base",
     files = {
-        ":sh_wasm": "/bin/sh",
-        ":invoke_wasm": "/bin/invoke",
-        ":pkgfsd_wasm": "/bin/pkgfsd",
+        "//programs/sh:sh": "/bin/sh",
+        "//programs/invoke:invoke": "/bin/invoke",
+        "//programs/pkgfsd:pkgfsd": "/bin/pkgfsd",
     },
     owner = "0.0",
     deps = [":rootfs"],
@@ -147,44 +126,33 @@ pkg_tar(
     visibility = ["//visibility:public"],
 )
 
-# kv-test — a resident-SERVICE proof image (SERVICES.md P1): loom (the shell + /bin/luau) + /bin/kv
-# (the kv service binary) + the /etc/services.json manifest that activates it at boot. On LOOM (not
-# base) so the e2e proves DUAL behavior — the SAME warm service reached from the CLI (`kv get`) AND
-# from Luau (`sys.svc`) — plus warm state across calls and crash-only, before sqlite.
-release_wasm(
-    name = "kv_wasm",
-    lib = "//programs/examples/kv:kv",
-    platform = "//platforms:wasm32_freestanding",
-)
-
-# /bin/crashloop — a deliberately-broken service (it crashes before svc_serve) used by the e2e to prove
-# the kernel's BOUNDED activation-failure path (codex #4). lazy, so it is only activated on a connect.
-release_wasm(
-    name = "crashloop_wasm",
-    lib = "//programs/examples/crashloop:crashloop",
-    platform = "//platforms:wasm32_freestanding",
-)
-
-# /etc/services.json — GENERATED from each service binary's own mc_service name (codex #6): mc-svc-manifest
-# reads "kv"/"crashloop" from the stamped wasms, so the manifest can never drift from the binaries. kv is
-# eager (activated at boot — proves eager activation); crashloop is lazy (activated only on a connect).
+# svc-test — the resident-service primitive proof image (SERVICES.md P1): loom (the shell + /bin/luau)
+# + the svc example/test services /bin/kv (the warm key-value demo) and /bin/crashloop (a deliberately-
+# broken negative control), plus the GENERATED /etc/services.json. On LOOM (not base) so the e2e proves
+# DUAL behavior (the SAME warm kv reached from the CLI `kv get` AND from Luau `sys.svc`), warm state
+# across calls, crash-only recovery, oversize survival, and bounded activation failure — before sqlite.
+# /etc/services.json — GENERATED from each service binary's own mc_service name (codex #6):
+# mc-svc-manifest reads "kv"/"crashloop" from the stamped (mc_rust_program) wasms, so the manifest can
+# never drift from the binaries. kv is eager (activated at boot — proves eager activation); crashloop is
+# lazy — a deliberately-broken negative control that crashes before svc_serve, so a connect exercises
+# the kernel's bounded activation-failure path (codex #4).
 genrule(
-    name = "kv_test_services",
+    name = "svc_test_services",
     srcs = [
-        ":kv_wasm",
-        ":crashloop_wasm",
+        "//programs/examples/kv:kv",
+        "//programs/examples/crashloop:crashloop",
     ],
-    outs = ["kv_test_services.json"],
-    cmd = "$(execpath //tools/mc-svc-manifest) eager $(execpath :kv_wasm) lazy $(execpath :crashloop_wasm) $@",
+    outs = ["svc_test_services.json"],
+    cmd = "$(execpath //tools/mc-svc-manifest) eager $(execpath //programs/examples/kv:kv) lazy $(execpath //programs/examples/crashloop:crashloop) $@",
     tools = ["//tools/mc-svc-manifest"],
 )
 
 pkg_tar(
-    name = "kv_test",
+    name = "svc_test",
     files = {
-        ":kv_wasm": "/bin/kv",
-        ":crashloop_wasm": "/bin/crashloop",
-        ":kv_test_services": "/etc/services.json",
+        "//programs/examples/kv:kv": "/bin/kv",
+        "//programs/examples/crashloop:crashloop": "/bin/crashloop",
+        ":svc_test_services": "/etc/services.json",
     },
     owner = "0.0",
     deps = [":loom"],

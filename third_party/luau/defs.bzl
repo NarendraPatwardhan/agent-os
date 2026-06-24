@@ -4,6 +4,7 @@ the actual compile is done by zig, so no cc_library / cc_toolchain is needed (ag
 zig toolchain, not a CC one — the `toolchains/zig_cc` Phase-A placeholder). See SYSTEM.md."""
 
 load("@bazel_skylib//lib:paths.bzl", "paths")
+load("//kernel/rust:defs.bzl", "release_wasm")
 
 def _cc_headers_impl(ctx):
     # Make each `includes` entry exec-root-relative: <repo>/<package>/<inc>. For @luau (package "")
@@ -135,19 +136,21 @@ _mc_program = rule(
         "tier": attr.string(mandatory = True, doc = "Capability tier (isolated/read-only/read-write/full)."),
         # Budgets are strings because attr.int caps at signed 32-bit but `fuel` is ~2e12; mc-stamp
         # parses them and the provider exposes them back as ints.
-        "mem": attr.string(mandatory = True, doc = "Memory budget, bytes."),
-        "fuel": attr.string(mandatory = True, doc = "Fuel budget (interpreter steps)."),
-        "table": attr.string(mandatory = True, doc = "Table-elements budget."),
+        "mem": attr.string(default = "0", doc = "Memory budget, bytes (0 = no mc_budget; the kernel default)."),
+        "fuel": attr.string(default = "0", doc = "Fuel budget, interpreter steps (0 = the kernel default)."),
+        "table": attr.string(default = "0", doc = "Table-elements budget (0 = the kernel default)."),
         "service": attr.string(default = "", doc = "Resident-service name → an mc_service section (VISION §6); \"\" for a one-shot tool."),
         "_stamp": attr.label(default = "//tools/mc-stamp", executable = True, cfg = "exec"),
         "_attest": attr.label(default = "//tools/mc-attest", executable = True, cfg = "exec"),
     },
 )
 
-def mc_program(name, wasm, tier, mem, fuel, table, service = "", visibility = None):
+def mc_program(name, wasm, tier, mem = 0, fuel = 0, table = 0, service = "", visibility = None):
     """Thin ergonomic wrapper over the `_mc_program` rule: takes INT budgets (e.g. 256 * 1024 * 1024)
     so call sites stay self-documenting, and forwards them as strings (attr.int is 32-bit; fuel is ~2e12).
-    `service` (optional) stamps the mc_service section marking a resident service (VISION §6)."""
+    A 0 budget means "no mc_budget section" (the kernel default). `service` (optional) stamps the
+    mc_service section marking a resident service (VISION §6). Used by the Zig/C++ lane (a pre-built
+    `wasm`); the Rust lane wraps it via `mc_rust_program`."""
     _mc_program(
         name = name,
         wasm = wasm,
@@ -155,6 +158,30 @@ def mc_program(name, wasm, tier, mem, fuel, table, service = "", visibility = No
         mem = str(mem),
         fuel = str(fuel),
         table = str(table),
+        service = service,
+        visibility = visibility,
+    )
+
+def mc_rust_program(name, lib, tier, mem = 0, fuel = 0, table = 0, service = "", visibility = None):
+    """A Rust guest PROGRAM, packaged uniformly with the Zig/C++ lane (VISION §16.5 / codex #1). A
+    Rust `rust_binary` (`lib`) declares NO metadata in its source; this rule transitions it to opt +
+    wasm32 (`release_wasm`), then stamps `mc_tier`/`mc_budget`/`mc_service` from the BUILD attributes
+    and attests it (`mc_program`). So both guest lanes declare tier/budget/service ONCE — in the build
+    graph, not the source — every guest is `mc-attest`ed, and the `McProgramInfo` provider carries the
+    metadata for downstream image/manifest rules. `release_wasm` stays the kernel-only transition; this
+    is its userland counterpart."""
+    release_wasm(
+        name = name + "_opt",
+        lib = lib,
+        platform = "//platforms:wasm32_freestanding",
+    )
+    mc_program(
+        name = name,
+        wasm = ":" + name + "_opt",
+        tier = tier,
+        mem = mem,
+        fuel = fuel,
+        table = table,
         service = service,
         visibility = visibility,
     )

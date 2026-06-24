@@ -9,9 +9,7 @@
 
 use sysroot as rt;
 
-rt::declare_tier!("isolated"); // needs no capabilities — it never does anything
-rt::declare_service!("crashloop"); // claims the "crashloop" name so the kernel will activate it…
-rt::entry!(main);
+rt::entry!(main); // tier (isolated) + service ("crashloop") are declared in the BUILD (mc_rust_program)
 
 /// The kernel passes this as `argv[1]` when it spawns a binary in SERVICE mode (matches the kernel's
 /// `SERVICE_MARKER`).

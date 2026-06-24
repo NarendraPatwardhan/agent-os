@@ -25,8 +25,7 @@ use sysroot as rt;
 #[global_allocator]
 static ALLOC: talc::wasm::WasmDynamicTalc = talc::wasm::new_wasm_dynamic_allocator();
 
-// `sh` runs at whatever privilege it was launched with.
-rt::declare_tier!("full");
+// `sh`'s tier (full) is declared in the BUILD (mc_rust_program); it runs at full privilege.
 
 const HELP: &str = "\
 sh — the memcontainers shell

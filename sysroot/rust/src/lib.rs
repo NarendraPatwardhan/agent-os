@@ -3,9 +3,10 @@
 //! A guest links this `no_std` rlib to get three things (§16.2): the `mc` import block
 //! GENERATED from the syscall contract (so a guest can never import a syscall the kernel
 //! doesn't serve — drift = compile error, B2); an ergonomic safe-wrapper skin over those
-//! raw `i32` imports (`read`/`write_all`/`open`/`spawn`/… as `Result<T, errno>`); and the
-//! `entry!`/`declare_tier!`/`declare_budget!`/`declare_service!` macros that stamp `_start`
-//! and the `mc_tier`/`mc_budget`/`mc_service` custom sections the kernel reads at exec. Built for
+//! raw `i32` imports (`read`/`write_all`/`open`/`spawn`/… as `Result<T, errno>`); and the `entry!`
+//! macro that exports `_start`. A guest's load-time metadata (`mc_tier`/`mc_budget`/`mc_service`) is
+//! NOT declared here — both guest lanes declare it in the BUILD and stamp it post-link (`mc_program`
+//! for Zig/C++, `mc_rust_program` for Rust), so the build graph is its single source. Built for
 //! wasm32-unknown-unknown; every guest pointer is an offset into the guest's OWN linear
 //! memory, never a host object (A6).
 
