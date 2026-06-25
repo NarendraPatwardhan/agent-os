@@ -97,7 +97,16 @@ crate.from_cargo(
     cargo_lockfile = "//memcontainers/programs/typst/glue:Cargo.lock",
     manifests = ["//memcontainers/programs/typst/glue:Cargo.toml"],
 )
-use_repo(crate, "crates", "host_crates", "guest_crates", "typst_crates")
+# The NIF universe (std, native): just `rustler` for the BEAM host shim
+# (//memcontainers/hosts/wasmtime/nif). Its OWN lock — apart from @host_crates — so rustler
+# never feature-unifies with the host's wasmtime graph; the `host` crate it wraps is a Bazel
+# dep (//memcontainers/hosts/wasmtime:host), not a crate_universe entry. (CONTROL_PLANE.md §6.1)
+crate.from_cargo(
+    name = "nif_crates",
+    cargo_lockfile = "//memcontainers/hosts/wasmtime/nif:Cargo.lock",
+    manifests = ["//memcontainers/hosts/wasmtime/nif:Cargo.toml"],
+)
+use_repo(crate, "crates", "host_crates", "guest_crates", "typst_crates", "nif_crates")
 
 # aspect_bazel_lib — write_source_files + diff_test for the contract drift gate (B2).
 bazel_dep(name = "aspect_bazel_lib", version = "2.22.5")
