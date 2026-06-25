@@ -1,0 +1,61 @@
+# The Elixir control-plane app — Mix-backed, on the HERMETIC discord toolchain
+# (rules_elixir -> discord/rules_erlang; OTP 26.2.5 + Elixir 1.16.1 built from source).
+#
+# IN-GRAPH (no separate Bazel workspace): the toolchain is registered in //MODULE.bazel and
+# SELECTED by `--config=elixir` (which sets the host/target platforms in //platforms). Build
+# and test with the config, e.g.:
+#     bazel test //server/otp_hello:mix_test --config=elixir
+#
+# A plain `bazel build //...` SKIPS these targets — they are target_compatible_with the
+# `erlang_26_2` constraint, which only the --config=elixir target platform carries — so the
+# rest of the repo's build/test is unaffected (a global erlang platform would clobber the
+# wasm/Rust/Zig builds, which is exactly why selection is scoped to the config).
+load("@rules_elixir//:defs.bzl", "mix_library", "mix_test", "mix_release")
+
+# Buildable only under --config=elixir (its target platform carries erlang_26_2); otherwise
+# Bazel marks these incompatible and skips them in wildcard (`//...`) builds.
+_ELIXIR_ONLY = ["@erlang_config//:erlang_26_2"]
+
+# Production library — `mix compile` (HEX_OFFLINE) into the otp_hello_mix OTP app.
+mix_library(
+    name = "lib",
+    app_name = "otp_hello_mix",
+    mix_config = ":mix.exs",
+    srcs = glob(["lib/**/*.ex"]),
+    target_compatible_with = _ELIXIR_ONLY,
+    visibility = ["//visibility:public"],
+)
+
+# Test library — same sources compiled with MIX_ENV=test (what mix_test runs against).
+mix_library(
+    name = "lib_test",
+    app_name = "otp_hello_mix",
+    mix_env = "test",
+    mix_config = ":mix.exs",
+    srcs = glob(["lib/**/*.ex"]),
+    target_compatible_with = _ELIXIR_ONLY,
+)
+
+# `mix test --no-compile --no-deps-check` against the pre-compiled MIX_ENV=test lib.
+# NB: the target must NOT be named `test` — that output dir would shadow the `test/` source
+# dir (Bazel "runfiles symlink obscured"), and `mix test` then can't find the test files.
+mix_test(
+    name = "mix_test",
+    lib = ":lib_test",
+    srcs = glob(["test/**/*.exs"]),
+    target_compatible_with = _ELIXIR_ONLY,
+    env = {
+        "ERL_COMPILER_OPTIONS": "deterministic",
+        "ELIXIR_ERL_OPTIONS": "+fnu",
+    },
+)
+
+# `mix release` — the runnable artifact (a self-contained OTP release with bin/otp_hello_mix).
+# This, not an escript, is what gets containerized via rules_oci later (include_erts → no
+# Erlang needed in the base image; the container entrypoint runs bin/otp_hello_mix).
+mix_release(
+    name = "release",
+    application = ":lib",
+    release_name = "otp_hello_mix",
+    target_compatible_with = _ELIXIR_ONLY,
+)

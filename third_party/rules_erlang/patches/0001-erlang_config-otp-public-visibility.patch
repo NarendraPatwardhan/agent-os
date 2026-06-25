@@ -1,0 +1,19 @@
+Make the source-built OTP target (`otp-<name>`) publicly visible.
+
+discord/rules_elixir's elixir_build references the OTP install cross-repo as
+`@erlang_config//<name>:otp-<name>`, but discord/rules_erlang @ b4b0191 generates that
+`erlang_build` target with no `visibility`, so it defaults to private and the Elixir build
+fails analysis with a visibility error. The toolchains are already public; the raw OTP
+target must be too. One-line, B3 "patch in place" — the exact integration gap between the
+two pinned discord forks.
+
+--- a/repositories/BUILD_internal.tpl
++++ b/repositories/BUILD_internal.tpl
+@@ -19,6 +19,7 @@
+     extra_configure_opts = %{EXTRA_CONFIGURE_OPTS},
+     post_configure_cmds = %{POST_CONFIGURE_CMDS},
+     extra_make_opts = %{EXTRA_MAKE_OPTS},
++    visibility = ["//visibility:public"],
+ )
+
+ erlang_toolchain(

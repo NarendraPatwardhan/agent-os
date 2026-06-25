@@ -1,0 +1,3 @@
+# discord/rules_elixir enters via //MODULE.bazel's git_override (B3: patches in-tree, source
+# out-of-tree). This package only exports the override patch.
+exports_files(["patches/0001-forward-target-compatible-with.patch"])

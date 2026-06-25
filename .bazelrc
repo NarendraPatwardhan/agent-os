@@ -34,3 +34,21 @@ build --sandbox_add_mount_pair=/tmp
 
 # Show what actually failed, not a wall of passing output.
 test --test_output=errors
+
+# --- Elixir control-plane lane (//server/otp_hello) — see //MODULE.bazel ----------------
+# Registries are GLOBAL because Bzlmod module resolution is global. The rabbitmq
+# erlang-packages registry is only consulted for modules absent from the BCR (the erlang hex
+# deps), and the BCR stays FIRST, so existing resolutions are unchanged. Specifying any
+# --registry replaces the default list, so the BCR must be named explicitly.
+common --registry=https://bcr.bazel.build/
+common --registry=https://raw.githubusercontent.com/rabbitmq/bazel-central-registry/erlang-packages/
+
+# Toolchain SELECTION is scoped to `--config=elixir`, NEVER global: a global erlang
+# --host_platform/--platforms would clobber the wasm/Rust/Zig builds (which is the whole point
+# of the "No global target platform" note above). The dual-platform dance rules_erlang needs:
+# the HOST platform carries *_internal (→ build OTP+Elixir from source), the TARGET platform
+# carries the version constraints (→ select the toolchains). The //server/otp_hello targets
+# are target_compatible_with erlang_26_2, so plain `bazel build //...` skips them and only
+# `--config=elixir` builds them. Usage: bazel test //server/otp_hello:mix_test --config=elixir
+build:elixir --host_platform=//platforms:erlang_internal_platform
+build:elixir --platforms=//platforms:erlang_linux_26_2_platform
