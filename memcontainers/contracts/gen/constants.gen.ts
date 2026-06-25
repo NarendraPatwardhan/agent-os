@@ -111,6 +111,16 @@ export const MOUNT_OP_UNLINK = 3;
 export const MOUNT_OP_RENAME = 4;
 export const MOUNT_OP_STAT = 5;
 export const MOUNT_OP_WRITE = 6;
+
+// stat-record
+export const STAT_REC_SIZE_OFF = 0;
+export const STAT_REC_NODE_TYPE_OFF = 8;
+export const STAT_REC_NLINK_OFF = 12;
+export const STAT_REC_MODE_OFF = 16;
+export const STAT_REC_MTIME_OFF = 20;
+export const STAT_REC_ATIME_OFF = 28;
+export const STAT_REC_CTIME_OFF = 36;
+export const STAT_REC_LEN = 44;
 export const WIRE_VERSION = 1;
 
 // the argv[1] marker the kernel passes to spawn a binary in SERVICE mode (SYSTEMS.md)

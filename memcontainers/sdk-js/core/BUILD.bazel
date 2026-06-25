@@ -3,6 +3,7 @@
 # mc-server). Published under the @mc/* scope. The remote/wire half returns with mc-server.
 load("//bazel:ts.bzl", "mc_ts_project")
 load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("@aspect_rules_js//npm:defs.bzl", "npm_package")
 load("@npm//:defs.bzl", "npm_link_all_packages")
 
 # Link @mc/core's deps (@mc/host, @mc/contracts, zod) into :node_modules/*.
@@ -21,9 +22,21 @@ mc_ts_project(
     visibility = ["//visibility:public"],
 )
 
-# Core-level runtime test: a real mc.create() boots the kernel via @mc/host, exercising the @mc/core →
-# @mc/host → @mc/contracts package linking at RUNTIME (the host parity test only covers @mc/host). Same
-# load-bearing data edge as the Rust e2e: the kernel + image it boots are the ones its sources produce.
+# @mc/core as a linkable workspace package. Keep this parallel to @mc/host and @mc/contracts so
+# downstream @mc/* packages depend on the package boundary, not deep source labels.
+npm_package(
+    name = "pkg",
+    srcs = [
+        ":lib",
+        "package.json",
+    ],
+    package = "@mc/core",
+    visibility = ["//visibility:public"],
+)
+
+# Core-level runtime test: a real mc.create() boots the kernel through @mc/host and @mc/contracts package
+# deps (the host parity test only covers @mc/host itself). Same load-bearing data edge as the Rust e2e:
+# the kernel + image it boots are the ones its sources produce.
 mc_ts_project(
     name = "vm_test_lib",
     srcs = ["test/vm.test.ts"],

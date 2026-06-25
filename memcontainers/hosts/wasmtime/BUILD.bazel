@@ -83,3 +83,30 @@ build_test(
         ":mc_bin",
     ],
 )
+
+# Cross-host snapshot fixture (A3/A8) — see test/snapshot_fixture.rs. Boots the kernel under THIS host,
+# writes a marker through the control channel, snapshots, and emits the bytes the JS host's restore test
+# rehydrates. Outside the `host` lib's src/ glob, so it is not part of the library.
+rust_binary(
+    name = "snapshot_fixture",
+    srcs = ["test/snapshot_fixture.rs"],
+    crate_root = "test/snapshot_fixture.rs",
+    edition = "2021",
+    deps = [":host"],
+)
+
+# Run the fixture over the SAME kernel + base the e2e boots (B1) to produce the cross-host snapshot the
+# JS `//memcontainers/hosts/js:cross_host_test` consumes — so the snapshot a test restores is always the
+# one this kernel produces, never a stale checked-in blob.
+genrule(
+    name = "cross_host_snapshot",
+    srcs = [
+        "//memcontainers/kernel/rust:kernel",
+        "//memcontainers/images:base",
+    ],
+    outs = ["cross_host_snapshot.bin"],
+    cmd = "$(execpath :snapshot_fixture) $(execpath //memcontainers/kernel/rust:kernel) " +
+          "$(execpath //memcontainers/images:base) $@",
+    tools = [":snapshot_fixture"],
+    visibility = ["//visibility:public"],
+)

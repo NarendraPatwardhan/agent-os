@@ -4,11 +4,10 @@
   "private": true,
   "type": "module",
   "description": "Unified Vm API over the embedded (in-process) JS host. The @mc/* SDK consumer surface.",
-  "module": "src/index.ts",
-  "types": "src/index.ts",
+  "types": "./src/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./drivers": "./src/drivers.ts"
+    ".": { "types": "./src/index.d.ts", "default": "./src/index.js" },
+    "./drivers": { "types": "./src/drivers.d.ts", "default": "./src/drivers.js" }
   },
   "dependencies": {
     "@mc/host": "workspace:*",

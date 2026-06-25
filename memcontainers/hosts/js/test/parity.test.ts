@@ -51,9 +51,8 @@ async function main(): Promise<void> {
   if (back !== "xyz") throw new Error(`control-channel fs mismatch: ${JSON.stringify(back)}`);
 
   // 3) Snapshot → restore (A8): the MCSN image round-trips through this host, and the rehydrated VM
-  //    continues from the saved state — the /tmp/parity file survives and the restored VM is live. The
-  //    MCSN header is byte-identical to the wasmtime host's, so a Rust-host snapshot restores here too;
-  //    this same-host round-trip exercises the format parse/write that makes that hold.
+  //    continues from the saved state — the /tmp/parity file survives and the restored VM is live.
+  //    Cross-host Rust→JS/JS→Rust restore is the stronger parity proof and belongs in the shared suite.
   const snap = host.snapshot();
   const restored = await new KernelHostBuilder(wasm)
     .deterministic() // fresh capabilities — a restored VM never shares the original's host handles

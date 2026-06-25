@@ -17,13 +17,20 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::wasm::abi::{SERVE_DIRENT_DIR, SERVE_DIRENT_FILE, SERVE_DIRENT_SYMLINK};
+use crate::wasm::abi::{
+    SERVE_DIRENT_DIR, SERVE_DIRENT_FILE, SERVE_DIRENT_SYMLINK, STAT_REC_ATIME_OFF, STAT_REC_CTIME_OFF,
+    STAT_REC_LEN, STAT_REC_MODE_OFF, STAT_REC_MTIME_OFF, STAT_REC_NLINK_OFF, STAT_REC_NODE_TYPE_OFF,
+    STAT_REC_SIZE_OFF,
+};
 
 use crate::vfs::traits::{DirEntry, FsError, Metadata, NodeType, Result};
 
 /// The fixed length of a serialized stat record: `[size:u64][node_type:u32]
-/// [nlink:u32][mode:u32][mtime:i64][atime:i64][ctime:i64]`, little-endian.
-pub const STAT_RECORD_LEN: usize = 44;
+/// [nlink:u32][mode:u32][mtime:i64][atime:i64][ctime:i64]`, little-endian. The length and every field
+/// offset below come from the generated contract (`constants.gen.rs` `STAT_REC_*`) — the ONE source the
+/// out-of-kernel encoders (e.g. `@mc/core` `mount.ts`) share, so this decoder cannot drift from them by
+/// hand (B2).
+pub const STAT_RECORD_LEN: usize = STAT_REC_LEN as usize;
 
 fn u32_at(data: &[u8], off: usize) -> Result<u32> {
     let end = off.checked_add(4).ok_or(FsError::IoError)?;
@@ -54,21 +61,21 @@ pub fn parse_metadata(data: &[u8]) -> Result<Metadata> {
     if data.len() != STAT_RECORD_LEN {
         return Err(FsError::IoError);
     }
-    let size = u64_at(data, 0)?;
-    let node_type = match u32_at(data, 8)? {
-        0 => NodeType::File,
-        1 => NodeType::Dir,
-        2 => return Err(FsError::NotImplemented),
+    let size = u64_at(data, STAT_REC_SIZE_OFF as usize)?;
+    let node_type = match u32_at(data, STAT_REC_NODE_TYPE_OFF as usize)? {
+        SERVE_DIRENT_FILE => NodeType::File,
+        SERVE_DIRENT_DIR => NodeType::Dir,
+        SERVE_DIRENT_SYMLINK => return Err(FsError::NotImplemented),
         _ => return Err(FsError::IoError),
     };
     Ok(Metadata {
         node_type,
         size,
-        nlink: u32_at(data, 12)?,
-        mode: u32_at(data, 16)? as u16,
-        mtime: i64_at(data, 20)?,
-        atime: i64_at(data, 28)?,
-        ctime: i64_at(data, 36)?,
+        nlink: u32_at(data, STAT_REC_NLINK_OFF as usize)?,
+        mode: u32_at(data, STAT_REC_MODE_OFF as usize)? as u16,
+        mtime: i64_at(data, STAT_REC_MTIME_OFF as usize)?,
+        atime: i64_at(data, STAT_REC_ATIME_OFF as usize)?,
+        ctime: i64_at(data, STAT_REC_CTIME_OFF as usize)?,
     })
 }
 

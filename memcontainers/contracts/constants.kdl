@@ -181,6 +181,23 @@ mount-op {
     MOUNT_OP_WRITE   6
 }
 
+// The fixed serve/mount STAT record both proxy filesystems agree on (the 44-byte record §7.1 names). A
+// host driver (or a served guest) WRITES these little-endian fields at these byte offsets; the kernel's
+// fs/proxy.rs READS them back. The ONE place the BYTE LAYOUT lives — the offset analog of the
+// MOUNT_OP_/SERVE_DIRENT_ tables above — so the encoders (e.g. @mc/core mount.ts) and the kernel
+// decoder can never drift apart by hand. Layout:
+//   [size:u64 @0][node_type:u32 @8][nlink:u32 @12][mode:u32 @16][mtime:i64 @20][atime:i64 @28][ctime:i64 @36]
+stat-record {
+    STAT_REC_SIZE_OFF      0
+    STAT_REC_NODE_TYPE_OFF 8
+    STAT_REC_NLINK_OFF     12
+    STAT_REC_MODE_OFF      16
+    STAT_REC_MTIME_OFF     20
+    STAT_REC_ATIME_OFF     28
+    STAT_REC_CTIME_OFF     36
+    STAT_REC_LEN           44
+}
+
 // Wire protocol version (server↔client), versioned separately from the syscall ABI.
 wire-version 1
 

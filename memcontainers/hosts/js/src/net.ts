@@ -38,16 +38,9 @@ interface WsSlot {
   open: boolean;
   closed: boolean;
   outgoing: Uint8Array[];
-  /** Bytes currently buffered in `outgoing` (pre-OPEN), for the send-queue cap. */
-  queuedBytes: number;
   incoming: Uint8Array[];
   frontPos: number;
 }
-
-// Pre-OPEN send-buffer cap: a socket that never opens (or opens slowly) must not let a chatty guest
-// grow `outgoing` without bound. Past this many queued bytes, `wsSend` refuses (-1) — backpressure the
-// guest sees as a transient send failure, not a host memory blowup.
-const WS_MAX_QUEUED_BYTES = 8 * 1024 * 1024; // 8 MiB
 
 // fetch refuses to *set* these request headers; the runtime manages them.
 const FORBIDDEN_REQ_HEADERS = new Set(["host", "content-length", "connection"]);
@@ -192,7 +185,6 @@ export class HostNet implements NetCapability {
       open: false,
       closed: false,
       outgoing: [],
-      queuedBytes: 0,
       incoming: [],
       frontPos: 0,
     };
@@ -210,7 +202,6 @@ export class HostNet implements NetCapability {
           slot.open = true;
           for (const msg of slot.outgoing) sock.send(msg as Uint8Array<ArrayBuffer>);
           slot.outgoing = [];
-          slot.queuedBytes = 0;
         };
         sock.onmessage = (e: MessageEvent) => {
           const data =
@@ -270,11 +261,10 @@ export class HostNet implements NetCapability {
         return -1;
       }
     } else {
-      // Not OPEN yet: queue until the socket flushes on `onopen`, but BOUNDED — a guest flooding a
-      // never-opening socket gets backpressure (-1), not unbounded host memory growth.
-      if (s.queuedBytes + data.length > WS_MAX_QUEUED_BYTES) return -1;
+      // Not OPEN yet: queue until the socket flushes on `onopen` (matches the wasmtime host, which has
+      // no async pre-open window). Bounding this buffer is a kernel/contract concern, not the host's —
+      // see TODO.md §1.
       s.outgoing.push(data.slice());
-      s.queuedBytes += data.length;
     }
     return data.length;
   }

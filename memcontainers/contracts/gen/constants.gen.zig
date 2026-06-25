@@ -111,6 +111,16 @@ pub const MOUNT_OP_UNLINK: u32 = 3;
 pub const MOUNT_OP_RENAME: u32 = 4;
 pub const MOUNT_OP_STAT: u32 = 5;
 pub const MOUNT_OP_WRITE: u32 = 6;
+
+// stat-record
+pub const STAT_REC_SIZE_OFF: i32 = 0;
+pub const STAT_REC_NODE_TYPE_OFF: i32 = 8;
+pub const STAT_REC_NLINK_OFF: i32 = 12;
+pub const STAT_REC_MODE_OFF: i32 = 16;
+pub const STAT_REC_MTIME_OFF: i32 = 20;
+pub const STAT_REC_ATIME_OFF: i32 = 28;
+pub const STAT_REC_CTIME_OFF: i32 = 36;
+pub const STAT_REC_LEN: i32 = 44;
 pub const WIRE_VERSION: u32 = 1;
 
 // the argv[1] marker the kernel passes to spawn a binary in SERVICE mode (SYSTEMS.md)

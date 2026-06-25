@@ -20,6 +20,11 @@ import {
   MOUNT_OP_WRITE,
   SERVE_DIRENT_FILE,
   SERVE_DIRENT_DIR,
+  STAT_REC_SIZE_OFF,
+  STAT_REC_NODE_TYPE_OFF,
+  STAT_REC_NLINK_OFF,
+  STAT_REC_MODE_OFF,
+  STAT_REC_LEN,
   EPERM,
   EACCES,
   ENOENT,
@@ -30,8 +35,6 @@ import {
   EISDIR,
   ENOTEMPTY,
 } from "@mc/contracts/constants";
-
-const STAT_RECORD_LEN = 44;
 
 interface MountRequest {
   op: number;
@@ -72,14 +75,16 @@ function fail(errno: number): Uint8Array {
 const EMPTY = new Uint8Array(0);
 
 function encodeStat(m: DriverMeta): Uint8Array {
-  const out = new Uint8Array(STAT_RECORD_LEN);
+  // Field offsets + length come from the generated contract (@mc/contracts/constants STAT_REC_*) — the
+  // same source the kernel's fs/proxy.rs decoder reads, so the two can't drift by hand (B2).
+  const out = new Uint8Array(STAT_REC_LEN);
   const dv = new DataView(out.buffer);
   const isDir = m.kind === "dir";
-  dv.setBigUint64(0, BigInt(Math.max(0, Math.floor(m.size))), true); // size
-  dv.setUint32(8, isDir ? SERVE_DIRENT_DIR : SERVE_DIRENT_FILE, true); // node_type: the serve-dirent file/dir enum
-  dv.setUint32(12, isDir ? 2 : 1, true); // nlink
-  dv.setUint32(16, isDir ? 0o755 : 0o644, true); // mode
-  // mtime/atime/ctime (i64 each at 20/28/36) stay 0 — synthetic.
+  dv.setBigUint64(STAT_REC_SIZE_OFF, BigInt(Math.max(0, Math.floor(m.size))), true);
+  dv.setUint32(STAT_REC_NODE_TYPE_OFF, isDir ? SERVE_DIRENT_DIR : SERVE_DIRENT_FILE, true);
+  dv.setUint32(STAT_REC_NLINK_OFF, isDir ? 2 : 1, true);
+  dv.setUint32(STAT_REC_MODE_OFF, isDir ? 0o755 : 0o644, true);
+  // mtime/atime/ctime (i64 at STAT_REC_MTIME/ATIME/CTIME_OFF) stay 0 — synthetic.
   return out;
 }
 

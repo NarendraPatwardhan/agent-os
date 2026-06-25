@@ -75,21 +75,27 @@ export function makeBridge(st: HostState): WebAssembly.ModuleImports {
     cap: number,
     call: (tmp: Uint8Array) => number,
   ): number => {
+    if (!st.mem.canAccess(buf, cap)) return -1;
     const tmp = new Uint8Array(cap);
     const n = call(tmp);
     if (n > 0) st.mem.write(buf, tmp.subarray(0, Math.min(n, cap)));
     return n;
   };
 
+  const readOrNull = (ptr: number, len: number): Uint8Array | null => st.mem.tryRead(ptr, len);
+  const readOrEmpty = (ptr: number, len: number): Uint8Array => readOrNull(ptr, len) ?? new Uint8Array(0);
+
   const env: Record<string, WebAssembly.ImportValue> = {
     // ---- terminal I/O ------------------------------------------------------
     mc_stdout_write: (ptr: number, len: number) => {
-      const bytes = st.mem.read(ptr, len);
+      const bytes = readOrNull(ptr, len);
+      if (!bytes) return;
       trackStdout(bytes);
       st.stdout.write(bytes);
     },
     mc_stderr_write: (ptr: number, len: number) => {
-      st.stderr.write(st.mem.read(ptr, len));
+      const bytes = readOrNull(ptr, len);
+      if (bytes) st.stderr.write(bytes);
     },
     mc_stdin_read: (_buf: number, _len: number): number => 0, // push-model input
 
@@ -99,14 +105,17 @@ export function makeBridge(st: HostState): WebAssembly.ModuleImports {
 
     // ---- randomness --------------------------------------------------------
     mc_random: (ptr: number, len: number) => {
+      if (!st.mem.canAccess(ptr, len)) return;
       const buf = new Uint8Array(len);
       st.rng.fill(buf);
       st.mem.write(ptr, buf);
     },
 
     // ---- HTTP (poll-based) -------------------------------------------------
-    mc_http_request: (ptr: number, len: number): number =>
-      st.net.httpRequest(st.mem.read(ptr, len)),
+    mc_http_request: (ptr: number, len: number): number => {
+      const req = readOrNull(ptr, len);
+      return req ? st.net.httpRequest(req) : -1;
+    },
     mc_http_response_poll: (h: number, buf: number, len: number): number =>
       drainInto(buf, len, (tmp) => st.net.httpPoll(h, tmp)),
     mc_http_response_body: (h: number, buf: number, len: number): number =>
@@ -114,30 +123,46 @@ export function makeBridge(st: HostState): WebAssembly.ModuleImports {
     mc_http_request_close: (h: number) => st.net.httpClose(h),
 
     // ---- WebSocket ---------------------------------------------------------
-    mc_ws_connect: (ptr: number, len: number): number =>
-      st.net.wsConnect(st.mem.readString(ptr, len)),
-    mc_ws_send: (h: number, ptr: number, len: number): number =>
-      st.net.wsSend(h, st.mem.read(ptr, len)),
+    mc_ws_connect: (ptr: number, len: number): number => {
+      const url = readOrNull(ptr, len);
+      return url ? st.net.wsConnect(new TextDecoder().decode(url)) : -1;
+    },
+    mc_ws_send: (h: number, ptr: number, len: number): number => {
+      const data = readOrNull(ptr, len);
+      return data ? st.net.wsSend(h, data) : -1;
+    },
     mc_ws_recv: (h: number, buf: number, len: number): number =>
       drainInto(buf, len, (tmp) => st.net.wsRecv(h, tmp)),
     mc_ws_close: (h: number) => st.net.wsClose(h),
 
     // ---- host call ---------------------------------------------------------
-    mc_host_call: (ptr: number, len: number): number => st.hostCall.start(st.mem.read(ptr, len)),
+    mc_host_call: (ptr: number, len: number): number => {
+      const req = readOrNull(ptr, len);
+      return req ? st.hostCall.start(req) : -1;
+    },
     mc_host_call_poll: (h: number, _buf: number, _len: number): number => st.hostCall.poll(h),
     mc_host_call_body: (h: number, buf: number, len: number): number =>
       drainInto(buf, len, (tmp) => st.hostCall.body(h, tmp)),
     mc_host_call_close: (h: number) => st.hostCall.close(h),
 
     // ---- persistence -------------------------------------------------------
-    mc_persist_get: (kp: number, kl: number, vp: number, vl: number): number =>
-      drainInto(vp, vl, (tmp) => st.persist.get(st.mem.read(kp, kl), tmp)),
-    mc_persist_put: (kp: number, kl: number, vp: number, vl: number): number =>
-      st.persist.put(st.mem.read(kp, kl), st.mem.read(vp, vl)),
-    mc_persist_delete: (kp: number, kl: number): number =>
-      st.persist.delete(st.mem.read(kp, kl)),
-    mc_persist_list: (pp: number, pl: number, bp: number, bl: number): number =>
-      drainInto(bp, bl, (tmp) => st.persist.list(st.mem.read(pp, pl), tmp)),
+    mc_persist_get: (kp: number, kl: number, vp: number, vl: number): number => {
+      const key = readOrNull(kp, kl);
+      return key ? drainInto(vp, vl, (tmp) => st.persist.get(key, tmp)) : -1;
+    },
+    mc_persist_put: (kp: number, kl: number, vp: number, vl: number): number => {
+      const key = readOrNull(kp, kl);
+      const val = readOrNull(vp, vl);
+      return key && val ? st.persist.put(key, val) : -1;
+    },
+    mc_persist_delete: (kp: number, kl: number): number => {
+      const key = readOrNull(kp, kl);
+      return key ? st.persist.delete(key) : -1;
+    },
+    mc_persist_list: (pp: number, pl: number, bp: number, bl: number): number => {
+      const prefix = readOrNull(pp, pl);
+      return prefix ? drainInto(bp, bl, (tmp) => st.persist.list(prefix, tmp)) : -1;
+    },
 
     // ---- threading (cooperative-backed) ------------------------------------
     mc_threads_init: (max: number): number => {
@@ -156,7 +181,7 @@ export function makeBridge(st: HostState): WebAssembly.ModuleImports {
     },
     mc_log: (level: number, ptr: number, len: number) => {
       const prefix = LOG_PREFIX[level] ?? "[LOG] ";
-      const body = st.mem.read(ptr, len);
+      const body = readOrEmpty(ptr, len);
       const needsNl = body.length === 0 || body[body.length - 1] !== 0x0a;
       const prefixBytes = enc.encode(prefix);
       const line = new Uint8Array(prefixBytes.length + body.length + (needsNl ? 1 : 0));
@@ -170,6 +195,7 @@ export function makeBridge(st: HostState): WebAssembly.ModuleImports {
     // ---- base image --------------------------------------------------------
     mc_load_base_image: (buf: number, bufLen: number): number => {
       if (!st.baseImage) return -1;
+      if (!st.mem.canAccess(buf, bufLen)) return -1;
       const toCopy = Math.min(st.baseImage.length, bufLen);
       if (toCopy > 0 && !st.mem.write(buf, st.baseImage.subarray(0, toCopy))) return -1;
       // Return the FULL image length (not just what fit): the kernel probes with a zero-length read to

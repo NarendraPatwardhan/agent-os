@@ -1,4 +1,4 @@
-import { CONTROL_EXPORTS } from "@mc/contracts/ctl";
+import { EXPORTS } from "@mc/contracts/ctl";
 import { EAGAIN } from "@mc/contracts/constants";
 import { Mem } from "./memory.js";
 import { makeBridge, type HostState } from "./bridge.js";
@@ -18,97 +18,42 @@ import type {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-interface KernelExports {
-  memory: WebAssembly.Memory;
-  mc_init: () => number;
-  mc_tick: () => number;
-  mc_input: (addr: number, len: number) => void;
-  mc_worker_entry?: (worker: number) => number;
-  // Structured control channel (mc_ctl_*) — present on a kernel built with it.
-  mc_ctl_buf?: (len: number) => number;
-  mc_ctl_read?: (pathPtr: number, pathLen: number) => number;
-  mc_ctl_write?: (pathPtr: number, pathLen: number, dataPtr: number, dataLen: number) => number;
-  mc_ctl_readdir?: (pathPtr: number, pathLen: number) => number;
-  mc_ctl_stat?: (pathPtr: number, pathLen: number) => number;
-  mc_ctl_mkdir?: (pathPtr: number, pathLen: number) => number;
-  mc_ctl_unlink?: (pathPtr: number, pathLen: number) => number;
-  mc_ctl_symlink?: (
-    targetPtr: number,
-    targetLen: number,
-    linkPtr: number,
-    linkLen: number,
-  ) => number;
-  mc_ctl_mount?: (pathPtr: number, pathLen: number, readOnly: number) => number;
-  mc_ctl_unmount?: (pathPtr: number, pathLen: number) => number;
-  mc_ctl_exec_start?: (cmdLen: number) => number;
-  mc_ctl_exec_poll?: (jobId: number) => number;
-  mc_ctl_exec_peek?: (jobId: number) => number;
-  mc_commit_layer?: () => number;
-  mc_ctl_exec_close?: (jobId: number) => number;
-  // Snapshot support (A8).
-  mc_inflight_egress?: () => number;
-  mc_pending_commits?: () => number;
-}
-
-// Every mc_* control export the host knows how to call. EACH must be a declared `CONTROL_EXPORT` — the
-// export-side analog of the bridge's import-completeness check: a rename or removal in the contract
-// surfaces HERE at startup (B2), not as a silent miss at call time. The reverse does NOT hold — the
-// host calls a SUBSET; a coop/imageless kernel legitimately omits mc_resize / mc_quiesce_* / exec,
-// which the optional `ctlFn` guards handle.
-const HOST_KNOWN_EXPORTS = [
-  "mc_init",
-  "mc_tick",
-  "mc_input",
-  "mc_worker_entry",
-  "mc_ctl_buf",
-  "mc_ctl_read",
-  "mc_ctl_write",
-  "mc_ctl_readdir",
-  "mc_ctl_stat",
-  "mc_ctl_mkdir",
-  "mc_ctl_unlink",
-  "mc_ctl_symlink",
-  "mc_ctl_mount",
-  "mc_ctl_unmount",
-  "mc_ctl_exec_start",
-  "mc_ctl_exec_poll",
-  "mc_ctl_exec_peek",
-  "mc_ctl_exec_close",
-  "mc_commit_layer",
-  "mc_inflight_egress",
-  "mc_pending_commits",
-] as const;
-
-// Compile-time: HOST_KNOWN_EXPORTS must enumerate EXACTLY the `KernelExports` call surface (minus the
-// `memory` field). If the interface gains or loses an export and this list isn't updated in lockstep,
-// `_exportListExact` fails to typecheck — so the runtime check below always covers the real surface.
-type ListedExport = (typeof HOST_KNOWN_EXPORTS)[number];
-type SurfaceExport = Exclude<keyof KernelExports, "memory">;
-const _exportListExact: [ListedExport] extends [SurfaceExport]
-  ? [SurfaceExport] extends [ListedExport]
-    ? true
-    : never
-  : never = true;
-void _exportListExact;
+// The kernel's control-export surface, DERIVED from the generated contract (ctl.gen.ts `EXPORTS`) — no
+// hand-written ABI (B2), so the host's typed call sites can't desync from the contract. A wasm
+// i32/u32/cptr/mptr/len arg or ret is a JS `number`; a `void` ret is void; arity comes from the row's
+// `args`. Each export is optional because a given kernel build omits some (a cooperative kernel has no
+// `mc_quiesce_*`, an imageless one no exec) — except the mandatory trio, promoted to required for
+// ergonomic call sites and asserted present by `checkControlExports`.
+type WasmRet<R> = R extends "void" ? void : number;
+type WasmArgs<A extends readonly unknown[]> = { -readonly [K in keyof A]: number };
+type ExportFn<Row extends { args: readonly unknown[]; ret: string }> = (
+  ...args: WasmArgs<Row["args"]>
+) => WasmRet<Row["ret"]>;
+type ContractExports = { [Row in (typeof EXPORTS)[number] as Row["name"]]?: ExportFn<Row> };
 
 // The mandatory trio the host cannot drive a kernel without (the rest gate on the kernel build).
 const REQUIRED_EXPORTS = ["mc_init", "mc_tick", "mc_input"] as const;
+type RequiredExport = (typeof REQUIRED_EXPORTS)[number];
 
+type KernelExports = { memory: WebAssembly.Memory } & Required<Pick<ContractExports, RequiredExport>> &
+  Omit<ContractExports, RequiredExport>;
+
+// Validate the booted kernel's control exports against the contract: every export it actually provides
+// must match the contract's ARITY — a control.kdl signature change the kernel picked up surfaces HERE
+// at startup (B2), not as a trap on the first call — and the mandatory trio must be present + callable.
 function checkControlExports(raw: WebAssembly.Exports): void {
-  const declared = new Set<string>(CONTROL_EXPORTS);
-  // Every export the host names must be one the contract actually declares (catches a contract rename
-  // or a host typo at startup, not at call time).
-  for (const name of HOST_KNOWN_EXPORTS) {
-    if (!declared.has(name)) {
+  const exports = raw as Record<string, unknown>;
+  for (const row of EXPORTS) {
+    const fn = exports[row.name];
+    if (typeof fn === "function" && fn.length !== row.args.length) {
       throw new Error(
-        `host calls control export "${name}", which is not declared in the contract (ctl.gen.ts) — ` +
-          `the host's export surface has drifted from CONTROL_EXPORTS`,
+        `control export "${row.name}" has arity ${fn.length}, but the contract (ctl.gen.ts) declares ` +
+          `${row.args.length} — the kernel artifact and the contract disagree`,
       );
     }
   }
-  // The mandatory trio must additionally be present on the booted artifact.
   for (const name of REQUIRED_EXPORTS) {
-    if (typeof (raw as Record<string, unknown>)[name] !== "function") {
+    if (typeof exports[name] !== "function") {
       throw new Error(`kernel artifact is missing the required control export "${name}"`);
     }
   }
@@ -373,6 +318,7 @@ export class KernelHostBuilder {
     }
     const image = snapshot.subarray(SNAPSHOT_HEADER_LEN, SNAPSHOT_HEADER_LEN + hdr.memLen);
     new Uint8Array(exports.memory.buffer).set(image, 0);
+    st.workersGranted = hdr.workers;
 
     return new KernelHost(st, exports, hdr.scratchAddr, hdr.scratchLen);
   }
@@ -718,7 +664,7 @@ export class KernelHost {
     dv.setUint32(4, SNAPSHOT_VERSION, true);
     dv.setUint32(8, this.scratchAddr >>> 0, true);
     dv.setUint32(12, this.scratchLen, true);
-    dv.setUint32(16, 0, true); // workers (cooperative JS host)
+    dv.setUint32(16, this.st.workersGranted >>> 0, true);
     dv.setUint32(20, memLen, true);
     out.set(mem, SNAPSHOT_HEADER_LEN);
     return out;

@@ -1,7 +1,7 @@
 // @mc/core embedded backend over @mc/host: a real `mc.create()` boots the SAME kernel.wasm + base.tar
 // the wasmtime e2e uses (passed as bytes, so no env/runfiles indirection through artifacts.ts), and the
-// Vm API runs a real command + a real fs round-trip. This exercises the @mc/core → @mc/host →
-// @mc/contracts package linking at RUNTIME — the layer the host-only parity test cannot reach.
+// Vm API runs a real command + a real fs round-trip. This exercises the SDK library through the
+// @mc/host → @mc/contracts package deps at RUNTIME — the layer the host-only parity test cannot reach.
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";

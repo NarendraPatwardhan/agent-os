@@ -312,7 +312,7 @@ function imageNeedsStore(image: CreateOptions["image"]): boolean {
 function validateBrowserArtifacts(opts: CreateOptions): void {
   if (!(opts.kernel instanceof Uint8Array)) {
     throw new Error(
-      "runtime 'browser' requires opts.kernel — the kernel-coop.wasm bytes you fetched (and opts.image bytes, or null)",
+      "runtime 'browser' requires opts.kernel — the kernel.wasm bytes you fetched (and opts.image bytes, or null)",
     );
   }
   if (opts.image === undefined || opts.image === "base:latest") {
@@ -500,7 +500,7 @@ export const mc = {
     // Browser and Bun share the embedded backend — the kernel runs in-process
     // via WebAssembly + the JS bridge (fetch/WebSocket/crypto are browser-native).
     // The only difference is artifact loading: a browser caller fetches the
-    // kernel-coop.wasm (+ base.tar) and passes the bytes, since the workspace
+    // kernel.wasm (+ base.tar) and passes the bytes, since the workspace
     // build paths (Bun.file) don't exist in a browser.
     if (runtime === "browser") validateBrowserArtifacts(opts);
     return new Vm(await makeEmbedded(opts, null), opts);
