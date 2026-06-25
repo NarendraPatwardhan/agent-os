@@ -1,7 +1,7 @@
 //! `grep` — the "from wasi / external-crate" representative (SYSTEMS.md): ripgrep's engine
 //! (`grep-regex` + `grep-searcher`), pure **std** I/O (→ `wasi_snapshot_preview1` → `mc` via the
 //! `//wasi-adapter`), `walkdir` for `-r`. The engine is ported verbatim from memcontainers'
-//! grep; only two things change — the hand-rolled getopt becomes **clap** (reused, per §16.3),
+//! grep; only two things change — the hand-rolled getopt becomes **clap** (reused),
 //! and `main`→`uumain` (the multicall stamps the tier, so its `mc_tier!` is dropped). Files are
 //! searched in memory (`search_slice`) because wasip1 has no mmap.
 //!

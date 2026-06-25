@@ -1,6 +1,6 @@
 //! CLI mode: the thin client. `typst compile <input.typ> [output.pdf]` connects to the warm `typst`
 //! service, sends the input's absolute path, drains the framed response, writes the PDF, and prints any
-//! diagnostics — the §3.3 one-binary face over the same warm engine the Luau library reaches.
+//! diagnostics — the one-binary face over the same warm engine the Luau library reaches.
 
 use std::path::{Path, PathBuf};
 

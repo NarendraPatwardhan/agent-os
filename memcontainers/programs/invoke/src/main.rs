@@ -1,4 +1,4 @@
-//! `invoke` — the host-tool bridge (§8 / API §11.2). Invokes a host-resident tool via
+//! `invoke` — the host-tool bridge. Invokes a host-resident tool via
 //! `mc_sys_host_call` and streams its result to stdout. Forms:
 //!
 //!   invoke <name> <json>          # explicit JSON args (e.g. '{"city":"London"}')

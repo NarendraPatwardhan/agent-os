@@ -368,7 +368,7 @@ fn emit_constants(lang: &str, nodes: &[Node], contract: &str) -> String {
             // resolver that ORs the named cap bits (the CAP_* consts emitted above), so the
             // kernel's Tier::caps() derives from this one place and both kernels agree.
             "tier-caps" => {
-                comment(&mut o, "tier → capability ceiling — the kernel's Tier::caps() consumes this (single source, §16 / §15.4)");
+                comment(&mut o, "tier → capability ceiling — the kernel's Tier::caps() consumes this (single source)");
                 let arms: Vec<(String, String)> = n
                     .children
                     .iter()
@@ -457,13 +457,13 @@ struct Row {
     /// the consumer's `$emit` applies to its generated item, so a build flavor's
     /// exports/handlers (e.g. the threads-only control exports) generate ONLY under that
     /// feature while the contract still describes the complete ABI. The first of the per-row
-    /// metadata the contract carries; the `cap` floor (§15.4) now sits beside it, and a
-    /// tracepoint (§15.3) annotation can slot in next.
+    /// metadata the contract carries; the `cap` floor now sits beside it, and a
+    /// tracepoint annotation can slot in next.
     cfg: Option<String>,
-    /// Optional `cap="CAP_A CAP_B …"` on a syscall row — the capability FLOOR (§15.4): the
+    /// Optional `cap="CAP_A CAP_B …"` on a syscall row — the capability FLOOR: the
     /// caps any ONE of which a caller's tier must hold to invoke it (a write op lists both
     /// CAP_FS_WRITE and the /scratch-only CAP_SCRATCH). Projected (mc only) to the
-    /// `SYSCALL_CAPS` matrix the attestation (§16.4) and /sys/abi (§15.5) read; the kernel's
+    /// `SYSCALL_CAPS` matrix the attestation and /sys/abi read; the kernel's
     /// contextual refinements (open's O_WRITE, per-mount FS caps) sit on top.
     cap: Option<String>,
 }

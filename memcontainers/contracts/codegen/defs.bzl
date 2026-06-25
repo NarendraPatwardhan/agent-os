@@ -50,7 +50,7 @@ def abi_library(name, contract, langs):
 
         # Compile-validate the code projections (the generator's output must be real
         # source). Text projections (ts/md/asyncapi) are gated by diff only until their
-        # compiler lane lands (ts: the JS host; §6.3).
+        # compiler lane lands (ts: the JS host).
         if lang == "rust":
             rust_library(
                 name = "%s_rust" % name,

@@ -1,5 +1,5 @@
 -- log.luau — structured logging that emits newline-delimited JSON ("framed JSON
--- lines") on stdout, the shape `vm.session` consumes (ctx/LUAU.md §7.1). Each call is
+-- lines") on stdout, the shape `vm.session` consumes. Each call is
 -- exactly one JSON object on its own line; `log.event{...}` is the raw primitive,
 -- the level helpers add `level`/`msg`/`time`.
 

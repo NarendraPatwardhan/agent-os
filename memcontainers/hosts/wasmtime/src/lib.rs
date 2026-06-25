@@ -8,7 +8,7 @@
 //! `env_rust`) and the `mc_*` export lookups (`exports`, from `ctl_rust`). It also owns the
 //! terminal-independent I/O sinks and the deterministic clock/RNG mode for tests (A7: the
 //! only nondeterminism is the clock + entropy, and the deterministic sources make a run
-//! byte-for-byte replayable, §15.1).
+//! byte-for-byte replayable, SYSTEMS.md section 8).
 
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
@@ -156,7 +156,7 @@ impl ClockSource for SystemClock {
 
 /// Fixed wall-clock; monotonic advances by 1 ms per call so loops that poll
 /// `mc_time_monotonic` make forward progress without leaking real-time jitter into tests.
-/// The deterministic half of replayability (§15.1).
+/// The deterministic half of replayability (SYSTEMS.md section 8).
 pub struct FixedClock {
     epoch_ms: i64,
     monotonic: i64,
@@ -545,7 +545,7 @@ impl KernelHostBuilder {
     }
 
     /// Wire deterministic sources so two runs with the same input transcript produce
-    /// byte-identical output (§15.1). Tests should call this; the CLI should not.
+    /// byte-identical output (SYSTEMS.md section 8). Tests should call this; the CLI should not.
     pub fn deterministic(mut self) -> Self {
         self.clock = Some(Box::new(FixedClock::new(1_700_000_000_000)));
         self.rng = Some(Box::new(SeededRng::new(0xDEAD_BEEF_CAFE_F00D)));

@@ -1,5 +1,5 @@
-//! Proof on a REAL artifact — and, in the same breath, the §9.3 conformance check on the
-//! kernel↔host `env` boundary. The kernel's `env` extern block is generated from
+//! Proof on a REAL artifact — and, in the same breath, the conformance check (SYSTEMS.md
+//! section 9.3) on the kernel↔host `env` boundary. The kernel's `env` extern block is generated from
 //! `bridge.kdl`, the SAME contract `env_rust::BRIDGE_IMPORTS` is projected from. So walking
 //! the genuine `//kernel/rust:kernel` wasm and checking its `env` imports against the
 //! DECLARED bridge proves three things at once: the oracle parses real wasm, the projection
@@ -7,7 +7,7 @@
 //! bridge symbol is hand-listed here — a copy of the surface in the test is the very drift
 //! B2 exists to forbid, so the declared set comes from the projection, never a literal.
 //!
-//! kernel.wasm is a `data` dep (B1, §7.2), located via the runfiles crate as //memcontainers/tests/e2e does.
+//! kernel.wasm is a `data` dep (B1, SYSTEMS.md section 14.1), located via the runfiles crate as //memcontainers/tests/e2e does.
 
 use env_rust::BRIDGE_IMPORTS;
 use wasm_imports::{ImportedSymbols, imported_function_symbols};
@@ -22,7 +22,7 @@ fn kernel_wasm() -> Vec<u8> {
     std::fs::read(&p).unwrap_or_else(|e| panic!("reading {}: {e}", p.display()))
 }
 
-/// WHY: the conformance safety property (§9.3) on the live kernel — every `env` symbol the
+/// WHY: the conformance safety property (SYSTEMS.md section 9.3) on the live kernel — every `env` symbol the
 /// kernel imports must be in the DECLARED bridge surface projected from the contract; a host
 /// call the contract never declared is drift the build must reject. GUARANTEES: the oracle
 /// pulls the kernel's real `env` surface out of a megabyte of release wasm, that surface ⊆
@@ -46,7 +46,7 @@ fn kernel_env_imports_conform_to_the_declared_bridge() {
 /// WHY: the oracle must scope strictly to the requested module and not invent symbols.
 /// GUARANTEES: asking for a module the kernel does not import from returns an empty set (not
 /// an error), and a plausible-but-absent name is reported absent — the negative space the
-/// §9.3 coverage check relies on is honest.
+/// coverage check (SYSTEMS.md section 9.3) relies on is honest.
 #[test]
 fn unknown_module_is_empty_and_absent_symbols_are_absent() {
     let wasm = kernel_wasm();

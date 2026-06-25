@@ -1,7 +1,7 @@
 //! The per-tier multicall — std, routed exactly like uutils' own `coreutils` binary: pick an
 //! applet from `argv[0]`'s basename (or `argv[1]` in bundle form) and call its
 //! `uumain(args) -> i32`. From ONE applet list, [`mcbox!`] emits this `main`, the box's
-//! `mc_applets` roster (the source of the generated `/bin` symlinks, §16.3), and its `mc_tier`
+//! `mc_applets` roster (the source of the generated `/bin` symlinks), and its `mc_tier`
 //! stamp; the cfg features select which applets a box carries. Ported from memcontainers'
 //! `wasi::multicall::multicall!`, generalized to mixed applet origins (hand-written +
 //! external-crate + uutils) and four cfg-tiered boxes.
@@ -28,7 +28,7 @@ pub fn basename(p: &OsString) -> String {
 macro_rules! mcbox {
     ( $( $name:literal @ $tier:literal $( [ $set:literal ] )? => $run:path ),+ $(,)? ) => {
         // The box's tier = the HIGHEST enabled tier feature → the `mc_tier` section the kernel
-        // reads at exec to narrow this box's capabilities (§4.3, §16.3).
+        // reads at exec to narrow this box's capabilities.
         #[cfg(feature = "tier_full")]
         const __BOX_TIER: &str = "full";
         #[cfg(all(feature = "tier_readwrite", not(feature = "tier_full")))]

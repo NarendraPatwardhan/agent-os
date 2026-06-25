@@ -4,10 +4,10 @@
 # coreutils long tail (cat, ls, grep-likes, sort, …), the shell (sh), the agent, the
 # mc-tool host-call shim, and the service binaries (sqlite/luau are third_party).
 #
-# Tools-as-libraries (§4.5): ONE binary per tool, two activation modes (one-shot CLI vs
+# Tools-as-libraries: ONE binary per tool, two activation modes (one-shot CLI vs
 # resident service), chosen by the kernel via the contract — never a `/bin/<tool>-svc`.
 #
-# The guest-userland LANGUAGE is revisited post-stabilization (§13): keep uutils-via-
+# The guest-userland LANGUAGE is revisited post-stabilization: keep uutils-via-
 # WASI, move hot tools to Zig, or convert Toybox/BSD via `zig cc`. Phase A ports Rust.
 #
 # Phase A:

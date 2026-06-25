@@ -1,7 +1,7 @@
 # kernel/zig — the Phase-B kernel: a Zig reimplementation against the UNCHANGED
 # contracts/, mining zmc for the wasmi-shim integration and the VFS/scheduler seed
 # (SYSTEMS.md Phase B). Accepted only when it matches kernel/rust across the whole
-# e2e + conformance suite (B7, §9.6) — by parity, never by inspection. The size lever
+# e2e + conformance suite (B7) — by parity, never by inspection. The size lever
 # (B5): zmc landed 859 KB *with* the interpreter.
 #
 # Phase B:

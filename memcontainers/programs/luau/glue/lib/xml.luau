@@ -1,6 +1,6 @@
 -- xml.luau — a standalone, namespace-aware XML library: an ordered, lossless DOM,
 -- a parser (DOM + streaming SAX over one tokenizer), a faithful escaping
--- serializer, and a well-formedness validator. A first-class module (ctx/LUAU.md §7):
+-- serializer, and a well-formedness validator. A first-class module:
 -- XML is its own domain — agents read/write SVG, RSS, config, and OOXML — and it
 -- is the substrate the zip/opc + office tier build on (luau-extensions Ch.04).
 --
@@ -20,7 +20,7 @@
 
 local xml = {}
 
--- Namespace URIs that are always in scope (XML 1.0 §3 reserved prefixes).
+-- Namespace URIs that are always in scope (XML 1.0 reserved prefixes).
 local XML_NS = "http://www.w3.org/XML/1998/namespace"
 local XMLNS_NS = "http://www.w3.org/2000/xmlns/"
 

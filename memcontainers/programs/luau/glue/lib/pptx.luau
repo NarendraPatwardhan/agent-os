@@ -6,7 +6,7 @@
 -- validated in real PowerPoint readers); the presentation + slides are generated
 -- from the model. Geometry is EMU; DrawingML font size is hundredths-of-a-point.
 --
--- Built on opc + zip + xml (ctx/LUAU.md §7.2). v1 covers text boxes + preset-geometry
+-- Built on opc + zip + xml (SYSTEMS.md section 10.3). v1 covers text boxes + preset-geometry
 -- autoshapes with solid fills and styled runs; the slide→layout→master→theme chain
 -- + a default theme ship so `new()` decks open. Unknown parts round-trip via opc.
 

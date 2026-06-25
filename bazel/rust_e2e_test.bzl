@@ -57,7 +57,7 @@ def rust_e2e_test(name, kernel = "//memcontainers/kernel/rust:kernel", size = "s
 
     `kernel` is the kernel.wasm under test: a data-dep whose RUNFILES path the suite reads
     from the MC_KERNEL_WASM env. So the SAME source boots ANY kernel — the Rust kernel by
-    default, the Zig kernel under the B7 parity gate (§9.6) — by pointing `kernel` elsewhere,
+    default, the Zig kernel under the B7 parity gate — by pointing `kernel` elsewhere,
     with no edit to the tests. This is the lever that makes the suite the shared parity oracle.
     """
     data = kwargs.pop("data", []) + [kernel]

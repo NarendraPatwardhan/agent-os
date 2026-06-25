@@ -41,8 +41,8 @@ syscall surface). agent-os re-expresses it the agent-os way, and the divergences
 
 4. **Observed conformance → ENFORCED conformance** — the largest improvement. memcontainers verified
    import purity by inspection. agent-os fails the *build* on any drift:
-   - **`//tools/mc-attest`** — §9.3 purity (every import is a *declared `mc` syscall*, not just the
-     `mc` module) **and** §16.4 tier fit (a syscall's cap-floor ⊆ the declared tier's caps). A
+   - **`//tools/mc-attest`** — attestation (every import is a *declared `mc` syscall*, not just the
+     `mc` module) **and** tier fit (a syscall's cap-floor ⊆ the declared tier's caps). A
      `read-only` luau that imports `spawn`/`net` does not build.
    - **`//tools/mc-abi-gate`** — pins the hand-written `extern "mc" fn` decls in `mc.zig` to the
      projected contract (`contracts/gen/mc.gen.zig`); a parameter/return drift fails the build.
@@ -156,7 +156,7 @@ loom ships CLI tools. The flavors that build on it add *programmability*: e.g. a
 loom + a sqlite **service** (`mc_service`, called as a library by Lua programs) + data tools, plus an
 `atlas`-only Lua library and skill. The binary stays universal (one luau, frozen batteries); the
 flavor-specific content — Lua libraries (VFS `.luau` under `package.path`), skills (`.md`), and the
-service binaries — is layered per-flavor via §16.1 `pkg_tar`, so it is present in `atlas` and absent
+service binaries — is layered per-flavor via `pkg_tar` (SYSTEMS.md section 11), so it is present in `atlas` and absent
 in `loom`. (loom's `require` already resolves cache → embedded → VFS, so a layered `/lib/luau/*.luau`
 is require-able without rebuilding the interpreter.)
 

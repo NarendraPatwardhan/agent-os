@@ -150,7 +150,7 @@ zig_configure_binary(
 )
 
 # /bin/luau — the load-ready guest: the wasm32-wasi build stamped with its mc_tier (full) + mc_budget
-# (256 MiB · 2T fuel · 40k table, §16.5) custom sections the kernel reads at exec.
+# (256 MiB · 2T fuel · 40k table, SYSTEMS.md section 4.3) custom sections the kernel reads at exec.
 mc_program(
     name = "luau",
     wasm = ":luau_wasm",
@@ -161,7 +161,7 @@ mc_program(
     visibility = ["//visibility:public"],
 )
 
-# /bin/luau-analyze — the Luau type checker (§8.6). Same zig c++ recipe as luau, but the csrcs are
+# /bin/luau-analyze — the Luau type checker (SYSTEMS.md section 10.3). Same zig c++ recipe as luau, but the csrcs are
 # Ast + Common + Config + Analysis (no VM/Compiler — it never executes), the C++ entry is
 # analyze_main.cpp (a holdout: int-main-renamed mc_analyze_run that analyze_entry.zig forwards to),
 # and analysis_eh_shim.h is force-included into every Analysis TU (the type checker's throw sites are

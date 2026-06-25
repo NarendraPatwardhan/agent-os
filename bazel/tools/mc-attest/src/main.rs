@@ -1,11 +1,11 @@
-//! `mc-attest <box.wasm>` — §16.4 capability attestation, run at build (drift = build error).
+//! `mc-attest <box.wasm>` — capability attestation, run at build (drift = build error).
 //!
 //! A box DECLARES its tier (the `mc_tier` custom section); this checks its ACTUAL `mc` imports fit
 //! that tier. For each imported syscall, `SYSCALL_CAPS` (projected from syscalls.kdl) gives the
 //! cap-FLOOR — the caps ANY of which authorizes it — and `tier_caps(tier)` (projected from
 //! constants.kdl) is the tier's cap bitmask; the syscall is permitted iff the tier holds at least
 //! one floor cap. Importing a syscall the tier cannot use AT ALL (spawn/bind/net/persist in a
-//! read-only box, …) fails the build — the §16.4 extension of §9.3 conformance from
+//! read-only box, …) fails the build — enforcing the extension of conformance from
 //! `imports ⊆ declared syscalls` to `imports ⊆ the tier's syscalls`, enforcing default-deny (A9)
 //! at authoring time. Both matrices come straight from the contract (B2): no hardcoded caps here,
 //! only the projected `SYSCALL_CAPS` + `tier_caps` + `CAP_*`/`TIER_*`.
@@ -178,7 +178,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(msg) => {
             eprintln!("mc-attest: {} — {msg}", args[1]);
-            eprintln!("  fix the applet's tier or its syscalls (§16.4 / A9 default-deny).");
+            eprintln!("  fix the applet's tier or its syscalls (A9 default-deny).");
             ExitCode::from(1)
         }
     }
@@ -197,7 +197,7 @@ fn attest(wasm: &[u8]) -> Result<(), String> {
 
     let imps = imports(wasm);
 
-    // §6: a binary that SERVES (imports svc_serve) is a resident service and MUST declare its
+    // A binary that SERVES (imports svc_serve) is a resident service and MUST declare its
     // identity via an mc_service section — service-capability is a stamped property (SYSTEMS.md), and
     // the kernel grants it to serve only that name. A server without the section is malformed; a
     // section that is present (server or not) must carry a grammar-valid name, the same shape the
@@ -222,15 +222,15 @@ fn attest(wasm: &[u8]) -> Result<(), String> {
 
     let mut violations: Vec<String> = Vec::new();
     for (module, name) in imps {
-        // §9.3 purity (the base conformance the §16.4 tier check extends): a guest may import ONLY
-        // the `mc` syscall module. A stray wasi/env import means the boundary leaked — fail the build,
-        // don't silently skip it (the gap that let mc_program ship un-attested).
+        // A guest may import ONLY the `mc` syscall module (purity: the base conformance the tier check
+        // extends). A stray wasi/env import means the boundary leaked — fail the build, don't silently
+        // skip it (the gap that let mc_program ship un-attested).
         if module != "mc" {
-            violations.push(format!("non-mc import `{module}::{name}` (§9.3: a guest imports only `mc`)"));
+            violations.push(format!("non-mc import `{module}::{name}` (a guest imports only `mc`)"));
             continue;
         }
         if !SYSCALL_NAMES.contains(&name.as_str()) {
-            violations.push(format!("unknown mc import `{name}` (§9.3: imports must be declared syscalls)"));
+            violations.push(format!("unknown mc import `{name}` (imports must be declared syscalls)"));
             continue;
         }
         let floor = match SYSCALL_CAPS.iter().find(|(s, _)| *s == name) {
@@ -263,7 +263,7 @@ mod tests {
         craft_import("mc", syscall, tier)
     }
 
-    /// Like `craft`, but with an explicit import module — to exercise §9.3 purity (a non-`mc` module).
+    /// Like `craft`, but with an explicit import module — to exercise purity (a non-`mc` module).
     fn craft_import(module: &str, name: &str, tier: &str) -> Vec<u8> {
         let mut w = vec![0x00, 0x61, 0x73, 0x6d, 1, 0, 0, 0]; // \0asm + version
         w.extend_from_slice(&[1, 4, 1, 0x60, 0, 0]); // type section: one () -> ()
@@ -322,14 +322,14 @@ mod tests {
 
     #[test]
     fn non_mc_import_is_rejected_even_at_full_tier() {
-        // §9.3 purity: a stray wasi/env import fails regardless of tier — the boundary leaked.
+        // A stray wasi/env import fails regardless of tier — the boundary leaked (purity rule).
         assert!(attest(&craft_import("wasi_snapshot_preview1", "fd_write", "full")).is_err());
         assert!(attest(&craft_import("env", "memcpy", "full")).is_err());
     }
 
     #[test]
     fn unknown_mc_import_is_rejected() {
-        // §9.3 conformance: the module alone is not enough; the symbol must be in the contract.
+        // The module alone is not enough; the symbol must be in the contract (conformance rule).
         assert!(attest(&craft("mc_sys_not_a_real_call", "full")).is_err());
     }
 
@@ -347,7 +347,7 @@ mod tests {
 
     #[test]
     fn service_binary_without_mc_service_is_rejected() {
-        // §6: importing svc_serve marks a resident service, which MUST declare its name.
+        // Importing svc_serve marks a resident service, which MUST declare its name.
         assert!(attest(&craft("mc_sys_svc_serve", "full")).is_err());
     }
 

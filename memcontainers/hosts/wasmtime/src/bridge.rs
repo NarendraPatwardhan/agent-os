@@ -4,7 +4,7 @@
 //! `$emit` (`register_env`), which maps the contract's ABI type tokens to the wasm value
 //! types the host sees and registers a `func_wrap` forwarding to a handler in `handlers`.
 //! Adding an `env` import emits a registration calling a handler that does not exist yet —
-//! a compile error until the host implements it (drift = compile error, §6.3). The
+//! a compile error until the host implements it (drift = compile error). The
 //! handlers themselves are host logic: stdout/clock/rng act directly, the gateable
 //! capabilities (net/persist/host_call) dispatch to the installed policy (Denied by
 //! default, A9).

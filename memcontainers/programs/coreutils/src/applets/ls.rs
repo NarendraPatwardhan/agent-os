@@ -11,7 +11,7 @@
 //!
 //! TIER: **read-only**. `ls` only reads (readdir + lstat/stat/readlink) — it never mutates,
 //! spawns, or reaches the network — so it belongs at `read-only` (memcontainers over-stamped it
-//! `full`; the §16.4 attestation confirms read-only covers every syscall it imports).
+//! `full`; attestation confirms read-only covers every syscall it imports).
 //!
 //! Deviations from POSIX/GNU ls:
 //!   - Help is `--help` only; `-h` means human-readable sizes (as in GNU).

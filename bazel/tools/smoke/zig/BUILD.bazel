@@ -5,7 +5,7 @@ load("@bazel_skylib//rules:build_test.bzl", "build_test")
 # wasm targets (kernel/, programs/) are still being ported. It proves the spine the
 # whole SYSTEMS.md rests on: a Zig source compiled to a real wasm32-freestanding `.wasm`
 # by the hermetic Zig 0.16 toolchain (B4), through the exact transition every kernel
-# and guest uses (§5.2). Remove when kernel/ and programs/ supply real wasm targets.
+# and guest uses. Remove when kernel/ and programs/ supply real wasm targets.
 
 # Reactor-style module: exports only, no `_start`. Tagged `manual` because it is
 # only meaningful under the wasm transition below — building it for the host

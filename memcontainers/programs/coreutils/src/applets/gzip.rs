@@ -1,5 +1,5 @@
-//! `gzip` — DEFLATE (de)compression (the external-crate `flate2`/miniz_oxide backend, SYSTEMS.md
-//! §16.3). A clap CLI; compress turns `foo` into `foo.gz` and removes `foo`, `-d` does the inverse,
+//! `gzip` — DEFLATE (de)compression (the external-crate `flate2`/miniz_oxide backend, SYSTEMS.md).
+//! A clap CLI; compress turns `foo` into `foo.gz` and removes `foo`, `-d` does the inverse,
 //! `-c` streams to stdout, `-l`/`-t` list/test. std I/O → the WASI→mc adapter (no mmap on wasip1).
 //!
 //! Deviations from GNU gzip (inherited from the memcontainers port): -n/-N (no-name/name) are

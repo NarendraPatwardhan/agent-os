@@ -1,5 +1,5 @@
 //! sys.zig — Layer 1 of the Luau standard library: `sys`, the thin 1:1 surface over the kernel
-//! syscalls (was loom/src/sys_bindings.cpp; C++ → Zig, §6). From inside the container these ARE the
+//! syscalls (was loom/src/sys_bindings.cpp; C++ → Zig). From inside the container these ARE the
 //! system calls, so unlike the C++ — which went through wasi-libc for the fs/io ops — this calls
 //! `mc_sys_*` DIRECTLY (sys is the syscall layer; one fd namespace, no libc indirection, no variadic
 //! open). House rule: every `sys.*` returns `value, err` — `err` is the errno NAME or nil.

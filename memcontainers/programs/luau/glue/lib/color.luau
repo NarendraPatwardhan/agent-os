@@ -1,4 +1,4 @@
--- color.luau — the shared OOXML color model (luau-extensions Ch.06 §6.2). One
+-- color.luau — the shared OOXML color model (luau-extensions Ch.06). One
 -- tagged union serves SpreadsheetML (`rgb`/`theme`/`indexed`/`auto`) and DrawingML
 -- (`srgbClr`/`schemeClr`/`sysClr`); each consumer's xform encodes it to its own
 -- element. A tagged union (Principle #7), never duck-typed.
@@ -73,7 +73,7 @@ local THEME_INDEX = {
 }
 color.THEME_INDEX = THEME_INDEX
 
--- A stable canonical string for style dedup (Ch.05 §5.8): same color → same key.
+-- A stable canonical string for style dedup (Ch.05): same color → same key.
 function color.canon(c)
 	if not c then return "" end
 	if c.kind == "theme" then

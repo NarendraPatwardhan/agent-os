@@ -1,8 +1,8 @@
 //! `mc` — the agent-os runtime CLI. Loads a `kernel.wasm` (and an optional base image),
 //! then drives it either interactively over a raw terminal or from a scripted input
 //! transcript (the mode the e2e suite uses). All the real work lives in the `host`
-//! library; this is the thin front door, named `mc` for the running system's identity
-//! (§8.2), not `agent-os-*`.
+//! library; this is the thin front door, named `mc` for the running system's identity,
+//! not `agent-os-*`.
 
 use std::path::PathBuf;
 

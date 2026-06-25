@@ -1,4 +1,4 @@
-//! `pkgcore` — pure, allocation-only logic shared by the `pkgfsd` demand-load daemon (§7.1) and
+//! `pkgcore` — pure, allocation-only logic shared by the `pkgfsd` demand-load daemon and
 //! natively unit-tested. NO syscalls, NO `std`: it builds for the wasm32 guest (`no_std` + `alloc`,
 //! the guest binary supplies the heap) and, under `cargo test`, links `std` so the test harness
 //! runs. Contents: a `no_std` SHA-256 (FIPS 180-4), the package `Catalog` parser, and the

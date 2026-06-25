@@ -3,7 +3,7 @@
 -- share (luau-extensions Ch.03 part 2). This is the same for all three formats;
 -- only the parts inside differ. The package is the owner of round-trip fidelity:
 -- parts it doesn't model stay as bytes and are written back verbatim, and their
--- content-type entries and relationships are preserved (ctx/LUAU.md §7).
+-- content-type entries and relationships are preserved.
 --
 -- Logical part names are absolute with a leading slash ("/word/document.xml"); the
 -- ZIP stores them without it. rIds are local to one .rels part and are allocated

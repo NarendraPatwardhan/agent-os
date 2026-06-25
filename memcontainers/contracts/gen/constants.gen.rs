@@ -47,7 +47,7 @@ pub const CAP_AMBIENT: u8 = 32;
 pub const CAP_SCRATCH: u8 = 64;
 pub const CAP_MOUNT: u8 = 128;
 
-// tier → capability ceiling — the kernel's Tier::caps() consumes this (single source, §16 / §15.4)
+// tier → capability ceiling — the kernel's Tier::caps() consumes this (single source)
 pub const fn tier_caps(tier: i32) -> u8 {
     match tier {
         TIER_INHERIT => 0,

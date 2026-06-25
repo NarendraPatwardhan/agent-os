@@ -4,7 +4,7 @@
 //! not: move/copy INTO a directory, recursive copy/remove, `mkdir -p`, and path
 //! canonicalization. They use `alloc` (dynamic paths + recursion).
 //!
-//! Ported from memcontainers' `programs::fsutil` onto agent-os's `//sysroot` (§16.2).
+//! Ported from memcontainers' `programs::fsutil` onto agent-os's `//sysroot`.
 
 use alloc::format;
 use alloc::string::String;

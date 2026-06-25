@@ -1,4 +1,4 @@
--- http.luau — ergonomic HTTP over `sys.net` (ctx/LUAU.md §7.1): JSON bodies, query
+-- http.luau — ergonomic HTTP over `sys.net`: JSON bodies, query
 -- building, status helpers and retries on top of the raw `sys.net.fetch`. Fails
 -- closed — without CAP_NET the syscall returns EPERM, surfaced here as `nil, err`
 -- (never a hang). The "fetch" cluster: http + url (query encoding) together.

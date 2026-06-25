@@ -1,4 +1,4 @@
--- units.luau — OOXML measurement units + converters (luau-extensions Ch.06 §6.1 /
+-- units.luau — OOXML measurement units + converters (luau-extensions Ch.06 /
 -- appendix A). The anti-pattern this kills is magnitude-guessing ("a number < 100
 -- means inches"): every format API is typed to the NATIVE unit it serializes, and
 -- conversion happens exactly once, here, at the boundary. A bare number always

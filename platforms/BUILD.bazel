@@ -6,7 +6,7 @@ load("@rules_zig//zig:toolchain.bzl", "zig_target_toolchain")
 package(default_visibility = ["//visibility:public"])
 
 # Native host drivers (hosts/wasmtime, server, the projector). musl so a statically
-# linked host binary matches a prebuilt libwasmtime.a (§8.1). This is the .bazelrc
+# linked host binary matches a prebuilt libwasmtime.a. This is the .bazelrc
 # default platform; wasm targets transition away from it.
 platform(
     name = "host_musl",
@@ -47,7 +47,7 @@ toolchain(
 
 # ---------------------------------------------------------------------------
 # Phase-later target worlds, defined with the toolchain that consumes them so the
-# path→world mapping stays complete and honest (§8.1):
+# path→world mapping stays complete and honest:
 #   wasm32_unknown — Rust's wasm32-unknown-unknown, for interpreter/ (wasmi as a
 #     wasm32 staticlib behind a C ABI; Phase B, kernel/zig only). Same Bazel
 #     constraints as wasm32_freestanding; the distinction is the Rust target triple.
@@ -55,7 +55,7 @@ toolchain(
 #     wasm32 staticlib behind a C ABI; Phase B, kernel/zig only).
 # ---------------------------------------------------------------------------
 
-# wasm32_wasi — WASI preview1, the INPUT world for the coreutils boxes (§16.3) and converted
+# wasm32_wasi — WASI preview1, the INPUT world for the coreutils boxes and converted
 # C/C++ tools, before the //memcontainers/wasi-adapter rewrites their `wasi_snapshot_preview1` imports to `mc`.
 # The std uutils/external crates a box links require std, which only exists on a wasi target;
 # the box's mc-direct applets (cat) keep their `mc` imports straight through. rules_rust's

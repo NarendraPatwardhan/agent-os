@@ -88,7 +88,7 @@ def _mc_program_impl(ctx):
         progress_message = "Stamping mc guest %{label}",
     )
 
-    # 2. ATTEST — §9.3 import purity + §16.4 tier-cap fit, as a VALIDATION action: Bazel runs it for
+    # 2. ATTEST — import purity and tier-cap fit, as a VALIDATION action: Bazel runs it for
     #    every target built (--run_validations, on by default) and fails the build on a violation,
     #    WITHOUT being an input to the stamped wasm. Attestation is a check on the artifact, not a
     #    transform of it, so the graph says exactly that — conformance enforced as a graph edge, not
@@ -124,8 +124,7 @@ def _mc_program_impl(ctx):
 
 _mc_program = rule(
     implementation = _mc_program_impl,
-    doc = "Stamp a zig/C++ domain-tool wasm with its mc_tier + mc_budget custom sections (SYSTEMS.md " +
-          "§16.5) and attest it (§9.3 import purity + §16.4 tier-cap fit). Yields the load-ready " +
+    doc = "Stamp a zig/C++ domain-tool wasm with its mc_tier + mc_budget custom sections (SYSTEMS.md) and attest it (import purity and tier-cap fit). Yields the load-ready " +
           "<name>.wasm + an McProgramInfo; a non-mc/unknown import or an over-tier syscall fails the build.",
     attrs = {
         "wasm": attr.label(

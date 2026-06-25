@@ -960,7 +960,7 @@ fn respondSqliteError(resp: *std.ArrayList(u8), db: ?*c.sqlite3) void {
     resp.append(alloc, '}') catch return;
 }
 
-// ── CLI: the thin-client face (the §3.3 `_start` path) ──────────────────────────
+// ── CLI: the thin-client face ──────────────────────────
 //
 // `sqlite <db> <sql>` runs SQL against the WARM resident service and prints rows (TSV); it is a thin
 // svc_connect/svc_call CLIENT of the same engine the library and the serve loop drive — "three faces,

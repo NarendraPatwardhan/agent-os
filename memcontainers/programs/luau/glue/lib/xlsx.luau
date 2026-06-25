@@ -5,7 +5,7 @@
 -- styles (deduping into stable indices), a second pass emits XML reading those
 -- indices — so markup, the indices, and the parts always agree.
 --
--- Built on opc + zip + xml + xform.pool (ctx/LUAU.md §7.2). Concrete (non-theme) colors;
+-- Built on opc + zip + xml + xform.pool. Concrete (non-theme) colors;
 -- cell kinds number/string/boolean/date/formula/error/inlineStr. Unknown parts the
 -- model doesn't touch round-trip verbatim through `opc`.
 
@@ -248,7 +248,7 @@ local function new_style_table()
 	end
 
 	-- Intern a CellStyle → a cellXf index (a cell's @s). Dedups by canonical
-	-- encoding of the typed record, NOT by rendered XML (Ch.05 §5.8).
+	-- encoding of the typed record, NOT by rendered XML.
 	function st.intern(style)
 		if not style then return 0 end
 		local fontId = style.font and intern(st.fonts, canon_font(style.font), style.font) or 0
@@ -457,7 +457,7 @@ end
 
 -- addWorksheet(name?, opts?) → Worksheet (appended). Name is validated + made
 -- unique. opts.inlineStrings → string cells are written inline (no shared-string
--- pool) — the streaming-friendly write mode (§8.7), avoiding a global pool.
+-- pool) — the streaming-friendly write mode, avoiding a global pool.
 function Workbook.addWorksheet(self, name, opts)
 	opts = opts or {}
 	name = name or ("Sheet" .. (#self.worksheets + 1))
@@ -741,7 +741,7 @@ end
 -- ===========================================================================
 
 -- Pure render of one cell, reading the indices `prepare` annotated (`_styleId` /
--- `_ssIndex`). No interning happens here (two-phase build, Ch.05 §5.6).
+-- `_ssIndex`). No interning happens here (two-phase build).
 local function encode_cell(cell, inlineStrings)
 	local v = cell.value
 	local attrs = { r = cell.ref }
@@ -1139,7 +1139,7 @@ function Workbook.toBytes(self)
 
 	-- PHASE 1 — prepare: intern styles + strings across every sheet (deterministic,
 	-- walk-order indices), so PHASE 2 render is pure and part-render-order can't
-	-- affect output (the coupling the two-phase build exists to remove, Ch.05 §5.6).
+	-- affect output (the coupling the two-phase build exists to remove).
 	for _, ws in ipairs(self.worksheets) do
 		prepare_worksheet(ws, st, sst)
 	end

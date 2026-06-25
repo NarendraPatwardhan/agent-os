@@ -4,7 +4,7 @@
 -- ordering and byte-stable, deterministic output (`[Content_Types].xml` first), and
 -- because it's just little-endian byte work — exactly what Luau does well. The two
 -- genuinely host-specific bits are delegated: DEFLATE to the C `deflate` module and
--- CRC-32 to `hash` (ctx/LUAU.md §7). `string.pack`/`unpack` give us fixed-width LE
+-- CRC-32 to `hash` (ctx/LUAU.md). `string.pack`/`unpack` give us fixed-width LE
 -- records for free (ZIP is little-endian, same as the machine).
 --
 -- An archive is { entries = { ZipEntry... }, byName = { [name]=ZipEntry } }, kept

@@ -21,7 +21,7 @@ module(name = "agent-os")
 # ACTIVE — the validated core (bazel-experiments/compile-zig-wasm).
 # ---------------------------------------------------------------------------
 bazel_dep(name = "platforms", version = "1.1.0")
-bazel_dep(name = "rules_zig", version = "0.16.0")    # in from day one — C/C++ shim lane (§0.2)
+bazel_dep(name = "rules_zig", version = "0.16.0")    # in from day one — C/C++ shim lane
 bazel_dep(name = "rules_cc", version = "0.2.18")     # cc_import/cc_library for vendored headers
 bazel_dep(name = "bazel_skylib", version = "1.9.0")  # build_test / diff_test / write_file
 
@@ -48,13 +48,13 @@ register_toolchains("//platforms:wasm32_wasi_zig_toolchain")
 
 # Rust — ACTIVE for the contracts projector (a dependency-light host tool: no external
 # crates, so no crate_universe needed yet). The wasm kernel port and its crates arrive
-# with crate_universe in Step 2 (§5.2).
+# with crate_universe in Step 2.
 bazel_dep(name = "rules_rust", version = "0.70.0")
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 # wasm32-unknown-unknown is the kernel's real rustc target (SYSTEMS.md's "freestanding"
 # is the Zig triple); the guests (sysroot/programs) compile there too. The host triple
 # stays for the projector and the wasmtime host (native, autodetected). A musl target
-# triple lands when the host goes static for distribution (§8.1) — deferred (see
+# triple lands when the host goes static for distribution — deferred (see
 # hosts/wasmtime/defs.bzl: it needs a libc constraint + a musl C toolchain, not just a
 # triple, and the "match a prebuilt libwasmtime.a" premise is moot under source builds).
 rust.toolchain(edition = "2021", extra_target_triples = ["wasm32-unknown-unknown", "wasm32-wasip1"])
@@ -81,7 +81,7 @@ crate.from_cargo(
 # The GUEST universe (no_std, wasm32-freestanding): the coreutils boxes + future guests
 # resolve their external crates (talc; regex for grep; …) from a THIRD lock, kept apart from
 # @crates (kernel) and @host_crates (host) for the same reason those two are split — a shared
-# Cargo resolution would feature-unify std on and break the no_std guests (§7.1, §16.3).
+# Cargo resolution would feature-unify std on and break the no_std guests.
 crate.from_cargo(
     name = "guest_crates",
     cargo_lockfile = "//memcontainers/programs/coreutils:Cargo.lock",

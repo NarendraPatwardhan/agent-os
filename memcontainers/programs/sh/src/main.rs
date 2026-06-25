@@ -1,4 +1,4 @@
-// programs/sh/src/main.rs — /bin/sh, the guest shell (NOT part of the mcbox multicall, §16.3).
+// programs/sh/src/main.rs — /bin/sh, the guest shell (NOT part of the mcbox multicall).
 //
 // A wasm32-freestanding guest that runs the OS-agnostic `shcore` engine over
 // `sysroot` syscalls (so it imports only `mc` — no WASI). The same binary serves three
@@ -187,7 +187,7 @@ impl ShellOs for SysrootOs {
     fn environ(&mut self) -> Vec<String> {
         self.readdir("/env").unwrap_or_default()
     }
-    // Signals / job control (§13): backed by the kernel's `mc_sys_*` signal
+    // Signals / job control: backed by the kernel's `mc_sys_*` signal
     // syscalls. `Signal` is `#[repr(i32)]` with the kernel's numbers, so the
     // cast is the wire value.
     fn kill(&mut self, pid: i32, sig: Signal) -> OsResult<()> {

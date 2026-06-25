@@ -4027,7 +4027,7 @@ fn validate_mc_sections(bytes: &[u8]) -> Result<(), String> {
                     ))
                 }
             }
-            // §6: a resident service has no parent to inherit a tier from, so a binary that declares a
+            // A resident service has no parent to inherit a tier from, so a binary that declares a
             // service name MUST also declare its tier — else activation has no capability ceiling to
             // apply. Enforce it at LOAD, uniform with the build (mc-attest) and activation (spawn_service)
             // gates, so the "service ⟹ tier" invariant holds at all three boundaries (codex audit).

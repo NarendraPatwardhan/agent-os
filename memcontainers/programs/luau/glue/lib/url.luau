@@ -1,6 +1,6 @@
 -- url.luau — URL parsing/building + percent/query encoding. Needed the moment you
 -- have `http` (you can't build a query string safely without it), so it's a
--- first-class module, not buried in `string` ops (ctx/LUAU.md §7).
+-- first-class module, not buried in `string` ops.
 
 local url = {}
 

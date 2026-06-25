@@ -36,7 +36,7 @@ fn runfile(path: &str) -> Vec<u8> {
 }
 
 /// The kernel.wasm under test, as a runfiles path — `rust_e2e_test` sets `MC_KERNEL_WASM` from the
-/// `kernel` target, so the suite is kernel-AGNOSTIC (Rust by default, Zig under the §9.6 gate).
+/// `kernel` target, so the suite is kernel-AGNOSTIC (Rust by default, Zig optional).
 fn kernel_rlocation() -> String {
     std::env::var("MC_KERNEL_WASM")
         .expect("MC_KERNEL_WASM unset — rust_e2e_test sets it from the `kernel` target")
@@ -84,7 +84,7 @@ pub fn boot_minimal() -> Session {
     Session { host, stdout }
 }
 
-/// Boot the `loom` image (posix + /bin/luau — the stamped, pure-mc Luau interpreter, §16.5). For the
+/// Boot the `loom` image (posix + /bin/luau — the stamped, pure-mc Luau interpreter). For the
 /// domain-tool tests that run real Luau bytecode on the real kernel via the trap-unwind.
 pub fn boot_loom() -> Session {
     let (b, stdout) = builder("_main/memcontainers/images/loom.tar");

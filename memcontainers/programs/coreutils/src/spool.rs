@@ -10,7 +10,7 @@
 //!   * [`Run`] — a write-once-then-read sorted run (a `SpoolFile` a tool fills, rewinds, and
 //!     streams back during a merge), built on [`crate::textio::LineReader`].
 //!
-//! Built on `//sysroot`; uses `alloc`. Ported from memcontainers' `programs::spool` (§16.2).
+//! Built on `//sysroot`; uses `alloc`. Ported from memcontainers' `programs::spool` (SYSTEMS.md section 10.2).
 
 use alloc::string::String;
 use core::sync::atomic::{AtomicU32, Ordering};

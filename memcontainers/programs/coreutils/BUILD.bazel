@@ -3,14 +3,14 @@ load("//bazel:mc_box.bzl", "mc_box")
 # programs/coreutils — ONE std Rust coreutils crate compiled four times into the per-tier
 # mcbox-{isolated,readonly,readwrite,full} boxes (SYSTEMS.md). It builds for wasm32-wasi (the
 # uutils + ripgrep crates it links are std); `mc_box` then link-injects the //memcontainers/wasi-adapter and
-# drives the trampoline fixpoint, so each shipped box imports ONLY `mc` and is attestable (§16.4)
+# drives the trampoline fixpoint, so each shipped box imports ONLY `mc` and is attestable
 # against its tier's syscalls. @guest_crates resolves the guests' std external deps.
 exports_files(["Cargo.toml", "Cargo.lock"])
 
 # The std crates every box links (uutils + ripgrep), plus //memcontainers/sysroot for the hand-written tools'
 # mc-direct I/O (cat). Resolved from @guest_crates (wasm32-wasi std).
 _BOX_DEPS = [
-    "//memcontainers/sysroot/rust",  # generated mc imports + ported safe wrappers (§16.2), for cat
+    "//memcontainers/sysroot/rust",  # generated mc imports + ported safe wrappers, for cat
     "@guest_crates//:uucore",  # uutils common plumbing + Args/locale, shared by every applet
     "@guest_crates//:clap",  # flag parsing + --help, reused by the hand-written tools
     "@guest_crates//:grep-searcher",  # ripgrep search engine, for grep

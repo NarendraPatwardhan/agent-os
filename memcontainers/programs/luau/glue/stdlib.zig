@@ -1,7 +1,7 @@
 //! stdlib.zig — Layer 2 (the batteries) + `require` (was loom/src/mc_stdlib.cpp; C++ → Zig). The
 //! .luau battery sources are @embedFile'd INTO the binary, so the standard library ships inside the
 //! interpreter — `require("time")` works on any VM with zero image staging (frozen modules).
-//! `require` resolution is cache → embedded → VFS package.path. See third_party/luau/SYSTEM.md / §7.
+//! `require` resolution is cache → embedded → VFS package.path. See third_party/luau/SYSTEM.md (SYSTEMS.md section 10.3).
 
 const std = @import("std");
 const lua = @import("lua.zig");

@@ -1,4 +1,4 @@
--- prelude.luau — builtin extensions (ctx/LUAU.md §7, "extend the builtins, don't
+-- prelude.luau — builtin extensions (ctx/LUAU.md, "extend the builtins, don't
 -- shadow them"). Run ONCE at VM startup on the (unsandboxed) entry state, before
 -- any user script, so additions to `string`/`table`/`os` are visible everywhere —
 -- exactly how Luau itself adds `string.split`. These hang off the existing tables

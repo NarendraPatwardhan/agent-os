@@ -1,5 +1,5 @@
 //! loom — the Luau interpreter (/bin/luau) + type checker (/bin/luau-analyze) as one-binary domain
-//! services (§16.5), exercised on memcontainers/web's cdp-luau-verify.ts recipes verbatim: the
+//! services, exercised on memcontainers/web's cdp-luau-verify.ts recipes verbatim: the
 //! `batteries.luau` demo (require-driven json/hash/time + the string :split/:trim extensions, under
 //! the fuel budget) and the typed_ok/typed_bad checks. Both run end-to-end on the real kernel — the
 //! batteries through the embedded .luau libs + the Zig json/hash bindings, the type errors through the

@@ -40,7 +40,7 @@ comptime {
 
 const kVersion = "luau (agent-os) — Luau 0.725";
 
-// Exit codes (§8.4): 0 ok · 1 runtime error · 2 syntax/usage error.
+// Exit codes: 0 ok · 1 runtime error · 2 syntax/usage error.
 const EXIT_OK: c_int = 0;
 const EXIT_RUNTIME: c_int = 1;
 const EXIT_USAGE: c_int = 2;

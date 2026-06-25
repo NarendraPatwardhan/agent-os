@@ -154,7 +154,7 @@ impl Tier {
     /// The capability ceiling this tier permits — GENERATED from
     /// `contracts/constants.kdl` (`tier-caps`, projected to `constants_rust::tier_caps`),
     /// so this kernel and the Phase-B Zig kernel grant IDENTICAL ceilings (a parity
-    /// invariant, §16 / §15.4) with no hand-maintained duplicate. The rationale lives with
+    /// invariant) with no hand-maintained duplicate. The rationale lives with
     /// the data, in the contract: ambient observation (`CAP_AMBIENT`) and private scratch
     /// (`CAP_SCRATCH`) are granted from `ReadOnly` up — so `date`/`shuf` and spill-to-
     /// `/scratch` work there — while `CAP_MOUNT` and spawn/net/persist stay `Full`-only;

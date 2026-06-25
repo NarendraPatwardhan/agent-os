@@ -1161,7 +1161,7 @@ pub fn exit(code: i32) -> ! {
     loop {}
 }
 
-// A standalone no_std guest (wasm32-unknown) needs this panic handler. A coreutils box (§16.3)
+// A standalone no_std guest (wasm32-unknown) needs this panic handler. A coreutils box (SYSTEMS.md section 10.2)
 // is std-on-wasi — std already provides `panic_impl` there — so suppress ours under wasi to
 // avoid a duplicate lang item. The box still reaches the mc wrappers below; only the runtime
 // item differs.

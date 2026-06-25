@@ -3,7 +3,7 @@ load("//bazel:rust_e2e_test.bzl", "rust_e2e_test")
 # tests/e2e — the no-mocks end-to-end suite, in TWO targets that share ONE harness
 # (src/harness.rs) and one constitution. Each test boots the REAL kernel.wasm in the REAL
 # wasmtime host with capture sinks and .deterministic() (fixed clock + seeded rng), and
-# asserts on REAL stdout bytes / REAL control-channel reads (§9.1, B6). Booting is itself a
+# asserts on REAL stdout bytes / REAL control-channel reads (B6). Booting is itself a
 # test — a kernel trap or a generated-bridge mismatch surfaces as a host error.
 #
 #   :core     — the fast invariants: boot, tty, shell, coreutils, kernel control channel,
@@ -15,14 +15,14 @@ load("//bazel:rust_e2e_test.bzl", "rust_e2e_test")
 # compiles) while :extended carries the slow, image-heavy proofs. Both glob the whole src/ tree;
 # the crate_root's `mod` declarations select which test modules each one actually compiles.
 #
-# THE load-bearing edge (B1, §7.2): each target `data`-depends on the kernel + the image targets
+# THE load-bearing edge (B1, section 7.2): each target `data`-depends on the kernel + the image targets
 # its tests boot, so the artifacts a test runs are ALWAYS the ones its sources produce — the death
-# of the memcontainers staleness class. In Phase B this edge fans out to BOTH kernels (§9.6).
+# of the memcontainers staleness class. In Phase B this edge fans out to BOTH kernels.
 #
 # Always RELEASE wasmtime: rust_e2e_test pins the host subgraph to compilation_mode=opt, so a debug
 # wasmtime never makes the suite crawl. kernel defaults to //memcontainers/kernel/rust:kernel (the
 # macro adds it as a data-dep and passes its runfiles path via MC_KERNEL_WASM); the Zig kernel gets
-# its own target — same srcs, kernel = //memcontainers/kernel/zig:kernel — under the §9.6 parity gate.
+# its own target — same srcs, kernel = //memcontainers/kernel/zig:kernel — under the parity gate.
 
 _E2E_SRCS = glob(["src/**/*.rs"])
 

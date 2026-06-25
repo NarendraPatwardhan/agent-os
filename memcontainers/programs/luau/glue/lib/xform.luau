@@ -4,7 +4,7 @@
 -- generic — it knows nothing about a specific format; the format models (docx/xlsx/
 -- pptx, the next cut) just *describe* themselves with these combinators.
 --
--- Built on the `xml` battery's ordered DOM (ctx/LUAU.md §7.2): an xform's `render`
+-- Built on the `xml` battery's ordered DOM: an xform's `render`
 -- produces an XmlElement (or nil when self-pruned), its `parse` consumes one. The
 -- DOM is the v1 sink; the design's direct-to-writer / SAX-streaming sinks are a
 -- later optimisation that reuses the *same* xform definitions (only the sink

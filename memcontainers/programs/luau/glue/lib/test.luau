@@ -1,5 +1,5 @@
 -- test.luau — a tiny assertion + describe/it harness so scripts and the batteries
--- self-verify (ctx/LUAU.md §7.1: we author the libs, so the libs need tests). Pure
+-- self-verify (we author the libs, so the libs need tests). Pure
 -- Lua; the only I/O is the summary it prints.
 
 local test = {}

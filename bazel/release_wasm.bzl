@@ -17,7 +17,7 @@ def _release_wasm_transition_impl(_settings, attr):
     # and panic=abort (no unwinding tables) matches across each link since every artifact aborts via its
     # own #[panic_handler]. Fat LTO is the one KERNEL-ONLY lever (size_opt): it dead-code-eliminates
     # wasmi/talc into the kernel, but on a guest it leaves core's panic shims (panic_bounds_check,
-    # slice_index_fail, …) as `env` imports — and the §9.3 attest rejects those (a guest imports only `mc`).
+    # slice_index_fail, …) as `env` imports — and the section 9.3 attest rejects those (a guest imports only `mc`).
     flags = ["-Copt-level=z", "-Ccodegen-units=1", "-Cpanic=abort"]
     if attr.size_opt:
         flags = flags + [
@@ -61,7 +61,7 @@ release_wasm = rule(
         "size_opt": attr.bool(
             default = False,
             doc = "Add fat LTO on top of the always-on size-opt (opt-level=z + panic=abort + one codegen " +
-                  "unit). Kernel-only: LTO breaks the guest §9.3 attest (core panic shims leak as `env`).",
+                  "unit). Kernel-only: LTO breaks the guest section 9.3 attest (core panic shims leak as `env`).",
         ),
         "_allowlist_function_transition": attr.label(
             default = "@bazel_tools//tools/allowlists/function_transition_allowlist",

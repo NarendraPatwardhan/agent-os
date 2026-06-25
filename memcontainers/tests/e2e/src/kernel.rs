@@ -1,11 +1,11 @@
 //! Kernel — the structured control channel (the generated `ctl` exports) and snapshot/restore.
 //! This is the host's out-of-band, programmatic surface: a PIPE (pure LF), distinct from the
-//! interactive terminal's ONLCR (CRLF — see [`crate::tty`]). No guest programs needed except the
+//! interactive terminal's ONLCR (CRLF — see [`crate::tty`], SYSTEMS.md section 6). No guest programs needed except the
 //! one exec test, which proves the pipe stays raw.
 
 use crate::{boot, boot_posix, names, restore};
 
-/// WHY: the base image is a deterministic pkg_tar (§10) the kernel mounts as its lowest layer; the
+/// WHY: the base image is a deterministic pkg_tar (SYSTEMS.md section 11) the kernel mounts as its lowest layer; the
 /// control channel (`mc_ctl_read`) reads guest files out-of-band. GUARANTEES: the image's
 /// /etc/profile is present in the mounted TarFs AND the generated ctl `read` round-trips its bytes.
 #[test]

@@ -1,4 +1,4 @@
-//! End-to-end suite — EXTENDED (B6, §9.1). The heavy DOMAIN services, split out of the core suite.
+//! End-to-end suite — EXTENDED (B6). The heavy DOMAIN services, split out of the core suite.
 //!
 //! Same constitution as [the core suite](../lib.rs) and the SAME [`harness`] (boot helpers + the
 //! `Session` driver) — re-exported here so `sqlite`/`typst` read `boot_atlas()`/`boot_paper()` exactly

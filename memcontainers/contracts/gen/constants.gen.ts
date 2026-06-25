@@ -46,7 +46,7 @@ export const CAP_AMBIENT = 32;
 export const CAP_SCRATCH = 64;
 export const CAP_MOUNT = 128;
 
-// tier → capability ceiling — the kernel's Tier::caps() consumes this (single source, §16 / §15.4)
+// tier → capability ceiling — the kernel's Tier::caps() consumes this (single source)
 export function tierCaps(tier: number): number {
   switch (tier) {
     case TIER_INHERIT: return 0;

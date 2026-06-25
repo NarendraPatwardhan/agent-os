@@ -5,7 +5,7 @@
 #   BUILD.sqlite.bazel   — the build_file http_archive applies to the extracted source.
 # 3.51.0 has native SQLITE_WASI support, so there are no source patches — just the compile defines in
 # glue/BUILD.bazel. The build stamps mc_tier / mc_budget / mc_service so /bin/sqlite is both a one-shot
-# CLI and a resident service from ONE binary (§4.5).
+# CLI and a resident service from ONE binary.
 
 # Exported so http_archive(build_file = "//third_party/sqlite:BUILD.sqlite.bazel") can apply it to the
 # extracted @sqlite source.

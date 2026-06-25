@@ -105,10 +105,10 @@ def mc_box(name, srcs, crate_root, crate_name, crate_features, deps, edition = "
     """
     _convert_to_mc(name, srcs, crate_root, crate_name, crate_features, deps, edition, compile_data, rounds, [], visibility)
 
-    # §16.4 attestation: surface the converged box opt+wasm32-wasi, then FAIL THE BUILD if its mc
+    # Attestation: surface the converged box opt+wasm32-wasi, then FAIL THE BUILD if its mc
     # imports exceed its declared tier. //... reaches `<name>.attest`, so a mis-tiered box (an
     # applet importing a syscall its tier cannot use — spawn/net/mount in read-only, …) is a build
-    # error, not a runtime surprise (the §16.4 / A9 default-deny gate, drift = build error).
+    # error, not a runtime surprise (the A9 default-deny gate, drift = build error).
     release_wasm(name = name + "_opt", lib = name, platform = "//platforms:wasm32_wasi", visibility = visibility)
     native.genrule(
         name = name + ".attest",
@@ -120,7 +120,7 @@ def mc_box(name, srcs, crate_root, crate_name, crate_features, deps, edition = "
 
     # The roster → /bin symlinks: read the converged box's mc_applets section and emit
     # /bin/<applet> → <box> symlinks — the SINGLE source for the staged /bin (no hand list, no
-    # drift from what the box dispatches; §16.3). A flavor image layers `<name>_symlinks`.
+    # drift from what the box dispatches). A flavor image layers `<name>_symlinks`.
     native.genrule(
         name = name + "_symlinks",
         srcs = [name + "_opt"],
@@ -134,7 +134,7 @@ def mc_wasi_program(name, srcs, crate_root, crate_name, deps, tier, service = ""
     """A SINGLE std-wasi tool as an mc program/SERVICE (SYSTEMS.md — the Rust-std lane, e.g. typst):
     convert the wasm32-wasi crate to a pure-`mc` box (the adapter + trampoline fixpoint, shared with
     `mc_box`), opt it (`release_wasm`), then stamp mc_tier/mc_budget/mc_service + attest (`mc_program`,
-    whose validation action enforces §9.3 import purity + §16.4 tier fit). Unlike `mc_box` there is NO
+    whose validation action enforces import purity and tier fit). Unlike `mc_box` there is NO
     busybox roster — one tool, not a multi-applet box — and the metadata is declared in the BUILD (the
     `mc_rust_program` convention), not in the source. `service` (non-empty) stamps the mc_service section
     so `mc_service_layer` activates it. `extra_rustc_flags` ride only the final converged box, after

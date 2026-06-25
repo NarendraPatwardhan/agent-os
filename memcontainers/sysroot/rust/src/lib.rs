@@ -1,6 +1,6 @@
 //! agent-os guest sysroot — the safe `mc` syscall surface for wasm guest programs.
 //!
-//! A guest links this `no_std` rlib to get three things (§16.2): the `mc` import block
+//! A guest links this `no_std` rlib to get three things: the `mc` import block
 //! GENERATED from the syscall contract (so a guest can never import a syscall the kernel
 //! doesn't serve — drift = compile error, B2); an ergonomic safe-wrapper skin over those
 //! raw `i32` imports (`read`/`write_all`/`open`/`spawn`/… as `Result<T, errno>`); and the `entry!`
@@ -20,7 +20,7 @@ pub use constants_rust::*;
 
 /// The `mc` import block, projected from `contracts/syscalls.kdl`: a guest `$emit` on the
 /// SAME `mc_syscall_table!` the kernel's dispatch (`Pending` enum + wasmi registration)
-/// derives from. Every argument and return is an `i32` on the wire (§4.2) — a guest pointer
+/// derives from. Every argument and return is an `i32` on the wire — a guest pointer
 /// is the i32 offset into the guest's own linear memory; the safe wrappers in [`sys`] cast.
 /// The `[$ret]` metadata is the kernel's concern (some syscalls return a value, most an
 /// errno); to the guest the import is always `(…i32) -> i32`. Add a syscall and this block
@@ -39,7 +39,7 @@ macro_rules! mc_guest_externs {
 mc_rust::mc_syscall_table!(mc_guest_externs);
 
 // The safe-wrapper skin + the entry/tier/budget macros + the panic handler. Ported from
-// memcontainers' sysroot over the generated imports above (§16.2: generate the boundary,
+// memcontainers' sysroot over the generated imports above (generate the boundary,
 // port the comfort).
 mod sys;
 pub use sys::*;

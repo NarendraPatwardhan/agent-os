@@ -45,7 +45,7 @@ fn invoke_flags_form_builds_json_args() {
     assert_eq!(out, "{\"city\":\"London\",\"count\":3,\"live\":true,\"ratio\":0.5}\r\n");
 }
 
-/// WHY: `pkgfsd` is the demand-load file server for /pkg (§7.1) — a daemon that `serve("/pkg")`s,
+/// WHY: `pkgfsd` is the demand-load file server for /pkg — a daemon that `serve("/pkg")`s,
 /// then spawns its consumer in that namespace. GUARANTEES: given a baked catalog, `pkgfsd ls
 /// /pkg/bin` spawns `ls` in pkgfsd's namespace, ls reads the SERVED readdir, and the catalog's tools
 /// appear — proving the serve protocol (servedfs) + the spawn-into-namespace model end to end
@@ -66,7 +66,7 @@ fn pkgfsd_serves_the_catalog_over_pkg() {
     );
 }
 
-/// WHY: the demand-load READ path (§7.1) — a tool's BYTES are fetched only on open; a cache hit is
+/// WHY: the demand-load READ path — a tool's BYTES are fetched only on open; a cache hit is
 /// served from `/var/persist/pkg/<sha>` after a sha256 RE-verify (which defends a corrupted/
 /// truncated cache). GUARANTEES: given a catalog row and a matching cached blob, `pkgfsd cat
 /// /pkg/bin/<name>` serves the REAL bytes through the serve channel — the demand-load, sha-verified,

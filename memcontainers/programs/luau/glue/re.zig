@@ -8,7 +8,7 @@
 //! {m,n}` (greedy + lazy), flags `i`/`s`/`m`. Not supported: backreferences and `\b`.
 //!
 //! Contract: a bad pattern is an expected failure → `re.compile` returns `nil, message`. Misuse
-//! (wrong arg type) raises. See third_party/luau/SYSTEM.md / ctx LUAU.md §7.
+//! (wrong arg type) raises. See third_party/luau/SYSTEM.md (SYSTEMS.md section 10.3).
 
 const std = @import("std");
 const lua = @import("lua.zig");

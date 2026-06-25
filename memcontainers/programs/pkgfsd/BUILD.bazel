@@ -5,7 +5,7 @@ load("//bazel:mc_program.bzl", "mc_rust_program")
 # serve("/pkg")s, then loops serve_recv → dispatch (readdir/stat from the baked catalog; open →
 # cache-hit /var/persist or cache-miss /net fetch → sha256-verify → write-through cache). The only
 # CAP_NET + CAP_PERSIST holder, so consumers reach a tool via /pkg/bin/<name> without holding either
-# ("capability by namespace", §7.1). NOT part of the mcbox multicall — its own binary like /bin/sh.
+# (capability by namespace). NOT part of the mcbox multicall — its own binary like /bin/sh.
 # Imports ONLY `mc`; built under --platforms=//platforms:wasm32_freestanding. Ported from
 # memcontainers' pkgfsd.
 rust_binary(

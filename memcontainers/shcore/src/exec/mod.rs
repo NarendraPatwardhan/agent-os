@@ -3,7 +3,7 @@
 //! `Interp` owns shell state (variables, functions, positional params, options, the
 //! job table) and runs the AST over a [`ShellOs`]. It is written in straight-line
 //! BLOCKING style: the kernel turns a blocking syscall (`waitpid`/`read`) into
-//! cooperative suspension (§4.4), so the executor needs no async or hand-rolled state
+//! cooperative suspension, so the executor needs no async or hand-rolled state
 //! machine. There is no `fork`, so subshells and command substitution run in-process
 //! with snapshot/restore rather than a second address space.
 //!

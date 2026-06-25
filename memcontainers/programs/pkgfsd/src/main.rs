@@ -1,4 +1,4 @@
-//! `pkgfsd` — the demand-load file server for `/pkg` (§7.1, approach A). A guest daemon:
+//! `pkgfsd` — the demand-load file server for `/pkg` (SYSTEMS.md section 7.1). A guest daemon:
 //! `serve("/pkg")`, then loop `serve_recv` → dispatch. A tool's NAME is cheap + visible (the baked
 //! catalog answers `readdir`/`stat` offline); only a `read` fetches the BYTES — cache hit
 //! `/var/persist/pkg/<sha>` (persistfs) or cache miss `/net/https/<registry>/<path>` (netfs) →
@@ -181,7 +181,7 @@ fn main() {
     };
 
     // `serve` mounts `/pkg` in OUR namespace, so only tasks WE spawn (after the serve) can reach it
-    // — the §7.1 "pkgfsd spawns the agent" model. Any argv after `pkgfsd` is that consumer (e.g.
+    // — the "pkgfsd spawns the agent" model (SYSTEMS.md section 7.1). Any argv after `pkgfsd` is that consumer (e.g.
     // `pkgfsd sh`): spawn it now, then serve its `/pkg` reads forever. With no argv, run as a pure
     // daemon.
     let mut argbuf = [0u8; 1024];

@@ -1,6 +1,6 @@
 //! A typst [`World`] over the VM filesystem, split for a resident service: the heavy state — the parsed
-//! fonts + the standard library — is loaded ONCE into [`Warm`] and shared by every compile (SYSTEMS.md
-//! §1, the cold-start win), while each request gets a cheap [`CompileWorld`] holding only its root, main,
+//! fonts + the standard library — is loaded ONCE into [`Warm`] and shared by every compile (the cold-start
+//! win), while each request gets a cheap [`CompileWorld`] holding only its root, main,
 //! and on-demand source/file caches. Ported from memcontainers `crates/wasi/typst/src/main.rs::McWorld`;
 //! the trait bodies are identical — only the warm/per-request split is new.
 

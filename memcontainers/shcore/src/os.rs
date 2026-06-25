@@ -2,7 +2,7 @@
 //!
 //! The guest `/bin/sh` binds this trait to `sysroot` syscalls; native tests bind a
 //! fake. Every method BLOCKS — the executor is straight-line code and relies on the
-//! kernel turning a blocking syscall into cooperative suspension (§4.4), so the shell
+//! kernel turning a blocking syscall into cooperative suspension (SYSTEMS.md section 4.2), so the shell
 //! needs no async coloring of its own.
 //!
 //! Signal numbers, the inherit tier, and the stopped-status floor come straight from

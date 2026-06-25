@@ -5,11 +5,11 @@
 //! the FUNCTION symbols it imports from one module (the `mc` syscall module, or the `env`
 //! bridge). They diverge only in the *set* they check those symbols against:
 //!
-//!   - Conformance (§9.3) checks a guest's `mc` imports ⊆ the declared syscall table
+//!   - Conformance (SYSTEMS.md section 9.3) checks a guest's `mc` imports ⊆ the declared syscall table
 //!     (SAFETY: no guest imports an undeclared `mc::` symbol) and, across all guests, that
 //!     every declared syscall is imported by ≥1 guest (COVERAGE).
-//!   - Attestation (§16.4) checks a guest's `mc` imports ⊆ its tier's allowed syscalls
-//!     (the capability × syscall matrix of §15.4) — capability drift caught at build time,
+//!   - Attestation (SYSTEMS.md section 9.3) checks a guest's `mc` imports ⊆ its tier's allowed syscalls
+//!     (the capability × syscall matrix) — capability drift caught at build time,
 //!     an enforcement of default-deny (A9) at authoring time, not just at exec.
 //!
 //! Because the only difference is the comparison set, there is exactly ONE primitive here:
@@ -86,7 +86,7 @@ impl ImportedSymbols {
     ///
     /// The caller hands the permitted set (the declared syscall table, a tier's allowed
     /// syscalls); the result is the symbols this module imports that fall *outside* it. An
-    /// empty result means `imports ⊆ allowed` — the property both §9.3 safety and §16.4
+    /// empty result means `imports ⊆ allowed` — the property both SYSTEMS.md section 9.3 safety and
     /// attestation assert.
     pub fn disallowed<'a, I, S>(&self, allowed: I) -> BTreeSet<String>
     where

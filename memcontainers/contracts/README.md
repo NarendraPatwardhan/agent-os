@@ -35,7 +35,7 @@ contracts/syscalls.kdl ──(//contracts/codegen:projector)──> mc.gen.rs   
    `constants.kdl` for an additive change).
 2. `bazel test //...` regenerates every projection. The Rust kernel's exhaustive
    `match` and the Zig kernel's exhaustive `switch` both fail to compile until each
-   has a handler — drift is a compile error, in both languages (§6.3).
+   has a handler — drift is a compile error, in both languages.
 3. Conformance fails until a guest exercises the new syscall (or it carries a
    documented exclusion).
 
@@ -52,4 +52,4 @@ The generated Rust is a `macro_rules!` callback table (memcontainers'
 `mc_syscall_table!` pattern, generalized to all four boundaries); the kernel, host,
 and sysroot supply their own `$emit` in Step 2, so no ABI is ever hand-written (B2).
 TS is generated but compile-validated only when the JS lane lands; capability
-annotations per syscall (§15.4) are the planned next pass.
+annotations per syscall are the planned next pass.

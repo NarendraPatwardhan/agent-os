@@ -1,5 +1,5 @@
 -- media.luau — image embedding helpers shared by the office formats (the
--- MediaRegistry of luau-extensions Ch.05 §5.7). Three concerns: identify an
+-- MediaRegistry of luau-extensions Ch.05). Three concerns: identify an
 -- image's content type from its magic bytes, probe its intrinsic pixel size
 -- (so the format APIs can auto-size), and a content-addressed registry that
 -- dedups identical bytes to ONE media part (docx/xlsx/pptx all hash media).

@@ -1,9 +1,9 @@
-//! End-to-end suite — CORE (B6, §9.1). The testing constitution every test here obeys:
+//! End-to-end suite — CORE (B6). The testing constitution every test here obeys:
 //!
 //! 1. **No mocks.** Each test boots the REAL `kernel.wasm` inside the REAL wasmtime host and
 //!    asserts on REAL bytes. Booting is itself the first assertion: a kernel trap or a
 //!    generated-bridge mismatch surfaces as a host error, never a silent skip.
-//! 2. **Load-bearing data edge (B1, §7.2).** The kernel + images are `data` deps, so a test always
+//! 2. **Load-bearing data edge (B1).** The kernel + images are `data` deps, so a test always
 //!    runs the artifact its sources produce — the death of the memcontainers staleness class.
 //! 3. **Deterministic.** Fixed clock + seeded rng (`.deterministic()`), so bytes are reproducible.
 //! 4. **One invariant per test**, named `<subject>_<behavior>`, with a WHY/GUARANTEES note.

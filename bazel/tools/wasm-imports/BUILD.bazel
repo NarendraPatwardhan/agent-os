@@ -1,7 +1,7 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 # tools/wasm-imports — the wasm import-section oracle, the ONE primitive behind conformance
-# (SYSTEMS.md) and capability attestation (§16.4). Both gates walk a guest's wasm imports
+# (SYSTEMS.md) and capability attestation. Both gates walk a guest's wasm imports
 # and check the function symbols it pulls from a module (`mc`, `env`) against an allowed set;
 # they differ only in the set (declared syscall table vs. a tier's syscalls), so the walk
 # lives here once. A NATIVE std library + CLI (it inspects guest wasm; it is not itself a
@@ -38,7 +38,7 @@ rust_binary(
     ],
 )
 
-# Proof on a REAL artifact (B6, §7.2) that doubles as the §9.3 conformance check: walk the
+# Proof on a REAL artifact (B6) that doubles as the conformance check: walk the
 # genuine //memcontainers/kernel/rust:kernel wasm and assert its `env` imports ⊆ the DECLARED bridge —
 # //memcontainers/contracts:env_rust's BRIDGE_IMPORTS, the projection, never a hand-listed copy of the
 # surface (that copy was the bug). The kernel is a `data` dep, located via the runfiles crate

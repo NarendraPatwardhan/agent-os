@@ -6,7 +6,7 @@ and so fails the wrapping test, when `file` exceeds `max_bytes`. Everything but 
 count itself — the budget, the diagnostics, the test wiring — is Starlark.
 
 Generic over the artifact: the always-opt kernel.wasm, a per-tier `mcbox` multicall binary,
-a flavor layer tar (§16). Generalized out of the kernel's original `kernel_size_limit` so
+a flavor layer tar. Generalized out of the kernel's original `kernel_size_limit` so
 every shipped artifact wires its ceiling through ONE rule.
 """
 

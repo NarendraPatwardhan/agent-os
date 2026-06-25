@@ -8,11 +8,11 @@
 //! Two optional check modes layer the set comparison the gates need on top of that walk,
 //! without thickening the library:
 //!
-//!   --require <symbol>…      every listed symbol MUST be imported (the §16.4 / coverage
+//!   --require <symbol>…      every listed symbol MUST be imported (coverage
 //!                            direction). Exit 1 listing any that are missing.
 //!   --allowed-file <path>    imports ⊆ the symbols in <path> (one per line; blanks and
-//!                            `#` comments ignored) — the §9.3 safety / §16.4 attestation
-//!                            direction. Exit 1 listing any disallowed import.
+//!                            `#` comments ignored) — the safety / attestation direction.
+//!                            Exit 1 listing any disallowed import.
 //!
 //! With neither flag the symbols are printed and the process exits 0 (or errors on a
 //! malformed/missing wasm — never panics).
@@ -67,7 +67,7 @@ fn run() -> Result<ExitCode> {
 
     let mut failed = false;
 
-    // --require: every named symbol must be imported (coverage / §16.4 mandatory set).
+    // --require: every named symbol must be imported (coverage / mandatory set).
     if !args.require.is_empty() {
         let missing = symbols.missing(&args.require);
         if !missing.is_empty() {
@@ -84,7 +84,7 @@ fn run() -> Result<ExitCode> {
         }
     }
 
-    // --allowed-file: imports ⊆ allowed (safety / attestation, §9.3 / §16.4).
+    // --allowed-file: imports ⊆ allowed (safety / attestation).
     if let Some(path) = &args.allowed_file {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("reading allowed-file `{}`", path.display()))?;

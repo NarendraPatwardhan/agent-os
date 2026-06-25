@@ -1,9 +1,9 @@
--- chart.luau — DrawingML charts (luau-extensions Ch.09 §6), shared by xlsx/docx/
+-- chart.luau — DrawingML charts, shared by xlsx/docx/
 -- pptx. A chart is `chartN.xml` in the `c:` namespace: a plot area holding one
 -- chart-type element (bar/col/line/pie) whose series carry both a formula
 -- reference (c:f → where the data lives) AND a cache (strCache/numCache) so the
 -- chart renders without recalculation. For pptx/docx the data lives in an
--- EMBEDDED .xlsx — built here by reusing our own xlsx writer (Ch.09 §6), rather
+-- EMBEDDED .xlsx — built here by reusing our own xlsx writer, rather
 -- than a second hand-rolled spreadsheet generator. For xlsx the data is the host
 -- workbook, so no embedding.
 --
