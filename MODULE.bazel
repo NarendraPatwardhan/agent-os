@@ -102,9 +102,27 @@ use_repo(crate, "crates", "host_crates", "guest_crates", "typst_crates")
 # aspect_bazel_lib — write_source_files + diff_test for the contract drift gate (B2).
 bazel_dep(name = "aspect_bazel_lib", version = "2.22.5")
 
-# JS/TS — the bun/browser host family (A3) and the @mc/* SDK (sdk-js/, hosts/js).
-# bazel_dep(name = "aspect_rules_js", version = "2.X")
-# bazel_dep(name = "aspect_rules_ts", version = "3.X")
+# JS/TS — the bun/browser host family (A3) and the @mc/* SDK (hosts/js, sdk-js/). The JS host loads the
+# SAME kernel.wasm the wasmtime host does and consumes the generated TS contract descriptors (env_ts/
+# ctl_ts), so a contract change can't silently desync it (B2). pnpm-managed npm deps; hermetic node + tsc.
+bazel_dep(name = "aspect_rules_js", version = "3.2.2")
+bazel_dep(name = "aspect_rules_ts", version = "3.8.11")
+
+npm = use_extension("@aspect_rules_js//npm:extensions.bzl", "npm")
+npm.npm_translate_lock(
+    name = "npm",
+    pnpm_lock = "//:pnpm-lock.yaml",
+    verify_node_modules_ignored = "//:.bazelignore",
+)
+use_repo(npm, "npm")
+
+pnpm = use_extension("@aspect_rules_js//npm:extensions.bzl", "pnpm")
+use_repo(pnpm, "pnpm")
+
+# typescript for ts_project, version pinned from the root package.json.
+rules_ts_ext = use_extension("@aspect_rules_ts//ts:extensions.bzl", "ext")
+rules_ts_ext.deps(ts_version_from = "//:package.json")
+use_repo(rules_ts_ext, "npm_typescript")
 
 # Images + contract drift gates.
 bazel_dep(name = "rules_pkg", version = "1.0.1")  # pkg_tar — deterministic images, no manual staging

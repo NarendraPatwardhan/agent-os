@@ -1,0 +1,18 @@
+{
+  "name": "@mc/core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Unified Vm API over the embedded (in-process) JS host. The @mc/* SDK consumer surface.",
+  "module": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./drivers": "./src/drivers.ts"
+  },
+  "dependencies": {
+    "@mc/host": "workspace:*",
+    "@mc/contracts": "workspace:*",
+    "zod": "^4.0.0"
+  }
+}

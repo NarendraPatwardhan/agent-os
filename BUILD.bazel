@@ -18,3 +18,19 @@
 #
 # zig_index.json is referenced by MODULE.bazel's Zig toolchain pin.
 exports_files(["zig_index.json"])
+
+load("@aspect_rules_ts//ts:defs.bzl", "ts_config")
+
+# The one shared TypeScript config for the whole JS workspace (hosts/js, sdk-js/, the contract TS
+# descriptors). mc_ts_project (//bazel:ts.bzl) pins every TS target to this — one config, no drift.
+ts_config(
+    name = "tsconfig",
+    src = "tsconfig.json",
+    visibility = ["//visibility:public"],
+)
+
+load("@npm//:defs.bzl", "npm_link_all_packages")
+
+# Link the root package's npm deps (typescript, @types/bun) into //:node_modules/* so the TS targets
+# (the JS host, the @mc/* SDK) can depend on them.
+npm_link_all_packages(name = "node_modules")

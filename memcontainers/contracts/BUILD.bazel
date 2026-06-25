@@ -35,3 +35,34 @@ abi_library(name = "mc", contract = "syscalls.kdl", langs = ["rust", "zig", "ts"
 abi_library(name = "env", contract = "bridge.kdl", langs = ["rust", "zig", "ts"])
 abi_library(name = "ctl", contract = "control.kdl", langs = ["rust", "zig", "ts"])
 abi_library(name = "wire", contract = "wire.kdl", langs = ["rust", "ts", "asyncapi"])
+
+# The generated TS descriptors compiled into ONE consumable lib — the JS host (hosts/js) and @mc/core
+# wire their `env` bridge + `mc_ctl_*` export lookup from these (BRIDGE_IMPORTS / CONTROL_EXPORTS /
+# constants), so the boundary the kernel + Rust host derive from is the one the JS side derives from
+# too (B2, no drift). The committed gen/*.gen.ts are kept fresh by the abi_library diff gates above.
+load("//bazel:ts.bzl", "mc_ts_project")
+
+mc_ts_project(
+    name = "ts",
+    srcs = [
+        "gen/constants.gen.ts",
+        "gen/ctl.gen.ts",
+        "gen/env.gen.ts",
+        "gen/wire.gen.ts",
+    ],
+)
+
+# @mc/contracts — the generated descriptors as a linkable workspace package, so @mc/host and @mc/core
+# import the contract (BRIDGE_IMPORTS / CONTROL_EXPORTS / errnos / tier ordinals) BY NAME with no deep
+# relative reach into gen/. One subpath export per descriptor (see package.json).
+load("@aspect_rules_js//npm:defs.bzl", "npm_package")
+
+npm_package(
+    name = "pkg",
+    srcs = [
+        ":ts",
+        "package.json",
+    ],
+    package = "@mc/contracts",
+    visibility = ["//visibility:public"],
+)

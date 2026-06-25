@@ -1,0 +1,9 @@
+packages:
+  - "memcontainers/contracts"
+  - "memcontainers/hosts/js"
+  - "memcontainers/sdk-js/core"
+
+# No dependency runs install/build scripts (pure-TS deps: typescript, @types/bun, zod). Declare the
+# empty allow-set explicitly — pnpm 10.26+ and rules_js require the lifecycle-hooks decision to be
+# present, not implicit.
+onlyBuiltDependencies: []

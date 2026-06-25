@@ -6,6 +6,12 @@
 .zig-cache/
 zig-out/
 
+# npm/pnpm — node_modules is a regenerable LOCAL-DEV artifact (for the editor + lockfile generation).
+# Bazel never uses it: rules_js links its OWN hermetic node_modules under bazel-* from pnpm-lock.yaml.
+# The lockfile, the package.json manifests, pnpm-workspace.yaml, and tsconfig.json ARE committed.
+node_modules/
+*.tsbuildinfo
+
 # Editor / OS noise
 *.swp
 *~

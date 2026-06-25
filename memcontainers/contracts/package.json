@@ -1,0 +1,13 @@
+{
+  "name": "@mc/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Generated TypeScript projections of the agent-os contracts — the single source of truth (B2). One subpath export per descriptor; consumed by @mc/host and @mc/core so the JS side derives from the same table as the kernel and the Rust host.",
+  "exports": {
+    "./env": { "types": "./gen/env.gen.d.ts", "default": "./gen/env.gen.js" },
+    "./ctl": { "types": "./gen/ctl.gen.d.ts", "default": "./gen/ctl.gen.js" },
+    "./constants": { "types": "./gen/constants.gen.d.ts", "default": "./gen/constants.gen.js" },
+    "./wire": { "types": "./gen/wire.gen.d.ts", "default": "./gen/wire.gen.js" }
+  }
+}

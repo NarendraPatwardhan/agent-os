@@ -1,0 +1,10 @@
+{
+  "name": "agent-os",
+  "version": "0.0.0",
+  "private": true,
+  "description": "agent-os JS workspace — the @mc/* host family (hosts/js) and SDK (sdk-js/).",
+  "devDependencies": {
+    "typescript": "5.7.3",
+    "@types/bun": "^1.2.0"
+  }
+}

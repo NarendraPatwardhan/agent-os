@@ -1,8 +1,48 @@
-# @mc/core — the Vm API and the wire client (ported from memcontainers packages/core).
-# Published under the @mc/* scope (SYSTEMS.md). Its wire half is GENERATED from
-# contracts/wire.kdl (//memcontainers/contracts:wire_ts), so it cannot drift from the server (B2).
-#
-# Phase A:
-#   load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
-#   ts_project(name = "core", srcs = glob(["src/**/*.ts"]),
-#       deps = ["//memcontainers/hosts/js:host", "//memcontainers/contracts:wire_ts"])
+# @mc/core — the unified Vm API over the embedded (in-process) @mc/host backend (ported from
+# memcontainers packages/core, minus the remote backend + unified socket, which need the unported
+# mc-server). Published under the @mc/* scope. The remote/wire half returns with mc-server.
+load("//bazel:ts.bzl", "mc_ts_project")
+load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+
+# Link @mc/core's deps (@mc/host, @mc/contracts, zod) into :node_modules/*.
+npm_link_all_packages(name = "node_modules")
+
+# Role-named (:lib), not :core — the package directory already namespaces it; the target names the role.
+mc_ts_project(
+    name = "lib",
+    srcs = glob(["src/**/*.ts"]),
+    deps = [
+        ":node_modules/@mc/host",  # the embedded backend drives the in-process kernel host
+        ":node_modules/@mc/contracts",  # the contract SsoT: tier ordinals + mount-op/dirent/errno constants
+        ":node_modules/zod",  # typed-tool input validation
+        "//:node_modules/@types/bun",  # process + node:fs (artifacts/store loaders)
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# Core-level runtime test: a real mc.create() boots the kernel via @mc/host, exercising the @mc/core →
+# @mc/host → @mc/contracts package linking at RUNTIME (the host parity test only covers @mc/host). Same
+# load-bearing data edge as the Rust e2e: the kernel + image it boots are the ones its sources produce.
+mc_ts_project(
+    name = "vm_test_lib",
+    srcs = ["test/vm.test.ts"],
+    deps = [
+        ":lib",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+js_test(
+    name = "vm_test",
+    data = [
+        ":vm_test_lib",
+        "//memcontainers/kernel/rust:kernel",
+        "//memcontainers/images:base",
+    ],
+    entry_point = "test/vm.test.js",
+    env = {
+        "MC_KERNEL_WASM": "$(rlocationpath //memcontainers/kernel/rust:kernel)",
+        "MC_BASE_IMAGE": "$(rlocationpath //memcontainers/images:base)",
+    },
+)
