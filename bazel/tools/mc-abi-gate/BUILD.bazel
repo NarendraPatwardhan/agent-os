@@ -1,0 +1,17 @@
+load("@rules_rust//rust:defs.bzl", "rust_test")
+
+# mc-abi-gate — pins mc.zig's HAND-WRITTEN `extern "mc" fn` signatures to the projected contract
+# (contracts/gen/mc.gen.zig). A contract change mc.zig doesn't mirror — or a typo — fails the build.
+# Zig can't GENERATE callable extern decls, so the projector emits descriptor tables (not the decls)
+# and this gates the hand-kept copy against them. Codex #9. Pure test; the two files come in via
+# include_str! (compile_data), no deps.
+rust_test(
+    name = "test",
+    srcs = ["src/main.rs"],
+    edition = "2021",
+    compile_data = [
+        "//memcontainers/sysroot/zig:mc.zig",
+        "//memcontainers/contracts:gen/mc.gen.zig",
+    ],
+    visibility = ["//visibility:public"],
+)

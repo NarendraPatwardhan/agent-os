@@ -1,0 +1,21 @@
+# kernel/zig — the Phase-B kernel: a Zig reimplementation against the UNCHANGED
+# contracts/, mining zmc for the wasmi-shim integration and the VFS/scheduler seed
+# (VISION §5, §11 Phase B). Accepted only when it matches kernel/rust across the whole
+# e2e + conformance suite (B7, §9.6) — by parity, never by inspection. The size lever
+# (B5): zmc landed 859 KB *with* the interpreter.
+#
+# Phase B:
+#   load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
+#   zig_binary(
+#       name = "kernel_obj",                   # → kernel.wasm (same contract, different impl)
+#       main = "src/main.zig",
+#       linkopts = ["-fno-entry", "-rdynamic"],
+#       deps = [
+#           "//memcontainers/kernel/interpreter:wasmi_shim",        # wasmi via C ABI — the ONE new seam, isolated here
+#           "//memcontainers/contracts:mc_zig", "//memcontainers/contracts:env_zig", "//memcontainers/contracts:ctl_zig",
+#       ],
+#       tags = ["manual"],
+#   )
+#   zig_configure_binary(name = "kernel", actual = ":kernel_obj",
+#       mode = "release_small", target = "//platforms:wasm32_freestanding")
+#   # size_test on kernel.wasm (B5).

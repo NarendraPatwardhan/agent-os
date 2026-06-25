@@ -1,0 +1,102 @@
+load("//bazel:mc_box.bzl", "mc_box")
+
+# programs/coreutils — ONE std Rust coreutils crate compiled four times into the per-tier
+# mcbox-{isolated,readonly,readwrite,full} boxes (VISION §16.3). It builds for wasm32-wasi (the
+# uutils + ripgrep crates it links are std); `mc_box` then link-injects the //memcontainers/wasi-adapter and
+# drives the trampoline fixpoint, so each shipped box imports ONLY `mc` and is attestable (§16.4)
+# against its tier's syscalls. @guest_crates resolves the guests' std external deps.
+exports_files(["Cargo.toml", "Cargo.lock"])
+
+# The std crates every box links (uutils + ripgrep), plus //memcontainers/sysroot for the hand-written tools'
+# mc-direct I/O (cat). Resolved from @guest_crates (wasm32-wasi std).
+_BOX_DEPS = [
+    "//memcontainers/sysroot/rust",  # generated mc imports + ported safe wrappers (§16.2), for cat
+    "@guest_crates//:uucore",  # uutils common plumbing + Args/locale, shared by every applet
+    "@guest_crates//:clap",  # flag parsing + --help, reused by the hand-written tools
+    "@guest_crates//:grep-searcher",  # ripgrep search engine, for grep
+    "@guest_crates//:grep-regex",  # ripgrep regex matcher, for grep
+    "@guest_crates//:walkdir",  # recursive directory walk, for grep -r
+    # uutils used AS-IS via uu_<name>::uumain (the mcbox! list routes them; unused ones GC out of
+    # a box whose tier doesn't enable them).
+    "@guest_crates//:uu_base64",
+    "@guest_crates//:uu_sha256sum",
+    "@guest_crates//:uu_sha1sum",
+    "@guest_crates//:uu_sha512sum",
+    "@guest_crates//:uu_md5sum",
+    "@guest_crates//:uu_b2sum",
+    "@guest_crates//:uu_cksum",
+    "@guest_crates//:uu_sum",
+    "@guest_crates//:uu_base32",
+    "@guest_crates//:uu_basenc",
+    "@guest_crates//:uu_comm",
+    "@guest_crates//:uu_join",
+    "@guest_crates//:uu_paste",
+    "@guest_crates//:uu_fmt",
+    "@guest_crates//:uu_expand",
+    "@guest_crates//:uu_unexpand",
+    "@guest_crates//:uu_od",
+    "@guest_crates//:uu_factor",
+    "@guest_crates//:uu_numfmt",
+    "@guest_crates//:uu_tsort",
+    "@guest_crates//:uu_date",
+    "@guest_crates//:uu_shuf",
+    "@guest_crates//:uu_pathchk",
+    "@guest_crates//:uu_split",
+    "@guest_crates//:uu_csplit",
+    # crates.io external tools (each a clap CLI over a library, like grep): awk/jq/gzip/diff/file/
+    # tar/zip/unzip. Unused ones GC out of a box whose tier doesn't enable them.
+    "@guest_crates//:awk-rs",
+    "@guest_crates//:jaq-core",
+    "@guest_crates//:jaq-std",
+    "@guest_crates//:jaq-json",
+    "@guest_crates//:serde_json",
+    "@guest_crates//:flate2",
+    "@guest_crates//:similar",
+    "@guest_crates//:infer",
+    "@guest_crates//:tar",
+    "@guest_crates//:bzip2-rs",
+    "@guest_crates//:lzma-rs",
+    "@guest_crates//:zip",
+    # external-crate (vendored): uutils `sed`, fetched + WASI-patched by the //MODULE.bazel
+    # http_archive, built lib-only by //third_party/sed. Routed at tier_readwrite (sed -i).
+    "@uutils_sed//:sed",
+]
+
+# Disjoint tier features: each box carries ONLY its own tier's applets (a tier_readonly applet is
+# in mcbox-readonly alone). The /bin routing spawns every command from its least-privilege box, so
+# the higher boxes never run the lower applets — putting them there would just duplicate the bulk
+# (ripgrep + the 22 uutils, ~7.7 MiB) the routing can't reach. Each box has exactly one tier
+# feature, which the mcbox! macro stamps as its mc_tier (its `not(higher)` guards still resolve).
+_TIERS = {
+    "isolated": ["tier_isolated"],
+    "readonly": ["tier_readonly"],
+    "readwrite": ["tier_readwrite"],
+    "full": ["tier_full"],
+}
+
+# The SECOND axis (mcbox.rs): two applet SETS over the same tiers. `set_full` = posix (every
+# applet); `set_min` = the `minimal` flavor (ONLY the `["set_min"]`-tagged applets — the curated
+# ~15: the carry-both builtin twins + core file ops). Same crate, same macro, same attest gate; the
+# set feature picks the applets. The posix boxes keep `mcbox-<tier>` (stable image/e2e refs); the
+# minimal boxes take a `min-` infix.
+_SETS = {
+    "": ["set_full"],
+    "min-": ["set_min"],
+}
+
+# Eight boxes (4 tiers × 2 sets). Each: build the crate for wasm32-wasi, link-inject the adapter,
+# trampoline-relink to a pure-`mc` fixpoint, attest imports ⊆ tier (//bazel:mc_box.bzl). Built
+# under --platforms=//platforms:wasm32_wasi.
+[
+    mc_box(
+        name = "mcbox-" + infix + tier,
+        srcs = glob(["src/**/*.rs"]),
+        crate_root = "src/main.rs",
+        crate_name = "coreutils",
+        crate_features = tier_feats + set_feats,
+        deps = _BOX_DEPS,
+        visibility = ["//visibility:public"],
+    )
+    for tier, tier_feats in _TIERS.items()
+    for infix, set_feats in _SETS.items()
+]

@@ -1,0 +1,15 @@
+# conformance — the ABI coverage gate (ported from memcontainers crates/conformance).
+# Derives the syscall surface from //memcontainers/contracts (the projected mc table) and walks every
+# guest's wasm import section (VISION §9.3):
+#   - SAFETY: no guest imports an undeclared `mc::` symbol.
+#   - COVERAGE: every declared syscall is imported by >=1 guest, or carries a documented
+#     exclusion.
+# The interpreter also gets BEHAVIORAL vectors (fuel exhaustion → re-park, host-trap →
+# suspend/resume, budget enforcement) so the Phase-B Zig kernel — and any future
+# interpreter swap — is provably equivalent.
+#
+# Phase A:
+#   load("@rules_rust//rust:defs.bzl", "rust_test")
+#   rust_test(name = "conformance", srcs = glob(["src/**/*.rs"]),
+#       deps = ["//memcontainers/contracts:mc_rust"],
+#       data = ["//memcontainers/images:base_tar"])     # walks the real guests in the real image (B1/B6).

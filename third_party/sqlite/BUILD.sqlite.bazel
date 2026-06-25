@@ -1,10 +1,10 @@
 # @sqlite — the SQLite amalgamation (3.51.0, public domain), fetched by MODULE.bazel from sqlite.org
 # (SERVICES.md §3.2: fetch upstream, never vendor). Evaluated in the @sqlite repo context. 3.51.0 ships
 # native SQLITE_WASI support, so there are no patches — the wasm32-wasi build defines live in
-# //third_party/sqlite/glue. This exposes exactly what the old vendored copy did (sqlite3.c, sqlite3.h,
+# //memcontainers/programs/sqlite/glue. This exposes exactly what the old vendored copy did (sqlite3.c, sqlite3.h,
 # and the `incs` header target), so the glue is a one-line-per-dep repoint. The Zig glue @cImports
 # sqlite3.h and links sqlite3.c as a csrc.
-load("@agent-os//third_party/luau:defs.bzl", "cc_headers")
+load("@agent-os//bazel:mc_program.bzl", "cc_headers")
 
 exports_files(["sqlite3.c", "sqlite3.h"])
 

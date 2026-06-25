@@ -1,0 +1,18 @@
+# The projector — contracts/*.kdl → one target language (VISION §6.2). A single
+# rust_binary behind every projection; `abi_library` (defs.bzl) invokes it once per
+# (contract, language) pair.
+#
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+# The projector reads one contract and emits one language (src/projector.rs). It is a
+# dependency-light HOST tool — a hand-rolled KDL reader, no external crates — so it
+# needs no crate_universe and stays cheap on the build's critical path.
+rust_binary(
+    name = "projector",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2021",
+    visibility = ["//visibility:public"],
+)
+
+# defs.bzl is consumed by //memcontainers/contracts:BUILD.bazel; expose it explicitly.
+exports_files(["defs.bzl"])

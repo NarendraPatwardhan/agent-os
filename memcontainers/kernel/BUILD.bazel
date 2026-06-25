@@ -1,0 +1,9 @@
+# The kernel — two interchangeable implementations (rust/ and zig/), one contract,
+# parity-gated (VISION §5, B7). This package owns the implementation SELECTOR: a single
+# flag flips every kernel-consuming edge (tests, images, hosts) between the two builds,
+# so the parity matrix (§9.6) runs both from one graph.
+#
+# Phase B:
+#   load("@bazel_skylib//rules:common_settings.bzl", "string_flag")
+#   string_flag(name = "impl", build_setting_default = "rust", values = ["rust", "zig"])
+#   # //:kernel aliases to //memcontainers/kernel/rust:kernel or //memcontainers/kernel/zig:kernel by this flag (§5.2).

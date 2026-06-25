@@ -1,0 +1,15 @@
+# tests/parity — the parity GRID (VISION §9.2, §9.6, B7). Two axes compose:
+#
+#                  Rust host          JS host
+#     Rust kernel   ✓ (Phase A)        ✓ (Phase A)
+#     Zig kernel    ✓ (Phase B)        ✓ (Phase B)
+#
+# Every cell runs the identical suite against real artifacts; any disagreement is a bug
+# in a host, a kernel, or an UNDERSPECIFIED contract — all three worth catching. The
+# two-kernel column is the Phase-B acceptance gate: the Zig kernel ships only when it
+# matches the Rust kernel bit-for-bit on the shared e2e + conformance suite — by parity,
+# never by inspection (B7). Amplified by record/replay (§15.1) and differential fuzzing
+# (§15.2), both using the Rust kernel as the oracle.
+#
+# Phase A starts with the host↔host row (Rust kernel under both hosts); the kernel↔kernel
+# rows light up in Phase B when //memcontainers/kernel/zig exists.

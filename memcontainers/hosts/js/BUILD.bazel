@@ -1,0 +1,10 @@
+# hosts/js — the TypeScript host for bun and the browser (ported from memcontainers
+# packages/host). The second host family (A3): it loads the SAME kernel.wasm as
+# hosts/wasmtime and must behave identically — the host-parity axis of the grid (§9.2).
+# It is the in-browser agent runtime; async JS drives the synchronous-looking kernel
+# over the poll bridge (§4.4).
+#
+# Phase A:
+#   load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+#   ts_project(name = "host", srcs = glob(["src/**/*.ts"]),
+#       deps = ["//memcontainers/contracts:env_ts", "//memcontainers/contracts:ctl_ts"])

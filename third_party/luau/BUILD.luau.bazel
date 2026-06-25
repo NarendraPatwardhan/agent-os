@@ -1,9 +1,9 @@
 # build_file for the patched @luau source (http_archive build_file = "//third_party/luau:BUILD.luau.bazel"),
 # evaluated in the @luau repo context. It only EXPOSES the upstream source; the actual zig c++ build
-# (//third_party/luau/glue:luau / :luau-analyze) lives in the main repo and references these. See
+# (//memcontainers/programs/luau/glue:luau / :luau-analyze) lives in the main repo and references these. See
 # third_party/luau/SYSTEM.md.
 
-load("@agent-os//third_party/luau:defs.bzl", "cc_headers")
+load("@agent-os//bazel:mc_program.bzl", "cc_headers")
 
 # The interpreter's translation units: VM (bytecode exec) + Compiler + Ast + Bytecode + Common.
 filegroup(
@@ -88,7 +88,7 @@ cc_headers(
 )
 
 # The PUBLIC Lua C API headers ONLY (VM/include: lua.h, lualib.h, luaconf.h — all pure C), exposed
-# as a CcInfo (no CC toolchain — see //third_party/luau:defs.bzl). rules_zig's @cImport translates
+# as a CcInfo (no CC toolchain — see //bazel:mc_program.bzl). rules_zig's @cImport translates
 # every `direct_public_header` of its cdeps, so this MUST exclude the C++-tainted internal headers
 # (e.g. Common/include/Luau/TimeTrace.h → <vector>) that translate-c (C-only) can't parse. `includes`
 # still lists every dir so the csrcs (compiled by zig c++, which handles C++ fine) resolve their

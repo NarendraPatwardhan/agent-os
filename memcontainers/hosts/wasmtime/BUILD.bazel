@@ -1,0 +1,85 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load(":defs.bzl", "host_release_binary")
+
+# hosts/wasmtime — the Rust host driver (ported from memcontainers crates/host). Loads
+# kernel.wasm, implements the `env` bridge + the `mc_ctl_*` control channel, terminates TLS
+# for guest egress, and ticks the kernel (VISION §4.1, A3). A NATIVE library + CLI. The
+# SAME kernel.wasm runs here and under hosts/js (A3); both kernels run under this host in
+# the parity matrix (B7). This is the host every e2e test boots — real bytes, no mocks (B6).
+#
+# Both ABI boundaries the host touches are GENERATED from the contracts, never hand-written
+# (B2): the `env` host side from //memcontainers/contracts:env_rust (src/bridge.rs) and the `mc_*` export
+# lookups from //memcontainers/contracts:ctl_rust (src/exports.rs).
+#
+# The shipped `mc` is always opt (see defs.bzl): debug wasmtime JITs kernel.wasm an order of
+# magnitude slower, which would make e2e crawl. (host_musl static linking, §8.1, is deferred
+# — defs.bzl explains why it's a real toolchain integration, not just a platform string.)
+
+_RUSTC_FLAGS = [
+    # `tokio-net` is an optional feature (the async TokioNet egress the mc-server enables).
+    # Declare it as a KNOWN cfg so the off-by-default `cfg(feature = "tokio-net")` does not
+    # trip the unexpected-cfgs lint.
+    "--check-cfg=cfg(feature, values(\"tokio-net\"))",
+]
+
+rust_library(
+    name = "host",
+    srcs = glob(
+        ["src/**/*.rs"],
+        exclude = [
+            "src/main.rs",      # the `mc` binary crate root
+            "src/terminal.rs",  # raw-TTY handling, used only by the binary
+        ],
+    ),
+    edition = "2021",
+    rustc_flags = _RUSTC_FLAGS,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@host_crates//:wasmtime",
+        "@host_crates//:anyhow",
+        "@host_crates//:sha2",
+        "@host_crates//:rand",
+        "@host_crates//:ureq",
+        "@host_crates//:tungstenite",
+        "//memcontainers/contracts:env_rust",  # the mc_bridge_table! macro → the host's env impls (B2)
+        "//memcontainers/contracts:ctl_rust",  # the mc_control_table! macro → the kernel-export lookups (B2)
+    ],
+)
+
+# The raw `mc` binary. Built in whatever config its consumer is in — the public `mc` below
+# wraps it to force opt + host_musl. Kept separate so the build_test can compile-check it
+# fast (fastbuild) without dragging in an opt wasmtime compile.
+rust_binary(
+    name = "mc_bin",
+    srcs = [
+        "src/main.rs",
+        "src/terminal.rs",
+    ],
+    crate_root = "src/main.rs",
+    edition = "2021",
+    deps = [
+        ":host",
+        "@host_crates//:anyhow",
+        "@host_crates//:clap",
+        "@host_crates//:crossterm",
+    ],
+)
+
+# The shipped runtime CLI (the running system's identity, §8.2 — not agent-os-*): always
+# opt, statically linked on host_musl. This is the `mc` e2e and humans run.
+host_release_binary(
+    name = "mc",
+    bin = ":mc_bin",
+    visibility = ["//visibility:public"],
+)
+
+# Compile-check the library + the binary's own sources fast (fastbuild). The opt+musl `mc`
+# is exercised when built directly and, structurally, by every e2e boot.
+build_test(
+    name = "test",
+    targets = [
+        ":host",
+        ":mc_bin",
+    ],
+)

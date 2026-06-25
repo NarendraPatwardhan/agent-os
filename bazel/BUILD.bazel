@@ -1,0 +1,4 @@
+# bazel/ — the centralized build machinery. The custom Starlark rules live here as loadable
+# `//bazel:<rule>.bzl` files (release_wasm, mc_program, mc_box, rust_e2e_test, wasm32_build_test),
+# gathered from the formerly-scattered defs.bzl (kernel/rust, third_party/luau, wasi-adapter,
+# tests/e2e). The mc build-graph executables are the subpackages under tools/.

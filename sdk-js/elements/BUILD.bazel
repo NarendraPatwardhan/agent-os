@@ -1,6 +1,0 @@
-# @mc/elements — the <mc-*> custom elements (ported from memcontainers
-# packages/elements). Published under the @mc/* scope; components are <mc-*> (VISION §8.2).
-#
-# Phase A:
-#   load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
-#   ts_project(name = "elements", srcs = glob(["src/**/*.ts"]), deps = ["//sdk-js/core"])

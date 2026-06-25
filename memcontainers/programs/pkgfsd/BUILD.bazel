@@ -1,0 +1,34 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//bazel:mc_program.bzl", "mc_rust_program")
+
+# programs/pkgfsd — the /pkg demand-load file server. A no_std wasm32-freestanding daemon: it
+# serve("/pkg")s, then loops serve_recv → dispatch (readdir/stat from the baked catalog; open →
+# cache-hit /var/persist or cache-miss /net fetch → sha256-verify → write-through cache). The only
+# CAP_NET + CAP_PERSIST holder, so consumers reach a tool via /pkg/bin/<name> without holding either
+# ("capability by namespace", §7.1). NOT part of the mcbox multicall — its own binary like /bin/sh.
+# Imports ONLY `mc`; built under --platforms=//platforms:wasm32_freestanding. Ported from
+# memcontainers' pkgfsd.
+rust_binary(
+    name = "pkgfsd_bin",
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
+    edition = "2021",
+    tags = ["manual"],
+    deps = [
+        "//memcontainers/pkgcore",  # the SHA-256 + catalog + path logic (unit-tested)
+        "//memcontainers/sysroot/rust",  # mc syscall wrappers (serve / netfs / persistfs) + the _start runtime
+        "@crates//:talc",  # the no_std wasm allocator (the catalog + pkgcore use alloc)
+    ],
+)
+
+# /bin/pkgfsd — stamped (tier + budget) + attested from the build graph (mc_rust_program). full tier
+# (it needs CAP_NET + CAP_PERSIST to fetch + cache); 64 MiB · 50B fuel · 10k table.
+mc_rust_program(
+    name = "pkgfsd",
+    lib = ":pkgfsd_bin",
+    tier = "full",
+    mem = 64 * 1024 * 1024,
+    fuel = 50000000000,
+    table = 10000,
+    visibility = ["//visibility:public"],
+)

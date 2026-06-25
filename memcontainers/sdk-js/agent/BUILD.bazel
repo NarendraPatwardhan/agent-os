@@ -1,0 +1,6 @@
+# @mc/agent — the agent SDK on top of @mc/core (ported from memcontainers
+# packages/agent). Published under the @mc/* scope (VISION §8.2).
+#
+# Phase A:
+#   load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
+#   ts_project(name = "agent", srcs = glob(["src/**/*.ts"]), deps = ["//memcontainers/sdk-js/core"])

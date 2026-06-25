@@ -5,5 +5,5 @@
 #
 # Phase A:
 #   load("@aspect_rules_js//js:defs.bzl", "js_binary")
-#   # app bundle deps //sdk-js/core //sdk-js/agent //sdk-js/elements
+#   # app bundle deps //memcontainers/sdk-js/core //memcontainers/sdk-js/agent //memcontainers/sdk-js/elements
 #   # //web:cdp_test — a browser e2e against the hermetic chromium toolchain.

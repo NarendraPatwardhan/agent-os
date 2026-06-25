@@ -56,7 +56,7 @@ toolchain(
 # ---------------------------------------------------------------------------
 
 # wasm32_wasi — WASI preview1, the INPUT world for the coreutils boxes (§16.3) and converted
-# C/C++ tools, before the //wasi-adapter rewrites their `wasi_snapshot_preview1` imports to `mc`.
+# C/C++ tools, before the //memcontainers/wasi-adapter rewrites their `wasi_snapshot_preview1` imports to `mc`.
 # The std uutils/external crates a box links require std, which only exists on a wasi target;
 # the box's mc-direct applets (cat) keep their `mc` imports straight through. rules_rust's
 # wasm32-wasip1 toolchain (MODULE.bazel extra_target_triples) resolves here via os:wasi.

@@ -1,0 +1,12 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+# mc-roster — read a box's `mc_applets` roster and emit a deterministic tar of /bin/<applet> → box
+# symlinks (src/main.rs). The roster is the single source for the symlink set, so the staged /bin
+# can't drift from what the box runs (VISION §16.3). Dependency-free (hand-rolled wasm parse +
+# ustar), like the other graph tools; //bazel:mc_box.bzl `mc_box` runs it per box.
+rust_binary(
+    name = "mc-roster",
+    srcs = ["src/main.rs"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+)

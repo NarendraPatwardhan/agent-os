@@ -1,0 +1,9 @@
+# server — mc-server (Rust/axum/tokio), ported from memcontainers crates/mc-server.
+# Hosts many concurrent kernels, speaks the `wire` protocol to clients, does real S3 /
+# net / persistence. Size is irrelevant server-side, so it stays Rust (VISION §5.1).
+# Tenancy/eviction for many kernels is §13 open Q7.
+#
+# Phase A:
+#   load("@rules_rust//rust:defs.bzl", "rust_binary")
+#   rust_binary(name = "mc-server", srcs = glob(["src/**/*.rs"]),
+#       deps = ["//memcontainers/hosts/wasmtime:host", "//memcontainers/contracts:wire_rust", "@crates//:axum", "@crates//:tokio"])

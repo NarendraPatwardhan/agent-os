@@ -36,7 +36,7 @@ register_toolchains("@zig_toolchains//:all")
 
 # Cross-compile-to-wasm zig toolchains: //platforms:wasm32_freestanding (kernels + pure guests, no
 # libc) and //platforms:wasm32_wasi (the C/C++ domain tools — luau — whose C++ runtime needs zig's
-# wasi-libc/libc++; the //wasi-adapter then rewrites the syscall imports to mc).
+# wasi-libc/libc++; the //memcontainers/wasi-adapter then rewrites the syscall imports to mc).
 register_toolchains("//platforms:wasm32_freestanding_zig_toolchain")
 register_toolchains("//platforms:wasm32_wasi_zig_toolchain")
 
@@ -66,17 +66,17 @@ use_repo(rust, "rust_toolchains")
 # bitflags/std via wasmtime) that drag std's lang items into the no_std kernel and break
 # it. So two pinned locks — each its own source of truth — rather than the single
 # workspace lock VISION §7.1 first imagined (a candidate VISION refinement). The `abi`
-# role is filled by the generated //contracts:*_rust bindings, not a crate.
+# role is filled by the generated //memcontainers/contracts:*_rust bindings, not a crate.
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 crate.from_cargo(
     name = "crates",
-    cargo_lockfile = "//kernel/rust:Cargo.lock",
-    manifests = ["//kernel/rust:Cargo.toml"],
+    cargo_lockfile = "//memcontainers/kernel/rust:Cargo.lock",
+    manifests = ["//memcontainers/kernel/rust:Cargo.toml"],
 )
 crate.from_cargo(
     name = "host_crates",
-    cargo_lockfile = "//hosts/wasmtime:Cargo.lock",
-    manifests = ["//hosts/wasmtime:Cargo.toml"],
+    cargo_lockfile = "//memcontainers/hosts/wasmtime:Cargo.lock",
+    manifests = ["//memcontainers/hosts/wasmtime:Cargo.toml"],
 )
 # The GUEST universe (no_std, wasm32-freestanding): the coreutils boxes + future guests
 # resolve their external crates (talc; regex for grep; …) from a THIRD lock, kept apart from
@@ -84,18 +84,18 @@ crate.from_cargo(
 # Cargo resolution would feature-unify std on and break the no_std guests (§7.1, §16.3).
 crate.from_cargo(
     name = "guest_crates",
-    cargo_lockfile = "//programs/coreutils:Cargo.lock",
-    manifests = ["//programs/coreutils:Cargo.toml"],
+    cargo_lockfile = "//memcontainers/programs/coreutils:Cargo.lock",
+    manifests = ["//memcontainers/programs/coreutils:Cargo.toml"],
 )
 # The typst engine's universe (std, wasm32-wasip1): the typst compiler graph (typst + typst-pdf +
 # typst-assets + comemo/krilla/ICU…, ~300 crates) resolves from its OWN lock — apart from @guest_crates
 # (coreutils) so typst's deep std graph never feature-unifies with the coreutils' resolution (the same
 # split rationale as the other three universes). The wasm engine links typst/typst-pdf/time/serde[_json];
-# the HOST font extractor (//third_party/typst/fonts) links typst-assets. SERVICES.md (typst is Rust).
+# the HOST font extractor (//memcontainers/programs/typst/fonts) links typst-assets. SERVICES.md (typst is Rust).
 crate.from_cargo(
     name = "typst_crates",
-    cargo_lockfile = "//third_party/typst/glue:Cargo.lock",
-    manifests = ["//third_party/typst/glue:Cargo.toml"],
+    cargo_lockfile = "//memcontainers/programs/typst/glue:Cargo.lock",
+    manifests = ["//memcontainers/programs/typst/glue:Cargo.toml"],
 )
 use_repo(crate, "crates", "host_crates", "guest_crates", "typst_crates")
 

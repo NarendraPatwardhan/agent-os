@@ -1,0 +1,13 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+# wasi-trampoline — host tool that reads a wasm's residual wasi_snapshot_preview1 imports (with
+# their linker symbols + signatures) and emits the Rust source of forwarders to the adapter's
+# __imported_* (src/main.rs). It drives the WASI→mc conversion fixpoint (//bazel:mc_box.bzl
+# mc_box). Dependency-free (hand-rolled wasm parse), like the contracts projector — so it needs
+# no crate universe.
+rust_binary(
+    name = "wasi-trampoline",
+    srcs = ["src/main.rs"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+)

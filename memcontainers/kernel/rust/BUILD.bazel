@@ -1,0 +1,66 @@
+load("@rules_rust//rust:defs.bzl", "rust_shared_library")
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("//bazel/tools/size:defs.bzl", "size_limit")
+load("//bazel:release_wasm.bzl", "release_wasm")
+
+# kernel/rust — the Phase-A kernel, PORTED from memcontainers crates/kernel, not
+# rewritten (VISION §5, §11 Phase A step 2). Compiles to wasm32-unknown-unknown; wasmi is
+# an ordinary NATIVE crate here — no C seam in Phase A (the seam is Phase B's
+# //memcontainers/kernel/interpreter, kernel/zig only). This kernel sets the behavior bar the Zig kernel must
+# match (B7).
+#
+# We ship ONE kernel: the cooperative build. Every guest runs on the cooperative
+# scheduler; the `threads` feature only WRAPS that scheduler in a Big Kernel Lock + worker
+# exports for a future shared-memory multi-worker host, which does not exist yet — so it
+# is left off (the `#[cfg(feature = "threads")]` gates stay in the source, a one-flag
+# re-enable when such a host lands). The shipped artifact is ALWAYS release: `release_wasm`
+# (defs.bzl) pins the whole subgraph to opt and the cdylib is symbol-stripped, so
+# `//memcontainers/kernel/rust:kernel` is the small (~1.7 MB) wasm, never a multi-MB debug build.
+
+# The cdylib. Tagged manual: a no_std cdylib has no host runtime, so `//...` builds it only through the
+# release_wasm transition below, which pins the size-opt GRAPH-WIDE (opt-level=z, fat LTO, panic=abort,
+# one codegen unit — VISION §B5); here we only strip the symbol/name tables from the shipped wasm.
+rust_shared_library(
+    name = "lib",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    rustc_flags = [
+        "-Cstrip=symbols",  # drop the symbol/name tables (opt-level/LTO/panic are pinned by the transition)
+    ],
+    tags = ["manual"],
+    deps = [
+        "@crates//:wasmi",  # eager-mode =1.0.9 (the §2.1 landmine), native dep
+        "@crates//:talc",   # wasm linear-memory allocator (A8: all state in linear mem)
+        "//memcontainers/contracts:constants_rust",  # errno / caps / tiers / flags / signals (B2)
+        "//memcontainers/contracts:mc_rust",         # the mc_syscall_table! macro + SYSCALL_NAMES (B2)
+        "//memcontainers/contracts:env_rust",        # the mc_bridge_table! macro → the env extern block (B2)
+        "//memcontainers/contracts:ctl_rust",        # the mc_control_table! macro → the mc_ctl_* exports (B2)
+        "//memcontainers/lib/json:serde",            # no_std JSON: read /etc/services.json for service activation
+    ],
+)
+
+# The shipped kernel: always opt + wasm32 + stripped. The rest of the graph consumes
+# //memcontainers/kernel/rust:kernel (§5.2); tests data-depend on it (B1).
+release_wasm(
+    name = "kernel",
+    lib = ":lib",
+    size_opt = True,  # the size-gated artifact carries the full §B5 size-opt (LTO + panic=abort)
+    # The shipped artifact: e2e / parity / conformance all data-dep it (B1, §7.2).
+    visibility = ["//visibility:public"],
+)
+
+# B5 size budget gate (the shared //bazel/tools/size rule) — a regression past the ceiling fails CI rather than
+# silently bloating the agent's footprint. memcontainers ships ~1.67 MB; we carry the resident-service
+# (svc) subsystem it lacks, but the §B5 size-opt (LTO + panic=abort) more than pays for it — the artifact
+# is ~1.20 MB. Hold the ceiling TIGHT at 1.4 MB so a real regression trips it, not a slack 2 MB.
+size_limit(
+    name = "size_limit",
+    file = ":kernel",
+    max_bytes = 1400000,
+)
+
+# Anchors the kernel in the test graph: asserts kernel.wasm builds.
+build_test(
+    name = "test",
+    targets = [":kernel"],
+)
