@@ -1,4 +1,4 @@
-//! `unzip` — extract or list a `.zip` (the external-crate `zip` crate, VISION §16.3). A clap CLI;
+//! `unzip` — extract or list a `.zip` (the external-crate `zip` crate, SYSTEMS.md). A clap CLI;
 //! the central directory at the file's end is read via the adapter's `fd_seek` (SEEK_END). Members
 //! may be selected/excluded by shell glob. std I/O → the WASI→mc adapter.
 //!

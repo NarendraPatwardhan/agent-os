@@ -1,7 +1,7 @@
 load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
 load("//bazel:mc_program.bzl", "cc_object", "mc_program")
 
-# /bin/sqlite — the SQLite engine as a resident SERVICE in the Zig-glue lane (SERVICES.md §1.1, §6.2).
+# /bin/sqlite — the SQLite engine as a resident SERVICE in the Zig-glue lane (SYSTEMS.md).
 # `zig cc` compiles the fetched amalgamation (@sqlite//:sqlite3.c) for wasm32-wasi and the glue @cImports
 # sqlite3.h to drive the C API directly. sqlite is C (return codes, no C++ EH), so unlike luau there is
 # NO force_extern_c, NO -fno-exceptions/-rtti, NO trap-unwind — just the WASI compile defines + the

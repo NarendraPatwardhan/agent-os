@@ -1,5 +1,5 @@
 //! `projector` — reads one contract (`contracts/*.kdl`) and emits one target
-//! language's binding to stdout (VISION §6.2). The single tool behind every
+//! language's binding to stdout (SYSTEMS.md). The single tool behind every
 //! projection; `abi_library` invokes it once per (module, language) pair.
 //!
 //! Invocation:  projector --module <m> --lang <l> --contract <path.kdl>
@@ -417,7 +417,7 @@ fn emit_constants(lang: &str, nodes: &[Node], contract: &str) -> String {
             "service-marker" => {
                 let cname = n.name.to_uppercase().replace('-', "_");
                 let value = n.arg_str(0);
-                comment(&mut o, "the argv[1] marker the kernel passes to spawn a binary in SERVICE mode (SERVICES.md §3.3)");
+                comment(&mut o, "the argv[1] marker the kernel passes to spawn a binary in SERVICE mode (SYSTEMS.md)");
                 match lang {
                     "rust" => o.push_str(&format!("pub const {cname}: &str = \"{value}\";\n")),
                     "zig" => o.push_str(&format!("pub const {cname}: []const u8 = \"{value}\";\n")),

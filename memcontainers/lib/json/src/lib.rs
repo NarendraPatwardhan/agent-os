@@ -448,7 +448,7 @@ mod tests {
 
     #[test]
     fn parses_a_service_manifest() {
-        // The exact shape the kernel reads from /etc/services.json (VISION §6): name → { binary,
+        // The exact shape the kernel reads from /etc/services.json (SYSTEMS.md): name → { binary,
         // optional `eager` }. No tier/budget here — the binary's own mc_tier/mc_budget are the single
         // source of truth, so a manifest can never widen the privilege a binary declared it needs.
         let m = parse(

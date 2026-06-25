@@ -1,17 +1,17 @@
-"""agent-os — one build graph, zero staleness (VISION §7.1 / invariant B1).
+"""agent-os — one build graph, zero staleness (SYSTEMS.md / invariant B1).
 
 Every artifact in this repo is a Bazel target with declared inputs; the packages
 under this module declare those targets, and this file pins the toolchains they
 build with. `agent-os` is the name of the *repository and build* and appears here
 and nowhere else — the running system's identity is `mc`, frozen into the ABI
-(VISION §8.2). Do not prefix anything `agent-os-*`.
+(SYSTEMS.md). Do not prefix anything `agent-os-*`.
 
 Toolchains land in two waves so that `bazel test //...` is green at every step:
   - ACTIVE now: the validated wasm32-freestanding spine (platforms + Zig 0.16 +
     rules_cc) that both kernels and every guest compile against, plus skylib for
     build/diff tests.
   - PHASE-A lanes (Rust kernel/host/server/projector, the JS host + SDK, images,
-    drift gates, the vendored C/C++ guests): declared as the VISION specifies but
+    drift gates, the vendored C/C++ guests): declared as SYSTEMS.md specifies but
     commented until the first target in each lane lands (then uncomment with it).
 """
 
@@ -41,7 +41,7 @@ register_toolchains("//platforms:wasm32_freestanding_zig_toolchain")
 register_toolchains("//platforms:wasm32_wasi_zig_toolchain")
 
 # ---------------------------------------------------------------------------
-# PHASE-A lanes — declared per VISION §7.1, enabled as each lane's first target
+# PHASE-A lanes — declared per SYSTEMS.md, enabled as each lane's first target
 # lands. Every block below is intended-final shape, not a guess; uncomment the
 # block together with the package that consumes it so green is preserved (B1).
 # ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ register_toolchains("//platforms:wasm32_wasi_zig_toolchain")
 # with crate_universe in Step 2 (§5.2).
 bazel_dep(name = "rules_rust", version = "0.70.0")
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
-# wasm32-unknown-unknown is the kernel's real rustc target (the VISION's "freestanding"
+# wasm32-unknown-unknown is the kernel's real rustc target (SYSTEMS.md's "freestanding"
 # is the Zig triple); the guests (sysroot/programs) compile there too. The host triple
 # stays for the projector and the wasmtime host (native, autodetected). A musl target
 # triple lands when the host goes static for distribution (§8.1) — deferred (see
@@ -65,7 +65,7 @@ use_repo(rust, "rust_toolchains")
 # resolution feature-unifies their common deps and turns on std features (e.g.
 # bitflags/std via wasmtime) that drag std's lang items into the no_std kernel and break
 # it. So two pinned locks — each its own source of truth — rather than the single
-# workspace lock VISION §7.1 first imagined (a candidate VISION refinement). The `abi`
+# workspace lock SYSTEMS.md first imagined (a candidate SYSTEMS.md refinement). The `abi`
 # role is filled by the generated //memcontainers/contracts:*_rust bindings, not a crate.
 crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
 crate.from_cargo(
@@ -91,7 +91,7 @@ crate.from_cargo(
 # typst-assets + comemo/krilla/ICU…, ~300 crates) resolves from its OWN lock — apart from @guest_crates
 # (coreutils) so typst's deep std graph never feature-unifies with the coreutils' resolution (the same
 # split rationale as the other three universes). The wasm engine links typst/typst-pdf/time/serde[_json];
-# the HOST font extractor (//memcontainers/programs/typst/fonts) links typst-assets. SERVICES.md (typst is Rust).
+# the HOST font extractor (//memcontainers/programs/typst/fonts) links typst-assets. SYSTEMS.md (typst is Rust).
 crate.from_cargo(
     name = "typst_crates",
     cargo_lockfile = "//memcontainers/programs/typst/glue:Cargo.lock",
@@ -128,7 +128,7 @@ http_archive(
     build_file = "//third_party/sed:sed.BUILD.bazel",
 )
 
-# sqlite — the SQLite 3.51.0 amalgamation fetched from sqlite.org (SERVICES.md §3.2: fetch upstream via
+# sqlite — the SQLite 3.51.0 amalgamation fetched from sqlite.org (SYSTEMS.md: fetch upstream via
 # http_archive; never commit a vendored copy). 3.51.0 ships native SQLITE_WASI support (the unix-dotfile
 # VFS over WASI fds), so the wasm32-wasi + mc build needs NO core patches — only the compile defines in
 # third_party/sqlite/glue/BUILD.bazel. Pinned by sha256; the Zig glue @cImports sqlite3.h and links

@@ -1,4 +1,4 @@
-# /bin/typst — the Typst document compiler as a resident SERVICE (the Rust-std-wasi lane; SERVICES.md).
+# /bin/typst — the Typst document compiler as a resident SERVICE (the Rust-std-wasi lane; SYSTEMS.md).
 # typst is std on wasm32-wasi: std::fs/clock ride the //memcontainers/wasi-adapter to mc_sys_*, and //memcontainers/sysroot/rust
 # supplies the svc_* serve syscalls (its no_std panic handler is cfg'd off on wasi). mc_wasi_program
 # converts the wasm32-wasi crate to a pure-mc box (adapter + trampoline fixpoint), opts it (panic=abort

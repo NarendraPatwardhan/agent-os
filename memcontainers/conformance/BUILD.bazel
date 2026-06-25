@@ -1,6 +1,6 @@
 # conformance — the ABI coverage gate (ported from memcontainers crates/conformance).
 # Derives the syscall surface from //memcontainers/contracts (the projected mc table) and walks every
-# guest's wasm import section (VISION §9.3):
+# guest's wasm import section (SYSTEMS.md):
 #   - SAFETY: no guest imports an undeclared `mc::` symbol.
 #   - COVERAGE: every declared syscall is imported by >=1 guest, or carries a documented
 #     exclusion.

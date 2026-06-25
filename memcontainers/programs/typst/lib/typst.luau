@@ -3,7 +3,7 @@
   typst.luau — compile Typst to PDF from agent-os Luau: `require("typst")`.
 
   The ergonomic face of the resident `typst` SERVICE. `typst.compile(source)` sends `.typ` source to the
-  warm service — which keeps ~30 MB of fonts loaded across calls (SERVICES.md §1) — and returns the PDF
+  warm service — which keeps ~30 MB of fonts loaded across calls (SYSTEMS.md) — and returns the PDF
   bytes; `typst.compile_file(path)` compiles a `.typ` already in the VFS. It talks to the service over
   `sys.svc` with a small JSON request and a length-framed binary response. Shipped as VFS content by the
   `paper` flavor (not embedded in the interpreter). The CLI `$ typst compile` is a thin client of the

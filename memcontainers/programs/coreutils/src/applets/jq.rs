@@ -1,4 +1,4 @@
-//! `jq` — command-line JSON processor (the external-crate `jaq` engine, VISION §16.3). A clap CLI
+//! `jq` — command-line JSON processor (the external-crate `jaq` engine, SYSTEMS.md). A clap CLI
 //! over jaq's `Loader`/`Compiler`/`Ctx`; reads JSON from stdin or files, applies the FILTER, prints
 //! each result. std I/O → the WASI→mc adapter.
 //!

@@ -1,4 +1,4 @@
-# spec — GENERATED specs, diff-tested outputs (VISION §8). Never hand-edited: the
+# spec — GENERATED specs, diff-tested outputs (SYSTEMS.md). Never hand-edited: the
 # AsyncAPI/OpenAPI documents and the wire golden-vector corpus are projected from
 # contracts/wire.kdl by the projector, and a write_source_files drift gate keeps the
 # editor-visible copies honest (B2). The golden vectors pin the wire byte layout across

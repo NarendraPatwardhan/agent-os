@@ -2,7 +2,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary")
 load("//bazel:mc_program.bzl", "mc_rust_program")
 
 # programs/examples/kv — /bin/kv, a trivial resident KEY-VALUE service that proves the resident-service
-# primitive end to end (SERVICES.md P1). One binary, two modes: the kernel spawns it in SERVICE mode
+# primitive end to end (SYSTEMS.md). One binary, two modes: the kernel spawns it in SERVICE mode
 # (a warm `svc_serve` loop over a fixed in-memory store), and the shell runs it as a thin
 # `svc_connect`/`svc_call` CLIENT (`kv get` / `kv put`). Allocator-free (a fixed-capacity store), so
 # it needs only //memcontainers/sysroot. Imports ONLY `mc` (no WASI); built under --platforms=//platforms:wasm32_freestanding.

@@ -4,7 +4,7 @@ load("//bazel/tools/size:defs.bzl", "size_limit")
 load("//bazel:release_wasm.bzl", "release_wasm")
 
 # kernel/rust — the Phase-A kernel, PORTED from memcontainers crates/kernel, not
-# rewritten (VISION §5, §11 Phase A step 2). Compiles to wasm32-unknown-unknown; wasmi is
+# rewritten (SYSTEMS.md Phase A step 2). Compiles to wasm32-unknown-unknown; wasmi is
 # an ordinary NATIVE crate here — no C seam in Phase A (the seam is Phase B's
 # //memcontainers/kernel/interpreter, kernel/zig only). This kernel sets the behavior bar the Zig kernel must
 # match (B7).
@@ -19,7 +19,7 @@ load("//bazel:release_wasm.bzl", "release_wasm")
 
 # The cdylib. Tagged manual: a no_std cdylib has no host runtime, so `//...` builds it only through the
 # release_wasm transition below, which pins the size-opt GRAPH-WIDE (opt-level=z, fat LTO, panic=abort,
-# one codegen unit — VISION §B5); here we only strip the symbol/name tables from the shipped wasm.
+# one codegen unit — SYSTEMS.md); here we only strip the symbol/name tables from the shipped wasm.
 rust_shared_library(
     name = "lib",
     srcs = glob(["src/**/*.rs"]),

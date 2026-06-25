@@ -1,4 +1,4 @@
-# luau as a guest — vendor LESS, patch in place (VISION §8, B3). Upstream source enters via
+# luau as a guest — vendor LESS, patch in place (SYSTEMS.md, B3). Upstream source enters via
 # http_archive(urls, sha256, patches=[...]) in MODULE.bazel; ONLY our deltas live in-tree:
 #   patches/           — the `// mc PATCH` set as real .patch files (VM/Parser/Compiler,
 #                        Analysis, and frontend nothread), applied to upstream 0.725 (B3).
@@ -8,7 +8,7 @@
 # See third_party/luau/SYSTEM.md.
 #
 # luau needs the kernel-mediated non-local exit because wasmi has no exception proposal — Lua
-# `error`/`pcall` and C++ EH unwind through the kernel's trap boundary (VISION §4.1).
+# `error`/`pcall` and C++ EH unwind through the kernel's trap boundary (SYSTEMS.md).
 
 # The patch files + the build_file are referenced as labels by the http_archive (resolved in the
 # @luau repo context), so they must be exported from this package.

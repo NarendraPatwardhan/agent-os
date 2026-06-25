@@ -1,6 +1,6 @@
 //! `wasm-imports <wasm> <module>` — the CLI surface over the import-section oracle
 //! ([`wasm_imports::imported_function_symbols`]), the primitive behind conformance
-//! (VISION §9.3) and capability attestation (VISION §16.4).
+//! (SYSTEMS.md) and capability attestation (SYSTEMS.md).
 //!
 //! Default: print the sorted FUNCTION symbols `<wasm>` imports from `<module>`, one per
 //! line — the shape a Bazel `genrule` captures or a golden file diffs.

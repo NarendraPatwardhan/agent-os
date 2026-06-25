@@ -1,6 +1,6 @@
 //! `kv` — a trivial resident KEY-VALUE service that proves the resident-service
-//! primitive end to end (SERVICES.md P1). One binary, two activation modes
-//! (VISION §4.5): spawned by the kernel with the service marker it runs a warm
+//! primitive end to end (SYSTEMS.md). One binary, two activation modes
+//! (SYSTEMS.md): spawned by the kernel with the service marker it runs a warm
 //! `svc_serve` loop over an in-memory store; invoked from the shell (`kv get k`,
 //! `kv put k v`) it is a thin client that `svc_connect`s the warm service and
 //! `svc_call`s it. The store lives in the SERVICE's linear memory, so it stays warm

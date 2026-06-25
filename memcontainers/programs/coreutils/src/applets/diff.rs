@@ -1,5 +1,5 @@
 //! `diff` — compare two files or directories line by line (the external-crate `similar` Myers
-//! engine, VISION §16.3). A clap CLI; unified (`-u`/`-U N`), context (`-c`/`-C N`), normal, and
+//! engine, SYSTEMS.md). A clap CLI; unified (`-u`/`-U N`), context (`-c`/`-C N`), normal, and
 //! brief (`-q`) output; `-r` recursive; `-i`/`-w`/`-B` ignore flags. std I/O → the WASI→mc adapter.
 //!
 //! Exit 0 (identical) / 1 (differ) / 2 (error). Deviations from GNU diff (inherited from the

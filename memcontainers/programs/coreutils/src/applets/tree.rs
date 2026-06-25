@@ -1,6 +1,6 @@
 //! `tree [-a] [-d] [-f] [-L LEVEL] [--noreport] [DIR...]` — print the directory hierarchy.
 //!
-//! HAND-WRITTEN applet (VISION §16.3): logic transcribed from memcontainers' `programs::tree`,
+//! HAND-WRITTEN applet (SYSTEMS.md): logic transcribed from memcontainers' `programs::tree`,
 //! the directory walk runs over the **facade** (`fsutil::list`/`join`/`is_dir`) and emits through
 //! `textio::out`/`outln`; args + help via **clap**. Prints the hierarchy under each DIR (default
 //! `.`) with the usual `├──`/`└──` connectors (UTF-8, byte-exact), then a `N directories, M files`

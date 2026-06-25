@@ -4,7 +4,7 @@ load(":defs.bzl", "host_release_binary")
 
 # hosts/wasmtime — the Rust host driver (ported from memcontainers crates/host). Loads
 # kernel.wasm, implements the `env` bridge + the `mc_ctl_*` control channel, terminates TLS
-# for guest egress, and ticks the kernel (VISION §4.1, A3). A NATIVE library + CLI. The
+# for guest egress, and ticks the kernel (SYSTEMS.md, A3). A NATIVE library + CLI. The
 # SAME kernel.wasm runs here and under hosts/js (A3); both kernels run under this host in
 # the parity matrix (B7). This is the host every e2e test boots — real bytes, no mocks (B6).
 #

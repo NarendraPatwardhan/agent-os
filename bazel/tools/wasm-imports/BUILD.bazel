@@ -1,7 +1,7 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
 # tools/wasm-imports — the wasm import-section oracle, the ONE primitive behind conformance
-# (VISION §9.3) and capability attestation (§16.4). Both gates walk a guest's wasm imports
+# (SYSTEMS.md) and capability attestation (§16.4). Both gates walk a guest's wasm imports
 # and check the function symbols it pulls from a module (`mc`, `env`) against an allowed set;
 # they differ only in the set (declared syscall table vs. a tier's syscalls), so the walk
 # lives here once. A NATIVE std library + CLI (it inspects guest wasm; it is not itself a

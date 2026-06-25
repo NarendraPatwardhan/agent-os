@@ -1,4 +1,4 @@
-//! sqlite glue — the resident SERVICE. One binary, two modes (VISION §4.5): spawned with the service
+//! sqlite glue — the resident SERVICE. One binary, two modes (SYSTEMS.md): spawned with the service
 //! marker it runs the warm `svc_serve` loop over per-session `sqlite3*` handles; otherwise it is a
 //! thin CLI client over that same service. The Luau library `require("sqlite")` is the default interface.
 //!
@@ -7,7 +7,7 @@
 //! and a response is {"ok":true,…} or {"ok":false,"error":"…"}. exec → {changes,rowid}; query →
 //! {cols:[…],rows:[[…]]} with values typed (INTEGER/REAL→number, TEXT→string, NULL→null, BLOB→string).
 //! The DB file (e.g. /var/persist/app.db) is opened by sqlite's stock unix-dotfile VFS over WASI → the
-//! wasi-adapter → mc — no custom VFS. SERVICES.md §6.2.
+//! wasi-adapter → mc — no custom VFS. SYSTEMS.md
 
 const std = @import("std");
 const mc = @import("mc");
@@ -593,7 +593,7 @@ fn doFinalize(session: u32, obj: std.json.ObjectMap, resp: *std.ArrayList(u8)) v
     respondOk(resp); // idempotent — finalizing an unknown/already-gone statement is fine
 }
 
-/// `import`: bulk-load a CSV that the CLI DELEGATED as a handle (SERVICES.md §3.4). The service reads
+/// `import`: bulk-load a CSV that the CLI DELEGATED as a handle (SYSTEMS.md). The service reads
 /// the file straight from `handles[0]` — no path, no namespace, no ambient FS reach — and INSERTs each
 /// comma-separated line into `table` (fields bound as text), atomically.
 fn doImport(session: u32, obj: std.json.ObjectMap, handles: []const u32, resp: *std.ArrayList(u8)) void {
@@ -964,8 +964,8 @@ fn respondSqliteError(resp: *std.ArrayList(u8), db: ?*c.sqlite3) void {
 //
 // `sqlite <db> <sql>` runs SQL against the WARM resident service and prints rows (TSV); it is a thin
 // svc_connect/svc_call CLIENT of the same engine the library and the serve loop drive — "three faces,
-// one core" (SERVICES.md §3.3), not a second implementation. `sqlite <db> import <table> <file>`
-// bulk-loads a CSV by DELEGATING the open file to the service (SERVICES.md §3.4), which reads it
+// one core" (SYSTEMS.md), not a second implementation. `sqlite <db> import <table> <file>`
+// bulk-loads a CSV by DELEGATING the open file to the service (SYSTEMS.md), which reads it
 // straight from the handle with no path of its own.
 
 fn die(msg: []const u8) noreturn {
@@ -1139,7 +1139,7 @@ fn printResult(self: *Cli, obj: std.json.ObjectMap) void {
 
 /// Run a (possibly multi-statement) SQL string against the warm service ONE statement at a time: the
 /// service runs each statement and returns the unparsed tail (its own boundary), and we print each
-/// result set. The service holds the warm db, so the CLI stays a thin client (SERVICES.md §3.3).
+/// result set. The service holds the warm db, so the CLI stays a thin client (SYSTEMS.md).
 fn runSql(self: *Cli, sql: []const u8) void {
     var remaining: []u8 = alloc.dupe(u8, sql) catch die("sqlite: oom\n");
     while (std.mem.trim(u8, remaining, " \t\r\n").len > 0) {
@@ -1160,7 +1160,7 @@ fn runSql(self: *Cli, sql: []const u8) void {
 }
 
 /// `.import FILE TABLE`: open FILE, DELEGATE its handle to the service, and let the service read the CSV
-/// straight from the handle (SERVICES.md §3.4) — the service never sees the path. Silent like sqlite3.
+/// straight from the handle (SYSTEMS.md) — the service never sees the path. Silent like sqlite3.
 fn cliImport(conn: i32, file: []const u8, table: []const u8) void {
     var fd: u32 = 0;
     if (mc.mc_sys_open(mc.addr(file.ptr), @intCast(file.len), 0, mc.addr(&fd)) != 0) {

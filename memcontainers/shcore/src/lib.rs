@@ -4,7 +4,7 @@
 //!
 //! Because the pure layers — lexing, parsing, expansion, arithmetic, globbing —
 //! touch no syscalls, they are the ONE place agent-os keeps native unit tests
-//! (VISION §9.4). The kernel cannot run natively (A2), so everywhere else there is
+//! (SYSTEMS.md). The kernel cannot run natively (A2), so everywhere else there is
 //! nothing to unit-test in isolation; integrated behaviour is driven through the
 //! real kernel by the e2e suite (B6). That split is structural here:
 //!

@@ -1,5 +1,5 @@
 # `zig cc` / `zig c++` as the hermetic C/C++ cross-compiler for the third_party guests
-# (sqlite, luau), compiled to wasm (VISION §5.1, §8). This is where Zig "earns its keep
+# (sqlite, luau), compiled to wasm (SYSTEMS.md). This is where Zig "earns its keep
 # first" in Phase A: one toolchain unifies the C, C++, and Zig-glue compiles, replacing
 # memcontainers' bare-`zig` / hand-`-fno-exceptions` glue with hermetic, declared actions.
 #

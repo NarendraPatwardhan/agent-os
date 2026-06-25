@@ -1,5 +1,5 @@
 # The kernel — two interchangeable implementations (rust/ and zig/), one contract,
-# parity-gated (VISION §5, B7). This package owns the implementation SELECTOR: a single
+# parity-gated (SYSTEMS.md, B7). This package owns the implementation SELECTOR: a single
 # flag flips every kernel-consuming edge (tests, images, hosts) between the two builds,
 # so the parity matrix (§9.6) runs both from one graph.
 #

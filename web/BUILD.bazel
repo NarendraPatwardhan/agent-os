@@ -1,5 +1,5 @@
 # web — the browser app + real-browser e2e (ported from memcontainers web/). Assets are
-# DEPS, not `cp` (VISION §7.3): the app bundles the @mc/* SDK as build dependencies, and
+# DEPS, not `cp` (SYSTEMS.md): the app bundles the @mc/* SDK as build dependencies, and
 # the CDP scripts under cdp/ run against a PINNED, hermetic chromium (B4) — never
 # /usr/bin/chromium. This is the in-browser proof that the JS host family works (A3).
 #

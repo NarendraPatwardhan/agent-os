@@ -58,7 +58,7 @@ print(string.sub(pdf, 1, 5), string.find(pdf, "%%EOF", 1, true) ~= nil)
     );
 }
 
-/// The CLI face (SERVICES.md §3.3): `$ typst compile <in.typ> <out.pdf>` is a thin svc_connect/svc_call
+/// The CLI face (SYSTEMS.md): `$ typst compile <in.typ> <out.pdf>` is a thin svc_connect/svc_call
 /// client of the SAME warm service the library drives. Success is silent on the terminal (diagnostics go
 /// to stderr only on error); the written PDF is real (magic + trailer + non-trivial size).
 #[test]
@@ -200,7 +200,7 @@ fn typst_version_and_help() {
     );
 }
 
-/// Warm survival across snapshot/restore (SERVICES.md §1, §3.5): the typst service loads its fonts ONCE
+/// Warm survival across snapshot/restore (SYSTEMS.md): the typst service loads its fonts ONCE
 /// into linear memory, so that warm state rides a VM snapshot. A document compiled before the snapshot
 /// leaves the service warm AND quiescent (the call completed → it idles in svc_recv, so the snapshot
 /// proceeds); after restoring into a FRESH VM, a second compile still produces a valid PDF — the warm

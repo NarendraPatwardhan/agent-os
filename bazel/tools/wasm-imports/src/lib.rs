@@ -1,5 +1,5 @@
-//! wasm-imports — the wasm import-section oracle shared by conformance (VISION §9.3) and
-//! capability attestation (VISION §16.4).
+//! wasm-imports — the wasm import-section oracle shared by conformance (SYSTEMS.md) and
+//! capability attestation (SYSTEMS.md).
 //!
 //! Both gates do the *same* thing to a guest `.wasm`: walk its import section and look at
 //! the FUNCTION symbols it imports from one module (the `mc` syscall module, or the `env`

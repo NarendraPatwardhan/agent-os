@@ -1,7 +1,7 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_static_library")
 load("//bazel:wasm32_build_test.bzl", "wasm32_build_test")
 
-# wasi-adapter — a guest-side WASI preview1 shim implemented over `mc_sys_*` (VISION §13.4/§16.3),
+# wasi-adapter — a guest-side WASI preview1 shim implemented over `mc_sys_*` (SYSTEMS.md),
 # ported from memcontainers crates/wasi/adapter. It DEFINES the `wasi_snapshot_preview1` functions
 # so the conversion link-injects it into a wasm32-wasi box and rewrites the box's WASI imports to
 # `mc` — the box then imports ONLY `mc` (A4: WASI exists only as a guest adapter, never in the

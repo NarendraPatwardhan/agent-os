@@ -1,4 +1,4 @@
-//! `tar` — create, list, and extract tar archives (the external-crate `tar` crate, VISION §16.3).
+//! `tar` — create, list, and extract tar archives (the external-crate `tar` crate, SYSTEMS.md).
 //! A clap CLI; modes `-c`/`-x`/`-t`, compression `-z` (gzip, both ways) and `-j`/`-J` (bzip2/xz,
 //! DECOMPRESS-ONLY — no viable pure-Rust encoder). Extract honors `-C`, `-O`, `-k`,
 //! `--strip-components`, `--exclude`. std I/O → the WASI→mc adapter (no mmap on wasip1).

@@ -1,4 +1,4 @@
-# Root package — the user-facing entry points (VISION §8).
+# Root package — the user-facing entry points (SYSTEMS.md).
 #
 # These aliases are the stable names the README and humans type; each resolves to
 # whichever package currently owns the artifact, so callers never chase a moved

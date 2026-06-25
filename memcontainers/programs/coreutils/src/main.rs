@@ -1,4 +1,4 @@
-//! `coreutils` — the multicall `/bin` (VISION §16.3). ONE std crate, built for `wasm32-wasi` and
+//! `coreutils` — the multicall `/bin` (SYSTEMS.md). ONE std crate, built for `wasm32-wasi` and
 //! compiled per (tier × set): the FULL set → `mcbox-{isolated,readonly,readwrite,full}` (posix,
 //! every applet), the MINIMAL set → `mcbox-min-{…}` (the curated ~15 the `["set_min"]`-tagged
 //! applets opt into). The `//wasi-adapter` then rewrites each box's `wasi_snapshot_preview1`

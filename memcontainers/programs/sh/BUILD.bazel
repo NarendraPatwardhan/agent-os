@@ -3,7 +3,7 @@ load("//bazel:mc_program.bzl", "mc_rust_program")
 
 # programs/sh — /bin/sh, the guest shell. A no_std wasm32-freestanding binary that runs the
 # OS-agnostic //memcontainers/shcore engine over //memcontainers/sysroot's mc syscalls. It is NOT part of the mcbox multicall
-# (VISION §16.3): it spawns the coreutils boxes, drives pipelines/redirections/job control, and
+# (SYSTEMS.md): it spawns the coreutils boxes, drives pipelines/redirections/job control, and
 # boots as pid 1 (the login shell). Three modes — interactive REPL, `sh -c COMMAND`, and
 # `sh FILE ARGS`. Ported from memcontainers crates/programs/src/bin/sh.rs. Being sysroot-native it
 # imports ONLY `mc` (no WASI, no conversion); built under --platforms=//platforms:wasm32_freestanding.

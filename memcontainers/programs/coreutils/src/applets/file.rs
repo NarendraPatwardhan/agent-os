@@ -1,5 +1,5 @@
 //! `file` — determine file type (the external-crate `infer` magic-byte crate + a text/binary +
-//! shebang/JSON/XML/HTML heuristic, VISION §16.3). A clap CLI; `-b` (brief, no name prefix), `-i`/
+//! shebang/JSON/XML/HTML heuristic, SYSTEMS.md). A clap CLI; `-b` (brief, no name prefix), `-i`/
 //! `--mime-type` (MIME output). std I/O → the WASI→mc adapter.
 //!
 //! Deviations from BSD/GNU file (inherited from the memcontainers port): only -b and -i; no -z

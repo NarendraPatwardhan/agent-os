@@ -61,8 +61,8 @@ McProgramInfo = provider(
     fields = {
         "wasm": "The stamped .wasm File (mc_tier + mc_budget custom sections appended).",
         "tier": "The capability tier string (isolated / read-only / read-write / full).",
-        "budget": "struct(mem, fuel, table) — the declared resource budget (VISION §16.5).",
-        "service": "The mc_service name if this is a resident service (VISION §6), else \"\".",
+        "budget": "struct(mem, fuel, table) — the declared resource budget (SYSTEMS.md).",
+        "service": "The mc_service name if this is a resident service (SYSTEMS.md), else \"\".",
     },
 )
 
@@ -82,7 +82,7 @@ def _mc_program_impl(ctx):
             ctx.attr.mem,
             ctx.attr.fuel,
             ctx.attr.table,
-            ctx.attr.service,  # "" → no mc_service section; a name → stamp it (resident service, VISION §6)
+            ctx.attr.service,  # "" → no mc_service section; a name → stamp it (resident service, SYSTEMS.md)
         ],
         mnemonic = "McStamp",
         progress_message = "Stamping mc guest %{label}",
@@ -124,7 +124,7 @@ def _mc_program_impl(ctx):
 
 _mc_program = rule(
     implementation = _mc_program_impl,
-    doc = "Stamp a zig/C++ domain-tool wasm with its mc_tier + mc_budget custom sections (VISION " +
+    doc = "Stamp a zig/C++ domain-tool wasm with its mc_tier + mc_budget custom sections (SYSTEMS.md " +
           "§16.5) and attest it (§9.3 import purity + §16.4 tier-cap fit). Yields the load-ready " +
           "<name>.wasm + an McProgramInfo; a non-mc/unknown import or an over-tier syscall fails the build.",
     attrs = {
@@ -139,7 +139,7 @@ _mc_program = rule(
         "mem": attr.string(default = "0", doc = "Memory budget, bytes (0 = no mc_budget; the kernel default)."),
         "fuel": attr.string(default = "0", doc = "Fuel budget, interpreter steps (0 = the kernel default)."),
         "table": attr.string(default = "0", doc = "Table-elements budget (0 = the kernel default)."),
-        "service": attr.string(default = "", doc = "Resident-service name → an mc_service section (VISION §6); \"\" for a one-shot tool."),
+        "service": attr.string(default = "", doc = "Resident-service name → an mc_service section (SYSTEMS.md); \"\" for a one-shot tool."),
         "_stamp": attr.label(default = "//bazel/tools/mc-stamp", executable = True, cfg = "exec"),
         "_attest": attr.label(default = "//bazel/tools/mc-attest", executable = True, cfg = "exec"),
     },
@@ -149,7 +149,7 @@ def mc_program(name, wasm, tier, mem = 0, fuel = 0, table = 0, service = "", vis
     """Thin ergonomic wrapper over the `_mc_program` rule: takes INT budgets (e.g. 256 * 1024 * 1024)
     so call sites stay self-documenting, and forwards them as strings (attr.int is 32-bit; fuel is ~2e12).
     A 0 budget means "no mc_budget section" (the kernel default). `service` (optional) stamps the
-    mc_service section marking a resident service (VISION §6). Used by the Zig/C++ lane (a pre-built
+    mc_service section marking a resident service (SYSTEMS.md). Used by the Zig/C++ lane (a pre-built
     `wasm`); the Rust lane wraps it via `mc_rust_program`."""
     _mc_program(
         name = name,
@@ -163,7 +163,7 @@ def mc_program(name, wasm, tier, mem = 0, fuel = 0, table = 0, service = "", vis
     )
 
 def mc_rust_program(name, lib, tier, mem = 0, fuel = 0, table = 0, service = "", visibility = None):
-    """A Rust guest PROGRAM, packaged uniformly with the Zig/C++ lane (VISION §16.5 / codex #1). A
+    """A Rust guest PROGRAM, packaged uniformly with the Zig/C++ lane (SYSTEMS.md / codex #1). A
     Rust `rust_binary` (`lib`) declares NO metadata in its source; this rule transitions it to opt +
     wasm32 (`release_wasm`), then stamps `mc_tier`/`mc_budget`/`mc_service` from the BUILD attributes
     and attests it (`mc_program`). So both guest lanes declare tier/budget/service ONCE — in the build

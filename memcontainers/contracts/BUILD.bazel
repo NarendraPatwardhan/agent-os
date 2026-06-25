@@ -1,4 +1,4 @@
-# The four boundaries, single source of truth (VISION §6, B2). The .kdl files here
+# The four boundaries, single source of truth (SYSTEMS.md, B2). The .kdl files here
 # are DEFINED once; every Rust/Zig/TS reference elsewhere is a generated *.gen.*
 # projection, never a hand-written copy.
 package(default_visibility = ["//visibility:public"])
@@ -22,7 +22,7 @@ filegroup(
 )
 
 # ---------------------------------------------------------------------------
-# Projections (VISION §6.2, §14.1). One contract → the languages that consume it.
+# Projections (SYSTEMS.md). One contract → the languages that consume it.
 # Each call generates the bindings, compile-validates the rust/zig ones, and gates
 # drift via gen/ + diff_test (B2). Consumers depend on the library targets
 # (:mc_rust, :env_zig, …); update the committed gen/ copies with

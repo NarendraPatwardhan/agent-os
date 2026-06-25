@@ -5,7 +5,7 @@ Bazel build graph — [memcontainers](../memcontainers)' design, shipped **Rust-
 by porting the proven kernel, and migrated to **Zig** later on a branch gated by
 Rust↔Zig behavior parity.
 
-The full design contract is **[VISION.md](./VISION.md)** — read it first. This README
+The full design contract is **[SYSTEMS.md](./SYSTEMS.md)** — read it first. This README
 is the quickstart and a map of the scaffold.
 
 ## Quickstart
@@ -36,17 +36,17 @@ not yet the port. What exists:
   are drift-gated by `diff_test` (B2). Add or change a syscall by editing one `.kdl`
   line and running `bazel run //contracts:mc_sync`.
 - A **package home for every Phase-A component**, each `BUILD.bazel` documenting
-  what it will hold, its language, its target world, and the VISION section that
+  what it will hold, its language, its target world, and SYSTEMS.md section that
   governs it.
 
-What does **not** exist yet (the next steps, VISION §11 Phase A):
+What does **not** exist yet (the next steps, SYSTEMS.md Phase A):
 
 - Step 2 — porting memcontainers' Rust into `kernel/rust`, `sysroot`, `shcore`,
   `programs`, `wasi-adapter`, `hosts/wasmtime`, `server`, `conformance`, `tests/e2e`,
   consuming the generated `//contracts:*_rust` bindings.
 - Step 4 — the C/C++ guest lane (sqlite, luau) via `http_archive` + Zig glue.
 
-## Layout (see VISION §8 for the rationale)
+## Layout (see SYSTEMS.md for the rationale)
 
 | Path | What | Lang | Target world |
 |---|---|---|---|
@@ -64,4 +64,4 @@ What does **not** exist yet (the next steps, VISION §11 Phase A):
 
 `agent-os` names the repo and the build only. The system is `mc`: the `mc` syscall
 module, `mc_sys_*`, `mc_ctl_*`, the `env` bridge, `mc-server`, the `@mc/*` npm scope.
-Never `agent-os-*` (VISION §8.2).
+Never `agent-os-*` (SYSTEMS.md).

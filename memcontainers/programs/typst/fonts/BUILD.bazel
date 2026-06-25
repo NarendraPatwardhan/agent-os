@@ -1,4 +1,4 @@
-# The typst /usr/share/fonts asset layer (SERVICES.md §4.2). The engine binary carries no fonts; the
+# The typst /usr/share/fonts asset layer (SYSTEMS.md). The engine binary carries no fonts; the
 # baseline faces ship here as a separate, content-addressed layer the warm service scans at startup.
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 

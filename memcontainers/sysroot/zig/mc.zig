@@ -49,7 +49,7 @@ pub extern "mc" fn mc_sys_http_request(req_ptr: u32, req_len: u32, ret_fd: u32) 
 pub extern "mc" fn mc_sys_http_status(fd: i32, ret_status: u32) i32;
 pub extern "mc" fn mc_sys_host_call(req_ptr: u32, req_len: u32, ret_fd: u32) i32;
 
-// resident services — typed cross-guest calls (the svc_* primitive, SERVICES.md). SERVER side
+// resident services — typed cross-guest calls (the svc_* primitive, SYSTEMS.md). SERVER side
 // (svc_serve/recv/respond) — used by a service binary's serve loop (see svc.zig). CLIENT side
 // (svc_connect/call) — used by a client (luau's Lua binding, a service's thin CLI face).
 pub extern "mc" fn mc_sys_svc_serve(name_ptr: u32, name_len: u32, ret_fd: u32) i32;

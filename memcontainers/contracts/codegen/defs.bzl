@@ -1,5 +1,5 @@
 """abi_library — project one contract into many languages, compile-validate the code
-projections, and gate drift (VISION §6.2, B2).
+projections, and gate drift (SYSTEMS.md, B2).
 
 For each language it:
   1. runs the projector over the contract → `<name>.gen.<ext>` (always fresh — B1),

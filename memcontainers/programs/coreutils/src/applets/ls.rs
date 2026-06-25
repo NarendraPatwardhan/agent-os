@@ -1,6 +1,6 @@
 //! `ls [-a] [-l] [-h] [-d] [-R] [-S] [-r] [-t] [-1] [-F] [FILE...]` — list files and directories.
 //!
-//! HAND-WRITTEN applet (VISION §16.3): logic transcribed from memcontainers' `programs::ls`,
+//! HAND-WRITTEN applet (SYSTEMS.md): logic transcribed from memcontainers' `programs::ls`,
 //! the directory walk and metadata read over the **facade** (`fsutil::list`/`join`) + raw `mc`
 //! (`rt::lstat`/`rt::stat`/`rt::readlink`); args + help via **clap**. Hides dotfiles unless `-a`;
 //! marks directories with `/` and symlinks with `@`; sorts by name (or size with `-S`, or mtime

@@ -1,5 +1,5 @@
 //! trap.zig — kernel-backed protected-call + raise (was loom/src/mc_runtime.cpp; the C/C++ → Zig
-//! rewrite, VISION §0.2). The Luau guest is built `-fno-exceptions` and runs under wasmi, which has
+//! rewrite, SYSTEMS.md). The Luau guest is built `-fno-exceptions` and runs under wasmi, which has
 //! neither the C++ exception runtime nor the wasm-EH proposal setjmp/longjmp needs, so the kernel
 //! supplies the unwind: `mc_sys_pcall` runs the stashed thunk as a NESTED guest call (a trap
 //! boundary), and `mc_sys_set_throw` records the code a subsequent trap hands back. The C++ side

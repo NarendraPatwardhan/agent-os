@@ -9,7 +9,7 @@
 //!
 //! The roster is the SINGLE source for a box's applet set: the `mcbox!` macro builds it from the
 //! very list it builds the dispatch from, so the staged `/bin` cannot drift from what the boxes
-//! actually run (VISION §16.3 — generated, never a hand list). The tar is content-addressed:
+//! actually run (SYSTEMS.md — generated, never a hand list). The tar is content-addressed:
 //! entries are name-sorted, owner/mtime zero, so its bytes are a pure function of the rosters.
 
 use std::collections::BTreeMap;

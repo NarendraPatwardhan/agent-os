@@ -1,6 +1,6 @@
 # programs — the guest /bin (Rust, ported from memcontainers crates/programs). One
 # wasm per tool via an `mc_program()` macro that links sysroot + shcore and stamps the
-# mc_tier / mc_budget / mc_service custom sections (VISION §4.5, §8). ~56 tools: the
+# mc_tier / mc_budget / mc_service custom sections (SYSTEMS.md). ~56 tools: the
 # coreutils long tail (cat, ls, grep-likes, sort, …), the shell (sh), the agent, the
 # mc-tool host-call shim, and the service binaries (sqlite/luau are third_party).
 #

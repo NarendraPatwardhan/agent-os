@@ -8,7 +8,7 @@
 //! payload layouts are the load-time contract with the kernel (mirrors the sysroot's
 //! declare_tier!/declare_budget!/declare_service!): mc_tier = the raw UTF-8 tier; mc_budget =
 //! [u32 version=1][u64 mem][u64 fuel][u32 table], little-endian (24 bytes); mc_service = the raw
-//! UTF-8 service name (present only for a resident service, VISION §6).
+//! UTF-8 service name (present only for a resident service, SYSTEMS.md).
 
 use std::process::exit;
 
@@ -107,7 +107,7 @@ fn main() {
     let mem = parse(&a[4]);
     let fuel = parse(&a[5]);
     let table = parse(&a[6]) as u32;
-    // The optional resident-service name (VISION §6) → an mc_service section. Absent/empty = a
+    // The optional resident-service name (SYSTEMS.md) → an mc_service section. Absent/empty = a
     // one-shot tool, which carries no such section. A present name must fit the grammar.
     if let Some(svc) = a.get(7) {
         if !svc.is_empty() && !valid_service_name(svc) {
@@ -141,7 +141,7 @@ fn main() {
         append_custom(b"mc_budget", &budget, &mut wasm);
     }
 
-    // A resident service also carries its identity (VISION §6); a one-shot tool does not.
+    // A resident service also carries its identity (SYSTEMS.md); a one-shot tool does not.
     if !service.is_empty() {
         append_custom(b"mc_service", service, &mut wasm);
     }

@@ -6,7 +6,7 @@
   Common) with the 19 `.luau` batteries embedded.
 - **`/bin/luau-analyze`** — the `--check` type checker (the full ~80 kLOC Analysis engine + Config).
 
-Both are CLI **domain tools** (VISION §16.5): one `.wasm` each, run from the command line, shipped in
+Both are CLI **domain tools** (SYSTEMS.md): one `.wasm` each, run from the command line, shipped in
 the `loom` flavor pack — never in `base`/`minimal`/`posix`. They are NOT resident library services
 (no `mc_service`); that mode — using a domain tool *as a library* — is for sqlite/typst, and the
 flavors built on loom (see "CLI now, services later").

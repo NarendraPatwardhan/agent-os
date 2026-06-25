@@ -850,7 +850,7 @@ pub fn svc_connect(name: &str) -> Result<i32, i32> {
 }
 
 /// Send a typed request on a service connection, optionally delegating `handles` (fd numbers — only
-/// `File`/`PipeRead`/`PipeWrite` may travel; SERVICES.md §3.4). Pass `&[]` to delegate nothing. Returns
+/// `File`/`PipeRead`/`PipeWrite` may travel; SYSTEMS.md). Pass `&[]` to delegate nothing. Returns
 /// a readable result fd that streams the service's response — read it like any file, then [`close`] it.
 pub fn svc_call(fd: i32, req: &[u8], handles: &[i32]) -> Result<i32, i32> {
     let mut ret: u32 = 0;
@@ -891,7 +891,7 @@ pub struct SvcRequest<'a> {
     pub session: u32,
     pub req_id: u32,
     pub blob: &'a [u8],
-    /// Delegated fd numbers installed in this service's fd table (SERVICES.md §3.4), or empty.
+    /// Delegated fd numbers installed in this service's fd table (SYSTEMS.md), or empty.
     pub handles: &'a [i32],
 }
 

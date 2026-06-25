@@ -1,4 +1,4 @@
-# The projector — contracts/*.kdl → one target language (VISION §6.2). A single
+# The projector — contracts/*.kdl → one target language (SYSTEMS.md). A single
 # rust_binary behind every projection; `abi_library` (defs.bzl) invokes it once per
 # (contract, language) pair.
 #

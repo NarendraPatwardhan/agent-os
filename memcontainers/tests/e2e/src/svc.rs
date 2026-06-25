@@ -1,4 +1,4 @@
-//! Resident-service primitive proof (SERVICES.md P1): the `kv` service reached as BOTH the `kv` CLI
+//! Resident-service primitive proof (SYSTEMS.md): the `kv` service reached as BOTH the `kv` CLI
 //! and the Luau `sys.svc` library — the SAME warm instance — plus warm-across-calls and crash-only.
 //! The kernel activates `kv` at boot from `/etc/services.json`; these tests drive it through the
 //! real shell on the real kernel (B6, no mocks).
@@ -179,7 +179,7 @@ fn svc_status_reflects_the_activation_supervisor() {
     assert_eq!(s.run_for_output("ls /svc"), "crashloop\r\nkv\r\n");
 }
 
-/// Snapshot quiescence + warm survival (#5; SERVICES.md §3.5): the in-flight-svc-call counter folds
+/// Snapshot quiescence + warm survival (#5; SYSTEMS.md): the in-flight-svc-call counter folds
 /// into the snapshot gate, so a snapshot is never taken while a service is mid-call. After a COMPLETED
 /// call the counter is back to zero — so the snapshot proceeds (a leaked counter would hang it forever)
 /// — and the service's WARM heap state rides the snapshot: a value put into kv before the snapshot is

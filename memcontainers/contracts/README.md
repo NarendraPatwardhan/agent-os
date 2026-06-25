@@ -1,7 +1,7 @@
 # contracts — the four boundaries
 
 This directory is the **single source of truth** for every boundary in agent-os
-(VISION §6). None of the kernels, hosts, shims, or clients *is* the truth — the
+(SYSTEMS.md). None of the kernels, hosts, shims, or clients *is* the truth — the
 contract is — so they cannot drift.
 
 | File | Boundary | Direction | Module |
@@ -14,7 +14,7 @@ contract is — so they cannot drift.
 
 Values are transcribed from the frozen `mc` ABI in memcontainers `crates/abi` and
 `crates/wire`. **Do not renumber** — the `mc` surface is a compatibility contract
-shared with memcontainers (VISION §8.2).
+shared with memcontainers (SYSTEMS.md).
 
 ## How a contract becomes code
 

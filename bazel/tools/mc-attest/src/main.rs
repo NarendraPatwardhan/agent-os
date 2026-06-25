@@ -198,7 +198,7 @@ fn attest(wasm: &[u8]) -> Result<(), String> {
     let imps = imports(wasm);
 
     // §6: a binary that SERVES (imports svc_serve) is a resident service and MUST declare its
-    // identity via an mc_service section — service-capability is a stamped property (VISION §6), and
+    // identity via an mc_service section — service-capability is a stamped property (SYSTEMS.md), and
     // the kernel grants it to serve only that name. A server without the section is malformed; a
     // section that is present (server or not) must carry a grammar-valid name, the same shape the
     // kernel's svc_serve/svc_connect gate enforces, so the build catches a bad name before boot.
@@ -206,7 +206,7 @@ fn attest(wasm: &[u8]) -> Result<(), String> {
     match custom_section(wasm, "mc_service") {
         None if serves => {
             return Err("imports svc_serve but has no mc_service section (a resident service must \
-                        declare its name, VISION §6)"
+                        declare its name, SYSTEMS.md)"
                 .to_string());
         }
         Some(p) => {

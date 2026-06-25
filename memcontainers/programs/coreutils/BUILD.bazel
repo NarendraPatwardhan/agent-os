@@ -1,7 +1,7 @@
 load("//bazel:mc_box.bzl", "mc_box")
 
 # programs/coreutils — ONE std Rust coreutils crate compiled four times into the per-tier
-# mcbox-{isolated,readonly,readwrite,full} boxes (VISION §16.3). It builds for wasm32-wasi (the
+# mcbox-{isolated,readonly,readwrite,full} boxes (SYSTEMS.md). It builds for wasm32-wasi (the
 # uutils + ripgrep crates it links are std); `mc_box` then link-injects the //memcontainers/wasi-adapter and
 # drives the trampoline fixpoint, so each shipped box imports ONLY `mc` and is attestable (§16.4)
 # against its tier's syscalls. @guest_crates resolves the guests' std external deps.

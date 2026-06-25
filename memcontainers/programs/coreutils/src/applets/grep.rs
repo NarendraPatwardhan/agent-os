@@ -1,4 +1,4 @@
-//! `grep` — the "from wasi / external-crate" representative (VISION §16.3): ripgrep's engine
+//! `grep` — the "from wasi / external-crate" representative (SYSTEMS.md): ripgrep's engine
 //! (`grep-regex` + `grep-searcher`), pure **std** I/O (→ `wasi_snapshot_preview1` → `mc` via the
 //! `//wasi-adapter`), `walkdir` for `-r`. The engine is ported verbatim from memcontainers'
 //! grep; only two things change — the hand-rolled getopt becomes **clap** (reused, per §16.3),

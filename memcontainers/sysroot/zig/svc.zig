@@ -3,7 +3,7 @@
 //! so a service binary writes only its DISPATCH: `serve` once, then loop `recv` → handle warm state →
 //! `respond`. The client side (connect/call) is each tool's own (a Lua binding for luau, a CLI for a
 //! service). Shared by the Zig services (sqlite today); a one-binary/two-modes service's `_start`
-//! selects the serve loop vs the CLI by argv. SERVICES.md §3.
+//! selects the serve loop vs the CLI by argv. SYSTEMS.md
 const std = @import("std");
 const mc = @import("mc");
 const constants = @import("constants_zig"); // the projected contract constants (constants.kdl)
@@ -24,7 +24,7 @@ pub const EAGAIN = constants.EAGAIN;
 pub const MAX_HANDLES = 8;
 
 /// What `recv` decoded: a call to answer, or a session-closed tombstone (free that session's own warm
-/// state — SERVICES.md §3.5 is silent; the kernel adds the signal, codex #1).
+/// state — SYSTEMS.md is silent; the kernel adds the signal, codex #1).
 pub const Kind = enum(u8) { call = 0, session_closed = 1, drain_ready = 2, _ };
 
 /// One decoded service inbound. `blob`/`handles` borrow the server's buffers — valid until the next

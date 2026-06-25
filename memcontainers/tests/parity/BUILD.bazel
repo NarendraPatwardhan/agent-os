@@ -1,4 +1,4 @@
-# tests/parity — the parity GRID (VISION §9.2, §9.6, B7). Two axes compose:
+# tests/parity — the parity GRID (SYSTEMS.md, B7). Two axes compose:
 #
 #                  Rust host          JS host
 #     Rust kernel   ✓ (Phase A)        ✓ (Phase A)

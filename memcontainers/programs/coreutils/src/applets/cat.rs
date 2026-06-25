@@ -1,5 +1,5 @@
 //! `cat [FILE...]` — concatenate files (or stdin) to stdout. The "from programs" representative
-//! (VISION §16.3): HAND-WRITTEN logic, args+help via **clap** (reused, not re-rolled), I/O via
+//! (SYSTEMS.md): HAND-WRITTEN logic, args+help via **clap** (reused, not re-rolled), I/O via
 //! the **facade** (`BufOut`) over **`//sysroot`** — i.e. mc-direct, the path uutils does not
 //! give us. With no display flags it streams verbatim (bytes preserved, no CRLF normalization);
 //! the display flags switch to a byte-exact, line-oriented pass that is ALSO streaming (bounded

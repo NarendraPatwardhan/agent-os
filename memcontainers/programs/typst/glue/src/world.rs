@@ -1,5 +1,5 @@
 //! A typst [`World`] over the VM filesystem, split for a resident service: the heavy state — the parsed
-//! fonts + the standard library — is loaded ONCE into [`Warm`] and shared by every compile (SERVICES.md
+//! fonts + the standard library — is loaded ONCE into [`Warm`] and shared by every compile (SYSTEMS.md
 //! §1, the cold-start win), while each request gets a cheap [`CompileWorld`] holding only its root, main,
 //! and on-demand source/file caches. Ported from memcontainers `crates/wasi/typst/src/main.rs::McWorld`;
 //! the trait bodies are identical — only the warm/per-request split is new.
@@ -26,7 +26,7 @@ pub struct Warm {
 impl Warm {
     /// Load the standard library and scan `/usr/share/fonts` (the paper flavor's font layer) for
     /// parseable faces. The engine does NOT embed `typst_assets` — the baseline faces ship as files
-    /// there (SERVICES.md §4.2), so they are warmed the same way an agent's own dropped-in fonts are.
+    /// there (SYSTEMS.md), so they are warmed the same way an agent's own dropped-in fonts are.
     pub fn load() -> Warm {
         let mut faces = Vec::new();
         scan_fonts(Path::new("/usr/share/fonts"), &mut faces);

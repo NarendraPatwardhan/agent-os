@@ -5,7 +5,7 @@ description: 'Write, query, migrate, stream, validate, and compose SQLite-backed
 
 # Agent-OS SQLite
 
-Use the Luau `sqlite` library for database work — shipped as a VFS module by the `atlas` flavor (not embedded in the interpreter, unlike `json`/`xlsx`). The source of truth is the resident-service contract in `SERVICES.md`, the sqlite guest packaging in `third_party/sqlite/BUILD*.bazel`, and the atlas flavor layer that ships `/bin/sqlite` plus `/lib/luau/sqlite.luau`.
+Use the Luau `sqlite` library for database work — shipped as a VFS module by the `atlas` flavor (not embedded in the interpreter, unlike `json`/`xlsx`). The source of truth is the resident-service contract in `SYSTEMS.md`, the sqlite guest packaging in `third_party/sqlite/BUILD*.bazel`, and the atlas flavor layer that ships `/bin/sqlite` plus `/lib/luau/sqlite.luau`.
 
 ## Workflow
 

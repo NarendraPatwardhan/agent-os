@@ -943,7 +943,7 @@ unsafe fn lookup_service_binary(name: &str) -> Option<String> {
 /// tier (`mc_tier`), in a fork of the boot namespace, and record its activation grant (`name → pid`).
 /// The service `svc_serve`s on its first tick; a client connecting in the meantime blocks until it
 /// does. `None` if the binary is missing, fails to load, or declares a DIFFERENT service name
-/// (VISION §6 — a binary cannot be activated under a name it did not claim).
+/// (SYSTEMS.md — a binary cannot be activated under a name it did not claim).
 unsafe fn spawn_service(name: &str, binary: &str) -> Option<task::TaskId> {
     unsafe {
         let ns = STATE.ns();
@@ -962,7 +962,7 @@ unsafe fn spawn_service(name: &str, binary: &str) -> Option<task::TaskId> {
         }
         let bytes = read_kernel_file(ns, binary)?;
         // A binary may not be activated unless it declares exactly this service
-        // name (mc_service, VISION §6). Build-time attestation should catch bad
+        // name (mc_service, SYSTEMS.md). Build-time attestation should catch bad
         // service binaries, but the runtime manifest is still a trust boundary.
         match wasm::declared_service(&bytes) {
             Some(declared) if declared == name => {}
@@ -2317,7 +2317,7 @@ pub(crate) fn mc_ctl_exec_close(job_id: u32) -> i32 {
 /// Number of operations in flight that a snapshot must not interrupt. Host egress — HTTP, WebSocket,
 /// AND host calls (host-backed mount reads and parked write-commits, whose raw host handles don't
 /// survive a restore) — PLUS resident-service calls mid-flight: a service between `svc_recv` and
-/// `svc_respond` has a live wasm stack a snapshot would lose (SERVICES.md §3.5; codex #5). The host
+/// `svc_respond` has a live wasm stack a snapshot would lose (SYSTEMS.md; codex #5). The host
 /// reads this before a snapshot and refuses (driving ticks to drain) while it is non-zero, so a
 /// snapshot is always taken at a quiescent, no-egress-and-no-service-mid-call boundary.
 pub(crate) fn mc_inflight_egress() -> i32 {

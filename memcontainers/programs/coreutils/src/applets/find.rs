@@ -1,6 +1,6 @@
 //! `find [PATH...] [EXPRESSION]` — walk directory trees and act on matching files.
 //!
-//! HAND-WRITTEN applet (VISION §16.3): the logic is transcribed from memcontainers'
+//! HAND-WRITTEN applet (SYSTEMS.md): the logic is transcribed from memcontainers'
 //! `programs::find`, the directory walk runs over the **facade** (`fsutil::list`/`join`/
 //! `basename`) + raw `mc` (`use sysroot as rt`), and `-exec` spawns children via `rt::spawn`
 //! / `rt::waitpid`. Help and the leading-PATH split go through **clap** (the expression tokens

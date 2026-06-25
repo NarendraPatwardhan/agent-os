@@ -1,4 +1,4 @@
-//! `zip` — create or update a `.zip` (the external-crate `zip` crate, VISION §16.3). A clap CLI;
+//! `zip` — create or update a `.zip` (the external-crate `zip` crate, SYSTEMS.md). A clap CLI;
 //! compression Deflate (default) or Store (`-0`); add/update/delete is a full rewrite (read the old
 //! central directory, merge, write a fresh archive). std I/O → the WASI→mc adapter; the writer
 //! back-patches the central directory via Seek (adapter `fd_seek`).

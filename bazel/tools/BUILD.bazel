@@ -1,4 +1,4 @@
-# Developer conveniences (VISION §7.4). Thin wrappers that orchestrate *nothing
+# Developer conveniences (SYSTEMS.md). Thin wrappers that orchestrate *nothing
 # about correctness* — every artifact they touch is already a hermetic target.
 # This is where the 2,384-line memcontainers `xtask` goes to die: a handful of
 # `bazel run` aliases, not an imperative build orchestrator.

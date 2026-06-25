@@ -4,7 +4,7 @@
 //! SESSION instead of caller, and captured by snapshot because all state lives in
 //! kernel linear memory.
 //!
-//! The cooperative dance mirrors `servedfs` with one structural change SERVICES.md
+//! The cooperative dance mirrors `servedfs` with one structural change SYSTEMS.md
 //! calls out. A client `svc_connect`s a NAME (opening a session), then `svc_call`s a
 //! typed blob: the kernel enqueues the request and hands back a readable result fd,
 //! which the client drains with ordinary `read`s (yielding while the answer is in
@@ -32,7 +32,7 @@ use crate::vfs::traits::{
     Result, SeekFrom,
 };
 
-/// A handle delegated alongside a service call (SERVICES.md §3.4 — SCM_RIGHTS-style). Only the
+/// A handle delegated alongside a service call (SYSTEMS.md — SCM_RIGHTS-style). Only the
 /// delegatable subset travels: an open file, or a pipe read/write end. The kernel clones the backing
 /// object at `svc_call` and installs it into the SERVER's fd table at `svc_recv`; egress/serve/svc fds
 /// are refused at the call boundary so a caller cannot launder them into a service. Held as fs-layer
@@ -58,7 +58,7 @@ pub struct ServiceRequest {
 /// What a server pulls from its channel with `svc_recv`: a [`ServiceRequest`] to answer, or a
 /// notification that a SESSION CLOSED (its client's connection went away) so the service can free that
 /// session's own warm state — the kernel can only evict its OWN per-session bookkeeping, never the
-/// service guest's heap (codex #1; SERVICES.md is silent on this signal, so we add it). A tombstone is
+/// service guest's heap (codex #1; SYSTEMS.md is silent on this signal, so we add it). A tombstone is
 /// a one-way notification: no answer, no `req_id`.
 pub enum ServiceInbound {
     Call(ServiceRequest),
@@ -135,7 +135,7 @@ pub struct ServiceChannel {
     /// Set once the server guest exits; pending/new calls then fail (`EIO`).
     closed: bool,
     /// Calls delivered to the server but not yet answered — the service is mid-call (a live wasm
-    /// stack). A snapshot must not be taken while this is non-empty (SERVICES.md §3.5; codex #5).
+    /// stack). A snapshot must not be taken while this is non-empty (SYSTEMS.md; codex #5).
     /// Track request identity, not just a count, so a buggy service cannot make the channel look
     /// quiescent by responding to an unsolicited or duplicate `(session, req_id)`.
     inflight: BTreeSet<(u32, u32)>,
@@ -496,7 +496,7 @@ pub fn service_status_line(name: &str) -> Option<String> {
 
 /// Total calls in flight across all REGISTERED services (delivered to a server, not yet answered). The
 /// snapshot gate refuses while this is non-zero, so a snapshot is never taken with a service mid-call —
-/// a live wasm stack the snapshot would lose (SERVICES.md §3.5; codex #5). A deregistered (crashed)
+/// a live wasm stack the snapshot would lose (SYSTEMS.md; codex #5). A deregistered (crashed)
 /// server is not counted: its warm state is already gone, so it cannot block a snapshot. A channel that
 /// is momentarily borrowed counts as in-flight (conservative — never snapshot mid-operation).
 pub fn svc_inflight() -> u32 {

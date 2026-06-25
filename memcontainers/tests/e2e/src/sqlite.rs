@@ -196,7 +196,7 @@ db:close()
 }
 
 /// The CLI face (#10): `$ sqlite <db> <sql>` is a thin svc_connect/svc_call client of the SAME warm
-/// service the library drives — "three faces, one core" (SERVICES.md §3.3), not "use the library".
+/// service the library drives — "three faces, one core" (SYSTEMS.md), not "use the library".
 /// Three separate processes share one warm instance; the table persists in the file across them, and a
 /// The CLI is sqlite3-like: a multi-statement script runs each statement (the service splits on its own
 /// boundary), CREATE/INSERT are silent, and a SELECT prints pipe-separated rows with NO header by
@@ -218,7 +218,7 @@ fn sqlite_cli_runs_sql_over_the_warm_service() {
 
 /// The CLI is also a stdin REPL with sqlite3 dot-commands: piped statements run; `.headers on` adds a
 /// header row; `.tables` lists user tables; `.mode csv` switches to comma-separated output. The
-/// interactive face of "one binary, three modes" (SERVICES.md §3.3).
+/// interactive face of "one binary, three modes" (SYSTEMS.md).
 #[test]
 fn sqlite_cli_repl_and_dot_commands() {
     let mut s = boot_atlas();
@@ -240,7 +240,7 @@ fn sqlite_cli_repl_and_dot_commands() {
     assert_eq!(s.run_for_output("cat /tmp/c.sql | sqlite /tmp/r.db"), "x,1\r\ny,2\r\n");
 }
 
-/// Handle delegation (#2; SERVICES.md §3.4) + a real CSV parser (#4): `.import FILE TABLE` opens the CSV
+/// Handle delegation (#2; SYSTEMS.md) + a real CSV parser (#4): `.import FILE TABLE` opens the CSV
 /// and DELEGATES the handle to the service, which reads it straight from the handle — no path, no
 /// namespace reach. The parser is RFC-4180, so a quoted field with an embedded comma stays ONE value
 /// and a doubled "" unescapes to a literal quote — a naive comma/newline split would mangle both.

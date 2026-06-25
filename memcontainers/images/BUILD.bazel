@@ -24,7 +24,7 @@ pkg_tar(
 # base — rootfs + the three SYSTEM binaries (each sysroot-native, pure-mc at wasm32-freestanding + opt,
 # stamped + attested via mc_rust_program): /bin/sh (the guest shell, boots as pid 1), /bin/invoke (the
 # host-tool bridge), /bin/pkgfsd (the /pkg daemon). A real but command-less shell, the substrate BOTH
-# flavors build on (VISION §16) — NOT a shipped flavor on its own (no coreutils — "make your own
+# flavors build on (SYSTEMS.md) — NOT a shipped flavor on its own (no coreutils — "make your own
 # harness"); minimal/posix add a command set by layering on top.
 pkg_tar(
     name = "base",
@@ -127,7 +127,7 @@ pkg_tar(
     visibility = ["//visibility:public"],
 )
 
-# svc-test — the resident-service primitive proof image (SERVICES.md P1): loom (the shell + /bin/luau)
+# svc-test — the resident-service primitive proof image (SYSTEMS.md): loom (the shell + /bin/luau)
 # + the svc example/test services /bin/kv (the warm key-value demo) and /bin/crashloop (a deliberately-
 # broken negative control), plus the GENERATED /etc/services.json. On LOOM (not base) so the e2e proves
 # DUAL behavior (the SAME warm kv reached from the CLI `kv get` AND from Luau `sys.svc`), warm state
@@ -153,7 +153,7 @@ pkg_tar(
 # atlas — the data-intelligence flavor: loom + the sqlite resident SERVICE (the Zig-glue lane). Adds
 # /bin/sqlite (the warm service binary, stamped + attested), the /etc/services.json that activates it
 # at boot, the require("sqlite") library at /lib/luau/sqlite.luau, and the sqlite skill at /skills. The
-# first flavor with a domain SERVICE, not just CLI tools (SERVICES.md). (sqlite-vec lands here later.)
+# first flavor with a domain SERVICE, not just CLI tools (SYSTEMS.md). (sqlite-vec lands here later.)
 # The sqlite service layer — /bin/sqlite + the GENERATED /etc/services.json, both derived from sqlite's
 # McProgramInfo (codex #2). lazy (the default activation model): atlas spawns sqlite on the first
 # svc_connect, not at boot.
@@ -176,7 +176,7 @@ pkg_tar(
 # paper — the document-automation flavor: loom + the typst resident SERVICE (the Rust-std-wasi lane).
 # Adds /bin/typst (the warm service binary, stamped + attested), the /etc/services.json that activates
 # it, the require("typst") library at /lib/luau/typst.luau, the typst skill at /skills, and the baseline
-# faces under /usr/share/fonts (the separated font layer — SERVICES.md §4.2; the engine carries no fonts
+# faces under /usr/share/fonts (the separated font layer — SYSTEMS.md; the engine carries no fonts
 # and scans this at startup). The second domain flavor (after atlas's sqlite), and the first Rust-std
 # service.
 # The typst service layer — /bin/typst + the GENERATED /etc/services.json, both derived from typst's

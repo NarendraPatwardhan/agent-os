@@ -1,4 +1,4 @@
-# sqlite as a guest — fetch upstream, patch in place (VISION §8, B3; SERVICES.md §3.2). The SQLite
+# sqlite as a guest — fetch upstream, patch in place (SYSTEMS.md, B3; SYSTEMS.md). The SQLite
 # amalgamation enters via http_archive(name = "sqlite", urls, sha256) in MODULE.bazel; ONLY our deltas
 # live in-tree:
 #   glue/                — the Zig serve loop + protocol + the close() shim, compiled by `zig cc`.

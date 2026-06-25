@@ -1,4 +1,4 @@
-"""WASI→mc conversion (VISION §13.4 / §16.3): turn a wasm32-wasi guest crate into a pure-`mc` box.
+"""WASI→mc conversion (SYSTEMS.md): turn a wasm32-wasi guest crate into a pure-`mc` box.
 
 A box compiled for wasm32-wasi imports `wasi_snapshot_preview1`. The conversion link-injects the
 `//memcontainers/wasi-adapter` object (whose `__imported_wasi_*` definitions resolve the stable WASI imports
@@ -14,7 +14,7 @@ convert_wasi_tool,generate_trampoline}` + `conformance::func_imports_full`.
 
 Two consumers ride the shared conversion (`_convert_to_mc`): `mc_box` packages the multi-applet
 coreutils busybox (its own in-source `mcbox!` tier stamp + the `mc-roster` /bin symlinks), and
-`mc_wasi_program` packages a SINGLE std-wasi tool as an mc program/SERVICE (SERVICES.md — e.g.
+`mc_wasi_program` packages a SINGLE std-wasi tool as an mc program/SERVICE (SYSTEMS.md — e.g.
 typst), stamping mc_tier/mc_budget/mc_service from the build graph via `mc_program` (no roster).
 """
 
@@ -131,7 +131,7 @@ def mc_box(name, srcs, crate_root, crate_name, crate_features, deps, edition = "
     )
 
 def mc_wasi_program(name, srcs, crate_root, crate_name, deps, tier, service = "", mem = 0, fuel = 0, table = 0, crate_features = [], edition = "2021", compile_data = [], rounds = _MAX_ROUNDS, extra_rustc_flags = [], visibility = None):
-    """A SINGLE std-wasi tool as an mc program/SERVICE (SERVICES.md — the Rust-std lane, e.g. typst):
+    """A SINGLE std-wasi tool as an mc program/SERVICE (SYSTEMS.md — the Rust-std lane, e.g. typst):
     convert the wasm32-wasi crate to a pure-`mc` box (the adapter + trampoline fixpoint, shared with
     `mc_box`), opt it (`release_wasm`), then stamp mc_tier/mc_budget/mc_service + attest (`mc_program`,
     whose validation action enforces §9.3 import purity + §16.4 tier fit). Unlike `mc_box` there is NO

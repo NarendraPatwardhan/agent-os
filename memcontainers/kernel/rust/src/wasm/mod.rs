@@ -55,7 +55,7 @@ const MAX_OPEN_FDS: usize = 256;
 /// Cap on one resident-service request blob. Results still stream through the
 /// readable result fd; requests are copied into the kernel queue, so bound them.
 const MAX_SVC_REQUEST_BYTES: usize = 1 << 20;
-/// Max fds one `svc_call` may delegate (SERVICES.md §3.4) — bounds the server's handle buffer.
+/// Max fds one `svc_call` may delegate (SYSTEMS.md) — bounds the server's handle buffer.
 const MAX_DELEGATED_HANDLES: usize = 8;
 /// svc recv envelope header: `[kind:u8][nhandles:u8][session:u32][req_id:u32][blob_len:u32]` (LE).
 const SVC_ENVELOPE_HEADER: usize = 14;
@@ -2573,7 +2573,7 @@ impl GuestProgram {
     /// connection (optionally delegating `nhandles` fds) and get a readable result fd that streams the
     /// server's response. Like `host_call`, the call itself does not block — the client drains the
     /// result fd, yielding while the answer is in flight. Delegated fds are cloned into the service's
-    /// table at `svc_recv`; only `File`/`PipeRead`/`PipeWrite` may travel (SERVICES.md §3.4).
+    /// table at `svc_recv`; only `File`/`PipeRead`/`PipeWrite` may travel (SYSTEMS.md).
     fn fulfill_svc_call(
         &mut self,
         fd: i32,
@@ -2635,7 +2635,7 @@ impl GuestProgram {
     }
 
     /// Clone a client's fd into a [`DelegatedHandle`] for delegation to a service (`svc_call`). Only
-    /// the delegatable subset travels (SERVICES.md §3.4): an open file (shared `Rc`) or a pipe end (a
+    /// the delegatable subset travels (SYSTEMS.md): an open file (shared `Rc`) or a pipe end (a
     /// fresh ref-counted endpoint on the same pipe — exactly `inherit_for_child`'s clone). `None` for a
     /// std fd or an egress/serve/svc fd, so a caller cannot launder those into a callee.
     fn delegate_fd(&self, fd: i32) -> Option<DelegatedHandle> {
@@ -4014,7 +4014,7 @@ fn validate_mc_sections(bytes: &[u8]) -> Result<(), String> {
         }
         None => {}
     }
-    // mc_service (VISION §6): a corrupt/empty/ungrammatical service name must fail the load rather
+    // mc_service (SYSTEMS.md): a corrupt/empty/ungrammatical service name must fail the load rather
     // than silently read as "not a service" (which would skip the activation-time name check), or be
     // accepted as a name the runtime `svc_serve`/`svc_connect` gate would then reject.
     match unique_custom(bytes, b"mc_service").map_err(|e| format!("mc_service: {e}"))? {

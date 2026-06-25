@@ -5,7 +5,7 @@ description: 'Compile Typst documents to PDF inside agent-os, and compose PDFs f
 
 # Agent-OS Typst
 
-Use the Luau `typst` library to compile Typst source to PDF — shipped as a VFS module by the `paper` flavor (not embedded in the interpreter, unlike `json`). The source of truth is the resident-service contract in `SERVICES.md`, the typst guest packaging in `third_party/typst/glue/BUILD.bazel`, and the paper flavor layer that ships `/bin/typst`, `/lib/luau/typst.luau`, and the baseline faces under `/usr/share/fonts`.
+Use the Luau `typst` library to compile Typst source to PDF — shipped as a VFS module by the `paper` flavor (not embedded in the interpreter, unlike `json`). The source of truth is the resident-service contract in `SYSTEMS.md`, the typst guest packaging in `third_party/typst/glue/BUILD.bazel`, and the paper flavor layer that ships `/bin/typst`, `/lib/luau/typst.luau`, and the baseline faces under `/usr/share/fonts`.
 
 ## Workflow
 

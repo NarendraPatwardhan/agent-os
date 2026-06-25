@@ -1,5 +1,5 @@
 //! `awk` — pattern-directed scanning and processing (the external-crate `awk-rs` tree-walking
-//! interpreter, VISION §16.3). A clap CLI over awk-rs's `Lexer`/`Parser`/`Interpreter`; std I/O →
+//! interpreter, SYSTEMS.md). A clap CLI over awk-rs's `Lexer`/`Parser`/`Interpreter`; std I/O →
 //! the WASI→mc adapter. Supports -F (field separator), -v (variable assignment), -f (program
 //! file), and a PROGRAM + FILE/stdin operands with ARGC/ARGV.
 //!

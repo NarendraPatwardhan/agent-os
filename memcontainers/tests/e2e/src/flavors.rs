@@ -1,4 +1,4 @@
-//! Flavors — the image layering (VISION §16). `base` (the bare sh + pkgfsd + invoke substrate, the
+//! Flavors — the image layering (SYSTEMS.md). `base` (the bare sh + pkgfsd + invoke substrate, the
 //! boot test already exercises it) is shared; `minimal` adds the curated ~15-tool coreutils set,
 //! `posix` adds the full ~88. This asserts the SET boundary is REAL at runtime — a minimal image
 //! runs its curated commands, and a posix-only command simply isn't there.

@@ -1,7 +1,7 @@
 //! `test EXPR` / `[ EXPR ]` — evaluate a conditional expression; exit 0 (true), 1 (false), or
 //! 2 (usage error).
 //!
-//! HAND-WRITTEN applet (VISION §16.3): the evaluator is transcribed from memcontainers'
+//! HAND-WRITTEN applet (SYSTEMS.md): the evaluator is transcribed from memcontainers'
 //! `programs::test`, with file tests over raw `mc` (`rt::stat` + the `Stat` permission
 //! predicates). Its CLI is UNUSUAL — the operands are an *expression*, not flags: primaries
 //! (`-z`, `-f`, `=`, `-eq`, …), the `!` negation, the `-a`/`-o` connectives, and `( … )`

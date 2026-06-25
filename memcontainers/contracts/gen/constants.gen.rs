@@ -114,5 +114,5 @@ pub const MOUNT_OP_STAT: u32 = 5;
 pub const MOUNT_OP_WRITE: u32 = 6;
 pub const WIRE_VERSION: u32 = 1;
 
-// the argv[1] marker the kernel passes to spawn a binary in SERVICE mode (SERVICES.md §3.3)
+// the argv[1] marker the kernel passes to spawn a binary in SERVICE mode (SYSTEMS.md)
 pub const SERVICE_MARKER: &str = "--mc-serve";

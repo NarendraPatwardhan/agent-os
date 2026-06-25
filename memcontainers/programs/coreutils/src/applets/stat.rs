@@ -1,6 +1,6 @@
 //! `stat [-c FMT | --format=FMT | --printf=FMT] FILE...` — display file metadata.
 //!
-//! HAND-WRITTEN applet (VISION §16.3): logic transcribed from memcontainers' `programs::stat`,
+//! HAND-WRITTEN applet (SYSTEMS.md): logic transcribed from memcontainers' `programs::stat`,
 //! metadata read via raw `mc` (`rt::lstat`/`rt::readlink`) and emitted through the facade
 //! (`textio::out`/`outln`); args + help via **clap**. The default multi-line form shows the
 //! name, size, type, hard-link count, the permission bits (octal + symbolic), and the

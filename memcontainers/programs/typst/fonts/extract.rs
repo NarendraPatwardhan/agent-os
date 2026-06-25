@@ -1,5 +1,5 @@
 //! `typst-extract-fonts <out.tar>` — materialize the `typst_assets` baseline faces into a deterministic
-//! tar carrying each at `usr/share/fonts/face_<NN>.ttf` (SERVICES.md §4.2). The engine does NOT embed
+//! tar carrying each at `usr/share/fonts/face_<NN>.ttf` (SYSTEMS.md). The engine does NOT embed
 //! fonts; it scans `/usr/share/fonts` at startup, so this layer (merged into the paper flavor via
 //! `pkg_tar` deps) supplies the default faces — derived from the SAME `typst_assets` the engine was
 //! designed around, so the shipped faces and the engine can never drift. Built for the HOST (the font
