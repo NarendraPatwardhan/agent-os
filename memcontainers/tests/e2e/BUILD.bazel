@@ -1,35 +1,60 @@
 load("//bazel:rust_e2e_test.bzl", "rust_e2e_test")
 
-# tests/e2e — the no-mocks end-to-end suite. Each test boots the REAL kernel.wasm in the
-# REAL wasmtime host with capture sinks and .deterministic() (fixed clock + seeded rng), and
-# asserts on REAL stdout bytes / REAL control-channel reads (VISION §9.1, B6). Booting is
-# itself a test — a kernel trap or a generated-bridge mismatch surfaces as a host error.
+# tests/e2e — the no-mocks end-to-end suite, in TWO targets that share ONE harness
+# (src/harness.rs) and one constitution. Each test boots the REAL kernel.wasm in the REAL
+# wasmtime host with capture sinks and .deterministic() (fixed clock + seeded rng), and
+# asserts on REAL stdout bytes / REAL control-channel reads (§9.1, B6). Booting is itself a
+# test — a kernel trap or a generated-bridge mismatch surfaces as a host error.
 #
-# THE load-bearing edge (B1, §7.2): the test `data`-depends on the kernel + image targets,
-# so the artifacts a test runs are ALWAYS the ones its sources produce — the death of the
-# memcontainers staleness class. In Phase B this edge fans out to BOTH kernels (§9.6).
+#   :core     — the fast invariants: boot, tty, shell, coreutils, kernel control channel,
+#               flavors, the svc primitives, the Luau loom boot. Sub-second; crate_root src/lib.rs.
+#   :extended — the heavy DOMAIN services (sqlite, typst): real compiles/queries that run for
+#               millions of fuel slices, booting the large atlas/paper images. crate_root src/extended.rs.
 #
-# Always RELEASE wasmtime: rust_e2e_test pins the host subgraph to compilation_mode=opt
-# (defs.bzl), so a debug wasmtime never makes the suite crawl.
+# The split keeps :core sub-second (CI can gate the fast invariants without paying the domain
+# compiles) while :extended carries the slow, image-heavy proofs. Both glob the whole src/ tree;
+# the crate_root's `mod` declarations select which test modules each one actually compiles.
+#
+# THE load-bearing edge (B1, §7.2): each target `data`-depends on the kernel + the image targets
+# its tests boot, so the artifacts a test runs are ALWAYS the ones its sources produce — the death
+# of the memcontainers staleness class. In Phase B this edge fans out to BOTH kernels (§9.6).
+#
+# Always RELEASE wasmtime: rust_e2e_test pins the host subgraph to compilation_mode=opt, so a debug
+# wasmtime never makes the suite crawl. kernel defaults to //memcontainers/kernel/rust:kernel (the
+# macro adds it as a data-dep and passes its runfiles path via MC_KERNEL_WASM); the Zig kernel gets
+# its own target — same srcs, kernel = //memcontainers/kernel/zig:kernel — under the §9.6 parity gate.
+
+_E2E_SRCS = glob(["src/**/*.rs"])
 
 rust_e2e_test(
-    name = "suite",
-    srcs = glob(["src/**/*.rs"]),
+    name = "core",
+    srcs = _E2E_SRCS,
+    crate_root = "src/lib.rs",
     edition = "2021",
     deps = [
         "//memcontainers/hosts/wasmtime:host",
         "//memcontainers/pkgcore",  # sha256_hex — to build a consistent catalog + cache fixture for the pkgfsd read test
         "@rules_rust//rust/runfiles",
     ],
-    # kernel defaults to //memcontainers/kernel/rust:kernel (the macro adds it as a data-dep and passes its
-    # runfiles path via MC_KERNEL_WASM). The Zig kernel gets its own target — same srcs,
-    # kernel = //memcontainers/kernel/zig:kernel — under the B7 parity gate (§9.6).
     data = [
         "//memcontainers/images:base",  # rootfs + sh/pkgfsd/invoke (the boot + kernel/control-channel tests)
         "//memcontainers/images:minimal",  # base + the curated minimal coreutils set (the flavor test)
         "//memcontainers/images:posix",  # base + the full coreutils set (the shell / coreutils / system tests)
         "//memcontainers/images:loom",  # posix + /bin/luau — the Luau domain-tool boot e2e
         "//memcontainers/images:svc_test",  # loom + the kv + crashloop example services — the resident-service proof
+    ],
+)
+
+rust_e2e_test(
+    name = "extended",
+    srcs = _E2E_SRCS,
+    crate_root = "src/extended.rs",
+    edition = "2021",
+    deps = [
+        "//memcontainers/hosts/wasmtime:host",
+        "@rules_rust//rust/runfiles",
+    ],
+    data = [
         "//memcontainers/images:atlas",  # loom + the sqlite service + require("sqlite") — the sqlite e2e
         "//memcontainers/images:paper",  # loom + the typst service + require("typst") + /usr/share/fonts — the typst e2e
     ],

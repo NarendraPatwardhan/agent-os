@@ -6,8 +6,8 @@
 # //...` green at every step (B1):
 #
 #   alias(name = "kernel", actual = "//memcontainers/kernel/rust:kernel")  # //memcontainers/kernel:impl flips rust|zig (§5.2)
-#   alias(name = "server", actual = "//memcontainers/hosts/server:mc-server")
-#   alias(name = "e2e",    actual = "//memcontainers/tests/e2e:suite")
+#   alias(name = "server", actual = "//server:mc-server")
+#   alias(name = "e2e",    actual = "//memcontainers/tests/e2e:core")
 #   alias(name = "web",    actual = "//web:app")
 #
 # The kernel-implementation selector (Phase B): one flag flips every kernel-
