@@ -31,5 +31,6 @@ rust_e2e_test(
         "//images:loom",  # posix + /bin/luau — the Luau domain-tool boot e2e
         "//images:svc_test",  # loom + the kv + crashloop example services — the resident-service proof
         "//images:atlas",  # loom + the sqlite service + require("sqlite") — the sqlite e2e
+        "//images:paper",  # loom + the typst service + require("typst") + /usr/share/fonts — the typst e2e
     ],
 )

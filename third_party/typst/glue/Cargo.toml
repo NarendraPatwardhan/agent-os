@@ -1,0 +1,30 @@
+# Manifest for crate_universe (@typst_crates) dependency resolution — the typst engine BUILDS via
+# Bazel (mc_wasi_program → a pure-mc resident service), not cargo. typst is a std crate graph built for
+# wasm32-wasip1 (SERVICES.md): the //wasi-adapter rewrites its wasi_snapshot_preview1 imports to
+# mc_sys_* afterward, and //sysroot/rust supplies the svc_* serve syscalls. Resolved from its OWN lock,
+# separate from @crates (kernel) / @host_crates (host) / @guest_crates (coreutils) — typst's deep graph
+# (comemo, krilla, ICU) must not feature-unify with anyone else's.
+[package]
+name = "typst-svc"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "typst"
+path = "src/main.rs"
+
+[dependencies]
+typst = "0.14.2"          # the compiler library (World trait + typst::compile)
+typst-pdf = "0.14.2"      # PagedDocument -> PDF bytes
+time = { version = "0.3", default-features = false } # epoch -> civil for World::today()
+serde = { version = "1", features = ["derive"] }     # the svc request/response protocol structs
+serde_json = "1"
+# typst-assets is HOST-ONLY: //third_party/typst/fonts:extract materializes the baseline faces into the
+# /usr/share/fonts layer (SERVICES.md §4.2). The engine itself does NOT embed fonts — it scans the layer
+# at startup. Declared here so both targets resolve from one lock.
+typst-assets = { version = "0.14.2", features = ["fonts"] }
+
+# Standalone workspace root: isolate from any parent cargo resolution (Bazel sets the build profile, not
+# this manifest's [profile]).
+[workspace]

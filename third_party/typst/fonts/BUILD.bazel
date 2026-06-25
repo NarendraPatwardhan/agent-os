@@ -1,0 +1,23 @@
+# The typst /usr/share/fonts asset layer (SERVICES.md §4.2). The engine binary carries no fonts; the
+# baseline faces ship here as a separate, content-addressed layer the warm service scans at startup.
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+# Host tool: extract the typst_assets baseline faces into a ustar tar at usr/share/fonts/. One dep
+# (typst-assets, an include_bytes! crate built for the host); the ustar writer is hand-rolled like
+# mc-svc-manifest, so the tool is otherwise dependency-free.
+rust_binary(
+    name = "extract",
+    srcs = ["extract.rs"],
+    edition = "2021",
+    deps = ["@typst_crates//:typst-assets"],
+)
+
+# typst_fonts.tar — the baseline faces at usr/share/fonts/face_NN.ttf. The paper flavor merges it via
+# pkg_tar(deps = [..., ":typst_fonts_tar"]); the warm typst service scans /usr/share/fonts at startup.
+genrule(
+    name = "typst_fonts_tar",
+    outs = ["typst_fonts.tar"],
+    cmd = "$(execpath :extract) $@",
+    tools = [":extract"],
+    visibility = ["//visibility:public"],
+)

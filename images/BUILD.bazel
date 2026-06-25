@@ -172,3 +172,28 @@ pkg_tar(
     deps = [":loom", ":atlas_layer"],
     visibility = ["//visibility:public"],
 )
+
+# paper — the document-automation flavor: loom + the typst resident SERVICE (the Rust-std-wasi lane).
+# Adds /bin/typst (the warm service binary, stamped + attested), the /etc/services.json that activates
+# it, the require("typst") library at /lib/luau/typst.luau, the typst skill at /skills, and the baseline
+# faces under /usr/share/fonts (the separated font layer — SERVICES.md §4.2; the engine carries no fonts
+# and scans this at startup). The second domain flavor (after atlas's sqlite), and the first Rust-std
+# service.
+# The typst service layer — /bin/typst + the GENERATED /etc/services.json, both derived from typst's
+# McProgramInfo. lazy (atlas's model): paper spawns typst on the first svc_connect, not at boot.
+mc_service_layer(
+    name = "paper_layer",
+    lazy = ["//third_party/typst/glue:typst"],
+)
+
+pkg_tar(
+    name = "paper",
+    files = {
+        "//third_party/typst/lib:typst.luau": "/lib/luau/typst.luau",
+        "//third_party/typst/skills:typst.md": "/skills/typst.md",
+    },
+    owner = "0.0",
+    # loom (shell + /bin/luau) + the typst service layer + the /usr/share/fonts baseline faces.
+    deps = [":loom", ":paper_layer", "//third_party/typst/fonts:typst_fonts_tar"],
+    visibility = ["//visibility:public"],
+)

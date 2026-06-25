@@ -1,0 +1,46 @@
+# /bin/typst — the Typst document compiler as a resident SERVICE (the Rust-std-wasi lane; SERVICES.md).
+# typst is std on wasm32-wasi: std::fs/clock ride the //wasi-adapter to mc_sys_*, and //sysroot/rust
+# supplies the svc_* serve syscalls (its no_std panic handler is cfg'd off on wasi). mc_wasi_program
+# converts the wasm32-wasi crate to a pure-mc box (adapter + trampoline fixpoint), opts it (panic=abort
+# → crash-only), then stamps mc_tier/mc_budget/mc_service + attests — one binary, two modes (warm serve
+# loop + thin-client CLI), the same shape as kv/sqlite.
+load("//wasi-adapter:defs.bzl", "mc_wasi_program")
+
+# Exposes the crate_universe manifest + lock @typst_crates resolves from (mirrors //programs/coreutils).
+exports_files(["Cargo.toml", "Cargo.lock"])
+
+mc_wasi_program(
+    name = "typst",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/main.rs",
+    crate_name = "typst_svc",
+    # read-write: the service reads sources/fonts + the clock + random (comemo), and the CLI mode writes
+    # the output PDF (std::fs::write) — CAP_FS_READ|WRITE|CLOCK|RANDOM, exactly memcontainers' tier. No
+    # CAP_PERSIST/net/spawn, so not `full`.
+    tier = "read-write",
+    service = "typst",  # the mc_service section — it serves the "typst" name (mc-attest enforces it)
+    # typst far exceeds the 16 MiB / 50e9-fuel defaults: ~30 MB of warm fonts + the engine + deep
+    # recursion. memcontainers' budget; the kernel clamps to its hard ceilings (1 GiB / 4e12 fuel).
+    mem = 512 * 1024 * 1024,
+    fuel = 2000000000000,
+    table = 200000,
+    extra_rustc_flags = [
+        # The 64 MiB shadow stack (memcontainers' build.rs). typst's layout/realization recursion
+        # overflows the default 1 MiB wasm stack — there is no guard page, so it silently corrupts
+        # adjacent memory (the BadConversionToInteger trap). Non-negotiable for real documents.
+        "-Clink-arg=-zstack-size=67108864",
+        # Strip the wasm `name` section (~7 MiB of internal symbol names for typst's ~300-crate graph):
+        # pure debug overhead a resident service never needs. memcontainers stripped at conversion-link
+        # time; the import/export + mc_* custom sections are untouched, so attest still reads imports.
+        "-Cstrip=symbols",
+    ],
+    deps = [
+        "//sysroot/rust",  # the svc_* serve syscalls + mc constants (EAGAIN, SERVICE_MARKER)
+        "@typst_crates//:typst",  # the compiler library (World + typst::compile)
+        "@typst_crates//:typst-pdf",  # PagedDocument -> PDF bytes
+        "@typst_crates//:time",  # epoch -> civil for World::today()
+        "@typst_crates//:serde",  # the request/response protocol structs
+        "@typst_crates//:serde_json",
+    ],
+    visibility = ["//visibility:public"],
+)

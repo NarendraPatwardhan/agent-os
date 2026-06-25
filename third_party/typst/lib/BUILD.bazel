@@ -1,0 +1,4 @@
+# The typst Luau library — VFS content shipped by the `paper` flavor at /lib/luau/typst.luau (NOT
+# embedded in the interpreter, unlike json). The ergonomic face of the typst resident service, over
+# sys.svc: require("typst").compile(src) -> PDF bytes. See third_party/typst/skills/typst.md and SERVICES.md.
+exports_files(["typst.luau"])

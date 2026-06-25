@@ -87,7 +87,17 @@ crate.from_cargo(
     cargo_lockfile = "//programs/coreutils:Cargo.lock",
     manifests = ["//programs/coreutils:Cargo.toml"],
 )
-use_repo(crate, "crates", "host_crates", "guest_crates")
+# The typst engine's universe (std, wasm32-wasip1): the typst compiler graph (typst + typst-pdf +
+# typst-assets + comemo/krilla/ICU…, ~300 crates) resolves from its OWN lock — apart from @guest_crates
+# (coreutils) so typst's deep std graph never feature-unifies with the coreutils' resolution (the same
+# split rationale as the other three universes). The wasm engine links typst/typst-pdf/time/serde[_json];
+# the HOST font extractor (//third_party/typst/fonts) links typst-assets. SERVICES.md (typst is Rust).
+crate.from_cargo(
+    name = "typst_crates",
+    cargo_lockfile = "//third_party/typst/glue:Cargo.lock",
+    manifests = ["//third_party/typst/glue:Cargo.toml"],
+)
+use_repo(crate, "crates", "host_crates", "guest_crates", "typst_crates")
 
 # aspect_bazel_lib — write_source_files + diff_test for the contract drift gate (B2).
 bazel_dep(name = "aspect_bazel_lib", version = "2.22.5")

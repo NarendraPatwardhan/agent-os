@@ -33,9 +33,16 @@ mod sqlite;
 mod svc;
 mod system;
 mod tty;
+mod typst;
 
 /// Generous tick budget for one shell operation (a pipeline can yield across many ticks).
 const MAX_TICKS_PER_OP: usize = 200_000;
+
+/// A far larger budget for a HEAVY guest op — a typst compile runs for millions of fuel slices under the
+/// wasmi interpreter (font load + layout + PDF realization). This is a CEILING that only trips on a
+/// genuine hang; a compile that completes exits at the prompt long before it (memcontainers' typst e2e
+/// uses the same kind of raised budget).
+const MAX_TICKS_PER_HEAVY_OP: usize = 12_000_000;
 
 /// Locate a `data`-dep artifact in the test's runfiles by its workspace-relative path.
 fn runfile(path: &str) -> Vec<u8> {
@@ -120,6 +127,15 @@ pub fn boot_atlas() -> Session {
     Session { host, stdout }
 }
 
+/// Boot the `paper` image (loom + the typst resident service + require("typst") + the /usr/share/fonts
+/// baseline faces + /etc/services.json). For the typst e2e: the warm compiler, the CLI + library faces,
+/// streamed PDFs, and diagnostics.
+pub fn boot_paper() -> Session {
+    let (b, stdout) = builder("_main/images/paper.tar");
+    let host = b.build().expect("kernel booted (paper image)");
+    Session { host, stdout }
+}
+
 /// Boot the `posix` image with a host-call tool registry installed (the `invoke` tests). The host
 /// refuses host calls by default (A9, `DeniedHostCall`); this opts in with a tool map.
 pub fn boot_posix_with_tools(tools: MapHostCall) -> Session {
@@ -178,7 +194,13 @@ impl Session {
     /// Pump ticks until stdout has grown since `baseline` and ends in the prompt `"$ "`, or until
     /// the budget is exhausted (a panic with the transcript — a hang is a test failure, not a skip).
     pub fn drive_until_prompt(&mut self, baseline: usize) {
-        for _ in 0..MAX_TICKS_PER_OP {
+        self.drive_until_prompt_budget(baseline, MAX_TICKS_PER_OP);
+    }
+
+    /// [`drive_until_prompt`](Self::drive_until_prompt) with an explicit tick ceiling — the heavy
+    /// variant raises it for typst compiles.
+    fn drive_until_prompt_budget(&mut self, baseline: usize, max_ticks: usize) {
+        for _ in 0..max_ticks {
             if !self.host.tick().expect("tick") {
                 return;
             }
@@ -193,10 +215,15 @@ impl Session {
     /// Type `line` + Enter at the console and wait for the next prompt; return the raw terminal
     /// slice emitted after entry (the echo + the output + the next prompt, CRLF).
     pub fn send_line(&mut self, line: &str) -> String {
+        self.send_line_budget(line, MAX_TICKS_PER_OP)
+    }
+
+    /// [`send_line`](Self::send_line) with an explicit tick ceiling.
+    fn send_line_budget(&mut self, line: &str, max_ticks: usize) -> String {
         let before = self.len();
         self.send_raw(line.as_bytes());
         self.send_raw(b"\n");
-        self.drive_until_prompt(before);
+        self.drive_until_prompt_budget(before, max_ticks);
         String::from_utf8_lossy(&self.stdout.lock().unwrap()[before..]).into_owned()
     }
 
@@ -205,6 +232,19 @@ impl Session {
     /// the agent's terminal actually shows as the response, CRLF intact.
     pub fn run_for_output(&mut self, line: &str) -> String {
         let response = self.send_line(line);
+        Self::extract_body(response, line)
+    }
+
+    /// [`run_for_output`](Self::run_for_output) with the HEAVY tick budget — for typst compiles, which
+    /// run for millions of fuel slices under wasmi.
+    pub fn run_for_output_heavy(&mut self, line: &str) -> String {
+        let response = self.send_line_budget(line, MAX_TICKS_PER_HEAVY_OP);
+        Self::extract_body(response, line)
+    }
+
+    /// Slice a `send_line` response down to the command's output (between the typed-line echo and the
+    /// trailing prompt).
+    fn extract_body(response: String, line: &str) -> String {
         let echo = format!("{line}\r\n");
         let after_echo = response
             .find(&echo)

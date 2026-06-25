@@ -1,6 +1,6 @@
 """WASI→mc conversion (VISION §13.4 / §16.3): turn a wasm32-wasi guest crate into a pure-`mc` box.
 
-A box compiled for wasm32-wasi imports `wasi_snapshot_preview1`. `mc_box` link-injects the
+A box compiled for wasm32-wasi imports `wasi_snapshot_preview1`. The conversion link-injects the
 `//wasi-adapter` object (whose `__imported_wasi_*` definitions resolve the stable WASI imports
 in one shot), then drives the TRAMPOLINE FIXPOINT for the residue: Rust std/deps bind a few
 calls (`args_*`, `random_get`, …) to hash-mangled symbols the adapter's stable names don't match,
@@ -11,10 +11,16 @@ imports only `mc`. Post-convergence rounds read zero residue → empty trampolin
 relinks Bazel caches, so the round cap is free past convergence. The whole pipeline is graph
 targets — no out-of-band xtask. Ported from memcontainers' `xtask::{build_wasi_adapter,
 convert_wasi_tool,generate_trampoline}` + `conformance::func_imports_full`.
+
+Two consumers ride the shared conversion (`_convert_to_mc`): `mc_box` packages the multi-applet
+coreutils busybox (its own in-source `mcbox!` tier stamp + the `mc-roster` /bin symlinks), and
+`mc_wasi_program` packages a SINGLE std-wasi tool as an mc program/SERVICE (SERVICES.md — e.g.
+typst), stamping mc_tier/mc_budget/mc_service from the build graph via `mc_program` (no roster).
 """
 
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 load("//kernel/rust:defs.bzl", "release_wasm")
+load("//third_party/luau:defs.bzl", "mc_program")
 
 # Trampoline+relink rounds before giving up. Matches memcontainers' xtask MAX_ROUNDS; a high cap
 # is cheap because post-convergence rounds are cached.
@@ -30,18 +36,22 @@ def _obj_from_rlib(name, rlib):
         tags = ["manual"],
     )
 
-def mc_box(name, srcs, crate_root, crate_name, crate_features, deps, edition = "2021", compile_data = [], rounds = _MAX_ROUNDS, visibility = None):
-    """Build a wasm32-wasi guest crate and convert it to a pure-`mc` box named `name`.
-
-    `name` is the converged box (the final round). Intermediate rounds + trampolines are private
-    `<name>_r<k>` / `<name>_tramp<k>_*` targets. Build under `--platforms=//platforms:wasm32_wasi`.
-    """
+def _convert_to_mc(name, srcs, crate_root, crate_name, crate_features, deps, edition, compile_data, rounds, extra_rustc_flags, box_visibility):
+    """Build the wasm32-wasi crate (`srcs`/`crate_root`) and trampoline-fixpoint it to a pure-`mc`
+    rust_binary named `name` (the converged final round). Private rounds are `<name>_r<k>` /
+    `<name>_tramp<k>_*`. `extra_rustc_flags` ride ONLY the final converged box — the intermediate rounds
+    are throwaway (only their IMPORTS are read to build the next trampoline), and a flag like `-Cstrip`
+    removes the `name` section `wasi-trampoline` needs to read those import symbols. The final-box flags
+    don't change the import SET, so the trampolines built from the un-stripped rounds stay valid; the
+    flags (typst's `-zstack-size` + `-Cstrip`) then apply to the box that actually ships. Shared by
+    `mc_box` and `mc_wasi_program`; the caller adds packaging (roster vs. mc_program stamp)."""
     adapter = "//wasi-adapter:wasi_adapter_obj"
     ident = name.replace("-", "_")
 
-    def _round(rname, objs, vis):
+    def _round(rname, objs, vis, extra):
         # Link-inject every accumulated object (adapter + trampolines) via -Clink-arg; the objects
-        # are compile_data so they land in the rustc/link action's sandbox.
+        # are compile_data so they land in the rustc/link action's sandbox. `extra` (final round only)
+        # carries per-tool link/codegen flags (typst's `-zstack-size` + `-Cstrip`).
         rust_binary(
             name = rname,
             srcs = srcs,
@@ -49,7 +59,7 @@ def mc_box(name, srcs, crate_root, crate_name, crate_features, deps, edition = "
             crate_name = crate_name,
             edition = edition,
             crate_features = crate_features,
-            rustc_flags = ["-Clink-arg=$(location %s)" % o for o in objs],
+            rustc_flags = ["-Clink-arg=$(location %s)" % o for o in objs] + extra,
             compile_data = objs + compile_data,
             tags = ["manual"],
             deps = deps,
@@ -57,7 +67,7 @@ def mc_box(name, srcs, crate_root, crate_name, crate_features, deps, edition = "
         )
 
     objs = [adapter]
-    _round(name + "_r0", objs, None)
+    _round(name + "_r0", objs, None, [])
     prev = name + "_r0"
 
     for k in range(1, rounds + 1):
@@ -83,8 +93,17 @@ def mc_box(name, srcs, crate_root, crate_name, crate_features, deps, edition = "
 
         last = (k == rounds)
         rname = name if last else "%s_r%d" % (name, k)
-        _round(rname, objs, visibility if last else None)
+        _round(rname, objs, box_visibility if last else None, extra_rustc_flags if last else [])
         prev = rname
+
+def mc_box(name, srcs, crate_root, crate_name, crate_features, deps, edition = "2021", compile_data = [], rounds = _MAX_ROUNDS, visibility = None):
+    """Build a wasm32-wasi guest crate and convert it to a pure-`mc` box named `name`, then attest it
+    and emit the `mc-roster` /bin symlinks (the multi-applet busybox lane — the coreutils).
+
+    `name` is the converged box (the final round). Intermediate rounds + trampolines are private
+    `<name>_r<k>` / `<name>_tramp<k>_*` targets. Build under `--platforms=//platforms:wasm32_wasi`.
+    """
+    _convert_to_mc(name, srcs, crate_root, crate_name, crate_features, deps, edition, compile_data, rounds, [], visibility)
 
     # §16.4 attestation: surface the converged box opt+wasm32-wasi, then FAIL THE BUILD if its mc
     # imports exceed its declared tier. //... reaches `<name>.attest`, so a mis-tiered box (an
@@ -108,5 +127,33 @@ def mc_box(name, srcs, crate_root, crate_name, crate_features, deps, edition = "
         outs = [name + "_symlinks.tar"],
         tools = ["//tools/mc-roster"],
         cmd = "$(execpath //tools/mc-roster) $(execpath :%s_opt) %s $@" % (name, name),
+        visibility = visibility,
+    )
+
+def mc_wasi_program(name, srcs, crate_root, crate_name, deps, tier, service = "", mem = 0, fuel = 0, table = 0, crate_features = [], edition = "2021", compile_data = [], rounds = _MAX_ROUNDS, extra_rustc_flags = [], visibility = None):
+    """A SINGLE std-wasi tool as an mc program/SERVICE (SERVICES.md — the Rust-std lane, e.g. typst):
+    convert the wasm32-wasi crate to a pure-`mc` box (the adapter + trampoline fixpoint, shared with
+    `mc_box`), opt it (`release_wasm`), then stamp mc_tier/mc_budget/mc_service + attest (`mc_program`,
+    whose validation action enforces §9.3 import purity + §16.4 tier fit). Unlike `mc_box` there is NO
+    busybox roster — one tool, not a multi-applet box — and the metadata is declared in the BUILD (the
+    `mc_rust_program` convention), not in the source. `service` (non-empty) stamps the mc_service section
+    so `mc_service_layer` activates it. `extra_rustc_flags` ride only the final converged box, after
+    trampoline discovery, so flags like `-Cstrip=symbols` do not erase import names before analysis.
+    Build under `--platforms=//platforms:wasm32_wasi`.
+
+    Targets: `<name>` (the stamped service, McProgramInfo), `<name>_box` (the converged rust_binary),
+    `<name>_box_opt` (the release_wasm'd wasm mc_program stamps).
+    """
+    box = name + "_box"
+    _convert_to_mc(box, srcs, crate_root, crate_name, crate_features, deps, edition, compile_data, rounds, extra_rustc_flags, None)
+    release_wasm(name = box + "_opt", lib = box, platform = "//platforms:wasm32_wasi")
+    mc_program(
+        name = name,
+        wasm = ":" + box + "_opt",
+        tier = tier,
+        service = service,
+        mem = mem,
+        fuel = fuel,
+        table = table,
         visibility = visibility,
     )

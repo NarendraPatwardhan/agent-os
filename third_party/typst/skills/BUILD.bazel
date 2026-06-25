@@ -1,0 +1,2 @@
+# The typst agent-facing skill — rides the `paper` flavor at /skills/typst.md (like loom's/atlas's skills).
+exports_files(["typst.md"])
