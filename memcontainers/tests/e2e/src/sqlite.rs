@@ -383,27 +383,27 @@ fn sqlite_vector_cache_cap_faults_nodes_after_cold_reopen() {
     s.host
         .write_file(
             "/tmp/cachevec.sql",
-            b"CREATE VIRTUAL TABLE spill USING vann(embedding float[2] metric=l2, label text aux, M=4, ef_construction=24, ef_search=24, cache_nodes=2);\n\
-INSERT INTO spill(rowid, embedding, label) VALUES (1, vec_f32('[0,0]'), 'p1');\n\
-INSERT INTO spill(rowid, embedding, label) VALUES (2, vec_f32('[1,0]'), 'p2');\n\
-INSERT INTO spill(rowid, embedding, label) VALUES (3, vec_f32('[2,0]'), 'p3');\n\
-INSERT INTO spill(rowid, embedding, label) VALUES (4, vec_f32('[3,0]'), 'p4');\n\
-INSERT INTO spill(rowid, embedding, label) VALUES (5, vec_f32('[4,0]'), 'p5');\n\
-INSERT INTO spill(rowid, embedding, label) VALUES (6, vec_f32('[5,0]'), 'p6');\n\
-INSERT INTO spill(rowid, embedding, label) VALUES (7, vec_f32('[6,0]'), 'p7');\n\
-INSERT INTO spill(rowid, embedding, label) VALUES (8, vec_f32('[7,0]'), 'p8');\n\
-INSERT INTO spill(rowid, embedding, label) VALUES (9, vec_f32('[8,0]'), 'p9');\n\
-INSERT INTO spill(rowid, embedding, label) VALUES (10, vec_f32('[9,0]'), 'p10');\n\
-INSERT INTO spill(rowid, embedding, label) VALUES (11, vec_f32('[10,0]'), 'p11');\n\
-INSERT INTO spill(rowid, embedding, label) VALUES (12, vec_f32('[11,0]'), 'p12');\n\
-INSERT INTO spill(rowid, embedding, label) VALUES (13, vec_f32('[12,0]'), 'p13');\n\
-INSERT INTO spill(rowid, embedding, label) VALUES (14, vec_f32('[13,0]'), 'p14');\n\
-INSERT INTO spill(rowid, embedding, label) VALUES (15, vec_f32('[14,0]'), 'p15');\n\
-INSERT INTO spill(rowid, embedding, label) VALUES (16, vec_f32('[15,0]'), 'p16');\n\
-INSERT INTO spill(rowid, embedding, label) VALUES (17, vec_f32('[16,0]'), 'p17');\n\
-INSERT INTO spill(rowid, embedding, label) VALUES (18, vec_f32('[17,0]'), 'p18');\n\
-INSERT INTO spill(rowid, embedding, label) VALUES (19, vec_f32('[18,0]'), 'p19');\n\
-INSERT INTO spill(rowid, embedding, label) VALUES (20, vec_f32('[19,0]'), 'p20');\n\
+            b"CREATE VIRTUAL TABLE spill USING vann(embedding float[2] metric=l2, tag text, label text aux, M=4, ef_construction=24, ef_search=24, cache_nodes=2);\n\
+INSERT INTO spill(rowid, embedding, tag, label) VALUES (1, vec_f32('[0,0]'), 'keep', 'p1');\n\
+INSERT INTO spill(rowid, embedding, tag, label) VALUES (2, vec_f32('[1,0]'), 'keep', 'p2');\n\
+INSERT INTO spill(rowid, embedding, tag, label) VALUES (3, vec_f32('[2,0]'), 'keep', 'p3');\n\
+INSERT INTO spill(rowid, embedding, tag, label) VALUES (4, vec_f32('[3,0]'), 'keep', 'p4');\n\
+INSERT INTO spill(rowid, embedding, tag, label) VALUES (5, vec_f32('[4,0]'), 'keep', 'p5');\n\
+INSERT INTO spill(rowid, embedding, tag, label) VALUES (6, vec_f32('[5,0]'), 'keep', 'p6');\n\
+INSERT INTO spill(rowid, embedding, tag, label) VALUES (7, vec_f32('[6,0]'), 'keep', 'p7');\n\
+INSERT INTO spill(rowid, embedding, tag, label) VALUES (8, vec_f32('[7,0]'), 'keep', 'p8');\n\
+INSERT INTO spill(rowid, embedding, tag, label) VALUES (9, vec_f32('[8,0]'), 'keep', 'p9');\n\
+INSERT INTO spill(rowid, embedding, tag, label) VALUES (10, vec_f32('[9,0]'), 'keep', 'p10');\n\
+INSERT INTO spill(rowid, embedding, tag, label) VALUES (11, vec_f32('[10,0]'), 'keep', 'p11');\n\
+INSERT INTO spill(rowid, embedding, tag, label) VALUES (12, vec_f32('[11,0]'), 'keep', 'p12');\n\
+INSERT INTO spill(rowid, embedding, tag, label) VALUES (13, vec_f32('[12,0]'), 'keep', 'p13');\n\
+INSERT INTO spill(rowid, embedding, tag, label) VALUES (14, vec_f32('[13,0]'), 'keep', 'p14');\n\
+INSERT INTO spill(rowid, embedding, tag, label) VALUES (15, vec_f32('[14,0]'), 'keep', 'p15');\n\
+INSERT INTO spill(rowid, embedding, tag, label) VALUES (16, vec_f32('[15,0]'), 'keep', 'p16');\n\
+INSERT INTO spill(rowid, embedding, tag, label) VALUES (17, vec_f32('[16,0]'), 'keep', 'p17');\n\
+INSERT INTO spill(rowid, embedding, tag, label) VALUES (18, vec_f32('[17,0]'), 'keep', 'p18');\n\
+INSERT INTO spill(rowid, embedding, tag, label) VALUES (19, vec_f32('[18,0]'), 'keep', 'p19');\n\
+INSERT INTO spill(rowid, embedding, tag, label) VALUES (20, vec_f32('[19,0]'), 'keep', 'p20');\n\
 SELECT instr(vann_info('spill'), '\"cache_nodes\":2') > 0;\n",
         )
         .expect("write cachevec.sql");
@@ -413,6 +413,10 @@ SELECT instr(vann_info('spill'), '\"cache_nodes\":2') > 0;\n",
     );
     assert_eq!(
         s.run_for_output("sqlite /tmp/cachevec.db \"SELECT rowid, label, printf('%.2f', distance) FROM spill WHERE embedding MATCH vec_f32('[19.2,0]') AND k = 1 AND ef = 64\""),
+        "20|p20|0.04\r\n"
+    );
+    assert_eq!(
+        s.run_for_output("sqlite /tmp/cachevec.db \"SELECT rowid, label, printf('%.2f', distance) FROM spill WHERE embedding MATCH vec_f32('[19.2,0]') AND k = 1 AND tag = 'keep'\""),
         "20|p20|0.04\r\n"
     );
 }

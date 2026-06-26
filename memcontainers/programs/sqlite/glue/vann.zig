@@ -829,7 +829,8 @@ const VTab = struct {
         const values = try deserializeCells(vals_raw);
         var values_owned = true;
         defer if (values_owned) deinitCellSlice(values);
-        var q = try decodeQuantizedBlob(vq_raw, self.config.dims);
+        const q_dims: u32 = if (self.config.elem_type == .bit) 0 else self.config.dims;
+        var q = try decodeQuantizedBlob(vq_raw, q_dims);
         var q_owned = true;
         defer if (q_owned) q.deinit();
         var transferred = false;
@@ -1389,31 +1390,78 @@ const VTab = struct {
     fn exactSearch(self: *VTab, q: VectorValue, part_key: ?[]const u8, filters: []const QueryFilter, k: usize) ![]SearchResult {
         var out: std.ArrayList(SearchResult) = .empty;
         defer out.deinit(alloc);
-        const ids = try self.liveIdList();
-        defer alloc.free(ids);
-        for (ids) |id| {
-            const n = (try self.nodeResident(id)) orelse continue;
-            if (n.deleted or !self.matchesPart(n, part_key)) continue;
-            if (!self.matchesFilters(n, filters)) continue;
-            try insertResultBounded(&out, .{ .id = n.id, .rowid = n.rowid, .distance = try self.exactDistanceRaw(n.id, q.floats, q.bits) }, k);
+        const node_table = try self.shadowName("_node");
+        defer alloc.free(node_table);
+        const vec_table = try self.shadowName("_vec");
+        defer alloc.free(vec_table);
+        const q_node = try qualifiedName(self.schema, node_table);
+        defer alloc.free(q_node);
+        const q_vec = try qualifiedName(self.schema, vec_table);
+        defer alloc.free(q_vec);
+        const sql = try std.fmt.allocPrint(
+            alloc,
+            "SELECT n.id,n.rowid,n.level,n.deleted,n.part,n.vq,n.vals,n.adj,v.v FROM {s} n JOIN {s} v ON v.id=n.id WHERE n.deleted=0 ORDER BY n.id",
+            .{ q_node, q_vec },
+        );
+        defer freeQuotedSql(sql);
+        var stmt: ?*c.sqlite3_stmt = null;
+        const z = try alloc.dupeZ(u8, sql);
+        defer alloc.free(z);
+        if (c.sqlite3_prepare_v2(self.db, z.ptr, -1, &stmt, null) != c.SQLITE_OK) return error.Sqlite;
+        defer _ = c.sqlite3_finalize(stmt);
+        while (true) {
+            const rc = c.sqlite3_step(stmt);
+            if (rc == c.SQLITE_DONE) break;
+            if (rc != c.SQLITE_ROW) return error.Sqlite;
+            {
+                const n = try self.nodeFromStmt(stmt, false);
+                defer n.deinit();
+                if (n.deleted or !self.matchesPart(n, part_key)) continue;
+                if (!self.matchesFilters(n, filters)) continue;
+                try insertResultBounded(&out, .{ .id = n.id, .rowid = n.rowid, .distance = try self.exactDistanceNode(n, q.floats, q.bits) }, k);
+            }
         }
-        const results = try out.toOwnedSlice(alloc);
-        try self.trimResidentCache();
-        return results;
+        return try out.toOwnedSlice(alloc);
     }
 
     fn exactSearchIds(self: *VTab, q: VectorValue, ids: []const u32, part_key: ?[]const u8, filters: []const QueryFilter, k: usize) ![]SearchResult {
         var out: std.ArrayList(SearchResult) = .empty;
         defer out.deinit(alloc);
+        const node_table = try self.shadowName("_node");
+        defer alloc.free(node_table);
+        const vec_table = try self.shadowName("_vec");
+        defer alloc.free(vec_table);
+        const q_node = try qualifiedName(self.schema, node_table);
+        defer alloc.free(q_node);
+        const q_vec = try qualifiedName(self.schema, vec_table);
+        defer alloc.free(q_vec);
+        const sql = try std.fmt.allocPrint(
+            alloc,
+            "SELECT n.id,n.rowid,n.level,n.deleted,n.part,n.vq,n.vals,n.adj,v.v FROM {s} n JOIN {s} v ON v.id=n.id WHERE n.deleted=0 AND n.id=?",
+            .{ q_node, q_vec },
+        );
+        defer freeQuotedSql(sql);
+        var stmt: ?*c.sqlite3_stmt = null;
+        const z = try alloc.dupeZ(u8, sql);
+        defer alloc.free(z);
+        if (c.sqlite3_prepare_v2(self.db, z.ptr, -1, &stmt, null) != c.SQLITE_OK) return error.Sqlite;
+        defer _ = c.sqlite3_finalize(stmt);
         for (ids) |id| {
-            const n = (try self.nodeResident(id)) orelse continue;
-            if (n.deleted or !self.matchesPart(n, part_key)) continue;
-            if (!self.matchesFilters(n, filters)) continue;
-            try insertResultBounded(&out, .{ .id = n.id, .rowid = n.rowid, .distance = try self.exactDistanceRaw(n.id, q.floats, q.bits) }, k);
+            _ = c.sqlite3_reset(stmt);
+            _ = c.sqlite3_clear_bindings(stmt);
+            if (c.sqlite3_bind_int64(stmt, 1, id) != c.SQLITE_OK) return error.Sqlite;
+            const rc = c.sqlite3_step(stmt);
+            if (rc == c.SQLITE_DONE) continue;
+            if (rc != c.SQLITE_ROW) return error.Sqlite;
+            {
+                const n = try self.nodeFromStmt(stmt, false);
+                defer n.deinit();
+                if (n.deleted or !self.matchesPart(n, part_key)) continue;
+                if (!self.matchesFilters(n, filters)) continue;
+                try insertResultBounded(&out, .{ .id = n.id, .rowid = n.rowid, .distance = try self.exactDistanceNode(n, q.floats, q.bits) }, k);
+            }
         }
-        const results = try out.toOwnedSlice(alloc);
-        try self.trimResidentCache();
-        return results;
+        return try out.toOwnedSlice(alloc);
     }
 
     fn metadataPrefilterIds(self: *VTab, filters: []const QueryFilter) !?[]u32 {
@@ -1558,13 +1606,31 @@ const VTab = struct {
 
     fn liveCountByScan(self: *VTab, part_key: ?[]const u8, filters: []const QueryFilter) usize {
         var nlive: usize = 0;
-        const ids = self.liveIdList() catch return 0;
-        defer alloc.free(ids);
-        for (ids) |id| {
-            const n = self.node(id) orelse continue;
-            if (!n.deleted and self.matchesPart(n, part_key) and self.matchesFilters(n, filters)) nlive += 1;
+        const node_table = self.shadowName("_node") catch return 0;
+        defer alloc.free(node_table);
+        const q_node = qualifiedName(self.schema, node_table) catch return 0;
+        defer alloc.free(q_node);
+        const sql = std.fmt.allocPrint(
+            alloc,
+            "SELECT n.id,n.rowid,n.level,n.deleted,n.part,n.vq,n.vals,n.adj FROM {s} n WHERE n.deleted=0 ORDER BY n.id",
+            .{q_node},
+        ) catch return 0;
+        defer freeQuotedSql(sql);
+        var stmt: ?*c.sqlite3_stmt = null;
+        const z = alloc.dupeZ(u8, sql) catch return 0;
+        defer alloc.free(z);
+        if (c.sqlite3_prepare_v2(self.db, z.ptr, -1, &stmt, null) != c.SQLITE_OK) return 0;
+        defer _ = c.sqlite3_finalize(stmt);
+        while (true) {
+            const rc = c.sqlite3_step(stmt);
+            if (rc == c.SQLITE_DONE) break;
+            if (rc != c.SQLITE_ROW) return 0;
+            {
+                const n = self.nodeFromStmt(stmt, true) catch return 0;
+                defer n.deinit();
+                if (!n.deleted and self.matchesPart(n, part_key) and self.matchesFilters(n, filters)) nlive += 1;
+            }
         }
-        self.trimResidentCache() catch {};
         return nlive;
     }
 
@@ -1824,8 +1890,12 @@ const VTab = struct {
 
     fn exactDistanceRaw(self: *VTab, id: u32, qf: []const f32, qb: []const u8) !f64 {
         const n = self.node(id) orelse return std.math.inf(f64);
+        return try self.exactDistanceNode(n, qf, qb);
+    }
+
+    fn exactDistanceNode(self: *VTab, n: *Node, qf: []const f32, qb: []const u8) !f64 {
         if (self.coldFullVectors() and n.floats.len == 0) {
-            var vec = try self.fetchVectorValue(id);
+            var vec = try self.fetchVectorValue(n.id);
             defer vec.deinit();
             return switch (self.config.metric) {
                 .hamming => hamming(vec.bits, qb),
