@@ -164,7 +164,7 @@ Use the narrowest real in-memcontainer check:
 
 For data scripts, reopen the database and query expected rows, counts, and rollback behavior. For vector memory, test with tiny known vectors before loading real embeddings, then verify filtered searches with matching and non-matching partitions or metadata.
 
-Use `db:vectorInfo(name)` to confirm dimensions, counts, resident hot bytes, and cold vector bytes. Use `db:vectorHealth(name)` after bulk loads or heavy churn; if it reports graph damage, run `db:vectorRebuild(name)` and check health again. Use `db:vectorQuantization(name)` when you need to know whether traversal is int8, bit, or f32-rescored.
+Use `db:vectorInfo(name)` to confirm dimensions, counts, resident bytes, hot payload bytes, and cold vector bytes. Use `db:vectorHealth(name)` after bulk loads or heavy churn; if it reports graph damage, run `db:vectorRebuild(name)` and check health again. Use `db:vectorQuantization(name)` when you need to know whether traversal is int8, bit, or f32-rescored.
 
 ## Boundaries
 

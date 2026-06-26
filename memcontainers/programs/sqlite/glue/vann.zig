@@ -2462,8 +2462,8 @@ fn infoFunc(ctx: ?*c.sqlite3_context, argc: c_int, argv: [*c]?*c.sqlite3_value) 
     defer snap.deinit();
     const json = std.fmt.allocPrint(
         alloc,
-        "{{\"module\":\"vann\",\"format\":{d},\"dims\":{d},\"elem_type\":\"{s}\",\"metric\":\"{s}\",\"M\":{d},\"ef_construction\":{d},\"ef_search\":{d},\"cache_nodes\":{d},\"version\":{d},\"nodes\":{d},\"live\":{d},\"deleted\":{d},\"max_id\":{d},\"free_slots\":{d},\"metadata_index_rows\":{d},\"resident_bytes\":{d},\"cold_vector_bytes\":{d}}}",
-        .{ snap.format, snap.dims, elemTypeName(snap.elem_type), metricName(snap.metric), snap.m, snap.ef_construction, snap.ef_search, snap.cache_nodes, snap.version, snap.nodes, snap.live, snap.deleted, snap.max_id, snap.free_slots, snap.metadata_index_rows, snap.resident_bytes, snap.cold_vector_bytes },
+        "{{\"module\":\"vann\",\"format\":{d},\"dims\":{d},\"elem_type\":\"{s}\",\"metric\":\"{s}\",\"M\":{d},\"ef_construction\":{d},\"ef_search\":{d},\"cache_nodes\":{d},\"resident_nodes\":{d},\"version\":{d},\"nodes\":{d},\"live\":{d},\"deleted\":{d},\"max_id\":{d},\"free_slots\":{d},\"metadata_index_rows\":{d},\"resident_bytes\":{d},\"hot_payload_bytes\":{d},\"cold_vector_bytes\":{d}}}",
+        .{ snap.format, snap.dims, elemTypeName(snap.elem_type), metricName(snap.metric), snap.m, snap.ef_construction, snap.ef_search, snap.cache_nodes, snap.resident_nodes, snap.version, snap.nodes, snap.live, snap.deleted, snap.max_id, snap.free_slots, snap.metadata_index_rows, snap.resident_bytes, snap.hot_payload_bytes, snap.cold_vector_bytes },
     ) catch {
         resultError(ctx, "vann_info: out of memory");
         return;
@@ -2569,6 +2569,7 @@ const Introspection = struct {
     ef_construction: i64,
     ef_search: i64,
     cache_nodes: i64,
+    resident_nodes: i64,
     version: i64,
     nodes: i64,
     live: i64,
@@ -2582,6 +2583,7 @@ const Introspection = struct {
     dangling_edges: i64,
     metadata_index_rows: i64,
     resident_bytes: i64,
+    hot_payload_bytes: i64,
     cold_vector_bytes: i64,
 
     fn deinit(self: Introspection) void {
@@ -2597,7 +2599,8 @@ fn readIntrospection(ctx: ?*c.sqlite3_context, argc: c_int, argv: [*c]?*c.sqlite
     errdefer alloc.free(prefix);
     const db = c.sqlite3_context_db_handle(ctx);
     const m = (try metaGetIntByPrefix(db, prefix, "m")) orelse DEFAULT_M;
-    const counts = try readNodeCounts(db, prefix, m);
+    const cache_nodes = (try metaGetIntByPrefix(db, prefix, "cache_nodes")) orelse DEFAULT_CACHE_NODES;
+    const counts = try readNodeCounts(db, prefix, m, cache_nodes);
     return .{
         .prefix = prefix,
         .format = (try metaGetIntByPrefix(db, prefix, "format")) orelse FORMAT_VERSION,
@@ -2607,7 +2610,8 @@ fn readIntrospection(ctx: ?*c.sqlite3_context, argc: c_int, argv: [*c]?*c.sqlite
         .m = m,
         .ef_construction = (try metaGetIntByPrefix(db, prefix, "ef_construction")) orelse DEFAULT_EF_CONSTRUCTION,
         .ef_search = (try metaGetIntByPrefix(db, prefix, "ef_search")) orelse DEFAULT_EF_SEARCH,
-        .cache_nodes = (try metaGetIntByPrefix(db, prefix, "cache_nodes")) orelse DEFAULT_CACHE_NODES,
+        .cache_nodes = cache_nodes,
+        .resident_nodes = counts.resident_nodes,
         .version = (try metaGetIntByPrefix(db, prefix, "version")) orelse 0,
         .nodes = counts.nodes,
         .live = counts.live,
@@ -2621,6 +2625,7 @@ fn readIntrospection(ctx: ?*c.sqlite3_context, argc: c_int, argv: [*c]?*c.sqlite
         .dangling_edges = counts.dangling_edges,
         .metadata_index_rows = try readMetadataIndexRows(db, prefix),
         .resident_bytes = counts.resident_bytes,
+        .hot_payload_bytes = counts.hot_payload_bytes,
         .cold_vector_bytes = counts.cold_vector_bytes,
     };
 }
@@ -2636,7 +2641,9 @@ const NodeCounts = struct {
     low_degree_nodes: i64,
     orphan_nodes: i64,
     dangling_edges: i64,
+    resident_nodes: i64,
     resident_bytes: i64,
+    hot_payload_bytes: i64,
     cold_vector_bytes: i64,
 };
 
@@ -2661,12 +2668,12 @@ const HealthEdge = struct {
     to: u32,
 };
 
-fn readNodeCounts(db: ?*c.sqlite3, prefix: []const u8, m: i64) !NodeCounts {
+fn readNodeCounts(db: ?*c.sqlite3, prefix: []const u8, m: i64, cache_nodes: i64) !NodeCounts {
     const node_table = try std.fmt.allocPrint(alloc, "{s}_node", .{prefix});
     defer alloc.free(node_table);
     const q_node = try quoteIdent(node_table);
     defer alloc.free(q_node);
-    const sql = try std.fmt.allocPrint(alloc, "SELECT id,deleted,adj,length(part),length(vq),length(vals) FROM {s}", .{q_node});
+    const sql = try std.fmt.allocPrint(alloc, "SELECT id,deleted,adj,length(part),length(vq),length(vals) FROM {s} ORDER BY id", .{q_node});
     defer alloc.free(sql);
     const z = try alloc.dupeZ(u8, sql);
     defer alloc.free(z);
@@ -2688,15 +2695,19 @@ fn readNodeCounts(db: ?*c.sqlite3, prefix: []const u8, m: i64) !NodeCounts {
         .low_degree_nodes = 0,
         .orphan_nodes = 0,
         .dangling_edges = 0,
+        .resident_nodes = 0,
         .resident_bytes = 0,
+        .hot_payload_bytes = 0,
         .cold_vector_bytes = 0,
     };
+    const unlimited_resident = cache_nodes <= 0;
     while (true) {
         const rc = c.sqlite3_step(stmt);
         if (rc == c.SQLITE_DONE) break;
         if (rc != c.SQLITE_ROW) return error.Sqlite;
         const id: u32 = @intCast(c.sqlite3_column_int64(stmt, 0));
         const deleted = c.sqlite3_column_int(stmt, 1) != 0;
+        var node_resident_estimate = false;
         out.max_id = @max(out.max_id, @as(i64, @intCast(id)));
         out.nodes += 1;
         if (deleted) {
@@ -2704,15 +2715,22 @@ fn readNodeCounts(db: ?*c.sqlite3, prefix: []const u8, m: i64) !NodeCounts {
         } else {
             out.live += 1;
             try valid_degrees.put(id, 0);
-            out.resident_bytes += NODE_HEADER_ESTIMATE_BYTES;
-            out.resident_bytes += c.sqlite3_column_int64(stmt, 3);
-            out.resident_bytes += c.sqlite3_column_int64(stmt, 4);
-            out.resident_bytes += c.sqlite3_column_int64(stmt, 5);
+            var node_bytes = NODE_HEADER_ESTIMATE_BYTES;
+            node_bytes += c.sqlite3_column_int64(stmt, 3);
+            node_bytes += c.sqlite3_column_int64(stmt, 4);
+            node_bytes += c.sqlite3_column_int64(stmt, 5);
+            out.hot_payload_bytes += node_bytes;
+            if (unlimited_resident or out.resident_nodes < cache_nodes) {
+                out.resident_nodes += 1;
+                out.resident_bytes += node_bytes;
+                node_resident_estimate = true;
+            }
         }
         if (!deleted) {
             const adj = try columnBlobCopy(stmt, 2);
             defer alloc.free(adj);
-            out.resident_bytes += @intCast(adj.len);
+            out.hot_payload_bytes += @intCast(adj.len);
+            if (node_resident_estimate) out.resident_bytes += @intCast(adj.len);
             try collectAdjacencyIds(id, adj, &edges);
         }
     }

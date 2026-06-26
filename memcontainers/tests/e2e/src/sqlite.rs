@@ -300,7 +300,7 @@ print(tostring(bad_update), still[1].rowid)
 local info = db:vectorInfo("mem")
 local health = db:vectorHealth("mem")
 local quant = db:vectorQuantization("mem")
-print(info.dims, info.metadata_index_rows, info.resident_bytes > 0, info.cold_vector_bytes > 0, health.status, quant.metric)
+print(info.dims, info.metadata_index_rows, info.resident_bytes > 0, info.hot_payload_bytes >= info.resident_bytes, info.cold_vector_bytes > 0, health.status, quant.metric)
 db:createVectorIndex("graph", {
   vector = { name = "embedding", type = "float", dims = 2, metric = "l2" },
   M = 4,
@@ -322,7 +322,7 @@ db:close()
         .expect("write vec.luau");
     assert_eq!(
         s.run_for_output("luau /tmp/vec.luau"),
-        "2\t1\torigin\t2\r\ntrue\t3\r\n3\t4\tbeta\r\n1\t4\tbeta\r\n1\t2\r\n1\t2\r\n1\t2\r\nfalse\t2\r\n3\t6\ttrue\ttrue\tok\tl2\r\n3\t20\t21\t19\r\n"
+        "2\t1\torigin\t2\r\ntrue\t3\r\n3\t4\tbeta\r\n1\t4\tbeta\r\n1\t2\r\n1\t2\r\n1\t2\r\nfalse\t2\r\n3\t6\ttrue\ttrue\ttrue\tok\tl2\r\n3\t20\t21\t19\r\n"
     );
 }
 
@@ -404,12 +404,12 @@ INSERT INTO spill(rowid, embedding, tag, label) VALUES (17, vec_f32('[16,0]'), '
 INSERT INTO spill(rowid, embedding, tag, label) VALUES (18, vec_f32('[17,0]'), 'keep', 'p18');\n\
 INSERT INTO spill(rowid, embedding, tag, label) VALUES (19, vec_f32('[18,0]'), 'keep', 'p19');\n\
 INSERT INTO spill(rowid, embedding, tag, label) VALUES (20, vec_f32('[19,0]'), 'keep', 'p20');\n\
-SELECT instr(vann_info('spill'), '\"cache_nodes\":2') > 0;\n",
+SELECT instr(vann_info('spill'), '\"cache_nodes\":2') > 0, instr(vann_info('spill'), '\"resident_nodes\":2') > 0, instr(vann_info('spill'), '\"hot_payload_bytes\"') > 0;\n",
         )
         .expect("write cachevec.sql");
     assert_eq!(
         s.run_for_output("cat /tmp/cachevec.sql | sqlite /tmp/cachevec.db"),
-        "1\r\n"
+        "1|1|1\r\n"
     );
     assert_eq!(
         s.run_for_output("sqlite /tmp/cachevec.db \"SELECT rowid, label, printf('%.2f', distance) FROM spill WHERE embedding MATCH vec_f32('[19.2,0]') AND k = 1 AND ef = 64\""),

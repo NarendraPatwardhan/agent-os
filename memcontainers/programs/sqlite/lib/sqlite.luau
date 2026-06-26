@@ -361,7 +361,8 @@ local function vectorMeta(self, fnName: string, name: string)
 end
 
 --- Return table-backed `vann` metadata: format, dims, element type, metric, graph params, version,
---- cache-node cap, node counts, metadata-index rows, resident hot bytes, and cold full-vector bytes.
+--- cache-node cap, node counts, metadata-index rows, resident estimate, total hot payload bytes,
+--- and cold full-vector bytes.
 function Db:vectorInfo(name: string)
   return vectorMeta(self, "vann_info", name)
 end
