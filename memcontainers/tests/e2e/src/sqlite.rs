@@ -412,6 +412,10 @@ SELECT instr(vann_info('spill'), '\"cache_nodes\":2') > 0, instr(vann_info('spil
         "1|1|1\r\n"
     );
     assert_eq!(
+        s.run_for_output("sqlite /tmp/cachevec.db \"SELECT count(*), min(rowid), max(rowid) FROM spill WHERE tag = 'keep'; SELECT rowid, label, length(embedding) FROM spill WHERE rowid = 20\""),
+        "20|1|20\r\n20|p20|13\r\n"
+    );
+    assert_eq!(
         s.run_for_output("sqlite /tmp/cachevec.db \"SELECT rowid, label, printf('%.2f', distance) FROM spill WHERE embedding MATCH vec_f32('[19.2,0]') AND k = 1 AND ef = 64\""),
         "20|p20|0.04\r\n"
     );

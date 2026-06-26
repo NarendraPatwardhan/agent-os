@@ -329,6 +329,12 @@ const QueryFilter = struct {
     }
 };
 
+fn deinitFilterList(filters: *std.ArrayList(QueryFilter)) void {
+    for (filters.items) |*f| f.deinit();
+    filters.deinit(alloc);
+    filters.* = .empty;
+}
+
 const NodeUndo = struct {
     id: u32,
     prev: ?*Node,
@@ -1929,9 +1935,69 @@ const Cursor = struct {
     base: c.sqlite3_vtab_cursor,
     tab: *VTab,
     results: std.ArrayList(SearchResult),
+    scan_stmt: ?*c.sqlite3_stmt = null,
+    scan_filters: std.ArrayList(QueryFilter),
+    scan_node: ?*Node = null,
     pos: usize = 0,
 
+    fn reset(self: *Cursor) void {
+        self.results.clearRetainingCapacity();
+        self.pos = 0;
+        self.clearScan();
+    }
+
+    fn clearScan(self: *Cursor) void {
+        if (self.scan_node) |n| {
+            n.deinit();
+            self.scan_node = null;
+        }
+        if (self.scan_stmt) |stmt| {
+            _ = c.sqlite3_finalize(stmt);
+            self.scan_stmt = null;
+        }
+        deinitFilterList(&self.scan_filters);
+    }
+
+    fn startScan(self: *Cursor, filters: std.ArrayList(QueryFilter)) !void {
+        self.scan_filters = filters;
+        errdefer self.clearScan();
+        const node_table = try self.tab.shadowName("_node");
+        defer alloc.free(node_table);
+        const q_node = try qualifiedName(self.tab.schema, node_table);
+        defer alloc.free(q_node);
+        const sql = try std.fmt.allocPrint(
+            alloc,
+            "SELECT n.id,n.rowid,n.level,n.deleted,n.part,n.vq,n.vals,n.adj FROM {s} n WHERE n.deleted=0 ORDER BY n.id",
+            .{q_node},
+        );
+        defer freeQuotedSql(sql);
+        const z = try alloc.dupeZ(u8, sql);
+        defer alloc.free(z);
+        if (c.sqlite3_prepare_v2(self.tab.db, z.ptr, -1, &self.scan_stmt, null) != c.SQLITE_OK) return error.Sqlite;
+        try self.advanceScan();
+    }
+
+    fn advanceScan(self: *Cursor) !void {
+        if (self.scan_node) |n| {
+            n.deinit();
+            self.scan_node = null;
+        }
+        const stmt = self.scan_stmt orelse return;
+        while (true) {
+            const rc = c.sqlite3_step(stmt);
+            if (rc == c.SQLITE_DONE) return;
+            if (rc != c.SQLITE_ROW) return error.Sqlite;
+            const n = try self.tab.nodeFromStmt(stmt, true);
+            if (self.tab.matchesFilters(n, self.scan_filters.items)) {
+                self.scan_node = n;
+                return;
+            }
+            n.deinit();
+        }
+    }
+
     fn deinit(self: *Cursor) void {
+        self.clearScan();
         self.results.deinit(alloc);
         alloc.destroy(self);
     }
@@ -2141,7 +2207,7 @@ fn xDestroy(p: ?*c.sqlite3_vtab) callconv(.c) c_int {
 
 fn xOpen(p: ?*c.sqlite3_vtab, pp: [*c][*c]c.sqlite3_vtab_cursor) callconv(.c) c_int {
     const cur = alloc.create(Cursor) catch return c.SQLITE_NOMEM;
-    cur.* = .{ .base = .{ .pVtab = p }, .tab = tabFromBase(p), .results = .empty };
+    cur.* = .{ .base = .{ .pVtab = p }, .tab = tabFromBase(p), .results = .empty, .scan_filters = .empty };
     pp.* = &cur.base;
     return c.SQLITE_OK;
 }
@@ -2156,15 +2222,14 @@ fn xFilter(curp: ?*c.sqlite3_vtab_cursor, idx_num: c_int, idx_str: [*c]const u8,
     _ = argc;
     const cur = cursorFromBase(curp);
     const t = cur.tab;
-    cur.results.clearRetainingCapacity();
-    cur.pos = 0;
+    cur.reset();
     const plan_constraints = parsePlan(idx_str) catch return t.setError("vann: malformed query plan");
     defer alloc.free(plan_constraints);
     var q: ?VectorValue = null;
     var filters: std.ArrayList(QueryFilter) = .empty;
+    var filters_moved = false;
     defer {
-        for (filters.items) |*f| f.deinit();
-        filters.deinit(alloc);
+        if (!filters_moved) deinitFilterList(&filters);
         if (q) |*v| v.deinit();
     }
     var k: usize = 10;
@@ -2196,65 +2261,73 @@ fn xFilter(curp: ?*c.sqlite3_vtab_cursor, idx_num: c_int, idx_str: [*c]const u8,
         for (res) |r| cur.results.append(alloc, r) catch return c.SQLITE_NOMEM;
     } else {
         t.refreshIfNeeded();
-        const ids = t.liveIdList() catch return c.SQLITE_NOMEM;
-        defer alloc.free(ids);
-        for (ids) |id| {
-            const n = t.node(id) orelse continue;
-            if (!n.deleted and t.matchesFilters(n, filters.items)) cur.results.append(alloc, .{ .id = n.id, .rowid = n.rowid, .distance = 0 }) catch return c.SQLITE_NOMEM;
-        }
-        t.trimResidentCache() catch {};
+        filters_moved = true;
+        cur.startScan(filters) catch return t.setError("vann: scan failed");
     }
     return c.SQLITE_OK;
 }
 
 fn xNext(cur: ?*c.sqlite3_vtab_cursor) callconv(.c) c_int {
-    cursorFromBase(cur).pos += 1;
+    const ccur = cursorFromBase(cur);
+    if (ccur.scan_stmt != null) {
+        ccur.advanceScan() catch return ccur.tab.setError("vann: scan failed");
+    } else {
+        ccur.pos += 1;
+    }
     return c.SQLITE_OK;
 }
 
 fn xEof(cur: ?*c.sqlite3_vtab_cursor) callconv(.c) c_int {
     const ccur = cursorFromBase(cur);
+    if (ccur.scan_stmt != null) return if (ccur.scan_node == null) 1 else 0;
     return if (ccur.pos >= ccur.results.items.len) 1 else 0;
 }
 
 fn xColumn(curp: ?*c.sqlite3_vtab_cursor, ctx: ?*c.sqlite3_context, col: c_int) callconv(.c) c_int {
     const cur = cursorFromBase(curp);
-    if (cur.pos >= cur.results.items.len) {
-        c.sqlite3_result_null(ctx);
-        return c.SQLITE_OK;
-    }
-    const r = cur.results.items[cur.pos];
     const t = cur.tab;
     const col_usize: usize = @intCast(col);
     if (col_usize == t.config.distance_col) {
-        c.sqlite3_result_double(ctx, r.distance);
+        const distance = if (cur.scan_stmt != null) 0 else if (cur.pos < cur.results.items.len) cur.results.items[cur.pos].distance else 0;
+        c.sqlite3_result_double(ctx, distance);
         return c.SQLITE_OK;
     }
     if (col_usize == t.config.k_col or col_usize == t.config.ef_col) {
         c.sqlite3_result_null(ctx);
         return c.SQLITE_OK;
     }
-    const n = t.node(r.id) orelse {
+    const n = if (cur.scan_stmt != null)
+        cur.scan_node
+    else if (cur.pos < cur.results.items.len)
+        t.node(cur.results.items[cur.pos].id)
+    else
+        null;
+    const node = n orelse {
         c.sqlite3_result_null(ctx);
         return c.SQLITE_OK;
     };
     if (col_usize == t.config.vector_col) {
-        if (n.vec_blob.len == 0) {
-            const blob = t.fetchVectorBlob(n.id) catch return t.setError("vann: vector fetch failed");
+        if (node.vec_blob.len == 0) {
+            const blob = t.fetchVectorBlob(node.id) catch return t.setError("vann: vector fetch failed");
             defer alloc.free(blob);
             c.sqlite3_result_blob(ctx, ptrOrEmpty(blob), @intCast(blob.len), SQLITE_TRANSIENT);
         } else {
-            c.sqlite3_result_blob(ctx, ptrOrEmpty(n.vec_blob), @intCast(n.vec_blob.len), null);
+            c.sqlite3_result_blob(ctx, ptrOrEmpty(node.vec_blob), @intCast(node.vec_blob.len), null);
         }
         return c.SQLITE_OK;
     }
-    if (col_usize < n.values.len) n.values[col_usize].result(ctx) else c.sqlite3_result_null(ctx);
+    if (col_usize < node.values.len) node.values[col_usize].result(ctx) else c.sqlite3_result_null(ctx);
     return c.SQLITE_OK;
 }
 
 fn xRowid(curp: ?*c.sqlite3_vtab_cursor, rowid: [*c]c.sqlite3_int64) callconv(.c) c_int {
     const cur = cursorFromBase(curp);
-    rowid.* = if (cur.pos < cur.results.items.len) cur.results.items[cur.pos].rowid else 0;
+    rowid.* = if (cur.scan_stmt != null)
+        if (cur.scan_node) |n| n.rowid else 0
+    else if (cur.pos < cur.results.items.len)
+        cur.results.items[cur.pos].rowid
+    else
+        0;
     return c.SQLITE_OK;
 }
 
