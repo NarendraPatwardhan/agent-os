@@ -21,7 +21,11 @@ zig_binary(
         "@sqlite//:sqlite3.c",
         "close_shim.c",  # override close() to route through the adapter — must be C, not Zig (see the file)
     ],
-    extra_srcs = ["@sqlite//:sqlite3.h"],
+    extra_srcs = [
+        "@sqlite//:sqlite3.h",
+        "sqlite.zig",
+        "vann.zig",
+    ],
     # The WASI build defines (memcontainers' proven set): WASI mode (unix-dotfile VFS, no shared memory;
     # rollback journal — sqlite's default — fits this single-threaded, sole-opener service),
     # single-threaded, no extension loading / memstatus / URI / deprecated APIs / double-quoted strings.

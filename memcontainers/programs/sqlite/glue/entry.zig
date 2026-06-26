@@ -12,9 +12,8 @@
 const std = @import("std");
 const mc = @import("mc");
 const svc = @import("svc");
-const c = @cImport({
-    @cInclude("sqlite3.h");
-});
+const c = @import("sqlite.zig").c;
+const vann = @import("vann.zig");
 
 const alloc = std.heap.c_allocator;
 const SERVICE_NAME = "sqlite";
@@ -234,6 +233,11 @@ fn doOpen(session: u32, obj: std.json.ObjectMap, resp: *std.ArrayList(u8)) void 
         c.SQLITE_OPEN_READWRITE | c.SQLITE_OPEN_CREATE;
     var db: ?*c.sqlite3 = null;
     if (c.sqlite3_open_v2(path_z.ptr, &db, flags, null) != c.SQLITE_OK) {
+        respondSqliteError(resp, db);
+        _ = c.sqlite3_close(db);
+        return;
+    }
+    if (vann.register(db) != c.SQLITE_OK) {
         respondSqliteError(resp, db);
         _ = c.sqlite3_close(db);
         return;
