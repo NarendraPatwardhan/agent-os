@@ -14,6 +14,7 @@ pub const BRIDGE_IMPORTS: &[&str] = &[
     "mc_http_request_close",
     "mc_ws_connect",
     "mc_ws_send",
+    "mc_ws_ready",
     "mc_ws_recv",
     "mc_ws_close",
     "mc_host_call",
@@ -52,6 +53,7 @@ macro_rules! mc_bridge_table {
         mc_http_request_close => HttpRequestClose (handle: i32) [void];
         mc_ws_connect => WsConnect (url_ptr: cptr, url_len: len) [i32];
         mc_ws_send => WsSend (handle: i32, ptr: cptr, len: len) [i32];
+        mc_ws_ready => WsReady (handle: i32) [i32];
         mc_ws_recv => WsRecv (handle: i32, buf: mptr, len: len) [i32];
         mc_ws_close => WsClose (handle: i32) [void];
         mc_host_call => HostCall (req_ptr: cptr, req_len: len) [i32];

@@ -98,14 +98,20 @@ impl FileSystem for NetFs {
             "ws" | "wss" => match WsConn::connect(&url) {
                 Ok(conn) => Ok(Box::new(NetFileHandle::websocket(conn))),
                 Err(NetError::Denied) => Err(FsError::PermissionDenied),
-                Err(NetError::Failed) => Err(FsError::IoError),
+                // Send-only outcomes cannot arise from connect; fold them with a
+                // transport failure, fail-closed (A5).
+                Err(NetError::Failed | NetError::WouldBlock | NetError::MessageTooBig) => {
+                    Err(FsError::IoError)
+                }
             },
             _ /* http | https */ => {
                 let blob = format!("GET {}\n\n", url);
                 match HttpReq::start(blob.as_bytes()) {
                     Ok(req) => Ok(Box::new(NetFileHandle::http_get(req))),
                     Err(NetError::Denied) => Err(FsError::PermissionDenied),
-                    Err(NetError::Failed) => Err(FsError::IoError),
+                    Err(NetError::Failed | NetError::WouldBlock | NetError::MessageTooBig) => {
+                        Err(FsError::IoError)
+                    }
                 }
             }
         }

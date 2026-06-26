@@ -145,6 +145,9 @@ mod handlers {
         };
         caller.data_mut().net.ws_send(h, &data)
     }
+    pub fn mc_ws_ready(caller: &mut Caller<'_, HostState>, h: i32) -> i32 {
+        caller.data_mut().net.ws_ready(h)
+    }
     pub fn mc_ws_recv(caller: &mut Caller<'_, HostState>, h: i32, ptr: i32, len: i32) -> i32 {
         net_read_into(caller, ptr, len, |net, buf| net.ws_recv(h, buf))
     }

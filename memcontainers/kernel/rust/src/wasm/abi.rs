@@ -84,4 +84,5 @@ fs_errno_table! {
     // `WouldBlock` is normally intercepted as a yield before errno mapping; if it ever
     // escapes a non-yielding op it surfaces as EAGAIN.
     WouldBlock => EAGAIN,
+    MessageTooBig => EMSGSIZE,
 }

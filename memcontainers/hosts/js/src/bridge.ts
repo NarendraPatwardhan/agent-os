@@ -131,6 +131,7 @@ export function makeBridge(st: HostState): WebAssembly.ModuleImports {
       const data = readOrNull(ptr, len);
       return data ? st.net.wsSend(h, data) : -1;
     },
+    mc_ws_ready: (h: number): number => st.net.wsReady(h),
     mc_ws_recv: (h: number, buf: number, len: number): number =>
       drainInto(buf, len, (tmp) => st.net.wsRecv(h, tmp)),
     mc_ws_close: (h: number) => st.net.wsClose(h),

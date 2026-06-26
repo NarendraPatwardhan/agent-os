@@ -22,6 +22,7 @@ use core::sync::atomic::{AtomicI32, Ordering};
 
 use crate::bridge;
 use crate::vfs::traits::{FileHandle, FsError, Metadata, Result as VfsResult, SeekFrom};
+use crate::wasm::abi::{EAGAIN, EMSGSIZE};
 
 /// Largest response head (status line + headers) we will accept in one poll.
 const HEAD_BUF: usize = 16 * 1024;
@@ -55,6 +56,17 @@ pub enum NetError {
     /// A transport failure after the request started (DNS / connect / TLS /
     /// read error).
     Failed,
+    /// The transport cannot accept a `ws_send` right now — still connecting,
+    /// or its send buffer is above the host's flow-control mark (`-EAGAIN`).
+    /// This is *not* an error: the caller parks the guest's write (the unsent
+    /// message stays in the GUEST's own linear memory, B5) and retries, exactly
+    /// as the read side parks on `WouldBlock`. Standard POSIX egress
+    /// backpressure: the host buffers nothing and reports nothing accepted.
+    WouldBlock,
+    /// The message is larger than the host's flow-control window (`-EMSGSIZE`).
+    /// This is a permanent outcome for the same bytes, not backpressure: retrying
+    /// would park forever, so callers must surface `EMSGSIZE` to the guest.
+    MessageTooBig,
 }
 
 /// Result of polling an in-flight HTTP request for its response head.
@@ -137,14 +149,39 @@ impl WsConn {
         }
     }
 
-    /// Send one message. Returns the number of bytes accepted.
+    /// Send one message. The host reports transport readiness, never a buffering
+    /// policy (A1): `len` ⇒ the whole message was accepted; `-EMSGSIZE` ⇒ this
+    /// message can never fit the host window; `-EAGAIN` ⇒ it cannot accept right
+    /// now and buffered NOTHING, so the caller parks and retries with the same
+    /// bytes; any other `n < 0` ⇒ the connection is closed. The specific negative
+    /// sentinels MUST precede `n < 0`, or permanent/park outcomes collapse into a
+    /// spurious close.
     pub fn send(&mut self, data: &[u8]) -> Result<usize, NetError> {
+        // Always ask `mc_ws_send` for the actual write outcome: `mc_ws_ready` is
+        // intentionally size-blind, so pre-gating here would turn an oversized
+        // CONNECTING write into an infinite `WouldBlock` instead of `EMSGSIZE`.
         let n = unsafe { bridge::mc_ws_send(self.handle, data.as_ptr(), data.len()) };
-        if n < 0 {
+        if n == -EMSGSIZE {
+            Err(NetError::MessageTooBig)
+        } else if n == -EAGAIN {
+            Err(NetError::WouldBlock)
+        } else if n < 0 {
             Err(NetError::Failed)
         } else {
             Ok((n as usize).min(data.len()))
         }
+    }
+
+    /// Whether a parked `send` should be re-driven (the write-side dual of
+    /// `recv` probing the read side). The host returns `1` when a send would make
+    /// progress — open and below the flow-control mark — OR when the socket is
+    /// CLOSED/errored, so a write blocked on a dead socket WAKES and errors out
+    /// (POSIX: a closed socket is write-ready). It returns `0` only while
+    /// genuinely would-block (still connecting, or buffer above the mark). Both
+    /// arms matter: never-true hangs the guest forever, true-while-would-block
+    /// busy-loops it.
+    pub fn poll_writable(&self) -> bool {
+        unsafe { bridge::mc_ws_ready(self.handle) != 0 }
     }
 
     /// Try to receive a message. `Ok(Some(n))` on data, `Ok(None)` when
@@ -348,10 +385,15 @@ impl FileHandle for NetFileHandle {
         match &mut *self.conn.borrow_mut() {
             // The HTTP response body is read-only.
             Conn::Http { .. } => Err(FsError::BadFileDescriptor),
-            Conn::Ws { conn, .. } => conn
-                .send(buf)
-                .map(|_| buf.len())
-                .map_err(|_| FsError::IoError),
+            // Would-block parks and re-drives; oversized is permanent and must
+            // surface as `EMSGSIZE` instead of retrying forever. On accept the
+            // host took the whole message, so report `buf.len()` written.
+            Conn::Ws { conn, .. } => match conn.send(buf) {
+                Ok(_) => Ok(buf.len()),
+                Err(NetError::WouldBlock) => Err(FsError::WouldBlock),
+                Err(NetError::MessageTooBig) => Err(FsError::MessageTooBig),
+                Err(_) => Err(FsError::IoError),
+            },
         }
     }
 
@@ -374,6 +416,16 @@ impl FileHandle for NetFileHandle {
             } => ws_ready(conn, pending, poff, failed),
         }
     }
-    // poll_writable defaults to true: a ws send is buffered host-side; an HTTP
-    // body fd is not writable but never blocks (writes return EBADF).
+
+    fn poll_writable(&self) -> bool {
+        match &*self.conn.borrow() {
+            // The host no longer buffers a ws send, so a WS is writable only when
+            // the transport says so (open + below the mark, or closed so the
+            // write errors out) — overriding the default-true that used to assume
+            // host-side buffering. An HTTP body fd never blocks (a write returns
+            // EBADF immediately), so it stays "writable".
+            Conn::Ws { conn, .. } => conn.poll_writable(),
+            Conn::Http { .. } => true,
+        }
+    }
 }

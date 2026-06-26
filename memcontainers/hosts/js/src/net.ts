@@ -1,4 +1,17 @@
+import { EAGAIN, EMSGSIZE } from "@mc/contracts/constants";
 import type { NetCapability } from "./types.js";
+
+/** Flow-control mark for `wsSend` backpressure: accepted sends must fit wholly within the socket's
+ *  own send window (`bufferedAmount + len <= mark`). Oversized messages fail permanently with
+ *  `-EMSGSIZE`; retryable pressure reports `-EAGAIN`, so the kernel parks the guest's bytes in its
+ *  own linear memory (B5) instead of growing host memory on the agent's behalf (A1). */
+const WS_SEND_MARK = 1024 * 1024;
+
+/** How long a `wsConnect` may sit in CONNECTING before the host gives up, closes the socket, and marks
+ *  the slot closed — so a guest blocked on a never-opening socket eventually ERRORS (its `ws_send`
+ *  returns -1, its `poll` reports the close) instead of parking forever. A real handshake completes in
+ *  well under this; a socket still connecting after it is dead. Overridable for tests. */
+const WS_CONNECT_DEADLINE_MS = 30_000;
 
 /** The default: no network. Every call refuses with -1 (mirrors Rust `DeniedNet`). Denial surfaces to
  *  the agent as an ordinary fs/IO error. */
@@ -19,6 +32,12 @@ export class DeniedNet implements NetCapability {
   wsSend(): number {
     return -1;
   }
+  /** A denied send errors immediately (wsSend → -1), so a parked write must NEVER block on a denied
+   *  socket: report writable-to-error (1) so it wakes and surfaces the denial (mirrors Rust
+   *  `DeniedNet::ws_ready`). */
+  wsReady(): number {
+    return 1;
+  }
   wsRecv(): number {
     return -1;
   }
@@ -37,9 +56,10 @@ interface WsSlot {
   ws: WebSocket | null;
   open: boolean;
   closed: boolean;
-  outgoing: Uint8Array[];
   incoming: Uint8Array[];
   frontPos: number;
+  /** The pending connect-deadline timer (cleared once the socket opens or closes). */
+  deadline: ReturnType<typeof setTimeout> | null;
 }
 
 // fetch refuses to *set* these request headers; the runtime manages them.
@@ -184,15 +204,24 @@ export class HostNet implements NetCapability {
       ws: null,
       open: false,
       closed: false,
-      outgoing: [],
       incoming: [],
       frontPos: 0,
+      deadline: null,
     };
     const handle = this.next++;
     this.ws.set(handle, slot);
 
-    // Dial only after the egress is permitted. While pending, the slot stays not-open/not-closed, so
-    // `ws_recv` reports 0 and the guest waits.
+    const clearDeadline = (): void => {
+      if (slot.deadline !== null) {
+        clearTimeout(slot.deadline);
+        slot.deadline = null;
+      }
+    };
+
+    // Dial only after the egress is permitted. While pending (connecting), the slot stays
+    // not-open/not-closed, so `wsSend` reports `-EAGAIN` and `wsReady` reports 0 — the guest's
+    // write parks until the socket opens. The host queues NOTHING (the lie + unbounded host buffer this
+    // replaces): the unsent message stays in the guest's own linear memory (A1/B5).
     const dial = (): void => {
       try {
         const sock = new WebSocket(url);
@@ -200,8 +229,7 @@ export class HostNet implements NetCapability {
         slot.ws = sock;
         sock.onopen = () => {
           slot.open = true;
-          for (const msg of slot.outgoing) sock.send(msg as Uint8Array<ArrayBuffer>);
-          slot.outgoing = [];
+          clearDeadline();
         };
         sock.onmessage = (e: MessageEvent) => {
           const data =
@@ -212,10 +240,30 @@ export class HostNet implements NetCapability {
         };
         sock.onclose = () => {
           slot.closed = true;
+          clearDeadline();
         };
         sock.onerror = () => {
           slot.closed = true;
+          clearDeadline();
         };
+        // Connect deadline: a socket still CONNECTING after the window is dead — close it and mark the
+        // slot closed so a guest blocked on it errors out instead of parking forever (the wake-to-error
+        // the contract requires; without this a never-opening socket would `-EAGAIN` indefinitely).
+        const ms = WS_CONNECT_DEADLINE_MS;
+        const t = setTimeout(() => {
+          if (!slot.open && !slot.closed) {
+            slot.closed = true;
+            try {
+              sock.close();
+            } catch {
+              /* already closing */
+            }
+          }
+        }, ms);
+        // A pending deadline must not keep the event loop (or a test process) alive; bun/node Timers
+        // expose `unref`, browsers return a bare number (no-op).
+        (t as { unref?: () => void }).unref?.();
+        slot.deadline = t;
       } catch {
         slot.closed = true;
       }
@@ -253,20 +301,32 @@ export class HostNet implements NetCapability {
 
   wsSend(handle: number, data: Uint8Array): number {
     const s = this.ws.get(handle);
-    if (!s || s.closed) return -1;
-    if (s.open && s.ws) {
-      try {
-        s.ws.send(data as Uint8Array<ArrayBuffer>);
-      } catch {
-        return -1;
-      }
-    } else {
-      // Not OPEN yet: queue until the socket flushes on `onopen` (matches the wasmtime host, which has
-      // no async pre-open window). Bounding this buffer is a kernel/contract concern, not the host's —
-      // see TODO.md §1.
-      s.outgoing.push(data.slice());
+    if (!s || s.closed) return -1; // closed → the write errors out
+    if (data.length > WS_SEND_MARK) return -EMSGSIZE; // permanent: it can never fit the window
+    const ws = s.ws;
+    // Still CONNECTING/not-open, or accepting this whole frame would cross the mark: would-block.
+    // Because oversized messages failed above, every `-EAGAIN` is retryable once the socket opens or
+    // the browser buffer drains; the host buffers nothing beyond the transport's bounded window (A1/B5).
+    if (!ws || ws.readyState !== WebSocket.OPEN || ws.bufferedAmount + data.length > WS_SEND_MARK) {
+      return -EAGAIN;
+    }
+    try {
+      ws.send(data as Uint8Array<ArrayBuffer>);
+    } catch {
+      s.closed = true;
+      return -1;
     }
     return data.length;
+  }
+
+  wsReady(handle: number): number {
+    const s = this.ws.get(handle);
+    // Unknown handle or closed → writable-to-error (1): a parked write must WAKE so its next `wsSend`
+    // returns -1 (POSIX: a closed socket is write-ready). 0 would hang the guest forever.
+    if (!s || s.closed) return 1;
+    // Coarse readiness only: `mc_ws_ready` has no message size, so "some room below the mark" wakes a
+    // writer, and `wsSend` remains the authority for whether that particular frame fits.
+    return s.open && s.ws && s.ws.bufferedAmount < WS_SEND_MARK ? 1 : 0;
   }
 
   wsRecv(handle: number, buf: Uint8Array): number {
@@ -287,6 +347,10 @@ export class HostNet implements NetCapability {
   wsClose(handle: number): void {
     const s = this.ws.get(handle);
     if (!s) return;
+    if (s.deadline !== null) {
+      clearTimeout(s.deadline);
+      s.deadline = null;
+    }
     try {
       s.ws?.close();
     } catch {

@@ -20,7 +20,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-/// The eight network bridge calls, behind the host's capability policy.
+/// WebSocket send sentinels from the generated contract constants (B2): `-EAGAIN`
+/// is retryable backpressure; `-EMSGSIZE` is a permanent oversized-frame error.
+use constants_rust::{EAGAIN, EMSGSIZE};
+
+/// The network bridge calls, behind the host's capability policy.
 pub trait NetCapability: Send + 'static {
     fn http_request(&mut self, req: &[u8]) -> i32;
     fn http_poll(&mut self, handle: i32, buf: &mut [u8]) -> i32;
@@ -28,6 +32,12 @@ pub trait NetCapability: Send + 'static {
     fn http_close(&mut self, handle: i32);
     fn ws_connect(&mut self, url: &str) -> i32;
     fn ws_send(&mut self, handle: i32, data: &[u8]) -> i32;
+    /// Write-readiness probe for a parked guest write (the dual of `recv` probing
+    /// the read side): `1` if a `ws_send` would make progress (the relay can take
+    /// a frame, i.e. its bounded queue is below the mark) OR the socket is closed
+    /// (so the parked write wakes and errors out), `0` only while genuinely
+    /// would-block. The kernel gates a parked write on this.
+    fn ws_ready(&mut self, handle: i32) -> i32;
     fn ws_recv(&mut self, handle: i32, buf: &mut [u8]) -> i32;
     fn ws_close(&mut self, handle: i32);
 }
@@ -53,6 +63,11 @@ impl NetCapability for DeniedNet {
     }
     fn ws_send(&mut self, _h: i32, _data: &[u8]) -> i32 {
         -1
+    }
+    /// A denied send errors immediately, so a parked write must never block on a denied socket:
+    /// report writable-to-error (1) so it wakes and surfaces the denial (mirrors JS `DeniedNet`).
+    fn ws_ready(&mut self, _h: i32) -> i32 {
+        1
     }
     fn ws_recv(&mut self, _h: i32, _buf: &mut [u8]) -> i32 {
         -1
@@ -178,6 +193,10 @@ impl NetCapability for RealNet {
         slot_ws_send(&self.ws, h, data)
     }
 
+    fn ws_ready(&mut self, h: i32) -> i32 {
+        slot_ws_ready(&self.ws, h)
+    }
+
     fn ws_recv(&mut self, h: i32, buf: &mut [u8]) -> i32 {
         slot_ws_recv(&self.ws, h, buf)
     }
@@ -236,10 +255,40 @@ fn slot_ws_send(ws: &HashMap<i32, Arc<Mutex<WsSlot>>>, h: i32, data: &[u8]) -> i
     };
     let mut s = slot.lock().unwrap();
     if s.closed {
-        return -1;
+        return -1; // closed → the write errors out
     }
+    if data.len() > WS_SEND_MARK {
+        return -EMSGSIZE; // permanent: this frame can never fit the host window
+    }
+    // A pre-handshake socket cannot accept (matching JS CONNECTING), and a send
+    // that would cross the mark must park until the relay drains enough room.
+    // Since oversized frames already failed above, every `-EAGAIN` can make
+    // progress later; the host buffers NOTHING extra and keeps the queued hold
+    // within the flow-control window (A1/B5).
+    if !s.open || s.queued_bytes + data.len() > WS_SEND_MARK {
+        return -EAGAIN;
+    }
+    s.queued_bytes += data.len();
     s.outgoing.push_back(data.to_vec());
     data.len() as i32
+}
+
+/// Write-readiness for a parked guest write (the dual of `recv` probing the read
+/// side): `1` if a `ws_send` would make progress (queue below the mark) OR the
+/// socket is closed/unknown (so the parked write WAKES and errors out — POSIX: a
+/// closed socket is write-ready), `0` only while genuinely would-block (queue at/
+/// above the mark). Never-true would hang the guest; true-while-would-block would
+/// busy-loop it.
+fn slot_ws_ready(ws: &HashMap<i32, Arc<Mutex<WsSlot>>>, h: i32) -> i32 {
+    let Some(slot) = ws.get(&h) else {
+        return 1; // unknown handle → wake-to-error, never park
+    };
+    let s = slot.lock().unwrap();
+    if s.closed || (s.open && s.queued_bytes < WS_SEND_MARK) {
+        1
+    } else {
+        0
+    }
 }
 
 fn slot_ws_recv(ws: &HashMap<i32, Arc<Mutex<WsSlot>>>, h: i32, buf: &mut [u8]) -> i32 {
@@ -262,9 +311,25 @@ fn slot_ws_recv(ws: &HashMap<i32, Arc<Mutex<WsSlot>>>, h: i32, buf: &mut [u8]) -
     n as i32
 }
 
+/// Flow-control mark for egress backpressure (the wasmtime dual of the JS host's
+/// `WS_SEND_MARK`): the relay stops draining `outgoing` into the socket once the
+/// socket would-block, so `outgoing` fills; `ws_send` accepts a whole message only
+/// when `queued_bytes + len <= WS_SEND_MARK`. This bounds the relay queue at the
+/// mark (A1) and turns a slow/stuck peer into real backpressure on the guest
+/// instead of host memory growth.
+const WS_SEND_MARK: usize = 1024 * 1024;
+
 #[derive(Default)]
 struct WsSlot {
+    /// The relay has completed the host WebSocket handshake. Before this point,
+    /// send/ready must mirror JS CONNECTING: `-EAGAIN` / not writable.
+    open: bool,
+    /// Messages accepted from the guest but not yet handed to the socket. Bounded
+    /// by `WS_SEND_MARK` via `queued_bytes`; the relay only drains it while the
+    /// socket can actually accept (so it reflects real transport backpressure).
     outgoing: VecDeque<Vec<u8>>,
+    /// Sum of the byte lengths currently in `outgoing` — the flow-control gauge.
+    queued_bytes: usize,
     incoming: VecDeque<Vec<u8>>,
     /// Read offset into the front incoming message (messages may be larger
     /// than one kernel recv buffer).
@@ -289,20 +354,51 @@ fn ws_relay(url: String, slot: Arc<Mutex<WsSlot>>) {
     if let Some(tcp) = inner_tcp(socket.get_ref()) {
         let _ = tcp.set_nonblocking(true);
     }
+    slot.lock().unwrap().open = true;
 
     loop {
-        let (outs, close_req) = {
-            let mut s = slot.lock().unwrap();
-            (s.outgoing.drain(..).collect::<Vec<_>>(), s.close_req)
-        };
-        for data in outs {
+        // Pump queued messages into the socket, but only WHILE it can actually accept:
+        // gate each pull on a successful FLUSH (an empty tungstenite send buffer ⇒ the
+        // socket is writable). The moment a flush would block, the socket is full — STOP
+        // pulling, leaving everything in `outgoing` so the queue (and `queued_bytes`)
+        // backs up and exerts real backpressure (`ws_send` → -EAGAIN; the guest's write
+        // parks, its bytes staying in the guest's own memory, B5). This bounds the
+        // relay queue at WS_SEND_MARK; using `write` (queue) + `flush`
+        // (drain) rather than `send` (= write + flush) is exactly what lets the leading
+        // flush be the gate: a plain `send` would shovel the whole queue into tungstenite's
+        // own buffer even with the socket stuck, defeating the bound.
+        loop {
+            match socket.flush() {
+                Ok(()) => {}
+                // Socket full: don't pull more — `outgoing` stays put and backs up.
+                Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    break;
+                }
+                Err(_) => {
+                    slot.lock().unwrap().closed = true;
+                    return;
+                }
+            }
+            // Flush succeeded (buffer empty) → the socket can take a frame; pull one.
+            let next = {
+                let mut s = slot.lock().unwrap();
+                match s.outgoing.pop_front() {
+                    Some(data) => {
+                        s.queued_bytes = s.queued_bytes.saturating_sub(data.len());
+                        Some(data)
+                    }
+                    None => None,
+                }
+            };
+            let Some(data) = next else { break };
             let msg = match std::str::from_utf8(&data) {
                 Ok(t) => Message::text(t),
                 Err(_) => Message::binary(data),
             };
-            match socket.send(msg) {
+            match socket.write(msg) {
+                // Queued (and partly written); the next iteration's flush drains it, or
+                // stops pulling once the socket has filled.
                 Ok(()) => {}
-                // WouldBlock: buffered by tungstenite, sent on a later flush.
                 Err(tungstenite::Error::Io(e)) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(_) => {
                     slot.lock().unwrap().closed = true;
@@ -310,8 +406,10 @@ fn ws_relay(url: String, slot: Arc<Mutex<WsSlot>>) {
                 }
             }
         }
+        // A final drain attempt for the last written frame (harmless if already flushed).
         let _ = socket.flush();
 
+        let close_req = slot.lock().unwrap().close_req;
         if close_req {
             let _ = socket.close(None);
             let _ = socket.flush();
@@ -451,6 +549,9 @@ impl NetCapability for TokioNet {
     }
     fn ws_send(&mut self, h: i32, data: &[u8]) -> i32 {
         slot_ws_send(&self.ws, h, data)
+    }
+    fn ws_ready(&mut self, h: i32) -> i32 {
+        slot_ws_ready(&self.ws, h)
     }
     fn ws_recv(&mut self, h: i32, buf: &mut [u8]) -> i32 {
         slot_ws_recv(&self.ws, h, buf)

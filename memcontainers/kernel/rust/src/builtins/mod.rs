@@ -99,6 +99,7 @@ pub(crate) fn fs_error_str(e: FsError) -> &'static str {
         FsError::CrossDevice => "Invalid cross-device link",
         FsError::Loop => "Too many levels of symbolic links",
         FsError::WouldBlock => "Resource temporarily unavailable",
+        FsError::MessageTooBig => "Message too long",
     }
 }
 

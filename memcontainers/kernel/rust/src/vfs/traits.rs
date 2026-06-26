@@ -58,6 +58,10 @@ pub enum FsError {
     /// re-poll them on a later tick. Ordinary in-memory/storage filesystems never
     /// produce it.
     WouldBlock,
+    /// A single message/write frame exceeds the contracted transport window. This is
+    /// permanent for the same bytes — unlike `WouldBlock`, retrying cannot help — and
+    /// maps to `EMSGSIZE`.
+    MessageTooBig,
     /// Path resolution exceeded the symlink-following depth limit — POSIX `ELOOP`.
     /// Produced only by the namespace canonicalizer, never by a leaf filesystem.
     Loop,

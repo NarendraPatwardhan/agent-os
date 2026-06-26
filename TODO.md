@@ -1,42 +1,30 @@
 # TODO
 
 System-design follow-ups surfaced by the JavaScript host / `@mc/core` port (commit `79fea3c`) and the
-Codex review of it. None is a bug in the committed port — `bazel test //...` is green. Items reference
-the invariants in `SYSTEMS.md` §2.2.
-
----
-
-## 1. Kernel-metered egress backpressure (the right home for the removed WS queue cap)
-
-**Why this exists.** A browser `WebSocket` opens asynchronously, so the JS host must buffer
-`mc_ws_send` bytes that arrive before the socket is OPEN and flush them in `onopen` (`hosts/js/src/net.ts`).
-The wasmtime host has no such async window. A host-side cap on that buffer was added during the port and
-then **removed**, because it:
-- put resource *policy* in the host — SYSTEMS.md is explicit that the host is "a driver, not a
-  participant… it performs effects and never makes policy";
-- diverged the two hosts (broke **A3** — same `kernel.wasm`, identical behavior); and
-- overloaded `-1` (which already means *socket closed* in the net bridge) to mean *queue full*, so a
-  guest misread backpressure as a dead connection.
-
-**The gap it leaves.** A contained guest that floods a never-opening socket can grow the **host's** heap
-without bound — and the host is the *uncontained* side (**A1**: the guest must not reach out and harm us).
-
-**The fix (kernel + contract, mirrored in both hosts):**
-- Bound egress buffering in the **kernel**, against the guest's own (accounted, snapshot-safe) linear
-  memory and per-guest budget (**B5**). The kernel already tracks `mc_inflight_egress`, so the resource
-  awareness is in the right place.
-- Add a distinct, contracted **backpressure return code** — a "would-block / queue-full" value, NOT
-  `-1` (= closed) — to the net bridge in `contracts/bridge.kdl`, projected to every host. The guest then
-  sees a real "retry later" and blocks/retries, the poll-based pattern the net bridge already uses.
-- Implement it identically in `hosts/wasmtime` and `hosts/js` so behavior stays host-identical (**A3**),
-  and the bytes live in bounded *kernel* memory rather than unbounded *host* memory.
+Codex review of it. **All are now resolved** — `bazel test //...` is green (47 tests). Kept for
+provenance; items reference the invariants in `SYSTEMS.md` §2.2.
 
 ---
 
 ## Resolved
 
-Solved after the Codex review (suite green at 47 tests); kept here for provenance.
-
+- **Kernel-metered egress backpressure (was §1) — A1/A3/B5.** The host-side WebSocket send buffer is
+  gone. `mc_ws_send` now reports true acceptance — `len` (whole message accepted) / `-EMSGSIZE`
+  (oversized beyond the host window; permanent, do not retry) / `-EAGAIN` (would-block, retry; the host
+  buffers nothing) / `-1` (closed) — and a new contracted `mc_ws_ready` import lets the kernel gate a
+  parked write (the write-side dual of how `recv` probes the read side). A guest write
+  that can't be accepted PARKS — its unsent message staying in the guest's own linear memory (B5) — and
+  re-drives via the existing scheduler requeue, exactly like a parked read; POLLOUT is gated on real
+  writability instead of the old "always writable" lie (`kernel/rust/src/{net/mod.rs,wasm/mod.rs}`,
+  `fs/netfs.rs`). Both hosts emit the IDENTICAL contract (A3) and hold at most a bounded flow-control
+  window — JS via the browser's `bufferedAmount`, wasmtime via a relay queue, both capped at
+  `WS_SEND_MARK` — and a single accepted message can't cross the mark (`hold + len <= mark`), so the
+  host hold is strictly bounded, never unbounded heap (A1). `bazel test //...` stays green (the contract
+  diff-gates, compilation, and the non-WS e2e/parity); the WS backpressure itself is verified
+  structurally as the dual of the in-production read path — the e2e has no WS-capable guest, so a true
+  end-to-end WS-flood boot remains the one open hardening gap. The wasmtime host's send sentinels come
+  from generated constants (B2). This replaced the removed host-side cap with the proper kernel +
+  contract design.
 - **Cross-host snapshot parity test (was §2) — A3/A8.** `//memcontainers/hosts/wasmtime:snapshot_fixture`
   (a `rust_binary` over the `host` lib) boots the kernel under the wasmtime host, writes a marker through
   the control channel, and snapshots; a `genrule` runs it over the same kernel + base the e2e boots (B1)

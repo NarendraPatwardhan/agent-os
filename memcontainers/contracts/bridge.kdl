@@ -35,7 +35,8 @@ import "mc_http_request_close" { arg "handle" type="i32"; ret "void"; doc "Relea
 
 // ── WebSocket (host does handshake + TLS for wss) ────────────────────────────
 import "mc_ws_connect" { arg "url_ptr" type="cptr"; arg "url_len" type="len"; ret "i32"; doc "Connect; handle >=0, or -1 to refuse." }
-import "mc_ws_send"    { arg "handle" type="i32"; arg "ptr" type="cptr"; arg "len" type="len"; ret "i32"; doc "Send bytes; count, or -1." }
+import "mc_ws_send"    { arg "handle" type="i32"; arg "ptr" type="cptr"; arg "len" type="len"; ret "i32"; doc "Send one message: `len` (whole message accepted), `-EMSGSIZE` (message exceeds the host flow-control window; permanent, do NOT retry the same message), `-EAGAIN` (would-block — retry; the host buffers nothing and the unsent bytes stay in guest linear memory), or -1 closed/errored. POSIX egress backpressure: the host reports transport readiness, it makes no buffering policy." }
+import "mc_ws_ready"   { arg "handle" type="i32"; ret "i32"; doc "Write-readiness probe — named `ws_ready` to stay in the one-word mc_ws_* family; it answers whether a `ws_send` is ready now. 1 if a send would make progress (open + send buffer below the flow-control mark, OR closed/errored so the send returns an error), 0 if it would would-block (still connecting, or buffer above the mark). The kernel gates a parked write on this — the write-side dual of how `recv` probes the read side (a send has no side-effect-free probe)." }
 import "mc_ws_recv"    { arg "handle" type="i32"; arg "buf" type="mptr"; arg "len" type="len"; ret "i32"; doc "n(>0) received / 0 none pending / -1 closed." }
 import "mc_ws_close"   { arg "handle" type="i32"; ret "void"; doc "Close the WebSocket." }
 

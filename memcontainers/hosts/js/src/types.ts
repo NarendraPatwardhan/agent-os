@@ -35,8 +35,12 @@ export interface NetCapability {
   httpClose(handle: number): void;
   /** Connect; returns a handle ≥ 1 or -1. */
   wsConnect(url: string): number;
-  /** Bytes queued, or -1 if closed. */
+  /** Send one message: `len` (whole message accepted), `-EMSGSIZE` (oversized, permanent),
+   *  `-EAGAIN` (would-block — the host buffers nothing; the kernel parks and retries), or -1 closed. */
   wsSend(handle: number, data: Uint8Array): number;
+  /** 1 if a `wsSend` would make progress (open + buffer below the mark, OR closed/errored so the send
+   *  returns an error), 0 if it would would-block. The kernel gates a parked write on this. */
+  wsReady(handle: number): number;
   /** Bytes read (> 0), 0 = none pending, -1 = closed. */
   wsRecv(handle: number, buf: Uint8Array): number;
   wsClose(handle: number): void;

@@ -41,7 +41,7 @@ use crate::fs::servicefs::{
 use crate::fs::{MemFs, ServeChannel, ServedFs};
 use crate::host_call::{HostCallRead, HostCallSource};
 use crate::io::{EmptySource, PipeSink, PipeSource, ReadSource, TerminalSink, WriteSink};
-use crate::net::{HttpPoll, HttpReq, WsConn};
+use crate::net::{HttpPoll, HttpReq, NetError, WsConn};
 use crate::task::{
     BlockReason, CAP_AMBIENT, CAP_FS_READ, CAP_MOUNT, CAP_NET, CAP_PERSIST, CAP_SCRATCH, CAP_SPAWN,
     Capabilities, TaskId, TaskState, Tier,
@@ -396,6 +396,22 @@ enum WsRead {
     Eof,
 }
 
+/// Outcome of a guest `write` on a WebSocket fd — the dual of [`WsRead`].
+enum WsWrite {
+    /// The whole `n`-byte message was accepted by the host transport.
+    Sent(usize),
+    /// The transport cannot accept right now (still connecting, or its send
+    /// buffer is above the flow-control mark). The guest's write parks and
+    /// retries; the unsent bytes stay in the guest's own linear memory (B5).
+    /// Mirrors `WsRead::Pending` on the read side.
+    Pending,
+    /// The frame is larger than the host flow-control window. Retrying the same
+    /// bytes cannot make progress, so the guest gets `EMSGSIZE`.
+    MessageTooBig,
+    /// The connection closed or errored; a `write` reports a broken pipe.
+    Closed,
+}
+
 /// Inner state of a shared WebSocket: the owned host connection plus a
 /// one-message receive buffer so `poll` can report `POLLIN` readiness
 /// *without* consuming the message (a later `read` drains the same buffer).
@@ -484,14 +500,29 @@ impl SharedWs {
         }
     }
 
-    /// Send one message. `Ok(n)` bytes accepted, `Err` if the connection broke.
-    fn send(&self, data: &[u8]) -> Result<usize, ()> {
-        self.0.borrow_mut().conn.send(data).map_err(|_| ())
+    /// Send one message. The host no longer buffers, so this is four-valued
+    /// (see [`WsWrite`]): the whole message accepted, a permanent size error, a
+    /// would-block to park on, or a close. Mirrors `read_into` on the read side.
+    fn send(&self, data: &[u8]) -> WsWrite {
+        match self.0.borrow_mut().conn.send(data) {
+            Ok(n) => WsWrite::Sent(n),
+            Err(NetError::WouldBlock) => WsWrite::Pending,
+            Err(NetError::MessageTooBig) => WsWrite::MessageTooBig,
+            Err(_) => WsWrite::Closed,
+        }
     }
 
     /// `mc_sys_poll` readiness: a message is buffered or the connection failed.
     fn poll_readable(&self) -> bool {
         self.0.borrow_mut().fill()
+    }
+
+    /// `mc_sys_poll` write-readiness: the transport can take a frame (open +
+    /// below the mark) or is closed (so the write wakes and errors out). Replaces
+    /// the old "a ws is always writable" assumption now that the host buffers
+    /// nothing — the dual of `poll_readable`.
+    fn poll_writable(&self) -> bool {
+        self.0.borrow().conn.poll_writable()
     }
 
     /// `mc_sys_poll` hang-up: the connection has closed/errored.
@@ -2965,8 +2996,13 @@ impl GuestProgram {
                     if want_in && ws.poll_readable() {
                         r |= POLLIN;
                     }
-                    if want_out {
-                        r |= POLLOUT; // a ws is always writable (send is buffered host-side)
+                    // Real write-readiness now that the host buffers nothing: the
+                    // transport is open + below the mark, OR closed (so a POLLOUT
+                    // waiter wakes and its write errors out — POSIX). Reporting
+                    // POLLOUT unconditionally would let a guest that polls-then-
+                    // writes busy-loop on a full/connecting socket.
+                    if want_out && ws.poll_writable() {
+                        r |= POLLOUT;
                     }
                     if ws.poll_hup() {
                         r |= POLLHUP;
@@ -3096,10 +3132,15 @@ impl GuestProgram {
                     Ok(n) => W::Wrote(n),
                     Err(_) => W::Err(EPIPE),
                 },
-                // A WebSocket write sends one message (whole buffer accepted).
+                // A WebSocket write sends one message. On accept the host took
+                // the whole buffer; a would-block PARKS the write (re-`send` next
+                // tick — the unsent bytes stay in the guest's memory, B5, exactly
+                // like a parked net/file read); a close is a broken pipe.
                 Some(GuestFd::Ws(ws)) => match ws.send(&bytes) {
-                    Ok(_) => W::Wrote(bytes.len()),
-                    Err(()) => W::Err(EPIPE),
+                    WsWrite::Sent(n) => W::Wrote(n),
+                    WsWrite::Pending => W::Pending,
+                    WsWrite::MessageTooBig => W::Err(EMSGSIZE),
+                    WsWrite::Closed => W::Err(EPIPE),
                 },
                 Some(GuestFd::PipeRead(_))
                 | Some(GuestFd::Net(_))
@@ -3729,7 +3770,13 @@ impl GuestProgram {
             },
             // Availability gate: the host refused (no `--allow-net`).
             Err(crate::net::NetError::Denied) => Fulfilled::Resume(EPERM),
-            Err(crate::net::NetError::Failed) => Fulfilled::Resume(EIO),
+            // Send-only outcomes cannot arise from start; fold them with a
+            // transport failure, fail-closed (A5).
+            Err(
+                crate::net::NetError::Failed
+                | crate::net::NetError::WouldBlock
+                | crate::net::NetError::MessageTooBig,
+            ) => Fulfilled::Resume(EIO),
         }
     }
 
@@ -3775,7 +3822,13 @@ impl GuestProgram {
                 None => Fulfilled::Resume(EMFILE),
             },
             Err(crate::net::NetError::Denied) => Fulfilled::Resume(EPERM),
-            Err(crate::net::NetError::Failed) => Fulfilled::Resume(EIO),
+            // Send-only outcomes cannot arise from start; fold them with a
+            // transport failure, fail-closed (A5).
+            Err(
+                crate::net::NetError::Failed
+                | crate::net::NetError::WouldBlock
+                | crate::net::NetError::MessageTooBig,
+            ) => Fulfilled::Resume(EIO),
         }
     }
 
@@ -3888,7 +3941,13 @@ impl GuestProgram {
                 None => Fulfilled::Resume(EMFILE),
             },
             Err(crate::net::NetError::Denied) => Fulfilled::Resume(EPERM),
-            Err(crate::net::NetError::Failed) => Fulfilled::Resume(EIO),
+            // Send-only outcomes cannot arise from connect; fold them with a
+            // transport failure, fail-closed (A5).
+            Err(
+                crate::net::NetError::Failed
+                | crate::net::NetError::WouldBlock
+                | crate::net::NetError::MessageTooBig,
+            ) => Fulfilled::Resume(EIO),
         }
     }
 

@@ -984,11 +984,13 @@ impl KernelHost {
 
 // ---------- Control channel (structured host ops) ----------
 
-/// `EAGAIN` — a control-channel fs op that resolves through a host-backed mount returns
-/// `-EAGAIN` while the driver call is in flight. The kernel does not pump from a ctl call,
-/// so the host retries, ticking between tries so the cooperative scheduler can advance the
-/// driver's host call.
-const EAGAIN: i32 = 6;
+/// `EAGAIN` — the would-block sentinel, taken from the generated contract constants (B2: never
+/// hand-written). It surfaces in two host paths: a control-channel fs op that resolves through a
+/// host-backed mount returns `-EAGAIN` while the driver call is in flight (the kernel does not pump
+/// from a ctl call, so the host retries, ticking between tries so the cooperative scheduler can
+/// advance the driver's host call); and `net::ws_send` returns `-EAGAIN` for WebSocket egress
+/// backpressure (the host accepts nothing, the kernel parks the guest's write).
+pub(crate) use constants_rust::EAGAIN;
 
 /// A ctl op can yield (`-EAGAIN`) across a host-backed mount. Drive at most this many
 /// tick/retry rounds before giving up — generous, since a healthy driver answers within a

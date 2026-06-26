@@ -16,6 +16,7 @@ pub const IMPORTS = [_]Desc{
     .{ .name = "mc_http_request_close", .variant = "HttpRequestClose", .args = &.{ .{ .name = "handle", .ty = "i32" } }, .ret = "void" },
     .{ .name = "mc_ws_connect", .variant = "WsConnect", .args = &.{ .{ .name = "url_ptr", .ty = "cptr" }, .{ .name = "url_len", .ty = "len" } }, .ret = "i32" },
     .{ .name = "mc_ws_send", .variant = "WsSend", .args = &.{ .{ .name = "handle", .ty = "i32" }, .{ .name = "ptr", .ty = "cptr" }, .{ .name = "len", .ty = "len" } }, .ret = "i32" },
+    .{ .name = "mc_ws_ready", .variant = "WsReady", .args = &.{ .{ .name = "handle", .ty = "i32" } }, .ret = "i32" },
     .{ .name = "mc_ws_recv", .variant = "WsRecv", .args = &.{ .{ .name = "handle", .ty = "i32" }, .{ .name = "buf", .ty = "mptr" }, .{ .name = "len", .ty = "len" } }, .ret = "i32" },
     .{ .name = "mc_ws_close", .variant = "WsClose", .args = &.{ .{ .name = "handle", .ty = "i32" } }, .ret = "void" },
     .{ .name = "mc_host_call", .variant = "HostCall", .args = &.{ .{ .name = "req_ptr", .ty = "cptr" }, .{ .name = "req_len", .ty = "len" } }, .ret = "i32" },
