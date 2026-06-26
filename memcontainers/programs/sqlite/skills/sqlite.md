@@ -1,118 +1,176 @@
 ---
-name: agent-os-sqlite
-description: 'Write, query, migrate, stream, validate, and compose SQLite-backed Luau scripts inside agent-os. Use this skill whenever the task mentions sqlite, SQL, .db files, persistent tables, migrations, prepared statements, bound parameters, transactions, streaming cursors, typed query rows, `/var/persist`, CAP_PERSIST, atlas flavor, resident services, `require("sqlite")`, `/bin/sqlite`, `sys.svc`, or exporting database results into xlsx/docx/pptx artifacts. Prefer the Luau `sqlite` library over shelling out to `$ sqlite`; use the CLI only for quick one-shot inspection.'
+name: memcontainer-sqlite
+description: 'Use SQLite from Luau inside a memcontainer or from a host agent driving a memcontainer VM. Use this skill when the task mentions sqlite, SQL, .db files, persistent tables, migrations, prepared statements, transactions, streaming rows, BLOBs, vector indexes, semantic memory, RAG, nearest-neighbour search, `/var/persist`, CAP_PERSIST, atlas flavor, `require("sqlite")`, or `/bin/sqlite`. Prefer the Luau `sqlite` library; use the CLI for quick one-shot inspection.'
 ---
 
-# Agent-OS SQLite
+# Memcontainer SQLite
 
-Use the Luau `sqlite` library for database work — shipped as a VFS module by the `atlas` flavor (not embedded in the interpreter, unlike `json`/`xlsx`). The source of truth is the resident-service contract in `SYSTEMS.md`, the sqlite guest packaging in `third_party/sqlite/BUILD*.bazel`, and the atlas flavor layer that ships `/bin/sqlite` plus `/lib/luau/sqlite.luau`.
+Use the embedded Luau `sqlite` library for database work inside a memcontainer. It talks to the resident SQLite service, keeps connections warm, returns typed Lua values, and supports prepared statements, transactions, streaming cursors, BLOBs, and vector-search helpers.
+
+The `/bin/sqlite` command is useful at a shell prompt for quick inspection and one-shot SQL. Prefer `require("sqlite")` in scripts that read, write, validate, compose artifacts, or maintain agent memory.
 
 ## Workflow
 
-1. Use `require("sqlite")` from a Luau script. It talks to the warm sqlite service through `sys.svc` and returns Lua values.
-2. Open database files with `sqlite.open(path, opts)`. Use `/var/persist/...` for durable state; it requires `CAP_PERSIST`.
-3. Use prepared statements and bound parameters for all data values.
-4. Wrap multi-statement writes in `Db:transaction(fn)`.
-5. Use `Db:rows()` for large results; `Db:query()` materializes the whole array.
-6. Run scripts with `/bin/luau script.luau`; type-check with `/bin/luau --check script.luau`.
+1. Use `local sqlite = require("sqlite")` in Luau scripts.
+2. Open durable databases under `/var/persist/...` when state must survive reboot; that requires `CAP_PERSIST`.
+3. Bind every data value with positional `?` parameters. Do not concatenate values into SQL.
+4. Wrap multi-statement writes in `Db:transaction(function(tx) ... end)`.
+5. Use `Db:rows()` for large result sets; `Db:query()` materializes all rows.
+6. For RAG or semantic memory, create a vector table with `Db:createVectorIndex()` and query it with `Db:vectorSearch()`.
+7. Validate behavior from inside the memcontainer with `/bin/luau --check`, `/bin/luau`, and targeted `/bin/sqlite` reads.
 
-The CLI is a thin one-shot client of the same service. It is useful at a shell prompt, but it returns text to parse. The library keeps a warm connection, returns typed Lua values, supports prepared statements, transactions, and streaming cursors, and composes with the other batteries.
-
-## Composition Pattern
-
-SQLite rows can flow directly into another library without shelling out or reparsing text:
-
-```lua
-local sqlite, xlsx = require("sqlite"), require("xlsx")
-local db = sqlite.open("/var/persist/sales.db")
-local wb = xlsx.new(); local ws = wb:addWorksheet("Q3")
-for _, r in ipairs(db:query("SELECT month, revenue FROM sales WHERE quarter = ?", 3)) do
-  ws:addRow({ r.month, r.revenue })
-end
-wb:save("/out/q3.xlsx")   -- sqlite -> xlsx, one script: warm connection, typed values, no shell-out.
-```
-
-## Database Pattern
+## SQL Pattern
 
 ```lua
 local sqlite = require("sqlite")
 local db, err = sqlite.open("/var/persist/app.db")
 assert(db, err)
-assert(db:exec("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT NOT NULL, age INTEGER)"))
-local insert = assert(db:prepare("INSERT INTO users (name, age) VALUES (?, ?)"))
-local rowid, changes = insert:run("alice", 30)
-assert(rowid and changes == 1)
-insert:run("bob", 25)
-local rows = assert(db:query("SELECT id, name, age FROM users WHERE age > ?", 18))
-local me = assert(db:queryone("SELECT * FROM users WHERE id = ?", rowid))
-local total = assert(db:queryvalue("SELECT count(*) FROM users"))
-print(me.name, total)
+
+db:exec([[
+  CREATE TABLE IF NOT EXISTS notes (
+    id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    created INTEGER NOT NULL
+  )
+]])
+
+db:transaction(function(tx)
+  local stmt = tx:prepare("INSERT INTO notes (title, body, created) VALUES (?, ?, ?)")
+  stmt:run("plan", "ship the report", os.time())
+  stmt:close()
+end)
+
+for row in db:rows("SELECT id, title FROM notes WHERE created >= ? ORDER BY created DESC", cutoff) do
+  print(row.id, row.title)
+end
+
 db:close()
 ```
 
-Query results are Lua arrays of row tables. Values are typed: `INTEGER` and `REAL` become numbers, `TEXT` becomes a string, `NULL` becomes nil, and `BLOB` becomes a raw byte string.
+Query rows are Lua tables keyed by column name and by 1-based index. `INTEGER` and `REAL` become numbers, `TEXT` becomes a string, `NULL` becomes nil, and `BLOB` becomes a raw byte string. Bind raw BLOB bytes with `sqlite.blob(bytes)`.
 
-## Prepared Statements
+`Db:transaction(fn)` commits when the function returns. If the function errors, SQLite rolls back and the error is re-raised. Prepared statements are compiled in the resident service and can be reused with `Stmt:run`, `Stmt:query`, and `Stmt:queryone`.
 
-Prepared statements are compiled once in the resident service and can be run many times against the warm connection:
+## Vector Memory Pattern
 
-```lua
-local find = assert(db:prepare("SELECT * FROM users WHERE name = :name"))
-local alice = assert(find:queryone({ name = "alice" }))
-find:close()
-```
+Use vector tables for agent memory, RAG chunks, deduplication, and scoped nearest-neighbour retrieval. The table is still SQL: vector search can be combined with partition columns, metadata filters, ordering, limits, and ordinary joins.
 
-Use positional `?` parameters with varargs, or named `:name` parameters with a table. Do not concatenate user values into SQL.
-
-## Transactions And Cursors
-
-`Db:transaction(fn)` commits on success. If the function errors, sqlite rolls back and re-raises the error so callers can catch it with `pcall`.
+Partition columns are for hard routing such as tenant, session, user, or corpus. Always include the partition equality filter when the user asks within a specific scope. Metadata columns are for filters such as source, created time, role, language, or document id. Aux columns are returned payloads that are not searched or filtered, such as chunk text or a citation label.
 
 ```lua
-db:transaction(function(tx)
-  insert:run("carol", 40)
-  tx:exec("UPDATE users SET age = age + 1 WHERE name = ?", "alice")
-end)
-for row in db:rows("SELECT * FROM events ORDER BY ts") do
-  handle(row)
+local sqlite = require("sqlite")
+local db = assert(sqlite.open("/var/persist/memory.db"))
+
+db:createVectorIndex("mem", {
+  vector = { name = "embedding", type = "float", dims = 768, metric = "cosine" },
+  partitions = { "tenant" },
+  metadata = {
+    { name = "source", type = "text" },
+    { name = "created", type = "integer" },
+  },
+  aux = { "chunk", "uri" },
+})
+
+db:exec(
+  "INSERT INTO mem(rowid, embedding, tenant, source, created, chunk, uri) VALUES (?, ?, ?, ?, ?, ?, ?)",
+  id,
+  sqlite.vec.f32(embedding),
+  "agent-a",
+  "docs",
+  created_at,
+  chunk_text,
+  uri
+)
+
+local hits = db:vectorSearch("mem", query_embedding, {
+  vector = "embedding",
+  type = "f32",
+  k = 8,
+  partition = { tenant = "agent-a" },
+  filter = { source = "docs" },
+  filters = { { "created", ">=", cutoff } },
+})
+
+for _, hit in ipairs(hits) do
+  print(hit.rowid, hit.distance, hit.uri, hit.chunk)
 end
 ```
 
-Use `Db:rows()` when a result may be too large to fit comfortably in memory. It is a lazy iterator that pulls pages from the service.
+`sqlite.vec.f32(values)`, `sqlite.vec.int8(values)`, and `sqlite.vec.bit(values)` encode vectors as tagged BLOBs. `Db:vectorSearch()` accepts one of those BLOBs or a numeric array plus `type = "f32" | "int8" | "bit"`.
+
+Keep dimensions fixed for a table. Reject NaN/Inf before insert if embeddings come from an unreliable source. Use `metric = "cosine"` for normalized semantic embeddings, `metric = "l2"` for geometric distance, `metric = "ip"` for inner product scoring, and `metric = "hamming"` for bit vectors. Use small `k` values for interactive retrieval, and set `ef` in `vectorSearch()` only when recall needs a wider candidate search.
+
+## RAG Loop
+
+For retrieval-augmented generation, store one row per chunk with:
+
+- a stable `rowid` if the source system already has ids, otherwise let SQLite allocate one;
+- an embedding in the vector column;
+- a partition such as tenant, workspace, or corpus;
+- metadata needed for filtering and freshness;
+- aux payloads such as chunk text, URI, title, and section.
+
+At answer time, embed the question, run `Db:vectorSearch()` with the correct partition and metadata filters, then pass the returned `chunk`, `uri`, `rowid`, and `distance` to the model. Keep source text in aux columns when it is small enough to return directly. Store larger documents in ordinary tables and put document ids in the vector table when chunks need joins.
+
+## CLI Pattern
+
+Use `/bin/sqlite` for quick inspection, migrations, and shell-visible checks. It uses the same SQL surface, including vector tables and vector constructors:
+
+```sql
+CREATE VIRTUAL TABLE mem USING vann(
+  embedding float[3] metric=cosine,
+  tenant text partition,
+  source text,
+  created integer,
+  chunk text aux
+);
+
+INSERT INTO mem(rowid, embedding, tenant, source, created, chunk)
+VALUES (1, vec_f32('[1,0,0]'), 'agent-a', 'docs', 1710000000, 'First chunk');
+
+SELECT rowid, printf('%.4f', distance) AS d, chunk
+FROM mem
+WHERE embedding MATCH vec_f32('[0.9,0.1,0]')
+  AND k = 5
+  AND tenant = 'agent-a'
+  AND source = 'docs';
+```
+
+At a shell prompt:
+
+```sh
+sqlite /var/persist/memory.db "SELECT count(*) FROM mem"
+sqlite /var/persist/memory.db "SELECT vann_info('mem')"
+sqlite /var/persist/memory.db "SELECT vann_health('mem')"
+```
 
 ## API Surface
 
-- Module: `sqlite.open(path [, opts])` returns a `Db` (options: `mode = "ro"` or `"rw"`, default read-write); `sqlite.blob(bytes)` tags a Lua byte string to bind as a BLOB.
-- `Db`: `exec(sql [, ...])`, `query(sql [, ...])`, `queryone(sql [, ...])`, `queryvalue(sql [, ...])`, `prepare(sql)`, `transaction(fn)`, `rows(sql [, ...])`, and `close()`.
-- `Stmt`: `run(...)`, `query(...)`, `queryone(...)`, and `close()`.
-- Parameters: positional `?` bind from varargs; named `:name` bind from a table.
-- Return discipline: recoverable failures return `(value, err)` pairs like `sys`; misuse raises and can be caught with `pcall`.
-- `Stmt:run(...)` returns `(last_insert_rowid, changes)`. `Db:exec(...)` returns `(changes, err)`.
-
-## Rules
-
-Prefer the Luau library by default. Reach for `$ sqlite` only for quick one-shot inspection at a shell prompt.
-
-Use prepared statements for repeated SQL and for every statement that includes values. Bound parameters are safe against injection and faster because compilation stays warm in the service.
-
-Use transactions for migrations, imports, and any write sequence that must be atomic. Keep the body small because one sqlite service instance serializes calls; a second caller waits while the first request runs.
-
-Warm is not durable: the service keeps a warm connection and page cache, but the durable store is the committed database file, usually under `/var/persist`. A crash loses warm state, not committed data; reconnecting gets a clean instance.
+- Module: `sqlite.open(path [, opts])`, `sqlite.blob(bytes)`, `sqlite.vec.f32(values)`, `sqlite.vec.int8(values)`, and `sqlite.vec.bit(values)`.
+- `Db`: `exec`, `query`, `queryone`, `queryvalue`, `prepare`, `transaction`, `rows`, `createVectorIndex`, `vectorSearch`, `vectorInfo`, `vectorHealth`, `vectorQuantization`, `vectorRebuild`, and `close`.
+- `Stmt`: `run`, `query`, `queryone`, and `close`.
+- Parameters: positional `?` bind from varargs.
+- Return discipline: `sqlite.open` returns `(db, err)`; query and statement misuse raises and can be caught with `pcall`.
 
 ## Validation
 
-Use the narrowest real gate that proves the behavior:
+Use the narrowest real in-memcontainer check:
 
-- Script type check: `/bin/luau --check script.luau`.
-- Script runtime: `/bin/luau script.luau`.
-- agent-os sqlite/kernel behavior: `bazel test //tests/e2e`.
+- Type check: `/bin/luau --check script.luau`.
+- Runtime check: `/bin/luau script.luau`.
+- SQL count or sample: `sqlite /var/persist/app.db "SELECT count(*) FROM table_name"`.
+- SQL file inspection: `cat query.sql | sqlite /var/persist/app.db`.
 
-For data-producing scripts, validate the data, not just the exit code. Reopen the database, query expected rows and counts, check transaction rollback behavior when it matters, and verify generated artifacts with their format libraries.
+For data scripts, reopen the database and query expected rows, counts, and rollback behavior. For vector memory, test with tiny known vectors before loading real embeddings, then verify filtered searches with matching and non-matching partitions or metadata.
+
+Use `db:vectorInfo(name)` to confirm dimensions, counts, resident hot bytes, and cold vector bytes. Use `db:vectorHealth(name)` after bulk loads or heavy churn; if it reports graph damage, run `db:vectorRebuild(name)` and check health again. Use `db:vectorQuantization(name)` when you need to know whether traversal is int8, bit, or f32-rescored.
 
 ## Boundaries
 
-- `require("sqlite")` resolves from the VFS cache, embedded libraries, then `package.path`; sqlite is shipped by the `atlas` flavor layer.
-- `/var/persist` needs `CAP_PERSIST`; read-only reference databases can be opened with `sqlite.open(path, { mode = "ro" })`.
-- `Db:query()` materializes the full result. Use `Db:rows()` for large tables or unbounded scans.
-- BLOB columns read back as raw byte strings (any bytes, round-tripped losslessly) — keep them as bytes, not UTF-8 text. To BIND a BLOB, wrap the bytes with `sqlite.blob(bytes)`; a plain Lua string binds as TEXT.
-- The public surface is the Luau library. Do not script the low-level `sys.svc` protocol unless you are changing the sqlite library or service itself.
+- `/var/persist` requires `CAP_PERSIST`; temporary databases can live elsewhere.
+- Read-only databases can be opened with `sqlite.open(path, { mode = "ro" })`.
+- `Db:query()` materializes the full result; use `Db:rows()` for large scans.
+- One resident SQLite service instance serializes calls, so keep transactions tight.
+- Vector tables are durable SQL tables with shadow storage; committed rows survive service restart.
+- The public surface is the Luau library plus SQL. Do not script the low-level service protocol directly.

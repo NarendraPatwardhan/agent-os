@@ -195,6 +195,271 @@ db:close()
     assert_eq!(s.run_for_output("luau /tmp/b.luau"), "6\ttrue\t255\t128\r\n");
 }
 
+/// `vann` vector indexes are exposed through the Luau sqlite library: agents can create a typed
+/// vector table, bind tagged vector BLOBs, combine KNN with partition/metadata filters, and get typed
+/// rows back with exact distances ordered by nearest neighbour.
+#[test]
+fn sqlite_vector_index_luau_api_searches_and_filters() {
+    let mut s = boot_atlas();
+    s.host
+        .write_file(
+            "/tmp/vec.luau",
+            br#"local sqlite = require("sqlite")
+local db = assert(sqlite.open("/tmp/vec.db"))
+db:createVectorIndex("mem", {
+  vector = { name = "embedding", type = "float", dims = 3, metric = "l2" },
+  partitions = { "tenant" },
+  metadata = { { name = "source", type = "text" }, { name = "created", type = "integer" } },
+  aux = { "title" },
+  M = 4,
+  ef_construction = 16,
+  ef_search = 16,
+})
+db:exec("INSERT INTO mem(rowid, embedding, tenant, source, created, title) VALUES (?, ?, ?, ?, ?, ?)", 1, sqlite.vec.f32({0, 0, 0}), "a", "docs", 10, "origin")
+db:exec("INSERT INTO mem(rowid, embedding, tenant, source, created, title) VALUES (?, ?, ?, ?, ?, ?)", 2, sqlite.vec.f32({1, 0, 0}), "a", "docs", 20, "unit-x")
+db:exec("INSERT INTO mem(rowid, embedding, tenant, source, created, title) VALUES (?, ?, ?, ?, ?, ?)", 3, sqlite.vec.f32({0, 0, 1}), "a", "notes", 30, "unit-z")
+db:exec("INSERT INTO mem(rowid, embedding, tenant, source, created, title) VALUES (?, ?, ?, ?, ?, ?)", 4, sqlite.vec.f32({0, 1, 0}), "b", "docs", 40, "beta")
+local rows = db:vectorSearch("mem", {0.05, 0, 0}, {
+  vector = "embedding",
+  type = "f32",
+  k = 2,
+  partition = { tenant = "a" },
+  filter = { source = "docs" },
+})
+print(#rows, rows[1].rowid, rows[1].title, rows[2].rowid)
+print(tostring(rows[1].distance <= rows[2].distance), math.floor(rows[1].distance * 1000 + 0.5))
+local all = db:vectorSearch("mem", sqlite.vec.f32({0, 1, 0}), {
+  vector = "embedding",
+  k = 3,
+  filter = { source = "docs" },
+})
+print(#all, all[1].rowid, all[1].title)
+local recent = db:vectorSearch("mem", sqlite.vec.f32({0, 1, 0}), {
+  vector = "embedding",
+  k = 3,
+  filter = { source = "docs" },
+  filters = { { "created", ">=", 30 } },
+})
+print(#recent, recent[1].rowid, recent[1].title)
+db:exec("DELETE FROM mem WHERE rowid = ?", 1)
+local after = db:vectorSearch("mem", {0.05, 0, 0}, {
+  vector = "embedding",
+  type = "f32",
+  k = 2,
+  partition = { tenant = "a" },
+  filter = { source = "docs" },
+})
+print(#after, after[1].rowid)
+db:exec("BEGIN")
+db:exec("INSERT INTO mem(rowid, embedding, tenant, source, created, title) VALUES (?, ?, ?, ?, ?, ?)", 5, sqlite.vec.f32({0, 0, 0}), "a", "docs", 50, "rolled-back")
+db:exec("ROLLBACK")
+local rolled = db:vectorSearch("mem", {0, 0, 0}, {
+  vector = "embedding",
+  type = "f32",
+  k = 2,
+  partition = { tenant = "a" },
+  filter = { source = "docs" },
+})
+print(#rolled, rolled[1].rowid)
+db:exec("SAVEPOINT vec_sp")
+db:exec("INSERT INTO mem(rowid, embedding, tenant, source, created, title) VALUES (?, ?, ?, ?, ?, ?)", 6, sqlite.vec.f32({0, 0, 0}), "a", "docs", 60, "savepoint")
+db:exec("ROLLBACK TO vec_sp")
+db:exec("RELEASE vec_sp")
+local saved = db:vectorSearch("mem", {0, 0, 0}, {
+  vector = "embedding",
+  type = "f32",
+  k = 2,
+  partition = { tenant = "a" },
+  filter = { source = "docs" },
+})
+print(#saved, saved[1].rowid)
+local bad_update = pcall(function()
+  db:exec("UPDATE mem SET embedding = ? WHERE rowid = ?", sqlite.vec.f32({1, 2}), 2)
+end)
+local still = db:vectorSearch("mem", {1, 0, 0}, {
+  vector = "embedding",
+  type = "f32",
+  k = 1,
+  partition = { tenant = "a" },
+  filter = { source = "docs" },
+})
+print(tostring(bad_update), still[1].rowid)
+local info = db:vectorInfo("mem")
+local health = db:vectorHealth("mem")
+local quant = db:vectorQuantization("mem")
+print(info.dims, info.metadata_index_rows, info.resident_bytes > 0, info.cold_vector_bytes > 0, health.status, quant.metric)
+db:createVectorIndex("graph", {
+  vector = { name = "embedding", type = "float", dims = 2, metric = "l2" },
+  M = 4,
+  ef_construction = 24,
+  ef_search = 24,
+})
+for i = 1, 24 do
+  db:exec("INSERT INTO graph(rowid, embedding) VALUES (?, ?)", i, sqlite.vec.f32({i, 0}))
+end
+local graph = db:vectorSearch("graph", {20.2, 0}, {
+  vector = "embedding",
+  type = "f32",
+  k = 3,
+})
+print(#graph, graph[1].rowid, graph[2].rowid, graph[3].rowid)
+db:close()
+"#,
+        )
+        .expect("write vec.luau");
+    assert_eq!(
+        s.run_for_output("luau /tmp/vec.luau"),
+        "2\t1\torigin\t2\r\ntrue\t3\r\n3\t4\tbeta\r\n1\t4\tbeta\r\n1\t2\r\n1\t2\r\n1\t2\r\nfalse\t2\r\n3\t6\ttrue\ttrue\tok\tl2\r\n3\t20\t21\t19\r\n"
+    );
+}
+
+/// Direct SQL can use the same module without the wrapper: VEC-style `tenant partition` declarations,
+/// `vec_f32('[...]')` scalar constructors, hidden `k`, and metadata/partition filters all go through
+/// the virtual table planner.
+#[test]
+fn sqlite_vector_index_raw_sql_uses_vann_module() {
+    let mut s = boot_atlas();
+    s.host
+        .write_file(
+            "/tmp/rawvec.sql",
+            b"CREATE VIRTUAL TABLE raw USING vann(embedding float[2] metric=l2, tenant partition, label text aux, M=4, ef_construction=16);\n\
+INSERT INTO raw(rowid, embedding, tenant, label) VALUES (10, vec_f32('[0,0]'), 'a', 'zero');\n\
+INSERT INTO raw(rowid, embedding, tenant, label) VALUES (11, vec_f32('[1,0]'), 'a', 'one');\n\
+INSERT INTO raw(rowid, embedding, tenant, label) VALUES (12, vec_f32('[0,1]'), 'b', 'other');\n\
+SELECT rowid, label, printf('%.2f', distance) FROM raw WHERE embedding MATCH vec_f32('[0.1,0]') AND k = 2 AND tenant = 'a';\n\
+SELECT rowid FROM raw WHERE embedding MATCH vec_f32('[0.1,0]') AND k = 2 AND tenant = 'a' ORDER BY rowid DESC;\n\
+SELECT instr(vann_info('raw'), '\"dims\":2') > 0;\n\
+SELECT instr(vann_health('raw'), '\"status\":\"ok\"') > 0;\n\
+CREATE VIRTUAL TABLE bits USING vann(embedding bit[3], label text aux, M=4, ef_construction=16);\n\
+INSERT INTO bits(rowid, embedding, label) VALUES (21, vec_bit('101'), 'one');\n\
+INSERT INTO bits(rowid, embedding, label) VALUES (22, vec_bit('001'), 'two');\n\
+SELECT rowid, label, printf('%.0f', distance) FROM bits WHERE embedding MATCH vec_bit('100') AND k = 2;\n\
+SELECT instr(vann_quantization('bits'), 'packed-bit-hamming') > 0;\n",
+        )
+        .expect("write rawvec.sql");
+    assert_eq!(
+        s.run_for_output("cat /tmp/rawvec.sql | sqlite /tmp/rawvec.db"),
+        "10|zero|0.01\r\n11|one|0.81\r\n11\r\n10\r\n1\r\n1\r\n21|one|1\r\n22|two|2\r\n1\r\n"
+    );
+}
+
+#[test]
+fn sqlite_vector_cosine_cold_start_fetches_full_vectors_from_shadow_table() {
+    let mut s = boot_atlas();
+    assert_eq!(
+        s.run_for_output("sqlite /tmp/coldvec.db \"CREATE VIRTUAL TABLE cold USING vann(embedding float[3] metric=cosine, label text aux, M=4, ef_construction=16); INSERT INTO cold(rowid, embedding, label) VALUES (31, vec_f32('[1,0,0]'), 'x'); INSERT INTO cold(rowid, embedding, label) VALUES (32, vec_f32('[0,1,0]'), 'y'); SELECT instr(vann_quantization('cold'), 'cold-f32-rescore') > 0\""),
+        "1\r\n"
+    );
+    assert_eq!(
+        s.run_for_output("sqlite /tmp/coldvec.db \"SELECT rowid, length(embedding), label, printf('%.2f', distance) FROM cold WHERE embedding MATCH vec_f32('[1,0,0]') AND k = 2; SELECT instr(vann_quantization('cold'), 'cold-f32-rescore') > 0\""),
+        "31|17|x|0.00\r\n32|17|y|1.00\r\n1\r\n"
+    );
+    assert_eq!(
+        s.run_for_output("sqlite /tmp/coldl2.db \"CREATE VIRTUAL TABLE cold USING vann(embedding float[2] metric=l2, label text aux, M=4, ef_construction=16); INSERT INTO cold(rowid, embedding, label) VALUES (41, vec_f32('[0,0]'), 'a'); INSERT INTO cold(rowid, embedding, label) VALUES (42, vec_f32('[2,0]'), 'b'); SELECT instr(vann_quantization('cold'), 'scaled-int8-l2-traversal-cold-f32-rescore') > 0\""),
+        "1\r\n"
+    );
+    assert_eq!(
+        s.run_for_output("sqlite /tmp/coldl2.db \"SELECT rowid, length(embedding), label, printf('%.2f', distance) FROM cold WHERE embedding MATCH vec_f32('[1.9,0]') AND k = 2; SELECT instr(vann_quantization('cold'), 'scaled-int8-l2-traversal-cold-f32-rescore') > 0\""),
+        "42|13|b|0.01\r\n41|13|a|3.61\r\n1\r\n"
+    );
+}
+
+#[test]
+fn sqlite_vector_reuses_deleted_internal_ids_after_cold_start() {
+    let mut s = boot_atlas();
+    assert_eq!(
+        s.run_for_output("sqlite /tmp/reusevec.db \"CREATE VIRTUAL TABLE reuse USING vann(embedding float[2] metric=l2, label text aux, M=4, ef_construction=16); INSERT INTO reuse(rowid, embedding, label) VALUES (1, vec_f32('[0,0]'), 'a'); INSERT INTO reuse(rowid, embedding, label) VALUES (2, vec_f32('[1,0]'), 'b'); INSERT INTO reuse(rowid, embedding, label) VALUES (3, vec_f32('[2,0]'), 'c'); DELETE FROM reuse WHERE rowid = 2; SELECT instr(vann_info('reuse'), char(34) || 'free_slots' || char(34) || ':1') > 0\""),
+        "1\r\n"
+    );
+    assert_eq!(
+        s.run_for_output("sqlite /tmp/reusevec.db \"INSERT INTO reuse(rowid, embedding, label) VALUES (4, vec_f32('[3,0]'), 'd'); SELECT instr(vann_info('reuse'), char(34) || 'max_id' || char(34) || ':2') > 0, instr(vann_info('reuse'), char(34) || 'free_slots' || char(34) || ':0') > 0; SELECT rowid FROM reuse WHERE embedding MATCH vec_f32('[3,0]') AND k = 1\""),
+        "1|1\r\n4\r\n"
+    );
+}
+
+#[test]
+fn sqlite_vector_savepoint_rollback_restores_hot_graph_state() {
+    let mut s = boot_atlas();
+    s.host
+        .write_file(
+            "/tmp/undo_vec.luau",
+            br#"local sqlite = require("sqlite")
+local db = assert(sqlite.open("/tmp/undovec.db"))
+db:createVectorIndex("undo", {
+  vector = { name = "embedding", type = "float", dims = 2, metric = "l2" },
+  aux = { "label" },
+  M = 4,
+  ef_construction = 16,
+})
+db:exec("INSERT INTO undo(rowid, embedding, label) VALUES (?, ?, ?)", 1, sqlite.vec.f32({1, 0}), "one")
+db:exec("INSERT INTO undo(rowid, embedding, label) VALUES (?, ?, ?)", 2, sqlite.vec.f32({2, 0}), "two")
+db:exec("BEGIN")
+db:exec("DELETE FROM undo WHERE rowid = ?", 1)
+db:exec("INSERT INTO undo(rowid, embedding, label) VALUES (?, ?, ?)", 3, sqlite.vec.f32({3, 0}), "three")
+db:exec("SAVEPOINT vec_undo")
+db:exec("DELETE FROM undo WHERE rowid = ?", 3)
+db:exec("INSERT INTO undo(rowid, embedding, label) VALUES (?, ?, ?)", 4, sqlite.vec.f32({4, 0}), "four")
+local mid = db:vectorSearch("undo", {4, 0}, { vector = "embedding", type = "f32", k = 1 })[1]
+db:exec("ROLLBACK TO vec_undo")
+local rolled = db:vectorSearch("undo", {3, 0}, { vector = "embedding", type = "f32", k = 2 })
+db:exec("RELEASE vec_undo")
+db:exec("COMMIT")
+local final = db:vectorSearch("undo", {3, 0}, { vector = "embedding", type = "f32", k = 2 })
+local info = db:vectorInfo("undo")
+print(mid.rowid, rolled[1].rowid, rolled[1].label, rolled[2].rowid, final[1].rowid, info.live, info.free_slots)
+db:close()
+"#,
+        )
+        .expect("write undo_vec.luau");
+    assert_eq!(
+        s.run_for_output("luau /tmp/undo_vec.luau"),
+        "4\t3\tthree\t2\t3\t2\t0\r\n"
+    );
+}
+
+#[test]
+fn sqlite_vector_rebuild_repairs_degraded_shadow_graph() {
+    let mut s = boot_atlas();
+    s.host
+        .write_file(
+            "/tmp/rebuild.luau",
+            br#"local sqlite = require("sqlite")
+local db = assert(sqlite.open("/tmp/rebuildvec.db"))
+db:createVectorIndex("repair", {
+  vector = { name = "embedding", type = "float", dims = 2, metric = "l2" },
+  metadata = { { name = "tag", type = "text" } },
+  aux = { "label" },
+  M = 4,
+  ef_construction = 16,
+})
+for i = 1, 4 do
+  local tag = if i == 4 then "keep" else "skip"
+  db:exec("INSERT INTO repair(rowid, embedding, tag, label) VALUES (?, ?, ?, ?)", i, sqlite.vec.f32({i, 0}), tag, "n" .. tostring(i))
+end
+local before = db:vectorHealth("repair")
+local node_shadow = assert(db:queryvalue("SELECT name FROM sqlite_schema WHERE name GLOB '_vann_repair*_node'"))
+local idx_shadow = assert(db:queryvalue("SELECT name FROM sqlite_schema WHERE name GLOB '_vann_repair*_idx'"))
+local empty_adj = string.char(1, 0, 0, 0, 0, 0, 0, 0)
+db:exec('UPDATE "' .. node_shadow .. '" SET adj = ?', sqlite.blob(empty_adj))
+db:exec('DELETE FROM "' .. idx_shadow .. '"')
+local broken = db:vectorHealth("repair")
+local stale_hit = db:vectorSearch("repair", {4, 0}, { vector = "embedding", type = "f32", k = 1, filter = { tag = "keep" } })[1]
+local stale_info = db:vectorInfo("repair")
+local rebuilt = db:vectorRebuild("repair")
+local after = db:vectorHealth("repair")
+local info = db:vectorInfo("repair")
+local hit = db:vectorSearch("repair", {4, 0}, { vector = "embedding", type = "f32", k = 1, filter = { tag = "keep" } })[1]
+print(before.orphan_nodes, broken.orphan_nodes, stale_hit.rowid, stale_info.metadata_index_rows, rebuilt.rebuild, rebuilt.nodes, after.orphan_nodes, info.metadata_index_rows, hit.rowid)
+db:close()
+"#,
+        )
+        .expect("write rebuild.luau");
+    assert_eq!(
+        s.run_for_output("luau /tmp/rebuild.luau"),
+        "0\t4\t4\t0\tok\t4\t0\t4\t4\r\n"
+    );
+}
+
 /// The CLI face (#10): `$ sqlite <db> <sql>` is a thin svc_connect/svc_call client of the SAME warm
 /// service the library drives — "three faces, one core" (SYSTEMS.md), not "use the library".
 /// Three separate processes share one warm instance; the table persists in the file across them, and a
