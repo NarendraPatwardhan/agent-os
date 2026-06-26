@@ -1,0 +1,20 @@
+load("@rules_rust//rust:defs.bzl", "rust_shared_library")
+
+# host_nif — the BEAM-loadable NIF that wraps the wasmtime `host` library (//memcontainers/
+# hosts/wasmtime:host), making Elixir a third host family (CONTROL_PLANE.md §6.1) WITHOUT
+# re-implementing the `env` bridge. One supervised BEAM process owns one KernelHost via a
+# Rustler ResourceArc; boot/tick/exec run on a DirtyCpu scheduler.
+#
+# Native cdylib (`libhost_nif.so`), built by Bazel — NOT by mix's rustler compilation. The
+# //server control plane `data`-depends on it and loads it from priv/. `rustler` comes from its
+# own @nif_crates universe (//MODULE.bazel); the wasmtime embedding comes from `:host`.
+rust_shared_library(
+    name = "host_nif",
+    srcs = ["src/lib.rs"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//memcontainers/hosts/wasmtime:host",
+        "@nif_crates//:rustler",
+    ],
+)

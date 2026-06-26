@@ -1,0 +1,28 @@
+Forward target_compatible_with / tags through the mix_library macro.
+
+The macro filters **kwargs to fixed allowlists and silently drops everything else, so a
+`target_compatible_with` set on a mix_library reaches neither the `_mix_compile` target (which
+resolves the Elixir toolchain) nor the `_mix_library_info` target (which carries the auto-added
+`@hex_pm//:lib` dep). Without it on BOTH, a wildcard `bazel build //...` under the default
+(non-Elixir) platform fails toolchain resolution — first on `<name>_compile`, then on
+`@hex_pm//:lib_compile` reached via the info target's deps — instead of SKIPPING the package as
+incompatible. Forwarding it to both targets makes the info target *directly* incompatible, which
+prunes its (hex) deps before they are configured. B3 patch-in-place; lets the Elixir lane live
+in-graph yet stay scoped to `--config=elixir`.
+
+--- a/private/mix_library.bzl
++++ b/private/mix_library.bzl
+@@ -387,4 +387,6 @@
+         "deps",
+         "include",
+         "ez_deps",
++        "target_compatible_with",
++        "tags",
+     )}
+@@ -398,4 +400,6 @@
+         "deps",
+         "srcs",
+         "include",
++        "target_compatible_with",
++        "tags",
+     )}

@@ -21,8 +21,8 @@ module(name = "agent-os")
 # ACTIVE — the validated core (bazel-experiments/compile-zig-wasm).
 # ---------------------------------------------------------------------------
 bazel_dep(name = "platforms", version = "1.1.0")
-bazel_dep(name = "rules_zig", version = "0.16.0")    # in from day one — C/C++ shim lane
-bazel_dep(name = "rules_cc", version = "0.2.18")     # cc_import/cc_library for vendored headers
+bazel_dep(name = "rules_zig", version = "0.16.0")  # in from day one — C/C++ shim lane
+bazel_dep(name = "rules_cc", version = "0.2.18")  # cc_import/cc_library for vendored headers
 bazel_dep(name = "bazel_skylib", version = "1.9.0")  # build_test / diff_test / write_file
 
 # Zig 0.16.0 toolchain, pinned via the local sha-locked index.
@@ -32,12 +32,14 @@ zig.toolchain(zig_version = "0.16.0")
 use_repo(zig, "zig_toolchains")
 
 register_toolchains("@rules_zig//zig/target:all")
+
 register_toolchains("@zig_toolchains//:all")
 
 # Cross-compile-to-wasm zig toolchains: //platforms:wasm32_freestanding (kernels + pure guests, no
 # libc) and //platforms:wasm32_wasi (the C/C++ domain tools — luau — whose C++ runtime needs zig's
 # wasi-libc/libc++; the //memcontainers/wasi-adapter then rewrites the syscall imports to mc).
 register_toolchains("//platforms:wasm32_freestanding_zig_toolchain")
+
 register_toolchains("//platforms:wasm32_wasi_zig_toolchain")
 
 # ---------------------------------------------------------------------------
@@ -50,14 +52,22 @@ register_toolchains("//platforms:wasm32_wasi_zig_toolchain")
 # crates, so no crate_universe needed yet). The wasm kernel port and its crates arrive
 # with crate_universe in Step 2.
 bazel_dep(name = "rules_rust", version = "0.70.0")
+
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+
 # wasm32-unknown-unknown is the kernel's real rustc target (SYSTEMS.md's "freestanding"
 # is the Zig triple); the guests (sysroot/programs) compile there too. The host triple
 # stays for the projector and the wasmtime host (native, autodetected). A musl target
 # triple lands when the host goes static for distribution — deferred (see
 # hosts/wasmtime/defs.bzl: it needs a libc constraint + a musl C toolchain, not just a
 # triple, and the "match a prebuilt libwasmtime.a" premise is moot under source builds).
-rust.toolchain(edition = "2021", extra_target_triples = ["wasm32-unknown-unknown", "wasm32-wasip1"])
+rust.toolchain(
+    edition = "2021",
+    extra_target_triples = [
+        "wasm32-unknown-unknown",
+        "wasm32-wasip1",
+    ],
+)
 use_repo(rust, "rust_toolchains")
 
 # crate_universe — external crates.io deps, PINNED. The kernel (no_std, wasm32) and the
@@ -78,6 +88,7 @@ crate.from_cargo(
     cargo_lockfile = "//memcontainers/hosts/wasmtime:Cargo.lock",
     manifests = ["//memcontainers/hosts/wasmtime:Cargo.toml"],
 )
+
 # The GUEST universe (no_std, wasm32-freestanding): the coreutils boxes + future guests
 # resolve their external crates (talc; regex for grep; …) from a THIRD lock, kept apart from
 # @crates (kernel) and @host_crates (host) for the same reason those two are split — a shared
@@ -87,6 +98,7 @@ crate.from_cargo(
     cargo_lockfile = "//memcontainers/programs/coreutils:Cargo.lock",
     manifests = ["//memcontainers/programs/coreutils:Cargo.toml"],
 )
+
 # The typst engine's universe (std, wasm32-wasip1): the typst compiler graph (typst + typst-pdf +
 # typst-assets + comemo/krilla/ICU…, ~300 crates) resolves from its OWN lock — apart from @guest_crates
 # (coreutils) so typst's deep std graph never feature-unifies with the coreutils' resolution (the same
@@ -97,7 +109,17 @@ crate.from_cargo(
     cargo_lockfile = "//memcontainers/programs/typst/glue:Cargo.lock",
     manifests = ["//memcontainers/programs/typst/glue:Cargo.toml"],
 )
-use_repo(crate, "crates", "host_crates", "guest_crates", "typst_crates")
+
+# The NIF universe (std, native): just `rustler` for the BEAM host shim
+# (//memcontainers/hosts/wasmtime/nif). Its OWN lock — apart from @host_crates — so rustler
+# never feature-unifies with the host's wasmtime graph; the `host` crate it wraps is a Bazel
+# dep (//memcontainers/hosts/wasmtime:host), not a crate_universe entry. (CONTROL_PLANE.md §6.1)
+crate.from_cargo(
+    name = "nif_crates",
+    cargo_lockfile = "//memcontainers/hosts/wasmtime/nif:Cargo.lock",
+    manifests = ["//memcontainers/hosts/wasmtime/nif:Cargo.toml"],
+)
+use_repo(crate, "crates", "guest_crates", "host_crates", "nif_crates", "typst_crates")
 
 # aspect_bazel_lib — write_source_files + diff_test for the contract drift gate (B2).
 bazel_dep(name = "aspect_bazel_lib", version = "2.22.5")
@@ -136,14 +158,14 @@ http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "ht
 # and built LIB-ONLY; the coreutils read-write box calls `sed::sed::uumain` (its own clap CLI).
 http_archive(
     name = "uutils_sed",
-    urls = ["https://static.crates.io/crates/sed/sed-0.1.1.crate"],
+    build_file = "//third_party/sed:sed.BUILD.bazel",
+    patch_args = ["-p1"],
+    patch_tool = "patch",  # GNU patch; Bazel's native parser mis-handles the multi-file diff
+    patches = ["//third_party/sed:patches/0001-wasi-compat.patch"],
     sha256 = "f5a00cdbffacbccf02decb7577da5e298c091bdee492a2a1b87a3d8b0cc5b7c5",
     strip_prefix = "sed-0.1.1",
     type = "tar.gz",
-    patches = ["//third_party/sed:patches/0001-wasi-compat.patch"],
-    patch_tool = "patch",  # GNU patch; Bazel's native parser mis-handles the multi-file diff
-    patch_args = ["-p1"],
-    build_file = "//third_party/sed:sed.BUILD.bazel",
+    urls = ["https://static.crates.io/crates/sed/sed-0.1.1.crate"],
 )
 
 # sqlite — the SQLite 3.51.0 amalgamation fetched from sqlite.org (SYSTEMS.md: fetch upstream via
@@ -153,30 +175,97 @@ http_archive(
 # sqlite3.c as a csrc (see third_party/sqlite/BUILD.sqlite.bazel).
 http_archive(
     name = "sqlite",
-    urls = ["https://sqlite.org/2025/sqlite-amalgamation-3510000.zip"],
+    build_file = "//third_party/sqlite:BUILD.sqlite.bazel",
     sha256 = "1caf7116f2910600d04473ad69d37ec538fa62fa36adccd37b5e0e43647c98be",
     strip_prefix = "sqlite-amalgamation-3510000",
     type = "zip",
-    build_file = "//third_party/sqlite:BUILD.sqlite.bazel",
+    urls = ["https://sqlite.org/2025/sqlite-amalgamation-3510000.zip"],
 )
+
 # luau — upstream Luau 0.725 fetched from GitHub, patched `-fno-exceptions`-clean (the `// mc PATCH`
 # set extracted to real .patch files: VM/Parser/Compiler trap-backed error channels + the Analysis
 # EH shim, B3), built to two guest wasms (/bin/luau interpreter, /bin/luau-analyze type checker) by
 # `zig c++` at wasm32-wasi. See third_party/luau/SYSTEM.md.
 http_archive(
     name = "luau",
-    urls = ["https://github.com/luau-lang/luau/archive/refs/tags/0.725.tar.gz"],
-    sha256 = "e51ead5f541633693d548057e0431927f3036c13b185fdb37fbc3f5a261e6676",
-    strip_prefix = "luau-0.725",
-    type = "tar.gz",
+    build_file = "//third_party/luau:BUILD.luau.bazel",
+    patch_args = ["-p1"],
+    patch_tool = "patch",  # GNU patch (matches sed; the native parser mis-handles multi-file diffs)
     patches = [
         "//third_party/luau:patches/0001-mc-vm.patch",  # VM/Parser/Compiler → trap-backed error channels
         "//third_party/luau:patches/0002-mc-analysis.patch",  # Analysis throw → mc_analysis_abort
         "//third_party/luau:patches/0003-mc-analysis-named-catch.patch",  # dead named-catch bodies: drop e.what()
         "//third_party/luau:patches/0004-mc-frontend-nothread.patch",  # Frontend std::mutex + locks → mc_nothread (.h decl + .cpp uses; B3)
     ],
-    patch_tool = "patch",  # GNU patch (matches sed; the native parser mis-handles multi-file diffs)
-    patch_args = ["-p1"],
-    build_file = "//third_party/luau:BUILD.luau.bazel",
+    sha256 = "e51ead5f541633693d548057e0431927f3036c13b185fdb37fbc3f5a261e6676",
+    strip_prefix = "luau-0.725",
+    type = "tar.gz",
+    urls = ["https://github.com/luau-lang/luau/archive/refs/tags/0.725.tar.gz"],
 )
 # http_archive(name = "wasmtime", urls = ["..."], sha256 = "...")  # for hosts/wasmtime
+
+# ---------------------------------------------------------------------------
+# Elixir control-plane lane (//server/otp_hello). The kubernetes-style supervisor over the
+# wasm VMs (CONTROL_PLANE.md). BOTH halves are DISCORD forks: rules_elixir is git_overridden
+# to discord/rules_elixir, which itself wants discord/rules_erlang — but Bazel overrides only
+# apply in the ROOT module, so we replicate that archive_override here. Toolchains are built
+# from SOURCE (HERMETIC, B4): OTP 26.2.5 + Elixir 1.16.1 from the GitHub release tarballs.
+#
+# Module resolution is global, so these always resolve; but the toolchain is only SELECTED
+# under `--config=elixir` (see .bazelrc — it sets --host_platform/--platforms to the erlang
+# platforms in //platforms), and the //server/otp_hello targets are target_compatible_with
+# the erlang constraint, so a plain `bazel build //...` SKIPS them. (Containerization via
+# rules_oci is a near-term follow-up; not wired yet.)
+# ---------------------------------------------------------------------------
+bazel_dep(name = "rules_erlang", version = "3.16.0")
+archive_override(
+    module_name = "rules_erlang",
+    integrity = "sha256-Gg1A/QyTHsHarL0EAOLhe2nTHlcnVngJLBZukcGvaOw=",
+    patch_strip = 1,
+    # B3 patch-in-place: make the source-built OTP target public so discord/rules_elixir's
+    # elixir_build can reference it cross-repo (the integration gap between the two pinned forks).
+    patches = ["//third_party/rules_erlang:patches/0001-erlang_config-otp-public-visibility.patch"],
+    strip_prefix = "rules_erlang-b4b01911b99944fa0c9efb66bf3d9030ee784fa9/",
+    url = "https://github.com/discord/rules_erlang/archive/b4b01911b99944fa0c9efb66bf3d9030ee784fa9.tar.gz",
+)
+
+bazel_dep(name = "rules_elixir", version = "1.1.0")
+git_override(
+    module_name = "rules_elixir",
+    commit = "c8b30e5cf2b88566e6024ec44f42b5c33edb9002",
+    patch_strip = 1,
+    # B3 patch-in-place: forward target_compatible_with through the mix_library macro (it drops
+    # it otherwise), so a bare `bazel build //...` SKIPS the Elixir package as incompatible and
+    # only `--config=elixir` builds it. Without this the macro-internal *_compile targets fail
+    # toolchain resolution under the default platform.
+    patches = ["//third_party/rules_elixir:patches/0001-forward-target-compatible-with.patch"],
+    remote = "https://github.com/discord/rules_elixir.git",
+)
+
+erlang_config = use_extension("@rules_erlang//bzlmod:extensions.bzl", "erlang_config")
+erlang_config.internal_erlang_from_github_release(
+    name = "26_2",
+    extra_make_opts = ["-j 4"],
+    sha256 = "de155c4ad9baab2b9e6c96dbd03bf955575a04dd6feee9c08758beb28484c9f6",
+    version = "26.2.5",
+)
+use_repo(erlang_config, "erlang_config")
+
+# The in-repo examples/internal-elixir is STALE: the current extension makes `otp` mandatory
+# (it links the Elixir build to the named OTP install), with `erlang_version` for the
+# combined platform constraints.
+elixir_config = use_extension("@rules_elixir//bzlmod:extensions.bzl", "elixir_config")
+elixir_config.internal_elixir_from_github_release(
+    name = "1_16",
+    erlang_version = "26.2.5",
+    otp = "26_2",
+    sha256 = "b9e845458e03d62a24325b8424069e401cc7468e21143ecbca5514724d7cbaa0",
+    version = "1.16.1",
+)
+use_repo(elixir_config, "elixir_config")
+
+register_toolchains(
+    "@erlang_config//26_2:toolchain_major",
+    "@erlang_config//26_2:toolchain_major_minor",
+    "@elixir_config//1_16:toolchain",
+)

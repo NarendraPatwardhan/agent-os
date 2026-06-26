@@ -1,0 +1,22 @@
+# Manifest for crate_universe (rustler) resolution ONLY — the NIF BUILDS via Bazel
+# (rust_shared_library), not cargo. The `host` crate it wraps is provided by Bazel as
+# //memcontainers/hosts/wasmtime:host (an in-repo rust_library), NOT declared here, so the
+# @nif_crates universe stays minimal (just rustler + its transitive deps). Kept apart from the
+# kernel / host / guest / typst universes for the same reason those are split (no feature
+# unification across unrelated graphs).
+[package]
+name = "host_nif"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "host_nif"
+path = "src/lib.rs"
+# cdylib: a BEAM-loadable shared object (Rustler NIF). rules_rust's rust_shared_library sets
+# this for the Bazel build; declared here too so a bare `cargo` resolution agrees.
+crate-type = ["cdylib"]
+
+[dependencies]
+# Modern Rustler needs NO Erlang headers at build time (it vendors the NIF API), so the cdylib
+# compiles hermetically without an OTP install — good for B4.
+rustler = "0.34"

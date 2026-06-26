@@ -1,9 +1,56 @@
-# server — mc-server (Rust/axum/tokio), ported from memcontainers crates/mc-server.
-# Hosts many concurrent kernels, speaks the `wire` protocol to clients, does real S3 /
-# net / persistence. Size is irrelevant server-side, so it stays Rust (SYSTEMS.md).
-# Tenancy/eviction for many kernels is an open question.
+# server — THE agent-os control plane (Elixir/OTP): the kubernetes-style supervisor over the
+# wasm VMs (CONTROL_PLANE.md). The Rust mc-server lineage (memcontainers/crates/mc-server) is
+# kept OUT of this graph as a behavioral/parity oracle, not built here — this server IS the
+# control plane, in Elixir, driving VMs through the host_nif.
 #
-# Phase A:
-#   load("@rules_rust//rust:defs.bzl", "rust_binary")
-#   rust_binary(name = "mc-server", srcs = glob(["src/**/*.rs"]),
-#       deps = ["//memcontainers/hosts/wasmtime:host", "//memcontainers/contracts:wire_rust", "@crates//:axum", "@crates//:tokio"])
+# Mix-backed on the hermetic discord toolchain; build/test with `--config=elixir`. The targets
+# are target_compatible_with erlang_26_2, so a bare `bazel build //...` SKIPS them (the rest of
+# the repo is unaffected). The VM-driving NIF (//memcontainers/hosts/wasmtime/nif:host_nif) is
+# staged into priv/ and loaded at runtime by AgentOS.Host.Nif — Bazel builds the .so, mix never
+# compiles it.
+load("@rules_elixir//:defs.bzl", "mix_library", "mix_release", "mix_test")
+
+_ELIXIR_ONLY = ["@erlang_config//:erlang_26_2"]
+
+# Production library — `mix compile` into the agent_os app, with the NIF cdylib staged in priv/.
+mix_library(
+    name = "lib",
+    app_name = "agent_os",
+    mix_config = ":mix.exs",
+    srcs = glob(["lib/**/*.ex"]),
+    priv = ["//memcontainers/hosts/wasmtime/nif:host_nif"],  # libhost_nif.so -> priv/
+    target_compatible_with = _ELIXIR_ONLY,
+    visibility = ["//visibility:public"],
+)
+
+# Test library — same sources compiled with MIX_ENV=test.
+mix_library(
+    name = "lib_test",
+    app_name = "agent_os",
+    mix_env = "test",
+    mix_config = ":mix.exs",
+    srcs = glob(["lib/**/*.ex"]),
+    priv = ["//memcontainers/hosts/wasmtime/nif:host_nif"],
+    target_compatible_with = _ELIXIR_ONLY,
+)
+
+# `mix test` against the pre-compiled MIX_ENV=test lib (the NIF smoke test + the OTP layer test).
+mix_test(
+    name = "mix_test",
+    lib = ":lib_test",
+    srcs = glob(["test/**/*.exs"]),
+    target_compatible_with = _ELIXIR_ONLY,
+    env = {
+        "ERL_COMPILER_OPTIONS": "deterministic",
+        "ELIXIR_ERL_OPTIONS": "+fnu",
+    },
+)
+
+# `mix release` — the deployable OTP release (bin/agent_os). With the NIF in priv and (later)
+# include_erts via rules_oci, this is what gets containerized.
+mix_release(
+    name = "release",
+    application = ":lib",
+    release_name = "agent_os",
+    target_compatible_with = _ELIXIR_ONLY,
+)
