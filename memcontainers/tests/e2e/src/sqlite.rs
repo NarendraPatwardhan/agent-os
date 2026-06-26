@@ -357,6 +357,29 @@ SELECT instr(vann_quantization('bits'), 'packed-bit-hamming') > 0;\n",
 }
 
 #[test]
+fn sqlite_vector_updates_metadata_without_reembedding() {
+    let mut s = boot_atlas();
+    s.host
+        .write_file(
+            "/tmp/updatevec.sql",
+            b"CREATE VIRTUAL TABLE upd USING vann(embedding float[2] metric=l2, tenant partition, source text, title text aux, M=4, ef_construction=16);\n\
+INSERT INTO upd(rowid, embedding, tenant, source, title) VALUES (1, vec_f32('[0,0]'), 'a', 'docs', 'one');\n\
+INSERT INTO upd(rowid, embedding, tenant, source, title) VALUES (2, vec_f32('[1,0]'), 'a', 'docs', 'two');\n\
+UPDATE upd SET source='web', title='two-web' WHERE rowid=2;\n\
+SELECT rowid, title, source FROM upd WHERE embedding MATCH vec_f32('[1,0]') AND k = 1 AND source = 'web';\n\
+SELECT count(*) FROM upd WHERE source = 'docs';\n\
+UPDATE upd SET tenant='b' WHERE rowid=2;\n\
+SELECT rowid, title FROM upd WHERE embedding MATCH vec_f32('[1,0]') AND k = 2 AND tenant = 'a';\n\
+SELECT rowid, title FROM upd WHERE embedding MATCH vec_f32('[1,0]') AND k = 1 AND tenant = 'b';\n",
+        )
+        .expect("write updatevec.sql");
+    assert_eq!(
+        s.run_for_output("cat /tmp/updatevec.sql | sqlite /tmp/updatevec.db"),
+        "2|two-web|web\r\n1\r\n1|one\r\n2|two-web\r\n"
+    );
+}
+
+#[test]
 fn sqlite_vector_cosine_cold_start_fetches_full_vectors_from_shadow_table() {
     let mut s = boot_atlas();
     assert_eq!(

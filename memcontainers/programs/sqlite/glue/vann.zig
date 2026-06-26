@@ -127,6 +127,14 @@ fn deinitCellSlice(cells: []Cell) void {
     alloc.free(cells);
 }
 
+fn cloneCellSlice(cells: []const Cell) ![]Cell {
+    const out = try alloc.alloc(Cell, cells.len);
+    for (out) |*cell| cell.* = .{ .null = {} };
+    errdefer deinitCellSlice(out);
+    for (cells, 0..) |cell, i| out[i] = try cell.clone();
+    return out;
+}
+
 const VectorValue = struct {
     elem_type: ElemType,
     dims: u32,
@@ -1055,6 +1063,31 @@ const VTab = struct {
         try self.bumpVersion();
         try self.trimResidentCache();
         changed_hot = false;
+    }
+
+    fn updateNodeValuesIfSameVector(self: *VTab, rowid: i64, values: []const Cell, vec: VectorValue) !bool {
+        const id = self.row_map.get(rowid) orelse return false;
+        const n = self.node(id) orelse return false;
+        const part_key = try self.makePartKey(values);
+        defer alloc.free(part_key);
+        if (!std.mem.eql(u8, n.part_key, part_key)) return false;
+        const current_vec = if (n.vec_blob.len > 0) n.vec_blob else try self.fetchVectorBlob(n.id);
+        const current_owned = n.vec_blob.len == 0;
+        defer if (current_owned) alloc.free(current_vec);
+        if (!std.mem.eql(u8, current_vec, vec.blob)) return false;
+
+        const cloned_values = try cloneCellSlice(values);
+        var cloned_owned = true;
+        errdefer if (cloned_owned) deinitCellSlice(cloned_values);
+        try self.recordNodeBefore(id);
+        const old_values = n.values;
+        n.values = cloned_values;
+        cloned_owned = false;
+        deinitCellSlice(old_values);
+        try self.persistNode(n);
+        try self.bumpVersion();
+        try self.trimResidentCache();
+        return true;
     }
 
     fn deleteRow(self: *VTab, rowid: i64) !void {
@@ -2344,10 +2377,10 @@ fn xUpdate(p: ?*c.sqlite3_vtab, argc: c_int, argv: [*c]?*c.sqlite3_value, out_ro
     var values = alloc.alloc(Cell, t.config.visible_cols) catch return c.SQLITE_NOMEM;
     for (values) |*v| v.* = .{ .null = {} };
     var values_owned = true;
-    errdefer if (values_owned) deinitCellSlice(values);
+    defer if (values_owned) deinitCellSlice(values);
     var vec: ?VectorValue = null;
     var vec_owned = false;
-    errdefer if (vec_owned) {
+    defer if (vec_owned) {
         if (vec) |*v| v.deinit();
     };
     var i: usize = 0;
@@ -2363,6 +2396,15 @@ fn xUpdate(p: ?*c.sqlite3_vtab, argc: c_int, argv: [*c]?*c.sqlite3_value, out_ro
     if (vec == null) return t.setError("vann: missing vector");
     if (old_type != c.SQLITE_NULL) {
         const old = c.sqlite3_value_int64(argv[0]);
+        if (old == rowid) {
+            if (t.updateNodeValuesIfSameVector(rowid, values, vec.?) catch {
+                t.reloadFromDisk() catch {};
+                return t.setError("vann: update failed");
+            }) {
+                out_rowid.* = rowid;
+                return c.SQLITE_OK;
+            }
+        }
         if (old != rowid) t.deleteRow(old) catch {
             t.reloadFromDisk() catch {};
             return t.setError("vann: update delete failed");
