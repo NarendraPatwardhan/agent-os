@@ -361,13 +361,14 @@ local function vectorMeta(self, fnName: string, name: string)
 end
 
 --- Return table-backed `vann` metadata: format, dims, element type, metric, graph params, version,
---- cache-node cap, node counts, metadata-index rows, resident estimate, total hot payload bytes,
---- and cold full-vector bytes.
+--- cache-node cap, partition count, metadata-index health, node counts, resident estimate,
+--- total hot payload bytes, and cold full-vector bytes.
 function Db:vectorInfo(name: string)
   return vectorMeta(self, "vann_info", name)
 end
 
---- Return `vann` health counters, including dangling graph edges.
+--- Return `vann` health counters, including graph-quality ratios, bounded recall estimate,
+--- metadata-index health, and dangling edges.
 function Db:vectorHealth(name: string)
   return vectorMeta(self, "vann_health", name)
 end

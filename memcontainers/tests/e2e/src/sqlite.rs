@@ -301,6 +301,7 @@ local info = db:vectorInfo("mem")
 local health = db:vectorHealth("mem")
 local quant = db:vectorQuantization("mem")
 print(info.dims, info.metadata_index_rows, info.resident_bytes > 0, info.hot_payload_bytes >= info.resident_bytes, info.cold_vector_bytes > 0, health.status, quant.metric)
+print(info.partition_count, info.metadata_columns, info.metadata_index_rows == info.metadata_index_expected_rows, tostring(info.metadata_index_healthy), info.metadata_prefilter_min_ids <= info.metadata_prefilter_max_ids, health.graph_quality >= 0 and health.graph_quality <= 1, health.low_degree_ratio >= 0, health.recall_sample_size >= 0, health.recall_at_1_estimate >= 0 and health.recall_at_1_estimate <= 1, tostring(health.metadata_index_healthy))
 db:createVectorIndex("graph", {
   vector = { name = "embedding", type = "float", dims = 2, metric = "l2" },
   M = 4,
@@ -322,7 +323,46 @@ db:close()
         .expect("write vec.luau");
     assert_eq!(
         s.run_for_output("luau /tmp/vec.luau"),
-        "2\t1\torigin\t2\r\ntrue\t3\r\n3\t4\tbeta\r\n1\t4\tbeta\r\n1\t2\r\n1\t2\r\n1\t2\r\nfalse\t2\r\n3\t6\ttrue\ttrue\ttrue\tok\tl2\r\n3\t20\t21\t19\r\n"
+        "2\t1\torigin\t2\r\ntrue\t3\r\n3\t4\tbeta\r\n1\t4\tbeta\r\n1\t2\r\n1\t2\r\n1\t2\r\nfalse\t2\r\n3\t6\ttrue\ttrue\ttrue\tok\tl2\r\n2\t2\ttrue\ttrue\ttrue\ttrue\ttrue\ttrue\ttrue\ttrue\r\n3\t20\t21\t19\r\n"
+    );
+}
+
+#[test]
+fn sqlite_vector_low_selectivity_metadata_filter_streams_exact() {
+    let mut s = boot_atlas();
+    s.host
+        .write_file(
+            "/tmp/selectivity.luau",
+            br#"local sqlite = require("sqlite")
+local db = assert(sqlite.open("/tmp/selectivity.db"))
+db:createVectorIndex("sel", {
+  vector = { name = "embedding", type = "float", dims = 2, metric = "l2" },
+  metadata = { { name = "tag", type = "text" } },
+  aux = { "label" },
+  M = 4,
+  ef_construction = 24,
+  ef_search = 16,
+})
+for i = 1, 300 do
+  db:exec("INSERT INTO sel(rowid, embedding, tag, label) VALUES (?, ?, ?, ?)", i, sqlite.vec.f32({i, 0}), "bulk", "r" .. tostring(i))
+end
+local info = db:vectorInfo("sel")
+local health = db:vectorHealth("sel")
+local hits = db:vectorSearch("sel", {299.1, 0}, {
+  vector = "embedding",
+  type = "f32",
+  k = 3,
+  filter = { tag = "bulk" },
+})
+print(info.metadata_index_healthy, info.metadata_index_rows == 300, info.metadata_prefilter_min_ids, info.metadata_prefilter_max_ids, health.metadata_index_healthy, health.recall_sample_size > 0, health.recall_at_1_estimate >= 0 and health.recall_at_1_estimate <= 1)
+print(#hits, hits[1].rowid, hits[2].rowid, hits[3].rowid)
+db:close()
+"#,
+        )
+        .expect("write selectivity.luau");
+    assert_eq!(
+        s.run_for_output("luau /tmp/selectivity.luau"),
+        "true\ttrue\t256\t4096\ttrue\ttrue\ttrue\r\n3\t299\t300\t298\r\n"
     );
 }
 

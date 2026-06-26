@@ -17,6 +17,10 @@ const DEFAULT_EF_CONSTRUCTION: usize = 96;
 const DEFAULT_EF_SEARCH: usize = 64;
 const DEFAULT_CACHE_NODES: usize = 65536;
 const EXACT_TINY_TABLE = 16;
+const METADATA_PREFILTER_MIN_IDS: usize = 256;
+const METADATA_PREFILTER_MAX_IDS: usize = 4096;
+const RECALL_PROBE_SAMPLE_LIMIT: usize = 16;
+const RECALL_PROBE_CANDIDATE_LIMIT: usize = 256;
 const VQ_MAGIC = "VQ1\x00";
 const VQ_HEADER_LEN: usize = 12;
 const NODE_HEADER_ESTIMATE_BYTES: i64 = 64;
@@ -341,6 +345,12 @@ fn deinitFilterList(filters: *std.ArrayList(QueryFilter)) void {
     for (filters.items) |*f| f.deinit();
     filters.deinit(alloc);
     filters.* = .empty;
+}
+
+fn metadataPrefilterCutoff(k: usize, ef_req: usize) usize {
+    const base = @max(k, ef_req);
+    const scaled = if (base > METADATA_PREFILTER_MAX_IDS / 8) METADATA_PREFILTER_MAX_IDS else base * 8;
+    return @min(METADATA_PREFILTER_MAX_IDS, @max(METADATA_PREFILTER_MIN_IDS, scaled));
 }
 
 const NodeUndo = struct {
@@ -1355,7 +1365,9 @@ const VTab = struct {
             if (try self.metadataPrefilterIds(filters)) |ids| {
                 defer alloc.free(ids);
                 if (ids.len == 0) return alloc.alloc(SearchResult, 0);
-                return self.exactSearchIds(q, ids, part_key, filters, k);
+                if (ids.len <= metadataPrefilterCutoff(k, ef_req)) {
+                    return self.exactSearchIds(q, ids, part_key, filters, k);
+                }
             }
             return self.exactSearch(q, part_key, filters, k);
         }
@@ -2577,8 +2589,8 @@ fn infoFunc(ctx: ?*c.sqlite3_context, argc: c_int, argv: [*c]?*c.sqlite3_value) 
     defer snap.deinit();
     const json = std.fmt.allocPrint(
         alloc,
-        "{{\"module\":\"vann\",\"format\":{d},\"dims\":{d},\"elem_type\":\"{s}\",\"metric\":\"{s}\",\"M\":{d},\"ef_construction\":{d},\"ef_search\":{d},\"cache_nodes\":{d},\"resident_nodes\":{d},\"version\":{d},\"nodes\":{d},\"live\":{d},\"deleted\":{d},\"max_id\":{d},\"free_slots\":{d},\"metadata_index_rows\":{d},\"resident_bytes\":{d},\"hot_payload_bytes\":{d},\"cold_vector_bytes\":{d}}}",
-        .{ snap.format, snap.dims, elemTypeName(snap.elem_type), metricName(snap.metric), snap.m, snap.ef_construction, snap.ef_search, snap.cache_nodes, snap.resident_nodes, snap.version, snap.nodes, snap.live, snap.deleted, snap.max_id, snap.free_slots, snap.metadata_index_rows, snap.resident_bytes, snap.hot_payload_bytes, snap.cold_vector_bytes },
+        "{{\"module\":\"vann\",\"format\":{d},\"dims\":{d},\"elem_type\":\"{s}\",\"metric\":\"{s}\",\"M\":{d},\"ef_construction\":{d},\"ef_search\":{d},\"cache_nodes\":{d},\"resident_nodes\":{d},\"version\":{d},\"nodes\":{d},\"live\":{d},\"deleted\":{d},\"max_id\":{d},\"free_slots\":{d},\"partition_count\":{d},\"metadata_columns\":{d},\"metadata_index_rows\":{d},\"metadata_index_expected_rows\":{d},\"metadata_index_healthy\":{s},\"metadata_prefilter_min_ids\":{d},\"metadata_prefilter_max_ids\":{d},\"resident_bytes\":{d},\"hot_payload_bytes\":{d},\"cold_vector_bytes\":{d}}}",
+        .{ snap.format, snap.dims, elemTypeName(snap.elem_type), metricName(snap.metric), snap.m, snap.ef_construction, snap.ef_search, snap.cache_nodes, snap.resident_nodes, snap.version, snap.nodes, snap.live, snap.deleted, snap.max_id, snap.free_slots, snap.partition_count, snap.metadata_columns, snap.metadata_index_rows, snap.metadata_index_expected_rows, if (snap.metadata_index_healthy) "true" else "false", METADATA_PREFILTER_MIN_IDS, METADATA_PREFILTER_MAX_IDS, snap.resident_bytes, snap.hot_payload_bytes, snap.cold_vector_bytes },
     ) catch {
         resultError(ctx, "vann_info: out of memory");
         return;
@@ -2594,10 +2606,14 @@ fn healthFunc(ctx: ?*c.sqlite3_context, argc: c_int, argv: [*c]?*c.sqlite3_value
     };
     defer snap.deinit();
     const status = if (snap.dangling_edges != 0) "corrupt" else "ok";
+    const deleted_ratio = if (snap.nodes > 0) @as(f64, @floatFromInt(snap.deleted)) / @as(f64, @floatFromInt(snap.nodes)) else 0;
+    const low_degree_ratio = if (snap.live > 0) @as(f64, @floatFromInt(snap.low_degree_nodes)) / @as(f64, @floatFromInt(snap.live)) else 0;
+    const orphan_ratio = if (snap.live > 0) @as(f64, @floatFromInt(snap.orphan_nodes)) / @as(f64, @floatFromInt(snap.live)) else 0;
+    const graph_quality = if (snap.dangling_edges != 0) 0 else @max(0, 1.0 - @min(1.0, (low_degree_ratio + orphan_ratio) / 2.0));
     const json = std.fmt.allocPrint(
         alloc,
-        "{{\"module\":\"vann\",\"status\":\"{s}\",\"nodes\":{d},\"live\":{d},\"deleted\":{d},\"edges\":{d},\"avg_out_degree\":{d},\"low_degree_nodes\":{d},\"orphan_nodes\":{d},\"dangling_edges\":{d},\"free_slots\":{d}}}",
-        .{ status, snap.nodes, snap.live, snap.deleted, snap.edges, snap.avg_out_degree, snap.low_degree_nodes, snap.orphan_nodes, snap.dangling_edges, snap.free_slots },
+        "{{\"module\":\"vann\",\"status\":\"{s}\",\"nodes\":{d},\"live\":{d},\"deleted\":{d},\"deleted_ratio\":{d},\"edges\":{d},\"avg_out_degree\":{d},\"low_degree_nodes\":{d},\"low_degree_ratio\":{d},\"orphan_nodes\":{d},\"orphan_ratio\":{d},\"dangling_edges\":{d},\"free_slots\":{d},\"partition_count\":{d},\"metadata_index_healthy\":{s},\"graph_quality\":{d},\"recall_sample_size\":{d},\"recall_at_1_estimate\":{d}}}",
+        .{ status, snap.nodes, snap.live, snap.deleted, deleted_ratio, snap.edges, snap.avg_out_degree, snap.low_degree_nodes, low_degree_ratio, snap.orphan_nodes, orphan_ratio, snap.dangling_edges, snap.free_slots, snap.partition_count, if (snap.metadata_index_healthy) "true" else "false", graph_quality, snap.recall_sample_size, snap.recall_at_1_estimate },
     ) catch {
         resultError(ctx, "vann_health: out of memory");
         return;
@@ -2700,6 +2716,12 @@ const Introspection = struct {
     resident_bytes: i64,
     hot_payload_bytes: i64,
     cold_vector_bytes: i64,
+    partition_count: i64,
+    metadata_columns: i64,
+    metadata_index_expected_rows: i64,
+    metadata_index_healthy: bool,
+    recall_sample_size: i64,
+    recall_at_1_estimate: f64,
 
     fn deinit(self: Introspection) void {
         alloc.free(self.prefix);
@@ -2716,6 +2738,17 @@ fn readIntrospection(ctx: ?*c.sqlite3_context, argc: c_int, argv: [*c]?*c.sqlite
     const m = (try metaGetIntByPrefix(db, prefix, "m")) orelse DEFAULT_M;
     const cache_nodes = (try metaGetIntByPrefix(db, prefix, "cache_nodes")) orelse DEFAULT_CACHE_NODES;
     const counts = try readNodeCounts(db, prefix, m, cache_nodes);
+    var metadata_columns: i64 = 0;
+    const parsed_opt: ?ParsedDecl = readTableDeclaration(db, table) catch null;
+    if (parsed_opt) |parsed| {
+        defer deinitColumns(parsed.columns);
+        for (parsed.columns) |col| {
+            if (col.kind == .metadata) metadata_columns += 1;
+        }
+    }
+    const metadata_index_rows = try readMetadataIndexRows(db, prefix);
+    const metadata_index_expected_rows = counts.live * metadata_columns;
+    const recall = readRecallProbe(db, prefix, elemTypeFromInt((try metaGetIntByPrefix(db, prefix, "elem_type")) orelse @intFromEnum(ElemType.f32)), (try metaGetIntByPrefix(db, prefix, "dims")) orelse 0, metricFromInt((try metaGetIntByPrefix(db, prefix, "metric")) orelse @intFromEnum(Metric.cosine))) catch RecallProbe{};
     return .{
         .prefix = prefix,
         .format = (try metaGetIntByPrefix(db, prefix, "format")) orelse FORMAT_VERSION,
@@ -2738,10 +2771,16 @@ fn readIntrospection(ctx: ?*c.sqlite3_context, argc: c_int, argv: [*c]?*c.sqlite
         .low_degree_nodes = counts.low_degree_nodes,
         .orphan_nodes = counts.orphan_nodes,
         .dangling_edges = counts.dangling_edges,
-        .metadata_index_rows = try readMetadataIndexRows(db, prefix),
+        .metadata_index_rows = metadata_index_rows,
         .resident_bytes = counts.resident_bytes,
         .hot_payload_bytes = counts.hot_payload_bytes,
         .cold_vector_bytes = counts.cold_vector_bytes,
+        .partition_count = counts.partition_count,
+        .metadata_columns = metadata_columns,
+        .metadata_index_expected_rows = metadata_index_expected_rows,
+        .metadata_index_healthy = metadata_index_rows == metadata_index_expected_rows,
+        .recall_sample_size = recall.sample_size,
+        .recall_at_1_estimate = recall.estimate,
     };
 }
 
@@ -2760,6 +2799,7 @@ const NodeCounts = struct {
     resident_bytes: i64,
     hot_payload_bytes: i64,
     cold_vector_bytes: i64,
+    partition_count: i64,
 };
 
 fn readMetadataIndexRows(db: ?*c.sqlite3, prefix: []const u8) !i64 {
@@ -2788,7 +2828,7 @@ fn readNodeCounts(db: ?*c.sqlite3, prefix: []const u8, m: i64, cache_nodes: i64)
     defer alloc.free(node_table);
     const q_node = try quoteIdent(node_table);
     defer alloc.free(q_node);
-    const sql = try std.fmt.allocPrint(alloc, "SELECT id,deleted,adj,length(part),length(vq),length(vals) FROM {s} ORDER BY id", .{q_node});
+    const sql = try std.fmt.allocPrint(alloc, "SELECT id,deleted,adj,part,length(vq),length(vals) FROM {s} ORDER BY id", .{q_node});
     defer alloc.free(sql);
     const z = try alloc.dupeZ(u8, sql);
     defer alloc.free(z);
@@ -2799,6 +2839,13 @@ fn readNodeCounts(db: ?*c.sqlite3, prefix: []const u8, m: i64, cache_nodes: i64)
     defer valid_degrees.deinit();
     var edges = std.ArrayList(HealthEdge).empty;
     defer edges.deinit(alloc);
+    var partitions = std.StringHashMap(void).init(alloc);
+    defer partitions.deinit();
+    var partition_keys = std.ArrayList([]u8).empty;
+    defer {
+        for (partition_keys.items) |key| alloc.free(key);
+        partition_keys.deinit(alloc);
+    }
     var out = NodeCounts{
         .nodes = 0,
         .live = 0,
@@ -2814,6 +2861,7 @@ fn readNodeCounts(db: ?*c.sqlite3, prefix: []const u8, m: i64, cache_nodes: i64)
         .resident_bytes = 0,
         .hot_payload_bytes = 0,
         .cold_vector_bytes = 0,
+        .partition_count = 0,
     };
     const unlimited_resident = cache_nodes <= 0;
     while (true) {
@@ -2830,8 +2878,17 @@ fn readNodeCounts(db: ?*c.sqlite3, prefix: []const u8, m: i64, cache_nodes: i64)
         } else {
             out.live += 1;
             try valid_degrees.put(id, 0);
+            const part = try columnBlobCopy(stmt, 3);
+            defer alloc.free(part);
+            if (!partitions.contains(part)) {
+                const key = try alloc.dupe(u8, part);
+                errdefer alloc.free(key);
+                try partitions.put(key, {});
+                try partition_keys.append(alloc, key);
+                out.partition_count += 1;
+            }
             var node_bytes = NODE_HEADER_ESTIMATE_BYTES;
-            node_bytes += c.sqlite3_column_int64(stmt, 3);
+            node_bytes += @intCast(part.len);
             node_bytes += c.sqlite3_column_int64(stmt, 4);
             node_bytes += c.sqlite3_column_int64(stmt, 5);
             out.hot_payload_bytes += node_bytes;
@@ -2887,6 +2944,125 @@ fn readColdVectorBytes(db: ?*c.sqlite3, prefix: []const u8) !i64 {
     defer _ = c.sqlite3_finalize(stmt);
     if (c.sqlite3_step(stmt) != c.SQLITE_ROW) return error.Sqlite;
     return c.sqlite3_column_int64(stmt, 0);
+}
+
+const RecallProbe = struct {
+    sample_size: i64 = 0,
+    estimate: f64 = 1,
+};
+
+const RecallProbeNode = struct {
+    id: u32,
+    part: []u8,
+    adj0: []u32,
+    vec: VectorValue,
+
+    fn deinit(self: *RecallProbeNode) void {
+        alloc.free(self.part);
+        alloc.free(self.adj0);
+        self.vec.deinit();
+    }
+};
+
+fn readRecallProbe(db: ?*c.sqlite3, prefix: []const u8, elem: ElemType, dims: i64, metric: Metric) !RecallProbe {
+    if (dims <= 0) return .{};
+    const node_table = try std.fmt.allocPrint(alloc, "{s}_node", .{prefix});
+    defer alloc.free(node_table);
+    const vec_table = try std.fmt.allocPrint(alloc, "{s}_vec", .{prefix});
+    defer alloc.free(vec_table);
+    const q_node = try quoteIdent(node_table);
+    defer alloc.free(q_node);
+    const q_vec = try quoteIdent(vec_table);
+    defer alloc.free(q_vec);
+    const sql = try std.fmt.allocPrint(
+        alloc,
+        "SELECT n.id,n.part,n.adj,v.v FROM {s} n JOIN {s} v ON v.id=n.id WHERE n.deleted=0 ORDER BY n.id LIMIT ?",
+        .{ q_node, q_vec },
+    );
+    defer alloc.free(sql);
+    const z = try alloc.dupeZ(u8, sql);
+    defer alloc.free(z);
+    var stmt: ?*c.sqlite3_stmt = null;
+    if (c.sqlite3_prepare_v2(db, z.ptr, -1, &stmt, null) != c.SQLITE_OK) return error.Sqlite;
+    defer _ = c.sqlite3_finalize(stmt);
+    if (c.sqlite3_bind_int64(stmt, 1, RECALL_PROBE_CANDIDATE_LIMIT) != c.SQLITE_OK) return error.Sqlite;
+    var nodes = std.ArrayList(RecallProbeNode).empty;
+    defer {
+        for (nodes.items) |*n| n.deinit();
+        nodes.deinit(alloc);
+    }
+    while (true) {
+        const rc = c.sqlite3_step(stmt);
+        if (rc == c.SQLITE_DONE) break;
+        if (rc != c.SQLITE_ROW) return error.Sqlite;
+        const part = try columnBlobCopy(stmt, 1);
+        var part_owned = true;
+        errdefer if (part_owned) alloc.free(part);
+        const adj = try columnBlobCopy(stmt, 2);
+        defer alloc.free(adj);
+        const adj0 = try readAdjacencyLevel0(adj);
+        var adj0_owned = true;
+        errdefer if (adj0_owned) alloc.free(adj0);
+        const vec_blob = try columnBlobCopy(stmt, 3);
+        var vec = try decodeVectorBlob(vec_blob, elem, @intCast(dims));
+        errdefer vec.deinit();
+        try nodes.append(alloc, .{
+            .id = @intCast(c.sqlite3_column_int64(stmt, 0)),
+            .part = part,
+            .adj0 = adj0,
+            .vec = vec,
+        });
+        part_owned = false;
+        adj0_owned = false;
+    }
+    if (nodes.items.len < 2) return .{};
+    const sample = @min(RECALL_PROBE_SAMPLE_LIMIT, nodes.items.len);
+    var evaluated: i64 = 0;
+    var hits: i64 = 0;
+    for (nodes.items[0..sample]) |sample_node| {
+        var best_id: ?u32 = null;
+        var best_distance = std.math.inf(f64);
+        for (nodes.items) |candidate| {
+            if (candidate.id == sample_node.id) continue;
+            if (!std.mem.eql(u8, candidate.part, sample_node.part)) continue;
+            const d = probeDistance(metric, sample_node.vec, candidate.vec);
+            if (d < best_distance or (d == best_distance and (best_id == null or candidate.id < best_id.?))) {
+                best_distance = d;
+                best_id = candidate.id;
+            }
+        }
+        const nearest = best_id orelse continue;
+        evaluated += 1;
+        for (sample_node.adj0) |edge| {
+            if (edge == nearest) {
+                hits += 1;
+                break;
+            }
+        }
+    }
+    if (evaluated == 0) return .{};
+    return .{ .sample_size = evaluated, .estimate = @as(f64, @floatFromInt(hits)) / @as(f64, @floatFromInt(evaluated)) };
+}
+
+fn readAdjacencyLevel0(blob: []const u8) ![]u32 {
+    if (blob.len == 0) return alloc.alloc(u32, 0);
+    var pos: usize = 0;
+    const levels = readU32(blob, &pos) orelse return error.MalformedAdjacency;
+    if (levels == 0) return alloc.alloc(u32, 0);
+    const count = readU32(blob, &pos) orelse return error.MalformedAdjacency;
+    const out = try alloc.alloc(u32, count);
+    errdefer alloc.free(out);
+    for (out) |*id| id.* = readU32(blob, &pos) orelse return error.MalformedAdjacency;
+    return out;
+}
+
+fn probeDistance(metric: Metric, a: VectorValue, b: VectorValue) f64 {
+    return switch (metric) {
+        .hamming => hamming(a.bits, b.bits),
+        .l2 => l2(a.floats, b.floats),
+        .cosine => cosineDistance(a.floats, b.floats),
+        .ip => innerProductDistance(a.floats, b.floats),
+    };
 }
 
 fn collectAdjacencyIds(from: u32, blob: []const u8, out: *std.ArrayList(HealthEdge)) !void {
