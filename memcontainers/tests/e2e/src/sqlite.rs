@@ -53,7 +53,10 @@ db:close()
 "#,
         )
         .expect("write big.luau");
-    assert_eq!(s.run_for_output("luau /tmp/big.luau"), "3000\t1\t3000\t60\r\n");
+    assert_eq!(
+        s.run_for_output("luau /tmp/big.luau"),
+        "3000\t1\t3000\t60\r\n"
+    );
 }
 
 /// `db:transaction` is atomic: the committing transaction adds two rows; the erroring one rolls back
@@ -137,7 +140,11 @@ fn sqlite_appears_in_svc_only_after_first_use() {
         )
         .expect("write touch.luau");
     let _ = s.run_for_output("luau /tmp/touch.luau");
-    assert_eq!(s.run_for_output("ls /svc"), "sqlite\r\n", "now a live, listed service");
+    assert_eq!(
+        s.run_for_output("ls /svc"),
+        "sqlite\r\n",
+        "now a live, listed service"
+    );
 }
 
 /// Prepared statements (compiled once, bound + run many) and a STREAMING cursor (rows pulled a page
@@ -168,7 +175,10 @@ db:close()
         )
         .expect("write p.luau");
     // find:query(95) → {96..100} = 5 rows; queryone(98).v → 99. Cursor: 100 rows, sum(1..100) = 5050.
-    assert_eq!(s.run_for_output("luau /tmp/p.luau"), "5\t99\r\n100\t5050\r\n");
+    assert_eq!(
+        s.run_for_output("luau /tmp/p.luau"),
+        "5\t99\r\n100\t5050\r\n"
+    );
 }
 
 /// BLOBs round-trip as RAW BYTES, not corrupted by JSON text encoding: a non-UTF-8 blob (NUL, 0xFF,
@@ -192,7 +202,10 @@ db:close()
         )
         .expect("write b.luau");
     // 6 bytes, byte-identical (got == raw), byte[2] = 255, byte[3] = 128.
-    assert_eq!(s.run_for_output("luau /tmp/b.luau"), "6\ttrue\t255\t128\r\n");
+    assert_eq!(
+        s.run_for_output("luau /tmp/b.luau"),
+        "6\ttrue\t255\t128\r\n"
+    );
 }
 
 /// `vann` vector indexes are exposed through the Luau sqlite library: agents can create a typed
@@ -365,6 +378,46 @@ fn sqlite_vector_cosine_cold_start_fetches_full_vectors_from_shadow_table() {
 }
 
 #[test]
+fn sqlite_vector_cache_cap_faults_nodes_after_cold_reopen() {
+    let mut s = boot_atlas();
+    s.host
+        .write_file(
+            "/tmp/cachevec.sql",
+            b"CREATE VIRTUAL TABLE spill USING vann(embedding float[2] metric=l2, label text aux, M=4, ef_construction=24, ef_search=24, cache_nodes=2);\n\
+INSERT INTO spill(rowid, embedding, label) VALUES (1, vec_f32('[0,0]'), 'p1');\n\
+INSERT INTO spill(rowid, embedding, label) VALUES (2, vec_f32('[1,0]'), 'p2');\n\
+INSERT INTO spill(rowid, embedding, label) VALUES (3, vec_f32('[2,0]'), 'p3');\n\
+INSERT INTO spill(rowid, embedding, label) VALUES (4, vec_f32('[3,0]'), 'p4');\n\
+INSERT INTO spill(rowid, embedding, label) VALUES (5, vec_f32('[4,0]'), 'p5');\n\
+INSERT INTO spill(rowid, embedding, label) VALUES (6, vec_f32('[5,0]'), 'p6');\n\
+INSERT INTO spill(rowid, embedding, label) VALUES (7, vec_f32('[6,0]'), 'p7');\n\
+INSERT INTO spill(rowid, embedding, label) VALUES (8, vec_f32('[7,0]'), 'p8');\n\
+INSERT INTO spill(rowid, embedding, label) VALUES (9, vec_f32('[8,0]'), 'p9');\n\
+INSERT INTO spill(rowid, embedding, label) VALUES (10, vec_f32('[9,0]'), 'p10');\n\
+INSERT INTO spill(rowid, embedding, label) VALUES (11, vec_f32('[10,0]'), 'p11');\n\
+INSERT INTO spill(rowid, embedding, label) VALUES (12, vec_f32('[11,0]'), 'p12');\n\
+INSERT INTO spill(rowid, embedding, label) VALUES (13, vec_f32('[12,0]'), 'p13');\n\
+INSERT INTO spill(rowid, embedding, label) VALUES (14, vec_f32('[13,0]'), 'p14');\n\
+INSERT INTO spill(rowid, embedding, label) VALUES (15, vec_f32('[14,0]'), 'p15');\n\
+INSERT INTO spill(rowid, embedding, label) VALUES (16, vec_f32('[15,0]'), 'p16');\n\
+INSERT INTO spill(rowid, embedding, label) VALUES (17, vec_f32('[16,0]'), 'p17');\n\
+INSERT INTO spill(rowid, embedding, label) VALUES (18, vec_f32('[17,0]'), 'p18');\n\
+INSERT INTO spill(rowid, embedding, label) VALUES (19, vec_f32('[18,0]'), 'p19');\n\
+INSERT INTO spill(rowid, embedding, label) VALUES (20, vec_f32('[19,0]'), 'p20');\n\
+SELECT instr(vann_info('spill'), '\"cache_nodes\":2') > 0;\n",
+        )
+        .expect("write cachevec.sql");
+    assert_eq!(
+        s.run_for_output("cat /tmp/cachevec.sql | sqlite /tmp/cachevec.db"),
+        "1\r\n"
+    );
+    assert_eq!(
+        s.run_for_output("sqlite /tmp/cachevec.db \"SELECT rowid, label, printf('%.2f', distance) FROM spill WHERE embedding MATCH vec_f32('[19.2,0]') AND k = 1 AND ef = 64\""),
+        "20|p20|0.04\r\n"
+    );
+}
+
+#[test]
 fn sqlite_vector_reuses_deleted_internal_ids_after_cold_start() {
     let mut s = boot_atlas();
     assert_eq!(
@@ -492,17 +545,34 @@ fn sqlite_cli_repl_and_dot_commands() {
     );
     // A piped script: a dot-command turns on headers, then a query.
     s.host
-        .write_file("/tmp/q.sql", b".headers on\nSELECT k, v FROM kv ORDER BY k;\n")
+        .write_file(
+            "/tmp/q.sql",
+            b".headers on\nSELECT k, v FROM kv ORDER BY k;\n",
+        )
         .expect("write q.sql");
-    assert_eq!(s.run_for_output("cat /tmp/q.sql | sqlite /tmp/r.db"), "k|v\r\nx|1\r\ny|2\r\n");
+    assert_eq!(
+        s.run_for_output("cat /tmp/q.sql | sqlite /tmp/r.db"),
+        "k|v\r\nx|1\r\ny|2\r\n"
+    );
     // .tables lists user tables.
-    s.host.write_file("/tmp/t.sql", b".tables\n").expect("write t.sql");
-    assert_eq!(s.run_for_output("cat /tmp/t.sql | sqlite /tmp/r.db"), "kv\r\n");
+    s.host
+        .write_file("/tmp/t.sql", b".tables\n")
+        .expect("write t.sql");
+    assert_eq!(
+        s.run_for_output("cat /tmp/t.sql | sqlite /tmp/r.db"),
+        "kv\r\n"
+    );
     // .mode csv switches the separator to a comma.
     s.host
-        .write_file("/tmp/c.sql", b".mode csv\nSELECT k, v FROM kv ORDER BY k;\n")
+        .write_file(
+            "/tmp/c.sql",
+            b".mode csv\nSELECT k, v FROM kv ORDER BY k;\n",
+        )
         .expect("write c.sql");
-    assert_eq!(s.run_for_output("cat /tmp/c.sql | sqlite /tmp/r.db"), "x,1\r\ny,2\r\n");
+    assert_eq!(
+        s.run_for_output("cat /tmp/c.sql | sqlite /tmp/r.db"),
+        "x,1\r\ny,2\r\n"
+    );
 }
 
 /// Handle delegation (#2; SYSTEMS.md) + a real CSV parser (#4): `.import FILE TABLE` opens the CSV
@@ -522,8 +592,14 @@ fn sqlite_cli_imports_via_a_delegated_handle() {
         "sqlite /tmp/imp.db \"CREATE TABLE people (id INTEGER, name TEXT, note TEXT)\"",
     );
     // .import is silent like sqlite3; the rows land via the delegated handle.
-    assert_eq!(s.run_for_output("sqlite /tmp/imp.db \".import /tmp/data.csv people\""), "");
-    assert_eq!(s.run_for_output("sqlite /tmp/imp.db \"SELECT count(*) FROM people\""), "2\r\n");
+    assert_eq!(
+        s.run_for_output("sqlite /tmp/imp.db \".import /tmp/data.csv people\""),
+        ""
+    );
+    assert_eq!(
+        s.run_for_output("sqlite /tmp/imp.db \"SELECT count(*) FROM people\""),
+        "2\r\n"
+    );
     // The quoted comma survived as ONE field; the "" unescaped to a literal quote.
     assert_eq!(
         s.run_for_output("sqlite /tmp/imp.db \"SELECT note FROM people WHERE id=1\""),
@@ -554,8 +630,14 @@ db:close()
         )
         .expect("write e.luau");
     let out = s.run_for_output("luau /tmp/e.luau");
-    assert!(out.contains("false"), "the pcall should catch the constraint error: {out}");
-    assert!(out.contains("sqlite code"), "the error must carry a structured code: {out}");
+    assert!(
+        out.contains("false"),
+        "the pcall should catch the constraint error: {out}"
+    );
+    assert!(
+        out.contains("sqlite code"),
+        "the error must carry a structured code: {out}"
+    );
 }
 
 /// Per-session cleanup on client death (#1): a client opens a db (a warm session) and DIES mid-session

@@ -288,6 +288,9 @@ function Db:createVectorIndex(name: string, spec)
   if spec.ef_search then
     parts[#parts + 1] = "ef_search=" .. tostring(spec.ef_search)
   end
+  if spec.cache_nodes or spec.cacheNodes then
+    parts[#parts + 1] = "cache_nodes=" .. tostring(spec.cache_nodes or spec.cacheNodes)
+  end
   local exists = if spec.ifNotExists == false then "" else " IF NOT EXISTS"
   local sql = "CREATE VIRTUAL TABLE" .. exists .. " " .. quoteIdent(name) .. " USING vann(" .. table.concat(parts, ", ") .. ")"
   return self:exec(sql)
@@ -358,7 +361,7 @@ local function vectorMeta(self, fnName: string, name: string)
 end
 
 --- Return table-backed `vann` metadata: format, dims, element type, metric, graph params, version,
---- node counts, metadata-index rows, resident hot bytes, and cold full-vector bytes.
+--- cache-node cap, node counts, metadata-index rows, resident hot bytes, and cold full-vector bytes.
 function Db:vectorInfo(name: string)
   return vectorMeta(self, "vann_info", name)
 end

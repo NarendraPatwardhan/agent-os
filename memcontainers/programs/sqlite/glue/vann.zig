@@ -15,6 +15,7 @@ const FORMAT_VERSION = 1;
 const DEFAULT_M: usize = 16;
 const DEFAULT_EF_CONSTRUCTION: usize = 96;
 const DEFAULT_EF_SEARCH: usize = 64;
+const DEFAULT_CACHE_NODES: usize = 65536;
 const EXACT_TINY_TABLE = 16;
 const VQ_MAGIC = "VQ1\x00";
 const VQ_HEADER_LEN: usize = 12;
@@ -68,6 +69,7 @@ const Config = struct {
     m: usize = DEFAULT_M,
     ef_construction: usize = DEFAULT_EF_CONSTRUCTION,
     ef_search: usize = DEFAULT_EF_SEARCH,
+    cache_nodes: usize = DEFAULT_CACHE_NODES,
     vector_col: usize = 0,
     distance_col: usize = 0,
     k_col: usize = 0,
@@ -167,6 +169,7 @@ const Node = struct {
     q: []i8 = &.{},
     q_scale: f32 = 1,
     q_offset: f32 = 0,
+    last_used: u64 = 0,
     adj: std.ArrayList(std.ArrayList(u32)),
 
     fn create(id: u32, rowid: i64, level: u8, part_key: []u8, values: []Cell, vec: VectorValue, q: QuantizedValue, adj_blob: ?[]const u8, transferred: ?*bool) !*Node {
@@ -233,6 +236,7 @@ const Node = struct {
             .q = &.{},
             .q_scale = self.q_scale,
             .q_offset = self.q_offset,
+            .last_used = self.last_used,
             .adj = .empty,
         };
         errdefer n.deinit();
@@ -366,8 +370,12 @@ const VTab = struct {
     columns: []Column,
     config: Config,
     nodes: std.ArrayList(?*Node),
+    live_ids: std.AutoHashMap(u32, void),
     row_map: std.AutoHashMap(i64, u32),
     free_ids: std.ArrayList(u32),
+    resident_count: usize = 0,
+    lru_clock: u64 = 0,
+    cache_faults: u64 = 0,
     version: i64 = -1,
     prng: Xoshiro,
     undo: std.ArrayList(UndoOp),
@@ -384,8 +392,12 @@ const VTab = struct {
             .columns = columns,
             .config = config,
             .nodes = .empty,
+            .live_ids = std.AutoHashMap(u32, void).init(alloc),
             .row_map = std.AutoHashMap(i64, u32).init(alloc),
             .free_ids = .empty,
+            .resident_count = 0,
+            .lru_clock = 0,
+            .cache_faults = 0,
             .prng = Xoshiro.init(hashSeed(name)),
             .undo = .empty,
             .frames = .empty,
@@ -399,6 +411,7 @@ const VTab = struct {
         self.frames.deinit(alloc);
         self.clearNodes();
         self.nodes.deinit(alloc);
+        self.live_ids.deinit();
         self.row_map.deinit();
         self.free_ids.deinit(alloc);
         deinitColumns(self.columns);
@@ -414,8 +427,11 @@ const VTab = struct {
             if (maybe) |n| n.deinit();
         }
         self.nodes.clearRetainingCapacity();
+        self.live_ids.clearRetainingCapacity();
         self.row_map.clearRetainingCapacity();
         self.free_ids.clearRetainingCapacity();
+        self.resident_count = 0;
+        self.cache_faults = 0;
     }
 
     fn clearUndoLog(self: *VTab) void {
@@ -453,10 +469,7 @@ const VTab = struct {
         for (self.undo.items[start..]) |op| {
             if (op == .node and op.node.id == id) return;
         }
-        var prev = if (id < self.nodes.items.len) blk: {
-            const n = self.nodes.items[id] orelse break :blk null;
-            break :blk try n.clone();
-        } else null;
+        var prev = if (try self.nodeResident(id)) |n| try n.clone() else null;
         errdefer if (prev) |n| n.deinit();
         try self.undo.append(alloc, .{ .node = .{ .id = id, .prev = prev } });
         prev = null;
@@ -492,14 +505,22 @@ const VTab = struct {
             switch (op) {
                 .node => |*u| {
                     if (u.id < self.nodes.items.len) {
-                        if (self.nodes.items[u.id]) |cur| cur.deinit();
+                        if (self.nodes.items[u.id]) |cur| {
+                            cur.deinit();
+                            self.resident_count -|= 1;
+                        }
                         self.nodes.items[u.id] = null;
                     } else if (u.prev != null) {
                         while (self.nodes.items.len <= u.id) try self.nodes.append(alloc, null);
                     }
                     if (u.prev) |prev| {
+                        try self.live_ids.put(u.id, {});
+                        self.touchNode(prev);
                         self.nodes.items[u.id] = prev;
+                        self.resident_count += 1;
                         u.prev = null;
+                    } else {
+                        _ = self.live_ids.remove(u.id);
                     }
                 },
                 .row_map => |u| {
@@ -516,9 +537,11 @@ const VTab = struct {
                     self.removeFreeId(id);
                 },
                 .nodes_append => |id| {
+                    _ = self.live_ids.remove(id);
                     if (id < self.nodes.items.len) {
                         if (self.nodes.items[id]) |cur| {
                             cur.deinit();
+                            self.resident_count -|= 1;
                             self.nodes.items[id] = null;
                         }
                         if (id + 1 == self.nodes.items.len) _ = self.nodes.pop();
@@ -540,6 +563,11 @@ const VTab = struct {
                 return;
             }
         }
+    }
+
+    fn touchNode(self: *VTab, n: *Node) void {
+        self.lru_clock +%= 1;
+        n.last_used = self.lru_clock;
     }
 
     fn findFrame(self: *VTab, id: c_int) ?usize {
@@ -599,6 +627,7 @@ const VTab = struct {
         try self.metaSetInt("m", self.config.m);
         try self.metaSetInt("ef_construction", self.config.ef_construction);
         try self.metaSetInt("ef_search", self.config.ef_search);
+        try self.metaSetInt("cache_nodes", self.config.cache_nodes);
         if ((try self.metaGetInt("version")) == null) try self.metaSetInt("version", 0);
         if ((try self.metaGetBlob("prng")) == null) try self.metaSetBlob("prng", self.prng.bytes()[0..]);
     }
@@ -648,6 +677,7 @@ const VTab = struct {
         if (try self.metaGetInt("m")) |v| self.config.m = @intCast(v);
         if (try self.metaGetInt("ef_construction")) |v| self.config.ef_construction = @intCast(v);
         if (try self.metaGetInt("ef_search")) |v| self.config.ef_search = @intCast(v);
+        if (try self.metaGetInt("cache_nodes")) |v| self.config.cache_nodes = @intCast(@max(v, 0));
         if (try self.metaGetBlob("prng")) |b| {
             defer alloc.free(b);
             self.prng = Xoshiro.fromBytes(b) orelse self.prng;
@@ -662,24 +692,7 @@ const VTab = struct {
         defer alloc.free(node_table);
         const q_node = try qualifiedName(self.schema, node_table);
         defer alloc.free(q_node);
-        const cold = self.coldFullVectors();
-        const sql = if (cold) blk: {
-            break :blk try std.fmt.allocPrint(
-                alloc,
-                "SELECT n.id,n.rowid,n.level,n.deleted,n.part,n.vq,n.vals,n.adj FROM {s} n ORDER BY n.id",
-                .{q_node},
-            );
-        } else blk: {
-            const vec = try self.shadowName("_vec");
-            defer alloc.free(vec);
-            const q_vec = try qualifiedName(self.schema, vec);
-            defer alloc.free(q_vec);
-            break :blk try std.fmt.allocPrint(
-                alloc,
-                "SELECT n.id,n.rowid,n.level,n.deleted,n.part,n.vq,n.vals,n.adj,v.v FROM {s} n JOIN {s} v ON v.id=n.id ORDER BY n.id",
-                .{ q_node, q_vec },
-            );
-        };
+        const sql = try std.fmt.allocPrint(alloc, "SELECT id,rowid,deleted FROM {s} ORDER BY id", .{q_node});
         defer freeQuotedSql(sql);
         var stmt: ?*c.sqlite3_stmt = null;
         const z = try alloc.dupeZ(u8, sql);
@@ -692,60 +705,149 @@ const VTab = struct {
             if (step != c.SQLITE_ROW) return error.Sqlite;
             const id: u32 = @intCast(c.sqlite3_column_int64(stmt, 0));
             const rowid = c.sqlite3_column_int64(stmt, 1);
-            const level: u8 = @intCast(c.sqlite3_column_int(stmt, 2));
-            const deleted = c.sqlite3_column_int(stmt, 3) != 0;
-            const part = try columnBlobCopy(stmt, 4);
-            var part_owned = true;
-            defer if (part_owned) alloc.free(part);
-            const vq_raw = try columnBlobCopy(stmt, 5);
-            defer alloc.free(vq_raw);
-            const vals_raw = try columnBlobCopy(stmt, 6);
-            defer alloc.free(vals_raw);
-            const adj_raw = try columnBlobCopy(stmt, 7);
-            defer alloc.free(adj_raw);
-            var vec_val = VectorValue{ .elem_type = self.config.elem_type, .dims = self.config.dims, .blob = &.{} };
-            if (!cold) {
-                const vec_raw = try columnBlobCopy(stmt, 8);
-                var vec_raw_owned = true;
-                defer if (vec_raw_owned) alloc.free(vec_raw);
-                vec_val = try decodeVectorBlob(vec_raw, self.config.elem_type, self.config.dims);
-                vec_raw_owned = false;
-            }
-            var vec_owned = true;
-            defer if (vec_owned) vec_val.deinit();
-            const values = try deserializeCells(vals_raw);
-            var values_owned = true;
-            defer if (values_owned) deinitCellSlice(values);
-            var q = try decodeQuantizedBlob(vq_raw, self.config.dims);
-            var q_owned = true;
-            defer if (q_owned) q.deinit();
-            var transferred = false;
-            const n = Node.create(id, rowid, level, part, values, vec_val, q, adj_raw, &transferred) catch |e| {
-                if (transferred) {
-                    part_owned = false;
-                    values_owned = false;
-                    vec_owned = false;
-                    q_owned = false;
-                }
-                return e;
-            };
-            part_owned = false;
-            values_owned = false;
-            vec_owned = false;
-            q_owned = false;
-            var n_owned = true;
-            defer if (n_owned) n.deinit();
             while (self.nodes.items.len <= id) try self.nodes.append(alloc, null);
-            n.deleted = deleted;
+            const deleted = c.sqlite3_column_int(stmt, 2) != 0;
             if (deleted) {
                 self.nodes.items[id] = null;
             } else {
-                self.nodes.items[id] = n;
-                n_owned = false;
+                try self.live_ids.put(id, {});
                 try self.row_map.put(rowid, id);
             }
         }
         try self.rebuildFreeIdsFromHoles();
+        if (self.cacheLimit() > 0) {
+            try self.primeResidentNodes(self.cacheLimit());
+        }
+        try self.trimResidentCache();
+    }
+
+    fn primeResidentNodes(self: *VTab, limit: usize) !void {
+        if (limit == 0) return;
+        const node_table = try self.shadowName("_node");
+        defer alloc.free(node_table);
+        const q_node = try qualifiedName(self.schema, node_table);
+        defer alloc.free(q_node);
+        const cold = self.coldFullVectors();
+        const sql = if (cold) blk: {
+            break :blk try std.fmt.allocPrint(
+                alloc,
+                "SELECT n.id,n.rowid,n.level,n.deleted,n.part,n.vq,n.vals,n.adj FROM {s} n WHERE n.deleted=0 ORDER BY n.id LIMIT ?",
+                .{q_node},
+            );
+        } else blk: {
+            const vec = try self.shadowName("_vec");
+            defer alloc.free(vec);
+            const q_vec = try qualifiedName(self.schema, vec);
+            defer alloc.free(q_vec);
+            break :blk try std.fmt.allocPrint(
+                alloc,
+                "SELECT n.id,n.rowid,n.level,n.deleted,n.part,n.vq,n.vals,n.adj,v.v FROM {s} n JOIN {s} v ON v.id=n.id WHERE n.deleted=0 ORDER BY n.id LIMIT ?",
+                .{ q_node, q_vec },
+            );
+        };
+        defer freeQuotedSql(sql);
+        var stmt: ?*c.sqlite3_stmt = null;
+        const z = try alloc.dupeZ(u8, sql);
+        defer alloc.free(z);
+        if (c.sqlite3_prepare_v2(self.db, z.ptr, -1, &stmt, null) != c.SQLITE_OK) return error.Sqlite;
+        defer _ = c.sqlite3_finalize(stmt);
+        if (c.sqlite3_bind_int64(stmt, 1, @intCast(limit)) != c.SQLITE_OK) return error.Sqlite;
+        while (true) {
+            const step = c.sqlite3_step(stmt);
+            if (step == c.SQLITE_DONE) break;
+            if (step != c.SQLITE_ROW) return error.Sqlite;
+            const id: u32 = @intCast(c.sqlite3_column_int64(stmt, 0));
+            if (!self.live_ids.contains(id)) continue;
+            while (self.nodes.items.len <= id) try self.nodes.append(alloc, null);
+            if (self.nodes.items[id] != null) continue;
+            const n = try self.nodeFromStmt(stmt, cold);
+            self.nodes.items[id] = n;
+            self.resident_count += 1;
+        }
+    }
+
+    fn loadNodeById(self: *VTab, id: u32) !?*Node {
+        const node_table = try self.shadowName("_node");
+        defer alloc.free(node_table);
+        const q_node = try qualifiedName(self.schema, node_table);
+        defer alloc.free(q_node);
+        const cold = self.coldFullVectors();
+        const sql = if (cold) blk: {
+            break :blk try std.fmt.allocPrint(
+                alloc,
+                "SELECT n.id,n.rowid,n.level,n.deleted,n.part,n.vq,n.vals,n.adj FROM {s} n WHERE n.id=?",
+                .{q_node},
+            );
+        } else blk: {
+            const vec = try self.shadowName("_vec");
+            defer alloc.free(vec);
+            const q_vec = try qualifiedName(self.schema, vec);
+            defer alloc.free(q_vec);
+            break :blk try std.fmt.allocPrint(
+                alloc,
+                "SELECT n.id,n.rowid,n.level,n.deleted,n.part,n.vq,n.vals,n.adj,v.v FROM {s} n JOIN {s} v ON v.id=n.id WHERE n.id=?",
+                .{ q_node, q_vec },
+            );
+        };
+        defer freeQuotedSql(sql);
+        var stmt: ?*c.sqlite3_stmt = null;
+        const z = try alloc.dupeZ(u8, sql);
+        defer alloc.free(z);
+        if (c.sqlite3_prepare_v2(self.db, z.ptr, -1, &stmt, null) != c.SQLITE_OK) return error.Sqlite;
+        defer _ = c.sqlite3_finalize(stmt);
+        if (c.sqlite3_bind_int64(stmt, 1, id) != c.SQLITE_OK) return error.Sqlite;
+        const step = c.sqlite3_step(stmt);
+        if (step == c.SQLITE_DONE) return null;
+        if (step != c.SQLITE_ROW) return error.Sqlite;
+        if (c.sqlite3_column_int(stmt, 3) != 0) return null;
+        return try self.nodeFromStmt(stmt, cold);
+    }
+
+    fn nodeFromStmt(self: *VTab, stmt: ?*c.sqlite3_stmt, cold: bool) !*Node {
+        const id: u32 = @intCast(c.sqlite3_column_int64(stmt, 0));
+        const rowid = c.sqlite3_column_int64(stmt, 1);
+        const level: u8 = @intCast(c.sqlite3_column_int(stmt, 2));
+        const part = try columnBlobCopy(stmt, 4);
+        var part_owned = true;
+        defer if (part_owned) alloc.free(part);
+        const vq_raw = try columnBlobCopy(stmt, 5);
+        defer alloc.free(vq_raw);
+        const vals_raw = try columnBlobCopy(stmt, 6);
+        defer alloc.free(vals_raw);
+        const adj_raw = try columnBlobCopy(stmt, 7);
+        defer alloc.free(adj_raw);
+        var vec_val = VectorValue{ .elem_type = self.config.elem_type, .dims = self.config.dims, .blob = &.{} };
+        if (!cold) {
+            const vec_raw = try columnBlobCopy(stmt, 8);
+            var vec_raw_owned = true;
+            defer if (vec_raw_owned) alloc.free(vec_raw);
+            vec_val = try decodeVectorBlob(vec_raw, self.config.elem_type, self.config.dims);
+            vec_raw_owned = false;
+        }
+        var vec_owned = true;
+        defer if (vec_owned) vec_val.deinit();
+        const values = try deserializeCells(vals_raw);
+        var values_owned = true;
+        defer if (values_owned) deinitCellSlice(values);
+        var q = try decodeQuantizedBlob(vq_raw, self.config.dims);
+        var q_owned = true;
+        defer if (q_owned) q.deinit();
+        var transferred = false;
+        const n = Node.create(id, rowid, level, part, values, vec_val, q, adj_raw, &transferred) catch |e| {
+            if (transferred) {
+                part_owned = false;
+                values_owned = false;
+                vec_owned = false;
+                q_owned = false;
+            }
+            return e;
+        };
+        part_owned = false;
+        values_owned = false;
+        vec_owned = false;
+        q_owned = false;
+        self.touchNode(n);
+        return n;
     }
 
     fn coldFullVectors(self: *const VTab) bool {
@@ -754,8 +856,9 @@ const VTab = struct {
 
     fn rebuildFreeIdsFromHoles(self: *VTab) !void {
         self.free_ids.clearRetainingCapacity();
-        for (self.nodes.items, 0..) |maybe, id| {
-            if (maybe == null) try self.free_ids.append(alloc, @intCast(id));
+        var id: usize = 0;
+        while (id < self.nodes.items.len) : (id += 1) {
+            if (!self.live_ids.contains(@intCast(id))) try self.free_ids.append(alloc, @intCast(id));
         }
     }
 
@@ -768,6 +871,46 @@ const VTab = struct {
         if (n.floats.len > 0) {
             alloc.free(n.floats);
             n.floats = &.{};
+        }
+    }
+
+    fn cacheLimit(self: *const VTab) usize {
+        return self.config.cache_nodes;
+    }
+
+    fn nodeResident(self: *VTab, id: u32) !?*Node {
+        if (!self.live_ids.contains(id)) return null;
+        while (self.nodes.items.len <= id) try self.nodes.append(alloc, null);
+        if (self.nodes.items[id]) |n| {
+            self.touchNode(n);
+            return n;
+        }
+        const n = try self.loadNodeById(id) orelse return null;
+        self.nodes.items[id] = n;
+        self.resident_count += 1;
+        self.cache_faults +%= 1;
+        return n;
+    }
+
+    fn trimResidentCache(self: *VTab) !void {
+        const limit = self.cacheLimit();
+        if (limit == 0) return;
+        while (self.resident_count > limit) {
+            var victim_id: ?usize = null;
+            var victim_tick: u64 = std.math.maxInt(u64);
+            for (self.nodes.items, 0..) |maybe, id| {
+                const n = maybe orelse continue;
+                if (n.last_used < victim_tick) {
+                    victim_tick = n.last_used;
+                    victim_id = id;
+                }
+            }
+            const id = victim_id orelse break;
+            if (self.nodes.items[id]) |n| {
+                n.deinit();
+                self.nodes.items[id] = null;
+                self.resident_count -|= 1;
+            }
         }
     }
 
@@ -893,13 +1036,17 @@ const VTab = struct {
         errdefer if (!n_installed) n.deinit();
         try self.recordNodeBefore(id);
         self.nodes.items[id] = n;
+        self.resident_count += 1;
+        self.touchNode(n);
         n_installed = true;
         try self.recordRowMapBefore(rowid);
         try self.row_map.put(rowid, id);
+        try self.live_ids.put(id, {});
         try self.linkNode(n, true, true);
         try self.persistNode(n);
         self.dropColdVectorPayload(n);
         try self.bumpVersion();
+        try self.trimResidentCache();
         changed_hot = false;
     }
 
@@ -914,16 +1061,18 @@ const VTab = struct {
         try self.recordRowMapBefore(rowid);
         _ = self.row_map.remove(rowid);
         self.nodes.items[id] = null;
+        _ = self.live_ids.remove(id);
         n.deinit();
+        self.resident_count -|= 1;
         try self.recordFreeAppend(id);
         try self.free_ids.append(alloc, id);
         try self.bumpVersion();
+        try self.trimResidentCache();
         changed_hot = false;
     }
 
     fn node(self: *VTab, id: u32) ?*Node {
-        if (id >= self.nodes.items.len) return null;
-        const n = self.nodes.items[id] orelse return null;
+        const n = (self.nodeResident(id) catch return null) orelse return null;
         if (n.deleted) return null;
         return n;
     }
@@ -941,14 +1090,31 @@ const VTab = struct {
     }
 
     fn entryForExcept(self: *VTab, part_key: []const u8, exclude: ?u32) ?u32 {
-        var best: ?*Node = null;
-        for (self.nodes.items) |maybe| {
-            const n = maybe orelse continue;
-            if (exclude != null and n.id == exclude.?) continue;
-            if (n.deleted or !std.mem.eql(u8, n.part_key, part_key)) continue;
-            if (best == null or n.level > best.?.level or (n.level == best.?.level and n.id < best.?.id)) best = n;
+        const node_table = self.shadowName("_node") catch return null;
+        defer alloc.free(node_table);
+        const q_node = qualifiedName(self.schema, node_table) catch return null;
+        defer alloc.free(q_node);
+        const sql = if (exclude) |_| std.fmt.allocPrint(
+            alloc,
+            "SELECT id FROM {s} WHERE deleted=0 AND part=? AND id<>? ORDER BY level DESC,id ASC LIMIT 1",
+            .{q_node},
+        ) catch return null else std.fmt.allocPrint(
+            alloc,
+            "SELECT id FROM {s} WHERE deleted=0 AND part=? ORDER BY level DESC,id ASC LIMIT 1",
+            .{q_node},
+        ) catch return null;
+        defer freeQuotedSql(sql);
+        var stmt: ?*c.sqlite3_stmt = null;
+        const z = alloc.dupeZ(u8, sql) catch return null;
+        defer alloc.free(z);
+        if (c.sqlite3_prepare_v2(self.db, z.ptr, -1, &stmt, null) != c.SQLITE_OK) return null;
+        defer _ = c.sqlite3_finalize(stmt);
+        if (c.sqlite3_bind_blob(stmt, 1, ptrOrEmpty(part_key), @intCast(part_key.len), SQLITE_TRANSIENT) != c.SQLITE_OK) return null;
+        if (exclude) |id| {
+            if (c.sqlite3_bind_int64(stmt, 2, id) != c.SQLITE_OK) return null;
         }
-        return if (best) |n| n.id else null;
+        if (c.sqlite3_step(stmt) != c.SQLITE_ROW) return null;
+        return @intCast(c.sqlite3_column_int64(stmt, 0));
     }
 
     fn linkNode(self: *VTab, n: *Node, persist_neighbors: bool, track_undo: bool) !void {
@@ -984,25 +1150,28 @@ const VTab = struct {
     }
 
     fn rebuildGraph(self: *VTab) !usize {
+        const ids = try self.liveIdList();
+        defer alloc.free(ids);
         var live: usize = 0;
-        for (self.nodes.items) |maybe| {
-            const n = maybe orelse continue;
+        for (ids) |id| {
+            const n = (try self.nodeResident(id)) orelse continue;
             for (n.adj.items) |*level| level.clearRetainingCapacity();
             while (n.adj.items.len <= n.level) try n.adj.append(alloc, .empty);
             n.deleted = true;
             live += 1;
         }
-        for (self.nodes.items) |maybe| {
-            const n = maybe orelse continue;
+        for (ids) |id| {
+            const n = (try self.nodeResident(id)) orelse continue;
             n.deleted = false;
             try self.linkNode(n, false, false);
         }
-        for (self.nodes.items) |maybe| {
-            const n = maybe orelse continue;
+        for (ids) |id| {
+            const n = (try self.nodeResident(id)) orelse continue;
             try self.persistAdjacency(n);
         }
         try self.rebuildMetadataIndex();
         try self.bumpVersion();
+        try self.trimResidentCache();
         return live;
     }
 
@@ -1011,13 +1180,31 @@ const VTab = struct {
     }
 
     fn maxLevelInPartExcept(self: *VTab, part_key: []const u8, exclude: ?u32) u8 {
-        var max: u8 = 0;
-        for (self.nodes.items) |maybe| {
-            const n = maybe orelse continue;
-            if (exclude != null and n.id == exclude.?) continue;
-            if (!n.deleted and std.mem.eql(u8, n.part_key, part_key) and n.level > max) max = n.level;
+        const node_table = self.shadowName("_node") catch return 0;
+        defer alloc.free(node_table);
+        const q_node = qualifiedName(self.schema, node_table) catch return 0;
+        defer alloc.free(q_node);
+        const sql = if (exclude) |_| std.fmt.allocPrint(
+            alloc,
+            "SELECT coalesce(max(level),0) FROM {s} WHERE deleted=0 AND part=? AND id<>?",
+            .{q_node},
+        ) catch return 0 else std.fmt.allocPrint(
+            alloc,
+            "SELECT coalesce(max(level),0) FROM {s} WHERE deleted=0 AND part=?",
+            .{q_node},
+        ) catch return 0;
+        defer freeQuotedSql(sql);
+        var stmt: ?*c.sqlite3_stmt = null;
+        const z = alloc.dupeZ(u8, sql) catch return 0;
+        defer alloc.free(z);
+        if (c.sqlite3_prepare_v2(self.db, z.ptr, -1, &stmt, null) != c.SQLITE_OK) return 0;
+        defer _ = c.sqlite3_finalize(stmt);
+        if (c.sqlite3_bind_blob(stmt, 1, ptrOrEmpty(part_key), @intCast(part_key.len), SQLITE_TRANSIENT) != c.SQLITE_OK) return 0;
+        if (exclude) |id| {
+            if (c.sqlite3_bind_int64(stmt, 2, id) != c.SQLITE_OK) return 0;
         }
-        return max;
+        if (c.sqlite3_step(stmt) != c.SQLITE_ROW) return 0;
+        return @intCast(c.sqlite3_column_int(stmt, 0));
     }
 
     fn greedy(self: *VTab, target: *Node, start: u32, level: usize) !Neighbor {
@@ -1123,15 +1310,17 @@ const VTab = struct {
         defer q_quant.deinit();
         const part_key = try self.queryPartKey(filters);
         defer if (part_key) |key| alloc.free(key);
-        const total = self.liveCount(part_key, filters);
-        if (total == 0 or k == 0) return alloc.alloc(SearchResult, 0);
+        if (k == 0) return alloc.alloc(SearchResult, 0);
         if (self.hasMetadataFilters(filters)) {
             if (try self.metadataPrefilterIds(filters)) |ids| {
                 defer alloc.free(ids);
+                if (ids.len == 0) return alloc.alloc(SearchResult, 0);
                 return self.exactSearchIds(q, ids, part_key, filters, k);
             }
             return self.exactSearch(q, part_key, filters, k);
         }
+        const total = self.liveCount(part_key, filters);
+        if (total == 0) return alloc.alloc(SearchResult, 0);
         if (total <= EXACT_TINY_TABLE or filters.len > 0 and total <= @max(ef_req * 4, 256)) {
             return self.exactSearch(q, part_key, filters, k);
         }
@@ -1162,7 +1351,9 @@ const VTab = struct {
             alloc.free(exact);
         }
         while (out.items.len > k) _ = out.pop();
-        return out.toOwnedSlice(alloc);
+        const results = try out.toOwnedSlice(alloc);
+        try self.trimResidentCache();
+        return results;
     }
 
     fn hasMetadataFilters(self: *VTab, filters: []const QueryFilter) bool {
@@ -1198,25 +1389,31 @@ const VTab = struct {
     fn exactSearch(self: *VTab, q: VectorValue, part_key: ?[]const u8, filters: []const QueryFilter, k: usize) ![]SearchResult {
         var out: std.ArrayList(SearchResult) = .empty;
         defer out.deinit(alloc);
-        for (self.nodes.items) |maybe| {
-            const n = maybe orelse continue;
+        const ids = try self.liveIdList();
+        defer alloc.free(ids);
+        for (ids) |id| {
+            const n = (try self.nodeResident(id)) orelse continue;
             if (n.deleted or !self.matchesPart(n, part_key)) continue;
             if (!self.matchesFilters(n, filters)) continue;
             try insertResultBounded(&out, .{ .id = n.id, .rowid = n.rowid, .distance = try self.exactDistanceRaw(n.id, q.floats, q.bits) }, k);
         }
-        return out.toOwnedSlice(alloc);
+        const results = try out.toOwnedSlice(alloc);
+        try self.trimResidentCache();
+        return results;
     }
 
     fn exactSearchIds(self: *VTab, q: VectorValue, ids: []const u32, part_key: ?[]const u8, filters: []const QueryFilter, k: usize) ![]SearchResult {
         var out: std.ArrayList(SearchResult) = .empty;
         defer out.deinit(alloc);
         for (ids) |id| {
-            const n = self.node(id) orelse continue;
+            const n = (try self.nodeResident(id)) orelse continue;
             if (n.deleted or !self.matchesPart(n, part_key)) continue;
             if (!self.matchesFilters(n, filters)) continue;
             try insertResultBounded(&out, .{ .id = n.id, .rowid = n.rowid, .distance = try self.exactDistanceRaw(n.id, q.floats, q.bits) }, k);
         }
-        return out.toOwnedSlice(alloc);
+        const results = try out.toOwnedSlice(alloc);
+        try self.trimResidentCache();
+        return results;
     }
 
     fn metadataPrefilterIds(self: *VTab, filters: []const QueryFilter) !?[]u32 {
@@ -1250,12 +1447,6 @@ const VTab = struct {
             i += 1;
         }
         sortU32(ids);
-        const expected = try self.exactMetadataIds(filters);
-        defer alloc.free(expected);
-        if (!std.mem.eql(u32, ids, expected)) {
-            alloc.free(ids);
-            return null;
-        }
         return ids;
     }
 
@@ -1301,13 +1492,20 @@ const VTab = struct {
         return count;
     }
 
-    fn liveNodeCount(self: *const VTab) usize {
-        var count: usize = 0;
-        for (self.nodes.items) |maybe| {
-            const n = maybe orelse continue;
-            if (!n.deleted) count += 1;
+    fn liveIdList(self: *VTab) ![]u32 {
+        var ids = try alloc.alloc(u32, self.live_ids.count());
+        var i: usize = 0;
+        var it = self.live_ids.keyIterator();
+        while (it.next()) |id| {
+            ids[i] = id.*;
+            i += 1;
         }
-        return count;
+        sortU32(ids);
+        return ids;
+    }
+
+    fn liveNodeCount(self: *const VTab) usize {
+        return self.live_ids.count();
     }
 
     fn metadataIndexRowCount(self: *VTab) !usize {
@@ -1326,20 +1524,6 @@ const VTab = struct {
         return @intCast(c.sqlite3_column_int64(stmt, 0));
     }
 
-    fn exactMetadataIds(self: *VTab, filters: []const QueryFilter) ![]u32 {
-        var out: std.ArrayList(u32) = .empty;
-        errdefer out.deinit(alloc);
-        for (self.nodes.items) |maybe| {
-            const n = maybe orelse continue;
-            if (n.deleted) continue;
-            if (!self.matchesMetadataFilters(n, filters)) continue;
-            try out.append(alloc, n.id);
-        }
-        const ids = try out.toOwnedSlice(alloc);
-        sortU32(ids);
-        return ids;
-    }
-
     fn matchesMetadataFilters(self: *VTab, n: *Node, filters: []const QueryFilter) bool {
         for (filters) |f| {
             if (f.col >= self.columns.len or self.columns[f.col].kind != .metadata) continue;
@@ -1350,11 +1534,37 @@ const VTab = struct {
     }
 
     fn liveCount(self: *VTab, part_key: ?[]const u8, filters: []const QueryFilter) usize {
+        if (self.hasMetadataFilters(filters)) return self.liveCountByScan(part_key, filters);
+        const node_table = self.shadowName("_node") catch return self.liveCountByScan(part_key, filters);
+        defer alloc.free(node_table);
+        const q_node = qualifiedName(self.schema, node_table) catch return self.liveCountByScan(part_key, filters);
+        defer alloc.free(q_node);
+        const sql = if (part_key != null)
+            std.fmt.allocPrint(alloc, "SELECT count(*) FROM {s} WHERE deleted=0 AND part=?", .{q_node}) catch return self.liveCountByScan(part_key, filters)
+        else
+            std.fmt.allocPrint(alloc, "SELECT count(*) FROM {s} WHERE deleted=0", .{q_node}) catch return self.liveCountByScan(part_key, filters);
+        defer freeQuotedSql(sql);
+        var stmt: ?*c.sqlite3_stmt = null;
+        const z = alloc.dupeZ(u8, sql) catch return self.liveCountByScan(part_key, filters);
+        defer alloc.free(z);
+        if (c.sqlite3_prepare_v2(self.db, z.ptr, -1, &stmt, null) != c.SQLITE_OK) return self.liveCountByScan(part_key, filters);
+        defer _ = c.sqlite3_finalize(stmt);
+        if (part_key) |key| {
+            if (c.sqlite3_bind_blob(stmt, 1, ptrOrEmpty(key), @intCast(key.len), SQLITE_TRANSIENT) != c.SQLITE_OK) return self.liveCountByScan(part_key, filters);
+        }
+        if (c.sqlite3_step(stmt) != c.SQLITE_ROW) return self.liveCountByScan(part_key, filters);
+        return @intCast(c.sqlite3_column_int64(stmt, 0));
+    }
+
+    fn liveCountByScan(self: *VTab, part_key: ?[]const u8, filters: []const QueryFilter) usize {
         var nlive: usize = 0;
-        for (self.nodes.items) |maybe| {
-            const n = maybe orelse continue;
+        const ids = self.liveIdList() catch return 0;
+        defer alloc.free(ids);
+        for (ids) |id| {
+            const n = self.node(id) orelse continue;
             if (!n.deleted and self.matchesPart(n, part_key) and self.matchesFilters(n, filters)) nlive += 1;
         }
+        self.trimResidentCache() catch {};
         return nlive;
     }
 
@@ -1540,11 +1750,14 @@ const VTab = struct {
         const delete_sql = try std.fmt.allocPrint(alloc, "DELETE FROM {s}", .{q_idx});
         defer freeQuotedSql(delete_sql);
         try execOwned(self.db, delete_sql);
-        for (self.nodes.items) |maybe| {
-            const n = maybe orelse continue;
+        const ids = try self.liveIdList();
+        defer alloc.free(ids);
+        for (ids) |id| {
+            const n = (try self.nodeResident(id)) orelse continue;
             if (n.deleted) continue;
             try self.persistMetadataIndex(n);
         }
+        try self.trimResidentCache();
     }
 
     fn fetchVectorBlob(self: *VTab, id: u32) ![]u8 {
@@ -1913,10 +2126,13 @@ fn xFilter(curp: ?*c.sqlite3_vtab_cursor, idx_num: c_int, idx_str: [*c]const u8,
         for (res) |r| cur.results.append(alloc, r) catch return c.SQLITE_NOMEM;
     } else {
         t.refreshIfNeeded();
-        for (t.nodes.items) |maybe| {
-            const n = maybe orelse continue;
+        const ids = t.liveIdList() catch return c.SQLITE_NOMEM;
+        defer alloc.free(ids);
+        for (ids) |id| {
+            const n = t.node(id) orelse continue;
             if (!n.deleted and t.matchesFilters(n, filters.items)) cur.results.append(alloc, .{ .id = n.id, .rowid = n.rowid, .distance = 0 }) catch return c.SQLITE_NOMEM;
         }
+        t.trimResidentCache() catch {};
     }
     return c.SQLITE_OK;
 }
@@ -2119,18 +2335,24 @@ fn xIntegrity(p: ?*c.sqlite3_vtab, schema_z: [*c]const u8, tab_z: [*c]const u8, 
     _ = tab_z;
     _ = flags;
     const t = tabFromBase(p);
-    for (t.nodes.items) |maybe| {
-        const n = maybe orelse continue;
+    const ids = t.liveIdList() catch {
+        err.* = sqliteMallocString("vann: out of memory");
+        return c.SQLITE_NOMEM;
+    };
+    defer alloc.free(ids);
+    for (ids) |node_id| {
+        const n = t.node(node_id) orelse continue;
         if (n.deleted) continue;
         for (n.adj.items) |lvl| {
-            for (lvl.items) |id| {
-                if (t.node(id) == null) {
+            for (lvl.items) |edge_id| {
+                if (t.node(edge_id) == null) {
                     err.* = sqliteMallocString("vann: dangling graph edge");
                     return c.SQLITE_CORRUPT_VTAB;
                 }
             }
         }
     }
+    t.trimResidentCache() catch {};
     return c.SQLITE_OK;
 }
 
@@ -2170,8 +2392,8 @@ fn infoFunc(ctx: ?*c.sqlite3_context, argc: c_int, argv: [*c]?*c.sqlite3_value) 
     defer snap.deinit();
     const json = std.fmt.allocPrint(
         alloc,
-        "{{\"module\":\"vann\",\"format\":{d},\"dims\":{d},\"elem_type\":\"{s}\",\"metric\":\"{s}\",\"M\":{d},\"ef_construction\":{d},\"ef_search\":{d},\"version\":{d},\"nodes\":{d},\"live\":{d},\"deleted\":{d},\"max_id\":{d},\"free_slots\":{d},\"metadata_index_rows\":{d},\"resident_bytes\":{d},\"cold_vector_bytes\":{d}}}",
-        .{ snap.format, snap.dims, elemTypeName(snap.elem_type), metricName(snap.metric), snap.m, snap.ef_construction, snap.ef_search, snap.version, snap.nodes, snap.live, snap.deleted, snap.max_id, snap.free_slots, snap.metadata_index_rows, snap.resident_bytes, snap.cold_vector_bytes },
+        "{{\"module\":\"vann\",\"format\":{d},\"dims\":{d},\"elem_type\":\"{s}\",\"metric\":\"{s}\",\"M\":{d},\"ef_construction\":{d},\"ef_search\":{d},\"cache_nodes\":{d},\"version\":{d},\"nodes\":{d},\"live\":{d},\"deleted\":{d},\"max_id\":{d},\"free_slots\":{d},\"metadata_index_rows\":{d},\"resident_bytes\":{d},\"cold_vector_bytes\":{d}}}",
+        .{ snap.format, snap.dims, elemTypeName(snap.elem_type), metricName(snap.metric), snap.m, snap.ef_construction, snap.ef_search, snap.cache_nodes, snap.version, snap.nodes, snap.live, snap.deleted, snap.max_id, snap.free_slots, snap.metadata_index_rows, snap.resident_bytes, snap.cold_vector_bytes },
     ) catch {
         resultError(ctx, "vann_info: out of memory");
         return;
@@ -2276,6 +2498,7 @@ const Introspection = struct {
     m: i64,
     ef_construction: i64,
     ef_search: i64,
+    cache_nodes: i64,
     version: i64,
     nodes: i64,
     live: i64,
@@ -2314,6 +2537,7 @@ fn readIntrospection(ctx: ?*c.sqlite3_context, argc: c_int, argv: [*c]?*c.sqlite
         .m = m,
         .ef_construction = (try metaGetIntByPrefix(db, prefix, "ef_construction")) orelse DEFAULT_EF_CONSTRUCTION,
         .ef_search = (try metaGetIntByPrefix(db, prefix, "ef_search")) orelse DEFAULT_EF_SEARCH,
+        .cache_nodes = (try metaGetIntByPrefix(db, prefix, "cache_nodes")) orelse DEFAULT_CACHE_NODES,
         .version = (try metaGetIntByPrefix(db, prefix, "version")) orelse 0,
         .nodes = counts.nodes,
         .live = counts.live,
@@ -2724,6 +2948,7 @@ fn parseOption(raw: []const u8, cfg: *Config) !void {
     if (std.mem.eql(u8, key, "M")) cfg.m = try std.fmt.parseInt(usize, val, 10);
     if (std.mem.eql(u8, key, "ef_construction")) cfg.ef_construction = try std.fmt.parseInt(usize, val, 10);
     if (std.mem.eql(u8, key, "ef_search")) cfg.ef_search = try std.fmt.parseInt(usize, val, 10);
+    if (std.mem.eql(u8, key, "cache_nodes")) cfg.cache_nodes = try std.fmt.parseInt(usize, val, 10);
 }
 
 fn buildDeclareSql(cols: []const Column) ![]u8 {
@@ -3510,9 +3735,9 @@ fn resultText(ctx: ?*c.sqlite3_context, msg: []const u8) void {
 
 fn nextRowid(t: *VTab) i64 {
     var max: i64 = 0;
-    for (t.nodes.items) |maybe| {
-        const n = maybe orelse continue;
-        if (!n.deleted and n.rowid > max) max = n.rowid;
+    var it = t.row_map.keyIterator();
+    while (it.next()) |rowid| {
+        if (rowid.* > max) max = rowid.*;
     }
     return max + 1;
 }

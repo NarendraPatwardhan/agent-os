@@ -99,7 +99,7 @@ end
 
 `sqlite.vec.f32(values)`, `sqlite.vec.int8(values)`, and `sqlite.vec.bit(values)` encode vectors as tagged BLOBs. `Db:vectorSearch()` accepts one of those BLOBs or a numeric array plus `type = "f32" | "int8" | "bit"`.
 
-Keep dimensions fixed for a table. Reject NaN/Inf before insert if embeddings come from an unreliable source. Use `metric = "cosine"` for normalized semantic embeddings, `metric = "l2"` for geometric distance, `metric = "ip"` for inner product scoring, and `metric = "hamming"` for bit vectors. Use small `k` values for interactive retrieval, and set `ef` in `vectorSearch()` only when recall needs a wider candidate search.
+Keep dimensions fixed for a table. Reject NaN/Inf before insert if embeddings come from an unreliable source. Use `metric = "cosine"` for normalized semantic embeddings, `metric = "l2"` for geometric distance, `metric = "ip"` for inner product scoring, and `metric = "hamming"` for bit vectors. Use small `k` values for interactive retrieval, set `ef` in `vectorSearch()` only when recall needs a wider candidate search, and set `cacheNodes` in `createVectorIndex()` only when you need to cap resident graph nodes for a large store.
 
 ## RAG Loop
 
