@@ -380,6 +380,47 @@ SELECT rowid, title FROM upd WHERE embedding MATCH vec_f32('[1,0]') AND k = 1 AN
 }
 
 #[test]
+fn sqlite_vector_rejects_invalid_declarations_and_vectors() {
+    let mut s = boot_atlas();
+    s.host
+        .write_file(
+            "/tmp/badvec.luau",
+            br#"
+local sqlite = require("sqlite")
+local db = assert(sqlite.open("/tmp/badvec.db"))
+local bad_dims = pcall(function()
+  db:exec("CREATE VIRTUAL TABLE bad_dims USING vann(embedding float[0])")
+end)
+local bad_m = pcall(function()
+  db:exec("CREATE VIRTUAL TABLE bad_m USING vann(embedding float[2], M=0)")
+end)
+local bad_ef = pcall(function()
+  db:exec("CREATE VIRTUAL TABLE bad_ef USING vann(embedding float[2], ef_search=0)")
+end)
+local bad_option = pcall(function()
+  db:exec("CREATE VIRTUAL TABLE bad_option USING vann(embedding float[2], surprise=1)")
+end)
+db:createVectorIndex("good", {
+  vector = { name = "embedding", type = "float", dims = 2, metric = "cosine" },
+})
+local bad_nan = pcall(function()
+  db:exec("INSERT INTO good(rowid, embedding) VALUES (1, vec_f32('[nan,1]'))")
+end)
+local bad_zero = pcall(function()
+  db:exec("INSERT INTO good(rowid, embedding) VALUES (2, vec_f32('[0,0]'))")
+end)
+print(tostring(bad_dims), tostring(bad_m), tostring(bad_ef), tostring(bad_option), tostring(bad_nan), tostring(bad_zero))
+db:close()
+"#,
+        )
+        .expect("write badvec.luau");
+    assert_eq!(
+        s.run_for_output("luau /tmp/badvec.luau"),
+        "false\tfalse\tfalse\tfalse\tfalse\tfalse\r\n"
+    );
+}
+
+#[test]
 fn sqlite_vector_cosine_cold_start_fetches_full_vectors_from_shadow_table() {
     let mut s = boot_atlas();
     assert_eq!(

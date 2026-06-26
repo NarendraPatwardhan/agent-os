@@ -3022,6 +3022,7 @@ fn parseDeclarationItems(items: []const []const u8) !ParsedDecl {
         try appendParsedColumn(&cols, name, kind, value_type);
     }
     if (!saw_vector or cfg.dims == 0) return error.MissingVector;
+    if (cfg.m == 0 or cfg.ef_construction == 0 or cfg.ef_search == 0) return error.BadOption;
     cfg.visible_cols = cols.items.len;
     cfg.distance_col = cols.items.len;
     try appendParsedColumn(&cols, "distance", .hidden_distance, .real);
@@ -3148,10 +3149,17 @@ fn parseOption(raw: []const u8, cfg: *Config) !void {
     const eq = std.mem.indexOfScalar(u8, raw, '=') orelse return;
     const key = raw[0..eq];
     const val = raw[eq + 1 ..];
-    if (std.mem.eql(u8, key, "M")) cfg.m = try std.fmt.parseInt(usize, val, 10);
-    if (std.mem.eql(u8, key, "ef_construction")) cfg.ef_construction = try std.fmt.parseInt(usize, val, 10);
-    if (std.mem.eql(u8, key, "ef_search")) cfg.ef_search = try std.fmt.parseInt(usize, val, 10);
-    if (std.mem.eql(u8, key, "cache_nodes")) cfg.cache_nodes = try std.fmt.parseInt(usize, val, 10);
+    if (std.mem.eql(u8, key, "M")) {
+        cfg.m = try std.fmt.parseInt(usize, val, 10);
+    } else if (std.mem.eql(u8, key, "ef_construction")) {
+        cfg.ef_construction = try std.fmt.parseInt(usize, val, 10);
+    } else if (std.mem.eql(u8, key, "ef_search")) {
+        cfg.ef_search = try std.fmt.parseInt(usize, val, 10);
+    } else if (std.mem.eql(u8, key, "cache_nodes")) {
+        cfg.cache_nodes = try std.fmt.parseInt(usize, val, 10);
+    } else {
+        return error.BadOption;
+    }
 }
 
 fn buildDeclareSql(cols: []const Column) ![]u8 {
