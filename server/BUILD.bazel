@@ -37,6 +37,10 @@ mix_library(
 # `mix test` against the pre-compiled MIX_ENV=test lib (the NIF smoke test + the OTP layer test).
 mix_test(
     name = "mix_test",
+    data = [
+        "//memcontainers/images:minimal",
+        "//memcontainers/kernel/rust:kernel",
+    ],
     lib = ":lib_test",
     srcs = glob(["test/**/*.exs"]),
     target_compatible_with = _ELIXIR_ONLY,

@@ -24,8 +24,9 @@ defmodule AgentOS.Vm do
 
   `exec/3` runs synchronously: the NIF ticks the kernel to completion on a DirtyCpu thread, so
   it never stalls a BEAM scheduler — only *this* actor's mailbox, which is correct (one VM runs
-  one command at a time). Incremental exec + terminal streaming are a later refinement on top
-  of `tick/2` + `take_output/1`.
+  one command at a time). For streaming or long-running commands, use the structured
+  `exec_start/2` + `exec_poll/2` + `exec_stdout_peek/2` lifecycle; it still serializes through
+  this actor and reuses the Rust host's control channel.
   """
 
   use GenServer, restart: :transient
@@ -38,6 +39,7 @@ defmodule AgentOS.Vm do
   # A generous default tick ceiling for a single command. SQLite/typst compiles burn millions
   # of fuel slices; this bounds a runaway command rather than the common case.
   @default_max_ticks 5_000_000
+  @default_call_timeout 60_000
 
   defstruct [:id, :nif, :booted_at, :last_active_ms]
 
@@ -56,19 +58,54 @@ defmodule AgentOS.Vm do
 
   @doc "Run `cmd` to completion → `{:ok, %{exit_code, stdout, stderr}}` or `{:error, reason}`."
   @spec exec(server(), String.t(), keyword()) :: {:ok, map()} | {:error, Nif.reason()}
-  def exec(server, cmd, opts \\ []) when is_binary(cmd) do
+  def exec(server, cmd, opts \\ [])
+
+  def exec(server, cmd, opts) when is_binary(cmd) do
     max_ticks = Keyword.get(opts, :max_ticks, @default_max_ticks)
-    GenServer.call(server, {:exec, cmd, max_ticks}, Keyword.get(opts, :timeout, 60_000))
+    GenServer.call(server, {:exec, cmd, max_ticks}, timeout(opts))
   end
+
+  def exec(_server, _cmd, _opts), do: {:error, "exec expects a binary command"}
+
+  @doc "Start a structured exec job. Poll it with `exec_poll/2`; cancel it with `exec_cancel/2`."
+  @spec exec_start(server(), String.t(), keyword()) :: {:ok, integer()} | {:error, Nif.reason()}
+  def exec_start(server, cmd, opts \\ [])
+
+  def exec_start(server, cmd, opts) when is_binary(cmd),
+    do: GenServer.call(server, {:exec_start, cmd}, timeout(opts))
+
+  def exec_start(_server, _cmd, _opts), do: {:error, "exec_start expects a binary command"}
+
+  @doc "Poll a structured exec job; `{:ok, nil}` means still running."
+  @spec exec_poll(server(), integer(), keyword()) ::
+          {:ok, nil | map()} | {:error, Nif.reason()}
+  def exec_poll(server, job, opts \\ []),
+    do: GenServer.call(server, {:exec_poll, job}, timeout(opts))
+
+  @doc "Read stdout produced so far by a running structured exec job."
+  @spec exec_stdout_peek(server(), integer(), keyword()) :: {:ok, binary()} | {:error, Nif.reason()}
+  def exec_stdout_peek(server, job, opts \\ []),
+    do: GenServer.call(server, {:exec_stdout_peek, job}, timeout(opts))
+
+  @doc "Cancel a structured exec job."
+  @spec exec_cancel(server(), integer(), keyword()) :: :ok | {:error, Nif.reason()}
+  def exec_cancel(server, job, opts \\ []),
+    do: GenServer.call(server, {:exec_cancel, job}, timeout(opts))
 
   @doc "Feed terminal input bytes."
   @spec send_input(server(), binary()) :: :ok | {:error, Nif.reason()}
   def send_input(server, bytes) when is_binary(bytes),
     do: GenServer.call(server, {:send_input, bytes})
 
+  def send_input(_server, _bytes), do: {:error, "send_input expects binary bytes"}
+
   @doc "Drive `n` bounded ticks (default 1): `:running`, `:exited`, or `{:error, reason}`."
   @spec tick(server(), pos_integer()) :: :running | :exited | {:error, Nif.reason()}
-  def tick(server, n \\ 1) when n > 0, do: GenServer.call(server, {:tick, n})
+  def tick(server, n \\ 1)
+
+  def tick(server, n) when n > 0, do: GenServer.call(server, {:tick, n})
+
+  def tick(_server, _n), do: {:error, "tick expects a positive integer count"}
 
   @doc "Drain the terminal output captured since the last drain."
   @spec take_output(server()) :: binary()
@@ -76,11 +113,86 @@ defmodule AgentOS.Vm do
 
   @doc "Snapshot the whole VM into a portable blob (refuses while egress is in flight)."
   @spec snapshot(server()) :: {:ok, binary()} | {:error, Nif.reason()}
-  def snapshot(server), do: GenServer.call(server, :snapshot, 60_000)
+  def snapshot(server), do: GenServer.call(server, :snapshot, @default_call_timeout)
+
+  @doc "Serialize the live CoW overlay into a content-addressed tar layer."
+  @spec commit_layer(server(), keyword()) ::
+          {:ok, %{tar: binary(), digest: String.t()}} | {:error, Nif.reason()}
+  def commit_layer(server, opts \\ []),
+    do: GenServer.call(server, :commit_layer, timeout(opts))
+
+  @doc "Read a whole file through the control channel."
+  @spec read_file(server(), String.t(), keyword()) :: {:ok, binary()} | {:error, Nif.reason()}
+  def read_file(server, path, opts \\ [])
+
+  def read_file(server, path, opts) when is_binary(path),
+    do: GenServer.call(server, {:read_file, path}, timeout(opts))
+
+  def read_file(_server, _path, _opts), do: {:error, "read_file expects a binary path"}
+
+  @doc "Write a whole file through the control channel."
+  @spec write_file(server(), String.t(), binary(), keyword()) :: :ok | {:error, Nif.reason()}
+  def write_file(server, path, data, opts \\ [])
+
+  def write_file(server, path, data, opts) when is_binary(path) and is_binary(data),
+    do: GenServer.call(server, {:write_file, path, data}, timeout(opts))
+
+  def write_file(_server, _path, _data, _opts),
+    do: {:error, "write_file expects a binary path and data"}
+
+  @doc "List a directory through the control channel."
+  @spec readdir(server(), String.t(), keyword()) :: {:ok, [Nif.dir_entry()]} | {:error, Nif.reason()}
+  def readdir(server, path, opts \\ [])
+
+  def readdir(server, path, opts) when is_binary(path),
+    do: GenServer.call(server, {:readdir, path}, timeout(opts))
+
+  def readdir(_server, _path, _opts), do: {:error, "readdir expects a binary path"}
+
+  @doc "Stat a path through the control channel."
+  @spec stat(server(), String.t(), keyword()) :: {:ok, Nif.file_stat()} | {:error, Nif.reason()}
+  def stat(server, path, opts \\ [])
+
+  def stat(server, path, opts) when is_binary(path),
+    do: GenServer.call(server, {:stat, path}, timeout(opts))
+
+  def stat(_server, _path, _opts), do: {:error, "stat expects a binary path"}
+
+  @doc "Create a directory through the control channel."
+  @spec mkdir(server(), String.t(), keyword()) :: :ok | {:error, Nif.reason()}
+  def mkdir(server, path, opts \\ [])
+
+  def mkdir(server, path, opts) when is_binary(path),
+    do: GenServer.call(server, {:mkdir, path}, timeout(opts))
+
+  def mkdir(_server, _path, _opts), do: {:error, "mkdir expects a binary path"}
+
+  @doc "Remove a file or empty directory through the control channel."
+  @spec unlink(server(), String.t(), keyword()) :: :ok | {:error, Nif.reason()}
+  def unlink(server, path, opts \\ [])
+
+  def unlink(server, path, opts) when is_binary(path),
+    do: GenServer.call(server, {:unlink, path}, timeout(opts))
+
+  def unlink(_server, _path, _opts), do: {:error, "unlink expects a binary path"}
+
+  @doc "Create a symbolic link through the control channel."
+  @spec symlink(server(), String.t(), String.t(), keyword()) :: :ok | {:error, Nif.reason()}
+  def symlink(server, target, link, opts \\ [])
+
+  def symlink(server, target, link, opts) when is_binary(target) and is_binary(link),
+    do: GenServer.call(server, {:symlink, target, link}, timeout(opts))
+
+  def symlink(_server, _target, _link, _opts),
+    do: {:error, "symlink expects binary target and link paths"}
 
   @doc "Liveness/age info."
   @spec info(server()) :: map()
   def info(server), do: GenServer.call(server, :info)
+
+  @doc "Host status from the Rust VM resource."
+  @spec status(server()) :: {:ok, Nif.status()} | {:error, Nif.reason()}
+  def status(server), do: GenServer.call(server, :status, @default_call_timeout)
 
   @typep server :: pid() | {:via, module(), term()}
 
@@ -96,8 +208,8 @@ defmodule AgentOS.Vm do
 
     result =
       case Keyword.get(opts, :snapshot) do
-        nil -> Nif.boot(wasm, Keyword.get(opts, :base_image))
-        snap -> Nif.restore(wasm, snap)
+        nil -> Nif.boot(wasm, Keyword.get(opts, :base_image), nif_opts(opts))
+        snap -> Nif.restore(wasm, snap, nif_opts(opts))
       end
 
     case result do
@@ -108,7 +220,7 @@ defmodule AgentOS.Vm do
       {:error, reason} ->
         # A boot/restore failure is a clean stop, so the caller sees `{:error, reason}` rather
         # than a mailbox for a VM that never came up.
-        {:stop, {:vm_start_failed, reason}}
+        {:stop, reason}
     end
   end
 
@@ -117,13 +229,36 @@ defmodule AgentOS.Vm do
     reply =
       case Nif.exec(state.nif, cmd, max_ticks) do
         {:ok, {exit_code, stdout, stderr}} ->
-          {:ok, %{exit_code: exit_code, stdout: stdout, stderr: stderr}}
+          {:ok, exec_result(exit_code, stdout, stderr)}
 
         {:error, _reason} = err ->
           err
       end
 
     {:reply, reply, touch(state)}
+  end
+
+  def handle_call({:exec_start, cmd}, _from, state) do
+    {:reply, Nif.exec_start(state.nif, cmd), touch(state)}
+  end
+
+  def handle_call({:exec_poll, job}, _from, state) do
+    reply =
+      case Nif.exec_poll(state.nif, job) do
+        {:ok, nil} -> {:ok, nil}
+        {:ok, {exit_code, stdout, stderr}} -> {:ok, exec_result(exit_code, stdout, stderr)}
+        {:error, _reason} = err -> err
+      end
+
+    {:reply, reply, touch(state)}
+  end
+
+  def handle_call({:exec_stdout_peek, job}, _from, state) do
+    {:reply, Nif.exec_stdout_peek(state.nif, job), touch(state)}
+  end
+
+  def handle_call({:exec_cancel, job}, _from, state) do
+    {:reply, Nif.exec_cancel(state.nif, job), touch(state)}
   end
 
   def handle_call({:send_input, bytes}, _from, state) do
@@ -142,9 +277,51 @@ defmodule AgentOS.Vm do
     {:reply, Nif.snapshot(state.nif), state}
   end
 
+  def handle_call(:commit_layer, _from, state) do
+    reply =
+      case Nif.commit_layer(state.nif) do
+        {:ok, {tar, digest}} -> {:ok, %{tar: tar, digest: digest}}
+        {:error, _reason} = err -> err
+      end
+
+    {:reply, reply, touch(state)}
+  end
+
+  def handle_call({:read_file, path}, _from, state) do
+    {:reply, Nif.read_file(state.nif, path), touch(state)}
+  end
+
+  def handle_call({:write_file, path, data}, _from, state) do
+    {:reply, Nif.write_file(state.nif, path, data), touch(state)}
+  end
+
+  def handle_call({:readdir, path}, _from, state) do
+    {:reply, Nif.readdir(state.nif, path), touch(state)}
+  end
+
+  def handle_call({:stat, path}, _from, state) do
+    {:reply, Nif.stat(state.nif, path), touch(state)}
+  end
+
+  def handle_call({:mkdir, path}, _from, state) do
+    {:reply, Nif.mkdir(state.nif, path), touch(state)}
+  end
+
+  def handle_call({:unlink, path}, _from, state) do
+    {:reply, Nif.unlink(state.nif, path), touch(state)}
+  end
+
+  def handle_call({:symlink, target, link}, _from, state) do
+    {:reply, Nif.symlink(state.nif, target, link), touch(state)}
+  end
+
   def handle_call(:info, _from, state) do
     {:reply, %{id: state.id, booted_at: state.booted_at, idle_ms: now_ms() - state.last_active_ms},
      state}
+  end
+
+  def handle_call(:status, _from, state) do
+    {:reply, Nif.status(state.nif), state}
   end
 
   # Tick up to `n` times, stopping early if the kernel exits or errors.
@@ -160,4 +337,12 @@ defmodule AgentOS.Vm do
 
   defp touch(state), do: %{state | last_active_ms: now_ms()}
   defp now_ms, do: System.monotonic_time(:millisecond)
+
+  defp nif_opts(opts),
+    do: Keyword.take(opts, [:layers, :deterministic, :contract, :workers])
+
+  defp timeout(opts), do: Keyword.get(opts, :timeout, @default_call_timeout)
+
+  defp exec_result(exit_code, stdout, stderr),
+    do: %{exit_code: exit_code, stdout: stdout, stderr: stderr}
 end
