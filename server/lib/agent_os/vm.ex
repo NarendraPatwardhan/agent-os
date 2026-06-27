@@ -27,6 +27,14 @@ defmodule AgentOS.Vm do
   one command at a time). For streaming or long-running commands, use the structured
   `exec_start/2` + `exec_poll/2` + `exec_stdout_peek/2` lifecycle; it still serializes through
   this actor and reuses the Rust host's control channel.
+
+  ## Egress relay
+
+  P2 keeps the host bridge in Rust but moves egress policy to the owner. `net` and
+  `host_call` can be booted with relay capabilities; during ticks the Rust host queues outbound
+  events, and this GenServer exposes drain/answer calls for the eventual Phoenix/wire layer.
+  `persist` is not implemented as a BEAM relay yet because the current ABI is synchronous; the
+  Rust NIF carries only a deny stub and documents the required async ABI change.
   """
 
   use GenServer, restart: :transient
@@ -194,6 +202,69 @@ defmodule AgentOS.Vm do
   @spec status(server()) :: {:ok, Nif.status()} | {:error, Nif.reason()}
   def status(server), do: GenServer.call(server, :status, @default_call_timeout)
 
+  @doc "Drain the next outbound egress relay event, if any."
+  @spec egress_next(server(), keyword()) :: {:ok, Nif.relay_event() | nil} | {:error, Nif.reason()}
+  def egress_next(server, opts \\ []), do: GenServer.call(server, :egress_next, timeout(opts))
+
+  @doc "Answer an HTTP relay event."
+  @spec egress_http_respond(server(), integer(), non_neg_integer(), String.t(), [{String.t(), String.t()}], binary(), keyword()) ::
+          :ok | {:error, Nif.reason()}
+  def egress_http_respond(server, handle, status, reason, headers, body, opts \\ [])
+
+  def egress_http_respond(server, handle, status, reason, headers, body, opts)
+      when is_integer(handle) and handle > 0 and is_binary(reason) and is_list(headers) and is_binary(body) do
+    GenServer.call(server, {:egress_http_respond, handle, status, reason, headers, body}, timeout(opts))
+  end
+
+  def egress_http_respond(_server, _handle, _status, _reason, _headers, _body, _opts),
+    do: {:error, "egress_http_respond expects handle, status, reason, headers, and body"}
+
+  @doc "Fail an HTTP relay event."
+  @spec egress_http_fail(server(), integer(), keyword()) :: :ok | {:error, Nif.reason()}
+  def egress_http_fail(server, handle, opts \\ []),
+    do: GenServer.call(server, {:egress_http_fail, handle}, timeout(opts))
+
+  @doc "Answer a host_call relay event."
+  @spec egress_host_call_respond(server(), integer(), binary(), keyword()) :: :ok | {:error, Nif.reason()}
+  def egress_host_call_respond(server, handle, result, opts \\ [])
+
+  def egress_host_call_respond(server, handle, result, opts)
+      when is_integer(handle) and handle > 0 and is_binary(result),
+      do: GenServer.call(server, {:egress_host_call_respond, handle, result}, timeout(opts))
+
+  def egress_host_call_respond(_server, _handle, _result, _opts),
+    do: {:error, "egress_host_call_respond expects a positive handle and binary result"}
+
+  @doc "Fail a host_call relay event."
+  @spec egress_host_call_fail(server(), integer(), keyword()) :: :ok | {:error, Nif.reason()}
+  def egress_host_call_fail(server, handle, opts \\ []),
+    do: GenServer.call(server, {:egress_host_call_fail, handle}, timeout(opts))
+
+  @doc "Mark a WebSocket relay event as connected."
+  @spec egress_ws_open(server(), integer(), keyword()) :: :ok | {:error, Nif.reason()}
+  def egress_ws_open(server, handle, opts \\ []),
+    do: GenServer.call(server, {:egress_ws_open, handle}, timeout(opts))
+
+  @doc "Fail a WebSocket relay connection."
+  @spec egress_ws_fail(server(), integer(), keyword()) :: :ok | {:error, Nif.reason()}
+  def egress_ws_fail(server, handle, opts \\ []),
+    do: GenServer.call(server, {:egress_ws_fail, handle}, timeout(opts))
+
+  @doc "Push one received WebSocket message into a relay connection."
+  @spec egress_ws_push(server(), integer(), binary(), keyword()) :: :ok | {:error, Nif.reason()}
+  def egress_ws_push(server, handle, data, opts \\ [])
+
+  def egress_ws_push(server, handle, data, opts) when is_integer(handle) and handle > 0 and is_binary(data),
+    do: GenServer.call(server, {:egress_ws_push, handle, data}, timeout(opts))
+
+  def egress_ws_push(_server, _handle, _data, _opts),
+    do: {:error, "egress_ws_push expects a positive handle and binary data"}
+
+  @doc "Mark a WebSocket relay connection as closed by the peer."
+  @spec egress_ws_close(server(), integer(), keyword()) :: :ok | {:error, Nif.reason()}
+  def egress_ws_close(server, handle, opts \\ []),
+    do: GenServer.call(server, {:egress_ws_close, handle}, timeout(opts))
+
   @typep server :: pid() | {:via, module(), term()}
 
   @doc "The `:via` tuple addressing a VM by id through the registry."
@@ -324,6 +395,43 @@ defmodule AgentOS.Vm do
     {:reply, Nif.status(state.nif), state}
   end
 
+  def handle_call(:egress_next, _from, state) do
+    {:reply, Nif.relay_next(state.nif), state}
+  end
+
+  def handle_call({:egress_http_respond, handle, status, reason, headers, body}, _from, state) do
+    reply = Nif.relay_http_respond(state.nif, handle, status, reason, headers, body)
+    {:reply, reply, touch(state)}
+  end
+
+  def handle_call({:egress_http_fail, handle}, _from, state) do
+    {:reply, Nif.relay_http_fail(state.nif, handle), touch(state)}
+  end
+
+  def handle_call({:egress_host_call_respond, handle, result}, _from, state) do
+    {:reply, Nif.relay_host_call_respond(state.nif, handle, result), touch(state)}
+  end
+
+  def handle_call({:egress_host_call_fail, handle}, _from, state) do
+    {:reply, Nif.relay_host_call_fail(state.nif, handle), touch(state)}
+  end
+
+  def handle_call({:egress_ws_open, handle}, _from, state) do
+    {:reply, Nif.relay_ws_open(state.nif, handle), touch(state)}
+  end
+
+  def handle_call({:egress_ws_fail, handle}, _from, state) do
+    {:reply, Nif.relay_ws_fail(state.nif, handle), touch(state)}
+  end
+
+  def handle_call({:egress_ws_push, handle, data}, _from, state) do
+    {:reply, Nif.relay_ws_push(state.nif, handle, data), touch(state)}
+  end
+
+  def handle_call({:egress_ws_close, handle}, _from, state) do
+    {:reply, Nif.relay_ws_close(state.nif, handle), touch(state)}
+  end
+
   # Tick up to `n` times, stopping early if the kernel exits or errors.
   defp tick_n(_nif, 0), do: :running
 
@@ -339,7 +447,7 @@ defmodule AgentOS.Vm do
   defp now_ms, do: System.monotonic_time(:millisecond)
 
   defp nif_opts(opts),
-    do: Keyword.take(opts, [:layers, :deterministic, :contract, :workers])
+    do: Keyword.take(opts, [:layers, :deterministic, :contract, :workers, :net, :host_call, :persist])
 
   defp timeout(opts), do: Keyword.get(opts, :timeout, @default_call_timeout)
 

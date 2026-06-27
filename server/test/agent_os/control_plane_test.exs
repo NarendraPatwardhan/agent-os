@@ -36,6 +36,15 @@ defmodule AgentOS.ControlPlaneTest do
     assert ControlPlane.unlink(id, "/tmp/nope") == {:error, :not_found}
     assert ControlPlane.symlink(id, "/tmp/a", "/tmp/b") == {:error, :not_found}
     assert ControlPlane.status(id) == {:error, :not_found}
+    assert ControlPlane.egress_next(id) == {:error, :not_found}
+    assert ControlPlane.egress_http_respond(id, 1, 200, "OK", [], "") == {:error, :not_found}
+    assert ControlPlane.egress_http_fail(id, 1) == {:error, :not_found}
+    assert ControlPlane.egress_host_call_respond(id, 1, "") == {:error, :not_found}
+    assert ControlPlane.egress_host_call_fail(id, 1) == {:error, :not_found}
+    assert ControlPlane.egress_ws_open(id, 1) == {:error, :not_found}
+    assert ControlPlane.egress_ws_fail(id, 1) == {:error, :not_found}
+    assert ControlPlane.egress_ws_push(id, 1, "") == {:error, :not_found}
+    assert ControlPlane.egress_ws_close(id, 1) == {:error, :not_found}
     assert ControlPlane.info(id) == {:error, :not_found}
     assert ControlPlane.dispose(id) == {:error, :not_found}
   end
@@ -101,6 +110,55 @@ defmodule AgentOS.ControlPlaneTest do
     end
   end
 
+  @tag timeout: 120_000
+  test "real kernel VM relays host_call and HTTP egress to the BEAM owner" do
+    wasm = runfile!("memcontainers/kernel/rust/kernel.wasm")
+    posix = runfile!("memcontainers/images/posix.tar")
+    id = unique_id("egress")
+
+    try do
+      assert {:ok, _pid} =
+               ControlPlane.create(id,
+                 wasm: wasm,
+                 base_image: posix,
+                 deterministic: true,
+                 workers: 0,
+                 host_call: :relay,
+                 net: :relay
+               )
+
+      assert {:ok, host_job} = ControlPlane.exec_start(id, "invoke greet world")
+      assert {:ok, %{kind: :host_call, name: "greet"} = event} = next_relay(id, host_job, 5_000)
+      assert tool_body(event.body) == "world"
+
+      assert :ok = ControlPlane.egress_host_call_respond(id, event.handle, "hello #{tool_body(event.body)}\n")
+
+      assert {:ok, %{exit_code: 0, stdout: "hello world\n", stderr: ""}} =
+               poll_exec(id, host_job, 5_000)
+
+      assert {:ok, http_job} = ControlPlane.exec_start(id, "fetch http://example.test/hello")
+      assert {:ok, %{kind: :http, request: request} = http} = next_relay(id, http_job, 5_000)
+      assert request =~ "GET http://example.test/hello"
+
+      assert :ok =
+               ControlPlane.egress_http_respond(
+                 id,
+                 http.handle,
+                 200,
+                 "OK",
+                 [{"content-type", "text/plain"}],
+                 "net hello\n"
+               )
+
+      assert {:ok, %{exit_code: 0, stdout: "net hello\n", stderr: ""}} =
+               poll_exec(id, http_job, 5_000)
+
+      assert {:ok, nil} = ControlPlane.egress_next(id)
+    after
+      ControlPlane.dispose(id)
+    end
+  end
+
   defp poll_exec(_id, _job, 0), do: flunk("exec job did not finish")
 
   defp poll_exec(id, job, attempts) do
@@ -114,8 +172,32 @@ defmodule AgentOS.ControlPlaneTest do
     end
   end
 
+  defp next_relay(_id, _job, 0), do: flunk("relay event did not arrive")
+
+  defp next_relay(id, job, attempts) do
+    case ControlPlane.egress_next(id) do
+      {:ok, nil} ->
+        case ControlPlane.exec_poll(id, job) do
+          {:ok, nil} ->
+            ControlPlane.tick(id, 8)
+            next_relay(id, job, attempts - 1)
+
+          {:ok, result} ->
+            flunk("exec finished before producing a relay event: #{inspect(result)}")
+
+          {:error, reason} ->
+            flunk("exec poll failed before producing a relay event: #{inspect(reason)}")
+        end
+
+      event ->
+        event
+    end
+  end
+
   defp unique_id(prefix),
     do: {"test-ns", "#{prefix}-#{System.unique_integer([:positive])}"}
+
+  defp tool_body(body), do: String.trim_trailing(body, <<0>>)
 
   defp runfile!(path) do
     roots =

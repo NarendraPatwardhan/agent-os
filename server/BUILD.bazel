@@ -39,6 +39,7 @@ mix_test(
     name = "mix_test",
     data = [
         "//memcontainers/images:minimal",
+        "//memcontainers/images:posix",
         "//memcontainers/kernel/rust:kernel",
     ],
     lib = ":lib_test",

@@ -45,26 +45,42 @@ defmodule AgentOS.Host.Nif do
   @type reason :: binary()
 
   @type contract :: {tier :: integer(), budget_mib :: integer(), fuel :: integer()}
+  @type relay_mode :: :deny | :relay
+  @type persist_mode :: :deny | :stub
   @type boot_opt ::
           {:layers, [binary()]}
           | {:deterministic, boolean()}
           | {:contract, contract() | nil}
           | {:workers, non_neg_integer() | nil}
+          | {:net, relay_mode()}
+          | {:host_call, relay_mode()}
+          | {:persist, persist_mode()}
+
+  @type relay_event ::
+          %{kind: :http, handle: pos_integer(), request: binary()}
+          | %{kind: :host_call, handle: pos_integer(), name: String.t(), body: binary()}
+          | %{kind: :ws_connect, handle: pos_integer(), url: String.t()}
+          | %{kind: :ws_send, handle: pos_integer(), data: binary()}
+          | %{kind: :ws_close, handle: pos_integer()}
 
   @doc """
   Boot a VM from a `kernel.wasm` plus either one base image or an ordered layer stack.
 
   Options intentionally mirror the production host builder rather than the whole Rust host:
-  deterministic clock/RNG for parity tests, boot contract, and worker count. Network,
-  persistence, and host-call relay capabilities are a separate control-plane phase.
+  deterministic clock/RNG for parity tests, boot contract, worker count, and the explicit P2
+  relay switches.
+
+  `:net` and `:host_call` accept `:deny` or `:relay`. `:persist` accepts `:deny` or `:stub`;
+  the stub is intentionally deny-only until the persistence ABI is made asynchronous.
   """
   @spec boot(binary(), binary() | nil, [boot_opt()]) :: {:ok, vm()} | {:error, reason()}
   def boot(wasm, base_image, opts \\ [])
 
   def boot(wasm, base_image, opts)
       when is_binary(wasm) and (is_binary(base_image) or is_nil(base_image)) and is_list(opts) do
-    with {:ok, layers, deterministic, contract, workers} <- boot_args(base_image, opts) do
-      boot_nif(wasm, base_image, layers, deterministic, contract, workers)
+    with {:ok, layers, deterministic, contract, workers, net, host_call, persist} <-
+           boot_args(base_image, opts) do
+      boot_nif(wasm, base_image, layers, deterministic, contract, workers, net, host_call, persist)
     end
   end
 
@@ -77,8 +93,8 @@ defmodule AgentOS.Host.Nif do
 
   def restore(wasm, snapshot, opts)
       when is_binary(wasm) and is_binary(snapshot) and is_list(opts) do
-    with {:ok, deterministic, workers} <- restore_args(opts) do
-      restore_nif(wasm, snapshot, deterministic, workers)
+    with {:ok, deterministic, workers, net, host_call, persist} <- restore_args(opts) do
+      restore_nif(wasm, snapshot, deterministic, workers, net, host_call, persist)
     end
   end
 
@@ -234,12 +250,98 @@ defmodule AgentOS.Host.Nif do
   @spec snapshot(vm()) :: {:ok, binary()} | {:error, reason()}
   def snapshot(vm), do: snapshot_nif(vm)
 
+  @doc "Drain the next outbound egress relay event, if any."
+  @spec relay_next(vm()) :: {:ok, relay_event() | nil} | {:error, reason()}
+  def relay_next(vm) do
+    case relay_next_nif(vm) do
+      {:ok, nil} -> {:ok, nil}
+      {:ok, {kind, handle, a, b}} -> relay_event(kind, handle, a, b)
+      {:error, _reason} = err -> err
+    end
+  end
+
+  @doc "Answer an HTTP relay event with a complete buffered response."
+  @spec relay_http_respond(vm(), integer(), non_neg_integer(), String.t(), [{String.t(), String.t()}], binary()) ::
+          :ok | {:error, reason()}
+  def relay_http_respond(vm, handle, status, reason, headers, body)
+      when is_integer(handle) and handle > 0 and is_integer(status) and status >= 100 and
+             status <= 999 and is_binary(reason) and is_list(headers) and is_binary(body) do
+    with {:ok, head} <- http_head(status, reason, headers) do
+      relay_http_respond_nif(vm, handle, true, head, body)
+    end
+  end
+
+  def relay_http_respond(_vm, _handle, _status, _reason, _headers, _body),
+    do: {:error, "relay_http_respond expects handle, status, reason, headers, and binary body"}
+
+  @doc "Fail an HTTP relay event."
+  @spec relay_http_fail(vm(), integer()) :: :ok | {:error, reason()}
+  def relay_http_fail(vm, handle) when is_integer(handle) and handle > 0,
+    do: relay_http_respond_nif(vm, handle, false, "", "")
+
+  def relay_http_fail(_vm, _handle), do: {:error, "relay_http_fail expects a positive handle"}
+
+  @doc "Answer a host_call relay event."
+  @spec relay_host_call_respond(vm(), integer(), binary()) :: :ok | {:error, reason()}
+  def relay_host_call_respond(vm, handle, result) when is_integer(handle) and handle > 0 and is_binary(result),
+    do: relay_host_call_respond_nif(vm, handle, true, result)
+
+  def relay_host_call_respond(_vm, _handle, _result),
+    do: {:error, "relay_host_call_respond expects a positive handle and binary result"}
+
+  @doc "Fail a host_call relay event."
+  @spec relay_host_call_fail(vm(), integer()) :: :ok | {:error, reason()}
+  def relay_host_call_fail(vm, handle) when is_integer(handle) and handle > 0,
+    do: relay_host_call_respond_nif(vm, handle, false, "")
+
+  def relay_host_call_fail(_vm, _handle), do: {:error, "relay_host_call_fail expects a positive handle"}
+
+  @doc "Mark a WebSocket relay connection as opened."
+  @spec relay_ws_open(vm(), integer()) :: :ok | {:error, reason()}
+  def relay_ws_open(vm, handle) when is_integer(handle) and handle > 0,
+    do: relay_ws_open_nif(vm, handle, true)
+
+  def relay_ws_open(_vm, _handle), do: {:error, "relay_ws_open expects a positive handle"}
+
+  @doc "Fail a WebSocket relay connection."
+  @spec relay_ws_fail(vm(), integer()) :: :ok | {:error, reason()}
+  def relay_ws_fail(vm, handle) when is_integer(handle) and handle > 0,
+    do: relay_ws_open_nif(vm, handle, false)
+
+  def relay_ws_fail(_vm, _handle), do: {:error, "relay_ws_fail expects a positive handle"}
+
+  @doc "Push one received WebSocket message into a relay connection."
+  @spec relay_ws_push(vm(), integer(), binary()) :: :ok | {:error, reason()}
+  def relay_ws_push(vm, handle, data) when is_integer(handle) and handle > 0 and is_binary(data),
+    do: relay_ws_push_nif(vm, handle, data)
+
+  def relay_ws_push(_vm, _handle, _data),
+    do: {:error, "relay_ws_push expects a positive handle and binary data"}
+
+  @doc "Mark a WebSocket relay connection as closed by the peer."
+  @spec relay_ws_close(vm(), integer()) :: :ok | {:error, reason()}
+  def relay_ws_close(vm, handle) when is_integer(handle) and handle > 0,
+    do: relay_ws_close_nif(vm, handle)
+
+  def relay_ws_close(_vm, _handle), do: {:error, "relay_ws_close expects a positive handle"}
+
   @doc false
-  def boot_nif(_wasm, _base_image, _layers, _deterministic, _contract, _workers),
+  def boot_nif(
+        _wasm,
+        _base_image,
+        _layers,
+        _deterministic,
+        _contract,
+        _workers,
+        _net,
+        _host_call,
+        _persist
+      ),
     do: nif_not_loaded()
 
   @doc false
-  def restore_nif(_wasm, _snapshot, _deterministic, _workers), do: nif_not_loaded()
+  def restore_nif(_wasm, _snapshot, _deterministic, _workers, _net, _host_call, _persist),
+    do: nif_not_loaded()
 
   @doc false
   def tick_nif(_vm), do: nif_not_loaded()
@@ -292,20 +394,40 @@ defmodule AgentOS.Host.Nif do
   @doc false
   def snapshot_nif(_vm), do: nif_not_loaded()
 
+  @doc false
+  def relay_next_nif(_vm), do: nif_not_loaded()
+
+  @doc false
+  def relay_http_respond_nif(_vm, _handle, _ok, _head, _body), do: nif_not_loaded()
+
+  @doc false
+  def relay_host_call_respond_nif(_vm, _handle, _ok, _result), do: nif_not_loaded()
+
+  @doc false
+  def relay_ws_open_nif(_vm, _handle, _ok), do: nif_not_loaded()
+
+  @doc false
+  def relay_ws_push_nif(_vm, _handle, _data), do: nif_not_loaded()
+
+  @doc false
+  def relay_ws_close_nif(_vm, _handle), do: nif_not_loaded()
+
   defp boot_args(base_image, opts) do
     with {:ok, layers} <- layers_arg(opts),
          :ok <- exclusive_base_or_layers(base_image, layers),
          {:ok, deterministic} <- boolean_arg(opts, :deterministic, false),
          {:ok, contract} <- contract_arg(opts),
-         {:ok, workers} <- workers_arg(opts) do
-      {:ok, layers, deterministic, contract, workers}
+         {:ok, workers} <- workers_arg(opts),
+         {:ok, net, host_call, persist} <- relay_args(opts) do
+      {:ok, layers, deterministic, contract, workers, net, host_call, persist}
     end
   end
 
   defp restore_args(opts) do
     with {:ok, deterministic} <- boolean_arg(opts, :deterministic, false),
-         {:ok, workers} <- workers_arg(opts) do
-      {:ok, deterministic, workers}
+         {:ok, workers} <- workers_arg(opts),
+         {:ok, net, host_call, persist} <- relay_args(opts) do
+      {:ok, deterministic, workers, net, host_call, persist}
     end
   end
 
@@ -352,6 +474,73 @@ defmodule AgentOS.Host.Nif do
       _other -> {:error, "workers must be nil or a non-negative integer"}
     end
   end
+
+  defp relay_args(opts) do
+    with {:ok, net} <- relay_mode_arg(opts, :net),
+         {:ok, host_call} <- relay_mode_arg(opts, :host_call),
+         {:ok, persist} <- persist_mode_arg(opts) do
+      {:ok, net == :relay, host_call == :relay, persist == :stub}
+    end
+  end
+
+  defp relay_mode_arg(opts, key) do
+    case Keyword.get(opts, key, :deny) do
+      mode when mode in [:deny, :relay] -> {:ok, mode}
+      _other -> {:error, "#{key} must be :deny or :relay"}
+    end
+  end
+
+  defp persist_mode_arg(opts) do
+    case Keyword.get(opts, :persist, :deny) do
+      mode when mode in [:deny, :stub] -> {:ok, mode}
+      :relay -> {:error, "persist relay requires an async persistence ABI; use :deny or :stub"}
+      _other -> {:error, "persist must be :deny or :stub"}
+    end
+  end
+
+  defp http_head(status, reason, headers) do
+    with :ok <- headers_arg(headers) do
+      head =
+        IO.iodata_to_binary([
+          Integer.to_string(status),
+          " ",
+          reason,
+          "\r\n",
+          Enum.map(headers, fn {name, value} -> [name, ": ", value, "\r\n"] end),
+          "\r\n"
+        ])
+
+      {:ok, head}
+    end
+  end
+
+  defp headers_arg(headers) do
+    if Enum.all?(headers, fn
+         {name, value} -> is_binary(name) and is_binary(value)
+         _other -> false
+       end) do
+      :ok
+    else
+      {:error, "headers must be {binary_name, binary_value} pairs"}
+    end
+  end
+
+  defp relay_event("http", handle, request, ""),
+    do: {:ok, %{kind: :http, handle: handle, request: request}}
+
+  defp relay_event("host_call", handle, name, body),
+    do: {:ok, %{kind: :host_call, handle: handle, name: name, body: body}}
+
+  defp relay_event("ws_connect", handle, url, ""),
+    do: {:ok, %{kind: :ws_connect, handle: handle, url: url}}
+
+  defp relay_event("ws_send", handle, data, ""),
+    do: {:ok, %{kind: :ws_send, handle: handle, data: data}}
+
+  defp relay_event("ws_close", handle, "", ""),
+    do: {:ok, %{kind: :ws_close, handle: handle}}
+
+  defp relay_event(kind, _handle, _a, _b), do: {:error, "unknown relay event kind #{inspect(kind)}"}
 
   defp dir_entry({name, is_dir, is_symlink}),
     do: %{name: name, type: file_type(is_dir, is_symlink)}

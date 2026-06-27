@@ -107,6 +107,47 @@ defmodule AgentOS.ControlPlane do
   @spec status(Vm.id()) :: {:ok, map()} | {:error, :not_found}
   def status(id), do: with_vm(id, &Vm.status/1)
 
+  @doc "Drain the next outbound egress relay event for an existing VM."
+  @spec egress_next(Vm.id(), keyword()) :: {:ok, map() | nil} | {:error, term()}
+  def egress_next(id, opts \\ []), do: with_vm(id, &Vm.egress_next(&1, opts))
+
+  @doc "Answer an HTTP egress relay event."
+  @spec egress_http_respond(Vm.id(), integer(), non_neg_integer(), String.t(), [{String.t(), String.t()}], binary(), keyword()) ::
+          :ok | {:error, term()}
+  def egress_http_respond(id, handle, status, reason, headers, body, opts \\ []),
+    do: with_vm(id, &Vm.egress_http_respond(&1, handle, status, reason, headers, body, opts))
+
+  @doc "Fail an HTTP egress relay event."
+  @spec egress_http_fail(Vm.id(), integer(), keyword()) :: :ok | {:error, term()}
+  def egress_http_fail(id, handle, opts \\ []), do: with_vm(id, &Vm.egress_http_fail(&1, handle, opts))
+
+  @doc "Answer a host_call egress relay event."
+  @spec egress_host_call_respond(Vm.id(), integer(), binary(), keyword()) :: :ok | {:error, term()}
+  def egress_host_call_respond(id, handle, result, opts \\ []),
+    do: with_vm(id, &Vm.egress_host_call_respond(&1, handle, result, opts))
+
+  @doc "Fail a host_call egress relay event."
+  @spec egress_host_call_fail(Vm.id(), integer(), keyword()) :: :ok | {:error, term()}
+  def egress_host_call_fail(id, handle, opts \\ []),
+    do: with_vm(id, &Vm.egress_host_call_fail(&1, handle, opts))
+
+  @doc "Mark a WebSocket egress relay as connected."
+  @spec egress_ws_open(Vm.id(), integer(), keyword()) :: :ok | {:error, term()}
+  def egress_ws_open(id, handle, opts \\ []), do: with_vm(id, &Vm.egress_ws_open(&1, handle, opts))
+
+  @doc "Fail a WebSocket egress relay connection."
+  @spec egress_ws_fail(Vm.id(), integer(), keyword()) :: :ok | {:error, term()}
+  def egress_ws_fail(id, handle, opts \\ []), do: with_vm(id, &Vm.egress_ws_fail(&1, handle, opts))
+
+  @doc "Push one received WebSocket message into an egress relay connection."
+  @spec egress_ws_push(Vm.id(), integer(), binary(), keyword()) :: :ok | {:error, term()}
+  def egress_ws_push(id, handle, data, opts \\ []),
+    do: with_vm(id, &Vm.egress_ws_push(&1, handle, data, opts))
+
+  @doc "Mark a WebSocket egress relay as closed by the peer."
+  @spec egress_ws_close(Vm.id(), integer(), keyword()) :: :ok | {:error, term()}
+  def egress_ws_close(id, handle, opts \\ []), do: with_vm(id, &Vm.egress_ws_close(&1, handle, opts))
+
   @doc "Liveness and age info for an existing VM."
   @spec info(Vm.id()) :: map() | {:error, :not_found}
   def info(id), do: with_vm(id, &Vm.info/1)

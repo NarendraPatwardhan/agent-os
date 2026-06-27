@@ -25,18 +25,28 @@
 //! The structured `exec` returns its own captured streams independently.
 //!
 //! Scope: boot / restore / tick / terminal I/O / structured exec / control-channel fs /
-//! snapshot / commit / status. Gated egress (net / host_call / persist) is a separate relay
-//! capability pass — it sends work to the owning process over the host's poll-based capability
-//! seam (the WsHostCall/GatedNet pattern), with no kernel change.
+//! snapshot / commit / status / egress relay. The relay is deliberately below the Phoenix/wire
+//! edge: Rust queues poll-based `net` + `host_call` requests, while the owning `AgentOS.Vm`
+//! process drains and answers them. `persist` is only a denial stub for now; see `BeamPersist`
+//! for the ABI mismatch that prevents a real BEAM round trip without changing the kernel/host
+//! contract.
 
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use host::{ExecResult, KernelHost, KernelHostBuilder, StreamSink};
+use host::{
+    ExecResult, HostCallCapability, KernelHost, KernelHostBuilder, NetCapability,
+    PersistCapability, StreamSink,
+};
 use rustler::{Atom, Binary, Env, Error, NifResult, OwnedBinary, ResourceArc};
 
 mod atoms {
     rustler::atoms! { ok }
 }
+
+const EAGAIN: i32 = 6;
+const EMSGSIZE: i32 = 53;
+const WS_SEND_MARK: usize = 1024 * 1024;
 
 /// A `StreamSink` that appends the kernel's terminal output (stdout/stderr/log) into a shared
 /// buffer the owning process drains via `take_output` — instead of the node's real stdout.
@@ -55,10 +65,331 @@ impl StreamSink for SharedSink {
 struct Vm {
     host: Mutex<KernelHost>,
     out: Arc<Mutex<Vec<u8>>>,
+    relay: Arc<Mutex<RelayState>>,
 }
 
 #[rustler::resource_impl]
 impl rustler::Resource for Vm {}
+
+#[derive(Default)]
+struct RelayState {
+    next: i32,
+    events: VecDeque<RelayEvent>,
+    http: HashMap<i32, HttpSlot>,
+    host_calls: HashMap<i32, HostCallSlot>,
+    ws: HashMap<i32, WsSlot>,
+}
+
+impl RelayState {
+    fn alloc_handle(&mut self) -> i32 {
+        if self.next <= 0 {
+            self.next = 1;
+        }
+        let handle = self.next;
+        self.next = self.next.wrapping_add(1).max(1);
+        handle
+    }
+}
+
+enum RelayEvent {
+    HttpRequest {
+        handle: i32,
+        request: Vec<u8>,
+    },
+    HostCall {
+        handle: i32,
+        name: String,
+        body: Vec<u8>,
+    },
+    WsConnect {
+        handle: i32,
+        url: String,
+    },
+    WsSend {
+        handle: i32,
+        data: Vec<u8>,
+    },
+    WsClose {
+        handle: i32,
+    },
+}
+
+#[derive(Default)]
+struct HttpSlot {
+    done: bool,
+    failed: bool,
+    head: Vec<u8>,
+    body: Vec<u8>,
+    body_pos: usize,
+}
+
+#[derive(Default)]
+struct HostCallSlot {
+    done: bool,
+    failed: bool,
+    result: Vec<u8>,
+    offset: usize,
+}
+
+#[derive(Default)]
+struct WsSlot {
+    open: bool,
+    failed: bool,
+    incoming: VecDeque<Vec<u8>>,
+    incoming_pos: usize,
+    queued_bytes: usize,
+}
+
+#[derive(Clone)]
+struct BeamNet {
+    relay: Arc<Mutex<RelayState>>,
+}
+
+impl NetCapability for BeamNet {
+    fn http_request(&mut self, req: &[u8]) -> i32 {
+        let Ok(mut relay) = self.relay.lock() else {
+            return -1;
+        };
+        let handle = relay.alloc_handle();
+        relay.http.insert(handle, HttpSlot::default());
+        relay.events.push_back(RelayEvent::HttpRequest {
+            handle,
+            request: req.to_vec(),
+        });
+        handle
+    }
+
+    fn http_poll(&mut self, handle: i32, buf: &mut [u8]) -> i32 {
+        let Ok(relay) = self.relay.lock() else {
+            return -1;
+        };
+        let Some(slot) = relay.http.get(&handle) else {
+            return -1;
+        };
+        if !slot.done {
+            return 0;
+        }
+        if slot.failed {
+            return -1;
+        }
+        let n = slot.head.len().min(buf.len());
+        buf[..n].copy_from_slice(&slot.head[..n]);
+        n as i32
+    }
+
+    fn http_body(&mut self, handle: i32, buf: &mut [u8]) -> i32 {
+        let Ok(mut relay) = self.relay.lock() else {
+            return -1;
+        };
+        let Some(slot) = relay.http.get_mut(&handle) else {
+            return -1;
+        };
+        if !slot.done {
+            return 0;
+        }
+        if slot.failed {
+            return -1;
+        }
+        let start = slot.body_pos.min(slot.body.len());
+        let n = (slot.body.len() - start).min(buf.len());
+        buf[..n].copy_from_slice(&slot.body[start..start + n]);
+        slot.body_pos += n;
+        n as i32
+    }
+
+    fn http_close(&mut self, handle: i32) {
+        if let Ok(mut relay) = self.relay.lock() {
+            relay.http.remove(&handle);
+            relay.events.retain(|event| match event {
+                RelayEvent::HttpRequest { handle: h, .. } => *h != handle,
+                _ => true,
+            });
+        }
+    }
+
+    fn ws_connect(&mut self, url: &str) -> i32 {
+        let Ok(mut relay) = self.relay.lock() else {
+            return -1;
+        };
+        let handle = relay.alloc_handle();
+        relay.ws.insert(handle, WsSlot::default());
+        relay.events.push_back(RelayEvent::WsConnect {
+            handle,
+            url: url.to_string(),
+        });
+        handle
+    }
+
+    fn ws_send(&mut self, handle: i32, data: &[u8]) -> i32 {
+        let Ok(mut relay) = self.relay.lock() else {
+            return -1;
+        };
+        let Some(slot) = relay.ws.get_mut(&handle) else {
+            return -1;
+        };
+        if slot.failed {
+            return -1;
+        }
+        if data.len() > WS_SEND_MARK {
+            return -EMSGSIZE;
+        }
+        if !slot.open || slot.queued_bytes + data.len() > WS_SEND_MARK {
+            return -EAGAIN;
+        }
+        slot.queued_bytes += data.len();
+        relay.events.push_back(RelayEvent::WsSend {
+            handle,
+            data: data.to_vec(),
+        });
+        data.len() as i32
+    }
+
+    fn ws_ready(&mut self, handle: i32) -> i32 {
+        let Ok(relay) = self.relay.lock() else {
+            return 1;
+        };
+        let Some(slot) = relay.ws.get(&handle) else {
+            return 1;
+        };
+        if slot.failed || (slot.open && slot.queued_bytes < WS_SEND_MARK) {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn ws_recv(&mut self, handle: i32, buf: &mut [u8]) -> i32 {
+        let Ok(mut relay) = self.relay.lock() else {
+            return -1;
+        };
+        let Some(slot) = relay.ws.get_mut(&handle) else {
+            return -1;
+        };
+        if slot.failed {
+            return -1;
+        }
+        let Some(front) = slot.incoming.front() else {
+            return 0;
+        };
+        let n = (front.len() - slot.incoming_pos).min(buf.len());
+        buf[..n].copy_from_slice(&front[slot.incoming_pos..slot.incoming_pos + n]);
+        slot.incoming_pos += n;
+        if slot.incoming_pos >= front.len() {
+            slot.incoming.pop_front();
+            slot.incoming_pos = 0;
+        }
+        n as i32
+    }
+
+    fn ws_close(&mut self, handle: i32) {
+        if let Ok(mut relay) = self.relay.lock() {
+            relay.ws.remove(&handle);
+            relay.events.push_back(RelayEvent::WsClose { handle });
+            relay.events.retain(|event| match event {
+                RelayEvent::WsConnect { handle: h, .. } | RelayEvent::WsSend { handle: h, .. } => {
+                    *h != handle
+                }
+                _ => true,
+            });
+        }
+    }
+}
+
+#[derive(Clone)]
+struct BeamHostCall {
+    relay: Arc<Mutex<RelayState>>,
+}
+
+impl HostCallCapability for BeamHostCall {
+    fn start(&mut self, req: &[u8]) -> i32 {
+        let nul = req.iter().position(|&b| b == 0).unwrap_or(req.len());
+        let name = String::from_utf8_lossy(&req[..nul]).into_owned();
+        let body = if nul < req.len() {
+            req[nul + 1..].to_vec()
+        } else {
+            Vec::new()
+        };
+
+        let Ok(mut relay) = self.relay.lock() else {
+            return -1;
+        };
+        let handle = relay.alloc_handle();
+        relay.host_calls.insert(handle, HostCallSlot::default());
+        relay
+            .events
+            .push_back(RelayEvent::HostCall { handle, name, body });
+        handle
+    }
+
+    fn poll(&mut self, handle: i32) -> i32 {
+        let Ok(relay) = self.relay.lock() else {
+            return -1;
+        };
+        match relay.host_calls.get(&handle) {
+            Some(slot) if slot.failed => -1,
+            Some(slot) if slot.done => 1,
+            Some(_) => 0,
+            None => -1,
+        }
+    }
+
+    fn body(&mut self, handle: i32, buf: &mut [u8]) -> i32 {
+        let Ok(mut relay) = self.relay.lock() else {
+            return -1;
+        };
+        let Some(slot) = relay.host_calls.get_mut(&handle) else {
+            return -1;
+        };
+        if slot.failed || !slot.done {
+            return -1;
+        }
+        let start = slot.offset.min(slot.result.len());
+        let n = (slot.result.len() - start).min(buf.len());
+        buf[..n].copy_from_slice(&slot.result[start..start + n]);
+        slot.offset += n;
+        n as i32
+    }
+
+    fn close(&mut self, handle: i32) {
+        if let Ok(mut relay) = self.relay.lock() {
+            relay.host_calls.remove(&handle);
+            relay.events.retain(|event| match event {
+                RelayEvent::HostCall { handle: h, .. } => *h != handle,
+                _ => true,
+            });
+        }
+    }
+}
+
+/// Placeholder for the CONTROL_PLANE.md `BeamPersist` concept.
+///
+/// This deliberately denies every call. The current kernel/host persistence ABI is synchronous:
+/// `mc_persist_get/put/delete/list` must return the final answer from inside one guest import.
+/// A real BEAM-owner round trip would either block a NIF scheduler while waiting for Elixir, or
+/// require re-entering the VM while the import is suspended, neither of which is the host pattern
+/// we want. The production shape should alter the ABI to match `net` and `host_call`: start an
+/// operation, return an opaque handle, poll readiness, stream body bytes for `get/list`, and close
+/// the handle. Until then, persistence should stay default-deny here or use a Rust-local capability
+/// such as `DiskPersist` configured from an explicit non-relay option.
+struct BeamPersist;
+
+impl PersistCapability for BeamPersist {
+    fn get(&mut self, _key: &[u8], _out: &mut [u8]) -> i32 {
+        -1
+    }
+
+    fn put(&mut self, _key: &[u8], _val: &[u8]) -> i32 {
+        -1
+    }
+
+    fn delete(&mut self, _key: &[u8]) -> i32 {
+        -1
+    }
+
+    fn list(&mut self, _prefix: &[u8], _out: &mut [u8]) -> i32 {
+        -1
+    }
+}
 
 /// Map a host-side `anyhow::Error` to a NIF error term; rustler surfaces it to Elixir as
 /// `{:error, message}` (a returned value, not a raise).
@@ -70,6 +401,12 @@ fn vm_lock(vm: &ResourceArc<Vm>) -> NifResult<MutexGuard<'_, KernelHost>> {
     vm.host
         .lock()
         .map_err(|_| nif_err("vm resource lock poisoned"))
+}
+
+fn relay_lock(vm: &ResourceArc<Vm>) -> NifResult<MutexGuard<'_, RelayState>> {
+    vm.relay
+        .lock()
+        .map_err(|_| nif_err("vm relay lock poisoned"))
 }
 
 /// Copy bytes into a freshly-allocated BEAM binary term (kernel output is binary, never a
@@ -99,7 +436,11 @@ fn build_builder(
     deterministic: bool,
     contract: Option<(i32, i32, i64)>,
     workers: Option<i32>,
+    net_relay: bool,
+    host_call_relay: bool,
+    persist_stub: bool,
     out: &Arc<Mutex<Vec<u8>>>,
+    relay: &Arc<Mutex<RelayState>>,
 ) -> NifResult<KernelHostBuilder> {
     if base_image.is_some() && !layers.is_empty() {
         return Err(nif_err("base_image and layers are mutually exclusive"));
@@ -123,6 +464,19 @@ fn build_builder(
     if let Some(workers) = workers {
         builder = builder.with_workers(workers);
     }
+    if net_relay {
+        builder = builder.with_net(Box::new(BeamNet {
+            relay: relay.clone(),
+        }));
+    }
+    if host_call_relay {
+        builder = builder.with_host_call(Box::new(BeamHostCall {
+            relay: relay.clone(),
+        }));
+    }
+    if persist_stub {
+        builder = builder.with_persist(Box::new(BeamPersist));
+    }
     Ok(with_capture(builder, out))
 }
 
@@ -135,8 +489,15 @@ fn boot(
     deterministic: bool,
     contract: Option<(i32, i32, i64)>,
     workers: Option<i32>,
+    net_relay: bool,
+    host_call_relay: bool,
+    persist_stub: bool,
 ) -> NifResult<(Atom, ResourceArc<Vm>)> {
     let out = Arc::new(Mutex::new(Vec::new()));
+    let relay = Arc::new(Mutex::new(RelayState {
+        next: 1,
+        ..RelayState::default()
+    }));
     let host = build_builder(
         wasm.as_slice().to_vec(),
         base_image.map(|b| b.as_slice().to_vec()),
@@ -144,7 +505,11 @@ fn boot(
         deterministic,
         contract,
         workers,
+        net_relay,
+        host_call_relay,
+        persist_stub,
         &out,
+        &relay,
     )?
     .build()
     .map_err(nif_err)?;
@@ -153,6 +518,7 @@ fn boot(
         ResourceArc::new(Vm {
             host: Mutex::new(host),
             out,
+            relay,
         }),
     ))
 }
@@ -164,8 +530,15 @@ fn restore(
     snapshot: Binary,
     deterministic: bool,
     workers: Option<i32>,
+    net_relay: bool,
+    host_call_relay: bool,
+    persist_stub: bool,
 ) -> NifResult<(Atom, ResourceArc<Vm>)> {
     let out = Arc::new(Mutex::new(Vec::new()));
+    let relay = Arc::new(Mutex::new(RelayState {
+        next: 1,
+        ..RelayState::default()
+    }));
     if matches!(workers, Some(n) if n < 0) {
         return Err(nif_err("workers must be non-negative"));
     }
@@ -176,6 +549,19 @@ fn restore(
     if let Some(workers) = workers {
         builder = builder.with_workers(workers);
     }
+    if net_relay {
+        builder = builder.with_net(Box::new(BeamNet {
+            relay: relay.clone(),
+        }));
+    }
+    if host_call_relay {
+        builder = builder.with_host_call(Box::new(BeamHostCall {
+            relay: relay.clone(),
+        }));
+    }
+    if persist_stub {
+        builder = builder.with_persist(Box::new(BeamPersist));
+    }
     let host = with_capture(builder, &out)
         .restore(snapshot.as_slice())
         .map_err(nif_err)?;
@@ -184,6 +570,7 @@ fn restore(
         ResourceArc::new(Vm {
             host: Mutex::new(host),
             out,
+            relay,
         }),
     ))
 }
@@ -372,6 +759,141 @@ fn status(vm: ResourceArc<Vm>) -> NifResult<(Atom, (u64, Option<i32>, bool, i32,
 fn snapshot<'a>(env: Env<'a>, vm: ResourceArc<Vm>) -> NifResult<(Atom, Binary<'a>)> {
     let bytes = vm_lock(&vm)?.snapshot().map_err(nif_err)?;
     Ok((atoms::ok(), to_binary(env, &bytes)?))
+}
+
+#[rustler::nif(name = "relay_next_nif")]
+fn relay_next<'a>(
+    env: Env<'a>,
+    vm: ResourceArc<Vm>,
+) -> NifResult<(Atom, Option<(String, i32, Binary<'a>, Binary<'a>)>)> {
+    let mut relay = relay_lock(&vm)?;
+    let Some(event) = relay.events.pop_front() else {
+        return Ok((atoms::ok(), None));
+    };
+
+    let event = match event {
+        RelayEvent::HttpRequest { handle, request } => (
+            "http".to_string(),
+            handle,
+            to_binary(env, &request)?,
+            to_binary(env, b"")?,
+        ),
+        RelayEvent::HostCall { handle, name, body } => (
+            "host_call".to_string(),
+            handle,
+            to_binary(env, name.as_bytes())?,
+            to_binary(env, &body)?,
+        ),
+        RelayEvent::WsConnect { handle, url } => (
+            "ws_connect".to_string(),
+            handle,
+            to_binary(env, url.as_bytes())?,
+            to_binary(env, b"")?,
+        ),
+        RelayEvent::WsSend { handle, data } => {
+            if let Some(slot) = relay.ws.get_mut(&handle) {
+                slot.queued_bytes = slot.queued_bytes.saturating_sub(data.len());
+            }
+            (
+                "ws_send".to_string(),
+                handle,
+                to_binary(env, &data)?,
+                to_binary(env, b"")?,
+            )
+        }
+        RelayEvent::WsClose { handle } => (
+            "ws_close".to_string(),
+            handle,
+            to_binary(env, b"")?,
+            to_binary(env, b"")?,
+        ),
+    };
+    Ok((atoms::ok(), Some(event)))
+}
+
+#[rustler::nif(name = "relay_http_respond_nif")]
+fn relay_http_respond(
+    vm: ResourceArc<Vm>,
+    handle: i32,
+    ok: bool,
+    head: Binary,
+    body: Binary,
+) -> NifResult<Atom> {
+    let mut relay = relay_lock(&vm)?;
+    let Some(slot) = relay.http.get_mut(&handle) else {
+        return Err(nif_err(format!("unknown HTTP relay handle {handle}")));
+    };
+    slot.done = true;
+    slot.failed = !ok;
+    slot.head = if ok {
+        head.as_slice().to_vec()
+    } else {
+        Vec::new()
+    };
+    slot.body = if ok {
+        body.as_slice().to_vec()
+    } else {
+        Vec::new()
+    };
+    slot.body_pos = 0;
+    Ok(atoms::ok())
+}
+
+#[rustler::nif(name = "relay_host_call_respond_nif")]
+fn relay_host_call_respond(
+    vm: ResourceArc<Vm>,
+    handle: i32,
+    ok: bool,
+    result: Binary,
+) -> NifResult<Atom> {
+    let mut relay = relay_lock(&vm)?;
+    let Some(slot) = relay.host_calls.get_mut(&handle) else {
+        return Err(nif_err(format!("unknown host_call relay handle {handle}")));
+    };
+    slot.done = true;
+    slot.failed = !ok;
+    slot.result = if ok {
+        result.as_slice().to_vec()
+    } else {
+        Vec::new()
+    };
+    slot.offset = 0;
+    Ok(atoms::ok())
+}
+
+#[rustler::nif(name = "relay_ws_open_nif")]
+fn relay_ws_open(vm: ResourceArc<Vm>, handle: i32, ok: bool) -> NifResult<Atom> {
+    let mut relay = relay_lock(&vm)?;
+    let Some(slot) = relay.ws.get_mut(&handle) else {
+        return Err(nif_err(format!("unknown WebSocket relay handle {handle}")));
+    };
+    slot.open = ok;
+    slot.failed = !ok;
+    Ok(atoms::ok())
+}
+
+#[rustler::nif(name = "relay_ws_push_nif")]
+fn relay_ws_push(vm: ResourceArc<Vm>, handle: i32, data: Binary) -> NifResult<Atom> {
+    let mut relay = relay_lock(&vm)?;
+    let Some(slot) = relay.ws.get_mut(&handle) else {
+        return Err(nif_err(format!("unknown WebSocket relay handle {handle}")));
+    };
+    if slot.failed {
+        return Err(nif_err(format!("closed WebSocket relay handle {handle}")));
+    }
+    slot.incoming.push_back(data.as_slice().to_vec());
+    Ok(atoms::ok())
+}
+
+#[rustler::nif(name = "relay_ws_close_nif")]
+fn relay_ws_close(vm: ResourceArc<Vm>, handle: i32) -> NifResult<Atom> {
+    let mut relay = relay_lock(&vm)?;
+    let Some(slot) = relay.ws.get_mut(&handle) else {
+        return Err(nif_err(format!("unknown WebSocket relay handle {handle}")));
+    };
+    slot.failed = true;
+    slot.open = false;
+    Ok(atoms::ok())
 }
 
 rustler::init!("Elixir.AgentOS.Host.Nif");

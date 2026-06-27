@@ -27,6 +27,15 @@ defmodule AgentOS.Host.NifTest do
 
     assert AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil, contract: {:bad, 0, 0}) ==
              {:error, "contract must be nil or {tier, budget_mib, fuel}"}
+
+    assert AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil, net: :open) ==
+             {:error, "net must be :deny or :relay"}
+
+    assert AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil, host_call: :open) ==
+             {:error, "host_call must be :deny or :relay"}
+
+    assert AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil, persist: :relay) ==
+             {:error, "persist relay requires an async persistence ABI; use :deny or :stub"}
   end
 
   test "restore validates the Elixir option surface before calling the raw NIF" do
@@ -35,5 +44,8 @@ defmodule AgentOS.Host.NifTest do
 
     assert AgentOS.Host.Nif.restore(<<0, 1, 2, 3>>, <<>>, workers: -1) ==
              {:error, "workers must be nil or a non-negative integer"}
+
+    assert AgentOS.Host.Nif.restore(<<0, 1, 2, 3>>, <<>>, persist: :relay) ==
+             {:error, "persist relay requires an async persistence ABI; use :deny or :stub"}
   end
 end
