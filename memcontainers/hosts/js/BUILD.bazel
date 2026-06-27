@@ -60,6 +60,25 @@ js_test(
     },
 )
 
+# Persist capability unit coverage: the JS host's disk/browser backends implement
+# the same async `start/poll/body/close` ABI as wasmtime. This target exercises
+# the codec and the browser durability/ordering semantics without booting a VM.
+mc_ts_project(
+    name = "persist_lib",
+    srcs = ["test/persist.test.ts"],
+    deps = [
+        ":host",
+        ":node_modules/@mc/contracts",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+js_test(
+    name = "persist_test",
+    data = [":persist_lib"],
+    entry_point = "test/persist.test.js",
+)
+
 # Cross-host parity (A3/A8): rehydrate a snapshot the WASMTIME host produced
 # (//memcontainers/hosts/wasmtime:cross_host_snapshot) under THIS host, asserting the saved state and a
 # live exec survive. The strongest proof the MCSN format is truly host-identical — not same-host only.

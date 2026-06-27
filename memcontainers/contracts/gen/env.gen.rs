@@ -21,10 +21,10 @@ pub const BRIDGE_IMPORTS: &[&str] = &[
     "mc_host_call_poll",
     "mc_host_call_body",
     "mc_host_call_close",
-    "mc_persist_get",
-    "mc_persist_put",
-    "mc_persist_delete",
-    "mc_persist_list",
+    "mc_persist_start",
+    "mc_persist_poll",
+    "mc_persist_body",
+    "mc_persist_close",
     "mc_threads_init",
     "mc_thread_spawn",
     "mc_thread_park",
@@ -60,10 +60,10 @@ macro_rules! mc_bridge_table {
         mc_host_call_poll => HostCallPoll (handle: i32, buf: mptr, buf_len: len) [i32];
         mc_host_call_body => HostCallBody (handle: i32, buf: mptr, buf_len: len) [i32];
         mc_host_call_close => HostCallClose (handle: i32) [void];
-        mc_persist_get => PersistGet (kp: cptr, kl: len, vp: mptr, vl: len) [i32];
-        mc_persist_put => PersistPut (kp: cptr, kl: len, vp: cptr, vl: len) [i32];
-        mc_persist_delete => PersistDelete (kp: cptr, kl: len) [i32];
-        mc_persist_list => PersistList (pp: cptr, pl: len, bp: mptr, bl: len) [i32];
+        mc_persist_start => PersistStart (req_ptr: cptr, req_len: len) [i32];
+        mc_persist_poll => PersistPoll (handle: i32) [i32];
+        mc_persist_body => PersistBody (handle: i32, buf: mptr, buf_len: len) [i32];
+        mc_persist_close => PersistClose (handle: i32) [void];
         mc_threads_init => ThreadsInit (max_workers: i32) [i32];
         mc_thread_spawn => ThreadSpawn (entry: i32, arg: i32) [i32];
         mc_thread_park => ThreadPark (timeout_ms: i32) [i32];

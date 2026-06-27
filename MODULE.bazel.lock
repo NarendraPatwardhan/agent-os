@@ -349,6 +349,75 @@
         ]
       }
     },
+    "@@rules_elixir+//bzlmod:extensions.bzl%elixir_packages": {
+      "general": {
+        "bzlTransitiveDigest": "4qFB9EtdnwfU/y4ZJmedS1PHcxZTB9Fhx8tfLzHoS84=",
+        "usagesDigest": "J7pXgqyQ/omVWSXeirznm9XpDNA20tclE/nCVGQprMA=",
+        "recordedFileInputs": {},
+        "recordedDirentsInputs": {},
+        "envVariables": {},
+        "generatedRepoSpecs": {
+          "hex_pm": {
+            "repoRuleId": "@@bazel_tools//tools/build_defs/repo:http.bzl%http_archive",
+            "attributes": {
+              "urls": [
+                "https://github.com/hexpm/hex/archive/refs/tags/v2.2.2.tar.gz"
+              ],
+              "strip_prefix": "hex-2.2.2",
+              "sha256": "f3ba423f2937eb593eccc863c060f147af333e188620b7879ceb4e3b97faf07c",
+              "build_file_content": "\nload(\"@rules_elixir//:defs.bzl\", \"mix_library\")\n\nmix_library(\n    name = \"lib\",\n    app_name = \"hex\",\n    srcs = glob([\"src/*.erl\", \"src/*.xrl\", \"src/*.hrl\", \"lib/**/*.ex\"]),\n    data = [\"lib/hex/http/ca-bundle.crt\"],\n    mix_config = \":mix.exs\",\n    visibility = [\"//visibility:public\"],\n)\n"
+            }
+          },
+          "jason": {
+            "repoRuleId": "@@rules_erlang+//:hex_archive.bzl%hex_archive",
+            "attributes": {
+              "package_name": "jason",
+              "version": "1.4.4",
+              "sha256": "c5eb0cab91f094599f94d55bc63409236a8ec69a21a67814529e8d5f6cc90b3b",
+              "integrity": "",
+              "build_file_content": "\nload(\"@rules_elixir//:defs.bzl\", \"elixir_app\")\n\nelixir_app(\n    srcs = glob([\"lib/**/*.ex\"]),\n    app_name = \"jason\",\n    app_version = \"1.4.4\",\n    visibility = [\"//visibility:public\"],\n)\n",
+              "patches": [],
+              "patch_args": [
+                "-p0"
+              ],
+              "patch_cmds": []
+            }
+          },
+          "decimal": {
+            "repoRuleId": "@@rules_erlang+//:hex_archive.bzl%hex_archive",
+            "attributes": {
+              "package_name": "decimal",
+              "version": "2.3.0",
+              "sha256": "a4d66355cb29cb47c3cf30e71329e58361cfcb37c34235ef3bf1d7bf3773aeac",
+              "integrity": "",
+              "build_file_content": "\nload(\"@rules_elixir//:defs.bzl\", \"elixir_app\")\n\nelixir_app(\n    srcs = glob([\"lib/**/*.ex\"]),\n    app_name = \"decimal\",\n    app_version = \"2.3.0\",\n    visibility = [\"//visibility:public\"],\n)\n",
+              "patches": [],
+              "patch_args": [
+                "-p0"
+              ],
+              "patch_cmds": []
+            }
+          }
+        },
+        "recordedRepoMappingEntries": [
+          [
+            "rules_elixir+",
+            "bazel_tools",
+            "bazel_tools"
+          ],
+          [
+            "rules_elixir+",
+            "rules_erlang",
+            "rules_erlang+"
+          ],
+          [
+            "rules_erlang+",
+            "bazel_tools",
+            "bazel_tools"
+          ]
+        ]
+      }
+    },
     "@@rules_erlang+//bzlmod:extensions.bzl%erlang_config": {
       "general": {
         "bzlTransitiveDigest": "qwh69Te4K7EI/Oireu0az3r/fWLkQdaV5hLvsFCk1cM=",

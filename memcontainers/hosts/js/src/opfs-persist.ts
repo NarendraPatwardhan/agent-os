@@ -1,11 +1,20 @@
-// Browser persistence for `/var/persist`. The kernel's persist bridge is SYNCHRONOUS (`get` returns
-// the value immediately), but the browser's durable stores — OPFS and IndexedDB — are async. So this
-// keeps an authoritative in-memory cache (sync get/put/delete/list) that is LOADED from the durable
-// backing at `open()`, and WRITES BEHIND to the backing so a VM's `/var/persist` survives a page
-// reload. The durable backing is injectable, so the cache semantics are unit-tested in bun/node
-// without a browser.
+// Browser persistence for `/var/persist`. Reads/lists are served from an
+// `open()`-loaded cache, while mutations report ready only after OPFS/IndexedDB
+// has accepted the write. That makes the kernel's `pending_commits` quiescence
+// mean the same thing in browsers as it does for native disk and BEAM relay
+// backends.
 
 import type { PersistCapability } from "./types.js";
+import {
+  PERSIST_OP_GET,
+  PERSIST_OP_PUT,
+  PERSIST_OP_DELETE,
+  PERSIST_OP_LIST,
+  decodePersistRequest,
+  encodeKeyList,
+  getAbsentBody,
+  getPresentBody,
+} from "./persist.js";
 
 /** An async durable key/value backing (OPFS / IndexedDB). Keys are hex strings. */
 export interface BrowserKv {
@@ -14,8 +23,19 @@ export interface BrowserKv {
   delete(hexKey: string): Promise<void>;
 }
 
-/** `/var/persist` backed by a browser durable store, via a sync cache. */
+interface Slot {
+  result: Uint8Array;
+  offset: number;
+  done: boolean;
+  failed: boolean;
+}
+
+/** `/var/persist` backed by a browser durable store, via an async bridge slot. */
 export class OpfsPersist implements PersistCapability {
+  private readonly slots = new Map<number, Slot>();
+  private next = 1;
+  private mutationTail: Promise<void> = Promise.resolve();
+
   private constructor(
     private readonly cache: Map<string, Uint8Array>,
     private readonly backing: BrowserKv,
@@ -30,50 +50,90 @@ export class OpfsPersist implements PersistCapability {
     return new OpfsPersist(cache, kv);
   }
 
-  get(key: Uint8Array, out: Uint8Array): number {
-    const v = this.cache.get(hexEncode(key));
-    if (v === undefined) return -2; // not found
-    const n = Math.min(v.length, out.length);
-    out.set(v.subarray(0, n));
-    return v.length; // FULL length (the kernel resizes + retries if needed)
+  start(req: Uint8Array): number {
+    const decoded = decodePersistRequest(req);
+    if (!decoded) return -1;
+    const handle = this.next;
+    this.next = this.next + 1 < 1 ? 1 : this.next + 1;
+    const slot: Slot = { result: new Uint8Array(0), offset: 0, done: false, failed: false };
+    this.slots.set(handle, slot);
+    void this.run(decoded.op, decoded.key.slice(), decoded.value.slice())
+      .then((result) => {
+        const live = this.slots.get(handle);
+        if (!live) return;
+        live.result = result;
+        live.done = true;
+      })
+      .catch(() => {
+        const live = this.slots.get(handle);
+        if (!live) return;
+        live.failed = true;
+        live.done = true;
+      });
+    return handle;
   }
 
-  put(key: Uint8Array, val: Uint8Array): number {
-    const hk = hexEncode(key);
-    const copy = val.slice();
-    this.cache.set(hk, copy);
-    void this.backing.put(hk, copy).catch((e) => console.warn("persist: write-behind failed", e));
-    return 0;
+  poll(handle: number): number {
+    const slot = this.slots.get(handle);
+    if (!slot || slot.failed) return -1;
+    return slot.done ? 1 : 0;
   }
 
-  delete(key: Uint8Array): number {
-    const hk = hexEncode(key);
-    this.cache.delete(hk);
-    void this.backing
-      .delete(hk)
-      .catch((e) => console.warn("persist: delete write-behind failed", e));
-    return 0; // missing key is ok
+  body(handle: number, buf: Uint8Array): number {
+    const slot = this.slots.get(handle);
+    if (!slot || slot.failed || !slot.done) return -1;
+    const remaining = slot.result.subarray(slot.offset);
+    const n = Math.min(remaining.length, buf.length);
+    buf.set(remaining.subarray(0, n), 0);
+    slot.offset += n;
+    return n;
   }
 
-  list(prefix: Uint8Array, out: Uint8Array): number {
-    const keys: Uint8Array[] = [];
-    for (const hk of this.cache.keys()) {
-      const key = hexDecode(hk);
-      if (key && startsWith(key, prefix)) keys.push(key);
+  close(handle: number): void {
+    this.slots.delete(handle);
+  }
+
+  private async run(op: number, key: Uint8Array, value: Uint8Array): Promise<Uint8Array> {
+    switch (op) {
+      case PERSIST_OP_GET: {
+        const v = this.cache.get(hexEncode(key));
+        return v === undefined ? getAbsentBody() : getPresentBody(v);
+      }
+      case PERSIST_OP_PUT: {
+        const hk = hexEncode(key);
+        const copy = value.slice();
+        await this.enqueueMutation(async () => {
+          await this.backing.put(hk, copy);
+          this.cache.set(hk, copy);
+        });
+        return new Uint8Array(0);
+      }
+      case PERSIST_OP_DELETE: {
+        const hk = hexEncode(key);
+        await this.enqueueMutation(async () => {
+          await this.backing.delete(hk);
+          this.cache.delete(hk);
+        });
+        return new Uint8Array(0);
+      }
+      case PERSIST_OP_LIST: {
+        const keys: Uint8Array[] = [];
+        for (const hk of this.cache.keys()) {
+          const candidate = hexDecode(hk);
+          if (candidate && startsWith(candidate, key)) keys.push(candidate);
+        }
+        keys.sort(compareBytes);
+        return encodeKeyList(keys);
+      }
+      default:
+        throw new Error(`unknown persist op ${op}`);
     }
-    keys.sort(compareBytes);
-    let total = 0;
-    for (const k of keys) total += k.length + 1;
-    const blob = new Uint8Array(total);
-    let off = 0;
-    for (const k of keys) {
-      blob.set(k, off);
-      off += k.length;
-      blob[off++] = 0; // NUL separator
-    }
-    const n = Math.min(blob.length, out.length);
-    out.set(blob.subarray(0, n));
-    return blob.length; // FULL length
+  }
+
+  private async enqueueMutation(work: () => Promise<void>): Promise<void> {
+    const run = this.mutationTail.then(work, work);
+    this.mutationTail = run.catch(() => {});
+    await run;
   }
 }
 

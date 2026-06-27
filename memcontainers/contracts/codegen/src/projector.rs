@@ -316,7 +316,7 @@ fn banner(lang: &str, contract: &str) -> String {
 fn const_ty(group: &str) -> &'static str {
     match group {
         "capability" => "u8", // the policy bitset packs into one byte (eight bits)
-        "serve-op" | "mount-op" => "u32",
+        "serve-op" | "mount-op" | "persist-op" => "u32",
         "wire-version" => "u32",
         "abi-version" => "i64",
         _ => "i32",
