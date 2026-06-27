@@ -1,139 +1,219 @@
-//! Host persistence capability — the real thing, no mocks.
+//! Host persistence capability — async ABI, synchronous local implementation.
 //!
-//! `DeniedPersist` is the default policy gate: every call returns `-1` (the
-//! default-deny invariant, A9). `DiskPersist` stores key/value pairs as real
-//! files in a directory, so data survives a kernel restart. It is installed
-//! only under `--persist-dir PATH`. The kernel reaches this through
-//! `mc_persist_*` and surfaces it to the agent as the `/var/persist`
-//! filesystem (`persistfs`) — the agent never sees a host path or handle.
-//!
-//! Return-value contract (mirrored by the kernel wrapper and bridge docs):
-//!   - `get(key, out)`  → `-1` denied/error · `-2` not found · `n>=0` the FULL
-//!     value length (writes `min(n, out.len())` bytes; `0` = present-but-empty).
-//!   - `put(key, val)`  → `-1` denied/error · `0` ok.
-//!   - `delete(key)`    → `-1` denied/error · `0` ok (missing key is ok).
-//!   - `list(prefix, out)` → `-1` denied/error · `n>=0` the FULL byte length of
-//!     the NUL-separated matching keys (writes `min(n, out.len())`).
+//! The bridge shape is deliberately the same as host calls: `start` accepts an
+//! op-tagged request blob and returns a handle, `poll` reports readiness, `body`
+//! streams the result, and `close` releases the slot. `DiskPersist` still uses
+//! ordinary blocking filesystem calls, but it performs them inside `start` and
+//! stores the already-ready result behind the handle. That keeps the fast native
+//! path simple while allowing BEAM/browser/remote hosts to answer later without
+//! blocking a wasm import.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-/// The four persistence bridge calls, behind the host's capability policy.
+use constants_rust::{
+    PERSIST_GET_ABSENT, PERSIST_GET_PRESENT, PERSIST_OP_DELETE, PERSIST_OP_GET, PERSIST_OP_LIST,
+    PERSIST_OP_PUT,
+};
+
+pub const OP_GET: u32 = PERSIST_OP_GET;
+pub const OP_PUT: u32 = PERSIST_OP_PUT;
+pub const OP_DELETE: u32 = PERSIST_OP_DELETE;
+pub const OP_LIST: u32 = PERSIST_OP_LIST;
+
+const GET_ABSENT: u8 = PERSIST_GET_ABSENT as u8;
+const GET_PRESENT: u8 = PERSIST_GET_PRESENT as u8;
+
 pub trait PersistCapability: Send + 'static {
-    fn get(&mut self, key: &[u8], out: &mut [u8]) -> i32;
-    fn put(&mut self, key: &[u8], val: &[u8]) -> i32;
-    fn delete(&mut self, key: &[u8]) -> i32;
-    fn list(&mut self, prefix: &[u8], out: &mut [u8]) -> i32;
+    /// Start an op-tagged request (`[op:u32][key_len:u32][key][value...]`).
+    /// Return a handle >= 0, or -1 to deny/fail before a handle exists.
+    fn start(&mut self, req: &[u8]) -> i32;
+    /// `0` pending, `1` ready, `-1` failed or unknown handle.
+    fn poll(&mut self, handle: i32) -> i32;
+    /// Stream body bytes: `n > 0`, `0` EOF, `-1` failed.
+    fn body(&mut self, handle: i32, buf: &mut [u8]) -> i32;
+    fn close(&mut self, handle: i32);
 }
 
-/// Refuse every persistence call (the default-deny gate, A9). The kernel
-/// degrades gracefully — `persistfs` surfaces denial as `PermissionDenied`.
 pub struct DeniedPersist;
 
 impl PersistCapability for DeniedPersist {
-    fn get(&mut self, _key: &[u8], _out: &mut [u8]) -> i32 {
+    fn start(&mut self, _req: &[u8]) -> i32 {
         -1
     }
-    fn put(&mut self, _key: &[u8], _val: &[u8]) -> i32 {
+    fn poll(&mut self, _handle: i32) -> i32 {
         -1
     }
-    fn delete(&mut self, _key: &[u8]) -> i32 {
+    fn body(&mut self, _handle: i32, _buf: &mut [u8]) -> i32 {
         -1
     }
-    fn list(&mut self, _prefix: &[u8], _out: &mut [u8]) -> i32 {
-        -1
-    }
+    fn close(&mut self, _handle: i32) {}
+}
+
+struct Slot {
+    result: Vec<u8>,
+    offset: usize,
+    failed: bool,
 }
 
 /// A real on-disk key/value store. Each key's bytes are hex-encoded into a
-/// single flat filename under `dir`, so arbitrary key bytes (including `/`)
-/// are stored safely with no path traversal, and `list` can recover the keys.
+/// single flat filename under `dir`, so arbitrary key bytes (including `/`) are
+/// stored safely with no path traversal, and `list` can recover the keys.
 pub struct DiskPersist {
     dir: PathBuf,
+    slots: HashMap<i32, Slot>,
+    next: i32,
 }
 
 impl DiskPersist {
-    /// Open (creating if needed) a store rooted at `dir`.
     pub fn new(dir: impl Into<PathBuf>) -> Self {
         let dir = dir.into();
         let _ = fs::create_dir_all(&dir);
-        DiskPersist { dir }
+        Self {
+            dir,
+            slots: HashMap::new(),
+            next: 1,
+        }
     }
 
     fn path_for(&self, key: &[u8]) -> PathBuf {
         self.dir.join(hex_encode(key))
     }
+
+    fn alloc_handle(&mut self, slot: Slot) -> i32 {
+        let handle = self.next;
+        self.next = self.next.wrapping_add(1).max(1);
+        self.slots.insert(handle, slot);
+        handle
+    }
+
+    fn run(&mut self, op: u32, key: &[u8], value: &[u8]) -> Slot {
+        match op {
+            OP_GET => match fs::read(self.path_for(key)) {
+                Ok(value) => {
+                    let mut body = Vec::with_capacity(value.len() + 1);
+                    body.push(GET_PRESENT);
+                    body.extend_from_slice(&value);
+                    ok_slot(body)
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => ok_slot(vec![GET_ABSENT]),
+                Err(_) => failed_slot(),
+            },
+            OP_PUT => {
+                let final_path = self.path_for(key);
+                let tmp_path = self.dir.join(format!("{}.tmp", hex_encode(key)));
+                if fs::write(&tmp_path, value).is_err() {
+                    return failed_slot();
+                }
+                match fs::rename(&tmp_path, &final_path) {
+                    Ok(()) => ok_slot(Vec::new()),
+                    Err(_) => {
+                        let _ = fs::remove_file(&tmp_path);
+                        failed_slot()
+                    }
+                }
+            }
+            OP_DELETE => match fs::remove_file(self.path_for(key)) {
+                Ok(()) => ok_slot(Vec::new()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => ok_slot(Vec::new()),
+                Err(_) => failed_slot(),
+            },
+            OP_LIST => {
+                let entries = match fs::read_dir(&self.dir) {
+                    Ok(entries) => entries,
+                    Err(_) => return failed_slot(),
+                };
+                let mut keys: Vec<Vec<u8>> = Vec::new();
+                for entry in entries.flatten() {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    if name.ends_with(".tmp") {
+                        continue;
+                    }
+                    if let Some(candidate) = hex_decode(name.as_bytes()) {
+                        if candidate.starts_with(key) {
+                            keys.push(candidate);
+                        }
+                    }
+                }
+                keys.sort();
+                let mut body = Vec::new();
+                for key in keys {
+                    body.extend_from_slice(&key);
+                    body.push(0);
+                }
+                ok_slot(body)
+            }
+            _ => failed_slot(),
+        }
+    }
 }
 
 impl PersistCapability for DiskPersist {
-    fn get(&mut self, key: &[u8], out: &mut [u8]) -> i32 {
-        match fs::read(self.path_for(key)) {
-            Ok(value) => {
-                let n = value.len().min(out.len());
-                out[..n].copy_from_slice(&value[..n]);
-                // Return the FULL length so the kernel can resize + retry when
-                // its probe buffer was too small.
-                value.len() as i32
-            }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => -2,
-            Err(_) => -1,
-        }
-    }
-
-    fn put(&mut self, key: &[u8], val: &[u8]) -> i32 {
-        // Atomic publish: write a temp file then rename over the key.
-        let final_path = self.path_for(key);
-        let tmp_path = self.dir.join(format!("{}.tmp", hex_encode(key)));
-        if fs::write(&tmp_path, val).is_err() {
+    fn start(&mut self, req: &[u8]) -> i32 {
+        let Some((op, key, value)) = decode_request(req) else {
             return -1;
-        }
-        match fs::rename(&tmp_path, &final_path) {
-            Ok(()) => 0,
-            Err(_) => {
-                let _ = fs::remove_file(&tmp_path);
-                -1
-            }
-        }
-    }
-
-    fn delete(&mut self, key: &[u8]) -> i32 {
-        match fs::remove_file(self.path_for(key)) {
-            Ok(()) => 0,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0, // missing is ok
-            Err(_) => -1,
-        }
-    }
-
-    fn list(&mut self, prefix: &[u8], out: &mut [u8]) -> i32 {
-        let entries = match fs::read_dir(&self.dir) {
-            Ok(e) => e,
-            Err(_) => return -1,
         };
-        // Collect matching keys as a NUL-separated blob (sorted for a stable,
-        // deterministic listing).
-        let mut keys: Vec<Vec<u8>> = Vec::new();
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name.ends_with(".tmp") {
-                continue; // skip in-flight writes
-            }
-            if let Some(key) = hex_decode(name.as_bytes()) {
-                if key.starts_with(prefix) {
-                    keys.push(key);
-                }
-            }
-        }
-        keys.sort();
-        let mut blob = Vec::new();
-        for key in keys {
-            blob.extend_from_slice(&key);
-            blob.push(0);
-        }
-        let n = blob.len().min(out.len());
-        out[..n].copy_from_slice(&blob[..n]);
-        blob.len() as i32
+        let slot = self.run(op, key, value);
+        self.alloc_handle(slot)
     }
+
+    fn poll(&mut self, handle: i32) -> i32 {
+        match self.slots.get(&handle) {
+            Some(slot) if slot.failed => -1,
+            Some(_) => 1,
+            None => -1,
+        }
+    }
+
+    fn body(&mut self, handle: i32, buf: &mut [u8]) -> i32 {
+        match self.slots.get_mut(&handle) {
+            Some(slot) if slot.failed => -1,
+            Some(slot) => {
+                let remaining = &slot.result[slot.offset..];
+                let n = remaining.len().min(buf.len());
+                buf[..n].copy_from_slice(&remaining[..n]);
+                slot.offset += n;
+                n as i32
+            }
+            None => -1,
+        }
+    }
+
+    fn close(&mut self, handle: i32) {
+        self.slots.remove(&handle);
+    }
+}
+
+fn ok_slot(result: Vec<u8>) -> Slot {
+    Slot {
+        result,
+        offset: 0,
+        failed: false,
+    }
+}
+
+fn failed_slot() -> Slot {
+    Slot {
+        result: Vec::new(),
+        offset: 0,
+        failed: true,
+    }
+}
+
+pub fn decode_request(req: &[u8]) -> Option<(u32, &[u8], &[u8])> {
+    if req.len() < 8 {
+        return None;
+    }
+    let op = u32::from_le_bytes([req[0], req[1], req[2], req[3]]);
+    let key_len = u32::from_le_bytes([req[4], req[5], req[6], req[7]]) as usize;
+    let key_start = 8usize;
+    let key_end = key_start.checked_add(key_len)?;
+    if key_end > req.len() {
+        return None;
+    }
+    Some((op, &req[key_start..key_end], &req[key_end..]))
 }
 
 fn hex_encode(bytes: &[u8]) -> String {

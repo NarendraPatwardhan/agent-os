@@ -112,6 +112,14 @@ export const MOUNT_OP_RENAME = 4;
 export const MOUNT_OP_STAT = 5;
 export const MOUNT_OP_WRITE = 6;
 
+// persist-op
+export const PERSIST_OP_GET = 1;
+export const PERSIST_OP_PUT = 2;
+export const PERSIST_OP_DELETE = 3;
+export const PERSIST_OP_LIST = 4;
+export const PERSIST_GET_ABSENT = 0;
+export const PERSIST_GET_PRESENT = 1;
+
 // stat-record
 export const STAT_REC_SIZE_OFF = 0;
 export const STAT_REC_NODE_TYPE_OFF = 8;

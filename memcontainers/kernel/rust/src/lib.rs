@@ -1130,6 +1130,9 @@ pub(crate) fn mc_tick() -> i32 {
         fs::mountfs::drain_all(|caller| {
             caller == vfs::SYSTEM_CALLER || scheduler.get_task(caller).is_some()
         });
+        fs::persistfs::drain_all(|caller| {
+            caller == vfs::SYSTEM_CALLER || scheduler.get_task(caller).is_some()
+        });
 
         // 2.5 Guest login-shell keep-alive: pid 1 must never disappear. If the
         //     guest `/bin/sh` exited (e.g. `exit` / Ctrl-D), reap it and respawn
@@ -2324,10 +2327,11 @@ pub(crate) fn mc_inflight_egress() -> i32 {
     net::inflight_egress() + fs::servicefs::svc_inflight() as i32
 }
 
-/// Number of host-backed-mount write-commits parked but not yet acknowledged by
-/// their drivers. The host polls this (driving ticks to drain them) to make a
-/// mount write durable on return WITHOUT waiting on unrelated egress — a write's
-/// durability must not block on an open WebSocket or a concurrent fetch.
+/// Number of host-backed filesystem write-commits parked but not yet acknowledged
+/// by their drivers (`mountfs` and `/var/persist`). The host polls this (driving
+/// ticks to drain them) to make a write durable on return WITHOUT waiting on
+/// unrelated egress — a write's durability must not block on an open WebSocket
+/// or a concurrent fetch.
 pub(crate) fn mc_pending_commits() -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
@@ -2335,7 +2339,7 @@ pub(crate) fn mc_pending_commits() -> i32 {
             return 0;
         }
     }
-    fs::mountfs::pending_commit_count() as i32
+    (fs::mountfs::pending_commit_count() + fs::persistfs::pending_commit_count()) as i32
 }
 
 // ---------- Threading exports ----------

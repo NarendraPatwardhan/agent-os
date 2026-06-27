@@ -181,6 +181,18 @@ mount-op {
     MOUNT_OP_WRITE   6
 }
 
+// Host-backed persistence opcodes and GET body tags. The bridge import shape
+// lives in bridge.kdl; these are the nested request/body constants every host
+// and kernel-side decoder must share.
+persist-op {
+    PERSIST_OP_GET     1
+    PERSIST_OP_PUT     2
+    PERSIST_OP_DELETE  3
+    PERSIST_OP_LIST    4
+    PERSIST_GET_ABSENT 0
+    PERSIST_GET_PRESENT 1
+}
+
 // The fixed serve/mount STAT record both proxy filesystems agree on (the 44-byte record §7.1 names). A
 // host driver (or a served guest) WRITES these little-endian fields at these byte offsets; the kernel's
 // fs/proxy.rs READS them back. The ONE place the BYTE LAYOUT lives — the offset analog of the

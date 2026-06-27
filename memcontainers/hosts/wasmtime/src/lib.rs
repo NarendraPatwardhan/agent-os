@@ -327,10 +327,10 @@ pub(crate) fn net_read_into(
     n as i32
 }
 
-/// Like [`net_read_into`] for the persistence capability. `get`/`list` return the FULL
-/// value/key length, so the kernel resizes and retries when `n > len`; `-1` denied, `-2`
-/// not-found, `0` empty all pass through unchanged.
-pub(crate) fn persist_read_into(
+/// Like [`net_read_into`] for an async persistence result body. `0` is EOF,
+/// `-1` is a failed/unknown handle, and positive values are copied into the
+/// kernel's buffer.
+pub(crate) fn persist_body_into(
     caller: &mut Caller<'_, HostState>,
     ptr: i32,
     len: i32,

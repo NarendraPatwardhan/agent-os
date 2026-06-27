@@ -59,7 +59,7 @@ mod handlers {
 
     // The capability/sink methods resolve through their trait objects (`Box<dyn …>`), so
     // the traits need not be imported here — only the helpers and `HostState`.
-    use crate::{HostState, host_call_read_into, net_read_into, persist_read_into, read_memory};
+    use crate::{HostState, host_call_read_into, net_read_into, persist_body_into, read_memory};
 
     // ── terminal I/O ─────────────────────────────────────────────────────────
     pub fn mc_stdout_write(caller: &mut Caller<'_, HostState>, ptr: i32, len: i32) {
@@ -174,37 +174,21 @@ mod handlers {
     }
 
     // ── persistence — dispatched to the persist capability (Denied refuses) ───
-    pub fn mc_persist_get(caller: &mut Caller<'_, HostState>, kp: i32, kl: i32, vp: i32, vl: i32) -> i32 {
-        let key = match read_memory(caller, kp, kl) {
-            Some(k) => k,
+    pub fn mc_persist_start(caller: &mut Caller<'_, HostState>, ptr: i32, len: i32) -> i32 {
+        let req = match read_memory(caller, ptr, len) {
+            Some(req) => req,
             None => return -1,
         };
-        persist_read_into(caller, vp, vl, |p, out| p.get(&key, out))
+        caller.data_mut().persist.start(&req)
     }
-    pub fn mc_persist_put(caller: &mut Caller<'_, HostState>, kp: i32, kl: i32, vp: i32, vl: i32) -> i32 {
-        let key = match read_memory(caller, kp, kl) {
-            Some(k) => k,
-            None => return -1,
-        };
-        let val = match read_memory(caller, vp, vl) {
-            Some(v) => v,
-            None => return -1,
-        };
-        caller.data_mut().persist.put(&key, &val)
+    pub fn mc_persist_poll(caller: &mut Caller<'_, HostState>, h: i32) -> i32 {
+        caller.data_mut().persist.poll(h)
     }
-    pub fn mc_persist_delete(caller: &mut Caller<'_, HostState>, kp: i32, kl: i32) -> i32 {
-        let key = match read_memory(caller, kp, kl) {
-            Some(k) => k,
-            None => return -1,
-        };
-        caller.data_mut().persist.delete(&key)
+    pub fn mc_persist_body(caller: &mut Caller<'_, HostState>, h: i32, ptr: i32, len: i32) -> i32 {
+        persist_body_into(caller, ptr, len, |p, buf| p.body(h, buf))
     }
-    pub fn mc_persist_list(caller: &mut Caller<'_, HostState>, pp: i32, pl: i32, bp: i32, bl: i32) -> i32 {
-        let prefix = match read_memory(caller, pp, pl) {
-            Some(p) => p,
-            None => return -1,
-        };
-        persist_read_into(caller, bp, bl, |p, out| p.list(&prefix, out))
+    pub fn mc_persist_close(caller: &mut Caller<'_, HostState>, h: i32) {
+        caller.data_mut().persist.close(h);
     }
 
     // ── threading — the host advertises its worker count; spawn/park inert ────

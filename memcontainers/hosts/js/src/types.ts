@@ -46,16 +46,14 @@ export interface NetCapability {
   wsClose(handle: number): void;
 }
 
-/** Host-side key/value store behind `/var/persist` (mirrors Rust `PersistCapability`). Return codes
- *  match the bridge contract (the persist_* rows). */
+/** Host-side key/value store behind `/var/persist` (mirrors Rust `PersistCapability`). The request
+ *  blob is `[op:u32][key_len:u32][key][value...]`; body bytes match the async persist bridge rows. */
 export interface PersistCapability {
-  /** -1 denied/error, -2 not-found, else the FULL value length (writes
-   *  min(n, out.length)). */
-  get(key: Uint8Array, out: Uint8Array): number;
-  /** -1 denied/error, ≥ 0 ok. */
-  put(key: Uint8Array, val: Uint8Array): number;
-  /** -1 denied/error, 0 ok (missing key is ok). */
-  delete(key: Uint8Array): number;
-  /** -1 denied/error, else the FULL byte length of NUL-separated sorted keys. */
-  list(prefix: Uint8Array, out: Uint8Array): number;
+  /** Start a request; return an opaque handle >= 0, or -1 to refuse. */
+  start(req: Uint8Array): number;
+  /** 0 pending, 1 ready, -1 failed/unknown. */
+  poll(handle: number): number;
+  /** Body bytes into `buf`: n > 0, 0 = EOF, -1 = error. */
+  body(handle: number, buf: Uint8Array): number;
+  close(handle: number): void;
 }

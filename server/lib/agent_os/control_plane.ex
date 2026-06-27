@@ -131,6 +131,16 @@ defmodule AgentOS.ControlPlane do
   def egress_host_call_fail(id, handle, opts \\ []),
     do: with_vm(id, &Vm.egress_host_call_fail(&1, handle, opts))
 
+  @doc "Answer a persist egress relay event with raw async-persist body bytes."
+  @spec egress_persist_respond(Vm.id(), integer(), binary(), keyword()) :: :ok | {:error, term()}
+  def egress_persist_respond(id, handle, body, opts \\ []),
+    do: with_vm(id, &Vm.egress_persist_respond(&1, handle, body, opts))
+
+  @doc "Fail a persist egress relay event."
+  @spec egress_persist_fail(Vm.id(), integer(), keyword()) :: :ok | {:error, term()}
+  def egress_persist_fail(id, handle, opts \\ []),
+    do: with_vm(id, &Vm.egress_persist_fail(&1, handle, opts))
+
   @doc "Mark a WebSocket egress relay as connected."
   @spec egress_ws_open(Vm.id(), integer(), keyword()) :: :ok | {:error, term()}
   def egress_ws_open(id, handle, opts \\ []), do: with_vm(id, &Vm.egress_ws_open(&1, handle, opts))

@@ -112,6 +112,14 @@ pub const MOUNT_OP_RENAME: u32 = 4;
 pub const MOUNT_OP_STAT: u32 = 5;
 pub const MOUNT_OP_WRITE: u32 = 6;
 
+// persist-op
+pub const PERSIST_OP_GET: u32 = 1;
+pub const PERSIST_OP_PUT: u32 = 2;
+pub const PERSIST_OP_DELETE: u32 = 3;
+pub const PERSIST_OP_LIST: u32 = 4;
+pub const PERSIST_GET_ABSENT: u32 = 0;
+pub const PERSIST_GET_PRESENT: u32 = 1;
+
 // stat-record
 pub const STAT_REC_SIZE_OFF: i32 = 0;
 pub const STAT_REC_NODE_TYPE_OFF: i32 = 8;

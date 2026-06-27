@@ -26,14 +26,13 @@
 //!
 //! Scope: boot / restore / tick / terminal I/O / structured exec / control-channel fs /
 //! snapshot / commit / status / egress relay. The relay is deliberately below the Phoenix/wire
-//! edge: Rust queues poll-based `net` + `host_call` requests, while the owning `AgentOS.Vm`
-//! process drains and answers them. `persist` is only a denial stub for now; see `BeamPersist`
-//! for the ABI mismatch that prevents a real BEAM round trip without changing the kernel/host
-//! contract.
+//! edge: Rust queues poll-based `net`, `host_call`, and `persist` requests, while the owning
+//! `AgentOS.Vm` process drains and answers them.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use constants_rust::{PERSIST_OP_DELETE, PERSIST_OP_GET, PERSIST_OP_LIST, PERSIST_OP_PUT};
 use host::{
     ExecResult, HostCallCapability, KernelHost, KernelHostBuilder, NetCapability,
     PersistCapability, StreamSink,
@@ -77,6 +76,7 @@ struct RelayState {
     events: VecDeque<RelayEvent>,
     http: HashMap<i32, HttpSlot>,
     host_calls: HashMap<i32, HostCallSlot>,
+    persist: HashMap<i32, PersistSlot>,
     ws: HashMap<i32, WsSlot>,
 }
 
@@ -100,6 +100,23 @@ enum RelayEvent {
         handle: i32,
         name: String,
         body: Vec<u8>,
+    },
+    PersistGet {
+        handle: i32,
+        key: Vec<u8>,
+    },
+    PersistPut {
+        handle: i32,
+        key: Vec<u8>,
+        value: Vec<u8>,
+    },
+    PersistDelete {
+        handle: i32,
+        key: Vec<u8>,
+    },
+    PersistList {
+        handle: i32,
+        prefix: Vec<u8>,
     },
     WsConnect {
         handle: i32,
@@ -125,6 +142,14 @@ struct HttpSlot {
 
 #[derive(Default)]
 struct HostCallSlot {
+    done: bool,
+    failed: bool,
+    result: Vec<u8>,
+    offset: usize,
+}
+
+#[derive(Default)]
+struct PersistSlot {
     done: bool,
     failed: bool,
     result: Vec<u8>,
@@ -361,33 +386,92 @@ impl HostCallCapability for BeamHostCall {
     }
 }
 
-/// Placeholder for the CONTROL_PLANE.md `BeamPersist` concept.
+/// Persistence relay to the BEAM owner.
 ///
-/// This deliberately denies every call. The current kernel/host persistence ABI is synchronous:
-/// `mc_persist_get/put/delete/list` must return the final answer from inside one guest import.
-/// A real BEAM-owner round trip would either block a NIF scheduler while waiting for Elixir, or
-/// require re-entering the VM while the import is suspended, neither of which is the host pattern
-/// we want. The production shape should alter the ABI to match `net` and `host_call`: start an
-/// operation, return an opaque handle, poll readiness, stream body bytes for `get/list`, and close
-/// the handle. Until then, persistence should stay default-deny here or use a Rust-local capability
-/// such as `DiskPersist` configured from an explicit non-relay option.
-struct BeamPersist;
+/// The old synchronous ABI (`mc_persist_get/put/delete/list`) could not safely
+/// round-trip to Elixir: the NIF would have had to block a scheduler while the
+/// owner process answered, or suspend/re-enter the VM inside a host import. The
+/// ABI alteration is the poll-based quartet now used here: `start` queues an
+/// op-tagged request and returns a handle; `poll` observes whether Elixir has
+/// answered; `body` streams the answer bytes; `close` releases the slot. Missing
+/// GETs are ordinary body data (`<<0>>`), not transport failure.
+#[derive(Clone)]
+struct BeamPersist {
+    relay: Arc<Mutex<RelayState>>,
+}
 
 impl PersistCapability for BeamPersist {
-    fn get(&mut self, _key: &[u8], _out: &mut [u8]) -> i32 {
-        -1
+    fn start(&mut self, req: &[u8]) -> i32 {
+        let Some((op, key, value)) = decode_persist_request(req) else {
+            return -1;
+        };
+        let Ok(mut relay) = self.relay.lock() else {
+            return -1;
+        };
+        let handle = relay.alloc_handle();
+        relay.persist.insert(handle, PersistSlot::default());
+        match op {
+            PERSIST_OP_GET => relay
+                .events
+                .push_back(RelayEvent::PersistGet { handle, key }),
+            PERSIST_OP_PUT => relay
+                .events
+                .push_back(RelayEvent::PersistPut { handle, key, value }),
+            PERSIST_OP_DELETE => relay
+                .events
+                .push_back(RelayEvent::PersistDelete { handle, key }),
+            PERSIST_OP_LIST => relay.events.push_back(RelayEvent::PersistList {
+                handle,
+                prefix: key,
+            }),
+            _ => {
+                relay.persist.remove(&handle);
+                return -1;
+            }
+        }
+        handle
     }
 
-    fn put(&mut self, _key: &[u8], _val: &[u8]) -> i32 {
-        -1
+    fn poll(&mut self, handle: i32) -> i32 {
+        let Ok(relay) = self.relay.lock() else {
+            return -1;
+        };
+        match relay.persist.get(&handle) {
+            Some(slot) if slot.failed => -1,
+            Some(slot) if slot.done => 1,
+            Some(_) => 0,
+            None => -1,
+        }
     }
 
-    fn delete(&mut self, _key: &[u8]) -> i32 {
-        -1
+    fn body(&mut self, handle: i32, buf: &mut [u8]) -> i32 {
+        let Ok(mut relay) = self.relay.lock() else {
+            return -1;
+        };
+        let Some(slot) = relay.persist.get_mut(&handle) else {
+            return -1;
+        };
+        if slot.failed || !slot.done {
+            return -1;
+        }
+        let start = slot.offset.min(slot.result.len());
+        let n = (slot.result.len() - start).min(buf.len());
+        buf[..n].copy_from_slice(&slot.result[start..start + n]);
+        slot.offset += n;
+        n as i32
     }
 
-    fn list(&mut self, _prefix: &[u8], _out: &mut [u8]) -> i32 {
-        -1
+    fn close(&mut self, handle: i32) {
+        if let Ok(mut relay) = self.relay.lock() {
+            relay.persist.remove(&handle);
+            relay.events.retain(|event| match event {
+                RelayEvent::PersistGet { handle: h, .. }
+                | RelayEvent::PersistPut { handle: h, .. }
+                | RelayEvent::PersistDelete { handle: h, .. }
+                | RelayEvent::PersistList { handle: h, .. } => *h != handle,
+                _ => true,
+            });
+        }
     }
 }
 
@@ -417,6 +501,24 @@ fn to_binary<'a>(env: Env<'a>, bytes: &[u8]) -> NifResult<Binary<'a>> {
     Ok(bin.release(env))
 }
 
+fn decode_persist_request(req: &[u8]) -> Option<(u32, Vec<u8>, Vec<u8>)> {
+    if req.len() < 8 {
+        return None;
+    }
+    let op = u32::from_le_bytes([req[0], req[1], req[2], req[3]]);
+    let key_len = u32::from_le_bytes([req[4], req[5], req[6], req[7]]) as usize;
+    let key_start = 8usize;
+    let key_end = key_start.checked_add(key_len)?;
+    if key_end > req.len() {
+        return None;
+    }
+    Some((
+        op,
+        req[key_start..key_end].to_vec(),
+        req[key_end..].to_vec(),
+    ))
+}
+
 /// Install capture sinks so terminal output is buffered into `out`, not the node's stdout.
 fn with_capture(builder: KernelHostBuilder, out: &Arc<Mutex<Vec<u8>>>) -> KernelHostBuilder {
     builder
@@ -438,7 +540,7 @@ fn build_builder(
     workers: Option<i32>,
     net_relay: bool,
     host_call_relay: bool,
-    persist_stub: bool,
+    persist_relay: bool,
     out: &Arc<Mutex<Vec<u8>>>,
     relay: &Arc<Mutex<RelayState>>,
 ) -> NifResult<KernelHostBuilder> {
@@ -474,8 +576,10 @@ fn build_builder(
             relay: relay.clone(),
         }));
     }
-    if persist_stub {
-        builder = builder.with_persist(Box::new(BeamPersist));
+    if persist_relay {
+        builder = builder.with_persist(Box::new(BeamPersist {
+            relay: relay.clone(),
+        }));
     }
     Ok(with_capture(builder, out))
 }
@@ -491,7 +595,7 @@ fn boot(
     workers: Option<i32>,
     net_relay: bool,
     host_call_relay: bool,
-    persist_stub: bool,
+    persist_relay: bool,
 ) -> NifResult<(Atom, ResourceArc<Vm>)> {
     let out = Arc::new(Mutex::new(Vec::new()));
     let relay = Arc::new(Mutex::new(RelayState {
@@ -507,7 +611,7 @@ fn boot(
         workers,
         net_relay,
         host_call_relay,
-        persist_stub,
+        persist_relay,
         &out,
         &relay,
     )?
@@ -532,7 +636,7 @@ fn restore(
     workers: Option<i32>,
     net_relay: bool,
     host_call_relay: bool,
-    persist_stub: bool,
+    persist_relay: bool,
 ) -> NifResult<(Atom, ResourceArc<Vm>)> {
     let out = Arc::new(Mutex::new(Vec::new()));
     let relay = Arc::new(Mutex::new(RelayState {
@@ -559,8 +663,10 @@ fn restore(
             relay: relay.clone(),
         }));
     }
-    if persist_stub {
-        builder = builder.with_persist(Box::new(BeamPersist));
+    if persist_relay {
+        builder = builder.with_persist(Box::new(BeamPersist {
+            relay: relay.clone(),
+        }));
     }
     let host = with_capture(builder, &out)
         .restore(snapshot.as_slice())
@@ -784,6 +890,30 @@ fn relay_next<'a>(
             to_binary(env, name.as_bytes())?,
             to_binary(env, &body)?,
         ),
+        RelayEvent::PersistGet { handle, key } => (
+            "persist_get".to_string(),
+            handle,
+            to_binary(env, &key)?,
+            to_binary(env, b"")?,
+        ),
+        RelayEvent::PersistPut { handle, key, value } => (
+            "persist_put".to_string(),
+            handle,
+            to_binary(env, &key)?,
+            to_binary(env, &value)?,
+        ),
+        RelayEvent::PersistDelete { handle, key } => (
+            "persist_delete".to_string(),
+            handle,
+            to_binary(env, &key)?,
+            to_binary(env, b"")?,
+        ),
+        RelayEvent::PersistList { handle, prefix } => (
+            "persist_list".to_string(),
+            handle,
+            to_binary(env, &prefix)?,
+            to_binary(env, b"")?,
+        ),
         RelayEvent::WsConnect { handle, url } => (
             "ws_connect".to_string(),
             handle,
@@ -809,6 +939,28 @@ fn relay_next<'a>(
         ),
     };
     Ok((atoms::ok(), Some(event)))
+}
+
+#[rustler::nif(name = "relay_persist_respond_nif")]
+fn relay_persist_respond(
+    vm: ResourceArc<Vm>,
+    handle: i32,
+    ok: bool,
+    body: Binary,
+) -> NifResult<Atom> {
+    let mut relay = relay_lock(&vm)?;
+    let Some(slot) = relay.persist.get_mut(&handle) else {
+        return Err(nif_err(format!("unknown persist relay handle {handle}")));
+    };
+    slot.done = true;
+    slot.failed = !ok;
+    slot.result = if ok {
+        body.as_slice().to_vec()
+    } else {
+        Vec::new()
+    };
+    slot.offset = 0;
+    Ok(atoms::ok())
 }
 
 #[rustler::nif(name = "relay_http_respond_nif")]

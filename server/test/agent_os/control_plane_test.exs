@@ -41,6 +41,8 @@ defmodule AgentOS.ControlPlaneTest do
     assert ControlPlane.egress_http_fail(id, 1) == {:error, :not_found}
     assert ControlPlane.egress_host_call_respond(id, 1, "") == {:error, :not_found}
     assert ControlPlane.egress_host_call_fail(id, 1) == {:error, :not_found}
+    assert ControlPlane.egress_persist_respond(id, 1, "") == {:error, :not_found}
+    assert ControlPlane.egress_persist_fail(id, 1) == {:error, :not_found}
     assert ControlPlane.egress_ws_open(id, 1) == {:error, :not_found}
     assert ControlPlane.egress_ws_fail(id, 1) == {:error, :not_found}
     assert ControlPlane.egress_ws_push(id, 1, "") == {:error, :not_found}
@@ -154,6 +156,53 @@ defmodule AgentOS.ControlPlaneTest do
                poll_exec(id, http_job, 5_000)
 
       assert {:ok, nil} = ControlPlane.egress_next(id)
+    after
+      ControlPlane.dispose(id)
+    end
+  end
+
+  @tag timeout: 120_000
+  test "real kernel VM relays async persistence to the BEAM owner" do
+    wasm = runfile!("memcontainers/kernel/rust/kernel.wasm")
+    posix = runfile!("memcontainers/images/posix.tar")
+    id = unique_id("persist-relay")
+
+    try do
+      assert {:ok, _pid} =
+               ControlPlane.create(id,
+                 wasm: wasm,
+                 base_image: posix,
+                 deterministic: true,
+                 workers: 0,
+                 persist: :relay
+               )
+
+      assert {:ok, write_job} = ControlPlane.exec_start(id, "echo relay > /var/persist/item")
+
+      assert {:ok, %{kind: :persist_get, key: "item"} = get} = next_relay(id, write_job, 5_000)
+      assert :ok = ControlPlane.egress_persist_respond(id, get.handle, <<0>>)
+
+      assert {:ok, %{kind: :persist_list, prefix: "item/"} = list} =
+               next_relay(id, write_job, 5_000)
+
+      assert :ok = ControlPlane.egress_persist_respond(id, list.handle, "")
+
+      assert {:ok, %{kind: :persist_put, key: "item", value: "relay\n"} = put} =
+               next_relay(id, write_job, 5_000)
+
+      assert :ok = ControlPlane.egress_persist_respond(id, put.handle, "")
+      assert :running = ControlPlane.tick(id, 8)
+      assert {:ok, status} = ControlPlane.status(id)
+      assert status.pending_commits == 0
+
+      assert {:ok, %{exit_code: 0, stdout: "", stderr: ""}} = poll_exec(id, write_job, 5_000)
+
+      assert {:ok, read_job} = ControlPlane.exec_start(id, "read line < /var/persist/item; echo $line")
+      assert {:ok, %{kind: :persist_get, key: "item"} = read} = next_relay(id, read_job, 5_000)
+      assert :ok = ControlPlane.egress_persist_respond(id, read.handle, <<1, "relay\n">>)
+
+      assert {:ok, %{exit_code: 0, stdout: "relay\n", stderr: ""}} =
+               poll_exec(id, read_job, 5_000)
     after
       ControlPlane.dispose(id)
     end

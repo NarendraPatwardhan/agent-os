@@ -30,11 +30,10 @@ defmodule AgentOS.Vm do
 
   ## Egress relay
 
-  P2 keeps the host bridge in Rust but moves egress policy to the owner. `net` and
-  `host_call` can be booted with relay capabilities; during ticks the Rust host queues outbound
-  events, and this GenServer exposes drain/answer calls for the eventual Phoenix/wire layer.
-  `persist` is not implemented as a BEAM relay yet because the current ABI is synchronous; the
-  Rust NIF carries only a deny stub and documents the required async ABI change.
+  P2 keeps the host bridge in Rust but moves egress policy to the owner. `net`,
+  `host_call`, and async `persist` can be booted with relay capabilities; during ticks the
+  Rust host queues outbound events, and this GenServer exposes drain/answer calls for the
+  eventual Phoenix/wire layer.
   """
 
   use GenServer, restart: :transient
@@ -240,6 +239,22 @@ defmodule AgentOS.Vm do
   def egress_host_call_fail(server, handle, opts \\ []),
     do: GenServer.call(server, {:egress_host_call_fail, handle}, timeout(opts))
 
+  @doc "Answer a persist relay event with raw async-persist body bytes."
+  @spec egress_persist_respond(server(), integer(), binary(), keyword()) :: :ok | {:error, Nif.reason()}
+  def egress_persist_respond(server, handle, body, opts \\ [])
+
+  def egress_persist_respond(server, handle, body, opts)
+      when is_integer(handle) and handle > 0 and is_binary(body),
+      do: GenServer.call(server, {:egress_persist_respond, handle, body}, timeout(opts))
+
+  def egress_persist_respond(_server, _handle, _body, _opts),
+    do: {:error, "egress_persist_respond expects a positive handle and binary body"}
+
+  @doc "Fail a persist relay event."
+  @spec egress_persist_fail(server(), integer(), keyword()) :: :ok | {:error, Nif.reason()}
+  def egress_persist_fail(server, handle, opts \\ []),
+    do: GenServer.call(server, {:egress_persist_fail, handle}, timeout(opts))
+
   @doc "Mark a WebSocket relay event as connected."
   @spec egress_ws_open(server(), integer(), keyword()) :: :ok | {:error, Nif.reason()}
   def egress_ws_open(server, handle, opts \\ []),
@@ -414,6 +429,14 @@ defmodule AgentOS.Vm do
 
   def handle_call({:egress_host_call_fail, handle}, _from, state) do
     {:reply, Nif.relay_host_call_fail(state.nif, handle), touch(state)}
+  end
+
+  def handle_call({:egress_persist_respond, handle, body}, _from, state) do
+    {:reply, Nif.relay_persist_respond(state.nif, handle, body), touch(state)}
+  end
+
+  def handle_call({:egress_persist_fail, handle}, _from, state) do
+    {:reply, Nif.relay_persist_fail(state.nif, handle), touch(state)}
   end
 
   def handle_call({:egress_ws_open, handle}, _from, state) do

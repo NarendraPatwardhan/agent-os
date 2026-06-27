@@ -46,7 +46,7 @@ defmodule AgentOS.Host.Nif do
 
   @type contract :: {tier :: integer(), budget_mib :: integer(), fuel :: integer()}
   @type relay_mode :: :deny | :relay
-  @type persist_mode :: :deny | :stub
+  @type persist_mode :: :deny | :relay
   @type boot_opt ::
           {:layers, [binary()]}
           | {:deterministic, boolean()}
@@ -59,6 +59,10 @@ defmodule AgentOS.Host.Nif do
   @type relay_event ::
           %{kind: :http, handle: pos_integer(), request: binary()}
           | %{kind: :host_call, handle: pos_integer(), name: String.t(), body: binary()}
+          | %{kind: :persist_get, handle: pos_integer(), key: binary()}
+          | %{kind: :persist_put, handle: pos_integer(), key: binary(), value: binary()}
+          | %{kind: :persist_delete, handle: pos_integer(), key: binary()}
+          | %{kind: :persist_list, handle: pos_integer(), prefix: binary()}
           | %{kind: :ws_connect, handle: pos_integer(), url: String.t()}
           | %{kind: :ws_send, handle: pos_integer(), data: binary()}
           | %{kind: :ws_close, handle: pos_integer()}
@@ -70,8 +74,7 @@ defmodule AgentOS.Host.Nif do
   deterministic clock/RNG for parity tests, boot contract, worker count, and the explicit P2
   relay switches.
 
-  `:net` and `:host_call` accept `:deny` or `:relay`. `:persist` accepts `:deny` or `:stub`;
-  the stub is intentionally deny-only until the persistence ABI is made asynchronous.
+  `:net`, `:host_call`, and `:persist` accept `:deny` or `:relay`.
   """
   @spec boot(binary(), binary() | nil, [boot_opt()]) :: {:ok, vm()} | {:error, reason()}
   def boot(wasm, base_image, opts \\ [])
@@ -296,6 +299,21 @@ defmodule AgentOS.Host.Nif do
 
   def relay_host_call_fail(_vm, _handle), do: {:error, "relay_host_call_fail expects a positive handle"}
 
+  @doc "Answer a persist relay event with the exact async-persist body bytes."
+  @spec relay_persist_respond(vm(), integer(), binary()) :: :ok | {:error, reason()}
+  def relay_persist_respond(vm, handle, body) when is_integer(handle) and handle > 0 and is_binary(body),
+    do: relay_persist_respond_nif(vm, handle, true, body)
+
+  def relay_persist_respond(_vm, _handle, _body),
+    do: {:error, "relay_persist_respond expects a positive handle and binary body"}
+
+  @doc "Fail a persist relay event."
+  @spec relay_persist_fail(vm(), integer()) :: :ok | {:error, reason()}
+  def relay_persist_fail(vm, handle) when is_integer(handle) and handle > 0,
+    do: relay_persist_respond_nif(vm, handle, false, "")
+
+  def relay_persist_fail(_vm, _handle), do: {:error, "relay_persist_fail expects a positive handle"}
+
   @doc "Mark a WebSocket relay connection as opened."
   @spec relay_ws_open(vm(), integer()) :: :ok | {:error, reason()}
   def relay_ws_open(vm, handle) when is_integer(handle) and handle > 0,
@@ -404,6 +422,9 @@ defmodule AgentOS.Host.Nif do
   def relay_host_call_respond_nif(_vm, _handle, _ok, _result), do: nif_not_loaded()
 
   @doc false
+  def relay_persist_respond_nif(_vm, _handle, _ok, _body), do: nif_not_loaded()
+
+  @doc false
   def relay_ws_open_nif(_vm, _handle, _ok), do: nif_not_loaded()
 
   @doc false
@@ -479,7 +500,7 @@ defmodule AgentOS.Host.Nif do
     with {:ok, net} <- relay_mode_arg(opts, :net),
          {:ok, host_call} <- relay_mode_arg(opts, :host_call),
          {:ok, persist} <- persist_mode_arg(opts) do
-      {:ok, net == :relay, host_call == :relay, persist == :stub}
+      {:ok, net == :relay, host_call == :relay, persist == :relay}
     end
   end
 
@@ -492,9 +513,8 @@ defmodule AgentOS.Host.Nif do
 
   defp persist_mode_arg(opts) do
     case Keyword.get(opts, :persist, :deny) do
-      mode when mode in [:deny, :stub] -> {:ok, mode}
-      :relay -> {:error, "persist relay requires an async persistence ABI; use :deny or :stub"}
-      _other -> {:error, "persist must be :deny or :stub"}
+      mode when mode in [:deny, :relay] -> {:ok, mode}
+      _other -> {:error, "persist must be :deny or :relay"}
     end
   end
 
@@ -530,6 +550,18 @@ defmodule AgentOS.Host.Nif do
 
   defp relay_event("host_call", handle, name, body),
     do: {:ok, %{kind: :host_call, handle: handle, name: name, body: body}}
+
+  defp relay_event("persist_get", handle, key, ""),
+    do: {:ok, %{kind: :persist_get, handle: handle, key: key}}
+
+  defp relay_event("persist_put", handle, key, value),
+    do: {:ok, %{kind: :persist_put, handle: handle, key: key, value: value}}
+
+  defp relay_event("persist_delete", handle, key, ""),
+    do: {:ok, %{kind: :persist_delete, handle: handle, key: key}}
+
+  defp relay_event("persist_list", handle, prefix, ""),
+    do: {:ok, %{kind: :persist_list, handle: handle, prefix: prefix}}
 
   defp relay_event("ws_connect", handle, url, ""),
     do: {:ok, %{kind: :ws_connect, handle: handle, url: url}}

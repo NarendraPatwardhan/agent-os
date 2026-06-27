@@ -47,10 +47,10 @@ import "mc_host_call_body"  { arg "handle" type="i32"; arg "buf" type="mptr"; ar
 import "mc_host_call_close" { arg "handle" type="i32"; ret "void"; doc "Release the call handle." }
 
 // ── persistence (host key/value store → /var/persist; gateable) ──────────────
-import "mc_persist_get"    { arg "kp" type="cptr"; arg "kl" type="len"; arg "vp" type="mptr"; arg "vl" type="len"; ret "i32"; doc "-1 denied/error; -2 not-found; n>=0 the FULL value length (writes min(n,vl); resize+retry when n>vl)." }
-import "mc_persist_put"    { arg "kp" type="cptr"; arg "kl" type="len"; arg "vp" type="cptr"; arg "vl" type="len"; ret "i32"; doc "-1 denied/error; >=0 ok." }
-import "mc_persist_delete" { arg "kp" type="cptr"; arg "kl" type="len"; ret "i32"; doc "-1 denied/error; 0 ok (deleting a missing key is ok)." }
-import "mc_persist_list"   { arg "pp" type="cptr"; arg "pl" type="len"; arg "bp" type="mptr"; arg "bl" type="len"; ret "i32"; doc "-1 denied/error; n>=0 FULL byte length of NUL-separated matching keys (resize+retry)." }
+import "mc_persist_start" { arg "req_ptr" type="cptr"; arg "req_len" type="len"; ret "i32"; doc "-1 denied/error; handle>=0 for an op-tagged persist request: [op:u32][key_len:u32][key][value...]." }
+import "mc_persist_poll"  { arg "handle" type="i32"; ret "i32"; doc "0 pending; 1 ready; -1 failed/unknown." }
+import "mc_persist_body"  { arg "handle" type="i32"; arg "buf" type="mptr"; arg "buf_len" type="len"; ret "i32"; doc "n>0 body bytes; 0 EOF; -1 failed. GET body is [present:u8][value...]; LIST body is NUL-separated keys; PUT/DELETE body is empty." }
+import "mc_persist_close" { arg "handle" type="i32"; ret "void"; doc "Release an async persist handle." }
 
 // ── threading (gateable, host returns -1/0 to refuse) ────────────────────────
 import "mc_threads_init"  { arg "max_workers" type="i32"; ret "i32"; doc "Called once at boot to negotiate a worker count." }

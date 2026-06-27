@@ -68,8 +68,8 @@ export function makeBridge(st: HostState): WebAssembly.ModuleImports {
   };
 
   /** Drain a capability that writes into a host-side temp buffer, then copy the written prefix into
-   *  guest memory at `buf` — the pattern shared by http_poll/http_body/ws_recv/persist_get/
-   *  persist_list. */
+   *  guest memory at `buf` — the pattern shared by http_poll/http_body/ws_recv/host_call_body/
+   *  persist_body. */
   const drainInto = (
     buf: number,
     cap: number,
@@ -147,23 +147,14 @@ export function makeBridge(st: HostState): WebAssembly.ModuleImports {
     mc_host_call_close: (h: number) => st.hostCall.close(h),
 
     // ---- persistence -------------------------------------------------------
-    mc_persist_get: (kp: number, kl: number, vp: number, vl: number): number => {
-      const key = readOrNull(kp, kl);
-      return key ? drainInto(vp, vl, (tmp) => st.persist.get(key, tmp)) : -1;
+    mc_persist_start: (ptr: number, len: number): number => {
+      const req = readOrNull(ptr, len);
+      return req ? st.persist.start(req) : -1;
     },
-    mc_persist_put: (kp: number, kl: number, vp: number, vl: number): number => {
-      const key = readOrNull(kp, kl);
-      const val = readOrNull(vp, vl);
-      return key && val ? st.persist.put(key, val) : -1;
-    },
-    mc_persist_delete: (kp: number, kl: number): number => {
-      const key = readOrNull(kp, kl);
-      return key ? st.persist.delete(key) : -1;
-    },
-    mc_persist_list: (pp: number, pl: number, bp: number, bl: number): number => {
-      const prefix = readOrNull(pp, pl);
-      return prefix ? drainInto(bp, bl, (tmp) => st.persist.list(prefix, tmp)) : -1;
-    },
+    mc_persist_poll: (h: number): number => st.persist.poll(h),
+    mc_persist_body: (h: number, buf: number, len: number): number =>
+      drainInto(buf, len, (tmp) => st.persist.body(h, tmp)),
+    mc_persist_close: (h: number) => st.persist.close(h),
 
     // ---- threading (cooperative-backed) ------------------------------------
     mc_threads_init: (max: number): number => {
