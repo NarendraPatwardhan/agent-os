@@ -470,7 +470,17 @@ defmodule AgentOS.Vm do
   defp now_ms, do: System.monotonic_time(:millisecond)
 
   defp nif_opts(opts),
-    do: Keyword.take(opts, [:layers, :deterministic, :contract, :workers, :net, :host_call, :persist])
+    do:
+      Keyword.take(opts, [
+        :layers,
+        :deterministic,
+        :contract,
+        :workers,
+        :net,
+        :connections,
+        :host_call,
+        :persist
+      ])
 
   defp timeout(opts), do: Keyword.get(opts, :timeout, @default_call_timeout)
 

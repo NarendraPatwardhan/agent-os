@@ -45,14 +45,33 @@ defmodule AgentOS.Host.Nif do
   @type reason :: binary()
 
   @type contract :: {tier :: integer(), budget_mib :: integer(), fuel :: integer()}
+  @type net_mode :: :deny | :relay | :real
   @type relay_mode :: :deny | :relay
   @type persist_mode :: :deny | :relay
+  @type connection_auth ::
+          :none
+          | {:none}
+          | {:bearer, binary()}
+          | {:header, binary(), binary()}
+          | {:query, binary(), binary()}
+          | %{
+              required(:kind) => :none | :bearer | :header | :query,
+              optional(:token) => binary(),
+              optional(:name) => binary(),
+              optional(:value) => binary()
+            }
+          | %{required(String.t()) => binary()}
+  @type connection_def ::
+          {ref :: binary(), connection_auth()}
+          | %{required(:ref) => binary(), required(:auth) => connection_auth()}
+          | %{required(String.t()) => term()}
   @type boot_opt ::
           {:layers, [binary()]}
           | {:deterministic, boolean()}
           | {:contract, contract() | nil}
           | {:workers, non_neg_integer() | nil}
-          | {:net, relay_mode()}
+          | {:net, net_mode() | {:real, [connection_def()]}}
+          | {:connections, [connection_def()]}
           | {:host_call, relay_mode()}
           | {:persist, persist_mode()}
 
@@ -74,7 +93,9 @@ defmodule AgentOS.Host.Nif do
   deterministic clock/RNG for parity tests, boot contract, worker count, and the explicit P2
   relay switches.
 
-  `:net`, `:host_call`, and `:persist` accept `:deny` or `:relay`.
+  `:host_call` and `:persist` accept `:deny` or `:relay`. `:net` accepts `:deny`,
+  `:relay`, or `:real`; real net may also receive host-only `:connections`, whose
+  secrets are injected by the Rust host when a guest request names `X-MC-Connection`.
   """
   @spec boot(binary(), binary() | nil, [boot_opt()]) :: {:ok, vm()} | {:error, reason()}
   def boot(wasm, base_image, opts \\ [])
@@ -83,7 +104,21 @@ defmodule AgentOS.Host.Nif do
       when is_binary(wasm) and (is_binary(base_image) or is_nil(base_image)) and is_list(opts) do
     with {:ok, layers, deterministic, contract, workers, net, host_call, persist} <-
            boot_args(base_image, opts) do
-      boot_nif(wasm, base_image, layers, deterministic, contract, workers, net, host_call, persist)
+      {net_relay, net_real, connections} = net
+
+      boot_nif(
+        wasm,
+        base_image,
+        layers,
+        deterministic,
+        contract,
+        workers,
+        net_relay,
+        net_real,
+        connections,
+        host_call,
+        persist
+      )
     end
   end
 
@@ -97,7 +132,19 @@ defmodule AgentOS.Host.Nif do
   def restore(wasm, snapshot, opts)
       when is_binary(wasm) and is_binary(snapshot) and is_list(opts) do
     with {:ok, deterministic, workers, net, host_call, persist} <- restore_args(opts) do
-      restore_nif(wasm, snapshot, deterministic, workers, net, host_call, persist)
+      {net_relay, net_real, connections} = net
+
+      restore_nif(
+        wasm,
+        snapshot,
+        deterministic,
+        workers,
+        net_relay,
+        net_real,
+        connections,
+        host_call,
+        persist
+      )
     end
   end
 
@@ -352,13 +399,25 @@ defmodule AgentOS.Host.Nif do
         _contract,
         _workers,
         _net,
+        _net_real,
+        _connections,
         _host_call,
         _persist
       ),
     do: nif_not_loaded()
 
   @doc false
-  def restore_nif(_wasm, _snapshot, _deterministic, _workers, _net, _host_call, _persist),
+  def restore_nif(
+        _wasm,
+        _snapshot,
+        _deterministic,
+        _workers,
+        _net,
+        _net_real,
+        _connections,
+        _host_call,
+        _persist
+      ),
     do: nif_not_loaded()
 
   @doc false
@@ -439,7 +498,7 @@ defmodule AgentOS.Host.Nif do
          {:ok, deterministic} <- boolean_arg(opts, :deterministic, false),
          {:ok, contract} <- contract_arg(opts),
          {:ok, workers} <- workers_arg(opts),
-         {:ok, net, host_call, persist} <- relay_args(opts) do
+         {:ok, net, host_call, persist} <- capability_args(opts) do
       {:ok, layers, deterministic, contract, workers, net, host_call, persist}
     end
   end
@@ -447,7 +506,7 @@ defmodule AgentOS.Host.Nif do
   defp restore_args(opts) do
     with {:ok, deterministic} <- boolean_arg(opts, :deterministic, false),
          {:ok, workers} <- workers_arg(opts),
-         {:ok, net, host_call, persist} <- relay_args(opts) do
+         {:ok, net, host_call, persist} <- capability_args(opts) do
       {:ok, deterministic, workers, net, host_call, persist}
     end
   end
@@ -496,13 +555,118 @@ defmodule AgentOS.Host.Nif do
     end
   end
 
-  defp relay_args(opts) do
-    with {:ok, net} <- relay_mode_arg(opts, :net),
+  defp capability_args(opts) do
+    with {:ok, net} <- net_arg(opts),
          {:ok, host_call} <- relay_mode_arg(opts, :host_call),
          {:ok, persist} <- persist_mode_arg(opts) do
-      {:ok, net == :relay, host_call == :relay, persist == :relay}
+      {:ok, net, host_call == :relay, persist == :relay}
     end
   end
+
+  defp net_arg(opts) do
+    separate_connections? = Keyword.has_key?(opts, :connections)
+
+    with {:ok, mode, inline_connections} <- net_mode_arg(Keyword.get(opts, :net, :deny)),
+         {:ok, configured_connections} <- connections_arg(Keyword.get(opts, :connections, [])),
+         :ok <- connection_location_arg(mode, inline_connections, separate_connections?) do
+      connections = if inline_connections == [], do: configured_connections, else: inline_connections
+
+      case {mode, connections} do
+        {:deny, []} -> {:ok, {false, false, []}}
+        {:relay, []} -> {:ok, {true, false, []}}
+        {:real, connections} -> {:ok, {false, true, connections}}
+        {_mode, _connections} -> {:error, "connections require net: :real"}
+      end
+    end
+  end
+
+  defp net_mode_arg(:deny), do: {:ok, :deny, []}
+  defp net_mode_arg(:relay), do: {:ok, :relay, []}
+  defp net_mode_arg(:real), do: {:ok, :real, []}
+
+  defp net_mode_arg({:real, connections}) do
+    with {:ok, connections} <- connections_arg(connections) do
+      {:ok, :real, connections}
+    end
+  end
+
+  defp net_mode_arg(_other),
+    do: {:error, "net must be :deny, :relay, :real, or {:real, connections}"}
+
+  defp connection_location_arg(:real, connections, true) when connections != [],
+    do:
+      {:error,
+       "connections must be specified either in net: {:real, ...} or :connections, not both"}
+
+  defp connection_location_arg(_mode, _connections, _separate_connections?), do: :ok
+
+  defp connections_arg(connections) when is_list(connections) do
+    Enum.reduce_while(connections, {:ok, []}, fn entry, {:ok, acc} ->
+      case connection_arg(entry) do
+        {:ok, connection} -> {:cont, {:ok, [connection | acc]}}
+        {:error, _reason} = err -> {:halt, err}
+      end
+    end)
+    |> case do
+      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
+      {:error, _reason} = err -> err
+    end
+  end
+
+  defp connections_arg(_other), do: {:error, "connections must be a list"}
+
+  defp connection_arg({ref, auth}) when is_binary(ref) do
+    with {:ok, kind, a, b} <- connection_auth_arg(auth) do
+      {:ok, {ref, kind, a, b}}
+    end
+  end
+
+  defp connection_arg(%{ref: ref, auth: auth}) when is_binary(ref),
+    do: connection_arg({ref, auth})
+
+  defp connection_arg(%{"ref" => ref, "auth" => auth}) when is_binary(ref),
+    do: connection_arg({ref, auth})
+
+  defp connection_arg(_other),
+    do: {:error, "connection must be {ref, auth} or %{ref: ref, auth: auth}"}
+
+  defp connection_auth_arg(:none), do: {:ok, "none", "", ""}
+  defp connection_auth_arg({:none}), do: {:ok, "none", "", ""}
+  defp connection_auth_arg({:bearer, token}) when is_binary(token), do: {:ok, "bearer", token, ""}
+
+  defp connection_auth_arg({:header, name, value}) when is_binary(name) and is_binary(value),
+    do: {:ok, "header", name, value}
+
+  defp connection_auth_arg({:query, name, value}) when is_binary(name) and is_binary(value),
+    do: {:ok, "query", name, value}
+
+  defp connection_auth_arg(%{kind: :none}), do: {:ok, "none", "", ""}
+  defp connection_auth_arg(%{kind: :bearer, token: token}) when is_binary(token),
+    do: {:ok, "bearer", token, ""}
+
+  defp connection_auth_arg(%{kind: :header, name: name, value: value})
+       when is_binary(name) and is_binary(value),
+       do: {:ok, "header", name, value}
+
+  defp connection_auth_arg(%{kind: :query, name: name, value: value})
+       when is_binary(name) and is_binary(value),
+       do: {:ok, "query", name, value}
+
+  defp connection_auth_arg(%{"kind" => "none"}), do: {:ok, "none", "", ""}
+
+  defp connection_auth_arg(%{"kind" => "bearer", "token" => token}) when is_binary(token),
+    do: {:ok, "bearer", token, ""}
+
+  defp connection_auth_arg(%{"kind" => "header", "name" => name, "value" => value})
+       when is_binary(name) and is_binary(value),
+       do: {:ok, "header", name, value}
+
+  defp connection_auth_arg(%{"kind" => "query", "name" => name, "value" => value})
+       when is_binary(name) and is_binary(value),
+       do: {:ok, "query", name, value}
+
+  defp connection_auth_arg(_other),
+    do: {:error, "connection auth must be none, bearer, header, or query"}
 
   defp relay_mode_arg(opts, key) do
     case Keyword.get(opts, key, :deny) do

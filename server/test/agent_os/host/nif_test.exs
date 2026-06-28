@@ -29,7 +29,19 @@ defmodule AgentOS.Host.NifTest do
              {:error, "contract must be nil or {tier, budget_mib, fuel}"}
 
     assert AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil, net: :open) ==
-             {:error, "net must be :deny or :relay"}
+             {:error, "net must be :deny, :relay, :real, or {:real, connections}"}
+
+    assert AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil, connections: [{"openai.org.main", {:bearer, "tok"}}]) ==
+             {:error, "connections require net: :real"}
+
+    assert AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil,
+             net: {:real, [{"openai.org.main", {:bearer, "tok"}}]},
+             connections: [{"google.org.main", {:bearer, "tok"}}]
+           ) ==
+             {:error, "connections must be specified either in net: {:real, ...} or :connections, not both"}
+
+    assert AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil, net: :real, connections: [:bad]) ==
+             {:error, "connection must be {ref, auth} or %{ref: ref, auth: auth}"}
 
     assert AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil, host_call: :open) ==
              {:error, "host_call must be :deny or :relay"}
@@ -44,6 +56,9 @@ defmodule AgentOS.Host.NifTest do
 
     assert AgentOS.Host.Nif.restore(<<0, 1, 2, 3>>, <<>>, workers: -1) ==
              {:error, "workers must be nil or a non-negative integer"}
+
+    assert AgentOS.Host.Nif.restore(<<0, 1, 2, 3>>, <<>>, connections: [{"openai.org.main", {:bearer, "tok"}}]) ==
+             {:error, "connections require net: :real"}
 
     assert AgentOS.Host.Nif.restore(<<0, 1, 2, 3>>, <<>>, persist: :open) ==
              {:error, "persist must be :deny or :relay"}

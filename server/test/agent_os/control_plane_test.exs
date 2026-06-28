@@ -129,8 +129,6 @@ defmodule AgentOS.ControlPlaneTest do
                  net: :relay
                )
 
-      assert :ok = ControlPlane.mkdir(id, "/etc/tools")
-
       assert :ok =
                ControlPlane.write_file(
                  id,
