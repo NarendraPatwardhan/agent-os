@@ -5,8 +5,10 @@
 // vs the syscall abi-version). Transcribed from memcontainers crates/wire/src/lib.rs.
 //
 // The projector emits the Rust server's message structs + tag constants, the TS
-// client (sdk-js/core), the AsyncAPI/OpenAPI specs (spec/), and a golden-vector
-// corpus (spec/wire-vectors.json) that pins the byte layout across languages.
+// client (sdk-js/core), and the AsyncAPI spec for the typed WebSocket. The REST
+// route rows below are the same boundary's non-streaming surface; an OpenAPI
+// projector should derive spec/openapi.yaml from them rather than hand-copying
+// route tables.
 //
 // Frame: [kind:u8][seq:u64 LE][body…]. CONTROL kinds carry a JSON tail; BULK kinds
 // (shell, host-call relay) carry length-prefixed binary — no base64 on the two
@@ -28,9 +30,226 @@ message "HOST_RESULT"         tag=0x21 dir="client->server" body="binary" { doc 
 message "SESSION_START"       tag=0x30 dir="client->server" body="json"   { doc "Begin an agent session." }
 message "SESSION_EVENT"       tag=0x31 dir="server->client" body="json"   { doc "A streamed session event (agent step, output, status)." }
 message "SESSION_END"         tag=0x32 dir="server->client" body="json"   { doc "Session terminated, with a final status." }
-message "PERMISSION_REQUEST"  tag=0x40 dir="server->client" body="json"   { doc "The kernel asks for a capability the agent currently lacks (§13 open Q6)." }
+message "PERMISSION_REQUEST"  tag=0x40 dir="server->client" body="json"   { doc "The kernel asks for a capability the agent currently lacks (section 13 open Q6)." }
 message "PERMISSION_RESPONSE" tag=0x41 dir="client->server" body="json"   { doc "The client's grant/deny decision." }
 
-// REST routes (the non-streaming surface). Filled out with the server in Phase A;
-// projected to spec/openapi.yaml. Shape:
-//   route "POST" "/v1/vms" req="CreateVm" res="Vm" { doc "..." }
+// REST routes (the non-streaming surface).
+//
+// REST is the request/response edge around the same VM actor addressed by the
+// WebSocket above. It is intentionally narrow: VM lifecycle, bounded exec,
+// filesystem operations, snapshots/layers, and mount registry operations. Live
+// terminal bytes, host-call relay, permission decisions, and streamed sessions
+// stay on the typed WebSocket, so REST never becomes a second relay protocol.
+//
+// Namespace is canonical in the path. A host may derive it from auth, but the
+// public contract does not hide tenancy in an ambient header.
+route "GET" "/healthz" res="Health" {
+  doc "Process health. Does not touch any VM actor."
+}
+route "GET" "/v1/capabilities" res="Capabilities" {
+  doc "Server/runtime capabilities: API version, wire version, body limits, packaged image flavors, and optional feature flags."
+}
+
+route "GET" "/v1/namespaces/{ns}/vms" res="VmList" {
+  doc "List live VMs visible in one namespace."
+}
+route "POST" "/v1/namespaces/{ns}/vms" req="CreateVm" res="Vm" {
+  doc "Create a VM from a packaged image, layer stack, or snapshot. Connection entries are host-side references, never raw secrets."
+}
+route "GET" "/v1/namespaces/{ns}/vms/{id}" res="Vm" {
+  doc "Return VM status and runtime metadata."
+}
+route "DELETE" "/v1/namespaces/{ns}/vms/{id}" res="DisposeVm" {
+  doc "Dispose the VM actor and release host-side resources."
+}
+route "POST" "/v1/namespaces/{ns}/vms/{id}/restore" req="SnapshotBytes" res="Vm" {
+  doc "Restore or replace a VM from snapshot bytes."
+}
+route "GET" "/v1/namespaces/{ns}/vms/{id}/ws" upgrade="websocket" protocol="wire" res="WireSocket" {
+  doc "Upgrade to the typed per-VM WebSocket described by the message table above."
+}
+
+route "POST" "/v1/namespaces/{ns}/vms/{id}/exec" req="Exec" res="ExecResult" {
+  doc "Run a bounded command and return the final result. Use exec-jobs for long-running commands."
+}
+route "POST" "/v1/namespaces/{ns}/vms/{id}/exec-jobs" req="Exec" res="ExecJob" {
+  doc "Start a long-running exec job."
+}
+route "GET" "/v1/namespaces/{ns}/vms/{id}/exec-jobs/{job}" res="ExecJob" {
+  doc "Poll an exec job's status, exit code, and buffered byte counts."
+}
+route "GET" "/v1/namespaces/{ns}/vms/{id}/exec-jobs/{job}/stdout" res="Bytes" {
+  query "offset" type="u64" required=0
+  query "limit" type="u32" required=0
+  doc "Read a slice of an exec job's buffered stdout."
+}
+route "DELETE" "/v1/namespaces/{ns}/vms/{id}/exec-jobs/{job}" res="ExecJob" {
+  doc "Cancel a long-running exec job."
+}
+
+route "GET" "/v1/namespaces/{ns}/vms/{id}/fs/files" res="Bytes" {
+  query "path" type="Path" required=1
+  doc "Read file bytes. The VM path is a query value so OpenAPI and host frameworks do not need slash-capture semantics."
+}
+route "PUT" "/v1/namespaces/{ns}/vms/{id}/fs/files" req="Bytes" res="FsWrite" {
+  query "path" type="Path" required=1
+  doc "Write file bytes at path."
+}
+route "DELETE" "/v1/namespaces/{ns}/vms/{id}/fs/files" res="FsDelete" {
+  query "path" type="Path" required=1
+  doc "Unlink a file or symlink."
+}
+route "GET" "/v1/namespaces/{ns}/vms/{id}/fs/stat" res="FsStat" {
+  query "path" type="Path" required=1
+  doc "Stat one file, directory, or symlink."
+}
+route "GET" "/v1/namespaces/{ns}/vms/{id}/fs/entries" res="FsEntries" {
+  query "path" type="Path" required=1
+  doc "Read a directory listing."
+}
+route "PUT" "/v1/namespaces/{ns}/vms/{id}/fs/dirs" res="FsMkdir" {
+  query "path" type="Path" required=1
+  doc "Create a directory, including parents when the host adapter elects to expose that option."
+}
+route "PUT" "/v1/namespaces/{ns}/vms/{id}/fs/symlinks" req="FsSymlink" res="FsSymlinkResult" {
+  doc "Create a symbolic link. The body carries both link and target paths to avoid ambiguous URL escaping."
+}
+
+route "POST" "/v1/namespaces/{ns}/vms/{id}/snapshots" res="SnapshotBytes" {
+  doc "Return a VM snapshot as bytes. Fails while in-flight egress/host work is not quiesced."
+}
+route "POST" "/v1/namespaces/{ns}/vms/{id}/layers" res="LayerTar" {
+  doc "Commit the writable layer as a tar artifact."
+}
+route "POST" "/v1/namespaces/{ns}/vms/{id}/forks" req="ForkVm" res="Vm" {
+  doc "Snapshot the current VM and create another VM in the same namespace."
+}
+
+route "GET" "/v1/namespaces/{ns}/vms/{id}/mounts" res="MountList" {
+  doc "List host-registered mounts attached to a VM."
+}
+route "POST" "/v1/namespaces/{ns}/vms/{id}/mounts" req="AttachMount" res="Mount" {
+  doc "Attach a host-side mount driver. Driver secrets remain outside guest memory."
+}
+route "DELETE" "/v1/namespaces/{ns}/vms/{id}/mounts" req="DetachMount" res="DetachMount" {
+  doc "Detach a mount by mount id or guest path."
+}
+
+// REST schema stubs.
+//
+// These are intentionally compact: the authoritative implementation types still
+// live in the host language, but the contract names the stable wire shapes an
+// OpenAPI projector must preserve. Binary schemas are real bytes, not base64 JSON.
+schema "Health" kind="json" {
+  field "ok" type="bool" required=1
+}
+schema "Capabilities" kind="json" {
+  field "apiVersion" type="string" required=1
+  field "wireVersion" type="u32" required=1
+  field "maxBodyBytes" type="u64" required=1
+  field "images" type="ImageFlavor[]" required=1
+  field "features" type="string[]" required=1
+}
+schema "CreateVm" kind="json" {
+  field "id" type="VmId" required=0
+  field "image" type="ImageFlavor" required=0
+  field "layers" type="LayerRef[]" required=0
+  field "snapshot" type="SnapshotRef" required=0
+  field "deterministic" type="bool" required=0
+  field "workers" type="u32" required=0
+  field "net" type="NetPolicy" required=0
+  field "persist" type="PersistPolicy" required=0
+  field "hostCall" type="HostCallPolicy" required=0
+  field "connections" type="ConnectionRef[]" required=0
+}
+schema "Vm" kind="json" {
+  field "namespace" type="Namespace" required=1
+  field "id" type="VmId" required=1
+  field "status" type="VmStatus" required=1
+  field "image" type="ImageFlavor" required=0
+  field "inflightEgress" type="u32" required=1
+}
+schema "VmList" kind="json" {
+  field "items" type="Vm[]" required=1
+}
+schema "Exec" kind="json" {
+  field "cmd" type="string" required=1
+  field "cwd" type="Path" required=0
+  field "env" type="StringMap" required=0
+  field "stdin" type="string" required=0
+  field "timeoutMs" type="u64" required=0
+  field "maxTicks" type="u64" required=0
+}
+schema "ExecResult" kind="json" {
+  field "ok" type="bool" required=1
+  field "exitCode" type="i32" required=0
+  field "stdout" type="string" required=1
+  field "stderr" type="string" required=1
+}
+schema "ExecJob" kind="json" {
+  field "id" type="JobId" required=1
+  field "status" type="JobStatus" required=1
+  field "exitCode" type="i32" required=0
+  field "stdoutBytes" type="u64" required=1
+  field "stderrBytes" type="u64" required=1
+}
+schema "FsWrite" kind="json" {
+  field "bytes" type="u64" required=1
+}
+schema "FsDelete" kind="json" {
+  field "ok" type="bool" required=1
+}
+schema "FsStat" kind="json" {
+  field "path" type="Path" required=1
+  field "kind" type="FsKind" required=1
+  field "size" type="u64" required=1
+  field "mode" type="u32" required=1
+}
+schema "FsEntries" kind="json" {
+  field "items" type="FsStat[]" required=1
+}
+schema "FsMkdir" kind="json" {
+  field "ok" type="bool" required=1
+}
+schema "FsSymlink" kind="json" {
+  field "link" type="Path" required=1
+  field "target" type="Path" required=1
+}
+schema "FsSymlinkResult" kind="json" {
+  field "ok" type="bool" required=1
+}
+schema "ForkVm" kind="json" {
+  field "id" type="VmId" required=0
+}
+schema "Mount" kind="json" {
+  field "id" type="MountId" required=1
+  field "path" type="Path" required=1
+  field "kind" type="MountKind" required=1
+}
+schema "MountList" kind="json" {
+  field "items" type="Mount[]" required=1
+}
+schema "AttachMount" kind="json" {
+  field "path" type="Path" required=1
+  field "kind" type="MountKind" required=1
+  field "source" type="MountSource" required=1
+}
+schema "DetachMount" kind="json" {
+  field "id" type="MountId" required=0
+  field "path" type="Path" required=0
+}
+schema "DisposeVm" kind="json" {
+  field "ok" type="bool" required=1
+}
+schema "SnapshotBytes" kind="binary" {
+  doc "Opaque VM snapshot bytes."
+}
+schema "LayerTar" kind="binary" {
+  doc "Tar stream for a committed writable layer."
+}
+schema "Bytes" kind="binary" {
+  doc "Raw bytes. The REST API does not base64-encode file, stdout, snapshot, or layer payloads."
+}
+schema "WireSocket" kind="websocket" {
+  doc "Typed frames [kind:u8][seq:u64 LE][body...] using the message table in this file."
+}

@@ -5,9 +5,9 @@
 #
 # Mix-backed on the hermetic discord toolchain; build/test with `--config=elixir`. The targets
 # are target_compatible_with erlang_26_2, so a bare `bazel build //...` SKIPS them (the rest of
-# the repo is unaffected). The VM-driving NIF (//memcontainers/hosts/wasmtime/nif:host_nif) is
-# staged into priv/ and loaded at runtime by AgentOS.Host.Nif — Bazel builds the .so, mix never
-# compiles it.
+# the repo is unaffected). The VM-driving NIF (//memcontainers/hosts/wasmtime/nif:host_nif_release)
+# is staged into priv/ and loaded at runtime by AgentOS.Host.Nif — Bazel builds the release .so,
+# mix never compiles it.
 load("@rules_elixir//:defs.bzl", "mix_library", "mix_test")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 
@@ -19,7 +19,7 @@ mix_library(
     app_name = "agent_os",
     mix_config = ":mix.exs",
     srcs = glob(["lib/**/*.ex"]),
-    priv = ["//memcontainers/hosts/wasmtime/nif:host_nif"],  # libhost_nif.so -> priv/
+    priv = ["//memcontainers/hosts/wasmtime/nif:host_nif_release"],  # libhost_nif.so -> priv/
     target_compatible_with = _ELIXIR_ONLY,
     visibility = ["//visibility:public"],
 )
@@ -31,7 +31,7 @@ mix_library(
     mix_env = "test",
     mix_config = ":mix.exs",
     srcs = glob(["lib/**/*.ex"]),
-    priv = ["//memcontainers/hosts/wasmtime/nif:host_nif"],
+    priv = ["//memcontainers/hosts/wasmtime/nif:host_nif_release"],
     target_compatible_with = _ELIXIR_ONLY,
 )
 
@@ -57,7 +57,11 @@ mix_test(
 pkg_tar(
     name = "agent_os_package_nif",
     files = {
-        "//memcontainers/hosts/wasmtime/nif:host_nif": "priv/libhost_nif.so",
+        "//memcontainers/hosts/wasmtime/nif:host_nif_release": "priv/libhost_nif.so",
+    },
+    mode = "0644",
+    modes = {
+        "priv": "0755",
     },
     owner = "0.0",
     package_dir = "agent_os",
@@ -66,6 +70,12 @@ pkg_tar(
 
 pkg_tar(
     name = "agent_os_package_src",
+    mode = "0644",
+    modes = {
+        "lib": "0755",
+        "lib/agent_os": "0755",
+        "lib/agent_os/host": "0755",
+    },
     srcs = ["mix.exs"] + glob(["lib/**/*.ex"]),
     owner = "0.0",
     package_dir = "agent_os",
@@ -86,6 +96,12 @@ pkg_tar(
         "//memcontainers/images:posix": "priv/images/posix.tar",
         "//memcontainers/kernel/rust:kernel": "priv/kernel/kernel.wasm",
     },
+    mode = "0644",
+    modes = {
+        "priv": "0755",
+        "priv/images": "0755",
+        "priv/kernel": "0755",
+    },
     owner = "0.0",
     package_dir = "agent_os",
     target_compatible_with = _ELIXIR_ONLY,
@@ -99,6 +115,16 @@ pkg_tar(
 # auto-start a server. The host can read packaged runtime assets from priv/kernel and priv/images.
 pkg_tar(
     name = "agent_os_package",
+    mode = "0644",
+    modes = {
+        "agent_os": "0755",
+        "agent_os/lib": "0755",
+        "agent_os/lib/agent_os": "0755",
+        "agent_os/lib/agent_os/host": "0755",
+        "agent_os/priv": "0755",
+        "agent_os/priv/images": "0755",
+        "agent_os/priv/kernel": "0755",
+    },
     owner = "0.0",
     target_compatible_with = _ELIXIR_ONLY,
     visibility = ["//visibility:public"],

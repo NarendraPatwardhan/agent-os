@@ -1,11 +1,10 @@
-"""Always-release `mc` binary.
+"""Always-release native host artifacts.
 
-A debug `mc` is a trap: wasmtime/cranelift compiled at `-c fastbuild` JITs and instantiates
-`kernel.wasm` an order of magnitude slower, so every interactive run and — the reason this
-exists — every e2e boot would crawl. `host_release_binary` pins the WHOLE host subgraph
-(wasmtime, the TLS stack, the host lib) to `compilation_mode=opt` regardless of the
-top-level `-c`, then re-exports the transitioned binary under a stable name, still runnable
-via `bazel run`.
+A debug host artifact is a trap: wasmtime/cranelift compiled at `-c fastbuild` JITs and
+instantiates `kernel.wasm` an order of magnitude slower, so every interactive run and —
+the reason this exists — every e2e boot would crawl. The release wrappers pin the WHOLE
+host subgraph (wasmtime, the TLS stack, the host lib) to `compilation_mode=opt` regardless
+of the top-level `-c`, then re-export the transitioned artifact under a stable name.
 
 The same transition is what e2e targets apply to their host dependency, so "e2e always runs
 release wasmtime" is structural — not a flag someone has to remember to pass.
@@ -45,6 +44,27 @@ def _host_release_binary_impl(ctx):
         runfiles = ctx.runfiles(files = [out]).merge(default.default_runfiles),
     )]
 
+def _host_release_shared_library_impl(ctx):
+    lib = ctx.attr.lib[0]
+    default = lib[DefaultInfo]
+
+    shared = None
+    for file in default.files.to_list():
+        if file.extension in ["so", "dylib", "dll"]:
+            shared = file
+            break
+    if not shared:
+        fail("host_release_shared_library expected a shared library output")
+
+    # Re-export the transitioned cdylib under its normal filename so downstream staging
+    # rules do not learn Bazel's configuration-specific output path.
+    out = ctx.actions.declare_file(ctx.attr.out if ctx.attr.out else shared.basename)
+    ctx.actions.symlink(output = out, target_file = shared)
+    return [DefaultInfo(
+        files = depset([out]),
+        runfiles = ctx.runfiles(files = [out]).merge(default.default_runfiles),
+    )]
+
 host_release_binary = rule(
     implementation = _host_release_binary_impl,
     executable = True,
@@ -54,6 +74,24 @@ host_release_binary = rule(
             mandatory = True,
             cfg = _host_release_transition,
             doc = "The rust_binary, built at compilation_mode=opt under the transition.",
+        ),
+        "_allowlist_function_transition": attr.label(
+            default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
+        ),
+    },
+)
+
+host_release_shared_library = rule(
+    implementation = _host_release_shared_library_impl,
+    doc = "Surface a rust_shared_library as an always-opt native shared library.",
+    attrs = {
+        "lib": attr.label(
+            mandatory = True,
+            cfg = _host_release_transition,
+            doc = "The rust_shared_library cdylib, built at compilation_mode=opt under the transition.",
+        ),
+        "out": attr.string(
+            doc = "Optional stable output basename. Defaults to the transitioned shared library basename.",
         ),
         "_allowlist_function_transition": attr.label(
             default = "@bazel_tools//tools/allowlists/function_transition_allowlist",

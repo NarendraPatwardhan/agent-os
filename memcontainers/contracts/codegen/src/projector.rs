@@ -4,7 +4,7 @@
 //!
 //! Invocation:  projector --module <m> --lang <l> --contract <path.kdl>
 //!   module = constants | mc | env | ctl | wire   (which boundary / schema)
-//!   lang   = rust | zig | ts | md | asyncapi      (which projection)
+//!   lang   = rust | zig | ts | md | asyncapi | openapi      (which projection)
 //!
 //! Design (why this shape — C1):
 //!   - DETERMINISM (A7/B2): same inputs → byte-identical output. No clock, no env,
@@ -21,7 +21,7 @@
 //!   - DEPENDENCY-LIGHT: no external crates, so the projector needs no crate_universe
 //!     and stays cheap on the build's critical path.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::process::ExitCode;
 
 // ===========================================================================
@@ -303,7 +303,9 @@ fn banner(lang: &str, contract: &str) -> String {
     let comment =
         format!("// {line} from contracts/{contract} by //contracts/codegen:projector — do not edit.\n");
     match lang {
-        "asyncapi" => format!("# {line} from contracts/{contract} by //contracts/codegen:projector — do not edit.\n"),
+        "asyncapi" | "openapi" => {
+            format!("# {line} from contracts/{contract} by //contracts/codegen:projector — do not edit.\n")
+        }
         // Rust projections are `no_std`: just consts/macros, usable by the no_std kernel
         // AND std hosts. Without this a std dependency would drag std's lang items
         // (panic_impl) into the kernel cdylib and collide with its `#[panic_handler]`.
@@ -632,7 +634,348 @@ fn emit_table(lang: &str, contract: &str, rows: &[Row], macro_name: &str, names_
     o
 }
 
+#[derive(Clone)]
+struct QueryParam {
+    name: String,
+    ty: String,
+    required: bool,
+}
+
+#[derive(Clone)]
+struct Route {
+    method: String,
+    path: String,
+    req: Option<String>,
+    res: Option<String>,
+    upgrade: Option<String>,
+    protocol: Option<String>,
+    doc: String,
+    queries: Vec<QueryParam>,
+}
+
+struct Field {
+    name: String,
+    ty: String,
+    required: bool,
+}
+
+struct Schema {
+    name: String,
+    kind: String,
+    doc: String,
+    fields: Vec<Field>,
+}
+
+fn prop_bool(n: &Node, key: &str, default: bool) -> bool {
+    match n.props.get(key) {
+        Some(Val::Int(i)) => *i != 0,
+        Some(Val::Str(s)) => matches!(s.as_str(), "1" | "true" | "yes"),
+        None => default,
+    }
+}
+
+fn collect_routes(nodes: &[Node]) -> Vec<Route> {
+    nodes
+        .iter()
+        .filter(|n| n.name == "route")
+        .map(|n| Route {
+            method: n.arg_str(0).to_string(),
+            path: n.arg_str(1).to_string(),
+            req: n.prop_str("req").map(String::from),
+            res: n.prop_str("res").map(String::from),
+            upgrade: n.prop_str("upgrade").map(String::from),
+            protocol: n.prop_str("protocol").map(String::from),
+            doc: n.doc(),
+            queries: n
+                .children_named("query")
+                .map(|q| QueryParam {
+                    name: q.arg_str(0).to_string(),
+                    ty: q.prop_str("type").unwrap_or("string").to_string(),
+                    required: prop_bool(q, "required", false),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+fn collect_schemas(nodes: &[Node]) -> Vec<Schema> {
+    nodes
+        .iter()
+        .filter(|n| n.name == "schema")
+        .map(|n| Schema {
+            name: n.arg_str(0).to_string(),
+            kind: n.prop_str("kind").unwrap_or("json").to_string(),
+            doc: n.doc(),
+            fields: n
+                .children_named("field")
+                .map(|f| Field {
+                    name: f.arg_str(0).to_string(),
+                    ty: f.prop_str("type").unwrap_or("string").to_string(),
+                    required: prop_bool(f, "required", false),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+fn yaml_quote(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn path_params(path: &str) -> Vec<String> {
+    let mut params = Vec::new();
+    let mut rest = path;
+    while let Some(start) = rest.find('{') {
+        rest = &rest[start + 1..];
+        let Some(end) = rest.find('}') else {
+            break;
+        };
+        let name = &rest[..end];
+        if !params.iter().any(|p| p == name) {
+            params.push(name.to_string());
+        }
+        rest = &rest[end + 1..];
+    }
+    params
+}
+
+fn operation_id(method: &str, path: &str) -> String {
+    let raw = format!("{}_{}", method.to_ascii_lowercase(), path.trim_matches('/'));
+    let mut out = String::new();
+    let mut last_underscore = false;
+    for c in raw.chars() {
+        let mapped = if c.is_ascii_alphanumeric() { c } else { '_' };
+        if mapped == '_' {
+            if !last_underscore {
+                out.push(mapped);
+            }
+            last_underscore = true;
+        } else {
+            out.push(mapped);
+            last_underscore = false;
+        }
+    }
+    out.trim_matches('_').to_string()
+}
+
+fn schema_kind<'a>(schemas: &'a BTreeMap<String, String>, name: &str) -> &'a str {
+    schemas.get(name).map(String::as_str).unwrap_or("json")
+}
+
+fn media_type(name: &str, kind: &str) -> &'static str {
+    match kind {
+        "binary" if name == "LayerTar" => "application/x-tar",
+        "binary" => "application/octet-stream",
+        _ => "application/json",
+    }
+}
+
+fn emit_openapi_schema_for_type(out: &mut String, ty: &str, indent: usize, schema_names: &BTreeSet<String>) {
+    let pad = " ".repeat(indent);
+    if let Some(inner) = ty.strip_suffix("[]") {
+        out.push_str(&format!("{pad}type: array\n"));
+        out.push_str(&format!("{pad}items:\n"));
+        emit_openapi_schema_for_type(out, inner, indent + 2, schema_names);
+        return;
+    }
+
+    if schema_names.contains(ty) {
+        out.push_str(&format!("{pad}$ref: \"#/components/schemas/{ty}\"\n"));
+        return;
+    }
+
+    match ty {
+        "bool" => out.push_str(&format!("{pad}type: boolean\n")),
+        "u32" | "i32" => {
+            out.push_str(&format!("{pad}type: integer\n"));
+            out.push_str(&format!("{pad}format: int32\n"));
+        }
+        "u64" | "i64" => {
+            out.push_str(&format!("{pad}type: integer\n"));
+            out.push_str(&format!("{pad}format: int64\n"));
+        }
+        "StringMap" => {
+            out.push_str(&format!("{pad}type: object\n"));
+            out.push_str(&format!("{pad}additionalProperties:\n"));
+            out.push_str(&format!("{pad}  type: string\n"));
+        }
+        "object" => out.push_str(&format!("{pad}type: object\n")),
+        "string" => out.push_str(&format!("{pad}type: string\n")),
+        alias => {
+            out.push_str(&format!("{pad}type: string\n"));
+            out.push_str(&format!("{pad}x-agentos-type: {}\n", yaml_quote(alias)));
+        }
+    }
+}
+
+fn emit_content(
+    out: &mut String,
+    schema_name: &str,
+    indent: usize,
+    schema_names: &BTreeSet<String>,
+    schema_kinds: &BTreeMap<String, String>,
+) {
+    let pad = " ".repeat(indent);
+    let kind = schema_kind(schema_kinds, schema_name);
+    out.push_str(&format!("{pad}content:\n"));
+    out.push_str(&format!("{pad}  {}:\n", media_type(schema_name, kind)));
+    out.push_str(&format!("{pad}    schema:\n"));
+    emit_openapi_schema_for_type(out, schema_name, indent + 6, schema_names);
+}
+
+fn emit_parameters(out: &mut String, route: &Route, schema_names: &BTreeSet<String>) {
+    let params = path_params(&route.path);
+    if params.is_empty() && route.queries.is_empty() {
+        return;
+    }
+    out.push_str("      parameters:\n");
+    for param in params {
+        out.push_str(&format!("        - name: {}\n", yaml_quote(&param)));
+        out.push_str("          in: path\n");
+        out.push_str("          required: true\n");
+        out.push_str("          schema:\n");
+        emit_openapi_schema_for_type(out, "string", 12, schema_names);
+    }
+    for query in &route.queries {
+        out.push_str(&format!("        - name: {}\n", yaml_quote(&query.name)));
+        out.push_str("          in: query\n");
+        out.push_str(&format!("          required: {}\n", if query.required { "true" } else { "false" }));
+        out.push_str("          schema:\n");
+        emit_openapi_schema_for_type(out, &query.ty, 12, schema_names);
+    }
+}
+
+fn emit_openapi(nodes: &[Node], contract: &str) -> String {
+    let version = nodes
+        .iter()
+        .find(|n| n.name == "version")
+        .map(|n| n.args.first().map(Val::as_int).unwrap_or(0))
+        .unwrap_or(0);
+    let routes = collect_routes(nodes);
+    let schemas = collect_schemas(nodes);
+    let schema_names: BTreeSet<String> = schemas.iter().map(|s| s.name.clone()).collect();
+    let schema_kinds: BTreeMap<String, String> = schemas.iter().map(|s| (s.name.clone(), s.kind.clone())).collect();
+    let mut paths: Vec<String> = Vec::new();
+    let mut grouped: BTreeMap<String, Vec<Route>> = BTreeMap::new();
+    for route in routes {
+        if !grouped.contains_key(&route.path) {
+            paths.push(route.path.clone());
+        }
+        grouped.entry(route.path.clone()).or_default().push(route);
+    }
+
+    let mut out = banner("openapi", contract);
+    out.push_str("openapi: 3.0.3\n");
+    out.push_str("info:\n");
+    out.push_str("  title: AgentOS REST API\n");
+    out.push_str(&format!("  version: {}\n", yaml_quote(&version.to_string())));
+    out.push_str("  description: \"Request/response API for AgentOS VM lifecycle, exec, filesystem, snapshots, layers, and mounts. Live terminal, relay, permissions, and streamed sessions use the typed WebSocket in asyncapi.yaml.\"\n");
+    out.push_str("security:\n");
+    out.push_str("  - bearerAuth: []\n");
+    out.push_str("paths:\n");
+    if paths.is_empty() {
+        out.push_str("  {}\n");
+    }
+    for path in paths {
+        out.push_str(&format!("  {}:\n", yaml_quote(&path)));
+        for route in grouped.get(&path).into_iter().flatten() {
+            let method = route.method.to_ascii_lowercase();
+            out.push_str(&format!("    {method}:\n"));
+            out.push_str(&format!("      operationId: {}\n", yaml_quote(&operation_id(&route.method, &route.path))));
+            if !route.doc.is_empty() {
+                out.push_str(&format!("      summary: {}\n", yaml_quote(&route.doc)));
+            }
+            if let Some(protocol) = &route.protocol {
+                out.push_str(&format!("      x-agentos-protocol: {}\n", yaml_quote(protocol)));
+            }
+            if route.upgrade.as_deref() == Some("websocket") {
+                out.push_str("      x-agentos-upgrade: websocket\n");
+            }
+            if path == "/healthz" {
+                out.push_str("      security: []\n");
+            }
+            emit_parameters(&mut out, route, &schema_names);
+            if let Some(req) = &route.req {
+                out.push_str("      requestBody:\n");
+                out.push_str("        required: true\n");
+                emit_content(&mut out, req, 8, &schema_names, &schema_kinds);
+            }
+            out.push_str("      responses:\n");
+            let status = if route.upgrade.as_deref() == Some("websocket") {
+                "101"
+            } else {
+                "200"
+            };
+            out.push_str(&format!("        {status:?}:\n"));
+            let description = if status == "101" { "Switching protocols" } else { "OK" };
+            out.push_str(&format!("          description: {}\n", yaml_quote(description)));
+            if status != "101" {
+                if let Some(res) = &route.res {
+                    emit_content(&mut out, res, 10, &schema_names, &schema_kinds);
+                }
+            }
+        }
+    }
+    out.push_str("components:\n");
+    out.push_str("  securitySchemes:\n");
+    out.push_str("    bearerAuth:\n");
+    out.push_str("      type: http\n");
+    out.push_str("      scheme: bearer\n");
+    out.push_str("  schemas:\n");
+    for schema in &schemas {
+        out.push_str(&format!("    {}:\n", yaml_quote(&schema.name)));
+        if !schema.doc.is_empty() {
+            out.push_str(&format!("      description: {}\n", yaml_quote(&schema.doc)));
+        }
+        match schema.kind.as_str() {
+            "binary" => {
+                out.push_str("      type: string\n");
+                out.push_str("      format: binary\n");
+            }
+            "websocket" => {
+                out.push_str("      type: string\n");
+                out.push_str("      x-agentos-protocol: wire\n");
+            }
+            _ => {
+                out.push_str("      type: object\n");
+                let required = schema.fields.iter().filter(|f| f.required).collect::<Vec<_>>();
+                if !required.is_empty() {
+                    out.push_str("      required:\n");
+                    for field in required {
+                        out.push_str(&format!("        - {}\n", yaml_quote(&field.name)));
+                    }
+                }
+                out.push_str("      properties:\n");
+                if schema.fields.is_empty() {
+                    out.push_str("        {}\n");
+                }
+                for field in &schema.fields {
+                    out.push_str(&format!("        {}:\n", yaml_quote(&field.name)));
+                    emit_openapi_schema_for_type(&mut out, &field.ty, 10, &schema_names);
+                }
+            }
+        }
+    }
+    out
+}
+
 fn emit_wire(lang: &str, nodes: &[Node], contract: &str) -> String {
+    if lang == "openapi" {
+        return emit_openapi(nodes, contract);
+    }
     let version = nodes.iter().find(|n| n.name == "version").map(|n| n.args.first().map(Val::as_int).unwrap_or(0)).unwrap_or(0);
     let header_len = nodes.iter().find(|n| n.name == "header-len").map(|n| n.args.first().map(Val::as_int).unwrap_or(0)).unwrap_or(0);
     let msgs: Vec<&Node> = nodes.iter().filter(|n| n.name == "message").collect();
@@ -674,7 +1017,7 @@ fn emit_wire(lang: &str, nodes: &[Node], contract: &str) -> String {
         "asyncapi" => {
             o = banner("asyncapi", contract);
             o.push_str("asyncapi: 3.0.0\n");
-            o.push_str("info:\n  title: mc wire protocol\n");
+            o.push_str("info:\n  title: AgentOS wire protocol\n");
             o.push_str(&format!("  version: \"{version}\"\n"));
             o.push_str("channels:\n  vm:\n    messages:\n");
             for m in &msgs {
@@ -708,7 +1051,7 @@ fn main() -> ExitCode {
         i += 2;
     }
     let (Some(lang), Some(module), Some(contract)) = (lang, module, contract) else {
-        eprintln!("usage: projector --module <constants|mc|env|ctl|wire> --lang <rust|zig|ts|md|asyncapi> --contract <path.kdl>");
+        eprintln!("usage: projector --module <constants|mc|env|ctl|wire> --lang <rust|zig|ts|md|asyncapi|openapi> --contract <path.kdl>");
         return ExitCode::FAILURE;
     };
 

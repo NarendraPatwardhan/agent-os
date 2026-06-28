@@ -1,4 +1,5 @@
 load("@rules_rust//rust:defs.bzl", "rust_shared_library")
+load("//memcontainers/hosts/wasmtime:defs.bzl", "host_release_shared_library")
 
 # host_nif — the BEAM-loadable NIF that wraps the wasmtime `host` library (//memcontainers/
 # hosts/wasmtime:host), making Elixir a third host family (CONTROL_PLANE.md §6.1) WITHOUT
@@ -18,4 +19,14 @@ rust_shared_library(
         "//memcontainers/hosts/wasmtime:host",
         "@nif_crates//:rustler",
     ],
+)
+
+# The distributable BEAM NIF is always release/opt, even when a caller builds the package from
+# Bazel's default fastbuild configuration. This mirrors //memcontainers/hosts/wasmtime:mc:
+# wasmtime/cranelift debug builds are not the runtime we ship.
+host_release_shared_library(
+    name = "host_nif_release",
+    lib = ":host_nif",
+    out = "libhost_nif.so",
+    visibility = ["//visibility:public"],
 )

@@ -1,7 +1,7 @@
 # @generated from contracts/wire.kdl by //contracts/codegen:projector — do not edit.
 asyncapi: 3.0.0
 info:
-  title: mc wire protocol
+  title: AgentOS wire protocol
   version: "1"
 channels:
   vm:
@@ -55,7 +55,7 @@ channels:
         x-tag: 64
         x-direction: "server->client"
         x-body: "json"
-        summary: "The kernel asks for a capability the agent currently lacks (Â§13 open Q6)."
+        summary: "The kernel asks for a capability the agent currently lacks (section 13 open Q6)."
       PERMISSION_RESPONSE:
         x-tag: 65
         x-direction: "client->server"

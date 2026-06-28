@@ -7,7 +7,7 @@ defmodule AgentOS.Host.Nif do
 
   ## Why manual loading (no `use Rustler`)
 
-  Bazel builds the `.so` (`//memcontainers/hosts/wasmtime/nif:host_nif`) and stages it into
+  Bazel builds the release `.so` (`//memcontainers/hosts/wasmtime/nif:host_nif_release`) and stages it into
   this app's `priv/`. We therefore want Elixir to *load* a prebuilt artifact, never *compile*
   one — so we skip the `rustler` hex package entirely and load the NIF by hand via `@on_load`
   + `:erlang.load_nif/2`. The Rust `rustler::init!` still emits the standard `nif_init`

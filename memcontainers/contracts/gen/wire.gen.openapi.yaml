@@ -1,0 +1,975 @@
+# @generated from contracts/wire.kdl by //contracts/codegen:projector — do not edit.
+openapi: 3.0.3
+info:
+  title: AgentOS REST API
+  version: "1"
+  description: "Request/response API for AgentOS VM lifecycle, exec, filesystem, snapshots, layers, and mounts. Live terminal, relay, permissions, and streamed sessions use the typed WebSocket in asyncapi.yaml."
+security:
+  - bearerAuth: []
+paths:
+  "/healthz":
+    get:
+      operationId: "get_healthz"
+      summary: "Process health. Does not touch any VM actor."
+      security: []
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+  "/v1/capabilities":
+    get:
+      operationId: "get_v1_capabilities"
+      summary: "Server/runtime capabilities: API version, wire version, body limits, packaged image flavors, and optional feature flags."
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Capabilities"
+  "/v1/namespaces/{ns}/vms":
+    get:
+      operationId: "get_v1_namespaces_ns_vms"
+      summary: "List live VMs visible in one namespace."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VmList"
+    post:
+      operationId: "post_v1_namespaces_ns_vms"
+      summary: "Create a VM from a packaged image, layer stack, or snapshot. Connection entries are host-side references, never raw secrets."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateVm"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Vm"
+  "/v1/namespaces/{ns}/vms/{id}":
+    get:
+      operationId: "get_v1_namespaces_ns_vms_id"
+      summary: "Return VM status and runtime metadata."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Vm"
+    delete:
+      operationId: "delete_v1_namespaces_ns_vms_id"
+      summary: "Dispose the VM actor and release host-side resources."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DisposeVm"
+  "/v1/namespaces/{ns}/vms/{id}/restore":
+    post:
+      operationId: "post_v1_namespaces_ns_vms_id_restore"
+      summary: "Restore or replace a VM from snapshot bytes."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              $ref: "#/components/schemas/SnapshotBytes"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Vm"
+  "/v1/namespaces/{ns}/vms/{id}/ws":
+    get:
+      operationId: "get_v1_namespaces_ns_vms_id_ws"
+      summary: "Upgrade to the typed per-VM WebSocket described by the message table above."
+      x-agentos-protocol: "wire"
+      x-agentos-upgrade: websocket
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "101":
+          description: "Switching protocols"
+  "/v1/namespaces/{ns}/vms/{id}/exec":
+    post:
+      operationId: "post_v1_namespaces_ns_vms_id_exec"
+      summary: "Run a bounded command and return the final result. Use exec-jobs for long-running commands."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Exec"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecResult"
+  "/v1/namespaces/{ns}/vms/{id}/exec-jobs":
+    post:
+      operationId: "post_v1_namespaces_ns_vms_id_exec_jobs"
+      summary: "Start a long-running exec job."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Exec"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecJob"
+  "/v1/namespaces/{ns}/vms/{id}/exec-jobs/{job}":
+    get:
+      operationId: "get_v1_namespaces_ns_vms_id_exec_jobs_job"
+      summary: "Poll an exec job's status, exit code, and buffered byte counts."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "job"
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecJob"
+    delete:
+      operationId: "delete_v1_namespaces_ns_vms_id_exec_jobs_job"
+      summary: "Cancel a long-running exec job."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "job"
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecJob"
+  "/v1/namespaces/{ns}/vms/{id}/exec-jobs/{job}/stdout":
+    get:
+      operationId: "get_v1_namespaces_ns_vms_id_exec_jobs_job_stdout"
+      summary: "Read a slice of an exec job's buffered stdout."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "job"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "offset"
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+        - name: "limit"
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/octet-stream:
+              schema:
+                $ref: "#/components/schemas/Bytes"
+  "/v1/namespaces/{ns}/vms/{id}/fs/files":
+    get:
+      operationId: "get_v1_namespaces_ns_vms_id_fs_files"
+      summary: "Read file bytes. The VM path is a query value so OpenAPI and host frameworks do not need slash-capture semantics."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "path"
+          in: query
+          required: true
+          schema:
+            type: string
+            x-agentos-type: "Path"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/octet-stream:
+              schema:
+                $ref: "#/components/schemas/Bytes"
+    put:
+      operationId: "put_v1_namespaces_ns_vms_id_fs_files"
+      summary: "Write file bytes at path."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "path"
+          in: query
+          required: true
+          schema:
+            type: string
+            x-agentos-type: "Path"
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              $ref: "#/components/schemas/Bytes"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FsWrite"
+    delete:
+      operationId: "delete_v1_namespaces_ns_vms_id_fs_files"
+      summary: "Unlink a file or symlink."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "path"
+          in: query
+          required: true
+          schema:
+            type: string
+            x-agentos-type: "Path"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FsDelete"
+  "/v1/namespaces/{ns}/vms/{id}/fs/stat":
+    get:
+      operationId: "get_v1_namespaces_ns_vms_id_fs_stat"
+      summary: "Stat one file, directory, or symlink."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "path"
+          in: query
+          required: true
+          schema:
+            type: string
+            x-agentos-type: "Path"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FsStat"
+  "/v1/namespaces/{ns}/vms/{id}/fs/entries":
+    get:
+      operationId: "get_v1_namespaces_ns_vms_id_fs_entries"
+      summary: "Read a directory listing."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "path"
+          in: query
+          required: true
+          schema:
+            type: string
+            x-agentos-type: "Path"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FsEntries"
+  "/v1/namespaces/{ns}/vms/{id}/fs/dirs":
+    put:
+      operationId: "put_v1_namespaces_ns_vms_id_fs_dirs"
+      summary: "Create a directory, including parents when the host adapter elects to expose that option."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "path"
+          in: query
+          required: true
+          schema:
+            type: string
+            x-agentos-type: "Path"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FsMkdir"
+  "/v1/namespaces/{ns}/vms/{id}/fs/symlinks":
+    put:
+      operationId: "put_v1_namespaces_ns_vms_id_fs_symlinks"
+      summary: "Create a symbolic link. The body carries both link and target paths to avoid ambiguous URL escaping."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FsSymlink"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FsSymlinkResult"
+  "/v1/namespaces/{ns}/vms/{id}/snapshots":
+    post:
+      operationId: "post_v1_namespaces_ns_vms_id_snapshots"
+      summary: "Return a VM snapshot as bytes. Fails while in-flight egress/host work is not quiesced."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/octet-stream:
+              schema:
+                $ref: "#/components/schemas/SnapshotBytes"
+  "/v1/namespaces/{ns}/vms/{id}/layers":
+    post:
+      operationId: "post_v1_namespaces_ns_vms_id_layers"
+      summary: "Commit the writable layer as a tar artifact."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/x-tar:
+              schema:
+                $ref: "#/components/schemas/LayerTar"
+  "/v1/namespaces/{ns}/vms/{id}/forks":
+    post:
+      operationId: "post_v1_namespaces_ns_vms_id_forks"
+      summary: "Snapshot the current VM and create another VM in the same namespace."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ForkVm"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Vm"
+  "/v1/namespaces/{ns}/vms/{id}/mounts":
+    get:
+      operationId: "get_v1_namespaces_ns_vms_id_mounts"
+      summary: "List host-registered mounts attached to a VM."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MountList"
+    post:
+      operationId: "post_v1_namespaces_ns_vms_id_mounts"
+      summary: "Attach a host-side mount driver. Driver secrets remain outside guest memory."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AttachMount"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Mount"
+    delete:
+      operationId: "delete_v1_namespaces_ns_vms_id_mounts"
+      summary: "Detach a mount by mount id or guest path."
+      parameters:
+        - name: "ns"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DetachMount"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DetachMount"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    "Health":
+      type: object
+      required:
+        - "ok"
+      properties:
+        "ok":
+          type: boolean
+    "Capabilities":
+      type: object
+      required:
+        - "apiVersion"
+        - "wireVersion"
+        - "maxBodyBytes"
+        - "images"
+        - "features"
+      properties:
+        "apiVersion":
+          type: string
+        "wireVersion":
+          type: integer
+          format: int32
+        "maxBodyBytes":
+          type: integer
+          format: int64
+        "images":
+          type: array
+          items:
+            type: string
+            x-agentos-type: "ImageFlavor"
+        "features":
+          type: array
+          items:
+            type: string
+    "CreateVm":
+      type: object
+      properties:
+        "id":
+          type: string
+          x-agentos-type: "VmId"
+        "image":
+          type: string
+          x-agentos-type: "ImageFlavor"
+        "layers":
+          type: array
+          items:
+            type: string
+            x-agentos-type: "LayerRef"
+        "snapshot":
+          type: string
+          x-agentos-type: "SnapshotRef"
+        "deterministic":
+          type: boolean
+        "workers":
+          type: integer
+          format: int32
+        "net":
+          type: string
+          x-agentos-type: "NetPolicy"
+        "persist":
+          type: string
+          x-agentos-type: "PersistPolicy"
+        "hostCall":
+          type: string
+          x-agentos-type: "HostCallPolicy"
+        "connections":
+          type: array
+          items:
+            type: string
+            x-agentos-type: "ConnectionRef"
+    "Vm":
+      type: object
+      required:
+        - "namespace"
+        - "id"
+        - "status"
+        - "inflightEgress"
+      properties:
+        "namespace":
+          type: string
+          x-agentos-type: "Namespace"
+        "id":
+          type: string
+          x-agentos-type: "VmId"
+        "status":
+          type: string
+          x-agentos-type: "VmStatus"
+        "image":
+          type: string
+          x-agentos-type: "ImageFlavor"
+        "inflightEgress":
+          type: integer
+          format: int32
+    "VmList":
+      type: object
+      required:
+        - "items"
+      properties:
+        "items":
+          type: array
+          items:
+            $ref: "#/components/schemas/Vm"
+    "Exec":
+      type: object
+      required:
+        - "cmd"
+      properties:
+        "cmd":
+          type: string
+        "cwd":
+          type: string
+          x-agentos-type: "Path"
+        "env":
+          type: object
+          additionalProperties:
+            type: string
+        "stdin":
+          type: string
+        "timeoutMs":
+          type: integer
+          format: int64
+        "maxTicks":
+          type: integer
+          format: int64
+    "ExecResult":
+      type: object
+      required:
+        - "ok"
+        - "stdout"
+        - "stderr"
+      properties:
+        "ok":
+          type: boolean
+        "exitCode":
+          type: integer
+          format: int32
+        "stdout":
+          type: string
+        "stderr":
+          type: string
+    "ExecJob":
+      type: object
+      required:
+        - "id"
+        - "status"
+        - "stdoutBytes"
+        - "stderrBytes"
+      properties:
+        "id":
+          type: string
+          x-agentos-type: "JobId"
+        "status":
+          type: string
+          x-agentos-type: "JobStatus"
+        "exitCode":
+          type: integer
+          format: int32
+        "stdoutBytes":
+          type: integer
+          format: int64
+        "stderrBytes":
+          type: integer
+          format: int64
+    "FsWrite":
+      type: object
+      required:
+        - "bytes"
+      properties:
+        "bytes":
+          type: integer
+          format: int64
+    "FsDelete":
+      type: object
+      required:
+        - "ok"
+      properties:
+        "ok":
+          type: boolean
+    "FsStat":
+      type: object
+      required:
+        - "path"
+        - "kind"
+        - "size"
+        - "mode"
+      properties:
+        "path":
+          type: string
+          x-agentos-type: "Path"
+        "kind":
+          type: string
+          x-agentos-type: "FsKind"
+        "size":
+          type: integer
+          format: int64
+        "mode":
+          type: integer
+          format: int32
+    "FsEntries":
+      type: object
+      required:
+        - "items"
+      properties:
+        "items":
+          type: array
+          items:
+            $ref: "#/components/schemas/FsStat"
+    "FsMkdir":
+      type: object
+      required:
+        - "ok"
+      properties:
+        "ok":
+          type: boolean
+    "FsSymlink":
+      type: object
+      required:
+        - "link"
+        - "target"
+      properties:
+        "link":
+          type: string
+          x-agentos-type: "Path"
+        "target":
+          type: string
+          x-agentos-type: "Path"
+    "FsSymlinkResult":
+      type: object
+      required:
+        - "ok"
+      properties:
+        "ok":
+          type: boolean
+    "ForkVm":
+      type: object
+      properties:
+        "id":
+          type: string
+          x-agentos-type: "VmId"
+    "Mount":
+      type: object
+      required:
+        - "id"
+        - "path"
+        - "kind"
+      properties:
+        "id":
+          type: string
+          x-agentos-type: "MountId"
+        "path":
+          type: string
+          x-agentos-type: "Path"
+        "kind":
+          type: string
+          x-agentos-type: "MountKind"
+    "MountList":
+      type: object
+      required:
+        - "items"
+      properties:
+        "items":
+          type: array
+          items:
+            $ref: "#/components/schemas/Mount"
+    "AttachMount":
+      type: object
+      required:
+        - "path"
+        - "kind"
+        - "source"
+      properties:
+        "path":
+          type: string
+          x-agentos-type: "Path"
+        "kind":
+          type: string
+          x-agentos-type: "MountKind"
+        "source":
+          type: string
+          x-agentos-type: "MountSource"
+    "DetachMount":
+      type: object
+      properties:
+        "id":
+          type: string
+          x-agentos-type: "MountId"
+        "path":
+          type: string
+          x-agentos-type: "Path"
+    "DisposeVm":
+      type: object
+      required:
+        - "ok"
+      properties:
+        "ok":
+          type: boolean
+    "SnapshotBytes":
+      description: "Opaque VM snapshot bytes."
+      type: string
+      format: binary
+    "LayerTar":
+      description: "Tar stream for a committed writable layer."
+      type: string
+      format: binary
+    "Bytes":
+      description: "Raw bytes. The REST API does not base64-encode file, stdout, snapshot, or layer payloads."
+      type: string
+      format: binary
+    "WireSocket":
+      description: "Typed frames [kind:u8][seq:u64 LE][body...] using the message table in this file."
+      type: string
+      x-agentos-protocol: wire

@@ -43,7 +43,7 @@ contracts/syscalls.kdl ──(//contracts/codegen:projector)──> mc.gen.rs   
 
 The `.kdl` files are complete and authoritative, and the **projector**
 (`codegen/src/projector.rs`) is implemented: a dependency-light KDL reader plus
-emitters for Rust, Zig, TS, Markdown, and AsyncAPI. The `abi_library()` calls in
+emitters for Rust, Zig, TS, Markdown, AsyncAPI, and OpenAPI. The `abi_library()` calls in
 `BUILD.bazel` are live — every boundary is generated into `gen/`, the Rust and Zig
 projections are compile-validated by `build_test`, and all are drift-gated by
 `diff_test`. Consume them as `//contracts:mc_rust`, `:env_zig`, `:wire_ts`, …

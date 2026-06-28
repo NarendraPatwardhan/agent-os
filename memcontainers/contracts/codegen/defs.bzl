@@ -22,7 +22,8 @@ _EXT = {
     "zig": "zig",
     "ts": "ts",
     "md": "md",
-    "asyncapi": "yaml",
+    "asyncapi": "asyncapi.yaml",
+    "openapi": "openapi.yaml",
 }
 
 def abi_library(name, contract, langs):

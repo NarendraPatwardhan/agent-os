@@ -5,5 +5,6 @@
 # Rust and TS so the server and client can't disagree.
 #
 # Phase A:
-#   # //memcontainers/contracts:wire_asyncapi → spec/asyncapi.yaml   (projected)
+#   # //memcontainers/contracts:wire_asyncapi_gen → gen/wire.gen.asyncapi.yaml   (projected)
+#   # //memcontainers/contracts:wire_openapi_gen  → gen/wire.gen.openapi.yaml    (projected)
 #   # a wire-vector generator     → spec/wire-vectors.json (golden, diff-tested)

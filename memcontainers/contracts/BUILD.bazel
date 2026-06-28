@@ -34,7 +34,7 @@ abi_library(name = "constants", contract = "constants.kdl", langs = ["rust", "zi
 abi_library(name = "mc", contract = "syscalls.kdl", langs = ["rust", "zig", "ts", "md"])
 abi_library(name = "env", contract = "bridge.kdl", langs = ["rust", "zig", "ts"])
 abi_library(name = "ctl", contract = "control.kdl", langs = ["rust", "zig", "ts"])
-abi_library(name = "wire", contract = "wire.kdl", langs = ["rust", "ts", "asyncapi"])
+abi_library(name = "wire", contract = "wire.kdl", langs = ["rust", "ts", "asyncapi", "openapi"])
 
 # The generated TS descriptors compiled into ONE consumable lib — the JS host (hosts/js) and @mc/core
 # wire their `env` bridge + `mc_ctl_*` export lookup from these (BRIDGE_IMPORTS / CONTROL_EXPORTS /
