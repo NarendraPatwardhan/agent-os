@@ -666,7 +666,6 @@ impl Scheduler {
             }
         }
     }
-
 }
 
 // SAFETY: single-threaded cooperative kernel; no aliasing across a yield (see task::mod).

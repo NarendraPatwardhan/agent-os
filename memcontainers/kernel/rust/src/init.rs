@@ -7,11 +7,11 @@ use alloc::vec::Vec;
 
 use crate::bridge;
 use crate::builtins::{
-    Builtin, BuiltinCtx, BuiltinStep, false_factory, tail_factory, true_factory, umount_factory,
+    false_factory, tail_factory, true_factory, umount_factory, Builtin, BuiltinCtx, BuiltinStep,
 };
 use crate::fs::{CowFs, DevFs, MemFs, OverlayFs, PersistFs, TarFs};
 use crate::io::{EmptySource, TerminalSink};
-use crate::shell::{Executor, parse_line};
+use crate::shell::{parse_line, Executor};
 use crate::task::Scheduler;
 use crate::vfs::traits::FileSystem;
 use crate::vfs::{KPath, Namespace, SYSTEM_CALLER};
@@ -296,13 +296,13 @@ impl crate::io::WriteSink for DiscardSink {
 
 fn register_builtins(executor: &mut Executor) {
     let _ = TerminalSink::Stdout; // keep the symbol imported for callers
-    // Shell-integral builtins only. The POSIX coreutils
-    // (cat/ls/echo/wc/head/mkdir/rm/cp/mv/touch/pwd) AND the network clients
-    // (fetch/wscat, via `mc_sys_http_request`/`mc_sys_ws_open`) are wasm
-    // guests on `$PATH`. What remains: `tail` must
-    // buffer its whole input (no-alloc guests can't); `true`/`false` are
-    // control primitives; `umount` is a privileged mount-table op guests must
-    // not perform.
+                                  // Shell-integral builtins only. The POSIX coreutils
+                                  // (cat/ls/echo/wc/head/mkdir/rm/cp/mv/touch/pwd) AND the network clients
+                                  // (fetch/wscat, via `mc_sys_http_request`/`mc_sys_ws_open`) are wasm
+                                  // guests on `$PATH`. What remains: `tail` must
+                                  // buffer its whole input (no-alloc guests can't); `true`/`false` are
+                                  // control primitives; `umount` is a privileged mount-table op guests must
+                                  // not perform.
     executor.register("umount", umount_factory);
     executor.register("tail", tail_factory);
     executor.register("true", true_factory);

@@ -37,7 +37,7 @@ use crate::fs::proxy;
 use crate::host_call::{HostCallRead, HostCallSource};
 use crate::vfs::traits::{
     CallerId, DirEntry, FileHandle, FileSystem, FsError, KPath, Metadata, OpenFlags, Result,
-    SYSTEM_CALLER, SeekFrom,
+    SeekFrom, SYSTEM_CALLER,
 };
 use crate::wasm::abi::fs_result_from_errno;
 
@@ -143,13 +143,11 @@ impl MountChannel {
     /// no-write-capability cases are rejected earlier — see the mount setup).
     fn drain_commits(&mut self) {
         let mut scratch = [0u8; 256];
-        self.pending_commits.retain_mut(|c| {
-            loop {
-                match c.source.read_into(&mut scratch) {
-                    HostCallRead::Pending => break true,
-                    HostCallRead::Got(_) => continue,
-                    HostCallRead::Eof | HostCallRead::Failed => break false,
-                }
+        self.pending_commits.retain_mut(|c| loop {
+            match c.source.read_into(&mut scratch) {
+                HostCallRead::Pending => break true,
+                HostCallRead::Got(_) => continue,
+                HostCallRead::Eof | HostCallRead::Failed => break false,
             }
         });
     }

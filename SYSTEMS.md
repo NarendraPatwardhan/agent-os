@@ -658,9 +658,9 @@ The lifecycle:
   `(session, req_id)`, **not by caller**, because one client may hold several concurrent sessions to one
   service (a script with two DB handles) — a caller-keyed map could not express that. This is the one
   real correction over the served-fs template, which dedups by caller on the assumption of one in-flight
-  request per caller. The request envelope still carries kernel-supplied `caller` metadata so a service can
-  distinguish ordinary guest calls from the host control channel (`SYSTEM_CALLER`) without trusting the
-  request body.
+  request per caller. The request envelope still carries kernel-supplied `caller` and `caller_caps`
+  metadata from the `svc_call` task so a service can distinguish ordinary guest calls from the host control
+  channel (`SYSTEM_CALLER`) and enforce operation-level authority without trusting the request body.
 - **Call** (`svc_call`): a typed request blob plus optional delegated handles → a *readable result fd*
   the caller drains. Like a host-call, the call itself does not block — the client streams the response,
   yielding while the server computes, so a large result (a SQLite cursor, a PDF) never materializes
@@ -670,11 +670,14 @@ The lifecycle:
   buffer crosses a high-water mark the server is parked until the client drains; only a delivered
   `(session, req_id)` may be answered.
 
-The envelope is `[kind:u8][nhandles:u8][session:u32][req_id:u32][blob_len:u32][blob…]`, with delegated fd
-numbers in a parallel buffer; `kind` is *call* or *session-closed tombstone*. The blob is **opaque** — the
-service and its library define the wire format; the kernel never reads it. Only the response `status` is
-kernel-interpreted (`0` = body follows, non-zero = an errno surfaced to the client's read; application
-errors ride *inside* the body).
+The envelope is
+`[kind:u8][nhandles:u8][session:u32][req_id:u32][caller:u32][caller_caps:u32][blob_len:u32][blob…]`, with
+delegated fd numbers in a parallel buffer; `kind` is *call* or *session-closed tombstone*. The blob is
+**opaque** — the service and its library define the wire format; the kernel never reads it. Only the response
+`status` is kernel-interpreted (`0` = body follows, non-zero = an errno surfaced to the client's read;
+application errors ride *inside* the body). `caller_caps` is kernel-authored call-time authority metadata; a
+service that performs privileged work on behalf of callers must check it instead of relying on its own binary
+tier.
 
 **Handle delegation** is the SCM_RIGHTS analogue: a call may carry a few of the caller's own fd numbers;
 the kernel clones the backing object into the service's table under fresh numbers. Only
@@ -961,7 +964,9 @@ The tool catalog has a single lifetime rule. `/etc/tools/catalog.json` is the bo
 registration (`vm.tool`) updates that live catalog only through an awaited host-control service call
 (`catalog.apply`, `caller == SYSTEM_CALLER`) that validates the full replacement catalog, swaps it atomically,
 and then checkpoints the canonical catalog file. Guest service calls can search, describe, list, call, and
-garbage-collect tool artifacts; they cannot mutate catalog bindings.
+garbage-collect tool artifacts; they cannot mutate catalog bindings. Tool `call` and `call_alias` additionally
+require the caller's kernel-stamped `CAP_NET`, matching direct `host_call`; discovery and artifact cleanup stay
+unprivileged.
 
 `pkgcore` is the pure logic for `pkgfsd`, a demand-load package daemon: a dependency-free SHA-256, a
 tab-separated catalog parser, and path/URL helpers. Packages are addressed by content hash, fetched from a

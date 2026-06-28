@@ -36,8 +36,8 @@ use shell::{
 use task::{Scheduler, TaskId, TaskState};
 use vfs::{KPath, Namespace, NodeType, OpenFlags};
 use wasm::abi::{
-    errno_from_fs, EAGAIN, EINVAL, EIO, ENOENT, ESUCCESS, ETIMEDOUT, SERVICE_MARKER, SIGHUP, SIGINT,
-    SIGTSTP,
+    errno_from_fs, EAGAIN, EINVAL, EIO, ENOENT, ESUCCESS, ETIMEDOUT, SERVICE_MARKER, SIGHUP,
+    SIGINT, SIGTSTP,
 };
 
 // ---------- ForegroundJob (the rescue shell) ----------
@@ -2172,7 +2172,13 @@ unsafe fn advance_ctl_svc_job(job: &mut CtlSvcJob) -> CtlSvcAdvance {
                     };
                     let session = channel.borrow_mut().open_session(vfs::SYSTEM_CALLER);
                     let body = core::mem::take(req);
-                    let req_id = match channel.borrow_mut().enqueue(session, body, Vec::new()) {
+                    let req_id = match channel.borrow_mut().enqueue(
+                        session,
+                        vfs::SYSTEM_CALLER,
+                        task::Capabilities::all().bits() as u32,
+                        body,
+                        Vec::new(),
+                    ) {
                         Some(req_id) => req_id,
                         None => {
                             channel.borrow_mut().drop_session(session);

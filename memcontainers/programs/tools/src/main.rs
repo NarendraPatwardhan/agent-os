@@ -30,6 +30,7 @@ const RESULTS_DIR: &str = "/tmp/tools/results";
 const INLINE_LIMIT: usize = 1024 * 1024;
 const COPY_CHUNK: usize = 16 * 1024;
 const CONTROL_CALLER: u32 = 0;
+const CAP_NET: u32 = rt::CAP_NET as u32;
 
 const HELP: &str = "\
 tools — discover and call host-backed tools through /svc/tools
@@ -459,7 +460,10 @@ fn call_host(
 
 fn apply_catalog(state: &mut ToolState, req: &Json, caller: u32) -> Json {
     if caller != CONTROL_CALLER {
-        return err_json("permission_denied", "catalog mutation requires host control");
+        return err_json(
+            "permission_denied",
+            "catalog mutation requires host control",
+        );
     }
     if let Some(base) = field_u64(req, "baseGeneration") {
         if base != state.catalog_generation {
@@ -486,7 +490,19 @@ fn apply_catalog(state: &mut ToolState, req: &Json, caller: u32) -> Json {
     ok_json(catalog_status(state, count))
 }
 
-fn handle(state: &mut ToolState, req: &Json, caller: u32) -> Json {
+fn can_call_host_tools(caller: u32, caller_caps: u32) -> bool {
+    caller == CONTROL_CALLER || caller_caps & CAP_NET != 0
+}
+
+fn require_host_tool_authority(caller: u32, caller_caps: u32) -> Option<Json> {
+    if can_call_host_tools(caller, caller_caps) {
+        None
+    } else {
+        Some(err_json("permission_denied", "tool calls require CAP_NET"))
+    }
+}
+
+fn handle(state: &mut ToolState, req: &Json, caller: u32, caller_caps: u32) -> Json {
     let op = field_str(req, "op").unwrap_or("");
     match op {
         "catalog.apply" => apply_catalog(state, req, caller),
@@ -510,6 +526,9 @@ fn handle(state: &mut ToolState, req: &Json, caller: u32) -> Json {
         "list" => list_json(&state.catalog),
         "gc" => gc_results(),
         "call" => {
+            if let Some(err) = require_host_tool_authority(caller, caller_caps) {
+                return err;
+            }
             let Some(address) = field_str(req, "address") else {
                 return err_json("bad_request", "call requires address");
             };
@@ -520,6 +539,9 @@ fn handle(state: &mut ToolState, req: &Json, caller: u32) -> Json {
             }
         }
         "call_alias" => {
+            if let Some(err) = require_host_tool_authority(caller, caller_caps) {
+                return err;
+            }
             let Some(alias) = field_str(req, "alias") else {
                 return err_json("bad_request", "call_alias requires alias");
             };
@@ -556,7 +578,7 @@ fn serve_loop() -> ! {
             .ok()
             .and_then(|s| json::parse(s).ok())
         {
-            Some(doc) => json::to_string(&handle(&mut state, &doc, req.caller)),
+            Some(doc) => json::to_string(&handle(&mut state, &doc, req.caller, req.caller_caps)),
             None => json::to_string(&err_json("bad_json", "request must be a JSON object")),
         };
         let _ = rt::svc_respond(

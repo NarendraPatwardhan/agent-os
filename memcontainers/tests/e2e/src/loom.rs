@@ -6,6 +6,10 @@
 //! full Luau Analysis engine (file:line:col diagnostics).
 
 use host::MapHostCall;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
 use crate::{boot_loom, boot_loom_with_tools};
 
@@ -164,8 +168,68 @@ print(denied:match('"code":"([^"]+)"'))
         "host.org.main.greet\r\ngreet\r\ntrue\thello world\r\ntrue\tToolFile\t/tmp/greet.json\r\npermission_denied\r\n"
     );
     assert_eq!(
-        s.host.read_file("/tmp/greet.json").expect("saved tool file"),
+        s.host
+            .read_file("/tmp/greet.json")
+            .expect("saved tool file"),
         br#"{"message":"hello file"}"#
+    );
+}
+
+/// A lower-authority caller may discover `/svc/tools`, but `call` must not let the full-tier service
+/// launder `mc_sys_host_call` authority on its behalf. The denied path is checked against direct
+/// `sys.host.call`, which is the policy baseline.
+#[test]
+fn luau_tools_calls_require_caller_net_authority() {
+    let called = Arc::new(AtomicBool::new(false));
+    let marker = Arc::clone(&called);
+    let mut tools = MapHostCall::new();
+    tools.register(
+        "greet",
+        Box::new(move |_args: &str| {
+            marker.store(true, Ordering::SeqCst);
+            Ok(b"{\"message\":\"should not run\"}".to_vec())
+        }),
+    );
+    let mut s = boot_loom_with_tools(tools);
+    s.host.mkdir("/etc/tools").ok();
+    s.host
+        .write_file(
+            "/etc/tools/catalog.json",
+            br#"{"tools":[{"address":"host.org.main.greet","description":"Greet someone",
+              "binding":{"type":"host_call","name":"greet","args":"raw"}}]}"#,
+        )
+        .expect("seed tool catalog");
+    s.host
+        .write_file(
+            "/demo/low-tools.luau",
+            br#"local sys = require("sys")
+local tools = require("tools")
+local page = assert(tools.search("greet", { limit = 1 }))
+print("search", page.items[1].address)
+local res = tools.call("host.org.main.greet", "world")
+print("tool", tostring(res.ok), res.err.code)
+local raw, host_err = sys.host.call("greet", "world")
+print("host", tostring(raw), tostring(host_err))
+"#,
+        )
+        .expect("seed low-authority tool script");
+    s.host
+        .write_file(
+            "/demo/spawn-low-tools.luau",
+            br#"local sys = require("sys")
+local pid = assert(sys.proc.spawn({ argv = { "luau", "/demo/low-tools.luau" }, tier = "read-only" }))
+local status = assert(sys.proc.wait(pid))
+assert(status == 0, status)
+"#,
+        )
+        .expect("seed parent tool script");
+    assert_eq!(
+        s.run_for_output("luau /demo/spawn-low-tools.luau"),
+        "search\thost.org.main.greet\r\ntool\tfalse\tpermission_denied\r\nhost\tnil\tEPERM\r\n"
+    );
+    assert!(
+        !called.load(Ordering::SeqCst),
+        "low-authority /svc/tools call must not reach the host handler"
     );
 }
 

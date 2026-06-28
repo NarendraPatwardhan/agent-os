@@ -155,7 +155,7 @@ syscall "mc_sys_svc_serve" variant="SvcServe" group="service" {
 }
 syscall "mc_sys_svc_recv" variant="SvcRecv" group="service" {
     arg "fd" type="i32"; arg "buf" type="u32"; arg "buf_len" type="u32"; arg "hbuf" type="u32"; arg "hbuf_len" type="u32"; arg "ret_len" type="u32"
-    doc "Receive the next inbound on server fd: the envelope ([kind][nhandles][session][req_id][blob_len][blob]) into buf and any delegated fd numbers into hbuf; envelope length to ret_len. kind=0 is a call, kind=1 a session-closed tombstone."
+    doc "Receive the next inbound on server fd: the envelope ([kind][nhandles][session][req_id][caller][caller_caps][blob_len][blob]) into buf and any delegated fd numbers into hbuf; envelope length to ret_len. kind=0 is a call, kind=1 a session-closed tombstone."
 }
 syscall "mc_sys_svc_respond" variant="SvcRespond" group="service" {
     arg "fd" type="i32"; arg "session" type="u32"; arg "req_id" type="u32"; arg "status" type="i32"; arg "data_ptr" type="u32"; arg "data_len" type="u32"; arg "last" type="u32"

@@ -21,7 +21,7 @@ use core::ptr::NonNull;
 use crate::task::Scheduler;
 use crate::vfs::traits::{
     CallerId, DirEntry, FileHandle, FileSystem, FsError, KPath, Metadata, NodeType, OpenFlags,
-    Result, SYSTEM_CALLER, SeekFrom,
+    Result, SeekFrom, SYSTEM_CALLER,
 };
 
 pub struct EnvFs {

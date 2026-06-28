@@ -1,5 +1,5 @@
 //! svc.zig — resident-service serve-loop scaffolding for the Zig lane. Wraps the svc_serve/recv/
-//! respond syscalls and the kernel's `[kind][nhandles][session][req_id][caller][blob_len][blob]`
+//! respond syscalls and the kernel's `[kind][nhandles][session][req_id][caller][caller_caps][blob_len][blob]`
 //! request envelope, so a service binary writes only its DISPATCH: `serve` once, then loop `recv` →
 //! handle warm state → `respond`. The client side (connect/call) is each tool's own (a Lua binding for
 //! luau, a CLI for a service). Shared by the Zig services (sqlite today); a one-binary/two-modes
@@ -34,6 +34,7 @@ pub const Request = struct {
     session: u32,
     req_id: u32,
     caller: u32,
+    caller_caps: u32,
     blob: []const u8,
     handles: []const u32,
 };
@@ -59,7 +60,7 @@ pub const Server = struct {
     }
 
     /// Block for the next inbound and decode its envelope
-    /// (`[kind][nhandles][session][req_id][caller][blob_len][blob]`). `null` when the channel is closed
+    /// (`[kind][nhandles][session][req_id][caller][caller_caps][blob_len][blob]`). `null` when the channel is closed
     /// (no client will call again) — the serve loop should then exit. A short or self-inconsistent
     /// envelope is skipped rather than mis-decoded. Delegated fd numbers land in `self.hbuf`, borrowed
     /// by `Request.handles`.
@@ -69,17 +70,18 @@ pub const Server = struct {
             if (mc.mc_sys_svc_recv(self.fd, mc.addr(self.buf.ptr), @intCast(self.buf.len), mc.addr(&self.hbuf), @intCast(self.hbuf.len * 4), mc.addr(&n)) != 0) {
                 return null; // channel closed
             }
-            if (n < 18) continue;
+            if (n < 22) continue;
             const env = self.buf[0..n];
             const nh = env[1];
-            const blob_len = std.mem.readInt(u32, env[14..18], .little);
-            if (18 + @as(usize, blob_len) > n) continue;
+            const blob_len = std.mem.readInt(u32, env[18..22], .little);
+            if (22 + @as(usize, blob_len) > n) continue;
             return .{
                 .kind = @enumFromInt(env[0]),
                 .session = std.mem.readInt(u32, env[2..6], .little),
                 .req_id = std.mem.readInt(u32, env[6..10], .little),
                 .caller = std.mem.readInt(u32, env[10..14], .little),
-                .blob = env[18 .. 18 + blob_len],
+                .caller_caps = std.mem.readInt(u32, env[14..18], .little),
+                .blob = env[22 .. 22 + blob_len],
                 .handles = self.hbuf[0..nh],
             };
         }
