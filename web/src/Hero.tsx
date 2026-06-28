@@ -81,14 +81,6 @@ export function Hero() {
               A WebAssembly VM with a Unix shell, files, processes, pipes, snapshots, and a host-controlled
               capability boundary.
             </p>
-            <nav className={styles.actions} aria-label="Primary">
-              <a className={[styles.action, styles.actionPrimary].join(" ")} href="#workbench">
-                Open workbench
-              </a>
-              <a className={styles.action} href="#runtime">
-                Runtime model
-              </a>
-            </nav>
           </div>
 
           <aside className={styles.aside}>

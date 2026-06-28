@@ -214,7 +214,7 @@ http_archive(
 # http_archive(name = "wasmtime", urls = ["..."], sha256 = "...")  # for hosts/wasmtime
 
 # ---------------------------------------------------------------------------
-# Elixir control-plane lane (//server/otp_hello). The kubernetes-style supervisor over the
+# Elixir control-plane lane (//server). The kubernetes-style supervisor over the
 # wasm VMs (CONTROL_PLANE.md). BOTH halves are DISCORD forks: rules_elixir is git_overridden
 # to discord/rules_elixir, which itself wants discord/rules_erlang — but Bazel overrides only
 # apply in the ROOT module, so we replicate that archive_override here. Toolchains are built
@@ -222,7 +222,7 @@ http_archive(
 #
 # Module resolution is global, so these always resolve; but the toolchain is only SELECTED
 # under `--config=elixir` (see .bazelrc — it sets --host_platform/--platforms to the erlang
-# platforms in //platforms), and the //server/otp_hello targets are target_compatible_with
+# platforms in //platforms), and the //server targets are target_compatible_with
 # the erlang constraint, so a plain `bazel build //...` SKIPS them. (Containerization via
 # rules_oci is a near-term follow-up; not wired yet.)
 # ---------------------------------------------------------------------------

@@ -4,7 +4,6 @@ use std::path::Path;
 
 const BEGIN: &str = "<!-- BEGIN generated:image-size-badges -->";
 const END: &str = "<!-- END generated:image-size-badges -->";
-const COLOR: &str = "607d8b";
 
 fn main() {
     if let Err(err) = run() {
@@ -38,14 +37,24 @@ fn fragment(args: Vec<String>) -> Result<(), String> {
             .map_err(|err| format!("metadata({path:?}) failed: {err}"))?
             .len();
         let message = human_size(bytes);
+        let color = badge_color(name)?;
         println!(
-            "    <img alt=\"Image size: {name} {message}\" src=\"https://img.shields.io/static/v1?label={label}&amp;message={encoded_message}&amp;color={COLOR}\">",
+            "    <img alt=\"Image size: {name} {message}\" src=\"https://img.shields.io/static/v1?label={label}&amp;message={encoded_message}&amp;color={color}\">",
             label = url_component(name),
             encoded_message = url_component(&message),
         );
     }
 
     Ok(())
+}
+
+fn badge_color(name: &str) -> Result<&'static str, String> {
+    match name {
+        "minimal" | "posix" => Ok("2e7d32"),
+        "loom" => Ok("d99a08"),
+        "atlas" | "paper" => Ok("1565c0"),
+        other => Err(format!("no badge color configured for {other:?}")),
+    }
 }
 
 fn update(args: Vec<String>) -> Result<(), String> {

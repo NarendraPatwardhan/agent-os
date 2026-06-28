@@ -16,7 +16,6 @@ defmodule AgentOS.MixProject do
 
   def application do
     [
-      mod: {AgentOS.Application, []},
       extra_applications: [:logger]
     ]
   end

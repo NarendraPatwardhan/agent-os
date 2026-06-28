@@ -39,7 +39,7 @@ test --test_output=errors
 # sync. rules_ts requires an explicit choice; this is it, repo-wide.
 common --@aspect_rules_ts//ts:default_to_tsc_transpiler
 
-# --- Elixir control-plane lane (//server/otp_hello) — see //MODULE.bazel ----------------
+# --- Elixir control-plane lane (//server) — see //MODULE.bazel ----------------
 # Registries are GLOBAL because Bzlmod module resolution is global. The rabbitmq
 # erlang-packages registry is only consulted for modules absent from the BCR (the erlang hex
 # deps), and the BCR stays FIRST, so existing resolutions are unchanged. Specifying any
@@ -51,8 +51,8 @@ common --registry=https://raw.githubusercontent.com/rabbitmq/bazel-central-regis
 # --host_platform/--platforms would clobber the wasm/Rust/Zig builds (which is the whole point
 # of the "No global target platform" note above). The dual-platform dance rules_erlang needs:
 # the HOST platform carries *_internal (→ build OTP+Elixir from source), the TARGET platform
-# carries the version constraints (→ select the toolchains). The //server/otp_hello targets
+# carries the version constraints (→ select the toolchains). The //server targets
 # are target_compatible_with erlang_26_2, so plain `bazel build //...` skips them and only
-# `--config=elixir` builds them. Usage: bazel test //server/otp_hello:mix_test --config=elixir
+# `--config=elixir` builds them. Usage: bazel test //server:mix_test --config=elixir
 build:elixir --host_platform=//platforms:erlang_internal_platform
 build:elixir --platforms=//platforms:erlang_linux_26_2_platform

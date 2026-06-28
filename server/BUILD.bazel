@@ -8,7 +8,8 @@
 # the repo is unaffected). The VM-driving NIF (//memcontainers/hosts/wasmtime/nif:host_nif) is
 # staged into priv/ and loaded at runtime by AgentOS.Host.Nif — Bazel builds the .so, mix never
 # compiles it.
-load("@rules_elixir//:defs.bzl", "mix_library", "mix_release", "mix_test")
+load("@rules_elixir//:defs.bzl", "mix_library", "mix_test")
+load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 
 _ELIXIR_ONLY = ["@erlang_config//:erlang_26_2"]
 
@@ -51,11 +52,59 @@ mix_test(
     },
 )
 
-# `mix release` — the deployable OTP release (bin/agent_os). With the NIF in priv and (later)
-# include_erts via rules_oci, this is what gets containerized.
-mix_release(
-    name = "release",
-    application = ":lib",
-    release_name = "agent_os",
+# The native payload for a Mix-consuming host app. Keep it as a separate layer so the pure Elixir
+# package layout stays obvious and the platform-shaped cdylib is isolated under priv/.
+pkg_tar(
+    name = "agent_os_package_nif",
+    files = {
+        "//memcontainers/hosts/wasmtime/nif:host_nif": "priv/libhost_nif.so",
+    },
+    owner = "0.0",
+    package_dir = "agent_os",
     target_compatible_with = _ELIXIR_ONLY,
+)
+
+pkg_tar(
+    name = "agent_os_package_src",
+    srcs = ["mix.exs"] + glob(["lib/**/*.ex"]),
+    owner = "0.0",
+    package_dir = "agent_os",
+    strip_prefix = ".",
+    target_compatible_with = _ELIXIR_ONLY,
+)
+
+# The runtime payload makes the package complete for a host app that consumes agent_os outside
+# Bazel: the Elixir library, NIF, kernel, and supported flavor images are one artifact. These
+# are the real graph outputs, not copied source-tree byproducts.
+pkg_tar(
+    name = "agent_os_package_runtime",
+    files = {
+        "//memcontainers/images:atlas": "priv/images/atlas.tar",
+        "//memcontainers/images:loom": "priv/images/loom.tar",
+        "//memcontainers/images:minimal": "priv/images/minimal.tar",
+        "//memcontainers/images:paper": "priv/images/paper.tar",
+        "//memcontainers/images:posix": "priv/images/posix.tar",
+        "//memcontainers/kernel/rust:kernel": "priv/kernel/kernel.wasm",
+    },
+    owner = "0.0",
+    package_dir = "agent_os",
+    target_compatible_with = _ELIXIR_ONLY,
+)
+
+# A complete path-dependency-shaped runtime package for external Mix/Phoenix consumers:
+#
+#   {:agent_os, path: "../agent_os"}
+#
+# Host applications start `AgentOS.Supervisor` in their own supervision tree; the package does not
+# auto-start a server. The host can read packaged runtime assets from priv/kernel and priv/images.
+pkg_tar(
+    name = "agent_os_package",
+    owner = "0.0",
+    target_compatible_with = _ELIXIR_ONLY,
+    visibility = ["//visibility:public"],
+    deps = [
+        ":agent_os_package_nif",
+        ":agent_os_package_runtime",
+        ":agent_os_package_src",
+    ],
 )
