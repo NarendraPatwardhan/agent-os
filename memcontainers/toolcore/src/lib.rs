@@ -56,12 +56,54 @@ pub struct Catalog {
     records: Vec<ToolRecord>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolConfig {
+    pub catalog: Catalog,
+    pub policies: PolicySet,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicyAction {
+    Approve,
+    RequireApproval,
+    Block,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PolicyRule {
+    pub id: String,
+    pub owner: String,
+    pub pattern: String,
+    pub action: PolicyAction,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PolicySet {
+    rules: Vec<PolicyRule>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PolicySource {
+    Default,
+    Annotation,
+    Policy,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PolicyDecision {
+    pub action: PolicyAction,
+    pub source: PolicySource,
+    pub policy_id: Option<String>,
+    pub pattern: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolError {
     Parse,
     Shape,
     InvalidAddress,
     InvalidBindingName,
+    InvalidPolicy,
     DuplicateAddress,
     UnsupportedBinding,
     Validation,
@@ -84,25 +126,7 @@ impl Catalog {
 
     pub fn parse(src: &str) -> Result<Self, ToolError> {
         let doc = json::parse(src).map_err(|_| ToolError::Parse)?;
-        let tools = match &doc {
-            Json::Arr(items) => items.as_slice(),
-            Json::Obj(_) => doc
-                .get("tools")
-                .and_then(|v| v.as_arr())
-                .ok_or(ToolError::Shape)?,
-            _ => return Err(ToolError::Shape),
-        };
-        let mut records = Vec::with_capacity(tools.len());
-        for item in tools {
-            records.push(parse_record(item)?);
-        }
-        records.sort_by(|a, b| a.address.cmp(&b.address));
-        for pair in records.windows(2) {
-            if pair[0].address == pair[1].address {
-                return Err(ToolError::DuplicateAddress);
-            }
-        }
-        Ok(Self { records })
+        Self::parse_json(&doc)
     }
 
     pub fn records(&self) -> &[ToolRecord] {
@@ -168,6 +192,155 @@ impl Catalog {
     }
 }
 
+impl ToolConfig {
+    pub fn empty() -> Self {
+        Self {
+            catalog: Catalog::empty(),
+            policies: PolicySet::empty(),
+        }
+    }
+
+    pub fn parse(src: &str) -> Result<Self, ToolError> {
+        let doc = json::parse(src).map_err(|_| ToolError::Parse)?;
+        let catalog = Catalog::parse_json(&doc)?;
+        let policies = PolicySet::parse_json(&doc)?;
+        Ok(Self { catalog, policies })
+    }
+}
+
+impl PolicySet {
+    pub fn empty() -> Self {
+        Self { rules: Vec::new() }
+    }
+
+    pub fn parse(src: &str) -> Result<Self, ToolError> {
+        let doc = json::parse(src).map_err(|_| ToolError::Parse)?;
+        let rules = match &doc {
+            Json::Arr(items) => parse_policy_rules(items)?,
+            Json::Obj(_) => {
+                let Some(policies) = doc.get("policies") else {
+                    return Ok(Self::empty());
+                };
+                parse_policy_rules(policies.as_arr().ok_or(ToolError::InvalidPolicy)?)?
+            }
+            _ => return Err(ToolError::Shape),
+        };
+        Ok(Self { rules })
+    }
+
+    pub fn rules(&self) -> &[PolicyRule] {
+        &self.rules
+    }
+
+    pub fn resolve(&self, rec: &ToolRecord) -> PolicyDecision {
+        let mut matched_owners: Vec<String> = Vec::new();
+        let mut by_owner: Vec<PolicyDecision> = Vec::new();
+        for rule in &self.rules {
+            if !pattern_matches(&rule.pattern, &rec.address) {
+                continue;
+            }
+            if matched_owners.iter().any(|owner| owner == &rule.owner) {
+                continue;
+            }
+            matched_owners.push(rule.owner.clone());
+            by_owner.push(PolicyDecision {
+                action: rule.action,
+                source: PolicySource::Policy,
+                policy_id: if rule.id.is_empty() {
+                    None
+                } else {
+                    Some(rule.id.clone())
+                },
+                pattern: Some(rule.pattern.clone()),
+            });
+        }
+
+        let mut strongest: Option<PolicyDecision> = None;
+        for decision in by_owner {
+            if strongest
+                .as_ref()
+                .map(|current| policy_rank(decision.action) > policy_rank(current.action))
+                .unwrap_or(true)
+            {
+                strongest = Some(decision);
+            }
+        }
+        if let Some(decision) = strongest {
+            return decision;
+        }
+
+        if annotation_requires_approval(&rec.annotations) {
+            return PolicyDecision {
+                action: PolicyAction::RequireApproval,
+                source: PolicySource::Annotation,
+                policy_id: None,
+                pattern: None,
+            };
+        }
+        PolicyDecision {
+            action: PolicyAction::Approve,
+            source: PolicySource::Default,
+            policy_id: None,
+            pattern: None,
+        }
+    }
+
+    pub fn to_json(&self) -> Json {
+        Json::Arr(self.rules.iter().map(PolicyRule::to_json).collect())
+    }
+
+    fn parse_json(doc: &Json) -> Result<Self, ToolError> {
+        let policies = match doc {
+            Json::Arr(_) => &[][..],
+            Json::Obj(_) => match doc.get("policies") {
+                Some(v) => v.as_arr().ok_or(ToolError::InvalidPolicy)?,
+                None => &[][..],
+            },
+            _ => return Err(ToolError::Shape),
+        };
+        Ok(Self {
+            rules: parse_policy_rules(policies)?,
+        })
+    }
+}
+
+impl PolicyRule {
+    pub fn to_json(&self) -> Json {
+        let mut pairs = vec![
+            ("owner".to_string(), Json::Str(self.owner.clone())),
+            ("pattern".to_string(), Json::Str(self.pattern.clone())),
+            (
+                "action".to_string(),
+                Json::Str(policy_action_name(self.action)),
+            ),
+        ];
+        if !self.id.is_empty() {
+            pairs.push(("id".to_string(), Json::Str(self.id.clone())));
+        }
+        Json::Obj(pairs)
+    }
+}
+
+impl PolicyAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PolicyAction::Approve => "approve",
+            PolicyAction::RequireApproval => "require_approval",
+            PolicyAction::Block => "block",
+        }
+    }
+}
+
+impl PolicySource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PolicySource::Default => "default",
+            PolicySource::Annotation => "annotation",
+            PolicySource::Policy => "policy",
+        }
+    }
+}
+
 impl ToolRecord {
     pub fn to_json(&self) -> Json {
         let mut pairs = Vec::new();
@@ -224,6 +397,30 @@ impl Binding {
                 ("request".to_string(), request.clone()),
             ]),
         }
+    }
+}
+
+impl Catalog {
+    fn parse_json(doc: &Json) -> Result<Self, ToolError> {
+        let tools = match doc {
+            Json::Arr(items) => items.as_slice(),
+            Json::Obj(_) => doc
+                .get("tools")
+                .and_then(|v| v.as_arr())
+                .ok_or(ToolError::Shape)?,
+            _ => return Err(ToolError::Shape),
+        };
+        let mut records = Vec::with_capacity(tools.len());
+        for item in tools {
+            records.push(parse_record(item)?);
+        }
+        records.sort_by(|a, b| a.address.cmp(&b.address));
+        for pair in records.windows(2) {
+            if pair[0].address == pair[1].address {
+                return Err(ToolError::DuplicateAddress);
+            }
+        }
+        Ok(Self { records })
     }
 }
 
@@ -287,6 +484,107 @@ pub fn validate_args(schema: Option<&Json>, args: &Json) -> Result<(), ToolError
     } else {
         Ok(())
     }
+}
+
+pub fn annotation_requires_approval(annotations: &Json) -> bool {
+    annotations
+        .get("requires_approval")
+        .and_then(Json::as_bool)
+        == Some(true)
+}
+
+pub fn approval_description(rec: &ToolRecord) -> String {
+    rec.annotations
+        .get("approval_description")
+        .and_then(Json::as_str)
+        .unwrap_or(&rec.description)
+        .to_string()
+}
+
+fn parse_policy_rules(policies: &[Json]) -> Result<Vec<PolicyRule>, ToolError> {
+    let mut rules = Vec::with_capacity(policies.len());
+    for item in policies {
+        rules.push(parse_policy_rule(item)?);
+    }
+    Ok(rules)
+}
+
+fn parse_policy_rule(v: &Json) -> Result<PolicyRule, ToolError> {
+    let owner = required_str(v, "owner")?;
+    let pattern = required_str(v, "pattern")?;
+    let action = parse_policy_action(required_str(v, "action")?)?;
+    let id = v.get("id").and_then(Json::as_str).unwrap_or("");
+    if !valid_segment(owner) || !valid_policy_pattern(pattern) {
+        return Err(ToolError::InvalidPolicy);
+    }
+    if !id.is_empty() && !valid_policy_id(id) {
+        return Err(ToolError::InvalidPolicy);
+    }
+    Ok(PolicyRule {
+        id: id.to_string(),
+        owner: owner.to_string(),
+        pattern: pattern.to_string(),
+        action,
+    })
+}
+
+fn parse_policy_action(action: &str) -> Result<PolicyAction, ToolError> {
+    match action {
+        "approve" => Ok(PolicyAction::Approve),
+        "require_approval" => Ok(PolicyAction::RequireApproval),
+        "block" => Ok(PolicyAction::Block),
+        _ => Err(ToolError::InvalidPolicy),
+    }
+}
+
+fn policy_action_name(action: PolicyAction) -> String {
+    action.as_str().to_string()
+}
+
+fn policy_rank(action: PolicyAction) -> u8 {
+    match action {
+        PolicyAction::Approve => 0,
+        PolicyAction::RequireApproval => 1,
+        PolicyAction::Block => 2,
+    }
+}
+
+fn valid_policy_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.trim() == id
+        && !id.as_bytes().iter().any(|b| b.is_ascii_control())
+}
+
+fn valid_policy_pattern(pattern: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    let parts: Vec<&str> = pattern.split('.').collect();
+    if parts.len() < 2 {
+        return false;
+    }
+    parts.iter().all(|part| *part == "*" || valid_segment(part))
+}
+
+fn pattern_matches(pattern: &str, address: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    let p: Vec<&str> = pattern.split('.').collect();
+    let a: Vec<&str> = address.split('.').collect();
+    if p.last() == Some(&"*") {
+        if p.len() == 1 || a.len() < p.len() - 1 {
+            return false;
+        }
+        return p[..p.len() - 1]
+            .iter()
+            .zip(a.iter())
+            .all(|(pp, aa)| *pp == "*" || pp == aa);
+    }
+    p.len() == a.len()
+        && p.iter()
+            .zip(a.iter())
+            .all(|(pp, aa)| *pp == "*" || pp == aa)
 }
 
 fn parse_record(v: &Json) -> Result<ToolRecord, ToolError> {
@@ -706,6 +1004,59 @@ mod tests {
                 .and_then(Json::as_str),
             Some("adapters")
         );
+    }
+
+    #[test]
+    fn policy_resolution_uses_annotations_as_defaults() {
+        let config = ToolConfig::parse(
+            r#"{"tools":[{"address":"github.org.main.deleteIssue","description":"Delete issue",
+               "annotations":{"requires_approval":true,"approval_description":"DELETE /issues/{id}"},
+               "binding":{"type":"host_call","name":"github.delete","args":"json"}}]}"#,
+        )
+        .unwrap();
+        let rec = config.catalog.find("github.org.main.deleteIssue").unwrap();
+        let decision = config.policies.resolve(rec);
+        assert_eq!(decision.action, PolicyAction::RequireApproval);
+        assert_eq!(decision.source, PolicySource::Annotation);
+        assert_eq!(approval_description(rec), "DELETE /issues/{id}");
+    }
+
+    #[test]
+    fn policy_resolution_is_first_match_per_owner_then_most_restrictive() {
+        let config = ToolConfig::parse(
+            r#"{"tools":[{"address":"github.org.main.deleteIssue","description":"Delete issue",
+               "annotations":{"requires_approval":true},
+               "binding":{"type":"host_call","name":"github.delete","args":"json"}}],
+               "policies":[
+                 {"id":"org-approve","owner":"org","pattern":"github.org.main.*","action":"approve"},
+                 {"id":"org-block-later","owner":"org","pattern":"github.org.main.deleteIssue","action":"block"},
+                 {"id":"user-require","owner":"user","pattern":"github.*","action":"require_approval"}
+               ]}"#,
+        )
+        .unwrap();
+        let rec = config.catalog.find("github.org.main.deleteIssue").unwrap();
+        let decision = config.policies.resolve(rec);
+        assert_eq!(decision.action, PolicyAction::RequireApproval);
+        assert_eq!(decision.source, PolicySource::Policy);
+        assert_eq!(decision.policy_id.as_deref(), Some("user-require"));
+        assert_eq!(decision.pattern.as_deref(), Some("github.*"));
+    }
+
+    #[test]
+    fn rejects_partial_wildcard_policy_patterns() {
+        let err = ToolConfig::parse(
+            r#"{"tools":[],"policies":[
+              {"owner":"org","pattern":"github.org.main.del*","action":"block"}
+            ]}"#,
+        )
+        .unwrap_err();
+        assert_eq!(err, ToolError::InvalidPolicy);
+    }
+
+    #[test]
+    fn rejects_malformed_policy_block() {
+        let err = ToolConfig::parse(r#"{"tools":[],"policies":{}}"#).unwrap_err();
+        assert_eq!(err, ToolError::InvalidPolicy);
     }
 
     #[test]

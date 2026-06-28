@@ -3,6 +3,7 @@
 //! exercise host_call + resident-service + serve machinery, not just a tool's output.
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use host::MapHostCall;
 
@@ -237,6 +238,85 @@ fn tools_call_output_writes_to_requested_guest_path() {
             .expect("requested output"),
         payload
     );
+}
+
+/// WHY: destructive tool calls are policy-gated by `/svc/tools` before dispatch, over the same
+/// host-call/permission channel the runtime already uses for interactive decisions. GUARANTEES: a
+/// `requires_approval` catalog annotation prompts the host with non-secret metadata, denial prevents
+/// the host tool from running, and approval resumes the real tool call.
+#[test]
+fn tools_requires_approval_before_destructive_dispatch() {
+    #[derive(Default)]
+    struct Approval {
+        allow: bool,
+        prompts: Vec<String>,
+    }
+
+    let approval = Arc::new(Mutex::new(Approval::default()));
+    let calls = Arc::new(Mutex::new(0usize));
+
+    let mut tools = MapHostCall::new();
+    {
+        let approval = Arc::clone(&approval);
+        tools.register_raw(
+            "/svc/tools/permission",
+            Box::new(move |body: &[u8]| {
+                let text = String::from_utf8_lossy(body).into_owned();
+                let mut approval = approval.lock().unwrap();
+                approval.prompts.push(text);
+                if approval.allow {
+                    Ok(br#"{"allow":true}"#.to_vec())
+                } else {
+                    Ok(br#"{"allow":false}"#.to_vec())
+                }
+            }),
+        );
+    }
+    {
+        let calls = Arc::clone(&calls);
+        tools.register(
+            "danger.delete",
+            Box::new(move |_args: &str| {
+                *calls.lock().unwrap() += 1;
+                Ok(br#"{"deleted":true}"#.to_vec())
+            }),
+        );
+    }
+
+    let mut s = boot_posix_with_tools(tools);
+    seed_catalog(
+        &mut s,
+        r#"{"tools":[{"address":"host.org.main.deleteThing","description":"Delete a thing",
+          "annotations":{"requires_approval":true,"approval_description":"DELETE /things/{id}"},
+          "input_schema":{"type":"object","required":["id"],"properties":{"id":{"type":"integer"}}},
+          "binding":{"type":"host_call","name":"danger.delete","args":"json"}}]}"#,
+    );
+
+    assert_eq!(
+        s.run_for_output("tools call host.org.main.deleteThing '{\"id\":1}'"),
+        "{\"ok\":false,\"err\":{\"code\":\"declined\",\"message\":\"tool call approval declined\"}}\r\n"
+    );
+    assert_eq!(*calls.lock().unwrap(), 0, "denial must not dispatch");
+    {
+        let approval = approval.lock().unwrap();
+        assert_eq!(approval.prompts.len(), 1);
+        assert!(approval.prompts[0].contains("\"kind\":\"tool_approval\""));
+        assert!(approval.prompts[0].contains("\"address\":\"host.org.main.deleteThing\""));
+        assert!(approval.prompts[0].contains("\"approvalDescription\":\"DELETE /things/{id}\""));
+        assert!(approval.prompts[0].contains("\"argsPreview\":\"{\\\"id\\\":1}\""));
+        assert!(
+            !approval.prompts[0].contains("Authorization"),
+            "approval prompt must not carry injected credentials"
+        );
+    }
+
+    approval.lock().unwrap().allow = true;
+    assert_eq!(
+        s.run_for_output("tools call host.org.main.deleteThing '{\"id\":1}'"),
+        "{\"ok\":true,\"data\":{\"deleted\":true}}\r\n"
+    );
+    assert_eq!(*calls.lock().unwrap(), 1, "approval should resume exactly one dispatch");
+    assert_eq!(approval.lock().unwrap().prompts.len(), 2);
 }
 
 /// WHY: SDK-created `/bin/<alias>` symlinks point to one `tools` binary and dispatch by argv[0].

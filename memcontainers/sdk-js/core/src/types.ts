@@ -41,10 +41,9 @@ export interface CreateOptions {
   persist?: boolean;
   /** Declarative permissions (see {@link Permissions}). */
   permissions?: Permissions;
-  /** Interactive approval for a guest network request to a host NOT on
-   *  `permissions.network.allow`. Call `req.allow()` to let it egress (optionally
-   *  remembering the host) or `req.reject()` to deny. With no handler, a
-   *  non-allowlisted host is denied. (Tool calls use the tool callback, not this.) */
+  /** Interactive approval for network egress or destructive tool calls. Call `req.allow()` to let the
+   *  operation proceed or `req.reject()` to deny. With no handler, operations that require approval are
+   *  denied. */
   onPermission?: (req: PermissionRequest) => void | Promise<void>;
   /** Host-resident tools to register at boot (see {@link tool} / {@link kit}). */
   tools?: ToolDefinition[];
@@ -119,10 +118,9 @@ export interface MountSpec {
   readOnly?: boolean;
 }
 
-/** An interactive permission request raised to {@link CreateOptions.onPermission}.
- *  Raised for network egress to a non-allowlisted host; the `kind` union is built to extend. Resolve
- *  it exactly once with `allow()` or `reject()`. */
-export interface PermissionRequest {
+/** A network egress prompt raised to {@link CreateOptions.onPermission}. Resolve it exactly once with
+ *  `allow()` or `reject()`. */
+export interface NetworkPermissionRequest {
   readonly id: number;
   readonly kind: "network";
   /** The egress host being requested (e.g. `api.example.com`). */
@@ -133,6 +131,32 @@ export interface PermissionRequest {
   /** Deny the request (the guest sees an ordinary network/IO error). */
   reject(message?: string): void;
 }
+
+/** A destructive tool prompt raised to {@link CreateOptions.onPermission}. The request carries catalog
+ *  identity and a bounded argument preview, never host-injected credentials. */
+export interface ToolApprovalPermissionRequest {
+  readonly id: number;
+  readonly kind: "tool_approval";
+  readonly address: string;
+  readonly integration: string;
+  readonly owner: string;
+  readonly connection: string;
+  readonly tool: string;
+  readonly description: string;
+  readonly approvalDescription: string;
+  readonly argsPreview: string;
+  readonly argsSha256: string;
+  readonly policy: {
+    readonly action: "require_approval";
+    readonly source: "annotation" | "policy";
+    readonly id?: string;
+    readonly pattern?: string;
+  };
+  allow(): void;
+  reject(message?: string): void;
+}
+
+export type PermissionRequest = NetworkPermissionRequest | ToolApprovalPermissionRequest;
 
 /** A directory entry a {@link Driver} returns from `readdir`. */
 export interface DriverEntry {

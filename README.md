@@ -1,67 +1,180 @@
 # agent-os
 
-A self-contained Unix that lives inside one WebAssembly module, on a zero-staleness
-Bazel build graph — [memcontainers](../memcontainers)' design, shipped **Rust-first**
-by porting the proven kernel, and migrated to **Zig** later on a branch gated by
-Rust↔Zig behavior parity.
+agent-os gives AI agents a real computer: a contained Unix-like workspace with a
+shell, files, network access, tools, data engines, document generation, and a
+programmable scripting layer. It runs as WebAssembly, so the whole machine can be
+paused, forked, replayed, moved, or restored as a value.
 
-The full design contract is **[SYSTEMS.md](./SYSTEMS.md)** — read it first. This README
-is the quickstart and a map of the scaffold.
+Use it when an agent needs to do actual work, not just call one API at a time.
 
-## Quickstart
+- Connect an agent to your internal tools and SaaS APIs through one searchable
+  tool catalog.
+- Let the agent write programs that compose many tool calls in one turn.
+- Mount data where the agent can inspect it with ordinary file commands.
+- Run analysis in a warm SQLite service and generate PDFs with a warm Typst
+  service.
+- Build spreadsheet, document, and presentation workflows with the Luau Office
+  batteries.
+- Keep secrets, host objects, and raw infrastructure handles outside the
+  sandbox.
+- Snapshot a working agent, fork it into variants, and resume it with its warm
+  state intact.
 
-```sh
-bazel test //...        # builds every artifact and runs every suite, always fresh (B1)
-bazel build //tools/smoke/zig:wasm    # the wasm spine: Zig -> wasm32-freestanding
+## What You Can Build
+
+| Integration | What it enables |
+|---|---|
+| Host tools via `vm.tool`, `tool`, `kit` | Expose any app or internal API as searchable in-VM tools with schemas. |
+| HTTP/HTTPS and WebSocket egress | Fetch APIs and stream socket traffic through host-gated network access. |
+| Credential registry | Inject bearer, header, or query credentials at the host boundary without putting secrets in guest memory. |
+| `hostDir` mount | Mount a jailed local directory into the VM as ordinary files. |
+| `s3` mount | Read and write S3 buckets through filesystem operations. |
+| `vectorStore` mount | Expose retrieval and RAG as `cat /rag/search/<query>`. |
+| Luau | Program multi-step tool workflows inside the VM. |
+| SQLite / `atlas` | Run warm SQL data processing from the CLI or `require("sqlite")`. |
+| Typst / `paper` | Generate warm PDF and document artifacts from the CLI or `require("typst")`. |
+| Luau Office batteries | Work with XLSX, DOCX, PPTX, ZIP, OPC, XML, media, and chart helpers. |
+| OPFS/IndexedDB persistence | Keep `/var/persist` durable in browser-backed runs. |
+| Bun/browser JS host | Embed the same VM in local apps or browser experiences. |
+| OpenAPI adapter | Compile REST APIs into tool catalog records. Presets include Stripe, GitHub REST, Vercel, Cloudflare, Neon, OpenAI, Sentry, Exa, Axiom, Asana, Twilio, DigitalOcean, Petstore, Val Town, Resend, and Spotify. |
+| Microsoft Graph adapter | Microsoft 365 workflows across profile, mail, calendar, contacts, tasks, Planner, OneDrive, Excel, SharePoint, OneNote, Teams, meetings, users, groups, directory, identity, admin, security, Intune, education, search, and platform services. |
+| Google Discovery adapter | Google workflows across Calendar, Gmail, Sheets, Drive, Docs, Slides, Forms, Tasks, People, Photos, Chat, Keep, YouTube, Search Console, Classroom, Admin, Apps Script, BigQuery, and Cloud Resource Manager. |
+
+## Why It Is Different
+
+### The agent has a computer
+
+Most tool platforms expose a bag of remote function calls. agent-os gives the
+agent an operating system. The agent can use a shell, write Luau, inspect files,
+run pipelines, store intermediate artifacts, and call tools from code.
+
+### Tools are discoverable at runtime
+
+The `/svc/tools` broker owns a warm catalog. The `/tools` filesystem exposes the
+same catalog as ordinary files. The Luau `tools` battery gives agents
+`search`, `describe`, `call`, and dotted calls like
+`tools.stripe.org.main.createCustomer(...)`.
+
+This keeps prompts small while still giving the agent access to broad tool
+surfaces.
+
+### Heavy engines stay warm
+
+SQLite, Typst, adapters, and the tool broker run as resident services inside the
+VM. They pay their startup cost once, then serve CLI calls, Luau calls, and tool
+calls through the same implementation.
+
+### Snapshots preserve useful state
+
+The VM's mutable state lives in WebAssembly linear memory: processes, services,
+filesystem state, loaded modules, and warm handles. A snapshot captures the
+computer, not just a log. Restoring it brings the agent back with its workspace
+and warm services ready.
+
+### The host stays in control
+
+Secrets live in host-side credential registries. Host-backed mounts proxy bytes,
+not handles. Network egress goes through the host. Tool calls can validate input
+schemas before dispatch. The guest gets useful capabilities without receiving
+the raw authority behind them.
+
+## Client API
+
+The SDK exposes one `Vm` surface:
+
+```ts
+import { mc, tool } from "@mc/core";
+import { hostDir, s3, vectorStore } from "@mc/core/drivers";
+import { z } from "zod";
+
+const vm = await mc.create({
+  runtime: "bun",
+  image: "loom",
+  net: true,
+  deterministic: true,
+  mounts: [
+    { path: "/workspace", driver: hostDir({ root: "./workspace" }) },
+    { path: "/assets", driver: s3({ bucket: "acme-assets", readOnly: true }) },
+    { path: "/rag", driver: vectorStore({ embed, search }) },
+  ],
+  tools: [
+    tool({
+      name: "customer lookup",
+      description: "Find a customer by account id.",
+      input: z.object({ accountId: z.string() }),
+      run: async ({ accountId }) => crm.lookup(accountId),
+    }),
+  ],
+});
+
+await vm.fs.write("/tmp/task.txt", "Find unpaid invoices and draft a report.");
+
+const result = await vm.luau(`
+local tools = require("tools")
+local customer = tools.host.org.main.customer.lookup({ accountId = "acme" })
+print(customer.ok and "ready" or customer.err.message)
+`);
+
+const snapshot = await vm.snapshot();
+const fork = await vm.fork();
 ```
 
-There is no `xtask`, no "did you rebuild?", no manual staging. If a test needs a
-kernel, it `data`-depends on the kernel target, so the artifact is never stale.
+Core operations:
 
-## Status: bootstrapped skeleton (Phase A, step 1)
+| Surface | What it enables |
+|---|---|
+| `vm.exec(cmd)` | Run shell commands and pipelines inside the VM. |
+| `vm.luau(src)` | Run multi-step agent programs without model round-trips. |
+| `vm.fs` | Read, write, list, stat, remove, and symlink VM files. |
+| `vm.tool(...)` | Register host-resident tools into the live in-VM catalog. |
+| `vm.mount(...)` | Expose host-backed storage or retrieval systems as files. |
+| `vm.snapshot()` / `vm.fork()` | Capture, restore, and branch an agent workspace. |
+| `vm.commit().asLayer()` | Turn VM changes into a reusable image layer. |
+| `vm.shell()` | Attach an interactive shell or Luau REPL. |
+| `vm.cron(...)` | Schedule recurring actions against a live VM. |
 
-This is the **structure** plus the **contract projector** (Phase A steps 1 and 3),
-not yet the port. What exists:
+## Images
 
-- The Bazel module and the validated **wasm32-freestanding** toolchain spine
-  (`MODULE.bazel`, `.bazelrc`, `platforms/`, `tools/smoke/` — a real Zig→wasm build
-  that proves the toolchain).
-- The four boundary **contracts** as the single source of truth (`contracts/*.kdl`),
-  populated from the frozen `mc` ABI (52 syscalls at ABI 1.3, the `env` bridge, the
-  `mc_ctl_*` control channel, the wire protocol).
-- The **projector** (`contracts/codegen`, Step 3): a dependency-light Rust tool that
-  reads the `.kdl` and emits Rust, Zig, TS, Markdown, and AsyncAPI. Every boundary is
-  generated into `contracts/gen/` and consumable as `//contracts:mc_rust`,
-  `:env_zig`, etc. The Rust/Zig projections are compile-validated by `build_test`; all
-  are drift-gated by `diff_test` (B2). Add or change a syscall by editing one `.kdl`
-  line and running `bazel run //contracts:mc_sync`.
-- A **package home for every Phase-A component**, each `BUILD.bazel` documenting
-  what it will hold, its language, its target world, and SYSTEMS.md section that
-  governs it.
+Choose the image that matches the job:
 
-What does **not** exist yet (the next steps, SYSTEMS.md Phase A):
+| Image | Includes | Best for |
+|---|---|---|
+| `minimal` | Shell, core builtins, package daemon, tools broker | Small custom harnesses |
+| `posix` | `minimal` plus the full coreutils command set | File and text automation |
+| `loom` | `posix` plus Luau and `luau-analyze` | Programmable agents |
+| `atlas` | `loom` plus warm SQLite and `require("sqlite")` | Data workflows |
+| `paper` | `loom` plus warm Typst and `require("typst")` | PDF and document workflows |
 
-- Step 2 — porting memcontainers' Rust into `kernel/rust`, `sysroot`, `shcore`,
-  `programs`, `wasi-adapter`, `hosts/wasmtime`, `server`, `conformance`, `tests/e2e`,
-  consuming the generated `//contracts:*_rust` bindings.
-- Step 4 — the C/C++ guest lane (sqlite, luau) via `http_archive` + Zig glue.
+## Integration Model
 
-## Layout (see SYSTEMS.md for the rationale)
+agent-os supports integrations in four complementary ways:
 
-| Path | What | Lang | Target world |
-|---|---|---|---|
-| `contracts/` | the four boundaries — single source of truth | KDL → Rust/Zig/TS | — |
-| `kernel/rust` · `kernel/zig` | the OS, two interchangeable impls (B7) | Rust → Zig | wasm32-freestanding |
-| `interpreter/` | wasmi as a wasm32 C-ABI staticlib (Phase B, kernel/zig only) | Rust | wasm32 |
-| `sysroot` · `shcore` · `programs` | guest userland (`/bin`, the shell) | Rust (ported) | wasm32-freestanding |
-| `third_party/{luau,sqlite}` | C/C++ guests — patches + Zig glue only (B3) | C/C++ + Zig | wasm32 |
-| `hosts/wasmtime` · `hosts/js` | the two host families, one binary (A3) | Rust · TS | host · — |
-| `server/` · `sdk-js/` · `web/` | mc-server, the `@mc/*` SDK, the browser app | Rust · TS | host · — |
-| `conformance/` · `tests/{e2e,parity}` | no-mocks suites + the two-kernel parity grid | Rust | host |
-| `platforms/` · `toolchains/` · `images/` · `spec/` | build plumbing, images, generated specs | Starlark | — |
+1. Host tools: define a typed tool in application code and expose it through
+   `/svc/tools`.
+2. API adapters: compile OpenAPI, Microsoft Graph, or Google Discovery sources
+   into ordinary tool catalog records.
+3. Host-backed mounts: expose local directories, S3 buckets, vector retrieval,
+   or a custom driver as a filesystem tree.
+4. In-VM engines: use Luau, SQLite, Typst, shell tools, and Office batteries to
+   transform data and generate artifacts.
 
-## Naming
+These paths compose. An agent can call Google Sheets, write rows into SQLite,
+join them with files mounted from S3, generate a PDF in Typst, and return the
+artifact from one program.
 
-`agent-os` names the repo and the build only. The system is `mc`: the `mc` syscall
-module, `mc_sys_*`, `mc_ctl_*`, the `env` bridge, `mc-server`, the `@mc/*` npm scope.
-Never `agent-os-*` (SYSTEMS.md).
+## Build and Verification
+
+The project is built as a Bazel graph. Generated contracts, kernel artifacts,
+guest programs, images, SDK packages, and end-to-end tests all declare their
+inputs, so tests run against the artifacts produced by the current source tree.
+
+Useful commands:
+
+```sh
+bazel test //memcontainers/tests/e2e:core
+bazel test //memcontainers/tests/e2e:extended
+bazel test //memcontainers/sdk-js/core:vm_test
+bazel test //...
+```
+
+The design contract for contributors is [SYSTEMS.md](./SYSTEMS.md).

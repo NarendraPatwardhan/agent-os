@@ -526,16 +526,27 @@ fn catalog_record(root: &Value, opts: &CompileOptions, op: Operation) -> Value {
     if let Some(schema) = op.response_schema.clone() {
         record.insert("output_schema".to_string(), schema);
     }
-    record.insert(
-        "annotations".to_string(),
-        json!({
-            "adapter": "openapi",
-            "method": op.method,
-            "path": op.path,
-            "operationId": op.operation_id,
-            "responseContentType": op.response_content_type,
-        }),
+    let destructive = matches!(op.method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
+    let mut annotations = Map::new();
+    annotations.insert("adapter".to_string(), Value::String("openapi".to_string()));
+    annotations.insert("method".to_string(), Value::String(op.method.clone()));
+    annotations.insert("path".to_string(), Value::String(op.path.clone()));
+    annotations.insert(
+        "operationId".to_string(),
+        json!(op.operation_id),
     );
+    annotations.insert(
+        "responseContentType".to_string(),
+        json!(op.response_content_type),
+    );
+    if destructive {
+        annotations.insert("requires_approval".to_string(), Value::Bool(true));
+        annotations.insert(
+            "approval_description".to_string(),
+            Value::String(format!("{} {}", op.method, op.path)),
+        );
+    }
+    record.insert("annotations".to_string(), Value::Object(annotations));
     record.insert("binding".to_string(), binding(root, opts, &op));
     Value::Object(record)
 }

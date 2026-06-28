@@ -19,15 +19,20 @@ use alloc::vec::Vec;
 use json::Json;
 use pkgcore::{hex, sha256, Sha256};
 use sysroot as rt;
-use toolcore::{err_json, ok_json, search_page_json, ArgsMode, Binding, Catalog, ToolRecord};
+use toolcore::{
+    approval_description, err_json, ok_json, search_page_json, ArgsMode, Binding, Catalog,
+    PolicyAction, PolicyDecision, PolicySet, ToolConfig, ToolRecord,
+};
 
 #[global_allocator]
 static ALLOCATOR: talc::wasm::WasmDynamicTalc = talc::wasm::new_wasm_dynamic_allocator();
 
 const SERVICE_NAME: &str = "tools";
 const CATALOG_PATH: &str = "/etc/tools/catalog.json";
+const PERMISSION_HANDLER: &str = "/svc/tools/permission";
 const RESULTS_DIR: &str = "/tmp/tools/results";
 const INLINE_LIMIT: usize = 1024 * 1024;
+const ARGS_PREVIEW_LIMIT: usize = 8192;
 const COPY_CHUNK: usize = 16 * 1024;
 const CONTROL_CALLER: u32 = 0;
 const CAP_NET: u32 = rt::CAP_NET as u32;
@@ -87,14 +92,14 @@ fn write_stdout(data: &[u8]) {
     }
 }
 
-fn load_catalog() -> Catalog {
+fn load_config() -> ToolConfig {
     let Some(bytes) = read_file(CATALOG_PATH) else {
-        return Catalog::empty();
+        return ToolConfig::empty();
     };
     let Ok(text) = core::str::from_utf8(&bytes) else {
-        return Catalog::empty();
+        return ToolConfig::empty();
     };
-    Catalog::parse(text).unwrap_or_else(|_| Catalog::empty())
+    ToolConfig::parse(text).unwrap_or_else(|_| ToolConfig::empty())
 }
 
 fn field_str<'a>(doc: &'a Json, name: &str) -> Option<&'a str> {
@@ -131,19 +136,22 @@ fn list_json(catalog: &Catalog) -> Json {
     ])
 }
 
-fn catalog_json(catalog: &Catalog) -> Json {
-    Json::Obj(vec![(
-        "tools".to_string(),
-        Json::Arr(catalog.records().iter().map(ToolRecord::to_json).collect()),
-    )])
+fn config_json(catalog: &Catalog, policies: &PolicySet) -> Json {
+    Json::Obj(vec![
+        (
+            "tools".to_string(),
+            Json::Arr(catalog.records().iter().map(ToolRecord::to_json).collect()),
+        ),
+        ("policies".to_string(), policies.to_json()),
+    ])
 }
 
-fn catalog_text(catalog: &Catalog) -> String {
-    json::to_string(&catalog_json(catalog))
+fn config_text(catalog: &Catalog, policies: &PolicySet) -> String {
+    json::to_string(&config_json(catalog, policies))
 }
 
-fn catalog_digest(catalog: &Catalog) -> String {
-    hex(&sha256(catalog_text(catalog).as_bytes()))
+fn state_digest(catalog: &Catalog, policies: &PolicySet) -> String {
+    hex(&sha256(config_text(catalog, policies).as_bytes()))
 }
 
 fn checkpoint_catalog(text: &str) -> Result<(), i32> {
@@ -168,11 +176,16 @@ fn catalog_status(state: &ToolState, count: usize) -> Json {
             Json::Str(state.catalog_digest.clone()),
         ),
         ("tools".to_string(), Json::Num(count as f64)),
+        (
+            "policies".to_string(),
+            Json::Num(state.policies.rules().len() as f64),
+        ),
     ])
 }
 
 struct ToolState {
     catalog: Catalog,
+    policies: PolicySet,
     catalog_generation: u64,
     catalog_digest: String,
     next_result_id: u64,
@@ -181,10 +194,11 @@ struct ToolState {
 impl ToolState {
     fn new() -> Self {
         ensure_result_dirs();
-        let catalog = load_catalog();
-        let catalog_digest = catalog_digest(&catalog);
+        let config = load_config();
+        let catalog_digest = state_digest(&config.catalog, &config.policies);
         Self {
-            catalog,
+            catalog: config.catalog,
+            policies: config.policies,
             catalog_generation: 0,
             catalog_digest,
             next_result_id: scan_next_result_id(),
@@ -538,12 +552,126 @@ fn call_service(
     }
 }
 
+fn args_digest_and_preview(rec: &ToolRecord, args: Option<&Json>) -> (String, String) {
+    let payload = args_for_binding(rec, args);
+    let digest = hex(&sha256(&payload));
+    let mut preview = if payload.len() <= ARGS_PREVIEW_LIMIT {
+        String::from_utf8_lossy(&payload).into_owned()
+    } else {
+        String::from_utf8_lossy(&payload[..ARGS_PREVIEW_LIMIT]).into_owned()
+    };
+    if payload.len() > ARGS_PREVIEW_LIMIT {
+        preview.push_str("...");
+    }
+    (digest, preview)
+}
+
+fn policy_json(decision: &PolicyDecision) -> Json {
+    let mut pairs = vec![
+        (
+            "action".to_string(),
+            Json::Str(decision.action.as_str().to_string()),
+        ),
+        (
+            "source".to_string(),
+            Json::Str(decision.source.as_str().to_string()),
+        ),
+    ];
+    if let Some(id) = &decision.policy_id {
+        pairs.push(("id".to_string(), Json::Str(id.clone())));
+    }
+    if let Some(pattern) = &decision.pattern {
+        pairs.push(("pattern".to_string(), Json::Str(pattern.clone())));
+    }
+    Json::Obj(pairs)
+}
+
+fn approval_request_json(rec: &ToolRecord, args: Option<&Json>, decision: &PolicyDecision) -> Json {
+    let (args_sha256, args_preview) = args_digest_and_preview(rec, args);
+    Json::Obj(vec![
+        ("kind".to_string(), Json::Str("tool_approval".to_string())),
+        ("address".to_string(), Json::Str(rec.address.clone())),
+        ("integration".to_string(), Json::Str(rec.integration.clone())),
+        ("owner".to_string(), Json::Str(rec.owner.clone())),
+        ("connection".to_string(), Json::Str(rec.connection.clone())),
+        ("tool".to_string(), Json::Str(rec.tool.clone())),
+        ("description".to_string(), Json::Str(rec.description.clone())),
+        (
+            "approvalDescription".to_string(),
+            Json::Str(approval_description(rec)),
+        ),
+        ("argsPreview".to_string(), Json::Str(args_preview)),
+        ("argsSha256".to_string(), Json::Str(args_sha256)),
+        ("policy".to_string(), policy_json(decision)),
+    ])
+}
+
+fn request_tool_approval(rec: &ToolRecord, args: Option<&Json>, decision: &PolicyDecision) -> Json {
+    let body = json::to_string(&approval_request_json(rec, args, decision));
+    let mut req = Vec::with_capacity(PERMISSION_HANDLER.len() + 1 + body.len());
+    req.extend_from_slice(PERMISSION_HANDLER.as_bytes());
+    req.push(0);
+    req.extend_from_slice(body.as_bytes());
+    let fd = match rt::host_call(&req) {
+        Ok(fd) => fd,
+        Err(_) => {
+            return err_json(
+                "approval_unavailable",
+                "tool approval requires a host permission broker",
+            )
+        }
+    };
+    let out = read_all_fd(fd);
+    let _ = rt::close(fd);
+    let Ok(out) = out else {
+        return err_json("approval_failed", "tool approval request failed");
+    };
+    let Ok(text) = core::str::from_utf8(&out) else {
+        return err_json("approval_failed", "tool approval response was not UTF-8");
+    };
+    let Ok(resp) = json::parse(text) else {
+        return err_json("approval_failed", "tool approval response was not JSON");
+    };
+    if resp.get("allow").and_then(Json::as_bool) == Some(true) {
+        ok_json(Json::Null)
+    } else {
+        err_json("declined", "tool call approval declined")
+    }
+}
+
+fn authorize_tool_call(state: &ToolState, rec: &ToolRecord, args: Option<&Json>) -> Option<Json> {
+    let empty_args = Json::Obj(Vec::new());
+    let actual_args = args.unwrap_or(&empty_args);
+    if toolcore::validate_args(rec.input_schema.as_ref(), actual_args).is_err() {
+        return Some(err_json(
+            "validation_error",
+            "arguments do not match input_schema",
+        ));
+    }
+    let decision = state.policies.resolve(rec);
+    match decision.action {
+        PolicyAction::Approve => None,
+        PolicyAction::Block => Some(err_json("blocked", "tool call blocked by policy")),
+        PolicyAction::RequireApproval => {
+            let response = request_tool_approval(rec, args, &decision);
+            if response.get("ok").and_then(Json::as_bool) == Some(true) {
+                None
+            } else {
+                Some(response)
+            }
+        }
+    }
+}
+
 fn call_tool(
     state: &mut ToolState,
     rec: &ToolRecord,
     args: Option<&Json>,
     output: Option<&str>,
 ) -> Json {
+    if let Some(err) = authorize_tool_call(state, rec, args) {
+        return err;
+    }
     match rec.binding {
         Binding::HostCall { .. } => call_host(state, rec, args, output),
         Binding::Service { .. } => call_service(state, rec, args, output),
@@ -565,18 +693,65 @@ fn apply_catalog(state: &mut ToolState, req: &Json, caller: u32) -> Json {
     let Some(tools) = req.get("tools").cloned() else {
         return err_json("bad_request", "catalog.apply requires tools");
     };
-    let proposed = Json::Obj(vec![("tools".to_string(), tools)]);
+    let policies = req
+        .get("policies")
+        .cloned()
+        .unwrap_or_else(|| state.policies.to_json());
+    let proposed = Json::Obj(vec![
+        ("tools".to_string(), tools),
+        ("policies".to_string(), policies),
+    ]);
     let proposed_text = json::to_string(&proposed);
-    let next = match Catalog::parse(&proposed_text) {
-        Ok(catalog) => catalog,
-        Err(_) => return err_json("invalid_catalog", "catalog did not validate"),
+    let next = match ToolConfig::parse(&proposed_text) {
+        Ok(config) => config,
+        Err(_) => return err_json("invalid_catalog", "tool state did not validate"),
     };
-    let text = catalog_text(&next);
+    let text = config_text(&next.catalog, &next.policies);
     if checkpoint_catalog(&text).is_err() {
         return err_json("checkpoint_failed", "could not persist tool catalog");
     }
-    let count = next.records().len();
-    state.catalog = next;
+    let count = next.catalog.records().len();
+    state.catalog = next.catalog;
+    state.policies = next.policies;
+    state.catalog_generation = state.catalog_generation.wrapping_add(1);
+    state.catalog_digest = hex(&sha256(text.as_bytes()));
+    ok_json(catalog_status(state, count))
+}
+
+fn apply_policy(state: &mut ToolState, req: &Json, caller: u32) -> Json {
+    if caller != CONTROL_CALLER {
+        return err_json(
+            "permission_denied",
+            "policy mutation requires host control",
+        );
+    }
+    if let Some(base) = field_u64(req, "baseGeneration") {
+        if base != state.catalog_generation {
+            return err_json("generation_mismatch", "tool state generation changed");
+        }
+    }
+    let Some(policies) = req.get("policies").cloned() else {
+        return err_json("bad_request", "policy.apply requires policies");
+    };
+    let proposed = Json::Obj(vec![
+        (
+            "tools".to_string(),
+            Json::Arr(state.catalog.records().iter().map(ToolRecord::to_json).collect()),
+        ),
+        ("policies".to_string(), policies),
+    ]);
+    let proposed_text = json::to_string(&proposed);
+    let next = match ToolConfig::parse(&proposed_text) {
+        Ok(config) => config,
+        Err(_) => return err_json("invalid_policy", "policy set did not validate"),
+    };
+    let text = config_text(&next.catalog, &next.policies);
+    if checkpoint_catalog(&text).is_err() {
+        return err_json("checkpoint_failed", "could not persist tool policy");
+    }
+    let count = next.catalog.records().len();
+    state.catalog = next.catalog;
+    state.policies = next.policies;
     state.catalog_generation = state.catalog_generation.wrapping_add(1);
     state.catalog_digest = hex(&sha256(text.as_bytes()));
     ok_json(catalog_status(state, count))
@@ -598,6 +773,7 @@ fn handle(state: &mut ToolState, req: &Json, caller: u32, caller_caps: u32) -> J
     let op = field_str(req, "op").unwrap_or("");
     match op {
         "catalog.apply" => apply_catalog(state, req, caller),
+        "policy.apply" => apply_policy(state, req, caller),
         "search" => {
             let query = field_str(req, "query").unwrap_or("");
             let limit = field_usize(req, "limit", 12, 100);

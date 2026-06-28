@@ -3,7 +3,7 @@
 // surface is identical across backends, so it slots in later without changing this file's shape.
 
 import { ConnectionRegistry, HostNet, KernelHostBuilder, MapHostCall, OpfsPersist } from "@mc/host";
-import type { KernelHost } from "@mc/host";
+import type { KernelHost, RawToolHandler } from "@mc/host";
 // Boot-contract tier ordinals come from the generated contract — the single source of truth the
 // kernel's `Tier` also derives from (contracts/constants.kdl → constants.gen.ts), never a local copy.
 import {
@@ -41,6 +41,7 @@ import type {
 
 const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+const TOOL_PERMISSION_HANDLER = "/svc/tools/permission";
 
 /** POSIX single-quote an argv element so it survives the shell `vm.exec` runs. */
 const shQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -386,6 +387,64 @@ function makeApprover(
     });
 }
 
+function makeToolPermissionHandler(onPermission: CreateOptions["onPermission"]): RawToolHandler | undefined {
+  if (!onPermission) return undefined;
+  let id = 0;
+  return async (body) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(dec(body));
+    } catch {
+      return enc(JSON.stringify({ allow: false, message: "bad tool approval request" }));
+    }
+    if (!parsed || typeof parsed !== "object") {
+      return enc(JSON.stringify({ allow: false, message: "bad tool approval request" }));
+    }
+    const p = parsed as Record<string, unknown>;
+    const policy =
+      p.policy && typeof p.policy === "object" ? (p.policy as Record<string, unknown>) : {};
+    const stringField = (name: string): string => {
+      const value = p[name];
+      return typeof value === "string" ? value : "";
+    };
+    const policyString = (name: string): string | undefined => {
+      const value = policy[name];
+      return typeof value === "string" ? value : undefined;
+    };
+
+    return new Promise<Uint8Array>((resolve) => {
+      let settled = false;
+      const finish = (allow: boolean, message?: string): void => {
+        if (settled) return;
+        settled = true;
+        resolve(enc(JSON.stringify(message ? { allow, message } : { allow })));
+      };
+      const req = {
+        id: ++id,
+        kind: "tool_approval" as const,
+        address: stringField("address"),
+        integration: stringField("integration"),
+        owner: stringField("owner"),
+        connection: stringField("connection"),
+        tool: stringField("tool"),
+        description: stringField("description"),
+        approvalDescription: stringField("approvalDescription"),
+        argsPreview: stringField("argsPreview"),
+        argsSha256: stringField("argsSha256"),
+        policy: {
+          action: "require_approval" as const,
+          source: policyString("source") === "policy" ? ("policy" as const) : ("annotation" as const),
+          ...(policyString("id") ? { id: policyString("id") } : {}),
+          ...(policyString("pattern") ? { pattern: policyString("pattern") } : {}),
+        },
+        allow: () => finish(true),
+        reject: (message?: string) => finish(false, message),
+      };
+      void Promise.resolve(onPermission(req)).catch(() => finish(false));
+    });
+  };
+}
+
 /** The remote backend (mc-server over REST + the wire protocol) is not yet ported into agent-os —
  *  mc-server itself isn't ported. `runtime: "remote"` and `mc.connect` route here until it lands. */
 function remoteUnsupported(): never {
@@ -402,6 +461,8 @@ async function makeEmbedded(
   const wasm = opts.kernel ?? (await defaultKernel());
   const stdout = new FanoutSink();
   const tools = new MapHostCall();
+  const toolPermission = makeToolPermissionHandler(opts.onPermission);
+  if (toolPermission) tools.registerRaw(TOOL_PERMISSION_HANDLER, toolPermission);
   let builder = new KernelHostBuilder(wasm)
     .withStdout(stdout)
     .withStderr(stdout)
