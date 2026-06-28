@@ -972,7 +972,10 @@ registration (`vm.tool`) updates that live catalog only through an awaited host-
 and then checkpoints the canonical catalog file. Guest service calls can search, describe, list, call, and
 garbage-collect tool artifacts; they cannot mutate catalog bindings. `/tools/<integration>/<owner>/<connection>/<tool>`
 is the file-tree discovery face over the checkpoint catalog: directories progressively disclose catalog segments,
-and reading a leaf returns that tool's JSON record. Tool `call` and `call_alias` additionally require the
+and reading a leaf returns that tool's JSON record. The filesystem keeps a read-through parsed projection cache
+keyed by the checkpoint digest sidecar written by `/svc/tools`; direct boot-seed catalog writes without the
+sidecar fall back to byte comparison, so `/tools` never becomes a second catalog owner. Tool `call` and
+`call_alias` additionally require the
 caller's kernel-stamped `CAP_NET`, matching direct `host_call`; discovery, `/tools`, and artifact cleanup stay
 unprivileged.
 

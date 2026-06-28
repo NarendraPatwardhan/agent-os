@@ -29,6 +29,7 @@ static ALLOCATOR: talc::wasm::WasmDynamicTalc = talc::wasm::new_wasm_dynamic_all
 
 const SERVICE_NAME: &str = "tools";
 const CATALOG_PATH: &str = "/etc/tools/catalog.json";
+const CATALOG_DIGEST_PATH: &str = "/etc/tools/catalog.sha256";
 const PERMISSION_HANDLER: &str = "/svc/tools/permission";
 const RESULTS_DIR: &str = "/tmp/tools/results";
 const INLINE_LIMIT: usize = 1024 * 1024;
@@ -162,7 +163,27 @@ fn checkpoint_catalog(text: &str) -> Result<(), i32> {
     let write = rt::write_all(fd, text.as_bytes());
     rt::close(fd);
     write?;
-    rt::rename(tmp, CATALOG_PATH)
+    rt::rename(tmp, CATALOG_PATH)?;
+    refresh_catalog_digest(text);
+    Ok(())
+}
+
+fn refresh_catalog_digest(text: &str) {
+    let digest = hex(&sha256(text.as_bytes()));
+    let tmp = "/etc/tools/catalog.sha256.tmp";
+    let result = (|| -> Result<(), i32> {
+        let fd = rt::open(tmp, rt::O_WRITE | rt::O_CREATE | rt::O_TRUNC)?;
+        let mut body = digest.into_bytes();
+        body.push(b'\n');
+        let write = rt::write_all(fd, &body);
+        rt::close(fd);
+        write?;
+        rt::rename(tmp, CATALOG_DIGEST_PATH)
+    })();
+    if result.is_err() {
+        let _ = rt::unlink(tmp);
+        let _ = rt::unlink(CATALOG_DIGEST_PATH);
+    }
 }
 
 fn catalog_status(state: &ToolState, count: usize) -> Json {

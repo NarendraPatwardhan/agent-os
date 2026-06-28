@@ -110,6 +110,22 @@ fn tools_catalog_is_browsable_as_files() {
             && describe.contains("\"binding\""),
         "cat /tools/... should return the catalog record; got {describe:?}"
     );
+
+    seed_catalog(
+        &mut s,
+        r#"{"tools":[
+          {"address":"linear.org.main.createIssue","description":"Create a Linear issue",
+           "binding":{"type":"host_call","name":"linear.issue","args":"json"}}
+        ]}"#,
+    );
+    assert_eq!(s.run_for_output("ls /tools"), "linear/\r\n");
+    let updated = s.run_for_output("cat /tools/linear/org/main/createIssue");
+    assert!(
+        updated.contains("\"address\":\"linear.org.main.createIssue\"")
+            && updated.contains("\"integration\":\"linear\"")
+            && updated.contains("\"binding\":{\"type\":\"host_call\",\"name\":\"linear.issue\""),
+        "cat /tools/... should reflect the rewritten catalog; got {updated:?}"
+    );
 }
 
 /// WHY: CLI JSON args should be passed through exactly enough for host-side handlers to parse/validate.

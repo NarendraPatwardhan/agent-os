@@ -12,8 +12,10 @@
 //! intermediate directories progressively reveals integrations, owners, connections, and tool names.
 
 use alloc::boxed::Box;
-use alloc::string::ToString;
+use alloc::collections::BTreeMap;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use core::cell::RefCell;
 use core::ptr::NonNull;
 
 use toolcore::{Catalog, ToolRecord};
@@ -25,9 +27,12 @@ use crate::vfs::traits::{
 use crate::vfs::Namespace;
 
 const CATALOG_PATH: &str = "/etc/tools/catalog.json";
+const CATALOG_DIGEST_PATH: &str = "/etc/tools/catalog.sha256";
+const DIGEST_MAX_BYTES: usize = 128;
 
 pub struct ToolsFs {
     namespace: NonNull<Namespace>,
+    cache: RefCell<Option<CachedCatalog>>,
 }
 
 // The namespace pointer targets the kernel's pinned boot namespace in SystemState. Kernel execution is
@@ -41,6 +46,7 @@ impl ToolsFs {
     pub unsafe fn new(namespace: *const Namespace) -> Self {
         Self {
             namespace: NonNull::new(namespace as *mut Namespace).expect("namespace non-null"),
+            cache: RefCell::new(None),
         }
     }
 
@@ -48,18 +54,12 @@ impl ToolsFs {
         unsafe { self.namespace.as_ref() }
     }
 
-    fn catalog(&self) -> Catalog {
-        let Some(bytes) = self.read_catalog_file() else {
-            return Catalog::empty();
-        };
-        let Ok(text) = core::str::from_utf8(&bytes) else {
-            return Catalog::empty();
-        };
-        Catalog::parse(text).unwrap_or_else(|_| Catalog::empty())
+    fn read_catalog_file(&self) -> Option<Vec<u8>> {
+        self.read_file(CATALOG_PATH)
     }
 
-    fn read_catalog_file(&self) -> Option<Vec<u8>> {
-        let path = KPath::new(CATALOG_PATH);
+    fn read_file(&self, path: &str) -> Option<Vec<u8>> {
+        let path = KPath::new(path);
         let mut handle = self
             .namespace()
             .open_as(SYSTEM_CALLER, &path, OpenFlags::READ)
@@ -76,6 +76,113 @@ impl ToolsFs {
         Some(out)
     }
 
+    fn read_digest_file(&self) -> Option<String> {
+        let bytes = self.read_file_limited(CATALOG_DIGEST_PATH, DIGEST_MAX_BYTES)?;
+        let text = core::str::from_utf8(&bytes).ok()?.trim();
+        if text.len() == 64 && text.bytes().all(|b| b.is_ascii_hexdigit()) {
+            Some(text.to_ascii_lowercase())
+        } else {
+            None
+        }
+    }
+
+    fn read_file_limited(&self, path: &str, limit: usize) -> Option<Vec<u8>> {
+        let path = KPath::new(path);
+        let mut handle = self
+            .namespace()
+            .open_as(SYSTEM_CALLER, &path, OpenFlags::READ)
+            .ok()?;
+        let mut out = Vec::new();
+        let mut buf = [0u8; 128];
+        loop {
+            match handle.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if out.len().saturating_add(n) > limit {
+                        return None;
+                    }
+                    out.extend_from_slice(&buf[..n]);
+                }
+                Err(_) => return None,
+            }
+        }
+        Some(out)
+    }
+
+    fn catalog_meta(&self) -> Option<CatalogMeta> {
+        let path = KPath::new(CATALOG_PATH);
+        let meta = self.namespace().stat_as(SYSTEM_CALLER, &path).ok()?;
+        if meta.node_type == NodeType::File {
+            Some(CatalogMeta {
+                size: meta.size,
+                mtime: meta.mtime,
+                ctime: meta.ctime,
+            })
+        } else {
+            None
+        }
+    }
+
+    fn observed_key(&self) -> Option<CacheKey> {
+        let meta = self.catalog_meta()?;
+        let digest = self.read_digest_file()?;
+        Some(CacheKey::Sidecar { meta, digest })
+    }
+
+    fn ensure_cache(&self) {
+        if let Some(key) = self.observed_key() {
+            if self
+                .cache
+                .borrow()
+                .as_ref()
+                .map_or(false, |cached| cached.key == key)
+            {
+                return;
+            }
+            let view = self
+                .read_catalog_file()
+                .as_deref()
+                .map(CatalogView::from_bytes)
+                .unwrap_or_else(CatalogView::empty);
+            *self.cache.borrow_mut() = Some(CachedCatalog { key, view });
+            return;
+        }
+
+        let Some(bytes) = self.read_catalog_file() else {
+            let key = CacheKey::Missing;
+            if self
+                .cache
+                .borrow()
+                .as_ref()
+                .map_or(false, |cached| cached.key == key)
+            {
+                return;
+            }
+            *self.cache.borrow_mut() = Some(CachedCatalog {
+                key,
+                view: CatalogView::empty(),
+            });
+            return;
+        };
+        let key = CacheKey::Bytes(bytes.clone());
+        if self
+            .cache
+            .borrow()
+            .as_ref()
+            .map_or(false, |cached| cached.key == key)
+        {
+            return;
+        }
+        let view = CatalogView::from_bytes(&bytes);
+        *self.cache.borrow_mut() = Some(CachedCatalog { key, view });
+    }
+
+    fn with_view<T>(&self, f: impl FnOnce(&CatalogView) -> T) -> T {
+        self.ensure_cache();
+        let cache = self.cache.borrow();
+        f(&cache.as_ref().expect("toolsfs cache populated").view)
+    }
+
     fn parts<'a>(path: &'a str) -> Vec<&'a str> {
         let rel = path.trim_matches('/');
         if rel.is_empty() {
@@ -84,81 +191,120 @@ impl ToolsFs {
             rel.split('/').collect()
         }
     }
+}
 
-    fn record_at<'a>(catalog: &'a Catalog, parts: &[&str]) -> Option<&'a ToolRecord> {
-        if parts.len() != 4 {
-            return None;
+#[derive(Clone, PartialEq, Eq)]
+enum CacheKey {
+    /// `/svc/tools` writes this small digest sidecar after checkpointing the authoritative catalog.
+    /// It is an accelerator only: cache rebuilds still parse `/etc/tools/catalog.json`.
+    Sidecar { meta: CatalogMeta, digest: String },
+    /// Direct catalog writes, such as boot seeding and tests, may not have the sidecar. In that case
+    /// correctness wins over speed: read bytes every VFS op, but reuse the parsed/indexed view while
+    /// the bytes are identical.
+    Bytes(Vec<u8>),
+    Missing,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct CatalogMeta {
+    size: u64,
+    mtime: i64,
+    ctime: i64,
+}
+
+struct CachedCatalog {
+    key: CacheKey,
+    view: CatalogView,
+}
+
+struct CatalogView {
+    dirs: BTreeMap<String, Vec<DirEntry>>,
+    files: BTreeMap<String, Vec<u8>>,
+}
+
+impl CatalogView {
+    fn empty() -> Self {
+        let mut dirs = BTreeMap::new();
+        dirs.insert(String::new(), Vec::new());
+        Self {
+            dirs,
+            files: BTreeMap::new(),
         }
-        catalog.records().iter().find(|rec| {
-            rec.integration == parts[0]
-                && rec.owner == parts[1]
-                && rec.connection == parts[2]
-                && rec.tool == parts[3]
-        })
     }
 
-    fn prefix_exists(catalog: &Catalog, parts: &[&str]) -> bool {
-        match parts {
-            [] => true,
-            [integration] => catalog
-                .records()
-                .iter()
-                .any(|rec| rec.integration == *integration),
-            [integration, owner] => catalog
-                .records()
-                .iter()
-                .any(|rec| rec.integration == *integration && rec.owner == *owner),
-            [integration, owner, connection] => catalog.records().iter().any(|rec| {
-                rec.integration == *integration
-                    && rec.owner == *owner
-                    && rec.connection == *connection
-            }),
-            [integration, owner, connection, tool] => catalog.records().iter().any(|rec| {
-                rec.integration == *integration
-                    && rec.owner == *owner
-                    && rec.connection == *connection
-                    && rec.tool == *tool
-            }),
-            _ => false,
-        }
+    fn from_bytes(bytes: &[u8]) -> Self {
+        let Ok(text) = core::str::from_utf8(bytes) else {
+            return Self::empty();
+        };
+        let catalog = Catalog::parse(text).unwrap_or_else(|_| Catalog::empty());
+        Self::from_catalog(&catalog)
     }
 
-    fn child_entries(catalog: &Catalog, parts: &[&str]) -> Vec<DirEntry> {
-        let mut entries: Vec<DirEntry> = Vec::new();
+    fn from_catalog(catalog: &Catalog) -> Self {
+        let mut view = Self::empty();
         for rec in catalog.records() {
-            let (name, node_type) = match parts {
-                [] => (rec.integration.as_str(), NodeType::Dir),
-                [integration] if rec.integration == *integration => {
-                    (rec.owner.as_str(), NodeType::Dir)
-                }
-                [integration, owner] if rec.integration == *integration && rec.owner == *owner => {
-                    (rec.connection.as_str(), NodeType::Dir)
-                }
-                [integration, owner, connection]
-                    if rec.integration == *integration
-                        && rec.owner == *owner
-                        && rec.connection == *connection =>
-                {
-                    (rec.tool.as_str(), NodeType::File)
-                }
-                _ => continue,
-            };
-            if !entries.iter().any(|entry| entry.name == name) {
-                entries.push(DirEntry {
-                    name: name.to_string(),
-                    node_type,
-                });
-            }
+            let p1 = rec.integration.clone();
+            let p2 = join_key(&[&rec.integration, &rec.owner]);
+            let p3 = join_key(&[&rec.integration, &rec.owner, &rec.connection]);
+            let p4 = join_key(&[&rec.integration, &rec.owner, &rec.connection, &rec.tool]);
+            view.add_child("", &rec.integration, NodeType::Dir);
+            view.add_child(&p1, &rec.owner, NodeType::Dir);
+            view.add_child(&p2, &rec.connection, NodeType::Dir);
+            view.add_child(&p3, &rec.tool, NodeType::File);
+            view.files.insert(p4, record_bytes(rec));
         }
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
-        entries
+        for entries in view.dirs.values_mut() {
+            entries.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+        view
     }
 
-    fn record_bytes(rec: &ToolRecord) -> Vec<u8> {
-        let mut text = json::to_string(&rec.to_json());
-        text.push('\n');
-        text.into_bytes()
+    fn add_child(&mut self, parent: &str, name: &str, node_type: NodeType) {
+        let entries = self.dirs.entry(parent.to_string()).or_default();
+        if !entries.iter().any(|entry| entry.name == name) {
+            entries.push(DirEntry {
+                name: name.to_string(),
+                node_type,
+            });
+        }
+        if node_type == NodeType::Dir {
+            let child = if parent.is_empty() {
+                name.to_string()
+            } else {
+                alloc::format!("{parent}/{name}")
+            };
+            self.dirs.entry(child).or_default();
+        }
     }
+
+    fn is_dir(&self, key: &str) -> bool {
+        self.dirs.contains_key(key)
+    }
+
+    fn file(&self, key: &str) -> Option<&[u8]> {
+        self.files.get(key).map(Vec::as_slice)
+    }
+
+    fn children(&self, key: &str) -> Option<Vec<DirEntry>> {
+        self.dirs.get(key).cloned()
+    }
+}
+
+fn record_bytes(rec: &ToolRecord) -> Vec<u8> {
+    let mut text = json::to_string(&rec.to_json());
+    text.push('\n');
+    text.into_bytes()
+}
+
+fn join_key(parts: &[&str]) -> String {
+    let mut out = String::new();
+    for (i, part) in parts.iter().enumerate() {
+        if i > 0 {
+            out.push('/');
+        }
+        out.push_str(part);
+    }
+    out
 }
 
 impl FileSystem for ToolsFs {
@@ -171,44 +317,42 @@ impl FileSystem for ToolsFs {
         if flags.write || flags.create || flags.truncate || flags.append {
             return Err(FsError::PermissionDenied);
         }
-        let catalog = self.catalog();
         let parts = Self::parts(path.as_str());
-        match parts.len() {
-            0..=3 if Self::prefix_exists(&catalog, &parts) => Err(FsError::IsDir),
-            4 => match Self::record_at(&catalog, &parts) {
-                Some(rec) => Ok(Box::new(ToolsFileHandle {
-                    data: Self::record_bytes(rec),
+        let key = join_key(&parts);
+        self.with_view(|view| match parts.len() {
+            0..=3 if view.is_dir(&key) => Err(FsError::IsDir),
+            4 => match view.file(&key) {
+                Some(data) => Ok(Box::new(ToolsFileHandle {
+                    data: data.to_vec(),
                     pos: 0,
-                })),
+                }) as Box<dyn FileHandle>),
                 None => Err(FsError::NotFound),
             },
             _ => Err(FsError::NotFound),
-        }
+        })
     }
 
     fn stat(&self, path: &KPath) -> Result<Metadata> {
-        let catalog = self.catalog();
         let parts = Self::parts(path.as_str());
-        match parts.len() {
-            0..=3 if Self::prefix_exists(&catalog, &parts) => Ok(Metadata::dir()),
-            4 => match Self::record_at(&catalog, &parts) {
-                Some(rec) => Ok(Metadata::file(Self::record_bytes(rec).len() as u64)),
+        let key = join_key(&parts);
+        self.with_view(|view| match parts.len() {
+            0..=3 if view.is_dir(&key) => Ok(Metadata::dir()),
+            4 => match view.file(&key) {
+                Some(data) => Ok(Metadata::file(data.len() as u64)),
                 None => Err(FsError::NotFound),
             },
             _ => Err(FsError::NotFound),
-        }
+        })
     }
 
     fn readdir(&self, _caller: CallerId, path: &KPath) -> Result<Vec<DirEntry>> {
-        let catalog = self.catalog();
         let parts = Self::parts(path.as_str());
-        match parts.len() {
-            0..=3 if Self::prefix_exists(&catalog, &parts) => {
-                Ok(Self::child_entries(&catalog, &parts))
-            }
-            4 if Self::record_at(&catalog, &parts).is_some() => Err(FsError::NotDir),
+        let key = join_key(&parts);
+        self.with_view(|view| match parts.len() {
+            0..=3 => view.children(&key).ok_or(FsError::NotFound),
+            4 if view.file(&key).is_some() => Err(FsError::NotDir),
             _ => Err(FsError::NotFound),
-        }
+        })
     }
 
     fn mkdir(&mut self, _caller: CallerId, _path: &KPath) -> Result<()> {
