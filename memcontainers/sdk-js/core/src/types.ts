@@ -17,6 +17,8 @@ export interface CreateOptions {
   runtime?: Runtime;
   /** Remote endpoint (runtime `"remote"` only). */
   endpoint?: string;
+  /** Stable VM id for remote create/restore. Omit on create to let the server assign one. */
+  id?: string;
   /** Bearer token (remote). */
   token?: string;
   /** Rootfs image: raw tar bytes (one layer), a flavor name (`"minimal"` /
@@ -33,7 +35,8 @@ export interface CreateOptions {
   /** Enable network egress (installs the host net capability). → `CAP_NET`. */
   net?: boolean;
   /** Host-side credential registry. Guest catalogs hold only connection refs; these secret values are
-   *  spliced into HTTP requests by the host when a request carries `X-MC-Connection`. */
+   *  spliced into HTTP requests by the host when a request carries `X-MC-Connection`. Remote create
+   *  sends only the refs; the served host must own the corresponding credentials. */
   connections?: ConnectionDefinition[];
   /** Make `/var/persist` durable (embedded backend). In a browser this is backed
    *  by OPFS (IndexedDB fallback) so state survives a page reload; elsewhere it is

@@ -103,6 +103,14 @@ defmodule AgentOS.ControlPlane do
   @spec symlink(Vm.id(), String.t(), String.t(), keyword()) :: :ok | {:error, term()}
   def symlink(id, target, link, opts \\ []), do: with_vm(id, &Vm.symlink(&1, target, link, opts))
 
+  @doc "Mount a host-call-backed filesystem driver in an existing VM."
+  @spec mount(Vm.id(), String.t(), keyword()) :: :ok | {:error, term()}
+  def mount(id, path, opts \\ []), do: with_vm(id, &Vm.mount(&1, path, opts))
+
+  @doc "Unmount a host-backed filesystem driver in an existing VM."
+  @spec unmount(Vm.id(), String.t(), keyword()) :: :ok | {:error, term()}
+  def unmount(id, path, opts \\ []), do: with_vm(id, &Vm.unmount(&1, path, opts))
+
   @doc "Host status for an existing VM."
   @spec status(Vm.id()) :: {:ok, map()} | {:error, :not_found}
   def status(id), do: with_vm(id, &Vm.status/1)

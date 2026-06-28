@@ -22,6 +22,7 @@ import { toolCatalogJson } from "./tools.js";
 import { startCron } from "./cron.js";
 import type { CronAction, CronHandle, CronOptions } from "./cron.js";
 import type { Backend } from "./backend.js";
+import { RemoteBackend } from "./remote.js";
 import type {
   ContentStore,
   ConnectionDefinition,
@@ -445,15 +446,6 @@ function makeToolPermissionHandler(onPermission: CreateOptions["onPermission"]):
   };
 }
 
-/** The remote backend (mc-server over REST + the wire protocol) is not yet ported into agent-os —
- *  mc-server itself isn't ported. `runtime: "remote"` and `mc.connect` route here until it lands. */
-function remoteUnsupported(): never {
-  throw new Error(
-    "the 'remote' runtime is not available yet — mc-server isn't ported into agent-os. Use the " +
-      "default embedded runtime: mc.create() / mc.create({ runtime: 'browser', kernel, image }).",
-  );
-}
-
 async function makeEmbedded(
   opts: CreateOptions,
   snapshot: Uint8Array | null,
@@ -598,15 +590,105 @@ async function seedToolAliases(
   }
 }
 
-// (The remote create/restore helpers — makeRemote, remoteImage, the policy-query encoder — are
-// omitted along with the remote backend; they return when mc-server is ported.)
+function remoteId(): string {
+  const random = globalThis.crypto?.randomUUID?.();
+  if (random) return random;
+  return `vm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function remoteNetPolicy(opts: CreateOptions): string {
+  return netEnabled(opts) ? "real" : "deny";
+}
+
+function remotePersistPolicy(opts: CreateOptions): string {
+  if (opts.persist) {
+    throw new Error("remote runtime: persist requires a server-side persistence policy; client-side persist relay is not in the wire contract");
+  }
+  return "deny";
+}
+
+function remoteHostCallPolicy(_opts: CreateOptions): string {
+  return "relay";
+}
+
+function remoteImageFields(image: CreateOptions["image"]): Record<string, unknown> {
+  if (image === undefined || image === "base:latest") return {};
+  if (image === null) return { layers: [] };
+  if (image instanceof Uint8Array) {
+    throw new Error(
+      "remote runtime: image must be a packaged flavor, sha256 layer digest, ImageManifest, or null; raw tar bytes are not sent over REST",
+    );
+  }
+  if (typeof image === "string") {
+    return image.startsWith("sha256:") ? { layers: [image] } : { image };
+  }
+  return { layers: image.layers.map((layer) => layer.digest) };
+}
+
+function remoteCreateBody(opts: CreateOptions, id?: string): Record<string, unknown> {
+  return {
+    ...(id ? { id } : {}),
+    ...remoteImageFields(opts.image),
+    ...(opts.deterministic ? { deterministic: true } : {}),
+    net: remoteNetPolicy(opts),
+    persist: remotePersistPolicy(opts),
+    hostCall: remoteHostCallPolicy(opts),
+    connections: (opts.connections ?? []).map((connection) => connection.ref),
+  };
+}
+
+async function makeRemote(opts: CreateOptions, snapshot: Uint8Array | null): Promise<Backend> {
+  if (!opts.endpoint) {
+    throw new Error("runtime 'remote' requires opts.endpoint");
+  }
+  const endpoint = opts.endpoint.replace(/\/$/, "");
+  const headers: Record<string, string> = opts.token ? { authorization: `Bearer ${opts.token}` } : {};
+  let id: string;
+
+  if (snapshot) {
+    id = opts.id ?? remoteId();
+    const response = await fetch(`${endpoint}/v1/vms/${encodeURIComponent(id)}/restore`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/octet-stream" },
+      body: snapshot as BodyInit,
+    });
+    if (!response.ok) throw new Error(`remote restore failed: ${response.status}`);
+    const body = (await response.json()) as { id?: string };
+    id = body.id ?? id;
+  } else {
+    const response = await fetch(`${endpoint}/v1/vms`, {
+      method: "POST",
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify(remoteCreateBody(opts, opts.id)),
+    });
+    if (!response.ok) throw new Error(`remote create failed: ${response.status}`);
+    const body = (await response.json()) as { id?: string };
+    if (!body.id) throw new Error("remote create response did not include a VM id");
+    id = body.id;
+  }
+
+  const backend = new RemoteBackend({
+    endpoint,
+    token: opts.token,
+    vmId: id,
+    onPermission: opts.onPermission,
+  });
+  for (const tool of opts.tools ?? []) backend.tool(tool);
+  if (opts.tools?.length || opts.mounts?.length || opts.onPermission) await backend.connect();
+  await seedToolCatalog(backend, opts.tools ?? []);
+  await seedToolAliases(backend, opts.tools ?? [], undefined, snapshot !== null);
+  for (const mount of opts.mounts ?? []) {
+    await backend.mount(mount.path, mount.driver, mount.readOnly ?? mount.driver.readOnly ?? false);
+  }
+  return backend;
+}
 
 /** Entry point: create, restore, or connect to a VM. */
 export const mc = {
   /** Create a fresh VM. */
   async create(opts: CreateOptions = {}): Promise<Vm> {
     const runtime = opts.runtime ?? "bun";
-    if (runtime === "remote") remoteUnsupported();
+    if (runtime === "remote") return new Vm(await makeRemote(opts, null), opts);
     // Browser and Bun share the embedded backend — the kernel runs in-process
     // via WebAssembly + the JS bridge (fetch/WebSocket/crypto are browser-native).
     // The only difference is artifact loading: a browser caller fetches the
@@ -619,17 +701,31 @@ export const mc = {
   /** Restore a VM from a snapshot blob (embedded or remote). */
   async restore(snapshot: Uint8Array, opts: CreateOptions = {}): Promise<Vm> {
     const runtime = opts.runtime ?? "bun";
-    if (runtime === "remote") remoteUnsupported();
+    if (runtime === "remote") return new Vm(await makeRemote(opts, snapshot), opts);
     if (runtime === "browser" && !(opts.kernel instanceof Uint8Array)) {
       throw new Error("runtime 'browser' restore requires opts.kernel bytes");
     }
     return new Vm(await makeEmbedded(opts, snapshot), opts);
   },
 
-  /** Connect to a served mc-server and get-or-create VMs by key — the `mc.connect(url).vm(key)`
-   *  pattern. Not available until mc-server is ported. */
-  connect(_endpoint: string, _token?: string): { vm: (key: string) => Promise<Vm> } {
-    return remoteUnsupported();
+  /** Connect to a served AgentOS host and get-or-create VMs by key. */
+  connect(endpoint: string, token?: string): { vm: (key: string) => Promise<Vm> } {
+    const base = endpoint.replace(/\/$/, "");
+    const headers: Record<string, string> = token ? { authorization: `Bearer ${token}` } : {};
+    return {
+      async vm(key: string): Promise<Vm> {
+        const response = await fetch(`${base}/v1/vms`, {
+          method: "POST",
+          headers: { ...headers, "content-type": "application/json" },
+          body: JSON.stringify({ id: key }),
+        });
+        if (!response.ok) throw new Error(`connect.vm(${key}) failed: ${response.status}`);
+        const body = (await response.json()) as { id?: string };
+        const id = body.id ?? key;
+        const opts: CreateOptions = { runtime: "remote", endpoint: base, token, id };
+        return new Vm(new RemoteBackend({ endpoint: base, token, vmId: id }), opts);
+      },
+    };
   },
 
   /** Create a VM that records its `fs.write` + `exec` as a replayable `llb` build

@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Unified Vm API over the embedded (in-process) JS host. The @mc/* SDK consumer surface.",
+  "description": "Unified Vm API over embedded, browser, and remote AgentOS runtimes. The @mc/* SDK consumer surface.",
   "types": "./src/index.d.ts",
   "exports": {
     ".": { "types": "./src/index.d.ts", "default": "./src/index.js" },

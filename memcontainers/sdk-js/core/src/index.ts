@@ -1,6 +1,5 @@
-// @mc/core — the unified consumer API. One `mc` / `vm` surface over the embedded (in-process) JS host
-// (@mc/host), under bun, node, and the browser. The remote backend — mc-server over the wire protocol
-// — lands when mc-server is ported; until then the `"remote"` runtime throws a clear error.
+// @mc/core — the unified consumer API. One `mc` / `vm` surface over the embedded JS host
+// (@mc/host), browser artifacts, or a remote AgentOS host over REST + the typed wire socket.
 
 export { mc, Vm } from "./memcontainer.js";
 export { llb } from "./llb.js";
@@ -13,6 +12,8 @@ export type { VmFs } from "./types.js";
 export { tool, kit } from "./tools.js";
 export type { ToolSpec } from "./tools.js";
 export { EmbeddedBackend, FanoutSink } from "./embedded.js";
+export { RemoteBackend } from "./remote.js";
+export type { RemoteBackendOptions } from "./remote.js";
 export { defaultKernel, defaultImage } from "./artifacts.js";
 export { FsContentStore, defaultStore } from "./store.js";
 export type { Backend, RawExecResult } from "./backend.js";

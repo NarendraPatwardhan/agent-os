@@ -1,6 +1,5 @@
-# @mc/core — the unified Vm API over the embedded (in-process) @mc/host backend (ported from
-# memcontainers packages/core, minus the remote backend + unified socket, which need the unported
-# mc-server). Published under the @mc/* scope. The remote/wire half returns with mc-server.
+# @mc/core — the unified Vm API over the embedded @mc/host backend, browser artifacts, and the
+# remote REST + typed WebSocket contract. Published under the @mc/* scope.
 load("//bazel:ts.bzl", "mc_ts_project")
 load("@aspect_rules_js//js:defs.bzl", "js_test")
 load("@aspect_rules_js//npm:defs.bzl", "npm_package")

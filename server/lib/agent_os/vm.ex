@@ -193,6 +193,31 @@ defmodule AgentOS.Vm do
   def symlink(_server, _target, _link, _opts),
     do: {:error, "symlink expects binary target and link paths"}
 
+  @doc "Mount a host-call-backed filesystem driver through the control channel."
+  @spec mount(server(), String.t(), keyword()) :: :ok | {:error, Nif.reason()}
+  def mount(server, path, opts \\ [])
+
+  def mount(server, path, opts) when is_binary(path) do
+    read_only = Keyword.get(opts, :read_only, false)
+
+    if is_boolean(read_only) do
+      GenServer.call(server, {:mount, path, read_only}, timeout(opts))
+    else
+      {:error, "mount read_only option must be a boolean"}
+    end
+  end
+
+  def mount(_server, _path, _opts), do: {:error, "mount expects a binary path"}
+
+  @doc "Unmount a host-backed filesystem driver through the control channel."
+  @spec unmount(server(), String.t(), keyword()) :: :ok | {:error, Nif.reason()}
+  def unmount(server, path, opts \\ [])
+
+  def unmount(server, path, opts) when is_binary(path),
+    do: GenServer.call(server, {:unmount, path}, timeout(opts))
+
+  def unmount(_server, _path, _opts), do: {:error, "unmount expects a binary path"}
+
   @doc "Liveness/age info."
   @spec info(server()) :: map()
   def info(server), do: GenServer.call(server, :info)
@@ -399,6 +424,14 @@ defmodule AgentOS.Vm do
 
   def handle_call({:symlink, target, link}, _from, state) do
     {:reply, Nif.symlink(state.nif, target, link), touch(state)}
+  end
+
+  def handle_call({:mount, path, read_only}, _from, state) do
+    {:reply, Nif.mount(state.nif, path, read_only), touch(state)}
+  end
+
+  def handle_call({:unmount, path}, _from, state) do
+    {:reply, Nif.unmount(state.nif, path), touch(state)}
   end
 
   def handle_call(:info, _from, state) do

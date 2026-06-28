@@ -262,6 +262,21 @@ defmodule AgentOS.Host.Nif do
   def symlink(_vm, _target, _link),
     do: {:error, "symlink expects binary target and link paths"}
 
+  @doc "Mount a host-call-backed filesystem driver at path."
+  @spec mount(vm(), String.t(), boolean()) :: :ok | {:error, reason()}
+  def mount(vm, path, read_only \\ false)
+
+  def mount(vm, path, read_only) when is_binary(path) and is_boolean(read_only),
+    do: mount_nif(vm, path, read_only)
+
+  def mount(_vm, _path, _read_only),
+    do: {:error, "mount expects a binary path and boolean read_only"}
+
+  @doc "Unmount a host-backed filesystem driver at path."
+  @spec unmount(vm(), String.t()) :: :ok | {:error, reason()}
+  def unmount(vm, path) when is_binary(path), do: unmount_nif(vm, path)
+  def unmount(_vm, _path), do: {:error, "unmount expects a binary path"}
+
   @doc "Serialize the live CoW overlay into `{tar_bytes, digest}`."
   @spec commit_layer(vm()) :: {:ok, {binary(), String.t()}} | {:error, reason()}
   def commit_layer(vm), do: commit_layer_nif(vm)
@@ -464,6 +479,12 @@ defmodule AgentOS.Host.Nif do
 
   @doc false
   def symlink_nif(_vm, _target, _link), do: nif_not_loaded()
+
+  @doc false
+  def mount_nif(_vm, _path, _read_only), do: nif_not_loaded()
+
+  @doc false
+  def unmount_nif(_vm, _path), do: nif_not_loaded()
 
   @doc false
   def commit_layer_nif(_vm), do: nif_not_loaded()

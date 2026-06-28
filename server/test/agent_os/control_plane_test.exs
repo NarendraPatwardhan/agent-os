@@ -35,6 +35,8 @@ defmodule AgentOS.ControlPlaneTest do
     assert ControlPlane.mkdir(id, "/tmp/new") == {:error, :not_found}
     assert ControlPlane.unlink(id, "/tmp/nope") == {:error, :not_found}
     assert ControlPlane.symlink(id, "/tmp/a", "/tmp/b") == {:error, :not_found}
+    assert ControlPlane.mount(id, "/mnt/host") == {:error, :not_found}
+    assert ControlPlane.unmount(id, "/mnt/host") == {:error, :not_found}
     assert ControlPlane.status(id) == {:error, :not_found}
     assert ControlPlane.egress_next(id) == {:error, :not_found}
     assert ControlPlane.egress_http_respond(id, 1, 200, "OK", [], "") == {:error, :not_found}
@@ -161,6 +163,16 @@ defmodule AgentOS.ControlPlaneTest do
 
       assert {:ok, %{exit_code: 0, stdout: "net hello\n", stderr: ""}} =
                poll_exec(id, http_job, 5_000)
+
+      assert :ok = ControlPlane.mount(id, "/mnt/beam", read_only: true)
+      assert {:ok, %{exit_code: 0, stdout: mounts, stderr: ""}} =
+               ControlPlane.exec(id, "cat /proc/mounts")
+      assert mounts =~ "/mnt/beam"
+
+      assert :ok = ControlPlane.unmount(id, "/mnt/beam")
+      assert {:ok, %{exit_code: 0, stdout: mounts_after, stderr: ""}} =
+               ControlPlane.exec(id, "cat /proc/mounts")
+      refute mounts_after =~ "/mnt/beam"
 
       assert {:ok, nil} = ControlPlane.egress_next(id)
     after

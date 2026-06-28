@@ -895,6 +895,18 @@ fn symlink(vm: ResourceArc<Vm>, target: String, link: String) -> NifResult<Atom>
     Ok(atoms::ok())
 }
 
+#[rustler::nif(name = "mount_nif", schedule = "DirtyCpu")]
+fn mount(vm: ResourceArc<Vm>, path: String, read_only: bool) -> NifResult<Atom> {
+    vm_lock(&vm)?.mount(&path, read_only).map_err(nif_err)?;
+    Ok(atoms::ok())
+}
+
+#[rustler::nif(name = "unmount_nif", schedule = "DirtyCpu")]
+fn unmount(vm: ResourceArc<Vm>, path: String) -> NifResult<Atom> {
+    vm_lock(&vm)?.unmount(&path).map_err(nif_err)?;
+    Ok(atoms::ok())
+}
+
 #[rustler::nif(name = "commit_layer_nif", schedule = "DirtyCpu")]
 fn commit_layer<'a>(env: Env<'a>, vm: ResourceArc<Vm>) -> NifResult<(Atom, (Binary<'a>, String))> {
     let (tar, digest) = vm_lock(&vm)?.commit_layer().map_err(nif_err)?;
