@@ -32,16 +32,18 @@ export interface CreateOptions {
   kernel?: Uint8Array;
   /** Enable network egress (installs the host net capability). → `CAP_NET`. */
   net?: boolean;
+  /** Host-side credential registry. Guest catalogs hold only connection refs; these secret values are
+   *  spliced into HTTP requests by the host when a request carries `X-MC-Connection`. */
+  connections?: ConnectionDefinition[];
   /** Make `/var/persist` durable (embedded backend). In a browser this is backed
    *  by OPFS (IndexedDB fallback) so state survives a page reload; elsewhere it is
    *  in-memory for the VM's lifetime. → `CAP_PERSIST`. */
   persist?: boolean;
   /** Declarative permissions (see {@link Permissions}). */
   permissions?: Permissions;
-  /** Interactive approval for a guest network request to a host NOT on
-   *  `permissions.network.allow`. Call `req.allow()` to let it egress (optionally
-   *  remembering the host) or `req.reject()` to deny. With no handler, a
-   *  non-allowlisted host is denied. (Tool calls use the tool callback, not this.) */
+  /** Interactive approval for network egress or destructive tool calls. Call `req.allow()` to let the
+   *  operation proceed or `req.reject()` to deny. With no handler, operations that require approval are
+   *  denied. */
   onPermission?: (req: PermissionRequest) => void | Promise<void>;
   /** Host-resident tools to register at boot (see {@link tool} / {@link kit}). */
   tools?: ToolDefinition[];
@@ -50,6 +52,20 @@ export interface CreateOptions {
   mounts?: MountSpec[];
   /** Deterministic clock + RNG (for reproducible runs / tests). */
   deterministic?: boolean;
+}
+
+export type ConnectionAuth =
+  | { kind: "none" }
+  | { kind: "bearer"; token: string }
+  | { kind: "header"; name: string; value: string }
+  | { kind: "query"; name: string; value: string };
+
+export interface ConnectionDefinition {
+  /** `integration.owner.name`, where owner is `org` or `user`. */
+  ref: string;
+  auth: ConnectionAuth;
+  /** Absolute `http`/`https` origins allowed to receive this connection's host-side credential. */
+  origins: string[];
 }
 
 /** A built image: an ordered stack of content-addressed layers plus the
@@ -104,10 +120,9 @@ export interface MountSpec {
   readOnly?: boolean;
 }
 
-/** An interactive permission request raised to {@link CreateOptions.onPermission}.
- *  Raised for network egress to a non-allowlisted host; the `kind` union is built to extend. Resolve
- *  it exactly once with `allow()` or `reject()`. */
-export interface PermissionRequest {
+/** A network egress prompt raised to {@link CreateOptions.onPermission}. Resolve it exactly once with
+ *  `allow()` or `reject()`. */
+export interface NetworkPermissionRequest {
   readonly id: number;
   readonly kind: "network";
   /** The egress host being requested (e.g. `api.example.com`). */
@@ -118,6 +133,32 @@ export interface PermissionRequest {
   /** Deny the request (the guest sees an ordinary network/IO error). */
   reject(message?: string): void;
 }
+
+/** A destructive tool prompt raised to {@link CreateOptions.onPermission}. The request carries catalog
+ *  identity and a bounded argument preview, never host-injected credentials. */
+export interface ToolApprovalPermissionRequest {
+  readonly id: number;
+  readonly kind: "tool_approval";
+  readonly address: string;
+  readonly integration: string;
+  readonly owner: string;
+  readonly connection: string;
+  readonly tool: string;
+  readonly description: string;
+  readonly approvalDescription: string;
+  readonly argsPreview: string;
+  readonly argsSha256: string;
+  readonly policy: {
+    readonly action: "require_approval";
+    readonly source: "annotation" | "policy";
+    readonly id?: string;
+    readonly pattern?: string;
+  };
+  allow(): void;
+  reject(message?: string): void;
+}
+
+export type PermissionRequest = NetworkPermissionRequest | ToolApprovalPermissionRequest;
 
 /** A directory entry a {@link Driver} returns from `readdir`. */
 export interface DriverEntry {
@@ -217,15 +258,22 @@ export interface ToolContext {
   fs: VmFs;
 }
 
-/** A host-resident tool a guest can invoke via `mc-tool <name> <json>`. The
- *  `run` handler executes host-side (in the consumer's process for the embedded
- *  backend) and receives the parsed JSON args plus a VM context. Build these
- *  with {@link tool} / {@link kit} for zod-typed input. */
+/** A host-resident tool a guest can invoke through `/svc/tools`. The `name` is the host-call binding
+ *  key; `address` is the optional catalog address exposed to in-VM discovery. The `run` handler
+ *  executes host-side and receives parsed JSON args plus a VM context. */
 export interface ToolDefinition {
+  /** Host-call binding key. Must be non-empty, must not start with `/`, and must not contain control
+   *  characters; `/...` is reserved for raw host-backed mount handlers. */
   name: string;
+  /** Full catalog address. Defaults to `host.org.main.<normalized name>`. */
+  address?: string;
   description?: string;
   /** JSON-Schema for the input args (produced by {@link tool} from a zod schema). */
   input?: JsonSchema;
+  /** Optional JSON-Schema for the output value. */
+  output?: JsonSchema;
+  /** Tool-plane annotations such as requires_approval/read_only. */
+  annotations?: Record<string, unknown>;
   /** Receives the parsed JSON args and a host-side VM context; returns a string
    *  or any JSON-able value. */
   run: (input: Record<string, unknown>, ctx: ToolContext) => Promise<unknown> | unknown;

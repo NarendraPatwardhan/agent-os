@@ -614,6 +614,63 @@ export class KernelHost {
     this.ctlFn(this.exports.mc_ctl_exec_close, "mc_ctl_exec_close")(job);
   }
 
+  /** Begin a host-originated resident-service call. The service sees caller=SYSTEM_CALLER. */
+  svcCallStart(name: string, req: Uint8Array): number {
+    const start = this.ctlFn(this.exports.mc_ctl_svc_call_start, "mc_ctl_svc_call_start");
+    const n = enc(name);
+    const frame = new Uint8Array(n.length + req.length);
+    frame.set(n, 0);
+    frame.set(req, n.length);
+    this.ctlPut(frame);
+    const job = start(0, n.length, n.length, req.length);
+    if (job < 0) throw ctlErr("svc_call", name, job);
+    return job;
+  }
+
+  /** Poll a host-originated resident-service call. `null` means the service is still working. */
+  svcCallPoll(job: number): Uint8Array | null {
+    const poll = this.ctlFn(this.exports.mc_ctl_svc_call_poll, "mc_ctl_svc_call_poll");
+    const status = poll(job);
+    if (status === 0) return null;
+    if (status < 0) throw ctlErr("svc_call_poll", "job", status);
+    return this.readSvcCallResult();
+  }
+
+  /** Abandon a host-originated resident-service call. */
+  svcCallCancel(job: number): void {
+    this.ctlFn(this.exports.mc_ctl_svc_call_close, "mc_ctl_svc_call_close")(job);
+  }
+
+  private readSvcCallResult(): Uint8Array {
+    const head = this.ctlGet(8);
+    const dv = new DataView(head.buffer, head.byteOffset, head.byteLength);
+    const status = dv.getInt32(0, true);
+    const len = dv.getUint32(4, true);
+    const raw = this.ctlGet(8 + len);
+    if (status !== 0) {
+      throw new Error(`control-channel svc_call failed (errno ${status})`);
+    }
+    return raw.subarray(8);
+  }
+
+  /** Run a host-originated resident-service call to completion. */
+  async svcCall(name: string, req: Uint8Array, maxTicks = 20_000): Promise<Uint8Array> {
+    const job = this.svcCallStart(name, req);
+    for (let i = 0; i < maxTicks; i++) {
+      const r = this.svcCallPoll(job);
+      if (r) return r;
+      if (!this.tick()) {
+        const r2 = this.svcCallPoll(job);
+        if (r2) return r2;
+        this.svcCallCancel(job);
+        throw new Error(`kernel exited before service call '${name}' completed`);
+      }
+      await sleep(1);
+    }
+    this.svcCallCancel(job);
+    throw new Error(`service call '${name}' did not finish within ${maxTicks} ticks`);
+  }
+
   /** Run `cmd` to completion: captured stdout/stderr + the real exit code. Drives ticks, yielding a
    *  macrotask between them so in-flight `fetch`/WS can resolve (mirrors the Rust host's `exec`). */
   async exec(cmd: string, maxTicks = 20_000): Promise<ExecResult> {

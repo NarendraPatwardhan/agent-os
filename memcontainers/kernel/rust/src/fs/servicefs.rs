@@ -47,10 +47,13 @@ pub enum DelegatedHandle {
 /// One typed call routed to the server guest. `session` identifies the client
 /// connection; `req_id` is unique within the channel; `blob` is the opaque request
 /// bytes (the service + its library define the wire format — the kernel never reads
-/// it); `handles` are any fds the caller delegated with this request.
+/// it); `caller` and `caller_caps` are kernel-supplied authority metadata from the
+/// `svc_call` task; `handles` are any fds the caller delegated with this request.
 pub struct ServiceRequest {
     pub session: u32,
     pub req_id: u32,
+    pub caller: CallerId,
+    pub caller_caps: u32,
     pub blob: Vec<u8>,
     pub handles: Vec<DelegatedHandle>,
 }
@@ -74,6 +77,9 @@ pub const SVC_RESPONSE_HIGH_WATER: usize = 64 * 1024;
 /// How long the server waits on a blocked (full) buffer before failing the call — separates a
 /// slow-but-live client (keeps draining, refreshing the deadline) from a stuck one.
 pub const SVC_DRAIN_TIMEOUT_MS: i64 = 5_000;
+/// Cap on one resident-service request blob. Results stream through the readable result fd, but
+/// requests are copied into the kernel queue, so both guest and host-control callers share this bound.
+pub const MAX_SVC_REQUEST_BYTES: usize = 1 << 20;
 
 /// The server guest's answer for one call — a STREAMING buffer (codex #3). The server appends body
 /// chunks via `svc_respond` (`last=0` until the final `last=1`); the client drains `buf` from the front
@@ -195,11 +201,11 @@ impl ServiceChannel {
             return; // already torn down — do not enqueue a second tombstone
         }
         self.responses.retain(|&(s, _), _| s != session);
-        self.requests.retain(
-            |m| !matches!(m, ServiceInbound::Call(r) if r.session == session),
-        );
+        self.requests
+            .retain(|m| !matches!(m, ServiceInbound::Call(r) if r.session == session));
         if !self.closed {
-            self.requests.push_back(ServiceInbound::SessionClosed(session));
+            self.requests
+                .push_back(ServiceInbound::SessionClosed(session));
         }
     }
 
@@ -226,20 +232,28 @@ impl ServiceChannel {
     pub fn enqueue(
         &mut self,
         session: u32,
+        caller: CallerId,
+        caller_caps: u32,
         blob: Vec<u8>,
         handles: Vec<DelegatedHandle>,
     ) -> Option<u32> {
-        if self.closed || !self.sessions.contains_key(&session) {
+        if !self.sessions.contains_key(&session) {
+            return None;
+        }
+        if self.closed {
             return None;
         }
         let id = self.next_req;
         self.next_req = self.next_req.wrapping_add(1).max(1);
-        self.requests.push_back(ServiceInbound::Call(ServiceRequest {
-            session,
-            req_id: id,
-            blob,
-            handles,
-        }));
+        self.requests
+            .push_back(ServiceInbound::Call(ServiceRequest {
+                session,
+                req_id: id,
+                caller,
+                caller_caps,
+                blob,
+                handles,
+            }));
         Some(id)
     }
 
@@ -315,12 +329,15 @@ impl ServiceChannel {
         if !self.sessions.contains_key(&session) {
             return RespondOutcome::SessionGone;
         }
-        let resp = self.responses.entry((session, req_id)).or_insert_with(|| ServiceResponse {
-            status: 0,
-            buf: VecDeque::new(),
-            complete: false,
-            drain_deadline: crate::wall_now_ms() + SVC_DRAIN_TIMEOUT_MS,
-        });
+        let resp = self
+            .responses
+            .entry((session, req_id))
+            .or_insert_with(|| ServiceResponse {
+                status: 0,
+                buf: VecDeque::new(),
+                complete: false,
+                drain_deadline: crate::wall_now_ms() + SVC_DRAIN_TIMEOUT_MS,
+            });
         if status != 0 {
             resp.status = status;
         }
@@ -340,7 +357,9 @@ impl ServiceChannel {
     /// The un-drained byte count for `(session, req_id)` — the backpressure level `svc_respond` reads to
     /// decide whether to yield before sending more.
     pub fn response_buffered(&self, session: u32, req_id: u32) -> usize {
-        self.responses.get(&(session, req_id)).map_or(0, |r| r.buf.len())
+        self.responses
+            .get(&(session, req_id))
+            .map_or(0, |r| r.buf.len())
     }
 
     /// Finalize `(session, req_id)`'s answer as a clean failure with `errno` (a stuck client; the
@@ -541,14 +560,24 @@ fn backoff_ms(attempts: u32) -> i64 {
 /// (codex #6). `attempts` is the consecutive-failure count (drives the backoff), carried across retries.
 #[derive(Clone, Copy)]
 pub enum ServiceState {
-    Activating { pid: TaskId, deadline_ms: i64, attempts: u32 },
-    Failed { until_ms: i64, last_errno: i32, attempts: u32 },
+    Activating {
+        pid: TaskId,
+        deadline_ms: i64,
+        attempts: u32,
+    },
+    Failed {
+        until_ms: i64,
+        last_errno: i32,
+        attempts: u32,
+    },
 }
 
 impl ServiceState {
     fn attempts(&self) -> u32 {
         match self {
-            ServiceState::Activating { attempts, .. } | ServiceState::Failed { attempts, .. } => *attempts,
+            ServiceState::Activating { attempts, .. } | ServiceState::Failed { attempts, .. } => {
+                *attempts
+            }
         }
     }
 }
@@ -567,21 +596,34 @@ fn activation_states() -> &'static mut BTreeMap<String, ServiceState> {
 /// Carries the failure count forward (so the backoff keeps growing for a service that keeps failing),
 /// starting at 1 for a first activation.
 pub fn mark_activating(name: &str, pid: TaskId, deadline_ms: i64) {
-    let attempts = activation_states().get(name).map_or(0, ServiceState::attempts) + 1;
+    let attempts = activation_states()
+        .get(name)
+        .map_or(0, ServiceState::attempts)
+        + 1;
     activation_states().insert(
         String::from(name),
-        ServiceState::Activating { pid, deadline_ms, attempts },
+        ServiceState::Activating {
+            pid,
+            deadline_ms,
+            attempts,
+        },
     );
 }
 
 /// Move `name` to `Failed` after a hung-past-deadline (`ETIMEDOUT`) or crash-before-serve (`EIO`)
 /// activation: connects fail fast with `errno` until the `attempts`-based backoff elapses.
 pub fn mark_failed(name: &str, errno: i32) {
-    let attempts = activation_states().get(name).map_or(1, ServiceState::attempts);
+    let attempts = activation_states()
+        .get(name)
+        .map_or(1, ServiceState::attempts);
     let until_ms = crate::wall_now_ms() + backoff_ms(attempts);
     activation_states().insert(
         String::from(name),
-        ServiceState::Failed { until_ms, last_errno: errno, attempts },
+        ServiceState::Failed {
+            until_ms,
+            last_errno: errno,
+            attempts,
+        },
     );
 }
 
@@ -708,7 +750,11 @@ impl SvcCallSource {
             SvcPhase::Active => {}
         }
         // Drain the next bytes from the channel's streaming buffer (the server appends chunks).
-        match self.channel.borrow_mut().drain_response(self.session, self.req_id, buf) {
+        match self
+            .channel
+            .borrow_mut()
+            .drain_response(self.session, self.req_id, buf)
+        {
             ResponsePoll::Pending => SvcRead::Pending,
             ResponsePoll::Got(n) => SvcRead::Got(n),
             ResponsePoll::Eof => {
@@ -775,7 +821,10 @@ impl FileSystem for ServiceFs {
                     return Err(FsError::PermissionDenied); // read-only: you svc_connect, not write
                 }
                 match service_status_line(name) {
-                    Some(line) => Ok(Box::new(StatusMarker { data: line.into_bytes(), pos: 0 })),
+                    Some(line) => Ok(Box::new(StatusMarker {
+                        data: line.into_bytes(),
+                        pos: 0,
+                    })),
                     None => Err(FsError::NotFound),
                 }
             }
@@ -793,7 +842,8 @@ impl FileSystem for ServiceFs {
     }
 
     fn readdir(&self, _caller: CallerId, path: &KPath) -> Result<Vec<DirEntry>> {
-        if Self::name(path.as_str()).is_some() || !path.as_str().trim_start_matches('/').is_empty() {
+        if Self::name(path.as_str()).is_some() || !path.as_str().trim_start_matches('/').is_empty()
+        {
             return Err(FsError::NotDir);
         }
         Ok(known_service_names()

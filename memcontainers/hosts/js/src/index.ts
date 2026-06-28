@@ -9,6 +9,8 @@ export { KernelHost, KernelHostBuilder, EagainError } from "./host.js";
 export type { ExecResult, DirEntry } from "./host.js";
 export { CaptureSink, WritableSink, processStdout, processStderr } from "./io.js";
 export { SystemClock, FixedClock, OsRng, SeededRng } from "./sources.js";
+export { ConnectionRegistry } from "./connections.js";
+export type { ConnectionCredential } from "./connections.js";
 export { DeniedNet, HostNet } from "./net.js";
 export type { NetApprover, HostNetOptions } from "./net.js";
 export { DeniedPersist, DiskPersist } from "./persist.js";

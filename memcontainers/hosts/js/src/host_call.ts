@@ -1,5 +1,5 @@
 // Host-call capability: the TS host side of `mc_sys_host_call`. The kernel hands the host an opaque
-// request blob (`name\0args`, from `mc-tool`); the host routes it to a registered handler and streams
+// request blob (`name\0args`, from the tool broker); the host routes it to a registered handler and streams
 // back a result. Poll-based, mirroring the net capability — and async-friendly, since tool handlers
 // are async: `start` kicks off the handler, `poll` reports `0` until it resolves, then `body` streams
 // the result. Default-deny (A9).

@@ -93,7 +93,7 @@ under `memcontainers/`, the build machinery under `bazel/`.
 | 14 | **Shell** | An OS-agnostic POSIX-ish shell engine driving `/bin/sh` | `memcontainers/shcore/`, `memcontainers/programs/sh` | built |
 | 15 | **Userland `/bin`** | Multicall coreutils, partitioned by tier | `memcontainers/programs/coreutils/` | built |
 | 16 | **Luau scripting** | The primary user-facing language; embedded + VFS batteries | `memcontainers/programs/luau/` | built |
-| 17 | **Domain engines (SQLite, typst)** | Heavy engines as warm resident services in flavors | `memcontainers/programs/{sqlite,typst}/` | built |
+| 17 | **Domain engines & adapters** | Heavy engines plus the shared tool-adapter service | `memcontainers/programs/{sqlite,typst,adapters}/`, `memcontainers/lib/parse/` | built |
 | 18 | **Images, flavors & packages** | Content-addressed layered images; demand-loaded packages | `memcontainers/images/`, `memcontainers/pkgcore/`, `bazel/tools/mc-roster` | built |
 | 19 | **Host (wasmtime)** | Loads `kernel.wasm`, supplies the bridge, ticks, performs effects | `memcontainers/hosts/wasmtime/` | built |
 | 20 | **The network & browser edge** | `mc-server` (actor-per-VM), the wire protocol, the JS host family, the `@mc/*` SDK, the web app | `server/`, `memcontainers/hosts/js/`, `memcontainers/sdk-js/`, `web/` | designed; port staged |
@@ -362,10 +362,11 @@ a Rust kernel, a Zig kernel, a Rust shim, a Rust server, and a TS client cannot 
 ### 3.4 Versioning
 
 The ABI version is `(major << 16) | minor`, reported by `mc_sys_abi_version`. This worktree is **ABI
-1.6** with **57 syscalls**: 1.3 froze a 52-syscall base, 1.4 added the five `svc_*` service calls, 1.5
-widened service handle-delegation, 1.6 added the response-chunk `last` flag. Additive changes bump the
-minor; only a break bumps the major. The wire protocol is versioned separately (`wire-version 1`) — it
-is the over-the-network `std` contract, distinct from the in-process `no_std` one.
+1.7** with **57 syscalls**: 1.3 froze a 52-syscall base, 1.4 added the five `svc_*` service calls, 1.5
+widened service handle-delegation, 1.6 added the response-chunk `last` flag, and 1.7 added kernel-authored
+`caller`/`caller_caps` metadata to the service receive envelope. Additive changes bump the minor; only a
+break bumps the major. The wire protocol is versioned separately (`wire-version 1`) — it is the
+over-the-network `std` contract, distinct from the in-process `no_std` one.
 
 ---
 
@@ -593,6 +594,9 @@ Each backend is a small, single-purpose system. Boot mounts a stack at `/` plus 
 - **devfs** — `/dev/null`, `/dev/zero`, `/dev/random` (host entropy), and `/dev/cons` (the Plan-9
   console).
 - **netfs** — the network as a file tree at `/net` (§7.3).
+- **toolsfs** — a read-only catalog view at `/tools`, mounted globally by base. `/svc/tools` remains the
+  broker and catalog mutator; toolsfs reparses the checkpoint catalog and exposes only progressive
+  browse/describe files, so it creates no egress path.
 
 ---
 
@@ -648,9 +652,9 @@ The lifecycle:
 - **Registration** (`svc_serve`): the kernel authorizes serving a name *only for the task it activated to
   serve it* — serve-authority is the **activation grant**, not a blanket capability — so no guest can
   squat a name. One server per name.
-- **Activation**: services are declared per-flavor in `/etc/services.json` (`name → binary,
-  eager|lazy`); the tier is taken from the binary's stamped `mc_tier`, never the manifest, so a manifest
-  can never widen privilege. Lazy services (the default) spawn on first connect; a supervisor state
+- **Activation**: services are declared by composable `/etc/services.d/<name>.json` fragments
+  (`binary`, optional `eager`); the tier is taken from the binary's stamped `mc_tier`, never the
+  fragment, so a fragment can never widen privilege. Lazy services (the default) spawn on first connect; a supervisor state
   machine tracks `Activating`/`Failed` with exponential backoff so a crash-looping service is retried
   ever more rarely rather than respawned every connect. A binary is resolved by exact absolute path and
   checked to actually claim the name it is being activated under.
@@ -658,7 +662,9 @@ The lifecycle:
   `(session, req_id)`, **not by caller**, because one client may hold several concurrent sessions to one
   service (a script with two DB handles) — a caller-keyed map could not express that. This is the one
   real correction over the served-fs template, which dedups by caller on the assumption of one in-flight
-  request per caller.
+  request per caller. The request envelope still carries kernel-supplied `caller` and `caller_caps`
+  metadata from the `svc_call` task so a service can distinguish ordinary guest calls from the host control
+  channel (`SYSTEM_CALLER`) and enforce operation-level authority without trusting the request body.
 - **Call** (`svc_call`): a typed request blob plus optional delegated handles → a *readable result fd*
   the caller drains. Like a host-call, the call itself does not block — the client streams the response,
   yielding while the server computes, so a large result (a SQLite cursor, a PDF) never materializes
@@ -668,11 +674,14 @@ The lifecycle:
   buffer crosses a high-water mark the server is parked until the client drains; only a delivered
   `(session, req_id)` may be answered.
 
-The envelope is `[kind:u8][nhandles:u8][session:u32][req_id:u32][blob_len:u32][blob…]`, with delegated fd
-numbers in a parallel buffer; `kind` is *call* or *session-closed tombstone*. The blob is **opaque** — the
-service and its library define the wire format; the kernel never reads it. Only the response `status` is
-kernel-interpreted (`0` = body follows, non-zero = an errno surfaced to the client's read; application
-errors ride *inside* the body).
+The envelope is
+`[kind:u8][nhandles:u8][session:u32][req_id:u32][caller:u32][caller_caps:u32][blob_len:u32][blob…]`, with
+delegated fd numbers in a parallel buffer; `kind` is *call* or *session-closed tombstone*. The blob is
+**opaque** — the service and its library define the wire format; the kernel never reads it. Only the response
+`status` is kernel-interpreted (`0` = body follows, non-zero = an errno surfaced to the client's read;
+application errors ride *inside* the body). `caller_caps` is kernel-authored call-time authority metadata; a
+service that performs privileged work on behalf of callers must check it instead of relying on its own binary
+tier.
 
 **Handle delegation** is the SCM_RIGHTS analogue: a call may carry a few of the caller's own fd numbers;
 the kernel clones the backing object into the service's table under fresh numbers. Only
@@ -694,7 +703,7 @@ binaries per tool" (`<tool>-svc` resident loop plus a thin CLI) convention: that
 surface and leaks an implementation mode into the user-visible namespace. agent-os ships **one binary
 with two activation modes**, chosen by the kernel from the contract (the `svc_serve` path vs `_start`),
 not by `argv[0]`. Service-capability is therefore a *property, not a second artifact*: an `mc_service`
-custom section (stamped like `mc_tier`/`mc_budget`) plus an `/etc/services.json` entry.
+custom section (stamped like `mc_tier`/`mc_budget`) plus an `/etc/services.d/<name>.json` fragment.
 
 ### 7.3 Networking (`net/`, `fs/netfs.rs`)
 
@@ -714,7 +723,7 @@ searchable but never enumerable — netfs must not leak reachable hosts.
 
 ### 7.4 Host-call and the proxy substrate (`host_call.rs`, `fs/proxy.rs`)
 
-A `host_call` routes an opaque blob to a host-registered handler (the `mc-tool` shim, a host-backed mount
+A `host_call` routes an opaque blob to a host-registered handler (the tool broker, a host-backed mount
 driver) and returns a readable result fd — the same poll→body→EOF state machine as the network, gated by
 `CAP_NET` and default-deny. The **proxy substrate** holds the shared decoders for the two proxying
 filesystems (served fs, answered by a guest; mount fs, answered by a host driver): the fixed 44-byte stat
@@ -936,7 +945,7 @@ inputs. The hierarchy stacks:
 
 | Flavor | Adds | For |
 |---|---|---|
-| **minimal** | `sh`, the integral builtins, `pkgfsd`, `agent`, `mc-tool` | building your own harness |
+| **minimal** | `sh`, the integral builtins, `pkgfsd`, `agent`, `tools` | building your own harness |
 | **posix** | + coreutils | a shell for agents (e.g. RAG) |
 | **loom** | + Luau + the analyzer | programmability |
 | **paper** | + a document compiler (typst) | the document domain |
@@ -946,12 +955,51 @@ Packs are **shared by content**: loom's Luau layer is a byte-identical input to 
 builds and stores it once and both flavors reference the same hash. `/bin` symlinks are generated by a
 tool that reads each box's applet roster and points each name at the *lowest-privilege* box that provides
 it — least-privilege dispatch, and `/bin` cannot drift from actual dispatch. Service install paths and
-`/etc/services.json` are generated from the stamped `mc_service` section of each binary, so the install
-path, the manifest, and the artifact cannot disagree. `services.json` is a per-flavor fragment merged by
-the layer stack, never a global file — because services are a property of the *domain pack* that pays the
-cold-start tax (loom's, paper's, atlas's), not of `minimal`/`posix`. A flavor's `require()` shim name must
+`/etc/services.d/<name>.json` fragments are generated from the stamped `mc_service` section of each
+binary, so the install path, the fragment, and the artifact cannot disagree. Service fragments compose
+through the layer stack, never as one global file — because services are a property of the layer that
+pays the cold-start tax. Base provides the lazy `tools` broker, the lazy `adapters` service, and the
+read-only `/tools` catalog tree so every image inherits the tool plane; domain packs add their own
+service fragments. A flavor's
+`require()` shim name must
 not collide with a universal embedded battery; `sqlite`/`typst` are not embedded, so they load from the
 layer (`require` order is cache → embedded → VFS).
+
+The tool catalog has a single lifetime rule. `/etc/tools/catalog.json` is the boot seed and checkpoint; once
+`/svc/tools` activates, its warm in-memory catalog is authoritative and snapshots with the VM. Runtime host
+registration (`vm.tool`) updates that live catalog only through an awaited host-control service call
+(`catalog.apply`, `caller == SYSTEM_CALLER`) that validates the full replacement catalog, swaps it atomically,
+and then checkpoints the canonical catalog file. Guest service calls can search, describe, list, call, and
+garbage-collect tool artifacts; they cannot mutate catalog bindings. `/tools/<integration>/<owner>/<connection>/<tool>`
+is the file-tree discovery face over the checkpoint catalog: directories progressively disclose catalog segments,
+and reading a leaf returns that tool's JSON record. The filesystem keeps a read-through parsed projection cache
+keyed by the checkpoint digest sidecar written by `/svc/tools`; direct boot-seed catalog writes without the
+sidecar fall back to byte comparison, so `/tools` never becomes a second catalog owner. Tool `call` and
+`call_alias` additionally require the
+caller's kernel-stamped `CAP_NET`, matching direct `host_call`; discovery, `/tools`, and artifact cleanup stay
+unprivileged.
+
+`/svc/adapters` is the mcbox-style resident service for adapter-backed tools. It is one std-WASI service,
+not one service per format: OpenAPI, Microsoft Graph workload filters, Google Discovery normalization,
+GraphQL introspection, and remote MCP tool-list normalization are internal modules behind the same protocol,
+so serde/YAML/schema costs are paid once.
+`memcontainers/lib/parse` owns shared parse/normalize logic; root `{x}core` crates remain for substrate
+that is fundamental to the VM. The service also exposes a static curated registry lifted from executor's
+MIT-licensed preset tables as factual metadata: integration ids, summaries, public spec/discovery/MCP
+endpoints, OAuth scopes, and Graph path filters. Registry reads are local and deterministic; fetching
+remote specs is still a later adapter/connection action. `compile` operations emit ordinary catalog
+records with service bindings back to `/svc/adapters invoke`; those records contain request templates and
+opaque connection references, never credentials. `invoke` expands tool args into a normal
+`mc_http_request` blob. If the binding names a non-`none` connection, the guest adds only
+`X-MC-Connection: <integration>.<owner>.<connection>`; the Rust and JS host network capabilities remove
+that marker at the egress boundary. Secret-bearing registry entries must declare the absolute `http`/`https`
+origins allowed to receive the credential; the host normalizes the request URL's origin and splices
+bearer/header/query credentials only on an exact origin match, failing closed before the secret is attached.
+This keeps the credential boundary self-contained even when a CAP_NET guest crafts an `mc_http_request`
+directly. Unknown markers also fail closed, and the secret never enters guest memory. Because
+the service is full-tier, it checks the caller's kernel-stamped `CAP_NET` before reaching
+`mc_http_request`. `/svc/tools` performs the same caller-authority gate before dispatching service-backed
+catalog records, so adapters cannot launder host egress around the normal tool-plane boundary.
 
 `pkgcore` is the pure logic for `pkgfsd`, a demand-load package daemon: a dependency-free SHA-256, a
 tab-separated catalog parser, and path/URL helpers. Packages are addressed by content hash, fetched from a
@@ -973,8 +1021,11 @@ I/O, time (`CAP_AMBIENT`), entropy (`CAP_AMBIENT`), HTTP (request/poll/body/clos
 (connect/send/recv/close), host-call (start/poll/body/close), persistence (get/put/delete/list), an
 optional threading set, and lifecycle (`yield`/`exit`/`log`/boot). The control exports the host calls are
 lifecycle (`mc_init`/`mc_tick`/`mc_input`/`mc_resize`), a scratch-buffer VFS control channel, exec jobs,
-and snapshot/quiescence. Every export is looked up as an `Option` because the host loads the kernel at
-runtime and cannot know which exports a given artifact carries.
+host-control service calls (`mc_ctl_svc_call_start`/`poll`/`close`), and snapshot/quiescence. Host-control
+service calls are the trusted mutation path for resident services such as `/svc/tools`: the kernel stamps
+them as `SYSTEM_CALLER` with full caps and returns a bounded `[status][len][body]` result in the scratch
+buffer. Every export is looked up as an `Option` because the host loads the kernel at runtime and cannot
+know which exports a given artifact carries.
 
 How effects are actually performed off-guest, all composing with the cooperative poll model:
 
@@ -1177,7 +1228,7 @@ agent-os/                      ← the repository root: a Bazel/deps/docs shell
 │       ├── mc-attest          #     import-purity + tier-fit gate (a build error)
 │       ├── mc-abi-gate        #     pin the hand-kept Zig externs to the contract
 │       ├── mc-roster          #     least-privilege /bin symlink generation
-│       ├── mc-svc-manifest    #     generate /etc/services.json from stamped sections
+│       ├── mc-svc-manifest    #     generate /etc/services.d fragments from stamped sections
 │       ├── size               #     the size_limit budget rule
 │       ├── wasi-trampoline / wasm-imports / smoke   #     the conversion + import-audit helpers
 │
@@ -1205,7 +1256,7 @@ agent-os/                      ← the repository root: a Bazel/deps/docs shell
     ├── lib/                   #   shared support libs (json, stdx)
     ├── programs/              #   the guest userland AND the service glue
     │   ├── coreutils/         #     the per-tier multicall /bin
-    │   ├── sh/  pkgfsd/  invoke/  examples/   #     the rest of /bin + the example services
+    │   ├── sh/  pkgfsd/  tools/  examples/    #     the rest of /bin + the example services
     │   ├── luau/              #     the Luau glue (Zig), batteries (.luau), skills
     │   ├── sqlite/            #     the SQLite service glue (Zig), require() lib, skill
     │   └── typst/             #     the typst service glue (Rust), fonts extractor, lib, skill
@@ -1233,7 +1284,7 @@ with their package (the contracts codegen, the wasmtime host transition, the siz
 **Naming.** `agent-os` names the *repository and the build*; it is not a prefix. The running system's
 identity is **`mc`**, frozen into the ABI itself — the `mc` syscall module, `mc_sys_*`, `mc_ctl_*`, the
 `env` bridge, the `mc_tier`/`mc_budget`/`mc_service` custom sections — and carried through to binaries
-(`mc-server`, `mc-tool`), services (`/svc/<name>`), and the JS scope (`@mc/*`, with `<mc-*>` elements).
+(`mc-server`, `tools`), services (`/svc/<name>`), and the JS scope (`@mc/*`, with `<mc-*>` elements).
 Nothing is prefixed `agent-os-`; Bazel labels need no prefix because the package path *is* the namespace
 (`//memcontainers/kernel/rust`, `//memcontainers/contracts:mc_zig`). `module(name = "agent-os")` is the one
 place the project name appears.
@@ -1306,7 +1357,7 @@ while the contract is still soft.
 
 | Area | Status |
 |---|---|
-| Contracts + projector (Rust/Zig/TS/MD/AsyncAPI) | Built; 57 syscalls at ABI 1.6 |
+| Contracts + projector (Rust/Zig/TS/MD/AsyncAPI) | Built; 57 syscalls at ABI 1.7 |
 | Rust kernel (scheduler, wasm runtime, VFS, filesystems, pipes, services, net, snapshots) | Built |
 | Guest sysroot (Rust + Zig), WASI adapter, conformance/attestation | Built |
 | Shell, multicall coreutils, Luau (+ batteries) | Built |

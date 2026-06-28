@@ -1,7 +1,7 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary")
 
-# mc-svc-manifest — read each service binary's `mc_service` name and emit /etc/services.json, so the
-# kernel's service manifest is DERIVED from the stamped binaries instead of hand-written beside them
+# mc-svc-manifest — read each service binary's `mc_service` name and emit /etc/services.d fragments, so
+# the kernel's service manifest is DERIVED from the stamped binaries instead of hand-written beside them
 # (codex #6): the name comes from the binary, the activation policy (eager|lazy) from the image. Both
 # lanes stamp mc_service, so it is lane-agnostic. Dependency-free (hand-rolled wasm parse + JSON), like
 # mc-roster; an image genrule runs it per flavor.

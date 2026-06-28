@@ -12,7 +12,7 @@
 //! export up, gracefully handling an absent one — whereas the kernel applies the cfg to
 //! omit the export entirely. Same contract, consumer-specific projection.
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use wasmtime::{Instance, Store, TypedFunc};
 
 use crate::HostState;
@@ -20,13 +20,27 @@ use crate::HostState;
 /// Map a contract ABI type token to the wasm value type the host sees (a guest pointer or
 /// length is an `i32` at the wasm boundary; `void` is the unit result).
 macro_rules! host_ty {
-    (u32) => { i32 };
-    (i32) => { i32 };
-    (i64) => { i64 };
-    (len) => { i32 };
-    (cptr) => { i32 };
-    (mptr) => { i32 };
-    (void) => { () };
+    (u32) => {
+        i32
+    };
+    (i32) => {
+        i32
+    };
+    (i64) => {
+        i64
+    };
+    (len) => {
+        i32
+    };
+    (cptr) => {
+        i32
+    };
+    (mptr) => {
+        i32
+    };
+    (void) => {
+        ()
+    };
 }
 
 /// Map a row's argument types to wasmtime's `Params`: `()` for zero args, the bare type
@@ -66,8 +80,9 @@ ctl_rust::mc_control_table!(kernel_exports);
 /// peek, commit) are read directly off the struct as `Option`.
 impl KernelExports {
     fn require<T: Clone>(f: &Option<T>, name: &str) -> Result<T> {
-        f.clone()
-            .ok_or_else(|| anyhow!("this kernel artifact lacks the `{name}` export; rebuild the kernel"))
+        f.clone().ok_or_else(|| {
+            anyhow!("this kernel artifact lacks the `{name}` export; rebuild the kernel")
+        })
     }
 
     pub(crate) fn require_tick(&self) -> Result<TypedFunc<(), i32>> {

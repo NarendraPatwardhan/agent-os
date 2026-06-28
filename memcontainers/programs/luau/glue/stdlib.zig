@@ -34,6 +34,7 @@ const MODULES = [_]Module{
     .{ .name = "pptx", .src = @embedFile("lib/pptx.luau") },
     .{ .name = "test", .src = @embedFile("lib/test.luau") },
     .{ .name = "time", .src = @embedFile("lib/time.luau") },
+    .{ .name = "tools", .src = @embedFile("lib/tools.luau") },
     .{ .name = "units", .src = @embedFile("lib/units.luau") },
     .{ .name = "url", .src = @embedFile("lib/url.luau") },
     .{ .name = "xform", .src = @embedFile("lib/xform.luau") },

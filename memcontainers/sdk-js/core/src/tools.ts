@@ -1,10 +1,6 @@
-// Tool builders: zod-typed sugar over `vm.tool()`. `tool()` defines one
-// host-resident tool (zod input → validated args + a JSON-Schema the LLM/agent
-// can introspect); `kit()` groups several under one name.
-//
-// These normalize to `ToolDefinition`s registered via the existing single-name `vm.tool()` /
-// `mc_host_call` path. The full `mc-tool <kit> <cmd> --flags` CLI routing and the served (WS) tool
-// callback land with mc-server.
+// Tool builders: zod-typed sugar over `vm.tool()`. `tool()` defines one host-resident tool (zod input
+// → validated args + JSON Schema); `kit()` groups several under one leading name. The SDK seeds the
+// in-VM tool catalog, while the actual handler remains a host-call function keyed by `ToolDefinition.name`.
 
 import { z } from "zod";
 import type { JsonSchema, ToolContext, ToolDefinition } from "./types.js";
@@ -13,10 +9,16 @@ import type { JsonSchema, ToolContext, ToolDefinition } from "./types.js";
 export interface ToolSpec<S extends z.ZodType = z.ZodType> {
   /** Tool name. Optional inside a {@link kit} (the key provides it). */
   name?: string;
+  /** Optional full catalog address. Defaults to `host.org.main.<normalized name>`. */
+  address?: string;
   description?: string;
   /** zod schema for the input args — validated before `run`, and emitted as
    *  JSON-Schema for LLM/agent introspection. */
   input?: S;
+  /** Optional JSON Schema for the result value. */
+  output?: JsonSchema;
+  /** Tool-plane safety/discovery annotations. */
+  annotations?: Record<string, unknown>;
   run: (args: z.infer<S>, ctx: ToolContext) => Promise<unknown> | unknown;
 }
 
@@ -30,8 +32,11 @@ export function tool<S extends z.ZodType>(spec: ToolSpec<S>): ToolDefinition {
   const schema = spec.input;
   return {
     name: spec.name ?? "",
+    address: spec.address,
     description: spec.description,
     input: schema ? toJsonSchema(schema) : undefined,
+    output: spec.output,
+    annotations: spec.annotations,
     run: (rawArgs: Record<string, unknown>, ctx: ToolContext) => {
       const args = schema ? (schema.parse(rawArgs) as z.infer<S>) : (rawArgs as z.infer<S>);
       return spec.run(args, ctx);
@@ -39,12 +44,50 @@ export function tool<S extends z.ZodType>(spec: ToolSpec<S>): ToolDefinition {
   };
 }
 
-/** The `/etc/mc-tools.json` manifest the guest `mc-tool` reads for `--list`/
- *  `--help`: `{ "<name>": { description?, input?: <JSON-Schema> } }`. */
-export function toolManifestJson(defs: ToolDefinition[]): string {
-  const out: Record<string, { description?: string; input?: JsonSchema }> = {};
-  for (const d of defs) out[d.name] = { description: d.description, input: d.input };
-  return JSON.stringify(out);
+/** The tool catalog shape seeded into `/etc/tools/catalog.json` and applied to `/svc/tools`. */
+export function toolCatalogJson(defs: ToolDefinition[]): string {
+  const addresses = new Set<string>();
+  const tools = defs.map((d) => {
+    assertSafeToolBindingName(d.name);
+    const address = d.address ?? defaultAddress(d.name);
+    if (addresses.has(address)) {
+      throw new Error(`duplicate tool catalog address '${address}'`);
+    }
+    addresses.add(address);
+    const parts = address.split(".");
+    return {
+      address,
+      integration: parts[0] ?? "host",
+      owner: parts[1] ?? "org",
+      connection: parts[2] ?? "main",
+      tool: parts.slice(3).join("."),
+      description: d.description,
+      input_schema: d.input,
+      output_schema: d.output,
+      annotations: d.annotations ?? {},
+      binding: { type: "host_call", name: d.name, args: "json" },
+    };
+  });
+  return JSON.stringify({ tools });
+}
+
+/** Host-call tool bindings share one router with raw mount handlers. Tool bindings must stay in the
+ *  plain UTF-8 tool namespace: non-empty, not a raw `/...` mount key, and no control/framing bytes. */
+export function isSafeToolBindingName(name: string): boolean {
+  return (
+    name.length > 0 &&
+    !name.startsWith("/") &&
+    name.trim() === name &&
+    !/[\u0000-\u001f\u007f]/u.test(name)
+  );
+}
+
+export function assertSafeToolBindingName(name: string): void {
+  if (!isSafeToolBindingName(name)) {
+    throw new Error(
+      `tool name '${name}' must be non-empty, must not start with '/', and must not contain control characters`,
+    );
+  }
 }
 
 /** Run a tool from a JSON args string and return its result as a string — the
@@ -68,9 +111,8 @@ export async function runToolJson(
   return typeof result === "string" ? result : JSON.stringify(result);
 }
 
-/** Group several tools under one kit name. Each subtool is registered as
- *  `<kit> <cmd>` (the agent invokes `mc-tool <kit> <cmd> ...`). Returns the
- *  array of definitions — pass it to `vm.tool()` or `create({ tools })`. */
+/** Group several tools under one kit name. Each subtool is registered as `<kit> <cmd>`. Returns the
+ *  array of definitions — pass it to `await vm.tool()` or `create({ tools })`. */
 export function kit(spec: {
   name: string;
   description?: string;
@@ -81,4 +123,14 @@ export function kit(spec: {
     name: t.name || `${spec.name} ${cmd}`,
     description: t.description ?? spec.description,
   }));
+}
+
+function defaultAddress(name: string): string {
+  const tail = name
+    .split(/\s+/)
+    .flatMap((part) => part.split(/[^A-Za-z0-9_-]+/))
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .join(".");
+  return `host.org.main.${tail || "tool"}`;
 }

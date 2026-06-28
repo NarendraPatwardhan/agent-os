@@ -1,8 +1,8 @@
 //! sqlite resident-service e2e (Phase 6): the `require("sqlite")` library on the `atlas` flavor — a
 //! warm connection, typed rows, parameterized writes, transactions, and the headline sqlite→xlsx
 //! composition (values flowing across libraries, which the shell-out CLI can't do). All driven through
-//! the real shell on the real kernel (B6, no mocks): the kernel activates the sqlite service from
-//! /etc/services.json at boot, and luau reaches it over sys.svc.
+//! the real shell on the real kernel (B6, no mocks): the kernel activates sqlite from its
+//! /etc/services.d fragment, and luau reaches it over sys.svc.
 
 use crate::boot_atlas;
 

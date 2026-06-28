@@ -16,6 +16,7 @@ pub mod proxy;
 pub mod servedfs;
 pub mod servicefs;
 pub mod tarfs;
+pub mod toolsfs;
 pub mod utils;
 
 pub use cowfs::CowFs;
@@ -29,3 +30,4 @@ pub use persistfs::PersistFs;
 pub use procfs::ProcFs;
 pub use servedfs::{ServeChannel, ServedFs};
 pub use tarfs::TarFs;
+pub use toolsfs::ToolsFs;

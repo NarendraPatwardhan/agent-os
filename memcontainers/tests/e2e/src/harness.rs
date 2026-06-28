@@ -17,7 +17,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use host::{CaptureSink, DirEntry, DiskPersist, KernelHost, KernelHostBuilder, MapHostCall};
+use host::{
+    CaptureSink, DirEntry, DiskPersist, KernelHost, KernelHostBuilder, MapHostCall, NetCapability,
+};
 
 /// Generous tick budget for one shell operation (a pipeline can yield across many ticks).
 const MAX_TICKS_PER_OP: usize = 200_000;
@@ -31,7 +33,9 @@ const MAX_TICKS_PER_HEAVY_OP: usize = 12_000_000;
 /// Locate a `data`-dep artifact in the test's runfiles by its workspace-relative path.
 fn runfile(path: &str) -> Vec<u8> {
     let r = runfiles::Runfiles::create().expect("runfiles unavailable");
-    let p = r.rlocation(path).unwrap_or_else(|| panic!("{path} not found in runfiles"));
+    let p = r
+        .rlocation(path)
+        .unwrap_or_else(|| panic!("{path} not found in runfiles"));
     std::fs::read(&p).unwrap_or_else(|e| panic!("reading {}: {e}", p.display()))
 }
 
@@ -64,7 +68,9 @@ fn builder(image: &str) -> (KernelHostBuilder, Arc<Mutex<Vec<u8>>>) {
 /// control-channel tests that need no guest programs.
 pub fn boot() -> Session {
     let (b, stdout) = builder("_main/memcontainers/images/base.tar");
-    let host = b.build().expect("kernel booted under the host (base image)");
+    let host = b
+        .build()
+        .expect("kernel booted under the host (base image)");
     Session { host, stdout }
 }
 
@@ -72,7 +78,9 @@ pub fn boot() -> Session {
 /// tty tests that run real guest programs through the interactive shell.
 pub fn boot_posix() -> Session {
     let (b, stdout) = builder("_main/memcontainers/images/posix.tar");
-    let host = b.build().expect("kernel booted under the host (posix image)");
+    let host = b
+        .build()
+        .expect("kernel booted under the host (posix image)");
     Session { host, stdout }
 }
 
@@ -92,8 +100,43 @@ pub fn boot_loom() -> Session {
     Session { host, stdout }
 }
 
-/// Boot the `svc_test` image (loom + the `kv` + `crashloop` example services + the generated
-/// /etc/services.json). For the svc-primitive proof: kv reached from the CLI (`kv get`) and Luau
+/// Boot the `loom` image with a host-call tool registry installed. This is the Luau `require("tools")`
+/// proof: the language battery talks to the base `/svc/tools` broker, which then egresses through the
+/// opted-in host-call map.
+pub fn boot_loom_with_tools(tools: MapHostCall) -> Session {
+    let (b, stdout) = builder("_main/memcontainers/images/loom.tar");
+    let host = b
+        .with_host_call(Box::new(tools))
+        .build()
+        .expect("kernel booted (loom image with tools)");
+    Session { host, stdout }
+}
+
+/// Boot the `loom` image with a real host network capability installed.
+pub fn boot_loom_with_net(net: Box<dyn NetCapability>) -> Session {
+    let (b, stdout) = builder("_main/memcontainers/images/loom.tar");
+    let host = b
+        .with_net(net)
+        .build()
+        .expect("kernel booted (loom image with net)");
+    Session { host, stdout }
+}
+
+/// Boot the `loom` image with both network and host-call tools installed. Adapter-backed destructive
+/// tools need this exact shape: `/svc/adapters` reaches the network, while `/svc/tools` asks the
+/// host-call permission broker before dispatching a destructive catalog record.
+pub fn boot_loom_with_net_and_tools(net: Box<dyn NetCapability>, tools: MapHostCall) -> Session {
+    let (b, stdout) = builder("_main/memcontainers/images/loom.tar");
+    let host = b
+        .with_net(net)
+        .with_host_call(Box::new(tools))
+        .build()
+        .expect("kernel booted (loom image with net and tools)");
+    Session { host, stdout }
+}
+
+/// Boot the `svc_test` image (loom + the `kv` + `crashloop` example services + generated
+/// /etc/services.d fragments). For the svc-primitive proof: kv reached from the CLI (`kv get`) and Luau
 /// (`sys.svc`), warm across calls, crash-only recovery, oversize survival, and crashloop's bounded
 /// activation failure.
 pub fn boot_svc_test() -> Session {
@@ -103,7 +146,7 @@ pub fn boot_svc_test() -> Session {
 }
 
 /// Boot the `atlas` image (loom + the sqlite resident service + the require("sqlite") library +
-/// /etc/services.json). For the sqlite e2e: the warm typed data layer, transactions, and the
+/// /etc/services.d fragment). For the sqlite e2e: the warm typed data layer, transactions, and the
 /// sqlite→xlsx composition.
 pub fn boot_atlas() -> Session {
     let (b, stdout) = builder("_main/memcontainers/images/atlas.tar");
@@ -112,7 +155,7 @@ pub fn boot_atlas() -> Session {
 }
 
 /// Boot the `paper` image (loom + the typst resident service + require("typst") + the /usr/share/fonts
-/// baseline faces + /etc/services.json). For the typst e2e: the warm compiler, the CLI + library faces,
+/// baseline faces + /etc/services.d fragment). For the typst e2e: the warm compiler, the CLI + library faces,
 /// streamed PDFs, and diagnostics.
 pub fn boot_paper() -> Session {
     let (b, stdout) = builder("_main/memcontainers/images/paper.tar");
@@ -120,11 +163,14 @@ pub fn boot_paper() -> Session {
     Session { host, stdout }
 }
 
-/// Boot the `posix` image with a host-call tool registry installed (the `invoke` tests). The host
+/// Boot the `posix` image with a host-call tool registry installed (the tool-plane tests). The host
 /// refuses host calls by default (A9, `DeniedHostCall`); this opts in with a tool map.
 pub fn boot_posix_with_tools(tools: MapHostCall) -> Session {
     let (b, stdout) = builder("_main/memcontainers/images/posix.tar");
-    let host = b.with_host_call(Box::new(tools)).build().expect("kernel booted with host tools");
+    let host = b
+        .with_host_call(Box::new(tools))
+        .build()
+        .expect("kernel booted with host tools");
     Session { host, stdout }
 }
 
@@ -134,7 +180,10 @@ pub fn boot_posix_with_tools(tools: MapHostCall) -> Session {
 pub fn boot_posix_with_persist(dir: std::path::PathBuf) -> Session {
     std::fs::create_dir_all(&dir).expect("create persist backing dir");
     let (b, stdout) = builder("_main/memcontainers/images/posix.tar");
-    let host = b.with_persist(Box::new(DiskPersist::new(dir))).build().expect("kernel booted with persist");
+    let host = b
+        .with_persist(Box::new(DiskPersist::new(dir)))
+        .build()
+        .expect("kernel booted with persist");
     Session { host, stdout }
 }
 
@@ -193,7 +242,10 @@ impl Session {
                 return;
             }
         }
-        panic!("timed out waiting for the shell prompt; transcript:\n{}", self.transcript());
+        panic!(
+            "timed out waiting for the shell prompt; transcript:\n{}",
+            self.transcript()
+        );
     }
 
     /// Type `line` + Enter at the console and wait for the next prompt; return the raw terminal

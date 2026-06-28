@@ -129,7 +129,11 @@ impl FileHandle for DevFileHandle {
             SeekFrom::Current(n) => self.offset as i64 + n,
             SeekFrom::End(n) => {
                 // Devices have no end
-                if n < 0 { 0 } else { n as i64 }
+                if n < 0 {
+                    0
+                } else {
+                    n as i64
+                }
             }
         };
 

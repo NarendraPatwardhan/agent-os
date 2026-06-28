@@ -36,15 +36,15 @@ use crate::fs::servicefs::{
     clear_activation, grant_holder, lookup_service, mark_failed, register_service,
     service_registered, service_state, valid_service_name, DelegatedHandle, RespondOutcome,
     ServiceChannel, ServiceInbound, ServiceState, SvcCallSource, SvcConnHandle, SvcRead,
-    SvcServeOwner, SVC_RESPONSE_HIGH_WATER,
+    SvcServeOwner, MAX_SVC_REQUEST_BYTES, SVC_RESPONSE_HIGH_WATER,
 };
 use crate::fs::{MemFs, ServeChannel, ServedFs};
 use crate::host_call::{HostCallRead, HostCallSource};
 use crate::io::{EmptySource, PipeSink, PipeSource, ReadSource, TerminalSink, WriteSink};
 use crate::net::{HttpPoll, HttpReq, NetError, WsConn};
 use crate::task::{
-    BlockReason, CAP_AMBIENT, CAP_FS_READ, CAP_MOUNT, CAP_NET, CAP_PERSIST, CAP_SCRATCH, CAP_SPAWN,
-    Capabilities, TaskId, TaskState, Tier,
+    BlockReason, Capabilities, TaskId, TaskState, Tier, CAP_AMBIENT, CAP_FS_READ, CAP_MOUNT,
+    CAP_NET, CAP_PERSIST, CAP_SCRATCH, CAP_SPAWN,
 };
 use crate::vfs::{FileHandle, FsError, KPath, Namespace, NodeType, OpenFlags, SeekFrom};
 use crate::wasm::abi::*;
@@ -52,13 +52,11 @@ use crate::wasm::abi::*;
 /// Cap on a guest's open fd table — the per-VM "maximum open fds" budget.
 /// Standard fds 0/1/2 are not counted; this bounds entries ≥ 3.
 const MAX_OPEN_FDS: usize = 256;
-/// Cap on one resident-service request blob. Results still stream through the
-/// readable result fd; requests are copied into the kernel queue, so bound them.
-const MAX_SVC_REQUEST_BYTES: usize = 1 << 20;
 /// Max fds one `svc_call` may delegate (SYSTEMS.md) — bounds the server's handle buffer.
 const MAX_DELEGATED_HANDLES: usize = 8;
-/// svc recv envelope header: `[kind:u8][nhandles:u8][session:u32][req_id:u32][blob_len:u32]` (LE).
-const SVC_ENVELOPE_HEADER: usize = 14;
+/// svc recv envelope header:
+/// `[kind:u8][nhandles:u8][session:u32][req_id:u32][caller:u32][caller_caps:u32][blob_len:u32]` (LE).
+const SVC_ENVELOPE_HEADER: usize = 22;
 /// Envelope `kind`: a call to answer, vs a session-closed tombstone (a one-way notification).
 const SVC_KIND_CALL: u8 = 0;
 const SVC_KIND_SESSION_CLOSED: u8 = 1;
@@ -88,7 +86,7 @@ enum GuestFd {
     /// guest exiting) closes the channel so pending requesters fail rather than
     /// block forever.
     Serve(ServeOwner),
-    /// A readable host-call result (`mc_sys_host_call`): the `mc-tool` shim and
+    /// A readable host-call result (`mc_sys_host_call`): the tool broker and
     /// host-backed mounts. Owns the kernel `HostCallSource`, so dropping the slot
     /// closes the host handle (R1).
     HostCall(SharedHostCall),
@@ -217,7 +215,7 @@ impl ReadSource for SharedNetSource {
     }
 
     fn is_eof(&self) -> bool {
-        matches!(self.0.0.borrow().phase, NetPhase::Eof)
+        matches!(self.0 .0.borrow().phase, NetPhase::Eof)
     }
 }
 
@@ -379,7 +377,11 @@ fn parse_http_status(head: &[u8]) -> u16 {
             break;
         }
     }
-    if saw { n } else { 0 }
+    if saw {
+        n
+    } else {
+        0
+    }
 }
 
 /// Largest single WebSocket message the kernel will buffer per `recv`.
@@ -1286,7 +1288,7 @@ impl GuestProgram {
                 handles_ptr,
                 nhandles,
                 ret_fd,
-            } => self.fulfill_svc_call(fd, req_ptr, req_len, handles_ptr, nhandles, ret_fd),
+            } => self.fulfill_svc_call(ctx, fd, req_ptr, req_len, handles_ptr, nhandles, ret_fd),
             Pending::Kill { pid, sig } => self.fulfill_kill(ctx, pid, sig),
             Pending::Sigdisp { sig, disp } => self.fulfill_sigdisp(ctx, sig, disp),
             Pending::Setpgid { pid, pgid } => self.fulfill_setpgid(ctx, pid, pgid),
@@ -2311,8 +2313,8 @@ impl GuestProgram {
         let channel = ServiceChannel::new();
         register_service(&name, channel.clone());
         clear_activation(&name); // grant consumed; the channel is now in the registry
-        // On `alloc_fd` failure the `SvcServeOwner` is dropped here, which closes the
-        // channel and deregisters `name` — no orphaned registration.
+                                 // On `alloc_fd` failure the `SvcServeOwner` is dropped here, which closes the
+                                 // channel and deregisters `name` — no orphaned registration.
         match self.alloc_fd(GuestFd::SvcServe(SvcServeOwner::new(name, channel))) {
             Some(fd) => match self.write_guest_u32(ret_fd, fd as u32) {
                 Ok(()) => Fulfilled::Resume(ESUCCESS),
@@ -2324,9 +2326,9 @@ impl GuestProgram {
 
     /// `mc_sys_svc_recv(fd, buf, buf_len, hbuf, hbuf_len) -> len`: receive the next inbound for a
     /// resident service (blocking). Encodes the envelope
-    /// `[kind:u8][nhandles:u8][session:u32][req_id:u32][blob_len:u32][blob…]` (LE) into `buf` and any
-    /// delegated fd numbers (cloned into THIS server's fd table) into `hbuf`, returning the envelope
-    /// length. `kind` is a call (0) or a session-closed tombstone (1, freeing the service's own
+    /// `[kind:u8][nhandles:u8][session:u32][req_id:u32][caller:u32][caller_caps:u32][blob_len:u32][blob…]` (LE) into
+    /// `buf` and any delegated fd numbers (cloned into THIS server's fd table) into `hbuf`, returning the
+    /// envelope length. `kind` is a call (0) or a session-closed tombstone (1, freeing the service's own
     /// per-session state — codex #1). A call too large for the server's buffers is auto-rejected (the
     /// client's call fails; the server is never stalled or killed — codex #3). Yields (`Pending`) until
     /// an inbound is available.
@@ -2355,9 +2357,11 @@ impl GuestProgram {
         // is the primary teardown; this is defense-in-depth). Each drop also enqueues a SessionClosed
         // tombstone, which we may deliver below so the service can free that session's own warm state.
         channel.borrow_mut().evict_dead_sessions(|pid| {
-            ctx.sched
-                .get_task(pid)
-                .is_some_and(|t| !matches!(t.state, TaskState::Zombie))
+            pid == crate::vfs::SYSTEM_CALLER
+                || ctx
+                    .sched
+                    .get_task(pid)
+                    .is_some_and(|t| !matches!(t.state, TaskState::Zombie))
         });
         // Reap any streaming response a client has stopped draining past its deadline — keeps a stuck
         // client from pinning the kernel buffer / quiescence gate, without the server ever blocking on it.
@@ -2385,6 +2389,8 @@ impl GuestProgram {
                                 SVC_KIND_DRAIN_READY,
                                 session,
                                 req_id,
+                                crate::vfs::SYSTEM_CALLER,
+                                0,
                                 &[],
                                 &[],
                             );
@@ -2405,6 +2411,8 @@ impl GuestProgram {
                         hbuf,
                         SVC_KIND_SESSION_CLOSED,
                         session,
+                        0,
+                        crate::vfs::SYSTEM_CALLER,
                         0,
                         &[],
                         &[],
@@ -2443,6 +2451,8 @@ impl GuestProgram {
                 SVC_KIND_CALL,
                 req.session,
                 req.req_id,
+                req.caller,
+                req.caller_caps,
                 &req.blob,
                 &handle_bytes,
             );
@@ -2549,7 +2559,9 @@ impl GuestProgram {
                 // from the manifest → no such service (`ENOENT`). Bounds the busy-poll / respawn-forever a
                 // hung or crash-looping service used to cause (#4), now with backoff (#6).
                 match service_state(&name) {
-                    Some(ServiceState::Activating { pid, deadline_ms, .. }) => {
+                    Some(ServiceState::Activating {
+                        pid, deadline_ms, ..
+                    }) => {
                         let alive = ctx
                             .sched
                             .get_task(pid)
@@ -2568,7 +2580,11 @@ impl GuestProgram {
                         self.store.data_mut().pending = None;
                         return Fulfilled::Resume(EIO);
                     }
-                    Some(ServiceState::Failed { until_ms, last_errno, .. }) => {
+                    Some(ServiceState::Failed {
+                        until_ms,
+                        last_errno,
+                        ..
+                    }) => {
                         if crate::wall_now_ms() < until_ms {
                             self.store.data_mut().pending = None;
                             return Fulfilled::Resume(last_errno); // in cooldown — fail fast, no respawn
@@ -2607,6 +2623,7 @@ impl GuestProgram {
     /// table at `svc_recv`; only `File`/`PipeRead`/`PipeWrite` may travel (SYSTEMS.md).
     fn fulfill_svc_call(
         &mut self,
+        ctx: &mut BuiltinCtx<'_>,
         fd: i32,
         req_ptr: u32,
         req_len: u32,
@@ -2650,11 +2667,16 @@ impl GuestProgram {
         if !self.fd_slots_available(1) {
             return Fulfilled::Resume(EMFILE);
         }
-        let req_id = match channel.borrow_mut().enqueue(session, blob, handles) {
-            Some(id) => id,
-            // The server has exited (or the session is gone): fail crash-only; handles drop (released).
-            None => return Fulfilled::Resume(EIO),
-        };
+        let caller_caps = self.policy(ctx).0.bits() as u32;
+        let req_id =
+            match channel
+                .borrow_mut()
+                .enqueue(session, ctx.pid, caller_caps, blob, handles)
+            {
+                Some(id) => id,
+                // The server has exited (or the session is gone): fail crash-only; handles drop (released).
+                None => return Fulfilled::Resume(EIO),
+            };
         let source = SvcCallSource::new(channel, session, req_id);
         match self.alloc_fd(GuestFd::SvcCall(SharedSvcCall::new(source))) {
             Some(fd) => match self.write_guest_u32(ret_fd, fd as u32) {
@@ -2676,10 +2698,14 @@ impl GuestProgram {
         match self.files.get((fd - 3) as usize).and_then(|s| s.as_ref()) {
             Some(GuestFd::File(sf)) => Some(DelegatedHandle::File(sf.0.clone())),
             Some(GuestFd::PipeRead(ps)) => {
-                Some(DelegatedHandle::PipeRead(PipeSource::new(unsafe { &*ps.pipe })))
+                Some(DelegatedHandle::PipeRead(PipeSource::new(unsafe {
+                    &*ps.pipe
+                })))
             }
             Some(GuestFd::PipeWrite(pk)) => {
-                Some(DelegatedHandle::PipeWrite(PipeSink::new(unsafe { &*pk.pipe })))
+                Some(DelegatedHandle::PipeWrite(PipeSink::new(unsafe {
+                    &*pk.pipe
+                })))
             }
             _ => None,
         }
@@ -2707,6 +2733,8 @@ impl GuestProgram {
         kind: u8,
         session: u32,
         req_id: u32,
+        caller: u32,
+        caller_caps: u32,
         blob: &[u8],
         handle_bytes: &[u8],
     ) -> Fulfilled {
@@ -2716,6 +2744,8 @@ impl GuestProgram {
         out.push((handle_bytes.len() / 4) as u8);
         out.extend_from_slice(&session.to_le_bytes());
         out.extend_from_slice(&req_id.to_le_bytes());
+        out.extend_from_slice(&caller.to_le_bytes());
+        out.extend_from_slice(&caller_caps.to_le_bytes());
         out.extend_from_slice(&(blob.len() as u32).to_le_bytes());
         out.extend_from_slice(blob);
         if let Err(e) = self.write_guest_bytes(buf, &out) {
@@ -3833,7 +3863,7 @@ impl GuestProgram {
     }
 
     /// `mc_sys_host_call(req_ptr, req_len) -> fd`: invoke a host-resident
-    /// function (the `mc-tool` shim / a host-backed mount). The guest passes an
+    /// function (the tool broker / a host-backed mount). The guest passes an
     /// opaque request blob and receives a **readable** result fd; it never sees
     /// the host handle (R1). Gated by `CAP_NET` (a host call is host-terminated
     /// egress, the same authority class) plus host availability — default-deny
@@ -4117,7 +4147,11 @@ pub fn declared_budget(bytes: &[u8]) -> Option<Budget> {
     let fuel = u64::from_le_bytes(p[12..20].try_into().ok()?);
     let table = u32::from_le_bytes(p[20..24].try_into().ok()?);
     Some(Budget {
-        mem_bytes: if mem > usize::MAX as u64 { usize::MAX } else { mem as usize },
+        mem_bytes: if mem > usize::MAX as u64 {
+            usize::MAX
+        } else {
+            mem as usize
+        },
         fuel,
         table: table as usize,
     })

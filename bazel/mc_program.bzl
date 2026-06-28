@@ -187,9 +187,9 @@ def mc_rust_program(name, lib, tier, mem = 0, fuel = 0, table = 0, service = "",
 
 def _mc_service_layer_impl(ctx):
     # Read the service NAME from each target's McProgramInfo (the graph), not by re-parsing the wasm.
-    # mc-svc-manifest then writes /bin/<service> for both the install and the manifest's "binary" field
-    # from that one name, and asserts the binary's own stamped mc_service matches — so the install path,
-    # the manifest, and the artifact can never disagree (codex #2).
+    # mc-svc-manifest then writes /bin/<service> and /etc/services.d/<service>.json from that one name,
+    # and asserts the binary's own stamped mc_service matches — so the install path, the fragment, and
+    # the artifact can never disagree (codex #2).
     tar = ctx.actions.declare_file(ctx.label.name + ".tar")
     args = [tar.path]
     inputs = []
@@ -215,9 +215,9 @@ def _mc_service_layer_impl(ctx):
 mc_service_layer = rule(
     implementation = _mc_service_layer_impl,
     doc = "Build a resident-service LAYER tar (codex #2): every service's stamped binary installed at " +
-          "/bin/<service> PLUS the /etc/services.json that activates them, both derived from the targets' " +
-          "McProgramInfo.service — so the install path and the manifest's binary field are written ONCE " +
-          "and cannot drift, and the manifest is graph-derived rather than hand-written beside the image. " +
+          "/bin/<service> PLUS a composable /etc/services.d/<service>.json fragment, both derived from " +
+          "the targets' McProgramInfo.service — so the install path and the fragment's binary field are " +
+          "written ONCE and cannot drift, and the manifest is graph-derived rather than hand-written beside the image. " +
           "`eager` services start at boot; `lazy` ones on the first svc_connect. Merge into an image with " +
           "pkg_tar(deps = [..., \":<name>\"]).",
     attrs = {

@@ -2,8 +2,8 @@
 // `"remote"` runtime (mc-server over the wire protocol) throws until mc-server is ported; the Vm
 // surface is identical across backends, so it slots in later without changing this file's shape.
 
-import { HostNet, KernelHostBuilder, MapHostCall, OpfsPersist } from "@mc/host";
-import type { KernelHost } from "@mc/host";
+import { ConnectionRegistry, HostNet, KernelHostBuilder, MapHostCall, OpfsPersist } from "@mc/host";
+import type { KernelHost, RawToolHandler } from "@mc/host";
 // Boot-contract tier ordinals come from the generated contract — the single source of truth the
 // kernel's `Tier` also derives from (contracts/constants.kdl → constants.gen.ts), never a local copy.
 import {
@@ -18,12 +18,13 @@ import { defaultImage, defaultKernel } from "./artifacts.js";
 import { defaultStore } from "./store.js";
 import { record } from "./record.js";
 import { makeFs } from "./fs.js";
-import { toolManifestJson } from "./tools.js";
+import { toolCatalogJson } from "./tools.js";
 import { startCron } from "./cron.js";
 import type { CronAction, CronHandle, CronOptions } from "./cron.js";
 import type { Backend } from "./backend.js";
 import type {
   ContentStore,
+  ConnectionDefinition,
   CreateOptions,
   DirEntry,
   Driver,
@@ -40,6 +41,7 @@ import type {
 
 const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+const TOOL_PERMISSION_HANDLER = "/svc/tools/permission";
 
 /** POSIX single-quote an argv element so it survives the shell `vm.exec` runs. */
 const shQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -50,8 +52,7 @@ export type { VmFs } from "./types.js";
 export class Vm {
   /** Filesystem ops (`vm.fs.read` / `write` / `ls` / `stat` / `mkdir` / `rm`). */
   readonly fs: VmFs;
-  /** All registered tools (boot-time + runtime), for the `/etc/mc-tools.json`
-   *  manifest the guest `mc-tool` reads. */
+  /** All registered tools (boot-time + runtime), mirrored into the `/svc/tools` live catalog. */
   private readonly registeredTools: ToolDefinition[];
   /** Host-backed mounts that must be re-registered when this VM is forked. */
   private readonly registeredMounts: MountSpec[];
@@ -130,21 +131,33 @@ export class Vm {
     };
   }
 
-  /** Register one or more host-resident tools the agent inside the VM can invoke
-   *  via `mc-tool <name> <json>`. The handler runs host-side. Build defs
-   *  with {@link tool} / {@link kit}. */
-  tool(def: ToolDefinition | ToolDefinition[]): void {
+  /** Register one or more host-resident tools the agent inside the VM can invoke through
+   *  `/svc/tools` and the Luau `tools` battery. The handler runs host-side. Build defs with
+   *  {@link tool} / {@link kit}. The returned promise resolves only after the warm service has
+   *  atomically accepted the new catalog. */
+  async tool(def: ToolDefinition | ToolDefinition[]): Promise<void> {
     const defs = Array.isArray(def) ? def : [def];
+    const previous = [...this.registeredTools];
+    const next = [...this.registeredTools];
     for (const d of defs) {
       this.backend.tool(d);
-      const existing = this.registeredTools.findIndex((t) => t.name === d.name);
-      if (existing >= 0) this.registeredTools[existing] = d;
-      else this.registeredTools.push(d);
+      const existing = next.findIndex((t) => t.name === d.name);
+      if (existing >= 0) next[existing] = d;
+      else next.push(d);
     }
+    try {
+      await applyToolCatalog(this.backend, next);
+      await seedToolAliases(this.backend, defs, this.handledToolAliases);
+    } catch (e) {
+      for (const d of defs) {
+        const prev = previous.find((t) => t.name === d.name);
+        if (prev) this.backend.tool(prev);
+        else this.backend.unregisterTool(d.name);
+      }
+      throw e;
+    }
+    this.registeredTools.splice(0, this.registeredTools.length, ...next);
     this.opts.tools = [...this.registeredTools];
-    // Refresh the guest manifest + `/bin` aliases (best-effort; runtime additions are rare).
-    void seedToolManifest(this.backend, this.registeredTools);
-    void seedToolAliases(this.backend, defs, this.handledToolAliases);
   }
 
   /** Install a host-backed driver as a `FileSystem` at `path`. The driver
@@ -336,6 +349,14 @@ function netEnabled(opts: CreateOptions): boolean {
   return false;
 }
 
+function connectionRegistry(defs: ConnectionDefinition[]): ConnectionRegistry {
+  const registry = new ConnectionRegistry();
+  for (const def of defs) {
+    registry.insert(def.ref, def.auth, def.origins);
+  }
+  return registry;
+}
+
 /** The set of hosts allowed without prompting, from `permissions.network.allow`.
  *  `undefined` = no filtering (open net). An empty/missing array = prompt for
  *  every host. */
@@ -366,6 +387,64 @@ function makeApprover(
     });
 }
 
+function makeToolPermissionHandler(onPermission: CreateOptions["onPermission"]): RawToolHandler | undefined {
+  if (!onPermission) return undefined;
+  let id = 0;
+  return async (body) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(dec(body));
+    } catch {
+      return enc(JSON.stringify({ allow: false, message: "bad tool approval request" }));
+    }
+    if (!parsed || typeof parsed !== "object") {
+      return enc(JSON.stringify({ allow: false, message: "bad tool approval request" }));
+    }
+    const p = parsed as Record<string, unknown>;
+    const policy =
+      p.policy && typeof p.policy === "object" ? (p.policy as Record<string, unknown>) : {};
+    const stringField = (name: string): string => {
+      const value = p[name];
+      return typeof value === "string" ? value : "";
+    };
+    const policyString = (name: string): string | undefined => {
+      const value = policy[name];
+      return typeof value === "string" ? value : undefined;
+    };
+
+    return new Promise<Uint8Array>((resolve) => {
+      let settled = false;
+      const finish = (allow: boolean, message?: string): void => {
+        if (settled) return;
+        settled = true;
+        resolve(enc(JSON.stringify(message ? { allow, message } : { allow })));
+      };
+      const req = {
+        id: ++id,
+        kind: "tool_approval" as const,
+        address: stringField("address"),
+        integration: stringField("integration"),
+        owner: stringField("owner"),
+        connection: stringField("connection"),
+        tool: stringField("tool"),
+        description: stringField("description"),
+        approvalDescription: stringField("approvalDescription"),
+        argsPreview: stringField("argsPreview"),
+        argsSha256: stringField("argsSha256"),
+        policy: {
+          action: "require_approval" as const,
+          source: policyString("source") === "policy" ? ("policy" as const) : ("annotation" as const),
+          ...(policyString("id") ? { id: policyString("id") } : {}),
+          ...(policyString("pattern") ? { pattern: policyString("pattern") } : {}),
+        },
+        allow: () => finish(true),
+        reject: (message?: string) => finish(false, message),
+      };
+      void Promise.resolve(onPermission(req)).catch(() => finish(false));
+    });
+  };
+}
+
 /** The remote backend (mc-server over REST + the wire protocol) is not yet ported into agent-os —
  *  mc-server itself isn't ported. `runtime: "remote"` and `mc.connect` route here until it lands. */
 function remoteUnsupported(): never {
@@ -382,6 +461,8 @@ async function makeEmbedded(
   const wasm = opts.kernel ?? (await defaultKernel());
   const stdout = new FanoutSink();
   const tools = new MapHostCall();
+  const toolPermission = makeToolPermissionHandler(opts.onPermission);
+  if (toolPermission) tools.registerRaw(TOOL_PERMISSION_HANDLER, toolPermission);
   let builder = new KernelHostBuilder(wasm)
     .withStdout(stdout)
     .withStderr(stdout)
@@ -390,7 +471,11 @@ async function makeEmbedded(
   if (opts.deterministic) builder = builder.deterministic();
   if (netEnabled(opts)) {
     builder = builder.withNet(
-      new HostNet({ allowlist: netAllowlist(opts), approver: makeApprover(opts.onPermission) }),
+      new HostNet({
+        allowlist: netAllowlist(opts),
+        approver: makeApprover(opts.onPermission),
+        connections: connectionRegistry(opts.connections ?? []),
+      }),
     );
   }
   // Durable `/var/persist`: in a browser OPFS/IndexedDB survives a reload; the
@@ -414,7 +499,10 @@ async function makeEmbedded(
   }
   const backend = new EmbeddedBackend(host, stdout, tools);
   for (const t of opts.tools ?? []) backend.tool(t);
-  await seedToolManifest(backend, opts.tools ?? []);
+  await seedToolCatalog(backend, opts.tools ?? []);
+  if (snapshot) {
+    await applyToolCatalog(backend, opts.tools ?? []);
+  }
   await seedToolAliases(backend, opts.tools ?? [], undefined, snapshot !== null);
   // Install boot-time mounts before the backend is returned (and before any
   // exec), so the first command already sees them. Declaration order is kept.
@@ -424,22 +512,44 @@ async function makeEmbedded(
   return backend;
 }
 
-/** Write the `/etc/mc-tools.json` manifest the guest `mc-tool` reads for `--list`
- *  and `<kit> <cmd>` discovery. Best-effort `mkdir /etc` (it usually exists). */
-async function seedToolManifest(backend: Backend, defs: ToolDefinition[]): Promise<void> {
-  if (!defs.length) return;
+/** Write the boot-seed `/etc/tools/catalog.json` catalog. Once `/svc/tools` is active, catalog mutation
+ *  must go through `applyToolCatalog`; this file is only the cold-start seed/checkpoint. */
+async function seedToolCatalog(backend: Backend, defs: ToolDefinition[]): Promise<void> {
   try {
     await backend.mkdir("/etc");
   } catch {
     /* already exists */
   }
-  await backend.write("/etc/mc-tools.json", enc(toolManifestJson(defs)));
+  try {
+    await backend.mkdir("/etc/tools");
+  } catch {
+    /* already exists */
+  }
+  await backend.write("/etc/tools/catalog.json", enc(toolCatalogJson(defs)));
+}
+
+async function applyToolCatalog(backend: Backend, defs: ToolDefinition[]): Promise<void> {
+  const catalog = JSON.parse(toolCatalogJson(defs)) as { tools?: unknown };
+  const req = JSON.stringify({ op: "catalog.apply", tools: catalog.tools ?? [] });
+  const raw = await backend.serviceCall("tools", enc(req));
+  let response: unknown;
+  try {
+    response = JSON.parse(dec(raw));
+  } catch {
+    throw new Error("/svc/tools returned a non-JSON catalog.apply response");
+  }
+  if (!response || typeof response !== "object" || (response as { ok?: unknown }).ok !== true) {
+    const err = (response as { err?: { code?: unknown; message?: unknown } } | null)?.err;
+    const code = typeof err?.code === "string" ? err.code : "catalog_apply_failed";
+    const message = typeof err?.message === "string" ? err.message : "tool catalog update failed";
+    throw new Error(`/svc/tools ${code}: ${message}`);
+  }
 }
 
 /** Make each registered tool/kit a first-class command: a `/bin/<name>` symlink →
- *  `mc-tool`, so the agent can run `weather get …` directly instead of
- *  `mc-tool weather get …` (busybox-style argv[0] dispatch, like mcbox — one
- *  `mc-tool` binary + tiny symlinks, no per-tool copy). One alias per unique
+ *  `tools`, so the agent can run `weather get …` directly instead of
+ *  `tools call …` (busybox-style argv[0] dispatch, like mcbox — one
+ *  `tools` binary + tiny symlinks, no per-tool copy). One alias per unique
  *  leading name token (a kit's `"weather get"`/`"weather set"` → one `/bin/weather`).
  *  Guarded: a name that isn't a safe single path component, or that already exists
  *  in `/bin`, is skipped (never clobbers a real command). */
@@ -453,7 +563,7 @@ function toolAliasNames(defs: ToolDefinition[]): Set<string> {
 }
 
 function isSafeToolAlias(name: string): boolean {
-  return name !== "mc-tool" && /^[A-Za-z0-9._-]+$/.test(name);
+  return name !== "tools" && /^[A-Za-z0-9._-]+$/.test(name);
 }
 
 async function seedToolAliases(
@@ -477,7 +587,7 @@ async function seedToolAliases(
       existing = undefined; // ENOENT — free to create
     }
     if (!existing) {
-      await backend.symlink("mc-tool", link);
+      await backend.symlink("tools", link);
     } else if (!(quietExistingSymlinks && existing.isSymlink)) {
       // Any existing `/bin` path is occupied, including symlinks like `date ->
       // mcbox-ro`. Without readlink in the public fs API, assuming "symlink means

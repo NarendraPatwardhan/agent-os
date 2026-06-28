@@ -2,7 +2,7 @@
 
 // syscall ABI version: (major << 16) | minor
 pub const SYS_ABI_MAJOR: i64 = 1;
-pub const SYS_ABI_MINOR: i64 = 6;
+pub const SYS_ABI_MINOR: i64 = 7;
 pub fn abi_version() i64 { return (SYS_ABI_MAJOR << 16) | SYS_ABI_MINOR; }
 
 // errno

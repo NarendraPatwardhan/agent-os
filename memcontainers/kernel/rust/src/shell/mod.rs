@@ -10,7 +10,7 @@ pub mod parser;
 pub mod pipeline;
 
 pub use executor::Executor;
-pub use parser::{Pipeline, PipelineSeq, Sep, parse_line};
+pub use parser::{parse_line, Pipeline, PipelineSeq, Sep};
 pub use pipeline::{
-    OutputCapture, reap_finished, run_round, submit_pipeline, submit_pipeline_captured,
+    reap_finished, run_round, submit_pipeline, submit_pipeline_captured, OutputCapture,
 };

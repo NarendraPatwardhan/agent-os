@@ -9,7 +9,7 @@ import type { KernelHost, MapHostCall, StreamSink } from "@mc/host";
 import type { Backend, RawExecResult } from "./backend.js";
 import { makeFs } from "./fs.js";
 import { dispatchMount } from "./mount.js";
-import { runToolJson } from "./tools.js";
+import { assertSafeToolBindingName, runToolJson } from "./tools.js";
 import type {
   DirEntry,
   Driver,
@@ -101,16 +101,21 @@ export class EmbeddedBackend implements Backend {
     this.pumpDone = this.pump();
   }
 
-  /** Register a host tool the VM can invoke via `mc-tool <name> <json>`. The
+  /** Register a host tool the VM can invoke through `/svc/tools`. The
    *  handler runs in this process and receives the parsed JSON args. */
   tool(def: ToolDefinition): void {
-    if (def.name.startsWith("/")) {
-      // Tool names share the host-call router with mount names, disambiguated by
-      // the leading `/` — so a tool name must not begin with one (a mount would
-      // shadow it, and `unmount` would drop both).
-      throw new Error(`tool name '${def.name}' must not start with '/' (reserved for mount paths)`);
-    }
-    this.tools.register(def.name, (argsJson: string) => runToolJson(def, argsJson, this.toolContext));
+    assertSafeToolBindingName(def.name);
+    this.tools.register(def.name, (argsJson: string) =>
+      runToolJson(def, argsJson, this.toolContext),
+    );
+  }
+
+  unregisterTool(name: string): void {
+    this.tools.unregister(name);
+  }
+
+  serviceCall(name: string, req: Uint8Array): Promise<Uint8Array> {
+    return this.host.svcCall(name, req);
   }
 
   private async pump(): Promise<void> {

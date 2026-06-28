@@ -31,7 +31,7 @@ use crate::shell::executor::Executor;
 use crate::shell::parser::Pipeline;
 use crate::task::{BlockReason, Capabilities, Scheduler, TaskId, TaskState};
 use crate::vfs::{Namespace, OpenFlags};
-use crate::wasm::{GuestProgram, GuestRuntime, declared_tier, exec_policy, resolve_program};
+use crate::wasm::{declared_tier, exec_policy, resolve_program, GuestProgram, GuestRuntime};
 
 use super::super::builtins::fs::resolve_path;
 

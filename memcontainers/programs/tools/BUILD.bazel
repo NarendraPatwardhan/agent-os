@@ -1,0 +1,29 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//bazel:mc_program.bzl", "mc_rust_program")
+
+# programs/tools — /bin/tools and the warm /svc/tools broker. The service holds the catalog and
+# deterministic lexical index in linear memory; the CLI and alias face are thin clients of that service.
+rust_binary(
+    name = "tools_bin",
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
+    edition = "2021",
+    tags = ["manual"],
+    deps = [
+        "//memcontainers/lib/json:serde",
+        "//memcontainers/pkgcore",
+        "//memcontainers/sysroot/rust",
+        "//memcontainers/toolcore",
+        "@crates//:talc",
+    ],
+)
+
+# /bin/tools — full tier because actual tool calls egress through mc_sys_host_call. Discovery
+# operations stay inside the VM and are deterministic.
+mc_rust_program(
+    name = "tools",
+    lib = ":tools_bin",
+    tier = "full",
+    service = "tools",
+    visibility = ["//visibility:public"],
+)
