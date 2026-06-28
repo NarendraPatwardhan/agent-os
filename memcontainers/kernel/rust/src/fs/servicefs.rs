@@ -47,10 +47,12 @@ pub enum DelegatedHandle {
 /// One typed call routed to the server guest. `session` identifies the client
 /// connection; `req_id` is unique within the channel; `blob` is the opaque request
 /// bytes (the service + its library define the wire format — the kernel never reads
-/// it); `handles` are any fds the caller delegated with this request.
+/// it); `caller` is kernel-supplied origin metadata; `handles` are any fds the caller
+/// delegated with this request.
 pub struct ServiceRequest {
     pub session: u32,
     pub req_id: u32,
+    pub caller: CallerId,
     pub blob: Vec<u8>,
     pub handles: Vec<DelegatedHandle>,
 }
@@ -74,6 +76,9 @@ pub const SVC_RESPONSE_HIGH_WATER: usize = 64 * 1024;
 /// How long the server waits on a blocked (full) buffer before failing the call — separates a
 /// slow-but-live client (keeps draining, refreshing the deadline) from a stuck one.
 pub const SVC_DRAIN_TIMEOUT_MS: i64 = 5_000;
+/// Cap on one resident-service request blob. Results stream through the readable result fd, but
+/// requests are copied into the kernel queue, so both guest and host-control callers share this bound.
+pub const MAX_SVC_REQUEST_BYTES: usize = 1 << 20;
 
 /// The server guest's answer for one call — a STREAMING buffer (codex #3). The server appends body
 /// chunks via `svc_respond` (`last=0` until the final `last=1`); the client drains `buf` from the front
@@ -229,7 +234,10 @@ impl ServiceChannel {
         blob: Vec<u8>,
         handles: Vec<DelegatedHandle>,
     ) -> Option<u32> {
-        if self.closed || !self.sessions.contains_key(&session) {
+        let Some(caller) = self.sessions.get(&session).map(|sess| sess.caller) else {
+            return None;
+        };
+        if self.closed {
             return None;
         }
         let id = self.next_req;
@@ -237,6 +245,7 @@ impl ServiceChannel {
         self.requests.push_back(ServiceInbound::Call(ServiceRequest {
             session,
             req_id: id,
+            caller,
             blob,
             handles,
         }));

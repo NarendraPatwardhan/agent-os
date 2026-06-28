@@ -30,6 +30,23 @@ async function main(): Promise<void> {
     if ((await vm.fs.readText("/tmp/core")) !== "hello") {
       throw new Error("vm.fs round-trip mismatch");
     }
+
+    // Activate /svc/tools while its boot catalog is empty, then register a tool at runtime. This proves
+    // vm.tool() updates the warm service's live catalog instead of only rewriting /etc/tools/catalog.json.
+    const before = await vm.exec("tools list");
+    if (before.exitCode !== 0 || !before.stdout.includes('"tools":[]')) {
+      throw new Error(`initial tools catalog mismatch: exit=${before.exitCode} stdout=${before.stdout}`);
+    }
+    await vm.tool({
+      name: "dynamic greet",
+      address: "host.org.main.dynamicGreet",
+      description: "Greet dynamically",
+      run: (input) => ({ message: `hello ${String(input.name ?? "world")}` }),
+    });
+    const after = await vm.exec("tools call host.org.main.dynamicGreet '{\"name\":\"Ada\"}'");
+    if (after.exitCode !== 0 || !after.stdout.includes('"message":"hello Ada"')) {
+      throw new Error(`runtime tool registration mismatch: exit=${after.exitCode} stdout=${after.stdout}`);
+    }
   } finally {
     await vm.close();
   }

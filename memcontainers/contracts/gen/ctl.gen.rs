@@ -20,6 +20,9 @@ pub const CONTROL_EXPORTS: &[&str] = &[
     "mc_ctl_exec_poll",
     "mc_ctl_exec_peek",
     "mc_ctl_exec_close",
+    "mc_ctl_svc_call_start",
+    "mc_ctl_svc_call_poll",
+    "mc_ctl_svc_call_close",
     "mc_commit_layer",
     "mc_inflight_egress",
     "mc_pending_commits",
@@ -51,6 +54,9 @@ macro_rules! mc_control_table {
         mc_ctl_exec_poll => ExecPoll (job_id: u32) [i32];
         mc_ctl_exec_peek => ExecPeek (job_id: u32) [i32];
         mc_ctl_exec_close => ExecClose (job_id: u32) [i32];
+        mc_ctl_svc_call_start => SvcCallStart (name_ptr: u32, name_len: u32, req_ptr: u32, req_len: u32) [i32];
+        mc_ctl_svc_call_poll => SvcCallPoll (job_id: u32) [i32];
+        mc_ctl_svc_call_close => SvcCallClose (job_id: u32) [i32];
         mc_commit_layer => CommitLayer () [i32];
         mc_inflight_egress => InflightEgress () [i32];
         mc_pending_commits => PendingCommits () [i32];

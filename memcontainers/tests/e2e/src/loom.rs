@@ -143,6 +143,7 @@ fn luau_tools_battery_discovers_and_calls() {
         .write_file(
             "/demo/tools.luau",
             br#"local tools = require("tools")
+local sys = require("sys")
 local page = assert(tools.search("greet", { limit = 1 }))
 print(page.items[1].address)
 local rec = assert(tools.describe("host.org.main.greet"))
@@ -151,12 +152,16 @@ local res = tools.host.org.main.greet("world")
 print(res.ok, res.data.message)
 local saved = tools.save("host.org.main.greet", "file", "/tmp/greet.json")
 print(saved.ok, saved.data._tag, saved.data.path)
+local fd = assert(sys.svc.connect("tools"))
+local denied = assert(sys.svc.call(fd, '{"op":"catalog.apply","tools":[]}'))
+assert(sys.svc.close(fd))
+print(denied:match('"code":"([^"]+)"'))
 "#,
         )
         .expect("seed tools.luau");
     assert_eq!(
         s.run_for_output("luau /demo/tools.luau"),
-        "host.org.main.greet\r\ngreet\r\ntrue\thello world\r\ntrue\tToolFile\t/tmp/greet.json\r\n"
+        "host.org.main.greet\r\ngreet\r\ntrue\thello world\r\ntrue\tToolFile\t/tmp/greet.json\r\npermission_denied\r\n"
     );
     assert_eq!(
         s.host.read_file("/tmp/greet.json").expect("saved tool file"),

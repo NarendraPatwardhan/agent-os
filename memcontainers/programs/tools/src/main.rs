@@ -1,9 +1,10 @@
 //! `tools` — the tool-plane broker and CLI.
 //!
-//! In SERVICE mode this binary serves `/svc/tools`: it loads `/etc/tools/catalog.json`, keeps the
-//! parsed catalog warm, answers `search`/`describe`/`list`, and dispatches `call` through the existing
-//! host-call transport (`name\0args`). As `/bin/tools` it is a CLI client of that service. As a
-//! `/bin/<alias>` symlink it dispatches through the catalog by alias, like mcbox-style applets.
+//! In SERVICE mode this binary serves `/svc/tools`: it seeds from `/etc/tools/catalog.json`, owns the
+//! warm live catalog, answers `search`/`describe`/`list`, and dispatches `call` through the existing
+//! host-call transport (`name\0args`). Runtime catalog mutation is host-control only. As `/bin/tools` it
+//! is a CLI client of that service. As a `/bin/<alias>` symlink it dispatches through the catalog by alias,
+//! like mcbox-style applets.
 
 #![no_std]
 #![no_main]
@@ -16,7 +17,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use json::Json;
-use pkgcore::{hex, Sha256};
+use pkgcore::{hex, sha256, Sha256};
 use sysroot as rt;
 use toolcore::{err_json, ok_json, search_page_json, ArgsMode, Catalog, ToolRecord};
 
@@ -28,6 +29,7 @@ const CATALOG_PATH: &str = "/etc/tools/catalog.json";
 const RESULTS_DIR: &str = "/tmp/tools/results";
 const INLINE_LIMIT: usize = 1024 * 1024;
 const COPY_CHUNK: usize = 16 * 1024;
+const CONTROL_CALLER: u32 = 0;
 
 const HELP: &str = "\
 tools — discover and call host-backed tools through /svc/tools
@@ -40,7 +42,7 @@ Usage:
   tools gc
   <alias> [json-or-string]
 
-Catalog records live at /etc/tools/catalog.json. Calls return a JSON envelope:
+The live catalog is owned by /svc/tools after activation. Calls return a JSON envelope:
 {\"ok\":true,\"data\":...} or {\"ok\":false,\"err\":{\"code\":...,\"message\":...}}.
 Large or binary results are materialized as ToolFile records under /tmp/tools/results unless --output
 writes them to a caller-selected guest path.
@@ -105,6 +107,10 @@ fn field_usize(doc: &Json, name: &str, default: usize, max: usize) -> usize {
         .unwrap_or(default)
 }
 
+fn field_u64(doc: &Json, name: &str) -> Option<u64> {
+    doc.get(name).and_then(|v| v.as_u64())
+}
+
 fn list_json(catalog: &Catalog) -> Json {
     let mut integrations: Vec<String> = Vec::new();
     let mut tools = Vec::new();
@@ -124,14 +130,62 @@ fn list_json(catalog: &Catalog) -> Json {
     ])
 }
 
+fn catalog_json(catalog: &Catalog) -> Json {
+    Json::Obj(vec![(
+        "tools".to_string(),
+        Json::Arr(catalog.records().iter().map(ToolRecord::to_json).collect()),
+    )])
+}
+
+fn catalog_text(catalog: &Catalog) -> String {
+    json::to_string(&catalog_json(catalog))
+}
+
+fn catalog_digest(catalog: &Catalog) -> String {
+    hex(&sha256(catalog_text(catalog).as_bytes()))
+}
+
+fn checkpoint_catalog(text: &str) -> Result<(), i32> {
+    let _ = rt::mkdir("/etc");
+    let _ = rt::mkdir("/etc/tools");
+    let tmp = "/etc/tools/catalog.json.tmp";
+    let fd = rt::open(tmp, rt::O_WRITE | rt::O_CREATE | rt::O_TRUNC)?;
+    let write = rt::write_all(fd, text.as_bytes());
+    rt::close(fd);
+    write?;
+    rt::rename(tmp, CATALOG_PATH)
+}
+
+fn catalog_status(state: &ToolState, count: usize) -> Json {
+    Json::Obj(vec![
+        (
+            "catalogGeneration".to_string(),
+            Json::Num(state.catalog_generation as f64),
+        ),
+        (
+            "catalogDigest".to_string(),
+            Json::Str(state.catalog_digest.clone()),
+        ),
+        ("tools".to_string(), Json::Num(count as f64)),
+    ])
+}
+
 struct ToolState {
+    catalog: Catalog,
+    catalog_generation: u64,
+    catalog_digest: String,
     next_result_id: u64,
 }
 
 impl ToolState {
     fn new() -> Self {
         ensure_result_dirs();
+        let catalog = load_catalog();
+        let catalog_digest = catalog_digest(&catalog);
         Self {
+            catalog,
+            catalog_generation: 0,
+            catalog_digest,
             next_result_id: scan_next_result_id(),
         }
     }
@@ -403,32 +457,64 @@ fn call_host(
     ok_json(data)
 }
 
-fn handle(state: &mut ToolState, catalog: &Catalog, req: &Json) -> Json {
+fn apply_catalog(state: &mut ToolState, req: &Json, caller: u32) -> Json {
+    if caller != CONTROL_CALLER {
+        return err_json("permission_denied", "catalog mutation requires host control");
+    }
+    if let Some(base) = field_u64(req, "baseGeneration") {
+        if base != state.catalog_generation {
+            return err_json("generation_mismatch", "catalog generation changed");
+        }
+    }
+    let Some(tools) = req.get("tools").cloned() else {
+        return err_json("bad_request", "catalog.apply requires tools");
+    };
+    let proposed = Json::Obj(vec![("tools".to_string(), tools)]);
+    let proposed_text = json::to_string(&proposed);
+    let next = match Catalog::parse(&proposed_text) {
+        Ok(catalog) => catalog,
+        Err(_) => return err_json("invalid_catalog", "catalog did not validate"),
+    };
+    let text = catalog_text(&next);
+    if checkpoint_catalog(&text).is_err() {
+        return err_json("checkpoint_failed", "could not persist tool catalog");
+    }
+    let count = next.records().len();
+    state.catalog = next;
+    state.catalog_generation = state.catalog_generation.wrapping_add(1);
+    state.catalog_digest = hex(&sha256(text.as_bytes()));
+    ok_json(catalog_status(state, count))
+}
+
+fn handle(state: &mut ToolState, req: &Json, caller: u32) -> Json {
     let op = field_str(req, "op").unwrap_or("");
     match op {
+        "catalog.apply" => apply_catalog(state, req, caller),
         "search" => {
             let query = field_str(req, "query").unwrap_or("");
             let limit = field_usize(req, "limit", 12, 100);
             let offset = field_usize(req, "offset", 0, usize::MAX);
-            let (items, total) = catalog.search(query, offset, limit);
+            let (items, total) = state.catalog.search(query, offset, limit);
             search_page_json(&items, total, offset, limit)
         }
         "describe" => {
             let Some(address) = field_str(req, "address") else {
                 return err_json("bad_request", "describe requires address");
             };
-            catalog
+            state
+                .catalog
                 .find(address)
                 .map(|rec| rec.to_json())
                 .unwrap_or_else(|| err_json("tool_not_found", "no tool with that address"))
         }
-        "list" => list_json(catalog),
+        "list" => list_json(&state.catalog),
         "gc" => gc_results(),
         "call" => {
             let Some(address) = field_str(req, "address") else {
                 return err_json("bad_request", "call requires address");
             };
-            match catalog.find(address) {
+            let rec = state.catalog.find(address).cloned();
+            match rec.as_ref() {
                 Some(rec) => call_host(state, rec, req.get("args"), field_str(req, "output")),
                 None => err_json("tool_not_found", "no tool with that address"),
             }
@@ -437,7 +523,8 @@ fn handle(state: &mut ToolState, catalog: &Catalog, req: &Json) -> Json {
             let Some(alias) = field_str(req, "alias") else {
                 return err_json("bad_request", "call_alias requires alias");
             };
-            match catalog.find_alias(alias) {
+            let rec = state.catalog.find_alias(alias).cloned();
+            match rec.as_ref() {
                 Some(rec) => call_host(state, rec, req.get("args"), field_str(req, "output")),
                 None => err_json("tool_not_found", "no unique tool for that alias"),
             }
@@ -447,7 +534,6 @@ fn handle(state: &mut ToolState, catalog: &Catalog, req: &Json) -> Json {
 }
 
 fn serve_loop() -> ! {
-    let catalog = load_catalog();
     let mut state = ToolState::new();
     let server = match rt::svc_serve(SERVICE_NAME) {
         Ok(fd) => fd,
@@ -470,7 +556,7 @@ fn serve_loop() -> ! {
             .ok()
             .and_then(|s| json::parse(s).ok())
         {
-            Some(doc) => json::to_string(&handle(&mut state, &catalog, &doc)),
+            Some(doc) => json::to_string(&handle(&mut state, &doc, req.caller)),
             None => json::to_string(&err_json("bad_json", "request must be a JSON object")),
         };
         let _ = rt::svc_respond(

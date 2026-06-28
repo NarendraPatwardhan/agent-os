@@ -658,7 +658,9 @@ The lifecycle:
   `(session, req_id)`, **not by caller**, because one client may hold several concurrent sessions to one
   service (a script with two DB handles) — a caller-keyed map could not express that. This is the one
   real correction over the served-fs template, which dedups by caller on the assumption of one in-flight
-  request per caller.
+  request per caller. The request envelope still carries kernel-supplied `caller` metadata so a service can
+  distinguish ordinary guest calls from the host control channel (`SYSTEM_CALLER`) without trusting the
+  request body.
 - **Call** (`svc_call`): a typed request blob plus optional delegated handles → a *readable result fd*
   the caller drains. Like a host-call, the call itself does not block — the client streams the response,
   yielding while the server computes, so a large result (a SQLite cursor, a PDF) never materializes
@@ -953,6 +955,13 @@ pays the cold-start tax. Base provides the lazy `tools` service so every image i
 domain packs add their own service fragments. A flavor's `require()` shim name must
 not collide with a universal embedded battery; `sqlite`/`typst` are not embedded, so they load from the
 layer (`require` order is cache → embedded → VFS).
+
+The tool catalog has a single lifetime rule. `/etc/tools/catalog.json` is the boot seed and checkpoint; once
+`/svc/tools` activates, its warm in-memory catalog is authoritative and snapshots with the VM. Runtime host
+registration (`vm.tool`) updates that live catalog only through an awaited host-control service call
+(`catalog.apply`, `caller == SYSTEM_CALLER`) that validates the full replacement catalog, swaps it atomically,
+and then checkpoints the canonical catalog file. Guest service calls can search, describe, list, call, and
+garbage-collect tool artifacts; they cannot mutate catalog bindings.
 
 `pkgcore` is the pure logic for `pkgfsd`, a demand-load package daemon: a dependency-free SHA-256, a
 tab-separated catalog parser, and path/URL helpers. Packages are addressed by content hash, fetched from a

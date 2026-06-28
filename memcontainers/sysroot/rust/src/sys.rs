@@ -782,10 +782,10 @@ pub fn svc_serve(name: &str) -> Result<i32, i32> {
 }
 
 /// Receive the next service inbound (blocks until one arrives). Writes the envelope
-/// `[kind: u8][nhandles: u8][session: u32][req_id: u32][blob_len: u32][blob…]` (little-endian) into
-/// `buf` and any delegated fd numbers into `hbuf`, returning the envelope byte length; decode with
-/// [`parse_svc_request`], answer a call with [`svc_respond`]. Pass an empty `hbuf` if the service
-/// accepts no delegated handles.
+/// `[kind: u8][nhandles: u8][session: u32][req_id: u32][caller: u32][blob_len: u32][blob…]`
+/// (little-endian) into `buf` and any delegated fd numbers into `hbuf`, returning the envelope byte
+/// length; decode with [`parse_svc_request`], answer a call with [`svc_respond`]. Pass an empty
+/// `hbuf` if the service accepts no delegated handles.
 pub fn svc_recv(fd: i32, buf: &mut [u8], hbuf: &mut [i32]) -> Result<usize, i32> {
     let mut len: u32 = 0;
     let errno = unsafe {
@@ -890,16 +890,17 @@ pub struct SvcRequest<'a> {
     pub kind: SvcKind,
     pub session: u32,
     pub req_id: u32,
+    pub caller: u32,
     pub blob: &'a [u8],
     /// Delegated fd numbers installed in this service's fd table (SYSTEMS.md), or empty.
     pub handles: &'a [i32],
 }
 
 /// Parse a [`svc_recv`] envelope —
-/// `[kind: u8][nhandles: u8][session: u32][req_id: u32][blob_len: u32][blob…]` — plus the companion
-/// handle buffer `hbuf`. `None` if too short, truncated, or an unknown kind.
+/// `[kind: u8][nhandles: u8][session: u32][req_id: u32][caller: u32][blob_len: u32][blob…]` — plus
+/// the companion handle buffer `hbuf`. `None` if too short, truncated, or an unknown kind.
 pub fn parse_svc_request<'a>(buf: &'a [u8], hbuf: &'a [i32]) -> Option<SvcRequest<'a>> {
-    if buf.len() < 14 {
+    if buf.len() < 18 {
         return None;
     }
     let kind = match buf[0] {
@@ -911,13 +912,15 @@ pub fn parse_svc_request<'a>(buf: &'a [u8], hbuf: &'a [i32]) -> Option<SvcReques
     let nhandles = buf[1] as usize;
     let session = u32::from_le_bytes([buf[2], buf[3], buf[4], buf[5]]);
     let req_id = u32::from_le_bytes([buf[6], buf[7], buf[8], buf[9]]);
-    let blob_len = u32::from_le_bytes([buf[10], buf[11], buf[12], buf[13]]) as usize;
-    let blob = buf.get(14..14 + blob_len)?;
+    let caller = u32::from_le_bytes([buf[10], buf[11], buf[12], buf[13]]);
+    let blob_len = u32::from_le_bytes([buf[14], buf[15], buf[16], buf[17]]) as usize;
+    let blob = buf.get(18..18 + blob_len)?;
     let handles = hbuf.get(..nhandles)?;
     Some(SvcRequest {
         kind,
         session,
         req_id,
+        caller,
         blob,
         handles,
     })

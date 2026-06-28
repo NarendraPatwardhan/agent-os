@@ -106,8 +106,8 @@ pub fn main() void {
 
 fn serveLoop() void {
     sessions = std.AutoHashMap(u32, *Session).init(alloc);
-    // 1 MiB request body, plus the kernel's 14-byte svc envelope header.
-    const reqbuf = alloc.alloc(u8, (1 << 20) + 14) catch {
+    // 1 MiB request body, plus the kernel's 18-byte svc envelope header.
+    const reqbuf = alloc.alloc(u8, (1 << 20) + 18) catch {
         _ = mc.mc_sys_exit(1);
         return;
     };

@@ -34,9 +34,9 @@ use wasmi::{
 use crate::builtins::{Builtin, BuiltinCtx, BuiltinStep};
 use crate::fs::servicefs::{
     clear_activation, grant_holder, lookup_service, mark_failed, register_service,
-    service_registered, service_state, valid_service_name, DelegatedHandle, RespondOutcome,
-    ServiceChannel, ServiceInbound, ServiceState, SvcCallSource, SvcConnHandle, SvcRead,
-    SvcServeOwner, SVC_RESPONSE_HIGH_WATER,
+    service_registered, service_state, valid_service_name, DelegatedHandle, MAX_SVC_REQUEST_BYTES,
+    RespondOutcome, ServiceChannel, ServiceInbound, ServiceState, SvcCallSource, SvcConnHandle,
+    SvcRead, SvcServeOwner, SVC_RESPONSE_HIGH_WATER,
 };
 use crate::fs::{MemFs, ServeChannel, ServedFs};
 use crate::host_call::{HostCallRead, HostCallSource};
@@ -52,13 +52,11 @@ use crate::wasm::abi::*;
 /// Cap on a guest's open fd table — the per-VM "maximum open fds" budget.
 /// Standard fds 0/1/2 are not counted; this bounds entries ≥ 3.
 const MAX_OPEN_FDS: usize = 256;
-/// Cap on one resident-service request blob. Results still stream through the
-/// readable result fd; requests are copied into the kernel queue, so bound them.
-const MAX_SVC_REQUEST_BYTES: usize = 1 << 20;
 /// Max fds one `svc_call` may delegate (SYSTEMS.md) — bounds the server's handle buffer.
 const MAX_DELEGATED_HANDLES: usize = 8;
-/// svc recv envelope header: `[kind:u8][nhandles:u8][session:u32][req_id:u32][blob_len:u32]` (LE).
-const SVC_ENVELOPE_HEADER: usize = 14;
+/// svc recv envelope header:
+/// `[kind:u8][nhandles:u8][session:u32][req_id:u32][caller:u32][blob_len:u32]` (LE).
+const SVC_ENVELOPE_HEADER: usize = 18;
 /// Envelope `kind`: a call to answer, vs a session-closed tombstone (a one-way notification).
 const SVC_KIND_CALL: u8 = 0;
 const SVC_KIND_SESSION_CLOSED: u8 = 1;
@@ -2324,9 +2322,9 @@ impl GuestProgram {
 
     /// `mc_sys_svc_recv(fd, buf, buf_len, hbuf, hbuf_len) -> len`: receive the next inbound for a
     /// resident service (blocking). Encodes the envelope
-    /// `[kind:u8][nhandles:u8][session:u32][req_id:u32][blob_len:u32][blob…]` (LE) into `buf` and any
-    /// delegated fd numbers (cloned into THIS server's fd table) into `hbuf`, returning the envelope
-    /// length. `kind` is a call (0) or a session-closed tombstone (1, freeing the service's own
+    /// `[kind:u8][nhandles:u8][session:u32][req_id:u32][caller:u32][blob_len:u32][blob…]` (LE) into
+    /// `buf` and any delegated fd numbers (cloned into THIS server's fd table) into `hbuf`, returning the
+    /// envelope length. `kind` is a call (0) or a session-closed tombstone (1, freeing the service's own
     /// per-session state — codex #1). A call too large for the server's buffers is auto-rejected (the
     /// client's call fails; the server is never stalled or killed — codex #3). Yields (`Pending`) until
     /// an inbound is available.
@@ -2355,9 +2353,11 @@ impl GuestProgram {
         // is the primary teardown; this is defense-in-depth). Each drop also enqueues a SessionClosed
         // tombstone, which we may deliver below so the service can free that session's own warm state.
         channel.borrow_mut().evict_dead_sessions(|pid| {
-            ctx.sched
-                .get_task(pid)
-                .is_some_and(|t| !matches!(t.state, TaskState::Zombie))
+            pid == crate::vfs::SYSTEM_CALLER
+                || ctx
+                    .sched
+                    .get_task(pid)
+                    .is_some_and(|t| !matches!(t.state, TaskState::Zombie))
         });
         // Reap any streaming response a client has stopped draining past its deadline — keeps a stuck
         // client from pinning the kernel buffer / quiescence gate, without the server ever blocking on it.
@@ -2385,6 +2385,7 @@ impl GuestProgram {
                                 SVC_KIND_DRAIN_READY,
                                 session,
                                 req_id,
+                                crate::vfs::SYSTEM_CALLER,
                                 &[],
                                 &[],
                             );
@@ -2406,6 +2407,7 @@ impl GuestProgram {
                         SVC_KIND_SESSION_CLOSED,
                         session,
                         0,
+                        crate::vfs::SYSTEM_CALLER,
                         &[],
                         &[],
                     );
@@ -2443,6 +2445,7 @@ impl GuestProgram {
                 SVC_KIND_CALL,
                 req.session,
                 req.req_id,
+                req.caller,
                 &req.blob,
                 &handle_bytes,
             );
@@ -2707,6 +2710,7 @@ impl GuestProgram {
         kind: u8,
         session: u32,
         req_id: u32,
+        caller: u32,
         blob: &[u8],
         handle_bytes: &[u8],
     ) -> Fulfilled {
@@ -2716,6 +2720,7 @@ impl GuestProgram {
         out.push((handle_bytes.len() / 4) as u8);
         out.extend_from_slice(&session.to_le_bytes());
         out.extend_from_slice(&req_id.to_le_bytes());
+        out.extend_from_slice(&caller.to_le_bytes());
         out.extend_from_slice(&(blob.len() as u32).to_le_bytes());
         out.extend_from_slice(blob);
         if let Err(e) = self.write_guest_bytes(buf, &out) {

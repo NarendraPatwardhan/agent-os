@@ -35,7 +35,10 @@ use shell::{
 };
 use task::{Scheduler, TaskId, TaskState};
 use vfs::{KPath, Namespace, NodeType, OpenFlags};
-use wasm::abi::{errno_from_fs, EAGAIN, EINVAL, EIO, SERVICE_MARKER, SIGHUP, SIGINT, SIGTSTP};
+use wasm::abi::{
+    errno_from_fs, EAGAIN, EINVAL, EIO, ENOENT, ESUCCESS, ETIMEDOUT, SERVICE_MARKER, SIGHUP, SIGINT,
+    SIGTSTP,
+};
 
 // ---------- ForegroundJob (the rescue shell) ----------
 
@@ -147,6 +150,24 @@ struct CtlExecJob {
     exit_code: i32,
 }
 
+enum CtlSvcState {
+    /// Waiting for the service to activate; the request has not been enqueued yet.
+    Connecting { name: String, req: Vec<u8> },
+    /// Request enqueued; drain the streaming response through servicefs.
+    Calling {
+        channel: Rc<RefCell<fs::servicefs::ServiceChannel>>,
+        session: u32,
+        req_id: u32,
+        out: Vec<u8>,
+    },
+    /// Terminal state: `status == 0` means `out` is the service body; non-zero is a transport errno.
+    Done { status: i32, out: Vec<u8> },
+}
+
+struct CtlSvcJob {
+    state: CtlSvcState,
+}
+
 // ---------- SystemState ----------
 
 struct SystemState {
@@ -171,6 +192,8 @@ struct SystemState {
     /// Advanced each tick alongside the interactive foreground, but independent
     /// of the prompt.
     ctl_jobs: UnsafeCell<BTreeMap<u32, CtlExecJob>>,
+    /// Host control-channel resident-service calls (`mc_ctl_svc_call_*`), keyed by job id.
+    ctl_svc_jobs: UnsafeCell<BTreeMap<u32, CtlSvcJob>>,
     /// Monotonic id source for `ctl_jobs` (starts at 1; 0 is never a job id).
     next_ctl_job: UnsafeCell<u32>,
     /// Exit status of the last completed interactive foreground line (`$?`).
@@ -208,6 +231,7 @@ impl SystemState {
             background: UnsafeCell::new(Vec::new()),
             foreground: UnsafeCell::new(None),
             ctl_jobs: UnsafeCell::new(BTreeMap::new()),
+            ctl_svc_jobs: UnsafeCell::new(BTreeMap::new()),
             next_ctl_job: UnsafeCell::new(1),
             last_status: UnsafeCell::new(0),
             interactive_guest: UnsafeCell::new(false),
@@ -262,6 +286,10 @@ impl SystemState {
 
     unsafe fn ctl_jobs(&self) -> &mut BTreeMap<u32, CtlExecJob> {
         unsafe { &mut *self.ctl_jobs.get() }
+    }
+
+    unsafe fn ctl_svc_jobs(&self) -> &mut BTreeMap<u32, CtlSvcJob> {
+        unsafe { &mut *self.ctl_svc_jobs.get() }
     }
 
     unsafe fn last_status(&self) -> &mut i32 {
@@ -2073,6 +2101,224 @@ pub(crate) fn mc_ctl_unmount(path_ptr: u32, path_len: u32) -> i32 {
             Ok(()) => 0,
             Err(e) => ctl_neg_errno(e),
         }
+    }
+}
+
+enum CtlSvcAdvance {
+    Pending,
+    Done,
+}
+
+unsafe fn ctl_service_channel(
+    name: &str,
+) -> Result<Option<Rc<RefCell<fs::servicefs::ServiceChannel>>>, i32> {
+    unsafe {
+        if let Some(channel) = fs::servicefs::lookup_service(name) {
+            return Ok(Some(channel));
+        }
+        match fs::servicefs::service_state(name) {
+            Some(fs::servicefs::ServiceState::Activating {
+                pid, deadline_ms, ..
+            }) => {
+                let alive = STATE
+                    .scheduler()
+                    .get_task(pid)
+                    .is_some_and(|t| !matches!(t.state, TaskState::Zombie));
+                if alive {
+                    if wall_now_ms() > deadline_ms {
+                        STATE.scheduler().kill_task(pid, 124);
+                        fs::servicefs::mark_failed(name, ETIMEDOUT);
+                        return Err(ETIMEDOUT);
+                    }
+                    return Ok(None);
+                }
+                fs::servicefs::mark_failed(name, EIO);
+                return Err(EIO);
+            }
+            Some(fs::servicefs::ServiceState::Failed {
+                until_ms,
+                last_errno,
+                ..
+            }) => {
+                if wall_now_ms() < until_ms {
+                    return Err(last_errno);
+                }
+            }
+            None => {}
+        }
+        if activate_service_lazily(name) {
+            Ok(None)
+        } else {
+            Err(ENOENT)
+        }
+    }
+}
+
+unsafe fn advance_ctl_svc_job(job: &mut CtlSvcJob) -> CtlSvcAdvance {
+    unsafe {
+        loop {
+            match &mut job.state {
+                CtlSvcState::Connecting { name, req } => {
+                    let channel = match ctl_service_channel(name) {
+                        Ok(Some(channel)) => channel,
+                        Ok(None) => return CtlSvcAdvance::Pending,
+                        Err(errno) => {
+                            job.state = CtlSvcState::Done {
+                                status: errno,
+                                out: Vec::new(),
+                            };
+                            return CtlSvcAdvance::Done;
+                        }
+                    };
+                    let session = channel.borrow_mut().open_session(vfs::SYSTEM_CALLER);
+                    let body = core::mem::take(req);
+                    let req_id = match channel.borrow_mut().enqueue(session, body, Vec::new()) {
+                        Some(req_id) => req_id,
+                        None => {
+                            channel.borrow_mut().drop_session(session);
+                            job.state = CtlSvcState::Done {
+                                status: EIO,
+                                out: Vec::new(),
+                            };
+                            return CtlSvcAdvance::Done;
+                        }
+                    };
+                    job.state = CtlSvcState::Calling {
+                        channel,
+                        session,
+                        req_id,
+                        out: Vec::new(),
+                    };
+                }
+                CtlSvcState::Calling {
+                    channel,
+                    session,
+                    req_id,
+                    out,
+                } => {
+                    let mut tmp = [0u8; 4096];
+                    loop {
+                        let poll = channel
+                            .borrow_mut()
+                            .drain_response(*session, *req_id, &mut tmp);
+                        match poll {
+                            fs::servicefs::ResponsePoll::Pending => return CtlSvcAdvance::Pending,
+                            fs::servicefs::ResponsePoll::Got(n) => {
+                                out.extend_from_slice(&tmp[..n]);
+                            }
+                            fs::servicefs::ResponsePoll::Eof => {
+                                let channel = channel.clone();
+                                let session = *session;
+                                let body = core::mem::take(out);
+                                channel.borrow_mut().drop_session(session);
+                                job.state = CtlSvcState::Done {
+                                    status: ESUCCESS,
+                                    out: body,
+                                };
+                                return CtlSvcAdvance::Done;
+                            }
+                            fs::servicefs::ResponsePoll::Failed(errno) => {
+                                let channel = channel.clone();
+                                let session = *session;
+                                channel.borrow_mut().drop_session(session);
+                                job.state = CtlSvcState::Done {
+                                    status: errno,
+                                    out: Vec::new(),
+                                };
+                                return CtlSvcAdvance::Done;
+                            }
+                            fs::servicefs::ResponsePoll::Closed => {
+                                let channel = channel.clone();
+                                let session = *session;
+                                channel.borrow_mut().drop_session(session);
+                                job.state = CtlSvcState::Done {
+                                    status: EIO,
+                                    out: Vec::new(),
+                                };
+                                return CtlSvcAdvance::Done;
+                            }
+                        }
+                    }
+                }
+                CtlSvcState::Done { .. } => return CtlSvcAdvance::Done,
+            }
+        }
+    }
+}
+
+fn close_ctl_svc_job(job: CtlSvcJob) {
+    if let CtlSvcState::Calling {
+        channel, session, ..
+    } = job.state
+    {
+        channel.borrow_mut().drop_session(session);
+    }
+}
+
+pub(crate) fn mc_ctl_svc_call_start(
+    name_ptr: u32,
+    name_len: u32,
+    req_ptr: u32,
+    req_len: u32,
+) -> i32 {
+    let _bkl = sync::lock_kernel();
+    unsafe {
+        if !STATE.is_initialized() {
+            return -EIO;
+        }
+        let name = match ctl_str(name_ptr, name_len) {
+            Some(name) if fs::servicefs::valid_service_name(&name) => name,
+            _ => return -EINVAL,
+        };
+        if req_len as usize > fs::servicefs::MAX_SVC_REQUEST_BYTES {
+            return -EINVAL;
+        }
+        let req = match ctl_bytes(req_ptr, req_len) {
+            Some(req) => req,
+            None => return -EINVAL,
+        };
+        let id = STATE.alloc_ctl_id();
+        STATE.ctl_svc_jobs().insert(
+            id,
+            CtlSvcJob {
+                state: CtlSvcState::Connecting { name, req },
+            },
+        );
+        id as i32
+    }
+}
+
+pub(crate) fn mc_ctl_svc_call_poll(job_id: u32) -> i32 {
+    let _bkl = sync::lock_kernel();
+    unsafe {
+        let jobs = STATE.ctl_svc_jobs();
+        let Some(job) = jobs.get_mut(&job_id) else {
+            return -EINVAL;
+        };
+        if matches!(advance_ctl_svc_job(job), CtlSvcAdvance::Pending) {
+            return 0;
+        }
+        let job = jobs.remove(&job_id).expect("present");
+        let CtlSvcState::Done { status, out } = job.state else {
+            return -EIO;
+        };
+        let mut framed = Vec::with_capacity(8 + out.len());
+        framed.extend_from_slice(&status.to_le_bytes());
+        framed.extend_from_slice(&(out.len() as u32).to_le_bytes());
+        framed.extend_from_slice(&out);
+        *CTL_BUFFER.get() = framed;
+        1
+    }
+}
+
+pub(crate) fn mc_ctl_svc_call_close(job_id: u32) -> i32 {
+    let _bkl = sync::lock_kernel();
+    unsafe {
+        let Some(job) = STATE.ctl_svc_jobs().remove(&job_id) else {
+            return -EINVAL;
+        };
+        close_ctl_svc_job(job);
+        0
     }
 }
 

@@ -110,6 +110,14 @@ export class EmbeddedBackend implements Backend {
     );
   }
 
+  unregisterTool(name: string): void {
+    this.tools.unregister(name);
+  }
+
+  serviceCall(name: string, req: Uint8Array): Promise<Uint8Array> {
+    return this.host.svcCall(name, req);
+  }
+
   private async pump(): Promise<void> {
     while (this.running) {
       let alive = true;

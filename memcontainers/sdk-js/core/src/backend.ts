@@ -42,6 +42,8 @@ export interface Backend {
   memoryBytes(): number;
   status(): Promise<VmStatus>;
   tool(def: ToolDefinition): void;
+  unregisterTool(name: string): void;
+  serviceCall(name: string, req: Uint8Array): Promise<Uint8Array>;
   /** Install a host-backed driver at `path` (read-only if `readOnly`). */
   mount(path: string, driver: Driver, readOnly: boolean): Promise<void>;
   /** Remove a host-backed mount at `path`. */

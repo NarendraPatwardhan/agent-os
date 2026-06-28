@@ -44,7 +44,7 @@ export function tool<S extends z.ZodType>(spec: ToolSpec<S>): ToolDefinition {
   };
 }
 
-/** The `/etc/tools/catalog.json` catalog consumed by `/svc/tools`. */
+/** The tool catalog shape seeded into `/etc/tools/catalog.json` and applied to `/svc/tools`. */
 export function toolCatalogJson(defs: ToolDefinition[]): string {
   const addresses = new Set<string>();
   const tools = defs.map((d) => {
@@ -112,7 +112,7 @@ export async function runToolJson(
 }
 
 /** Group several tools under one kit name. Each subtool is registered as `<kit> <cmd>`. Returns the
- *  array of definitions — pass it to `vm.tool()` or `create({ tools })`. */
+ *  array of definitions — pass it to `await vm.tool()` or `create({ tools })`. */
 export function kit(spec: {
   name: string;
   description?: string;

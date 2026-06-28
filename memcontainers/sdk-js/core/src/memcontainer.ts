@@ -50,8 +50,7 @@ export type { VmFs } from "./types.js";
 export class Vm {
   /** Filesystem ops (`vm.fs.read` / `write` / `ls` / `stat` / `mkdir` / `rm`). */
   readonly fs: VmFs;
-  /** All registered tools (boot-time + runtime), mirrored into `/etc/tools/catalog.json`
-   *  for the guest `/svc/tools` broker. */
+  /** All registered tools (boot-time + runtime), mirrored into the `/svc/tools` live catalog. */
   private readonly registeredTools: ToolDefinition[];
   /** Host-backed mounts that must be re-registered when this VM is forked. */
   private readonly registeredMounts: MountSpec[];
@@ -132,19 +131,31 @@ export class Vm {
 
   /** Register one or more host-resident tools the agent inside the VM can invoke through
    *  `/svc/tools` and the Luau `tools` battery. The handler runs host-side. Build defs with
-   *  {@link tool} / {@link kit}. */
-  tool(def: ToolDefinition | ToolDefinition[]): void {
+   *  {@link tool} / {@link kit}. The returned promise resolves only after the warm service has
+   *  atomically accepted the new catalog. */
+  async tool(def: ToolDefinition | ToolDefinition[]): Promise<void> {
     const defs = Array.isArray(def) ? def : [def];
+    const previous = [...this.registeredTools];
+    const next = [...this.registeredTools];
     for (const d of defs) {
       this.backend.tool(d);
-      const existing = this.registeredTools.findIndex((t) => t.name === d.name);
-      if (existing >= 0) this.registeredTools[existing] = d;
-      else this.registeredTools.push(d);
+      const existing = next.findIndex((t) => t.name === d.name);
+      if (existing >= 0) next[existing] = d;
+      else next.push(d);
     }
+    try {
+      await applyToolCatalog(this.backend, next);
+      await seedToolAliases(this.backend, defs, this.handledToolAliases);
+    } catch (e) {
+      for (const d of defs) {
+        const prev = previous.find((t) => t.name === d.name);
+        if (prev) this.backend.tool(prev);
+        else this.backend.unregisterTool(d.name);
+      }
+      throw e;
+    }
+    this.registeredTools.splice(0, this.registeredTools.length, ...next);
     this.opts.tools = [...this.registeredTools];
-    // Refresh the guest catalog + `/bin` aliases (best-effort; runtime additions are rare).
-    void seedToolCatalog(this.backend, this.registeredTools);
-    void seedToolAliases(this.backend, defs, this.handledToolAliases);
   }
 
   /** Install a host-backed driver as a `FileSystem` at `path`. The driver
@@ -415,6 +426,9 @@ async function makeEmbedded(
   const backend = new EmbeddedBackend(host, stdout, tools);
   for (const t of opts.tools ?? []) backend.tool(t);
   await seedToolCatalog(backend, opts.tools ?? []);
+  if (snapshot) {
+    await applyToolCatalog(backend, opts.tools ?? []);
+  }
   await seedToolAliases(backend, opts.tools ?? [], undefined, snapshot !== null);
   // Install boot-time mounts before the backend is returned (and before any
   // exec), so the first command already sees them. Declaration order is kept.
@@ -424,10 +438,9 @@ async function makeEmbedded(
   return backend;
 }
 
-/** Write the `/etc/tools/catalog.json` catalog the guest `/svc/tools` broker reads.
- *  Best-effort directory creation: `/etc` usually exists, `/etc/tools` is VM-local config. */
+/** Write the boot-seed `/etc/tools/catalog.json` catalog. Once `/svc/tools` is active, catalog mutation
+ *  must go through `applyToolCatalog`; this file is only the cold-start seed/checkpoint. */
 async function seedToolCatalog(backend: Backend, defs: ToolDefinition[]): Promise<void> {
-  if (!defs.length) return;
   try {
     await backend.mkdir("/etc");
   } catch {
@@ -439,6 +452,24 @@ async function seedToolCatalog(backend: Backend, defs: ToolDefinition[]): Promis
     /* already exists */
   }
   await backend.write("/etc/tools/catalog.json", enc(toolCatalogJson(defs)));
+}
+
+async function applyToolCatalog(backend: Backend, defs: ToolDefinition[]): Promise<void> {
+  const catalog = JSON.parse(toolCatalogJson(defs)) as { tools?: unknown };
+  const req = JSON.stringify({ op: "catalog.apply", tools: catalog.tools ?? [] });
+  const raw = await backend.serviceCall("tools", enc(req));
+  let response: unknown;
+  try {
+    response = JSON.parse(dec(raw));
+  } catch {
+    throw new Error("/svc/tools returned a non-JSON catalog.apply response");
+  }
+  if (!response || typeof response !== "object" || (response as { ok?: unknown }).ok !== true) {
+    const err = (response as { err?: { code?: unknown; message?: unknown } } | null)?.err;
+    const code = typeof err?.code === "string" ? err.code : "catalog_apply_failed";
+    const message = typeof err?.message === "string" ? err.message : "tool catalog update failed";
+    throw new Error(`/svc/tools ${code}: ${message}`);
+  }
 }
 
 /** Make each registered tool/kit a first-class command: a `/bin/<name>` symlink →
