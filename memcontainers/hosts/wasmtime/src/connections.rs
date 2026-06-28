@@ -10,7 +10,13 @@ const CONNECTION_HEADER: &str = "X-MC-Connection";
 
 #[derive(Debug, Clone, Default)]
 pub struct ConnectionRegistry {
-    entries: HashMap<String, ConnectionCredential>,
+    entries: HashMap<String, ConnectionEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ConnectionEntry {
+    credential: ConnectionCredential,
+    origins: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,9 +31,12 @@ pub enum ConnectionCredential {
 pub enum ConnectionError {
     InvalidReference,
     InvalidHeader,
+    InvalidOrigin,
     InvalidSecret,
+    MissingOrigin,
     DuplicateConnection,
     UnknownConnection,
+    OriginNotAllowed,
     DuplicateMarker,
     MalformedRequest,
     HeaderAlreadyPresent,
@@ -38,31 +47,44 @@ impl ConnectionRegistry {
         Self::default()
     }
 
-    pub fn insert(
+    pub fn insert<I, S>(
         &mut self,
         reference: impl Into<String>,
         credential: ConnectionCredential,
-    ) -> Result<(), ConnectionError> {
+        origins: I,
+    ) -> Result<(), ConnectionError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
         let reference = reference.into();
         validate_reference(&reference)?;
         credential.validate()?;
+        let origins = normalize_origins(&credential, origins)?;
         if self.entries.contains_key(&reference) {
             return Err(ConnectionError::DuplicateConnection);
         }
-        self.entries.insert(reference, credential);
+        self.entries
+            .insert(reference, ConnectionEntry { credential, origins });
         Ok(())
     }
 
-    pub fn with_bearer(
+    pub fn with_bearer<I, S>(
         mut self,
         reference: impl Into<String>,
         token: impl Into<String>,
-    ) -> Result<Self, ConnectionError> {
+        origins: I,
+    ) -> Result<Self, ConnectionError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
         self.insert(
             reference,
             ConnectionCredential::Bearer {
                 token: token.into(),
             },
+            origins,
         )?;
         Ok(self)
     }
@@ -105,11 +127,17 @@ impl ConnectionRegistry {
             return Ok(req.to_vec());
         };
         validate_reference(&reference)?;
-        let credential = self
+        let entry = self
             .entries
             .get(&reference)
             .ok_or(ConnectionError::UnknownConnection)?;
-        match credential {
+        if !entry.origins.is_empty() || entry.credential.is_secret_bearing() {
+            let origin = request_origin(url)?;
+            if !entry.origins.iter().any(|allowed| allowed == &origin) {
+                return Err(ConnectionError::OriginNotAllowed);
+            }
+        }
+        match &entry.credential {
             ConnectionCredential::None => {}
             ConnectionCredential::Bearer { token } => {
                 add_header(&mut headers, "Authorization", &format!("Bearer {token}"))?;
@@ -127,6 +155,10 @@ impl ConnectionRegistry {
 }
 
 impl ConnectionCredential {
+    fn is_secret_bearing(&self) -> bool {
+        !matches!(self, ConnectionCredential::None)
+    }
+
     fn validate(&self) -> Result<(), ConnectionError> {
         match self {
             ConnectionCredential::None => Ok(()),
@@ -141,6 +173,27 @@ impl ConnectionCredential {
             }
         }
     }
+}
+
+fn normalize_origins<I, S>(
+    credential: &ConnectionCredential,
+    origins: I,
+) -> Result<Vec<String>, ConnectionError>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+{
+    let mut out = Vec::new();
+    for raw in origins {
+        let origin = normalize_allowed_origin(&raw.into())?;
+        if !out.contains(&origin) {
+            out.push(origin);
+        }
+    }
+    if credential.is_secret_bearing() && out.is_empty() {
+        return Err(ConnectionError::MissingOrigin);
+    }
+    Ok(out)
 }
 
 fn split_head_body(req: &[u8]) -> Option<(&[u8], &[u8])> {
@@ -230,6 +283,94 @@ fn add_header(
     }
     headers.push((name.to_string(), value.to_string()));
     Ok(())
+}
+
+fn normalize_allowed_origin(value: &str) -> Result<String, ConnectionError> {
+    let origin = parse_origin(value)?;
+    if !matches!(origin.suffix, "" | "/") {
+        return Err(ConnectionError::InvalidOrigin);
+    }
+    Ok(origin.value)
+}
+
+fn request_origin(value: &str) -> Result<String, ConnectionError> {
+    Ok(parse_origin(value)?.value)
+}
+
+struct ParsedOrigin<'a> {
+    value: String,
+    suffix: &'a str,
+}
+
+fn parse_origin(value: &str) -> Result<ParsedOrigin<'_>, ConnectionError> {
+    if value.is_empty() || has_control(value) || value.bytes().any(|b| b.is_ascii_whitespace()) {
+        return Err(ConnectionError::InvalidOrigin);
+    }
+    let (scheme_raw, rest) = value.split_once("://").ok_or(ConnectionError::InvalidOrigin)?;
+    let scheme = scheme_raw.to_ascii_lowercase();
+    if !matches!(scheme.as_str(), "http" | "https") {
+        return Err(ConnectionError::InvalidOrigin);
+    }
+    let authority_end = rest
+        .find(|c| matches!(c, '/' | '?' | '#'))
+        .unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    let suffix = &rest[authority_end..];
+    let authority = normalize_authority(authority, &scheme)?;
+    Ok(ParsedOrigin {
+        value: format!("{scheme}://{authority}"),
+        suffix,
+    })
+}
+
+fn normalize_authority(authority: &str, scheme: &str) -> Result<String, ConnectionError> {
+    if authority.is_empty()
+        || authority.contains('@')
+        || has_control(authority)
+        || authority.bytes().any(|b| b.is_ascii_whitespace())
+    {
+        return Err(ConnectionError::InvalidOrigin);
+    }
+
+    let (host, port) = if authority.starts_with('[') {
+        let close = authority.find(']').ok_or(ConnectionError::InvalidOrigin)?;
+        let host = &authority[..=close];
+        let rest = &authority[close + 1..];
+        let port = match rest.strip_prefix(':') {
+            Some(port) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => {
+                Some(port)
+            }
+            Some(_) => return Err(ConnectionError::InvalidOrigin),
+            None if rest.is_empty() => None,
+            None => return Err(ConnectionError::InvalidOrigin),
+        };
+        (host.to_ascii_lowercase(), port)
+    } else {
+        if authority.contains('[') || authority.contains(']') || authority.matches(':').count() > 1
+        {
+            return Err(ConnectionError::InvalidOrigin);
+        }
+        let (host, port) = match authority.rsplit_once(':') {
+            Some((host, port)) => {
+                if host.is_empty() || port.is_empty() || !port.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(ConnectionError::InvalidOrigin);
+                }
+                (host, Some(port))
+            }
+            None => (authority, None),
+        };
+        if host.is_empty() {
+            return Err(ConnectionError::InvalidOrigin);
+        }
+        (host.to_ascii_lowercase(), port)
+    };
+
+    match port {
+        Some("80") if scheme == "http" => Ok(host),
+        Some("443") if scheme == "https" => Ok(host),
+        Some(port) => Ok(format!("{host}:{port}")),
+        None => Ok(host),
+    }
 }
 
 fn serialize_request(

@@ -234,3 +234,82 @@ fn annotate_tools(tools: &mut [Value], presets: &[String]) {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn openapi_opts() -> openapi::CompileOptions {
+        openapi::CompileOptions {
+            integration: "microsoft".to_string(),
+            owner: "org".to_string(),
+            connection: "main".to_string(),
+            auth: "bearer".to_string(),
+            base_url: None,
+        }
+    }
+
+    #[test]
+    fn filters_graph_openapi_by_registry_preset() {
+        let source = r#"{
+          "openapi": "3.0.3",
+          "info": { "title": "Graph", "version": "v1.0" },
+          "paths": {
+            "/me/messages": {
+              "get": {
+                "operationId": "listMessages",
+                "responses": { "200": { "description": "ok" } }
+              }
+            },
+            "/me/events": {
+              "get": {
+                "operationId": "listEvents",
+                "responses": { "200": { "description": "ok" } }
+              }
+            }
+          }
+        }"#;
+        let opts = CompileOptions {
+            preset_ids: vec!["mail".to_string()],
+        };
+
+        let out = compile(source, SourceFormat::Json, &openapi_opts(), &opts);
+        assert_eq!(out.diagnostics, Vec::new());
+        assert_eq!(out.tools.len(), 1);
+        assert_eq!(out.tools[0]["address"], "microsoft.org.main.listMessages");
+        assert_eq!(
+            out.tools[0]["binding"]["request"]["url_template"],
+            "https://graph.microsoft.com/v1.0/me/messages"
+        );
+        assert_eq!(
+            out.tools[0]["annotations"]["sourceFormat"],
+            "microsoft-graph"
+        );
+    }
+
+    #[test]
+    fn malformed_source_is_a_parse_error() {
+        let out = compile(
+            "{",
+            SourceFormat::Json,
+            &openapi_opts(),
+            &CompileOptions::default(),
+        );
+        assert_eq!(out.tools, Vec::<Value>::new());
+        assert_eq!(out.diagnostics[0].code, "parse_failed");
+    }
+
+    #[test]
+    fn unknown_preset_is_an_invalid_preset_error() {
+        let out = compile(
+            "{}",
+            SourceFormat::Json,
+            &openapi_opts(),
+            &CompileOptions {
+                preset_ids: vec!["not-a-preset".to_string()],
+            },
+        );
+        assert_eq!(out.tools, Vec::<Value>::new());
+        assert_eq!(out.diagnostics[0].code, "invalid_preset");
+    }
+}

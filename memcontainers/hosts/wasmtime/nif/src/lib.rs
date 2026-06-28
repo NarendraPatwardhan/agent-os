@@ -532,10 +532,10 @@ fn ticks_to_usize(max_ticks: u64) -> NifResult<usize> {
 }
 
 fn build_connections(
-    defs: Vec<(String, String, String, String)>,
+    defs: Vec<(String, String, String, String, Vec<String>)>,
 ) -> NifResult<ConnectionRegistry> {
     let mut registry = ConnectionRegistry::new();
-    for (reference, kind, a, b) in defs {
+    for (reference, kind, a, b, origins) in defs {
         let credential = match kind.as_str() {
             "none" => ConnectionCredential::None,
             "bearer" => ConnectionCredential::Bearer { token: a },
@@ -544,7 +544,7 @@ fn build_connections(
             _ => return Err(nif_err(format!("unknown connection credential kind {kind:?}"))),
         };
         registry
-            .insert(reference.clone(), credential)
+            .insert(reference.clone(), credential, origins)
             .map_err(|err| {
                 nif_err(format!(
                     "invalid connection {reference:?}: {}",
@@ -559,9 +559,12 @@ fn connection_error(err: ConnectionError) -> &'static str {
     match err {
         ConnectionError::InvalidReference => "invalid reference",
         ConnectionError::InvalidHeader => "invalid header",
+        ConnectionError::InvalidOrigin => "invalid origin",
         ConnectionError::InvalidSecret => "invalid secret",
+        ConnectionError::MissingOrigin => "missing origin",
         ConnectionError::DuplicateConnection => "duplicate connection",
         ConnectionError::UnknownConnection => "unknown connection",
+        ConnectionError::OriginNotAllowed => "origin not allowed",
         ConnectionError::DuplicateMarker => "duplicate marker",
         ConnectionError::MalformedRequest => "malformed request",
         ConnectionError::HeaderAlreadyPresent => "header already present",
@@ -577,7 +580,7 @@ fn build_builder(
     workers: Option<i32>,
     net_relay: bool,
     net_real: bool,
-    connections: Vec<(String, String, String, String)>,
+    connections: Vec<(String, String, String, String, Vec<String>)>,
     host_call_relay: bool,
     persist_relay: bool,
     out: &Arc<Mutex<Vec<u8>>>,
@@ -643,7 +646,7 @@ fn boot(
     workers: Option<i32>,
     net_relay: bool,
     net_real: bool,
-    connections: Vec<(String, String, String, String)>,
+    connections: Vec<(String, String, String, String, Vec<String>)>,
     host_call_relay: bool,
     persist_relay: bool,
 ) -> NifResult<(Atom, ResourceArc<Vm>)> {
@@ -688,7 +691,7 @@ fn restore(
     workers: Option<i32>,
     net_relay: bool,
     net_real: bool,
-    connections: Vec<(String, String, String, String)>,
+    connections: Vec<(String, String, String, String, Vec<String>)>,
     host_call_relay: bool,
     persist_relay: bool,
 ) -> NifResult<(Atom, ResourceArc<Vm>)> {

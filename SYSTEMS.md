@@ -362,10 +362,11 @@ a Rust kernel, a Zig kernel, a Rust shim, a Rust server, and a TS client cannot 
 ### 3.4 Versioning
 
 The ABI version is `(major << 16) | minor`, reported by `mc_sys_abi_version`. This worktree is **ABI
-1.6** with **57 syscalls**: 1.3 froze a 52-syscall base, 1.4 added the five `svc_*` service calls, 1.5
-widened service handle-delegation, 1.6 added the response-chunk `last` flag. Additive changes bump the
-minor; only a break bumps the major. The wire protocol is versioned separately (`wire-version 1`) — it
-is the over-the-network `std` contract, distinct from the in-process `no_std` one.
+1.7** with **57 syscalls**: 1.3 froze a 52-syscall base, 1.4 added the five `svc_*` service calls, 1.5
+widened service handle-delegation, 1.6 added the response-chunk `last` flag, and 1.7 added kernel-authored
+`caller`/`caller_caps` metadata to the service receive envelope. Additive changes bump the minor; only a
+break bumps the major. The wire protocol is versioned separately (`wire-version 1`) — it is the
+over-the-network `std` contract, distinct from the in-process `no_std` one.
 
 ---
 
@@ -976,9 +977,9 @@ caller's kernel-stamped `CAP_NET`, matching direct `host_call`; discovery, `/too
 unprivileged.
 
 `/svc/adapters` is the mcbox-style resident service for adapter-backed tools. It is one std-WASI service,
-not one service per format: OpenAPI, Microsoft Graph workload filters, and Google Discovery normalization
-are internal modules behind the same protocol; GraphQL is next and should reuse the same service so
-serde/YAML/schema costs are paid once.
+not one service per format: OpenAPI, Microsoft Graph workload filters, Google Discovery normalization,
+GraphQL introspection, and remote MCP tool-list normalization are internal modules behind the same protocol,
+so serde/YAML/schema costs are paid once.
 `memcontainers/lib/parse` owns shared parse/normalize logic; root `{x}core` crates remain for substrate
 that is fundamental to the VM. The service also exposes a static curated registry lifted from executor's
 MIT-licensed preset tables as factual metadata: integration ids, summaries, public spec/discovery/MCP
@@ -988,8 +989,11 @@ records with service bindings back to `/svc/adapters invoke`; those records cont
 opaque connection references, never credentials. `invoke` expands tool args into a normal
 `mc_http_request` blob. If the binding names a non-`none` connection, the guest adds only
 `X-MC-Connection: <integration>.<owner>.<connection>`; the Rust and JS host network capabilities remove
-that marker at the egress boundary and splice the host-side credential from their connection registry
-(bearer/header/query), fail-closed on unknown markers, and never put the secret in guest memory. Because
+that marker at the egress boundary. Secret-bearing registry entries must declare the absolute `http`/`https`
+origins allowed to receive the credential; the host normalizes the request URL's origin and splices
+bearer/header/query credentials only on an exact origin match, failing closed before the secret is attached.
+This keeps the credential boundary self-contained even when a CAP_NET guest crafts an `mc_http_request`
+directly. Unknown markers also fail closed, and the secret never enters guest memory. Because
 the service is full-tier, it checks the caller's kernel-stamped `CAP_NET` before reaching
 `mc_http_request`. `/svc/tools` performs the same caller-authority gate before dispatching service-backed
 catalog records, so adapters cannot launder host egress around the normal tool-plane boundary.
@@ -1014,8 +1018,11 @@ I/O, time (`CAP_AMBIENT`), entropy (`CAP_AMBIENT`), HTTP (request/poll/body/clos
 (connect/send/recv/close), host-call (start/poll/body/close), persistence (get/put/delete/list), an
 optional threading set, and lifecycle (`yield`/`exit`/`log`/boot). The control exports the host calls are
 lifecycle (`mc_init`/`mc_tick`/`mc_input`/`mc_resize`), a scratch-buffer VFS control channel, exec jobs,
-and snapshot/quiescence. Every export is looked up as an `Option` because the host loads the kernel at
-runtime and cannot know which exports a given artifact carries.
+host-control service calls (`mc_ctl_svc_call_start`/`poll`/`close`), and snapshot/quiescence. Host-control
+service calls are the trusted mutation path for resident services such as `/svc/tools`: the kernel stamps
+them as `SYSTEM_CALLER` with full caps and returns a bounded `[status][len][body]` result in the scratch
+buffer. Every export is looked up as an `Option` because the host loads the kernel at runtime and cannot
+know which exports a given artifact carries.
 
 How effects are actually performed off-guest, all composing with the cooperative poll model:
 
@@ -1347,7 +1354,7 @@ while the contract is still soft.
 
 | Area | Status |
 |---|---|
-| Contracts + projector (Rust/Zig/TS/MD/AsyncAPI) | Built; 57 syscalls at ABI 1.6 |
+| Contracts + projector (Rust/Zig/TS/MD/AsyncAPI) | Built; 57 syscalls at ABI 1.7 |
 | Rust kernel (scheduler, wasm runtime, VFS, filesystems, pipes, services, net, snapshots) | Built |
 | Guest sysroot (Rust + Zig), WASI adapter, conformance/attestation | Built |
 | Shell, multicall coreutils, Luau (+ batteries) | Built |

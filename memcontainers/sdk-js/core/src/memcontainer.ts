@@ -352,7 +352,7 @@ function netEnabled(opts: CreateOptions): boolean {
 function connectionRegistry(defs: ConnectionDefinition[]): ConnectionRegistry {
   const registry = new ConnectionRegistry();
   for (const def of defs) {
-    registry.insert(def.ref, def.auth);
+    registry.insert(def.ref, def.auth, def.origins);
   }
   return registry;
 }

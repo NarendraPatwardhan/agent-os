@@ -9,6 +9,8 @@ use serde_json::{json, Map, Value};
 use crate::openapi::{self, CompileOutput, SourceFormat};
 use crate::Diagnostic;
 
+const MAX_DISCOVERY_DEPTH: usize = 32;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CompileOptions {}
 
@@ -62,7 +64,7 @@ fn normalize_discovery(
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Value {
     let mut paths = Map::new();
-    collect_methods(root, &mut paths, diagnostics);
+    collect_methods(root, &mut paths, diagnostics, 0);
     if paths.is_empty() {
         diagnostics.push(Diagnostic::warn(
             "no_methods",
@@ -74,7 +76,7 @@ fn normalize_discovery(
     let mut components = Map::new();
     if let Some(schemas) = root.get("schemas").and_then(Value::as_object) {
         for (name, schema) in schemas {
-            components.insert(name.clone(), discovery_schema(schema));
+            components.insert(name.clone(), discovery_schema(schema, 0));
         }
     }
 
@@ -96,7 +98,17 @@ fn collect_methods(
     node: &Value,
     paths: &mut Map<String, Value>,
     diagnostics: &mut Vec<Diagnostic>,
+    depth: usize,
 ) {
+    if depth > MAX_DISCOVERY_DEPTH {
+        diagnostics.push(Diagnostic::warn(
+            "max_depth_exceeded",
+            "Google Discovery resource tree exceeded the supported nesting depth",
+            None,
+        ));
+        return;
+    }
+
     if let Some(methods) = node.get("methods").and_then(Value::as_object) {
         let mut names: Vec<&String> = methods.keys().collect();
         names.sort();
@@ -111,7 +123,7 @@ fn collect_methods(
         names.sort();
         for name in names {
             if let Some(resource) = resources.get(name) {
-                collect_methods(resource, paths, diagnostics);
+                collect_methods(resource, paths, diagnostics, depth + 1);
             }
         }
     }
@@ -211,7 +223,7 @@ fn discovery_parameters(method: &Value) -> Vec<Value> {
 }
 
 fn discovery_parameter_schema(param: &Value) -> Value {
-    let schema = discovery_schema(param);
+    let schema = discovery_schema(param, 0);
     if param.get("repeated").and_then(Value::as_bool) == Some(true) {
         json!({
             "type": "array",
@@ -228,7 +240,7 @@ fn discovery_body(method: &Value) -> Option<Value> {
         "required": true,
         "content": {
             "application/json": {
-                "schema": discovery_schema(request),
+                "schema": discovery_schema(request, 0),
             }
         }
     }))
@@ -237,7 +249,7 @@ fn discovery_body(method: &Value) -> Option<Value> {
 fn discovery_responses(method: &Value) -> Value {
     let schema = method
         .get("response")
-        .map(discovery_schema)
+        .map(|schema| discovery_schema(schema, 0))
         .unwrap_or_else(|| json!({ "type": "object" }));
     json!({
         "200": {
@@ -251,7 +263,11 @@ fn discovery_responses(method: &Value) -> Value {
     })
 }
 
-fn discovery_schema(schema: &Value) -> Value {
+fn discovery_schema(schema: &Value, depth: usize) -> Value {
+    if depth > MAX_DISCOVERY_DEPTH {
+        return json!({});
+    }
+
     if let Some(reference) = text_field(schema, "$ref") {
         return json!({ "$ref": format!("#/components/schemas/{reference}") });
     }
@@ -283,7 +299,7 @@ fn discovery_schema(schema: &Value) -> Value {
         names.sort();
         for name in names {
             if let Some(property) = properties.get(name) {
-                props.insert(name.clone(), discovery_schema(property));
+                props.insert(name.clone(), discovery_schema(property, depth + 1));
             }
         }
         out.insert("properties".to_string(), Value::Object(props));
@@ -291,12 +307,12 @@ fn discovery_schema(schema: &Value) -> Value {
             .or_insert_with(|| Value::String("object".to_string()));
     }
     if let Some(items) = obj.get("items") {
-        out.insert("items".to_string(), discovery_schema(items));
+        out.insert("items".to_string(), discovery_schema(items, depth + 1));
     }
     if let Some(additional) = obj.get("additionalProperties") {
         let value = match additional {
             Value::Bool(_) => additional.clone(),
-            _ => discovery_schema(additional),
+            _ => discovery_schema(additional, depth + 1),
         };
         out.insert("additionalProperties".to_string(), value);
     }
@@ -351,5 +367,123 @@ fn annotate_tools(tools: &mut [Value]) {
             "sourceFormat".to_string(),
             Value::String("google-discovery".to_string()),
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn openapi_opts() -> openapi::CompileOptions {
+        openapi::CompileOptions {
+            integration: "google".to_string(),
+            owner: "org".to_string(),
+            connection: "main".to_string(),
+            auth: "bearer".to_string(),
+            base_url: None,
+        }
+    }
+
+    #[test]
+    fn emits_catalog_records_from_discovery_methods() {
+        let source = r#"{
+          "title": "Drive API",
+          "version": "v3",
+          "rootUrl": "https://www.googleapis.com/",
+          "servicePath": "drive/v3/",
+          "methods": {
+            "files.list": {
+              "id": "drive.files.list",
+              "path": "files",
+              "httpMethod": "GET",
+              "parameters": {
+                "pageSize": { "type": "integer", "location": "query" }
+              },
+              "response": { "$ref": "FileList" }
+            }
+          },
+          "schemas": {
+            "FileList": {
+              "type": "object",
+              "properties": {
+                "files": { "type": "array", "items": { "$ref": "File" } }
+              }
+            },
+            "File": {
+              "type": "object",
+              "properties": { "id": { "type": "string" } }
+            }
+          }
+        }"#;
+
+        let out = compile(
+            source,
+            SourceFormat::Json,
+            &openapi_opts(),
+            &CompileOptions {},
+        );
+        assert_eq!(out.diagnostics, Vec::new());
+        assert_eq!(out.tools.len(), 1);
+        assert_eq!(out.tools[0]["address"], "google.org.main.drive-files-list");
+        assert_eq!(
+            out.tools[0]["annotations"]["sourceFormat"],
+            "google-discovery"
+        );
+        assert_eq!(
+            out.tools[0]["binding"]["request"]["url_template"],
+            "https://www.googleapis.com/drive/v3/files"
+        );
+    }
+
+    #[test]
+    fn resource_collection_stops_at_the_depth_limit() {
+        let mut node = json!({
+            "methods": {
+                "deep.get": {
+                    "id": "deep.get",
+                    "path": "deep",
+                    "httpMethod": "GET"
+                }
+            }
+        });
+        for i in 0..=MAX_DISCOVERY_DEPTH {
+            node = json!({ "resources": { format!("r{i}"): node } });
+        }
+        let source = serde_json::to_string(&node).unwrap();
+
+        let out = compile(
+            &source,
+            SourceFormat::Json,
+            &openapi_opts(),
+            &CompileOptions {},
+        );
+        assert_eq!(out.tools, Vec::<Value>::new());
+        assert!(out
+            .diagnostics
+            .iter()
+            .any(|diag| diag.code == "max_depth_exceeded"));
+        assert!(out
+            .diagnostics
+            .iter()
+            .any(|diag| diag.code == "no_methods"));
+    }
+
+    #[test]
+    fn schema_normalization_stops_at_the_depth_limit() {
+        let mut schema = json!({ "type": "string" });
+        for i in (0..40).rev() {
+            schema = json!({
+                "type": "object",
+                "properties": {
+                    format!("p{i}"): schema
+                }
+            });
+        }
+
+        let normalized = discovery_schema(&schema, 0);
+        let rendered = serde_json::to_string(&normalized).unwrap();
+        assert!(rendered.contains("\"p0\""));
+        assert!(rendered.contains("\"p32\""));
+        assert!(!rendered.contains("\"p33\""));
     }
 }

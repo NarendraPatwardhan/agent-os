@@ -63,6 +63,7 @@ defmodule AgentOS.Host.Nif do
           | %{required(String.t()) => binary()}
   @type connection_def ::
           {ref :: binary(), connection_auth()}
+          | {ref :: binary(), connection_auth(), origins :: [binary()]}
           | %{required(:ref) => binary(), required(:auth) => connection_auth()}
           | %{required(String.t()) => term()}
   @type boot_opt ::
@@ -96,6 +97,8 @@ defmodule AgentOS.Host.Nif do
   `:host_call` and `:persist` accept `:deny` or `:relay`. `:net` accepts `:deny`,
   `:relay`, or `:real`; real net may also receive host-only `:connections`, whose
   secrets are injected by the Rust host when a guest request names `X-MC-Connection`.
+  Secret-bearing connections must include the absolute `http`/`https` origins allowed to
+  receive that credential.
   """
   @spec boot(binary(), binary() | nil, [boot_opt()]) :: {:ok, vm()} | {:error, reason()}
   def boot(wasm, base_image, opts \\ [])
@@ -617,18 +620,35 @@ defmodule AgentOS.Host.Nif do
 
   defp connection_arg({ref, auth}) when is_binary(ref) do
     with {:ok, kind, a, b} <- connection_auth_arg(auth) do
-      {:ok, {ref, kind, a, b}}
+      {:ok, {ref, kind, a, b, []}}
     end
   end
 
-  defp connection_arg(%{ref: ref, auth: auth}) when is_binary(ref),
-    do: connection_arg({ref, auth})
+  defp connection_arg({ref, auth, origins}) when is_binary(ref) do
+    with {:ok, kind, a, b} <- connection_auth_arg(auth),
+         {:ok, origins} <- connection_origins_arg(origins) do
+      {:ok, {ref, kind, a, b, origins}}
+    end
+  end
 
-  defp connection_arg(%{"ref" => ref, "auth" => auth}) when is_binary(ref),
-    do: connection_arg({ref, auth})
+  defp connection_arg(%{ref: ref, auth: auth} = entry) when is_binary(ref),
+    do: connection_arg({ref, auth, Map.get(entry, :origins, [])})
+
+  defp connection_arg(%{"ref" => ref, "auth" => auth} = entry) when is_binary(ref),
+    do: connection_arg({ref, auth, Map.get(entry, "origins", [])})
 
   defp connection_arg(_other),
-    do: {:error, "connection must be {ref, auth} or %{ref: ref, auth: auth}"}
+    do: {:error, "connection must be {ref, auth}, {ref, auth, origins}, or %{ref: ref, auth: auth}"}
+
+  defp connection_origins_arg(origins) when is_list(origins) do
+    if Enum.all?(origins, &is_binary/1) do
+      {:ok, origins}
+    else
+      {:error, "connection origins must be a list of binaries"}
+    end
+  end
+
+  defp connection_origins_arg(_other), do: {:error, "connection origins must be a list of binaries"}
 
   defp connection_auth_arg(:none), do: {:ok, "none", "", ""}
   defp connection_auth_arg({:none}), do: {:ok, "none", "", ""}

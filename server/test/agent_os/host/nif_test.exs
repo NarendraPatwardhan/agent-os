@@ -41,7 +41,21 @@ defmodule AgentOS.Host.NifTest do
              {:error, "connections must be specified either in net: {:real, ...} or :connections, not both"}
 
     assert AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil, net: :real, connections: [:bad]) ==
-             {:error, "connection must be {ref, auth} or %{ref: ref, auth: auth}"}
+             {:error, "connection must be {ref, auth}, {ref, auth, origins}, or %{ref: ref, auth: auth}"}
+
+    assert AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil,
+             net: :real,
+             connections: [{"openai.org.main", {:bearer, "tok"}}]
+           ) ==
+             {:error, ~s(invalid connection "openai.org.main": missing origin)}
+
+    assert {:error, msg} =
+             AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil,
+               net: :real,
+               connections: [{"openai.org.main", {:bearer, "tok"}, ["https://api.openai.com"]}]
+             )
+
+    assert msg =~ "kernel.wasm"
 
     assert AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil, host_call: :open) ==
              {:error, "host_call must be :deny or :relay"}

@@ -12,19 +12,25 @@ export type ConnectionCredential =
   | { kind: "header"; name: string; value: string }
   | { kind: "query"; name: string; value: string };
 
-export class ConnectionRegistry {
-  private readonly entries = new Map<string, ConnectionCredential>();
+interface ConnectionEntry {
+  credential: ConnectionCredential;
+  origins: string[];
+}
 
-  insert(reference: string, credential: ConnectionCredential): this {
+export class ConnectionRegistry {
+  private readonly entries = new Map<string, ConnectionEntry>();
+
+  insert(reference: string, credential: ConnectionCredential, origins: string[] = []): this {
     validateReference(reference);
     validateCredential(credential);
+    const normalizedOrigins = normalizeOrigins(credential, origins);
     if (this.entries.has(reference)) throw new Error(`duplicate connection '${reference}'`);
-    this.entries.set(reference, credential);
+    this.entries.set(reference, { credential, origins: normalizedOrigins });
     return this;
   }
 
-  bearer(reference: string, token: string): this {
-    return this.insert(reference, { kind: "bearer", token });
+  bearer(reference: string, token: string, origins: string[]): this {
+    return this.insert(reference, { kind: "bearer", token }, origins);
   }
 
   injectHttpRequest(req: Uint8Array): Uint8Array | null {
@@ -35,22 +41,26 @@ export class ConnectionRegistry {
     if (markerValues.length > 1) return null;
     const reference = markerValues[0]![1];
     if (!validReference(reference)) return null;
-    const credential = this.entries.get(reference);
-    if (!credential) return null;
+    const entry = this.entries.get(reference);
+    if (!entry) return null;
+    if (entry.origins.length > 0 || secretBearing(entry.credential)) {
+      const origin = requestOrigin(parsed.url);
+      if (!origin || !entry.origins.includes(origin)) return null;
+    }
 
     const headers = parsed.headers.filter(([name]) => !eqHeader(name, CONNECTION_HEADER));
     let url = parsed.url;
-    switch (credential.kind) {
+    switch (entry.credential.kind) {
       case "none":
         break;
       case "bearer":
-        if (!addHeader(headers, "Authorization", `Bearer ${credential.token}`)) return null;
+        if (!addHeader(headers, "Authorization", `Bearer ${entry.credential.token}`)) return null;
         break;
       case "header":
-        if (!addHeader(headers, credential.name, credential.value)) return null;
+        if (!addHeader(headers, entry.credential.name, entry.credential.value)) return null;
         break;
       case "query":
-        url = appendQuery(url, credential.name, credential.value);
+        url = appendQuery(url, entry.credential.name, entry.credential.value);
         break;
     }
     return serializeRequest(parsed.method, url, headers, parsed.body);
@@ -136,6 +146,49 @@ function validateCredential(credential: ConnectionCredential): void {
         throw new Error("invalid query credential");
       }
   }
+}
+
+function normalizeOrigins(credential: ConnectionCredential, origins: string[]): string[] {
+  const out: string[] = [];
+  for (const raw of origins) {
+    const origin = normalizeAllowedOrigin(raw);
+    if (!out.includes(origin)) out.push(origin);
+  }
+  if (secretBearing(credential) && out.length === 0) throw new Error("secret connection auth requires origins");
+  return out;
+}
+
+function secretBearing(credential: ConnectionCredential): boolean {
+  return credential.kind !== "none";
+}
+
+function normalizeAllowedOrigin(value: string): string {
+  const url = parseHttpUrl(value);
+  if (url.pathname !== "/" || url.search !== "" || url.hash !== "") {
+    throw new Error(`invalid connection origin '${value}'`);
+  }
+  return url.origin;
+}
+
+function requestOrigin(value: string): string | null {
+  try {
+    return parseHttpUrl(value).origin;
+  } catch {
+    return null;
+  }
+}
+
+function parseHttpUrl(value: string): URL {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`invalid connection origin '${value}'`);
+  }
+  if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password) {
+    throw new Error(`invalid connection origin '${value}'`);
+  }
+  return url;
 }
 
 function validateReference(reference: string): void {

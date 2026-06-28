@@ -64,6 +64,8 @@ export interface ConnectionDefinition {
   /** `integration.owner.name`, where owner is `org` or `user`. */
   ref: string;
   auth: ConnectionAuth;
+  /** Absolute `http`/`https` origins allowed to receive this connection's host-side credential. */
+  origins: string[];
 }
 
 /** A built image: an ordered stack of content-addressed layers plus the

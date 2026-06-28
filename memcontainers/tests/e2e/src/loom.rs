@@ -312,7 +312,7 @@ fn adapters_compile_openapi_catalog_and_tools_call_it() {
     let (base_url, seen) = one_shot_http_server(br#"{"received":true}"#);
     let net = RealNet::new().with_connections(
         ConnectionRegistry::new()
-            .with_bearer("petstore.org.main", "e2e-secret-token")
+            .with_bearer("petstore.org.main", "e2e-secret-token", [base_url.clone()])
             .expect("connection registry"),
     );
     let mut s = boot_loom_with_net(Box::new(net));
@@ -456,6 +456,32 @@ print(res.data.tools[2].address)
     );
 }
 
+/// WHY: connection refs are host credentials, not ambient bearer tokens. A CAP_NET guest can craft a
+/// raw `mc_http_request` with `X-MC-Connection`; the host must still bind that credential to its
+/// configured destination origin before any secret is attached.
+#[test]
+fn host_connection_credentials_are_origin_bound() {
+    let (base_url, seen) = one_shot_http_server(br#"{"received":true}"#);
+    let net = RealNet::new().with_connections(
+        ConnectionRegistry::new()
+            .with_bearer(
+                "petstore.org.main",
+                "e2e-secret-token",
+                ["https://allowed.example"],
+            )
+            .expect("connection registry"),
+    );
+    let mut s = boot_loom_with_net(Box::new(net));
+
+    let _ = s.run_for_output(&format!(
+        "fetch -H 'X-MC-Connection: petstore.org.main' {base_url}/v1/pets"
+    ));
+    match seen.recv_timeout(Duration::from_millis(200)) {
+        Err(mpsc::RecvTimeoutError::Timeout) => {}
+        other => panic!("origin-mismatched credential request reached upstream: {other:?}"),
+    }
+}
+
 /// WHY: Microsoft Graph is not a separate runtime. `/svc/adapters` should trim the large Graph OpenAPI
 /// source by registry workload presets, emit ordinary service-backed tool records, and let the host
 /// splice OAuth credentials only at `mc_http_request` egress.
@@ -464,7 +490,7 @@ fn adapters_compile_microsoft_graph_preset_and_tools_call_it() {
     let (base_url, seen) = one_shot_http_server(br#"{"mail":true}"#);
     let net = RealNet::new().with_connections(
         ConnectionRegistry::new()
-            .with_bearer("microsoft.org.work", "ms-secret-token")
+            .with_bearer("microsoft.org.work", "ms-secret-token", [base_url.clone()])
             .expect("connection registry"),
     );
     let mut s = boot_loom_with_net(Box::new(net));
@@ -578,7 +604,7 @@ fn adapters_compile_google_discovery_and_tools_call_it() {
     let (base_url, seen) = one_shot_http_server(br#"{"messages":["hello"]}"#);
     let net = RealNet::new().with_connections(
         ConnectionRegistry::new()
-            .with_bearer("gmail.org.work", "google-secret-token")
+            .with_bearer("gmail.org.work", "google-secret-token", [base_url.clone()])
             .expect("connection registry"),
     );
     let mut s = boot_loom_with_net(Box::new(net));
