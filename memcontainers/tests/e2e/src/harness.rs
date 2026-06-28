@@ -17,7 +17,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use host::{CaptureSink, DirEntry, DiskPersist, KernelHost, KernelHostBuilder, MapHostCall};
+use host::{
+    CaptureSink, DirEntry, DiskPersist, KernelHost, KernelHostBuilder, MapHostCall, NetCapability,
+};
 
 /// Generous tick budget for one shell operation (a pipeline can yield across many ticks).
 const MAX_TICKS_PER_OP: usize = 200_000;
@@ -107,6 +109,16 @@ pub fn boot_loom_with_tools(tools: MapHostCall) -> Session {
         .with_host_call(Box::new(tools))
         .build()
         .expect("kernel booted (loom image with tools)");
+    Session { host, stdout }
+}
+
+/// Boot the `loom` image with a real host network capability installed.
+pub fn boot_loom_with_net(net: Box<dyn NetCapability>) -> Session {
+    let (b, stdout) = builder("_main/memcontainers/images/loom.tar");
+    let host = b
+        .with_net(net)
+        .build()
+        .expect("kernel booted (loom image with net)");
     Session { host, stdout }
 }
 

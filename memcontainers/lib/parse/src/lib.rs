@@ -1,9 +1,11 @@
 //! Shared parsers for adapter-backed tool generation.
 //!
 //! This crate owns the expensive, format-specific normalization work for `/svc/adapters`: OpenAPI
-//! first, then GraphQL, Microsoft Graph, and Google discovery behind the same service contract. It is
+//! first, then Microsoft Graph and Google discovery, then GraphQL behind the same service contract. It is
 //! intentionally `std + serde`; these formats are schema-heavy data languages, not kernel substrate.
 
+pub mod google;
+pub mod microsoft;
 pub mod openapi;
 pub mod registry;
 

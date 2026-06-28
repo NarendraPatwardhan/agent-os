@@ -976,17 +976,22 @@ caller's kernel-stamped `CAP_NET`, matching direct `host_call`; discovery, `/too
 unprivileged.
 
 `/svc/adapters` is the mcbox-style resident service for adapter-backed tools. It is one std-WASI service,
-not one service per format: OpenAPI is the first internal compiler, and GraphQL, Microsoft Graph, and
-Google discovery should land as modules behind the same protocol so serde/YAML/schema costs are paid once.
+not one service per format: OpenAPI, Microsoft Graph workload filters, and Google Discovery normalization
+are internal modules behind the same protocol; GraphQL is next and should reuse the same service so
+serde/YAML/schema costs are paid once.
 `memcontainers/lib/parse` owns shared parse/normalize logic; root `{x}core` crates remain for substrate
 that is fundamental to the VM. The service also exposes a static curated registry lifted from executor's
 MIT-licensed preset tables as factual metadata: integration ids, summaries, public spec/discovery/MCP
 endpoints, OAuth scopes, and Graph path filters. Registry reads are local and deterministic; fetching
 remote specs is still a later adapter/connection action. `compile` operations emit ordinary catalog
 records with service bindings back to `/svc/adapters invoke`; those records contain request templates and
-opaque connection references, never credentials. `invoke` expands tool args into a host request and,
-because the service is full-tier, checks the caller's kernel-stamped `CAP_NET` before reaching
-`host_call`. `/svc/tools` performs the same caller-authority gate before dispatching service-backed
+opaque connection references, never credentials. `invoke` expands tool args into a normal
+`mc_http_request` blob. If the binding names a non-`none` connection, the guest adds only
+`X-MC-Connection: <integration>.<owner>.<connection>`; the Rust and JS host network capabilities remove
+that marker at the egress boundary and splice the host-side credential from their connection registry
+(bearer/header/query), fail-closed on unknown markers, and never put the secret in guest memory. Because
+the service is full-tier, it checks the caller's kernel-stamped `CAP_NET` before reaching
+`mc_http_request`. `/svc/tools` performs the same caller-authority gate before dispatching service-backed
 catalog records, so adapters cannot launder host egress around the normal tool-plane boundary.
 
 `pkgcore` is the pure logic for `pkgfsd`, a demand-load package daemon: a dependency-free SHA-256, a

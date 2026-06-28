@@ -5,14 +5,14 @@
 //! so serde/YAML/schema costs are paid once per VM. The binary intentionally has no supported CLI face.
 
 use mc_parse::openapi::{self, CompileOptions, SourceFormat};
-use mc_parse::registry;
+use mc_parse::{google, microsoft, registry};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, VecDeque};
 use sysroot as rt;
 
 const SERVICE_NAME: &str = "adapters";
-const HOST_OPENAPI_REQUEST: &str = "openapi.request";
+const CONNECTION_HEADER: &str = "X-MC-Connection";
 const CAP_NET: u32 = rt::CAP_NET as u32;
 const CONTROL_CALLER: u32 = 0;
 const MAX_REQ: usize = 1024 * 1024 + 64 * 1024;
@@ -36,11 +36,13 @@ struct Request {
     #[serde(default)]
     connection: Option<String>,
     #[serde(default)]
+    auth: Option<String>,
+    #[serde(default)]
+    preset_ids: Option<Vec<String>>,
+    #[serde(default)]
     base_url: Option<String>,
     #[serde(default)]
     adapter: Option<String>,
-    #[serde(default)]
-    tool: Option<String>,
     #[serde(default)]
     binding: Option<Value>,
     #[serde(default)]
@@ -178,6 +180,8 @@ fn registry_get(req: Request) -> Response {
 fn compile(req: Request) -> Response {
     match req.format.as_deref() {
         Some("openapi") => compile_openapi(req),
+        Some("microsoft-graph") | Some("msgraph") => compile_microsoft_graph(req),
+        Some("google-discovery") => compile_google_discovery(req),
         Some(_) => json_response(error("unsupported_format", "unsupported adapter format")),
         None => json_response(error("bad_request", "compile requires format")),
     }
@@ -197,6 +201,7 @@ fn compile_openapi(req: Request) -> Response {
         integration: req.integration.unwrap_or_else(|| "openapi".to_string()),
         owner: req.owner.unwrap_or_else(|| "org".to_string()),
         connection: req.connection.unwrap_or_else(|| "main".to_string()),
+        auth: req.auth.unwrap_or_else(|| "none".to_string()),
         base_url: req.base_url,
     };
     let out = openapi::compile(&source, source_format, &opts);
@@ -204,6 +209,81 @@ fn compile_openapi(req: Request) -> Response {
         "tools": out.tools,
         "diagnostics": out.diagnostics,
     })))
+}
+
+fn compile_microsoft_graph(req: Request) -> Response {
+    let source = match read_source(&req) {
+        Ok(source) => source,
+        Err(message) => return json_response(error("bad_source", message)),
+    };
+    let source_format = match source_format(&req) {
+        Ok(format) => format,
+        Err(message) => return json_response(error("bad_request", message)),
+    };
+    let preset_ids = requested_preset_ids(&req);
+    let opts = CompileOptions {
+        integration: req.integration.unwrap_or_else(|| "microsoft".to_string()),
+        owner: req.owner.unwrap_or_else(|| "org".to_string()),
+        connection: req.connection.unwrap_or_else(|| "main".to_string()),
+        auth: req.auth.unwrap_or_else(|| "bearer".to_string()),
+        base_url: req.base_url,
+    };
+    let out = microsoft::compile(
+        &source,
+        source_format,
+        &opts,
+        &microsoft::CompileOptions { preset_ids },
+    );
+    json_response(ok(json!({
+        "tools": out.tools,
+        "diagnostics": out.diagnostics,
+    })))
+}
+
+fn compile_google_discovery(req: Request) -> Response {
+    let source = match read_source(&req) {
+        Ok(source) => source,
+        Err(message) => return json_response(error("bad_source", message)),
+    };
+    let source_format = match source_format(&req) {
+        Ok(format) => format,
+        Err(message) => return json_response(error("bad_request", message)),
+    };
+    let integration = req
+        .integration
+        .or(req.id)
+        .unwrap_or_else(|| "google".to_string());
+    let opts = CompileOptions {
+        integration,
+        owner: req.owner.unwrap_or_else(|| "org".to_string()),
+        connection: req.connection.unwrap_or_else(|| "main".to_string()),
+        auth: req.auth.unwrap_or_else(|| "bearer".to_string()),
+        base_url: req.base_url,
+    };
+    let out = google::compile(
+        &source,
+        source_format,
+        &opts,
+        &google::CompileOptions::default(),
+    );
+    json_response(ok(json!({
+        "tools": out.tools,
+        "diagnostics": out.diagnostics,
+    })))
+}
+
+fn source_format(req: &Request) -> Result<SourceFormat, &'static str> {
+    match req.source_format.as_deref().unwrap_or("json") {
+        "json" => Ok(SourceFormat::Json),
+        "yaml" | "yml" => Ok(SourceFormat::Yaml),
+        _ => Err("source_format must be json or yaml"),
+    }
+}
+
+fn requested_preset_ids(req: &Request) -> Vec<String> {
+    req.preset_ids
+        .clone()
+        .unwrap_or_else(|| req.id.iter().cloned().collect())
 }
 
 fn read_source(req: &Request) -> Result<String, String> {
@@ -224,19 +304,11 @@ fn invoke(req: Request) -> Response {
         return json_response(error("bad_request", "invoke requires binding"));
     };
     let args = req.args.unwrap_or_else(|| json!({}));
-    let host_payload = match openapi_host_payload(&binding, &args, req.tool.as_deref()) {
-        Ok(payload) => payload,
+    let request = match openapi_http_request(&binding, &args) {
+        Ok(request) => request,
         Err(message) => return json_response(error("bad_request", message)),
     };
-    let payload = match serde_json::to_vec(&host_payload) {
-        Ok(payload) => payload,
-        Err(_) => return json_response(error("internal_error", "could not encode host request")),
-    };
-    let mut framed = Vec::with_capacity(HOST_OPENAPI_REQUEST.len() + 1 + payload.len());
-    framed.extend_from_slice(HOST_OPENAPI_REQUEST.as_bytes());
-    framed.push(0);
-    framed.extend_from_slice(&payload);
-    match rt::host_call(&framed) {
+    match rt::http_request(&request) {
         Ok(fd) => Response::Fd(fd),
         Err(e) if e == rt::EPERM => {
             json_response(error("permission_denied", "host request denied"))
@@ -245,11 +317,7 @@ fn invoke(req: Request) -> Response {
     }
 }
 
-fn openapi_host_payload(
-    binding: &Value,
-    args: &Value,
-    tool: Option<&str>,
-) -> Result<Value, String> {
+fn openapi_http_request(binding: &Value, args: &Value) -> Result<Vec<u8>, String> {
     let method = str_field(binding, "method")?.to_string();
     let template = str_field(binding, "url_template")?;
     let params = binding
@@ -312,14 +380,15 @@ fn openapi_host_payload(
         None => None,
     };
 
-    Ok(json!({
-        "tool": tool,
-        "method": method,
-        "url": url,
-        "headers": headers,
-        "body": body_text,
-        "connection_ref": binding.get("connection_ref").cloned().unwrap_or_else(|| json!({ "auth": "none" })),
-    }))
+    if let Some(connection) = connection_marker(binding)? {
+        headers.insert(CONNECTION_HEADER.to_string(), Value::String(connection));
+    }
+    Ok(serialize_http_request(
+        &method,
+        &url,
+        &headers,
+        body_text.as_deref(),
+    ))
 }
 
 fn str_field<'a>(value: &'a Value, name: &str) -> Result<&'a str, String> {
@@ -347,6 +416,57 @@ fn scalar_string(value: &Value) -> String {
         Value::Number(n) => n.to_string(),
         other => serde_json::to_string(other).unwrap_or_default(),
     }
+}
+
+fn connection_marker(binding: &Value) -> Result<Option<String>, String> {
+    let Some(connection) = binding.get("connection_ref") else {
+        return Ok(None);
+    };
+    if connection
+        .get("auth")
+        .and_then(Value::as_str)
+        .unwrap_or("none")
+        == "none"
+    {
+        return Ok(None);
+    }
+    let integration = connection
+        .get("integration")
+        .and_then(Value::as_str)
+        .ok_or("connection_ref missing integration")?;
+    let owner = connection
+        .get("owner")
+        .and_then(Value::as_str)
+        .ok_or("connection_ref missing owner")?;
+    let name = connection
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or("connection_ref missing name")?;
+    Ok(Some(format!("{integration}.{owner}.{name}")))
+}
+
+fn serialize_http_request(
+    method: &str,
+    url: &str,
+    headers: &Map<String, Value>,
+    body: Option<&str>,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(method.as_bytes());
+    out.push(b' ');
+    out.extend_from_slice(url.as_bytes());
+    out.push(b'\n');
+    for (name, value) in headers {
+        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(b": ");
+        out.extend_from_slice(scalar_string(value).as_bytes());
+        out.push(b'\n');
+    }
+    out.push(b'\n');
+    if let Some(body) = body {
+        out.extend_from_slice(body.as_bytes());
+    }
+    out
 }
 
 fn encode_component(value: &str) -> String {

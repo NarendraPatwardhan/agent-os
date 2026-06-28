@@ -20,6 +20,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use crate::connections::ConnectionRegistry;
+
 /// WebSocket send sentinels from the generated contract constants (B2): `-EAGAIN`
 /// is retryable backpressure; `-EMSGSIZE` is a permanent oversized-frame error.
 use constants_rust::{EAGAIN, EMSGSIZE};
@@ -90,6 +92,7 @@ pub struct RealNet {
     next_handle: i32,
     http: HashMap<i32, Arc<Mutex<HttpSlot>>>,
     ws: HashMap<i32, Arc<Mutex<WsSlot>>>,
+    connections: ConnectionRegistry,
 }
 
 impl RealNet {
@@ -98,7 +101,13 @@ impl RealNet {
             next_handle: 1,
             http: HashMap::new(),
             ws: HashMap::new(),
+            connections: ConnectionRegistry::new(),
         }
+    }
+
+    pub fn with_connections(mut self, connections: ConnectionRegistry) -> Self {
+        self.connections = connections;
+        self
     }
 }
 
@@ -110,7 +119,11 @@ impl Default for RealNet {
 
 impl NetCapability for RealNet {
     fn http_request(&mut self, req: &[u8]) -> i32 {
-        let Some((method, url, headers, body)) = parse_blob(req) else {
+        let req = match self.connections.inject_http_request(req) {
+            Ok(req) => req,
+            Err(_) => return -1,
+        };
+        let Some((method, url, headers, body)) = parse_blob(&req) else {
             return -1;
         };
         let slot = Arc::new(Mutex::new(HttpSlot::default()));
@@ -489,6 +502,7 @@ pub struct TokioNet {
     next_handle: i32,
     http: HashMap<i32, Arc<Mutex<HttpSlot>>>,
     ws: HashMap<i32, Arc<Mutex<WsSlot>>>,
+    connections: ConnectionRegistry,
 }
 
 #[cfg(feature = "tokio-net")]
@@ -504,14 +518,24 @@ impl TokioNet {
             next_handle: 1,
             http: HashMap::new(),
             ws: HashMap::new(),
+            connections: ConnectionRegistry::new(),
         }
+    }
+
+    pub fn with_connections(mut self, connections: ConnectionRegistry) -> Self {
+        self.connections = connections;
+        self
     }
 }
 
 #[cfg(feature = "tokio-net")]
 impl NetCapability for TokioNet {
     fn http_request(&mut self, req: &[u8]) -> i32 {
-        let Some((method, url, headers, body)) = parse_blob(req) else {
+        let req = match self.connections.inject_http_request(req) {
+            Ok(req) => req,
+            Err(_) => return -1,
+        };
+        let Some((method, url, headers, body)) = parse_blob(&req) else {
             return -1;
         };
         let slot = Arc::new(Mutex::new(HttpSlot::default()));

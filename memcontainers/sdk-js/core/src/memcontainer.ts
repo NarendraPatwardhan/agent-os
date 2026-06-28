@@ -2,7 +2,7 @@
 // `"remote"` runtime (mc-server over the wire protocol) throws until mc-server is ported; the Vm
 // surface is identical across backends, so it slots in later without changing this file's shape.
 
-import { HostNet, KernelHostBuilder, MapHostCall, OpfsPersist } from "@mc/host";
+import { ConnectionRegistry, HostNet, KernelHostBuilder, MapHostCall, OpfsPersist } from "@mc/host";
 import type { KernelHost } from "@mc/host";
 // Boot-contract tier ordinals come from the generated contract — the single source of truth the
 // kernel's `Tier` also derives from (contracts/constants.kdl → constants.gen.ts), never a local copy.
@@ -24,6 +24,7 @@ import type { CronAction, CronHandle, CronOptions } from "./cron.js";
 import type { Backend } from "./backend.js";
 import type {
   ContentStore,
+  ConnectionDefinition,
   CreateOptions,
   DirEntry,
   Driver,
@@ -347,6 +348,14 @@ function netEnabled(opts: CreateOptions): boolean {
   return false;
 }
 
+function connectionRegistry(defs: ConnectionDefinition[]): ConnectionRegistry {
+  const registry = new ConnectionRegistry();
+  for (const def of defs) {
+    registry.insert(def.ref, def.auth);
+  }
+  return registry;
+}
+
 /** The set of hosts allowed without prompting, from `permissions.network.allow`.
  *  `undefined` = no filtering (open net). An empty/missing array = prompt for
  *  every host. */
@@ -401,7 +410,11 @@ async function makeEmbedded(
   if (opts.deterministic) builder = builder.deterministic();
   if (netEnabled(opts)) {
     builder = builder.withNet(
-      new HostNet({ allowlist: netAllowlist(opts), approver: makeApprover(opts.onPermission) }),
+      new HostNet({
+        allowlist: netAllowlist(opts),
+        approver: makeApprover(opts.onPermission),
+        connections: connectionRegistry(opts.connections ?? []),
+      }),
     );
   }
   // Durable `/var/persist`: in a browser OPFS/IndexedDB survives a reload; the

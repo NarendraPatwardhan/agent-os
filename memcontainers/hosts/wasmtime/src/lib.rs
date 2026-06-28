@@ -10,26 +10,28 @@
 //! only nondeterminism is the clock + entropy, and the deterministic sources make a run
 //! byte-for-byte replayable, SYSTEMS.md section 8).
 
-use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use sha2::{Digest, Sha256};
 use wasmtime::{Caller, Engine, Instance, Linker, Memory, Module, Store};
 
 mod bridge;
+mod connections;
 mod exports;
 mod host_call;
 mod net;
 mod persist;
 
+pub use connections::{ConnectionCredential, ConnectionError, ConnectionRegistry};
 pub use host_call::{DeniedHostCall, HostCallCapability, MapHostCall};
-pub use net::{DeniedNet, NetCapability, RealNet};
 #[cfg(feature = "tokio-net")]
 pub use net::TokioNet;
+pub use net::{DeniedNet, NetCapability, RealNet};
 pub use persist::{DeniedPersist, DiskPersist, PersistCapability};
 
 use bridge::register_bridge;
@@ -105,7 +107,12 @@ impl CaptureSink {
     /// captured bytes from the test.
     pub fn new() -> (Self, Arc<Mutex<Vec<u8>>>) {
         let buf = Arc::new(Mutex::new(Vec::new()));
-        (Self { buf: Arc::clone(&buf) }, buf)
+        (
+            Self {
+                buf: Arc::clone(&buf),
+            },
+            buf,
+        )
     }
 }
 
@@ -132,7 +139,9 @@ pub struct SystemClock {
 
 impl SystemClock {
     pub fn new() -> Self {
-        Self { start: Instant::now() }
+        Self {
+            start: Instant::now(),
+        }
     }
 }
 
@@ -164,7 +173,10 @@ pub struct FixedClock {
 
 impl FixedClock {
     pub fn new(epoch_ms: i64) -> Self {
-        Self { epoch_ms, monotonic: 0 }
+        Self {
+            epoch_ms,
+            monotonic: 0,
+        }
     }
 }
 
@@ -280,7 +292,11 @@ impl HostState {
 
 /// Read `len` bytes at `ptr` out of the kernel's linear memory. `None` if the range is out
 /// of bounds — the host never trusts the (untrusted) kernel's pointer/length.
-pub(crate) fn read_memory(caller: &mut Caller<'_, HostState>, ptr: i32, len: i32) -> Option<Vec<u8>> {
+pub(crate) fn read_memory(
+    caller: &mut Caller<'_, HostState>,
+    ptr: i32,
+    len: i32,
+) -> Option<Vec<u8>> {
     let memory = caller.data().memory?;
     let data = memory.data(&*caller);
     let start = ptr as usize;
@@ -585,7 +601,10 @@ impl KernelHostBuilder {
         // Talc's first allocation already sees a larger memory; our scratch sits in the
         // newly added page. Talc only grows above the existing end, so it can never
         // reclaim this page.
-        let prev_pages = wt(memory.grow(&mut store, 1), "growing memory for input scratch page")?;
+        let prev_pages = wt(
+            memory.grow(&mut store, 1),
+            "growing memory for input scratch page",
+        )?;
         let scratch_addr = (prev_pages * WASM_PAGE_SIZE) as i32;
         let scratch_len = WASM_PAGE_SIZE as usize;
 
@@ -634,7 +653,14 @@ impl KernelHostBuilder {
         let image = &snapshot[SNAPSHOT_HEADER_LEN..SNAPSHOT_HEADER_LEN + hdr.mem_len];
         memory.data_mut(&mut store)[..hdr.mem_len].copy_from_slice(image);
 
-        finalize(store, instance, memory, hdr.scratch_addr, hdr.scratch_len, hdr.workers)
+        finalize(
+            store,
+            instance,
+            memory,
+            hdr.scratch_addr,
+            hdr.scratch_len,
+            hdr.workers,
+        )
     }
 }
 
@@ -650,7 +676,10 @@ fn instantiate(
     let mut linker = Linker::<HostState>::new(engine);
     register_bridge(&mut linker)?;
     let mut store = Store::new(engine, state);
-    let instance = wt(linker.instantiate(&mut store, module), "instantiating kernel module")?;
+    let instance = wt(
+        linker.instantiate(&mut store, module),
+        "instantiating kernel module",
+    )?;
     let memory = instance
         .get_export(&mut store, "memory")
         .ok_or_else(|| anyhow!("kernel module is missing the `memory` export"))?
@@ -721,7 +750,12 @@ impl SnapshotHeader {
                 snap.len()
             ));
         }
-        Ok(SnapshotHeader { scratch_addr, scratch_len, workers, mem_len })
+        Ok(SnapshotHeader {
+            scratch_addr,
+            scratch_len,
+            workers,
+            mem_len,
+        })
     }
 }
 
@@ -853,7 +887,10 @@ impl KernelHost {
     /// cooperative-only artifact.
     pub fn worker_step(&mut self, worker_id: i32) -> Result<i32> {
         match self.exports.mc_worker_entry.clone() {
-            Some(f) => wt(f.call(&mut self.store, worker_id), "calling mc_worker_entry"),
+            Some(f) => wt(
+                f.call(&mut self.store, worker_id),
+                "calling mc_worker_entry",
+            ),
             None => Ok(0),
         }
     }
@@ -915,7 +952,11 @@ impl KernelHost {
 
     /// Pump ticks until `mc_exit`, the kernel stops producing output for
     /// `idle_ticks_required` consecutive ticks, or `max_ticks` is exhausted.
-    pub fn run_until_idle(&mut self, max_ticks: usize, idle_ticks_required: usize) -> Result<usize> {
+    pub fn run_until_idle(
+        &mut self,
+        max_ticks: usize,
+        idle_ticks_required: usize,
+    ) -> Result<usize> {
         let mut last = self.bytes_written();
         let mut idle = 0usize;
         for n in 0..max_ticks {
@@ -1075,7 +1116,10 @@ impl KernelHost {
             req.extend_from_slice(data);
             s.ctl_put(&req)?;
             wt(
-                f.call(&mut s.store, (0, path.len() as i32, path.len() as i32, data.len() as i32)),
+                f.call(
+                    &mut s.store,
+                    (0, path.len() as i32, path.len() as i32, data.len() as i32),
+                ),
                 "mc_ctl_write",
             )
         })?;
@@ -1090,7 +1134,10 @@ impl KernelHost {
         let f = self.exports.require_ctl_readdir()?;
         let n = self.ctl_with_retry(|s| {
             s.ctl_put(path.as_bytes())?;
-            wt(f.call(&mut s.store, (0, path.len() as i32)), "mc_ctl_readdir")
+            wt(
+                f.call(&mut s.store, (0, path.len() as i32)),
+                "mc_ctl_readdir",
+            )
         })?;
         if n < 0 {
             return Err(ctl_err("readdir", path, n));
@@ -1105,7 +1152,9 @@ impl KernelHost {
                 .ok_or_else(|| anyhow!("malformed readdir entry"))?;
             let nul = i + rel;
             let name = String::from_utf8_lossy(&raw[i..nul]).into_owned();
-            let kind = *raw.get(nul + 1).ok_or_else(|| anyhow!("truncated readdir entry"))?;
+            let kind = *raw
+                .get(nul + 1)
+                .ok_or_else(|| anyhow!("truncated readdir entry"))?;
             out.push(DirEntry {
                 name,
                 is_dir: kind == b'd',
@@ -1156,7 +1205,10 @@ impl KernelHost {
         let f = self.exports.require_ctl_unlink()?;
         let n = self.ctl_with_retry(|s| {
             s.ctl_put(path.as_bytes())?;
-            wt(f.call(&mut s.store, (0, path.len() as i32)), "mc_ctl_unlink")
+            wt(
+                f.call(&mut s.store, (0, path.len() as i32)),
+                "mc_ctl_unlink",
+            )
         })?;
         if n < 0 {
             return Err(ctl_err("unlink", path, n));
@@ -1174,7 +1226,15 @@ impl KernelHost {
             req.extend_from_slice(link.as_bytes());
             s.ctl_put(&req)?;
             wt(
-                f.call(&mut s.store, (0, target.len() as i32, target.len() as i32, link.len() as i32)),
+                f.call(
+                    &mut s.store,
+                    (
+                        0,
+                        target.len() as i32,
+                        target.len() as i32,
+                        link.len() as i32,
+                    ),
+                ),
                 "mc_ctl_symlink",
             )
         })?;
@@ -1204,7 +1264,10 @@ impl KernelHost {
     pub fn unmount(&mut self, path: &str) -> Result<()> {
         let f = self.exports.require_ctl_unmount()?;
         self.ctl_put(path.as_bytes())?;
-        let n = wt(f.call(&mut self.store, (0, path.len() as i32)), "mc_ctl_unmount")?;
+        let n = wt(
+            f.call(&mut self.store, (0, path.len() as i32)),
+            "mc_ctl_unmount",
+        )?;
         if n < 0 {
             return Err(ctl_err("unmount", path, n));
         }
@@ -1217,7 +1280,10 @@ impl KernelHost {
     pub fn exec_start(&mut self, cmd: &str) -> Result<i32> {
         let start = self.exports.require_ctl_exec_start()?;
         self.ctl_put(cmd.as_bytes())?;
-        let job = wt(start.call(&mut self.store, cmd.len() as i32), "mc_ctl_exec_start")?;
+        let job = wt(
+            start.call(&mut self.store, cmd.len() as i32),
+            "mc_ctl_exec_start",
+        )?;
         if job < 0 {
             return Err(ctl_err("exec", cmd, job));
         }
@@ -1282,7 +1348,11 @@ impl KernelHost {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         let _ = self.exec_cancel(job);
-        Err(anyhow!("exec '{}' did not finish within {} ticks", cmd, max_ticks))
+        Err(anyhow!(
+            "exec '{}' did not finish within {} ticks",
+            cmd,
+            max_ticks
+        ))
     }
 
     fn read_exec_result(&mut self) -> Result<ExecResult> {

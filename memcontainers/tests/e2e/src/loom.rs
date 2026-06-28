@@ -5,15 +5,54 @@
 //! batteries through the embedded .luau libs + the Zig json/hash bindings, the type errors through the
 //! full Luau Analysis engine (file:line:col diagnostics).
 
-use host::MapHostCall;
+use host::{ConnectionRegistry, MapHostCall, RealNet};
+use std::io::{Read, Write};
+use std::net::TcpListener;
+use std::sync::mpsc;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use std::thread;
+use std::time::Duration;
 
-use crate::{boot_loom, boot_loom_with_tools};
+use crate::{boot_loom, boot_loom_with_net, boot_loom_with_tools};
 
 // ── smoke: the VM, the trap-unwind, and boot.
+
+fn one_shot_http_server(body: &'static [u8]) -> (String, mpsc::Receiver<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind local upstream");
+    let addr = listener.local_addr().expect("local upstream addr");
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let Ok((mut stream, _)) = listener.accept() else {
+            return;
+        };
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+        let mut raw = Vec::new();
+        let mut buf = [0u8; 1024];
+        loop {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    raw.extend_from_slice(&buf[..n]);
+                    if raw.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = tx.send(String::from_utf8_lossy(&raw).into_owned());
+        let head = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        let _ = stream.write_all(head.as_bytes());
+        let _ = stream.write_all(body);
+    });
+    (format!("http://{addr}"), rx)
+}
 
 /// luau evaluates a `-e` one-liner: parse + compile + run bytecode, the script under lua_pcall so the
 /// kernel trap-unwind (mc_sys_pcall ⇒ __mc_pcall_run) is exercised.
@@ -234,72 +273,74 @@ assert(status == 0, status)
 }
 
 /// WHY: `/svc/adapters` is the single resident compiler/invoker for adapter-backed tool formats. OpenAPI
-/// is the first internal adapter: it compiles a no-auth spec to normal catalog records, `/svc/tools`
-/// loads those records, and generated service bindings call back into `/svc/adapters invoke` without
-/// leaking any secret-bearing headers into the catalog.
+/// is the first internal adapter: it compiles a spec to normal catalog records, `/svc/tools` loads those
+/// records, and generated service bindings call back into `/svc/adapters invoke`. The call exits through
+/// real `mc_http_request`; the host injects credentials from its registry, while the guest catalog/result
+/// never contains the secret.
 #[test]
 fn adapters_compile_openapi_catalog_and_tools_call_it() {
-    let mut tools = MapHostCall::new();
-    tools.register(
-        "openapi.request",
-        Box::new(|args: &str| Ok(args.as_bytes().to_vec())),
+    let (base_url, seen) = one_shot_http_server(br#"{"received":true}"#);
+    let net = RealNet::new().with_connections(
+        ConnectionRegistry::new()
+            .with_bearer("petstore.org.main", "e2e-secret-token")
+            .expect("connection registry"),
     );
-    let mut s = boot_loom_with_tools(tools);
+    let mut s = boot_loom_with_net(Box::new(net));
     s.host.mkdir("/etc/tools").ok();
-    s.host
-        .write_file(
-            "/tmp/petstore.openapi.json",
-            br##"{
+    let spec = format!(
+        r#"{{
               "openapi": "3.0.3",
-              "info": { "title": "Pets", "version": "1.0.0" },
-              "servers": [{ "url": "https://pets.example.test/v1" }],
-              "paths": {
-                "/pets": {
-                  "get": {
+              "info": {{ "title": "Pets", "version": "1.0.0" }},
+              "servers": [{{ "url": "{base_url}/v1" }}],
+              "paths": {{
+                "/pets": {{
+                  "get": {{
                     "operationId": "listPets",
                     "summary": "List pets",
                     "parameters": [
-                      { "name": "limit", "in": "query", "schema": { "type": "integer" } }
+                      {{ "name": "limit", "in": "query", "schema": {{ "type": "integer" }} }}
                     ],
-                    "responses": {
-                      "200": {
+                    "responses": {{
+                      "200": {{
                         "description": "ok",
-                        "content": {
-                          "application/json": {
-                            "schema": {
-                              "type": "array",
-                              "items": { "$ref": "#/components/schemas/Pet" }
-                            }
-                          }
-                        }
-                      }
-                    }
-                  }
-                },
-                "/pets/{petId}": {
-                  "get": {
+                        "content": {{
+                          "application/json": {{
+                            "schema": {{
+                              "type": "object",
+                              "properties": {{ "received": {{ "type": "boolean" }} }}
+                            }}
+                          }}
+                        }}
+                      }}
+                    }}
+                  }}
+                }},
+                "/pets/{{petId}}": {{
+                  "get": {{
                     "summary": "Show pet",
                     "parameters": [
-                      { "name": "petId", "in": "path", "required": true, "schema": { "type": "string" } }
+                      {{ "name": "petId", "in": "path", "required": true, "schema": {{ "type": "string" }} }}
                     ],
-                    "responses": { "200": { "description": "ok" } }
-                  }
-                }
-              },
-              "components": {
-                "schemas": {
-                  "Pet": {
+                    "responses": {{ "200": {{ "description": "ok" }} }}
+                  }}
+                }}
+              }},
+              "components": {{
+                "schemas": {{
+                  "Pet": {{
                     "type": "object",
                     "required": ["id"],
-                    "properties": {
-                      "id": { "type": "string" },
-                      "name": { "type": "string", "nullable": true }
-                    }
-                  }
-                }
-              }
-            }"##,
-        )
+                    "properties": {{
+                      "id": {{ "type": "string" }},
+                      "name": {{ "type": "string", "nullable": true }}
+                    }}
+                  }}
+                }}
+              }}
+            }}"#
+    );
+    s.host
+        .write_file("/tmp/petstore.openapi.json", spec.as_bytes())
         .expect("seed OpenAPI fixture");
     s.host
         .write_file(
@@ -323,6 +364,7 @@ local raw = assert(sys.svc.call(fd, json.encode({
   integration = "petstore",
   owner = "org",
   connection = "main",
+  auth = "bearer",
 })))
 assert(sys.svc.close(fd))
 local res = assert(json.decode(raw))
@@ -331,6 +373,7 @@ assert(#res.data.diagnostics == 0, json.encode(res.data.diagnostics))
 assert(#res.data.tools == 2, tostring(#res.data.tools))
 local text = json.encode({ tools = res.data.tools })
 assert(not string.find(string.lower(text), "authorization", 1, true))
+assert(not string.find(text, "e2e-secret-token", 1, true))
 assert(sys.fs.write("/etc/tools/catalog.json", text))
 print(res.data.tools[1].address)
 print(res.data.tools[2].address)
@@ -352,60 +395,309 @@ print(res.data.tools[2].address)
     assert!(
         catalog.contains("\"service\":\"adapters\"")
             && catalog.contains("\"adapter\":\"openapi\"")
-            && catalog.contains("\"auth\":\"none\"")
-            && !catalog.to_ascii_lowercase().contains("authorization"),
+            && catalog.contains("\"auth\":\"bearer\"")
+            && !catalog.to_ascii_lowercase().contains("authorization")
+            && !catalog.contains("e2e-secret-token"),
         "compiled catalog should carry only non-secret service bindings; got {catalog}"
     );
 
     let out = s.run_for_output("tools call petstore.org.main.listPets '{\"query\":{\"limit\":3}}'");
     assert!(
         out.contains("\"ok\":true")
-            && out.contains("\"method\":\"GET\"")
-            && out.contains("\"url\":\"https://pets.example.test/v1/pets?limit=3\"")
-            && out.contains("\"connection_ref\"")
-            && !out.to_ascii_lowercase().contains("authorization"),
-        "generated OpenAPI tool should invoke through /svc/adapters; got {out:?}"
+            && out.contains("\"received\":true")
+            && !out.to_ascii_lowercase().contains("authorization")
+            && !out.contains("e2e-secret-token"),
+        "generated OpenAPI tool should invoke through /svc/adapters and hide credentials; got {out:?}"
+    );
+    let request = seen.recv().expect("local upstream request");
+    assert!(
+        request.starts_with("GET /v1/pets?limit=3 "),
+        "upstream request path mismatch: {request:?}"
+    );
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer e2e-secret-token"),
+        "host did not inject bearer credential: {request:?}"
+    );
+    assert!(
+        !request.to_ascii_lowercase().contains("x-mc-connection"),
+        "host marker leaked onto the wire: {request:?}"
     );
 }
 
-/// WHY: `/svc/adapters` is full-tier because invocation reaches host calls, so it must not become a
-/// second authority-laundering path around `/svc/tools`. A read-only caller may connect and compile,
-/// but direct `invoke` is denied before the host fixture runs.
+/// WHY: Microsoft Graph is not a separate runtime. `/svc/adapters` should trim the large Graph OpenAPI
+/// source by registry workload presets, emit ordinary service-backed tool records, and let the host
+/// splice OAuth credentials only at `mc_http_request` egress.
 #[test]
-fn adapters_invoke_requires_caller_net_authority() {
-    let called = Arc::new(AtomicBool::new(false));
-    let marker = Arc::clone(&called);
-    let mut tools = MapHostCall::new();
-    tools.register(
-        "openapi.request",
-        Box::new(move |_args: &str| {
-            marker.store(true, Ordering::SeqCst);
-            Ok(b"{\"should\":\"not run\"}".to_vec())
-        }),
+fn adapters_compile_microsoft_graph_preset_and_tools_call_it() {
+    let (base_url, seen) = one_shot_http_server(br#"{"mail":true}"#);
+    let net = RealNet::new().with_connections(
+        ConnectionRegistry::new()
+            .with_bearer("microsoft.org.work", "ms-secret-token")
+            .expect("connection registry"),
     );
-    let mut s = boot_loom_with_tools(tools);
+    let mut s = boot_loom_with_net(Box::new(net));
+    s.host.mkdir("/etc/tools").ok();
+    let spec = format!(
+        r#"{{
+              "openapi": "3.0.3",
+              "info": {{ "title": "Microsoft Graph", "version": "v1.0" }},
+              "servers": [{{ "url": "{base_url}/v1.0" }}],
+              "paths": {{
+                "/me/messages": {{
+                  "get": {{
+                    "operationId": "listMessages",
+                    "description": "List signed-in user's messages.",
+                    "responses": {{
+                      "200": {{
+                        "description": "ok",
+                        "content": {{
+                          "application/json": {{
+                            "schema": {{
+                              "type": "object",
+                              "properties": {{ "mail": {{ "type": "boolean" }} }}
+                            }}
+                          }}
+                        }}
+                      }}
+                    }}
+                  }}
+                }},
+                "/me/events": {{
+                  "get": {{
+                    "operationId": "listEvents",
+                    "description": "List signed-in user's events.",
+                    "responses": {{ "200": {{ "description": "ok" }} }}
+                  }}
+                }}
+              }}
+            }}"#
+    );
+    s.host
+        .write_file("/tmp/graph.openapi.json", spec.as_bytes())
+        .expect("seed Microsoft Graph fixture");
     s.host
         .write_file(
-            "/demo/low-adapters.luau",
+            "/demo/graph_compile.luau",
             br#"local sys = require("sys")
 local json = require("json")
+local source = assert(sys.fs.read("/tmp/graph.openapi.json"))
 local fd = assert(sys.svc.connect("adapters"))
 local raw = assert(sys.svc.call(fd, json.encode({
-  op = "invoke",
-  adapter = "openapi",
-  binding = {
-    method = "GET",
-    url_template = "https://pets.example.test/v1/pets",
-    parameters = {},
-    connection_ref = { auth = "none" },
-  },
-  args = {},
+  op = "compile",
+  format = "microsoft-graph",
+  source_format = "json",
+  source = source,
+  integration = "microsoft",
+  owner = "org",
+  connection = "work",
+  auth = "bearer",
+  preset_ids = { "mail" },
 })))
 assert(sys.svc.close(fd))
 local res = assert(json.decode(raw))
-print(tostring(res.ok), res.err.code)
+assert(res.ok, res.err and res.err.message)
+assert(#res.data.diagnostics == 0, json.encode(res.data.diagnostics))
+assert(#res.data.tools == 1, tostring(#res.data.tools))
+local text = json.encode({ tools = res.data.tools })
+assert(string.find(text, "microsoft%-graph"))
+assert(not string.find(text, "listEvents", 1, true))
+assert(not string.find(string.lower(text), "authorization", 1, true))
+assert(not string.find(text, "ms-secret-token", 1, true))
+assert(sys.fs.write("/etc/tools/catalog.json", text))
+print(res.data.tools[1].address)
 "#,
         )
+        .expect("seed Microsoft Graph compile script");
+
+    assert_eq!(
+        s.run_for_output("luau /demo/graph_compile.luau"),
+        "microsoft.org.work.listMessages\r\n"
+    );
+    let out = s.run_for_output("tools call microsoft.org.work.listMessages '{}'");
+    assert!(
+        out.contains("\"ok\":true")
+            && out.contains("\"mail\":true")
+            && !out.to_ascii_lowercase().contains("authorization")
+            && !out.contains("ms-secret-token"),
+        "generated Microsoft Graph tool should hide credentials; got {out:?}"
+    );
+    let request = seen.recv().expect("local Microsoft Graph request");
+    assert!(
+        request.starts_with("GET /v1.0/me/messages "),
+        "Graph request path mismatch: {request:?}"
+    );
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer ms-secret-token"),
+        "host did not inject Microsoft Graph bearer credential: {request:?}"
+    );
+    assert!(
+        !request.to_ascii_lowercase().contains("x-mc-connection"),
+        "host marker leaked onto the wire: {request:?}"
+    );
+}
+
+/// WHY: Google Discovery documents are a different public description format, but not a different
+/// capability boundary. `/svc/adapters` normalizes Discovery into OpenAPI-shaped operations and the
+/// generated tool still relies on host-side credential injection.
+#[test]
+fn adapters_compile_google_discovery_and_tools_call_it() {
+    let (base_url, seen) = one_shot_http_server(br#"{"messages":["hello"]}"#);
+    let net = RealNet::new().with_connections(
+        ConnectionRegistry::new()
+            .with_bearer("gmail.org.work", "google-secret-token")
+            .expect("connection registry"),
+    );
+    let mut s = boot_loom_with_net(Box::new(net));
+    s.host.mkdir("/etc/tools").ok();
+    let discovery = format!(
+        r#"{{
+              "kind": "discovery#restDescription",
+              "name": "gmail",
+              "version": "v1",
+              "title": "Gmail API",
+              "baseUrl": "{base_url}/",
+              "schemas": {{
+                "ListMessagesResponse": {{
+                  "id": "ListMessagesResponse",
+                  "type": "object",
+                  "properties": {{
+                    "messages": {{
+                      "type": "array",
+                      "items": {{ "type": "string" }}
+                    }}
+                  }}
+                }}
+              }},
+              "resources": {{
+                "users": {{
+                  "resources": {{
+                    "messages": {{
+                      "methods": {{
+                        "list": {{
+                          "id": "gmail.users.messages.list",
+                          "path": "gmail/v1/users/{{userId}}/messages",
+                          "httpMethod": "GET",
+                          "description": "Lists the messages in the user's mailbox.",
+                          "parameters": {{
+                            "userId": {{
+                              "type": "string",
+                              "required": true,
+                              "location": "path"
+                            }},
+                            "maxResults": {{
+                              "type": "integer",
+                              "format": "uint32",
+                              "location": "query"
+                            }}
+                          }},
+                          "response": {{ "$ref": "ListMessagesResponse" }}
+                        }}
+                      }}
+                    }}
+                  }}
+                }}
+              }}
+            }}"#
+    );
+    s.host
+        .write_file("/tmp/gmail.discovery.json", discovery.as_bytes())
+        .expect("seed Google Discovery fixture");
+    s.host
+        .write_file(
+            "/demo/google_compile.luau",
+            br#"local sys = require("sys")
+local json = require("json")
+local source = assert(sys.fs.read("/tmp/gmail.discovery.json"))
+local fd = assert(sys.svc.connect("adapters"))
+local raw = assert(sys.svc.call(fd, json.encode({
+  op = "compile",
+  format = "google-discovery",
+  source_format = "json",
+  source = source,
+  integration = "gmail",
+  owner = "org",
+  connection = "work",
+  auth = "bearer",
+})))
+assert(sys.svc.close(fd))
+local res = assert(json.decode(raw))
+assert(res.ok, res.err and res.err.message)
+assert(#res.data.diagnostics == 0, json.encode(res.data.diagnostics))
+assert(#res.data.tools == 1, tostring(#res.data.tools))
+local text = json.encode({ tools = res.data.tools })
+assert(string.find(text, "google%-discovery"))
+assert(not string.find(string.lower(text), "authorization", 1, true))
+assert(not string.find(text, "google-secret-token", 1, true))
+assert(sys.fs.write("/etc/tools/catalog.json", text))
+print(res.data.tools[1].address)
+"#,
+        )
+        .expect("seed Google Discovery compile script");
+
+    assert_eq!(
+        s.run_for_output("luau /demo/google_compile.luau"),
+        "gmail.org.work.gmail-users-messages-list\r\n"
+    );
+    let out = s.run_for_output(
+        "tools call gmail.org.work.gmail-users-messages-list '{\"path\":{\"userId\":\"me\"},\"query\":{\"maxResults\":2}}'",
+    );
+    assert!(
+        out.contains("\"ok\":true")
+            && out.contains("\"messages\":[\"hello\"]")
+            && !out.to_ascii_lowercase().contains("authorization")
+            && !out.contains("google-secret-token"),
+        "generated Google Discovery tool should hide credentials; got {out:?}"
+    );
+    let request = seen.recv().expect("local Google request");
+    assert!(
+        request.starts_with("GET /gmail/v1/users/me/messages?maxResults=2 "),
+        "Google request path mismatch: {request:?}"
+    );
+    assert!(
+        request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer google-secret-token"),
+        "host did not inject Google bearer credential: {request:?}"
+    );
+    assert!(
+        !request.to_ascii_lowercase().contains("x-mc-connection"),
+        "host marker leaked onto the wire: {request:?}"
+    );
+}
+
+/// WHY: `/svc/adapters` is full-tier because invocation reaches host egress, so it must not become a
+/// second authority-laundering path around `/svc/tools`. A read-only caller may connect and compile,
+/// but direct `invoke` is denied before the adapter reaches the host network capability.
+#[test]
+fn adapters_invoke_requires_caller_net_authority() {
+    let (base_url, seen) = one_shot_http_server(br#"{"should":"not run"}"#);
+    let mut s = boot_loom_with_net(Box::new(RealNet::new()));
+    let script = format!(
+        r#"local sys = require("sys")
+local json = require("json")
+local fd = assert(sys.svc.connect("adapters"))
+local raw = assert(sys.svc.call(fd, json.encode({{
+  op = "invoke",
+  adapter = "openapi",
+  binding = {{
+    method = "GET",
+    url_template = "{base_url}/v1/pets",
+    parameters = {{}},
+    connection_ref = {{ auth = "none" }},
+  }},
+  args = {{}},
+}})))
+assert(sys.svc.close(fd))
+local res = assert(json.decode(raw))
+print(tostring(res.ok), res.err.code)
+"#
+    );
+    s.host
+        .write_file("/demo/low-adapters.luau", script.as_bytes())
         .expect("seed low-authority adapters script");
     s.host
         .write_file(
@@ -423,8 +715,8 @@ assert(status == 0, status)
         "false\tpermission_denied\r\n"
     );
     assert!(
-        !called.load(Ordering::SeqCst),
-        "low-authority /svc/adapters invoke must not reach the host handler"
+        seen.recv_timeout(Duration::from_millis(100)).is_err(),
+        "low-authority /svc/adapters invoke must not reach host network egress"
     );
 }
 

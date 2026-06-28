@@ -32,6 +32,9 @@ export interface CreateOptions {
   kernel?: Uint8Array;
   /** Enable network egress (installs the host net capability). → `CAP_NET`. */
   net?: boolean;
+  /** Host-side credential registry. Guest catalogs hold only connection refs; these secret values are
+   *  spliced into HTTP requests by the host when a request carries `X-MC-Connection`. */
+  connections?: ConnectionDefinition[];
   /** Make `/var/persist` durable (embedded backend). In a browser this is backed
    *  by OPFS (IndexedDB fallback) so state survives a page reload; elsewhere it is
    *  in-memory for the VM's lifetime. → `CAP_PERSIST`. */
@@ -50,6 +53,18 @@ export interface CreateOptions {
   mounts?: MountSpec[];
   /** Deterministic clock + RNG (for reproducible runs / tests). */
   deterministic?: boolean;
+}
+
+export type ConnectionAuth =
+  | { kind: "none" }
+  | { kind: "bearer"; token: string }
+  | { kind: "header"; name: string; value: string }
+  | { kind: "query"; name: string; value: string };
+
+export interface ConnectionDefinition {
+  /** `integration.owner.name`, where owner is `org` or `user`. */
+  ref: string;
+  auth: ConnectionAuth;
 }
 
 /** A built image: an ordered stack of content-addressed layers plus the

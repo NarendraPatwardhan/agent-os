@@ -22,6 +22,7 @@ pub struct CompileOptions {
     pub integration: String,
     pub owner: String,
     pub connection: String,
+    pub auth: String,
     pub base_url: Option<String>,
 }
 
@@ -566,7 +567,7 @@ fn binding(_root: &Value, opts: &CompileOptions, op: &Operation) -> Value {
                 "integration": opts.integration,
                 "owner": opts.owner,
                 "name": opts.connection,
-                "auth": "none"
+                "auth": opts.auth
             }
         }
     })
@@ -651,6 +652,9 @@ fn validate_options(opts: &CompileOptions) -> Result<(), String> {
     }
     if sanitize_segment(&opts.connection).is_empty() {
         return Err("connection must contain at least one address-safe character".to_string());
+    }
+    if !matches!(opts.auth.as_str(), "none" | "bearer" | "header" | "query") {
+        return Err("auth must be `none`, `bearer`, `header`, or `query`".to_string());
     }
     Ok(())
 }
@@ -785,6 +789,7 @@ mod tests {
             integration: "petstore".to_string(),
             owner: "org".to_string(),
             connection: "main".to_string(),
+            auth: "none".to_string(),
             base_url: None,
         }
     }
