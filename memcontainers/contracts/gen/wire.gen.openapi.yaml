@@ -30,16 +30,10 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Capabilities"
-  "/v1/namespaces/{ns}/vms":
+  "/v1/vms":
     get:
-      operationId: "get_v1_namespaces_ns_vms"
-      summary: "List live VMs visible in one namespace."
-      parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
+      operationId: "get_v1_vms"
+      summary: "List live VMs."
       responses:
         "200":
           description: "OK"
@@ -48,14 +42,8 @@ paths:
               schema:
                 $ref: "#/components/schemas/VmList"
     post:
-      operationId: "post_v1_namespaces_ns_vms"
+      operationId: "post_v1_vms"
       summary: "Create a VM from a packaged image, layer stack, or snapshot. Connection entries are host-side references, never raw secrets."
-      parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
       requestBody:
         required: true
         content:
@@ -69,16 +57,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Vm"
-  "/v1/namespaces/{ns}/vms/{id}":
+  "/v1/vms/{id}":
     get:
-      operationId: "get_v1_namespaces_ns_vms_id"
+      operationId: "get_v1_vms_id"
       summary: "Return VM status and runtime metadata."
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -92,14 +75,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/Vm"
     delete:
-      operationId: "delete_v1_namespaces_ns_vms_id"
+      operationId: "delete_v1_vms_id"
       summary: "Dispose the VM actor and release host-side resources."
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -112,16 +90,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DisposeVm"
-  "/v1/namespaces/{ns}/vms/{id}/restore":
+  "/v1/vms/{id}/restore":
     post:
-      operationId: "post_v1_namespaces_ns_vms_id_restore"
+      operationId: "post_v1_vms_id_restore"
       summary: "Restore or replace a VM from snapshot bytes."
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -140,18 +113,13 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Vm"
-  "/v1/namespaces/{ns}/vms/{id}/ws":
+  "/v1/vms/{id}/ws":
     get:
-      operationId: "get_v1_namespaces_ns_vms_id_ws"
+      operationId: "get_v1_vms_id_ws"
       summary: "Upgrade to the typed per-VM WebSocket described by the message table above."
       x-agentos-protocol: "wire"
       x-agentos-upgrade: websocket
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -160,16 +128,11 @@ paths:
       responses:
         "101":
           description: "Switching protocols"
-  "/v1/namespaces/{ns}/vms/{id}/exec":
+  "/v1/vms/{id}/exec":
     post:
-      operationId: "post_v1_namespaces_ns_vms_id_exec"
+      operationId: "post_v1_vms_id_exec"
       summary: "Run a bounded command and return the final result. Use exec-jobs for long-running commands."
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -188,16 +151,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ExecResult"
-  "/v1/namespaces/{ns}/vms/{id}/exec-jobs":
+  "/v1/vms/{id}/exec-jobs":
     post:
-      operationId: "post_v1_namespaces_ns_vms_id_exec_jobs"
+      operationId: "post_v1_vms_id_exec_jobs"
       summary: "Start a long-running exec job."
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -216,16 +174,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ExecJob"
-  "/v1/namespaces/{ns}/vms/{id}/exec-jobs/{job}":
+  "/v1/vms/{id}/exec-jobs/{job}":
     get:
-      operationId: "get_v1_namespaces_ns_vms_id_exec_jobs_job"
+      operationId: "get_v1_vms_id_exec_jobs_job"
       summary: "Poll an exec job's status, exit code, and buffered byte counts."
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -244,14 +197,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ExecJob"
     delete:
-      operationId: "delete_v1_namespaces_ns_vms_id_exec_jobs_job"
+      operationId: "delete_v1_vms_id_exec_jobs_job"
       summary: "Cancel a long-running exec job."
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -269,16 +217,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ExecJob"
-  "/v1/namespaces/{ns}/vms/{id}/exec-jobs/{job}/stdout":
+  "/v1/vms/{id}/exec-jobs/{job}/stdout":
     get:
-      operationId: "get_v1_namespaces_ns_vms_id_exec_jobs_job_stdout"
+      operationId: "get_v1_vms_id_exec_jobs_job_stdout"
       summary: "Read a slice of an exec job's buffered stdout."
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -308,16 +251,11 @@ paths:
             application/octet-stream:
               schema:
                 $ref: "#/components/schemas/Bytes"
-  "/v1/namespaces/{ns}/vms/{id}/fs/files":
+  "/v1/vms/{id}/fs/files":
     get:
-      operationId: "get_v1_namespaces_ns_vms_id_fs_files"
+      operationId: "get_v1_vms_id_fs_files"
       summary: "Read file bytes. The VM path is a query value so OpenAPI and host frameworks do not need slash-capture semantics."
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -337,14 +275,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/Bytes"
     put:
-      operationId: "put_v1_namespaces_ns_vms_id_fs_files"
+      operationId: "put_v1_vms_id_fs_files"
       summary: "Write file bytes at path."
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -370,14 +303,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/FsWrite"
     delete:
-      operationId: "delete_v1_namespaces_ns_vms_id_fs_files"
+      operationId: "delete_v1_vms_id_fs_files"
       summary: "Unlink a file or symlink."
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -396,16 +324,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/FsDelete"
-  "/v1/namespaces/{ns}/vms/{id}/fs/stat":
+  "/v1/vms/{id}/fs/stat":
     get:
-      operationId: "get_v1_namespaces_ns_vms_id_fs_stat"
+      operationId: "get_v1_vms_id_fs_stat"
       summary: "Stat one file, directory, or symlink."
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -424,16 +347,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/FsStat"
-  "/v1/namespaces/{ns}/vms/{id}/fs/entries":
+  "/v1/vms/{id}/fs/entries":
     get:
-      operationId: "get_v1_namespaces_ns_vms_id_fs_entries"
+      operationId: "get_v1_vms_id_fs_entries"
       summary: "Read a directory listing."
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -452,16 +370,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/FsEntries"
-  "/v1/namespaces/{ns}/vms/{id}/fs/dirs":
+  "/v1/vms/{id}/fs/dirs":
     put:
-      operationId: "put_v1_namespaces_ns_vms_id_fs_dirs"
+      operationId: "put_v1_vms_id_fs_dirs"
       summary: "Create a directory, including parents when the host adapter elects to expose that option."
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -480,16 +393,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/FsMkdir"
-  "/v1/namespaces/{ns}/vms/{id}/fs/symlinks":
+  "/v1/vms/{id}/fs/symlinks":
     put:
-      operationId: "put_v1_namespaces_ns_vms_id_fs_symlinks"
+      operationId: "put_v1_vms_id_fs_symlinks"
       summary: "Create a symbolic link. The body carries both link and target paths to avoid ambiguous URL escaping."
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -508,16 +416,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/FsSymlinkResult"
-  "/v1/namespaces/{ns}/vms/{id}/snapshots":
+  "/v1/vms/{id}/snapshots":
     post:
-      operationId: "post_v1_namespaces_ns_vms_id_snapshots"
+      operationId: "post_v1_vms_id_snapshots"
       summary: "Return a VM snapshot as bytes. Fails while in-flight egress/host work is not quiesced."
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -530,16 +433,11 @@ paths:
             application/octet-stream:
               schema:
                 $ref: "#/components/schemas/SnapshotBytes"
-  "/v1/namespaces/{ns}/vms/{id}/layers":
+  "/v1/vms/{id}/layers":
     post:
-      operationId: "post_v1_namespaces_ns_vms_id_layers"
+      operationId: "post_v1_vms_id_layers"
       summary: "Commit the writable layer as a tar artifact."
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -552,16 +450,11 @@ paths:
             application/x-tar:
               schema:
                 $ref: "#/components/schemas/LayerTar"
-  "/v1/namespaces/{ns}/vms/{id}/forks":
+  "/v1/vms/{id}/forks":
     post:
-      operationId: "post_v1_namespaces_ns_vms_id_forks"
-      summary: "Snapshot the current VM and create another VM in the same namespace."
+      operationId: "post_v1_vms_id_forks"
+      summary: "Snapshot the current VM and create another VM."
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -580,16 +473,11 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Vm"
-  "/v1/namespaces/{ns}/vms/{id}/mounts":
+  "/v1/vms/{id}/mounts":
     get:
-      operationId: "get_v1_namespaces_ns_vms_id_mounts"
+      operationId: "get_v1_vms_id_mounts"
       summary: "List host-registered mounts attached to a VM."
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -603,14 +491,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/MountList"
     post:
-      operationId: "post_v1_namespaces_ns_vms_id_mounts"
+      operationId: "post_v1_vms_id_mounts"
       summary: "Attach a host-side mount driver. Driver secrets remain outside guest memory."
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -630,14 +513,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/Mount"
     delete:
-      operationId: "delete_v1_namespaces_ns_vms_id_mounts"
+      operationId: "delete_v1_vms_id_mounts"
       summary: "Detach a mount by mount id or guest path."
       parameters:
-        - name: "ns"
-          in: path
-          required: true
-          schema:
-            type: string
         - name: "id"
           in: path
           required: true
@@ -734,14 +612,10 @@ components:
     "Vm":
       type: object
       required:
-        - "namespace"
         - "id"
         - "status"
         - "inflightEgress"
       properties:
-        "namespace":
-          type: string
-          x-agentos-type: "Namespace"
         "id":
           type: string
           x-agentos-type: "VmId"

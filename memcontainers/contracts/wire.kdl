@@ -41,8 +41,6 @@ message "PERMISSION_RESPONSE" tag=0x41 dir="client->server" body="json"   { doc 
 // terminal bytes, host-call relay, permission decisions, and streamed sessions
 // stay on the typed WebSocket, so REST never becomes a second relay protocol.
 //
-// Namespace is canonical in the path. A host may derive it from auth, but the
-// public contract does not hide tenancy in an ambient header.
 route "GET" "/healthz" res="Health" {
   doc "Process health. Does not touch any VM actor."
 }
@@ -50,88 +48,88 @@ route "GET" "/v1/capabilities" res="Capabilities" {
   doc "Server/runtime capabilities: API version, wire version, body limits, packaged image flavors, and optional feature flags."
 }
 
-route "GET" "/v1/namespaces/{ns}/vms" res="VmList" {
-  doc "List live VMs visible in one namespace."
+route "GET" "/v1/vms" res="VmList" {
+  doc "List live VMs."
 }
-route "POST" "/v1/namespaces/{ns}/vms" req="CreateVm" res="Vm" {
+route "POST" "/v1/vms" req="CreateVm" res="Vm" {
   doc "Create a VM from a packaged image, layer stack, or snapshot. Connection entries are host-side references, never raw secrets."
 }
-route "GET" "/v1/namespaces/{ns}/vms/{id}" res="Vm" {
+route "GET" "/v1/vms/{id}" res="Vm" {
   doc "Return VM status and runtime metadata."
 }
-route "DELETE" "/v1/namespaces/{ns}/vms/{id}" res="DisposeVm" {
+route "DELETE" "/v1/vms/{id}" res="DisposeVm" {
   doc "Dispose the VM actor and release host-side resources."
 }
-route "POST" "/v1/namespaces/{ns}/vms/{id}/restore" req="SnapshotBytes" res="Vm" {
+route "POST" "/v1/vms/{id}/restore" req="SnapshotBytes" res="Vm" {
   doc "Restore or replace a VM from snapshot bytes."
 }
-route "GET" "/v1/namespaces/{ns}/vms/{id}/ws" upgrade="websocket" protocol="wire" res="WireSocket" {
+route "GET" "/v1/vms/{id}/ws" upgrade="websocket" protocol="wire" res="WireSocket" {
   doc "Upgrade to the typed per-VM WebSocket described by the message table above."
 }
 
-route "POST" "/v1/namespaces/{ns}/vms/{id}/exec" req="Exec" res="ExecResult" {
+route "POST" "/v1/vms/{id}/exec" req="Exec" res="ExecResult" {
   doc "Run a bounded command and return the final result. Use exec-jobs for long-running commands."
 }
-route "POST" "/v1/namespaces/{ns}/vms/{id}/exec-jobs" req="Exec" res="ExecJob" {
+route "POST" "/v1/vms/{id}/exec-jobs" req="Exec" res="ExecJob" {
   doc "Start a long-running exec job."
 }
-route "GET" "/v1/namespaces/{ns}/vms/{id}/exec-jobs/{job}" res="ExecJob" {
+route "GET" "/v1/vms/{id}/exec-jobs/{job}" res="ExecJob" {
   doc "Poll an exec job's status, exit code, and buffered byte counts."
 }
-route "GET" "/v1/namespaces/{ns}/vms/{id}/exec-jobs/{job}/stdout" res="Bytes" {
+route "GET" "/v1/vms/{id}/exec-jobs/{job}/stdout" res="Bytes" {
   query "offset" type="u64" required=0
   query "limit" type="u32" required=0
   doc "Read a slice of an exec job's buffered stdout."
 }
-route "DELETE" "/v1/namespaces/{ns}/vms/{id}/exec-jobs/{job}" res="ExecJob" {
+route "DELETE" "/v1/vms/{id}/exec-jobs/{job}" res="ExecJob" {
   doc "Cancel a long-running exec job."
 }
 
-route "GET" "/v1/namespaces/{ns}/vms/{id}/fs/files" res="Bytes" {
+route "GET" "/v1/vms/{id}/fs/files" res="Bytes" {
   query "path" type="Path" required=1
   doc "Read file bytes. The VM path is a query value so OpenAPI and host frameworks do not need slash-capture semantics."
 }
-route "PUT" "/v1/namespaces/{ns}/vms/{id}/fs/files" req="Bytes" res="FsWrite" {
+route "PUT" "/v1/vms/{id}/fs/files" req="Bytes" res="FsWrite" {
   query "path" type="Path" required=1
   doc "Write file bytes at path."
 }
-route "DELETE" "/v1/namespaces/{ns}/vms/{id}/fs/files" res="FsDelete" {
+route "DELETE" "/v1/vms/{id}/fs/files" res="FsDelete" {
   query "path" type="Path" required=1
   doc "Unlink a file or symlink."
 }
-route "GET" "/v1/namespaces/{ns}/vms/{id}/fs/stat" res="FsStat" {
+route "GET" "/v1/vms/{id}/fs/stat" res="FsStat" {
   query "path" type="Path" required=1
   doc "Stat one file, directory, or symlink."
 }
-route "GET" "/v1/namespaces/{ns}/vms/{id}/fs/entries" res="FsEntries" {
+route "GET" "/v1/vms/{id}/fs/entries" res="FsEntries" {
   query "path" type="Path" required=1
   doc "Read a directory listing."
 }
-route "PUT" "/v1/namespaces/{ns}/vms/{id}/fs/dirs" res="FsMkdir" {
+route "PUT" "/v1/vms/{id}/fs/dirs" res="FsMkdir" {
   query "path" type="Path" required=1
   doc "Create a directory, including parents when the host adapter elects to expose that option."
 }
-route "PUT" "/v1/namespaces/{ns}/vms/{id}/fs/symlinks" req="FsSymlink" res="FsSymlinkResult" {
+route "PUT" "/v1/vms/{id}/fs/symlinks" req="FsSymlink" res="FsSymlinkResult" {
   doc "Create a symbolic link. The body carries both link and target paths to avoid ambiguous URL escaping."
 }
 
-route "POST" "/v1/namespaces/{ns}/vms/{id}/snapshots" res="SnapshotBytes" {
+route "POST" "/v1/vms/{id}/snapshots" res="SnapshotBytes" {
   doc "Return a VM snapshot as bytes. Fails while in-flight egress/host work is not quiesced."
 }
-route "POST" "/v1/namespaces/{ns}/vms/{id}/layers" res="LayerTar" {
+route "POST" "/v1/vms/{id}/layers" res="LayerTar" {
   doc "Commit the writable layer as a tar artifact."
 }
-route "POST" "/v1/namespaces/{ns}/vms/{id}/forks" req="ForkVm" res="Vm" {
-  doc "Snapshot the current VM and create another VM in the same namespace."
+route "POST" "/v1/vms/{id}/forks" req="ForkVm" res="Vm" {
+  doc "Snapshot the current VM and create another VM."
 }
 
-route "GET" "/v1/namespaces/{ns}/vms/{id}/mounts" res="MountList" {
+route "GET" "/v1/vms/{id}/mounts" res="MountList" {
   doc "List host-registered mounts attached to a VM."
 }
-route "POST" "/v1/namespaces/{ns}/vms/{id}/mounts" req="AttachMount" res="Mount" {
+route "POST" "/v1/vms/{id}/mounts" req="AttachMount" res="Mount" {
   doc "Attach a host-side mount driver. Driver secrets remain outside guest memory."
 }
-route "DELETE" "/v1/namespaces/{ns}/vms/{id}/mounts" req="DetachMount" res="DetachMount" {
+route "DELETE" "/v1/vms/{id}/mounts" req="DetachMount" res="DetachMount" {
   doc "Detach a mount by mount id or guest path."
 }
 
@@ -163,7 +161,6 @@ schema "CreateVm" kind="json" {
   field "connections" type="ConnectionRef[]" required=0
 }
 schema "Vm" kind="json" {
-  field "namespace" type="Namespace" required=1
   field "id" type="VmId" required=1
   field "status" type="VmStatus" required=1
   field "image" type="ImageFlavor" required=0
