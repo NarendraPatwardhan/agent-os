@@ -1,9 +1,9 @@
 # web — the browser app consumer of the JS host family (SYSTEMS.md §13.4).
 #
 # Keep the app as a normal Vite package for local iteration, but make the production
-# bundle a Bazel action so the stable //web:app target is a real graph node. Kernel
-# and image artifacts will become explicit data deps here when the live browser VM
-# boot path lands; no checked-in copied wasm/tar assets.
+# bundle a Bazel action so the stable //web:app target is a real graph node. The
+# live browser VM consumes Bazel-staged kernel/image artifacts through Vite's
+# public asset path; no checked-in copied wasm/tar assets.
 
 load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_run_binary")
 load("@npm//:defs.bzl", "npm_link_all_packages")
@@ -19,7 +19,56 @@ WEB_SOURCES = [
     "vite.config.ts",
 ] + [
     "tools/vite.mjs",
-] + glob(["src/**"])
+] + glob(["src/**"]) + [
+    ":hero_vm_assets",
+]
+
+WEB_APP_DEPS = [
+    ":node_modules/@codemirror/autocomplete",
+    ":node_modules/@codemirror/commands",
+    ":node_modules/@codemirror/lang-javascript",
+    ":node_modules/@codemirror/language",
+    ":node_modules/@codemirror/lint",
+    ":node_modules/@codemirror/state",
+    ":node_modules/@codemirror/view",
+    ":node_modules/@lezer/common",
+    ":node_modules/@lezer/highlight",
+    ":node_modules/@lezer/javascript",
+    ":node_modules/@lezer/lr",
+    ":node_modules/@marijn/find-cluster-break",
+    ":node_modules/@mc/contracts",
+    ":node_modules/@mc/core",
+    ":node_modules/@mc/host",
+    ":node_modules/@vitejs/plugin-react",
+    ":node_modules/@xterm/addon-fit",
+    ":node_modules/@xterm/xterm",
+    ":node_modules/crelt",
+    ":node_modules/react",
+    ":node_modules/react-dom",
+    ":node_modules/scheduler",
+    ":node_modules/style-mod",
+    ":node_modules/typescript",
+    ":node_modules/vite",
+    ":node_modules/w3c-keyname",
+    ":node_modules/zod",
+]
+
+genrule(
+    name = "hero_vm_assets",
+    srcs = [
+        "//memcontainers/kernel/rust:kernel",
+        "//memcontainers/images:loom",
+    ],
+    outs = [
+        "public/mc/image.tar",
+        "public/mc/kernel.wasm",
+    ],
+    cmd = """
+mkdir -p "$(@D)/public/mc"
+cp "$(location //memcontainers/kernel/rust:kernel)" "$(@D)/public/mc/kernel.wasm"
+cp "$(location //memcontainers/images:loom)" "$(@D)/public/mc/image.tar"
+""",
+)
 
 filegroup(
     name = "sources",
@@ -31,11 +80,8 @@ js_binary(
     chdir = package_name(),
     data = [
         ":node_modules/@vitejs/plugin-react",
-        ":node_modules/vite",
-        ":node_modules/react",
-        ":node_modules/react-dom",
-        ":node_modules/scheduler",
         ":node_modules/typescript",
+        ":node_modules/vite",
     ],
     entry_point = "tools/vite.mjs",
 )
@@ -43,13 +89,7 @@ js_binary(
 js_binary(
     name = "dev",
     chdir = package_name(),
-    data = [
-        ":node_modules/@vitejs/plugin-react",
-        ":node_modules/vite",
-        ":node_modules/react",
-        ":node_modules/react-dom",
-        ":node_modules/scheduler",
-        ":node_modules/typescript",
+    data = WEB_APP_DEPS + [
         ":sources",
     ],
     entry_point = "tools/vite.mjs",
@@ -72,15 +112,9 @@ js_binary(
 
 js_run_binary(
     name = "typecheck_app",
-    srcs = [
+    srcs = WEB_APP_DEPS + [
         ":node_modules/@types/react",
         ":node_modules/@types/react-dom",
-        ":node_modules/@vitejs/plugin-react",
-        ":node_modules/react",
-        ":node_modules/react-dom",
-        ":node_modules/scheduler",
-        ":node_modules/typescript",
-        ":node_modules/vite",
         ":sources",
     ],
     outs = ["typecheck_app.stamp"],
@@ -132,13 +166,7 @@ filegroup(
 
 js_run_binary(
     name = "app",
-    srcs = [
-        ":node_modules/@vitejs/plugin-react",
-        ":node_modules/vite",
-        ":node_modules/react",
-        ":node_modules/react-dom",
-        ":node_modules/scheduler",
-        ":node_modules/typescript",
+    srcs = WEB_APP_DEPS + [
         ":sources",
     ],
     out_dirs = ["dist"],

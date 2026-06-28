@@ -1,5 +1,7 @@
+import { Hero } from "./Hero";
+
 function App() {
-  return <main>hi</main>;
+  return <Hero />;
 }
 
 export default App;

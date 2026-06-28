@@ -1,0 +1,284 @@
+.root {
+  --mc-term-bg: color-mix(in oklch, var(--neutral-1, #101114) 92%, oklch(0 0 0));
+  background: var(--mc-term-bg);
+  color: var(--mc-fg, var(--fg, #e8e8ea));
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  contain: layout paint;
+}
+
+.screen {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.root :global(.xterm) {
+  position: relative;
+  cursor: text;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.root :global(.xterm.focus),
+.root :global(.xterm:focus) {
+  outline: none;
+}
+
+.root :global(.xterm-helpers) {
+  position: absolute;
+  top: 0;
+  z-index: 5;
+}
+
+.root :global(.xterm-helper-textarea) {
+  padding: 0;
+  border: 0;
+  margin: 0;
+  position: absolute;
+  opacity: 0;
+  left: -9999em;
+  top: 0;
+  width: 0;
+  height: 0;
+  z-index: -5;
+  white-space: nowrap;
+  overflow: hidden;
+  resize: none;
+}
+
+.root :global(.composition-view) {
+  background: transparent;
+  color: inherit;
+  display: none;
+  position: absolute;
+  white-space: nowrap;
+  z-index: 1;
+}
+
+.root :global(.composition-view.active) {
+  display: block;
+}
+
+.root :global(.xterm-screen) {
+  position: relative;
+}
+
+.root :global(.xterm-screen canvas) {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+
+.root :global(.xterm-char-measure-element) {
+  display: inline-block;
+  visibility: hidden;
+  position: absolute;
+  top: 0;
+  left: -9999em;
+  line-height: normal;
+}
+
+.root :global(.xterm.enable-mouse-events) {
+  cursor: default;
+}
+
+.root :global(.xterm.xterm-cursor-pointer),
+.root :global(.xterm .xterm-cursor-pointer) {
+  cursor: pointer;
+}
+
+.root :global(.xterm.column-select.focus) {
+  cursor: crosshair;
+}
+
+.root :global(.xterm-accessibility:not(.debug)),
+.root :global(.xterm-message) {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  color: transparent;
+  pointer-events: none;
+}
+
+.root :global(.xterm-accessibility-tree:not(.debug) *::selection) {
+  color: transparent;
+}
+
+.root :global(.xterm-accessibility-tree) {
+  font-family: monospace;
+  user-select: text;
+  white-space: pre;
+}
+
+.root :global(.xterm-accessibility-tree > div) {
+  transform-origin: left;
+  width: fit-content;
+}
+
+.root :global(.live-region) {
+  position: absolute;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+
+.root :global(.xterm-dim) {
+  opacity: 1 !important;
+}
+
+.root :global(.xterm-underline-1) {
+  text-decoration: underline;
+}
+
+.root :global(.xterm-underline-2) {
+  text-decoration: double underline;
+}
+
+.root :global(.xterm-underline-3) {
+  text-decoration: wavy underline;
+}
+
+.root :global(.xterm-underline-4) {
+  text-decoration: dotted underline;
+}
+
+.root :global(.xterm-underline-5) {
+  text-decoration: dashed underline;
+}
+
+.root :global(.xterm-overline) {
+  text-decoration: overline;
+}
+
+.root :global(.xterm-strikethrough) {
+  text-decoration: line-through;
+}
+
+.root :global(.xterm-screen .xterm-decoration-container .xterm-decoration) {
+  z-index: 6;
+  position: absolute;
+}
+
+.root :global(.xterm-screen .xterm-decoration-container .xterm-decoration.xterm-decoration-top-layer) {
+  z-index: 7;
+}
+
+.root :global(.xterm-decoration-overview-ruler) {
+  z-index: 8;
+  position: absolute;
+  top: 0;
+  right: 0;
+  pointer-events: none;
+}
+
+.root :global(.xterm-decoration-top) {
+  z-index: 2;
+  position: relative;
+}
+
+.root :global(.xterm) {
+  width: 100%;
+  height: 100%;
+  padding: var(--mc-term-pad, var(--space-6, 24px));
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
+  background: var(--mc-term-bg, color-mix(in oklch, var(--neutral-1, #101114) 92%, oklch(0 0 0)));
+}
+
+.root :global(.xterm-viewport) {
+  background: transparent !important;
+  position: absolute;
+  inset: 0;
+  right: calc(var(--space-2, 8px) - var(--mc-term-pad, var(--space-6, 24px))) !important;
+  overflow-y: auto !important;
+  cursor: default;
+  scrollbar-width: thin;
+  scrollbar-color: var(--mc-scrollbar, color-mix(in oklch, var(--neutral-7, #8d929d) 60%, transparent)) transparent;
+}
+
+.root :global(.xterm-viewport::-webkit-scrollbar) {
+  width: 5px !important;
+  height: 5px;
+}
+
+.root :global(.xterm-viewport::-webkit-scrollbar-track) {
+  background: transparent;
+}
+
+.root :global(.xterm-viewport::-webkit-scrollbar-thumb) {
+  background: var(--mc-scrollbar, color-mix(in oklch, var(--neutral-7, #8d929d) 60%, transparent));
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill, 999px);
+  background-clip: padding-box;
+}
+
+.root :global(.xterm-viewport::-webkit-scrollbar-thumb:hover) {
+  background: var(--mc-scrollbar-hover, var(--neutral-8, #acb0ba));
+  background-clip: padding-box;
+}
+
+.root :global(.xterm-viewport::-webkit-scrollbar-corner) {
+  background: transparent;
+}
+
+.root :global(.xterm-scrollable-element > .scrollbar) {
+  width: 5px !important;
+  right: calc(var(--space-2, 8px) - var(--mc-term-pad, var(--space-6, 24px))) !important;
+  border-radius: var(--radius-pill, 999px);
+}
+
+.root :global(.xterm-scrollable-element > .scrollbar > .slider) {
+  width: 5px !important;
+  left: 0 !important;
+  border-radius: var(--radius-pill, 999px);
+  background: var(--mc-scrollbar, color-mix(in oklch, var(--neutral-7, #8d929d) 60%, transparent)) !important;
+}
+
+.root :global(.xterm-scrollable-element > .scrollbar > .slider:hover) {
+  background: var(--mc-scrollbar-hover, var(--neutral-8, #acb0ba)) !important;
+}
+
+.root :global(.xterm-cursor.xterm-cursor-block) {
+  box-shadow: none !important;
+  background-color: transparent !important;
+  position: relative;
+  z-index: 0;
+}
+
+.root :global(.xterm-cursor.xterm-cursor-block::before) {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 1ch;
+  height: 1.15em;
+  transform: translateY(-50%);
+  background: var(--mc-cursor, var(--accent, #d8a531));
+  border-radius: 1px;
+  z-index: -1;
+}
+
+.root :global(.xterm:not(.focus) .xterm-cursor.xterm-cursor-block::before) {
+  opacity: 0.35;
+}
+
+.root :global(.xterm.focus .xterm-cursor.xterm-cursor-block::before) {
+  opacity: 1;
+  animation: mc-cursor-blink 1.1s step-end infinite;
+}
+
+@keyframes mc-cursor-blink {
+  50% {
+    opacity: 0;
+  }
+}
