@@ -35,8 +35,9 @@ export interface CreateOptions {
   /** Enable network egress (installs the host net capability). → `CAP_NET`. */
   net?: boolean;
   /** Host-side credential registry. Guest catalogs hold only connection refs; these secret values are
-   *  spliced into HTTP requests by the host when a request carries `X-MC-Connection`. Remote create
-   *  sends only the refs; the served host must own the corresponding credentials. */
+   *  spliced into HTTP requests by the host when a request carries `X-MC-Connection`. For remote
+   *  runtime, create sends these definitions to the trusted server host; they still do not enter guest
+   *  memory or the tool catalog. */
   connections?: ConnectionDefinition[];
   /** Make `/var/persist` durable (embedded backend). In a browser this is backed
    *  by OPFS (IndexedDB fallback) so state survives a page reload; elsewhere it is

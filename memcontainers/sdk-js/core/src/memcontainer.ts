@@ -611,6 +611,27 @@ function remoteHostCallPolicy(_opts: CreateOptions): string {
   return "relay";
 }
 
+function remoteConnectionAuth(auth: ConnectionDefinition["auth"]): Record<string, string> {
+  switch (auth.kind) {
+    case "none":
+      return { kind: "none" };
+    case "bearer":
+      return { kind: "bearer", token: auth.token };
+    case "header":
+      return { kind: "header", name: auth.name, value: auth.value };
+    case "query":
+      return { kind: "query", name: auth.name, value: auth.value };
+  }
+}
+
+function remoteConnections(defs: readonly ConnectionDefinition[] | undefined): Record<string, unknown>[] {
+  return (defs ?? []).map((connection) => ({
+    ref: connection.ref,
+    auth: remoteConnectionAuth(connection.auth),
+    origins: [...connection.origins],
+  }));
+}
+
 function remoteImageFields(image: CreateOptions["image"]): Record<string, unknown> {
   if (image === undefined || image === "base:latest") return {};
   if (image === null) return { layers: [] };
@@ -633,7 +654,7 @@ function remoteCreateBody(opts: CreateOptions, id?: string): Record<string, unkn
     net: remoteNetPolicy(opts),
     persist: remotePersistPolicy(opts),
     hostCall: remoteHostCallPolicy(opts),
-    connections: (opts.connections ?? []).map((connection) => connection.ref),
+    connections: remoteConnections(opts.connections),
   };
 }
 

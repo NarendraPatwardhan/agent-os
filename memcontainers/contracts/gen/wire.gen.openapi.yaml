@@ -43,7 +43,7 @@ paths:
                 $ref: "#/components/schemas/VmList"
     post:
       operationId: "post_v1_vms"
-      summary: "Create a VM from a packaged image, layer stack, or snapshot. Connection entries are host-side references, never raw secrets."
+      summary: "Create a VM from a packaged image, layer stack, or snapshot. Connection definitions configure the trusted host registry; guest catalogs receive only refs."
       requestBody:
         required: true
         content:
@@ -607,8 +607,36 @@ components:
         "connections":
           type: array
           items:
+            $ref: "#/components/schemas/ConnectionDefinition"
+    "ConnectionDefinition":
+      type: object
+      required:
+        - "ref"
+        - "auth"
+      properties:
+        "ref":
+          type: string
+          x-agentos-type: "ConnectionRef"
+        "auth":
+          $ref: "#/components/schemas/ConnectionAuth"
+        "origins":
+          type: array
+          items:
             type: string
-            x-agentos-type: "ConnectionRef"
+    "ConnectionAuth":
+      type: object
+      required:
+        - "kind"
+      properties:
+        "kind":
+          type: string
+          x-agentos-type: "ConnectionAuthKind"
+        "token":
+          type: string
+        "name":
+          type: string
+        "value":
+          type: string
     "Vm":
       type: object
       required:

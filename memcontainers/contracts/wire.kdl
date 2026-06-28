@@ -52,7 +52,7 @@ route "GET" "/v1/vms" res="VmList" {
   doc "List live VMs."
 }
 route "POST" "/v1/vms" req="CreateVm" res="Vm" {
-  doc "Create a VM from a packaged image, layer stack, or snapshot. Connection entries are host-side references, never raw secrets."
+  doc "Create a VM from a packaged image, layer stack, or snapshot. Connection definitions configure the trusted host registry; guest catalogs receive only refs."
 }
 route "GET" "/v1/vms/{id}" res="Vm" {
   doc "Return VM status and runtime metadata."
@@ -158,7 +158,18 @@ schema "CreateVm" kind="json" {
   field "net" type="NetPolicy" required=0
   field "persist" type="PersistPolicy" required=0
   field "hostCall" type="HostCallPolicy" required=0
-  field "connections" type="ConnectionRef[]" required=0
+  field "connections" type="ConnectionDefinition[]" required=0
+}
+schema "ConnectionDefinition" kind="json" {
+  field "ref" type="ConnectionRef" required=1
+  field "auth" type="ConnectionAuth" required=1
+  field "origins" type="string[]" required=0
+}
+schema "ConnectionAuth" kind="json" {
+  field "kind" type="ConnectionAuthKind" required=1
+  field "token" type="string" required=0
+  field "name" type="string" required=0
+  field "value" type="string" required=0
 }
 schema "Vm" kind="json" {
   field "id" type="VmId" required=1
