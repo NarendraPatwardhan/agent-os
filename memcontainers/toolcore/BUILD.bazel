@@ -1,0 +1,19 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Pure tool-plane catalog logic shared by the resident /svc/tools broker and native tests.
+# No syscalls and no std dependency outside tests; the guest binary supplies the heap.
+rust_library(
+    name = "toolcore",
+    srcs = ["src/lib.rs"],
+    crate_name = "toolcore",
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = ["//memcontainers/lib/json:serde"],
+)
+
+rust_test(
+    name = "test",
+    crate = ":toolcore",
+    edition = "2021",
+    size = "small",
+)

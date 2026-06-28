@@ -2,7 +2,7 @@
 # wasm per tool via an `mc_program()` macro that links sysroot + shcore and stamps the
 # mc_tier / mc_budget / mc_service custom sections (SYSTEMS.md). ~56 tools: the
 # coreutils long tail (cat, ls, grep-likes, sort, …), the shell (sh), the agent, the
-# mc-tool host-call shim, and the service binaries (sqlite/luau are third_party).
+# tools broker/CLI, and the service binaries (sqlite/luau are third_party).
 #
 # Tools-as-libraries: ONE binary per tool, two activation modes (one-shot CLI vs
 # resident service), chosen by the kernel via the contract — never a `/bin/<tool>-svc`.

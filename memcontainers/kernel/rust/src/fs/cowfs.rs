@@ -6,11 +6,11 @@ use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::fs::MemFs;
 use crate::fs::utils::TarWriter;
+use crate::fs::MemFs;
 use crate::vfs::traits::{
     CallerId, DirEntry, FileHandle, FileSystem, FsError, KPath, Metadata, NodeType, OpenFlags,
-    Result, SYSTEM_CALLER, SeekFrom,
+    Result, SeekFrom, SYSTEM_CALLER,
 };
 
 /// One overlay entry gathered for `commit` (pass 1 of `serialize_layer`). `ino`

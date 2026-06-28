@@ -50,8 +50,7 @@ pub type TaskId = u32;
 // policy types below and the syscall gate name them `crate::task::CAP_*`; the namespace
 // consumes them straight from the projection, so the VFS need not depend on `task`.
 pub use constants_rust::{
-    CAP_AMBIENT, CAP_FS_READ, CAP_FS_WRITE, CAP_MOUNT, CAP_NET, CAP_PERSIST, CAP_SCRATCH,
-    CAP_SPAWN,
+    CAP_AMBIENT, CAP_FS_READ, CAP_FS_WRITE, CAP_MOUNT, CAP_NET, CAP_PERSIST, CAP_SCRATCH, CAP_SPAWN,
 };
 
 /// A task's capability set. The kernel-side POLICY layer: a privileged
@@ -88,6 +87,10 @@ impl Capabilities {
 
     pub const fn from_bits(bits: u8) -> Self {
         Capabilities(bits)
+    }
+
+    pub const fn bits(self) -> u8 {
+        self.0
     }
 
     pub fn has(self, cap: u8) -> bool {
@@ -162,7 +165,7 @@ impl Tier {
     /// scratch would re-introduce clock-derived mtimes).
     pub fn caps(self) -> Capabilities {
         use constants_rust::{
-            TIER_FULL, TIER_ISOLATED, TIER_READ_ONLY, TIER_READ_WRITE, tier_caps,
+            tier_caps, TIER_FULL, TIER_ISOLATED, TIER_READ_ONLY, TIER_READ_WRITE,
         };
         let ordinal = match self {
             Tier::Full => TIER_FULL,

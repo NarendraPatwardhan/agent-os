@@ -18,7 +18,9 @@
 // hbuf/hbuf_len) — a reshape of the still-unreleased svc_* layer; the frozen base ABI is unchanged.
 // 1.6 adds svc_respond's `last` chunk flag (bounded-buffer result streaming) — another reshape of the
 // still-unreleased svc_* layer (codex #3).
-abi-version major=1 minor=6
+// 1.7 adds kernel-authored caller/caller_caps metadata to the svc_recv envelope so resident services can
+// gate privileged operations on the caller's effective authority, including host-control SYSTEM_CALLER.
+abi-version major=1 minor=7
 
 // ---------------------------------------------------------------------------
 // Errno — WASI-style; 0 = success. A syscall returns 0 or a positive errno; any

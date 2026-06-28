@@ -34,8 +34,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use constants_rust::{PERSIST_OP_DELETE, PERSIST_OP_GET, PERSIST_OP_LIST, PERSIST_OP_PUT};
 use host::{
-    ExecResult, HostCallCapability, KernelHost, KernelHostBuilder, NetCapability,
-    PersistCapability, StreamSink,
+    ConnectionCredential, ConnectionError, ConnectionRegistry, ExecResult, HostCallCapability,
+    KernelHost, KernelHostBuilder, NetCapability, PersistCapability, RealNet, StreamSink,
 };
 use rustler::{Atom, Binary, Env, Error, NifResult, OwnedBinary, ResourceArc};
 
@@ -531,6 +531,46 @@ fn ticks_to_usize(max_ticks: u64) -> NifResult<usize> {
     usize::try_from(max_ticks).map_err(|_| nif_err("max_ticks is too large for this host"))
 }
 
+fn build_connections(
+    defs: Vec<(String, String, String, String, Vec<String>)>,
+) -> NifResult<ConnectionRegistry> {
+    let mut registry = ConnectionRegistry::new();
+    for (reference, kind, a, b, origins) in defs {
+        let credential = match kind.as_str() {
+            "none" => ConnectionCredential::None,
+            "bearer" => ConnectionCredential::Bearer { token: a },
+            "header" => ConnectionCredential::Header { name: a, value: b },
+            "query" => ConnectionCredential::Query { name: a, value: b },
+            _ => return Err(nif_err(format!("unknown connection credential kind {kind:?}"))),
+        };
+        registry
+            .insert(reference.clone(), credential, origins)
+            .map_err(|err| {
+                nif_err(format!(
+                    "invalid connection {reference:?}: {}",
+                    connection_error(err)
+                ))
+            })?;
+    }
+    Ok(registry)
+}
+
+fn connection_error(err: ConnectionError) -> &'static str {
+    match err {
+        ConnectionError::InvalidReference => "invalid reference",
+        ConnectionError::InvalidHeader => "invalid header",
+        ConnectionError::InvalidOrigin => "invalid origin",
+        ConnectionError::InvalidSecret => "invalid secret",
+        ConnectionError::MissingOrigin => "missing origin",
+        ConnectionError::DuplicateConnection => "duplicate connection",
+        ConnectionError::UnknownConnection => "unknown connection",
+        ConnectionError::OriginNotAllowed => "origin not allowed",
+        ConnectionError::DuplicateMarker => "duplicate marker",
+        ConnectionError::MalformedRequest => "malformed request",
+        ConnectionError::HeaderAlreadyPresent => "header already present",
+    }
+}
+
 fn build_builder(
     wasm: Vec<u8>,
     base_image: Option<Vec<u8>>,
@@ -539,6 +579,8 @@ fn build_builder(
     contract: Option<(i32, i32, i64)>,
     workers: Option<i32>,
     net_relay: bool,
+    net_real: bool,
+    connections: Vec<(String, String, String, String, Vec<String>)>,
     host_call_relay: bool,
     persist_relay: bool,
     out: &Arc<Mutex<Vec<u8>>>,
@@ -549,6 +591,12 @@ fn build_builder(
     }
     if matches!(workers, Some(n) if n < 0) {
         return Err(nif_err("workers must be non-negative"));
+    }
+    if net_relay && net_real {
+        return Err(nif_err("net cannot be both relay and real"));
+    }
+    if !net_real && !connections.is_empty() {
+        return Err(nif_err("connections require real net"));
     }
 
     let mut builder = KernelHostBuilder::new(wasm);
@@ -570,6 +618,9 @@ fn build_builder(
         builder = builder.with_net(Box::new(BeamNet {
             relay: relay.clone(),
         }));
+    } else if net_real {
+        let net = RealNet::new().with_connections(build_connections(connections)?);
+        builder = builder.with_net(Box::new(net));
     }
     if host_call_relay {
         builder = builder.with_host_call(Box::new(BeamHostCall {
@@ -594,6 +645,8 @@ fn boot(
     contract: Option<(i32, i32, i64)>,
     workers: Option<i32>,
     net_relay: bool,
+    net_real: bool,
+    connections: Vec<(String, String, String, String, Vec<String>)>,
     host_call_relay: bool,
     persist_relay: bool,
 ) -> NifResult<(Atom, ResourceArc<Vm>)> {
@@ -610,6 +663,8 @@ fn boot(
         contract,
         workers,
         net_relay,
+        net_real,
+        connections,
         host_call_relay,
         persist_relay,
         &out,
@@ -635,6 +690,8 @@ fn restore(
     deterministic: bool,
     workers: Option<i32>,
     net_relay: bool,
+    net_real: bool,
+    connections: Vec<(String, String, String, String, Vec<String>)>,
     host_call_relay: bool,
     persist_relay: bool,
 ) -> NifResult<(Atom, ResourceArc<Vm>)> {
@@ -645,6 +702,12 @@ fn restore(
     }));
     if matches!(workers, Some(n) if n < 0) {
         return Err(nif_err("workers must be non-negative"));
+    }
+    if net_relay && net_real {
+        return Err(nif_err("net cannot be both relay and real"));
+    }
+    if !net_real && !connections.is_empty() {
+        return Err(nif_err("connections require real net"));
     }
     let mut builder = KernelHostBuilder::new(wasm.as_slice().to_vec());
     if deterministic {
@@ -657,6 +720,9 @@ fn restore(
         builder = builder.with_net(Box::new(BeamNet {
             relay: relay.clone(),
         }));
+    } else if net_real {
+        let net = RealNet::new().with_connections(build_connections(connections)?);
+        builder = builder.with_net(Box::new(net));
     }
     if host_call_relay {
         builder = builder.with_host_call(Box::new(BeamHostCall {

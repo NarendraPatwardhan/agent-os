@@ -1,0 +1,27 @@
+load("//bazel:mc_box.bzl", "mc_wasi_program")
+
+# /bin/adapters — service-only resident compiler/invoker for tool-plane API-description formats.
+# OpenAPI is the first internal adapter; GraphQL, Microsoft Graph, and Google discovery should land as
+# modules behind the same /svc/adapters protocol instead of new services with repeated serde/YAML cost.
+mc_wasi_program(
+    name = "adapters",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/main.rs",
+    crate_name = "adapters_svc",
+    tier = "full",
+    service = "adapters",
+    mem = 96 * 1024 * 1024,
+    fuel = 300000000000,
+    table = 40000,
+    extra_rustc_flags = [
+        "-Cstrip=symbols",
+    ],
+    deps = [
+        "//memcontainers/lib/parse",
+        "//memcontainers/sysroot/rust",
+        "@parse_crates//:serde",
+        "@parse_crates//:serde_json",
+        "@parse_crates//:serde_yaml",
+    ],
+    visibility = ["//visibility:public"],
+)

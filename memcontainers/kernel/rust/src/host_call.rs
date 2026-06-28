@@ -1,5 +1,5 @@
 //! Kernel-side wrapper over the host-call bridge imports. A guest invokes a
-//! host-resident function (the `mc-tool` shim, a host-backed mount driver) via
+//! host-resident function (the tool broker, a host-backed mount driver) via
 //! `mc_sys_host_call`; the host routes the opaque request blob to a registered
 //! handler and streams back a result. Exactly like `net::HttpReq`, the raw `i32`
 //! handle is a kernel↔host contract that MUST NOT reach the guest — the guest

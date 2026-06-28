@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 use crate::vfs::{FsError, KPath, OpenFlags};
 
 use super::fs::resolve_path;
-use super::{Builtin, BuiltinCtx, BuiltinStep, OutBuf, fs_error_str, push_str};
+use super::{fs_error_str, push_str, Builtin, BuiltinCtx, BuiltinStep, OutBuf};
 
 const CHUNK: usize = 4096;
 

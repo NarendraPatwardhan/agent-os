@@ -35,7 +35,8 @@ rust_shared_library(
         "//memcontainers/contracts:mc_rust",         # the mc_syscall_table! macro + SYSCALL_NAMES (B2)
         "//memcontainers/contracts:env_rust",        # the mc_bridge_table! macro → the env extern block (B2)
         "//memcontainers/contracts:ctl_rust",        # the mc_control_table! macro → the mc_ctl_* exports (B2)
-        "//memcontainers/lib/json:serde",            # no_std JSON: read /etc/services.json for service activation
+        "//memcontainers/lib/json:serde",            # no_std JSON: read /etc/services.d fragments for service activation
+        "//memcontainers/toolcore",                  # no_std tool catalog parser for the read-only /tools tree
     ],
 )
 

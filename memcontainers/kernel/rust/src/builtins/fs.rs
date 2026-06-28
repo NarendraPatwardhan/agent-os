@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 
 use crate::vfs::KPath;
 
-use super::{Builtin, BuiltinCtx, BuiltinStep, OutBuf, push_str};
+use super::{push_str, Builtin, BuiltinCtx, BuiltinStep, OutBuf};
 
 // ---------- shared utilities ----------
 

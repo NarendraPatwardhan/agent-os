@@ -30,12 +30,15 @@ use core::cell::{RefCell, UnsafeCell};
 
 use fs::ProcFs;
 use shell::{
-    Executor, OutputCapture, Pipeline, PipelineSeq, Sep, parse_line, reap_finished, run_round,
-    submit_pipeline, submit_pipeline_captured,
+    parse_line, reap_finished, run_round, submit_pipeline, submit_pipeline_captured, Executor,
+    OutputCapture, Pipeline, PipelineSeq, Sep,
 };
 use task::{Scheduler, TaskId, TaskState};
 use vfs::{KPath, Namespace, NodeType, OpenFlags};
-use wasm::abi::{EAGAIN, EINVAL, EIO, SERVICE_MARKER, SIGHUP, SIGINT, SIGTSTP, errno_from_fs};
+use wasm::abi::{
+    errno_from_fs, EAGAIN, EINVAL, EIO, ENOENT, ESUCCESS, ETIMEDOUT, SERVICE_MARKER, SIGHUP,
+    SIGINT, SIGTSTP,
+};
 
 // ---------- ForegroundJob (the rescue shell) ----------
 
@@ -147,6 +150,24 @@ struct CtlExecJob {
     exit_code: i32,
 }
 
+enum CtlSvcState {
+    /// Waiting for the service to activate; the request has not been enqueued yet.
+    Connecting { name: String, req: Vec<u8> },
+    /// Request enqueued; drain the streaming response through servicefs.
+    Calling {
+        channel: Rc<RefCell<fs::servicefs::ServiceChannel>>,
+        session: u32,
+        req_id: u32,
+        out: Vec<u8>,
+    },
+    /// Terminal state: `status == 0` means `out` is the service body; non-zero is a transport errno.
+    Done { status: i32, out: Vec<u8> },
+}
+
+struct CtlSvcJob {
+    state: CtlSvcState,
+}
+
 // ---------- SystemState ----------
 
 struct SystemState {
@@ -171,6 +192,8 @@ struct SystemState {
     /// Advanced each tick alongside the interactive foreground, but independent
     /// of the prompt.
     ctl_jobs: UnsafeCell<BTreeMap<u32, CtlExecJob>>,
+    /// Host control-channel resident-service calls (`mc_ctl_svc_call_*`), keyed by job id.
+    ctl_svc_jobs: UnsafeCell<BTreeMap<u32, CtlSvcJob>>,
     /// Monotonic id source for `ctl_jobs` (starts at 1; 0 is never a job id).
     next_ctl_job: UnsafeCell<u32>,
     /// Exit status of the last completed interactive foreground line (`$?`).
@@ -208,6 +231,7 @@ impl SystemState {
             background: UnsafeCell::new(Vec::new()),
             foreground: UnsafeCell::new(None),
             ctl_jobs: UnsafeCell::new(BTreeMap::new()),
+            ctl_svc_jobs: UnsafeCell::new(BTreeMap::new()),
             next_ctl_job: UnsafeCell::new(1),
             last_status: UnsafeCell::new(0),
             interactive_guest: UnsafeCell::new(false),
@@ -262,6 +286,10 @@ impl SystemState {
 
     unsafe fn ctl_jobs(&self) -> &mut BTreeMap<u32, CtlExecJob> {
         unsafe { &mut *self.ctl_jobs.get() }
+    }
+
+    unsafe fn ctl_svc_jobs(&self) -> &mut BTreeMap<u32, CtlSvcJob> {
+        unsafe { &mut *self.ctl_svc_jobs.get() }
     }
 
     unsafe fn last_status(&self) -> &mut i32 {
@@ -725,6 +753,17 @@ fn init_system() {
                     false,
                 );
 
+                // toolsfs: a global read-only catalog tree at /tools. The broker service owns calls,
+                // search, and mutation; this filesystem only exposes the checkpointed catalog as files,
+                // so every process can browse tools without gaining egress authority.
+                let toolsfs = crate::fs::ToolsFs::new(ns_ptr);
+                (*STATE.ns.get()).as_ref().unwrap().mount_labeled(
+                    "/tools",
+                    Box::new(toolsfs),
+                    "toolsfs",
+                    true,
+                );
+
                 // Apply the image manifest's runtime contract: the budget
                 // ceiling (every guest spawn is capped by it) and the pid-1 boot
                 // tier. Must precede any guest load (so the shell is bounded too).
@@ -736,7 +775,7 @@ fn init_system() {
                 // later, after the grants below are recorded.
                 boot_login_shell();
 
-                // THEN activate eager resident services from /etc/services.json (each runs its svc_serve
+                // THEN activate eager resident services from /etc/services.d fragments (each runs its svc_serve
                 // loop). They take pid 2+, and their grant `name → pid` is recorded here — before any user
                 // task actually runs — so a first connect still finds them registered (or briefly blocks).
                 activate_services();
@@ -915,27 +954,42 @@ unsafe fn try_guest_login_shell() -> bool {
 // `constants.kdl → service-marker`, imported above via `wasm::abi` — one source for the kernel and
 // every service binary, Rust and Zig (codex #5).
 
-/// Look up a declared service's binary path in `/etc/services.json`. `None` if the manifest is
-/// absent/unreadable/malformed, or the name is not declared there. A manifest entry is `name → {
-/// binary, eager? }`; the tier is deliberately NOT there — the binary's own `mc_tier` is the single
-/// source of truth, so a manifest can never widen the privilege a binary declared it needs. (The
-/// `eager` flag is read by [`activate_services`] at boot; lazy activation needs only the path.)
-unsafe fn lookup_service_binary(name: &str) -> Option<String> {
+struct ServiceSpec {
+    binary: String,
+    eager: bool,
+}
+
+/// Look up a declared service's fragment at `/etc/services.d/<name>.json`. `None` if the fragment is
+/// absent/unreadable/malformed. A fragment is `{ binary, eager? }`; the tier is deliberately NOT there
+/// — the binary's own `mc_tier` is the single source of truth, so a fragment can never widen the
+/// privilege a binary declared it needs.
+unsafe fn lookup_service_spec(name: &str) -> Option<ServiceSpec> {
     unsafe {
         if !fs::servicefs::valid_service_name(name) {
             return None;
         }
-        let manifest = read_kernel_file(STATE.ns(), "/etc/services.json")?;
+        let manifest = read_kernel_file(STATE.ns(), &format!("/etc/services.d/{name}.json"))?;
         let text = core::str::from_utf8(&manifest).ok()?;
         let doc = json::parse(text).ok()?;
-        let services = doc.as_obj()?;
-        let (_, spec) = services.iter().find(|(n, _)| n == name)?;
-        Some(
-            spec.get("binary")
-                .and_then(|b| b.as_str())
-                .map(String::from)
-                .unwrap_or_else(|| format!("/bin/{name}")),
-        )
+        let spec = doc.as_obj()?;
+        let binary = JsonObj(spec)
+            .get("binary")
+            .and_then(|b| b.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| format!("/bin/{name}"));
+        let eager = JsonObj(spec)
+            .get("eager")
+            .and_then(|e| e.as_bool())
+            .unwrap_or(false);
+        Some(ServiceSpec { binary, eager })
+    }
+}
+
+struct JsonObj<'a>(&'a [(String, json::Json)]);
+
+impl<'a> JsonObj<'a> {
+    fn get(&self, key: &str) -> Option<&'a json::Json> {
+        self.0.iter().find(|(k, _)| k == key).map(|(_, v)| v)
     }
 }
 
@@ -998,48 +1052,40 @@ unsafe fn spawn_service(name: &str, binary: &str) -> Option<task::TaskId> {
 }
 
 /// EAGER service activation at boot: spawn each service marked `"eager": true` in
-/// `/etc/services.json`. Lazy services (the default) are instead spawned on their first
+/// `/etc/services.d/<name>.json`. Lazy services (the default) are instead spawned on their first
 /// `svc_connect` ([`activate_service_lazily`]), so a flavor pays a service's cold start only when
-/// something actually uses it. An absent/malformed manifest means no eager services — boot continues.
+/// something actually uses it. Absent/malformed fragments are ignored — boot continues.
 unsafe fn activate_services() {
     unsafe {
-        let Some(manifest) = read_kernel_file(STATE.ns(), "/etc/services.json") else {
+        let Some(mut names) = read_kernel_dir(STATE.ns(), "/etc/services.d") else {
             return;
         };
-        let Ok(text) = core::str::from_utf8(&manifest) else {
-            return;
-        };
-        let Ok(doc) = json::parse(text) else {
-            return;
-        };
-        let Some(services) = doc.as_obj() else {
-            return;
-        };
-        for (name, spec) in services {
+        names.sort();
+        for file in names {
+            let Some(name) = file.strip_suffix(".json") else {
+                continue;
+            };
             if !fs::servicefs::valid_service_name(name) {
-                continue; // a manifest key that isn't a valid service name can't match any binary
+                continue; // a fragment name that isn't a valid service name can't match any binary
             }
-            if !spec.get("eager").and_then(|e| e.as_bool()).unwrap_or(false) {
-                continue; // lazy (default): activated on first connect, not at boot
+            let Some(spec) = lookup_service_spec(name) else {
+                continue;
+            };
+            if spec.eager {
+                spawn_service(name, &spec.binary);
             }
-            let binary = spec
-                .get("binary")
-                .and_then(|b| b.as_str())
-                .map(String::from)
-                .unwrap_or_else(|| format!("/bin/{name}"));
-            spawn_service(name, &binary);
         }
     }
 }
 
 /// Lazily (re-)activate a service on its first `svc_connect` (spawn-on-connect): look it up in
-/// `/etc/services.json` and spawn it. Returns whether an activation was STARTED (the connecting
+/// `/etc/services.d/<name>.json` and spawn it. Returns whether an activation was STARTED (the connecting
 /// client then blocks until it serves); `false` means the name is not a declared service. This is
 /// also the crash-recovery path — a connect after a service died re-runs it and gets a fresh instance.
 pub(crate) unsafe fn activate_service_lazily(name: &str) -> bool {
     unsafe {
-        match lookup_service_binary(name) {
-            Some(binary) => spawn_service(name, &binary).is_some(),
+        match lookup_service_spec(name) {
+            Some(spec) => spawn_service(name, &spec.binary).is_some(),
             None => false,
         }
     }
@@ -1061,6 +1107,13 @@ fn read_kernel_file(ns: &Namespace, path: &str) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+/// List a small boot-namespace directory as names only. `None` if absent/unreadable.
+fn read_kernel_dir(ns: &Namespace, path: &str) -> Option<Vec<String>> {
+    let kpath = KPath::new(path);
+    let entries = ns.readdir_owner(&kpath).ok()?;
+    Some(entries.into_iter().map(|e| e.name).collect())
 }
 
 // ---------- Exported functions ----------
@@ -1796,7 +1849,10 @@ pub(crate) fn mc_ctl_read(path_ptr: u32, path_len: u32) -> i32 {
             Ok(c) => c,
             Err(e) => return ctl_neg_errno(e),
         };
-        let mut h = match STATE.ns().open_as(vfs::SYSTEM_CALLER, &real, OpenFlags::READ) {
+        let mut h = match STATE
+            .ns()
+            .open_as(vfs::SYSTEM_CALLER, &real, OpenFlags::READ)
+        {
             Ok(h) => h,
             Err(e) => return ctl_neg_errno(e),
         };
@@ -2056,6 +2112,230 @@ pub(crate) fn mc_ctl_unmount(path_ptr: u32, path_len: u32) -> i32 {
             Ok(()) => 0,
             Err(e) => ctl_neg_errno(e),
         }
+    }
+}
+
+enum CtlSvcAdvance {
+    Pending,
+    Done,
+}
+
+unsafe fn ctl_service_channel(
+    name: &str,
+) -> Result<Option<Rc<RefCell<fs::servicefs::ServiceChannel>>>, i32> {
+    unsafe {
+        if let Some(channel) = fs::servicefs::lookup_service(name) {
+            return Ok(Some(channel));
+        }
+        match fs::servicefs::service_state(name) {
+            Some(fs::servicefs::ServiceState::Activating {
+                pid, deadline_ms, ..
+            }) => {
+                let alive = STATE
+                    .scheduler()
+                    .get_task(pid)
+                    .is_some_and(|t| !matches!(t.state, TaskState::Zombie));
+                if alive {
+                    if wall_now_ms() > deadline_ms {
+                        STATE.scheduler().kill_task(pid, 124);
+                        fs::servicefs::mark_failed(name, ETIMEDOUT);
+                        return Err(ETIMEDOUT);
+                    }
+                    return Ok(None);
+                }
+                fs::servicefs::mark_failed(name, EIO);
+                return Err(EIO);
+            }
+            Some(fs::servicefs::ServiceState::Failed {
+                until_ms,
+                last_errno,
+                ..
+            }) => {
+                if wall_now_ms() < until_ms {
+                    return Err(last_errno);
+                }
+            }
+            None => {}
+        }
+        if activate_service_lazily(name) {
+            Ok(None)
+        } else {
+            Err(ENOENT)
+        }
+    }
+}
+
+unsafe fn advance_ctl_svc_job(job: &mut CtlSvcJob) -> CtlSvcAdvance {
+    unsafe {
+        loop {
+            match &mut job.state {
+                CtlSvcState::Connecting { name, req } => {
+                    let channel = match ctl_service_channel(name) {
+                        Ok(Some(channel)) => channel,
+                        Ok(None) => return CtlSvcAdvance::Pending,
+                        Err(errno) => {
+                            job.state = CtlSvcState::Done {
+                                status: errno,
+                                out: Vec::new(),
+                            };
+                            return CtlSvcAdvance::Done;
+                        }
+                    };
+                    let session = channel.borrow_mut().open_session(vfs::SYSTEM_CALLER);
+                    let body = core::mem::take(req);
+                    let req_id = match channel.borrow_mut().enqueue(
+                        session,
+                        vfs::SYSTEM_CALLER,
+                        task::Capabilities::all().bits() as u32,
+                        body,
+                        Vec::new(),
+                    ) {
+                        Some(req_id) => req_id,
+                        None => {
+                            channel.borrow_mut().drop_session(session);
+                            job.state = CtlSvcState::Done {
+                                status: EIO,
+                                out: Vec::new(),
+                            };
+                            return CtlSvcAdvance::Done;
+                        }
+                    };
+                    job.state = CtlSvcState::Calling {
+                        channel,
+                        session,
+                        req_id,
+                        out: Vec::new(),
+                    };
+                }
+                CtlSvcState::Calling {
+                    channel,
+                    session,
+                    req_id,
+                    out,
+                } => {
+                    let mut tmp = [0u8; 4096];
+                    loop {
+                        let poll = channel
+                            .borrow_mut()
+                            .drain_response(*session, *req_id, &mut tmp);
+                        match poll {
+                            fs::servicefs::ResponsePoll::Pending => return CtlSvcAdvance::Pending,
+                            fs::servicefs::ResponsePoll::Got(n) => {
+                                out.extend_from_slice(&tmp[..n]);
+                            }
+                            fs::servicefs::ResponsePoll::Eof => {
+                                let channel = channel.clone();
+                                let session = *session;
+                                let body = core::mem::take(out);
+                                channel.borrow_mut().drop_session(session);
+                                job.state = CtlSvcState::Done {
+                                    status: ESUCCESS,
+                                    out: body,
+                                };
+                                return CtlSvcAdvance::Done;
+                            }
+                            fs::servicefs::ResponsePoll::Failed(errno) => {
+                                let channel = channel.clone();
+                                let session = *session;
+                                channel.borrow_mut().drop_session(session);
+                                job.state = CtlSvcState::Done {
+                                    status: errno,
+                                    out: Vec::new(),
+                                };
+                                return CtlSvcAdvance::Done;
+                            }
+                            fs::servicefs::ResponsePoll::Closed => {
+                                let channel = channel.clone();
+                                let session = *session;
+                                channel.borrow_mut().drop_session(session);
+                                job.state = CtlSvcState::Done {
+                                    status: EIO,
+                                    out: Vec::new(),
+                                };
+                                return CtlSvcAdvance::Done;
+                            }
+                        }
+                    }
+                }
+                CtlSvcState::Done { .. } => return CtlSvcAdvance::Done,
+            }
+        }
+    }
+}
+
+fn close_ctl_svc_job(job: CtlSvcJob) {
+    if let CtlSvcState::Calling {
+        channel, session, ..
+    } = job.state
+    {
+        channel.borrow_mut().drop_session(session);
+    }
+}
+
+pub(crate) fn mc_ctl_svc_call_start(
+    name_ptr: u32,
+    name_len: u32,
+    req_ptr: u32,
+    req_len: u32,
+) -> i32 {
+    let _bkl = sync::lock_kernel();
+    unsafe {
+        if !STATE.is_initialized() {
+            return -EIO;
+        }
+        let name = match ctl_str(name_ptr, name_len) {
+            Some(name) if fs::servicefs::valid_service_name(&name) => name,
+            _ => return -EINVAL,
+        };
+        if req_len as usize > fs::servicefs::MAX_SVC_REQUEST_BYTES {
+            return -EINVAL;
+        }
+        let req = match ctl_bytes(req_ptr, req_len) {
+            Some(req) => req,
+            None => return -EINVAL,
+        };
+        let id = STATE.alloc_ctl_id();
+        STATE.ctl_svc_jobs().insert(
+            id,
+            CtlSvcJob {
+                state: CtlSvcState::Connecting { name, req },
+            },
+        );
+        id as i32
+    }
+}
+
+pub(crate) fn mc_ctl_svc_call_poll(job_id: u32) -> i32 {
+    let _bkl = sync::lock_kernel();
+    unsafe {
+        let jobs = STATE.ctl_svc_jobs();
+        let Some(job) = jobs.get_mut(&job_id) else {
+            return -EINVAL;
+        };
+        if matches!(advance_ctl_svc_job(job), CtlSvcAdvance::Pending) {
+            return 0;
+        }
+        let job = jobs.remove(&job_id).expect("present");
+        let CtlSvcState::Done { status, out } = job.state else {
+            return -EIO;
+        };
+        let mut framed = Vec::with_capacity(8 + out.len());
+        framed.extend_from_slice(&status.to_le_bytes());
+        framed.extend_from_slice(&(out.len() as u32).to_le_bytes());
+        framed.extend_from_slice(&out);
+        *CTL_BUFFER.get() = framed;
+        1
+    }
+}
+
+pub(crate) fn mc_ctl_svc_call_close(job_id: u32) -> i32 {
+    let _bkl = sync::lock_kernel();
+    unsafe {
+        let Some(job) = STATE.ctl_svc_jobs().remove(&job_id) else {
+            return -EINVAL;
+        };
+        close_ctl_svc_job(job);
+        0
     }
 }
 
@@ -2376,7 +2656,11 @@ pub(crate) fn mc_worker_entry(_arg: i32) -> i32 {
         let ns = STATE.ns();
         scheduler.check_unblocked();
         run_round(scheduler, ns);
-        if scheduler.has_work() { 1 } else { 0 }
+        if scheduler.has_work() {
+            1
+        } else {
+            0
+        }
     }
 }
 

@@ -19,13 +19,27 @@ use crate::HostState;
 /// translates through the `Caller`; `void`/`noreturn` are the unit type (`mc_exit` records
 /// the code and returns — the host's tick loop stops on it).
 macro_rules! host_ty {
-    (cptr) => { i32 };
-    (mptr) => { i32 };
-    (len) => { i32 };
-    (i32) => { i32 };
-    (i64) => { i64 };
-    (void) => { () };
-    (noreturn) => { () };
+    (cptr) => {
+        i32
+    };
+    (mptr) => {
+        i32
+    };
+    (len) => {
+        i32
+    };
+    (i32) => {
+        i32
+    };
+    (i64) => {
+        i64
+    };
+    (void) => {
+        ()
+    };
+    (noreturn) => {
+        ()
+    };
 }
 
 /// `$emit` for the env bridge: one `func_wrap` per import, forwarding to its handler. The
@@ -59,7 +73,7 @@ mod handlers {
 
     // The capability/sink methods resolve through their trait objects (`Box<dyn …>`), so
     // the traits need not be imported here — only the helpers and `HostState`.
-    use crate::{HostState, host_call_read_into, net_read_into, persist_body_into, read_memory};
+    use crate::{host_call_read_into, net_read_into, persist_body_into, read_memory, HostState};
 
     // ── terminal I/O ─────────────────────────────────────────────────────────
     pub fn mc_stdout_write(caller: &mut Caller<'_, HostState>, ptr: i32, len: i32) {
@@ -120,10 +134,20 @@ mod handlers {
         };
         caller.data_mut().net.http_request(&req)
     }
-    pub fn mc_http_response_poll(caller: &mut Caller<'_, HostState>, h: i32, ptr: i32, len: i32) -> i32 {
+    pub fn mc_http_response_poll(
+        caller: &mut Caller<'_, HostState>,
+        h: i32,
+        ptr: i32,
+        len: i32,
+    ) -> i32 {
         net_read_into(caller, ptr, len, |net, buf| net.http_poll(h, buf))
     }
-    pub fn mc_http_response_body(caller: &mut Caller<'_, HostState>, h: i32, ptr: i32, len: i32) -> i32 {
+    pub fn mc_http_response_body(
+        caller: &mut Caller<'_, HostState>,
+        h: i32,
+        ptr: i32,
+        len: i32,
+    ) -> i32 {
         net_read_into(caller, ptr, len, |net, buf| net.http_body(h, buf))
     }
     pub fn mc_http_request_close(caller: &mut Caller<'_, HostState>, h: i32) {
@@ -163,10 +187,20 @@ mod handlers {
         };
         caller.data_mut().host_call.start(&req)
     }
-    pub fn mc_host_call_poll(caller: &mut Caller<'_, HostState>, h: i32, _ptr: i32, _len: i32) -> i32 {
+    pub fn mc_host_call_poll(
+        caller: &mut Caller<'_, HostState>,
+        h: i32,
+        _ptr: i32,
+        _len: i32,
+    ) -> i32 {
         caller.data_mut().host_call.poll(h)
     }
-    pub fn mc_host_call_body(caller: &mut Caller<'_, HostState>, h: i32, ptr: i32, len: i32) -> i32 {
+    pub fn mc_host_call_body(
+        caller: &mut Caller<'_, HostState>,
+        h: i32,
+        ptr: i32,
+        len: i32,
+    ) -> i32 {
         host_call_read_into(caller, ptr, len, |hc, buf| hc.body(h, buf))
     }
     pub fn mc_host_call_close(caller: &mut Caller<'_, HostState>, h: i32) {

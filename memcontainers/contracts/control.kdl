@@ -44,6 +44,13 @@ export "mc_ctl_exec_poll"  group="exec" { arg "job_id" type="u32"; ret "i32"; do
 export "mc_ctl_exec_peek"  group="exec" { arg "job_id" type="u32"; ret "i32"; doc "Copy output captured so far without consuming it." }
 export "mc_ctl_exec_close" group="exec" { arg "job_id" type="u32"; ret "i32"; doc "Release a finished job." }
 
+// ── host-driven resident-service calls ───────────────────────────────────────
+// Trusted operator calls into a resident service. The service receives caller=SYSTEM_CALLER
+// with full caller capability metadata.
+export "mc_ctl_svc_call_start" group="service" { arg "name_ptr" type="u32"; arg "name_len" type="u32"; arg "req_ptr" type="u32"; arg "req_len" type="u32"; ret "i32"; doc "Start a host-control service call using name and request bytes from the scratch buffer; a job id, or negative errno." }
+export "mc_ctl_svc_call_poll"  group="service" { arg "job_id" type="u32"; ret "i32"; doc "Poll a host-control service call. 0 running, 1 done with [status:i32][body_len:u32][body] in the scratch buffer, or negative errno." }
+export "mc_ctl_svc_call_close" group="service" { arg "job_id" type="u32"; ret "i32"; doc "Release a host-control service call job." }
+
 // ── layers / snapshots / quiescence (A8) ─────────────────────────────────────
 export "mc_commit_layer"     group="snapshot" { ret "i32"; doc "Commit the current writable layer into a content-addressed image layer." }
 export "mc_inflight_egress"  group="snapshot" { ret "i32"; doc "Count of in-flight egress operations (a snapshot must wait for 0)." }

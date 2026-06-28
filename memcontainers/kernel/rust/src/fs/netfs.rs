@@ -23,7 +23,7 @@ use alloc::vec::Vec;
 use core::ptr::NonNull;
 
 use crate::net::{HttpReq, NetError, NetFileHandle, WsConn};
-use crate::task::{CAP_NET, Scheduler};
+use crate::task::{Scheduler, CAP_NET};
 use crate::vfs::traits::{
     CallerId, DirEntry, FileHandle, FileSystem, FsError, KPath, Metadata, NodeType, OpenFlags,
     Result,

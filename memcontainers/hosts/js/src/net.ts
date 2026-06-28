@@ -1,4 +1,5 @@
 import { EAGAIN, EMSGSIZE } from "@mc/contracts/constants";
+import type { ConnectionRegistry } from "./connections.js";
 import type { NetCapability } from "./types.js";
 
 /** Flow-control mark for `wsSend` backpressure: accepted sends must fit wholly within the socket's
@@ -76,6 +77,8 @@ export interface HostNetOptions {
   allowlist?: Set<string>;
   /** Consulted for a non-allowlisted host. Absent → deny (default-deny). */
   approver?: NetApprover;
+  /** Host-only credentials keyed by `X-MC-Connection` markers in guest request blobs. */
+  connections?: ConnectionRegistry;
 }
 
 /** Real network over `fetch` (HTTP) and `WebSocket` (WS) — the browser/Bun analogue of Rust `RealNet`
@@ -95,7 +98,9 @@ export class HostNet implements NetCapability {
   constructor(private readonly opts: HostNetOptions = {}) {}
 
   httpRequest(req: Uint8Array): number {
-    const parsed = parseBlob(req);
+    const injected = this.opts.connections ? this.opts.connections.injectHttpRequest(req) : req;
+    if (!injected) return -1;
+    const parsed = parseBlob(injected);
     if (!parsed) return -1;
     const { method, url, headers, body } = parsed;
     const slot: HttpSlot = {
