@@ -122,6 +122,19 @@ pub fn boot_loom_with_net(net: Box<dyn NetCapability>) -> Session {
     Session { host, stdout }
 }
 
+/// Boot the `loom` image with both network and host-call tools installed. Adapter-backed destructive
+/// tools need this exact shape: `/svc/adapters` reaches the network, while `/svc/tools` asks the
+/// host-call permission broker before dispatching a destructive catalog record.
+pub fn boot_loom_with_net_and_tools(net: Box<dyn NetCapability>, tools: MapHostCall) -> Session {
+    let (b, stdout) = builder("_main/memcontainers/images/loom.tar");
+    let host = b
+        .with_net(net)
+        .with_host_call(Box::new(tools))
+        .build()
+        .expect("kernel booted (loom image with net and tools)");
+    Session { host, stdout }
+}
+
 /// Boot the `svc_test` image (loom + the `kv` + `crashloop` example services + generated
 /// /etc/services.d fragments). For the svc-primitive proof: kv reached from the CLI (`kv get`) and Luau
 /// (`sys.svc`), warm across calls, crash-only recovery, oversize survival, and crashloop's bounded

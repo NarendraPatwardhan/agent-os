@@ -7,51 +7,81 @@
 
 use host::{ConnectionRegistry, MapHostCall, RealNet};
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 use std::thread;
 use std::time::Duration;
 
-use crate::{boot_loom, boot_loom_with_net, boot_loom_with_tools};
+use crate::{boot_loom, boot_loom_with_net, boot_loom_with_net_and_tools, boot_loom_with_tools};
 
 // ── smoke: the VM, the trap-unwind, and boot.
 
 fn one_shot_http_server(body: &'static [u8]) -> (String, mpsc::Receiver<String>) {
+    sequence_http_server(vec![body])
+}
+
+fn sequence_http_server(bodies: Vec<&'static [u8]>) -> (String, mpsc::Receiver<String>) {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind local upstream");
     let addr = listener.local_addr().expect("local upstream addr");
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let Ok((mut stream, _)) = listener.accept() else {
-            return;
-        };
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-        let mut raw = Vec::new();
-        let mut buf = [0u8; 1024];
-        loop {
-            match stream.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    raw.extend_from_slice(&buf[..n]);
-                    if raw.windows(4).any(|w| w == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                Err(_) => break,
-            }
+        for body in bodies {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let raw = read_http_request(&mut stream);
+            let _ = tx.send(String::from_utf8_lossy(&raw).into_owned());
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(body);
         }
-        let _ = tx.send(String::from_utf8_lossy(&raw).into_owned());
-        let head = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            body.len()
-        );
-        let _ = stream.write_all(head.as_bytes());
-        let _ = stream.write_all(body);
     });
     (format!("http://{addr}"), rx)
+}
+
+fn read_http_request(stream: &mut TcpStream) -> Vec<u8> {
+    let mut raw = Vec::new();
+    let mut buf = [0u8; 1024];
+    let mut header_end = None;
+    loop {
+        match stream.read(&mut buf) {
+            Ok(0) => return raw,
+            Ok(n) => {
+                raw.extend_from_slice(&buf[..n]);
+                if header_end.is_none() {
+                    header_end = raw.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4);
+                }
+                if let Some(end) = header_end {
+                    let content_length = content_length(&raw[..end]);
+                    if raw.len() >= end + content_length {
+                        return raw;
+                    }
+                }
+            }
+            Err(_) => return raw,
+        }
+    }
+}
+
+fn content_length(head: &[u8]) -> usize {
+    let text = String::from_utf8_lossy(head);
+    for line in text.lines() {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("content-length") {
+            return value.trim().parse().unwrap_or(0);
+        }
+    }
+    0
 }
 
 /// luau evaluates a `-e` one-liner: parse + compile + run bytecode, the script under lua_pcall so the
@@ -667,6 +697,180 @@ print(res.data.tools[1].address)
         !request.to_ascii_lowercase().contains("x-mc-connection"),
         "host marker leaked onto the wire: {request:?}"
     );
+}
+
+/// WHY: GraphQL joins the same `/svc/adapters` plane after Graph/Google: introspection produces
+/// ordinary catalog records, queries invoke through HTTP POST, and mutations are annotated for the
+/// `/svc/tools` approval path before network dispatch.
+#[test]
+fn adapters_compile_graphql_and_tools_call_it() {
+    let introspection = br#"{"data":{"__schema":{
+      "queryType":{"name":"Query"},
+      "mutationType":{"name":"Mutation"},
+      "types":[
+        {"kind":"OBJECT","name":"Query","fields":[
+          {"name":"viewer","description":"Viewer by id","args":[
+            {"name":"id","description":"User id","type":{"kind":"NON_NULL","ofType":{"kind":"SCALAR","name":"ID"}}}
+          ]}
+        ]},
+        {"kind":"OBJECT","name":"Mutation","fields":[
+          {"name":"updateName","description":"Update display name","args":[
+            {"name":"name","type":{"kind":"NON_NULL","ofType":{"kind":"SCALAR","name":"String"}}}
+          ]}
+        ]}
+      ]}}}"#;
+    let (base_url, seen) = sequence_http_server(vec![
+        introspection,
+        br#"{"data":{"viewer":{"login":"ada"}}}"#,
+        br#"{"data":{"updateName":{"ok":true}}}"#,
+    ]);
+    let approvals = Arc::new(Mutex::new(0usize));
+    let mut host_calls = MapHostCall::new();
+    {
+        let approvals = Arc::clone(&approvals);
+        host_calls.register_raw(
+            "/svc/tools/permission",
+            Box::new(move |body: &[u8]| {
+                let prompt = String::from_utf8_lossy(body);
+                assert!(prompt.contains("\"kind\":\"tool_approval\""));
+                assert!(prompt.contains("\"approvalDescription\":\"mutation updateName\""));
+                *approvals.lock().unwrap() += 1;
+                Ok(br#"{"allow":true}"#.to_vec())
+            }),
+        );
+    }
+    let mut s = boot_loom_with_net_and_tools(Box::new(RealNet::new()), host_calls);
+    s.host.mkdir("/etc/tools").ok();
+    let endpoint = format!("{base_url}/graphql");
+    let script = format!(
+        r#"local sys = require("sys")
+local json = require("json")
+local fd = assert(sys.svc.connect("adapters"))
+local raw = assert(sys.svc.call(fd, json.encode({{
+  op = "compile",
+  format = "graphql",
+  endpoint = "{endpoint}",
+  integration = "gql",
+  owner = "org",
+  connection = "main",
+  auth = "none",
+}})))
+assert(sys.svc.close(fd))
+local res = assert(json.decode(raw))
+assert(res.ok, res.err and res.err.message)
+assert(#res.data.diagnostics == 0, json.encode(res.data.diagnostics))
+assert(#res.data.tools == 2, tostring(#res.data.tools))
+local text = json.encode({{ tools = res.data.tools }})
+assert(string.find(text, "requires_approval", 1, true))
+assert(sys.fs.write("/etc/tools/catalog.json", text))
+print(res.data.tools[1].address)
+print(res.data.tools[2].address)
+"#
+    );
+    s.host
+        .write_file("/demo/graphql_compile.luau", script.as_bytes())
+        .expect("seed GraphQL compile script");
+
+    let compile = s.run_for_output("luau /demo/graphql_compile.luau");
+    assert!(
+        compile.contains("gql.org.main.query.viewer")
+            && compile.contains("gql.org.main.mutation.updateName"),
+        "GraphQL compiler should emit query and mutation tools; got {compile:?}"
+    );
+    let query = s.run_for_output("tools call gql.org.main.query.viewer '{\"id\":\"ada\"}'");
+    assert!(
+        query.contains("\"ok\":true") && query.contains("\"login\":\"ada\""),
+        "GraphQL query tool should return upstream JSON; got {query:?}"
+    );
+    let mutation = s.run_for_output("tools call gql.org.main.mutation.updateName '{\"name\":\"Ada\"}'");
+    assert!(
+        mutation.contains("\"ok\":true") && mutation.contains("\"updateName\":{\"ok\":true}"),
+        "GraphQL mutation tool should run after approval; got {mutation:?}"
+    );
+    assert_eq!(*approvals.lock().unwrap(), 1);
+
+    let introspection_req = seen.recv().expect("GraphQL introspection request");
+    assert!(introspection_req.contains("__schema"));
+    let query_req = seen.recv().expect("GraphQL query request");
+    assert!(query_req.contains("query_viewer") && query_req.contains("\"id\":\"ada\""));
+    let mutation_req = seen.recv().expect("GraphQL mutation request");
+    assert!(mutation_req.contains("mutation_updateName") && mutation_req.contains("\"name\":\"Ada\""));
+}
+
+/// WHY: remote MCP is additive to the same adapter service: discovery performs the MCP HTTP handshake
+/// and `tools/list`, catalog records keep MCP names/hints, and destructive MCP tools run only after
+/// `/svc/tools` approval.
+#[test]
+fn adapters_compile_remote_mcp_and_tools_call_it() {
+    let (base_url, seen) = sequence_http_server(vec![
+        br#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","capabilities":{}}}"#,
+        br#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"repo.delete","description":"Delete docs","inputSchema":{"type":"object","required":["repo"],"properties":{"repo":{"type":"string"}}},"annotations":{"title":"Delete docs","destructiveHint":true}}]}}"#,
+        br#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"deleted"}]}}"#,
+    ]);
+    let approvals = Arc::new(Mutex::new(0usize));
+    let mut host_calls = MapHostCall::new();
+    {
+        let approvals = Arc::clone(&approvals);
+        host_calls.register_raw(
+            "/svc/tools/permission",
+            Box::new(move |body: &[u8]| {
+                let prompt = String::from_utf8_lossy(body);
+                assert!(prompt.contains("\"approvalDescription\":\"Delete docs\""));
+                *approvals.lock().unwrap() += 1;
+                Ok(br#"{"allow":true}"#.to_vec())
+            }),
+        );
+    }
+    let mut s = boot_loom_with_net_and_tools(Box::new(RealNet::new()), host_calls);
+    s.host.mkdir("/etc/tools").ok();
+    let endpoint = format!("{base_url}/mcp");
+    let script = format!(
+        r#"local sys = require("sys")
+local json = require("json")
+local fd = assert(sys.svc.connect("adapters"))
+local raw = assert(sys.svc.call(fd, json.encode({{
+  op = "compile",
+  format = "mcp-remote",
+  endpoint = "{endpoint}",
+  integration = "deepwiki",
+  owner = "org",
+  connection = "main",
+  auth = "none",
+}})))
+assert(sys.svc.close(fd))
+local res = assert(json.decode(raw))
+assert(res.ok, res.err and res.err.message)
+assert(#res.data.diagnostics == 0, json.encode(res.data.diagnostics))
+assert(#res.data.tools == 1, tostring(#res.data.tools))
+local text = json.encode({{ tools = res.data.tools }})
+assert(string.find(text, "repo.delete", 1, true))
+assert(string.find(text, "requires_approval", 1, true))
+assert(sys.fs.write("/etc/tools/catalog.json", text))
+print(res.data.tools[1].address)
+"#
+    );
+    s.host
+        .write_file("/demo/mcp_compile.luau", script.as_bytes())
+        .expect("seed MCP compile script");
+
+    assert_eq!(
+        s.run_for_output("luau /demo/mcp_compile.luau"),
+        "deepwiki.org.main.repo-delete\r\n"
+    );
+    let out = s.run_for_output("tools call deepwiki.org.main.repo-delete '{\"repo\":\"acme/docs\"}'");
+    assert!(
+        out.contains("\"ok\":true") && out.contains("\"text\":\"deleted\""),
+        "remote MCP tool should return tools/call result; got {out:?}"
+    );
+    assert_eq!(*approvals.lock().unwrap(), 1);
+
+    let init = seen.recv().expect("MCP initialize request");
+    assert!(init.contains("\"method\":\"initialize\""));
+    let list = seen.recv().expect("MCP tools/list request");
+    assert!(list.contains("\"method\":\"tools/list\""));
+    let call = seen.recv().expect("MCP tools/call request");
+    assert!(call.contains("\"method\":\"tools/call\""));
+    assert!(call.contains("\"name\":\"repo.delete\"") && call.contains("\"repo\":\"acme/docs\""));
 }
 
 /// WHY: `/svc/adapters` is full-tier because invocation reaches host egress, so it must not become a

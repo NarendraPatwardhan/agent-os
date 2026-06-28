@@ -5,7 +5,7 @@
 //! so serde/YAML/schema costs are paid once per VM. The binary intentionally has no supported CLI face.
 
 use mc_parse::openapi::{self, CompileOptions, SourceFormat};
-use mc_parse::{google, microsoft, registry};
+use mc_parse::{google, graphql, mcp, microsoft, registry};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, VecDeque};
@@ -41,6 +41,8 @@ struct Request {
     preset_ids: Option<Vec<String>>,
     #[serde(default)]
     base_url: Option<String>,
+    #[serde(default)]
+    endpoint: Option<String>,
     #[serde(default)]
     adapter: Option<String>,
     #[serde(default)]
@@ -141,7 +143,7 @@ fn handle_call(blob: &[u8], caller: u32, caller_caps: u32) -> Response {
     match req.op.as_str() {
         "registry.list" => registry_list(),
         "registry.get" => registry_get(req),
-        "compile" => compile(req),
+        "compile" => compile(req, caller, caller_caps),
         "invoke" => {
             if !can_call_network(caller, caller_caps) {
                 return json_response(error(
@@ -177,11 +179,13 @@ fn registry_get(req: Request) -> Response {
     }
 }
 
-fn compile(req: Request) -> Response {
+fn compile(req: Request, caller: u32, caller_caps: u32) -> Response {
     match req.format.as_deref() {
         Some("openapi") => compile_openapi(req),
         Some("microsoft-graph") | Some("msgraph") => compile_microsoft_graph(req),
         Some("google-discovery") => compile_google_discovery(req),
+        Some("graphql") => compile_graphql(req, caller, caller_caps),
+        Some("mcp-remote") | Some("mcp") => compile_mcp_remote(req, caller, caller_caps),
         Some(_) => json_response(error("unsupported_format", "unsupported adapter format")),
         None => json_response(error("bad_request", "compile requires format")),
     }
@@ -272,6 +276,144 @@ fn compile_google_discovery(req: Request) -> Response {
     })))
 }
 
+fn compile_graphql(req: Request, caller: u32, caller_caps: u32) -> Response {
+    let endpoint = match adapter_endpoint(&req, "graphql") {
+        Ok(endpoint) => endpoint,
+        Err(message) => return json_response(error("bad_request", message)),
+    };
+    let integration = req
+        .integration
+        .clone()
+        .or_else(|| req.id.clone())
+        .unwrap_or_else(|| "graphql".to_string());
+    let opts = graphql::CompileOptions {
+        integration,
+        owner: req.owner.clone().unwrap_or_else(|| "org".to_string()),
+        connection: req.connection.clone().unwrap_or_else(|| "main".to_string()),
+        auth: req.auth.clone().unwrap_or_else(|| "none".to_string()),
+        endpoint: endpoint.clone(),
+    };
+    let source = match read_source(&req) {
+        Ok(source) => source,
+        Err(_) => {
+            if !can_call_network(caller, caller_caps) {
+                return json_response(error(
+                    "permission_denied",
+                    "GraphQL introspection requires CAP_NET",
+                ));
+            }
+            match graphql_introspect(&endpoint, &connection_ref_value(&opts)) {
+                Ok(source) => source,
+                Err(message) => return json_response(error("discovery_failed", message)),
+            }
+        }
+    };
+    let out = graphql::compile(&source, &opts);
+    json_response(ok(json!({
+        "tools": out.tools,
+        "diagnostics": out.diagnostics,
+    })))
+}
+
+fn compile_mcp_remote(req: Request, caller: u32, caller_caps: u32) -> Response {
+    let endpoint = match adapter_endpoint(&req, "remote MCP") {
+        Ok(endpoint) => endpoint,
+        Err(message) => return json_response(error("bad_request", message)),
+    };
+    let integration = req
+        .integration
+        .clone()
+        .or_else(|| req.id.clone())
+        .unwrap_or_else(|| "mcp".to_string());
+    let opts = mcp::CompileOptions {
+        integration,
+        owner: req.owner.clone().unwrap_or_else(|| "org".to_string()),
+        connection: req.connection.clone().unwrap_or_else(|| "main".to_string()),
+        auth: req.auth.clone().unwrap_or_else(|| "none".to_string()),
+        endpoint: endpoint.clone(),
+    };
+    let source = match read_source(&req) {
+        Ok(source) => source,
+        Err(_) => {
+            if !can_call_network(caller, caller_caps) {
+                return json_response(error(
+                    "permission_denied",
+                    "remote MCP discovery requires CAP_NET",
+                ));
+            }
+            match mcp_list_tools(&endpoint, &connection_ref_value(&opts)) {
+                Ok(source) => source,
+                Err(message) => return json_response(error("discovery_failed", message)),
+            }
+        }
+    };
+    let out = mcp::compile(&source, &opts);
+    json_response(ok(json!({
+        "tools": out.tools,
+        "diagnostics": out.diagnostics,
+    })))
+}
+
+fn adapter_endpoint(req: &Request, label: &'static str) -> Result<String, String> {
+    req.endpoint
+        .clone()
+        .or_else(|| req.base_url.clone())
+        .or_else(|| {
+            req.id.as_deref()
+                .and_then(registry::find)
+                .and_then(|entry| entry.endpoint.or(entry.url))
+                .map(str::to_string)
+        })
+        .filter(|endpoint| !endpoint.trim().is_empty())
+        .ok_or_else(|| format!("{label} compile requires endpoint"))
+}
+
+trait ConnectionOptions {
+    fn integration(&self) -> &str;
+    fn owner(&self) -> &str;
+    fn connection(&self) -> &str;
+    fn auth(&self) -> &str;
+}
+
+impl ConnectionOptions for graphql::CompileOptions {
+    fn integration(&self) -> &str {
+        &self.integration
+    }
+    fn owner(&self) -> &str {
+        &self.owner
+    }
+    fn connection(&self) -> &str {
+        &self.connection
+    }
+    fn auth(&self) -> &str {
+        &self.auth
+    }
+}
+
+impl ConnectionOptions for mcp::CompileOptions {
+    fn integration(&self) -> &str {
+        &self.integration
+    }
+    fn owner(&self) -> &str {
+        &self.owner
+    }
+    fn connection(&self) -> &str {
+        &self.connection
+    }
+    fn auth(&self) -> &str {
+        &self.auth
+    }
+}
+
+fn connection_ref_value(opts: &impl ConnectionOptions) -> Value {
+    json!({
+        "integration": opts.integration(),
+        "owner": opts.owner(),
+        "name": opts.connection(),
+        "auth": opts.auth(),
+    })
+}
+
 fn source_format(req: &Request) -> Result<SourceFormat, &'static str> {
     match req.source_format.as_deref().unwrap_or("json") {
         "json" => Ok(SourceFormat::Json),
@@ -296,10 +438,51 @@ fn read_source(req: &Request) -> Result<String, String> {
     Err("compile requires source or source_path".to_string())
 }
 
+fn graphql_introspect(endpoint: &str, connection_ref: &Value) -> Result<String, String> {
+    http_json_post(
+        endpoint,
+        &json!({ "query": graphql::INTROSPECTION_QUERY }),
+        connection_ref,
+    )
+}
+
+fn mcp_list_tools(endpoint: &str, connection_ref: &Value) -> Result<String, String> {
+    let initialize = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-03-26",
+            "capabilities": {},
+            "clientInfo": {
+                "name": "agent-os-adapters",
+                "version": "0"
+            }
+        }
+    });
+    let _ = http_json_post(endpoint, &initialize, connection_ref)?;
+    http_json_post(
+        endpoint,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {}
+        }),
+        connection_ref,
+    )
+}
+
 fn invoke(req: Request) -> Response {
-    if req.adapter.as_deref() != Some("openapi") {
-        return json_response(error("unsupported_adapter", "unsupported adapter"));
+    match req.adapter.as_deref() {
+        Some("openapi") => invoke_openapi(req),
+        Some("graphql") => invoke_graphql(req),
+        Some("mcp-remote") | Some("mcp") => invoke_mcp_remote(req),
+        _ => json_response(error("unsupported_adapter", "unsupported adapter")),
     }
+}
+
+fn invoke_openapi(req: Request) -> Response {
     let Some(binding) = req.binding else {
         return json_response(error("bad_request", "invoke requires binding"));
     };
@@ -314,6 +497,120 @@ fn invoke(req: Request) -> Response {
             json_response(error("permission_denied", "host request denied"))
         }
         Err(_) => json_response(error("host_call_failed", "host request failed")),
+    }
+}
+
+fn invoke_graphql(req: Request) -> Response {
+    let Some(binding) = req.binding else {
+        return json_response(error("bad_request", "invoke requires binding"));
+    };
+    let endpoint = match str_field(&binding, "endpoint") {
+        Ok(endpoint) => endpoint,
+        Err(message) => return json_response(error("bad_request", message)),
+    };
+    let document = match str_field(&binding, "document") {
+        Ok(document) => document,
+        Err(message) => return json_response(error("bad_request", message)),
+    };
+    let mut body = Map::new();
+    body.insert("query".to_string(), Value::String(document.to_string()));
+    if let Some(operation) = binding.get("operationName").and_then(Value::as_str) {
+        body.insert(
+            "operationName".to_string(),
+            Value::String(operation.to_string()),
+        );
+    }
+    body.insert(
+        "variables".to_string(),
+        req.args.unwrap_or_else(|| json!({})),
+    );
+    let connection = binding
+        .get("connection_ref")
+        .cloned()
+        .unwrap_or_else(|| json!({"auth":"none"}));
+    match http_json_post(endpoint, &Value::Object(body), &connection) {
+        Ok(text) => Response::Bytes(text.into_bytes()),
+        Err(message) => json_response(error("host_call_failed", message)),
+    }
+}
+
+fn invoke_mcp_remote(req: Request) -> Response {
+    let Some(binding) = req.binding else {
+        return json_response(error("bad_request", "invoke requires binding"));
+    };
+    let endpoint = match str_field(&binding, "endpoint") {
+        Ok(endpoint) => endpoint,
+        Err(message) => return json_response(error("bad_request", message)),
+    };
+    let tool_name = match str_field(&binding, "tool_name") {
+        Ok(name) => name,
+        Err(message) => return json_response(error("bad_request", message)),
+    };
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": tool_name,
+            "arguments": req.args.unwrap_or_else(|| json!({})),
+        }
+    });
+    let connection = binding
+        .get("connection_ref")
+        .cloned()
+        .unwrap_or_else(|| json!({"auth":"none"}));
+    match http_json_post(endpoint, &body, &connection) {
+        Ok(text) => match serde_json::from_str::<Value>(&text) {
+            Ok(resp) => {
+                if let Some(error_value) = resp.get("error") {
+                    json_response(error("mcp_error", error_value.to_string()))
+                } else if let Some(result) = resp.get("result") {
+                    json_response(ok(result.clone()))
+                } else {
+                    json_response(error("mcp_error", "MCP response had no result"))
+                }
+            }
+            Err(_) => json_response(error("mcp_error", "MCP response was not JSON")),
+        },
+        Err(message) => json_response(error("host_call_failed", message)),
+    }
+}
+
+fn http_json_post(endpoint: &str, body: &Value, connection_ref: &Value) -> Result<String, String> {
+    let body_text = serde_json::to_string(body).map_err(|e| e.to_string())?;
+    let mut headers = Map::new();
+    headers.insert(
+        "Content-Type".to_string(),
+        Value::String("application/json".to_string()),
+    );
+    if let Some(connection) = connection_marker(&json!({ "connection_ref": connection_ref }))? {
+        headers.insert(CONNECTION_HEADER.to_string(), Value::String(connection));
+    }
+    let request = serialize_http_request("POST", endpoint, &headers, Some(&body_text));
+    let fd = match rt::http_request(&request) {
+        Ok(fd) => fd,
+        Err(e) if e == rt::EPERM => return Err("host request denied".to_string()),
+        Err(_) => return Err("host request failed".to_string()),
+    };
+    let status = rt::http_status(fd).unwrap_or(200);
+    let out = read_all_fd(fd);
+    let _ = rt::close(fd);
+    if status >= 400 {
+        return Err(format!("host returned HTTP {status}"));
+    }
+    let bytes = out.map_err(|_| "host response failed".to_string())?;
+    String::from_utf8(bytes).map_err(|_| "host response was not UTF-8".to_string())
+}
+
+fn read_all_fd(fd: i32) -> Result<Vec<u8>, i32> {
+    let mut out = Vec::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        match rt::read(fd, &mut buf) {
+            Ok(0) => return Ok(out),
+            Ok(n) => out.extend_from_slice(&buf[..n]),
+            Err(e) => return Err(e),
+        }
     }
 }
 

@@ -5,6 +5,8 @@
 //! intentionally `std + serde`; these formats are schema-heavy data languages, not kernel substrate.
 
 pub mod google;
+pub mod graphql;
+pub mod mcp;
 pub mod microsoft;
 pub mod openapi;
 pub mod registry;
