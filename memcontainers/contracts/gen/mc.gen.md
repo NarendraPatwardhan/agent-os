@@ -53,7 +53,7 @@
 | 46 | `mc_sys_http_request` | HttpRequest | req_ptr: u32, req_len: u32, ret_fd: u32 | i32 | Start an arbitrary HTTP request from the blob at req_ptr; readable result fd to ret_fd. |
 | 47 | `mc_sys_http_status` | HttpStatus | fd: i32, ret_status: u32 | i32 | Write the HTTP status code of request fd to ret_status (once headers arrive). |
 | 48 | `mc_sys_ws_open` | WsOpen | url_ptr: u32, url_len: u32, ret_fd: u32 | i32 | Open a WebSocket to url (host does the handshake + TLS); a duplex fd to ret_fd. |
-| 49 | `mc_sys_host_call` | HostCall | req_ptr: u32, req_len: u32, ret_fd: u32 | i32 | Invoke a host-resident function (the mc-tool shim, host-backed mounts); readable result fd to ret_fd. |
+| 49 | `mc_sys_host_call` | HostCall | req_ptr: u32, req_len: u32, ret_fd: u32 | i32 | Invoke a host-resident function (the tool broker, host-backed mounts); readable result fd to ret_fd. |
 | 50 | `mc_sys_time_monotonic` | TimeMonotonic | ret: u32 | i32 | Write a monotonic timestamp (ms) to ret (CAP_AMBIENT). |
 | 51 | `mc_sys_time_realtime` | TimeRealtime | ret: u32 | i32 | Write wall-clock ms since the Unix epoch to ret; can jump (NTP) (CAP_AMBIENT). |
 | 52 | `mc_sys_sleep_ms` | SleepMs | ms: i32 | i32 | Park this task for ms milliseconds. |

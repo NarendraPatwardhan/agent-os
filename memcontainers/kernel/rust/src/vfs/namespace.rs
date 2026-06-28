@@ -371,6 +371,12 @@ impl Namespace {
         Ok(merged.into_values().collect())
     }
 
+    /// Convenience listing as the namespace's owner. Boot-time kernel helpers use the root namespace
+    /// this way, mirroring [`open`].
+    pub fn readdir_owner(&self, path: &KPath) -> Result<Vec<DirEntry>> {
+        self.readdir(self.owner, path)
+    }
+
     pub fn mkdir(&self, caller: CallerId, path: &KPath) -> Result<()> {
         let r = self.resolve(path).ok_or(FsError::NotFound)?;
         if r.read_only {

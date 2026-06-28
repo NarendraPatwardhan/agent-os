@@ -31,65 +31,124 @@ const H0: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
 
+/// Incremental SHA-256 state. Used by streamers that cannot afford to materialize the whole byte stream
+/// just to name or verify it.
+pub struct Sha256 {
+    h: [u32; 8],
+    len: u64,
+    buf: [u8; 64],
+    buf_len: usize,
+}
+
+impl Sha256 {
+    pub fn new() -> Self {
+        Self {
+            h: H0,
+            len: 0,
+            buf: [0; 64],
+            buf_len: 0,
+        }
+    }
+
+    pub fn update(&mut self, mut data: &[u8]) {
+        self.len = self.len.wrapping_add(data.len() as u64);
+        if self.buf_len > 0 {
+            let take = (64 - self.buf_len).min(data.len());
+            self.buf[self.buf_len..self.buf_len + take].copy_from_slice(&data[..take]);
+            self.buf_len += take;
+            data = &data[take..];
+            if self.buf_len == 64 {
+                compress(&mut self.h, &self.buf);
+                self.buf_len = 0;
+            }
+        }
+        while data.len() >= 64 {
+            let block: &[u8; 64] = data[..64].try_into().unwrap();
+            compress(&mut self.h, block);
+            data = &data[64..];
+        }
+        if !data.is_empty() {
+            self.buf[..data.len()].copy_from_slice(data);
+            self.buf_len = data.len();
+        }
+    }
+
+    pub fn finalize(mut self) -> [u8; 32] {
+        let bit_len = self.len.wrapping_mul(8);
+        self.buf[self.buf_len] = 0x80;
+        self.buf_len += 1;
+        if self.buf_len > 56 {
+            for b in &mut self.buf[self.buf_len..] {
+                *b = 0;
+            }
+            compress(&mut self.h, &self.buf);
+            self.buf_len = 0;
+        }
+        for b in &mut self.buf[self.buf_len..56] {
+            *b = 0;
+        }
+        self.buf[56..64].copy_from_slice(&bit_len.to_be_bytes());
+        compress(&mut self.h, &self.buf);
+
+        let mut out = [0u8; 32];
+        for (i, word) in self.h.iter().enumerate() {
+            out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
+        }
+        out
+    }
+}
+
+impl Default for Sha256 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// The SHA-256 digest of `data`.
 pub fn sha256(data: &[u8]) -> [u8; 32] {
-    let mut h = H0;
+    let mut h = Sha256::new();
+    h.update(data);
+    h.finalize()
+}
 
-    // Pre-processing: append 0x80, pad to 56 mod 64, then the 64-bit big-endian bit length.
-    let bit_len = (data.len() as u64).wrapping_mul(8);
-    let mut msg: Vec<u8> = Vec::with_capacity(data.len() + 72);
-    msg.extend_from_slice(data);
-    msg.push(0x80);
-    while msg.len() % 64 != 56 {
-        msg.push(0);
-    }
-    msg.extend_from_slice(&bit_len.to_be_bytes());
-
+fn compress(h: &mut [u32; 8], block: &[u8; 64]) {
     let mut w = [0u32; 64];
-    for block in msg.chunks_exact(64) {
-        for (i, word) in w.iter_mut().take(16).enumerate() {
-            let j = i * 4;
-            *word = u32::from_be_bytes([block[j], block[j + 1], block[j + 2], block[j + 3]]);
-        }
-        for i in 16..64 {
-            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16].wrapping_add(s0).wrapping_add(w[i - 7]).wrapping_add(s1);
-        }
-
-        let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh) =
-            (h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
-        for i in 0..64 {
-            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-            let ch = (e & f) ^ ((!e) & g);
-            let t1 = hh.wrapping_add(s1).wrapping_add(ch).wrapping_add(K[i]).wrapping_add(w[i]);
-            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-            let maj = (a & b) ^ (a & c) ^ (b & c);
-            let t2 = s0.wrapping_add(maj);
-            hh = g;
-            g = f;
-            f = e;
-            e = d.wrapping_add(t1);
-            d = c;
-            c = b;
-            b = a;
-            a = t1.wrapping_add(t2);
-        }
-        h[0] = h[0].wrapping_add(a);
-        h[1] = h[1].wrapping_add(b);
-        h[2] = h[2].wrapping_add(c);
-        h[3] = h[3].wrapping_add(d);
-        h[4] = h[4].wrapping_add(e);
-        h[5] = h[5].wrapping_add(f);
-        h[6] = h[6].wrapping_add(g);
-        h[7] = h[7].wrapping_add(hh);
+    for (i, word) in w.iter_mut().take(16).enumerate() {
+        let j = i * 4;
+        *word = u32::from_be_bytes([block[j], block[j + 1], block[j + 2], block[j + 3]]);
+    }
+    for i in 16..64 {
+        let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+        let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16].wrapping_add(s0).wrapping_add(w[i - 7]).wrapping_add(s1);
     }
 
-    let mut out = [0u8; 32];
-    for (i, word) in h.iter().enumerate() {
-        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
+    let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh) =
+        (h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
+    for i in 0..64 {
+        let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+        let ch = (e & f) ^ ((!e) & g);
+        let t1 = hh.wrapping_add(s1).wrapping_add(ch).wrapping_add(K[i]).wrapping_add(w[i]);
+        let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+        let maj = (a & b) ^ (a & c) ^ (b & c);
+        let t2 = s0.wrapping_add(maj);
+        hh = g;
+        g = f;
+        f = e;
+        e = d.wrapping_add(t1);
+        d = c;
+        c = b;
+        b = a;
+        a = t1.wrapping_add(t2);
     }
-    out
+    h[0] = h[0].wrapping_add(a);
+    h[1] = h[1].wrapping_add(b);
+    h[2] = h[2].wrapping_add(c);
+    h[3] = h[3].wrapping_add(d);
+    h[4] = h[4].wrapping_add(e);
+    h[5] = h[5].wrapping_add(f);
+    h[6] = h[6].wrapping_add(g);
+    h[7] = h[7].wrapping_add(hh);
 }
 
 /// Lowercase hex of arbitrary bytes.
@@ -261,6 +320,22 @@ mod tests {
         assert!(verify(bytes, &good.to_uppercase())); // case-insensitive
         assert!(!verify(bytes, &sha256_hex(b"other")));
         assert!(!verify(b"tampered", &good));
+    }
+
+    #[test]
+    fn sha256_incremental_matches_one_shot() {
+        let parts: [&[u8]; 5] = [
+            b"The quick ",
+            b"brown fox ",
+            b"jumps over ",
+            b"the lazy ",
+            b"dog",
+        ];
+        let mut h = Sha256::new();
+        for part in parts {
+            h.update(part);
+        }
+        assert_eq!(hex(&h.finalize()), sha256_hex(b"The quick brown fox jumps over the lazy dog"));
     }
 
     #[test]

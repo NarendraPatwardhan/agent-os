@@ -217,15 +217,22 @@ export interface ToolContext {
   fs: VmFs;
 }
 
-/** A host-resident tool a guest can invoke via `mc-tool <name> <json>`. The
- *  `run` handler executes host-side (in the consumer's process for the embedded
- *  backend) and receives the parsed JSON args plus a VM context. Build these
- *  with {@link tool} / {@link kit} for zod-typed input. */
+/** A host-resident tool a guest can invoke through `/svc/tools`. The `name` is the host-call binding
+ *  key; `address` is the optional catalog address exposed to in-VM discovery. The `run` handler
+ *  executes host-side and receives parsed JSON args plus a VM context. */
 export interface ToolDefinition {
+  /** Host-call binding key. Must be non-empty, must not start with `/`, and must not contain control
+   *  characters; `/...` is reserved for raw host-backed mount handlers. */
   name: string;
+  /** Full catalog address. Defaults to `host.org.main.<normalized name>`. */
+  address?: string;
   description?: string;
   /** JSON-Schema for the input args (produced by {@link tool} from a zod schema). */
   input?: JsonSchema;
+  /** Optional JSON-Schema for the output value. */
+  output?: JsonSchema;
+  /** Tool-plane annotations such as requires_approval/read_only. */
+  annotations?: Record<string, unknown>;
   /** Receives the parsed JSON args and a host-side VM context; returns a string
    *  or any JSON-able value. */
   run: (input: Record<string, unknown>, ctx: ToolContext) => Promise<unknown> | unknown;

@@ -30,12 +30,12 @@ use core::cell::{RefCell, UnsafeCell};
 
 use fs::ProcFs;
 use shell::{
-    Executor, OutputCapture, Pipeline, PipelineSeq, Sep, parse_line, reap_finished, run_round,
-    submit_pipeline, submit_pipeline_captured,
+    parse_line, reap_finished, run_round, submit_pipeline, submit_pipeline_captured, Executor,
+    OutputCapture, Pipeline, PipelineSeq, Sep,
 };
 use task::{Scheduler, TaskId, TaskState};
 use vfs::{KPath, Namespace, NodeType, OpenFlags};
-use wasm::abi::{EAGAIN, EINVAL, EIO, SERVICE_MARKER, SIGHUP, SIGINT, SIGTSTP, errno_from_fs};
+use wasm::abi::{errno_from_fs, EAGAIN, EINVAL, EIO, SERVICE_MARKER, SIGHUP, SIGINT, SIGTSTP};
 
 // ---------- ForegroundJob (the rescue shell) ----------
 
@@ -736,7 +736,7 @@ fn init_system() {
                 // later, after the grants below are recorded.
                 boot_login_shell();
 
-                // THEN activate eager resident services from /etc/services.json (each runs its svc_serve
+                // THEN activate eager resident services from /etc/services.d fragments (each runs its svc_serve
                 // loop). They take pid 2+, and their grant `name → pid` is recorded here — before any user
                 // task actually runs — so a first connect still finds them registered (or briefly blocks).
                 activate_services();
@@ -915,27 +915,42 @@ unsafe fn try_guest_login_shell() -> bool {
 // `constants.kdl → service-marker`, imported above via `wasm::abi` — one source for the kernel and
 // every service binary, Rust and Zig (codex #5).
 
-/// Look up a declared service's binary path in `/etc/services.json`. `None` if the manifest is
-/// absent/unreadable/malformed, or the name is not declared there. A manifest entry is `name → {
-/// binary, eager? }`; the tier is deliberately NOT there — the binary's own `mc_tier` is the single
-/// source of truth, so a manifest can never widen the privilege a binary declared it needs. (The
-/// `eager` flag is read by [`activate_services`] at boot; lazy activation needs only the path.)
-unsafe fn lookup_service_binary(name: &str) -> Option<String> {
+struct ServiceSpec {
+    binary: String,
+    eager: bool,
+}
+
+/// Look up a declared service's fragment at `/etc/services.d/<name>.json`. `None` if the fragment is
+/// absent/unreadable/malformed. A fragment is `{ binary, eager? }`; the tier is deliberately NOT there
+/// — the binary's own `mc_tier` is the single source of truth, so a fragment can never widen the
+/// privilege a binary declared it needs.
+unsafe fn lookup_service_spec(name: &str) -> Option<ServiceSpec> {
     unsafe {
         if !fs::servicefs::valid_service_name(name) {
             return None;
         }
-        let manifest = read_kernel_file(STATE.ns(), "/etc/services.json")?;
+        let manifest = read_kernel_file(STATE.ns(), &format!("/etc/services.d/{name}.json"))?;
         let text = core::str::from_utf8(&manifest).ok()?;
         let doc = json::parse(text).ok()?;
-        let services = doc.as_obj()?;
-        let (_, spec) = services.iter().find(|(n, _)| n == name)?;
-        Some(
-            spec.get("binary")
-                .and_then(|b| b.as_str())
-                .map(String::from)
-                .unwrap_or_else(|| format!("/bin/{name}")),
-        )
+        let spec = doc.as_obj()?;
+        let binary = JsonObj(spec)
+            .get("binary")
+            .and_then(|b| b.as_str())
+            .map(String::from)
+            .unwrap_or_else(|| format!("/bin/{name}"));
+        let eager = JsonObj(spec)
+            .get("eager")
+            .and_then(|e| e.as_bool())
+            .unwrap_or(false);
+        Some(ServiceSpec { binary, eager })
+    }
+}
+
+struct JsonObj<'a>(&'a [(String, json::Json)]);
+
+impl<'a> JsonObj<'a> {
+    fn get(&self, key: &str) -> Option<&'a json::Json> {
+        self.0.iter().find(|(k, _)| k == key).map(|(_, v)| v)
     }
 }
 
@@ -998,48 +1013,40 @@ unsafe fn spawn_service(name: &str, binary: &str) -> Option<task::TaskId> {
 }
 
 /// EAGER service activation at boot: spawn each service marked `"eager": true` in
-/// `/etc/services.json`. Lazy services (the default) are instead spawned on their first
+/// `/etc/services.d/<name>.json`. Lazy services (the default) are instead spawned on their first
 /// `svc_connect` ([`activate_service_lazily`]), so a flavor pays a service's cold start only when
-/// something actually uses it. An absent/malformed manifest means no eager services — boot continues.
+/// something actually uses it. Absent/malformed fragments are ignored — boot continues.
 unsafe fn activate_services() {
     unsafe {
-        let Some(manifest) = read_kernel_file(STATE.ns(), "/etc/services.json") else {
+        let Some(mut names) = read_kernel_dir(STATE.ns(), "/etc/services.d") else {
             return;
         };
-        let Ok(text) = core::str::from_utf8(&manifest) else {
-            return;
-        };
-        let Ok(doc) = json::parse(text) else {
-            return;
-        };
-        let Some(services) = doc.as_obj() else {
-            return;
-        };
-        for (name, spec) in services {
+        names.sort();
+        for file in names {
+            let Some(name) = file.strip_suffix(".json") else {
+                continue;
+            };
             if !fs::servicefs::valid_service_name(name) {
-                continue; // a manifest key that isn't a valid service name can't match any binary
+                continue; // a fragment name that isn't a valid service name can't match any binary
             }
-            if !spec.get("eager").and_then(|e| e.as_bool()).unwrap_or(false) {
-                continue; // lazy (default): activated on first connect, not at boot
+            let Some(spec) = lookup_service_spec(name) else {
+                continue;
+            };
+            if spec.eager {
+                spawn_service(name, &spec.binary);
             }
-            let binary = spec
-                .get("binary")
-                .and_then(|b| b.as_str())
-                .map(String::from)
-                .unwrap_or_else(|| format!("/bin/{name}"));
-            spawn_service(name, &binary);
         }
     }
 }
 
 /// Lazily (re-)activate a service on its first `svc_connect` (spawn-on-connect): look it up in
-/// `/etc/services.json` and spawn it. Returns whether an activation was STARTED (the connecting
+/// `/etc/services.d/<name>.json` and spawn it. Returns whether an activation was STARTED (the connecting
 /// client then blocks until it serves); `false` means the name is not a declared service. This is
 /// also the crash-recovery path — a connect after a service died re-runs it and gets a fresh instance.
 pub(crate) unsafe fn activate_service_lazily(name: &str) -> bool {
     unsafe {
-        match lookup_service_binary(name) {
-            Some(binary) => spawn_service(name, &binary).is_some(),
+        match lookup_service_spec(name) {
+            Some(spec) => spawn_service(name, &spec.binary).is_some(),
             None => false,
         }
     }
@@ -1061,6 +1068,13 @@ fn read_kernel_file(ns: &Namespace, path: &str) -> Option<Vec<u8>> {
         }
     }
     Some(out)
+}
+
+/// List a small boot-namespace directory as names only. `None` if absent/unreadable.
+fn read_kernel_dir(ns: &Namespace, path: &str) -> Option<Vec<String>> {
+    let kpath = KPath::new(path);
+    let entries = ns.readdir_owner(&kpath).ok()?;
+    Some(entries.into_iter().map(|e| e.name).collect())
 }
 
 // ---------- Exported functions ----------
@@ -1796,7 +1810,10 @@ pub(crate) fn mc_ctl_read(path_ptr: u32, path_len: u32) -> i32 {
             Ok(c) => c,
             Err(e) => return ctl_neg_errno(e),
         };
-        let mut h = match STATE.ns().open_as(vfs::SYSTEM_CALLER, &real, OpenFlags::READ) {
+        let mut h = match STATE
+            .ns()
+            .open_as(vfs::SYSTEM_CALLER, &real, OpenFlags::READ)
+        {
             Ok(h) => h,
             Err(e) => return ctl_neg_errno(e),
         };
@@ -2376,7 +2393,11 @@ pub(crate) fn mc_worker_entry(_arg: i32) -> i32 {
         let ns = STATE.ns();
         scheduler.check_unblocked();
         run_round(scheduler, ns);
-        if scheduler.has_work() { 1 } else { 0 }
+        if scheduler.has_work() {
+            1
+        } else {
+            0
+        }
     }
 }
 

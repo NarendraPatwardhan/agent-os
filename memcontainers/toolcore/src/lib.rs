@@ -1,0 +1,668 @@
+//! `toolcore` — pure catalog/search/schema logic for the agent-os tool plane.
+//!
+//! The resident `/svc/tools` broker owns syscalls and warmth; this crate owns the data contract:
+//! dotted tool addresses, catalog parsing, deterministic lexical search, small JSON-Schema validation,
+//! and JSON result envelopes. It is intentionally `no_std + alloc` so the same logic can run inside a
+//! wasm guest and as a native unit test.
+
+#![cfg_attr(not(test), no_std)]
+
+extern crate alloc;
+
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
+use core::cmp::Ordering;
+
+use json::Json;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArgsMode {
+    Json,
+    Raw,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Binding {
+    pub name: String,
+    pub args_mode: ArgsMode,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolRecord {
+    pub address: String,
+    pub integration: String,
+    pub owner: String,
+    pub connection: String,
+    pub tool: String,
+    pub description: String,
+    pub input_schema: Option<Json>,
+    pub output_schema: Option<Json>,
+    pub annotations: Json,
+    pub binding: Binding,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Catalog {
+    records: Vec<ToolRecord>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolError {
+    Parse,
+    Shape,
+    InvalidAddress,
+    InvalidBindingName,
+    DuplicateAddress,
+    UnsupportedBinding,
+    Validation,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchHit {
+    pub address: String,
+    pub integration: String,
+    pub description: String,
+    pub score: i64,
+}
+
+impl Catalog {
+    pub fn empty() -> Self {
+        Self {
+            records: Vec::new(),
+        }
+    }
+
+    pub fn parse(src: &str) -> Result<Self, ToolError> {
+        let doc = json::parse(src).map_err(|_| ToolError::Parse)?;
+        let tools = match &doc {
+            Json::Arr(items) => items.as_slice(),
+            Json::Obj(_) => doc
+                .get("tools")
+                .and_then(|v| v.as_arr())
+                .ok_or(ToolError::Shape)?,
+            _ => return Err(ToolError::Shape),
+        };
+        let mut records = Vec::with_capacity(tools.len());
+        for item in tools {
+            records.push(parse_record(item)?);
+        }
+        records.sort_by(|a, b| a.address.cmp(&b.address));
+        for pair in records.windows(2) {
+            if pair[0].address == pair[1].address {
+                return Err(ToolError::DuplicateAddress);
+            }
+        }
+        Ok(Self { records })
+    }
+
+    pub fn records(&self) -> &[ToolRecord] {
+        &self.records
+    }
+
+    pub fn find(&self, address: &str) -> Option<&ToolRecord> {
+        self.records.iter().find(|r| r.address == address)
+    }
+
+    /// Resolve a busybox-style command alias. Exact host binding names win; otherwise the final
+    /// address segment may resolve only when it is unambiguous.
+    pub fn find_alias(&self, alias: &str) -> Option<&ToolRecord> {
+        if let Some(r) = self.records.iter().find(|r| r.binding.name == alias) {
+            return Some(r);
+        }
+        let mut found = None;
+        for r in &self.records {
+            let leading_binding = r.binding.name.split_whitespace().next() == Some(alias);
+            if r.tool == alias || leading_binding {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(r);
+            }
+        }
+        found
+    }
+
+    pub fn search(&self, query: &str, offset: usize, limit: usize) -> (Vec<SearchHit>, usize) {
+        let q_tokens = tokenize(query);
+        let q_phrase = normalize(query);
+        let mut scored = Vec::new();
+        for rec in &self.records {
+            let score = score_record(rec, &q_tokens, &q_phrase);
+            if score > 0 || q_tokens.is_empty() {
+                scored.push(SearchHit {
+                    address: rec.address.clone(),
+                    integration: rec.integration.clone(),
+                    description: rec.description.clone(),
+                    score,
+                });
+            }
+        }
+        scored.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| a.address.cmp(&b.address))
+                .then(Ordering::Equal)
+        });
+        let total = scored.len();
+        let start = offset.min(total);
+        let end = start.saturating_add(limit).min(total);
+        (scored[start..end].to_vec(), total)
+    }
+}
+
+impl ToolRecord {
+    pub fn to_json(&self) -> Json {
+        let mut pairs = Vec::new();
+        pairs.push(("address".to_string(), Json::Str(self.address.clone())));
+        pairs.push((
+            "integration".to_string(),
+            Json::Str(self.integration.clone()),
+        ));
+        pairs.push(("owner".to_string(), Json::Str(self.owner.clone())));
+        pairs.push(("connection".to_string(), Json::Str(self.connection.clone())));
+        pairs.push(("tool".to_string(), Json::Str(self.tool.clone())));
+        pairs.push((
+            "description".to_string(),
+            Json::Str(self.description.clone()),
+        ));
+        if let Some(schema) = &self.input_schema {
+            pairs.push(("input_schema".to_string(), schema.clone()));
+        }
+        if let Some(schema) = &self.output_schema {
+            pairs.push(("output_schema".to_string(), schema.clone()));
+        }
+        pairs.push(("annotations".to_string(), self.annotations.clone()));
+        pairs.push((
+            "binding".to_string(),
+            Json::Obj(vec![
+                ("type".to_string(), Json::Str("host_call".to_string())),
+                ("name".to_string(), Json::Str(self.binding.name.clone())),
+                (
+                    "args".to_string(),
+                    Json::Str(
+                        match self.binding.args_mode {
+                            ArgsMode::Json => "json",
+                            ArgsMode::Raw => "raw",
+                        }
+                        .to_string(),
+                    ),
+                ),
+            ]),
+        ));
+        Json::Obj(pairs)
+    }
+}
+
+pub fn ok_json(data: Json) -> Json {
+    Json::Obj(vec![
+        ("ok".to_string(), Json::Bool(true)),
+        ("data".to_string(), data),
+    ])
+}
+
+pub fn err_json(code: &str, message: &str) -> Json {
+    Json::Obj(vec![
+        ("ok".to_string(), Json::Bool(false)),
+        (
+            "err".to_string(),
+            Json::Obj(vec![
+                ("code".to_string(), Json::Str(code.to_string())),
+                ("message".to_string(), Json::Str(message.to_string())),
+            ]),
+        ),
+    ])
+}
+
+pub fn search_page_json(items: &[SearchHit], total: usize, offset: usize, limit: usize) -> Json {
+    let arr = items
+        .iter()
+        .map(|hit| {
+            Json::Obj(vec![
+                ("address".to_string(), Json::Str(hit.address.clone())),
+                (
+                    "integration".to_string(),
+                    Json::Str(hit.integration.clone()),
+                ),
+                (
+                    "description".to_string(),
+                    Json::Str(hit.description.clone()),
+                ),
+                ("score".to_string(), Json::Num(hit.score as f64)),
+            ])
+        })
+        .collect();
+    let next = offset.saturating_add(limit);
+    Json::Obj(vec![
+        ("items".to_string(), Json::Arr(arr)),
+        ("total".to_string(), Json::Num(total as f64)),
+        ("hasMore".to_string(), Json::Bool(next < total)),
+        (
+            "nextOffset".to_string(),
+            if next < total {
+                Json::Num(next as f64)
+            } else {
+                Json::Null
+            },
+        ),
+    ])
+}
+
+pub fn validate_args(schema: Option<&Json>, args: &Json) -> Result<(), ToolError> {
+    if let Some(schema) = schema {
+        validate(schema, args).map_err(|_| ToolError::Validation)
+    } else {
+        Ok(())
+    }
+}
+
+fn parse_record(v: &Json) -> Result<ToolRecord, ToolError> {
+    let address = required_str(v, "address")?.to_string();
+    let (integration, owner, connection, tool) = parse_address(&address)?;
+    let description = v
+        .get("description")
+        .and_then(|d| d.as_str())
+        .unwrap_or("")
+        .to_string();
+    let binding_json = v.get("binding").ok_or(ToolError::Shape)?;
+    let binding_type = binding_json
+        .get("type")
+        .and_then(|t| t.as_str())
+        .unwrap_or("host_call");
+    if binding_type != "host_call" {
+        return Err(ToolError::UnsupportedBinding);
+    }
+    let binding_name = binding_json
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or(&tool);
+    if !valid_binding_name(binding_name) {
+        return Err(ToolError::InvalidBindingName);
+    }
+    let binding_name = binding_name.to_string();
+    let args_mode = match binding_json
+        .get("args")
+        .and_then(|a| a.as_str())
+        .unwrap_or("json")
+    {
+        "raw" => ArgsMode::Raw,
+        "json" => ArgsMode::Json,
+        _ => return Err(ToolError::UnsupportedBinding),
+    };
+    Ok(ToolRecord {
+        address,
+        integration,
+        owner,
+        connection,
+        tool,
+        description,
+        input_schema: v.get("input_schema").cloned(),
+        output_schema: v.get("output_schema").cloned(),
+        annotations: v
+            .get("annotations")
+            .cloned()
+            .unwrap_or_else(|| Json::Obj(Vec::new())),
+        binding: Binding {
+            name: binding_name,
+            args_mode,
+        },
+    })
+}
+
+fn required_str<'a>(v: &'a Json, key: &str) -> Result<&'a str, ToolError> {
+    v.get(key).and_then(|s| s.as_str()).ok_or(ToolError::Shape)
+}
+
+fn parse_address(address: &str) -> Result<(String, String, String, String), ToolError> {
+    let parts: Vec<&str> = address.split('.').collect();
+    if parts.len() < 4 {
+        return Err(ToolError::InvalidAddress);
+    }
+    for part in &parts {
+        if !valid_segment(part) {
+            return Err(ToolError::InvalidAddress);
+        }
+    }
+    if parts[1] != "org" && parts[1] != "user" {
+        return Err(ToolError::InvalidAddress);
+    }
+    Ok((
+        parts[0].to_string(),
+        parts[1].to_string(),
+        parts[2].to_string(),
+        parts[3..].join("."),
+    ))
+}
+
+fn valid_segment(s: &str) -> bool {
+    !s.is_empty()
+        && s.as_bytes()
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-')
+}
+
+/// Host-call tool bindings live in a UTF-8 key space separated from raw mount handlers. Raw handlers are
+/// keyed by absolute paths and request blobs are NUL-framed, so catalog bindings must be plain non-empty
+/// names: no raw-handler `/...` namespace, no framing byte, and no control characters.
+fn valid_binding_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('/')
+        && name.trim() == name
+        && !name.as_bytes().iter().any(|b| b.is_ascii_control())
+}
+
+fn normalize(s: &str) -> String {
+    let mut out = String::new();
+    let mut prev_lower_or_digit = false;
+    let mut prev_space = true;
+    for c in s.chars() {
+        if c.is_ascii_uppercase() {
+            if prev_lower_or_digit && !prev_space {
+                out.push(' ');
+            }
+            out.push(c.to_ascii_lowercase());
+            prev_lower_or_digit = false;
+            prev_space = false;
+        } else if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            prev_lower_or_digit = c.is_ascii_lowercase() || c.is_ascii_digit();
+            prev_space = false;
+        } else {
+            if !prev_space {
+                out.push(' ');
+            }
+            prev_lower_or_digit = false;
+            prev_space = true;
+        }
+    }
+    out.trim().to_string()
+}
+
+fn tokenize(s: &str) -> Vec<String> {
+    normalize(s)
+        .split_whitespace()
+        .map(|p| p.to_string())
+        .collect()
+}
+
+fn score_record(rec: &ToolRecord, q_tokens: &[String], q_phrase: &str) -> i64 {
+    if q_tokens.is_empty() {
+        return 1;
+    }
+    let fields = [
+        (&rec.address, 12i64),
+        (&rec.tool, 10),
+        (&rec.integration, 8),
+        (&rec.description, 5),
+    ];
+    let mut score = 0;
+    let mut covered = 0;
+    for token in q_tokens {
+        let mut hit = false;
+        for (field, weight) in &fields {
+            let f = normalize(field);
+            if f.split_whitespace().any(|p| p == token) {
+                score += *weight;
+                hit = true;
+            } else if f.split_whitespace().any(|p| p.starts_with(token)) {
+                score += *weight / 2;
+                hit = true;
+            }
+            if !q_phrase.is_empty() && f.contains(q_phrase) {
+                score += *weight * 2;
+            }
+        }
+        if hit {
+            covered += 1;
+        }
+    }
+    if covered == q_tokens.len() {
+        score += 25;
+    }
+    score
+}
+
+fn validate(schema: &Json, value: &Json) -> Result<(), ()> {
+    if let Some(types) = schema.get("type") {
+        match types {
+            Json::Str(t) => validate_type(t, schema, value)?,
+            Json::Arr(options) => {
+                let mut ok = false;
+                for opt in options {
+                    if let Some(t) = opt.as_str() {
+                        if validate_type(t, schema, value).is_ok() {
+                            ok = true;
+                            break;
+                        }
+                    }
+                }
+                if !ok {
+                    return Err(());
+                }
+            }
+            _ => return Err(()),
+        }
+    }
+    if let Some(enums) = schema.get("enum").and_then(|e| e.as_arr()) {
+        if !enums.iter().any(|candidate| candidate == value) {
+            return Err(());
+        }
+    }
+    Ok(())
+}
+
+fn validate_type(t: &str, schema: &Json, value: &Json) -> Result<(), ()> {
+    match t {
+        "object" => validate_object(schema, value),
+        "array" => validate_array(schema, value),
+        "string" => value.as_str().map(|_| ()).ok_or(()),
+        "boolean" => value.as_bool().map(|_| ()).ok_or(()),
+        "number" => value.as_f64().map(|_| ()).ok_or(()),
+        "integer" => match value.as_f64() {
+            Some(n) if n.is_finite() && n == (n as i64) as f64 => Ok(()),
+            _ => Err(()),
+        },
+        "null" => match value {
+            Json::Null => Ok(()),
+            _ => Err(()),
+        },
+        _ => Ok(()), // Unknown JSON-Schema type keywords are left to host-side validators.
+    }
+}
+
+fn validate_object(schema: &Json, value: &Json) -> Result<(), ()> {
+    let Json::Obj(pairs) = value else {
+        return Err(());
+    };
+    if let Some(required) = schema.get("required").and_then(|r| r.as_arr()) {
+        for req in required {
+            let Some(name) = req.as_str() else {
+                return Err(());
+            };
+            if !pairs.iter().any(|(k, _)| k == name) {
+                return Err(());
+            }
+        }
+    }
+    let props = schema.get("properties").and_then(|p| p.as_obj());
+    if schema.get("additionalProperties").and_then(|p| p.as_bool()) == Some(false) {
+        for (k, _) in pairs {
+            let declared = props
+                .map(|p| p.iter().any(|(pk, _)| pk == k))
+                .unwrap_or(false);
+            if !declared {
+                return Err(());
+            }
+        }
+    }
+    if let Some(props) = props {
+        for (k, v) in pairs {
+            if let Some((_, ps)) = props.iter().find(|(pk, _)| pk == k) {
+                validate(ps, v)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_array(schema: &Json, value: &Json) -> Result<(), ()> {
+    let Json::Arr(items) = value else {
+        return Err(());
+    };
+    if let Some(item_schema) = schema.get("items") {
+        for item in items {
+            validate(item_schema, item)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn parse_json_or_string(src: &str) -> Json {
+    let trimmed = src.trim();
+    if trimmed.starts_with('{')
+        || trimmed.starts_with('[')
+        || trimmed.starts_with('"')
+        || trimmed == "true"
+        || trimmed == "false"
+        || trimmed == "null"
+        || trimmed.parse::<f64>().is_ok()
+    {
+        if let Ok(v) = json::parse(trimmed) {
+            return v;
+        }
+    }
+    Json::Str(src.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn parses_catalog_and_ranks_lexically() {
+        let catalog = Catalog::parse(
+            r#"{"tools":[
+              {"address":"github.org.main.createIssue","description":"Create a GitHub issue",
+               "binding":{"type":"host_call","name":"github.issue","args":"json"}},
+              {"address":"sentry.org.main.listIssues","description":"List release-blocker issues",
+               "binding":{"type":"host_call","name":"sentry.list","args":"json"}}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(catalog.records().len(), 2);
+        let (hits, total) = catalog.search("create github issue", 0, 10);
+        assert_eq!(total, 2);
+        assert_eq!(hits[0].address, "github.org.main.createIssue");
+        assert!(hits[0].score > 0);
+    }
+
+    #[test]
+    fn validates_small_schema_subset() {
+        let schema = json::parse(
+            r#"{"type":"object","required":["repo","title"],"additionalProperties":false,
+                "properties":{"repo":{"type":"string"},"title":{"type":"string"},"n":{"type":"integer"}}}"#,
+        )
+        .unwrap();
+        let good = json::parse(r#"{"repo":"acme/web","title":"bug","n":2}"#).unwrap();
+        let missing = json::parse(r#"{"repo":"acme/web"}"#).unwrap();
+        let extra = json::parse(r#"{"repo":"acme/web","title":"bug","x":1}"#).unwrap();
+        assert_eq!(validate_args(Some(&schema), &good), Ok(()));
+        assert_eq!(
+            validate_args(Some(&schema), &missing),
+            Err(ToolError::Validation)
+        );
+        assert_eq!(
+            validate_args(Some(&schema), &extra),
+            Err(ToolError::Validation)
+        );
+    }
+
+    #[test]
+    fn resolves_alias_without_legacy_names() {
+        let catalog = Catalog::parse(
+            r#"{"tools":[{"address":"host.org.main.greet","description":"Greet",
+               "binding":{"type":"host_call","name":"greet","args":"raw"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            catalog.find_alias("greet").unwrap().address,
+            "host.org.main.greet"
+        );
+    }
+
+    #[test]
+    fn rejects_bad_addresses() {
+        for bad in [
+            "x.main.greet",
+            "x.team.main.greet",
+            "x.org.main.",
+            "x.org.main.greet/now",
+        ] {
+            let src = format!(
+                r#"{{"tools":[{{"address":"{bad}","binding":{{"type":"host_call","name":"x"}}}}]}}"#
+            );
+            assert!(Catalog::parse(&src).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_binding_names() {
+        for bad in ["", "/mnt/search", " greet", "greet "] {
+            let src = format!(
+                r#"{{"tools":[{{"address":"host.org.main.greet","binding":{{"type":"host_call","name":"{bad}"}}}}]}}"#
+            );
+            assert_eq!(
+                Catalog::parse(&src).unwrap_err(),
+                ToolError::InvalidBindingName,
+                "{bad:?}"
+            );
+        }
+
+        for bad in ["bad\nname", "bad\0name"] {
+            assert_eq!(
+                parse_record(&record_with_binding_name(bad)).unwrap_err(),
+                ToolError::InvalidBindingName
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_addresses() {
+        let err = Catalog::parse(
+            r#"{"tools":[
+              {"address":"host.org.main.greet","binding":{"type":"host_call","name":"greet"}},
+              {"address":"host.org.main.greet","binding":{"type":"host_call","name":"greet-again"}}
+            ]}"#,
+        )
+        .unwrap_err();
+        assert_eq!(err, ToolError::DuplicateAddress);
+    }
+
+    #[test]
+    fn accepts_spaced_binding_names_for_kits() {
+        let catalog = Catalog::parse(
+            r#"{"tools":[{"address":"host.org.main.weather.get","description":"Weather",
+               "binding":{"type":"host_call","name":"weather get","args":"json"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            catalog.find_alias("weather").unwrap().address,
+            "host.org.main.weather.get"
+        );
+    }
+
+    fn record_with_binding_name(name: &str) -> Json {
+        Json::Obj(vec![
+            (
+                "address".to_string(),
+                Json::Str("host.org.main.greet".to_string()),
+            ),
+            (
+                "binding".to_string(),
+                Json::Obj(vec![
+                    ("type".to_string(), Json::Str("host_call".to_string())),
+                    ("name".to_string(), Json::Str(name.to_string())),
+                ]),
+            ),
+        ])
+    }
+}

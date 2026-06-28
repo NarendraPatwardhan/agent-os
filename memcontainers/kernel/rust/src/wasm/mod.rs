@@ -88,7 +88,7 @@ enum GuestFd {
     /// guest exiting) closes the channel so pending requesters fail rather than
     /// block forever.
     Serve(ServeOwner),
-    /// A readable host-call result (`mc_sys_host_call`): the `mc-tool` shim and
+    /// A readable host-call result (`mc_sys_host_call`): the tool broker and
     /// host-backed mounts. Owns the kernel `HostCallSource`, so dropping the slot
     /// closes the host handle (R1).
     HostCall(SharedHostCall),
@@ -3833,7 +3833,7 @@ impl GuestProgram {
     }
 
     /// `mc_sys_host_call(req_ptr, req_len) -> fd`: invoke a host-resident
-    /// function (the `mc-tool` shim / a host-backed mount). The guest passes an
+    /// function (the tool broker / a host-backed mount). The guest passes an
     /// opaque request blob and receives a **readable** result fd; it never sees
     /// the host handle (R1). Gated by `CAP_NET` (a host call is host-terminated
     /// egress, the same authority class) plus host availability — default-deny

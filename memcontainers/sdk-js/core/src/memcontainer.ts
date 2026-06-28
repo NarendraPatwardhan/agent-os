@@ -18,7 +18,7 @@ import { defaultImage, defaultKernel } from "./artifacts.js";
 import { defaultStore } from "./store.js";
 import { record } from "./record.js";
 import { makeFs } from "./fs.js";
-import { toolManifestJson } from "./tools.js";
+import { toolCatalogJson } from "./tools.js";
 import { startCron } from "./cron.js";
 import type { CronAction, CronHandle, CronOptions } from "./cron.js";
 import type { Backend } from "./backend.js";
@@ -50,8 +50,8 @@ export type { VmFs } from "./types.js";
 export class Vm {
   /** Filesystem ops (`vm.fs.read` / `write` / `ls` / `stat` / `mkdir` / `rm`). */
   readonly fs: VmFs;
-  /** All registered tools (boot-time + runtime), for the `/etc/mc-tools.json`
-   *  manifest the guest `mc-tool` reads. */
+  /** All registered tools (boot-time + runtime), mirrored into `/etc/tools/catalog.json`
+   *  for the guest `/svc/tools` broker. */
   private readonly registeredTools: ToolDefinition[];
   /** Host-backed mounts that must be re-registered when this VM is forked. */
   private readonly registeredMounts: MountSpec[];
@@ -130,9 +130,9 @@ export class Vm {
     };
   }
 
-  /** Register one or more host-resident tools the agent inside the VM can invoke
-   *  via `mc-tool <name> <json>`. The handler runs host-side. Build defs
-   *  with {@link tool} / {@link kit}. */
+  /** Register one or more host-resident tools the agent inside the VM can invoke through
+   *  `/svc/tools` and the Luau `tools` battery. The handler runs host-side. Build defs with
+   *  {@link tool} / {@link kit}. */
   tool(def: ToolDefinition | ToolDefinition[]): void {
     const defs = Array.isArray(def) ? def : [def];
     for (const d of defs) {
@@ -142,8 +142,8 @@ export class Vm {
       else this.registeredTools.push(d);
     }
     this.opts.tools = [...this.registeredTools];
-    // Refresh the guest manifest + `/bin` aliases (best-effort; runtime additions are rare).
-    void seedToolManifest(this.backend, this.registeredTools);
+    // Refresh the guest catalog + `/bin` aliases (best-effort; runtime additions are rare).
+    void seedToolCatalog(this.backend, this.registeredTools);
     void seedToolAliases(this.backend, defs, this.handledToolAliases);
   }
 
@@ -414,7 +414,7 @@ async function makeEmbedded(
   }
   const backend = new EmbeddedBackend(host, stdout, tools);
   for (const t of opts.tools ?? []) backend.tool(t);
-  await seedToolManifest(backend, opts.tools ?? []);
+  await seedToolCatalog(backend, opts.tools ?? []);
   await seedToolAliases(backend, opts.tools ?? [], undefined, snapshot !== null);
   // Install boot-time mounts before the backend is returned (and before any
   // exec), so the first command already sees them. Declaration order is kept.
@@ -424,22 +424,27 @@ async function makeEmbedded(
   return backend;
 }
 
-/** Write the `/etc/mc-tools.json` manifest the guest `mc-tool` reads for `--list`
- *  and `<kit> <cmd>` discovery. Best-effort `mkdir /etc` (it usually exists). */
-async function seedToolManifest(backend: Backend, defs: ToolDefinition[]): Promise<void> {
+/** Write the `/etc/tools/catalog.json` catalog the guest `/svc/tools` broker reads.
+ *  Best-effort directory creation: `/etc` usually exists, `/etc/tools` is VM-local config. */
+async function seedToolCatalog(backend: Backend, defs: ToolDefinition[]): Promise<void> {
   if (!defs.length) return;
   try {
     await backend.mkdir("/etc");
   } catch {
     /* already exists */
   }
-  await backend.write("/etc/mc-tools.json", enc(toolManifestJson(defs)));
+  try {
+    await backend.mkdir("/etc/tools");
+  } catch {
+    /* already exists */
+  }
+  await backend.write("/etc/tools/catalog.json", enc(toolCatalogJson(defs)));
 }
 
 /** Make each registered tool/kit a first-class command: a `/bin/<name>` symlink →
- *  `mc-tool`, so the agent can run `weather get …` directly instead of
- *  `mc-tool weather get …` (busybox-style argv[0] dispatch, like mcbox — one
- *  `mc-tool` binary + tiny symlinks, no per-tool copy). One alias per unique
+ *  `tools`, so the agent can run `weather get …` directly instead of
+ *  `tools call …` (busybox-style argv[0] dispatch, like mcbox — one
+ *  `tools` binary + tiny symlinks, no per-tool copy). One alias per unique
  *  leading name token (a kit's `"weather get"`/`"weather set"` → one `/bin/weather`).
  *  Guarded: a name that isn't a safe single path component, or that already exists
  *  in `/bin`, is skipped (never clobbers a real command). */
@@ -453,7 +458,7 @@ function toolAliasNames(defs: ToolDefinition[]): Set<string> {
 }
 
 function isSafeToolAlias(name: string): boolean {
-  return name !== "mc-tool" && /^[A-Za-z0-9._-]+$/.test(name);
+  return name !== "tools" && /^[A-Za-z0-9._-]+$/.test(name);
 }
 
 async function seedToolAliases(
@@ -477,7 +482,7 @@ async function seedToolAliases(
       existing = undefined; // ENOENT — free to create
     }
     if (!existing) {
-      await backend.symlink("mc-tool", link);
+      await backend.symlink("tools", link);
     } else if (!(quietExistingSymlinks && existing.isSymlink)) {
       // Any existing `/bin` path is occupied, including symlinks like `date ->
       // mcbox-ro`. Without readlink in the public fs API, assuming "symlink means

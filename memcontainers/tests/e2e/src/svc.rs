@@ -1,6 +1,6 @@
 //! Resident-service primitive proof (SYSTEMS.md): the `kv` service reached as BOTH the `kv` CLI
 //! and the Luau `sys.svc` library — the SAME warm instance — plus warm-across-calls and crash-only.
-//! The kernel activates `kv` at boot from `/etc/services.json`; these tests drive it through the
+//! The kernel activates `kv` at boot from `/etc/services.d/kv.json`; these tests drive it through the
 //! real shell on the real kernel (B6, no mocks).
 
 use crate::{boot_svc_test, restore};
@@ -61,8 +61,8 @@ fn kv_crash_recovers_a_fresh_instance() {
     assert_eq!(s.run_for_output("kv put k v"), "");
     assert_eq!(s.run_for_output("kv get k"), "v\r\n");
     let _ = s.run_for_output("kv _crash"); // the warm service exits mid-call
-    // Not a hang: a fresh instance is lazily spawned on the next connect. Its store is empty, so the
-    // pre-crash key is gone...
+                                           // Not a hang: a fresh instance is lazily spawned on the next connect. Its store is empty, so the
+                                           // pre-crash key is gone...
     assert_eq!(s.run_for_output("kv get k"), "");
     // ...but the recovered instance serves normally — a new put/get round-trips.
     assert_eq!(s.run_for_output("kv put k2 v2"), "");
@@ -86,8 +86,14 @@ fn svc_lists_an_eager_service_at_boot() {
 fn the_login_shell_owns_pid_1_not_an_eager_service() {
     let mut s = boot_svc_test();
     let status = s.run_for_output("cat /proc/1/status");
-    assert!(status.contains("Name:\tsh"), "pid 1 should be the shell, got: {status:?}");
-    assert!(!status.contains("kv"), "pid 1 must not be the eager kv service, got: {status:?}");
+    assert!(
+        status.contains("Name:\tsh"),
+        "pid 1 should be the shell, got: {status:?}"
+    );
+    assert!(
+        !status.contains("kv"),
+        "pid 1 must not be the eager kv service, got: {status:?}"
+    );
 }
 
 /// Dead-client cleanup: a client that dies mid-session (a Luau trap while holding a `kv` connection)
@@ -105,7 +111,7 @@ fn kv_survives_a_client_dying_mid_session() {
         )
         .expect("write die.luau");
     let _ = s.run_for_output("luau /tmp/die.luau"); // connects, then traps mid-session
-    // The warm service is unaffected — the prior key survives and it serves new calls.
+                                                    // The warm service is unaffected — the prior key survives and it serves new calls.
     assert_eq!(s.run_for_output("kv get k"), "v\r\n");
     assert_eq!(s.run_for_output("kv put k2 v2"), "");
     assert_eq!(s.run_for_output("kv get k2"), "v2\r\n");
@@ -169,11 +175,17 @@ fn svc_status_reflects_the_activation_supervisor() {
     assert_eq!(s.run_for_output("cat /svc/kv"), "ready\r\n");
     // Trigger crashloop's activation — it crashes before serving, so the supervisor marks it failed.
     s.host
-        .write_file("/tmp/c.luau", br#"print(sys.svc.connect("crashloop") == nil)"#)
+        .write_file(
+            "/tmp/c.luau",
+            br#"print(sys.svc.connect("crashloop") == nil)"#,
+        )
         .expect("write c.luau");
     assert_eq!(s.run_for_output("luau /tmp/c.luau"), "true\r\n");
     // crashloop is now observably FAILED (not silently gone); kv is unaffected.
-    assert_eq!(s.run_for_output("cat /svc/crashloop"), "failed: crashed before serving\r\n");
+    assert_eq!(
+        s.run_for_output("cat /svc/crashloop"),
+        "failed: crashed before serving\r\n"
+    );
     assert_eq!(s.run_for_output("cat /svc/kv"), "ready\r\n");
     // The listing shows every known service — ready and failed alike (sorted).
     assert_eq!(s.run_for_output("ls /svc"), "crashloop\r\nkv\r\n");
@@ -236,5 +248,8 @@ fn crashed_service_instances_are_reaped_not_leaked() {
         .count();
     // With reaping only a few live tasks remain (shell, the current kv, the listing) — NOT 6 leaked
     // zombies. Without the fix this would be ≥ 6 higher.
-    assert!(pids <= 4, "leaked service zombies: /proc lists {pids} pids:\n{proc}");
+    assert!(
+        pids <= 4,
+        "leaked service zombies: /proc lists {pids} pids:\n{proc}"
+    );
 }

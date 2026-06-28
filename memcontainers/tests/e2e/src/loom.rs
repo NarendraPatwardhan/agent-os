@@ -5,7 +5,9 @@
 //! batteries through the embedded .luau libs + the Zig json/hash bindings, the type errors through the
 //! full Luau Analysis engine (file:line:col diagnostics).
 
-use crate::boot_loom;
+use host::MapHostCall;
+
+use crate::{boot_loom, boot_loom_with_tools};
 
 // ── smoke: the VM, the trap-unwind, and boot.
 
@@ -65,9 +67,15 @@ fn luau_pcall_nested_and_error_in_error() {
         .expect("seed /demo/pcall.luau");
     let out = s.run_for_output("luau /demo/pcall.luau");
     assert!(out.contains("nested=true"), "nested pcall unwind:\n{out}");
-    assert!(out.contains("errinerr=true"), "error raised inside xpcall handler:\n{out}");
+    assert!(
+        out.contains("errinerr=true"),
+        "error raised inside xpcall handler:\n{out}"
+    );
     assert!(out.contains("vals=true"), "value-returning pcall:\n{out}");
-    assert!(out.contains("stress=true"), "100 consecutive pcall unwinds:\n{out}");
+    assert!(
+        out.contains("stress=true"),
+        "100 consecutive pcall unwinds:\n{out}"
+    );
     assert!(out.contains("4"), "VM dead after the unwind stress:\n{out}");
 }
 
@@ -96,12 +104,64 @@ fn luau_runs_the_batteries_demo() {
         )
         .expect("seed /demo/batteries.luau");
     let out = s.run_for_output("luau /demo/batteries.luau");
-    assert!(!out.to_lowercase().contains("fuel"), "ran out of fuel — raise mc_budget:\n{out}");
-    assert!(out.contains(r#"{"hello":"world","n":42}"#), "json.encode:\n{out}");
+    assert!(
+        !out.to_lowercase().contains("fuel"),
+        "ran out of fuel — raise mc_budget:\n{out}"
+    );
+    assert!(
+        out.contains(r#"{"hello":"world","n":42}"#),
+        "json.encode:\n{out}"
+    );
     assert!(out.contains("sha256 ="), "hash.sha256:\n{out}");
-    assert!(out.contains("1970-01-01T00:00:00Z"), "time.format(0):\n{out}");
+    assert!(
+        out.contains("1970-01-01T00:00:00Z"),
+        "time.format(0):\n{out}"
+    );
     assert!(out.contains("trim   =\thi"), "string :trim:\n{out}");
     assert!(out.contains("split2 =\tb"), "string :split:\n{out}");
+}
+
+/// The `tools` battery is the programmable tool-plane face: search/describe are warm service calls,
+/// and dotted-property invocation dispatches through the same `/svc/tools` broker.
+#[test]
+fn luau_tools_battery_discovers_and_calls() {
+    let mut tools = MapHostCall::new();
+    tools.register(
+        "greet",
+        Box::new(|args: &str| Ok(format!("{{\"message\":\"hello {args}\"}}").into_bytes())),
+    );
+    let mut s = boot_loom_with_tools(tools);
+    s.host.mkdir("/etc/tools").ok();
+    s.host
+        .write_file(
+            "/etc/tools/catalog.json",
+            br#"{"tools":[{"address":"host.org.main.greet","description":"Greet someone",
+              "binding":{"type":"host_call","name":"greet","args":"raw"}}]}"#,
+        )
+        .expect("seed tool catalog");
+    s.host
+        .write_file(
+            "/demo/tools.luau",
+            br#"local tools = require("tools")
+local page = assert(tools.search("greet", { limit = 1 }))
+print(page.items[1].address)
+local rec = assert(tools.describe("host.org.main.greet"))
+print(rec.binding.name)
+local res = tools.host.org.main.greet("world")
+print(res.ok, res.data.message)
+local saved = tools.save("host.org.main.greet", "file", "/tmp/greet.json")
+print(saved.ok, saved.data._tag, saved.data.path)
+"#,
+        )
+        .expect("seed tools.luau");
+    assert_eq!(
+        s.run_for_output("luau /demo/tools.luau"),
+        "host.org.main.greet\r\ngreet\r\ntrue\thello world\r\ntrue\tToolFile\t/tmp/greet.json\r\n"
+    );
+    assert_eq!(
+        s.host.read_file("/tmp/greet.json").expect("saved tool file"),
+        br#"{"message":"hello file"}"#
+    );
 }
 
 /// json.decode round-trips: parse an object with a nested array + table, read fields back, and
@@ -117,7 +177,10 @@ fn json_decode_round_trips() {
         )
         .expect("seed");
     let out = s.run_for_output("luau /demo/jsonrt.luau");
-    assert!(out.contains("1\t20\tv\t[10,20,30]"), "json.decode round-trip:\n{out}");
+    assert!(
+        out.contains("1\t20\tv\t[10,20,30]"),
+        "json.decode round-trip:\n{out}"
+    );
 }
 
 /// deflate.decompress is bounded: with the exact size it round-trips; with a cap smaller than the
@@ -149,7 +212,12 @@ fn json_number_grammar() {
         .expect("seed");
     let out = s.run_for_output("luau /demo/jsonnum.luau");
     assert!(out.contains("nums=true"), "json numbers:\n{out}");
-    assert!(out.contains("rej-exp=true") && out.contains("rej-inf=true") && out.contains("rej-nan=true"), "json grammar:\n{out}");
+    assert!(
+        out.contains("rej-exp=true")
+            && out.contains("rej-inf=true")
+            && out.contains("rej-nan=true"),
+        "json grammar:\n{out}"
+    );
 }
 
 /// re — the Pike-VM regex battery (the 3rd native module): anchors, char classes + negation,
@@ -202,9 +270,14 @@ fn sys_fs_writes_a_file_the_host_can_read() {
         )
         .expect("seed");
     let out = s.run_for_output("luau /demo/syswrite.luau");
-    assert_eq!(out, "readback=written-by-sys-fs\r\n", "sys.fs read-back:\n{out}");
     assert_eq!(
-        s.host.read_file("/tmp/sysout.txt").expect("host reads the guest-written file"),
+        out, "readback=written-by-sys-fs\r\n",
+        "sys.fs read-back:\n{out}"
+    );
+    assert_eq!(
+        s.host
+            .read_file("/tmp/sysout.txt")
+            .expect("host reads the guest-written file"),
         b"written-by-sys-fs",
         "the guest's sys.fs.write must reach the kernel VFS",
     );
@@ -236,12 +309,29 @@ fn luau_generates_a_real_xlsx() {
         .expect("seed");
     let out = s.run_for_output("luau /demo/genxlsx.luau");
     assert!(out.contains("wrote xlsx"), "generation failed:\n{out}");
-    let xlsx = s.host.read_file("/tmp/gen.xlsx").expect("host reads the generated xlsx");
-    assert!(xlsx.starts_with(b"PK\x03\x04"), "not a zip — head {:?}", &xlsx[..xlsx.len().min(8)]);
+    let xlsx = s
+        .host
+        .read_file("/tmp/gen.xlsx")
+        .expect("host reads the generated xlsx");
+    assert!(
+        xlsx.starts_with(b"PK\x03\x04"),
+        "not a zip — head {:?}",
+        &xlsx[..xlsx.len().min(8)]
+    );
     let body = String::from_utf8_lossy(&xlsx);
-    assert!(body.contains("[Content_Types].xml"), "missing the OOXML content-types part");
-    assert!(body.contains("xl/worksheets/"), "missing the worksheet part");
-    assert!(xlsx.len() > 1000, "xlsx suspiciously small: {} bytes", xlsx.len());
+    assert!(
+        body.contains("[Content_Types].xml"),
+        "missing the OOXML content-types part"
+    );
+    assert!(
+        body.contains("xl/worksheets/"),
+        "missing the worksheet part"
+    );
+    assert!(
+        xlsx.len() > 1000,
+        "xlsx suspiciously small: {} bytes",
+        xlsx.len()
+    );
 }
 
 /// Well-typed strict module: luau-analyze reports nothing.
@@ -255,7 +345,10 @@ fn luau_check_passes_clean() {
         )
         .expect("seed /demo/typed_ok.luau");
     let out = s.run_for_output("luau --check /demo/typed_ok.luau");
-    assert!(!out.to_lowercase().contains("error"), "expected no diagnostics:\n{out}");
+    assert!(
+        !out.to_lowercase().contains("error"),
+        "expected no diagnostics:\n{out}"
+    );
 }
 
 /// A strict type error: luau-analyze reports it as file:line:col (here line 2 — the bad assignment).
@@ -269,8 +362,14 @@ fn luau_check_reports_type_error() {
         )
         .expect("seed /demo/typed_bad.luau");
     let out = s.run_for_output("luau --check /demo/typed_bad.luau");
-    assert!(out.contains("/demo/typed_bad.luau:2:"), "expected a file:line:col diagnostic at line 2:\n{out}");
-    assert!(out.contains("'number'") && out.contains("'string'"), "expected the number-vs-string error:\n{out}");
+    assert!(
+        out.contains("/demo/typed_bad.luau:2:"),
+        "expected a file:line:col diagnostic at line 2:\n{out}"
+    );
+    assert!(
+        out.contains("'number'") && out.contains("'string'"),
+        "expected the number-vs-string error:\n{out}"
+    );
 }
 
 /// Pathological input degrades GRACEFULLY. The analyzer's only non-data failure modes are the
@@ -293,13 +392,22 @@ fn luau_analyze_survives_pathological_depth() {
     src.push_str("false"); // a leaf mismatch only deep traversal would find
     src.push_str(&"}".repeat(n));
     src.push_str("\nprint(d)\n");
-    s.host.write_file("/demo/deep.luau", src.as_bytes()).expect("seed /demo/deep.luau");
+    s.host
+        .write_file("/demo/deep.luau", src.as_bytes())
+        .expect("seed /demo/deep.luau");
 
     // No panic here ⇒ luau-analyze returned the shell to a prompt (no hang/crash). If it took an
     // abort path, the message is a categorized one; either way it's clean.
     let out = s.run_for_output("luau --check /demo/deep.luau");
-    assert!(!out.contains("internal compiler error"), "deep input must not ICE:\n{out}");
+    assert!(
+        !out.contains("internal compiler error"),
+        "deep input must not ICE:\n{out}"
+    );
 
     // The kernel + shell survived the pathological guest: a normal command still works.
-    assert_eq!(s.run_for_output("luau -e 'print(1+1)'"), "2\r\n", "VM dead after deep-input check");
+    assert_eq!(
+        s.run_for_output("luau -e 'print(1+1)'"),
+        "2\r\n",
+        "VM dead after deep-input check"
+    );
 }

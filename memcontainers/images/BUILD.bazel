@@ -9,7 +9,7 @@ load("//bazel:mc_program.bzl", "mc_service_layer")
 #
 # Three stacked layers, each inheriting the one below via pkg_tar `deps`:
 #   rootfs  — just /etc/profile (internal).
-#   base    — rootfs + /bin/{sh,pkgfsd,invoke}: a real but command-less shell, the shared substrate.
+#   base    — rootfs + /bin/{sh,pkgfsd,tools} + /svc/tools + /etc/services.d: the shared substrate.
 #   minimal — base + the four MINIMAL coreutils boxes (the curated ~15) + their /bin symlinks.
 #   posix   — base + the four FULL coreutils boxes (everything) + their /bin symlinks.
 
@@ -21,20 +21,36 @@ pkg_tar(
     owner = "0.0",  # determinism: root.root + fixed portable_mtime → content-addressable
 )
 
-# base — rootfs + the three SYSTEM binaries (each sysroot-native, pure-mc at wasm32-freestanding + opt,
-# stamped + attested via mc_rust_program): /bin/sh (the guest shell, boots as pid 1), /bin/invoke (the
-# host-tool bridge), /bin/pkgfsd (the /pkg daemon). A real but command-less shell, the substrate BOTH
-# flavors build on (SYSTEMS.md) — NOT a shipped flavor on its own (no coreutils — "make your own
-# harness"); minimal/posix add a command set by layering on top.
+# The base tool service layer — /bin/tools + /etc/services.d/tools.json. Lazy: discovery/calls pay the
+# broker start only when a VM actually uses the tool plane, while every image inherits the capability.
+mc_service_layer(
+    name = "base_tools_layer",
+    lazy = ["//memcontainers/programs/tools:tools"],
+)
+
+# The resident-service namespace root. Rootfs owns `/etc`; this base-owned layer adds only the leaf
+# directory so service layers can carry fragments without duplicating directory entries.
+pkg_tar(
+    name = "base_service_dirs",
+    create_parents = False,
+    empty_dirs = ["etc/services.d"],
+    owner = "0.0",
+)
+
+# base — rootfs + the three SYSTEM binaries/service faces (each sysroot-native, pure-mc at
+# wasm32-freestanding + opt, stamped + attested via mc_rust_program): /bin/sh (the guest shell, boots
+# as pid 1), /bin/tools plus /svc/tools (the host-backed tool plane), and /bin/pkgfsd (the /pkg
+# daemon). Base owns the resident-service directory; service layers add only binaries and fragments.
+# A real but command-less shell, the substrate BOTH flavors build on (SYSTEMS.md) — NOT a shipped flavor
+# on its own (no coreutils — "make your own harness"); minimal/posix add a command set by layering on top.
 pkg_tar(
     name = "base",
     files = {
         "//memcontainers/programs/sh:sh": "/bin/sh",
-        "//memcontainers/programs/invoke:invoke": "/bin/invoke",
         "//memcontainers/programs/pkgfsd:pkgfsd": "/bin/pkgfsd",
     },
     owner = "0.0",
-    deps = [":rootfs"],
+    deps = [":rootfs", ":base_service_dirs", ":base_tools_layer"],
     visibility = ["//visibility:public"],
 )
 
@@ -81,6 +97,7 @@ genrule(
 # ops) + their symlinks. Each /bin/<applet> routes to its least-privilege mcbox-min-<tier>.
 pkg_tar(
     name = "minimal",
+    create_parents = False,
     files = {
         "//memcontainers/programs/coreutils:mcbox-min-isolated_opt": "/bin/mcbox-min-isolated",
         "//memcontainers/programs/coreutils:mcbox-min-readonly_opt": "/bin/mcbox-min-readonly",
@@ -97,6 +114,7 @@ pkg_tar(
 # routing spawns every command from its lowest box.
 pkg_tar(
     name = "posix",
+    create_parents = False,
     files = {
         "//memcontainers/programs/coreutils:mcbox-isolated_opt": "/bin/mcbox-isolated",
         "//memcontainers/programs/coreutils:mcbox-readonly_opt": "/bin/mcbox-readonly",
@@ -113,12 +131,19 @@ pkg_tar(
 # json/hash/time/string batteries embedded) and luau-analyze type checker (256 MiB · 400B · 40k).
 pkg_tar(
     name = "loom",
+    create_parents = False,
+    empty_dirs = [
+        "lib",
+        "lib/luau",
+        "skills",
+    ],
     files = {
         "//memcontainers/programs/luau/glue:luau": "/bin/luau",
         "//memcontainers/programs/luau/glue:luau-analyze": "/bin/luau-analyze",
         # The agent-facing skill docs ride the flavor (not the binary) — luau + the doc generators.
         "//memcontainers/programs/luau/skills:luau.md": "/skills/luau.md",
         "//memcontainers/programs/luau/skills:docx.md": "/skills/docx.md",
+        "//memcontainers/programs/luau/skills:tools.md": "/skills/tools.md",
         "//memcontainers/programs/luau/skills:xlsx.md": "/skills/xlsx.md",
         "//memcontainers/programs/luau/skills:pptx.md": "/skills/pptx.md",
     },
@@ -129,10 +154,10 @@ pkg_tar(
 
 # svc-test — the resident-service primitive proof image (SYSTEMS.md): loom (the shell + /bin/luau)
 # + the svc example/test services /bin/kv (the warm key-value demo) and /bin/crashloop (a deliberately-
-# broken negative control), plus the GENERATED /etc/services.json. On LOOM (not base) so the e2e proves
+# broken negative control), plus GENERATED /etc/services.d fragments. On LOOM (not base) so the e2e proves
 # DUAL behavior (the SAME warm kv reached from the CLI `kv get` AND from Luau `sys.svc`), warm state
 # across calls, crash-only recovery, oversize survival, and bounded activation failure — before sqlite.
-# The svc layer — /bin/kv + /bin/crashloop + the GENERATED /etc/services.json, all derived from each
+# The svc layer — /bin/kv + /bin/crashloop + GENERATED /etc/services.d fragments, all derived from each
 # service's McProgramInfo (codex #2): the install path and the manifest's binary field are written once,
 # from one name, so they cannot drift. kv is eager (activated at boot — proves eager activation);
 # crashloop is lazy — a deliberately-broken negative control that crashes before svc_serve, so a connect
@@ -145,16 +170,17 @@ mc_service_layer(
 
 pkg_tar(
     name = "svc_test",
+    create_parents = False,
     owner = "0.0",
     deps = [":loom", ":svc_test_layer"],
     visibility = ["//visibility:public"],
 )
 
 # atlas — the data-intelligence flavor: loom + the sqlite resident SERVICE (the Zig-glue lane). Adds
-# /bin/sqlite (the warm service binary, stamped + attested), the /etc/services.json that activates it
+# /bin/sqlite (the warm service binary, stamped + attested), the /etc/services.d fragment that activates it
 # at boot, the require("sqlite") library at /lib/luau/sqlite.luau, and the sqlite skill at /skills. The
 # first flavor with a domain SERVICE, not just CLI tools (SYSTEMS.md). (sqlite-vec lands here later.)
-# The sqlite service layer — /bin/sqlite + the GENERATED /etc/services.json, both derived from sqlite's
+# The sqlite service layer — /bin/sqlite + its GENERATED /etc/services.d fragment, both derived from sqlite's
 # McProgramInfo (codex #2). lazy (the default activation model): atlas spawns sqlite on the first
 # svc_connect, not at boot.
 mc_service_layer(
@@ -164,6 +190,7 @@ mc_service_layer(
 
 pkg_tar(
     name = "atlas",
+    create_parents = False,
     files = {
         "//memcontainers/programs/sqlite/lib:sqlite.luau": "/lib/luau/sqlite.luau",
         "//memcontainers/programs/sqlite/skills:sqlite.md": "/skills/sqlite.md",
@@ -174,12 +201,12 @@ pkg_tar(
 )
 
 # paper — the document-automation flavor: loom + the typst resident SERVICE (the Rust-std-wasi lane).
-# Adds /bin/typst (the warm service binary, stamped + attested), the /etc/services.json that activates
+# Adds /bin/typst (the warm service binary, stamped + attested), the /etc/services.d fragment that activates
 # it, the require("typst") library at /lib/luau/typst.luau, the typst skill at /skills, and the baseline
 # faces under /usr/share/fonts (the separated font layer — SYSTEMS.md; the engine carries no fonts
 # and scans this at startup). The second domain flavor (after atlas's sqlite), and the first Rust-std
 # service.
-# The typst service layer — /bin/typst + the GENERATED /etc/services.json, both derived from typst's
+# The typst service layer — /bin/typst + its GENERATED /etc/services.d fragment, both derived from typst's
 # McProgramInfo. lazy (atlas's model): paper spawns typst on the first svc_connect, not at boot.
 mc_service_layer(
     name = "paper_layer",
@@ -188,6 +215,7 @@ mc_service_layer(
 
 pkg_tar(
     name = "paper",
+    create_parents = False,
     files = {
         "//memcontainers/programs/typst/lib:typst.luau": "/lib/luau/typst.luau",
         "//memcontainers/programs/typst/skills:typst.md": "/skills/typst.md",

@@ -129,13 +129,22 @@ defmodule AgentOS.ControlPlaneTest do
                  net: :relay
                )
 
-      assert {:ok, host_job} = ControlPlane.exec_start(id, "invoke greet world")
+      assert :ok = ControlPlane.mkdir(id, "/etc/tools")
+
+      assert :ok =
+               ControlPlane.write_file(
+                 id,
+                 "/etc/tools/catalog.json",
+                 ~s({"tools":[{"address":"host.org.main.greet","description":"Greet","binding":{"type":"host_call","name":"greet","args":"raw"}}]})
+               )
+
+      assert {:ok, host_job} = ControlPlane.exec_start(id, "tools call host.org.main.greet world")
       assert {:ok, %{kind: :host_call, name: "greet"} = event} = next_relay(id, host_job, 5_000)
       assert tool_body(event.body) == "world"
 
       assert :ok = ControlPlane.egress_host_call_respond(id, event.handle, "hello #{tool_body(event.body)}\n")
 
-      assert {:ok, %{exit_code: 0, stdout: "hello world\n", stderr: ""}} =
+      assert {:ok, %{exit_code: 0, stdout: ~s({"ok":true,"data":"hello world\\n"}\n), stderr: ""}} =
                poll_exec(id, host_job, 5_000)
 
       assert {:ok, http_job} = ControlPlane.exec_start(id, "fetch http://example.test/hello")

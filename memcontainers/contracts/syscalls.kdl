@@ -247,7 +247,7 @@ syscall "mc_sys_ws_open" variant="WsOpen" group="egress" cap="CAP_NET" {
 }
 syscall "mc_sys_host_call" variant="HostCall" group="egress" cap="CAP_NET" {
     arg "req_ptr" type="u32"; arg "req_len" type="u32"; arg "ret_fd" type="u32"
-    doc "Invoke a host-resident function (the mc-tool shim, host-backed mounts); readable result fd to ret_fd."
+    doc "Invoke a host-resident function (the tool broker, host-backed mounts); readable result fd to ret_fd."
 }
 
 // ── misc ─────────────────────────────────────────────────────────────────────

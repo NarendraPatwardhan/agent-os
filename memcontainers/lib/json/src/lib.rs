@@ -1,7 +1,7 @@
 //! `json` — a lightweight, pure `no_std + alloc` alternative to `serde_json`
 //! (parse + serialize) shared across agent-os Rust components: the kernel reads
-//! `/etc/services.json` to
-//! activate resident services, and userspace tools (`invoke`) can parse tool-call
+//! `/etc/services.d` fragments to
+//! activate resident services, and userspace tools can parse tool-call
 //! results instead of only hand-building request bodies. No syscalls, no `std`, no
 //! external deps — the caller supplies the heap (`alloc`); under `--test` the crate
 //! links `std` so the unit tests run natively (`#![cfg_attr(not(test), no_std)]`).
@@ -448,23 +448,16 @@ mod tests {
 
     #[test]
     fn parses_a_service_manifest() {
-        // The exact shape the kernel reads from /etc/services.json (SYSTEMS.md): name → { binary,
-        // optional `eager` }. No tier/budget here — the binary's own mc_tier/mc_budget are the single
+        // The exact per-service fragment shape the kernel reads from /etc/services.d (SYSTEMS.md):
+        // { binary, optional `eager` }. No tier/budget here — the binary's own mc_tier/mc_budget are the single
         // source of truth, so a manifest can never widen the privilege a binary declared it needs.
-        let m = parse(
-            r#"{
-                "kv":     { "binary": "/bin/kv", "eager": true },
-                "sqlite": { "binary": "/bin/sqlite" }
-            }"#,
-        )
-        .unwrap();
-        let kv = m.get("kv").unwrap();
-        assert_eq!(kv.get("binary").unwrap().as_str(), Some("/bin/kv"));
-        assert_eq!(kv.get("eager").unwrap().as_bool(), Some(true));
-        let sqlite = m.get("sqlite").unwrap();
-        assert_eq!(sqlite.get("binary").unwrap().as_str(), Some("/bin/sqlite"));
-        assert_eq!(sqlite.get("eager"), None); // absent → lazy (the default)
-        // The `as_u64` accessor stays covered (numeric config a tool might carry, e.g. a budget).
+        let m = parse(r#"{ "binary": "/bin/kv", "eager": true }"#).unwrap();
+        assert_eq!(m.get("binary").unwrap().as_str(), Some("/bin/kv"));
+        assert_eq!(m.get("eager").unwrap().as_bool(), Some(true));
+        let lazy = parse(r#"{ "binary": "/bin/sqlite" }"#).unwrap();
+        assert_eq!(lazy.get("binary").unwrap().as_str(), Some("/bin/sqlite"));
+        assert_eq!(lazy.get("eager"), None); // absent → lazy (the default)
+                                             // The `as_u64` accessor stays covered (numeric config a tool might carry, e.g. a budget).
         assert_eq!(parse("134217728").unwrap().as_u64(), Some(134217728));
     }
 

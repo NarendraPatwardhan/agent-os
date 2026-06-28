@@ -1,11 +1,12 @@
 //! `mc-svc-manifest <out.tar> <name> <eager|lazy> <service.wasm> [<name> <eager|lazy> <service.wasm>]...`
 //! — build the resident-service LAYER: a deterministic tar carrying each service binary at `/bin/<name>`
-//! AND the `/etc/services.json` that activates them. Emitting BOTH the install and the manifest from one
-//! place (codex #2) is the point: `/bin/<name>` is derived ONCE, so the install path and the manifest's
-//! `binary` field can never drift apart. The per-service NAME is the caller's — `mc_service_layer` reads
-//! it from each target's `McProgramInfo.service` (the build graph, not a wasm re-parse) — and this
-//! asserts the binary's own stamped `mc_service` section matches, so the graph's truth and the shipped
-//! artifact must agree. Dependency-free; the ustar writer mirrors mc-roster.
+//! AND one `/etc/services.d/<name>.json` fragment that activates it. The base image owns the
+//! `/etc/services.d` directory; generated service layers carry only the files they introduce. Emitting
+//! BOTH from one place (codex #2) is the point: `/bin/<name>` is derived ONCE, so the install path and the
+//! manifest's `binary` field can never drift apart. The per-service NAME is the caller's —
+//! `mc_service_layer` reads it from each target's `McProgramInfo.service` (the build graph, not a wasm
+//! re-parse) — and this asserts the binary's own stamped `mc_service` section matches, so the graph's
+//! truth and the shipped artifact must agree. Dependency-free; the ustar writer mirrors mc-roster.
 
 use std::collections::BTreeMap;
 use std::process::ExitCode;
@@ -173,34 +174,30 @@ fn main() -> ExitCode {
         }
     }
 
-    // /etc/services.json — { "<name>": { "binary": "/bin/<name>"[, "eager": true] } }, sorted.
-    let mut json = String::from("{\n");
-    let n = services.len();
-    for (idx, (name, (eager, _))) in services.iter().enumerate() {
-        json.push_str("  ");
-        json.push_str(&json_str(name));
-        json.push_str(": { \"binary\": ");
-        json.push_str(&json_str(&format!("/bin/{name}")));
-        if *eager {
-            json.push_str(", \"eager\": true");
-        }
-        json.push_str(" }");
-        if idx + 1 < n {
-            json.push(',');
-        }
-        json.push('\n');
-    }
-    json.push_str("}\n");
-
-    // The layer tar: each binary at /bin/<name> (BTreeMap order, all sorting before "etc/"), then the
-    // manifest at /etc/services.json — the SAME /bin/<name> the manifest names, so they cannot drift.
+    // The layer tar: each binary at /bin/<name> (BTreeMap order, all sorting before "etc/"), then one
+    // fragment at /etc/services.d/<name>.json — the SAME /bin/<name> the fragment names, so they cannot
+    // drift. Base owns the directory; fragments are composable across image layers, so a flavor adding
+    // sqlite does not replace the base tools service.
     let mut tar = Vec::new();
     for (name, (_, wasm)) in &services {
         // Executable (0555, like the rest of /bin) — the shell PATH-execs these as the service's CLI
         // face; the kernel also spawns them for activation.
         append_file(&mut tar, &format!("bin/{name}"), wasm, b"0000555\0");
     }
-    append_file(&mut tar, "etc/services.json", json.as_bytes(), b"0000644\0"); // plain data
+    for (name, (eager, _)) in &services {
+        let mut json = String::from("{ \"binary\": ");
+        json.push_str(&json_str(&format!("/bin/{name}")));
+        if *eager {
+            json.push_str(", \"eager\": true");
+        }
+        json.push_str(" }\n");
+        append_file(
+            &mut tar,
+            &format!("etc/services.d/{name}.json"),
+            json.as_bytes(),
+            b"0000644\0",
+        );
+    }
     tar.extend_from_slice(&[0u8; 1024]); // two zero blocks terminate the archive
 
     if let Err(e) = std::fs::write(out, &tar) {

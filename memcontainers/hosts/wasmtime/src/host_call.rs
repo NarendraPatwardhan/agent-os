@@ -1,5 +1,5 @@
 //! Host-call capability: the host side of `mc_sys_host_call`. The kernel hands
-//! the host an opaque request blob (`name\0args`, from `mc-tool`); the host
+//! the host an opaque request blob (`name\0args`, from the tool broker); the host
 //! routes it to a registered handler and streams back a result. Poll-based,
 //! mirroring the net capability: `start` → handle, `poll` → readiness, `body` →
 //! result bytes, `close`. Default-deny (A9): without an installed capability,

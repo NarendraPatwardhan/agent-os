@@ -37,7 +37,7 @@ rust_e2e_test(
         "@rules_rust//rust/runfiles",
     ],
     data = [
-        "//memcontainers/images:base",  # rootfs + sh/pkgfsd/invoke (the boot + kernel/control-channel tests)
+        "//memcontainers/images:base",  # rootfs + sh/pkgfsd/tools (the boot + kernel/control-channel tests)
         "//memcontainers/images:minimal",  # base + the curated minimal coreutils set (the flavor test)
         "//memcontainers/images:posix",  # base + the full coreutils set (the shell / coreutils / system tests)
         "//memcontainers/images:loom",  # posix + /bin/luau — the Luau domain-tool boot e2e

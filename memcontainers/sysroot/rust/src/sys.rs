@@ -740,8 +740,8 @@ pub fn http_request(req: &[u8]) -> Result<i32, i32> {
     }
 }
 
-/// Invoke a host-resident function (`mc_sys_host_call`) — the `mc-tool` shim and
-/// host-backed mounts. `req` is an opaque blob the host routes to a registered
+/// Invoke a host-resident function (`mc_sys_host_call`) — the tool broker and host-backed mounts.
+/// `req` is an opaque blob the host routes to a registered
 /// handler; the returned fd streams the result back (read it like any file).
 /// Requires `CAP_NET` (a host call is host-terminated egress).
 pub fn host_call(req: &[u8]) -> Result<i32, i32> {
