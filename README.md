@@ -1,4 +1,25 @@
-# agent-os
+<div align="center">
+  <img src="./agentOS.png" alt="agent-os hero" width="360">
+
+  <h1>agent-os</h1>
+
+  <p><strong>A WebAssembly-native computer for AI agents.</strong></p>
+
+  <p>
+    <a href="./SYSTEMS.md"><img alt="Design contract: SYSTEMS.md" src="https://img.shields.io/badge/design-SYSTEMS.md-111111"></a>
+    <a href="./LICENSE"><img alt="License: BSL 1.1" src="https://img.shields.io/badge/license-BSL%201.1-f5c542"></a>
+    <img alt="Runtime: WebAssembly" src="https://img.shields.io/badge/runtime-WebAssembly-654ff0">
+    <img alt="Build: Bazel" src="https://img.shields.io/badge/build-Bazel-43a047">
+    <img alt="SDK: TypeScript and Bun" src="https://img.shields.io/badge/SDK-TypeScript%20%2B%20Bun-3178c6">
+  </p>
+
+  <p>
+    <a href="#what-you-can-build">What You Can Build</a> -
+    <a href="#client-api">Client API</a> -
+    <a href="#images">Images</a> -
+    <a href="#build-and-verification">Build and Verification</a>
+  </p>
+</div>
 
 agent-os gives AI agents a real computer: a contained Unix-like workspace with a
 shell, files, network access, tools, data engines, document generation, and a
