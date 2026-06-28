@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::normalize::{sanitize_segment_or, valid_segment};
 use crate::Diagnostic;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,7 +76,7 @@ pub fn compile(source: &str, opts: &CompileOptions) -> CompileOutput {
         };
         tools.push(McpTool {
             name: name.to_string(),
-            address_id: sanitize_segment(name),
+            address_id: sanitize_segment_or(name, "tool"),
             description: item
                 .get("description")
                 .or_else(|| item.get("title"))
@@ -227,33 +228,6 @@ fn assign_collision_suffixes(tools: &mut [McpTool]) {
         *n += 1;
         tool.address_id = format!("{}-{}", tool.address_id, *n);
     }
-}
-
-fn sanitize_segment(name: &str) -> String {
-    let mut out = String::new();
-    let mut last_dash = false;
-    for c in name.chars() {
-        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-            out.push(c);
-            last_dash = false;
-        } else if !last_dash {
-            out.push('-');
-            last_dash = true;
-        }
-    }
-    let out = out.trim_matches('-').to_string();
-    if out.is_empty() {
-        "tool".to_string()
-    } else {
-        out
-    }
-}
-
-fn valid_segment(s: &str) -> bool {
-    !s.is_empty()
-        && s.as_bytes()
-            .iter()
-            .all(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-')
 }
 
 #[cfg(test)]

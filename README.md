@@ -60,6 +60,8 @@ Use it when an agent needs to do actual work, not just call one API at a time.
 | OpenAPI adapter | Compile REST APIs into tool catalog records. Presets include Stripe, GitHub REST, Vercel, Cloudflare, Neon, OpenAI, Sentry, Exa, Axiom, Asana, Twilio, DigitalOcean, Petstore, Val Town, Resend, and Spotify. |
 | Microsoft Graph adapter | Microsoft 365 workflows across profile, mail, calendar, contacts, tasks, Planner, OneDrive, Excel, SharePoint, OneNote, Teams, meetings, users, groups, directory, identity, admin, security, Intune, education, search, and platform services. |
 | Google Discovery adapter | Google workflows across Calendar, Gmail, Sheets, Drive, Docs, Slides, Forms, Tasks, People, Photos, Chat, Keep, YouTube, Search Console, Classroom, Admin, Apps Script, BigQuery, and Cloud Resource Manager. |
+| GraphQL adapter | GitHub GraphQL, GitLab, Linear, Monday.com, and AniList workflows across repos, issues, merge requests, pipelines, users, projects, teams, cycles, boards, items, anime, and manga. |
+| Remote MCP adapter | MCP workflows across DeepWiki, Context7, Browserbase, Firecrawl, Neon, Axiom, Stripe, Linear, Notion, Sentry, Cloudflare, and deterministic Emulate fixtures. |
 
 ## Why It Is Different
 

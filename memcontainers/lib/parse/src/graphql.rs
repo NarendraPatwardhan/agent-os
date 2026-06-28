@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::normalize::{sanitize_segment_or, valid_segment};
 use crate::Diagnostic;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -374,7 +375,11 @@ fn tool_address(opts: &CompileOptions, field: &RootField) -> String {
 }
 
 fn tool_tail(field: &RootField) -> String {
-    format!("{}.{}", field.operation_type, sanitize_segment(&field.name))
+    format!(
+        "{}.{}",
+        field.operation_type,
+        sanitize_segment_or(&field.name, "field")
+    )
 }
 
 fn sanitize_graphql_name(name: &str) -> String {
@@ -390,33 +395,6 @@ fn sanitize_graphql_name(name: &str) -> String {
         out.insert(0, '_');
     }
     out
-}
-
-fn sanitize_segment(name: &str) -> String {
-    let mut out = String::new();
-    let mut last_dash = false;
-    for c in name.chars() {
-        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-            out.push(c);
-            last_dash = false;
-        } else if !last_dash {
-            out.push('-');
-            last_dash = true;
-        }
-    }
-    let out = out.trim_matches('-').to_string();
-    if out.is_empty() {
-        "field".to_string()
-    } else {
-        out
-    }
-}
-
-fn valid_segment(s: &str) -> bool {
-    !s.is_empty()
-        && s.as_bytes()
-            .iter()
-            .all(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-')
 }
 
 #[cfg(test)]

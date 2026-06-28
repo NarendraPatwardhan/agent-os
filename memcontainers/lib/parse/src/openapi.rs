@@ -9,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+use crate::normalize::{depth_exceeded, sanitize_segment};
 use crate::Diagnostic;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -321,7 +322,7 @@ enum SchemaUse {
 }
 
 fn normalize_schema(root: &Value, schema: &Value, use_case: SchemaUse, depth: usize) -> Value {
-    if depth > 32 {
+    if depth_exceeded(depth) {
         return json!({});
     }
     let schema = resolve_ref_or_self(root, schema).unwrap_or(schema);
@@ -693,29 +694,6 @@ fn derived_tool_id(method: &str, path: &str) -> String {
         }
     }
     parts.join(".")
-}
-
-fn sanitize_segment(value: &str) -> String {
-    let mut out = String::new();
-    let mut last_sep = false;
-    for b in value.bytes() {
-        let c = match b {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' => b as char,
-            b'_' | b'-' => b as char,
-            _ => {
-                if last_sep {
-                    continue;
-                }
-                last_sep = true;
-                '-'
-            }
-        };
-        if c != '-' {
-            last_sep = false;
-        }
-        out.push(c);
-    }
-    out.trim_matches('-').to_string()
 }
 
 fn assign_collision_suffixes(operations: &mut [Operation]) {

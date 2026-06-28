@@ -6,10 +6,9 @@
 
 use serde_json::{json, Map, Value};
 
+use crate::normalize::{depth_exceeded, MAX_NORMALIZATION_DEPTH};
 use crate::openapi::{self, CompileOutput, SourceFormat};
 use crate::Diagnostic;
-
-const MAX_DISCOVERY_DEPTH: usize = 32;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CompileOptions {}
@@ -100,7 +99,7 @@ fn collect_methods(
     diagnostics: &mut Vec<Diagnostic>,
     depth: usize,
 ) {
-    if depth > MAX_DISCOVERY_DEPTH {
+    if depth_exceeded(depth) {
         diagnostics.push(Diagnostic::warn(
             "max_depth_exceeded",
             "Google Discovery resource tree exceeded the supported nesting depth",
@@ -264,7 +263,7 @@ fn discovery_responses(method: &Value) -> Value {
 }
 
 fn discovery_schema(schema: &Value, depth: usize) -> Value {
-    if depth > MAX_DISCOVERY_DEPTH {
+    if depth_exceeded(depth) {
         return json!({});
     }
 
@@ -446,7 +445,7 @@ mod tests {
                 }
             }
         });
-        for i in 0..=MAX_DISCOVERY_DEPTH {
+        for i in 0..=MAX_NORMALIZATION_DEPTH {
             node = json!({ "resources": { format!("r{i}"): node } });
         }
         let source = serde_json::to_string(&node).unwrap();

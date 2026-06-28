@@ -8,6 +8,7 @@ pub mod google;
 pub mod graphql;
 pub mod mcp;
 pub mod microsoft;
+pub mod normalize;
 pub mod openapi;
 pub mod registry;
 
