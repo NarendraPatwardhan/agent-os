@@ -1,0 +1,27 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+# Shared parser/normalizer library for external API-description formats that feed the tool plane.
+# This is deliberately under `memcontainers/lib`: OpenAPI/GraphQL/Graph/Google parsing is adapter
+# logic, not root `{x}core` substrate. The crate is std + serde; resident services consume it through
+# the WASI lane, while native tests exercise deterministic catalog emission without booting a VM.
+exports_files(["Cargo.toml", "Cargo.lock"])
+
+rust_library(
+    name = "parse",
+    srcs = glob(["src/**/*.rs"]),
+    crate_name = "mc_parse",
+    edition = "2021",
+    deps = [
+        "@parse_crates//:serde",
+        "@parse_crates//:serde_json",
+        "@parse_crates//:serde_yaml",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+rust_test(
+    name = "test",
+    crate = ":parse",
+    edition = "2021",
+    size = "small",
+)

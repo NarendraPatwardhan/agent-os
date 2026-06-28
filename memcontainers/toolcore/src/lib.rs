@@ -23,9 +23,18 @@ pub enum ArgsMode {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Binding {
-    pub name: String,
-    pub args_mode: ArgsMode,
+pub enum Binding {
+    HostCall {
+        name: String,
+        args_mode: ArgsMode,
+    },
+    Service {
+        service: String,
+        op: String,
+        adapter: String,
+        args_mode: ArgsMode,
+        request: Json,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,15 +113,23 @@ impl Catalog {
         self.records.iter().find(|r| r.address == address)
     }
 
-    /// Resolve a busybox-style command alias. Exact host binding names win; otherwise the final
-    /// address segment may resolve only when it is unambiguous.
+    /// Resolve a busybox-style command alias. Exact host-call binding names win; otherwise the final
+    /// address segment may resolve only when it is unambiguous. Service-backed tools intentionally do
+    /// not get a second raw binding-name namespace: their callable identity is the catalog address.
     pub fn find_alias(&self, alias: &str) -> Option<&ToolRecord> {
-        if let Some(r) = self.records.iter().find(|r| r.binding.name == alias) {
+        if let Some(r) = self
+            .records
+            .iter()
+            .find(|r| matches!(&r.binding, Binding::HostCall { name, .. } if name == alias))
+        {
             return Some(r);
         }
         let mut found = None;
         for r in &self.records {
-            let leading_binding = r.binding.name.split_whitespace().next() == Some(alias);
+            let leading_binding = match &r.binding {
+                Binding::HostCall { name, .. } => name.split_whitespace().next() == Some(alias),
+                Binding::Service { .. } => false,
+            };
             if r.tool == alias || leading_binding {
                 if found.is_some() {
                     return None;
@@ -173,24 +190,40 @@ impl ToolRecord {
             pairs.push(("output_schema".to_string(), schema.clone()));
         }
         pairs.push(("annotations".to_string(), self.annotations.clone()));
-        pairs.push((
-            "binding".to_string(),
-            Json::Obj(vec![
-                ("type".to_string(), Json::Str("host_call".to_string())),
-                ("name".to_string(), Json::Str(self.binding.name.clone())),
-                (
-                    "args".to_string(),
-                    Json::Str(
-                        match self.binding.args_mode {
-                            ArgsMode::Json => "json",
-                            ArgsMode::Raw => "raw",
-                        }
-                        .to_string(),
-                    ),
-                ),
-            ]),
-        ));
+        pairs.push(("binding".to_string(), self.binding.to_json()));
         Json::Obj(pairs)
+    }
+}
+
+impl Binding {
+    pub fn args_mode(&self) -> ArgsMode {
+        match self {
+            Binding::HostCall { args_mode, .. } | Binding::Service { args_mode, .. } => *args_mode,
+        }
+    }
+
+    pub fn to_json(&self) -> Json {
+        match self {
+            Binding::HostCall { name, args_mode } => Json::Obj(vec![
+                ("type".to_string(), Json::Str("host_call".to_string())),
+                ("name".to_string(), Json::Str(name.clone())),
+                ("args".to_string(), Json::Str(args_mode_name(*args_mode))),
+            ]),
+            Binding::Service {
+                service,
+                op,
+                adapter,
+                args_mode,
+                request,
+            } => Json::Obj(vec![
+                ("type".to_string(), Json::Str("service".to_string())),
+                ("service".to_string(), Json::Str(service.clone())),
+                ("op".to_string(), Json::Str(op.clone())),
+                ("adapter".to_string(), Json::Str(adapter.clone())),
+                ("args".to_string(), Json::Str(args_mode_name(*args_mode))),
+                ("request".to_string(), request.clone()),
+            ]),
+        }
     }
 }
 
@@ -269,24 +302,9 @@ fn parse_record(v: &Json) -> Result<ToolRecord, ToolError> {
         .get("type")
         .and_then(|t| t.as_str())
         .unwrap_or("host_call");
-    if binding_type != "host_call" {
-        return Err(ToolError::UnsupportedBinding);
-    }
-    let binding_name = binding_json
-        .get("name")
-        .and_then(|n| n.as_str())
-        .unwrap_or(&tool);
-    if !valid_binding_name(binding_name) {
-        return Err(ToolError::InvalidBindingName);
-    }
-    let binding_name = binding_name.to_string();
-    let args_mode = match binding_json
-        .get("args")
-        .and_then(|a| a.as_str())
-        .unwrap_or("json")
-    {
-        "raw" => ArgsMode::Raw,
-        "json" => ArgsMode::Json,
+    let binding = match binding_type {
+        "host_call" => parse_host_binding(binding_json, &tool)?,
+        "service" => parse_service_binding(binding_json)?,
         _ => return Err(ToolError::UnsupportedBinding),
     };
     Ok(ToolRecord {
@@ -302,11 +320,65 @@ fn parse_record(v: &Json) -> Result<ToolRecord, ToolError> {
             .get("annotations")
             .cloned()
             .unwrap_or_else(|| Json::Obj(Vec::new())),
-        binding: Binding {
-            name: binding_name,
-            args_mode,
-        },
+        binding,
     })
+}
+
+fn parse_host_binding(binding_json: &Json, tool: &str) -> Result<Binding, ToolError> {
+    let binding_name = binding_json
+        .get("name")
+        .and_then(|n| n.as_str())
+        .unwrap_or(tool);
+    if !valid_binding_name(binding_name) {
+        return Err(ToolError::InvalidBindingName);
+    }
+    Ok(Binding::HostCall {
+        name: binding_name.to_string(),
+        args_mode: parse_args_mode(binding_json)?,
+    })
+}
+
+fn parse_service_binding(binding_json: &Json) -> Result<Binding, ToolError> {
+    let service = required_str(binding_json, "service")?;
+    let op = required_str(binding_json, "op")?;
+    let adapter = required_str(binding_json, "adapter")?;
+    if !valid_service_name(service) || !valid_op_name(op) || !valid_segment(adapter) {
+        return Err(ToolError::InvalidBindingName);
+    }
+    let request = binding_json
+        .get("request")
+        .cloned()
+        .unwrap_or_else(|| Json::Obj(Vec::new()));
+    if !matches!(request, Json::Obj(_)) {
+        return Err(ToolError::Shape);
+    }
+    Ok(Binding::Service {
+        service: service.to_string(),
+        op: op.to_string(),
+        adapter: adapter.to_string(),
+        args_mode: parse_args_mode(binding_json)?,
+        request,
+    })
+}
+
+fn parse_args_mode(binding_json: &Json) -> Result<ArgsMode, ToolError> {
+    match binding_json
+        .get("args")
+        .and_then(|a| a.as_str())
+        .unwrap_or("json")
+    {
+        "raw" => Ok(ArgsMode::Raw),
+        "json" => Ok(ArgsMode::Json),
+        _ => Err(ToolError::UnsupportedBinding),
+    }
+}
+
+fn args_mode_name(mode: ArgsMode) -> String {
+    match mode {
+        ArgsMode::Json => "json",
+        ArgsMode::Raw => "raw",
+    }
+    .to_string()
 }
 
 fn required_str<'a>(v: &'a Json, key: &str) -> Result<&'a str, ToolError> {
@@ -349,6 +421,20 @@ fn valid_binding_name(name: &str) -> bool {
         && !name.starts_with('/')
         && name.trim() == name
         && !name.as_bytes().iter().any(|b| b.is_ascii_control())
+}
+
+fn valid_service_name(name: &str) -> bool {
+    valid_segment(name)
+}
+
+fn valid_op_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.trim() == name
+        && !name.as_bytes().iter().any(|b| b.is_ascii_control())
+        && name
+            .as_bytes()
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'.' || *b == b'_' || *b == b'-')
 }
 
 fn normalize(s: &str) -> String {
@@ -590,6 +676,39 @@ mod tests {
     }
 
     #[test]
+    fn parses_service_bindings_without_host_call_names() {
+        let catalog = Catalog::parse(
+            r#"{"tools":[{"address":"petstore.org.main.listPets","description":"List pets",
+               "binding":{"type":"service","service":"adapters","op":"invoke","adapter":"openapi",
+                 "args":"json","request":{"method":"GET","url_template":"https://example.test/pets"}}}]}"#,
+        )
+        .unwrap();
+        let rec = catalog.find("petstore.org.main.listPets").unwrap();
+        match &rec.binding {
+            Binding::Service {
+                service,
+                op,
+                adapter,
+                request,
+                ..
+            } => {
+                assert_eq!(service, "adapters");
+                assert_eq!(op, "invoke");
+                assert_eq!(adapter, "openapi");
+                assert_eq!(request.get("method").and_then(Json::as_str), Some("GET"));
+            }
+            other => panic!("expected service binding, got {other:?}"),
+        }
+        assert_eq!(
+            rec.to_json()
+                .get("binding")
+                .and_then(|b| b.get("service"))
+                .and_then(Json::as_str),
+            Some("adapters")
+        );
+    }
+
+    #[test]
     fn rejects_bad_addresses() {
         for bad in [
             "x.main.greet",
@@ -623,6 +742,17 @@ mod tests {
                 ToolError::InvalidBindingName
             );
         }
+    }
+
+    #[test]
+    fn rejects_unsafe_service_bindings() {
+        let err = Catalog::parse(
+            r#"{"tools":[{"address":"petstore.org.main.listPets",
+               "binding":{"type":"service","service":"/adapters","op":"invoke","adapter":"openapi",
+                 "request":{}}}]}"#,
+        )
+        .unwrap_err();
+        assert_eq!(err, ToolError::InvalidBindingName);
     }
 
     #[test]

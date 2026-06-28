@@ -93,7 +93,7 @@ under `memcontainers/`, the build machinery under `bazel/`.
 | 14 | **Shell** | An OS-agnostic POSIX-ish shell engine driving `/bin/sh` | `memcontainers/shcore/`, `memcontainers/programs/sh` | built |
 | 15 | **Userland `/bin`** | Multicall coreutils, partitioned by tier | `memcontainers/programs/coreutils/` | built |
 | 16 | **Luau scripting** | The primary user-facing language; embedded + VFS batteries | `memcontainers/programs/luau/` | built |
-| 17 | **Domain engines (SQLite, typst)** | Heavy engines as warm resident services in flavors | `memcontainers/programs/{sqlite,typst}/` | built |
+| 17 | **Domain engines & adapters** | Heavy engines plus the shared tool-adapter service | `memcontainers/programs/{sqlite,typst,adapters}/`, `memcontainers/lib/parse/` | built |
 | 18 | **Images, flavors & packages** | Content-addressed layered images; demand-loaded packages | `memcontainers/images/`, `memcontainers/pkgcore/`, `bazel/tools/mc-roster` | built |
 | 19 | **Host (wasmtime)** | Loads `kernel.wasm`, supplies the bridge, ticks, performs effects | `memcontainers/hosts/wasmtime/` | built |
 | 20 | **The network & browser edge** | `mc-server` (actor-per-VM), the wire protocol, the JS host family, the `@mc/*` SDK, the web app | `server/`, `memcontainers/hosts/js/`, `memcontainers/sdk-js/`, `web/` | designed; port staged |
@@ -957,8 +957,9 @@ it — least-privilege dispatch, and `/bin` cannot drift from actual dispatch. S
 `/etc/services.d/<name>.json` fragments are generated from the stamped `mc_service` section of each
 binary, so the install path, the fragment, and the artifact cannot disagree. Service fragments compose
 through the layer stack, never as one global file — because services are a property of the layer that
-pays the cold-start tax. Base provides the lazy `tools` service and the read-only `/tools` catalog tree
-so every image inherits the tool plane; domain packs add their own service fragments. A flavor's
+pays the cold-start tax. Base provides the lazy `tools` broker, the lazy `adapters` service, and the
+read-only `/tools` catalog tree so every image inherits the tool plane; domain packs add their own
+service fragments. A flavor's
 `require()` shim name must
 not collide with a universal embedded battery; `sqlite`/`typst` are not embedded, so they load from the
 layer (`require` order is cache → embedded → VFS).
@@ -973,6 +974,20 @@ is the file-tree discovery face over the checkpoint catalog: directories progres
 and reading a leaf returns that tool's JSON record. Tool `call` and `call_alias` additionally require the
 caller's kernel-stamped `CAP_NET`, matching direct `host_call`; discovery, `/tools`, and artifact cleanup stay
 unprivileged.
+
+`/svc/adapters` is the mcbox-style resident service for adapter-backed tools. It is one std-WASI service,
+not one service per format: OpenAPI is the first internal compiler, and GraphQL, Microsoft Graph, and
+Google discovery should land as modules behind the same protocol so serde/YAML/schema costs are paid once.
+`memcontainers/lib/parse` owns shared parse/normalize logic; root `{x}core` crates remain for substrate
+that is fundamental to the VM. The service also exposes a static curated registry lifted from executor's
+MIT-licensed preset tables as factual metadata: integration ids, summaries, public spec/discovery/MCP
+endpoints, OAuth scopes, and Graph path filters. Registry reads are local and deterministic; fetching
+remote specs is still a later adapter/connection action. `compile` operations emit ordinary catalog
+records with service bindings back to `/svc/adapters invoke`; those records contain request templates and
+opaque connection references, never credentials. `invoke` expands tool args into a host request and,
+because the service is full-tier, checks the caller's kernel-stamped `CAP_NET` before reaching
+`host_call`. `/svc/tools` performs the same caller-authority gate before dispatching service-backed
+catalog records, so adapters cannot launder host egress around the normal tool-plane boundary.
 
 `pkgcore` is the pure logic for `pkgfsd`, a demand-load package daemon: a dependency-free SHA-256, a
 tab-separated catalog parser, and path/URL helpers. Packages are addressed by content hash, fetched from a

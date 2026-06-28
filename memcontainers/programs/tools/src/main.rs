@@ -19,7 +19,7 @@ use alloc::vec::Vec;
 use json::Json;
 use pkgcore::{hex, sha256, Sha256};
 use sysroot as rt;
-use toolcore::{err_json, ok_json, search_page_json, ArgsMode, Catalog, ToolRecord};
+use toolcore::{err_json, ok_json, search_page_json, ArgsMode, Binding, Catalog, ToolRecord};
 
 #[global_allocator]
 static ALLOCATOR: talc::wasm::WasmDynamicTalc = talc::wasm::new_wasm_dynamic_allocator();
@@ -409,7 +409,7 @@ fn collect_or_materialize(fd: i32, state: &mut ToolState) -> Result<Json, ()> {
 }
 
 fn args_for_binding(rec: &ToolRecord, args: Option<&Json>) -> Vec<u8> {
-    match rec.binding.args_mode {
+    match rec.binding.args_mode() {
         ArgsMode::Raw => match args {
             Some(Json::Str(s)) => s.as_bytes().to_vec(),
             Some(Json::Null) | None => Vec::new(),
@@ -435,8 +435,11 @@ fn call_host(
     }
 
     let payload = args_for_binding(rec, args);
-    let mut req = Vec::with_capacity(rec.binding.name.len() + 1 + payload.len());
-    req.extend_from_slice(rec.binding.name.as_bytes());
+    let Binding::HostCall { name, .. } = &rec.binding else {
+        return err_json("bad_binding", "tool is not a host-call binding");
+    };
+    let mut req = Vec::with_capacity(name.len() + 1 + payload.len());
+    req.extend_from_slice(name.as_bytes());
     req.push(0);
     req.extend_from_slice(&payload);
     let fd = match rt::host_call(&req) {
@@ -456,6 +459,95 @@ fn call_host(
     };
     let _ = rt::close(fd);
     ok_json(data)
+}
+
+fn service_call_request(rec: &ToolRecord, args: Option<&Json>) -> Result<(String, Vec<u8>), ()> {
+    let Binding::Service {
+        service,
+        op,
+        adapter,
+        request,
+        ..
+    } = &rec.binding
+    else {
+        return Err(());
+    };
+    let empty_args = Json::Obj(Vec::new());
+    let actual_args = args.unwrap_or(&empty_args);
+    let doc = Json::Obj(vec![
+        ("op".to_string(), Json::Str(op.clone())),
+        ("adapter".to_string(), Json::Str(adapter.clone())),
+        ("tool".to_string(), Json::Str(rec.address.clone())),
+        ("binding".to_string(), request.clone()),
+        ("args".to_string(), actual_args.clone()),
+    ]);
+    Ok((service.clone(), json::to_string(&doc).into_bytes()))
+}
+
+fn tool_envelope(v: &Json) -> bool {
+    v.get("ok").and_then(|ok| ok.as_bool()).is_some()
+}
+
+fn wrap_service_data(data: Json) -> Json {
+    if tool_envelope(&data) {
+        data
+    } else {
+        ok_json(data)
+    }
+}
+
+fn call_service(
+    state: &mut ToolState,
+    rec: &ToolRecord,
+    args: Option<&Json>,
+    output: Option<&str>,
+) -> Json {
+    let empty_args = Json::Obj(Vec::new());
+    let actual_args = args.unwrap_or(&empty_args);
+    if toolcore::validate_args(rec.input_schema.as_ref(), actual_args).is_err() {
+        return err_json("validation_error", "arguments do not match input_schema");
+    }
+
+    let (service, body) = match service_call_request(rec, args) {
+        Ok(req) => req,
+        Err(_) => return err_json("bad_binding", "tool is not a service binding"),
+    };
+    let conn = match rt::svc_connect(&service) {
+        Ok(fd) => fd,
+        Err(_) => return err_json("service_unavailable", "tool adapter service is unavailable"),
+    };
+    let fd = match rt::svc_call(conn, &body, &[]) {
+        Ok(fd) => fd,
+        Err(_) => {
+            let _ = rt::close(conn);
+            return err_json("service_call_failed", "tool adapter service call failed");
+        }
+    };
+    let data = match output {
+        Some(_) => copy_host_to_file(fd, state, output).map(wrap_service_data),
+        None => collect_or_materialize(fd, state).map(wrap_service_data),
+    };
+    let _ = rt::close(fd);
+    let _ = rt::close(conn);
+    match data {
+        Ok(data) => data,
+        Err(_) => err_json(
+            "service_call_failed",
+            "tool adapter service response failed",
+        ),
+    }
+}
+
+fn call_tool(
+    state: &mut ToolState,
+    rec: &ToolRecord,
+    args: Option<&Json>,
+    output: Option<&str>,
+) -> Json {
+    match rec.binding {
+        Binding::HostCall { .. } => call_host(state, rec, args, output),
+        Binding::Service { .. } => call_service(state, rec, args, output),
+    }
 }
 
 fn apply_catalog(state: &mut ToolState, req: &Json, caller: u32) -> Json {
@@ -534,7 +626,7 @@ fn handle(state: &mut ToolState, req: &Json, caller: u32, caller_caps: u32) -> J
             };
             let rec = state.catalog.find(address).cloned();
             match rec.as_ref() {
-                Some(rec) => call_host(state, rec, req.get("args"), field_str(req, "output")),
+                Some(rec) => call_tool(state, rec, req.get("args"), field_str(req, "output")),
                 None => err_json("tool_not_found", "no tool with that address"),
             }
         }
@@ -547,7 +639,7 @@ fn handle(state: &mut ToolState, req: &Json, caller: u32, caller_caps: u32) -> J
             };
             let rec = state.catalog.find_alias(alias).cloned();
             match rec.as_ref() {
-                Some(rec) => call_host(state, rec, req.get("args"), field_str(req, "output")),
+                Some(rec) => call_tool(state, rec, req.get("args"), field_str(req, "output")),
                 None => err_json("tool_not_found", "no unique tool for that alias"),
             }
         }

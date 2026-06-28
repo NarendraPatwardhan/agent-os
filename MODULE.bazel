@@ -110,6 +110,15 @@ crate.from_cargo(
     manifests = ["//memcontainers/programs/typst/glue:Cargo.toml"],
 )
 
+# The adapter parser universe (std, wasm32-wasip1): shared serde-based parsers for external API
+# description formats that feed /svc/adapters. Kept apart from typst and freestanding guest graphs so
+# OpenAPI/YAML/schema dependencies never feature-unify with either domain engines or no_std tools.
+crate.from_cargo(
+    name = "parse_crates",
+    cargo_lockfile = "//memcontainers/lib/parse:Cargo.lock",
+    manifests = ["//memcontainers/lib/parse:Cargo.toml"],
+)
+
 # The NIF universe (std, native): just `rustler` for the BEAM host shim
 # (//memcontainers/hosts/wasmtime/nif). Its OWN lock — apart from @host_crates — so rustler
 # never feature-unifies with the host's wasmtime graph; the `host` crate it wraps is a Bazel
@@ -119,7 +128,7 @@ crate.from_cargo(
     cargo_lockfile = "//memcontainers/hosts/wasmtime/nif:Cargo.lock",
     manifests = ["//memcontainers/hosts/wasmtime/nif:Cargo.toml"],
 )
-use_repo(crate, "crates", "guest_crates", "host_crates", "nif_crates", "typst_crates")
+use_repo(crate, "crates", "guest_crates", "host_crates", "nif_crates", "parse_crates", "typst_crates")
 
 # aspect_bazel_lib — write_source_files + diff_test for the contract drift gate (B2).
 bazel_dep(name = "aspect_bazel_lib", version = "2.22.5")

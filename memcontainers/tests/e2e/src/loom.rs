@@ -233,6 +233,201 @@ assert(status == 0, status)
     );
 }
 
+/// WHY: `/svc/adapters` is the single resident compiler/invoker for adapter-backed tool formats. OpenAPI
+/// is the first internal adapter: it compiles a no-auth spec to normal catalog records, `/svc/tools`
+/// loads those records, and generated service bindings call back into `/svc/adapters invoke` without
+/// leaking any secret-bearing headers into the catalog.
+#[test]
+fn adapters_compile_openapi_catalog_and_tools_call_it() {
+    let mut tools = MapHostCall::new();
+    tools.register(
+        "openapi.request",
+        Box::new(|args: &str| Ok(args.as_bytes().to_vec())),
+    );
+    let mut s = boot_loom_with_tools(tools);
+    s.host.mkdir("/etc/tools").ok();
+    s.host
+        .write_file(
+            "/tmp/petstore.openapi.json",
+            br##"{
+              "openapi": "3.0.3",
+              "info": { "title": "Pets", "version": "1.0.0" },
+              "servers": [{ "url": "https://pets.example.test/v1" }],
+              "paths": {
+                "/pets": {
+                  "get": {
+                    "operationId": "listPets",
+                    "summary": "List pets",
+                    "parameters": [
+                      { "name": "limit", "in": "query", "schema": { "type": "integer" } }
+                    ],
+                    "responses": {
+                      "200": {
+                        "description": "ok",
+                        "content": {
+                          "application/json": {
+                            "schema": {
+                              "type": "array",
+                              "items": { "$ref": "#/components/schemas/Pet" }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "/pets/{petId}": {
+                  "get": {
+                    "summary": "Show pet",
+                    "parameters": [
+                      { "name": "petId", "in": "path", "required": true, "schema": { "type": "string" } }
+                    ],
+                    "responses": { "200": { "description": "ok" } }
+                  }
+                }
+              },
+              "components": {
+                "schemas": {
+                  "Pet": {
+                    "type": "object",
+                    "required": ["id"],
+                    "properties": {
+                      "id": { "type": "string" },
+                      "name": { "type": "string", "nullable": true }
+                    }
+                  }
+                }
+              }
+            }"##,
+        )
+        .expect("seed OpenAPI fixture");
+    s.host
+        .write_file(
+            "/demo/openapi_compile.luau",
+            br#"local sys = require("sys")
+local json = require("json")
+local source = assert(sys.fs.read("/tmp/petstore.openapi.json"))
+local fd = assert(sys.svc.connect("adapters"))
+local registryRaw = assert(sys.svc.call(fd, json.encode({ op = "registry.list" })))
+local registry = assert(json.decode(registryRaw))
+assert(registry.ok, registry.err and registry.err.message)
+assert(#registry.data.items == 85, tostring(#registry.data.items))
+local petstoreRaw = assert(sys.svc.call(fd, json.encode({ op = "registry.get", id = "petstore" })))
+local petstore = assert(json.decode(petstoreRaw))
+assert(petstore.ok and petstore.data.url == "https://petstore3.swagger.io/api/v3/openapi.json")
+local raw = assert(sys.svc.call(fd, json.encode({
+  op = "compile",
+  format = "openapi",
+  source_format = "json",
+  source = source,
+  integration = "petstore",
+  owner = "org",
+  connection = "main",
+})))
+assert(sys.svc.close(fd))
+local res = assert(json.decode(raw))
+assert(res.ok, res.err and res.err.message)
+assert(#res.data.diagnostics == 0, json.encode(res.data.diagnostics))
+assert(#res.data.tools == 2, tostring(#res.data.tools))
+local text = json.encode({ tools = res.data.tools })
+assert(not string.find(string.lower(text), "authorization", 1, true))
+assert(sys.fs.write("/etc/tools/catalog.json", text))
+print(res.data.tools[1].address)
+print(res.data.tools[2].address)
+"#,
+        )
+        .expect("seed adapter compile script");
+
+    let compile = s.run_for_output("luau /demo/openapi_compile.luau");
+    assert!(
+        compile.contains("petstore.org.main.get.pets.petId")
+            && compile.contains("petstore.org.main.listPets"),
+        "OpenAPI compiler should emit both tools; got {compile:?}"
+    );
+    let catalog = s
+        .host
+        .read_file("/etc/tools/catalog.json")
+        .expect("compiled catalog");
+    let catalog = String::from_utf8_lossy(&catalog);
+    assert!(
+        catalog.contains("\"service\":\"adapters\"")
+            && catalog.contains("\"adapter\":\"openapi\"")
+            && catalog.contains("\"auth\":\"none\"")
+            && !catalog.to_ascii_lowercase().contains("authorization"),
+        "compiled catalog should carry only non-secret service bindings; got {catalog}"
+    );
+
+    let out = s.run_for_output("tools call petstore.org.main.listPets '{\"query\":{\"limit\":3}}'");
+    assert!(
+        out.contains("\"ok\":true")
+            && out.contains("\"method\":\"GET\"")
+            && out.contains("\"url\":\"https://pets.example.test/v1/pets?limit=3\"")
+            && out.contains("\"connection_ref\"")
+            && !out.to_ascii_lowercase().contains("authorization"),
+        "generated OpenAPI tool should invoke through /svc/adapters; got {out:?}"
+    );
+}
+
+/// WHY: `/svc/adapters` is full-tier because invocation reaches host calls, so it must not become a
+/// second authority-laundering path around `/svc/tools`. A read-only caller may connect and compile,
+/// but direct `invoke` is denied before the host fixture runs.
+#[test]
+fn adapters_invoke_requires_caller_net_authority() {
+    let called = Arc::new(AtomicBool::new(false));
+    let marker = Arc::clone(&called);
+    let mut tools = MapHostCall::new();
+    tools.register(
+        "openapi.request",
+        Box::new(move |_args: &str| {
+            marker.store(true, Ordering::SeqCst);
+            Ok(b"{\"should\":\"not run\"}".to_vec())
+        }),
+    );
+    let mut s = boot_loom_with_tools(tools);
+    s.host
+        .write_file(
+            "/demo/low-adapters.luau",
+            br#"local sys = require("sys")
+local json = require("json")
+local fd = assert(sys.svc.connect("adapters"))
+local raw = assert(sys.svc.call(fd, json.encode({
+  op = "invoke",
+  adapter = "openapi",
+  binding = {
+    method = "GET",
+    url_template = "https://pets.example.test/v1/pets",
+    parameters = {},
+    connection_ref = { auth = "none" },
+  },
+  args = {},
+})))
+assert(sys.svc.close(fd))
+local res = assert(json.decode(raw))
+print(tostring(res.ok), res.err.code)
+"#,
+        )
+        .expect("seed low-authority adapters script");
+    s.host
+        .write_file(
+            "/demo/spawn-low-adapters.luau",
+            br#"local sys = require("sys")
+local pid = assert(sys.proc.spawn({ argv = { "luau", "/demo/low-adapters.luau" }, tier = "read-only" }))
+local status = assert(sys.proc.wait(pid))
+assert(status == 0, status)
+"#,
+        )
+        .expect("seed low-authority adapters parent");
+
+    assert_eq!(
+        s.run_for_output("luau /demo/spawn-low-adapters.luau"),
+        "false\tpermission_denied\r\n"
+    );
+    assert!(
+        !called.load(Ordering::SeqCst),
+        "low-authority /svc/adapters invoke must not reach the host handler"
+    );
+}
+
 /// json.decode round-trips: parse an object with a nested array + table, read fields back, and
 /// re-encode — exercising the decode path (object/array/number/string/nesting) the batteries demo
 /// (encode-only) didn't cover.

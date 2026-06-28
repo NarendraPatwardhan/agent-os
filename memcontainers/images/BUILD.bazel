@@ -21,11 +21,15 @@ pkg_tar(
     owner = "0.0",  # determinism: root.root + fixed portable_mtime → content-addressable
 )
 
-# The base tool service layer — /bin/tools + /etc/services.d/tools.json. Lazy: discovery/calls pay the
-# broker start only when a VM actually uses the tool plane, while every image inherits the capability.
+# The base tool-plane service layer — /bin/tools, /bin/adapters, and their /etc/services.d fragments.
+# Lazy: discovery, calls, and adapter compilation pay resident-service startup only when a VM uses the
+# tool plane, while every image inherits the capability.
 mc_service_layer(
     name = "base_tools_layer",
-    lazy = ["//memcontainers/programs/tools:tools"],
+    lazy = [
+        "//memcontainers/programs/adapters:adapters",
+        "//memcontainers/programs/tools:tools",
+    ],
 )
 
 # The base-owned namespace roots. Rootfs owns `/etc`; this layer adds only the leaves service/tool
@@ -46,11 +50,10 @@ pkg_tar(
     owner = "0.0",
 )
 
-# base — rootfs + the three SYSTEM binaries/service faces (each sysroot-native, pure-mc at
-# wasm32-freestanding + opt, stamped + attested via mc_rust_program): /bin/sh (the guest shell, boots
-# as pid 1), /bin/tools plus /svc/tools and /tools (the host-backed tool plane), and /bin/pkgfsd
-# (the /pkg daemon). Base owns the service/tool directories; service layers add only binaries and
-# fragments.
+# base — rootfs + the SYSTEM binaries/service faces: /bin/sh (the guest shell, boots as pid 1),
+# /bin/tools plus /svc/tools and /tools (catalog/search/call broker), /bin/adapters plus
+# /svc/adapters (shared parser/invoker service for adapter-backed tools), and /bin/pkgfsd (the /pkg
+# daemon). Base owns the service/tool directories; service layers add only binaries and fragments.
 # A real but command-less shell, the substrate BOTH flavors build on (SYSTEMS.md) — NOT a shipped flavor
 # on its own (no coreutils — "make your own harness"); minimal/posix add a command set by layering on top.
 pkg_tar(
