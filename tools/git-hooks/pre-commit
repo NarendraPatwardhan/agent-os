@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "${AGENT_OS_SKIP_BADGE_HOOK:-}" == "1" ]]; then
+  exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+
+bazel run --ui_event_filters=-info,-stdout,-stderr --noshow_progress //docs:update-readme-badges
+if ! git diff --quiet -- README.md; then
+  git add README.md
+fi

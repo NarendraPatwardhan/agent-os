@@ -1,0 +1,44 @@
+genrule(
+    name = "image_size_badges_fragment",
+    srcs = [
+        "//memcontainers/images:atlas",
+        "//memcontainers/images:loom",
+        "//memcontainers/images:minimal",
+        "//memcontainers/images:paper",
+        "//memcontainers/images:posix",
+    ],
+    outs = ["image_size_badges.html"],
+    cmd = "$(execpath //bazel/tools/readme-badges) fragment " +
+          "minimal=$(execpath //memcontainers/images:minimal) " +
+          "posix=$(execpath //memcontainers/images:posix) " +
+          "loom=$(execpath //memcontainers/images:loom) " +
+          "atlas=$(execpath //memcontainers/images:atlas) " +
+          "paper=$(execpath //memcontainers/images:paper) > $@",
+    tools = ["//bazel/tools/readme-badges"],
+)
+
+genrule(
+    name = "readme_with_badges",
+    srcs = [
+        "//:README.md",
+        ":image_size_badges_fragment",
+    ],
+    outs = ["README.generated.md"],
+    cmd = "$(execpath //bazel/tools/readme-badges) update " +
+          "--readme $(location //:README.md) " +
+          "--fragment $(location :image_size_badges_fragment) > $@",
+    tools = ["//bazel/tools/readme-badges"],
+    visibility = ["//visibility:public"],
+)
+
+alias(
+    name = "update-readme-badges",
+    actual = "//:update-readme-badges",
+    visibility = ["//visibility:public"],
+)
+
+test_suite(
+    name = "readme_badges_check",
+    tests = ["//:update-readme-badges_test"],
+    visibility = ["//visibility:public"],
+)

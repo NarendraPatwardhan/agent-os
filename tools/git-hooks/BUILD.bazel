@@ -1,0 +1,5 @@
+sh_binary(
+    name = "install",
+    srcs = ["install.sh"],
+    visibility = ["//visibility:public"],
+)

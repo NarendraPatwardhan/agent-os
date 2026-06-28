@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./agentOS.png" alt="agent-os hero" width="360">
+  <img src="./web/public/agentos.svg" alt="agent-os hero" width="270">
 
   <h1>agent-os</h1>
 
@@ -11,6 +11,14 @@
     <img alt="Runtime: WebAssembly" src="https://img.shields.io/badge/runtime-WebAssembly-654ff0">
     <img alt="Build: Bazel" src="https://img.shields.io/badge/build-Bazel-43a047">
     <img alt="SDK: TypeScript and Bun" src="https://img.shields.io/badge/SDK-TypeScript%20%2B%20Bun-3178c6">
+<!-- BEGIN generated:image-size-badges -->
+    <br>
+    <img alt="Image size: minimal 3.3 MiB" src="https://img.shields.io/static/v1?label=minimal&amp;message=3.3%20MiB&amp;color=607d8b">
+    <img alt="Image size: posix 13.9 MiB" src="https://img.shields.io/static/v1?label=posix&amp;message=13.9%20MiB&amp;color=607d8b">
+    <img alt="Image size: loom 17.9 MiB" src="https://img.shields.io/static/v1?label=loom&amp;message=17.9%20MiB&amp;color=607d8b">
+    <img alt="Image size: atlas 18.9 MiB" src="https://img.shields.io/static/v1?label=atlas&amp;message=18.9%20MiB&amp;color=607d8b">
+    <img alt="Image size: paper 47.6 MiB" src="https://img.shields.io/static/v1?label=paper&amp;message=47.6%20MiB&amp;color=607d8b">
+<!-- END generated:image-size-badges -->
   </p>
 
   <p>

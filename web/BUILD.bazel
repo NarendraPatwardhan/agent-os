@@ -19,7 +19,7 @@ WEB_SOURCES = [
     "vite.config.ts",
 ] + [
     "tools/vite.mjs",
-] + glob(["src/**"]) + [
+] + glob(["public/**", "src/**"]) + [
     ":hero_vm_assets",
 ]
 
