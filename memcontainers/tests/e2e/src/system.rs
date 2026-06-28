@@ -78,6 +78,39 @@ fn tools_searches_and_describes_the_catalog() {
     );
 }
 
+/// WHY: `/tools` is the Plan-9 file face of the catalog, globally mounted by base rather than hidden in
+/// one service task's namespace. GUARANTEES: ordinary file tools can progressively browse the same
+/// addressed records that `/svc/tools describe` returns, with no egress and no Luau dependency.
+#[test]
+fn tools_catalog_is_browsable_as_files() {
+    let mut s = boot_posix_with_tools(MapHostCall::new());
+    seed_catalog(
+        &mut s,
+        r#"{"tools":[
+          {"address":"github.org.main.createIssue","description":"Create a GitHub issue",
+           "input_schema":{"type":"object","required":["repo","title"],"properties":{"repo":{"type":"string"},"title":{"type":"string"}}},
+           "binding":{"type":"host_call","name":"github.issue","args":"json"}},
+          {"address":"github.org.main.listPullRequests","description":"List pull requests",
+           "binding":{"type":"host_call","name":"github.prs","args":"json"}},
+          {"address":"sentry.org.main.listIssues","description":"List Sentry issues",
+           "binding":{"type":"host_call","name":"sentry.list","args":"json"}}
+        ]}"#,
+    );
+
+    assert_eq!(s.run_for_output("ls /tools"), "github/\r\nsentry/\r\n");
+    assert_eq!(
+        s.run_for_output("ls /tools/github/org/main"),
+        "createIssue\r\nlistPullRequests\r\n"
+    );
+    let describe = s.run_for_output("cat /tools/github/org/main/createIssue");
+    assert!(
+        describe.contains("\"address\":\"github.org.main.createIssue\"")
+            && describe.contains("\"input_schema\"")
+            && describe.contains("\"binding\""),
+        "cat /tools/... should return the catalog record; got {describe:?}"
+    );
+}
+
 /// WHY: CLI JSON args should be passed through exactly enough for host-side handlers to parse/validate.
 /// GUARANTEES: object args reach the handler as compact JSON and the broker parses a JSON result into
 /// envelope `data`, not an opaque stdout string.
@@ -199,7 +232,9 @@ fn tools_call_output_writes_to_requested_guest_path() {
         )
     );
     assert_eq!(
-        s.host.read_file("/tmp/export.bin").expect("requested output"),
+        s.host
+            .read_file("/tmp/export.bin")
+            .expect("requested output"),
         payload
     );
 }

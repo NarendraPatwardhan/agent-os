@@ -753,6 +753,17 @@ fn init_system() {
                     false,
                 );
 
+                // toolsfs: a global read-only catalog tree at /tools. The broker service owns calls,
+                // search, and mutation; this filesystem only exposes the checkpointed catalog as files,
+                // so every process can browse tools without gaining egress authority.
+                let toolsfs = crate::fs::ToolsFs::new(ns_ptr);
+                (*STATE.ns.get()).as_ref().unwrap().mount_labeled(
+                    "/tools",
+                    Box::new(toolsfs),
+                    "toolsfs",
+                    true,
+                );
+
                 // Apply the image manifest's runtime contract: the budget
                 // ceiling (every guest spawn is capped by it) and the pid-1 boot
                 // tier. Must precede any guest load (so the shell is bounded too).

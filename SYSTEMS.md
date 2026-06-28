@@ -593,6 +593,9 @@ Each backend is a small, single-purpose system. Boot mounts a stack at `/` plus 
 - **devfs** — `/dev/null`, `/dev/zero`, `/dev/random` (host entropy), and `/dev/cons` (the Plan-9
   console).
 - **netfs** — the network as a file tree at `/net` (§7.3).
+- **toolsfs** — a read-only catalog view at `/tools`, mounted globally by base. `/svc/tools` remains the
+  broker and catalog mutator; toolsfs reparses the checkpoint catalog and exposes only progressive
+  browse/describe files, so it creates no egress path.
 
 ---
 
@@ -954,8 +957,9 @@ it — least-privilege dispatch, and `/bin` cannot drift from actual dispatch. S
 `/etc/services.d/<name>.json` fragments are generated from the stamped `mc_service` section of each
 binary, so the install path, the fragment, and the artifact cannot disagree. Service fragments compose
 through the layer stack, never as one global file — because services are a property of the layer that
-pays the cold-start tax. Base provides the lazy `tools` service so every image inherits the tool plane;
-domain packs add their own service fragments. A flavor's `require()` shim name must
+pays the cold-start tax. Base provides the lazy `tools` service and the read-only `/tools` catalog tree
+so every image inherits the tool plane; domain packs add their own service fragments. A flavor's
+`require()` shim name must
 not collide with a universal embedded battery; `sqlite`/`typst` are not embedded, so they load from the
 layer (`require` order is cache → embedded → VFS).
 
@@ -964,8 +968,10 @@ The tool catalog has a single lifetime rule. `/etc/tools/catalog.json` is the bo
 registration (`vm.tool`) updates that live catalog only through an awaited host-control service call
 (`catalog.apply`, `caller == SYSTEM_CALLER`) that validates the full replacement catalog, swaps it atomically,
 and then checkpoints the canonical catalog file. Guest service calls can search, describe, list, call, and
-garbage-collect tool artifacts; they cannot mutate catalog bindings. Tool `call` and `call_alias` additionally
-require the caller's kernel-stamped `CAP_NET`, matching direct `host_call`; discovery and artifact cleanup stay
+garbage-collect tool artifacts; they cannot mutate catalog bindings. `/tools/<integration>/<owner>/<connection>/<tool>`
+is the file-tree discovery face over the checkpoint catalog: directories progressively disclose catalog segments,
+and reading a leaf returns that tool's JSON record. Tool `call` and `call_alias` additionally require the
+caller's kernel-stamped `CAP_NET`, matching direct `host_call`; discovery, `/tools`, and artifact cleanup stay
 unprivileged.
 
 `pkgcore` is the pure logic for `pkgfsd`, a demand-load package daemon: a dependency-free SHA-256, a

@@ -9,7 +9,7 @@ load("//bazel:mc_program.bzl", "mc_service_layer")
 #
 # Three stacked layers, each inheriting the one below via pkg_tar `deps`:
 #   rootfs  — just /etc/profile (internal).
-#   base    — rootfs + /bin/{sh,pkgfsd,tools} + /svc/tools + /etc/services.d: the shared substrate.
+#   base    — rootfs + /bin/{sh,pkgfsd,tools} + /svc/tools + /tools + /etc/services.d: the shared substrate.
 #   minimal — base + the four MINIMAL coreutils boxes (the curated ~15) + their /bin symlinks.
 #   posix   — base + the four FULL coreutils boxes (everything) + their /bin symlinks.
 
@@ -28,19 +28,29 @@ mc_service_layer(
     lazy = ["//memcontainers/programs/tools:tools"],
 )
 
-# The resident-service namespace root. Rootfs owns `/etc`; this base-owned layer adds only the leaf
-# directory so service layers can carry fragments without duplicating directory entries.
+# The base-owned namespace roots. Rootfs owns `/etc`; this layer adds only the leaves service/tool
+# layers need, so later layers carry fragments or catalogs without duplicating directory entries.
 pkg_tar(
-    name = "base_service_dirs",
+    name = "base_dirs",
     create_parents = False,
-    empty_dirs = ["etc/services.d"],
+    empty_dirs = [
+        "etc/services.d",
+        "etc/tools",
+        "tools",
+    ],
+    modes = {
+        "etc/services.d": "0755",
+        "etc/tools": "0755",
+        "tools": "0755",
+    },
     owner = "0.0",
 )
 
 # base — rootfs + the three SYSTEM binaries/service faces (each sysroot-native, pure-mc at
 # wasm32-freestanding + opt, stamped + attested via mc_rust_program): /bin/sh (the guest shell, boots
-# as pid 1), /bin/tools plus /svc/tools (the host-backed tool plane), and /bin/pkgfsd (the /pkg
-# daemon). Base owns the resident-service directory; service layers add only binaries and fragments.
+# as pid 1), /bin/tools plus /svc/tools and /tools (the host-backed tool plane), and /bin/pkgfsd
+# (the /pkg daemon). Base owns the service/tool directories; service layers add only binaries and
+# fragments.
 # A real but command-less shell, the substrate BOTH flavors build on (SYSTEMS.md) — NOT a shipped flavor
 # on its own (no coreutils — "make your own harness"); minimal/posix add a command set by layering on top.
 pkg_tar(
@@ -50,7 +60,7 @@ pkg_tar(
         "//memcontainers/programs/pkgfsd:pkgfsd": "/bin/pkgfsd",
     },
     owner = "0.0",
-    deps = [":rootfs", ":base_service_dirs", ":base_tools_layer"],
+    deps = [":rootfs", ":base_dirs", ":base_tools_layer"],
     visibility = ["//visibility:public"],
 )
 
