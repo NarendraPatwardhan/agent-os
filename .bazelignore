@@ -2,3 +2,4 @@ node_modules
 memcontainers/contracts/node_modules
 memcontainers/hosts/js/node_modules
 memcontainers/sdk-js/core/node_modules
+web/node_modules

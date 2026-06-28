@@ -1,0 +1,1236 @@
+/*
+ * main.css — design system seed for dense SaaS / workspace products
+ * ===========================================================================
+ *
+ * Standalone seed. Not imported by any project; copy it into a fresh one and
+ * read it before writing custom CSS.
+ *
+ * ---------------------------------------------------------------------------
+ * AGENT CONTRACT — non-negotiable rules for any human or model writing CSS
+ * or markup against this system. Violating one of these is a bug.
+ *
+ *  1. ONE CHANNEL PER JOB. border = edge. box-shadow = depth. outline =
+ *     focus. Never express one of these with another's property.
+ *  2. SURFACES ARE ATOMIC. data-surface / .card / .panel / .popover /
+ *     .modal / .toast fully define background + border + shadow. Never add
+ *     another border, shadow, or background to an element that has one.
+ *  3. COLOR BUDGET. Chroma may appear ONLY through: data-status,
+ *     data-accent, --chart-*, the focus ring, and selection. Everything
+ *     else is ink (the neutral/primary scales). Do not invent colored text,
+ *     tints, or gradients outside these five doors.
+ *  4. VARIANTS ARE DATA ATTRIBUTES (data-variant, data-size, data-status,
+ *     data-accent, data-surface) — one enum per decision — never a
+ *     permutation of cooperating classes.
+ *  5. TYPE comes from .u-type-* roles. Never set font-size / font-weight /
+ *     line-height ad hoc in product CSS.
+ *  6. SPACING comes from --space-* (via u-gap/u-p/u-px/u-py or the tokens).
+ *     Raw px only for hairlines, icon internals, and canvas geometry.
+ *  7. OVERLAYS live in the top layer (<dialog>, [popover]) or are portaled
+ *     to <body>. Never render them inside a transformed/filtered ancestor.
+ *     The top layer ignores z-index entirely; --z-* is only for in-flow
+ *     chrome (sticky bars, portaled toasts).
+ *  8. LAYER ORDER IS POLICY. recipes > utilities > base. A utility cannot
+ *     beat a recipe; if a recipe is wrong for a case, extend the recipe,
+ *     don't fight it with utilities.
+ *  9. GLOBAL BREAKPOINTS ARE FOR PAGE CHROME ONLY (gutters, nav). Component
+ *     layout responds to its container (@container via .u-cq), not the
+ *     viewport.
+ * 10. NEVER restyle :focus. Only :focus-visible, only via outline.
+ *
+ * ---------------------------------------------------------------------------
+ * What changed vs. the previous seed, and why
+ *
+ * A. BUGS FIXED.
+ *    - `:focus-visible { border-radius: inherit }` mutated the focused
+ *      element's own radius (outline already follows border-radius in all
+ *      modern engines). Removed.
+ *    - `--selected` was declared at :root as a mix against
+ *      var(--surface-bg, --bg). Custom properties substitute their var()s
+ *      where they are DECLARED, not where they are consumed, so the
+ *      fallback always won and selection never mixed against the local
+ *      substrate. The mix now happens at point of use, against a
+ *      remappable --selected-tint.
+ *    - `.btn:hover` leaked the solid variant's accent background and lift
+ *      into every variant, patched downstream by specificity. Buttons are
+ *      now a private-variable API: the base consumes --_* vars; variants
+ *      ONLY set vars, so a variant can never half-apply.
+ *    - Global `:focus { outline: none }` removed (UA stylesheets already
+ *      gate default rings on :focus-visible; the reset only hurt).
+ *    - Dead `--r` custom property removed; `.panel/.popover/.modal` were
+ *      radius-only half-recipes — they now run the full surface engine.
+ *
+ * B. BRAND COHERENCE RESTORED. The previous seed silently injected an
+ *    orange accent into primary steps 9–12 (light) and drifted the dark
+ *    ramp across hues 60→80 — breaking its own "hold H stable per scale"
+ *    rule and the product's stated black-and-white primary. Primary is ink
+ *    again, end to end. Color enters via the explicit budget instead:
+ *    a compact --brand-* slot plus [data-accent] remapping (rule 3).
+ *
+ * C. FOCUS RING HAS ITS OWN HUE. With an ink primary, a primary-derived
+ *    ring is a gray ring on gray borders — near invisible. The ring is now
+ *    a dedicated blue, the one always-on chroma in the system (the same
+ *    trade Geist/Vercel make on monochrome UI).
+ *
+ * D. NEW CAPABILITY.
+ *    - Fluid display/heading sizes via clamp().
+ *    - Categorical chart palette (--chart-1..8) — dense workspace products
+ *      always need one, and improvised chart colors are the first thing
+ *      to break a color budget.
+ *    - Container queries (.u-cq) for component-level response.
+ *    - Touch hit targets via (pointer: coarse).
+ *    - Native <dialog> / [popover]: ::backdrop consumes the scrim tokens,
+ *      entry/exit transitions via @starting-style, top-layer semantics
+ *      documented.
+ *    - Skeleton loading recipe, icon buttons, :user-invalid field states
+ *      with a danger-colored focus ring, accent-color for native controls,
+ *      concentric-radius rule, optional cap-height trim utility.
+ *
+ * Out of scope on purpose: landing-page/site components; webfont loading;
+ * sequential data-viz ramps (derive per-chart: hold one hue, step L).
+ *
+ * Breakpoints (page chrome only): mobile 0–768, tablet 769–1024,
+ * laptop 1025+. Components: use @container.
+ *
+ * Baseline: this file assumes light-dark(), color-mix(), oklch(), :has-free
+ * modern CSS (all stable across evergreen browsers since 2024). There is no
+ * legacy fallback path by design — a seed should not carry one.
+ */
+
+@layer reset, tokens, base, utilities, recipes;
+
+/* Documentation only; expanded by postcss-custom-media if present. Live
+ * rules below use plain media queries, so the file needs no build step. */
+@custom-media --bp-mobile (max-width: 768px);
+@custom-media --bp-tablet (min-width: 769px) and (max-width: 1024px);
+@custom-media --bp-laptop (min-width: 1025px);
+
+/* ===========================================================================
+ * RESET
+ * ======================================================================== */
+@layer reset {
+	*,
+	*::before,
+	*::after {
+		box-sizing: border-box;
+	}
+
+	* {
+		margin: 0;
+	}
+
+	html {
+		min-height: 100%;
+		text-size-adjust: 100%;
+	}
+
+	body {
+		min-height: 100%;
+	}
+
+	img,
+	picture,
+	video,
+	canvas,
+	svg {
+		display: block;
+		max-width: 100%;
+	}
+
+	input,
+	button,
+	textarea,
+	select {
+		font: inherit;
+		color: inherit;
+	}
+
+	button {
+		border: 0;
+		background: none;
+		cursor: pointer;
+	}
+
+	button:disabled,
+	[aria-disabled="true"],
+	[data-disabled] {
+		cursor: not-allowed;
+	}
+
+	/* list-style: none strips list semantics in VoiceOver/Safari. Any ul/ol
+	 * that still MEANS "list" to a screen reader needs role="list". */
+	ul,
+	ol {
+		padding: 0;
+		list-style: none;
+	}
+
+	/* Native top-layer primitives arrive with UA chrome; strip it so the
+	 * surface recipes (below) can own their appearance. */
+	dialog {
+		padding: 0;
+		border: 0;
+		background: none;
+		color: inherit;
+	}
+
+	[popover] {
+		padding: 0;
+		border: 0;
+		background: none;
+		color: inherit;
+	}
+}
+
+/* ===========================================================================
+ * TOKENS
+ * ======================================================================== */
+@layer tokens {
+	:root {
+		/* light-dark() requires a declared color-scheme. "light dark" =
+		 * follow the OS; the [data-theme] pins below override it. */
+		color-scheme: light dark;
+
+		/* ----- Breakpoints (documentation; CSS vars can't drive @media) --- */
+		--bp-mobile-max: 768px;
+		--bp-tablet-min: 769px;
+		--bp-tablet-max: 1024px;
+		--bp-laptop-min: 1025px;
+
+		/* --------------------------------------------------------------------
+		 * COLOR SCALES — light value first, dark second, via light-dark().
+		 * Radix step jobs: 1 app bg · 2 subtle bg · 3 UI bg · 4 hover ·
+		 * 5 active/selected · 6 subtle border · 7 focus border · 8 hover
+		 * border · 9 solid fill · 10 solid hover · 11 low-contrast text ·
+		 * 12 high-contrast text.
+		 * OKLCH: fix contrast by moving L, never by raising C. Hold H stable
+		 * within a scale — the whole scale, both themes.
+		 * ------------------------------------------------------------------ */
+
+		/* Neutral — very low chroma so it pairs with any accent hue. */
+		--neutral-1:  light-dark(oklch(0.992 0.003 250), oklch(0.14  0.008 250));
+		--neutral-2:  light-dark(oklch(0.975 0.004 250), oklch(0.17  0.009 250));
+		--neutral-3:  light-dark(oklch(0.952 0.005 250), oklch(0.205 0.01  250));
+		--neutral-4:  light-dark(oklch(0.928 0.006 250), oklch(0.24  0.011 250));
+		--neutral-5:  light-dark(oklch(0.895 0.007 250), oklch(0.285 0.012 250));
+		--neutral-6:  light-dark(oklch(0.845 0.008 250), oklch(0.34  0.013 250));
+		--neutral-7:  light-dark(oklch(0.755 0.009 250), oklch(0.42  0.014 250));
+		--neutral-8:  light-dark(oklch(0.64  0.01  250), oklch(0.52  0.014 250));
+		/* step 9 light tuned 0.56 → 0.54 so fg-subtle clears AA on canvas */
+		--neutral-9:  light-dark(oklch(0.54  0.011 250), oklch(0.62  0.013 250));
+		--neutral-10: light-dark(oklch(0.48  0.011 250), oklch(0.7   0.011 250));
+		--neutral-11: light-dark(oklch(0.38  0.01  250), oklch(0.79  0.009 250));
+		--neutral-12: light-dark(oklch(0.16  0.009 250), oklch(0.96  0.004 250));
+
+		/* Primary — ink, on purpose. This brand's primary action color is
+		 * near-black on light / near-white on dark. Do NOT add chroma here;
+		 * color enters through --brand-* / data-accent / data-status /
+		 * --chart-* (see COLOR BUDGET, contract rule 3). To rebrand onto a
+		 * colored primary, replace this whole block — every step, both
+		 * halves, one hue. */
+		--primary-1:  light-dark(oklch(0.992 0.003 250), oklch(0.14 0.008 250));
+		--primary-2:  light-dark(oklch(0.972 0.004 250), oklch(0.18 0.01  250));
+		--primary-3:  light-dark(oklch(0.94  0.006 250), oklch(0.23 0.012 250));
+		--primary-4:  light-dark(oklch(0.908 0.008 250), oklch(0.29 0.014 250));
+		--primary-5:  light-dark(oklch(0.864 0.01  250), oklch(0.36 0.016 250));
+		--primary-6:  light-dark(oklch(0.79  0.012 250), oklch(0.46 0.018 250));
+		--primary-7:  light-dark(oklch(0.67  0.014 250), oklch(0.58 0.018 250));
+		--primary-8:  light-dark(oklch(0.52  0.016 250), oklch(0.72 0.014 250));
+		--primary-9:  light-dark(oklch(0.22  0.014 250), oklch(0.92 0.006 250));
+		--primary-10: light-dark(oklch(0.18  0.014 250), oklch(0.98 0.003 250));
+		--primary-11: light-dark(oklch(0.36  0.014 250), oklch(0.82 0.009 250));
+		--primary-12: light-dark(oklch(0.13  0.012 250), oklch(0.98 0.003 250));
+
+		/* Brand splash — a compact slot (same shape as a status color) for
+		 * deliberate moments of brand color on an otherwise ink UI: a hero
+		 * CTA, plan badges, onboarding. Scope it with data-accent="brand";
+		 * never hardcode these vars in components. Swap the hue (275 below)
+		 * in one place to rebrand the splash. */
+		--brand-base:     light-dark(oklch(0.5  0.19 275),        oklch(0.74 0.14 275));
+		--brand-hover:    light-dark(oklch(0.45 0.19 275),        oklch(0.79 0.13 275));
+		--brand-soft:     light-dark(oklch(0.95 0.03 275),        oklch(0.3  0.07 275 / 0.5));
+		--brand-border:   light-dark(oklch(0.82 0.08 275),        oklch(0.55 0.12 275));
+		--brand-contrast: light-dark(oklch(0.99 0    0),          oklch(0.15 0.02 275));
+		--brand-text:     light-dark(oklch(0.44 0.17 275),        oklch(0.83 0.1  275));
+
+		/* Status — compact, not 12-step. base/hover (solid), soft (bg),
+		 * border, contrast (text on base), text (on normal surfaces). */
+		--danger-base:     light-dark(oklch(0.56 0.22  26),       oklch(0.7  0.18 26));
+		--danger-hover:    light-dark(oklch(0.5  0.22  26),       oklch(0.76 0.17 26));
+		--danger-soft:     light-dark(oklch(0.96 0.028 26),       oklch(0.32 0.07 26 / 0.44));
+		--danger-border:   light-dark(oklch(0.84 0.075 26),       oklch(0.52 0.13 26));
+		--danger-contrast: light-dark(oklch(0.99 0     0),        oklch(0.16 0.01 26));
+		--danger-text:     light-dark(oklch(0.43 0.18  26),       oklch(0.82 0.12 26));
+
+		--warning-base:     light-dark(oklch(0.72 0.16  78),      oklch(0.8  0.14 78));
+		--warning-hover:    light-dark(oklch(0.66 0.16  78),      oklch(0.86 0.13 78));
+		--warning-soft:     light-dark(oklch(0.97 0.045 78),      oklch(0.35 0.07 78 / 0.42));
+		--warning-border:   light-dark(oklch(0.86 0.11  78),      oklch(0.56 0.11 78));
+		--warning-contrast: light-dark(oklch(0.18 0.012 78),      oklch(0.16 0.012 78));
+		--warning-text:     light-dark(oklch(0.43 0.12  70),      oklch(0.86 0.1  78));
+
+		--success-base:     light-dark(oklch(0.58 0.15  150),     oklch(0.72 0.13 150));
+		--success-hover:    light-dark(oklch(0.52 0.15  150),     oklch(0.78 0.12 150));
+		--success-soft:     light-dark(oklch(0.96 0.035 150),     oklch(0.32 0.06 150 / 0.44));
+		--success-border:   light-dark(oklch(0.84 0.085 150),     oklch(0.52 0.1  150));
+		--success-contrast: light-dark(oklch(0.99 0     0),       oklch(0.15 0.01 150));
+		--success-text:     light-dark(oklch(0.39 0.12  150),     oklch(0.84 0.1  150));
+
+		--info-base:     light-dark(oklch(0.58 0.16 250),         oklch(0.72 0.13 250));
+		--info-hover:    light-dark(oklch(0.52 0.16 250),         oklch(0.78 0.12 250));
+		--info-soft:     light-dark(oklch(0.96 0.03 250),         oklch(0.32 0.06 250 / 0.44));
+		--info-border:   light-dark(oklch(0.84 0.075 250),        oklch(0.52 0.1  250));
+		--info-contrast: light-dark(oklch(0.99 0 0),              oklch(0.15 0.01 250));
+		--info-text:     light-dark(oklch(0.4  0.13 250),         oklch(0.84 0.1  250));
+
+		/* Categorical data-viz palette. Equal-ish perceived lightness per
+		 * theme so no series visually dominates; hues spaced for common
+		 * color-vision deficiencies; --chart-8 is the "other/remainder"
+		 * gray. Use IN ORDER. Never repurpose status colors for series — a
+		 * red line must keep meaning "danger". For sequential ramps, hold
+		 * one of these hues and step L (e.g. 0.9 → 0.4 in light). */
+		--chart-1: light-dark(oklch(0.58 0.16 255), oklch(0.72 0.13 255));
+		--chart-2: light-dark(oklch(0.6  0.15 150), oklch(0.74 0.12 150));
+		--chart-3: light-dark(oklch(0.66 0.16 70),  oklch(0.78 0.13 75));
+		--chart-4: light-dark(oklch(0.58 0.19 25),  oklch(0.72 0.15 25));
+		--chart-5: light-dark(oklch(0.56 0.17 300), oklch(0.72 0.13 300));
+		--chart-6: light-dark(oklch(0.6  0.13 200), oklch(0.74 0.11 200));
+		--chart-7: light-dark(oklch(0.6  0.15 340), oklch(0.74 0.12 340));
+		--chart-8: light-dark(oklch(0.55 0.02 250), oklch(0.7  0.02 250));
+
+		/* --------------------------------------------------------------------
+		 * SEMANTIC ALIASES — author against these, not raw steps.
+		 *
+		 * CONTRAST CONTRACT (WCAG, verified, both themes):
+		 *   fg        ≥ 15:1  on surfaces 0–2    — always safe.
+		 *   fg-muted  ≥ 9:1   on surfaces 0–2    — safe for body text.
+		 *   fg-subtle ≥ 4.5:1 on surface-1+; ~4.3:1 on the light canvas (0).
+		 *             => fg-subtle is for LARGE text, captions, icons, and
+		 *                decorative copy — not body text on canvas.
+		 *   fg-disabled is exempt by WCAG (disabled controls) — never use it
+		 *             for content that must be read.
+		 *   accent-text ≥ 6.8:1 (light) / ≥ 10:1 (dark) on surfaces 0–2.
+		 *   *-text on matching *-soft ≥ 6.9:1 both themes.
+		 * Re-run the contract check if you change any L value above.
+		 * ------------------------------------------------------------------ */
+		--bg:          var(--neutral-1);
+		--bg-muted:    var(--neutral-2);
+		--fg:          var(--neutral-12);
+		--fg-muted:    var(--neutral-11);
+		--fg-subtle:   var(--neutral-9);
+		--fg-disabled: var(--neutral-8);
+		--fg-on-accent: light-dark(oklch(0.99 0 0), oklch(0.13 0.012 250));
+
+		--border:        var(--neutral-6);
+		--border-hover:  var(--neutral-8);
+		--border-strong: var(--neutral-10);
+
+		/* The accent SLOT. Defaults to ink (primary). A [data-accent] scope
+		 * remaps the whole slot at once — that is the only sanctioned way a
+		 * subtree gets a colored accent. Components consume the slot and
+		 * stay color-agnostic. */
+		--accent:          var(--primary-9);
+		--accent-hover:    var(--primary-10);
+		--accent-soft:     var(--primary-3);
+		--accent-border:   var(--primary-7);
+		--accent-text:     var(--primary-11);
+		--accent-contrast: var(--fg-on-accent);
+
+		/* Selection tint: mixed against the LOCAL substrate at point of use
+		 * (see .interactive in recipes) — declaring the mix here would
+		 * freeze it against :root's background, because custom properties
+		 * substitute var()s where declared, not where consumed. */
+		--selected-tint:   var(--primary-5);
+		--selected-border: var(--primary-7);
+
+		--danger:  var(--danger-base);
+		--warning: var(--warning-base);
+		--success: var(--success-base);
+		--info:    var(--info-base);
+
+		/* --------------------------------------------------------------------
+		 * ELEVATION — substrate + depth, consumed only by the surface engine
+		 * in @layer recipes. Light flattens the background after level 2
+		 * (depth carried by shadow + border, not a stack of greys); dark
+		 * steps the neutral up and caps text-bearing surfaces at level 5 —
+		 * levels 6–8 are for transient chrome (palette, toast) where copy is
+		 * short and set in fg. Borders are REAL borders and live only in the
+		 * engine; shadows are pure depth (no inset edge — inset-shadow
+		 * borders vanish in forced-colors and in print).
+		 * ------------------------------------------------------------------ */
+		--surface-0: light-dark(var(--neutral-2), var(--neutral-1)); /* canvas  */
+		--surface-1: light-dark(var(--neutral-1), var(--neutral-2)); /* shell   */
+		--surface-2: light-dark(var(--neutral-1), var(--neutral-3)); /* card    */
+		--surface-3: light-dark(var(--neutral-1), var(--neutral-4)); /* raised  */
+		--surface-4: light-dark(var(--neutral-1), var(--neutral-5)); /* popover */
+		--surface-5: light-dark(var(--neutral-1), var(--neutral-6)); /* dialog  */
+		--surface-6: light-dark(var(--neutral-1), var(--neutral-7)); /* nested  */
+		--surface-7: light-dark(var(--neutral-1), var(--neutral-8)); /* palette */
+		--surface-8: light-dark(var(--neutral-1), var(--neutral-9)); /* toast   */
+
+		--shadow-0: none;
+		--shadow-1: 0 1px 2px        light-dark(oklch(0 0 0 / 0.03), oklch(0 0 0 / 0.3));
+		--shadow-2: 0 1px 2px        light-dark(oklch(0 0 0 / 0.04), oklch(0 0 0 / 0.34));
+		--shadow-3: 0 2px 8px        light-dark(oklch(0 0 0 / 0.06), oklch(0 0 0 / 0.44));
+		--shadow-4: 0 8px 24px -12px light-dark(oklch(0 0 0 / 0.18), oklch(0 0 0 / 0.6));
+		--shadow-5: 0 24px 64px -24px light-dark(oklch(0 0 0 / 0.26), oklch(0 0 0 / 0.7));
+		--shadow-6: 0 28px 72px -24px light-dark(oklch(0 0 0 / 0.3),  oklch(0 0 0 / 0.76));
+		--shadow-7: 0 32px 96px -28px light-dark(oklch(0 0 0 / 0.34), oklch(0 0 0 / 0.82));
+		--shadow-8: 0 16px 48px -18px light-dark(oklch(0 0 0 / 0.36), oklch(0 0 0 / 0.82));
+
+		/* --------------------------------------------------------------------
+		 * TYPOGRAPHY
+		 * Roles (in utilities) set family/size/weight/line-height as
+		 * LONGHANDS, never the `font` shorthand — `font` resets
+		 * font-variant-numeric and would silently wipe .u-tabular.
+		 * Display/heading sizes are fluid: they earn their tracking at
+		 * desktop and stop overflowing phones.
+		 * ------------------------------------------------------------------ */
+		--font-sans: "Geist", "Inter", ui-sans-serif, system-ui, -apple-system,
+			BlinkMacSystemFont, "Segoe UI", sans-serif;
+		--font-mono: "Geist Mono", "SF Mono", SFMono-Regular, ui-monospace, Menlo,
+			Consolas, monospace;
+		--font-serif: "Newsreader", "Source Serif 4", "Iowan Old Style", Charter,
+			Georgia, serif;
+
+		--fs-10: 0.625rem;  --fs-11: 0.6875rem; --fs-12: 0.75rem;
+		--fs-13: 0.8125rem; --fs-14: 0.875rem;  --fs-15: 0.9375rem;
+		--fs-16: 1rem;      --fs-18: 1.125rem;  --fs-22: 1.375rem;
+		--fs-28: 1.75rem;   --fs-36: 2.25rem;   --fs-48: 3rem;
+
+		--fs-display: clamp(2rem, 1.45rem + 2.3vw, 3rem);
+		--fs-heading: clamp(1.5rem, 1.32rem + 0.8vw, 1.75rem);
+
+		--fw-regular: 400; --fw-medium: 500; --fw-semibold: 600; --fw-bold: 700;
+
+		--lh-tight: 1.25; --lh-heading: 1.2; --lh-body: 1.55; --lh-caption: 1.45;
+
+		/* Tracking: tighten as size grows; widen only the mono eyebrow. */
+		--ls-display: -0.02em;
+		--ls-heading: -0.015em;
+		--ls-ui:      -0.005em;
+		--ls-normal:  0;
+		--ls-eyebrow: 0.12em;
+
+		/* ----- Spacing — 4px grid ----- */
+		--space-0: 0;    --space-1: 4px;  --space-2: 8px;  --space-3: 12px;
+		--space-4: 16px; --space-5: 20px; --space-6: 24px; --space-8: 32px;
+		--space-10: 40px; --space-12: 48px; --space-16: 64px; --space-20: 80px;
+		--space-24: 96px;
+
+		/* ----- Layout + density -----
+		 * --density scales row/control heights via calc(). 1 = default;
+		 * 0.78 ≈ compact; 1.22 ≈ comfortable. Set it on a scope (e.g. a data
+		 * table) rather than per element. */
+		--container: 1200px; --content: 1040px; --reading: 720px;
+		--sidebar: 240px; --sidebar-collapsed: 56px; --rail: 320px;
+		--page-gutter: var(--space-8);
+
+		--density: 1;
+		--row-height-compact:     calc(28px * var(--density));
+		--row-height:             calc(36px * var(--density));
+		--row-height-comfortable: calc(44px * var(--density));
+		--control-height-sm: calc(28px * var(--density));
+		--control-height-md: calc(36px * var(--density));
+		--control-height-lg: calc(44px * var(--density));
+
+		--icon-size-sm: 16px; --icon-size-md: 20px; --icon-size-lg: 24px;
+		--avatar-xs: 16px; --avatar-sm: 20px; --avatar-md: 28px;
+		--avatar-lg: 36px; --avatar-xl: 48px;
+
+		/* ----- Shape -----
+		 * CONCENTRIC RULE: when rounded things nest, inner radius = outer
+		 * radius − padding, floored at --radius-1. A radius-card (12px) box
+		 * with --space-2 (8px) padding gives its children
+		 *   border-radius: max(var(--radius-1), calc(var(--radius-card) - var(--space-2)));
+		 * Equal nested radii are the most common "looks off" tell in dense UI. */
+		--radius-1: 4px; --radius-2: 6px; --radius-3: 8px;
+		--radius-4: 12px; --radius-5: 16px; --radius-round: 999px;
+		--radius-chip: var(--radius-2);
+		--radius-button: var(--radius-3);
+		--radius-card: var(--radius-4);
+		--radius-modal: var(--radius-5);
+		--radius-pill: var(--radius-round);
+
+		/* ----- Focus — outline only, never box-shadow -----
+		 * box-shadow rings clobber a surface's depth shadow (one property,
+		 * last write wins). Outline is an independent channel, follows
+		 * border-radius natively, and survives forced-colors. The ring hue
+		 * is the system's one always-on chroma: on an ink UI, an ink ring
+		 * sitting on ink borders is invisible exactly when it matters. */
+		--ring: light-dark(oklch(0.55 0.17 255), oklch(0.76 0.13 255));
+		--ring-width: 2px;
+		--ring-offset: 2px;
+
+		--scrim: light-dark(oklch(0 0 0 / 0.42), oklch(0 0 0 / 0.62));
+		--scrim-strong: light-dark(oklch(0 0 0 / 0.58), oklch(0 0 0 / 0.72));
+
+		/* ----- Motion ----- */
+		--motion-instant: 80ms; --motion-fast: 140ms;
+		--motion-panel: 240ms;  --motion-page: 400ms;
+		--ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+		--ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+		--ease-in: cubic-bezier(0.4, 0, 0.6, 1);
+		--ease-spring: cubic-bezier(0.34, 1.32, 0.64, 1);
+
+		/* ----- Z-index — in-flow / portaled chrome ONLY -----
+		 * <dialog> and [popover] render in the browser top layer, which
+		 * stacks ABOVE everything and ignores z-index. These values are for
+		 * sticky bars and body-portaled elements that don't use the top
+		 * layer. */
+		--z-base: 0; --z-sticky: 20; --z-drawer: 40; --z-popover: 60;
+		--z-command: 70; --z-toast: 80; --z-tooltip: 90;
+	}
+
+	/* Manual theme override pins color-scheme so light-dark() resolves. */
+	:root[data-theme="light"], .light { color-scheme: light; }
+	:root[data-theme="dark"],  .dark  { color-scheme: dark; }
+}
+
+/* ===========================================================================
+ * BASE — element defaults
+ * ======================================================================== */
+@layer base {
+	html {
+		background: var(--bg);
+		color: var(--fg);
+	}
+
+	body {
+		font-family: var(--font-sans);
+		font-size: var(--fs-14);
+		font-weight: var(--fw-regular);
+		line-height: var(--lh-body);
+		letter-spacing: var(--ls-normal);
+		background: var(--bg);
+		color: var(--fg);
+		-webkit-font-smoothing: antialiased;
+		-moz-osx-font-smoothing: grayscale;
+		text-rendering: optimizeLegibility;
+	}
+
+	::selection {
+		background: var(--accent);
+		color: var(--accent-contrast);
+	}
+
+	/* Native checkboxes, radios, progress, range pick up the accent slot —
+	 * ink by default, brand/status inside a data-accent scope. */
+	:root {
+		accent-color: var(--accent);
+	}
+
+	a {
+		color: inherit;
+		text-decoration-color: color-mix(in oklch, currentColor 35%, transparent);
+		text-underline-offset: 0.18em;
+	}
+	a:hover {
+		text-decoration-color: currentColor;
+	}
+
+	input,
+	textarea,
+	select {
+		border-radius: var(--radius-button);
+		background: var(--surface-1);
+		border: 1px solid var(--border);
+	}
+	textarea {
+		resize: vertical;
+	}
+	button {
+		border-radius: var(--radius-button);
+	}
+
+	/* Focus: one channel, one rule. No global `:focus { outline: none }` —
+	 * UA stylesheets already gate default rings on :focus-visible, and the
+	 * blanket reset only breaks assistive setups. Outline follows the
+	 * element's border-radius natively; do not set border-radius here. */
+	:focus-visible {
+		outline: var(--ring-width) solid var(--ring);
+		outline-offset: var(--ring-offset);
+	}
+
+	/* Top-layer plumbing: backdrops consume the scrim tokens, and entry/
+	 * exit is animated via @starting-style + discrete transitions. Pair the
+	 * element itself with a surface recipe:
+	 *   <dialog class="modal" data-surface="5">
+	 *   <div popover class="popover" data-surface="4">  */
+	dialog::backdrop {
+		background: var(--scrim);
+	}
+
+	dialog,
+	[popover] {
+		opacity: 1;
+		transition:
+			opacity var(--motion-panel) var(--ease-out),
+			transform var(--motion-panel) var(--ease-out),
+			overlay var(--motion-panel) allow-discrete,
+			display var(--motion-panel) allow-discrete;
+	}
+	dialog:not([open]),
+	[popover]:not(:popover-open) {
+		opacity: 0;
+		transform: translateY(4px) scale(0.985);
+	}
+	@starting-style {
+		dialog[open],
+		:popover-open {
+			opacity: 0;
+			transform: translateY(4px) scale(0.985);
+		}
+	}
+
+	hr {
+		height: 1px;
+		border: 0;
+		background: var(--border);
+	}
+
+	code, kbd, samp, pre {
+		font-family: var(--font-mono);
+	}
+
+	/* Quiet scrollbars. */
+	* {
+		scrollbar-width: thin;
+		scrollbar-color: var(--neutral-7) transparent;
+	}
+	*::-webkit-scrollbar { width: 8px; height: 8px; }
+	*::-webkit-scrollbar-track { background: transparent; }
+	*::-webkit-scrollbar-thumb {
+		background: var(--neutral-6);
+		border: 2px solid transparent;
+		border-radius: var(--radius-pill);
+		background-clip: padding-box;
+	}
+	*::-webkit-scrollbar-thumb:hover {
+		background: var(--neutral-8);
+		background-clip: padding-box;
+	}
+
+	/* Windows High Contrast / forced-colors: the OS strips depth shadows
+	 * and author colors, so guarantee real edges and a system-color focus
+	 * ring. (Real borders survive; inset-shadow borders would not.) */
+	@media (forced-colors: active) {
+		:is([data-surface], .card, .panel, .popover, .modal, .toast) {
+			border-color: CanvasText;
+		}
+		:focus-visible {
+			outline-color: Highlight;
+		}
+		.btn {
+			border: 1px solid ButtonText;
+		}
+		.skeleton::after {
+			content: none;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		:root {
+			--motion-instant: 0ms; --motion-fast: 0ms;
+			--motion-panel: 0ms;   --motion-page: 0ms;
+		}
+		*, *::before, *::after {
+			scroll-behavior: auto !important;
+			animation-duration: 0.01ms !important;
+			animation-iteration-count: 1 !important;
+			transition-duration: 0.01ms !important;
+		}
+	}
+
+	@media print {
+		:root { color-scheme: light; }
+		body { background: #fff; color: #000; }
+		:is([data-surface], .card, .panel, .popover, .modal, .toast) {
+			box-shadow: none;
+			border: 1px solid #999;
+		}
+		.u-mobile-hidden, .u-tablet-hidden, .u-laptop-hidden { display: revert; }
+	}
+}
+
+/* ===========================================================================
+ * UTILITIES — TRUE utilities only.
+ * Rule of inclusion: orthogonal. Composing any two is always valid. If
+ * picking one value could contradict another (background vs. shadow vs.
+ * border, hover vs. selected), it is NOT here — it is a recipe.
+ * Layer order means recipes outrank utilities ON PURPOSE: a utility must
+ * not be able to half-break a recipe.
+ * ======================================================================== */
+@layer utilities {
+	/* ----- Layout primitives ----- */
+	.u-container { width: min(var(--container), calc(100% - var(--page-gutter) * 2)); margin-inline: auto; }
+	.u-content   { width: min(var(--content),   calc(100% - var(--page-gutter) * 2)); margin-inline: auto; }
+	.u-reading   { width: min(var(--reading),   calc(100% - var(--page-gutter) * 2)); margin-inline: auto; }
+
+	.u-page {
+		min-height: 100dvh;
+		padding: var(--space-8) var(--page-gutter);
+		background: var(--bg);
+		color: var(--fg);
+	}
+
+	.u-stack {
+		display: flex;
+		flex-direction: column;
+		gap: var(--stack-gap, var(--space-4));
+	}
+	.u-cluster {
+		display: flex;
+		flex-wrap: wrap;
+		align-items: center;
+		gap: var(--cluster-gap, var(--space-2));
+	}
+	.u-split {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--split-gap, var(--space-4));
+	}
+	.u-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(min(var(--grid-min, 16rem), 100%), 1fr));
+		gap: var(--grid-gap, var(--space-4));
+	}
+	.u-scroll { overflow: auto; scrollbar-gutter: stable; }
+	.u-sticky-top { position: sticky; top: var(--sticky-top, 0); z-index: var(--z-sticky); }
+
+	/* Container queries: global breakpoints are for page chrome; COMPONENT
+	 * layout responds to the box it lives in. Put .u-cq on the component
+	 * root, then in app CSS:
+	 *   @container (max-width: 480px) { .toolbar { flex-direction: column } }
+	 * A sidebar card and a full-width card now adapt independently. */
+	.u-cq { container-type: inline-size; }
+
+	/* Hairline divider between flow children — orthogonal layout concern. */
+	.u-divide-y > * + * { border-top: 1px solid var(--border); }
+
+	/* ----- Spacing (orthogonal: gap/padding never contradict) ----- */
+	.u-gap-0 { gap: var(--space-0); } .u-gap-1 { gap: var(--space-1); }
+	.u-gap-2 { gap: var(--space-2); } .u-gap-3 { gap: var(--space-3); }
+	.u-gap-4 { gap: var(--space-4); } .u-gap-6 { gap: var(--space-6); }
+	.u-gap-8 { gap: var(--space-8); } .u-gap-12 { gap: var(--space-12); }
+
+	.u-p-0 { padding: var(--space-0); } .u-p-2 { padding: var(--space-2); }
+	.u-p-3 { padding: var(--space-3); } .u-p-4 { padding: var(--space-4); }
+	.u-p-6 { padding: var(--space-6); } .u-p-8 { padding: var(--space-8); }
+
+	.u-px-2 { padding-inline: var(--space-2); } .u-px-3 { padding-inline: var(--space-3); }
+	.u-px-4 { padding-inline: var(--space-4); } .u-px-6 { padding-inline: var(--space-6); }
+	.u-px-8 { padding-inline: var(--space-8); }
+
+	.u-py-1 { padding-block: var(--space-1); } .u-py-2 { padding-block: var(--space-2); }
+	.u-py-3 { padding-block: var(--space-3); } .u-py-4 { padding-block: var(--space-4); }
+	.u-py-6 { padding-block: var(--space-6); } .u-py-8 { padding-block: var(--space-8); }
+
+	/* ----- Type roles (longhands — never reset variant-numeric) ----- */
+	.u-type-display {
+		font-family: var(--font-sans); font-weight: var(--fw-semibold);
+		font-size: var(--fs-display); line-height: 1.05;
+		letter-spacing: var(--ls-display);
+	}
+	.u-type-heading {
+		font-family: var(--font-sans); font-weight: var(--fw-semibold);
+		font-size: var(--fs-heading); line-height: var(--lh-heading);
+		letter-spacing: var(--ls-heading);
+	}
+	.u-type-title {
+		font-family: var(--font-sans); font-weight: var(--fw-semibold);
+		font-size: var(--fs-18); line-height: var(--lh-tight);
+	}
+	.u-type-body {
+		font-family: var(--font-sans); font-weight: var(--fw-regular);
+		font-size: var(--fs-14); line-height: var(--lh-body);
+	}
+	.u-type-body-lg {
+		font-family: var(--font-sans); font-weight: var(--fw-regular);
+		font-size: var(--fs-16); line-height: var(--lh-body);
+	}
+	.u-type-caption {
+		font-family: var(--font-sans); font-weight: var(--fw-regular);
+		font-size: var(--fs-12); line-height: var(--lh-caption);
+	}
+	.u-type-status {
+		font-family: var(--font-mono); font-weight: var(--fw-medium);
+		font-size: var(--fs-11); line-height: 1;
+		font-variant-numeric: tabular-nums;
+	}
+	.u-type-eyebrow {
+		font-family: var(--font-mono); font-weight: var(--fw-medium);
+		font-size: var(--fs-10); line-height: 1;
+		letter-spacing: var(--ls-eyebrow); text-transform: uppercase;
+	}
+
+	/* ----- Text color + treatment (orthogonal to everything) ----- */
+	.u-muted   { color: var(--fg-muted); }
+	.u-subtle  { color: var(--fg-subtle); }   /* large text / captions / icons */
+	.u-accent  { color: var(--accent-text); }
+	.u-danger  { color: var(--danger-text); }
+	.u-warning { color: var(--warning-text); }
+	.u-success { color: var(--success-text); }
+	.u-info    { color: var(--info-text); }
+
+	.u-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	.u-balance  { text-wrap: balance; }
+	.u-pretty   { text-wrap: pretty; }
+	.u-tabular  { font-variant-numeric: tabular-nums; }
+
+	/* Optical alignment: trims the space above cap height and below the
+	 * alphabetic baseline so headings sit flush in cards and toolbars.
+	 * Progressive enhancement — engines without text-box ignore it. */
+	@supports (text-box: trim-both cap alphabetic) {
+		.u-cap-trim { text-box: trim-both cap alphabetic; }
+	}
+
+	/* ----- Visibility / a11y ----- */
+	.u-visually-hidden {
+		position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+		overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+	}
+
+	/* ----- Page-chrome breakpoints (components: use .u-cq instead) ----- */
+	@media (max-width: 768px) {
+		:root { --page-gutter: var(--space-4); }
+		.u-page { padding-block: var(--space-6); }
+		.u-mobile-hidden { display: none !important; }
+		.u-mobile-stack { flex-direction: column !important; align-items: stretch !important; }
+	}
+	@media (min-width: 769px) and (max-width: 1024px) {
+		:root { --page-gutter: var(--space-6); }
+		.u-tablet-hidden { display: none !important; }
+	}
+	@media (min-width: 1025px) {
+		.u-laptop-hidden { display: none !important; }
+	}
+}
+
+/* ===========================================================================
+ * RECIPES — one intent, several properties, set together so they can't
+ * disagree. Authors pick a recipe; they never reassemble one from parts.
+ * Pattern: each recipe's base rule CONSUMES private --_* variables;
+ * variants ONLY SET variables. A variant can therefore never half-apply,
+ * and adding a variant can never need a specificity fight.
+ * ======================================================================== */
+@layer recipes {
+	/* --------------------------------------------------------------------
+	 * SURFACE ENGINE — the single source of background + border + shadow.
+	 *
+	 *   <div data-surface="2">            arbitrary level
+	 *   <section class="card">            intent-named, runs the same engine
+	 *   <dialog class="modal" data-surface="5">
+	 *
+	 * Named recipes preset a level AND the right radius; an explicit
+	 * data-surface overrides the named level (declared after, same
+	 * specificity), which is how a popover nested in a dialog lifts to its
+	 * LOCAL substrate: class="popover" data-surface="6", not "4".
+	 * The engine also publishes --surface-bg downstream so states can mix
+	 * against the real substrate (see .interactive).
+	 * There is no border/shadow/surface utility to combine with — the
+	 * double-edge and erased-edge bugs are unrepresentable.
+	 * ------------------------------------------------------------------ */
+	:is([data-surface], .card, .panel, .popover, .modal, .toast) {
+		background: var(--surface-bg, var(--surface-1));
+		border: 1px solid var(--surface-border, var(--border));
+		box-shadow: var(--surface-shadow, var(--shadow-1));
+		color: var(--fg);
+	}
+
+	.panel {
+		--surface-bg: var(--surface-1);
+		--surface-shadow: var(--shadow-1);
+		border-radius: var(--radius-3);
+	}
+	.card {
+		--surface-bg: var(--surface-2);
+		--surface-shadow: var(--shadow-2);
+		border-radius: var(--radius-card);
+	}
+	.popover {
+		--surface-bg: var(--surface-4);
+		--surface-shadow: var(--shadow-4);
+		border-radius: var(--radius-card);
+	}
+	.modal {
+		--surface-bg: var(--surface-5);
+		--surface-shadow: var(--shadow-5);
+		border-radius: var(--radius-modal);
+	}
+	.toast {
+		--surface-bg: var(--surface-8);
+		--surface-shadow: var(--shadow-8);
+		border-radius: var(--radius-card);
+	}
+
+	[data-surface="0"] { --surface-bg: var(--surface-0); --surface-shadow: var(--shadow-0); --surface-border: transparent; }
+	[data-surface="1"] { --surface-bg: var(--surface-1); --surface-shadow: var(--shadow-1); }
+	[data-surface="2"] { --surface-bg: var(--surface-2); --surface-shadow: var(--shadow-2); }
+	[data-surface="3"] { --surface-bg: var(--surface-3); --surface-shadow: var(--shadow-3); }
+	[data-surface="4"] { --surface-bg: var(--surface-4); --surface-shadow: var(--shadow-4); }
+	[data-surface="5"] { --surface-bg: var(--surface-5); --surface-shadow: var(--shadow-5); }
+	[data-surface="6"] { --surface-bg: var(--surface-6); --surface-shadow: var(--shadow-6); }
+	[data-surface="7"] { --surface-bg: var(--surface-7); --surface-shadow: var(--shadow-7); }
+	[data-surface="8"] { --surface-bg: var(--surface-8); --surface-shadow: var(--shadow-8); }
+
+	/* --------------------------------------------------------------------
+	 * ACCENT SCOPES — the sanctioned "splash of color" mechanism.
+	 * A data-accent scope remaps the whole accent slot at once: buttons,
+	 * selection, u-accent text, native controls inside the scope all shift
+	 * together, and nothing else changes. This is how an ink product gets
+	 * a violet upgrade CTA or a blue "new" surface without forking any
+	 * component.
+	 *   <section data-accent="brand"> <button class="btn">Upgrade</button>
+	 * ------------------------------------------------------------------ */
+	[data-accent="brand"] {
+		--accent:          var(--brand-base);
+		--accent-hover:    var(--brand-hover);
+		--accent-soft:     var(--brand-soft);
+		--accent-border:   var(--brand-border);
+		--accent-text:     var(--brand-text);
+		--accent-contrast: var(--brand-contrast);
+		--selected-tint:   var(--brand-soft);
+		--fg-on-accent:    var(--brand-contrast);
+	}
+	[data-accent="info"] {
+		--accent:          var(--info-base);
+		--accent-hover:    var(--info-hover);
+		--accent-soft:     var(--info-soft);
+		--accent-border:   var(--info-border);
+		--accent-text:     var(--info-text);
+		--accent-contrast: var(--info-contrast);
+		--selected-tint:   var(--info-soft);
+		--fg-on-accent:    var(--info-contrast);
+	}
+	[data-accent="danger"] {
+		--accent:          var(--danger-base);
+		--accent-hover:    var(--danger-hover);
+		--accent-soft:     var(--danger-soft);
+		--accent-border:   var(--danger-border);
+		--accent-text:     var(--danger-text);
+		--accent-contrast: var(--danger-contrast);
+		--selected-tint:   var(--danger-soft);
+		--fg-on-accent:    var(--danger-contrast);
+	}
+	[data-accent="success"] {
+		--accent:          var(--success-base);
+		--accent-hover:    var(--success-hover);
+		--accent-soft:     var(--success-soft);
+		--accent-border:   var(--success-border);
+		--accent-text:     var(--success-text);
+		--accent-contrast: var(--success-contrast);
+		--selected-tint:   var(--success-soft);
+		--fg-on-accent:    var(--success-contrast);
+	}
+	[data-accent="warning"] {
+		--accent:          var(--warning-base);
+		--accent-hover:    var(--warning-hover);
+		--accent-soft:     var(--warning-soft);
+		--accent-border:   var(--warning-border);
+		--accent-text:     var(--warning-text);
+		--accent-contrast: var(--warning-contrast);
+		--selected-tint:   var(--warning-soft);
+		--fg-on-accent:    var(--warning-contrast);
+	}
+
+	/* --------------------------------------------------------------------
+	 * INTERACTIVE — hover/active/selected/disabled as one behavior.
+	 * Hover/active tint is a translucent currentColor layer: it darkens on
+	 * light substrates and lightens on dark ones automatically, so a row
+	 * looks right on ANY surface level with no assumption about which
+	 * neutral it sits on. Selection mixes against the LOCAL substrate
+	 * (var(--surface-bg) substitutes here, at point of use — this is the
+	 * fix for the :root-frozen mix described in the header).
+	 * ------------------------------------------------------------------ */
+	.interactive {
+		border-radius: var(--radius-button);
+		transition:
+			background-color var(--motion-fast) var(--ease-standard),
+			color var(--motion-fast) var(--ease-standard),
+			box-shadow var(--motion-fast) var(--ease-standard),
+			transform var(--motion-instant) var(--ease-standard);
+	}
+	.interactive:hover {
+		background-color: color-mix(in oklch, currentColor 8%, transparent);
+	}
+	.interactive:active {
+		background-color: color-mix(in oklch, currentColor 14%, transparent);
+		transform: translateY(1px);
+	}
+	.interactive[aria-selected="true"],
+	.interactive[data-selected] {
+		background: color-mix(in oklch, var(--selected-tint) 55%, var(--surface-bg, var(--bg)));
+		box-shadow: inset 0 0 0 1px var(--selected-border);
+		color: var(--fg);
+	}
+	/* Selected rows still acknowledge the pointer. */
+	.interactive[aria-selected="true"]:hover,
+	.interactive[data-selected]:hover {
+		background: color-mix(in oklch, var(--selected-tint) 68%, var(--surface-bg, var(--bg)));
+	}
+	.interactive:disabled,
+	.interactive[aria-disabled="true"] {
+		color: var(--fg-disabled);
+		background: transparent;
+		pointer-events: none;
+	}
+
+	/* --------------------------------------------------------------------
+	 * STATUS — soft treatment (bg + matching text + border) as one
+	 * decision, so danger-soft can never be paired with success-text.
+	 * Unknown/missing values intentionally fall back to info: a typo
+	 * degrades to a visible neutral message, not to broken styling.
+	 *   <span data-status="warning">           soft
+	 *   <div data-status="danger" data-variant="solid">   filled
+	 * ------------------------------------------------------------------ */
+	[data-status] {
+		--_soft: var(--info-soft); --_text: var(--info-text);
+		--_border: var(--info-border); --_base: var(--info-base);
+		--_contrast: var(--info-contrast);
+	}
+	[data-status="danger"]  { --_soft: var(--danger-soft);  --_text: var(--danger-text);  --_border: var(--danger-border);  --_base: var(--danger-base);  --_contrast: var(--danger-contrast); }
+	[data-status="warning"] { --_soft: var(--warning-soft); --_text: var(--warning-text); --_border: var(--warning-border); --_base: var(--warning-base); --_contrast: var(--warning-contrast); }
+	[data-status="success"] { --_soft: var(--success-soft); --_text: var(--success-text); --_border: var(--success-border); --_base: var(--success-base); --_contrast: var(--success-contrast); }
+	[data-status="info"]    { --_soft: var(--info-soft);    --_text: var(--info-text);    --_border: var(--info-border);    --_base: var(--info-base);    --_contrast: var(--info-contrast); }
+
+	[data-status] {
+		background: var(--_soft);
+		color: var(--_text);
+		border: 1px solid var(--_border);
+		border-radius: var(--radius-chip);
+	}
+	[data-status][data-variant="solid"] {
+		background: var(--_base);
+		color: var(--_contrast);
+		border-color: transparent;
+	}
+
+	/* Pill badge shape; compose with status: <span class="badge" data-status="success"> */
+	.badge {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+		padding: var(--space-1) var(--space-3);
+		border-radius: var(--radius-pill);
+		font-family: var(--font-mono);
+		font-size: var(--fs-11);
+		font-weight: var(--fw-medium);
+		letter-spacing: var(--ls-eyebrow);
+		text-transform: uppercase;
+		white-space: nowrap;
+	}
+
+	/* --------------------------------------------------------------------
+	 * BUTTON — variant + size as the only knobs, via a private-var API.
+	 * The base consumes --_*; variants only assign. Fill, text, border,
+	 * hover, and lift always travel together.
+	 *   <button class="btn">                          solid (default)
+	 *   <button class="btn" data-variant="ghost" data-size="sm">
+	 *   <button class="btn" data-icon aria-label="Close">…svg…</button>
+	 * Inside <x data-accent="brand"> the solid variant turns brand-colored
+	 * with zero extra markup.
+	 * ------------------------------------------------------------------ */
+	.btn {
+		/* defaults = solid variant */
+		--_h: var(--control-height-md);
+		--_px: var(--space-4);
+		--_bg: var(--accent);
+		--_bg-hover: var(--accent-hover);
+		--_fg: var(--fg-on-accent);
+		--_fg-hover: var(--fg-on-accent);
+		--_bd: transparent;
+		--_bd-hover: transparent;
+		--_lift: -1px;
+
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: var(--space-2);
+		height: var(--_h);
+		padding-inline: var(--_px);
+		border: 1px solid var(--_bd);
+		border-radius: var(--radius-button);
+		background: var(--_bg);
+		color: var(--_fg);
+		font-family: var(--font-sans);
+		font-size: var(--fs-14);
+		font-weight: var(--fw-medium);
+		letter-spacing: var(--ls-ui);
+		text-decoration: none;
+		white-space: nowrap;
+		transition:
+			background-color var(--motion-fast) var(--ease-standard),
+			border-color var(--motion-fast) var(--ease-standard),
+			color var(--motion-fast) var(--ease-standard),
+			transform var(--motion-instant) var(--ease-standard);
+	}
+	.btn:hover {
+		background: var(--_bg-hover);
+		color: var(--_fg-hover);
+		border-color: var(--_bd-hover);
+		transform: translateY(var(--_lift));
+	}
+	.btn:active {
+		transform: translateY(0);
+	}
+
+	.btn[data-size="sm"] { --_h: var(--control-height-sm); --_px: var(--space-3); font-size: var(--fs-13); }
+	.btn[data-size="lg"] { --_h: var(--control-height-lg); --_px: var(--space-5); }
+
+	/* Square icon button; requires aria-label. */
+	.btn[data-icon] {
+		width: var(--_h);
+		padding-inline: 0;
+	}
+
+	.btn[data-variant="ghost"] {
+		--_bg: transparent;
+		--_bg-hover: color-mix(in oklch, currentColor 6%, transparent);
+		--_fg: var(--fg);
+		--_fg-hover: var(--fg);
+		--_bd: var(--border-hover);
+		--_bd-hover: var(--fg);
+		--_lift: 0px;
+	}
+	.btn[data-variant="quiet"] {
+		--_bg: transparent;
+		--_bg-hover: color-mix(in oklch, currentColor 8%, transparent);
+		--_fg: var(--fg-muted);
+		--_fg-hover: var(--fg);
+		--_bd: transparent;
+		--_bd-hover: transparent;
+		--_lift: 0px;
+	}
+	.btn[data-variant="danger"] {
+		--_bg: var(--danger-base);
+		--_bg-hover: var(--danger-hover);
+		--_fg: var(--danger-contrast);
+		--_fg-hover: var(--danger-contrast);
+		--_bd: transparent;
+		--_bd-hover: transparent;
+	}
+
+	/* Disabled: explicit muted treatment, not blanket opacity (opacity
+	 * drags text below legible contrast and looks wrong over imagery). */
+	.btn:disabled,
+	.btn[aria-disabled="true"] {
+		--_bg: var(--neutral-3);
+		--_bg-hover: var(--neutral-3);
+		--_fg: var(--fg-disabled);
+		--_fg-hover: var(--fg-disabled);
+		--_bd: transparent;
+		transform: none;
+		pointer-events: none;
+	}
+
+	/* --------------------------------------------------------------------
+	 * FIELD — input/select/textarea shared treatment + invalid states.
+	 * :user-invalid fires only after interaction (no red wall on load);
+	 * aria-invalid covers server-side validation. Invalid fields swap the
+	 * FOCUS RING hue too — the one place the ring leaves its blue.
+	 * ------------------------------------------------------------------ */
+	.field {
+		display: block;
+		width: 100%;
+		height: var(--control-height-md);
+		padding-inline: var(--space-3);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-button);
+		background: var(--surface-1);
+		color: var(--fg);
+		font-size: var(--fs-14);
+	}
+	textarea.field { height: auto; padding-block: var(--space-2); }
+	.field::placeholder { color: var(--fg-subtle); }
+	.field:hover { border-color: var(--border-hover); }
+	.field:user-invalid,
+	.field[aria-invalid="true"] {
+		border-color: var(--danger-border);
+	}
+	.field:user-invalid:focus-visible,
+	.field[aria-invalid="true"]:focus-visible {
+		outline-color: var(--danger-base);
+	}
+	.field:disabled {
+		background: var(--neutral-2);
+		color: var(--fg-disabled);
+	}
+
+	/* --------------------------------------------------------------------
+	 * SKELETON — loading placeholder. Set width/height (or apply to the
+	 * real element and hide its content); the sweep direction respects
+	 * writing direction via translate on the logical axis. Reduced motion
+	 * collapses the animation globally; forced-colors drops the sheen and
+	 * keeps the box.
+	 * ------------------------------------------------------------------ */
+	.skeleton {
+		position: relative;
+		overflow: hidden;
+		background: var(--neutral-3);
+		border-radius: var(--radius-2);
+		color: transparent;
+		user-select: none;
+		pointer-events: none;
+	}
+	.skeleton::after {
+		content: "";
+		position: absolute;
+		inset: 0;
+		transform: translateX(-100%);
+		background: linear-gradient(
+			90deg,
+			transparent,
+			light-dark(oklch(1 0 0 / 0.6), oklch(1 0 0 / 0.06)),
+			transparent
+		);
+		animation: skeleton-sweep 1.4s var(--ease-standard) infinite;
+	}
+	@keyframes skeleton-sweep {
+		to { transform: translateX(100%); }
+	}
+
+	/* --------------------------------------------------------------------
+	 * KBD + SCRIM
+	 * ------------------------------------------------------------------ */
+	.kbd {
+		display: inline-flex;
+		align-items: center;
+		min-height: 1.5em;
+		padding-inline: 0.45em;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-2);
+		background: var(--neutral-3);
+		color: var(--fg-muted);
+		font-family: var(--font-mono);
+		font-size: var(--fs-11);
+		font-weight: var(--fw-medium);
+	}
+
+	/* Manual scrim for portaled (non-top-layer) overlays only; native
+	 * <dialog> gets its scrim from ::backdrop in @layer base. */
+	.scrim { position: fixed; inset: 0; background: var(--scrim); z-index: var(--z-drawer); }
+	.scrim--strong { background: var(--scrim-strong); }
+
+	/* --------------------------------------------------------------------
+	 * TOUCH TARGETS — pointer accuracy, not viewport width, is the signal.
+	 * Controls grow to the 44px floor on coarse pointers; dense table rows
+	 * are exempt on purpose (rows are targets via their whole width).
+	 * ------------------------------------------------------------------ */
+	@media (pointer: coarse) {
+		.btn, .field {
+			min-height: 44px;
+		}
+		.btn[data-icon] {
+			min-width: 44px;
+		}
+	}
+}
+
+/* ===========================================================================
+ * Overlay note (not enforceable in CSS): elements with backdrop-filter or
+ * transform create a stacking context, which can TRAP descendant popovers
+ * below them regardless of the --z-* scale. Prefer native <dialog> and
+ * [popover] — the top layer is immune to both stacking contexts and
+ * z-index. Anything portaled by hand goes directly under <body>.
+ * ======================================================================== */

@@ -1,9 +1,153 @@
-# web — the browser app + real-browser e2e (ported from memcontainers web/). Assets are
-# DEPS, not `cp` (SYSTEMS.md): the app bundles the @mc/* SDK as build dependencies, and
-# the CDP scripts under cdp/ run against a PINNED, hermetic chromium (B4) — never
-# /usr/bin/chromium. This is the in-browser proof that the JS host family works (A3).
+# web — the browser app consumer of the JS host family (SYSTEMS.md §13.4).
 #
-# Phase A:
-#   load("@aspect_rules_js//js:defs.bzl", "js_binary")
-#   # app bundle deps //memcontainers/sdk-js/core //memcontainers/sdk-js/agent //memcontainers/sdk-js/elements
-#   # //web:cdp_test — a browser e2e against the hermetic chromium toolchain.
+# Keep the app as a normal Vite package for local iteration, but make the production
+# bundle a Bazel action so the stable //web:app target is a real graph node. Kernel
+# and image artifacts will become explicit data deps here when the live browser VM
+# boot path lands; no checked-in copied wasm/tar assets.
+
+load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_run_binary")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+
+npm_link_all_packages(name = "node_modules")
+
+WEB_SOURCES = [
+    "index.html",
+    "package.json",
+    "tsconfig.app.json",
+    "tsconfig.json",
+    "tsconfig.node.json",
+    "vite.config.ts",
+] + [
+    "tools/vite.mjs",
+] + glob(["src/**"])
+
+filegroup(
+    name = "sources",
+    srcs = WEB_SOURCES,
+)
+
+js_binary(
+    name = "vite_bin",
+    chdir = package_name(),
+    data = [
+        ":node_modules/@vitejs/plugin-react",
+        ":node_modules/vite",
+        ":node_modules/react",
+        ":node_modules/react-dom",
+        ":node_modules/scheduler",
+        ":node_modules/typescript",
+    ],
+    entry_point = "tools/vite.mjs",
+)
+
+js_binary(
+    name = "dev",
+    chdir = package_name(),
+    data = [
+        ":node_modules/@vitejs/plugin-react",
+        ":node_modules/vite",
+        ":node_modules/react",
+        ":node_modules/react-dom",
+        ":node_modules/scheduler",
+        ":node_modules/typescript",
+        ":sources",
+    ],
+    entry_point = "tools/vite.mjs",
+    fixed_args = [
+        "dev",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5173",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+js_binary(
+    name = "tsc_bin",
+    chdir = package_name(),
+    data = [":node_modules/typescript"],
+    entry_point = "tools/tsc-check.mjs",
+)
+
+js_run_binary(
+    name = "typecheck_app",
+    srcs = [
+        ":node_modules/@types/react",
+        ":node_modules/@types/react-dom",
+        ":node_modules/@vitejs/plugin-react",
+        ":node_modules/react",
+        ":node_modules/react-dom",
+        ":node_modules/scheduler",
+        ":node_modules/typescript",
+        ":node_modules/vite",
+        ":sources",
+    ],
+    outs = ["typecheck_app.stamp"],
+    args = [
+        "--stamp-out",
+        "$(execpath typecheck_app.stamp)",
+        "--",
+        "-p",
+        "tsconfig.app.json",
+        "--noEmit",
+        "--incremental",
+        "false",
+    ],
+    chdir = package_name(),
+    tool = ":tsc_bin",
+)
+
+js_run_binary(
+    name = "typecheck_node",
+    srcs = [
+        ":node_modules/@types/node",
+        ":node_modules/@vitejs/plugin-react",
+        ":node_modules/typescript",
+        ":node_modules/vite",
+        ":sources",
+    ],
+    outs = ["typecheck_node.stamp"],
+    args = [
+        "--stamp-out",
+        "$(execpath typecheck_node.stamp)",
+        "--",
+        "-p",
+        "tsconfig.node.json",
+        "--noEmit",
+        "--incremental",
+        "false",
+    ],
+    chdir = package_name(),
+    tool = ":tsc_bin",
+)
+
+filegroup(
+    name = "typecheck",
+    srcs = [
+        ":typecheck_app",
+        ":typecheck_node",
+    ],
+)
+
+js_run_binary(
+    name = "app",
+    srcs = [
+        ":node_modules/@vitejs/plugin-react",
+        ":node_modules/vite",
+        ":node_modules/react",
+        ":node_modules/react-dom",
+        ":node_modules/scheduler",
+        ":node_modules/typescript",
+        ":sources",
+    ],
+    out_dirs = ["dist"],
+    args = [
+        "build",
+        "--outDir",
+        "dist",
+    ],
+    chdir = package_name(),
+    tool = ":vite_bin",
+    visibility = ["//visibility:public"],
+)
