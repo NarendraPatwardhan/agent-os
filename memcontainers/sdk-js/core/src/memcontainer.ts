@@ -72,8 +72,12 @@ export class Vm {
   private readonly cronJobs = new Set<CronHandle>();
   /** Monotonic counter for the temp files {@link Vm.luau} writes. */
   private luauSeq = 0;
-  /** Catalog generation used for host-control catalog.apply commits. */
+  /** Cosmetic monotonic label carried in the index; NOT the concurrency primitive (the digest below
+   *  is). The broker is idempotent by content digest, so this can never desync into a wrong decision. */
   private catalogGeneration = 0;
+  /** The last index digest this VM committed — the compare-and-swap base for the next `catalog.apply`,
+   *  so a runtime `vm.tool` cannot clobber a catalog that moved under it. */
+  private catalogDigest = "";
 
   /** @internal — use {@link mc.create}. */
   constructor(
@@ -160,9 +164,10 @@ export class Vm {
     }
     try {
       const generation = this.catalogGeneration + 1;
-      await applyToolCatalog(this.backend, this.opts, next, generation);
+      const digest = await applyToolCatalog(this.backend, this.opts, next, generation, this.catalogDigest);
       await seedToolAliases(this.backend, defs, this.handledToolAliases);
       this.catalogGeneration = generation;
+      this.catalogDigest = digest;
     } catch (e) {
       for (const d of defs) {
         const prev = previous.find((t) => t.name === d.name);
@@ -529,7 +534,8 @@ async function applyToolCatalog(
   opts: CreateOptions,
   defs: ToolDefinition[],
   generation: number,
-): Promise<void> {
+  baseDigest = "",
+): Promise<string> {
   const bundle = await mergedCatalogBundle(opts, defs, generation);
   await ensureToolCatalogDirs(backend);
   for (const record of bundle.records) {
@@ -540,6 +546,9 @@ async function applyToolCatalog(
     generation,
     index: bundle.index,
     digest: bundle.indexDigest,
+    // Compare-and-swap base: omitted on the first commit (idempotent-by-digest is the safety net), set
+    // on subsequent runtime commits so a concurrent change is caught instead of clobbered.
+    ...(baseDigest ? { base_digest: baseDigest } : {}),
   });
   const raw = await backend.serviceCall("tools", enc(req));
   let response: unknown;
@@ -554,6 +563,7 @@ async function applyToolCatalog(
     const message = typeof err?.message === "string" ? err.message : "tool catalog update failed";
     throw new Error(`/svc/tools ${code}: ${message}`);
   }
+  return bundle.indexDigest;
 }
 
 async function mergedCatalogBundle(

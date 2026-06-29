@@ -104,10 +104,6 @@ fn field_usize(doc: &Json, name: &str, default: usize, max: usize) -> usize {
         .unwrap_or(default)
 }
 
-fn field_u64(doc: &Json, name: &str) -> Option<u64> {
-    doc.get(name).and_then(|v| v.as_u64())
-}
-
 fn digest_hex(bytes: &[u8]) -> String {
     hex(&sha256(bytes))
 }
@@ -661,9 +657,6 @@ fn apply_catalog(state: &mut ToolState, req: &Json, caller: u32) -> Json {
             "catalog mutation requires host control",
         );
     }
-    let Some(generation) = field_u64(req, "generation") else {
-        return err_json("bad_request", "catalog.apply requires generation");
-    };
     let Some(index_json) = req.get("index").cloned() else {
         return err_json("bad_request", "catalog.apply requires index");
     };
@@ -673,33 +666,35 @@ fn apply_catalog(state: &mut ToolState, req: &Json, caller: u32) -> Json {
     if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
         return err_json("bad_request", "catalog.apply digest must be sha256 hex");
     }
+    let digest = digest.to_ascii_lowercase();
     let index_text = json::to_string(&index_json);
     let computed = digest_hex(index_text.as_bytes());
-    if computed != digest.to_ascii_lowercase() {
+    if computed != digest {
         return err_json(
             "digest_mismatch",
             "catalog.apply digest does not match index",
         );
     }
+    // The catalog's identity is its content digest, not a counter (which a multi-step writer can desync
+    // from the live state). Optimistic concurrency is compare-and-swap on the base the caller edited:
+    // if `base_digest` is supplied and the live catalog has already moved on, reject the stale write.
+    if let Some(base) = field_str(req, "base_digest") {
+        if base.to_ascii_lowercase() != state.catalog_digest {
+            return err_json(
+                "catalog_conflict",
+                "catalog.apply base_digest does not match the live catalog",
+            );
+        }
+    }
+    // Idempotent by result: re-applying the identical catalog is a no-op — the digest IS the version,
+    // so a stale retry or a duplicate runtime add is harmless (same content ⇒ same digest).
+    if computed == state.catalog_digest {
+        return ok_json(catalog_status(state));
+    }
     let next = match CatalogIndex::parse(&index_text) {
         Ok(index) => index,
         Err(_) => return err_json("invalid_catalog", "catalog index did not validate"),
     };
-    if next.generation() != generation {
-        return err_json(
-            "generation_mismatch",
-            "index generation did not match request",
-        );
-    }
-    // Optimistic-concurrency guard: a single host controls the catalog, so a request whose generation
-    // is older than the live one is a stale or replayed apply — reject it rather than roll the catalog
-    // backwards. (Re-applying the current generation is idempotent and allowed.)
-    if generation < state.catalog_generation {
-        return err_json(
-            "generation_conflict",
-            "catalog.apply generation is older than the live catalog",
-        );
-    }
     // Verify every referenced shard is present AND content-addressed correctly before committing, so a
     // torn shard write can never go live (the broker also re-verifies lazily on hydration).
     for entry in next.entries() {
@@ -723,7 +718,9 @@ fn apply_catalog(state: &mut ToolState, req: &Json, caller: u32) -> Json {
         return err_json("checkpoint_failed", "could not persist tool catalog index");
     }
     state.index = next;
-    state.catalog_generation = generation;
+    // `generation` is now a cosmetic monotonic label carried in the index (reported in status); the
+    // digest above — not this number — is the concurrency/identity primitive.
+    state.catalog_generation = state.index.generation();
     state.catalog_digest = computed;
     state.shard_cache.clear();
     ok_json(catalog_status(state))
