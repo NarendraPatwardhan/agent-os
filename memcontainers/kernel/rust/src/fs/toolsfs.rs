@@ -34,6 +34,10 @@ const DIGEST_MAX_BYTES: usize = 128;
 pub struct ToolsFs {
     namespace: NonNull<Namespace>,
     cache: RefCell<Option<CachedCatalog>>,
+    /// Hydrated leaf bytes by tool address, populated lazily and reused while the catalog is unchanged
+    /// — so a `cat`/`stat` of the same `/tools/.../tool` does not re-read + re-hydrate its shard on every
+    /// VFS op. Cleared whenever the index view is rebuilt (see `ensure_cache`).
+    record_cache: RefCell<BTreeMap<String, Vec<u8>>>,
 }
 
 // The namespace pointer targets the kernel's pinned boot namespace in SystemState. Kernel execution is
@@ -48,6 +52,7 @@ impl ToolsFs {
         Self {
             namespace: NonNull::new(namespace as *mut Namespace).expect("namespace non-null"),
             cache: RefCell::new(None),
+            record_cache: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -148,6 +153,7 @@ impl ToolsFs {
                 .as_deref()
                 .map(CatalogView::from_bytes)
                 .unwrap_or_else(CatalogView::empty);
+            self.record_cache.borrow_mut().clear();
             *self.cache.borrow_mut() = Some(CachedCatalog { key, view });
             return;
         }
@@ -162,6 +168,7 @@ impl ToolsFs {
             {
                 return;
             }
+            self.record_cache.borrow_mut().clear();
             *self.cache.borrow_mut() = Some(CachedCatalog {
                 key,
                 view: CatalogView::empty(),
@@ -178,6 +185,7 @@ impl ToolsFs {
             return;
         }
         let view = CatalogView::from_bytes(&bytes);
+        self.record_cache.borrow_mut().clear();
         *self.cache.borrow_mut() = Some(CachedCatalog { key, view });
     }
 
@@ -188,6 +196,9 @@ impl ToolsFs {
     }
 
     fn record_bytes_for_entry(&self, entry: &IndexEntry) -> Option<Vec<u8>> {
+        if let Some(cached) = self.record_cache.borrow().get(&entry.address) {
+            return Some(cached.clone());
+        }
         let path = alloc::format!("{CATALOG_RECORDS_DIR}/{}", entry.sha);
         let bytes = self.read_file(&path)?;
         if pkgcore::sha256_hex(&bytes) != entry.sha {
@@ -195,7 +206,11 @@ impl ToolsFs {
         }
         let text = core::str::from_utf8(&bytes).ok()?;
         let rec = toolcore::hydrate_record(entry, text).ok()?;
-        Some(record_bytes(&rec))
+        let out = record_bytes(&rec);
+        self.record_cache
+            .borrow_mut()
+            .insert(entry.address.clone(), out.clone());
+        Some(out)
     }
 
     fn parts<'a>(path: &'a str) -> Vec<&'a str> {
