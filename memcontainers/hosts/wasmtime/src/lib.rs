@@ -38,7 +38,6 @@ mod exports;
 mod host_call;
 mod net;
 mod persist;
-mod policy;
 
 pub use catalog::{
     read_default_catalog_compiler_wasm, CatalogApplyStatus, CatalogConnection,
@@ -55,7 +54,9 @@ pub use net::{
     DeniedNet, NetCapability, RealNet, ToolApprovalDecision, ToolApprovalFacts, ToolApprover,
 };
 pub use persist::{DeniedPersist, DiskPersist, PersistCapability};
-pub use policy::{
+// The tool-policy engine is single-source in toolcore; re-export it so the NIF + tests keep importing
+// it from this host crate (the wasmtime host links it natively, the JS host calls it via the wasm).
+pub use toolcore::policy::{
     ToolPolicyAction, ToolPolicyError, ToolPolicyOwner, ToolPolicyRule, ToolPolicySet,
 };
 

@@ -716,6 +716,238 @@ pub fn parse_json_or_string(src: &str) -> Json {
     Json::Str(src.to_string())
 }
 
+/// The tool-policy engine — the single source of policy logic for BOTH host families. The
+/// wasmtime/Elixir host links this natively; the JS host calls it through `catalog-compiler.wasm`
+/// (`cc_policy_resolve` / `cc_validate_policy`). There is no second implementation: a Rust copy plus a
+/// TypeScript copy was forbidden drift. The host owns only transport + the credential splice; the
+/// decision (which pattern matches, most-restrictive resolution, what is a valid pattern) lives here.
+pub mod policy {
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ToolPolicyAction {
+        Approve,
+        RequireApproval,
+        Block,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ToolPolicyOwner {
+        Org,
+        User,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct ToolPolicyRule {
+        pub owner: ToolPolicyOwner,
+        pub pattern: String,
+        pub action: ToolPolicyAction,
+    }
+
+    #[derive(Debug, Clone, Default)]
+    pub struct ToolPolicySet {
+        rules: Vec<ToolPolicyRule>,
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ToolPolicyError {
+        InvalidOwner,
+        InvalidPattern,
+        InvalidAction,
+    }
+
+    impl ToolPolicySet {
+        pub fn new(rules: Vec<ToolPolicyRule>) -> Result<Self, ToolPolicyError> {
+            for rule in &rules {
+                validate_rule(rule)?;
+            }
+            Ok(Self { rules })
+        }
+
+        pub fn empty() -> Self {
+            Self::default()
+        }
+
+        pub fn resolve(&self, address: &str) -> Option<ToolPolicyAction> {
+            let mut seen_org = false;
+            let mut seen_user = false;
+            let mut strongest = None::<ToolPolicyAction>;
+            for rule in &self.rules {
+                let seen = match rule.owner {
+                    ToolPolicyOwner::Org => &mut seen_org,
+                    ToolPolicyOwner::User => &mut seen_user,
+                };
+                if *seen || !pattern_matches(&rule.pattern, address) {
+                    continue;
+                }
+                *seen = true;
+                if strongest
+                    .map(|current| action_rank(rule.action) > action_rank(current))
+                    .unwrap_or(true)
+                {
+                    strongest = Some(rule.action);
+                }
+            }
+            strongest
+        }
+    }
+
+    fn validate_rule(rule: &ToolPolicyRule) -> Result<(), ToolPolicyError> {
+        match rule.owner {
+            ToolPolicyOwner::Org | ToolPolicyOwner::User => {}
+        }
+        match rule.action {
+            ToolPolicyAction::Approve
+            | ToolPolicyAction::RequireApproval
+            | ToolPolicyAction::Block => {}
+        }
+        if !valid_policy_pattern(&rule.pattern) {
+            return Err(ToolPolicyError::InvalidPattern);
+        }
+        Ok(())
+    }
+
+    fn valid_policy_pattern(pattern: &str) -> bool {
+        if pattern == "*" {
+            return true;
+        }
+        // The host authorizes at the egress splice, where it knows the connection
+        // (`integration.owner.connection`) and the request's method/origin, but NOT the catalog tool
+        // address — so it resolves rules against `integration.owner.connection.*`. A pattern can
+        // therefore only match at connection granularity or coarser: a trailing wildcard with at most
+        // three concrete segments. A per-tool pattern (a concrete fourth segment) could never match
+        // and would silently no-op, so it is rejected at construction rather than left as a fail-open
+        // footgun.
+        let parts = pattern.split('.').collect::<Vec<_>>();
+        parts.len() >= 2
+            && parts.len() <= 4
+            && parts.last() == Some(&"*")
+            && parts.iter().all(|part| *part == "*" || valid_segment(part))
+    }
+
+    fn pattern_matches(pattern: &str, address: &str) -> bool {
+        if pattern == "*" {
+            return true;
+        }
+        let p = pattern.split('.').collect::<Vec<_>>();
+        let a = address.split('.').collect::<Vec<_>>();
+        if p.last() == Some(&"*") {
+            if a.len() < p.len() - 1 {
+                return false;
+            }
+            return p[..p.len() - 1]
+                .iter()
+                .zip(a.iter())
+                .all(|(p, a)| *p == "*" || p == a);
+        }
+        p.len() == a.len() && p.iter().zip(a.iter()).all(|(p, a)| *p == "*" || p == a)
+    }
+
+    fn valid_segment(value: &str) -> bool {
+        !value.is_empty()
+            && value
+                .bytes()
+                .all(|b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-'))
+    }
+
+    fn action_rank(action: ToolPolicyAction) -> u8 {
+        match action {
+            ToolPolicyAction::Approve => 0,
+            ToolPolicyAction::RequireApproval => 1,
+            ToolPolicyAction::Block => 2,
+        }
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::policy::{ToolPolicyAction, ToolPolicyOwner, ToolPolicyRule, ToolPolicySet};
+
+    fn rule(owner: ToolPolicyOwner, pattern: &str, action: ToolPolicyAction) -> ToolPolicyRule {
+        ToolPolicyRule {
+            owner,
+            pattern: pattern.into(),
+            action,
+        }
+    }
+
+    #[test]
+    fn resolves_at_connection_granularity() {
+        use ToolPolicyAction::*;
+        use ToolPolicyOwner::*;
+        let addr = "github.org.main.*";
+        assert_eq!(ToolPolicySet::new(vec![]).unwrap().resolve(addr), None);
+        assert_eq!(
+            ToolPolicySet::new(vec![rule(Org, "*", Block)]).unwrap().resolve(addr),
+            Some(Block)
+        );
+        assert_eq!(
+            ToolPolicySet::new(vec![rule(Org, "github.*", RequireApproval)]).unwrap().resolve(addr),
+            Some(RequireApproval)
+        );
+        assert_eq!(
+            ToolPolicySet::new(vec![rule(User, "github.org.main.*", Approve)]).unwrap().resolve(addr),
+            Some(Approve)
+        );
+        assert_eq!(
+            ToolPolicySet::new(vec![rule(Org, "github.org.other.*", Block)]).unwrap().resolve(addr),
+            None
+        );
+    }
+
+    #[test]
+    fn first_match_per_owner_then_most_restrictive() {
+        use ToolPolicyAction::*;
+        use ToolPolicyOwner::*;
+        let addr = "github.org.main.*";
+        // org: the earlier match (approve) wins for that owner, ignoring the later block.
+        assert_eq!(
+            ToolPolicySet::new(vec![
+                rule(Org, "github.org.main.*", Approve),
+                rule(Org, "github.*", Block),
+            ])
+            .unwrap()
+            .resolve(addr),
+            Some(Approve)
+        );
+        // across owners: the most restrictive wins (org approve + user block → block).
+        assert_eq!(
+            ToolPolicySet::new(vec![
+                rule(Org, "github.*", Approve),
+                rule(User, "github.org.main.*", Block),
+            ])
+            .unwrap()
+            .resolve(addr),
+            Some(Block)
+        );
+    }
+
+    #[test]
+    fn rejects_unenforceable_patterns_accepts_connection_granular() {
+        use ToolPolicyAction::Block;
+        use ToolPolicyOwner::Org;
+        // per-tool (concrete 4th segment), 5-segment, exact (no trailing wildcard), empty segment.
+        for pat in [
+            "github.org.main.delete-repo",
+            "github.org.main.issues.*",
+            "github.org.main",
+            "github..main.*",
+        ] {
+            assert!(
+                ToolPolicySet::new(vec![rule(Org, pat, Block)]).is_err(),
+                "pattern {pat:?} must be rejected at construction"
+            );
+        }
+        for pat in ["*", "github.*", "github.org.*", "github.org.main.*"] {
+            assert!(
+                ToolPolicySet::new(vec![rule(Org, pat, Block)]).is_ok(),
+                "pattern {pat:?} must be accepted"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -9,6 +9,7 @@ import type {
   ConnectionSpecSource,
   CreateOptions,
   ToolDefinition,
+  ToolPolicyAction,
 } from "./types.js";
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -105,6 +106,30 @@ export async function deriveConnectionOrigins(opts: CreateOptions): Promise<Conn
       }
     }),
   );
+}
+
+/**
+ * Resolve the embedder's tool policy per connection address (`integration.owner.connection.*`) via the
+ * single-source toolcore engine (`cc_validate_policy` + `cc_policy_resolve`), at create — so the egress
+ * splice just looks the action up, never re-implementing pattern matching (the JS peer of the Rust
+ * host's native `toolcore::policy`). Throws if any rule is invalid. Empty when there are no rules or no
+ * connections (the splice then falls back to method-based destructiveness classification).
+ */
+export async function resolvePolicyByConnection(
+  opts: CreateOptions,
+): Promise<Map<string, ToolPolicyAction | null>> {
+  const map = new Map<string, ToolPolicyAction | null>();
+  const rules = opts.policies ?? [];
+  const connections = opts.connections ?? [];
+  if (rules.length === 0 || connections.length === 0) return map;
+  const compiler = await defaultCatalogCompiler(opts.catalogCompiler);
+  const rulesJson = JSON.stringify(rules);
+  await compiler.validatePolicy(rulesJson);
+  for (const connection of connections) {
+    const address = `${connection.ref}.*`;
+    map.set(address, await compiler.policyResolve(rulesJson, address));
+  }
+  return map;
 }
 
 /** Curated egress origins for a registry entry: explicit `servers`, else the `endpoint`'s origin

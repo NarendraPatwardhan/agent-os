@@ -24,6 +24,7 @@ import {
   connectionToolCatalogBundle,
   deriveConnectionOrigins,
   hostToolDefinitions,
+  resolvePolicyByConnection,
 } from "./catalog.js";
 import { startCron } from "./cron.js";
 import type { CronAction, CronHandle, CronOptions } from "./cron.js";
@@ -446,7 +447,7 @@ async function makeEmbedded(
         approver: makeApprover(opts.onPermission),
         connections: connectionRegistry(opts.connections ?? []),
         toolApprover: makeToolApprover(opts.onPermission),
-        policies: opts.policies,
+        policyByConnection: await resolvePolicyByConnection(opts),
       }),
     );
   }

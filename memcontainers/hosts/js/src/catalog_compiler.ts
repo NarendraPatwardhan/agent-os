@@ -1,6 +1,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
+import type { ToolPolicyAction } from "./policy.js";
+
 export interface CatalogBundle {
   entries: Map<string, Uint8Array>;
 }
@@ -34,6 +36,9 @@ type CompilerExports = {
   cc_registry_resolve(idPtr: number, idLen: number): bigint;
   cc_compile(srcPtr: number, srcLen: number, optsPtr: number, optsLen: number): bigint;
   cc_bundle_schema_version(): number;
+  cc_validate_address(ptr: number, len: number): bigint;
+  cc_validate_policy(ptr: number, len: number): bigint;
+  cc_policy_resolve(rulesPtr: number, rulesLen: number, addrPtr: number, addrLen: number): bigint;
 };
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -87,6 +92,9 @@ export class CatalogCompiler {
       "cc_registry_resolve",
       "cc_compile",
       "cc_bundle_schema_version",
+      "cc_validate_address",
+      "cc_validate_policy",
+      "cc_policy_resolve",
     ] as const) {
       if (!(name in exports)) throw new Error(`catalog compiler is missing ${name}`);
     }
@@ -143,6 +151,42 @@ export class CatalogCompiler {
 
   bundleSchemaVersion(): number {
     return this.exports.cc_bundle_schema_version();
+  }
+
+  /** Validate a tool-policy rule set (owner/action + connection-granular patterns) via the single-source
+   *  toolcore engine; throws on the first invalid rule. The wasmtime host enforces the identical check. */
+  async validatePolicy(rulesJson: string): Promise<void> {
+    const bytes = enc(rulesJson);
+    const ptr = this.write(bytes);
+    try {
+      const res: unknown = JSON.parse(dec(await this.readReturn(this.exports.cc_validate_policy(ptr, bytes.length))));
+      if (isObject(res) && isObject(res.error)) {
+        throw new Error(
+          typeof res.error.message === "string" ? `invalid tool policy: ${res.error.message}` : "invalid tool policy",
+        );
+      }
+    } finally {
+      this.exports.cc_free(ptr, bytes.length);
+    }
+  }
+
+  /** Resolve a (pre-validated) policy rule set against a connection address → the action or null, via
+   *  the single-source toolcore engine. */
+  async policyResolve(rulesJson: string, address: string): Promise<ToolPolicyAction | null> {
+    const rules = enc(rulesJson);
+    const addr = enc(address);
+    const rulesPtr = this.write(rules);
+    const addrPtr = this.write(addr);
+    try {
+      const res: unknown = JSON.parse(
+        dec(await this.readReturn(this.exports.cc_policy_resolve(rulesPtr, rules.length, addrPtr, addr.length))),
+      );
+      const action = isObject(res) ? res.action : null;
+      return action === "approve" || action === "require_approval" || action === "block" ? action : null;
+    } finally {
+      this.exports.cc_free(rulesPtr, rules.length);
+      this.exports.cc_free(addrPtr, addr.length);
+    }
   }
 
   private write(bytes: Uint8Array): number {

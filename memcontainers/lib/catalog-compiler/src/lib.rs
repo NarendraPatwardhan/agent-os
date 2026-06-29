@@ -342,6 +342,122 @@ pub extern "C" fn cc_bundle_schema_version() -> u32 {
     BUNDLE_SCHEMA_VERSION
 }
 
+// ── Single-source decision exports (toolcore is the one implementation; the JS host calls these, the
+//    wasmtime host calls toolcore natively, so the two cannot drift) ───────────────────────────────
+
+/// Validate a fully-qualified tool address (`integration.owner.tool…`) via `toolcore::parse_address` —
+/// the same check the host catalog builder uses, so the JS `toolCatalogBundle` cannot accept an address
+/// the Rust host would reject.
+#[no_mangle]
+pub unsafe extern "C" fn cc_validate_address(ptr: *const u8, len: usize) -> u64 {
+    let addr = str::from_utf8(read(ptr, len)).unwrap_or("");
+    alloc_return(match toolcore::parse_address(addr) {
+        Ok(_) => serde_json::to_vec(&json!({ "ok": true })).expect("ok serializes"),
+        Err(_) => serde_json::to_vec(&json!({
+            "error": { "code": "invalid_address", "message": format!("invalid tool address `{addr}`") }
+        }))
+        .expect("address error serializes"),
+    })
+}
+
+/// Validate a tool-policy rule set (owner/action enums + connection-granular patterns) — the construction
+/// check both hosts enforce.
+#[no_mangle]
+pub unsafe extern "C" fn cc_validate_policy(ptr: *const u8, len: usize) -> u64 {
+    alloc_return(match parse_policy_rules(read(ptr, len)) {
+        Ok(rules) => match toolcore::policy::ToolPolicySet::new(rules) {
+            Ok(_) => serde_json::to_vec(&json!({ "ok": true })).expect("ok serializes"),
+            Err(err) => policy_error_json(err),
+        },
+        Err(message) => serde_json::to_vec(&json!({
+            "error": { "code": "bad_request", "message": message }
+        }))
+        .expect("policy parse error serializes"),
+    })
+}
+
+/// Resolve a policy rule set against a connection address → the action (`approve`/`require_approval`/
+/// `block`) or null. Rules are validated at construction (`cc_validate_policy`); a malformed set here
+/// resolves to null (fail-open is impossible — the splice still classifies destructiveness).
+#[no_mangle]
+pub unsafe extern "C" fn cc_policy_resolve(
+    rules_ptr: *const u8,
+    rules_len: usize,
+    addr_ptr: *const u8,
+    addr_len: usize,
+) -> u64 {
+    let address = str::from_utf8(read(addr_ptr, addr_len)).unwrap_or("");
+    let action = match parse_policy_rules(read(rules_ptr, rules_len)) {
+        Ok(rules) => toolcore::policy::ToolPolicySet::new(rules)
+            .ok()
+            .and_then(|set| set.resolve(address)),
+        Err(_) => None,
+    };
+    alloc_return(
+        serde_json::to_vec(&json!({ "action": policy_action_name(action) }))
+            .expect("policy action serializes"),
+    )
+}
+
+fn parse_policy_rules(bytes: &[u8]) -> Result<Vec<toolcore::policy::ToolPolicyRule>, String> {
+    use toolcore::policy::{ToolPolicyAction, ToolPolicyOwner, ToolPolicyRule};
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).map_err(|e| format!("invalid policy rules JSON: {e}"))?;
+    let array = value
+        .as_array()
+        .ok_or_else(|| "policy rules must be a JSON array".to_string())?;
+    let mut out = Vec::with_capacity(array.len());
+    for rule in array {
+        let owner = match rule.get("owner").and_then(|v| v.as_str()) {
+            Some("org") => ToolPolicyOwner::Org,
+            Some("user") => ToolPolicyOwner::User,
+            other => return Err(format!("invalid tool policy owner {other:?}")),
+        };
+        let action = match rule.get("action").and_then(|v| v.as_str()) {
+            Some("approve") => ToolPolicyAction::Approve,
+            Some("require_approval") => ToolPolicyAction::RequireApproval,
+            Some("block") => ToolPolicyAction::Block,
+            other => return Err(format!("invalid tool policy action {other:?}")),
+        };
+        let pattern = rule
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "tool policy rule is missing `pattern`".to_string())?
+            .to_string();
+        out.push(ToolPolicyRule {
+            owner,
+            pattern,
+            action,
+        });
+    }
+    Ok(out)
+}
+
+fn policy_action_name(action: Option<toolcore::policy::ToolPolicyAction>) -> Option<&'static str> {
+    use toolcore::policy::ToolPolicyAction;
+    action.map(|a| match a {
+        ToolPolicyAction::Approve => "approve",
+        ToolPolicyAction::RequireApproval => "require_approval",
+        ToolPolicyAction::Block => "block",
+    })
+}
+
+fn policy_error_json(err: toolcore::policy::ToolPolicyError) -> Vec<u8> {
+    use toolcore::policy::ToolPolicyError;
+    let (code, message) = match err {
+        ToolPolicyError::InvalidOwner => ("invalid_owner", "tool policy rule has an invalid owner"),
+        ToolPolicyError::InvalidPattern => (
+            "invalid_pattern",
+            "tool policy pattern must be connection-granular (`*`, or a trailing-wildcard with at most three concrete segments)",
+        ),
+        ToolPolicyError::InvalidAction => {
+            ("invalid_action", "tool policy rule has an invalid action")
+        }
+    };
+    serde_json::to_vec(&json!({ "error": { "code": code, "message": message } }))
+        .expect("policy error serializes")
+}
+
 fn alloc_return(bytes: Vec<u8>) -> u64 {
     let len = bytes.len() as u32;
     let boxed = bytes.into_boxed_slice();

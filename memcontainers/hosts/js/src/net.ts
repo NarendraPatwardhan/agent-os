@@ -1,8 +1,7 @@
 import { EAGAIN, EMSGSIZE } from "@mc/contracts/constants";
 import { ConnectionRegistry } from "./connections.js";
 import type { PreparedConnectionRequest } from "./connections.js";
-import { ToolPolicySet } from "./policy.js";
-import type { ToolPolicyRule } from "./policy.js";
+import type { ToolPolicyAction } from "./policy.js";
 import type { NetCapability } from "./types.js";
 
 /** Flow-control mark for `wsSend` backpressure: accepted sends must fit wholly within the socket's
@@ -97,8 +96,9 @@ export interface HostNetOptions {
   connections?: ConnectionRegistry;
   /** Host-side destructive-action approval for connection-marked HTTP egress. */
   toolApprover?: ToolApprover;
-  /** Embedder-owned policy over connection/tool address patterns. */
-  policies?: readonly ToolPolicyRule[];
+  /** Embedder policy resolved per connection address (`integration.owner.connection.*`) by the
+   *  single-source toolcore engine at create — the splice looks it up, never re-implements matching. */
+  policyByConnection?: ReadonlyMap<string, ToolPolicyAction | null>;
 }
 
 /** Real network over `fetch` (HTTP) and `WebSocket` (WS) — the browser/Bun analogue of Rust `RealNet`
@@ -117,11 +117,9 @@ export class HostNet implements NetCapability {
   /** Destructive connection egress remembered-for-session by exact connection/method/url. */
   private readonly toolSessionAllow = new Set<string>();
   private readonly connections: ConnectionRegistry;
-  private readonly policies: ToolPolicySet;
 
   constructor(private readonly opts: HostNetOptions = {}) {
     this.connections = opts.connections ?? new ConnectionRegistry();
-    this.policies = new ToolPolicySet(opts.policies ?? []);
   }
 
   httpRequest(req: Uint8Array): number {
@@ -261,7 +259,7 @@ export class HostNet implements NetCapability {
   }
 
   private async authorizeConnectionHttp(req: PreparedConnectionRequest): Promise<boolean> {
-    const policy = this.policies.resolve(req.policyAddress);
+    const policy = this.opts.policyByConnection?.get(req.policyAddress) ?? null;
     if (policy === "block") return false;
     if (policy === "approve") return true;
     if (policy === null && !isDestructiveMethod(req.method)) return true;

@@ -21,7 +21,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::connections::{ConnectionRegistry, PreparedConnectionRequest, PreparedHttpRequest};
-use crate::policy::{ToolPolicyAction, ToolPolicyRule, ToolPolicySet};
+use toolcore::policy::{ToolPolicyAction, ToolPolicyRule, ToolPolicySet};
 use crate::sha256_hex;
 
 /// WebSocket send sentinels from the generated contract constants (B2): `-EAGAIN`
