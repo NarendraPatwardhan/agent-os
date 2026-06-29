@@ -203,6 +203,14 @@ fn configured_net(
             [origin.to_string()],
         )
         .expect("insert connection");
+    // An origins-only (auth:none) connection for the public-tool test: origin-gated, no credential.
+    registry
+        .insert(
+            "public.org.main",
+            ConnectionCredential::None,
+            [origin.to_string()],
+        )
+        .expect("insert public connection");
     RealNet::new()
         .with_connections(registry)
         .with_tool_policies(policies)
@@ -426,6 +434,70 @@ fn discovers_graphql_catalog_via_authenticated_introspection() {
         requests.iter().any(|r| r.method == "POST"
             && r.headers.get("authorization").map(String::as_str) == Some("Bearer gql-secret")),
         "introspection POST missing host-side credential: {requests:?}"
+    );
+}
+
+/// Origins-only (auth:none) public tool on the wasmtime host: the call reaches an allowed origin with
+/// NO credential and the connection marker stripped host-side, origin-gated by the splice — the public
+/// counterpart of a secret-bearing connection. Mirrors vm_test's origins-only phase.
+#[test]
+fn origins_only_public_tool_sends_no_credential() {
+    let server = RecordingServer::start();
+    let approver = SharedApprover {
+        prompts: Arc::new(Mutex::new(Vec::new())),
+        allow: Arc::new(AtomicBool::new(true)),
+    };
+
+    let kernel = read_runfile("_main/memcontainers/kernel/rust/kernel.wasm");
+    let image = read_runfile("_main/memcontainers/images/loom.tar");
+    let compiler = read_runfile("_main/memcontainers/lib/catalog-compiler/catalog-compiler.wasm");
+    let openapi = format!(
+        r#"{{"openapi":"3.0.0","info":{{"title":"public","version":"1"}},"servers":[{{"url":"{}"}}],"paths":{{"/ping":{{"get":{{"operationId":"ping","responses":{{"200":{{"description":"ok"}}}}}}}}}}}}"#,
+        server.origin
+    );
+
+    let (sink, _stdout) = CaptureSink::new();
+    let mut host = KernelHostBuilder::new(kernel)
+        .with_base_image(Some(image))
+        .with_stdout(Box::new(sink))
+        .with_net(Box::new(configured_net(&server.origin, approver, Vec::new())))
+        .deterministic()
+        .build()
+        .expect("boot loom");
+
+    host.inject_catalog(CatalogInjectOptions {
+        compiler_wasm: compiler,
+        generation: 1,
+        tools: vec![],
+        host_tools: vec![],
+        connections: vec![CatalogConnection {
+            reference: "public.org.main".to_string(),
+            spec: Some(CatalogSpecSource::Bytes {
+                bytes: openapi.into_bytes(),
+                format: Some("openapi".to_string()),
+                source_format: Some("json".to_string()),
+                base_url: None,
+                endpoint: None,
+            }),
+            tools: Vec::new(),
+            credential: ConnectionCredential::None,
+        }],
+    })
+    .expect("inject public catalog")
+    .expect("catalog status");
+
+    let called = exec_stdout(&mut host, "tools call public.org.main.ping '{}'");
+    assert!(called.contains("rust-host-adapter"), "{called}");
+    let requests = server.snapshot();
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert_eq!(requests[0].path, "/ping");
+    assert!(
+        requests[0].headers.get("authorization").is_none(),
+        "auth:none carried a credential: {requests:?}"
+    );
+    assert!(
+        requests[0].headers.get("x-mc-connection").is_none(),
+        "connection marker not stripped host-side: {requests:?}"
     );
 }
 

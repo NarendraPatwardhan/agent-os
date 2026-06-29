@@ -480,6 +480,47 @@ print("bypass-ok")
     } finally {
       await new Promise<void>((resolve) => disco.close(() => resolve()));
     }
+
+    // ── Origins-only public tool (auth:none): reaches an allowed origin with NO credential, the
+    //    connection marker stripped host-side, origin-gated by the splice. ──
+    console.log("phase: origins-only public tool (auth:none)");
+    clearRequests(server.requests);
+    const publicOpenapi = JSON.stringify({
+      openapi: "3.0.0",
+      info: { title: "public", version: "1" },
+      servers: [{ url: server.origin }],
+      paths: { "/ping": { get: { operationId: "ping", responses: { "200": { description: "ok" } } } } },
+    });
+    const publicVm = await mc.create({
+      kernel,
+      image,
+      deterministic: true,
+      net: true,
+      permissions: { network: "allow" },
+      connections: [
+        {
+          ref: "public.org.main",
+          auth: { kind: "none" },
+          origins: [server.origin],
+          spec: { bytes: new TextEncoder().encode(publicOpenapi), format: "openapi" },
+        },
+      ],
+    });
+    created.push(publicVm);
+    const pinged = await publicVm.exec("tools call public.org.main.ping '{}'");
+    if (pinged.exitCode !== 0) {
+      throw new Error(`origins-only public tool call failed: exit=${pinged.exitCode} stdout=${pinged.stdout}`);
+    }
+    const publicReqs = [...server.requests];
+    if (publicReqs.length !== 1 || publicReqs[0]!.url !== "/ping") {
+      throw new Error(`public tool did not reach upstream once: ${JSON.stringify(publicReqs)}`);
+    }
+    if (publicReqs[0]!.headers.authorization !== undefined) {
+      throw new Error(`auth:none must carry no credential, got ${publicReqs[0]!.headers.authorization}`);
+    }
+    if (publicReqs[0]!.headers["x-mc-connection"] !== undefined) {
+      throw new Error(`connection marker must be stripped host-side, got ${publicReqs[0]!.headers["x-mc-connection"]}`);
+    }
   } finally {
     await closeAll(created);
     await server.close();
