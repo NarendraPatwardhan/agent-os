@@ -256,36 +256,14 @@ async function acquireSource(
   }
 
   // Live discovery: an authenticated call to the connection endpoint. The credential is applied
-  // host-side here (never reaches the guest); the response is the source document for compilation.
-  // Discovery egresses the credential, so it honors the same origin allowlist as a tool-call splice:
-  // a secret only travels to an allowed origin, fail-closed.
-  assertDiscoveryEndpointAllowed(endpoint, connection.auth, connection.origins ?? []);
+  // host-side here (never reaches the guest); the response is the source document for compilation. The
+  // endpoint is host/embedder-determined (the registry endpoint or the embedder's spec URL), never
+  // guest-controlled, so the origin allowlist that gates guest-built tool-call URLs does not apply here.
   const bytes =
     discovery.protocol === "graphql"
       ? await graphqlDiscover(discovery, connection.auth)
       : await mcpDiscover(discovery, connection.auth);
   return cachedSource(bytes, "json", sourceBaseUrl(spec), endpoint);
-}
-
-/** A discovery call that carries a secret must target an allowed origin (mirrors the egress splice).
- *  An unauthenticated (`none`) discovery has no secret to protect and is permitted. */
-function assertDiscoveryEndpointAllowed(
-  endpoint: string,
-  auth: ConnectionDefinition["auth"],
-  origins: readonly string[],
-): void {
-  if (auth.kind === "none") return;
-  let origin: string;
-  try {
-    origin = new URL(endpoint).origin;
-  } catch {
-    throw new Error(`discovery endpoint '${endpoint}' is not an absolute URL`);
-  }
-  if (!origins.includes(origin)) {
-    throw new Error(
-      `discovery endpoint origin '${origin}' is not in the connection's allowed origins — refusing to send the credential`,
-    );
-  }
 }
 
 /** Apply a connection credential to an outbound discovery request, host-side. Returns the (possibly

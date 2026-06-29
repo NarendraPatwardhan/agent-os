@@ -29,6 +29,12 @@ struct RecordingServer {
 
 impl RecordingServer {
     fn start() -> Self {
+        Self::start_with_body(br#"{"marker":"rust-host-adapter","ok":true}"#.to_vec())
+    }
+
+    /// Start a loopback that records every request and answers each with `body` — used by the discovery
+    /// test to return an introspection result rather than the default adapter marker.
+    fn start_with_body(body: Vec<u8>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind recording server");
         listener
             .set_nonblocking(true)
@@ -36,12 +42,14 @@ impl RecordingServer {
         let port = listener.local_addr().unwrap().port();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
+        let body = Arc::new(body);
         let worker_requests = Arc::clone(&requests);
         let worker_stop = Arc::clone(&stop);
+        let worker_body = Arc::clone(&body);
         let join = thread::spawn(move || {
             while !worker_stop.load(Ordering::SeqCst) {
                 match listener.accept() {
-                    Ok((stream, _)) => handle_http(stream, &worker_requests),
+                    Ok((stream, _)) => handle_http(stream, &worker_requests, &worker_body),
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         thread::sleep(Duration::from_millis(2));
                     }
@@ -76,7 +84,11 @@ impl Drop for RecordingServer {
     }
 }
 
-fn handle_http(mut stream: TcpStream, requests: &Arc<Mutex<Vec<RecordedRequest>>>) {
+fn handle_http(
+    mut stream: TcpStream,
+    requests: &Arc<Mutex<Vec<RecordedRequest>>>,
+    response_body: &[u8],
+) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
     let mut buf = Vec::new();
     let mut tmp = [0u8; 4096];
@@ -127,13 +139,12 @@ fn handle_http(mut stream: TcpStream, requests: &Arc<Mutex<Vec<RecordedRequest>>
         path,
         headers,
     });
-    let body = br#"{"marker":"rust-host-adapter","ok":true}"#;
     let response = format!(
         "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
-        body.len()
+        response_body.len()
     );
     let _ = stream.write_all(response.as_bytes());
-    let _ = stream.write_all(body);
+    let _ = stream.write_all(response_body);
 }
 
 fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -247,6 +258,7 @@ fn injects_catalog_and_gates_connection_egress() {
                     endpoint: None,
                 }),
                 tools: Vec::new(),
+                credential: ConnectionCredential::None,
             }],
         })
         .expect("inject catalog")
@@ -352,6 +364,69 @@ print("bypass-ok")
     assert!(requests.iter().all(
         |r| r.headers.get("authorization").map(String::as_str) == Some("Bearer fixture-token")
     ));
+}
+
+/// Live GraphQL discovery on the wasmtime host: a connection with a `graphql` spec URL (no static
+/// document) is acquired by POSTing the introspection query — authenticated host-side — and compiling
+/// the result. Mirrors the JS host's discovery path (vm_test), so the two stay identical by construction.
+#[test]
+fn discovers_graphql_catalog_via_authenticated_introspection() {
+    let introspection = r#"{"data":{"__schema":{"queryType":{"name":"Query"},"mutationType":null,"types":[{"kind":"OBJECT","name":"Query","fields":[{"name":"viewer","description":"current user","args":[],"type":{"kind":"OBJECT","name":"User","ofType":null}}]}]}}}"#;
+    let server = RecordingServer::start_with_body(introspection.as_bytes().to_vec());
+    let approver = SharedApprover {
+        prompts: Arc::new(Mutex::new(Vec::new())),
+        allow: Arc::new(AtomicBool::new(true)),
+    };
+
+    let kernel = read_runfile("_main/memcontainers/kernel/rust/kernel.wasm");
+    let image = read_runfile("_main/memcontainers/images/loom.tar");
+    let compiler = read_runfile("_main/memcontainers/lib/catalog-compiler/catalog-compiler.wasm");
+    let endpoint = format!("{}/graphql", server.origin);
+
+    let (sink, _stdout) = CaptureSink::new();
+    let mut host = KernelHostBuilder::new(kernel)
+        .with_base_image(Some(image))
+        .with_stdout(Box::new(sink))
+        .with_net(Box::new(configured_net(&server.origin, approver, Vec::new())))
+        .deterministic()
+        .build()
+        .expect("boot loom");
+
+    let status = host
+        .inject_catalog(CatalogInjectOptions {
+            compiler_wasm: compiler,
+            generation: 1,
+            tools: vec![],
+            host_tools: vec![],
+            connections: vec![CatalogConnection {
+                reference: "gql.org.main".to_string(),
+                spec: Some(CatalogSpecSource::Url {
+                    url: endpoint.clone(),
+                    format: Some("graphql".to_string()),
+                    source_format: None,
+                    base_url: None,
+                    endpoint: None,
+                }),
+                tools: Vec::new(),
+                credential: ConnectionCredential::Bearer {
+                    token: "gql-secret".to_string(),
+                },
+            }],
+        })
+        .expect("inject graphql catalog")
+        .expect("catalog status");
+    assert!(status.tools >= 1, "expected discovered tools, got {status:?}");
+
+    let listed = exec_stdout(&mut host, "tools list");
+    assert!(listed.contains("gql.org.main.query.viewer"), "{listed}");
+
+    // The introspection POST carried the credential, spliced host-side — never in the guest.
+    let requests = server.snapshot();
+    assert!(
+        requests.iter().any(|r| r.method == "POST"
+            && r.headers.get("authorization").map(String::as_str) == Some("Bearer gql-secret")),
+        "introspection POST missing host-side credential: {requests:?}"
+    );
 }
 
 #[test]

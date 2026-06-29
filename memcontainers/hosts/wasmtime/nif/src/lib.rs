@@ -55,6 +55,7 @@ type NifConnectionDef = (String, String, String, String, Vec<String>);
 type NifPolicyRule = (String, String, String);
 type NifCatalogConnection = (
     String,
+    (String, String, String),
     String,
     Vec<u8>,
     (String, String, String, String),
@@ -62,6 +63,7 @@ type NifCatalogConnection = (
 );
 type NifCatalogConnectionArg<'a> = (
     String,
+    (String, String, String),
     String,
     Binary<'a>,
     (String, String, String, String),
@@ -597,17 +599,7 @@ fn ticks_to_usize(max_ticks: u64) -> NifResult<usize> {
 fn build_connections(defs: Vec<NifConnectionDef>) -> NifResult<ConnectionRegistry> {
     let mut registry = ConnectionRegistry::new();
     for (reference, kind, a, b, origins) in defs {
-        let credential = match kind.as_str() {
-            "none" => ConnectionCredential::None,
-            "bearer" => ConnectionCredential::Bearer { token: a },
-            "header" => ConnectionCredential::Header { name: a, value: b },
-            "query" => ConnectionCredential::Query { name: a, value: b },
-            _ => {
-                return Err(nif_err(format!(
-                    "unknown connection credential kind {kind:?}"
-                )))
-            }
-        };
+        let credential = build_credential(&kind, a, b)?;
         // Omitted origins are derived from the curated registry (parity with the JS host), so a
         // connection is just {ref, auth}; an underivable one stays empty and fails closed at the splice.
         let origins = if origins.is_empty() {
@@ -650,9 +642,21 @@ fn build_tool_policies(defs: Vec<NifPolicyRule>) -> NifResult<Vec<ToolPolicyRule
         .collect()
 }
 
+fn build_credential(kind: &str, a: String, b: String) -> NifResult<ConnectionCredential> {
+    match kind {
+        "none" => Ok(ConnectionCredential::None),
+        "bearer" => Ok(ConnectionCredential::Bearer { token: a }),
+        "header" => Ok(ConnectionCredential::Header { name: a, value: b }),
+        "query" => Ok(ConnectionCredential::Query { name: a, value: b }),
+        _ => Err(nif_err(format!("unknown connection credential kind {kind:?}"))),
+    }
+}
+
 fn build_catalog_connections(defs: Vec<NifCatalogConnection>) -> NifResult<Vec<CatalogConnection>> {
     defs.into_iter()
-        .map(|(reference, spec_kind, payload, spec_opts, tools)| {
+        .map(|(reference, credential, spec_kind, payload, spec_opts, tools)| {
+            let (cred_kind, cred_a, cred_b) = credential;
+            let credential = build_credential(&cred_kind, cred_a, cred_b)?;
             let (source_format, format, base_url, endpoint) = spec_opts;
             let source_format = opt_string(source_format);
             let format = opt_string(format);
@@ -687,6 +691,7 @@ fn build_catalog_connections(defs: Vec<NifCatalogConnection>) -> NifResult<Vec<C
                 reference,
                 spec,
                 tools,
+                credential,
             })
         })
         .collect()
@@ -1170,9 +1175,10 @@ fn inject_catalog<'a>(
 ) -> NifResult<(Atom, Option<(u64, String, u64)>)> {
     let connections = connections
         .into_iter()
-        .map(|(reference, spec_kind, payload, spec_opts, tools)| {
+        .map(|(reference, credential, spec_kind, payload, spec_opts, tools)| {
             (
                 reference,
+                credential,
                 spec_kind,
                 payload.as_slice().to_vec(),
                 spec_opts,

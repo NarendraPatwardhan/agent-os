@@ -883,11 +883,11 @@ defmodule AgentOS.Host.Nif do
     end
   end
 
-  defp catalog_connection_arg({ref, _auth}) when is_binary(ref),
-    do: {:ok, {ref, "none", "", {"", "", "", ""}, []}}
+  defp catalog_connection_arg({ref, auth}) when is_binary(ref),
+    do: catalog_connection_with_auth(ref, auth, nil, [])
 
-  defp catalog_connection_arg({ref, _auth, _origins}) when is_binary(ref),
-    do: {:ok, {ref, "none", "", {"", "", "", ""}, []}}
+  defp catalog_connection_arg({ref, auth, _origins}) when is_binary(ref),
+    do: catalog_connection_with_auth(ref, auth, nil, [])
 
   defp catalog_connection_arg(%{ref: ref} = entry) when is_binary(ref),
     do: catalog_connection_from_map(ref, entry)
@@ -899,17 +899,29 @@ defmodule AgentOS.Host.Nif do
     do: {:error, "catalog connection must include a binary ref"}
 
   defp catalog_connection_from_map(ref, entry) do
+    auth = map_get_any(entry, [:auth, "auth"], {:none})
+
     with {:ok, tools} <- tools_arg(map_get_any(entry, [:tools, "tools"], [])),
          {:ok, spec} <- catalog_spec_arg(map_get_any(entry, [:spec, "spec"], nil)) do
-      {:ok, catalog_connection_tuple(ref, spec, tools)}
+      catalog_connection_with_auth(ref, auth, spec, tools)
     end
   end
 
-  defp catalog_connection_tuple(ref, nil, tools), do: {ref, "none", "", {"", "", "", ""}, tools}
+  # The connection credential travels with the inject connection so the host can run live discovery
+  # (graphql/mcp) as authenticated egress; it is unused for static-spec (openapi/google) connections.
+  defp catalog_connection_with_auth(ref, auth, spec, tools) do
+    with {:ok, kind, a, b} <- connection_auth_arg(auth) do
+      {:ok, catalog_connection_tuple(ref, {kind, a, b}, spec, tools)}
+    end
+  end
 
-  defp catalog_connection_tuple(ref, {kind, payload, opts}, tools) do
+  defp catalog_connection_tuple(ref, credential, nil, tools),
+    do: {ref, credential, "none", "", {"", "", "", ""}, tools}
+
+  defp catalog_connection_tuple(ref, credential, {kind, payload, opts}, tools) do
     {
       ref,
+      credential,
       kind,
       payload,
       {

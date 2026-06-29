@@ -8,6 +8,7 @@ use serde_json::Value;
 use wasmtime::{Engine, Instance, Linker, Memory, Module, Store, TypedFunc};
 
 use crate::sha256_hex;
+use crate::ConnectionCredential;
 use crate::KernelHost;
 
 #[derive(Debug, Clone)]
@@ -15,6 +16,9 @@ pub struct CatalogConnection {
     pub reference: String,
     pub spec: Option<CatalogSpecSource>,
     pub tools: Vec<String>,
+    /// The connection credential, applied host-side to a live discovery call (graphql/mcp); never
+    /// reaches the guest. `None` for static-spec (openapi/google) connections.
+    pub credential: ConnectionCredential,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +43,25 @@ pub enum CatalogSpecSource {
         source_format: Option<String>,
         base_url: Option<String>,
         endpoint: Option<String>,
+    },
+}
+
+/// How a host acquires a connection's source document, as described single-source by
+/// `cc_discovery_request` (the JS host parses the identical JSON). `Static` ⇒ GET the registry URL;
+/// `Graphql`/`Mcp` ⇒ authenticated live discovery the host transports below.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "protocol", rename_all = "lowercase")]
+enum DiscoveryRequest {
+    Static,
+    Graphql {
+        url: String,
+        body: String,
+    },
+    Mcp {
+        url: String,
+        initialize: String,
+        initialized: String,
+        list: String,
     },
 }
 
@@ -162,6 +185,7 @@ struct CatalogCompiler {
     free: TypedFunc<(u32, u32), ()>,
     registry_resolve: TypedFunc<(u32, u32), i64>,
     compile: TypedFunc<(u32, u32, u32, u32), i64>,
+    discovery_request: TypedFunc<(u32, u32, u32, u32), i64>,
     bundle_schema_version: TypedFunc<(), u32>,
     artifact_digest: String,
 }
@@ -188,6 +212,7 @@ impl CatalogCompiler {
             free: typed(&instance, &mut store, "cc_free")?,
             registry_resolve: typed(&instance, &mut store, "cc_registry_resolve")?,
             compile: typed(&instance, &mut store, "cc_compile")?,
+            discovery_request: typed(&instance, &mut store, "cc_discovery_request")?,
             bundle_schema_version: typed(&instance, &mut store, "cc_bundle_schema_version")?,
             store,
             memory,
@@ -244,6 +269,26 @@ impl CatalogCompiler {
             return Err(anyhow!(message.to_string()));
         }
         Ok(CompilerEntries { entries })
+    }
+
+    fn discovery_request(&mut self, kind: &str, endpoint: &str) -> Result<DiscoveryRequest> {
+        let kind_bytes = kind.as_bytes();
+        let ep_bytes = endpoint.as_bytes();
+        let kind_ptr = self.write(kind_bytes)?;
+        let ep_ptr = self.write(ep_bytes)?;
+        let pair = self
+            .discovery_request
+            .call(
+                &mut self.store,
+                (kind_ptr, kind_bytes.len() as u32, ep_ptr, ep_bytes.len() as u32),
+            )
+            .map_err(anyhow::Error::from);
+        self.free
+            .call(&mut self.store, (kind_ptr, kind_bytes.len() as u32))?;
+        self.free
+            .call(&mut self.store, (ep_ptr, ep_bytes.len() as u32))?;
+        let raw = self.read_return(pair?)?;
+        Ok(serde_json::from_slice(&raw)?)
     }
 
     fn schema_version(&mut self) -> Result<u32> {
@@ -451,7 +496,7 @@ fn connection_tool_catalog_bundle(
             &connection.tools,
         );
         for group in groups {
-            let source = acquire_source(connection, &registry)?;
+            let source = acquire_source(connection, &registry, compiler)?;
             let compile_opts =
                 resolved_compile_opts(&ref_parts.integration, &registry, &source, group.as_deref());
             let entries = compile_cached(compiler, &source, &compile_opts)?;
@@ -542,14 +587,19 @@ fn selectors_for_connection(
     out
 }
 
-fn acquire_source(connection: &CatalogConnection, registry: &RegistryEntry) -> Result<SourceBytes> {
+fn acquire_source(
+    connection: &CatalogConnection,
+    registry: &RegistryEntry,
+    compiler: &mut CatalogCompiler,
+) -> Result<SourceBytes> {
     match &connection.spec {
+        // A provided document is used as-is (the embedder handed us the spec / introspection result).
         Some(CatalogSpecSource::Bytes {
             bytes,
             source_format,
-            format: _,
             base_url,
             endpoint,
+            ..
         }) => cached_source(
             bytes.clone(),
             source_format.clone().unwrap_or_else(|| "json".to_string()),
@@ -559,9 +609,9 @@ fn acquire_source(connection: &CatalogConnection, registry: &RegistryEntry) -> R
         Some(CatalogSpecSource::Path {
             path,
             source_format,
-            format: _,
             base_url,
             endpoint,
+            ..
         }) => cached_source(
             std::fs::read(path)?,
             source_format
@@ -570,35 +620,141 @@ fn acquire_source(connection: &CatalogConnection, registry: &RegistryEntry) -> R
             base_url.clone(),
             endpoint.clone(),
         ),
-        Some(CatalogSpecSource::Url {
-            url,
-            source_format,
-            format: _,
-            base_url,
-            endpoint,
-        }) => fetch_source(
-            url,
-            source_format
+        // A URL spec or no spec: the registry kind decides acquisition — a static GET (openapi/google)
+        // or live, authenticated discovery (graphql/mcp). The credential is applied host-side here, in
+        // `run_discovery`, and never reaches the guest.
+        spec => {
+            let (spec_url, spec_format, spec_base_url, spec_endpoint) = match spec {
+                Some(CatalogSpecSource::Url {
+                    url,
+                    source_format,
+                    base_url,
+                    endpoint,
+                    ..
+                }) => (
+                    Some(url.clone()),
+                    source_format.clone(),
+                    base_url.clone(),
+                    endpoint.clone(),
+                ),
+                _ => (None, None, None, None),
+            };
+            let endpoint = spec_url
                 .clone()
-                .unwrap_or_else(|| source_format_for_path(url)),
-            base_url.clone(),
-            endpoint.clone(),
-        ),
-        None => {
-            let url = registry.url.as_ref().ok_or_else(|| {
-                anyhow!(
-                    "connection '{}' requires a provided spec",
-                    connection.reference
-                )
-            })?;
-            fetch_source(
-                url,
-                source_format_for_path(url),
-                None,
-                registry.endpoint.clone(),
-            )
+                .or_else(|| spec_endpoint.clone())
+                .or_else(|| registry.endpoint.clone())
+                .or_else(|| registry.url.clone())
+                .unwrap_or_default();
+            match compiler.discovery_request(&registry.kind, &endpoint)? {
+                DiscoveryRequest::Static => {
+                    let url = spec_url.or_else(|| registry.url.clone()).ok_or_else(|| {
+                        anyhow!(
+                            "connection '{}' requires a provided spec",
+                            connection.reference
+                        )
+                    })?;
+                    let format = spec_format.unwrap_or_else(|| source_format_for_path(&url));
+                    fetch_source(
+                        &url,
+                        format,
+                        spec_base_url,
+                        spec_endpoint.or_else(|| registry.endpoint.clone()),
+                    )
+                }
+                discovery => {
+                    let bytes = run_discovery(&discovery, &connection.credential)?;
+                    cached_source(bytes, "json".to_string(), spec_base_url, Some(endpoint))
+                }
+            }
         }
     }
+}
+
+/// Execute a live discovery (graphql introspection, or the remote-MCP initialize → tools/list
+/// handshake) as authenticated host egress, returning the source document bytes. The credential is
+/// applied here, host-side; the guest never sees it.
+fn run_discovery(discovery: &DiscoveryRequest, credential: &ConnectionCredential) -> Result<Vec<u8>> {
+    match discovery {
+        DiscoveryRequest::Static => Err(anyhow!("static acquisition has no live discovery request")),
+        DiscoveryRequest::Graphql { url, body } => Ok(discovery_post(url, body, credential, None)?.0),
+        DiscoveryRequest::Mcp {
+            url,
+            initialize,
+            initialized,
+            list,
+        } => {
+            let (_, session) = discovery_post(url, initialize, credential, None)?;
+            // notifications/initialized: a fire-and-forget notification (202, no useful body).
+            let _ = discovery_post(url, initialized, credential, session.as_deref());
+            Ok(discovery_post(url, list, credential, session.as_deref())?.0)
+        }
+    }
+}
+
+/// One authenticated discovery POST. Returns (body bytes — JSON lifted from an SSE stream if the server
+/// answers `text/event-stream`, else raw — and the `Mcp-Session-Id` the server set, if any).
+fn discovery_post(
+    url: &str,
+    body: &str,
+    credential: &ConnectionCredential,
+    session: Option<&str>,
+) -> Result<(Vec<u8>, Option<String>)> {
+    let target = match credential {
+        ConnectionCredential::Query { name, value } => {
+            let sep = if url.contains('?') { '&' } else { '?' };
+            format!("{url}{sep}{}={}", percent_encode(name), percent_encode(value))
+        }
+        _ => url.to_string(),
+    };
+    let mut req = ureq::post(&target)
+        .set("content-type", "application/json")
+        .set("accept", "application/json, text/event-stream");
+    match credential {
+        ConnectionCredential::Bearer { token } => {
+            req = req.set("authorization", &format!("Bearer {token}"));
+        }
+        ConnectionCredential::Header { name, value } => {
+            req = req.set(name, value);
+        }
+        _ => {}
+    }
+    if let Some(session) = session {
+        req = req.set("mcp-session-id", session);
+    }
+    let response = req.send_string(body)?;
+    let session_out = response.header("mcp-session-id").map(|s| s.to_string());
+    let content_type = response.content_type().to_string();
+    let text = response.into_string()?;
+    Ok((extract_discovery_bytes(&content_type, &text), session_out))
+}
+
+/// Lift the JSON out of a `text/event-stream` discovery response (`data:` lines); otherwise the body is
+/// already JSON.
+fn extract_discovery_bytes(content_type: &str, text: &str) -> Vec<u8> {
+    if content_type.contains("text/event-stream") {
+        let data: String = text
+            .lines()
+            .filter(|line| line.starts_with("data:"))
+            .map(|line| line[5..].trim())
+            .collect();
+        if !data.is_empty() {
+            return data.into_bytes();
+        }
+    }
+    text.as_bytes().to_vec()
+}
+
+/// Minimal percent-encoding for a query-credential name/value (encode everything outside the unreserved
+/// set, so an api-key with reserved characters travels correctly).
+fn percent_encode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for b in value.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 fn cached_source(
