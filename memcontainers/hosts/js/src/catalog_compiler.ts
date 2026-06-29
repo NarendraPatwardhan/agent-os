@@ -21,6 +21,9 @@ export interface RegistryEntry {
   endpoint?: string;
   defaultGroups?: string[];
   groups?: Record<string, RegistryGroup>;
+  /** Curated egress origins; the host derives a connection's allowlist from these when `origins` is
+   *  omitted, so the embedder names only the capability + key. */
+  servers?: string[];
 }
 
 type CompilerExports = {
@@ -222,6 +225,9 @@ function registryEntry(value: unknown): RegistryEntry {
       ? { defaultGroups: value.defaultGroups.filter((v): v is string => typeof v === "string") }
       : {}),
     ...(isObject(value.groups) ? { groups: value.groups as Record<string, RegistryGroup> } : {}),
+    ...(Array.isArray(value.servers)
+      ? { servers: value.servers.filter((v): v is string => typeof v === "string") }
+      : {}),
   };
 }
 

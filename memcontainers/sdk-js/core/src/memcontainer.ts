@@ -22,6 +22,7 @@ import { mergeToolCatalogBundles, toolCatalogBundle } from "./tools.js";
 import {
   catalogToolSelectors,
   connectionToolCatalogBundle,
+  deriveConnectionOrigins,
   hostToolDefinitions,
 } from "./catalog.js";
 import { startCron } from "./cron.js";
@@ -426,6 +427,9 @@ async function makeEmbedded(
   snapshot: Uint8Array | null,
 ): Promise<Backend> {
   const wasm = opts.kernel ?? (await defaultKernel());
+  // Fill each connection's credential-egress origins from the curated registry when omitted, so the
+  // credential store and the compiled catalog below both see the same derived allowlist.
+  opts = { ...opts, connections: await deriveConnectionOrigins(opts) };
   const hostTools = hostToolDefinitions(opts.tools);
   const stdout = new FanoutSink();
   const tools = new MapHostCall();
@@ -652,7 +656,7 @@ function remoteConnections(defs: readonly ConnectionDefinition[] | undefined): R
   return (defs ?? []).map((connection) => ({
     ref: connection.ref,
     auth: remoteConnectionAuth(connection.auth),
-    origins: [...connection.origins],
+    origins: [...(connection.origins ?? [])],
   }));
 }
 

@@ -107,8 +107,11 @@ export interface ConnectionDefinition {
   /** `integration.owner.name`, where owner is `org` or `user`. */
   ref: string;
   auth: ConnectionAuth;
-  /** Absolute `http`/`https` origins allowed to receive this connection's host-side credential. */
-  origins: string[];
+  /** Absolute `http`/`https` origins allowed to receive this connection's host-side credential.
+   *  Optional: when omitted for a curated-registry integration, the host derives it from the registry
+   *  entry's `servers`, so the connection is just `{ ref, auth }`. Pass it only to narrow further, or
+   *  for a custom (non-registry) `spec`. */
+  origins?: string[];
   /** Provided spec bytes/path bypass host fetch; URL overrides the registry's public spec URL. */
   spec?: ConnectionSpecSource;
   /** Per-connection tool group override. Top-level `tools: ["github/issues"]` is also accepted. */

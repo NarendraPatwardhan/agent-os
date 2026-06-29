@@ -80,6 +80,47 @@ export async function connectionToolCatalogBundle(
   return mergeToolCatalogBundles(bundles, generation);
 }
 
+/**
+ * Fill each connection's credential-egress `origins` from its curated registry `servers` when the
+ * embedder omitted them, so a connection is just `{ ref, auth }`. Best-effort: a connection with
+ * explicit `origins`, a custom `spec`, or no resolvable registry entry is returned unchanged (it then
+ * fails closed at the splice if still empty — derivation never widens an explicit allowlist). Only
+ * curated `servers`/`endpoint` (our constant) are used; a live spec's servers are never trusted here.
+ */
+export async function deriveConnectionOrigins(opts: CreateOptions): Promise<ConnectionDefinition[]> {
+  const connections = opts.connections ?? [];
+  const needs = connections.some((c) => !(c.origins && c.origins.length) && !c.spec);
+  if (!needs) return connections;
+  const compiler = await defaultCatalogCompiler(opts.catalogCompiler);
+  return Promise.all(
+    connections.map(async (c) => {
+      if ((c.origins && c.origins.length) || c.spec) return c;
+      try {
+        const ref = parseRef(c.ref);
+        const registry = await resolveRegistry(compiler, ref.integration, c);
+        const origins = registryOrigins(registry);
+        return origins.length ? { ...c, origins } : c;
+      } catch {
+        return c;
+      }
+    }),
+  );
+}
+
+/** Curated egress origins for a registry entry: explicit `servers`, else the `endpoint`'s origin
+ *  (graphql/mcp/microsoft-graph carry the live server in `endpoint`). */
+function registryOrigins(registry: RegistryEntry): string[] {
+  if (registry.servers && registry.servers.length) return [...registry.servers];
+  if (registry.endpoint) {
+    try {
+      return [new URL(registry.endpoint).origin];
+    } catch {
+      /* endpoint is not an absolute URL — nothing to derive */
+    }
+  }
+  return [];
+}
+
 async function resolveRegistry(
   compiler: CatalogCompiler,
   integration: string,

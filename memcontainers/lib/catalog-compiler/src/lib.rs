@@ -54,6 +54,9 @@ struct RegistryEntryOut {
     #[serde(rename = "defaultGroups")]
     default_groups: Vec<&'static str>,
     groups: BTreeMap<&'static str, RegistryGroupOut>,
+    /// Curated egress origins; the host derives a connection's allowlist from these when `origins` is
+    /// omitted (so the user names only the capability + key).
+    servers: Vec<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -124,6 +127,7 @@ fn registry_entry_out(entry: &'static registry::RegistryEntry) -> RegistryEntryO
             Vec::new()
         },
         groups,
+        servers: entry.servers.to_vec(),
     }
 }
 

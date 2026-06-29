@@ -41,6 +41,17 @@ pub struct RegistryEntry {
     pub exact_paths: &'static [&'static str],
     pub path_prefixes: &'static [&'static str],
     pub tag_prefixes: &'static [&'static str],
+    /// Curated egress origins (`scheme://host[:port]`) this integration's tools call. The host derives
+    /// a connection's credential-egress allowlist from this when the embedder omits `origins`, so the
+    /// user only names the capability + key. Curated (our constant), not read from a live spec, so a
+    /// tampered upstream spec cannot redirect the credential. Empty ⇒ the embedder must pass `origins`.
+    pub servers: &'static [&'static str],
+}
+
+/// Set `servers` on an entry built by one of the kind constructors (which default it to `NONE`).
+const fn with_servers(mut entry: RegistryEntry, servers: &'static [&'static str]) -> RegistryEntry {
+    entry.servers = servers;
+    entry
 }
 
 pub fn entries() -> &'static [RegistryEntry] {
@@ -81,6 +92,7 @@ const fn openapi(
         exact_paths: NONE,
         path_prefixes: NONE,
         tag_prefixes: NONE,
+        servers: NONE,
     }
 }
 
@@ -108,6 +120,7 @@ const fn google(
         exact_paths: NONE,
         path_prefixes: NONE,
         tag_prefixes: NONE,
+        servers: NONE,
     }
 }
 
@@ -133,6 +146,7 @@ const fn graphql(
         exact_paths: NONE,
         path_prefixes: NONE,
         tag_prefixes: NONE,
+        servers: NONE,
     }
 }
 
@@ -158,6 +172,7 @@ const fn mcp_remote(
         exact_paths: NONE,
         path_prefixes: NONE,
         tag_prefixes: NONE,
+        servers: NONE,
     }
 }
 
@@ -186,6 +201,7 @@ const fn microsoft(
         exact_paths,
         path_prefixes,
         tag_prefixes: NONE,
+        servers: NONE,
     }
 }
 
@@ -198,13 +214,16 @@ pub const REGISTRY: &[RegistryEntry] = &[
         "https://stripe.com/favicon.ico",
         true,
     ),
-    openapi(
-        "github-rest",
-        "GitHub REST",
-        "Repos, issues, pull requests, actions, and users.",
-        "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
-        "https://svgl.app/library/github_dark.svg",
-        true,
+    with_servers(
+        openapi(
+            "github-rest",
+            "GitHub REST",
+            "Repos, issues, pull requests, actions, and users.",
+            "https://raw.githubusercontent.com/github/rest-api-description/main/descriptions/api.github.com/api.github.com.json",
+            "https://svgl.app/library/github_dark.svg",
+            true,
+        ),
+        &["https://api.github.com"],
     ),
     openapi(
         "vercel",
@@ -1067,6 +1086,7 @@ pub const REGISTRY: &[RegistryEntry] = &[
         exact_paths: NONE,
         path_prefixes: NONE,
         tag_prefixes: NONE,
+        servers: NONE,
     },
     RegistryEntry {
         id: "google",
@@ -1082,6 +1102,7 @@ pub const REGISTRY: &[RegistryEntry] = &[
         exact_paths: NONE,
         path_prefixes: NONE,
         tag_prefixes: NONE,
+        servers: NONE,
     },
     RegistryEntry {
         id: "google-photos",
@@ -1097,6 +1118,7 @@ pub const REGISTRY: &[RegistryEntry] = &[
         exact_paths: NONE,
         path_prefixes: NONE,
         tag_prefixes: NONE,
+        servers: NONE,
     },
 ];
 
