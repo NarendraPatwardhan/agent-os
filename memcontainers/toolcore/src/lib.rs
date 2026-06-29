@@ -499,12 +499,31 @@ fn valid_sha(s: &str) -> bool {
 
 /// Host-call tool bindings live in a UTF-8 key space separated from raw mount handlers. Raw handlers are
 /// keyed by absolute paths and request blobs are NUL-framed, so catalog bindings must be plain non-empty
-/// names: no raw-handler `/...` namespace, no framing byte, and no control characters.
-fn valid_binding_name(name: &str) -> bool {
+/// names: no raw-handler `/...` namespace, no framing byte, and no control characters. Public so both
+/// hosts validate host-tool bindings against this one definition (no per-host mirror).
+pub fn valid_binding_name(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('/')
         && name.trim() == name
         && !name.as_bytes().iter().any(|b| b.is_ascii_control())
+}
+
+/// Validate + split a connection reference `integration.{org|user}.connection` (exactly three valid
+/// segments) — the shape the host `X-MC-Connection` marker and the catalog re-prefixer key on. The
+/// single source for both hosts (no per-host ref parser).
+pub fn parse_connection_ref(reference: &str) -> Result<(String, String, String), ToolError> {
+    let parts: Vec<&str> = reference.split('.').collect();
+    if parts.len() != 3 || (parts[1] != "org" && parts[1] != "user") {
+        return Err(ToolError::InvalidAddress);
+    }
+    if !parts.iter().all(|p| valid_segment(p)) {
+        return Err(ToolError::InvalidAddress);
+    }
+    Ok((
+        parts[0].to_string(),
+        parts[1].to_string(),
+        parts[2].to_string(),
+    ))
 }
 
 fn valid_service_name(name: &str) -> bool {

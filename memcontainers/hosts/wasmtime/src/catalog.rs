@@ -378,10 +378,10 @@ fn host_tool_catalog_bundle(defs: &[HostToolDef], generation: u64) -> Result<Too
         if !seen.insert(def.address.clone()) {
             return Err(anyhow!("duplicate tool catalog address '{}'", def.address));
         }
-        if !valid_tool_address(&def.address) {
+        if toolcore::parse_address(&def.address).is_err() {
             return Err(anyhow!("invalid host tool address '{}'", def.address));
         }
-        if !valid_binding_name(&def.binding_name) {
+        if !toolcore::valid_binding_name(&def.binding_name) {
             return Err(anyhow!("invalid host tool binding name '{}'", def.binding_name));
         }
         if def.args_mode != "json" && def.args_mode != "raw" {
@@ -432,29 +432,8 @@ fn host_tool_catalog_bundle(defs: &[HostToolDef], generation: u64) -> Result<Too
     })
 }
 
-/// Mirror of `toolcore::valid_binding_name`: a plain UTF-8 host-call name, not a raw `/...` mount key,
-/// trimmed, no control/framing bytes.
-fn valid_binding_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.starts_with('/')
-        && name.trim() == name
-        && !name.bytes().any(|b| b.is_ascii_control())
-}
-
 fn parse_host_tool_json(json: &str, field: &str) -> Result<Value> {
     serde_json::from_str(json).map_err(|e| anyhow!("host tool {field} must be valid JSON: {e}"))
-}
-
-/// Mirror of `toolcore::parse_address`'s shape check: `integration.{org|user}.connection.tool…`.
-fn valid_tool_address(address: &str) -> bool {
-    let parts: Vec<&str> = address.split('.').collect();
-    parts.len() >= 4
-        && (parts[1] == "org" || parts[1] == "user")
-        && parts.iter().all(|p| {
-            !p.is_empty()
-                && p.bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-        })
 }
 
 fn connection_tool_catalog_bundle(
@@ -891,26 +870,13 @@ fn re_prefix_address(address: &str, ref_parts: &RefParts) -> Result<String> {
 }
 
 fn parse_ref(reference: &str) -> Result<RefParts> {
-    let parts = reference.split('.').collect::<Vec<_>>();
-    if parts.len() != 3
-        || !safe_segment(parts[0])
-        || !matches!(parts[1], "org" | "user")
-        || !safe_segment(parts[2])
-    {
-        return Err(anyhow!("invalid connection reference '{}'", reference));
-    }
+    let (integration, owner, connection) = toolcore::parse_connection_ref(reference)
+        .map_err(|_| anyhow!("invalid connection reference '{}'", reference))?;
     Ok(RefParts {
-        integration: parts[0].to_string(),
-        owner: parts[1].to_string(),
-        connection: parts[2].to_string(),
+        integration,
+        owner,
+        connection,
     })
-}
-
-fn safe_segment(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .bytes()
-            .all(|b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-'))
 }
 
 fn dedupe_options(values: Vec<Option<String>>) -> Vec<Option<String>> {
