@@ -1,7 +1,7 @@
 // @mc/core — the unified consumer API. One `mc` / `vm` surface over the embedded JS host
 // (@mc/host), browser artifacts, or a remote AgentOS host over REST + the typed wire socket.
 
-export { mc, Vm } from "./memcontainer.js";
+export { capabilityConnection, mc, Vm } from "./memcontainer.js";
 export { llb } from "./llb.js";
 export type { BuildState, ExecOpts } from "./llb.js";
 export { record } from "./record.js";

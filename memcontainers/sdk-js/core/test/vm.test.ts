@@ -7,7 +7,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { mc } from "../src/index.js";
+import { capabilityConnection, mc } from "../src/index.js";
 import type { CreateOptions, PermissionRequest, ToolPolicyRule, Vm } from "../src/index.js";
 
 function runfile(rel: string | undefined, envVar: string): string {
@@ -119,6 +119,42 @@ async function main(): Promise<void> {
   const image = new Uint8Array(readFileSync(runfile(process.env.MC_BASE_IMAGE, "MC_BASE_IMAGE")));
   const loomImage = new Uint8Array(readFileSync(runfile(process.env.MC_LOOM_IMAGE, "MC_LOOM_IMAGE")));
   const githubFixture = readFileSync(runfile(process.env.MC_GITHUB_FIXTURE, "MC_GITHUB_FIXTURE"), "utf8");
+
+  // mc.use capability sugar derives {ref, auth} + the tool selector (pure; no network).
+  {
+    const single = capabilityConnection("github.issues", "tok-123");
+    if (
+      single.connections.length !== 1 ||
+      single.connections[0]!.ref !== "github.org.main" ||
+      single.connections[0]!.auth.kind !== "bearer" ||
+      JSON.stringify(single.tools) !== JSON.stringify(["github/issues"])
+    ) {
+      throw new Error(`capabilityConnection single wrong: ${JSON.stringify(single)}`);
+    }
+    const multi = capabilityConnection(["github.issues", "github.pulls"], { kind: "header", name: "X-Key", value: "v" });
+    if (
+      multi.connections.length !== 1 ||
+      multi.connections[0]!.auth.kind !== "header" ||
+      JSON.stringify(multi.tools) !== JSON.stringify(["github/issues", "github/pulls"])
+    ) {
+      throw new Error(`capabilityConnection multi wrong: ${JSON.stringify(multi)}`);
+    }
+    let threwBad = false;
+    try {
+      capabilityConnection("github", "tok");
+    } catch {
+      threwBad = true;
+    }
+    if (!threwBad) throw new Error("capabilityConnection should reject a capability without a group");
+    let threwMixed = false;
+    try {
+      capabilityConnection(["github.issues", "slack.messages"], "tok");
+    } catch {
+      threwMixed = true;
+    }
+    if (!threwMixed) throw new Error("capabilityConnection should reject mixed integrations");
+    console.log("phase: mc.use capability derivation OK");
+  }
 
   // Bytes passed directly → no MC_STORE / defaultKernel env path; the embedded backend (the JS host)
   // boots the kernel in-process.

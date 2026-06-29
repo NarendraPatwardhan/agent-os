@@ -757,6 +757,41 @@ async function makeRemote(opts: CreateOptions, snapshot: Uint8Array | null): Pro
   return backend;
 }
 
+/** Derive the connection + tool selectors for one or more `integration.group` capabilities — the pure
+ *  core of {@link mc.use}, exported for testing. All capabilities must share one integration so a single
+ *  credential/connection covers them; origins are filled from the curated registry, so the connection is
+ *  just `{ ref: "<integration>.org.main", auth }` (no spec, no origins). A bare string credential is a
+ *  bearer token. */
+export function capabilityConnection(
+  capability: string | string[],
+  credential: string | ConnectionDefinition["auth"],
+): { connections: ConnectionDefinition[]; tools: string[] } {
+  const caps = Array.isArray(capability) ? capability : [capability];
+  if (caps.length === 0) throw new Error("mc.use requires at least one capability");
+  const auth: ConnectionDefinition["auth"] =
+    typeof credential === "string" ? { kind: "bearer", token: credential } : credential;
+  const parsed = caps.map((c) => {
+    const dot = c.indexOf(".");
+    if (dot < 0) {
+      throw new Error(`capability '${c}' must be 'integration.group' (e.g. 'github.issues')`);
+    }
+    const integration = c.slice(0, dot);
+    const group = c.slice(dot + 1);
+    if (!integration || !group) {
+      throw new Error(`capability '${c}' must be 'integration.group' (e.g. 'github.issues')`);
+    }
+    return { integration, group };
+  });
+  const integration = parsed[0]!.integration;
+  if (parsed.some((p) => p.integration !== integration)) {
+    throw new Error("mc.use capabilities must share one integration; use mc.create for several");
+  }
+  return {
+    connections: [{ ref: `${integration}.org.main`, auth }],
+    tools: parsed.map((p) => `${p.integration}/${p.group}`),
+  };
+}
+
 /** Entry point: create, restore, or connect to a VM. */
 export const mc = {
   /** Create a fresh VM. */
@@ -770,6 +805,26 @@ export const mc = {
     // build paths (Bun.file) don't exist in a browser.
     if (runtime === "browser") validateBrowserArtifacts(opts);
     return new Vm(await makeEmbedded(opts, null), opts);
+  },
+
+  /** Capability sugar over {@link create}: turn on one or more `integration.group` capabilities with a
+   *  credential and get a running VM. `mc.use("github.issues", token, { kernel, image })` derives the
+   *  connection `{ ref: "github.org.main", auth }` and the `github/issues` tool selector for you, with
+   *  net + network permission on. A bare token string is treated as a bearer credential. Multiple
+   *  capabilities must share one integration (one connection); use {@link create} for several. */
+  async use(
+    capability: string | string[],
+    credential: string | ConnectionDefinition["auth"],
+    opts: Omit<CreateOptions, "connections" | "tools"> = {},
+  ): Promise<Vm> {
+    const { connections, tools } = capabilityConnection(capability, credential);
+    return mc.create({
+      ...opts,
+      net: opts.net ?? true,
+      permissions: { network: "allow", ...opts.permissions },
+      connections,
+      tools,
+    });
   },
 
   /** Restore a VM from a snapshot blob (embedded or remote). */
