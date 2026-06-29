@@ -25,5 +25,8 @@ mc_rust_program(
     lib = ":tools_bin",
     tier = "full",
     service = "tools",
+    mem = 256 * 1024 * 1024,
+    fuel = 2000000000000,
+    table = 10000,
     visibility = ["//visibility:public"],
 )

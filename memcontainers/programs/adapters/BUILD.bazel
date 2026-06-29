@@ -10,7 +10,7 @@ mc_wasi_program(
     crate_name = "adapters_svc",
     tier = "full",
     service = "adapters",
-    mem = 96 * 1024 * 1024,
+    mem = 256 * 1024 * 1024,
     fuel = 300000000000,
     table = 40000,
     extra_rustc_flags = [

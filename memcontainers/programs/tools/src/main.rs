@@ -612,11 +612,17 @@ fn approval_request_json(rec: &ToolRecord, args: Option<&Json>, decision: &Polic
     Json::Obj(vec![
         ("kind".to_string(), Json::Str("tool_approval".to_string())),
         ("address".to_string(), Json::Str(rec.address.clone())),
-        ("integration".to_string(), Json::Str(rec.integration.clone())),
+        (
+            "integration".to_string(),
+            Json::Str(rec.integration.clone()),
+        ),
         ("owner".to_string(), Json::Str(rec.owner.clone())),
         ("connection".to_string(), Json::Str(rec.connection.clone())),
         ("tool".to_string(), Json::Str(rec.tool.clone())),
-        ("description".to_string(), Json::Str(rec.description.clone())),
+        (
+            "description".to_string(),
+            Json::Str(rec.description.clone()),
+        ),
         (
             "approvalDescription".to_string(),
             Json::Str(approval_description(rec)),
@@ -741,10 +747,7 @@ fn apply_catalog(state: &mut ToolState, req: &Json, caller: u32) -> Json {
 
 fn apply_policy(state: &mut ToolState, req: &Json, caller: u32) -> Json {
     if caller != CONTROL_CALLER {
-        return err_json(
-            "permission_denied",
-            "policy mutation requires host control",
-        );
+        return err_json("permission_denied", "policy mutation requires host control");
     }
     if let Some(base) = field_u64(req, "baseGeneration") {
         if base != state.catalog_generation {
@@ -757,7 +760,14 @@ fn apply_policy(state: &mut ToolState, req: &Json, caller: u32) -> Json {
     let proposed = Json::Obj(vec![
         (
             "tools".to_string(),
-            Json::Arr(state.catalog.records().iter().map(ToolRecord::to_json).collect()),
+            Json::Arr(
+                state
+                    .catalog
+                    .records()
+                    .iter()
+                    .map(ToolRecord::to_json)
+                    .collect(),
+            ),
         ),
         ("policies".to_string(), policies),
     ]);
@@ -845,11 +855,15 @@ fn handle(state: &mut ToolState, req: &Json, caller: u32, caller_caps: u32) -> J
 }
 
 fn serve_loop() -> ! {
-    let mut state = ToolState::new();
     let server = match rt::svc_serve(SERVICE_NAME) {
         Ok(fd) => fd,
         Err(_) => rt::exit(1),
     };
+    // Activation should prove that the endpoint exists, not that every warm
+    // index has already been rebuilt. Large real-world catalogs are still
+    // loaded before the first request is handled, but after `svc_serve` the
+    // kernel's activation watchdog is no longer the startup bottleneck.
+    let mut state = ToolState::new();
     let mut buf = [0u8; 65536];
     let mut hbuf = [0i32; 0];
     loop {

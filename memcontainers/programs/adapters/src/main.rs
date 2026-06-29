@@ -14,6 +14,7 @@ use sysroot as rt;
 const SERVICE_NAME: &str = "adapters";
 const CONNECTION_HEADER: &str = "X-MC-Connection";
 const CAP_NET: u32 = rt::CAP_NET as u32;
+const CAP_MOUNT: u32 = rt::CAP_MOUNT as u32;
 const CONTROL_CALLER: u32 = 0;
 const MAX_REQ: usize = 1024 * 1024 + 64 * 1024;
 const CHUNK: usize = 32 * 1024;
@@ -29,6 +30,8 @@ struct Request {
     source: Option<String>,
     #[serde(default)]
     source_path: Option<String>,
+    #[serde(default)]
+    output_path: Option<String>,
     #[serde(default)]
     integration: Option<String>,
     #[serde(default)]
@@ -181,9 +184,11 @@ fn registry_get(req: Request) -> Response {
 
 fn compile(req: Request, caller: u32, caller_caps: u32) -> Response {
     match req.format.as_deref() {
-        Some("openapi") => compile_openapi(req),
-        Some("microsoft-graph") | Some("msgraph") => compile_microsoft_graph(req),
-        Some("google-discovery") => compile_google_discovery(req),
+        Some("openapi") => compile_openapi(req, caller, caller_caps),
+        Some("microsoft-graph") | Some("msgraph") => {
+            compile_microsoft_graph(req, caller, caller_caps)
+        }
+        Some("google-discovery") => compile_google_discovery(req, caller, caller_caps),
         Some("graphql") => compile_graphql(req, caller, caller_caps),
         Some("mcp-remote") | Some("mcp") => compile_mcp_remote(req, caller, caller_caps),
         Some(_) => json_response(error("unsupported_format", "unsupported adapter format")),
@@ -191,7 +196,8 @@ fn compile(req: Request, caller: u32, caller_caps: u32) -> Response {
     }
 }
 
-fn compile_openapi(req: Request) -> Response {
+fn compile_openapi(req: Request, caller: u32, caller_caps: u32) -> Response {
+    let output_path = req.output_path.clone();
     let source = match read_source(&req) {
         Ok(source) => source,
         Err(message) => return json_response(error("bad_source", message)),
@@ -209,13 +215,17 @@ fn compile_openapi(req: Request) -> Response {
         base_url: req.base_url,
     };
     let out = openapi::compile(&source, source_format, &opts);
-    json_response(ok(json!({
-        "tools": out.tools,
-        "diagnostics": out.diagnostics,
-    })))
+    compile_response(
+        output_path.as_deref(),
+        out.tools,
+        out.diagnostics,
+        caller,
+        caller_caps,
+    )
 }
 
-fn compile_microsoft_graph(req: Request) -> Response {
+fn compile_microsoft_graph(req: Request, caller: u32, caller_caps: u32) -> Response {
+    let output_path = req.output_path.clone();
     let source = match read_source(&req) {
         Ok(source) => source,
         Err(message) => return json_response(error("bad_source", message)),
@@ -238,13 +248,17 @@ fn compile_microsoft_graph(req: Request) -> Response {
         &opts,
         &microsoft::CompileOptions { preset_ids },
     );
-    json_response(ok(json!({
-        "tools": out.tools,
-        "diagnostics": out.diagnostics,
-    })))
+    compile_response(
+        output_path.as_deref(),
+        out.tools,
+        out.diagnostics,
+        caller,
+        caller_caps,
+    )
 }
 
-fn compile_google_discovery(req: Request) -> Response {
+fn compile_google_discovery(req: Request, caller: u32, caller_caps: u32) -> Response {
+    let output_path = req.output_path.clone();
     let source = match read_source(&req) {
         Ok(source) => source,
         Err(message) => return json_response(error("bad_source", message)),
@@ -270,13 +284,17 @@ fn compile_google_discovery(req: Request) -> Response {
         &opts,
         &google::CompileOptions::default(),
     );
-    json_response(ok(json!({
-        "tools": out.tools,
-        "diagnostics": out.diagnostics,
-    })))
+    compile_response(
+        output_path.as_deref(),
+        out.tools,
+        out.diagnostics,
+        caller,
+        caller_caps,
+    )
 }
 
 fn compile_graphql(req: Request, caller: u32, caller_caps: u32) -> Response {
+    let output_path = req.output_path.clone();
     let endpoint = match adapter_endpoint(&req, "graphql") {
         Ok(endpoint) => endpoint,
         Err(message) => return json_response(error("bad_request", message)),
@@ -309,13 +327,17 @@ fn compile_graphql(req: Request, caller: u32, caller_caps: u32) -> Response {
         }
     };
     let out = graphql::compile(&source, &opts);
-    json_response(ok(json!({
-        "tools": out.tools,
-        "diagnostics": out.diagnostics,
-    })))
+    compile_response(
+        output_path.as_deref(),
+        out.tools,
+        out.diagnostics,
+        caller,
+        caller_caps,
+    )
 }
 
 fn compile_mcp_remote(req: Request, caller: u32, caller_caps: u32) -> Response {
+    let output_path = req.output_path.clone();
     let endpoint = match adapter_endpoint(&req, "remote MCP") {
         Ok(endpoint) => endpoint,
         Err(message) => return json_response(error("bad_request", message)),
@@ -348,10 +370,61 @@ fn compile_mcp_remote(req: Request, caller: u32, caller_caps: u32) -> Response {
         }
     };
     let out = mcp::compile(&source, &opts);
+    compile_response(
+        output_path.as_deref(),
+        out.tools,
+        out.diagnostics,
+        caller,
+        caller_caps,
+    )
+}
+
+fn compile_response(
+    output_path: Option<&str>,
+    tools: Vec<Value>,
+    diagnostics: Vec<mc_parse::Diagnostic>,
+    caller: u32,
+    caller_caps: u32,
+) -> Response {
+    let tool_count = tools.len();
+    let Some(path) = output_path else {
+        return json_response(ok(json!({
+            "tools": tools,
+            "diagnostics": diagnostics,
+        })));
+    };
+    if !can_write_compile_output(caller, caller_caps) {
+        return json_response(error(
+            "permission_denied",
+            "compile output_path requires full filesystem authority",
+        ));
+    }
+    if !valid_output_path(path) {
+        return json_response(error(
+            "bad_request",
+            "output_path must be an absolute guest path",
+        ));
+    }
+    let text = match serde_json::to_string(&json!({ "tools": tools })) {
+        Ok(text) => text,
+        Err(_) => return json_response(error("internal_error", "could not encode catalog")),
+    };
+    if let Err(e) = std::fs::write(path, text.as_bytes()) {
+        return json_response(error("write_failed", e.to_string()));
+    }
     json_response(ok(json!({
-        "tools": out.tools,
-        "diagnostics": out.diagnostics,
+        "tool_count": tool_count,
+        "tools_path": path,
+        "diagnostics": diagnostics,
     })))
+}
+
+fn valid_output_path(path: &str) -> bool {
+    path.starts_with('/') && !path.as_bytes().contains(&0)
+}
+
+fn can_write_compile_output(caller: u32, caller_caps: u32) -> bool {
+    caller == CONTROL_CALLER || caller_caps & CAP_MOUNT != 0
 }
 
 fn adapter_endpoint(req: &Request, label: &'static str) -> Result<String, String> {
@@ -359,7 +432,8 @@ fn adapter_endpoint(req: &Request, label: &'static str) -> Result<String, String
         .clone()
         .or_else(|| req.base_url.clone())
         .or_else(|| {
-            req.id.as_deref()
+            req.id
+                .as_deref()
                 .and_then(registry::find)
                 .and_then(|entry| entry.endpoint.or(entry.url))
                 .map(str::to_string)
