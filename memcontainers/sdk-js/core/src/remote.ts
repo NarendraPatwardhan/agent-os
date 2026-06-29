@@ -65,16 +65,10 @@ interface RemotePermissionRequest {
   kind?: string;
   host?: string;
   url?: string;
-  address?: string;
-  integration?: string;
-  owner?: string;
   connection?: string;
-  tool?: string;
-  description?: string;
-  approvalDescription?: string;
-  argsPreview?: string;
-  argsSha256?: string;
-  policy?: Record<string, unknown>;
+  method?: string;
+  origin?: string;
+  argsDigest?: string;
 }
 
 export class RemoteBackend implements Backend {
@@ -159,31 +153,16 @@ export class RemoteBackend implements Backend {
       return true;
     }
 
-    const policy = asRecord(msg.policy) ?? {};
-    const maybeToolApproval =
-      msg.kind === "tool_approval" ||
-      typeof msg.address === "string" ||
-      typeof msg.approvalDescription === "string";
-    const req: PermissionRequest = maybeToolApproval
+    const req: PermissionRequest = msg.kind === "tool_approval"
       ? {
           id: msg.id,
           kind: "tool_approval",
-          address: str(msg.address),
-          integration: str(msg.integration),
-          owner: str(msg.owner),
           connection: str(msg.connection),
-          tool: str(msg.tool),
-          description: str(msg.description),
-          approvalDescription: str(msg.approvalDescription),
-          argsPreview: str(msg.argsPreview),
-          argsSha256: str(msg.argsSha256),
-          policy: {
-            action: "require_approval",
-            source: str(policy.source) === "policy" ? "policy" : "annotation",
-            ...(typeof policy.id === "string" ? { id: policy.id } : {}),
-            ...(typeof policy.pattern === "string" ? { pattern: policy.pattern } : {}),
-          },
-          allow: () => respond(true),
+          method: str(msg.method),
+          url: str(msg.url),
+          origin: str(msg.origin),
+          ...(typeof msg.argsDigest === "string" ? { argsDigest: msg.argsDigest } : {}),
+          allow: (opts?: { remember?: "once" | "session" }) => respond(true, opts),
           reject: (message?: string) => respond(false, { message }),
         }
       : {

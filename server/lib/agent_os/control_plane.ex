@@ -134,6 +134,12 @@ defmodule AgentOS.ControlPlane do
   def egress_host_call_respond(id, handle, result, opts \\ []),
     do: with_vm(id, &Vm.egress_host_call_respond(&1, handle, result, opts))
 
+  @doc "Answer a tool_approval egress relay event: allow or deny the parked destructive call."
+  @spec egress_tool_approval_respond(Vm.id(), integer(), boolean(), boolean(), keyword()) ::
+          :ok | {:error, term()}
+  def egress_tool_approval_respond(id, handle, allow, remember_session \\ false, opts \\ []),
+    do: with_vm(id, &Vm.egress_tool_approval_respond(&1, handle, allow, remember_session, opts))
+
   @doc "Fail a host_call egress relay event."
   @spec egress_host_call_fail(Vm.id(), integer(), keyword()) :: :ok | {:error, term()}
   def egress_host_call_fail(id, handle, opts \\ []),

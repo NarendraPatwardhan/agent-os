@@ -44,10 +44,24 @@ export function tool<S extends z.ZodType>(spec: ToolSpec<S>): ToolDefinition {
   };
 }
 
-/** The tool catalog shape seeded into `/etc/tools/catalog.json` and applied to `/svc/tools`. */
-export function toolCatalogJson(defs: ToolDefinition[]): string {
+export interface ToolCatalogBundle {
+  index: {
+    generation: number;
+    tools: { address: string; integration: string; description: string; sha: string }[];
+  };
+  indexBytes: Uint8Array;
+  indexDigest: string;
+  records: { sha: string; bytes: Uint8Array }[];
+}
+
+/** The sharded tool catalog shape seeded into `/etc/tools/catalog/` and applied to `/svc/tools`. */
+export async function toolCatalogBundle(
+  defs: ToolDefinition[],
+  generation = 0,
+): Promise<ToolCatalogBundle> {
   const addresses = new Set<string>();
-  const tools = defs.map((d) => {
+  const records: { address: string; integration: string; description: string; sha: string; bytes: Uint8Array }[] = [];
+  for (const d of defs) {
     assertSafeToolBindingName(d.name);
     const address = d.address ?? defaultAddress(d.name);
     if (addresses.has(address)) {
@@ -55,20 +69,79 @@ export function toolCatalogJson(defs: ToolDefinition[]): string {
     }
     addresses.add(address);
     const parts = address.split(".");
-    return {
+    const description = d.description ?? "";
+    const shard: Record<string, unknown> = {};
+    if (d.input !== undefined) shard.input_schema = d.input;
+    if (d.output !== undefined) shard.output_schema = d.output;
+    shard.annotations = d.annotations ?? {};
+    shard.binding = { type: "host_call", name: d.name, args: "json" };
+    const bytes = new TextEncoder().encode(JSON.stringify(shard));
+    const sha = await sha256Hex(bytes);
+    records.push({
       address,
       integration: parts[0] ?? "host",
-      owner: parts[1] ?? "org",
-      connection: parts[2] ?? "main",
-      tool: parts.slice(3).join("."),
-      description: d.description,
-      input_schema: d.input,
-      output_schema: d.output,
-      annotations: d.annotations ?? {},
-      binding: { type: "host_call", name: d.name, args: "json" },
-    };
-  });
-  return JSON.stringify({ tools });
+      description,
+      sha,
+      bytes,
+    });
+  }
+  records.sort((a, b) => a.address.localeCompare(b.address));
+  const index = {
+    generation,
+    tools: records.map(({ address, integration, description, sha }) => ({
+      address,
+      integration,
+      description,
+      sha,
+    })),
+  };
+  const indexBytes = new TextEncoder().encode(JSON.stringify(index));
+  const indexDigest = await sha256Hex(indexBytes);
+  const seenRecords = new Set<string>();
+  return {
+    index,
+    indexBytes,
+    indexDigest,
+    records: records
+      .filter((record) => {
+        if (seenRecords.has(record.sha)) return false;
+        seenRecords.add(record.sha);
+        return true;
+      })
+      .map(({ sha, bytes }) => ({ sha, bytes })),
+  };
+}
+
+export async function mergeToolCatalogBundles(
+  bundles: ToolCatalogBundle[],
+  generation: number,
+): Promise<ToolCatalogBundle> {
+  const byAddress = new Map<string, { address: string; integration: string; description: string; sha: string }>();
+  const records = new Map<string, Uint8Array>();
+  for (const bundle of bundles) {
+    for (const record of bundle.records) {
+      const existing = records.get(record.sha);
+      if (existing && !bytesEqual(existing, record.bytes)) {
+        throw new Error(`catalog record sha collision '${record.sha}'`);
+      }
+      records.set(record.sha, record.bytes);
+    }
+    for (const tool of bundle.index.tools) {
+      if (byAddress.has(tool.address)) throw new Error(`duplicate tool catalog address '${tool.address}'`);
+      byAddress.set(tool.address, { ...tool });
+    }
+  }
+  const tools = [...byAddress.values()].sort((a, b) => a.address.localeCompare(b.address));
+  const index = { generation, tools };
+  const indexBytes = new TextEncoder().encode(JSON.stringify(index));
+  return {
+    index,
+    indexBytes,
+    indexDigest: await sha256Hex(indexBytes),
+    records: [...records.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([sha, bytes]) => ({ sha, bytes })),
+  };
 }
 
 /** Host-call tool bindings share one router with raw mount handlers. Tool bindings must stay in the
@@ -133,4 +206,17 @@ function defaultAddress(name: string): string {
     .filter(Boolean)
     .join(".");
   return `host.org.main.${tail || "tool"}`;
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
 }

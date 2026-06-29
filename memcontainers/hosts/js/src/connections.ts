@@ -17,6 +17,20 @@ interface ConnectionEntry {
   origins: string[];
 }
 
+export interface PreparedConnectionRequest {
+  connection: string;
+  method: string;
+  url: string;
+  origin: string;
+  body: Uint8Array;
+  policyAddress: string;
+  inject(): Uint8Array | null;
+}
+
+export type PreparedHttpRequest =
+  | { kind: "unmarked"; request: Uint8Array }
+  | { kind: "connection"; request: PreparedConnectionRequest };
+
 export class ConnectionRegistry {
   private readonly entries = new Map<string, ConnectionEntry>();
 
@@ -34,37 +48,63 @@ export class ConnectionRegistry {
   }
 
   injectHttpRequest(req: Uint8Array): Uint8Array | null {
+    const prepared = this.prepareHttpRequest(req);
+    if (!prepared) return null;
+    if (prepared.kind === "unmarked") return prepared.request;
+    return prepared.request.inject();
+  }
+
+  prepareHttpRequest(req: Uint8Array): PreparedHttpRequest | null {
     const parsed = parseBlob(req);
     if (!parsed) return null;
     const markerValues = parsed.headers.filter(([name]) => eqHeader(name, CONNECTION_HEADER));
-    if (markerValues.length === 0) return req;
+    if (markerValues.length === 0) return { kind: "unmarked", request: req };
     if (markerValues.length > 1) return null;
     const reference = markerValues[0]![1];
     if (!validReference(reference)) return null;
     const entry = this.entries.get(reference);
     if (!entry) return null;
+    const origin = requestOrigin(parsed.url);
     if (entry.origins.length > 0 || secretBearing(entry.credential)) {
-      const origin = requestOrigin(parsed.url);
       if (!origin || !entry.origins.includes(origin)) return null;
     }
+    if (!origin) return null;
 
-    const headers = parsed.headers.filter(([name]) => !eqHeader(name, CONNECTION_HEADER));
-    let url = parsed.url;
-    switch (entry.credential.kind) {
-      case "none":
-        break;
-      case "bearer":
-        if (!addHeader(headers, "Authorization", `Bearer ${entry.credential.token}`)) return null;
-        break;
-      case "header":
-        if (!addHeader(headers, entry.credential.name, entry.credential.value)) return null;
-        break;
-      case "query":
-        url = appendQuery(url, entry.credential.name, entry.credential.value);
-        break;
-    }
-    return serializeRequest(parsed.method, url, headers, parsed.body);
+    return {
+      kind: "connection",
+      request: {
+        connection: reference,
+        method: parsed.method,
+        url: parsed.url,
+        origin,
+        body: parsed.body.slice(),
+        policyAddress: `${reference}.*`,
+        inject: () => injectParsedRequest(parsed, entry),
+      },
+    };
   }
+}
+
+function injectParsedRequest(
+  parsed: { method: string; url: string; headers: [string, string][]; body: Uint8Array },
+  entry: ConnectionEntry,
+): Uint8Array | null {
+  const headers = parsed.headers.filter(([name]) => !eqHeader(name, CONNECTION_HEADER));
+  let url = parsed.url;
+  switch (entry.credential.kind) {
+    case "none":
+      break;
+    case "bearer":
+      if (!addHeader(headers, "Authorization", `Bearer ${entry.credential.token}`)) return null;
+      break;
+    case "header":
+      if (!addHeader(headers, entry.credential.name, entry.credential.value)) return null;
+      break;
+    case "query":
+      url = appendQuery(url, entry.credential.name, entry.credential.value);
+      break;
+  }
+  return serializeRequest(parsed.method, url, headers, parsed.body);
 }
 
 function parseBlob(

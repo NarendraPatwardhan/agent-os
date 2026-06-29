@@ -264,6 +264,23 @@ defmodule AgentOS.Vm do
   def egress_host_call_fail(server, handle, opts \\ []),
     do: GenServer.call(server, {:egress_host_call_fail, handle}, timeout(opts))
 
+  @doc "Answer a tool_approval relay event (allow or deny the parked destructive connection call)."
+  @spec egress_tool_approval_respond(server(), integer(), boolean(), boolean(), keyword()) ::
+          :ok | {:error, Nif.reason()}
+  def egress_tool_approval_respond(server, handle, allow, remember_session \\ false, opts \\ [])
+
+  def egress_tool_approval_respond(server, handle, allow, remember_session, opts)
+      when is_integer(handle) and handle > 0 and is_boolean(allow) and is_boolean(remember_session),
+      do:
+        GenServer.call(
+          server,
+          {:egress_tool_approval_respond, handle, allow, remember_session},
+          timeout(opts)
+        )
+
+  def egress_tool_approval_respond(_server, _handle, _allow, _remember, _opts),
+    do: {:error, "egress_tool_approval_respond expects a positive handle and boolean allow/remember"}
+
   @doc "Answer a persist relay event with raw async-persist body bytes."
   @spec egress_persist_respond(server(), integer(), binary(), keyword()) :: :ok | {:error, Nif.reason()}
   def egress_persist_respond(server, handle, body, opts \\ [])
@@ -317,16 +334,29 @@ defmodule AgentOS.Vm do
   def init(opts) do
     wasm = Keyword.fetch!(opts, :wasm)
 
+    fresh_boot = Keyword.get(opts, :snapshot) == nil
+
     result =
-      case Keyword.get(opts, :snapshot) do
-        nil -> Nif.boot(wasm, Keyword.get(opts, :base_image), nif_opts(opts))
-        snap -> Nif.restore(wasm, snap, nif_opts(opts))
+      if fresh_boot do
+        Nif.boot(wasm, Keyword.get(opts, :base_image), nif_opts(opts))
+      else
+        Nif.restore(wasm, Keyword.get(opts, :snapshot), nif_opts(opts))
       end
 
     case result do
       {:ok, nif} ->
-        now = now_ms()
-        {:ok, %__MODULE__{id: Keyword.fetch!(opts, :id), nif: nif, booted_at: now, last_active_ms: now}}
+        # Inject the catalog only on a fresh boot; a restored snapshot already carries the warm
+        # catalog (§4.9), so re-injecting would needlessly recompile and reset the generation.
+        catalog_result = if fresh_boot, do: inject_catalog_on_create(nif, opts), else: :ok
+
+        case catalog_result do
+          :ok ->
+            now = now_ms()
+            {:ok, %__MODULE__{id: Keyword.fetch!(opts, :id), nif: nif, booted_at: now, last_active_ms: now}}
+
+          {:error, reason} ->
+            {:stop, reason}
+        end
 
       {:error, reason} ->
         # A boot/restore failure is a clean stop, so the caller sees `{:error, reason}` rather
@@ -464,6 +494,11 @@ defmodule AgentOS.Vm do
     {:reply, Nif.relay_host_call_fail(state.nif, handle), touch(state)}
   end
 
+  def handle_call({:egress_tool_approval_respond, handle, allow, remember_session}, _from, state) do
+    {:reply, Nif.relay_tool_approval_respond(state.nif, handle, allow, remember_session),
+     touch(state)}
+  end
+
   def handle_call({:egress_persist_respond, handle, body}, _from, state) do
     {:reply, Nif.relay_persist_respond(state.nif, handle, body), touch(state)}
   end
@@ -511,6 +546,9 @@ defmodule AgentOS.Vm do
         :workers,
         :net,
         :connections,
+        :tool_policies,
+        :policies,
+        :tool_approval,
         :host_call,
         :persist
       ])
@@ -519,4 +557,69 @@ defmodule AgentOS.Vm do
 
   defp exec_result(exit_code, stdout, stderr),
     do: %{exit_code: exit_code, stdout: stdout, stderr: stderr}
+
+  defp inject_catalog_on_create(nif, opts) do
+    connections = Keyword.get(opts, :catalog_connections, Keyword.get(opts, :connections, []))
+    host_tools = Keyword.get(opts, :catalog_host_tools, Keyword.get(opts, :host_tools, []))
+    tools = Keyword.get(opts, :catalog_tools, Keyword.get(opts, :tools, []))
+    generation = Keyword.get(opts, :catalog_generation, 1)
+
+    if connections == [] and host_tools == [] do
+      :ok
+    else
+      with {:ok, compiler_wasm} <- compiler_bytes_for(opts, connections),
+           {:ok, _status} <-
+             Nif.inject_catalog(nif, compiler_wasm, connections, tools, host_tools, generation) do
+        :ok
+      end
+    end
+  end
+
+  # Connection/spec tools are compiled by catalog-compiler.wasm; host-call tools are sharded
+  # directly and need no compiler. So host-call-only injection passes an empty compiler binary, and
+  # a declared connection without an explicit compiler falls back to MC_CATALOG_COMPILER_WASM — a
+  # declared connection is intent enough; the caller need not thread compiler config (finding F).
+  defp compiler_bytes_for(opts, connections) do
+    case catalog_compiler(opts) do
+      {:ok, nil} when connections == [] -> {:ok, <<>>}
+      {:ok, nil} -> default_compiler_bytes()
+      other -> other
+    end
+  end
+
+  defp default_compiler_bytes do
+    case System.get_env("MC_CATALOG_COMPILER_WASM") do
+      nil ->
+        {:error,
+         "connections require a catalog compiler (set :catalog_compiler_path/:catalog_compiler_wasm or MC_CATALOG_COMPILER_WASM)"}
+
+      path ->
+        File.read(path)
+    end
+  end
+
+  defp catalog_compiler(opts) do
+    cond do
+      Keyword.has_key?(opts, :catalog_compiler_wasm) ->
+        case Keyword.get(opts, :catalog_compiler_wasm) do
+          bytes when is_binary(bytes) -> {:ok, bytes}
+          _other -> {:error, "catalog_compiler_wasm must be a binary"}
+        end
+
+      Keyword.has_key?(opts, :catalog_compiler_path) ->
+        case Keyword.get(opts, :catalog_compiler_path) do
+          path when is_binary(path) -> File.read(path)
+          _other -> {:error, "catalog_compiler_path must be a binary path"}
+        end
+
+      Keyword.has_key?(opts, :catalog_compiler) ->
+        case Keyword.get(opts, :catalog_compiler) do
+          bytes when is_binary(bytes) -> {:ok, bytes}
+          _other -> {:error, "catalog_compiler must be wasm bytes"}
+        end
+
+      true ->
+        {:ok, nil}
+    end
+  end
 end

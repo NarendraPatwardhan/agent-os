@@ -5,17 +5,22 @@
 //! batteries through the embedded .luau libs + the Zig json/hash bindings, the type errors through the
 //! full Luau Analysis engine (file:line:col diagnostics).
 
-use host::{ConnectionRegistry, MapHostCall, RealNet};
+use host::{
+    ConnectionCredential, ConnectionRegistry, MapHostCall, RealNet, ToolPolicyAction,
+    ToolPolicyOwner, ToolPolicyRule,
+};
+use pkgcore::sha256_hex;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc, Mutex,
+    Arc,
 };
 use std::thread;
 use std::time::Duration;
 
+use crate::harness::Session;
 use crate::{boot_loom, boot_loom_with_net, boot_loom_with_net_and_tools, boot_loom_with_tools};
 
 // ── smoke: the VM, the trap-unwind, and boot.
@@ -69,6 +74,39 @@ fn read_http_request(stream: &mut TcpStream) -> Vec<u8> {
             Err(_) => return raw,
         }
     }
+}
+
+fn write_test_catalog(s: &mut Session, tools: &[(&str, &str, &str)]) {
+    s.host.mkdir("/etc").ok();
+    s.host.mkdir("/etc/tools").ok();
+    s.host.mkdir("/etc/tools/catalog").ok();
+    s.host.mkdir("/etc/tools/catalog/records").ok();
+    let mut entries = Vec::new();
+    for (address, description, shard) in tools {
+        let sha = sha256_hex(shard.as_bytes());
+        s.host
+            .write_file(
+                &format!("/etc/tools/catalog/records/{sha}"),
+                shard.as_bytes(),
+            )
+            .expect("seed catalog shard");
+        let integration = address.split('.').next().unwrap_or("host");
+        entries.push(format!(
+            r#"{{"address":"{address}","integration":"{integration}","description":"{description}","sha":"{sha}"}}"#
+        ));
+    }
+    entries.sort();
+    let index = format!(r#"{{"generation":0,"tools":[{}]}}"#, entries.join(","));
+    let digest = sha256_hex(index.as_bytes());
+    s.host
+        .write_file("/etc/tools/catalog/index.json", index.as_bytes())
+        .expect("seed catalog index");
+    s.host
+        .write_file(
+            "/etc/tools/catalog/index.sha256",
+            format!("{digest}\n").as_bytes(),
+        )
+        .expect("seed catalog digest");
 }
 
 fn content_length(head: &[u8]) -> usize {
@@ -204,14 +242,14 @@ fn luau_tools_battery_discovers_and_calls() {
         Box::new(|args: &str| Ok(format!("{{\"message\":\"hello {args}\"}}").into_bytes())),
     );
     let mut s = boot_loom_with_tools(tools);
-    s.host.mkdir("/etc/tools").ok();
-    s.host
-        .write_file(
-            "/etc/tools/catalog.json",
-            br#"{"tools":[{"address":"host.org.main.greet","description":"Greet someone",
-              "binding":{"type":"host_call","name":"greet","args":"raw"}}]}"#,
-        )
-        .expect("seed tool catalog");
+    write_test_catalog(
+        &mut s,
+        &[(
+            "host.org.main.greet",
+            "Greet someone",
+            r#"{"binding":{"type":"host_call","name":"greet","args":"raw"}}"#,
+        )],
+    );
     s.host
         .write_file(
             "/demo/tools.luau",
@@ -226,7 +264,7 @@ print(res.ok, res.data.message)
 local saved = tools.save("host.org.main.greet", "file", "/tmp/greet.json")
 print(saved.ok, saved.data._tag, saved.data.path)
 local fd = assert(sys.svc.connect("tools"))
-local denied = assert(sys.svc.call(fd, '{"op":"catalog.apply","tools":[]}'))
+local denied = assert(sys.svc.call(fd, '{"op":"catalog.apply","generation":1,"index":{"generation":1,"tools":[]},"digest":"bad"}'))
 assert(sys.svc.close(fd))
 print(denied:match('"code":"([^"]+)"'))
 "#,
@@ -260,14 +298,14 @@ fn luau_tools_calls_require_caller_net_authority() {
         }),
     );
     let mut s = boot_loom_with_tools(tools);
-    s.host.mkdir("/etc/tools").ok();
-    s.host
-        .write_file(
-            "/etc/tools/catalog.json",
-            br#"{"tools":[{"address":"host.org.main.greet","description":"Greet someone",
-              "binding":{"type":"host_call","name":"greet","args":"raw"}}]}"#,
-        )
-        .expect("seed tool catalog");
+    write_test_catalog(
+        &mut s,
+        &[(
+            "host.org.main.greet",
+            "Greet someone",
+            r#"{"binding":{"type":"host_call","name":"greet","args":"raw"}}"#,
+        )],
+    );
     s.host
         .write_file(
             "/demo/low-tools.luau",
@@ -379,13 +417,6 @@ fn adapters_compile_openapi_catalog_and_tools_call_it() {
 local json = require("json")
 local source = assert(sys.fs.read("/tmp/petstore.openapi.json"))
 local fd = assert(sys.svc.connect("adapters"))
-local registryRaw = assert(sys.svc.call(fd, json.encode({ op = "registry.list" })))
-local registry = assert(json.decode(registryRaw))
-assert(registry.ok, registry.err and registry.err.message)
-assert(#registry.data.items == 85, tostring(#registry.data.items))
-local petstoreRaw = assert(sys.svc.call(fd, json.encode({ op = "registry.get", id = "petstore" })))
-local petstore = assert(json.decode(petstoreRaw))
-assert(petstore.ok and petstore.data.url == "https://petstore3.swagger.io/api/v3/openapi.json")
 local raw = assert(sys.svc.call(fd, json.encode({
   op = "compile",
   format = "openapi",
@@ -395,18 +426,26 @@ local raw = assert(sys.svc.call(fd, json.encode({
   owner = "org",
   connection = "main",
   auth = "bearer",
+  output_path = "/etc/tools/catalog",
 })))
 assert(sys.svc.close(fd))
 local res = assert(json.decode(raw))
 assert(res.ok, res.err and res.err.message)
 assert(#res.data.diagnostics == 0, json.encode(res.data.diagnostics))
-assert(#res.data.tools == 2, tostring(#res.data.tools))
-local text = json.encode({ tools = res.data.tools })
+assert(res.data.tool_count == 2, tostring(res.data.tool_count))
+assert(res.data.catalog_path == "/etc/tools/catalog")
+local indexText = assert(sys.fs.read("/etc/tools/catalog/index.json"))
+local index = assert(json.decode(indexText))
+assert(index.generation == 0)
+assert(#index.tools == 2, tostring(#index.tools))
+local text = indexText
+for _, tool in ipairs(index.tools) do
+  text = text .. assert(sys.fs.read("/etc/tools/catalog/records/" .. tool.sha))
+end
 assert(not string.find(string.lower(text), "authorization", 1, true))
 assert(not string.find(text, "e2e-secret-token", 1, true))
-assert(sys.fs.write("/etc/tools/catalog.json", text))
-print(res.data.tools[1].address)
-print(res.data.tools[2].address)
+print(index.tools[1].address)
+print(index.tools[2].address)
 "#,
         )
         .expect("seed adapter compile script");
@@ -419,16 +458,16 @@ print(res.data.tools[2].address)
     );
     let catalog = s
         .host
-        .read_file("/etc/tools/catalog.json")
-        .expect("compiled catalog");
+        .read_file("/etc/tools/catalog/index.json")
+        .expect("compiled catalog index");
     let catalog = String::from_utf8_lossy(&catalog);
     assert!(
-        catalog.contains("\"service\":\"adapters\"")
-            && catalog.contains("\"adapter\":\"openapi\"")
-            && catalog.contains("\"auth\":\"bearer\"")
+        catalog.contains("\"address\":\"petstore.org.main")
+            && catalog.contains("\"sha\":\"")
+            && !catalog.contains("connection_ref")
             && !catalog.to_ascii_lowercase().contains("authorization")
             && !catalog.contains("e2e-secret-token"),
-        "compiled catalog should carry only non-secret service bindings; got {catalog}"
+        "compiled catalog index should carry only discovery fields; got {catalog}"
     );
 
     let out = s.run_for_output("tools call petstore.org.main.listPets '{\"query\":{\"limit\":3}}'");
@@ -550,19 +589,22 @@ local raw = assert(sys.svc.call(fd, json.encode({
   connection = "work",
   auth = "bearer",
   preset_ids = { "mail" },
+  output_path = "/etc/tools/catalog",
 })))
 assert(sys.svc.close(fd))
 local res = assert(json.decode(raw))
 assert(res.ok, res.err and res.err.message)
 assert(#res.data.diagnostics == 0, json.encode(res.data.diagnostics))
-assert(#res.data.tools == 1, tostring(#res.data.tools))
-local text = json.encode({ tools = res.data.tools })
+assert(res.data.tool_count == 1, tostring(res.data.tool_count))
+local indexText = assert(sys.fs.read("/etc/tools/catalog/index.json"))
+local index = assert(json.decode(indexText))
+assert(#index.tools == 1, tostring(#index.tools))
+local text = indexText .. assert(sys.fs.read("/etc/tools/catalog/records/" .. index.tools[1].sha))
 assert(string.find(text, "microsoft%-graph"))
 assert(not string.find(text, "listEvents", 1, true))
 assert(not string.find(string.lower(text), "authorization", 1, true))
 assert(not string.find(text, "ms-secret-token", 1, true))
-assert(sys.fs.write("/etc/tools/catalog.json", text))
-print(res.data.tools[1].address)
+print(index.tools[1].address)
 "#,
         )
         .expect("seed Microsoft Graph compile script");
@@ -678,18 +720,21 @@ local raw = assert(sys.svc.call(fd, json.encode({
   owner = "org",
   connection = "work",
   auth = "bearer",
+  output_path = "/etc/tools/catalog",
 })))
 assert(sys.svc.close(fd))
 local res = assert(json.decode(raw))
 assert(res.ok, res.err and res.err.message)
 assert(#res.data.diagnostics == 0, json.encode(res.data.diagnostics))
-assert(#res.data.tools == 1, tostring(#res.data.tools))
-local text = json.encode({ tools = res.data.tools })
+assert(res.data.tool_count == 1, tostring(res.data.tool_count))
+local indexText = assert(sys.fs.read("/etc/tools/catalog/index.json"))
+local index = assert(json.decode(indexText))
+assert(#index.tools == 1, tostring(#index.tools))
+local text = indexText .. assert(sys.fs.read("/etc/tools/catalog/records/" .. index.tools[1].sha))
 assert(string.find(text, "google%-discovery"))
 assert(not string.find(string.lower(text), "authorization", 1, true))
 assert(not string.find(text, "google-secret-token", 1, true))
-assert(sys.fs.write("/etc/tools/catalog.json", text))
-print(res.data.tools[1].address)
+print(index.tools[1].address)
 "#,
         )
         .expect("seed Google Discovery compile script");
@@ -726,8 +771,8 @@ print(res.data.tools[1].address)
 }
 
 /// WHY: GraphQL joins the same `/svc/adapters` plane after Graph/Google: introspection produces
-/// ordinary catalog records, queries invoke through HTTP POST, and mutations are annotated for the
-/// `/svc/tools` approval path before network dispatch.
+/// ordinary catalog records, queries invoke through HTTP POST, and mutations keep descriptive
+/// destructive metadata while host egress policy owns enforcement.
 #[test]
 fn adapters_compile_graphql_and_tools_call_it() {
     let introspection = br#"{"data":{"__schema":{
@@ -750,22 +795,27 @@ fn adapters_compile_graphql_and_tools_call_it() {
         br#"{"data":{"viewer":{"login":"ada"}}}"#,
         br#"{"data":{"updateName":{"ok":true}}}"#,
     ]);
-    let approvals = Arc::new(Mutex::new(0usize));
-    let mut host_calls = MapHostCall::new();
-    {
-        let approvals = Arc::clone(&approvals);
-        host_calls.register_raw(
-            "/svc/tools/permission",
-            Box::new(move |body: &[u8]| {
-                let prompt = String::from_utf8_lossy(body);
-                assert!(prompt.contains("\"kind\":\"tool_approval\""));
-                assert!(prompt.contains("\"approvalDescription\":\"mutation updateName\""));
-                *approvals.lock().unwrap() += 1;
-                Ok(br#"{"allow":true}"#.to_vec())
-            }),
-        );
-    }
-    let mut s = boot_loom_with_net_and_tools(Box::new(RealNet::new()), host_calls);
+    let mut registry = ConnectionRegistry::new();
+    registry
+        .insert(
+            "gql.org.main",
+            ConnectionCredential::None,
+            std::iter::empty::<&str>(),
+        )
+        .expect("none GraphQL connection");
+    let mut s = boot_loom_with_net_and_tools(
+        Box::new(
+            RealNet::new()
+                .with_connections(registry)
+                .with_tool_policies(vec![ToolPolicyRule {
+                    owner: ToolPolicyOwner::Org,
+                    pattern: "gql.org.main.*".to_string(),
+                    action: ToolPolicyAction::Approve,
+                }])
+                .expect("approve GraphQL adapter policy"),
+        ),
+        MapHostCall::new(),
+    );
     s.host.mkdir("/etc/tools").ok();
     let endpoint = format!("{base_url}/graphql");
     let script = format!(
@@ -780,17 +830,23 @@ local raw = assert(sys.svc.call(fd, json.encode({{
   owner = "org",
   connection = "main",
   auth = "none",
+  output_path = "/etc/tools/catalog",
 }})))
 assert(sys.svc.close(fd))
 local res = assert(json.decode(raw))
 assert(res.ok, res.err and res.err.message)
 assert(#res.data.diagnostics == 0, json.encode(res.data.diagnostics))
-assert(#res.data.tools == 2, tostring(#res.data.tools))
-local text = json.encode({{ tools = res.data.tools }})
+assert(res.data.tool_count == 2, tostring(res.data.tool_count))
+local indexText = assert(sys.fs.read("/etc/tools/catalog/index.json"))
+local index = assert(json.decode(indexText))
+assert(#index.tools == 2, tostring(#index.tools))
+local text = indexText
+for _, tool in ipairs(index.tools) do
+  text = text .. assert(sys.fs.read("/etc/tools/catalog/records/" .. tool.sha))
+end
 assert(string.find(text, "requires_approval", 1, true))
-assert(sys.fs.write("/etc/tools/catalog.json", text))
-print(res.data.tools[1].address)
-print(res.data.tools[2].address)
+print(index.tools[1].address)
+print(index.tools[2].address)
 "#
     );
     s.host
@@ -808,24 +864,26 @@ print(res.data.tools[2].address)
         query.contains("\"ok\":true") && query.contains("\"login\":\"ada\""),
         "GraphQL query tool should return upstream JSON; got {query:?}"
     );
-    let mutation = s.run_for_output("tools call gql.org.main.mutation.updateName '{\"name\":\"Ada\"}'");
+    let mutation =
+        s.run_for_output("tools call gql.org.main.mutation.updateName '{\"name\":\"Ada\"}'");
     assert!(
         mutation.contains("\"ok\":true") && mutation.contains("\"updateName\":{\"ok\":true}"),
-        "GraphQL mutation tool should run after approval; got {mutation:?}"
+        "GraphQL mutation tool should run; got {mutation:?}"
     );
-    assert_eq!(*approvals.lock().unwrap(), 1);
 
     let introspection_req = seen.recv().expect("GraphQL introspection request");
     assert!(introspection_req.contains("__schema"));
     let query_req = seen.recv().expect("GraphQL query request");
     assert!(query_req.contains("query_viewer") && query_req.contains("\"id\":\"ada\""));
     let mutation_req = seen.recv().expect("GraphQL mutation request");
-    assert!(mutation_req.contains("mutation_updateName") && mutation_req.contains("\"name\":\"Ada\""));
+    assert!(
+        mutation_req.contains("mutation_updateName") && mutation_req.contains("\"name\":\"Ada\"")
+    );
 }
 
 /// WHY: remote MCP is additive to the same adapter service: discovery performs the MCP HTTP handshake
-/// and `tools/list`, catalog records keep MCP names/hints, and destructive MCP tools run only after
-/// `/svc/tools` approval.
+/// and `tools/list`, catalog records keep MCP names/hints, and destructive MCP hints stay descriptive
+/// while host egress policy owns enforcement.
 #[test]
 fn adapters_compile_remote_mcp_and_tools_call_it() {
     let (base_url, seen) = sequence_http_server(vec![
@@ -833,21 +891,27 @@ fn adapters_compile_remote_mcp_and_tools_call_it() {
         br#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"repo.delete","description":"Delete docs","inputSchema":{"type":"object","required":["repo"],"properties":{"repo":{"type":"string"}}},"annotations":{"title":"Delete docs","destructiveHint":true}}]}}"#,
         br#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"deleted"}]}}"#,
     ]);
-    let approvals = Arc::new(Mutex::new(0usize));
-    let mut host_calls = MapHostCall::new();
-    {
-        let approvals = Arc::clone(&approvals);
-        host_calls.register_raw(
-            "/svc/tools/permission",
-            Box::new(move |body: &[u8]| {
-                let prompt = String::from_utf8_lossy(body);
-                assert!(prompt.contains("\"approvalDescription\":\"Delete docs\""));
-                *approvals.lock().unwrap() += 1;
-                Ok(br#"{"allow":true}"#.to_vec())
-            }),
-        );
-    }
-    let mut s = boot_loom_with_net_and_tools(Box::new(RealNet::new()), host_calls);
+    let mut registry = ConnectionRegistry::new();
+    registry
+        .insert(
+            "deepwiki.org.main",
+            ConnectionCredential::None,
+            std::iter::empty::<&str>(),
+        )
+        .expect("none MCP connection");
+    let mut s = boot_loom_with_net_and_tools(
+        Box::new(
+            RealNet::new()
+                .with_connections(registry)
+                .with_tool_policies(vec![ToolPolicyRule {
+                    owner: ToolPolicyOwner::Org,
+                    pattern: "deepwiki.org.main.*".to_string(),
+                    action: ToolPolicyAction::Approve,
+                }])
+                .expect("approve MCP adapter policy"),
+        ),
+        MapHostCall::new(),
+    );
     s.host.mkdir("/etc/tools").ok();
     let endpoint = format!("{base_url}/mcp");
     let script = format!(
@@ -862,17 +926,20 @@ local raw = assert(sys.svc.call(fd, json.encode({{
   owner = "org",
   connection = "main",
   auth = "none",
+  output_path = "/etc/tools/catalog",
 }})))
 assert(sys.svc.close(fd))
 local res = assert(json.decode(raw))
 assert(res.ok, res.err and res.err.message)
 assert(#res.data.diagnostics == 0, json.encode(res.data.diagnostics))
-assert(#res.data.tools == 1, tostring(#res.data.tools))
-local text = json.encode({{ tools = res.data.tools }})
+assert(res.data.tool_count == 1, tostring(res.data.tool_count))
+local indexText = assert(sys.fs.read("/etc/tools/catalog/index.json"))
+local index = assert(json.decode(indexText))
+assert(#index.tools == 1, tostring(#index.tools))
+local text = indexText .. assert(sys.fs.read("/etc/tools/catalog/records/" .. index.tools[1].sha))
 assert(string.find(text, "repo.delete", 1, true))
 assert(string.find(text, "requires_approval", 1, true))
-assert(sys.fs.write("/etc/tools/catalog.json", text))
-print(res.data.tools[1].address)
+print(index.tools[1].address)
 "#
     );
     s.host
@@ -883,12 +950,12 @@ print(res.data.tools[1].address)
         s.run_for_output("luau /demo/mcp_compile.luau"),
         "deepwiki.org.main.repo-delete\r\n"
     );
-    let out = s.run_for_output("tools call deepwiki.org.main.repo-delete '{\"repo\":\"acme/docs\"}'");
+    let out =
+        s.run_for_output("tools call deepwiki.org.main.repo-delete '{\"repo\":\"acme/docs\"}'");
     assert!(
         out.contains("\"ok\":true") && out.contains("\"text\":\"deleted\""),
         "remote MCP tool should return tools/call result; got {out:?}"
     );
-    assert_eq!(*approvals.lock().unwrap(), 1);
 
     let init = seen.recv().expect("MCP initialize request");
     assert!(init.contains("\"method\":\"initialize\""));
@@ -917,8 +984,8 @@ local raw = assert(sys.svc.call(fd, json.encode({{
     method = "GET",
     url_template = "{base_url}/v1/pets",
     parameters = {{}},
-    connection_ref = {{ auth = "none" }},
   }},
+  connection_ref = "petstore.org.main",
   args = {{}},
 }})))
 assert(sys.svc.close(fd))

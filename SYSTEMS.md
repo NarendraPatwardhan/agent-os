@@ -965,41 +965,58 @@ service fragments. A flavor's
 not collide with a universal embedded battery; `sqlite`/`typst` are not embedded, so they load from the
 layer (`require` order is cache → embedded → VFS).
 
-The tool catalog has a single lifetime rule. `/etc/tools/catalog.json` is the boot seed and checkpoint; once
-`/svc/tools` activates, its warm in-memory catalog is authoritative and snapshots with the VM. Runtime host
-registration (`vm.tool`) updates that live catalog only through an awaited host-control service call
-(`catalog.apply`, `caller == SYSTEM_CALLER`) that validates the full replacement catalog, swaps it atomically,
-and then checkpoints the canonical catalog file. Guest service calls can search, describe, list, call, and
-garbage-collect tool artifacts; they cannot mutate catalog bindings. `/tools/<integration>/<owner>/<connection>/<tool>`
-is the file-tree discovery face over the checkpoint catalog: directories progressively disclose catalog segments,
-and reading a leaf returns that tool's JSON record. The filesystem keeps a read-through parsed projection cache
-keyed by the checkpoint digest sidecar written by `/svc/tools`; direct boot-seed catalog writes without the
-sidecar fall back to byte comparison, so `/tools` never becomes a second catalog owner. Tool `call` and
-`call_alias` additionally require the
-caller's kernel-stamped `CAP_NET`, matching direct `host_call`; discovery, `/tools`, and artifact cleanup stay
-unprivileged.
+The tool catalog is a sharded, lazily-loaded tree, not a monolith. `/etc/tools/catalog/` holds `index.json`
+(one entry per tool — `address`, `integration`, `description`, and the content `sha` of its shard), the
+content-addressed `records/<sha>` shards (each a connection-agnostic payload: input/output schema,
+annotations, and the `/svc/adapters invoke` request template — never an address, description, or
+connection reference), and an `index.sha256` digest sidecar. `/svc/tools` loads only the index at
+activation and hydrates a single shard per `describe`/`call` (digest-verified, LRU-cached, fail-soft),
+composing the record from the index entry ⊕ shard; `search`/`list` serve from the index alone. So
+cold-start cost is O(index), independent of catalog size — a multi-thousand-tool catalog activates by
+parsing a ~hundred-KiB index, and a `call` reads one ~KiB shard. The tree plus its digest is the single
+source of truth; the in-memory index/shard cache is keyed by that digest, so a changed digest triggers a
+reload and `/svc/tools` and `/tools` can never disagree. Mutation is host-control only: `catalog.apply`
+(`caller == SYSTEM_CALLER`) writes the shards, then commits `{generation, index, digest}` by an atomic
+single-file rename of `index.json` (immutable shards make the rename the only ordering point); the warm
+state snapshots with the VM. `/tools/<integration>/<owner>/<connection>/<tool>` is the file-tree discovery
+face built from the same index, serving each leaf as its shard. `call`/`call_alias` require the caller's
+kernel-stamped `CAP_NET`; discovery, `/tools`, and artifact cleanup stay unprivileged.
 
-`/svc/adapters` is the mcbox-style resident service for adapter-backed tools. It is one std-WASI service,
-not one service per format: OpenAPI, Microsoft Graph workload filters, Google Discovery normalization,
-GraphQL introspection, and remote MCP tool-list normalization are internal modules behind the same protocol,
-so serde/YAML/schema costs are paid once.
-`memcontainers/lib/parse` owns shared parse/normalize logic; root `{x}core` crates remain for substrate
-that is fundamental to the VM. The service also exposes a static curated registry lifted from executor's
-MIT-licensed preset tables as factual metadata: integration ids, summaries, public spec/discovery/MCP
-endpoints, OAuth scopes, and Graph path filters. Registry reads are local and deterministic; fetching
-remote specs is still a later adapter/connection action. `compile` operations emit ordinary catalog
-records with service bindings back to `/svc/adapters invoke`; those records contain request templates and
-opaque connection references, never credentials. `invoke` expands tool args into a normal
-`mc_http_request` blob. If the binding names a non-`none` connection, the guest adds only
-`X-MC-Connection: <integration>.<owner>.<connection>`; the Rust and JS host network capabilities remove
-that marker at the egress boundary. Secret-bearing registry entries must declare the absolute `http`/`https`
-origins allowed to receive the credential; the host normalizes the request URL's origin and splices
-bearer/header/query credentials only on an exact origin match, failing closed before the secret is attached.
-This keeps the credential boundary self-contained even when a CAP_NET guest crafts an `mc_http_request`
-directly. Unknown markers also fail closed, and the secret never enters guest memory. Because
-the service is full-tier, it checks the caller's kernel-stamped `CAP_NET` before reaching
-`mc_http_request`. `/svc/tools` performs the same caller-authority gate before dispatching service-backed
-catalog records, so adapters cannot launder host egress around the normal tool-plane boundary.
+Catalogs are compiled **on the host, ahead of the request path** — not in the guest. `memcontainers/lib/
+catalog-compiler` builds to a pure-compute `catalog-compiler.wasm` (zero imports) that both hosts
+instantiate outside the VM — the Rust host via Cranelift, the JS host via `WebAssembly` — at native-class
+speed, so the one normalizer never forks into a second implementation. It wraps `memcontainers/lib/parse`
+(OpenAPI, Microsoft Graph workload filters with a generic path/tag subset filter, Google Discovery, GraphQL,
+remote MCP) plus the curated executor-derived registry, and emits framed, content-addressed,
+**connection-agnostic** bundles: a bundle is a pure function of `(spec, group)`, so it is reused across every
+owner and connection. On `create`, the host resolves each declared connection ref to a registry integration
+and tool groups (explicit selectors like `github/issues`, else sensible defaults), acquires the spec (a
+caller-provided document, or a public fetch cached by content hash), compiles (the bundle cached by the
+compiler-wasm artifact digest + bundle-schema version + source hash + options), re-prefixes the placeholder
+addresses to the connection ref — touching only the index — and injects the sharded tree. A connection-driven
+`create` therefore performs no in-guest compile and no registry round-trip; what was a ~19 s in-VM `wasmi`
+compile plus a ~20 s reparse becomes a sub-second host compile (cached) and a tiny index load. The guest
+`/svc/adapters` keeps `invoke` (the runtime HTTP path) and a non-default, elevation-gated `compile` fallback
+that emits the same sharded tree through the shared `lib/parse/bundle` emitter; registry resolution and the
+default compile path are host-side. `invoke` expands tool args into an `mc_http_request` blob, and the broker
+supplies `X-MC-Connection: <integration>.<owner>.<connection>` derived from the tool address — shards carry
+no connection reference.
+
+The credential **and authorization** boundary is the host egress splice — the one point a `CAP_NET` guest
+cannot route around. Secret-bearing connections declare the absolute `http`/`https` origins allowed to
+receive the credential; the host normalizes the request origin and splices bearer/header/query credentials
+only on an exact origin match, failing closed otherwise — even when a `CAP_NET` guest crafts an
+`mc_http_request` directly — so the secret never enters guest memory. Destructive-action approval is enforced
+at that same splice, before the credential is attached, for every connection-marked request alike
+(`tools.call`, a direct `/svc/adapters invoke`, or a raw `mc_http_request`). The host classifies
+destructiveness from the actual outgoing request (a non-idempotent method by default), evaluates the
+embedder's relocated `ToolPolicySet` (`block` → fail closed, `approve` → send, `require_approval` → prompt;
+no match → the method classification), and on a prompt raises a typed `tool_approval` permission frame
+carrying **host-computed** facts (connection, method, URL, origin, args digest) — never a guest-supplied
+description. A lying catalog can therefore neither suppress a prompt nor spoof what is approved: **catalog
+content is not a trust boundary**, and `requires_approval` annotations are descriptive hints only. Both
+host families (the Rust/wasmtime host driving the Elixir control plane, and the JS host) implement this
+identically; `/svc/tools` and the host each gate on the caller's `CAP_NET`.
 
 `pkgcore` is the pure logic for `pkgfsd`, a demand-load package daemon: a dependency-free SHA-256, a
 tab-separated catalog parser, and path/URL helpers. Packages are addressed by content hash, fetched from a

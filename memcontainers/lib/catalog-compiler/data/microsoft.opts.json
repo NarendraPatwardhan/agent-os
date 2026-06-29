@@ -1,0 +1,6 @@
+{
+  "format": "microsoft-graph",
+  "source_format": "json",
+  "integration": "microsoft",
+  "group": "mail"
+}

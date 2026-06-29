@@ -3,7 +3,7 @@
 // surface is identical across backends, so it slots in later without changing this file's shape.
 
 import { ConnectionRegistry, HostNet, KernelHostBuilder, MapHostCall, OpfsPersist } from "@mc/host";
-import type { KernelHost, RawToolHandler } from "@mc/host";
+import type { KernelHost, ToolApprovalFacts, ToolApprover } from "@mc/host";
 // Boot-contract tier ordinals come from the generated contract — the single source of truth the
 // kernel's `Tier` also derives from (contracts/constants.kdl → constants.gen.ts), never a local copy.
 import {
@@ -18,11 +18,17 @@ import { defaultImage, defaultKernel } from "./artifacts.js";
 import { defaultStore } from "./store.js";
 import { record } from "./record.js";
 import { makeFs } from "./fs.js";
-import { toolCatalogJson } from "./tools.js";
+import { mergeToolCatalogBundles, toolCatalogBundle } from "./tools.js";
+import {
+  catalogToolSelectors,
+  connectionToolCatalogBundle,
+  hostToolDefinitions,
+} from "./catalog.js";
 import { startCron } from "./cron.js";
 import type { CronAction, CronHandle, CronOptions } from "./cron.js";
 import type { Backend } from "./backend.js";
 import { RemoteBackend } from "./remote.js";
+import type { ToolCatalogBundle } from "./tools.js";
 import type {
   ContentStore,
   ConnectionDefinition,
@@ -42,7 +48,6 @@ import type {
 
 const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
-const TOOL_PERMISSION_HANDLER = "/svc/tools/permission";
 
 /** POSIX single-quote an argv element so it survives the shell `vm.exec` runs. */
 const shQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -55,6 +60,8 @@ export class Vm {
   readonly fs: VmFs;
   /** All registered tools (boot-time + runtime), mirrored into the `/svc/tools` live catalog. */
   private readonly registeredTools: ToolDefinition[];
+  /** String entries from `create({ tools })`, used as connection group selectors. */
+  private readonly registeredToolSelectors: string[];
   /** Host-backed mounts that must be re-registered when this VM is forked. */
   private readonly registeredMounts: MountSpec[];
   /** Tool alias names already handled for this VM (created or deliberately skipped). */
@@ -63,6 +70,8 @@ export class Vm {
   private readonly cronJobs = new Set<CronHandle>();
   /** Monotonic counter for the temp files {@link Vm.luau} writes. */
   private luauSeq = 0;
+  /** Catalog generation used for host-control catalog.apply commits. */
+  private catalogGeneration = 0;
 
   /** @internal — use {@link mc.create}. */
   constructor(
@@ -70,7 +79,8 @@ export class Vm {
     private readonly opts: CreateOptions,
   ) {
     this.fs = makeFs(backend);
-    this.registeredTools = [...(opts.tools ?? [])];
+    this.registeredTools = hostToolDefinitions(opts.tools);
+    this.registeredToolSelectors = catalogToolSelectors(opts.tools);
     this.registeredMounts = [...(opts.mounts ?? [])];
     for (const name of toolAliasNames(this.registeredTools)) {
       if (isSafeToolAlias(name)) this.handledToolAliases.add(name);
@@ -147,8 +157,10 @@ export class Vm {
       else next.push(d);
     }
     try {
-      await applyToolCatalog(this.backend, next);
+      const generation = this.catalogGeneration + 1;
+      await applyToolCatalog(this.backend, this.opts, next, generation);
       await seedToolAliases(this.backend, defs, this.handledToolAliases);
+      this.catalogGeneration = generation;
     } catch (e) {
       for (const d of defs) {
         const prev = previous.find((t) => t.name === d.name);
@@ -158,7 +170,7 @@ export class Vm {
       throw e;
     }
     this.registeredTools.splice(0, this.registeredTools.length, ...next);
-    this.opts.tools = [...this.registeredTools];
+    this.opts.tools = [...this.registeredToolSelectors, ...this.registeredTools];
   }
 
   /** Install a host-backed driver as a `FileSystem` at `path`. The driver
@@ -388,62 +400,25 @@ function makeApprover(
     });
 }
 
-function makeToolPermissionHandler(onPermission: CreateOptions["onPermission"]): RawToolHandler | undefined {
+function makeToolApprover(onPermission: CreateOptions["onPermission"]): ToolApprover | undefined {
   if (!onPermission) return undefined;
   let id = 0;
-  return async (body) => {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(dec(body));
-    } catch {
-      return enc(JSON.stringify({ allow: false, message: "bad tool approval request" }));
-    }
-    if (!parsed || typeof parsed !== "object") {
-      return enc(JSON.stringify({ allow: false, message: "bad tool approval request" }));
-    }
-    const p = parsed as Record<string, unknown>;
-    const policy =
-      p.policy && typeof p.policy === "object" ? (p.policy as Record<string, unknown>) : {};
-    const stringField = (name: string): string => {
-      const value = p[name];
-      return typeof value === "string" ? value : "";
-    };
-    const policyString = (name: string): string | undefined => {
-      const value = policy[name];
-      return typeof value === "string" ? value : undefined;
-    };
-
-    return new Promise<Uint8Array>((resolve) => {
-      let settled = false;
-      const finish = (allow: boolean, message?: string): void => {
-        if (settled) return;
-        settled = true;
-        resolve(enc(JSON.stringify(message ? { allow, message } : { allow })));
-      };
+  return (facts: ToolApprovalFacts) =>
+    new Promise((resolve) => {
       const req = {
         id: ++id,
         kind: "tool_approval" as const,
-        address: stringField("address"),
-        integration: stringField("integration"),
-        owner: stringField("owner"),
-        connection: stringField("connection"),
-        tool: stringField("tool"),
-        description: stringField("description"),
-        approvalDescription: stringField("approvalDescription"),
-        argsPreview: stringField("argsPreview"),
-        argsSha256: stringField("argsSha256"),
-        policy: {
-          action: "require_approval" as const,
-          source: policyString("source") === "policy" ? ("policy" as const) : ("annotation" as const),
-          ...(policyString("id") ? { id: policyString("id") } : {}),
-          ...(policyString("pattern") ? { pattern: policyString("pattern") } : {}),
-        },
-        allow: () => finish(true),
-        reject: (message?: string) => finish(false, message),
+        connection: facts.connection,
+        method: facts.method,
+        url: facts.url,
+        origin: facts.origin,
+        ...(facts.argsDigest ? { argsDigest: facts.argsDigest } : {}),
+        allow: (o?: { remember?: "once" | "session" }) =>
+          resolve({ allow: true, remember: o?.remember }),
+        reject: () => resolve({ allow: false }),
       };
-      void Promise.resolve(onPermission(req)).catch(() => finish(false));
+      void Promise.resolve(onPermission(req)).catch(() => resolve({ allow: false }));
     });
-  };
 }
 
 async function makeEmbedded(
@@ -451,10 +426,9 @@ async function makeEmbedded(
   snapshot: Uint8Array | null,
 ): Promise<Backend> {
   const wasm = opts.kernel ?? (await defaultKernel());
+  const hostTools = hostToolDefinitions(opts.tools);
   const stdout = new FanoutSink();
   const tools = new MapHostCall();
-  const toolPermission = makeToolPermissionHandler(opts.onPermission);
-  if (toolPermission) tools.registerRaw(TOOL_PERMISSION_HANDLER, toolPermission);
   let builder = new KernelHostBuilder(wasm)
     .withStdout(stdout)
     .withStderr(stdout)
@@ -467,6 +441,8 @@ async function makeEmbedded(
         allowlist: netAllowlist(opts),
         approver: makeApprover(opts.onPermission),
         connections: connectionRegistry(opts.connections ?? []),
+        toolApprover: makeToolApprover(opts.onPermission),
+        policies: opts.policies,
       }),
     );
   }
@@ -490,12 +466,12 @@ async function makeEmbedded(
     host.bootToPrompt(); // drive boot only to the first prompt (no settle wait)
   }
   const backend = new EmbeddedBackend(host, stdout, tools);
-  for (const t of opts.tools ?? []) backend.tool(t);
-  await seedToolCatalog(backend, opts.tools ?? []);
+  for (const t of hostTools) backend.tool(t);
+  await seedToolCatalog(backend, opts, hostTools);
   if (snapshot) {
-    await applyToolCatalog(backend, opts.tools ?? []);
+    await applyToolCatalog(backend, opts, hostTools, 1);
   }
-  await seedToolAliases(backend, opts.tools ?? [], undefined, snapshot !== null);
+  await seedToolAliases(backend, hostTools, undefined, snapshot !== null);
   // Install boot-time mounts before the backend is returned (and before any
   // exec), so the first command already sees them. Declaration order is kept.
   for (const m of opts.mounts ?? []) {
@@ -504,9 +480,23 @@ async function makeEmbedded(
   return backend;
 }
 
-/** Write the boot-seed `/etc/tools/catalog.json` catalog. Once `/svc/tools` is active, catalog mutation
- *  must go through `applyToolCatalog`; this file is only the cold-start seed/checkpoint. */
-async function seedToolCatalog(backend: Backend, defs: ToolDefinition[]): Promise<void> {
+/** Write the boot-seed `/etc/tools/catalog/` tree. Once `/svc/tools` is active, catalog mutation
+ *  must go through `applyToolCatalog`; these files are only the cold-start seed/checkpoint. */
+async function seedToolCatalog(
+  backend: Backend,
+  opts: CreateOptions,
+  defs: ToolDefinition[],
+): Promise<void> {
+  const bundle = await mergedCatalogBundle(opts, defs, 0);
+  await ensureToolCatalogDirs(backend);
+  for (const record of bundle.records) {
+    await backend.write(`/etc/tools/catalog/records/${record.sha}`, record.bytes);
+  }
+  await backend.write("/etc/tools/catalog/index.json", bundle.indexBytes);
+  await backend.write("/etc/tools/catalog/index.sha256", enc(`${bundle.indexDigest}\n`));
+}
+
+async function ensureToolCatalogDirs(backend: Backend): Promise<void> {
   try {
     await backend.mkdir("/etc");
   } catch {
@@ -517,12 +507,35 @@ async function seedToolCatalog(backend: Backend, defs: ToolDefinition[]): Promis
   } catch {
     /* already exists */
   }
-  await backend.write("/etc/tools/catalog.json", enc(toolCatalogJson(defs)));
+  try {
+    await backend.mkdir("/etc/tools/catalog");
+  } catch {
+    /* already exists */
+  }
+  try {
+    await backend.mkdir("/etc/tools/catalog/records");
+  } catch {
+    /* already exists */
+  }
 }
 
-async function applyToolCatalog(backend: Backend, defs: ToolDefinition[]): Promise<void> {
-  const catalog = JSON.parse(toolCatalogJson(defs)) as { tools?: unknown };
-  const req = JSON.stringify({ op: "catalog.apply", tools: catalog.tools ?? [] });
+async function applyToolCatalog(
+  backend: Backend,
+  opts: CreateOptions,
+  defs: ToolDefinition[],
+  generation: number,
+): Promise<void> {
+  const bundle = await mergedCatalogBundle(opts, defs, generation);
+  await ensureToolCatalogDirs(backend);
+  for (const record of bundle.records) {
+    await backend.write(`/etc/tools/catalog/records/${record.sha}`, record.bytes);
+  }
+  const req = JSON.stringify({
+    op: "catalog.apply",
+    generation,
+    index: bundle.index,
+    digest: bundle.indexDigest,
+  });
   const raw = await backend.serviceCall("tools", enc(req));
   let response: unknown;
   try {
@@ -536,6 +549,17 @@ async function applyToolCatalog(backend: Backend, defs: ToolDefinition[]): Promi
     const message = typeof err?.message === "string" ? err.message : "tool catalog update failed";
     throw new Error(`/svc/tools ${code}: ${message}`);
   }
+}
+
+async function mergedCatalogBundle(
+  opts: CreateOptions,
+  defs: ToolDefinition[],
+  generation: number,
+): Promise<ToolCatalogBundle> {
+  const bundles = [await toolCatalogBundle(defs, generation)];
+  const connectionBundle = await connectionToolCatalogBundle(opts, generation);
+  if (connectionBundle) bundles.push(connectionBundle);
+  return mergeToolCatalogBundles(bundles, generation);
 }
 
 /** Make each registered tool/kit a first-class command: a `/bin/<name>` symlink →
@@ -664,6 +688,7 @@ async function makeRemote(opts: CreateOptions, snapshot: Uint8Array | null): Pro
   }
   const endpoint = opts.endpoint.replace(/\/$/, "");
   const headers: Record<string, string> = opts.token ? { authorization: `Bearer ${opts.token}` } : {};
+  const hostTools = hostToolDefinitions(opts.tools);
   let id: string;
 
   if (snapshot) {
@@ -694,10 +719,10 @@ async function makeRemote(opts: CreateOptions, snapshot: Uint8Array | null): Pro
     vmId: id,
     onPermission: opts.onPermission,
   });
-  for (const tool of opts.tools ?? []) backend.tool(tool);
-  if (opts.tools?.length || opts.mounts?.length || opts.onPermission) await backend.connect();
-  await seedToolCatalog(backend, opts.tools ?? []);
-  await seedToolAliases(backend, opts.tools ?? [], undefined, snapshot !== null);
+  for (const tool of hostTools) backend.tool(tool);
+  if (hostTools.length || opts.mounts?.length || opts.onPermission) await backend.connect();
+  await seedToolCatalog(backend, opts, hostTools);
+  await seedToolAliases(backend, hostTools, undefined, snapshot !== null);
   for (const mount of opts.mounts ?? []) {
     await backend.mount(mount.path, mount.driver, mount.readOnly ?? mount.driver.readOnly ?? false);
   }

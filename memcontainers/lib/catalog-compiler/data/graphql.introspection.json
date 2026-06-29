@@ -1,0 +1,43 @@
+{
+  "data": {
+    "__schema": {
+      "queryType": { "name": "Query" },
+      "mutationType": { "name": "Mutation" },
+      "types": [
+        {
+          "kind": "OBJECT",
+          "name": "Query",
+          "fields": [
+            {
+              "name": "viewer",
+              "description": "Viewer by id",
+              "args": [
+                {
+                  "name": "id",
+                  "description": "User id",
+                  "type": { "kind": "NON_NULL", "ofType": { "kind": "SCALAR", "name": "ID" } }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "kind": "OBJECT",
+          "name": "Mutation",
+          "fields": [
+            {
+              "name": "updateName",
+              "description": "Update display name",
+              "args": [
+                {
+                  "name": "name",
+                  "type": { "kind": "NON_NULL", "ofType": { "kind": "SCALAR", "name": "String" } }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

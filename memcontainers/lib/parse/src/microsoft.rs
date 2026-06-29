@@ -5,26 +5,23 @@
 //! feeds the ordinary OpenAPI compiler. Tool bindings still invoke the OpenAPI adapter path; the
 //! Microsoft-specific work is deterministic source selection, not a separate runtime.
 
-use std::collections::BTreeSet;
+use serde_json::{json, Value};
 
-use serde_json::{json, Map, Value};
-
-use crate::openapi::{self, CompileOutput, SourceFormat};
+use crate::openapi::{self, CompileOutput, OperationFilter, SourceFormat};
 use crate::registry::{self, RegistryKind};
 use crate::Diagnostic;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CompileOptions {
     pub preset_ids: Vec<String>,
+    pub filter: OperationFilter,
 }
 
 #[derive(Default)]
 struct PresetFilter {
     all_paths: bool,
     ids: Vec<String>,
-    exact_paths: BTreeSet<String>,
-    path_prefixes: Vec<String>,
-    tag_prefixes: Vec<String>,
+    filter: OperationFilter,
 }
 
 pub fn compile(
@@ -54,9 +51,6 @@ pub fn compile(
     };
 
     ensure_graph_server(&mut root, openapi_opts.base_url.as_deref());
-    if !filter.all_paths {
-        filter_paths(&mut root, &filter, &mut diagnostics);
-    }
 
     let source = match serde_json::to_string(&root) {
         Ok(source) => source,
@@ -71,7 +65,20 @@ pub fn compile(
             }
         }
     };
-    let mut out = openapi::compile(&source, SourceFormat::Json, openapi_opts);
+    let mut openapi_opts = openapi_opts.clone();
+    openapi_opts.filter = if filter.all_paths {
+        opts.filter.clone()
+    } else {
+        filter.filter.merged(&opts.filter)
+    };
+    let mut out = openapi::compile(&source, SourceFormat::Json, &openapi_opts);
+    if !filter.all_paths && out.tools.is_empty() {
+        diagnostics.push(Diagnostic::warn(
+            "no_matching_paths",
+            "Microsoft Graph preset filters matched no OpenAPI paths",
+            None,
+        ));
+    }
     diagnostics.append(&mut out.diagnostics);
     out.diagnostics = diagnostics;
     annotate_tools(&mut out.tools, &filter.ids);
@@ -111,13 +118,15 @@ fn preset_filter(opts: &CompileOptions) -> Result<PresetFilter, String> {
             continue;
         }
         for path in entry.exact_paths {
-            filter.exact_paths.insert((*path).to_string());
+            if !filter.filter.exact_paths.iter().any(|p| p == path) {
+                filter.filter.exact_paths.push((*path).to_string());
+            }
         }
         for prefix in entry.path_prefixes {
-            filter.path_prefixes.push((*prefix).to_string());
+            filter.filter.path_prefixes.push((*prefix).to_string());
         }
         for prefix in entry.tag_prefixes {
-            filter.tag_prefixes.push((*prefix).to_string());
+            filter.filter.tag_prefixes.push((*prefix).to_string());
         }
     }
     Ok(filter)
@@ -137,86 +146,6 @@ fn ensure_graph_server(root: &mut Value, base_url: Option<&str>) {
             json!([{ "url": "https://graph.microsoft.com/v1.0" }]),
         );
     }
-}
-
-fn filter_paths(root: &mut Value, filter: &PresetFilter, diagnostics: &mut Vec<Diagnostic>) {
-    let Some(paths) = root.get_mut("paths").and_then(Value::as_object_mut) else {
-        return;
-    };
-    let mut kept = Map::new();
-    let old = std::mem::take(paths);
-    for (path, item) in old {
-        if filter.matches_path(&path) {
-            kept.insert(path, item);
-            continue;
-        }
-        if let Some(item) = filter_tagged_operations(&item, filter) {
-            kept.insert(path, item);
-        }
-    }
-    if kept.is_empty() {
-        diagnostics.push(Diagnostic::warn(
-            "no_matching_paths",
-            "Microsoft Graph preset filters matched no OpenAPI paths",
-            None,
-        ));
-    }
-    *paths = kept;
-}
-
-fn filter_tagged_operations(item: &Value, filter: &PresetFilter) -> Option<Value> {
-    if filter.tag_prefixes.is_empty() {
-        return None;
-    }
-    let obj = item.as_object()?;
-    let mut kept = Map::new();
-    if let Some(parameters) = obj.get("parameters") {
-        kept.insert("parameters".to_string(), parameters.clone());
-    }
-    for method in [
-        "get", "put", "post", "delete", "options", "head", "patch", "trace",
-    ] {
-        let Some(op) = obj.get(method) else {
-            continue;
-        };
-        if filter.matches_tags(op) {
-            kept.insert(method.to_string(), op.clone());
-        }
-    }
-    kept.keys()
-        .any(|key| key != "parameters")
-        .then_some(Value::Object(kept))
-}
-
-impl PresetFilter {
-    fn matches_path(&self, path: &str) -> bool {
-        self.exact_paths.contains(path)
-            || self
-                .path_prefixes
-                .iter()
-                .any(|prefix| path_has_prefix(path, prefix))
-    }
-
-    fn matches_tags(&self, op: &Value) -> bool {
-        let Some(tags) = op.get("tags").and_then(Value::as_array) else {
-            return false;
-        };
-        tags.iter().filter_map(Value::as_str).any(|tag| {
-            self.tag_prefixes
-                .iter()
-                .any(|prefix| tag == prefix || tag.starts_with(prefix))
-        })
-    }
-}
-
-fn path_has_prefix(path: &str, prefix: &str) -> bool {
-    if path == prefix {
-        return true;
-    }
-    let Some(rest) = path.strip_prefix(prefix) else {
-        return false;
-    };
-    rest.starts_with('/') || rest.starts_with('(')
 }
 
 fn annotate_tools(tools: &mut [Value], presets: &[String]) {
@@ -246,6 +175,7 @@ mod tests {
             connection: "main".to_string(),
             auth: "bearer".to_string(),
             base_url: None,
+            filter: OperationFilter::default(),
         }
     }
 
@@ -271,6 +201,7 @@ mod tests {
         }"#;
         let opts = CompileOptions {
             preset_ids: vec!["mail".to_string()],
+            filter: OperationFilter::default(),
         };
 
         let out = compile(source, SourceFormat::Json, &openapi_opts(), &opts);
@@ -307,6 +238,7 @@ mod tests {
             &openapi_opts(),
             &CompileOptions {
                 preset_ids: vec!["not-a-preset".to_string()],
+                filter: OperationFilter::default(),
             },
         );
         assert_eq!(out.tools, Vec::<Value>::new());

@@ -4,6 +4,7 @@
 //! first, then Microsoft Graph and Google discovery, then GraphQL behind the same service contract. It is
 //! intentionally `std + serde`; these formats are schema-heavy data languages, not kernel substrate.
 
+pub mod bundle;
 pub mod google;
 pub mod graphql;
 pub mod mcp;

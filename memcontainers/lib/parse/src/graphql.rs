@@ -2,13 +2,14 @@
 //!
 //! The compiler consumes a standard introspection JSON result and emits one service-backed tool per
 //! root field: `query.<field>` or `mutation.<field>`. Calls keep the pre-built operation document in
-//! the catalog binding and supply only JSON variables at runtime. Mutations are marked destructive so
-//! `/svc/tools` can apply the ordinary approval path before `/svc/adapters` reaches network egress.
+//! the catalog binding and supply only JSON variables at runtime. Mutations keep descriptive
+//! destructive metadata; the host egress boundary enforces approval before credentials are spliced.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::normalize::{sanitize_segment_or, valid_segment};
+use crate::openapi::OperationFilter;
 use crate::Diagnostic;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +19,7 @@ pub struct CompileOptions {
     pub connection: String,
     pub auth: String,
     pub endpoint: String,
+    pub filter: OperationFilter,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -102,6 +104,12 @@ pub fn compile(source: &str, opts: &CompileOptions) -> CompileOutput {
         &mut fields,
         &mut diagnostics,
     );
+    fields.retain(|field| {
+        let path = format!("/{}/{}", field.operation_type, field.name);
+        let typed_name = format!("{}.{}", field.operation_type, field.name);
+        opts.filter
+            .matches_parts(&path, &[field.operation_type, typed_name.as_str()])
+    });
     fields.sort_by(|a, b| {
         tool_address(opts, a)
             .cmp(&tool_address(opts, b))
@@ -219,7 +227,10 @@ fn catalog_record(opts: &CompileOptions, field: &RootField) -> Value {
     }
 
     let mut record = Map::new();
-    record.insert("address".to_string(), Value::String(tool_address(opts, field)));
+    record.insert(
+        "address".to_string(),
+        Value::String(tool_address(opts, field)),
+    );
     record.insert(
         "description".to_string(),
         Value::String(if field.description.is_empty() {
@@ -238,6 +249,10 @@ fn catalog_record(opts: &CompileOptions, field: &RootField) -> Value {
         record.insert("input_schema".to_string(), schema);
     }
     record.insert("annotations".to_string(), Value::Object(annotations));
+    let mut request = Map::new();
+    request.insert("endpoint".to_string(), Value::String(opts.endpoint.clone()));
+    request.insert("document".to_string(), Value::String(document));
+    request.insert("operationName".to_string(), Value::String(operation_name));
     record.insert(
         "binding".to_string(),
         json!({
@@ -246,17 +261,7 @@ fn catalog_record(opts: &CompileOptions, field: &RootField) -> Value {
             "op": "invoke",
             "adapter": "graphql",
             "args": "json",
-            "request": {
-                "endpoint": opts.endpoint,
-                "document": document,
-                "operationName": operation_name,
-                "connection_ref": {
-                    "integration": opts.integration,
-                    "owner": opts.owner,
-                    "name": opts.connection,
-                    "auth": opts.auth,
-                }
-            }
+            "request": Value::Object(request)
         }),
     );
     Value::Object(record)
@@ -356,7 +361,10 @@ fn graphql_type(type_ref: &Value) -> Option<String> {
     match type_kind(type_ref)? {
         "NON_NULL" => Some(format!("{}!", graphql_type(type_ref.get("ofType")?)?)),
         "LIST" => Some(format!("[{}]", graphql_type(type_ref.get("ofType")?)?)),
-        _ => type_ref.get("name").and_then(Value::as_str).map(str::to_string),
+        _ => type_ref
+            .get("name")
+            .and_then(Value::as_str)
+            .map(str::to_string),
     }
 }
 
@@ -408,6 +416,7 @@ mod tests {
             connection: "main".to_string(),
             auth: "none".to_string(),
             endpoint: "https://example.test/graphql".to_string(),
+            filter: OperationFilter::default(),
         }
     }
 

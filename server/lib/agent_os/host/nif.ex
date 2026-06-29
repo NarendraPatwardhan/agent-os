@@ -66,6 +66,16 @@ defmodule AgentOS.Host.Nif do
           | {ref :: binary(), connection_auth(), origins :: [binary()]}
           | %{required(:ref) => binary(), required(:auth) => connection_auth()}
           | %{required(String.t()) => term()}
+  @type tool_policy_owner :: :org | :user
+  @type tool_policy_action :: :approve | :require_approval | :block
+  @type tool_policy_rule ::
+          {tool_policy_owner(), binary(), tool_policy_action()}
+          | %{
+              required(:owner) => tool_policy_owner(),
+              required(:pattern) => binary(),
+              required(:action) => tool_policy_action()
+            }
+          | %{required(String.t()) => term()}
   @type boot_opt ::
           {:layers, [binary()]}
           | {:deterministic, boolean()}
@@ -73,8 +83,21 @@ defmodule AgentOS.Host.Nif do
           | {:workers, non_neg_integer() | nil}
           | {:net, net_mode() | {:real, [connection_def()]}}
           | {:connections, [connection_def()]}
+          | {:tool_policies, [tool_policy_rule()]}
+          | {:tool_approval, :deny | :relay}
           | {:host_call, relay_mode()}
           | {:persist, persist_mode()}
+
+  @type catalog_spec ::
+          nil
+          | {:bytes, binary()}
+          | {:bytes, binary(), keyword() | map()}
+          | {:path, binary()}
+          | {:path, binary(), keyword() | map()}
+          | {:url, binary()}
+          | {:url, binary(), keyword() | map()}
+          | %{required(String.t() | atom()) => term()}
+  @type catalog_status :: %{generation: non_neg_integer(), digest: String.t(), tools: non_neg_integer()}
 
   @type relay_event ::
           %{kind: :http, handle: pos_integer(), request: binary()}
@@ -86,6 +109,15 @@ defmodule AgentOS.Host.Nif do
           | %{kind: :ws_connect, handle: pos_integer(), url: String.t()}
           | %{kind: :ws_send, handle: pos_integer(), data: binary()}
           | %{kind: :ws_close, handle: pos_integer()}
+          | %{
+              kind: :tool_approval,
+              handle: pos_integer(),
+              connection: String.t(),
+              method: String.t(),
+              url: String.t(),
+              origin: String.t(),
+              args_digest: String.t() | nil
+            }
 
   @doc """
   Boot a VM from a `kernel.wasm` plus either one base image or an ordered layer stack.
@@ -105,7 +137,8 @@ defmodule AgentOS.Host.Nif do
 
   def boot(wasm, base_image, opts)
       when is_binary(wasm) and (is_binary(base_image) or is_nil(base_image)) and is_list(opts) do
-    with {:ok, layers, deterministic, contract, workers, net, host_call, persist} <-
+    with {:ok, layers, deterministic, contract, workers, net, tool_policies, tool_approval, host_call,
+          persist} <-
            boot_args(base_image, opts) do
       {net_relay, net_real, connections} = net
 
@@ -119,6 +152,8 @@ defmodule AgentOS.Host.Nif do
         net_relay,
         net_real,
         connections,
+        tool_policies,
+        tool_approval,
         host_call,
         persist
       )
@@ -134,7 +169,8 @@ defmodule AgentOS.Host.Nif do
 
   def restore(wasm, snapshot, opts)
       when is_binary(wasm) and is_binary(snapshot) and is_list(opts) do
-    with {:ok, deterministic, workers, net, host_call, persist} <- restore_args(opts) do
+    with {:ok, deterministic, workers, net, tool_policies, tool_approval, host_call, persist} <-
+           restore_args(opts) do
       {net_relay, net_real, connections} = net
 
       restore_nif(
@@ -145,6 +181,8 @@ defmodule AgentOS.Host.Nif do
         net_relay,
         net_real,
         connections,
+        tool_policies,
+        tool_approval,
         host_call,
         persist
       )
@@ -318,6 +356,38 @@ defmodule AgentOS.Host.Nif do
   @spec snapshot(vm()) :: {:ok, binary()} | {:error, reason()}
   def snapshot(vm), do: snapshot_nif(vm)
 
+  @doc """
+  Compile and inject a host-side tool catalog through the wasmtime host. `connections` carry
+  spec/group selectors compiled via `catalog-compiler.wasm`; `host_tools` carry host-call tool
+  definitions (BEAM-relayed) sharded directly without the compiler. `compiler_wasm` may be empty
+  when only `host_tools` are injected.
+  """
+  @spec inject_catalog(vm(), binary(), [connection_def()], [String.t()], [map()], non_neg_integer()) ::
+          {:ok, catalog_status() | nil} | {:error, reason()}
+  def inject_catalog(vm, compiler_wasm, connections, tools, host_tools, generation)
+      when is_binary(compiler_wasm) and is_list(connections) and is_list(tools) and
+             is_list(host_tools) and is_integer(generation) and generation >= 0 do
+    with {:ok, connections} <- catalog_connections_arg(connections),
+         {:ok, tools} <- tools_arg(tools),
+         {:ok, host_tools} <- host_tools_arg(host_tools) do
+      case inject_catalog_nif(vm, compiler_wasm, generation, tools, host_tools, connections) do
+        {:ok, nil} ->
+          {:ok, nil}
+
+        {:ok, {generation, digest, tools}} ->
+          {:ok, %{generation: generation, digest: digest, tools: tools}}
+
+        {:error, _reason} = err ->
+          err
+      end
+    end
+  end
+
+  def inject_catalog(_vm, _compiler_wasm, _connections, _tools, _host_tools, _generation),
+    do:
+      {:error,
+       "inject_catalog expects vm, compiler wasm, connections, tools, host_tools, and generation"}
+
   @doc "Drain the next outbound egress relay event, if any."
   @spec relay_next(vm()) :: {:ok, relay_event() | nil} | {:error, reason()}
   def relay_next(vm) do
@@ -379,6 +449,21 @@ defmodule AgentOS.Host.Nif do
 
   def relay_persist_fail(_vm, _handle), do: {:error, "relay_persist_fail expects a positive handle"}
 
+  @doc """
+  Answer a `tool_approval` relay event: allow or deny the destructive connection call the host parked
+  on. `remember_session` caches an allow for the exact connection/method/url for the VM's lifetime.
+  """
+  @spec relay_tool_approval_respond(vm(), integer(), boolean(), boolean()) ::
+          :ok | {:error, reason()}
+  def relay_tool_approval_respond(vm, handle, allow, remember_session \\ false)
+
+  def relay_tool_approval_respond(vm, handle, allow, remember_session)
+      when is_integer(handle) and handle > 0 and is_boolean(allow) and is_boolean(remember_session),
+      do: relay_tool_approval_respond_nif(vm, handle, allow, remember_session)
+
+  def relay_tool_approval_respond(_vm, _handle, _allow, _remember),
+    do: {:error, "relay_tool_approval_respond expects a positive handle and boolean allow/remember"}
+
   @doc "Mark a WebSocket relay connection as opened."
   @spec relay_ws_open(vm(), integer()) :: :ok | {:error, reason()}
   def relay_ws_open(vm, handle) when is_integer(handle) and handle > 0,
@@ -419,6 +504,8 @@ defmodule AgentOS.Host.Nif do
         _net,
         _net_real,
         _connections,
+        _tool_policies,
+        _tool_approval,
         _host_call,
         _persist
       ),
@@ -433,6 +520,8 @@ defmodule AgentOS.Host.Nif do
         _net,
         _net_real,
         _connections,
+        _tool_policies,
+        _tool_approval,
         _host_call,
         _persist
       ),
@@ -496,6 +585,10 @@ defmodule AgentOS.Host.Nif do
   def snapshot_nif(_vm), do: nif_not_loaded()
 
   @doc false
+  def inject_catalog_nif(_vm, _compiler_wasm, _generation, _tools, _host_tools, _connections),
+    do: nif_not_loaded()
+
+  @doc false
   def relay_next_nif(_vm), do: nif_not_loaded()
 
   @doc false
@@ -503,6 +596,9 @@ defmodule AgentOS.Host.Nif do
 
   @doc false
   def relay_host_call_respond_nif(_vm, _handle, _ok, _result), do: nif_not_loaded()
+
+  @doc false
+  def relay_tool_approval_respond_nif(_vm, _handle, _allow, _remember), do: nif_not_loaded()
 
   @doc false
   def relay_persist_respond_nif(_vm, _handle, _ok, _body), do: nif_not_loaded()
@@ -522,16 +618,21 @@ defmodule AgentOS.Host.Nif do
          {:ok, deterministic} <- boolean_arg(opts, :deterministic, false),
          {:ok, contract} <- contract_arg(opts),
          {:ok, workers} <- workers_arg(opts),
-         {:ok, net, host_call, persist} <- capability_args(opts) do
-      {:ok, layers, deterministic, contract, workers, net, host_call, persist}
+         {:ok, net, host_call, persist} <- capability_args(opts),
+         {:ok, tool_policies} <- tool_policies_arg(opts),
+         {:ok, tool_approval} <- tool_approval_arg(opts) do
+      {:ok, layers, deterministic, contract, workers, net, tool_policies, tool_approval, host_call,
+       persist}
     end
   end
 
   defp restore_args(opts) do
     with {:ok, deterministic} <- boolean_arg(opts, :deterministic, false),
          {:ok, workers} <- workers_arg(opts),
-         {:ok, net, host_call, persist} <- capability_args(opts) do
-      {:ok, deterministic, workers, net, host_call, persist}
+         {:ok, net, host_call, persist} <- capability_args(opts),
+         {:ok, tool_policies} <- tool_policies_arg(opts),
+         {:ok, tool_approval} <- tool_approval_arg(opts) do
+      {:ok, deterministic, workers, net, tool_policies, tool_approval, host_call, persist}
     end
   end
 
@@ -709,6 +810,252 @@ defmodule AgentOS.Host.Nif do
   defp connection_auth_arg(_other),
     do: {:error, "connection auth must be none, bearer, header, or query"}
 
+  defp tool_policies_arg(opts) do
+    rules = Keyword.get(opts, :tool_policies, Keyword.get(opts, :policies, []))
+
+    if is_list(rules) do
+      Enum.reduce_while(rules, {:ok, []}, fn rule, {:ok, acc} ->
+        case tool_policy_rule_arg(rule) do
+          {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
+          {:error, _reason} = err -> {:halt, err}
+        end
+      end)
+      |> case do
+        {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
+        {:error, _reason} = err -> err
+      end
+    else
+      {:error, "tool_policies must be a list"}
+    end
+  end
+
+  defp tool_policy_rule_arg({owner, pattern, action}) when is_binary(pattern) do
+    with {:ok, owner} <- tool_policy_owner_arg(owner),
+         {:ok, action} <- tool_policy_action_arg(action) do
+      {:ok, {owner, pattern, action}}
+    end
+  end
+
+  defp tool_policy_rule_arg(%{owner: owner, pattern: pattern, action: action})
+       when is_binary(pattern),
+       do: tool_policy_rule_arg({owner, pattern, action})
+
+  defp tool_policy_rule_arg(%{"owner" => owner, "pattern" => pattern, "action" => action})
+       when is_binary(pattern),
+       do: tool_policy_rule_arg({owner, pattern, action})
+
+  defp tool_policy_rule_arg(_other),
+    do: {:error, "tool policy rule must be {owner, pattern, action}"}
+
+  defp tool_policy_owner_arg(owner) when owner in [:org, "org"], do: {:ok, "org"}
+  defp tool_policy_owner_arg(owner) when owner in [:user, "user"], do: {:ok, "user"}
+  defp tool_policy_owner_arg(_other), do: {:error, "tool policy owner must be :org or :user"}
+
+  defp tool_policy_action_arg(action) when action in [:approve, "approve"],
+    do: {:ok, "approve"}
+
+  defp tool_policy_action_arg(action) when action in [:require_approval, "require_approval"],
+    do: {:ok, "require_approval"}
+
+  defp tool_policy_action_arg(action) when action in [:block, "block"], do: {:ok, "block"}
+
+  defp tool_policy_action_arg(_other),
+    do: {:error, "tool policy action must be :approve, :require_approval, or :block"}
+
+  defp tool_approval_arg(opts) do
+    case Keyword.get(opts, :tool_approval, :deny) do
+      :deny -> {:ok, false}
+      :relay -> {:ok, true}
+      _other -> {:error, "tool_approval must be :deny or :relay"}
+    end
+  end
+
+  defp catalog_connections_arg(connections) do
+    Enum.reduce_while(connections, {:ok, []}, fn entry, {:ok, acc} ->
+      case catalog_connection_arg(entry) do
+        {:ok, connection} -> {:cont, {:ok, [connection | acc]}}
+        {:error, _reason} = err -> {:halt, err}
+      end
+    end)
+    |> case do
+      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
+      {:error, _reason} = err -> err
+    end
+  end
+
+  defp catalog_connection_arg({ref, _auth}) when is_binary(ref),
+    do: {:ok, {ref, "none", "", {"", "", "", ""}, []}}
+
+  defp catalog_connection_arg({ref, _auth, _origins}) when is_binary(ref),
+    do: {:ok, {ref, "none", "", {"", "", "", ""}, []}}
+
+  defp catalog_connection_arg(%{ref: ref} = entry) when is_binary(ref),
+    do: catalog_connection_from_map(ref, entry)
+
+  defp catalog_connection_arg(%{"ref" => ref} = entry) when is_binary(ref),
+    do: catalog_connection_from_map(ref, entry)
+
+  defp catalog_connection_arg(_other),
+    do: {:error, "catalog connection must include a binary ref"}
+
+  defp catalog_connection_from_map(ref, entry) do
+    with {:ok, tools} <- tools_arg(map_get_any(entry, [:tools, "tools"], [])),
+         {:ok, spec} <- catalog_spec_arg(map_get_any(entry, [:spec, "spec"], nil)) do
+      {:ok, catalog_connection_tuple(ref, spec, tools)}
+    end
+  end
+
+  defp catalog_connection_tuple(ref, nil, tools), do: {ref, "none", "", {"", "", "", ""}, tools}
+
+  defp catalog_connection_tuple(ref, {kind, payload, opts}, tools) do
+    {
+      ref,
+      kind,
+      payload,
+      {
+        catalog_opt(opts, :source_format),
+        catalog_opt(opts, :format),
+        catalog_opt(opts, :base_url),
+        catalog_opt(opts, :endpoint)
+      },
+      tools
+    }
+  end
+
+  defp catalog_spec_arg(nil), do: {:ok, nil}
+  defp catalog_spec_arg({:bytes, bytes}) when is_binary(bytes), do: {:ok, {"bytes", bytes, %{}}}
+  defp catalog_spec_arg({:bytes, bytes, opts}) when is_binary(bytes), do: {:ok, {"bytes", bytes, opts}}
+  defp catalog_spec_arg({:path, path}) when is_binary(path), do: {:ok, {"path", path, %{}}}
+  defp catalog_spec_arg({:path, path, opts}) when is_binary(path), do: {:ok, {"path", path, opts}}
+  defp catalog_spec_arg({:url, url}) when is_binary(url), do: {:ok, {"url", url, %{}}}
+  defp catalog_spec_arg({:url, url, opts}) when is_binary(url), do: {:ok, {"url", url, opts}}
+
+  defp catalog_spec_arg(spec) when is_map(spec) do
+    cond do
+      is_binary(map_get_any(spec, [:bytes, "bytes"], nil)) ->
+        {:ok, {"bytes", map_get_any(spec, [:bytes, "bytes"], nil), spec}}
+
+      is_binary(map_get_any(spec, [:path, "path"], nil)) ->
+        {:ok, {"path", map_get_any(spec, [:path, "path"], nil), spec}}
+
+      is_binary(map_get_any(spec, [:url, "url"], nil)) ->
+        {:ok, {"url", map_get_any(spec, [:url, "url"], nil), spec}}
+
+      true ->
+        {:error, "catalog spec map must include bytes, path, or url"}
+    end
+  end
+
+  defp catalog_spec_arg(_other),
+    do: {:error, "catalog spec must be nil, {:bytes|:path|:url, value}, or a spec map"}
+
+  defp catalog_opt(opts, key) do
+    value = map_get_any(opts, [key, Atom.to_string(key)], nil)
+
+    cond do
+      is_binary(value) -> value
+      is_atom(value) and not is_nil(value) -> Atom.to_string(value)
+      is_nil(value) -> ""
+      true -> ""
+    end
+  end
+
+  defp tools_arg(tools) when is_list(tools) do
+    if Enum.all?(tools, &is_binary/1) do
+      {:ok, tools}
+    else
+      {:error, "tools must be a list of binaries"}
+    end
+  end
+
+  defp tools_arg(_other), do: {:error, "tools must be a list of binaries"}
+
+  # Each host tool -> the NIF 7-tuple (address, description, binding_name, args_mode,
+  # input_schema_json, output_schema_json, annotations_json). Schema/annotation fields are
+  # JSON strings ("" when absent) — the server has no JSON encoder dependency.
+  defp host_tools_arg(host_tools) when is_list(host_tools) do
+    Enum.reduce_while(host_tools, {:ok, []}, fn entry, {:ok, acc} ->
+      case host_tool_arg(entry) do
+        {:ok, tool} -> {:cont, {:ok, [tool | acc]}}
+        {:error, _reason} = err -> {:halt, err}
+      end
+    end)
+    |> case do
+      {:ok, normalized} -> {:ok, Enum.reverse(normalized)}
+      {:error, _reason} = err -> err
+    end
+  end
+
+  defp host_tools_arg(_other), do: {:error, "host_tools must be a list of maps"}
+
+  defp host_tool_arg(entry) when is_map(entry) do
+    name = map_get_any(entry, [:name, "name"], nil)
+
+    cond do
+      not (is_binary(name) and name != "") ->
+        {:error, "host tool must include a non-empty binary :name"}
+
+      true ->
+        with {:ok, input_json} <- host_tool_json(entry, [:input_schema, "input_schema"]),
+             {:ok, output_json} <- host_tool_json(entry, [:output_schema, "output_schema"]),
+             {:ok, annot_json} <- host_tool_json(entry, [:annotations, "annotations"]) do
+          {:ok,
+           {
+             map_get_any(entry, [:address, "address"], default_host_address(name)),
+             to_binary(map_get_any(entry, [:description, "description"], "")),
+             name,
+             host_tool_args_mode(map_get_any(entry, [:args, "args"], "json")),
+             input_json,
+             output_json,
+             annot_json
+           }}
+        end
+    end
+  end
+
+  defp host_tool_arg(_other), do: {:error, "host tool must be a map with at least a :name"}
+
+  defp host_tool_json(entry, keys) do
+    case map_get_any(entry, keys, nil) do
+      nil -> {:ok, ""}
+      value when is_binary(value) -> {:ok, value}
+      _other -> {:error, "host tool #{hd(keys)} must be a JSON string"}
+    end
+  end
+
+  defp host_tool_args_mode(mode) when mode in ["json", "raw"], do: mode
+  defp host_tool_args_mode(:json), do: "json"
+  defp host_tool_args_mode(:raw), do: "raw"
+  defp host_tool_args_mode(_other), do: "json"
+
+  defp default_host_address(name) do
+    tail =
+      name
+      |> String.split(~r/[^A-Za-z0-9_-]+/, trim: true)
+      |> Enum.join(".")
+
+    tail = if tail == "", do: "tool", else: tail
+    "host.org.main." <> tail
+  end
+
+  defp to_binary(value) when is_binary(value), do: value
+  defp to_binary(value) when is_atom(value) and not is_nil(value), do: Atom.to_string(value)
+  defp to_binary(_other), do: ""
+
+  defp map_get_any(map, keys, default) when is_map(map) do
+    Enum.find_value(keys, default, fn key ->
+      if Map.has_key?(map, key), do: Map.get(map, key), else: nil
+    end)
+  end
+
+  defp map_get_any(list, keys, default) when is_list(list) do
+    Enum.find_value(keys, default, fn key ->
+      if Keyword.has_key?(list, key), do: Keyword.get(list, key), else: nil
+    end)
+  end
+
+  defp map_get_any(_other, _keys, default), do: default
+
   defp relay_mode_arg(opts, key) do
     case Keyword.get(opts, key, :deny) do
       mode when mode in [:deny, :relay] -> {:ok, mode}
@@ -776,6 +1123,37 @@ defmodule AgentOS.Host.Nif do
 
   defp relay_event("ws_close", handle, "", ""),
     do: {:ok, %{kind: :ws_close, handle: handle}}
+
+  defp relay_event("tool_approval", handle, frame, "") do
+    case :binary.split(frame, <<0>>, [:global]) do
+      [connection, method, url, origin, ""] ->
+        {:ok,
+         %{
+           kind: :tool_approval,
+           handle: handle,
+           connection: connection,
+           method: method,
+           url: url,
+           origin: origin,
+           args_digest: nil
+         }}
+
+      [connection, method, url, origin, args_digest] ->
+        {:ok,
+         %{
+           kind: :tool_approval,
+           handle: handle,
+           connection: connection,
+           method: method,
+           url: url,
+           origin: origin,
+           args_digest: args_digest
+         }}
+
+      _other ->
+        {:error, "malformed tool_approval relay frame"}
+    end
+  end
 
   defp relay_event(kind, _handle, _a, _b), do: {:error, "unknown relay event kind #{inspect(kind)}"}
 

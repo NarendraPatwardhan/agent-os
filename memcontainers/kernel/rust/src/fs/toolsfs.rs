@@ -1,8 +1,8 @@
 //! `/tools` — a read-only file view of the tool catalog.
 //!
 //! `/svc/tools` is the authoritative broker for search, describe, catalog mutation, and calls. This
-//! filesystem is deliberately smaller: it makes the current checkpoint catalog browsable with ordinary
-//! file tools, without creating another egress path or another catalog owner. The tree shape is:
+//! filesystem is deliberately smaller: it makes the current sharded checkpoint catalog browsable with
+//! ordinary file tools, without creating another egress path or another catalog owner. The tree shape is:
 //!
 //! ```text
 //! /tools/<integration>/<owner>/<connection>/<tool>
@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::ptr::NonNull;
 
-use toolcore::{Catalog, ToolRecord};
+use toolcore::{CatalogIndex, IndexEntry, ToolRecord};
 
 use crate::vfs::traits::{
     CallerId, DirEntry, FileHandle, FileSystem, FsError, KPath, Metadata, NodeType, OpenFlags,
@@ -26,8 +26,9 @@ use crate::vfs::traits::{
 };
 use crate::vfs::Namespace;
 
-const CATALOG_PATH: &str = "/etc/tools/catalog.json";
-const CATALOG_DIGEST_PATH: &str = "/etc/tools/catalog.sha256";
+const CATALOG_INDEX_PATH: &str = "/etc/tools/catalog/index.json";
+const CATALOG_DIGEST_PATH: &str = "/etc/tools/catalog/index.sha256";
+const CATALOG_RECORDS_DIR: &str = "/etc/tools/catalog/records";
 const DIGEST_MAX_BYTES: usize = 128;
 
 pub struct ToolsFs {
@@ -54,8 +55,8 @@ impl ToolsFs {
         unsafe { self.namespace.as_ref() }
     }
 
-    fn read_catalog_file(&self) -> Option<Vec<u8>> {
-        self.read_file(CATALOG_PATH)
+    fn read_index_file(&self) -> Option<Vec<u8>> {
+        self.read_file(CATALOG_INDEX_PATH)
     }
 
     fn read_file(&self, path: &str) -> Option<Vec<u8>> {
@@ -110,7 +111,7 @@ impl ToolsFs {
     }
 
     fn catalog_meta(&self) -> Option<CatalogMeta> {
-        let path = KPath::new(CATALOG_PATH);
+        let path = KPath::new(CATALOG_INDEX_PATH);
         let meta = self.namespace().stat_as(SYSTEM_CALLER, &path).ok()?;
         if meta.node_type == NodeType::File {
             Some(CatalogMeta {
@@ -125,7 +126,10 @@ impl ToolsFs {
 
     fn observed_key(&self) -> Option<CacheKey> {
         let meta = self.catalog_meta()?;
-        let digest = self.read_digest_file()?;
+        let digest = self.read_digest_file().or_else(|| {
+            self.read_index_file()
+                .map(|bytes| pkgcore::sha256_hex(&bytes))
+        })?;
         Some(CacheKey::Sidecar { meta, digest })
     }
 
@@ -140,7 +144,7 @@ impl ToolsFs {
                 return;
             }
             let view = self
-                .read_catalog_file()
+                .read_index_file()
                 .as_deref()
                 .map(CatalogView::from_bytes)
                 .unwrap_or_else(CatalogView::empty);
@@ -148,7 +152,7 @@ impl ToolsFs {
             return;
         }
 
-        let Some(bytes) = self.read_catalog_file() else {
+        let Some(bytes) = self.read_index_file() else {
             let key = CacheKey::Missing;
             if self
                 .cache
@@ -183,6 +187,17 @@ impl ToolsFs {
         f(&cache.as_ref().expect("toolsfs cache populated").view)
     }
 
+    fn record_bytes_for_entry(&self, entry: &IndexEntry) -> Option<Vec<u8>> {
+        let path = alloc::format!("{CATALOG_RECORDS_DIR}/{}", entry.sha);
+        let bytes = self.read_file(&path)?;
+        if pkgcore::sha256_hex(&bytes) != entry.sha {
+            return None;
+        }
+        let text = core::str::from_utf8(&bytes).ok()?;
+        let rec = toolcore::hydrate_record(entry, text).ok()?;
+        Some(record_bytes(&rec))
+    }
+
     fn parts<'a>(path: &'a str) -> Vec<&'a str> {
         let rel = path.trim_matches('/');
         if rel.is_empty() {
@@ -195,12 +210,15 @@ impl ToolsFs {
 
 #[derive(Clone, PartialEq, Eq)]
 enum CacheKey {
-    /// `/svc/tools` writes this small digest sidecar after checkpointing the authoritative catalog.
-    /// It is an accelerator only: cache rebuilds still parse `/etc/tools/catalog.json`.
-    Sidecar { meta: CatalogMeta, digest: String },
-    /// Direct catalog writes, such as boot seeding and tests, may not have the sidecar. In that case
-    /// correctness wins over speed: read bytes every VFS op, but reuse the parsed/indexed view while
-    /// the bytes are identical.
+    /// `/svc/tools` writes this small digest sidecar after checkpointing the authoritative index.
+    /// It is the shared cache key for the broker and this read-only filesystem.
+    Sidecar {
+        meta: CatalogMeta,
+        digest: String,
+    },
+    /// Direct sharded index writes, such as boot seeding and tests, may not have the sidecar. In that
+    /// case correctness wins over speed: read bytes every VFS op, but reuse the parsed/indexed view
+    /// while the bytes are identical.
     Bytes(Vec<u8>),
     Missing,
 }
@@ -219,7 +237,7 @@ struct CachedCatalog {
 
 struct CatalogView {
     dirs: BTreeMap<String, Vec<DirEntry>>,
-    files: BTreeMap<String, Vec<u8>>,
+    files: BTreeMap<String, IndexEntry>,
 }
 
 impl CatalogView {
@@ -236,22 +254,27 @@ impl CatalogView {
         let Ok(text) = core::str::from_utf8(bytes) else {
             return Self::empty();
         };
-        let catalog = Catalog::parse(text).unwrap_or_else(|_| Catalog::empty());
-        Self::from_catalog(&catalog)
+        let index = CatalogIndex::parse(text).unwrap_or_else(|_| CatalogIndex::empty());
+        Self::from_index(&index)
     }
 
-    fn from_catalog(catalog: &Catalog) -> Self {
+    fn from_index(index: &CatalogIndex) -> Self {
         let mut view = Self::empty();
-        for rec in catalog.records() {
-            let p1 = rec.integration.clone();
-            let p2 = join_key(&[&rec.integration, &rec.owner]);
-            let p3 = join_key(&[&rec.integration, &rec.owner, &rec.connection]);
-            let p4 = join_key(&[&rec.integration, &rec.owner, &rec.connection, &rec.tool]);
-            view.add_child("", &rec.integration, NodeType::Dir);
-            view.add_child(&p1, &rec.owner, NodeType::Dir);
-            view.add_child(&p2, &rec.connection, NodeType::Dir);
-            view.add_child(&p3, &rec.tool, NodeType::File);
-            view.files.insert(p4, record_bytes(rec));
+        for entry in index.entries() {
+            let p1 = entry.integration.clone();
+            let p2 = join_key(&[&entry.integration, &entry.owner]);
+            let p3 = join_key(&[&entry.integration, &entry.owner, &entry.connection]);
+            let p4 = join_key(&[
+                &entry.integration,
+                &entry.owner,
+                &entry.connection,
+                &entry.tool,
+            ]);
+            view.add_child("", &entry.integration, NodeType::Dir);
+            view.add_child(&p1, &entry.owner, NodeType::Dir);
+            view.add_child(&p2, &entry.connection, NodeType::Dir);
+            view.add_child(&p3, &entry.tool, NodeType::File);
+            view.files.insert(p4, entry.clone());
         }
         for entries in view.dirs.values_mut() {
             entries.sort_by(|a, b| a.name.cmp(&b.name));
@@ -281,8 +304,8 @@ impl CatalogView {
         self.dirs.contains_key(key)
     }
 
-    fn file(&self, key: &str) -> Option<&[u8]> {
-        self.files.get(key).map(Vec::as_slice)
+    fn file(&self, key: &str) -> Option<&IndexEntry> {
+        self.files.get(key)
     }
 
     fn children(&self, key: &str) -> Option<Vec<DirEntry>> {
@@ -321,11 +344,13 @@ impl FileSystem for ToolsFs {
         let key = join_key(&parts);
         self.with_view(|view| match parts.len() {
             0..=3 if view.is_dir(&key) => Err(FsError::IsDir),
-            4 => match view.file(&key) {
-                Some(data) => Ok(Box::new(ToolsFileHandle {
-                    data: data.to_vec(),
-                    pos: 0,
-                }) as Box<dyn FileHandle>),
+            4 => match view.file(&key).cloned() {
+                Some(entry) => match self.record_bytes_for_entry(&entry) {
+                    Some(data) => {
+                        Ok(Box::new(ToolsFileHandle { data, pos: 0 }) as Box<dyn FileHandle>)
+                    }
+                    None => Err(FsError::NotFound),
+                },
                 None => Err(FsError::NotFound),
             },
             _ => Err(FsError::NotFound),
@@ -337,8 +362,11 @@ impl FileSystem for ToolsFs {
         let key = join_key(&parts);
         self.with_view(|view| match parts.len() {
             0..=3 if view.is_dir(&key) => Ok(Metadata::dir()),
-            4 => match view.file(&key) {
-                Some(data) => Ok(Metadata::file(data.len() as u64)),
+            4 => match view.file(&key).cloned() {
+                Some(entry) => match self.record_bytes_for_entry(&entry) {
+                    Some(data) => Ok(Metadata::file(data.len() as u64)),
+                    None => Err(FsError::NotFound),
+                },
                 None => Err(FsError::NotFound),
             },
             _ => Err(FsError::NotFound),

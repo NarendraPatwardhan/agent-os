@@ -20,6 +20,32 @@ struct ConnectionEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedRequest {
+    method: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedConnectionRequest {
+    pub connection: String,
+    pub method: String,
+    pub url: String,
+    pub origin: String,
+    pub body: Vec<u8>,
+    pub policy_address: String,
+    parsed: ParsedRequest,
+    entry: ConnectionEntry,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PreparedHttpRequest {
+    Unmarked(Vec<u8>),
+    Connection(PreparedConnectionRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConnectionCredential {
     None,
     Bearer { token: String },
@@ -64,8 +90,13 @@ impl ConnectionRegistry {
         if self.entries.contains_key(&reference) {
             return Err(ConnectionError::DuplicateConnection);
         }
-        self.entries
-            .insert(reference, ConnectionEntry { credential, origins });
+        self.entries.insert(
+            reference,
+            ConnectionEntry {
+                credential,
+                origins,
+            },
+        );
         Ok(())
     }
 
@@ -90,54 +121,59 @@ impl ConnectionRegistry {
     }
 
     pub fn inject_http_request(&self, req: &[u8]) -> Result<Vec<u8>, ConnectionError> {
-        let Some((head, body)) = split_head_body(req) else {
-            return Err(ConnectionError::MalformedRequest);
-        };
-        let head = std::str::from_utf8(head).map_err(|_| ConnectionError::MalformedRequest)?;
-        let mut lines = head.split('\n');
-        let first = lines.next().ok_or(ConnectionError::MalformedRequest)?;
-        let (method, url) = first
-            .split_once(' ')
-            .ok_or(ConnectionError::MalformedRequest)?;
-        if method.is_empty() || url.is_empty() {
-            return Err(ConnectionError::MalformedRequest);
+        match self.prepare_http_request(req)? {
+            PreparedHttpRequest::Unmarked(req) => Ok(req),
+            PreparedHttpRequest::Connection(req) => req.inject(),
         }
+    }
 
+    pub fn prepare_http_request(&self, req: &[u8]) -> Result<PreparedHttpRequest, ConnectionError> {
+        let parsed = parse_blob(req)?;
         let mut marker = None::<String>;
-        let mut headers = Vec::<(String, String)>::new();
-        for line in lines {
-            if line.is_empty() {
-                continue;
-            }
-            let (name, value) = line
-                .split_once(':')
-                .ok_or(ConnectionError::MalformedRequest)?;
-            let name = name.trim().to_string();
-            let value = value.trim().to_string();
-            if name.eq_ignore_ascii_case(CONNECTION_HEADER) {
-                if marker.replace(value).is_some() {
-                    return Err(ConnectionError::DuplicateMarker);
-                }
-            } else {
-                headers.push((name, value));
+        for (name, value) in &parsed.headers {
+            if name.eq_ignore_ascii_case(CONNECTION_HEADER)
+                && marker.replace(value.clone()).is_some()
+            {
+                return Err(ConnectionError::DuplicateMarker);
             }
         }
-
         let Some(reference) = marker else {
-            return Ok(req.to_vec());
+            return Ok(PreparedHttpRequest::Unmarked(req.to_vec()));
         };
         validate_reference(&reference)?;
         let entry = self
             .entries
             .get(&reference)
             .ok_or(ConnectionError::UnknownConnection)?;
+        let origin = request_origin(&parsed.url)?;
         if !entry.origins.is_empty() || entry.credential.is_secret_bearing() {
-            let origin = request_origin(url)?;
             if !entry.origins.iter().any(|allowed| allowed == &origin) {
                 return Err(ConnectionError::OriginNotAllowed);
             }
         }
-        match &entry.credential {
+        Ok(PreparedHttpRequest::Connection(PreparedConnectionRequest {
+            connection: reference.clone(),
+            method: parsed.method.clone(),
+            url: parsed.url.clone(),
+            origin,
+            body: parsed.body.clone(),
+            policy_address: format!("{reference}.*"),
+            parsed,
+            entry: entry.clone(),
+        }))
+    }
+}
+
+impl PreparedConnectionRequest {
+    pub fn inject(&self) -> Result<Vec<u8>, ConnectionError> {
+        let mut headers = self
+            .parsed
+            .headers
+            .iter()
+            .filter(|(name, _)| !name.eq_ignore_ascii_case(CONNECTION_HEADER))
+            .cloned()
+            .collect::<Vec<_>>();
+        match &self.entry.credential {
             ConnectionCredential::None => {}
             ConnectionCredential::Bearer { token } => {
                 add_header(&mut headers, "Authorization", &format!("Bearer {token}"))?;
@@ -146,11 +182,21 @@ impl ConnectionRegistry {
                 add_header(&mut headers, name, value)?;
             }
             ConnectionCredential::Query { name, value } => {
-                let url = append_query(url, name, value);
-                return Ok(serialize_request(method, &url, &headers, body));
+                let url = append_query(&self.parsed.url, name, value);
+                return Ok(serialize_request(
+                    &self.parsed.method,
+                    &url,
+                    &headers,
+                    &self.parsed.body,
+                ));
             }
         }
-        Ok(serialize_request(method, url, &headers, body))
+        Ok(serialize_request(
+            &self.parsed.method,
+            &self.parsed.url,
+            &headers,
+            &self.parsed.body,
+        ))
     }
 }
 
@@ -199,6 +245,39 @@ where
 fn split_head_body(req: &[u8]) -> Option<(&[u8], &[u8])> {
     let sep = req.windows(2).position(|w| w == b"\n\n")?;
     Some((&req[..sep], req.get(sep + 2..).unwrap_or(&[])))
+}
+
+fn parse_blob(req: &[u8]) -> Result<ParsedRequest, ConnectionError> {
+    let Some((head, body)) = split_head_body(req) else {
+        return Err(ConnectionError::MalformedRequest);
+    };
+    let head = std::str::from_utf8(head).map_err(|_| ConnectionError::MalformedRequest)?;
+    let mut lines = head.split('\n');
+    let first = lines.next().ok_or(ConnectionError::MalformedRequest)?;
+    let (method, url) = first
+        .split_once(' ')
+        .ok_or(ConnectionError::MalformedRequest)?;
+    if method.is_empty() || url.is_empty() {
+        return Err(ConnectionError::MalformedRequest);
+    }
+
+    let mut headers = Vec::<(String, String)>::new();
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        let (name, value) = line
+            .split_once(':')
+            .ok_or(ConnectionError::MalformedRequest)?;
+        headers.push((name.trim().to_string(), value.trim().to_string()));
+    }
+
+    Ok(ParsedRequest {
+        method: method.to_string(),
+        url: url.to_string(),
+        headers,
+        body: body.to_vec(),
+    })
 }
 
 fn validate_reference(reference: &str) -> Result<(), ConnectionError> {
@@ -306,7 +385,9 @@ fn parse_origin(value: &str) -> Result<ParsedOrigin<'_>, ConnectionError> {
     if value.is_empty() || has_control(value) || value.bytes().any(|b| b.is_ascii_whitespace()) {
         return Err(ConnectionError::InvalidOrigin);
     }
-    let (scheme_raw, rest) = value.split_once("://").ok_or(ConnectionError::InvalidOrigin)?;
+    let (scheme_raw, rest) = value
+        .split_once("://")
+        .ok_or(ConnectionError::InvalidOrigin)?;
     let scheme = scheme_raw.to_ascii_lowercase();
     if !matches!(scheme.as_str(), "http" | "https") {
         return Err(ConnectionError::InvalidOrigin);

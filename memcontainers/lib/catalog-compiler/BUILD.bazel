@@ -1,0 +1,98 @@
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_shared_library", "rust_test")
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("//bazel:release_wasm.bzl", "release_wasm")
+
+package(default_visibility = ["//visibility:public"])
+
+_SRCS = glob(["src/**/*.rs"])
+
+_DEPS = [
+    "//memcontainers/lib/parse",
+    "//memcontainers/pkgcore",
+    "//memcontainers/toolcore",
+    "@parse_crates//:serde",
+    "@parse_crates//:serde_json",
+]
+
+# Host-side compiler logic. This library is std-capable; toolcore remains no_std.
+rust_library(
+    name = "lib",
+    srcs = _SRCS,
+    compile_data = glob(["data/*.json"]),
+    crate_name = "mc_catalog_compiler",
+    edition = "2021",
+    deps = _DEPS,
+)
+
+rust_shared_library(
+    name = "wasm_lib",
+    srcs = _SRCS,
+    crate_name = "mc_catalog_compiler",
+    edition = "2021",
+    rustc_flags = [
+        "-Cstrip=symbols",
+    ],
+    tags = ["manual"],
+    deps = _DEPS,
+)
+
+release_wasm(
+    name = "wasm_raw",
+    lib = ":wasm_lib",
+    platform = "//platforms:wasm32_freestanding",
+)
+
+genrule(
+    name = "wasm",
+    srcs = [":wasm_raw"],
+    outs = ["catalog-compiler.wasm"],
+    cmd = "cp $(location :wasm_raw) $@",
+)
+
+build_test(
+    name = "build_test",
+    targets = [":wasm"],
+)
+
+# `unit_test`, not `test`: the `node_test` entry is staged at bin/<pkg>/test/node.test.mjs, so a
+# target whose output is bin/<pkg>/test (a `:test` rust_test) would collide with that `test/` dir.
+rust_test(
+    name = "unit_test",
+    crate = ":lib",
+    edition = "2021",
+    size = "small",
+)
+
+rust_test(
+    name = "wasmtime_test",
+    srcs = ["test/wasmtime.rs"],
+    crate_root = "test/wasmtime.rs",
+    edition = "2021",
+    size = "small",
+    data = [
+        ":wasm",
+        "data/github_issues.openapi.json",
+        "data/github_issues.opts.json",
+    ],
+    deps = [
+        "@host_crates//:wasmtime",
+        "@rules_rust//rust/runfiles",
+    ],
+)
+
+js_test(
+    name = "node_test",
+    data = [
+        ":wasm",
+        "test/node.test.mjs",
+        "data/github_issues.openapi.json",
+        "data/github_issues.opts.json",
+    ],
+    entry_point = "test/node.test.mjs",
+    env = {
+        "MC_CATALOG_COMPILER_WASM": "$(rlocationpath :wasm)",
+        "MC_GITHUB_FIXTURE": "$(rlocationpath data/github_issues.openapi.json)",
+        "MC_GITHUB_OPTS": "$(rlocationpath data/github_issues.opts.json)",
+    },
+)

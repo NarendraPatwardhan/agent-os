@@ -1,0 +1,8 @@
+{
+  "format": "google-discovery",
+  "source_format": "json",
+  "integration": "gmail",
+  "filter": {
+    "path_prefixes": ["/gmail/v1/users/{userId}/messages"]
+  }
+}

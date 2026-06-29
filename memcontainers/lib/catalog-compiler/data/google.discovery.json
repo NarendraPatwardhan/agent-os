@@ -1,0 +1,54 @@
+{
+  "kind": "discovery#restDescription",
+  "name": "gmail",
+  "version": "v1",
+  "title": "Gmail API",
+  "baseUrl": "https://gmail.googleapis.com/",
+  "schemas": {
+    "ListMessagesResponse": {
+      "id": "ListMessagesResponse",
+      "type": "object",
+      "properties": {
+        "messages": {
+          "type": "array",
+          "items": { "type": "object", "properties": { "id": { "type": "string" } } }
+        }
+      }
+    }
+  },
+  "resources": {
+    "users": {
+      "resources": {
+        "messages": {
+          "methods": {
+            "list": {
+              "id": "gmail.users.messages.list",
+              "path": "gmail/v1/users/{userId}/messages",
+              "httpMethod": "GET",
+              "description": "Lists the messages in the user's mailbox.",
+              "parameters": {
+                "userId": { "type": "string", "required": true, "location": "path" },
+                "maxResults": { "type": "integer", "format": "uint32", "location": "query" }
+              },
+              "response": { "$ref": "ListMessagesResponse" }
+            }
+          }
+        },
+        "labels": {
+          "methods": {
+            "list": {
+              "id": "gmail.users.labels.list",
+              "path": "gmail/v1/users/{userId}/labels",
+              "httpMethod": "GET",
+              "description": "Lists labels.",
+              "parameters": {
+                "userId": { "type": "string", "required": true, "location": "path" }
+              },
+              "response": { "type": "object" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

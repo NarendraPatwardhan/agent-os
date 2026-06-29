@@ -40,6 +40,8 @@ rust_library(
         "@host_crates//:anyhow",
         "@host_crates//:sha2",
         "@host_crates//:rand",
+        "@host_crates//:serde",
+        "@host_crates//:serde_json",
         "@host_crates//:ureq",
         "@host_crates//:tungstenite",
         "//memcontainers/contracts:env_rust",  # the mc_bridge_table! macro → the host's env impls (B2)
@@ -94,6 +96,44 @@ rust_binary(
     crate_root = "test/snapshot_fixture.rs",
     edition = "2021",
     deps = [":host"],
+)
+
+rust_test(
+    name = "tool_plane_test",
+    srcs = ["test/tool_plane.rs"],
+    crate_root = "test/tool_plane.rs",
+    edition = "2021",
+    size = "medium",
+    data = [
+        "//memcontainers/kernel/rust:kernel",
+        "//memcontainers/images:loom",
+        "//memcontainers/lib/catalog-compiler:wasm",
+        "//memcontainers/lib/catalog-compiler:data/github_issues.openapi.json",
+    ],
+    deps = [
+        ":host",
+        "@rules_rust//rust/runfiles",
+    ],
+)
+
+# Cross-host policy parity (this Rust side + the JS //memcontainers/hosts/js:policy_parity_test) over
+# ONE shared vector file, so policy.rs and policy.ts cannot drift in resolution or pattern rejection.
+rust_test(
+    name = "policy_parity_test",
+    srcs = ["test/policy_parity.rs"],
+    crate_root = "test/policy_parity.rs",
+    edition = "2021",
+    # The canonical vectors live in the JS package (rules_js requires a js_test's data be same-package);
+    # this Rust side consumes the identical file cross-package, so the two engines test one source.
+    data = ["//memcontainers/hosts/js:test/policy_parity.json"],
+    env = {
+        "MC_POLICY_VECTORS": "$(rlocationpath //memcontainers/hosts/js:test/policy_parity.json)",
+    },
+    deps = [
+        ":host",
+        "@host_crates//:serde_json",
+        "@rules_rust//rust/runfiles",
+    ],
 )
 
 # Run the fixture over the SAME kernel + base the e2e boots (B1) to produce the cross-host snapshot the

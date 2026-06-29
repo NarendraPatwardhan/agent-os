@@ -1,8 +1,8 @@
 //! Remote MCP `tools/list` → tool-catalog normalization.
 //!
 //! Remote MCP tools are lifted as service-backed tool records. The address uses a sanitized stable id;
-//! the real MCP name and upstream hints remain in annotations. `destructiveHint` maps to
-//! `requires_approval`, leaving enforcement to `/svc/tools` instead of inventing a second policy path.
+//! the real MCP name and upstream hints remain in annotations. `destructiveHint` maps to descriptive
+//! `requires_approval` metadata; enforcement happens at the host egress boundary.
 
 use std::collections::BTreeMap;
 
@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
 use crate::normalize::{sanitize_segment_or, valid_segment};
+use crate::openapi::OperationFilter;
 use crate::Diagnostic;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,6 +20,7 @@ pub struct CompileOptions {
     pub connection: String,
     pub auth: String,
     pub endpoint: String,
+    pub filter: OperationFilter,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -93,8 +95,23 @@ pub fn compile(source: &str, opts: &CompileOptions) -> CompileOutput {
                 .unwrap_or_else(|| Value::Object(Map::new())),
         });
     }
+    tools.retain(|tool| {
+        let path = format!("/{}", tool.name);
+        let mut tags = vec![tool.name.as_str(), tool.address_id.as_str()];
+        if hint_bool(&tool.annotations, "destructiveHint") == Some(true) {
+            tags.push("destructive");
+        }
+        if hint_bool(&tool.annotations, "readOnlyHint") == Some(true) {
+            tags.push("readOnly");
+        }
+        opts.filter.matches_parts(&path, &tags)
+    });
     assign_collision_suffixes(&mut tools);
-    tools.sort_by(|a, b| a.address_id.cmp(&b.address_id).then_with(|| a.name.cmp(&b.name)));
+    tools.sort_by(|a, b| {
+        a.address_id
+            .cmp(&b.address_id)
+            .then_with(|| a.name.cmp(&b.name))
+    });
     let records = tools
         .iter()
         .map(|tool| catalog_record(opts, tool))
@@ -153,7 +170,10 @@ fn catalog_record(opts: &CompileOptions, tool: &McpTool) -> Value {
     }
 
     let mut annotations = Map::new();
-    annotations.insert("adapter".to_string(), Value::String("mcp-remote".to_string()));
+    annotations.insert(
+        "adapter".to_string(),
+        Value::String("mcp-remote".to_string()),
+    );
     annotations.insert("mcp".to_string(), Value::Object(mcp));
     if destructive {
         annotations.insert("requires_approval".to_string(), Value::Bool(true));
@@ -187,6 +207,9 @@ fn catalog_record(opts: &CompileOptions, tool: &McpTool) -> Value {
     );
     record.insert("input_schema".to_string(), tool.input_schema.clone());
     record.insert("annotations".to_string(), Value::Object(annotations));
+    let mut request = Map::new();
+    request.insert("endpoint".to_string(), Value::String(opts.endpoint.clone()));
+    request.insert("tool_name".to_string(), Value::String(tool.name.clone()));
     record.insert(
         "binding".to_string(),
         json!({
@@ -195,16 +218,7 @@ fn catalog_record(opts: &CompileOptions, tool: &McpTool) -> Value {
             "op": "invoke",
             "adapter": "mcp-remote",
             "args": "json",
-            "request": {
-                "endpoint": opts.endpoint,
-                "tool_name": tool.name,
-                "connection_ref": {
-                    "integration": opts.integration,
-                    "owner": opts.owner,
-                    "name": opts.connection,
-                    "auth": opts.auth,
-                }
-            }
+            "request": Value::Object(request)
         }),
     );
     Value::Object(record)
@@ -241,11 +255,12 @@ mod tests {
             connection: "main".to_string(),
             auth: "none".to_string(),
             endpoint: "https://mcp.example.test/mcp".to_string(),
+            filter: OperationFilter::default(),
         }
     }
 
     #[test]
-    fn emits_remote_mcp_tools_and_destructive_approval() {
+    fn emits_remote_mcp_tools_and_destructive_metadata() {
         let source = r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[
           {"name":"repo.search","description":"Search docs","inputSchema":{"type":"object","properties":{"q":{"type":"string"}}},
            "annotations":{"readOnlyHint":true}},

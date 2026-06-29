@@ -1,0 +1,5 @@
+{
+  "format": "mcp-remote",
+  "integration": "deepwiki",
+  "endpoint": "https://mcp.example.test/mcp"
+}

@@ -1,0 +1,367 @@
+import { defaultCatalogCompiler } from "@mc/host";
+import type { CatalogCompiler, RegistryEntry, RegistryGroup } from "@mc/host";
+import { mergeToolCatalogBundles } from "./tools.js";
+import type { ToolCatalogBundle } from "./tools.js";
+import type {
+  CatalogFormat,
+  CatalogSourceFormat,
+  ConnectionDefinition,
+  ConnectionSpecSource,
+  CreateOptions,
+  ToolDefinition,
+} from "./types.js";
+
+const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
+
+const sourceBySha = new Map<string, Uint8Array>();
+const sourceShaByUrl = new Map<string, string>();
+const bundleByKey = new Map<string, Map<string, Uint8Array>>();
+
+interface RefParts {
+  integration: string;
+  owner: string;
+  connection: string;
+}
+
+interface SourceBytes {
+  bytes: Uint8Array;
+  sha: string;
+  format: CatalogSourceFormat;
+  baseUrl?: string;
+  endpoint?: string;
+}
+
+interface CompileFilter {
+  exact_paths: string[];
+  path_prefixes: string[];
+  tag_prefixes: string[];
+}
+
+interface CompileOpts {
+  format: CatalogFormat;
+  source_format: CatalogSourceFormat;
+  integration: string;
+  group?: string;
+  filter: CompileFilter;
+  base_url?: string | null;
+  endpoint?: string | null;
+}
+
+export function hostToolDefinitions(tools: CreateOptions["tools"]): ToolDefinition[] {
+  return (tools ?? []).filter((tool): tool is ToolDefinition => typeof tool !== "string");
+}
+
+export function catalogToolSelectors(tools: CreateOptions["tools"]): string[] {
+  return (tools ?? []).filter((tool): tool is string => typeof tool === "string");
+}
+
+export async function connectionToolCatalogBundle(
+  opts: CreateOptions,
+  generation: number,
+): Promise<ToolCatalogBundle | null> {
+  const connections = opts.connections ?? [];
+  if (connections.length === 0) return null;
+  const compiler = await defaultCatalogCompiler(opts.catalogCompiler);
+  const selectors = catalogToolSelectors(opts.tools);
+  const bundles: ToolCatalogBundle[] = [];
+  for (const connection of connections) {
+    const ref = parseRef(connection.ref);
+    const registry = await resolveRegistry(compiler, ref.integration, connection);
+    const groups = selectedGroups(ref.integration, registry, selectors, connection.tools);
+    for (const group of groups) {
+      const source = await acquireSource(connection, registry);
+      const compileOpts = resolvedCompileOpts(ref.integration, registry, source, group);
+      const entries = await compileCached(compiler, source, compileOpts);
+      bundles.push(await bundleFromCompilerEntries(entries, ref, generation));
+    }
+  }
+  if (bundles.length === 0) return null;
+  return mergeToolCatalogBundles(bundles, generation);
+}
+
+async function resolveRegistry(
+  compiler: CatalogCompiler,
+  integration: string,
+  connection: ConnectionDefinition,
+): Promise<RegistryEntry> {
+  const candidates = [integration, `${integration}-rest`, `${integration}-openapi`];
+  for (const id of candidates) {
+    try {
+      return await compiler.registryResolve(id);
+    } catch {
+      /* try alias */
+    }
+  }
+  const spec = connection.spec;
+  if (spec?.format) {
+    return {
+      id: integration,
+      name: integration,
+      kind: spec.format,
+      ...("url" in spec ? { url: spec.url } : {}),
+    };
+  }
+  throw new Error(`connection '${connection.ref}' does not resolve to a catalog registry entry`);
+}
+
+function selectedGroups(
+  integration: string,
+  registry: RegistryEntry,
+  rootSelectors: string[],
+  connectionSelectors: readonly string[] | undefined,
+): (string | undefined)[] {
+  const explicit = [
+    ...selectorsForConnection(integration, registry.id, rootSelectors),
+    ...selectorsForConnection(integration, registry.id, connectionSelectors ?? []),
+  ];
+  if (explicit.length > 0) return dedupe(explicit);
+  const defaults = registry.defaultGroups ?? [];
+  return defaults.length === 0 ? [undefined] : dedupe(defaults);
+}
+
+function selectorsForConnection(
+  integration: string,
+  registryId: string,
+  selectors: readonly string[],
+): (string | undefined)[] {
+  const out: (string | undefined)[] = [];
+  for (const raw of selectors) {
+    const selector = raw.trim();
+    if (!selector) continue;
+    const slash = selector.indexOf("/");
+    if (slash < 0) {
+      if (selector === integration || selector === registryId) out.push(undefined);
+      continue;
+    }
+    const lhs = selector.slice(0, slash);
+    const rhs = selector.slice(slash + 1);
+    if ((lhs === integration || lhs === registryId) && rhs) out.push(rhs);
+  }
+  return out;
+}
+
+async function acquireSource(connection: ConnectionDefinition, registry: RegistryEntry): Promise<SourceBytes> {
+  const spec = connection.spec;
+  if (spec && "bytes" in spec) {
+    return cachedSource(spec.bytes, sourceFormat(spec, undefined), sourceBaseUrl(spec), sourceEndpoint(spec));
+  }
+  if (spec && "path" in spec) {
+    const { readFileSync } = await import("node:fs");
+    return cachedSource(
+      new Uint8Array(readFileSync(spec.path)),
+      sourceFormat(spec, spec.path),
+      sourceBaseUrl(spec),
+      sourceEndpoint(spec),
+    );
+  }
+  const url = spec && "url" in spec ? spec.url : registry.url;
+  if (!url) {
+    throw new Error(`connection '${connection.ref}' requires a provided spec; live discovery is deferred`);
+  }
+  const cachedSha = sourceShaByUrl.get(url);
+  const cached = cachedSha ? sourceBySha.get(cachedSha) : undefined;
+  if (cached && cachedSha) {
+    return {
+      bytes: cached,
+      sha: cachedSha,
+      format: sourceFormat(spec, url),
+      ...(sourceBaseUrl(spec) ? { baseUrl: sourceBaseUrl(spec) } : {}),
+      ...(sourceEndpoint(spec) ? { endpoint: sourceEndpoint(spec) } : {}),
+    };
+  }
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`catalog source fetch failed for ${url}: HTTP ${response.status}`);
+  const loaded = await cachedSource(
+    new Uint8Array(await response.arrayBuffer()),
+    sourceFormat(spec, url),
+    sourceBaseUrl(spec),
+    sourceEndpoint(spec),
+  );
+  sourceShaByUrl.set(url, loaded.sha);
+  return loaded;
+}
+
+async function cachedSource(
+  bytes: Uint8Array,
+  format: CatalogSourceFormat,
+  baseUrl?: string,
+  endpoint?: string,
+): Promise<SourceBytes> {
+  const copy = bytes.slice();
+  const sha = await sha256Hex(copy);
+  sourceBySha.set(sha, copy);
+  return {
+    bytes: copy,
+    sha,
+    format,
+    ...(baseUrl ? { baseUrl } : {}),
+    ...(endpoint ? { endpoint } : {}),
+  };
+}
+
+function resolvedCompileOpts(
+  integration: string,
+  registry: RegistryEntry,
+  source: SourceBytes,
+  group: string | undefined,
+): CompileOpts {
+  const registryGroup = group ? registry.groups?.[group] : undefined;
+  const filter = filterForGroup(group, registryGroup);
+  return dropUndefined({
+    format: registry.kind,
+    source_format: source.format,
+    integration,
+    group,
+    filter,
+    base_url: source.baseUrl ?? registry.endpoint ?? null,
+    endpoint: source.endpoint ?? registry.endpoint ?? null,
+  });
+}
+
+function filterForGroup(group: string | undefined, registryGroup: RegistryGroup | undefined): CompileFilter {
+  const f = registryGroup?.filter;
+  if (f) {
+    return {
+      exact_paths: [...(f.exact_paths ?? [])],
+      path_prefixes: [...(f.path_prefixes ?? [])],
+      tag_prefixes: [...(f.tag_prefixes ?? [])],
+    };
+  }
+  return {
+    exact_paths: [],
+    path_prefixes: [],
+    tag_prefixes: group ? [group] : [],
+  };
+}
+
+async function compileCached(
+  compiler: CatalogCompiler,
+  source: SourceBytes,
+  opts: CompileOpts,
+): Promise<Map<string, Uint8Array>> {
+  const canonicalOpts = canonicalJson(opts);
+  // The host-computed artifact digest (sha256 of the compiler wasm) is the compiler's identity — it
+  // changes whenever the binary does, fully subsuming any in-wasm version string.
+  const key = await sha256Text(
+    `${compiler.artifactDigest}\0${compiler.bundleSchemaVersion()}\0${source.sha}\0${canonicalOpts}`,
+  );
+  const cached = bundleByKey.get(key);
+  if (cached) return cloneEntries(cached);
+  const bundle = await compiler.compile(source.bytes, enc(canonicalOpts));
+  bundleByKey.set(key, cloneEntries(bundle.entries));
+  return cloneEntries(bundle.entries);
+}
+
+async function bundleFromCompilerEntries(
+  entries: Map<string, Uint8Array>,
+  ref: RefParts,
+  generation: number,
+): Promise<ToolCatalogBundle> {
+  const indexBytes = entries.get("index.json");
+  if (!indexBytes) throw new Error("catalog compiler bundle missing index.json");
+  const parsed: unknown = JSON.parse(dec(indexBytes));
+  if (!isObject(parsed) || !Array.isArray(parsed.tools)) {
+    throw new Error("catalog compiler bundle index has invalid shape");
+  }
+  const tools = parsed.tools.map((tool) => indexTool(tool, ref)).sort((a, b) => a.address.localeCompare(b.address));
+  const index = { generation, tools };
+  const rewrittenIndexBytes = enc(JSON.stringify(index));
+  const records = [...entries.entries()]
+    .filter(([path]) => path.startsWith("records/"))
+    .map(([path, bytes]) => ({ sha: path.slice("records/".length), bytes }));
+  return {
+    index,
+    indexBytes: rewrittenIndexBytes,
+    indexDigest: await sha256Hex(rewrittenIndexBytes),
+    records,
+  };
+}
+
+function indexTool(
+  value: unknown,
+  ref: RefParts,
+): { address: string; integration: string; description: string; sha: string } {
+  if (!isObject(value) || typeof value.address !== "string" || typeof value.sha !== "string") {
+    throw new Error("catalog compiler bundle index entry has invalid shape");
+  }
+  return {
+    address: rePrefixAddress(value.address, ref),
+    integration: ref.integration,
+    description: typeof value.description === "string" ? value.description : "",
+    sha: value.sha,
+  };
+}
+
+function rePrefixAddress(address: string, ref: RefParts): string {
+  const parts = address.split(".");
+  if (parts.length < 4) throw new Error(`catalog compiler emitted invalid tool address '${address}'`);
+  return [ref.integration, ref.owner, ref.connection, ...parts.slice(3)].join(".");
+}
+
+function parseRef(ref: string): RefParts {
+  const parts = ref.split(".");
+  if (parts.length !== 3 || !parts[0] || (parts[1] !== "org" && parts[1] !== "user") || !parts[2]) {
+    throw new Error(`invalid connection reference '${ref}'`);
+  }
+  return { integration: parts[0], owner: parts[1], connection: parts[2] };
+}
+
+function sourceFormat(source: ConnectionSpecSource | undefined, pathOrUrl: string | undefined): CatalogSourceFormat {
+  if (source?.sourceFormat) return source.sourceFormat;
+  return pathOrUrl?.match(/\.ya?ml($|[?#])/i) ? "yaml" : "json";
+}
+
+function sourceBaseUrl(source: ConnectionSpecSource | undefined): string | undefined {
+  return source?.baseUrl;
+}
+
+function sourceEndpoint(source: ConnectionSpecSource | undefined): string | undefined {
+  return source?.endpoint;
+}
+
+function dropUndefined<T extends Record<string, unknown>>(value: T): T {
+  for (const key of Object.keys(value)) {
+    if (value[key] === undefined) delete value[key];
+  }
+  return value;
+}
+
+function dedupe<T>(values: T[]): T[] {
+  const out: T[] = [];
+  for (const value of values) {
+    if (!out.includes(value)) out.push(value);
+  }
+  return out;
+}
+
+function cloneEntries(entries: Map<string, Uint8Array>): Map<string, Uint8Array> {
+  const out = new Map<string, Uint8Array>();
+  for (const [key, value] of entries) out.set(key, value.slice());
+  return out;
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(canonical(value));
+}
+
+function canonical(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (!isObject(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(value).sort()) out[key] = canonical(value[key]);
+  return out;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+async function sha256Text(text: string): Promise<string> {
+  return sha256Hex(enc(text));
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}

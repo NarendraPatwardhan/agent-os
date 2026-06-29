@@ -1,0 +1,5 @@
+{
+  "format": "graphql",
+  "integration": "gql",
+  "endpoint": "https://example.test/graphql"
+}

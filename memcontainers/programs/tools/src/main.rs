@@ -1,9 +1,9 @@
 //! `tools` — the tool-plane broker and CLI.
 //!
-//! In SERVICE mode this binary serves `/svc/tools`: it seeds from `/etc/tools/catalog.json`, owns the
-//! warm live catalog, answers `search`/`describe`/`list`, and dispatches `call` through the existing
-//! host-call transport (`name\0args`). Runtime catalog mutation is host-control only. As `/bin/tools` it
-//! is a CLI client of that service. As a `/bin/<alias>` symlink it dispatches through the catalog by alias,
+//! In SERVICE mode this binary serves `/svc/tools`: it seeds from `/etc/tools/catalog/index.json`,
+//! keeps a warm digest-keyed index, answers `search`/`list` from that index, and hydrates one sharded
+//! record for `describe`/`call`. Runtime catalog mutation is host-control only. As `/bin/tools` it is a
+//! CLI client of that service. As a `/bin/<alias>` symlink it dispatches through the catalog by alias,
 //! like mcbox-style applets.
 
 #![no_std]
@@ -20,21 +20,21 @@ use json::Json;
 use pkgcore::{hex, sha256, Sha256};
 use sysroot as rt;
 use toolcore::{
-    approval_description, err_json, ok_json, search_page_json, ArgsMode, Binding, Catalog,
-    PolicyAction, PolicyDecision, PolicySet, ToolConfig, ToolRecord,
+    err_json, ok_json, search_page_json, ArgsMode, Binding, CatalogIndex, IndexEntry, ToolRecord,
 };
 
 #[global_allocator]
 static ALLOCATOR: talc::wasm::WasmDynamicTalc = talc::wasm::new_wasm_dynamic_allocator();
 
 const SERVICE_NAME: &str = "tools";
-const CATALOG_PATH: &str = "/etc/tools/catalog.json";
-const CATALOG_DIGEST_PATH: &str = "/etc/tools/catalog.sha256";
-const PERMISSION_HANDLER: &str = "/svc/tools/permission";
+const CATALOG_ROOT: &str = "/etc/tools/catalog";
+const CATALOG_INDEX_PATH: &str = "/etc/tools/catalog/index.json";
+const CATALOG_DIGEST_PATH: &str = "/etc/tools/catalog/index.sha256";
+const CATALOG_RECORDS_DIR: &str = "/etc/tools/catalog/records";
 const RESULTS_DIR: &str = "/tmp/tools/results";
 const INLINE_LIMIT: usize = 1024 * 1024;
-const ARGS_PREVIEW_LIMIT: usize = 8192;
 const COPY_CHUNK: usize = 16 * 1024;
+const SHARD_CACHE_LIMIT: usize = 32;
 const CONTROL_CALLER: u32 = 0;
 const CAP_NET: u32 = rt::CAP_NET as u32;
 
@@ -93,16 +93,6 @@ fn write_stdout(data: &[u8]) {
     }
 }
 
-fn load_config() -> ToolConfig {
-    let Some(bytes) = read_file(CATALOG_PATH) else {
-        return ToolConfig::empty();
-    };
-    let Ok(text) = core::str::from_utf8(&bytes) else {
-        return ToolConfig::empty();
-    };
-    ToolConfig::parse(text).unwrap_or_else(|_| ToolConfig::empty())
-}
-
 fn field_str<'a>(doc: &'a Json, name: &str) -> Option<&'a str> {
     doc.get(name).and_then(|v| v.as_str())
 }
@@ -118,14 +108,41 @@ fn field_u64(doc: &Json, name: &str) -> Option<u64> {
     doc.get(name).and_then(|v| v.as_u64())
 }
 
-fn list_json(catalog: &Catalog) -> Json {
+fn digest_hex(bytes: &[u8]) -> String {
+    hex(&sha256(bytes))
+}
+
+fn ensure_catalog_dirs() {
+    let _ = rt::mkdir("/etc");
+    let _ = rt::mkdir("/etc/tools");
+    let _ = rt::mkdir(CATALOG_ROOT);
+    let _ = rt::mkdir(CATALOG_RECORDS_DIR);
+}
+
+fn load_index() -> (CatalogIndex, String) {
+    let Some(bytes) = read_file(CATALOG_INDEX_PATH) else {
+        return (CatalogIndex::empty(), String::new());
+    };
+    // The index bytes are the source of truth; the digest is computed from them (never from the
+    // sidecar, which is only a `/tools` accelerator and could be stale after an interrupted write).
+    let digest = digest_hex(&bytes);
+    let Ok(text) = core::str::from_utf8(&bytes) else {
+        return (CatalogIndex::empty(), digest);
+    };
+    (
+        CatalogIndex::parse(text).unwrap_or_else(|_| CatalogIndex::empty()),
+        digest,
+    )
+}
+
+fn list_json(index: &CatalogIndex) -> Json {
     let mut integrations: Vec<String> = Vec::new();
     let mut tools = Vec::new();
-    for rec in catalog.records() {
-        if !integrations.iter().any(|i| i == &rec.integration) {
-            integrations.push(rec.integration.clone());
+    for entry in index.entries() {
+        if !integrations.iter().any(|i| i == &entry.integration) {
+            integrations.push(entry.integration.clone());
         }
-        tools.push(Json::Str(rec.address.clone()));
+        tools.push(Json::Str(entry.address.clone()));
     }
     integrations.sort();
     Json::Obj(vec![
@@ -137,56 +154,34 @@ fn list_json(catalog: &Catalog) -> Json {
     ])
 }
 
-fn config_json(catalog: &Catalog, policies: &PolicySet) -> Json {
-    Json::Obj(vec![
-        (
-            "tools".to_string(),
-            Json::Arr(catalog.records().iter().map(ToolRecord::to_json).collect()),
-        ),
-        ("policies".to_string(), policies.to_json()),
-    ])
-}
-
-fn config_text(catalog: &Catalog, policies: &PolicySet) -> String {
-    json::to_string(&config_json(catalog, policies))
-}
-
-fn state_digest(catalog: &Catalog, policies: &PolicySet) -> String {
-    hex(&sha256(config_text(catalog, policies).as_bytes()))
-}
-
-fn checkpoint_catalog(text: &str) -> Result<(), i32> {
-    let _ = rt::mkdir("/etc");
-    let _ = rt::mkdir("/etc/tools");
-    let tmp = "/etc/tools/catalog.json.tmp";
+fn write_atomic(path: &str, tmp: &str, bytes: &[u8]) -> Result<(), i32> {
     let fd = rt::open(tmp, rt::O_WRITE | rt::O_CREATE | rt::O_TRUNC)?;
-    let write = rt::write_all(fd, text.as_bytes());
+    let write = rt::write_all(fd, bytes);
     rt::close(fd);
     write?;
-    rt::rename(tmp, CATALOG_PATH)?;
-    refresh_catalog_digest(text);
-    Ok(())
+    rt::rename(tmp, path)
 }
 
-fn refresh_catalog_digest(text: &str) {
-    let digest = hex(&sha256(text.as_bytes()));
-    let tmp = "/etc/tools/catalog.sha256.tmp";
-    let result = (|| -> Result<(), i32> {
-        let fd = rt::open(tmp, rt::O_WRITE | rt::O_CREATE | rt::O_TRUNC)?;
-        let mut body = digest.into_bytes();
-        body.push(b'\n');
-        let write = rt::write_all(fd, &body);
-        rt::close(fd);
-        write?;
-        rt::rename(tmp, CATALOG_DIGEST_PATH)
-    })();
-    if result.is_err() {
-        let _ = rt::unlink(tmp);
-        let _ = rt::unlink(CATALOG_DIGEST_PATH);
-    }
+fn checkpoint_index(index_text: &str, digest: &str) -> Result<(), i32> {
+    ensure_catalog_dirs();
+    // Write the digest sidecar first, then commit the index with the atomic rename — so the index.json
+    // rename is the single commit point and the live index never carries an OLDER sidecar. (The broker
+    // trusts the index bytes regardless; this keeps the `/tools` accelerator consistent.)
+    let mut digest_body = digest.as_bytes().to_vec();
+    digest_body.push(b'\n');
+    write_atomic(
+        CATALOG_DIGEST_PATH,
+        "/etc/tools/catalog/index.sha256.tmp",
+        &digest_body,
+    )?;
+    write_atomic(
+        CATALOG_INDEX_PATH,
+        "/etc/tools/catalog/index.json.tmp",
+        index_text.as_bytes(),
+    )
 }
 
-fn catalog_status(state: &ToolState, count: usize) -> Json {
+fn catalog_status(state: &ToolState) -> Json {
     Json::Obj(vec![
         (
             "catalogGeneration".to_string(),
@@ -196,17 +191,16 @@ fn catalog_status(state: &ToolState, count: usize) -> Json {
             "catalogDigest".to_string(),
             Json::Str(state.catalog_digest.clone()),
         ),
-        ("tools".to_string(), Json::Num(count as f64)),
         (
-            "policies".to_string(),
-            Json::Num(state.policies.rules().len() as f64),
+            "tools".to_string(),
+            Json::Num(state.index.entries().len() as f64),
         ),
     ])
 }
 
 struct ToolState {
-    catalog: Catalog,
-    policies: PolicySet,
+    index: CatalogIndex,
+    shard_cache: Vec<(String, ToolRecord)>,
     catalog_generation: u64,
     catalog_digest: String,
     next_result_id: u64,
@@ -215,15 +209,35 @@ struct ToolState {
 impl ToolState {
     fn new() -> Self {
         ensure_result_dirs();
-        let config = load_config();
-        let catalog_digest = state_digest(&config.catalog, &config.policies);
+        ensure_catalog_dirs();
+        let (index, catalog_digest) = load_index();
+        let catalog_generation = index.generation();
         Self {
-            catalog: config.catalog,
-            policies: config.policies,
-            catalog_generation: 0,
+            index,
+            shard_cache: Vec::new(),
+            catalog_generation,
             catalog_digest,
             next_result_id: scan_next_result_id(),
         }
+    }
+
+    fn reload_if_changed(&mut self) {
+        // Detect change by hashing the current index bytes (the source of truth) — not the digest
+        // sidecar, which could be stale after an interrupted write and would then mask a real change.
+        // The index is the small discovery list (not the shards), so this is cheap relative to the
+        // per-shard hydration it gates, and it costs nothing to load when unchanged.
+        let observed = match read_file(CATALOG_INDEX_PATH) {
+            Some(bytes) => digest_hex(&bytes),
+            None => String::new(),
+        };
+        if observed == self.catalog_digest {
+            return;
+        }
+        let (index, digest) = load_index();
+        self.catalog_generation = index.generation();
+        self.index = index;
+        self.shard_cache.clear();
+        self.catalog_digest = digest;
     }
 
     fn next_paths(&mut self) -> (String, String) {
@@ -236,6 +250,57 @@ impl ToolState {
             }
             return (format!("{RESULTS_DIR}/.{id}.tmp"), final_path);
         }
+    }
+
+    fn cached_record(&mut self, entry: &IndexEntry) -> Option<ToolRecord> {
+        let pos = self
+            .shard_cache
+            .iter()
+            .position(|(sha, _)| sha == &entry.sha)?;
+        let (_, record) = self.shard_cache.remove(pos);
+        self.shard_cache
+            .insert(0, (entry.sha.clone(), record.clone()));
+        Some(record)
+    }
+
+    fn insert_record_cache(&mut self, entry: &IndexEntry, record: ToolRecord) {
+        if let Some(pos) = self
+            .shard_cache
+            .iter()
+            .position(|(sha, _)| sha == &entry.sha)
+        {
+            self.shard_cache.remove(pos);
+        }
+        self.shard_cache.insert(0, (entry.sha.clone(), record));
+        if self.shard_cache.len() > SHARD_CACHE_LIMIT {
+            self.shard_cache.pop();
+        }
+    }
+
+    fn hydrate_entry(&mut self, entry: &IndexEntry) -> Result<ToolRecord, Json> {
+        if let Some(record) = self.cached_record(entry) {
+            return Ok(record);
+        }
+        let path = format!("{CATALOG_RECORDS_DIR}/{}", entry.sha);
+        let Some(bytes) = read_file(&path) else {
+            return Err(err_json("catalog_shard_missing", "tool shard is missing"));
+        };
+        if digest_hex(&bytes) != entry.sha {
+            return Err(err_json(
+                "catalog_shard_corrupt",
+                "tool shard digest mismatch",
+            ));
+        }
+        let Ok(text) = core::str::from_utf8(&bytes) else {
+            return Err(err_json(
+                "catalog_shard_invalid",
+                "tool shard was not UTF-8",
+            ));
+        };
+        let record = toolcore::hydrate_record(entry, text)
+            .map_err(|_| err_json("catalog_shard_invalid", "tool shard did not validate"))?;
+        self.insert_record_cache(entry, record.clone());
+        Ok(record)
     }
 }
 
@@ -509,10 +574,14 @@ fn service_call_request(rec: &ToolRecord, args: Option<&Json>) -> Result<(String
     };
     let empty_args = Json::Obj(Vec::new());
     let actual_args = args.unwrap_or(&empty_args);
+    let (integration, owner, connection, _) =
+        toolcore::parse_address(&rec.address).map_err(|_| ())?;
+    let connection_ref = format!("{integration}.{owner}.{connection}");
     let doc = Json::Obj(vec![
         ("op".to_string(), Json::Str(op.clone())),
         ("adapter".to_string(), Json::Str(adapter.clone())),
         ("tool".to_string(), Json::Str(rec.address.clone())),
+        ("connection_ref".to_string(), Json::Str(connection_ref)),
         ("binding".to_string(), request.clone()),
         ("args".to_string(), actual_args.clone()),
     ]);
@@ -573,132 +642,12 @@ fn call_service(
     }
 }
 
-fn args_digest_and_preview(rec: &ToolRecord, args: Option<&Json>) -> (String, String) {
-    let payload = args_for_binding(rec, args);
-    let digest = hex(&sha256(&payload));
-    let mut preview = if payload.len() <= ARGS_PREVIEW_LIMIT {
-        String::from_utf8_lossy(&payload).into_owned()
-    } else {
-        String::from_utf8_lossy(&payload[..ARGS_PREVIEW_LIMIT]).into_owned()
-    };
-    if payload.len() > ARGS_PREVIEW_LIMIT {
-        preview.push_str("...");
-    }
-    (digest, preview)
-}
-
-fn policy_json(decision: &PolicyDecision) -> Json {
-    let mut pairs = vec![
-        (
-            "action".to_string(),
-            Json::Str(decision.action.as_str().to_string()),
-        ),
-        (
-            "source".to_string(),
-            Json::Str(decision.source.as_str().to_string()),
-        ),
-    ];
-    if let Some(id) = &decision.policy_id {
-        pairs.push(("id".to_string(), Json::Str(id.clone())));
-    }
-    if let Some(pattern) = &decision.pattern {
-        pairs.push(("pattern".to_string(), Json::Str(pattern.clone())));
-    }
-    Json::Obj(pairs)
-}
-
-fn approval_request_json(rec: &ToolRecord, args: Option<&Json>, decision: &PolicyDecision) -> Json {
-    let (args_sha256, args_preview) = args_digest_and_preview(rec, args);
-    Json::Obj(vec![
-        ("kind".to_string(), Json::Str("tool_approval".to_string())),
-        ("address".to_string(), Json::Str(rec.address.clone())),
-        (
-            "integration".to_string(),
-            Json::Str(rec.integration.clone()),
-        ),
-        ("owner".to_string(), Json::Str(rec.owner.clone())),
-        ("connection".to_string(), Json::Str(rec.connection.clone())),
-        ("tool".to_string(), Json::Str(rec.tool.clone())),
-        (
-            "description".to_string(),
-            Json::Str(rec.description.clone()),
-        ),
-        (
-            "approvalDescription".to_string(),
-            Json::Str(approval_description(rec)),
-        ),
-        ("argsPreview".to_string(), Json::Str(args_preview)),
-        ("argsSha256".to_string(), Json::Str(args_sha256)),
-        ("policy".to_string(), policy_json(decision)),
-    ])
-}
-
-fn request_tool_approval(rec: &ToolRecord, args: Option<&Json>, decision: &PolicyDecision) -> Json {
-    let body = json::to_string(&approval_request_json(rec, args, decision));
-    let mut req = Vec::with_capacity(PERMISSION_HANDLER.len() + 1 + body.len());
-    req.extend_from_slice(PERMISSION_HANDLER.as_bytes());
-    req.push(0);
-    req.extend_from_slice(body.as_bytes());
-    let fd = match rt::host_call(&req) {
-        Ok(fd) => fd,
-        Err(_) => {
-            return err_json(
-                "approval_unavailable",
-                "tool approval requires a host permission broker",
-            )
-        }
-    };
-    let out = read_all_fd(fd);
-    let _ = rt::close(fd);
-    let Ok(out) = out else {
-        return err_json("approval_failed", "tool approval request failed");
-    };
-    let Ok(text) = core::str::from_utf8(&out) else {
-        return err_json("approval_failed", "tool approval response was not UTF-8");
-    };
-    let Ok(resp) = json::parse(text) else {
-        return err_json("approval_failed", "tool approval response was not JSON");
-    };
-    if resp.get("allow").and_then(Json::as_bool) == Some(true) {
-        ok_json(Json::Null)
-    } else {
-        err_json("declined", "tool call approval declined")
-    }
-}
-
-fn authorize_tool_call(state: &ToolState, rec: &ToolRecord, args: Option<&Json>) -> Option<Json> {
-    let empty_args = Json::Obj(Vec::new());
-    let actual_args = args.unwrap_or(&empty_args);
-    if toolcore::validate_args(rec.input_schema.as_ref(), actual_args).is_err() {
-        return Some(err_json(
-            "validation_error",
-            "arguments do not match input_schema",
-        ));
-    }
-    let decision = state.policies.resolve(rec);
-    match decision.action {
-        PolicyAction::Approve => None,
-        PolicyAction::Block => Some(err_json("blocked", "tool call blocked by policy")),
-        PolicyAction::RequireApproval => {
-            let response = request_tool_approval(rec, args, &decision);
-            if response.get("ok").and_then(Json::as_bool) == Some(true) {
-                None
-            } else {
-                Some(response)
-            }
-        }
-    }
-}
-
 fn call_tool(
     state: &mut ToolState,
     rec: &ToolRecord,
     args: Option<&Json>,
     output: Option<&str>,
 ) -> Json {
-    if let Some(err) = authorize_tool_call(state, rec, args) {
-        return err;
-    }
     match rec.binding {
         Binding::HostCall { .. } => call_host(state, rec, args, output),
         Binding::Service { .. } => call_service(state, rec, args, output),
@@ -712,80 +661,72 @@ fn apply_catalog(state: &mut ToolState, req: &Json, caller: u32) -> Json {
             "catalog mutation requires host control",
         );
     }
-    if let Some(base) = field_u64(req, "baseGeneration") {
-        if base != state.catalog_generation {
-            return err_json("generation_mismatch", "catalog generation changed");
+    let Some(generation) = field_u64(req, "generation") else {
+        return err_json("bad_request", "catalog.apply requires generation");
+    };
+    let Some(index_json) = req.get("index").cloned() else {
+        return err_json("bad_request", "catalog.apply requires index");
+    };
+    let Some(digest) = field_str(req, "digest") else {
+        return err_json("bad_request", "catalog.apply requires digest");
+    };
+    if digest.len() != 64 || !digest.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return err_json("bad_request", "catalog.apply digest must be sha256 hex");
+    }
+    let index_text = json::to_string(&index_json);
+    let computed = digest_hex(index_text.as_bytes());
+    if computed != digest.to_ascii_lowercase() {
+        return err_json(
+            "digest_mismatch",
+            "catalog.apply digest does not match index",
+        );
+    }
+    let next = match CatalogIndex::parse(&index_text) {
+        Ok(index) => index,
+        Err(_) => return err_json("invalid_catalog", "catalog index did not validate"),
+    };
+    if next.generation() != generation {
+        return err_json(
+            "generation_mismatch",
+            "index generation did not match request",
+        );
+    }
+    // Optimistic-concurrency guard: a single host controls the catalog, so a request whose generation
+    // is older than the live one is a stale or replayed apply — reject it rather than roll the catalog
+    // backwards. (Re-applying the current generation is idempotent and allowed.)
+    if generation < state.catalog_generation {
+        return err_json(
+            "generation_conflict",
+            "catalog.apply generation is older than the live catalog",
+        );
+    }
+    // Verify every referenced shard is present AND content-addressed correctly before committing, so a
+    // torn shard write can never go live (the broker also re-verifies lazily on hydration).
+    for entry in next.entries() {
+        match read_file(&format!("{CATALOG_RECORDS_DIR}/{}", entry.sha)) {
+            Some(bytes) if digest_hex(&bytes) == entry.sha => {}
+            Some(_) => {
+                return err_json(
+                    "catalog_shard_corrupt",
+                    "catalog.apply shard does not match its content address",
+                )
+            }
+            None => {
+                return err_json(
+                    "catalog_shard_missing",
+                    "catalog.apply references a missing shard",
+                )
+            }
         }
     }
-    let Some(tools) = req.get("tools").cloned() else {
-        return err_json("bad_request", "catalog.apply requires tools");
-    };
-    let policies = req
-        .get("policies")
-        .cloned()
-        .unwrap_or_else(|| state.policies.to_json());
-    let proposed = Json::Obj(vec![
-        ("tools".to_string(), tools),
-        ("policies".to_string(), policies),
-    ]);
-    let proposed_text = json::to_string(&proposed);
-    let next = match ToolConfig::parse(&proposed_text) {
-        Ok(config) => config,
-        Err(_) => return err_json("invalid_catalog", "tool state did not validate"),
-    };
-    let text = config_text(&next.catalog, &next.policies);
-    if checkpoint_catalog(&text).is_err() {
-        return err_json("checkpoint_failed", "could not persist tool catalog");
+    if checkpoint_index(&index_text, &computed).is_err() {
+        return err_json("checkpoint_failed", "could not persist tool catalog index");
     }
-    let count = next.catalog.records().len();
-    state.catalog = next.catalog;
-    state.policies = next.policies;
-    state.catalog_generation = state.catalog_generation.wrapping_add(1);
-    state.catalog_digest = hex(&sha256(text.as_bytes()));
-    ok_json(catalog_status(state, count))
-}
-
-fn apply_policy(state: &mut ToolState, req: &Json, caller: u32) -> Json {
-    if caller != CONTROL_CALLER {
-        return err_json("permission_denied", "policy mutation requires host control");
-    }
-    if let Some(base) = field_u64(req, "baseGeneration") {
-        if base != state.catalog_generation {
-            return err_json("generation_mismatch", "tool state generation changed");
-        }
-    }
-    let Some(policies) = req.get("policies").cloned() else {
-        return err_json("bad_request", "policy.apply requires policies");
-    };
-    let proposed = Json::Obj(vec![
-        (
-            "tools".to_string(),
-            Json::Arr(
-                state
-                    .catalog
-                    .records()
-                    .iter()
-                    .map(ToolRecord::to_json)
-                    .collect(),
-            ),
-        ),
-        ("policies".to_string(), policies),
-    ]);
-    let proposed_text = json::to_string(&proposed);
-    let next = match ToolConfig::parse(&proposed_text) {
-        Ok(config) => config,
-        Err(_) => return err_json("invalid_policy", "policy set did not validate"),
-    };
-    let text = config_text(&next.catalog, &next.policies);
-    if checkpoint_catalog(&text).is_err() {
-        return err_json("checkpoint_failed", "could not persist tool policy");
-    }
-    let count = next.catalog.records().len();
-    state.catalog = next.catalog;
-    state.policies = next.policies;
-    state.catalog_generation = state.catalog_generation.wrapping_add(1);
-    state.catalog_digest = hex(&sha256(text.as_bytes()));
-    ok_json(catalog_status(state, count))
+    state.index = next;
+    state.catalog_generation = generation;
+    state.catalog_digest = computed;
+    state.shard_cache.clear();
+    ok_json(catalog_status(state))
 }
 
 fn can_call_host_tools(caller: u32, caller_caps: u32) -> bool {
@@ -801,28 +742,30 @@ fn require_host_tool_authority(caller: u32, caller_caps: u32) -> Option<Json> {
 }
 
 fn handle(state: &mut ToolState, req: &Json, caller: u32, caller_caps: u32) -> Json {
+    state.reload_if_changed();
     let op = field_str(req, "op").unwrap_or("");
     match op {
         "catalog.apply" => apply_catalog(state, req, caller),
-        "policy.apply" => apply_policy(state, req, caller),
         "search" => {
             let query = field_str(req, "query").unwrap_or("");
             let limit = field_usize(req, "limit", 12, 100);
             let offset = field_usize(req, "offset", 0, usize::MAX);
-            let (items, total) = state.catalog.search(query, offset, limit);
+            let (items, total) = state.index.search(query, offset, limit);
             search_page_json(&items, total, offset, limit)
         }
         "describe" => {
             let Some(address) = field_str(req, "address") else {
                 return err_json("bad_request", "describe requires address");
             };
-            state
-                .catalog
-                .find(address)
-                .map(|rec| rec.to_json())
-                .unwrap_or_else(|| err_json("tool_not_found", "no tool with that address"))
+            let Some(entry) = state.index.find(address).cloned() else {
+                return err_json("tool_not_found", "no tool with that address");
+            };
+            match state.hydrate_entry(&entry) {
+                Ok(rec) => rec.to_json(),
+                Err(err) => err,
+            }
         }
-        "list" => list_json(&state.catalog),
+        "list" => list_json(&state.index),
         "gc" => gc_results(),
         "call" => {
             if let Some(err) = require_host_tool_authority(caller, caller_caps) {
@@ -831,11 +774,14 @@ fn handle(state: &mut ToolState, req: &Json, caller: u32, caller_caps: u32) -> J
             let Some(address) = field_str(req, "address") else {
                 return err_json("bad_request", "call requires address");
             };
-            let rec = state.catalog.find(address).cloned();
-            match rec.as_ref() {
-                Some(rec) => call_tool(state, rec, req.get("args"), field_str(req, "output")),
-                None => err_json("tool_not_found", "no tool with that address"),
-            }
+            let Some(entry) = state.index.find(address).cloned() else {
+                return err_json("tool_not_found", "no tool with that address");
+            };
+            let rec = match state.hydrate_entry(&entry) {
+                Ok(rec) => rec,
+                Err(err) => return err,
+            };
+            call_tool(state, &rec, req.get("args"), field_str(req, "output"))
         }
         "call_alias" => {
             if let Some(err) = require_host_tool_authority(caller, caller_caps) {
@@ -844,11 +790,14 @@ fn handle(state: &mut ToolState, req: &Json, caller: u32, caller_caps: u32) -> J
             let Some(alias) = field_str(req, "alias") else {
                 return err_json("bad_request", "call_alias requires alias");
             };
-            let rec = state.catalog.find_alias(alias).cloned();
-            match rec.as_ref() {
-                Some(rec) => call_tool(state, rec, req.get("args"), field_str(req, "output")),
-                None => err_json("tool_not_found", "no unique tool for that alias"),
-            }
+            let Some(entry) = state.index.find_alias(alias).cloned() else {
+                return err_json("tool_not_found", "no unique tool for that alias");
+            };
+            let rec = match state.hydrate_entry(&entry) {
+                Ok(rec) => rec,
+                Err(err) => return err,
+            };
+            call_tool(state, &rec, req.get("args"), field_str(req, "output"))
         }
         _ => err_json("bad_request", "unknown tools operation"),
     }

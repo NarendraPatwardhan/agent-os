@@ -4,8 +4,9 @@
 //! first implementation; GraphQL, Microsoft Graph, and Google discovery should extend the same protocol
 //! so serde/YAML/schema costs are paid once per VM. The binary intentionally has no supported CLI face.
 
-use mc_parse::openapi::{self, CompileOptions, SourceFormat};
-use mc_parse::{google, graphql, mcp, microsoft, registry};
+use mc_parse::bundle;
+use mc_parse::openapi::{self, CompileOptions, OperationFilter, SourceFormat};
+use mc_parse::{google, graphql, mcp, microsoft};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, VecDeque};
@@ -52,6 +53,8 @@ struct Request {
     binding: Option<Value>,
     #[serde(default)]
     args: Option<Value>,
+    #[serde(default)]
+    connection_ref: Option<String>,
     #[serde(default)]
     id: Option<String>,
 }
@@ -144,8 +147,6 @@ fn handle_call(blob: &[u8], caller: u32, caller_caps: u32) -> Response {
         Err(_) => return json_response(error("bad_json", "request must be a JSON object")),
     };
     match req.op.as_str() {
-        "registry.list" => registry_list(),
-        "registry.get" => registry_get(req),
         "compile" => compile(req, caller, caller_caps),
         "invoke" => {
             if !can_call_network(caller, caller_caps) {
@@ -157,28 +158,6 @@ fn handle_call(blob: &[u8], caller: u32, caller_caps: u32) -> Response {
             invoke(req)
         }
         _ => json_response(error("bad_request", "unknown adapters operation")),
-    }
-}
-
-fn registry_list() -> Response {
-    match serde_json::to_value(registry::entries()) {
-        Ok(items) => json_response(ok(json!({
-            "items": items,
-        }))),
-        Err(_) => json_response(error("internal_error", "could not encode registry")),
-    }
-}
-
-fn registry_get(req: Request) -> Response {
-    let Some(id) = req.id.as_deref() else {
-        return json_response(error("bad_request", "registry.get requires id"));
-    };
-    match registry::find(id) {
-        Some(entry) => match serde_json::to_value(entry) {
-            Ok(value) => json_response(ok(value)),
-            Err(_) => json_response(error("internal_error", "could not encode registry entry")),
-        },
-        None => json_response(error("not_found", "no registry entry with that id")),
     }
 }
 
@@ -213,10 +192,12 @@ fn compile_openapi(req: Request, caller: u32, caller_caps: u32) -> Response {
         connection: req.connection.unwrap_or_else(|| "main".to_string()),
         auth: req.auth.unwrap_or_else(|| "none".to_string()),
         base_url: req.base_url,
+        filter: OperationFilter::default(),
     };
     let out = openapi::compile(&source, source_format, &opts);
     compile_response(
         output_path.as_deref(),
+        &opts.integration,
         out.tools,
         out.diagnostics,
         caller,
@@ -241,15 +222,20 @@ fn compile_microsoft_graph(req: Request, caller: u32, caller_caps: u32) -> Respo
         connection: req.connection.unwrap_or_else(|| "main".to_string()),
         auth: req.auth.unwrap_or_else(|| "bearer".to_string()),
         base_url: req.base_url,
+        filter: OperationFilter::default(),
     };
     let out = microsoft::compile(
         &source,
         source_format,
         &opts,
-        &microsoft::CompileOptions { preset_ids },
+        &microsoft::CompileOptions {
+            preset_ids,
+            filter: OperationFilter::default(),
+        },
     );
     compile_response(
         output_path.as_deref(),
+        &opts.integration,
         out.tools,
         out.diagnostics,
         caller,
@@ -277,6 +263,7 @@ fn compile_google_discovery(req: Request, caller: u32, caller_caps: u32) -> Resp
         connection: req.connection.unwrap_or_else(|| "main".to_string()),
         auth: req.auth.unwrap_or_else(|| "bearer".to_string()),
         base_url: req.base_url,
+        filter: OperationFilter::default(),
     };
     let out = google::compile(
         &source,
@@ -286,6 +273,7 @@ fn compile_google_discovery(req: Request, caller: u32, caller_caps: u32) -> Resp
     );
     compile_response(
         output_path.as_deref(),
+        &opts.integration,
         out.tools,
         out.diagnostics,
         caller,
@@ -310,6 +298,7 @@ fn compile_graphql(req: Request, caller: u32, caller_caps: u32) -> Response {
         connection: req.connection.clone().unwrap_or_else(|| "main".to_string()),
         auth: req.auth.clone().unwrap_or_else(|| "none".to_string()),
         endpoint: endpoint.clone(),
+        filter: OperationFilter::default(),
     };
     let source = match read_source(&req) {
         Ok(source) => source,
@@ -320,7 +309,7 @@ fn compile_graphql(req: Request, caller: u32, caller_caps: u32) -> Response {
                     "GraphQL introspection requires CAP_NET",
                 ));
             }
-            match graphql_introspect(&endpoint, &connection_ref_value(&opts)) {
+            match graphql_introspect(&endpoint, connection_marker_from_options(&opts).as_deref()) {
                 Ok(source) => source,
                 Err(message) => return json_response(error("discovery_failed", message)),
             }
@@ -329,6 +318,7 @@ fn compile_graphql(req: Request, caller: u32, caller_caps: u32) -> Response {
     let out = graphql::compile(&source, &opts);
     compile_response(
         output_path.as_deref(),
+        &opts.integration,
         out.tools,
         out.diagnostics,
         caller,
@@ -353,6 +343,7 @@ fn compile_mcp_remote(req: Request, caller: u32, caller_caps: u32) -> Response {
         connection: req.connection.clone().unwrap_or_else(|| "main".to_string()),
         auth: req.auth.clone().unwrap_or_else(|| "none".to_string()),
         endpoint: endpoint.clone(),
+        filter: OperationFilter::default(),
     };
     let source = match read_source(&req) {
         Ok(source) => source,
@@ -363,7 +354,7 @@ fn compile_mcp_remote(req: Request, caller: u32, caller_caps: u32) -> Response {
                     "remote MCP discovery requires CAP_NET",
                 ));
             }
-            match mcp_list_tools(&endpoint, &connection_ref_value(&opts)) {
+            match mcp_list_tools(&endpoint, connection_marker_from_options(&opts).as_deref()) {
                 Ok(source) => source,
                 Err(message) => return json_response(error("discovery_failed", message)),
             }
@@ -372,6 +363,7 @@ fn compile_mcp_remote(req: Request, caller: u32, caller_caps: u32) -> Response {
     let out = mcp::compile(&source, &opts);
     compile_response(
         output_path.as_deref(),
+        &opts.integration,
         out.tools,
         out.diagnostics,
         caller,
@@ -381,17 +373,23 @@ fn compile_mcp_remote(req: Request, caller: u32, caller_caps: u32) -> Response {
 
 fn compile_response(
     output_path: Option<&str>,
+    integration: &str,
     tools: Vec<Value>,
     diagnostics: Vec<mc_parse::Diagnostic>,
     caller: u32,
     caller_caps: u32,
 ) -> Response {
     let tool_count = tools.len();
+    let entries = match bundle::bundle_entries(integration, 0, tools, diagnostics.clone()) {
+        Ok(entries) => entries,
+        Err(err) => return json_response(error(err.code(), err.message())),
+    };
     let Some(path) = output_path else {
-        return json_response(ok(json!({
-            "tools": tools,
-            "diagnostics": diagnostics,
-        })));
+        let summary = match bundle_summary(&entries, diagnostics, tool_count) {
+            Ok(summary) => summary,
+            Err(message) => return json_response(error("internal_error", message)),
+        };
+        return json_response(ok(summary));
     };
     if !can_write_compile_output(caller, caller_caps) {
         return json_response(error(
@@ -405,18 +403,78 @@ fn compile_response(
             "output_path must be an absolute guest path",
         ));
     }
-    let text = match serde_json::to_string(&json!({ "tools": tools })) {
-        Ok(text) => text,
-        Err(_) => return json_response(error("internal_error", "could not encode catalog")),
-    };
-    if let Err(e) = std::fs::write(path, text.as_bytes()) {
-        return json_response(error("write_failed", e.to_string()));
+    if let Err(e) = write_catalog_tree(path, &entries) {
+        return json_response(error("write_failed", e));
     }
+    let digest = catalog_digest(&entries).unwrap_or_default();
     json_response(ok(json!({
         "tool_count": tool_count,
-        "tools_path": path,
+        "catalog_path": path,
+        "index_digest": digest,
         "diagnostics": diagnostics,
     })))
+}
+
+fn bundle_summary(
+    entries: &BTreeMap<String, Vec<u8>>,
+    diagnostics: Vec<mc_parse::Diagnostic>,
+    tool_count: usize,
+) -> Result<Value, String> {
+    let index: Value = serde_json::from_slice(
+        entries
+            .get("index.json")
+            .ok_or_else(|| "bundle missing index.json".to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let mut records = Map::new();
+    for (path, bytes) in entries {
+        let Some(sha) = path.strip_prefix("records/") else {
+            continue;
+        };
+        let shard: Value = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+        records.insert(sha.to_string(), shard);
+    }
+    Ok(json!({
+        "tool_count": tool_count,
+        "index": index,
+        "index_digest": catalog_digest(entries).unwrap_or_default(),
+        "records": records,
+        "diagnostics": diagnostics,
+    }))
+}
+
+fn catalog_digest(entries: &BTreeMap<String, Vec<u8>>) -> Option<String> {
+    let bytes = entries.get("index.sha256")?;
+    Some(String::from_utf8_lossy(bytes).trim().to_string())
+}
+
+fn write_catalog_tree(root: &str, entries: &BTreeMap<String, Vec<u8>>) -> Result<(), String> {
+    std::fs::create_dir_all(format!("{root}/records")).map_err(|e| e.to_string())?;
+    for (path, bytes) in entries {
+        match path.as_str() {
+            "index.json" | "index.sha256" => continue,
+            "diagnostics.json" => {
+                atomic_write(&format!("{root}/{path}"), bytes)?;
+            }
+            _ if path.starts_with("records/") && !path.contains("..") => {
+                std::fs::write(format!("{root}/{path}"), bytes).map_err(|e| e.to_string())?;
+            }
+            _ => return Err(format!("invalid bundle path {path}")),
+        }
+    }
+    if let Some(index) = entries.get("index.json") {
+        atomic_write(&format!("{root}/index.json"), index)?;
+    }
+    if let Some(digest) = entries.get("index.sha256") {
+        atomic_write(&format!("{root}/index.sha256"), digest)?;
+    }
+    Ok(())
+}
+
+fn atomic_write(path: &str, bytes: &[u8]) -> Result<(), String> {
+    let tmp = format!("{path}.tmp");
+    std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
 fn valid_output_path(path: &str) -> bool {
@@ -431,13 +489,6 @@ fn adapter_endpoint(req: &Request, label: &'static str) -> Result<String, String
     req.endpoint
         .clone()
         .or_else(|| req.base_url.clone())
-        .or_else(|| {
-            req.id
-                .as_deref()
-                .and_then(registry::find)
-                .and_then(|entry| entry.endpoint.or(entry.url))
-                .map(str::to_string)
-        })
         .filter(|endpoint| !endpoint.trim().is_empty())
         .ok_or_else(|| format!("{label} compile requires endpoint"))
 }
@@ -479,13 +530,17 @@ impl ConnectionOptions for mcp::CompileOptions {
     }
 }
 
-fn connection_ref_value(opts: &impl ConnectionOptions) -> Value {
-    json!({
-        "integration": opts.integration(),
-        "owner": opts.owner(),
-        "name": opts.connection(),
-        "auth": opts.auth(),
-    })
+fn connection_marker_from_options(opts: &impl ConnectionOptions) -> Option<String> {
+    if opts.auth() == "none" {
+        None
+    } else {
+        Some(format!(
+            "{}.{}.{}",
+            opts.integration(),
+            opts.owner(),
+            opts.connection()
+        ))
+    }
 }
 
 fn source_format(req: &Request) -> Result<SourceFormat, &'static str> {
@@ -512,7 +567,7 @@ fn read_source(req: &Request) -> Result<String, String> {
     Err("compile requires source or source_path".to_string())
 }
 
-fn graphql_introspect(endpoint: &str, connection_ref: &Value) -> Result<String, String> {
+fn graphql_introspect(endpoint: &str, connection_ref: Option<&str>) -> Result<String, String> {
     http_json_post(
         endpoint,
         &json!({ "query": graphql::INTROSPECTION_QUERY }),
@@ -520,7 +575,7 @@ fn graphql_introspect(endpoint: &str, connection_ref: &Value) -> Result<String, 
     )
 }
 
-fn mcp_list_tools(endpoint: &str, connection_ref: &Value) -> Result<String, String> {
+fn mcp_list_tools(endpoint: &str, connection_ref: Option<&str>) -> Result<String, String> {
     let initialize = json!({
         "jsonrpc": "2.0",
         "id": 1,
@@ -560,8 +615,9 @@ fn invoke_openapi(req: Request) -> Response {
     let Some(binding) = req.binding else {
         return json_response(error("bad_request", "invoke requires binding"));
     };
+    let connection_ref = req.connection_ref.clone();
     let args = req.args.unwrap_or_else(|| json!({}));
-    let request = match openapi_http_request(&binding, &args) {
+    let request = match openapi_http_request(&binding, &args, connection_ref.as_deref()) {
         Ok(request) => request,
         Err(message) => return json_response(error("bad_request", message)),
     };
@@ -598,11 +654,11 @@ fn invoke_graphql(req: Request) -> Response {
         "variables".to_string(),
         req.args.unwrap_or_else(|| json!({})),
     );
-    let connection = binding
-        .get("connection_ref")
-        .cloned()
-        .unwrap_or_else(|| json!({"auth":"none"}));
-    match http_json_post(endpoint, &Value::Object(body), &connection) {
+    match http_json_post(
+        endpoint,
+        &Value::Object(body),
+        req.connection_ref.as_deref(),
+    ) {
         Ok(text) => Response::Bytes(text.into_bytes()),
         Err(message) => json_response(error("host_call_failed", message)),
     }
@@ -629,11 +685,7 @@ fn invoke_mcp_remote(req: Request) -> Response {
             "arguments": req.args.unwrap_or_else(|| json!({})),
         }
     });
-    let connection = binding
-        .get("connection_ref")
-        .cloned()
-        .unwrap_or_else(|| json!({"auth":"none"}));
-    match http_json_post(endpoint, &body, &connection) {
+    match http_json_post(endpoint, &body, req.connection_ref.as_deref()) {
         Ok(text) => match serde_json::from_str::<Value>(&text) {
             Ok(resp) => {
                 if let Some(error_value) = resp.get("error") {
@@ -650,15 +702,22 @@ fn invoke_mcp_remote(req: Request) -> Response {
     }
 }
 
-fn http_json_post(endpoint: &str, body: &Value, connection_ref: &Value) -> Result<String, String> {
+fn http_json_post(
+    endpoint: &str,
+    body: &Value,
+    connection_ref: Option<&str>,
+) -> Result<String, String> {
     let body_text = serde_json::to_string(body).map_err(|e| e.to_string())?;
     let mut headers = Map::new();
     headers.insert(
         "Content-Type".to_string(),
         Value::String("application/json".to_string()),
     );
-    if let Some(connection) = connection_marker(&json!({ "connection_ref": connection_ref }))? {
-        headers.insert(CONNECTION_HEADER.to_string(), Value::String(connection));
+    if let Some(connection) = connection_ref {
+        headers.insert(
+            CONNECTION_HEADER.to_string(),
+            Value::String(connection.to_string()),
+        );
     }
     let request = serialize_http_request("POST", endpoint, &headers, Some(&body_text));
     let fd = match rt::http_request(&request) {
@@ -688,7 +747,11 @@ fn read_all_fd(fd: i32) -> Result<Vec<u8>, i32> {
     }
 }
 
-fn openapi_http_request(binding: &Value, args: &Value) -> Result<Vec<u8>, String> {
+fn openapi_http_request(
+    binding: &Value,
+    args: &Value,
+    connection_ref: Option<&str>,
+) -> Result<Vec<u8>, String> {
     let method = str_field(binding, "method")?.to_string();
     let template = str_field(binding, "url_template")?;
     let params = binding
@@ -751,8 +814,11 @@ fn openapi_http_request(binding: &Value, args: &Value) -> Result<Vec<u8>, String
         None => None,
     };
 
-    if let Some(connection) = connection_marker(binding)? {
-        headers.insert(CONNECTION_HEADER.to_string(), Value::String(connection));
+    if let Some(connection) = connection_ref {
+        headers.insert(
+            CONNECTION_HEADER.to_string(),
+            Value::String(connection.to_string()),
+        );
     }
     Ok(serialize_http_request(
         &method,
@@ -787,33 +853,6 @@ fn scalar_string(value: &Value) -> String {
         Value::Number(n) => n.to_string(),
         other => serde_json::to_string(other).unwrap_or_default(),
     }
-}
-
-fn connection_marker(binding: &Value) -> Result<Option<String>, String> {
-    let Some(connection) = binding.get("connection_ref") else {
-        return Ok(None);
-    };
-    if connection
-        .get("auth")
-        .and_then(Value::as_str)
-        .unwrap_or("none")
-        == "none"
-    {
-        return Ok(None);
-    }
-    let integration = connection
-        .get("integration")
-        .and_then(Value::as_str)
-        .ok_or("connection_ref missing integration")?;
-    let owner = connection
-        .get("owner")
-        .and_then(Value::as_str)
-        .ok_or("connection_ref missing owner")?;
-    let name = connection
-        .get("name")
-        .and_then(Value::as_str)
-        .ok_or("connection_ref missing name")?;
-    Ok(Some(format!("{integration}.{owner}.{name}")))
 }
 
 fn serialize_http_request(

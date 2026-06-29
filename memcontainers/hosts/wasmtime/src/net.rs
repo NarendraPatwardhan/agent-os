@@ -13,14 +13,16 @@
 //! request and buffers the full response; `http_poll` returns `0` until the
 //! buffer is complete, then the response head; `http_body` streams the body.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Read;
 use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::connections::ConnectionRegistry;
+use crate::connections::{ConnectionRegistry, PreparedConnectionRequest, PreparedHttpRequest};
+use crate::policy::{ToolPolicyAction, ToolPolicyRule, ToolPolicySet};
+use crate::sha256_hex;
 
 /// WebSocket send sentinels from the generated contract constants (B2): `-EAGAIN`
 /// is retryable backpressure; `-EMSGSIZE` is a permanent oversized-frame error.
@@ -86,6 +88,94 @@ struct HttpSlot {
     body_pos: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolApprovalFacts {
+    pub connection: String,
+    pub method: String,
+    pub url: String,
+    pub origin: String,
+    pub args_digest: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolApprovalDecision {
+    pub allow: bool,
+    pub remember_session: bool,
+}
+
+pub trait ToolApprover: Send + Sync + 'static {
+    /// Decide a destructive-action approval. This MAY block: it is called from the request's own
+    /// worker thread (never the kernel pump), so a host that relays the prompt to an external owner
+    /// (e.g. the BEAM) can park here until the answer arrives while the guest sees `http_poll -> 0`.
+    fn approve(&self, facts: ToolApprovalFacts) -> ToolApprovalDecision;
+}
+
+/// The host-side egress authorization gate: connection policy + destructive-action approval, in one
+/// place shared by every real net (so the logic is not copy-pasted across `RealNet`/`TokioNet`).
+/// Cloneable so a request's worker thread can run a possibly-blocking prompt off the kernel pump.
+#[derive(Clone, Default)]
+pub struct ConnectionGate {
+    policies: ToolPolicySet,
+    approver: Option<Arc<dyn ToolApprover>>,
+    session_allow: Arc<Mutex<HashSet<String>>>,
+}
+
+enum GateDecision {
+    Allow,
+    Reject,
+    /// An interactive approval is required; resolve it off the kernel pump via `run_prompt`.
+    Prompt {
+        facts: ToolApprovalFacts,
+        remember_key: String,
+    },
+}
+
+impl ConnectionGate {
+    fn set_policies(&mut self, rules: Vec<ToolPolicyRule>) -> anyhow::Result<()> {
+        self.policies = ToolPolicySet::new(rules)
+            .map_err(|err| anyhow::anyhow!("invalid tool policy rule: {err:?}"))?;
+        Ok(())
+    }
+
+    /// Non-blocking: the policy + remembered-session decision. Returns `Prompt` only when an
+    /// interactive approval is genuinely needed, so the caller can defer it to a worker thread.
+    fn decide(&self, req: &PreparedConnectionRequest) -> GateDecision {
+        match self.policies.resolve(&req.policy_address) {
+            Some(ToolPolicyAction::Block) => return GateDecision::Reject,
+            Some(ToolPolicyAction::Approve) => return GateDecision::Allow,
+            Some(ToolPolicyAction::RequireApproval) => {}
+            None if !is_destructive_method(&req.method) => return GateDecision::Allow,
+            None => {}
+        }
+        let remember_key = tool_remember_key(req);
+        if self.session_allow.lock().unwrap().contains(&remember_key) {
+            return GateDecision::Allow;
+        }
+        if self.approver.is_none() {
+            return GateDecision::Reject;
+        }
+        GateDecision::Prompt {
+            facts: tool_approval_facts(req),
+            remember_key,
+        }
+    }
+
+    /// Blocking: run the interactive prompt from a worker thread. Returns whether to proceed.
+    fn run_prompt(&self, facts: ToolApprovalFacts, remember_key: String) -> bool {
+        let Some(approver) = self.approver.as_ref() else {
+            return false;
+        };
+        let decision = approver.approve(facts);
+        if !decision.allow {
+            return false;
+        }
+        if decision.remember_session {
+            self.session_allow.lock().unwrap().insert(remember_key);
+        }
+        true
+    }
+}
+
 /// Real network egress. Each in-flight request is a background thread
 /// buffering into a shared slot; the bridge calls read the slot.
 pub struct RealNet {
@@ -93,6 +183,7 @@ pub struct RealNet {
     http: HashMap<i32, Arc<Mutex<HttpSlot>>>,
     ws: HashMap<i32, Arc<Mutex<WsSlot>>>,
     connections: ConnectionRegistry,
+    gate: ConnectionGate,
 }
 
 impl RealNet {
@@ -102,11 +193,22 @@ impl RealNet {
             http: HashMap::new(),
             ws: HashMap::new(),
             connections: ConnectionRegistry::new(),
+            gate: ConnectionGate::default(),
         }
     }
 
     pub fn with_connections(mut self, connections: ConnectionRegistry) -> Self {
         self.connections = connections;
+        self
+    }
+
+    pub fn with_tool_policies(mut self, rules: Vec<ToolPolicyRule>) -> anyhow::Result<Self> {
+        self.gate.set_policies(rules)?;
+        Ok(self)
+    }
+
+    pub fn with_tool_approver(mut self, approver: Arc<dyn ToolApprover>) -> Self {
+        self.gate.approver = Some(approver);
         self
     }
 }
@@ -119,63 +221,45 @@ impl Default for RealNet {
 
 impl NetCapability for RealNet {
     fn http_request(&mut self, req: &[u8]) -> i32 {
-        let req = match self.connections.inject_http_request(req) {
-            Ok(req) => req,
+        let prepared = match self.connections.prepare_http_request(req) {
+            Ok(prepared) => prepared,
             Err(_) => return -1,
         };
-        let Some((method, url, headers, body)) = parse_blob(&req) else {
-            return -1;
-        };
         let slot = Arc::new(Mutex::new(HttpSlot::default()));
-        let worker = Arc::clone(&slot);
-        thread::spawn(move || {
-            let mut r = ureq::request(&method, &url);
-            for (k, v) in &headers {
-                // ureq derives Content-Length from the body itself.
-                if !k.eq_ignore_ascii_case("content-length") {
-                    r = r.set(k, v);
-                }
-            }
-            let result = if body.is_empty() {
-                r.call()
-            } else {
-                r.send_bytes(&body)
-            };
-            // 4xx/5xx are still real responses worth delivering (the agent
-            // wants the body and the status); only transport errors fail.
-            let resp = match result {
-                Ok(resp) => Some(resp),
-                Err(ureq::Error::Status(_code, resp)) => Some(resp),
-                Err(ureq::Error::Transport(_)) => None,
-            };
-            let mut s = worker.lock().unwrap();
-            match resp {
-                Some(resp) => {
-                    let status = resp.status();
-                    let reason = resp.status_text().to_string();
-                    let mut head = format!("{status} {reason}\r\n").into_bytes();
-                    for name in resp.headers_names() {
-                        if let Some(v) = resp.header(&name) {
-                            head.extend_from_slice(format!("{name}: {v}\r\n").as_bytes());
-                        }
-                    }
-                    head.extend_from_slice(b"\r\n");
-                    let mut body_buf = Vec::new();
-                    let read_ok = resp.into_reader().read_to_end(&mut body_buf).is_ok();
-                    s.head = head;
-                    s.body = body_buf;
-                    s.failed = !read_ok;
-                    s.done = true;
-                }
-                None => {
-                    s.failed = true;
-                    s.done = true;
-                }
-            }
-        });
         let h = self.next_handle;
         self.next_handle += 1;
-        self.http.insert(h, slot);
+        self.http.insert(h, Arc::clone(&slot));
+
+        let req = match prepared {
+            PreparedHttpRequest::Unmarked(req) => req,
+            PreparedHttpRequest::Connection(req) => match self.gate.decide(&req) {
+                GateDecision::Reject => {
+                    complete_rejected_connection(&slot);
+                    return h;
+                }
+                GateDecision::Allow => match req.inject() {
+                    Ok(injected) => injected,
+                    Err(_) => {
+                        complete_failed(&slot);
+                        return h;
+                    }
+                },
+                GateDecision::Prompt { facts, remember_key } => {
+                    // Resolve the prompt off the kernel pump: the worker blocks until the host owner
+                    // answers (the guest sees `http_poll -> 0` meanwhile), then injects + fetches, or
+                    // rejects. The credential is spliced only after an allow.
+                    let gate = self.gate.clone();
+                    let slot = Arc::clone(&slot);
+                    thread::spawn(move || run_gated_http(gate, facts, remember_key, req, slot));
+                    return h;
+                }
+            },
+        };
+        let Some((method, url, headers, body)) = parse_blob(&req) else {
+            complete_failed(&slot);
+            return h;
+        };
+        spawn_http_worker(method, url, headers, body, slot);
         h
     }
 
@@ -223,6 +307,132 @@ impl NetCapability for RealNet {
 
 // The bridge calls that just read the shared slots are independent of the
 // worker that fills the slot, so they live here as free helpers.
+
+/// Resolve a connection request whose approval was deferred: block on the prompt (off the kernel
+/// pump), then splice the credential and fetch on an allow, or fail closed on a reject.
+fn run_gated_http(
+    gate: ConnectionGate,
+    facts: ToolApprovalFacts,
+    remember_key: String,
+    req: PreparedConnectionRequest,
+    slot: Arc<Mutex<HttpSlot>>,
+) {
+    if !gate.run_prompt(facts, remember_key) {
+        complete_rejected_connection(&slot);
+        return;
+    }
+    let injected = match req.inject() {
+        Ok(injected) => injected,
+        Err(_) => {
+            complete_failed(&slot);
+            return;
+        }
+    };
+    match parse_blob(&injected) {
+        Some((method, url, headers, body)) => run_http_request(method, url, headers, body, &slot),
+        None => complete_failed(&slot),
+    }
+}
+
+fn spawn_http_worker(
+    method: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+    worker: Arc<Mutex<HttpSlot>>,
+) {
+    thread::spawn(move || run_http_request(method, url, headers, body, &worker));
+}
+
+/// The blocking ureq fetch that buffers a full response into `worker`. Run on a worker thread (either
+/// the request's own, or the gated-approval thread once the prompt is answered).
+fn run_http_request(
+    method: String,
+    url: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+    worker: &Arc<Mutex<HttpSlot>>,
+) {
+    {
+        let mut r = ureq::request(&method, &url);
+        for (k, v) in &headers {
+            // ureq derives Content-Length from the body itself.
+            if !k.eq_ignore_ascii_case("content-length") {
+                r = r.set(k, v);
+            }
+        }
+        let result = if body.is_empty() {
+            r.call()
+        } else {
+            r.send_bytes(&body)
+        };
+        // 4xx/5xx are still real responses worth delivering (the agent
+        // wants the body and the status); only transport errors fail.
+        let resp = match result {
+            Ok(resp) => Some(resp),
+            Err(ureq::Error::Status(_code, resp)) => Some(resp),
+            Err(ureq::Error::Transport(_)) => None,
+        };
+        let mut s = worker.lock().unwrap();
+        match resp {
+            Some(resp) => {
+                let status = resp.status();
+                let reason = resp.status_text().to_string();
+                let mut head = format!("{status} {reason}\r\n").into_bytes();
+                for name in resp.headers_names() {
+                    if let Some(v) = resp.header(&name) {
+                        head.extend_from_slice(format!("{name}: {v}\r\n").as_bytes());
+                    }
+                }
+                head.extend_from_slice(b"\r\n");
+                let mut body_buf = Vec::new();
+                let read_ok = resp.into_reader().read_to_end(&mut body_buf).is_ok();
+                s.head = head;
+                s.body = body_buf;
+                s.failed = !read_ok;
+                s.done = true;
+            }
+            None => {
+                s.failed = true;
+                s.done = true;
+            }
+        }
+    }
+}
+
+fn complete_rejected_connection(slot: &Arc<Mutex<HttpSlot>>) {
+    complete_http(
+        slot,
+        403,
+        "Forbidden",
+        &[("content-type", "application/json")],
+        br#"{"ok":false,"err":{"code":"declined","message":"tool approval declined"}}"#,
+    );
+}
+
+fn complete_failed(slot: &Arc<Mutex<HttpSlot>>) {
+    let mut s = slot.lock().unwrap();
+    s.failed = true;
+    s.done = true;
+}
+
+fn complete_http(
+    slot: &Arc<Mutex<HttpSlot>>,
+    status: u16,
+    reason: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) {
+    let mut head = format!("{status} {reason}\r\n").into_bytes();
+    for (name, value) in headers {
+        head.extend_from_slice(format!("{name}: {value}\r\n").as_bytes());
+    }
+    head.extend_from_slice(format!("content-length: {}\r\n\r\n", body.len()).as_bytes());
+    let mut s = slot.lock().unwrap();
+    s.head = head;
+    s.body = body.to_vec();
+    s.done = true;
+}
 
 fn slot_http_poll(http: &HashMap<i32, Arc<Mutex<HttpSlot>>>, h: i32, buf: &mut [u8]) -> i32 {
     let Some(slot) = http.get(&h) else {
@@ -487,6 +697,36 @@ fn parse_blob(req: &[u8]) -> Option<(String, String, Vec<(String, String)>, Vec<
     Some((method.to_string(), url.to_string(), headers, body))
 }
 
+fn is_destructive_method(method: &str) -> bool {
+    matches!(
+        method.to_ascii_uppercase().as_str(),
+        "POST" | "PUT" | "PATCH" | "DELETE"
+    )
+}
+
+fn tool_remember_key(req: &PreparedConnectionRequest) -> String {
+    format!(
+        "{}\0{}\0{}",
+        req.connection,
+        req.method.to_ascii_uppercase(),
+        req.url
+    )
+}
+
+fn tool_approval_facts(req: &PreparedConnectionRequest) -> ToolApprovalFacts {
+    ToolApprovalFacts {
+        connection: req.connection.clone(),
+        method: req.method.to_ascii_uppercase(),
+        url: req.url.clone(),
+        origin: req.origin.clone(),
+        args_digest: if req.body.is_empty() {
+            None
+        } else {
+            Some(sha256_hex(&req.body))
+        },
+    }
+}
+
 // ── TokioNet — the async, runtime-integrated egress capability ───────────────
 // Behind the `tokio-net` feature so the CLI build never pulls an async HTTP client; the
 // async host (the mc-server, axum/tokio) enables it.
@@ -503,6 +743,7 @@ pub struct TokioNet {
     http: HashMap<i32, Arc<Mutex<HttpSlot>>>,
     ws: HashMap<i32, Arc<Mutex<WsSlot>>>,
     connections: ConnectionRegistry,
+    gate: ConnectionGate,
 }
 
 #[cfg(feature = "tokio-net")]
@@ -519,6 +760,7 @@ impl TokioNet {
             http: HashMap::new(),
             ws: HashMap::new(),
             connections: ConnectionRegistry::new(),
+            gate: ConnectionGate::default(),
         }
     }
 
@@ -526,26 +768,65 @@ impl TokioNet {
         self.connections = connections;
         self
     }
+
+    pub fn with_tool_policies(mut self, rules: Vec<ToolPolicyRule>) -> anyhow::Result<Self> {
+        self.gate.set_policies(rules)?;
+        Ok(self)
+    }
+
+    pub fn with_tool_approver(mut self, approver: Arc<dyn ToolApprover>) -> Self {
+        self.gate.approver = Some(approver);
+        self
+    }
 }
 
 #[cfg(feature = "tokio-net")]
 impl NetCapability for TokioNet {
     fn http_request(&mut self, req: &[u8]) -> i32 {
-        let req = match self.connections.inject_http_request(req) {
-            Ok(req) => req,
+        let prepared = match self.connections.prepare_http_request(req) {
+            Ok(prepared) => prepared,
             Err(_) => return -1,
         };
-        let Some((method, url, headers, body)) = parse_blob(&req) else {
-            return -1;
-        };
         let slot = Arc::new(Mutex::new(HttpSlot::default()));
+        let h = self.next_handle;
+        self.next_handle += 1;
+        self.http.insert(h, Arc::clone(&slot));
+
+        let req = match prepared {
+            PreparedHttpRequest::Unmarked(req) => req,
+            PreparedHttpRequest::Connection(req) => match self.gate.decide(&req) {
+                GateDecision::Reject => {
+                    complete_rejected_connection(&slot);
+                    return h;
+                }
+                GateDecision::Allow => match req.inject() {
+                    Ok(injected) => injected,
+                    Err(_) => {
+                        complete_failed(&slot);
+                        return h;
+                    }
+                },
+                GateDecision::Prompt { facts, remember_key } => {
+                    // Resolve the prompt off the async executor (spawn_blocking), then inject + fetch
+                    // or fail closed — the credential is spliced only after an allow.
+                    let client = self.client.clone();
+                    let gate = self.gate.clone();
+                    let slot = Arc::clone(&slot);
+                    self.handle.spawn(async move {
+                        tokio_gated_http(client, gate, facts, remember_key, req, slot).await
+                    });
+                    return h;
+                }
+            },
+        };
+        let Some((method, url, headers, body)) = parse_blob(&req) else {
+            complete_failed(&slot);
+            return h;
+        };
         let worker = Arc::clone(&slot);
         let client = self.client.clone();
         self.handle
             .spawn(async move { http_worker(client, method, url, headers, body, worker).await });
-        let h = self.next_handle;
-        self.next_handle += 1;
-        self.http.insert(h, slot);
         h
     }
 
@@ -584,6 +865,40 @@ impl NetCapability for TokioNet {
         if let Some(slot) = self.ws.remove(&h) {
             slot.lock().unwrap().close_req = true;
         }
+    }
+}
+
+/// Resolve a connection request whose approval was deferred (the async analogue of
+/// `run_gated_http`): run the blocking prompt on the runtime's blocking pool, then splice + fetch on
+/// an allow, or fail closed on a reject.
+#[cfg(feature = "tokio-net")]
+async fn tokio_gated_http(
+    client: reqwest::Client,
+    gate: ConnectionGate,
+    facts: ToolApprovalFacts,
+    remember_key: String,
+    req: PreparedConnectionRequest,
+    slot: Arc<Mutex<HttpSlot>>,
+) {
+    let allow = tokio::task::spawn_blocking(move || gate.run_prompt(facts, remember_key))
+        .await
+        .unwrap_or(false);
+    if !allow {
+        complete_rejected_connection(&slot);
+        return;
+    }
+    let injected = match req.inject() {
+        Ok(injected) => injected,
+        Err(_) => {
+            complete_failed(&slot);
+            return;
+        }
+    };
+    match parse_blob(&injected) {
+        Some((method, url, headers, body)) => {
+            http_worker(client, method, url, headers, body, slot).await
+        }
+        None => complete_failed(&slot),
     }
 }
 

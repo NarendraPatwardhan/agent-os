@@ -79,6 +79,37 @@ js_test(
     entry_point = "test/persist.test.js",
 )
 
+# Cross-host policy parity (A3): the SAME vector file the Rust
+# //memcontainers/hosts/wasmtime:policy_parity_test consumes drives policy.ts here, so the two
+# independent policy engines cannot drift in resolution or which patterns they reject.
+mc_ts_project(
+    name = "policy_parity_lib",
+    srcs = ["test/policy-parity.test.ts"],
+    deps = [
+        ":host",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+# The canonical shared parity vectors. Exported so the Rust
+# //memcontainers/hosts/wasmtime:policy_parity_test consumes the identical file cross-package.
+exports_files(
+    ["test/policy_parity.json"],
+    visibility = ["//visibility:public"],
+)
+
+js_test(
+    name = "policy_parity_test",
+    data = [
+        ":policy_parity_lib",
+        "test/policy_parity.json",
+    ],
+    entry_point = "test/policy-parity.test.js",
+    env = {
+        "MC_POLICY_VECTORS": "$(rlocationpath test/policy_parity.json)",
+    },
+)
+
 # Cross-host parity (A3/A8): rehydrate a snapshot the WASMTIME host produced
 # (//memcontainers/hosts/wasmtime:cross_host_snapshot) under THIS host, asserting the saved state and a
 # live exec survive. The strongest proof the MCSN format is truly host-identical — not same-host only.

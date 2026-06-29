@@ -39,18 +39,25 @@ export interface CreateOptions {
    *  runtime, create sends these definitions to the trusted server host; they still do not enter guest
    *  memory or the tool catalog. */
   connections?: ConnectionDefinition[];
+  /** catalog-compiler.wasm bytes (embedded). Defaults to $MC_CATALOG_COMPILER_WASM when a connection
+   *  needs host-side catalog compilation. */
+  catalogCompiler?: Uint8Array;
   /** Make `/var/persist` durable (embedded backend). In a browser this is backed
    *  by OPFS (IndexedDB fallback) so state survives a page reload; elsewhere it is
    *  in-memory for the VM's lifetime. → `CAP_PERSIST`. */
   persist?: boolean;
   /** Declarative permissions (see {@link Permissions}). */
   permissions?: Permissions;
-  /** Interactive approval for network egress or destructive tool calls. Call `req.allow()` to let the
-   *  operation proceed or `req.reject()` to deny. With no handler, operations that require approval are
-   *  denied. */
+  /** Embedder-owned policy over connection/tool address patterns. The JS host evaluates these before
+   *  method-based destructive classification at the credential splice boundary. */
+  policies?: ToolPolicyRule[];
+  /** Interactive approval for network egress or destructive connection egress. Call `req.allow()` to
+   *  let the operation proceed or `req.reject()` to deny. With no handler, operations that require
+   *  approval are denied. */
   onPermission?: (req: PermissionRequest) => void | Promise<void>;
-  /** Host-resident tools to register at boot (see {@link tool} / {@link kit}). */
-  tools?: ToolDefinition[];
+  /** Host-resident tools to register at boot (see {@link tool} / {@link kit}), plus optional
+   *  connection tool groups such as `"github/issues"` for host-side catalog compilation. */
+  tools?: Array<ToolDefinition | string>;
   /** Host-backed filesystem mounts to install at boot (see {@link MountSpec} and
    *  the drivers at `@mc/core/drivers`). */
   mounts?: MountSpec[];
@@ -64,12 +71,57 @@ export type ConnectionAuth =
   | { kind: "header"; name: string; value: string }
   | { kind: "query"; name: string; value: string };
 
+export type CatalogFormat =
+  | "openapi"
+  | "microsoft-graph"
+  | "google-discovery"
+  | "graphql"
+  | "mcp-remote";
+
+export type CatalogSourceFormat = "json" | "yaml";
+
+export type ConnectionSpecSource =
+  | {
+      bytes: Uint8Array;
+      format?: CatalogFormat;
+      sourceFormat?: CatalogSourceFormat;
+      baseUrl?: string;
+      endpoint?: string;
+    }
+  | {
+      path: string;
+      format?: CatalogFormat;
+      sourceFormat?: CatalogSourceFormat;
+      baseUrl?: string;
+      endpoint?: string;
+    }
+  | {
+      url: string;
+      format?: CatalogFormat;
+      sourceFormat?: CatalogSourceFormat;
+      baseUrl?: string;
+      endpoint?: string;
+    };
+
 export interface ConnectionDefinition {
   /** `integration.owner.name`, where owner is `org` or `user`. */
   ref: string;
   auth: ConnectionAuth;
   /** Absolute `http`/`https` origins allowed to receive this connection's host-side credential. */
   origins: string[];
+  /** Provided spec bytes/path bypass host fetch; URL overrides the registry's public spec URL. */
+  spec?: ConnectionSpecSource;
+  /** Per-connection tool group override. Top-level `tools: ["github/issues"]` is also accepted. */
+  tools?: string[];
+}
+
+export type ToolPolicyAction = "approve" | "require_approval" | "block";
+export type ToolPolicyOwner = "org" | "user";
+
+export interface ToolPolicyRule {
+  owner: ToolPolicyOwner;
+  pattern: string;
+  action: ToolPolicyAction;
 }
 
 /** A built image: an ordered stack of content-addressed layers plus the
@@ -138,27 +190,19 @@ export interface NetworkPermissionRequest {
   reject(message?: string): void;
 }
 
-/** A destructive tool prompt raised to {@link CreateOptions.onPermission}. The request carries catalog
- *  identity and a bounded argument preview, never host-injected credentials. */
+/** A destructive connection-egress prompt raised to {@link CreateOptions.onPermission}. The request
+ *  carries only host-computed facts from the actual outgoing HTTP request, never catalog text or
+ *  host-injected credentials. */
 export interface ToolApprovalPermissionRequest {
   readonly id: number;
   readonly kind: "tool_approval";
-  readonly address: string;
-  readonly integration: string;
-  readonly owner: string;
   readonly connection: string;
-  readonly tool: string;
-  readonly description: string;
-  readonly approvalDescription: string;
-  readonly argsPreview: string;
-  readonly argsSha256: string;
-  readonly policy: {
-    readonly action: "require_approval";
-    readonly source: "annotation" | "policy";
-    readonly id?: string;
-    readonly pattern?: string;
-  };
-  allow(): void;
+  readonly method: string;
+  readonly url: string;
+  readonly origin: string;
+  readonly argsDigest?: string;
+  /** Permit the request; `remember:"session"` skips future prompts for the same connection/method/url. */
+  allow(opts?: { remember?: "once" | "session" }): void;
   reject(message?: string): void;
 }
 

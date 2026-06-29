@@ -122,9 +122,9 @@ pub fn boot_loom_with_net(net: Box<dyn NetCapability>) -> Session {
     Session { host, stdout }
 }
 
-/// Boot the `loom` image with both network and host-call tools installed. Adapter-backed destructive
-/// tools need this exact shape: `/svc/adapters` reaches the network, while `/svc/tools` asks the
-/// host-call permission broker before dispatching a destructive catalog record.
+/// Boot the `loom` image with both network and host-call tools installed. Adapter-backed tools use this
+/// exact shape: `/svc/adapters` reaches the network, while host-call tools still route through the
+/// configured host-call registry.
 pub fn boot_loom_with_net_and_tools(net: Box<dyn NetCapability>, tools: MapHostCall) -> Session {
     let (b, stdout) = builder("_main/memcontainers/images/loom.tar");
     let host = b

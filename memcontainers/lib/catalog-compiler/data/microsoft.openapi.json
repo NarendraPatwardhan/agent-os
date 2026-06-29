@@ -1,0 +1,33 @@
+{
+  "openapi": "3.0.3",
+  "info": { "title": "Microsoft Graph", "version": "v1.0" },
+  "servers": [{ "url": "https://graph.microsoft.com/v1.0" }],
+  "paths": {
+    "/me/messages": {
+      "get": {
+        "operationId": "listMessages",
+        "description": "List signed-in user's messages.",
+        "responses": {
+          "200": {
+            "description": "ok",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "value": { "type": "array", "items": { "type": "object" } } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/me/events": {
+      "get": {
+        "operationId": "listEvents",
+        "description": "List signed-in user's events.",
+        "responses": { "200": { "description": "ok" } }
+      }
+    }
+  }
+}

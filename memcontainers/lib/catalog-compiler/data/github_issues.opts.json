@@ -1,0 +1,10 @@
+{
+  "format": "openapi",
+  "source_format": "json",
+  "integration": "github",
+  "group": "issues",
+  "filter": {
+    "path_prefixes": ["/repos/{owner}/{repo}/issues"],
+    "tag_prefixes": ["issues"]
+  }
+}

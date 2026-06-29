@@ -34,6 +34,7 @@ rust_e2e_test(
     deps = [
         "//memcontainers/hosts/wasmtime:host",
         "//memcontainers/pkgcore",  # sha256_hex — to build a consistent catalog + cache fixture for the pkgfsd read test
+        "@parse_crates//:serde_json",
         "@rules_rust//rust/runfiles",
     ],
     data = [

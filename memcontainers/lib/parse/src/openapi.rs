@@ -1,8 +1,8 @@
 //! OpenAPI → tool-catalog normalization.
 //!
 //! The compiler emits only stable, non-secret catalog records. Generated bindings point back to
-//! `/svc/adapters invoke`; host credentials are represented by an opaque connection reference and are
-//! injected later by the host-side registry, never by the guest catalog.
+//! `/svc/adapters invoke`; connection identity is derived later from the tool address so bundles can be
+//! reused across owners/connections.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -25,6 +25,14 @@ pub struct CompileOptions {
     pub connection: String,
     pub auth: String,
     pub base_url: Option<String>,
+    pub filter: OperationFilter,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OperationFilter {
+    pub exact_paths: Vec<String>,
+    pub path_prefixes: Vec<String>,
+    pub tag_prefixes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -115,12 +123,16 @@ fn collect_operations(
 
     for (path, path_item) in paths {
         let path_params = collect_parameters(root, path_item.get("parameters"), diagnostics, None);
+        let path_matches = opts.filter.matches_path(path);
         for method in [
             "get", "put", "post", "delete", "options", "head", "patch", "trace",
         ] {
             let Some(op_value) = path_item.get(method) else {
                 continue;
             };
+            if !opts.filter.is_empty() && !path_matches && !opts.filter.matches_tags(op_value) {
+                continue;
+            }
             let op_name = operation_name(method, path, op_value);
             match compile_operation(
                 root,
@@ -142,6 +154,67 @@ fn collect_operations(
         }
     }
     out
+}
+
+impl OperationFilter {
+    pub fn is_empty(&self) -> bool {
+        self.exact_paths.is_empty() && self.path_prefixes.is_empty() && self.tag_prefixes.is_empty()
+    }
+
+    pub fn merged(&self, other: &OperationFilter) -> OperationFilter {
+        let mut merged = self.clone();
+        append_unique(&mut merged.exact_paths, &other.exact_paths);
+        append_unique(&mut merged.path_prefixes, &other.path_prefixes);
+        append_unique(&mut merged.tag_prefixes, &other.tag_prefixes);
+        merged
+    }
+
+    pub fn matches_parts(&self, path: &str, tags: &[&str]) -> bool {
+        self.is_empty()
+            || self.matches_path(path)
+            || tags.iter().any(|tag| {
+                self.tag_prefixes
+                    .iter()
+                    .any(|prefix| *tag == prefix || tag.starts_with(prefix))
+            })
+    }
+
+    fn matches_path(&self, path: &str) -> bool {
+        self.exact_paths.iter().any(|candidate| candidate == path)
+            || self
+                .path_prefixes
+                .iter()
+                .any(|prefix| path_has_prefix(path, prefix))
+    }
+
+    fn matches_tags(&self, op: &Value) -> bool {
+        let Some(tags) = op.get("tags").and_then(Value::as_array) else {
+            return false;
+        };
+        tags.iter().filter_map(Value::as_str).any(|tag| {
+            self.tag_prefixes
+                .iter()
+                .any(|prefix| tag == prefix || tag.starts_with(prefix))
+        })
+    }
+}
+
+fn append_unique(out: &mut Vec<String>, extra: &[String]) {
+    for item in extra {
+        if !out.iter().any(|existing| existing == item) {
+            out.push(item.clone());
+        }
+    }
+}
+
+fn path_has_prefix(path: &str, prefix: &str) -> bool {
+    if path == prefix {
+        return true;
+    }
+    let Some(rest) = path.strip_prefix(prefix) else {
+        return false;
+    };
+    rest.starts_with('/') || rest.starts_with('(')
 }
 
 fn compile_operation(
@@ -532,10 +605,7 @@ fn catalog_record(root: &Value, opts: &CompileOptions, op: Operation) -> Value {
     annotations.insert("adapter".to_string(), Value::String("openapi".to_string()));
     annotations.insert("method".to_string(), Value::String(op.method.clone()));
     annotations.insert("path".to_string(), Value::String(op.path.clone()));
-    annotations.insert(
-        "operationId".to_string(),
-        json!(op.operation_id),
-    );
+    annotations.insert("operationId".to_string(), json!(op.operation_id));
     annotations.insert(
         "responseContentType".to_string(),
         json!(op.response_content_type),
@@ -548,11 +618,11 @@ fn catalog_record(root: &Value, opts: &CompileOptions, op: Operation) -> Value {
         );
     }
     record.insert("annotations".to_string(), Value::Object(annotations));
-    record.insert("binding".to_string(), binding(root, opts, &op));
+    record.insert("binding".to_string(), binding(root, &op));
     Value::Object(record)
 }
 
-fn binding(_root: &Value, opts: &CompileOptions, op: &Operation) -> Value {
+fn binding(_root: &Value, op: &Operation) -> Value {
     let params: Vec<Value> = op
         .parameters
         .iter()
@@ -564,24 +634,27 @@ fn binding(_root: &Value, opts: &CompileOptions, op: &Operation) -> Value {
             })
         })
         .collect();
+    let mut request = Map::new();
+    request.insert("method".to_string(), Value::String(op.method.clone()));
+    request.insert(
+        "url_template".to_string(),
+        Value::String(op.url_template.clone()),
+    );
+    request.insert("parameters".to_string(), Value::Array(params));
+    request.insert(
+        "request_body".to_string(),
+        op.request_content_type
+            .as_ref()
+            .map(|content_type| json!({"content_type": content_type}))
+            .unwrap_or(Value::Null),
+    );
     json!({
         "type": "service",
         "service": "adapters",
         "op": "invoke",
         "adapter": "openapi",
         "args": "json",
-        "request": {
-            "method": op.method,
-            "url_template": op.url_template,
-            "parameters": params,
-            "request_body": op.request_content_type.as_ref().map(|content_type| json!({"content_type": content_type})),
-            "connection_ref": {
-                "integration": opts.integration,
-                "owner": opts.owner,
-                "name": opts.connection,
-                "auth": opts.auth
-            }
-        }
+        "request": Value::Object(request)
     })
 }
 
@@ -780,6 +853,7 @@ mod tests {
             connection: "main".to_string(),
             auth: "none".to_string(),
             base_url: None,
+            filter: OperationFilter::default(),
         }
     }
 
@@ -793,7 +867,7 @@ mod tests {
         assert!(rendered.contains("\"address\":\"petstore.org.main.listPets\""));
         assert!(rendered.contains("\"service\":\"adapters\""));
         assert!(rendered.contains("\"adapter\":\"openapi\""));
-        assert!(rendered.contains("\"connection_ref\":{\"auth\":\"none\""));
+        assert!(!rendered.contains("connection_ref"));
         assert!(!rendered.to_ascii_lowercase().contains("authorization"));
     }
 
@@ -848,5 +922,50 @@ paths:
         let binding = &out.tools[0]["binding"]["request"];
         assert_eq!(binding["url_template"], "https://fixed.example.test/ping");
         assert_eq!(out.diagnostics[0].code, "server_variables_unsupported");
+    }
+
+    #[test]
+    fn generic_filter_keeps_path_and_tag_subsets() {
+        let source = r#"{
+          "openapi": "3.0.3",
+          "info": { "title": "Demo", "version": "1.0.0" },
+          "servers": [{ "url": "https://demo.example.test" }],
+          "paths": {
+            "/repos/{owner}/{repo}/issues": {
+              "get": {
+                "operationId": "listIssues",
+                "tags": ["issues"],
+                "responses": { "200": { "description": "ok" } }
+              }
+            },
+            "/repos/{owner}/{repo}/pulls": {
+              "get": {
+                "operationId": "listPulls",
+                "tags": ["pulls"],
+                "responses": { "200": { "description": "ok" } }
+              }
+            },
+            "/user/issues": {
+              "get": {
+                "operationId": "listUserIssues",
+                "tags": ["user.issues"],
+                "responses": { "200": { "description": "ok" } }
+              }
+            }
+          }
+        }"#;
+        let mut opts = opts();
+        opts.filter = OperationFilter {
+            exact_paths: Vec::new(),
+            path_prefixes: vec!["/repos/{owner}/{repo}/issues".to_string()],
+            tag_prefixes: vec!["user.".to_string()],
+        };
+        let out = compile(source, SourceFormat::Json, &opts);
+        assert_eq!(out.diagnostics, Vec::new());
+        assert_eq!(out.tools.len(), 2);
+        let rendered = serde_json::to_string(&out.tools).unwrap();
+        assert!(rendered.contains("listIssues"));
+        assert!(rendered.contains("listUserIssues"));
+        assert!(!rendered.contains("listPulls"));
     }
 }

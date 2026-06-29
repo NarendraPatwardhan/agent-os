@@ -1,5 +1,8 @@
 import { EAGAIN, EMSGSIZE } from "@mc/contracts/constants";
-import type { ConnectionRegistry } from "./connections.js";
+import { ConnectionRegistry } from "./connections.js";
+import type { PreparedConnectionRequest } from "./connections.js";
+import { ToolPolicySet } from "./policy.js";
+import type { ToolPolicyRule } from "./policy.js";
 import type { NetCapability } from "./types.js";
 
 /** Flow-control mark for `wsSend` backpressure: accepted sends must fit wholly within the socket's
@@ -72,6 +75,19 @@ export type NetApprover = (
   url: string,
 ) => Promise<{ allow: boolean; remember?: "once" | "session" }>;
 
+export interface ToolApprovalFacts {
+  readonly kind: "tool_approval";
+  readonly connection: string;
+  readonly method: string;
+  readonly url: string;
+  readonly origin: string;
+  readonly argsDigest?: string;
+}
+
+export type ToolApprover = (
+  request: ToolApprovalFacts,
+) => Promise<{ allow: boolean; remember?: "once" | "session" }>;
+
 export interface HostNetOptions {
   /** Hosts allowed without prompting. `undefined` = no filtering (all allowed). */
   allowlist?: Set<string>;
@@ -79,6 +95,10 @@ export interface HostNetOptions {
   approver?: NetApprover;
   /** Host-only credentials keyed by `X-MC-Connection` markers in guest request blobs. */
   connections?: ConnectionRegistry;
+  /** Host-side destructive-action approval for connection-marked HTTP egress. */
+  toolApprover?: ToolApprover;
+  /** Embedder-owned policy over connection/tool address patterns. */
+  policies?: readonly ToolPolicyRule[];
 }
 
 /** Real network over `fetch` (HTTP) and `WebSocket` (WS) — the browser/Bun analogue of Rust `RealNet`
@@ -94,15 +114,21 @@ export class HostNet implements NetCapability {
   private ws = new Map<number, WsSlot>();
   /** Hosts remembered-for-session via `req.allow({ remember: "session" })`. */
   private readonly sessionAllow = new Set<string>();
+  /** Destructive connection egress remembered-for-session by exact connection/method/url. */
+  private readonly toolSessionAllow = new Set<string>();
+  private readonly connections: ConnectionRegistry;
+  private readonly policies: ToolPolicySet;
 
-  constructor(private readonly opts: HostNetOptions = {}) {}
+  constructor(private readonly opts: HostNetOptions = {}) {
+    this.connections = opts.connections ?? new ConnectionRegistry();
+    this.policies = new ToolPolicySet(opts.policies ?? []);
+  }
 
   httpRequest(req: Uint8Array): number {
-    const injected = this.opts.connections ? this.opts.connections.injectHttpRequest(req) : req;
-    if (!injected) return -1;
-    const parsed = parseBlob(injected);
-    if (!parsed) return -1;
-    const { method, url, headers, body } = parsed;
+    const prepared = this.connections.prepareHttpRequest(req);
+    if (!prepared) return -1;
+    const parsed = prepared.kind === "unmarked" ? parseBlob(prepared.request) : null;
+    if (prepared.kind === "unmarked" && !parsed) return -1;
     const slot: HttpSlot = {
       done: false,
       failed: false,
@@ -113,58 +139,117 @@ export class HostNet implements NetCapability {
     const handle = this.next++;
     this.http.set(handle, slot);
 
-    const init: RequestInit = {
-      method,
-      headers: headers.filter(([k]) => !FORBIDDEN_REQ_HEADERS.has(k.toLowerCase())),
-    };
-    if (body.length > 0 && method !== "GET" && method !== "HEAD") {
-      // A fresh copy guarantees an `ArrayBuffer` (not `ArrayBufferLike`) backing, which `BodyInit`
-      // requires.
-      init.body = new Uint8Array(body);
-    }
-
-    const doFetch = (): void => {
-      fetch(url, init)
-        .then(async (resp) => {
-          // Serialize the head exactly like the Rust host:
-          //   "<status> <reason>\r\n<Name: value>\r\n…\r\n\r\n"
-          let head = `${resp.status} ${resp.statusText}\r\n`;
-          resp.headers.forEach((value, name) => {
-            head += `${name}: ${value}\r\n`;
-          });
-          head += "\r\n";
-          const bodyBuf = new Uint8Array(await resp.arrayBuffer());
-          slot.head = new TextEncoder().encode(head);
-          slot.body = bodyBuf;
-          slot.done = true;
-        })
-        .catch(() => {
-          slot.failed = true;
-          slot.done = true;
-        });
-    };
-    const deny = (): void => {
+    const failTransport = (): void => {
       slot.failed = true;
       slot.done = true;
     };
+    const rejectConnection = (): void => {
+      this.completeHttp(
+        slot,
+        403,
+        "Forbidden",
+        [["content-type", "application/json"]],
+        new TextEncoder().encode(
+          JSON.stringify({ ok: false, err: { code: "declined", message: "tool approval declined" } }),
+        ),
+      );
+    };
 
+    if (prepared.kind === "connection") {
+      this.authorizeConnectionHttp(prepared.request)
+        .then((allow) => {
+          if (!allow) {
+            rejectConnection();
+            return;
+          }
+          const injected = prepared.request.inject();
+          const injectedParsed = injected ? parseBlob(injected) : null;
+          if (!injectedParsed) {
+            failTransport();
+            return;
+          }
+          this.fetchHttp(injectedParsed, slot);
+        })
+        .catch(rejectConnection);
+    } else {
+      this.gateNetworkHttp(parsed!, () => this.fetchHttp(parsed!, slot), failTransport);
+    }
+
+    return handle;
+  }
+
+  private fetchHttp(
+    parsed: { method: string; url: string; headers: [string, string][]; body: Uint8Array },
+    slot: HttpSlot,
+  ): void {
+    const method = parsed.method.toUpperCase();
+    const init: RequestInit = {
+      method: parsed.method,
+      headers: parsed.headers.filter(([k]) => !FORBIDDEN_REQ_HEADERS.has(k.toLowerCase())),
+    };
+    if (parsed.body.length > 0 && method !== "GET" && method !== "HEAD") {
+      // A fresh copy guarantees an `ArrayBuffer` (not `ArrayBufferLike`) backing, which `BodyInit`
+      // requires.
+      init.body = new Uint8Array(parsed.body);
+    }
+
+    fetch(parsed.url, init)
+      .then(async (resp) => {
+        // Serialize the head exactly like the Rust host:
+        //   "<status> <reason>\r\n<Name: value>\r\n…\r\n\r\n"
+        let head = `${resp.status} ${resp.statusText}\r\n`;
+        resp.headers.forEach((value, name) => {
+          head += `${name}: ${value}\r\n`;
+        });
+        head += "\r\n";
+        const bodyBuf = new Uint8Array(await resp.arrayBuffer());
+        slot.head = new TextEncoder().encode(head);
+        slot.body = bodyBuf;
+        slot.done = true;
+      })
+      .catch(() => {
+        slot.failed = true;
+        slot.done = true;
+      });
+  }
+
+  private completeHttp(
+    slot: HttpSlot,
+    status: number,
+    statusText: string,
+    headers: [string, string][],
+    body: Uint8Array,
+  ): void {
+    let head = `${status} ${statusText}\r\n`;
+    for (const [name, value] of headers) head += `${name}: ${value}\r\n`;
+    head += `content-length: ${body.length}\r\n\r\n`;
+    slot.head = new TextEncoder().encode(head);
+    slot.body = body;
+    slot.done = true;
+  }
+
+  private gateNetworkHttp(
+    parsed: { method: string; url: string; headers: [string, string][]; body: Uint8Array },
+    allow: () => void,
+    deny: () => void,
+  ): void {
     let host = "";
     try {
-      host = new URL(url).host;
+      host = new URL(parsed.url).host;
     } catch {
       /* malformed URL → host stays empty (not allowlisted) */
     }
     const allowed =
       !this.opts.allowlist || this.opts.allowlist.has(host) || this.sessionAllow.has(host);
     if (allowed) {
-      doFetch();
+      allow();
     } else if (this.opts.approver) {
       this.opts
-        .approver(host, url)
+        .approver(host, parsed.url)
         .then((d) => {
           if (d.allow) {
             if (d.remember === "session") this.sessionAllow.add(host);
-            doFetch();
+            allow();
           } else {
             deny();
           }
@@ -173,8 +258,30 @@ export class HostNet implements NetCapability {
     } else {
       deny(); // default-deny a non-allowlisted host with no approver
     }
+  }
 
-    return handle;
+  private async authorizeConnectionHttp(req: PreparedConnectionRequest): Promise<boolean> {
+    const policy = this.policies.resolve(req.policyAddress);
+    if (policy === "block") return false;
+    if (policy === "approve") return true;
+    if (policy === null && !isDestructiveMethod(req.method)) return true;
+
+    const key = toolRememberKey(req);
+    if (this.toolSessionAllow.has(key)) return true;
+    if (!this.opts.toolApprover) return false;
+
+    const facts: ToolApprovalFacts = {
+      kind: "tool_approval",
+      connection: req.connection,
+      method: req.method.toUpperCase(),
+      url: req.url,
+      origin: req.origin,
+      ...(req.body.length > 0 ? { argsDigest: await sha256Hex(req.body) } : {}),
+    };
+    const decision = await this.opts.toolApprover(facts);
+    if (!decision.allow) return false;
+    if (decision.remember === "session") this.toolSessionAllow.add(key);
+    return true;
   }
 
   httpPoll(handle: number, buf: Uint8Array): number {
@@ -393,4 +500,25 @@ function parseBlob(
     if (c >= 0) headers.push([line.slice(0, c).trim(), line.slice(c + 1).trim()]);
   }
   return { method, url, headers, body };
+}
+
+function isDestructiveMethod(method: string): boolean {
+  switch (method.toUpperCase()) {
+    case "POST":
+    case "PUT":
+    case "PATCH":
+    case "DELETE":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function toolRememberKey(req: PreparedConnectionRequest): string {
+  return `${req.connection}\0${req.method.toUpperCase()}\0${req.url}`;
+}
+
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
 }

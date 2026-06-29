@@ -30,12 +30,15 @@
 //! `AgentOS.Vm` process drains and answers them.
 
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use constants_rust::{PERSIST_OP_DELETE, PERSIST_OP_GET, PERSIST_OP_LIST, PERSIST_OP_PUT};
 use host::{
-    ConnectionCredential, ConnectionError, ConnectionRegistry, ExecResult, HostCallCapability,
-    KernelHost, KernelHostBuilder, NetCapability, PersistCapability, RealNet, StreamSink,
+    CatalogConnection, CatalogInjectOptions, CatalogSpecSource, ConnectionCredential,
+    ConnectionError, ConnectionRegistry, ExecResult, HostCallCapability, HostToolDef, KernelHost,
+    KernelHostBuilder, NetCapability, PersistCapability, RealNet, StreamSink, ToolApprovalDecision,
+    ToolApprovalFacts, ToolApprover, ToolPolicyAction, ToolPolicyOwner, ToolPolicyRule,
 };
 use rustler::{Atom, Binary, Env, Error, NifResult, OwnedBinary, ResourceArc};
 
@@ -46,6 +49,26 @@ mod atoms {
 const EAGAIN: i32 = 6;
 const EMSGSIZE: i32 = 53;
 const WS_SEND_MARK: usize = 1024 * 1024;
+
+type NifConnectionDef = (String, String, String, String, Vec<String>);
+type NifPolicyRule = (String, String, String);
+type NifCatalogConnection = (
+    String,
+    String,
+    Vec<u8>,
+    (String, String, String, String),
+    Vec<String>,
+);
+type NifCatalogConnectionArg<'a> = (
+    String,
+    String,
+    Binary<'a>,
+    (String, String, String, String),
+    Vec<String>,
+);
+// (address, description, binding_name, args_mode, input_schema_json, output_schema_json,
+// annotations_json) — the json fields are "" when absent.
+type NifHostTool = (String, String, String, String, String, String, String);
 
 /// A `StreamSink` that appends the kernel's terminal output (stdout/stderr/log) into a shared
 /// buffer the owning process drains via `take_output` — instead of the node's real stdout.
@@ -78,6 +101,9 @@ struct RelayState {
     host_calls: HashMap<i32, HostCallSlot>,
     persist: HashMap<i32, PersistSlot>,
     ws: HashMap<i32, WsSlot>,
+    /// A destructive-approval prompt parks the request's worker thread on this channel; the BEAM
+    /// answers via `relay_tool_approval_respond`, which sends the decision and wakes the worker.
+    pending_tool_approvals: HashMap<i32, std::sync::mpsc::Sender<ToolApprovalDecision>>,
 }
 
 impl RelayState {
@@ -128,6 +154,10 @@ enum RelayEvent {
     },
     WsClose {
         handle: i32,
+    },
+    ToolApproval {
+        handle: i32,
+        frame: Vec<u8>,
     },
 }
 
@@ -317,6 +347,38 @@ impl NetCapability for BeamNet {
                 _ => true,
             });
         }
+    }
+}
+
+#[derive(Clone)]
+struct BeamToolApprover {
+    relay: Arc<Mutex<RelayState>>,
+}
+
+impl ToolApprover for BeamToolApprover {
+    fn approve(&self, facts: ToolApprovalFacts) -> ToolApprovalDecision {
+        let deny = ToolApprovalDecision {
+            allow: false,
+            remember_session: false,
+        };
+        // Register a one-shot channel, emit the prompt event, release the relay lock, then BLOCK on
+        // the channel (this runs on the request's worker thread, not the kernel pump, so the BEAM can
+        // drain the event via relay_next and answer via relay_tool_approval_respond).
+        let rx = {
+            let Ok(mut relay) = self.relay.lock() else {
+                return deny;
+            };
+            let handle = relay.alloc_handle();
+            let (tx, rx) = std::sync::mpsc::channel();
+            relay.pending_tool_approvals.insert(handle, tx);
+            relay.events.push_back(RelayEvent::ToolApproval {
+                handle,
+                frame: tool_approval_frame(&facts),
+            });
+            rx
+        };
+        // A dropped sender (VM torn down before an answer) resolves to deny — fail closed.
+        rx.recv().unwrap_or(deny)
     }
 }
 
@@ -531,9 +593,7 @@ fn ticks_to_usize(max_ticks: u64) -> NifResult<usize> {
     usize::try_from(max_ticks).map_err(|_| nif_err("max_ticks is too large for this host"))
 }
 
-fn build_connections(
-    defs: Vec<(String, String, String, String, Vec<String>)>,
-) -> NifResult<ConnectionRegistry> {
+fn build_connections(defs: Vec<NifConnectionDef>) -> NifResult<ConnectionRegistry> {
     let mut registry = ConnectionRegistry::new();
     for (reference, kind, a, b, origins) in defs {
         let credential = match kind.as_str() {
@@ -541,7 +601,11 @@ fn build_connections(
             "bearer" => ConnectionCredential::Bearer { token: a },
             "header" => ConnectionCredential::Header { name: a, value: b },
             "query" => ConnectionCredential::Query { name: a, value: b },
-            _ => return Err(nif_err(format!("unknown connection credential kind {kind:?}"))),
+            _ => {
+                return Err(nif_err(format!(
+                    "unknown connection credential kind {kind:?}"
+                )))
+            }
         };
         registry
             .insert(reference.clone(), credential, origins)
@@ -553,6 +617,119 @@ fn build_connections(
             })?;
     }
     Ok(registry)
+}
+
+fn build_tool_policies(defs: Vec<NifPolicyRule>) -> NifResult<Vec<ToolPolicyRule>> {
+    defs.into_iter()
+        .map(|(owner, pattern, action)| {
+            let owner = match owner.as_str() {
+                "org" => ToolPolicyOwner::Org,
+                "user" => ToolPolicyOwner::User,
+                _ => return Err(nif_err(format!("unknown tool policy owner {owner:?}"))),
+            };
+            let action = match action.as_str() {
+                "approve" => ToolPolicyAction::Approve,
+                "require_approval" => ToolPolicyAction::RequireApproval,
+                "block" => ToolPolicyAction::Block,
+                _ => return Err(nif_err(format!("unknown tool policy action {action:?}"))),
+            };
+            Ok(ToolPolicyRule {
+                owner,
+                pattern,
+                action,
+            })
+        })
+        .collect()
+}
+
+fn build_catalog_connections(defs: Vec<NifCatalogConnection>) -> NifResult<Vec<CatalogConnection>> {
+    defs.into_iter()
+        .map(|(reference, spec_kind, payload, spec_opts, tools)| {
+            let (source_format, format, base_url, endpoint) = spec_opts;
+            let source_format = opt_string(source_format);
+            let format = opt_string(format);
+            let base_url = opt_string(base_url);
+            let endpoint = opt_string(endpoint);
+            let spec = match spec_kind.as_str() {
+                "none" => None,
+                "bytes" => Some(CatalogSpecSource::Bytes {
+                    bytes: payload,
+                    format,
+                    source_format,
+                    base_url,
+                    endpoint,
+                }),
+                "path" => Some(CatalogSpecSource::Path {
+                    path: PathBuf::from(payload_string("catalog path", payload)?),
+                    format,
+                    source_format,
+                    base_url,
+                    endpoint,
+                }),
+                "url" => Some(CatalogSpecSource::Url {
+                    url: payload_string("catalog url", payload)?,
+                    format,
+                    source_format,
+                    base_url,
+                    endpoint,
+                }),
+                _ => return Err(nif_err(format!("unknown catalog spec kind {spec_kind:?}"))),
+            };
+            Ok(CatalogConnection {
+                reference,
+                spec,
+                tools,
+            })
+        })
+        .collect()
+}
+
+fn build_host_tools(defs: Vec<NifHostTool>) -> Vec<HostToolDef> {
+    defs.into_iter()
+        .map(
+            |(address, description, binding_name, args_mode, input_json, output_json, annot_json)| {
+                // Raw JSON strings ("" -> None) are validated/parsed in the host crate (catalog.rs).
+                HostToolDef {
+                    address,
+                    description,
+                    binding_name,
+                    args_mode,
+                    input_schema: opt_string(input_json),
+                    output_schema: opt_string(output_json),
+                    annotations: opt_string(annot_json),
+                }
+            },
+        )
+        .collect()
+}
+
+fn opt_string(value: String) -> Option<String> {
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn payload_string(label: &str, payload: Vec<u8>) -> NifResult<String> {
+    String::from_utf8(payload).map_err(|_| nif_err(format!("{label} must be utf8")))
+}
+
+fn tool_approval_frame(facts: &ToolApprovalFacts) -> Vec<u8> {
+    let mut out = Vec::new();
+    for part in [
+        facts.connection.as_str(),
+        facts.method.as_str(),
+        facts.url.as_str(),
+        facts.origin.as_str(),
+        facts.args_digest.as_deref().unwrap_or(""),
+    ] {
+        if !out.is_empty() {
+            out.push(0);
+        }
+        out.extend_from_slice(part.as_bytes());
+    }
+    out
 }
 
 fn connection_error(err: ConnectionError) -> &'static str {
@@ -580,7 +757,9 @@ fn build_builder(
     workers: Option<i32>,
     net_relay: bool,
     net_real: bool,
-    connections: Vec<(String, String, String, String, Vec<String>)>,
+    connections: Vec<NifConnectionDef>,
+    tool_policies: Vec<NifPolicyRule>,
+    tool_approval_relay: bool,
     host_call_relay: bool,
     persist_relay: bool,
     out: &Arc<Mutex<Vec<u8>>>,
@@ -619,8 +798,18 @@ fn build_builder(
             relay: relay.clone(),
         }));
     } else if net_real {
-        let net = RealNet::new().with_connections(build_connections(connections)?);
+        let mut net = RealNet::new()
+            .with_connections(build_connections(connections)?)
+            .with_tool_policies(build_tool_policies(tool_policies)?)
+            .map_err(nif_err)?;
+        if tool_approval_relay {
+            net = net.with_tool_approver(Arc::new(BeamToolApprover {
+                relay: relay.clone(),
+            }));
+        }
         builder = builder.with_net(Box::new(net));
+    } else if !tool_policies.is_empty() || tool_approval_relay {
+        return Err(nif_err("tool policies and approval relay require real net"));
     }
     if host_call_relay {
         builder = builder.with_host_call(Box::new(BeamHostCall {
@@ -646,7 +835,9 @@ fn boot(
     workers: Option<i32>,
     net_relay: bool,
     net_real: bool,
-    connections: Vec<(String, String, String, String, Vec<String>)>,
+    connections: Vec<NifConnectionDef>,
+    tool_policies: Vec<NifPolicyRule>,
+    tool_approval_relay: bool,
     host_call_relay: bool,
     persist_relay: bool,
 ) -> NifResult<(Atom, ResourceArc<Vm>)> {
@@ -665,6 +856,8 @@ fn boot(
         net_relay,
         net_real,
         connections,
+        tool_policies,
+        tool_approval_relay,
         host_call_relay,
         persist_relay,
         &out,
@@ -691,7 +884,9 @@ fn restore(
     workers: Option<i32>,
     net_relay: bool,
     net_real: bool,
-    connections: Vec<(String, String, String, String, Vec<String>)>,
+    connections: Vec<NifConnectionDef>,
+    tool_policies: Vec<NifPolicyRule>,
+    tool_approval_relay: bool,
     host_call_relay: bool,
     persist_relay: bool,
 ) -> NifResult<(Atom, ResourceArc<Vm>)> {
@@ -709,6 +904,9 @@ fn restore(
     if !net_real && !connections.is_empty() {
         return Err(nif_err("connections require real net"));
     }
+    if !net_real && (!tool_policies.is_empty() || tool_approval_relay) {
+        return Err(nif_err("tool policies and approval relay require real net"));
+    }
     let mut builder = KernelHostBuilder::new(wasm.as_slice().to_vec());
     if deterministic {
         builder = builder.deterministic();
@@ -721,7 +919,15 @@ fn restore(
             relay: relay.clone(),
         }));
     } else if net_real {
-        let net = RealNet::new().with_connections(build_connections(connections)?);
+        let mut net = RealNet::new()
+            .with_connections(build_connections(connections)?)
+            .with_tool_policies(build_tool_policies(tool_policies)?)
+            .map_err(nif_err)?;
+        if tool_approval_relay {
+            net = net.with_tool_approver(Arc::new(BeamToolApprover {
+                relay: relay.clone(),
+            }));
+        }
         builder = builder.with_net(Box::new(net));
     }
     if host_call_relay {
@@ -945,6 +1151,42 @@ fn snapshot<'a>(env: Env<'a>, vm: ResourceArc<Vm>) -> NifResult<(Atom, Binary<'a
     Ok((atoms::ok(), to_binary(env, &bytes)?))
 }
 
+#[rustler::nif(name = "inject_catalog_nif", schedule = "DirtyCpu")]
+fn inject_catalog<'a>(
+    vm: ResourceArc<Vm>,
+    compiler_wasm: Binary,
+    generation: u64,
+    tools: Vec<String>,
+    host_tools: Vec<NifHostTool>,
+    connections: Vec<NifCatalogConnectionArg<'a>>,
+) -> NifResult<(Atom, Option<(u64, String, u64)>)> {
+    let connections = connections
+        .into_iter()
+        .map(|(reference, spec_kind, payload, spec_opts, tools)| {
+            (
+                reference,
+                spec_kind,
+                payload.as_slice().to_vec(),
+                spec_opts,
+                tools,
+            )
+        })
+        .collect();
+    let status = vm_lock(&vm)?
+        .inject_catalog(CatalogInjectOptions {
+            compiler_wasm: compiler_wasm.as_slice().to_vec(),
+            connections: build_catalog_connections(connections)?,
+            tools,
+            host_tools: build_host_tools(host_tools),
+            generation,
+        })
+        .map_err(nif_err)?;
+    Ok((
+        atoms::ok(),
+        status.map(|status| (status.generation, status.digest, status.tools as u64)),
+    ))
+}
+
 #[rustler::nif(name = "relay_next_nif")]
 fn relay_next<'a>(
     env: Env<'a>,
@@ -1013,6 +1255,12 @@ fn relay_next<'a>(
             "ws_close".to_string(),
             handle,
             to_binary(env, b"")?,
+            to_binary(env, b"")?,
+        ),
+        RelayEvent::ToolApproval { handle, frame } => (
+            "tool_approval".to_string(),
+            handle,
+            to_binary(env, &frame)?,
             to_binary(env, b"")?,
         ),
     };
@@ -1088,6 +1336,26 @@ fn relay_host_call_respond(
         Vec::new()
     };
     slot.offset = 0;
+    Ok(atoms::ok())
+}
+
+#[rustler::nif(name = "relay_tool_approval_respond_nif")]
+fn relay_tool_approval_respond(
+    vm: ResourceArc<Vm>,
+    handle: i32,
+    allow: bool,
+    remember_session: bool,
+) -> NifResult<Atom> {
+    let mut relay = relay_lock(&vm)?;
+    let Some(tx) = relay.pending_tool_approvals.remove(&handle) else {
+        return Err(nif_err(format!("unknown tool_approval relay handle {handle}")));
+    };
+    // Wake the parked worker thread. A dropped receiver (the request already resolved/torn down) is
+    // harmless — ignore the send error.
+    let _ = tx.send(ToolApprovalDecision {
+        allow,
+        remember_session,
+    });
     Ok(atoms::ok())
 }
 

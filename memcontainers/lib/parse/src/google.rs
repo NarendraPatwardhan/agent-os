@@ -6,7 +6,7 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::normalize::{depth_exceeded, MAX_NORMALIZATION_DEPTH};
+use crate::normalize::depth_exceeded;
 use crate::openapi::{self, CompileOutput, SourceFormat};
 use crate::Diagnostic;
 
@@ -372,6 +372,7 @@ fn annotate_tools(tools: &mut [Value]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::normalize::MAX_NORMALIZATION_DEPTH;
 
     fn openapi_opts() -> openapi::CompileOptions {
         openapi::CompileOptions {
@@ -380,6 +381,7 @@ mod tests {
             connection: "main".to_string(),
             auth: "bearer".to_string(),
             base_url: None,
+            filter: openapi::OperationFilter::default(),
         }
     }
 
@@ -461,10 +463,7 @@ mod tests {
             .diagnostics
             .iter()
             .any(|diag| diag.code == "max_depth_exceeded"));
-        assert!(out
-            .diagnostics
-            .iter()
-            .any(|diag| diag.code == "no_methods"));
+        assert!(out.diagnostics.iter().any(|diag| diag.code == "no_methods"));
     }
 
     #[test]

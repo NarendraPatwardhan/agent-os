@@ -121,6 +121,17 @@ impl KernelExports {
     pub(crate) fn require_ctl_unmount(&self) -> Result<TypedFunc<(i32, i32), i32>> {
         Self::require(&self.mc_ctl_unmount, "mc_ctl_unmount")
     }
+    pub(crate) fn require_ctl_svc_call_start(
+        &self,
+    ) -> Result<TypedFunc<(i32, i32, i32, i32), i32>> {
+        Self::require(&self.mc_ctl_svc_call_start, "mc_ctl_svc_call_start")
+    }
+    pub(crate) fn require_ctl_svc_call_poll(&self) -> Result<TypedFunc<i32, i32>> {
+        Self::require(&self.mc_ctl_svc_call_poll, "mc_ctl_svc_call_poll")
+    }
+    pub(crate) fn require_ctl_svc_call_close(&self) -> Result<TypedFunc<i32, i32>> {
+        Self::require(&self.mc_ctl_svc_call_close, "mc_ctl_svc_call_close")
+    }
     pub(crate) fn require_ctl_exec_start(&self) -> Result<TypedFunc<i32, i32>> {
         Self::require(&self.mc_ctl_exec_start, "mc_ctl_exec_start")
     }

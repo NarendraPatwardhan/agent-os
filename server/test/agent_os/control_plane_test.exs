@@ -128,14 +128,17 @@ defmodule AgentOS.ControlPlaneTest do
                  deterministic: true,
                  workers: 0,
                  host_call: :relay,
-                 net: :relay
-               )
-
-      assert :ok =
-               ControlPlane.write_file(
-                 id,
-                 "/etc/tools/catalog.json",
-                 ~s({"tools":[{"address":"host.org.main.greet","description":"Greet","binding":{"type":"host_call","name":"greet","args":"raw"}}]})
+                 net: :relay,
+                 # Host-call tool injected through the sharded catalog path (no compiler needed for
+                 # host-call tools); the broker relays its invocation to this BEAM owner.
+                 host_tools: [
+                   %{
+                     address: "host.org.main.greet",
+                     description: "Greet",
+                     name: "greet",
+                     args: "raw"
+                   }
+                 ]
                )
 
       assert {:ok, host_job} = ControlPlane.exec_start(id, "tools call host.org.main.greet world")
@@ -224,6 +227,105 @@ defmodule AgentOS.ControlPlaneTest do
                poll_exec(id, read_job, 5_000)
     after
       ControlPlane.dispose(id)
+    end
+  end
+
+  @tag timeout: 120_000
+  test "destructive connection egress is gated by host-enforced approval relayed to the BEAM owner" do
+    wasm = runfile!("memcontainers/kernel/rust/kernel.wasm")
+    posix = runfile!("memcontainers/images/posix.tar")
+    {port, listen} = start_loopback_server()
+    origin = "http://127.0.0.1:#{port}"
+    connection = {"petstore.org.main", {:bearer, "fixture-token"}, [origin]}
+
+    # Allow: a destructive (POST) connection call parks for approval, relays a tool_approval event
+    # with HOST-COMPUTED facts, and on allow un-parks, splices the credential, and reaches the origin.
+    allow_id = unique_id("approve-allow")
+
+    try do
+      assert {:ok, _pid} =
+               ControlPlane.create(allow_id,
+                 wasm: wasm,
+                 base_image: posix,
+                 deterministic: true,
+                 workers: 0,
+                 net: {:real, [connection]},
+                 tool_approval: :relay
+               )
+
+      assert {:ok, job} =
+               ControlPlane.exec_start(
+                 allow_id,
+                 "fetch -X POST -H 'X-MC-Connection: petstore.org.main' #{origin}/widgets"
+               )
+
+      assert {:ok, %{kind: :tool_approval, handle: handle} = event} =
+               next_relay(allow_id, job, 5_000)
+
+      # Host-computed facts (not guest-supplied): connection, method, url, origin.
+      assert event.connection == "petstore.org.main"
+      assert event.method == "POST"
+      assert event.origin == origin
+      assert event.url =~ "/widgets"
+
+      assert :ok = ControlPlane.egress_tool_approval_respond(allow_id, handle, true)
+      assert {:ok, %{exit_code: 0, stdout: "ok"}} = poll_exec(allow_id, job, 5_000)
+    after
+      ControlPlane.dispose(allow_id)
+    end
+
+    # Deny: the same gate, answered deny, fails closed — the guest gets the declined envelope and the
+    # credential is never spliced or sent.
+    deny_id = unique_id("approve-deny")
+
+    try do
+      assert {:ok, _pid} =
+               ControlPlane.create(deny_id,
+                 wasm: wasm,
+                 base_image: posix,
+                 deterministic: true,
+                 workers: 0,
+                 net: {:real, [connection]},
+                 tool_approval: :relay
+               )
+
+      assert {:ok, job} =
+               ControlPlane.exec_start(
+                 deny_id,
+                 "fetch -X DELETE -H 'X-MC-Connection: petstore.org.main' #{origin}/widgets/1"
+               )
+
+      assert {:ok, %{kind: :tool_approval, handle: handle, method: "DELETE"}} =
+               next_relay(deny_id, job, 5_000)
+
+      assert :ok = ControlPlane.egress_tool_approval_respond(deny_id, handle, false)
+      assert {:ok, %{exit_code: 1, stdout: stdout}} = poll_exec(deny_id, job, 5_000)
+      assert stdout =~ "declined"
+    after
+      ControlPlane.dispose(deny_id)
+      :gen_tcp.close(listen)
+    end
+  end
+
+  defp start_loopback_server do
+    {:ok, listen} = :gen_tcp.listen(0, [:binary, packet: :raw, active: false, reuseaddr: true])
+    {:ok, port} = :inet.port(listen)
+    spawn_link(fn -> loopback_accept(listen) end)
+    {port, listen}
+  end
+
+  # A minimal real HTTP/1.1 origin: accept, read the request, answer 200 "ok", close, loop. The host's
+  # ureq client really connects here (no mocks) once an approval is granted.
+  defp loopback_accept(listen) do
+    case :gen_tcp.accept(listen) do
+      {:ok, sock} ->
+        _ = :gen_tcp.recv(sock, 0, 1_000)
+        :gen_tcp.send(sock, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+        :gen_tcp.close(sock)
+        loopback_accept(listen)
+
+      {:error, _reason} ->
+        :ok
     end
   end
 

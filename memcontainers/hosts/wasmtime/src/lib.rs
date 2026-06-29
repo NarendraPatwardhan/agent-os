@@ -20,19 +20,44 @@ use anyhow::{anyhow, Result};
 use sha2::{Digest, Sha256};
 use wasmtime::{Caller, Engine, Instance, Linker, Memory, Module, Store};
 
+/// Lowercase hex sha-256 — the one content-address helper shared across the host modules (catalog
+/// shard/index digests, connection-approval argument digests).
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(64);
+    for b in digest {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
 mod bridge;
+mod catalog;
 mod connections;
 mod exports;
 mod host_call;
 mod net;
 mod persist;
+mod policy;
 
-pub use connections::{ConnectionCredential, ConnectionError, ConnectionRegistry};
+pub use catalog::{
+    read_default_catalog_compiler_wasm, CatalogApplyStatus, CatalogConnection,
+    CatalogInjectOptions, CatalogSpecSource, HostToolDef,
+};
+pub use connections::{
+    ConnectionCredential, ConnectionError, ConnectionRegistry, PreparedConnectionRequest,
+    PreparedHttpRequest,
+};
 pub use host_call::{DeniedHostCall, HostCallCapability, MapHostCall};
 #[cfg(feature = "tokio-net")]
 pub use net::TokioNet;
-pub use net::{DeniedNet, NetCapability, RealNet};
+pub use net::{
+    DeniedNet, NetCapability, RealNet, ToolApprovalDecision, ToolApprovalFacts, ToolApprover,
+};
 pub use persist::{DeniedPersist, DiskPersist, PersistCapability};
+pub use policy::{
+    ToolPolicyAction, ToolPolicyError, ToolPolicyOwner, ToolPolicyRule, ToolPolicySet,
+};
 
 use bridge::register_bridge;
 use exports::KernelExports;
@@ -770,6 +795,13 @@ pub struct ExecResult {
     pub exit_code: i32,
 }
 
+/// Result of a host-control resident-service call.
+#[derive(Debug, Clone)]
+pub struct ServiceCallResult {
+    pub status: i32,
+    pub body: Vec<u8>,
+}
+
 /// Metadata from [`KernelHost::stat`]. Reports the link itself for a symlink (the control
 /// channel uses lstat semantics).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1272,6 +1304,68 @@ impl KernelHost {
             return Err(ctl_err("unmount", path, n));
         }
         Ok(())
+    }
+
+    /// Call a resident service as host control (`SYSTEM_CALLER`) through the kernel-owned
+    /// service channel. The result body is framed in the control buffer by the kernel as
+    /// `[status:i32][body_len:u32][body]`.
+    pub fn service_call(&mut self, service: &str, request: &[u8]) -> Result<ServiceCallResult> {
+        let start = self.exports.require_ctl_svc_call_start()?;
+        let poll = self.exports.require_ctl_svc_call_poll()?;
+        let close = self.exports.require_ctl_svc_call_close()?;
+        let job = {
+            let mut req = Vec::with_capacity(service.len() + request.len());
+            req.extend_from_slice(service.as_bytes());
+            req.extend_from_slice(request);
+            self.ctl_put(&req)?;
+            wt(
+                start.call(
+                    &mut self.store,
+                    (
+                        0,
+                        service.len() as i32,
+                        service.len() as i32,
+                        request.len() as i32,
+                    ),
+                ),
+                "mc_ctl_svc_call_start",
+            )?
+        };
+        if job < 0 {
+            return Err(ctl_err("service_call", service, job));
+        }
+        for _ in 0..CTL_RETRY_TICKS {
+            let status = wt(poll.call(&mut self.store, job), "mc_ctl_svc_call_poll")?;
+            if status == 0 {
+                self.tick()?;
+                continue;
+            }
+            if status < 0 {
+                let _ = close.call(&mut self.store, job);
+                return Err(ctl_err("service_call_poll", service, status));
+            }
+            let framed = self.ctl_get(8)?;
+            if framed.len() < 8 {
+                let _ = close.call(&mut self.store, job);
+                return Err(anyhow!("service_call returned a truncated frame"));
+            }
+            let service_status = i32::from_le_bytes(framed[0..4].try_into().unwrap());
+            let body_len = u32::from_le_bytes(framed[4..8].try_into().unwrap()) as usize;
+            let framed = self.ctl_get(8 + body_len)?;
+            if framed.len() < 8 + body_len {
+                let _ = close.call(&mut self.store, job);
+                return Err(anyhow!("service_call returned a truncated body"));
+            }
+            return Ok(ServiceCallResult {
+                status: service_status,
+                body: framed[8..8 + body_len].to_vec(),
+            });
+        }
+        let _ = close.call(&mut self.store, job);
+        Err(anyhow!(
+            "service_call '{}' stuck after {CTL_RETRY_TICKS} ticks",
+            service
+        ))
     }
 
     /// Begin a command without driving it to completion. Returns a job id; drive ticks

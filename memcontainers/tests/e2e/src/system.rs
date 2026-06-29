@@ -6,14 +6,69 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use host::MapHostCall;
+use serde_json::{json, Map, Value};
 
 use crate::{boot_posix, boot_posix_with_persist, boot_posix_with_tools, Session};
 
 fn seed_catalog(s: &mut Session, json: &str) {
+    let doc: Value = serde_json::from_str(json).expect("catalog fixture JSON");
+    let tools = doc
+        .get("tools")
+        .and_then(Value::as_array)
+        .expect("catalog fixture tools");
     s.host.mkdir("/etc/tools").ok();
+    s.host.mkdir("/etc/tools/catalog").ok();
+    s.host.mkdir("/etc/tools/catalog/records").ok();
+    let mut entries = Vec::new();
+    for record in tools {
+        let obj = record.as_object().expect("tool record object");
+        let address = obj
+            .get("address")
+            .and_then(Value::as_str)
+            .expect("tool address");
+        let integration = obj
+            .get("integration")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| address.split('.').next().unwrap_or("host"));
+        let description = obj.get("description").and_then(Value::as_str).unwrap_or("");
+        let mut shard = Map::new();
+        for key in ["input_schema", "output_schema", "annotations", "binding"] {
+            if let Some(value) = obj.get(key) {
+                shard.insert(key.to_string(), value.clone());
+            }
+        }
+        let shard = serde_json::to_vec(&Value::Object(shard)).expect("encode shard");
+        let sha = pkgcore::sha256_hex(&shard);
+        s.host
+            .write_file(&format!("/etc/tools/catalog/records/{sha}"), &shard)
+            .expect("seed tool shard");
+        entries.push(json!({
+            "address": address,
+            "integration": integration,
+            "description": description,
+            "sha": sha,
+        }));
+    }
+    entries.sort_by(|a, b| {
+        a.get("address")
+            .and_then(Value::as_str)
+            .cmp(&b.get("address").and_then(Value::as_str))
+    });
+    let index = serde_json::to_vec(&json!({
+        "generation": 0,
+        "tools": entries,
+    }))
+    .expect("encode index");
+    let digest = pkgcore::sha256_hex(&index);
     s.host
-        .write_file("/etc/tools/catalog.json", json.as_bytes())
-        .expect("seed tool catalog");
+        .write_file("/etc/tools/catalog/index.json", &index)
+        .expect("seed catalog index");
+    s.host
+        .write_file(
+            "/etc/tools/catalog/index.sha256",
+            format!("{digest}\n").as_bytes(),
+        )
+        .expect("seed catalog digest");
 }
 
 /// WHY: `/svc/tools` is the guest→host tool broker — it discovers an addressed catalog record, validates
@@ -256,38 +311,14 @@ fn tools_call_output_writes_to_requested_guest_path() {
     );
 }
 
-/// WHY: destructive tool calls are policy-gated by `/svc/tools` before dispatch, over the same
-/// host-call/permission channel the runtime already uses for interactive decisions. GUARANTEES: a
-/// `requires_approval` catalog annotation prompts the host with non-secret metadata, denial prevents
-/// the host tool from running, and approval resumes the real tool call.
+/// WHY: destructive approval moved out of the guest broker to the host egress boundary. GUARANTEES:
+/// catalog annotations remain descriptive metadata only; `/svc/tools` validates and dispatches without
+/// a guest-side approval host-call.
 #[test]
-fn tools_requires_approval_before_destructive_dispatch() {
-    #[derive(Default)]
-    struct Approval {
-        allow: bool,
-        prompts: Vec<String>,
-    }
-
-    let approval = Arc::new(Mutex::new(Approval::default()));
+fn tools_treats_approval_annotations_as_descriptive_metadata() {
     let calls = Arc::new(Mutex::new(0usize));
 
     let mut tools = MapHostCall::new();
-    {
-        let approval = Arc::clone(&approval);
-        tools.register_raw(
-            "/svc/tools/permission",
-            Box::new(move |body: &[u8]| {
-                let text = String::from_utf8_lossy(body).into_owned();
-                let mut approval = approval.lock().unwrap();
-                approval.prompts.push(text);
-                if approval.allow {
-                    Ok(br#"{"allow":true}"#.to_vec())
-                } else {
-                    Ok(br#"{"allow":false}"#.to_vec())
-                }
-            }),
-        );
-    }
     {
         let calls = Arc::clone(&calls);
         tools.register(
@@ -310,29 +341,9 @@ fn tools_requires_approval_before_destructive_dispatch() {
 
     assert_eq!(
         s.run_for_output("tools call host.org.main.deleteThing '{\"id\":1}'"),
-        "{\"ok\":false,\"err\":{\"code\":\"declined\",\"message\":\"tool call approval declined\"}}\r\n"
-    );
-    assert_eq!(*calls.lock().unwrap(), 0, "denial must not dispatch");
-    {
-        let approval = approval.lock().unwrap();
-        assert_eq!(approval.prompts.len(), 1);
-        assert!(approval.prompts[0].contains("\"kind\":\"tool_approval\""));
-        assert!(approval.prompts[0].contains("\"address\":\"host.org.main.deleteThing\""));
-        assert!(approval.prompts[0].contains("\"approvalDescription\":\"DELETE /things/{id}\""));
-        assert!(approval.prompts[0].contains("\"argsPreview\":\"{\\\"id\\\":1}\""));
-        assert!(
-            !approval.prompts[0].contains("Authorization"),
-            "approval prompt must not carry injected credentials"
-        );
-    }
-
-    approval.lock().unwrap().allow = true;
-    assert_eq!(
-        s.run_for_output("tools call host.org.main.deleteThing '{\"id\":1}'"),
         "{\"ok\":true,\"data\":{\"deleted\":true}}\r\n"
     );
-    assert_eq!(*calls.lock().unwrap(), 1, "approval should resume exactly one dispatch");
-    assert_eq!(approval.lock().unwrap().prompts.len(), 2);
+    assert_eq!(*calls.lock().unwrap(), 1);
 }
 
 /// WHY: SDK-created `/bin/<alias>` symlinks point to one `tools` binary and dispatch by argv[0].

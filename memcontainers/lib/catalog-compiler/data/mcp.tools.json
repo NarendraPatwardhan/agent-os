@@ -1,0 +1,27 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "tools": [
+      {
+        "name": "repo.search",
+        "description": "Search docs",
+        "inputSchema": {
+          "type": "object",
+          "properties": { "q": { "type": "string" } }
+        },
+        "annotations": { "readOnlyHint": true }
+      },
+      {
+        "name": "repo.delete",
+        "description": "Delete docs",
+        "inputSchema": {
+          "type": "object",
+          "required": ["repo"],
+          "properties": { "repo": { "type": "string" } }
+        },
+        "annotations": { "title": "Delete docs", "destructiveHint": true }
+      }
+    ]
+  }
+}

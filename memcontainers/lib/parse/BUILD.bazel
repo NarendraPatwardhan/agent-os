@@ -12,6 +12,7 @@ rust_library(
     crate_name = "mc_parse",
     edition = "2021",
     deps = [
+        "//memcontainers/pkgcore",
         "@parse_crates//:serde",
         "@parse_crates//:serde_json",
         "@parse_crates//:serde_yaml",
