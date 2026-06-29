@@ -8,6 +8,50 @@ use std::collections::HashMap;
 
 const CONNECTION_HEADER: &str = "X-MC-Connection";
 
+/// Derive a connection's credential-egress origins from the curated registry when the embedder omitted
+/// them, so a connection is just `{ref, auth}` (the wasmtime/Elixir-host peer of the JS
+/// `deriveConnectionOrigins`). The registry (`mc_parse::registry`) is the single source for both hosts;
+/// curated `servers` (our constant) are used first, then an `endpoint`'s origin. Curated data only —
+/// never a live spec — so a tampered upstream cannot redirect the credential. Returns empty when the
+/// integration is not curated, which leaves the splice failing closed (never widened).
+pub fn derive_connection_origins(reference: &str) -> Vec<String> {
+    let integration = reference.split('.').next().unwrap_or("");
+    if integration.is_empty() {
+        return Vec::new();
+    }
+    for id in [
+        integration.to_string(),
+        format!("{integration}-rest"),
+        format!("{integration}-openapi"),
+    ] {
+        let Some(entry) = mc_parse::registry::find(&id) else {
+            continue;
+        };
+        if !entry.servers.is_empty() {
+            return entry.servers.iter().map(|s| s.to_string()).collect();
+        }
+        if let Some(endpoint) = entry.endpoint {
+            if let Some(origin) = origin_of(endpoint) {
+                return vec![origin];
+            }
+        }
+        return Vec::new();
+    }
+    Vec::new()
+}
+
+/// `scheme://host[:port]` of an absolute URL — the egress origin. Matches `new URL(x).origin` for the
+/// `http`/`https` endpoints the registry carries (no path, no trailing slash).
+fn origin_of(url: &str) -> Option<String> {
+    let scheme_end = url.find("://")?;
+    let after = &url[scheme_end + 3..];
+    let host_end = after.find('/').unwrap_or(after.len());
+    if host_end == 0 {
+        return None;
+    }
+    Some(format!("{}://{}", &url[..scheme_end], &after[..host_end]))
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ConnectionRegistry {
     entries: HashMap<String, ConnectionEntry>,

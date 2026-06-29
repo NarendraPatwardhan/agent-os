@@ -35,8 +35,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use constants_rust::{PERSIST_OP_DELETE, PERSIST_OP_GET, PERSIST_OP_LIST, PERSIST_OP_PUT};
 use host::{
-    CatalogConnection, CatalogInjectOptions, CatalogSpecSource, ConnectionCredential,
-    ConnectionError, ConnectionRegistry, ExecResult, HostCallCapability, HostToolDef, KernelHost,
+    derive_connection_origins, CatalogConnection, CatalogInjectOptions, CatalogSpecSource,
+    ConnectionCredential, ConnectionError, ConnectionRegistry, ExecResult, HostCallCapability,
+    HostToolDef, KernelHost,
     KernelHostBuilder, NetCapability, PersistCapability, RealNet, StreamSink, ToolApprovalDecision,
     ToolApprovalFacts, ToolApprover, ToolPolicyAction, ToolPolicyOwner, ToolPolicyRule,
 };
@@ -606,6 +607,13 @@ fn build_connections(defs: Vec<NifConnectionDef>) -> NifResult<ConnectionRegistr
                     "unknown connection credential kind {kind:?}"
                 )))
             }
+        };
+        // Omitted origins are derived from the curated registry (parity with the JS host), so a
+        // connection is just {ref, auth}; an underivable one stays empty and fails closed at the splice.
+        let origins = if origins.is_empty() {
+            derive_connection_origins(&reference)
+        } else {
+            origins
         };
         registry
             .insert(reference.clone(), credential, origins)

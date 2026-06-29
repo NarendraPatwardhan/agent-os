@@ -44,6 +44,7 @@ rust_library(
         "@host_crates//:serde_json",
         "@host_crates//:ureq",
         "@host_crates//:tungstenite",
+        "//memcontainers/lib/parse",  # curated registry (servers) for host-side origin derivation
         "//memcontainers/contracts:env_rust",  # the mc_bridge_table! macro → the host's env impls (B2)
         "//memcontainers/contracts:ctl_rust",  # the mc_control_table! macro → the kernel-export lookups (B2)
         "//memcontainers/contracts:constants_rust",  # EAGAIN/EMSGSIZE — ws send sentinels + ctl retry (B2)
@@ -134,6 +135,15 @@ rust_test(
         "@host_crates//:serde_json",
         "@rules_rust//rust/runfiles",
     ],
+)
+
+# Host-side origin derivation from the curated registry — parity with the JS deriveConnectionOrigins.
+rust_test(
+    name = "derive_origins_test",
+    srcs = ["test/derive_origins.rs"],
+    crate_root = "test/derive_origins.rs",
+    edition = "2021",
+    deps = [":host"],
 )
 
 # Run the fixture over the SAME kernel + base the e2e boots (B1) to produce the cross-host snapshot the

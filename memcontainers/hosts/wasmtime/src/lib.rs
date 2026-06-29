@@ -45,8 +45,8 @@ pub use catalog::{
     CatalogInjectOptions, CatalogSpecSource, HostToolDef,
 };
 pub use connections::{
-    ConnectionCredential, ConnectionError, ConnectionRegistry, PreparedConnectionRequest,
-    PreparedHttpRequest,
+    derive_connection_origins, ConnectionCredential, ConnectionError, ConnectionRegistry,
+    PreparedConnectionRequest, PreparedHttpRequest,
 };
 pub use host_call::{DeniedHostCall, HostCallCapability, MapHostCall};
 #[cfg(feature = "tokio-net")]
