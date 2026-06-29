@@ -9,10 +9,17 @@ load("//memcontainers/hosts/wasmtime:defs.bzl", "host_release_shared_library")
 # Native cdylib (`libhost_nif.so`), built by Bazel — NOT by mix's rustler compilation. The
 # //server control plane `data`-depends on it and loads it from priv/. `rustler` comes from its
 # own @nif_crates universe (//MODULE.bazel); the wasmtime embedding comes from `:host`.
+#
+# `manual`: this is the intermediate cdylib that `host_nif_release` transitions to opt and
+# re-exports. Both emit `libhost_nif.so` in this package, so leaving it in the `//...` wildcard
+# makes the two actions collide on the same output path at the top-level config. Mirrors the
+# kernel's `release_wasm`-wrapped `:lib` (also `manual`). The release wrapper still builds it
+# transitively, so nothing that consumes `host_nif_release` is affected.
 rust_shared_library(
     name = "host_nif",
     srcs = ["src/lib.rs"],
     edition = "2021",
+    tags = ["manual"],
     visibility = ["//visibility:public"],
     deps = [
         "//memcontainers/contracts:constants_rust",
