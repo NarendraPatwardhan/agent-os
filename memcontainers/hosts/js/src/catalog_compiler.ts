@@ -39,7 +39,15 @@ type CompilerExports = {
   cc_validate_address(ptr: number, len: number): bigint;
   cc_validate_policy(ptr: number, len: number): bigint;
   cc_policy_resolve(rulesPtr: number, rulesLen: number, addrPtr: number, addrLen: number): bigint;
+  cc_discovery_request(kindPtr: number, kindLen: number, epPtr: number, epLen: number): bigint;
 };
+
+/** How to acquire a connection's source document (built single-source by toolcore; the host is pure
+ *  transport, adding `content-type` + the credential + the MCP session header). */
+export type DiscoveryRequest =
+  | { protocol: "static" }
+  | { protocol: "graphql"; url: string; body: string }
+  | { protocol: "mcp"; url: string; initialize: string; initialized: string; list: string };
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
@@ -95,6 +103,7 @@ export class CatalogCompiler {
       "cc_validate_address",
       "cc_validate_policy",
       "cc_policy_resolve",
+      "cc_discovery_request",
     ] as const) {
       if (!(name in exports)) throw new Error(`catalog compiler is missing ${name}`);
     }
@@ -151,6 +160,23 @@ export class CatalogCompiler {
 
   bundleSchemaVersion(): number {
     return this.exports.cc_bundle_schema_version();
+  }
+
+  /** The discovery protocol + request bodies for a registry kind (single-source toolcore); the host
+   *  executes it as transport. */
+  async discoveryRequest(kind: string, endpoint: string): Promise<DiscoveryRequest> {
+    const k = enc(kind);
+    const e = enc(endpoint);
+    const kp = this.write(k);
+    const ep = this.write(e);
+    try {
+      return JSON.parse(
+        dec(await this.readReturn(this.exports.cc_discovery_request(kp, k.length, ep, e.length))),
+      ) as DiscoveryRequest;
+    } finally {
+      this.exports.cc_free(kp, k.length);
+      this.exports.cc_free(ep, e.length);
+    }
   }
 
   /** Validate a fully-qualified tool address (`integration.{org|user}.tool…`) via the single-source

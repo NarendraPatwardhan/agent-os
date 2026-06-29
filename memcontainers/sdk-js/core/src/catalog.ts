@@ -71,7 +71,7 @@ export async function connectionToolCatalogBundle(
     const registry = await resolveRegistry(compiler, ref.integration, connection);
     const groups = selectedGroups(ref.integration, registry, selectors, connection.tools);
     for (const group of groups) {
-      const source = await acquireSource(connection, registry);
+      const source = await acquireSource(connection, registry, compiler);
       const compileOpts = resolvedCompileOpts(ref.integration, registry, source, group);
       const entries = await compileCached(compiler, source, compileOpts);
       bundles.push(await bundleFromCompilerEntries(entries, ref, generation));
@@ -207,7 +207,11 @@ function selectorsForConnection(
   return out;
 }
 
-async function acquireSource(connection: ConnectionDefinition, registry: RegistryEntry): Promise<SourceBytes> {
+async function acquireSource(
+  connection: ConnectionDefinition,
+  registry: RegistryEntry,
+  compiler: CatalogCompiler,
+): Promise<SourceBytes> {
   const spec = connection.spec;
   if (spec && "bytes" in spec) {
     return cachedSource(spec.bytes, sourceFormat(spec, undefined), sourceBaseUrl(spec), sourceEndpoint(spec));
@@ -222,30 +226,139 @@ async function acquireSource(connection: ConnectionDefinition, registry: Registr
     );
   }
   const url = spec && "url" in spec ? spec.url : registry.url;
-  if (!url) {
-    throw new Error(`connection '${connection.ref}' requires a provided spec; live discovery is deferred`);
+  // The endpoint a live discovery (graphql/mcp) calls — a provided url, else the registry endpoint/url.
+  const endpoint = (spec && "url" in spec ? spec.url : registry.endpoint) ?? url ?? "";
+  const discovery = await compiler.discoveryRequest(registry.kind, endpoint);
+
+  if (discovery.protocol === "static") {
+    if (!url) throw new Error(`connection '${connection.ref}' requires a provided spec`);
+    const cachedSha = sourceShaByUrl.get(url);
+    const cached = cachedSha ? sourceBySha.get(cachedSha) : undefined;
+    if (cached && cachedSha) {
+      return {
+        bytes: cached,
+        sha: cachedSha,
+        format: sourceFormat(spec, url),
+        ...(sourceBaseUrl(spec) ? { baseUrl: sourceBaseUrl(spec) } : {}),
+        ...(sourceEndpoint(spec) ? { endpoint: sourceEndpoint(spec) } : {}),
+      };
+    }
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`catalog source fetch failed for ${url}: HTTP ${response.status}`);
+    const loaded = await cachedSource(
+      new Uint8Array(await response.arrayBuffer()),
+      sourceFormat(spec, url),
+      sourceBaseUrl(spec),
+      sourceEndpoint(spec),
+    );
+    sourceShaByUrl.set(url, loaded.sha);
+    return loaded;
   }
-  const cachedSha = sourceShaByUrl.get(url);
-  const cached = cachedSha ? sourceBySha.get(cachedSha) : undefined;
-  if (cached && cachedSha) {
-    return {
-      bytes: cached,
-      sha: cachedSha,
-      format: sourceFormat(spec, url),
-      ...(sourceBaseUrl(spec) ? { baseUrl: sourceBaseUrl(spec) } : {}),
-      ...(sourceEndpoint(spec) ? { endpoint: sourceEndpoint(spec) } : {}),
-    };
+
+  // Live discovery: an authenticated call to the connection endpoint. The credential is applied
+  // host-side here (never reaches the guest); the response is the source document for compilation.
+  // Discovery egresses the credential, so it honors the same origin allowlist as a tool-call splice:
+  // a secret only travels to an allowed origin, fail-closed.
+  assertDiscoveryEndpointAllowed(endpoint, connection.auth, connection.origins ?? []);
+  const bytes =
+    discovery.protocol === "graphql"
+      ? await graphqlDiscover(discovery, connection.auth)
+      : await mcpDiscover(discovery, connection.auth);
+  return cachedSource(bytes, "json", sourceBaseUrl(spec), endpoint);
+}
+
+/** A discovery call that carries a secret must target an allowed origin (mirrors the egress splice).
+ *  An unauthenticated (`none`) discovery has no secret to protect and is permitted. */
+function assertDiscoveryEndpointAllowed(
+  endpoint: string,
+  auth: ConnectionDefinition["auth"],
+  origins: readonly string[],
+): void {
+  if (auth.kind === "none") return;
+  let origin: string;
+  try {
+    origin = new URL(endpoint).origin;
+  } catch {
+    throw new Error(`discovery endpoint '${endpoint}' is not an absolute URL`);
   }
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`catalog source fetch failed for ${url}: HTTP ${response.status}`);
-  const loaded = await cachedSource(
-    new Uint8Array(await response.arrayBuffer()),
-    sourceFormat(spec, url),
-    sourceBaseUrl(spec),
-    sourceEndpoint(spec),
-  );
-  sourceShaByUrl.set(url, loaded.sha);
-  return loaded;
+  if (!origins.includes(origin)) {
+    throw new Error(
+      `discovery endpoint origin '${origin}' is not in the connection's allowed origins — refusing to send the credential`,
+    );
+  }
+}
+
+/** Apply a connection credential to an outbound discovery request, host-side. Returns the (possibly
+ *  query-augmented) URL; mutates `headers` for bearer/header auth. */
+function applyConnectionAuth(
+  auth: ConnectionDefinition["auth"],
+  url: string,
+  headers: Record<string, string>,
+): string {
+  switch (auth.kind) {
+    case "bearer":
+      headers["authorization"] = `Bearer ${auth.token}`;
+      return url;
+    case "header":
+      headers[auth.name.toLowerCase()] = auth.value;
+      return url;
+    case "query": {
+      const u = new URL(url);
+      u.searchParams.set(auth.name, auth.value);
+      return u.toString();
+    }
+    default:
+      return url;
+  }
+}
+
+async function graphqlDiscover(
+  discovery: { url: string; body: string },
+  auth: ConnectionDefinition["auth"],
+): Promise<Uint8Array> {
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  const url = applyConnectionAuth(auth, discovery.url, headers);
+  const res = await fetch(url, { method: "POST", headers, body: discovery.body });
+  if (!res.ok) throw new Error(`GraphQL introspection failed: HTTP ${res.status}`);
+  return new Uint8Array(await res.arrayBuffer());
+}
+
+async function mcpDiscover(
+  discovery: { url: string; initialize: string; initialized: string; list: string },
+  auth: ConnectionDefinition["auth"],
+): Promise<Uint8Array> {
+  const headers = (): Record<string, string> => ({
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+  });
+  const post = async (body: string, session?: string): Promise<Response> => {
+    const h = headers();
+    if (session) h["mcp-session-id"] = session;
+    const url = applyConnectionAuth(auth, discovery.url, h);
+    return fetch(url, { method: "POST", headers: h, body });
+  };
+  const initRes = await post(discovery.initialize);
+  if (!initRes.ok) throw new Error(`MCP initialize failed: HTTP ${initRes.status}`);
+  await initRes.arrayBuffer();
+  const session = initRes.headers.get("mcp-session-id") ?? undefined;
+  await post(discovery.initialized, session).catch(() => undefined); // notification; result ignored
+  const listRes = await post(discovery.list, session);
+  if (!listRes.ok) throw new Error(`MCP tools/list failed: HTTP ${listRes.status}`);
+  return extractDiscoveryJson(listRes.headers.get("content-type") ?? "", await listRes.text());
+}
+
+/** Streamable-HTTP MCP may answer as SSE (`event:`/`data:` frames); lift the JSON out of the `data:`
+ *  lines, else use the body as-is (plain JSON). */
+function extractDiscoveryJson(contentType: string, text: string): Uint8Array {
+  if (contentType.includes("text/event-stream")) {
+    const data = text
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trim())
+      .join("");
+    return new TextEncoder().encode(data || text);
+  }
+  return new TextEncoder().encode(text);
 }
 
 async function cachedSource(

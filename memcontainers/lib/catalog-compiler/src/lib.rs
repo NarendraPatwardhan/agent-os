@@ -399,6 +399,52 @@ pub unsafe extern "C" fn cc_policy_resolve(
     )
 }
 
+/// How a host acquires a connection's source document, by registry kind — the request bodies are built
+/// here so the *logic* is single-source; the host is pure transport (it adds `content-type`, the
+/// credential, the MCP session header, and sends the requests through the egress path).
+///
+/// - `openapi`/`google`: `{"protocol":"static"}` — GET the registry URL (a static spec doc).
+/// - `graphql`: `{"protocol":"graphql","url","body"}` — one authenticated introspection POST; the
+///   response is the introspection result (`compile` reads `data.__schema`).
+/// - `mcp-remote`: `{"protocol":"mcp","url","initialize","initialized","list"}` — the streamable-HTTP
+///   handshake: POST `initialize` (capture the `Mcp-Session-Id` response header), POST the
+///   `notifications/initialized` notification, then POST `tools/list` (the response is the source;
+///   `compile` reads `result.tools`). The host threads the session header through the later POSTs.
+#[no_mangle]
+pub unsafe extern "C" fn cc_discovery_request(
+    kind_ptr: *const u8,
+    kind_len: usize,
+    endpoint_ptr: *const u8,
+    endpoint_len: usize,
+) -> u64 {
+    let kind = str::from_utf8(read(kind_ptr, kind_len)).unwrap_or("");
+    let endpoint = str::from_utf8(read(endpoint_ptr, endpoint_len)).unwrap_or("");
+    let to_str = |v: serde_json::Value| serde_json::to_string(&v).expect("discovery body serializes");
+    let out = match kind {
+        "graphql" => json!({
+            "protocol": "graphql",
+            "url": endpoint,
+            "body": to_str(json!({ "query": mc_parse::graphql::INTROSPECTION_QUERY })),
+        }),
+        "mcp-remote" => json!({
+            "protocol": "mcp",
+            "url": endpoint,
+            "initialize": to_str(json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": { "name": "agent-os", "version": "0" }
+                }
+            })),
+            "initialized": to_str(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" })),
+            "list": to_str(json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} })),
+        }),
+        _ => json!({ "protocol": "static" }),
+    };
+    alloc_return(serde_json::to_vec(&out).expect("discovery request serializes"))
+}
+
 fn parse_policy_rules(bytes: &[u8]) -> Result<Vec<toolcore::policy::ToolPolicyRule>, String> {
     use toolcore::policy::{ToolPolicyAction, ToolPolicyOwner, ToolPolicyRule};
     let value: serde_json::Value =

@@ -382,6 +382,104 @@ print("bypass-ok")
     ) {
       throw new Error(`direct/raw requests did not reach upstream with spliced credentials: ${JSON.stringify(bypassRequests)}`);
     }
+
+    // ── Live discovery: GraphQL introspection + remote-MCP initialize→tools/list handshake. The host
+    //    runs discovery as authenticated egress (credential spliced host-side), then compiles the result.
+    console.log("phase: live discovery (graphql + mcp)");
+    const introspection = JSON.stringify({
+      data: {
+        __schema: {
+          queryType: { name: "Query" },
+          mutationType: null,
+          types: [
+            {
+              kind: "OBJECT",
+              name: "Query",
+              fields: [
+                { name: "viewer", description: "current user", args: [], type: { kind: "OBJECT", name: "User", ofType: null } },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    const mcpToolsList = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 2,
+      result: { tools: [{ name: "search", description: "search docs", inputSchema: { type: "object", properties: {} } }] },
+    });
+    const discoSeen: { auth: string | null; method?: string }[] = [];
+    const disco = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        const auth = (req.headers.authorization as string | undefined) ?? null;
+        if ((req.url ?? "").includes("/graphql")) {
+          discoSeen.push({ auth });
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(introspection);
+          return;
+        }
+        const msg = JSON.parse(body || "{}") as { method?: string; id?: number };
+        discoSeen.push({ auth, method: msg.method });
+        if (msg.method === "initialize") {
+          res.writeHead(200, { "content-type": "application/json", "mcp-session-id": "s1" });
+          res.end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} }));
+        } else if (msg.method === "notifications/initialized") {
+          res.writeHead(202).end();
+        } else if (msg.method === "tools/list") {
+          // SSE form, to also exercise the data: extraction path
+          res.writeHead(200, { "content-type": "text/event-stream" });
+          res.end(`event: message\ndata: ${mcpToolsList}\n\n`);
+        } else {
+          res.writeHead(400).end();
+        }
+      });
+    });
+    await new Promise<void>((resolve) => disco.listen(0, "127.0.0.1", () => resolve()));
+    const discoOrigin = `http://127.0.0.1:${(disco.address() as { port: number }).port}`;
+    try {
+      const gqlVm = await mc.create({
+        kernel,
+        image,
+        deterministic: true,
+        net: true,
+        permissions: { network: "allow" },
+        connections: [
+          { ref: "gql.org.main", auth: { kind: "bearer", token: "gql-tok" }, origins: [discoOrigin], spec: { format: "graphql", url: `${discoOrigin}/graphql` } },
+        ],
+      });
+      created.push(gqlVm);
+      const gqlList = await gqlVm.exec("tools list");
+      if (gqlList.exitCode !== 0 || !gqlList.stdout.includes("gql.org.main.query.viewer")) {
+        throw new Error(`graphql discovery produced no tools: ${gqlList.stdout}`);
+      }
+
+      const mcpVm = await mc.create({
+        kernel,
+        image,
+        deterministic: true,
+        net: true,
+        permissions: { network: "allow" },
+        connections: [
+          { ref: "mcp.org.main", auth: { kind: "bearer", token: "mcp-tok" }, origins: [discoOrigin], spec: { format: "mcp-remote", url: `${discoOrigin}/mcp` } },
+        ],
+      });
+      created.push(mcpVm);
+      const mcpList = await mcpVm.exec("tools list");
+      if (mcpList.exitCode !== 0 || !mcpList.stdout.includes("mcp.org.main.search")) {
+        throw new Error(`mcp discovery produced no tools: ${mcpList.stdout}`);
+      }
+      // The credential was spliced host-side on the discovery calls, and the MCP handshake ran in order.
+      if (!discoSeen.some((s) => s.auth === "Bearer gql-tok") || !discoSeen.some((s) => s.auth === "Bearer mcp-tok")) {
+        throw new Error(`discovery did not splice the credential: ${JSON.stringify(discoSeen)}`);
+      }
+      if (!discoSeen.some((s) => s.method === "initialize") || !discoSeen.some((s) => s.method === "tools/list")) {
+        throw new Error(`mcp handshake incomplete: ${JSON.stringify(discoSeen)}`);
+      }
+    } finally {
+      await new Promise<void>((resolve) => disco.close(() => resolve()));
+    }
   } finally {
     await closeAll(created);
     await server.close();
