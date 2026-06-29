@@ -153,6 +153,23 @@ export class CatalogCompiler {
     return this.exports.cc_bundle_schema_version();
   }
 
+  /** Validate a fully-qualified tool address (`integration.{org|user}.tool…`) via the single-source
+   *  toolcore::parse_address; throws if the shape is invalid (the wasmtime host rejects the same). */
+  async validateAddress(address: string): Promise<void> {
+    const bytes = enc(address);
+    const ptr = this.write(bytes);
+    try {
+      const res: unknown = JSON.parse(dec(await this.readReturn(this.exports.cc_validate_address(ptr, bytes.length))));
+      if (isObject(res) && isObject(res.error)) {
+        throw new Error(
+          typeof res.error.message === "string" ? res.error.message : `invalid tool address '${address}'`,
+        );
+      }
+    } finally {
+      this.exports.cc_free(ptr, bytes.length);
+    }
+  }
+
   /** Validate a tool-policy rule set (owner/action + connection-granular patterns) via the single-source
    *  toolcore engine; throws on the first invalid rule. The wasmtime host enforces the identical check. */
   async validatePolicy(rulesJson: string): Promise<void> {

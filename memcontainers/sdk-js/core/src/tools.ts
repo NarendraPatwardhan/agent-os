@@ -2,6 +2,7 @@
 // → validated args + JSON Schema); `kit()` groups several under one leading name. The SDK seeds the
 // in-VM tool catalog, while the actual handler remains a host-call function keyed by `ToolDefinition.name`.
 
+import type { CatalogCompiler } from "@mc/host";
 import { z } from "zod";
 import type { JsonSchema, ToolContext, ToolDefinition } from "./types.js";
 
@@ -57,6 +58,7 @@ export interface ToolCatalogBundle {
 /** The sharded tool catalog shape seeded into `/etc/tools/catalog/` and applied to `/svc/tools`. */
 export async function toolCatalogBundle(
   defs: ToolDefinition[],
+  compiler: CatalogCompiler,
   generation = 0,
 ): Promise<ToolCatalogBundle> {
   const addresses = new Set<string>();
@@ -64,6 +66,9 @@ export async function toolCatalogBundle(
   for (const d of defs) {
     assertSafeToolBindingName(d.name);
     const address = d.address ?? defaultAddress(d.name);
+    // Validate the address shape against the single-source toolcore engine (the wasmtime host rejects
+    // the same), so a custom host-tool address can't be accepted here but rejected on the other host.
+    await compiler.validateAddress(address);
     if (addresses.has(address)) {
       throw new Error(`duplicate tool catalog address '${address}'`);
     }

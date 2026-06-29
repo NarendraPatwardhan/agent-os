@@ -2,7 +2,14 @@
 // `"remote"` runtime (mc-server over the wire protocol) throws until mc-server is ported; the Vm
 // surface is identical across backends, so it slots in later without changing this file's shape.
 
-import { ConnectionRegistry, HostNet, KernelHostBuilder, MapHostCall, OpfsPersist } from "@mc/host";
+import {
+  ConnectionRegistry,
+  defaultCatalogCompiler,
+  HostNet,
+  KernelHostBuilder,
+  MapHostCall,
+  OpfsPersist,
+} from "@mc/host";
 import type { KernelHost, ToolApprovalFacts, ToolApprover } from "@mc/host";
 // Boot-contract tier ordinals come from the generated contract — the single source of truth the
 // kernel's `Tier` also derives from (contracts/constants.kdl → constants.gen.ts), never a local copy.
@@ -571,7 +578,13 @@ async function mergedCatalogBundle(
   defs: ToolDefinition[],
   generation: number,
 ): Promise<ToolCatalogBundle> {
-  const bundles = [await toolCatalogBundle(defs, generation)];
+  const bundles: ToolCatalogBundle[] = [];
+  // Only touch the compiler when there are host tools to validate — a bare VM (no host tools, no
+  // connections) must not require catalog-compiler.wasm.
+  if (defs.length > 0) {
+    const compiler = await defaultCatalogCompiler(opts.catalogCompiler);
+    bundles.push(await toolCatalogBundle(defs, compiler, generation));
+  }
   const connectionBundle = await connectionToolCatalogBundle(opts, generation);
   if (connectionBundle) bundles.push(connectionBundle);
   return mergeToolCatalogBundles(bundles, generation);
