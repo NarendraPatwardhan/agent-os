@@ -64,10 +64,11 @@ export async function toolCatalogBundle(
   const addresses = new Set<string>();
   const records: { address: string; integration: string; description: string; sha: string; bytes: Uint8Array }[] = [];
   for (const d of defs) {
-    assertSafeToolBindingName(d.name);
+    // Validate the binding name + address shape against the single-source toolcore engine (the wasmtime
+    // host rejects the same), so a host tool accepted here can't be one the other host rejects. (The
+    // exported isSafeToolBindingName predicate stays for the sync runtime router, which has no compiler.)
+    await compiler.validateBindingName(d.name);
     const address = d.address ?? defaultAddress(d.name);
-    // Validate the address shape against the single-source toolcore engine (the wasmtime host rejects
-    // the same), so a custom host-tool address can't be accepted here but rejected on the other host.
     await compiler.validateAddress(address);
     if (addresses.has(address)) {
       throw new Error(`duplicate tool catalog address '${address}'`);

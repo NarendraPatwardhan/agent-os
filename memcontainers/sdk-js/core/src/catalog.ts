@@ -67,7 +67,7 @@ export async function connectionToolCatalogBundle(
   const selectors = catalogToolSelectors(opts.tools);
   const bundles: ToolCatalogBundle[] = [];
   for (const connection of connections) {
-    const ref = parseRef(connection.ref);
+    const ref = await compiler.parseRef(connection.ref);
     const registry = await resolveRegistry(compiler, ref.integration, connection);
     const groups = selectedGroups(ref.integration, registry, selectors, connection.tools);
     for (const group of groups) {
@@ -97,7 +97,7 @@ export async function deriveConnectionOrigins(opts: CreateOptions): Promise<Conn
     connections.map(async (c) => {
       if ((c.origins && c.origins.length) || c.spec) return c;
       try {
-        const ref = parseRef(c.ref);
+        const ref = await compiler.parseRef(c.ref);
         const registry = await resolveRegistry(compiler, ref.integration, c);
         const origins = registryOrigins(registry);
         return origins.length ? { ...c, origins } : c;
@@ -474,14 +474,6 @@ function rePrefixAddress(address: string, ref: RefParts): string {
   const parts = address.split(".");
   if (parts.length < 4) throw new Error(`catalog compiler emitted invalid tool address '${address}'`);
   return [ref.integration, ref.owner, ref.connection, ...parts.slice(3)].join(".");
-}
-
-function parseRef(ref: string): RefParts {
-  const parts = ref.split(".");
-  if (parts.length !== 3 || !parts[0] || (parts[1] !== "org" && parts[1] !== "user") || !parts[2]) {
-    throw new Error(`invalid connection reference '${ref}'`);
-  }
-  return { integration: parts[0], owner: parts[1], connection: parts[2] };
 }
 
 function sourceFormat(source: ConnectionSpecSource | undefined, pathOrUrl: string | undefined): CatalogSourceFormat {

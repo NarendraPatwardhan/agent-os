@@ -360,6 +360,39 @@ pub unsafe extern "C" fn cc_validate_address(ptr: *const u8, len: usize) -> u64 
     })
 }
 
+/// Parse + validate a connection reference `integration.{org|user}.connection` via the single-source
+/// `toolcore::parse_connection_ref`, returning its three segments — so the JS host shares the Rust host's
+/// ref grammar instead of reimplementing it.
+#[no_mangle]
+pub unsafe extern "C" fn cc_parse_ref(ptr: *const u8, len: usize) -> u64 {
+    let reference = str::from_utf8(read(ptr, len)).unwrap_or("");
+    alloc_return(match toolcore::parse_connection_ref(reference) {
+        Ok((integration, owner, connection)) => serde_json::to_vec(&json!({
+            "integration": integration, "owner": owner, "connection": connection
+        }))
+        .expect("ref parts serialize"),
+        Err(_) => serde_json::to_vec(&json!({
+            "error": { "code": "invalid_reference", "message": format!("invalid connection reference `{reference}`") }
+        }))
+        .expect("ref error serializes"),
+    })
+}
+
+/// Validate a host-tool binding name via the single-source `toolcore::valid_binding_name` — so the JS host
+/// shares the Rust host's binding grammar.
+#[no_mangle]
+pub unsafe extern "C" fn cc_validate_binding(ptr: *const u8, len: usize) -> u64 {
+    let name = str::from_utf8(read(ptr, len)).unwrap_or("");
+    alloc_return(if toolcore::valid_binding_name(name) {
+        serde_json::to_vec(&json!({ "ok": true })).expect("ok serializes")
+    } else {
+        serde_json::to_vec(&json!({
+            "error": { "code": "invalid_binding_name", "message": format!("invalid tool binding name `{name}`") }
+        }))
+        .expect("binding error serializes")
+    })
+}
+
 /// Validate a tool-policy rule set (owner/action enums + connection-granular patterns) — the construction
 /// check both hosts enforce.
 #[no_mangle]
@@ -401,7 +434,10 @@ pub unsafe extern "C" fn cc_policy_resolve(
 
 /// How a host acquires a connection's source document, by registry kind — the request bodies are built
 /// here so the *logic* is single-source; the host is pure transport (it adds `content-type`, the
-/// credential, the MCP session header, and sends the requests through the egress path).
+/// credential, the MCP session header, and sends the requests through the egress path). This lives in the
+/// catalog-compiler rather than `toolcore` because it needs `mc_parse::graphql::INTROSPECTION_QUERY`;
+/// `toolcore` stays the minimal no_std core (no `mc_parse` dependency), and both hosts reach this builder
+/// through the same wasm export, so it is single-source regardless of which crate hosts it.
 ///
 /// - `openapi`/`google`: `{"protocol":"static"}` — GET the registry URL (a static spec doc).
 /// - `graphql`: `{"protocol":"graphql","url","body"}` — one authenticated introspection POST; the

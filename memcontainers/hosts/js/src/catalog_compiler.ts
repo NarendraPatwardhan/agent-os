@@ -37,6 +37,8 @@ type CompilerExports = {
   cc_compile(srcPtr: number, srcLen: number, optsPtr: number, optsLen: number): bigint;
   cc_bundle_schema_version(): number;
   cc_validate_address(ptr: number, len: number): bigint;
+  cc_parse_ref(ptr: number, len: number): bigint;
+  cc_validate_binding(ptr: number, len: number): bigint;
   cc_validate_policy(ptr: number, len: number): bigint;
   cc_policy_resolve(rulesPtr: number, rulesLen: number, addrPtr: number, addrLen: number): bigint;
   cc_discovery_request(kindPtr: number, kindLen: number, epPtr: number, epLen: number): bigint;
@@ -101,6 +103,8 @@ export class CatalogCompiler {
       "cc_compile",
       "cc_bundle_schema_version",
       "cc_validate_address",
+      "cc_parse_ref",
+      "cc_validate_binding",
       "cc_validate_policy",
       "cc_policy_resolve",
       "cc_discovery_request",
@@ -189,6 +193,43 @@ export class CatalogCompiler {
       if (isObject(res) && isObject(res.error)) {
         throw new Error(
           typeof res.error.message === "string" ? res.error.message : `invalid tool address '${address}'`,
+        );
+      }
+    } finally {
+      this.exports.cc_free(ptr, bytes.length);
+    }
+  }
+
+  /** Parse + validate a connection reference via the single-source toolcore grammar, returning its three
+   *  segments. Throws on an invalid reference (the wasmtime host rejects the same). */
+  async parseRef(reference: string): Promise<{ integration: string; owner: string; connection: string }> {
+    const bytes = enc(reference);
+    const ptr = this.write(bytes);
+    try {
+      const res: unknown = JSON.parse(dec(await this.readReturn(this.exports.cc_parse_ref(ptr, bytes.length))));
+      if (
+        isObject(res) &&
+        typeof res.integration === "string" &&
+        typeof res.owner === "string" &&
+        typeof res.connection === "string"
+      ) {
+        return { integration: res.integration, owner: res.owner, connection: res.connection };
+      }
+      throw new Error(`invalid connection reference '${reference}'`);
+    } finally {
+      this.exports.cc_free(ptr, bytes.length);
+    }
+  }
+
+  /** Validate a host-tool binding name via the single-source toolcore grammar; throws if invalid. */
+  async validateBindingName(name: string): Promise<void> {
+    const bytes = enc(name);
+    const ptr = this.write(bytes);
+    try {
+      const res: unknown = JSON.parse(dec(await this.readReturn(this.exports.cc_validate_binding(ptr, bytes.length))));
+      if (isObject(res) && isObject(res.error)) {
+        throw new Error(
+          typeof res.error.message === "string" ? res.error.message : `invalid tool binding name '${name}'`,
         );
       }
     } finally {
