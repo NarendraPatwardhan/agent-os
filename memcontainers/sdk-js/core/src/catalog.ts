@@ -319,24 +319,44 @@ async function mcpDiscover(
   if (!initRes.ok) throw new Error(`MCP initialize failed: HTTP ${initRes.status}`);
   await initRes.arrayBuffer();
   const session = initRes.headers.get("mcp-session-id") ?? undefined;
-  await post(discovery.initialized, session).catch(() => undefined); // notification; result ignored
+  // notifications/initialized has no JSON-RPC reply, but a transport/HTTP failure means the server never
+  // reached the initialized state — surface it rather than letting tools/list fail confusingly later.
+  const initializedRes = await post(discovery.initialized, session);
+  if (!initializedRes.ok) {
+    throw new Error(`MCP notifications/initialized failed: HTTP ${initializedRes.status}`);
+  }
+  await initializedRes.arrayBuffer();
   const listRes = await post(discovery.list, session);
   if (!listRes.ok) throw new Error(`MCP tools/list failed: HTTP ${listRes.status}`);
   return extractDiscoveryJson(listRes.headers.get("content-type") ?? "", await listRes.text());
 }
 
-/** Streamable-HTTP MCP may answer as SSE (`event:`/`data:` frames); lift the JSON out of the `data:`
- *  lines, else use the body as-is (plain JSON). */
+/** Streamable-HTTP MCP may answer as SSE: events are blank-line separated, and one event's `data:` lines
+ *  join with "\n". Return the JSON-RPC RESPONSE frame (the one carrying `result`/`error`), skipping any
+ *  notification frames (which carry `method`) — concatenating every `data:` line would corrupt the JSON.
+ *  A plain-JSON (non-SSE) body is returned as-is. */
 function extractDiscoveryJson(contentType: string, text: string): Uint8Array {
-  if (contentType.includes("text/event-stream")) {
-    const data = text
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith("data:"))
-      .map((line) => line.slice(5).trim())
-      .join("");
-    return new TextEncoder().encode(data || text);
+  const enc = new TextEncoder();
+  if (!contentType.includes("text/event-stream")) return enc.encode(text);
+  const frames = text
+    .split(/\r?\n\r?\n/)
+    .map((block) =>
+      block
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.replace(/^data:[ \t]?/, ""))
+        .join("\n"),
+    )
+    .filter((data) => data.length > 0);
+  for (const data of frames) {
+    try {
+      const msg = JSON.parse(data) as Record<string, unknown>;
+      if ("result" in msg || "error" in msg) return enc.encode(data);
+    } catch {
+      /* skip a non-JSON frame (e.g. a partial or comment) */
+    }
   }
-  return new TextEncoder().encode(text);
+  return enc.encode(frames[frames.length - 1] ?? text);
 }
 
 async function cachedSource(

@@ -464,9 +464,11 @@ print("bypass-ok")
         } else if (msg.method === "notifications/initialized") {
           res.writeHead(202).end();
         } else if (msg.method === "tools/list") {
-          // SSE form, to also exercise the data: extraction path
+          // Multi-event SSE: a notification frame BEFORE the response frame, so the host must select the
+          // JSON-RPC response (carrying `result`) and not concatenate every `data:` line (C2).
+          const notification = JSON.stringify({ jsonrpc: "2.0", method: "notifications/message", params: { level: "info" } });
           res.writeHead(200, { "content-type": "text/event-stream" });
-          res.end(`event: message\ndata: ${mcpToolsList}\n\n`);
+          res.end(`event: message\ndata: ${notification}\n\nevent: message\ndata: ${mcpToolsList}\n\n`);
         } else {
           res.writeHead(400).end();
         }

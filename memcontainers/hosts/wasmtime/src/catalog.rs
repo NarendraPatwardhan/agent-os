@@ -684,8 +684,10 @@ fn run_discovery(discovery: &DiscoveryRequest, credential: &ConnectionCredential
             list,
         } => {
             let (_, session) = discovery_post(url, initialize, credential, None)?;
-            // notifications/initialized: a fire-and-forget notification (202, no useful body).
-            let _ = discovery_post(url, initialized, credential, session.as_deref());
+            // notifications/initialized has no JSON-RPC reply, but a transport/HTTP failure means the
+            // server never reached the initialized state — surface it instead of a confusing tools/list
+            // failure later.
+            discovery_post(url, initialized, credential, session.as_deref())?;
             Ok(discovery_post(url, list, credential, session.as_deref())?.0)
         }
     }
@@ -728,20 +730,38 @@ fn discovery_post(
     Ok((extract_discovery_bytes(&content_type, &text), session_out))
 }
 
-/// Lift the JSON out of a `text/event-stream` discovery response (`data:` lines); otherwise the body is
-/// already JSON.
+/// Lift the JSON-RPC response out of a discovery body. Streamable-HTTP MCP may answer as SSE: events are
+/// blank-line separated, and one event's `data:` lines join with "\n". Return the RESPONSE frame (carrying
+/// `result`/`error`), skipping notification frames (carrying `method`) — concatenating every `data:` line
+/// across events would corrupt the JSON. A plain-JSON (non-SSE) body is returned as-is.
 fn extract_discovery_bytes(content_type: &str, text: &str) -> Vec<u8> {
-    if content_type.contains("text/event-stream") {
-        let data: String = text
-            .lines()
-            .filter(|line| line.starts_with("data:"))
-            .map(|line| line[5..].trim())
-            .collect();
-        if !data.is_empty() {
-            return data.into_bytes();
+    if !content_type.contains("text/event-stream") {
+        return text.as_bytes().to_vec();
+    }
+    let normalized = text.replace("\r\n", "\n");
+    let frames: Vec<String> = normalized
+        .split("\n\n")
+        .map(|block| {
+            block
+                .lines()
+                .filter_map(|line| line.strip_prefix("data:"))
+                .map(|rest| rest.strip_prefix(' ').or_else(|| rest.strip_prefix('\t')).unwrap_or(rest))
+                .collect::<Vec<_>>()
+                .join("\n")
+        })
+        .filter(|data| !data.is_empty())
+        .collect();
+    for data in &frames {
+        if let Ok(msg) = serde_json::from_str::<serde_json::Value>(data) {
+            if msg.get("result").is_some() || msg.get("error").is_some() {
+                return data.clone().into_bytes();
+            }
         }
     }
-    text.as_bytes().to_vec()
+    frames
+        .last()
+        .map(|data| data.clone().into_bytes())
+        .unwrap_or_else(|| text.as_bytes().to_vec())
 }
 
 /// Minimal percent-encoding for a query-credential name/value (encode everything outside the unreserved
@@ -1139,4 +1159,28 @@ fn read_u32(bytes: &[u8], pos: &mut usize) -> Result<u32> {
 fn unpack_return(pair: i64) -> (u32, u32) {
     let raw = pair as u64;
     ((raw & 0xffff_ffff) as u32, (raw >> 32) as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sse_discovery_returns_the_response_frame_not_a_concatenation() {
+        // Multi-event SSE: a notification frame (carries `method`) then the tools/list RESPONSE frame
+        // (carries `result`). Concatenating every `data:` line would corrupt the JSON — we must return
+        // the response frame alone.
+        let stream = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{}}\n\nevent: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[]}}\n\n";
+        let out = extract_discovery_bytes("text/event-stream", stream);
+        let value: serde_json::Value =
+            serde_json::from_slice(&out).expect("response frame must be valid JSON");
+        assert!(value.get("result").is_some(), "expected the result frame, got {value}");
+        assert!(value.get("method").is_none(), "must not return the notification frame");
+    }
+
+    #[test]
+    fn plain_json_discovery_body_is_returned_as_is() {
+        let body = r#"{"data":{"__schema":{}}}"#;
+        assert_eq!(extract_discovery_bytes("application/json", body), body.as_bytes());
+    }
 }
