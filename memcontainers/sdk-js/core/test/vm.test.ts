@@ -22,6 +22,7 @@ interface RecordedRequest {
   url: string;
   headers: Record<string, string | string[] | undefined>;
   body: string;
+  bodyBytes: number[];
 }
 
 interface ToolApprovalFact {
@@ -47,6 +48,7 @@ async function recordingServer(): Promise<{
         url: req.url ?? "",
         headers: req.headers,
         body: new TextDecoder().decode(Buffer.concat(chunks)),
+        bodyBytes: [...Buffer.concat(chunks)],
       });
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({ marker: "js-host-adapter", ok: true }));
@@ -58,6 +60,73 @@ async function recordingServer(): Promise<{
   });
   const address = server.address();
   if (!address || typeof address === "string") throw new Error("recording server did not bind a TCP port");
+  return {
+    origin: `http://127.0.0.1:${address.port}`,
+    requests,
+    close: () =>
+      new Promise((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      }),
+  };
+}
+
+async function remoteVmServer(): Promise<{
+  origin: string;
+  requests: RecordedRequest[];
+  close(): Promise<void>;
+}> {
+  const requests: RecordedRequest[] = [];
+  const server = createServer((req, res) => {
+    const chunks: Uint8Array[] = [];
+    req.on("data", (chunk: Uint8Array) => chunks.push(chunk));
+    req.on("end", () => {
+      const body = new TextDecoder().decode(Buffer.concat(chunks));
+      requests.push({
+        method: req.method ?? "",
+        url: req.url ?? "",
+        headers: req.headers,
+        body,
+        bodyBytes: [...Buffer.concat(chunks)],
+      });
+
+      if (req.method === "POST" && req.url === "/v1/snapshots") {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            ref: `sha256:${"a".repeat(64)}`,
+            size: chunks.reduce((n, chunk) => n + chunk.length, 0),
+          }),
+        );
+        return;
+      }
+      if (req.method === "POST" && req.url === "/v1/vms") {
+        const parsed = JSON.parse(body || "{}") as { id?: string };
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ id: parsed.id ?? "remote-test" }));
+        return;
+      }
+      if (req.method === "POST" && req.url?.startsWith("/v1/vms/") && req.url.endsWith("/restore")) {
+        const parts = req.url.split("/");
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ id: decodeURIComponent(parts[3] ?? "restored") }));
+        return;
+      }
+      if (req.method === "DELETE" && req.url?.startsWith("/v1/vms/")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+
+      res.writeHead(404, { "content-type": "text/plain" });
+      res.end("not found");
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("remote VM test server did not bind a TCP port");
   return {
     origin: `http://127.0.0.1:${address.port}`,
     requests,
@@ -156,59 +225,129 @@ async function main(): Promise<void> {
     console.log("phase: mc.use capability derivation OK");
   }
 
-  // P4: a remote VM cannot silently drop connection policies (the remote backend doesn't enforce them) — the
-  // create must fail closed rather than diverge from the embedded/wasmtime hosts.
+  // Remote create must preserve the same declarative tool-plane intent as embedded create. The client does
+  // not compile catalogs; it sends refs/specs/selectors/policies for the remote host to inject and enforce.
   {
-    let threwRemotePolicies = false;
+    const remote = await remoteVmServer();
     try {
-      await mc.create({
+      const policy: ConnectionPolicyRule = { owner: "org", pattern: "github.org.main.*", action: "approve" };
+      const specBytes = new TextEncoder().encode(githubFixture);
+      const remoteVm = await mc.create({
         runtime: "remote",
-        endpoint: "http://127.0.0.1:0",
-        policies: [{ owner: "org", pattern: "github.org.main.*", action: "require_approval" }],
-      });
-    } catch (e) {
-      threwRemotePolicies = /polic/i.test(String(e));
-    }
-    if (!threwRemotePolicies) throw new Error("remote create must reject connection policies (not silently drop them)");
-    console.log("phase: remote create rejects connection policies OK");
-  }
-
-  // #3: a remote VM cannot honor connections the way the host does (host-side origin derivation + live
-  // discovery), so it must fail closed rather than half-support them client-side.
-  {
-    let threwRemoteConnections = false;
-    try {
-      await mc.create({
-        runtime: "remote",
-        endpoint: "http://127.0.0.1:0",
-        connections: [{ ref: "github.org.main", auth: { kind: "bearer", token: "t" } }],
-      });
-    } catch (e) {
-      threwRemoteConnections = /connection/i.test(String(e));
-    }
-    if (!threwRemoteConnections) {
-      throw new Error("remote create must reject connections (not half-support them client-side)");
-    }
-    console.log("phase: remote create rejects connections OK");
-  }
-
-  // Connection tool selectors are catalog options too. With no server-side catalog construction on the
-  // remote path, accepting a bare selector would silently no-op instead of failing closed.
-  {
-    let threwRemoteToolSelector = false;
-    try {
-      await mc.create({
-        runtime: "remote",
-        endpoint: "http://127.0.0.1:0",
+        endpoint: remote.origin,
+        token: "server-token",
+        id: "remote-catalog",
+        image: null,
+        connections: [
+          {
+            ref: "github.org.main",
+            auth: { kind: "bearer", token: "github-token" },
+            spec: {
+              bytes: specBytes,
+              format: "openapi",
+              sourceFormat: "json",
+              baseUrl: "https://api.github.com",
+            },
+          },
+        ],
         tools: ["github/issues"],
+        policies: [policy],
       });
-    } catch (e) {
-      threwRemoteToolSelector = /selector|catalog/i.test(String(e));
+      await remoteVm.close();
+
+      const create = remote.requests.find((req) => req.method === "POST" && req.url === "/v1/vms");
+      if (!create) throw new Error(`remote create did not POST /v1/vms: ${JSON.stringify(remote.requests)}`);
+      if (create.headers.authorization !== "Bearer server-token") {
+        throw new Error(`remote create omitted bearer token: ${JSON.stringify(create.headers)}`);
+      }
+      const body = JSON.parse(create.body) as {
+        id?: string;
+        net?: string;
+        connections?: Array<{ ref?: string; auth?: { kind?: string; token?: string }; spec?: Record<string, unknown> }>;
+        catalogTools?: string[];
+        connectionPolicies?: ConnectionPolicyRule[];
+      };
+      if (body.id !== "remote-catalog" || body.net !== "real") {
+        throw new Error(`remote create body did not preserve id/net: ${create.body}`);
+      }
+      const connection = body.connections?.[0];
+      if (
+        connection?.ref !== "github.org.main" ||
+        connection.auth?.kind !== "bearer" ||
+        connection.auth.token !== "github-token" ||
+        typeof connection.spec?.bytesBase64 !== "string" ||
+        connection.spec.sourceFormat !== "json" ||
+        connection.spec.baseUrl !== "https://api.github.com"
+      ) {
+        throw new Error(`remote create did not serialize connection/spec: ${create.body}`);
+      }
+      if (JSON.stringify(body.catalogTools) !== JSON.stringify(["github/issues"])) {
+        throw new Error(`remote create did not forward catalog selectors: ${create.body}`);
+      }
+      if (JSON.stringify(body.connectionPolicies) !== JSON.stringify([policy])) {
+        throw new Error(`remote create did not forward connection policies: ${create.body}`);
+      }
+      console.log("phase: remote create forwards catalog intent OK");
+    } finally {
+      await remote.close();
     }
-    if (!threwRemoteToolSelector) {
-      throw new Error("remote create must reject connection tool selectors (not silently ignore them)");
+  }
+
+  // Remote restore is a two-plane protocol: raw snapshot bytes are uploaded to the data plane, while the
+  // restore call carries only a snapshot ref plus runtime authority/callback attachments.
+  {
+    const remote = await remoteVmServer();
+    try {
+      const restored = await mc.restore(new Uint8Array([1, 2, 3]), {
+        runtime: "remote",
+        endpoint: remote.origin,
+        token: "server-token",
+        id: "restore-catalog",
+        connections: [{ ref: "github.org.main", auth: { kind: "bearer", token: "github-token" } }],
+        policies: [{ owner: "org", pattern: "github.org.main.*", action: "approve" }],
+      });
+      await restored.close();
+      const upload = remote.requests.find((req) => req.method === "POST" && req.url === "/v1/snapshots");
+      if (!upload) throw new Error(`remote restore did not upload snapshot bytes: ${JSON.stringify(remote.requests)}`);
+      if (
+        upload.headers["content-type"] !== "application/octet-stream" ||
+        JSON.stringify(upload.bodyBytes) !== JSON.stringify([1, 2, 3])
+      ) {
+        throw new Error(`remote restore snapshot upload was not raw bytes: ${JSON.stringify(upload)}`);
+      }
+      const restore = remote.requests.find(
+        (req) => req.method === "POST" && req.url === "/v1/vms/restore-catalog/restore",
+      );
+      if (!restore) throw new Error(`remote restore did not POST restore endpoint: ${JSON.stringify(remote.requests)}`);
+      const body = JSON.parse(restore.body) as {
+        snapshot?: { ref?: string };
+        attachments?: {
+          net?: string;
+          connections?: Array<{ spec?: unknown; tools?: unknown }>;
+          connectionPolicies?: unknown[];
+          catalogTools?: unknown;
+        };
+        snapshotBase64?: string;
+      };
+      const attachments = body.attachments;
+      const restoreConnection = attachments?.connections?.[0];
+      if (
+        body.snapshot?.ref !== `sha256:${"a".repeat(64)}` ||
+        body.snapshotBase64 !== undefined ||
+        !attachments ||
+        attachments.net !== "real" ||
+        attachments.connections?.length !== 1 ||
+        restoreConnection?.spec !== undefined ||
+        restoreConnection?.tools !== undefined ||
+        attachments.connectionPolicies?.length !== 1 ||
+        attachments.catalogTools !== undefined
+      ) {
+        throw new Error(`remote restore did not preserve snapshot attachments: ${restore.body}`);
+      }
+      console.log("phase: remote restore uploads snapshot refs and forwards attachment intent OK");
+    } finally {
+      await remote.close();
     }
-    console.log("phase: remote create rejects connection tool selectors OK");
   }
 
   // Bytes passed directly → no MC_STORE / defaultKernel env path; the embedded backend (the JS host)

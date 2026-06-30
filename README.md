@@ -26,6 +26,7 @@
     <a href="#client-api">Client API</a> -
     <a href="#calling-tools">Calling Tools</a> -
     <a href="#images">Images</a> -
+    <a href="#reproducible-builds">Reproducible Builds</a> -
     <a href="#build-and-verification">Build and Verification</a>
   </p>
 </div>
@@ -54,7 +55,7 @@ Use it when an agent needs to do actual work, not just call one API at a time.
 
 | Integration | What it enables |
 |---|---|
-| Host tools via `vm.tool`, `tool`, `kit` | Expose any app or internal API as searchable in-VM tools with schemas. |
+| Host tools via `tool`, `kit` | Define any app or internal API as searchable in-VM tools with schemas. |
 | HTTP/HTTPS and WebSocket egress | Fetch APIs and stream socket traffic through host-gated network access. |
 | Credential registry | Inject bearer, header, or query credentials at the host boundary without putting secrets in guest memory. |
 | `hostDir` mount | Mount a jailed local directory into the VM as ordinary files. |
@@ -102,6 +103,14 @@ The VM's mutable state lives in WebAssembly linear memory: processes, services,
 filesystem state, loaded modules, and warm handles. A snapshot captures the
 computer, not just a log. Restoring it brings the agent back with its workspace
 and warm services ready.
+
+### Builds are reproducible and cached
+
+Driving a VM is also a way to build one. `record` captures a live session, and
+`llb` authors a build directly, as a content-addressed graph of filesystem steps.
+Identical inputs reproduce the identical machine, and an unchanged step is a
+cache hit — down to restoring an already-warm snapshot instead of rebooting. See
+[Reproducible Builds](#reproducible-builds).
 
 ### The host stays in control
 
@@ -176,6 +185,66 @@ Choose the image that matches the job:
 | `loom` | `posix` plus Luau and `luau-analyze` | Programmable agents |
 | `atlas` | `loom` plus warm SQLite and `require("sqlite")` | Data workflows |
 | `paper` | `loom` plus warm Typst and `require("typst")` | PDF and document workflows |
+
+## Reproducible Builds
+
+Driving a VM and *building* one are the same act. Every `vm.fs.write` and
+`vm.exec` is a build step — capture the steps and you get a content-addressed,
+incrementally-cached build that reproduces the exact same machine. Two surfaces
+expose this, and both run on every runtime: bun, browser, and remote.
+
+### `record` — capture a session as a build
+
+`mc.record` returns a VM that runs live *and* records its mutating steps as a
+build graph. Nothing new to learn: drive the VM as usual, then take the result.
+
+```ts
+import { mc, llb } from "@mc/core";
+
+const rec = await mc.record({ image: "loom" });
+await rec.vm.exec("setup.sh");
+await rec.vm.fs.write("/etc/agent/policy.json", policy);
+
+const warm = await llb.commit(rec.build()).asSnapshot();
+// Re-running an unchanged session is a cache hit — restore the warm VM instantly.
+```
+
+### `llb` — the build grammar
+
+`llb` is a small, composable grammar: a content-addressed DAG of filesystem ops.
+Each verb returns an opaque handle and runs nothing until you `commit`. The verbs
+map 1:1 onto VM primitives, so there is no Dockerfile to learn.
+
+```ts
+import { llb } from "@mc/core";
+
+const base = llb.exec(llb.source("posix"), "install deps", { tier: "isolated" });
+
+// One VM timeline is linear; a graph can branch, share, and merge.
+const image = llb.image([base, llb.write(base, "/etc/flavor", "acme")]);
+
+const layer = await llb.commit(image).asLayer();     // portable .tar layer
+const manifest = await llb.commit(image).asImage();  // bootable image
+const snap = await llb.commit(image).asSnapshot();   // whole warm VM
+```
+
+| Selector | Result |
+|---|---|
+| `.asLayer()` | The portable `.tar` layer the node produced. |
+| `.asImage()` | The full image manifest — layer stack plus runtime contract. |
+| `.asSnapshot()` | The whole-VM warm memory image, ready for `mc.restore`. |
+
+Why it pays off:
+
+- **Sound caching.** A node's identity is a Merkle digest of its op, inputs, and
+  args. Edit one step and only its downstream sub-graph re-runs; everything
+  upstream is a cache hit. Deterministic runs and the `isolated` tier make that
+  cache provably correct — a guarantee a Dockerfile can't make.
+- **Warm-snapshot reuse.** A cache hit on `.asSnapshot()` restores an
+  already-warm VM — services up, modules loaded, deps installed — instead of
+  cold-booting. This is the fast path for agent cold-start.
+- **Provenance.** The graph digest *is* the image's identity: the same inputs
+  produce the same machine, on any runtime.
 
 ## Integration Model
 

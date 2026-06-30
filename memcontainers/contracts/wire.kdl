@@ -15,7 +15,7 @@
 // highest-volume paths (terminal + mount content). The server stamps a monotonic
 // `seq` on every frame it sends and skips the client's inbound seq.
 
-version 1   // bump MINOR for additive changes; MAJOR for a breaking change. The handshake carries it; a server accepts only its own major.
+version 2   // bump MINOR for additive changes; MAJOR for a breaking change. The handshake carries it; a server accepts only its own major.
 header-len 9   // [kind:u8][seq:u64 LE]
 
 // Kind tags (the frame's first byte). Numeric ranges are intentional:
@@ -45,14 +45,17 @@ route "GET" "/healthz" res="Health" {
   doc "Process health. Does not touch any VM actor."
 }
 route "GET" "/v1/capabilities" res="Capabilities" {
-  doc "Server/runtime capabilities: API version, wire version, body limits, packaged image flavors, and optional feature flags."
+  doc "Server/runtime capabilities: API version, wire version, control/snapshot body limits, packaged image flavors, and optional feature flags."
+}
+route "POST" "/v1/snapshots" req="SnapshotBytes" res="SnapshotUpload" {
+  doc "Store raw snapshot bytes as a namespaced content-addressed object and return a restore ref."
 }
 
 route "GET" "/v1/vms" res="VmList" {
   doc "List live VMs."
 }
 route "POST" "/v1/vms" req="CreateVm" res="Vm" {
-  doc "Create a VM from a packaged image, layer stack, or snapshot. Connection definitions configure the trusted host registry; guest catalogs receive only refs."
+  doc "Create a VM from a packaged image or layer stack. Connection definitions configure the trusted host registry; guest catalogs receive only refs."
 }
 route "GET" "/v1/vms/{id}" res="Vm" {
   doc "Return VM status and runtime metadata."
@@ -60,8 +63,8 @@ route "GET" "/v1/vms/{id}" res="Vm" {
 route "DELETE" "/v1/vms/{id}" res="DisposeVm" {
   doc "Dispose the VM actor and release host-side resources."
 }
-route "POST" "/v1/vms/{id}/restore" req="SnapshotBytes" res="Vm" {
-  doc "Restore or replace a VM from snapshot bytes."
+route "POST" "/v1/vms/{id}/restore" req="RestoreVm" res="Vm" {
+  doc "Restore or replace a VM from an uploaded snapshot ref plus runtime-only attachments."
 }
 route "GET" "/v1/vms/{id}/ws" upgrade="websocket" protocol="wire" res="WireSocket" {
   doc "Upgrade to the typed per-VM WebSocket described by the message table above."
@@ -144,7 +147,9 @@ schema "Health" kind="json" {
 schema "Capabilities" kind="json" {
   field "apiVersion" type="string" required=1
   field "wireVersion" type="u32" required=1
-  field "maxBodyBytes" type="u64" required=1
+  field "maxControlBodyBytes" type="u64" required=1
+  field "maxSnapshotBytes" type="u64" required=1
+  field "restoreProtocols" type="string[]" required=1
   field "images" type="ImageFlavor[]" required=1
   field "features" type="string[]" required=1
 }
@@ -152,24 +157,78 @@ schema "CreateVm" kind="json" {
   field "id" type="VmId" required=0
   field "image" type="ImageFlavor" required=0
   field "layers" type="LayerRef[]" required=0
-  field "snapshot" type="SnapshotRef" required=0
   field "deterministic" type="bool" required=0
   field "workers" type="u32" required=0
   field "net" type="NetPolicy" required=0
   field "persist" type="PersistPolicy" required=0
   field "hostCall" type="HostCallPolicy" required=0
+  field "toolApproval" type="ToolApprovalPolicy" required=0
   field "connections" type="ConnectionDefinition[]" required=0
+  field "catalogTools" type="string[]" required=0
+  field "hostTools" type="HostToolDefinition[]" required=0
+  field "connectionPolicies" type="ConnectionPolicyRule[]" required=0
 }
 schema "ConnectionDefinition" kind="json" {
   field "ref" type="ConnectionRef" required=1
   field "auth" type="ConnectionAuth" required=1
   field "origins" type="string[]" required=0
+  field "tools" type="string[]" required=0
+  field "spec" type="ConnectionSpec" required=0
 }
 schema "ConnectionAuth" kind="json" {
   field "kind" type="ConnectionAuthKind" required=1
   field "token" type="string" required=0
   field "name" type="string" required=0
   field "value" type="string" required=0
+}
+schema "ConnectionSpec" kind="json" {
+  field "url" type="string" required=0
+  field "bytesBase64" type="string" required=0
+  field "format" type="string" required=0
+  field "sourceFormat" type="string" required=0
+  field "baseUrl" type="string" required=0
+  field "endpoint" type="string" required=0
+}
+schema "ConnectionPolicyRule" kind="json" {
+  field "owner" type="string" required=1
+  field "pattern" type="string" required=1
+  field "action" type="ConnectionPolicyAction" required=1
+}
+schema "HostToolDefinition" kind="json" {
+  field "name" type="string" required=1
+  field "address" type="string" required=1
+  field "description" type="string" required=0
+  field "input_schema" type="string" required=0
+  field "output_schema" type="string" required=0
+  field "annotations" type="string" required=0
+  field "args" type="string" required=0
+}
+schema "SnapshotUpload" kind="json" {
+  field "ref" type="SnapshotRef" required=1
+  field "size" type="u64" required=1
+}
+schema "SnapshotRefObject" kind="json" {
+  field "ref" type="SnapshotRef" required=1
+}
+schema "RestoreVm" kind="json" {
+  field "snapshot" type="SnapshotRefObject" required=1
+  field "attachments" type="RestoreAttachments" required=0
+}
+schema "RestoreAttachments" kind="json" {
+  field "deterministic" type="bool" required=0
+  field "workers" type="u32" required=0
+  field "net" type="NetPolicy" required=0
+  field "persist" type="PersistPolicy" required=0
+  field "hostCall" type="HostCallPolicy" required=0
+  field "toolApproval" type="ToolApprovalPolicy" required=0
+  field "connections" type="RestoreConnectionDefinition[]" required=0
+  field "connectionPolicies" type="ConnectionPolicyRule[]" required=0
+  field "hostTools" type="HostToolDefinition[]" required=0
+}
+schema "RestoreConnectionDefinition" kind="json" {
+  field "ref" type="ConnectionRef" required=1
+  field "auth" type="ConnectionAuth" required=1
+  field "origins" type="string[]" required=0
 }
 schema "Vm" kind="json" {
   field "id" type="VmId" required=1

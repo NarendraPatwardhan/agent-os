@@ -129,7 +129,7 @@ export const STAT_REC_MTIME_OFF = 20;
 export const STAT_REC_ATIME_OFF = 28;
 export const STAT_REC_CTIME_OFF = 36;
 export const STAT_REC_LEN = 44;
-export const WIRE_VERSION = 1;
+export const WIRE_VERSION = 2;
 
 // the argv[1] marker the kernel passes to spawn a binary in SERVICE mode (SYSTEMS.md)
 export const SERVICE_MARKER = "--mc-serve";

@@ -402,6 +402,7 @@ function netEnabled(opts: CreateOptions): boolean {
   const n = opts.permissions?.network;
   if (n === "deny") return false;
   if (opts.net) return true;
+  if ((opts.connections?.length ?? 0) > 0) return true;
   if (n === "allow") return true;
   // An allowlist object implies net is on (the host filters per-host below).
   if (n !== undefined && typeof n === "object") return true;
@@ -919,12 +920,91 @@ function remoteConnectionAuth(auth: ConnectionDefinition["auth"]): Record<string
   }
 }
 
-function remoteConnections(defs: readonly ConnectionDefinition[] | undefined): Record<string, unknown>[] {
-  return (defs ?? []).map((connection) => ({
-    ref: connection.ref,
-    auth: remoteConnectionAuth(connection.auth),
-    origins: [...(connection.origins ?? [])],
-  }));
+function jsonString(value: unknown | undefined): string | undefined {
+  return value === undefined ? undefined : JSON.stringify(value);
+}
+
+function dropUndefined<T extends Record<string, unknown>>(obj: T): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value !== undefined) out[key] = value;
+  }
+  return out;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  const buffer = (globalThis as unknown as {
+    Buffer?: { from(input: Uint8Array): { toString(encoding: "base64"): string } };
+  }).Buffer;
+  if (buffer) return buffer.from(bytes).toString("base64");
+
+  const btoaFn = (globalThis as unknown as { btoa?: (input: string) => string }).btoa;
+  if (!btoaFn) throw new Error("base64 encoding is unavailable in this runtime");
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoaFn(binary);
+}
+
+async function readRemoteSpecPath(path: string): Promise<Uint8Array> {
+  try {
+    const { readFile } = await import("node:fs/promises");
+    return new Uint8Array(await readFile(path));
+  } catch (e) {
+    throw new Error(
+      `remote runtime spec.path '${path}' could not be read by the JS client; ` +
+        `pass spec.bytes or spec.url instead (${String((e as Error)?.message ?? e)})`,
+    );
+  }
+}
+
+function remoteSpecOptions(spec: NonNullable<ConnectionDefinition["spec"]>): Record<string, unknown> {
+  return dropUndefined({
+    format: spec.format,
+    sourceFormat: spec.sourceFormat,
+    baseUrl: spec.baseUrl,
+    endpoint: spec.endpoint,
+  });
+}
+
+async function remoteConnectionSpec(
+  spec: ConnectionDefinition["spec"],
+): Promise<Record<string, unknown> | undefined> {
+  if (!spec) return undefined;
+  const opts = remoteSpecOptions(spec);
+  if ("url" in spec) return { ...opts, url: spec.url };
+  if ("bytes" in spec) return { ...opts, bytesBase64: bytesToBase64(spec.bytes) };
+  return { ...opts, bytesBase64: bytesToBase64(await readRemoteSpecPath(spec.path)) };
+}
+
+async function remoteConnections(defs: readonly ConnectionDefinition[] | undefined): Promise<Record<string, unknown>[]> {
+  return Promise.all(
+    (defs ?? []).map(async (connection) =>
+      dropUndefined({
+        ref: connection.ref,
+        auth: remoteConnectionAuth(connection.auth),
+        origins: connection.origins ? [...connection.origins] : undefined,
+        tools: connection.tools ? [...connection.tools] : undefined,
+        spec: await remoteConnectionSpec(connection.spec),
+      }),
+    ),
+  );
+}
+
+function remoteHostTools(defs: readonly ToolDefinition[]): Record<string, unknown>[] {
+  return defs.map((def) =>
+    dropUndefined({
+      name: def.name,
+      address: def.address,
+      description: def.description,
+      input_schema: jsonString(def.input),
+      output_schema: jsonString(def.output),
+      annotations: jsonString(def.annotations),
+      args: "json",
+    }),
+  );
 }
 
 function remoteImageFields(image: CreateOptions["image"]): Record<string, unknown> {
@@ -941,16 +1021,66 @@ function remoteImageFields(image: CreateOptions["image"]): Record<string, unknow
   return { layers: image.layers.map((layer) => layer.digest) };
 }
 
-function remoteCreateBody(opts: CreateOptions, id?: string): Record<string, unknown> {
-  return {
+async function remoteCreateBody(opts: CreateOptions, id?: string): Promise<Record<string, unknown>> {
+  const connections = await remoteConnections(opts.connections);
+  const catalogTools = catalogToolSelectors(opts.tools);
+  const hostTools = remoteHostTools(hostToolDefinitions(opts.tools));
+  return dropUndefined({
     ...(id ? { id } : {}),
     ...remoteImageFields(opts.image),
     ...(opts.deterministic ? { deterministic: true } : {}),
     net: remoteNetPolicy(opts),
     persist: remotePersistPolicy(opts),
     hostCall: remoteHostCallPolicy(opts),
-    connections: remoteConnections(opts.connections),
-  };
+    ...(opts.onPermission ? { toolApproval: "relay" } : {}),
+    ...(connections.length ? { connections } : {}),
+    ...(opts.policies && opts.policies.length ? { connectionPolicies: opts.policies } : {}),
+    ...(catalogTools.length ? { catalogTools } : {}),
+    ...(hostTools.length ? { hostTools } : {}),
+  });
+}
+
+function remoteRestoreConnections(defs: readonly ConnectionDefinition[] | undefined): Record<string, unknown>[] {
+  return (defs ?? []).map((connection) =>
+    dropUndefined({
+      ref: connection.ref,
+      auth: remoteConnectionAuth(connection.auth),
+      origins: connection.origins ? [...connection.origins] : undefined,
+    }),
+  );
+}
+
+function remoteRestoreAttachments(opts: CreateOptions): Record<string, unknown> {
+  const connections = remoteRestoreConnections(opts.connections);
+  const hostTools = remoteHostTools(hostToolDefinitions(opts.tools));
+  return dropUndefined({
+    ...(opts.deterministic ? { deterministic: true } : {}),
+    net: remoteNetPolicy(opts),
+    persist: remotePersistPolicy(opts),
+    hostCall: remoteHostCallPolicy(opts),
+    ...(opts.onPermission ? { toolApproval: "relay" } : {}),
+    ...(connections.length ? { connections } : {}),
+    ...(opts.policies && opts.policies.length ? { connectionPolicies: opts.policies } : {}),
+    ...(hostTools.length ? { hostTools } : {}),
+  });
+}
+
+async function remoteUploadSnapshot(
+  endpoint: string,
+  headers: Record<string, string>,
+  snapshot: Uint8Array,
+): Promise<string> {
+  const response = await fetch(`${endpoint}/v1/snapshots`, {
+    method: "POST",
+    headers: { ...headers, "content-type": "application/octet-stream" },
+    body: snapshot as BodyInit,
+  });
+  if (!response.ok) throw new Error(`remote snapshot upload failed: ${response.status}`);
+  const body = (await response.json()) as { ref?: unknown };
+  if (typeof body.ref !== "string" || body.ref.length === 0) {
+    throw new Error("remote snapshot upload response did not include a snapshot ref");
+  }
+  return body.ref;
 }
 
 async function makeRemote(
@@ -960,32 +1090,6 @@ async function makeRemote(
   if (!opts.endpoint) {
     throw new Error("runtime 'remote' requires opts.endpoint");
   }
-  // Fail closed rather than present partial parity. Two options the remote path cannot honor the way the
-  // embedded/wasmtime host does:
-  //  - connection policies: the remote backend does not enforce them at an egress splice, so accepting them would
-  //    silently drop a security control.
-  //  - connections: faithful connection tools need HOST-SIDE catalog construction — origin derivation and,
-  //    for graphql/mcp, live discovery run as authenticated host egress (the credential never leaving the
-  //    host). The remote SDK would instead compile/discover CLIENT-SIDE and apply the credential
-  //    client-side, diverging from the host model and bypassing the server's fresh-boot injection. Until
-  //    the server accepts catalog connections over REST and injects them host-side, refuse them rather than
-  //    half-support them (host tools + mounts remain fully supported on remote).
-  if (opts.policies && opts.policies.length > 0) {
-    throw new Error(
-      "connection policies are enforced only on the embedded runtime; the remote backend does not support them yet",
-    );
-  }
-  if (catalogToolSelectors(opts.tools).length > 0) {
-    throw new Error(
-      "connection tool selectors require host-side catalog construction, which the remote backend does not perform yet",
-    );
-  }
-  if (opts.connections && opts.connections.length > 0) {
-    throw new Error(
-      "connections require host-side catalog construction (origin derivation + live discovery), which the " +
-        "remote backend does not perform yet; use the embedded runtime for connection-backed tools",
-    );
-  }
   const endpoint = opts.endpoint.replace(/\/$/, "");
   const headers: Record<string, string> = opts.token ? { authorization: `Bearer ${opts.token}` } : {};
   const hostTools = hostToolDefinitions(opts.tools);
@@ -993,10 +1097,14 @@ async function makeRemote(
 
   if (snapshot) {
     id = opts.id ?? remoteId();
+    const snapshotRef = await remoteUploadSnapshot(endpoint, headers, snapshot);
     const response = await fetch(`${endpoint}/v1/vms/${encodeURIComponent(id)}/restore`, {
       method: "POST",
-      headers: { ...headers, "content-type": "application/octet-stream" },
-      body: snapshot as BodyInit,
+      headers: { ...headers, "content-type": "application/json" },
+      body: JSON.stringify({
+        snapshot: { ref: snapshotRef },
+        attachments: remoteRestoreAttachments(opts),
+      }),
     });
     if (!response.ok) throw new Error(`remote restore failed: ${response.status}`);
     const body = (await response.json()) as { id?: string };
@@ -1005,7 +1113,7 @@ async function makeRemote(
     const response = await fetch(`${endpoint}/v1/vms`, {
       method: "POST",
       headers: { ...headers, "content-type": "application/json" },
-      body: JSON.stringify(remoteCreateBody(opts, opts.id)),
+      body: JSON.stringify(await remoteCreateBody(opts, opts.id)),
     });
     if (!response.ok) throw new Error(`remote create failed: ${response.status}`);
     const body = (await response.json()) as { id?: string };
@@ -1022,11 +1130,10 @@ async function makeRemote(
   try {
     for (const tool of hostTools) backend.tool(tool);
     if (hostTools.length || opts.mounts?.length || opts.onPermission) await backend.connect();
-    // As on the embedded path: a restored VM already carries its warm catalog server-side, so trust it and
-    // only read the digest back; a fresh VM gets the cold-start seed.
-    const catalog = snapshot
-      ? await readRestoredCatalogState(backend)
-      : await seedToolCatalog(backend, opts, hostTools);
+    // The remote host owns boot catalog injection (connection tools and host-tool metadata) so credentials,
+    // discovery, policy, and catalog mutation stay on the same authority boundary as wasmtime. The JS client
+    // only registers callback closures and reads the server-injected/restored catalog digest as the CAS base.
+    const catalog = await readRestoredCatalogState(backend);
     if (snapshot) await validateRestoredCatalogAttachments(backend, opts, hostTools, catalog.generation);
     await seedToolAliases(backend, hostTools, undefined, snapshot !== null);
     for (const mount of opts.mounts ?? []) {

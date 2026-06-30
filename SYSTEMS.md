@@ -365,8 +365,9 @@ The ABI version is `(major << 16) | minor`, reported by `mc_sys_abi_version`. Th
 1.7** with **57 syscalls**: 1.3 froze a 52-syscall base, 1.4 added the five `svc_*` service calls, 1.5
 widened service handle-delegation, 1.6 added the response-chunk `last` flag, and 1.7 added kernel-authored
 `caller`/`caller_caps` metadata to the service receive envelope. Additive changes bump the minor; only a
-break bumps the major. The wire protocol is versioned separately (`wire-version 1`) — it is the
-over-the-network `std` contract, distinct from the in-process `no_std` one.
+break bumps the major. The wire protocol is versioned separately (`wire-version 2`, after splitting
+snapshot restore into upload-ref data and control attachments) — it is the over-the-network `std`
+contract, distinct from the in-process `no_std` one.
 
 ---
 
@@ -1104,16 +1105,29 @@ to subscribers and polling exec/session jobs.
 
 A client addresses a VM by `(namespace, id)`; `POST /v1/vms` is get-or-create, and the REST surface
 mirrors the embedded API exactly: exec, snapshot, commit, and a full `GET|PUT|DELETE /fs/*path` file API,
-with the body limit lifted to 256 MiB because a snapshot is a whole linear-memory image. **Tenancy** is
-the namespace (an `X-MC-Namespace` header), which is also the quota and eviction boundary: a per-namespace
+with snapshot upload carried on a separate raw object path rather than in control JSON. **Tenancy** is the
+namespace (an `X-MC-Namespace` header), which is also the quota and eviction boundary: a per-namespace
 `max_live` cap returns `429` past the limit, and an idle-TTL **eviction sweeper** snapshots a VM with zero
 attached WebSockets to its store and frees the slot — the next request to that id *lazily restores* it,
-serialized so two requests cannot both respawn. Snapshots persist to a pluggable object store (a
-filesystem backend that writes atomically via temp+rename and rejects path traversal; an S3 backend over
-SigV4). Auth is an optional bearer token (also accepted as a `?token=` query param on the WebSocket, since
-browsers cannot set headers there). Egress and host-calls relayed to the client reuse the kernel's
+serialized so two requests cannot both respawn. Snapshots persist to a pluggable object store (a filesystem
+backend that writes atomically via temp+rename and rejects path traversal; an S3 backend over SigV4). Auth is
+an optional bearer token (also accepted as a `?token=` query param on the WebSocket, since browsers cannot
+set headers there). Egress and host-calls relayed to the client reuse the kernel's
 poll-based bridge **unchanged**: a `WsHostCall` parks the guest until the client answers, and a gated net
 capability parks it until a permission response lands — "no kernel change."
+
+Remote restore is a two-plane protocol. Snapshot bytes are data-plane objects: the client uploads the raw
+opaque VM image with `POST /v1/snapshots` and `content-type: application/octet-stream`; the server stores it
+atomically under the authenticated namespace, keyed by content, and returns a `sha256:<hex>` ref plus size.
+`POST /v1/vms/:id/restore` is then control-plane JSON only: `{ "snapshot": { "ref": "sha256:..." },
+"attachments": { ... } }`. A conforming backend does **not** accept `snapshotBase64` or a raw snapshot body on
+the restore endpoint. Restore attachments are limited to runtime authority and callback reattachment:
+`deterministic`, `workers`, `net`, `persist`, `hostCall`, `toolApproval`, egress `connections` containing
+only `{ref, auth, origins?}`, `connectionPolicies`, and host-call `hostTools`. They must reject boot/catalog
+inputs (`image`, `layers`, `catalogTools`, `catalogConnections`) and per-connection catalog inputs (`spec`,
+`tools`). The catalog tree and its digest are warm VM state captured by the snapshot; only `create` and fresh
+boot catalog injection may compile or mutate the catalog. Capabilities advertise this split explicitly with
+`restoreProtocols: ["snapshot-ref-v1"]`, `maxControlBodyBytes`, and `maxSnapshotBytes`.
 
 ### 13.2 The wire protocol
 

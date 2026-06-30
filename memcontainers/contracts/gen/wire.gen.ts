@@ -1,6 +1,6 @@
 // @generated from contracts/wire.kdl by //contracts/codegen:projector — do not edit.
 
-export const WIRE_VERSION = 1;
+export const WIRE_VERSION = 2;
 export const HEADER_LEN = 9;
 
 export const HELLO = 0x00;

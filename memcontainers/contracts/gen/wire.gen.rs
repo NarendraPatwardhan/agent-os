@@ -1,7 +1,7 @@
 // @generated from contracts/wire.kdl by //contracts/codegen:projector — do not edit.
 #![no_std]
 
-pub const WIRE_VERSION: u32 = 1;
+pub const WIRE_VERSION: u32 = 2;
 pub const HEADER_LEN: usize = 9;
 
 pub const HELLO: u8 = 0x00;

@@ -2,7 +2,7 @@
 openapi: 3.0.3
 info:
   title: AgentOS REST API
-  version: "1"
+  version: "2"
   description: "Request/response API for AgentOS VM lifecycle, exec, filesystem, snapshots, layers, and mounts. Live terminal, relay, permissions, and streamed sessions use the typed WebSocket in asyncapi.yaml."
 security:
   - bearerAuth: []
@@ -22,7 +22,7 @@ paths:
   "/v1/capabilities":
     get:
       operationId: "get_v1_capabilities"
-      summary: "Server/runtime capabilities: API version, wire version, body limits, packaged image flavors, and optional feature flags."
+      summary: "Server/runtime capabilities: API version, wire version, control/snapshot body limits, packaged image flavors, and optional feature flags."
       responses:
         "200":
           description: "OK"
@@ -30,6 +30,23 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Capabilities"
+  "/v1/snapshots":
+    post:
+      operationId: "post_v1_snapshots"
+      summary: "Store raw snapshot bytes as a namespaced content-addressed object and return a restore ref."
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              $ref: "#/components/schemas/SnapshotBytes"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SnapshotUpload"
   "/v1/vms":
     get:
       operationId: "get_v1_vms"
@@ -43,7 +60,7 @@ paths:
                 $ref: "#/components/schemas/VmList"
     post:
       operationId: "post_v1_vms"
-      summary: "Create a VM from a packaged image, layer stack, or snapshot. Connection definitions configure the trusted host registry; guest catalogs receive only refs."
+      summary: "Create a VM from a packaged image or layer stack. Connection definitions configure the trusted host registry; guest catalogs receive only refs."
       requestBody:
         required: true
         content:
@@ -93,7 +110,7 @@ paths:
   "/v1/vms/{id}/restore":
     post:
       operationId: "post_v1_vms_id_restore"
-      summary: "Restore or replace a VM from snapshot bytes."
+      summary: "Restore or replace a VM from an uploaded snapshot ref plus runtime-only attachments."
       parameters:
         - name: "id"
           in: path
@@ -103,9 +120,9 @@ paths:
       requestBody:
         required: true
         content:
-          application/octet-stream:
+          application/json:
             schema:
-              $ref: "#/components/schemas/SnapshotBytes"
+              $ref: "#/components/schemas/RestoreVm"
       responses:
         "200":
           description: "OK"
@@ -552,7 +569,9 @@ components:
       required:
         - "apiVersion"
         - "wireVersion"
-        - "maxBodyBytes"
+        - "maxControlBodyBytes"
+        - "maxSnapshotBytes"
+        - "restoreProtocols"
         - "images"
         - "features"
       properties:
@@ -561,9 +580,16 @@ components:
         "wireVersion":
           type: integer
           format: int32
-        "maxBodyBytes":
+        "maxControlBodyBytes":
           type: integer
           format: int64
+        "maxSnapshotBytes":
+          type: integer
+          format: int64
+        "restoreProtocols":
+          type: array
+          items:
+            type: string
         "images":
           type: array
           items:
@@ -587,9 +613,6 @@ components:
           items:
             type: string
             x-agentos-type: "LayerRef"
-        "snapshot":
-          type: string
-          x-agentos-type: "SnapshotRef"
         "deterministic":
           type: boolean
         "workers":
@@ -604,10 +627,25 @@ components:
         "hostCall":
           type: string
           x-agentos-type: "HostCallPolicy"
+        "toolApproval":
+          type: string
+          x-agentos-type: "ToolApprovalPolicy"
         "connections":
           type: array
           items:
             $ref: "#/components/schemas/ConnectionDefinition"
+        "catalogTools":
+          type: array
+          items:
+            type: string
+        "hostTools":
+          type: array
+          items:
+            $ref: "#/components/schemas/HostToolDefinition"
+        "connectionPolicies":
+          type: array
+          items:
+            $ref: "#/components/schemas/ConnectionPolicyRule"
     "ConnectionDefinition":
       type: object
       required:
@@ -623,6 +661,12 @@ components:
           type: array
           items:
             type: string
+        "tools":
+          type: array
+          items:
+            type: string
+        "spec":
+          $ref: "#/components/schemas/ConnectionSpec"
     "ConnectionAuth":
       type: object
       required:
@@ -637,6 +681,131 @@ components:
           type: string
         "value":
           type: string
+    "ConnectionSpec":
+      type: object
+      properties:
+        "url":
+          type: string
+        "bytesBase64":
+          type: string
+        "format":
+          type: string
+        "sourceFormat":
+          type: string
+        "baseUrl":
+          type: string
+        "endpoint":
+          type: string
+    "ConnectionPolicyRule":
+      type: object
+      required:
+        - "owner"
+        - "pattern"
+        - "action"
+      properties:
+        "owner":
+          type: string
+        "pattern":
+          type: string
+        "action":
+          type: string
+          x-agentos-type: "ConnectionPolicyAction"
+    "HostToolDefinition":
+      type: object
+      required:
+        - "name"
+        - "address"
+      properties:
+        "name":
+          type: string
+        "address":
+          type: string
+        "description":
+          type: string
+        "input_schema":
+          type: string
+        "output_schema":
+          type: string
+        "annotations":
+          type: string
+        "args":
+          type: string
+    "SnapshotUpload":
+      type: object
+      required:
+        - "ref"
+        - "size"
+      properties:
+        "ref":
+          type: string
+          x-agentos-type: "SnapshotRef"
+        "size":
+          type: integer
+          format: int64
+    "SnapshotRefObject":
+      type: object
+      required:
+        - "ref"
+      properties:
+        "ref":
+          type: string
+          x-agentos-type: "SnapshotRef"
+    "RestoreVm":
+      type: object
+      required:
+        - "snapshot"
+      properties:
+        "snapshot":
+          $ref: "#/components/schemas/SnapshotRefObject"
+        "attachments":
+          $ref: "#/components/schemas/RestoreAttachments"
+    "RestoreAttachments":
+      type: object
+      properties:
+        "deterministic":
+          type: boolean
+        "workers":
+          type: integer
+          format: int32
+        "net":
+          type: string
+          x-agentos-type: "NetPolicy"
+        "persist":
+          type: string
+          x-agentos-type: "PersistPolicy"
+        "hostCall":
+          type: string
+          x-agentos-type: "HostCallPolicy"
+        "toolApproval":
+          type: string
+          x-agentos-type: "ToolApprovalPolicy"
+        "connections":
+          type: array
+          items:
+            $ref: "#/components/schemas/RestoreConnectionDefinition"
+        "connectionPolicies":
+          type: array
+          items:
+            $ref: "#/components/schemas/ConnectionPolicyRule"
+        "hostTools":
+          type: array
+          items:
+            $ref: "#/components/schemas/HostToolDefinition"
+    "RestoreConnectionDefinition":
+      type: object
+      required:
+        - "ref"
+        - "auth"
+      properties:
+        "ref":
+          type: string
+          x-agentos-type: "ConnectionRef"
+        "auth":
+          $ref: "#/components/schemas/ConnectionAuth"
+        "origins":
+          type: array
+          items:
+            type: string
     "Vm":
       type: object
       required:

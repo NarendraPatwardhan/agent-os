@@ -2,7 +2,7 @@
 asyncapi: 3.0.0
 info:
   title: AgentOS wire protocol
-  version: "1"
+  version: "2"
 channels:
   vm:
     messages:

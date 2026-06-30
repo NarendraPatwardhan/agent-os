@@ -129,7 +129,7 @@ pub const STAT_REC_MTIME_OFF: i32 = 20;
 pub const STAT_REC_ATIME_OFF: i32 = 28;
 pub const STAT_REC_CTIME_OFF: i32 = 36;
 pub const STAT_REC_LEN: i32 = 44;
-pub const WIRE_VERSION: u32 = 1;
+pub const WIRE_VERSION: u32 = 2;
 
 // the argv[1] marker the kernel passes to spawn a binary in SERVICE mode (SYSTEMS.md)
 pub const SERVICE_MARKER: []const u8 = "--mc-serve";

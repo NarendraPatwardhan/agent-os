@@ -213,7 +213,7 @@ stat-record {
 }
 
 // Wire protocol version (server↔client), versioned separately from the syscall ABI.
-wire-version 1
+wire-version 2
 
 // ---------------------------------------------------------------------------
 // Resident services (SERVICES.md). The kernel spawns a service binary with this

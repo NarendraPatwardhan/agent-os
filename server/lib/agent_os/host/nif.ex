@@ -989,8 +989,6 @@ defmodule AgentOS.Host.Nif do
     end
   end
 
-  defp host_tools_arg(_other), do: {:error, "host_tools must be a list of maps"}
-
   defp host_tool_arg(entry) when is_map(entry) do
     name = map_get_any(entry, [:name, "name"], nil)
 
