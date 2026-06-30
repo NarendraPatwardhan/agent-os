@@ -162,20 +162,29 @@ fn handle_call(blob: &[u8], caller: u32, caller_caps: u32) -> Response {
 }
 
 fn compile(req: Request, caller: u32, caller_caps: u32) -> Response {
+    // The in-guest `compile` is the non-default, elevation-gated fallback (SYSTEMS §13.5): it reads a
+    // provided source (possibly via `source_path`), runs heavyweight parse/compile, and can write a
+    // catalog tree — every part of that is filesystem authority. The default compile path is host-side,
+    // and a CAP_NET-only guest egresses through `invoke`, never `compile`. Gate the whole op up front so
+    // neither the `source_path` read nor the inline-records summary is reachable without elevation.
+    if !can_compile(caller, caller_caps) {
+        return json_response(error(
+            "permission_denied",
+            "the in-guest compile fallback requires filesystem authority (CAP_MOUNT)",
+        ));
+    }
     match req.format.as_deref() {
-        Some("openapi") => compile_openapi(req, caller, caller_caps),
-        Some("microsoft-graph") | Some("msgraph") => {
-            compile_microsoft_graph(req, caller, caller_caps)
-        }
-        Some("google-discovery") => compile_google_discovery(req, caller, caller_caps),
-        Some("graphql") => compile_graphql(req, caller, caller_caps),
-        Some("mcp-remote") | Some("mcp") => compile_mcp_remote(req, caller, caller_caps),
+        Some("openapi") => compile_openapi(req),
+        Some("microsoft-graph") | Some("msgraph") => compile_microsoft_graph(req),
+        Some("google-discovery") => compile_google_discovery(req),
+        Some("graphql") => compile_graphql(req),
+        Some("mcp-remote") | Some("mcp") => compile_mcp_remote(req),
         Some(_) => json_response(error("unsupported_format", "unsupported adapter format")),
         None => json_response(error("bad_request", "compile requires format")),
     }
 }
 
-fn compile_openapi(req: Request, caller: u32, caller_caps: u32) -> Response {
+fn compile_openapi(req: Request) -> Response {
     let output_path = req.output_path.clone();
     let source = match read_source(&req) {
         Ok(source) => source,
@@ -200,12 +209,10 @@ fn compile_openapi(req: Request, caller: u32, caller_caps: u32) -> Response {
         &opts.integration,
         out.tools,
         out.diagnostics,
-        caller,
-        caller_caps,
     )
 }
 
-fn compile_microsoft_graph(req: Request, caller: u32, caller_caps: u32) -> Response {
+fn compile_microsoft_graph(req: Request) -> Response {
     let output_path = req.output_path.clone();
     let source = match read_source(&req) {
         Ok(source) => source,
@@ -238,12 +245,10 @@ fn compile_microsoft_graph(req: Request, caller: u32, caller_caps: u32) -> Respo
         &opts.integration,
         out.tools,
         out.diagnostics,
-        caller,
-        caller_caps,
     )
 }
 
-fn compile_google_discovery(req: Request, caller: u32, caller_caps: u32) -> Response {
+fn compile_google_discovery(req: Request) -> Response {
     let output_path = req.output_path.clone();
     let source = match read_source(&req) {
         Ok(source) => source,
@@ -276,12 +281,10 @@ fn compile_google_discovery(req: Request, caller: u32, caller_caps: u32) -> Resp
         &opts.integration,
         out.tools,
         out.diagnostics,
-        caller,
-        caller_caps,
     )
 }
 
-fn compile_graphql(req: Request, caller: u32, caller_caps: u32) -> Response {
+fn compile_graphql(req: Request) -> Response {
     let output_path = req.output_path.clone();
     let endpoint = match adapter_endpoint(&req, "graphql") {
         Ok(endpoint) => endpoint,
@@ -313,12 +316,10 @@ fn compile_graphql(req: Request, caller: u32, caller_caps: u32) -> Response {
         &opts.integration,
         out.tools,
         out.diagnostics,
-        caller,
-        caller_caps,
     )
 }
 
-fn compile_mcp_remote(req: Request, caller: u32, caller_caps: u32) -> Response {
+fn compile_mcp_remote(req: Request) -> Response {
     let output_path = req.output_path.clone();
     let endpoint = match adapter_endpoint(&req, "remote MCP") {
         Ok(endpoint) => endpoint,
@@ -349,8 +350,6 @@ fn compile_mcp_remote(req: Request, caller: u32, caller_caps: u32) -> Response {
         &opts.integration,
         out.tools,
         out.diagnostics,
-        caller,
-        caller_caps,
     )
 }
 
@@ -359,8 +358,6 @@ fn compile_response(
     integration: &str,
     tools: Vec<Value>,
     diagnostics: Vec<mc_parse::Diagnostic>,
-    caller: u32,
-    caller_caps: u32,
 ) -> Response {
     let tool_count = tools.len();
     let entries = match bundle::bundle_entries(integration, 0, tools, diagnostics.clone()) {
@@ -374,12 +371,8 @@ fn compile_response(
         };
         return json_response(ok(summary));
     };
-    if !can_write_compile_output(caller, caller_caps) {
-        return json_response(error(
-            "permission_denied",
-            "compile output_path requires full filesystem authority",
-        ));
-    }
+    // Authority was already checked at the `compile` entry point (CAP_MOUNT/control); the output write
+    // needs no second gate.
     if !valid_output_path(path) {
         return json_response(error(
             "bad_request",
@@ -464,7 +457,7 @@ fn valid_output_path(path: &str) -> bool {
     path.starts_with('/') && !path.as_bytes().contains(&0)
 }
 
-fn can_write_compile_output(caller: u32, caller_caps: u32) -> bool {
+fn can_compile(caller: u32, caller_caps: u32) -> bool {
     caller == CONTROL_CALLER || caller_caps & CAP_MOUNT != 0
 }
 

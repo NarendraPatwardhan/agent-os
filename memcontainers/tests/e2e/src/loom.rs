@@ -880,6 +880,47 @@ print(index.tools[2].address)
     );
 }
 
+/// WHY: the in-guest `compile` is the non-default, elevation-gated fallback (SYSTEMS §13.5) — it reads a
+/// provided source (possibly via `source_path`), runs heavyweight parse/compile, and can write a catalog
+/// tree. A guest without filesystem authority (here a spawned `read-only` child) must be refused BEFORE any
+/// of that work, so it can neither DoS the compiler nor read a `source_path` it lacks authority for.
+/// `invoke` (CAP_NET) is the only adapter face a low-authority guest gets.
+#[test]
+fn adapters_compile_requires_filesystem_authority() {
+    let mut s = boot_loom_with_tools(MapHostCall::new());
+    s.host
+        .write_file(
+            "/demo/low-compile.luau",
+            br#"local sys = require("sys")
+local json = require("json")
+local fd = assert(sys.svc.connect("adapters"))
+local raw = assert(sys.svc.call(fd, json.encode({
+  op = "compile",
+  format = "openapi",
+  source = "{\"openapi\":\"3.0.0\",\"info\":{\"title\":\"x\",\"version\":\"1\"},\"paths\":{}}",
+})))
+assert(sys.svc.close(fd))
+local res = assert(json.decode(raw))
+print("compile", tostring(res.ok), res.err and res.err.code or "")
+"#,
+        )
+        .expect("seed low-authority compile script");
+    s.host
+        .write_file(
+            "/demo/spawn-low-compile.luau",
+            br#"local sys = require("sys")
+local pid = assert(sys.proc.spawn({ argv = { "luau", "/demo/low-compile.luau" }, tier = "read-only" }))
+local status = assert(sys.proc.wait(pid))
+assert(status == 0, status)
+"#,
+        )
+        .expect("seed parent compile script");
+    assert_eq!(
+        s.run_for_output("luau /demo/spawn-low-compile.luau"),
+        "compile\tfalse\tpermission_denied\r\n"
+    );
+}
+
 /// WHY: remote MCP is additive to the same adapter service: a provided `tools/list` compiles to catalog
 /// records keeping MCP names/hints (live discovery — the initialize/tools-list handshake — is host-side),
 /// and destructive MCP hints stay descriptive while host egress policy owns enforcement.
