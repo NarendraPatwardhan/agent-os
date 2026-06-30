@@ -356,6 +356,13 @@ impl KernelHost {
         }
         let bundle = merge_tool_catalog_bundles(bundles, opts.generation)?;
         self.ensure_catalog_dirs()?;
+        // Shards are written BEFORE catalog.apply by necessity: the broker verifies every referenced shard
+        // is present and content-addressed before it commits the index, so the content must exist first.
+        // This is the catalog's create-time INITIAL commit (the only caller; restore reuses the warm
+        // snapshot, vm.ex) — apply carries no base, so it can only be NoOp or Apply, never Conflict. A NoOp
+        // means the identical catalog is already live, so these shards re-write identical (content-
+        // addressed) bytes — no orphans. If this path were ever reused for a base'd update, a lost CAS
+        // would leave content-addressed shards the broker's `gc` reclaims; it can never corrupt the index.
         for record in &bundle.records {
             self.write_file(
                 &format!("/etc/tools/catalog/records/{}", record.sha),

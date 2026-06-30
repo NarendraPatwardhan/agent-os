@@ -35,7 +35,9 @@ pub fn derive_connection_origins(reference: &str) -> Vec<String> {
                 return vec![origin];
             }
         }
-        return Vec::new();
+        // This candidate resolved but carries no origin data — keep trying the remaining ids (a `-rest` /
+        // `-openapi` sibling may have them) rather than giving up here. Curated integrations register under
+        // one id today, so this is fragility-hardening, not a behavior change.
     }
     Vec::new()
 }

@@ -99,14 +99,29 @@ export async function deriveConnectionOrigins(opts: CreateOptions): Promise<Conn
       if ((c.origins && c.origins.length) || c.spec) return c;
       try {
         const ref = await compiler.parseRef(c.ref);
-        const registry = await resolveRegistry(compiler, ref.integration, c);
-        const origins = registryOrigins(registry);
+        const origins = await deriveRegistryOrigins(compiler, ref.integration);
         return origins.length ? { ...c, origins } : c;
       } catch {
         return c;
       }
     }),
   );
+}
+
+/** Try the registry candidate ids in order and return the first that carries curated egress origins
+ *  (`servers`, else the `endpoint`'s origin). A candidate that resolves but has no origin data does NOT
+ *  stop the search — a `-rest`/`-openapi` sibling may carry them (the peer of the wasmtime host's
+ *  `derive_connection_origins`). Empty if none do. */
+async function deriveRegistryOrigins(compiler: CatalogCompiler, integration: string): Promise<string[]> {
+  for (const id of [integration, `${integration}-rest`, `${integration}-openapi`]) {
+    try {
+      const origins = registryOrigins(await compiler.registryResolve(id));
+      if (origins.length) return origins;
+    } catch {
+      /* not this id — try the next candidate */
+    }
+  }
+  return [];
 }
 
 /**
