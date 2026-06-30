@@ -1,4 +1,5 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
+load("//bazel:rust_opt_test.bzl", "rust_opt_test")
 
 # tools/wasm-imports — the wasm import-section oracle, the ONE primitive behind conformance
 # (SYSTEMS.md) and capability attestation. Both gates walk a guest's wasm imports
@@ -43,7 +44,7 @@ rust_binary(
 # //memcontainers/contracts:env_rust's BRIDGE_IMPORTS, the projection, never a hand-listed copy of the
 # surface (that copy was the bug). The kernel is a `data` dep, located via the runfiles crate
 # as //memcontainers/tests/e2e does.
-rust_test(
+rust_opt_test(
     name = "kernel_imports",
     srcs = ["tests/kernel_imports.rs"],
     edition = "2021",
@@ -57,7 +58,7 @@ rust_test(
 
 # Unit tests live INSIDE src/lib.rs (#[cfg(test)] over hand-rolled wasm fixtures); this
 # target runs them without a kernel dep, so the primitive's logic is covered fast.
-rust_test(
+rust_opt_test(
     name = "lib_test",
     crate = ":lib",
     edition = "2021",

@@ -1,7 +1,8 @@
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_shared_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_shared_library")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@aspect_rules_js//js:defs.bzl", "js_test")
 load("//bazel:release_wasm.bzl", "release_wasm")
+load("//bazel:rust_opt_test.bzl", "rust_opt_test")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -57,14 +58,14 @@ build_test(
 
 # `unit_test`, not `test`: the `node_test` entry is staged at bin/<pkg>/test/node.test.mjs, so a
 # target whose output is bin/<pkg>/test (a `:test` rust_test) would collide with that `test/` dir.
-rust_test(
+rust_opt_test(
     name = "unit_test",
     crate = ":lib",
     edition = "2021",
     size = "small",
 )
 
-rust_test(
+rust_opt_test(
     name = "wasmtime_test",
     srcs = ["test/wasmtime.rs"],
     crate_root = "test/wasmtime.rs",

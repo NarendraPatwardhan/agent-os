@@ -10,42 +10,7 @@ The kernel.wasm keeps its own release_wasm transition (opt + wasm32), so the dat
 kernel is unaffected; this transition only optimizes the native host the test links.
 """
 
-load("@rules_rust//rust:defs.bzl", "rust_test")
-
-def _opt_transition_impl(_settings, _attr):
-    return {"//command_line_option:compilation_mode": "opt"}
-
-_opt_transition = transition(
-    implementation = _opt_transition_impl,
-    inputs = [],
-    outputs = ["//command_line_option:compilation_mode"],
-)
-
-def _opt_test_impl(ctx):
-    inner = ctx.attr.inner[0]
-    exe = inner[DefaultInfo].files_to_run.executable
-    out = ctx.actions.declare_file(ctx.label.name)
-    ctx.actions.symlink(output = out, target_file = exe, is_executable = True)
-
-    providers = [DefaultInfo(
-        executable = out,
-        runfiles = ctx.runfiles(files = [out]).merge(inner[DefaultInfo].default_runfiles),
-    )]
-    # Forward the inner test's run environment (if any) so `bazel test` sees it.
-    if RunEnvironmentInfo in inner:
-        providers.append(inner[RunEnvironmentInfo])
-    return providers
-
-_opt_test = rule(
-    implementation = _opt_test_impl,
-    test = True,
-    attrs = {
-        "inner": attr.label(mandatory = True, cfg = _opt_transition),
-        "_allowlist_function_transition": attr.label(
-            default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
-        ),
-    },
-)
+load("//bazel:rust_opt_test.bzl", "rust_opt_test")
 
 def rust_e2e_test(name, kernel = "//memcontainers/kernel/rust:kernel", size = "small", **kwargs):
     """A rust_test whose host subgraph (wasmtime) builds at compilation_mode=opt.
@@ -63,5 +28,4 @@ def rust_e2e_test(name, kernel = "//memcontainers/kernel/rust:kernel", size = "s
     data = kwargs.pop("data", []) + [kernel]
     env = dict(kwargs.pop("env", {}))
     env["MC_KERNEL_WASM"] = "$(rlocationpath %s)" % kernel
-    rust_test(name = name + "_inner", tags = ["manual"], data = data, env = env, **kwargs)
-    _opt_test(name = name, inner = ":" + name + "_inner", size = size)
+    rust_opt_test(name = name, size = size, data = data, env = env, **kwargs)

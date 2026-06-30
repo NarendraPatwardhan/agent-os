@@ -1,4 +1,5 @@
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//bazel:rust_opt_test.bzl", "rust_opt_test")
 
 # shcore — the OS-agnostic shell engine (SYSTEMS.md: the one legitimate native-test
 # home). Pure logic — no kernel, no syscalls — so it builds for the host and its
@@ -21,7 +22,7 @@ rust_library(
 # Native unit tests for the pure layers — legitimate here ONLY because shcore is not
 # the kernel (A2). Builds the crate with cfg(test) (so std is available) and runs the
 # in-module #[cfg(test)] tests.
-rust_test(
+rust_opt_test(
     name = "test",
     crate = ":shcore",
     edition = "2021",

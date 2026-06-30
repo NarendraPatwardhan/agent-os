@@ -1,4 +1,5 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//bazel:rust_opt_test.bzl", "rust_opt_test")
 
 # tools/mc-stamp — append the load-time `mc_tier` + `mc_budget` WASM CUSTOM SECTIONS that the kernel
 # reads at exec (kernel/rust/src/wasm/mod.rs `declared_tier` / `declared_budget`). The Rust boxes
@@ -15,7 +16,7 @@ rust_binary(
 )
 
 # The strip-then-append idempotency, unit-tested: a re-stamp replaces rather than duplicates.
-rust_test(
+rust_opt_test(
     name = "test",
     crate = ":mc-stamp",
     edition = "2021",

@@ -1,4 +1,5 @@
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//bazel:rust_opt_test.bzl", "rust_opt_test")
 
 # A lightweight, pure no_std alternative to serde_json (parse + serialize), shared across agent-os
 # Rust components — hence the `:serde` target. It imports as the `json` crate (crate_name), so it never
@@ -17,7 +18,7 @@ rust_library(
 
 # The pure logic, unit-tested natively: parse primitives/nesting/errors, the service-manifest shape,
 # and serialize round-trips.
-rust_test(
+rust_opt_test(
     name = "test",
     crate = ":serde",
     edition = "2021",

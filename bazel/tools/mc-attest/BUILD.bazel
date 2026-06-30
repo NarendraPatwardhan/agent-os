@@ -1,4 +1,5 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//bazel:rust_opt_test.bzl", "rust_opt_test")
 
 # mc-attest — the capability attestation tool. Reads a box's declared tier (mc_tier section)
 # + its mc imports and fails if any import's cap-floor (SYSCALL_CAPS) does not intersect
@@ -17,7 +18,7 @@ rust_binary(
 
 # The gate's logic, unit-tested directly (it's pure): minimal crafted boxes prove it ACCEPTS
 # tier-fitting imports and REJECTS over-reach (spawn/net at read-only, ambient at isolated).
-rust_test(
+rust_opt_test(
     name = "test",
     crate = ":mc-attest",
     edition = "2021",

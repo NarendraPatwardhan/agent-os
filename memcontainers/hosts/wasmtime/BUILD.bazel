@@ -1,5 +1,6 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("//bazel:rust_opt_test.bzl", "rust_opt_test")
 load(":defs.bzl", "host_release_binary")
 
 # hosts/wasmtime — the Rust host driver (ported from memcontainers crates/host). Loads
@@ -100,7 +101,7 @@ rust_binary(
     deps = [":host"],
 )
 
-rust_test(
+rust_opt_test(
     name = "tool_plane_test",
     srcs = ["test/tool_plane.rs"],
     crate_root = "test/tool_plane.rs",
@@ -120,7 +121,7 @@ rust_test(
 )
 
 # Host-side origin derivation from the curated registry — parity with the JS deriveConnectionOrigins.
-rust_test(
+rust_opt_test(
     name = "derive_origins_test",
     srcs = ["test/derive_origins.rs"],
     crate_root = "test/derive_origins.rs",

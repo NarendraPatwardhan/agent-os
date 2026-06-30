@@ -1,4 +1,5 @@
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("//bazel:rust_opt_test.bzl", "rust_opt_test")
 
 # Shared parser/normalizer library for external API-description formats that feed the tool plane.
 # This is deliberately under `memcontainers/lib`: OpenAPI/GraphQL/Graph/Google parsing is adapter
@@ -20,7 +21,7 @@ rust_library(
     visibility = ["//visibility:public"],
 )
 
-rust_test(
+rust_opt_test(
     name = "test",
     crate = ":parse",
     edition = "2021",
