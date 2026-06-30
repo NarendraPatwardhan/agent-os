@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { capabilityConnection, mc } from "../src/index.js";
-import type { CreateOptions, PermissionRequest, ConnectionPolicyRule, Vm } from "../src/index.js";
+import type { CreateOptions, PermissionRequest, ConnectionPolicyRule, ToolDefinition, Vm } from "../src/index.js";
 
 function runfile(rel: string | undefined, envVar: string): string {
   if (!rel) throw new Error(`${envVar} is not set (this test must run under \`bazel test\`)`);
@@ -230,30 +230,57 @@ async function main(): Promise<void> {
     if (before.exitCode !== 0 || !before.stdout.includes('"tools":[]')) {
       throw new Error(`initial tools catalog mismatch: exit=${before.exitCode} stdout=${before.stdout}`);
     }
-    await vm.tool({
+    const dynamicTool: ToolDefinition = {
       name: "dynamic greet",
       address: "host.org.main.dynamicGreet",
       description: "Greet dynamically",
       run: (input) => ({ message: `hello ${String(input.name ?? "world")}` }),
-    });
+    };
+    await vm.tool(dynamicTool);
     const after = await vm.exec("tools call host.org.main.dynamicGreet '{\"name\":\"Ada\"}'");
     if (after.exitCode !== 0 || !after.stdout.includes('"message":"hello Ada"')) {
       throw new Error(`runtime tool registration mismatch: exit=${after.exitCode} stdout=${after.stdout}`);
     }
 
-    // #1: the warm catalog snapshots WITH the VM, so a restore must keep the runtime-registered tool. The
-    // restore opts ({kernel, image, deterministic}) carry NO host tools — the old path re-seeded the
-    // catalog from them, clobbering dynamicGreet and resetting the generation; the wasmtime/Elixir host
-    // never re-injects on restore. Now restore trusts the snapshot, so the tool survives. (Its host-call
-    // closure can't be snapshotted — we assert the catalog entry persists, not that it's re-callable.)
-    console.log("phase: restore preserves the warm catalog");
+    // #1 + restore attachment contract: the warm catalog snapshots WITH the VM, but JS host-call
+    // closures do not. Strict restore refuses to return a VM that advertises a host-call catalog entry
+    // without the matching host handler; detached restore is explicit inspection mode; strict restore
+    // with the same definition reattaches the handler and the tool is callable.
+    console.log("phase: restore preserves catalog and validates host attachments");
     const snap = await vm.snapshot();
-    const restored = await mc.restore(snap, { kernel, image, deterministic: true });
+    let threwMissingAttachment = false;
     try {
-      const restoredList = await restored.exec("tools list");
-      if (restoredList.exitCode !== 0 || !restoredList.stdout.includes("host.org.main.dynamicGreet")) {
+      await mc.restore(snap, { kernel, image, deterministic: true });
+    } catch (e) {
+      threwMissingAttachment = /host attachments|dynamic greet|detached/i.test(String(e));
+    }
+    if (!threwMissingAttachment) {
+      throw new Error("strict restore must reject a host-call catalog entry without its handler");
+    }
+
+    const detached = await mc.restore(snap, {
+      kernel,
+      image,
+      deterministic: true,
+      restoreAttachments: "detached",
+    });
+    try {
+      const detachedList = await detached.exec("tools list");
+      if (detachedList.exitCode !== 0 || !detachedList.stdout.includes("host.org.main.dynamicGreet")) {
         throw new Error(
-          `restore clobbered the warm catalog (dynamicGreet missing): exit=${restoredList.exitCode} stdout=${restoredList.stdout}`,
+          `detached restore clobbered the warm catalog (dynamicGreet missing): exit=${detachedList.exitCode} stdout=${detachedList.stdout}`,
+        );
+      }
+    } finally {
+      await detached.close();
+    }
+
+    const restored = await mc.restore(snap, { kernel, image, deterministic: true, tools: [dynamicTool] });
+    try {
+      const restoredCall = await restored.exec("tools call host.org.main.dynamicGreet '{\"name\":\"Restore\"}'");
+      if (restoredCall.exitCode !== 0 || !restoredCall.stdout.includes('"message":"hello Restore"')) {
+        throw new Error(
+          `strict restore did not reattach dynamicGreet: exit=${restoredCall.exitCode} stdout=${restoredCall.stdout}`,
         );
       }
     } finally {

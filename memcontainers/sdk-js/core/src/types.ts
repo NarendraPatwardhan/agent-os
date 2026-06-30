@@ -61,6 +61,12 @@ export interface CreateOptions {
   /** Host-resident tools to register at boot (see {@link tool} / {@link kit}), plus optional
    *  connection tool groups such as `"github/issues"` for host-side catalog compilation. */
   tools?: Array<ToolDefinition | string>;
+  /** Restore-time host attachment policy. A snapshot carries guest-visible catalog state, but JS
+   *  closures, connection credentials, mounts, and callbacks live in the restoring host process.
+   *  `"strict"` (default) refuses to return a VM when restored catalog entries need host attachments
+   *  that were not supplied in these options; `"detached"` permits inspection-only restores with those
+   *  entries still listed but not necessarily callable. Ignored on fresh create. */
+  restoreAttachments?: "strict" | "detached";
   /** Host-backed filesystem mounts to install at boot (see {@link MountSpec} and
    *  the drivers at `@mc/core/drivers`). */
   mounts?: MountSpec[];

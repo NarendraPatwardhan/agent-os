@@ -517,24 +517,38 @@ async function makeEmbedded(
     host.bootToPrompt(); // drive boot only to the first prompt (no settle wait)
   }
   const backend = new EmbeddedBackend(host, stdout, tools);
-  // Re-register the host-call HANDLERS (the JS closures) on both paths — they can never live in a
-  // snapshot, so a restored VM must be handed them again to route its host-tool catalog entries.
-  for (const t of hostTools) backend.tool(t);
-  // A restored snapshot already carries the warm catalog (records + index + digest, SYSTEMS §4.9/§13.5),
-  // exactly like the wasmtime/Elixir host which skips injection on restore (vm.ex). Re-seeding from opts
-  // would clobber any runtime-registered tools the snapshot holds and reset the generation — so trust the
-  // snapshot and only read its digest back as the CAS base for the next vm.tool (the connection bundle is
-  // recomputed lazily on that first runtime commit). A fresh boot writes the cold-start seed.
-  const catalog = snapshot
-    ? await readRestoredCatalogState(backend)
-    : await seedToolCatalog(backend, opts, hostTools);
-  await seedToolAliases(backend, hostTools, undefined, snapshot !== null);
-  // Install boot-time mounts before the backend is returned (and before any
-  // exec), so the first command already sees them. Declaration order is kept.
-  for (const m of opts.mounts ?? []) {
-    await backend.mount(m.path, m.driver, m.readOnly ?? m.driver.readOnly ?? false);
+  try {
+    // Re-register the host-call HANDLERS (the JS closures) on both paths — they can never live in a
+    // snapshot, so a restored VM must be handed them again to route its host-tool catalog entries.
+    for (const t of hostTools) backend.tool(t);
+    // A restored snapshot already carries the warm catalog (records + index + digest, SYSTEMS §4.9/§13.5),
+    // exactly like the wasmtime/Elixir host which skips injection on restore (vm.ex). Re-seeding from opts
+    // would clobber any runtime-registered tools the snapshot holds and reset the generation — so trust the
+    // snapshot and only read its digest back as the CAS base for the next vm.tool (the connection bundle is
+    // recomputed lazily on that first runtime commit). A fresh boot writes the cold-start seed.
+    const catalog = snapshot
+      ? await readRestoredCatalogState(backend)
+      : await seedToolCatalog(backend, opts, hostTools);
+    if (snapshot) await validateRestoredCatalogAttachments(backend, opts, hostTools, catalog.generation);
+    await seedToolAliases(backend, hostTools, undefined, snapshot !== null);
+    // Install boot-time mounts before the backend is returned (and before any
+    // exec), so the first command already sees them. Declaration order is kept.
+    for (const m of opts.mounts ?? []) {
+      await backend.mount(m.path, m.driver, m.readOnly ?? m.driver.readOnly ?? false);
+    }
+    return { backend, opts, catalog };
+  } catch (e) {
+    await closeBackendQuietly(backend);
+    throw e;
   }
-  return { backend, opts, catalog };
+}
+
+async function closeBackendQuietly(backend: Backend): Promise<void> {
+  try {
+    await backend.close();
+  } catch {
+    /* preserve the original construction error */
+  }
 }
 
 /** Read the warm catalog state a restored snapshot already carries — the committed index digest (the CAS
@@ -556,6 +570,161 @@ async function readRestoredCatalogState(backend: Backend): Promise<CatalogState>
     /* no readable index — leave empty catalog state */
   }
   return { digest, generation, connectionBundle: null };
+}
+
+interface RestoredIndexTool {
+  address: string;
+  description: string;
+  sha: string;
+}
+
+interface RestoredBinding {
+  type: string;
+  name?: string;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function restoredIndexTools(value: unknown): RestoredIndexTool[] {
+  if (!isObject(value) || !Array.isArray(value.tools)) return [];
+  const tools: RestoredIndexTool[] = [];
+  for (const tool of value.tools) {
+    if (!isObject(tool)) continue;
+    if (typeof tool.address !== "string" || typeof tool.sha !== "string") continue;
+    tools.push({
+      address: tool.address,
+      description: typeof tool.description === "string" ? tool.description : "",
+      sha: tool.sha,
+    });
+  }
+  return tools;
+}
+
+async function readRestoredIndexTools(backend: Backend): Promise<RestoredIndexTool[]> {
+  try {
+    return restoredIndexTools(JSON.parse(dec(await backend.read("/etc/tools/catalog/index.json"))));
+  } catch {
+    return [];
+  }
+}
+
+function restoredBinding(value: unknown): RestoredBinding | null {
+  if (!isObject(value)) return null;
+  const binding = value.binding;
+  if (!isObject(binding) || typeof binding.type !== "string") return null;
+  return {
+    type: binding.type,
+    ...(typeof binding.name === "string" ? { name: binding.name } : {}),
+  };
+}
+
+async function readRestoredBinding(backend: Backend, tool: RestoredIndexTool): Promise<RestoredBinding | null> {
+  try {
+    const shard = JSON.parse(dec(await backend.read(`/etc/tools/catalog/records/${tool.sha}`)));
+    return restoredBinding(shard);
+  } catch {
+    return null;
+  }
+}
+
+function connectionRefFromAddress(address: string): string | null {
+  const parts = address.split(".");
+  return parts.length >= 4 ? `${parts[0]}.${parts[1]}.${parts[2]}` : null;
+}
+
+function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+async function expectedHostCallCatalog(
+  opts: CreateOptions,
+  defs: ToolDefinition[],
+  generation: number,
+): Promise<Map<string, { description: string; sha: string; bytes: Uint8Array }>> {
+  if (defs.length === 0) return new Map();
+  const compiler = await defaultCatalogCompiler(opts.catalogCompiler);
+  const bundle = await toolCatalogBundle(defs, compiler, generation);
+  const records = new Map(bundle.records.map((record) => [record.sha, record.bytes]));
+  const expected = new Map<string, { description: string; sha: string; bytes: Uint8Array }>();
+  for (const tool of bundle.index.tools) {
+    const bytes = records.get(tool.sha);
+    if (!bytes) continue;
+    const binding = restoredBinding(JSON.parse(dec(bytes)));
+    if (binding?.type === "host_call" && binding.name) {
+      expected.set(`${binding.name}\0${tool.address}`, {
+        description: tool.description,
+        sha: tool.sha,
+        bytes,
+      });
+    }
+  }
+  return expected;
+}
+
+async function validateRestoredCatalogAttachments(
+  backend: Backend,
+  opts: CreateOptions,
+  hostTools: ToolDefinition[],
+  generation: number,
+): Promise<void> {
+  const mode = opts.restoreAttachments ?? "strict";
+  if (mode === "detached") return;
+  if (mode !== "strict") {
+    throw new Error("restoreAttachments must be 'strict' or 'detached'");
+  }
+
+  const indexTools = await readRestoredIndexTools(backend);
+  if (indexTools.length === 0) return;
+
+  const issues: string[] = [];
+  let expected: Map<string, { description: string; sha: string; bytes: Uint8Array }> | null = null;
+  const connections = new Set((opts.connections ?? []).map((connection) => connection.ref));
+
+  for (const tool of indexTools) {
+    const binding = await readRestoredBinding(backend, tool);
+    if (!binding) {
+      issues.push(`${tool.address} -> missing or unreadable catalog shard ${tool.sha}`);
+      continue;
+    }
+    if (binding.type === "host_call") {
+      const name = binding.name ?? "";
+      expected ??= await expectedHostCallCatalog(opts, hostTools, generation);
+      const expectedTool = expected.get(`${name}\0${tool.address}`);
+      if (!expectedTool) {
+        issues.push(`${tool.address} -> missing host-call handler '${name || "<unnamed>"}'`);
+        continue;
+      }
+      const actualBytes = await backend.read(`/etc/tools/catalog/records/${tool.sha}`);
+      if (
+        tool.description !== expectedTool.description ||
+        tool.sha !== expectedTool.sha ||
+        !bytesEqual(actualBytes, expectedTool.bytes)
+      ) {
+        issues.push(`${tool.address} -> supplied host tool '${name}' does not match the restored catalog shard`);
+      }
+      continue;
+    }
+    if (binding.type === "service") {
+      const ref = connectionRefFromAddress(tool.address);
+      if (ref && !connections.has(ref)) {
+        issues.push(`${tool.address} -> missing connection '${ref}'`);
+      }
+    }
+  }
+
+  if (issues.length > 0) {
+    throw new Error(
+      "restore snapshot contains catalog entries whose host attachments were not reattached:\n" +
+        issues.map((issue) => `  ${issue}`).join("\n") +
+        "\nPass matching tools/connections to mc.restore(...), or set restoreAttachments: 'detached' for inspection-only restore.",
+    );
+  }
 }
 
 /** Write the boot-seed `/etc/tools/catalog/` tree. Once `/svc/tools` is active, catalog mutation
@@ -850,18 +1019,24 @@ async function makeRemote(
     vmId: id,
     onPermission: opts.onPermission,
   });
-  for (const tool of hostTools) backend.tool(tool);
-  if (hostTools.length || opts.mounts?.length || opts.onPermission) await backend.connect();
-  // As on the embedded path: a restored VM already carries its warm catalog server-side, so trust it and
-  // only read the digest back; a fresh VM gets the cold-start seed.
-  const catalog = snapshot
-    ? await readRestoredCatalogState(backend)
-    : await seedToolCatalog(backend, opts, hostTools);
-  await seedToolAliases(backend, hostTools, undefined, snapshot !== null);
-  for (const mount of opts.mounts ?? []) {
-    await backend.mount(mount.path, mount.driver, mount.readOnly ?? mount.driver.readOnly ?? false);
+  try {
+    for (const tool of hostTools) backend.tool(tool);
+    if (hostTools.length || opts.mounts?.length || opts.onPermission) await backend.connect();
+    // As on the embedded path: a restored VM already carries its warm catalog server-side, so trust it and
+    // only read the digest back; a fresh VM gets the cold-start seed.
+    const catalog = snapshot
+      ? await readRestoredCatalogState(backend)
+      : await seedToolCatalog(backend, opts, hostTools);
+    if (snapshot) await validateRestoredCatalogAttachments(backend, opts, hostTools, catalog.generation);
+    await seedToolAliases(backend, hostTools, undefined, snapshot !== null);
+    for (const mount of opts.mounts ?? []) {
+      await backend.mount(mount.path, mount.driver, mount.readOnly ?? mount.driver.readOnly ?? false);
+    }
+    return { backend, opts, catalog };
+  } catch (e) {
+    await closeBackendQuietly(backend);
+    throw e;
   }
-  return { backend, opts, catalog };
 }
 
 /** Derive the connection + tool selectors for one or more `integration.group` capabilities — the pure
