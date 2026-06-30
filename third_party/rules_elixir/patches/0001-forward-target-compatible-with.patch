@@ -2,13 +2,15 @@ Forward target_compatible_with / tags through the mix_library macro.
 
 The macro filters **kwargs to fixed allowlists and silently drops everything else, so a
 `target_compatible_with` set on a mix_library reaches neither the `_mix_compile` target (which
-resolves the Elixir toolchain) nor the `_mix_library_info` target (which carries the auto-added
-`@hex_pm//:lib` dep). Without it on BOTH, a wildcard `bazel build //...` under the default
-(non-Elixir) platform fails toolchain resolution — first on `<name>_compile`, then on
-`@hex_pm//:lib_compile` reached via the info target's deps — instead of SKIPPING the package as
-incompatible. Forwarding it to both targets makes the info target *directly* incompatible, which
-prunes its (hex) deps before they are configured. B3 patch-in-place; lets the Elixir lane live
-in-graph yet stay scoped to `--config=elixir`.
+resolves the Elixir toolchain), nor the `_mix_library_info` target (which carries the auto-added
+`@hex_pm//:lib` dep), nor the generated `_mix_priv` target (which carries native priv artifacts).
+Without it on those internals, a wildcard `bazel build //...` under the default (non-Elixir)
+platform fails toolchain resolution - first on `<name>_compile`, then on `@hex_pm//:lib_compile`
+reached via the info target's deps - or leaks native priv builds through `<name>_priv` instead of
+SKIPPING the package as incompatible. Forwarding it to the generated targets makes the info/priv
+targets *directly* incompatible, which prunes their deps before they are configured. B3
+patch-in-place; lets the Elixir lane live in-graph yet stay scoped to the transition-wrapped
+//server entry points.
 
 --- a/private/mix_library.bzl
 +++ b/private/mix_library.bzl
@@ -26,3 +28,12 @@ in-graph yet stay scoped to `--config=elixir`.
 +        "target_compatible_with",
 +        "tags",
      )}
+@@ -417,6 +421,8 @@
+         _mix_priv(
+             name = name + "_priv",
+             priv = priv,
++            target_compatible_with = kwargs.get("target_compatible_with", []),
++            tags = kwargs.get("tags", []),
+             visibility = ["//visibility:private"],
+         )
+         priv_target = ":" + name + "_priv"

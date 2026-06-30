@@ -89,12 +89,14 @@ toolchain(
 )
 
 # ---------------------------------------------------------------------------
-# Elixir control-plane target worlds (//server/otp_hello), selected by `--config=elixir`.
-# rules_erlang's dual-platform model: the HOST platform carries the *_internal constraints
-# (→ build OTP + Elixir from source), the TARGET platform carries the version constraints
-# (→ select the @erlang_config / @elixir_config toolchains). The constraints come from the
-# toolchain extensions in //MODULE.bazel; this is never the repo default (a global erlang
-# platform would clobber the wasm/Rust/Zig builds).
+# Elixir control-plane target worlds (//server), selected by the scoped transition
+# wrapper in //bazel:elixir_transition.bzl for public entry points. rules_erlang's
+# dual-platform model: the HOST platform carries the *_internal constraints
+# (→ build OTP + Elixir from source), the TARGET platform carries the version
+# constraints (→ select the @erlang_config / @elixir_config toolchains). The
+# constraints come from the toolchain extensions in //MODULE.bazel; this is never
+# the repo default (a global erlang platform would clobber the wasm/Rust/Zig
+# builds).
 # ---------------------------------------------------------------------------
 platform(
     name = "erlang_internal_platform",

@@ -220,10 +220,10 @@ http_archive(
 # apply in the ROOT module, so we replicate that archive_override here. Toolchains are built
 # from SOURCE (HERMETIC, B4): OTP 26.2.5 + Elixir 1.16.1 from the GitHub release tarballs.
 #
-# Module resolution is global, so these always resolve; but the toolchain is only SELECTED
-# under `--config=elixir` (see .bazelrc — it sets --host_platform/--platforms to the erlang
-# platforms in //platforms), and the //server targets are target_compatible_with
-# the erlang constraint, so a plain `bazel build //...` SKIPS them. (Containerization via
+# Module resolution is global, so these always resolve. Toolchain selection is
+# scoped by //bazel:elixir_transition.bzl for public //server entry points; the
+# raw //server implementation targets are target_compatible_with the erlang
+# constraint, so a plain `bazel build //...` SKIPS them. (Containerization via
 # rules_oci is a near-term follow-up; not wired yet.)
 # ---------------------------------------------------------------------------
 bazel_dep(name = "rules_erlang", version = "3.16.0")
@@ -245,8 +245,8 @@ git_override(
     patch_strip = 1,
     # B3 patch-in-place: forward target_compatible_with through the mix_library macro (it drops
     # it otherwise), so a bare `bazel build //...` SKIPS the Elixir package as incompatible and
-    # only `--config=elixir` builds it. Without this the macro-internal *_compile targets fail
-    # toolchain resolution under the default platform.
+    # only the scoped transition wrappers configure it. Without this the macro-internal
+    # *_compile targets fail toolchain resolution under the default platform.
     patches = ["//third_party/rules_elixir:patches/0001-forward-target-compatible-with.patch"],
     remote = "https://github.com/discord/rules_elixir.git",
 )

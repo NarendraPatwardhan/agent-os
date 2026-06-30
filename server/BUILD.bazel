@@ -3,11 +3,16 @@
 # kept OUT of this graph as a behavioral/parity oracle, not built here — this server IS the
 # control plane, in Elixir, driving VMs through the host_nif.
 #
-# Mix-backed on the hermetic discord toolchain; build/test with `--config=elixir`. The targets
-# are target_compatible_with erlang_26_2, so a bare `bazel build //...` SKIPS them (the rest of
-# the repo is unaffected). The VM-driving NIF (//memcontainers/hosts/wasmtime/nif:host_nif_release)
-# is staged into priv/ and loaded at runtime by AgentOS.Host.Nif — Bazel builds the release .so,
-# mix never compiles it.
+# Mix-backed on the hermetic discord toolchain. The implementation targets are
+# target_compatible_with erlang_26_2, so a bare `bazel build //...` SKIPS them
+# (the rest of the repo is unaffected); public entry points such as :mix_test and
+# :agent_os_package use //bazel:elixir_transition.bzl to apply the Erlang/Elixir
+# platform only on the dependency edge into this package, without flipping
+# Bazel's top-level --platforms/--host_platform. The VM-driving NIF
+# (//memcontainers/hosts/wasmtime/nif:host_nif_release) is staged into priv/ and
+# loaded at runtime by AgentOS.Host.Nif — Bazel builds the release .so, mix never
+# compiles it.
+load("//bazel:elixir_transition.bzl", "elixir_file", "elixir_test")
 load("@rules_elixir//:defs.bzl", "mix_library", "mix_test")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 
@@ -20,6 +25,7 @@ mix_library(
     mix_config = ":mix.exs",
     srcs = glob(["lib/**/*.ex"]),
     priv = ["//memcontainers/hosts/wasmtime/nif:host_nif_release"],  # libhost_nif.so -> priv/
+    tags = ["manual"],
     target_compatible_with = _ELIXIR_ONLY,
     visibility = ["//visibility:public"],
 )
@@ -32,12 +38,13 @@ mix_library(
     mix_config = ":mix.exs",
     srcs = glob(["lib/**/*.ex"]),
     priv = ["//memcontainers/hosts/wasmtime/nif:host_nif_release"],
+    tags = ["manual"],
     target_compatible_with = _ELIXIR_ONLY,
 )
 
 # `mix test` against the pre-compiled MIX_ENV=test lib (the NIF smoke test + the OTP layer test).
 mix_test(
-    name = "mix_test",
+    name = "mix_test_impl",
     data = [
         "//memcontainers/images:minimal",
         "//memcontainers/images:posix",
@@ -50,6 +57,17 @@ mix_test(
         "ERL_COMPILER_OPTIONS": "deterministic",
         "ELIXIR_ERL_OPTIONS": "+fnu",
     },
+    tags = ["manual"],
+)
+
+# Public test entry point. Run this without `--config=elixir`; the wrapper scopes
+# the Erlang/Elixir platform switch to the implementation edge so switching
+# between VM/kernel tests and the control-plane test does not invalidate the
+# top-level Bazel analysis cache.
+elixir_test(
+    name = "mix_test",
+    actual = ":mix_test_impl",
+    tags = ["manual"],
 )
 
 # The native payload for a Mix-consuming host app. Keep it as a separate layer so the pure Elixir
@@ -65,6 +83,7 @@ pkg_tar(
     },
     owner = "0.0",
     package_dir = "agent_os",
+    tags = ["manual"],
     target_compatible_with = _ELIXIR_ONLY,
 )
 
@@ -80,6 +99,7 @@ pkg_tar(
     owner = "0.0",
     package_dir = "agent_os",
     strip_prefix = ".",
+    tags = ["manual"],
     target_compatible_with = _ELIXIR_ONLY,
 )
 
@@ -104,6 +124,7 @@ pkg_tar(
     },
     owner = "0.0",
     package_dir = "agent_os",
+    tags = ["manual"],
     target_compatible_with = _ELIXIR_ONLY,
 )
 
@@ -114,7 +135,7 @@ pkg_tar(
 # Host applications start `AgentOS.Supervisor` in their own supervision tree; the package does not
 # auto-start a server. The host can read packaged runtime assets from priv/kernel and priv/images.
 pkg_tar(
-    name = "agent_os_package",
+    name = "agent_os_package_impl",
     mode = "0644",
     modes = {
         "agent_os": "0755",
@@ -126,11 +147,19 @@ pkg_tar(
         "agent_os/priv/kernel": "0755",
     },
     owner = "0.0",
+    tags = ["manual"],
     target_compatible_with = _ELIXIR_ONLY,
-    visibility = ["//visibility:public"],
     deps = [
         ":agent_os_package_nif",
         ":agent_os_package_runtime",
         ":agent_os_package_src",
     ],
+)
+
+elixir_file(
+    name = "agent_os_package",
+    actual = ":agent_os_package_impl",
+    output = "agent_os_package.tar",
+    tags = ["manual"],
+    visibility = ["//visibility:public"],
 )
