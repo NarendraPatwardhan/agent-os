@@ -156,6 +156,23 @@ async function main(): Promise<void> {
     console.log("phase: mc.use capability derivation OK");
   }
 
+  // P4: a remote VM cannot silently drop tool policies (the remote backend doesn't enforce them) — the
+  // create must fail closed rather than diverge from the embedded/wasmtime hosts.
+  {
+    let threwRemotePolicies = false;
+    try {
+      await mc.create({
+        runtime: "remote",
+        endpoint: "http://127.0.0.1:0",
+        policies: [{ owner: "org", pattern: "github.org.main.*", action: "require_approval" }],
+      });
+    } catch (e) {
+      threwRemotePolicies = /polic/i.test(String(e));
+    }
+    if (!threwRemotePolicies) throw new Error("remote create must reject tool policies (not silently drop them)");
+    console.log("phase: remote create rejects tool policies OK");
+  }
+
   // Bytes passed directly → no MC_STORE / defaultKernel env path; the embedded backend (the JS host)
   // boots the kernel in-process.
   const vm = await mc.create({ kernel, image, deterministic: true });

@@ -558,6 +558,11 @@ defmodule AgentOS.Vm do
   defp exec_result(exit_code, stdout, stderr),
     do: %{exit_code: exit_code, stdout: stdout, stderr: stderr}
 
+  # The wasmtime/Elixir host injects the catalog exactly once, at fresh boot (this is the only caller),
+  # so this is the catalog's INITIAL commit. `catalog.apply` therefore needs no `base_digest` — there is
+  # no prior catalog to lose-update against (the broker treats a missing base as the initial apply). The
+  # compare-and-swap base_digest is the JS host's runtime-mutation (`vm.tool`) concern; were runtime
+  # re-injection ever added here, this call would need to thread the live digest.
   defp inject_catalog_on_create(nif, opts) do
     connections = Keyword.get(opts, :catalog_connections, Keyword.get(opts, :connections, []))
     host_tools = Keyword.get(opts, :catalog_host_tools, Keyword.get(opts, :host_tools, []))

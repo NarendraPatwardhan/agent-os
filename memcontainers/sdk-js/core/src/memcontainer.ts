@@ -714,6 +714,14 @@ async function makeRemote(opts: CreateOptions, snapshot: Uint8Array | null): Pro
   if (!opts.endpoint) {
     throw new Error("runtime 'remote' requires opts.endpoint");
   }
+  // The remote create body does not carry tool policies, and the remote backend does not enforce them, so
+  // accepting them would silently drop a security control (the embedded/wasmtime hosts enforce them at the
+  // egress splice). Fail closed rather than diverge: refuse a remote VM that sets policies.
+  if (opts.policies && opts.policies.length > 0) {
+    throw new Error(
+      "tool policies are enforced only on the embedded runtime; the remote backend does not support them yet",
+    );
+  }
   const endpoint = opts.endpoint.replace(/\/$/, "");
   const headers: Record<string, string> = opts.token ? { authorization: `Bearer ${opts.token}` } : {};
   const hostTools = hostToolDefinitions(opts.tools);
