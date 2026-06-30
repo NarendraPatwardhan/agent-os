@@ -69,7 +69,8 @@ export class ConnectionRegistry {
     // authorize nothing (fail-closed) — a public (auth:none) tool must still name where it may reach, and
     // unrestricted egress belongs on the ordinary network path, not behind a connection marker.
     // (Previously auth:none + empty origins slipped past this check + bypassed the network allowlist.)
-    if (!origin || !entry.origins.includes(origin)) return null;
+    // `originAllowed` is the same primitive live discovery uses, so the splice and discovery agree.
+    if (!origin || !originAllowed(entry.origins, parsed.url)) return null;
 
     return {
       kind: "connection",
@@ -216,6 +217,17 @@ function requestOrigin(value: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** Canonical origin authorization — the single definition of "this URL may receive this connection's
+ *  credential," shared by the egress splice and live discovery (`@mc/core`'s catalog). Both `url` and every
+ *  allowed origin are normalized through the same http(s) parse (scheme/host lowercased, default port
+ *  folded), so a non-canonical allowed origin (`:443`, an uppercase host) still matches and the two paths
+ *  cannot diverge. A malformed or non-http(s) `url` is not allowed (fail closed). */
+export function originAllowed(allowedOrigins: readonly string[], url: string): boolean {
+  const target = requestOrigin(url);
+  if (target === null) return false;
+  return allowedOrigins.some((origin) => requestOrigin(origin) === target);
 }
 
 function parseHttpUrl(value: string): URL {

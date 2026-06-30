@@ -1,4 +1,4 @@
-import { defaultCatalogCompiler } from "@mc/host";
+import { defaultCatalogCompiler, originAllowed } from "@mc/host";
 import type { CatalogCompiler, RegistryEntry, RegistryGroup } from "@mc/host";
 import { graphqlDiscover, mcpDiscover } from "./discovery.js";
 import { mergeToolCatalogBundles } from "./tools.js";
@@ -258,10 +258,10 @@ async function acquireSource(
 
   // Live discovery: an authenticated call to the connection endpoint. The credential is applied host-side
   // here (never reaches the guest); the response is the source document for compilation. Discovery
-  // egresses the credential, so it honors the same origin allowlist as a tool-call splice (S2): the
-  // endpoint must be one of the connection's allowed origins, fail-closed (mirrors the wasmtime host).
-  const origins = connection.origins ?? [];
-  if (!origins.some((o) => endpoint === o || endpoint.startsWith(`${o}/`))) {
+  // egresses the credential, so it honors the same origin allowlist as a tool-call splice (S2), authorizing
+  // through the SAME `originAllowed` primitive the splice uses — a non-canonical origin (`:443`, uppercase
+  // host) is normalized identically, so discovery and the splice (and the wasmtime host) can never diverge.
+  if (!originAllowed(connection.origins ?? [], endpoint)) {
     throw new Error(
       `discovery endpoint '${endpoint}' is not an allowed origin for connection '${connection.ref}'`,
     );

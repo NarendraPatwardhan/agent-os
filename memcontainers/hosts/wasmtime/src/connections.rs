@@ -204,7 +204,8 @@ impl ConnectionRegistry {
         // authorize nothing (fail-closed) — a public (auth:none) tool must still name where it may reach,
         // and an unrestricted egress belongs on the ordinary network path, not behind a connection marker.
         // (Previously auth:none + empty origins slipped past this check, an unrestricted marked channel.)
-        if !entry.origins.iter().any(|allowed| allowed == &origin) {
+        // `origin_allowed` is the same primitive live discovery uses, so the splice and discovery agree.
+        if !origin_allowed(&entry.origins, &parsed.url) {
             return Err(ConnectionError::OriginNotAllowed);
         }
         Ok(PreparedHttpRequest::Connection(PreparedConnectionRequest {
@@ -428,6 +429,20 @@ fn request_origin(value: &str) -> Result<String, ConnectionError> {
     Ok(parse_origin(value)?.value)
 }
 
+/// Canonical origin authorization — the single definition of "this URL may receive this connection's
+/// credential," shared by the egress splice and live discovery (`catalog.rs`). Both `url` and every
+/// `allowed` origin are normalized through `parse_origin` (scheme/host lowercased, default port folded), so
+/// a non-canonical allowed origin (`:443`, an uppercase host) still matches and the two paths can never
+/// diverge. A malformed or non-`http(s)` `url` is not allowed (fail closed).
+pub fn origin_allowed(allowed: &[String], url: &str) -> bool {
+    let Ok(origin) = request_origin(url) else {
+        return false;
+    };
+    allowed
+        .iter()
+        .any(|candidate| request_origin(candidate).map(|c| c == origin).unwrap_or(false))
+}
+
 struct ParsedOrigin<'a> {
     value: String,
     suffix: &'a str,
@@ -595,5 +610,21 @@ mod tests {
                 ["https://api.example.com".to_string()],
             )
             .is_ok());
+    }
+
+    #[test]
+    fn origin_allowed_authorizes_by_normalized_origin() {
+        // A non-canonical allowed origin (explicit default port, uppercase host) still authorizes the same
+        // host, because both sides normalize through parse_origin — the same decision the splice makes.
+        let allowed = vec!["https://API.Example.com:443".to_string()];
+        assert!(origin_allowed(&allowed, "https://api.example.com/graphql"));
+        assert!(origin_allowed(&allowed, "https://api.example.com"));
+        // A different host, a different scheme, a path-suffixed lookalike, and a malformed URL are refused.
+        assert!(!origin_allowed(&allowed, "https://api.example.com.evil.test/graphql"));
+        assert!(!origin_allowed(&allowed, "http://api.example.com/graphql"));
+        assert!(!origin_allowed(&allowed, "https://evil.test/graphql"));
+        assert!(!origin_allowed(&allowed, "not-a-url"));
+        // Empty allowlist authorizes nothing (fail closed).
+        assert!(!origin_allowed(&[], "https://api.example.com/graphql"));
     }
 }

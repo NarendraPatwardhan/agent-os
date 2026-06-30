@@ -681,10 +681,9 @@ fn acquire_source(
                                 connection.reference
                             )
                         })?;
-                    if !origins
-                        .iter()
-                        .any(|o| endpoint == *o || endpoint.starts_with(&format!("{o}/")))
-                    {
+                    // Authorize the discovery endpoint with the SAME primitive the egress splice uses, so
+                    // a credential-bearing discovery can never reach an origin a tool call could not (S2).
+                    if !crate::connections::origin_allowed(&origins, &endpoint) {
                         return Err(anyhow!(
                             "discovery endpoint '{endpoint}' is not an allowed origin for connection '{}'",
                             connection.reference

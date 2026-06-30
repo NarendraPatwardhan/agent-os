@@ -9,7 +9,7 @@ export { KernelHost, KernelHostBuilder, EagainError } from "./host.js";
 export type { ExecResult, DirEntry } from "./host.js";
 export { CaptureSink, WritableSink, processStdout, processStderr } from "./io.js";
 export { SystemClock, FixedClock, OsRng, SeededRng } from "./sources.js";
-export { ConnectionRegistry } from "./connections.js";
+export { ConnectionRegistry, originAllowed } from "./connections.js";
 export type { ConnectionCredential, PreparedConnectionRequest, PreparedHttpRequest } from "./connections.js";
 export type { ToolPolicyAction, ToolPolicyOwner, ToolPolicyRule } from "./policy.js";
 export { CatalogCompiler, defaultCatalogCompiler } from "./catalog_compiler.js";

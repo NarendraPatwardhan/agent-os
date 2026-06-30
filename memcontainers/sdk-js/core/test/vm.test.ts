@@ -519,6 +519,11 @@ print("bypass-ok")
     });
     await new Promise<void>((resolve) => disco.listen(0, "127.0.0.1", () => resolve()));
     const discoOrigin = `http://127.0.0.1:${(disco.address() as { port: number }).port}`;
+    // #4: a NON-canonical form of the same origin (uppercase scheme). Discovery must authorize by the
+    // normalized origin (the splice's `originAllowed` primitive), not a raw string prefix — the old
+    // `startsWith` check rejected this even though it is the identical host, diverging from the splice
+    // (which normalizes) and from the wasmtime host (whose origins come back normalized from the registry).
+    const discoOriginNonCanonical = discoOrigin.replace(/^http:/, "HTTP:");
     try {
       const gqlVm = await mc.create({
         kernel,
@@ -527,7 +532,7 @@ print("bypass-ok")
         net: true,
         permissions: { network: "allow" },
         connections: [
-          { ref: "gql.org.main", auth: { kind: "bearer", token: "gql-tok" }, origins: [discoOrigin], spec: { format: "graphql", url: `${discoOrigin}/graphql` } },
+          { ref: "gql.org.main", auth: { kind: "bearer", token: "gql-tok" }, origins: [discoOriginNonCanonical], spec: { format: "graphql", url: `${discoOrigin}/graphql` } },
         ],
       });
       created.push(gqlVm);
