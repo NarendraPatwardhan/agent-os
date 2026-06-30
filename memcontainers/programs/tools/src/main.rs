@@ -100,7 +100,9 @@ fn field_str<'a>(doc: &'a Json, name: &str) -> Option<&'a str> {
 fn field_usize(doc: &Json, name: &str, default: usize, max: usize) -> usize {
     doc.get(name)
         .and_then(|v| v.as_u64())
-        .map(|n| (n as usize).min(max))
+        // `as usize` truncates on wasm32 (a >2^32 value would wrap *below* `max` before the clamp), so
+        // saturate through try_from first.
+        .map(|n| usize::try_from(n).unwrap_or(max).min(max))
         .unwrap_or(default)
 }
 
@@ -676,20 +678,20 @@ fn apply_catalog(state: &mut ToolState, req: &Json, caller: u32) -> Json {
         );
     }
     // The catalog's identity is its content digest, not a counter (which a multi-step writer can desync
-    // from the live state). Optimistic concurrency is compare-and-swap on the base the caller edited:
-    // if `base_digest` is supplied and the live catalog has already moved on, reject the stale write.
-    if let Some(base) = field_str(req, "base_digest") {
-        if base.to_ascii_lowercase() != state.catalog_digest {
+    // from the live state). The CAS decision lives in `toolcore` (unit-tested), so the contract is one
+    // place: idempotency wins first — a retry after a lost response still carries the old base, but if
+    // the result is already live it is a harmless no-op — and only a genuinely new result is gated by
+    // the base the caller edited.
+    let base = field_str(req, "base_digest").map(|b| b.to_ascii_lowercase());
+    match toolcore::catalog_apply_decision(&computed, &state.catalog_digest, base.as_deref()) {
+        toolcore::CatalogApplyDecision::NoOp => return ok_json(catalog_status(state)),
+        toolcore::CatalogApplyDecision::Conflict => {
             return err_json(
                 "catalog_conflict",
                 "catalog.apply base_digest does not match the live catalog",
-            );
+            )
         }
-    }
-    // Idempotent by result: re-applying the identical catalog is a no-op — the digest IS the version,
-    // so a stale retry or a duplicate runtime add is harmless (same content ⇒ same digest).
-    if computed == state.catalog_digest {
-        return ok_json(catalog_status(state));
+        toolcore::CatalogApplyDecision::Apply => {}
     }
     let next = match CatalogIndex::parse(&index_text) {
         Ok(index) => index,

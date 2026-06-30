@@ -526,6 +526,38 @@ pub fn parse_connection_ref(reference: &str) -> Result<(String, String, String),
     ))
 }
 
+/// The outcome of a `catalog.apply` compare-and-swap, decided purely from content digests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatalogApplyDecision {
+    /// The incoming catalog already equals the live one — a retry/duplicate is harmless. Commit nothing.
+    NoOp,
+    /// The caller edited a base the live catalog has since moved past — reject the stale write.
+    Conflict,
+    /// Proceed to commit the incoming catalog.
+    Apply,
+}
+
+/// Decide a `catalog.apply` from the incoming content digest, the live digest, and the optional base the
+/// caller edited. **Idempotency wins first**: if the result is already live it is a no-op regardless of
+/// the base, so a retried apply after a lost response (the caller still holds the old base) is harmless —
+/// the digest *is* the version. Only a genuinely new result is gated by the base (compare-and-swap). All
+/// three digests must already be normalized (lowercase hex) by the caller.
+pub fn catalog_apply_decision(
+    incoming: &str,
+    live: &str,
+    base: Option<&str>,
+) -> CatalogApplyDecision {
+    if incoming == live {
+        return CatalogApplyDecision::NoOp;
+    }
+    if let Some(base) = base {
+        if base != live {
+            return CatalogApplyDecision::Conflict;
+        }
+    }
+    CatalogApplyDecision::Apply
+}
+
 fn valid_service_name(name: &str) -> bool {
     valid_segment(name)
 }
@@ -1117,6 +1149,22 @@ mod tests {
                 ToolError::InvalidBindingName
             );
         }
+    }
+
+    #[test]
+    fn catalog_apply_cas_is_idempotency_first() {
+        let (a, b) = ("a".repeat(64), "b".repeat(64));
+        // Idempotent: the incoming catalog already equals the live one — a no-op regardless of base.
+        assert_eq!(catalog_apply_decision(&a, &a, None), CatalogApplyDecision::NoOp);
+        assert_eq!(catalog_apply_decision(&a, &a, Some(&a)), CatalogApplyDecision::NoOp);
+        // The C1 regression: a retry after a lost response still carries the OLD base, but the live
+        // catalog is already the result — this must be a no-op, NOT a conflict.
+        assert_eq!(catalog_apply_decision(&a, &a, Some(&b)), CatalogApplyDecision::NoOp);
+        // A genuinely new result with no base, or a base that matches live, applies.
+        assert_eq!(catalog_apply_decision(&b, &a, None), CatalogApplyDecision::Apply);
+        assert_eq!(catalog_apply_decision(&b, &a, Some(&a)), CatalogApplyDecision::Apply);
+        // A genuinely new result against a stale base is a lost-update conflict.
+        assert_eq!(catalog_apply_decision(&b, &a, Some(&b)), CatalogApplyDecision::Conflict);
     }
 
     #[test]
