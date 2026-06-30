@@ -211,6 +211,17 @@ fn configured_net(
             [origin.to_string()],
         )
         .expect("insert public connection");
+    // The GraphQL discovery test's connection: its credential lives here (the egress owner), and the
+    // host reads it from the registry for the authenticated introspection POST (single-source).
+    registry
+        .insert(
+            "gql.org.main",
+            ConnectionCredential::Bearer {
+                token: "gql-secret".to_string(),
+            },
+            [origin.to_string()],
+        )
+        .expect("insert gql connection");
     RealNet::new()
         .with_connections(registry)
         .with_tool_policies(policies)
@@ -266,7 +277,6 @@ fn injects_catalog_and_gates_connection_egress() {
                     endpoint: None,
                 }),
                 tools: Vec::new(),
-                credential: ConnectionCredential::None,
             }],
         })
         .expect("inject catalog")
@@ -416,9 +426,6 @@ fn discovers_graphql_catalog_via_authenticated_introspection() {
                     endpoint: None,
                 }),
                 tools: Vec::new(),
-                credential: ConnectionCredential::Bearer {
-                    token: "gql-secret".to_string(),
-                },
             }],
         })
         .expect("inject graphql catalog")
@@ -480,7 +487,6 @@ fn origins_only_public_tool_sends_no_credential() {
                 endpoint: None,
             }),
             tools: Vec::new(),
-            credential: ConnectionCredential::None,
         }],
     })
     .expect("inject public catalog")

@@ -164,6 +164,16 @@ impl ConnectionRegistry {
         Ok(self)
     }
 
+    /// The egress facet of a connection — its credential + allowed origins — for a reference. This is the
+    /// single source of a connection's credential: the catalog/discovery path reads it from here (it is
+    /// not duplicated onto the inject-time `CatalogConnection`), so a live discovery authenticates with the
+    /// same secret the runtime splice uses, and can origin-check against the same allowlist.
+    pub fn egress(&self, reference: &str) -> Option<(ConnectionCredential, Vec<String>)> {
+        self.entries
+            .get(reference)
+            .map(|entry| (entry.credential.clone(), entry.origins.clone()))
+    }
+
     pub fn inject_http_request(&self, req: &[u8]) -> Result<Vec<u8>, ConnectionError> {
         match self.prepare_http_request(req)? {
             PreparedHttpRequest::Unmarked(req) => Ok(req),

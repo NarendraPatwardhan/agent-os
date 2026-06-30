@@ -7,18 +7,20 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use wasmtime::{Engine, Instance, Linker, Memory, Module, Store, TypedFunc};
 
+use crate::net::NetCapability;
 use crate::sha256_hex;
 use crate::ConnectionCredential;
 use crate::KernelHost;
 
+/// The catalog facet of a connection: which spec + tool groups to compile for a connection reference.
+/// The credential + egress origins are NOT here — they live once in the net's `ConnectionRegistry` (the
+/// egress owner); a live discovery looks them up from there via `NetCapability::connection_egress`, so the
+/// secret is single-source and a discovery call authenticates exactly as the runtime splice does.
 #[derive(Debug, Clone)]
 pub struct CatalogConnection {
     pub reference: String,
     pub spec: Option<CatalogSpecSource>,
     pub tools: Vec<String>,
-    /// The connection credential, applied host-side to a live discovery call (graphql/mcp); never
-    /// reaches the guest. `None` for static-spec (openapi/google) connections.
-    pub credential: ConnectionCredential,
 }
 
 #[derive(Debug, Clone)]
@@ -346,7 +348,11 @@ impl KernelHost {
         if !opts.connections.is_empty() {
             // Only connection/spec tools need the compiler; host-call tools are sharded directly.
             let mut compiler = CatalogCompiler::instantiate(&opts.compiler_wasm)?;
-            bundles.push(connection_tool_catalog_bundle(&mut compiler, &opts)?);
+            bundles.push(connection_tool_catalog_bundle(
+                &mut compiler,
+                &opts,
+                self.store.data().net.as_ref(),
+            )?);
         }
         let bundle = merge_tool_catalog_bundles(bundles, opts.generation)?;
         self.ensure_catalog_dirs()?;
@@ -484,6 +490,7 @@ fn parse_host_tool_json(json: &str, field: &str) -> Result<Value> {
 fn connection_tool_catalog_bundle(
     compiler: &mut CatalogCompiler,
     opts: &CatalogInjectOptions,
+    net: &dyn NetCapability,
 ) -> Result<ToolCatalogBundle> {
     let mut bundles = Vec::new();
     for connection in &opts.connections {
@@ -496,7 +503,7 @@ fn connection_tool_catalog_bundle(
             &connection.tools,
         );
         for group in groups {
-            let source = acquire_source(connection, &registry, compiler)?;
+            let source = acquire_source(connection, &registry, compiler, net)?;
             let compile_opts =
                 resolved_compile_opts(&ref_parts.integration, &registry, &source, group.as_deref());
             let entries = compile_cached(compiler, &source, &compile_opts)?;
@@ -591,6 +598,7 @@ fn acquire_source(
     connection: &CatalogConnection,
     registry: &RegistryEntry,
     compiler: &mut CatalogCompiler,
+    net: &dyn NetCapability,
 ) -> Result<SourceBytes> {
     match &connection.spec {
         // A provided document is used as-is (the embedder handed us the spec / introspection result).
@@ -662,7 +670,27 @@ fn acquire_source(
                     )
                 }
                 discovery => {
-                    let bytes = run_discovery(&discovery, &connection.credential)?;
+                    // The credential + allowed origins live once in the net registry (the egress owner);
+                    // look them up there rather than carrying a second copy on the connection. Discovery
+                    // egresses the credential, so it honors the same origin allowlist as a tool call (S2):
+                    // the endpoint must be an allowed origin, fail-closed.
+                    let (credential, origins) =
+                        net.connection_egress(&connection.reference).ok_or_else(|| {
+                            anyhow!(
+                                "connection '{}' is not registered for egress; live discovery needs its credential",
+                                connection.reference
+                            )
+                        })?;
+                    if !origins
+                        .iter()
+                        .any(|o| endpoint == *o || endpoint.starts_with(&format!("{o}/")))
+                    {
+                        return Err(anyhow!(
+                            "discovery endpoint '{endpoint}' is not an allowed origin for connection '{}'",
+                            connection.reference
+                        ));
+                    }
+                    let bytes = run_discovery(&discovery, &credential)?;
                     cached_source(bytes, "json".to_string(), spec_base_url, Some(endpoint))
                 }
             }

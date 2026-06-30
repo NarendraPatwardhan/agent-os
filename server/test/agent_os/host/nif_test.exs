@@ -43,11 +43,13 @@ defmodule AgentOS.Host.NifTest do
     assert AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil, net: :real, connections: [:bad]) ==
              {:error, "connection must be {ref, auth}, {ref, auth, origins}, or %{ref: ref, auth: auth}"}
 
+    # A secret connection whose origins can't be derived (an integration NOT in the curated registry, so
+    # no `servers` to fall back to) is rejected — every secret connection must reach a known origin.
     assert AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil,
              net: :real,
-             connections: [{"openai.org.main", {:bearer, "tok"}}]
+             connections: [{"uncurated.org.main", {:bearer, "tok"}}]
            ) ==
-             {:error, ~s(invalid connection "openai.org.main": missing origin)}
+             {:error, ~s(invalid connection "uncurated.org.main": missing origin)}
 
     assert {:error, msg} =
              AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil,

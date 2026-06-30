@@ -55,7 +55,6 @@ type NifConnectionDef = (String, String, String, String, Vec<String>);
 type NifPolicyRule = (String, String, String);
 type NifCatalogConnection = (
     String,
-    (String, String, String),
     String,
     Vec<u8>,
     (String, String, String, String),
@@ -63,7 +62,6 @@ type NifCatalogConnection = (
 );
 type NifCatalogConnectionArg<'a> = (
     String,
-    (String, String, String),
     String,
     Binary<'a>,
     (String, String, String, String),
@@ -654,9 +652,7 @@ fn build_credential(kind: &str, a: String, b: String) -> NifResult<ConnectionCre
 
 fn build_catalog_connections(defs: Vec<NifCatalogConnection>) -> NifResult<Vec<CatalogConnection>> {
     defs.into_iter()
-        .map(|(reference, credential, spec_kind, payload, spec_opts, tools)| {
-            let (cred_kind, cred_a, cred_b) = credential;
-            let credential = build_credential(&cred_kind, cred_a, cred_b)?;
+        .map(|(reference, spec_kind, payload, spec_opts, tools)| {
             let (source_format, format, base_url, endpoint) = spec_opts;
             let source_format = opt_string(source_format);
             let format = opt_string(format);
@@ -691,7 +687,6 @@ fn build_catalog_connections(defs: Vec<NifCatalogConnection>) -> NifResult<Vec<C
                 reference,
                 spec,
                 tools,
-                credential,
             })
         })
         .collect()
@@ -1175,15 +1170,8 @@ fn inject_catalog<'a>(
 ) -> NifResult<(Atom, Option<(u64, String, u64)>)> {
     let connections = connections
         .into_iter()
-        .map(|(reference, credential, spec_kind, payload, spec_opts, tools)| {
-            (
-                reference,
-                credential,
-                spec_kind,
-                payload.as_slice().to_vec(),
-                spec_opts,
-                tools,
-            )
+        .map(|(reference, spec_kind, payload, spec_opts, tools)| {
+            (reference, spec_kind, payload.as_slice().to_vec(), spec_opts, tools)
         })
         .collect();
     let status = vm_lock(&vm)?

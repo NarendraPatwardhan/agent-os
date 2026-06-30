@@ -20,7 +20,9 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use crate::connections::{ConnectionRegistry, PreparedConnectionRequest, PreparedHttpRequest};
+use crate::connections::{
+    ConnectionCredential, ConnectionRegistry, PreparedConnectionRequest, PreparedHttpRequest,
+};
 use toolcore::policy::{ToolPolicyAction, ToolPolicyRule, ToolPolicySet};
 use crate::sha256_hex;
 
@@ -44,6 +46,13 @@ pub trait NetCapability: Send + 'static {
     fn ws_ready(&mut self, handle: i32) -> i32;
     fn ws_recv(&mut self, handle: i32, buf: &mut [u8]) -> i32;
     fn ws_close(&mut self, handle: i32);
+
+    /// The egress facet (credential + allowed origins) of a registered connection, for host-side live
+    /// discovery (graphql/mcp) — which authenticates with the same secret the runtime splice uses. The
+    /// default is `None` (a net with no connection registry, e.g. deny/relay), so discovery fails closed.
+    fn connection_egress(&self, _reference: &str) -> Option<(ConnectionCredential, Vec<String>)> {
+        None
+    }
 }
 
 /// Refuse every network call. This is the real policy gate, not a mock —
@@ -220,6 +229,10 @@ impl Default for RealNet {
 }
 
 impl NetCapability for RealNet {
+    fn connection_egress(&self, reference: &str) -> Option<(ConnectionCredential, Vec<String>)> {
+        self.connections.egress(reference)
+    }
+
     fn http_request(&mut self, req: &[u8]) -> i32 {
         let prepared = match self.connections.prepare_http_request(req) {
             Ok(prepared) => prepared,
@@ -782,6 +795,10 @@ impl TokioNet {
 
 #[cfg(feature = "tokio-net")]
 impl NetCapability for TokioNet {
+    fn connection_egress(&self, reference: &str) -> Option<(ConnectionCredential, Vec<String>)> {
+        self.connections.egress(reference)
+    }
+
     fn http_request(&mut self, req: &[u8]) -> i32 {
         let prepared = match self.connections.prepare_http_request(req) {
             Ok(prepared) => prepared,

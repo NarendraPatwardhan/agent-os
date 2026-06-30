@@ -255,10 +255,16 @@ async function acquireSource(
     return loaded;
   }
 
-  // Live discovery: an authenticated call to the connection endpoint. The credential is applied
-  // host-side here (never reaches the guest); the response is the source document for compilation. The
-  // endpoint is host/embedder-determined (the registry endpoint or the embedder's spec URL), never
-  // guest-controlled, so the origin allowlist that gates guest-built tool-call URLs does not apply here.
+  // Live discovery: an authenticated call to the connection endpoint. The credential is applied host-side
+  // here (never reaches the guest); the response is the source document for compilation. Discovery
+  // egresses the credential, so it honors the same origin allowlist as a tool-call splice (S2): the
+  // endpoint must be one of the connection's allowed origins, fail-closed (mirrors the wasmtime host).
+  const origins = connection.origins ?? [];
+  if (!origins.some((o) => endpoint === o || endpoint.startsWith(`${o}/`))) {
+    throw new Error(
+      `discovery endpoint '${endpoint}' is not an allowed origin for connection '${connection.ref}'`,
+    );
+  }
   const bytes =
     discovery.protocol === "graphql"
       ? await graphqlDiscover(discovery, connection.auth)
