@@ -389,8 +389,10 @@ print("bypass-ok")
 /// the result. Mirrors the JS host's discovery path (vm_test), so the two stay identical by construction.
 #[test]
 fn discovers_graphql_catalog_via_authenticated_introspection() {
-    let introspection = r#"{"data":{"__schema":{"queryType":{"name":"Query"},"mutationType":null,"types":[{"kind":"OBJECT","name":"Query","fields":[{"name":"viewer","description":"current user","args":[],"type":{"kind":"OBJECT","name":"User","ofType":null}}]}]}}}"#;
-    let server = RecordingServer::start_with_body(introspection.as_bytes().to_vec());
+    // Cross-host parity fixture (P3): the SAME graphql.introspection.json the JS host's vm_test discovery
+    // serves; both hosts compile it through catalog-compiler.wasm and MUST yield the identical golden set.
+    let introspection = read_runfile("_main/memcontainers/lib/catalog-compiler/data/graphql.introspection.json");
+    let server = RecordingServer::start_with_body(introspection);
     let approver = SharedApprover {
         prompts: Arc::new(Mutex::new(Vec::new())),
         allow: Arc::new(AtomicBool::new(true)),
@@ -433,7 +435,9 @@ fn discovers_graphql_catalog_via_authenticated_introspection() {
     assert!(status.tools >= 1, "expected discovered tools, got {status:?}");
 
     let listed = exec_stdout(&mut host, "tools list");
-    assert!(listed.contains("gql.org.main.query.viewer"), "{listed}");
+    for tool in ["gql.org.main.query.viewer", "gql.org.main.mutation.updateName"] {
+        assert!(listed.contains(tool), "missing parity golden {tool}: {listed}");
+    }
 
     // The introspection POST carried the credential, spliced host-side — never in the guest.
     let requests = server.snapshot();

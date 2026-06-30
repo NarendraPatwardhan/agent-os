@@ -111,6 +111,7 @@ rust_test(
         "//memcontainers/images:loom",
         "//memcontainers/lib/catalog-compiler:wasm",
         "//memcontainers/lib/catalog-compiler:data/github_issues.openapi.json",
+        "//memcontainers/lib/catalog-compiler:data/graphql.introspection.json",
     ],
     deps = [
         ":host",

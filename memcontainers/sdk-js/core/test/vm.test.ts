@@ -439,23 +439,11 @@ print("bypass-ok")
     // ── Live discovery: GraphQL introspection + remote-MCP initialize→tools/list handshake. The host
     //    runs discovery as authenticated egress (credential spliced host-side), then compiles the result.
     console.log("phase: live discovery (graphql + mcp)");
-    const introspection = JSON.stringify({
-      data: {
-        __schema: {
-          queryType: { name: "Query" },
-          mutationType: null,
-          types: [
-            {
-              kind: "OBJECT",
-              name: "Query",
-              fields: [
-                { name: "viewer", description: "current user", args: [], type: { kind: "OBJECT", name: "User", ofType: null } },
-              ],
-            },
-          ],
-        },
-      },
-    });
+    // Cross-host parity fixture (P3): graphql.introspection.json is the SAME document the Rust host's
+    // `discovers_graphql_catalog_via_authenticated_introspection` serves. Both hosts run the shared
+    // catalog-compiler.wasm over it, so they MUST yield the identical golden tool set
+    // (gql.org.main.query.viewer + gql.org.main.mutation.updateName) — a divergence here is a transport bug.
+    const introspection = readFileSync(runfile(process.env.MC_GRAPHQL_FIXTURE, "MC_GRAPHQL_FIXTURE"), "utf8");
     const mcpToolsList = JSON.stringify({
       jsonrpc: "2.0",
       id: 2,
@@ -506,8 +494,9 @@ print("bypass-ok")
       });
       created.push(gqlVm);
       const gqlList = await gqlVm.exec("tools list");
-      if (gqlList.exitCode !== 0 || !gqlList.stdout.includes("gql.org.main.query.viewer")) {
-        throw new Error(`graphql discovery produced no tools: ${gqlList.stdout}`);
+      const gqlGolden = ["gql.org.main.query.viewer", "gql.org.main.mutation.updateName"];
+      if (gqlList.exitCode !== 0 || !gqlGolden.every((t) => gqlList.stdout.includes(t))) {
+        throw new Error(`graphql discovery did not yield the parity golden ${JSON.stringify(gqlGolden)}: ${gqlList.stdout}`);
       }
 
       const mcpVm = await mc.create({

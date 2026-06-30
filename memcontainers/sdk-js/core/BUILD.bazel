@@ -40,6 +40,15 @@ genrule(
     cmd = "cp $< $@",
 )
 
+# Shared cross-host discovery-parity fixture (P3): the SAME introspection the Rust host's tool_plane
+# discovery test serves, so both hosts compile it through catalog-compiler.wasm to the identical catalog.
+genrule(
+    name = "graphql_introspection_fixture",
+    srcs = ["//memcontainers/lib/catalog-compiler:data/graphql.introspection.json"],
+    outs = ["data/graphql.introspection.json"],
+    cmd = "cp $< $@",
+)
+
 # Core-level runtime test: a real mc.create() boots the kernel through @mc/host and @mc/contracts package
 # deps (the host parity test only covers @mc/host itself). Same load-bearing data edge as the Rust e2e:
 # the kernel + image it boots are the ones its sources produce.
@@ -57,6 +66,7 @@ js_test(
     data = [
         ":vm_test_lib",
         ":github_issues_fixture",
+        ":graphql_introspection_fixture",
         "//memcontainers/kernel/rust:kernel",
         "//memcontainers/images:base",
         "//memcontainers/images:loom",
@@ -69,5 +79,6 @@ js_test(
         "MC_LOOM_IMAGE": "$(rlocationpath //memcontainers/images:loom)",
         "MC_CATALOG_COMPILER_WASM": "$(rlocationpath //memcontainers/lib/catalog-compiler:wasm)",
         "MC_GITHUB_FIXTURE": "$(rlocationpath :github_issues_fixture)",
+        "MC_GRAPHQL_FIXTURE": "$(rlocationpath :graphql_introspection_fixture)",
     },
 )
