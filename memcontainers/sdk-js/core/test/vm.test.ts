@@ -173,6 +173,25 @@ async function main(): Promise<void> {
     console.log("phase: remote create rejects tool policies OK");
   }
 
+  // #3: a remote VM cannot honor connections the way the host does (host-side origin derivation + live
+  // discovery), so it must fail closed rather than half-support them client-side.
+  {
+    let threwRemoteConnections = false;
+    try {
+      await mc.create({
+        runtime: "remote",
+        endpoint: "http://127.0.0.1:0",
+        connections: [{ ref: "github.org.main", auth: { kind: "bearer", token: "t" } }],
+      });
+    } catch (e) {
+      threwRemoteConnections = /connection/i.test(String(e));
+    }
+    if (!threwRemoteConnections) {
+      throw new Error("remote create must reject connections (not half-support them client-side)");
+    }
+    console.log("phase: remote create rejects connections OK");
+  }
+
   // Bytes passed directly → no MC_STORE / defaultKernel env path; the embedded backend (the JS host)
   // boots the kernel in-process.
   const vm = await mc.create({ kernel, image, deterministic: true });

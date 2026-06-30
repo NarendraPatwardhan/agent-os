@@ -791,12 +791,25 @@ async function makeRemote(
   if (!opts.endpoint) {
     throw new Error("runtime 'remote' requires opts.endpoint");
   }
-  // The remote create body does not carry tool policies, and the remote backend does not enforce them, so
-  // accepting them would silently drop a security control (the embedded/wasmtime hosts enforce them at the
-  // egress splice). Fail closed rather than diverge: refuse a remote VM that sets policies.
+  // Fail closed rather than present partial parity. Two options the remote path cannot honor the way the
+  // embedded/wasmtime host does:
+  //  - tool policies: the remote backend does not enforce them at an egress splice, so accepting them would
+  //    silently drop a security control.
+  //  - connections: faithful connection tools need HOST-SIDE catalog construction — origin derivation and,
+  //    for graphql/mcp, live discovery run as authenticated host egress (the credential never leaving the
+  //    host). The remote SDK would instead compile/discover CLIENT-SIDE and apply the credential
+  //    client-side, diverging from the host model and bypassing the server's fresh-boot injection. Until
+  //    the server accepts catalog connections over REST and injects them host-side, refuse them rather than
+  //    half-support them (host tools + mounts remain fully supported on remote).
   if (opts.policies && opts.policies.length > 0) {
     throw new Error(
       "tool policies are enforced only on the embedded runtime; the remote backend does not support them yet",
+    );
+  }
+  if (opts.connections && opts.connections.length > 0) {
+    throw new Error(
+      "connections require host-side catalog construction (origin derivation + live discovery), which the " +
+        "remote backend does not perform yet; use the embedded runtime for connection-backed tools",
     );
   }
   const endpoint = opts.endpoint.replace(/\/$/, "");
