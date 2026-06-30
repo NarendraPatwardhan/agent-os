@@ -24,6 +24,7 @@
   <p>
     <a href="#what-you-can-build">What You Can Build</a> -
     <a href="#client-api">Client API</a> -
+    <a href="#calling-tools">Calling Tools</a> -
     <a href="#images">Images</a> -
     <a href="#build-and-verification">Build and Verification</a>
   </p>
@@ -192,6 +193,79 @@ agent-os supports integrations in four complementary ways:
 These paths compose. An agent can call Google Sheets, write rows into SQLite,
 join them with files mounted from S3, generate a PDF in Typst, and return the
 artifact from one program.
+
+## Calling Tools
+
+Tools are how an agent reaches the outside world — GitHub, Google, Microsoft, a
+custom API, or your own host functions. The model is a clean split: the
+**embedder** declares connections (specs, credentials, egress policy) when it
+creates the VM; the **agent inside the VM** only ever sees tool *addresses* and
+JSON arguments. The credential is spliced in host-side at egress and never enters
+the guest.
+
+Every tool has an address `‹integration›.‹owner›.‹connection›.‹tool›` — e.g.
+`github.org.main.issues-create`. The `‹owner›.‹connection›` (default `org.main`)
+names the connection the host resolves to a credential and an origin allowlist.
+
+**From the shell** — the `tools` applet, backed by `/svc/tools`:
+
+```sh
+tools list                                   # every available address
+tools search "issue" --limit 5               # ranked discovery
+tools describe github.org.main.issues-create # input/output JSON schema
+tools call github.org.main.issues-create '{"path":{"owner":"me","repo":"r"},"body":{"title":"hi"}}'
+github issues-create '{ ... }'               # /bin alias (argv[0] dispatch)
+```
+
+Every call returns `{"ok":true,"data":…}` or
+`{"ok":false,"err":{"code":…,"message":…}}`. Large or binary results land as a
+file under `/tmp/tools/results` (or `--output /path`). `call` requires the
+caller's `CAP_NET`; discovery does not. A read-only mirror lives at
+`/tools/‹integration›/‹owner›/‹connection›/‹tool›`.
+
+**From Luau** — `require("tools")`:
+
+```lua
+local tools = require("tools")
+local rec = tools.describe("github.org.main.issues-create")
+local res = tools.call("github.org.main.issues-create", { path = {...}, body = {...} })
+print(res.ok, res.data)
+-- or the dotted proxy: tools.github.org.main["issues-create"]({ ... })
+```
+
+**Your own functions are tools too.** A `tool()` / `kit()` defined in the SDK is
+a first-class catalog entry (address `host.org.main.‹name›` by default); the
+agent calls it exactly like an API tool — `tools call host.org.main.greet '"world"'`
+— and your host function answers.
+
+**Adding an integration** is the embedder's `mc.create`. For a curated
+integration, name the capability and hand over a key:
+
+```js
+const vm = await mc.use("github.issues", process.env.GITHUB_TOKEN, { kernel, image });
+```
+
+For any other API, supply the spec — `openapi`, `microsoft-graph`,
+`google-discovery`, `graphql`, or `mcp-remote` — as a URL, bytes, or path, plus
+the credential and the origins the credential may reach:
+
+```js
+await mc.create({
+  kernel, image, net: true, permissions: { network: "allow" },
+  connections: [{
+    ref: "acme.org.main",
+    auth: { kind: "bearer", token: process.env.ACME_TOKEN },
+    origins: ["https://api.acme.com"],
+    spec: { format: "openapi", url: "https://api.acme.com/openapi.json" },
+  }],
+});
+```
+
+The host compiles the spec into catalog records — a `graphql` / `mcp-remote`
+endpoint is *discovered live* instead — and the new `acme.org.main.*` tools
+appear to the agent immediately. The connection's `origins` confine the
+credential to the hosts it may reach; an attempt to egress anywhere else fails
+closed.
 
 ## Build and Verification
 
