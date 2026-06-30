@@ -206,14 +206,14 @@ const fn microsoft(
 }
 
 pub const REGISTRY: &[RegistryEntry] = &[
-    openapi(
+    with_servers(openapi(
         "stripe",
         "Stripe",
         "Payments, subscriptions, customers, and invoices.",
         "https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.json",
         "https://stripe.com/favicon.ico",
         true,
-    ),
+    ), &["https://api.stripe.com"]),
     with_servers(
         openapi(
             "github-rest",
@@ -225,126 +225,126 @@ pub const REGISTRY: &[RegistryEntry] = &[
         ),
         &["https://api.github.com"],
     ),
-    openapi(
+    with_servers(openapi(
         "vercel",
         "Vercel",
         "Deployments, domains, projects, and edge config.",
         "https://openapi.vercel.sh",
         "https://vercel.com/favicon.ico",
         true,
-    ),
-    openapi(
+    ), &["https://api.vercel.com"]),
+    with_servers(openapi(
         "cloudflare",
         "Cloudflare",
         "DNS, workers, pages, R2, and security rules.",
         "https://raw.githubusercontent.com/cloudflare/api-schemas/main/openapi.json",
         "https://cloudflare.com/favicon.ico",
         true,
-    ),
-    openapi(
+    ), &["https://api.cloudflare.com"]),
+    with_servers(openapi(
         "neon",
         "Neon",
         "Serverless Postgres: projects, branches, and endpoints.",
         "https://neon.tech/api_spec/release/v2.json",
         "https://neon.tech/favicon/favicon.ico",
         true,
-    ),
-    openapi(
+    ), &["https://console.neon.tech"]),
+    with_servers(openapi(
         "openai",
         "OpenAI",
         "Models, files, responses, and fine-tuning.",
         "https://app.stainless.com/api/spec/documented/openai/openapi.documented.yml",
         "https://svgl.app/library/openai_dark.svg",
         true,
-    ),
-    openapi(
+    ), &["https://api.openai.com"]),
+    with_servers(openapi(
         "sentry",
         "Sentry",
         "Error tracking, performance monitoring, and releases.",
         "https://raw.githubusercontent.com/getsentry/sentry-api-schema/main/openapi-derefed.json",
         "https://svgl.app/library/sentry.svg",
         true,
-    ),
-    openapi(
+    ), &["https://sentry.io", "https://us.sentry.io", "https://de.sentry.io"]),
+    with_servers(openapi(
         "exa",
         "Exa",
         "Web search, similar links, content retrieval, and answers.",
         "https://raw.githubusercontent.com/exa-labs/openapi-spec/refs/heads/master/exa-openapi-spec.yaml",
         "https://exa.ai/images/favicon-32x32.png",
         true,
-    ),
-    openapi(
+    ), &["https://api.exa.ai"]),
+    with_servers(openapi(
         "exa-websets",
         "Exa Websets",
         "Websets, enrichments, webhooks, and monitors.",
         "https://raw.githubusercontent.com/exa-labs/openapi-spec/refs/heads/master/exa-websets-spec.yaml",
         "https://exa.ai/images/favicon-32x32.png",
         true,
-    ),
-    openapi(
+    ), &["https://api.exa.ai"]),
+    with_servers(openapi(
         "axiom",
         "Axiom",
         "Log ingestion, querying, datasets, and monitors.",
         "https://axiom.co/docs/restapi/versions/v2.json",
         "https://axiom.co/favicon.ico",
         false,
-    ),
-    openapi(
+    ), &["https://api.axiom.co"]),
+    with_servers(openapi(
         "asana",
         "Asana",
         "Tasks, projects, teams, and workspace management.",
         "https://raw.githubusercontent.com/APIs-guru/openapi-directory/main/APIs/asana.com/1.0/openapi.yaml",
         "https://asana.com/favicon.ico",
         false,
-    ),
-    openapi(
+    ), &["https://app.asana.com"]),
+    with_servers(openapi(
         "twilio",
         "Twilio",
         "SMS, voice, video, and messaging APIs.",
         "https://raw.githubusercontent.com/twilio/twilio-oai/main/spec/json/twilio_api_v2010.json",
         "https://twilio.com/favicon.ico",
         false,
-    ),
-    openapi(
+    ), &["https://api.twilio.com"]),
+    with_servers(openapi(
         "digitalocean",
         "DigitalOcean",
         "Droplets, Kubernetes, databases, and networking.",
         "https://raw.githubusercontent.com/digitalocean/openapi/main/specification/DigitalOcean-public.v2.yaml",
         "https://assets.digitalocean.com/favicon.ico",
         false,
-    ),
-    openapi(
+    ), &["https://api.digitalocean.com"]),
+    with_servers(openapi(
         "petstore",
         "Petstore",
         "Classic OpenAPI demo, no auth required.",
         "https://petstore3.swagger.io/api/v3/openapi.json",
         "https://petstore3.swagger.io/favicon-32x32.png",
         false,
-    ),
-    openapi(
+    ), &["https://petstore3.swagger.io"]),
+    with_servers(openapi(
         "val-town",
         "Val Town",
         "Vals, runs, blobs, and email/web endpoints.",
         "https://api.val.town/openapi.json",
         "https://www.val.town/favicon.svg",
         false,
-    ),
-    openapi(
+    ), &["https://api.val.town"]),
+    with_servers(openapi(
         "resend",
         "Resend",
         "Transactional email sending and domain management.",
         "https://raw.githubusercontent.com/resend/resend-openapi/main/resend.yaml",
         "https://resend.com/static/favicons/favicon.ico",
         false,
-    ),
-    openapi(
+    ), &["https://api.resend.com"]),
+    with_servers(openapi(
         "spotify",
         "Spotify",
         "Tracks, albums, playlists, library, and playback.",
         "https://raw.githubusercontent.com/sonallux/spotify-web-api/refs/heads/main/official-spotify-open-api.yml",
         "https://svgl.app/library/spotify.svg",
         false,
-    ),
+    ), &["https://api.spotify.com"]),
     microsoft(
         "profile",
         "Profile",
@@ -723,7 +723,7 @@ pub const REGISTRY: &[RegistryEntry] = &[
         NONE,
         &["/filterOperators", "/functions", "/places", "/print", "/schemaExtensions", "/storage", "/subscriptions"],
     ),
-    google(
+    with_servers(google(
         "google-calendar",
         "Google Calendar",
         "Calendars, events, ACLs, and scheduling.",
@@ -732,8 +732,8 @@ pub const REGISTRY: &[RegistryEntry] = &[
         true,
         "standard-user",
         &["https://www.googleapis.com/auth/calendar"],
-    ),
-    google(
+    ), &["https://www.googleapis.com"]),
+    with_servers(google(
         "google-gmail",
         "Gmail",
         "Messages, threads, labels, and drafts.",
@@ -742,8 +742,8 @@ pub const REGISTRY: &[RegistryEntry] = &[
         true,
         "standard-user",
         &["https://mail.google.com/"],
-    ),
-    google(
+    ), &["https://gmail.googleapis.com"]),
+    with_servers(google(
         "google-sheets",
         "Google Sheets",
         "Spreadsheets, values, ranges, and formatting.",
@@ -752,8 +752,8 @@ pub const REGISTRY: &[RegistryEntry] = &[
         true,
         "standard-user",
         &["https://www.googleapis.com/auth/spreadsheets"],
-    ),
-    google(
+    ), &["https://sheets.googleapis.com"]),
+    with_servers(google(
         "google-drive",
         "Google Drive",
         "Files, folders, permissions, and shared drives.",
@@ -762,8 +762,8 @@ pub const REGISTRY: &[RegistryEntry] = &[
         true,
         "standard-user",
         &["https://www.googleapis.com/auth/drive"],
-    ),
-    google(
+    ), &["https://www.googleapis.com"]),
+    with_servers(google(
         "google-docs",
         "Google Docs",
         "Documents, structural edits, and formatting.",
@@ -772,8 +772,8 @@ pub const REGISTRY: &[RegistryEntry] = &[
         true,
         "standard-user",
         &["https://www.googleapis.com/auth/documents"],
-    ),
-    google(
+    ), &["https://docs.googleapis.com"]),
+    with_servers(google(
         "google-slides",
         "Google Slides",
         "Presentations, slides, page elements, and deck updates.",
@@ -782,8 +782,8 @@ pub const REGISTRY: &[RegistryEntry] = &[
         false,
         "standard-user",
         &["https://www.googleapis.com/auth/presentations"],
-    ),
-    google(
+    ), &["https://slides.googleapis.com"]),
+    with_servers(google(
         "google-forms",
         "Google Forms",
         "Forms, questions, responses, and quizzes.",
@@ -792,8 +792,8 @@ pub const REGISTRY: &[RegistryEntry] = &[
         false,
         "standard-user",
         &["https://www.googleapis.com/auth/forms.body"],
-    ),
-    google(
+    ), &["https://forms.googleapis.com"]),
+    with_servers(google(
         "google-tasks",
         "Google Tasks",
         "Task lists, task items, notes, and due dates.",
@@ -802,8 +802,8 @@ pub const REGISTRY: &[RegistryEntry] = &[
         false,
         "standard-user",
         &["https://www.googleapis.com/auth/tasks"],
-    ),
-    google(
+    ), &["https://tasks.googleapis.com"]),
+    with_servers(google(
         "google-people",
         "Google People",
         "Contacts, profiles, directory people, and contact groups.",
@@ -812,8 +812,8 @@ pub const REGISTRY: &[RegistryEntry] = &[
         false,
         "standard-user",
         &["https://www.googleapis.com/auth/contacts"],
-    ),
-    google(
+    ), &["https://people.googleapis.com"]),
+    with_servers(google(
         "google-photos-library",
         "Google Photos Library",
         "Albums, uploads, and app-created media through Google Photos.",
@@ -825,8 +825,8 @@ pub const REGISTRY: &[RegistryEntry] = &[
             "https://www.googleapis.com/auth/photoslibrary.appendonly",
             "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
         ],
-    ),
-    google(
+    ), &["https://photoslibrary.googleapis.com"]),
+    with_servers(google(
         "google-photos-picker",
         "Google Photos Picker",
         "Picker sessions and user-selected Google Photos media items.",
@@ -835,8 +835,8 @@ pub const REGISTRY: &[RegistryEntry] = &[
         false,
         "advanced-user",
         &["https://www.googleapis.com/auth/photospicker.mediaitems.readonly"],
-    ),
-    google(
+    ), &["https://photospicker.googleapis.com"]),
+    with_servers(google(
         "google-chat",
         "Google Chat",
         "Spaces, messages, members, reactions, and chat workflows.",
@@ -845,8 +845,8 @@ pub const REGISTRY: &[RegistryEntry] = &[
         false,
         "workspace-admin",
         &["https://www.googleapis.com/auth/chat.spaces"],
-    ),
-    google(
+    ), &["https://chat.googleapis.com"]),
+    with_servers(google(
         "google-keep",
         "Google Keep",
         "Notes, lists, attachments, and annotations.",
@@ -855,8 +855,8 @@ pub const REGISTRY: &[RegistryEntry] = &[
         false,
         "unsupported-user",
         &["https://www.googleapis.com/auth/keep"],
-    ),
-    google(
+    ), &["https://keep.googleapis.com"]),
+    with_servers(google(
         "google-youtube-data",
         "YouTube Data",
         "Channels, playlists, videos, comments, and uploads.",
@@ -865,8 +865,8 @@ pub const REGISTRY: &[RegistryEntry] = &[
         false,
         "advanced-user",
         &["https://www.googleapis.com/auth/youtube"],
-    ),
-    google(
+    ), &["https://youtube.googleapis.com"]),
+    with_servers(google(
         "google-search-console",
         "Google Search Console",
         "Sites, sitemaps, URL inspection, and search performance.",
@@ -875,8 +875,8 @@ pub const REGISTRY: &[RegistryEntry] = &[
         false,
         "standard-user",
         &["https://www.googleapis.com/auth/webmasters"],
-    ),
-    google(
+    ), &["https://searchconsole.googleapis.com"]),
+    with_servers(google(
         "google-classroom",
         "Google Classroom",
         "Courses, rosters, coursework, and grading.",
@@ -885,8 +885,8 @@ pub const REGISTRY: &[RegistryEntry] = &[
         false,
         "advanced-user",
         &["https://www.googleapis.com/auth/classroom.courses"],
-    ),
-    google(
+    ), &["https://classroom.googleapis.com"]),
+    with_servers(google(
         "google-admin-directory",
         "Google Admin Directory",
         "Users, groups, org units, roles, and domain resources.",
@@ -895,8 +895,8 @@ pub const REGISTRY: &[RegistryEntry] = &[
         false,
         "workspace-admin",
         &["https://www.googleapis.com/auth/admin.directory.user"],
-    ),
-    google(
+    ), &["https://admin.googleapis.com"]),
+    with_servers(google(
         "google-admin-reports",
         "Google Admin Reports",
         "Audit events, usage reports, and admin activity logs.",
@@ -905,8 +905,8 @@ pub const REGISTRY: &[RegistryEntry] = &[
         false,
         "workspace-admin",
         &["https://www.googleapis.com/auth/admin.reports.audit.readonly"],
-    ),
-    google(
+    ), &["https://admin.googleapis.com"]),
+    with_servers(google(
         "google-apps-script",
         "Google Apps Script",
         "Projects, deployments, and script execution.",
@@ -915,8 +915,8 @@ pub const REGISTRY: &[RegistryEntry] = &[
         false,
         "advanced-user",
         &["https://www.googleapis.com/auth/script.projects"],
-    ),
-    google(
+    ), &["https://script.googleapis.com"]),
+    with_servers(google(
         "google-bigquery",
         "Google BigQuery",
         "Datasets, tables, jobs, and analytical queries.",
@@ -925,8 +925,8 @@ pub const REGISTRY: &[RegistryEntry] = &[
         false,
         "advanced-user",
         &["https://www.googleapis.com/auth/bigquery"],
-    ),
-    google(
+    ), &["https://bigquery.googleapis.com"]),
+    with_servers(google(
         "google-cloud-resource-manager",
         "Google Cloud Resource Manager",
         "Projects, folders, organizations, and IAM hierarchy.",
@@ -935,7 +935,7 @@ pub const REGISTRY: &[RegistryEntry] = &[
         false,
         "advanced-user",
         &["https://www.googleapis.com/auth/cloud-platform"],
-    ),
+    ), &["https://cloudresourcemanager.googleapis.com"]),
     graphql(
         "github-graphql",
         "GitHub GraphQL",

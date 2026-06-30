@@ -14,6 +14,25 @@ fn github_origins_derived_from_curated_servers() {
 }
 
 #[test]
+fn openapi_and_google_integrations_derive_curated_servers() {
+    // U1: every secret-bearing integration now carries curated `servers`, so a bare {ref, auth}
+    // connection derives its egress origin — `mc.use("<x>", token)` works beyond GitHub.
+    assert_eq!(
+        derive_connection_origins("stripe.org.main"),
+        vec!["https://api.stripe.com".to_string()],
+    );
+    assert_eq!(
+        derive_connection_origins("openai.org.main"),
+        vec!["https://api.openai.com".to_string()],
+    );
+    // Per-API Google egress hosts come from each discovery doc's rootUrl.
+    assert_eq!(
+        derive_connection_origins("google-gmail.org.main"),
+        vec!["https://gmail.googleapis.com".to_string()],
+    );
+}
+
+#[test]
 fn microsoft_origin_derived_from_endpoint() {
     // No curated `servers`, but an `endpoint` — the origin is derived from it.
     assert_eq!(
