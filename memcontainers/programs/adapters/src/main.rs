@@ -300,20 +300,12 @@ fn compile_graphql(req: Request, caller: u32, caller_caps: u32) -> Response {
         endpoint: endpoint.clone(),
         filter: OperationFilter::default(),
     };
+    // Live discovery is a host responsibility — the host-native path runs the full introspection/handshake
+    // through the egress splice (credential host-side, SSE-aware). The in-guest compile fallback only
+    // normalizes a PROVIDED source, so it can never drift from the host's discovery protocol.
     let source = match read_source(&req) {
         Ok(source) => source,
-        Err(_) => {
-            if !can_call_network(caller, caller_caps) {
-                return json_response(error(
-                    "permission_denied",
-                    "GraphQL introspection requires CAP_NET",
-                ));
-            }
-            match graphql_introspect(&endpoint, connection_marker_from_options(&opts).as_deref()) {
-                Ok(source) => source,
-                Err(message) => return json_response(error("discovery_failed", message)),
-            }
-        }
+        Err(message) => return json_response(error("bad_request", message)),
     };
     let out = graphql::compile(&source, &opts);
     compile_response(
@@ -345,20 +337,11 @@ fn compile_mcp_remote(req: Request, caller: u32, caller_caps: u32) -> Response {
         endpoint: endpoint.clone(),
         filter: OperationFilter::default(),
     };
+    // As with GraphQL: live MCP discovery (the initialize -> tools/list handshake) is host-only; the
+    // in-guest fallback normalizes a PROVIDED tools/list source so it cannot drift from the host.
     let source = match read_source(&req) {
         Ok(source) => source,
-        Err(_) => {
-            if !can_call_network(caller, caller_caps) {
-                return json_response(error(
-                    "permission_denied",
-                    "remote MCP discovery requires CAP_NET",
-                ));
-            }
-            match mcp_list_tools(&endpoint, connection_marker_from_options(&opts).as_deref()) {
-                Ok(source) => source,
-                Err(message) => return json_response(error("discovery_failed", message)),
-            }
-        }
+        Err(message) => return json_response(error("bad_request", message)),
     };
     let out = mcp::compile(&source, &opts);
     compile_response(
@@ -493,56 +476,6 @@ fn adapter_endpoint(req: &Request, label: &'static str) -> Result<String, String
         .ok_or_else(|| format!("{label} compile requires endpoint"))
 }
 
-trait ConnectionOptions {
-    fn integration(&self) -> &str;
-    fn owner(&self) -> &str;
-    fn connection(&self) -> &str;
-    fn auth(&self) -> &str;
-}
-
-impl ConnectionOptions for graphql::CompileOptions {
-    fn integration(&self) -> &str {
-        &self.integration
-    }
-    fn owner(&self) -> &str {
-        &self.owner
-    }
-    fn connection(&self) -> &str {
-        &self.connection
-    }
-    fn auth(&self) -> &str {
-        &self.auth
-    }
-}
-
-impl ConnectionOptions for mcp::CompileOptions {
-    fn integration(&self) -> &str {
-        &self.integration
-    }
-    fn owner(&self) -> &str {
-        &self.owner
-    }
-    fn connection(&self) -> &str {
-        &self.connection
-    }
-    fn auth(&self) -> &str {
-        &self.auth
-    }
-}
-
-fn connection_marker_from_options(opts: &impl ConnectionOptions) -> Option<String> {
-    if opts.auth() == "none" {
-        None
-    } else {
-        Some(format!(
-            "{}.{}.{}",
-            opts.integration(),
-            opts.owner(),
-            opts.connection()
-        ))
-    }
-}
-
 fn source_format(req: &Request) -> Result<SourceFormat, &'static str> {
     match req.source_format.as_deref().unwrap_or("json") {
         "json" => Ok(SourceFormat::Json),
@@ -567,40 +500,6 @@ fn read_source(req: &Request) -> Result<String, String> {
     Err("compile requires source or source_path".to_string())
 }
 
-fn graphql_introspect(endpoint: &str, connection_ref: Option<&str>) -> Result<String, String> {
-    http_json_post(
-        endpoint,
-        &json!({ "query": graphql::INTROSPECTION_QUERY }),
-        connection_ref,
-    )
-}
-
-fn mcp_list_tools(endpoint: &str, connection_ref: Option<&str>) -> Result<String, String> {
-    let initialize = json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2025-03-26",
-            "capabilities": {},
-            "clientInfo": {
-                "name": "agent-os-adapters",
-                "version": "0"
-            }
-        }
-    });
-    let _ = http_json_post(endpoint, &initialize, connection_ref)?;
-    http_json_post(
-        endpoint,
-        &json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/list",
-            "params": {}
-        }),
-        connection_ref,
-    )
-}
 
 fn invoke(req: Request) -> Response {
     match req.adapter.as_deref() {

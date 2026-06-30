@@ -37,7 +37,7 @@ export class ConnectionRegistry {
   insert(reference: string, credential: ConnectionCredential, origins: string[] = []): this {
     validateReference(reference);
     validateCredential(credential);
-    const normalizedOrigins = normalizeOrigins(credential, origins);
+    const normalizedOrigins = normalizeOrigins(origins);
     if (this.entries.has(reference)) throw new Error(`duplicate connection '${reference}'`);
     this.entries.set(reference, { credential, origins: normalizedOrigins });
     return this;
@@ -65,10 +65,11 @@ export class ConnectionRegistry {
     const entry = this.entries.get(reference);
     if (!entry) return null;
     const origin = requestOrigin(parsed.url);
-    if (entry.origins.length > 0 || secretBearing(entry.credential)) {
-      if (!origin || !entry.origins.includes(origin)) return null;
-    }
-    if (!origin) return null;
+    // A connection marker authorizes egress ONLY to the connection's declared origins. Empty origins
+    // authorize nothing (fail-closed) — a public (auth:none) tool must still name where it may reach, and
+    // unrestricted egress belongs on the ordinary network path, not behind a connection marker.
+    // (Previously auth:none + empty origins slipped past this check + bypassed the network allowlist.)
+    if (!origin || !entry.origins.includes(origin)) return null;
 
     return {
       kind: "connection",
@@ -188,18 +189,17 @@ function validateCredential(credential: ConnectionCredential): void {
   }
 }
 
-function normalizeOrigins(credential: ConnectionCredential, origins: string[]): string[] {
+function normalizeOrigins(origins: string[]): string[] {
   const out: string[] = [];
   for (const raw of origins) {
     const origin = normalizeAllowedOrigin(raw);
     if (!out.includes(origin)) out.push(origin);
   }
-  if (secretBearing(credential) && out.length === 0) throw new Error("secret connection auth requires origins");
+  // Every connection authorizes egress only to its declared origins, so an empty set is invalid (the
+  // connection could never egress) — reject up front. Holds for auth:none too: unrestricted egress
+  // belongs on the ordinary network path, not behind a connection marker.
+  if (out.length === 0) throw new Error("connection requires at least one allowed origin");
   return out;
-}
-
-function secretBearing(credential: ConnectionCredential): boolean {
-  return credential.kind !== "none";
 }
 
 function normalizeAllowedOrigin(value: string): string {

@@ -1000,8 +1000,9 @@ addresses to the connection ref — touching only the index — and injects the 
 `create` therefore performs no in-guest compile and no registry round-trip; what was a ~19 s in-VM `wasmi`
 compile plus a ~20 s reparse becomes a sub-second host compile (cached) and a tiny index load. The guest
 `/svc/adapters` keeps `invoke` (the runtime HTTP path) and a non-default, elevation-gated `compile` fallback
-that emits the same sharded tree through the shared `lib/parse/bundle` emitter; registry resolution and the
-default compile path are host-side. `invoke` expands tool args into an `mc_http_request` blob, and the broker
+that emits the same sharded tree through the shared `lib/parse/bundle` emitter from a *provided* source —
+live discovery (GraphQL introspection, the remote-MCP handshake) is host-only, so the in-guest fallback can
+never drift from the host's discovery protocol; registry resolution and the default compile path are host-side. `invoke` expands tool args into an `mc_http_request` blob, and the broker
 supplies `X-MC-Connection: <integration>.<owner>.<connection>` derived from the tool address — shards carry
 no connection reference.
 

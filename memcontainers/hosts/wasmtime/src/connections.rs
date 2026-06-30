@@ -130,7 +130,7 @@ impl ConnectionRegistry {
         let reference = reference.into();
         validate_reference(&reference)?;
         credential.validate()?;
-        let origins = normalize_origins(&credential, origins)?;
+        let origins = normalize_origins(origins)?;
         if self.entries.contains_key(&reference) {
             return Err(ConnectionError::DuplicateConnection);
         }
@@ -190,10 +190,12 @@ impl ConnectionRegistry {
             .get(&reference)
             .ok_or(ConnectionError::UnknownConnection)?;
         let origin = request_origin(&parsed.url)?;
-        if !entry.origins.is_empty() || entry.credential.is_secret_bearing() {
-            if !entry.origins.iter().any(|allowed| allowed == &origin) {
-                return Err(ConnectionError::OriginNotAllowed);
-            }
+        // A connection marker authorizes egress ONLY to the connection's declared origins. Empty origins
+        // authorize nothing (fail-closed) — a public (auth:none) tool must still name where it may reach,
+        // and an unrestricted egress belongs on the ordinary network path, not behind a connection marker.
+        // (Previously auth:none + empty origins slipped past this check, an unrestricted marked channel.)
+        if !entry.origins.iter().any(|allowed| allowed == &origin) {
+            return Err(ConnectionError::OriginNotAllowed);
         }
         Ok(PreparedHttpRequest::Connection(PreparedConnectionRequest {
             connection: reference.clone(),
@@ -245,10 +247,6 @@ impl PreparedConnectionRequest {
 }
 
 impl ConnectionCredential {
-    fn is_secret_bearing(&self) -> bool {
-        !matches!(self, ConnectionCredential::None)
-    }
-
     fn validate(&self) -> Result<(), ConnectionError> {
         match self {
             ConnectionCredential::None => Ok(()),
@@ -265,10 +263,7 @@ impl ConnectionCredential {
     }
 }
 
-fn normalize_origins<I, S>(
-    credential: &ConnectionCredential,
-    origins: I,
-) -> Result<Vec<String>, ConnectionError>
+fn normalize_origins<I, S>(origins: I) -> Result<Vec<String>, ConnectionError>
 where
     I: IntoIterator<Item = S>,
     S: Into<String>,
@@ -280,7 +275,10 @@ where
             out.push(origin);
         }
     }
-    if credential.is_secret_bearing() && out.is_empty() {
+    // Every connection authorizes egress only to its declared origins, so an empty set is invalid (the
+    // connection could never egress) — reject it up front rather than silently fail-closed at the splice.
+    // This holds for auth:none too: an unrestricted public fetch belongs on the ordinary network path.
+    if out.is_empty() {
         return Err(ConnectionError::MissingOrigin);
     }
     Ok(out)
@@ -555,4 +553,37 @@ fn encode_component(value: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connection_requires_at_least_one_origin() {
+        let mut reg = ConnectionRegistry::new();
+        // auth:none with no origins is rejected — previously allowed, which let a connection marker be an
+        // unrestricted egress channel that bypassed the network allowlist (S1).
+        assert!(matches!(
+            reg.insert("public.org.main", ConnectionCredential::None, Vec::<String>::new()),
+            Err(ConnectionError::MissingOrigin)
+        ));
+        // a secret-bearing connection with no origins is rejected (unchanged by S1).
+        assert!(matches!(
+            reg.insert(
+                "github.org.main",
+                ConnectionCredential::Bearer { token: "t".to_string() },
+                Vec::<String>::new(),
+            ),
+            Err(ConnectionError::MissingOrigin)
+        ));
+        // with an explicit origin both kinds insert fine.
+        assert!(reg
+            .insert(
+                "public.org.main",
+                ConnectionCredential::None,
+                ["https://api.example.com".to_string()],
+            )
+            .is_ok());
+    }
 }

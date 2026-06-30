@@ -557,6 +557,28 @@ print("bypass-ok")
     if (publicReqs[0]!.headers["x-mc-connection"] !== undefined) {
       throw new Error(`connection marker must be stripped host-side, got ${publicReqs[0]!.headers["x-mc-connection"]}`);
     }
+
+    // S1: auth:none with NO origins is rejected at create — a connection marker can't be an unrestricted
+    // egress channel (previously this fell open and bypassed the network allowlist).
+    let rejectedEmptyOrigins = false;
+    try {
+      const v = await mc.create({
+        kernel,
+        image,
+        deterministic: true,
+        net: true,
+        permissions: { network: "allow" },
+        connections: [
+          { ref: "empty.org.main", auth: { kind: "none" }, origins: [], spec: { bytes: new TextEncoder().encode(publicOpenapi), format: "openapi" } },
+        ],
+      });
+      created.push(v);
+    } catch (e) {
+      rejectedEmptyOrigins = /origin/i.test(String(e));
+    }
+    if (!rejectedEmptyOrigins) {
+      throw new Error("auth:none + empty origins must be rejected at create (S1)");
+    }
   } finally {
     await closeAll(created);
     await server.close();

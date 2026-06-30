@@ -770,9 +770,9 @@ print(index.tools[1].address)
     );
 }
 
-/// WHY: GraphQL joins the same `/svc/adapters` plane after Graph/Google: introspection produces
-/// ordinary catalog records, queries invoke through HTTP POST, and mutations keep descriptive
-/// destructive metadata while host egress policy owns enforcement.
+/// WHY: GraphQL joins the same `/svc/adapters` plane after Graph/Google: a provided introspection result
+/// compiles to ordinary catalog records (live introspection is host-side), queries invoke through HTTP
+/// POST, and mutations keep descriptive destructive metadata while host egress policy owns enforcement.
 #[test]
 fn adapters_compile_graphql_and_tools_call_it() {
     let introspection = br#"{"data":{"__schema":{
@@ -790,18 +790,15 @@ fn adapters_compile_graphql_and_tools_call_it() {
           ]}
         ]}
       ]}}}"#;
+    // Live discovery is host-only now; the in-guest compile fallback takes a PROVIDED source, so the
+    // loopback only serves the two tool-call responses (the introspection is handed in as source below).
     let (base_url, seen) = sequence_http_server(vec![
-        introspection,
         br#"{"data":{"viewer":{"login":"ada"}}}"#,
         br#"{"data":{"updateName":{"ok":true}}}"#,
     ]);
     let mut registry = ConnectionRegistry::new();
     registry
-        .insert(
-            "gql.org.main",
-            ConnectionCredential::None,
-            std::iter::empty::<&str>(),
-        )
+        .insert("gql.org.main", ConnectionCredential::None, [base_url.clone()])
         .expect("none GraphQL connection");
     let mut s = boot_loom_with_net_and_tools(
         Box::new(
@@ -817,6 +814,9 @@ fn adapters_compile_graphql_and_tools_call_it() {
         MapHostCall::new(),
     );
     s.host.mkdir("/etc/tools").ok();
+    s.host
+        .write_file("/demo/introspection.json", introspection)
+        .expect("seed graphql introspection source");
     let endpoint = format!("{base_url}/graphql");
     let script = format!(
         r#"local sys = require("sys")
@@ -826,6 +826,7 @@ local raw = assert(sys.svc.call(fd, json.encode({{
   op = "compile",
   format = "graphql",
   endpoint = "{endpoint}",
+  source_path = "/demo/introspection.json",
   integration = "gql",
   owner = "org",
   connection = "main",
@@ -871,8 +872,6 @@ print(index.tools[2].address)
         "GraphQL mutation tool should run; got {mutation:?}"
     );
 
-    let introspection_req = seen.recv().expect("GraphQL introspection request");
-    assert!(introspection_req.contains("__schema"));
     let query_req = seen.recv().expect("GraphQL query request");
     assert!(query_req.contains("query_viewer") && query_req.contains("\"id\":\"ada\""));
     let mutation_req = seen.recv().expect("GraphQL mutation request");
@@ -881,23 +880,20 @@ print(index.tools[2].address)
     );
 }
 
-/// WHY: remote MCP is additive to the same adapter service: discovery performs the MCP HTTP handshake
-/// and `tools/list`, catalog records keep MCP names/hints, and destructive MCP hints stay descriptive
-/// while host egress policy owns enforcement.
+/// WHY: remote MCP is additive to the same adapter service: a provided `tools/list` compiles to catalog
+/// records keeping MCP names/hints (live discovery — the initialize/tools-list handshake — is host-side),
+/// and destructive MCP hints stay descriptive while host egress policy owns enforcement.
 #[test]
 fn adapters_compile_remote_mcp_and_tools_call_it() {
+    // Live discovery is host-only now; the in-guest fallback takes a PROVIDED tools/list source, so the
+    // loopback serves only the tools/call response (the tools/list is handed in as source below).
+    let tools_list = br#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"repo.delete","description":"Delete docs","inputSchema":{"type":"object","required":["repo"],"properties":{"repo":{"type":"string"}}},"annotations":{"title":"Delete docs","destructiveHint":true}}]}}"#;
     let (base_url, seen) = sequence_http_server(vec![
-        br#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","capabilities":{}}}"#,
-        br#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"repo.delete","description":"Delete docs","inputSchema":{"type":"object","required":["repo"],"properties":{"repo":{"type":"string"}}},"annotations":{"title":"Delete docs","destructiveHint":true}}]}}"#,
         br#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"deleted"}]}}"#,
     ]);
     let mut registry = ConnectionRegistry::new();
     registry
-        .insert(
-            "deepwiki.org.main",
-            ConnectionCredential::None,
-            std::iter::empty::<&str>(),
-        )
+        .insert("deepwiki.org.main", ConnectionCredential::None, [base_url.clone()])
         .expect("none MCP connection");
     let mut s = boot_loom_with_net_and_tools(
         Box::new(
@@ -913,6 +909,9 @@ fn adapters_compile_remote_mcp_and_tools_call_it() {
         MapHostCall::new(),
     );
     s.host.mkdir("/etc/tools").ok();
+    s.host
+        .write_file("/demo/mcp_tools.json", tools_list)
+        .expect("seed mcp tools/list source");
     let endpoint = format!("{base_url}/mcp");
     let script = format!(
         r#"local sys = require("sys")
@@ -922,6 +921,7 @@ local raw = assert(sys.svc.call(fd, json.encode({{
   op = "compile",
   format = "mcp-remote",
   endpoint = "{endpoint}",
+  source_path = "/demo/mcp_tools.json",
   integration = "deepwiki",
   owner = "org",
   connection = "main",
@@ -957,10 +957,6 @@ print(index.tools[1].address)
         "remote MCP tool should return tools/call result; got {out:?}"
     );
 
-    let init = seen.recv().expect("MCP initialize request");
-    assert!(init.contains("\"method\":\"initialize\""));
-    let list = seen.recv().expect("MCP tools/list request");
-    assert!(list.contains("\"method\":\"tools/list\""));
     let call = seen.recv().expect("MCP tools/call request");
     assert!(call.contains("\"method\":\"tools/call\""));
     assert!(call.contains("\"name\":\"repo.delete\"") && call.contains("\"repo\":\"acme/docs\""));
