@@ -6,7 +6,7 @@
   <p><strong>A WebAssembly-native computer for AI agents.</strong></p>
 
   <p>
-    <a href="./SYSTEMS.md"><img alt="Design contract: SYSTEMS.md" src="https://img.shields.io/badge/design-SYSTEMS.md-111111"></a>
+    <a href="https://deepwiki.com/NarendraPatwardhan/agent-os"><img alt="Docs: DeepWiki" src="https://img.shields.io/badge/docs-DeepWiki-111111"></a>
     <a href="./LICENSE"><img alt="License: BSL 1.1" src="https://img.shields.io/badge/license-BSL%201.1-f5c542"></a>
     <img alt="Runtime: WebAssembly" src="https://img.shields.io/badge/runtime-WebAssembly-654ff0">
     <img alt="Build: Bazel" src="https://img.shields.io/badge/build-Bazel-43a047">
