@@ -202,6 +202,25 @@ async function main(): Promise<void> {
     if (after.exitCode !== 0 || !after.stdout.includes('"message":"hello Ada"')) {
       throw new Error(`runtime tool registration mismatch: exit=${after.exitCode} stdout=${after.stdout}`);
     }
+
+    // #1: the warm catalog snapshots WITH the VM, so a restore must keep the runtime-registered tool. The
+    // restore opts ({kernel, image, deterministic}) carry NO host tools — the old path re-seeded the
+    // catalog from them, clobbering dynamicGreet and resetting the generation; the wasmtime/Elixir host
+    // never re-injects on restore. Now restore trusts the snapshot, so the tool survives. (Its host-call
+    // closure can't be snapshotted — we assert the catalog entry persists, not that it's re-callable.)
+    console.log("phase: restore preserves the warm catalog");
+    const snap = await vm.snapshot();
+    const restored = await mc.restore(snap, { kernel, image, deterministic: true });
+    try {
+      const restoredList = await restored.exec("tools list");
+      if (restoredList.exitCode !== 0 || !restoredList.stdout.includes("host.org.main.dynamicGreet")) {
+        throw new Error(
+          `restore clobbered the warm catalog (dynamicGreet missing): exit=${restoredList.exitCode} stdout=${restoredList.stdout}`,
+        );
+      }
+    } finally {
+      await restored.close();
+    }
   } finally {
     await vm.close();
   }

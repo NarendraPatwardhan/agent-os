@@ -63,6 +63,17 @@ const shQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
 
 export type { VmFs } from "./types.js";
 
+/** The live tool-catalog state a backend hands to its {@link Vm}: the committed index digest (the CAS base
+ *  for the next `vm.tool`), the cosmetic generation, and the compiled connection bundle. The connection
+ *  bundle is fixed for the VM's lifetime (connections are create-time), so it is computed once and reused
+ *  by every runtime `vm.tool` instead of re-running live discovery — `null` means "not computed yet"
+ *  (a fresh boot with no connections, or a restore that trusts the snapshot and recomputes lazily). */
+interface CatalogState {
+  digest: string;
+  generation: number;
+  connectionBundle: ToolCatalogBundle | null;
+}
+
 /** A booted memcontainers VM. One surface, embedded or remote. */
 export class Vm {
   /** Filesystem ops (`vm.fs.read` / `write` / `ls` / `stat` / `mkdir` / `rm`). */
@@ -81,20 +92,29 @@ export class Vm {
   private luauSeq = 0;
   /** Cosmetic monotonic label carried in the index; NOT the concurrency primitive (the digest below
    *  is). The broker is idempotent by content digest, so this can never desync into a wrong decision. */
-  private catalogGeneration = 0;
+  private catalogGeneration: number;
   /** The last index digest this VM committed — the compare-and-swap base for the next `catalog.apply`,
-   *  so a runtime `vm.tool` cannot clobber a catalog that moved under it. */
-  private catalogDigest = "";
+   *  so a runtime `vm.tool` cannot clobber a catalog that moved under it. Seeded from the backend's live
+   *  catalog state (a fresh seed, or the digest read back from a restored snapshot). */
+  private catalogDigest: string;
+  /** The compiled connection bundle, reused by every runtime `vm.tool` so adding a host tool never
+   *  re-runs live connection discovery (graphql introspection / the MCP handshake). `null` until first
+   *  computed (lazily on the first post-restore `vm.tool`). */
+  private connectionBundle: ToolCatalogBundle | null;
 
   /** @internal — use {@link mc.create}. */
   constructor(
     private readonly backend: Backend,
     private readonly opts: CreateOptions,
+    catalog: CatalogState = { digest: "", generation: 0, connectionBundle: null },
   ) {
     this.fs = makeFs(backend);
     this.registeredTools = hostToolDefinitions(opts.tools);
     this.registeredToolSelectors = catalogToolSelectors(opts.tools);
     this.registeredMounts = [...(opts.mounts ?? [])];
+    this.catalogDigest = catalog.digest;
+    this.catalogGeneration = catalog.generation;
+    this.connectionBundle = catalog.connectionBundle;
     for (const name of toolAliasNames(this.registeredTools)) {
       if (isSafeToolAlias(name)) this.handledToolAliases.add(name);
     }
@@ -171,10 +191,18 @@ export class Vm {
     }
     try {
       const generation = this.catalogGeneration + 1;
-      const digest = await applyToolCatalog(this.backend, this.opts, next, generation, this.catalogDigest);
+      const applied = await applyToolCatalog(
+        this.backend,
+        this.opts,
+        next,
+        generation,
+        this.catalogDigest,
+        this.connectionBundle,
+      );
       await seedToolAliases(this.backend, defs, this.handledToolAliases);
       this.catalogGeneration = generation;
-      this.catalogDigest = digest;
+      this.catalogDigest = applied.digest;
+      this.connectionBundle = applied.connectionBundle;
     } catch (e) {
       for (const d of defs) {
         const prev = previous.find((t) => t.name === d.name);
@@ -438,10 +466,12 @@ function makeToolApprover(onPermission: CreateOptions["onPermission"]): ToolAppr
 async function makeEmbedded(
   opts: CreateOptions,
   snapshot: Uint8Array | null,
-): Promise<Backend> {
+): Promise<{ backend: Backend; opts: CreateOptions; catalog: CatalogState }> {
   const wasm = opts.kernel ?? (await defaultKernel());
   // Fill each connection's credential-egress origins from the curated registry when omitted, so the
-  // credential store and the compiled catalog below both see the same derived allowlist.
+  // credential store and the compiled catalog below both see the same derived allowlist. The derived opts
+  // are returned to the caller so the Vm holds them too — a runtime vm.tool then re-runs discovery against
+  // the same origins, not the raw (originless) opts the embedder passed in.
   opts = { ...opts, connections: await deriveConnectionOrigins(opts) };
   const hostTools = hostToolDefinitions(opts.tools);
   const stdout = new FanoutSink();
@@ -483,18 +513,49 @@ async function makeEmbedded(
     host.bootToPrompt(); // drive boot only to the first prompt (no settle wait)
   }
   const backend = new EmbeddedBackend(host, stdout, tools);
+  // Re-register the host-call HANDLERS (the JS closures) on both paths — they can never live in a
+  // snapshot, so a restored VM must be handed them again to route its host-tool catalog entries.
   for (const t of hostTools) backend.tool(t);
-  await seedToolCatalog(backend, opts, hostTools);
-  if (snapshot) {
-    await applyToolCatalog(backend, opts, hostTools, 1);
-  }
+  // A restored snapshot already carries the warm catalog (records + index + digest, SYSTEMS §4.9/§13.5),
+  // exactly like the wasmtime/Elixir host which skips injection on restore (vm.ex). Re-seeding from opts
+  // would clobber any runtime-registered tools the snapshot holds and reset the generation — so trust the
+  // snapshot and only read its digest back as the CAS base for the next vm.tool (the connection bundle is
+  // recomputed lazily on that first runtime commit). A fresh boot writes the cold-start seed.
+  const catalog = snapshot
+    ? await readRestoredCatalogState(backend)
+    : await seedToolCatalog(backend, opts, hostTools);
   await seedToolAliases(backend, hostTools, undefined, snapshot !== null);
   // Install boot-time mounts before the backend is returned (and before any
   // exec), so the first command already sees them. Declaration order is kept.
   for (const m of opts.mounts ?? []) {
     await backend.mount(m.path, m.driver, m.readOnly ?? m.driver.readOnly ?? false);
   }
-  return backend;
+  return { backend, opts, catalog };
+}
+
+/** Read the warm catalog state a restored snapshot already carries — the committed index digest (the CAS
+ *  base for the next `vm.tool`) and the cosmetic generation. The connection bundle stays `null`: it is
+ *  recomputed lazily if and when the embedder adds a tool at runtime, so a restore that never mutates the
+ *  catalog does no compile work at all. Missing/garbled sidecar → an empty base (the next apply then
+ *  commits without a CAS guard, which is the pre-existing first-commit behavior). */
+async function readRestoredCatalogState(backend: Backend): Promise<CatalogState> {
+  let digest = "";
+  let generation = 0;
+  try {
+    digest = dec(await backend.read("/etc/tools/catalog/index.sha256")).trim();
+    if (!/^[0-9a-f]{64}$/.test(digest)) digest = "";
+  } catch {
+    /* no sidecar — leave the base empty */
+  }
+  try {
+    const parsed: unknown = JSON.parse(dec(await backend.read("/etc/tools/catalog/index.json")));
+    if (parsed && typeof parsed === "object" && typeof (parsed as { generation?: unknown }).generation === "number") {
+      generation = (parsed as { generation: number }).generation;
+    }
+  } catch {
+    /* no index — leave the generation at 0 */
+  }
+  return { digest, generation, connectionBundle: null };
 }
 
 /** Write the boot-seed `/etc/tools/catalog/` tree. Once `/svc/tools` is active, catalog mutation
@@ -503,14 +564,15 @@ async function seedToolCatalog(
   backend: Backend,
   opts: CreateOptions,
   defs: ToolDefinition[],
-): Promise<void> {
-  const bundle = await mergedCatalogBundle(opts, defs, 0);
+): Promise<CatalogState> {
+  const { bundle, connectionBundle } = await mergedCatalogBundle(opts, defs, 0);
   await ensureToolCatalogDirs(backend);
   for (const record of bundle.records) {
     await backend.write(`/etc/tools/catalog/records/${record.sha}`, record.bytes);
   }
   await backend.write("/etc/tools/catalog/index.json", bundle.indexBytes);
   await backend.write("/etc/tools/catalog/index.sha256", enc(`${bundle.indexDigest}\n`));
+  return { digest: bundle.indexDigest, generation: 0, connectionBundle };
 }
 
 async function ensureToolCatalogDirs(backend: Backend): Promise<void> {
@@ -542,8 +604,14 @@ async function applyToolCatalog(
   defs: ToolDefinition[],
   generation: number,
   baseDigest = "",
-): Promise<string> {
-  const bundle = await mergedCatalogBundle(opts, defs, generation);
+  cachedConnectionBundle: ToolCatalogBundle | null = null,
+): Promise<{ digest: string; connectionBundle: ToolCatalogBundle | null }> {
+  const { bundle, connectionBundle } = await mergedCatalogBundle(
+    opts,
+    defs,
+    generation,
+    cachedConnectionBundle,
+  );
   await ensureToolCatalogDirs(backend);
   for (const record of bundle.records) {
     await backend.write(`/etc/tools/catalog/records/${record.sha}`, record.bytes);
@@ -570,14 +638,19 @@ async function applyToolCatalog(
     const message = typeof err?.message === "string" ? err.message : "tool catalog update failed";
     throw new Error(`/svc/tools ${code}: ${message}`);
   }
-  return bundle.indexDigest;
+  return { digest: bundle.indexDigest, connectionBundle };
 }
 
+/** Build the full catalog (host tools ∪ connection tools) at `generation`, returning the merged bundle
+ *  AND the connection bundle so the caller can cache the latter. Connections are create-time, so a
+ *  `cachedConnectionBundle` is reused verbatim — `mergeToolCatalogBundles` re-stamps its generation — and
+ *  live connection discovery runs only on the first build, never on a runtime `vm.tool`. */
 async function mergedCatalogBundle(
   opts: CreateOptions,
   defs: ToolDefinition[],
   generation: number,
-): Promise<ToolCatalogBundle> {
+  cachedConnectionBundle: ToolCatalogBundle | null = null,
+): Promise<{ bundle: ToolCatalogBundle; connectionBundle: ToolCatalogBundle | null }> {
   const bundles: ToolCatalogBundle[] = [];
   // Only touch the compiler when there are host tools to validate — a bare VM (no host tools, no
   // connections) must not require catalog-compiler.wasm.
@@ -585,9 +658,10 @@ async function mergedCatalogBundle(
     const compiler = await defaultCatalogCompiler(opts.catalogCompiler);
     bundles.push(await toolCatalogBundle(defs, compiler, generation));
   }
-  const connectionBundle = await connectionToolCatalogBundle(opts, generation);
+  const connectionBundle =
+    cachedConnectionBundle ?? (await connectionToolCatalogBundle(opts, generation));
   if (connectionBundle) bundles.push(connectionBundle);
-  return mergeToolCatalogBundles(bundles, generation);
+  return { bundle: await mergeToolCatalogBundles(bundles, generation), connectionBundle };
 }
 
 /** Make each registered tool/kit a first-class command: a `/bin/<name>` symlink →
@@ -710,7 +784,10 @@ function remoteCreateBody(opts: CreateOptions, id?: string): Record<string, unkn
   };
 }
 
-async function makeRemote(opts: CreateOptions, snapshot: Uint8Array | null): Promise<Backend> {
+async function makeRemote(
+  opts: CreateOptions,
+  snapshot: Uint8Array | null,
+): Promise<{ backend: Backend; opts: CreateOptions; catalog: CatalogState }> {
   if (!opts.endpoint) {
     throw new Error("runtime 'remote' requires opts.endpoint");
   }
@@ -757,12 +834,16 @@ async function makeRemote(opts: CreateOptions, snapshot: Uint8Array | null): Pro
   });
   for (const tool of hostTools) backend.tool(tool);
   if (hostTools.length || opts.mounts?.length || opts.onPermission) await backend.connect();
-  await seedToolCatalog(backend, opts, hostTools);
+  // As on the embedded path: a restored VM already carries its warm catalog server-side, so trust it and
+  // only read the digest back; a fresh VM gets the cold-start seed.
+  const catalog = snapshot
+    ? await readRestoredCatalogState(backend)
+    : await seedToolCatalog(backend, opts, hostTools);
   await seedToolAliases(backend, hostTools, undefined, snapshot !== null);
   for (const mount of opts.mounts ?? []) {
     await backend.mount(mount.path, mount.driver, mount.readOnly ?? mount.driver.readOnly ?? false);
   }
-  return backend;
+  return { backend, opts, catalog };
 }
 
 /** Derive the connection + tool selectors for one or more `integration.group` capabilities — the pure
@@ -805,14 +886,18 @@ export const mc = {
   /** Create a fresh VM. */
   async create(opts: CreateOptions = {}): Promise<Vm> {
     const runtime = opts.runtime ?? "bun";
-    if (runtime === "remote") return new Vm(await makeRemote(opts, null), opts);
+    if (runtime === "remote") {
+      const made = await makeRemote(opts, null);
+      return new Vm(made.backend, made.opts, made.catalog);
+    }
     // Browser and Bun share the embedded backend — the kernel runs in-process
     // via WebAssembly + the JS bridge (fetch/WebSocket/crypto are browser-native).
     // The only difference is artifact loading: a browser caller fetches the
     // kernel.wasm (+ base.tar) and passes the bytes, since the workspace
     // build paths (Bun.file) don't exist in a browser.
     if (runtime === "browser") validateBrowserArtifacts(opts);
-    return new Vm(await makeEmbedded(opts, null), opts);
+    const made = await makeEmbedded(opts, null);
+    return new Vm(made.backend, made.opts, made.catalog);
   },
 
   /** Capability sugar over {@link create}: turn on one or more `integration.group` capabilities with a
@@ -838,11 +923,15 @@ export const mc = {
   /** Restore a VM from a snapshot blob (embedded or remote). */
   async restore(snapshot: Uint8Array, opts: CreateOptions = {}): Promise<Vm> {
     const runtime = opts.runtime ?? "bun";
-    if (runtime === "remote") return new Vm(await makeRemote(opts, snapshot), opts);
+    if (runtime === "remote") {
+      const made = await makeRemote(opts, snapshot);
+      return new Vm(made.backend, made.opts, made.catalog);
+    }
     if (runtime === "browser" && !(opts.kernel instanceof Uint8Array)) {
       throw new Error("runtime 'browser' restore requires opts.kernel bytes");
     }
-    return new Vm(await makeEmbedded(opts, snapshot), opts);
+    const made = await makeEmbedded(opts, snapshot);
+    return new Vm(made.backend, made.opts, made.catalog);
   },
 
   /** Connect to a served AgentOS host and get-or-create VMs by key. */
