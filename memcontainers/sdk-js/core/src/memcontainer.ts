@@ -793,7 +793,7 @@ async function makeRemote(
   }
   // Fail closed rather than present partial parity. Two options the remote path cannot honor the way the
   // embedded/wasmtime host does:
-  //  - tool policies: the remote backend does not enforce them at an egress splice, so accepting them would
+  //  - connection policies: the remote backend does not enforce them at an egress splice, so accepting them would
   //    silently drop a security control.
   //  - connections: faithful connection tools need HOST-SIDE catalog construction — origin derivation and,
   //    for graphql/mcp, live discovery run as authenticated host egress (the credential never leaving the
@@ -803,7 +803,7 @@ async function makeRemote(
   //    half-support them (host tools + mounts remain fully supported on remote).
   if (opts.policies && opts.policies.length > 0) {
     throw new Error(
-      "tool policies are enforced only on the embedded runtime; the remote backend does not support them yet",
+      "connection policies are enforced only on the embedded runtime; the remote backend does not support them yet",
     );
   }
   if (opts.connections && opts.connections.length > 0) {

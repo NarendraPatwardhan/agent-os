@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { ToolPolicyAction } from "./policy.js";
+import type { ConnectionPolicyAction } from "./policy.js";
 
 export interface CatalogBundle {
   entries: Map<string, Uint8Array>;
@@ -246,7 +246,7 @@ export class CatalogCompiler {
       const res: unknown = JSON.parse(dec(await this.readReturn(this.exports.cc_validate_policy(ptr, bytes.length))));
       if (isObject(res) && isObject(res.error)) {
         throw new Error(
-          typeof res.error.message === "string" ? `invalid tool policy: ${res.error.message}` : "invalid tool policy",
+          typeof res.error.message === "string" ? `invalid connection policy: ${res.error.message}` : "invalid connection policy",
         );
       }
     } finally {
@@ -256,7 +256,7 @@ export class CatalogCompiler {
 
   /** Resolve a (pre-validated) policy rule set against a connection address → the action or null, via
    *  the single-source toolcore engine. */
-  async policyResolve(rulesJson: string, address: string): Promise<ToolPolicyAction | null> {
+  async policyResolve(rulesJson: string, address: string): Promise<ConnectionPolicyAction | null> {
     const rules = enc(rulesJson);
     const addr = enc(address);
     const rulesPtr = this.write(rules);

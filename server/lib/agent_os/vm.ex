@@ -546,7 +546,7 @@ defmodule AgentOS.Vm do
         :workers,
         :net,
         :connections,
-        :tool_policies,
+        :connection_policies,
         :policies,
         :tool_approval,
         :host_call,

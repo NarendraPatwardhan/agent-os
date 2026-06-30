@@ -11,7 +11,7 @@ export { CaptureSink, WritableSink, processStdout, processStderr } from "./io.js
 export { SystemClock, FixedClock, OsRng, SeededRng } from "./sources.js";
 export { ConnectionRegistry, originAllowed } from "./connections.js";
 export type { ConnectionCredential, PreparedConnectionRequest, PreparedHttpRequest } from "./connections.js";
-export type { ToolPolicyAction, ToolPolicyOwner, ToolPolicyRule } from "./policy.js";
+export type { ConnectionPolicyAction, ConnectionPolicyOwner, ConnectionPolicyRule } from "./policy.js";
 export { CatalogCompiler, defaultCatalogCompiler } from "./catalog_compiler.js";
 export type { CatalogBundle, RegistryEntry, RegistryGroup } from "./catalog_compiler.js";
 export { DeniedNet, HostNet } from "./net.js";

@@ -6,8 +6,8 @@
 //! full Luau Analysis engine (file:line:col diagnostics).
 
 use host::{
-    ConnectionCredential, ConnectionRegistry, MapHostCall, RealNet, ToolPolicyAction,
-    ToolPolicyOwner, ToolPolicyRule,
+    ConnectionCredential, ConnectionRegistry, MapHostCall, RealNet, ConnectionPolicyAction,
+    ConnectionPolicyOwner, ConnectionPolicyRule,
 };
 use pkgcore::sha256_hex;
 use std::io::{Read, Write};
@@ -804,10 +804,10 @@ fn adapters_compile_graphql_and_tools_call_it() {
         Box::new(
             RealNet::new()
                 .with_connections(registry)
-                .with_tool_policies(vec![ToolPolicyRule {
-                    owner: ToolPolicyOwner::Org,
+                .with_connection_policies(vec![ConnectionPolicyRule {
+                    owner: ConnectionPolicyOwner::Org,
                     pattern: "gql.org.main.*".to_string(),
-                    action: ToolPolicyAction::Approve,
+                    action: ConnectionPolicyAction::Approve,
                 }])
                 .expect("approve GraphQL adapter policy"),
         ),
@@ -940,10 +940,10 @@ fn adapters_compile_remote_mcp_and_tools_call_it() {
         Box::new(
             RealNet::new()
                 .with_connections(registry)
-                .with_tool_policies(vec![ToolPolicyRule {
-                    owner: ToolPolicyOwner::Org,
+                .with_connection_policies(vec![ConnectionPolicyRule {
+                    owner: ConnectionPolicyOwner::Org,
                     pattern: "deepwiki.org.main.*".to_string(),
-                    action: ToolPolicyAction::Approve,
+                    action: ConnectionPolicyAction::Approve,
                 }])
                 .expect("approve MCP adapter policy"),
         ),

@@ -777,39 +777,66 @@ pub mod policy {
     use alloc::vec::Vec;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum ToolPolicyAction {
+    pub enum ConnectionPolicyAction {
         Approve,
         RequireApproval,
         Block,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum ToolPolicyOwner {
+    pub enum ConnectionPolicyOwner {
         Org,
         User,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
-    pub struct ToolPolicyRule {
-        pub owner: ToolPolicyOwner,
+    pub struct ConnectionPolicyRule {
+        pub owner: ConnectionPolicyOwner,
         pub pattern: String,
-        pub action: ToolPolicyAction,
+        pub action: ConnectionPolicyAction,
     }
 
     #[derive(Debug, Clone, Default)]
-    pub struct ToolPolicySet {
-        rules: Vec<ToolPolicyRule>,
+    pub struct ConnectionPolicySet {
+        rules: Vec<ConnectionPolicyRule>,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum ToolPolicyError {
+    pub enum ConnectionPolicyError {
         InvalidOwner,
         InvalidPattern,
         InvalidAction,
     }
 
-    impl ToolPolicySet {
-        pub fn new(rules: Vec<ToolPolicyRule>) -> Result<Self, ToolPolicyError> {
+    impl ConnectionPolicyError {
+        /// A human-actionable explanation, single-sourced here so every host surfaces the same guidance
+        /// (the JS host through `cc_validate_policy`, the wasmtime/Elixir host natively) instead of leaking
+        /// a bare variant name.
+        pub fn message(&self) -> &'static str {
+            match self {
+                ConnectionPolicyError::InvalidOwner => {
+                    "connection policy owner must be \"org\" or \"user\""
+                }
+                ConnectionPolicyError::InvalidAction => {
+                    "connection policy action must be \"approve\", \"require_approval\", or \"block\""
+                }
+                // The egress splice authorizes per CONNECTION, not per tool: it knows the connection
+                // (integration.owner.connection) and the request method/origin, never the catalog tool
+                // address. A per-tool pattern can therefore never match — so it is rejected with a pointer
+                // to what IS expressible, rather than silently no-op'ing (a fail-open footgun).
+                ConnectionPolicyError::InvalidPattern => {
+                    "connection policy patterns match a connection, not an individual tool: use \
+                     \"integration.owner.connection.*\" or a coarser prefix (\"integration.owner.*\", \
+                     \"integration.*\", or \"*\"). A per-tool pattern such as \
+                     \"github.org.main.deleteRepo\" cannot be expressed, because the egress splice \
+                     authorizes per connection."
+                }
+            }
+        }
+    }
+
+    impl ConnectionPolicySet {
+        pub fn new(rules: Vec<ConnectionPolicyRule>) -> Result<Self, ConnectionPolicyError> {
             for rule in &rules {
                 validate_rule(rule)?;
             }
@@ -820,14 +847,14 @@ pub mod policy {
             Self::default()
         }
 
-        pub fn resolve(&self, address: &str) -> Option<ToolPolicyAction> {
+        pub fn resolve(&self, address: &str) -> Option<ConnectionPolicyAction> {
             let mut seen_org = false;
             let mut seen_user = false;
-            let mut strongest = None::<ToolPolicyAction>;
+            let mut strongest = None::<ConnectionPolicyAction>;
             for rule in &self.rules {
                 let seen = match rule.owner {
-                    ToolPolicyOwner::Org => &mut seen_org,
-                    ToolPolicyOwner::User => &mut seen_user,
+                    ConnectionPolicyOwner::Org => &mut seen_org,
+                    ConnectionPolicyOwner::User => &mut seen_user,
                 };
                 if *seen || !pattern_matches(&rule.pattern, address) {
                     continue;
@@ -844,17 +871,17 @@ pub mod policy {
         }
     }
 
-    fn validate_rule(rule: &ToolPolicyRule) -> Result<(), ToolPolicyError> {
+    fn validate_rule(rule: &ConnectionPolicyRule) -> Result<(), ConnectionPolicyError> {
         match rule.owner {
-            ToolPolicyOwner::Org | ToolPolicyOwner::User => {}
+            ConnectionPolicyOwner::Org | ConnectionPolicyOwner::User => {}
         }
         match rule.action {
-            ToolPolicyAction::Approve
-            | ToolPolicyAction::RequireApproval
-            | ToolPolicyAction::Block => {}
+            ConnectionPolicyAction::Approve
+            | ConnectionPolicyAction::RequireApproval
+            | ConnectionPolicyAction::Block => {}
         }
         if !valid_policy_pattern(&rule.pattern) {
-            return Err(ToolPolicyError::InvalidPattern);
+            return Err(ConnectionPolicyError::InvalidPattern);
         }
         Ok(())
     }
@@ -902,21 +929,24 @@ pub mod policy {
                 .all(|b| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | b'-'))
     }
 
-    fn action_rank(action: ToolPolicyAction) -> u8 {
+    fn action_rank(action: ConnectionPolicyAction) -> u8 {
         match action {
-            ToolPolicyAction::Approve => 0,
-            ToolPolicyAction::RequireApproval => 1,
-            ToolPolicyAction::Block => 2,
+            ConnectionPolicyAction::Approve => 0,
+            ConnectionPolicyAction::RequireApproval => 1,
+            ConnectionPolicyAction::Block => 2,
         }
     }
 }
 
 #[cfg(test)]
 mod policy_tests {
-    use super::policy::{ToolPolicyAction, ToolPolicyOwner, ToolPolicyRule, ToolPolicySet};
+    use super::policy::{
+        ConnectionPolicyAction, ConnectionPolicyError, ConnectionPolicyOwner, ConnectionPolicyRule,
+        ConnectionPolicySet,
+    };
 
-    fn rule(owner: ToolPolicyOwner, pattern: &str, action: ToolPolicyAction) -> ToolPolicyRule {
-        ToolPolicyRule {
+    fn rule(owner: ConnectionPolicyOwner, pattern: &str, action: ConnectionPolicyAction) -> ConnectionPolicyRule {
+        ConnectionPolicyRule {
             owner,
             pattern: pattern.into(),
             action,
@@ -925,36 +955,36 @@ mod policy_tests {
 
     #[test]
     fn resolves_at_connection_granularity() {
-        use ToolPolicyAction::*;
-        use ToolPolicyOwner::*;
+        use ConnectionPolicyAction::*;
+        use ConnectionPolicyOwner::*;
         let addr = "github.org.main.*";
-        assert_eq!(ToolPolicySet::new(vec![]).unwrap().resolve(addr), None);
+        assert_eq!(ConnectionPolicySet::new(vec![]).unwrap().resolve(addr), None);
         assert_eq!(
-            ToolPolicySet::new(vec![rule(Org, "*", Block)]).unwrap().resolve(addr),
+            ConnectionPolicySet::new(vec![rule(Org, "*", Block)]).unwrap().resolve(addr),
             Some(Block)
         );
         assert_eq!(
-            ToolPolicySet::new(vec![rule(Org, "github.*", RequireApproval)]).unwrap().resolve(addr),
+            ConnectionPolicySet::new(vec![rule(Org, "github.*", RequireApproval)]).unwrap().resolve(addr),
             Some(RequireApproval)
         );
         assert_eq!(
-            ToolPolicySet::new(vec![rule(User, "github.org.main.*", Approve)]).unwrap().resolve(addr),
+            ConnectionPolicySet::new(vec![rule(User, "github.org.main.*", Approve)]).unwrap().resolve(addr),
             Some(Approve)
         );
         assert_eq!(
-            ToolPolicySet::new(vec![rule(Org, "github.org.other.*", Block)]).unwrap().resolve(addr),
+            ConnectionPolicySet::new(vec![rule(Org, "github.org.other.*", Block)]).unwrap().resolve(addr),
             None
         );
     }
 
     #[test]
     fn first_match_per_owner_then_most_restrictive() {
-        use ToolPolicyAction::*;
-        use ToolPolicyOwner::*;
+        use ConnectionPolicyAction::*;
+        use ConnectionPolicyOwner::*;
         let addr = "github.org.main.*";
         // org: the earlier match (approve) wins for that owner, ignoring the later block.
         assert_eq!(
-            ToolPolicySet::new(vec![
+            ConnectionPolicySet::new(vec![
                 rule(Org, "github.org.main.*", Approve),
                 rule(Org, "github.*", Block),
             ])
@@ -964,7 +994,7 @@ mod policy_tests {
         );
         // across owners: the most restrictive wins (org approve + user block → block).
         assert_eq!(
-            ToolPolicySet::new(vec![
+            ConnectionPolicySet::new(vec![
                 rule(Org, "github.*", Approve),
                 rule(User, "github.org.main.*", Block),
             ])
@@ -976,8 +1006,8 @@ mod policy_tests {
 
     #[test]
     fn rejects_unenforceable_patterns_accepts_connection_granular() {
-        use ToolPolicyAction::Block;
-        use ToolPolicyOwner::Org;
+        use ConnectionPolicyAction::Block;
+        use ConnectionPolicyOwner::Org;
         // per-tool (concrete 4th segment), 5-segment, exact (no trailing wildcard), empty segment.
         for pat in [
             "github.org.main.delete-repo",
@@ -985,14 +1015,20 @@ mod policy_tests {
             "github.org.main",
             "github..main.*",
         ] {
-            assert!(
-                ToolPolicySet::new(vec![rule(Org, pat, Block)]).is_err(),
+            let err = ConnectionPolicySet::new(vec![rule(Org, pat, Block)]).unwrap_err();
+            assert_eq!(
+                err,
+                ConnectionPolicyError::InvalidPattern,
                 "pattern {pat:?} must be rejected at construction"
             );
         }
+        // The rejection is actionable, not a bare variant name: it points at connection granularity so a
+        // user reaching for a per-tool rule learns why and what they CAN express.
+        let msg = ConnectionPolicyError::InvalidPattern.message();
+        assert!(msg.contains("connection") && msg.contains("not an individual tool"), "{msg}");
         for pat in ["*", "github.*", "github.org.*", "github.org.main.*"] {
             assert!(
-                ToolPolicySet::new(vec![rule(Org, pat, Block)]).is_ok(),
+                ConnectionPolicySet::new(vec![rule(Org, pat, Block)]).is_ok(),
                 "pattern {pat:?} must be accepted"
             );
         }

@@ -66,14 +66,14 @@ defmodule AgentOS.Host.Nif do
           | {ref :: binary(), connection_auth(), origins :: [binary()]}
           | %{required(:ref) => binary(), required(:auth) => connection_auth()}
           | %{required(String.t()) => term()}
-  @type tool_policy_owner :: :org | :user
-  @type tool_policy_action :: :approve | :require_approval | :block
-  @type tool_policy_rule ::
-          {tool_policy_owner(), binary(), tool_policy_action()}
+  @type connection_policy_owner :: :org | :user
+  @type connection_policy_action :: :approve | :require_approval | :block
+  @type connection_policy_rule ::
+          {connection_policy_owner(), binary(), connection_policy_action()}
           | %{
-              required(:owner) => tool_policy_owner(),
+              required(:owner) => connection_policy_owner(),
               required(:pattern) => binary(),
-              required(:action) => tool_policy_action()
+              required(:action) => connection_policy_action()
             }
           | %{required(String.t()) => term()}
   @type boot_opt ::
@@ -83,7 +83,7 @@ defmodule AgentOS.Host.Nif do
           | {:workers, non_neg_integer() | nil}
           | {:net, net_mode() | {:real, [connection_def()]}}
           | {:connections, [connection_def()]}
-          | {:tool_policies, [tool_policy_rule()]}
+          | {:connection_policies, [connection_policy_rule()]}
           | {:tool_approval, :deny | :relay}
           | {:host_call, relay_mode()}
           | {:persist, persist_mode()}
@@ -137,7 +137,7 @@ defmodule AgentOS.Host.Nif do
 
   def boot(wasm, base_image, opts)
       when is_binary(wasm) and (is_binary(base_image) or is_nil(base_image)) and is_list(opts) do
-    with {:ok, layers, deterministic, contract, workers, net, tool_policies, tool_approval, host_call,
+    with {:ok, layers, deterministic, contract, workers, net, connection_policies, tool_approval, host_call,
           persist} <-
            boot_args(base_image, opts) do
       {net_relay, net_real, connections} = net
@@ -152,7 +152,7 @@ defmodule AgentOS.Host.Nif do
         net_relay,
         net_real,
         connections,
-        tool_policies,
+        connection_policies,
         tool_approval,
         host_call,
         persist
@@ -169,7 +169,7 @@ defmodule AgentOS.Host.Nif do
 
   def restore(wasm, snapshot, opts)
       when is_binary(wasm) and is_binary(snapshot) and is_list(opts) do
-    with {:ok, deterministic, workers, net, tool_policies, tool_approval, host_call, persist} <-
+    with {:ok, deterministic, workers, net, connection_policies, tool_approval, host_call, persist} <-
            restore_args(opts) do
       {net_relay, net_real, connections} = net
 
@@ -181,7 +181,7 @@ defmodule AgentOS.Host.Nif do
         net_relay,
         net_real,
         connections,
-        tool_policies,
+        connection_policies,
         tool_approval,
         host_call,
         persist
@@ -504,7 +504,7 @@ defmodule AgentOS.Host.Nif do
         _net,
         _net_real,
         _connections,
-        _tool_policies,
+        _connection_policies,
         _tool_approval,
         _host_call,
         _persist
@@ -520,7 +520,7 @@ defmodule AgentOS.Host.Nif do
         _net,
         _net_real,
         _connections,
-        _tool_policies,
+        _connection_policies,
         _tool_approval,
         _host_call,
         _persist
@@ -619,9 +619,9 @@ defmodule AgentOS.Host.Nif do
          {:ok, contract} <- contract_arg(opts),
          {:ok, workers} <- workers_arg(opts),
          {:ok, net, host_call, persist} <- capability_args(opts),
-         {:ok, tool_policies} <- tool_policies_arg(opts),
+         {:ok, connection_policies} <- connection_policies_arg(opts),
          {:ok, tool_approval} <- tool_approval_arg(opts) do
-      {:ok, layers, deterministic, contract, workers, net, tool_policies, tool_approval, host_call,
+      {:ok, layers, deterministic, contract, workers, net, connection_policies, tool_approval, host_call,
        persist}
     end
   end
@@ -630,9 +630,9 @@ defmodule AgentOS.Host.Nif do
     with {:ok, deterministic} <- boolean_arg(opts, :deterministic, false),
          {:ok, workers} <- workers_arg(opts),
          {:ok, net, host_call, persist} <- capability_args(opts),
-         {:ok, tool_policies} <- tool_policies_arg(opts),
+         {:ok, connection_policies} <- connection_policies_arg(opts),
          {:ok, tool_approval} <- tool_approval_arg(opts) do
-      {:ok, deterministic, workers, net, tool_policies, tool_approval, host_call, persist}
+      {:ok, deterministic, workers, net, connection_policies, tool_approval, host_call, persist}
     end
   end
 
@@ -810,12 +810,12 @@ defmodule AgentOS.Host.Nif do
   defp connection_auth_arg(_other),
     do: {:error, "connection auth must be none, bearer, header, or query"}
 
-  defp tool_policies_arg(opts) do
-    rules = Keyword.get(opts, :tool_policies, Keyword.get(opts, :policies, []))
+  defp connection_policies_arg(opts) do
+    rules = Keyword.get(opts, :connection_policies, Keyword.get(opts, :policies, []))
 
     if is_list(rules) do
       Enum.reduce_while(rules, {:ok, []}, fn rule, {:ok, acc} ->
-        case tool_policy_rule_arg(rule) do
+        case connection_policy_rule_arg(rule) do
           {:ok, normalized} -> {:cont, {:ok, [normalized | acc]}}
           {:error, _reason} = err -> {:halt, err}
         end
@@ -825,42 +825,42 @@ defmodule AgentOS.Host.Nif do
         {:error, _reason} = err -> err
       end
     else
-      {:error, "tool_policies must be a list"}
+      {:error, "connection_policies must be a list"}
     end
   end
 
-  defp tool_policy_rule_arg({owner, pattern, action}) when is_binary(pattern) do
-    with {:ok, owner} <- tool_policy_owner_arg(owner),
-         {:ok, action} <- tool_policy_action_arg(action) do
+  defp connection_policy_rule_arg({owner, pattern, action}) when is_binary(pattern) do
+    with {:ok, owner} <- connection_policy_owner_arg(owner),
+         {:ok, action} <- connection_policy_action_arg(action) do
       {:ok, {owner, pattern, action}}
     end
   end
 
-  defp tool_policy_rule_arg(%{owner: owner, pattern: pattern, action: action})
+  defp connection_policy_rule_arg(%{owner: owner, pattern: pattern, action: action})
        when is_binary(pattern),
-       do: tool_policy_rule_arg({owner, pattern, action})
+       do: connection_policy_rule_arg({owner, pattern, action})
 
-  defp tool_policy_rule_arg(%{"owner" => owner, "pattern" => pattern, "action" => action})
+  defp connection_policy_rule_arg(%{"owner" => owner, "pattern" => pattern, "action" => action})
        when is_binary(pattern),
-       do: tool_policy_rule_arg({owner, pattern, action})
+       do: connection_policy_rule_arg({owner, pattern, action})
 
-  defp tool_policy_rule_arg(_other),
-    do: {:error, "tool policy rule must be {owner, pattern, action}"}
+  defp connection_policy_rule_arg(_other),
+    do: {:error, "connection policy rule must be {owner, pattern, action}"}
 
-  defp tool_policy_owner_arg(owner) when owner in [:org, "org"], do: {:ok, "org"}
-  defp tool_policy_owner_arg(owner) when owner in [:user, "user"], do: {:ok, "user"}
-  defp tool_policy_owner_arg(_other), do: {:error, "tool policy owner must be :org or :user"}
+  defp connection_policy_owner_arg(owner) when owner in [:org, "org"], do: {:ok, "org"}
+  defp connection_policy_owner_arg(owner) when owner in [:user, "user"], do: {:ok, "user"}
+  defp connection_policy_owner_arg(_other), do: {:error, "connection policy owner must be :org or :user"}
 
-  defp tool_policy_action_arg(action) when action in [:approve, "approve"],
+  defp connection_policy_action_arg(action) when action in [:approve, "approve"],
     do: {:ok, "approve"}
 
-  defp tool_policy_action_arg(action) when action in [:require_approval, "require_approval"],
+  defp connection_policy_action_arg(action) when action in [:require_approval, "require_approval"],
     do: {:ok, "require_approval"}
 
-  defp tool_policy_action_arg(action) when action in [:block, "block"], do: {:ok, "block"}
+  defp connection_policy_action_arg(action) when action in [:block, "block"], do: {:ok, "block"}
 
-  defp tool_policy_action_arg(_other),
-    do: {:error, "tool policy action must be :approve, :require_approval, or :block"}
+  defp connection_policy_action_arg(_other),
+    do: {:error, "connection policy action must be :approve, :require_approval, or :block"}
 
   defp tool_approval_arg(opts) do
     case Keyword.get(opts, :tool_approval, :deny) do

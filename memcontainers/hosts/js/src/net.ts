@@ -1,7 +1,7 @@
 import { EAGAIN, EMSGSIZE } from "@mc/contracts/constants";
 import { ConnectionRegistry } from "./connections.js";
 import type { PreparedConnectionRequest } from "./connections.js";
-import type { ToolPolicyAction } from "./policy.js";
+import type { ConnectionPolicyAction } from "./policy.js";
 import type { NetCapability } from "./types.js";
 
 /** Flow-control mark for `wsSend` backpressure: accepted sends must fit wholly within the socket's
@@ -98,7 +98,7 @@ export interface HostNetOptions {
   toolApprover?: ToolApprover;
   /** Embedder policy resolved per connection address (`integration.owner.connection.*`) by the
    *  single-source toolcore engine at create — the splice looks it up, never re-implements matching. */
-  policyByConnection?: ReadonlyMap<string, ToolPolicyAction | null>;
+  policyByConnection?: ReadonlyMap<string, ConnectionPolicyAction | null>;
 }
 
 /** Real network over `fetch` (HTTP) and `WebSocket` (WS) — the browser/Bun analogue of Rust `RealNet`

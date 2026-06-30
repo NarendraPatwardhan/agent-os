@@ -1014,11 +1014,14 @@ only on an exact origin match, failing closed otherwise — even when a `CAP_NET
 at that same splice, before the credential is attached, for every connection-marked request alike
 (`tools.call`, a direct `/svc/adapters invoke`, or a raw `mc_http_request`). The host classifies
 destructiveness from the actual outgoing request (a non-idempotent method by default), evaluates the
-embedder's relocated `ToolPolicySet` (`block` → fail closed, `approve` → send, `require_approval` → prompt;
+embedder's `ConnectionPolicySet` (`block` → fail closed, `approve` → send, `require_approval` → prompt;
 no match → the method classification), and on a prompt raises a typed `tool_approval` permission frame
 carrying **host-computed** facts (connection, method, URL, origin, args digest) — never a guest-supplied
 description. A lying catalog can therefore neither suppress a prompt nor spoof what is approved: **catalog
-content is not a trust boundary**, and `requires_approval` annotations are descriptive hints only. Both
+content is not a trust boundary**, and `requires_approval` annotations are descriptive hints only. Policy is
+**connection-granular**: the splice keys on `integration.owner.connection` (resolved against
+`integration.owner.connection.*`), never the tool address, so a rule matches a connection or coarser — a
+per-tool pattern cannot be expressed and is rejected at construction. Both
 host families (the Rust/wasmtime host driving the Elixir control plane, and the JS host) implement this
 identically; `/svc/tools` and the host each gate on the caller's `CAP_NET`.
 

@@ -10,7 +10,7 @@ import type {
   ConnectionSpecSource,
   CreateOptions,
   ToolDefinition,
-  ToolPolicyAction,
+  ConnectionPolicyAction,
 } from "./types.js";
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -110,7 +110,7 @@ export async function deriveConnectionOrigins(opts: CreateOptions): Promise<Conn
 }
 
 /**
- * Resolve the embedder's tool policy per connection address (`integration.owner.connection.*`) via the
+ * Resolve the embedder's connection policy per connection address (`integration.owner.connection.*`) via the
  * single-source toolcore engine (`cc_validate_policy` + `cc_policy_resolve`), at create — so the egress
  * splice just looks the action up, never re-implementing pattern matching (the JS peer of the Rust
  * host's native `toolcore::policy`). Throws if any rule is invalid. Empty when there are no rules or no
@@ -118,8 +118,8 @@ export async function deriveConnectionOrigins(opts: CreateOptions): Promise<Conn
  */
 export async function resolvePolicyByConnection(
   opts: CreateOptions,
-): Promise<Map<string, ToolPolicyAction | null>> {
-  const map = new Map<string, ToolPolicyAction | null>();
+): Promise<Map<string, ConnectionPolicyAction | null>> {
+  const map = new Map<string, ConnectionPolicyAction | null>();
   const rules = opts.policies ?? [];
   const connections = opts.connections ?? [];
   if (rules.length === 0 || connections.length === 0) return map;

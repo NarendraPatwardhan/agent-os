@@ -48,9 +48,12 @@ export interface CreateOptions {
   persist?: boolean;
   /** Declarative permissions (see {@link Permissions}). */
   permissions?: Permissions;
-  /** Embedder-owned policy over connection/tool address patterns. The JS host evaluates these before
-   *  method-based destructive classification at the credential splice boundary. */
-  policies?: ToolPolicyRule[];
+  /** Embedder-owned egress policy, evaluated at the credential splice before method-based destructive
+   *  classification. Policy is **connection-granular**, not per-tool: the splice authorizes a request by
+   *  its connection (`integration.owner.connection`), method, and origin — it does not see the catalog
+   *  tool address — so patterns match a connection or coarser (`integration.owner.connection.*`,
+   *  `integration.*`, `*`). A per-tool pattern like `github.org.main.deleteRepo` is rejected at create. */
+  policies?: ConnectionPolicyRule[];
   /** Interactive approval for network egress or destructive connection egress. Call `req.allow()` to
    *  let the operation proceed or `req.reject()` to deny. With no handler, operations that require
    *  approval are denied. */
@@ -118,13 +121,16 @@ export interface ConnectionDefinition {
   tools?: string[];
 }
 
-export type ToolPolicyAction = "approve" | "require_approval" | "block";
-export type ToolPolicyOwner = "org" | "user";
+export type ConnectionPolicyAction = "approve" | "require_approval" | "block";
+export type ConnectionPolicyOwner = "org" | "user";
 
-export interface ToolPolicyRule {
-  owner: ToolPolicyOwner;
+/** One egress-policy rule. `pattern` matches a **connection**, not a tool: `integration.owner.connection.*`
+ *  or a coarser prefix (`integration.owner.*`, `integration.*`, `*`). Across owners the most restrictive
+ *  matching action wins; within an owner the first match wins. */
+export interface ConnectionPolicyRule {
+  owner: ConnectionPolicyOwner;
   pattern: string;
-  action: ToolPolicyAction;
+  action: ConnectionPolicyAction;
 }
 
 /** A built image: an ordered stack of content-addressed layers plus the

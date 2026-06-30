@@ -2,11 +2,11 @@
 // is single-source in `toolcore::policy` and reached from this host via the catalog-compiler wasm
 // (`cc_validate_policy` / `cc_policy_resolve`) — there is no TypeScript reimplementation to drift.
 
-export type ToolPolicyAction = "approve" | "require_approval" | "block";
-export type ToolPolicyOwner = "org" | "user";
+export type ConnectionPolicyAction = "approve" | "require_approval" | "block";
+export type ConnectionPolicyOwner = "org" | "user";
 
-export interface ToolPolicyRule {
-  owner: ToolPolicyOwner;
+export interface ConnectionPolicyRule {
+  owner: ConnectionPolicyOwner;
   pattern: string;
-  action: ToolPolicyAction;
+  action: ConnectionPolicyAction;
 }

@@ -39,7 +39,7 @@ use host::{
     ConnectionCredential, ConnectionError, ConnectionRegistry, ExecResult, HostCallCapability,
     HostToolDef, KernelHost,
     KernelHostBuilder, NetCapability, PersistCapability, RealNet, StreamSink, ToolApprovalDecision,
-    ToolApprovalFacts, ToolApprover, ToolPolicyAction, ToolPolicyOwner, ToolPolicyRule,
+    ToolApprovalFacts, ToolApprover, ConnectionPolicyAction, ConnectionPolicyOwner, ConnectionPolicyRule,
 };
 use rustler::{Atom, Binary, Env, Error, NifResult, OwnedBinary, ResourceArc};
 
@@ -617,21 +617,21 @@ fn build_connections(defs: Vec<NifConnectionDef>) -> NifResult<ConnectionRegistr
     Ok(registry)
 }
 
-fn build_tool_policies(defs: Vec<NifPolicyRule>) -> NifResult<Vec<ToolPolicyRule>> {
+fn build_connection_policies(defs: Vec<NifPolicyRule>) -> NifResult<Vec<ConnectionPolicyRule>> {
     defs.into_iter()
         .map(|(owner, pattern, action)| {
             let owner = match owner.as_str() {
-                "org" => ToolPolicyOwner::Org,
-                "user" => ToolPolicyOwner::User,
-                _ => return Err(nif_err(format!("unknown tool policy owner {owner:?}"))),
+                "org" => ConnectionPolicyOwner::Org,
+                "user" => ConnectionPolicyOwner::User,
+                _ => return Err(nif_err(format!("unknown connection policy owner {owner:?}"))),
             };
             let action = match action.as_str() {
-                "approve" => ToolPolicyAction::Approve,
-                "require_approval" => ToolPolicyAction::RequireApproval,
-                "block" => ToolPolicyAction::Block,
-                _ => return Err(nif_err(format!("unknown tool policy action {action:?}"))),
+                "approve" => ConnectionPolicyAction::Approve,
+                "require_approval" => ConnectionPolicyAction::RequireApproval,
+                "block" => ConnectionPolicyAction::Block,
+                _ => return Err(nif_err(format!("unknown connection policy action {action:?}"))),
             };
-            Ok(ToolPolicyRule {
+            Ok(ConnectionPolicyRule {
                 owner,
                 pattern,
                 action,
@@ -766,7 +766,7 @@ fn build_builder(
     net_relay: bool,
     net_real: bool,
     connections: Vec<NifConnectionDef>,
-    tool_policies: Vec<NifPolicyRule>,
+    connection_policies: Vec<NifPolicyRule>,
     tool_approval_relay: bool,
     host_call_relay: bool,
     persist_relay: bool,
@@ -808,7 +808,7 @@ fn build_builder(
     } else if net_real {
         let mut net = RealNet::new()
             .with_connections(build_connections(connections)?)
-            .with_tool_policies(build_tool_policies(tool_policies)?)
+            .with_connection_policies(build_connection_policies(connection_policies)?)
             .map_err(nif_err)?;
         if tool_approval_relay {
             net = net.with_tool_approver(Arc::new(BeamToolApprover {
@@ -816,8 +816,8 @@ fn build_builder(
             }));
         }
         builder = builder.with_net(Box::new(net));
-    } else if !tool_policies.is_empty() || tool_approval_relay {
-        return Err(nif_err("tool policies and approval relay require real net"));
+    } else if !connection_policies.is_empty() || tool_approval_relay {
+        return Err(nif_err("connection policies and approval relay require real net"));
     }
     if host_call_relay {
         builder = builder.with_host_call(Box::new(BeamHostCall {
@@ -844,7 +844,7 @@ fn boot(
     net_relay: bool,
     net_real: bool,
     connections: Vec<NifConnectionDef>,
-    tool_policies: Vec<NifPolicyRule>,
+    connection_policies: Vec<NifPolicyRule>,
     tool_approval_relay: bool,
     host_call_relay: bool,
     persist_relay: bool,
@@ -864,7 +864,7 @@ fn boot(
         net_relay,
         net_real,
         connections,
-        tool_policies,
+        connection_policies,
         tool_approval_relay,
         host_call_relay,
         persist_relay,
@@ -893,7 +893,7 @@ fn restore(
     net_relay: bool,
     net_real: bool,
     connections: Vec<NifConnectionDef>,
-    tool_policies: Vec<NifPolicyRule>,
+    connection_policies: Vec<NifPolicyRule>,
     tool_approval_relay: bool,
     host_call_relay: bool,
     persist_relay: bool,
@@ -912,8 +912,8 @@ fn restore(
     if !net_real && !connections.is_empty() {
         return Err(nif_err("connections require real net"));
     }
-    if !net_real && (!tool_policies.is_empty() || tool_approval_relay) {
-        return Err(nif_err("tool policies and approval relay require real net"));
+    if !net_real && (!connection_policies.is_empty() || tool_approval_relay) {
+        return Err(nif_err("connection policies and approval relay require real net"));
     }
     let mut builder = KernelHostBuilder::new(wasm.as_slice().to_vec());
     if deterministic {
@@ -929,7 +929,7 @@ fn restore(
     } else if net_real {
         let mut net = RealNet::new()
             .with_connections(build_connections(connections)?)
-            .with_tool_policies(build_tool_policies(tool_policies)?)
+            .with_connection_policies(build_connection_policies(connection_policies)?)
             .map_err(nif_err)?;
         if tool_approval_relay {
             net = net.with_tool_approver(Arc::new(BeamToolApprover {

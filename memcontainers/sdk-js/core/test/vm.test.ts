@@ -8,7 +8,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { capabilityConnection, mc } from "../src/index.js";
-import type { CreateOptions, PermissionRequest, ToolPolicyRule, Vm } from "../src/index.js";
+import type { CreateOptions, PermissionRequest, ConnectionPolicyRule, Vm } from "../src/index.js";
 
 function runfile(rel: string | undefined, envVar: string): string {
   if (!rel) throw new Error(`${envVar} is not set (this test must run under \`bazel test\`)`);
@@ -156,7 +156,7 @@ async function main(): Promise<void> {
     console.log("phase: mc.use capability derivation OK");
   }
 
-  // P4: a remote VM cannot silently drop tool policies (the remote backend doesn't enforce them) — the
+  // P4: a remote VM cannot silently drop connection policies (the remote backend doesn't enforce them) — the
   // create must fail closed rather than diverge from the embedded/wasmtime hosts.
   {
     let threwRemotePolicies = false;
@@ -169,8 +169,8 @@ async function main(): Promise<void> {
     } catch (e) {
       threwRemotePolicies = /polic/i.test(String(e));
     }
-    if (!threwRemotePolicies) throw new Error("remote create must reject tool policies (not silently drop them)");
-    console.log("phase: remote create rejects tool policies OK");
+    if (!threwRemotePolicies) throw new Error("remote create must reject connection policies (not silently drop them)");
+    console.log("phase: remote create rejects connection policies OK");
   }
 
   // #3: a remote VM cannot honor connections the way the host does (host-side origin derivation + live
@@ -369,7 +369,7 @@ async function main(): Promise<void> {
     clearRequests(server.requests);
     console.log("phase: block policy");
     const blockPrompts: ToolApprovalFact[] = [];
-    const blockPolicy: ToolPolicyRule[] = [{ owner: "org", pattern: "github.org.main.*", action: "block" }];
+    const blockPolicy: ConnectionPolicyRule[] = [{ owner: "org", pattern: "github.org.main.*", action: "block" }];
     const blockVm = await mc.create(
       githubOptions({
         policies: blockPolicy,

@@ -23,7 +23,7 @@ use std::time::Duration;
 use crate::connections::{
     ConnectionCredential, ConnectionRegistry, PreparedConnectionRequest, PreparedHttpRequest,
 };
-use toolcore::policy::{ToolPolicyAction, ToolPolicyRule, ToolPolicySet};
+use toolcore::policy::{ConnectionPolicyAction, ConnectionPolicyRule, ConnectionPolicySet};
 use crate::sha256_hex;
 
 /// WebSocket send sentinels from the generated contract constants (B2): `-EAGAIN`
@@ -124,7 +124,7 @@ pub trait ToolApprover: Send + Sync + 'static {
 /// Cloneable so a request's worker thread can run a possibly-blocking prompt off the kernel pump.
 #[derive(Clone, Default)]
 pub struct ConnectionGate {
-    policies: ToolPolicySet,
+    policies: ConnectionPolicySet,
     approver: Option<Arc<dyn ToolApprover>>,
     session_allow: Arc<Mutex<HashSet<String>>>,
 }
@@ -140,9 +140,9 @@ enum GateDecision {
 }
 
 impl ConnectionGate {
-    fn set_policies(&mut self, rules: Vec<ToolPolicyRule>) -> anyhow::Result<()> {
-        self.policies = ToolPolicySet::new(rules)
-            .map_err(|err| anyhow::anyhow!("invalid tool policy rule: {err:?}"))?;
+    fn set_policies(&mut self, rules: Vec<ConnectionPolicyRule>) -> anyhow::Result<()> {
+        self.policies = ConnectionPolicySet::new(rules)
+            .map_err(|err| anyhow::anyhow!("invalid connection policy rule: {}", err.message()))?;
         Ok(())
     }
 
@@ -150,9 +150,9 @@ impl ConnectionGate {
     /// interactive approval is genuinely needed, so the caller can defer it to a worker thread.
     fn decide(&self, req: &PreparedConnectionRequest) -> GateDecision {
         match self.policies.resolve(&req.policy_address) {
-            Some(ToolPolicyAction::Block) => return GateDecision::Reject,
-            Some(ToolPolicyAction::Approve) => return GateDecision::Allow,
-            Some(ToolPolicyAction::RequireApproval) => {}
+            Some(ConnectionPolicyAction::Block) => return GateDecision::Reject,
+            Some(ConnectionPolicyAction::Approve) => return GateDecision::Allow,
+            Some(ConnectionPolicyAction::RequireApproval) => {}
             None if !is_destructive_method(&req.method) => return GateDecision::Allow,
             None => {}
         }
@@ -211,7 +211,7 @@ impl RealNet {
         self
     }
 
-    pub fn with_tool_policies(mut self, rules: Vec<ToolPolicyRule>) -> anyhow::Result<Self> {
+    pub fn with_connection_policies(mut self, rules: Vec<ConnectionPolicyRule>) -> anyhow::Result<Self> {
         self.gate.set_policies(rules)?;
         Ok(self)
     }
@@ -782,7 +782,7 @@ impl TokioNet {
         self
     }
 
-    pub fn with_tool_policies(mut self, rules: Vec<ToolPolicyRule>) -> anyhow::Result<Self> {
+    pub fn with_connection_policies(mut self, rules: Vec<ConnectionPolicyRule>) -> anyhow::Result<Self> {
         self.gate.set_policies(rules)?;
         Ok(self)
     }

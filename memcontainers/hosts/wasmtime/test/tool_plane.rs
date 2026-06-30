@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use host::{
     CaptureSink, CatalogConnection, CatalogInjectOptions, CatalogSpecSource, ConnectionCredential,
     ConnectionRegistry, KernelHostBuilder, NetCapability, RealNet, ToolApprovalDecision,
-    ToolApprovalFacts, ToolApprover, ToolPolicyAction, ToolPolicyOwner, ToolPolicyRule,
+    ToolApprovalFacts, ToolApprover, ConnectionPolicyAction, ConnectionPolicyOwner, ConnectionPolicyRule,
 };
 
 #[derive(Debug, Clone)]
@@ -191,7 +191,7 @@ fn exec_stdout(host: &mut host::KernelHost, cmd: &str) -> String {
 fn configured_net(
     origin: &str,
     approver: SharedApprover,
-    policies: Vec<ToolPolicyRule>,
+    policies: Vec<ConnectionPolicyRule>,
 ) -> RealNet {
     let mut registry = ConnectionRegistry::new();
     registry
@@ -224,8 +224,8 @@ fn configured_net(
         .expect("insert gql connection");
     RealNet::new()
         .with_connections(registry)
-        .with_tool_policies(policies)
-        .expect("tool policies")
+        .with_connection_policies(policies)
+        .expect("connection policies")
         .with_tool_approver(Arc::new(approver))
 }
 
@@ -520,10 +520,10 @@ fn host_policy_block_and_approve_match_js_ordering() {
         prompts: Arc::clone(&prompts),
         allow: Arc::clone(&allow),
     };
-    let block = vec![ToolPolicyRule {
-        owner: ToolPolicyOwner::Org,
+    let block = vec![ConnectionPolicyRule {
+        owner: ConnectionPolicyOwner::Org,
         pattern: "github.org.main.*".to_string(),
-        action: ToolPolicyAction::Block,
+        action: ConnectionPolicyAction::Block,
     }];
     let mut net = configured_net(&server.origin, approver.clone(), block);
     let req = format!(
@@ -537,10 +537,10 @@ fn host_policy_block_and_approve_match_js_ordering() {
     assert!(server.snapshot().is_empty());
     assert!(prompts.lock().unwrap().is_empty());
 
-    let approve = vec![ToolPolicyRule {
-        owner: ToolPolicyOwner::Org,
+    let approve = vec![ConnectionPolicyRule {
+        owner: ConnectionPolicyOwner::Org,
         pattern: "github.org.main.*".to_string(),
-        action: ToolPolicyAction::Approve,
+        action: ConnectionPolicyAction::Approve,
     }];
     let mut net = configured_net(&server.origin, approver, approve);
     let req = format!(

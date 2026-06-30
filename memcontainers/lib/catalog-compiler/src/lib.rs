@@ -398,7 +398,7 @@ pub unsafe extern "C" fn cc_validate_binding(ptr: *const u8, len: usize) -> u64 
 #[no_mangle]
 pub unsafe extern "C" fn cc_validate_policy(ptr: *const u8, len: usize) -> u64 {
     alloc_return(match parse_policy_rules(read(ptr, len)) {
-        Ok(rules) => match toolcore::policy::ToolPolicySet::new(rules) {
+        Ok(rules) => match toolcore::policy::ConnectionPolicySet::new(rules) {
             Ok(_) => serde_json::to_vec(&json!({ "ok": true })).expect("ok serializes"),
             Err(err) => policy_error_json(err),
         },
@@ -421,7 +421,7 @@ pub unsafe extern "C" fn cc_policy_resolve(
 ) -> u64 {
     let address = str::from_utf8(read(addr_ptr, addr_len)).unwrap_or("");
     let action = match parse_policy_rules(read(rules_ptr, rules_len)) {
-        Ok(rules) => toolcore::policy::ToolPolicySet::new(rules)
+        Ok(rules) => toolcore::policy::ConnectionPolicySet::new(rules)
             .ok()
             .and_then(|set| set.resolve(address)),
         Err(_) => None,
@@ -481,8 +481,8 @@ pub unsafe extern "C" fn cc_discovery_request(
     alloc_return(serde_json::to_vec(&out).expect("discovery request serializes"))
 }
 
-fn parse_policy_rules(bytes: &[u8]) -> Result<Vec<toolcore::policy::ToolPolicyRule>, String> {
-    use toolcore::policy::{ToolPolicyAction, ToolPolicyOwner, ToolPolicyRule};
+fn parse_policy_rules(bytes: &[u8]) -> Result<Vec<toolcore::policy::ConnectionPolicyRule>, String> {
+    use toolcore::policy::{ConnectionPolicyAction, ConnectionPolicyOwner, ConnectionPolicyRule};
     let value: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|e| format!("invalid policy rules JSON: {e}"))?;
     let array = value
@@ -491,22 +491,22 @@ fn parse_policy_rules(bytes: &[u8]) -> Result<Vec<toolcore::policy::ToolPolicyRu
     let mut out = Vec::with_capacity(array.len());
     for rule in array {
         let owner = match rule.get("owner").and_then(|v| v.as_str()) {
-            Some("org") => ToolPolicyOwner::Org,
-            Some("user") => ToolPolicyOwner::User,
-            other => return Err(format!("invalid tool policy owner {other:?}")),
+            Some("org") => ConnectionPolicyOwner::Org,
+            Some("user") => ConnectionPolicyOwner::User,
+            other => return Err(format!("invalid connection policy owner {other:?}")),
         };
         let action = match rule.get("action").and_then(|v| v.as_str()) {
-            Some("approve") => ToolPolicyAction::Approve,
-            Some("require_approval") => ToolPolicyAction::RequireApproval,
-            Some("block") => ToolPolicyAction::Block,
-            other => return Err(format!("invalid tool policy action {other:?}")),
+            Some("approve") => ConnectionPolicyAction::Approve,
+            Some("require_approval") => ConnectionPolicyAction::RequireApproval,
+            Some("block") => ConnectionPolicyAction::Block,
+            other => return Err(format!("invalid connection policy action {other:?}")),
         };
         let pattern = rule
             .get("pattern")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| "tool policy rule is missing `pattern`".to_string())?
+            .ok_or_else(|| "connection policy rule is missing `pattern`".to_string())?
             .to_string();
-        out.push(ToolPolicyRule {
+        out.push(ConnectionPolicyRule {
             owner,
             pattern,
             action,
@@ -515,28 +515,25 @@ fn parse_policy_rules(bytes: &[u8]) -> Result<Vec<toolcore::policy::ToolPolicyRu
     Ok(out)
 }
 
-fn policy_action_name(action: Option<toolcore::policy::ToolPolicyAction>) -> Option<&'static str> {
-    use toolcore::policy::ToolPolicyAction;
+fn policy_action_name(action: Option<toolcore::policy::ConnectionPolicyAction>) -> Option<&'static str> {
+    use toolcore::policy::ConnectionPolicyAction;
     action.map(|a| match a {
-        ToolPolicyAction::Approve => "approve",
-        ToolPolicyAction::RequireApproval => "require_approval",
-        ToolPolicyAction::Block => "block",
+        ConnectionPolicyAction::Approve => "approve",
+        ConnectionPolicyAction::RequireApproval => "require_approval",
+        ConnectionPolicyAction::Block => "block",
     })
 }
 
-fn policy_error_json(err: toolcore::policy::ToolPolicyError) -> Vec<u8> {
-    use toolcore::policy::ToolPolicyError;
-    let (code, message) = match err {
-        ToolPolicyError::InvalidOwner => ("invalid_owner", "tool policy rule has an invalid owner"),
-        ToolPolicyError::InvalidPattern => (
-            "invalid_pattern",
-            "tool policy pattern must be connection-granular (`*`, or a trailing-wildcard with at most three concrete segments)",
-        ),
-        ToolPolicyError::InvalidAction => {
-            ("invalid_action", "tool policy rule has an invalid action")
-        }
+fn policy_error_json(err: toolcore::policy::ConnectionPolicyError) -> Vec<u8> {
+    use toolcore::policy::ConnectionPolicyError;
+    // The actionable message is single-sourced in toolcore so the JS host (here) and the wasmtime/Elixir
+    // host surface identical guidance; only the machine-readable code is mapped per variant.
+    let code = match err {
+        ConnectionPolicyError::InvalidOwner => "invalid_owner",
+        ConnectionPolicyError::InvalidPattern => "invalid_pattern",
+        ConnectionPolicyError::InvalidAction => "invalid_action",
     };
-    serde_json::to_vec(&json!({ "error": { "code": code, "message": message } }))
+    serde_json::to_vec(&json!({ "error": { "code": code, "message": err.message() } }))
         .expect("policy error serializes")
 }
 
