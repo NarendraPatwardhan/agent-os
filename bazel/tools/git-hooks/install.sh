@@ -7,5 +7,5 @@ if [[ -z "$workspace" ]]; then
 fi
 
 cd "$workspace"
-git config core.hooksPath tools/git-hooks
-echo "Configured Git hooks path: tools/git-hooks"
+git config core.hooksPath bazel/tools/git-hooks
+echo "Configured Git hooks path: bazel/tools/git-hooks"
