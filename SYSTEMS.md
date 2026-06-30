@@ -1022,6 +1022,15 @@ content is not a trust boundary**, and `requires_approval` annotations are descr
 host families (the Rust/wasmtime host driving the Elixir control plane, and the JS host) implement this
 identically; `/svc/tools` and the host each gate on the caller's `CAP_NET`.
 
+A connection is one embedder concept — `ConnectionDefinition {ref, auth, origins}` in the wire contract and
+the JS SDK — but it decomposes into two host-side facets, each single-sourced, so the differing type names
+are facets and not aliases for one record. The **egress facet** (the credential plus the absolute origins
+allowed to receive it) lives once in the net's `ConnectionRegistry`; both the splice gate and live discovery
+read the credential from there and nowhere else. The **catalog facet** — `CatalogConnection {ref, spec,
+tools}`, the discovery/spec input that compiles into tool shards — carries no credential and no transport
+identity at all; it recovers its egress origins by looking the ref up in that same registry. The credential
+therefore exists in exactly one place, and a catalog can neither leak nor override it by construction.
+
 `pkgcore` is the pure logic for `pkgfsd`, a demand-load package daemon: a dependency-free SHA-256, a
 tab-separated catalog parser, and path/URL helpers. Packages are addressed by content hash, fetched from a
 registry over `/net` on a miss, verified against their hash, and cached under `/var/persist/pkg/<sha>` —
