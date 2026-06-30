@@ -57,6 +57,10 @@ import type {
 
 const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 /** POSIX single-quote an argv element so it survives the shell `vm.exec` runs. */
 const shQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -534,26 +538,22 @@ async function makeEmbedded(
 }
 
 /** Read the warm catalog state a restored snapshot already carries — the committed index digest (the CAS
- *  base for the next `vm.tool`) and the cosmetic generation. The connection bundle stays `null`: it is
- *  recomputed lazily if and when the embedder adds a tool at runtime, so a restore that never mutates the
- *  catalog does no compile work at all. Missing/garbled sidecar → an empty base (the next apply then
- *  commits without a CAS guard, which is the pre-existing first-commit behavior). */
+ *  base for the next `vm.tool`) and the cosmetic generation. The digest is recomputed from `index.json`,
+ *  matching the broker's source of truth; `index.sha256` is only a filesystem accelerator and may be stale
+ *  after an interrupted write. The connection bundle stays `null`: it is recomputed lazily if and when the
+ *  embedder adds a tool at runtime, so a restore that never mutates the catalog does no compile work. */
 async function readRestoredCatalogState(backend: Backend): Promise<CatalogState> {
   let digest = "";
   let generation = 0;
   try {
-    digest = dec(await backend.read("/etc/tools/catalog/index.sha256")).trim();
-    if (!/^[0-9a-f]{64}$/.test(digest)) digest = "";
-  } catch {
-    /* no sidecar — leave the base empty */
-  }
-  try {
-    const parsed: unknown = JSON.parse(dec(await backend.read("/etc/tools/catalog/index.json")));
+    const index = await backend.read("/etc/tools/catalog/index.json");
+    digest = await sha256Hex(index);
+    const parsed: unknown = JSON.parse(dec(index));
     if (parsed && typeof parsed === "object" && typeof (parsed as { generation?: unknown }).generation === "number") {
       generation = (parsed as { generation: number }).generation;
     }
   } catch {
-    /* no index — leave the generation at 0 */
+    /* no readable index — leave empty catalog state */
   }
   return { digest, generation, connectionBundle: null };
 }
@@ -804,6 +804,11 @@ async function makeRemote(
   if (opts.policies && opts.policies.length > 0) {
     throw new Error(
       "connection policies are enforced only on the embedded runtime; the remote backend does not support them yet",
+    );
+  }
+  if (catalogToolSelectors(opts.tools).length > 0) {
+    throw new Error(
+      "connection tool selectors require host-side catalog construction, which the remote backend does not perform yet",
     );
   }
   if (opts.connections && opts.connections.length > 0) {

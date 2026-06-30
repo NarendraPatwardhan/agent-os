@@ -767,7 +767,7 @@ pub fn parse_json_or_string(src: &str) -> Json {
     Json::Str(src.to_string())
 }
 
-/// The tool-policy engine — the single source of policy logic for BOTH host families. The
+/// The connection-policy engine — the single source of policy logic for BOTH host families. The
 /// wasmtime/Elixir host links this natively; the JS host calls it through `catalog-compiler.wasm`
 /// (`cc_policy_resolve` / `cc_validate_policy`). There is no second implementation: a Rust copy plus a
 /// TypeScript copy was forbidden drift. The host owns only transport + the credential splice; the

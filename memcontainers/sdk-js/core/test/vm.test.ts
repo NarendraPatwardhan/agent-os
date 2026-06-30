@@ -192,6 +192,25 @@ async function main(): Promise<void> {
     console.log("phase: remote create rejects connections OK");
   }
 
+  // Connection tool selectors are catalog options too. With no server-side catalog construction on the
+  // remote path, accepting a bare selector would silently no-op instead of failing closed.
+  {
+    let threwRemoteToolSelector = false;
+    try {
+      await mc.create({
+        runtime: "remote",
+        endpoint: "http://127.0.0.1:0",
+        tools: ["github/issues"],
+      });
+    } catch (e) {
+      threwRemoteToolSelector = /selector|catalog/i.test(String(e));
+    }
+    if (!threwRemoteToolSelector) {
+      throw new Error("remote create must reject connection tool selectors (not silently ignore them)");
+    }
+    console.log("phase: remote create rejects connection tool selectors OK");
+  }
+
   // Bytes passed directly → no MC_STORE / defaultKernel env path; the embedded backend (the JS host)
   // boots the kernel in-process.
   const vm = await mc.create({ kernel, image, deterministic: true });

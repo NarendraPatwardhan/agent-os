@@ -54,7 +54,7 @@ pub use net::{
     DeniedNet, NetCapability, RealNet, ToolApprovalDecision, ToolApprovalFacts, ToolApprover,
 };
 pub use persist::{DeniedPersist, DiskPersist, PersistCapability};
-// The tool-policy engine is single-source in toolcore; re-export it so the NIF + tests keep importing
+// The connection-policy engine is single-source in toolcore; re-export it so the NIF + tests keep importing
 // it from this host crate (the wasmtime host links it natively, the JS host calls it via the wasm).
 pub use toolcore::policy::{
     ConnectionPolicyAction, ConnectionPolicyError, ConnectionPolicyOwner, ConnectionPolicyRule, ConnectionPolicySet,

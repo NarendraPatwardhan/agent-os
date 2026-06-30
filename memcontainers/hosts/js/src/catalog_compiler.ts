@@ -237,7 +237,7 @@ export class CatalogCompiler {
     }
   }
 
-  /** Validate a tool-policy rule set (owner/action + connection-granular patterns) via the single-source
+  /** Validate a connection-policy rule set (owner/action + connection-granular patterns) via the single-source
    *  toolcore engine; throws on the first invalid rule. The wasmtime host enforces the identical check. */
   async validatePolicy(rulesJson: string): Promise<void> {
     const bytes = enc(rulesJson);

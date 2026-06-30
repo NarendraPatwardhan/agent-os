@@ -393,7 +393,7 @@ pub unsafe extern "C" fn cc_validate_binding(ptr: *const u8, len: usize) -> u64 
     })
 }
 
-/// Validate a tool-policy rule set (owner/action enums + connection-granular patterns) — the construction
+/// Validate a connection-policy rule set (owner/action enums + connection-granular patterns) — the construction
 /// check both hosts enforce.
 #[no_mangle]
 pub unsafe extern "C" fn cc_validate_policy(ptr: *const u8, len: usize) -> u64 {
