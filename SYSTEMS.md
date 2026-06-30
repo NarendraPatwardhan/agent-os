@@ -976,9 +976,12 @@ cold-start cost is O(index), independent of catalog size — a multi-thousand-to
 parsing a ~hundred-KiB index, and a `call` reads one ~KiB shard. The tree plus its digest is the single
 source of truth; the in-memory index/shard cache is keyed by that digest, so a changed digest triggers a
 reload and `/svc/tools` and `/tools` can never disagree. Mutation is host-control only: `catalog.apply`
-(`caller == SYSTEM_CALLER`) writes the shards, then commits `{generation, index, digest}` by an atomic
-single-file rename of `index.json` (immutable shards make the rename the only ordering point); the warm
-state snapshots with the VM. `/tools/<integration>/<owner>/<connection>/<tool>` is the file-tree discovery
+(`caller == SYSTEM_CALLER`) writes the shards, then commits the index by an atomic single-file rename of
+`index.json` (immutable shards make the rename the only ordering point). The commit is a **compare-and-swap
+on the content digest**, not a counter: the caller passes the digest it edited against, and `apply` is
+rejected if the live digest has moved (lost-update protection) and is a no-op if the incoming digest already
+matches (idempotent — a retried or duplicate apply is free). A monotonic generation rides along for
+observability only; correctness is the digest. The warm state snapshots with the VM. `/tools/<integration>/<owner>/<connection>/<tool>` is the file-tree discovery
 face built from the same index, serving each leaf as its shard. `call`/`call_alias` require the caller's
 kernel-stamped `CAP_NET`; discovery, `/tools`, and artifact cleanup stay unprivileged.
 
@@ -1143,6 +1146,36 @@ exercise the whole stack — a Luau playground, an xlsx→typst report generator
 on-device WebGPU model — booting the cooperative `kernel.wasm` with OPFS persistence and *no* COOP/COEP
 headers (none are needed without `SharedArrayBuffer`). Real headless-Chrome CDP tests verify Luau,
 cross-reload OPFS durability, and document generation.
+
+### 13.5 The tool plane — one decision core, derived connections, live discovery
+
+The two host families must make *identical* tool-plane decisions, so the decision logic is **single-source
+by construction, not by parity test**. A `no_std` crate, `toolcore`, holds every consequential choice —
+egress policy resolution (owner/action precedence, connection-granular patterns), tool-address + binding
+validation, the discovery-request builder, and connection-reference parsing. The Rust host links it
+natively; the JS host calls the *same* code compiled into `catalog-compiler.wasm` (`cc_policy_resolve`,
+`cc_validate_address`, `cc_discovery_request`). Neither host re-implements any of it, so the wasmtime host
+and the JS host cannot diverge — A3 enforced at the type level, upstream of the parity test.
+
+A connection is just `{ ref, auth }`. The host **derives** the credential-egress origin allowlist from the
+curated registry's `servers` field — *our* constant, never read from the live spec — so a user names only
+the capability and the key, and a tampered upstream spec can never redirect a credential (it can at most
+produce malformed tool shapes, which fail safely). This is why specs are fetched-and-cached rather than
+vendored: the credential-tamper-safety that vendoring would buy is already provided by curated origins, so
+the catalog source does not need to live in the repo. A connection with `auth: none` + origins is a
+**public tool**: the host strips the connection marker and gates on origin alone, no credential attached.
+
+Spec acquisition is kind-driven and single-source (`cc_discovery_request` describes it; the host is pure
+transport). The three static-document kinds — `openapi`, `microsoft-graph` (the MS Graph OpenAPI), and
+`google-discovery` (a Google discovery doc) — fetch their spec, differing only in the compiler front-end
+that normalizes it. `graphql`/`mcp-remote`
+integrations are **discovered live**: the host issues a GraphQL introspection query, or the remote-MCP
+`initialize → notifications/initialized → tools/list` handshake (threading `Mcp-Session-Id`, parsing SSE),
+as authenticated egress — the credential is applied host-side and never reaches the guest — then compiles
+the response into the catalog. Compilation itself is the host-instantiated `catalog-compiler.wasm` (a pure,
+zero-import module) producing the sharded, content-addressed bundle of §11. The capability surface bottoms
+out in `mc.use("github.issues", token)`: it derives `{ ref: "github.org.main", auth }` and the
+`github/issues` selector and creates a VM in one call.
 
 ---
 
