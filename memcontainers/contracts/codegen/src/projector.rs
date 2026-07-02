@@ -1652,16 +1652,31 @@ struct Route {
     queries: Vec<QueryParam>,
 }
 
+#[derive(Clone)]
 struct Field {
     name: String,
     ty: String,
     required: bool,
+    source: Option<String>,
+    encoding: Option<String>,
+}
+
+#[derive(Clone)]
+struct ProjectField {
+    name: String,
+    from: String,
+    ty: Option<String>,
+    required: Option<bool>,
+    encoding: Option<String>,
 }
 
 struct Schema {
     name: String,
     kind: String,
     doc: String,
+    source: Option<String>,
+    from_message: Option<String>,
+    projects: Vec<ProjectField>,
     fields: Vec<Field>,
 }
 
@@ -1671,6 +1686,10 @@ fn prop_bool(n: &Node, key: &str, default: bool) -> bool {
         Some(Val::Str(s)) => matches!(s.as_str(), "1" | "true" | "yes"),
         None => default,
     }
+}
+
+fn prop_bool_opt(n: &Node, key: &str) -> Option<bool> {
+    n.props.get(key).map(|_| prop_bool(n, key, false))
 }
 
 fn collect_routes(nodes: &[Node]) -> Vec<Route> {
@@ -1705,16 +1724,162 @@ fn collect_schemas(nodes: &[Node]) -> Vec<Schema> {
             name: n.arg_str(0).to_string(),
             kind: n.prop_str("kind").unwrap_or("json").to_string(),
             doc: n.doc(),
+            source: n.prop_str("source").map(String::from),
+            from_message: n.prop_str("from-message").map(String::from),
+            projects: n
+                .children_named("project")
+                .map(|p| ProjectField {
+                    name: p.arg_str(0).to_string(),
+                    from: p
+                        .prop_str("from")
+                        .map(String::from)
+                        .unwrap_or_else(|| p.arg_str(0).to_string()),
+                    ty: p.prop_str("type").map(String::from),
+                    required: prop_bool_opt(p, "required"),
+                    encoding: p.prop_str("encoding").map(String::from),
+                })
+                .collect(),
             fields: n
                 .children_named("field")
                 .map(|f| Field {
                     name: f.arg_str(0).to_string(),
                     ty: f.prop_str("type").unwrap_or("string").to_string(),
                     required: prop_bool(f, "required", false),
+                    source: None,
+                    encoding: None,
                 })
                 .collect(),
         })
         .collect()
+}
+
+fn message_field_schema_type(ty: &str) -> Option<String> {
+    if let Some(inner) = ty.strip_prefix("list<").and_then(|s| s.strip_suffix('>')) {
+        return Some(format!("{}[]", inner));
+    }
+    match ty {
+        "str" => Some("string".to_string()),
+        "strmap" => Some("StringMap".to_string()),
+        // Binary message fields need an explicit JSON projection (`stdin` vs.
+        // `stdinBase64`) instead of a default one-size-fits-all REST shape.
+        "bytes" => None,
+        "bool" | "u32" | "i32" | "u64" | "i64" => Some(ty.to_string()),
+        other => Some(other.to_string()),
+    }
+}
+
+fn schema_source_messages(nodes: &[Node], contract_path: &str, schemas: &[Schema]) -> Vec<Message> {
+    let mut messages = collect_codec_messages(nodes);
+    let mut seen_sources = BTreeSet::new();
+    let contract_dir = std::path::Path::new(contract_path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."));
+
+    for schema in schemas {
+        let Some(source) = &schema.source else {
+            continue;
+        };
+        if !seen_sources.insert(source.clone()) {
+            continue;
+        }
+        let source_path = contract_dir.join(source);
+        let src = std::fs::read_to_string(&source_path).unwrap_or_else(|e| {
+            panic!(
+                "projector: schema {} source {} could not be read: {e}",
+                schema.name,
+                source_path.display()
+            )
+        });
+        messages.extend(collect_codec_messages(&parse(&tokenize(&src))));
+    }
+
+    messages
+}
+
+fn resolve_schema_fields(schema: &Schema, messages: &BTreeMap<String, Message>) -> Vec<Field> {
+    let Some(message_name) = &schema.from_message else {
+        return schema.fields.clone();
+    };
+    let message = messages.get(message_name).unwrap_or_else(|| {
+        panic!(
+            "schema {} derives from unknown message {}",
+            schema.name, message_name
+        )
+    });
+
+    let mut out = Vec::new();
+    let mut used_projects = vec![false; schema.projects.len()];
+    let mut seen_names = BTreeSet::new();
+
+    for mf in &message.fields {
+        let matching = schema
+            .projects
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.from == mf.name)
+            .collect::<Vec<_>>();
+
+        if matching.is_empty() {
+            if let Some(ty) = message_field_schema_type(&mf.ty) {
+                if !seen_names.insert(mf.name.clone()) {
+                    panic!("schema {} has duplicate field {}", schema.name, mf.name);
+                }
+                out.push(Field {
+                    name: mf.name.clone(),
+                    ty,
+                    required: !mf.optional,
+                    source: Some(mf.name.clone()),
+                    encoding: None,
+                });
+            }
+            continue;
+        }
+
+        for (idx, project) in matching {
+            used_projects[idx] = true;
+            let ty = project
+                .ty
+                .clone()
+                .or_else(|| message_field_schema_type(&mf.ty))
+                .unwrap_or_else(|| {
+                    panic!(
+                        "schema {} project {} from binary field {} must declare type",
+                        schema.name, project.name, mf.name
+                    )
+                });
+            if !seen_names.insert(project.name.clone()) {
+                panic!("schema {} has duplicate field {}", schema.name, project.name);
+            }
+            out.push(Field {
+                name: project.name.clone(),
+                ty,
+                required: project.required.unwrap_or(!mf.optional),
+                source: Some(mf.name.clone()),
+                encoding: project.encoding.clone(),
+            });
+        }
+    }
+
+    for (idx, project) in schema.projects.iter().enumerate() {
+        if !used_projects[idx] {
+            panic!(
+                "schema {} projects unknown source field {} from message {}",
+                schema.name, project.from, message_name
+            );
+        }
+    }
+
+    for field in &schema.fields {
+        if !seen_names.insert(field.name.clone()) {
+            panic!(
+                "schema {} locally redeclares projected field {}",
+                schema.name, field.name
+            );
+        }
+        out.push(field.clone());
+    }
+
+    out
 }
 
 fn yaml_quote(s: &str) -> String {
@@ -1865,7 +2030,7 @@ fn emit_parameters(out: &mut String, route: &Route, schema_names: &BTreeSet<Stri
     }
 }
 
-fn emit_openapi(nodes: &[Node], contract: &str) -> String {
+fn emit_openapi(nodes: &[Node], contract: &str, contract_path: &str) -> String {
     let version = nodes
         .iter()
         .find(|n| n.name == "version")
@@ -1873,6 +2038,14 @@ fn emit_openapi(nodes: &[Node], contract: &str) -> String {
         .unwrap_or(0);
     let routes = collect_routes(nodes);
     let schemas = collect_schemas(nodes);
+    let messages: BTreeMap<String, Message> = schema_source_messages(nodes, contract_path, &schemas)
+        .into_iter()
+        .map(|m| (m.name.clone(), m))
+        .collect();
+    let resolved_fields: BTreeMap<String, Vec<Field>> = schemas
+        .iter()
+        .map(|schema| (schema.name.clone(), resolve_schema_fields(schema, &messages)))
+        .collect();
     let schema_names: BTreeSet<String> = schemas.iter().map(|s| s.name.clone()).collect();
     let schema_kinds: BTreeMap<String, String> = schemas
         .iter()
@@ -1962,6 +2135,9 @@ fn emit_openapi(nodes: &[Node], contract: &str) -> String {
     out.push_str("      scheme: bearer\n");
     out.push_str("  schemas:\n");
     for schema in &schemas {
+        let fields = resolved_fields
+            .get(&schema.name)
+            .expect("schema fields resolved above");
         out.push_str(&format!("    {}:\n", yaml_quote(&schema.name)));
         if !schema.doc.is_empty() {
             out.push_str(&format!("      description: {}\n", yaml_quote(&schema.doc)));
@@ -1977,8 +2153,7 @@ fn emit_openapi(nodes: &[Node], contract: &str) -> String {
             }
             _ => {
                 out.push_str("      type: object\n");
-                let required = schema
-                    .fields
+                let required = fields
                     .iter()
                     .filter(|f| f.required)
                     .collect::<Vec<_>>();
@@ -1989,12 +2164,24 @@ fn emit_openapi(nodes: &[Node], contract: &str) -> String {
                     }
                 }
                 out.push_str("      properties:\n");
-                if schema.fields.is_empty() {
+                if fields.is_empty() {
                     out.push_str("        {}\n");
                 }
-                for field in &schema.fields {
+                for field in fields {
                     out.push_str(&format!("        {}:\n", yaml_quote(&field.name)));
                     emit_openapi_schema_for_type(&mut out, &field.ty, 10, &schema_names);
+                    if let Some(source) = &field.source {
+                        out.push_str(&format!(
+                            "          x-agentos-source-field: {}\n",
+                            yaml_quote(source)
+                        ));
+                    }
+                    if let Some(encoding) = &field.encoding {
+                        out.push_str(&format!(
+                            "          x-agentos-encoding: {}\n",
+                            yaml_quote(encoding)
+                        ));
+                    }
                 }
             }
         }
@@ -2002,9 +2189,9 @@ fn emit_openapi(nodes: &[Node], contract: &str) -> String {
     out
 }
 
-fn emit_wire(lang: &str, nodes: &[Node], contract: &str) -> String {
+fn emit_wire(lang: &str, nodes: &[Node], contract: &str, contract_path: &str) -> String {
     if lang == "openapi" {
-        return emit_openapi(nodes, contract);
+        return emit_openapi(nodes, contract, contract_path);
     }
     let version = nodes
         .iter()
@@ -2151,7 +2338,7 @@ fn main() -> ExitCode {
             "CONTROL_EXPORTS",
             "EXPORTS",
         ),
-        "wire" => emit_wire(&lang, &nodes, &file),
+        "wire" => emit_wire(&lang, &nodes, &file, &contract),
         "llb" => emit_codec_module(&lang, &nodes, &file),
         other => {
             eprintln!("projector: unknown module {other}");

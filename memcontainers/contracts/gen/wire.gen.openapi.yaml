@@ -1084,17 +1084,24 @@ components:
       properties:
         "cmd":
           type: string
+          x-agentos-source-field: "cmd"
         "cwd":
           type: string
           x-agentos-type: "Path"
+          x-agentos-source-field: "cwd"
         "env":
           type: object
           additionalProperties:
             type: string
+          x-agentos-source-field: "env"
         "stdin":
           type: string
+          x-agentos-source-field: "stdin"
+          x-agentos-encoding: "utf8"
         "stdinBase64":
           type: string
+          x-agentos-source-field: "stdin"
+          x-agentos-encoding: "base64"
         "timeoutMs":
           type: integer
           format: int64

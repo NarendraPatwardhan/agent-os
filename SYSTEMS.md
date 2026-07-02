@@ -323,8 +323,8 @@ arguments** the kernel bounds-checks; 64-bit values are split into lo/hi or pass
 
 ### 3.2 The projector
 
-`memcontainers/contracts/codegen/src/projector.rs` is a ~740-line, dependency-free Rust binary. Invoked
-as `projector --module <constants|mc|env|ctl|wire> --lang <rust|zig|ts|md|asyncapi>`, it parses a
+`memcontainers/contracts/codegen/src/projector.rs` is a dependency-free Rust binary. Invoked
+as `projector --module <constants|mc|env|ctl|wire|llb> --lang <rust|zig|ts|elixir|md|asyncapi|openapi>`, it parses a
 contract into a tiny KDL node model and walks it with a per-language emitter. Its design choices are
 deliberate:
 
@@ -338,9 +338,31 @@ deliberate:
 
 Per language: Rust gets a `&[&str]` names array, the macro table, and a `SYSCALL_CAPS` matrix; Zig gets
 a *descriptor data* array (it cannot generate callable externs — see §9.1); TypeScript gets `as const`
-arrays; Markdown gets a reference table; wire also emits AsyncAPI YAML.
+arrays; Elixir gets the server/Moltres codecs; Markdown gets a reference table; wire also emits AsyncAPI
+and OpenAPI YAML.
 
-### 3.3 How drift becomes impossible
+### 3.3 Typed messages and schema projections
+
+Rows describe callable ABI surfaces. **Messages** describe typed byte payloads that travel over those
+surfaces. A `message` node has a stable id, a version, and a closed set of fields (`str`, `bytes`,
+`strmap`, integers, booleans, and lists of other messages). The projector emits canonical binary codecs
+for Rust, Zig, TypeScript, and Elixir: little-endian numbers, declaration-order fields, explicit
+presence bits for optional fields, sorted maps, and fail-closed decoders (`WrongMessage`,
+`UnsupportedVersion`, `Truncated`, `TrailingBytes`, `InvalidUtf8`, `InvalidPresence`,
+`NonCanonicalMap`). `control.kdl` owns the host-control messages; `llb.kdl` owns the portable build
+graph messages.
+
+The REST surface can project a message instead of hand-copying its fields. `schema "Exec"` in `wire.kdl`
+derives from `message "ExecRequest"` in `control.kdl`, so the kernel control payload and the REST request
+body share one source declaration for `cmd`, `cwd`, `env`, and `stdin`. REST-specific shape differences
+are explicit `project` annotations: `cwd` keeps the public `Path` alias, `env` remains optional at the
+JSON edge while the binary message carries an empty map, and `stdin` has both UTF-8 text and base64
+presentations. The only local fields on the REST `Exec` schema are actual REST-only controls
+(`timeoutMs`, `maxTicks`). The OpenAPI projection marks derived properties with
+`x-agentos-source-field` and stdin encodings, and the projector rejects a local field that redeclares a
+projected source field.
+
+### 3.4 How drift becomes impossible
 
 The build wires four gates, so the contract cannot diverge from any consumer:
 
@@ -359,7 +381,7 @@ no path by which two sides of a boundary disagree silently. This is also the pro
 kernels interchangeable: because none of the kernels, hosts, shims, or clients *is* the source of truth,
 a Rust kernel, a Zig kernel, a Rust shim, a Rust server, and a TS client cannot drift.
 
-### 3.4 Versioning
+### 3.5 Versioning
 
 The ABI version is `(major << 16) | minor`, reported by `mc_sys_abi_version`. This worktree is **ABI
 1.7** with **57 syscalls**: 1.3 froze a 52-syscall base, 1.4 added the five `svc_*` service calls, 1.5
@@ -817,6 +839,16 @@ a documented exclusion. The interpreter additionally gets *behavioral vectors* (
 host-trap → suspend/resume, budget enforcement) so a future kernel — or any interpreter swap — is provably
 equivalent.
 
+`//memcontainers/conformance:conformance` is that broader gate. It walks the real shipped image tarballs
+(`minimal`, `posix`, `svc_test`, `atlas`, `paper`) and reads every embedded wasm module with the shared
+`wasm-imports` oracle, failing on any non-`mc` function import, undeclared syscall import, uncovered
+declared syscall without a documented exclusion, or stale exclusion whose syscall is now covered. It also
+pins the typed host-control messages as language-neutral vectors (`control_vectors.json`) consumed by both
+the Rust and TypeScript generated codecs: `ExecRequest`/`ExecOutcome`, `FileStat`, `DirEntries`,
+`SvcRequest`/`SvcResponse`, and `RelayEvent`, including malformed frames. Finally, it boots the real Rust
+kernel under the wasmtime host for runtime vectors over typed exec/stat/readdir/service calls, fuel
+re-parking, pcall trap unwind/resume, and fuel-ceiling termination.
+
 ---
 
 ## 10. Systems 14–17 — The userland
@@ -1061,6 +1093,16 @@ them as `SYSTEM_CALLER` with full caps and returns a bounded `[status][len][body
 buffer. Every export is looked up as an `Option` because the host loads the kernel at runtime and cannot
 know which exports a given artifact carries.
 
+The control channel has two generated layers. The export signatures (`mc_ctl_*`) are the fixed ABI over
+the shared scratch buffer; structured payloads inside that buffer are generated `message` codecs from
+`control.kdl`. `ExecRequest` is the canonical exec request: `cmd` still means `/bin/sh -c`, but `cwd`,
+`env`, and `stdin` are kernel-owned spawn facts, not strings the host rewrites into shell. The result is
+`ExecOutcome` with raw captured stdout/stderr bytes and the real exit code. Filesystem inspection returns
+`FileStat` and `DirEntries`; host-control resident-service calls use `SvcRequest`/`SvcResponse`; BEAM
+egress uses `RelayEvent`. This is deliberately the same model as the syscall table: adding a payload
+field updates the binary codec, OpenAPI projection, Rust host, JS host, Elixir edge, and conformance
+vectors from one contract edit, or the build fails.
+
 How effects are actually performed off-guest, all composing with the cooperative poll model:
 
 - **Network/TLS** — the denied capability returns `-1` everywhere (the real policy gate, not a mock); the
@@ -1172,7 +1214,33 @@ on-device WebGPU model — booting the cooperative `kernel.wasm` with OPFS persi
 headers (none are needed without `SharedArrayBuffer`). Real headless-Chrome CDP tests verify Luau,
 cross-reload OPFS durability, and document generation.
 
-### 13.5 The tool plane — one decision core, derived connections, live discovery
+### 13.5 The portable build plane
+
+The SDK also owns a build plane: a content-addressed image algebra for constructing VM images without an
+imperative "build script" hidden beside the graph. The grammar lives in `llb.kdl` and projects into the
+same canonical `message` codec family as control: a portable `Definition` is a DAG of `source`, `layer`,
+`write`, `mkdir`, `rm`, `chmod`, `symlink`, `copy`, `exec`, `merge`, `diff`, `image`, and `cache` nodes.
+`@mc/core` records or authors that DAG, serializes it with `toDefinition`, round-trips it with
+`fromDefinition`, and hashes each vertex over the kernel digest, resolved inputs, and full structured
+arguments. For `exec`, those arguments include the same `{cmd,cwd,env,stdin}` facts carried by
+`ExecRequest`; the build cache cannot ignore cwd/env/stdin without changing the digest.
+
+`solve` materializes a `Definition` by booting real VMs, applying each node, and committing real image
+layers or snapshots. Shared vertices are registered as in-flight promises before they await, so concurrent
+branches build once. Provenance is algebraic: layers carry producers, `merge` deduplicates by producer,
+`diff` subtracts ancestry and materializes only when trees are disjoint, and image config merges
+explicitly. A node is cacheable only when its output is a pure function of `(kernel, resolved inputs,
+args)`; warm snapshots wait for zero inflight egress before capture. The store is content-addressed
+across layer tarballs, blobs, manifests, and snapshots, with host-directory, in-memory, OPFS, and server
+backends behind the same interface.
+
+The same definition solves in every runtime. `solve-node.ts` is the Node/Bun platform backend; the
+browser path uses OPFS and is verified in headless Chromium; the server exposes `POST /v1/build` and raw
+blob endpoints so a remote backend can solve without the client sharing a filesystem. Build records attach
+`{definition, rootDigest, kernelDigest, storeRefs}` to the resulting image, so provenance is portable and
+attestable rather than an in-memory `BuildState`.
+
+### 13.6 The tool plane — one decision core, derived connections, live discovery
 
 The two host families must make *identical* tool-plane decisions, so the decision logic is **single-source
 by construction, not by parity test**. A `no_std` crate, `toolcore`, holds every consequential choice —

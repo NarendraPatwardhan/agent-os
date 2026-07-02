@@ -37,9 +37,13 @@ def abi_library(name, contract, langs):
 
         # The projector emits one (module, lang) to stdout. Deterministic: same inputs
         # → byte-identical output, so the diff gate below is stable (A7/B2).
+        projector_srcs = [contract]
+        if name == "wire":
+            projector_srcs.append("control.kdl")
+
         native.genrule(
             name = gen,
-            srcs = [contract],
+            srcs = projector_srcs,
             outs = [out],
             tools = ["//memcontainers/contracts/codegen:projector"],
             cmd = "$(location //memcontainers/contracts/codegen:projector) --module {m} --lang {l} --contract $(location {c}) > $@".format(

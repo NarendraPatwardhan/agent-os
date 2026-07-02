@@ -1,15 +1,89 @@
-# conformance — the ABI coverage gate (ported from memcontainers crates/conformance).
-# Derives the syscall surface from //memcontainers/contracts (the projected mc table) and walks every
-# guest's wasm import section (SYSTEMS.md):
-#   - SAFETY: no guest imports an undeclared `mc::` symbol.
-#   - COVERAGE: every declared syscall is imported by >=1 guest, or carries a documented
-#     exclusion.
-# The interpreter also gets BEHAVIORAL vectors (fuel exhaustion → re-park, host-trap →
-# suspend/resume, budget enforcement) so the Phase-B Zig kernel — and any future
-# interpreter swap — is provably equivalent.
-#
-# Phase A:
-#   load("@rules_rust//rust:defs.bzl", "rust_test")
-#   rust_test(name = "conformance", srcs = glob(["src/**/*.rs"]),
-#       deps = ["//memcontainers/contracts:mc_rust"],
-#       data = ["//memcontainers/images:base_tar"])     # walks the real guests in the real image (B1/B6).
+package(default_visibility = ["//visibility:public"])
+
+load("//bazel:rust_opt_test.bzl", "rust_opt_test")
+load("//bazel:ts.bzl", "mc_ts_project")
+load("@aspect_rules_js//js:defs.bzl", "js_test")
+
+exports_files(["control_vectors.json"])
+
+rust_opt_test(
+    name = "abi_test",
+    srcs = ["src/abi_test.rs"],
+    crate_root = "src/abi_test.rs",
+    edition = "2021",
+    size = "medium",
+    data = [
+        "//memcontainers/images:atlas",
+        "//memcontainers/images:minimal",
+        "//memcontainers/images:paper",
+        "//memcontainers/images:posix",
+        "//memcontainers/images:svc_test",
+    ],
+    deps = [
+        "//bazel/tools/wasm-imports:lib",
+        "//memcontainers/contracts:mc_rust",
+        "@rules_rust//rust/runfiles",
+    ],
+)
+
+rust_opt_test(
+    name = "control_vectors_rust_test",
+    srcs = ["src/control_vectors_test.rs"],
+    crate_root = "src/control_vectors_test.rs",
+    edition = "2021",
+    data = [":control_vectors.json"],
+    deps = [
+        "//memcontainers/contracts:ctl_rust",
+        "@host_crates//:serde_json",
+        "@rules_rust//rust/runfiles",
+    ],
+)
+
+rust_opt_test(
+    name = "runtime_test",
+    srcs = ["src/runtime_test.rs"],
+    crate_root = "src/runtime_test.rs",
+    edition = "2021",
+    size = "medium",
+    data = [
+        "//memcontainers/images:loom",
+        "//memcontainers/images:posix",
+        "//memcontainers/images:svc_test",
+        "//memcontainers/kernel/rust:kernel",
+    ],
+    deps = [
+        "//memcontainers/hosts/wasmtime:host",
+        "@rules_rust//rust/runfiles",
+    ],
+)
+
+mc_ts_project(
+    name = "control_vectors_ts_lib",
+    srcs = ["test/control_vectors.test.ts"],
+    deps = [
+        "//:node_modules/@types/bun",
+        "//memcontainers/contracts:ts",
+    ],
+)
+
+js_test(
+    name = "control_vectors_ts_test",
+    data = [
+        ":control_vectors.json",
+        ":control_vectors_ts_lib",
+    ],
+    entry_point = "test/control_vectors.test.js",
+    env = {
+        "MC_CONTROL_VECTORS": "$(rlocationpath :control_vectors.json)",
+    },
+)
+
+test_suite(
+    name = "conformance",
+    tests = [
+        ":abi_test",
+        ":control_vectors_rust_test",
+        ":control_vectors_ts_test",
+        ":runtime_test",
+    ],
+)

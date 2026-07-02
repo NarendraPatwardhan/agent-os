@@ -21,7 +21,7 @@
 //! Malformed input is data, not a crash: every fallible path returns [`Result`] so a
 //! truncated or non-wasm file surfaces as an error a build rule can report, never a panic.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Context, Result};
 use wasmparser::{Parser, Payload, TypeRef};
@@ -108,29 +108,38 @@ impl ImportedSymbols {
 /// `wasm`; a module importing the same function name twice (legal but odd) collapses to one
 /// entry. Returns an error — never panics — on a truncated or otherwise malformed binary.
 pub fn imported_function_symbols(wasm: &[u8], module: &str) -> Result<BTreeSet<String>> {
-    let mut names = BTreeSet::new();
+    Ok(imported_function_symbols_by_module(wasm)?
+        .remove(module)
+        .unwrap_or_default())
+}
+
+/// Every function import grouped by import module.
+///
+/// Conformance needs the full map, not only the `mc` subset: a guest importing
+/// from `wasi_snapshot_preview1` or `env` has leaked past the adapter boundary
+/// even if its `mc` imports are valid.
+pub fn imported_function_symbols_by_module(
+    wasm: &[u8],
+) -> Result<BTreeMap<String, BTreeSet<String>>> {
+    let mut modules: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
     for payload in Parser::new(0).parse_all(wasm) {
-        // A parse error here is a malformed/truncated wasm; surface it, don't unwrap.
         let payload = payload.context("parsing wasm payload")?;
         if let Payload::ImportSection(reader) = payload {
-            // `into_imports()` flattens every import-group encoding (single + the two
-            // compact forms) into individual `Import { module, name, ty }` entries, so we
-            // never have to match the grouping variants ourselves.
             for import in reader.into_imports() {
                 let import = import.context("reading an import entry")?;
-                // Functions only — a syscall/bridge surface is functions; table/memory/
-                // global imports from the same module are not part of it.
-                if matches!(import.ty, TypeRef::Func(_)) && import.module == module {
-                    names.insert(import.name.to_string());
+                if matches!(import.ty, TypeRef::Func(_)) {
+                    modules
+                        .entry(import.module.to_string())
+                        .or_default()
+                        .insert(import.name.to_string());
                 }
             }
-            // The import section is unique in a core module; once seen we are done.
             break;
         }
     }
 
-    Ok(names)
+    Ok(modules)
 }
 
 #[cfg(test)]
@@ -194,6 +203,23 @@ mod tests {
     }
 
     #[test]
+    fn groups_function_imports_by_module() {
+        let got = imported_function_symbols_by_module(&fixture_wasm()).unwrap();
+        assert_eq!(
+            got.get("mc").unwrap(),
+            &["sys_write"].iter().map(|s| s.to_string()).collect()
+        );
+        assert_eq!(
+            got.get("env").unwrap(),
+            &["now"].iter().map(|s| s.to_string()).collect()
+        );
+        assert!(
+            !got.get("mc").unwrap().contains("shared_mem"),
+            "non-function imports stay out of the grouped surface"
+        );
+    }
+
+    #[test]
     fn ignores_non_function_imports() {
         // `shared_mem` is a memory import from "mc"; it must never appear.
         let got = imported_function_symbols(&fixture_wasm(), "mc").unwrap();
@@ -240,5 +266,6 @@ mod tests {
 
         // Not a wasm file at all.
         assert!(imported_function_symbols(b"this is not wasm", "mc").is_err());
+        assert!(imported_function_symbols_by_module(b"this is not wasm").is_err());
     }
 }

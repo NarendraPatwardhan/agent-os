@@ -299,12 +299,11 @@ schema "Vm" kind="json" {
 schema "VmList" kind="json" {
   field "items" type="Vm[]" required=1
 }
-schema "Exec" kind="json" {
-  field "cmd" type="string" required=1
-  field "cwd" type="Path" required=0
-  field "env" type="StringMap" required=0
-  field "stdin" type="string" required=0
-  field "stdinBase64" type="string" required=0
+schema "Exec" kind="json" source="control.kdl" from-message="ExecRequest" {
+  project "cwd" from="cwd" type="Path"
+  project "env" from="env" required=0
+  project "stdin" from="stdin" type="string" encoding="utf8"
+  project "stdinBase64" from="stdin" type="string" encoding="base64"
   field "timeoutMs" type="u64" required=0
   field "maxTicks" type="u64" required=0
 }

@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "positive": [
+    {
+      "message": "ExecRequest",
+      "description": "structured exec request with cwd, sorted env, and binary stdin",
+      "hex": "010001140000007072696e74662024414c5048412026262063617401050000002f776f726b0200000005000000414c504841050000006669727374030000005a4544040000006c61737401090000007061796c6f61640a00"
+    },
+    {
+      "message": "ExecOutcome",
+      "description": "exec result with captured stdout and stderr",
+      "hex": "02000107000000040000006f75740a040000006572720a"
+    },
+    {
+      "message": "FileStat",
+      "description": "symlink metadata frame",
+      "hex": "0300013930000000000000000102000000ffa10000"
+    },
+    {
+      "message": "DirEntries",
+      "description": "directory listing with file, symlink, and directory entries",
+      "hex": "050001030000000e00000004000105000000612e74787400000d000000040001040000006c696e6b00010c000000040001030000007375620100"
+    },
+    {
+      "message": "SvcRequest",
+      "description": "host-control resident service request",
+      "hex": "060001020000006b761400000070757400616e7377657200666f7274792d74776f"
+    },
+    {
+      "message": "SvcResponse",
+      "description": "host-control resident service response",
+      "hex": "07000100000000020000003432"
+    },
+    {
+      "message": "RelayEvent",
+      "description": "BEAM relay host-call event with optional payload fields",
+      "hex": "08000109000000686f73745f63616c6c2a000000000109000000746f6f6c2e657865630104000000000102ff000000000000000001170000007368613235363a30313233343536373839616263646566"
+    }
+  ],
+  "negative": [
+    {
+      "message": "ExecRequest",
+      "name": "wrong-message-id",
+      "hex": "020001",
+      "error": "WrongMessage"
+    },
+    {
+      "message": "ExecRequest",
+      "name": "wrong-version",
+      "hex": "010002",
+      "error": "UnsupportedVersion"
+    },
+    {
+      "message": "ExecRequest",
+      "name": "non-canonical-env-map",
+      "hex": "01000103000000656e760002000000010000007a040000006c617374010000006105000000666972737400",
+      "error": "NonCanonicalMap"
+    },
+    {
+      "message": "ExecRequest",
+      "name": "trailing-byte",
+      "hex": "010001140000007072696e74662024414c5048412026262063617401050000002f776f726b0200000005000000414c504841050000006669727374030000005a4544040000006c61737401090000007061796c6f61640a0000",
+      "error": "TrailingBytes"
+    }
+  ]
+}

@@ -79,6 +79,18 @@ rust_test(
     ],
 )
 
+rust_test(
+    name = "wire_projection_test",
+    srcs = ["test/wire_projection_test.rs"],
+    edition = "2021",
+    data = [
+        "control.kdl",
+        "gen/wire.gen.openapi.yaml",
+        "wire.kdl",
+    ],
+    deps = ["@rules_rust//rust/runfiles"],
+)
+
 # @mc/contracts — the generated descriptors as a linkable workspace package, so @mc/host and @mc/core
 # import the contract (BRIDGE_IMPORTS / CONTROL_EXPORTS / errnos / tier ordinals) BY NAME with no deep
 # relative reach into gen/. One subpath export per descriptor (see package.json).
