@@ -2,6 +2,7 @@ packages:
   - "memcontainers/contracts"
   - "memcontainers/hosts/js"
   - "memcontainers/sdk-js/core"
+  - "memcontainers/sdk-js/elements"
   - "web"
 
 # No dependency runs install/build scripts today. Declare the empty allow-set explicitly:

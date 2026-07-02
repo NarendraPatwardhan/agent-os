@@ -9,6 +9,7 @@ exports_files([
     "syscalls.kdl",
     "bridge.kdl",
     "control.kdl",
+    "llb.kdl",
     "wire.kdl",
     "constants.kdl",
     # The projected zig descriptor table — //bazel/tools/mc-abi-gate gates mc.zig's hand-kept externs
@@ -30,17 +31,20 @@ filegroup(
 # ---------------------------------------------------------------------------
 load("//memcontainers/contracts/codegen:defs.bzl", "abi_library")
 
-abi_library(name = "constants", contract = "constants.kdl", langs = ["rust", "zig", "ts"])
+abi_library(name = "constants", contract = "constants.kdl", langs = ["rust", "zig", "ts", "elixir"])
 abi_library(name = "mc", contract = "syscalls.kdl", langs = ["rust", "zig", "ts", "md"])
 abi_library(name = "env", contract = "bridge.kdl", langs = ["rust", "zig", "ts"])
-abi_library(name = "ctl", contract = "control.kdl", langs = ["rust", "zig", "ts"])
+abi_library(name = "ctl", contract = "control.kdl", langs = ["rust", "zig", "ts", "elixir"])
 abi_library(name = "wire", contract = "wire.kdl", langs = ["rust", "ts", "asyncapi", "openapi"])
+abi_library(name = "llb", contract = "llb.kdl", langs = ["rust", "zig", "ts", "elixir"])
 
 # The generated TS descriptors compiled into ONE consumable lib — the JS host (hosts/js) and @mc/core
 # wire their `env` bridge + `mc_ctl_*` export lookup from these (BRIDGE_IMPORTS / CONTROL_EXPORTS /
 # constants), so the boundary the kernel + Rust host derive from is the one the JS side derives from
 # too (B2, no drift). The committed gen/*.gen.ts are kept fresh by the abi_library diff gates above.
 load("//bazel:ts.bzl", "mc_ts_project")
+load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("@rules_rust//rust:defs.bzl", "rust_test")
 
 mc_ts_project(
     name = "ts",
@@ -48,7 +52,30 @@ mc_ts_project(
         "gen/constants.gen.ts",
         "gen/ctl.gen.ts",
         "gen/env.gen.ts",
+        "gen/llb.gen.ts",
         "gen/wire.gen.ts",
+    ],
+)
+
+mc_ts_project(
+    name = "codec_test_lib",
+    srcs = ["test/codec.test.ts"],
+    deps = [":ts"],
+)
+
+js_test(
+    name = "codec_test",
+    data = [":codec_test_lib"],
+    entry_point = "test/codec.test.js",
+)
+
+rust_test(
+    name = "codec_rust_test",
+    srcs = ["test/codec_test.rs"],
+    edition = "2021",
+    deps = [
+        ":ctl_rust",
+        ":llb_rust",
     ],
 )
 

@@ -68,6 +68,7 @@ js_test(
         ":github_issues_fixture",
         ":graphql_introspection_fixture",
         "//memcontainers/kernel/rust:kernel",
+        "//memcontainers/images:atlas",
         "//memcontainers/images:base",
         "//memcontainers/images:loom",
         "//memcontainers/lib/catalog-compiler:wasm",
@@ -75,10 +76,36 @@ js_test(
     entry_point = "test/vm.test.js",
     env = {
         "MC_KERNEL_WASM": "$(rlocationpath //memcontainers/kernel/rust:kernel)",
+        "MC_ATLAS_IMAGE": "$(rlocationpath //memcontainers/images:atlas)",
         "MC_BASE_IMAGE": "$(rlocationpath //memcontainers/images:base)",
         "MC_LOOM_IMAGE": "$(rlocationpath //memcontainers/images:loom)",
         "MC_CATALOG_COMPILER_WASM": "$(rlocationpath //memcontainers/lib/catalog-compiler:wasm)",
         "MC_GITHUB_FIXTURE": "$(rlocationpath :github_issues_fixture)",
         "MC_GRAPHQL_FIXTURE": "$(rlocationpath :graphql_introspection_fixture)",
+    },
+)
+
+# Design-doc browser build gate: solve the same canonical LLB Definition in
+# headless Chromium using OPFS and compare the root digest to the Bun solve.
+mc_ts_project(
+    name = "browser_opfs_test_lib",
+    srcs = ["test/browser_opfs.test.ts"],
+    deps = [
+        ":lib",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+js_test(
+    name = "browser_opfs_test",
+    data = [
+        ":browser_opfs_test_lib",
+        "//memcontainers/images:base",
+        "//memcontainers/kernel/rust:kernel",
+    ],
+    entry_point = "test/browser_opfs.test.js",
+    env = {
+        "MC_KERNEL_WASM": "$(rlocationpath //memcontainers/kernel/rust:kernel)",
+        "MC_BASE_IMAGE": "$(rlocationpath //memcontainers/images:base)",
     },
 )

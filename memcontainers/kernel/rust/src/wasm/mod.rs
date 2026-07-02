@@ -3325,8 +3325,9 @@ impl GuestProgram {
         Fulfilled::Resume(ESUCCESS)
     }
 
-    /// Build the child's stdin from the parent's `fd`: a pipe read end is
-    /// shared; `0` inherits the parent's own stdin (a pipe or empty).
+    /// Build the child's stdin from the parent's `fd`: a pipe/file/net fd is
+    /// shared; `0` inherits the parent's own stdin when it is inheritable
+    /// (pipe or control-channel byte stream), otherwise empty.
     /// Invalid or non-readable fds return EBADF instead of silently changing
     /// the child's stdio wiring.
     fn dup_read_source(&self, ctx: &BuiltinCtx<'_>, fd: i32) -> Result<Box<dyn ReadSource>, i32> {
@@ -3341,10 +3342,8 @@ impl GuestProgram {
             }
             return Err(EBADF);
         } else if fd == 0 {
-            if let Some(p) = ctx.stdin.block_handle() {
-                return Ok(Box::new(PipeSource::new(unsafe {
-                    &*(p as *const crate::ipc::Pipe)
-                })));
+            if let Some(src) = ctx.stdin.inherit_for_child() {
+                return Ok(src);
             }
             return Ok(Box::new(EmptySource));
         }

@@ -13,17 +13,33 @@
 # loaded at runtime by AgentOS.Host.Nif — Bazel builds the release .so, mix never
 # compiles it.
 load("//bazel:elixir_transition.bzl", "elixir_file", "elixir_test")
+load("@aspect_bazel_lib//lib:write_source_files.bzl", "write_source_files")
 load("@rules_elixir//:defs.bzl", "mix_library", "mix_test")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 
 _ELIXIR_ONLY = ["@erlang_config//:erlang_26_2"]
+_SERVER_SRCS = glob(["lib/**/*.ex"])
+_PACKAGE_SRCS = glob(
+    ["lib/**/*.ex"],
+    exclude = ["lib/agent_os/contracts/*.ex"],
+)
+
+write_source_files(
+    name = "agent_os_contracts_sync",
+    files = {
+        "lib/agent_os/contracts/constants.ex": "//memcontainers/contracts:constants_elixir_gen",
+        "lib/agent_os/contracts/control.ex": "//memcontainers/contracts:ctl_elixir_gen",
+        "lib/agent_os/contracts/llb.ex": "//memcontainers/contracts:llb_elixir_gen",
+    },
+    visibility = ["//visibility:public"],
+)
 
 # Production library — `mix compile` into the agent_os app, with the NIF cdylib staged in priv/.
 mix_library(
     name = "lib",
     app_name = "agent_os",
     mix_config = ":mix.exs",
-    srcs = glob(["lib/**/*.ex"]),
+    srcs = _SERVER_SRCS,
     priv = ["//memcontainers/hosts/wasmtime/nif:host_nif_release"],  # libhost_nif.so -> priv/
     tags = ["manual"],
     target_compatible_with = _ELIXIR_ONLY,
@@ -36,7 +52,7 @@ mix_library(
     app_name = "agent_os",
     mix_env = "test",
     mix_config = ":mix.exs",
-    srcs = glob(["lib/**/*.ex"]),
+    srcs = _SERVER_SRCS,
     priv = ["//memcontainers/hosts/wasmtime/nif:host_nif_release"],
     tags = ["manual"],
     target_compatible_with = _ELIXIR_ONLY,
@@ -95,10 +111,29 @@ pkg_tar(
         "lib/agent_os": "0755",
         "lib/agent_os/host": "0755",
     },
-    srcs = ["mix.exs"] + glob(["lib/**/*.ex"]),
+    srcs = ["mix.exs"] + _PACKAGE_SRCS,
     owner = "0.0",
     package_dir = "agent_os",
     strip_prefix = ".",
+    tags = ["manual"],
+    target_compatible_with = _ELIXIR_ONLY,
+)
+
+pkg_tar(
+    name = "agent_os_package_contracts",
+    files = {
+        "//memcontainers/contracts:constants_elixir_gen": "lib/agent_os/contracts/constants.ex",
+        "//memcontainers/contracts:ctl_elixir_gen": "lib/agent_os/contracts/control.ex",
+        "//memcontainers/contracts:llb_elixir_gen": "lib/agent_os/contracts/llb.ex",
+    },
+    mode = "0644",
+    modes = {
+        "lib": "0755",
+        "lib/agent_os": "0755",
+        "lib/agent_os/contracts": "0755",
+    },
+    owner = "0.0",
+    package_dir = "agent_os",
     tags = ["manual"],
     target_compatible_with = _ELIXIR_ONLY,
 )
@@ -141,6 +176,7 @@ pkg_tar(
         "agent_os": "0755",
         "agent_os/lib": "0755",
         "agent_os/lib/agent_os": "0755",
+        "agent_os/lib/agent_os/contracts": "0755",
         "agent_os/lib/agent_os/host": "0755",
         "agent_os/priv": "0755",
         "agent_os/priv/images": "0755",
@@ -151,6 +187,7 @@ pkg_tar(
     target_compatible_with = _ELIXIR_ONLY,
     deps = [
         ":agent_os_package_nif",
+        ":agent_os_package_contracts",
         ":agent_os_package_runtime",
         ":agent_os_package_src",
     ],

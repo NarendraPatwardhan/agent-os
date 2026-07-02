@@ -47,6 +47,57 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SnapshotUpload"
+  "/v1/blobs":
+    post:
+      operationId: "post_v1_blobs"
+      summary: "Store arbitrary content-addressed bytes in the server build store. LLB write ops reference these blobs by sha256 digest."
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              $ref: "#/components/schemas/Bytes"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BlobUpload"
+  "/v1/blobs/{digest}":
+    get:
+      operationId: "get_v1_blobs_digest"
+      summary: "Read arbitrary content-addressed bytes from the server build store by sha256 digest."
+      parameters:
+        - name: "digest"
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/octet-stream:
+              schema:
+                $ref: "#/components/schemas/Bytes"
+  "/v1/build":
+    post:
+      operationId: "post_v1_build"
+      summary: "Solve a canonical llb.Definition on the server, next to the content store and wasmtime host, and return the root image manifest reference."
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              $ref: "#/components/schemas/BuildDefinitionBytes"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BuildResult"
   "/v1/vms":
     get:
       operationId: "get_v1_vms"
@@ -268,6 +319,34 @@ paths:
             application/octet-stream:
               schema:
                 $ref: "#/components/schemas/Bytes"
+  "/v1/vms/{id}/svc/{service}":
+    post:
+      operationId: "post_v1_vms_id_svc_service"
+      summary: "Call a resident service as host control through the kernel service channel. Request and response bodies are the service's raw framed bytes; a framed non-zero status is surfaced as an error."
+      parameters:
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "service"
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              $ref: "#/components/schemas/Bytes"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/octet-stream:
+              schema:
+                $ref: "#/components/schemas/Bytes"
   "/v1/vms/{id}/fs/files":
     get:
       operationId: "get_v1_vms_id_fs_files"
@@ -410,6 +489,35 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/FsMkdir"
+  "/v1/vms/{id}/fs/mode":
+    put:
+      operationId: "put_v1_vms_id_fs_mode"
+      summary: "Set POSIX permission bits for a VM path."
+      parameters:
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "path"
+          in: query
+          required: true
+          schema:
+            type: string
+            x-agentos-type: "Path"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FsChmod"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FsChmodResult"
   "/v1/vms/{id}/fs/symlinks":
     put:
       operationId: "put_v1_vms_id_fs_symlinks"
@@ -742,6 +850,141 @@ components:
         "size":
           type: integer
           format: int64
+    "BlobUpload":
+      type: object
+      required:
+        - "digest"
+        - "size"
+      properties:
+        "digest":
+          type: string
+          x-agentos-type: "Digest"
+        "size":
+          type: integer
+          format: int64
+    "BuildResult":
+      type: object
+      required:
+        - "definitionDigest"
+        - "rootDigest"
+        - "kernelDigest"
+        - "manifestRef"
+        - "image"
+        - "layers"
+      properties:
+        "definitionDigest":
+          type: string
+          x-agentos-type: "Digest"
+        "rootDigest":
+          type: string
+          x-agentos-type: "Digest"
+        "kernelDigest":
+          type: string
+          x-agentos-type: "Digest"
+        "manifestRef":
+          type: string
+          x-agentos-type: "ManifestRef"
+        "image":
+          $ref: "#/components/schemas/ImageManifest"
+        "layers":
+          type: array
+          items:
+            $ref: "#/components/schemas/ImageLayer"
+    "ImageManifest":
+      type: object
+      required:
+        - "schema"
+        - "layers"
+        - "config"
+      properties:
+        "schema":
+          type: integer
+          format: int32
+        "layers":
+          type: array
+          items:
+            $ref: "#/components/schemas/ImageLayer"
+        "config":
+          $ref: "#/components/schemas/ImageConfig"
+        "build":
+          $ref: "#/components/schemas/BuildRecord"
+    "ImageLayer":
+      type: object
+      required:
+        - "digest"
+        - "size"
+      properties:
+        "digest":
+          type: string
+          x-agentos-type: "Digest"
+        "size":
+          type: integer
+          format: int64
+    "ImageConfig":
+      type: object
+      properties:
+        "tier":
+          type: string
+        "budgetMib":
+          type: integer
+          format: int32
+        "fuel":
+          type: integer
+          format: int32
+    "BuildRecord":
+      type: object
+      required:
+        - "schema"
+        - "definition"
+        - "rootDigest"
+        - "kernelDigest"
+        - "storeRefs"
+      properties:
+        "schema":
+          type: integer
+          format: int32
+        "definition":
+          $ref: "#/components/schemas/BuildRecordDefinition"
+        "rootDigest":
+          type: string
+          x-agentos-type: "Digest"
+        "kernelDigest":
+          type: string
+          x-agentos-type: "Digest"
+        "storeRefs":
+          $ref: "#/components/schemas/BuildStoreRefs"
+    "BuildRecordDefinition":
+      type: object
+      required:
+        - "encoding"
+        - "digest"
+        - "bytes"
+      properties:
+        "encoding":
+          type: string
+        "digest":
+          type: string
+          x-agentos-type: "Digest"
+        "bytes":
+          type: array
+          items:
+            type: integer
+            format: int32
+    "BuildStoreRefs":
+      type: object
+      required:
+        - "layers"
+        - "blobs"
+      properties:
+        "layers":
+          type: array
+          items:
+            $ref: "#/components/schemas/ImageLayer"
+        "blobs":
+          type: array
+          items:
+            type: string
+            x-agentos-type: "Digest"
     "SnapshotRefObject":
       type: object
       required:
@@ -850,6 +1093,8 @@ components:
             type: string
         "stdin":
           type: string
+        "stdinBase64":
+          type: string
         "timeoutMs":
           type: integer
           format: int64
@@ -940,6 +1185,21 @@ components:
           items:
             $ref: "#/components/schemas/FsStat"
     "FsMkdir":
+      type: object
+      required:
+        - "ok"
+      properties:
+        "ok":
+          type: boolean
+    "FsChmod":
+      type: object
+      required:
+        - "mode"
+      properties:
+        "mode":
+          type: integer
+          format: int32
+    "FsChmodResult":
       type: object
       required:
         - "ok"
@@ -1038,6 +1298,10 @@ components:
       format: binary
     "Bytes":
       description: "Raw bytes. The REST API does not base64-encode file, stdout, snapshot, or layer payloads."
+      type: string
+      format: binary
+    "BuildDefinitionBytes":
+      description: "Canonical encoded llb.Definition bytes."
       type: string
       format: binary
     "WireSocket":

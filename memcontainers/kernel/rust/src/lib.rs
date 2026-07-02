@@ -27,6 +27,10 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::{RefCell, UnsafeCell};
+use ctl_rust::{
+    DirEntries as CtlDirEntries, DirEntry as CtlDirEntry, ExecOutcome, ExecRequest,
+    FileStat as CtlFileStat, SvcRequest as CtlSvcRequest, SvcResponse as CtlSvcResponse,
+};
 
 use fs::ProcFs;
 use shell::{
@@ -36,8 +40,8 @@ use shell::{
 use task::{Scheduler, TaskId, TaskState};
 use vfs::{KPath, Namespace, NodeType, OpenFlags};
 use wasm::abi::{
-    errno_from_fs, EAGAIN, EINVAL, EIO, ENOENT, ESUCCESS, ETIMEDOUT, SERVICE_MARKER, SIGHUP,
-    SIGINT, SIGTSTP,
+    errno_from_fs, EAGAIN, EINVAL, EIO, ENOENT, ENOTDIR, ESUCCESS, ETIMEDOUT, SERVICE_MARKER,
+    SIGHUP, SIGINT, SIGTSTP,
 };
 
 // ---------- ForegroundJob (the rescue shell) ----------
@@ -69,6 +73,9 @@ struct ForegroundJob {
     /// The shell's cwd as this job sees it (a `cd` in the line mutates this;
     /// the interactive shell copies it back to the real cwd on completion).
     cwd: String,
+    /// Optional inherited stdin for host-control rescue exec. Interactive
+    /// foreground jobs leave this empty and read from the console pipe instead.
+    stdin: Option<Box<dyn io::ReadSource>>,
 }
 
 /// Lifecycle of the current stage within a [`ForegroundJob`].
@@ -105,6 +112,7 @@ fn make_foreground(
     line: &str,
     last_status: i32,
     cwd: String,
+    stdin: Option<Box<dyn io::ReadSource>>,
 ) -> Result<Option<ForegroundJob>, String> {
     let seq = match parse_line(line) {
         Some(s) => s,
@@ -120,6 +128,7 @@ fn make_foreground(
         last_status,
         pending_sep: Sep::Then,
         cwd,
+        stdin,
     }))
 }
 
@@ -138,7 +147,10 @@ enum CtlBody {
     /// A `/bin/sh -c "<cmd>"` guest task (the unified shell path).
     Guest { pid: TaskId },
     /// The in-kernel rescue executor (used when `/bin/sh` is unavailable).
-    Rescue(ForegroundJob),
+    Rescue {
+        fg: ForegroundJob,
+        env: BTreeMap<String, String>,
+    },
     /// Already finished (empty command / parse error).
     Done,
 }
@@ -1269,7 +1281,11 @@ pub(crate) fn mc_tick() -> i32 {
                             job.done = true;
                         }
                     }
-                    CtlBody::Rescue(fg) => {
+                    CtlBody::Rescue { fg, env } => {
+                        let path = env
+                            .get("PATH")
+                            .cloned()
+                            .unwrap_or_else(|| String::from("/bin:/usr/bin"));
                         if advance_foreground(
                             fg,
                             scheduler,
@@ -1277,12 +1293,11 @@ pub(crate) fn mc_tick() -> i32 {
                             executor,
                             engine,
                             &path,
-                            STATE.env(),
+                            env,
                             Some(&job.cap),
                         ) {
                             job.done = true;
                             job.exit_code = fg.last_status;
-                            *STATE.cwd() = fg.cwd.clone();
                         }
                     }
                     CtlBody::Done => {
@@ -1463,7 +1478,7 @@ unsafe fn submit_user_line(
 ) -> bool {
     let cwd = unsafe { STATE.cwd().clone() };
     let last = unsafe { *STATE.last_status() };
-    let mut fg = match make_foreground(line, last, cwd) {
+    let mut fg = match make_foreground(line, last, cwd, None) {
         Ok(Some(fg)) => fg,
         Ok(None) => return false,
         Err(e) => {
@@ -1695,9 +1710,17 @@ fn run_stage(
     }
 
     let submit_result = match capture {
-        Some(c) => {
-            submit_pipeline_captured(scheduler, ns, executor, engine, path, &fg.cwd, pipeline, c)
-        }
+        Some(c) => submit_pipeline_captured(
+            scheduler,
+            ns,
+            executor,
+            engine,
+            path,
+            &fg.cwd,
+            pipeline,
+            c,
+            fg.stdin.as_ref().and_then(|s| s.inherit_for_child()),
+        ),
         None => submit_pipeline(scheduler, ns, executor, engine, path, &fg.cwd, pipeline),
     };
     match submit_result {
@@ -1872,6 +1895,30 @@ pub(crate) fn mc_ctl_read(path_ptr: u32, path_len: u32) -> i32 {
     }
 }
 
+/// Read the target text of a symlink without following it. The path is in the
+/// control buffer at `[path_ptr..path_ptr+path_len]`; on success the buffer is
+/// replaced with the UTF-8 target bytes.
+pub(crate) fn mc_ctl_readlink(path_ptr: u32, path_len: u32) -> i32 {
+    let _bkl = sync::lock_kernel();
+    unsafe {
+        if !STATE.is_initialized() {
+            return -EIO;
+        }
+        let path = match ctl_str(path_ptr, path_len) {
+            Some(p) => p,
+            None => return -EINVAL,
+        };
+        let target = match STATE.ns().readlink(&KPath::new(&path)) {
+            Ok(target) => target,
+            Err(e) => return ctl_neg_errno(e),
+        };
+        let out = target.into_bytes();
+        let len = out.len() as i32;
+        *CTL_BUFFER.get() = out;
+        len
+    }
+}
+
 /// Serialize the root CoW overlay's writable diff into a content-addressed `.tar`
 /// layer (the `commit` primitive — inverse of `tarfs`): write the bytes to
 /// the control buffer and return their length. `-EINVAL` if root isn't an overlay,
@@ -1930,9 +1977,8 @@ pub(crate) fn mc_ctl_write(path_ptr: u32, path_len: u32, data_ptr: u32, data_len
 }
 
 /// List a directory. The path is in the control buffer. On success the buffer
-/// is REPLACED with a sequence of entries — each `name` bytes, a NUL, then one
-/// kind byte (`b'd'` for a directory, `b'f'` otherwise) — and the total length
-/// is returned; otherwise a negative errno.
+/// is replaced with an encoded [`CtlDirEntries`] frame and the total length is
+/// returned; otherwise a negative errno.
 pub(crate) fn mc_ctl_readdir(path_ptr: u32, path_len: u32) -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
@@ -1947,25 +1993,26 @@ pub(crate) fn mc_ctl_readdir(path_ptr: u32, path_len: u32) -> i32 {
             Ok(e) => e,
             Err(e) => return ctl_neg_errno(e),
         };
-        let mut out = Vec::new();
-        for e in entries {
-            out.extend_from_slice(e.name.as_bytes());
-            out.push(0);
-            out.push(match e.node_type {
-                NodeType::Dir => b'd',
-                NodeType::File => b'f',
-                NodeType::Symlink => b'l',
-            });
+        let out = CtlDirEntries {
+            entries: entries
+                .into_iter()
+                .map(|e| CtlDirEntry {
+                    name: e.name,
+                    is_dir: matches!(e.node_type, NodeType::Dir),
+                    is_symlink: matches!(e.node_type, NodeType::Symlink),
+                })
+                .collect(),
         }
+        .encode();
         let len = out.len() as i32;
         *CTL_BUFFER.get() = out;
         len
     }
 }
 
-/// Stat a path. On success the buffer is REPLACED with a 16-byte record —
-/// `size: u64` (LE), `kind: u32` (1 = dir, 0 = file, 2 = symlink), `nlink: u32`
-/// — and 16 is returned; otherwise a negative errno.
+/// Stat a path. On success the buffer is replaced with an encoded
+/// [`CtlFileStat`] frame and its byte length is returned; otherwise a negative
+/// errno.
 pub(crate) fn mc_ctl_stat(path_ptr: u32, path_len: u32) -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
@@ -1986,17 +2033,20 @@ pub(crate) fn mc_ctl_stat(path_ptr: u32, path_len: u32) -> i32 {
             Err(vfs::FsError::WouldBlock) => return -EAGAIN,
             Err(e) => return ctl_neg_errno(e),
         };
-        let kind: u32 = match md.node_type {
-            NodeType::Dir => 1,
-            NodeType::File => 0,
-            NodeType::Symlink => 2,
-        };
-        let mut out = Vec::with_capacity(16);
-        out.extend_from_slice(&md.size.to_le_bytes());
-        out.extend_from_slice(&kind.to_le_bytes());
-        out.extend_from_slice(&md.nlink.to_le_bytes());
+        if md.size > i64::MAX as u64 {
+            return -EINVAL;
+        }
+        let out = CtlFileStat {
+            size: md.size as i64,
+            is_dir: matches!(md.node_type, NodeType::Dir),
+            is_symlink: matches!(md.node_type, NodeType::Symlink),
+            nlink: md.nlink,
+            mode: md.mode as u32,
+        }
+        .encode();
+        let len = out.len() as i32;
         *CTL_BUFFER.get() = out;
-        16
+        len
     }
 }
 
@@ -2030,6 +2080,27 @@ pub(crate) fn mc_ctl_unlink(path_ptr: u32, path_len: u32) -> i32 {
             None => return -EINVAL,
         };
         match STATE.ns().unlink(vfs::SYSTEM_CALLER, &KPath::new(&path)) {
+            Ok(()) => 0,
+            Err(e) => ctl_neg_errno(e),
+        }
+    }
+}
+
+/// Set POSIX permission bits. Returns 0 or a negative errno.
+pub(crate) fn mc_ctl_chmod(path_ptr: u32, path_len: u32, mode: u32) -> i32 {
+    let _bkl = sync::lock_kernel();
+    if mode > 0o7777 {
+        return -EINVAL;
+    }
+    unsafe {
+        if !STATE.is_initialized() {
+            return -EIO;
+        }
+        let path = match ctl_str(path_ptr, path_len) {
+            Some(p) => p,
+            None => return -EINVAL,
+        };
+        match STATE.ns().set_mode(&KPath::new(&path), mode as u16) {
             Ok(()) => 0,
             Err(e) => ctl_neg_errno(e),
         }
@@ -2272,33 +2343,35 @@ fn close_ctl_svc_job(job: CtlSvcJob) {
     }
 }
 
-pub(crate) fn mc_ctl_svc_call_start(
-    name_ptr: u32,
-    name_len: u32,
-    req_ptr: u32,
-    req_len: u32,
-) -> i32 {
+pub(crate) fn mc_ctl_svc_call_start(request_len: u32) -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
         if !STATE.is_initialized() {
             return -EIO;
         }
-        let name = match ctl_str(name_ptr, name_len) {
-            Some(name) if fs::servicefs::valid_service_name(&name) => name,
-            _ => return -EINVAL,
-        };
-        if req_len as usize > fs::servicefs::MAX_SVC_REQUEST_BYTES {
-            return -EINVAL;
-        }
-        let req = match ctl_bytes(req_ptr, req_len) {
-            Some(req) => req,
+        let frame = match ctl_bytes(0, request_len) {
+            Some(frame) => frame,
             None => return -EINVAL,
         };
+        let req = match CtlSvcRequest::decode(&frame) {
+            Ok(req) => req,
+            Err(_) => return -EINVAL,
+        };
+        let name = match req.service {
+            name if fs::servicefs::valid_service_name(&name) => name,
+            _ => return -EINVAL,
+        };
+        if req.request.len() > fs::servicefs::MAX_SVC_REQUEST_BYTES {
+            return -EINVAL;
+        }
         let id = STATE.alloc_ctl_id();
         STATE.ctl_svc_jobs().insert(
             id,
             CtlSvcJob {
-                state: CtlSvcState::Connecting { name, req },
+                state: CtlSvcState::Connecting {
+                    name,
+                    req: req.request,
+                },
             },
         );
         id as i32
@@ -2319,12 +2392,10 @@ pub(crate) fn mc_ctl_svc_call_poll(job_id: u32) -> i32 {
         let CtlSvcState::Done { status, out } = job.state else {
             return -EIO;
         };
-        let mut framed = Vec::with_capacity(8 + out.len());
-        framed.extend_from_slice(&status.to_le_bytes());
-        framed.extend_from_slice(&(out.len() as u32).to_le_bytes());
-        framed.extend_from_slice(&out);
+        let framed = CtlSvcResponse { status, body: out }.encode();
+        let len = framed.len() as i32;
         *CTL_BUFFER.get() = framed;
-        1
+        len
     }
 }
 
@@ -2357,28 +2428,49 @@ unsafe fn ctl_finish_immediate(exit_code: i32, cap: OutputCapture) -> i32 {
     }
 }
 
+unsafe fn resolve_exec_cwd(requested: Option<&str>) -> Result<String, i32> {
+    unsafe {
+        match requested {
+            Some(cwd) => {
+                let path = builtins::fs::resolve_path(STATE.cwd(), cwd);
+                match STATE.ns().stat(&path) {
+                    Ok(md) if md.node_type == NodeType::Dir => Ok(String::from(path.as_str())),
+                    Ok(_) | Err(vfs::FsError::NotDir) => Err(-ENOTDIR),
+                    Err(vfs::FsError::NotFound) => Err(-ENOENT),
+                    Err(e) => Err(ctl_neg_errno(e)),
+                }
+            }
+            None => Ok(STATE.cwd().clone()),
+        }
+    }
+}
+
 /// Spawn `/bin/sh -c "<cmd>"` as a guest task with stdout/stderr captured into
 /// `cap`. Returns its pid, or `None` if `/bin/sh` can't be loaded.
-unsafe fn spawn_ctl_sh(cmd: &str, cap: &OutputCapture) -> Option<TaskId> {
+unsafe fn spawn_ctl_sh(
+    cmd: &str,
+    cwd: &str,
+    env: &BTreeMap<String, String>,
+    stdin: Option<&[u8]>,
+    cap: &OutputCapture,
+) -> Option<TaskId> {
     unsafe {
         let sched = STATE.scheduler();
         let ns = STATE.ns();
         let engine = STATE.guest_runtime();
-        let path: String = STATE
-            .env()
+        let path: String = env
             .get("PATH")
             .cloned()
             .unwrap_or_else(|| String::from("/bin:/usr/bin"));
-        let bytes = wasm::resolve_program(ns, "/home/user", "sh", &path)?;
+        let bytes = wasm::resolve_program(ns, cwd, "sh", &path)?;
         let argv = alloc::vec![String::from("sh"), String::from("-c"), String::from(cmd)];
         let prog = wasm::GuestProgram::load(engine, &bytes, argv.clone(), &path).ok()?;
-        let cwd = STATE.cwd().clone();
         let pid = sched.spawn(
             Some(1),
             String::from("sh"),
             String::from("sh"),
             argv[1..].to_vec(),
-            cwd.clone(),
+            String::from(cwd),
         );
         // A structured operator exec is not the interactive foreground job.
         // Keep it out of the terminal's foreground process group so Ctrl-C /
@@ -2386,11 +2478,12 @@ unsafe fn spawn_ctl_sh(cmd: &str, cap: &OutputCapture) -> Option<TaskId> {
         sched.set_pgid(pid, 0);
         let task = sched.get_task(pid).expect("spawned ctl sh");
         task.set_namespace(ns.fork(pid));
-        // Seed this control-channel command's env from the LIVE boot env
-        // (`STATE.env`), not pid 1's copy frozen at boot — so a value the host
-        // injected after boot (e.g. `vm.fs.write("/env/CEREBRAS_API_KEY", key)`)
-        // is visible to this command and the children it spawns.
-        task.env_mut().clone_from(STATE.env());
+        // Seed this control-channel command from the decoded ExecRequest context:
+        // live boot env overlaid by request env, explicit cwd, and optional stdin.
+        task.env_mut().clone_from(env);
+        if let Some(stdin) = stdin {
+            task.set_stdin(Box::new(io::BytesSource::new(stdin.to_vec())));
+        }
         task.set_stdout(Box::new(io::CaptureSink(cap.stdout.clone())));
         task.set_stderr(Box::new(io::CaptureSink(cap.stderr.clone())));
         task.set_program(Box::new(prog));
@@ -2403,7 +2496,7 @@ unsafe fn spawn_ctl_sh(cmd: &str, cap: &OutputCapture) -> Option<TaskId> {
             parent_root,
             wasm::declared_tier(&bytes),
             None,
-            &cwd,
+            cwd,
         );
         sched.set_task_policy(pid, caps, root);
         Some(pid)
@@ -2421,25 +2514,38 @@ fn task_subtree(scheduler: &Scheduler, root: TaskId) -> Vec<TaskId> {
     pids
 }
 
-/// Begin a host-initiated exec. The command line is in the control buffer at
-/// `[0..cmd_len]`. Returns a job id (> 0) or a negative errno; drive ticks and
+/// Begin a host-initiated exec. An `ExecRequest` is in the control buffer at
+/// `[0..request_len]`. Returns a job id (> 0) or a negative errno; drive ticks and
 /// `mc_ctl_exec_poll` until the job reports done.
-pub(crate) fn mc_ctl_exec_start(cmd_len: u32) -> i32 {
+pub(crate) fn mc_ctl_exec_start(request_len: u32) -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
         if !STATE.is_initialized() {
             return -EIO;
         }
-        let cmd = match ctl_str(0, cmd_len) {
-            Some(c) => c,
+        let req_bytes = match ctl_bytes(0, request_len) {
+            Some(bytes) => bytes,
             None => return -EINVAL,
         };
+        let req = match ExecRequest::decode(&req_bytes) {
+            Ok(req) => req,
+            Err(_) => return -EINVAL,
+        };
+        let cwd = match resolve_exec_cwd(req.cwd.as_deref()) {
+            Ok(cwd) => cwd,
+            Err(errno) => return errno,
+        };
+        let mut env = STATE.env().clone();
+        for (k, v) in req.env {
+            env.insert(k, v);
+        }
+        let stdin = req.stdin;
+        let cmd = req.cmd;
         let cap = new_capture();
 
         // Preferred path: run the command through the unified guest `/bin/sh -c`,
-        // capturing its stdout/stderr. This gives control-channel exec the full
-        // shell (substitution, control flow, …), the same one the prompt uses.
-        if let Some(pid) = spawn_ctl_sh(&cmd, &cap) {
+        // capturing its stdout/stderr under pid 1's live capability ceiling.
+        if let Some(pid) = spawn_ctl_sh(&cmd, &cwd, &env, stdin.as_deref(), &cap) {
             let id = STATE.alloc_ctl_id();
             STATE.ctl_jobs().insert(
                 id,
@@ -2458,14 +2564,14 @@ pub(crate) fn mc_ctl_exec_start(cmd_len: u32) -> i32 {
         let ns = STATE.ns();
         let executor = STATE.executor();
         let engine = STATE.guest_runtime();
-        let path: String = STATE
-            .env()
+        let path: String = env
             .get("PATH")
             .cloned()
             .unwrap_or_else(|| String::from("/bin:/usr/bin"));
-        let cwd = STATE.cwd().clone();
         let last = *STATE.last_status();
-        let mut fg = match make_foreground(&cmd, last, cwd) {
+        let rescue_stdin =
+            stdin.map(|bytes| Box::new(io::BytesSource::new(bytes)) as Box<dyn io::ReadSource>);
+        let mut fg = match make_foreground(&cmd, last, cwd, rescue_stdin) {
             Ok(Some(fg)) => fg,
             Ok(None) => return ctl_finish_immediate(0, cap),
             Err(e) => {
@@ -2482,18 +2588,15 @@ pub(crate) fn mc_ctl_exec_start(cmd_len: u32) -> i32 {
             executor,
             engine,
             &path,
-            STATE.env(),
+            &mut env,
             Some(&cap),
         );
-        if done {
-            *STATE.cwd() = fg.cwd.clone();
-        }
         let exit_code = if done { fg.last_status } else { 0 };
         let id = STATE.alloc_ctl_id();
         STATE.ctl_jobs().insert(
             id,
             CtlExecJob {
-                body: CtlBody::Rescue(fg),
+                body: CtlBody::Rescue { fg, env },
                 cap,
                 done,
                 exit_code,
@@ -2503,11 +2606,10 @@ pub(crate) fn mc_ctl_exec_start(cmd_len: u32) -> i32 {
     }
 }
 
-/// Poll a host exec. Returns 0 (running) or 1 (finished). On finish the result
-/// is written to the control buffer as `[exit_code: i32][stdout_len: u32]
-/// [stderr_len: u32]` followed by the stdout then stderr bytes, the job is
-/// freed, and the host reads it via `mc_ctl_buf(0)`. A negative errno is
-/// returned for an unknown job id.
+/// Poll a host exec. Returns 0 while running. On finish the result is written to
+/// the control buffer as an encoded `ExecOutcome`, the job is freed, and the
+/// encoded byte length is returned. A negative errno is returned for an unknown
+/// job id.
 pub(crate) fn mc_ctl_exec_poll(job_id: u32) -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
@@ -2520,16 +2622,17 @@ pub(crate) fn mc_ctl_exec_poll(job_id: u32) -> i32 {
         let job = jobs.remove(&job_id).expect("present");
         let so = job.cap.stdout.borrow();
         let se = job.cap.stderr.borrow();
-        let mut out = Vec::with_capacity(12 + so.len() + se.len());
-        out.extend_from_slice(&job.exit_code.to_le_bytes());
-        out.extend_from_slice(&(so.len() as u32).to_le_bytes());
-        out.extend_from_slice(&(se.len() as u32).to_le_bytes());
-        out.extend_from_slice(&so[..]);
-        out.extend_from_slice(&se[..]);
+        let out = ExecOutcome {
+            exit_code: job.exit_code,
+            stdout: so.to_vec(),
+            stderr: se.to_vec(),
+        }
+        .encode();
+        let len = out.len() as i32;
         drop(so);
         drop(se);
         *CTL_BUFFER.get() = out;
-        1
+        len
     }
 }
 
@@ -2566,7 +2669,7 @@ pub(crate) fn mc_ctl_exec_close(job_id: u32) -> i32 {
                 CtlBody::Guest { pid } => {
                     pids.extend(task_subtree(STATE.scheduler(), pid));
                 }
-                CtlBody::Rescue(fg) => fg.live_pids(&mut pids),
+                CtlBody::Rescue { fg, .. } => fg.live_pids(&mut pids),
                 CtlBody::Done => {}
             }
             if !pids.is_empty() {

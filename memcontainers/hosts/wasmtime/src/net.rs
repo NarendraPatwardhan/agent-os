@@ -23,8 +23,8 @@ use std::time::Duration;
 use crate::connections::{
     ConnectionCredential, ConnectionRegistry, PreparedConnectionRequest, PreparedHttpRequest,
 };
-use toolcore::policy::{ConnectionPolicyAction, ConnectionPolicyRule, ConnectionPolicySet};
 use crate::sha256_hex;
+use toolcore::policy::{ConnectionPolicyAction, ConnectionPolicyRule, ConnectionPolicySet};
 
 /// WebSocket send sentinels from the generated contract constants (B2): `-EAGAIN`
 /// is retryable backpressure; `-EMSGSIZE` is a permanent oversized-frame error.
@@ -211,7 +211,10 @@ impl RealNet {
         self
     }
 
-    pub fn with_connection_policies(mut self, rules: Vec<ConnectionPolicyRule>) -> anyhow::Result<Self> {
+    pub fn with_connection_policies(
+        mut self,
+        rules: Vec<ConnectionPolicyRule>,
+    ) -> anyhow::Result<Self> {
         self.gate.set_policies(rules)?;
         Ok(self)
     }
@@ -257,7 +260,10 @@ impl NetCapability for RealNet {
                         return h;
                     }
                 },
-                GateDecision::Prompt { facts, remember_key } => {
+                GateDecision::Prompt {
+                    facts,
+                    remember_key,
+                } => {
                     // Resolve the prompt off the kernel pump: the worker blocks until the host owner
                     // answers (the guest sees `http_poll -> 0` meanwhile), then injects + fetches, or
                     // rejects. The credential is spliced only after an allow.
@@ -782,7 +788,10 @@ impl TokioNet {
         self
     }
 
-    pub fn with_connection_policies(mut self, rules: Vec<ConnectionPolicyRule>) -> anyhow::Result<Self> {
+    pub fn with_connection_policies(
+        mut self,
+        rules: Vec<ConnectionPolicyRule>,
+    ) -> anyhow::Result<Self> {
         self.gate.set_policies(rules)?;
         Ok(self)
     }
@@ -823,7 +832,10 @@ impl NetCapability for TokioNet {
                         return h;
                     }
                 },
-                GateDecision::Prompt { facts, remember_key } => {
+                GateDecision::Prompt {
+                    facts,
+                    remember_key,
+                } => {
                     // Resolve the prompt off the async executor (spawn_blocking), then inject + fetch
                     // or fail closed — the credential is spliced only after an allow.
                     let client = self.client.clone();

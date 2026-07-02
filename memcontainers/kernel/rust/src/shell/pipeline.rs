@@ -26,7 +26,7 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 
 use crate::builtins::{Builtin, BuiltinFactory, BuiltinStep};
-use crate::io::{CaptureSink, FileSink, FileSource, PipeSink, PipeSource};
+use crate::io::{CaptureSink, FileSink, FileSource, PipeSink, PipeSource, ReadSource};
 use crate::shell::executor::Executor;
 use crate::shell::parser::Pipeline;
 use crate::task::{BlockReason, Capabilities, Scheduler, TaskId, TaskState};
@@ -69,7 +69,7 @@ pub fn submit_pipeline(
     cwd: &str,
     pipeline: &Pipeline,
 ) -> Result<Vec<TaskId>, String> {
-    submit_pipeline_inner(sched, ns, executor, engine, path, cwd, pipeline, None)
+    submit_pipeline_inner(sched, ns, executor, engine, path, cwd, pipeline, None, None)
 }
 
 /// Like [`submit_pipeline`], but the tail command's (non-redirected) stdout
@@ -84,6 +84,7 @@ pub fn submit_pipeline_captured(
     cwd: &str,
     pipeline: &Pipeline,
     capture: &OutputCapture,
+    stdin: Option<Box<dyn ReadSource>>,
 ) -> Result<Vec<TaskId>, String> {
     submit_pipeline_inner(
         sched,
@@ -94,6 +95,7 @@ pub fn submit_pipeline_captured(
         cwd,
         pipeline,
         Some(capture),
+        stdin,
     )
 }
 
@@ -106,6 +108,7 @@ fn submit_pipeline_inner(
     cwd: &str,
     pipeline: &Pipeline,
     capture: Option<&OutputCapture>,
+    mut stdin: Option<Box<dyn ReadSource>>,
 ) -> Result<Vec<TaskId>, String> {
     let n = pipeline.commands.len();
     if n == 0 {
@@ -233,7 +236,8 @@ fn submit_pipeline_inner(
 
         let plan = plans.get_mut(i).expect("plan present");
 
-        // stdin: redirect wins, else inbound pipe, else default Empty.
+        // stdin: redirect wins, else inbound pipe, else optional control-channel stdin,
+        // else default Empty.
         if let Some(src) = plan.stdin.take() {
             task.set_stdin(src);
             // Producer side will never have a reader on the pipe →
@@ -245,6 +249,8 @@ fn submit_pipeline_inner(
             }
         } else if i > 0 {
             task.set_stdin(Box::new(PipeSource::new(pipes[i - 1])));
+        } else if let Some(src) = stdin.take() {
+            task.set_stdin(src);
         }
 
         // stdout: redirect wins, else outbound pipe, else terminal.

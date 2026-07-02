@@ -147,7 +147,28 @@ export interface ImageManifest {
   /** Ordered lowest→highest; each `digest` resolves to a `.tar` layer in the store. */
   layers: { digest: string; size: number }[];
   config: ImageConfig;
+  /** Portable build provenance for LLB-built images. */
+  build?: BuildRecord;
   created?: string;
+}
+
+export interface BuildRecord {
+  schema: 1;
+  /** Canonical encoded `llb.Definition` bytes, plus their content digest. */
+  definition: {
+    encoding: "mc.llb.definition.v1";
+    digest: string;
+    bytes: number[];
+  };
+  /** Canonical digest of the root build graph node. */
+  rootDigest: string;
+  /** Digest of the `kernel.wasm` bytes used for VM-executing build steps. */
+  kernelDigest: string;
+  /** Content-store objects needed by the image/provenance bundle. */
+  storeRefs: {
+    layers: { digest: string; size: number }[];
+    blobs: string[];
+  };
 }
 
 /** The runtime contract carried by an {@link ImageManifest} (SYSTEMS.md §11 — "Docker can't say:
@@ -161,14 +182,27 @@ export interface ImageConfig {
   fuel?: number;
 }
 
-/** A content-addressed store for committed layers (by `sha256:` digest) and image
- *  manifests (by flavor/image name). A local-dir implementation; a registry/persistfs-backed store is
- *  a later addition. */
+export interface ExecOptions {
+  /** Working directory for the command. Relative paths resolve against the VM's current cwd. */
+  cwd?: string;
+  /** Environment overrides layered on top of the VM's live boot environment. */
+  env?: Record<string, string>;
+  /** Bytes to expose as fd 0 for the command. Strings are UTF-8 encoded. */
+  stdin?: string | Uint8Array;
+}
+
+/** A content-addressed store for committed layers, generic blobs (by `sha256:`
+ *  digest), and image manifests (by flavor/image name). A local-dir
+ *  implementation; a registry/persistfs-backed store is a later addition. */
 export interface ContentStore {
   /** Read a layer's `.tar` bytes by `"sha256:…"` digest. */
   layer(digest: string): Promise<Uint8Array>;
   /** Store a `.tar` layer, returning its `"sha256:…"` digest. */
   put(tar: Uint8Array): Promise<string>;
+  /** Read arbitrary content-addressed bytes by `"sha256:…"` digest. */
+  blob(digest: string): Promise<Uint8Array>;
+  /** Store arbitrary bytes, returning their `"sha256:…"` digest. */
+  putBlob(bytes: Uint8Array): Promise<string>;
   /** Read a named manifest (a flavor like `"posix"`, or a built image). */
   manifest(name: string): Promise<ImageManifest>;
   /** Store a named manifest. */
@@ -287,6 +321,7 @@ export interface StatResult {
   isDir: boolean;
   isSymlink: boolean;
   nlink: number;
+  mode: number;
 }
 
 /** Filesystem ops on a VM — Unix verbs, grouped under `vm.fs` and also exposed
@@ -302,10 +337,14 @@ export interface VmFs {
   ls(path: string): Promise<DirEntry[]>;
   /** Stat a path (reports the link itself for symlinks). */
   stat(path: string): Promise<StatResult>;
+  /** Read the target text of a symbolic link without following it. */
+  readlink(path: string): Promise<string>;
   /** Create a directory. */
   mkdir(path: string): Promise<void>;
   /** Remove a file or empty directory. */
   rm(path: string): Promise<void>;
+  /** Set POSIX permission bits. */
+  chmod(path: string, mode: number): Promise<void>;
   /** Create a symbolic link at `link` pointing at `target` (target text is stored
    *  verbatim — relative targets resolve against the link's directory). */
   symlink(target: string, link: string): Promise<void>;

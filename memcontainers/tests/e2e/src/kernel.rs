@@ -4,6 +4,7 @@
 //! one exec test, which proves the pipe stays raw.
 
 use crate::{boot, boot_posix, names, restore};
+use host::ExecOptions;
 
 /// WHY: the base image is a deterministic pkg_tar (SYSTEMS.md section 11) the kernel mounts as its lowest layer; the
 /// control channel (`mc_ctl_read`) reads guest files out-of-band. GUARANTEES: the image's
@@ -13,7 +14,10 @@ fn control_channel_reads_image_profile() {
     let mut s = boot();
     let profile = s.host.read_file("/etc/profile").expect("read /etc/profile");
     let text = String::from_utf8_lossy(&profile);
-    assert!(text.contains("export PATH=/bin:/usr/bin"), "/etc/profile unexpected: {text:?}");
+    assert!(
+        text.contains("export PATH=/bin:/usr/bin"),
+        "/etc/profile unexpected: {text:?}"
+    );
 }
 
 /// WHY: a guest's writes land in the CoW/tmpfs overlay, and the control channel must both write and
@@ -22,8 +26,13 @@ fn control_channel_reads_image_profile() {
 #[test]
 fn control_channel_write_then_read_roundtrips() {
     let mut s = boot();
-    s.host.write_file("/tmp/note", b"agent-os e2e").expect("write /tmp/note");
-    assert_eq!(s.host.read_file("/tmp/note").expect("read /tmp/note"), b"agent-os e2e");
+    s.host
+        .write_file("/tmp/note", b"agent-os e2e")
+        .expect("write /tmp/note");
+    assert_eq!(
+        s.host.read_file("/tmp/note").expect("read /tmp/note"),
+        b"agent-os e2e"
+    );
 }
 
 /// WHY: directories, metadata, and listing are distinct ctl exports (`mc_ctl_mkdir`/`stat`/
@@ -33,13 +42,18 @@ fn control_channel_write_then_read_roundtrips() {
 fn control_channel_mkdir_stat_and_readdir() {
     let mut s = boot();
     s.host.mkdir("/tmp/work").expect("mkdir /tmp/work");
-    s.host.write_file("/tmp/work/a.txt", b"x").expect("write a.txt");
+    s.host
+        .write_file("/tmp/work/a.txt", b"x")
+        .expect("write a.txt");
 
     let st = s.host.stat("/tmp/work").expect("stat /tmp/work");
     assert!(st.is_dir && !st.is_symlink, "stat of a dir: {st:?}");
 
     let listing = s.host.readdir("/tmp/work").expect("readdir /tmp/work");
-    assert!(names(&listing).contains(&"a.txt"), "readdir missing a.txt: {listing:?}");
+    assert!(
+        names(&listing).contains(&"a.txt"),
+        "readdir missing a.txt: {listing:?}"
+    );
 }
 
 /// WHY: removal must actually remove (`mc_ctl_unlink`), and a read of a missing path must fail
@@ -48,9 +62,14 @@ fn control_channel_mkdir_stat_and_readdir() {
 #[test]
 fn control_channel_unlink_then_read_errors() {
     let mut s = boot();
-    s.host.write_file("/tmp/gone", b"temporary").expect("write /tmp/gone");
+    s.host
+        .write_file("/tmp/gone", b"temporary")
+        .expect("write /tmp/gone");
     s.host.unlink("/tmp/gone").expect("unlink /tmp/gone");
-    assert!(s.host.read_file("/tmp/gone").is_err(), "read of an unlinked file should error");
+    assert!(
+        s.host.read_file("/tmp/gone").is_err(),
+        "read of an unlinked file should error"
+    );
 }
 
 /// WHY: symlinks carry their own metadata AND resolve POSIX-style — `stat` is lstat (the LINK:
@@ -60,20 +79,34 @@ fn control_channel_unlink_then_read_errors() {
 #[test]
 fn control_channel_symlink_lstat_metadata_and_read_follows() {
     let mut s = boot();
-    s.host.write_file("/tmp/target", b"pointee").expect("write target");
+    s.host
+        .write_file("/tmp/target", b"pointee")
+        .expect("write target");
     s.host.symlink("/tmp/target", "/tmp/link").expect("symlink");
 
     let st = s.host.stat("/tmp/link").expect("stat /tmp/link");
-    assert!(st.is_symlink && !st.is_dir, "lstat should report a symlink: {st:?}");
-    assert_eq!(st.size, "/tmp/target".len() as u64, "symlink size = target-text length");
+    assert!(
+        st.is_symlink && !st.is_dir,
+        "lstat should report a symlink: {st:?}"
+    );
+    assert_eq!(
+        st.size,
+        "/tmp/target".len() as u64,
+        "symlink size = target-text length"
+    );
     assert_eq!(st.nlink, 1, "fresh symlink link count");
 
     let entries = s.host.readdir("/tmp").expect("readdir /tmp");
     assert!(
-        entries.iter().any(|e| e.name == "link" && e.is_symlink && !e.is_dir),
+        entries
+            .iter()
+            .any(|e| e.name == "link" && e.is_symlink && !e.is_dir),
         "readdir must expose symlink kind; got {entries:?}"
     );
-    assert_eq!(s.host.read_file("/tmp/link").expect("read through link"), b"pointee");
+    assert_eq!(
+        s.host.read_file("/tmp/link").expect("read through link"),
+        b"pointee"
+    );
 }
 
 /// WHY: the ctl read path negotiates buffer size — the kernel returns the FULL length so the host
@@ -94,10 +127,19 @@ fn control_channel_large_file_roundtrips() {
 #[test]
 fn exec_channel_captures_raw_lf_not_crlf() {
     let mut s = boot_posix();
-    s.host.write_file("/tmp/note", b"line1\nline2\n").expect("write");
-    let r = s.host.exec("cat /tmp/note", 200_000).expect("exec cat");
+    s.host
+        .write_file("/tmp/note", b"line1\nline2\n")
+        .expect("write");
+    let r = s
+        .host
+        .exec("cat /tmp/note", 200_000, ExecOptions::default())
+        .expect("exec cat");
     assert_eq!(r.exit_code, 0, "cat exit code");
-    assert_eq!(r.stdout, b"line1\nline2\n", "exec pipe must stay raw LF, not CRLF: {:?}", r.stdout);
+    assert_eq!(
+        r.stdout, b"line1\nline2\n",
+        "exec pipe must stay raw LF, not CRLF: {:?}",
+        r.stdout
+    );
 }
 
 /// WHY: A8 — the entire VM is a portable value: `snapshot` captures linear memory, `restore`
@@ -106,11 +148,16 @@ fn exec_channel_captures_raw_lf_not_crlf() {
 #[test]
 fn snapshot_then_restore_preserves_a_written_file() {
     let mut s = boot();
-    s.host.write_file("/tmp/keep", b"survives a snapshot").expect("write /tmp/keep");
+    s.host
+        .write_file("/tmp/keep", b"survives a snapshot")
+        .expect("write /tmp/keep");
     let snap = s.host.snapshot().expect("snapshot");
 
     let mut restored = restore(&snap);
-    assert_eq!(restored.host.read_file("/tmp/keep").expect("read restored"), b"survives a snapshot");
+    assert_eq!(
+        restored.host.read_file("/tmp/keep").expect("read restored"),
+        b"survives a snapshot"
+    );
 }
 
 /// WHY: A8 forking — restoring one snapshot twice must yield two INDEPENDENT VMs, not two views of
@@ -123,8 +170,12 @@ fn restoring_a_snapshot_twice_forks_independent_vms() {
 
     let mut a = restore(&snap);
     let mut b = restore(&snap);
-    a.host.write_file("/tmp/fork", b"branch-a").expect("write a");
-    b.host.write_file("/tmp/fork", b"branch-b").expect("write b");
+    a.host
+        .write_file("/tmp/fork", b"branch-a")
+        .expect("write a");
+    b.host
+        .write_file("/tmp/fork", b"branch-b")
+        .expect("write b");
 
     assert_eq!(a.host.read_file("/tmp/fork").expect("read a"), b"branch-a");
     assert_eq!(b.host.read_file("/tmp/fork").expect("read b"), b"branch-b");

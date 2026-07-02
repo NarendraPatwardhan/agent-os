@@ -16,6 +16,74 @@
 // (ptr,len) regions into that buffer.
 //
 // Shape: `export "<name>" group="<group>" { arg "<n>" type="<t>"; ... ret "<t>"; doc "..." }`.
+// Message shape: `message "<Name>" id=<u16> version=<u8> { field "<n>" type="<closed-type|list<Message>>" opt=1 }`.
+
+// ── typed scratch-buffer payloads ───────────────────────────────────────────
+message "ExecRequest" id=1 version=1 {
+  field "cmd" type="str"
+  field "cwd" type="str" opt=1
+  field "env" type="strmap"
+  field "stdin" type="bytes" opt=1
+  doc "Structured host-control exec request. `cmd` still runs under /bin/sh -c; cwd/env/stdin are applied by the kernel at spawn."
+}
+
+message "ExecOutcome" id=2 version=1 {
+  field "exit_code" type="i32"
+  field "stdout" type="bytes"
+  field "stderr" type="bytes"
+  doc "Structured host-control exec result: process exit code plus captured stdout/stderr bytes."
+}
+
+message "FileStat" id=3 version=1 {
+  field "size" type="i64"
+  field "is_dir" type="bool"
+  field "is_symlink" type="bool"
+  field "nlink" type="u32"
+  field "mode" type="u32"
+  doc "Structured host-control stat result. Size is non-negative; hosts reject negative values."
+}
+
+message "DirEntry" id=4 version=1 {
+  field "name" type="str"
+  field "is_dir" type="bool"
+  field "is_symlink" type="bool"
+  doc "One structured host-control directory entry."
+}
+
+message "DirEntries" id=5 version=1 {
+  field "entries" type="list<DirEntry>"
+  doc "Structured host-control directory listing."
+}
+
+message "SvcRequest" id=6 version=1 {
+  field "service" type="str"
+  field "request" type="bytes"
+  doc "Structured host-control resident-service request."
+}
+
+message "SvcResponse" id=7 version=1 {
+  field "status" type="i32"
+  field "body" type="bytes"
+  doc "Structured host-control resident-service response. Status 0 means the service handled the call; nonzero is a transport errno."
+}
+
+message "RelayEvent" id=8 version=1 {
+  field "kind" type="str"
+  field "handle" type="i32"
+  field "request" type="bytes" opt=1
+  field "name" type="str" opt=1
+  field "body" type="bytes" opt=1
+  field "key" type="bytes" opt=1
+  field "value" type="bytes" opt=1
+  field "prefix" type="bytes" opt=1
+  field "url" type="str" opt=1
+  field "data" type="bytes" opt=1
+  field "connection" type="str" opt=1
+  field "method" type="str" opt=1
+  field "origin" type="str" opt=1
+  field "args_digest" type="str" opt=1
+  doc "Structured BEAM egress relay event. `kind` selects which optional payload fields are present."
+}
 
 // ── lifecycle / hot path (§4.4) ──────────────────────────────────────────────
 export "mc_init"   group="lifecycle" { ret "i32"; doc "Boot the kernel (load base image, start pid 1). 0 on success." }
@@ -28,27 +96,29 @@ export "mc_ctl_buf" group="buffer" { arg "len" type="len"; ret "mptr"; doc "Resi
 
 // ── out-of-band VFS access (image staging, snapshot inspection) ──────────────
 export "mc_ctl_read"    group="vfs" { arg "path_ptr" type="u32"; arg "path_len" type="u32"; ret "i32"; doc "Read file `path` into the scratch buffer; byte length or negative errno." }
+export "mc_ctl_readlink" group="vfs" { arg "path_ptr" type="u32"; arg "path_len" type="u32"; ret "i32"; doc "Read symlink target text for `path` into the scratch buffer; byte length or negative errno." }
 export "mc_ctl_write"   group="vfs" { arg "path_ptr" type="u32"; arg "path_len" type="u32"; arg "data_ptr" type="u32"; arg "data_len" type="u32"; ret "i32"; doc "Write data to file `path`; 0 or negative errno." }
 export "mc_ctl_readdir" group="vfs" { arg "path_ptr" type="u32"; arg "path_len" type="u32"; ret "i32"; doc "List directory `path` into the scratch buffer; byte length or negative errno." }
 export "mc_ctl_stat"    group="vfs" { arg "path_ptr" type="u32"; arg "path_len" type="u32"; ret "i32"; doc "Stat `path` into the scratch buffer; byte length or negative errno." }
 export "mc_ctl_mkdir"   group="vfs" { arg "path_ptr" type="u32"; arg "path_len" type="u32"; ret "i32"; doc "Create directory `path`." }
 export "mc_ctl_unlink"  group="vfs" { arg "path_ptr" type="u32"; arg "path_len" type="u32"; ret "i32"; doc "Remove the file at `path`." }
+export "mc_ctl_chmod"   group="vfs" { arg "path_ptr" type="u32"; arg "path_len" type="u32"; arg "mode" type="u32"; ret "i32"; doc "Set permission bits on `path`." }
 export "mc_ctl_symlink" group="vfs" { arg "target_ptr" type="u32"; arg "target_len" type="u32"; arg "link_ptr" type="u32"; arg "link_len" type="u32"; ret "i32"; doc "Create symlink `link` → `target` (two-region layout)." }
 export "mc_ctl_mount"   group="vfs" { arg "path_ptr" type="u32"; arg "path_len" type="u32"; arg "read_only" type="i32"; ret "i32"; doc "Mount a host-backed driver at `path`." }
 export "mc_ctl_unmount" group="vfs" { arg "path_ptr" type="u32"; arg "path_len" type="u32"; ret "i32"; doc "Unmount the driver at `path`." }
 
 // ── host-driven exec jobs (the server's command channel) ─────────────────────
 // Start a detached `/bin/sh -c` job, then poll/peek its captured output until done.
-export "mc_ctl_exec_start" group="exec" { arg "cmd_len" type="u32"; ret "i32"; doc "Start a job from the cmd bytes in the scratch buffer; a job id, or negative errno." }
-export "mc_ctl_exec_poll"  group="exec" { arg "job_id" type="u32"; ret "i32"; doc "Drain a job's output to the scratch buffer; >=0 bytes, a done marker, or negative errno." }
+export "mc_ctl_exec_start" group="exec" { arg "request_len" type="u32"; ret "i32"; doc "Start a job from an encoded ExecRequest in the scratch buffer; a job id, or negative errno." }
+export "mc_ctl_exec_poll"  group="exec" { arg "job_id" type="u32"; ret "i32"; doc "Poll a host exec job. 0 means running; >0 is the encoded ExecOutcome byte length in the scratch buffer; negative errno on failure." }
 export "mc_ctl_exec_peek"  group="exec" { arg "job_id" type="u32"; ret "i32"; doc "Copy output captured so far without consuming it." }
 export "mc_ctl_exec_close" group="exec" { arg "job_id" type="u32"; ret "i32"; doc "Release a finished job." }
 
 // ── host-driven resident-service calls ───────────────────────────────────────
 // Trusted operator calls into a resident service. The service receives caller=SYSTEM_CALLER
 // with full caller capability metadata.
-export "mc_ctl_svc_call_start" group="service" { arg "name_ptr" type="u32"; arg "name_len" type="u32"; arg "req_ptr" type="u32"; arg "req_len" type="u32"; ret "i32"; doc "Start a host-control service call using name and request bytes from the scratch buffer; a job id, or negative errno." }
-export "mc_ctl_svc_call_poll"  group="service" { arg "job_id" type="u32"; ret "i32"; doc "Poll a host-control service call. 0 running, 1 done with [status:i32][body_len:u32][body] in the scratch buffer, or negative errno." }
+export "mc_ctl_svc_call_start" group="service" { arg "request_len" type="u32"; ret "i32"; doc "Start a host-control service call from an encoded SvcRequest in the scratch buffer; a job id, or negative errno." }
+export "mc_ctl_svc_call_poll"  group="service" { arg "job_id" type="u32"; ret "i32"; doc "Poll a host-control service call. 0 means running; >0 is the encoded SvcResponse byte length in the scratch buffer; negative errno on failure." }
 export "mc_ctl_svc_call_close" group="service" { arg "job_id" type="u32"; ret "i32"; doc "Release a host-control service call job." }
 
 // ── layers / snapshots / quiescence (A8) ─────────────────────────────────────

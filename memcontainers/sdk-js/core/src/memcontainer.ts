@@ -1,6 +1,8 @@
-// mc.create / restore / connect and the Vm surface, over the embedded (in-process) backend. The
-// `"remote"` runtime (mc-server over the wire protocol) throws until mc-server is ported; the Vm
-// surface is identical across backends, so it slots in later without changing this file's shape.
+// mc.create / restore / connect and the Vm surface. The embedded (in-process) backend runs the
+// kernel via WebAssembly; the `"remote"` runtime drives a served AgentOS host (the moltres Phoenix
+// control plane) over the REST + typed-wire contract in ./remote.js. The Vm surface — exec, fs,
+// snapshot, layer, mount, shell, sessions, tools, and `serviceCall` (`/svc/*`) — is wired end to
+// end across both backends.
 
 import {
   ConnectionRegistry,
@@ -44,6 +46,7 @@ import type {
   CreateOptions,
   DirEntry,
   Driver,
+  ExecOptions,
   ExecResult,
   ImageConfig,
   ImageManifest,
@@ -125,8 +128,8 @@ export class Vm {
   }
 
   /** Run a command to completion: decoded stdout/stderr + the real exit code. */
-  async exec(cmd: string): Promise<ExecResult> {
-    const r = await this.backend.exec(cmd);
+  async exec(cmd: string, opts: ExecOptions = {}): Promise<ExecResult> {
+    const r = await this.backend.exec(cmd, opts);
     return {
       stdout: dec(r.stdout),
       stderr: dec(r.stderr),
@@ -134,6 +137,11 @@ export class Vm {
       stderrBytes: r.stderr,
       exitCode: r.exitCode,
     };
+  }
+
+  /** Call a resident `/svc/<name>` service through the host-control channel. */
+  serviceCall(name: string, req: Uint8Array = new Uint8Array()): Promise<Uint8Array> {
+    return this.backend.serviceCall(name, req);
   }
 
   /** Run a Luau script (SYSTEMS.md §10.3). The source is written to a temp file
@@ -1254,8 +1262,8 @@ export const mc = {
     };
   },
 
-  /** Create a VM that records its `fs.write` + `exec` as a replayable `llb` build
-   *  DAG while running live. `await rec.build()`'s tip is the image you just
-   *  authored by *driving* the VM. */
+  /** Create a VM that records its `fs` mutations + `exec` as a replayable `llb` build
+   *  Definition while running live. Commit `await rec.build()` to replay the image
+   *  you just authored by *driving* the VM. */
   record,
 };

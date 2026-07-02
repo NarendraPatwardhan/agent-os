@@ -2,18 +2,18 @@
 // under BOTH node and bun (no `Bun.file`) and against the bazel-built artifacts (which have no single
 // fixed source path). A browser caller passes `opts.kernel` + `opts.image` bytes directly (no
 // filesystem). Point these at the built artifacts via MC_KERNEL_WASM / MC_BASE_IMAGE, or pass
-// `opts.kernel` / `opts.image` to `mc.create`.
+// `opts.kernel` / `opts.image` to `mc.create`. The Node filesystem import is lazy so browser imports of
+// `@mc/core` stay valid when artifacts are provided by the caller.
 
-import { readFileSync } from "node:fs";
-
-function readEnvArtifact(envVar: string, what: string, optsKey: string): Uint8Array {
-  const path = process.env[envVar];
+async function readEnvArtifact(envVar: string, what: string, optsKey: string): Promise<Uint8Array> {
+  const path = typeof process === "undefined" ? undefined : process.env[envVar];
   if (!path) {
     throw new Error(
       `${what} not available: set ${envVar} to the built artifact path, or pass it as ` +
         `mc.create({ ${optsKey}: <Uint8Array> }).`,
     );
   }
+  const { readFileSync } = await import("node:fs");
   return new Uint8Array(readFileSync(path));
 }
 

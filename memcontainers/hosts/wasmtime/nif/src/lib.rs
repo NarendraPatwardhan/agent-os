@@ -29,17 +29,18 @@
 //! edge: Rust queues poll-based `net`, `host_call`, and `persist` requests, while the owning
 //! `AgentOS.Vm` process drains and answers them.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use constants_rust::{PERSIST_OP_DELETE, PERSIST_OP_GET, PERSIST_OP_LIST, PERSIST_OP_PUT};
+use ctl_rust::RelayEvent as WireRelayEvent;
 use host::{
     derive_connection_origins, CatalogConnection, CatalogInjectOptions, CatalogSpecSource,
-    ConnectionCredential, ConnectionError, ConnectionRegistry, ExecResult, HostCallCapability,
-    HostToolDef, KernelHost,
-    KernelHostBuilder, NetCapability, PersistCapability, RealNet, StreamSink, ToolApprovalDecision,
-    ToolApprovalFacts, ToolApprover, ConnectionPolicyAction, ConnectionPolicyOwner, ConnectionPolicyRule,
+    ConnectionCredential, ConnectionError, ConnectionPolicyAction, ConnectionPolicyOwner,
+    ConnectionPolicyRule, ConnectionRegistry, ExecOptions, ExecResult, HostCallCapability,
+    HostToolDef, KernelHost, KernelHostBuilder, NetCapability, PersistCapability, RealNet,
+    StreamSink, ToolApprovalDecision, ToolApprovalFacts, ToolApprover,
 };
 use rustler::{Atom, Binary, Env, Error, NifResult, OwnedBinary, ResourceArc};
 
@@ -53,6 +54,7 @@ const WS_SEND_MARK: usize = 1024 * 1024;
 
 type NifConnectionDef = (String, String, String, String, Vec<String>);
 type NifPolicyRule = (String, String, String);
+type NifExecEnv = Vec<(String, String)>;
 type NifCatalogConnection = (
     String,
     String,
@@ -97,7 +99,7 @@ impl rustler::Resource for Vm {}
 #[derive(Default)]
 struct RelayState {
     next: i32,
-    events: VecDeque<RelayEvent>,
+    events: VecDeque<EgressRelayEvent>,
     http: HashMap<i32, HttpSlot>,
     host_calls: HashMap<i32, HostCallSlot>,
     persist: HashMap<i32, PersistSlot>,
@@ -118,7 +120,7 @@ impl RelayState {
     }
 }
 
-enum RelayEvent {
+enum EgressRelayEvent {
     HttpRequest {
         handle: i32,
         request: Vec<u8>,
@@ -158,7 +160,11 @@ enum RelayEvent {
     },
     ToolApproval {
         handle: i32,
-        frame: Vec<u8>,
+        connection: String,
+        method: String,
+        url: String,
+        origin: String,
+        args_digest: Option<String>,
     },
 }
 
@@ -208,7 +214,7 @@ impl NetCapability for BeamNet {
         };
         let handle = relay.alloc_handle();
         relay.http.insert(handle, HttpSlot::default());
-        relay.events.push_back(RelayEvent::HttpRequest {
+        relay.events.push_back(EgressRelayEvent::HttpRequest {
             handle,
             request: req.to_vec(),
         });
@@ -257,7 +263,7 @@ impl NetCapability for BeamNet {
         if let Ok(mut relay) = self.relay.lock() {
             relay.http.remove(&handle);
             relay.events.retain(|event| match event {
-                RelayEvent::HttpRequest { handle: h, .. } => *h != handle,
+                EgressRelayEvent::HttpRequest { handle: h, .. } => *h != handle,
                 _ => true,
             });
         }
@@ -269,7 +275,7 @@ impl NetCapability for BeamNet {
         };
         let handle = relay.alloc_handle();
         relay.ws.insert(handle, WsSlot::default());
-        relay.events.push_back(RelayEvent::WsConnect {
+        relay.events.push_back(EgressRelayEvent::WsConnect {
             handle,
             url: url.to_string(),
         });
@@ -293,7 +299,7 @@ impl NetCapability for BeamNet {
             return -EAGAIN;
         }
         slot.queued_bytes += data.len();
-        relay.events.push_back(RelayEvent::WsSend {
+        relay.events.push_back(EgressRelayEvent::WsSend {
             handle,
             data: data.to_vec(),
         });
@@ -340,11 +346,10 @@ impl NetCapability for BeamNet {
     fn ws_close(&mut self, handle: i32) {
         if let Ok(mut relay) = self.relay.lock() {
             relay.ws.remove(&handle);
-            relay.events.push_back(RelayEvent::WsClose { handle });
+            relay.events.push_back(EgressRelayEvent::WsClose { handle });
             relay.events.retain(|event| match event {
-                RelayEvent::WsConnect { handle: h, .. } | RelayEvent::WsSend { handle: h, .. } => {
-                    *h != handle
-                }
+                EgressRelayEvent::WsConnect { handle: h, .. }
+                | EgressRelayEvent::WsSend { handle: h, .. } => *h != handle,
                 _ => true,
             });
         }
@@ -372,9 +377,20 @@ impl ToolApprover for BeamToolApprover {
             let handle = relay.alloc_handle();
             let (tx, rx) = std::sync::mpsc::channel();
             relay.pending_tool_approvals.insert(handle, tx);
-            relay.events.push_back(RelayEvent::ToolApproval {
+            let ToolApprovalFacts {
+                connection,
+                method,
+                url,
+                origin,
+                args_digest,
+            } = facts;
+            relay.events.push_back(EgressRelayEvent::ToolApproval {
                 handle,
-                frame: tool_approval_frame(&facts),
+                connection,
+                method,
+                url,
+                origin,
+                args_digest,
             });
             rx
         };
@@ -405,7 +421,7 @@ impl HostCallCapability for BeamHostCall {
         relay.host_calls.insert(handle, HostCallSlot::default());
         relay
             .events
-            .push_back(RelayEvent::HostCall { handle, name, body });
+            .push_back(EgressRelayEvent::HostCall { handle, name, body });
         handle
     }
 
@@ -442,7 +458,7 @@ impl HostCallCapability for BeamHostCall {
         if let Ok(mut relay) = self.relay.lock() {
             relay.host_calls.remove(&handle);
             relay.events.retain(|event| match event {
-                RelayEvent::HostCall { handle: h, .. } => *h != handle,
+                EgressRelayEvent::HostCall { handle: h, .. } => *h != handle,
                 _ => true,
             });
         }
@@ -476,14 +492,16 @@ impl PersistCapability for BeamPersist {
         match op {
             PERSIST_OP_GET => relay
                 .events
-                .push_back(RelayEvent::PersistGet { handle, key }),
-            PERSIST_OP_PUT => relay
-                .events
-                .push_back(RelayEvent::PersistPut { handle, key, value }),
+                .push_back(EgressRelayEvent::PersistGet { handle, key }),
+            PERSIST_OP_PUT => {
+                relay
+                    .events
+                    .push_back(EgressRelayEvent::PersistPut { handle, key, value })
+            }
             PERSIST_OP_DELETE => relay
                 .events
-                .push_back(RelayEvent::PersistDelete { handle, key }),
-            PERSIST_OP_LIST => relay.events.push_back(RelayEvent::PersistList {
+                .push_back(EgressRelayEvent::PersistDelete { handle, key }),
+            PERSIST_OP_LIST => relay.events.push_back(EgressRelayEvent::PersistList {
                 handle,
                 prefix: key,
             }),
@@ -528,10 +546,10 @@ impl PersistCapability for BeamPersist {
         if let Ok(mut relay) = self.relay.lock() {
             relay.persist.remove(&handle);
             relay.events.retain(|event| match event {
-                RelayEvent::PersistGet { handle: h, .. }
-                | RelayEvent::PersistPut { handle: h, .. }
-                | RelayEvent::PersistDelete { handle: h, .. }
-                | RelayEvent::PersistList { handle: h, .. } => *h != handle,
+                EgressRelayEvent::PersistGet { handle: h, .. }
+                | EgressRelayEvent::PersistPut { handle: h, .. }
+                | EgressRelayEvent::PersistDelete { handle: h, .. }
+                | EgressRelayEvent::PersistList { handle: h, .. } => *h != handle,
                 _ => true,
             });
         }
@@ -562,6 +580,27 @@ fn to_binary<'a>(env: Env<'a>, bytes: &[u8]) -> NifResult<Binary<'a>> {
     let mut bin = OwnedBinary::new(bytes.len()).ok_or_else(|| nif_err("allocate NIF binary"))?;
     bin.as_mut_slice().copy_from_slice(bytes);
     Ok(bin.release(env))
+}
+
+fn exec_options(
+    cwd: String,
+    env: NifExecEnv,
+    stdin_present: bool,
+    stdin: Binary<'_>,
+) -> ExecOptions {
+    let mut vars = BTreeMap::new();
+    for (key, value) in env {
+        vars.insert(key, value);
+    }
+    ExecOptions {
+        cwd: if cwd.is_empty() { None } else { Some(cwd) },
+        env: vars,
+        stdin: if stdin_present {
+            Some(stdin.as_slice().to_vec())
+        } else {
+            None
+        },
+    }
 }
 
 fn decode_persist_request(req: &[u8]) -> Option<(u32, Vec<u8>, Vec<u8>)> {
@@ -623,13 +662,21 @@ fn build_connection_policies(defs: Vec<NifPolicyRule>) -> NifResult<Vec<Connecti
             let owner = match owner.as_str() {
                 "org" => ConnectionPolicyOwner::Org,
                 "user" => ConnectionPolicyOwner::User,
-                _ => return Err(nif_err(format!("unknown connection policy owner {owner:?}"))),
+                _ => {
+                    return Err(nif_err(format!(
+                        "unknown connection policy owner {owner:?}"
+                    )))
+                }
             };
             let action = match action.as_str() {
                 "approve" => ConnectionPolicyAction::Approve,
                 "require_approval" => ConnectionPolicyAction::RequireApproval,
                 "block" => ConnectionPolicyAction::Block,
-                _ => return Err(nif_err(format!("unknown connection policy action {action:?}"))),
+                _ => {
+                    return Err(nif_err(format!(
+                        "unknown connection policy action {action:?}"
+                    )))
+                }
             };
             Ok(ConnectionPolicyRule {
                 owner,
@@ -646,7 +693,9 @@ fn build_credential(kind: &str, a: String, b: String) -> NifResult<ConnectionCre
         "bearer" => Ok(ConnectionCredential::Bearer { token: a }),
         "header" => Ok(ConnectionCredential::Header { name: a, value: b }),
         "query" => Ok(ConnectionCredential::Query { name: a, value: b }),
-        _ => Err(nif_err(format!("unknown connection credential kind {kind:?}"))),
+        _ => Err(nif_err(format!(
+            "unknown connection credential kind {kind:?}"
+        ))),
     }
 }
 
@@ -695,7 +744,15 @@ fn build_catalog_connections(defs: Vec<NifCatalogConnection>) -> NifResult<Vec<C
 fn build_host_tools(defs: Vec<NifHostTool>) -> Vec<HostToolDef> {
     defs.into_iter()
         .map(
-            |(address, description, binding_name, args_mode, input_json, output_json, annot_json)| {
+            |(
+                address,
+                description,
+                binding_name,
+                args_mode,
+                input_json,
+                output_json,
+                annot_json,
+            )| {
                 // Raw JSON strings ("" -> None) are validated/parsed in the host crate (catalog.rs).
                 HostToolDef {
                     address,
@@ -721,23 +778,6 @@ fn opt_string(value: String) -> Option<String> {
 
 fn payload_string(label: &str, payload: Vec<u8>) -> NifResult<String> {
     String::from_utf8(payload).map_err(|_| nif_err(format!("{label} must be utf8")))
-}
-
-fn tool_approval_frame(facts: &ToolApprovalFacts) -> Vec<u8> {
-    let mut out = Vec::new();
-    for part in [
-        facts.connection.as_str(),
-        facts.method.as_str(),
-        facts.url.as_str(),
-        facts.origin.as_str(),
-        facts.args_digest.as_deref().unwrap_or(""),
-    ] {
-        if !out.is_empty() {
-            out.push(0);
-        }
-        out.extend_from_slice(part.as_bytes());
-    }
-    out
 }
 
 fn connection_error(err: ConnectionError) -> &'static str {
@@ -817,7 +857,9 @@ fn build_builder(
         }
         builder = builder.with_net(Box::new(net));
     } else if !connection_policies.is_empty() || tool_approval_relay {
-        return Err(nif_err("connection policies and approval relay require real net"));
+        return Err(nif_err(
+            "connection policies and approval relay require real net",
+        ));
     }
     if host_call_relay {
         builder = builder.with_host_call(Box::new(BeamHostCall {
@@ -913,7 +955,9 @@ fn restore(
         return Err(nif_err("connections require real net"));
     }
     if !net_real && (!connection_policies.is_empty() || tool_approval_relay) {
-        return Err(nif_err("connection policies and approval relay require real net"));
+        return Err(nif_err(
+            "connection policies and approval relay require real net",
+        ));
     }
     let mut builder = KernelHostBuilder::new(wasm.as_slice().to_vec());
     if deterministic {
@@ -1004,9 +1048,17 @@ fn exec<'a>(
     vm: ResourceArc<Vm>,
     cmd: String,
     max_ticks: u64,
+    cwd: String,
+    exec_env: NifExecEnv,
+    stdin_present: bool,
+    stdin: Binary<'a>,
 ) -> NifResult<(Atom, (i32, Binary<'a>, Binary<'a>))> {
     let result: ExecResult = vm_lock(&vm)?
-        .exec(&cmd, ticks_to_usize(max_ticks)?)
+        .exec(
+            &cmd,
+            ticks_to_usize(max_ticks)?,
+            exec_options(cwd, exec_env, stdin_present, stdin),
+        )
         .map_err(nif_err)?;
     Ok((
         atoms::ok(),
@@ -1019,8 +1071,17 @@ fn exec<'a>(
 }
 
 #[rustler::nif(name = "exec_start_nif", schedule = "DirtyCpu")]
-fn exec_start(vm: ResourceArc<Vm>, cmd: String) -> NifResult<(Atom, i32)> {
-    let job = vm_lock(&vm)?.exec_start(&cmd).map_err(nif_err)?;
+fn exec_start<'a>(
+    vm: ResourceArc<Vm>,
+    cmd: String,
+    cwd: String,
+    exec_env: NifExecEnv,
+    stdin_present: bool,
+    stdin: Binary<'a>,
+) -> NifResult<(Atom, i32)> {
+    let job = vm_lock(&vm)?
+        .exec_start(&cmd, exec_options(cwd, exec_env, stdin_present, stdin))
+        .map_err(nif_err)?;
     Ok((atoms::ok(), job))
 }
 
@@ -1058,6 +1119,23 @@ fn exec_cancel(vm: ResourceArc<Vm>, job: i32) -> NifResult<Atom> {
     Ok(atoms::ok())
 }
 
+/// Call a resident service as host control (`SYSTEM_CALLER`) through the kernel service channel →
+/// `{:ok, {status, body}}`. `status` is the service's own status code (0 = ok); a nonzero status
+/// still returns its body so the owning `AgentOS.Vm`/facade decides policy. A host-level failure
+/// (bad channel, missing service export) returns `{:error, reason}`.
+#[rustler::nif(name = "svc_call_nif", schedule = "DirtyCpu")]
+fn svc_call<'a>(
+    env: Env<'a>,
+    vm: ResourceArc<Vm>,
+    service: String,
+    request: Binary,
+) -> NifResult<(Atom, (i32, Binary<'a>))> {
+    let result = vm_lock(&vm)?
+        .service_call(&service, &request)
+        .map_err(nif_err)?;
+    Ok((atoms::ok(), (result.status, to_binary(env, &result.body)?)))
+}
+
 #[rustler::nif(name = "read_file_nif", schedule = "DirtyCpu")]
 fn read_file<'a>(env: Env<'a>, vm: ResourceArc<Vm>, path: String) -> NifResult<(Atom, Binary<'a>)> {
     let bytes = vm_lock(&vm)?.read_file(&path).map_err(nif_err)?;
@@ -1083,12 +1161,24 @@ fn readdir(vm: ResourceArc<Vm>, path: String) -> NifResult<(Atom, Vec<(String, b
 }
 
 #[rustler::nif(name = "stat_nif", schedule = "DirtyCpu")]
-fn stat(vm: ResourceArc<Vm>, path: String) -> NifResult<(Atom, (u64, bool, bool, u32))> {
+fn stat(vm: ResourceArc<Vm>, path: String) -> NifResult<(Atom, (u64, bool, bool, u32, u32))> {
     let stat = vm_lock(&vm)?.stat(&path).map_err(nif_err)?;
     Ok((
         atoms::ok(),
-        (stat.size, stat.is_dir, stat.is_symlink, stat.nlink),
+        (
+            stat.size,
+            stat.is_dir,
+            stat.is_symlink,
+            stat.nlink,
+            stat.mode,
+        ),
     ))
+}
+
+#[rustler::nif(name = "readlink_nif", schedule = "DirtyCpu")]
+fn readlink<'a>(env: Env<'a>, vm: ResourceArc<Vm>, path: String) -> NifResult<(Atom, Binary<'a>)> {
+    let target = vm_lock(&vm)?.readlink(&path).map_err(nif_err)?;
+    Ok((atoms::ok(), to_binary(env, target.as_bytes())?))
 }
 
 #[rustler::nif(name = "mkdir_nif", schedule = "DirtyCpu")]
@@ -1100,6 +1190,12 @@ fn mkdir(vm: ResourceArc<Vm>, path: String) -> NifResult<Atom> {
 #[rustler::nif(name = "unlink_nif", schedule = "DirtyCpu")]
 fn unlink(vm: ResourceArc<Vm>, path: String) -> NifResult<Atom> {
     vm_lock(&vm)?.unlink(&path).map_err(nif_err)?;
+    Ok(atoms::ok())
+}
+
+#[rustler::nif(name = "chmod_nif", schedule = "DirtyCpu")]
+fn chmod(vm: ResourceArc<Vm>, path: String, mode: u32) -> NifResult<Atom> {
+    vm_lock(&vm)?.chmod(&path, mode).map_err(nif_err)?;
     Ok(atoms::ok())
 }
 
@@ -1171,7 +1267,13 @@ fn inject_catalog<'a>(
     let connections = connections
         .into_iter()
         .map(|(reference, spec_kind, payload, spec_opts, tools)| {
-            (reference, spec_kind, payload.as_slice().to_vec(), spec_opts, tools)
+            (
+                reference,
+                spec_kind,
+                payload.as_slice().to_vec(),
+                spec_opts,
+                tools,
+            )
         })
         .collect();
     let status = vm_lock(&vm)?
@@ -1189,84 +1291,101 @@ fn inject_catalog<'a>(
     ))
 }
 
+fn relay_frame(kind: &str, handle: i32) -> WireRelayEvent {
+    WireRelayEvent {
+        kind: kind.to_string(),
+        handle,
+        request: None,
+        name: None,
+        body: None,
+        key: None,
+        value: None,
+        prefix: None,
+        url: None,
+        data: None,
+        connection: None,
+        method: None,
+        origin: None,
+        args_digest: None,
+    }
+}
+
+fn wire_relay_event(relay: &mut RelayState, event: EgressRelayEvent) -> WireRelayEvent {
+    match event {
+        EgressRelayEvent::HttpRequest { handle, request } => {
+            let mut frame = relay_frame("http", handle);
+            frame.request = Some(request);
+            frame
+        }
+        EgressRelayEvent::HostCall { handle, name, body } => {
+            let mut frame = relay_frame("host_call", handle);
+            frame.name = Some(name);
+            frame.body = Some(body);
+            frame
+        }
+        EgressRelayEvent::PersistGet { handle, key } => {
+            let mut frame = relay_frame("persist_get", handle);
+            frame.key = Some(key);
+            frame
+        }
+        EgressRelayEvent::PersistPut { handle, key, value } => {
+            let mut frame = relay_frame("persist_put", handle);
+            frame.key = Some(key);
+            frame.value = Some(value);
+            frame
+        }
+        EgressRelayEvent::PersistDelete { handle, key } => {
+            let mut frame = relay_frame("persist_delete", handle);
+            frame.key = Some(key);
+            frame
+        }
+        EgressRelayEvent::PersistList { handle, prefix } => {
+            let mut frame = relay_frame("persist_list", handle);
+            frame.prefix = Some(prefix);
+            frame
+        }
+        EgressRelayEvent::WsConnect { handle, url } => {
+            let mut frame = relay_frame("ws_connect", handle);
+            frame.url = Some(url);
+            frame
+        }
+        EgressRelayEvent::WsSend { handle, data } => {
+            if let Some(slot) = relay.ws.get_mut(&handle) {
+                slot.queued_bytes = slot.queued_bytes.saturating_sub(data.len());
+            }
+            let mut frame = relay_frame("ws_send", handle);
+            frame.data = Some(data);
+            frame
+        }
+        EgressRelayEvent::WsClose { handle } => relay_frame("ws_close", handle),
+        EgressRelayEvent::ToolApproval {
+            handle,
+            connection,
+            method,
+            url,
+            origin,
+            args_digest,
+        } => {
+            let mut frame = relay_frame("tool_approval", handle);
+            frame.connection = Some(connection);
+            frame.method = Some(method);
+            frame.url = Some(url);
+            frame.origin = Some(origin);
+            frame.args_digest = args_digest;
+            frame
+        }
+    }
+}
+
 #[rustler::nif(name = "relay_next_nif")]
-fn relay_next<'a>(
-    env: Env<'a>,
-    vm: ResourceArc<Vm>,
-) -> NifResult<(Atom, Option<(String, i32, Binary<'a>, Binary<'a>)>)> {
+fn relay_next<'a>(env: Env<'a>, vm: ResourceArc<Vm>) -> NifResult<(Atom, Option<Binary<'a>>)> {
     let mut relay = relay_lock(&vm)?;
     let Some(event) = relay.events.pop_front() else {
         return Ok((atoms::ok(), None));
     };
 
-    let event = match event {
-        RelayEvent::HttpRequest { handle, request } => (
-            "http".to_string(),
-            handle,
-            to_binary(env, &request)?,
-            to_binary(env, b"")?,
-        ),
-        RelayEvent::HostCall { handle, name, body } => (
-            "host_call".to_string(),
-            handle,
-            to_binary(env, name.as_bytes())?,
-            to_binary(env, &body)?,
-        ),
-        RelayEvent::PersistGet { handle, key } => (
-            "persist_get".to_string(),
-            handle,
-            to_binary(env, &key)?,
-            to_binary(env, b"")?,
-        ),
-        RelayEvent::PersistPut { handle, key, value } => (
-            "persist_put".to_string(),
-            handle,
-            to_binary(env, &key)?,
-            to_binary(env, &value)?,
-        ),
-        RelayEvent::PersistDelete { handle, key } => (
-            "persist_delete".to_string(),
-            handle,
-            to_binary(env, &key)?,
-            to_binary(env, b"")?,
-        ),
-        RelayEvent::PersistList { handle, prefix } => (
-            "persist_list".to_string(),
-            handle,
-            to_binary(env, &prefix)?,
-            to_binary(env, b"")?,
-        ),
-        RelayEvent::WsConnect { handle, url } => (
-            "ws_connect".to_string(),
-            handle,
-            to_binary(env, url.as_bytes())?,
-            to_binary(env, b"")?,
-        ),
-        RelayEvent::WsSend { handle, data } => {
-            if let Some(slot) = relay.ws.get_mut(&handle) {
-                slot.queued_bytes = slot.queued_bytes.saturating_sub(data.len());
-            }
-            (
-                "ws_send".to_string(),
-                handle,
-                to_binary(env, &data)?,
-                to_binary(env, b"")?,
-            )
-        }
-        RelayEvent::WsClose { handle } => (
-            "ws_close".to_string(),
-            handle,
-            to_binary(env, b"")?,
-            to_binary(env, b"")?,
-        ),
-        RelayEvent::ToolApproval { handle, frame } => (
-            "tool_approval".to_string(),
-            handle,
-            to_binary(env, &frame)?,
-            to_binary(env, b"")?,
-        ),
-    };
-    Ok((atoms::ok(), Some(event)))
+    let bytes = wire_relay_event(&mut relay, event).encode();
+    Ok((atoms::ok(), Some(to_binary(env, &bytes)?)))
 }
 
 #[rustler::nif(name = "relay_persist_respond_nif")]
@@ -1350,7 +1469,9 @@ fn relay_tool_approval_respond(
 ) -> NifResult<Atom> {
     let mut relay = relay_lock(&vm)?;
     let Some(tx) = relay.pending_tool_approvals.remove(&handle) else {
-        return Err(nif_err(format!("unknown tool_approval relay handle {handle}")));
+        return Err(nif_err(format!(
+            "unknown tool_approval relay handle {handle}"
+        )));
     };
     // Wake the parked worker thread. A dropped receiver (the request already resolved/torn down) is
     // harmless — ignore the send error.

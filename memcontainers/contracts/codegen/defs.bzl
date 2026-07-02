@@ -21,6 +21,7 @@ _EXT = {
     "rust": "rs",
     "zig": "zig",
     "ts": "ts",
+    "elixir": "ex",
     "md": "md",
     "asyncapi": "asyncapi.yaml",
     "openapi": "openapi.yaml",

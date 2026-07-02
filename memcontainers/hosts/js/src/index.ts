@@ -6,7 +6,7 @@
 // the one the JS host derives from too — it cannot silently desync (B2).
 
 export { KernelHost, KernelHostBuilder, EagainError } from "./host.js";
-export type { ExecResult, DirEntry } from "./host.js";
+export type { ExecResult, ExecOptions, DirEntry } from "./host.js";
 export { CaptureSink, WritableSink, processStdout, processStderr } from "./io.js";
 export { SystemClock, FixedClock, OsRng, SeededRng } from "./sources.js";
 export { ConnectionRegistry, originAllowed } from "./connections.js";
@@ -16,7 +16,7 @@ export { CatalogCompiler, defaultCatalogCompiler } from "./catalog_compiler.js";
 export type { CatalogBundle, RegistryEntry, RegistryGroup } from "./catalog_compiler.js";
 export { DeniedNet, HostNet } from "./net.js";
 export type { NetApprover, ToolApprovalFacts, ToolApprover, HostNetOptions } from "./net.js";
-export { DeniedPersist, DiskPersist } from "./persist.js";
+export { DeniedPersist } from "./persist_core.js";
 export { OpfsPersist, OpfsKv, IdbKv, MemoryKv } from "./opfs-persist.js";
 export type { BrowserKv } from "./opfs-persist.js";
 export { DeniedHostCall, MapHostCall } from "./host_call.js";

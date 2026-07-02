@@ -11,12 +11,17 @@
 //! byte-for-byte replayable, SYSTEMS.md section 8).
 
 use std::collections::hash_map::DefaultHasher;
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Result};
+use ctl_rust::{
+    DirEntries as WireDirEntries, ExecOutcome, ExecRequest, FileStat as WireFileStat,
+    SvcRequest as WireSvcRequest, SvcResponse as WireSvcResponse,
+};
 use sha2::{Digest, Sha256};
 use wasmtime::{Caller, Engine, Instance, Linker, Memory, Module, Store};
 
@@ -57,7 +62,8 @@ pub use persist::{DeniedPersist, DiskPersist, PersistCapability};
 // The connection-policy engine is single-source in toolcore; re-export it so the NIF + tests keep importing
 // it from this host crate (the wasmtime host links it natively, the JS host calls it via the wasm).
 pub use toolcore::policy::{
-    ConnectionPolicyAction, ConnectionPolicyError, ConnectionPolicyOwner, ConnectionPolicyRule, ConnectionPolicySet,
+    ConnectionPolicyAction, ConnectionPolicyError, ConnectionPolicyOwner, ConnectionPolicyRule,
+    ConnectionPolicySet,
 };
 
 use bridge::register_bridge;
@@ -796,6 +802,13 @@ pub struct ExecResult {
     pub exit_code: i32,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ExecOptions {
+    pub cwd: Option<String>,
+    pub env: BTreeMap<String, String>,
+    pub stdin: Option<Vec<u8>>,
+}
+
 /// Result of a host-control resident-service call.
 #[derive(Debug, Clone)]
 pub struct ServiceCallResult {
@@ -812,6 +825,8 @@ pub struct FileStat {
     pub is_symlink: bool,
     /// Hard-link count (POSIX `st_nlink`).
     pub nlink: u32,
+    /// POSIX permission bits.
+    pub mode: u32,
 }
 
 /// One entry from [`KernelHost::readdir`].
@@ -1140,6 +1155,23 @@ impl KernelHost {
         self.ctl_get(n as usize)
     }
 
+    /// Read the target text of a symlink without following it.
+    pub fn readlink(&mut self, path: &str) -> Result<String> {
+        let f = self.exports.require_ctl_readlink()?;
+        let n = self.ctl_with_retry(|s| {
+            s.ctl_put(path.as_bytes())?;
+            wt(
+                f.call(&mut s.store, (0, path.len() as i32)),
+                "mc_ctl_readlink",
+            )
+        })?;
+        if n < 0 {
+            return Err(ctl_err("readlink", path, n));
+        }
+        String::from_utf8(self.ctl_get(n as usize)?)
+            .map_err(|_| anyhow!("malformed readlink target from kernel: not UTF-8"))
+    }
+
     /// Write (truncating) a file through the control channel.
     pub fn write_file(&mut self, path: &str, data: &[u8]) -> Result<()> {
         let f = self.exports.require_ctl_write()?;
@@ -1176,26 +1208,17 @@ impl KernelHost {
             return Err(ctl_err("readdir", path, n));
         }
         let raw = self.ctl_get(n as usize)?;
-        let mut out = Vec::new();
-        let mut i = 0;
-        while i < raw.len() {
-            let rel = raw[i..]
-                .iter()
-                .position(|&b| b == 0)
-                .ok_or_else(|| anyhow!("malformed readdir entry"))?;
-            let nul = i + rel;
-            let name = String::from_utf8_lossy(&raw[i..nul]).into_owned();
-            let kind = *raw
-                .get(nul + 1)
-                .ok_or_else(|| anyhow!("truncated readdir entry"))?;
-            out.push(DirEntry {
-                name,
-                is_dir: kind == b'd',
-                is_symlink: kind == b'l',
-            });
-            i = nul + 2;
-        }
-        Ok(out)
+        let listing = WireDirEntries::decode(&raw)
+            .map_err(|e| anyhow!("malformed readdir frame from kernel: {e:?}"))?;
+        Ok(listing
+            .entries
+            .into_iter()
+            .map(|entry| DirEntry {
+                name: entry.name,
+                is_dir: entry.is_dir,
+                is_symlink: entry.is_symlink,
+            })
+            .collect())
     }
 
     /// Stat a path (the link itself for a symlink — lstat semantics).
@@ -1208,15 +1231,18 @@ impl KernelHost {
         if n < 0 {
             return Err(ctl_err("stat", path, n));
         }
-        let raw = self.ctl_get(16)?;
-        let size = u64::from_le_bytes(raw[0..8].try_into().unwrap());
-        let kind = u32::from_le_bytes(raw[8..12].try_into().unwrap());
-        let nlink = u32::from_le_bytes(raw[12..16].try_into().unwrap());
+        let raw = self.ctl_get(n as usize)?;
+        let stat = WireFileStat::decode(&raw)
+            .map_err(|e| anyhow!("malformed stat frame from kernel: {e:?}"))?;
+        if stat.size < 0 {
+            return Err(anyhow!("malformed stat frame from kernel: negative size"));
+        }
         Ok(FileStat {
-            size,
-            is_dir: kind == 1,
-            is_symlink: kind == 2,
-            nlink,
+            size: stat.size as u64,
+            is_dir: stat.is_dir,
+            is_symlink: stat.is_symlink,
+            nlink: stat.nlink,
+            mode: stat.mode,
         })
     }
 
@@ -1245,6 +1271,22 @@ impl KernelHost {
         })?;
         if n < 0 {
             return Err(ctl_err("unlink", path, n));
+        }
+        Ok(())
+    }
+
+    /// Set POSIX permission bits through the control channel.
+    pub fn chmod(&mut self, path: &str, mode: u32) -> Result<()> {
+        let f = self.exports.require_ctl_chmod()?;
+        let n = self.ctl_with_retry(|s| {
+            s.ctl_put(path.as_bytes())?;
+            wt(
+                f.call(&mut s.store, (0, path.len() as i32, mode as i32)),
+                "mc_ctl_chmod",
+            )
+        })?;
+        if n < 0 {
+            return Err(ctl_err("chmod", path, n));
         }
         Ok(())
     }
@@ -1308,27 +1350,20 @@ impl KernelHost {
     }
 
     /// Call a resident service as host control (`SYSTEM_CALLER`) through the kernel-owned
-    /// service channel. The result body is framed in the control buffer by the kernel as
-    /// `[status:i32][body_len:u32][body]`.
+    /// service channel. Request and response payloads are generated control messages.
     pub fn service_call(&mut self, service: &str, request: &[u8]) -> Result<ServiceCallResult> {
         let start = self.exports.require_ctl_svc_call_start()?;
         let poll = self.exports.require_ctl_svc_call_poll()?;
         let close = self.exports.require_ctl_svc_call_close()?;
         let job = {
-            let mut req = Vec::with_capacity(service.len() + request.len());
-            req.extend_from_slice(service.as_bytes());
-            req.extend_from_slice(request);
+            let req = WireSvcRequest {
+                service: service.to_string(),
+                request: request.to_vec(),
+            }
+            .encode();
             self.ctl_put(&req)?;
             wt(
-                start.call(
-                    &mut self.store,
-                    (
-                        0,
-                        service.len() as i32,
-                        service.len() as i32,
-                        request.len() as i32,
-                    ),
-                ),
+                start.call(&mut self.store, req.len() as i32),
                 "mc_ctl_svc_call_start",
             )?
         };
@@ -1336,31 +1371,16 @@ impl KernelHost {
             return Err(ctl_err("service_call", service, job));
         }
         for _ in 0..CTL_RETRY_TICKS {
-            let status = wt(poll.call(&mut self.store, job), "mc_ctl_svc_call_poll")?;
-            if status == 0 {
+            let len = wt(poll.call(&mut self.store, job), "mc_ctl_svc_call_poll")?;
+            if len == 0 {
                 self.tick()?;
                 continue;
             }
-            if status < 0 {
+            if len < 0 {
                 let _ = close.call(&mut self.store, job);
-                return Err(ctl_err("service_call_poll", service, status));
+                return Err(ctl_err("service_call_poll", service, len));
             }
-            let framed = self.ctl_get(8)?;
-            if framed.len() < 8 {
-                let _ = close.call(&mut self.store, job);
-                return Err(anyhow!("service_call returned a truncated frame"));
-            }
-            let service_status = i32::from_le_bytes(framed[0..4].try_into().unwrap());
-            let body_len = u32::from_le_bytes(framed[4..8].try_into().unwrap()) as usize;
-            let framed = self.ctl_get(8 + body_len)?;
-            if framed.len() < 8 + body_len {
-                let _ = close.call(&mut self.store, job);
-                return Err(anyhow!("service_call returned a truncated body"));
-            }
-            return Ok(ServiceCallResult {
-                status: service_status,
-                body: framed[8..8 + body_len].to_vec(),
-            });
+            return self.read_service_call_result(len as usize);
         }
         let _ = close.call(&mut self.store, job);
         Err(anyhow!(
@@ -1369,14 +1389,31 @@ impl KernelHost {
         ))
     }
 
+    fn read_service_call_result(&mut self, len: usize) -> Result<ServiceCallResult> {
+        let raw = self.ctl_get(len)?;
+        let response = WireSvcResponse::decode(&raw)
+            .map_err(|e| anyhow!("service_call response frame decode failed: {e:?}"))?;
+        Ok(ServiceCallResult {
+            status: response.status,
+            body: response.body,
+        })
+    }
+
     /// Begin a command without driving it to completion. Returns a job id; drive ticks
     /// yourself and call [`exec_poll`](Self::exec_poll) until it returns `Some`. A job
     /// survives `snapshot`/`restore`.
-    pub fn exec_start(&mut self, cmd: &str) -> Result<i32> {
+    pub fn exec_start(&mut self, cmd: &str, opts: ExecOptions) -> Result<i32> {
         let start = self.exports.require_ctl_exec_start()?;
-        self.ctl_put(cmd.as_bytes())?;
+        let req = ExecRequest {
+            cmd: cmd.to_string(),
+            cwd: opts.cwd,
+            env: opts.env,
+            stdin: opts.stdin,
+        };
+        let req = req.encode();
+        self.ctl_put(&req)?;
         let job = wt(
-            start.call(&mut self.store, cmd.len() as i32),
+            start.call(&mut self.store, req.len() as i32),
             "mc_ctl_exec_start",
         )?;
         if job < 0 {
@@ -1389,11 +1426,11 @@ impl KernelHost {
     /// `Some(result)` once finished (the job is then freed).
     pub fn exec_poll(&mut self, job: i32) -> Result<Option<ExecResult>> {
         let poll = self.exports.require_ctl_exec_poll()?;
-        let status = wt(poll.call(&mut self.store, job), "mc_ctl_exec_poll")?;
-        if status == 1 {
-            Ok(Some(self.read_exec_result()?))
-        } else if status < 0 {
-            Err(ctl_err("exec_poll", "job", status))
+        let len = wt(poll.call(&mut self.store, job), "mc_ctl_exec_poll")?;
+        if len > 0 {
+            Ok(Some(self.read_exec_result(len as usize)?))
+        } else if len < 0 {
+            Err(ctl_err("exec_poll", "job", len))
         } else {
             Ok(None)
         }
@@ -1427,8 +1464,8 @@ impl KernelHost {
 
     /// Run `cmd` to completion, returning captured stdout/stderr and the real exit code.
     /// Drives ticks (pacing idle ticks so in-flight host I/O can resolve) up to `max_ticks`.
-    pub fn exec(&mut self, cmd: &str, max_ticks: usize) -> Result<ExecResult> {
-        let job = self.exec_start(cmd)?;
+    pub fn exec(&mut self, cmd: &str, max_ticks: usize, opts: ExecOptions) -> Result<ExecResult> {
+        let job = self.exec_start(cmd, opts)?;
         for _ in 0..max_ticks {
             if let Some(r) = self.exec_poll(job)? {
                 return Ok(r);
@@ -1450,26 +1487,14 @@ impl KernelHost {
         ))
     }
 
-    fn read_exec_result(&mut self) -> Result<ExecResult> {
-        let base = self.ctl_buf(0)?;
-        let data = self.memory.data(&self.store);
-        let hdr_end = base
-            .checked_add(12)
-            .filter(|e| *e <= data.len())
-            .ok_or_else(|| anyhow!("exec result header truncated"))?;
-        let exit_code = i32::from_le_bytes(data[base..base + 4].try_into().unwrap());
-        let so_len = u32::from_le_bytes(data[base + 4..base + 8].try_into().unwrap()) as usize;
-        let se_len = u32::from_le_bytes(data[base + 8..hdr_end].try_into().unwrap()) as usize;
-        let so_start = base + 12;
-        let se_start = so_start + so_len;
-        let se_end = se_start + se_len;
-        if se_end > data.len() {
-            return Err(anyhow!("exec result body out of range"));
-        }
+    fn read_exec_result(&mut self, len: usize) -> Result<ExecResult> {
+        let raw = self.ctl_get(len)?;
+        let outcome = ExecOutcome::decode(&raw)
+            .map_err(|e| anyhow!("exec result frame decode failed: {e:?}"))?;
         Ok(ExecResult {
-            stdout: data[so_start..se_start].to_vec(),
-            stderr: data[se_start..se_end].to_vec(),
-            exit_code,
+            stdout: outcome.stdout,
+            stderr: outcome.stderr,
+            exit_code: outcome.exit_code,
         })
     }
 

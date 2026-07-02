@@ -51,6 +51,10 @@ defmodule AgentOS.ControlPlane do
   @spec take_output(Vm.id()) :: binary() | {:error, :not_found}
   def take_output(id), do: with_vm(id, &Vm.take_output/1)
 
+  @doc "Terminal scrollback retained since `cursor`, plus the absolute total, for typed-socket resume."
+  @spec shell_since(Vm.id(), non_neg_integer()) :: {:ok, map()} | {:error, term()}
+  def shell_since(id, cursor), do: with_vm(id, &Vm.shell_since(&1, cursor))
+
   @doc "Start a structured exec job on an existing VM."
   @spec exec_start(Vm.id(), String.t(), keyword()) :: {:ok, integer()} | {:error, term()}
   def exec_start(id, cmd, opts \\ []), do: with_vm(id, &Vm.exec_start(&1, cmd, opts))
@@ -67,6 +71,12 @@ defmodule AgentOS.ControlPlane do
   @spec exec_cancel(Vm.id(), integer(), keyword()) :: :ok | {:error, term()}
   def exec_cancel(id, job, opts \\ []), do: with_vm(id, &Vm.exec_cancel(&1, job, opts))
 
+  @doc "Call a resident service as host control on an existing VM."
+  @spec svc_call(Vm.id(), String.t(), binary(), keyword()) ::
+          {:ok, {integer(), binary()}} | {:error, term()}
+  def svc_call(id, service, request, opts \\ []),
+    do: with_vm(id, &Vm.svc_call(&1, service, request, opts))
+
   @doc "Snapshot an existing VM."
   @spec snapshot(Vm.id()) :: {:ok, binary()} | {:error, :not_found}
   def snapshot(id), do: with_vm(id, &Vm.snapshot/1)
@@ -81,7 +91,8 @@ defmodule AgentOS.ControlPlane do
 
   @doc "Write a file in an existing VM through the host control channel."
   @spec write_file(Vm.id(), String.t(), binary(), keyword()) :: :ok | {:error, term()}
-  def write_file(id, path, data, opts \\ []), do: with_vm(id, &Vm.write_file(&1, path, data, opts))
+  def write_file(id, path, data, opts \\ []),
+    do: with_vm(id, &Vm.write_file(&1, path, data, opts))
 
   @doc "List a directory in an existing VM through the host control channel."
   @spec readdir(Vm.id(), String.t(), keyword()) :: {:ok, list()} | {:error, term()}
@@ -91,6 +102,10 @@ defmodule AgentOS.ControlPlane do
   @spec stat(Vm.id(), String.t(), keyword()) :: {:ok, map()} | {:error, term()}
   def stat(id, path, opts \\ []), do: with_vm(id, &Vm.stat(&1, path, opts))
 
+  @doc "Read the target text of a symlink through the host control channel."
+  @spec readlink(Vm.id(), String.t(), keyword()) :: {:ok, binary()} | {:error, term()}
+  def readlink(id, path, opts \\ []), do: with_vm(id, &Vm.readlink(&1, path, opts))
+
   @doc "Create a directory in an existing VM through the host control channel."
   @spec mkdir(Vm.id(), String.t(), keyword()) :: :ok | {:error, term()}
   def mkdir(id, path, opts \\ []), do: with_vm(id, &Vm.mkdir(&1, path, opts))
@@ -98,6 +113,10 @@ defmodule AgentOS.ControlPlane do
   @doc "Remove a file or empty directory in an existing VM through the host control channel."
   @spec unlink(Vm.id(), String.t(), keyword()) :: :ok | {:error, term()}
   def unlink(id, path, opts \\ []), do: with_vm(id, &Vm.unlink(&1, path, opts))
+
+  @doc "Set POSIX permission bits in an existing VM through the host control channel."
+  @spec chmod(Vm.id(), String.t(), non_neg_integer(), keyword()) :: :ok | {:error, term()}
+  def chmod(id, path, mode, opts \\ []), do: with_vm(id, &Vm.chmod(&1, path, mode, opts))
 
   @doc "Create a symbolic link in an existing VM through the host control channel."
   @spec symlink(Vm.id(), String.t(), String.t(), keyword()) :: :ok | {:error, term()}
@@ -120,17 +139,27 @@ defmodule AgentOS.ControlPlane do
   def egress_next(id, opts \\ []), do: with_vm(id, &Vm.egress_next(&1, opts))
 
   @doc "Answer an HTTP egress relay event."
-  @spec egress_http_respond(Vm.id(), integer(), non_neg_integer(), String.t(), [{String.t(), String.t()}], binary(), keyword()) ::
+  @spec egress_http_respond(
+          Vm.id(),
+          integer(),
+          non_neg_integer(),
+          String.t(),
+          [{String.t(), String.t()}],
+          binary(),
+          keyword()
+        ) ::
           :ok | {:error, term()}
   def egress_http_respond(id, handle, status, reason, headers, body, opts \\ []),
     do: with_vm(id, &Vm.egress_http_respond(&1, handle, status, reason, headers, body, opts))
 
   @doc "Fail an HTTP egress relay event."
   @spec egress_http_fail(Vm.id(), integer(), keyword()) :: :ok | {:error, term()}
-  def egress_http_fail(id, handle, opts \\ []), do: with_vm(id, &Vm.egress_http_fail(&1, handle, opts))
+  def egress_http_fail(id, handle, opts \\ []),
+    do: with_vm(id, &Vm.egress_http_fail(&1, handle, opts))
 
   @doc "Answer a host_call egress relay event."
-  @spec egress_host_call_respond(Vm.id(), integer(), binary(), keyword()) :: :ok | {:error, term()}
+  @spec egress_host_call_respond(Vm.id(), integer(), binary(), keyword()) ::
+          :ok | {:error, term()}
   def egress_host_call_respond(id, handle, result, opts \\ []),
     do: with_vm(id, &Vm.egress_host_call_respond(&1, handle, result, opts))
 
@@ -157,11 +186,13 @@ defmodule AgentOS.ControlPlane do
 
   @doc "Mark a WebSocket egress relay as connected."
   @spec egress_ws_open(Vm.id(), integer(), keyword()) :: :ok | {:error, term()}
-  def egress_ws_open(id, handle, opts \\ []), do: with_vm(id, &Vm.egress_ws_open(&1, handle, opts))
+  def egress_ws_open(id, handle, opts \\ []),
+    do: with_vm(id, &Vm.egress_ws_open(&1, handle, opts))
 
   @doc "Fail a WebSocket egress relay connection."
   @spec egress_ws_fail(Vm.id(), integer(), keyword()) :: :ok | {:error, term()}
-  def egress_ws_fail(id, handle, opts \\ []), do: with_vm(id, &Vm.egress_ws_fail(&1, handle, opts))
+  def egress_ws_fail(id, handle, opts \\ []),
+    do: with_vm(id, &Vm.egress_ws_fail(&1, handle, opts))
 
   @doc "Push one received WebSocket message into an egress relay connection."
   @spec egress_ws_push(Vm.id(), integer(), binary(), keyword()) :: :ok | {:error, term()}
@@ -170,7 +201,8 @@ defmodule AgentOS.ControlPlane do
 
   @doc "Mark a WebSocket egress relay as closed by the peer."
   @spec egress_ws_close(Vm.id(), integer(), keyword()) :: :ok | {:error, term()}
-  def egress_ws_close(id, handle, opts \\ []), do: with_vm(id, &Vm.egress_ws_close(&1, handle, opts))
+  def egress_ws_close(id, handle, opts \\ []),
+    do: with_vm(id, &Vm.egress_ws_close(&1, handle, opts))
 
   @doc "Liveness and age info for an existing VM."
   @spec info(Vm.id()) :: map() | {:error, :not_found}

@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-
 import type { ConnectionPolicyAction } from "./policy.js";
 
 export interface CatalogBundle {
@@ -68,7 +65,7 @@ export async function defaultCatalogCompiler(wasmBytes?: Uint8Array): Promise<Ca
     }
     return compiler;
   }
-  defaultCompiler ??= CatalogCompiler.instantiate(readDefaultCompilerWasm());
+  defaultCompiler ??= readDefaultCompilerWasm().then((wasm) => CatalogCompiler.instantiate(wasm));
   return defaultCompiler;
 }
 
@@ -287,15 +284,18 @@ export class CatalogCompiler {
   }
 }
 
-function readDefaultCompilerWasm(): Uint8Array {
-  const rel = process.env.MC_CATALOG_COMPILER_WASM;
+async function readDefaultCompilerWasm(): Promise<Uint8Array> {
+  const proc = globalThis as typeof globalThis & { process?: { env?: Record<string, string | undefined> } };
+  const rel = proc.process?.env?.MC_CATALOG_COMPILER_WASM;
   if (!rel) {
     throw new Error(
       "catalog-compiler.wasm not available: set MC_CATALOG_COMPILER_WASM to the built artifact path, " +
         "or pass mc.create({ catalogCompiler: <Uint8Array> }).",
     );
   }
-  const path = rel.startsWith("/") || !process.env.RUNFILES_DIR ? rel : join(process.env.RUNFILES_DIR, rel);
+  const [{ readFileSync }, { join }] = await Promise.all([import("node:fs"), import("node:path")]);
+  const runfilesDir = proc.process?.env?.RUNFILES_DIR;
+  const path = rel.startsWith("/") || !runfilesDir ? rel : join(runfilesDir, rel);
   return new Uint8Array(readFileSync(path));
 }
 

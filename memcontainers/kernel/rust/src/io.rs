@@ -84,6 +84,12 @@ pub trait ReadSource {
     fn block_handle(&self) -> Option<usize> {
         None
     }
+    /// Produce a child-inheritable handle to the same input stream when a guest
+    /// spawn passes fd 0. Pipes return a fresh read end; byte buffers share
+    /// cursor state so `/bin/sh -c "cat"` sees host-provided stdin.
+    fn inherit_for_child(&self) -> Option<Box<dyn ReadSource>> {
+        None
+    }
     /// `mc_sys_poll` readiness: would a `read` return *without* blocking?
     /// Default `true` (files/EOF sources are always readable — a read returns
     /// data or 0); a pipe is readable iff it has buffered data or its write end
@@ -217,6 +223,51 @@ impl ReadSource for EmptySource {
     }
 }
 
+// ------ Byte buffer ------
+
+struct BytesState {
+    bytes: Vec<u8>,
+    off: usize,
+}
+
+pub struct BytesSource(Rc<RefCell<BytesState>>);
+
+impl BytesSource {
+    pub fn new(bytes: Vec<u8>) -> Self {
+        Self(Rc::new(RefCell::new(BytesState { bytes, off: 0 })))
+    }
+}
+
+impl ReadSource for BytesSource {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, FsError> {
+        let mut state = self.0.borrow_mut();
+        let remaining = state.bytes.len().saturating_sub(state.off);
+        let n = remaining.min(buf.len());
+        if n == 0 {
+            return Ok(0);
+        }
+        buf[..n].copy_from_slice(&state.bytes[state.off..state.off + n]);
+        state.off += n;
+        Ok(n)
+    }
+    fn is_eof(&self) -> bool {
+        let state = self.0.borrow();
+        state.off >= state.bytes.len()
+    }
+    fn inherit_for_child(&self) -> Option<Box<dyn ReadSource>> {
+        Some(Box::new(BytesSource(self.0.clone())))
+    }
+    fn poll_hup(&self) -> bool {
+        self.is_eof()
+    }
+}
+
+// SAFETY: like CaptureSink, BytesSource is only touched under the kernel's
+// cooperative discipline / BKL. The shared cursor is never accessed from two
+// threads simultaneously.
+unsafe impl Send for BytesSource {}
+unsafe impl Sync for BytesSource {}
+
 // ------ File ------
 
 pub struct FileSink(pub Box<dyn FileHandle>);
@@ -345,6 +396,9 @@ impl ReadSource for PipeSource {
     }
     fn block_handle(&self) -> Option<usize> {
         Some(self.pipe as usize)
+    }
+    fn inherit_for_child(&self) -> Option<Box<dyn ReadSource>> {
+        Some(Box::new(PipeSource::new(self.pipe())))
     }
     fn poll_readable(&self) -> bool {
         let p = self.pipe();

@@ -9,8 +9,9 @@ use std::time::{Duration, Instant};
 
 use host::{
     CaptureSink, CatalogConnection, CatalogInjectOptions, CatalogSpecSource, ConnectionCredential,
-    ConnectionRegistry, KernelHostBuilder, NetCapability, RealNet, ToolApprovalDecision,
-    ToolApprovalFacts, ToolApprover, ConnectionPolicyAction, ConnectionPolicyOwner, ConnectionPolicyRule,
+    ConnectionPolicyAction, ConnectionPolicyOwner, ConnectionPolicyRule, ConnectionRegistry,
+    ExecOptions, KernelHostBuilder, NetCapability, RealNet, ToolApprovalDecision,
+    ToolApprovalFacts, ToolApprover,
 };
 
 #[derive(Debug, Clone)]
@@ -178,7 +179,9 @@ fn read_runfile(path: &str) -> Vec<u8> {
 }
 
 fn exec_stdout(host: &mut host::KernelHost, cmd: &str) -> String {
-    let result = host.exec(cmd, 2_000_000).expect("exec command");
+    let result = host
+        .exec(cmd, 2_000_000, ExecOptions::default())
+        .expect("exec command");
     assert_eq!(
         result.exit_code,
         0,
@@ -186,6 +189,44 @@ fn exec_stdout(host: &mut host::KernelHost, cmd: &str) -> String {
         String::from_utf8_lossy(&result.stderr)
     );
     String::from_utf8(result.stdout).expect("stdout utf8")
+}
+
+#[test]
+fn exec_options_apply_cwd_env_and_stdin() {
+    let kernel = read_runfile("_main/memcontainers/kernel/rust/kernel.wasm");
+    let image = read_runfile("_main/memcontainers/images/loom.tar");
+    let (sink, _stdout) = CaptureSink::new();
+    let mut host = KernelHostBuilder::new(kernel)
+        .with_base_image(Some(image))
+        .with_stdout(Box::new(sink))
+        .deterministic()
+        .build()
+        .expect("boot loom");
+
+    host.mkdir("/home/user/rust-exec-cwd").expect("mkdir cwd");
+    let mut env = BTreeMap::new();
+    env.insert("RUST_EXEC_FLAG".to_string(), "typed-env".to_string());
+    let result = host
+        .exec(
+            "pwd; printf \"$RUST_EXEC_FLAG\\n\"; read line; printf \"$line\"",
+            2_000_000,
+            ExecOptions {
+                cwd: Some("/home/user/rust-exec-cwd".to_string()),
+                env,
+                stdin: Some(b"typed-stdin\n".to_vec()),
+            },
+        )
+        .expect("exec with options");
+    assert_eq!(
+        result.exit_code,
+        0,
+        "stderr={}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(result.stdout).expect("stdout utf8"),
+        "/home/user/rust-exec-cwd\ntyped-env\ntyped-stdin"
+    );
 }
 
 fn configured_net(
@@ -391,7 +432,8 @@ print("bypass-ok")
 fn discovers_graphql_catalog_via_authenticated_introspection() {
     // Cross-host parity fixture (P3): the SAME graphql.introspection.json the JS host's vm_test discovery
     // serves; both hosts compile it through catalog-compiler.wasm and MUST yield the identical golden set.
-    let introspection = read_runfile("_main/memcontainers/lib/catalog-compiler/data/graphql.introspection.json");
+    let introspection =
+        read_runfile("_main/memcontainers/lib/catalog-compiler/data/graphql.introspection.json");
     let server = RecordingServer::start_with_body(introspection);
     let approver = SharedApprover {
         prompts: Arc::new(Mutex::new(Vec::new())),
@@ -407,7 +449,11 @@ fn discovers_graphql_catalog_via_authenticated_introspection() {
     let mut host = KernelHostBuilder::new(kernel)
         .with_base_image(Some(image))
         .with_stdout(Box::new(sink))
-        .with_net(Box::new(configured_net(&server.origin, approver, Vec::new())))
+        .with_net(Box::new(configured_net(
+            &server.origin,
+            approver,
+            Vec::new(),
+        )))
         .deterministic()
         .build()
         .expect("boot loom");
@@ -432,11 +478,20 @@ fn discovers_graphql_catalog_via_authenticated_introspection() {
         })
         .expect("inject graphql catalog")
         .expect("catalog status");
-    assert!(status.tools >= 1, "expected discovered tools, got {status:?}");
+    assert!(
+        status.tools >= 1,
+        "expected discovered tools, got {status:?}"
+    );
 
     let listed = exec_stdout(&mut host, "tools list");
-    for tool in ["gql.org.main.query.viewer", "gql.org.main.mutation.updateName"] {
-        assert!(listed.contains(tool), "missing parity golden {tool}: {listed}");
+    for tool in [
+        "gql.org.main.query.viewer",
+        "gql.org.main.mutation.updateName",
+    ] {
+        assert!(
+            listed.contains(tool),
+            "missing parity golden {tool}: {listed}"
+        );
     }
 
     // The introspection POST carried the credential, spliced host-side — never in the guest.
@@ -471,7 +526,11 @@ fn origins_only_public_tool_sends_no_credential() {
     let mut host = KernelHostBuilder::new(kernel)
         .with_base_image(Some(image))
         .with_stdout(Box::new(sink))
-        .with_net(Box::new(configured_net(&server.origin, approver, Vec::new())))
+        .with_net(Box::new(configured_net(
+            &server.origin,
+            approver,
+            Vec::new(),
+        )))
         .deterministic()
         .build()
         .expect("boot loom");

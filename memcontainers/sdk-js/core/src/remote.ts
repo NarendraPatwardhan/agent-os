@@ -5,12 +5,14 @@
 import type { Backend, RawExecResult } from "./backend.js";
 import { makeFs } from "./fs.js";
 import { dispatchMount } from "./mount.js";
+import { assertSessionAgentType } from "./session.js";
 import { Kind } from "./wire.js";
 import { runToolJson, assertSafeToolBindingName } from "./tools.js";
 import { UnifiedSocket } from "./unified-ws.js";
 import type {
   DirEntry,
   Driver,
+  ExecOptions,
   PermissionRequest,
   SessionEvent,
   SessionHandle,
@@ -23,6 +25,22 @@ import type {
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
+function bytesBase64(bytes: Uint8Array): string {
+  let raw = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    raw += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(raw);
+}
+
+function execBody(cmd: string, opts: ExecOptions = {}): Record<string, unknown> {
+  const body: Record<string, unknown> = { cmd };
+  if (opts.cwd !== undefined) body.cwd = opts.cwd;
+  if (opts.env !== undefined) body.env = opts.env;
+  if (typeof opts.stdin === "string") body.stdin = opts.stdin;
+  else if (opts.stdin) body.stdinBase64 = bytesBase64(opts.stdin);
+  return body;
+}
 
 export interface RemoteBackendOptions {
   endpoint: string;
@@ -178,11 +196,11 @@ export class RemoteBackend implements Backend {
     return true;
   }
 
-  async exec(cmd: string): Promise<RawExecResult> {
+  async exec(cmd: string, opts: ExecOptions = {}): Promise<RawExecResult> {
     const response = await fetch(this.vmUrl("/exec"), {
       method: "POST",
       headers: { ...this.headers, "content-type": "application/json" },
-      body: JSON.stringify({ cmd }),
+      body: JSON.stringify(execBody(cmd, opts)),
     });
     if (!response.ok) throw new Error(`remote exec failed: ${response.status} ${await safeText(response)}`);
     const result = (await response.json()) as RemoteExecResult;
@@ -225,6 +243,16 @@ export class RemoteBackend implements Backend {
     return statFromWire((await response.json()) as RemoteFsStat);
   }
 
+  async readlink(path: string): Promise<string> {
+    const response = await fetch(this.urlWithPath("/fs/symlinks", path), { headers: this.headers });
+    if (!response.ok) throw new Error(`remote readlink ${path}: ${response.status} ${await safeText(response)}`);
+    const body = (await response.json()) as { target?: unknown };
+    if (typeof body.target !== "string") {
+      throw new Error(`remote readlink ${path}: malformed response`);
+    }
+    return body.target;
+  }
+
   async mkdir(path: string): Promise<void> {
     const response = await fetch(this.urlWithPath("/fs/dirs", path), {
       method: "PUT",
@@ -239,6 +267,15 @@ export class RemoteBackend implements Backend {
       headers: this.headers,
     });
     if (!response.ok) throw new Error(`remote rm ${path}: ${response.status} ${await safeText(response)}`);
+  }
+
+  async chmod(path: string, mode: number): Promise<void> {
+    const response = await fetch(this.urlWithPath("/fs/mode", path), {
+      method: "PUT",
+      headers: { ...this.headers, "content-type": "application/json" },
+      body: JSON.stringify({ mode }),
+    });
+    if (!response.ok) throw new Error(`remote chmod ${path}: ${response.status} ${await safeText(response)}`);
   }
 
   async symlink(target: string, link: string): Promise<void> {
@@ -303,8 +340,20 @@ export class RemoteBackend implements Backend {
     this.tools.delete(name);
   }
 
-  async serviceCall(name: string, _req: Uint8Array): Promise<Uint8Array> {
-    throw new Error(`remote runtime cannot call /svc/${name}: the REST contract does not expose svc_call`);
+  async serviceCall(name: string, req: Uint8Array): Promise<Uint8Array> {
+    // POST /v1/vms/:id/svc/:service — the served host runs the resident-service call as host control
+    // on its own authority boundary and returns the framed body. A framed non-zero status (the
+    // service could not be delivered) is surfaced by the server as a non-2xx, matching the embedded
+    // backend which throws on a non-zero status.
+    const response = await fetch(this.vmUrl(`/svc/${encodeURIComponent(name)}`), {
+      method: "POST",
+      headers: { ...this.headers, "content-type": "application/octet-stream" },
+      body: req as BodyInit,
+    });
+    if (!response.ok) {
+      throw new Error(`remote svc_call ${name}: ${response.status} ${await safeText(response)}`);
+    }
+    return responseBytes(response);
   }
 
   async mount(path: string, driver: Driver, readOnly: boolean): Promise<void> {
@@ -352,6 +401,7 @@ export class RemoteBackend implements Backend {
   }
 
   liveSession(agentType: string): SessionHandle {
+    assertSessionAgentType(agentType);
     const id = `s${++this.sessionSeq}`;
     const socket = this.unified();
     const backend = this;
@@ -447,6 +497,7 @@ function statFromWire(stat: RemoteFsStat): StatResult {
     isDir,
     isSymlink: isSymlinkKind(stat.kind),
     nlink: isDir ? 2 : 1,
+    mode: stat.mode,
   };
 }
 

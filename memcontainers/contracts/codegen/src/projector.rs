@@ -4,7 +4,7 @@
 //!
 //! Invocation:  projector --module <m> --lang <l> --contract <path.kdl>
 //!   module = constants | mc | env | ctl | wire   (which boundary / schema)
-//!   lang   = rust | zig | ts | md | asyncapi | openapi      (which projection)
+//!   lang   = rust | zig | ts | elixir | md | asyncapi | openapi      (which projection)
 //!
 //! Design (why this shape — C1):
 //!   - DETERMINISM (A7/B2): same inputs → byte-identical output. No clock, no env,
@@ -21,7 +21,7 @@
 //!   - DEPENDENCY-LIGHT: no external crates, so the projector needs no crate_universe
 //!     and stays cheap on the build's critical path.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::process::ExitCode;
 
 // ===========================================================================
@@ -165,7 +165,9 @@ fn tokenize(src: &str) -> Vec<Tok> {
             b'-' if i + 1 < b.len() && b[i + 1].is_ascii_digit() => {
                 let start = i;
                 i += 1;
-                while i < b.len() && (b[i].is_ascii_digit() || b[i] == b'x' || b[i].is_ascii_hexdigit()) {
+                while i < b.len()
+                    && (b[i].is_ascii_digit() || b[i] == b'x' || b[i].is_ascii_hexdigit())
+                {
                     i += 1;
                 }
                 out.push(Tok::Int(parse_int(&src[start..i])));
@@ -300,10 +302,11 @@ fn sanitize(s: &str) -> String {
 
 fn banner(lang: &str, contract: &str) -> String {
     let line = "@generated";
-    let comment =
-        format!("// {line} from contracts/{contract} by //contracts/codegen:projector — do not edit.\n");
+    let comment = format!(
+        "// {line} from contracts/{contract} by //contracts/codegen:projector — do not edit.\n"
+    );
     match lang {
-        "asyncapi" | "openapi" => {
+        "asyncapi" | "openapi" | "elixir" => {
             format!("# {line} from contracts/{contract} by //contracts/codegen:projector — do not edit.\n")
         }
         // Rust projections are `no_std`: just consts/macros, usable by the no_std kernel
@@ -336,8 +339,23 @@ fn ts_num(v: i64) -> String {
 fn emit_constants(lang: &str, nodes: &[Node], contract: &str) -> String {
     let mut o = banner(lang, contract);
     let comment = |o: &mut String, text: &str| match lang {
+        "elixir" => o.push_str(&format!("\n  # {text}\n")),
         _ => o.push_str(&format!("\n// {text}\n")),
     };
+    let const_values: HashMap<String, i64> = nodes
+        .iter()
+        .filter(|n| n.name != "tier-caps")
+        .flat_map(|n| {
+            n.children
+                .iter()
+                .map(|c| (c.name.clone(), c.args.first().map(Val::as_int).unwrap_or(0)))
+        })
+        .collect();
+
+    if lang == "elixir" {
+        o.push_str(&format!("defmodule {} do\n", elixir_module_name(contract)));
+    }
+
     for n in nodes {
         match n.name.as_str() {
             "abi-version" => {
@@ -354,15 +372,25 @@ fn emit_constants(lang: &str, nodes: &[Node], contract: &str) -> String {
                     "ts" => o.push_str(&format!(
                         "export const SYS_ABI_MAJOR = {major};\nexport const SYS_ABI_MINOR = {minor};\nexport function abiVersion(): number {{ return (SYS_ABI_MAJOR << 16) | SYS_ABI_MINOR; }}\n"
                     )),
+                    "elixir" => {
+                        let version = (major << 16) | minor;
+                        o.push_str(&format!(
+                            "  def sys_abi_major, do: {major}\n  def sys_abi_minor, do: {minor}\n  def abi_version, do: {version}\n"
+                        ))
+                    }
                     _ => {}
                 }
             }
             "wire-version" => {
-                let v = n.arg_str(0).parse::<i64>().unwrap_or_else(|_| n.args.first().map(Val::as_int).unwrap_or(0));
+                let v = n
+                    .arg_str(0)
+                    .parse::<i64>()
+                    .unwrap_or_else(|_| n.args.first().map(Val::as_int).unwrap_or(0));
                 match lang {
                     "rust" => o.push_str(&format!("pub const WIRE_VERSION: u32 = {v};\n")),
                     "zig" => o.push_str(&format!("pub const WIRE_VERSION: u32 = {v};\n")),
                     "ts" => o.push_str(&format!("export const WIRE_VERSION = {v};\n")),
+                    "elixir" => o.push_str(&format!("  def wire_version, do: {v}\n")),
                     _ => {}
                 }
             }
@@ -397,18 +425,36 @@ fn emit_constants(lang: &str, nodes: &[Node], contract: &str) -> String {
                     }
                     "zig" => {
                         // Match the Rust projection: TIER_* consts are i32, so is the param.
-                        o.push_str("pub fn tier_caps(tier: i32) u8 {\n    return switch (tier) {\n");
+                        o.push_str(
+                            "pub fn tier_caps(tier: i32) u8 {\n    return switch (tier) {\n",
+                        );
                         for (name, expr) in &arms {
                             o.push_str(&format!("        {name} => {expr},\n"));
                         }
                         o.push_str("        else => 0,\n    };\n}\n");
                     }
                     "ts" => {
-                        o.push_str("export function tierCaps(tier: number): number {\n  switch (tier) {\n");
+                        o.push_str(
+                            "export function tierCaps(tier: number): number {\n  switch (tier) {\n",
+                        );
                         for (name, expr) in &arms {
                             o.push_str(&format!("    case {name}: return {expr};\n"));
                         }
                         o.push_str("    default: return 0;\n  }\n}\n");
+                    }
+                    "elixir" => {
+                        o.push_str("  def tier_caps(tier) do\n    case tier do\n");
+                        for (name, expr) in &arms {
+                            let tier = const_values.get(name).copied().unwrap_or(0);
+                            let caps = expr
+                                .split('|')
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                                .map(|cap| const_values.get(cap).copied().unwrap_or(0))
+                                .fold(0, |acc, v| acc | v);
+                            o.push_str(&format!("      {tier} -> {caps}\n"));
+                        }
+                        o.push_str("      _ -> 0\n    end\n  end\n");
                     }
                     _ => {}
                 }
@@ -424,6 +470,10 @@ fn emit_constants(lang: &str, nodes: &[Node], contract: &str) -> String {
                     "rust" => o.push_str(&format!("pub const {cname}: &str = \"{value}\";\n")),
                     "zig" => o.push_str(&format!("pub const {cname}: []const u8 = \"{value}\";\n")),
                     "ts" => o.push_str(&format!("export const {cname} = \"{value}\";\n")),
+                    "elixir" => o.push_str(&format!(
+                        "  def {}, do: \"{value}\"\n",
+                        elixir_fun_name(&cname)
+                    )),
                     _ => {}
                 }
             }
@@ -438,12 +488,18 @@ fn emit_constants(lang: &str, nodes: &[Node], contract: &str) -> String {
                         "rust" => o.push_str(&format!("pub const {name}: {ty} = {v};\n")),
                         "zig" => o.push_str(&format!("pub const {name}: {ty} = {v};\n")),
                         "ts" => o.push_str(&format!("export const {name} = {};\n", ts_num(v))),
+                        "elixir" => {
+                            o.push_str(&format!("  def {}, do: {v}\n", elixir_fun_name(name)))
+                        }
                         _ => {}
                     }
                 }
             }
             _ => {}
         }
+    }
+    if lang == "elixir" {
+        o.push_str("end\n");
     }
     o
 }
@@ -470,6 +526,22 @@ struct Row {
     cap: Option<String>,
 }
 
+#[derive(Clone)]
+struct MessageField {
+    name: String,
+    ty: String,
+    optional: bool,
+}
+
+#[derive(Clone)]
+struct Message {
+    name: String,
+    id: u16,
+    version: u8,
+    fields: Vec<MessageField>,
+    doc: String,
+}
+
 fn collect_rows(nodes: &[Node], node_name: &str) -> Vec<Row> {
     nodes
         .iter()
@@ -482,7 +554,12 @@ fn collect_rows(nodes: &[Node], node_name: &str) -> Vec<Row> {
                 .unwrap_or_else(|| to_variant(&name));
             let args = n
                 .children_named("arg")
-                .map(|a| (a.arg_str(0).to_string(), a.prop_str("type").unwrap_or("i32").to_string()))
+                .map(|a| {
+                    (
+                        a.arg_str(0).to_string(),
+                        a.prop_str("type").unwrap_or("i32").to_string(),
+                    )
+                })
                 .collect();
             Row {
                 name,
@@ -493,6 +570,27 @@ fn collect_rows(nodes: &[Node], node_name: &str) -> Vec<Row> {
                 cfg: n.prop_str("cfg").map(String::from),
                 cap: n.prop_str("cap").map(String::from),
             }
+        })
+        .collect()
+}
+
+fn collect_codec_messages(nodes: &[Node]) -> Vec<Message> {
+    nodes
+        .iter()
+        .filter(|n| n.name == "message" && n.children.iter().any(|c| c.name == "field"))
+        .map(|n| Message {
+            name: n.arg_str(0).to_string(),
+            id: n.props.get("id").map(Val::as_int).unwrap_or(0) as u16,
+            version: n.props.get("version").map(Val::as_int).unwrap_or(1) as u8,
+            fields: n
+                .children_named("field")
+                .map(|f| MessageField {
+                    name: f.arg_str(0).to_string(),
+                    ty: f.prop_str("type").unwrap_or("bytes").to_string(),
+                    optional: prop_bool(f, "opt", false),
+                })
+                .collect(),
+            doc: n.doc(),
         })
         .collect()
 }
@@ -509,17 +607,893 @@ fn to_variant(sym: &str) -> String {
         .filter(|p| !p.is_empty())
         .map(|p| {
             let mut c = p.chars();
-            c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+            c.next()
+                .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+                .unwrap_or_default()
         })
         .collect()
 }
 
+fn screaming_snake(s: &str) -> String {
+    let mut out = String::new();
+    let mut prev_lower = false;
+    for c in s.chars() {
+        if c == '-' || c == ' ' {
+            if !out.ends_with('_') {
+                out.push('_');
+            }
+            prev_lower = false;
+        } else if c == '_' {
+            if !out.ends_with('_') {
+                out.push('_');
+            }
+            prev_lower = false;
+        } else if c.is_ascii_uppercase() {
+            if prev_lower && !out.ends_with('_') {
+                out.push('_');
+            }
+            out.push(c);
+            prev_lower = false;
+        } else {
+            out.push(c.to_ascii_uppercase());
+            prev_lower = c.is_ascii_lowercase() || c.is_ascii_digit();
+        }
+    }
+    out
+}
+
+fn list_inner(ty: &str) -> Option<&str> {
+    let ty = ty.trim();
+    ty.strip_prefix("list<")
+        .and_then(|rest| rest.strip_suffix('>'))
+        .map(str::trim)
+        .filter(|inner| !inner.is_empty())
+}
+
+fn rust_type(ty: &str) -> String {
+    if let Some(inner) = list_inner(ty) {
+        return format!("Vec<{}>", rust_type(inner));
+    }
+    match ty {
+        "u32" => "u32".to_string(),
+        "i32" => "i32".to_string(),
+        "i64" => "i64".to_string(),
+        "bool" => "bool".to_string(),
+        "str" => "String".to_string(),
+        "bytes" => "Vec<u8>".to_string(),
+        "strmap" => "BTreeMap<String, String>".to_string(),
+        _ => ty.to_string(),
+    }
+}
+
+fn ts_type(ty: &str) -> String {
+    if let Some(inner) = list_inner(ty) {
+        return format!("{}[]", ts_type(inner));
+    }
+    match ty {
+        "u32" | "i32" | "i64" => "number".to_string(),
+        "bool" => "boolean".to_string(),
+        "str" => "string".to_string(),
+        "bytes" => "Uint8Array".to_string(),
+        "strmap" => "Record<string, string>".to_string(),
+        _ => ty.to_string(),
+    }
+}
+
+fn zig_type(ty: &str) -> String {
+    if let Some(inner) = list_inner(ty) {
+        return format!("[]const {}", zig_type(inner));
+    }
+    match ty {
+        "u32" => "u32".to_string(),
+        "i32" => "i32".to_string(),
+        "i64" => "i64".to_string(),
+        "bool" => "bool".to_string(),
+        "str" | "bytes" => "[]const u8".to_string(),
+        "strmap" => "[]const StringPair".to_string(),
+        _ => ty.to_string(),
+    }
+}
+
+fn elixir_fun_name(s: &str) -> String {
+    let mut out = String::new();
+    let mut prev_lower = false;
+    for c in s.chars() {
+        if c == '-' || c == ' ' || c == '_' {
+            if !out.ends_with('_') {
+                out.push('_');
+            }
+            prev_lower = false;
+        } else if c.is_ascii_uppercase() {
+            if prev_lower && !out.ends_with('_') {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+            prev_lower = false;
+        } else {
+            out.push(c.to_ascii_lowercase());
+            prev_lower = c.is_ascii_lowercase() || c.is_ascii_digit();
+        }
+    }
+    out
+}
+
+fn elixir_module_name(contract: &str) -> String {
+    let stem = contract.strip_suffix(".kdl").unwrap_or(contract);
+    let module = match stem {
+        "llb" => "LLB".to_string(),
+        _ => to_variant(stem),
+    };
+    format!("AgentOS.Contracts.{module}")
+}
+
+fn elixir_encode_expr(ty: &str, expr: &str) -> String {
+    if let Some(inner) = list_inner(ty) {
+        return format!(
+            "put_message_list({expr}, &encode_{}/1)",
+            elixir_fun_name(inner)
+        );
+    }
+    match ty {
+        "u32" => format!("put_u32({expr})"),
+        "i32" => format!("put_i32({expr})"),
+        "i64" => format!("put_i64({expr})"),
+        "bool" => format!("put_bool({expr})"),
+        "str" => format!("put_str({expr})"),
+        "bytes" => format!("put_bytes({expr})"),
+        "strmap" => format!("put_strmap({expr})"),
+        _ => format!("put_bytes(encode_{}({expr}))", elixir_fun_name(ty)),
+    }
+}
+
+fn elixir_decode_expr(ty: &str, rest: &str) -> String {
+    if let Some(inner) = list_inner(ty) {
+        return format!(
+            "read_message_list({rest}, &decode_{}/1)",
+            elixir_fun_name(inner)
+        );
+    }
+    match ty {
+        "u32" => format!("read_u32({rest})"),
+        "i32" => format!("read_i32({rest})"),
+        "i64" => format!("read_i64({rest})"),
+        "bool" => format!("read_bool({rest})"),
+        "str" => format!("read_str({rest})"),
+        "bytes" => format!("read_bytes({rest})"),
+        "strmap" => format!("read_strmap({rest})"),
+        _ => format!("read_message({rest}, &decode_{}/1)", elixir_fun_name(ty)),
+    }
+}
+
+fn field_type_contains(ty: &str, needle: &str) -> bool {
+    if ty == needle {
+        return true;
+    }
+    list_inner(ty)
+        .map(|inner| field_type_contains(inner, needle))
+        .unwrap_or(false)
+}
+
+fn messages_use_type(messages: &[Message], needle: &str) -> bool {
+    messages
+        .iter()
+        .any(|m| m.fields.iter().any(|f| field_type_contains(&f.ty, needle)))
+}
+
+fn is_builtin_elixir_type(ty: &str) -> bool {
+    matches!(
+        ty,
+        "u32" | "i32" | "i64" | "bool" | "str" | "bytes" | "strmap"
+    )
+}
+
+fn messages_use_list_type(messages: &[Message]) -> bool {
+    messages
+        .iter()
+        .any(|m| m.fields.iter().any(|f| list_inner(&f.ty).is_some()))
+}
+
+fn messages_use_scalar_message_type(messages: &[Message]) -> bool {
+    messages.iter().any(|m| {
+        m.fields
+            .iter()
+            .any(|f| list_inner(&f.ty).is_none() && !is_builtin_elixir_type(&f.ty))
+    })
+}
+
+fn emit_elixir_messages(messages: &[Message], contract: &str) -> String {
+    if messages.is_empty() {
+        return String::new();
+    }
+
+    let mut o = String::new();
+    o.push_str(&format!("defmodule {} do\n", elixir_module_name(contract)));
+    o.push_str("  @moduledoc false\n\n");
+    let uses_i32 = messages_use_type(messages, "i32");
+    let uses_message_list = messages_use_list_type(messages);
+    let uses_scalar_message = messages_use_scalar_message_type(messages);
+    o.push_str(
+        r#"  defp field!(map, key) do
+    case field(map, key, :__mc_missing__) do
+      :__mc_missing__ -> raise KeyError, key: key, term: map
+      value -> value
+    end
+  end
+
+  defp field(map, key, default \\ nil) when is_map(map) do
+    Map.get(map, key, Map.get(map, Atom.to_string(key), default))
+  end
+
+  defp read_header(bytes, expected_id, expected_version) do
+    with {:ok, id, rest} <- read_u16(bytes),
+         true <- id == expected_id || {:error, "wrong message id"},
+         {:ok, version, rest} <- read_u8(rest),
+         true <- version == expected_version || {:error, "unsupported message version"} do
+      {:ok, rest}
+    end
+  end
+
+  defp read_u8(<<value, rest::binary>>), do: {:ok, value, rest}
+  defp read_u8(_bytes), do: {:error, "truncated frame"}
+  defp read_u16(<<value::unsigned-little-16, rest::binary>>), do: {:ok, value, rest}
+  defp read_u16(_bytes), do: {:error, "truncated frame"}
+  defp read_u32(<<value::unsigned-little-32, rest::binary>>), do: {:ok, value, rest}
+  defp read_u32(_bytes), do: {:error, "truncated frame"}
+  defp read_i64(<<value::signed-little-64, rest::binary>>), do: {:ok, value, rest}
+  defp read_i64(_bytes), do: {:error, "truncated frame"}
+
+  defp read_bool(bytes) do
+    case read_u8(bytes) do
+      {:ok, 0, rest} -> {:ok, false, rest}
+      {:ok, 1, rest} -> {:ok, true, rest}
+      {:ok, _value, _rest} -> {:error, "invalid bool"}
+      err -> err
+    end
+  end
+
+  defp read_bytes(bytes) do
+    with {:ok, len, rest} <- read_u32(bytes),
+         true <- byte_size(rest) >= len || {:error, "truncated frame"} do
+      <<out::binary-size(^len), rest::binary>> = rest
+      {:ok, out, rest}
+    end
+  end
+
+  defp read_str(bytes) do
+    with {:ok, out, rest} <- read_bytes(bytes),
+         true <- String.valid?(out) || {:error, "invalid utf-8"} do
+      {:ok, out, rest}
+    end
+  end
+
+  defp read_strmap(bytes) do
+    with {:ok, n, rest} <- read_u32(bytes) do
+      read_strmap_entries(n, rest, nil, %{})
+    end
+  end
+
+  defp read_strmap_entries(0, rest, _prev, out), do: {:ok, out, rest}
+
+  defp read_strmap_entries(n, bytes, prev, out) do
+    with {:ok, key, rest} <- read_str(bytes),
+         true <- is_nil(prev) or prev < key || {:error, "non-canonical strmap"},
+         {:ok, value, rest} <- read_str(rest) do
+      read_strmap_entries(n - 1, rest, key, Map.put(out, key, value))
+    end
+  end
+
+  defp read_opt(bytes, fun) do
+    case read_u8(bytes) do
+      {:ok, 0, rest} -> {:ok, nil, rest}
+      {:ok, 1, rest} -> fun.(rest)
+      {:ok, _value, _rest} -> {:error, "invalid optional presence"}
+      err -> err
+    end
+  end
+
+  defp read_eof(<<>>), do: :ok
+  defp read_eof(_rest), do: {:error, "trailing bytes"}
+
+  defp put_u8(value), do: <<value::unsigned-little-8>>
+  defp put_u16(value), do: <<value::unsigned-little-16>>
+  defp put_u32(value), do: <<value::unsigned-little-32>>
+  defp put_i64(value), do: <<value::signed-little-64>>
+  defp put_bool(true), do: <<1>>
+  defp put_bool(false), do: <<0>>
+  defp put_bytes(bytes), do: [put_u32(byte_size(bytes)), bytes]
+  defp put_str(value), do: put_bytes(value)
+
+  defp put_strmap(map) do
+    entries = map |> Enum.map(fn {k, v} -> {to_string(k), to_string(v)} end) |> Enum.sort()
+    [put_u32(length(entries)), Enum.map(entries, fn {k, v} -> [put_str(k), put_str(v)] end)]
+  end
+
+"#,
+    );
+    if uses_message_list {
+        o.push_str(
+            r#"  defp read_message_list(bytes, decoder) do
+    with {:ok, n, rest} <- read_u32(bytes) do
+      read_message_list_items(n, rest, decoder, [])
+    end
+  end
+
+  defp read_message_list_items(0, rest, _decoder, acc), do: {:ok, Enum.reverse(acc), rest}
+
+  defp read_message_list_items(n, bytes, decoder, acc) do
+    with {:ok, item_bytes, rest} <- read_bytes(bytes),
+         {:ok, item} <- decoder.(item_bytes) do
+      read_message_list_items(n - 1, rest, decoder, [item | acc])
+    end
+  end
+
+  defp put_message_list(values, encoder) do
+    [put_u32(length(values)), Enum.map(values, fn value -> put_bytes(encoder.(value)) end)]
+  end
+
+"#,
+        );
+    }
+    if uses_scalar_message {
+        o.push_str(
+            r#"  defp read_message(bytes, decoder) do
+    with {:ok, item_bytes, rest} <- read_bytes(bytes),
+         {:ok, item} <- decoder.(item_bytes) do
+      {:ok, item, rest}
+    end
+  end
+
+"#,
+        );
+    }
+    if uses_i32 {
+        o.push_str(
+            r#"  defp read_i32(<<value::signed-little-32, rest::binary>>), do: {:ok, value, rest}
+  defp read_i32(_bytes), do: {:error, "truncated frame"}
+  defp put_i32(value), do: <<value::signed-little-32>>
+
+"#,
+        );
+    }
+
+    for m in messages {
+        let fun = elixir_fun_name(&m.name);
+        let const_prefix = screaming_snake(&m.name);
+        o.push_str(&format!("  @{}_msg_id {}\n", fun, m.id));
+        o.push_str(&format!("  @{}_version {}\n", fun, m.version));
+        o.push_str(&format!(
+            "\n  def encode_{}(msg) when is_map(msg) do\n",
+            fun
+        ));
+        o.push_str("    IO.iodata_to_binary([\n");
+        o.push_str(&format!("      put_u16(@{}_msg_id),\n", fun));
+        o.push_str(&format!("      put_u8(@{}_version)", fun));
+        for f in &m.fields {
+            let key = format!(":{}", f.name);
+            if f.optional {
+                o.push_str(",\n      ");
+                o.push_str(&format!(
+                    "case field(msg, {key}) do\n        nil -> <<0>>\n        value -> [<<1>>, {}]\n      end",
+                    elixir_encode_expr(&f.ty, "value")
+                ));
+            } else {
+                o.push_str(",\n      ");
+                o.push_str(&elixir_encode_expr(&f.ty, &format!("field!(msg, {key})")));
+            }
+        }
+        o.push_str("\n    ])\n  end\n\n");
+
+        o.push_str(&format!(
+            "  def decode_{}(bytes) when is_binary(bytes) do\n",
+            fun
+        ));
+        o.push_str(&format!(
+            "    with {{:ok, rest}} <- read_header(bytes, @{}_msg_id, @{}_version)",
+            fun, fun
+        ));
+        for f in &m.fields {
+            if f.optional {
+                o.push_str(&format!(
+                    ",\n         {{:ok, {}, rest}} <- read_opt(rest, fn rest -> {} end)",
+                    f.name,
+                    elixir_decode_expr(&f.ty, "rest")
+                ));
+            } else {
+                o.push_str(&format!(
+                    ",\n         {{:ok, {}, rest}} <- {}",
+                    f.name,
+                    elixir_decode_expr(&f.ty, "rest")
+                ));
+            }
+        }
+        o.push_str(",\n         :ok <- read_eof(rest) do\n");
+        o.push_str("      {:ok, %{\n");
+        for f in &m.fields {
+            o.push_str(&format!("        {}: {},\n", f.name, f.name));
+        }
+        o.push_str("      }}\n    end\n  end\n\n");
+
+        o.push_str(&format!(
+            "  def {}_msg_id, do: @{}_msg_id\n  def {}_version, do: @{}_version\n\n",
+            fun, fun, fun, fun
+        ));
+        o.push_str(&format!("  # {const_prefix}\n"));
+    }
+
+    o.push_str("end\n");
+    o
+}
+
+fn emit_rust_codec_field_put(o: &mut String, f: &MessageField, expr: &str) {
+    if list_inner(&f.ty).is_some() {
+        o.push_str(&format!(
+            "        ctl_put_message_list(&mut out, {expr}, |v| v.encode());\n"
+        ));
+        return;
+    }
+    match f.ty.as_str() {
+        "u32" => o.push_str(&format!("        ctl_put_u32(&mut out, {expr});\n")),
+        "i32" => o.push_str(&format!("        ctl_put_i32(&mut out, {expr});\n")),
+        "i64" => o.push_str(&format!("        ctl_put_i64(&mut out, {expr});\n")),
+        "bool" => o.push_str(&format!("        ctl_put_bool(&mut out, {expr});\n")),
+        "str" => o.push_str(&format!("        ctl_put_str(&mut out, {expr});\n")),
+        "bytes" => o.push_str(&format!("        ctl_put_bytes(&mut out, {expr});\n")),
+        "strmap" => o.push_str(&format!("        ctl_put_strmap(&mut out, {expr});\n")),
+        _ => o.push_str(&format!(
+            "        let frame = ({expr}).encode();\n        ctl_put_bytes(&mut out, &frame);\n"
+        )),
+    }
+}
+
+fn rust_encode_expr(f: &MessageField, base: &str, by_ref_match: bool) -> String {
+    match f.ty.as_str() {
+        "u32" | "i32" | "i64" | "bool" if by_ref_match => format!("*{base}"),
+        "u32" | "i32" | "i64" | "bool" => base.to_string(),
+        _ if by_ref_match => base.to_string(),
+        _ => format!("&{base}"),
+    }
+}
+
+fn rust_decode_expr(ty: &str) -> String {
+    if let Some(inner) = list_inner(ty) {
+        return format!("ctl_read_message_list(bytes, &mut off, {inner}::decode)?");
+    }
+    match ty {
+        "u32" => "ctl_read_u32(bytes, &mut off)?".to_string(),
+        "i32" => "ctl_read_i32(bytes, &mut off)?".to_string(),
+        "i64" => "ctl_read_i64(bytes, &mut off)?".to_string(),
+        "bool" => "ctl_read_bool(bytes, &mut off)?".to_string(),
+        "str" => "ctl_read_str(bytes, &mut off)?".to_string(),
+        "bytes" => "ctl_read_bytes(bytes, &mut off)?".to_string(),
+        "strmap" => "ctl_read_strmap(bytes, &mut off)?".to_string(),
+        _ => format!("{ty}::decode(&ctl_read_bytes(bytes, &mut off)?)?"),
+    }
+}
+
+fn emit_rust_messages(messages: &[Message]) -> String {
+    if messages.is_empty() {
+        return String::new();
+    }
+    let mut o = String::new();
+    o.push_str("#![allow(dead_code)]\n\nextern crate alloc;\nuse alloc::collections::BTreeMap;\nuse alloc::string::String;\nuse alloc::vec::Vec;\n\n");
+    o.push_str("#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n");
+    o.push_str("pub enum WireError { WrongMessage, UnsupportedVersion, Truncated, InvalidUtf8, NonCanonicalMap, InvalidPresence, TrailingBytes }\n\n");
+    o.push_str(
+        "fn ctl_put_u16(out: &mut Vec<u8>, v: u16) { out.extend_from_slice(&v.to_le_bytes()); }\n",
+    );
+    o.push_str(
+        "fn ctl_put_u32(out: &mut Vec<u8>, v: u32) { out.extend_from_slice(&v.to_le_bytes()); }\n",
+    );
+    o.push_str(
+        "fn ctl_put_i32(out: &mut Vec<u8>, v: i32) { out.extend_from_slice(&v.to_le_bytes()); }\n",
+    );
+    o.push_str(
+        "fn ctl_put_i64(out: &mut Vec<u8>, v: i64) { out.extend_from_slice(&v.to_le_bytes()); }\n",
+    );
+    o.push_str(
+        "fn ctl_put_bool(out: &mut Vec<u8>, v: bool) { out.push(if v { 1 } else { 0 }); }\n",
+    );
+    o.push_str("fn ctl_put_bytes(out: &mut Vec<u8>, v: &[u8]) { ctl_put_u32(out, v.len() as u32); out.extend_from_slice(v); }\n");
+    o.push_str(
+        "fn ctl_put_str(out: &mut Vec<u8>, v: &str) { ctl_put_bytes(out, v.as_bytes()); }\n",
+    );
+    o.push_str("fn ctl_put_strmap(out: &mut Vec<u8>, v: &BTreeMap<String, String>) { ctl_put_u32(out, v.len() as u32); for (k, val) in v { ctl_put_str(out, k); ctl_put_str(out, val); } }\n");
+    o.push_str("fn ctl_put_message_list<T, F>(out: &mut Vec<u8>, values: &[T], mut encode: F) where F: FnMut(&T) -> Vec<u8> { ctl_put_u32(out, values.len() as u32); for value in values { let frame = encode(value); ctl_put_bytes(out, &frame); } }\n");
+    o.push_str("fn ctl_need<'a>(bytes: &'a [u8], off: &mut usize, len: usize) -> Result<&'a [u8], WireError> { let end = off.checked_add(len).ok_or(WireError::Truncated)?; if end > bytes.len() { return Err(WireError::Truncated); } let out = &bytes[*off..end]; *off = end; Ok(out) }\n");
+    o.push_str("fn ctl_read_u8(bytes: &[u8], off: &mut usize) -> Result<u8, WireError> { Ok(ctl_need(bytes, off, 1)?[0]) }\n");
+    o.push_str("fn ctl_read_u16(bytes: &[u8], off: &mut usize) -> Result<u16, WireError> { let b = ctl_need(bytes, off, 2)?; Ok(u16::from_le_bytes([b[0], b[1]])) }\n");
+    o.push_str("fn ctl_read_u32(bytes: &[u8], off: &mut usize) -> Result<u32, WireError> { let b = ctl_need(bytes, off, 4)?; Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]])) }\n");
+    o.push_str("fn ctl_read_i32(bytes: &[u8], off: &mut usize) -> Result<i32, WireError> { let b = ctl_need(bytes, off, 4)?; Ok(i32::from_le_bytes([b[0], b[1], b[2], b[3]])) }\n");
+    o.push_str("fn ctl_read_i64(bytes: &[u8], off: &mut usize) -> Result<i64, WireError> { let b = ctl_need(bytes, off, 8)?; Ok(i64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]])) }\n");
+    o.push_str("fn ctl_read_bool(bytes: &[u8], off: &mut usize) -> Result<bool, WireError> { match ctl_read_u8(bytes, off)? { 0 => Ok(false), 1 => Ok(true), _ => Err(WireError::InvalidPresence) } }\n");
+    o.push_str("fn ctl_read_bytes(bytes: &[u8], off: &mut usize) -> Result<Vec<u8>, WireError> { let len = ctl_read_u32(bytes, off)? as usize; Ok(ctl_need(bytes, off, len)?.to_vec()) }\n");
+    o.push_str("fn ctl_read_str(bytes: &[u8], off: &mut usize) -> Result<String, WireError> { String::from_utf8(ctl_read_bytes(bytes, off)?).map_err(|_| WireError::InvalidUtf8) }\n");
+    o.push_str("fn ctl_read_strmap(bytes: &[u8], off: &mut usize) -> Result<BTreeMap<String, String>, WireError> { let n = ctl_read_u32(bytes, off)? as usize; let mut out = BTreeMap::new(); let mut prev: Option<String> = None; for _ in 0..n { let k = ctl_read_str(bytes, off)?; if prev.as_ref().map_or(false, |p| p >= &k) { return Err(WireError::NonCanonicalMap); } let v = ctl_read_str(bytes, off)?; prev = Some(k.clone()); out.insert(k, v); } Ok(out) }\n\n");
+    o.push_str("fn ctl_read_message_list<T, F>(bytes: &[u8], off: &mut usize, mut decode: F) -> Result<Vec<T>, WireError> where F: FnMut(&[u8]) -> Result<T, WireError> { let n = ctl_read_u32(bytes, off)? as usize; let mut out = Vec::with_capacity(n); for _ in 0..n { let frame = ctl_read_bytes(bytes, off)?; out.push(decode(&frame)?); } Ok(out) }\n\n");
+
+    for m in messages {
+        let const_prefix = screaming_snake(&m.name);
+        if !m.doc.is_empty() {
+            o.push_str(&format!("/// {}\n", m.doc));
+        }
+        o.push_str("#[derive(Clone, Debug, Default, Eq, PartialEq)]\n");
+        o.push_str(&format!("pub struct {} {{\n", m.name));
+        for f in &m.fields {
+            let ty = rust_type(&f.ty);
+            if f.optional {
+                o.push_str(&format!("    pub {}: Option<{}>,\n", f.name, ty));
+            } else {
+                o.push_str(&format!("    pub {}: {},\n", f.name, ty));
+            }
+        }
+        o.push_str("}\n\n");
+        o.push_str(&format!(
+            "pub const {const_prefix}_MSG_ID: u16 = {};\n",
+            m.id
+        ));
+        o.push_str(&format!(
+            "pub const {const_prefix}_VERSION: u8 = {};\n",
+            m.version
+        ));
+        o.push_str(&format!("impl {} {{\n", m.name));
+        o.push_str("    pub fn encode(&self) -> Vec<u8> {\n");
+        o.push_str("        let mut out = Vec::new();\n");
+        o.push_str(&format!(
+            "        ctl_put_u16(&mut out, {const_prefix}_MSG_ID);\n"
+        ));
+        o.push_str(&format!("        out.push({const_prefix}_VERSION);\n"));
+        for f in &m.fields {
+            if f.optional {
+                o.push_str(&format!("        match &self.{} {{\n", f.name));
+                o.push_str("            Some(v) => {\n                out.push(1);\n");
+                emit_rust_codec_field_put(&mut o, f, &rust_encode_expr(f, "v", true));
+                o.push_str("            }\n            None => out.push(0),\n        }\n");
+            } else {
+                emit_rust_codec_field_put(
+                    &mut o,
+                    f,
+                    &rust_encode_expr(f, &format!("self.{}", f.name), false),
+                );
+            }
+        }
+        o.push_str("        out\n    }\n\n");
+        o.push_str("    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {\n");
+        o.push_str("        let mut off = 0usize;\n");
+        o.push_str(&format!("        if ctl_read_u16(bytes, &mut off)? != {const_prefix}_MSG_ID {{ return Err(WireError::WrongMessage); }}\n"));
+        o.push_str(&format!("        if ctl_read_u8(bytes, &mut off)? != {const_prefix}_VERSION {{ return Err(WireError::UnsupportedVersion); }}\n"));
+        for f in &m.fields {
+            if f.optional {
+                o.push_str(&format!(
+                    "        let {} = match ctl_read_u8(bytes, &mut off)? {{\n",
+                    f.name
+                ));
+                o.push_str("            0 => None,\n            1 => Some(");
+                o.push_str(&rust_decode_expr(&f.ty));
+                o.push_str(
+                    "),\n            _ => return Err(WireError::InvalidPresence),\n        };\n",
+                );
+            } else {
+                o.push_str(&format!(
+                    "        let {} = {};\n",
+                    f.name,
+                    rust_decode_expr(&f.ty)
+                ));
+            }
+        }
+        o.push_str("        if off != bytes.len() { return Err(WireError::TrailingBytes); }\n");
+        o.push_str("        Ok(Self {\n");
+        for f in &m.fields {
+            o.push_str(&format!("            {},\n", f.name));
+        }
+        o.push_str("        })\n    }\n}\n\n");
+    }
+    o
+}
+
+fn emit_ts_codec_field_put(o: &mut String, f: &MessageField, expr: &str) {
+    if let Some(inner) = list_inner(&f.ty) {
+        o.push_str(&format!(
+            "  ctlPutMessageList(out, {expr}, encode{});\n",
+            inner
+        ));
+        return;
+    }
+    match f.ty.as_str() {
+        "u32" => o.push_str(&format!("  ctlPutU32(out, {expr});\n")),
+        "i32" => o.push_str(&format!("  ctlPutI32(out, {expr});\n")),
+        "i64" => o.push_str(&format!("  ctlPutI64(out, {expr});\n")),
+        "bool" => o.push_str(&format!("  ctlPutBool(out, {expr});\n")),
+        "str" => o.push_str(&format!("  ctlPutStr(out, {expr});\n")),
+        "bytes" => o.push_str(&format!("  ctlPutBytes(out, {expr});\n")),
+        "strmap" => o.push_str(&format!("  ctlPutStrMap(out, {expr});\n")),
+        _ => o.push_str(&format!("  ctlPutBytes(out, encode{}({expr}));\n", f.ty)),
+    }
+}
+
+fn ts_decode_expr(ty: &str) -> String {
+    if let Some(inner) = list_inner(ty) {
+        return format!("ctlReadMessageList(cursor, decode{inner})");
+    }
+    match ty {
+        "u32" => "ctlReadU32(cursor)".to_string(),
+        "i32" => "ctlReadI32(cursor)".to_string(),
+        "i64" => "ctlReadI64(cursor)".to_string(),
+        "bool" => "ctlReadBool(cursor)".to_string(),
+        "str" => "ctlReadStr(cursor)".to_string(),
+        "bytes" => "ctlReadBytes(cursor)".to_string(),
+        "strmap" => "ctlReadStrMap(cursor)".to_string(),
+        _ => format!("decode{ty}(ctlReadBytes(cursor))"),
+    }
+}
+
+fn emit_ts_messages(messages: &[Message]) -> String {
+    if messages.is_empty() {
+        return String::new();
+    }
+    let mut o = String::new();
+    o.push_str("\nconst CTL_TEXT_ENCODER = new TextEncoder();\n");
+    o.push_str("const CTL_TEXT_DECODER = new TextDecoder(\"utf-8\", { fatal: true });\n\n");
+    o.push_str("export class WireError extends Error { constructor(message: string) { super(message); this.name = \"WireError\"; } }\n");
+    o.push_str("interface CtlCursor { bytes: Uint8Array; off: number }\n");
+    o.push_str("function ctlNeed(cursor: CtlCursor, len: number): Uint8Array { const end = cursor.off + len; if (end > cursor.bytes.length) throw new WireError(\"truncated frame\"); const out = cursor.bytes.subarray(cursor.off, end); cursor.off = end; return out; }\n");
+    o.push_str("function ctlPutU8(out: number[], v: number): void { out.push(v & 0xff); }\n");
+    o.push_str("function ctlPutU16(out: number[], v: number): void { out.push(v & 0xff, (v >>> 8) & 0xff); }\n");
+    o.push_str("function ctlPutU32(out: number[], v: number): void { out.push(v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff); }\n");
+    o.push_str("function ctlPutI32(out: number[], v: number): void { ctlPutU32(out, v >>> 0); }\n");
+    o.push_str("function ctlPutI64(out: number[], v: number): void { let x = BigInt(Math.trunc(v)); for (let i = 0; i < 8; i++) { out.push(Number((x >> BigInt(i * 8)) & 0xffn)); } }\n");
+    o.push_str("function ctlPutBool(out: number[], v: boolean): void { out.push(v ? 1 : 0); }\n");
+    o.push_str("function ctlPutBytes(out: number[], v: Uint8Array): void { ctlPutU32(out, v.length); for (const b of v) out.push(b); }\n");
+    o.push_str("function ctlPutStr(out: number[], v: string): void { ctlPutBytes(out, CTL_TEXT_ENCODER.encode(v)); }\n");
+    o.push_str("function ctlPutStrMap(out: number[], v: Record<string, string>): void { const entries = Object.entries(v).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0); ctlPutU32(out, entries.length); for (const [k, val] of entries) { ctlPutStr(out, k); ctlPutStr(out, val); } }\n");
+    o.push_str("function ctlPutMessageList<T>(out: number[], values: readonly T[], encode: (msg: T) => Uint8Array): void { ctlPutU32(out, values.length); for (const value of values) ctlPutBytes(out, encode(value)); }\n");
+    o.push_str(
+        "function ctlReadU8(cursor: CtlCursor): number { return ctlNeed(cursor, 1)[0]!; }\n",
+    );
+    o.push_str("function ctlReadU16(cursor: CtlCursor): number { const b = ctlNeed(cursor, 2); return b[0]! | (b[1]! << 8); }\n");
+    o.push_str("function ctlReadU32(cursor: CtlCursor): number { const b = ctlNeed(cursor, 4); return (b[0]! | (b[1]! << 8) | (b[2]! << 16) | (b[3]! << 24)) >>> 0; }\n");
+    o.push_str(
+        "function ctlReadI32(cursor: CtlCursor): number { return ctlReadU32(cursor) | 0; }\n",
+    );
+    o.push_str("function ctlReadI64(cursor: CtlCursor): number { const b = ctlNeed(cursor, 8); let x = 0n; for (let i = 0; i < 8; i++) x |= BigInt(b[i]!) << BigInt(i * 8); if ((x & (1n << 63n)) !== 0n) x -= 1n << 64n; return Number(x); }\n");
+    o.push_str("function ctlReadBool(cursor: CtlCursor): boolean { const v = ctlReadU8(cursor); if (v === 0) return false; if (v === 1) return true; throw new WireError(\"invalid bool\"); }\n");
+    o.push_str("function ctlReadBytes(cursor: CtlCursor): Uint8Array { const len = ctlReadU32(cursor); return ctlNeed(cursor, len).slice(); }\n");
+    o.push_str("function ctlReadStr(cursor: CtlCursor): string { try { return CTL_TEXT_DECODER.decode(ctlReadBytes(cursor)); } catch { throw new WireError(\"invalid utf-8\"); } }\n");
+    o.push_str("function ctlReadStrMap(cursor: CtlCursor): Record<string, string> { const n = ctlReadU32(cursor); const out: Record<string, string> = {}; let prev: string | null = null; for (let i = 0; i < n; i++) { const k = ctlReadStr(cursor); if (prev !== null && prev >= k) throw new WireError(\"non-canonical strmap\"); out[k] = ctlReadStr(cursor); prev = k; } return out; }\n\n");
+    o.push_str("function ctlReadMessageList<T>(cursor: CtlCursor, decode: (bytes: Uint8Array) => T): T[] { const n = ctlReadU32(cursor); const out: T[] = []; for (let i = 0; i < n; i++) out.push(decode(ctlReadBytes(cursor))); return out; }\n\n");
+
+    for m in messages {
+        let const_prefix = screaming_snake(&m.name);
+        if !m.doc.is_empty() {
+            o.push_str(&format!("// {}\n", m.doc));
+        }
+        o.push_str(&format!("export interface {} {{\n", m.name));
+        for f in &m.fields {
+            let opt = if f.optional { "?" } else { "" };
+            let nil = if f.optional { " | null" } else { "" };
+            o.push_str(&format!(
+                "  {}{}: {}{};\n",
+                f.name,
+                opt,
+                ts_type(&f.ty),
+                nil
+            ));
+        }
+        o.push_str("}\n");
+        o.push_str(&format!("export const {const_prefix}_MSG_ID = {};\n", m.id));
+        o.push_str(&format!(
+            "export const {const_prefix}_VERSION = {};\n",
+            m.version
+        ));
+        o.push_str(&format!(
+            "export function encode{}(msg: {}): Uint8Array {{\n",
+            m.name, m.name
+        ));
+        o.push_str("  const out: number[] = [];\n");
+        o.push_str(&format!("  ctlPutU16(out, {const_prefix}_MSG_ID);\n"));
+        o.push_str(&format!("  ctlPutU8(out, {const_prefix}_VERSION);\n"));
+        for f in &m.fields {
+            if f.optional {
+                o.push_str(&format!(
+                    "  if (msg.{} === undefined || msg.{} === null) {{\n",
+                    f.name, f.name
+                ));
+                o.push_str("    ctlPutU8(out, 0);\n  } else {\n    ctlPutU8(out, 1);\n");
+                emit_ts_codec_field_put(&mut o, f, &format!("msg.{}", f.name));
+                o.push_str("  }\n");
+            } else {
+                emit_ts_codec_field_put(&mut o, f, &format!("msg.{}", f.name));
+            }
+        }
+        o.push_str("  return Uint8Array.from(out);\n}\n");
+        o.push_str(&format!(
+            "export function decode{}(bytes: Uint8Array): {} {{\n",
+            m.name, m.name
+        ));
+        o.push_str("  const cursor: CtlCursor = { bytes, off: 0 };\n");
+        o.push_str(&format!("  if (ctlReadU16(cursor) !== {const_prefix}_MSG_ID) throw new WireError(\"wrong message id\");\n"));
+        o.push_str(&format!("  if (ctlReadU8(cursor) !== {const_prefix}_VERSION) throw new WireError(\"unsupported message version\");\n"));
+        for f in &m.fields {
+            if f.optional {
+                o.push_str(&format!(
+                    "  let {}: {} | undefined;\n",
+                    f.name,
+                    ts_type(&f.ty)
+                ));
+                o.push_str(&format!("  switch (ctlReadU8(cursor)) {{\n    case 0: {} = undefined; break;\n    case 1: {} = {}; break;\n    default: throw new WireError(\"invalid optional presence\");\n  }}\n", f.name, f.name, ts_decode_expr(&f.ty)));
+            } else {
+                o.push_str(&format!(
+                    "  const {} = {};\n",
+                    f.name,
+                    ts_decode_expr(&f.ty)
+                ));
+            }
+        }
+        o.push_str("  if (cursor.off !== bytes.length) throw new WireError(\"trailing bytes\");\n");
+        o.push_str("  return {\n");
+        for f in &m.fields {
+            o.push_str(&format!("    {},\n", f.name));
+        }
+        o.push_str("  };\n}\n\n");
+    }
+    o
+}
+
+fn emit_zig_codec_field_put(o: &mut String, f: &MessageField, expr: &str) {
+    if let Some(inner) = list_inner(&f.ty) {
+        o.push_str(&format!(
+            "        try ctlPutMessageList({}, &out, allocator, {expr});\n",
+            inner
+        ));
+        return;
+    }
+    match f.ty.as_str() {
+        "u32" => o.push_str(&format!("        try ctlPutU32(&out, allocator, {expr});\n")),
+        "i32" => o.push_str(&format!("        try ctlPutI32(&out, allocator, {expr});\n")),
+        "i64" => o.push_str(&format!("        try ctlPutI64(&out, allocator, {expr});\n")),
+        "bool" => o.push_str(&format!("        try ctlPutBool(&out, allocator, {expr});\n")),
+        "str" | "bytes" => o.push_str(&format!("        try ctlPutBytes(&out, allocator, {expr});\n")),
+        "strmap" => o.push_str(&format!("        try ctlPutStrMap(&out, allocator, {expr});\n")),
+        _ => o.push_str(&format!(
+            "        {{\n            const frame = try {expr}.encode(allocator);\n            defer allocator.free(frame);\n            try ctlPutBytes(&out, allocator, frame);\n        }}\n"
+        )),
+    }
+}
+
+fn zig_decode_expr(ty: &str) -> String {
+    if let Some(inner) = list_inner(ty) {
+        return format!("try ctlReadMessageList({inner}, allocator, bytes, &off)");
+    }
+    match ty {
+        "u32" => "try ctlReadU32(bytes, &off)".to_string(),
+        "i32" => "try ctlReadI32(bytes, &off)".to_string(),
+        "i64" => "try ctlReadI64(bytes, &off)".to_string(),
+        "bool" => "try ctlReadBool(bytes, &off)".to_string(),
+        "str" => "try ctlReadStr(bytes, &off)".to_string(),
+        "bytes" => "try ctlReadBytes(bytes, &off)".to_string(),
+        "strmap" => "try ctlReadStrMap(allocator, bytes, &off)".to_string(),
+        _ => format!("try {ty}.decode(allocator, try ctlReadBytes(bytes, &off))"),
+    }
+}
+
+fn emit_zig_messages(messages: &[Message]) -> String {
+    if messages.is_empty() {
+        return String::new();
+    }
+    let mut o = String::new();
+    o.push_str("\nconst std = @import(\"std\");\n");
+    o.push_str("pub const WireError = error{ WrongMessage, UnsupportedVersion, Truncated, InvalidUtf8, NonCanonicalMap, InvalidPresence, TrailingBytes };\n");
+    o.push_str("pub const StringPair = struct { key: []const u8, value: []const u8 };\n\n");
+    o.push_str("fn ctlPutU8(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: u8) !void { try out.append(allocator, v); }\n");
+    o.push_str("fn ctlPutU16(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: u16) !void { try out.append(allocator, @as(u8, @truncate(v))); try out.append(allocator, @as(u8, @truncate(v >> 8))); }\n");
+    o.push_str("fn ctlPutU32(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: u32) !void { try out.append(allocator, @as(u8, @truncate(v))); try out.append(allocator, @as(u8, @truncate(v >> 8))); try out.append(allocator, @as(u8, @truncate(v >> 16))); try out.append(allocator, @as(u8, @truncate(v >> 24))); }\n");
+    o.push_str("fn ctlPutU64(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: u64) !void { var i: u6 = 0; while (i < 8) : (i += 1) try out.append(allocator, @as(u8, @truncate(v >> (i * 8)))); }\n");
+    o.push_str("fn ctlPutI32(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: i32) !void { try ctlPutU32(out, allocator, @as(u32, @bitCast(v))); }\n");
+    o.push_str("fn ctlPutI64(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: i64) !void { try ctlPutU64(out, allocator, @as(u64, @bitCast(v))); }\n");
+    o.push_str("fn ctlPutBool(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: bool) !void { try ctlPutU8(out, allocator, if (v) 1 else 0); }\n");
+    o.push_str("fn ctlPutBytes(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: []const u8) !void { try ctlPutU32(out, allocator, @intCast(v.len)); try out.appendSlice(allocator, v); }\n");
+    o.push_str("fn ctlPairLess(_: void, a: StringPair, b: StringPair) bool { return std.mem.lessThan(u8, a.key, b.key); }\n");
+    o.push_str("fn ctlPutStrMap(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: []const StringPair) !void { var pairs = try allocator.dupe(StringPair, v); defer allocator.free(pairs); std.mem.sort(StringPair, pairs, {}, ctlPairLess); try ctlPutU32(out, allocator, @intCast(pairs.len)); var prev: ?[]const u8 = null; for (pairs) |p| { if (prev) |last| { if (std.mem.eql(u8, last, p.key)) return WireError.NonCanonicalMap; } try ctlPutBytes(out, allocator, p.key); try ctlPutBytes(out, allocator, p.value); prev = p.key; } }\n");
+    o.push_str("fn ctlPutMessageList(comptime T: type, out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const T) !void { try ctlPutU32(out, allocator, @intCast(values.len)); for (values) |value| { const frame = try value.encode(allocator); defer allocator.free(frame); try ctlPutBytes(out, allocator, frame); } }\n");
+    o.push_str("fn ctlNeed(bytes: []const u8, off: *usize, len: usize) WireError![]const u8 { const end = off.* + len; if (end < off.* or end > bytes.len) return WireError.Truncated; const out = bytes[off.*..end]; off.* = end; return out; }\n");
+    o.push_str("fn ctlReadU8(bytes: []const u8, off: *usize) WireError!u8 { return (try ctlNeed(bytes, off, 1))[0]; }\n");
+    o.push_str("fn ctlReadU16(bytes: []const u8, off: *usize) WireError!u16 { const b = try ctlNeed(bytes, off, 2); return @as(u16, b[0]) | (@as(u16, b[1]) << 8); }\n");
+    o.push_str("fn ctlReadU32(bytes: []const u8, off: *usize) WireError!u32 { const b = try ctlNeed(bytes, off, 4); return @as(u32, b[0]) | (@as(u32, b[1]) << 8) | (@as(u32, b[2]) << 16) | (@as(u32, b[3]) << 24); }\n");
+    o.push_str("fn ctlReadU64(bytes: []const u8, off: *usize) WireError!u64 { const b = try ctlNeed(bytes, off, 8); var out: u64 = 0; var i: u6 = 0; while (i < 8) : (i += 1) out |= @as(u64, b[i]) << (i * 8); return out; }\n");
+    o.push_str("fn ctlReadI32(bytes: []const u8, off: *usize) WireError!i32 { return @as(i32, @bitCast(try ctlReadU32(bytes, off))); }\n");
+    o.push_str("fn ctlReadI64(bytes: []const u8, off: *usize) WireError!i64 { return @as(i64, @bitCast(try ctlReadU64(bytes, off))); }\n");
+    o.push_str("fn ctlReadBool(bytes: []const u8, off: *usize) WireError!bool { return switch (try ctlReadU8(bytes, off)) { 0 => false, 1 => true, else => WireError.InvalidPresence }; }\n");
+    o.push_str("fn ctlReadBytes(bytes: []const u8, off: *usize) WireError![]const u8 { const len = try ctlReadU32(bytes, off); return ctlNeed(bytes, off, @intCast(len)); }\n");
+    o.push_str("fn ctlReadStr(bytes: []const u8, off: *usize) WireError![]const u8 { const out = try ctlReadBytes(bytes, off); _ = std.unicode.Utf8View.init(out) catch return WireError.InvalidUtf8; return out; }\n");
+    o.push_str("fn ctlReadStrMap(allocator: std.mem.Allocator, bytes: []const u8, off: *usize) ![]const StringPair { const n = try ctlReadU32(bytes, off); var out = try allocator.alloc(StringPair, @intCast(n)); errdefer allocator.free(out); var prev: ?[]const u8 = null; var i: usize = 0; while (i < out.len) : (i += 1) { const k = try ctlReadStr(bytes, off); if (prev) |last| { if (!std.mem.lessThan(u8, last, k)) return WireError.NonCanonicalMap; } const v = try ctlReadStr(bytes, off); out[i] = .{ .key = k, .value = v }; prev = k; } return out; }\n\n");
+    o.push_str("fn ctlReadMessageList(comptime T: type, allocator: std.mem.Allocator, bytes: []const u8, off: *usize) ![]const T { const n = try ctlReadU32(bytes, off); var out = try allocator.alloc(T, @intCast(n)); errdefer allocator.free(out); var i: usize = 0; while (i < out.len) : (i += 1) out[i] = try T.decode(allocator, try ctlReadBytes(bytes, off)); return out; }\n\n");
+
+    for m in messages {
+        let const_prefix = screaming_snake(&m.name);
+        if !m.doc.is_empty() {
+            o.push_str(&format!("// {}\n", m.doc));
+        }
+        o.push_str(&format!(
+            "pub const {const_prefix}_MSG_ID: u16 = {};\n",
+            m.id
+        ));
+        o.push_str(&format!(
+            "pub const {const_prefix}_VERSION: u8 = {};\n",
+            m.version
+        ));
+        o.push_str(&format!("pub const {} = struct {{\n", m.name));
+        for f in &m.fields {
+            let ty = zig_type(&f.ty);
+            if f.optional {
+                o.push_str(&format!("    {}: ?{} = null,\n", f.name, ty));
+            } else {
+                o.push_str(&format!("    {}: {},\n", f.name, ty));
+            }
+        }
+        o.push_str("\n    pub fn encode(self: @This(), allocator: std.mem.Allocator) ![]u8 {\n");
+        o.push_str("        var out: std.ArrayList(u8) = .empty;\n        errdefer out.deinit(allocator);\n");
+        o.push_str(&format!(
+            "        try ctlPutU16(&out, allocator, {const_prefix}_MSG_ID);\n"
+        ));
+        o.push_str(&format!(
+            "        try ctlPutU8(&out, allocator, {const_prefix}_VERSION);\n"
+        ));
+        for f in &m.fields {
+            if f.optional {
+                o.push_str(&format!(
+                    "        if (self.{}) |v| {{\n            try ctlPutU8(&out, allocator, 1);\n",
+                    f.name
+                ));
+                emit_zig_codec_field_put(&mut o, f, "v");
+                o.push_str(
+                    "        } else {\n            try ctlPutU8(&out, allocator, 0);\n        }\n",
+                );
+            } else {
+                emit_zig_codec_field_put(&mut o, f, &format!("self.{}", f.name));
+            }
+        }
+        o.push_str("        return out.toOwnedSlice(allocator);\n    }\n\n");
+        o.push_str(
+            "    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {\n",
+        );
+        o.push_str("        var off: usize = 0;\n");
+        o.push_str(&format!("        if ((try ctlReadU16(bytes, &off)) != {const_prefix}_MSG_ID) return WireError.WrongMessage;\n"));
+        o.push_str(&format!("        if ((try ctlReadU8(bytes, &off)) != {const_prefix}_VERSION) return WireError.UnsupportedVersion;\n"));
+        for f in &m.fields {
+            if f.optional {
+                o.push_str(&format!("        const {} = switch (try ctlReadU8(bytes, &off)) {{\n            0 => null,\n            1 => {},\n            else => return WireError.InvalidPresence,\n        }};\n", f.name, zig_decode_expr(&f.ty)));
+            } else {
+                o.push_str(&format!(
+                    "        const {} = {};\n",
+                    f.name,
+                    zig_decode_expr(&f.ty)
+                ));
+            }
+        }
+        o.push_str("        if (off != bytes.len) return WireError.TrailingBytes;\n");
+        o.push_str("        return .{\n");
+        for f in &m.fields {
+            o.push_str(&format!("            .{} = {},\n", f.name, f.name));
+        }
+        o.push_str("        };\n    }\n};\n\n");
+    }
+    o
+}
+
 /// Emit a table boundary (mc / env / ctl) for one language. `macro_name` is the Rust
 /// callback macro; `names_const` is the `&[&str]` symbol array.
-fn emit_table(lang: &str, contract: &str, rows: &[Row], macro_name: &str, names_const: &str, table_const: &str) -> String {
+fn emit_table(
+    lang: &str,
+    contract: &str,
+    rows: &[Row],
+    messages: &[Message],
+    macro_name: &str,
+    names_const: &str,
+    table_const: &str,
+) -> String {
     let mut o = banner(lang, contract);
     match lang {
         "rust" => {
+            o.push_str(&emit_rust_messages(messages));
             o.push_str(&format!("\npub const {names_const}: &[&str] = &[\n"));
             for r in rows {
                 o.push_str(&format!("    \"{}\",\n", r.name));
@@ -528,7 +1502,9 @@ fn emit_table(lang: &str, contract: &str, rows: &[Row], macro_name: &str, names_
             o.push_str("/// The canonical table. A consumer hands its own `$emit!` callback (the kernel's\n");
             o.push_str("/// dispatch, the sysroot's extern block, the host's import table) and cannot drift.\n");
             o.push_str("#[macro_export]\n");
-            o.push_str(&format!("macro_rules! {macro_name} {{\n    ($emit:path) => {{ $emit! {{\n"));
+            o.push_str(&format!(
+                "macro_rules! {macro_name} {{\n    ($emit:path) => {{ $emit! {{\n"
+            ));
             for r in rows {
                 let args = r
                     .args
@@ -569,6 +1545,7 @@ fn emit_table(lang: &str, contract: &str, rows: &[Row], macro_name: &str, names_
             }
         }
         "zig" => {
+            o.push_str(&emit_zig_messages(messages));
             o.push_str("\npub const Arg = struct { name: []const u8, ty: []const u8 };\n");
             o.push_str("pub const Desc = struct { name: []const u8, variant: []const u8, args: []const Arg, ret: []const u8 };\n\n");
             o.push_str(&format!("pub const {table_const} = [_]Desc{{\n"));
@@ -587,6 +1564,7 @@ fn emit_table(lang: &str, contract: &str, rows: &[Row], macro_name: &str, names_
             o.push_str("};\n");
         }
         "ts" => {
+            o.push_str(&emit_ts_messages(messages));
             o.push_str(&format!("\nexport const {names_const} = [\n"));
             for r in rows {
                 o.push_str(&format!("  \"{}\",\n", r.name));
@@ -607,8 +1585,14 @@ fn emit_table(lang: &str, contract: &str, rows: &[Row], macro_name: &str, names_
             }
             o.push_str("] as const;\n");
         }
+        "elixir" => {
+            o.push_str(&emit_elixir_messages(messages, contract));
+        }
         "md" => {
-            o = format!("<!-- {} -->\n", banner("md", contract).trim_start_matches("// "));
+            o = format!(
+                "<!-- {} -->\n",
+                banner("md", contract).trim_start_matches("// ")
+            );
             o.push_str(&format!("\n# `{}` — generated reference\n\n", macro_name));
             o.push_str("| # | symbol | variant | args | ret | doc |\n|---|---|---|---|---|---|\n");
             for (i, r) in rows.iter().enumerate() {
@@ -630,6 +1614,21 @@ fn emit_table(lang: &str, contract: &str, rows: &[Row], macro_name: &str, names_
             }
         }
         _ => {}
+    }
+    o
+}
+
+/// Emit a message-codec-only module. `llb.kdl` has no operation table; it is the portable
+/// canonical data shape used by the build solver and the future server solver.
+fn emit_codec_module(lang: &str, nodes: &[Node], contract: &str) -> String {
+    let messages = collect_codec_messages(nodes);
+    let mut o = banner(lang, contract);
+    match lang {
+        "rust" => o.push_str(&emit_rust_messages(&messages)),
+        "zig" => o.push_str(&emit_zig_messages(&messages)),
+        "ts" => o.push_str(&emit_ts_messages(&messages)),
+        "elixir" => o.push_str(&emit_elixir_messages(&messages, contract)),
+        _ => o.push_str(&format!("// codec projection is not defined for {lang}\n")),
     }
     o
 }
@@ -783,7 +1782,12 @@ fn media_type(name: &str, kind: &str) -> &'static str {
     }
 }
 
-fn emit_openapi_schema_for_type(out: &mut String, ty: &str, indent: usize, schema_names: &BTreeSet<String>) {
+fn emit_openapi_schema_for_type(
+    out: &mut String,
+    ty: &str,
+    indent: usize,
+    schema_names: &BTreeSet<String>,
+) {
     let pad = " ".repeat(indent);
     if let Some(inner) = ty.strip_suffix("[]") {
         out.push_str(&format!("{pad}type: array\n"));
@@ -852,7 +1856,10 @@ fn emit_parameters(out: &mut String, route: &Route, schema_names: &BTreeSet<Stri
     for query in &route.queries {
         out.push_str(&format!("        - name: {}\n", yaml_quote(&query.name)));
         out.push_str("          in: query\n");
-        out.push_str(&format!("          required: {}\n", if query.required { "true" } else { "false" }));
+        out.push_str(&format!(
+            "          required: {}\n",
+            if query.required { "true" } else { "false" }
+        ));
         out.push_str("          schema:\n");
         emit_openapi_schema_for_type(out, &query.ty, 12, schema_names);
     }
@@ -867,7 +1874,10 @@ fn emit_openapi(nodes: &[Node], contract: &str) -> String {
     let routes = collect_routes(nodes);
     let schemas = collect_schemas(nodes);
     let schema_names: BTreeSet<String> = schemas.iter().map(|s| s.name.clone()).collect();
-    let schema_kinds: BTreeMap<String, String> = schemas.iter().map(|s| (s.name.clone(), s.kind.clone())).collect();
+    let schema_kinds: BTreeMap<String, String> = schemas
+        .iter()
+        .map(|s| (s.name.clone(), s.kind.clone()))
+        .collect();
     let mut paths: Vec<String> = Vec::new();
     let mut grouped: BTreeMap<String, Vec<Route>> = BTreeMap::new();
     for route in routes {
@@ -881,7 +1891,10 @@ fn emit_openapi(nodes: &[Node], contract: &str) -> String {
     out.push_str("openapi: 3.0.3\n");
     out.push_str("info:\n");
     out.push_str("  title: AgentOS REST API\n");
-    out.push_str(&format!("  version: {}\n", yaml_quote(&version.to_string())));
+    out.push_str(&format!(
+        "  version: {}\n",
+        yaml_quote(&version.to_string())
+    ));
     out.push_str("  description: \"Request/response API for AgentOS VM lifecycle, exec, filesystem, snapshots, layers, and mounts. Live terminal, relay, permissions, and streamed sessions use the typed WebSocket in asyncapi.yaml.\"\n");
     out.push_str("security:\n");
     out.push_str("  - bearerAuth: []\n");
@@ -894,12 +1907,18 @@ fn emit_openapi(nodes: &[Node], contract: &str) -> String {
         for route in grouped.get(&path).into_iter().flatten() {
             let method = route.method.to_ascii_lowercase();
             out.push_str(&format!("    {method}:\n"));
-            out.push_str(&format!("      operationId: {}\n", yaml_quote(&operation_id(&route.method, &route.path))));
+            out.push_str(&format!(
+                "      operationId: {}\n",
+                yaml_quote(&operation_id(&route.method, &route.path))
+            ));
             if !route.doc.is_empty() {
                 out.push_str(&format!("      summary: {}\n", yaml_quote(&route.doc)));
             }
             if let Some(protocol) = &route.protocol {
-                out.push_str(&format!("      x-agentos-protocol: {}\n", yaml_quote(protocol)));
+                out.push_str(&format!(
+                    "      x-agentos-protocol: {}\n",
+                    yaml_quote(protocol)
+                ));
             }
             if route.upgrade.as_deref() == Some("websocket") {
                 out.push_str("      x-agentos-upgrade: websocket\n");
@@ -920,8 +1939,15 @@ fn emit_openapi(nodes: &[Node], contract: &str) -> String {
                 "200"
             };
             out.push_str(&format!("        {status:?}:\n"));
-            let description = if status == "101" { "Switching protocols" } else { "OK" };
-            out.push_str(&format!("          description: {}\n", yaml_quote(description)));
+            let description = if status == "101" {
+                "Switching protocols"
+            } else {
+                "OK"
+            };
+            out.push_str(&format!(
+                "          description: {}\n",
+                yaml_quote(description)
+            ));
             if status != "101" {
                 if let Some(res) = &route.res {
                     emit_content(&mut out, res, 10, &schema_names, &schema_kinds);
@@ -951,7 +1977,11 @@ fn emit_openapi(nodes: &[Node], contract: &str) -> String {
             }
             _ => {
                 out.push_str("      type: object\n");
-                let required = schema.fields.iter().filter(|f| f.required).collect::<Vec<_>>();
+                let required = schema
+                    .fields
+                    .iter()
+                    .filter(|f| f.required)
+                    .collect::<Vec<_>>();
                 if !required.is_empty() {
                     out.push_str("      required:\n");
                     for field in required {
@@ -976,8 +2006,16 @@ fn emit_wire(lang: &str, nodes: &[Node], contract: &str) -> String {
     if lang == "openapi" {
         return emit_openapi(nodes, contract);
     }
-    let version = nodes.iter().find(|n| n.name == "version").map(|n| n.args.first().map(Val::as_int).unwrap_or(0)).unwrap_or(0);
-    let header_len = nodes.iter().find(|n| n.name == "header-len").map(|n| n.args.first().map(Val::as_int).unwrap_or(0)).unwrap_or(0);
+    let version = nodes
+        .iter()
+        .find(|n| n.name == "version")
+        .map(|n| n.args.first().map(Val::as_int).unwrap_or(0))
+        .unwrap_or(0);
+    let header_len = nodes
+        .iter()
+        .find(|n| n.name == "header-len")
+        .map(|n| n.args.first().map(Val::as_int).unwrap_or(0))
+        .unwrap_or(0);
     let msgs: Vec<&Node> = nodes.iter().filter(|n| n.name == "message").collect();
     let mut o = banner(lang, contract);
     match lang {
@@ -985,7 +2023,11 @@ fn emit_wire(lang: &str, nodes: &[Node], contract: &str) -> String {
             o.push_str(&format!("\npub const WIRE_VERSION: u32 = {version};\npub const HEADER_LEN: usize = {header_len};\n\n"));
             for m in &msgs {
                 let tag = m.props.get("tag").map(Val::as_int).unwrap_or(0);
-                o.push_str(&format!("pub const {}: u8 = 0x{:02x};\n", m.arg_str(0), tag));
+                o.push_str(&format!(
+                    "pub const {}: u8 = 0x{:02x};\n",
+                    m.arg_str(0),
+                    tag
+                ));
             }
             o.push_str("\npub struct WireMessage { pub name: &'static str, pub tag: u8, pub dir: &'static str, pub body: &'static str }\n");
             o.push_str("pub const MESSAGES: &[WireMessage] = &[\n");
@@ -1009,7 +2051,10 @@ fn emit_wire(lang: &str, nodes: &[Node], contract: &str) -> String {
                 let tag = m.props.get("tag").map(Val::as_int).unwrap_or(0);
                 o.push_str(&format!(
                     "  {{ name: \"{}\", tag: 0x{:02x}, dir: \"{}\", body: \"{}\" }},\n",
-                    m.arg_str(0), tag, m.prop_str("dir").unwrap_or(""), m.prop_str("body").unwrap_or("")
+                    m.arg_str(0),
+                    tag,
+                    m.prop_str("dir").unwrap_or(""),
+                    m.prop_str("body").unwrap_or("")
                 ));
             }
             o.push_str("] as const;\n");
@@ -1022,9 +2067,18 @@ fn emit_wire(lang: &str, nodes: &[Node], contract: &str) -> String {
             o.push_str("channels:\n  vm:\n    messages:\n");
             for m in &msgs {
                 o.push_str(&format!("      {}:\n", m.arg_str(0)));
-                o.push_str(&format!("        x-tag: {}\n", m.props.get("tag").map(Val::as_int).unwrap_or(0)));
-                o.push_str(&format!("        x-direction: \"{}\"\n", m.prop_str("dir").unwrap_or("")));
-                o.push_str(&format!("        x-body: \"{}\"\n", m.prop_str("body").unwrap_or("")));
+                o.push_str(&format!(
+                    "        x-tag: {}\n",
+                    m.props.get("tag").map(Val::as_int).unwrap_or(0)
+                ));
+                o.push_str(&format!(
+                    "        x-direction: \"{}\"\n",
+                    m.prop_str("dir").unwrap_or("")
+                ));
+                o.push_str(&format!(
+                    "        x-body: \"{}\"\n",
+                    m.prop_str("body").unwrap_or("")
+                ));
                 o.push_str(&format!("        summary: \"{}\"\n", m.doc()));
             }
         }
@@ -1051,7 +2105,7 @@ fn main() -> ExitCode {
         i += 2;
     }
     let (Some(lang), Some(module), Some(contract)) = (lang, module, contract) else {
-        eprintln!("usage: projector --module <constants|mc|env|ctl|wire> --lang <rust|zig|ts|md|asyncapi|openapi> --contract <path.kdl>");
+        eprintln!("usage: projector --module <constants|mc|env|ctl|wire|llb> --lang <rust|zig|ts|elixir|md|asyncapi|openapi> --contract <path.kdl>");
         return ExitCode::FAILURE;
     };
 
@@ -1070,10 +2124,35 @@ fn main() -> ExitCode {
 
     let out = match module.as_str() {
         "constants" => emit_constants(&lang, &nodes, &file),
-        "mc" => emit_table(&lang, &file, &collect_rows(&nodes, "syscall"), "mc_syscall_table", "SYSCALL_NAMES", "SYSCALLS"),
-        "env" => emit_table(&lang, &file, &collect_rows(&nodes, "import"), "mc_bridge_table", "BRIDGE_IMPORTS", "IMPORTS"),
-        "ctl" => emit_table(&lang, &file, &collect_rows(&nodes, "export"), "mc_control_table", "CONTROL_EXPORTS", "EXPORTS"),
+        "mc" => emit_table(
+            &lang,
+            &file,
+            &collect_rows(&nodes, "syscall"),
+            &collect_codec_messages(&nodes),
+            "mc_syscall_table",
+            "SYSCALL_NAMES",
+            "SYSCALLS",
+        ),
+        "env" => emit_table(
+            &lang,
+            &file,
+            &collect_rows(&nodes, "import"),
+            &collect_codec_messages(&nodes),
+            "mc_bridge_table",
+            "BRIDGE_IMPORTS",
+            "IMPORTS",
+        ),
+        "ctl" => emit_table(
+            &lang,
+            &file,
+            &collect_rows(&nodes, "export"),
+            &collect_codec_messages(&nodes),
+            "mc_control_table",
+            "CONTROL_EXPORTS",
+            "EXPORTS",
+        ),
         "wire" => emit_wire(&lang, &nodes, &file),
+        "llb" => emit_codec_module(&lang, &nodes, &file),
         other => {
             eprintln!("projector: unknown module {other}");
             return ExitCode::FAILURE;

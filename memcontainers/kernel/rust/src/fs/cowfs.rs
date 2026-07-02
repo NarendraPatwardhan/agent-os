@@ -132,10 +132,14 @@ impl CowFs {
         };
         self.ensure_overlay_parents(&parent)?;
         if self.overlay.stat(&KPath::new(&parent)).is_err() {
-            // `_ =` so a race or harmless AlreadyExists does not bubble up.
             // Copy-up bookkeeping acts as the kernel itself (SYSTEM_CALLER), not
             // the requesting task — the overlay (a MemFs) ignores it regardless.
-            let _ = self.overlay.mkdir(SYSTEM_CALLER, &KPath::new(&parent));
+            let parent_path = KPath::new(&parent);
+            self.overlay.mkdir(SYSTEM_CALLER, &parent_path)?;
+            if let Ok(meta) = self.base.stat(&parent_path) {
+                let _ = self.overlay.set_mode(&parent_path, meta.mode);
+                let _ = self.overlay.set_times(&parent_path, meta.atime, meta.mtime);
+            }
         }
         Ok(())
     }

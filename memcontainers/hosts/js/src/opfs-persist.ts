@@ -14,7 +14,7 @@ import {
   encodeKeyList,
   getAbsentBody,
   getPresentBody,
-} from "./persist.js";
+} from "./persist_core.js";
 
 /** An async durable key/value backing (OPFS / IndexedDB). Keys are hex strings. */
 export interface BrowserKv {

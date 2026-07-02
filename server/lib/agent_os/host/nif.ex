@@ -23,6 +23,8 @@ defmodule AgentOS.Host.Nif do
 
   @on_load :load_nif
 
+  alias AgentOS.Contracts.Control
+
   @doc false
   def load_nif do
     priv = :code.priv_dir(:agent_os)
@@ -97,7 +99,11 @@ defmodule AgentOS.Host.Nif do
           | {:url, binary()}
           | {:url, binary(), keyword() | map()}
           | %{required(String.t() | atom()) => term()}
-  @type catalog_status :: %{generation: non_neg_integer(), digest: String.t(), tools: non_neg_integer()}
+  @type catalog_status :: %{
+          generation: non_neg_integer(),
+          digest: String.t(),
+          tools: non_neg_integer()
+        }
 
   @type relay_event ::
           %{kind: :http, handle: pos_integer(), request: binary()}
@@ -137,8 +143,8 @@ defmodule AgentOS.Host.Nif do
 
   def boot(wasm, base_image, opts)
       when is_binary(wasm) and (is_binary(base_image) or is_nil(base_image)) and is_list(opts) do
-    with {:ok, layers, deterministic, contract, workers, net, connection_policies, tool_approval, host_call,
-          persist} <-
+    with {:ok, layers, deterministic, contract, workers, net, connection_policies, tool_approval,
+          host_call, persist} <-
            boot_args(base_image, opts) do
       {net_relay, net_real, connections} = net
 
@@ -169,7 +175,8 @@ defmodule AgentOS.Host.Nif do
 
   def restore(wasm, snapshot, opts)
       when is_binary(wasm) and is_binary(snapshot) and is_list(opts) do
-    with {:ok, deterministic, workers, net, connection_policies, tool_approval, host_call, persist} <-
+    with {:ok, deterministic, workers, net, connection_policies, tool_approval, host_call,
+          persist} <-
            restore_args(opts) do
       {net_relay, net_real, connections} = net
 
@@ -206,18 +213,32 @@ defmodule AgentOS.Host.Nif do
   def take_output(_vm), do: nif_not_loaded()
 
   @doc "Run a command to completion → `{:ok, {exit_code, stdout, stderr}}`."
-  @spec exec(vm(), String.t(), non_neg_integer()) ::
+  @spec exec(vm(), String.t(), non_neg_integer(), keyword() | map()) ::
           {:ok, {integer(), binary(), binary()}} | {:error, reason()}
-  def exec(vm, cmd, max_ticks) when is_binary(cmd) and is_integer(max_ticks) and max_ticks >= 0,
-    do: exec_nif(vm, cmd, max_ticks)
+  def exec(vm, cmd, max_ticks, opts \\ [])
 
-  def exec(_vm, _cmd, _max_ticks),
-    do: {:error, "exec expects a binary command and non-negative max_ticks"}
+  def exec(vm, cmd, max_ticks, opts)
+      when is_binary(cmd) and is_integer(max_ticks) and max_ticks >= 0 do
+    with {:ok, {cwd, env, stdin_present, stdin}} <- exec_options(opts) do
+      exec_nif(vm, cmd, max_ticks, cwd, env, stdin_present, stdin)
+    end
+  end
+
+  def exec(_vm, _cmd, _max_ticks, _opts),
+    do: {:error, "exec expects a binary command, non-negative max_ticks, and valid options"}
 
   @doc "Start a structured exec job without driving it to completion."
-  @spec exec_start(vm(), String.t()) :: {:ok, integer()} | {:error, reason()}
-  def exec_start(vm, cmd) when is_binary(cmd), do: exec_start_nif(vm, cmd)
-  def exec_start(_vm, _cmd), do: {:error, "exec_start expects a binary command"}
+  @spec exec_start(vm(), String.t(), keyword() | map()) :: {:ok, integer()} | {:error, reason()}
+  def exec_start(vm, cmd, opts \\ [])
+
+  def exec_start(vm, cmd, opts) when is_binary(cmd) do
+    with {:ok, {cwd, env, stdin_present, stdin}} <- exec_options(opts) do
+      exec_start_nif(vm, cmd, cwd, env, stdin_present, stdin)
+    end
+  end
+
+  def exec_start(_vm, _cmd, _opts),
+    do: {:error, "exec_start expects a binary command and valid options"}
 
   @doc "Poll a structured exec job; `nil` means still running."
   @spec exec_poll(vm(), integer()) ::
@@ -236,6 +257,19 @@ defmodule AgentOS.Host.Nif do
   @spec exec_cancel(vm(), integer()) :: :ok | {:error, reason()}
   def exec_cancel(vm, job) when is_integer(job) and job > 0, do: exec_cancel_nif(vm, job)
   def exec_cancel(_vm, _job), do: {:error, "exec_cancel expects a positive job id"}
+
+  @doc """
+  Call a resident service as host control (`SYSTEM_CALLER`) through the kernel service channel →
+  `{:ok, {status, body}}`. `status` is the service's own status code (0 = ok); a nonzero status
+  still returns its body so the owning `AgentOS.Vm` decides policy.
+  """
+  @spec svc_call(vm(), String.t(), binary()) ::
+          {:ok, {integer(), binary()}} | {:error, reason()}
+  def svc_call(vm, service, request) when is_binary(service) and is_binary(request),
+    do: svc_call_nif(vm, service, request)
+
+  def svc_call(_vm, _service, _request),
+    do: {:error, "svc_call expects a binary service name and request"}
 
   @doc "Read a whole file through the Rust host control channel."
   @spec read_file(vm(), String.t()) :: {:ok, binary()} | {:error, reason()}
@@ -265,15 +299,16 @@ defmodule AgentOS.Host.Nif do
   @type file_stat :: %{
           size: non_neg_integer(),
           type: :directory | :symlink | :file,
-          nlink: non_neg_integer()
+          nlink: non_neg_integer(),
+          mode: non_neg_integer()
         }
 
   @doc "Stat a path through the Rust host control channel."
   @spec stat(vm(), String.t()) :: {:ok, file_stat()} | {:error, reason()}
   def stat(vm, path) when is_binary(path) do
     case stat_nif(vm, path) do
-      {:ok, {size, is_dir, is_symlink, nlink}} ->
-        {:ok, %{size: size, type: file_type(is_dir, is_symlink), nlink: nlink}}
+      {:ok, {size, is_dir, is_symlink, nlink, mode}} ->
+        {:ok, %{size: size, type: file_type(is_dir, is_symlink), nlink: nlink, mode: mode}}
 
       {:error, _reason} = err ->
         err
@@ -281,6 +316,11 @@ defmodule AgentOS.Host.Nif do
   end
 
   def stat(_vm, _path), do: {:error, "stat expects a binary path"}
+
+  @doc "Read the target text of a symlink through the Rust host control channel."
+  @spec readlink(vm(), String.t()) :: {:ok, binary()} | {:error, reason()}
+  def readlink(vm, path) when is_binary(path), do: readlink_nif(vm, path)
+  def readlink(_vm, _path), do: {:error, "readlink expects a binary path"}
 
   @doc "Create a directory through the Rust host control channel."
   @spec mkdir(vm(), String.t()) :: :ok | {:error, reason()}
@@ -291,6 +331,14 @@ defmodule AgentOS.Host.Nif do
   @spec unlink(vm(), String.t()) :: :ok | {:error, reason()}
   def unlink(vm, path) when is_binary(path), do: unlink_nif(vm, path)
   def unlink(_vm, _path), do: {:error, "unlink expects a binary path"}
+
+  @doc "Set POSIX permission bits through the Rust host control channel."
+  @spec chmod(vm(), String.t(), non_neg_integer()) :: :ok | {:error, reason()}
+  def chmod(vm, path, mode) when is_binary(path) and is_integer(mode) and mode in 0..0o7777,
+    do: chmod_nif(vm, path, mode)
+
+  def chmod(_vm, _path, _mode),
+    do: {:error, "chmod expects a binary path and mode in 0..0o7777"}
 
   @doc "Create a symbolic link through the Rust host control channel."
   @spec symlink(vm(), String.t(), String.t()) :: :ok | {:error, reason()}
@@ -362,7 +410,14 @@ defmodule AgentOS.Host.Nif do
   definitions (BEAM-relayed) sharded directly without the compiler. `compiler_wasm` may be empty
   when only `host_tools` are injected.
   """
-  @spec inject_catalog(vm(), binary(), [connection_def()], [String.t()], [map()], non_neg_integer()) ::
+  @spec inject_catalog(
+          vm(),
+          binary(),
+          [connection_def()],
+          [String.t()],
+          [map()],
+          non_neg_integer()
+        ) ::
           {:ok, catalog_status() | nil} | {:error, reason()}
   def inject_catalog(vm, compiler_wasm, connections, tools, host_tools, generation)
       when is_binary(compiler_wasm) and is_list(connections) and is_list(tools) and
@@ -393,13 +448,21 @@ defmodule AgentOS.Host.Nif do
   def relay_next(vm) do
     case relay_next_nif(vm) do
       {:ok, nil} -> {:ok, nil}
-      {:ok, {kind, handle, a, b}} -> relay_event(kind, handle, a, b)
+      {:ok, frame} when is_binary(frame) -> decode_relay_event(frame)
+      {:ok, other} -> {:error, "invalid relay event frame #{inspect(other)}"}
       {:error, _reason} = err -> err
     end
   end
 
   @doc "Answer an HTTP relay event with a complete buffered response."
-  @spec relay_http_respond(vm(), integer(), non_neg_integer(), String.t(), [{String.t(), String.t()}], binary()) ::
+  @spec relay_http_respond(
+          vm(),
+          integer(),
+          non_neg_integer(),
+          String.t(),
+          [{String.t(), String.t()}],
+          binary()
+        ) ::
           :ok | {:error, reason()}
   def relay_http_respond(vm, handle, status, reason, headers, body)
       when is_integer(handle) and handle > 0 and is_integer(status) and status >= 100 and
@@ -421,8 +484,9 @@ defmodule AgentOS.Host.Nif do
 
   @doc "Answer a host_call relay event."
   @spec relay_host_call_respond(vm(), integer(), binary()) :: :ok | {:error, reason()}
-  def relay_host_call_respond(vm, handle, result) when is_integer(handle) and handle > 0 and is_binary(result),
-    do: relay_host_call_respond_nif(vm, handle, true, result)
+  def relay_host_call_respond(vm, handle, result)
+      when is_integer(handle) and handle > 0 and is_binary(result),
+      do: relay_host_call_respond_nif(vm, handle, true, result)
 
   def relay_host_call_respond(_vm, _handle, _result),
     do: {:error, "relay_host_call_respond expects a positive handle and binary result"}
@@ -432,12 +496,14 @@ defmodule AgentOS.Host.Nif do
   def relay_host_call_fail(vm, handle) when is_integer(handle) and handle > 0,
     do: relay_host_call_respond_nif(vm, handle, false, "")
 
-  def relay_host_call_fail(_vm, _handle), do: {:error, "relay_host_call_fail expects a positive handle"}
+  def relay_host_call_fail(_vm, _handle),
+    do: {:error, "relay_host_call_fail expects a positive handle"}
 
   @doc "Answer a persist relay event with the exact async-persist body bytes."
   @spec relay_persist_respond(vm(), integer(), binary()) :: :ok | {:error, reason()}
-  def relay_persist_respond(vm, handle, body) when is_integer(handle) and handle > 0 and is_binary(body),
-    do: relay_persist_respond_nif(vm, handle, true, body)
+  def relay_persist_respond(vm, handle, body)
+      when is_integer(handle) and handle > 0 and is_binary(body),
+      do: relay_persist_respond_nif(vm, handle, true, body)
 
   def relay_persist_respond(_vm, _handle, _body),
     do: {:error, "relay_persist_respond expects a positive handle and binary body"}
@@ -447,7 +513,8 @@ defmodule AgentOS.Host.Nif do
   def relay_persist_fail(vm, handle) when is_integer(handle) and handle > 0,
     do: relay_persist_respond_nif(vm, handle, false, "")
 
-  def relay_persist_fail(_vm, _handle), do: {:error, "relay_persist_fail expects a positive handle"}
+  def relay_persist_fail(_vm, _handle),
+    do: {:error, "relay_persist_fail expects a positive handle"}
 
   @doc """
   Answer a `tool_approval` relay event: allow or deny the destructive connection call the host parked
@@ -458,11 +525,13 @@ defmodule AgentOS.Host.Nif do
   def relay_tool_approval_respond(vm, handle, allow, remember_session \\ false)
 
   def relay_tool_approval_respond(vm, handle, allow, remember_session)
-      when is_integer(handle) and handle > 0 and is_boolean(allow) and is_boolean(remember_session),
+      when is_integer(handle) and handle > 0 and is_boolean(allow) and
+             is_boolean(remember_session),
       do: relay_tool_approval_respond_nif(vm, handle, allow, remember_session)
 
   def relay_tool_approval_respond(_vm, _handle, _allow, _remember),
-    do: {:error, "relay_tool_approval_respond expects a positive handle and boolean allow/remember"}
+    do:
+      {:error, "relay_tool_approval_respond expects a positive handle and boolean allow/remember"}
 
   @doc "Mark a WebSocket relay connection as opened."
   @spec relay_ws_open(vm(), integer()) :: :ok | {:error, reason()}
@@ -509,7 +578,7 @@ defmodule AgentOS.Host.Nif do
         _host_call,
         _persist
       ),
-    do: nif_not_loaded()
+      do: nif_not_loaded()
 
   @doc false
   def restore_nif(
@@ -525,7 +594,7 @@ defmodule AgentOS.Host.Nif do
         _host_call,
         _persist
       ),
-    do: nif_not_loaded()
+      do: nif_not_loaded()
 
   @doc false
   def tick_nif(_vm), do: nif_not_loaded()
@@ -534,10 +603,10 @@ defmodule AgentOS.Host.Nif do
   def send_input_nif(_vm, _bytes), do: nif_not_loaded()
 
   @doc false
-  def exec_nif(_vm, _cmd, _max_ticks), do: nif_not_loaded()
+  def exec_nif(_vm, _cmd, _max_ticks, _cwd, _env, _stdin_present, _stdin), do: nif_not_loaded()
 
   @doc false
-  def exec_start_nif(_vm, _cmd), do: nif_not_loaded()
+  def exec_start_nif(_vm, _cmd, _cwd, _env, _stdin_present, _stdin), do: nif_not_loaded()
 
   @doc false
   def exec_poll_nif(_vm, _job), do: nif_not_loaded()
@@ -547,6 +616,9 @@ defmodule AgentOS.Host.Nif do
 
   @doc false
   def exec_cancel_nif(_vm, _job), do: nif_not_loaded()
+
+  @doc false
+  def svc_call_nif(_vm, _service, _request), do: nif_not_loaded()
 
   @doc false
   def read_file_nif(_vm, _path), do: nif_not_loaded()
@@ -561,10 +633,16 @@ defmodule AgentOS.Host.Nif do
   def stat_nif(_vm, _path), do: nif_not_loaded()
 
   @doc false
+  def readlink_nif(_vm, _path), do: nif_not_loaded()
+
+  @doc false
   def mkdir_nif(_vm, _path), do: nif_not_loaded()
 
   @doc false
   def unlink_nif(_vm, _path), do: nif_not_loaded()
+
+  @doc false
+  def chmod_nif(_vm, _path, _mode), do: nif_not_loaded()
 
   @doc false
   def symlink_nif(_vm, _target, _link), do: nif_not_loaded()
@@ -612,6 +690,47 @@ defmodule AgentOS.Host.Nif do
   @doc false
   def relay_ws_close_nif(_vm, _handle), do: nif_not_loaded()
 
+  defp exec_options(opts) when is_list(opts) or is_map(opts) do
+    with {:ok, cwd} <- normalize_cwd(opt(opts, :cwd, nil)),
+         {:ok, env} <- normalize_env(opt(opts, :env, nil)),
+         {:ok, stdin_present, stdin} <- normalize_stdin(opt(opts, :stdin, nil)) do
+      {:ok, {cwd, env, stdin_present, stdin}}
+    end
+  end
+
+  defp exec_options(_opts), do: {:error, "exec options must be a keyword list or map"}
+
+  defp opt(opts, key, default) when is_list(opts), do: Keyword.get(opts, key, default)
+  defp opt(opts, key, default) when is_map(opts), do: Map.get(opts, key, default)
+
+  defp normalize_cwd(nil), do: {:ok, ""}
+  defp normalize_cwd(cwd) when is_binary(cwd), do: {:ok, cwd}
+  defp normalize_cwd(_cwd), do: {:error, "exec cwd must be a binary"}
+
+  defp normalize_env(nil), do: {:ok, []}
+  defp normalize_env(env) when is_map(env), do: normalize_env_pairs(Map.to_list(env))
+  defp normalize_env(env) when is_list(env), do: normalize_env_pairs(env)
+
+  defp normalize_env(_env),
+    do: {:error, "exec env must be a map or list of binary key/value pairs"}
+
+  defp normalize_env_pairs(pairs) do
+    case Enum.reduce_while(pairs, {:ok, []}, fn
+           {key, value}, {:ok, acc} when is_binary(key) and is_binary(value) ->
+             {:cont, {:ok, [{key, value} | acc]}}
+
+           _entry, _acc ->
+             {:halt, {:error, "exec env must be a map or list of binary key/value pairs"}}
+         end) do
+      {:ok, pairs} -> {:ok, Enum.reverse(pairs)}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp normalize_stdin(nil), do: {:ok, false, ""}
+  defp normalize_stdin(stdin) when is_binary(stdin), do: {:ok, true, stdin}
+  defp normalize_stdin(_stdin), do: {:error, "exec stdin must be a binary"}
+
   defp boot_args(base_image, opts) do
     with {:ok, layers} <- layers_arg(opts),
          :ok <- exclusive_base_or_layers(base_image, layers),
@@ -621,8 +740,8 @@ defmodule AgentOS.Host.Nif do
          {:ok, net, host_call, persist} <- capability_args(opts),
          {:ok, connection_policies} <- connection_policies_arg(opts),
          {:ok, tool_approval} <- tool_approval_arg(opts) do
-      {:ok, layers, deterministic, contract, workers, net, connection_policies, tool_approval, host_call,
-       persist}
+      {:ok, layers, deterministic, contract, workers, net, connection_policies, tool_approval,
+       host_call, persist}
     end
   end
 
@@ -645,12 +764,14 @@ defmodule AgentOS.Host.Nif do
           {:error, "layers must be a list of binaries"}
         end
 
-      _other -> {:error, "layers must be a list of binaries"}
+      _other ->
+        {:error, "layers must be a list of binaries"}
     end
   end
 
   defp exclusive_base_or_layers(nil, _layers), do: :ok
   defp exclusive_base_or_layers(_base_image, []), do: :ok
+
   defp exclusive_base_or_layers(_base_image, _layers),
     do: {:error, "base_image and layers are mutually exclusive"}
 
@@ -663,8 +784,11 @@ defmodule AgentOS.Host.Nif do
 
   defp contract_arg(opts) do
     case Keyword.get(opts, :contract, nil) do
-      nil -> {:ok, nil}
-      {tier, budget_mib, fuel} when is_integer(tier) and is_integer(budget_mib) and is_integer(fuel) ->
+      nil ->
+        {:ok, nil}
+
+      {tier, budget_mib, fuel}
+      when is_integer(tier) and is_integer(budget_mib) and is_integer(fuel) ->
         {:ok, {tier, budget_mib, fuel}}
 
       _other ->
@@ -694,7 +818,8 @@ defmodule AgentOS.Host.Nif do
     with {:ok, mode, inline_connections} <- net_mode_arg(Keyword.get(opts, :net, :deny)),
          {:ok, configured_connections} <- connections_arg(Keyword.get(opts, :connections, [])),
          :ok <- connection_location_arg(mode, inline_connections, separate_connections?) do
-      connections = if inline_connections == [], do: configured_connections, else: inline_connections
+      connections =
+        if inline_connections == [], do: configured_connections, else: inline_connections
 
       case {mode, connections} do
         {:deny, []} -> {:ok, {false, false, []}}
@@ -760,7 +885,8 @@ defmodule AgentOS.Host.Nif do
     do: connection_arg({ref, auth, Map.get(entry, "origins", [])})
 
   defp connection_arg(_other),
-    do: {:error, "connection must be {ref, auth}, {ref, auth, origins}, or %{ref: ref, auth: auth}"}
+    do:
+      {:error, "connection must be {ref, auth}, {ref, auth, origins}, or %{ref: ref, auth: auth}"}
 
   defp connection_origins_arg(origins) when is_list(origins) do
     if Enum.all?(origins, &is_binary/1) do
@@ -770,7 +896,8 @@ defmodule AgentOS.Host.Nif do
     end
   end
 
-  defp connection_origins_arg(_other), do: {:error, "connection origins must be a list of binaries"}
+  defp connection_origins_arg(_other),
+    do: {:error, "connection origins must be a list of binaries"}
 
   defp connection_auth_arg(:none), do: {:ok, "none", "", ""}
   defp connection_auth_arg({:none}), do: {:ok, "none", "", ""}
@@ -783,6 +910,7 @@ defmodule AgentOS.Host.Nif do
     do: {:ok, "query", name, value}
 
   defp connection_auth_arg(%{kind: :none}), do: {:ok, "none", "", ""}
+
   defp connection_auth_arg(%{kind: :bearer, token: token}) when is_binary(token),
     do: {:ok, "bearer", token, ""}
 
@@ -849,13 +977,16 @@ defmodule AgentOS.Host.Nif do
 
   defp connection_policy_owner_arg(owner) when owner in [:org, "org"], do: {:ok, "org"}
   defp connection_policy_owner_arg(owner) when owner in [:user, "user"], do: {:ok, "user"}
-  defp connection_policy_owner_arg(_other), do: {:error, "connection policy owner must be :org or :user"}
+
+  defp connection_policy_owner_arg(_other),
+    do: {:error, "connection policy owner must be :org or :user"}
 
   defp connection_policy_action_arg(action) when action in [:approve, "approve"],
     do: {:ok, "approve"}
 
-  defp connection_policy_action_arg(action) when action in [:require_approval, "require_approval"],
-    do: {:ok, "require_approval"}
+  defp connection_policy_action_arg(action)
+       when action in [:require_approval, "require_approval"],
+       do: {:ok, "require_approval"}
 
   defp connection_policy_action_arg(action) when action in [:block, "block"], do: {:ok, "block"}
 
@@ -927,7 +1058,10 @@ defmodule AgentOS.Host.Nif do
 
   defp catalog_spec_arg(nil), do: {:ok, nil}
   defp catalog_spec_arg({:bytes, bytes}) when is_binary(bytes), do: {:ok, {"bytes", bytes, %{}}}
-  defp catalog_spec_arg({:bytes, bytes, opts}) when is_binary(bytes), do: {:ok, {"bytes", bytes, opts}}
+
+  defp catalog_spec_arg({:bytes, bytes, opts}) when is_binary(bytes),
+    do: {:ok, {"bytes", bytes, opts}}
+
   defp catalog_spec_arg({:path, path}) when is_binary(path), do: {:ok, {"path", path, %{}}}
   defp catalog_spec_arg({:path, path, opts}) when is_binary(path), do: {:ok, {"path", path, opts}}
   defp catalog_spec_arg({:url, url}) when is_binary(url), do: {:ok, {"url", url, %{}}}
@@ -1098,65 +1232,126 @@ defmodule AgentOS.Host.Nif do
     end
   end
 
-  defp relay_event("http", handle, request, ""),
-    do: {:ok, %{kind: :http, handle: handle, request: request}}
-
-  defp relay_event("host_call", handle, name, body),
-    do: {:ok, %{kind: :host_call, handle: handle, name: name, body: body}}
-
-  defp relay_event("persist_get", handle, key, ""),
-    do: {:ok, %{kind: :persist_get, handle: handle, key: key}}
-
-  defp relay_event("persist_put", handle, key, value),
-    do: {:ok, %{kind: :persist_put, handle: handle, key: key, value: value}}
-
-  defp relay_event("persist_delete", handle, key, ""),
-    do: {:ok, %{kind: :persist_delete, handle: handle, key: key}}
-
-  defp relay_event("persist_list", handle, prefix, ""),
-    do: {:ok, %{kind: :persist_list, handle: handle, prefix: prefix}}
-
-  defp relay_event("ws_connect", handle, url, ""),
-    do: {:ok, %{kind: :ws_connect, handle: handle, url: url}}
-
-  defp relay_event("ws_send", handle, data, ""),
-    do: {:ok, %{kind: :ws_send, handle: handle, data: data}}
-
-  defp relay_event("ws_close", handle, "", ""),
-    do: {:ok, %{kind: :ws_close, handle: handle}}
-
-  defp relay_event("tool_approval", handle, frame, "") do
-    case :binary.split(frame, <<0>>, [:global]) do
-      [connection, method, url, origin, ""] ->
-        {:ok,
-         %{
-           kind: :tool_approval,
-           handle: handle,
-           connection: connection,
-           method: method,
-           url: url,
-           origin: origin,
-           args_digest: nil
-         }}
-
-      [connection, method, url, origin, args_digest] ->
-        {:ok,
-         %{
-           kind: :tool_approval,
-           handle: handle,
-           connection: connection,
-           method: method,
-           url: url,
-           origin: origin,
-           args_digest: args_digest
-         }}
-
-      _other ->
-        {:error, "malformed tool_approval relay frame"}
+  defp decode_relay_event(frame) when is_binary(frame) do
+    with {:ok, %{kind: kind, handle: handle} = event} <- Control.decode_relay_event(frame),
+         :ok <- relay_handle(handle) do
+      relay_event(kind, handle, Map.drop(event, [:kind, :handle]))
+    else
+      {:error, reason} when is_binary(reason) -> {:error, "invalid relay event frame: #{reason}"}
+      {:error, _reason} = err -> err
     end
   end
 
-  defp relay_event(kind, _handle, _a, _b), do: {:error, "unknown relay event kind #{inspect(kind)}"}
+  defp relay_handle(handle) when handle > 0, do: :ok
+  defp relay_handle(handle), do: {:error, "invalid relay event handle #{inspect(handle)}"}
+
+  defp relay_event("http", handle, fields) do
+    with :ok <- relay_fields("http", fields, [:request]),
+         {:ok, request} <- relay_required("http", fields, :request) do
+      {:ok, %{kind: :http, handle: handle, request: request}}
+    end
+  end
+
+  defp relay_event("host_call", handle, fields) do
+    with :ok <- relay_fields("host_call", fields, [:name, :body]),
+         {:ok, name} <- relay_required("host_call", fields, :name),
+         {:ok, body} <- relay_required("host_call", fields, :body) do
+      {:ok, %{kind: :host_call, handle: handle, name: name, body: body}}
+    end
+  end
+
+  defp relay_event("persist_get", handle, fields) do
+    with :ok <- relay_fields("persist_get", fields, [:key]),
+         {:ok, key} <- relay_required("persist_get", fields, :key) do
+      {:ok, %{kind: :persist_get, handle: handle, key: key}}
+    end
+  end
+
+  defp relay_event("persist_put", handle, fields) do
+    with :ok <- relay_fields("persist_put", fields, [:key, :value]),
+         {:ok, key} <- relay_required("persist_put", fields, :key),
+         {:ok, value} <- relay_required("persist_put", fields, :value) do
+      {:ok, %{kind: :persist_put, handle: handle, key: key, value: value}}
+    end
+  end
+
+  defp relay_event("persist_delete", handle, fields) do
+    with :ok <- relay_fields("persist_delete", fields, [:key]),
+         {:ok, key} <- relay_required("persist_delete", fields, :key) do
+      {:ok, %{kind: :persist_delete, handle: handle, key: key}}
+    end
+  end
+
+  defp relay_event("persist_list", handle, fields) do
+    with :ok <- relay_fields("persist_list", fields, [:prefix]),
+         {:ok, prefix} <- relay_required("persist_list", fields, :prefix) do
+      {:ok, %{kind: :persist_list, handle: handle, prefix: prefix}}
+    end
+  end
+
+  defp relay_event("ws_connect", handle, fields) do
+    with :ok <- relay_fields("ws_connect", fields, [:url]),
+         {:ok, url} <- relay_required("ws_connect", fields, :url) do
+      {:ok, %{kind: :ws_connect, handle: handle, url: url}}
+    end
+  end
+
+  defp relay_event("ws_send", handle, fields) do
+    with :ok <- relay_fields("ws_send", fields, [:data]),
+         {:ok, data} <- relay_required("ws_send", fields, :data) do
+      {:ok, %{kind: :ws_send, handle: handle, data: data}}
+    end
+  end
+
+  defp relay_event("ws_close", handle, fields) do
+    with :ok <- relay_fields("ws_close", fields, []) do
+      {:ok, %{kind: :ws_close, handle: handle}}
+    end
+  end
+
+  defp relay_event("tool_approval", handle, fields) do
+    with :ok <-
+           relay_fields("tool_approval", fields, [
+             :connection,
+             :method,
+             :url,
+             :origin,
+             :args_digest
+           ]),
+         {:ok, connection} <- relay_required("tool_approval", fields, :connection),
+         {:ok, method} <- relay_required("tool_approval", fields, :method),
+         {:ok, url} <- relay_required("tool_approval", fields, :url),
+         {:ok, origin} <- relay_required("tool_approval", fields, :origin) do
+      {:ok,
+       %{
+         kind: :tool_approval,
+         handle: handle,
+         connection: connection,
+         method: method,
+         url: url,
+         origin: origin,
+         args_digest: Map.get(fields, :args_digest)
+       }}
+    end
+  end
+
+  defp relay_event(kind, _handle, _fields),
+    do: {:error, "unknown relay event kind #{inspect(kind)}"}
+
+  defp relay_fields(kind, fields, allowed) do
+    case Enum.find(fields, fn {key, value} -> not is_nil(value) and key not in allowed end) do
+      nil -> :ok
+      {key, _value} -> {:error, "relay event #{kind} has unexpected #{key}"}
+    end
+  end
+
+  defp relay_required(kind, fields, key) do
+    case Map.fetch(fields, key) do
+      {:ok, nil} -> {:error, "relay event #{kind} missing #{key}"}
+      {:ok, value} -> {:ok, value}
+      :error -> {:error, "relay event #{kind} missing #{key}"}
+    end
+  end
 
   defp dir_entry({name, is_dir, is_symlink}),
     do: %{name: name, type: file_type(is_dir, is_symlink)}

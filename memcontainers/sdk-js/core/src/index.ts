@@ -3,7 +3,17 @@
 
 export { capabilityConnection, mc, Vm } from "./memcontainer.js";
 export { llb } from "./llb.js";
-export type { BuildState, ExecOpts } from "./llb.js";
+export type {
+  BuildDefinition,
+  BuildRef,
+  BuildState,
+  CopyPath,
+  DefinitionOptions,
+  ExecOpts,
+  GitSourceOptions,
+  HttpSourceOptions,
+  LocalSourceOptions,
+} from "./llb.js";
 export { record } from "./record.js";
 export type { Recorder } from "./record.js";
 export { startCron, parseSchedule } from "./cron.js";
@@ -14,8 +24,12 @@ export type { ToolSpec } from "./tools.js";
 export { EmbeddedBackend, FanoutSink } from "./embedded.js";
 export { RemoteBackend } from "./remote.js";
 export type { RemoteBackendOptions } from "./remote.js";
+export { remoteBuild } from "./remote-build.js";
+export type { RemoteBuildOptions, RemoteBuildResult } from "./remote-build.js";
+export type { WarmDirective } from "./solve.js";
+export type { GitSource, LocalEntry, LocalSource, SolvePlatform, SolveProgressEvent } from "./solve.js";
 export { defaultKernel, defaultImage } from "./artifacts.js";
-export { FsContentStore, defaultStore } from "./store.js";
+export { FsContentStore, MemoryContentStore, OpfsContentStore, defaultStore } from "./store.js";
 export type { Backend, RawExecResult } from "./backend.js";
 export type {
   Runtime,
@@ -26,6 +40,7 @@ export type {
   CatalogFormat,
   CatalogSourceFormat,
   ConnectionSpecSource,
+  ExecOptions,
   ExecResult,
   DirEntry,
   StatResult,
@@ -45,6 +60,7 @@ export type {
   ConnectionPolicyAction,
   ConnectionPolicyOwner,
   ConnectionPolicyRule,
+  BuildRecord,
   ImageManifest,
   ImageConfig,
   ContentStore,

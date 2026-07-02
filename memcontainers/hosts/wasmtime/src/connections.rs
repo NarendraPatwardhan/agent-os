@@ -440,9 +440,11 @@ pub fn origin_allowed(allowed: &[String], url: &str) -> bool {
     let Ok(origin) = request_origin(url) else {
         return false;
     };
-    allowed
-        .iter()
-        .any(|candidate| request_origin(candidate).map(|c| c == origin).unwrap_or(false))
+    allowed.iter().any(|candidate| {
+        request_origin(candidate)
+            .map(|c| c == origin)
+            .unwrap_or(false)
+    })
 }
 
 struct ParsedOrigin<'a> {
@@ -592,14 +594,20 @@ mod tests {
         // auth:none with no origins is rejected — previously allowed, which let a connection marker be an
         // unrestricted egress channel that bypassed the network allowlist (S1).
         assert!(matches!(
-            reg.insert("public.org.main", ConnectionCredential::None, Vec::<String>::new()),
+            reg.insert(
+                "public.org.main",
+                ConnectionCredential::None,
+                Vec::<String>::new()
+            ),
             Err(ConnectionError::MissingOrigin)
         ));
         // a secret-bearing connection with no origins is rejected (unchanged by S1).
         assert!(matches!(
             reg.insert(
                 "github.org.main",
-                ConnectionCredential::Bearer { token: "t".to_string() },
+                ConnectionCredential::Bearer {
+                    token: "t".to_string()
+                },
                 Vec::<String>::new(),
             ),
             Err(ConnectionError::MissingOrigin)
@@ -622,7 +630,10 @@ mod tests {
         assert!(origin_allowed(&allowed, "https://api.example.com/graphql"));
         assert!(origin_allowed(&allowed, "https://api.example.com"));
         // A different host, a different scheme, a path-suffixed lookalike, and a malformed URL are refused.
-        assert!(!origin_allowed(&allowed, "https://api.example.com.evil.test/graphql"));
+        assert!(!origin_allowed(
+            &allowed,
+            "https://api.example.com.evil.test/graphql"
+        ));
         assert!(!origin_allowed(&allowed, "http://api.example.com/graphql"));
         assert!(!origin_allowed(&allowed, "https://evil.test/graphql"));
         assert!(!origin_allowed(&allowed, "not-a-url"));

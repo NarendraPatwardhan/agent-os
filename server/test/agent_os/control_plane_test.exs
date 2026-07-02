@@ -34,6 +34,7 @@ defmodule AgentOS.ControlPlaneTest do
     assert ControlPlane.stat(id, "/tmp/nope") == {:error, :not_found}
     assert ControlPlane.mkdir(id, "/tmp/new") == {:error, :not_found}
     assert ControlPlane.unlink(id, "/tmp/nope") == {:error, :not_found}
+    assert ControlPlane.chmod(id, "/tmp/nope", 0o600) == {:error, :not_found}
     assert ControlPlane.symlink(id, "/tmp/a", "/tmp/b") == {:error, :not_found}
     assert ControlPlane.mount(id, "/mnt/host") == {:error, :not_found}
     assert ControlPlane.unmount(id, "/mnt/host") == {:error, :not_found}
@@ -86,21 +87,67 @@ defmodule AgentOS.ControlPlaneTest do
 
       assert :ok = ControlPlane.write_file(id, "/tmp/nif.txt", "hello from nif\n")
       assert {:ok, "hello from nif\n"} = ControlPlane.read_file(id, "/tmp/nif.txt")
-      assert {:ok, %{type: :file, size: 15, nlink: nlink}} = ControlPlane.stat(id, "/tmp/nif.txt")
+
+      assert {:ok, %{type: :file, size: 15, nlink: nlink, mode: mode}} =
+               ControlPlane.stat(id, "/tmp/nif.txt")
+
       assert nlink >= 1
+      assert mode > 0
+      assert :ok = ControlPlane.chmod(id, "/tmp/nif.txt", 0o600)
+      assert {:ok, %{type: :file, size: 15, mode: 0o600}} = ControlPlane.stat(id, "/tmp/nif.txt")
 
       assert {:ok, entries} = ControlPlane.readdir(id, "/tmp")
       assert Enum.any?(entries, &(&1.name == "nif.txt" and &1.type == :file))
 
       assert {:ok, job} = ControlPlane.exec_start(id, "cat /tmp/nif.txt")
+
       assert {:ok, %{exit_code: 0, stdout: "hello from nif\n", stderr: ""}} =
                poll_exec(id, job, 5_000)
+
+      assert :ok = ControlPlane.mkdir(id, "/tmp/cp-exec-cwd")
+
+      assert {:ok,
+              %{exit_code: 0, stdout: "/tmp/cp-exec-cwd\ntyped-env\ntyped-stdin", stderr: ""}} =
+               ControlPlane.exec(
+                 id,
+                 "pwd; printf \"$CP_EXEC_FLAG\\n\"; read line; printf \"$line\"",
+                 cwd: "/tmp/cp-exec-cwd",
+                 env: %{"CP_EXEC_FLAG" => "typed-env"},
+                 stdin: "typed-stdin\n"
+               )
+
+      assert {:ok, %{exit_code: 0, stdout: <<0, 1, 2, "raw", 255>>, stderr: ""}} =
+               ControlPlane.exec(id, "cat", stdin: <<0, 1, 2, "raw", 255>>)
+
+      assert {:error, missing_cwd} = ControlPlane.exec(id, "true", cwd: "/tmp/missing-cwd")
+      assert missing_cwd =~ "errno 44"
+
+      assert :ok = ControlPlane.write_file(id, "/tmp/not-a-cwd", "file")
+      assert {:error, not_dir_cwd} = ControlPlane.exec(id, "true", cwd: "/tmp/not-a-cwd")
+      assert not_dir_cwd =~ "errno 54"
+
+      assert {:ok, opt_job} =
+               ControlPlane.exec_start(
+                 id,
+                 "pwd; printf \"$CP_JOB_FLAG\\n\"; read line; printf \"$line\"",
+                 cwd: "/tmp/cp-exec-cwd",
+                 env: [{"CP_JOB_FLAG", "job-env"}],
+                 stdin: "job-stdin\n"
+               )
+
+      assert {:ok, %{exit_code: 0, stdout: "/tmp/cp-exec-cwd\njob-env\njob-stdin", stderr: ""}} =
+               poll_exec(id, opt_job, 5_000)
 
       assert {:ok, snapshot} = ControlPlane.snapshot(id)
       assert binary_part(snapshot, 0, 4) == "MCSN"
 
       assert {:ok, fork_pid} =
-               ControlPlane.create(fork_id, wasm: wasm, snapshot: snapshot, deterministic: true, workers: 0)
+               ControlPlane.create(fork_id,
+                 wasm: wasm,
+                 snapshot: snapshot,
+                 deterministic: true,
+                 workers: 0
+               )
 
       assert is_pid(fork_pid)
       assert {:ok, "hello from nif\n"} = ControlPlane.read_file(fork_id, "/tmp/nif.txt")
@@ -145,7 +192,12 @@ defmodule AgentOS.ControlPlaneTest do
       assert {:ok, %{kind: :host_call, name: "greet"} = event} = next_relay(id, host_job, 5_000)
       assert tool_body(event.body) == "world"
 
-      assert :ok = ControlPlane.egress_host_call_respond(id, event.handle, "hello #{tool_body(event.body)}\n")
+      assert :ok =
+               ControlPlane.egress_host_call_respond(
+                 id,
+                 event.handle,
+                 "hello #{tool_body(event.body)}\n"
+               )
 
       assert {:ok, %{exit_code: 0, stdout: ~s({"ok":true,"data":"hello world\\n"}\n), stderr: ""}} =
                poll_exec(id, host_job, 5_000)
@@ -168,13 +220,17 @@ defmodule AgentOS.ControlPlaneTest do
                poll_exec(id, http_job, 5_000)
 
       assert :ok = ControlPlane.mount(id, "/mnt/beam", read_only: true)
+
       assert {:ok, %{exit_code: 0, stdout: mounts, stderr: ""}} =
                ControlPlane.exec(id, "cat /proc/mounts")
+
       assert mounts =~ "/mnt/beam"
 
       assert :ok = ControlPlane.unmount(id, "/mnt/beam")
+
       assert {:ok, %{exit_code: 0, stdout: mounts_after, stderr: ""}} =
                ControlPlane.exec(id, "cat /proc/mounts")
+
       refute mounts_after =~ "/mnt/beam"
 
       assert {:ok, nil} = ControlPlane.egress_next(id)
@@ -219,7 +275,9 @@ defmodule AgentOS.ControlPlaneTest do
 
       assert {:ok, %{exit_code: 0, stdout: "", stderr: ""}} = poll_exec(id, write_job, 5_000)
 
-      assert {:ok, read_job} = ControlPlane.exec_start(id, "read line < /var/persist/item; echo $line")
+      assert {:ok, read_job} =
+               ControlPlane.exec_start(id, "read line < /var/persist/item; echo $line")
+
       assert {:ok, %{kind: :persist_get, key: "item"} = read} = next_relay(id, read_job, 5_000)
       assert :ok = ControlPlane.egress_persist_respond(id, read.handle, <<1, "relay\n">>)
 

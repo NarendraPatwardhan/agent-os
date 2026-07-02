@@ -97,6 +97,9 @@ impl KernelExports {
     pub(crate) fn require_ctl_read(&self) -> Result<TypedFunc<(i32, i32), i32>> {
         Self::require(&self.mc_ctl_read, "mc_ctl_read")
     }
+    pub(crate) fn require_ctl_readlink(&self) -> Result<TypedFunc<(i32, i32), i32>> {
+        Self::require(&self.mc_ctl_readlink, "mc_ctl_readlink")
+    }
     pub(crate) fn require_ctl_write(&self) -> Result<TypedFunc<(i32, i32, i32, i32), i32>> {
         Self::require(&self.mc_ctl_write, "mc_ctl_write")
     }
@@ -112,6 +115,9 @@ impl KernelExports {
     pub(crate) fn require_ctl_unlink(&self) -> Result<TypedFunc<(i32, i32), i32>> {
         Self::require(&self.mc_ctl_unlink, "mc_ctl_unlink")
     }
+    pub(crate) fn require_ctl_chmod(&self) -> Result<TypedFunc<(i32, i32, i32), i32>> {
+        Self::require(&self.mc_ctl_chmod, "mc_ctl_chmod")
+    }
     pub(crate) fn require_ctl_symlink(&self) -> Result<TypedFunc<(i32, i32, i32, i32), i32>> {
         Self::require(&self.mc_ctl_symlink, "mc_ctl_symlink")
     }
@@ -121,9 +127,7 @@ impl KernelExports {
     pub(crate) fn require_ctl_unmount(&self) -> Result<TypedFunc<(i32, i32), i32>> {
         Self::require(&self.mc_ctl_unmount, "mc_ctl_unmount")
     }
-    pub(crate) fn require_ctl_svc_call_start(
-        &self,
-    ) -> Result<TypedFunc<(i32, i32, i32, i32), i32>> {
+    pub(crate) fn require_ctl_svc_call_start(&self) -> Result<TypedFunc<i32, i32>> {
         Self::require(&self.mc_ctl_svc_call_start, "mc_ctl_svc_call_start")
     }
     pub(crate) fn require_ctl_svc_call_poll(&self) -> Result<TypedFunc<i32, i32>> {

@@ -11,8 +11,10 @@ export function makeFs(backend: Backend): VmFs {
     write: (path, data) => backend.write(path, typeof data === "string" ? enc(data) : data),
     ls: (path) => backend.ls(path),
     stat: (path) => backend.stat(path),
+    readlink: (path) => backend.readlink(path),
     mkdir: (path) => backend.mkdir(path),
     rm: (path) => backend.rm(path),
+    chmod: (path, mode) => backend.chmod(path, mode),
     symlink: (target, link) => backend.symlink(target, link),
   };
 }

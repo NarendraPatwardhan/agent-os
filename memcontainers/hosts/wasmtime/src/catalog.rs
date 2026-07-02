@@ -282,7 +282,12 @@ impl CatalogCompiler {
             .discovery_request
             .call(
                 &mut self.store,
-                (kind_ptr, kind_bytes.len() as u32, ep_ptr, ep_bytes.len() as u32),
+                (
+                    kind_ptr,
+                    kind_bytes.len() as u32,
+                    ep_ptr,
+                    ep_bytes.len() as u32,
+                ),
             )
             .map_err(anyhow::Error::from);
         self.free
@@ -440,7 +445,10 @@ fn host_tool_catalog_bundle(defs: &[HostToolDef], generation: u64) -> Result<Too
             return Err(anyhow!("invalid host tool address '{}'", def.address));
         }
         if !toolcore::valid_binding_name(&def.binding_name) {
-            return Err(anyhow!("invalid host tool binding name '{}'", def.binding_name));
+            return Err(anyhow!(
+                "invalid host tool binding name '{}'",
+                def.binding_name
+            ));
         }
         if def.args_mode != "json" && def.args_mode != "raw" {
             return Err(anyhow!(
@@ -450,10 +458,16 @@ fn host_tool_catalog_bundle(defs: &[HostToolDef], generation: u64) -> Result<Too
         }
         let mut shard = serde_json::Map::new();
         if let Some(json) = &def.input_schema {
-            shard.insert("input_schema".to_string(), parse_host_tool_json(json, "input_schema")?);
+            shard.insert(
+                "input_schema".to_string(),
+                parse_host_tool_json(json, "input_schema")?,
+            );
         }
         if let Some(json) = &def.output_schema {
-            shard.insert("output_schema".to_string(), parse_host_tool_json(json, "output_schema")?);
+            shard.insert(
+                "output_schema".to_string(),
+                parse_host_tool_json(json, "output_schema")?,
+            );
         }
         shard.insert(
             "annotations".to_string(),
@@ -707,10 +721,17 @@ fn acquire_source(
 /// Execute a live discovery (graphql introspection, or the remote-MCP initialize → tools/list
 /// handshake) as authenticated host egress, returning the source document bytes. The credential is
 /// applied here, host-side; the guest never sees it.
-fn run_discovery(discovery: &DiscoveryRequest, credential: &ConnectionCredential) -> Result<Vec<u8>> {
+fn run_discovery(
+    discovery: &DiscoveryRequest,
+    credential: &ConnectionCredential,
+) -> Result<Vec<u8>> {
     match discovery {
-        DiscoveryRequest::Static => Err(anyhow!("static acquisition has no live discovery request")),
-        DiscoveryRequest::Graphql { url, body } => Ok(discovery_post(url, body, credential, None)?.0),
+        DiscoveryRequest::Static => {
+            Err(anyhow!("static acquisition has no live discovery request"))
+        }
+        DiscoveryRequest::Graphql { url, body } => {
+            Ok(discovery_post(url, body, credential, None)?.0)
+        }
         DiscoveryRequest::Mcp {
             url,
             initialize,
@@ -738,7 +759,11 @@ fn discovery_post(
     let target = match credential {
         ConnectionCredential::Query { name, value } => {
             let sep = if url.contains('?') { '&' } else { '?' };
-            format!("{url}{sep}{}={}", percent_encode(name), percent_encode(value))
+            format!(
+                "{url}{sep}{}={}",
+                percent_encode(name),
+                percent_encode(value)
+            )
         }
         _ => url.to_string(),
     };
@@ -779,7 +804,11 @@ fn extract_discovery_bytes(content_type: &str, text: &str) -> Vec<u8> {
             block
                 .lines()
                 .filter_map(|line| line.strip_prefix("data:"))
-                .map(|rest| rest.strip_prefix(' ').or_else(|| rest.strip_prefix('\t')).unwrap_or(rest))
+                .map(|rest| {
+                    rest.strip_prefix(' ')
+                        .or_else(|| rest.strip_prefix('\t'))
+                        .unwrap_or(rest)
+                })
                 .collect::<Vec<_>>()
                 .join("\n")
         })
@@ -804,7 +833,9 @@ fn percent_encode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for b in value.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{b:02X}")),
         }
     }
@@ -1208,13 +1239,22 @@ mod tests {
         let out = extract_discovery_bytes("text/event-stream", stream);
         let value: serde_json::Value =
             serde_json::from_slice(&out).expect("response frame must be valid JSON");
-        assert!(value.get("result").is_some(), "expected the result frame, got {value}");
-        assert!(value.get("method").is_none(), "must not return the notification frame");
+        assert!(
+            value.get("result").is_some(),
+            "expected the result frame, got {value}"
+        );
+        assert!(
+            value.get("method").is_none(),
+            "must not return the notification frame"
+        );
     }
 
     #[test]
     fn plain_json_discovery_body_is_returned_as_is() {
         let body = r#"{"data":{"__schema":{}}}"#;
-        assert_eq!(extract_discovery_bytes("application/json", body), body.as_bytes());
+        assert_eq!(
+            extract_discovery_bytes("application/json", body),
+            body.as_bytes()
+        );
     }
 }

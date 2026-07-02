@@ -1,0 +1,89 @@
+// contracts/llb.kdl — portable build definitions for the `llb` build plane.
+//
+// This is a message-only contract. A Definition is a topologically ordered list
+// of BuildOp records; op edges point at previous indexes. Large file payloads
+// are content-addressed out of line: a write op carries `data_digest`, and the
+// bytes live in the configured ContentStore under that digest.
+
+message "BuildInput" id=1 version=1 {
+  field "index" type="u32"
+  doc "One integer edge into a Definition's topologically ordered op array."
+}
+
+message "CopyPath" id=4 version=1 {
+  field "src_path" type="str"
+  field "dest_path" type="str"
+  doc "One exact path mapping for a multi-stage copy op."
+}
+
+message "BuildOp" id=2 version=1 {
+  field "kind" type="u32"
+
+  field "source_ref" type="str" opt=1
+  field "input" type="u32" opt=1
+  field "src" type="u32" opt=1
+  field "dest" type="u32" opt=1
+  field "a" type="u32" opt=1
+  field "b" type="u32" opt=1
+  field "lower" type="u32" opt=1
+  field "upper" type="u32" opt=1
+  field "parts" type="list<BuildInput>"
+  field "copy_paths" type="list<CopyPath>"
+
+  field "path" type="str" opt=1
+  field "local_path" type="str" opt=1
+  field "http_url" type="str" opt=1
+  field "expected_digest" type="str" opt=1
+  field "git_repo" type="str" opt=1
+  field "git_ref" type="str" opt=1
+  field "dest_path" type="str" opt=1
+  field "data_digest" type="str" opt=1
+  field "target" type="str" opt=1
+  field "link" type="str" opt=1
+  field "mode" type="u32" opt=1
+
+  field "cmd" type="str" opt=1
+  field "cwd" type="str" opt=1
+  field "env" type="strmap"
+  field "stdin" type="bytes" opt=1
+  field "tier" type="str" opt=1
+  field "budget_mib" type="u32" opt=1
+  field "fuel" type="u32" opt=1
+  field "deterministic" type="bool" opt=1
+  field "net" type="bool" opt=1
+  field "mounts" type="list<BuildInput>"
+
+  field "config_tier" type="str" opt=1
+  field "config_budget_mib" type="u32" opt=1
+  field "config_fuel" type="u32" opt=1
+  doc "One portable LLB op. `kind` is the SDK's closed op enum; unused fields must be absent or empty."
+}
+
+message "DigestEdge" id=5 version=1 {
+  field "role" type="str"
+  field "digest" type="str"
+  doc "One resolved input edge for a cache-key node digest. Roles are stable names such as input, src, dest, or part:0."
+}
+
+message "LayerRef" id=6 version=1 {
+  field "producer" type="str"
+  field "digest" type="str"
+  field "size" type="i64"
+  doc "Resolved layer metadata folded into source-node cache keys."
+}
+
+message "NodeDigest" id=7 version=1 {
+  field "op" type="BuildOp"
+  field "edges" type="list<DigestEdge>"
+  field "resolved" type="strmap"
+  field "layers" type="list<LayerRef>"
+  field "kernel_digest" type="str" opt=1
+  doc "Canonical cache-key input for one solved LLB vertex: op args, child digests, resolved mutable-source facts, source layers, and kernel identity when a VM is booted."
+}
+
+message "Definition" id=3 version=1 {
+  field "version" type="u32"
+  field "ops" type="list<BuildOp>"
+  field "root" type="u32"
+  doc "A portable LLB build graph. `root` indexes into `ops`; edges only point at earlier ops."
+}

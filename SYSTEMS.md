@@ -1163,12 +1163,10 @@ The SDK is the `@mc/*` scope. `@mc/core` is the unified `Vm` API over a pluggabl
 `tool`s, framed `session`s, and an interactive `shell` — with three interchangeable backends behind one
 interface: an **embedded** backend (the JS host in-process), a **remote** backend (REST + per-VM WebSocket
 to `mc-server`), and an auto-reconnecting unified socket. Its wire client is generated from the same `wire`
-contract as the server. `@mc/agent` is an external agent loop (the conversation and tool-dispatch run in
-the caller; the VM is the sandbox) with `bash`/`read`/`write` tools that keep the VM air-gapped and
-snapshots deterministic, over pluggable model providers. `@mc/elements` ships nine `<mc-*>` custom elements
-— a terminal bound to `vm.shell()`, a code editor, a one-shot exec, a lazy VFS file tree, a snapshot bar,
-an agent chat, and a full playground — that resolve a `Vm` from an ancestor sandbox element or boot their
-own. The **web app** embeds live VMs in the browser: a real shell, a code+shell playground, and demos that
+contract as the server. `@mc/elements` is the integration package for embedding AgentOS into applications
+without hand-wiring VM boot, context propagation, terminal/editor surfaces, artifact loading, or remote
+connection setup; its `<mc-*>` elements resolve a `Vm` from an ancestor sandbox element or boot their own.
+The **web app** embeds live VMs in the browser: a real shell, a code+shell playground, and demos that
 exercise the whole stack — a Luau playground, an xlsx→typst report generator, a RAG sandbox, and an
 on-device WebGPU model — booting the cooperative `kernel.wasm` with OPFS persistence and *no* COOP/COEP
 headers (none are needed without `SharedArrayBuffer`). Real headless-Chrome CDP tests verify Luau,

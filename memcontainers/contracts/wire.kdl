@@ -50,6 +50,15 @@ route "GET" "/v1/capabilities" res="Capabilities" {
 route "POST" "/v1/snapshots" req="SnapshotBytes" res="SnapshotUpload" {
   doc "Store raw snapshot bytes as a namespaced content-addressed object and return a restore ref."
 }
+route "POST" "/v1/blobs" req="Bytes" res="BlobUpload" {
+  doc "Store arbitrary content-addressed bytes in the server build store. LLB write ops reference these blobs by sha256 digest."
+}
+route "GET" "/v1/blobs/{digest}" res="Bytes" {
+  doc "Read arbitrary content-addressed bytes from the server build store by sha256 digest."
+}
+route "POST" "/v1/build" req="BuildDefinitionBytes" res="BuildResult" {
+  doc "Solve a canonical llb.Definition on the server, next to the content store and wasmtime host, and return the root image manifest reference."
+}
 
 route "GET" "/v1/vms" res="VmList" {
   doc "List live VMs."
@@ -88,6 +97,10 @@ route "DELETE" "/v1/vms/{id}/exec-jobs/{job}" res="ExecJob" {
   doc "Cancel a long-running exec job."
 }
 
+route "POST" "/v1/vms/{id}/svc/{service}" req="Bytes" res="Bytes" {
+  doc "Call a resident service as host control through the kernel service channel. Request and response bodies are the service's raw framed bytes; a framed non-zero status is surfaced as an error."
+}
+
 route "GET" "/v1/vms/{id}/fs/files" res="Bytes" {
   query "path" type="Path" required=1
   doc "Read file bytes. The VM path is a query value so OpenAPI and host frameworks do not need slash-capture semantics."
@@ -111,6 +124,10 @@ route "GET" "/v1/vms/{id}/fs/entries" res="FsEntries" {
 route "PUT" "/v1/vms/{id}/fs/dirs" res="FsMkdir" {
   query "path" type="Path" required=1
   doc "Create a directory, including parents when the host adapter elects to expose that option."
+}
+route "PUT" "/v1/vms/{id}/fs/mode" req="FsChmod" res="FsChmodResult" {
+  query "path" type="Path" required=1
+  doc "Set POSIX permission bits for a VM path."
 }
 route "PUT" "/v1/vms/{id}/fs/symlinks" req="FsSymlink" res="FsSymlinkResult" {
   doc "Create a symbolic link. The body carries both link and target paths to avoid ambiguous URL escaping."
@@ -207,6 +224,49 @@ schema "SnapshotUpload" kind="json" {
   field "ref" type="SnapshotRef" required=1
   field "size" type="u64" required=1
 }
+schema "BlobUpload" kind="json" {
+  field "digest" type="Digest" required=1
+  field "size" type="u64" required=1
+}
+schema "BuildResult" kind="json" {
+  field "definitionDigest" type="Digest" required=1
+  field "rootDigest" type="Digest" required=1
+  field "kernelDigest" type="Digest" required=1
+  field "manifestRef" type="ManifestRef" required=1
+  field "image" type="ImageManifest" required=1
+  field "layers" type="ImageLayer[]" required=1
+}
+schema "ImageManifest" kind="json" {
+  field "schema" type="u32" required=1
+  field "layers" type="ImageLayer[]" required=1
+  field "config" type="ImageConfig" required=1
+  field "build" type="BuildRecord" required=0
+}
+schema "ImageLayer" kind="json" {
+  field "digest" type="Digest" required=1
+  field "size" type="u64" required=1
+}
+schema "ImageConfig" kind="json" {
+  field "tier" type="string" required=0
+  field "budgetMib" type="u32" required=0
+  field "fuel" type="u32" required=0
+}
+schema "BuildRecord" kind="json" {
+  field "schema" type="u32" required=1
+  field "definition" type="BuildRecordDefinition" required=1
+  field "rootDigest" type="Digest" required=1
+  field "kernelDigest" type="Digest" required=1
+  field "storeRefs" type="BuildStoreRefs" required=1
+}
+schema "BuildRecordDefinition" kind="json" {
+  field "encoding" type="string" required=1
+  field "digest" type="Digest" required=1
+  field "bytes" type="u32[]" required=1
+}
+schema "BuildStoreRefs" kind="json" {
+  field "layers" type="ImageLayer[]" required=1
+  field "blobs" type="Digest[]" required=1
+}
 schema "SnapshotRefObject" kind="json" {
   field "ref" type="SnapshotRef" required=1
 }
@@ -244,6 +304,7 @@ schema "Exec" kind="json" {
   field "cwd" type="Path" required=0
   field "env" type="StringMap" required=0
   field "stdin" type="string" required=0
+  field "stdinBase64" type="string" required=0
   field "timeoutMs" type="u64" required=0
   field "maxTicks" type="u64" required=0
 }
@@ -276,6 +337,12 @@ schema "FsEntries" kind="json" {
   field "items" type="FsStat[]" required=1
 }
 schema "FsMkdir" kind="json" {
+  field "ok" type="bool" required=1
+}
+schema "FsChmod" kind="json" {
+  field "mode" type="u32" required=1
+}
+schema "FsChmodResult" kind="json" {
   field "ok" type="bool" required=1
 }
 schema "FsSymlink" kind="json" {
@@ -316,6 +383,9 @@ schema "LayerTar" kind="binary" {
 }
 schema "Bytes" kind="binary" {
   doc "Raw bytes. The REST API does not base64-encode file, stdout, snapshot, or layer payloads."
+}
+schema "BuildDefinitionBytes" kind="binary" {
+  doc "Canonical encoded llb.Definition bytes."
 }
 schema "WireSocket" kind="websocket" {
   doc "Typed frames [kind:u8][seq:u64 LE][body...] using the message table in this file."

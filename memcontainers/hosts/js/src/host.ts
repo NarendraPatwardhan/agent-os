@@ -1,11 +1,19 @@
-import { EXPORTS } from "@mc/contracts/ctl";
+import {
+  EXPORTS,
+  decodeDirEntries,
+  decodeExecOutcome,
+  decodeFileStat,
+  decodeSvcResponse,
+  encodeExecRequest,
+  encodeSvcRequest,
+} from "@mc/contracts/ctl";
 import { EAGAIN } from "@mc/contracts/constants";
 import { Mem } from "./memory.js";
 import { makeBridge, type HostState } from "./bridge.js";
 import { processStdout, processStderr } from "./io.js";
 import { SystemClock, FixedClock, OsRng, SeededRng } from "./sources.js";
 import { DeniedNet } from "./net.js";
-import { DeniedPersist } from "./persist.js";
+import { DeniedPersist } from "./persist_core.js";
 import { DeniedHostCall } from "./host_call.js";
 import type { HostCallCapability } from "./host_call.js";
 import type {
@@ -67,6 +75,12 @@ export interface ExecResult {
   exitCode: number;
 }
 
+export interface ExecOptions {
+  cwd?: string;
+  env?: Record<string, string>;
+  stdin?: Uint8Array;
+}
+
 /** A directory entry from `readdir`. */
 export interface DirEntry {
   name: string;
@@ -74,6 +88,7 @@ export interface DirEntry {
   isSymlink: boolean;
 }
 
+const textDecoder = new TextDecoder();
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const ctlErr = (op: string, arg: string, code: number): Error =>
   new Error(`control-channel ${op} '${arg}' failed (errno ${-code})`);
@@ -479,6 +494,15 @@ export class KernelHost {
     return this.ctlGet(n);
   }
 
+  /** Read the target text of a symlink without following it. */
+  readlink(path: string): string {
+    const f = this.ctlFn(this.exports.mc_ctl_readlink, "mc_ctl_readlink");
+    const p = enc(path);
+    this.ctlPut(p);
+    const n = ctlCheck("readlink", path, f(0, p.length));
+    return textDecoder.decode(this.ctlGet(n));
+  }
+
   /** Write (truncating) a file through the control channel. */
   writeFile(path: string, data: Uint8Array): void {
     const f = this.ctlFn(this.exports.mc_ctl_write, "mc_ctl_write");
@@ -496,36 +520,31 @@ export class KernelHost {
     const p = enc(path);
     this.ctlPut(p);
     const n = ctlCheck("readdir", path, f(0, p.length));
-    const raw = this.ctlGet(n);
-    const out: DirEntry[] = [];
-    let i = 0;
-    while (i < raw.length) {
-      let nul = i;
-      while (nul < raw.length && raw[nul] !== 0) nul++;
-      const name = new TextDecoder().decode(raw.subarray(i, nul));
-      const kind = raw[nul + 1];
-      out.push({
-        name,
-        isDir: kind === 0x64 /* 'd' */,
-        isSymlink: kind === 0x6c /* 'l' */,
-      });
-      i = nul + 2;
-    }
-    return out;
+    const listing = decodeDirEntries(this.ctlGet(n));
+    return listing.entries.map((entry) => ({
+      name: entry.name,
+      isDir: entry.is_dir,
+      isSymlink: entry.is_symlink,
+    }));
   }
 
-  /** Stat a path: `{ size, isDir, isSymlink, nlink }` (the link itself for a symlink). */
-  stat(path: string): { size: number; isDir: boolean; isSymlink: boolean; nlink: number } {
+  /** Stat a path: `{ size, isDir, isSymlink, nlink, mode }` (the link itself for a symlink). */
+  stat(path: string): { size: number; isDir: boolean; isSymlink: boolean; nlink: number; mode: number } {
     const f = this.ctlFn(this.exports.mc_ctl_stat, "mc_ctl_stat");
     const p = enc(path);
     this.ctlPut(p);
-    ctlCheck("stat", path, f(0, p.length));
-    const raw = this.ctlGet(16);
-    const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
-    const size = Number(dv.getBigUint64(0, true));
-    const kind = dv.getUint32(8, true);
-    const nlink = dv.getUint32(12, true);
-    return { size, isDir: kind === 1, isSymlink: kind === 2, nlink };
+    const n = ctlCheck("stat", path, f(0, p.length));
+    const stat = decodeFileStat(this.ctlGet(n));
+    if (stat.size < 0) {
+      throw new Error("malformed stat frame from kernel: negative size");
+    }
+    return {
+      size: stat.size,
+      isDir: stat.is_dir,
+      isSymlink: stat.is_symlink,
+      nlink: stat.nlink,
+      mode: stat.mode,
+    };
   }
 
   /** Create a directory through the control channel. */
@@ -542,6 +561,14 @@ export class KernelHost {
     const p = enc(path);
     this.ctlPut(p);
     ctlCheck("unlink", path, f(0, p.length));
+  }
+
+  /** Set POSIX permission bits through the control channel. */
+  chmod(path: string, mode: number): void {
+    const f = this.ctlFn(this.exports.mc_ctl_chmod, "mc_ctl_chmod");
+    const p = enc(path);
+    this.ctlPut(p);
+    ctlCheck("chmod", path, f(0, p.length, mode));
   }
 
   /** Create a symbolic link at `link` with target text `target`. The control buffer holds the target
@@ -578,11 +605,16 @@ export class KernelHost {
   /** Begin a command without driving it to completion; returns a job id. Drive ticks yourself and call
    *  {@link execPoll} until it returns a result. A job survives `snapshot`/`restore`, so a command
    *  begun in one VM can finish in a forked/rehydrated one. */
-  execStart(cmd: string): number {
+  execStart(cmd: string, opts: ExecOptions = {}): number {
     const start = this.ctlFn(this.exports.mc_ctl_exec_start, "mc_ctl_exec_start");
-    const c = enc(cmd);
-    this.ctlPut(c);
-    const job = start(c.length);
+    const req = encodeExecRequest({
+      cmd,
+      cwd: opts.cwd,
+      env: opts.env ?? {},
+      stdin: opts.stdin,
+    });
+    this.ctlPut(req);
+    const job = start(req.length);
     if (job < 0) throw ctlErr("exec", cmd, job);
     return job;
   }
@@ -592,9 +624,8 @@ export class KernelHost {
   execPoll(job: number): ExecResult | null {
     const poll = this.ctlFn(this.exports.mc_ctl_exec_poll, "mc_ctl_exec_poll");
     const status = poll(job);
-    if (status === 1) return this.readExecResult();
     if (status < 0) throw ctlErr("exec_poll", "job", status);
-    return null;
+    return status > 0 ? this.readExecResult(status) : null;
   }
 
   /** Stdout a *running* job has produced so far, without finalizing it (empty if the kernel lacks the
@@ -617,12 +648,9 @@ export class KernelHost {
   /** Begin a host-originated resident-service call. The service sees caller=SYSTEM_CALLER. */
   svcCallStart(name: string, req: Uint8Array): number {
     const start = this.ctlFn(this.exports.mc_ctl_svc_call_start, "mc_ctl_svc_call_start");
-    const n = enc(name);
-    const frame = new Uint8Array(n.length + req.length);
-    frame.set(n, 0);
-    frame.set(req, n.length);
+    const frame = encodeSvcRequest({ service: name, request: req });
     this.ctlPut(frame);
-    const job = start(0, n.length, n.length, req.length);
+    const job = start(frame.length);
     if (job < 0) throw ctlErr("svc_call", name, job);
     return job;
   }
@@ -633,7 +661,7 @@ export class KernelHost {
     const status = poll(job);
     if (status === 0) return null;
     if (status < 0) throw ctlErr("svc_call_poll", "job", status);
-    return this.readSvcCallResult();
+    return this.readSvcCallResult(status);
   }
 
   /** Abandon a host-originated resident-service call. */
@@ -641,16 +669,12 @@ export class KernelHost {
     this.ctlFn(this.exports.mc_ctl_svc_call_close, "mc_ctl_svc_call_close")(job);
   }
 
-  private readSvcCallResult(): Uint8Array {
-    const head = this.ctlGet(8);
-    const dv = new DataView(head.buffer, head.byteOffset, head.byteLength);
-    const status = dv.getInt32(0, true);
-    const len = dv.getUint32(4, true);
-    const raw = this.ctlGet(8 + len);
-    if (status !== 0) {
-      throw new Error(`control-channel svc_call failed (errno ${status})`);
+  private readSvcCallResult(len: number): Uint8Array {
+    const response = decodeSvcResponse(this.ctlGet(len));
+    if (response.status !== 0) {
+      throw new Error(`control-channel svc_call failed (errno ${response.status})`);
     }
-    return raw.subarray(8);
+    return response.body;
   }
 
   /** Run a host-originated resident-service call to completion. */
@@ -673,8 +697,8 @@ export class KernelHost {
 
   /** Run `cmd` to completion: captured stdout/stderr + the real exit code. Drives ticks, yielding a
    *  macrotask between them so in-flight `fetch`/WS can resolve (mirrors the Rust host's `exec`). */
-  async exec(cmd: string, maxTicks = 20_000): Promise<ExecResult> {
-    const job = this.execStart(cmd);
+  async exec(cmd: string, opts: ExecOptions = {}, maxTicks = 20_000): Promise<ExecResult> {
+    const job = this.execStart(cmd, opts);
     for (let i = 0; i < maxTicks; i++) {
       const r = this.execPoll(job);
       if (r) return r;
@@ -747,18 +771,12 @@ export class KernelHost {
     return { digest: `sha256:${hex}`, tar };
   }
 
-  private readExecResult(): ExecResult {
-    const ptr = this.ctlBuf(0);
-    const header = this.st.mem.read(ptr, 12);
-    const dv = new DataView(header.buffer, header.byteOffset, 12);
-    const exitCode = dv.getInt32(0, true);
-    const soLen = dv.getUint32(4, true);
-    const seLen = dv.getUint32(8, true);
-    const body = this.st.mem.read(ptr + 12, soLen + seLen);
+  private readExecResult(len: number): ExecResult {
+    const outcome = decodeExecOutcome(this.ctlGet(len));
     return {
-      stdout: body.subarray(0, soLen),
-      stderr: body.subarray(soLen, soLen + seLen),
-      exitCode,
+      stdout: outcome.stdout,
+      stderr: outcome.stderr,
+      exitCode: outcome.exit_code,
     };
   }
 }

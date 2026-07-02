@@ -9,10 +9,12 @@ import type { KernelHost, MapHostCall, StreamSink } from "@mc/host";
 import type { Backend, RawExecResult } from "./backend.js";
 import { makeFs } from "./fs.js";
 import { dispatchMount } from "./mount.js";
+import { assertSessionAgentType, sessionExec } from "./session.js";
 import { assertSafeToolBindingName, runToolJson } from "./tools.js";
 import type {
   DirEntry,
   Driver,
+  ExecOptions,
   SessionEvent,
   SessionHandle,
   Shell,
@@ -48,6 +50,8 @@ function emitSessionLines(
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+const execStdinBytes = (stdin: ExecOptions["stdin"]): Uint8Array | undefined =>
+  typeof stdin === "string" ? enc(stdin) : stdin;
 
 /** Wall-clock deadline for a single structured fs op (or commit flush) across a
  *  host-backed mount before giving up. A wall-clock bound — not an iteration
@@ -182,11 +186,15 @@ export class EmbeddedBackend implements Backend {
     this.rejecters.clear();
   }
 
-  async exec(cmd: string): Promise<RawExecResult> {
+  async exec(cmd: string, opts: ExecOptions = {}): Promise<RawExecResult> {
     if (!this.running) throw new Error("VM closed");
     let job: number;
     try {
-      job = this.host.execStart(cmd);
+      job = this.host.execStart(cmd, {
+        cwd: opts.cwd,
+        env: opts.env,
+        stdin: execStdinBytes(opts.stdin),
+      });
     } catch (e) {
       throw asError(e);
     }
@@ -201,10 +209,12 @@ export class EmbeddedBackend implements Backend {
     return result;
   }
 
-  /** A live agent session: runs `<agentType> <promptFile>` and streams its framed
+  /** A live agent session: runs the validated guest agent with the prompt path
+   *  passed through a typed exec env var, and streams its framed
    *  events as the pump tails the running exec (via the kernel exec-peek). on()
    *  fires as events arrive; prompt() resolves when the agent exits. */
   liveSession(agentType: string): SessionHandle {
+    assertSessionAgentType(agentType);
     const id = `s${++this.sessionSeq}`;
     const listeners = new Set<(e: SessionEvent) => void>();
     const backend = this;
@@ -225,7 +235,12 @@ export class EmbeddedBackend implements Backend {
           events.push(e);
           for (const l of listeners) l(e);
         };
-        const job = backend.host.execStart(`${agentType} ${promptFile}`);
+        const { cmd, opts } = sessionExec(agentType, promptFile);
+        const job = backend.host.execStart(cmd, {
+          cwd: opts.cwd,
+          env: opts.env,
+          stdin: execStdinBytes(opts.stdin),
+        });
         await new Promise<void>((resolve) => {
           backend.sessions.set(job, { emitted: 0, onEvent, onEnd: resolve });
         });
@@ -286,11 +301,17 @@ export class EmbeddedBackend implements Backend {
   async stat(path: string): Promise<StatResult> {
     return this.withMountRetry(() => this.host.stat(path));
   }
+  async readlink(path: string): Promise<string> {
+    return this.withMountRetry(() => this.host.readlink(path));
+  }
   async mkdir(path: string): Promise<void> {
     await this.withMountRetry(() => this.host.mkdir(path));
   }
   async rm(path: string): Promise<void> {
     await this.withMountRetry(() => this.host.unlink(path));
+  }
+  async chmod(path: string, mode: number): Promise<void> {
+    await this.withMountRetry(() => this.host.chmod(path, mode));
   }
   async symlink(target: string, link: string): Promise<void> {
     await this.withMountRetry(() => this.host.symlink(target, link));

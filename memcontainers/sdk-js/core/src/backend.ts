@@ -8,6 +8,7 @@
 import type {
   DirEntry,
   Driver,
+  ExecOptions,
   SessionHandle,
   Shell,
   StatResult,
@@ -23,13 +24,15 @@ export interface RawExecResult {
 }
 
 export interface Backend {
-  exec(cmd: string): Promise<RawExecResult>;
+  exec(cmd: string, opts?: ExecOptions): Promise<RawExecResult>;
   read(path: string): Promise<Uint8Array>;
   write(path: string, data: Uint8Array): Promise<void>;
   ls(path: string): Promise<DirEntry[]>;
   stat(path: string): Promise<StatResult>;
+  readlink(path: string): Promise<string>;
   mkdir(path: string): Promise<void>;
   rm(path: string): Promise<void>;
+  chmod(path: string, mode: number): Promise<void>;
   /** Create a symbolic link at `link` with target text `target`. */
   symlink(target: string, link: string): Promise<void>;
   snapshot(): Promise<Uint8Array>;

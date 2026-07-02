@@ -47,8 +47,15 @@ defmodule AgentOS.Vm do
   # of fuel slices; this bounds a runaway command rather than the common case.
   @default_max_ticks 5_000_000
   @default_call_timeout 60_000
+  @exec_option_keys [:cwd, :env, :stdin]
 
-  defstruct [:id, :nif, :booted_at, :last_active_ms]
+  # Bounded terminal scrollback retained in the VM so a reconnecting client can resume the shell
+  # stream from its last cursor (the typed socket's Hello `resume`) and a fresh client can render
+  # recent history. Capped to avoid reintroducing the unbounded-output flooding the CaptureSink
+  # exists to prevent; older bytes are dropped and `shell_base` advances past them.
+  @shell_log_cap 262_144
+
+  defstruct [:id, :nif, :booted_at, :last_active_ms, shell_log: "", shell_base: 0]
 
   # ── Client API ────────────────────────────────────────────────────────────
 
@@ -67,21 +74,23 @@ defmodule AgentOS.Vm do
   @spec exec(server(), String.t(), keyword()) :: {:ok, map()} | {:error, Nif.reason()}
   def exec(server, cmd, opts \\ [])
 
-  def exec(server, cmd, opts) when is_binary(cmd) do
+  def exec(server, cmd, opts) when is_binary(cmd) and is_list(opts) do
     max_ticks = Keyword.get(opts, :max_ticks, @default_max_ticks)
-    GenServer.call(server, {:exec, cmd, max_ticks}, timeout(opts))
+    GenServer.call(server, {:exec, cmd, max_ticks, exec_opts(opts)}, timeout(opts))
   end
 
-  def exec(_server, _cmd, _opts), do: {:error, "exec expects a binary command"}
+  def exec(_server, _cmd, _opts),
+    do: {:error, "exec expects a binary command and keyword options"}
 
   @doc "Start a structured exec job. Poll it with `exec_poll/2`; cancel it with `exec_cancel/2`."
   @spec exec_start(server(), String.t(), keyword()) :: {:ok, integer()} | {:error, Nif.reason()}
   def exec_start(server, cmd, opts \\ [])
 
-  def exec_start(server, cmd, opts) when is_binary(cmd),
-    do: GenServer.call(server, {:exec_start, cmd}, timeout(opts))
+  def exec_start(server, cmd, opts) when is_binary(cmd) and is_list(opts),
+    do: GenServer.call(server, {:exec_start, cmd, exec_opts(opts)}, timeout(opts))
 
-  def exec_start(_server, _cmd, _opts), do: {:error, "exec_start expects a binary command"}
+  def exec_start(_server, _cmd, _opts),
+    do: {:error, "exec_start expects a binary command and keyword options"}
 
   @doc "Poll a structured exec job; `{:ok, nil}` means still running."
   @spec exec_poll(server(), integer(), keyword()) ::
@@ -90,7 +99,8 @@ defmodule AgentOS.Vm do
     do: GenServer.call(server, {:exec_poll, job}, timeout(opts))
 
   @doc "Read stdout produced so far by a running structured exec job."
-  @spec exec_stdout_peek(server(), integer(), keyword()) :: {:ok, binary()} | {:error, Nif.reason()}
+  @spec exec_stdout_peek(server(), integer(), keyword()) ::
+          {:ok, binary()} | {:error, Nif.reason()}
   def exec_stdout_peek(server, job, opts \\ []),
     do: GenServer.call(server, {:exec_stdout_peek, job}, timeout(opts))
 
@@ -98,6 +108,17 @@ defmodule AgentOS.Vm do
   @spec exec_cancel(server(), integer(), keyword()) :: :ok | {:error, Nif.reason()}
   def exec_cancel(server, job, opts \\ []),
     do: GenServer.call(server, {:exec_cancel, job}, timeout(opts))
+
+  @doc "Call a resident service as host control through the kernel service channel."
+  @spec svc_call(server(), String.t(), binary(), keyword()) ::
+          {:ok, {integer(), binary()}} | {:error, Nif.reason()}
+  def svc_call(server, service, request, opts \\ [])
+
+  def svc_call(server, service, request, opts) when is_binary(service) and is_binary(request),
+    do: GenServer.call(server, {:svc_call, service, request}, timeout(opts))
+
+  def svc_call(_server, _service, _request, _opts),
+    do: {:error, "svc_call expects a binary service name and request"}
 
   @doc "Feed terminal input bytes."
   @spec send_input(server(), binary()) :: :ok | {:error, Nif.reason()}
@@ -117,6 +138,20 @@ defmodule AgentOS.Vm do
   @doc "Drain the terminal output captured since the last drain."
   @spec take_output(server()) :: binary()
   def take_output(server), do: GenServer.call(server, :take_output)
+
+  @doc """
+  Terminal scrollback the VM has retained since `cursor` (an absolute byte offset) plus the
+  absolute `total` bytes ever produced. Powers typed-socket resume: a reconnecting client passes
+  its last cursor and gets exactly the bytes it missed. Bytes older than the retained window
+  (`@shell_log_cap`) are dropped, so the returned `from` may exceed `cursor`.
+  """
+  @spec shell_since(server(), non_neg_integer()) ::
+          {:ok, %{bytes: binary(), total: non_neg_integer(), from: non_neg_integer()}}
+          | {:error, term()}
+  def shell_since(server, cursor) when is_integer(cursor) and cursor >= 0,
+    do: GenServer.call(server, {:shell_since, cursor})
+
+  def shell_since(_server, _cursor), do: {:error, "shell_since expects a non-negative cursor"}
 
   @doc "Snapshot the whole VM into a portable blob (refuses while egress is in flight)."
   @spec snapshot(server()) :: {:ok, binary()} | {:error, Nif.reason()}
@@ -148,7 +183,8 @@ defmodule AgentOS.Vm do
     do: {:error, "write_file expects a binary path and data"}
 
   @doc "List a directory through the control channel."
-  @spec readdir(server(), String.t(), keyword()) :: {:ok, [Nif.dir_entry()]} | {:error, Nif.reason()}
+  @spec readdir(server(), String.t(), keyword()) ::
+          {:ok, [Nif.dir_entry()]} | {:error, Nif.reason()}
   def readdir(server, path, opts \\ [])
 
   def readdir(server, path, opts) when is_binary(path),
@@ -164,6 +200,15 @@ defmodule AgentOS.Vm do
     do: GenServer.call(server, {:stat, path}, timeout(opts))
 
   def stat(_server, _path, _opts), do: {:error, "stat expects a binary path"}
+
+  @doc "Read the target text of a symlink through the control channel."
+  @spec readlink(server(), String.t(), keyword()) :: {:ok, binary()} | {:error, Nif.reason()}
+  def readlink(server, path, opts \\ [])
+
+  def readlink(server, path, opts) when is_binary(path),
+    do: GenServer.call(server, {:readlink, path}, timeout(opts))
+
+  def readlink(_server, _path, _opts), do: {:error, "readlink expects a binary path"}
 
   @doc "Create a directory through the control channel."
   @spec mkdir(server(), String.t(), keyword()) :: :ok | {:error, Nif.reason()}
@@ -182,6 +227,16 @@ defmodule AgentOS.Vm do
     do: GenServer.call(server, {:unlink, path}, timeout(opts))
 
   def unlink(_server, _path, _opts), do: {:error, "unlink expects a binary path"}
+
+  @doc "Set POSIX permission bits through the control channel."
+  @spec chmod(server(), String.t(), non_neg_integer(), keyword()) :: :ok | {:error, Nif.reason()}
+  def chmod(server, path, mode, opts \\ [])
+
+  def chmod(server, path, mode, opts) when is_binary(path) and is_integer(mode),
+    do: GenServer.call(server, {:chmod, path, mode}, timeout(opts))
+
+  def chmod(_server, _path, _mode, _opts),
+    do: {:error, "chmod expects a binary path and integer mode"}
 
   @doc "Create a symbolic link through the control channel."
   @spec symlink(server(), String.t(), String.t(), keyword()) :: :ok | {:error, Nif.reason()}
@@ -227,17 +282,31 @@ defmodule AgentOS.Vm do
   def status(server), do: GenServer.call(server, :status, @default_call_timeout)
 
   @doc "Drain the next outbound egress relay event, if any."
-  @spec egress_next(server(), keyword()) :: {:ok, Nif.relay_event() | nil} | {:error, Nif.reason()}
+  @spec egress_next(server(), keyword()) ::
+          {:ok, Nif.relay_event() | nil} | {:error, Nif.reason()}
   def egress_next(server, opts \\ []), do: GenServer.call(server, :egress_next, timeout(opts))
 
   @doc "Answer an HTTP relay event."
-  @spec egress_http_respond(server(), integer(), non_neg_integer(), String.t(), [{String.t(), String.t()}], binary(), keyword()) ::
+  @spec egress_http_respond(
+          server(),
+          integer(),
+          non_neg_integer(),
+          String.t(),
+          [{String.t(), String.t()}],
+          binary(),
+          keyword()
+        ) ::
           :ok | {:error, Nif.reason()}
   def egress_http_respond(server, handle, status, reason, headers, body, opts \\ [])
 
   def egress_http_respond(server, handle, status, reason, headers, body, opts)
-      when is_integer(handle) and handle > 0 and is_binary(reason) and is_list(headers) and is_binary(body) do
-    GenServer.call(server, {:egress_http_respond, handle, status, reason, headers, body}, timeout(opts))
+      when is_integer(handle) and handle > 0 and is_binary(reason) and is_list(headers) and
+             is_binary(body) do
+    GenServer.call(
+      server,
+      {:egress_http_respond, handle, status, reason, headers, body},
+      timeout(opts)
+    )
   end
 
   def egress_http_respond(_server, _handle, _status, _reason, _headers, _body, _opts),
@@ -249,7 +318,8 @@ defmodule AgentOS.Vm do
     do: GenServer.call(server, {:egress_http_fail, handle}, timeout(opts))
 
   @doc "Answer a host_call relay event."
-  @spec egress_host_call_respond(server(), integer(), binary(), keyword()) :: :ok | {:error, Nif.reason()}
+  @spec egress_host_call_respond(server(), integer(), binary(), keyword()) ::
+          :ok | {:error, Nif.reason()}
   def egress_host_call_respond(server, handle, result, opts \\ [])
 
   def egress_host_call_respond(server, handle, result, opts)
@@ -270,7 +340,8 @@ defmodule AgentOS.Vm do
   def egress_tool_approval_respond(server, handle, allow, remember_session \\ false, opts \\ [])
 
   def egress_tool_approval_respond(server, handle, allow, remember_session, opts)
-      when is_integer(handle) and handle > 0 and is_boolean(allow) and is_boolean(remember_session),
+      when is_integer(handle) and handle > 0 and is_boolean(allow) and
+             is_boolean(remember_session),
       do:
         GenServer.call(
           server,
@@ -279,10 +350,13 @@ defmodule AgentOS.Vm do
         )
 
   def egress_tool_approval_respond(_server, _handle, _allow, _remember, _opts),
-    do: {:error, "egress_tool_approval_respond expects a positive handle and boolean allow/remember"}
+    do:
+      {:error,
+       "egress_tool_approval_respond expects a positive handle and boolean allow/remember"}
 
   @doc "Answer a persist relay event with raw async-persist body bytes."
-  @spec egress_persist_respond(server(), integer(), binary(), keyword()) :: :ok | {:error, Nif.reason()}
+  @spec egress_persist_respond(server(), integer(), binary(), keyword()) ::
+          :ok | {:error, Nif.reason()}
   def egress_persist_respond(server, handle, body, opts \\ [])
 
   def egress_persist_respond(server, handle, body, opts)
@@ -311,8 +385,9 @@ defmodule AgentOS.Vm do
   @spec egress_ws_push(server(), integer(), binary(), keyword()) :: :ok | {:error, Nif.reason()}
   def egress_ws_push(server, handle, data, opts \\ [])
 
-  def egress_ws_push(server, handle, data, opts) when is_integer(handle) and handle > 0 and is_binary(data),
-    do: GenServer.call(server, {:egress_ws_push, handle, data}, timeout(opts))
+  def egress_ws_push(server, handle, data, opts)
+      when is_integer(handle) and handle > 0 and is_binary(data),
+      do: GenServer.call(server, {:egress_ws_push, handle, data}, timeout(opts))
 
   def egress_ws_push(_server, _handle, _data, _opts),
     do: {:error, "egress_ws_push expects a positive handle and binary data"}
@@ -352,7 +427,14 @@ defmodule AgentOS.Vm do
         case catalog_result do
           :ok ->
             now = now_ms()
-            {:ok, %__MODULE__{id: Keyword.fetch!(opts, :id), nif: nif, booted_at: now, last_active_ms: now}}
+
+            {:ok,
+             %__MODULE__{
+               id: Keyword.fetch!(opts, :id),
+               nif: nif,
+               booted_at: now,
+               last_active_ms: now
+             }}
 
           {:error, reason} ->
             {:stop, reason}
@@ -366,9 +448,9 @@ defmodule AgentOS.Vm do
   end
 
   @impl true
-  def handle_call({:exec, cmd, max_ticks}, _from, state) do
+  def handle_call({:exec, cmd, max_ticks, exec_opts}, _from, state) do
     reply =
-      case Nif.exec(state.nif, cmd, max_ticks) do
+      case Nif.exec(state.nif, cmd, max_ticks, exec_opts) do
         {:ok, {exit_code, stdout, stderr}} ->
           {:ok, exec_result(exit_code, stdout, stderr)}
 
@@ -379,8 +461,8 @@ defmodule AgentOS.Vm do
     {:reply, reply, touch(state)}
   end
 
-  def handle_call({:exec_start, cmd}, _from, state) do
-    {:reply, Nif.exec_start(state.nif, cmd), touch(state)}
+  def handle_call({:exec_start, cmd, exec_opts}, _from, state) do
+    {:reply, Nif.exec_start(state.nif, cmd, exec_opts), touch(state)}
   end
 
   def handle_call({:exec_poll, job}, _from, state) do
@@ -402,6 +484,10 @@ defmodule AgentOS.Vm do
     {:reply, Nif.exec_cancel(state.nif, job), touch(state)}
   end
 
+  def handle_call({:svc_call, service, request}, _from, state) do
+    {:reply, Nif.svc_call(state.nif, service, request), touch(state)}
+  end
+
   def handle_call({:send_input, bytes}, _from, state) do
     {:reply, Nif.send_input(state.nif, bytes), touch(state)}
   end
@@ -411,7 +497,16 @@ defmodule AgentOS.Vm do
   end
 
   def handle_call(:take_output, _from, state) do
-    {:reply, Nif.take_output(state.nif), state}
+    output = Nif.take_output(state.nif)
+    {:reply, output, record_shell_output(state, output)}
+  end
+
+  def handle_call({:shell_since, cursor}, _from, state) do
+    total = state.shell_base + byte_size(state.shell_log)
+    from = cursor |> max(state.shell_base) |> min(total)
+    offset = from - state.shell_base
+    bytes = binary_part(state.shell_log, offset, byte_size(state.shell_log) - offset)
+    {:reply, {:ok, %{bytes: bytes, total: total, from: from}}, state}
   end
 
   def handle_call(:snapshot, _from, state) do
@@ -444,12 +539,20 @@ defmodule AgentOS.Vm do
     {:reply, Nif.stat(state.nif, path), touch(state)}
   end
 
+  def handle_call({:readlink, path}, _from, state) do
+    {:reply, Nif.readlink(state.nif, path), touch(state)}
+  end
+
   def handle_call({:mkdir, path}, _from, state) do
     {:reply, Nif.mkdir(state.nif, path), touch(state)}
   end
 
   def handle_call({:unlink, path}, _from, state) do
     {:reply, Nif.unlink(state.nif, path), touch(state)}
+  end
+
+  def handle_call({:chmod, path, mode}, _from, state) do
+    {:reply, Nif.chmod(state.nif, path, mode), touch(state)}
   end
 
   def handle_call({:symlink, target, link}, _from, state) do
@@ -465,8 +568,8 @@ defmodule AgentOS.Vm do
   end
 
   def handle_call(:info, _from, state) do
-    {:reply, %{id: state.id, booted_at: state.booted_at, idle_ms: now_ms() - state.last_active_ms},
-     state}
+    {:reply,
+     %{id: state.id, booted_at: state.booted_at, idle_ms: now_ms() - state.last_active_ms}, state}
   end
 
   def handle_call(:status, _from, state) do
@@ -534,6 +637,23 @@ defmodule AgentOS.Vm do
     end
   end
 
+  # Append freshly-drained terminal output to the bounded scrollback, dropping the oldest bytes
+  # (and advancing the absolute base past them) once the retained window exceeds the cap.
+  defp record_shell_output(state, output) when is_binary(output) and output != "" do
+    combined = state.shell_log <> output
+    size = byte_size(combined)
+
+    if size <= @shell_log_cap do
+      %{state | shell_log: combined}
+    else
+      drop = size - @shell_log_cap
+      <<_dropped::binary-size(^drop), kept::binary>> = combined
+      %{state | shell_log: kept, shell_base: state.shell_base + drop}
+    end
+  end
+
+  defp record_shell_output(state, _output), do: state
+
   defp touch(state), do: %{state | last_active_ms: now_ms()}
   defp now_ms, do: System.monotonic_time(:millisecond)
 
@@ -554,6 +674,8 @@ defmodule AgentOS.Vm do
       ])
 
   defp timeout(opts), do: Keyword.get(opts, :timeout, @default_call_timeout)
+
+  defp exec_opts(opts), do: Keyword.take(opts, @exec_option_keys)
 
   defp exec_result(exit_code, stdout, stderr),
     do: %{exit_code: exit_code, stdout: stdout, stderr: stderr}
