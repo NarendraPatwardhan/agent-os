@@ -1,69 +1,49 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { mc } from "@mc/core";
-import type { CreateOptions, Vm } from "@mc/core";
-import { Terminal, TerminalFrame, useVmHost, VmProvider, type VmFactory } from "./components";
-import { loadBrowserVmArtifacts } from "./browserArtifacts";
+import { useEffect, useRef } from "react";
+import { setArtifactSources } from "@mc/elements";
+import type { McTerminal } from "@mc/elements";
 import { runAutoDemo, type AutoDemoHandle } from "./heroDemo";
 import styles from "./Hero.module.css";
 
-const HERO_CREATE_OPTIONS: CreateOptions = {
-  runtime: "browser",
-  net: true,
-};
+// Point @mc/elements' artifact loader at the Bazel-staged kernel/image that Vite
+// serves from /mc/ (see web/BUILD.bazel `hero_vm_assets`). Module scope: runs once,
+// before any <mc-terminal> boots.
+setArtifactSources({ kernel: "/mc/kernel.wasm", image: "/mc/image.tar" });
 
-function abortError(): Error {
-  return new Error("hero VM boot was aborted");
-}
-
-const createHeroVm: VmFactory = async (options, signal): Promise<Vm> => {
-  const artifacts = await loadBrowserVmArtifacts(signal);
-  if (signal.aborted) throw abortError();
-  const vm = await mc.create({
-    ...options,
-    runtime: "browser",
-    kernel: artifacts.kernel,
-    image: artifacts.image,
-  });
-  if (signal.aborted) {
-    await vm.close().catch(() => {});
-    throw abortError();
-  }
-  return vm;
-};
-
-function HeroTerminalInner() {
-  const host = useVmHost();
-  const demoRef = useRef<AutoDemoHandle | null>(null);
-  const [userInteracted, setUserInteracted] = useState(false);
+function HeroTerminal() {
+  const ref = useRef<McTerminal>(null);
 
   useEffect(() => {
-    if (host.status !== "ready" || !host.shell || userInteracted) return undefined;
-    const demo = runAutoDemo(host.shell);
-    demoRef.current = demo;
-    return () => {
-      demo.cancel();
-      if (demoRef.current === demo) demoRef.current = null;
-    };
-  }, [host.shell, host.status, userInteracted]);
+    const term = ref.current;
+    if (!term) return undefined;
+    let demo: AutoDemoHandle | null = null;
 
-  const handleInput = useCallback((): void => {
-    demoRef.current?.cancel();
-    demoRef.current = null;
-    setUserInteracted(true);
+    // Run the scripted demo once the shell is live; cancel the instant the user types.
+    const onReady = (): void => {
+      demo?.cancel();
+      demo = runAutoDemo((bytes) => term.send(bytes));
+    };
+    const onData = (): void => {
+      demo?.cancel();
+      demo = null;
+    };
+    term.addEventListener("mc-ready", onReady);
+    term.addEventListener("mc-data", onData);
+    return () => {
+      term.removeEventListener("mc-ready", onReady);
+      term.removeEventListener("mc-data", onData);
+      demo?.cancel();
+    };
   }, []);
 
   return (
-    <TerminalFrame title="agent - live in your browser" status={host.status} error={host.error} className={styles.terminal}>
-      <Terminal cursorStyle="block" lineHeight={1.55} onData={handleInput} />
-    </TerminalFrame>
-  );
-}
-
-function HeroTerminal() {
-  return (
-    <VmProvider createOptions={HERO_CREATE_OPTIONS} createVm={createHeroVm} autoBoot>
-      <HeroTerminalInner />
-    </VmProvider>
+    <mc-terminal
+      ref={ref}
+      className={styles.terminal}
+      label="agent · live in your browser"
+      net
+      cursor="block"
+      line-height={1.55}
+    />
   );
 }
 

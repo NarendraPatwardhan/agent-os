@@ -1,0 +1,10 @@
+{
+  "//": "The shared workspace config + the one deviation this package needs: Lit's",
+  "//2": "classic decorators (experimentalDecorators + fields defined the pre-ES2022",
+  "//3": "way) so `@property() cols?: number` compiles the way the components are written.",
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": {
+    "experimentalDecorators": true,
+    "useDefineForClassFields": false
+  }
+}

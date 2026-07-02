@@ -1,0 +1,28 @@
+{
+  "name": "@mc/elements",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Lit <mc-*> web components over @mc/core VMs — <mc-sandbox>, <mc-terminal>, <mc-xterm>, <mc-editor>. Restyled onto the design-system base.",
+  "types": "./src/index.d.ts",
+  "exports": {
+    ".": { "types": "./src/index.d.ts", "default": "./dist/index.js" },
+    "./styles.css": "./styles/index.css"
+  },
+  "devDependencies": {
+    "rolldown": "1.1.3"
+  },
+  "dependencies": {
+    "@codemirror/commands": "^6.7.1",
+    "@codemirror/lang-javascript": "^6.2.2",
+    "@codemirror/language": "^6.10.8",
+    "@codemirror/state": "^6.5.0",
+    "@codemirror/view": "^6.36.1",
+    "@lezer/highlight": "^1.2.1",
+    "@lit/context": "^1.1.3",
+    "@mc/core": "workspace:*",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "lit": "^3.2.1"
+  }
+}

@@ -1,0 +1,120 @@
+/* components.css — chrome for the light-DOM <mc-*> components, re-authored on the
+ * design-system base (base.css). The components render in LIGHT DOM, so these rules
+ * target the custom-element tags + BEM classes directly.
+ *
+ * Everything lives in @layer mc-elements, declared AFTER base.css's layers
+ * (reset, tokens, base, utilities, recipes), so component chrome wins over the base
+ * recipes by layer order — no specificity hacks. The terminal's xterm overrides are
+ * NOT here; they're unlayered in terminal.css because they must beat inline styles. */
+
+@layer mc-elements {
+  /* ── mc-xterm — presentational terminal primitive. Light DOM + `.mc-term`, so
+   *    terminal.css styles xterm's injected DOM. ─────────────────────────────── */
+  mc-xterm {
+    display: block;
+    height: 100%;
+    min-height: 0;
+    border-radius: inherit;
+    background: var(--mc-term-bg);
+  }
+  mc-xterm .mc-xterm__screen {
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+  }
+
+  /* ── mc-editor — CodeMirror editor on a plain surface card ─────────────────── */
+  mc-editor {
+    display: block;
+    height: 100%;
+    min-height: 0;
+    background: var(--surface-2);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    overflow: hidden;
+  }
+  mc-editor .mc-editor__host {
+    height: 100%;
+    min-height: 140px;
+  }
+  mc-editor .cm-editor {
+    height: 100%;
+  }
+
+  /* ── mc-terminal — the hero: a dark card around a shell-bound xterm ────────── */
+  mc-terminal {
+    /* one edge token so the border + bar divider stay in step on the dark surface */
+    --mc-term-edge: oklch(1 0 0 / 0.1);
+
+    display: flex;
+    flex-direction: column;
+    min-height: 220px;
+    height: 100%;
+    border: 1px solid var(--mc-term-edge);
+    border-radius: var(--radius-card);
+    overflow: hidden;
+    box-shadow: var(--shadow-4);
+    background: var(--mc-term-bg);
+  }
+  mc-terminal .bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    background: color-mix(in oklch, var(--mc-term-bg), oklch(1 0 0) 6%);
+    border-bottom: 1px solid color-mix(in oklch, var(--mc-term-edge), transparent 20%);
+    flex: 0 0 auto;
+    user-select: none;
+  }
+  mc-terminal .lights {
+    display: inline-flex;
+    gap: 6px;
+  }
+  mc-terminal .lights span {
+    width: 11px;
+    height: 11px;
+    border-radius: var(--radius-pill);
+    background: oklch(1 0 0 / 0.22);
+  }
+  mc-terminal .title {
+    font: var(--fw-medium) var(--fs-12) / 1 var(--font-mono);
+    letter-spacing: var(--ls-ui);
+    color: var(--mc-fg-subtle);
+    margin-left: var(--space-1);
+  }
+  mc-terminal .live-dot {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font: var(--fw-medium) var(--fs-10) / 1 var(--font-mono);
+    letter-spacing: var(--ls-eyebrow);
+    text-transform: uppercase;
+    color: var(--mc-fg-subtle);
+    opacity: 0;
+    transition: opacity var(--motion-panel) var(--ease-standard);
+  }
+  mc-terminal[data-live] .live-dot {
+    opacity: 1;
+    color: var(--success);
+  }
+  mc-terminal .live-dot i {
+    width: 7px;
+    height: 7px;
+    border-radius: var(--radius-pill);
+    background: currentColor;
+    box-shadow: 0 0 0 3px color-mix(in oklch, currentColor 22%, transparent);
+  }
+  mc-terminal .screen {
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    mc-terminal .live-dot {
+      transition: none;
+    }
+  }
+}

@@ -64,6 +64,9 @@
 
 .terminal {
   min-width: 0;
+  /* <mc-terminal> is height:100% inside its own chrome; give it the fixed hero box
+   * the old TerminalFrame provided (unlayered, so it wins over the element's layer). */
+  height: clamp(15rem, 34vw, 22rem);
 }
 
 .caption {

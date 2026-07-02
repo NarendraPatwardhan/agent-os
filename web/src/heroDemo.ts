@@ -1,4 +1,5 @@
-import type { Shell } from "@mc/core";
+// The scripted "type a few commands" hero demo. VM-agnostic: it just needs a byte
+// sink — <mc-terminal>.send (which writes the shell's stdin), or any shell.write.
 
 const encoder = new TextEncoder();
 
@@ -8,12 +9,15 @@ const DEFAULT_SCRIPT: readonly string[] = [
   "cat /etc/profile",
 ];
 
+/** Where the demo's keystrokes go — one <mc-terminal>.send / shell.write per chunk. */
+export type DemoWriter = (data: Uint8Array) => void;
+
 export interface AutoDemoHandle {
   readonly done: Promise<void>;
   cancel(): void;
 }
 
-export function runAutoDemo(shell: Shell, script: readonly string[] = DEFAULT_SCRIPT): AutoDemoHandle {
+export function runAutoDemo(write: DemoWriter, script: readonly string[] = DEFAULT_SCRIPT): AutoDemoHandle {
   let cancelled = false;
   const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -23,12 +27,12 @@ export function runAutoDemo(shell: Shell, script: readonly string[] = DEFAULT_SC
       if (cancelled) return;
       for (const character of command) {
         if (cancelled) return;
-        shell.write(encoder.encode(character));
+        write(encoder.encode(character));
         await sleep(38);
       }
       if (cancelled) return;
       await sleep(220);
-      shell.write(encoder.encode("\n"));
+      write(encoder.encode("\n"));
       await sleep(700);
     }
   })();

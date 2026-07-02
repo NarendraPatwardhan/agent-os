@@ -1,6 +1,121 @@
-# @mc/elements — the <mc-*> custom elements (ported from memcontainers
-# packages/elements). Published under the @mc/* scope; components are <mc-*> (SYSTEMS.md).
-#
-# Phase A:
-#   load("@aspect_rules_ts//ts:defs.bzl", "ts_project")
-#   ts_project(name = "elements", srcs = glob(["src/**/*.ts"]), deps = ["//memcontainers/sdk-js/core"])
+load("//bazel:ts.bzl", "mc_ts_project")
+load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_run_binary", "js_test")
+load("@aspect_rules_js//npm:defs.bzl", "npm_package")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_config")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+
+# Link @mc/elements' deps (@mc/core, lit, @lit/context, xterm, codemirror) into :node_modules/*.
+npm_link_all_packages(name = "node_modules")
+
+# Package-local tsconfig: the shared //:tsconfig plus Lit's classic-decorator flags.
+# The single deviation from "one config, no drift" in the JS workspace, scoped to
+# exactly the decorator semantics the <mc-*> components are written against.
+ts_config(
+    name = "tsconfig",
+    src = "tsconfig.json",
+    deps = ["//:tsconfig"],
+    visibility = ["//visibility:private"],
+)
+
+# Role-named (:lib) like sibling SDK packages — the directory already says "elements".
+mc_ts_project(
+    name = "lib",
+    srcs = glob(["src/**/*.ts"]),
+    tsconfig = ":tsconfig",
+    deps = [
+        ":node_modules/@mc/core",
+        ":node_modules/lit",
+        ":node_modules/@lit/context",
+        ":node_modules/@xterm/xterm",
+        ":node_modules/@xterm/addon-fit",
+        ":node_modules/@codemirror/commands",
+        ":node_modules/@codemirror/lang-javascript",
+        ":node_modules/@codemirror/language",
+        ":node_modules/@codemirror/state",
+        ":node_modules/@codemirror/view",
+        ":node_modules/@lezer/highlight",
+        "//:node_modules/@types/bun",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# Bundle the compiled lib into a code-split ESM dist/ with rolldown, inlining every
+# npm dependency (lit, @lit/context, xterm, codemirror, @mc/core → @mc/host/…) so a
+# consumer depends on @mc/elements ALONE, not its transitive closure. Node builtins
+# stay external; <mc-editor>'s dynamic import stays a separate CodeMirror chunk.
+js_binary(
+    name = "bundle_bin",
+    chdir = package_name(),
+    data = [":node_modules/rolldown"],
+    entry_point = "tools/bundle.mjs",
+)
+
+js_run_binary(
+    name = "bundle",
+    srcs = [
+        ":lib",
+        ":node_modules/@codemirror/commands",
+        ":node_modules/@codemirror/lang-javascript",
+        ":node_modules/@codemirror/language",
+        ":node_modules/@codemirror/state",
+        ":node_modules/@codemirror/view",
+        ":node_modules/@lezer/highlight",
+        ":node_modules/@lit/context",
+        ":node_modules/@mc/core",
+        ":node_modules/@xterm/addon-fit",
+        ":node_modules/@xterm/xterm",
+        ":node_modules/lit",
+        ":node_modules/rolldown",
+    ],
+    out_dirs = ["dist"],
+    args = [
+        "src/index.js",
+        "dist",
+    ],
+    chdir = package_name(),
+    tool = ":bundle_bin",
+)
+
+# @mc/elements as a linkable workspace package: the rolldown bundle is the runtime
+# (exports "." → ./dist/index.js), :lib supplies the .d.ts types (exports "." types →
+# ./src/index.d.ts), and the stylesheet ships as data assets (tsc never sees the .css;
+# consumers <link> styles/index.css or import "@mc/elements/styles.css").
+npm_package(
+    name = "pkg",
+    srcs = [
+        ":bundle",
+        ":lib",
+        "package.json",
+    ] + glob(["styles/*.css"]),
+    package = "@mc/elements",
+    visibility = ["//visibility:public"],
+)
+
+# VM state-machine test (mirrors //memcontainers/sdk-js/core:vm_test): the pure
+# decideVmSource priority policy + makeVmHost/makeControlledHost subscribe/fork/
+# restore/reboot/close, booting the real kernel.wasm + base.tar through the package's
+# own artifacts.ts off a localhost server. No DOM — the Lit shells delegate to this.
+mc_ts_project(
+    name = "host_test_lib",
+    srcs = ["test/host.test.ts"],
+    tsconfig = ":tsconfig",
+    deps = [
+        ":lib",
+        ":node_modules/@mc/core",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+js_test(
+    name = "host_test",
+    data = [
+        ":host_test_lib",
+        "//memcontainers/images:base",
+        "//memcontainers/kernel/rust:kernel",
+    ],
+    entry_point = "test/host.test.js",
+    env = {
+        "MC_BASE_IMAGE": "$(rlocationpath //memcontainers/images:base)",
+        "MC_KERNEL_WASM": "$(rlocationpath //memcontainers/kernel/rust:kernel)",
+    },
+)
