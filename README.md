@@ -29,6 +29,10 @@
     <a href="#reproducible-builds">Reproducible Builds</a> -
     <a href="#build-and-verification">Build and Verification</a>
   </p>
+
+  <p>
+    <img src="./docs/agent-os-browser-vm.png" alt="agent-os browser VM shell running in the web hero" width="980">
+  </p>
 </div>
 
 agent-os gives AI agents a real computer: a contained Unix-like workspace with a
