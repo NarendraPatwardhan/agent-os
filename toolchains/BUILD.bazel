@@ -1,5 +1,0 @@
-# Hermetic toolchains (SYSTEMS.md, B4). No host fonts, no host chromium, no tool from
-# $PATH. The Zig 0.16 + wasm32-freestanding toolchains are registered in MODULE.bazel
-# and defined in //platforms; this package holds cross-compilers that don't belong to a
-# single platform — chiefly zig_cc/ (the C/C++ cross-compiler for the sqlite/luau
-# guests) and, in Phase A, a pinned browser repo for //web CDP tests.

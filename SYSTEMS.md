@@ -1375,7 +1375,7 @@ agent-os/                      ← the repository root: a Bazel/deps/docs shell
 │       ├── size               #     the size_limit budget rule
 │       ├── wasi-trampoline / wasm-imports / smoke   #     the conversion + import-audit helpers
 │
-├── platforms/  toolchains/    # wasm32 platforms + hermetic rust/zig/node toolchains (B4)
+├── platforms/                 # wasm32 platforms; toolchains are registered in MODULE.bazel (B4)
 │
 ├── third_party/               # ★ vendor LESS — only the dep fetch + patches live here (B3)
 │   ├── luau/  sqlite/  sed/    #   each: BUILD.<lib>.bazel (zig cc/c++ the patched archive), patches/
