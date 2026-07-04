@@ -165,4 +165,5 @@ comptime {
     // per-import signature derivation (validates every declared env import against ZigType).
     _ = constants.ENOSYS;
     _ = bridge.contract_covered;
+    _ = @import("guest.zig"); // compile the wasm3 bindings + allocator hooks (task #1)
 }

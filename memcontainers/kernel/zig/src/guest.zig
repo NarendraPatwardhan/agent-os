@@ -37,7 +37,16 @@
 //! fails the build if instrumentation ever reaches it. pcall's nested unwind/rewind is
 //! the one delicate case (§7.6) — its own Phase-6 tests, not an assumed-solved detail.
 //!
-//! Scaffold status: header-only. The externs it will own, for reference when filled:
+//! Status: the wasm3 library is vendored, bound, and linked (task #1). The DRIVER — eager
+//! compile, per-guest runtime, the fuel counter, and the Asyncify unwind/rewind boundary —
+//! lands in Phase 5. The externs it will own, for reference when filled:
 //!   extern "asyncify" fn start_unwind(data: u32) void;  // + stop_unwind/start_rewind/stop_rewind
 
-// (intentionally empty until Phase 5 — the wasm3 + Asyncify cherry-pick lands here.)
+/// The thin wasm3 C-API bindings (§7.2). No policy here — the driver owns policy (§7.1).
+pub const wasm3 = @import("wasm3/bindings.zig");
+
+comptime {
+    // The wasm3 allocator hooks (the d_m3AgentOsAllocator patch calls agent_os_wasm3_alloc/
+    // free/realloc) must be compiled into the kernel so wasm3's C links against them (A6).
+    _ = @import("wasm3/alloc.zig");
+}

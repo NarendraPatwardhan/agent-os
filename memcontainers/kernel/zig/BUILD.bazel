@@ -39,6 +39,7 @@ KERNEL_SRCS = [
     "src/syscall.zig",
     "src/vfs.zig",
     "src/wasm3/bindings.zig",
+    "src/wasm3/alloc.zig",
     "src/wasm3/raw.zig",
     "src/ipc/pipe.zig",
     "src/egress/net.zig",
@@ -62,6 +63,31 @@ KERNEL_SRCS = [
     "src/fs/utils.zig",
 ]
 
+# The embedded wasm3 interpreter (ZIG_KERNEL §7), compiled freestanding by zig cc into the
+# kernel. Its libc surface is satisfied in-module (third_party/wasm3/freestanding), never as
+# a new host import (A4, verified by import-purity). The fuel-metering patch is on
+# (d_m3AgentOsFuelHook); allocation routes to wasm3/alloc.zig (d_m3AgentOsAllocator, A6).
+WASM3_CSRC = [
+    "//third_party/wasm3:freestanding_libc",
+    "@wasm3//:core_srcs",
+]
+WASM3_EXTRA_SRCS = [
+    "//third_party/wasm3:freestanding_headers",
+    "@wasm3//:headers",
+]
+WASM3_COPTS = [
+    "-Dd_m3AgentOsAllocator=1",
+    "-Dd_m3Freestanding=1",
+    "-Dd_m3VerboseErrorMessages=0",
+    "-Dd_m3RecordBacktraces=0",
+    "-Dd_m3EnableStrace=0",
+    "-Dd_m3AgentOsFuelHook=1",
+    "-Ithird_party/wasm3/freestanding/include",
+    "-fdata-sections",
+    "-ffunction-sections",
+    "-fvisibility=hidden",
+]
+
 # The reactor module: exports only, no _start. Reachable files compile; the rest are
 # declared inputs the fill phases import as they land (§15.1). Tagged manual — it is only
 # meaningful under the wasm transition (building it for the host has no entry point).
@@ -69,6 +95,9 @@ zig_binary(
     name = "kernel_raw",
     main = "src/main.zig",
     srcs = KERNEL_SRCS,
+    copts = WASM3_COPTS,
+    csrcs = WASM3_CSRC,
+    extra_srcs = WASM3_EXTRA_SRCS,
     linkopts = [
         "-fno-entry",
         "-rdynamic",
@@ -77,6 +106,7 @@ zig_binary(
     deps = [
         "//memcontainers/contracts:constants_zig",  # errno/caps/tiers/flags (B2)
         "//memcontainers/contracts:env_zig",  # bridge.zig derives the env extern surface from IMPORTS (§5.1)
+        "@wasm3//:incs",  # wasm3.h include path for the freestanding C compile
         # ctl_zig / mc_zig join as control-exec (Phase 4) and syscall.zig (Phase 5) consume their
         # descriptors. The two tiny FileStat/DirEntries result frames are hand-encoded in control.zig
         # against the control.kdl wire format (constants there gate drift) — see wire_test.

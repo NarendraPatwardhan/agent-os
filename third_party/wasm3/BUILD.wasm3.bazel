@@ -1,0 +1,36 @@
+# build_file for @wasm3, evaluated in the fetched wasm3 source tree.
+# The Zig kernel compiles these C sources with rules_zig/zig cc for
+# wasm32-freestanding. Optional libc/WASI/tracer API shims are intentionally
+# excluded; guest syscalls are registered by the kernel's own Zig glue.
+
+load("@agent-os//bazel:mc_program.bzl", "cc_headers")
+
+filegroup(
+    name = "core_srcs",
+    srcs = [
+        "source/m3_bind.c",
+        "source/m3_code.c",
+        "source/m3_compile.c",
+        "source/m3_core.c",
+        "source/m3_emit.c",
+        "source/m3_env.c",
+        "source/m3_exec.c",
+        "source/m3_function.c",
+        "source/m3_module.c",
+        "source/m3_parse.c",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "headers",
+    srcs = glob(["source/*.h"]),
+    visibility = ["//visibility:public"],
+)
+
+cc_headers(
+    name = "incs",
+    hdrs = [],
+    includes = ["source"],
+    visibility = ["//visibility:public"],
+)
