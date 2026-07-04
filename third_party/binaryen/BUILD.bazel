@@ -1,0 +1,6 @@
+# //third_party/binaryen — repository-local build file for the Binaryen wasm-opt tool.
+#
+# Binaryen is fetched as a prebuilt release archive by MODULE.bazel. Only this
+# BUILD file lives in-tree; no tool binaries are vendored.
+
+exports_files(["BUILD.binaryen.bazel"])

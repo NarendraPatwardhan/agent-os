@@ -1,0 +1,9 @@
+# @binaryen_linux_x86_64 — prebuilt Binaryen release archive.
+
+exports_files(["bin/wasm-opt"], visibility = ["//visibility:public"])
+
+filegroup(
+    name = "wasm_opt",
+    srcs = ["bin/wasm-opt"],
+    visibility = ["//visibility:public"],
+)

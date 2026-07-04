@@ -191,6 +191,18 @@ http_archive(
     urls = ["https://sqlite.org/2025/sqlite-amalgamation-3510000.zip"],
 )
 
+# binaryen — Zig-kernel Asyncify tooling (ZIG_KERNEL.md §6.2). The Zig kernel artifact is
+# post-linked with wasm-opt --asyncify (bazel/asyncify.bzl); this prebuilt release supplies
+# the hermetic tool executable. Zig-only: the Rust kernel never passes through Binaryen.
+http_archive(
+    name = "binaryen_linux_x86_64",
+    build_file = "//third_party/binaryen:BUILD.binaryen.bazel",
+    sha256 = "0a18362361ad05465118cd8eeb72edaeec89de6894bc283576ef4e07aa3babcc",
+    strip_prefix = "binaryen-version_130",
+    type = "tar.gz",
+    urls = ["https://github.com/WebAssembly/binaryen/releases/download/version_130/binaryen-version_130-x86_64-linux.tar.gz"],
+)
+
 # luau — upstream Luau 0.725 fetched from GitHub, patched `-fno-exceptions`-clean (the `// mc PATCH`
 # set extracted to real .patch files: VM/Parser/Compiler trap-backed error channels + the Analysis
 # EH shim, B3), built to two guest wasms (/bin/luau interpreter, /bin/luau-analyze type checker) by

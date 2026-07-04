@@ -1,7 +1,8 @@
+load("@rules_rust//rust:defs.bzl", "rust_test")
 load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("//bazel:asyncify.bzl", "asyncify_wasm")
 load("//bazel/tools/size:defs.bzl", "size_limit")
-# CHERRY-PICK (ZIG_KERNEL §15.5, Phase 5): load("//bazel:asyncify.bzl", "asyncify_wasm")
 
 # kernel/zig — the parity-gated Zig kernel from ZIG_KERNEL.md. The Rust kernel remains
 # the oracle/default (B7); Zig ships only by matching it on the shared suite. This file
@@ -9,14 +10,16 @@ load("//bazel/tools/size:defs.bzl", "size_limit")
 # files, wired into a buildable freestanding wasm, so the implementer fills named blanks
 # and never invents structure. Fill order: §13.
 #
+# Phase 1 is DONE here: the freestanding kernel passes the Asyncify transition (via
+# bazel/asyncify.bzl, non-empty only_list — never []) and carries the import/export-purity
+# and size gates. On the no-wasm3 kernel nothing suspends, so Asyncify instruments nothing
+# and the only_list matches nothing yet — that is the honest "no wasm3 yet" Phase 1 (§8).
+#
 # WHAT IS DELIBERATELY NOT HERE YET (cherry-picked from agent-os-slim in Phase order, §15.5):
 #   - //third_party/wasm3 (http_archive + fuel patch) + its freestanding libc — Phase 5.
 #     When it lands: add csrcs/copts (-Dd_m3AgentOsFuelHook=1, -Dd_m3AgentOsAllocator=1)
-#     + @wasm3//:incs to kernel_raw, filling src/wasm3/* and src/guest.zig.
-#   - bazel/asyncify.bzl — Phase 5. The `kernel` target below becomes an asyncify_wasm
-#     with a NON-EMPTY only_list (wasm3 fns + the mc_sys_* trampoline) and a remove_list
-#     pinning the src/guest.zig driver frame. NEVER only_list=[] — that instruments the
-#     whole kernel and forces host-driven suspend, the exact first-attempt failure (§15.2).
+#     + @wasm3//:incs to kernel_raw, filling src/wasm3/* and src/guest.zig; and the
+#     only_list/remove_list below get their REAL wasm3-op + trampoline + driver-frame names.
 #   - the generated ctl_zig/env_zig/mc_zig deps — added to kernel_raw as control.zig /
 #     bridge.zig / syscall.zig get filled (constants_zig is used from day one).
 
@@ -86,14 +89,23 @@ zig_configure_binary(
     target = "//platforms:wasm32_freestanding",
 )
 
-# The shipped kernel artifact every consumer data-depends on (B1). TODAY: the minimal
-# freestanding wasm (§8 Phase 1, no wasm3). CHERRY-PICK (§15.5/§7.4): replace this alias
-# with asyncify_wasm(src=":kernel_obj", only_list=[<wasm3 fns + trampoline>],
-# remove_list=[<guest.zig driver frame>], visibility=public). The suspend is caught
-# INTERNALLY; there is no mc_prepare_rewind and the host is never modified (§7.7).
-alias(
+# The shipped kernel artifact every consumer data-depends on (B1): kernel_obj through the
+# Asyncify transition (§6.2, §7.4). The only_list is the scoped instrument set — the whole
+# point of the port (§15.2): it is a NON-EMPTY WHITELIST (never []), so ONLY these frames are
+# instrumented. The guest.zig driver frame is excluded simply by being absent from the list,
+# which is exactly what lets it catch the unwind INTERNALLY (§7.4) — Binaryen forbids pairing
+# an only-list with a remove-list, so omission IS the pin. On the no-wasm3 kernel there are no
+# suspend points, so this instruments nothing; Phase 5 expands only_list to the real wasm3-op
+# functions + the mc_sys_* trampoline (everything from the trampoline UP TO but not including
+# the driver frame). The host is never modified; there is no mc_prepare_rewind (§7.7). Adds
+# only the optional asyncify_* exports (allowed by §1.2).
+asyncify_wasm(
     name = "kernel",
-    actual = ":kernel_obj",
+    src = ":kernel_obj",
+    # Phase-5 TODO: expand to the real wasm3 op functions + the mc_sys_* trampoline (guest.zig
+    # / wasm3/raw.zig). Non-empty NOW to lock the never-[] rule; matches nothing until wasm3.
+    # The guest.zig driver frame must stay OFF this list (that is the internal-catch boundary).
+    only_list = ["mc_sys_trampoline"],
     visibility = ["//visibility:public"],
 )
 
@@ -109,6 +121,72 @@ size_limit(
 build_test(
     name = "test",
     targets = [":kernel"],
+)
+
+# ── Import/export purity gates (§8 Phase 1, §1.2) ─────────────────────────────────────
+# Inspect the real post-Asyncify kernel.wasm: it may import only declared `env` symbols
+# (A4), and export only the generated control surface + the optional asyncify_* set — no
+# host-callable suspend-driving export (no mc_prepare_rewind, §15.2).
+rust_test(
+    name = "purity_test",
+    srcs = ["tests/purity_test.rs"],
+    edition = "2021",
+    data = [":kernel"],
+    deps = [
+        "//bazel/tools/wasm-imports:lib",
+        "//memcontainers/contracts:ctl_rust",
+        "//memcontainers/contracts:env_rust",
+        "@host_crates//:anyhow",
+        "@host_crates//:wasmparser",
+        "@rules_rust//rust/runfiles",
+    ],
+)
+
+# ── Host-instantiate smoke (§8 Phase 1, §7.7) ─────────────────────────────────────────
+# The STOCK wasmtime host (no Zig special-casing) instantiates kernel.wasm, runs mc_init,
+# and ticks without trapping. Proof that the host loads Zig unchanged and lifecycle returns.
+rust_test(
+    name = "host_instantiate_test",
+    srcs = ["tests/host_instantiate_test.rs"],
+    edition = "2021",
+    data = [":kernel"],
+    deps = [
+        "//memcontainers/hosts/wasmtime:host",
+        "@rules_rust//rust/runfiles",
+    ],
+)
+
+# ── Asyncify no-creep gate (§7.4, §9, §15.6) ──────────────────────────────────────────
+# The scoped instrument set must never exceed the only_list. On the no-wasm3 kernel the
+# only_list matches nothing, so NOTHING may be instrumented — Binaryen's verbose sets every
+# function's Asyncify state to 0. A "to 1"/"to 2" line means a frame outside the only_list
+# got instrumented (creep): fail. Phase 5 upgrades this to a by-name (index→name) subset
+# check once wasm3 introduces real suspend points and the only_list names them.
+filegroup(
+    name = "kernel_asyncify_verbose",
+    srcs = [":kernel"],
+    output_group = "asyncify_verbose",
+)
+
+genrule(
+    name = "asyncify_no_creep_check",
+    srcs = [":kernel_asyncify_verbose"],
+    outs = ["asyncify_no_creep.ok"],
+    cmd = """
+set -eu
+v="$(SRCS)"
+if grep -Eq 'to [1-9]' "$$v"; then
+  echo "FAIL: Asyncify instrumented a function outside the only-list (§7.4 no-creep):"
+  grep -E 'to [1-9]' "$$v"
+  exit 1
+fi
+echo ok > $@
+""",
+)
+
+build_test(
+    name = "asyncify_no_creep_test",
+    targets = [":asyncify_no_creep_check"],
 )
 
 # ── Scaffold-shape gate (§15.1, §15.7) ───────────────────────────────────────────────
