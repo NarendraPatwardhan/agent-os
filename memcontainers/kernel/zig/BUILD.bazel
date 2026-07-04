@@ -77,7 +77,9 @@ zig_binary(
     deps = [
         "//memcontainers/contracts:constants_zig",  # errno/caps/tiers/flags (B2)
         "//memcontainers/contracts:env_zig",  # bridge.zig derives the env extern surface from IMPORTS (§5.1)
-        # ctl_zig / mc_zig join as control.zig / syscall.zig consume their descriptors (Phase 3/5).
+        # ctl_zig / mc_zig join as control-exec (Phase 4) and syscall.zig (Phase 5) consume their
+        # descriptors. The two tiny FileStat/DirEntries result frames are hand-encoded in control.zig
+        # against the control.kdl wire format (constants there gate drift) — see wire_test.
     ],
 )
 
@@ -88,6 +90,7 @@ zig_configure_binary(
     mode = "release_small",
     tags = ["manual"],
     target = "//platforms:wasm32_freestanding",
+    threaded = "single",  # the kernel is cooperative/single-threaded (A7); enables WasmAllocator
 )
 
 # The shipped kernel artifact every consumer data-depends on (B1): kernel_obj through the
@@ -103,6 +106,12 @@ zig_configure_binary(
 asyncify_wasm(
     name = "kernel",
     src = ":kernel_obj",
+    # The suspend path is direct-call only (§6.2, §7.4): the mc_sys_* trampoline calls
+    # asyncify_start_unwind directly, and async backends return a shallow Pending rather than
+    # suspending in place — so the kernel's vtable indirect calls (VFS/guest dispatch) never
+    # cross a suspend and must NOT be treated as suspend points. Without this, Asyncify
+    # conservatively instruments every indirect-calling function (creep).
+    ignore_indirect = True,
     # Phase-5 TODO: expand to the real wasm3 op functions + the mc_sys_* trampoline (guest.zig
     # / wasm3/raw.zig). Non-empty NOW to lock the never-[] rule; matches nothing until wasm3.
     # The guest.zig driver frame must stay OFF this list (that is the internal-catch boundary).
