@@ -12,12 +12,14 @@
 const std = @import("std");
 const vfs = @import("vfs.zig");
 const boot = @import("boot.zig");
+const scheduler = @import("scheduler.zig");
 const constants = @import("constants_zig");
 
 /// The single root kernel state. Everything that affects behavior lives here (A8).
 pub const Kernel = struct {
     gpa: std.mem.Allocator,
     ns: vfs.Namespace,
+    sched: scheduler.Scheduler,
     /// Bidirectional host control scratch buffer (mc_ctl_*); lives in linear memory, so a
     /// snapshot captures it. The host sizes it via mc_ctl_buf, writes a request, and reads
     /// results back out of it.
@@ -45,7 +47,11 @@ pub fn isInitialized() bool {
 /// `mc_init`: construct the root `Kernel`, load the base image, and build the namespace
 /// (§2.2). Boot runs to completion and never suspends — off the Asyncify path (§7.4).
 pub fn init() i32 {
-    g_kernel = .{ .gpa = kernel_allocator, .ns = vfs.Namespace.init(kernel_allocator) };
+    g_kernel = .{
+        .gpa = kernel_allocator,
+        .ns = vfs.Namespace.init(kernel_allocator),
+        .sched = scheduler.Scheduler.init(kernel_allocator),
+    };
     g_ready = true;
     g_kernel.ctl_buffer.ensureTotalCapacity(g_kernel.gpa, 256) catch @panic("OOM");
     boot.bootSystem(&g_kernel);
