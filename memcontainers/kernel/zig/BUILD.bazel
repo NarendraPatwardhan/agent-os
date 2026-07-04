@@ -1,4 +1,3 @@
-load("@rules_rust//rust:defs.bzl", "rust_test")
 load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("//bazel:asyncify.bzl", "asyncify_wasm")
@@ -123,38 +122,11 @@ build_test(
     targets = [":kernel"],
 )
 
-# ── Import/export purity gates (§8 Phase 1, §1.2) ─────────────────────────────────────
-# Inspect the real post-Asyncify kernel.wasm: it may import only declared `env` symbols
-# (A4), and export only the generated control surface + the optional asyncify_* set — no
-# host-callable suspend-driving export (no mc_prepare_rewind, §15.2).
-rust_test(
-    name = "purity_test",
-    srcs = ["tests/purity_test.rs"],
-    edition = "2021",
-    data = [":kernel"],
-    deps = [
-        "//bazel/tools/wasm-imports:lib",
-        "//memcontainers/contracts:ctl_rust",
-        "//memcontainers/contracts:env_rust",
-        "@host_crates//:anyhow",
-        "@host_crates//:wasmparser",
-        "@rules_rust//rust/runfiles",
-    ],
-)
-
-# ── Host-instantiate smoke (§8 Phase 1, §7.7) ─────────────────────────────────────────
-# The STOCK wasmtime host (no Zig special-casing) instantiates kernel.wasm, runs mc_init,
-# and ticks without trapping. Proof that the host loads Zig unchanged and lifecycle returns.
-rust_test(
-    name = "host_instantiate_test",
-    srcs = ["tests/host_instantiate_test.rs"],
-    edition = "2021",
-    data = [":kernel"],
-    deps = [
-        "//memcontainers/hosts/wasmtime:host",
-        "@rules_rust//rust/runfiles",
-    ],
-)
+# The import/export-purity and host-instantiate gates (rust_test SOURCES) live under
+# //memcontainers/tests/parity:zig_purity_test and :zig_host_instantiate_test — kernel test
+# sources do not belong in the kernel package (kernel/rust has no tests/ dir either). The
+# build-rule gates below stay here because they are source/artifact checks local to this
+# package, like size_limit — they carry no .rs sources.
 
 # ── Asyncify no-creep gate (§7.4, §9, §15.6) ──────────────────────────────────────────
 # The scoped instrument set must never exceed the only_list. On the no-wasm3 kernel the
