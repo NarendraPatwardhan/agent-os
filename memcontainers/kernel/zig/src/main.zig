@@ -22,6 +22,7 @@
 //! null) and route through state/control. Fill each callee, not this file.
 
 const constants = @import("constants_zig");
+const bridge = @import("bridge.zig");
 const state = @import("state.zig");
 const control = @import("control.zig");
 
@@ -159,7 +160,9 @@ pub export fn mc_ctl_svc_call_close(job_id: u32) i32 {
 }
 
 comptime {
-    // Anchor the errno namespace into the build so a contract rename breaks loudly here
-    // rather than at the first fill. (§5.2 drift discipline.)
+    // Anchor the generated ABI into the build so a contract change breaks loudly here rather
+    // than at the first fill (§5.2 drift discipline): the errno namespace, and the bridge's
+    // per-import signature derivation (validates every declared env import against ZigType).
     _ = constants.ENOSYS;
+    _ = bridge.contract_covered;
 }
