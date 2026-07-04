@@ -1,21 +1,140 @@
-# kernel/zig — the Phase-B kernel: a Zig reimplementation against the UNCHANGED
-# contracts/, mining zmc for the wasmi-shim integration and the VFS/scheduler seed
-# (SYSTEMS.md Phase B). Accepted only when it matches kernel/rust across the whole
-# e2e + conformance suite (B7) — by parity, never by inspection. The size lever
-# (B5): zmc landed 859 KB *with* the interpreter.
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("//bazel/tools/size:defs.bzl", "size_limit")
+# CHERRY-PICK (ZIG_KERNEL §15.5, Phase 5): load("//bazel:asyncify.bzl", "asyncify_wasm")
+
+# kernel/zig — the parity-gated Zig kernel from ZIG_KERNEL.md. The Rust kernel remains
+# the oracle/default (B7); Zig ships only by matching it on the shared suite. This file
+# is the CONCRETE SCAFFOLD (§15.1): the §4.1 module map exists as empty contract-headed
+# files, wired into a buildable freestanding wasm, so the implementer fills named blanks
+# and never invents structure. Fill order: §13.
 #
-# Phase B:
-#   load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
-#   zig_binary(
-#       name = "kernel_obj",                   # → kernel.wasm (same contract, different impl)
-#       main = "src/main.zig",
-#       linkopts = ["-fno-entry", "-rdynamic"],
-#       deps = [
-#           "//memcontainers/kernel/interpreter:wasmi_shim",        # wasmi via C ABI — the ONE new seam, isolated here
-#           "//memcontainers/contracts:mc_zig", "//memcontainers/contracts:env_zig", "//memcontainers/contracts:ctl_zig",
-#       ],
-#       tags = ["manual"],
-#   )
-#   zig_configure_binary(name = "kernel", actual = ":kernel_obj",
-#       mode = "release_small", target = "//platforms:wasm32_freestanding")
-#   # size_test on kernel.wasm (B5).
+# WHAT IS DELIBERATELY NOT HERE YET (cherry-picked from agent-os-slim in Phase order, §15.5):
+#   - //third_party/wasm3 (http_archive + fuel patch) + its freestanding libc — Phase 5.
+#     When it lands: add csrcs/copts (-Dd_m3AgentOsFuelHook=1, -Dd_m3AgentOsAllocator=1)
+#     + @wasm3//:incs to kernel_raw, filling src/wasm3/* and src/guest.zig.
+#   - bazel/asyncify.bzl — Phase 5. The `kernel` target below becomes an asyncify_wasm
+#     with a NON-EMPTY only_list (wasm3 fns + the mc_sys_* trampoline) and a remove_list
+#     pinning the src/guest.zig driver frame. NEVER only_list=[] — that instruments the
+#     whole kernel and forces host-driven suspend, the exact first-attempt failure (§15.2).
+#   - the generated ctl_zig/env_zig/mc_zig deps — added to kernel_raw as control.zig /
+#     bridge.zig / syscall.zig get filled (constants_zig is used from day one).
+
+# Loose scaffold ceiling; measured post-Asyncify and tightened after parity, not before (B5).
+KERNEL_MAX_BYTES = 1024 * 1024
+
+# The §4.1 module map, declared EXPLICITLY (never globbed): the scaffold-shape gate below
+# asserts this set carries no *_smoke/*_probe/fixture file (§15.7). Adding a source here is
+# a reviewed act — that is the anti-sprawl mechanism the first attempt lacked.
+KERNEL_SRCS = [
+    "src/state.zig",
+    "src/control.zig",
+    "src/bridge.zig",
+    "src/boot.zig",
+    "src/task.zig",
+    "src/scheduler.zig",
+    "src/guest.zig",
+    "src/syscall.zig",
+    "src/vfs.zig",
+    "src/wasm3/bindings.zig",
+    "src/wasm3/raw.zig",
+    "src/ipc/pipe.zig",
+    "src/egress/net.zig",
+    "src/egress/host_call.zig",
+    "src/egress/persist.zig",
+    "src/service/registry.zig",
+    "src/fs/memfs.zig",
+    "src/fs/tarfs.zig",
+    "src/fs/cowfs.zig",
+    "src/fs/overlayfs.zig",
+    "src/fs/devfs.zig",
+    "src/fs/envfs.zig",
+    "src/fs/procfs.zig",
+    "src/fs/netfs.zig",
+    "src/fs/persistfs.zig",
+    "src/fs/servedfs.zig",
+    "src/fs/servicefs.zig",
+    "src/fs/mountfs.zig",
+    "src/fs/toolsfs.zig",
+    "src/fs/proxy.zig",
+    "src/fs/utils.zig",
+]
+
+# The reactor module: exports only, no _start. Reachable files compile; the rest are
+# declared inputs the fill phases import as they land (§15.1). Tagged manual — it is only
+# meaningful under the wasm transition (building it for the host has no entry point).
+zig_binary(
+    name = "kernel_raw",
+    main = "src/main.zig",
+    srcs = KERNEL_SRCS,
+    linkopts = [
+        "-fno-entry",
+        "-rdynamic",
+    ],
+    tags = ["manual"],
+    deps = [
+        "//memcontainers/contracts:constants_zig",  # errno/caps/tiers/flags (B2). ctl/env/mc join as fill lands.
+    ],
+)
+
+# Transition to wasm32-freestanding, size-optimised — the exact lane every kernel/guest uses.
+zig_configure_binary(
+    name = "kernel_obj",
+    actual = ":kernel_raw",
+    mode = "release_small",
+    tags = ["manual"],
+    target = "//platforms:wasm32_freestanding",
+)
+
+# The shipped kernel artifact every consumer data-depends on (B1). TODAY: the minimal
+# freestanding wasm (§8 Phase 1, no wasm3). CHERRY-PICK (§15.5/§7.4): replace this alias
+# with asyncify_wasm(src=":kernel_obj", only_list=[<wasm3 fns + trampoline>],
+# remove_list=[<guest.zig driver frame>], visibility=public). The suspend is caught
+# INTERNALLY; there is no mc_prepare_rewind and the host is never modified (§7.7).
+alias(
+    name = "kernel",
+    actual = ":kernel_obj",
+    visibility = ["//visibility:public"],
+)
+
+# B5 size gate — loose while incomplete, read against the shipped artifact. Tightens
+# post-parity; once Asyncify lands it measures the Asyncified wasm (its real cost, §12.2).
+size_limit(
+    name = "size_limit",
+    file = ":kernel",
+    max_bytes = KERNEL_MAX_BYTES,
+)
+
+# Anchors the kernel in the test graph: asserts the freestanding wasm actually builds.
+build_test(
+    name = "test",
+    targets = [":kernel"],
+)
+
+# ── Scaffold-shape gate (§15.1, §15.7) ───────────────────────────────────────────────
+# Mechanically forbids the first attempt's two production sins: a *_smoke/*_probe source
+# in the kernel, and an embedded guest fixture / self-test symbol (@embedFile /
+# bootSelfCheck) in production code. A violation fails `bazel test`.
+genrule(
+    name = "scaffold_shape_check",
+    srcs = KERNEL_SRCS + ["src/main.zig"],
+    outs = ["scaffold_shape.ok"],
+    cmd = """
+set -eu
+viol=0
+for f in $(SRCS); do
+  case "$$f" in
+    *_smoke*|*_probe*) echo "FAIL: smoke/probe source in kernel: $$f (ZIG_KERNEL §15.7)"; viol=1 ;;
+  esac
+  if grep -q '@embedFile' "$$f"; then echo "FAIL: embedded fixture (@embedFile) in production: $$f (§15.7)"; viol=1; fi
+  if grep -q 'bootSelfCheck' "$$f"; then echo "FAIL: self-test symbol (bootSelfCheck) in production: $$f (§15.7)"; viol=1; fi
+done
+if [ "$$viol" != 0 ]; then exit 1; fi
+echo ok > $@
+""",
+)
+
+build_test(
+    name = "scaffold_shape_test",
+    targets = [":scaffold_shape_check"],
+)

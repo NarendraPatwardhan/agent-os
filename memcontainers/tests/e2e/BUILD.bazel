@@ -60,3 +60,49 @@ rust_e2e_test(
         "//memcontainers/images:paper",  # loom + the typst service + require("typst") + /usr/share/fonts — the typst e2e
     ],
 )
+
+# ── The Zig kernel parity rows: the ACCEPTANCE GATE (ZIG_KERNEL §9, §15.3) ────────────
+# Same _E2E_SRCS, same host, same images — only `kernel` differs. These ARE the proof the
+# Zig kernel is equivalent; nothing else counts (no *_smoke/*_probe target may substitute,
+# §15.2). They are `manual` ONLY as the Bazel mechanism to keep a known-red target out of
+# the `//...` wildcard while the kernel is a scaffold — run them ON DEMAND to watch the
+# burn-down (`bazel test //memcontainers/tests/e2e:core_zig`). The tag comes OFF at
+# promotion (§11); it is NEVER a way to park the gate and claim progress via probes.
+rust_e2e_test(
+    name = "core_zig",
+    srcs = _E2E_SRCS,
+    crate_root = "src/lib.rs",
+    edition = "2021",
+    kernel = "//memcontainers/kernel/zig:kernel",
+    tags = ["manual"],  # burn-down gate — un-manual at promotion, never probe-substituted (§15.3)
+    deps = [
+        "//memcontainers/hosts/wasmtime:host",
+        "//memcontainers/pkgcore",
+        "@parse_crates//:serde_json",
+        "@rules_rust//rust/runfiles",
+    ],
+    data = [
+        "//memcontainers/images:base",
+        "//memcontainers/images:minimal",
+        "//memcontainers/images:posix",
+        "//memcontainers/images:loom",
+        "//memcontainers/images:svc_test",
+    ],
+)
+
+rust_e2e_test(
+    name = "extended_zig",
+    srcs = _E2E_SRCS,
+    crate_root = "src/extended.rs",
+    edition = "2021",
+    kernel = "//memcontainers/kernel/zig:kernel",
+    tags = ["manual"],  # burn-down gate — un-manual at promotion, never probe-substituted (§15.3)
+    deps = [
+        "//memcontainers/hosts/wasmtime:host",
+        "@rules_rust//rust/runfiles",
+    ],
+    data = [
+        "//memcontainers/images:atlas",
+        "//memcontainers/images:paper",
+    ],
+)
