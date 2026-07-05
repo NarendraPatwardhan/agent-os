@@ -1,17 +1,8 @@
-# programs — the guest /bin (Rust, ported from memcontainers crates/programs). One
-# wasm per tool via an `mc_program()` macro that links sysroot + shcore and stamps the
-# mc_tier / mc_budget / mc_service custom sections (SYSTEMS.md). ~56 tools: the
-# coreutils long tail (cat, ls, grep-likes, sort, …), the shell (sh), the agent, the
-# tools broker/CLI, and the service binaries (sqlite/luau are third_party).
+# programs — the guest /bin. Tools are Bazel-built wasm guests stamped with
+# mc_tier / mc_budget / mc_service or multicall metadata as appropriate.
 #
 # Tools-as-libraries: ONE binary per tool, two activation modes (one-shot CLI vs
 # resident service), chosen by the kernel via the contract — never a `/bin/<tool>-svc`.
 #
-# The guest-userland LANGUAGE is revisited post-stabilization: keep uutils-via-
-# WASI, move hot tools to Zig, or convert Toybox/BSD via `zig cc`. Phase A ports Rust.
-#
-# Phase A:
-#   load(":defs.bzl", "mc_program")          # wraps rust_binary → wasm + section stamps
-#   mc_program(name = "cat", srcs = ["src/cat.rs"], tier = "read_only")
-#   ...
-#   fixtures/ holds dev-only test inputs (data deps, never staged into an image).
+# The guest-userland language is per subsystem: core shell and coreutils are Zig,
+# while Rust/C/C++ engines remain where they are the right fit.

@@ -55,11 +55,9 @@ toolchain(
 #     wasm32 staticlib behind a C ABI; Phase B, kernel/zig only).
 # ---------------------------------------------------------------------------
 
-# wasm32_wasi — WASI preview1, the INPUT world for the coreutils boxes and converted
-# C/C++ tools, before the //memcontainers/wasi-adapter rewrites their `wasi_snapshot_preview1` imports to `mc`.
-# The std uutils/external crates a box links require std, which only exists on a wasi target;
-# the box's mc-direct applets (cat) keep their `mc` imports straight through. rules_rust's
-# wasm32-wasip1 toolchain (MODULE.bazel extra_target_triples) resolves here via os:wasi.
+# wasm32_wasi — WASI preview1, the INPUT world for converted Rust/C/C++ tools before
+# //memcontainers/wasi-adapter rewrites their `wasi_snapshot_preview1` imports to `mc`.
+# rules_rust's wasm32-wasip1 toolchain (MODULE.bazel extra_target_triples) resolves here via os:wasi.
 platform(
     name = "wasm32_wasi",
     constraint_values = [
@@ -71,8 +69,8 @@ platform(
 # The zig toolchain for wasm32-wasi — the C/C++ domain tools (luau) compile their C++ here so zig's
 # wasi-libc/libc++ supplies the runtime (malloc / strtod / snprintf / math), then the //wasi-adapter
 # rewrites the syscall imports to mc. It coexists with rules_rust's wasm32-wasip1 toolchain on the
-# same os:wasi platform (different toolchain_type), so the coreutils boxes (Rust) and luau (zig c++)
-# both resolve here. Registered in MODULE.bazel.
+# same os:wasi platform (different toolchain_type), so Rust-WASI and Zig/C++ guests can coexist.
+# Registered in MODULE.bazel.
 zig_target_toolchain(
     name = "wasm32_wasi_target",
     target = "wasm32-wasi",

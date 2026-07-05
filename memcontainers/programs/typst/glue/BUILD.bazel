@@ -6,7 +6,7 @@
 # loop + thin-client CLI), the same shape as kv/sqlite.
 load("//bazel:mc_box.bzl", "mc_wasi_program")
 
-# Exposes the crate_universe manifest + lock @typst_crates resolves from (mirrors //memcontainers/programs/coreutils).
+# Exposes the crate_universe manifest + lock @typst_crates resolves from.
 exports_files(["Cargo.toml", "Cargo.lock"])
 
 mc_wasi_program(

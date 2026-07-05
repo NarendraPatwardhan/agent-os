@@ -90,7 +90,7 @@ under `memcontainers/`, the build machinery under `bazel/`.
 | 11 | **Snapshots & determinism** | `(memory)` capture/restore; quiescence; the seal | `…/src/{persist,seal,sync}.rs` + host | built |
 | 12 | **Guest sysroot & WASI adapter** | The guest side of the ABI (Rust + Zig); WASI→mc shim | `memcontainers/sysroot/`, `memcontainers/wasi-adapter/` | built |
 | 13 | **Conformance & attestation** | Build-time import-purity + tier-fit gates | `memcontainers/conformance/`, `bazel/tools/{mc-attest,mc-abi-gate}` | built |
-| 14 | **Shell** | An OS-agnostic POSIX-ish shell engine driving `/bin/sh` | `memcontainers/shcore/`, `memcontainers/programs/sh` | built |
+| 14 | **Shell** | An OS-agnostic POSIX-ish shell engine driving `/bin/sh` and rescue shells | `memcontainers/shcore/{rust,zig}/`, `memcontainers/programs/sh` | built |
 | 15 | **Userland `/bin`** | Multicall coreutils, partitioned by tier | `memcontainers/programs/coreutils/` | built |
 | 16 | **Luau scripting** | The primary user-facing language; embedded + VFS batteries | `memcontainers/programs/luau/` | built |
 | 17 | **Domain engines & adapters** | Heavy engines plus the shared tool-adapter service | `memcontainers/programs/{sqlite,typst,adapters}/`, `memcontainers/lib/parse/` | built |
@@ -855,13 +855,18 @@ re-parking, pcall trap unwind/resume, and fuel-ceiling termination.
 
 ### 10.1 The shell (`shcore/`, `programs/sh`)
 
-`shcore` is an OS-agnostic POSIX-ish shell: a pure front-end (lex → parse → expand/glob/arith) plus a
-blocking tree-walking executor, decoupled from the world by a single `ShellOs` trait. The pure layers
-touch no syscalls, which is why the shell is *the one place* agent-os keeps native unit tests — it is
-logic, not the kernel. The lexer does maximal-munch operators, quotes, all the substitutions, and
-here-docs, and deliberately does *not* classify keywords (POSIX recognizes them only by grammar position,
-so the parser upgrades a bare word in command position). The AST keeps words unexpanded because expansion
-is runtime-dependent.
+`shcore` is the canonical Zig OS-agnostic POSIX-ish shell core behind `/bin/sh`. It uses a pure
+front-end (lex → parse → expand/glob/arith) plus a blocking tree-walking executor, decoupled from the
+world by a single `ShellOs` boundary. The pure layers touch no syscalls; the guest `programs/sh`
+package binds that boundary to `sysroot/zig` and ships the full-tier `/bin/sh` wasm. The lexer does
+maximal-munch operators, quotes, all the substitutions, and here-docs, and deliberately does *not*
+classify keywords (POSIX recognizes them only by grammar position, so the parser upgrades a bare word
+in command position). The AST keeps words unexpanded because expansion is runtime-dependent.
+
+`shcore` is not the process layer: the Zig kernel must still bind `ShellOs` to real VFS/task/scheduler
+operations, and the guest `/bin/sh` path still depends on `mc_sys_spawn`/`mc_sys_waitpid`/job-control
+syscalls. Shell-core verification proves the shell engine; kernel e2e proves the adapter and process
+syscalls.
 
 The seam is illustrative of the whole system: **every `ShellOs` method blocks**, and the executor is
 straight-line code — it relies on the kernel turning a blocking syscall into cooperative suspension, so
@@ -1394,7 +1399,9 @@ agent-os/                      ← the repository root: a Bazel/deps/docs shell
     │   └── interpreter/       #     wasmi → wasm32 staticlib + C ABI (consumed by kernel/zig only)
     ├── sysroot/               #   the guest side of the ABI (Rust + Zig wrappers)
     ├── wasi-adapter/          #   WASI(preview1) → mc link-injected shim
-    ├── shcore/                #   the OS-agnostic shell engine (the one native-test home)
+    ├── shcore/                #   the OS-agnostic shell engine
+    │   ├── rust/              #     current /bin/sh engine (the one native-test home)
+    │   └── zig/               #     Zig shell engine awaiting kernel/sysroot adapters
     ├── pkgcore/               #   pure logic for pkgfsd (sha256, catalog, path/url)
     ├── lib/                   #   shared support libs (json, stdx)
     ├── programs/              #   the guest userland AND the service glue

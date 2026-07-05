@@ -13,11 +13,11 @@
     <img alt="SDK: TypeScript and Bun" src="https://img.shields.io/badge/SDK-TypeScript%20%2B%20Bun-3178c6">
 <!-- BEGIN generated:image-size-badges -->
     <br>
-    <img alt="Image size: minimal 3.3 MiB" src="https://img.shields.io/static/v1?label=minimal&amp;message=3.3%20MiB&amp;color=2e7d32">
-    <img alt="Image size: posix 13.9 MiB" src="https://img.shields.io/static/v1?label=posix&amp;message=13.9%20MiB&amp;color=2e7d32">
-    <img alt="Image size: loom 17.8 MiB" src="https://img.shields.io/static/v1?label=loom&amp;message=17.8%20MiB&amp;color=d99a08">
-    <img alt="Image size: atlas 18.8 MiB" src="https://img.shields.io/static/v1?label=atlas&amp;message=18.8%20MiB&amp;color=1565c0">
-    <img alt="Image size: paper 47.6 MiB" src="https://img.shields.io/static/v1?label=paper&amp;message=47.6%20MiB&amp;color=1565c0">
+    <img alt="Image size: minimal 1.1 MiB" src="https://img.shields.io/static/v1?label=minimal&amp;message=1.1%20MiB&amp;color=2e7d32">
+    <img alt="Image size: posix 2.2 MiB" src="https://img.shields.io/static/v1?label=posix&amp;message=2.2%20MiB&amp;color=2e7d32">
+    <img alt="Image size: loom 6.2 MiB" src="https://img.shields.io/static/v1?label=loom&amp;message=6.2%20MiB&amp;color=d99a08">
+    <img alt="Image size: atlas 7.2 MiB" src="https://img.shields.io/static/v1?label=atlas&amp;message=7.2%20MiB&amp;color=1565c0">
+    <img alt="Image size: paper 35.9 MiB" src="https://img.shields.io/static/v1?label=paper&amp;message=35.9%20MiB&amp;color=1565c0">
 <!-- END generated:image-size-badges -->
   </p>
 

@@ -37,6 +37,7 @@ fn ctl_read_message_list<T, F>(bytes: &[u8], off: &mut usize, mut decode: F) -> 
 pub struct BuildInput {
     pub index: u32,
 }
+
 pub const BUILD_INPUT_MSG_ID: u16 = 1;
 pub const BUILD_INPUT_VERSION: u8 = 1;
 impl BuildInput {
@@ -59,7 +60,6 @@ impl BuildInput {
         })
     }
 }
-
 /// One exact path mapping for a multi-stage copy op.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CopyPath {

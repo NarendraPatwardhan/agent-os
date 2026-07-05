@@ -1,0 +1,11 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+
+# tools/mc-applets — derive a newline roster payload from nutils-style registry_data.zig.
+# It is a host build tool used by the Zig coreutils lane before mc-stamp appends the
+# `mc_applets` custom section.
+rust_binary(
+    name = "mc-applets",
+    srcs = ["src/main.rs"],
+    edition = "2021",
+    visibility = ["//visibility:public"],
+)

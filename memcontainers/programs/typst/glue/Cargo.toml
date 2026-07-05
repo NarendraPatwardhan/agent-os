@@ -2,7 +2,7 @@
 # Bazel (mc_wasi_program → a pure-mc resident service), not cargo. typst is a std crate graph built for
 # wasm32-wasip1 (SERVICES.md): the //wasi-adapter rewrites its wasi_snapshot_preview1 imports to
 # mc_sys_* afterward, and //sysroot/rust supplies the svc_* serve syscalls. Resolved from its OWN lock,
-# separate from @crates (kernel) / @host_crates (host) / @guest_crates (coreutils) — typst's deep graph
+# separate from @crates (kernel) / @host_crates (host) — typst's deep graph
 # (comemo, krilla, ICU) must not feature-unify with anyone else's.
 [package]
 name = "typst-svc"

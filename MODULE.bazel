@@ -89,21 +89,11 @@ crate.from_cargo(
     manifests = ["//memcontainers/hosts/wasmtime:Cargo.toml"],
 )
 
-# The GUEST universe (no_std, wasm32-freestanding): the coreutils boxes + future guests
-# resolve their external crates (talc; regex for grep; …) from a THIRD lock, kept apart from
-# @crates (kernel) and @host_crates (host) for the same reason those two are split — a shared
-# Cargo resolution would feature-unify std on and break the no_std guests.
-crate.from_cargo(
-    name = "guest_crates",
-    cargo_lockfile = "//memcontainers/programs/coreutils:Cargo.lock",
-    manifests = ["//memcontainers/programs/coreutils:Cargo.toml"],
-)
-
 # The typst engine's universe (std, wasm32-wasip1): the typst compiler graph (typst + typst-pdf +
-# typst-assets + comemo/krilla/ICU…, ~300 crates) resolves from its OWN lock — apart from @guest_crates
-# (coreutils) so typst's deep std graph never feature-unifies with the coreutils' resolution (the same
-# split rationale as the other three universes). The wasm engine links typst/typst-pdf/time/serde[_json];
-# the HOST font extractor (//memcontainers/programs/typst/fonts) links typst-assets. SYSTEMS.md (typst is Rust).
+# typst-assets + comemo/krilla/ICU…, ~300 crates) resolves from its OWN lock so typst's deep std graph
+# never feature-unifies with the kernel or host graphs. The wasm engine links typst/typst-pdf/time/
+# serde[_json]; the HOST font extractor (//memcontainers/programs/typst/fonts) links typst-assets.
+# SYSTEMS.md (typst is Rust).
 crate.from_cargo(
     name = "typst_crates",
     cargo_lockfile = "//memcontainers/programs/typst/glue:Cargo.lock",
@@ -128,7 +118,7 @@ crate.from_cargo(
     cargo_lockfile = "//memcontainers/hosts/wasmtime/nif:Cargo.lock",
     manifests = ["//memcontainers/hosts/wasmtime/nif:Cargo.toml"],
 )
-use_repo(crate, "crates", "guest_crates", "host_crates", "nif_crates", "parse_crates", "typst_crates")
+use_repo(crate, "crates", "host_crates", "nif_crates", "parse_crates", "typst_crates")
 
 # aspect_bazel_lib — write_source_files + diff_test for the contract drift gate (B2).
 bazel_dep(name = "aspect_bazel_lib", version = "2.22.5")
@@ -162,20 +152,6 @@ bazel_dep(name = "rules_pkg", version = "1.0.1")  # pkg_tar — deterministic im
 # Third-party guests — vendor LESS, patch in place (B3). Upstream SOURCE via http_archive (never a
 # vendored copy in-tree); only the patch + BUILD file live under third_party/<lib>/.
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
-
-# sed — uutils `sed` v0.1.1 fetched from crates.io, WASI-patched (terminal_size stub + an -i fix)
-# and built LIB-ONLY; the coreutils read-write box calls `sed::sed::uumain` (its own clap CLI).
-http_archive(
-    name = "uutils_sed",
-    build_file = "//third_party/sed:sed.BUILD.bazel",
-    patch_args = ["-p1"],
-    patch_tool = "patch",  # GNU patch; Bazel's native parser mis-handles the multi-file diff
-    patches = ["//third_party/sed:patches/0001-wasi-compat.patch"],
-    sha256 = "f5a00cdbffacbccf02decb7577da5e298c091bdee492a2a1b87a3d8b0cc5b7c5",
-    strip_prefix = "sed-0.1.1",
-    type = "tar.gz",
-    urls = ["https://static.crates.io/crates/sed/sed-0.1.1.crate"],
-)
 
 # sqlite — the SQLite 3.51.0 amalgamation fetched from sqlite.org (SYSTEMS.md: fetch upstream via
 # http_archive; never commit a vendored copy). 3.51.0 ships native SQLITE_WASI support (the unix-dotfile
