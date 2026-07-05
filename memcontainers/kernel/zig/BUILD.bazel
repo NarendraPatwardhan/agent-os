@@ -25,15 +25,15 @@ load("//bazel/tools/size:defs.bzl", "size_limit")
 # Loose scaffold ceiling; measured post-Asyncify and tightened after parity, not before (B5).
 KERNEL_MAX_BYTES = 1024 * 1024
 
-# The scoped Asyncify path (§7.4): wasm3's interpreter/runtime frames plus the
-# thin Zig raw-import trampoline. The guest driver boundary remains absent on
-# purpose, so it can stop unwind and start rewind internally.
-ASYNCIFY_ONLY_LIST = [
-    "m3_Call",
-    "Call",
-    "op_*",
-    "Compile_*",
-    "*rawSyscall*",
+# The §7.4 Asyncify catch boundary, as a REMOVE-list (full rationale on the asyncify_wasm
+# call): Asyncify instruments EVERY function that can reach a suspend EXCEPT these — the ONE
+# catch frame and every host export stay uninstrumented, so the guest unwind is caught inside
+# the kernel and the host boundary is provably clean. Future suspend paths (mc.pcall's nested
+# m3_Call → loom) are instrumented by construction, never by re-enumeration. no-creep asserts
+# each entry actually MATCHES a real function (an inlined catch frame would silently escape).
+ASYNCIFY_REMOVE_LIST = [
+    "agent_os_guest_call_boundary",
+    "main.mc_*",
 ]
 
 # The §4.1 module map, declared EXPLICITLY (never globbed): the scaffold-shape gate below
@@ -109,6 +109,11 @@ zig_binary(
     copts = WASM3_COPTS,
     csrcs = WASM3_CSRC,
     extra_srcs = WASM3_EXTRA_SRCS,
+    # Keep the wasm name section (ReleaseSmall strips it by default): Binaryen's
+    # asyncify-onlylist matches wasm3's functions BY NAME, so without names it instruments
+    # nothing and the suspend/resume is silently a no-op (§7.4). The name section is a few
+    # tens of KB, well under the size budget; the asyncify no-creep gate keeps it honest.
+    zigopts = ["-fno-strip"],
     linkopts = [
         "-fno-entry",
         "-rdynamic",
@@ -148,14 +153,31 @@ zig_configure_binary(
 asyncify_wasm(
     name = "kernel",
     src = ":kernel_obj",
-    # The suspend path is direct-call only (§6.2, §7.4): the mc_sys_* trampoline calls
-    # asyncify_start_unwind directly, and async backends return a shallow Pending rather than
-    # suspending in place — so the kernel's vtable indirect calls (VFS/guest dispatch) never
-    # cross a suspend and must NOT be treated as suspend points. Without this, Asyncify
-    # conservatively instruments every indirect-calling function (creep).
-    ignore_indirect = True,
-    # The guest.zig driver frame must stay OFF this list (that is the internal-catch boundary).
-    only_list = ASYNCIFY_ONLY_LIST,
+    # ignore_indirect MUST stay off (slim commit 4e4d3da): wasm3 dispatches op→op and
+    # op_CallRawFunction→trampoline via CALL_INDIRECT, and slim proved that ignoring indirect
+    # calls "re-entered the pcall import instead of resuming the continuation" — it breaks
+    # nested-m3_Call resumption, the core of mc.pcall / loom programmability. The unwind
+    # propagates back up the indirect op chain, so those sites must be instrumented (with it on,
+    # the unwind cannot cross them and hits an Asyncify-inserted `unreachable` at the first
+    # suspend — the stdin-read block).
+    ignore_indirect = False,
+    # §7.4 internal catch as a REMOVE-list (blacklist), NOT a whitelist. Asyncify instruments
+    # EVERY function that can reach a suspend EXCEPT those named here — the future-proof choice
+    # for programmability: mc.pcall runs a guest inside a guest (a nested m3_Call, slim 4e4d3da),
+    # and any such new suspend path is auto-instrumented. A whitelist would have to re-enumerate
+    # the pcall handler + every suspend helper and would SILENTLY break loom on a miss.
+    # Excluded:
+    #   agent_os_guest_call_boundary — the ONE Asyncify catch: the unwind spills up the whole
+    #     wasm3 op chain + raw handlers + nested m3_Calls + the syscall/fuel suspend helpers (all
+    #     auto-instrumented) and STOPS here, which calls asyncify_stop_unwind and returns to the
+    #     scheduler — the host never sees a suspend, and there is no mc_prepare_rewind.
+    #   main.mc_*  — every host-called export, kept OUT of instrumentation so the host boundary
+    #     is provably clean (no export can carry an unwind to the host). mc_tick reaches the
+    #     guest only THROUGH the catch frame, so it is never on a live unwind anyway.
+    # Cost: ignore_indirect=False conservatively marks the VFS/control plane (vtable indirect
+    # calls) instrumentable — dead instrumentation (those paths never call start_unwind), a size
+    # cost for Phase 8, not a correctness issue. no-creep asserts the excluded set is state 0.
+    remove_list = ASYNCIFY_REMOVE_LIST,
     visibility = ["//visibility:public"],
 )
 
@@ -180,9 +202,13 @@ build_test(
 # package, like size_limit — they carry no .rs sources.
 
 # ── Asyncify no-creep gate (§7.4, §9, §15.6) ──────────────────────────────────────────
-# The scoped instrument set must never exceed the only_list. Binaryen's verbose stream marks
-# each state-changing function; every non-zero state must match one of ASYNCIFY_ONLY_LIST.
-# The guest driver boundary stays absent, and host imports may not become state-changing.
+# The §7.4 internal catch is a REMOVE-list, so "no creep" flips to three invariants on the
+# SHIPPED wasm + the Asyncify verbose stream: (1) the ONE catch frame still exists as a named
+# function to be pinned (an inlined pin silently escapes — and Binaryen does NOT warn on a
+# non-matching remove_list entry); (2) no host-callable mc_prepare_rewind export (the host
+# never drives Asyncify, §7.7); (3) no host IMPORT becomes a suspend-driver (only the Asyncify
+# intrinsics may change state through an import, A4). The end-to-end proof that the catch
+# actually fires is //memcontainers/tests/e2e:core_zig (boot_reaches_login_prompt).
 filegroup(
     name = "kernel_asyncify_verbose",
     srcs = [":kernel"],
@@ -191,51 +217,50 @@ filegroup(
 
 genrule(
     name = "asyncify_no_creep_check",
-    srcs = [":kernel_asyncify_verbose"],
+    srcs = [
+        ":kernel",
+        ":kernel_asyncify_verbose",
+    ],
     outs = ["asyncify_no_creep.ok"],
     cmd = """
 set -eu
-v="$(SRCS)"
-allow="$@.allow"
-viol="$@.viol"
-cat > "$$allow" <<'EOF'
-""" + "\n".join(ASYNCIFY_ONLY_LIST) + """
-EOF
-: > "$$viol"
+wasm="$(location :kernel)"
+verbose="$(location :kernel_asyncify_verbose)"
 
-if grep -Eq '^(agent_os_guest_call_boundary|callGuestBoundary|mc_prepare_rewind)$$' "$$allow"; then
-  echo "FAIL: Asyncify only-list includes a driver/host rewind boundary (§7.4):"
-  grep -E '^(agent_os_guest_call_boundary|callGuestBoundary|mc_prepare_rewind)$$' "$$allow"
+# (1) The §7.4 catch frame must EXIST as a named function so the remove_list pin lands. Its
+# name lives in the wasm name section ONLY while it is a real, non-inlined function, so a
+# binary substring search (grep -a, no disassembler dep) is the existence proof. If a refactor
+# inlined agent_os_guest_call_boundary the pin misses, the frame is instrumented, and the guest
+# unwind escapes to the host.
+if ! grep -aqF 'agent_os_guest_call_boundary' "$$wasm"; then
+  echo "FAIL: §7.4 catch frame agent_os_guest_call_boundary is absent from the shipped wasm"
+  echo "      name section (inlined/renamed) — the Asyncify remove_list can no longer pin it."
   exit 1
 fi
 
-(grep -E "\\[asyncify\\] .* is an import that can change the state" "$$v" || true) | while IFS= read -r line; do
+# (2) No host-callable rewind export: the host never drives Asyncify (§7.7, §15.2).
+if grep -aqF 'mc_prepare_rewind' "$$wasm"; then
+  echo "FAIL: mc_prepare_rewind present in the shipped wasm — the host must never drive Asyncify."
+  exit 1
+fi
+
+# (3) No host IMPORT may become a suspend-driver; only the Asyncify intrinsics may change state
+# via an import. A new state-changing env import would be a host-visible suspend.
+viol="$@.viol"
+: > "$$viol"
+(grep -E "\\[asyncify\\] .* is an import that can change the state" "$$verbose" || true) | while IFS= read -r line; do
   name="$$(printf '%s\\n' "$$line" | sed -E 's/^\\[asyncify\\] (.*) is an import that can change the state.*$$/\\1/')"
   case "$$name" in
     asyncify_*) ;;
     *) echo "$$line" >> "$$viol" ;;
   esac
 done
-
-(grep -E "\\[asyncify\\] .*'s state is set based on the only-list to [1-9]" "$$v" || true) | while IFS= read -r line; do
-  name="$$(printf '%s\\n' "$$line" | sed -E "s/^\\[asyncify\\] (.*)'s state is set based on the only-list to [1-9].*$$/\\1/")"
-  allowed=0
-  while IFS= read -r pat; do
-    [ -n "$$pat" ] || continue
-    case "$$name" in
-      $$pat) allowed=1 ;;
-    esac
-  done < "$$allow"
-  if [ "$$allowed" -eq 0 ]; then
-    echo "$$line" >> "$$viol"
-  fi
-done
-
 if [ -s "$$viol" ]; then
-  echo "FAIL: Asyncify state-changing set escaped the only-list (§7.4 no-creep):"
+  echo "FAIL: a non-Asyncify import can change state (a host-visible suspend, §7.4):"
   cat "$$viol"
   exit 1
 fi
+
 echo ok > $@
 """,
 )

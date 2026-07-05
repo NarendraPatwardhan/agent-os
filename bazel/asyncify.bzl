@@ -38,11 +38,24 @@ IMPORT_ARG=""
 if [ "$8" = "1" ]; then
   IMPORT_ARG="--pass-arg=asyncify-ignore-imports"
 fi
+INDIRECT_ARG=""
 if [ "$6" = "1" ]; then
-  "$1" "$2" -o "$3" --enable-bulk-memory --enable-nontrapping-float-to-int --asyncify --pass-arg=asyncify-ignore-indirect $IMPORT_ARG $ONLY_ARG $REMOVE_ARG --pass-arg=asyncify-verbose > "$4"
-else
-  "$1" "$2" -o "$3" --enable-bulk-memory --enable-nontrapping-float-to-int --asyncify $IMPORT_ARG $ONLY_ARG $REMOVE_ARG --pass-arg=asyncify-verbose > "$4"
+  INDIRECT_ARG="--pass-arg=asyncify-ignore-indirect"
 fi
+# The kernel is built with -fno-strip so the wasm NAME SECTION survives: Binaryen's
+# asyncify-onlylist matches wasm3's functions BY NAME (§7.4), and without names it
+# instruments nothing (the suspend/resume silently becomes a no-op). -fno-strip ALSO emits
+# DWARF that Binaryen's asyncify cannot parse ("Fatal: TODO: DW_LNE_define_file"), so strip
+# DWARF FIRST while KEEPING names (-g), then asyncify the DWARF-free, still-named wasm (-g
+# again, to carry the names into both the shipped artifact and the verbose no-creep stream).
+PRE="$3.pre-asyncify.wasm"
+"$1" --strip-dwarf -g "$2" -o "$PRE"
+# Capture BOTH the verbose analysis (stdout) and Binaryen's warnings (stderr) into $4 so the
+# no-creep gate can read them from a file: a "non-existing function name"/"non-matching
+# pattern" warning means a remove_list entry (the catch frame or a host export) matched
+# nothing — i.e. it would be instrumented and the unwind could escape. On a hard failure,
+# surface $4 so the error is not swallowed.
+"$1" "$PRE" -o "$3" -g --enable-bulk-memory --enable-nontrapping-float-to-int --asyncify $INDIRECT_ARG $IMPORT_ARG $ONLY_ARG $REMOVE_ARG --pass-arg=asyncify-verbose > "$4" 2>&1 || { cat "$4" >&2; exit 1; }
 """,
         arguments = [
             ctx.file.wasm_opt.path,
