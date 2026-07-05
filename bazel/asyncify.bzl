@@ -28,11 +28,11 @@ set -eu
 export BINARYEN_CORES=1
 ONLY_ARG=""
 if [ -s "$5" ]; then
-  ONLY_ARG="--pass-arg=asyncify-onlylist@$5"
+  ONLY_ARG="--pass-arg=asyncify-onlylist@@$5"
 fi
 REMOVE_ARG=""
 if [ -s "$7" ]; then
-  REMOVE_ARG="--pass-arg=asyncify-removelist@$7"
+  REMOVE_ARG="--pass-arg=asyncify-removelist@@$7"
 fi
 IMPORT_ARG=""
 if [ "$8" = "1" ]; then

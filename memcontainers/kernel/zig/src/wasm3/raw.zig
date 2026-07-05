@@ -1,19 +1,122 @@
-//! wasm3/raw.zig — the `m3ApiRawFunction` handlers that record a generated `Pending`
-//! (ZIG_KERNEL §2.7, §7.1, §4.1).
+//! wasm3/raw.zig — the `m3ApiRawFunction` handlers that record a generated
+//! `Pending` and dispatch it shallowly (ZIG_KERNEL §2.7, §7.1, §4.1).
 //!
-//! Owns: one raw handler per `mc_sys_*` (generated registration, §5.1). A handler reads
-//!   the guest's args with m3ApiGetArg*, bounds-checks every guest pointer with
-//!   m3ApiCheckMem (out-of-bounds → errno, never a wasm3 trap that escapes to the host),
-//!   records "guest requested syscall X with args Y" as a `Pending`, and returns —
-//!   SHALLOW, so no deep frame is live at a suspend (§7.4). Fulfillment happens later in
-//!   syscall.zig.
-//! Invariants: A4 (adds no imports), §4.3 (guest fault → errno). These handlers are ON
-//!   the Asyncify only-list (thin trampoline); syscall.zig fulfillment is OFF it.
-//! Consumes: bindings.zig (the C surface), :mc_zig (the `Pending` union + arg structs).
-//! Not here: syscall POLICY/fulfillment (syscall.zig); suspend/resume (guest.zig). A raw
-//!   handler must NOT decide whether a syscall is permitted or whether to snapshot — it
-//!   records and returns (§7.1).
-//!
-//! Scaffold status: header-only until the wasm3 cherry-pick (§15.5).
+//! Owns: the single raw trampoline registered for every `mc_sys_*` import. It
+//!   recovers the guest context from wasm3 userdata, decodes the generated
+//!   `Pending` from wasm3's raw stack slots, records it, and delegates fulfillment
+//!   to syscall.zig. Blocking/yielding outcomes call back into guest.zig's driver
+//!   entrypoint to start Asyncify; policy stays out of this file.
+//! Invariants: the raw trampoline is on the Asyncify only-list; syscall.zig and
+//!   the guest driver frame are not.
 
-// (intentionally empty until //third_party/wasm3 is linked in Phase 5.)
+const constants = @import("constants_zig");
+const mc = @import("mc_zig");
+const syscall = @import("../syscall.zig");
+const task = @import("../task.zig");
+const wasm3 = @import("bindings.zig");
+
+const exit_result_message: [*:0]const u8 = "agent-os-exit";
+const fuel_yield_result_message: [*:0]const u8 = "agent-os-fuel-yield";
+
+pub fn exitResult() wasm3.Result {
+    return @ptrCast(exit_result_message);
+}
+
+pub fn fuelYieldResult() wasm3.Result {
+    return @ptrCast(fuel_yield_result_message);
+}
+
+pub fn i32Slot(value: i32) u64 {
+    return @as(u64, @as(u32, @bitCast(value)));
+}
+
+pub const Context = struct {
+    guest: syscall.Guest,
+    record_pending: *const fn (*anyopaque, mc.Pending) void,
+    park_blocked: *const fn (*anyopaque, mc.Pending, task.BlockReason) bool,
+    park_ready: *const fn (*anyopaque, mc.Pending) bool,
+    start_syscall_suspend: *const fn (*anyopaque) bool,
+    finish_rewind: *const fn (*anyopaque) void,
+    resume_result: *const fn (*anyopaque) i32,
+    mark_exited: *const fn (*anyopaque, i32) void,
+
+    fn recordPending(self: *Context, pending: mc.Pending) void {
+        self.record_pending(self.guest.ptr, pending);
+    }
+
+    fn parkBlocked(self: *Context, pending: mc.Pending, reason: task.BlockReason) bool {
+        return self.park_blocked(self.guest.ptr, pending, reason);
+    }
+
+    fn parkReady(self: *Context, pending: mc.Pending) bool {
+        return self.park_ready(self.guest.ptr, pending);
+    }
+
+    fn startSyscallSuspend(self: *Context) bool {
+        return self.start_syscall_suspend(self.guest.ptr);
+    }
+
+    fn finishRewind(self: *Context) void {
+        self.finish_rewind(self.guest.ptr);
+    }
+
+    fn resumeResult(self: *Context) i32 {
+        return self.resume_result(self.guest.ptr);
+    }
+
+    fn markExited(self: *Context, code: i32) void {
+        self.mark_exited(self.guest.ptr, code);
+    }
+};
+
+fn rawContext(runtime: ?*wasm3.Runtime) ?*Context {
+    const userdata = wasm3.m3_GetUserData(runtime) orelse return null;
+    return @ptrCast(@alignCast(userdata));
+}
+
+fn suspendOrResume(ctx: *Context, sp: [*]u64) void {
+    if (ctx.startSyscallSuspend()) {
+        sp[0] = i32Slot(ctx.resumeResult());
+        ctx.finishRewind();
+    }
+}
+
+pub fn rawSyscall(runtime: ?*wasm3.Runtime, import_ctx: wasm3.ImportContext, sp: [*]u64, mem: ?*anyopaque) callconv(.c) wasm3.Result {
+    const desc_userdata = import_ctx.userdata orelse {
+        sp[0] = i32Slot(-constants.ENOSYS);
+        return null;
+    };
+    const desc: *const mc.Desc = @ptrCast(@alignCast(desc_userdata));
+    const pending = mc.pendingFromRaw(desc, sp) orelse {
+        sp[0] = i32Slot(-constants.ENOSYS);
+        return null;
+    };
+    const ctx = rawContext(runtime) orelse {
+        sp[0] = i32Slot(-constants.EIO);
+        return null;
+    };
+
+    ctx.recordPending(pending);
+    switch (syscall.fulfillOutcome(runtime, mem, &ctx.guest, pending)) {
+        .Resume => |code| sp[0] = i32Slot(code),
+        .Exit => |code| {
+            ctx.markExited(code);
+            return exitResult();
+        },
+        .Block => |reason| {
+            if (!ctx.parkBlocked(pending, reason)) {
+                sp[0] = i32Slot(-constants.EIO);
+                return null;
+            }
+            suspendOrResume(ctx, sp);
+        },
+        .Pending => {
+            if (!ctx.parkReady(pending)) {
+                sp[0] = i32Slot(-constants.EIO);
+                return null;
+            }
+            suspendOrResume(ctx, sp);
+        },
+    }
+    return null;
+}

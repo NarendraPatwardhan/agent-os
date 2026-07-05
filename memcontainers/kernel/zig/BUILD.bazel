@@ -25,6 +25,17 @@ load("//bazel/tools/size:defs.bzl", "size_limit")
 # Loose scaffold ceiling; measured post-Asyncify and tightened after parity, not before (B5).
 KERNEL_MAX_BYTES = 1024 * 1024
 
+# The scoped Asyncify path (§7.4): wasm3's interpreter/runtime frames plus the
+# thin Zig raw-import trampoline. The guest driver boundary remains absent on
+# purpose, so it can stop unwind and start rewind internally.
+ASYNCIFY_ONLY_LIST = [
+    "m3_Call",
+    "Call",
+    "op_*",
+    "Compile_*",
+    "*rawSyscall*",
+]
+
 # The §4.1 module map, declared EXPLICITLY (never globbed): the scaffold-shape gate below
 # asserts this set carries no *_smoke/*_probe/fixture file (§15.7). Adding a source here is
 # a reviewed act — that is the anti-sprawl mechanism the first attempt lacked.
@@ -106,6 +117,7 @@ zig_binary(
     deps = [
         "//memcontainers/contracts:constants_zig",  # errno/caps/tiers/flags (B2)
         "//memcontainers/contracts:env_zig",  # bridge.zig derives the env extern surface from IMPORTS (§5.1)
+        "//memcontainers/contracts:mc_zig",  # generated syscall descriptors + Pending union (§5.1)
         "@wasm3//:incs",  # wasm3.h include path for the freestanding C compile
         # ctl_zig / mc_zig join as control-exec (Phase 4) and syscall.zig (Phase 5) consume their
         # descriptors. The two tiny FileStat/DirEntries result frames are hand-encoded in control.zig
@@ -142,10 +154,8 @@ asyncify_wasm(
     # cross a suspend and must NOT be treated as suspend points. Without this, Asyncify
     # conservatively instruments every indirect-calling function (creep).
     ignore_indirect = True,
-    # Phase-5 TODO: expand to the real wasm3 op functions + the mc_sys_* trampoline (guest.zig
-    # / wasm3/raw.zig). Non-empty NOW to lock the never-[] rule; matches nothing until wasm3.
     # The guest.zig driver frame must stay OFF this list (that is the internal-catch boundary).
-    only_list = ["mc_sys_trampoline"],
+    only_list = ASYNCIFY_ONLY_LIST,
     visibility = ["//visibility:public"],
 )
 
@@ -170,11 +180,9 @@ build_test(
 # package, like size_limit — they carry no .rs sources.
 
 # ── Asyncify no-creep gate (§7.4, §9, §15.6) ──────────────────────────────────────────
-# The scoped instrument set must never exceed the only_list. On the no-wasm3 kernel the
-# only_list matches nothing, so NOTHING may be instrumented — Binaryen's verbose sets every
-# function's Asyncify state to 0. A "to 1"/"to 2" line means a frame outside the only_list
-# got instrumented (creep): fail. Phase 5 upgrades this to a by-name (index→name) subset
-# check once wasm3 introduces real suspend points and the only_list names them.
+# The scoped instrument set must never exceed the only_list. Binaryen's verbose stream marks
+# each state-changing function; every non-zero state must match one of ASYNCIFY_ONLY_LIST.
+# The guest driver boundary stays absent, and host imports may not become state-changing.
 filegroup(
     name = "kernel_asyncify_verbose",
     srcs = [":kernel"],
@@ -188,9 +196,44 @@ genrule(
     cmd = """
 set -eu
 v="$(SRCS)"
-if grep -Eq 'to [1-9]' "$$v"; then
-  echo "FAIL: Asyncify instrumented a function outside the only-list (§7.4 no-creep):"
-  grep -E 'to [1-9]' "$$v"
+allow="$@.allow"
+viol="$@.viol"
+cat > "$$allow" <<'EOF'
+""" + "\n".join(ASYNCIFY_ONLY_LIST) + """
+EOF
+: > "$$viol"
+
+if grep -Eq '^(agent_os_guest_call_boundary|callGuestBoundary|mc_prepare_rewind)$$' "$$allow"; then
+  echo "FAIL: Asyncify only-list includes a driver/host rewind boundary (§7.4):"
+  grep -E '^(agent_os_guest_call_boundary|callGuestBoundary|mc_prepare_rewind)$$' "$$allow"
+  exit 1
+fi
+
+(grep -E "\\[asyncify\\] .* is an import that can change the state" "$$v" || true) | while IFS= read -r line; do
+  name="$$(printf '%s\\n' "$$line" | sed -E 's/^\\[asyncify\\] (.*) is an import that can change the state.*$$/\\1/')"
+  case "$$name" in
+    asyncify_*) ;;
+    *) echo "$$line" >> "$$viol" ;;
+  esac
+done
+
+(grep -E "\\[asyncify\\] .*'s state is set based on the only-list to [1-9]" "$$v" || true) | while IFS= read -r line; do
+  name="$$(printf '%s\\n' "$$line" | sed -E "s/^\\[asyncify\\] (.*)'s state is set based on the only-list to [1-9].*$$/\\1/")"
+  allowed=0
+  while IFS= read -r pat; do
+    [ -n "$$pat" ] || continue
+    case "$$name" in
+      $$pat) allowed=1 ;;
+    esac
+  done < "$$allow"
+  if [ "$$allowed" -eq 0 ]; then
+    echo "$$line" >> "$$viol"
+  fi
+done
+
+if [ -s "$$viol" ]; then
+  echo "FAIL: Asyncify state-changing set escaped the only-list (§7.4 no-creep):"
+  cat "$$viol"
   exit 1
 fi
 echo ok > $@

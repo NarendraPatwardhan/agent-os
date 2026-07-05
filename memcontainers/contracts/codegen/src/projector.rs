@@ -1479,6 +1479,98 @@ fn emit_zig_messages(messages: &[Message]) -> String {
     o
 }
 
+fn zig_syscall_storage_ty(ty: &str) -> &str {
+    match ty {
+        "u32" => "u32",
+        "i32" => "i32",
+        other => panic!("unsupported Zig syscall storage type {other}"),
+    }
+}
+
+fn zig_syscall_raw_arg(ty: &str, idx: usize) -> String {
+    match ty {
+        "u32" => format!("rawArgU32(sp, {idx})"),
+        "i32" => format!("rawArgI32(sp, {idx})"),
+        other => panic!("unsupported Zig raw syscall arg type {other}"),
+    }
+}
+
+fn wasm3_type_char(ty: &str, is_ret: bool) -> char {
+    match ty {
+        "u32" | "i32" => 'i',
+        "u64" | "i64" => 'I',
+        "void" => 'v',
+        // mc_sys_exit is noreturn in the syscall contract, but the wasm import
+        // still type-checks as an i32-returning function.
+        "noreturn" if is_ret => 'i',
+        other => panic!("unsupported wasm3 ABI type {other}"),
+    }
+}
+
+fn wasm3_signature(row: &Row) -> String {
+    let ret = wasm3_type_char(&row.ret, true);
+    let args = row
+        .args
+        .iter()
+        .map(|(_, ty)| wasm3_type_char(ty, false))
+        .collect::<String>();
+    format!("{ret}({args})")
+}
+
+fn emit_zig_syscall_types(rows: &[Row]) -> String {
+    let mut o = String::new();
+    o.push_str("\npub const Syscall = enum {\n");
+    for r in rows {
+        o.push_str(&format!("    {},\n", r.variant));
+    }
+    o.push_str("};\n\n");
+
+    for r in rows {
+        o.push_str(&format!("pub const {}Args = struct {{\n", r.variant));
+        for (name, ty) in &r.args {
+            o.push_str(&format!(
+                "    {name}: {},\n",
+                zig_syscall_storage_ty(ty),
+            ));
+        }
+        o.push_str("};\n\n");
+    }
+
+    o.push_str("pub const Pending = union(Syscall) {\n");
+    for r in rows {
+        o.push_str(&format!("    {}: {}Args,\n", r.variant, r.variant));
+    }
+    o.push_str("};\n\n");
+
+    o.push_str(
+        "inline fn rawArgU32(sp: [*]const u64, idx: usize) u32 {\n    return @truncate(sp[idx]);\n}\n\n",
+    );
+    o.push_str(
+        "inline fn rawArgI32(sp: [*]const u64, idx: usize) i32 {\n    return @bitCast(rawArgU32(sp, idx));\n}\n\n",
+    );
+    o.push_str("pub fn pendingFromRaw(desc: *const Desc, sp: [*]const u64) ?Pending {\n");
+    for (idx, r) in rows.iter().enumerate() {
+        o.push_str(&format!(
+            "    if (desc == &SYSCALLS[{idx}]) return Pending{{ .{} = .{{",
+            r.variant
+        ));
+        if r.args.is_empty() {
+            o.push_str(" } };\n");
+            continue;
+        }
+        o.push('\n');
+        for (i, (name, ty)) in r.args.iter().enumerate() {
+            o.push_str(&format!(
+                "        .{name} = {},\n",
+                zig_syscall_raw_arg(ty, i + 1),
+            ));
+        }
+        o.push_str("    } };\n");
+    }
+    o.push_str("    return null;\n}\n");
+    o
+}
+
 /// Emit a table boundary (mc / env / ctl) for one language. `macro_name` is the Rust
 /// callback macro; `names_const` is the `&[&str]` symbol array.
 fn emit_table(
@@ -1547,7 +1639,11 @@ fn emit_table(
         "zig" => {
             o.push_str(&emit_zig_messages(messages));
             o.push_str("\npub const Arg = struct { name: []const u8, ty: []const u8 };\n");
-            o.push_str("pub const Desc = struct { name: []const u8, variant: []const u8, args: []const Arg, ret: []const u8 };\n\n");
+            if table_const == "SYSCALLS" {
+                o.push_str("pub const Desc = struct { name: [:0]const u8, variant: []const u8, args: []const Arg, ret: []const u8, signature: [:0]const u8 };\n\n");
+            } else {
+                o.push_str("pub const Desc = struct { name: []const u8, variant: []const u8, args: []const Arg, ret: []const u8 };\n\n");
+            }
             o.push_str(&format!("pub const {table_const} = [_]Desc{{\n"));
             for r in rows {
                 let args = r
@@ -1556,12 +1652,26 @@ fn emit_table(
                     .map(|(n, t)| format!(".{{ .name = \"{n}\", .ty = \"{t}\" }}"))
                     .collect::<Vec<_>>()
                     .join(", ");
-                o.push_str(&format!(
-                    "    .{{ .name = \"{}\", .variant = \"{}\", .args = &.{{ {} }}, .ret = \"{}\" }},\n",
-                    r.name, r.variant, args, r.ret
-                ));
+                if table_const == "SYSCALLS" {
+                    o.push_str(&format!(
+                        "    .{{ .name = \"{}\", .variant = \"{}\", .args = &.{{ {} }}, .ret = \"{}\", .signature = \"{}\" }},\n",
+                        r.name,
+                        r.variant,
+                        args,
+                        r.ret,
+                        wasm3_signature(r)
+                    ));
+                } else {
+                    o.push_str(&format!(
+                        "    .{{ .name = \"{}\", .variant = \"{}\", .args = &.{{ {} }}, .ret = \"{}\" }},\n",
+                        r.name, r.variant, args, r.ret
+                    ));
+                }
             }
             o.push_str("};\n");
+            if table_const == "SYSCALLS" {
+                o.push_str(&emit_zig_syscall_types(rows));
+            }
         }
         "ts" => {
             o.push_str(&emit_ts_messages(messages));
