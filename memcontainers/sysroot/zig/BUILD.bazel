@@ -1,12 +1,12 @@
 load("@rules_zig//zig:defs.bzl", "zig_library")
 
 # sysroot/zig — the ZIG lane of the guest sysroot (sibling of //memcontainers/sysroot/rust): the shared
-# `mc` syscall ABI that luau, sqlite (and a future Zig shell over shcore) `@import("mc")`. The callable
+# `mc` syscall ABI that luau, sqlite and Zig guest programs consume. The callable
 # `extern "mc" fn` block is GENERATED from contracts/syscalls.kdl (//memcontainers/contracts:mc_zig) and
-# re-exported by mc.zig, so it cannot drift from the kernel's served surface — the abi_library diff gate
-# is the single source of truth (the old hand-kept decls + //bazel/tools/mc-abi-gate are gone). svc.zig
-# adds the resident-service serve-loop scaffolding (over the svc_* server syscalls) for a one-binary,
-# two-modes service.
+# re-exported by :mc, so it cannot drift from the kernel's served surface — the abi_library diff gate
+# is the single source of truth. sys.zig is the reusable guest runtime/wrapper layer over those raw
+# imports, mirroring //memcontainers/sysroot/rust's role. svc.zig adds the resident-service serve-loop
+# scaffolding (over the svc_* server syscalls) for a one-binary, two-modes service.
 
 zig_library(
     name = "mc",
@@ -15,6 +15,16 @@ zig_library(
     # `@import("mc")` gets it directly. The descriptor tables in the same file (used by the kernel)
     # are unreferenced here and dropped by the linker.
     main = "//memcontainers/contracts:gen/mc.gen.zig",
+    visibility = ["//visibility:public"],
+)
+
+zig_library(
+    name = "sys",
+    main = "sys.zig",
+    deps = [
+        ":mc",
+        "//memcontainers/contracts:constants_zig",
+    ],
     visibility = ["//visibility:public"],
 )
 

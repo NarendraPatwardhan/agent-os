@@ -14,16 +14,7 @@ const IMAGES: &[(&str, &str)] = &[
 // A declared syscall may be absent from the shipped images only when the reason
 // is tied to a specific subsystem, not because the conformance gate has not
 // caught up yet. If a guest starts importing one of these, remove the exclusion.
-const COVERAGE_EXCLUSIONS: &[(&str, &str)] = &[
-    (
-        "mc_sys_dup",
-        "fd-table primitive reserved for POSIX duplication semantics; no shipped guest currently calls dup directly",
-    ),
-    (
-        "mc_sys_dup2",
-        "fd-table primitive reserved for explicit descriptor-number duplication; no shipped guest currently calls dup2 directly",
-    ),
-];
+const COVERAGE_EXCLUSIONS: &[(&str, &str)] = &[];
 
 #[derive(Debug)]
 struct Guest {
