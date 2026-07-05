@@ -1571,6 +1571,56 @@ fn emit_zig_syscall_types(rows: &[Row]) -> String {
     o
 }
 
+/// Emit the callable guest-side `mc` import block: `pub extern "mc" fn mc_sys_<name>(...) i32;`
+/// for every syscall. This is the Zig counterpart of the Rust `mc_syscall_table!` extern
+/// expansion — the sysroot re-exports it so a Zig guest imports EXACTLY the kernel's served
+/// surface (and only the subset it references; an unused extern is dropped by the linker, so no
+/// spurious wasm import). Unlike the descriptor tables above these are CONCRETE decls, because
+/// Zig comptime cannot synthesize `extern fn` signatures — which is exactly why a hand-kept
+/// mc.zig + an mc-abi-gate used to be needed and are now gone. The kernel imports this same file
+/// for the descriptor tables and never references the externs, so they never become a real
+/// `mc` import there.
+fn emit_zig_syscall_externs(rows: &[Row]) -> String {
+    let mut o = String::new();
+    o.push_str(
+        "\n// The guest-side `mc` import block: every syscall the kernel serves, callable as\n\
+         // `mc.mc_sys_<name>(...)`. wasm32 — pointer/length args are u32 offsets into the guest's\n\
+         // own linear memory; each returns i32 (0 / negative errno).\n",
+    );
+    for r in rows {
+        let args = r
+            .args
+            .iter()
+            .map(|(n, t)| format!("{n}: {}", zig_extern_arg_ty(t)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        // The contract marks mc_sys_exit `noreturn`, but the kernel registers the wasm import as
+        // (…)->i32 like every other syscall; declaring it `noreturn` here would change the import
+        // TYPE and the kernel would reject the guest at spawn. So every extern returns i32 (an
+        // exit call is simply unreachable at the call site).
+        let note = if r.ret == "noreturn" {
+            "  // contract: noreturn; the kernel serves it as (…)->i32"
+        } else {
+            assert_eq!(
+                r.ret, "i32",
+                "unsupported Zig extern ret type {} for {}",
+                r.ret, r.name
+            );
+            ""
+        };
+        o.push_str(&format!("pub extern \"mc\" fn {}({args}) i32;{note}\n", r.name));
+    }
+    o
+}
+
+fn zig_extern_arg_ty(ty: &str) -> &str {
+    match ty {
+        "u32" => "u32",
+        "i32" => "i32",
+        other => panic!("unsupported Zig extern arg type {other}"),
+    }
+}
+
 /// Emit a table boundary (mc / env / ctl) for one language. `macro_name` is the Rust
 /// callback macro; `names_const` is the `&[&str]` symbol array.
 fn emit_table(
@@ -1671,6 +1721,15 @@ fn emit_table(
             o.push_str("};\n");
             if table_const == "SYSCALLS" {
                 o.push_str(&emit_zig_syscall_types(rows));
+                o.push_str(&emit_zig_syscall_externs(rows));
+                // The guest-side pointer helper — the one bit of Zig `mc` ABI comfort that isn't
+                // per-syscall. Emitted here (not hand-kept) so a guest `@import("mc")` is the WHOLE
+                // generated boundary with nothing to maintain by hand (Zig 0.16 dropped
+                // `usingnamespace`, so a re-export skin would have to list every decl).
+                o.push_str(
+                    "\n/// A Zig pointer as a wasm linear-memory address (the u32 the mc ABI takes).\n\
+                     pub inline fn addr(p: anytype) u32 {\n    return @intCast(@intFromPtr(p));\n}\n",
+                );
             }
         }
         "ts" => {

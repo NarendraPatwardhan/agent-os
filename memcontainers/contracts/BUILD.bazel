@@ -12,8 +12,10 @@ exports_files([
     "llb.kdl",
     "wire.kdl",
     "constants.kdl",
-    # The projected zig descriptor table — //bazel/tools/mc-abi-gate gates mc.zig's hand-kept externs
-    # against it via include_str!.
+    # The generated Zig `mc` module IS the guest sysroot's `mc` (//memcontainers/sysroot/zig:mc
+    # compiles it under import_name "mc"): a guest `@import("mc")` gets the whole generated
+    # boundary — every syscall extern + the `addr` helper — with nothing hand-kept (Zig 0.16
+    # dropped `usingnamespace`, so a re-export skin isn't viable).
     "gen/mc.gen.zig",
 ])
 
