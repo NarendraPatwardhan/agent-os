@@ -78,8 +78,10 @@ pub const DevFs = struct {
         .unlink = fsReadOnly1,
         .rename = vfs.fsRenameUnsupported,
         .symlink = vfs.fsSymlinkUnsupported,
+        .link = vfs.fsLinkUnsupported,
         .readlink = vfs.fsReadlinkUnsupported,
         .setMode = vfs.fsSetModeUnsupported,
+        .setTimes = vfs.fsSetTimesUnsupported,
     };
     fn fsOpen(p: *anyopaque, _: vfs.CallerId, path: []const u8, flags: OpenFlags) FsError!FileHandle {
         return self_(p).open(path, flags);

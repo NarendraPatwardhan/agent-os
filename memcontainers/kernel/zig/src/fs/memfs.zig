@@ -35,6 +35,11 @@ const Inode = struct {
     ctime: i64,
 };
 
+const PathMove = struct {
+    old: []u8,
+    new: []u8,
+};
+
 pub const MemFs = struct {
     gpa: std.mem.Allocator,
     inodes: std.AutoHashMapUnmanaged(u64, Inode) = .{},
@@ -159,6 +164,72 @@ pub const MemFs = struct {
         return base.withMode(inode.mode).withTimes(inode.atime, inode.mtime, inode.ctime);
     }
 
+    /// Move a path table entry (and descendants for directories) without touching inodes.
+    fn moveNode(self: *MemFs, from: []const u8, to: []const u8, is_dir: bool) void {
+        var moves: std.ArrayList(PathMove) = .empty;
+        defer moves.deinit(self.gpa);
+        moves.append(self.gpa, .{
+            .old = self.gpa.dupe(u8, from) catch @panic("OOM"),
+            .new = self.gpa.dupe(u8, to) catch @panic("OOM"),
+        }) catch @panic("OOM");
+
+        if (is_dir) {
+            const prefix = std.fmt.allocPrint(self.gpa, "{s}/", .{from}) catch @panic("OOM");
+            defer self.gpa.free(prefix);
+            var it = self.paths.keyIterator();
+            while (it.next()) |key| {
+                if (std.mem.startsWith(u8, key.*, prefix)) {
+                    const new_key = std.fmt.allocPrint(self.gpa, "{s}{s}", .{ to, key.*[from.len..] }) catch @panic("OOM");
+                    moves.append(self.gpa, .{
+                        .old = self.gpa.dupe(u8, key.*) catch @panic("OOM"),
+                        .new = new_key,
+                    }) catch @panic("OOM");
+                }
+            }
+        }
+
+        var taken: std.ArrayList(struct { path: []u8, ino: u64 }) = .empty;
+        defer taken.deinit(self.gpa);
+        for (moves.items) |m| {
+            if (self.paths.fetchRemove(m.old)) |kv| {
+                self.gpa.free(kv.key);
+                taken.append(self.gpa, .{ .path = m.new, .ino = kv.value }) catch @panic("OOM");
+            } else {
+                self.gpa.free(m.new);
+            }
+            self.gpa.free(m.old);
+        }
+        for (taken.items) |entry| {
+            self.paths.put(self.gpa, entry.path, entry.ino) catch @panic("OOM");
+        }
+
+        if (vfs.parentPath(from)) |fp| {
+            var fbuf: [MAX_PATH]u8 = undefined;
+            const from_parent = dupInto(&fbuf, fp);
+            var nbuf: [MAX_PATH]u8 = undefined;
+            const from_name = dupInto(&nbuf, vfs.baseName(from));
+            self.removeChild(from_parent, from_name);
+        }
+        if (vfs.parentPath(to)) |tp| {
+            var tbuf: [MAX_PATH]u8 = undefined;
+            const to_parent = dupInto(&tbuf, tp);
+            var nbuf: [MAX_PATH]u8 = undefined;
+            const to_name = dupInto(&nbuf, vfs.baseName(to));
+            self.addChild(to_parent, to_name);
+        }
+    }
+
+    fn detachDest(self: *MemFs, dest: []const u8) void {
+        if (vfs.parentPath(dest)) |parent| {
+            var pbuf: [MAX_PATH]u8 = undefined;
+            const parent_owned = dupInto(&pbuf, parent);
+            var nbuf: [MAX_PATH]u8 = undefined;
+            const name = dupInto(&nbuf, vfs.baseName(dest));
+            self.removeChild(parent_owned, name);
+        }
+        self.dropPath(dest);
+    }
+
     // ── FileSystem impl ───────────────────────────────────────────────────────────────────
     pub fn open(self: *MemFs, path_in: []const u8, flags: OpenFlags) FsError!FileHandle {
         var nb: [MAX_PATH]u8 = undefined;
@@ -257,6 +328,45 @@ pub const MemFs = struct {
         self.dropPath(path);
     }
 
+    pub fn renameOp(self: *MemFs, from_in: []const u8, to_in: []const u8) FsError!void {
+        var fb: [MAX_PATH]u8 = undefined;
+        const from = norm(from_in, &fb) orelse return FsError.InvalidPath;
+        var tb: [MAX_PATH]u8 = undefined;
+        const to = norm(to_in, &tb) orelse return FsError.InvalidPath;
+
+        const from_is_dir = switch ((self.node(from) orelse return FsError.NotFound).data) {
+            .dir => true,
+            else => false,
+        };
+        if (std.mem.eql(u8, from, to)) return;
+        if (from_is_dir) {
+            var prefix_buf: [MAX_PATH]u8 = undefined;
+            const prefix = joinInto(&prefix_buf, from, "") orelse return FsError.InvalidPath;
+            if (std.mem.startsWith(u8, to, prefix)) return FsError.InvalidPath;
+        }
+
+        if (self.node(to)) |dest| {
+            switch (dest.data) {
+                .dir => |*entries| {
+                    if (!from_is_dir) return FsError.IsDir;
+                    if (entries.count() != 0) return FsError.NotEmpty;
+                    self.detachDest(to);
+                },
+                else => {
+                    if (from_is_dir) return FsError.NotDir;
+                    self.detachDest(to);
+                },
+            }
+        } else {
+            const to_parent = vfs.parentPath(to) orelse return FsError.NotFound;
+            var pbuf: [MAX_PATH]u8 = undefined;
+            const parent_owned = dupInto(&pbuf, to_parent);
+            try self.ensureDirExists(parent_owned);
+        }
+
+        self.moveNode(from, to, from_is_dir);
+    }
+
     pub fn symlinkOp(self: *MemFs, target: []const u8, link_in: []const u8) FsError!void {
         var nb: [MAX_PATH]u8 = undefined;
         const link = norm(link_in, &nb) orelse return FsError.InvalidPath;
@@ -271,6 +381,32 @@ pub const MemFs = struct {
         const now = vfs.wallNowMs();
         self.inodes.put(self.gpa, ino, .{ .data = .{ .symlink = self.gpa.dupe(u8, target) catch @panic("OOM") }, .nlink = 1, .mode = vfs.MODE_SYMLINK, .mtime = now, .atime = now, .ctime = now }) catch @panic("OOM");
         self.paths.put(self.gpa, self.gpa.dupe(u8, link) catch @panic("OOM"), ino) catch @panic("OOM");
+        self.addChild(parent_owned, name);
+    }
+
+    pub fn linkOp(self: *MemFs, existing_in: []const u8, new_in: []const u8) FsError!void {
+        var eb: [MAX_PATH]u8 = undefined;
+        const existing = norm(existing_in, &eb) orelse return FsError.InvalidPath;
+        var nb: [MAX_PATH]u8 = undefined;
+        const new = norm(new_in, &nb) orelse return FsError.InvalidPath;
+        const ino = self.inoOf(existing) orelse return FsError.NotFound;
+        if (self.inodes.getPtr(ino)) |inode| {
+            if (inode.data == .dir) return FsError.PermissionDenied;
+        } else {
+            return FsError.NotFound;
+        }
+        if (self.paths.contains(new)) return FsError.AlreadyExists;
+        const parent = vfs.parentPath(new) orelse return FsError.NotFound;
+        var pbuf: [MAX_PATH]u8 = undefined;
+        const parent_owned = dupInto(&pbuf, parent);
+        try self.ensureDirExists(parent_owned);
+        var nmbuf: [MAX_PATH]u8 = undefined;
+        const name = dupInto(&nmbuf, vfs.baseName(new));
+        self.paths.put(self.gpa, self.gpa.dupe(u8, new) catch @panic("OOM"), ino) catch @panic("OOM");
+        if (self.inodes.getPtr(ino)) |inode| {
+            inode.nlink += 1;
+            inode.ctime = vfs.wallNowMs();
+        }
         self.addChild(parent_owned, name);
     }
 
@@ -308,10 +444,12 @@ pub const MemFs = struct {
         .readdir = fsReaddir,
         .mkdir = fsMkdir,
         .unlink = fsUnlink,
-        .rename = vfs.fsRenameUnsupported, // full rename lands with the shell (Phase 4)
+        .rename = fsRename,
         .symlink = fsSymlink,
+        .link = fsLink,
         .readlink = fsReadlink,
         .setMode = fsSetMode,
+        .setTimes = fsSetTimes,
     };
     fn fsOpen(p: *anyopaque, _: vfs.CallerId, path: []const u8, flags: OpenFlags) FsError!FileHandle {
         return self_(p).open(path, flags);
@@ -328,14 +466,23 @@ pub const MemFs = struct {
     fn fsUnlink(p: *anyopaque, _: vfs.CallerId, path: []const u8) FsError!void {
         return self_(p).unlink(path);
     }
+    fn fsRename(p: *anyopaque, _: vfs.CallerId, from: []const u8, to: []const u8) FsError!void {
+        return self_(p).renameOp(from, to);
+    }
     fn fsSymlink(p: *anyopaque, target: []const u8, link: []const u8) FsError!void {
         return self_(p).symlinkOp(target, link);
+    }
+    fn fsLink(p: *anyopaque, existing: []const u8, new: []const u8) FsError!void {
+        return self_(p).linkOp(existing, new);
     }
     fn fsReadlink(p: *anyopaque, path: []const u8, out: *std.ArrayList(u8)) FsError!void {
         return self_(p).readlink(path, out);
     }
     fn fsSetMode(p: *anyopaque, path: []const u8, mode: u16) FsError!void {
         return self_(p).setMode(path, mode);
+    }
+    fn fsSetTimes(p: *anyopaque, path: []const u8, atime: i64, mtime: i64) FsError!void {
+        return self_(p).setTimes(path, atime, mtime);
     }
     fn self_(p: *anyopaque) *MemFs {
         return @ptrCast(@alignCast(p));

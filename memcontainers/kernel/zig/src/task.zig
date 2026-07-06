@@ -162,6 +162,7 @@ pub const BlockReason = union(enum) {
     pipe_read: *pipe.Pipe,
     pipe_write: *pipe.Pipe,
     wait_child: TaskId,
+    timer: i64,
 };
 
 pub const TaskState = union(enum) {
@@ -219,6 +220,10 @@ pub const Task = struct {
     /// down the wasm3 instance behind a non-null `guest` around exit is guest.zig's
     /// responsibility, not the scheduler's (see `Scheduler.exitTask`).
     guest: ?*anyopaque = null,
+
+    /// Monotonic-ms deadline for a timed blocking syscall (`sleep_ms`). The pending
+    /// syscall owns clearing it when the deadline is observed or the sleep is interrupted.
+    timed_deadline: ?i64 = null,
 
     /// Per-task fd table. Indices 0/1/2 are the conventional stdin/stdout/stderr slots
     /// (pre-seeded `.none` by `create`); indices 3+ are opened by open/pipe/dup and grow

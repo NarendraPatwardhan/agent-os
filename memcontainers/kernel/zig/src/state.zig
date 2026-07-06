@@ -22,6 +22,21 @@ const shcore = @import("shcore");
 
 const HISTORY_CAP: usize = 200;
 
+pub const CtlExecJob = struct {
+    pid: ?u32,
+    stdout: *std.ArrayList(u8),
+    stderr: *std.ArrayList(u8),
+    done: bool = false,
+    exit_code: i32 = 0,
+
+    pub fn deinit(self: *CtlExecJob, gpa: std.mem.Allocator) void {
+        self.stdout.deinit(gpa);
+        gpa.destroy(self.stdout);
+        self.stderr.deinit(gpa);
+        gpa.destroy(self.stderr);
+    }
+};
+
 const EscState = enum {
     normal,
     esc,
@@ -208,6 +223,10 @@ pub const Kernel = struct {
     /// into the pipe in one write. Both live in `Kernel`, never module globals (§4.2).
     line_editor: LineEditor = .{},
     console_pending: std.ArrayList(u8) = .empty,
+    /// Host control-channel exec jobs (`mc_ctl_exec_*`), keyed by job id. The capture
+    /// buffers are heap-owned so fd handles can point at them while child tasks run.
+    ctl_exec_jobs: std.AutoHashMapUnmanaged(u32, CtlExecJob) = .{},
+    next_ctl_job_id: u32 = 1,
     initialized: bool = false,
 };
 
@@ -237,6 +256,7 @@ pub fn init() i32 {
         .sched = scheduler.Scheduler.init(kernel_allocator),
     };
     g_ready = true;
+    vfs.wall_ms = bridge.mc_time_now();
     g_kernel.ctl_buffer.ensureTotalCapacity(g_kernel.gpa, 256) catch @panic("OOM");
     boot.bootSystem(&g_kernel);
     g_kernel.initialized = true;
@@ -262,6 +282,7 @@ const FAULT_EXIT_CODE: i32 = 134; // 128 + SIGABRT(6): the conventional "aborted
 pub fn tick() i32 {
     if (!isInitialized()) return 0;
     const k = &g_kernel;
+    vfs.wall_ms = bridge.mc_time_now();
     _ = flushConsole(k);
     // Wake any task whose block condition cleared: an empty stdin pipe that now has bytes,
     // a full pipe drained, a waited-for child that exited.

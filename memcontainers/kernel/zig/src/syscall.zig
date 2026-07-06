@@ -665,6 +665,72 @@ fn fulfillUnlink(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque
     return constants.ESUCCESS;
 }
 
+fn fulfillRename(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.RenameArgs) i32 {
+    const t = currentTask(guest) orelse return neg(constants.EIO);
+    var arena_state = std.heap.ArenaAllocator.init(state.kernel().gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var errno: i32 = 0;
+    const from = resolveGuestPath(guest, runtime, mem, arena, args.from_ptr, args.from_len, true, false, &errno) orelse return neg(errno);
+    const to = resolveGuestPath(guest, runtime, mem, arena, args.to_ptr, args.to_len, true, false, &errno) orelse return neg(errno);
+    state.kernel().ns.rename(arena, t.id, from, to) catch |e| return fsErr(e);
+    return constants.ESUCCESS;
+}
+
+fn fulfillSymlink(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.SymlinkArgs) i32 {
+    const target = guestRange(runtime, mem, args.target_ptr, args.target_len) orelse return neg(constants.EINVAL);
+    if (std.mem.indexOfScalar(u8, target, 0) != null) return neg(constants.EINVAL);
+    var arena_state = std.heap.ArenaAllocator.init(state.kernel().gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var errno: i32 = 0;
+    const link = resolveGuestPath(guest, runtime, mem, arena, args.link_ptr, args.link_len, true, false, &errno) orelse return neg(errno);
+    state.kernel().ns.symlink(arena, target, link) catch |e| return fsErr(e);
+    return constants.ESUCCESS;
+}
+
+fn fulfillLink(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.LinkArgs) i32 {
+    var arena_state = std.heap.ArenaAllocator.init(state.kernel().gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var errno: i32 = 0;
+    const existing = resolveGuestPath(guest, runtime, mem, arena, args.old_ptr, args.old_len, false, false, &errno) orelse return neg(errno);
+    const new = resolveGuestPath(guest, runtime, mem, arena, args.new_ptr, args.new_len, true, false, &errno) orelse return neg(errno);
+    state.kernel().ns.link(arena, existing, new) catch |e| return fsErr(e);
+    return constants.ESUCCESS;
+}
+
+fn fulfillChmod(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.ChmodArgs) i32 {
+    var arena_state = std.heap.ArenaAllocator.init(state.kernel().gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var errno: i32 = 0;
+    const path = resolveGuestPath(guest, runtime, mem, arena, args.path_ptr, args.path_len, true, false, &errno) orelse return neg(errno);
+    state.kernel().ns.setMode(arena, path, @intCast(args.mode & 0o7777)) catch |e| return fsErr(e);
+    return constants.ESUCCESS;
+}
+
+fn fulfillUtimes(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.UtimesArgs) i32 {
+    var arena_state = std.heap.ArenaAllocator.init(state.kernel().gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var errno: i32 = 0;
+    const path = resolveGuestPath(guest, runtime, mem, arena, args.path_ptr, args.path_len, true, false, &errno) orelse return neg(errno);
+    var atime: i64 = undefined;
+    var mtime: i64 = undefined;
+    if (args.times_ptr == 0) {
+        const now = vfs.wallNowMs();
+        atime = now;
+        mtime = now;
+    } else {
+        const mtime_ptr = std.math.add(u32, args.times_ptr, 8) catch return neg(constants.EINVAL);
+        atime = readGuestI64(runtime, mem, args.times_ptr) orelse return neg(constants.EINVAL);
+        mtime = readGuestI64(runtime, mem, mtime_ptr) orelse return neg(constants.EINVAL);
+    }
+    state.kernel().ns.setTimes(arena, path, atime, mtime) catch |e| return fsErr(e);
+    return constants.ESUCCESS;
+}
+
 fn fulfillGetcwd(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.GetcwdArgs) i32 {
     const t = currentTask(guest) orelse return neg(constants.EIO);
     if (t.cwd.len > std.math.maxInt(u32)) return neg(constants.EINVAL);
@@ -783,6 +849,30 @@ fn fulfillIsatty(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque
 
 fn fulfillAbiVersion(runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.AbiVersionArgs) i32 {
     if (!writeGuestU32(runtime, mem, args.ret, @intCast(constants.abi_version()))) return neg(constants.EINVAL);
+    return constants.ESUCCESS;
+}
+
+fn fulfillTimeMonotonic(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.TimeMonotonicArgs) i32 {
+    const t = currentTask(guest) orelse return neg(constants.EIO);
+    if (!t.caps.has(constants.CAP_AMBIENT)) return neg(constants.EPERM);
+    if (!writeGuestI64(runtime, mem, args.ret, bridge.mc_time_monotonic())) return neg(constants.EINVAL);
+    return constants.ESUCCESS;
+}
+
+fn fulfillTimeRealtime(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.TimeRealtimeArgs) i32 {
+    const t = currentTask(guest) orelse return neg(constants.EIO);
+    if (!t.caps.has(constants.CAP_AMBIENT)) return neg(constants.EPERM);
+    const now = bridge.mc_time_now();
+    vfs.wall_ms = now;
+    if (!writeGuestI64(runtime, mem, args.ret, now)) return neg(constants.EINVAL);
+    return constants.ESUCCESS;
+}
+
+fn fulfillRandom(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.RandomArgs) i32 {
+    const t = currentTask(guest) orelse return neg(constants.EIO);
+    if (!t.caps.has(constants.CAP_AMBIENT)) return neg(constants.EPERM);
+    const out = guestRange(runtime, mem, args.ptr, args.len) orelse return neg(constants.EINVAL);
+    if (out.len != 0) bridge.mc_random(out.ptr, out.len);
     return constants.ESUCCESS;
 }
 
@@ -981,6 +1071,34 @@ fn takeEintr(t: *Task) bool {
         }
     }
     return hit;
+}
+
+fn fulfillSleepMs(guest: *const Guest, args: mc.SleepMsArgs) Fulfillment {
+    const t = currentTask(guest) orelse return finish(neg(constants.EIO));
+    if (!t.caps.has(constants.CAP_AMBIENT)) {
+        t.timed_deadline = null;
+        return finish(neg(constants.EPERM));
+    }
+    if (args.ms <= 0) {
+        t.timed_deadline = null;
+        return finish(constants.ESUCCESS);
+    }
+
+    const now = bridge.mc_time_monotonic();
+    const deadline = t.timed_deadline orelse blk: {
+        const d = std.math.add(i64, now, @as(i64, args.ms)) catch std.math.maxInt(i64);
+        t.timed_deadline = d;
+        break :blk d;
+    };
+    if (now >= deadline) {
+        t.timed_deadline = null;
+        return finish(constants.ESUCCESS);
+    }
+    if (takeEintr(t)) {
+        t.timed_deadline = null;
+        return finish(neg(constants.EINTR));
+    }
+    return .{ .Block = .{ .timer = deadline } };
 }
 
 fn isChildOf(parent: TaskId, child_id: TaskId) bool {
@@ -1236,13 +1354,13 @@ pub fn fulfillOutcome(runtime: ?*wasm3.Runtime, mem: ?*anyopaque, guest: *const 
         .Mkdir => |args| finish(fulfillMkdir(guest, runtime, mem, args)),
         .Unlink => |args| finish(fulfillUnlink(guest, runtime, mem, args)),
         // TODO(Phase 6): namespace mutation and richer metadata operations.
-        .Rename => finish(todoPhase6()),
-        .Symlink => finish(todoPhase6()),
-        .Link => finish(todoPhase6()),
+        .Rename => |args| finish(fulfillRename(guest, runtime, mem, args)),
+        .Symlink => |args| finish(fulfillSymlink(guest, runtime, mem, args)),
+        .Link => |args| finish(fulfillLink(guest, runtime, mem, args)),
         .Readlink => |args| finish(fulfillReadlink(guest, runtime, mem, args)),
         .Lstat => |args| finish(fulfillStatLike(guest, runtime, mem, args.path_ptr, args.path_len, args.ret_stat, false)),
-        .Chmod => finish(todoPhase6()),
-        .Utimes => finish(todoPhase6()),
+        .Chmod => |args| finish(fulfillChmod(guest, runtime, mem, args)),
+        .Utimes => |args| finish(fulfillUtimes(guest, runtime, mem, args)),
         .Getcwd => |args| finish(fulfillGetcwd(guest, runtime, mem, args)),
         .Chdir => |args| finish(fulfillChdir(guest, runtime, mem, args)),
         .Lseek => |args| finish(fulfillLseek(guest, runtime, mem, args)),
@@ -1272,16 +1390,16 @@ pub fn fulfillOutcome(runtime: ?*wasm3.Runtime, mem: ?*anyopaque, guest: *const 
         .Sigdisp => |args| fulfillSigdisp(guest, args),
         .Setpgid => |args| fulfillSetpgid(guest, args),
         .Tcsetpgrp => |args| fulfillTcsetpgrp(guest, args),
-        // TODO(Phase 6): network, host-call, ambient time/entropy, and sleep.
+        // TODO(Phase 6): network and host-call.
         .HttpGet => finish(todoPhase6()),
         .HttpRequest => finish(todoPhase6()),
         .HttpStatus => finish(todoPhase6()),
         .WsOpen => finish(todoPhase6()),
         .HostCall => finish(todoPhase6()),
-        .TimeMonotonic => finish(todoPhase6()),
-        .TimeRealtime => finish(todoPhase6()),
-        .SleepMs => finish(todoPhase6()),
-        .Random => finish(todoPhase6()),
+        .TimeMonotonic => |args| finish(fulfillTimeMonotonic(guest, runtime, mem, args)),
+        .TimeRealtime => |args| finish(fulfillTimeRealtime(guest, runtime, mem, args)),
+        .SleepMs => |args| fulfillSleepMs(guest, args),
+        .Random => |args| finish(fulfillRandom(guest, runtime, mem, args)),
         .AbiVersion => |args| finish(fulfillAbiVersion(runtime, mem, args)),
         .Exit => |args| .{ .Exit = args.code },
         // TODO(Phase 6): C/C++ protected-call support.

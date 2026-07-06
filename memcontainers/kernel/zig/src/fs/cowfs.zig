@@ -162,14 +162,40 @@ pub const CowFs = struct {
         self.addTombstone(path);
     }
 
-    fn symlink(self: *CowFs, target: []const u8, link: []const u8) FsError!void {
-        if (self.isTombstoned(link)) {
-            self.removeTombstone(link);
-        } else if (self.exists(link)) {
+    fn rename(self: *CowFs, caller: vfs.CallerId, from: []const u8, to: []const u8) FsError!void {
+        _ = caller;
+        if (!self.exists(from)) return FsError.NotFound;
+
+        try self.copyUp(from);
+        if (self.exists(to)) {
+            if (self.ov().stat(to)) |_| {} else |_| try self.copyUp(to);
+        }
+        try self.ensureOverlayParents(to);
+        try self.overlay.renameOp(from, to);
+        self.tombstoneSubtree(from);
+        self.clearTombstonesUnder(to);
+    }
+
+    fn symlink(self: *CowFs, target: []const u8, link_path: []const u8) FsError!void {
+        if (self.isTombstoned(link_path)) {
+            self.removeTombstone(link_path);
+        } else if (self.exists(link_path)) {
             return FsError.AlreadyExists;
         }
-        try self.ensureOverlayParents(link);
-        return self.overlay.symlinkOp(target, link);
+        try self.ensureOverlayParents(link_path);
+        return self.overlay.symlinkOp(target, link_path);
+    }
+
+    fn link(self: *CowFs, existing: []const u8, new: []const u8) FsError!void {
+        if (!self.exists(existing)) return FsError.NotFound;
+        if (self.isTombstoned(new)) {
+            self.removeTombstone(new);
+        } else if (self.exists(new)) {
+            return FsError.AlreadyExists;
+        }
+        try self.copyUp(existing);
+        try self.ensureOverlayParents(new);
+        return self.overlay.linkOp(existing, new);
     }
 
     fn readlink(self: *CowFs, path: []const u8, out: *std.ArrayList(u8)) FsError!void {
@@ -182,6 +208,12 @@ pub const CowFs = struct {
         if (self.isTombstoned(path)) return FsError.NotFound;
         try self.copyUp(path);
         return self.overlay.setMode(path, mode);
+    }
+
+    fn setTimes(self: *CowFs, path: []const u8, atime: i64, mtime: i64) FsError!void {
+        if (self.isTombstoned(path)) return FsError.NotFound;
+        try self.copyUp(path);
+        return self.overlay.setTimes(path, atime, mtime);
     }
 
     /// Materialize `path` (file / dir subtree / symlink) into the overlay, copying base
@@ -232,16 +264,49 @@ pub const CowFs = struct {
         }
     }
 
+    fn tombstoneSubtree(self: *CowFs, path: []const u8) void {
+        var scratch = std.heap.ArenaAllocator.init(self.gpa);
+        defer scratch.deinit();
+        var entries: std.ArrayList(DirEntry) = .empty;
+        if (self.base.readdir(SYSTEM_CALLER, path, scratch.allocator(), &entries)) |_| {
+            for (entries.items) |e| {
+                var cbuf: [MAX_PATH]u8 = undefined;
+                const child = joinInto(&cbuf, path, e.name) orelse continue;
+                self.tombstoneSubtree(child);
+            }
+        } else |_| {}
+        self.addTombstone(path);
+    }
+
+    fn clearTombstonesUnder(self: *CowFs, path: []const u8) void {
+        const prefix = std.fmt.allocPrint(self.gpa, "{s}/", .{path}) catch @panic("OOM");
+        defer self.gpa.free(prefix);
+        var stale: std.ArrayList([]u8) = .empty;
+        defer stale.deinit(self.gpa);
+        var it = self.tombstones.keyIterator();
+        while (it.next()) |t| {
+            if (std.mem.eql(u8, t.*, path) or std.mem.startsWith(u8, t.*, prefix)) {
+                stale.append(self.gpa, self.gpa.dupe(u8, t.*) catch @panic("OOM")) catch @panic("OOM");
+            }
+        }
+        for (stale.items) |t| {
+            self.removeTombstone(t);
+            self.gpa.free(t);
+        }
+    }
+
     const fs_vtable = FileSystem.VTable{
         .open = fsOpen,
         .stat = fsStat,
         .readdir = fsReaddir,
         .mkdir = fsMkdir,
         .unlink = fsUnlink,
-        .rename = vfs.fsRenameUnsupported,
+        .rename = fsRename,
         .symlink = fsSymlink,
+        .link = fsLink,
         .readlink = fsReadlink,
         .setMode = fsSetMode,
+        .setTimes = fsSetTimes,
     };
     fn fsOpen(p: *anyopaque, caller: vfs.CallerId, path: []const u8, flags: OpenFlags) FsError!FileHandle {
         return self_(p).open(caller, path, flags);
@@ -258,14 +323,23 @@ pub const CowFs = struct {
     fn fsUnlink(p: *anyopaque, _: vfs.CallerId, path: []const u8) FsError!void {
         return self_(p).unlink(path);
     }
-    fn fsSymlink(p: *anyopaque, target: []const u8, link: []const u8) FsError!void {
-        return self_(p).symlink(target, link);
+    fn fsRename(p: *anyopaque, caller: vfs.CallerId, from: []const u8, to: []const u8) FsError!void {
+        return self_(p).rename(caller, from, to);
+    }
+    fn fsSymlink(p: *anyopaque, target: []const u8, link_path: []const u8) FsError!void {
+        return self_(p).symlink(target, link_path);
+    }
+    fn fsLink(p: *anyopaque, existing: []const u8, new: []const u8) FsError!void {
+        return self_(p).link(existing, new);
     }
     fn fsReadlink(p: *anyopaque, path: []const u8, out: *std.ArrayList(u8)) FsError!void {
         return self_(p).readlink(path, out);
     }
     fn fsSetMode(p: *anyopaque, path: []const u8, mode: u16) FsError!void {
         return self_(p).setMode(path, mode);
+    }
+    fn fsSetTimes(p: *anyopaque, path: []const u8, atime: i64, mtime: i64) FsError!void {
+        return self_(p).setTimes(path, atime, mtime);
     }
     fn self_(p: *anyopaque) *CowFs {
         return @ptrCast(@alignCast(p));

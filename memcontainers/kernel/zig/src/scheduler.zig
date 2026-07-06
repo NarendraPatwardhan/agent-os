@@ -35,6 +35,7 @@ const std = @import("std");
 const task_mod = @import("task.zig");
 const pipe = @import("ipc/pipe.zig");
 const constants = @import("constants_zig");
+const bridge = @import("bridge.zig");
 
 const Task = task_mod.Task;
 const TaskId = task_mod.TaskId;
@@ -193,6 +194,7 @@ pub const Scheduler = struct {
                         .pipe_read => |rp| rp == p,
                         .pipe_write => |wp| wp == p,
                         .wait_child => false,
+                        .timer => false,
                     };
                     if (referenced) {
                         i += 1;
@@ -532,6 +534,7 @@ pub const Scheduler = struct {
                 .pipe_read => |p| p.isWriteClosed() or !p.isEmpty(),
                 .pipe_write => |p| p.isReadClosed() or !p.isFull(),
                 .wait_child => false,
+                .timer => |deadline| bridge.mc_time_monotonic() >= deadline,
             };
             if (should_unblock) to_unblock.append(self.gpa, id) catch @panic("OOM");
         }

@@ -196,9 +196,11 @@ pub const FileSystem = struct {
         unlink: *const fn (*anyopaque, caller: CallerId, path: []const u8) FsError!void,
         rename: *const fn (*anyopaque, caller: CallerId, from: []const u8, to: []const u8) FsError!void,
         symlink: *const fn (*anyopaque, target: []const u8, link: []const u8) FsError!void,
+        link: *const fn (*anyopaque, existing: []const u8, new: []const u8) FsError!void,
         /// Write the link target into `out`; caller owns `out`.
         readlink: *const fn (*anyopaque, path: []const u8, out: *std.ArrayList(u8)) FsError!void,
         setMode: *const fn (*anyopaque, path: []const u8, mode: u16) FsError!void,
+        setTimes: *const fn (*anyopaque, path: []const u8, atime: i64, mtime: i64) FsError!void,
     };
 
     pub fn open(self: FileSystem, caller: CallerId, path: []const u8, flags: OpenFlags) FsError!FileHandle {
@@ -219,8 +221,11 @@ pub const FileSystem = struct {
     pub fn rename(self: FileSystem, caller: CallerId, from: []const u8, to: []const u8) FsError!void {
         return self.vtable.rename(self.ptr, caller, from, to);
     }
-    pub fn symlink(self: FileSystem, target: []const u8, link: []const u8) FsError!void {
-        return self.vtable.symlink(self.ptr, target, link);
+    pub fn symlink(self: FileSystem, target: []const u8, link_path: []const u8) FsError!void {
+        return self.vtable.symlink(self.ptr, target, link_path);
+    }
+    pub fn link(self: FileSystem, existing: []const u8, new: []const u8) FsError!void {
+        return self.vtable.link(self.ptr, existing, new);
     }
     pub fn readlink(self: FileSystem, path: []const u8, out: *std.ArrayList(u8)) FsError!void {
         return self.vtable.readlink(self.ptr, path, out);
@@ -228,15 +233,24 @@ pub const FileSystem = struct {
     pub fn setMode(self: FileSystem, path: []const u8, mode: u16) FsError!void {
         return self.vtable.setMode(self.ptr, path, mode);
     }
+    pub fn setTimes(self: FileSystem, path: []const u8, atime: i64, mtime: i64) FsError!void {
+        return self.vtable.setTimes(self.ptr, path, atime, mtime);
+    }
 };
 
 pub fn fsSymlinkUnsupported(_: *anyopaque, _: []const u8, _: []const u8) FsError!void {
+    return FsError.NotImplemented;
+}
+pub fn fsLinkUnsupported(_: *anyopaque, _: []const u8, _: []const u8) FsError!void {
     return FsError.NotImplemented;
 }
 pub fn fsReadlinkUnsupported(_: *anyopaque, _: []const u8, _: *std.ArrayList(u8)) FsError!void {
     return FsError.NotImplemented;
 }
 pub fn fsSetModeUnsupported(_: *anyopaque, _: []const u8, _: u16) FsError!void {
+    return FsError.NotImplemented;
+}
+pub fn fsSetTimesUnsupported(_: *anyopaque, _: []const u8, _: i64, _: i64) FsError!void {
     return FsError.NotImplemented;
 }
 pub fn fsRenameUnsupported(_: *anyopaque, _: CallerId, _: []const u8, _: []const u8) FsError!void {
@@ -505,22 +519,47 @@ pub const Namespace = struct {
         return r.fs.unlink(caller, r.fs_path);
     }
 
+    pub fn rename(self: *Namespace, arena: std.mem.Allocator, caller: CallerId, from: []const u8, to: []const u8) FsError!void {
+        const rf = self.resolve(arena, from) orelse return FsError.NotFound;
+        const rt = self.resolve(arena, to) orelse return FsError.NotFound;
+        if (!std.mem.eql(u8, rf.mount_point, rt.mount_point)) return FsError.CrossDevice;
+        if (rf.read_only) return FsError.PermissionDenied;
+        try requireParentWritable(rf);
+        try requireParentWritable(rt);
+        return rf.fs.rename(caller, rf.fs_path, rt.fs_path);
+    }
+
     pub fn readlink(self: *Namespace, arena: std.mem.Allocator, path: []const u8, out: *std.ArrayList(u8)) FsError!void {
         const r = self.resolve(arena, path) orelse return FsError.NotFound;
         return r.fs.readlink(r.fs_path, out);
     }
 
-    pub fn symlink(self: *Namespace, arena: std.mem.Allocator, target: []const u8, link: []const u8) FsError!void {
-        const r = self.resolve(arena, link) orelse return FsError.NotFound;
+    pub fn symlink(self: *Namespace, arena: std.mem.Allocator, target: []const u8, link_path: []const u8) FsError!void {
+        const r = self.resolve(arena, link_path) orelse return FsError.NotFound;
         if (r.read_only) return FsError.PermissionDenied;
         try requireParentWritable(r);
         return r.fs.symlink(target, r.fs_path);
+    }
+
+    pub fn link(self: *Namespace, arena: std.mem.Allocator, existing: []const u8, new: []const u8) FsError!void {
+        const re = self.resolve(arena, existing) orelse return FsError.NotFound;
+        const rn = self.resolve(arena, new) orelse return FsError.NotFound;
+        if (!std.mem.eql(u8, re.mount_point, rn.mount_point)) return FsError.CrossDevice;
+        if (rn.read_only) return FsError.PermissionDenied;
+        try requireParentWritable(rn);
+        return re.fs.link(re.fs_path, rn.fs_path);
     }
 
     pub fn setMode(self: *Namespace, arena: std.mem.Allocator, path: []const u8, mode: u16) FsError!void {
         const r = self.resolve(arena, path) orelse return FsError.NotFound;
         if (r.read_only) return FsError.PermissionDenied;
         return r.fs.setMode(r.fs_path, mode);
+    }
+
+    pub fn setTimes(self: *Namespace, arena: std.mem.Allocator, path: []const u8, atime: i64, mtime: i64) FsError!void {
+        const r = self.resolve(arena, path) orelse return FsError.NotFound;
+        if (r.read_only) return FsError.PermissionDenied;
+        return r.fs.setTimes(r.fs_path, atime, mtime);
     }
 
     /// lstat-equivalent used by canonicalize: (node type, link target) at `path`, no follow.
