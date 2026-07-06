@@ -396,6 +396,30 @@ fn fulfillArgs(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, 
     return constants.ESUCCESS;
 }
 
+fn termEmit(bytes: []const u8, stderr: bool) void {
+    if (bytes.len == 0) return;
+    if (stderr) {
+        bridge.mc_stderr_write(bytes.ptr, bytes.len);
+    } else {
+        bridge.mc_stdout_write(bytes.ptr, bytes.len);
+    }
+}
+
+/// Terminal ONLCR: guest output writes plain LF internally; the interactive
+/// terminal bridge sees CRLF. Pipes, files, and control-channel captures do not
+/// pass through this path, so they stay raw LF.
+fn termWrite(bytes: []const u8, stderr: bool) void {
+    var start: usize = 0;
+    for (bytes, 0..) |byte, i| {
+        if (byte == '\n') {
+            termEmit(bytes[start..i], stderr);
+            termEmit("\r\n", stderr);
+            start = i + 1;
+        }
+    }
+    termEmit(bytes[start..], stderr);
+}
+
 fn fulfillWrite(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.WriteArgs) Fulfillment {
     const t = currentTask(guest) orelse return finish(neg(constants.EIO));
     const bytes = guestRange(runtime, mem, args.ptr, args.len) orelse return finish(neg(constants.EINVAL));
@@ -405,12 +429,12 @@ fn fulfillWrite(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque,
     switch (t.getFd(idx)) {
         .none => {
             if (args.fd == 1) {
-                bridge.mc_stdout_write(bytes.ptr, bytes.len);
+                termWrite(bytes, false);
                 if (!writeGuestU32(runtime, mem, args.ret_n, @intCast(bytes.len))) return finish(neg(constants.EINVAL));
                 return finish(constants.ESUCCESS);
             }
             if (args.fd == 2) {
-                bridge.mc_stderr_write(bytes.ptr, bytes.len);
+                termWrite(bytes, true);
                 if (!writeGuestU32(runtime, mem, args.ret_n, @intCast(bytes.len))) return finish(neg(constants.EINVAL));
                 return finish(constants.ESUCCESS);
             }
