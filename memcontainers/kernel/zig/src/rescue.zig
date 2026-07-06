@@ -306,6 +306,9 @@ fn vWriteAll(ptr: *anyopaque, fd: shos.Fd, bytes: []const u8) shos.ShellError!vo
             }
         },
         .pipe_read => return error.BadFileDescriptor,
+        .net => return error.BadFileDescriptor,
+        .ws => return error.BadFileDescriptor,
+        .host_call => return error.BadFileDescriptor,
     }
 }
 

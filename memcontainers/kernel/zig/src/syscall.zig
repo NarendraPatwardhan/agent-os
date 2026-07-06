@@ -299,6 +299,9 @@ pub fn cloneFd(fd: Fd) ?Fd {
             p.addWriter();
             break :blk Fd{ .pipe_write = p };
         },
+        .net => |src| Fd{ .net = src.retain() },
+        .ws => |src| Fd{ .ws = src.retain() },
+        .host_call => |src| Fd{ .host_call = src.retain() },
     };
 }
 
@@ -453,7 +456,20 @@ fn fulfillWrite(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque,
             if (!writeGuestU32(runtime, mem, args.ret_n, @intCast(n))) return finish(neg(constants.EINVAL));
             return finish(constants.ESUCCESS);
         },
+        .ws => |ws| {
+            switch (ws.send(bytes)) {
+                .sent => |n| {
+                    if (!writeGuestU32(runtime, mem, args.ret_n, @intCast(n))) return finish(neg(constants.EINVAL));
+                    return finish(constants.ESUCCESS);
+                },
+                .pending => return .Pending,
+                .message_too_big => return finish(neg(constants.EMSGSIZE)),
+                .closed => return finish(neg(constants.EPIPE)),
+            }
+        },
         .pipe_read => return finish(neg(constants.EBADF)),
+        .net => return finish(neg(constants.EBADF)),
+        .host_call => return finish(neg(constants.EBADF)),
     }
 }
 
@@ -482,6 +498,41 @@ fn fulfillRead(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, 
             state.kernel().sched.checkUnblocked();
             if (!writeGuestU32(runtime, mem, args.ret_n, @intCast(n))) return finish(neg(constants.EINVAL));
             return finish(constants.ESUCCESS);
+        },
+        .net => |src| switch (src.readInto(out)) {
+            .pending => return .Pending,
+            .got => |n| {
+                if (!writeGuestU32(runtime, mem, args.ret_n, @intCast(n))) return finish(neg(constants.EINVAL));
+                return finish(constants.ESUCCESS);
+            },
+            .eof => {
+                if (!writeGuestU32(runtime, mem, args.ret_n, 0)) return finish(neg(constants.EINVAL));
+                return finish(constants.ESUCCESS);
+            },
+            .failed => return finish(neg(constants.EIO)),
+        },
+        .ws => |ws| switch (ws.readInto(out)) {
+            .pending => return .Pending,
+            .got => |n| {
+                if (!writeGuestU32(runtime, mem, args.ret_n, @intCast(n))) return finish(neg(constants.EINVAL));
+                return finish(constants.ESUCCESS);
+            },
+            .eof => {
+                if (!writeGuestU32(runtime, mem, args.ret_n, 0)) return finish(neg(constants.EINVAL));
+                return finish(constants.ESUCCESS);
+            },
+        },
+        .host_call => |src| switch (src.readInto(out)) {
+            .pending => return .Pending,
+            .got => |n| {
+                if (!writeGuestU32(runtime, mem, args.ret_n, @intCast(n))) return finish(neg(constants.EINVAL));
+                return finish(constants.ESUCCESS);
+            },
+            .eof => {
+                if (!writeGuestU32(runtime, mem, args.ret_n, 0)) return finish(neg(constants.EINVAL));
+                return finish(constants.ESUCCESS);
+            },
+            .failed => return finish(neg(constants.EIO)),
         },
         .pipe_write => return finish(neg(constants.EBADF)),
     }
@@ -814,6 +865,17 @@ fn pollOne(t: *const Task, fd: i32, events: i16) i16 {
             if (want_out and !p.isReadClosed() and !p.isFull()) result |= constants.POLLOUT;
             if (p.isReadClosed()) result |= constants.POLLERR;
         },
+        .net => |src| {
+            if (want_in and src.pollReadable()) result |= constants.POLLIN;
+        },
+        .host_call => |src| {
+            if (want_in and src.pollReadable()) result |= constants.POLLIN;
+        },
+        .ws => |ws| {
+            if (want_in and ws.pollReadable()) result |= constants.POLLIN;
+            if (want_out and ws.pollWritable()) result |= constants.POLLOUT;
+            if (ws.pollHup()) result |= constants.POLLHUP;
+        },
     }
     return @intCast(result);
 }
@@ -881,6 +943,9 @@ pub fn releaseFdValue(fd: Fd) void {
         .pipe_read => |p| p.closeRead(),
         .pipe_write => |p| p.closeWrite(),
         .file => |fh| fh.close(),
+        .net => |src| src.release(),
+        .ws => |src| src.release(),
+        .host_call => |src| src.release(),
         .none => {},
     }
 }
@@ -902,7 +967,10 @@ fn duplicateReadableFd(parent: *const Task, fd: i32) ?Fd {
             const retained = SharedFile.retain(fh) orelse break :blk null;
             break :blk Fd{ .file = retained };
         },
+        .net => |src| Fd{ .net = src.retain() },
         .pipe_write => null,
+        .ws => null,
+        .host_call => null,
     };
 }
 
@@ -924,6 +992,9 @@ fn duplicateWritableFd(parent: *const Task, fd: i32) ?Fd {
             break :blk Fd{ .file = retained };
         },
         .pipe_read => null,
+        .net => null,
+        .ws => null,
+        .host_call => null,
     };
 }
 
@@ -1338,6 +1409,91 @@ fn fulfillNice(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, 
     return finish(constants.ESUCCESS);
 }
 
+fn netPermitted(guest: *const Guest) bool {
+    const t = currentTask(guest) orelse return false;
+    return t.caps.has(constants.CAP_NET);
+}
+
+fn readGuestUtf8(runtime: ?*wasm3.Runtime, mem: ?*anyopaque, ptr: u32, len: u32) ?[]const u8 {
+    const bytes = guestRange(runtime, mem, ptr, len) orelse return null;
+    if (!std.unicode.utf8ValidateSlice(bytes)) return null;
+    return bytes;
+}
+
+fn installFd(t: *Task, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, ret_fd: u32, fd_value: Fd) i32 {
+    const fd = t.allocFd(state.kernel().gpa, fd_value);
+    if (!writeGuestU32(runtime, mem, ret_fd, @intCast(fd))) {
+        t.closeFd(fd);
+        return neg(constants.EINVAL);
+    }
+    return constants.ESUCCESS;
+}
+
+fn fulfillHttpGet(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.HttpGetArgs) i32 {
+    const t = currentTask(guest) orelse return neg(constants.EIO);
+    _ = guestRange(runtime, mem, args.ret_fd, 4) orelse return neg(constants.EINVAL);
+    if (!netPermitted(guest)) return neg(constants.EPERM);
+    const url = readGuestUtf8(runtime, mem, args.url_ptr, args.url_len) orelse return neg(constants.EINVAL);
+    if (url.len == 0) return neg(constants.EINVAL);
+
+    var blob: std.ArrayList(u8) = .empty;
+    defer blob.deinit(state.kernel().gpa);
+    blob.appendSlice(state.kernel().gpa, "GET ") catch @panic("OOM");
+    blob.appendSlice(state.kernel().gpa, url) catch @panic("OOM");
+    blob.appendSlice(state.kernel().gpa, "\n\n") catch @panic("OOM");
+
+    const src = state.kernel().net.startHttp(blob.items) catch return neg(constants.EPERM);
+    return installFd(t, runtime, mem, args.ret_fd, .{ .net = src });
+}
+
+fn fulfillHttpRequest(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.HttpRequestArgs) i32 {
+    const t = currentTask(guest) orelse return neg(constants.EIO);
+    _ = guestRange(runtime, mem, args.ret_fd, 4) orelse return neg(constants.EINVAL);
+    if (!netPermitted(guest)) return neg(constants.EPERM);
+    const blob = guestRange(runtime, mem, args.req_ptr, args.req_len) orelse return neg(constants.EINVAL);
+    if (blob.len == 0) return neg(constants.EINVAL);
+    const src = state.kernel().net.startHttp(blob) catch return neg(constants.EPERM);
+    return installFd(t, runtime, mem, args.ret_fd, .{ .net = src });
+}
+
+fn fulfillHttpStatus(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.HttpStatusArgs) Fulfillment {
+    _ = guestRange(runtime, mem, args.ret_status, 4) orelse return finish(neg(constants.EINVAL));
+    const t = currentTask(guest) orelse return finish(neg(constants.EIO));
+    const idx = fdIndex(args.fd) orelse return finish(neg(constants.EBADF));
+    const src = switch (t.getFd(idx)) {
+        .net => |s| s,
+        else => return finish(neg(constants.EBADF)),
+    };
+    switch (src.driveStatus()) {
+        .pending => return .Pending,
+        .ready => |status| {
+            if (!writeGuestU32(runtime, mem, args.ret_status, status)) return finish(neg(constants.EINVAL));
+            return finish(constants.ESUCCESS);
+        },
+        .failed => return finish(neg(constants.EIO)),
+    }
+}
+
+fn fulfillWsOpen(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.WsOpenArgs) i32 {
+    const t = currentTask(guest) orelse return neg(constants.EIO);
+    _ = guestRange(runtime, mem, args.ret_fd, 4) orelse return neg(constants.EINVAL);
+    if (!netPermitted(guest)) return neg(constants.EPERM);
+    const url = readGuestUtf8(runtime, mem, args.url_ptr, args.url_len) orelse return neg(constants.EINVAL);
+    if (url.len == 0) return neg(constants.EINVAL);
+    const src = state.kernel().net.connectWs(url) catch return neg(constants.EPERM);
+    return installFd(t, runtime, mem, args.ret_fd, .{ .ws = src });
+}
+
+fn fulfillHostCall(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.HostCallArgs) i32 {
+    const t = currentTask(guest) orelse return neg(constants.EIO);
+    _ = guestRange(runtime, mem, args.ret_fd, 4) orelse return neg(constants.EINVAL);
+    if (!netPermitted(guest)) return neg(constants.EPERM);
+    const blob = guestRange(runtime, mem, args.req_ptr, args.req_len) orelse return neg(constants.EINVAL);
+    if (blob.len == 0) return neg(constants.EINVAL);
+    const src = state.kernel().host_call.start(blob) catch return neg(constants.EPERM);
+    return installFd(t, runtime, mem, args.ret_fd, .{ .host_call = src });
+}
+
 fn todoPhase6() i32 {
     return neg(constants.ENOSYS);
 }
@@ -1390,12 +1546,11 @@ pub fn fulfillOutcome(runtime: ?*wasm3.Runtime, mem: ?*anyopaque, guest: *const 
         .Sigdisp => |args| fulfillSigdisp(guest, args),
         .Setpgid => |args| fulfillSetpgid(guest, args),
         .Tcsetpgrp => |args| fulfillTcsetpgrp(guest, args),
-        // TODO(Phase 6): network and host-call.
-        .HttpGet => finish(todoPhase6()),
-        .HttpRequest => finish(todoPhase6()),
-        .HttpStatus => finish(todoPhase6()),
-        .WsOpen => finish(todoPhase6()),
-        .HostCall => finish(todoPhase6()),
+        .HttpGet => |args| finish(fulfillHttpGet(guest, runtime, mem, args)),
+        .HttpRequest => |args| finish(fulfillHttpRequest(guest, runtime, mem, args)),
+        .HttpStatus => |args| fulfillHttpStatus(guest, runtime, mem, args),
+        .WsOpen => |args| finish(fulfillWsOpen(guest, runtime, mem, args)),
+        .HostCall => |args| finish(fulfillHostCall(guest, runtime, mem, args)),
         .TimeMonotonic => |args| finish(fulfillTimeMonotonic(guest, runtime, mem, args)),
         .TimeRealtime => |args| finish(fulfillTimeRealtime(guest, runtime, mem, args)),
         .SleepMs => |args| fulfillSleepMs(guest, args),

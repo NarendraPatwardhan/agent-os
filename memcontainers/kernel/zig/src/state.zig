@@ -17,6 +17,8 @@ const scheduler = @import("scheduler.zig");
 const guest = @import("guest.zig");
 const rescue = @import("rescue.zig");
 const pipe = @import("ipc/pipe.zig");
+const net = @import("egress/net.zig");
+const host_call = @import("egress/host_call.zig");
 const constants = @import("constants_zig");
 const shcore = @import("shcore");
 
@@ -227,6 +229,9 @@ pub const Kernel = struct {
     /// buffers are heap-owned so fd handles can point at them while child tasks run.
     ctl_exec_jobs: std.AutoHashMapUnmanaged(u32, CtlExecJob) = .{},
     next_ctl_job_id: u32 = 1,
+    /// Host egress engines. Open handles are snapshot blockers.
+    net: net.Engine,
+    host_call: host_call.Engine,
     initialized: bool = false,
 };
 
@@ -254,6 +259,8 @@ pub fn init() i32 {
         .gpa = kernel_allocator,
         .ns = vfs.Namespace.init(kernel_allocator),
         .sched = scheduler.Scheduler.init(kernel_allocator),
+        .net = net.Engine.init(kernel_allocator),
+        .host_call = host_call.Engine.init(kernel_allocator),
     };
     g_ready = true;
     vfs.wall_ms = bridge.mc_time_now();
@@ -536,10 +543,11 @@ pub fn commitLayer() i32 {
     return -constants.ENOSYS;
 }
 
-/// §2.8 quiescence accounting. 0 is the honest count while no egress/persist subsystem
-/// exists; wired to the real inflight/pending registries in Phase 6.
+/// §2.8 quiescence accounting. Host egress handles are host-owned capabilities and
+/// cannot be snapshotted safely while open.
 pub fn inflightEgress() i32 {
-    return 0;
+    if (!isInitialized()) return 0;
+    return g_kernel.net.inflight() + g_kernel.host_call.inflight();
 }
 pub fn pendingCommits() i32 {
     return 0;

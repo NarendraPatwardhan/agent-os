@@ -40,19 +40,24 @@ const std = @import("std");
 const vfs = @import("vfs.zig");
 const pipe = @import("ipc/pipe.zig");
 const constants = @import("constants_zig");
+const net = @import("egress/net.zig");
+const host_call = @import("egress/host_call.zig");
 
 pub const TaskId = u32;
 
 /// A file-descriptor slot. Indices 0/1/2 are the conventional stdin/stdout/stderr slots;
 /// 3+ are opened by open/pipe/dup (see `Task.fds`).
 ///
-/// TODO(later phase): guest-only fd kinds — net, ws, host_call, served, svc — are not
-/// represented yet; add variants here once that syscall surface lands.
+/// TODO(later phase): guest-only fd kinds — served and svc — are not represented yet;
+/// add variants here once that syscall surface lands.
 pub const Fd = union(enum) {
     none,
     file: vfs.FileHandle,
     pipe_read: *pipe.Pipe,
     pipe_write: *pipe.Pipe,
+    net: *net.HttpSource,
+    ws: *net.WsSource,
+    host_call: *host_call.Source,
 };
 
 /// A task's capability set — the kernel-side POLICY layer. A privileged syscall checks
@@ -302,6 +307,9 @@ pub const Task = struct {
                 .pipe_read => |p| p.closeRead(),
                 .pipe_write => |p| p.closeWrite(),
                 .file => |fh| fh.close(),
+                .net => |src| src.release(),
+                .ws => |src| src.release(),
+                .host_call => |src| src.release(),
                 .none => {},
             }
         }
@@ -452,6 +460,9 @@ pub const Task = struct {
             .pipe_read => |p| p.closeRead(),
             .pipe_write => |p| p.closeWrite(),
             .file => |fh| fh.close(),
+            .net => |src| src.release(),
+            .ws => |src| src.release(),
+            .host_call => |src| src.release(),
             .none => {},
         }
         self.fds.items[fd] = .none;
