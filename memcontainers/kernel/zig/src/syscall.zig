@@ -18,6 +18,8 @@ const state = @import("state.zig");
 const task_mod = @import("task.zig");
 const vfs = @import("vfs.zig");
 const wasm3 = @import("wasm3/bindings.zig");
+const servedfs = @import("fs/servedfs.zig");
+const registry = @import("service/registry.zig");
 
 const Task = task_mod.Task;
 const TaskId = task_mod.TaskId;
@@ -302,6 +304,7 @@ pub fn cloneFd(fd: Fd) ?Fd {
         .net => |src| Fd{ .net = src.retain() },
         .ws => |src| Fd{ .ws = src.retain() },
         .host_call => |src| Fd{ .host_call = src.retain() },
+        .serve, .svc_serve, .svc_conn, .svc_call => null,
     };
 }
 
@@ -470,6 +473,10 @@ fn fulfillWrite(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque,
         .pipe_read => return finish(neg(constants.EBADF)),
         .net => return finish(neg(constants.EBADF)),
         .host_call => return finish(neg(constants.EBADF)),
+        .serve => return finish(neg(constants.EBADF)),
+        .svc_serve => return finish(neg(constants.EBADF)),
+        .svc_conn => return finish(neg(constants.EBADF)),
+        .svc_call => return finish(neg(constants.EBADF)),
     }
 }
 
@@ -488,7 +495,10 @@ fn fulfillRead(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, 
             return finish(constants.ESUCCESS);
         },
         .file => |fh| {
-            const n = fh.read(out) catch |e| return finish(fsErr(e));
+            const n = fh.read(out) catch |e| {
+                if (e == vfs.FsError.WouldBlock) return .Pending;
+                return finish(fsErr(e));
+            };
             if (!writeGuestU32(runtime, mem, args.ret_n, @intCast(n))) return finish(neg(constants.EINVAL));
             return finish(constants.ESUCCESS);
         },
@@ -534,14 +544,30 @@ fn fulfillRead(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, 
             },
             .failed => return finish(neg(constants.EIO)),
         },
+        .svc_call => |src| switch (src.readInto(out)) {
+            .pending => return .Pending,
+            .got => |n| {
+                if (!writeGuestU32(runtime, mem, args.ret_n, @intCast(n))) return finish(neg(constants.EINVAL));
+                return finish(constants.ESUCCESS);
+            },
+            .eof => {
+                if (!writeGuestU32(runtime, mem, args.ret_n, 0)) return finish(neg(constants.EINVAL));
+                return finish(constants.ESUCCESS);
+            },
+            .closed => return finish(neg(constants.EIO)),
+            .failed => |errno| return finish(neg(errno)),
+        },
         .pipe_write => return finish(neg(constants.EBADF)),
+        .serve => return finish(neg(constants.EBADF)),
+        .svc_serve => return finish(neg(constants.EBADF)),
+        .svc_conn => return finish(neg(constants.EBADF)),
     }
 }
 
-fn fulfillOpen(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.OpenArgs) i32 {
-    const t = currentTask(guest) orelse return neg(constants.EIO);
-    _ = guestRange(runtime, mem, args.ret_fd, 4) orelse return neg(constants.EINVAL);
-    var flags = openFlags(args.flags) orelse return neg(constants.EINVAL);
+fn fulfillOpen(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.OpenArgs) Fulfillment {
+    const t = currentTask(guest) orelse return finish(neg(constants.EIO));
+    _ = guestRange(runtime, mem, args.ret_fd, 4) orelse return finish(neg(constants.EINVAL));
+    var flags = openFlags(args.flags) orelse return finish(neg(constants.EINVAL));
 
     var arena_state = std.heap.ArenaAllocator.init(state.kernel().gpa);
     defer arena_state.deinit();
@@ -549,18 +575,21 @@ fn fulfillOpen(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, 
 
     var errno: i32 = 0;
     const need_write = flags.write or flags.create or flags.truncate or flags.append;
-    const path = resolveGuestPath(guest, runtime, mem, arena, args.path_ptr, args.path_len, need_write, true, &errno) orelse return neg(errno);
-    if ((flags.read or !need_write) and !t.caps.has(constants.CAP_FS_READ)) return neg(constants.EPERM);
+    const path = resolveGuestPath(guest, runtime, mem, arena, args.path_ptr, args.path_len, need_write, true, &errno) orelse return finish(neg(errno));
+    if ((flags.read or !need_write) and !t.caps.has(constants.CAP_FS_READ)) return finish(neg(constants.EPERM));
     flags.noatime = !t.caps.has(constants.CAP_AMBIENT);
 
-    const h = state.kernel().ns.openAs(arena, t.id, path, flags) catch |e| return fsErr(e);
+    const h = state.kernel().ns.openAs(arena, t.id, path, flags) catch |e| {
+        if (e == vfs.FsError.WouldBlock) return .Pending;
+        return finish(fsErr(e));
+    };
     const wrapped = SharedFile.wrap(state.kernel().gpa, h, flags.read or !need_write, flags.write);
     const fd = t.allocFd(state.kernel().gpa, .{ .file = wrapped });
     if (!writeGuestU32(runtime, mem, args.ret_fd, @intCast(fd))) {
         t.closeFd(fd);
-        return neg(constants.EINVAL);
+        return finish(neg(constants.EINVAL));
     }
-    return constants.ESUCCESS;
+    return finish(constants.ESUCCESS);
 }
 
 fn fulfillClose(guest: *const Guest, args: mc.CloseArgs) i32 {
@@ -671,27 +700,30 @@ fn fulfillReadlink(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaq
     return constants.ESUCCESS;
 }
 
-fn fulfillReaddir(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.ReaddirArgs) i32 {
-    const t = currentTask(guest) orelse return neg(constants.EIO);
-    _ = guestRange(runtime, mem, args.ret_len, 4) orelse return neg(constants.EINVAL);
+fn fulfillReaddir(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.ReaddirArgs) Fulfillment {
+    const t = currentTask(guest) orelse return finish(neg(constants.EIO));
+    _ = guestRange(runtime, mem, args.ret_len, 4) orelse return finish(neg(constants.EINVAL));
     var arena_state = std.heap.ArenaAllocator.init(state.kernel().gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     var errno: i32 = 0;
-    const path = resolveGuestPath(guest, runtime, mem, arena, args.path_ptr, args.path_len, false, true, &errno) orelse return neg(errno);
+    const path = resolveGuestPath(guest, runtime, mem, arena, args.path_ptr, args.path_len, false, true, &errno) orelse return finish(neg(errno));
 
     var entries: std.ArrayList(vfs.DirEntry) = .empty;
-    state.kernel().ns.readdir(arena, t.id, path, &entries) catch |e| return fsErr(e);
+    state.kernel().ns.readdir(arena, t.id, path, &entries) catch |e| {
+        if (e == vfs.FsError.WouldBlock) return .Pending;
+        return finish(fsErr(e));
+    };
     var blob: std.ArrayList(u8) = .empty;
     for (entries.items) |entry| {
         blob.appendSlice(arena, entry.name) catch @panic("OOM");
         blob.append(arena, 0) catch @panic("OOM");
     }
     const n = @min(blob.items.len, @as(usize, @intCast(args.buf_len)));
-    if (guestRange(runtime, mem, args.buf, @intCast(n)) == null) return neg(constants.EINVAL);
-    if (n != 0 and !writeGuestBytes(runtime, mem, args.buf, blob.items[0..n])) return neg(constants.EINVAL);
-    if (!writeGuestU32(runtime, mem, args.ret_len, @intCast(blob.items.len))) return neg(constants.EINVAL);
-    return constants.ESUCCESS;
+    if (guestRange(runtime, mem, args.buf, @intCast(n)) == null) return finish(neg(constants.EINVAL));
+    if (n != 0 and !writeGuestBytes(runtime, mem, args.buf, blob.items[0..n])) return finish(neg(constants.EINVAL));
+    if (!writeGuestU32(runtime, mem, args.ret_len, @intCast(blob.items.len))) return finish(neg(constants.EINVAL));
+    return finish(constants.ESUCCESS);
 }
 
 fn fulfillMkdir(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.MkdirArgs) i32 {
@@ -871,11 +903,15 @@ fn pollOne(t: *const Task, fd: i32, events: i16) i16 {
         .host_call => |src| {
             if (want_in and src.pollReadable()) result |= constants.POLLIN;
         },
+        .svc_call => |src| {
+            if (want_in and src.pollReadable()) result |= constants.POLLIN;
+        },
         .ws => |ws| {
             if (want_in and ws.pollReadable()) result |= constants.POLLIN;
             if (want_out and ws.pollWritable()) result |= constants.POLLOUT;
             if (ws.pollHup()) result |= constants.POLLHUP;
         },
+        .serve, .svc_serve, .svc_conn => {},
     }
     return @intCast(result);
 }
@@ -946,6 +982,10 @@ pub fn releaseFdValue(fd: Fd) void {
         .net => |src| src.release(),
         .ws => |src| src.release(),
         .host_call => |src| src.release(),
+        .serve => |owner| owner.release(),
+        .svc_serve => |owner| owner.release(),
+        .svc_conn => |conn| conn.release(),
+        .svc_call => |src| src.release(),
         .none => {},
     }
 }
@@ -971,6 +1011,10 @@ fn duplicateReadableFd(parent: *const Task, fd: i32) ?Fd {
         .pipe_write => null,
         .ws => null,
         .host_call => null,
+        .serve => null,
+        .svc_serve => null,
+        .svc_conn => null,
+        .svc_call => null,
     };
 }
 
@@ -995,6 +1039,10 @@ fn duplicateWritableFd(parent: *const Task, fd: i32) ?Fd {
         .net => null,
         .ws => null,
         .host_call => null,
+        .serve => null,
+        .svc_serve => null,
+        .svc_conn => null,
+        .svc_call => null,
     };
 }
 
@@ -1494,6 +1542,362 @@ fn fulfillHostCall(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaq
     return installFd(t, runtime, mem, args.ret_fd, .{ .host_call = src });
 }
 
+fn fulfillBind(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.BindArgs) i32 {
+    const t = currentTask(guest) orelse return neg(constants.EIO);
+    if (!t.caps.has(constants.CAP_MOUNT)) return neg(constants.EPERM);
+    const old_raw = readGuestUtf8(runtime, mem, args.old_ptr, args.old_len) orelse return neg(constants.EINVAL);
+    const new_raw = readGuestUtf8(runtime, mem, args.new_ptr, args.new_len) orelse return neg(constants.EINVAL);
+    if (std.mem.indexOfScalar(u8, old_raw, 0) != null or std.mem.indexOfScalar(u8, new_raw, 0) != null) return neg(constants.EINVAL);
+    var arena_state = std.heap.ArenaAllocator.init(state.kernel().gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const old_path = absolutize(arena, t.cwd, old_raw);
+    const new_path = absolutize(arena, t.cwd, new_raw);
+    if (!pathWithin(t.confine_root, old_path) or !pathWithin(t.confine_root, new_path)) return neg(constants.EPERM);
+    state.kernel().ns.bind(arena, old_path, new_path) catch |e| return fsErr(e);
+    return constants.ESUCCESS;
+}
+
+fn fulfillUnmount(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.UnmountArgs) i32 {
+    const t = currentTask(guest) orelse return neg(constants.EIO);
+    if (!t.caps.has(constants.CAP_MOUNT)) return neg(constants.EPERM);
+    const raw = readGuestUtf8(runtime, mem, args.path_ptr, args.path_len) orelse return neg(constants.EINVAL);
+    if (std.mem.indexOfScalar(u8, raw, 0) != null) return neg(constants.EINVAL);
+    var arena_state = std.heap.ArenaAllocator.init(state.kernel().gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const path = absolutize(arena, t.cwd, raw);
+    if (!pathWithin(t.confine_root, path)) return neg(constants.EPERM);
+    state.kernel().ns.unmount(path) catch |e| return fsErr(e);
+    return constants.ESUCCESS;
+}
+
+fn serveChannel(t: *const Task, fd: i32) ?*servedfs.ServeChannel {
+    const idx = fdIndex(fd) orelse return null;
+    return switch (t.getFd(idx)) {
+        .serve => |owner| owner.channel,
+        else => null,
+    };
+}
+
+fn fulfillServe(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.ServeArgs) i32 {
+    const t = currentTask(guest) orelse return neg(constants.EIO);
+    _ = guestRange(runtime, mem, args.ret_fd, 4) orelse return neg(constants.EINVAL);
+    if (!t.caps.has(constants.CAP_MOUNT)) return neg(constants.EPERM);
+    const raw = readGuestUtf8(runtime, mem, args.path_ptr, args.path_len) orelse return neg(constants.EINVAL);
+    if (raw.len == 0 or std.mem.indexOfScalar(u8, raw, 0) != null) return neg(constants.EINVAL);
+    var arena_state = std.heap.ArenaAllocator.init(state.kernel().gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const path = absolutize(arena, t.cwd, raw);
+    if (!pathWithin(t.confine_root, path)) return neg(constants.EPERM);
+
+    const channel = servedfs.ServeChannel.create(state.kernel().gpa);
+    const fs = servedfs.ServedFs.create(state.kernel().gpa, channel);
+    state.kernel().ns.mountLabeled(path, fs.fileSystem(), "served", false);
+    const owner = servedfs.ServeOwner.create(state.kernel().gpa, channel);
+    const fd = t.allocFd(state.kernel().gpa, .{ .serve = owner });
+    if (!writeGuestU32(runtime, mem, args.ret_fd, @intCast(fd))) {
+        t.closeFd(fd);
+        return neg(constants.EINVAL);
+    }
+    return constants.ESUCCESS;
+}
+
+fn appendU32(out: *std.ArrayList(u8), a: std.mem.Allocator, value: u32) void {
+    out.append(a, @truncate(value)) catch @panic("OOM");
+    out.append(a, @truncate(value >> 8)) catch @panic("OOM");
+    out.append(a, @truncate(value >> 16)) catch @panic("OOM");
+    out.append(a, @truncate(value >> 24)) catch @panic("OOM");
+}
+
+fn fulfillServeRecv(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.ServeRecvArgs) Fulfillment {
+    const t = currentTask(guest) orelse return finish(neg(constants.EIO));
+    _ = guestRange(runtime, mem, args.ret_len, 4) orelse return finish(neg(constants.EINVAL));
+    const channel = serveChannel(t, args.fd) orelse return finish(neg(constants.EBADF));
+    const req = channel.peekRequest() orelse return .Pending;
+    const total = 20 + req.path.len + req.arg.len;
+    if (total > @as(usize, @intCast(args.buf_len)) or guestRange(runtime, mem, args.buf, @intCast(total)) == null) {
+        return finish(neg(constants.EINVAL));
+    }
+    var taken = channel.takeRequest() orelse return .Pending;
+    defer taken.deinit(state.kernel().gpa);
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(state.kernel().gpa);
+    appendU32(&out, state.kernel().gpa, taken.id);
+    appendU32(&out, state.kernel().gpa, taken.caller);
+    appendU32(&out, state.kernel().gpa, taken.op);
+    appendU32(&out, state.kernel().gpa, @intCast(taken.path.len));
+    out.appendSlice(state.kernel().gpa, taken.path) catch @panic("OOM");
+    appendU32(&out, state.kernel().gpa, @intCast(taken.arg.len));
+    out.appendSlice(state.kernel().gpa, taken.arg) catch @panic("OOM");
+    if (!writeGuestBytes(runtime, mem, args.buf, out.items)) return finish(neg(constants.EINVAL));
+    if (!writeGuestU32(runtime, mem, args.ret_len, @intCast(out.items.len))) return finish(neg(constants.EINVAL));
+    return finish(constants.ESUCCESS);
+}
+
+fn fulfillServeRespond(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.ServeRespondArgs) i32 {
+    const t = currentTask(guest) orelse return neg(constants.EIO);
+    const channel = serveChannel(t, args.fd) orelse return neg(constants.EBADF);
+    const data = guestRange(runtime, mem, args.data_ptr, args.data_len) orelse return neg(constants.EINVAL);
+    return if (channel.respond(args.req_id, args.status, data)) constants.ESUCCESS else neg(constants.EINVAL);
+}
+
+fn svcChannel(t: *const Task, fd: i32) ?*registry.ServiceChannel {
+    const idx = fdIndex(fd) orelse return null;
+    return switch (t.getFd(idx)) {
+        .svc_serve => |owner| owner.channel,
+        else => null,
+    };
+}
+
+fn svcConn(t: *const Task, fd: i32) ?struct { channel: *registry.ServiceChannel, session: u32 } {
+    const idx = fdIndex(fd) orelse return null;
+    return switch (t.getFd(idx)) {
+        .svc_conn => |conn| .{ .channel = conn.channel, .session = conn.session },
+        else => null,
+    };
+}
+
+const ServiceConnectPoll = union(enum) {
+    ready: *registry.ServiceChannel,
+    pending,
+    errno: i32,
+};
+
+fn serviceChannelForConnect(name: []const u8) ServiceConnectPoll {
+    const k = state.kernel();
+    if (k.services.lookupService(name)) |channel| return .{ .ready = channel };
+    if (k.services.serviceState(name)) |s| {
+        switch (s) {
+            .activating => |a| {
+                const alive = if (k.sched.getTask(a.pid)) |t| t.state != .zombie else false;
+                if (alive) {
+                    if (vfs.wallNowMs() > a.deadline_ms) {
+                        k.sched.killTask(a.pid, 124);
+                        k.services.markFailed(name, constants.ETIMEDOUT);
+                        return .{ .errno = constants.ETIMEDOUT };
+                    }
+                    return .pending;
+                }
+                k.services.markFailed(name, constants.EIO);
+                return .{ .errno = constants.EIO };
+            },
+            .failed => |f| {
+                if (vfs.wallNowMs() < f.until_ms) return .{ .errno = f.last_errno };
+            },
+        }
+    }
+    if (state.activateServiceLazily(k, name)) return .pending;
+    return .{ .errno = constants.ENOENT };
+}
+
+fn fulfillSvcServe(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.SvcServeArgs) i32 {
+    const t = currentTask(guest) orelse return neg(constants.EIO);
+    _ = guestRange(runtime, mem, args.ret_fd, 4) orelse return neg(constants.EINVAL);
+    const name = readGuestUtf8(runtime, mem, args.name_ptr, args.name_len) orelse return neg(constants.EINVAL);
+    if (!registry.validServiceName(name)) return neg(constants.EINVAL);
+    if (state.kernel().services.grantHolder(name) != t.id) return neg(constants.EPERM);
+    if (state.kernel().services.serviceRegistered(name)) return neg(constants.EEXIST);
+    const channel = registry.ServiceChannel.create(state.kernel().gpa);
+    if (!state.kernel().services.registerService(name, channel)) return neg(constants.EEXIST);
+    state.kernel().services.clearActivation(name);
+    const owner = registry.SvcServeOwner.create(state.kernel().gpa, &state.kernel().services, name, channel);
+    const fd = t.allocFd(state.kernel().gpa, .{ .svc_serve = owner });
+    if (!writeGuestU32(runtime, mem, args.ret_fd, @intCast(fd))) {
+        t.closeFd(fd);
+        return neg(constants.EINVAL);
+    }
+    return constants.ESUCCESS;
+}
+
+fn callerAlive(ctx: *anyopaque, caller: vfs.CallerId) bool {
+    if (caller == vfs.SYSTEM_CALLER) return true;
+    const k: *state.Kernel = @ptrCast(@alignCast(ctx));
+    const t = k.sched.getTask(caller) orelse return false;
+    return t.state != .zombie;
+}
+
+fn writeSvcEnvelope(
+    runtime: ?*wasm3.Runtime,
+    mem: ?*anyopaque,
+    buf: u32,
+    ret_len: u32,
+    hbuf: u32,
+    kind: u8,
+    session: u32,
+    req_id: u32,
+    caller: u32,
+    caller_caps: u32,
+    blob: []const u8,
+    handle_bytes: []const u8,
+) i32 {
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(state.kernel().gpa);
+    out.append(state.kernel().gpa, kind) catch @panic("OOM");
+    out.append(state.kernel().gpa, @intCast(handle_bytes.len / 4)) catch @panic("OOM");
+    appendU32(&out, state.kernel().gpa, session);
+    appendU32(&out, state.kernel().gpa, req_id);
+    appendU32(&out, state.kernel().gpa, caller);
+    appendU32(&out, state.kernel().gpa, caller_caps);
+    appendU32(&out, state.kernel().gpa, @intCast(blob.len));
+    out.appendSlice(state.kernel().gpa, blob) catch @panic("OOM");
+    if (!writeGuestBytes(runtime, mem, buf, out.items)) return neg(constants.EINVAL);
+    if (handle_bytes.len != 0 and !writeGuestBytes(runtime, mem, hbuf, handle_bytes)) return neg(constants.EINVAL);
+    if (!writeGuestU32(runtime, mem, ret_len, @intCast(out.items.len))) return neg(constants.EINVAL);
+    return constants.ESUCCESS;
+}
+
+fn installDelegated(t: *Task, dh: registry.DelegatedHandle) i32 {
+    const fd = switch (dh) {
+        .file => |fh| t.allocFd(state.kernel().gpa, .{ .file = fh }),
+        .pipe_read => |p| t.allocFd(state.kernel().gpa, .{ .pipe_read = p }),
+        .pipe_write => |p| t.allocFd(state.kernel().gpa, .{ .pipe_write = p }),
+    };
+    return @intCast(fd);
+}
+
+fn fulfillSvcRecv(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.SvcRecvArgs) Fulfillment {
+    const t = currentTask(guest) orelse return finish(neg(constants.EIO));
+    _ = guestRange(runtime, mem, args.ret_len, 4) orelse return finish(neg(constants.EINVAL));
+    const channel = svcChannel(t, args.fd) orelse return finish(neg(constants.EBADF));
+    channel.evictDeadSessions(@ptrCast(state.kernel()), callerAlive);
+    channel.failOverdue();
+    while (true) {
+        var inbound = channel.takeRequest() orelse {
+            if (channel.nextDrainReady()) |key| {
+                if (registry.SVC_ENVELOPE_HEADER <= @as(usize, @intCast(args.buf_len)) and guestRange(runtime, mem, args.buf, @intCast(registry.SVC_ENVELOPE_HEADER)) != null) {
+                    return finish(writeSvcEnvelope(runtime, mem, args.buf, args.ret_len, args.hbuf, registry.SVC_KIND_DRAIN_READY, key.session, key.req_id, vfs.SYSTEM_CALLER, 0, "", ""));
+                }
+            }
+            return .Pending;
+        };
+        switch (inbound) {
+            .session_closed => |session| {
+                if (registry.SVC_ENVELOPE_HEADER > @as(usize, @intCast(args.buf_len)) or guestRange(runtime, mem, args.buf, @intCast(registry.SVC_ENVELOPE_HEADER)) == null) continue;
+                return finish(writeSvcEnvelope(runtime, mem, args.buf, args.ret_len, args.hbuf, registry.SVC_KIND_SESSION_CLOSED, session, 0, vfs.SYSTEM_CALLER, 0, "", ""));
+            },
+            .call => |*req| {
+                const nh = req.handles.len;
+                const total = registry.SVC_ENVELOPE_HEADER + req.blob.len;
+                if (total > @as(usize, @intCast(args.buf_len)) or
+                    nh * 4 > @as(usize, @intCast(args.hbuf_len)) or
+                    guestRange(runtime, mem, args.buf, @intCast(total)) == null or
+                    (nh != 0 and guestRange(runtime, mem, args.hbuf, @intCast(nh * 4)) == null))
+                {
+                    _ = channel.respond(req.session, req.req_id, constants.EMSGSIZE, "", true);
+                    req.deinit(state.kernel().gpa, true);
+                    continue;
+                }
+                var handle_bytes: std.ArrayList(u8) = .empty;
+                defer handle_bytes.deinit(state.kernel().gpa);
+                for (req.handles) |dh| appendU32(&handle_bytes, state.kernel().gpa, @bitCast(installDelegated(t, dh)));
+                channel.markDelivered(req.session, req.req_id);
+                const code = writeSvcEnvelope(runtime, mem, args.buf, args.ret_len, args.hbuf, registry.SVC_KIND_CALL, req.session, req.req_id, req.caller, req.caller_caps, req.blob, handle_bytes.items);
+                req.deinit(state.kernel().gpa, false);
+                return finish(code);
+            },
+        }
+    }
+}
+
+fn fulfillSvcRespond(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.SvcRespondArgs) i32 {
+    const t = currentTask(guest) orelse return neg(constants.EIO);
+    const channel = svcChannel(t, args.fd) orelse return neg(constants.EBADF);
+    const is_last = args.last != 0;
+    if (channel.responseBuffered(args.session, args.req_id) >= registry.SVC_RESPONSE_HIGH_WATER) return neg(constants.EAGAIN);
+    const data = guestRange(runtime, mem, args.data_ptr, args.data_len) orelse return neg(constants.EINVAL);
+    const ok = if (is_last) channel.markAnswered(args.session, args.req_id) else channel.isInflight(args.session, args.req_id);
+    if (!ok) return neg(constants.EINVAL);
+    return switch (channel.respond(args.session, args.req_id, args.status, data, is_last)) {
+        .session_gone => constants.ESUCCESS,
+        .overflow => blk: {
+            if (!is_last) _ = channel.markAnswered(args.session, args.req_id);
+            break :blk neg(constants.EMSGSIZE);
+        },
+        .ok => constants.ESUCCESS,
+    };
+}
+
+fn fulfillSvcConnect(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.SvcConnectArgs) Fulfillment {
+    const t = currentTask(guest) orelse return finish(neg(constants.EIO));
+    _ = guestRange(runtime, mem, args.ret_fd, 4) orelse return finish(neg(constants.EINVAL));
+    const name = readGuestUtf8(runtime, mem, args.name_ptr, args.name_len) orelse return finish(neg(constants.EINVAL));
+    if (!registry.validServiceName(name)) return finish(neg(constants.EINVAL));
+    const channel = switch (serviceChannelForConnect(name)) {
+        .ready => |ch| ch,
+        .pending => return .Pending,
+        .errno => |errno| return finish(neg(errno)),
+    };
+    const session = channel.openSession(t.id);
+    const conn = registry.SvcConnHandle.create(state.kernel().gpa, channel, session);
+    const fd = t.allocFd(state.kernel().gpa, .{ .svc_conn = conn });
+    if (!writeGuestU32(runtime, mem, args.ret_fd, @intCast(fd))) {
+        t.closeFd(fd);
+        return finish(neg(constants.EINVAL));
+    }
+    return finish(constants.ESUCCESS);
+}
+
+fn readHandleFdList(runtime: ?*wasm3.Runtime, mem: ?*anyopaque, ptr: u32, nhandles: u32) ?[]const u8 {
+    if (nhandles == 0) return &[_]u8{};
+    return guestRange(runtime, mem, ptr, nhandles * 4);
+}
+
+fn delegateFd(t: *Task, fd: i32) ?registry.DelegatedHandle {
+    const idx = fdIndex(fd) orelse return null;
+    return switch (t.getFd(idx)) {
+        .file => |fh| blk: {
+            const retained = SharedFile.retain(fh) orelse break :blk null;
+            break :blk .{ .file = retained };
+        },
+        .pipe_read => |p| blk: {
+            p.addReader();
+            break :blk .{ .pipe_read = p };
+        },
+        .pipe_write => |p| blk: {
+            p.addWriter();
+            break :blk .{ .pipe_write = p };
+        },
+        else => null,
+    };
+}
+
+fn releaseDelegatedList(handles: []registry.DelegatedHandle) void {
+    for (handles) |h| h.release();
+}
+
+fn fulfillSvcCall(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.SvcCallArgs) i32 {
+    const t = currentTask(guest) orelse return neg(constants.EIO);
+    _ = guestRange(runtime, mem, args.ret_fd, 4) orelse return neg(constants.EINVAL);
+    const conn = svcConn(t, args.fd) orelse return neg(constants.EBADF);
+    if (@as(usize, @intCast(args.req_len)) > registry.MAX_SVC_REQUEST_BYTES or @as(usize, @intCast(args.nhandles)) > registry.MAX_DELEGATED_HANDLES) return neg(constants.EINVAL);
+    const blob = guestRange(runtime, mem, args.req_ptr, args.req_len) orelse return neg(constants.EINVAL);
+    const raw_handles = readHandleFdList(runtime, mem, args.handles_ptr, args.nhandles) orelse return neg(constants.EINVAL);
+    var handles: std.ArrayListUnmanaged(registry.DelegatedHandle) = .empty;
+    defer handles.deinit(state.kernel().gpa);
+    var i: usize = 0;
+    while (i < @as(usize, @intCast(args.nhandles))) : (i += 1) {
+        const hfd = readLeI32(raw_handles, i * 4);
+        const dh = delegateFd(t, hfd) orelse {
+            releaseDelegatedList(handles.items);
+            return neg(constants.EINVAL);
+        };
+        handles.append(state.kernel().gpa, dh) catch @panic("OOM");
+    }
+    const req_id = conn.channel.enqueue(conn.session, t.id, t.caps.bits, blob, handles.items) orelse {
+        releaseDelegatedList(handles.items);
+        return neg(constants.EIO);
+    };
+    const src = registry.SvcCallSource.create(state.kernel().gpa, conn.channel, conn.session, req_id);
+    const fd = t.allocFd(state.kernel().gpa, .{ .svc_call = src });
+    if (!writeGuestU32(runtime, mem, args.ret_fd, @intCast(fd))) {
+        t.closeFd(fd);
+        return neg(constants.EINVAL);
+    }
+    return constants.ESUCCESS;
+}
+
 fn todoPhase6() i32 {
     return neg(constants.ENOSYS);
 }
@@ -1503,10 +1907,10 @@ pub fn fulfillOutcome(runtime: ?*wasm3.Runtime, mem: ?*anyopaque, guest: *const 
         .Args => |args| finish(fulfillArgs(guest, runtime, mem, args)),
         .Write => |args| fulfillWrite(guest, runtime, mem, args),
         .Read => |args| fulfillRead(guest, runtime, mem, args),
-        .Open => |args| finish(fulfillOpen(guest, runtime, mem, args)),
+        .Open => |args| fulfillOpen(guest, runtime, mem, args),
         .Close => |args| finish(fulfillClose(guest, args)),
         .Stat => |args| finish(fulfillStatLike(guest, runtime, mem, args.path_ptr, args.path_len, args.ret_stat, true)),
-        .Readdir => |args| finish(fulfillReaddir(guest, runtime, mem, args)),
+        .Readdir => |args| fulfillReaddir(guest, runtime, mem, args),
         .Mkdir => |args| finish(fulfillMkdir(guest, runtime, mem, args)),
         .Unlink => |args| finish(fulfillUnlink(guest, runtime, mem, args)),
         // TODO(Phase 6): namespace mutation and richer metadata operations.
@@ -1522,17 +1926,16 @@ pub fn fulfillOutcome(runtime: ?*wasm3.Runtime, mem: ?*anyopaque, guest: *const 
         .Lseek => |args| finish(fulfillLseek(guest, runtime, mem, args)),
         .Ftruncate => |args| finish(fulfillFtruncate(guest, args)),
         .Poll => |args| fulfillPoll(guest, runtime, mem, args),
-        // TODO(Phase 6): per-task namespaces and guest-served filesystems.
-        .Bind => finish(todoPhase6()),
-        .Unmount => finish(todoPhase6()),
-        .Serve => finish(todoPhase6()),
-        .ServeRecv => finish(todoPhase6()),
-        .ServeRespond => finish(todoPhase6()),
-        .SvcServe => finish(todoPhase6()),
-        .SvcRecv => finish(todoPhase6()),
-        .SvcRespond => finish(todoPhase6()),
-        .SvcConnect => finish(todoPhase6()),
-        .SvcCall => finish(todoPhase6()),
+        .Bind => |args| finish(fulfillBind(guest, runtime, mem, args)),
+        .Unmount => |args| finish(fulfillUnmount(guest, runtime, mem, args)),
+        .Serve => |args| finish(fulfillServe(guest, runtime, mem, args)),
+        .ServeRecv => |args| fulfillServeRecv(guest, runtime, mem, args),
+        .ServeRespond => |args| finish(fulfillServeRespond(guest, runtime, mem, args)),
+        .SvcServe => |args| finish(fulfillSvcServe(guest, runtime, mem, args)),
+        .SvcRecv => |args| fulfillSvcRecv(guest, runtime, mem, args),
+        .SvcRespond => |args| finish(fulfillSvcRespond(guest, runtime, mem, args)),
+        .SvcConnect => |args| fulfillSvcConnect(guest, runtime, mem, args),
+        .SvcCall => |args| finish(fulfillSvcCall(guest, runtime, mem, args)),
         .Pipe => |args| finish(fulfillPipe(guest, runtime, mem, args)),
         .Dup => |args| finish(fulfillDup(guest, runtime, mem, args)),
         .Dup2 => |args| finish(fulfillDup2(guest, args)),

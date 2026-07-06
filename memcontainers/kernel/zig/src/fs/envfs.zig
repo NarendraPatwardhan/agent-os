@@ -6,5 +6,6 @@
 //! Not here: process env ownership (task.zig).
 //!
 //! Scaffold status: header-only. Fill Phase 3.
+// TODO(E2): projected /env is outside the resident-service protocol core.
 
 // (intentionally empty — scaffold stub; fill per the header contract above.)

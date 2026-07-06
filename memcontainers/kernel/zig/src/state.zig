@@ -16,9 +16,11 @@ const bridge = @import("bridge.zig");
 const scheduler = @import("scheduler.zig");
 const guest = @import("guest.zig");
 const rescue = @import("rescue.zig");
+const task = @import("task.zig");
 const pipe = @import("ipc/pipe.zig");
 const net = @import("egress/net.zig");
 const host_call = @import("egress/host_call.zig");
+const registry = @import("service/registry.zig");
 const constants = @import("constants_zig");
 const shcore = @import("shcore");
 
@@ -36,6 +38,27 @@ pub const CtlExecJob = struct {
         gpa.destroy(self.stdout);
         self.stderr.deinit(gpa);
         gpa.destroy(self.stderr);
+    }
+};
+
+pub const CtlSvcJob = struct {
+    name: ?[]u8,
+    req: ?[]u8,
+    channel: ?*registry.ServiceChannel = null,
+    session: u32 = 0,
+    req_id: u32 = 0,
+    out: std.ArrayListUnmanaged(u8) = .empty,
+    done: bool = false,
+    status: i32 = 0,
+
+    pub fn deinit(self: *CtlSvcJob, gpa: std.mem.Allocator) void {
+        if (self.name) |n| gpa.free(n);
+        if (self.req) |r| gpa.free(r);
+        if (self.channel) |ch| {
+            ch.dropSession(self.session);
+            ch.release();
+        }
+        self.out.deinit(gpa);
     }
 };
 
@@ -232,6 +255,10 @@ pub const Kernel = struct {
     /// Host egress engines. Open handles are snapshot blockers.
     net: net.Engine,
     host_call: host_call.Engine,
+    /// Resident-service registry, activation supervisor, and session channels.
+    services: registry.Engine,
+    /// Host control-channel service calls (`mc_ctl_svc_call_*`), keyed by job id.
+    ctl_svc_jobs: std.AutoHashMapUnmanaged(u32, CtlSvcJob) = .{},
     initialized: bool = false,
 };
 
@@ -261,6 +288,7 @@ pub fn init() i32 {
         .sched = scheduler.Scheduler.init(kernel_allocator),
         .net = net.Engine.init(kernel_allocator),
         .host_call = host_call.Engine.init(kernel_allocator),
+        .services = registry.Engine.init(kernel_allocator),
     };
     g_ready = true;
     vfs.wall_ms = bridge.mc_time_now();
@@ -268,6 +296,7 @@ pub fn init() i32 {
     boot.bootSystem(&g_kernel);
     g_kernel.initialized = true;
     startLoginShell(&g_kernel);
+    activateEagerServices(&g_kernel);
     return 0;
 }
 
@@ -489,6 +518,169 @@ fn readFileAlloc(k: *Kernel, path: []const u8) ?[]u8 {
     return out.toOwnedSlice(k.gpa) catch @panic("OOM");
 }
 
+fn readDirNames(k: *Kernel, arena: std.mem.Allocator, path: []const u8) ?[]const []const u8 {
+    var out: std.ArrayList(vfs.DirEntry) = .empty;
+    k.ns.readdir(arena, vfs.SYSTEM_CALLER, path, &out) catch return null;
+    var names: std.ArrayList([]const u8) = .empty;
+    for (out.items) |entry| names.append(arena, entry.name) catch @panic("OOM");
+    return names.items;
+}
+
+fn readUleb(bytes: []const u8, at: usize) ?struct { value: u32, adv: usize } {
+    var result: u32 = 0;
+    var shift: u32 = 0;
+    var n: usize = 0;
+    while (true) {
+        if (at + n >= bytes.len or shift >= 32) return null;
+        const byte = bytes[at + n];
+        n += 1;
+        const low = @as(u32, byte & 0x7f);
+        if (shift == 28 and low > 0x0f) return null;
+        result |= low << @as(u5, @intCast(shift));
+        if ((byte & 0x80) == 0) return .{ .value = result, .adv = n };
+        shift += 7;
+    }
+}
+
+fn uniqueCustom(bytes: []const u8, name: []const u8) ?[]const u8 {
+    if (bytes.len < 8 or !std.mem.eql(u8, bytes[0..4], "\x00asm")) return null;
+    var found: ?[]const u8 = null;
+    var i: usize = 8;
+    while (i < bytes.len) {
+        const id = bytes[i];
+        i += 1;
+        const size_info = readUleb(bytes, i) orelse return null;
+        i += size_info.adv;
+        const body_start = i;
+        const body_end = std.math.add(usize, body_start, @intCast(size_info.value)) catch return null;
+        if (body_end > bytes.len) return null;
+        if (id == 0) {
+            const name_info = readUleb(bytes, body_start) orelse return null;
+            const name_start = body_start + name_info.adv;
+            const name_end = std.math.add(usize, name_start, @intCast(name_info.value)) catch return null;
+            if (name_end <= body_end and std.mem.eql(u8, bytes[name_start..name_end], name)) {
+                if (found != null) return null;
+                found = bytes[name_end..body_end];
+            }
+        }
+        i = body_end;
+    }
+    return found;
+}
+
+fn declaredTier(bytes: []const u8) ?task.Tier {
+    const payload = uniqueCustom(bytes, "mc_tier") orelse return null;
+    if (!std.unicode.utf8ValidateSlice(payload)) return null;
+    return task.Tier.parse(payload);
+}
+
+fn declaredService(bytes: []const u8) ?[]const u8 {
+    const payload = uniqueCustom(bytes, "mc_service") orelse return null;
+    if (!std.unicode.utf8ValidateSlice(payload)) return null;
+    if (!registry.validServiceName(payload)) return null;
+    return payload;
+}
+
+const ServiceSpec = struct {
+    binary: []u8,
+    eager: bool,
+};
+
+fn skipWs(text: []const u8, at: *usize) void {
+    while (at.* < text.len and (text[at.*] == ' ' or text[at.*] == '\n' or text[at.*] == '\r' or text[at.*] == '\t')) at.* += 1;
+}
+
+fn jsonStringField(gpa: std.mem.Allocator, text: []const u8, field: []const u8) ?[]u8 {
+    const needle = std.fmt.allocPrint(gpa, "\"{s}\"", .{field}) catch @panic("OOM");
+    defer gpa.free(needle);
+    var pos = std.mem.indexOf(u8, text, needle) orelse return null;
+    pos += needle.len;
+    skipWs(text, &pos);
+    if (pos >= text.len or text[pos] != ':') return null;
+    pos += 1;
+    skipWs(text, &pos);
+    if (pos >= text.len or text[pos] != '"') return null;
+    pos += 1;
+    const start = pos;
+    while (pos < text.len and text[pos] != '"') : (pos += 1) {
+        if (text[pos] == '\\') return null;
+    }
+    if (pos >= text.len) return null;
+    return gpa.dupe(u8, text[start..pos]) catch @panic("OOM");
+}
+
+fn jsonBoolField(text: []const u8, field: []const u8) ?bool {
+    var tmp: [64]u8 = undefined;
+    if (field.len + 2 > tmp.len) return null;
+    tmp[0] = '"';
+    @memcpy(tmp[1 .. 1 + field.len], field);
+    tmp[1 + field.len] = '"';
+    const needle = tmp[0 .. field.len + 2];
+    var pos = std.mem.indexOf(u8, text, needle) orelse return null;
+    pos += needle.len;
+    skipWs(text, &pos);
+    if (pos >= text.len or text[pos] != ':') return null;
+    pos += 1;
+    skipWs(text, &pos);
+    if (std.mem.startsWith(u8, text[pos..], "true")) return true;
+    if (std.mem.startsWith(u8, text[pos..], "false")) return false;
+    return null;
+}
+
+fn lookupServiceSpec(k: *Kernel, name: []const u8) ?ServiceSpec {
+    if (!registry.validServiceName(name)) return null;
+    const path = std.fmt.allocPrint(k.gpa, "/etc/services.d/{s}.json", .{name}) catch @panic("OOM");
+    defer k.gpa.free(path);
+    const bytes = readFileAlloc(k, path) orelse return null;
+    defer k.gpa.free(bytes);
+    if (!std.unicode.utf8ValidateSlice(bytes)) return null;
+    const binary = jsonStringField(k.gpa, bytes, "binary") orelse
+        std.fmt.allocPrint(k.gpa, "/bin/{s}", .{name}) catch @panic("OOM");
+    const eager = jsonBoolField(bytes, "eager") orelse false;
+    return .{ .binary = binary, .eager = eager };
+}
+
+fn spawnService(k: *Kernel, name: []const u8, binary: []const u8) bool {
+    if (binary.len == 0 or binary[0] != '/') return false;
+    const bytes = readFileAlloc(k, binary) orelse return false;
+    defer k.gpa.free(bytes);
+    const service = declaredService(bytes) orelse return false;
+    if (!std.mem.eql(u8, service, name)) return false;
+    const tier = declaredTier(bytes) orelse return false;
+    const args = [_][]const u8{constants.SERVICE_MARKER};
+    const pid = k.sched.spawn(null, name, binary, &args, "/");
+    const root: ?[]const u8 = if (tier.confines()) "/" else null;
+    k.sched.setTaskPolicy(pid, tier.caps(), root);
+    if (!guest.createChildGuest(pid, bytes, "/")) {
+        k.sched.exitTask(pid, 126);
+        k.sched.dropDeadPipes();
+        return false;
+    }
+    k.services.markActivating(name, pid, vfs.wallNowMs() + registry.ACTIVATION_TIMEOUT_MS);
+    return true;
+}
+
+pub fn activateServiceLazily(k: *Kernel, name: []const u8) bool {
+    const spec = lookupServiceSpec(k, name) orelse return false;
+    defer k.gpa.free(spec.binary);
+    return spawnService(k, name, spec.binary);
+}
+
+fn activateEagerServices(k: *Kernel) void {
+    var arena_state = std.heap.ArenaAllocator.init(k.gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const names = readDirNames(k, arena, "/etc/services.d") orelse return;
+    for (names) |file| {
+        if (!std.mem.endsWith(u8, file, ".json")) continue;
+        const name = file[0 .. file.len - ".json".len];
+        if (!registry.validServiceName(name)) continue;
+        const spec = lookupServiceSpec(k, name) orelse continue;
+        defer k.gpa.free(spec.binary);
+        if (spec.eager) _ = spawnService(k, name, spec.binary);
+    }
+}
+
 /// Start the pid-1 login shell (§2.3): source /etc/profile, resolve /bin/sh, spawn pid 1
 /// with the console pipe as its stdin, and load it into a wasm3 runtime. Oracle:
 /// lib.rs::boot_login_shell → try_guest_login_shell. A missing or unloadable /bin/sh
@@ -547,7 +739,7 @@ pub fn commitLayer() i32 {
 /// cannot be snapshotted safely while open.
 pub fn inflightEgress() i32 {
     if (!isInitialized()) return 0;
-    return g_kernel.net.inflight() + g_kernel.host_call.inflight();
+    return g_kernel.net.inflight() + g_kernel.host_call.inflight() + g_kernel.services.svcInflight();
 }
 pub fn pendingCommits() i32 {
     return 0;

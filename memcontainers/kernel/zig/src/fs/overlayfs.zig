@@ -6,5 +6,6 @@
 //! Not here: copy-up mechanics (cowfs.zig); mount policy (vfs.zig).
 //!
 //! Scaffold status: header-only. Fill Phase 3.
+// TODO(E2): overlay projection is outside the resident-service protocol core.
 
 // (intentionally empty — scaffold stub; fill per the header contract above.)

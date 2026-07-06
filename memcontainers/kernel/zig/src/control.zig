@@ -18,6 +18,7 @@ const state = @import("state.zig");
 const syscall = @import("syscall.zig");
 const guest = @import("guest.zig");
 const task_mod = @import("task.zig");
+const registry = @import("service/registry.zig");
 const FsError = vfs.FsError;
 
 // control.kdl scratch-buffer frame ids/versions (the two the VFS ops emit). Little-endian;
@@ -33,6 +34,10 @@ const EXEC_REQUEST_MSG_ID: u16 = 1;
 const EXEC_REQUEST_VERSION: u8 = 1;
 const EXEC_OUTCOME_MSG_ID: u16 = 2;
 const EXEC_OUTCOME_VERSION: u8 = 1;
+const SVC_REQUEST_MSG_ID: u16 = 6;
+const SVC_REQUEST_VERSION: u8 = 1;
+const SVC_RESPONSE_MSG_ID: u16 = 7;
+const SVC_RESPONSE_VERSION: u8 = 1;
 
 const StringPair = struct { key: []const u8, value: []const u8 };
 const ExecRequest = struct {
@@ -40,6 +45,11 @@ const ExecRequest = struct {
     cwd: ?[]const u8,
     env: []const StringPair,
     stdin: ?[]const u8,
+};
+
+const SvcRequest = struct {
+    service: []const u8,
+    request: []const u8,
 };
 
 fn putU8(o: *std.ArrayList(u8), a: std.mem.Allocator, v: u8) void {
@@ -138,6 +148,16 @@ fn decodeExecRequest(arena: std.mem.Allocator, bytes: []const u8) ?ExecRequest {
     return .{ .cmd = cmd, .cwd = cwd, .env = env, .stdin = stdin };
 }
 
+fn decodeSvcRequest(bytes: []const u8) ?SvcRequest {
+    var off: usize = 0;
+    if ((readU16(bytes, &off) orelse return null) != SVC_REQUEST_MSG_ID) return null;
+    if ((readU8(bytes, &off) orelse return null) != SVC_REQUEST_VERSION) return null;
+    const service = readStr(bytes, &off) orelse return null;
+    const request = readBytes(bytes, &off) orelse return null;
+    if (off != bytes.len) return null;
+    return .{ .service = service, .request = request };
+}
+
 fn encodeExecOutcome(a: std.mem.Allocator, exit_code: i32, stdout: []const u8, stderr: []const u8) []u8 {
     var o: std.ArrayList(u8) = .empty;
     putU16(&o, a, EXEC_OUTCOME_MSG_ID);
@@ -145,6 +165,15 @@ fn encodeExecOutcome(a: std.mem.Allocator, exit_code: i32, stdout: []const u8, s
     putI32(&o, a, exit_code);
     putBytes(&o, a, stdout);
     putBytes(&o, a, stderr);
+    return o.items;
+}
+
+fn encodeSvcResponse(a: std.mem.Allocator, status: i32, body: []const u8) []u8 {
+    var o: std.ArrayList(u8) = .empty;
+    putU16(&o, a, SVC_RESPONSE_MSG_ID);
+    putU8(&o, a, SVC_RESPONSE_VERSION);
+    putI32(&o, a, status);
+    putBytes(&o, a, body);
     return o.items;
 }
 
@@ -423,7 +452,121 @@ fn allocCtlJobId(k: *state.Kernel) u32 {
         const id = k.next_ctl_job_id;
         k.next_ctl_job_id +%= 1;
         if (k.next_ctl_job_id == 0) k.next_ctl_job_id = 1;
-        if (id != 0 and !k.ctl_exec_jobs.contains(id)) return id;
+        if (id != 0 and !k.ctl_exec_jobs.contains(id) and !k.ctl_svc_jobs.contains(id)) return id;
+    }
+}
+
+const ControlServicePoll = union(enum) {
+    ready: *registry.ServiceChannel,
+    pending,
+    errno: i32,
+};
+
+fn controlServiceChannel(k: *state.Kernel, name: []const u8) ControlServicePoll {
+    if (k.services.lookupService(name)) |channel| return .{ .ready = channel };
+    if (k.services.serviceState(name)) |s| {
+        switch (s) {
+            .activating => |a| {
+                const alive = if (k.sched.getTask(a.pid)) |t| t.state != .zombie else false;
+                if (alive) {
+                    if (vfs.wallNowMs() > a.deadline_ms) {
+                        k.sched.killTask(a.pid, 124);
+                        k.services.markFailed(name, constants.ETIMEDOUT);
+                        return .{ .errno = constants.ETIMEDOUT };
+                    }
+                    return .pending;
+                }
+                k.services.markFailed(name, constants.EIO);
+                return .{ .errno = constants.EIO };
+            },
+            .failed => |f| {
+                if (vfs.wallNowMs() < f.until_ms) return .{ .errno = f.last_errno };
+            },
+        }
+    }
+    if (state.activateServiceLazily(k, name)) return .pending;
+    return .{ .errno = constants.ENOENT };
+}
+
+fn freeCtlSvcConnectPayload(k: *state.Kernel, job: *state.CtlSvcJob) void {
+    if (job.name) |name| {
+        k.gpa.free(name);
+        job.name = null;
+    }
+    if (job.req) |req| {
+        k.gpa.free(req);
+        job.req = null;
+    }
+}
+
+fn finishCtlSvcJob(k: *state.Kernel, job: *state.CtlSvcJob, status: i32) void {
+    if (job.channel) |channel| {
+        channel.dropSession(job.session);
+        channel.release();
+        job.channel = null;
+    }
+    freeCtlSvcConnectPayload(k, job);
+    job.status = status;
+    job.done = true;
+}
+
+fn advanceCtlSvcJob(k: *state.Kernel, job: *state.CtlSvcJob) bool {
+    if (job.done) return true;
+    while (true) {
+        if (job.channel == null) {
+            const name = job.name orelse {
+                finishCtlSvcJob(k, job, constants.EIO);
+                return true;
+            };
+            const channel = switch (controlServiceChannel(k, name)) {
+                .ready => |ch| ch,
+                .pending => return false,
+                .errno => |errno| {
+                    finishCtlSvcJob(k, job, errno);
+                    return true;
+                },
+            };
+            const req = job.req orelse {
+                finishCtlSvcJob(k, job, constants.EIO);
+                return true;
+            };
+            const session = channel.openSession(vfs.SYSTEM_CALLER);
+            const req_id = channel.enqueue(session, vfs.SYSTEM_CALLER, task_mod.Capabilities.all().bits, req, &.{}) orelse {
+                channel.dropSession(session);
+                finishCtlSvcJob(k, job, constants.EIO);
+                return true;
+            };
+            job.channel = channel.retain();
+            job.session = session;
+            job.req_id = req_id;
+            freeCtlSvcConnectPayload(k, job);
+        }
+
+        const channel = job.channel orelse {
+            finishCtlSvcJob(k, job, constants.EIO);
+            return true;
+        };
+        var tmp: [4096]u8 = undefined;
+        while (true) {
+            switch (channel.drainResponse(job.session, job.req_id, &tmp)) {
+                .pending => return false,
+                .got => |n| job.out.appendSlice(k.gpa, tmp[0..n]) catch @panic("OOM"),
+                .eof => {
+                    finishCtlSvcJob(k, job, constants.ESUCCESS);
+                    return true;
+                },
+                .failed => |errno| {
+                    job.out.clearRetainingCapacity();
+                    finishCtlSvcJob(k, job, errno);
+                    return true;
+                },
+                .closed => {
+                    job.out.clearRetainingCapacity();
+                    finishCtlSvcJob(k, job, constants.EIO);
+                    return true;
+                },
+            }
+        }
     }
 }
 
@@ -742,14 +885,47 @@ pub fn execClose(job_id: u32) i32 {
     return 0;
 }
 pub fn svcCallStart(request_len: u32) i32 {
-    _ = request_len;
-    return neg(constants.ENOSYS);
+    const k = state.kernel();
+    if (!state.isInitialized()) return neg(constants.EIO);
+    var scratch = std.heap.ArenaAllocator.init(k.gpa);
+    defer scratch.deinit();
+    const a = scratch.allocator();
+    const req_bytes = ctlBytes(a, 0, request_len) orelse return neg(constants.EINVAL);
+    const req = decodeSvcRequest(req_bytes) orelse return neg(constants.EINVAL);
+    if (!registry.validServiceName(req.service)) return neg(constants.EINVAL);
+    if (req.request.len > registry.MAX_SVC_REQUEST_BYTES) return neg(constants.EINVAL);
+    const id = allocCtlJobId(k);
+    k.ctl_svc_jobs.put(k.gpa, id, .{
+        .name = k.gpa.dupe(u8, req.service) catch @panic("OOM"),
+        .req = k.gpa.dupe(u8, req.request) catch @panic("OOM"),
+    }) catch @panic("OOM");
+    return @intCast(id);
 }
 pub fn svcCallPoll(job_id: u32) i32 {
-    _ = job_id;
-    return neg(constants.ENOSYS);
+    const k = state.kernel();
+    if (!state.isInitialized()) return neg(constants.EIO);
+    {
+        const job = k.ctl_svc_jobs.getPtr(job_id) orelse return neg(constants.EINVAL);
+        if (!job.done) {
+            k.sched.checkUnblocked();
+            _ = state.stepReadyRound(k);
+        }
+    }
+    {
+        const job = k.ctl_svc_jobs.getPtr(job_id) orelse return neg(constants.EINVAL);
+        if (!advanceCtlSvcJob(k, job)) return 0;
+    }
+    var kv = k.ctl_svc_jobs.fetchRemove(job_id) orelse return neg(constants.EINVAL);
+    defer kv.value.deinit(k.gpa);
+    const encoded = encodeSvcResponse(k.gpa, kv.value.status, kv.value.out.items);
+    defer k.gpa.free(encoded);
+    replaceBuffer(encoded);
+    return @intCast(encoded.len);
 }
 pub fn svcCallClose(job_id: u32) i32 {
-    _ = job_id;
-    return neg(constants.ENOSYS);
+    const k = state.kernel();
+    if (!state.isInitialized()) return neg(constants.EIO);
+    var kv = k.ctl_svc_jobs.fetchRemove(job_id) orelse return neg(constants.EINVAL);
+    kv.value.deinit(k.gpa);
+    return 0;
 }

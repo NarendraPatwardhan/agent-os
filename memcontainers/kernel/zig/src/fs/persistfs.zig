@@ -6,5 +6,6 @@
 //! Not here: the commit state machine (egress/persist.zig).
 //!
 //! Scaffold status: header-only. Fill Phase 6.
+// TODO(E2): projected /var/persist is outside the resident-service protocol core.
 
 // (intentionally empty — scaffold stub; fill per the header contract above.)

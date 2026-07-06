@@ -6,5 +6,6 @@
 //! Not here: the egress state machine itself (egress/net.zig) — netfs is its VFS face.
 //!
 //! Scaffold status: header-only. Fill Phase 6.
+// TODO(E2): projected /net is outside the resident-service protocol core.
 
 // (intentionally empty — scaffold stub; fill per the header contract above.)

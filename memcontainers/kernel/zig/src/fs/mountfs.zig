@@ -6,5 +6,6 @@
 //! Not here: the opaque host_call engine (egress/host_call.zig).
 //!
 //! Scaffold status: header-only. Fill Phase 6.
+// TODO(E2): host-backed mount projection is outside the resident-service protocol core.
 
 // (intentionally empty — scaffold stub; fill per the header contract above.)

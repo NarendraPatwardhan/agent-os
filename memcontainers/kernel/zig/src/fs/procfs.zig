@@ -6,5 +6,6 @@
 //! Not here: the task table itself (task.zig) — procfs only RENDERS it.
 //!
 //! Scaffold status: header-only. Fill Phase 3/4.
+// TODO(E2): projected /proc is outside the resident-service protocol core.
 
 // (intentionally empty — scaffold stub; fill per the header contract above.)

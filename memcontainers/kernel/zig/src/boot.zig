@@ -17,6 +17,7 @@ const MemFs = @import("fs/memfs.zig").MemFs;
 const TarFs = @import("fs/tarfs.zig").TarFs;
 const CowFs = @import("fs/cowfs.zig").CowFs;
 const DevFs = @import("fs/devfs.zig").DevFs;
+const ServiceFs = @import("fs/servicefs.zig").ServiceFs;
 
 fn say(msg: []const u8) void {
     bridge.mc_stdout_write(msg.ptr, msg.len);
@@ -61,6 +62,8 @@ pub fn bootSystem(k: *state.Kernel) void {
     ns.mkdir(a, vfs.SYSTEM_CALLER, "/var") catch {};
     ns.mkdir(a, vfs.SYSTEM_CALLER, "/var/persist") catch {};
     ns.mkdir(a, vfs.SYSTEM_CALLER, "/proc") catch {};
+    ns.mkdir(a, vfs.SYSTEM_CALLER, "/svc") catch {};
+    ns.mountLabeled("/svc", ServiceFs.create(gpa).fileSystem(), "servicefs", false);
     say("\r\n");
 }
 
