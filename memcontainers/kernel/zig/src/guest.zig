@@ -75,6 +75,10 @@ pub const Step = enum { ran, suspended, exited, faulted };
 pub const GuestRuntime = struct {
     gpa: std.mem.Allocator = undefined,
     runtime: ?*wasm3.Runtime = null,
+    /// The guest's wasm image, OWNED (duped in `init`). wasm3's `m3_ParseModule` REFERENCES
+    /// this buffer rather than copying it, so it must outlive the module; `deinit` frees it.
+    /// (pid 1 leaked it harmlessly before; a per-command spawn would dangle without this.)
+    owned_bytes: ?[]u8 = null,
     function: ?*wasm3.Function = null,
     raw_context: raw.Context = undefined,
     task_id: TaskId = 0,
@@ -100,6 +104,8 @@ pub const GuestRuntime = struct {
             .gpa = gpa,
             .task_id = task_id,
         };
+        // Own the wasm image: wasm3 references it for the runtime's lifetime (see field doc).
+        self.owned_bytes = gpa.dupe(u8, wasm_bytes) catch return false;
         self.raw_context = makeRawContext(self);
         self.resetAsyncifyData();
 
@@ -118,7 +124,8 @@ pub const GuestRuntime = struct {
         wasm3.m3_ClearFuel(self.runtime);
 
         var module: ?*wasm3.Module = null;
-        const parse_result = wasm3.m3_ParseModule(env, &module, wasm_bytes.ptr, @intCast(wasm_bytes.len));
+        const bytes = self.owned_bytes orelse return false;
+        const parse_result = wasm3.m3_ParseModule(env, &module, bytes.ptr, @intCast(bytes.len));
         if (!ok(parse_result)) {
             self.deinit();
             return false;
@@ -219,6 +226,13 @@ pub const GuestRuntime = struct {
             if (state.kernel().sched.getTask(self.task_id)) |t| {
                 if (t.guest == @as(*anyopaque, @ptrCast(self))) t.guest = null;
             }
+        }
+        // Free the owned image AFTER the runtime (the module referenced it). Safe on a
+        // fresh `.{}` runtime: owned_bytes is null there, so `self.gpa` (undefined until
+        // `init`) is never touched — owned_bytes non-null implies `init` ran and set gpa.
+        if (self.owned_bytes) |b| {
+            self.gpa.free(b);
+            self.owned_bytes = null;
         }
         self.runtime = null;
         self.function = null;
@@ -431,9 +445,39 @@ fn cbMarkExited(ptr: *anyopaque, code: i32) void {
     guestFromAny(ptr).markExited(code);
 }
 
+/// Instantiate a child guest for an already-created child task (`spawn`). Heap-allocates a
+/// GuestRuntime with a STABLE address (the raw trampoline recovers it via `m3_GetUserData`),
+/// loads `bytes` eagerly, and — through `init` — points `child_id`'s `Task.guest` at it. The
+/// tick loop drives it thereafter and frees it on exit via `destroyGuest`. False on load
+/// failure (the caller resumes the parent's `spawn` with an errno). Owned via `Task.guest`,
+/// not a module global (§4.2). Called through the `create_child` context hook (syscall.zig).
+pub fn createChildGuest(child_id: TaskId, bytes: []const u8, cwd: []const u8) bool {
+    const gpa = state.kernel().gpa;
+    const g = gpa.create(GuestRuntime) catch return false;
+    g.* = .{};
+    if (!g.init(gpa, bytes, "_start", child_id, cwd)) {
+        gpa.destroy(g);
+        return false;
+    }
+    return true;
+}
+
+fn cbCreateChild(child_id: TaskId, bytes: []const u8, cwd: []const u8) bool {
+    return createChildGuest(child_id, bytes, cwd);
+}
+
+/// Tear down and free a heap-allocated child GuestRuntime. The tick loop calls this when a
+/// guest step reports `.exited`/`.faulted`: `deinit` frees the wasm3 runtime + owned image
+/// and clears the `Task.guest` back-pointer; then the GuestRuntime allocation is released.
+pub fn destroyGuest(g: *GuestRuntime) void {
+    const gpa = g.gpa;
+    g.deinit();
+    gpa.destroy(g);
+}
+
 fn makeRawContext(self: *GuestRuntime) raw.Context {
     return .{
-        .guest = .{ .ptr = @ptrCast(self), .task_id = cbTaskId },
+        .guest = .{ .ptr = @ptrCast(self), .task_id = cbTaskId, .create_child = cbCreateChild },
         .record_pending = cbRecordPending,
         .park_blocked = cbParkBlocked,
         .park_ready = cbParkReady,

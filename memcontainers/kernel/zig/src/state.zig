@@ -74,25 +74,73 @@ pub fn init() i32 {
     return 0;
 }
 
-/// `mc_tick`: advance the machine one step without monopolizing the host. Always returns
-/// normally (§2.1). The scheduler/guest stepping attaches here in Phase 4/5.
-/// `mc_tick`: step the machine one bounded slice. Returns 1 when there is more work to do
-/// (the host keeps ticking) and 0 when the machine is idle — parked on the prompt read,
-/// waiting for input (the host settles and checks for the prompt). Never suspends the host
-/// itself: a suspended guest is just a blocked task (§2.1, §7.4).
+/// Exit status for a guest that FAULTED (a wasm trap / bad-instruction / host-detected
+/// error, distinct from a clean `mc_exit` or a fuel kill): 128 + SIGABRT, the conventional
+/// "aborted" code, so `waitpid` reports a non-zero status the shell can surface.
+const FAULT_EXIT_CODE: i32 = 134; // 128 + SIGABRT(6): the conventional "aborted" status
+
+/// `mc_tick`: step the machine one bounded slice, then return. 1 ⇒ runnable work remains
+/// (the host keeps ticking); 0 ⇒ every task is blocked on input or a child — idle at the
+/// prompt, so the host settles and waits for `mc_input`. Never suspends the host itself: a
+/// suspended guest is just a blocked task (§2.1, §7.4).
+///
+/// One cooperative round per tick: step each CURRENTLY-ready task's guest exactly once.
+/// A guest that fuel-yields or re-arms a ready syscall requeues itself to the BACK of the
+/// ready queue, so it waits for the next tick — an unbounded producer (`yes | head`) can't
+/// monopolize a tick (the Rust oracle's bounded run_round). pid 1 is just one ready task
+/// here (its console pipe is only its fd 0); a spawned child is picked up the same way.
 pub fn tick() i32 {
     if (!isInitialized()) return 0;
     const k = &g_kernel;
-    // Wake any task whose block condition cleared (an empty stdin pipe that now has bytes).
+    // Wake any task whose block condition cleared: an empty stdin pipe that now has bytes,
+    // a full pipe drained, a waited-for child that exited.
     k.sched.checkUnblocked();
-    if (k.login_guest) |g| {
-        return switch (g.step()) {
-            .ran => 1, // yielded on the fuel quantum — more work remains
-            .suspended => 0, // parked on a syscall (the prompt read) — idle until input
-            .exited, .faulted => 0, // TODO(Phase 6): respawn pid 1 (session keep-alive)
+
+    var ran_any = false;
+    const rounds = k.sched.readyCount();
+    var i: usize = 0;
+    while (i < rounds) : (i += 1) {
+        const id = k.sched.popReady() orelse break;
+        const t = k.sched.getTask(id) orelse continue;
+        // Apply pending signals at this safe point (between steps); `false` ⇒ the task was
+        // terminated (now a zombie) — tear its guest down and move on.
+        if (!k.sched.processSignals(id)) {
+            if (t.guest) |gp| onGuestFinished(k, id, @ptrCast(@alignCast(gp)), t.exit_code orelse 0);
+            continue;
+        }
+        const gp = t.guest orelse {
+            // A ready task with no instantiated guest can make no progress: requeue rather
+            // than busy-spin. (Shouldn't happen — spawn wires the guest before it enqueues.)
+            k.sched.requeue(id);
+            continue;
         };
+        const g: *guest.GuestRuntime = @ptrCast(@alignCast(gp));
+        switch (g.step()) {
+            .ran => ran_any = true, // requeued itself (fuel yield / ready syscall) — more work
+            .suspended => {}, // parked on a blocking syscall — idle until its wake condition
+            .exited => onGuestFinished(k, id, g, g.exitCode()),
+            .faulted => onGuestFinished(k, id, g, FAULT_EXIT_CODE),
+        }
     }
+
+    if (ran_any or k.sched.readyCount() > 0) return 1;
     return 0;
+}
+
+/// A guest reported `.exited`/`.faulted` (or a signal killed its task): make sure the task
+/// is a zombie carrying `code`, free its wasm3 runtime, and — for pid 1 — end the session.
+/// The zombie stays until a parent `waitpid` reaps it: guest.zig owns the runtime, the
+/// scheduler owns the task. Respawning pid 1 for session keep-alive is a later refinement.
+fn onGuestFinished(k: *Kernel, id: u32, g: *guest.GuestRuntime, code: i32) void {
+    if (k.sched.getTask(id)) |t| {
+        if (t.state != .zombie) k.sched.exitTask(id, code);
+    }
+    const is_login = if (k.login_guest) |lg| lg == g else false;
+    guest.destroyGuest(g); // deinit clears Task.guest + frees the runtime; then frees `g`
+    if (is_login) {
+        k.login_guest = null;
+        k.sched.signalAllExcept(1, constants.SIGHUP); // hang up the session
+    }
 }
 
 /// `mc_input`: feed terminal keystrokes to the foreground task's stdin. Oracle: lib.rs

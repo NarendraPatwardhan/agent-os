@@ -23,18 +23,31 @@ const Task = task_mod.Task;
 const TaskId = task_mod.TaskId;
 const Fd = task_mod.Fd;
 const BlockReason = task_mod.BlockReason;
+const Capabilities = task_mod.Capabilities;
+const Tier = task_mod.Tier;
 
 const STAT_RECORD_LEN: usize = @intCast(constants.STAT_REC_LEN);
 const PERSIST_ROOT = "/var/persist";
+const DEFAULT_PATH = "/bin:/usr/bin";
 
 /// Narrow guest-runtime view used by syscall fulfillment. guest.zig owns the
 /// concrete runtime; this interface keeps syscall.zig out of the Asyncify driver.
 pub const Guest = struct {
     ptr: *anyopaque,
     task_id: *const fn (*anyopaque) TaskId,
+    /// Instantiate a wasm3 runtime for an already-created child task (spawn). Lives in
+    /// guest.zig — which imports this file, so the call crosses the layer as a callback
+    /// (the same pattern as `task_id`), never a circular import. Returns false if the
+    /// child's program could not be parsed/compiled/linked. Wired by makeRawContext.
+    create_child: *const fn (child_id: TaskId, bytes: []const u8, cwd: []const u8) bool,
 
     pub fn taskId(self: *const Guest) TaskId {
         return self.task_id(self.ptr);
+    }
+
+    /// Instantiate the child guest for `child_id` (its Task must already exist).
+    pub fn createChild(self: *const Guest, child_id: TaskId, bytes: []const u8, cwd: []const u8) bool {
+        return self.create_child(child_id, bytes, cwd);
     }
 };
 
@@ -749,6 +762,408 @@ fn fulfillAbiVersion(runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.AbiVer
     return constants.ESUCCESS;
 }
 
+fn releaseFdValue(fd: Fd) void {
+    switch (fd) {
+        .pipe_read => |p| p.closeRead(),
+        .pipe_write => |p| p.closeWrite(),
+        .file => |fh| fh.close(),
+        .none => {},
+    }
+}
+
+fn duplicateReadableFd(parent: *const Task, fd: i32) ?Fd {
+    if (fd < 0) return null;
+    if (fd < 3 and fd != 0) return null;
+    const idx: usize = @intCast(fd);
+    return switch (parent.getFd(idx)) {
+        .none => if (fd == 0) Fd.none else null,
+        .pipe_read => |p| blk: {
+            p.addReader();
+            break :blk Fd{ .pipe_read = p };
+        },
+        .file => |fh| blk: {
+            // TODO(Phase 6, fd/file redirection): non-SharedFile handles need a
+            // vfs-level retain/clone operation before they can be inherited.
+            if (!SharedFile.readableHandle(fh)) break :blk null;
+            const retained = SharedFile.retain(fh) orelse break :blk null;
+            break :blk Fd{ .file = retained };
+        },
+        .pipe_write => null,
+    };
+}
+
+fn duplicateWritableFd(parent: *const Task, fd: i32) ?Fd {
+    if (fd < 0) return null;
+    if (fd < 3 and fd != 1 and fd != 2) return null;
+    const idx: usize = @intCast(fd);
+    return switch (parent.getFd(idx)) {
+        .none => if (fd == 1 or fd == 2) Fd.none else null,
+        .pipe_write => |p| blk: {
+            p.addWriter();
+            break :blk Fd{ .pipe_write = p };
+        },
+        .file => |fh| blk: {
+            // TODO(Phase 6, fd/file redirection): non-SharedFile handles need a
+            // vfs-level retain/clone operation before they can be inherited.
+            if (!SharedFile.writableHandle(fh)) break :blk null;
+            const retained = SharedFile.retain(fh) orelse break :blk null;
+            break :blk Fd{ .file = retained };
+        },
+        .pipe_read => null,
+    };
+}
+
+fn lessTaskId(_: void, a: TaskId, b: TaskId) bool {
+    return a < b;
+}
+
+fn sortedTaskIds(arena: std.mem.Allocator) []TaskId {
+    const ids = state.kernel().sched.taskIds(arena);
+    std.mem.sort(TaskId, ids, {}, lessTaskId);
+    return ids;
+}
+
+fn readUleb(bytes: []const u8, at: usize) ?struct { value: u32, adv: usize } {
+    var result: u32 = 0;
+    var shift: u32 = 0;
+    var n: usize = 0;
+    while (true) {
+        if (at + n >= bytes.len) return null;
+        if (shift >= 32) return null;
+        const byte = bytes[at + n];
+        n += 1;
+        const low = @as(u32, byte & 0x7f);
+        if (shift == 28 and low > 0x0f) return null;
+        result |= low << @as(u5, @intCast(shift));
+        if ((byte & 0x80) == 0) return .{ .value = result, .adv = n };
+        shift += 7;
+    }
+}
+
+fn uniqueCustom(bytes: []const u8, name: []const u8) ?[]const u8 {
+    if (bytes.len < 8 or !std.mem.eql(u8, bytes[0..4], "\x00asm")) return null;
+    var found: ?[]const u8 = null;
+    var i: usize = 8;
+    while (i < bytes.len) {
+        const id = bytes[i];
+        i += 1;
+        const size_info = readUleb(bytes, i) orelse return null;
+        i += size_info.adv;
+        const body_start = i;
+        const body_end = std.math.add(usize, body_start, @intCast(size_info.value)) catch return null;
+        if (body_end > bytes.len) return null;
+        if (id == 0) {
+            const name_info = readUleb(bytes, body_start) orelse return null;
+            const name_start = body_start + name_info.adv;
+            const name_end = std.math.add(usize, name_start, @intCast(name_info.value)) catch return null;
+            if (name_end <= body_end and std.mem.eql(u8, bytes[name_start..name_end], name)) {
+                if (found != null) return null;
+                found = bytes[name_end..body_end];
+            }
+        }
+        i = body_end;
+    }
+    return found;
+}
+
+fn declaredTier(bytes: []const u8) ?Tier {
+    const payload = uniqueCustom(bytes, "mc_tier") orelse return null;
+    if (!std.unicode.utf8ValidateSlice(payload)) return null;
+    return Tier.parse(payload);
+}
+
+const ExecPolicy = struct {
+    caps: Capabilities,
+    root: ?[]const u8,
+};
+
+fn execPolicy(parent_caps: Capabilities, parent_root: ?[]const u8, binary: ?Tier, requested: ?Tier, cwd: []const u8) ExecPolicy {
+    var caps = parent_caps;
+    if (binary) |t| caps = caps.intersect(t.caps());
+    if (requested) |t| caps = caps.intersect(t.caps());
+    const confines = (binary != null and binary.?.confines()) or (requested != null and requested.?.confines());
+    return .{
+        .caps = caps,
+        .root = if (confines) cwd else parent_root,
+    };
+}
+
+fn appendProgramCandidate(arena: std.mem.Allocator, candidates: *std.ArrayList([]const u8), cwd: []const u8, raw: []const u8) void {
+    const absolute = absolutize(arena, cwd, raw);
+    candidates.append(arena, absolute) catch @panic("OOM");
+}
+
+fn resolveProgram(arena: std.mem.Allocator, owner: TaskId, cwd: []const u8, cmd: []const u8, path: []const u8) ?[]u8 {
+    var candidates: std.ArrayList([]const u8) = .empty;
+    if (std.mem.indexOfScalar(u8, cmd, '/') != null) {
+        appendProgramCandidate(arena, &candidates, cwd, cmd);
+    } else {
+        var dirs = std.mem.splitScalar(u8, path, ':');
+        while (dirs.next()) |dir| {
+            if (dir.len == 0) continue;
+            const joined = std.fmt.allocPrint(arena, "{s}/{s}", .{ dir, cmd }) catch @panic("OOM");
+            appendProgramCandidate(arena, &candidates, cwd, joined);
+        }
+    }
+
+    for (candidates.items) |candidate| {
+        // TODO(Phase 6, namespace/services group): served-fs `WouldBlock`
+        // should re-arm spawn and retry; Zig has no served fs yet, so this
+        // path is treated as NotFound by continuing the lookup.
+        const real = state.kernel().ns.canonicalize(arena, candidate, true) catch continue;
+        const md = state.kernel().ns.statPath(arena, real) catch continue;
+        if (!md.ownerExecutable()) continue;
+        var h = state.kernel().ns.openAs(arena, owner, real, vfs.OpenFlags.READ) catch continue;
+        defer h.close();
+        var out: std.ArrayList(u8) = .empty;
+        var tmp: [4096]u8 = undefined;
+        while (true) {
+            const n = h.read(&tmp) catch {
+                out.deinit(state.kernel().gpa);
+                break;
+            };
+            if (n == 0) {
+                if (out.items.len == 0) {
+                    out.deinit(state.kernel().gpa);
+                    break;
+                }
+                return out.toOwnedSlice(state.kernel().gpa) catch @panic("OOM");
+            }
+            out.appendSlice(state.kernel().gpa, tmp[0..n]) catch @panic("OOM");
+        }
+    }
+    return null;
+}
+
+fn takeEintr(t: *Task) bool {
+    var hit = false;
+    for ([_]i32{ constants.SIGINT, constants.SIGTERM, constants.SIGHUP, constants.SIGTSTP }) |sig| {
+        if (t.signalPending(sig) and t.signalIgnored(sig)) {
+            t.clearSignal(sig);
+            hit = true;
+        }
+    }
+    return hit;
+}
+
+fn isChildOf(parent: TaskId, child_id: TaskId) bool {
+    const child = state.kernel().sched.getTask(child_id) orelse return false;
+    return child.parent_id != null and child.parent_id.? == parent;
+}
+
+fn findZombieChild(arena: std.mem.Allocator, parent: TaskId, pid: i32) ?TaskId {
+    if (pid > 0) {
+        const id: TaskId = @intCast(pid);
+        const child = state.kernel().sched.getTask(id) orelse return null;
+        return if (child.parent_id != null and child.parent_id.? == parent and child.state == .zombie) id else null;
+    }
+    for (sortedTaskIds(arena)) |id| {
+        const child = state.kernel().sched.getTask(id) orelse continue;
+        if (child.parent_id != null and child.parent_id.? == parent and child.state == .zombie) return id;
+    }
+    return null;
+}
+
+fn findStoppedChild(arena: std.mem.Allocator, parent: TaskId, pid: i32) ?TaskId {
+    if (pid > 0) {
+        const id: TaskId = @intCast(pid);
+        const child = state.kernel().sched.getTask(id) orelse return null;
+        return if (child.parent_id != null and child.parent_id.? == parent and child.sig_stopped) id else null;
+    }
+    for (sortedTaskIds(arena)) |id| {
+        const child = state.kernel().sched.getTask(id) orelse continue;
+        if (child.parent_id != null and child.parent_id.? == parent and child.sig_stopped) return id;
+    }
+    return null;
+}
+
+fn hasWaitTarget(arena: std.mem.Allocator, parent: TaskId, pid: i32) bool {
+    if (pid > 0) return isChildOf(parent, @intCast(pid));
+    for (sortedTaskIds(arena)) |id| {
+        if (isChildOf(parent, id)) return true;
+    }
+    return false;
+}
+
+fn fulfillSpawn(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.SpawnArgs) Fulfillment {
+    const parent = currentTask(guest) orelse return finish(neg(constants.EIO));
+    _ = guestRange(runtime, mem, args.ret_pid, 4) orelse return finish(neg(constants.EINVAL));
+    if (!parent.caps.has(constants.CAP_SPAWN)) return finish(neg(constants.EPERM));
+
+    const blob = guestRange(runtime, mem, args.argv_ptr, args.argv_len) orelse return finish(neg(constants.EINVAL));
+    var arena_state = std.heap.ArenaAllocator.init(state.kernel().gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var argv: std.ArrayList([]const u8) = .empty;
+    var it = std.mem.splitScalar(u8, blob, 0);
+    while (it.next()) |part| {
+        if (part.len == 0) continue;
+        if (!std.unicode.utf8ValidateSlice(part)) continue;
+        argv.append(arena, arena.dupe(u8, part) catch @panic("OOM")) catch @panic("OOM");
+    }
+    if (argv.items.len == 0) return finish(neg(constants.EINVAL));
+
+    const prog_name = argv.items[0];
+    const child_args = argv.items[1..];
+    const cwd = parent.cwd;
+    const live_path = parent.env.get("PATH") orelse DEFAULT_PATH;
+    const bytes = resolveProgram(arena, parent.id, cwd, prog_name, live_path) orelse return finish(neg(constants.ENOENT));
+    defer state.kernel().gpa.free(bytes);
+
+    const policy = execPolicy(parent.caps, parent.confine_root, declaredTier(bytes), Tier.fromArg(args.tier), cwd);
+
+    const stdin = duplicateReadableFd(parent, args.in_fd) orelse return finish(neg(constants.EBADF));
+    var stdout = duplicateWritableFd(parent, args.out_fd) orelse {
+        releaseFdValue(stdin);
+        return finish(neg(constants.EBADF));
+    };
+    var stderr = duplicateWritableFd(parent, args.err_fd) orelse {
+        releaseFdValue(stdin);
+        releaseFdValue(stdout);
+        return finish(neg(constants.EBADF));
+    };
+
+    const child_pid = state.kernel().sched.spawn(parent.id, prog_name, prog_name, child_args, cwd);
+    state.kernel().sched.setTaskPolicy(child_pid, policy.caps, policy.root);
+    if (state.kernel().sched.getTask(child_pid)) |child| {
+        child.setFd(state.kernel().gpa, 0, stdin);
+        child.setFd(state.kernel().gpa, 1, stdout);
+        child.setFd(state.kernel().gpa, 2, stderr);
+        stdout = .none;
+        stderr = .none;
+        // TODO(Phase 6, namespace/services group): fork the parent's namespace
+        // for child_pid and install a private `/scratch` mount according to
+        // CAP_SCRATCH. Zig vfs currently has one root namespace, not per-task
+        // namespace ownership.
+    }
+
+    if (!guest.createChild(child_pid, bytes, cwd)) {
+        state.kernel().sched.exitTask(child_pid, neg(constants.EINVAL));
+        state.kernel().sched.reapZombie(child_pid);
+        state.kernel().sched.dropDeadPipes();
+        return finish(neg(constants.EINVAL));
+    }
+
+    if (!writeGuestU32(runtime, mem, args.ret_pid, child_pid)) return finish(neg(constants.EINVAL));
+    return finish(constants.ESUCCESS);
+}
+
+fn fulfillWaitpid(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.WaitpidArgs) Fulfillment {
+    const me_task = currentTask(guest) orelse return finish(neg(constants.EIO));
+    _ = guestRange(runtime, mem, args.ret_status, 4) orelse return finish(neg(constants.EINVAL));
+    _ = guestRange(runtime, mem, args.ret_pid, 4) orelse return finish(neg(constants.EINVAL));
+
+    var arena_state = std.heap.ArenaAllocator.init(state.kernel().gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    if (findZombieChild(arena, me_task.id, args.pid)) |zpid| {
+        const code = state.kernel().sched.getExitCode(zpid) orelse 0;
+        state.kernel().sched.reapZombie(zpid);
+        state.kernel().sched.dropDeadPipes();
+        if (!writeGuestU32(runtime, mem, args.ret_status, @bitCast(code))) return finish(neg(constants.EINVAL));
+        if (!writeGuestU32(runtime, mem, args.ret_pid, zpid)) return finish(neg(constants.EINVAL));
+        return finish(constants.ESUCCESS);
+    }
+
+    if ((args.opts & constants.WNOHANG) == 0) {
+        if (findStoppedChild(arena, me_task.id, args.pid)) |spid| {
+            const report = if (state.kernel().sched.getTask(spid)) |child| child.takeStopReport() else false;
+            if (report) {
+                const status: u32 = @intCast(constants.STOPPED_STATUS_BASE + constants.SIGTSTP);
+                if (!writeGuestU32(runtime, mem, args.ret_status, status)) return finish(neg(constants.EINVAL));
+                if (!writeGuestU32(runtime, mem, args.ret_pid, spid)) return finish(neg(constants.EINVAL));
+                return finish(constants.ESUCCESS);
+            }
+        }
+    }
+
+    if (!hasWaitTarget(arena, me_task.id, args.pid)) return finish(neg(constants.ECHILD));
+    if ((args.opts & constants.WNOHANG) != 0) {
+        if (!writeGuestU32(runtime, mem, args.ret_pid, 0)) return finish(neg(constants.EINVAL));
+        return finish(constants.ESUCCESS);
+    }
+    if (takeEintr(me_task)) return finish(neg(constants.EINTR));
+    if (args.pid > 0) return .{ .Block = .{ .wait_child = @intCast(args.pid) } };
+    return .Pending;
+}
+
+fn fulfillKill(guest: *const Guest, args: mc.KillArgs) Fulfillment {
+    const me_task = currentTask(guest) orelse return finish(neg(constants.EIO));
+    if (args.sig < 0 or args.sig >= 32) return finish(neg(constants.EINVAL));
+    if (!me_task.caps.has(constants.CAP_SPAWN)) return finish(neg(constants.EPERM));
+    const me = me_task.id;
+
+    if (args.pid > 0) {
+        const target: TaskId = @intCast(args.pid);
+        if (state.kernel().sched.getTask(target) == null) return finish(neg(constants.ESRCH));
+        if (target != me and !state.kernel().sched.isAncestorOf(me, target)) return finish(neg(constants.EPERM));
+        if (args.sig != 0) state.kernel().sched.deliverSignal(target, args.sig);
+        return finish(constants.ESUCCESS);
+    }
+
+    const pgid: TaskId = if (args.pid == 0) me_task.pgid else blk: {
+        const abs_pid = std.math.negate(args.pid) catch return finish(neg(constants.EINVAL));
+        break :blk @intCast(abs_pid);
+    };
+
+    var arena_state = std.heap.ArenaAllocator.init(state.kernel().gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var members: std.ArrayList(TaskId) = .empty;
+    for (sortedTaskIds(arena)) |id| {
+        const t = state.kernel().sched.getTask(id) orelse continue;
+        if (t.pgid == pgid and (id == me or state.kernel().sched.isAncestorOf(me, id))) {
+            members.append(arena, id) catch @panic("OOM");
+        }
+    }
+    if (members.items.len == 0) return finish(neg(constants.ESRCH));
+    if (args.sig != 0) {
+        for (members.items) |id| state.kernel().sched.deliverSignal(id, args.sig);
+    }
+    return finish(constants.ESUCCESS);
+}
+
+fn fulfillSigdisp(guest: *const Guest, args: mc.SigdispArgs) Fulfillment {
+    const t = currentTask(guest) orelse return finish(neg(constants.EIO));
+    if (args.sig < 1 or args.sig >= 32 or args.sig == constants.SIGKILL) return finish(neg(constants.EINVAL));
+    t.setSignalIgnored(args.sig, args.disp == constants.SIG_IGN);
+    return finish(constants.ESUCCESS);
+}
+
+fn fulfillSetpgid(guest: *const Guest, args: mc.SetpgidArgs) Fulfillment {
+    const me = guest.taskId();
+    if (args.pid < 0) return finish(neg(constants.ESRCH));
+    const target: TaskId = if (args.pid == 0) me else @intCast(args.pid);
+    if (state.kernel().sched.getTask(target) == null) return finish(neg(constants.ESRCH));
+    if (target != me and !state.kernel().sched.isAncestorOf(me, target)) return finish(neg(constants.EPERM));
+    const pgid: TaskId = if (args.pgid <= 0) 0 else @intCast(args.pgid);
+    state.kernel().sched.setPgid(target, pgid);
+    return finish(constants.ESUCCESS);
+}
+
+fn fulfillTcsetpgrp(guest: *const Guest, args: mc.TcsetpgrpArgs) Fulfillment {
+    const t = currentTask(guest) orelse return finish(neg(constants.EIO));
+    if (args.pgid <= 0) return finish(neg(constants.EINVAL));
+    if (!t.caps.has(constants.CAP_SPAWN)) return finish(neg(constants.EPERM));
+    state.kernel().sched.foreground_pgid = @intCast(args.pgid);
+    return finish(constants.ESUCCESS);
+}
+
+fn fulfillNice(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.NiceArgs) Fulfillment {
+    _ = guestRange(runtime, mem, args.ret, 4) orelse return finish(neg(constants.EINVAL));
+    const new_nice: i8 = blk: {
+        const t = currentTask(guest) orelse break :blk 0;
+        const next = std.math.clamp(@as(i32, t.nice) + args.inc, -20, 19);
+        t.nice = @intCast(next);
+        break :blk t.nice;
+    };
+    const signed: i32 = new_nice;
+    if (!writeGuestU32(runtime, mem, args.ret, @bitCast(signed))) return finish(neg(constants.EINVAL));
+    return finish(constants.ESUCCESS);
+}
+
 fn todoPhase6() i32 {
     return neg(constants.ENOSYS);
 }
@@ -794,14 +1209,13 @@ pub fn fulfillOutcome(runtime: ?*wasm3.Runtime, mem: ?*anyopaque, guest: *const 
         .Isatty => |args| finish(fulfillIsatty(guest, runtime, mem, args)),
         .Getpid => |args| finish(fulfillGetpid(guest, runtime, mem, args)),
         .Getppid => |args| finish(fulfillGetppid(guest, runtime, mem, args)),
-        // TODO(Phase 6): process creation/wait/signals/job-control policy.
-        .Spawn => finish(todoPhase6()),
-        .Waitpid => finish(todoPhase6()),
-        .Nice => finish(todoPhase6()),
-        .Kill => finish(todoPhase6()),
-        .Sigdisp => finish(todoPhase6()),
-        .Setpgid => finish(todoPhase6()),
-        .Tcsetpgrp => finish(todoPhase6()),
+        .Spawn => |args| fulfillSpawn(guest, runtime, mem, args),
+        .Waitpid => |args| fulfillWaitpid(guest, runtime, mem, args),
+        .Nice => |args| fulfillNice(guest, runtime, mem, args),
+        .Kill => |args| fulfillKill(guest, args),
+        .Sigdisp => |args| fulfillSigdisp(guest, args),
+        .Setpgid => |args| fulfillSetpgid(guest, args),
+        .Tcsetpgrp => |args| fulfillTcsetpgrp(guest, args),
         // TODO(Phase 6): network, host-call, ambient time/entropy, and sleep.
         .HttpGet => finish(todoPhase6()),
         .HttpRequest => finish(todoPhase6()),

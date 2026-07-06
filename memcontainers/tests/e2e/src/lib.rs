@@ -25,6 +25,7 @@ mod coreutils;
 mod flavors;
 mod kernel;
 mod loom;
+mod process;
 mod shell;
 mod svc;
 mod system;
