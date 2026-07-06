@@ -1898,10 +1898,6 @@ fn fulfillSvcCall(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaqu
     return constants.ESUCCESS;
 }
 
-fn todoPhase6() i32 {
-    return neg(constants.ENOSYS);
-}
-
 pub fn fulfillOutcome(runtime: ?*wasm3.Runtime, mem: ?*anyopaque, guest: *const Guest, pending: mc.Pending) Fulfillment {
     return switch (pending) {
         .Args => |args| finish(fulfillArgs(guest, runtime, mem, args)),
@@ -1960,9 +1956,9 @@ pub fn fulfillOutcome(runtime: ?*wasm3.Runtime, mem: ?*anyopaque, guest: *const 
         .Random => |args| finish(fulfillRandom(guest, runtime, mem, args)),
         .AbiVersion => |args| finish(fulfillAbiVersion(runtime, mem, args)),
         .Exit => |args| .{ .Exit = args.code },
-        // TODO(Phase 6): C/C++ protected-call support.
-        .Pcall => finish(todoPhase6()),
-        .SetThrow => finish(todoPhase6()),
+        // These are linked to dedicated raw handlers in guest.zig because pcall must
+        // run a nested wasm3 call and set_throw records driver-local unwind state.
+        .Pcall, .SetThrow => finish(neg(constants.EINVAL)),
     };
 }
 

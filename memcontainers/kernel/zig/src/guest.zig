@@ -39,6 +39,7 @@ const TaskId = task_mod.TaskId;
 
 const STACK_SIZE: u32 = 64 * 1024;
 const ASYNCIFY_STACK_BYTES: usize = 256 * 1024;
+const PCALL_STACK_MAX: usize = 32;
 const FUEL_QUANTUM: u64 = 2_000_000;
 const FUEL_LIFETIME: u64 = 50_000_000_000;
 const EXIT_CODE_FUEL_EXHAUSTED: i32 = 137;
@@ -70,6 +71,10 @@ const SuspendKind = enum {
     fuel_yield,
 };
 
+const PcallFrame = struct {
+    saved_sp: i32,
+};
+
 pub const Step = enum { ran, suspended, exited, faulted };
 
 pub const GuestRuntime = struct {
@@ -98,6 +103,11 @@ pub const GuestRuntime = struct {
     current_slice: u64 = 0,
     asyncify_stack: [ASYNCIFY_STACK_BYTES]u8 align(16) = undefined,
     asyncify_data: [2]u32 align(4) = .{ 0, 0 },
+    pcall_stack: [PCALL_STACK_MAX]PcallFrame = undefined,
+    pcall_depth: usize = 0,
+    recorded_throw: ?i32 = null,
+    pcall_run_fn: ?*wasm3.Function = null,
+    sp_global: ?*wasm3.Global = null,
 
     pub fn init(self: *GuestRuntime, gpa: std.mem.Allocator, wasm_bytes: []const u8, entry: [*:0]const u8, task_id: TaskId, cwd: []const u8) bool {
         self.deinit();
@@ -156,6 +166,31 @@ pub const GuestRuntime = struct {
         if (!ok(find_result) or self.function == null) {
             self.deinit();
             return false;
+        }
+
+        const pcall_run_name: [:0]const u8 = "__mc_pcall_run";
+        var pcall_run: ?*wasm3.Function = null;
+        const pcall_find_result = wasm3.m3_FindFunction(&pcall_run, self.runtime, pcall_run_name.ptr);
+        if (ok(pcall_find_result)) {
+            self.pcall_run_fn = pcall_run;
+        } else if (pcall_find_result == wasm3.m3Err_functionLookupFailed) {
+            self.pcall_run_fn = null;
+        } else {
+            self.deinit();
+            return false;
+        }
+
+        const stack_pointer_name: [:0]const u8 = "__stack_pointer";
+        self.sp_global = wasm3.m3_FindGlobal(loaded_module, stack_pointer_name.ptr);
+        if ((self.pcall_run_fn == null) != (self.sp_global == null)) {
+            self.deinit();
+            return false;
+        }
+        if (self.sp_global) |global| {
+            if (wasm3.m3_GetGlobalType(global) != .i32) {
+                self.deinit();
+                return false;
+            }
         }
 
         self.active = true;
@@ -238,6 +273,10 @@ pub const GuestRuntime = struct {
         }
         self.runtime = null;
         self.function = null;
+        self.pcall_run_fn = null;
+        self.sp_global = null;
+        self.pcall_depth = 0;
+        self.recorded_throw = null;
         self.active = false;
     }
 
@@ -282,6 +321,43 @@ pub const GuestRuntime = struct {
 
     fn asyncifyDataPtr(self: *GuestRuntime) u32 {
         return ptr32(&self.asyncify_data);
+    }
+
+    fn readStackPointer(self: *GuestRuntime) ?i32 {
+        const global = self.sp_global orelse return null;
+        var value = wasm3.TaggedValue{
+            .type = .none,
+            .value = .{ .i32_value = 0 },
+        };
+        if (!ok(wasm3.m3_GetGlobal(global, &value))) return null;
+        if (value.type != .i32) return null;
+        return @as(i32, @bitCast(value.value.i32_value));
+    }
+
+    fn writeStackPointer(self: *GuestRuntime, value: i32) bool {
+        const global = self.sp_global orelse return false;
+        const tagged = wasm3.TaggedValue{
+            .type = .i32,
+            .value = .{ .i32_value = @bitCast(value) },
+        };
+        return ok(wasm3.m3_SetGlobal(global, &tagged));
+    }
+
+    fn pushPcallFrame(self: *GuestRuntime) i32 {
+        if (self.pcall_run_fn == null or self.sp_global == null) return -constants.EINVAL;
+        if (self.pcall_depth >= self.pcall_stack.len) return -constants.EIO;
+        const saved_sp = self.readStackPointer() orelse return -constants.EIO;
+        self.pcall_stack[self.pcall_depth] = .{ .saved_sp = saved_sp };
+        self.pcall_depth += 1;
+        return constants.ESUCCESS;
+    }
+
+    fn popPcallFrameRestore(self: *GuestRuntime) i32 {
+        if (self.pcall_depth == 0) return -constants.EIO;
+        self.pcall_depth -= 1;
+        const frame = self.pcall_stack[self.pcall_depth];
+        if (!self.writeStackPointer(frame.saved_sp)) return -constants.EIO;
+        return constants.ESUCCESS;
     }
 
     fn recordPending(self: *GuestRuntime, pending: mc.Pending) void {
@@ -453,6 +529,41 @@ fn cbMarkExited(ptr: *anyopaque, code: i32) void {
     guestFromAny(ptr).markExited(code);
 }
 
+fn cbPcallRunFn(ptr: *anyopaque) ?*wasm3.Function {
+    return guestFromAny(ptr).pcall_run_fn;
+}
+
+fn cbPcallUnwindActive(ptr: *anyopaque) bool {
+    return guestFromAny(ptr).unwind_active;
+}
+
+fn cbPcallRewindActive(ptr: *anyopaque) bool {
+    return guestFromAny(ptr).rewind_active;
+}
+
+fn cbPcallDepth(ptr: *anyopaque) usize {
+    return guestFromAny(ptr).pcall_depth;
+}
+
+fn cbPcallPushFrame(ptr: *anyopaque) i32 {
+    return guestFromAny(ptr).pushPcallFrame();
+}
+
+fn cbPcallPopRestore(ptr: *anyopaque) i32 {
+    return guestFromAny(ptr).popPcallFrameRestore();
+}
+
+fn cbPcallRecordThrow(ptr: *anyopaque, code: i32) void {
+    guestFromAny(ptr).recorded_throw = code;
+}
+
+fn cbPcallTakeThrow(ptr: *anyopaque) ?i32 {
+    const guest = guestFromAny(ptr);
+    const code = guest.recorded_throw orelse return null;
+    guest.recorded_throw = null;
+    return code;
+}
+
 /// Instantiate a child guest for an already-created child task (`spawn`). Heap-allocates a
 /// GuestRuntime with a STABLE address (the raw trampoline recovers it via `m3_GetUserData`),
 /// loads `bytes` eagerly, and — through `init` — points `child_id`'s `Task.guest` at it. The
@@ -493,6 +604,14 @@ fn makeRawContext(self: *GuestRuntime) raw.Context {
         .finish_rewind = cbFinishRewind,
         .resume_result = cbResumeResult,
         .mark_exited = cbMarkExited,
+        .pcall_run_fn = cbPcallRunFn,
+        .pcall_unwind_active = cbPcallUnwindActive,
+        .pcall_rewind_active = cbPcallRewindActive,
+        .pcall_depth = cbPcallDepth,
+        .pcall_push_frame = cbPcallPushFrame,
+        .pcall_pop_restore = cbPcallPopRestore,
+        .pcall_record_throw = cbPcallRecordThrow,
+        .pcall_take_throw = cbPcallTakeThrow,
     };
 }
 
@@ -514,13 +633,17 @@ noinline fn callGuestBoundary(function: ?*wasm3.Function) callconv(.c) wasm3.Res
 pub fn linkRawSyscalls(module: ?*wasm3.Module) bool {
     const mc_module: [:0]const u8 = "mc";
     for (&mc.SYSCALLS) |*desc| {
+        const is_pcall = std.mem.eql(u8, desc.name, "mc_sys_pcall");
+        const is_set_throw = std.mem.eql(u8, desc.name, "mc_sys_set_throw");
+        const handler: wasm3.RawCall = if (is_pcall) raw.rawPcall else if (is_set_throw) raw.rawSetThrow else raw.rawSyscall;
+        const userdata: ?*const anyopaque = if (is_pcall or is_set_throw) null else @ptrCast(desc);
         const result = wasm3.m3_LinkRawFunctionEx(
             module,
             mc_module.ptr,
             desc.name.ptr,
             desc.signature.ptr,
-            raw.rawSyscall,
-            @ptrCast(desc),
+            handler,
+            userdata,
         );
         if (!ok(result) and result != wasm3.m3Err_functionLookupFailed) return false;
     }
