@@ -319,8 +319,39 @@ pub const Namespace = struct {
     pub fn mountLabeled(self: *Namespace, path: []const u8, fs: FileSystem, label: []const u8, read_only: bool) void {
         const key = normalizeMount(self.gpa, path);
         const gop = self.mounts.getOrPut(self.gpa, key) catch @panic("OOM");
-        if (gop.found_existing) self.gpa.free(key);
+        if (gop.found_existing) {
+            if (gop.value_ptr.sub.len != 0) self.gpa.free(gop.value_ptr.sub);
+            self.gpa.free(key);
+        }
         gop.value_ptr.* = .{ .fs = fs, .sub = "", .label = label, .read_only = read_only, .write_cap = constants.CAP_FS_WRITE };
+    }
+
+    /// Bind an existing resolved namespace path at another mount point.
+    pub fn bind(self: *Namespace, arena: std.mem.Allocator, old: []const u8, new: []const u8) FsError!void {
+        const old_path = try self.canonicalize(arena, old, true);
+        const new_path = try self.canonicalize(arena, new, false);
+        const source = self.resolve(arena, old_path) orelse return FsError.NotFound;
+        if (parentPath(new_path)) |parent| {
+            const md = try self.statPath(arena, parent);
+            if (md.node_type != .dir) return FsError.NotDir;
+        } else {
+            return FsError.InvalidPath;
+        }
+
+        const key = normalizeMount(self.gpa, new_path);
+        const sub = self.gpa.dupe(u8, source.fs_path) catch @panic("OOM");
+        const gop = self.mounts.getOrPut(self.gpa, key) catch @panic("OOM");
+        if (gop.found_existing) {
+            if (gop.value_ptr.sub.len != 0) self.gpa.free(gop.value_ptr.sub);
+            self.gpa.free(key);
+        }
+        gop.value_ptr.* = .{
+            .fs = source.fs,
+            .sub = sub,
+            .label = "bind",
+            .read_only = source.read_only,
+            .write_cap = source.write_cap,
+        };
     }
 
     /// Unmount at `path`; refuses (NotEmpty) while a child mount exists beneath it.
@@ -332,6 +363,7 @@ pub const Namespace = struct {
             if (!std.mem.eql(u8, k.*, norm) and mountBeneath(norm, k.*)) return FsError.NotEmpty;
         }
         if (self.mounts.fetchRemove(norm)) |kv| {
+            if (kv.value.sub.len != 0) self.gpa.free(kv.value.sub);
             self.gpa.free(kv.key);
         } else {
             return FsError.NotFound;

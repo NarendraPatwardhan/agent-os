@@ -47,6 +47,7 @@ KERNEL_SRCS = [
     "src/task.zig",
     "src/scheduler.zig",
     "src/guest.zig",
+    "src/rescue.zig",
     "src/syscall.zig",
     "src/vfs.zig",
     "src/wasm3/bindings.zig",
@@ -123,6 +124,7 @@ zig_binary(
         "//memcontainers/contracts:constants_zig",  # errno/caps/tiers/flags (B2)
         "//memcontainers/contracts:env_zig",  # bridge.zig derives the env extern surface from IMPORTS (§5.1)
         "//memcontainers/contracts:mc_zig",  # generated syscall descriptors + Pending union (§5.1)
+        "//memcontainers/shcore:shcore",
         "@wasm3//:incs",  # wasm3.h include path for the freestanding C compile
         # ctl_zig / mc_zig join as control-exec (Phase 4) and syscall.zig (Phase 5) consume their
         # descriptors. The two tiny FileStat/DirEntries result frames are hand-encoded in control.zig

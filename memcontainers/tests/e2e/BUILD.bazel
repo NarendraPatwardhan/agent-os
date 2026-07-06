@@ -38,6 +38,7 @@ rust_e2e_test(
         "@rules_rust//rust/runfiles",
     ],
     data = [
+        "//memcontainers/images:rootfs",  # rootfs-only: /etc/profile, no /bin/sh (Zig rescue shell proof)
         "//memcontainers/images:base",  # rootfs + sh/pkgfsd/tools (the boot + kernel/control-channel tests)
         "//memcontainers/images:minimal",  # base + the curated minimal coreutils set (the flavor test)
         "//memcontainers/images:posix",  # base + the full coreutils set (the shell / coreutils / system tests)
@@ -82,6 +83,7 @@ rust_e2e_test(
         "@rules_rust//rust/runfiles",
     ],
     data = [
+        "//memcontainers/images:rootfs",  # rootfs-only: /etc/profile, no /bin/sh (Zig rescue shell proof)
         "//memcontainers/images:base",
         "//memcontainers/images:minimal",
         "//memcontainers/images:posix",

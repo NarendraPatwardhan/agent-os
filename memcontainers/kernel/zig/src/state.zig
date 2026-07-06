@@ -15,8 +15,10 @@ const boot = @import("boot.zig");
 const bridge = @import("bridge.zig");
 const scheduler = @import("scheduler.zig");
 const guest = @import("guest.zig");
+const rescue = @import("rescue.zig");
 const pipe = @import("ipc/pipe.zig");
 const constants = @import("constants_zig");
+const shcore = @import("shcore");
 
 const HISTORY_CAP: usize = 200;
 
@@ -196,6 +198,12 @@ pub const Kernel = struct {
     /// never sees EOF until Ctrl-D), the shell holds the read end as fd 0. Oracle: lib.rs
     /// STATE.console_pipe.
     console_pipe: ?*pipe.Pipe = null,
+    /// Native shcore rescue shell, used only when the guest /bin/sh cannot be loaded.
+    /// The adapter owns the ShellOs value shcore points at; both allocations live here,
+    /// not in module globals.
+    rescue_os: ?*rescue.KernelShellOs = null,
+    rescue_shell: ?*shcore.Shell = null,
+    rescue_active: bool = false,
     /// Cooked terminal line editor and backlog of committed console input that did not fit
     /// into the pipe in one write. Both live in `Kernel`, never module globals (§4.2).
     line_editor: LineEditor = .{},
@@ -258,7 +266,20 @@ pub fn tick() i32 {
     // Wake any task whose block condition cleared: an empty stdin pipe that now has bytes,
     // a full pipe drained, a waited-for child that exited.
     k.sched.checkUnblocked();
+    const ran_any = stepReadyRound(k);
+    if (ran_any or k.sched.readyCount() > 0) return 1;
+    return 0;
+}
 
+/// Step each CURRENTLY-ready task's guest exactly once — the bounded run-round. Returns true
+/// if any guest made progress (`.ran`). Shared by `tick()` and the rescue shell's inline
+/// `waitpid` drive: a native (kernel) shell can't Asyncify-suspend, so it drives child guests
+/// to completion by calling THIS between zombie checks (task #11). Frees an exited/faulted
+/// guest via `onGuestFinished`; a signal-terminated task's guest is torn down too. Bounded to
+/// the ready count captured up front — a guest that fuel-yields or re-arms a ready syscall
+/// requeues to the BACK and waits for the next round, so an unbounded producer can't
+/// monopolize a round.
+pub fn stepReadyRound(k: *Kernel) bool {
     var ran_any = false;
     const rounds = k.sched.readyCount();
     var i: usize = 0;
@@ -285,9 +306,7 @@ pub fn tick() i32 {
             .faulted => onGuestFinished(k, id, g, FAULT_EXIT_CODE),
         }
     }
-
-    if (ran_any or k.sched.readyCount() > 0) return 1;
-    return 0;
+    return ran_any;
 }
 
 /// A guest reported `.exited`/`.faulted` (or a signal killed its task): make sure the task
@@ -376,23 +395,35 @@ fn feedConsoleByte(k: *Kernel, byte: u8) void {
     } else if (byte == 0x05) {
         ed.end();
     } else if (byte == 0x04) {
-        if (ed.line.items.len == 0) {
+        if (k.rescue_active) {
+            return;
+        } else if (ed.line.items.len == 0) {
             if (k.console_pipe) |cpipe| cpipe.closeWrite();
             k.sched.checkUnblocked();
         }
     } else if (byte == 0x03) {
         termEmit("^C\r\n");
         ed.resetLine();
-        k.sched.signalGroup(k.sched.foreground_pgid, constants.SIGINT);
+        if (k.rescue_active) {
+            rescue.prompt();
+        } else {
+            k.sched.signalGroup(k.sched.foreground_pgid, constants.SIGINT);
+        }
     } else if (byte == 0x1a) {
         termEmit("^Z\r\n");
         ed.resetLine();
-        k.sched.signalGroup(k.sched.foreground_pgid, constants.SIGTSTP);
+        if (k.rescue_active) {
+            rescue.prompt();
+        } else {
+            k.sched.signalGroup(k.sched.foreground_pgid, constants.SIGTSTP);
+        }
     } else if (byte == '\n' or byte == '\r') {
         termEmit("\r\n");
-        // TODO(rescue shell, task #11): when the native rescue shell is active
-        // (!guest), deliver `ed.line` to submit_user_line instead of this console pipe.
-        queueConsoleLine(k, ed.line.items);
+        if (k.rescue_active) {
+            rescue.submitLine(k, ed.line.items);
+        } else {
+            queueConsoleLine(k, ed.line.items);
+        }
         ed.commit(k.gpa);
     } else if ((byte >= '!' and byte <= '~') or byte == ' ') {
         ed.insert(k.gpa, byte);
@@ -432,11 +463,11 @@ fn readFileAlloc(k: *Kernel, path: []const u8) ?[]u8 {
 
 /// Start the pid-1 login shell (§2.3): source /etc/profile, resolve /bin/sh, spawn pid 1
 /// with the console pipe as its stdin, and load it into a wasm3 runtime. Oracle:
-/// lib.rs::boot_login_shell → try_guest_login_shell. A missing /bin/sh degrades to the bare
-/// boot transcript rather than trapping (the in-kernel rescue shell is Phase 6).
+/// lib.rs::boot_login_shell → try_guest_login_shell. A missing or unloadable /bin/sh
+/// falls back to the native in-kernel rescue shell bound to the same pid-1 Task.
 pub fn startLoginShell(k: *Kernel) void {
     say("Sourcing /etc/profile\r\n");
-    const sh_bytes = readFileAlloc(k, "/bin/sh") orelse return;
+    const sh_bytes = readFileAlloc(k, "/bin/sh");
 
     // The login shell is always pid 1 (reuse the id so /proc/1 is stable across respawn).
     const pid = k.sched.spawnWithId(1, null, "sh", "sh", &[_][]const u8{}, "/home/user") orelse return;
@@ -451,14 +482,25 @@ pub fn startLoginShell(k: *Kernel) void {
         t.setFd(k.gpa, 0, .{ .pipe_read = cpipe });
     }
 
+    const bytes = sh_bytes orelse {
+        say("login shell unavailable; starting rescue shell\r\n");
+        k.sched.detach(pid);
+        rescue.start(k);
+        return;
+    };
+    defer k.gpa.free(bytes);
+
     // Heap-allocate the runtime (stable address) and load /bin/sh eagerly.
     const g = k.gpa.create(guest.GuestRuntime) catch @panic("OOM");
     g.* = .{};
-    if (!g.init(k.gpa, sh_bytes, "_start", pid, "/home/user")) {
+    if (!g.init(k.gpa, bytes, "_start", pid, "/home/user")) {
         say("login shell failed to load\r\n");
         k.gpa.destroy(g);
+        k.sched.detach(pid);
+        rescue.start(k);
         return;
     }
+    k.rescue_active = false;
     k.login_guest = g;
 }
 

@@ -46,6 +46,10 @@ fn kernel_rlocation() -> String {
         .expect("MC_KERNEL_WASM unset — rust_e2e_test sets it from the `kernel` target")
 }
 
+pub fn kernel_under_test_rlocation() -> String {
+    kernel_rlocation()
+}
+
 /// A booted VM under the real host: the kernel plus its captured terminal stdout. The console
 /// methods drive the interactive TTY (CRLF); `host` is the structured control channel (LF).
 pub struct Session {
@@ -71,6 +75,14 @@ pub fn boot() -> Session {
     let host = b
         .build()
         .expect("kernel booted under the host (base image)");
+    Session { host, stdout }
+}
+
+/// Boot the rootfs-only image: /etc/profile and no /bin/sh. Zig uses this to prove the native
+/// rescue shell takes over pid 1; the Rust kernel intentionally lacks that capability.
+pub fn boot_rootfs() -> Session {
+    let (b, stdout) = builder("_main/memcontainers/images/rootfs.tar");
+    let host = b.build().expect("kernel booted (rootfs image)");
     Session { host, stdout }
 }
 

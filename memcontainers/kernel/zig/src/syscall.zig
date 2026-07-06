@@ -287,7 +287,7 @@ const SharedFile = struct {
     }
 };
 
-fn cloneFd(fd: Fd) ?Fd {
+pub fn cloneFd(fd: Fd) ?Fd {
     return switch (fd) {
         .none => null,
         .file => |fh| if (SharedFile.retain(fh)) |retained| Fd{ .file = retained } else null,
@@ -360,7 +360,7 @@ fn resolveGuestPath(
     return path;
 }
 
-fn openFlags(raw: i32) ?vfs.OpenFlags {
+pub fn openFlags(raw: i32) ?vfs.OpenFlags {
     const flags = if (raw == 0) constants.O_READ else raw;
     var out = vfs.OpenFlags{
         .read = (flags & constants.O_READ) != 0,
@@ -408,7 +408,7 @@ fn termEmit(bytes: []const u8, stderr: bool) void {
 /// Terminal ONLCR: guest output writes plain LF internally; the interactive
 /// terminal bridge sees CRLF. Pipes, files, and control-channel captures do not
 /// pass through this path, so they stay raw LF.
-fn termWrite(bytes: []const u8, stderr: bool) void {
+pub fn termWrite(bytes: []const u8, stderr: bool) void {
     var start: usize = 0;
     for (bytes, 0..) |byte, i| {
         if (byte == '\n') {
@@ -786,7 +786,7 @@ fn fulfillAbiVersion(runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.AbiVer
     return constants.ESUCCESS;
 }
 
-fn releaseFdValue(fd: Fd) void {
+pub fn releaseFdValue(fd: Fd) void {
     switch (fd) {
         .pipe_read => |p| p.closeRead(),
         .pipe_write => |p| p.closeWrite(),
@@ -901,6 +901,15 @@ const ExecPolicy = struct {
     root: ?[]const u8,
 };
 
+pub const ChildFactory = struct {
+    ptr: *const anyopaque,
+    create_child: *const fn (*const anyopaque, TaskId, []const u8, []const u8) bool,
+
+    fn createChild(self: ChildFactory, child_id: TaskId, bytes: []const u8, cwd: []const u8) bool {
+        return self.create_child(self.ptr, child_id, bytes, cwd);
+    }
+};
+
 fn execPolicy(parent_caps: Capabilities, parent_root: ?[]const u8, binary: ?Tier, requested: ?Tier, cwd: []const u8) ExecPolicy {
     var caps = parent_caps;
     if (binary) |t| caps = caps.intersect(t.caps());
@@ -959,6 +968,10 @@ fn resolveProgram(arena: std.mem.Allocator, owner: TaskId, cwd: []const u8, cmd:
     return null;
 }
 
+pub fn wrapFileHandle(gpa: std.mem.Allocator, inner: vfs.FileHandle, readable: bool, writable: bool) vfs.FileHandle {
+    return SharedFile.wrap(gpa, inner, readable, writable);
+}
+
 fn takeEintr(t: *Task) bool {
     var hit = false;
     for ([_]i32{ constants.SIGINT, constants.SIGTERM, constants.SIGHUP, constants.SIGTSTP }) |sig| {
@@ -1009,10 +1022,66 @@ fn hasWaitTarget(arena: std.mem.Allocator, parent: TaskId, pid: i32) bool {
     return false;
 }
 
+pub fn spawnNative(parent_id: TaskId, argv: []const []const u8, in_fd: i32, out_fd: i32, err_fd: i32, tier: i32, factory: ChildFactory) i32 {
+    const parent = state.kernel().sched.getTask(parent_id) orelse return neg(constants.EIO);
+    if (!parent.caps.has(constants.CAP_SPAWN)) return neg(constants.EPERM);
+    if (argv.len == 0) return neg(constants.EINVAL);
+
+    var arena_state = std.heap.ArenaAllocator.init(state.kernel().gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const prog_name = argv[0];
+    const child_args = argv[1..];
+    const cwd = parent.cwd;
+    const live_path = parent.env.get("PATH") orelse DEFAULT_PATH;
+    const bytes = resolveProgram(arena, parent.id, cwd, prog_name, live_path) orelse return neg(constants.ENOENT);
+    defer state.kernel().gpa.free(bytes);
+
+    const policy = execPolicy(parent.caps, parent.confine_root, declaredTier(bytes), Tier.fromArg(tier), cwd);
+
+    var stdin = duplicateReadableFd(parent, in_fd) orelse return neg(constants.EBADF);
+    var stdout = duplicateWritableFd(parent, out_fd) orelse {
+        releaseFdValue(stdin);
+        return neg(constants.EBADF);
+    };
+    var stderr = duplicateWritableFd(parent, err_fd) orelse {
+        releaseFdValue(stdin);
+        releaseFdValue(stdout);
+        return neg(constants.EBADF);
+    };
+
+    const child_pid = state.kernel().sched.spawn(parent.id, prog_name, prog_name, child_args, cwd);
+    state.kernel().sched.setTaskPolicy(child_pid, policy.caps, policy.root);
+    if (state.kernel().sched.getTask(child_pid)) |child| {
+        child.setFd(state.kernel().gpa, 0, stdin);
+        child.setFd(state.kernel().gpa, 1, stdout);
+        child.setFd(state.kernel().gpa, 2, stderr);
+        stdin = .none;
+        stdout = .none;
+        stderr = .none;
+        // TODO(Phase 6, namespace/services group): fork the parent's namespace
+        // for child_pid and install a private `/scratch` mount according to
+        // CAP_SCRATCH. Zig vfs currently has one root namespace, not per-task
+        // namespace ownership.
+    }
+
+    if (!factory.createChild(child_pid, bytes, cwd)) {
+        state.kernel().sched.exitTask(child_pid, neg(constants.EINVAL));
+        state.kernel().sched.reapZombie(child_pid);
+        state.kernel().sched.dropDeadPipes();
+        return neg(constants.EINVAL);
+    }
+
+    return @intCast(child_pid);
+}
+
+fn spawnGuestChild(ptr: *const anyopaque, child_id: TaskId, bytes: []const u8, cwd: []const u8) bool {
+    const g: *const Guest = @ptrCast(@alignCast(ptr));
+    return g.createChild(child_id, bytes, cwd);
+}
+
 fn fulfillSpawn(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, args: mc.SpawnArgs) Fulfillment {
-    const parent = currentTask(guest) orelse return finish(neg(constants.EIO));
     _ = guestRange(runtime, mem, args.ret_pid, 4) orelse return finish(neg(constants.EINVAL));
-    if (!parent.caps.has(constants.CAP_SPAWN)) return finish(neg(constants.EPERM));
 
     const blob = guestRange(runtime, mem, args.argv_ptr, args.argv_len) orelse return finish(neg(constants.EINVAL));
     var arena_state = std.heap.ArenaAllocator.init(state.kernel().gpa);
@@ -1026,50 +1095,13 @@ fn fulfillSpawn(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque,
         if (!std.unicode.utf8ValidateSlice(part)) continue;
         argv.append(arena, arena.dupe(u8, part) catch @panic("OOM")) catch @panic("OOM");
     }
-    if (argv.items.len == 0) return finish(neg(constants.EINVAL));
 
-    const prog_name = argv.items[0];
-    const child_args = argv.items[1..];
-    const cwd = parent.cwd;
-    const live_path = parent.env.get("PATH") orelse DEFAULT_PATH;
-    const bytes = resolveProgram(arena, parent.id, cwd, prog_name, live_path) orelse return finish(neg(constants.ENOENT));
-    defer state.kernel().gpa.free(bytes);
-
-    const policy = execPolicy(parent.caps, parent.confine_root, declaredTier(bytes), Tier.fromArg(args.tier), cwd);
-
-    const stdin = duplicateReadableFd(parent, args.in_fd) orelse return finish(neg(constants.EBADF));
-    var stdout = duplicateWritableFd(parent, args.out_fd) orelse {
-        releaseFdValue(stdin);
-        return finish(neg(constants.EBADF));
-    };
-    var stderr = duplicateWritableFd(parent, args.err_fd) orelse {
-        releaseFdValue(stdin);
-        releaseFdValue(stdout);
-        return finish(neg(constants.EBADF));
-    };
-
-    const child_pid = state.kernel().sched.spawn(parent.id, prog_name, prog_name, child_args, cwd);
-    state.kernel().sched.setTaskPolicy(child_pid, policy.caps, policy.root);
-    if (state.kernel().sched.getTask(child_pid)) |child| {
-        child.setFd(state.kernel().gpa, 0, stdin);
-        child.setFd(state.kernel().gpa, 1, stdout);
-        child.setFd(state.kernel().gpa, 2, stderr);
-        stdout = .none;
-        stderr = .none;
-        // TODO(Phase 6, namespace/services group): fork the parent's namespace
-        // for child_pid and install a private `/scratch` mount according to
-        // CAP_SCRATCH. Zig vfs currently has one root namespace, not per-task
-        // namespace ownership.
-    }
-
-    if (!guest.createChild(child_pid, bytes, cwd)) {
-        state.kernel().sched.exitTask(child_pid, neg(constants.EINVAL));
-        state.kernel().sched.reapZombie(child_pid);
-        state.kernel().sched.dropDeadPipes();
-        return finish(neg(constants.EINVAL));
-    }
-
-    if (!writeGuestU32(runtime, mem, args.ret_pid, child_pid)) return finish(neg(constants.EINVAL));
+    const child_pid = spawnNative(guest.taskId(), argv.items, args.in_fd, args.out_fd, args.err_fd, args.tier, .{
+        .ptr = @ptrCast(guest),
+        .create_child = spawnGuestChild,
+    });
+    if (child_pid < 0) return finish(child_pid);
+    if (!writeGuestU32(runtime, mem, args.ret_pid, @intCast(child_pid))) return finish(neg(constants.EINVAL));
     return finish(constants.ESUCCESS);
 }
 
