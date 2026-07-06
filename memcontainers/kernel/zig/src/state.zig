@@ -20,11 +20,15 @@ const task = @import("task.zig");
 const pipe = @import("ipc/pipe.zig");
 const net = @import("egress/net.zig");
 const host_call = @import("egress/host_call.zig");
+const persist = @import("egress/persist.zig");
+const mountfs = @import("fs/mountfs.zig");
+const persistfs = @import("fs/persistfs.zig");
 const registry = @import("service/registry.zig");
 const constants = @import("constants_zig");
 const shcore = @import("shcore");
 
 const HISTORY_CAP: usize = 200;
+const DEFAULT_PATH = "/bin:/usr/bin";
 
 pub const CtlExecJob = struct {
     pid: ?u32,
@@ -255,8 +259,15 @@ pub const Kernel = struct {
     /// Host egress engines. Open handles are snapshot blockers.
     net: net.Engine,
     host_call: host_call.Engine,
+    persist: persist.Engine,
     /// Resident-service registry, activation supervisor, and session channels.
     services: registry.Engine,
+    /// Boot/default environment exposed through `/env` before a caller-specific task env
+    /// exists, then cloned into pid 1.
+    boot_env: std.StringHashMapUnmanaged([]const u8) = .{},
+    /// Async persist mounts registered for tick-time commit draining.
+    mount_channels: std.ArrayListUnmanaged(*mountfs.MountChannel) = .empty,
+    persist_channels: std.ArrayListUnmanaged(*persistfs.PersistChannel) = .empty,
     /// Host control-channel service calls (`mc_ctl_svc_call_*`), keyed by job id.
     ctl_svc_jobs: std.AutoHashMapUnmanaged(u32, CtlSvcJob) = .{},
     initialized: bool = false,
@@ -288,6 +299,7 @@ pub fn init() i32 {
         .sched = scheduler.Scheduler.init(kernel_allocator),
         .net = net.Engine.init(kernel_allocator),
         .host_call = host_call.Engine.init(kernel_allocator),
+        .persist = persist.Engine.init(kernel_allocator),
         .services = registry.Engine.init(kernel_allocator),
     };
     g_ready = true;
@@ -324,8 +336,16 @@ pub fn tick() i32 {
     // a full pipe drained, a waited-for child that exited.
     k.sched.checkUnblocked();
     const ran_any = stepReadyRound(k);
+    mountfs.drainAll(&k.mount_channels, callerAlive, k);
+    persistfs.drainAll(&k.persist_channels, callerAlive, k);
     if (ran_any or k.sched.readyCount() > 0) return 1;
     return 0;
+}
+
+fn callerAlive(ctx: *anyopaque, caller: vfs.CallerId) bool {
+    if (caller == vfs.SYSTEM_CALLER) return true;
+    const k: *Kernel = @ptrCast(@alignCast(ctx));
+    return k.sched.getTask(caller) != null;
 }
 
 /// Step each CURRENTLY-ready task's guest exactly once — the bounded run-round. Returns true
@@ -681,12 +701,67 @@ fn activateEagerServices(k: *Kernel) void {
     }
 }
 
+fn setBootEnv(k: *Kernel, key: []const u8, value: []const u8) void {
+    if (key.len == 0) return;
+    if (k.boot_env.fetchRemove(key)) |old| {
+        k.gpa.free(old.key);
+        k.gpa.free(old.value);
+    }
+    const owned_key = k.gpa.dupe(u8, key) catch @panic("OOM");
+    const owned_value = k.gpa.dupe(u8, value) catch @panic("OOM");
+    k.boot_env.put(k.gpa, owned_key, owned_value) catch @panic("OOM");
+}
+
+fn profileValue(raw: []const u8) []const u8 {
+    var value = std.mem.trim(u8, raw, " \t");
+    if (value.len >= 2) {
+        const q = value[0];
+        if ((q == '"' or q == '\'') and value[value.len - 1] == q) {
+            value = value[1 .. value.len - 1];
+        }
+    }
+    return value;
+}
+
+fn seedBootEnv(k: *Kernel) void {
+    if (k.boot_env.count() == 0) {
+        setBootEnv(k, "PATH", DEFAULT_PATH);
+        setBootEnv(k, "HOME", "/home/user");
+        setBootEnv(k, "HOSTNAME", "agent-os");
+    }
+
+    const bytes = readFileAlloc(k, "/etc/profile") orelse return;
+    defer k.gpa.free(bytes);
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |line_raw| {
+        var line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        if (std.mem.startsWith(u8, line, "export ")) {
+            line = std.mem.trim(u8, line["export ".len..], " \t");
+        }
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..eq], " \t");
+        if (key.len == 0) continue;
+        var valid = true;
+        for (key, 0..) |b, i| {
+            const ok = std.ascii.isAlphabetic(b) or b == '_' or (i != 0 and std.ascii.isDigit(b));
+            if (!ok) {
+                valid = false;
+                break;
+            }
+        }
+        if (!valid) continue;
+        setBootEnv(k, key, profileValue(line[eq + 1 ..]));
+    }
+}
+
 /// Start the pid-1 login shell (§2.3): source /etc/profile, resolve /bin/sh, spawn pid 1
 /// with the console pipe as its stdin, and load it into a wasm3 runtime. Oracle:
 /// lib.rs::boot_login_shell → try_guest_login_shell. A missing or unloadable /bin/sh
 /// falls back to the native in-kernel rescue shell bound to the same pid-1 Task.
 pub fn startLoginShell(k: *Kernel) void {
     say("Sourcing /etc/profile\r\n");
+    seedBootEnv(k);
     const sh_bytes = readFileAlloc(k, "/bin/sh");
 
     // The login shell is always pid 1 (reuse the id so /proc/1 is stable across respawn).
@@ -699,6 +774,7 @@ pub fn startLoginShell(k: *Kernel) void {
     cpipe.addReader();
     k.console_pipe = cpipe;
     if (k.sched.getTask(pid)) |t| {
+        t.cloneEnvFrom(k.gpa, &k.boot_env);
         t.setFd(k.gpa, 0, .{ .pipe_read = cpipe });
     }
 
@@ -739,10 +815,12 @@ pub fn commitLayer() i32 {
 /// cannot be snapshotted safely while open.
 pub fn inflightEgress() i32 {
     if (!isInitialized()) return 0;
-    return g_kernel.net.inflight() + g_kernel.host_call.inflight() + g_kernel.services.svcInflight();
+    return g_kernel.net.inflight() + g_kernel.host_call.inflight() + g_kernel.persist.inflight() +
+        g_kernel.services.svcInflight();
 }
 pub fn pendingCommits() i32 {
-    return 0;
+    if (!isInitialized()) return 0;
+    return mountfs.pendingCommitCount(&g_kernel.mount_channels) + persistfs.pendingCommitCount(&g_kernel.persist_channels);
 }
 pub fn quiesceRequest() i32 {
     return 0;

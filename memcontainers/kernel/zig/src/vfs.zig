@@ -308,6 +308,12 @@ const Mount = struct {
     write_cap: u8,
 };
 
+pub const MountInfo = struct {
+    path: []const u8,
+    label: []const u8,
+    read_only: bool,
+};
+
 const Resolved = struct {
     mount_point: []const u8,
     /// fs-relative path, owned by the transient arena.
@@ -425,6 +431,22 @@ pub const Namespace = struct {
     pub fn writeCapAt(self: *Namespace, arena: std.mem.Allocator, path: []const u8) u8 {
         const r = self.resolve(arena, path) orelse return constants.CAP_FS_WRITE;
         return r.write_cap;
+    }
+
+    pub fn mountList(self: *Namespace, arena: std.mem.Allocator, out: *std.ArrayList(MountInfo)) void {
+        var it = self.mounts.iterator();
+        while (it.next()) |entry| {
+            out.append(arena, .{
+                .path = arena.dupe(u8, entry.key_ptr.*) catch @panic("OOM"),
+                .label = entry.value_ptr.label,
+                .read_only = entry.value_ptr.read_only,
+            }) catch @panic("OOM");
+        }
+        std.mem.sort(MountInfo, out.items, {}, struct {
+            fn less(_: void, a: MountInfo, b: MountInfo) bool {
+                return std.mem.lessThan(u8, a.path, b.path);
+            }
+        }.less);
     }
 
     /// Basenames of every mount whose parent directory is `path` (deduped, appended sorted).

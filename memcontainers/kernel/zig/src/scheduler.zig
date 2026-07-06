@@ -42,6 +42,7 @@ const TaskId = task_mod.TaskId;
 const BlockReason = task_mod.BlockReason;
 const Capabilities = task_mod.Capabilities;
 const Pipe = pipe.Pipe;
+const READY_CAPACITY_HINT: usize = 4096;
 
 pub const Scheduler = struct {
     gpa: std.mem.Allocator,
@@ -71,7 +72,9 @@ pub const Scheduler = struct {
     foreground_pgid: TaskId = 1,
 
     pub fn init(gpa: std.mem.Allocator) Scheduler {
-        return .{ .gpa = gpa };
+        var self = Scheduler{ .gpa = gpa };
+        self.ready.ensureTotalCapacity(gpa, READY_CAPACITY_HINT) catch @panic("OOM");
+        return self;
     }
 
     /// Spawn a new task with the next free id and enqueue it.
@@ -162,6 +165,49 @@ pub const Scheduler = struct {
             } else {
                 i += 1;
             }
+        }
+    }
+
+    fn isReadyQueued(self: *Scheduler, id: TaskId) bool {
+        for (self.ready.items) |queued| {
+            if (queued == id) return true;
+        }
+        return false;
+    }
+
+    fn compactReadyQueue(self: *Scheduler) void {
+        var write: usize = 0;
+        var read: usize = 0;
+        while (read < self.ready.items.len) : (read += 1) {
+            const id = self.ready.items[read];
+            const t = self.getTask(id) orelse continue;
+            if (t.state == .zombie) continue;
+            var seen = false;
+            var j: usize = 0;
+            while (j < write) : (j += 1) {
+                if (self.ready.items[j] == id) {
+                    seen = true;
+                    break;
+                }
+            }
+            if (seen) continue;
+            self.ready.items[write] = id;
+            write += 1;
+        }
+        self.ready.items.len = write;
+    }
+
+    fn enqueueReadyIfLive(self: *Scheduler, id: TaskId) void {
+        const t = self.getTask(id) orelse return;
+        if (t.state == .zombie) return;
+        if (t.state == .ready) return;
+        if (!self.isReadyQueued(id)) {
+            if (self.ready.items.len >= self.ready.capacity) self.compactReadyQueue();
+            if (self.ready.items.len >= self.ready.capacity) return;
+            t.state = .ready;
+            self.ready.appendAssumeCapacity(id);
+        } else {
+            t.state = .ready;
         }
     }
 
@@ -260,8 +306,7 @@ pub const Scheduler = struct {
     /// stream it reported blocked on, so it is not truly parked) to the back of the
     /// ready queue. Clears `current`.
     pub fn requeue(self: *Scheduler, id: TaskId) void {
-        if (self.getTask(id)) |t| t.state = .ready;
-        self.ready.append(self.gpa, id) catch @panic("OOM");
+        self.enqueueReadyIfLive(id);
         if (self.current) |cur| {
             if (cur == id) self.current = null;
         }
@@ -269,8 +314,7 @@ pub const Scheduler = struct {
 
     pub fn unblock(self: *Scheduler, id: TaskId) void {
         if (self.blocked.fetchRemove(id) != null) {
-            self.ready.append(self.gpa, id) catch @panic("OOM");
-            if (self.getTask(id)) |t| t.state = .ready;
+            self.enqueueReadyIfLive(id);
         }
     }
 
@@ -350,14 +394,14 @@ pub const Scheduler = struct {
         var i: usize = 0;
         while (i < n) : (i += 1) {
             const id = self.popReadyFront() orelse return null;
-            if (self.getTask(id)) |t| {
-                if (t.isStopped()) {
-                    self.ready.append(self.gpa, id) catch @panic("OOM");
-                    continue;
-                }
+            const t = self.getTask(id) orelse continue;
+            if (t.state == .zombie) continue;
+            if (t.isStopped()) {
+                self.enqueueReadyIfLive(id);
+                continue;
             }
             self.current = id;
-            if (self.getTask(id)) |t| t.state = .running;
+            t.state = .running;
             return id;
         }
         return null;

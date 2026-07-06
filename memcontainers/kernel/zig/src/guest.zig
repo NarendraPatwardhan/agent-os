@@ -88,6 +88,7 @@ pub const GuestRuntime = struct {
     unwind_active: bool = false,
     rewind_active: bool = false,
     suspended: bool = false,
+    requeued_this_boundary: bool = false,
     exited: bool = false,
     faulted: bool = false,
     exit_code: i32 = 0,
@@ -165,6 +166,7 @@ pub const GuestRuntime = struct {
         if (!self.active) return if (self.exited) .exited else .faulted;
         const runtime = self.runtime orelse return self.markFault();
         const function = self.function orelse return self.markFault();
+        self.requeued_this_boundary = false;
 
         if (self.suspended) {
             switch (self.suspend_kind) {
@@ -296,13 +298,19 @@ pub const GuestRuntime = struct {
         return true;
     }
 
+    fn requeueOnce(self: *GuestRuntime) void {
+        if (self.requeued_this_boundary) return;
+        self.requeued_this_boundary = true;
+        if (state.isInitialized()) state.kernel().sched.requeue(self.task_id);
+    }
+
     fn parkReady(self: *GuestRuntime, pending: mc.Pending) bool {
         self.suspended = true;
         self.suspend_kind = .syscall_pending;
         self.suspended_pending = pending;
         self.unwind_active = false;
         self.rewind_active = false;
-        if (state.isInitialized()) state.kernel().sched.requeue(self.task_id);
+        self.requeueOnce();
         return true;
     }
 
@@ -312,7 +320,7 @@ pub const GuestRuntime = struct {
         self.suspended_pending = null;
         self.unwind_active = false;
         self.rewind_active = false;
-        if (state.isInitialized()) state.kernel().sched.requeue(self.task_id);
+        self.requeueOnce();
         return true;
     }
 

@@ -19,6 +19,7 @@ const syscall = @import("syscall.zig");
 const guest = @import("guest.zig");
 const task_mod = @import("task.zig");
 const registry = @import("service/registry.zig");
+const MountFs = @import("fs/mountfs.zig").MountFs;
 const FsError = vfs.FsError;
 
 // control.kdl scratch-buffer frame ids/versions (the two the VFS ops emit). Little-endian;
@@ -765,10 +766,15 @@ pub fn symlink(target_ptr: u32, target_len: u32, link_ptr: u32, link_len: u32) i
 
 /// Host-backed mounts need MountFs (the mc_host_call driver) — Phase 6.
 pub fn mount(path_ptr: u32, path_len: u32, read_only: i32) i32 {
-    _ = path_ptr;
-    _ = path_len;
-    _ = read_only;
-    return neg(constants.ENOSYS);
+    const k = state.kernel();
+    if (!state.isInitialized()) return neg(constants.EIO);
+    var scratch = std.heap.ArenaAllocator.init(k.gpa);
+    defer scratch.deinit();
+    const a = scratch.allocator();
+    const path = ctlStr(a, path_ptr, path_len) orelse return neg(constants.EINVAL);
+    if (path.len == 0 or path[0] != '/') return neg(constants.EINVAL);
+    k.ns.mountLabeled(path, MountFs.create(k.gpa, path, &k.host_call, &k.mount_channels).fileSystem(), "mountfs", read_only != 0);
+    return 0;
 }
 
 pub fn unmount(path_ptr: u32, path_len: u32) i32 {
