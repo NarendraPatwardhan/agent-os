@@ -1,15 +1,28 @@
 # Zig Kernel — Interpreter Performance Retrospective
 
-**Status at time of writing:**
+> **RESOLVED (2026-07-08).** The gap this document diagnosed is CLOSED. We replaced wasm3+Asyncify with
+> **WAMR** (wasm-micro-runtime) — a natively re-entrant interpreter — as planned in §8. The Zig kernel
+> now runs entirely on WAMR: **`core_zig` 81/81, `extended_zig` 32/32, no Asyncify, no wasm3.** On the
+> `zz_bench_luau_loop` benchmark, **WAMR at `-O3` = 3001 ms vs wasmi 2938 ms — parity within 2%**
+> (from wasm3's 8.5 s / 2.9x, which was hard-capped at 1.3x by the Asyncify tax). The migration went in
+> stages (git: WAMR vendored `47f56cb` → runs a guest `7beb531` → resumable suspend proven `f5f3d10` →
+> kernel boots, Asyncify deleted `4de2fc9` → full parity `8783f87` → -O3 wasmi parity `f263696`). The
+> two things that mattered: WAMR keeps execution state IN MEMORY (re-entrant), so a blocking syscall or
+> fuel yield is *save exec_env, return, re-enter* — zero per-op tax; and `-O3` (not `-Os`) on the
+> interpreter, since with no instrumentation tax, dispatch codegen is what dominates. **Everything below
+> is the historical record of the wasm3 era and the decision to switch — kept for provenance.**
+
+**Status (wasm3 era — historical):**
 - **Functional parity with the Rust kernel: ACHIEVED.** `core_zig` 81/81 (+ Group G suspend-across-
   snapshot), `extended_zig` 32/32 (sqlite + typst domain suites), every functional subsystem ported
   (see [§1](#1-what-the-port-achieved)), and the full suspend / resume / snapshot / pcall machinery
   works.
-- **Performance parity with the Rust kernel: NOT achieved.** The Zig kernel embeds **wasm3** (a C
-  interpreter) made suspendable via **Binaryen Asyncify**. That combination runs the real e2e suites
-  **~2.5–3x slower than the Rust kernel** (which embeds **wasmi**): `core` ~5 s (wasmi) vs ~12–16 s
-  (wasm3); `extended` similar. This gap is **pervasive across real workloads** (coreutils, shell,
-  luau tool-calls, adapters, sqlite, typst) — it is NOT a microbenchmark artifact.
+- **Performance parity with the Rust kernel: NOT achieved *[with wasm3 — since resolved via WAMR,
+  see the RESOLVED note above]*.** The Zig kernel embeds **wasm3** (a C interpreter) made suspendable
+  via **Binaryen Asyncify**. That combination runs the real e2e suites **~2.5–3x slower than the Rust
+  kernel** (which embeds **wasmi**): `core` ~5 s (wasmi) vs ~12–16 s (wasm3); `extended` similar. This
+  gap is **pervasive across real workloads** (coreutils, shell, luau tool-calls, adapters, sqlite,
+  typst) — it is NOT a microbenchmark artifact.
 
 This document records the root cause, the full investigation, why we could not close the gap with
 wasm3, and the path forward — so future work starts from evidence, not from scratch. Every experiment
