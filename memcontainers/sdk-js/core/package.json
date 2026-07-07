@@ -1,6 +1,6 @@
 {
   "name": "@mc/core",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "description": "Unified Vm API over embedded, browser, and remote AgentOS runtimes. The @mc/* SDK consumer surface.",
@@ -13,5 +13,8 @@
     "@mc/host": "workspace:*",
     "@mc/contracts": "workspace:*",
     "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "rolldown": "1.1.3"
   }
 }

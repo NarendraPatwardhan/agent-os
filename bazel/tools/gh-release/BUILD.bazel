@@ -3,11 +3,12 @@ load(":defs.bzl", "gh_release")
 # tools/gh-release — `bazel run` a GitHub release for agent-os straight from the graph, over the REST
 # API (no `gh` CLI). The mechanism is in defs.bzl; this is the one concrete release target.
 #
-# First cut ships the RUNTIME CORE: the one kernel.wasm + the five SHIPPED flavor tars (minimal,
-# posix, loom, atlas, paper). The tool also generates and uploads a SHA256SUMS over those bytes.
-# Deliberately excluded: base/rootfs (the substrate, not a flavor), svc_test (a test image), and — as
-# follow-ons — the `mc` host binary, the Elixir package, and a manifest.json index. Adding a binary
-# asset is one line in `assets`.
+# First cut ships everything to run agent-os client-side: the one kernel.wasm, the five SHIPPED flavor
+# tars (minimal, posix, loom, atlas, paper), and the self-contained @mc/core ESM bundle (mc-core.mjs —
+# @mc/host/@mc/contracts/zod inlined, imports with no npm install). The tool also generates and uploads
+# a SHA256SUMS over those bytes. Deliberately excluded: base/rootfs (the substrate, not a flavor),
+# svc_test (a test image), and — as follow-ons — the `mc` host binary, the Elixir package, and a
+# manifest.json index. Adding an asset is one line in `assets`.
 #
 # Release notes are MANDATORY (--notes / --notes-file); GitHub auto-generated notes are never used.
 #
@@ -25,6 +26,7 @@ gh_release(
         "//memcontainers/images:loom": "loom.tar",
         "//memcontainers/images:atlas": "atlas.tar",
         "//memcontainers/images:paper": "paper.tar",
+        "//memcontainers/sdk-js/core:bundle": "mc-core.mjs",
     },
     repo = "NarendraPatwardhan/agent-os",
     visibility = ["//visibility:public"],

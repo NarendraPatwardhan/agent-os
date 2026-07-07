@@ -1,7 +1,7 @@
 # @mc/core — the unified Vm API over the embedded @mc/host backend, browser artifacts, and the
 # remote REST + typed WebSocket contract. Published under the @mc/* scope.
 load("//bazel:ts.bzl", "mc_ts_project")
-load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_run_binary", "js_test")
 load("@aspect_rules_js//npm:defs.bzl", "npm_package")
 load("@npm//:defs.bzl", "npm_link_all_packages")
 
@@ -30,6 +30,36 @@ npm_package(
         "package.json",
     ],
     package = "@mc/core",
+    visibility = ["//visibility:public"],
+)
+
+# Bundle @mc/core into a SINGLE self-contained ESM with rolldown (the repo's bundler, same engine
+# as //memcontainers/sdk-js/elements:bundle), inlining @mc/host, @mc/contracts, and zod. A consumer
+# imports this ONE file — no npm install, no node_modules. This is the release "js bundle" asset
+# uploaded by //bazel/tools/gh-release. Node builtins stay external (Bun/Node provide them).
+js_binary(
+    name = "bundle_bin",
+    chdir = package_name(),
+    data = [":node_modules/rolldown"],
+    entry_point = "tools/bundle.mjs",
+)
+
+js_run_binary(
+    name = "bundle",
+    srcs = [
+        ":lib",
+        ":node_modules/@mc/host",
+        ":node_modules/@mc/contracts",
+        ":node_modules/zod",
+        ":node_modules/rolldown",
+    ],
+    outs = ["mc-core.mjs"],
+    args = [
+        "src/index.js",
+        "mc-core.mjs",
+    ],
+    chdir = package_name(),
+    tool = ":bundle_bin",
     visibility = ["//visibility:public"],
 )
 
