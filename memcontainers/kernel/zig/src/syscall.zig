@@ -556,6 +556,7 @@ fn fulfillRead(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque, 
         .svc_call => |src| switch (src.readInto(out)) {
             .pending => return .Pending,
             .got => |n| {
+                state.kernel().sched.checkUnblocked();
                 if (!writeGuestU32(runtime, mem, args.ret_n, @intCast(n))) return finish(neg(constants.EINVAL));
                 return finish(constants.ESUCCESS);
             },
@@ -1781,7 +1782,7 @@ fn fulfillSvcRecv(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaqu
                     return finish(writeSvcEnvelope(runtime, mem, args.buf, args.ret_len, args.hbuf, registry.SVC_KIND_DRAIN_READY, key.session, key.req_id, vfs.SYSTEM_CALLER, 0, "", ""));
                 }
             }
-            return .Pending;
+            return .{ .Block = .{ .svc_recv = channel } };
         };
         switch (inbound) {
             .session_closed => |session| {
@@ -1900,6 +1901,7 @@ fn fulfillSvcCall(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaqu
         releaseDelegatedList(handles.items);
         return neg(constants.EIO);
     };
+    state.kernel().sched.checkUnblocked();
     const src = registry.SvcCallSource.create(state.kernel().gpa, conn.channel, conn.session, req_id);
     const fd = t.allocFd(state.kernel().gpa, .{ .svc_call = src });
     if (!writeGuestU32(runtime, mem, args.ret_fd, @intCast(fd))) {

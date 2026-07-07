@@ -239,6 +239,7 @@ pub const Scheduler = struct {
                     const referenced = switch (reason_ptr.*) {
                         .pipe_read => |rp| rp == p,
                         .pipe_write => |wp| wp == p,
+                        .svc_recv => false,
                         .wait_child => false,
                         .timer => false,
                     };
@@ -577,6 +578,7 @@ pub const Scheduler = struct {
             const should_unblock = switch (entry.value_ptr.*) {
                 .pipe_read => |p| p.isWriteClosed() or !p.isEmpty(),
                 .pipe_write => |p| p.isReadClosed() or !p.isFull(),
+                .svc_recv => |channel| channel.recvReady(),
                 .wait_child => false,
                 .timer => |deadline| bridge.mc_time_monotonic() >= deadline,
             };

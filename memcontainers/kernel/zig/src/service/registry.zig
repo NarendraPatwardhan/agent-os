@@ -395,6 +395,15 @@ pub const ServiceChannel = struct {
         return next;
     }
 
+    pub fn recvReady(self: *const ServiceChannel) bool {
+        if (self.closed or self.requests.items.len != 0) return true;
+        for (self.responses.items) |*entry| {
+            const resp = &entry.response;
+            if (!resp.complete and resp.status == 0 and resp.buffered() < SVC_RESPONSE_HIGH_WATER) return true;
+        }
+        return false;
+    }
+
     pub fn failOverdue(self: *ServiceChannel) void {
         const now = vfs.wallNowMs();
         var i: usize = 0;

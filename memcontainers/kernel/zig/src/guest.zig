@@ -38,9 +38,9 @@ comptime {
 const TaskId = task_mod.TaskId;
 
 const STACK_SIZE: u32 = 512 * 1024;
-const ASYNCIFY_STACK_BYTES: usize = 256 * 1024;
+const ASYNCIFY_STACK_BYTES: usize = 1024 * 1024;
 const PCALL_STACK_MAX: usize = 32;
-const FUEL_QUANTUM: u64 = 20_000_000;
+const FUEL_QUANTUM: u64 = 2_000_000;
 const DEFAULT_FUEL_LIFETIME: u64 = 50_000_000_000;
 const HARD_FUEL_LIFETIME: u64 = 4_000_000_000_000;
 const EXIT_CODE_FUEL_EXHAUSTED: i32 = 137;
@@ -210,12 +210,6 @@ pub const GuestRuntime = struct {
             self.deinit();
             return false;
         }
-        const compile_result = wasm3.m3_CompileModule(loaded_module);
-        if (!ok(compile_result)) {
-            self.deinit();
-            return false;
-        }
-
         const find_result = wasm3.m3_FindFunction(&self.function, self.runtime, entry);
         if (!ok(find_result) or self.function == null) {
             self.deinit();
@@ -267,7 +261,9 @@ pub const GuestRuntime = struct {
                     if (!self.fulfillSuspendedSyscall(runtime)) return .ran;
                 },
                 .fuel_yield => {
-                    if (!self.prepareNextFuelSlice(runtime)) return self.exitNow(EXIT_CODE_FUEL_EXHAUSTED);
+                    if (!self.prepareNextFuelSlice(runtime)) {
+                        return self.exitNow(EXIT_CODE_FUEL_EXHAUSTED);
+                    }
                 },
                 .none => return self.markFault(),
             }
@@ -507,12 +503,16 @@ pub const GuestRuntime = struct {
     }
 
     fn fuelExhausted(self: *GuestRuntime) wasm3.Result {
-        if (self.current_slice == 0 or self.current_slice >= self.lifetime_remaining) {
+        if (self.rewind_active) {
+            _ = self.startFuelYieldSuspend();
+            return null;
+        }
+        if (self.current_slice == 0) {
             self.lifetime_remaining = 0;
             self.current_slice = 0;
             return wasm3.m3Err_trapOutOfFuel;
         }
-        self.lifetime_remaining -= self.current_slice;
+        self.lifetime_remaining -|= self.current_slice;
         self.current_slice = 0;
         if (!self.parkFuelYield()) return wasm3.m3Err_trapOutOfFuel;
         if (self.startFuelYieldSuspend()) return null;

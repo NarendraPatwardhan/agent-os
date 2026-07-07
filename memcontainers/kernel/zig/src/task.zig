@@ -170,6 +170,7 @@ pub const Tier = enum {
 pub const BlockReason = union(enum) {
     pipe_read: *pipe.Pipe,
     pipe_write: *pipe.Pipe,
+    svc_recv: *registry.ServiceChannel,
     wait_child: TaskId,
     timer: i64,
 };
