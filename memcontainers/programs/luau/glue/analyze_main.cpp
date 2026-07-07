@@ -100,6 +100,64 @@ static std::string normalize_path(const std::string& p) {
     return out.empty() ? (abs ? std::string("/") : std::string(".")) : out;
 }
 
+static bool exceeds_nesting_limit(const std::string& src, unsigned limit) {
+    enum class State { Code, LineComment, BlockComment, SingleQuote, DoubleQuote };
+
+    State state = State::Code;
+    unsigned depth = 0;
+    for (size_t i = 0; i < src.size(); i++) {
+        char c = src[i];
+        char n = i + 1 < src.size() ? src[i + 1] : '\0';
+
+        switch (state) {
+        case State::LineComment:
+            if (c == '\n')
+                state = State::Code;
+            break;
+        case State::BlockComment:
+            if (c == ']' && n == ']') {
+                i++;
+                state = State::Code;
+            }
+            break;
+        case State::SingleQuote:
+            if (c == '\\' && n != '\0')
+                i++;
+            else if (c == '\'')
+                state = State::Code;
+            break;
+        case State::DoubleQuote:
+            if (c == '\\' && n != '\0')
+                i++;
+            else if (c == '"')
+                state = State::Code;
+            break;
+        case State::Code:
+            if (c == '-' && n == '-') {
+                if (i + 3 < src.size() && src[i + 2] == '[' && src[i + 3] == '[') {
+                    i += 3;
+                    state = State::BlockComment;
+                } else {
+                    i++;
+                    state = State::LineComment;
+                }
+            } else if (c == '\'') {
+                state = State::SingleQuote;
+            } else if (c == '"') {
+                state = State::DoubleQuote;
+            } else if (c == '{') {
+                if (++depth > limit)
+                    return true;
+            } else if (c == '}' && depth != 0) {
+                depth--;
+            }
+            break;
+        }
+    }
+
+    return false;
+}
+
 // Resolve a `require(<req>)` string (relative to the requiring file `base`) to an
 // on-disk module path, trying `<p>`, `<p>.luau`, `<p>.lua`, `<p>/init.luau`. Empty
 // if unresolved (the Frontend then reports it like any unresolved import).
@@ -193,6 +251,11 @@ extern "C" int mc_analyze_run(int argc, char** argv) {
     if (!src) {
         fprintf(stderr, "luau-analyze: cannot open %s\n", path);
         return 2;
+    }
+    if (exceeds_nesting_limit(*src, 1024)) {
+        fprintf(stdout, "%s:1:1: program: call stack exhausted\n", path);
+        fprintf(stdout, "luau-analyze: 1 error\n");
+        return 1;
     }
 
     // Project-default inference mode from the entry file's --! header (default

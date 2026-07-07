@@ -23,7 +23,7 @@ use ctl_rust::{
     SvcRequest as WireSvcRequest, SvcResponse as WireSvcResponse,
 };
 use sha2::{Digest, Sha256};
-use wasmtime::{Caller, Engine, Instance, Linker, Memory, Module, Store};
+use wasmtime::{Caller, Config, Engine, Instance, Linker, Memory, Module, Store};
 
 /// Lowercase hex sha-256 — the one content-address helper shared across the host modules (catalog
 /// shard/index digests, connection-approval argument digests).
@@ -77,6 +77,7 @@ fn wt<T>(r: std::result::Result<T, wasmtime::Error>, msg: &'static str) -> Resul
 
 const WASM_PAGE_SIZE: u64 = 65536;
 const DEFAULT_WORKERS: i32 = 2;
+const KERNEL_WASM_STACK_BYTES: usize = 2_621_440;
 
 // ---------- Stream sinks ----------
 
@@ -465,7 +466,15 @@ fn get_or_compile(wasm: &[u8]) -> Result<(Engine, Module)> {
     if let Some((e, m)) = cache.get(&key) {
         return Ok((e.clone(), m.clone()));
     }
-    let engine = Engine::default();
+    let mut config = Config::new();
+    // The Zig kernel embeds wasm3; Luau analyzer/docgen paths run through long
+    // asyncified interpreter call chains, but the cap must stay below libtest's
+    // native thread stack so pathological guests trap inside the VM instead of
+    // aborting the host process.
+    config
+        .max_wasm_stack(KERNEL_WASM_STACK_BYTES)
+        .async_stack_size(KERNEL_WASM_STACK_BYTES);
+    let engine = Engine::new(&config).map_err(|e| anyhow!("creating wasmtime engine: {e}"))?;
     let module = wt(Module::new(&engine, wasm), "compiling kernel.wasm")?;
     cache.insert(key, (engine.clone(), module.clone()));
     Ok((engine, module))

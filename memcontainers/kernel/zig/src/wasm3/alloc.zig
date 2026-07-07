@@ -3,13 +3,16 @@
 //! wasm3 calls these through the `d_m3AgentOsAllocator` patch. The storage is
 //! deliberately inside Zig/kernel linear memory, not a C fixed heap or host
 //! import. Use the same wasm allocator class as the kernel state so multiple
-//! live runtimes can coexist. wasm3 keeps several internal pointers in compiled
-//! runtime structures, so the hooks keep the prior conservative non-reuse
-//! behavior while removing the fixed 64 MiB ceiling.
+//! live runtimes can coexist, and release blocks when wasm3 tears a runtime down.
+//! Realloc first tries to resize in place. If the allocator cannot keep the same
+//! address, it allocates/copies and leaves the old block alive: wasm3 has
+//! internal structures that can retain pointers across growth. Size-class
+//! reserves keep that compatibility fallback rare enough to stay bounded.
 
 const std = @import("std");
 
 const ALIGN = 16;
+const POWER2_CAP_LIMIT = 32 * 1024 * 1024;
 const HEADER_BYTES_ALIGNED = std.mem.alignForward(usize, @sizeOf(Header), ALIGN);
 
 const Header = extern struct {
@@ -28,9 +31,37 @@ fn alignForward(value: usize) ?usize {
     return adjusted & ~@as(usize, mask);
 }
 
+fn reserveBlockLen(requested_len: usize) ?usize {
+    if (requested_len > POWER2_CAP_LIMIT) {
+        const total_len = std.math.add(usize, HEADER_BYTES_ALIGNED, requested_len) catch return null;
+        return alignForward(total_len);
+    }
+    const payload_cap: usize = if (requested_len <= 1024)
+        4 * 1024
+    else if (requested_len <= 64 * 1024)
+        256 * 1024
+    else if (requested_len <= 256 * 1024)
+        1024 * 1024
+    else if (requested_len <= 1024 * 1024)
+        4 * 1024 * 1024
+    else blk: {
+        var cap: usize = 2 * 1024 * 1024;
+        const target = std.math.mul(usize, requested_len, 2) catch return null;
+        while (cap < target) cap = std.math.mul(usize, cap, 2) catch return null;
+        break :blk cap;
+    };
+    const total_len = std.math.add(usize, HEADER_BYTES_ALIGNED, payload_cap) catch return null;
+    return alignForward(total_len);
+}
+
 fn headerFromPayload(ptr: *anyopaque) *Header {
     const base_addr = @intFromPtr(ptr) - HEADER_BYTES_ALIGNED;
     return @ptrFromInt(base_addr);
+}
+
+fn blockFromHeader(header: *Header) []align(ALIGN) u8 {
+    const base: [*]align(ALIGN) u8 = @ptrFromInt(@intFromPtr(header));
+    return base[0..header.block_len];
 }
 
 pub fn reset() void {
@@ -43,8 +74,7 @@ pub fn usedBytes() usize {
 
 fn agentOsWasm3Alloc(size: usize) callconv(.c) ?*anyopaque {
     const requested_len = if (size == 0) 1 else size;
-    const total_len = std.math.add(usize, HEADER_BYTES_ALIGNED, requested_len) catch return null;
-    const block_len = alignForward(total_len) orelse return null;
+    const block_len = reserveBlockLen(requested_len) orelse return null;
     const block = wasm_allocator.alignedAlloc(u8, .fromByteUnits(ALIGN), block_len) catch return null;
     const payload = block.ptr + HEADER_BYTES_ALIGNED;
 
@@ -58,7 +88,9 @@ fn agentOsWasm3Alloc(size: usize) callconv(.c) ?*anyopaque {
 }
 
 fn agentOsWasm3Free(ptr: ?*anyopaque) callconv(.c) void {
-    _ = ptr;
+    const raw = ptr orelse return;
+    const header = headerFromPayload(raw);
+    wasm_allocator.free(blockFromHeader(header));
 }
 
 fn agentOsWasm3Realloc(ptr: ?*anyopaque, new_size: usize, old_size: usize) callconv(.c) ?*anyopaque {
@@ -71,6 +103,30 @@ fn agentOsWasm3Realloc(ptr: ?*anyopaque, new_size: usize, old_size: usize) callc
     const raw = ptr.?;
     const header = headerFromPayload(raw);
     const requested_len = if (new_size == 0) 1 else new_size;
+    const needed_len = std.math.add(usize, HEADER_BYTES_ALIGNED, requested_len) catch return null;
+    const block_len = reserveBlockLen(requested_len) orelse return null;
+
+    const old_requested_len = header.requested_len;
+    if (needed_len <= header.block_len) {
+        header.requested_len = requested_len;
+        if (requested_len > old_requested_len) {
+            const dst: [*]u8 = @ptrCast(raw);
+            @memset(dst[old_requested_len..requested_len], 0);
+        }
+        return raw;
+    }
+
+    if (wasm_allocator.resize(blockFromHeader(header), block_len)) {
+        header.* = .{
+            .requested_len = requested_len,
+            .block_len = block_len,
+        };
+        if (requested_len > old_requested_len) {
+            const dst: [*]u8 = @ptrCast(raw);
+            @memset(dst[old_requested_len..requested_len], 0);
+        }
+        return raw;
+    }
 
     const new_raw = agentOsWasm3Alloc(new_size) orelse return null;
     const copy_len = @min(@min(old_size, header.requested_len), new_size);
