@@ -1,4 +1,5 @@
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@rules_rust//rust:defs.bzl", "rust_test")
 load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
 
 # //third_party/wamr — repository-local inputs for the external WAMR runtime.
@@ -72,7 +73,10 @@ zig_binary(
         "-rdynamic",
     ],
     tags = ["manual"],
-    deps = ["@wamr//:incs"],
+    deps = [
+        "//memcontainers/kernel/zig:wamr_bindings",
+        "@wamr//:incs",
+    ],
 )
 
 zig_configure_binary(
@@ -87,4 +91,16 @@ zig_configure_binary(
 build_test(
     name = "wamr_wasm32_probe_test",
     targets = [":wamr_wasm32_probe"],
+)
+
+rust_test(
+    name = "wamr_wasm32_run_test",
+    srcs = ["wamr_wasm32_run_test.rs"],
+    crate_root = "wamr_wasm32_run_test.rs",
+    edition = "2021",
+    data = [":wamr_wasm32_probe"],
+    deps = [
+        "@host_crates//:wasmtime",
+        "@rules_rust//rust/runfiles",
+    ],
 )

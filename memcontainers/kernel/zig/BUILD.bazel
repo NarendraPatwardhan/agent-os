@@ -1,4 +1,4 @@
-load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary", "zig_library")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("//bazel:asyncify.bzl", "asyncify_wasm")
 load("//bazel/tools/size:defs.bzl", "size_limit")
@@ -242,6 +242,13 @@ WAMR_COPTS = [
     "-ffunction-sections",
     "-fvisibility=hidden",
 ]
+
+zig_library(
+    name = "wamr_bindings",
+    main = "src/wamr/bindings.zig",
+    import_name = "wamr_bindings",
+    visibility = ["//third_party/wamr:__pkg__"],
+)
 
 # The reactor module: exports only, no _start. Reachable files compile; the rest are
 # declared inputs the fill phases import as they land (§15.1). Tagged manual — it is only
