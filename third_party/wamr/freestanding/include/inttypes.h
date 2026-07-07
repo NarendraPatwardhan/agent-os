@@ -1,5 +1,5 @@
-#ifndef AGENT_OS_WASM3_INTTYPES_H
-#define AGENT_OS_WASM3_INTTYPES_H
+#ifndef AGENT_OS_WAMR_INTTYPES_H
+#define AGENT_OS_WAMR_INTTYPES_H
 
 #include <stdint.h>
 
@@ -27,5 +27,8 @@
 #define PRIX16 "X"
 #define PRIX32 "X"
 #define PRIX64 "llX"
+
+#define PRIxPTR "x"
+#define PRIXPTR "X"
 
 #endif

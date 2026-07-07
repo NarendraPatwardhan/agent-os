@@ -1,0 +1,46 @@
+diff --git a/core/config.h b/core/config.h
+index 4f3bbf6d..d0b1e3a4 100644
+--- a/core/config.h
++++ b/core/config.h
+@@ -22,7 +22,8 @@
+     && !defined(BUILD_TARGET_RISCV32_ILP32D) \
+     && !defined(BUILD_TARGET_RISCV32_ILP32F) \
+     && !defined(BUILD_TARGET_RISCV32_ILP32) \
+-    && !defined(BUILD_TARGET_ARC)
++    && !defined(BUILD_TARGET_ARC) \
++    && !defined(BUILD_TARGET_WASM32)
+ /* clang-format on */
+ #if defined(__x86_64__) || defined(__x86_64)
+ #define BUILD_TARGET_X86_64
+@@ -49,6 +50,9 @@
+ #define BUILD_TARGET_RISCV32_ILP32D
+ #elif defined(__arc__)
+ #define BUILD_TARGET_ARC
++#elif defined(__wasm32__)
++#define BUILD_TARGET_WASM32
++#define BUILD_TARGET "WASM32"
+ #else
+ #error "Build target isn't set"
+ #endif
+diff --git a/core/iwasm/common/wasm_runtime_common.c b/core/iwasm/common/wasm_runtime_common.c
+index 9305d829..3293ad76 100644
+--- a/core/iwasm/common/wasm_runtime_common.c
++++ b/core/iwasm/common/wasm_runtime_common.c
+@@ -5554,7 +5554,7 @@ wasm_runtime_invoke_native(WASMExecEnv *exec_env, void *func_ptr,
+ 
+ #if defined(BUILD_TARGET_X86_32) || defined(BUILD_TARGET_ARM)    \
+     || defined(BUILD_TARGET_THUMB) || defined(BUILD_TARGET_MIPS) \
+-    || defined(BUILD_TARGET_XTENSA)
++    || defined(BUILD_TARGET_XTENSA) || defined(BUILD_TARGET_WASM32)
+ typedef void (*GenericFunctionPointer)(void);
+ void
+ invokeNative(GenericFunctionPointer f, uint32 *args, uint32 sz);
+@@ -5602,7 +5602,7 @@ wasm_runtime_invoke_native(WASMExecEnv *exec_env, void *func_ptr,
+     bool is_aot_func = (NULL == signature);
+ #endif
+ 
+-#if defined(BUILD_TARGET_X86_32)
++#if defined(BUILD_TARGET_X86_32) || defined(BUILD_TARGET_WASM32)
+     argc1 = argc + ext_ret_count + 2;
+ #else
+     /* arm/thumb/mips/xtensa, 64-bit data must be 8 bytes aligned,

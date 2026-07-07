@@ -1,8 +1,10 @@
-#ifndef AGENT_OS_WASM3_MATH_H
-#define AGENT_OS_WASM3_MATH_H
+#ifndef AGENT_OS_WAMR_MATH_H
+#define AGENT_OS_WAMR_MATH_H
 
 #define NAN (__builtin_nanf(""))
+#define INFINITY (__builtin_inff())
 #define isnan(x) __builtin_isnan(x)
+#define isinf(x) __builtin_isinf(x)
 #define signbit(x) __builtin_signbit(x)
 
 static inline float fabsf(float x) { return __builtin_fabsf(x); }

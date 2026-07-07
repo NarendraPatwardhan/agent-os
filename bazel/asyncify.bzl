@@ -1,8 +1,8 @@
 """Zig-kernel Asyncify packaging rule.
 
-The Zig kernel uses Binaryen Asyncify to instrument only the embedded wasm3 call
-chain and the thin syscall trampoline. This rule is deliberately Zig-only: Rust
-uses wasmi's native resumability and never passes through Binaryen.
+The Zig kernel used Binaryen Asyncify to instrument only the embedded interpreter
+call chain and thin syscall trampoline. This rule remains for the legacy kernel
+target while the WAMR driver port replaces it with native exec_env re-entry.
 """
 
 def _asyncify_wasm_impl(ctx):
@@ -48,7 +48,7 @@ if [ "$6" = "1" ]; then
   INDIRECT_ARG="--pass-arg=asyncify-ignore-indirect"
 fi
 # The kernel is built with -fno-strip so the wasm NAME SECTION survives: Binaryen's
-# asyncify-onlylist matches wasm3's functions BY NAME (§7.4), and without names it
+# asyncify-onlylist matches interpreter functions BY NAME (§7.4), and without names it
 # instruments nothing (the suspend/resume silently becomes a no-op). -fno-strip ALSO emits
 # DWARF that Binaryen's asyncify cannot parse ("Fatal: TODO: DW_LNE_define_file"), so strip
 # DWARF FIRST while KEEPING names (-g), then asyncify the DWARF-free, still-named wasm (-g
@@ -156,13 +156,13 @@ asyncify_wasm = rule(
             doc = "The pre-Asyncify Zig kernel wasm.",
         ),
         "only_list": attr.string_list(
-            doc = "Functions allowed to be Asyncify-instrumented. Empty until the wasm3 driver executes guests.",
+            doc = "Functions allowed to be Asyncify-instrumented.",
         ),
         "remove_list": attr.string_list(
             doc = "Functions that must remain outside Asyncify instrumentation, usually internal driver boundaries.",
         ),
         "tail_call_list": attr.string_list(
-            doc = "Remove-listed functions whose final wasm3 dispatch call_indirect is rewritten to return_call_indirect after Asyncify.",
+            doc = "Remove-listed functions whose final dispatch call_indirect is rewritten to return_call_indirect after Asyncify.",
         ),
         "ignore_indirect": attr.bool(
             default = False,

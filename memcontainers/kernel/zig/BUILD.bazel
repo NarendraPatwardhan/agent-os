@@ -11,14 +11,10 @@ load("//bazel/tools/size:defs.bzl", "size_limit")
 #
 # Phase 1 is DONE here: the freestanding kernel passes the Asyncify transition (via
 # bazel/asyncify.bzl, non-empty only_list — never []) and carries the import/export-purity
-# and size gates. On the no-wasm3 kernel nothing suspends, so Asyncify instruments nothing
-# and the only_list matches nothing yet — that is the honest "no wasm3 yet" Phase 1 (§8).
+# and size gates. The WAMR engine swap intentionally leaves the Zig guest driver red until
+# the follow-up driver/snapshot phase.
 #
 # WHAT IS DELIBERATELY NOT HERE YET (cherry-picked from agent-os-slim in Phase order, §15.5):
-#   - //third_party/wasm3 (http_archive + fuel patch) + its freestanding libc — Phase 5.
-#     When it lands: add csrcs/copts (-Dd_m3AgentOsFuelHook=1, -Dd_m3AgentOsAllocator=1)
-#     + @wasm3//:incs to kernel_raw, filling src/wasm3/* and src/guest.zig; and the
-#     only_list/remove_list below get their REAL wasm3-op + trampoline + driver-frame names.
 #   - the generated ctl_zig/env_zig/mc_zig deps — added to kernel_raw as control.zig /
 #     bridge.zig / syscall.zig get filled (constants_zig is used from day one).
 
@@ -190,9 +186,6 @@ KERNEL_SRCS = [
     "src/rescue.zig",
     "src/syscall.zig",
     "src/vfs.zig",
-    "src/wasm3/bindings.zig",
-    "src/wasm3/alloc.zig",
-    "src/wasm3/raw.zig",
     "src/ipc/pipe.zig",
     "src/egress/net.zig",
     "src/egress/host_call.zig",
@@ -215,30 +208,39 @@ KERNEL_SRCS = [
     "src/fs/utils.zig",
 ]
 
-# The embedded wasm3 interpreter (ZIG_KERNEL §7), compiled freestanding by zig cc into the
-# kernel. Its libc surface is satisfied in-module (third_party/wasm3/freestanding), never as
-# a new host import (A4, verified by import-purity). The fuel-metering patch is on
-# (d_m3AgentOsFuelHook); allocation routes to wasm3/alloc.zig (d_m3AgentOsAllocator, A6).
-WASM3_CSRC = [
-    "//third_party/wasm3:freestanding_libc",
-    "@wasm3//:core_srcs",
+# The embedded WAMR interpreter foundation (PERFORMANCE.md §8), compiled freestanding by zig cc
+# into the kernel. Its libc/platform surface is satisfied in-module
+# (third_party/wamr/freestanding), never as a new host import (A4, verified by import-purity).
+# The Zig guest driver still needs the follow-up WAMR port before this kernel target compiles.
+WAMR_CSRC = [
+    "//third_party/wamr:freestanding_libc",
+    "//third_party/wamr:freestanding_platform",
+    "@wamr//:core_srcs",
 ]
-WASM3_EXTRA_SRCS = [
-    "//third_party/wasm3:freestanding_headers",
-    "@wasm3//:headers",
+WAMR_EXTRA_SRCS = [
+    "//third_party/wamr:freestanding_headers",
+    "@wamr//:headers",
 ]
-WASM3_COPTS = [
-    "-Dd_m3AgentOsAllocator=1",
-    "-Dd_m3Freestanding=1",
-    "-Dd_m3VerboseErrorMessages=0",
-    "-Dd_m3RecordBacktraces=0",
-    "-Dd_m3EnableStrace=0",
-    "-Dd_m3AgentOsFuelHook=1",
-    "-Ithird_party/wasm3/freestanding/include",
+WAMR_COPTS = [
+    "-DWASM_ENABLE_INTERP=1",
+    "-DWASM_ENABLE_FAST_INTERP=1",
+    "-DWASM_ENABLE_INSTRUCTION_METERING=1",
+    "-DWASM_ENABLE_AOT=0",
+    "-DWASM_ENABLE_JIT=0",
+    "-DWASM_ENABLE_FAST_JIT=0",
+    "-DWASM_ENABLE_THREAD_MGR=0",
+    "-DWASM_ENABLE_SHARED_MEMORY=0",
+    "-DWASM_ENABLE_LIBC_WASI=0",
+    "-DWASM_ENABLE_LIBC_BUILTIN=0",
+    "-DWASM_ENABLE_MULTI_MODULE=0",
+    "-DWASM_ENABLE_GC=0",
+    "-DWASM_ENABLE_BULK_MEMORY=1",
+    "-DBH_MALLOC=wasm_runtime_malloc",
+    "-DBH_FREE=wasm_runtime_free",
+    "-Ithird_party/wamr/freestanding/include",
     "-fdata-sections",
     "-ffunction-sections",
     "-fvisibility=hidden",
-    "-mtail-call",
 ]
 
 # The reactor module: exports only, no _start. Reachable files compile; the rest are
@@ -248,13 +250,13 @@ zig_binary(
     name = "kernel_raw",
     main = "src/main.zig",
     srcs = KERNEL_SRCS,
-    copts = WASM3_COPTS,
-    csrcs = WASM3_CSRC,
-    extra_srcs = WASM3_EXTRA_SRCS,
+    copts = WAMR_COPTS,
+    csrcs = WAMR_CSRC,
+    extra_srcs = WAMR_EXTRA_SRCS,
     # Keep the wasm name section (ReleaseSmall strips it by default): Binaryen's
-    # asyncify-onlylist matches wasm3's functions BY NAME, so without names it instruments
-    # nothing and the suspend/resume is silently a no-op (§7.4). The name section is a few
-    # tens of KB, well under the size budget; the asyncify no-creep gate keeps it honest.
+    # The legacy asyncify gates match functions BY NAME, so without names they instrument
+    # nothing and the suspend/resume check becomes meaningless (§7.4). The name section is
+    # kept until the WAMR driver phase deletes the asyncify machinery.
     zigopts = ["-fno-strip"],
     linkopts = [
         "-fno-entry",
@@ -266,7 +268,7 @@ zig_binary(
         "//memcontainers/contracts:env_zig",  # bridge.zig derives the env extern surface from IMPORTS (§5.1)
         "//memcontainers/contracts:mc_zig",  # generated syscall descriptors + Pending union (§5.1)
         "//memcontainers/shcore:shcore",
-        "@wasm3//:incs",  # wasm3.h include path for the freestanding C compile
+        "@wamr//:incs",  # WAMR include path for the freestanding C compile
         # ctl_zig / mc_zig join as control-exec (Phase 4) and syscall.zig (Phase 5) consume their
         # descriptors. The two tiny FileStat/DirEntries result frames are hand-encoded in control.zig
         # against the control.kdl wire format (constants there gate drift) — see wire_test.
@@ -288,16 +290,15 @@ zig_configure_binary(
 # point of the port (§15.2): it is a NON-EMPTY WHITELIST (never []), so ONLY these frames are
 # instrumented. The guest.zig driver frame is excluded simply by being absent from the list,
 # which is exactly what lets it catch the unwind INTERNALLY (§7.4) — Binaryen forbids pairing
-# an only-list with a remove-list, so omission IS the pin. On the no-wasm3 kernel there are no
-# suspend points, so this instruments nothing; Phase 5 expands only_list to the real wasm3-op
-# functions + the mc_sys_* trampoline (everything from the trampoline UP TO but not including
-# the driver frame). The host is never modified; there is no mc_prepare_rewind (§7.7). Adds
-# only the optional asyncify_* exports (allowed by §1.2).
+# an only-list with a remove-list, so omission IS the pin. On the pre-driver kernel there are no
+# suspend points, so this instruments nothing. The WAMR follow-up removes this path in favor
+# of exec_env re-entry and metering. The host is never modified; there is no mc_prepare_rewind
+# (§7.7). Adds only the optional asyncify_* exports (allowed by §1.2).
 asyncify_wasm(
     name = "kernel",
     src = ":kernel_obj",
-    # ignore_indirect MUST stay off (slim commit 4e4d3da): wasm3 dispatches op→op and
-    # op_CallRawFunction→trampoline via CALL_INDIRECT, and slim proved that ignoring indirect
+    # ignore_indirect MUST stay off for the legacy asyncify path: interpreter dispatch and
+    # raw-function trampolines use CALL_INDIRECT, and slim proved that ignoring indirect
     # calls "re-entered the pcall import instead of resuming the continuation" — it breaks
     # nested-m3_Call resumption, the core of mc.pcall / loom programmability. The unwind
     # propagates back up the indirect op chain, so those sites must be instrumented (with it on,
@@ -311,8 +312,8 @@ asyncify_wasm(
     # the pcall handler + every suspend helper and would SILENTLY break loom on a miss.
     # Excluded:
     #   agent_os_guest_call_boundary — the ONE Asyncify catch: the unwind spills up the whole
-    #     wasm3 op chain + raw handlers + nested m3_Calls + the syscall/fuel suspend helpers (all
-    #     auto-instrumented) and STOPS here, which calls asyncify_stop_unwind and returns to the
+    #     interpreter op chain + raw handlers + nested guest calls + the syscall/fuel suspend
+    #     helpers (all auto-instrumented) and STOPS here, which calls asyncify_stop_unwind and returns to the
     #     scheduler — the host never sees a suspend, and there is no mc_prepare_rewind.
     #   main.mc_*  — every host-called export, kept OUT of instrumentation so the host boundary
     #     is provably clean (no export can carry an unwind to the host). mc_tick reaches the

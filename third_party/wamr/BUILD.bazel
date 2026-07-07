@@ -1,0 +1,90 @@
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
+
+# //third_party/wamr — repository-local inputs for the external WAMR runtime.
+# Upstream source enters via MODULE.bazel's http_archive. Only our Bazel build
+# file, wasm32 target patch, and freestanding platform/libc live in-tree.
+
+exports_files([
+    "BUILD.wamr.bazel",
+    "patches/0001-agent-os-wasm32-target.patch",
+])
+
+filegroup(
+    name = "freestanding_headers",
+    srcs = glob(["freestanding/include/*.h"]),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "freestanding_libc",
+    srcs = ["freestanding/libc.c"],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "freestanding_platform",
+    srcs = ["freestanding/wamr_platform.c"],
+    visibility = ["//visibility:public"],
+)
+
+WAMR_COPTS = [
+    "-DWASM_ENABLE_INTERP=1",
+    "-DWASM_ENABLE_FAST_INTERP=1",
+    "-DWASM_ENABLE_INSTRUCTION_METERING=1",
+    "-DWASM_ENABLE_AOT=0",
+    "-DWASM_ENABLE_JIT=0",
+    "-DWASM_ENABLE_FAST_JIT=0",
+    "-DWASM_ENABLE_THREAD_MGR=0",
+    "-DWASM_ENABLE_SHARED_MEMORY=0",
+    "-DWASM_ENABLE_LIBC_WASI=0",
+    "-DWASM_ENABLE_LIBC_BUILTIN=0",
+    "-DWASM_ENABLE_MULTI_MODULE=0",
+    "-DWASM_ENABLE_GC=0",
+    "-DWASM_ENABLE_BULK_MEMORY=1",
+    "-DBH_MALLOC=wasm_runtime_malloc",
+    "-DBH_FREE=wasm_runtime_free",
+    "-Ithird_party/wamr/freestanding/include",
+    "-fdata-sections",
+    "-ffunction-sections",
+    "-fvisibility=hidden",
+]
+
+WAMR_CSRC = [
+    ":freestanding_libc",
+    ":freestanding_platform",
+    "@wamr//:core_srcs",
+]
+
+WAMR_EXTRA_SRCS = [
+    ":freestanding_headers",
+    "@wamr//:headers",
+]
+
+zig_binary(
+    name = "wamr_wasm32_probe_raw",
+    main = "freestanding/probe.zig",
+    copts = WAMR_COPTS,
+    csrcs = WAMR_CSRC,
+    extra_srcs = WAMR_EXTRA_SRCS,
+    linkopts = [
+        "-fno-entry",
+        "-rdynamic",
+    ],
+    tags = ["manual"],
+    deps = ["@wamr//:incs"],
+)
+
+zig_configure_binary(
+    name = "wamr_wasm32_probe",
+    actual = ":wamr_wasm32_probe_raw",
+    mode = "release_small",
+    target = "//platforms:wasm32_freestanding",
+    threaded = "single",
+    visibility = ["//visibility:public"],
+)
+
+build_test(
+    name = "wamr_wasm32_probe_test",
+    targets = [":wamr_wasm32_probe"],
+)

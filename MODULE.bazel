@@ -179,24 +179,22 @@ http_archive(
     urls = ["https://github.com/WebAssembly/binaryen/releases/download/version_130/binaryen-version_130-x86_64-linux.tar.gz"],
 )
 
-# wasm3 — the Zig kernel's embedded interpreter (ZIG_KERNEL.md §7), fetched from upstream and
-# patched only for agent-os native fuel metering plus a freestanding abort path (B3). Optional
-# WASI/libc/tracer shims are not linked; guest syscalls are registered by Zig glue. Compiled
-# freestanding by zig cc; its libc surface is satisfied in-module (third_party/wasm3/freestanding),
-# never as a new host import (A4).
+# WAMR — the Zig kernel's embedded interpreter foundation (PERFORMANCE.md §8), fetched from upstream
+# and compiled interpreter-only/fuel-enabled for wasm32-freestanding. A tiny patch teaches upstream
+# config.h about __wasm32__; the platform/libc surface is satisfied in-module
+# (third_party/wamr/freestanding), never as a new host import (A4).
 http_archive(
-    name = "wasm3",
-    build_file = "//third_party/wasm3:BUILD.wasm3.bazel",
+    name = "wamr",
+    build_file = "//third_party/wamr:BUILD.wamr.bazel",
     patch_args = ["-p1"],
     patch_tool = "patch",
     patches = [
-        "//third_party/wasm3:patches/0001-agent-os-fuel.patch",
-        "//third_party/wasm3:patches/0002-musttail-dispatch.patch",
+        "//third_party/wamr:patches/0001-agent-os-wasm32-target.patch",
     ],
-    sha256 = "b778dd72ee2251f4fe9e2666ee3fe1c26f06f517c3ffce572416db067546536c",
-    strip_prefix = "wasm3-0.5.0",
+    sha256 = "4ac27e697a3e64959756624d68ec18ce5fc54a2d3f31f1b3f702be6fcd48a7d8",
+    strip_prefix = "wasm-micro-runtime-WAMR-2.4.3",
     type = "tar.gz",
-    urls = ["https://github.com/wasm3/wasm3/archive/refs/tags/v0.5.0.tar.gz"],
+    urls = ["https://github.com/bytecodealliance/wasm-micro-runtime/archive/refs/tags/WAMR-2.4.3.tar.gz"],
 )
 
 # luau — upstream Luau 0.725 fetched from GitHub, patched `-fno-exceptions`-clean (the `// mc PATCH`

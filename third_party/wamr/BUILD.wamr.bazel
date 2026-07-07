@@ -1,0 +1,62 @@
+# build_file for @wamr, evaluated in the fetched WAMR source tree.
+# The Zig kernel compiles these C sources with rules_zig/zig cc for
+# wasm32-freestanding. AOT/JIT/WASI/thread/debug sources are intentionally
+# excluded; guest syscalls are registered by the kernel's own Zig glue.
+
+load("@agent-os//bazel:mc_program.bzl", "cc_headers")
+
+filegroup(
+    name = "core_srcs",
+    srcs = [
+        "core/iwasm/interpreter/wasm_interp_fast.c",
+        "core/iwasm/interpreter/wasm_loader.c",
+        "core/iwasm/interpreter/wasm_runtime.c",
+        "core/iwasm/common/wasm_exec_env.c",
+        "core/iwasm/common/wasm_c_api.c",
+        "core/iwasm/common/wasm_loader_common.c",
+        "core/iwasm/common/wasm_memory.c",
+        "core/iwasm/common/wasm_native.c",
+        "core/iwasm/common/wasm_runtime_common.c",
+        "core/iwasm/common/arch/invokeNative_general.c",
+        "core/shared/mem-alloc/mem_alloc.c",
+        "core/shared/mem-alloc/ems/ems_alloc.c",
+        "core/shared/mem-alloc/ems/ems_gc.c",
+        "core/shared/mem-alloc/ems/ems_hmu.c",
+        "core/shared/mem-alloc/ems/ems_kfc.c",
+        "core/shared/utils/bh_assert.c",
+        "core/shared/utils/bh_bitmap.c",
+        "core/shared/utils/bh_common.c",
+        "core/shared/utils/bh_hashmap.c",
+        "core/shared/utils/bh_leb128.c",
+        "core/shared/utils/bh_list.c",
+        "core/shared/utils/bh_log.c",
+        "core/shared/utils/bh_queue.c",
+        "core/shared/utils/bh_vector.c",
+        "core/shared/utils/runtime_timer.c",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "headers",
+    srcs = glob([
+        "core/**/*.h",
+    ]),
+    visibility = ["//visibility:public"],
+)
+
+cc_headers(
+    name = "incs",
+    hdrs = [],
+    includes = [
+        "core/iwasm/common",
+        "core/iwasm/common/gc",
+        "core/iwasm/include",
+        "core/iwasm/interpreter",
+        "core/shared/mem-alloc",
+        "core/shared/mem-alloc/ems",
+        "core/shared/platform/include",
+        "core/shared/utils",
+    ],
+    visibility = ["//visibility:public"],
+)
