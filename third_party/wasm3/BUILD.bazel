@@ -5,6 +5,7 @@
 exports_files([
     "BUILD.wasm3.bazel",
     "patches/0001-agent-os-fuel.patch",
+    "patches/0002-musttail-dispatch.patch",
 ])
 
 filegroup(

@@ -189,7 +189,10 @@ http_archive(
     build_file = "//third_party/wasm3:BUILD.wasm3.bazel",
     patch_args = ["-p1"],
     patch_tool = "patch",
-    patches = ["//third_party/wasm3:patches/0001-agent-os-fuel.patch"],
+    patches = [
+        "//third_party/wasm3:patches/0001-agent-os-fuel.patch",
+        "//third_party/wasm3:patches/0002-musttail-dispatch.patch",
+    ],
     sha256 = "b778dd72ee2251f4fe9e2666ee3fe1c26f06f517c3ffce572416db067546536c",
     strip_prefix = "wasm3-0.5.0",
     type = "tar.gz",

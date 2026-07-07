@@ -31,10 +31,150 @@ KERNEL_MAX_BYTES = 1024 * 1024
 # the kernel and the host boundary is provably clean. Future suspend paths (mc.pcall's nested
 # m3_Call → loom) are instrumented by construction, never by re-enumeration. no-creep asserts
 # each entry actually MATCHES a real function (an inlined catch frame would silently escape).
+ASYNCIFY_TAIL_CALL_LIST = [
+    "op_i32_Add_*",
+    "op_i32_Subtract_*",
+    "op_i32_Multiply_*",
+    "op_i32_Divide_*",
+    "op_u32_Divide_*",
+    "op_i32_Remainder_*",
+    "op_u32_Remainder_*",
+    "op_u32_And_*",
+    "op_u32_Or_*",
+    "op_u32_Xor_*",
+    "op_u32_ShiftLeft_*",
+    "op_i32_ShiftRight_*",
+    "op_u32_ShiftRight_*",
+    "op_u32_Rotl_*",
+    "op_u32_Rotr_*",
+    "op_i32_Equal*",
+    "op_i32_NotEqual*",
+    "op_i32_LessThan*",
+    "op_u32_LessThan*",
+    "op_i32_GreaterThan*",
+    "op_u32_GreaterThan*",
+    "op_i32_LessThanOrEqual*",
+    "op_u32_LessThanOrEqual*",
+    "op_i32_GreaterThanOrEqual*",
+    "op_u32_GreaterThanOrEqual*",
+    "op_u32_Clz_*",
+    "op_u32_Ctz_*",
+    "op_u32_Popcnt_*",
+    "op_i32_Wrap_i64_*",
+    "op_i32_Trunc_f32_*",
+    "op_u32_Trunc_f32_*",
+    "op_i32_Trunc_f64_*",
+    "op_u32_Trunc_f64_*",
+    "op_i32_Reinterpret_f32_*",
+    "op_i32_Extend8_s_*",
+    "op_i32_Extend16_s_*",
+    "op_i32_TruncSat_f32_*",
+    "op_u32_TruncSat_f32_*",
+    "op_i32_TruncSat_f64_*",
+    "op_u32_TruncSat_f64_*",
+    "op_i64_Add_*",
+    "op_i64_Subtract_*",
+    "op_i64_Multiply_*",
+    "op_i64_Divide_*",
+    "op_u64_Divide_*",
+    "op_i64_Remainder_*",
+    "op_u64_Remainder_*",
+    "op_u64_And_*",
+    "op_u64_Or_*",
+    "op_u64_Xor_*",
+    "op_u64_ShiftLeft_*",
+    "op_i64_ShiftRight_*",
+    "op_u64_ShiftRight_*",
+    "op_u64_Rotl_*",
+    "op_u64_Rotr_*",
+    "op_i64_Equal*",
+    "op_i64_NotEqual*",
+    "op_i64_LessThan*",
+    "op_u64_LessThan*",
+    "op_i64_GreaterThan*",
+    "op_u64_GreaterThan*",
+    "op_i64_LessThanOrEqual*",
+    "op_u64_LessThanOrEqual*",
+    "op_i64_GreaterThanOrEqual*",
+    "op_u64_GreaterThanOrEqual*",
+    "op_u64_Clz_*",
+    "op_u64_Ctz_*",
+    "op_u64_Popcnt_*",
+    "op_i64_Extend_i32_*",
+    "op_i64_Extend_u32_*",
+    "op_i64_Trunc_f32_*",
+    "op_u64_Trunc_f32_*",
+    "op_i64_Trunc_f64_*",
+    "op_u64_Trunc_f64_*",
+    "op_i64_Reinterpret_f64_*",
+    "op_i64_Extend8_s_*",
+    "op_i64_Extend16_s_*",
+    "op_i64_Extend32_s_*",
+    "op_i64_TruncSat_f32_*",
+    "op_u64_TruncSat_f32_*",
+    "op_i64_TruncSat_f64_*",
+    "op_u64_TruncSat_f64_*",
+    "op_f32_Abs_*",
+    "op_f32_Negate_*",
+    "op_f32_Ceil_*",
+    "op_f32_Floor_*",
+    "op_f32_Trunc_*",
+    "op_f32_Nearest_*",
+    "op_f32_Sqrt_*",
+    "op_f32_Add_*",
+    "op_f32_Subtract_*",
+    "op_f32_Multiply_*",
+    "op_f32_Divide_*",
+    "op_f32_Min_*",
+    "op_f32_Max_*",
+    "op_f32_CopySign_*",
+    "op_f32_Equal*",
+    "op_f32_NotEqual*",
+    "op_f32_LessThan*",
+    "op_f32_GreaterThan*",
+    "op_f32_LessThanOrEqual*",
+    "op_f32_GreaterThanOrEqual*",
+    "op_f32_Convert_i32_*",
+    "op_f32_Convert_u32_*",
+    "op_f32_Convert_i64_*",
+    "op_f32_Convert_u64_*",
+    "op_f32_Demote_f64_*",
+    "op_f32_Reinterpret_i32_*",
+    "op_f64_Abs_*",
+    "op_f64_Negate_*",
+    "op_f64_Ceil_*",
+    "op_f64_Floor_*",
+    "op_f64_Trunc_*",
+    "op_f64_Nearest_*",
+    "op_f64_Sqrt_*",
+    "op_f64_Add_*",
+    "op_f64_Subtract_*",
+    "op_f64_Multiply_*",
+    "op_f64_Divide_*",
+    "op_f64_Min_*",
+    "op_f64_Max_*",
+    "op_f64_CopySign_*",
+    "op_f64_Equal*",
+    "op_f64_NotEqual*",
+    "op_f64_LessThan*",
+    "op_f64_GreaterThan*",
+    "op_f64_LessThanOrEqual*",
+    "op_f64_GreaterThanOrEqual*",
+    "op_f64_Convert_i32_*",
+    "op_f64_Convert_u32_*",
+    "op_f64_Convert_i64_*",
+    "op_f64_Convert_u64_*",
+    "op_f64_Promote_f32_*",
+    "op_f64_Reinterpret_i64_*",
+    "op_SetRegister_*",
+    "op_Select_*",
+    "op_MemSize",
+]
+
 ASYNCIFY_REMOVE_LIST = [
     "agent_os_guest_call_boundary",
     "main.mc_*",
-]
+] + ASYNCIFY_TAIL_CALL_LIST
 
 # The §4.1 module map, declared EXPLICITLY (never globbed): the scaffold-shape gate below
 # asserts this set carries no *_smoke/*_probe/fixture file (§15.7). Adding a source here is
@@ -98,6 +238,7 @@ WASM3_COPTS = [
     "-fdata-sections",
     "-ffunction-sections",
     "-fvisibility=hidden",
+    "-mtail-call",
 ]
 
 # The reactor module: exports only, no _start. Reachable files compile; the rest are
@@ -180,6 +321,7 @@ asyncify_wasm(
     # calls) instrumentable — dead instrumentation (those paths never call start_unwind), a size
     # cost for Phase 8, not a correctness issue. no-creep asserts the excluded set is state 0.
     remove_list = ASYNCIFY_REMOVE_LIST,
+    tail_call_list = ASYNCIFY_TAIL_CALL_LIST,
     visibility = ["//visibility:public"],
 )
 
@@ -217,53 +359,30 @@ filegroup(
     output_group = "asyncify_verbose",
 )
 
+filegroup(
+    name = "kernel_asyncify_manifest",
+    srcs = [":kernel"],
+    output_group = "asyncify_manifest",
+)
+
 genrule(
     name = "asyncify_no_creep_check",
     srcs = [
         ":kernel",
+        ":kernel_asyncify_manifest",
         ":kernel_asyncify_verbose",
+    ],
+    tools = [
+        "asyncify_no_creep.sh",
+        "@binaryen_linux_x86_64//:bin/wasm-dis",
     ],
     outs = ["asyncify_no_creep.ok"],
     cmd = """
 set -eu
 wasm="$(location :kernel)"
+manifest="$(location :kernel_asyncify_manifest)"
 verbose="$(location :kernel_asyncify_verbose)"
-
-# (1) The §7.4 catch frame must EXIST as a named function so the remove_list pin lands. Its
-# name lives in the wasm name section ONLY while it is a real, non-inlined function, so a
-# binary substring search (grep -a, no disassembler dep) is the existence proof. If a refactor
-# inlined agent_os_guest_call_boundary the pin misses, the frame is instrumented, and the guest
-# unwind escapes to the host.
-if ! grep -aqF 'agent_os_guest_call_boundary' "$$wasm"; then
-  echo "FAIL: §7.4 catch frame agent_os_guest_call_boundary is absent from the shipped wasm"
-  echo "      name section (inlined/renamed) — the Asyncify remove_list can no longer pin it."
-  exit 1
-fi
-
-# (2) No host-callable rewind export: the host never drives Asyncify (§7.7, §15.2).
-if grep -aqF 'mc_prepare_rewind' "$$wasm"; then
-  echo "FAIL: mc_prepare_rewind present in the shipped wasm — the host must never drive Asyncify."
-  exit 1
-fi
-
-# (3) No host IMPORT may become a suspend-driver; only the Asyncify intrinsics may change state
-# via an import. A new state-changing env import would be a host-visible suspend.
-viol="$@.viol"
-: > "$$viol"
-(grep -E "\\[asyncify\\] .* is an import that can change the state" "$$verbose" || true) | while IFS= read -r line; do
-  name="$$(printf '%s\\n' "$$line" | sed -E 's/^\\[asyncify\\] (.*) is an import that can change the state.*$$/\\1/')"
-  case "$$name" in
-    asyncify_*) ;;
-    *) echo "$$line" >> "$$viol" ;;
-  esac
-done
-if [ -s "$$viol" ]; then
-  echo "FAIL: a non-Asyncify import can change state (a host-visible suspend, §7.4):"
-  cat "$$viol"
-  exit 1
-fi
-
-echo ok > $@
+bash "$(location asyncify_no_creep.sh)" "$$wasm" "$$verbose" "$(location @binaryen_linux_x86_64//:bin/wasm-dis)" "$$manifest" "$@"
 """,
 )
 

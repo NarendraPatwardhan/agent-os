@@ -223,3 +223,19 @@ fn snapshot_while_a_guest_is_suspended_resumes_identically() {
         "restored VM did not resume the suspended computation to its result; got:\n{resumed}"
     );
 }
+
+/// Manual interpreter-throughput benchmark — the harness used for the wasm3-vs-wasmi perf
+/// investigation (see PERFORMANCE.md). #[ignore]d so it never taxes the fast suite; run it with
+/// `--test_arg=--ignored --test_arg=--nocapture` against both `core` (wasmi) and `core_zig` (wasm3)
+/// to reproduce the ~2.5-3x gap.
+#[test]
+#[ignore = "manual perf benchmark — see PERFORMANCE.md; run with --test_arg=--ignored"]
+fn zz_bench_luau_loop() {
+    let mut s = boot_loom();
+    s.drive_until_prompt(0);
+    let t = std::time::Instant::now();
+    let out = s.run_for_output_heavy("luau -e 'local n=0 for i=1,10000000 do n=n+1 end print(n)'");
+    let dt = t.elapsed();
+    assert!(out.contains("10000000"), "got: {out}");
+    println!("BENCH luau 10M-iter loop: {} ms", dt.as_millis());
+}

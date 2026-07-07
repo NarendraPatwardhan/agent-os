@@ -472,6 +472,7 @@ fn get_or_compile(wasm: &[u8]) -> Result<(Engine, Module)> {
     // native thread stack so pathological guests trap inside the VM instead of
     // aborting the host process.
     config
+        .wasm_tail_call(true)
         .max_wasm_stack(KERNEL_WASM_STACK_BYTES)
         .async_stack_size(KERNEL_WASM_STACK_BYTES);
     let engine = Engine::new(&config).map_err(|e| anyhow!("creating wasmtime engine: {e}"))?;
