@@ -190,6 +190,7 @@ http_archive(
     patch_tool = "patch",
     patches = [
         "//third_party/wamr:patches/0001-agent-os-wasm32-target.patch",
+        "//third_party/wamr:patches/0002-resumable-yield.patch",
     ],
     sha256 = "4ac27e697a3e64959756624d68ec18ce5fc54a2d3f31f1b3f702be6fcd48a7d8",
     strip_prefix = "wasm-micro-runtime-WAMR-2.4.3",

@@ -9,6 +9,7 @@ load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
 exports_files([
     "BUILD.wamr.bazel",
     "patches/0001-agent-os-wasm32-target.patch",
+    "patches/0002-resumable-yield.patch",
 ])
 
 filegroup(
@@ -97,6 +98,18 @@ rust_test(
     name = "wamr_wasm32_run_test",
     srcs = ["wamr_wasm32_run_test.rs"],
     crate_root = "wamr_wasm32_run_test.rs",
+    edition = "2021",
+    data = [":wamr_wasm32_probe"],
+    deps = [
+        "@host_crates//:wasmtime",
+        "@rules_rust//rust/runfiles",
+    ],
+)
+
+rust_test(
+    name = "wamr_wasm32_resume_test",
+    srcs = ["wamr_wasm32_resume_test.rs"],
+    crate_root = "wamr_wasm32_resume_test.rs",
     edition = "2021",
     data = [":wamr_wasm32_probe"],
     deps = [

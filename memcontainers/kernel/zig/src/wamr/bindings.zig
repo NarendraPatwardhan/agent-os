@@ -11,6 +11,12 @@ pub const ExecEnv = opaque {};
 pub const Function = opaque {};
 pub const Memory = opaque {};
 
+pub const CallStatus = enum(c_int) {
+    done = 0,
+    yielded = 1,
+    trap = 2,
+};
+
 pub const NativeSymbol = extern struct {
     symbol: ?[*:0]const u8,
     func_ptr: ?*anyopaque,
@@ -120,6 +126,18 @@ pub extern fn wasm_runtime_call_wasm(
     argc: u32,
     argv: [*]u32,
 ) bool;
+pub extern fn wasm_runtime_call_wasm_status(
+    exec_env: ?*ExecEnv,
+    function: ?*Function,
+    argc: u32,
+    argv: [*]u32,
+) CallStatus;
+pub extern fn wasm_runtime_resume(
+    exec_env: ?*ExecEnv,
+    result_cell_count: u32,
+    argv: [*]u32,
+) CallStatus;
+pub extern fn wasm_runtime_get_call_status(exec_env: ?*ExecEnv) CallStatus;
 pub extern fn wasm_runtime_call_wasm_a(
     exec_env: ?*ExecEnv,
     function: ?*Function,

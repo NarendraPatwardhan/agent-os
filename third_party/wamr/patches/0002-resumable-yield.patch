@@ -1,0 +1,455 @@
+diff --git a/core/iwasm/common/wasm_exec_env.h b/core/iwasm/common/wasm_exec_env.h
+index 5d80312..531ef20 100644
+--- a/core/iwasm/common/wasm_exec_env.h
++++ b/core/iwasm/common/wasm_exec_env.h
+@@ -87,6 +87,9 @@ typedef struct WASMExecEnv {
+         uint8 *bottom;
+     } wasm_stack;
+ 
++    /* Last public call status: done, cooperative yield, or trap. */
++    uint32 wasm_call_status;
++
+ #if WASM_ENABLE_INSTRUCTION_METERING != 0
+     /* instructions to execute */
+     int instructions_to_execute;
+diff --git a/core/iwasm/common/wasm_runtime_common.c b/core/iwasm/common/wasm_runtime_common.c
+index ea08d53..88fd18e 100644
+--- a/core/iwasm/common/wasm_runtime_common.c
++++ b/core/iwasm/common/wasm_runtime_common.c
+@@ -2350,6 +2350,14 @@ wasm_runtime_set_instruction_count_limit(WASMExecEnv *exec_env,
+ }
+ #endif
+ 
++wasm_runtime_call_status_t
++wasm_runtime_get_call_status(WASMExecEnv *exec_env)
++{
++    if (!exec_env)
++        return WASM_RUNTIME_CALL_STATUS_TRAP;
++    return (wasm_runtime_call_status_t)exec_env->wasm_call_status;
++}
++
+ WASMFuncType *
+ wasm_runtime_get_function_type(const WASMFunctionInstanceCommon *function,
+                                uint32 module_type)
+@@ -2647,6 +2655,7 @@ wasm_runtime_call_wasm(WASMExecEnv *exec_env,
+         LOG_ERROR("Invalid exec env stack info.");
+         return false;
+     }
++    exec_env->wasm_call_status = WASM_RUNTIME_CALL_STATUS_TRAP;
+ 
+ #if WASM_ENABLE_GC == 0 && WASM_ENABLE_REF_TYPES != 0
+     if (!wasm_runtime_prepare_call_function(exec_env, function, argv, argc,
+@@ -2690,6 +2699,44 @@ wasm_runtime_call_wasm(WASMExecEnv *exec_env,
+     return ret;
+ }
+ 
++wasm_runtime_call_status_t
++wasm_runtime_call_wasm_status(WASMExecEnv *exec_env,
++                              WASMFunctionInstanceCommon *function,
++                              uint32 argc, uint32 argv[])
++{
++    if (!wasm_runtime_exec_env_check(exec_env)) {
++        LOG_ERROR("Invalid exec env stack info.");
++        return WASM_RUNTIME_CALL_STATUS_TRAP;
++    }
++    exec_env->wasm_call_status = WASM_RUNTIME_CALL_STATUS_TRAP;
++
++    if (wasm_runtime_call_wasm(exec_env, function, argc, argv))
++        return WASM_RUNTIME_CALL_STATUS_DONE;
++
++    return wasm_runtime_get_call_status(exec_env);
++}
++
++wasm_runtime_call_status_t
++wasm_runtime_resume(WASMExecEnv *exec_env, uint32 result_cell_count,
++                    uint32 argv[])
++{
++    if (!wasm_runtime_exec_env_check(exec_env)) {
++        LOG_ERROR("Invalid exec env stack info.");
++        return WASM_RUNTIME_CALL_STATUS_TRAP;
++    }
++    exec_env->wasm_call_status = WASM_RUNTIME_CALL_STATUS_TRAP;
++
++#if WASM_ENABLE_INTERP != 0
++    if (exec_env->module_inst->module_type == Wasm_Module_Bytecode)
++        return wasm_resume_function(exec_env, result_cell_count, argv);
++#endif
++
++    wasm_runtime_set_exception(exec_env->module_inst,
++                               "resumable resume unsupported for module type");
++    exec_env->wasm_call_status = WASM_RUNTIME_CALL_STATUS_TRAP;
++    return WASM_RUNTIME_CALL_STATUS_TRAP;
++}
++
+ static void
+ parse_args_to_uint32_array(WASMFuncType *type, wasm_val_t *args,
+                            uint32 *out_argv)
+diff --git a/core/iwasm/common/wasm_runtime_common.h b/core/iwasm/common/wasm_runtime_common.h
+index 324620b..853d5e6 100644
+--- a/core/iwasm/common/wasm_runtime_common.h
++++ b/core/iwasm/common/wasm_runtime_common.h
+@@ -860,6 +860,18 @@ wasm_runtime_call_wasm(WASMExecEnv *exec_env,
+                        WASMFunctionInstanceCommon *function, uint32 argc,
+                        uint32 argv[]);
+ 
++WASM_RUNTIME_API_EXTERN wasm_runtime_call_status_t
++wasm_runtime_call_wasm_status(WASMExecEnv *exec_env,
++                              WASMFunctionInstanceCommon *function,
++                              uint32 argc, uint32 argv[]);
++
++WASM_RUNTIME_API_EXTERN wasm_runtime_call_status_t
++wasm_runtime_resume(WASMExecEnv *exec_env, uint32 result_cell_count,
++                    uint32 argv[]);
++
++WASM_RUNTIME_API_EXTERN wasm_runtime_call_status_t
++wasm_runtime_get_call_status(WASMExecEnv *exec_env);
++
+ WASM_RUNTIME_API_EXTERN bool
+ wasm_runtime_call_wasm_a(WASMExecEnv *exec_env,
+                          WASMFunctionInstanceCommon *function,
+diff --git a/core/iwasm/include/wasm_export.h b/core/iwasm/include/wasm_export.h
+index 81efb8f..0c3d760 100644
+--- a/core/iwasm/include/wasm_export.h
++++ b/core/iwasm/include/wasm_export.h
+@@ -154,6 +154,12 @@ typedef struct wasm_section_t {
+ struct WASMExecEnv;
+ typedef struct WASMExecEnv *wasm_exec_env_t;
+ 
++typedef enum wasm_runtime_call_status_t {
++    WASM_RUNTIME_CALL_STATUS_DONE = 0,
++    WASM_RUNTIME_CALL_STATUS_YIELD = 1,
++    WASM_RUNTIME_CALL_STATUS_TRAP = 2,
++} wasm_runtime_call_status_t;
++
+ struct WASMSharedHeap;
+ typedef struct WASMSharedHeap *wasm_shared_heap_t;
+ 
+@@ -1166,6 +1172,18 @@ WASM_RUNTIME_API_EXTERN bool
+ wasm_runtime_call_wasm(wasm_exec_env_t exec_env, wasm_function_inst_t function,
+                        uint32_t argc, uint32_t argv[]);
+ 
++WASM_RUNTIME_API_EXTERN wasm_runtime_call_status_t
++wasm_runtime_call_wasm_status(wasm_exec_env_t exec_env,
++                              wasm_function_inst_t function, uint32_t argc,
++                              uint32_t argv[]);
++
++WASM_RUNTIME_API_EXTERN wasm_runtime_call_status_t
++wasm_runtime_resume(wasm_exec_env_t exec_env, uint32_t result_cell_count,
++                    uint32_t argv[]);
++
++WASM_RUNTIME_API_EXTERN wasm_runtime_call_status_t
++wasm_runtime_get_call_status(wasm_exec_env_t exec_env);
++
+ /**
+  * Call the given WASM function of a WASM module instance with
+  * provided results space and arguments (bytecode and AoT).
+diff --git a/core/iwasm/interpreter/wasm_interp.h b/core/iwasm/interpreter/wasm_interp.h
+index 1416405..74d1b32 100644
+--- a/core/iwasm/interpreter/wasm_interp.h
++++ b/core/iwasm/interpreter/wasm_interp.h
+@@ -107,6 +107,11 @@ wasm_interp_call_wasm(struct WASMModuleInstance *module_inst,
+                       struct WASMFunctionInstance *function, uint32 argc,
+                       uint32 argv[]);
+ 
++void
++wasm_interp_resume_wasm(struct WASMModuleInstance *module_inst,
++                        struct WASMExecEnv *exec_env,
++                        uint32 result_cell_count, uint32 argv[]);
++
+ #if WASM_ENABLE_GC != 0
+ bool
+ wasm_interp_traverse_gc_rootset(struct WASMExecEnv *exec_env, void *heap);
+diff --git a/core/iwasm/interpreter/wasm_interp_fast.c b/core/iwasm/interpreter/wasm_interp_fast.c
+index 36d4538..4e8d8c6 100644
+--- a/core/iwasm/interpreter/wasm_interp_fast.c
++++ b/core/iwasm/interpreter/wasm_interp_fast.c
+@@ -30,6 +30,13 @@ typedef int64 CellType_I64;
+ typedef float32 CellType_F32;
+ typedef float64 CellType_F64;
+ 
++#define YIELD_FROM_INTERP()                                      \
++    do {                                                         \
++        exec_env->wasm_call_status = WASM_RUNTIME_CALL_STATUS_YIELD; \
++        SYNC_ALL_TO_FRAME();                                     \
++        return;                                                  \
++    } while (0)
++
+ #if WASM_ENABLE_THREAD_MGR == 0
+ #define get_linear_mem_size() linear_mem_size
+ #else
+@@ -90,18 +97,25 @@ typedef float64 CellType_F64;
+     } while (0)
+ 
+ #if WASM_ENABLE_INSTRUCTION_METERING != 0
+-#define CHECK_INSTRUCTION_LIMIT()                                 \
+-    if (instructions_left == 0) {                                 \
+-        wasm_set_exception(module, "instruction limit exceeded"); \
+-        goto got_exception;                                       \
+-    }                                                             \
+-    else if (instructions_left > 0)                               \
++#define CHECK_INSTRUCTION_LIMIT()   \
++    if (instructions_left == 0) {   \
++        YIELD_FROM_INTERP();        \
++    }                               \
++    else if (instructions_left > 0) \
+         instructions_left--;
+ 
+ #else
+ #define CHECK_INSTRUCTION_LIMIT() (void)0
+ #endif
+ 
++#define CHECK_RESUMABLE_SUSPEND_FLAGS()                         \
++    do {                                                        \
++        if (WASM_SUSPEND_FLAGS_GET(exec_env->suspend_flags)     \
++            & WASM_SUSPEND_FLAG_BLOCKING) {                     \
++            YIELD_FROM_INTERP();                                \
++        }                                                       \
++    } while (0)
++
+ static inline uint32
+ rotl32(uint32 n, uint32 c)
+ {
+@@ -1437,8 +1451,9 @@ wasm_interp_dump_op_count()
+ #define FETCH_OPCODE_AND_DISPATCH()                    \
+     do {                                               \
+         const void *p_label_addr = *(void **)frame_ip; \
+-        frame_ip += sizeof(void *);                    \
+         CHECK_INSTRUCTION_LIMIT();                     \
++        CHECK_RESUMABLE_SUSPEND_FLAGS();               \
++        frame_ip += sizeof(void *);                    \
+         goto *p_label_addr;                            \
+     } while (0)
+ #else
+@@ -1449,8 +1464,9 @@ wasm_interp_dump_op_count()
+         bh_assert(((uintptr_t)frame_ip & 1) == 0);                        \
+         /* int32 relative offset was emitted in 64-bit target */          \
+         p_label_addr = label_base + (int32)LOAD_U32_WITH_2U16S(frame_ip); \
+-        frame_ip += sizeof(int32);                                        \
+         CHECK_INSTRUCTION_LIMIT();                                        \
++        CHECK_RESUMABLE_SUSPEND_FLAGS();                                  \
++        frame_ip += sizeof(int32);                                        \
+         goto *p_label_addr;                                               \
+     } while (0)
+ #else
+@@ -1460,8 +1476,9 @@ wasm_interp_dump_op_count()
+         bh_assert(((uintptr_t)frame_ip & 1) == 0);                       \
+         /* uint32 label address was emitted in 32-bit target */          \
+         p_label_addr = (void *)(uintptr_t)LOAD_U32_WITH_2U16S(frame_ip); \
+-        frame_ip += sizeof(int32);                                       \
+         CHECK_INSTRUCTION_LIMIT();                                       \
++        CHECK_RESUMABLE_SUSPEND_FLAGS();                                 \
++        frame_ip += sizeof(int32);                                       \
+         goto *p_label_addr;                                              \
+     } while (0)
+ #endif
+@@ -1594,8 +1611,25 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
+     }
+ #endif
+ 
++    if (!cur_func) {
++        frame = wasm_exec_env_get_cur_frame(exec_env);
++        if (!frame || !frame->function) {
++            wasm_set_exception(module, "no suspended wasm frame to resume");
++            return;
++        }
++        RECOVER_CONTEXT(frame);
+ #if WASM_ENABLE_LABELS_AS_VALUES == 0
++        goto resume_dispatch;
++#else
++        FETCH_OPCODE_AND_DISPATCH();
++#endif
++    }
++
++#if WASM_ENABLE_LABELS_AS_VALUES == 0
++resume_dispatch:
+     while (frame_ip < frame_ip_end) {
++        CHECK_INSTRUCTION_LIMIT();
++        CHECK_RESUMABLE_SUSPEND_FLAGS();
+         opcode = *frame_ip++;
+ #if WASM_CPU_SUPPORTS_UNALIGNED_ADDR_ACCESS == 0
+         frame_ip++;
+@@ -7810,9 +7844,10 @@ wasm_interp_call_func_bytecode(WASMModuleInstance *module,
+         wasm_set_exception(module, "out of bounds memory access");
+ #endif
+ 
+-    got_exception:
+-        SYNC_ALL_TO_FRAME();
+-        return;
++got_exception:
++    exec_env->wasm_call_status = WASM_RUNTIME_CALL_STATUS_TRAP;
++    SYNC_ALL_TO_FRAME();
++    return;
+ 
+ #if WASM_ENABLE_LABELS_AS_VALUES == 0
+     }
+@@ -7974,6 +8009,9 @@ wasm_interp_call_wasm(WASMModuleInstance *module_inst, WASMExecEnv *exec_env,
+         wasm_interp_call_func_bytecode(module_inst, exec_env, function, frame);
+     }
+ 
++    if (exec_env->wasm_call_status == WASM_RUNTIME_CALL_STATUS_YIELD)
++        return;
++
+     /* Output the return value to the caller */
+     if (!wasm_copy_exception(module_inst, NULL)) {
+         for (i = 0; i < function->ret_cell_num; i++)
+@@ -7993,3 +8031,66 @@ wasm_interp_call_wasm(WASMModuleInstance *module_inst, WASMExecEnv *exec_env,
+     wasm_interp_dump_op_count();
+ #endif
+ }
++
++static WASMInterpFrame *
++wasm_interp_find_resume_entry_frame(WASMExecEnv *exec_env)
++{
++    WASMInterpFrame *frame = wasm_exec_env_get_cur_frame(exec_env);
++
++    while (frame) {
++        if (!frame->function && !frame->ip)
++            return frame;
++        frame = frame->prev_frame;
++    }
++
++    return NULL;
++}
++
++void
++wasm_interp_resume_wasm(WASMModuleInstance *module_inst, WASMExecEnv *exec_env,
++                        uint32 result_cell_count, uint32 argv[])
++{
++    WASMInterpFrame *entry_frame, *cur_frame;
++    uint32 i;
++
++    cur_frame = wasm_exec_env_get_cur_frame(exec_env);
++    entry_frame = wasm_interp_find_resume_entry_frame(exec_env);
++    if (!cur_frame || cur_frame == entry_frame || !entry_frame) {
++        wasm_set_exception(module_inst, "no suspended wasm frame to resume");
++        return;
++    }
++
++#if defined(OS_ENABLE_HW_BOUND_CHECK) && WASM_DISABLE_STACK_HW_BOUND_CHECK == 0
++    /*
++     * wasm_runtime_detect_native_stack_overflow is done by
++     * call_wasm_with_hw_bound_check.
++     */
++#else
++    if (!wasm_runtime_detect_native_stack_overflow(exec_env)) {
++        return;
++    }
++#endif
++
++    wasm_interp_call_func_bytecode(module_inst, exec_env, NULL, NULL);
++
++    if (exec_env->wasm_call_status == WASM_RUNTIME_CALL_STATUS_YIELD)
++        return;
++
++    if (!wasm_copy_exception(module_inst, NULL)) {
++        for (i = 0; i < result_cell_count; i++)
++            argv[i] = *(entry_frame->lp + i);
++    }
++    else {
++#if WASM_ENABLE_DUMP_CALL_STACK != 0
++        if (wasm_interp_create_call_stack(exec_env)) {
++            wasm_interp_dump_call_stack(exec_env, true, NULL, 0);
++        }
++#endif
++    }
++
++    wasm_exec_env_set_cur_frame(exec_env, entry_frame->prev_frame);
++    FREE_FRAME(exec_env, entry_frame);
++#if WASM_ENABLE_OPCODE_COUNTER != 0
++    wasm_interp_dump_op_count();
++#endif
++}
+diff --git a/core/iwasm/interpreter/wasm_runtime.c b/core/iwasm/interpreter/wasm_runtime.c
+index b4aa483..d0e5c0b 100644
+--- a/core/iwasm/interpreter/wasm_runtime.c
++++ b/core/iwasm/interpreter/wasm_runtime.c
+@@ -3668,9 +3668,29 @@ call_wasm_with_hw_bound_check(WASMModuleInstance *module_inst,
+ #define interp_call_wasm wasm_interp_call_wasm
+ #endif
+ 
+-bool
+-wasm_call_function(WASMExecEnv *exec_env, WASMFunctionInstance *function,
+-                   unsigned argc, uint32 argv[])
++static wasm_runtime_call_status_t
++finish_interp_call_status(WASMModuleInstance *module_inst,
++                          WASMExecEnv *exec_env)
++{
++    if (exec_env->wasm_call_status == WASM_RUNTIME_CALL_STATUS_YIELD)
++        return WASM_RUNTIME_CALL_STATUS_YIELD;
++
++    if (exec_env->wasm_call_status == WASM_RUNTIME_CALL_STATUS_TRAP)
++        return WASM_RUNTIME_CALL_STATUS_TRAP;
++
++    if (wasm_copy_exception(module_inst, NULL)) {
++        exec_env->wasm_call_status = WASM_RUNTIME_CALL_STATUS_TRAP;
++        return WASM_RUNTIME_CALL_STATUS_TRAP;
++    }
++
++    exec_env->wasm_call_status = WASM_RUNTIME_CALL_STATUS_DONE;
++    return WASM_RUNTIME_CALL_STATUS_DONE;
++}
++
++wasm_runtime_call_status_t
++wasm_call_function_status(WASMExecEnv *exec_env,
++                          WASMFunctionInstance *function, unsigned argc,
++                          uint32 argv[])
+ {
+     WASMModuleInstance *module_inst =
+         (WASMModuleInstance *)exec_env->module_inst;
+@@ -3686,8 +3706,35 @@ wasm_call_function(WASMExecEnv *exec_env, WASMFunctionInstance *function,
+     /* Set exec env, so it can be later retrieved from instance */
+     module_inst->cur_exec_env = exec_env;
+ 
++    exec_env->wasm_call_status = WASM_RUNTIME_CALL_STATUS_DONE;
+     interp_call_wasm(module_inst, exec_env, function, argc, argv);
+-    return !wasm_copy_exception(module_inst, NULL);
++    return finish_interp_call_status(module_inst, exec_env);
++}
++
++bool
++wasm_call_function(WASMExecEnv *exec_env, WASMFunctionInstance *function,
++                   unsigned argc, uint32 argv[])
++{
++    return wasm_call_function_status(exec_env, function, argc, argv)
++           == WASM_RUNTIME_CALL_STATUS_DONE;
++}
++
++wasm_runtime_call_status_t
++wasm_resume_function(WASMExecEnv *exec_env, uint32 result_cell_count,
++                     uint32 argv[])
++{
++    WASMModuleInstance *module_inst =
++        (WASMModuleInstance *)exec_env->module_inst;
++
++#ifndef OS_ENABLE_HW_BOUND_CHECK
++    wasm_exec_env_set_thread_info(exec_env);
++#endif
++
++    module_inst->cur_exec_env = exec_env;
++
++    exec_env->wasm_call_status = WASM_RUNTIME_CALL_STATUS_DONE;
++    wasm_interp_resume_wasm(module_inst, exec_env, result_cell_count, argv);
++    return finish_interp_call_status(module_inst, exec_env);
+ }
+ 
+ #if WASM_ENABLE_PERF_PROFILING != 0 || WASM_ENABLE_DUMP_CALL_STACK != 0
+diff --git a/core/iwasm/interpreter/wasm_runtime.h b/core/iwasm/interpreter/wasm_runtime.h
+index 16c670f..42134e6 100644
+--- a/core/iwasm/interpreter/wasm_runtime.h
++++ b/core/iwasm/interpreter/wasm_runtime.h
+@@ -599,6 +599,15 @@ bool
+ wasm_call_function(WASMExecEnv *exec_env, WASMFunctionInstance *function,
+                    unsigned argc, uint32 argv[]);
+ 
++wasm_runtime_call_status_t
++wasm_call_function_status(WASMExecEnv *exec_env,
++                          WASMFunctionInstance *function, unsigned argc,
++                          uint32 argv[]);
++
++wasm_runtime_call_status_t
++wasm_resume_function(WASMExecEnv *exec_env, uint32 result_cell_count,
++                     uint32 argv[]);
++
+ void
+ wasm_set_exception(WASMModuleInstance *module, const char *exception);
+ 
