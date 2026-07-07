@@ -180,23 +180,50 @@ recursive design also costs us **memory** (that 1.5 MB/guest is a real multi-gue
 
 ---
 
-## 8. Path forward (not yet pursued)
+## 8. Decision: adopt WAMR (wasm-micro-runtime)
 
-Closing the gap means a **natively re-entrant (loop-based, heap-call-stack) interpreter**:
+The re-entrant engine this document called for exists off the shelf. A source analysis of **WAMR**
+(bytecodealliance/wasm-micro-runtime, **v2.4.3**) confirms it is the right foundation — it ships the
+pieces §6 said we would otherwise have to invent:
 
-1. **Evaluate WAMR (wasm-micro-runtime) first.** Its interpreter is loop-based with an explicit heap
-   frame stack — structurally far closer to suspendable than wasm3, in pure C, embeddable the same
-   way. The question to answer: can it be driven the way we drive wasm3 (blocking syscalls, fuel
-   yield, snapshot mid-execution) without an Asyncify-class tax? Most leverage for least new code.
-2. **Purpose-built re-entrant interpreter in Zig.** Full control, designed for suspend + snapshot from
-   day one, sized to the kernel budget. Biggest effort, best fit, no foreign dependency.
-3. **wasmi-in-wasm.** Proven and fast, but it is Rust — embedding it reintroduces a Rust engine and
-   cuts against the point of a Zig port. A design compromise, listed for completeness.
+- **Re-entrant by construction.** Both interpreters — classic and the faster `fast-interp` — dispatch
+  a wasm `CALL` with `goto call_func_from_interp`: they push an in-memory `WASMInterpFrame` (chained
+  via `prev_frame`, allocated from the exec_env's wasm stack) and continue ONE dispatch loop. There is
+  **no recursive C call per wasm call** (only the multi-module / native-import special cases).
+  Execution state lives in memory, not the native C stack — the wasmi model, exactly what §6 requires.
+- **Suspend without a per-op tax.** `CHECK_SUSPEND_FLAGS()` — one flag (`exec_env->suspend_flags`)
+  checked in the loop — is the yield hook, with **no** per-op instrumentation. The mechanism the
+  Asyncify approach fundamentally could not have.
+- **Fuel is built in.** `WASM_ENABLE_INSTRUCTION_METERING` + `exec_env->instructions_to_execute` bound
+  execution per quantum — our fuel, native to the engine.
+- **Snapshottable.** The whole execution state is the `exec_env` + its in-memory `wasm_stack` + the
+  guest's linear memory. Allocate the wasm stack from the kernel allocator and snapshot stays
+  copy-the-bytes, as today.
+- **Small and embeddable.** Interpreter-only footprint ~59 K (comparable to wasm3); threads and shared
+  memory default off (matches our single-threaded cooperative model); designed for constrained targets.
+- **The freestanding port is bounded.** WAMR has no `wasm32` platform, so we write one — but the
+  `os_*` surface is ~20 functions, most trivial on single-threaded wasm: cache/thread/mmap become
+  no-ops or malloc-backed, `os_malloc` → the kernel allocator, `os_printf` → the console, time → the
+  capability-gated clock. Larger than wasm3's libc shim, still small.
 
-Each is a rewrite of the *execution layer* (the driver in `guest.zig` and the suspend boundary), but
-it is the *correct* rewrite, and it pays back on memory as well as speed. The functional work in this
-branch (syscalls, fs, services, scheduler, snapshot, control channel) is engine-agnostic and carries
-over.
+**What this buys us:** suspend becomes *save `exec_env`, return, re-enter* — zero per-op tax, so the
+~2.5–3x gap closes (fast-interp is competitive with wasmi). And it **deletes the entire Asyncify
+apparatus** — the `asyncify.bzl` transition, the no-creep gate, the musttail patch, the whole §7.4
+boundary — the single most delicate, load-bearing part of the current port.
+
+**Migration plan (this branch, `feature/zig`):**
+1. **Vendor WAMR, remove wasm3** from the build; write the `wasm32`-freestanding platform layer; get
+   WAMR compiling to `wasm32`. *(The kernel is deliberately non-building from here until step 3 — the
+   engine swap precedes the driver rewrite.)*
+2. **Build the WAMR-based `guest.zig` driver:** the `mc_sys_*` host-import bridge, and resumable
+   suspend/resume (a blocking syscall or quantum yield via `suspend_flags` / metering: save exec_env,
+   return, re-enter) + the snapshot integration.
+3. **Bring `core_zig` + `extended_zig` back to green on WAMR** — now targeting wasmi **parity**, not a
+   1.3x ceiling — and delete the Asyncify machinery.
+
+The rejected alternatives (a purpose-built Zig interpreter; wasmi-in-wasm) stay in git history; WAMR
+wins on least-new-code for a proven re-entrant engine. The functional work in this branch (syscalls,
+fs, services, scheduler, snapshot, control channel) is engine-agnostic and carries over unchanged.
 
 ---
 
