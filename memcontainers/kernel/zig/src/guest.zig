@@ -17,17 +17,66 @@ const TaskId = task_mod.TaskId;
 const STACK_SIZE: u32 = 512 * 1024;
 const HOST_HEAP_SIZE: u32 = 0;
 const ERROR_BUF_SIZE: u32 = 256;
+const PCALL_STACK_MAX: usize = 32;
 const FUEL_QUANTUM: u64 = 2_000_000;
 const DEFAULT_FUEL_LIFETIME: u64 = 50_000_000_000;
 const HARD_FUEL_LIFETIME: u64 = 4_000_000_000_000;
 const EXIT_CODE_FUEL_EXHAUSTED: i32 = 137;
 const MAX_RAW_CELLS: usize = 16;
-const WAMR_POOL_BYTES: usize = 16 * 1024 * 1024;
-const WAMR_POOL_WORDS: usize = WAMR_POOL_BYTES / @sizeOf(u64);
+const WAMR_ALLOC_ALIGN: usize = 16;
 
 const MC_MODULE: [:0]const u8 = "mc";
 const ERR_NATIVE_CONTEXT: [:0]const u8 = "mc native bridge missing guest context";
 const ERR_RETURN_SLOT: [:0]const u8 = "mc native bridge missing return slot";
+const ERR_PCALL_YIELD: [:0]const u8 = "mc pcall yielded";
+
+const WamrAllocHeader = extern struct {
+    base_addr: usize,
+    total_len: usize,
+    requested_len: usize,
+};
+
+fn alignForward(value: usize, comptime alignment: usize) usize {
+    return (value + alignment - 1) & ~(alignment - 1);
+}
+
+fn wamrAlloc(size_raw: c_uint) callconv(.c) ?*anyopaque {
+    if (!state.isInitialized()) return null;
+    const size: usize = @max(@as(usize, @intCast(size_raw)), 1);
+    const header_len = @sizeOf(WamrAllocHeader);
+    const total = std.math.add(usize, size, header_len + WAMR_ALLOC_ALIGN - 1) catch return null;
+    const raw = state.kernel().gpa.alloc(u8, total) catch return null;
+    const payload_addr = alignForward(@intFromPtr(raw.ptr) + header_len, WAMR_ALLOC_ALIGN);
+    const header: *WamrAllocHeader = @ptrFromInt(payload_addr - header_len);
+    header.* = .{
+        .base_addr = @intFromPtr(raw.ptr),
+        .total_len = total,
+        .requested_len = size,
+    };
+    return @ptrFromInt(payload_addr);
+}
+
+fn wamrFree(ptr: ?*anyopaque) callconv(.c) void {
+    const payload = ptr orelse return;
+    const header: *WamrAllocHeader = @ptrFromInt(@intFromPtr(payload) - @sizeOf(WamrAllocHeader));
+    const base: [*]u8 = @ptrFromInt(header.base_addr);
+    state.kernel().gpa.free(base[0..header.total_len]);
+}
+
+fn wamrRealloc(ptr: ?*anyopaque, size_raw: c_uint) callconv(.c) ?*anyopaque {
+    const size: usize = @max(@as(usize, @intCast(size_raw)), 1);
+    const old = ptr orelse return wamrAlloc(size_raw);
+    const old_header: *WamrAllocHeader = @ptrFromInt(@intFromPtr(old) - @sizeOf(WamrAllocHeader));
+    const next = wamrAlloc(size_raw) orelse return null;
+    const copy_len = @min(old_header.requested_len, size);
+    if (copy_len != 0) {
+        const old_bytes: [*]const u8 = @ptrCast(old);
+        const new_bytes: [*]u8 = @ptrCast(next);
+        @memcpy(new_bytes[0..copy_len], old_bytes[0..copy_len]);
+    }
+    wamrFree(old);
+    return next;
+}
 
 fn readUleb(bytes: []const u8, at: usize) ?struct { value: u32, adv: usize } {
     var result: u32 = 0;
@@ -88,6 +137,14 @@ const SuspendKind = enum {
     fuel_yield,
 };
 
+const PcallFrame = struct {
+    saved_sp: i32,
+    return_slot: ?*u32 = null,
+    native_frame: ?*wamr.InterpFrame = null,
+    caller_frame: ?*wamr.InterpFrame = null,
+    waiting: bool = false,
+};
+
 pub const Step = enum { ran, suspended, exited, faulted };
 
 pub const GuestRuntime = struct {
@@ -96,6 +153,8 @@ pub const GuestRuntime = struct {
     module_inst: ?*wamr.ModuleInst = null,
     exec_env: ?*wamr.ExecEnv = null,
     function: ?*wamr.Function = null,
+    pcall_run_fn: ?*wamr.Function = null,
+    stack_pointer: ?*u32 = null,
     owned_bytes: ?[]u8 = null,
     raw_guest: syscall.Guest = undefined,
     task_id: TaskId = 0,
@@ -113,6 +172,9 @@ pub const GuestRuntime = struct {
     resume_result: i32 = 0,
     lifetime_remaining: u64 = DEFAULT_FUEL_LIFETIME,
     current_slice: u64 = 0,
+    pcall_stack: [PCALL_STACK_MAX]PcallFrame = undefined,
+    pcall_depth: usize = 0,
+    recorded_throw: ?i32 = null,
     error_buf: [ERROR_BUF_SIZE]u8 = undefined,
 
     pub fn init(self: *GuestRuntime, gpa: std.mem.Allocator, wasm_bytes: []const u8, entry: [*:0]const u8, task_id: TaskId, cwd: []const u8) bool {
@@ -162,6 +224,10 @@ pub const GuestRuntime = struct {
         };
         self.function = wamr.wasm_runtime_lookup_function(self.module_inst, entry) orelse {
             syscall.termWrite("wamr lookup failed\n", true);
+            self.deinit();
+            return false;
+        };
+        self.initPcallExports() orelse {
             self.deinit();
             return false;
         };
@@ -230,6 +296,10 @@ pub const GuestRuntime = struct {
             self.owned_bytes = null;
         }
         self.function = null;
+        self.pcall_run_fn = null;
+        self.stack_pointer = null;
+        self.pcall_depth = 0;
+        self.recorded_throw = null;
         self.pending = null;
         self.suspended_pending = null;
         self.suspended_return_slot = null;
@@ -281,6 +351,99 @@ pub const GuestRuntime = struct {
         const len64 = std.math.mul(u64, pages, page_bytes) catch return null;
         if (len64 > std.math.maxInt(usize)) return null;
         return syscall.GuestMemory.from(base, @intCast(len64));
+    }
+
+    fn initPcallExports(self: *GuestRuntime) ?void {
+        const module_inst = self.module_inst orelse return null;
+        const pcall_run_name: [:0]const u8 = "__mc_pcall_run";
+        self.pcall_run_fn = wamr.wasm_runtime_lookup_function(module_inst, pcall_run_name.ptr);
+        if (self.pcall_run_fn == null) wamr.wasm_runtime_clear_exception(module_inst);
+
+        const stack_pointer_name: [:0]const u8 = "__stack_pointer";
+        var global = std.mem.zeroes(wamr.GlobalInst);
+        if (wamr.wasm_runtime_get_export_global_inst(module_inst, stack_pointer_name.ptr, &global)) {
+            if (global.kind != .i32 or !global.is_mutable) return null;
+            self.stack_pointer = @ptrCast(@alignCast(global.global_data orelse return null));
+        } else {
+            self.stack_pointer = null;
+            wamr.wasm_runtime_clear_exception(module_inst);
+        }
+
+        if ((self.pcall_run_fn == null) != (self.stack_pointer == null)) return null;
+        return {};
+    }
+
+    fn readStackPointer(self: *GuestRuntime) ?i32 {
+        const ptr = self.stack_pointer orelse return null;
+        return @bitCast(ptr.*);
+    }
+
+    fn writeStackPointer(self: *GuestRuntime, value: i32) bool {
+        const ptr = self.stack_pointer orelse return false;
+        ptr.* = @bitCast(value);
+        return true;
+    }
+
+    fn pushPcallFrame(self: *GuestRuntime, index: *usize) i32 {
+        if (self.pcall_run_fn == null or self.stack_pointer == null) return -constants.EINVAL;
+        if (self.pcall_depth >= self.pcall_stack.len) return -constants.EIO;
+        const saved_sp = self.readStackPointer() orelse return -constants.EIO;
+        index.* = self.pcall_depth;
+        self.pcall_stack[self.pcall_depth] = .{ .saved_sp = saved_sp };
+        self.pcall_depth += 1;
+        return constants.ESUCCESS;
+    }
+
+    fn popPcallFrameRestore(self: *GuestRuntime) i32 {
+        if (self.pcall_depth == 0) return -constants.EIO;
+        self.pcall_depth -= 1;
+        const frame = self.pcall_stack[self.pcall_depth];
+        if (!self.writeStackPointer(frame.saved_sp)) return -constants.EIO;
+        return constants.ESUCCESS;
+    }
+
+    fn markPcallWaiting(self: *GuestRuntime, index: usize, boundary: NativeBoundary) bool {
+        if (index >= self.pcall_depth) return false;
+        self.pcall_stack[index].return_slot = boundary.return_slot;
+        self.pcall_stack[index].native_frame = boundary.native_frame;
+        self.pcall_stack[index].caller_frame = boundary.caller_frame;
+        self.pcall_stack[index].waiting = true;
+        return true;
+    }
+
+    fn hasWaitingPcall(self: *const GuestRuntime) bool {
+        return self.pcall_depth != 0 and self.pcall_stack[self.pcall_depth - 1].waiting;
+    }
+
+    fn completeWaitingPcall(self: *GuestRuntime, code: i32) bool {
+        if (!self.hasWaitingPcall()) return false;
+        self.pcall_depth -= 1;
+        const frame = self.pcall_stack[self.pcall_depth];
+        if (!self.writeStackPointer(frame.saved_sp)) return false;
+        const slot = frame.return_slot orelse return false;
+        slot.* = @as(u32, @bitCast(code));
+        if (!self.finishWaitingPcallNativeFrame(frame)) return false;
+        return true;
+    }
+
+    fn finishWaitingPcallNativeFrame(self: *GuestRuntime, frame: PcallFrame) bool {
+        const exec_env = self.exec_env orelse return false;
+        const native_frame = frame.native_frame orelse return false;
+        exec_env.cur_frame = frame.caller_frame orelse return false;
+        exec_env.wasm_stack.top = @ptrCast(native_frame);
+        exec_env.wasm_call_status = @intFromEnum(wamr.CallStatus.done);
+        if (self.module_inst) |module_inst| wamr.wasm_runtime_clear_exception(module_inst);
+        return true;
+    }
+
+    fn recordThrow(self: *GuestRuntime, code: i32) void {
+        self.recorded_throw = code;
+    }
+
+    fn takeThrow(self: *GuestRuntime) ?i32 {
+        const code = self.recorded_throw orelse return null;
+        self.recorded_throw = null;
+        return code;
     }
 
     fn prepareNextFuelSlice(self: *GuestRuntime) bool {
@@ -381,11 +544,18 @@ pub const GuestRuntime = struct {
     fn handleStatus(self: *GuestRuntime, status: wamr.CallStatus, result_cell: u32) Step {
         return switch (status) {
             .done => blk: {
+                if (self.hasWaitingPcall()) {
+                    if (!self.completeWaitingPcall(constants.ESUCCESS)) break :blk self.markFault();
+                    break :blk self.resumeAfterPcallCompletion();
+                }
                 self.current_slice = 0;
                 if (self.exited) break :blk self.exitNow(self.exit_code);
                 break :blk self.exitNow(@as(i32, @bitCast(result_cell)));
             },
             .yielded => blk: {
+                if (self.hasWaitingPcall()) {
+                    if (self.module_inst) |module_inst| wamr.wasm_runtime_clear_exception(module_inst);
+                }
                 if (self.exited) break :blk self.exitNow(self.exit_code);
                 if (self.syscall_yield_requested or self.suspend_kind == .syscall_blocked or self.suspend_kind == .syscall_pending) {
                     self.syscall_yield_requested = false;
@@ -404,18 +574,40 @@ pub const GuestRuntime = struct {
                 break :blk .ran;
             },
             .trap => blk: {
-                if (self.module_inst) |module_inst| {
-                    if (wamr.wasm_runtime_get_exception(module_inst)) |message| {
-                        syscall.termWrite("wamr trap: ", true);
-                        syscall.termWrite(std.mem.sliceTo(message, 0), true);
-                        syscall.termWrite("\n", true);
-                    } else {
-                        syscall.termWrite("wamr trap: <no exception>\n", true);
-                    }
+                if (self.hasWaitingPcall()) {
+                    const code = self.takeThrow() orelse {
+                        self.reportWamrTrap();
+                        break :blk self.markFault();
+                    };
+                    if (self.module_inst) |module_inst| wamr.wasm_runtime_clear_exception(module_inst);
+                    if (self.exec_env) |exec_env| exec_env.wasm_call_status = @intFromEnum(wamr.CallStatus.done);
+                    if (!self.completeWaitingPcall(code)) break :blk self.markFault();
+                    break :blk self.resumeAfterPcallCompletion();
                 }
+                self.reportWamrTrap();
                 break :blk self.markFault();
             },
         };
+    }
+
+    fn resumeAfterPcallCompletion(self: *GuestRuntime) Step {
+        const exec_env = self.exec_env orelse return self.markFault();
+        self.clearWamrBlockingFlag();
+        var argv = [_]u32{0};
+        const status = wamr.wasm_runtime_resume(exec_env, 1, argv[0..].ptr);
+        return self.handleStatus(status, argv[0]);
+    }
+
+    fn reportWamrTrap(self: *GuestRuntime) void {
+        if (self.module_inst) |module_inst| {
+            if (wamr.wasm_runtime_get_exception(module_inst)) |message| {
+                syscall.termWrite("wamr trap: ", true);
+                syscall.termWrite(std.mem.sliceTo(message, 0), true);
+                syscall.termWrite("\n", true);
+            } else {
+                syscall.termWrite("wamr trap: <no exception>\n", true);
+            }
+        }
     }
 };
 
@@ -441,6 +633,23 @@ fn captureReturnSlot(exec_env: ?*wamr.ExecEnv) ?*u32 {
     return &caller.lp[caller.ret_offset];
 }
 
+const NativeBoundary = struct {
+    native_frame: *wamr.InterpFrame,
+    caller_frame: *wamr.InterpFrame,
+    return_slot: *u32,
+};
+
+fn captureNativeBoundary(exec_env: ?*wamr.ExecEnv) ?NativeBoundary {
+    const env = exec_env orelse return null;
+    const native_frame = env.cur_frame orelse return null;
+    const caller = native_frame.prev_frame orelse return null;
+    return .{
+        .native_frame = native_frame,
+        .caller_frame = caller,
+        .return_slot = &caller.lp[caller.ret_offset],
+    };
+}
+
 fn setRawReturn(raw_args: [*]u64, code: i32) void {
     raw_args[0] = @as(u32, @bitCast(code));
 }
@@ -450,6 +659,81 @@ fn setException(exec_env: ?*wamr.ExecEnv, message: [*:0]const u8) void {
     wamr.wasm_runtime_set_exception(module_inst, message);
 }
 
+fn rawI32(slot: u64) i32 {
+    return @bitCast(@as(u32, @truncate(slot)));
+}
+
+fn clearHandledTrap(exec_env: ?*wamr.ExecEnv) void {
+    const env = exec_env orelse return;
+    const module_inst = wamr.wasm_runtime_get_module_inst(exec_env) orelse return;
+    wamr.wasm_runtime_clear_exception(module_inst);
+    env.wasm_call_status = @intFromEnum(wamr.CallStatus.done);
+}
+
+fn rawSetThrow(exec_env: ?*wamr.ExecEnv, raw_args: [*]u64) void {
+    const guest = guestFromExecEnv(exec_env) orelse {
+        setRawReturn(raw_args, -constants.EIO);
+        setException(exec_env, ERR_NATIVE_CONTEXT.ptr);
+        return;
+    };
+    guest.recordThrow(rawI32(raw_args[0]));
+    setRawReturn(raw_args, constants.ESUCCESS);
+}
+
+fn rawPcall(exec_env: ?*wamr.ExecEnv, raw_args: [*]u64) void {
+    const guest = guestFromExecEnv(exec_env) orelse {
+        setRawReturn(raw_args, -constants.EIO);
+        setException(exec_env, ERR_NATIVE_CONTEXT.ptr);
+        return;
+    };
+    const child = guest.pcall_run_fn orelse {
+        setRawReturn(raw_args, -constants.EINVAL);
+        return;
+    };
+    const boundary = captureNativeBoundary(exec_env) orelse {
+        setException(exec_env, ERR_RETURN_SLOT.ptr);
+        return;
+    };
+
+    var frame_index: usize = 0;
+    const push_result = guest.pushPcallFrame(&frame_index);
+    if (push_result != constants.ESUCCESS) {
+        setRawReturn(raw_args, push_result);
+        return;
+    }
+
+    var argv = [_]u32{0};
+    const child_status = wamr.wasm_runtime_call_wasm_status(exec_env, child, 0, argv[0..].ptr);
+    switch (child_status) {
+        .done => {
+            const pop_result = guest.popPcallFrameRestore();
+            if (pop_result != constants.ESUCCESS) {
+                setRawReturn(raw_args, pop_result);
+                return;
+            }
+            setRawReturn(raw_args, constants.ESUCCESS);
+        },
+        .yielded => {
+            if (!guest.markPcallWaiting(frame_index, boundary)) {
+                setRawReturn(raw_args, -constants.EIO);
+                return;
+            }
+            setRawReturn(raw_args, 0);
+            setException(exec_env, ERR_PCALL_YIELD.ptr);
+        },
+        .trap => {
+            const code = guest.takeThrow() orelse return;
+            clearHandledTrap(exec_env);
+            const pop_result = guest.popPcallFrameRestore();
+            if (pop_result != constants.ESUCCESS) {
+                setRawReturn(raw_args, pop_result);
+                return;
+            }
+            setRawReturn(raw_args, code);
+        },
+    }
+}
+
 fn rawSyscall(exec_env: ?*wamr.ExecEnv, raw_args: [*]u64, desc: *const mc.Desc) void {
     const guest = guestFromExecEnv(exec_env) orelse {
         setRawReturn(raw_args, constants.EIO);
@@ -457,9 +741,12 @@ fn rawSyscall(exec_env: ?*wamr.ExecEnv, raw_args: [*]u64, desc: *const mc.Desc) 
         return;
     };
 
-    if (std.mem.eql(u8, desc.variant, "Pcall") or std.mem.eql(u8, desc.variant, "SetThrow")) {
-        // TODO(Stage 3): WAMR guest-in-guest pcall needs its own frame/result protocol.
-        setRawReturn(raw_args, syscall.neg(constants.ENOSYS));
+    if (std.mem.eql(u8, desc.variant, "Pcall")) {
+        rawPcall(exec_env, raw_args);
+        return;
+    }
+    if (std.mem.eql(u8, desc.variant, "SetThrow")) {
+        rawSetThrow(exec_env, raw_args);
         return;
     }
 
@@ -536,16 +823,14 @@ fn ensureWamrInitialized() bool {
     if (!state.isInitialized()) return false;
     const k = state.kernel();
     if (!k.wamr_runtime_initialized) {
-        if (k.wamr_runtime_pool == null) {
-            k.wamr_runtime_pool = k.gpa.alloc(u64, WAMR_POOL_WORDS) catch return false;
-        }
-        const pool = k.wamr_runtime_pool orelse return false;
         var init_args = std.mem.zeroes(wamr.RuntimeInitArgs);
-        init_args.mem_alloc_type = .pool;
+        init_args.mem_alloc_type = .allocator;
         init_args.mem_alloc_option = .{
-            .pool = .{
-                .heap_buf = @ptrCast(pool.ptr),
-                .heap_size = WAMR_POOL_BYTES,
+            .allocator = .{
+                .malloc_func = @ptrCast(@constCast(&wamrAlloc)),
+                .realloc_func = @ptrCast(@constCast(&wamrRealloc)),
+                .free_func = @ptrCast(@constCast(&wamrFree)),
+                .user_data = null,
             },
         };
         init_args.running_mode = .interp;

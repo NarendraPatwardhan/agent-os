@@ -694,9 +694,18 @@ pub fn activateServiceLazily(k: *Kernel, name: []const u8) bool {
 }
 
 fn activateEagerServices(k: *Kernel) void {
-    _ = k;
-    // TODO(Stage 3): re-enable eager resident-service activation once WAMR service
-    // guests and full snapshot parity are wired. Stage 2b only needs pid-1/coreutils.
+    var arena_state = std.heap.ArenaAllocator.init(k.gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const names = readDirNames(k, arena, "/etc/services.d") orelse return;
+    for (names) |file| {
+        if (!std.mem.endsWith(u8, file, ".json")) continue;
+        const name = file[0 .. file.len - ".json".len];
+        if (!registry.validServiceName(name)) continue;
+        const spec = lookupServiceSpec(k, name) orelse continue;
+        defer k.gpa.free(spec.binary);
+        if (spec.eager) _ = spawnService(k, name, spec.binary);
+    }
 }
 
 fn setBootEnv(k: *Kernel, key: []const u8, value: []const u8) void {

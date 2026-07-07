@@ -129,6 +129,12 @@ pub const Val = extern struct {
     },
 };
 
+pub const GlobalInst = extern struct {
+    kind: ValKind,
+    is_mutable: bool,
+    global_data: ?*anyopaque,
+};
+
 pub extern fn wasm_runtime_init() bool;
 pub extern fn wasm_runtime_full_init(init_args: *RuntimeInitArgs) bool;
 pub extern fn wasm_runtime_destroy() void;
@@ -195,6 +201,11 @@ pub extern fn wasm_runtime_get_memory(module_inst: ?*ModuleInst, index: u32) ?*M
 pub extern fn wasm_memory_get_base_address(memory_inst: ?*Memory) ?*anyopaque;
 pub extern fn wasm_memory_get_cur_page_count(memory_inst: ?*Memory) u64;
 pub extern fn wasm_memory_get_bytes_per_page(memory_inst: ?*Memory) u64;
+pub extern fn wasm_runtime_get_export_global_inst(
+    module_inst: ?*ModuleInst,
+    name: [*:0]const u8,
+    global_inst: *GlobalInst,
+) bool;
 pub extern fn wasm_runtime_addr_app_to_native(module_inst: ?*ModuleInst, app_offset: u64) ?*anyopaque;
 pub extern fn wasm_runtime_addr_native_to_app(module_inst: ?*ModuleInst, native_ptr: ?*anyopaque) u64;
 pub extern fn wasm_runtime_validate_app_addr(module_inst: ?*ModuleInst, app_offset: u64, size: u64) bool;
