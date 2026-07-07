@@ -822,7 +822,7 @@ pub fn execStart(request_len: u32) i32 {
     parent.setFd(k.gpa, 1, stdout_fd);
     parent.setFd(k.gpa, 2, stderr_fd);
     const argv: [3][]const u8 = .{ "sh", "-c", req.cmd };
-    const pid = syscall.spawnNative(1, &argv, 0, 1, 2, constants.TIER_INHERIT, .{
+    const spawn_result = syscall.spawnNative(1, &argv, 0, 1, 2, constants.TIER_INHERIT, .{
         .ptr = @ptrCast(k),
         .create_child = createCtlChild,
     });
@@ -833,13 +833,16 @@ pub fn execStart(request_len: u32) i32 {
     syscall.releaseFdValue(stdout_fd);
     syscall.releaseFdValue(stderr_fd);
 
-    if (pid < 0) {
-        stdout_buf.deinit(k.gpa);
-        k.gpa.destroy(stdout_buf);
-        stderr_buf.deinit(k.gpa);
-        k.gpa.destroy(stderr_buf);
-        return pid;
-    }
+    const pid = switch (spawn_result) {
+        .pid => |child_pid| child_pid,
+        .errno => |errno| {
+            stdout_buf.deinit(k.gpa);
+            k.gpa.destroy(stdout_buf);
+            stderr_buf.deinit(k.gpa);
+            k.gpa.destroy(stderr_buf);
+            return neg(errno);
+        },
+    };
     const child_id: u32 = @intCast(pid);
     k.sched.setPgid(child_id, 0);
     if (k.sched.getTask(child_id)) |child| {

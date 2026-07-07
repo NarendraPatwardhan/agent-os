@@ -134,12 +134,13 @@ fn createChild(_: *const anyopaque, child_id: TaskId, bytes: []const u8, cwd: []
 
 fn vSpawn(ptr: *anyopaque, argv: []const []const u8, in_fd: shos.Fd, out_fd: shos.Fd, err_fd: shos.Fd, tier: i32) shos.ShellError!shos.Pid {
     const self = ctx(ptr);
-    const rc = syscall.spawnNative(RESCUE_PID, argv, in_fd, out_fd, err_fd, tier, .{
+    return switch (syscall.spawnNative(RESCUE_PID, argv, in_fd, out_fd, err_fd, tier, .{
         .ptr = @ptrCast(self),
         .create_child = createChild,
-    });
-    if (rc < 0) return errnoToShell(-rc);
-    return @intCast(rc);
+    })) {
+        .pid => |pid| @intCast(pid),
+        .errno => |errno| errnoToShell(errno),
+    };
 }
 
 fn reapIfZombie(self: *KernelShellOs, pid: TaskId) ?i32 {

@@ -60,12 +60,21 @@ pub const Fulfillment = union(enum) {
     Exit: i32,
 };
 
+pub const SpawnResult = union(enum) {
+    pid: TaskId,
+    errno: i32,
+};
+
 fn finish(code: i32) Fulfillment {
     return .{ .Resume = code };
 }
 
 pub fn neg(errno: i32) i32 {
-    return -errno;
+    // Historical Zig scaffolding named this helper after the host-side trap
+    // convention, but the mc syscall ABI returns positive WASI errno values:
+    // 0 on success, nonzero errno on failure. Keep the helper name so the
+    // broad call-site surface stays stable while matching the oracle ABI.
+    return errno;
 }
 
 pub fn errnoFromFs(e: vfs.FsError) i32 {
@@ -1259,10 +1268,10 @@ fn hasWaitTarget(arena: std.mem.Allocator, parent: TaskId, pid: i32) bool {
     return false;
 }
 
-pub fn spawnNative(parent_id: TaskId, argv: []const []const u8, in_fd: i32, out_fd: i32, err_fd: i32, tier: i32, factory: ChildFactory) i32 {
-    const parent = state.kernel().sched.getTask(parent_id) orelse return neg(constants.EIO);
-    if (!parent.caps.has(constants.CAP_SPAWN)) return neg(constants.EPERM);
-    if (argv.len == 0) return neg(constants.EINVAL);
+pub fn spawnNative(parent_id: TaskId, argv: []const []const u8, in_fd: i32, out_fd: i32, err_fd: i32, tier: i32, factory: ChildFactory) SpawnResult {
+    const parent = state.kernel().sched.getTask(parent_id) orelse return .{ .errno = constants.EIO };
+    if (!parent.caps.has(constants.CAP_SPAWN)) return .{ .errno = constants.EPERM };
+    if (argv.len == 0) return .{ .errno = constants.EINVAL };
 
     var arena_state = std.heap.ArenaAllocator.init(state.kernel().gpa);
     defer arena_state.deinit();
@@ -1271,20 +1280,20 @@ pub fn spawnNative(parent_id: TaskId, argv: []const []const u8, in_fd: i32, out_
     const child_args = argv[1..];
     const cwd = parent.cwd;
     const live_path = parent.env.get("PATH") orelse DEFAULT_PATH;
-    const bytes = resolveProgram(arena, parent.id, cwd, prog_name, live_path) orelse return neg(constants.ENOENT);
+    const bytes = resolveProgram(arena, parent.id, cwd, prog_name, live_path) orelse return .{ .errno = constants.ENOENT };
     defer state.kernel().gpa.free(bytes);
 
     const policy = execPolicy(parent.caps, parent.confine_root, declaredTier(bytes), Tier.fromArg(tier), cwd);
 
-    var stdin = duplicateReadableFd(parent, in_fd) orelse return neg(constants.EBADF);
+    var stdin = duplicateReadableFd(parent, in_fd) orelse return .{ .errno = constants.EBADF };
     var stdout = duplicateWritableFd(parent, out_fd) orelse {
         releaseFdValue(stdin);
-        return neg(constants.EBADF);
+        return .{ .errno = constants.EBADF };
     };
     var stderr = duplicateWritableFd(parent, err_fd) orelse {
         releaseFdValue(stdin);
         releaseFdValue(stdout);
-        return neg(constants.EBADF);
+        return .{ .errno = constants.EBADF };
     };
 
     const child_pid = state.kernel().sched.spawn(parent.id, prog_name, prog_name, child_args, cwd);
@@ -1306,10 +1315,10 @@ pub fn spawnNative(parent_id: TaskId, argv: []const []const u8, in_fd: i32, out_
         state.kernel().sched.exitTask(child_pid, neg(constants.EINVAL));
         state.kernel().sched.reapZombie(child_pid);
         state.kernel().sched.dropDeadPipes();
-        return neg(constants.EINVAL);
+        return .{ .errno = constants.EINVAL };
     }
 
-    return @intCast(child_pid);
+    return .{ .pid = child_pid };
 }
 
 fn spawnGuestChild(ptr: *const anyopaque, child_id: TaskId, bytes: []const u8, cwd: []const u8) bool {
@@ -1333,11 +1342,13 @@ fn fulfillSpawn(guest: *const Guest, runtime: ?*wasm3.Runtime, mem: ?*anyopaque,
         argv.append(arena, arena.dupe(u8, part) catch @panic("OOM")) catch @panic("OOM");
     }
 
-    const child_pid = spawnNative(guest.taskId(), argv.items, args.in_fd, args.out_fd, args.err_fd, args.tier, .{
+    const child_pid = switch (spawnNative(guest.taskId(), argv.items, args.in_fd, args.out_fd, args.err_fd, args.tier, .{
         .ptr = @ptrCast(guest),
         .create_child = spawnGuestChild,
-    });
-    if (child_pid < 0) return finish(child_pid);
+    })) {
+        .pid => |pid| pid,
+        .errno => |errno| return finish(neg(errno)),
+    };
     if (!writeGuestU32(runtime, mem, args.ret_pid, @intCast(child_pid))) return finish(neg(constants.EINVAL));
     return finish(constants.ESUCCESS);
 }

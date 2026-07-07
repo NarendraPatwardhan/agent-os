@@ -1,26 +1,26 @@
 //! Kernel-owned allocation hooks for the embedded wasm3 C library.
 //!
-//! wasm3 calls these through the `d_m3AgentOsAllocator` patch. The arena is
+//! wasm3 calls these through the `d_m3AgentOsAllocator` patch. The storage is
 //! deliberately inside Zig/kernel linear memory, not a C fixed heap or host
-//! import. It is a deterministic bootstrap allocator; later guest-runtime work
-//! should hang it off the root Kernel state with per-runtime accounting.
+//! import. Use the same wasm allocator class as the kernel state so multiple
+//! live runtimes can coexist. wasm3 keeps several internal pointers in compiled
+//! runtime structures, so the hooks keep the prior conservative non-reuse
+//! behavior while removing the fixed 64 MiB ceiling.
 
 const std = @import("std");
 
-const HEAP_BYTES = 64 * 1024 * 1024;
 const ALIGN = 16;
+const HEADER_BYTES_ALIGNED = std.mem.alignForward(usize, @sizeOf(Header), ALIGN);
 
 const Header = extern struct {
     requested_len: usize,
     block_len: usize,
 };
 
-const HEADER_BYTES = @sizeOf(Header);
-
-var heap: [HEAP_BYTES]u8 align(ALIGN) = undefined;
-var cursor: usize = 0;
-var last_payload: usize = 0;
-var has_last_payload: bool = false;
+const wasm_allocator: std.mem.Allocator = .{
+    .ptr = undefined,
+    .vtable = &std.heap.WasmAllocator.vtable,
+};
 
 fn alignForward(value: usize) ?usize {
     const mask = ALIGN - 1;
@@ -28,59 +28,37 @@ fn alignForward(value: usize) ?usize {
     return adjusted & ~@as(usize, mask);
 }
 
-fn headerAt(offset: usize) *Header {
-    return @ptrCast(@alignCast(&heap[offset]));
-}
-
-fn offsetOf(ptr: *anyopaque) ?usize {
-    const base = @intFromPtr(&heap[0]);
-    const addr = @intFromPtr(ptr);
-    if (addr < base) return null;
-    const offset = addr - base;
-    if (offset >= heap.len) return null;
-    return offset;
+fn headerFromPayload(ptr: *anyopaque) *Header {
+    const base_addr = @intFromPtr(ptr) - HEADER_BYTES_ALIGNED;
+    return @ptrFromInt(base_addr);
 }
 
 pub fn reset() void {
-    cursor = 0;
-    last_payload = 0;
-    has_last_payload = false;
+    // Kept for older diagnostics; wasm3 allocations now use the kernel allocator.
 }
 
 pub fn usedBytes() usize {
-    return cursor;
+    return 0;
 }
 
 fn agentOsWasm3Alloc(size: usize) callconv(.c) ?*anyopaque {
     const requested_len = if (size == 0) 1 else size;
-    const block_len = alignForward(HEADER_BYTES + requested_len) orelse return null;
-    const end = std.math.add(usize, cursor, block_len) catch return null;
-    if (end > heap.len) return null;
+    const total_len = std.math.add(usize, HEADER_BYTES_ALIGNED, requested_len) catch return null;
+    const block_len = alignForward(total_len) orelse return null;
+    const block = wasm_allocator.alignedAlloc(u8, .fromByteUnits(ALIGN), block_len) catch return null;
+    const payload = block.ptr + HEADER_BYTES_ALIGNED;
 
-    const header_offset = cursor;
-    const payload_offset = header_offset + HEADER_BYTES;
-    const header = headerAt(header_offset);
+    const header: *Header = @ptrCast(@alignCast(block.ptr));
     header.* = .{
         .requested_len = requested_len,
         .block_len = block_len,
     };
-    @memset(heap[payload_offset..][0..requested_len], 0);
-
-    cursor = end;
-    last_payload = payload_offset;
-    has_last_payload = true;
-    return @ptrCast(&heap[payload_offset]);
+    @memset(payload[0..requested_len], 0);
+    return @ptrCast(payload);
 }
 
 fn agentOsWasm3Free(ptr: ?*anyopaque) callconv(.c) void {
-    const raw = ptr orelse return;
-    const payload_offset = offsetOf(raw) orelse return;
-    if (!has_last_payload or payload_offset != last_payload or payload_offset < HEADER_BYTES) return;
-
-    const header_offset = payload_offset - HEADER_BYTES;
-    cursor = header_offset;
-    last_payload = 0;
-    has_last_payload = false;
+    _ = ptr;
 }
 
 fn agentOsWasm3Realloc(ptr: ?*anyopaque, new_size: usize, old_size: usize) callconv(.c) ?*anyopaque {
@@ -91,26 +69,8 @@ fn agentOsWasm3Realloc(ptr: ?*anyopaque, new_size: usize, old_size: usize) callc
     }
 
     const raw = ptr.?;
-    const payload_offset = offsetOf(raw) orelse return null;
-    if (payload_offset < HEADER_BYTES) return null;
-    const header_offset = payload_offset - HEADER_BYTES;
-    const header = headerAt(header_offset);
+    const header = headerFromPayload(raw);
     const requested_len = if (new_size == 0) 1 else new_size;
-    const block_len = alignForward(HEADER_BYTES + requested_len) orelse return null;
-
-    if (has_last_payload and payload_offset == last_payload) {
-        const end = std.math.add(usize, header_offset, block_len) catch return null;
-        if (end > heap.len) return null;
-        if (requested_len > header.requested_len) {
-            @memset(heap[payload_offset + header.requested_len ..][0 .. requested_len - header.requested_len], 0);
-        }
-        header.* = .{
-            .requested_len = requested_len,
-            .block_len = block_len,
-        };
-        cursor = end;
-        return raw;
-    }
 
     const new_raw = agentOsWasm3Alloc(new_size) orelse return null;
     const copy_len = @min(@min(old_size, header.requested_len), new_size);
@@ -118,6 +78,10 @@ fn agentOsWasm3Realloc(ptr: ?*anyopaque, new_size: usize, old_size: usize) callc
         const src: [*]const u8 = @ptrCast(raw);
         const dst: [*]u8 = @ptrCast(new_raw);
         @memcpy(dst[0..copy_len], src[0..copy_len]);
+    }
+    if (requested_len > copy_len) {
+        const dst: [*]u8 = @ptrCast(new_raw);
+        @memset(dst[copy_len..requested_len], 0);
     }
     return new_raw;
 }
