@@ -68,6 +68,7 @@ WAMR_EXTRA_SRCS = [
     "@wamr//:headers",
 ]
 WAMR_COPTS = [
+    "-O3",
     "-fvisibility=hidden",
     "-DWASM_RUNTIME_API_EXTERN=",
     "-DWASM_API_EXTERN=",
