@@ -8,6 +8,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+extern void *wasm_runtime_malloc(unsigned size);
+extern void wasm_runtime_free(void *ptr);
+
 int
 bh_platform_init(void)
 {
@@ -117,7 +120,10 @@ os_mmap(void *hint, size_t size, int prot, int flags, os_file_handle file)
     (void)flags;
     (void)file;
 
-    void *ptr = malloc(size);
+    if (size > UINT32_MAX)
+        return NULL;
+
+    void *ptr = wasm_runtime_malloc((unsigned)size);
     if (ptr) memset(ptr, 0, size);
     return ptr;
 }
@@ -126,7 +132,7 @@ void
 os_munmap(void *addr, size_t size)
 {
     (void)size;
-    free(addr);
+    wasm_runtime_free(addr);
 }
 
 int
@@ -141,11 +147,14 @@ os_mprotect(void *addr, size_t size, int prot)
 void *
 os_mremap(void *old_addr, size_t old_size, size_t new_size)
 {
-    void *new_addr = malloc(new_size);
+    if (new_size > UINT32_MAX)
+        return NULL;
+
+    void *new_addr = wasm_runtime_malloc((unsigned)new_size);
     if (!new_addr) return NULL;
     if (old_addr) {
         memcpy(new_addr, old_addr, old_size < new_size ? old_size : new_size);
-        free(old_addr);
+        wasm_runtime_free(old_addr);
     }
     return new_addr;
 }

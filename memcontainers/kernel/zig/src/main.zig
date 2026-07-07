@@ -6,17 +6,13 @@
 //!   root `Kernel`, and the freestanding panic handler. Each export is a thin
 //!   shim that routes into `state.zig` (lifecycle/accounting) or `control.zig`
 //!   (the mc_ctl_* scratch-buffer plane) — no policy lives here.
-//! Invariants: A2 (wasm only), A4 (imports only `env`; Asyncify adds EXPORTS, never
-//!   imports), A5 (no native side effects), §4.3 error discipline (a guest fault is
+//! Invariants: A2 (wasm only), A4 (imports only `env`), A5 (no native side effects),
+//!   §4.3 error discipline (a guest fault is
 //!   an errno, never a host trap). The export set is exactly control.kdl — proven by
 //!   the export-purity gate against `ctl_zig`'s descriptor table.
 //! Consumes: //memcontainers/contracts:ctl_zig (export descriptors), :constants_zig.
-//! Not here — and this is load-bearing (ZIG_KERNEL §7.4, §7.7, §15.2): there is NO
-//!   `mc_prepare_rewind` and NO host-facing Asyncify-driving export. The suspend is
-//!   caught INTERNALLY at the non-instrumented `guest.zig` driver frame; the host
-//!   keeps calling `mc_tick` and never sees a suspend. The only Zig-specific symbols
-//!   are the optional `asyncify_*` exports Binaryen emits, which no host calls. If a
-//!   host change ever seems necessary, the scope is wrong — fix guest.zig, not main.
+//! Not here: guest suspend/resume. WAMR re-entry is owned by `guest.zig`; the host
+//! keeps calling `mc_tick` and never sees a suspend.
 //!
 //! Scaffold status: exports return honest stubs (lifecycle 0, control -ENOSYS, buf
 //! null) and route through state/control. Fill each callee, not this file.
@@ -165,5 +161,5 @@ comptime {
     // per-import signature derivation (validates every declared env import against ZigType).
     _ = constants.ENOSYS;
     _ = bridge.contract_covered;
-    _ = @import("guest.zig"); // compile the wasm3 bindings + allocator hooks (task #1)
+    _ = @import("guest.zig"); // compile the WAMR guest driver and native bridge
 }

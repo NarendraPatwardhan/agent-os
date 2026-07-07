@@ -44,6 +44,7 @@ WAMR_COPTS = [
     "-DWASM_ENABLE_MULTI_MODULE=0",
     "-DWASM_ENABLE_GC=0",
     "-DWASM_ENABLE_BULK_MEMORY=1",
+    "-DWASM_ENABLE_REF_TYPES=1",
     "-DBH_MALLOC=wasm_runtime_malloc",
     "-DBH_FREE=wasm_runtime_free",
     "-Ithird_party/wamr/freestanding/include",

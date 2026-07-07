@@ -3,7 +3,7 @@
 //! Owns: `mc_load_base_image` via the bridge, MCLS layer parsing, mounting a writable COW
 //!   view over the read-only base (or falling back to memfs), and mounting /dev + /tmp +
 //!   the boot directory skeleton. Oracle: kernel/rust/src/init.rs::boot_system.
-//! Invariants: boot runs to completion and NEVER suspends — off the Asyncify path (§7.4);
+//! Invariants: boot runs to completion and NEVER suspends — off the guest re-entry path;
 //!   a failed base image degrades to an empty root, never traps the host (§2.2).
 //! Not here: mount resolution / path policy (vfs.zig); backend bytes (fs/*). Boot
 //!   orchestrates. The persistfs mount, /etc/profile sourcing, and the login shell land

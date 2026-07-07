@@ -1,9 +1,9 @@
 //! Phase-1 purity gates for the Zig kernel artifact (ZIG_KERNEL §8 Phase 1, §1.2).
 //!
-//! These tests inspect the REAL Bazel-built, post-Asyncify `kernel.wasm`. They prove the
+//! These tests inspect the REAL Bazel-built Zig kernel object. They prove the
 //! first artifact obeys the unchanged host boundary (A4: imports only declared `env`
-//! symbols) and exposes exactly the generated control surface plus the OPTIONAL Asyncify
-//! exports — nothing else. They do not claim subsystem parity; that is the e2e suite.
+//! symbols) and exposes exactly the generated control surface — nothing else. They do
+//! not claim subsystem parity; that is the e2e suite.
 
 use std::collections::BTreeSet;
 
@@ -13,10 +13,18 @@ use wasmparser::{ExternalKind, Parser, Payload};
 
 fn zig_kernel_wasm() -> Vec<u8> {
     let r = runfiles::Runfiles::create().expect("runfiles unavailable");
-    let p = r
-        .rlocation("_main/memcontainers/kernel/zig/kernel.wasm")
-        .expect("zig kernel.wasm not found in runfiles");
-    std::fs::read(&p).unwrap_or_else(|e| panic!("reading {}: {e}", p.display()))
+    for rel in [
+        "_main/memcontainers/kernel/zig/kernel_obj",
+        "_main/memcontainers/kernel/zig/kernel.wasm",
+    ] {
+        let Some(p) = r.rlocation(rel) else {
+            continue;
+        };
+        if p.exists() {
+            return std::fs::read(&p).unwrap_or_else(|e| panic!("reading {}: {e}", p.display()));
+        }
+    }
+    panic!("zig kernel artifact not found in runfiles");
 }
 
 fn exported_functions(wasm: &[u8]) -> Result<BTreeSet<String>> {
@@ -65,9 +73,8 @@ fn zig_kernel_imports_only_declared_env_symbols() {
     );
 }
 
-/// §1.2: exports are exactly the generated control surface plus the OPTIONAL `asyncify_*`
-/// set — and crucially NOT a host-callable suspend-driving export (no mc_prepare_rewind).
-/// This is the gate that mechanically rejects the first attempt's host-driven Asyncify.
+/// §1.2: exports are exactly the generated control surface, with no host-callable
+/// suspend-driving exports and no embedded runtime C API leaking out of the kernel.
 #[test]
 fn zig_kernel_exports_the_generated_control_surface() {
     let exports = exported_functions(&zig_kernel_wasm()).expect("walk function exports");
@@ -79,21 +86,7 @@ fn zig_kernel_exports_the_generated_control_surface() {
         );
     }
 
-    // The ONLY non-contract exports permitted are the internal Asyncify API that Binaryen
-    // emits (no host calls them, §7.4). Anything else — especially an mc_prepare_rewind-style
-    // suspend-driving export — fails here (§15.2).
-    let allowed_optional = [
-        "asyncify_get_state",
-        "asyncify_start_unwind",
-        "asyncify_stop_unwind",
-        "asyncify_start_rewind",
-        "asyncify_stop_rewind",
-    ];
-    let allowed: BTreeSet<&str> = ctl_rust::CONTROL_EXPORTS
-        .iter()
-        .copied()
-        .chain(allowed_optional)
-        .collect();
+    let allowed: BTreeSet<&str> = ctl_rust::CONTROL_EXPORTS.iter().copied().collect();
     let extra: BTreeSet<_> = exports
         .iter()
         .filter(|name| name.as_str() != "_initialize")
@@ -103,6 +96,6 @@ fn zig_kernel_exports_the_generated_control_surface() {
 
     assert!(
         extra.is_empty(),
-        "Zig kernel exports non-contract functions beyond the optional Asyncify symbols: {extra:?}",
+        "Zig kernel exports non-contract functions: {extra:?}",
     );
 }

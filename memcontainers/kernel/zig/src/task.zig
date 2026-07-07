@@ -2,17 +2,17 @@
 //! and signal state (ZIG_KERNEL §2.3, §4.1).
 //!
 //! Owns: stable task identities (a `TaskId` is what every OTHER subsystem holds — a
-//!   guest points back by stable id, e.g. `m3_GetUserData`, never a raw pointer, §4.2),
+//!   guest points back by stable id, never a raw pointer, §4.2),
 //!   pid allocation, per-task fd tables, the 8-bit capability set (generated from
 //!   constants), tier caps applied at exec, process groups, and signal state. Exec
 //!   authority is `parent caps & binary tier/caps & requested caps`.
 //! Invariants: pid 1 has special reparenting/liveness meaning; a blocked guest is a task
-//!   whose wasm3 execution was Asyncify-suspended, its park descriptor in task state
-//!   (§2.3). Guest runtime state may point back by stable id (m3_GetUserData), but this
+//!   whose WAMR execution yielded on a blocking syscall, with its park descriptor in task state
+//!   (§2.3). Guest runtime state may point back by stable id, but this
 //!   table owns lifecycle.
 //! Consumes: :constants_zig (caps, tiers, signals, wait flags).
 //! Not here: run-queue transitions and tick logic (scheduler.zig); pipe buffers
-//!   (ipc/pipe.zig); the wasm3 runtimes themselves (guest.zig). This file is identity +
+//!   (ipc/pipe.zig); the WAMR runtimes themselves (guest.zig). This file is identity +
 //!   capability + fd bookkeeping; the scheduler drives it.
 //!
 //! Scaffold status: implemented (Phase 4). Oracle: kernel/rust/src/task/mod.rs — ported
@@ -33,7 +33,7 @@
 //! one uniform tagged union rather than boxed `ReadSource`/`WriteSink` trait objects — a
 //! `.none` slot at 0/1/2 means "fall back to the host terminal bridge", a syscall-layer
 //! concern out of scope here. The oracle's `Task::step`/`Builtin` plumbing is not ported:
-//! execution is wasm3-driven (guest.zig owns `Task.guest`), not a cooperative native
+//! execution is WAMR-driven (guest.zig owns `Task.guest`), not a cooperative native
 //! closure.
 
 const std = @import("std");
@@ -224,10 +224,10 @@ pub const Task = struct {
     /// task twice in a round; reloads to a niceness-derived quota when it reaches zero.
     skip_credit: u16 = 0,
 
-    /// Opaque wasm3 guest-runtime handle, owned and interpreted by guest.zig (a different
+    /// Opaque WAMR guest-runtime handle, owned and interpreted by guest.zig (a different
     /// file — no wasm/interpreter logic lives here). `null` for pid 1 (the shell, which
     /// runs inline in `mc_tick`) and for a task with no guest instantiated yet. Tearing
-    /// down the wasm3 instance behind a non-null `guest` around exit is guest.zig's
+    /// down the WAMR instance behind a non-null `guest` around exit is guest.zig's
     /// responsibility, not the scheduler's (see `Scheduler.exitTask`).
     guest: ?*anyopaque = null,
 

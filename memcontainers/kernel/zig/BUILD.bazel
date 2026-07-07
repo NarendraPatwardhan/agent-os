@@ -1,6 +1,5 @@
 load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary", "zig_library")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
-load("//bazel:asyncify.bzl", "asyncify_wasm")
 load("//bazel/tools/size:defs.bzl", "size_limit")
 
 # kernel/zig — the parity-gated Zig kernel from ZIG_KERNEL.md. The Rust kernel remains
@@ -9,168 +8,15 @@ load("//bazel/tools/size:defs.bzl", "size_limit")
 # files, wired into a buildable freestanding wasm, so the implementer fills named blanks
 # and never invents structure. Fill order: §13.
 #
-# Phase 1 is DONE here: the freestanding kernel passes the Asyncify transition (via
-# bazel/asyncify.bzl, non-empty only_list — never []) and carries the import/export-purity
-# and size gates. The WAMR engine swap intentionally leaves the Zig guest driver red until
-# the follow-up driver/snapshot phase.
+# WAMR is the in-kernel guest engine. The shipped kernel is the plain wasm32
+# object; suspend/resume is driven by WAMR exec_env re-entry, not a Binaryen pass.
 #
 # WHAT IS DELIBERATELY NOT HERE YET (cherry-picked from agent-os-slim in Phase order, §15.5):
 #   - the generated ctl_zig/env_zig/mc_zig deps — added to kernel_raw as control.zig /
 #     bridge.zig / syscall.zig get filled (constants_zig is used from day one).
 
-# Loose scaffold ceiling; measured post-Asyncify and tightened after parity, not before (B5).
+# Loose scaffold ceiling; tightened after parity, not before (B5).
 KERNEL_MAX_BYTES = 1024 * 1024
-
-# The §7.4 Asyncify catch boundary, as a REMOVE-list (full rationale on the asyncify_wasm
-# call): Asyncify instruments EVERY function that can reach a suspend EXCEPT these — the ONE
-# catch frame and every host export stay uninstrumented, so the guest unwind is caught inside
-# the kernel and the host boundary is provably clean. Future suspend paths (mc.pcall's nested
-# m3_Call → loom) are instrumented by construction, never by re-enumeration. no-creep asserts
-# each entry actually MATCHES a real function (an inlined catch frame would silently escape).
-ASYNCIFY_TAIL_CALL_LIST = [
-    "op_i32_Add_*",
-    "op_i32_Subtract_*",
-    "op_i32_Multiply_*",
-    "op_i32_Divide_*",
-    "op_u32_Divide_*",
-    "op_i32_Remainder_*",
-    "op_u32_Remainder_*",
-    "op_u32_And_*",
-    "op_u32_Or_*",
-    "op_u32_Xor_*",
-    "op_u32_ShiftLeft_*",
-    "op_i32_ShiftRight_*",
-    "op_u32_ShiftRight_*",
-    "op_u32_Rotl_*",
-    "op_u32_Rotr_*",
-    "op_i32_Equal*",
-    "op_i32_NotEqual*",
-    "op_i32_LessThan*",
-    "op_u32_LessThan*",
-    "op_i32_GreaterThan*",
-    "op_u32_GreaterThan*",
-    "op_i32_LessThanOrEqual*",
-    "op_u32_LessThanOrEqual*",
-    "op_i32_GreaterThanOrEqual*",
-    "op_u32_GreaterThanOrEqual*",
-    "op_u32_Clz_*",
-    "op_u32_Ctz_*",
-    "op_u32_Popcnt_*",
-    "op_i32_Wrap_i64_*",
-    "op_i32_Trunc_f32_*",
-    "op_u32_Trunc_f32_*",
-    "op_i32_Trunc_f64_*",
-    "op_u32_Trunc_f64_*",
-    "op_i32_Reinterpret_f32_*",
-    "op_i32_Extend8_s_*",
-    "op_i32_Extend16_s_*",
-    "op_i32_TruncSat_f32_*",
-    "op_u32_TruncSat_f32_*",
-    "op_i32_TruncSat_f64_*",
-    "op_u32_TruncSat_f64_*",
-    "op_i64_Add_*",
-    "op_i64_Subtract_*",
-    "op_i64_Multiply_*",
-    "op_i64_Divide_*",
-    "op_u64_Divide_*",
-    "op_i64_Remainder_*",
-    "op_u64_Remainder_*",
-    "op_u64_And_*",
-    "op_u64_Or_*",
-    "op_u64_Xor_*",
-    "op_u64_ShiftLeft_*",
-    "op_i64_ShiftRight_*",
-    "op_u64_ShiftRight_*",
-    "op_u64_Rotl_*",
-    "op_u64_Rotr_*",
-    "op_i64_Equal*",
-    "op_i64_NotEqual*",
-    "op_i64_LessThan*",
-    "op_u64_LessThan*",
-    "op_i64_GreaterThan*",
-    "op_u64_GreaterThan*",
-    "op_i64_LessThanOrEqual*",
-    "op_u64_LessThanOrEqual*",
-    "op_i64_GreaterThanOrEqual*",
-    "op_u64_GreaterThanOrEqual*",
-    "op_u64_Clz_*",
-    "op_u64_Ctz_*",
-    "op_u64_Popcnt_*",
-    "op_i64_Extend_i32_*",
-    "op_i64_Extend_u32_*",
-    "op_i64_Trunc_f32_*",
-    "op_u64_Trunc_f32_*",
-    "op_i64_Trunc_f64_*",
-    "op_u64_Trunc_f64_*",
-    "op_i64_Reinterpret_f64_*",
-    "op_i64_Extend8_s_*",
-    "op_i64_Extend16_s_*",
-    "op_i64_Extend32_s_*",
-    "op_i64_TruncSat_f32_*",
-    "op_u64_TruncSat_f32_*",
-    "op_i64_TruncSat_f64_*",
-    "op_u64_TruncSat_f64_*",
-    "op_f32_Abs_*",
-    "op_f32_Negate_*",
-    "op_f32_Ceil_*",
-    "op_f32_Floor_*",
-    "op_f32_Trunc_*",
-    "op_f32_Nearest_*",
-    "op_f32_Sqrt_*",
-    "op_f32_Add_*",
-    "op_f32_Subtract_*",
-    "op_f32_Multiply_*",
-    "op_f32_Divide_*",
-    "op_f32_Min_*",
-    "op_f32_Max_*",
-    "op_f32_CopySign_*",
-    "op_f32_Equal*",
-    "op_f32_NotEqual*",
-    "op_f32_LessThan*",
-    "op_f32_GreaterThan*",
-    "op_f32_LessThanOrEqual*",
-    "op_f32_GreaterThanOrEqual*",
-    "op_f32_Convert_i32_*",
-    "op_f32_Convert_u32_*",
-    "op_f32_Convert_i64_*",
-    "op_f32_Convert_u64_*",
-    "op_f32_Demote_f64_*",
-    "op_f32_Reinterpret_i32_*",
-    "op_f64_Abs_*",
-    "op_f64_Negate_*",
-    "op_f64_Ceil_*",
-    "op_f64_Floor_*",
-    "op_f64_Trunc_*",
-    "op_f64_Nearest_*",
-    "op_f64_Sqrt_*",
-    "op_f64_Add_*",
-    "op_f64_Subtract_*",
-    "op_f64_Multiply_*",
-    "op_f64_Divide_*",
-    "op_f64_Min_*",
-    "op_f64_Max_*",
-    "op_f64_CopySign_*",
-    "op_f64_Equal*",
-    "op_f64_NotEqual*",
-    "op_f64_LessThan*",
-    "op_f64_GreaterThan*",
-    "op_f64_LessThanOrEqual*",
-    "op_f64_GreaterThanOrEqual*",
-    "op_f64_Convert_i32_*",
-    "op_f64_Convert_u32_*",
-    "op_f64_Convert_i64_*",
-    "op_f64_Convert_u64_*",
-    "op_f64_Promote_f32_*",
-    "op_f64_Reinterpret_i64_*",
-    "op_SetRegister_*",
-    "op_Select_*",
-    "op_MemSize",
-]
-
-ASYNCIFY_REMOVE_LIST = [
-    "agent_os_guest_call_boundary",
-    "main.mc_*",
-] + ASYNCIFY_TAIL_CALL_LIST
 
 # The §4.1 module map, declared EXPLICITLY (never globbed): the scaffold-shape gate below
 # asserts this set carries no *_smoke/*_probe/fixture file (§15.7). Adding a source here is
@@ -183,6 +29,7 @@ KERNEL_SRCS = [
     "src/task.zig",
     "src/scheduler.zig",
     "src/guest.zig",
+    "src/wamr/bindings.zig",
     "src/rescue.zig",
     "src/syscall.zig",
     "src/vfs.zig",
@@ -211,7 +58,6 @@ KERNEL_SRCS = [
 # The embedded WAMR interpreter foundation (PERFORMANCE.md §8), compiled freestanding by zig cc
 # into the kernel. Its libc/platform surface is satisfied in-module
 # (third_party/wamr/freestanding), never as a new host import (A4, verified by import-purity).
-# The Zig guest driver still needs the follow-up WAMR port before this kernel target compiles.
 WAMR_CSRC = [
     "//third_party/wamr:freestanding_libc",
     "//third_party/wamr:freestanding_platform",
@@ -222,6 +68,9 @@ WAMR_EXTRA_SRCS = [
     "@wamr//:headers",
 ]
 WAMR_COPTS = [
+    "-fvisibility=hidden",
+    "-DWASM_RUNTIME_API_EXTERN=",
+    "-DWASM_API_EXTERN=",
     "-DWASM_ENABLE_INTERP=1",
     "-DWASM_ENABLE_FAST_INTERP=1",
     "-DWASM_ENABLE_INSTRUCTION_METERING=1",
@@ -235,6 +84,7 @@ WAMR_COPTS = [
     "-DWASM_ENABLE_MULTI_MODULE=0",
     "-DWASM_ENABLE_GC=0",
     "-DWASM_ENABLE_BULK_MEMORY=1",
+    "-DWASM_ENABLE_REF_TYPES=1",
     "-DBH_MALLOC=wasm_runtime_malloc",
     "-DBH_FREE=wasm_runtime_free",
     "-Ithird_party/wamr/freestanding/include",
@@ -260,11 +110,6 @@ zig_binary(
     copts = WAMR_COPTS,
     csrcs = WAMR_CSRC,
     extra_srcs = WAMR_EXTRA_SRCS,
-    # Keep the wasm name section (ReleaseSmall strips it by default): Binaryen's
-    # The legacy asyncify gates match functions BY NAME, so without names they instrument
-    # nothing and the suspend/resume check becomes meaningless (§7.4). The name section is
-    # kept until the WAMR driver phase deletes the asyncify machinery.
-    zigopts = ["-fno-strip"],
     linkopts = [
         "-fno-entry",
         "-rdynamic",
@@ -292,49 +137,16 @@ zig_configure_binary(
     threaded = "single",  # the kernel is cooperative/single-threaded (A7); enables WasmAllocator
 )
 
-# The shipped kernel artifact every consumer data-depends on (B1): kernel_obj through the
-# Asyncify transition (§6.2, §7.4). The only_list is the scoped instrument set — the whole
-# point of the port (§15.2): it is a NON-EMPTY WHITELIST (never []), so ONLY these frames are
-# instrumented. The guest.zig driver frame is excluded simply by being absent from the list,
-# which is exactly what lets it catch the unwind INTERNALLY (§7.4) — Binaryen forbids pairing
-# an only-list with a remove-list, so omission IS the pin. On the pre-driver kernel there are no
-# suspend points, so this instruments nothing. The WAMR follow-up removes this path in favor
-# of exec_env re-entry and metering. The host is never modified; there is no mc_prepare_rewind
-# (§7.7). Adds only the optional asyncify_* exports (allowed by §1.2).
-asyncify_wasm(
+# The shipped kernel artifact every consumer data-depends on (B1). WAMR suspend/resume
+# is handled inside the embedded engine, so the shipped artifact is the configured
+# wasm32 object directly.
+alias(
     name = "kernel",
-    src = ":kernel_obj",
-    # ignore_indirect MUST stay off for the legacy asyncify path: interpreter dispatch and
-    # raw-function trampolines use CALL_INDIRECT, and slim proved that ignoring indirect
-    # calls "re-entered the pcall import instead of resuming the continuation" — it breaks
-    # nested-m3_Call resumption, the core of mc.pcall / loom programmability. The unwind
-    # propagates back up the indirect op chain, so those sites must be instrumented (with it on,
-    # the unwind cannot cross them and hits an Asyncify-inserted `unreachable` at the first
-    # suspend — the stdin-read block).
-    ignore_indirect = False,
-    # §7.4 internal catch as a REMOVE-list (blacklist), NOT a whitelist. Asyncify instruments
-    # EVERY function that can reach a suspend EXCEPT those named here — the future-proof choice
-    # for programmability: mc.pcall runs a guest inside a guest (a nested m3_Call, slim 4e4d3da),
-    # and any such new suspend path is auto-instrumented. A whitelist would have to re-enumerate
-    # the pcall handler + every suspend helper and would SILENTLY break loom on a miss.
-    # Excluded:
-    #   agent_os_guest_call_boundary — the ONE Asyncify catch: the unwind spills up the whole
-    #     interpreter op chain + raw handlers + nested guest calls + the syscall/fuel suspend
-    #     helpers (all auto-instrumented) and STOPS here, which calls asyncify_stop_unwind and returns to the
-    #     scheduler — the host never sees a suspend, and there is no mc_prepare_rewind.
-    #   main.mc_*  — every host-called export, kept OUT of instrumentation so the host boundary
-    #     is provably clean (no export can carry an unwind to the host). mc_tick reaches the
-    #     guest only THROUGH the catch frame, so it is never on a live unwind anyway.
-    # Cost: ignore_indirect=False conservatively marks the VFS/control plane (vtable indirect
-    # calls) instrumentable — dead instrumentation (those paths never call start_unwind), a size
-    # cost for Phase 8, not a correctness issue. no-creep asserts the excluded set is state 0.
-    remove_list = ASYNCIFY_REMOVE_LIST,
-    tail_call_list = ASYNCIFY_TAIL_CALL_LIST,
+    actual = ":kernel_obj",
     visibility = ["//visibility:public"],
 )
 
-# B5 size gate — loose while incomplete, read against the shipped artifact. Tightens
-# post-parity; once Asyncify lands it measures the Asyncified wasm (its real cost, §12.2).
+# B5 size gate — loose while incomplete, read against the shipped artifact.
 size_limit(
     name = "size_limit",
     file = ":kernel",
@@ -345,58 +157,6 @@ size_limit(
 build_test(
     name = "test",
     targets = [":kernel"],
-)
-
-# The import/export-purity and host-instantiate gates (rust_test SOURCES) live under
-# //memcontainers/tests/parity:zig_purity_test and :zig_host_instantiate_test — kernel test
-# sources do not belong in the kernel package (kernel/rust has no tests/ dir either). The
-# build-rule gates below stay here because they are source/artifact checks local to this
-# package, like size_limit — they carry no .rs sources.
-
-# ── Asyncify no-creep gate (§7.4, §9, §15.6) ──────────────────────────────────────────
-# The §7.4 internal catch is a REMOVE-list, so "no creep" flips to three invariants on the
-# SHIPPED wasm + the Asyncify verbose stream: (1) the ONE catch frame still exists as a named
-# function to be pinned (an inlined pin silently escapes — and Binaryen does NOT warn on a
-# non-matching remove_list entry); (2) no host-callable mc_prepare_rewind export (the host
-# never drives Asyncify, §7.7); (3) no host IMPORT becomes a suspend-driver (only the Asyncify
-# intrinsics may change state through an import, A4). The end-to-end proof that the catch
-# actually fires is //memcontainers/tests/e2e:core_zig (boot_reaches_login_prompt).
-filegroup(
-    name = "kernel_asyncify_verbose",
-    srcs = [":kernel"],
-    output_group = "asyncify_verbose",
-)
-
-filegroup(
-    name = "kernel_asyncify_manifest",
-    srcs = [":kernel"],
-    output_group = "asyncify_manifest",
-)
-
-genrule(
-    name = "asyncify_no_creep_check",
-    srcs = [
-        ":kernel",
-        ":kernel_asyncify_manifest",
-        ":kernel_asyncify_verbose",
-    ],
-    tools = [
-        "asyncify_no_creep.sh",
-        "@binaryen_linux_x86_64//:bin/wasm-dis",
-    ],
-    outs = ["asyncify_no_creep.ok"],
-    cmd = """
-set -eu
-wasm="$(location :kernel)"
-manifest="$(location :kernel_asyncify_manifest)"
-verbose="$(location :kernel_asyncify_verbose)"
-bash "$(location asyncify_no_creep.sh)" "$$wasm" "$$verbose" "$(location @binaryen_linux_x86_64//:bin/wasm-dis)" "$$manifest" "$@"
-""",
-)
-
-build_test(
-    name = "asyncify_no_creep_test",
-    targets = [":asyncify_no_creep_check"],
 )
 
 # ── Scaffold-shape gate (§15.1, §15.7) ───────────────────────────────────────────────

@@ -3,13 +3,50 @@
 //! This file owns only the extern declarations for the runtime surface used by
 //! the Zig kernel driver: runtime init/destroy, module load/unload,
 //! instantiate/deinstantiate, exec-env creation, exported-function lookup/call,
-//! exception reads, memory lookup, and app/native address conversion.
+//! exception reads, memory lookup, native registration, and the small exec-env
+//! frame surface needed for cooperative yield/resume.
 
 pub const Module = opaque {};
 pub const ModuleInst = opaque {};
-pub const ExecEnv = opaque {};
 pub const Function = opaque {};
 pub const Memory = opaque {};
+
+pub const WASM_SUSPEND_FLAG_BLOCKING: u32 = 0x10;
+
+pub const SuspendFlags = extern union {
+    flags: u32,
+    padding: usize,
+};
+
+pub const InterpFrame = extern struct {
+    prev_frame: ?*InterpFrame,
+    function: ?*Function,
+    ip: ?[*]u8,
+    ret_offset: u32,
+    lp: [*]u32,
+    operand: [1]u32,
+};
+
+pub const WasmStack = extern struct {
+    top_boundary: ?[*]u8,
+    top: ?[*]u8,
+    bottom: ?[*]u8,
+};
+
+pub const ExecEnv = extern struct {
+    next: ?*ExecEnv,
+    cur_frame: ?*InterpFrame,
+    module_inst: ?*ModuleInst,
+    native_stack_boundary: ?[*]u8,
+    suspend_flags: SuspendFlags,
+    aux_stack_boundary: usize,
+    aux_stack_bottom: usize,
+    native_stack_top_min: ?[*]u8,
+    wasm_stack: WasmStack,
+    wasm_call_status: u32,
+    instructions_to_execute: c_int,
+    attachment: ?*anyopaque,
+};
 
 pub const CallStatus = enum(c_int) {
     done = 0,
@@ -19,7 +56,7 @@ pub const CallStatus = enum(c_int) {
 
 pub const NativeSymbol = extern struct {
     symbol: ?[*:0]const u8,
-    func_ptr: ?*anyopaque,
+    func_ptr: ?*const anyopaque,
     signature: ?[*:0]const u8,
     attachment: ?*anyopaque,
 };
@@ -118,6 +155,7 @@ pub extern fn wasm_runtime_deinstantiate(module_inst: ?*ModuleInst) void;
 
 pub extern fn wasm_runtime_create_exec_env(module_inst: ?*ModuleInst, stack_size: u32) ?*ExecEnv;
 pub extern fn wasm_runtime_destroy_exec_env(exec_env: ?*ExecEnv) void;
+pub extern fn wasm_runtime_get_module_inst(exec_env: ?*ExecEnv) ?*ModuleInst;
 
 pub extern fn wasm_runtime_lookup_function(module_inst: ?*ModuleInst, name: [*:0]const u8) ?*Function;
 pub extern fn wasm_runtime_call_wasm(
@@ -148,9 +186,35 @@ pub extern fn wasm_runtime_call_wasm_a(
 ) bool;
 
 pub extern fn wasm_runtime_get_exception(module_inst: ?*ModuleInst) ?[*:0]const u8;
+pub extern fn wasm_runtime_set_exception(module_inst: ?*ModuleInst, exception: [*:0]const u8) void;
+pub extern fn wasm_runtime_clear_exception(module_inst: ?*ModuleInst) void;
+pub extern fn wasm_runtime_set_custom_data(module_inst: ?*ModuleInst, custom_data: ?*anyopaque) void;
+pub extern fn wasm_runtime_get_custom_data(module_inst: ?*ModuleInst) ?*anyopaque;
 
 pub extern fn wasm_runtime_get_memory(module_inst: ?*ModuleInst, index: u32) ?*Memory;
 pub extern fn wasm_memory_get_base_address(memory_inst: ?*Memory) ?*anyopaque;
+pub extern fn wasm_memory_get_cur_page_count(memory_inst: ?*Memory) u64;
+pub extern fn wasm_memory_get_bytes_per_page(memory_inst: ?*Memory) u64;
 pub extern fn wasm_runtime_addr_app_to_native(module_inst: ?*ModuleInst, app_offset: u64) ?*anyopaque;
+pub extern fn wasm_runtime_addr_native_to_app(module_inst: ?*ModuleInst, native_ptr: ?*anyopaque) u64;
+pub extern fn wasm_runtime_validate_app_addr(module_inst: ?*ModuleInst, app_offset: u64, size: u64) bool;
+pub extern fn wasm_runtime_module_malloc(module_inst: ?*ModuleInst, size: u64, p_native_addr: ?*?*anyopaque) u64;
+pub extern fn wasm_runtime_module_free(module_inst: ?*ModuleInst, ptr: u64) void;
 
 pub extern fn wasm_runtime_set_instruction_count_limit(exec_env: ?*ExecEnv, instruction_count: c_int) void;
+pub extern fn wasm_runtime_register_natives(
+    module_name: [*:0]const u8,
+    native_symbols: [*]NativeSymbol,
+    n_native_symbols: u32,
+) bool;
+pub extern fn wasm_runtime_register_natives_raw(
+    module_name: [*:0]const u8,
+    native_symbols: [*]NativeSymbol,
+    n_native_symbols: u32,
+) bool;
+pub extern fn wasm_runtime_unregister_natives(
+    module_name: [*:0]const u8,
+    native_symbols: [*]NativeSymbol,
+) bool;
+
+pub extern fn bh_log_set_verbose_level(level: u32) void;

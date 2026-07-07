@@ -28,6 +28,18 @@ static size_t align_up(size_t value, size_t align) {
     return (value + align - 1U) & ~(align - 1U);
 }
 
+static size_t alloc_header_size(void) {
+    return align_up(sizeof(AllocBlock), 8U);
+}
+
+static unsigned char *alloc_payload(AllocBlock *block) {
+    return (unsigned char *)block + alloc_header_size();
+}
+
+static AllocBlock *alloc_block_from_payload(void *ptr) {
+    return (AllocBlock *)((unsigned char *)ptr - alloc_header_size());
+}
+
 static unsigned char *heap_end(void) {
     return (unsigned char *)(uintptr_t)(__builtin_wasm_memory_size(0) * 65536U);
 }
@@ -42,10 +54,10 @@ static bool grow_heap_to(unsigned char *needed) {
 }
 
 static void split_block(AllocBlock *block, size_t size) {
-    size_t header_size = align_up(sizeof(AllocBlock), 8U);
+    size_t header_size = alloc_header_size();
     if (block->size < size + header_size + 8U) return;
 
-    AllocBlock *next = (AllocBlock *)((unsigned char *)(block + 1) + size);
+    AllocBlock *next = (AllocBlock *)(alloc_payload(block) + size);
     next->size = block->size - size - header_size;
     next->next = block->next;
     next->free = true;
@@ -56,9 +68,9 @@ static void split_block(AllocBlock *block, size_t size) {
 
 static void coalesce_blocks(void) {
     for (AllocBlock *block = alloc_head; block && block->next;) {
-        unsigned char *block_end = (unsigned char *)(block + 1) + block->size;
+        unsigned char *block_end = alloc_payload(block) + block->size;
         if (block->free && block->next->free && block_end == (unsigned char *)block->next) {
-            block->size += align_up(sizeof(AllocBlock), 8U) + block->next->size;
+            block->size += alloc_header_size() + block->next->size;
             block->next = block->next->next;
             if (!block->next) alloc_tail = block;
         } else {
@@ -85,11 +97,11 @@ void *malloc(size_t size) {
         if (block->free && block->size >= size) {
             split_block(block, size);
             block->free = false;
-            return block + 1;
+            return alloc_payload(block);
         }
     }
 
-    size_t header_size = align_up(sizeof(AllocBlock), 8U);
+    size_t header_size = alloc_header_size();
     if (!heap_cursor) heap_cursor = (unsigned char *)align_up((uintptr_t)&__heap_base, 8U);
 
     unsigned char *block_addr = heap_cursor;
@@ -111,12 +123,12 @@ void *malloc(size_t size) {
     }
     alloc_tail = block;
     heap_cursor = next_cursor;
-    return block + 1;
+    return alloc_payload(block);
 }
 
 void free(void *ptr) {
     if (!ptr) return;
-    AllocBlock *block = ((AllocBlock *)ptr) - 1;
+    AllocBlock *block = alloc_block_from_payload(ptr);
     block->free = true;
     coalesce_blocks();
 }
@@ -128,7 +140,7 @@ void *realloc(void *ptr, size_t size) {
         return 0;
     }
 
-    AllocBlock *block = ((AllocBlock *)ptr) - 1;
+    AllocBlock *block = alloc_block_from_payload(ptr);
     if (block->size >= size) {
         split_block(block, align_up(size, 8U));
         return ptr;
@@ -387,52 +399,186 @@ char *strstr(const char *haystack, const char *needle) {
     return 0;
 }
 
-static int write_empty(char *buffer, size_t size) {
-    if (buffer && size > 0) buffer[0] = 0;
-    return 0;
+static void out_ch(char *buffer, size_t size, size_t *pos, char c) {
+    if (buffer && size > 0 && *pos + 1 < size) buffer[*pos] = c;
+    *pos += 1;
+}
+
+static void out_str(char *buffer, size_t size, size_t *pos, const char *s) {
+    if (!s) s = "(null)";
+    while (*s) {
+        out_ch(buffer, size, pos, *s);
+        s += 1;
+    }
+}
+
+static void out_unsigned(char *buffer, size_t size, size_t *pos, unsigned long long value,
+                         unsigned base, int uppercase, int width, char pad) {
+    char tmp[32];
+    size_t n = 0;
+    const char *digits = uppercase ? "0123456789ABCDEF" : "0123456789abcdef";
+
+    if (base < 2) base = 10;
+    do {
+        tmp[n++] = digits[value % base];
+        value /= base;
+    } while (value && n < sizeof(tmp));
+
+    while ((int)n < width) {
+        out_ch(buffer, size, pos, pad);
+        width -= 1;
+    }
+    while (n > 0) out_ch(buffer, size, pos, tmp[--n]);
+}
+
+static void out_signed(char *buffer, size_t size, size_t *pos, long long value,
+                       int width, char pad) {
+    unsigned long long magnitude;
+    if (value < 0) {
+        out_ch(buffer, size, pos, '-');
+        magnitude = (unsigned long long)(-(value + 1)) + 1;
+    } else {
+        magnitude = (unsigned long long)value;
+    }
+    out_unsigned(buffer, size, pos, magnitude, 10, 0, width, pad);
+}
+
+int vsnprintf(char *buffer, size_t size, const char *format, va_list ap) {
+    size_t pos = 0;
+
+    for (const char *p = format; p && *p; p += 1) {
+        if (*p != '%') {
+            out_ch(buffer, size, &pos, *p);
+            continue;
+        }
+
+        p += 1;
+        if (*p == '%') {
+            out_ch(buffer, size, &pos, '%');
+            continue;
+        }
+
+        char pad = ' ';
+        if (*p == '0') {
+            pad = '0';
+            p += 1;
+        }
+
+        int width = 0;
+        while (*p >= '0' && *p <= '9') {
+            width = width * 10 + (*p - '0');
+            p += 1;
+        }
+
+        int long_count = 0;
+        if (*p == 'l') {
+            long_count = 1;
+            p += 1;
+            if (*p == 'l') {
+                long_count = 2;
+                p += 1;
+            }
+        } else if (*p == 'z' || *p == 't' || *p == 'j') {
+            long_count = 2;
+            p += 1;
+        }
+
+        switch (*p) {
+            case 's':
+                out_str(buffer, size, &pos, va_arg(ap, const char *));
+                break;
+            case 'c':
+                out_ch(buffer, size, &pos, (char)va_arg(ap, int));
+                break;
+            case 'd':
+            case 'i':
+                if (long_count >= 2)
+                    out_signed(buffer, size, &pos, va_arg(ap, long long), width, pad);
+                else if (long_count == 1)
+                    out_signed(buffer, size, &pos, va_arg(ap, long), width, pad);
+                else
+                    out_signed(buffer, size, &pos, va_arg(ap, int), width, pad);
+                break;
+            case 'u':
+                if (long_count >= 2)
+                    out_unsigned(buffer, size, &pos, va_arg(ap, unsigned long long), 10, 0, width, pad);
+                else if (long_count == 1)
+                    out_unsigned(buffer, size, &pos, va_arg(ap, unsigned long), 10, 0, width, pad);
+                else
+                    out_unsigned(buffer, size, &pos, va_arg(ap, unsigned int), 10, 0, width, pad);
+                break;
+            case 'x':
+            case 'X':
+                if (long_count >= 2)
+                    out_unsigned(buffer, size, &pos, va_arg(ap, unsigned long long), 16, *p == 'X', width, pad);
+                else if (long_count == 1)
+                    out_unsigned(buffer, size, &pos, va_arg(ap, unsigned long), 16, *p == 'X', width, pad);
+                else
+                    out_unsigned(buffer, size, &pos, va_arg(ap, unsigned int), 16, *p == 'X', width, pad);
+                break;
+            case 'p':
+                out_str(buffer, size, &pos, "0x");
+                out_unsigned(buffer, size, &pos, (unsigned long long)(uintptr_t)va_arg(ap, void *), 16, 0, width, '0');
+                break;
+            default:
+                out_ch(buffer, size, &pos, '%');
+                if (*p) out_ch(buffer, size, &pos, *p);
+                break;
+        }
+    }
+
+    if (buffer && size > 0) {
+        if (pos < size)
+            buffer[pos] = 0;
+        else
+            buffer[size - 1] = 0;
+    }
+    return (int)pos;
+}
+
+int snprintf(char *buffer, size_t size, const char *format, ...) {
+    va_list ap;
+    va_start(ap, format);
+    int n = vsnprintf(buffer, size, format, ap);
+    va_end(ap);
+    return n;
+}
+
+int sprintf(char *buffer, const char *format, ...) {
+    va_list ap;
+    va_start(ap, format);
+    int n = vsnprintf(buffer, (size_t)-1, format, ap);
+    va_end(ap);
+    return n;
 }
 
 int vprintf(const char *format, va_list ap) {
-    (void)format;
-    (void)ap;
-    return 0;
+    char buffer[256];
+    return vsnprintf(buffer, sizeof(buffer), format, ap);
 }
 
 int printf(const char *format, ...) {
-    (void)format;
-    return 0;
+    va_list ap;
+    va_start(ap, format);
+    int n = vprintf(format, ap);
+    va_end(ap);
+    return n;
 }
 
 int vfprintf(FILE *stream, const char *format, va_list ap) {
     (void)stream;
-    (void)format;
-    (void)ap;
-    return 0;
+    return vprintf(format, ap);
 }
 
 int fprintf(FILE *stream, const char *format, ...) {
+    va_list ap;
     (void)stream;
-    (void)format;
-    return 0;
-}
-
-int vsnprintf(char *buffer, size_t size, const char *format, va_list ap) {
-    (void)format;
-    (void)ap;
-    return write_empty(buffer, size);
-}
-
-int snprintf(char *buffer, size_t size, const char *format, ...) {
-    (void)format;
-    return write_empty(buffer, size);
-}
-
-int sprintf(char *buffer, const char *format, ...) {
-    (void)format;
-    return write_empty(buffer, (size_t)1);
+    va_start(ap, format);
+    int n = vprintf(format, ap);
+    va_end(ap);
+    return n;
 }
 
 int puts(const char *s) {
-    (void)s;
-    return 0;
+    return printf("%s\n", s);
 }

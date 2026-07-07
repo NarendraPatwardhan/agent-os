@@ -235,9 +235,16 @@ pub const Kernel = struct {
     /// snapshot captures it. The host sizes it via mc_ctl_buf, writes a request, and reads
     /// results back out of it.
     ctl_buffer: std.ArrayList(u8) = .empty,
-    /// The pid-1 login shell's wasm3 runtime, heap-allocated for a stable address (the raw
-    /// syscall trampoline recovers it via m3_GetUserData, §7.4). Null until startLoginShell.
+    /// The pid-1 login shell's WAMR runtime, heap-allocated for a stable address. Null
+    /// until startLoginShell.
     login_guest: ?*guest.GuestRuntime = null,
+    /// Process-wide WAMR init/registry flags. The WAMR singleton itself is in the embedded
+    /// C runtime; the ownership decision lives on Kernel, not in guest.zig globals.
+    wamr_runtime_initialized: bool = false,
+    wamr_natives_registered: bool = false,
+    /// Private WAMR runtime heap. WAMR must not use the Zig kernel's process heap directly:
+    /// its freestanding C allocator would race the kernel WasmAllocator for `__heap_base`.
+    wamr_runtime_pool: ?[]u64 = null,
     /// The console pipe feeding pid-1 stdin: the kernel holds an extra writer (so the shell
     /// never sees EOF until Ctrl-D), the shell holds the read end as fd 0. Oracle: lib.rs
     /// STATE.console_pipe.
@@ -291,7 +298,7 @@ pub fn isInitialized() bool {
 }
 
 /// `mc_init`: construct the root `Kernel`, load the base image, and build the namespace
-/// (§2.2). Boot runs to completion and never suspends — off the Asyncify path (§7.4).
+/// (§2.2). Boot runs to completion before the guest scheduler starts.
 pub fn init() i32 {
     g_kernel = .{
         .gpa = kernel_allocator,
@@ -350,7 +357,7 @@ fn callerAlive(ctx: *anyopaque, caller: vfs.CallerId) bool {
 
 /// Step each CURRENTLY-ready task's guest exactly once — the bounded run-round. Returns true
 /// if any guest made progress (`.ran`). Shared by `tick()` and the rescue shell's inline
-/// `waitpid` drive: a native (kernel) shell can't Asyncify-suspend, so it drives child guests
+/// `waitpid` drive: a native (kernel) shell does not own a guest exec_env, so it drives child guests
 /// to completion by calling THIS between zombie checks (task #11). Frees an exited/faulted
 /// guest via `onGuestFinished`; a signal-terminated task's guest is torn down too. Bounded to
 /// the ready count captured up front — a guest that fuel-yields or re-arms a ready syscall
@@ -387,7 +394,7 @@ pub fn stepReadyRound(k: *Kernel) bool {
 }
 
 /// A guest reported `.exited`/`.faulted` (or a signal killed its task): make sure the task
-/// is a zombie carrying `code`, free its wasm3 runtime, and — for pid 1 — end the session.
+/// is a zombie carrying `code`, free its WAMR runtime, and — for pid 1 — end the session.
 /// The zombie stays until a parent `waitpid` reaps it: guest.zig owns the runtime, the
 /// scheduler owns the task. Respawning pid 1 for session keep-alive is a later refinement.
 fn onGuestFinished(k: *Kernel, id: u32, g: *guest.GuestRuntime, code: i32) void {
@@ -687,18 +694,9 @@ pub fn activateServiceLazily(k: *Kernel, name: []const u8) bool {
 }
 
 fn activateEagerServices(k: *Kernel) void {
-    var arena_state = std.heap.ArenaAllocator.init(k.gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const names = readDirNames(k, arena, "/etc/services.d") orelse return;
-    for (names) |file| {
-        if (!std.mem.endsWith(u8, file, ".json")) continue;
-        const name = file[0 .. file.len - ".json".len];
-        if (!registry.validServiceName(name)) continue;
-        const spec = lookupServiceSpec(k, name) orelse continue;
-        defer k.gpa.free(spec.binary);
-        if (spec.eager) _ = spawnService(k, name, spec.binary);
-    }
+    _ = k;
+    // TODO(Stage 3): re-enable eager resident-service activation once WAMR service
+    // guests and full snapshot parity are wired. Stage 2b only needs pid-1/coreutils.
 }
 
 fn setBootEnv(k: *Kernel, key: []const u8, value: []const u8) void {
@@ -756,7 +754,7 @@ fn seedBootEnv(k: *Kernel) void {
 }
 
 /// Start the pid-1 login shell (§2.3): source /etc/profile, resolve /bin/sh, spawn pid 1
-/// with the console pipe as its stdin, and load it into a wasm3 runtime. Oracle:
+/// with the console pipe as its stdin, and load it into a WAMR runtime. Oracle:
 /// lib.rs::boot_login_shell → try_guest_login_shell. A missing or unloadable /bin/sh
 /// falls back to the native in-kernel rescue shell bound to the same pid-1 Task.
 pub fn startLoginShell(k: *Kernel) void {
