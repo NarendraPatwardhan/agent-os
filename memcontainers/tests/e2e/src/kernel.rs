@@ -3,7 +3,7 @@
 //! interactive terminal's ONLCR (CRLF — see [`crate::tty`], SYSTEMS.md section 6). No guest programs needed except the
 //! one exec test, which proves the pipe stays raw.
 
-use crate::{boot, boot_posix, names, restore};
+use crate::{boot, boot_loom, boot_posix, names, restore};
 use host::ExecOptions;
 
 /// WHY: the base image is a deterministic pkg_tar (SYSTEMS.md section 11) the kernel mounts as its lowest layer; the
@@ -179,4 +179,47 @@ fn restoring_a_snapshot_twice_forks_independent_vms() {
 
     assert_eq!(a.host.read_file("/tmp/fork").expect("read a"), b"branch-a");
     assert_eq!(b.host.read_file("/tmp/fork").expect("read b"), b"branch-b");
+}
+
+/// WHY: Group G / A8 under Asyncify (ZIG_KERNEL section 7.4) — the DEEPEST snapshot guarantee. The two
+/// snapshot tests above quiesce first; this one snapshots a guest that is provably STILL RUNNING —
+/// suspended mid-computation on an Asyncify fuel-yield, its native wasm call stack spilled into linear
+/// memory. A VM restored from that snapshot must RESUME the same computation to the identical result,
+/// proving the Asyncify buffer is snapshottable by construction, not just the filesystem.
+#[test]
+fn snapshot_while_a_guest_is_suspended_resumes_identically() {
+    // A heavy, deterministic loop that spans many fuel slices and prints a clean integer only at the
+    // END — so no output exists before completion, and the whole result appears only on resume in the
+    // restored VM.
+    let mut s = boot_loom();
+    s.drive_until_prompt(0);
+
+    s.send_raw(b"luau -e 'local n=0 for i=1,4000000 do n=n+1 end print(n)'\n");
+
+    // Drive only a FEW ticks — far fewer than the loop needs — so the guest is suspended mid-loop.
+    // Each tick must report more work pending; a loop that finished this fast would not prove a
+    // mid-flight snapshot, so fail loudly (raise the iteration count) rather than degrade silently.
+    for _ in 0..5 {
+        assert!(
+            s.host.tick().expect("tick"),
+            "the heavy guest finished before we could snapshot it mid-suspend — raise the loop count"
+        );
+    }
+    assert!(
+        !s.transcript().ends_with("$ "),
+        "expected the guest still mid-computation, but the prompt already returned:\n{}",
+        s.transcript()
+    );
+
+    // Snapshot WHILE the guest is Asyncify-suspended, then rehydrate a fresh VM from the blob.
+    let snap = s.host.snapshot().expect("snapshot while a guest is suspended");
+    let mut restored = restore(&snap);
+
+    // The restored VM must RESUME the suspended loop and finish it — the result appears only now.
+    restored.drive_until_prompt(0);
+    let resumed = restored.transcript();
+    assert!(
+        resumed.contains("4000000"),
+        "restored VM did not resume the suspended computation to its result; got:\n{resumed}"
+    );
 }
