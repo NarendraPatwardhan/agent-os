@@ -51,6 +51,7 @@ export function decodeBuildInput(bytes: Uint8Array): BuildInput {
     index,
   };
 }
+
 // One exact path mapping for a multi-stage copy op.
 export interface CopyPath {
   src_path: string;
@@ -680,3 +681,4 @@ export function decodeDefinition(bytes: Uint8Array): Definition {
     root,
   };
 }
+

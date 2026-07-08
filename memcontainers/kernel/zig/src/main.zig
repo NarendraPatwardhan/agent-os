@@ -7,17 +7,17 @@
 //!   shim that routes into `state.zig` (lifecycle/accounting) or `control.zig`
 //!   (the mc_ctl_* scratch-buffer plane) — no policy lives here.
 //! Invariants: A2 (wasm only), A4 (imports only `env`), A5 (no native side effects),
-//!   §4.3 error discipline (a guest fault is
-//!   an errno, never a host trap). The export set is exactly control.kdl — proven by
-//!   the export-purity gate against `ctl_zig`'s descriptor table.
-//! Consumes: //memcontainers/contracts:ctl_zig (export descriptors), :constants_zig.
+//!   §4.3 error discipline (a guest fault is an errno, never a host trap). The export set
+//!   is exactly control.kdl — enforced by `exports_covered` below, which fails the kernel
+//!   build if a control.kdl export lacks a `pub export fn` here (the mirror of
+//!   `bridge.contract_covered` for the host→kernel direction).
+//! Consumes: //memcontainers/contracts:ctl_zig (the EXPORTS descriptor — the drift oracle),
+//!   :constants_zig.
 //! Not here: guest suspend/resume. WAMR re-entry is owned by `guest.zig`; the host
 //! keeps calling `mc_tick` and never sees a suspend.
-//!
-//! Scaffold status: exports return honest stubs (lifecycle 0, control -ENOSYS, buf
-//! null) and route through state/control. Fill each callee, not this file.
 
 const constants = @import("constants_zig");
+const ctl = @import("ctl_zig");
 const bridge = @import("bridge.zig");
 const state = @import("state.zig");
 const control = @import("control.zig");
@@ -55,9 +55,10 @@ pub export fn mc_commit_layer() i32 {
     return state.commitLayer();
 }
 
-// NOTE (§2.8): these return 0 only because the scaffold has no egress/persist/service
-// subsystem yet — that is the honest count. They MUST reflect real inflight/pending
-// state the moment egress/* or persist land, or every snapshot gate is a lie.
+// The snapshot quiescence gate (§2.8, A8): the host refuses to snapshot while these are
+// non-zero. `inflightEgress` sums the live net + host_call + persist + service-call handles
+// (state.inflightEgress); a raw host handle mid-flight would not survive a restore, so a
+// snapshot is only ever taken at a quiescent boundary.
 pub export fn mc_inflight_egress() i32 {
     return state.inflightEgress();
 }
@@ -155,11 +156,25 @@ pub export fn mc_ctl_svc_call_close(job_id: u32) i32 {
     return control.svcCallClose(job_id);
 }
 
+/// Export-purity gate (§5.2): every control export `control.kdl` declares is defined below as a
+/// `pub export fn`. Referenced from the comptime block so a control.kdl add/rename breaks the
+/// kernel build here rather than drifting silently from the host — the host→kernel mirror of
+/// `bridge.contract_covered`. `@hasDecl` is type-level, so no export materializes from this check.
+pub const exports_covered = blk: {
+    for (ctl.EXPORTS) |desc| {
+        if (!@hasDecl(@This(), desc.name)) {
+            @compileError("main.zig: missing `pub export fn` for control export '" ++ desc.name ++ "' — control.kdl changed; declare it here.");
+        }
+    }
+    break :blk ctl.EXPORTS.len;
+};
+
 comptime {
-    // Anchor the generated ABI into the build so a contract change breaks loudly here rather
-    // than at the first fill (§5.2 drift discipline): the errno namespace, and the bridge's
-    // per-import signature derivation (validates every declared env import against ZigType).
+    // Anchor the generated contract surfaces into the build so a contract change breaks loudly
+    // here rather than at a call site (§5.2 drift discipline): the errno namespace, the bridge's
+    // per-import coverage check, and the control-export coverage gate.
     _ = constants.ENOSYS;
     _ = bridge.contract_covered;
+    _ = exports_covered;
     _ = @import("guest.zig"); // compile the WAMR guest driver and native bridge
 }

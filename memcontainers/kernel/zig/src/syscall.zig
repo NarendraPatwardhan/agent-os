@@ -1969,8 +1969,10 @@ pub fn fulfillOutcome(memory: GuestMemory, guest: *const Guest, pending: mc.Pend
         .Random => |args| finish(fulfillRandom(guest, memory, args)),
         .AbiVersion => |args| finish(fulfillAbiVersion(memory, args)),
         .Exit => |args| .{ .Exit = args.code },
-        // TODO(Stage 3): WAMR guest-in-guest pcall needs a dedicated nested-call
-        // protocol; boot/core exec does not require it.
+        // Pcall/SetThrow are intercepted in the WAMR native bridge (guest.zig rawPcall/rawSetThrow),
+        // which runs the nested call and records the throw before a Pending is ever built — so these
+        // arms are unreachable in practice. They remain for switch exhaustiveness (mc.Pending has no
+        // `else`), failing closed with ENOSYS should the interception ever be bypassed.
         .Pcall, .SetThrow => finish(neg(constants.ENOSYS)),
     };
 }

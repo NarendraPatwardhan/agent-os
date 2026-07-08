@@ -13,7 +13,7 @@ fn ctlPutI64(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: i64) !voi
 fn ctlPutBool(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: bool) !void { try ctlPutU8(out, allocator, if (v) 1 else 0); }
 fn ctlPutBytes(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: []const u8) !void { try ctlPutU32(out, allocator, @intCast(v.len)); try out.appendSlice(allocator, v); }
 fn ctlPairLess(_: void, a: StringPair, b: StringPair) bool { return std.mem.lessThan(u8, a.key, b.key); }
-fn ctlPutStrMap(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: []const StringPair) !void { var pairs = try allocator.dupe(StringPair, v); defer allocator.free(pairs); std.mem.sort(StringPair, pairs, {}, ctlPairLess); try ctlPutU32(out, allocator, @intCast(pairs.len)); var prev: ?[]const u8 = null; for (pairs) |p| { if (prev) |last| { if (std.mem.eql(u8, last, p.key)) return WireError.NonCanonicalMap; } try ctlPutBytes(out, allocator, p.key); try ctlPutBytes(out, allocator, p.value); prev = p.key; } }
+fn ctlPutStrMap(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: []const StringPair) !void { const pairs = try allocator.dupe(StringPair, v); defer allocator.free(pairs); std.mem.sort(StringPair, pairs, {}, ctlPairLess); try ctlPutU32(out, allocator, @intCast(pairs.len)); var prev: ?[]const u8 = null; for (pairs) |p| { if (prev) |last| { if (std.mem.eql(u8, last, p.key)) return WireError.NonCanonicalMap; } try ctlPutBytes(out, allocator, p.key); try ctlPutBytes(out, allocator, p.value); prev = p.key; } }
 fn ctlPutMessageList(comptime T: type, out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const T) !void { try ctlPutU32(out, allocator, @intCast(values.len)); for (values) |value| { const frame = try value.encode(allocator); defer allocator.free(frame); try ctlPutBytes(out, allocator, frame); } }
 fn ctlNeed(bytes: []const u8, off: *usize, len: usize) WireError![]const u8 { const end = off.* + len; if (end < off.* or end > bytes.len) return WireError.Truncated; const out = bytes[off.*..end]; off.* = end; return out; }
 fn ctlReadU8(bytes: []const u8, off: *usize) WireError!u8 { return (try ctlNeed(bytes, off, 1))[0]; }
@@ -25,9 +25,9 @@ fn ctlReadI64(bytes: []const u8, off: *usize) WireError!i64 { return @as(i64, @b
 fn ctlReadBool(bytes: []const u8, off: *usize) WireError!bool { return switch (try ctlReadU8(bytes, off)) { 0 => false, 1 => true, else => WireError.InvalidPresence }; }
 fn ctlReadBytes(bytes: []const u8, off: *usize) WireError![]const u8 { const len = try ctlReadU32(bytes, off); return ctlNeed(bytes, off, @intCast(len)); }
 fn ctlReadStr(bytes: []const u8, off: *usize) WireError![]const u8 { const out = try ctlReadBytes(bytes, off); _ = std.unicode.Utf8View.init(out) catch return WireError.InvalidUtf8; return out; }
-fn ctlReadStrMap(allocator: std.mem.Allocator, bytes: []const u8, off: *usize) ![]const StringPair { const n = try ctlReadU32(bytes, off); var out = try allocator.alloc(StringPair, @intCast(n)); errdefer allocator.free(out); var prev: ?[]const u8 = null; var i: usize = 0; while (i < out.len) : (i += 1) { const k = try ctlReadStr(bytes, off); if (prev) |last| { if (!std.mem.lessThan(u8, last, k)) return WireError.NonCanonicalMap; } const v = try ctlReadStr(bytes, off); out[i] = .{ .key = k, .value = v }; prev = k; } return out; }
+fn ctlReadStrMap(allocator: std.mem.Allocator, bytes: []const u8, off: *usize) ![]const StringPair { const n = try ctlReadU32(bytes, off); const out = try allocator.alloc(StringPair, @intCast(n)); errdefer allocator.free(out); var prev: ?[]const u8 = null; var i: usize = 0; while (i < out.len) : (i += 1) { const k = try ctlReadStr(bytes, off); if (prev) |last| { if (!std.mem.lessThan(u8, last, k)) return WireError.NonCanonicalMap; } const v = try ctlReadStr(bytes, off); out[i] = .{ .key = k, .value = v }; prev = k; } return out; }
 
-fn ctlReadMessageList(comptime T: type, allocator: std.mem.Allocator, bytes: []const u8, off: *usize) ![]const T { const n = try ctlReadU32(bytes, off); var out = try allocator.alloc(T, @intCast(n)); errdefer allocator.free(out); var i: usize = 0; while (i < out.len) : (i += 1) out[i] = try T.decode(allocator, try ctlReadBytes(bytes, off)); return out; }
+fn ctlReadMessageList(comptime T: type, allocator: std.mem.Allocator, bytes: []const u8, off: *usize) ![]const T { const n = try ctlReadU32(bytes, off); const out = try allocator.alloc(T, @intCast(n)); errdefer allocator.free(out); var i: usize = 0; while (i < out.len) : (i += 1) out[i] = try T.decode(allocator, try ctlReadBytes(bytes, off)); return out; }
 
 // Structured host-control exec request. `cmd` still runs under /bin/sh -c; cwd/env/stdin are applied by the kernel at spawn.
 pub const EXEC_REQUEST_MSG_ID: u16 = 1;
@@ -106,6 +106,7 @@ pub const ExecOutcome = struct {
     }
 
     pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+        _ = allocator;
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != EXEC_OUTCOME_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != EXEC_OUTCOME_VERSION) return WireError.UnsupportedVersion;
@@ -145,6 +146,7 @@ pub const FileStat = struct {
     }
 
     pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+        _ = allocator;
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != FILE_STAT_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != FILE_STAT_VERSION) return WireError.UnsupportedVersion;
@@ -184,6 +186,7 @@ pub const DirEntry = struct {
     }
 
     pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+        _ = allocator;
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != DIR_ENTRY_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != DIR_ENTRY_VERSION) return WireError.UnsupportedVersion;
@@ -244,6 +247,7 @@ pub const SvcRequest = struct {
     }
 
     pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+        _ = allocator;
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != SVC_REQUEST_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != SVC_REQUEST_VERSION) return WireError.UnsupportedVersion;
@@ -275,6 +279,7 @@ pub const SvcResponse = struct {
     }
 
     pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+        _ = allocator;
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != SVC_RESPONSE_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != SVC_RESPONSE_VERSION) return WireError.UnsupportedVersion;
@@ -390,6 +395,7 @@ pub const RelayEvent = struct {
     }
 
     pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+        _ = allocator;
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != RELAY_EVENT_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != RELAY_EVENT_VERSION) return WireError.UnsupportedVersion;

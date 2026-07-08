@@ -120,11 +120,13 @@ zig_binary(
         "//memcontainers/contracts:constants_zig",  # errno/caps/tiers/flags (B2)
         "//memcontainers/contracts:env_zig",  # bridge.zig derives the env extern surface from IMPORTS (§5.1)
         "//memcontainers/contracts:mc_zig",  # generated syscall descriptors + Pending union (§5.1)
+        "//memcontainers/contracts:ctl_zig",  # generated control EXPORTS descriptor — main.zig's export-purity gate (§5.2)
         "//memcontainers/shcore:shcore",
         "@wamr//:incs",  # WAMR include path for the freestanding C compile
-        # ctl_zig / mc_zig join as control-exec (Phase 4) and syscall.zig (Phase 5) consume their
-        # descriptors. The two tiny FileStat/DirEntries result frames are hand-encoded in control.zig
-        # against the control.kdl wire format (constants there gate drift) — see wire_test.
+        # NOTE: control.zig still hand-encodes the control-frame wire codec against control.kdl;
+        # ZIG_CLEANUP #2 replaces that with ctl_zig's generated codecs (needs a lean-Zig projector
+        # change so ctl.gen.zig's lazy decoders link into the kernel). Today ctl_zig is consumed only
+        # for its EXPORTS descriptor (data-only, lazily analyzed — no decoder is pulled in).
     ],
 )
 
