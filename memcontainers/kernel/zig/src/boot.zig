@@ -6,8 +6,7 @@
 //! Invariants: boot runs to completion and NEVER suspends — off the guest re-entry path;
 //!   a failed base image degrades to an empty root, never traps the host (§2.2).
 //! Not here: mount resolution / path policy (vfs.zig); backend bytes (fs/*). Boot
-//!   orchestrates. The persistfs mount, /etc/profile sourcing, and the login shell land
-//!   with the scheduler/shell (Phase 4) and the egress/persist tier (Phase 6).
+//!   orchestrates. The login shell lifecycle stays with the root kernel state.
 
 const std = @import("std");
 const vfs = @import("vfs.zig");
@@ -24,6 +23,8 @@ const EnvFs = @import("fs/envfs.zig").EnvFs;
 const NetFs = @import("fs/netfs.zig").NetFs;
 const ToolsFs = @import("fs/toolsfs.zig").ToolsFs;
 const PersistFs = @import("fs/persistfs.zig").PersistFs;
+
+const DEFAULT_PATH = "/bin:/usr/bin";
 
 fn say(msg: []const u8) void {
     bridge.mc_stdout_write(msg.ptr, msg.len);
@@ -144,4 +145,58 @@ fn parseLayers(gpa: std.mem.Allocator, buf: []const u8) ?[]const []const u8 {
     }
     out.append(gpa, buf) catch @panic("OOM");
     return out.toOwnedSlice(gpa) catch @panic("OOM");
+}
+
+fn setBootEnv(k: *state.Kernel, key: []const u8, value: []const u8) void {
+    if (key.len == 0) return;
+    if (k.boot_env.fetchRemove(key)) |old| {
+        k.gpa.free(old.key);
+        k.gpa.free(old.value);
+    }
+    const owned_key = k.gpa.dupe(u8, key) catch @panic("OOM");
+    const owned_value = k.gpa.dupe(u8, value) catch @panic("OOM");
+    k.boot_env.put(k.gpa, owned_key, owned_value) catch @panic("OOM");
+}
+
+fn profileValue(raw: []const u8) []const u8 {
+    var value = std.mem.trim(u8, raw, " \t");
+    if (value.len >= 2) {
+        const q = value[0];
+        if ((q == '"' or q == '\'') and value[value.len - 1] == q) {
+            value = value[1 .. value.len - 1];
+        }
+    }
+    return value;
+}
+
+pub fn seedBootEnv(k: *state.Kernel) void {
+    if (k.boot_env.count() == 0) {
+        setBootEnv(k, "PATH", DEFAULT_PATH);
+        setBootEnv(k, "HOME", "/home/user");
+        setBootEnv(k, "HOSTNAME", "agent-os");
+    }
+
+    const bytes = state.readFileAlloc(k, "/etc/profile") orelse return;
+    defer k.gpa.free(bytes);
+    var lines = std.mem.splitScalar(u8, bytes, '\n');
+    while (lines.next()) |line_raw| {
+        var line = std.mem.trim(u8, line_raw, " \t\r");
+        if (line.len == 0 or line[0] == '#') continue;
+        if (std.mem.startsWith(u8, line, "export ")) {
+            line = std.mem.trim(u8, line["export ".len..], " \t");
+        }
+        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
+        const key = std.mem.trim(u8, line[0..eq], " \t");
+        if (key.len == 0) continue;
+        var valid = true;
+        for (key, 0..) |b, i| {
+            const ok = std.ascii.isAlphabetic(b) or b == '_' or (i != 0 and std.ascii.isDigit(b));
+            if (!ok) {
+                valid = false;
+                break;
+            }
+        }
+        if (!valid) continue;
+        setBootEnv(k, key, profileValue(line[eq + 1 ..]));
+    }
 }

@@ -23,6 +23,7 @@ KERNEL_MAX_BYTES = 1024 * 1024
 # a reviewed act — that is the anti-sprawl mechanism the first attempt lacked.
 KERNEL_SRCS = [
     "src/state.zig",
+    "src/console.zig",
     "src/control.zig",
     "src/control/wire.zig",
     "src/control/buf.zig",
@@ -54,6 +55,7 @@ KERNEL_SRCS = [
     "src/egress/net.zig",
     "src/egress/host_call.zig",
     "src/egress/persist.zig",
+    "src/service/activation.zig",
     "src/service/registry.zig",
     "src/fs/memfs.zig",
     "src/fs/tarfs.zig",

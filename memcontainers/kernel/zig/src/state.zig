@@ -7,29 +7,36 @@
 //!   attempt broke, §15.4).
 //! Invariants: A8 (all mutable state in linear memory, reachable from `Kernel`), A7.
 //! Not here: exported symbols (main.zig); the mc_ctl_* protocol (control.zig); base-image
-//!   parsing (boot.zig).
+//!   parsing and boot env seeding (boot.zig); console editing (console.zig);
+//!   service activation (service/activation.zig).
 
 const std = @import("std");
 const vfs = @import("vfs.zig");
 const boot = @import("boot.zig");
 const bridge = @import("bridge.zig");
+const console = @import("console.zig");
 const scheduler = @import("scheduler.zig");
 const guest = @import("guest.zig");
 const rescue = @import("rescue.zig");
-const task = @import("task.zig");
-const sections = @import("wasm_sections.zig");
 const pipe = @import("ipc/pipe.zig");
 const net = @import("egress/net.zig");
 const host_call = @import("egress/host_call.zig");
 const persist = @import("egress/persist.zig");
 const mountfs = @import("fs/mountfs.zig");
 const persistfs = @import("fs/persistfs.zig");
+const activation = @import("service/activation.zig");
 const registry = @import("service/registry.zig");
 const constants = @import("constants_zig");
 const shcore = @import("shcore");
 
-const HISTORY_CAP: usize = 200;
-const DEFAULT_PATH = "/bin:/usr/bin";
+const LineEditor = console.LineEditor;
+const flushConsole = console.flushConsole;
+const feedConsoleByte = console.feedConsoleByte;
+const activateEagerServices = activation.activateEagerServices;
+
+pub const ServicePoll = activation.ServicePoll;
+pub const serviceChannel = activation.serviceChannel;
+pub const activateServiceLazily = activation.activateServiceLazily;
 
 pub const CtlExecJob = struct {
     pid: ?u32,
@@ -64,162 +71,6 @@ pub const CtlSvcJob = struct {
             ch.release();
         }
         self.out.deinit(gpa);
-    }
-};
-
-const EscState = enum {
-    normal,
-    esc,
-    csi,
-};
-
-fn termEmit(bytes: []const u8) void {
-    if (bytes.len != 0) bridge.mc_stdout_write(bytes.ptr, bytes.len);
-}
-
-fn termBs(n: usize) void {
-    var i: usize = 0;
-    while (i < n) : (i += 1) termEmit("\x08");
-}
-
-fn termErase(n: usize) void {
-    var i: usize = 0;
-    while (i < n) : (i += 1) termEmit("\x08 \x08");
-}
-
-const LineEditor = struct {
-    line: std.ArrayList(u8) = .empty,
-    cursor: usize = 0,
-    history: std.ArrayList([]u8) = .empty,
-    hist_nav: ?usize = null,
-    stash: std.ArrayList(u8) = .empty,
-    esc: EscState = .normal,
-    param: u16 = 0,
-
-    fn insert(self: *LineEditor, gpa: std.mem.Allocator, b: u8) void {
-        const old_len = self.line.items.len;
-        self.line.append(gpa, b) catch @panic("OOM");
-        if (self.cursor < old_len) {
-            std.mem.copyBackwards(
-                u8,
-                self.line.items[self.cursor + 1 .. old_len + 1],
-                self.line.items[self.cursor..old_len],
-            );
-        }
-        self.line.items[self.cursor] = b;
-        termEmit(self.line.items[self.cursor..]);
-        termBs(self.line.items.len - self.cursor - 1);
-        self.cursor += 1;
-    }
-
-    fn removeAt(self: *LineEditor, idx: usize) void {
-        const old_len = self.line.items.len;
-        if (idx + 1 < old_len) {
-            std.mem.copyForwards(u8, self.line.items[idx .. old_len - 1], self.line.items[idx + 1 .. old_len]);
-        }
-        self.line.items.len = old_len - 1;
-    }
-
-    fn backspace(self: *LineEditor) void {
-        if (self.cursor == 0) return;
-        self.cursor -= 1;
-        self.removeAt(self.cursor);
-        termBs(1);
-        termEmit(self.line.items[self.cursor..]);
-        termEmit(" ");
-        termBs(self.line.items.len - self.cursor + 1);
-    }
-
-    fn deleteFwd(self: *LineEditor) void {
-        if (self.cursor >= self.line.items.len) return;
-        self.removeAt(self.cursor);
-        termEmit(self.line.items[self.cursor..]);
-        termEmit(" ");
-        termBs(self.line.items.len - self.cursor + 1);
-    }
-
-    fn left(self: *LineEditor) void {
-        if (self.cursor == 0) return;
-        self.cursor -= 1;
-        termBs(1);
-    }
-
-    fn right(self: *LineEditor) void {
-        if (self.cursor >= self.line.items.len) return;
-        termEmit(self.line.items[self.cursor .. self.cursor + 1]);
-        self.cursor += 1;
-    }
-
-    fn home(self: *LineEditor) void {
-        termBs(self.cursor);
-        self.cursor = 0;
-    }
-
-    fn end(self: *LineEditor) void {
-        termEmit(self.line.items[self.cursor..]);
-        self.cursor = self.line.items.len;
-    }
-
-    fn replaceLine(self: *LineEditor, gpa: std.mem.Allocator, next: []const u8) void {
-        termEmit(self.line.items[self.cursor..]);
-        termErase(self.line.items.len);
-        self.line.clearRetainingCapacity();
-        self.line.appendSlice(gpa, next) catch @panic("OOM");
-        termEmit(self.line.items);
-        self.cursor = self.line.items.len;
-    }
-
-    fn historyPrev(self: *LineEditor, gpa: std.mem.Allocator) void {
-        if (self.history.items.len == 0) return;
-        const j = self.hist_nav orelse blk: {
-            self.stash.clearRetainingCapacity();
-            self.stash.appendSlice(gpa, self.line.items) catch @panic("OOM");
-            break :blk self.history.items.len;
-        };
-        if (j == 0) return;
-        self.hist_nav = j - 1;
-        self.replaceLine(gpa, self.history.items[j - 1]);
-    }
-
-    fn historyNext(self: *LineEditor, gpa: std.mem.Allocator) void {
-        const j = self.hist_nav orelse return;
-        const n = self.history.items.len;
-        if (j >= n) return;
-        if (j + 1 == n) {
-            self.hist_nav = null;
-            self.replaceLine(gpa, self.stash.items);
-            self.stash.clearRetainingCapacity();
-        } else {
-            self.hist_nav = j + 1;
-            self.replaceLine(gpa, self.history.items[j + 1]);
-        }
-    }
-
-    fn resetLine(self: *LineEditor) void {
-        self.line.clearRetainingCapacity();
-        self.cursor = 0;
-        self.hist_nav = null;
-        self.stash.clearRetainingCapacity();
-        self.esc = .normal;
-        self.param = 0;
-    }
-
-    fn commit(self: *LineEditor, gpa: std.mem.Allocator) void {
-        if (self.line.items.len != 0) {
-            const duplicate = if (self.history.items.len == 0)
-                false
-            else
-                std.mem.eql(u8, self.history.items[self.history.items.len - 1], self.line.items);
-            if (!duplicate) {
-                const owned = gpa.dupe(u8, self.line.items) catch @panic("OOM");
-                self.history.append(gpa, owned) catch @panic("OOM");
-                if (self.history.items.len > HISTORY_CAP) {
-                    const old = self.history.orderedRemove(0);
-                    gpa.free(old);
-                }
-            }
-        }
-        self.resetLine();
     }
 };
 
@@ -419,111 +270,6 @@ fn onGuestFinished(k: *Kernel, id: u32, g: *guest.GuestRuntime, code: i32) void 
     }
 }
 
-fn flushConsole(k: *Kernel) bool {
-    const cpipe = k.console_pipe orelse return false;
-    if (cpipe.isWriteClosed()) return false;
-    var wrote = false;
-    while (k.console_pending.items.len != 0) {
-        const n = cpipe.write(k.console_pending.items);
-        if (n == 0) break;
-        wrote = true;
-        const remaining = k.console_pending.items.len - n;
-        if (remaining != 0) {
-            std.mem.copyForwards(u8, k.console_pending.items[0..remaining], k.console_pending.items[n..]);
-        }
-        k.console_pending.items.len = remaining;
-    }
-    if (wrote) k.sched.checkUnblocked();
-    return wrote;
-}
-
-fn queueConsoleLine(k: *Kernel, line: []const u8) void {
-    k.console_pending.appendSlice(k.gpa, line) catch @panic("OOM");
-    k.console_pending.append(k.gpa, '\n') catch @panic("OOM");
-    _ = flushConsole(k);
-}
-
-fn feedConsoleByte(k: *Kernel, byte: u8) void {
-    const ed = &k.line_editor;
-
-    switch (ed.esc) {
-        .esc => {
-            ed.esc = if (byte == '[' or byte == 'O') blk: {
-                ed.param = 0;
-                break :blk .csi;
-            } else .normal;
-            return;
-        },
-        .csi => {
-            if (byte >= '0' and byte <= '9') {
-                ed.param = (ed.param *| 10) +| @as(u16, @intCast(byte - '0'));
-                return;
-            }
-            ed.esc = .normal;
-            switch (byte) {
-                'A' => ed.historyPrev(k.gpa),
-                'B' => ed.historyNext(k.gpa),
-                'C' => ed.right(),
-                'D' => ed.left(),
-                'H' => ed.home(),
-                'F' => ed.end(),
-                '~' => switch (ed.param) {
-                    1, 7 => ed.home(),
-                    4, 8 => ed.end(),
-                    3 => ed.deleteFwd(),
-                    else => {},
-                },
-                else => {},
-            }
-            return;
-        },
-        .normal => {},
-    }
-
-    if (byte == 0x1b) {
-        ed.esc = .esc;
-    } else if (byte == 0x7f or byte == 0x08) {
-        ed.backspace();
-    } else if (byte == 0x01) {
-        ed.home();
-    } else if (byte == 0x05) {
-        ed.end();
-    } else if (byte == 0x04) {
-        if (k.rescue_active) {
-            return;
-        } else if (ed.line.items.len == 0) {
-            if (k.console_pipe) |cpipe| cpipe.closeWrite();
-            k.sched.checkUnblocked();
-        }
-    } else if (byte == 0x03) {
-        termEmit("^C\r\n");
-        ed.resetLine();
-        if (k.rescue_active) {
-            rescue.prompt();
-        } else {
-            k.sched.signalGroup(k.sched.foreground_pgid, constants.SIGINT);
-        }
-    } else if (byte == 0x1a) {
-        termEmit("^Z\r\n");
-        ed.resetLine();
-        if (k.rescue_active) {
-            rescue.prompt();
-        } else {
-            k.sched.signalGroup(k.sched.foreground_pgid, constants.SIGTSTP);
-        }
-    } else if (byte == '\n' or byte == '\r') {
-        termEmit("\r\n");
-        if (k.rescue_active) {
-            rescue.submitLine(k, ed.line.items);
-        } else {
-            queueConsoleLine(k, ed.line.items);
-        }
-        ed.commit(k.gpa);
-    } else if ((byte >= '!' and byte <= '~') or byte == ' ') {
-        ed.insert(k.gpa, byte);
-    }
-}
-
 /// `mc_input`: feed terminal keystrokes through the kernel cooked line discipline. The
 /// terminal has no local echo: `LineEditor` echoes edits and only committed lines reach
 /// pid-1 sh's console pipe.
@@ -537,7 +283,7 @@ pub fn input(ptr: [*]const u8, len: usize) void {
 /// Read a whole file from the root namespace into a gpa-owned buffer (resolves the login
 /// shell binary + boot scripts). Null if the path can't be opened/read. Oracle: control.zig
 /// mc_ctl_read's read loop.
-fn readFileAlloc(k: *Kernel, path: []const u8) ?[]u8 {
+pub fn readFileAlloc(k: *Kernel, path: []const u8) ?[]u8 {
     var scratch = std.heap.ArenaAllocator.init(k.gpa);
     defer scratch.deinit();
     var h = k.ns.openAs(scratch.allocator(), vfs.SYSTEM_CALLER, path, vfs.OpenFlags.READ) catch return null;
@@ -555,186 +301,12 @@ fn readFileAlloc(k: *Kernel, path: []const u8) ?[]u8 {
     return out.toOwnedSlice(k.gpa) catch @panic("OOM");
 }
 
-fn readDirNames(k: *Kernel, arena: std.mem.Allocator, path: []const u8) ?[]const []const u8 {
+pub fn readDirNames(k: *Kernel, arena: std.mem.Allocator, path: []const u8) ?[]const []const u8 {
     var out: std.ArrayList(vfs.DirEntry) = .empty;
     k.ns.readdir(arena, vfs.SYSTEM_CALLER, path, &out) catch return null;
     var names: std.ArrayList([]const u8) = .empty;
     for (out.items) |entry| names.append(arena, entry.name) catch @panic("OOM");
     return names.items;
-}
-
-fn declaredService(bytes: []const u8) ?[]const u8 {
-    const payload = sections.uniqueCustom(bytes, "mc_service") orelse return null;
-    if (!std.unicode.utf8ValidateSlice(payload)) return null;
-    if (!registry.validServiceName(payload)) return null;
-    return payload;
-}
-
-const ServiceSpec = struct {
-    binary: []u8,
-    eager: bool,
-};
-
-fn lookupServiceSpec(k: *Kernel, name: []const u8) ?ServiceSpec {
-    if (!registry.validServiceName(name)) return null;
-    const path = std.fmt.allocPrint(k.gpa, "/etc/services.d/{s}.json", .{name}) catch @panic("OOM");
-    defer k.gpa.free(path);
-    const bytes = readFileAlloc(k, path) orelse return null;
-    defer k.gpa.free(bytes);
-    if (!std.unicode.utf8ValidateSlice(bytes)) return null;
-
-    // Parse with std.json (as fs/toolsfs.zig does) rather than a hand-rolled scanner that matched a
-    // key even inside a string value and rejected any escaped string. `binary` defaults to /bin/<name>,
-    // `eager` to false; both are duped onto k.gpa so they outlive the parse arena.
-    var arena_state = std.heap.ArenaAllocator.init(k.gpa);
-    defer arena_state.deinit();
-    const parsed = std.json.parseFromSlice(std.json.Value, arena_state.allocator(), bytes, .{}) catch return null;
-    const obj = switch (parsed.value) {
-        .object => |o| o,
-        else => return null,
-    };
-    const binary = blk: {
-        if (obj.get("binary")) |v| switch (v) {
-            .string => |s| break :blk k.gpa.dupe(u8, s) catch @panic("OOM"),
-            else => {},
-        };
-        break :blk std.fmt.allocPrint(k.gpa, "/bin/{s}", .{name}) catch @panic("OOM");
-    };
-    const eager = if (obj.get("eager")) |v| switch (v) {
-        .bool => |b| b,
-        else => false,
-    } else false;
-    return .{ .binary = binary, .eager = eager };
-}
-
-fn spawnService(k: *Kernel, name: []const u8, binary: []const u8) bool {
-    if (binary.len == 0 or binary[0] != '/') return false;
-    const bytes = readFileAlloc(k, binary) orelse return false;
-    defer k.gpa.free(bytes);
-    const service = declaredService(bytes) orelse return false;
-    if (!std.mem.eql(u8, service, name)) return false;
-    const tier = task.Tier.fromModule(bytes) orelse return false;
-    const args = [_][]const u8{constants.SERVICE_MARKER};
-    const pid = k.sched.spawn(null, name, binary, &args, "/");
-    const root: ?[]const u8 = if (tier.confines()) "/" else null;
-    k.sched.setTaskPolicy(pid, tier.caps(), root);
-    if (!guest.createChildGuest(pid, bytes, "/")) {
-        k.sched.exitTask(pid, 126);
-        k.sched.dropDeadPipes();
-        return false;
-    }
-    k.services.markActivating(name, pid, vfs.wallNowMs() + registry.ACTIVATION_TIMEOUT_MS);
-    return true;
-}
-
-pub const ServicePoll = union(enum) {
-    ready: *registry.ServiceChannel,
-    pending,
-    errno: i32,
-};
-
-/// Resolve a service by name into its channel, driving lazy activation: `ready` = connected;
-/// `pending` = activating, retry next tick; `errno` = timed-out / failed (within backoff) / absent.
-/// Shared by the control-channel svc-call path and the guest svc_connect syscall.
-pub fn serviceChannel(k: *Kernel, name: []const u8) ServicePoll {
-    if (k.services.lookupService(name)) |channel| return .{ .ready = channel };
-    if (k.services.serviceState(name)) |s| {
-        switch (s) {
-            .activating => |a| {
-                const alive = if (k.sched.getTask(a.pid)) |t| t.state != .zombie else false;
-                if (alive) {
-                    if (vfs.wallNowMs() > a.deadline_ms) {
-                        k.sched.killTask(a.pid, 124);
-                        k.services.markFailed(name, constants.ETIMEDOUT);
-                        return .{ .errno = constants.ETIMEDOUT };
-                    }
-                    return .pending;
-                }
-                k.services.markFailed(name, constants.EIO);
-                return .{ .errno = constants.EIO };
-            },
-            .failed => |f| {
-                if (vfs.wallNowMs() < f.until_ms) return .{ .errno = f.last_errno };
-            },
-        }
-    }
-    if (activateServiceLazily(k, name)) return .pending;
-    return .{ .errno = constants.ENOENT };
-}
-
-pub fn activateServiceLazily(k: *Kernel, name: []const u8) bool {
-    const spec = lookupServiceSpec(k, name) orelse return false;
-    defer k.gpa.free(spec.binary);
-    return spawnService(k, name, spec.binary);
-}
-
-fn activateEagerServices(k: *Kernel) void {
-    var arena_state = std.heap.ArenaAllocator.init(k.gpa);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-    const names = readDirNames(k, arena, "/etc/services.d") orelse return;
-    for (names) |file| {
-        if (!std.mem.endsWith(u8, file, ".json")) continue;
-        const name = file[0 .. file.len - ".json".len];
-        if (!registry.validServiceName(name)) continue;
-        const spec = lookupServiceSpec(k, name) orelse continue;
-        defer k.gpa.free(spec.binary);
-        if (spec.eager) _ = spawnService(k, name, spec.binary);
-    }
-}
-
-fn setBootEnv(k: *Kernel, key: []const u8, value: []const u8) void {
-    if (key.len == 0) return;
-    if (k.boot_env.fetchRemove(key)) |old| {
-        k.gpa.free(old.key);
-        k.gpa.free(old.value);
-    }
-    const owned_key = k.gpa.dupe(u8, key) catch @panic("OOM");
-    const owned_value = k.gpa.dupe(u8, value) catch @panic("OOM");
-    k.boot_env.put(k.gpa, owned_key, owned_value) catch @panic("OOM");
-}
-
-fn profileValue(raw: []const u8) []const u8 {
-    var value = std.mem.trim(u8, raw, " \t");
-    if (value.len >= 2) {
-        const q = value[0];
-        if ((q == '"' or q == '\'') and value[value.len - 1] == q) {
-            value = value[1 .. value.len - 1];
-        }
-    }
-    return value;
-}
-
-fn seedBootEnv(k: *Kernel) void {
-    if (k.boot_env.count() == 0) {
-        setBootEnv(k, "PATH", DEFAULT_PATH);
-        setBootEnv(k, "HOME", "/home/user");
-        setBootEnv(k, "HOSTNAME", "agent-os");
-    }
-
-    const bytes = readFileAlloc(k, "/etc/profile") orelse return;
-    defer k.gpa.free(bytes);
-    var lines = std.mem.splitScalar(u8, bytes, '\n');
-    while (lines.next()) |line_raw| {
-        var line = std.mem.trim(u8, line_raw, " \t\r");
-        if (line.len == 0 or line[0] == '#') continue;
-        if (std.mem.startsWith(u8, line, "export ")) {
-            line = std.mem.trim(u8, line["export ".len..], " \t");
-        }
-        const eq = std.mem.indexOfScalar(u8, line, '=') orelse continue;
-        const key = std.mem.trim(u8, line[0..eq], " \t");
-        if (key.len == 0) continue;
-        var valid = true;
-        for (key, 0..) |b, i| {
-            const ok = std.ascii.isAlphabetic(b) or b == '_' or (i != 0 and std.ascii.isDigit(b));
-            if (!ok) {
-                valid = false;
-                break;
-            }
-        }
-        if (!valid) continue;
-        setBootEnv(k, key, profileValue(line[eq + 1 ..]));
-    }
 }
 
 /// Start the pid-1 login shell (§2.3): source /etc/profile, resolve /bin/sh, spawn pid 1
@@ -743,7 +315,7 @@ fn seedBootEnv(k: *Kernel) void {
 /// falls back to the native in-kernel rescue shell bound to the same pid-1 Task.
 pub fn startLoginShell(k: *Kernel) void {
     say("Sourcing /etc/profile\r\n");
-    seedBootEnv(k);
+    boot.seedBootEnv(k);
     const sh_bytes = readFileAlloc(k, "/bin/sh");
 
     // The login shell is always pid 1 (reuse the id so /proc/1 is stable across respawn).

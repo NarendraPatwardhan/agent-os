@@ -8,7 +8,7 @@
 //!
 //! Depends on `std` only, so any consumer — including `Tier.fromModule` in task.zig — can import it
 //! without a cycle. The typed readers that interpret a section's payload live with their types:
-//! `Tier.fromModule` (task.zig), `declaredFuel` (guest.zig), `declaredService` (state.zig).
+//! `Tier.fromModule` (task.zig), `declaredFuel` (guest.zig), `declaredService` (service/activation.zig).
 
 const std = @import("std");
 
