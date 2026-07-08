@@ -666,7 +666,7 @@ mod tests {
                 name: "google-discovery",
                 source: include_bytes!("../data/google.discovery.json"),
                 opts: include_bytes!("../data/google.opts.json"),
-                sha256: "3a05e7f4f0dab9a419adb84e742181ec0806ed96c134797dba9959b9ba07187b",
+                sha256: "4e688ba34c615cc55147f189debfddc513bea6ec712ea125d844976bbe5c7d9e",
                 tool_count: 1,
             },
             Golden {

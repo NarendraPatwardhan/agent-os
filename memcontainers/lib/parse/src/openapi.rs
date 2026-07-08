@@ -4,7 +4,7 @@
 //! `/svc/adapters invoke`; connection identity is derived later from the tool address so bundles can be
 //! reused across owners/connections.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -63,6 +63,10 @@ struct Operation {
     request_content_type: Option<String>,
     response_content_type: Option<String>,
     operation_id: Option<String>,
+    /// `$defs` closure for the input schema (shared by params + request body).
+    input_defs: Map<String, Value>,
+    /// `$defs` closure for the output (response) schema.
+    output_defs: Map<String, Value>,
 }
 
 pub fn compile(source: &str, source_format: SourceFormat, opts: &CompileOptions) -> CompileOutput {
@@ -102,8 +106,91 @@ pub fn compile(source: &str, source_format: SourceFormat, opts: &CompileOptions)
 fn parse_source(source: &str, format: SourceFormat) -> Result<Value, String> {
     match format {
         SourceFormat::Json => serde_json::from_str(source).map_err(|e| e.to_string()),
-        SourceFormat::Yaml => serde_yaml::from_str(source).map_err(|e| e.to_string()),
+        // Deserialize YAML through a lenient visitor. Straight `serde_yaml::from_str::<Value>` aborts
+        // the whole document on a single integer bound outside i64/u64 (e.g. OpenAI declares
+        // `seed.minimum: -9223372036854776000`; serde_yaml then hands it over as i128, which neither
+        // serde_yaml::Value nor serde_json::Value accepts). `LenientValue` demotes such numbers to
+        // f64 instead of failing, so the spec still compiles. Ordinary numbers are preserved exactly.
+        SourceFormat::Yaml => serde_yaml::from_str::<LenientValue>(source)
+            .map(|v| v.0)
+            .map_err(|e| e.to_string()),
     }
+}
+
+/// A `serde_json::Value` deserialized leniently: integer scalars wider than i64/u64 (delivered as
+/// i128/u128) are demoted to f64 rather than rejected. This only affects out-of-range numbers (which
+/// serde_json::Value cannot hold anyway); every other value round-trips unchanged.
+struct LenientValue(Value);
+
+impl<'de> Deserialize<'de> for LenientValue {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(LenientVisitor).map(LenientValue)
+    }
+}
+
+struct LenientVisitor;
+
+impl<'de> serde::de::Visitor<'de> for LenientVisitor {
+    type Value = Value;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("any YAML value")
+    }
+
+    fn visit_bool<E>(self, v: bool) -> Result<Value, E> {
+        Ok(Value::Bool(v))
+    }
+    fn visit_i64<E>(self, v: i64) -> Result<Value, E> {
+        Ok(Value::Number(v.into()))
+    }
+    fn visit_u64<E>(self, v: u64) -> Result<Value, E> {
+        Ok(Value::Number(v.into()))
+    }
+    fn visit_i128<E>(self, v: i128) -> Result<Value, E> {
+        Ok(number_from_f64(v as f64))
+    }
+    fn visit_u128<E>(self, v: u128) -> Result<Value, E> {
+        Ok(number_from_f64(v as f64))
+    }
+    fn visit_f64<E>(self, v: f64) -> Result<Value, E> {
+        Ok(number_from_f64(v))
+    }
+    fn visit_str<E>(self, v: &str) -> Result<Value, E> {
+        Ok(Value::String(v.to_string()))
+    }
+    fn visit_string<E>(self, v: String) -> Result<Value, E> {
+        Ok(Value::String(v))
+    }
+    fn visit_unit<E>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+    fn visit_none<E>(self) -> Result<Value, E> {
+        Ok(Value::Null)
+    }
+    fn visit_some<D: serde::Deserializer<'de>>(self, d: D) -> Result<Value, D::Error> {
+        d.deserialize_any(LenientVisitor)
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Value, A::Error> {
+        let mut out = Vec::new();
+        while let Some(LenientValue(v)) = seq.next_element()? {
+            out.push(v);
+        }
+        Ok(Value::Array(out))
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Value, A::Error> {
+        let mut out = Map::new();
+        while let Some(key) = map.next_key::<String>()? {
+            let LenientValue(v) = map.next_value()?;
+            out.insert(key, v);
+        }
+        Ok(Value::Object(out))
+    }
+}
+
+fn number_from_f64(f: f64) -> Value {
+    serde_json::Number::from_f64(f)
+        .map(Value::Number)
+        .unwrap_or(Value::Null)
 }
 
 fn collect_operations(
@@ -258,11 +345,22 @@ fn compile_operation(
     ) {
         params.insert((p.location.clone(), p.name.clone()), p);
     }
-    let parameters = params.into_values().collect();
+    let mut parameters: Vec<Parameter> = params.into_values().collect();
 
+    // One `$defs` closure per side. Parameters + request body share the input closure; the response
+    // owns the output closure. `normalize_schema` records referenced components into the closure and
+    // rewrites `$ref`s to point at them, so nothing is inlined (and nothing balloons).
+    let mut input_defs = Map::new();
+    for p in &mut parameters {
+        let raw = p.schema.clone();
+        p.schema = normalize_schema(root, &raw, SchemaUse::Input, 0, &mut input_defs);
+    }
     let (body_schema, body_required, request_content_type) =
-        request_body(root, op_value.get("requestBody"), diagnostics, &tool_id)?;
-    let (response_schema, response_content_type) = response_schema(root, op_value);
+        request_body(root, op_value.get("requestBody"), diagnostics, &tool_id, &mut input_defs)?;
+
+    let mut output_defs = Map::new();
+    let (response_schema, response_content_type) =
+        response_schema(root, op_value, &mut output_defs);
 
     Some(Operation {
         method: method.to_ascii_uppercase(),
@@ -277,6 +375,8 @@ fn compile_operation(
         request_content_type,
         response_content_type,
         operation_id,
+        input_defs,
+        output_defs,
     })
 }
 
@@ -313,9 +413,10 @@ fn collect_parameters(
                 .get("required")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
+        // Raw schema; normalized (with the operation's shared `$defs`) in compile_operation.
         let schema = param
             .get("schema")
-            .map(|s| normalize_schema(root, s, SchemaUse::Input, 0))
+            .cloned()
             .unwrap_or_else(|| json!({"type":"string"}));
         out.push(Parameter {
             location: location.to_string(),
@@ -332,6 +433,7 @@ fn request_body(
     value: Option<&Value>,
     diagnostics: &mut Vec<Diagnostic>,
     operation: &str,
+    defs: &mut Map<String, Value>,
 ) -> Option<(Option<Value>, bool, Option<String>)> {
     let Some(body) = value else {
         return Some((None, false, None));
@@ -342,22 +444,34 @@ fn request_body(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let content = body.get("content").and_then(Value::as_object)?;
-    let Some(media) = content.get("application/json") else {
+    // Emit JSON, form-urlencoded, and multipart bodies (Stripe et al. are entirely form-encoded);
+    // the chosen media type rides along so the executor serializes the arguments correctly.
+    let Some((content_type, media)) = [
+        "application/json",
+        "application/x-www-form-urlencoded",
+        "multipart/form-data",
+    ]
+    .into_iter()
+    .find_map(|ct| content.get(ct).map(|m| (ct, m))) else {
         diagnostics.push(Diagnostic::warn(
             "unsupported_request_body",
-            "only application/json request bodies are emitted in the first adapter slice",
+            "only application/json, application/x-www-form-urlencoded, and multipart/form-data request bodies are emitted in the first adapter slice",
             Some(operation.to_string()),
         ));
         return None;
     };
     let schema = media
         .get("schema")
-        .map(|s| normalize_schema(root, s, SchemaUse::Input, 0))
+        .map(|s| normalize_schema(root, s, SchemaUse::Input, 0, defs))
         .unwrap_or_else(|| json!({"type":"object"}));
-    Some((Some(schema), required, Some("application/json".to_string())))
+    Some((Some(schema), required, Some(content_type.to_string())))
 }
 
-fn response_schema(root: &Value, op_value: &Value) -> (Option<Value>, Option<String>) {
+fn response_schema(
+    root: &Value,
+    op_value: &Value,
+    defs: &mut Map<String, Value>,
+) -> (Option<Value>, Option<String>) {
     let Some(responses) = op_value.get("responses").and_then(Value::as_object) else {
         return (None, None);
     };
@@ -380,7 +494,7 @@ fn response_schema(root: &Value, op_value: &Value) -> (Option<Value>, Option<Str
             return (
                 media
                     .get("schema")
-                    .map(|s| normalize_schema(root, s, SchemaUse::Output, 0)),
+                    .map(|s| normalize_schema(root, s, SchemaUse::Output, 0, defs)),
                 Some("application/json".to_string()),
             );
         }
@@ -394,18 +508,61 @@ enum SchemaUse {
     Output,
 }
 
-fn normalize_schema(root: &Value, schema: &Value, use_case: SchemaUse, depth: usize) -> Value {
+fn normalize_schema(
+    root: &Value,
+    schema: &Value,
+    use_case: SchemaUse,
+    depth: usize,
+    defs: &mut Map<String, Value>,
+) -> Value {
     if depth_exceeded(depth) {
         return json!({});
     }
-    let schema = resolve_ref_or_self(root, schema).unwrap_or(schema);
+    // Reference-preserving normalization. Entity specs (Microsoft Graph, Stripe, Google) have wide,
+    // cyclically cross-referential component graphs. Inlining every `$ref` turns that compact graph
+    // into a tree — a DAG inlines to exponential size, a cycle to infinite size — which is what made a
+    // single `GET /me` balloon past the 4 GB wasm ceiling. Instead, normalize each referenced
+    // component ONCE into a shared `$defs` map and point at it with a rewritten `$ref`. Output is then
+    // linear in the referenced-component count, and a recursive entity is represented exactly (its
+    // self-reference is just a `$ref`) — nothing is lost and nothing balloons.
+    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+        let Some(pointer) = reference.strip_prefix('#') else {
+            return schema.clone(); // external ref: cannot resolve locally, keep verbatim
+        };
+        let key = def_key(pointer);
+        if !defs.contains_key(&key) {
+            // Register a placeholder BEFORE recursing so a cyclic component terminates at the `$ref`.
+            defs.insert(key.clone(), json!({}));
+            let normalized = match root.pointer(pointer) {
+                // A component is a top-level definition: normalize it at depth 0 so its result is
+                // independent of where it was first referenced. Termination is guaranteed by the
+                // placeholder above, not by the depth cap.
+                Some(target) => normalize_resolved(root, &target.clone(), use_case, 0, defs),
+                None => json!({}),
+            };
+            defs.insert(key.clone(), normalized);
+        }
+        return json!({ "$ref": format!("#/$defs/{key}") });
+    }
+    normalize_resolved(root, schema, use_case, depth, defs)
+}
+
+/// Turn a `#/components/schemas/microsoft.graph.user` pointer into a slash-free `$defs` key
+/// (`components.schemas.microsoft.graph.user`) so the rewritten `#/$defs/<key>` resolves in one hop.
+fn def_key(pointer: &str) -> String {
+    pointer.trim_start_matches('/').replace('/', ".")
+}
+
+fn normalize_resolved(
+    root: &Value,
+    schema: &Value,
+    use_case: SchemaUse,
+    depth: usize,
+    defs: &mut Map<String, Value>,
+) -> Value {
     let Some(obj) = schema.as_object() else {
         return schema.clone();
     };
-    if let Some(all_of) = obj.get("allOf").and_then(Value::as_array) {
-        return merge_all_of(root, all_of, use_case, depth + 1);
-    }
-
     let mut out = Map::new();
     for (key, value) in obj {
         if key == "nullable" || key == "$ref" {
@@ -418,9 +575,15 @@ fn normalize_schema(root: &Value, schema: &Value, use_case: SchemaUse, depth: us
             continue;
         }
         let normalized = match key.as_str() {
-            "properties" => normalize_properties(root, value, use_case, depth + 1),
-            "items" | "additionalProperties" => normalize_schema(root, value, use_case, depth + 1),
-            "oneOf" | "anyOf" => normalize_schema_array(root, value, use_case, depth + 1),
+            "properties" => normalize_properties(root, value, use_case, depth + 1, defs),
+            "items" | "additionalProperties" => {
+                normalize_schema(root, value, use_case, depth + 1, defs)
+            }
+            // Composition keywords are preserved as arrays of normalized (ref-preserving) branches,
+            // rather than merged, so `allOf: [{$ref: base}, {inline}]` keeps both without inlining.
+            "allOf" | "oneOf" | "anyOf" => {
+                normalize_schema_array(root, value, use_case, depth + 1, defs)
+            }
             _ => value.clone(),
         };
         out.insert(key.clone(), normalized);
@@ -431,7 +594,13 @@ fn normalize_schema(root: &Value, schema: &Value, use_case: SchemaUse, depth: us
     Value::Object(out)
 }
 
-fn normalize_properties(root: &Value, value: &Value, use_case: SchemaUse, depth: usize) -> Value {
+fn normalize_properties(
+    root: &Value,
+    value: &Value,
+    use_case: SchemaUse,
+    depth: usize,
+    defs: &mut Map<String, Value>,
+) -> Value {
     let Some(props) = value.as_object() else {
         return value.clone();
     };
@@ -439,65 +608,28 @@ fn normalize_properties(root: &Value, value: &Value, use_case: SchemaUse, depth:
     for (name, schema) in props {
         out.insert(
             name.clone(),
-            normalize_schema(root, schema, use_case, depth),
+            normalize_schema(root, schema, use_case, depth, defs),
         );
     }
     Value::Object(out)
 }
 
-fn normalize_schema_array(root: &Value, value: &Value, use_case: SchemaUse, depth: usize) -> Value {
+fn normalize_schema_array(
+    root: &Value,
+    value: &Value,
+    use_case: SchemaUse,
+    depth: usize,
+    defs: &mut Map<String, Value>,
+) -> Value {
     let Some(items) = value.as_array() else {
         return value.clone();
     };
     Value::Array(
         items
             .iter()
-            .map(|item| normalize_schema(root, item, use_case, depth))
+            .map(|item| normalize_schema(root, item, use_case, depth, defs))
             .collect(),
     )
-}
-
-fn merge_all_of(root: &Value, items: &[Value], use_case: SchemaUse, depth: usize) -> Value {
-    let mut merged = Map::new();
-    let mut required = BTreeSet::new();
-    let mut properties = Map::new();
-    for item in items {
-        let normalized = normalize_schema(root, item, use_case, depth);
-        let Some(obj) = normalized.as_object() else {
-            continue;
-        };
-        for (key, value) in obj {
-            match key.as_str() {
-                "properties" => {
-                    if let Some(props) = value.as_object() {
-                        for (name, schema) in props {
-                            properties.insert(name.clone(), schema.clone());
-                        }
-                    }
-                }
-                "required" => {
-                    if let Some(reqs) = value.as_array() {
-                        for req in reqs.iter().filter_map(Value::as_str) {
-                            required.insert(req.to_string());
-                        }
-                    }
-                }
-                _ => {
-                    merged.insert(key.clone(), value.clone());
-                }
-            }
-        }
-    }
-    if !properties.is_empty() {
-        merged.insert("properties".to_string(), Value::Object(properties));
-    }
-    if !required.is_empty() {
-        merged.insert(
-            "required".to_string(),
-            Value::Array(required.into_iter().map(Value::String).collect()),
-        );
-    }
-    Value::Object(merged)
 }
 
 fn add_null_type(out: &mut Map<String, Value>) {
@@ -597,7 +729,13 @@ fn catalog_record(root: &Value, opts: &CompileOptions, op: Operation) -> Value {
     if !empty_object(&input_schema) {
         record.insert("input_schema".to_string(), input_schema);
     }
-    if let Some(schema) = op.response_schema.clone() {
+    if let Some(mut schema) = op.response_schema.clone() {
+        // Attach the response `$defs` closure so the (ref-preserving) output schema is self-contained.
+        if !op.output_defs.is_empty() {
+            if let Some(obj) = schema.as_object_mut() {
+                obj.insert("$defs".to_string(), Value::Object(op.output_defs.clone()));
+            }
+        }
         record.insert("output_schema".to_string(), schema);
     }
     let destructive = matches!(op.method.as_str(), "POST" | "PUT" | "PATCH" | "DELETE");
@@ -706,6 +844,10 @@ fn input_schema(op: &Operation) -> Value {
     schema.insert("properties".to_string(), Value::Object(root_props));
     if !root_required.is_empty() {
         schema.insert("required".to_string(), Value::Array(root_required));
+    }
+    // Attach the input `$defs` closure so the (ref-preserving) input schema is self-contained.
+    if !op.input_defs.is_empty() {
+        schema.insert("$defs".to_string(), Value::Object(op.input_defs.clone()));
     }
     Value::Object(schema)
 }
