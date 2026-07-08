@@ -97,7 +97,7 @@ under `memcontainers/`, the build machinery under `bazel/`.
 | 18 | **Images, flavors & packages** | Content-addressed layered images; demand-loaded packages | `memcontainers/images/`, `memcontainers/pkgcore/`, `bazel/tools/mc-roster` | built |
 | 19 | **Host (wasmtime)** | Loads `kernel.wasm`, supplies the bridge, ticks, performs effects | `memcontainers/hosts/wasmtime/` | built |
 | 20 | **The network & browser edge** | `mc-server` (actor-per-VM), the wire protocol, the JS host family, the `@mc/*` SDK, the web app | `server/`, `memcontainers/hosts/js/`, `memcontainers/sdk-js/`, `web/` | designed; port staged |
-| 21 | **Build, test & migration** | Bazel zero-staleness graph; no-mocks e2e; the two-kernel parity plan | `MODULE.bazel`, `bazel/`, `memcontainers/tests/`, `memcontainers/kernel/zig` | built (Zig kernel: staged) |
+| 21 | **Build, test & migration** | Bazel zero-staleness graph; no-mocks e2e; the two-kernel parity plan | `MODULE.bazel`, `bazel/`, `memcontainers/tests/`, `memcontainers/kernel/rust` | built (Zig kernel: reached functional parity, paused — see §14.3, lives on `feature/zig`) |
 
 Roughly 52k lines of Rust (kernel, host, shell, coreutils, projector), 11k of Luau (the scripting
 batteries), 5k of Zig (the C/C++ guest glue), plus the contracts and the build graph.
@@ -1318,6 +1318,21 @@ transcript and a final memory hash; a replay diffs the hash) and differential fu
 reproducible from a seed).
 
 ### 14.3 The staged migration — Rust now, Zig next, parity always
+
+> **Status update (2026-07-08) — the Zig kernel reached functional parity, then paused; Rust stays the
+> sole default.** The port hit green functional parity with the Rust kernel (`core_zig` 82/82,
+> `extended_zig` 32/32, every subsystem) at roughly **half the binary size** (~0.63 vs ~1.23 MiB), but
+> with a **~1.2–2× runtime penalty** — near parity on warm-service work (sqlite ~1.12×) widening to
+> ~1.8–1.9× on boot-heavy suites. Both suspendable-interpreter engines were tried: **wasm3** (made
+> resumable via Binaryen Asyncify, which capped at a ~1.3× ceiling from its per-op instrumentation tax)
+> and then **WAMR** (natively re-entrant, which erased the pathological gaps and left only the intrinsic
+> interpreter-dispatch cost). That residual gap is a structural interpreter tradeoff, not a bug.
+>
+> Because that penalty is not worth the size win as a shipped default, **the Zig kernel is no longer part
+> of main development** and has been removed from `develop`. The complete work — the functional port,
+> both engine experiments, the workload benchmarks, and the full retrospective — remains on the
+> **`feature/zig`** branch (see its `PERFORMANCE.md`). Rust stays the shipped kernel and the permanent B7
+> parity oracle; the plan below records how the staging was originally intended to run.
 
 The kernel ships **Rust-first by porting** rather than rewriting: that reuses thousands of lines of
 battle-tested, memory-safe code, keeps `wasmi` as a native crate (no C seam), and reaches a stable green

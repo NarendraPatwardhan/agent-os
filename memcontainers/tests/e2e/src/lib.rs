@@ -26,7 +26,6 @@ mod flavors;
 mod kernel;
 mod loom;
 mod process;
-mod rescue;
 mod shell;
 mod svc;
 mod system;

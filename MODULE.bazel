@@ -167,38 +167,6 @@ http_archive(
     urls = ["https://sqlite.org/2025/sqlite-amalgamation-3510000.zip"],
 )
 
-# binaryen — Zig-kernel Asyncify tooling (ZIG_KERNEL.md §6.2). The Zig kernel artifact is
-# post-linked with wasm-opt --asyncify (bazel/asyncify.bzl); this prebuilt release supplies
-# the hermetic tool executable. Zig-only: the Rust kernel never passes through Binaryen.
-http_archive(
-    name = "binaryen_linux_x86_64",
-    build_file = "//third_party/binaryen:BUILD.binaryen.bazel",
-    sha256 = "0a18362361ad05465118cd8eeb72edaeec89de6894bc283576ef4e07aa3babcc",
-    strip_prefix = "binaryen-version_130",
-    type = "tar.gz",
-    urls = ["https://github.com/WebAssembly/binaryen/releases/download/version_130/binaryen-version_130-x86_64-linux.tar.gz"],
-)
-
-# wasm3 — the Zig kernel's embedded interpreter (ZIG_KERNEL.md §7), fetched from upstream and
-# patched only for agent-os native fuel metering plus a freestanding abort path (B3). Optional
-# WASI/libc/tracer shims are not linked; guest syscalls are registered by Zig glue. Compiled
-# freestanding by zig cc; its libc surface is satisfied in-module (third_party/wasm3/freestanding),
-# never as a new host import (A4).
-http_archive(
-    name = "wasm3",
-    build_file = "//third_party/wasm3:BUILD.wasm3.bazel",
-    patch_args = ["-p1"],
-    patch_tool = "patch",
-    patches = [
-        "//third_party/wasm3:patches/0001-agent-os-fuel.patch",
-        "//third_party/wasm3:patches/0002-musttail-dispatch.patch",
-    ],
-    sha256 = "b778dd72ee2251f4fe9e2666ee3fe1c26f06f517c3ffce572416db067546536c",
-    strip_prefix = "wasm3-0.5.0",
-    type = "tar.gz",
-    urls = ["https://github.com/wasm3/wasm3/archive/refs/tags/v0.5.0.tar.gz"],
-)
-
 # luau — upstream Luau 0.725 fetched from GitHub, patched `-fno-exceptions`-clean (the `// mc PATCH`
 # set extracted to real .patch files: VM/Parser/Compiler trap-backed error channels + the Analysis
 # EH shim, B3), built to two guest wasms (/bin/luau interpreter, /bin/luau-analyze type checker) by

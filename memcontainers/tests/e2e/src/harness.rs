@@ -78,14 +78,6 @@ pub fn boot() -> Session {
     Session { host, stdout }
 }
 
-/// Boot the rootfs-only image: /etc/profile and no /bin/sh. Zig uses this to prove the native
-/// rescue shell takes over pid 1; the Rust kernel intentionally lacks that capability.
-pub fn boot_rootfs() -> Session {
-    let (b, stdout) = builder("_main/memcontainers/images/rootfs.tar");
-    let host = b.build().expect("kernel booted (rootfs image)");
-    Session { host, stdout }
-}
-
 /// Boot the `posix` image (base + the guest /bin/sh + the coreutils boxes). For shell / coreutils /
 /// tty tests that run real guest programs through the interactive shell.
 pub fn boot_posix() -> Session {

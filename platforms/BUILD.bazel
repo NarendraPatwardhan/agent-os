@@ -49,10 +49,10 @@ toolchain(
 # Phase-later target worlds, defined with the toolchain that consumes them so the
 # path→world mapping stays complete and honest:
 #   wasm32_unknown — Rust's wasm32-unknown-unknown, for interpreter/ (wasmi as a
-#     wasm32 staticlib behind a C ABI; Phase B, kernel/zig only). Same Bazel
+#     wasm32 staticlib behind a C ABI; consumed only by the staged Zig kernel). Same Bazel
 #     constraints as wasm32_freestanding; the distinction is the Rust target triple.
 #   wasm32_unknown — Rust's wasm32-unknown-unknown, for interpreter/ (wasmi as a
-#     wasm32 staticlib behind a C ABI; Phase B, kernel/zig only).
+#     wasm32 staticlib behind a C ABI; consumed only by the staged Zig kernel).
 # ---------------------------------------------------------------------------
 
 # wasm32_wasi — WASI preview1, the INPUT world for converted Rust/C/C++ tools before
