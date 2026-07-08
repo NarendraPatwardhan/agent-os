@@ -116,7 +116,7 @@ pub fn svcCallStart(request_len: u32) i32 {
     defer scratch.deinit();
     const a = scratch.allocator();
     const req_bytes = ctlBytes(a, 0, request_len) orelse return neg(constants.EINVAL);
-    const req = decodeSvcRequest(req_bytes) orelse return neg(constants.EINVAL);
+    const req = decodeSvcRequest(a, req_bytes) orelse return neg(constants.EINVAL);
     if (!registry.validServiceName(req.service)) return neg(constants.EINVAL);
     if (req.request.len > registry.MAX_SVC_REQUEST_BYTES) return neg(constants.EINVAL);
     const id = allocCtlJobId(k);
