@@ -748,14 +748,13 @@ pub fn startLoginShell(k: *Kernel) void {
 
     // Heap-allocate the runtime (stable address) and load /bin/sh eagerly.
     const g = k.gpa.create(guest.GuestRuntime) catch @panic("OOM");
-    g.* = .{};
-    if (!g.init(k.gpa, bytes, "_start", pid, "/home/user")) {
+    g.init(k.gpa, bytes, "_start", pid, "/home/user") catch {
         say("login shell failed to load\r\n");
         k.gpa.destroy(g);
         k.sched.detach(pid);
         rescue.start(k);
         return;
-    }
+    };
     k.rescue_active = false;
     k.login_guest = g;
 }

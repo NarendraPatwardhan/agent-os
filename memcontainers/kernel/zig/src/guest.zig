@@ -135,16 +135,21 @@ pub const GuestRuntime = struct {
     recorded_throw: ?i32 = null,
     error_buf: [ERROR_BUF_SIZE]u8 = undefined,
 
-    pub fn init(self: *GuestRuntime, gpa: std.mem.Allocator, wasm_bytes: []const u8, entry: [*:0]const u8, task_id: TaskId, cwd: []const u8) bool {
-        self.deinit();
+    /// Initialize a GuestRuntime from raw (uninitialized) memory: dup the module bytes, load and
+    /// instantiate the WAMR module, create the exec_env, resolve the entry + pcall exports. On any
+    /// error the partially-built runtime is torn down exactly once by `errdefer self.deinit()` (the
+    /// single, idempotent cleanup path); the caller then frees the struct. Never call on a live
+    /// runtime — deinit it first.
+    pub fn init(self: *GuestRuntime, gpa: std.mem.Allocator, wasm_bytes: []const u8, entry: [*:0]const u8, task_id: TaskId, cwd: []const u8) !void {
         self.* = .{
             .gpa = gpa,
             .task_id = task_id,
             .lifetime_remaining = declaredFuel(wasm_bytes),
         };
+        errdefer self.deinit();
         self.raw_guest = .{ .ptr = @ptrCast(self), .task_id = cbTaskId, .create_child = cbCreateChild };
 
-        self.owned_bytes = gpa.dupe(u8, wasm_bytes) catch return false;
+        self.owned_bytes = try gpa.dupe(u8, wasm_bytes);
         if (state.isInitialized()) {
             if (state.kernel().sched.getTask(task_id)) |t| {
                 t.guest = @ptrCast(self);
@@ -152,46 +157,35 @@ pub const GuestRuntime = struct {
             }
         }
 
-        if (!ensureWamrInitialized()) {
-            self.deinit();
-            return false;
-        }
+        if (!ensureWamrInitialized()) return error.WamrInit;
 
-        const bytes = self.owned_bytes orelse return false;
+        const bytes = self.owned_bytes.?;
         @memset(self.error_buf[0..], 0);
         self.module = wamr.wasm_runtime_load(bytes.ptr, @intCast(bytes.len), self.error_buf[0..].ptr, ERROR_BUF_SIZE) orelse {
             syscall.termWrite("wamr load failed\n", true);
             syscall.termWrite(std.mem.sliceTo(self.error_buf[0..].ptr, 0), true);
             syscall.termWrite("\n", true);
-            self.deinit();
-            return false;
+            return error.WamrLoad;
         };
         self.module_inst = wamr.wasm_runtime_instantiate(self.module, STACK_SIZE, HOST_HEAP_SIZE, self.error_buf[0..].ptr, ERROR_BUF_SIZE) orelse {
             syscall.termWrite("wamr instantiate failed\n", true);
             syscall.termWrite(std.mem.sliceTo(self.error_buf[0..].ptr, 0), true);
             syscall.termWrite("\n", true);
-            self.deinit();
-            return false;
+            return error.WamrInstantiate;
         };
         wamr.wasm_runtime_set_custom_data(self.module_inst, @ptrCast(self));
 
         self.exec_env = wamr.wasm_runtime_create_exec_env(self.module_inst, STACK_SIZE) orelse {
             syscall.termWrite("wamr exec env failed\n", true);
-            self.deinit();
-            return false;
+            return error.WamrExecEnv;
         };
         self.function = wamr.wasm_runtime_lookup_function(self.module_inst, entry) orelse {
             syscall.termWrite("wamr lookup failed\n", true);
-            self.deinit();
-            return false;
+            return error.WamrLookup;
         };
-        self.initPcallExports() orelse {
-            self.deinit();
-            return false;
-        };
+        self.initPcallExports() orelse return error.PcallExports;
 
         self.active = true;
-        return true;
     }
 
     pub fn step(self: *GuestRuntime) Step {
@@ -827,11 +821,10 @@ fn ensureWamrInitialized() bool {
 pub fn createChildGuest(child_id: TaskId, bytes: []const u8, cwd: []const u8) bool {
     const gpa = state.kernel().gpa;
     const g = gpa.create(GuestRuntime) catch return false;
-    g.* = .{};
-    if (!g.init(gpa, bytes, "_start", child_id, cwd)) {
+    g.init(gpa, bytes, "_start", child_id, cwd) catch {
         gpa.destroy(g);
         return false;
-    }
+    };
     return true;
 }
 
