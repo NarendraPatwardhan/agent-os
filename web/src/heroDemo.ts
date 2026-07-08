@@ -3,10 +3,14 @@
 
 const encoder = new TextEncoder();
 
+// Grounded in the loom image: the shell parses $(), pipes and redirection; awk/wc
+// exist in /bin; /etc/profile's first line names the OS ("# agent-os — …"). Keeps
+// output to two short lines (the tool count, then the greeting).
 const DEFAULT_SCRIPT: readonly string[] = [
-  "echo agent-os",
-  "ls /bin",
-  "cat /etc/profile",
+  "os=$(awk 'NR==1 {print $2}' /etc/profile)",
+  'echo "greetings from $os" > greetings.md',
+  "cat greetings.md",
+  "ls /bin | wc -l",
 ];
 
 /** Where the demo's keystrokes go — one <mc-terminal>.send / shell.write per chunk. */

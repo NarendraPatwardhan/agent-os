@@ -1,7 +1,16 @@
+import * as stylex from "@stylexjs/stylex";
+import { surface, scheme } from "instrument";
+
 import { Hero } from "./Hero";
+import { ExamplesShowcase } from "./ExamplesShowcase";
 
-function App() {
-  return <Hero />;
+// The app shell carries the base register (bg / ink / type) and pins the color
+// scheme to dark — the marketing site is dark-first.
+export default function App() {
+  return (
+    <div {...stylex.props(surface.root, scheme.dark)}>
+      <Hero />
+      <ExamplesShowcase />
+    </div>
+  );
 }
-
-export default App;

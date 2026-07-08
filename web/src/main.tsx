@@ -1,7 +1,8 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "@mc/elements"; // registers <mc-sandbox>/<mc-terminal>/<mc-xterm>/<mc-editor>
-import "@mc/elements/styles.css"; // design-system base + terminal + component chrome
+import "./index.css"; // design-system reset + self-hosted faces (global)
+import "@mc/elements/styles.css"; // standalone terminal + component chrome (no design-system base)
 import App from "./App";
 
 const root = document.getElementById("root");

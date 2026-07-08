@@ -27,7 +27,13 @@ WEB_SOURCES = [
 # @mc/elements ALONE — no transitive closure to re-declare. (The bundle keeps Node
 # builtins external; vite stubs them for the browser as before.)
 WEB_APP_DEPS = [
+    ":node_modules/@fontsource-variable/inter",
+    ":node_modules/@fontsource-variable/inter-tight",
+    ":node_modules/@fontsource-variable/newsreader",
+    ":node_modules/@fontsource/ibm-plex-mono",
     ":node_modules/@mc/elements",
+    ":node_modules/@stylexjs/stylex",
+    ":node_modules/@stylexjs/unplugin",
     ":node_modules/@vitejs/plugin-react",
     ":node_modules/react",
     ":node_modules/react-dom",
@@ -62,6 +68,7 @@ js_binary(
     name = "vite_bin",
     chdir = package_name(),
     data = [
+        ":node_modules/@stylexjs/unplugin",
         ":node_modules/@vitejs/plugin-react",
         ":node_modules/typescript",
         ":node_modules/vite",
@@ -118,6 +125,7 @@ js_run_binary(
 js_run_binary(
     name = "typecheck_node",
     srcs = [
+        ":node_modules/@stylexjs/unplugin",
         ":node_modules/@types/node",
         ":node_modules/@vitejs/plugin-react",
         ":node_modules/typescript",

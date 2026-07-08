@@ -1,0 +1,156 @@
+/*
+ * reset.css — the ONE CSS file in the system.
+ *
+ * StyleX (correctly) has no global-styles API, so element resets, UA-chrome
+ * stripping, and pseudo-page rules live here. Nothing else ever goes in
+ * CSS: if you are about to add a rule to this file that styles a component,
+ * you are in the wrong file — extend a recipe instead.
+ *
+ * Literal colors below deliberately mirror tokens/color.stylex.js (marked
+ * with the token name); if a token changes, update its mirror here.
+ */
+
+/* ----- Box model + defaults ----- */
+*,
+*::before,
+*::after {
+	box-sizing: border-box;
+}
+
+* {
+	margin: 0;
+}
+
+html {
+	min-height: 100%;
+	text-size-adjust: 100%;
+	/* Follow the OS so light-dark() resolves; pin via scheme.light/dark. */
+	color-scheme: light dark;
+}
+
+body {
+	min-height: 100%;
+	text-rendering: optimizeLegibility;
+	/* Safety net for portaled content rendered outside the app root.
+	 * Mirrors color.bgCanvas / color.ink / font.sans. */
+	background: light-dark(oklch(0.975 0 0), oklch(0.15 0 0));
+	color: light-dark(oklch(0.16 0 0), oklch(0.96 0 0));
+	font-family: "InterVariable", "Inter Variable", "Inter", ui-sans-serif, system-ui, sans-serif;
+}
+
+img,
+picture,
+video,
+canvas,
+svg {
+	display: block;
+	max-width: 100%;
+}
+
+input,
+button,
+textarea,
+select {
+	font: inherit;
+	color: inherit;
+}
+
+button {
+	border: 0;
+	background: none;
+}
+
+/* list-style: none strips list semantics in VoiceOver/Safari. Any ul/ol
+ * that still MEANS "list" to a screen reader needs role="list". */
+ul,
+ol {
+	padding: 0;
+	list-style: none;
+}
+
+/* Native top-layer primitives arrive with UA chrome; strip it so the
+ * surface recipes own their appearance. Pair the element with a surface:
+ *   <dialog {...stylex.props(surface.modal)}> */
+dialog,
+[popover] {
+	padding: 0;
+	border: 0;
+	background: none;
+	color: inherit;
+}
+
+dialog::backdrop {
+	/* mirrors color.scrim */
+	background: light-dark(oklch(0 0 0 / 0.42), oklch(0 0 0 / 0.62));
+}
+
+hr {
+	height: 0.5px;
+	border: 0;
+	/* mirrors color.border */
+	background: light-dark(oklch(0.91 0 0), oklch(0.3 0 0));
+}
+
+/* ----- Selection + native control accenting ----- */
+::selection {
+	/* Text selection is frost-adjacent ink, not a hue:
+	 * mirrors frost at readable strength over both canvases. */
+	background: light-dark(oklch(0.16 0 0 / 0.14), oklch(1 0 0 / 0.2));
+	color: light-dark(oklch(0.16 0 0), oklch(0.96 0 0));
+}
+
+:root {
+	/* mirrors color.accent — native checkboxes, radios, progress, range
+	 * follow the accent slot (ink), like their styled counterparts */
+	accent-color: light-dark(oklch(0.22 0 0), oklch(0.92 0 0));
+}
+
+/* ----- Focus safety net -----
+ * Recipes carry their own :focus-visible ring; this covers anything that
+ * slipped through. Never add `:focus { outline: none }` — anywhere. */
+:focus-visible {
+	/* mirrors color.signal (hue 245) */
+	outline: 2px solid light-dark(oklch(0.58 0.14 245), oklch(0.75 0.11 245));
+	outline-offset: 2px;
+}
+
+/* ----- Quiet scrollbars ----- */
+* {
+	scrollbar-width: thin;
+	scrollbar-color: light-dark(oklch(0.76 0 0), oklch(0.42 0 0)) transparent;
+}
+
+/* ----- Forced colors: real borders + system ring survive; kill sheens. */
+@media (forced-colors: active) {
+	:focus-visible {
+		outline-color: Highlight;
+	}
+}
+
+/* ----- Print ----- */
+@media print {
+	html {
+		color-scheme: light;
+	}
+
+	body {
+		background: #fff;
+		color: #000;
+	}
+}
+
+/* ----- Font-face slots -----
+ * The system assumes variable fonts for the 450/550 weights:
+ *   InterVariable   https://rsms.me/inter/     (weight axis 100–900)
+ *   Newsreader      Google Fonts               (italic axis for the swap)
+ *   Geist Mono      https://vercel.com/font    (or Berkeley Mono if licensed)
+ * Self-host with @font-face here, font-display: swap. Example:
+ *
+ * @font-face {
+ *   font-family: "InterVariable";
+ *   src: url("/fonts/InterVariable.woff2") format("woff2");
+ *   font-weight: 100 900;
+ *   font-style: normal;
+ *   font-display: swap;
+ * }
+ */

@@ -7,9 +7,9 @@ import { css } from "lit";
 // Deliberately does NOT capture design tokens into `--mc-*` on :host — that would
 // let a :host rule outrank an embedder's `mc-sandbox { --mc-accent: … }`. Instead
 // each rule reads tokens with the fallback chain `var(--mc-x, var(--x, <fallback>))`,
-// so precedence is: embedder `--mc-x` › host design system `--x` (base.css) › a
-// standalone-correct default. Custom properties inherit through the shadow boundary,
-// so the tokens defined on :root in base.css reach in here.
+// so precedence is: embedder `--mc-x` › host design-system `--x` (if the host
+// provides one) › a standalone-correct default. Custom properties inherit through
+// the shadow boundary, so any tokens a host defines on :root reach in here.
 export const baseStyles = css`
   :host {
     box-sizing: border-box;

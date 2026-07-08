@@ -1,10 +1,10 @@
 /* @mc/elements — the complete stylesheet. Include this once on the page:
  *   <link rel="stylesheet" href=".../@mc/elements/styles.css">
  *
- * Order matters. The vendored design-system base first (its @layer declaration
- * fixes the layer order: reset, tokens, base, utilities, recipes), then the xterm
- * DOM overrides, then the component chrome (@layer mc-elements, which lands after
- * the base layers and so wins over the base recipes without specificity hacks). */
-@import "./base.css";
+ * Standalone: every design token is consumed as var(--token, fallback), so the
+ * components render correctly with no external CSS. A host may override any token
+ * (--accent, --surface-2, …) on :root and it wins over the fallback. Order: the
+ * xterm DOM overrides (unlayered, so they beat xterm's inline styles) first, then
+ * the component chrome (@layer mc-elements, kept low-priority so host CSS wins). */
 @import "./terminal.css";
 @import "./components.css";

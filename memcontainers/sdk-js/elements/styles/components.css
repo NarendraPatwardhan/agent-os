@@ -1,11 +1,12 @@
-/* components.css — chrome for the light-DOM <mc-*> components, re-authored on the
- * design-system base (base.css). The components render in LIGHT DOM, so these rules
- * target the custom-element tags + BEM classes directly.
+/* components.css — chrome for the light-DOM <mc-*> components. They render in LIGHT
+ * DOM, so these rules target the custom-element tags + BEM classes directly.
  *
- * Everything lives in @layer mc-elements, declared AFTER base.css's layers
- * (reset, tokens, base, utilities, recipes), so component chrome wins over the base
- * recipes by layer order — no specificity hacks. The terminal's xterm overrides are
- * NOT here; they're unlayered in terminal.css because they must beat inline styles. */
+ * Standalone: every design token is read as var(--token, fallback) matching the
+ * design-system value, so the components look right with no external stylesheet;
+ * a host that defines --token on :root overrides the fallback. Everything lives in
+ * @layer mc-elements, so unlayered host CSS wins over this chrome without specificity
+ * hacks. The terminal's xterm overrides are NOT here; they're unlayered in
+ * terminal.css because they must beat inline styles. */
 
 @layer mc-elements {
   /* ── mc-xterm — presentational terminal primitive. Light DOM + `.mc-term`, so
@@ -28,10 +29,10 @@
     display: block;
     height: 100%;
     min-height: 0;
-    background: var(--surface-2);
-    color: var(--fg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-card);
+    background: var(--surface-2, light-dark(oklch(0.992 0.003 250), oklch(0.205 0.01 250)));
+    color: var(--fg, light-dark(oklch(0.16 0.009 250), oklch(0.96 0.004 250)));
+    border: 1px solid var(--border, light-dark(oklch(0.845 0.008 250), oklch(0.34 0.013 250)));
+    border-radius: var(--radius-card, 12px);
     overflow: hidden;
   }
   mc-editor .mc-editor__host {
@@ -52,16 +53,16 @@
     min-height: 220px;
     height: 100%;
     border: 1px solid var(--mc-term-edge);
-    border-radius: var(--radius-card);
+    border-radius: var(--radius-card, 12px);
     overflow: hidden;
-    box-shadow: var(--shadow-4);
+    box-shadow: var(--shadow-4, 0 8px 24px -12px oklch(0 0 0 / 0.6));
     background: var(--mc-term-bg);
   }
   mc-terminal .bar {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
-    padding: var(--space-2) var(--space-3);
+    gap: var(--space-2, 8px);
+    padding: var(--space-2, 8px) var(--space-3, 12px);
     background: color-mix(in oklch, var(--mc-term-bg), oklch(1 0 0) 6%);
     border-bottom: 1px solid color-mix(in oklch, var(--mc-term-edge), transparent 20%);
     flex: 0 0 auto;
@@ -74,35 +75,35 @@
   mc-terminal .lights span {
     width: 11px;
     height: 11px;
-    border-radius: var(--radius-pill);
+    border-radius: var(--radius-pill, 999px);
     background: oklch(1 0 0 / 0.22);
   }
   mc-terminal .title {
-    font: var(--fw-medium) var(--fs-12) / 1 var(--font-mono);
-    letter-spacing: var(--ls-ui);
+    font: var(--fw-medium, 500) var(--fs-12, 0.75rem)/ 1 var(--font-mono, "Geist Mono", "SF Mono", SFMono-Regular, ui-monospace, Menlo, Consolas, monospace);
+    letter-spacing: var(--ls-ui, -0.005em);
     color: var(--mc-fg-subtle);
-    margin-left: var(--space-1);
+    margin-left: var(--space-1, 4px);
   }
   mc-terminal .live-dot {
     margin-left: auto;
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font: var(--fw-medium) var(--fs-10) / 1 var(--font-mono);
-    letter-spacing: var(--ls-eyebrow);
+    font: var(--fw-medium, 500) var(--fs-10, 0.625rem)/ 1 var(--font-mono, "Geist Mono", "SF Mono", SFMono-Regular, ui-monospace, Menlo, Consolas, monospace);
+    letter-spacing: var(--ls-eyebrow, 0.12em);
     text-transform: uppercase;
     color: var(--mc-fg-subtle);
     opacity: 0;
-    transition: opacity var(--motion-panel) var(--ease-standard);
+    transition: opacity var(--motion-panel, 240ms) var(--ease-standard, cubic-bezier(0.2, 0.8, 0.2, 1));
   }
   mc-terminal[data-live] .live-dot {
     opacity: 1;
-    color: var(--success);
+    color: var(--success, oklch(0.72 0.13 150));
   }
   mc-terminal .live-dot i {
     width: 7px;
     height: 7px;
-    border-radius: var(--radius-pill);
+    border-radius: var(--radius-pill, 999px);
     background: currentColor;
     box-shadow: 0 0 0 3px color-mix(in oklch, currentColor 22%, transparent);
   }

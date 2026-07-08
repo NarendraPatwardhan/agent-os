@@ -5,6 +5,12 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "lib": ["ES2022", "DOM", "DOM.Iterable", "DOM.AsyncIterable"],
+    "paths": {
+      "instrument": ["./src/instrument/index.js"],
+      "instrument/*": ["./src/instrument/*"]
+    },
+    "allowJs": true,
+    "checkJs": false,
     "strict": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
