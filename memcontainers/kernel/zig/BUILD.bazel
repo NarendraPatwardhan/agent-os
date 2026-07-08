@@ -34,6 +34,8 @@ KERNEL_SRCS = [
     "src/task.zig",
     "src/scheduler.zig",
     "src/guest.zig",
+    "src/guest/pcall.zig",
+    "src/wamr/alloc.zig",
     "src/wamr/bindings.zig",
     "src/rescue.zig",
     "src/syscall.zig",

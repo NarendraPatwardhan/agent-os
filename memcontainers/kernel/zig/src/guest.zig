@@ -11,84 +11,28 @@ const state = @import("state.zig");
 const syscall = @import("syscall.zig");
 const task_mod = @import("task.zig");
 const wamr = @import("wamr/bindings.zig");
+const wamr_alloc = @import("wamr/alloc.zig");
 const sections = @import("wasm_sections.zig");
+const pcall = @import("guest/pcall.zig");
 
 const TaskId = task_mod.TaskId;
+const PCALL_STACK_MAX = pcall.PCALL_STACK_MAX;
+const PcallFrame = pcall.PcallFrame;
+const NativeBoundary = pcall.NativeBoundary;
 
 const STACK_SIZE: u32 = 512 * 1024;
 const HOST_HEAP_SIZE: u32 = 0;
 const ERROR_BUF_SIZE: u32 = 256;
-const PCALL_STACK_MAX: usize = 32;
 const FUEL_QUANTUM: u64 = 2_000_000;
 const DEFAULT_FUEL_LIFETIME: u64 = 50_000_000_000;
 const HARD_FUEL_LIFETIME: u64 = 4_000_000_000_000;
 const EXIT_CODE_FUEL_EXHAUSTED: i32 = 137;
 const MAX_RAW_CELLS: usize = 16;
-const WAMR_ALLOC_ALIGN: usize = 16;
 
 const MC_MODULE: [:0]const u8 = "mc";
 const ERR_NATIVE_CONTEXT: [:0]const u8 = "mc native bridge missing guest context";
 const ERR_RETURN_SLOT: [:0]const u8 = "mc native bridge missing return slot";
 const ERR_PCALL_YIELD: [:0]const u8 = "mc pcall yielded";
-
-// Sentinel stamped into every wamrAlloc'd block's header. wamrFree/wamrRealloc assert it before
-// trusting base_addr/total_len — a free or realloc of a pointer WAMR did not get from wamrAlloc would
-// otherwise read a garbage header and free a wild base (heap corruption). Catches the class loudly.
-const WAMR_ALLOC_MAGIC: u64 = 0x6d63_776d_725f_6821; // "mcwmr_h!" (u64: usize is 32-bit on wasm32)
-
-const WamrAllocHeader = extern struct {
-    magic: u64,
-    base_addr: usize,
-    total_len: usize,
-    requested_len: usize,
-};
-
-fn alignForward(value: usize, comptime alignment: usize) usize {
-    return (value + alignment - 1) & ~(alignment - 1);
-}
-
-fn wamrAlloc(size_raw: c_uint) callconv(.c) ?*anyopaque {
-    if (!state.isInitialized()) return null;
-    const size: usize = @max(@as(usize, @intCast(size_raw)), 1);
-    const header_len = @sizeOf(WamrAllocHeader);
-    const total = std.math.add(usize, size, header_len + WAMR_ALLOC_ALIGN - 1) catch return null;
-    const raw = state.kernel().gpa.alloc(u8, total) catch return null;
-    const payload_addr = alignForward(@intFromPtr(raw.ptr) + header_len, WAMR_ALLOC_ALIGN);
-    const header: *WamrAllocHeader = @ptrFromInt(payload_addr - header_len);
-    header.* = .{
-        .magic = WAMR_ALLOC_MAGIC,
-        .base_addr = @intFromPtr(raw.ptr),
-        .total_len = total,
-        .requested_len = size,
-    };
-    return @ptrFromInt(payload_addr);
-}
-
-fn wamrFree(ptr: ?*anyopaque) callconv(.c) void {
-    const payload = ptr orelse return;
-    if (!state.isInitialized()) return; // kernel torn down — the whole heap is going away
-    const header: *WamrAllocHeader = @ptrFromInt(@intFromPtr(payload) - @sizeOf(WamrAllocHeader));
-    if (header.magic != WAMR_ALLOC_MAGIC) @panic("wamrFree: pointer not from wamrAlloc (bad allocation header)");
-    const base: [*]u8 = @ptrFromInt(header.base_addr);
-    state.kernel().gpa.free(base[0..header.total_len]);
-}
-
-fn wamrRealloc(ptr: ?*anyopaque, size_raw: c_uint) callconv(.c) ?*anyopaque {
-    const size: usize = @max(@as(usize, @intCast(size_raw)), 1);
-    const old = ptr orelse return wamrAlloc(size_raw);
-    if (!state.isInitialized()) return null; // symmetry with wamrAlloc's guard
-    const old_header: *WamrAllocHeader = @ptrFromInt(@intFromPtr(old) - @sizeOf(WamrAllocHeader));
-    if (old_header.magic != WAMR_ALLOC_MAGIC) @panic("wamrRealloc: pointer not from wamrAlloc (bad allocation header)");
-    const next = wamrAlloc(size_raw) orelse return null;
-    const copy_len = @min(old_header.requested_len, size);
-    if (copy_len != 0) {
-        const old_bytes: [*]const u8 = @ptrCast(old);
-        const new_bytes: [*]u8 = @ptrCast(next);
-        @memcpy(new_bytes[0..copy_len], old_bytes[0..copy_len]);
-    }
-    wamrFree(old);
-    return next;
-}
 
 fn declaredFuel(bytes: []const u8) u64 {
     const payload = sections.uniqueCustom(bytes, "mc_budget") orelse return DEFAULT_FUEL_LIFETIME;
@@ -104,14 +48,6 @@ const SuspendKind = enum {
     syscall_blocked,
     syscall_pending,
     fuel_yield,
-};
-
-const PcallFrame = struct {
-    saved_sp: i32,
-    return_slot: ?*u32 = null,
-    native_frame: ?*wamr.InterpFrame = null,
-    caller_frame: ?*wamr.InterpFrame = null,
-    waiting: bool = false,
 };
 
 pub const Step = enum { ran, suspended, exited, faulted };
@@ -589,46 +525,6 @@ fn guestFromExecEnv(exec_env: ?*wamr.ExecEnv) ?*GuestRuntime {
     return @ptrCast(@alignCast(custom));
 }
 
-/// True if `slot` (a return-slot pointer derived from a caller frame's `lp` + `ret_offset`) lies
-/// within the exec_env's wasm operand stack. The pcall bridge trusts WAMR's private InterpFrame
-/// layout; a WAMR upgrade that shifted fields (despite the comptime pin in bindings.zig) would yield
-/// a garbage lp/ret_offset pointing outside the stack. Reject it and fail closed rather than perform
-/// an out-of-bounds host write into whatever the bad pointer names.
-fn returnSlotInBounds(env: *wamr.ExecEnv, slot: *const u32) bool {
-    const bottom = @intFromPtr(env.wasm_stack.bottom orelse return false);
-    const boundary = @intFromPtr(env.wasm_stack.top_boundary orelse return false);
-    const p = @intFromPtr(slot);
-    return p >= bottom and p + @sizeOf(u32) <= boundary;
-}
-
-fn captureReturnSlot(exec_env: ?*wamr.ExecEnv) ?*u32 {
-    const env = exec_env orelse return null;
-    const native_frame = env.cur_frame orelse return null;
-    const caller = native_frame.prev_frame orelse return null;
-    const slot = &caller.lp[caller.ret_offset];
-    if (!returnSlotInBounds(env, slot)) return null;
-    return slot;
-}
-
-const NativeBoundary = struct {
-    native_frame: *wamr.InterpFrame,
-    caller_frame: *wamr.InterpFrame,
-    return_slot: *u32,
-};
-
-fn captureNativeBoundary(exec_env: ?*wamr.ExecEnv) ?NativeBoundary {
-    const env = exec_env orelse return null;
-    const native_frame = env.cur_frame orelse return null;
-    const caller = native_frame.prev_frame orelse return null;
-    const slot = &caller.lp[caller.ret_offset];
-    if (!returnSlotInBounds(env, slot)) return null;
-    return .{
-        .native_frame = native_frame,
-        .caller_frame = caller,
-        .return_slot = slot,
-    };
-}
-
 fn setRawReturn(raw_args: [*]u64, code: i32) void {
     raw_args[0] = @as(u32, @bitCast(code));
 }
@@ -669,7 +565,7 @@ fn rawPcall(exec_env: ?*wamr.ExecEnv, raw_args: [*]u64) void {
         setRawReturn(raw_args, -constants.EINVAL);
         return;
     };
-    const boundary = captureNativeBoundary(exec_env) orelse {
+    const boundary = pcall.captureNativeBoundary(exec_env) orelse {
         setException(exec_env, ERR_RETURN_SLOT.ptr);
         return;
     };
@@ -753,7 +649,7 @@ fn rawSyscall(exec_env: ?*wamr.ExecEnv, raw_args: [*]u64, desc: *const mc.Desc) 
             guest.requestSyscallYield(exec_env);
         },
         .Block => |reason| {
-            const return_slot = captureReturnSlot(exec_env) orelse {
+            const return_slot = pcall.captureReturnSlot(exec_env) orelse {
                 setException(exec_env, ERR_RETURN_SLOT.ptr);
                 return;
             };
@@ -762,7 +658,7 @@ fn rawSyscall(exec_env: ?*wamr.ExecEnv, raw_args: [*]u64, desc: *const mc.Desc) 
             guest.requestSyscallYield(exec_env);
         },
         .Pending => {
-            const return_slot = captureReturnSlot(exec_env) orelse {
+            const return_slot = pcall.captureReturnSlot(exec_env) orelse {
                 setException(exec_env, ERR_RETURN_SLOT.ptr);
                 return;
             };
@@ -806,9 +702,9 @@ fn ensureWamrInitialized() bool {
         init_args.mem_alloc_type = .allocator;
         init_args.mem_alloc_option = .{
             .allocator = .{
-                .malloc_func = @ptrCast(@constCast(&wamrAlloc)),
-                .realloc_func = @ptrCast(@constCast(&wamrRealloc)),
-                .free_func = @ptrCast(@constCast(&wamrFree)),
+                .malloc_func = @ptrCast(@constCast(&wamr_alloc.wamrAlloc)),
+                .realloc_func = @ptrCast(@constCast(&wamr_alloc.wamrRealloc)),
+                .free_func = @ptrCast(@constCast(&wamr_alloc.wamrFree)),
                 .user_data = null,
             },
         };

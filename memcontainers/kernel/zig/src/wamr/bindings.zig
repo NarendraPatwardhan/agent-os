@@ -54,7 +54,7 @@ comptime {
     // flags gate extra frame fields). The pcall bridge in guest.zig reads a frame's `lp`/`ret_offset`
     // directly, so a wrong offset is a silent out-of-bounds host write. Pin the layout: a careless
     // edit here, or a WAMR upgrade / config change that shifts fields, fails the build instead. (The
-    // frame is also range-checked at runtime — see guest.zig returnSlotInBounds — so a layout drift
+    // frame is also range-checked at runtime — see guest/pcall.zig returnSlotInBounds — so a layout drift
     // that somehow slips past this fails closed rather than corrupting memory.)
     const P = @sizeOf(*anyopaque); // wasm32: 4
     if (@offsetOf(InterpFrame, "prev_frame") != 0) @compileError("WAMR InterpFrame.prev_frame moved");
