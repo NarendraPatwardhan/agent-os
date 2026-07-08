@@ -1551,7 +1551,12 @@ fn fulfillServe(guest: *const Guest, memory: GuestMemory, args: mc.ServeArgs) i3
     const owner = servedfs.ServeOwner.create(state.kernel().gpa, channel);
     const fd = t.allocFd(state.kernel().gpa, .{ .serve = owner });
     if (!writeGuestU32(memory, args.ret_fd, @intCast(fd))) {
+        // Undo BOTH the fd and the mount installed above: closeFd releases the owner's channel ref,
+        // but without the unmount the namespace keeps an orphaned `served` mount — guest-triggerable
+        // inconsistent VFS state (via a bad ret_fd pointer). fulfillSvcServe's failure path is
+        // already symmetric this way.
         t.closeFd(fd);
+        state.kernel().ns.unmount(path) catch {};
         return neg(constants.EINVAL);
     }
     return constants.ESUCCESS;
