@@ -7,12 +7,14 @@
 > `-O3` ≈ **1.4× wasmi** (down from wasm3's 2.9×, hard-capped at 1.3× by the Asyncify tax). The
 > migration went in stages (git: `47f56cb` → `7beb531` → `f5f3d10` → `4de2fc9` → `8783f87` → `f263696`).
 >
-> **CAUTION — the earlier "parity within 2%" claim here was WRONG for real workloads.** A later
-> realistic-workload measurement (§0) shows the tight loop is WAMR's *best case*; normal agent work is
-> spawn-heavy, and WAMR's per-instance `wasm_runtime_instantiate` is **~8–11× slower than wasmi**, so
-> the full e2e suites run **1.8–2× slower** overall. See **§0 — Default-readiness verdict** for the full
-> Rust-vs-Zig decision (performance + design + the blockers to shipping Zig as default). The wasm3-era
-> record below is kept for provenance.
+> **CAUTION — the earlier "parity within 2%" claim here was microbenchmark-only.** Realistic-workload
+> measurement (§0) shows the tight loop is WAMR's *best case*. An earlier draft of §0 blamed the
+> spawn-heavy gap on `wasm_runtime_instantiate`; **that was wrong** — profiling (§0.6) found the
+> module cache was missing on *every* spawn (`wasm_runtime_load` mutates its input buffer), so the
+> kernel re-preprocessed each binary per spawn. Fixed in `b07ab46`: spawn ~3.8× faster, coreutils
+> pipelines ~5.8× faster. Post-fix, the residual gap is just the intrinsic WAMR-vs-wasmi *dispatch*
+> (~1.2–1.5×), no pathology left. See **§0 — Default-readiness verdict** for the full, current
+> Rust-vs-Zig comparison. The wasm3-era record below is kept for provenance.
 
 **Status (wasm3 era — historical):**
 - **Functional parity with the Rust kernel: ACHIEVED.** `core_zig` 81/81 (+ Group G suspend-across-
@@ -47,28 +49,37 @@ benchmarks that run on BOTH kernels — and (b) a system-design + maintainabilit
 `memcontainers/kernel/{rust,zig}/src` against the SYSTEMS.md constitution. Both point to the same
 conclusion: strong candidate, not ready to ship as default.
 
-### 0.1 Performance — realistic workloads, not just the tight loop
+### 0.1 Performance — realistic workloads, Zig vs Rust (post module-cache fix, `b07ab46`)
 
-Full-suite execution (uncached, pure libtest wall-clock): **`core` 2.44 s vs `core_zig` 4.65 s
-(1.9×)** · **`extended` 15.0 s vs `extended_zig` 31.2 s (2.1×)**.
+Workload benchmarks (`zz_bench_*` in `tests/e2e/src/{kernel,sqlite}.rs`; run on both kernels with
+`--test_arg=zz_bench --test_arg=--ignored --test_arg=--nocapture --cache_test_results=no`). Numbers are
+representative of several clean alternating runs (wall-clock is noisy at ±10–15%, so ratios matter more
+than absolutes):
 
-Workload benchmarks (`zz_bench_*` in `tests/e2e/src/kernel.rs` + `sqlite.rs`; run on both kernels with
-`--test_arg=zz_bench --test_arg=--ignored --test_arg=--nocapture --cache_test_results=no`):
+| Workload | Rust / wasmi | Zig / WAMR | Ratio | (was, pre-fix) |
+|---|---|---|---|---|
+| sqlite (5k insert txn + aggregates, warm service) | ~2860 ms | ~3190 ms | **1.12×** | — |
+| luau 10M tight loop (pure dispatch) | ~2850 ms | ~3400 ms | **~1.25×** | 1.37× |
+| coreutils pipeline (`seq\|grep\|sort\|wc`) | ~28.5 ms | ~38.9 ms | **1.36×** | **7.97×** |
+| boot-to-prompt (fresh VM, cold shell load) | ~32 ms | ~49 ms | ~1.5× | 1.47× |
+| luau scripting (20k build+sort+concat) | ~995 ms | ~1520 ms | ~1.5× | 1.61× |
+| spawn churn (`sh -c true`) | ~2.8 ms | ~7.4 ms | **~2.6×** | **11.1×** |
+| full core suite (82 tests, uncached) | ~2.44 s | ~4.3 s | 1.76× | 1.9× |
+| full extended suite (32 tests, uncached) | ~14.5 s | ~27.6 s | 1.9× | 2.1× |
 
-| Workload | Rust / wasmi | Zig / WAMR | Ratio |
-|---|---|---|---|
-| luau 10M tight loop (dispatch only) | 2885 ms | 3946 ms | **1.37×** |
-| boot-to-prompt | 37 ms/boot | 55 ms/boot | 1.47× |
-| luau scripting (20k build+sort+concat) | 1049 ms | 1690 ms | 1.61× |
-| coreutils pipeline (`seq\|grep\|sort\|wc`) | 30.2 ms/run | 240 ms/run | **7.97×** |
-| spawn churn (`sh -c true`) | 3.2 ms/spawn | 35.3 ms/spawn | **11.1×** |
+**What changed:** the earlier draft reported spawn/pipeline at **8–11×** and blamed
+`wasm_runtime_instantiate`. Profiling (§0.6) disproved that — instantiate is **0.36 ms** (~1% of a
+spawn). The real cost was `wasm_runtime_load` (module preprocessing) running on *every* spawn because
+the content-addressed cache never hit (`b07ab46`, root cause in §0.6). Fixing it collapsed the
+pathological gaps: pipeline **8× → 1.4×**, spawn **11× → 2.6×**.
 
-**The finding that matters:** the tight loop (~1.4×) is WAMR's *best case* — pure interpreter dispatch.
-Real agent work is **spawn-heavy**, and WAMR's `wasm_runtime_instantiate` (fresh linear memory + a
-512 KB stack per instance, in `guest.zig`) is **~8–11× slower** than wasmi's. The content-addressed
-module cache (`guest.zig::cachedModule`, §4.3) fixed *loading*; per-spawn *instantiation* is the
-untouched bottleneck. This is why the "parity within 2%" claim in the banner above was microbenchmark-
-only and misleading for real use.
+**What remains** is the intrinsic WAMR-vs-wasmi *dispatch* cost (~1.2–1.5×): warm-service workloads
+(sqlite) are near parity (1.12×), the tight loop is ~1.25×, and the spawn residual is now ~90% the
+shell's own `run` phase (the interpreter executing), not any fixable kernel overhead. The full suites
+sit at ~1.8× because they pay a fresh-VM **boot** (cold shell load, uncacheable across isolated VMs)
+per test — a per-test fixed cost, not a per-workload one. There is no pathological cost left to remove;
+closing the residual would mean making WAMR's interpreter dispatch itself faster than wasmi's (a deep
+engine project, not a bug fix).
 
 ### 0.2 Design & maintainability (verified in-tree)
 
@@ -90,7 +101,7 @@ patch); and the two blockers below.
 |---|---|---|---|
 | **1** | **No per-task namespace.** Zig has ONE global `Kernel.ns`; `bind`/`unmount`/`serve` mutate it globally. Rust forks a per-process namespace per spawn (private `/scratch`, `CAP_SCRATCH`). An **isolation-semantics** gap, not an optimization — and a parity blind spot the suite doesn't catch. | **High** | `state.zig:84` (one ns); `task.zig:29` + `vfs.zig:339` say forking is "deferred / Phase 4"; Rust `vfs/namespace.rs:87 fork` + `wasm/mod.rs:3492` (child inherits a fork) |
 | **2** | **Fail-open on malformed metadata.** Zig `Tier.fromModule` returns null for absent **and** malformed **and** duplicate `mc_tier` → treated as "inherit parent privilege." Rust hard-fails the load. A tampered/malformed binary is granted *more* than fail-closed would allow. | **High** | `task.zig:137` (null → inherit); Rust `wasm/mod.rs:843–845 validate_mc_sections` ("a duplicate or present-but-malformed mc_tier/mc_budget is a hard load" failure) |
-| **3** | **Spawn/instantiate ~8–11× slower** (§0.1). Dominates real workloads; the "parity" claim was microbenchmark-only. | **High (perf)** | benchmarks in §0.1; per-spawn `wasm_runtime_instantiate` in `guest.zig` |
+| **3** | **Residual dispatch gap ~1.2–2×.** The *pathological* spawn/pipeline gap (8–11×) is FIXED (§0.1/§0.6 — the module-cache bug). What remains is the intrinsic WAMR-vs-wasmi interpreter dispatch: near parity on warm-service work (sqlite 1.12×), ~1.5–1.9× on boot-heavy suites. A perf characteristic, not a bug — closing it is a deep engine project. | **Low–med (perf)** | §0.1 benchmarks; profiler §0.6 |
 
 Plus mediums: the shipped-artifact wiring still points at Rust (`web/`, `bazel/tools/gh-release/`,
 `server/`, the JS/SDK BUILDs); `core_zig`/`extended_zig` are still `manual` targets (not in the normal
@@ -104,8 +115,10 @@ allocation paths.
    the gap.
 2. **Fail-closed metadata validation** — reject malformed/duplicate `mc_tier`/`mc_budget`/`mc_service`
    at load; distinguish absent vs malformed (a semantics fix on `wasm_sections.zig`).
-3. **Close the spawn/instantiate gap** — the real perf blocker (instance/memory pooling, a smaller
-   default stack, or lazy-zero) so realistic workloads approach wasmi, not just the tight loop.
+3. **Performance is no longer a hard blocker.** The pathological spawn/pipeline gap is fixed (§0.6);
+   the residual ~1.2–2× dispatch is a known tradeoff for ~half the binary size. Optional further wins
+   need real profiling first (the pattern in §0.6 — three "obvious" perf hypotheses were all disproven
+   by measurement before the actual bug was found), not another guess.
 4. **Then** flip the shipped-artifact wiring to Zig by selector/label and de-`manual` the parity
    targets (B7 promotion), Rust remaining the buildable oracle.
 
@@ -120,6 +133,38 @@ control 950→37, guest and state extracted); `control/wire.zig` switched to the
 codecs; a content-addressed WAMR module cache (§4.3); and a new syscall-blocked snapshot/restore parity
 test. These closed the *maintainability* frontier; §0.3 is the remaining *correctness + performance*
 frontier before default.
+
+### 0.6 The spawn bottleneck: measure, don't guess (`b07ab46`)
+
+The first perf pass **guessed** the spawn cost was `wasm_runtime_instantiate` (fresh linear memory +
+memset). Three quick experiments each disproved a hypothesis: kernel `-Os`→`release_fast` (nothing, for
++50% size), exec_env stack 512 KB→128 KB (nothing), and moving the per-op suspend/metering check out of
+dispatch (no measurable change — the loop gap is intrinsic, ~1.1–1.25×). The lesson: stop guessing,
+instrument.
+
+The kernel can't self-time (`mc_time_monotonic` is deterministic for reproducibility, A7), so
+`instrument.zig` (dev-only, comptime-gated OFF — kernel.wasm byte-identical when off) emits phase
+markers via `mc_log`, and the wasmtime host timestamps them with its real clock
+(`hosts/wasmtime::Instr`, surfaced by `zz_bench_spawn_churn`'s `host.instr_report()`). One run gave the
+per-`sh -c true` breakdown:
+
+```
+  load         avg 23.6 ms   <- 75%
+  run          avg  7.2 ms
+  instantiate  avg  0.36 ms  <- the thing we'd been "optimizing": ~1%
+  execenv      avg  0.16 ms
+  teardown     avg  0.004 ms
+```
+
+Instantiate was cheap; **`load` (module preprocessing) was the whole gap** — even though the
+content-addressed cache (§4.3, `guest.zig::cachedModule`) was supposed to make it a one-time cost. A
+one-line diagnostic (`loadmiss`) showed it firing **301 times for 300 spawns**: the cache missed on
+*every* spawn. Root cause: **`wasm_runtime_load` writes into its input buffer during preprocessing**, so
+the bytes stored as the cache key were mutated by the loader and never matched the pristine input on the
+next lookup. Fix: keep a **pristine `key` copy** for the byte comparison, separate from the `load_buf`
+WAMR mutates and holds for the module's lifetime. Result: `loadmiss` 301→1, `load` 23.6 ms→0.18 ms,
+spawn 35→9 ms, pipeline 240→42 ms (§0.1). The instrumentation is committed (off) for the next time
+someone needs to profile the spawn path instead of guessing.
 
 ---
 
