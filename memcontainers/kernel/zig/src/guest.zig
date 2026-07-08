@@ -11,6 +11,7 @@ const state = @import("state.zig");
 const syscall = @import("syscall.zig");
 const task_mod = @import("task.zig");
 const wamr = @import("wamr/bindings.zig");
+const sections = @import("wasm_sections.zig");
 
 const TaskId = task_mod.TaskId;
 
@@ -78,51 +79,8 @@ fn wamrRealloc(ptr: ?*anyopaque, size_raw: c_uint) callconv(.c) ?*anyopaque {
     return next;
 }
 
-fn readUleb(bytes: []const u8, at: usize) ?struct { value: u32, adv: usize } {
-    var result: u32 = 0;
-    var shift: u32 = 0;
-    var n: usize = 0;
-    while (true) {
-        if (at + n >= bytes.len) return null;
-        if (shift >= 32) return null;
-        const byte = bytes[at + n];
-        n += 1;
-        const low = @as(u32, byte & 0x7f);
-        if (shift == 28 and low > 0x0f) return null;
-        result |= low << @as(u5, @intCast(shift));
-        if ((byte & 0x80) == 0) return .{ .value = result, .adv = n };
-        shift += 7;
-    }
-}
-
-fn uniqueCustom(bytes: []const u8, name: []const u8) ?[]const u8 {
-    if (bytes.len < 8 or !std.mem.eql(u8, bytes[0..4], "\x00asm")) return null;
-    var found: ?[]const u8 = null;
-    var i: usize = 8;
-    while (i < bytes.len) {
-        const id = bytes[i];
-        i += 1;
-        const size_info = readUleb(bytes, i) orelse return null;
-        i += size_info.adv;
-        const body_start = i;
-        const body_end = std.math.add(usize, body_start, @intCast(size_info.value)) catch return null;
-        if (body_end > bytes.len) return null;
-        if (id == 0) {
-            const name_info = readUleb(bytes, body_start) orelse return null;
-            const name_start = body_start + name_info.adv;
-            const name_end = std.math.add(usize, name_start, @intCast(name_info.value)) catch return null;
-            if (name_end <= body_end and std.mem.eql(u8, bytes[name_start..name_end], name)) {
-                if (found != null) return null;
-                found = bytes[name_end..body_end];
-            }
-        }
-        i = body_end;
-    }
-    return found;
-}
-
 fn declaredFuel(bytes: []const u8) u64 {
-    const payload = uniqueCustom(bytes, "mc_budget") orelse return DEFAULT_FUEL_LIFETIME;
+    const payload = sections.uniqueCustom(bytes, "mc_budget") orelse return DEFAULT_FUEL_LIFETIME;
     if (payload.len < 24) return DEFAULT_FUEL_LIFETIME;
     if (std.mem.readInt(u32, payload[0..4], .little) != 1) return DEFAULT_FUEL_LIFETIME;
     const fuel = std.mem.readInt(u64, payload[12..20], .little);

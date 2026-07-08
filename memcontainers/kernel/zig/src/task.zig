@@ -44,6 +44,7 @@ const net = @import("egress/net.zig");
 const host_call = @import("egress/host_call.zig");
 const servedfs = @import("fs/servedfs.zig");
 const registry = @import("service/registry.zig");
+const sections = @import("wasm_sections.zig");
 
 pub const TaskId = u32;
 
@@ -128,6 +129,15 @@ pub const Tier = enum {
         if (std.mem.eql(u8, s, "read-only")) return .read_only;
         if (std.mem.eql(u8, s, "isolated")) return .isolated;
         return null;
+    }
+
+    /// Read the `mc_tier` custom section off a guest's (untrusted) module bytes and parse it;
+    /// null if the section is absent, non-UTF-8, or names an unknown tier — in which case the
+    /// caller inherits rather than narrows. Reads through the one shared `wasm_sections` parser.
+    pub fn fromModule(bytes: []const u8) ?Tier {
+        const payload = sections.uniqueCustom(bytes, "mc_tier") orelse return null;
+        if (!std.unicode.utf8ValidateSlice(payload)) return null;
+        return parse(payload);
     }
 
     /// Decode a tier from the `mc_sys_spawn` argument, using the encodings projected

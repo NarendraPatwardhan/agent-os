@@ -17,6 +17,7 @@ const scheduler = @import("scheduler.zig");
 const guest = @import("guest.zig");
 const rescue = @import("rescue.zig");
 const task = @import("task.zig");
+const sections = @import("wasm_sections.zig");
 const pipe = @import("ipc/pipe.zig");
 const net = @import("egress/net.zig");
 const host_call = @import("egress/host_call.zig");
@@ -553,56 +554,8 @@ fn readDirNames(k: *Kernel, arena: std.mem.Allocator, path: []const u8) ?[]const
     return names.items;
 }
 
-fn readUleb(bytes: []const u8, at: usize) ?struct { value: u32, adv: usize } {
-    var result: u32 = 0;
-    var shift: u32 = 0;
-    var n: usize = 0;
-    while (true) {
-        if (at + n >= bytes.len or shift >= 32) return null;
-        const byte = bytes[at + n];
-        n += 1;
-        const low = @as(u32, byte & 0x7f);
-        if (shift == 28 and low > 0x0f) return null;
-        result |= low << @as(u5, @intCast(shift));
-        if ((byte & 0x80) == 0) return .{ .value = result, .adv = n };
-        shift += 7;
-    }
-}
-
-fn uniqueCustom(bytes: []const u8, name: []const u8) ?[]const u8 {
-    if (bytes.len < 8 or !std.mem.eql(u8, bytes[0..4], "\x00asm")) return null;
-    var found: ?[]const u8 = null;
-    var i: usize = 8;
-    while (i < bytes.len) {
-        const id = bytes[i];
-        i += 1;
-        const size_info = readUleb(bytes, i) orelse return null;
-        i += size_info.adv;
-        const body_start = i;
-        const body_end = std.math.add(usize, body_start, @intCast(size_info.value)) catch return null;
-        if (body_end > bytes.len) return null;
-        if (id == 0) {
-            const name_info = readUleb(bytes, body_start) orelse return null;
-            const name_start = body_start + name_info.adv;
-            const name_end = std.math.add(usize, name_start, @intCast(name_info.value)) catch return null;
-            if (name_end <= body_end and std.mem.eql(u8, bytes[name_start..name_end], name)) {
-                if (found != null) return null;
-                found = bytes[name_end..body_end];
-            }
-        }
-        i = body_end;
-    }
-    return found;
-}
-
-fn declaredTier(bytes: []const u8) ?task.Tier {
-    const payload = uniqueCustom(bytes, "mc_tier") orelse return null;
-    if (!std.unicode.utf8ValidateSlice(payload)) return null;
-    return task.Tier.parse(payload);
-}
-
 fn declaredService(bytes: []const u8) ?[]const u8 {
-    const payload = uniqueCustom(bytes, "mc_service") orelse return null;
+    const payload = sections.uniqueCustom(bytes, "mc_service") orelse return null;
     if (!std.unicode.utf8ValidateSlice(payload)) return null;
     if (!registry.validServiceName(payload)) return null;
     return payload;
@@ -673,7 +626,7 @@ fn spawnService(k: *Kernel, name: []const u8, binary: []const u8) bool {
     defer k.gpa.free(bytes);
     const service = declaredService(bytes) orelse return false;
     if (!std.mem.eql(u8, service, name)) return false;
-    const tier = declaredTier(bytes) orelse return false;
+    const tier = task.Tier.fromModule(bytes) orelse return false;
     const args = [_][]const u8{constants.SERVICE_MARKER};
     const pid = k.sched.spawn(null, name, binary, &args, "/");
     const root: ?[]const u8 = if (tier.confines()) "/" else null;
