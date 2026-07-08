@@ -48,6 +48,21 @@ pub const ExecEnv = extern struct {
     attachment: ?*anyopaque,
 };
 
+comptime {
+    // These extern structs mirror WAMR's WASMInterpFrame / WASMExecEnv for THIS kernel's build
+    // config (WASM_ENABLE_FAST_INTERP=1, FAST_JIT/PERF_PROFILING/EXCE_HANDLING/GC=0 — those config
+    // flags gate extra frame fields). The pcall bridge in guest.zig reads a frame's `lp`/`ret_offset`
+    // directly, so a wrong offset is a silent out-of-bounds host write. Pin the layout: a careless
+    // edit here, or a WAMR upgrade / config change that shifts fields, fails the build instead. (The
+    // frame is also range-checked at runtime — see guest.zig returnSlotInBounds — so a layout drift
+    // that somehow slips past this fails closed rather than corrupting memory.)
+    const P = @sizeOf(*anyopaque); // wasm32: 4
+    if (@offsetOf(InterpFrame, "prev_frame") != 0) @compileError("WAMR InterpFrame.prev_frame moved");
+    if (@offsetOf(InterpFrame, "ret_offset") != 3 * P) @compileError("WAMR InterpFrame.ret_offset moved");
+    if (@offsetOf(InterpFrame, "lp") != 3 * P + @sizeOf(u32)) @compileError("WAMR InterpFrame.lp moved");
+    if (@offsetOf(ExecEnv, "cur_frame") != P) @compileError("WAMR ExecEnv.cur_frame moved");
+}
+
 pub const CallStatus = enum(c_int) {
     done = 0,
     yielded = 1,

@@ -584,11 +584,25 @@ fn guestFromExecEnv(exec_env: ?*wamr.ExecEnv) ?*GuestRuntime {
     return @ptrCast(@alignCast(custom));
 }
 
+/// True if `slot` (a return-slot pointer derived from a caller frame's `lp` + `ret_offset`) lies
+/// within the exec_env's wasm operand stack. The pcall bridge trusts WAMR's private InterpFrame
+/// layout; a WAMR upgrade that shifted fields (despite the comptime pin in bindings.zig) would yield
+/// a garbage lp/ret_offset pointing outside the stack. Reject it and fail closed rather than perform
+/// an out-of-bounds host write into whatever the bad pointer names.
+fn returnSlotInBounds(env: *wamr.ExecEnv, slot: *const u32) bool {
+    const bottom = @intFromPtr(env.wasm_stack.bottom orelse return false);
+    const boundary = @intFromPtr(env.wasm_stack.top_boundary orelse return false);
+    const p = @intFromPtr(slot);
+    return p >= bottom and p + @sizeOf(u32) <= boundary;
+}
+
 fn captureReturnSlot(exec_env: ?*wamr.ExecEnv) ?*u32 {
     const env = exec_env orelse return null;
     const native_frame = env.cur_frame orelse return null;
     const caller = native_frame.prev_frame orelse return null;
-    return &caller.lp[caller.ret_offset];
+    const slot = &caller.lp[caller.ret_offset];
+    if (!returnSlotInBounds(env, slot)) return null;
+    return slot;
 }
 
 const NativeBoundary = struct {
@@ -601,10 +615,12 @@ fn captureNativeBoundary(exec_env: ?*wamr.ExecEnv) ?NativeBoundary {
     const env = exec_env orelse return null;
     const native_frame = env.cur_frame orelse return null;
     const caller = native_frame.prev_frame orelse return null;
+    const slot = &caller.lp[caller.ret_offset];
+    if (!returnSlotInBounds(env, slot)) return null;
     return .{
         .native_frame = native_frame,
         .caller_frame = caller,
-        .return_slot = &caller.lp[caller.ret_offset],
+        .return_slot = slot,
     };
 }
 
