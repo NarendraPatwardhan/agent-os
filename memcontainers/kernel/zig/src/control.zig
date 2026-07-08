@@ -330,6 +330,12 @@ const BytesReadHandle = struct {
     }
 };
 
+/// Ceiling on a single exec job's captured stdout/stderr — a runaway guest program must not be able
+/// to grow the capture buffer until the kernel heap is exhausted and the VM traps. Generous: normal
+/// control-channel exec output (coreutils) is tiny; heavy engines use the (separately capped) svc
+/// channel, not exec capture.
+const MAX_CAPTURE_BYTES: usize = 64 << 20;
+
 const CaptureWriteHandle = struct {
     gpa: std.mem.Allocator,
     buf: *std.ArrayList(u8),
@@ -342,7 +348,13 @@ const CaptureWriteHandle = struct {
         return FsError.BadFileDescriptor;
     }
     fn write(self: *CaptureWriteHandle, bytes: []const u8) FsError!usize {
-        self.buf.appendSlice(self.gpa, bytes) catch @panic("OOM");
+        // Exec stdout/stderr capture is an unbounded guest-driven sink: a runaway program could
+        // otherwise grow this buffer until the kernel heap is exhausted and the whole VM traps.
+        // Cap it and fail closed with EMSGSIZE (via MessageTooBig) at the ceiling or on OOM —
+        // a guest fault is an errno, never a host trap (§4.3). Invariant: buf.items.len never
+        // exceeds MAX_CAPTURE_BYTES, so the subtraction cannot underflow.
+        if (bytes.len > MAX_CAPTURE_BYTES - self.buf.items.len) return FsError.MessageTooBig;
+        self.buf.appendSlice(self.gpa, bytes) catch return FsError.MessageTooBig;
         self.offset = self.buf.items.len;
         return bytes.len;
     }
@@ -362,7 +374,8 @@ const CaptureWriteHandle = struct {
         return vfs.Metadata.file(@intCast(self.buf.items.len));
     }
     fn truncate(self: *CaptureWriteHandle, size: u64) FsError!void {
-        self.buf.resize(self.gpa, @intCast(size)) catch @panic("OOM");
+        if (size > MAX_CAPTURE_BYTES) return FsError.MessageTooBig;
+        self.buf.resize(self.gpa, @intCast(size)) catch return FsError.MessageTooBig;
         if (self.offset > self.buf.items.len) self.offset = self.buf.items.len;
     }
     fn close(self: *CaptureWriteHandle) void {

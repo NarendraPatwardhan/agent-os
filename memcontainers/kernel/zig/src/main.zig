@@ -22,13 +22,18 @@ const bridge = @import("bridge.zig");
 const state = @import("state.zig");
 const control = @import("control.zig");
 
-// Freestanding panic policy (§4.3): only a genuinely-impossible invariant violation
-// may trap; everything guest-triggered is converted to an errno upstream. Kept trivial
-// in the scaffold; the real handler records diagnostics into kernel state before trap.
+// Freestanding panic policy (§4.3): only a genuinely-impossible invariant violation may trap;
+// everything guest-triggered is converted to an errno upstream (guest-facing syscalls fail closed
+// with an errno, not @panic). Reaching here therefore means a real kernel invariant broke — so
+// record the message to the host before trapping rather than trapping silently. No allocation on
+// this path: the allocator may be the very thing that failed.
 pub const panic = std.debug.FullPanic(struct {
     pub fn panic(msg: []const u8, first_trace_addr: ?usize) noreturn {
-        _ = msg;
         _ = first_trace_addr;
+        const prefix = "kernel panic: ";
+        bridge.mc_stderr_write(prefix, prefix.len);
+        bridge.mc_stderr_write(msg.ptr, msg.len);
+        bridge.mc_stderr_write("\n", 1);
         @trap();
     }
 }.panic);

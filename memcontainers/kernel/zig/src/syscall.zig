@@ -380,11 +380,13 @@ fn fulfillArgs(guest: *const Guest, memory: GuestMemory, args: mc.ArgsArgs) i32 
     var blob: std.ArrayList(u8) = .empty;
     defer blob.deinit(state.kernel().gpa);
     const argv0 = if (t.command.len != 0) t.command else t.name;
-    blob.appendSlice(state.kernel().gpa, argv0) catch @panic("OOM");
-    blob.append(state.kernel().gpa, 0) catch @panic("OOM");
+    // Fail closed with EMSGSIZE rather than trapping the whole VM if the kernel heap is exhausted
+    // building this (guest-influenced) blob — a guest fault is an errno, never a host trap (§4.3).
+    blob.appendSlice(state.kernel().gpa, argv0) catch return neg(constants.EMSGSIZE);
+    blob.append(state.kernel().gpa, 0) catch return neg(constants.EMSGSIZE);
     for (t.args) |a| {
-        blob.appendSlice(state.kernel().gpa, a) catch @panic("OOM");
-        blob.append(state.kernel().gpa, 0) catch @panic("OOM");
+        blob.appendSlice(state.kernel().gpa, a) catch return neg(constants.EMSGSIZE);
+        blob.append(state.kernel().gpa, 0) catch return neg(constants.EMSGSIZE);
     }
 
     const n = @min(blob.items.len, @as(usize, @intCast(args.len)));
@@ -712,8 +714,10 @@ fn fulfillReaddir(guest: *const Guest, memory: GuestMemory, args: mc.ReaddirArgs
     };
     var blob: std.ArrayList(u8) = .empty;
     for (entries.items) |entry| {
-        blob.appendSlice(arena, entry.name) catch @panic("OOM");
-        blob.append(arena, 0) catch @panic("OOM");
+        // Fail closed rather than trapping the VM on heap exhaustion while serialising a
+        // (guest-influenced) directory listing (§4.3 — guest fault is an errno, not a host trap).
+        blob.appendSlice(arena, entry.name) catch return finish(neg(constants.EMSGSIZE));
+        blob.append(arena, 0) catch return finish(neg(constants.EMSGSIZE));
     }
     const n = @min(blob.items.len, @as(usize, @intCast(args.buf_len)));
     if (guestRange(memory, args.buf, @intCast(n)) == null) return finish(neg(constants.EINVAL));
