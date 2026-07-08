@@ -253,6 +253,13 @@ mod handlers {
 
     pub fn mc_log(caller: &mut Caller<'_, HostState>, level: i32, ptr: i32, len: i32) {
         let bytes = read_memory(caller, ptr, len).unwrap_or_default();
+        // Dev-only spawn profiler: the kernel (built with instrumentation on) emits
+        // "mcinstr B <phase>" / "mcinstr E <phase>" markers; timestamp them with the host's real
+        // clock and accumulate per phase, rather than logging. No-op in a normal build (never emitted).
+        if let Some(rest) = bytes.strip_prefix(b"mcinstr ") {
+            caller.data_mut().instr.record(rest);
+            return;
+        }
         let prefix: &[u8] = match level {
             0 => b"[DEBUG] ",
             1 => b"[INFO] ",

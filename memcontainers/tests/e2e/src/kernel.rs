@@ -337,6 +337,8 @@ fn zz_bench_spawn_churn() {
         dt.as_millis(),
         dt.as_secs_f64() * 1000.0 / N as f64
     );
+    // Per-phase attribution (populated only when the kernel is built with instrument.enabled = true).
+    print!("{}", s.host.instr_report());
 }
 
 /// A realistic multi-stage coreutils pipeline (several guests spawned, pipes wired, real read/write

@@ -51,6 +51,7 @@ KERNEL_SRCS = [
     "src/vfs.zig",
     "src/errno.zig",
     "src/wasm_sections.zig",
+    "src/instrument.zig",
     "src/ipc/pipe.zig",
     "src/egress/net.zig",
     "src/egress/host_call.zig",

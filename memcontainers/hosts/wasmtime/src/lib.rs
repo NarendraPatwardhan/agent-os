@@ -313,11 +313,63 @@ pub struct HostState {
     /// Last two bytes written to stdout. Lets the script driver tell a settled prompt
     /// (`"$ "`) from merely-quiet (a network command in flight, prompt held).
     pub stdout_tail: [u8; 2],
+    /// Dev-only spawn-phase profiler (empty unless the kernel is built with instrumentation on).
+    pub instr: Instr,
 }
 
 impl HostState {
     pub fn memory(&self) -> Option<Memory> {
         self.memory
+    }
+}
+
+/// Dev-only spawn/instantiate profiler. The kernel clock is deterministic (it can't measure real
+/// wall-time), so the kernel emits phase-boundary markers via `mc_log` — `"mcinstr B <phase>"` /
+/// `"mcinstr E <phase>"` — and this accumulates the REAL elapsed time between B/E per phase using the
+/// host clock. Populated only when the kernel is built with `instrument.enabled = true`; otherwise no
+/// markers are ever emitted and this stays empty. Read via `KernelHost::instr_report`.
+#[derive(Default)]
+pub struct Instr {
+    starts: std::collections::HashMap<String, std::time::Instant>,
+    totals: std::collections::HashMap<String, (std::time::Duration, u64)>,
+}
+
+impl Instr {
+    /// Consume one marker payload (the bytes after the `"mcinstr "` prefix): `"B <phase>"` opens a
+    /// phase, `"E <phase>"` closes it and folds the elapsed real time into that phase's total.
+    pub fn record(&mut self, rest: &[u8]) {
+        let s = String::from_utf8_lossy(rest);
+        let mut it = s.trim().splitn(2, ' ');
+        let edge = it.next().unwrap_or("");
+        let phase = it.next().unwrap_or("").to_string();
+        match edge {
+            "B" => {
+                self.starts.insert(phase, std::time::Instant::now());
+            }
+            "E" => {
+                if let Some(t0) = self.starts.remove(&phase) {
+                    let e = self.totals.entry(phase).or_default();
+                    e.0 += t0.elapsed();
+                    e.1 += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Format the accumulated per-phase totals (sorted), with per-occurrence averages in microseconds.
+    pub fn report(&self) -> String {
+        let mut phases: Vec<_> = self.totals.iter().collect();
+        phases.sort_by(|a, b| b.1 .0.cmp(&a.1 .0));
+        let mut out = String::from("INSTR spawn-phase breakdown (real host time):\n");
+        for (phase, (total, n)) in phases {
+            let total_us = total.as_micros();
+            let avg_us = if *n > 0 { total_us / *n as u128 } else { 0 };
+            out.push_str(&format!(
+                "  {phase:<12} total {total_us:>10} us   n={n:<6} avg {avg_us:>7} us\n"
+            ));
+        }
+        out
     }
 }
 
@@ -631,6 +683,7 @@ impl KernelHostBuilder {
             exit_code: None,
             bytes_written: 0,
             stdout_tail: [0, 0],
+            instr: Instr::default(),
         }
     }
 
@@ -861,6 +914,12 @@ pub struct KernelHost {
 }
 
 impl KernelHost {
+    /// Dev-only: the accumulated spawn-phase timing breakdown (empty unless the kernel was built
+    /// with `instrument.enabled = true`). See [`Instr`].
+    pub fn instr_report(&self) -> String {
+        self.store.data().instr.report()
+    }
+
     /// Number of bytes the kernel has written to any stream so far.
     pub fn bytes_written(&self) -> u64 {
         self.store.data().bytes_written

@@ -14,6 +14,7 @@ const wamr = @import("wamr/bindings.zig");
 const wamr_alloc = @import("wamr/alloc.zig");
 const sections = @import("wasm_sections.zig");
 const pcall = @import("guest/pcall.zig");
+const instrument = @import("instrument.zig");
 
 const TaskId = task_mod.TaskId;
 const PCALL_STACK_MAX = pcall.PCALL_STACK_MAX;
@@ -57,28 +58,42 @@ pub const Step = enum { ran, suspended, exited, faulted };
 /// the (astronomically rare) hash collision by exact bytes. Both the module and its backing bytes
 /// live in kernel linear memory (WAMR + gpa allocations), so they are captured by a snapshot and are
 /// owned by the cache for the VM's lifetime — a GuestRuntime borrows a `*Module` and never unloads it.
-pub const ModuleCacheEntry = struct { bytes: []u8, module: *wamr.Module };
+pub const ModuleCacheEntry = struct { key: []u8, load_buf: []u8, module: *wamr.Module };
 pub const ModuleCache = std.AutoHashMapUnmanaged(u64, std.ArrayListUnmanaged(ModuleCacheEntry));
 
-/// Return the loaded `*Module` for `wasm_bytes`, loading + caching it on first sight. The cache owns
-/// a private copy of the bytes (WAMR may reference them for the module's lifetime). Returns null only
-/// on a genuine load failure; `error_buf` receives WAMR's message. Never evicts.
+/// Return the loaded `*Module` for `wasm_bytes`, loading + caching it on first sight (§4.3: each
+/// distinct program is preprocessed exactly once). Returns null only on a genuine load failure;
+/// `error_buf` receives WAMR's message. Never evicts.
+///
+/// Two copies are kept per module, on purpose: `wasm_runtime_load` WRITES INTO its input buffer during
+/// preprocessing, so the buffer we hand it can no longer serve as the content-address key. We therefore
+/// keep a PRISTINE `key` copy for the collision-safe byte comparison, and a separate `load_buf` that
+/// WAMR mutates and continues to reference for the module's lifetime. (Keying on the pristine bytes is
+/// what makes the cache actually hit across repeated spawns of the same binary.)
 fn cachedModule(k: *state.Kernel, wasm_bytes: []const u8, error_buf: [*]u8) ?*wamr.Module {
     const h = std.hash.Wyhash.hash(0, wasm_bytes);
     const gop = k.module_cache.getOrPut(k.gpa, h) catch return null;
     if (!gop.found_existing) gop.value_ptr.* = .empty;
     for (gop.value_ptr.items) |e| {
-        if (std.mem.eql(u8, e.bytes, wasm_bytes)) return e.module;
+        if (std.mem.eql(u8, e.key, wasm_bytes)) return e.module;
     }
-    const owned = k.gpa.dupe(u8, wasm_bytes) catch return null;
-    const module = wamr.wasm_runtime_load(owned.ptr, @intCast(owned.len), error_buf, ERROR_BUF_SIZE) orelse {
-        k.gpa.free(owned);
+    const key = k.gpa.dupe(u8, wasm_bytes) catch return null;
+    const load_buf = k.gpa.dupe(u8, wasm_bytes) catch {
+        k.gpa.free(key);
         return null;
     };
-    gop.value_ptr.append(k.gpa, .{ .bytes = owned, .module = module }) catch {
+    instrument.begin(.loadmiss);
+    const module = wamr.wasm_runtime_load(load_buf.ptr, @intCast(load_buf.len), error_buf, ERROR_BUF_SIZE) orelse {
+        k.gpa.free(key);
+        k.gpa.free(load_buf);
+        return null;
+    };
+    instrument.end(.loadmiss);
+    gop.value_ptr.append(k.gpa, .{ .key = key, .load_buf = load_buf, .module = module }) catch {
         // Could not record the module; unload + free so we neither leak nor cache an untracked module.
         wamr.wasm_runtime_unload(module);
-        k.gpa.free(owned);
+        k.gpa.free(key);
+        k.gpa.free(load_buf);
         return null;
     };
     return module;
@@ -139,24 +154,30 @@ pub const GuestRuntime = struct {
         // Load-once/instantiate-many (§4.3): the preprocessed module is shared, content-addressed, and
         // owned by the kernel's module cache; this runtime only creates a fresh instance + exec_env.
         @memset(self.error_buf[0..], 0);
+        instrument.begin(.load);
         self.module = cachedModule(state.kernel(), wasm_bytes, self.error_buf[0..].ptr) orelse {
             syscall.termWrite("wamr load failed\n", true);
             syscall.termWrite(std.mem.sliceTo(self.error_buf[0..].ptr, 0), true);
             syscall.termWrite("\n", true);
             return error.WamrLoad;
         };
+        instrument.end(.load);
+        instrument.begin(.instantiate);
         self.module_inst = wamr.wasm_runtime_instantiate(self.module, STACK_SIZE, HOST_HEAP_SIZE, self.error_buf[0..].ptr, ERROR_BUF_SIZE) orelse {
             syscall.termWrite("wamr instantiate failed\n", true);
             syscall.termWrite(std.mem.sliceTo(self.error_buf[0..].ptr, 0), true);
             syscall.termWrite("\n", true);
             return error.WamrInstantiate;
         };
+        instrument.end(.instantiate);
         wamr.wasm_runtime_set_custom_data(self.module_inst, @ptrCast(self));
 
+        instrument.begin(.execenv);
         self.exec_env = wamr.wasm_runtime_create_exec_env(self.module_inst, STACK_SIZE) orelse {
             syscall.termWrite("wamr exec env failed\n", true);
             return error.WamrExecEnv;
         };
+        instrument.end(.execenv);
         self.function = wamr.wasm_runtime_lookup_function(self.module_inst, entry) orelse {
             syscall.termWrite("wamr lookup failed\n", true);
             return error.WamrLookup;
@@ -199,14 +220,17 @@ pub const GuestRuntime = struct {
         self.clearWamrBlockingFlag();
 
         var argv = [_]u32{0};
+        instrument.begin(.run);
         const status = if (should_resume)
             wamr.wasm_runtime_resume(exec_env, 1, argv[0..].ptr)
         else
             wamr.wasm_runtime_call_wasm_status(exec_env, function, 0, argv[0..].ptr);
+        instrument.end(.run);
         return self.handleStatus(status, argv[0]);
     }
 
     pub fn deinit(self: *GuestRuntime) void {
+        instrument.begin(.teardown);
         if (self.exec_env) |exec_env| wamr.wasm_runtime_destroy_exec_env(exec_env);
         self.exec_env = null;
         if (self.module_inst) |module_inst| {
@@ -214,6 +238,7 @@ pub const GuestRuntime = struct {
             wamr.wasm_runtime_deinstantiate(module_inst);
         }
         self.module_inst = null;
+        instrument.end(.teardown);
         // The module itself is NOT unloaded: it is owned by the kernel's content-addressed module
         // cache (§4.3, never evicted) and may be shared by other live instances.
         self.module = null;
