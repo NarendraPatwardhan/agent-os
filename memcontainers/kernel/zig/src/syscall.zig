@@ -961,7 +961,7 @@ fn fulfillTimeRealtime(guest: *const Guest, memory: GuestMemory, args: mc.TimeRe
     const t = currentTask(guest) orelse return neg(constants.EIO);
     if (!t.caps.has(constants.CAP_AMBIENT)) return neg(constants.EPERM);
     const now = bridge.mc_time_now();
-    vfs.wall_ms = now;
+    state.kernel().wall_ms = now;
     if (!writeGuestI64(memory, args.ret, now)) return neg(constants.EINVAL);
     return constants.ESUCCESS;
 }

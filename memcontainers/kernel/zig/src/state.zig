@@ -232,6 +232,11 @@ pub const Kernel = struct {
     gpa: std.mem.Allocator,
     ns: vfs.Namespace,
     sched: scheduler.Scheduler,
+    /// Cached wall-clock (ms), refreshed each tick and on a CAP_AMBIENT realtime read from the host
+    /// clock. Owned here rather than in a module global so it resets/forks with the rest of kernel
+    /// state; the many low-level readers (memfs timestamps, service deadlines) reach it through
+    /// vfs.wallNowMs() so they need no Kernel handle.
+    wall_ms: i64 = 0,
     /// Bidirectional host control scratch buffer (mc_ctl_*); lives in linear memory, so a
     /// snapshot captures it. The host sizes it via mc_ctl_buf, writes a request, and reads
     /// results back out of it.
@@ -311,7 +316,7 @@ pub fn init() i32 {
         .services = registry.Engine.init(kernel_allocator),
     };
     g_ready = true;
-    vfs.wall_ms = bridge.mc_time_now();
+    g_kernel.wall_ms = bridge.mc_time_now();
     g_kernel.ctl_buffer.ensureTotalCapacity(g_kernel.gpa, 256) catch @panic("OOM");
     boot.bootSystem(&g_kernel);
     g_kernel.initialized = true;
@@ -338,7 +343,7 @@ const FAULT_EXIT_CODE: i32 = 134; // 128 + SIGABRT(6): the conventional "aborted
 pub fn tick() i32 {
     if (!isInitialized()) return 0;
     const k = &g_kernel;
-    vfs.wall_ms = bridge.mc_time_now();
+    k.wall_ms = bridge.mc_time_now();
     _ = flushConsole(k);
     // Wake any task whose block condition cleared: an empty stdin pipe that now has bytes,
     // a full pipe drained, a waited-for child that exited.

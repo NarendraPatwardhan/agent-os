@@ -12,13 +12,16 @@
 
 const std = @import("std");
 const constants = @import("constants_zig");
+const state = @import("state.zig");
 
 /// Cached wall clock in ms since the epoch — the kernel refreshes it from the clock bridge
 /// each tick (mirrors the Rust kernel's cached WALL_CLOCK static). Backends stamp node times
 /// from it without each taking a clock dependency. `0` until the clock is wired (Phase 4).
-pub var wall_ms: i64 = 0;
+/// The kernel's cached wall-clock (ms), owned by `Kernel.wall_ms` and refreshed each tick. Read from
+/// the many low-level sites (memfs timestamps, service deadlines) through this accessor so none of
+/// them needs a Kernel handle. Returns 0 before the kernel is initialized.
 pub fn wallNowMs() i64 {
-    return wall_ms;
+    return if (state.isInitialized()) state.kernel().wall_ms else 0;
 }
 
 pub const CallerId = u32;
