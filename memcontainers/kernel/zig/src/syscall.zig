@@ -76,25 +76,9 @@ pub fn neg(errno: i32) i32 {
     return errno;
 }
 
-pub fn errnoFromFs(e: vfs.FsError) i32 {
-    return switch (e) {
-        vfs.FsError.NotFound => constants.ENOENT,
-        vfs.FsError.AlreadyExists => constants.EEXIST,
-        vfs.FsError.NotDir => constants.ENOTDIR,
-        vfs.FsError.IsDir => constants.EISDIR,
-        vfs.FsError.PermissionDenied => constants.EPERM,
-        vfs.FsError.AccessDenied => constants.EACCES,
-        vfs.FsError.InvalidPath => constants.EINVAL,
-        vfs.FsError.NotEmpty => constants.ENOTEMPTY,
-        vfs.FsError.IoError => constants.EIO,
-        vfs.FsError.BadFileDescriptor => constants.EBADF,
-        vfs.FsError.NotImplemented => constants.ENOSYS,
-        vfs.FsError.CrossDevice => constants.EXDEV,
-        vfs.FsError.WouldBlock => constants.EAGAIN,
-        vfs.FsError.MessageTooBig => constants.EMSGSIZE,
-        vfs.FsError.Loop => constants.ELOOP,
-    };
-}
+/// FsError -> errno (positive WASI). Single source in errno.zig; re-exported so the syscall
+/// call sites keep the bare `errnoFromFs` spelling.
+pub const errnoFromFs = @import("errno.zig").errnoFromFs;
 
 pub const GuestMemory = struct {
     base: [*]u8,

@@ -293,26 +293,9 @@ pub const ServedFs = struct {
     }
 };
 
-fn fsResultFromErrno(errno: i32) FsError!void {
-    if (errno == 0) return;
-    return switch (errno) {
-        constants.ENOENT => FsError.NotFound,
-        constants.EEXIST => FsError.AlreadyExists,
-        constants.ENOTDIR => FsError.NotDir,
-        constants.EISDIR => FsError.IsDir,
-        constants.EPERM => FsError.PermissionDenied,
-        constants.EACCES => FsError.AccessDenied,
-        constants.EINVAL => FsError.InvalidPath,
-        constants.ENOTEMPTY => FsError.NotEmpty,
-        constants.EBADF => FsError.BadFileDescriptor,
-        constants.ENOSYS => FsError.NotImplemented,
-        constants.EXDEV => FsError.CrossDevice,
-        constants.EAGAIN => FsError.WouldBlock,
-        constants.EMSGSIZE => FsError.MessageTooBig,
-        constants.ELOOP => FsError.Loop,
-        else => FsError.IoError,
-    };
-}
+/// errno -> FsError, the single inverse map in errno.zig (re-exported for the served-proxy
+/// reply decoding).
+const fsResultFromErrno = @import("../errno.zig").fsResultFromErrno;
 
 const ServedFileHandle = struct {
     gpa: std.mem.Allocator,

@@ -33,6 +33,7 @@ KERNEL_SRCS = [
     "src/rescue.zig",
     "src/syscall.zig",
     "src/vfs.zig",
+    "src/errno.zig",
     "src/ipc/pipe.zig",
     "src/egress/net.zig",
     "src/egress/host_call.zig",

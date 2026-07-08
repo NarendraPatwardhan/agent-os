@@ -213,26 +213,10 @@ inline fn neg(errno: i32) i32 {
     return -errno;
 }
 
-/// The shared FsError → errno map (so the control channel and the syscall ABI never drift).
-fn errnoFromFs(e: FsError) i32 {
-    return switch (e) {
-        FsError.NotFound => constants.ENOENT,
-        FsError.AlreadyExists => constants.EEXIST,
-        FsError.NotDir => constants.ENOTDIR,
-        FsError.IsDir => constants.EISDIR,
-        FsError.PermissionDenied => constants.EPERM,
-        FsError.AccessDenied => constants.EACCES,
-        FsError.InvalidPath => constants.EINVAL,
-        FsError.NotEmpty => constants.ENOTEMPTY,
-        FsError.IoError => constants.EIO,
-        FsError.BadFileDescriptor => constants.EBADF,
-        FsError.NotImplemented => constants.ENOSYS,
-        FsError.CrossDevice => constants.EXDEV,
-        FsError.WouldBlock => constants.EAGAIN,
-        FsError.MessageTooBig => constants.EMSGSIZE,
-        FsError.Loop => constants.ELOOP,
-    };
-}
+/// FsError -> errno, the single map in errno.zig (re-exported so control's call sites keep the
+/// bare spelling). Control's local `neg` negates the result for the control-channel sign
+/// convention — the map itself is sign-agnostic.
+const errnoFromFs = @import("errno.zig").errnoFromFs;
 
 /// Copy `len` bytes out of the control buffer at `ptr` (bounds-checked), duped into `a`.
 fn ctlBytes(a: std.mem.Allocator, ptr: u32, len: u32) ?[]u8 {

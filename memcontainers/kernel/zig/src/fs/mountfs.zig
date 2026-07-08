@@ -535,26 +535,9 @@ fn appendU32(out: *std.ArrayList(u8), a: std.mem.Allocator, value: u32) void {
     out.append(a, @truncate(value >> 24)) catch @panic("OOM");
 }
 
-fn fsResultFromErrno(errno: i32) FsError!void {
-    if (errno == 0) return;
-    return switch (errno) {
-        constants.ENOENT => FsError.NotFound,
-        constants.EEXIST => FsError.AlreadyExists,
-        constants.ENOTDIR => FsError.NotDir,
-        constants.EISDIR => FsError.IsDir,
-        constants.EPERM => FsError.PermissionDenied,
-        constants.EACCES => FsError.AccessDenied,
-        constants.EINVAL => FsError.InvalidPath,
-        constants.ENOTEMPTY => FsError.NotEmpty,
-        constants.EBADF => FsError.BadFileDescriptor,
-        constants.ENOSYS => FsError.NotImplemented,
-        constants.EXDEV => FsError.CrossDevice,
-        constants.EAGAIN => FsError.WouldBlock,
-        constants.EMSGSIZE => FsError.MessageTooBig,
-        constants.ELOOP => FsError.Loop,
-        else => FsError.IoError,
-    };
-}
+/// errno -> FsError, the single inverse map in errno.zig (re-exported for the mount host-driver
+/// reply decoding).
+const fsResultFromErrno = @import("../errno.zig").fsResultFromErrno;
 
 fn requestDataFingerprint(data: []const u8) u64 {
     var hash: u64 = 0xcbf2_9ce4_8422_2325;
