@@ -782,3 +782,33 @@ db:close()
         .expect("write d2.luau");
     assert_eq!(s.run_for_output("luau /tmp/d2.luau"), "42\r\n");
 }
+
+/// Realistic DB workload benchmark (#[ignore]d): open a warm sqlite connection, insert 5000 rows in a
+/// single transaction, then run an aggregate — the shape of an agent persisting and querying data
+/// through the resident sqlite service. Runs on BOTH `extended` (Rust/wasmi) and `extended_zig`
+/// (Zig/WAMR). Run: bazel test //memcontainers/tests/e2e:{extended,extended_zig}
+///   --test_arg=zz_bench_sqlite --test_arg=--ignored --test_arg=--nocapture --cache_test_results=no
+#[test]
+#[ignore = "manual perf benchmark — run with --test_arg=--ignored"]
+fn zz_bench_sqlite_workload() {
+    let mut s = boot_atlas();
+    s.host
+        .write_file(
+            "/tmp/bench.luau",
+            br#"local sqlite = require("sqlite")
+local db = assert(sqlite.open("/tmp/bench.db"))
+db:exec("CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT, n INTEGER)")
+db:exec("BEGIN")
+for i=1,5000 do db:exec("INSERT INTO t (name, n) VALUES (?, ?)", "row"..i, i*3) end
+db:exec("COMMIT")
+print(db:queryvalue("SELECT count(*) FROM t"), db:queryvalue("SELECT sum(n) FROM t"))
+db:close()
+"#,
+        )
+        .expect("write bench.luau");
+    let t = std::time::Instant::now();
+    let out = s.run_for_output_heavy("luau /tmp/bench.luau");
+    let dt = t.elapsed();
+    assert!(out.contains("5000"), "sqlite bench output: {out:?}");
+    println!("BENCH sqlite-workload (5000 inserts in a txn + 2 aggregates): {} ms", dt.as_millis());
+}

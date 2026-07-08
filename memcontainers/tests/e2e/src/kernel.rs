@@ -271,10 +271,11 @@ fn snapshot_while_a_guest_is_blocked_on_a_syscall_resumes_identically() {
     );
 }
 
-/// Manual interpreter-throughput benchmark — the harness used for the wasm3-vs-wasmi perf
-/// investigation (see PERFORMANCE.md). #[ignore]d so it never taxes the fast suite; run it with
-/// `--test_arg=--ignored --test_arg=--nocapture` against both `core` (wasmi) and `core_zig` (wasm3)
-/// to reproduce the ~2.5-3x gap.
+/// Interpreter-throughput microbenchmark: a tight 10M-iteration arithmetic loop — pure interpreter
+/// dispatch, no spawn/syscall/IO. See PERFORMANCE.md. #[ignore]d so it never taxes the fast suite; run
+/// against both `core` (Rust/wasmi) and `core_zig` (Zig/WAMR) to compare raw dispatch (they are at
+/// parity: WAMR -O3 ~3.0s vs wasmi ~2.9s). NOTE: this loop is the BEST case for WAMR — the realistic
+/// workload benchmarks below (spawn/pipeline/scripting) show where the two diverge.
 #[test]
 #[ignore = "manual perf benchmark — see PERFORMANCE.md; run with --test_arg=--ignored"]
 fn zz_bench_luau_loop() {
@@ -285,4 +286,97 @@ fn zz_bench_luau_loop() {
     let dt = t.elapsed();
     assert!(out.contains("10000000"), "got: {out}");
     println!("BENCH luau 10M-iter loop: {} ms", dt.as_millis());
+}
+
+// ── Realistic-workload benchmarks ────────────────────────────────────────────────────────────────
+// Normal agent workloads — cold boot, per-command spawn, coreutils pipelines, and real scripting —
+// NOT the tight-loop microbenchmark above. Each runs on BOTH `core` (Rust/wasmi) and `core_zig`
+// (Zig/WAMR), so a side-by-side run quantifies the end-to-end gap where it actually matters. All are
+// #[ignore]d. Run: bazel test //memcontainers/tests/e2e:{core,core_zig} \
+//   --test_arg=zz_bench --test_arg=--ignored --test_arg=--nocapture --cache_test_results=no
+
+/// Cold-boot latency: construct a fresh VM and drive its shell to the first prompt, N times — the
+/// kernel-init + pid-1-shell load/instantiate cost the user waits on before typing anything.
+#[test]
+#[ignore = "manual perf benchmark — run with --test_arg=--ignored"]
+fn zz_bench_boot_to_prompt() {
+    const N: usize = 20;
+    let t = std::time::Instant::now();
+    for _ in 0..N {
+        let mut s = boot_posix();
+        s.drive_until_prompt(0);
+    }
+    let dt = t.elapsed();
+    println!(
+        "BENCH boot-to-prompt: {N} boots in {} ms ({:.1} ms/boot)",
+        dt.as_millis(),
+        dt.as_secs_f64() * 1000.0 / N as f64
+    );
+}
+
+/// Per-command spawn cost: from ONE booted VM, run a trivial command N times through the control
+/// channel. The module is preprocessed once (content-addressed cache), so this isolates
+/// instantiate + run + teardown per `sh -c` — the dominant cost of an agent running many commands.
+#[test]
+#[ignore = "manual perf benchmark — run with --test_arg=--ignored"]
+fn zz_bench_spawn_churn() {
+    let mut s = boot_posix();
+    s.drive_until_prompt(0);
+    const N: usize = 300;
+    let t = std::time::Instant::now();
+    for _ in 0..N {
+        let r = s
+            .host
+            .exec("true", 200_000, ExecOptions::default())
+            .expect("exec true");
+        assert_eq!(r.exit_code, 0, "true exit code");
+    }
+    let dt = t.elapsed();
+    println!(
+        "BENCH spawn-churn: {N} runs of `true` in {} ms ({:.2} ms/spawn)",
+        dt.as_millis(),
+        dt.as_secs_f64() * 1000.0 / N as f64
+    );
+}
+
+/// A realistic multi-stage coreutils pipeline (several guests spawned, pipes wired, real read/write
+/// syscalls) run N times — the shape of a lot of agent shell work.
+#[test]
+#[ignore = "manual perf benchmark — run with --test_arg=--ignored"]
+fn zz_bench_coreutils_pipeline() {
+    let mut s = boot_posix();
+    s.drive_until_prompt(0);
+    const N: usize = 100;
+    let t = std::time::Instant::now();
+    for _ in 0..N {
+        let r = s
+            .host
+            .exec("seq 1 500 | grep 7 | sort | wc -l", 2_000_000, ExecOptions::default())
+            .expect("exec pipeline");
+        assert_eq!(r.exit_code, 0, "pipeline exit code; stderr: {:?}", r.stderr);
+    }
+    let dt = t.elapsed();
+    println!(
+        "BENCH coreutils-pipeline: {N} runs of `seq|grep|sort|wc` in {} ms ({:.2} ms/run)",
+        dt.as_millis(),
+        dt.as_secs_f64() * 1000.0 / N as f64
+    );
+}
+
+/// Realistic scripting: build, sort, and join a table of 20k formatted strings — interpreter work
+/// over strings/tables/stdlib, not a tight arithmetic loop, closer to how agents actually script.
+#[test]
+#[ignore = "manual perf benchmark — run with --test_arg=--ignored"]
+fn zz_bench_luau_workload() {
+    let mut s = boot_loom();
+    s.drive_until_prompt(0);
+    let script = "luau -e 'local t={} for i=1,20000 do t[i]=string.format(\"row-%d-%d\",i,i*7) end table.sort(t) print(#table.concat(t,\",\"))'";
+    let t = std::time::Instant::now();
+    let out = s.run_for_output_heavy(script);
+    let dt = t.elapsed();
+    assert!(
+        out.trim().parse::<usize>().is_ok(),
+        "luau workload produced no length; got: {out:?}"
+    );
+    println!("BENCH luau-workload (20k rows build+sort+concat): {} ms", dt.as_millis());
 }
