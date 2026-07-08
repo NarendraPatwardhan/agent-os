@@ -24,6 +24,11 @@ KERNEL_MAX_BYTES = 1024 * 1024
 KERNEL_SRCS = [
     "src/state.zig",
     "src/control.zig",
+    "src/control/wire.zig",
+    "src/control/buf.zig",
+    "src/control/fs.zig",
+    "src/control/exec.zig",
+    "src/control/svc.zig",
     "src/bridge.zig",
     "src/boot.zig",
     "src/task.zig",
