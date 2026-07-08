@@ -355,10 +355,14 @@ pub fn tick() i32 {
     return 0;
 }
 
-fn callerAlive(ctx: *anyopaque, caller: vfs.CallerId) bool {
+/// True if `caller` is a live (non-zombie) task; SYSTEM_CALLER is always live. The fs drain and
+/// svc-eviction callbacks use it to skip channels whose caller has exited or is being reaped — a
+/// zombie is not a live recipient.
+pub fn callerAlive(ctx: *anyopaque, caller: vfs.CallerId) bool {
     if (caller == vfs.SYSTEM_CALLER) return true;
     const k: *Kernel = @ptrCast(@alignCast(ctx));
-    return k.sched.getTask(caller) != null;
+    const t = k.sched.getTask(caller) orelse return false;
+    return t.state != .zombie;
 }
 
 /// Step each CURRENTLY-ready task's guest exactly once — the bounded run-round. Returns true
@@ -621,6 +625,41 @@ fn spawnService(k: *Kernel, name: []const u8, binary: []const u8) bool {
     }
     k.services.markActivating(name, pid, vfs.wallNowMs() + registry.ACTIVATION_TIMEOUT_MS);
     return true;
+}
+
+pub const ServicePoll = union(enum) {
+    ready: *registry.ServiceChannel,
+    pending,
+    errno: i32,
+};
+
+/// Resolve a service by name into its channel, driving lazy activation: `ready` = connected;
+/// `pending` = activating, retry next tick; `errno` = timed-out / failed (within backoff) / absent.
+/// Shared by the control-channel svc-call path and the guest svc_connect syscall.
+pub fn serviceChannel(k: *Kernel, name: []const u8) ServicePoll {
+    if (k.services.lookupService(name)) |channel| return .{ .ready = channel };
+    if (k.services.serviceState(name)) |s| {
+        switch (s) {
+            .activating => |a| {
+                const alive = if (k.sched.getTask(a.pid)) |t| t.state != .zombie else false;
+                if (alive) {
+                    if (vfs.wallNowMs() > a.deadline_ms) {
+                        k.sched.killTask(a.pid, 124);
+                        k.services.markFailed(name, constants.ETIMEDOUT);
+                        return .{ .errno = constants.ETIMEDOUT };
+                    }
+                    return .pending;
+                }
+                k.services.markFailed(name, constants.EIO);
+                return .{ .errno = constants.EIO };
+            },
+            .failed => |f| {
+                if (vfs.wallNowMs() < f.until_ms) return .{ .errno = f.last_errno };
+            },
+        }
+    }
+    if (activateServiceLazily(k, name)) return .pending;
+    return .{ .errno = constants.ENOENT };
 }
 
 pub fn activateServiceLazily(k: *Kernel, name: []const u8) bool {

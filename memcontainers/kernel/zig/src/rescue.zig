@@ -106,12 +106,7 @@ fn errnoToShell(errno: i32) shos.ShellError {
     };
 }
 
-fn absolutize(arena: std.mem.Allocator, cwd: []const u8, raw: []const u8) []const u8 {
-    if (raw.len == 0) return arena.dupe(u8, cwd) catch @panic("OOM");
-    if (raw[0] == '/') return arena.dupe(u8, raw) catch @panic("OOM");
-    if (std.mem.eql(u8, cwd, "/")) return std.fmt.allocPrint(arena, "/{s}", .{raw}) catch @panic("OOM");
-    return std.fmt.allocPrint(arena, "{s}/{s}", .{ cwd, raw }) catch @panic("OOM");
-}
+const absolutize = vfs.absolutize;
 
 fn resolvePath(self: *KernelShellOs, arena: std.mem.Allocator, raw: []const u8, need_write: bool, follow_final: bool) shos.ShellError![]const u8 {
     if (std.mem.indexOfScalar(u8, raw, 0) != null) return error.InvalidArgument;

@@ -241,12 +241,7 @@ fn replaceBuffer(bytes: []const u8) void {
     k.ctl_buffer.appendSlice(k.gpa, bytes) catch @panic("OOM");
 }
 
-fn absolutize(arena: std.mem.Allocator, cwd: []const u8, raw: []const u8) []const u8 {
-    if (raw.len == 0) return arena.dupe(u8, cwd) catch @panic("OOM");
-    if (raw[0] == '/') return arena.dupe(u8, raw) catch @panic("OOM");
-    if (std.mem.eql(u8, cwd, "/")) return std.fmt.allocPrint(arena, "/{s}", .{raw}) catch @panic("OOM");
-    return std.fmt.allocPrint(arena, "{s}/{s}", .{ cwd, raw }) catch @panic("OOM");
-}
+const absolutize = vfs.absolutize;
 
 fn resolveExecCwd(k: *state.Kernel, arena: std.mem.Allocator, requested: ?[]const u8) union(enum) { ok: []const u8, errno: i32 } {
     const parent = k.sched.getTask(1) orelse return .{ .errno = constants.EIO };
@@ -454,38 +449,6 @@ fn allocCtlJobId(k: *state.Kernel) u32 {
     }
 }
 
-const ControlServicePoll = union(enum) {
-    ready: *registry.ServiceChannel,
-    pending,
-    errno: i32,
-};
-
-fn controlServiceChannel(k: *state.Kernel, name: []const u8) ControlServicePoll {
-    if (k.services.lookupService(name)) |channel| return .{ .ready = channel };
-    if (k.services.serviceState(name)) |s| {
-        switch (s) {
-            .activating => |a| {
-                const alive = if (k.sched.getTask(a.pid)) |t| t.state != .zombie else false;
-                if (alive) {
-                    if (vfs.wallNowMs() > a.deadline_ms) {
-                        k.sched.killTask(a.pid, 124);
-                        k.services.markFailed(name, constants.ETIMEDOUT);
-                        return .{ .errno = constants.ETIMEDOUT };
-                    }
-                    return .pending;
-                }
-                k.services.markFailed(name, constants.EIO);
-                return .{ .errno = constants.EIO };
-            },
-            .failed => |f| {
-                if (vfs.wallNowMs() < f.until_ms) return .{ .errno = f.last_errno };
-            },
-        }
-    }
-    if (state.activateServiceLazily(k, name)) return .pending;
-    return .{ .errno = constants.ENOENT };
-}
-
 fn freeCtlSvcConnectPayload(k: *state.Kernel, job: *state.CtlSvcJob) void {
     if (job.name) |name| {
         k.gpa.free(name);
@@ -516,7 +479,7 @@ fn advanceCtlSvcJob(k: *state.Kernel, job: *state.CtlSvcJob) bool {
                 finishCtlSvcJob(k, job, constants.EIO);
                 return true;
             };
-            const channel = switch (controlServiceChannel(k, name)) {
+            const channel = switch (state.serviceChannel(k, name)) {
                 .ready => |ch| ch,
                 .pending => return false,
                 .errno => |errno| {

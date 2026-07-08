@@ -24,6 +24,16 @@ pub fn wallNowMs() i64 {
     return if (state.isInitialized()) state.kernel().wall_ms else 0;
 }
 
+/// Resolve `raw` against `cwd` into an absolute path duped into `arena`. Empty -> cwd; already
+/// absolute -> raw; otherwise cwd/raw (with the root special-case). The one copy for the control
+/// channel, the syscall ABI, and the rescue shell.
+pub fn absolutize(arena: std.mem.Allocator, cwd: []const u8, raw: []const u8) []const u8 {
+    if (raw.len == 0) return arena.dupe(u8, cwd) catch @panic("OOM");
+    if (raw[0] == '/') return arena.dupe(u8, raw) catch @panic("OOM");
+    if (std.mem.eql(u8, cwd, "/")) return std.fmt.allocPrint(arena, "/{s}", .{raw}) catch @panic("OOM");
+    return std.fmt.allocPrint(arena, "{s}/{s}", .{ cwd, raw }) catch @panic("OOM");
+}
+
 pub const CallerId = u32;
 /// Boot-time / internal opens that act on no task's behalf.
 pub const SYSTEM_CALLER: CallerId = 0;

@@ -311,12 +311,7 @@ fn pathWithin(root: ?[]const u8, path: []const u8) bool {
     return std.mem.startsWith(u8, path, r) and path.len > r.len and path[r.len] == '/';
 }
 
-fn absolutize(arena: std.mem.Allocator, cwd: []const u8, raw: []const u8) []const u8 {
-    if (raw.len == 0) return arena.dupe(u8, cwd) catch @panic("OOM");
-    if (raw[0] == '/') return arena.dupe(u8, raw) catch @panic("OOM");
-    if (std.mem.eql(u8, cwd, "/")) return std.fmt.allocPrint(arena, "/{s}", .{raw}) catch @panic("OOM");
-    return std.fmt.allocPrint(arena, "{s}/{s}", .{ cwd, raw }) catch @panic("OOM");
-}
+const absolutize = vfs.absolutize;
 
 fn resolveGuestPath(
     guest: *const Guest,
@@ -1617,39 +1612,6 @@ fn svcConn(t: *const Task, fd: i32) ?struct { channel: *registry.ServiceChannel,
     };
 }
 
-const ServiceConnectPoll = union(enum) {
-    ready: *registry.ServiceChannel,
-    pending,
-    errno: i32,
-};
-
-fn serviceChannelForConnect(name: []const u8) ServiceConnectPoll {
-    const k = state.kernel();
-    if (k.services.lookupService(name)) |channel| return .{ .ready = channel };
-    if (k.services.serviceState(name)) |s| {
-        switch (s) {
-            .activating => |a| {
-                const alive = if (k.sched.getTask(a.pid)) |t| t.state != .zombie else false;
-                if (alive) {
-                    if (vfs.wallNowMs() > a.deadline_ms) {
-                        k.sched.killTask(a.pid, 124);
-                        k.services.markFailed(name, constants.ETIMEDOUT);
-                        return .{ .errno = constants.ETIMEDOUT };
-                    }
-                    return .pending;
-                }
-                k.services.markFailed(name, constants.EIO);
-                return .{ .errno = constants.EIO };
-            },
-            .failed => |f| {
-                if (vfs.wallNowMs() < f.until_ms) return .{ .errno = f.last_errno };
-            },
-        }
-    }
-    if (state.activateServiceLazily(k, name)) return .pending;
-    return .{ .errno = constants.ENOENT };
-}
-
 fn fulfillSvcServe(guest: *const Guest, memory: GuestMemory, args: mc.SvcServeArgs) i32 {
     const t = currentTask(guest) orelse return neg(constants.EIO);
     _ = guestRange(memory, args.ret_fd, 4) orelse return neg(constants.EINVAL);
@@ -1667,13 +1629,6 @@ fn fulfillSvcServe(guest: *const Guest, memory: GuestMemory, args: mc.SvcServeAr
         return neg(constants.EINVAL);
     }
     return constants.ESUCCESS;
-}
-
-fn callerAlive(ctx: *anyopaque, caller: vfs.CallerId) bool {
-    if (caller == vfs.SYSTEM_CALLER) return true;
-    const k: *state.Kernel = @ptrCast(@alignCast(ctx));
-    const t = k.sched.getTask(caller) orelse return false;
-    return t.state != .zombie;
 }
 
 fn writeSvcEnvelope(
@@ -1718,7 +1673,7 @@ fn fulfillSvcRecv(guest: *const Guest, memory: GuestMemory, args: mc.SvcRecvArgs
     const t = currentTask(guest) orelse return finish(neg(constants.EIO));
     _ = guestRange(memory, args.ret_len, 4) orelse return finish(neg(constants.EINVAL));
     const channel = svcChannel(t, args.fd) orelse return finish(neg(constants.EBADF));
-    channel.evictDeadSessions(@ptrCast(state.kernel()), callerAlive);
+    channel.evictDeadSessions(@ptrCast(state.kernel()), state.callerAlive);
     channel.failOverdue();
     while (true) {
         var inbound = channel.takeRequest() orelse {
@@ -1781,7 +1736,7 @@ fn fulfillSvcConnect(guest: *const Guest, memory: GuestMemory, args: mc.SvcConne
     _ = guestRange(memory, args.ret_fd, 4) orelse return finish(neg(constants.EINVAL));
     const name = readGuestUtf8(memory, args.name_ptr, args.name_len) orelse return finish(neg(constants.EINVAL));
     if (!registry.validServiceName(name)) return finish(neg(constants.EINVAL));
-    const channel = switch (serviceChannelForConnect(name)) {
+    const channel = switch (state.serviceChannel(state.kernel(), name)) {
         .ready => |ch| ch,
         .pending => return .Pending,
         .errno => |errno| return finish(neg(errno)),
