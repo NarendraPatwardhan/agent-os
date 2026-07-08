@@ -181,11 +181,13 @@ fn restoring_a_snapshot_twice_forks_independent_vms() {
     assert_eq!(b.host.read_file("/tmp/fork").expect("read b"), b"branch-b");
 }
 
-/// WHY: Group G / A8 under Asyncify (ZIG_KERNEL section 7.4) — the DEEPEST snapshot guarantee. The two
-/// snapshot tests above quiesce first; this one snapshots a guest that is provably STILL RUNNING —
-/// suspended mid-computation on an Asyncify fuel-yield, its native wasm call stack spilled into linear
-/// memory. A VM restored from that snapshot must RESUME the same computation to the identical result,
-/// proving the Asyncify buffer is snapshottable by construction, not just the filesystem.
+/// WHY: Group G / A8 — the DEEPEST snapshot guarantee, for a FUEL-yield suspend. The two snapshot
+/// tests above quiesce first; this one snapshots a guest that is provably STILL RUNNING — suspended
+/// mid-computation on a fuel-slice yield, its entire execution state (the WAMR exec_env: the in-memory
+/// frame chain + operand stack) resident in linear memory. A VM restored from that snapshot must
+/// RESUME the same computation to the identical result, proving the interpreter's suspended state is
+/// snapshottable by construction, not just the filesystem. (The kernel runs on WAMR, whose re-entrant
+/// interpreter keeps this state in linear memory — no Binaryen/Asyncify buffer is involved.)
 #[test]
 fn snapshot_while_a_guest_is_suspended_resumes_identically() {
     // A heavy, deterministic loop that spans many fuel slices and prints a clean integer only at the
@@ -221,6 +223,51 @@ fn snapshot_while_a_guest_is_suspended_resumes_identically() {
     assert!(
         resumed.contains("4000000"),
         "restored VM did not resume the suspended computation to its result; got:\n{resumed}"
+    );
+}
+
+/// WHY: Group G / A8, the OTHER suspend kind — a guest parked at a BLOCKING SYSCALL (not a fuel
+/// yield). `cat` with no args reads stdin in a loop; with an empty console pipe it suspends inside the
+/// read syscall (the driver's `.syscall_blocked`), the pending syscall + the WAMR exec_env both in
+/// linear memory. Snapshotting there and restoring a fresh VM must resume the blocked read: feeding
+/// input to the RESTORED VM unblocks the resumed `cat`, which echoes it. This exercises the second
+/// resumable boundary the fuel-yield test above does not — together they cover both suspend kinds
+/// against snapshot/restore.
+#[test]
+fn snapshot_while_a_guest_is_blocked_on_a_syscall_resumes_identically() {
+    let mut s = boot_posix();
+    s.drive_until_prompt(0);
+
+    // Start `cat` (no args): it reads stdin and echoes each line. With stdin now empty it blocks in
+    // the read syscall — no prompt returns while it is the foreground reader.
+    s.send_raw(b"cat\n");
+    for _ in 0..5 {
+        assert!(
+            s.host.tick().expect("tick"),
+            "cat exited before we could snapshot it blocked on stdin — it should be waiting for input"
+        );
+    }
+    assert!(
+        !s.transcript().ends_with("$ "),
+        "expected cat still blocked on the stdin read, but the prompt already returned:\n{}",
+        s.transcript()
+    );
+
+    // Snapshot WHILE cat is suspended inside the blocking read, then rehydrate a fresh VM.
+    let snap = s.host.snapshot().expect("snapshot while a guest is blocked on a syscall");
+    let mut restored = restore(&snap);
+
+    // Feed a line to the RESTORED VM and drive a fixed budget of ticks (the resumed cat need not exit
+    // — we are not waiting for a prompt). If the blocked read resumed, the fed line appears TWICE: the
+    // cooked line-discipline echoes the typed bytes, and the resumed `cat` reads them and echoes them
+    // to stdout. A cat that failed to resume would show only the line-discipline copy — so >= 2 copies
+    // is the proof the syscall-blocked guest resumed across the restore.
+    let out = restored.send_line_async("resumed-line", 40);
+    let copies = out.matches("resumed-line").count();
+    assert!(
+        copies >= 2,
+        "restored VM did not resume the stdin-blocked cat (saw {copies} copies of the fed line; \
+         expected the line-discipline echo plus cat's own echo):\n{out}"
     );
 }
 
