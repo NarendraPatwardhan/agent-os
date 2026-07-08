@@ -102,6 +102,10 @@ pub const Kernel = struct {
     /// Private WAMR runtime heap. WAMR must not use the Zig kernel's process heap directly:
     /// its freestanding C allocator would race the kernel WasmAllocator for `__heap_base`.
     wamr_runtime_pool: ?[]u64 = null,
+    /// Content-addressed cache of loaded WAMR modules (§4.3: each distinct program is preprocessed
+    /// once, keyed by content hash, never evicted). Lives on Kernel (linear memory) so it is captured
+    /// by a snapshot; instances borrow a shared *Module and never unload it.
+    module_cache: guest.ModuleCache = .{},
     /// The console pipe feeding pid-1 stdin: the kernel holds an extra writer (so the shell
     /// never sees EOF until Ctrl-D), the shell holds the read end as fd 0. Oracle: lib.rs
     /// STATE.console_pipe.

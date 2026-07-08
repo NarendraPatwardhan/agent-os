@@ -52,6 +52,38 @@ const SuspendKind = enum {
 
 pub const Step = enum { ran, suspended, exited, faulted };
 
+/// A content-addressed, never-evicted cache of loaded WAMR modules (§4.3: each distinct program is
+/// preprocessed exactly once). Keyed by a 64-bit content hash; the value is a list to disambiguate
+/// the (astronomically rare) hash collision by exact bytes. Both the module and its backing bytes
+/// live in kernel linear memory (WAMR + gpa allocations), so they are captured by a snapshot and are
+/// owned by the cache for the VM's lifetime — a GuestRuntime borrows a `*Module` and never unloads it.
+pub const ModuleCacheEntry = struct { bytes: []u8, module: *wamr.Module };
+pub const ModuleCache = std.AutoHashMapUnmanaged(u64, std.ArrayListUnmanaged(ModuleCacheEntry));
+
+/// Return the loaded `*Module` for `wasm_bytes`, loading + caching it on first sight. The cache owns
+/// a private copy of the bytes (WAMR may reference them for the module's lifetime). Returns null only
+/// on a genuine load failure; `error_buf` receives WAMR's message. Never evicts.
+fn cachedModule(k: *state.Kernel, wasm_bytes: []const u8, error_buf: [*]u8) ?*wamr.Module {
+    const h = std.hash.Wyhash.hash(0, wasm_bytes);
+    const gop = k.module_cache.getOrPut(k.gpa, h) catch return null;
+    if (!gop.found_existing) gop.value_ptr.* = .empty;
+    for (gop.value_ptr.items) |e| {
+        if (std.mem.eql(u8, e.bytes, wasm_bytes)) return e.module;
+    }
+    const owned = k.gpa.dupe(u8, wasm_bytes) catch return null;
+    const module = wamr.wasm_runtime_load(owned.ptr, @intCast(owned.len), error_buf, ERROR_BUF_SIZE) orelse {
+        k.gpa.free(owned);
+        return null;
+    };
+    gop.value_ptr.append(k.gpa, .{ .bytes = owned, .module = module }) catch {
+        // Could not record the module; unload + free so we neither leak nor cache an untracked module.
+        wamr.wasm_runtime_unload(module);
+        k.gpa.free(owned);
+        return null;
+    };
+    return module;
+}
+
 pub const GuestRuntime = struct {
     gpa: std.mem.Allocator = undefined,
     module: ?*wamr.Module = null,
@@ -60,7 +92,6 @@ pub const GuestRuntime = struct {
     function: ?*wamr.Function = null,
     pcall_run_fn: ?*wamr.Function = null,
     stack_pointer: ?*u32 = null,
-    owned_bytes: ?[]u8 = null,
     raw_guest: syscall.Guest = undefined,
     task_id: TaskId = 0,
     pending: ?mc.Pending = null,
@@ -96,7 +127,6 @@ pub const GuestRuntime = struct {
         errdefer self.deinit();
         self.raw_guest = .{ .ptr = @ptrCast(self), .task_id = cbTaskId, .create_child = cbCreateChild };
 
-        self.owned_bytes = try gpa.dupe(u8, wasm_bytes);
         if (state.isInitialized()) {
             if (state.kernel().sched.getTask(task_id)) |t| {
                 t.guest = @ptrCast(self);
@@ -106,9 +136,10 @@ pub const GuestRuntime = struct {
 
         if (!ensureWamrInitialized()) return error.WamrInit;
 
-        const bytes = self.owned_bytes.?;
+        // Load-once/instantiate-many (§4.3): the preprocessed module is shared, content-addressed, and
+        // owned by the kernel's module cache; this runtime only creates a fresh instance + exec_env.
         @memset(self.error_buf[0..], 0);
-        self.module = wamr.wasm_runtime_load(bytes.ptr, @intCast(bytes.len), self.error_buf[0..].ptr, ERROR_BUF_SIZE) orelse {
+        self.module = cachedModule(state.kernel(), wasm_bytes, self.error_buf[0..].ptr) orelse {
             syscall.termWrite("wamr load failed\n", true);
             syscall.termWrite(std.mem.sliceTo(self.error_buf[0..].ptr, 0), true);
             syscall.termWrite("\n", true);
@@ -183,16 +214,13 @@ pub const GuestRuntime = struct {
             wamr.wasm_runtime_deinstantiate(module_inst);
         }
         self.module_inst = null;
-        if (self.module) |module| wamr.wasm_runtime_unload(module);
+        // The module itself is NOT unloaded: it is owned by the kernel's content-addressed module
+        // cache (§4.3, never evicted) and may be shared by other live instances.
         self.module = null;
         if (state.isInitialized() and self.task_id != 0) {
             if (state.kernel().sched.getTask(self.task_id)) |t| {
                 if (t.guest == @as(*anyopaque, @ptrCast(self))) t.guest = null;
             }
-        }
-        if (self.owned_bytes) |b| {
-            self.gpa.free(b);
-            self.owned_bytes = null;
         }
         self.function = null;
         self.pcall_run_fn = null;
