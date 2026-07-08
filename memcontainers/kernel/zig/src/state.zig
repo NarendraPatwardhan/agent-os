@@ -571,47 +571,6 @@ const ServiceSpec = struct {
     eager: bool,
 };
 
-fn skipWs(text: []const u8, at: *usize) void {
-    while (at.* < text.len and (text[at.*] == ' ' or text[at.*] == '\n' or text[at.*] == '\r' or text[at.*] == '\t')) at.* += 1;
-}
-
-fn jsonStringField(gpa: std.mem.Allocator, text: []const u8, field: []const u8) ?[]u8 {
-    const needle = std.fmt.allocPrint(gpa, "\"{s}\"", .{field}) catch @panic("OOM");
-    defer gpa.free(needle);
-    var pos = std.mem.indexOf(u8, text, needle) orelse return null;
-    pos += needle.len;
-    skipWs(text, &pos);
-    if (pos >= text.len or text[pos] != ':') return null;
-    pos += 1;
-    skipWs(text, &pos);
-    if (pos >= text.len or text[pos] != '"') return null;
-    pos += 1;
-    const start = pos;
-    while (pos < text.len and text[pos] != '"') : (pos += 1) {
-        if (text[pos] == '\\') return null;
-    }
-    if (pos >= text.len) return null;
-    return gpa.dupe(u8, text[start..pos]) catch @panic("OOM");
-}
-
-fn jsonBoolField(text: []const u8, field: []const u8) ?bool {
-    var tmp: [64]u8 = undefined;
-    if (field.len + 2 > tmp.len) return null;
-    tmp[0] = '"';
-    @memcpy(tmp[1 .. 1 + field.len], field);
-    tmp[1 + field.len] = '"';
-    const needle = tmp[0 .. field.len + 2];
-    var pos = std.mem.indexOf(u8, text, needle) orelse return null;
-    pos += needle.len;
-    skipWs(text, &pos);
-    if (pos >= text.len or text[pos] != ':') return null;
-    pos += 1;
-    skipWs(text, &pos);
-    if (std.mem.startsWith(u8, text[pos..], "true")) return true;
-    if (std.mem.startsWith(u8, text[pos..], "false")) return false;
-    return null;
-}
-
 fn lookupServiceSpec(k: *Kernel, name: []const u8) ?ServiceSpec {
     if (!registry.validServiceName(name)) return null;
     const path = std.fmt.allocPrint(k.gpa, "/etc/services.d/{s}.json", .{name}) catch @panic("OOM");
@@ -619,9 +578,28 @@ fn lookupServiceSpec(k: *Kernel, name: []const u8) ?ServiceSpec {
     const bytes = readFileAlloc(k, path) orelse return null;
     defer k.gpa.free(bytes);
     if (!std.unicode.utf8ValidateSlice(bytes)) return null;
-    const binary = jsonStringField(k.gpa, bytes, "binary") orelse
-        std.fmt.allocPrint(k.gpa, "/bin/{s}", .{name}) catch @panic("OOM");
-    const eager = jsonBoolField(bytes, "eager") orelse false;
+
+    // Parse with std.json (as fs/toolsfs.zig does) rather than a hand-rolled scanner that matched a
+    // key even inside a string value and rejected any escaped string. `binary` defaults to /bin/<name>,
+    // `eager` to false; both are duped onto k.gpa so they outlive the parse arena.
+    var arena_state = std.heap.ArenaAllocator.init(k.gpa);
+    defer arena_state.deinit();
+    const parsed = std.json.parseFromSlice(std.json.Value, arena_state.allocator(), bytes, .{}) catch return null;
+    const obj = switch (parsed.value) {
+        .object => |o| o,
+        else => return null,
+    };
+    const binary = blk: {
+        if (obj.get("binary")) |v| switch (v) {
+            .string => |s| break :blk k.gpa.dupe(u8, s) catch @panic("OOM"),
+            else => {},
+        };
+        break :blk std.fmt.allocPrint(k.gpa, "/bin/{s}", .{name}) catch @panic("OOM");
+    };
+    const eager = if (obj.get("eager")) |v| switch (v) {
+        .bool => |b| b,
+        else => false,
+    } else false;
     return .{ .binary = binary, .eager = eager };
 }
 
