@@ -8,7 +8,7 @@
 // are wired via ref + addEventListener, so they are not declared as props here.
 
 import type { DetailedHTMLProps, HTMLAttributes } from "react";
-import type { McTerminal } from "@mc/elements";
+import type { McTerminal, McEditor } from "@mc/elements";
 
 type McTerminalProps = DetailedHTMLProps<HTMLAttributes<McTerminal>, McTerminal> & {
   label?: string;
@@ -16,14 +16,23 @@ type McTerminalProps = DetailedHTMLProps<HTMLAttributes<McTerminal>, McTerminal>
   cursor?: "bar" | "block" | "underline";
   runtime?: "browser" | "bun" | "remote";
   image?: string;
+  manual?: boolean;
   "line-height"?: number;
   "replay-history"?: boolean;
+};
+
+type McEditorProps = DetailedHTMLProps<HTMLAttributes<McEditor>, McEditor> & {
+  value?: string;
+  language?: "javascript" | "typescript" | "plain";
+  "read-only"?: boolean;
+  "line-wrapping"?: boolean;
 };
 
 declare module "react" {
   namespace JSX {
     interface IntrinsicElements {
       "mc-terminal": McTerminalProps;
+      "mc-editor": McEditorProps;
     }
   }
 }

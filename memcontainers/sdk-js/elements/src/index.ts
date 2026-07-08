@@ -18,3 +18,8 @@ export { setArtifactSources, prefetchArtifacts } from "./vm/artifacts.js";
 export { makeVmHost } from "./vm/host.js";
 export type { BootOptions, VmHost } from "./vm/host.js";
 export { vmHostContext, installContextRoot } from "./vm/context.js";
+
+// The SDK itself, for embedders that drive VM lifecycle directly (create / connect
+// / restore / close) alongside the elements — e.g. a remote create→connect→kill flow.
+export { mc } from "@mc/core";
+export type { Vm, CreateOptions } from "@mc/core";
