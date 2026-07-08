@@ -1,16 +1,18 @@
 # Zig Kernel — Interpreter Performance Retrospective
 
-> **RESOLVED (2026-07-08).** The gap this document diagnosed is CLOSED. We replaced wasm3+Asyncify with
-> **WAMR** (wasm-micro-runtime) — a natively re-entrant interpreter — as planned in §8. The Zig kernel
-> now runs entirely on WAMR: **`core_zig` 81/81, `extended_zig` 32/32, no Asyncify, no wasm3.** On the
-> `zz_bench_luau_loop` benchmark, **WAMR at `-O3` = 3001 ms vs wasmi 2938 ms — parity within 2%**
-> (from wasm3's 8.5 s / 2.9x, which was hard-capped at 1.3x by the Asyncify tax). The migration went in
-> stages (git: WAMR vendored `47f56cb` → runs a guest `7beb531` → resumable suspend proven `f5f3d10` →
-> kernel boots, Asyncify deleted `4de2fc9` → full parity `8783f87` → -O3 wasmi parity `f263696`). The
-> two things that mattered: WAMR keeps execution state IN MEMORY (re-entrant), so a blocking syscall or
-> fuel yield is *save exec_env, return, re-enter* — zero per-op tax; and `-O3` (not `-Os`) on the
-> interpreter, since with no instrumentation tax, dispatch codegen is what dominates. **Everything below
-> is the historical record of the wasm3 era and the decision to switch — kept for provenance.**
+> **WAMR MIGRATION DONE — but "parity" was microbenchmark-only (2026-07-08).** We replaced
+> wasm3+Asyncify with **WAMR** (a natively re-entrant interpreter) as planned in §8. The Zig kernel now
+> runs entirely on WAMR: **`core_zig` 82/82, `extended_zig` 32/32, no Asyncify, no wasm3.** WAMR closed
+> the *interpreter-dispatch* gap the wasm3 era suffered: on the `zz_bench_luau_loop` tight loop, WAMR
+> `-O3` ≈ **1.4× wasmi** (down from wasm3's 2.9×, hard-capped at 1.3× by the Asyncify tax). The
+> migration went in stages (git: `47f56cb` → `7beb531` → `f5f3d10` → `4de2fc9` → `8783f87` → `f263696`).
+>
+> **CAUTION — the earlier "parity within 2%" claim here was WRONG for real workloads.** A later
+> realistic-workload measurement (§0) shows the tight loop is WAMR's *best case*; normal agent work is
+> spawn-heavy, and WAMR's per-instance `wasm_runtime_instantiate` is **~8–11× slower than wasmi**, so
+> the full e2e suites run **1.8–2× slower** overall. See **§0 — Default-readiness verdict** for the full
+> Rust-vs-Zig decision (performance + design + the blockers to shipping Zig as default). The wasm3-era
+> record below is kept for provenance.
 
 **Status (wasm3 era — historical):**
 - **Functional parity with the Rust kernel: ACHIEVED.** `core_zig` 81/81 (+ Group G suspend-across-
@@ -28,6 +30,96 @@ This document records the root cause, the full investigation, why we could not c
 wasm3, and the path forward — so future work starts from evidence, not from scratch. Every experiment
 below is reproducible; the perf harness is `zz_bench_luau_loop` in `memcontainers/tests/e2e/src/kernel.rs`
 (`#[ignore]`d; run with `--test_arg=--ignored --test_arg=--nocapture`).
+
+---
+
+## 0. Default-readiness verdict (2026-07-08) — is the Zig kernel good enough to be the default?
+
+> **Verdict: ❌ Not yet.** The Zig kernel is a credible, now well-structured implementation at green
+> functional parity (`core_zig` 82/82, `extended_zig` 32/32, ~half the binary size: 0.63 vs 1.23 MiB).
+> But "green parity" hides constitution-level gaps the e2e suite does not exercise, and realistic
+> performance is materially worse than the tight-loop microbenchmark claimed. **Keep Rust as the
+> shipped default;** the three blockers below are a concrete, finite path to promotion. Rust remains
+> the B7 parity oracle either way.
+
+This section was produced from (a) direct performance measurement — new `zz_bench_*` workload
+benchmarks that run on BOTH kernels — and (b) a system-design + maintainability review comparing
+`memcontainers/kernel/{rust,zig}/src` against the SYSTEMS.md constitution. Both point to the same
+conclusion: strong candidate, not ready to ship as default.
+
+### 0.1 Performance — realistic workloads, not just the tight loop
+
+Full-suite execution (uncached, pure libtest wall-clock): **`core` 2.44 s vs `core_zig` 4.65 s
+(1.9×)** · **`extended` 15.0 s vs `extended_zig` 31.2 s (2.1×)**.
+
+Workload benchmarks (`zz_bench_*` in `tests/e2e/src/kernel.rs` + `sqlite.rs`; run on both kernels with
+`--test_arg=zz_bench --test_arg=--ignored --test_arg=--nocapture --cache_test_results=no`):
+
+| Workload | Rust / wasmi | Zig / WAMR | Ratio |
+|---|---|---|---|
+| luau 10M tight loop (dispatch only) | 2885 ms | 3946 ms | **1.37×** |
+| boot-to-prompt | 37 ms/boot | 55 ms/boot | 1.47× |
+| luau scripting (20k build+sort+concat) | 1049 ms | 1690 ms | 1.61× |
+| coreutils pipeline (`seq\|grep\|sort\|wc`) | 30.2 ms/run | 240 ms/run | **7.97×** |
+| spawn churn (`sh -c true`) | 3.2 ms/spawn | 35.3 ms/spawn | **11.1×** |
+
+**The finding that matters:** the tight loop (~1.4×) is WAMR's *best case* — pure interpreter dispatch.
+Real agent work is **spawn-heavy**, and WAMR's `wasm_runtime_instantiate` (fresh linear memory + a
+512 KB stack per instance, in `guest.zig`) is **~8–11× slower** than wasmi's. The content-addressed
+module cache (`guest.zig::cachedModule`, §4.3) fixed *loading*; per-spawn *instantiation* is the
+untouched bottleneck. This is why the "parity within 2%" claim in the banner above was microbenchmark-
+only and misleading for real use.
+
+### 0.2 Design & maintainability (verified in-tree)
+
+**Where Zig now wins** (after the 2026-07-08 maintainability cleanup — see §0.4): module shape —
+`syscall.zig` is a 110-line dispatcher over `syscall/*`, `control.zig` a 37-line façade over
+`control/*`, with `errno.zig` / `wasm_sections.zig` removing duplicated maps/parsers, and a real
+`cachedModule`. Cleaner day-to-day than Rust's still-large `wasm/mod.rs` (~4.5k) + `lib.rs`. B2
+contract-safety is near-parity: `main.zig::exports_covered` + `bridge.zig::contract_covered` gate the
+boundaries, and `control/wire.zig` now consumes the generated `ctl_zig` codecs.
+
+**Where Rust still wins:** stronger type-system boundaries (fully generated macro tables vs Zig's
+name-gated hand-declared externs); pcall built on *public* wasmi resumable calls vs Zig's coupling to
+*private* WAMR frame layout (`wamr/bindings.zig::InterpFrame/ExecEnv` + a vendored resumable-yield
+patch); and the two blockers below.
+
+### 0.3 The blockers (both design blockers independently verified in-tree)
+
+| # | Blocker | Severity | Evidence |
+|---|---|---|---|
+| **1** | **No per-task namespace.** Zig has ONE global `Kernel.ns`; `bind`/`unmount`/`serve` mutate it globally. Rust forks a per-process namespace per spawn (private `/scratch`, `CAP_SCRATCH`). An **isolation-semantics** gap, not an optimization — and a parity blind spot the suite doesn't catch. | **High** | `state.zig:84` (one ns); `task.zig:29` + `vfs.zig:339` say forking is "deferred / Phase 4"; Rust `vfs/namespace.rs:87 fork` + `wasm/mod.rs:3492` (child inherits a fork) |
+| **2** | **Fail-open on malformed metadata.** Zig `Tier.fromModule` returns null for absent **and** malformed **and** duplicate `mc_tier` → treated as "inherit parent privilege." Rust hard-fails the load. A tampered/malformed binary is granted *more* than fail-closed would allow. | **High** | `task.zig:137` (null → inherit); Rust `wasm/mod.rs:843–845 validate_mc_sections` ("a duplicate or present-but-malformed mc_tier/mc_budget is a hard load" failure) |
+| **3** | **Spawn/instantiate ~8–11× slower** (§0.1). Dominates real workloads; the "parity" claim was microbenchmark-only. | **High (perf)** | benchmarks in §0.1; per-spawn `wasm_runtime_instantiate` in `guest.zig` |
+
+Plus mediums: the shipped-artifact wiring still points at Rust (`web/`, `bazel/tools/gh-release/`,
+`server/`, the JS/SDK BUILDs); `core_zig`/`extended_zig` are still `manual` targets (not in the normal
+B7 gate); the WAMR-patch + private-frame pcall coupling; and residual `@panic("OOM")` on some
+allocation paths.
+
+### 0.4 What "yes, ship Zig as default" requires (bounded)
+
+1. **Per-task namespace parity** — task-owned namespace views, fork-on-spawn, `bind`/`unmount`/`serve`
+   against the *caller's* namespace, private `/scratch`; add parity tests that would currently expose
+   the gap.
+2. **Fail-closed metadata validation** — reject malformed/duplicate `mc_tier`/`mc_budget`/`mc_service`
+   at load; distinguish absent vs malformed (a semantics fix on `wasm_sections.zig`).
+3. **Close the spawn/instantiate gap** — the real perf blocker (instance/memory pooling, a smaller
+   default stack, or lazy-zero) so realistic workloads approach wasmi, not just the tight loop.
+4. **Then** flip the shipped-artifact wiring to Zig by selector/label and de-`manual` the parity
+   targets (B7 promotion), Rust remaining the buildable oracle.
+
+### 0.5 The maintainability cleanup that got Zig this close (2026-07-08)
+
+Nineteen fixes landed (commits `ee0e7f5`..`025b3f2`), from a three-dimension audit against SYSTEMS.md:
+a real control-export purity gate (B2); a single `FsError↔errno` map (was 4 copies) and one
+wasm-section parser (was 3); OOM made an errno not a host trap (A2/§4.3); WAMR frame-access comptime-
+pinned + runtime bounds-checked; `errdefer` ownership in `GuestRuntime.init`; a WAMR-alloc sentinel;
+the wall-clock cache moved onto `Kernel`; the four mega-modules split by domain (syscall 1900→110,
+control 950→37, guest and state extracted); `control/wire.zig` switched to the generated `ctl_zig`
+codecs; a content-addressed WAMR module cache (§4.3); and a new syscall-blocked snapshot/restore parity
+test. These closed the *maintainability* frontier; §0.3 is the remaining *correctness + performance*
+frontier before default.
 
 ---
 
