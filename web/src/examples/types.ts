@@ -72,12 +72,19 @@ type Base = {
   readonly notes?: readonly string[];
 };
 
+/** Boot options for the kinds that self-boot a browser VM (mirrors the terminal's
+ *  boot props). `deterministic` pins the clock + seeds the RNG at boot. */
+type Boot = {
+  readonly image?: ImageName;
+  readonly deterministic?: boolean;
+};
+
 /** An example (a chapter subitem / pill). The `kind` selects its driver. */
 export type Example =
   // Editable code; play reboots the VM and runs the whole source (real exec).
-  | (Base & { readonly kind: "program"; readonly code: Code; readonly image?: ImageName })
+  | (Base & Boot & { readonly kind: "program"; readonly code: Code })
   // Read-only code / step list; play reboots and runs the declarative steps.
-  | (Base & { readonly kind: "commands"; readonly steps: readonly Step[]; readonly code?: Code; readonly image?: ImageName })
+  | (Base & Boot & { readonly kind: "commands"; readonly steps: readonly Step[]; readonly code?: Code })
   // The flavor picker — a span per image, each with a play button that boots it.
   | (Base & { readonly kind: "flavors" })
   // The remote create → connect → kill lifecycle form.

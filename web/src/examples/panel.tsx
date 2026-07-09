@@ -99,7 +99,13 @@ export function TerminalPanel({
             label={label}
             cursor="block"
             line-height={1.5}
-            {...(s.kind === "browser" ? { image: s.image, ...(s.net ? { net: true } : {}) } : { manual: true })}
+            {...(s.kind === "browser"
+              ? {
+                  image: s.image,
+                  ...(s.net ? { net: true } : {}),
+                  ...(s.deterministic ? { deterministic: true } : {}),
+                }
+              : { manual: true })}
           />
         )}
       </div>

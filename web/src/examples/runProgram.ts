@@ -11,15 +11,22 @@ import type { VmSession } from "./useVmSession";
  *  Only the `program` kind uses this `new Function` eval — non-editable demos use the
  *  declarative `runSteps` instead, so the eval surface stays minimal. */
 export async function runProgram(source: string, vm: Vm, session: VmSession): Promise<void> {
+  // Boot leaves a live `$ ` at the cursor; the first painted exec rides it, every
+  // later one paints its own. A `type` hands the prompt back to the real shell.
+  let promptAtCursor = true;
   const ctx = {
     exec: async (cmd: string, o?: { echo?: boolean }) => {
       const r = await vm.exec(cmd);
-      // The shell already shows a `$ ` prompt at the cursor; paint just the command
-      // + its real stdout after it (no extra prompt), so it reads like a run command.
-      if (o?.echo !== false) session.echoTerminal(`${cmd}\n`, r.stdout);
+      if (o?.echo !== false) {
+        session.echoTerminal(`${promptAtCursor ? "" : "$ "}${cmd}\n`, r.stdout);
+        promptAtCursor = false;
+      }
       return r;
     },
-    type: (cmd: string) => session.send(`${cmd}\n`),
+    type: (cmd: string) => {
+      session.send(`${cmd}\n`);
+      promptAtCursor = true;
+    },
     fs: vm.fs,
     luau: (src: string, args: string[] = []) => vm.luau(src, args),
   };

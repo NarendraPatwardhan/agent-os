@@ -15,7 +15,7 @@ export function CommandsDriver({ example }: { example: Extract<Example, { kind: 
 
   const play = (): void => {
     session.clearLogs();
-    session.bootBrowser(example.image ?? "loom");
+    session.bootBrowser(example.image ?? "loom", { deterministic: example.deterministic });
   };
 
   return (

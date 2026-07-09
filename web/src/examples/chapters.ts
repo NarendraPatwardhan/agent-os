@@ -11,7 +11,7 @@ function ch(id: string, num: string, title: string, tagline: string, examples: r
   return { id, num, title, tagline, count: examples.length, examples };
 }
 
-// The book's ten chapters. Chapter 1 is authored; the rest carry the full TOC
+// The book's ten chapters. Chapters 1–2 are authored; the rest carry the full TOC
 // (prose placeholders) and get their walkthroughs next.
 export const chapters: readonly Chapter[] = [
   ch("first-contact", "1", "First Contact", "Three runtimes host the exact same VM surface — learn it once; it moves with you.", [
@@ -61,7 +61,111 @@ await vm.exec("cat /tmp/hello.txt");`,
     },
   ]),
   ch("agents-computer", "2", "The Agent's Computer", "Not a bag of remote function calls — a shell, a real filesystem, pipelines, and a workspace.", [
-    p("Pipelines"), p("vm.fs"), p("vm.shell"), p("Determinism"),
+    {
+      kind: "program",
+      id: "pipelines",
+      label: "Pipelines",
+      image: "posix",
+      summary:
+        "The posix image carries the full coreutils set. Stage an event log from the host, then summarize it the Unix way — sort | uniq -c | sort -rn. No bespoke summarize API: the agent composes pipes like any Unix user.",
+      notes: [
+        "exec runs a real shell — pipes, ;, and exit codes all behave",
+        "posix stacks coreutils onto minimal; pick it for file & text automation",
+        "Edit the log lines or the pipeline and press ▶ again — it's your machine",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+await vm.fs.write("/workspace/events.log", "paid\\nfailed\\npaid\\nrefunded\\n");
+console.log("staged /workspace/events.log from the host");
+await vm.exec("sort /workspace/events.log | uniq -c | sort -rn");`,
+      },
+    },
+    {
+      kind: "program",
+      id: "vm-fs",
+      label: "vm.fs",
+      image: "posix",
+      summary:
+        "vm.fs is the whole Unix verb set from the host, not just read/write. Build a small tree, stat it host-side, then check the same files at the shell — one filesystem, two views.",
+      notes: [
+        "Surface: read, readText, write, ls, stat, readlink, mkdir, rm, chmod, symlink",
+        "stat reports the link itself for symlinks (isSymlink)",
+        "The trusted operator view — host tools receive it as ctx.fs to stage inputs and harvest outputs",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+await vm.fs.mkdir("/work");
+await vm.fs.write("/work/a.txt", "alpha");
+await vm.fs.symlink("/work/a.txt", "/work/link");
+
+for (const e of await vm.fs.ls("/work")) {
+  const st = await vm.fs.stat("/work/" + e.name);
+  console.log(e.name, st.isSymlink ? "→ symlink" : st.size + "b");
+}
+
+await vm.fs.chmod("/work/a.txt", 0o600);
+await vm.fs.rm("/work/link");
+await vm.exec("ls -la /work");`,
+      },
+    },
+    {
+      kind: "commands",
+      id: "vm-shell",
+      label: "vm.shell",
+      image: "loom",
+      summary:
+        "The terminal on the right isn't a picture of the API — it is the API. vm.shell() returns a raw byte pipe: on streams bytes out, write sends keystrokes in. Press ▶ to send these keystrokes programmatically, then type into the same shell yourself.",
+      notes: [
+        "Shell is { on(cb), write(data), history() } — an xterm-style byte pipe, not line-buffered streams",
+        '{ language: "luau" } opens the /bin/luau REPL instead of sh',
+        "history() replays every byte emitted so far — how this terminal restores its scrollback",
+      ],
+      code: {
+        language: "ts",
+        source: `const shell = vm.shell({ language: "sh" });
+
+shell.on((bytes) => term.write(bytes));  // bytes out — drawn by this terminal
+shell.write("ls /skills\\n");             // keystrokes in — what ▶ sends
+shell.write("luau -e 'print(1 + 2)'\\n");`,
+      },
+      steps: [
+        { do: "type", cmd: "ls /skills" },
+        { do: "type", cmd: "luau -e 'print(1 + 2)'" },
+      ],
+    },
+    {
+      kind: "program",
+      id: "determinism",
+      label: "Determinism",
+      image: "posix",
+      deterministic: true,
+      summary:
+        "▶ boots this VM with deterministic: true — the clock is pinned and entropy is seeded. The time never ticks, and every reboot replays the same run byte-for-byte: press ▶ twice and watch the \"random\" number come back identical. That's what makes a build step's output digest trustworthy.",
+      notes: [
+        "Wall-clock and entropy are capabilities the host dials, not ambient facts",
+        "Determinism means the run replays — same boot, same steps, same bytes — not that entropy repeats within a run",
+        "For full determinism — no ambient network or persistence — boot the isolated tier",
+      ],
+      code: {
+        language: "ts",
+        source: `// ▶ booted this machine with { deterministic: true }
+const vm = await mc.create();
+
+const t1 = await vm.exec("date +%s");
+const t2 = await vm.exec("date +%s");
+console.log(t1.stdout === t2.stdout
+  ? "clock pinned at " + t1.stdout.trim() + " — it never ticks"
+  : "clock ticked — this run was not deterministic");
+
+const draw = await vm.exec("shuf -i 1-99999 -n 1");
+console.log("seeded shuffle: " + draw.stdout.trim() +
+  " — press \\u25b6 to replay the run and draw it again");`,
+      },
+    },
   ]),
   ch("programming-in-luau", "3", "Programming in Luau", "Compose many steps — tool calls, data work, documents — in one program, without a model round-trip per step.", [
     p("vm.luau"), p("Sessions"), p("Analyze"), p("sys.*"), p("require(tools)"), p("vm.tool"), p("Kits"), p("Tool → doc"),

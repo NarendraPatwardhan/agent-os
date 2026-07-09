@@ -17,6 +17,7 @@ type McTerminalProps = DetailedHTMLProps<HTMLAttributes<McTerminal>, McTerminal>
   runtime?: "browser" | "bun" | "remote";
   image?: string;
   manual?: boolean;
+  deterministic?: boolean;
   "line-height"?: number;
   "replay-history"?: boolean;
 };

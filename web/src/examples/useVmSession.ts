@@ -5,7 +5,7 @@ import type { McTerminal, Vm } from "@mc/elements";
  *  prop drives the browser boot per-instance); `attach` binds an externally-created
  *  VM (a remote handle, a fork) to a `manual` terminal. */
 export type BootSpec =
-  | { readonly kind: "browser"; readonly image: string; readonly net?: boolean }
+  | { readonly kind: "browser"; readonly image: string; readonly net?: boolean; readonly deterministic?: boolean }
   | { readonly kind: "attach"; readonly vm: Vm };
 
 export type VmSession = {
@@ -17,11 +17,14 @@ export type VmSession = {
   readonly logs: readonly string[];
   readonly vm: Vm | null;
   // imperative API for drivers
-  readonly bootBrowser: (image: string, opts?: { net?: boolean }) => void;
+  readonly bootBrowser: (image: string, opts?: { net?: boolean; deterministic?: boolean }) => void;
   readonly attach: (vm: Vm) => void;
   readonly reboot: () => void;
   readonly close: () => void;
   readonly send: (data: string) => void;
+  /** Resolves the next time the shell emits its `$ ` prompt (or on timeout, so a hung
+   *  command can't wedge a step list). Subscribe BEFORE typing, then await. */
+  readonly promptReturn: (timeoutMs?: number) => Promise<void>;
   readonly print: (line: string) => void;
   readonly setLogs: (lines: readonly string[]) => void;
   readonly clearLogs: () => void;
@@ -89,7 +92,7 @@ export function useVmSession(opts: Options = {}): VmSession {
     vm: vmRef.current,
     bootBrowser: (image, o) => {
       reset();
-      setSpec({ kind: "browser", image, net: o?.net ?? true });
+      setSpec({ kind: "browser", image, net: o?.net ?? true, deterministic: o?.deterministic ?? false });
       setBootKey((k) => k + 1);
     },
     attach: (vm) => {
@@ -107,6 +110,22 @@ export function useVmSession(opts: Options = {}): VmSession {
       setSpec(null);
     },
     send: (data) => termRef.current?.send(data),
+    promptReturn: (timeoutMs = 15_000) =>
+      new Promise<void>((resolve) => {
+        const el = termRef.current;
+        if (!el) return resolve();
+        const settle = (): void => {
+          clearTimeout(timer);
+          el.removeEventListener("mc-output", onOut);
+          resolve();
+        };
+        const timer = setTimeout(settle, timeoutMs);
+        const onOut = (e: Event): void => {
+          const text = ((e as CustomEvent).detail?.text ?? "") as string;
+          if (text.endsWith("$ ")) settle();
+        };
+        el.addEventListener("mc-output", onOut);
+      }),
     print: (line) => setLogsState((p) => [...p, line]),
     setLogs: (lines) => setLogsState(lines),
     clearLogs: () => setLogsState([]),
