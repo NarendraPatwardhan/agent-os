@@ -177,6 +177,7 @@ export function TerminalPanel({
             ref={session.terminalRef}
             {...stylex.props(styles.terminal)}
             label={label}
+            working={session.working}
             cursor="block"
             line-height={1.5}
             {...(s.kind === "browser"

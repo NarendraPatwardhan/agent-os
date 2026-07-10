@@ -67,6 +67,9 @@
     border-bottom: 1px solid color-mix(in oklch, var(--mc-term-edge), transparent 20%);
     flex: 0 0 auto;
     user-select: none;
+    width: 100%;
+    box-sizing: border-box;
+    position: relative;
   }
   mc-terminal .lights {
     display: inline-flex;
@@ -85,7 +88,8 @@
     margin-left: var(--space-1, 4px);
   }
   mc-terminal .live-dot {
-    margin-left: auto;
+    position: absolute;
+    right: var(--space-3, 12px);
     display: inline-flex;
     align-items: center;
     gap: 6px;
@@ -99,6 +103,20 @@
   mc-terminal[data-live] .live-dot {
     opacity: 1;
     color: var(--success, oklch(0.72 0.13 150));
+  }
+  mc-terminal[working] .live-dot {
+    opacity: 1;
+    color: var(--mc-fg);
+  }
+  mc-terminal[working] .live-dot i {
+    background: transparent;
+    box-shadow: none;
+    border: 1px solid currentColor;
+    border-right-color: transparent;
+    animation: mc-working-spin 700ms linear infinite;
+  }
+  @keyframes mc-working-spin {
+    to { transform: rotate(360deg); }
   }
   mc-terminal .live-dot i {
     width: 7px;
@@ -118,6 +136,9 @@
   @media (prefers-reduced-motion: reduce) {
     mc-terminal .live-dot {
       transition: none;
+    }
+    mc-terminal[working] .live-dot i {
+      animation: none;
     }
   }
 }

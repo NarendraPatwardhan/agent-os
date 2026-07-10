@@ -783,6 +783,11 @@ fn scalar_string(value: &Value) -> String {
         Value::String(s) => s.clone(),
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => n.to_string(),
+        Value::Array(values) => values
+            .iter()
+            .map(scalar_string)
+            .collect::<Vec<_>>()
+            .join(","),
         other => serde_json::to_string(other).unwrap_or_default(),
     }
 }
@@ -947,5 +952,22 @@ mod tests {
     fn plain_json_tool_call_passes_through() {
         let body = r#"{"jsonrpc":"2.0","id":1,"result":{"data":true}}"#;
         assert_eq!(extract_sse_json(body.to_string()), body);
+    }
+
+    #[test]
+    fn openapi_query_arrays_are_comma_separated() {
+        let binding = json!({
+            "method": "GET",
+            "url_template": "https://api.example.test/forecast",
+            "parameters": [{ "name": "hourly", "in": "query" }]
+        });
+        let args = json!({ "query": { "hourly": ["temperature_2m", "rain"] } });
+
+        let request = openapi_http_request(&binding, &args, None).expect("request");
+        let request = String::from_utf8(request).expect("utf8 request");
+
+        assert!(request.starts_with(
+            "GET https://api.example.test/forecast?hourly=temperature_2m%2Crain\n"
+        ));
     }
 }

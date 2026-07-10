@@ -18,6 +18,7 @@ type McTerminalProps = DetailedHTMLProps<HTMLAttributes<McTerminal>, McTerminal>
   image?: string;
   manual?: boolean;
   deterministic?: boolean;
+  working?: boolean;
   "line-height"?: number;
   "replay-history"?: boolean;
 };

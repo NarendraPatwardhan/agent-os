@@ -51,6 +51,8 @@ export class McTerminal extends LitElement {
   @property() kernel?: string;
   /** Title-bar caption. */
   @property() label = "agent · live in your browser";
+  /** A host-driven command is still running. */
+  @property({ type: Boolean, reflect: true }) working = false;
 
   /** Explicit VM to attach (JS property; takes precedence over context). */
   vm?: Vm;
@@ -95,7 +97,7 @@ export class McTerminal extends LitElement {
       <div class="bar">
         <span class="lights"><span></span><span></span><span></span></span>
         <span class="title">${this.label}</span>
-        <span class="live-dot"><i></i>live</span>
+        <span class="live-dot"><i></i>${this.working ? "working" : "live"}</span>
       </div>
       <div class="screen"></div>
     `;

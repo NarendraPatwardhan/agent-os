@@ -10,7 +10,7 @@ import type { Example } from "../types";
 export function CommandsDriver({ example }: { example: Extract<Example, { kind: "commands" }> }) {
   const session = useVmSession({
     onReady: (vm, s) =>
-      void runSteps(example.steps, vm, s).catch((e) => s.print(e instanceof Error ? e.message : String(e))),
+      runSteps(example.steps, vm, s).catch((e) => s.print(e instanceof Error ? e.message : String(e))),
   });
 
   const play = (): void => {

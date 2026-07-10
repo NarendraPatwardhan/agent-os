@@ -16,7 +16,7 @@ export function ProgramDriver({ example }: { example: Extract<Example, { kind: "
 
   const session = useVmSession({
     onReady: (vm, s) =>
-      void runProgram(editorRef.current?.source ?? example.code.source, vm, s)
+      runProgram(editorRef.current?.source ?? example.code.source, vm, s)
         .catch((e) => s.print(e instanceof Error ? e.message : String(e)))
         .then(() => artifacts.collect(vm)),
   });

@@ -314,7 +314,16 @@ export const styles = stylex.create({
   artifactSize: { color: color.inkMuted, fontWeight: 450 },
 
   // ── terminal column (TerminalPanel) ────────────────────────────────────────
-  termCol: { gridColumn: "2", gridRow: "2", minWidth: 0, display: "flex", flexDirection: "column", gap: space.s3 },
+  termCol: {
+    gridColumn: "2",
+    gridRow: "2",
+    minWidth: 0,
+    minHeight: 0,
+    overflow: "hidden",
+    display: "flex",
+    flexDirection: "column",
+    gap: space.s3,
+  },
   terminalBox: {
     width: "100%",
     height: "clamp(220px, 42vh, 460px)",
@@ -337,11 +346,15 @@ export const styles = stylex.create({
   terminal: { width: "100%", height: "100%" },
   actions: { display: "flex", flexWrap: "wrap", gap: space.s2, alignItems: "center", minHeight: "40px" },
   logs: {
+    flex: 1,
     minHeight: "40px",
+    overflowY: "auto",
     display: "flex",
     flexDirection: "column",
     gap: space.s1,
     paddingTop: space.s1,
+    scrollbarWidth: "thin",
+    scrollbarColor: `${color.borderStrong} transparent`,
   },
   logLine: {
     fontFamily: font.mono,

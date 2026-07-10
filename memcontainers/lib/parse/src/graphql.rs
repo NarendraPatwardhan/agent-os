@@ -34,6 +34,7 @@ struct RootField {
     name: String,
     description: String,
     args: Vec<FieldArg>,
+    selection: String,
 }
 
 #[derive(Debug, Clone)]
@@ -53,6 +54,7 @@ pub const INTROSPECTION_QUERY: &str = r#"query AgentOSGraphQLIntrospection {
       fields {
         name
         description
+        type { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } } }
         args {
           name
           description
@@ -204,7 +206,100 @@ fn collect_root_fields(
                 .unwrap_or("")
                 .to_string(),
             args,
+            selection: field
+                .get("type")
+                .map(|ty| default_selection(schema, ty))
+                .unwrap_or_default(),
         });
+    }
+}
+
+fn default_selection(schema: &Value, type_ref: &Value) -> String {
+    if !composite_type(type_ref) {
+        return String::new();
+    }
+    let Some(name) = named_type(type_ref) else {
+        return " { __typename }".to_string();
+    };
+    let Some(types) = schema.get("types").and_then(Value::as_array) else {
+        return " { __typename }".to_string();
+    };
+    let Some(ty) = types
+        .iter()
+        .find(|candidate| candidate.get("name").and_then(Value::as_str) == Some(name))
+    else {
+        return " { __typename }".to_string();
+    };
+    let mut selected = Vec::new();
+    for field in ty
+        .get("fields")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if field
+            .get("args")
+            .and_then(Value::as_array)
+            .is_some_and(|args| !args.is_empty())
+        {
+            continue;
+        }
+        let Some(field_name) = field.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(field_type) = field.get("type") else {
+            continue;
+        };
+        if leaf_type(field_type) {
+            selected.push(field_name.to_string());
+        } else if composite_type(field_type) {
+            let nested = named_type(field_type)
+                .and_then(|nested_name| {
+                    types.iter().find(|candidate| {
+                        candidate.get("name").and_then(Value::as_str) == Some(nested_name)
+                    })
+                })
+                .and_then(|nested_type| nested_type.get("fields"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|nested_field| {
+                    nested_field
+                        .get("args")
+                        .and_then(Value::as_array)
+                        .is_none_or(Vec::is_empty)
+                        && nested_field.get("type").is_some_and(leaf_type)
+                })
+                .filter_map(|nested_field| nested_field.get("name").and_then(Value::as_str))
+                .take(4)
+                .collect::<Vec<_>>();
+            if !nested.is_empty() {
+                selected.push(format!("{field_name} {{ {} }}", nested.join(" ")));
+            }
+        }
+        if selected.len() == 8 {
+            break;
+        }
+    }
+    if selected.is_empty() {
+        " { __typename }".to_string()
+    } else {
+        format!(" {{ {} }}", selected.join(" "))
+    }
+}
+
+fn named_type(type_ref: &Value) -> Option<&str> {
+    match type_kind(type_ref) {
+        Some("NON_NULL" | "LIST") => named_type(type_ref.get("ofType")?),
+        _ => type_ref.get("name").and_then(Value::as_str),
+    }
+}
+
+fn leaf_type(type_ref: &Value) -> bool {
+    match type_kind(type_ref) {
+        Some("NON_NULL" | "LIST") => type_ref.get("ofType").is_some_and(leaf_type),
+        Some("SCALAR" | "ENUM") => true,
+        _ => false,
     }
 }
 
@@ -344,9 +439,17 @@ fn operation_document(field: &RootField) -> String {
         format!("({})", call_args.join(", "))
     };
     format!(
-        "{} {}{} {{ {}{} }}",
-        field.operation_type, op_name, vars, field.name, call_args
+        "{} {}{} {{ {}{}{} }}",
+        field.operation_type, op_name, vars, field.name, call_args, field.selection
     )
+}
+
+fn composite_type(type_ref: &Value) -> bool {
+    match type_kind(type_ref) {
+        Some("NON_NULL" | "LIST") => type_ref.get("ofType").is_some_and(composite_type),
+        Some("OBJECT" | "INTERFACE" | "UNION") => true,
+        _ => false,
+    }
 }
 
 fn operation_name(field: &RootField) -> String {
@@ -427,9 +530,12 @@ mod tests {
           "mutationType":{"name":"Mutation"},
           "types":[
             {"kind":"OBJECT","name":"Query","fields":[
-              {"name":"viewer","description":"Viewer by id","args":[
+              {"name":"viewer","description":"Viewer by id","type":{"kind":"OBJECT","name":"Viewer"},"args":[
                 {"name":"id","description":"User id","type":{"kind":"NON_NULL","ofType":{"kind":"SCALAR","name":"ID"}}}
               ]}
+            ]},
+            {"kind":"OBJECT","name":"Viewer","fields":[
+              {"name":"login","type":{"kind":"SCALAR","name":"String"},"args":[]}
             ]},
             {"kind":"OBJECT","name":"Mutation","fields":[
               {"name":"updateName","description":"Update name","args":[
@@ -445,6 +551,7 @@ mod tests {
         assert!(text.contains("\"requires_approval\":true"));
         assert!(text.contains("query_viewer"));
         assert!(text.contains("$id: ID!"));
+        assert!(text.contains("viewer(id: $id) { login }"));
     }
 
     #[test]

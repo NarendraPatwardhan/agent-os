@@ -14,6 +14,7 @@ export type VmSession = {
   readonly bootKey: number;
   readonly spec: BootSpec | null;
   readonly live: boolean;
+  readonly working: boolean;
   readonly logs: readonly string[];
   readonly vm: Vm | null;
   // imperative API for drivers
@@ -35,7 +36,7 @@ export type VmSession = {
 type Options = {
   /** Fired once per boot, when the VM's shell is ready. Read through a ref, so the
    *  latest closure (fresh editor source, etc.) is always used. */
-  readonly onReady?: (vm: Vm, session: VmSession) => void;
+  readonly onReady?: (vm: Vm, session: VmSession) => void | Promise<void>;
 };
 
 const crlf = (s: string): string => s.replace(/\r?\n/g, "\r\n");
@@ -59,6 +60,7 @@ export function useVmSession(opts: Options = {}): VmSession {
   const [spec, setSpec] = useState<BootSpec | null>(null);
   const [bootKey, setBootKey] = useState(0);
   const [logs, setLogsState] = useState<readonly string[]>([]);
+  const [working, setWorking] = useState(false);
 
   const termRef = useRef<McTerminal | null>(null);
   const vmRef = useRef<Vm | null>(null);
@@ -66,6 +68,7 @@ export function useVmSession(opts: Options = {}): VmSession {
   const ranRef = useRef(false); // onReady fires at most once per boot (mc-ready can double-fire)
   const optsRef = useRef(opts);
   const sessionRef = useRef<VmSession | null>(null);
+  const runRef = useRef(0);
   optsRef.current = opts;
   specRef.current = spec;
 
@@ -76,7 +79,19 @@ export function useVmSession(opts: Options = {}): VmSession {
     if (!vm || ranRef.current) return;
     ranRef.current = true;
     vmRef.current = vm;
-    optsRef.current.onReady?.(vm, sessionRef.current!);
+    const run = ++runRef.current;
+    setWorking(true);
+    try {
+      const pending = optsRef.current.onReady?.(vm, sessionRef.current!);
+      void Promise.resolve(pending)
+        .catch((error) => sessionRef.current?.print(error instanceof Error ? error.message : String(error)))
+        .finally(() => {
+          if (runRef.current === run) setWorking(false);
+        });
+    } catch (error) {
+      sessionRef.current?.print(error instanceof Error ? error.message : String(error));
+      if (runRef.current === run) setWorking(false);
+    }
   }).current;
 
   // Ref callback (not an effect): attaches the listener SYNCHRONOUSLY on mount, so a
@@ -91,6 +106,8 @@ export function useVmSession(opts: Options = {}): VmSession {
   }).current;
 
   const reset = (): void => {
+    runRef.current += 1;
+    setWorking(false);
     vmRef.current = null;
     ranRef.current = false;
   };
@@ -100,6 +117,7 @@ export function useVmSession(opts: Options = {}): VmSession {
     bootKey,
     spec,
     live: spec !== null,
+    working,
     logs,
     vm: vmRef.current,
     bootBrowser: (image, o) => {

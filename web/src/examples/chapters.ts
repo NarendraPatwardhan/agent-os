@@ -992,7 +992,7 @@ const vm = await mc.create();
 
 await vm.luau(\`
   local tools = require("tools")
-  for _, hit in ipairs(tools.search("anime", { limit = 3 }).items) do print(hit.address) end
+  for _, hit in ipairs(tools.search("query Media", { limit = 3 }).items) do print(hit.address) end
 
   local res = tools.call("anilist.org.main.query.Media", { search = "Cowboy Bebop" })
   assert(res.ok, res.err and res.err.message)
@@ -1058,10 +1058,13 @@ await vm.luau(\`
         language: "ts",
         source: `const vm = await mc.create();
 
-await vm.exec("tools list");
+await vm.exec("tools search forecast --limit 3 | jq -r '.items[].address'");
 await vm.exec(
-  \`tools call openmeteo.org.main.v1-forecast \` +
-  \`'{"query":{"latitude":52.52,"longitude":13.41,"current_weather":true}}'\`
+  \`tools call openmeteo.org.main.get.v1.forecast \` +
+  \`'{"query":{"latitude":"52.52","longitude":"13.41","hourly":["temperature_2m"],"forecast_days":1}}' \` +
+  \`| jq '{latitude:.data.latitude,longitude:.data.longitude,timezone:.data.timezone,\` +
+  \`unit:.data.hourly_units.temperature_2m,time:.data.hourly.time[:6],\` +
+  \`temperature_2m:.data.hourly.temperature_2m[:6]}'\`
 );`,
       },
     },
