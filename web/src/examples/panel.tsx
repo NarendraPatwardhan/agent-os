@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import type { ReactNode } from "react";
 import * as stylex from "@stylexjs/stylex";
 import type { Vm } from "@mc/elements";
-import { text } from "instrument";
+import { motion, text } from "instrument";
 import { Icon } from "../Icon";
 import { styles } from "./styles";
 import type { VmSession } from "./useVmSession";
@@ -132,7 +132,7 @@ export function useArtifacts(paths: readonly string[] | undefined): Artifacts {
 export function ExampleShell({ example, left, terminal }: { example: Example; left: ReactNode; terminal: ReactNode }) {
   return (
     <>
-      <div {...stylex.props(styles.content)}>
+      <div {...stylex.props(styles.content, motion.enter)}>
         <div {...stylex.props(styles.contentInner)}>
           {example.summary ? <p {...stylex.props(styles.lede, text.body)}>{example.summary}</p> : null}
           {example.notes && example.notes.length > 0 ? (
@@ -167,7 +167,7 @@ export function TerminalPanel({
 }) {
   const s = session.spec;
   return (
-    <div {...stylex.props(styles.termCol)}>
+    <div {...stylex.props(styles.termCol, motion.enter)}>
       <div {...stylex.props(styles.terminalBox, !session.live && styles.terminalBoxIdle)}>
         {s == null ? (
           hint

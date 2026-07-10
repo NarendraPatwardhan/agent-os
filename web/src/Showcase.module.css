@@ -186,3 +186,55 @@
     transition: none;
   }
 }
+
+/* Instrument page chrome breakpoints: the scale becomes a compact, scrollable
+ * chapter rail while the lesson itself stacks below it. Every chapter remains
+ * reachable; only the decorative ruler marks drop away under pressure. */
+@media (max-width: 1024px) {
+  .toc {
+    gap: 0.5rem;
+  }
+
+  .tocScroller {
+    flex-direction: row;
+    gap: 0.35rem;
+    width: 100%;
+    height: auto;
+    min-height: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 0 0 0.25rem;
+    -webkit-mask-image: none;
+    mask-image: none;
+    animation: none;
+    scrollbar-width: none;
+  }
+
+  .tocItem {
+    flex: 0 0 auto;
+    animation: none;
+  }
+
+  .tocButton {
+    gap: 0.4rem;
+    width: auto;
+    padding: 0.45rem 0.7rem;
+    border-radius: 999px;
+    background: transparent;
+    transform: none;
+  }
+
+  .tocItem[data-active="true"] .tocButton {
+    background: var(--interactive-selected, rgba(255, 255, 255, 0.08));
+  }
+
+  .tocText {
+    font-size: 0.88rem;
+  }
+
+  .topMarker,
+  .bottomMarker,
+  .primaryMarker {
+    display: none;
+  }
+}

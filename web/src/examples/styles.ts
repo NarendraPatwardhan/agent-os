@@ -7,57 +7,80 @@ import { color } from "instrument/tokens/color.stylex.js";
 import { space } from "instrument/tokens/space.stylex.js";
 import { radius } from "instrument/tokens/radius.stylex.js";
 import { font } from "instrument/tokens/type.stylex.js";
+import { media } from "instrument/tokens/media.stylex.js";
 
 export const styles = stylex.create({
   // ── shell / layout ────────────────────────────────────────────────────────
   area: {
     width: "100%",
-    // One lesson fills the viewport — no page scroll for the group; the content box
-    // scrolls internally. overflow:hidden also clips the scale ticks at the left edge.
-    height: "100vh",
-    overflow: "hidden",
-    paddingTop: "clamp(24px, 3vh, 44px)",
-    paddingBottom: "clamp(24px, 3vh, 44px)",
-    paddingLeft: "clamp(56px, 5vw, 72px)",
-    paddingRight: "clamp(24px, 4vw, 80px)",
+    // Laptop lessons fill one viewport and scroll inside the content card. Under
+    // pressure the blocks stack and the page itself becomes the scroll container.
+    height: { default: "100vh", [media.tablet]: "auto", [media.mobile]: "auto" },
+    minHeight: "100dvh",
+    overflow: { default: "hidden", [media.tablet]: "visible", [media.mobile]: "visible" },
+    paddingTop: { default: "clamp(24px, 3vh, 44px)", [media.tablet]: space.s6, [media.mobile]: space.s5 },
+    paddingBottom: { default: "clamp(24px, 3vh, 44px)", [media.tablet]: space.s6, [media.mobile]: space.s5 },
+    paddingLeft: { default: "clamp(56px, 5vw, 72px)", [media.tablet]: space.s6, [media.mobile]: space.s4 },
+    paddingRight: { default: "clamp(24px, 4vw, 80px)", [media.tablet]: space.s6, [media.mobile]: space.s4 },
     borderTopWidth: "1px",
     borderTopStyle: "solid",
     borderTopColor: color.border,
   },
   layout: {
-    height: "100%",
+    height: { default: "100%", [media.tablet]: "auto", [media.mobile]: "auto" },
     maxWidth: "1760px",
     display: "grid",
-    gridTemplateColumns: "380px minmax(0, 1fr)",
+    gridTemplateColumns: { default: "380px minmax(0, 1fr)", [media.tablet]: "minmax(0, 1fr)", [media.mobile]: "minmax(0, 1fr)" },
     gap: "clamp(24px, 2.2vw, 40px)",
     alignItems: "stretch",
   },
-  tocCol: { alignSelf: "center", minHeight: 0 },
+  tocCol: { alignSelf: { default: "center", [media.tablet]: "stretch", [media.mobile]: "stretch" }, minHeight: 0, minWidth: 0 },
   main: { minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column", gap: "clamp(16px, 2.4vh, 32px)" },
   titleBlock: { display: "flex", flexDirection: "column", gap: space.s3 },
   eyebrow: { color: color.inkSubtle },
   title: { margin: 0, fontSize: "clamp(28px, 24px + 1.4vw, 44px)" },
   subtitle: { maxWidth: "62ch" },
   workRow: {
-    flex: 1,
+    flex: { default: 1, [media.tablet]: "none", [media.mobile]: "none" },
     minHeight: 0,
     display: "grid",
-    gridTemplateColumns: "minmax(0, 1fr) clamp(432px, calc(100vw - 1260px), 660px)",
-    gridTemplateRows: "auto minmax(0, 1fr)",
+    gridTemplateColumns: {
+      default: "minmax(0, 1fr) clamp(432px, calc(100vw - 1260px), 660px)",
+      [media.tablet]: "minmax(0, 1fr)",
+      [media.mobile]: "minmax(0, 1fr)",
+    },
+    gridTemplateRows: { default: "auto minmax(0, 1fr)", [media.tablet]: "auto", [media.mobile]: "auto" },
     columnGap: space.s6,
-    rowGap: space.s3,
+    rowGap: { default: space.s3, [media.tablet]: space.s5, [media.mobile]: space.s4 },
   },
 
   // ── pill tabs ─────────────────────────────────────────────────────────────
   pillRow: {
     gridColumn: "1",
     gridRow: "1",
+    position: "relative",
     display: "flex",
-    flexWrap: "wrap",
+    flexWrap: { default: "wrap", [media.tablet]: "nowrap", [media.mobile]: "nowrap" },
     gap: space.s2,
     alignItems: "center",
+    overflowX: { default: "visible", [media.tablet]: "auto", [media.mobile]: "auto" },
+    paddingBottom: { default: 0, [media.tablet]: space.s1, [media.mobile]: space.s1 },
+    scrollbarWidth: "none",
+  },
+  pillIndicator: {
+    top: 0,
+    left: 0,
+    height: "29px",
+    borderRadius: radius.pill,
+    backgroundColor: color.frost,
+    opacity: 1,
   },
   pill: {
+    position: "relative",
+    zIndex: 1,
+    display: "inline-flex",
+    alignItems: "center",
+    gap: space.s2,
     paddingBlock: "5px",
     paddingInline: space.s3,
     borderRadius: radius.pill,
@@ -67,11 +90,9 @@ export const styles = stylex.create({
     whiteSpace: "nowrap",
     cursor: "pointer",
     color: { default: color.inkMuted, ":hover": color.ink },
-    backgroundColor: { default: "transparent", ":hover": color.frost },
-    transitionProperty: "color, background-color",
-    transitionDuration: "150ms",
+    backgroundColor: "transparent",
   },
-  pillActive: { color: color.ink, backgroundColor: color.frost },
+  pillActive: { color: color.ink },
 
   // ── left content column (shared by every driver via ExampleShell) ──────────
   content: {
@@ -79,7 +100,7 @@ export const styles = stylex.create({
     gridRow: "2",
     minWidth: 0,
     minHeight: 0,
-    overflowY: "auto",
+    overflowY: { default: "auto", [media.tablet]: "visible", [media.mobile]: "visible" },
     padding: space.s5,
     borderWidth: "1px",
     borderStyle: "solid",
@@ -315,8 +336,8 @@ export const styles = stylex.create({
 
   // ── terminal column (TerminalPanel) ────────────────────────────────────────
   termCol: {
-    gridColumn: "2",
-    gridRow: "2",
+    gridColumn: { default: "2", [media.tablet]: "1", [media.mobile]: "1" },
+    gridRow: { default: "2", [media.tablet]: "3", [media.mobile]: "3" },
     minWidth: 0,
     minHeight: 0,
     overflow: "hidden",
@@ -326,7 +347,7 @@ export const styles = stylex.create({
   },
   terminalBox: {
     width: "100%",
-    height: "clamp(220px, 42vh, 460px)",
+    height: { default: "clamp(220px, 42vh, 460px)", [media.tablet]: "clamp(280px, 42vh, 420px)", [media.mobile]: "320px" },
     flexShrink: 0,
     borderRadius: radius.card,
     overflow: "hidden",

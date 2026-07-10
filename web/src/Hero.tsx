@@ -8,6 +8,7 @@ import { space } from "instrument/tokens/space.stylex.js";
 import { radius } from "instrument/tokens/radius.stylex.js";
 import { font } from "instrument/tokens/type.stylex.js";
 import { container } from "instrument/tokens/size.stylex.js";
+import { media } from "instrument/tokens/media.stylex.js";
 import { runAutoDemo, type AutoDemoHandle } from "./heroDemo";
 
 // Point @mc/elements' artifact loader at the Bazel-staged kernel/image that Vite
@@ -20,8 +21,8 @@ const styles = stylex.create({
     minHeight: "100vh",
     display: "flex",
     justifyContent: "center",
-    paddingBlock: "clamp(64px, 12vw, 120px)",
-    paddingInline: space.s6,
+    paddingBlock: { default: "clamp(64px, 12vw, 120px)", [media.mobile]: space.s6 },
+    paddingInline: { default: space.s6, [media.mobile]: space.s4 },
   },
   shell: {
     width: "100%",
@@ -29,7 +30,7 @@ const styles = stylex.create({
     display: "flex",
     flexDirection: "column",
     alignItems: "center",
-    gap: "clamp(40px, 6vw, 72px)",
+    gap: { default: "clamp(40px, 6vw, 72px)", [media.mobile]: space.s6 },
   },
   copy: {
     display: "flex",
@@ -79,6 +80,7 @@ const styles = stylex.create({
     fontSize: "13px",
     color: color.ink,
     overflowWrap: "anywhere",
+    justifyContent: { default: "flex-start", [media.mobile]: "center" },
   },
   prompt: {
     color: color.inkSubtle,
@@ -89,7 +91,7 @@ const styles = stylex.create({
     // Definite height lives on the wrapper (a plain div, no @layer contest). The
     // element's own `mc-terminal { height: 100% }` fills it — otherwise a StyleX height
     // on <mc-terminal> loses to that layered rule and xterm fits to a bogus size.
-    height: "clamp(20rem, 40vw, 30rem)",
+    height: { default: "clamp(20rem, 40vw, 30rem)", [media.mobile]: "22rem" },
   },
   terminal: {
     // NOTE: do NOT set `display` here. <mc-terminal> is `display: flex` (column) from
