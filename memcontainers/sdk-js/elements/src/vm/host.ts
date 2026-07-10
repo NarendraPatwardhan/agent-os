@@ -11,7 +11,7 @@
 
 import { mc } from "@mc/core";
 import type { CreateOptions, Shell, Vm } from "@mc/core";
-import { loadImage, loadKernel } from "./artifacts.js";
+import { loadCatalogCompiler, loadImage, loadKernel } from "./artifacts.js";
 
 /** Boot options as read off an element's attributes (URLs/names, never bytes). */
 export interface BootOptions {
@@ -75,7 +75,17 @@ export async function resolveCreateOptions(boot: BootOptions): Promise<CreateOpt
     const pending = loadImage(boot.image ?? undefined);
     image = pending ? await pending : null;
   }
-  return { runtime, kernel, image, net: boot.net, deterministic: boot.deterministic };
+  // Runtime `vm.tool` needs catalog-compiler.wasm; in the browser there is no env-var
+  // fallback, so thread the page-registered artifact (if any) into every embedded boot.
+  const compiler = loadCatalogCompiler();
+  return {
+    runtime,
+    kernel,
+    image,
+    net: boot.net,
+    deterministic: boot.deterministic,
+    ...(compiler ? { catalogCompiler: await compiler } : {}),
+  };
 }
 
 /** Create a VmHost and start booting immediately. */

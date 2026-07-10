@@ -18,6 +18,10 @@ let imageRegistry: Record<string, string> = {
 
 let kernelUrl = "kernel-coop.wasm";
 
+// Unset by default: a page that never registers host tools must not pay for (or
+// require) the compiler wasm. Registering it makes runtime `vm.tool` work in-browser.
+let catalogCompilerUrl: string | null = null;
+
 /** Point the loader at where the kernel + image blobs live. Call once, before any
  *  element boots (e.g. in the app entry). */
 export function setArtifactSources(opts: {
@@ -27,12 +31,15 @@ export function setArtifactSources(opts: {
   image?: string;
   /** Extra/overriding logical-name → URL mappings, merged over the defaults. */
   images?: Record<string, string>;
+  /** URL of catalog-compiler.wasm — needed for host-tool registration (`vm.tool`). */
+  catalogCompiler?: string;
 }): void {
   if (opts.kernel) kernelUrl = opts.kernel;
   if (opts.image) {
     imageRegistry = { ...imageRegistry, default: opts.image, "base:latest": opts.image };
   }
   if (opts.images) imageRegistry = { ...imageRegistry, ...opts.images };
+  if (opts.catalogCompiler) catalogCompilerUrl = opts.catalogCompiler;
 }
 
 /** Resolve the kernel URL (a per-element override wins). */
@@ -75,6 +82,13 @@ export function loadKernel(override?: string | null): Promise<Uint8Array> {
 export function loadImage(ref?: string | null): Promise<Uint8Array> | null {
   if (ref === null) return null;
   return fetchBytes(resolveImageUrl(ref));
+}
+
+/** Fetch catalog-compiler.wasm (memoized), or `null` when the page never registered
+ *  one — then a VM boots fine but a runtime `vm.tool` will fail asking for it. */
+export function loadCatalogCompiler(): Promise<Uint8Array> | null {
+  if (!catalogCompilerUrl) return null;
+  return fetchBytes(catalogCompilerUrl);
 }
 
 /** Pre-warm the shared download without booting a VM — call on first interaction

@@ -42,8 +42,9 @@ WEB_APP_DEPS = [
     ":node_modules/vite",
 ]
 
-# Kernel + every shipped flavor tar, served at /mc/. The hero + "Boot a VM" boot
-# image.tar (loom); the "Images" pill boots a specific flavor from /mc/<flavor>.tar.
+# Kernel + every shipped flavor tar + catalog-compiler.wasm, served at /mc/. The hero
+# + "Boot a VM" boot image.tar (loom); the "Images" pill boots a specific flavor from
+# /mc/<flavor>.tar; the compiler backs runtime `vm.tool` (host-tool examples).
 # Flavor tars are fetched lazily (only when a flavor is booted), so page load is unaffected.
 genrule(
     name = "hero_vm_assets",
@@ -54,6 +55,7 @@ genrule(
         "//memcontainers/images:loom",
         "//memcontainers/images:atlas",
         "//memcontainers/images:paper",
+        "//memcontainers/lib/catalog-compiler:wasm",
     ],
     outs = [
         "public/mc/kernel.wasm",
@@ -63,6 +65,7 @@ genrule(
         "public/mc/loom.tar",
         "public/mc/atlas.tar",
         "public/mc/paper.tar",
+        "public/mc/catalog-compiler.wasm",
     ],
     cmd = """
 mkdir -p "$(@D)/public/mc"
@@ -73,6 +76,7 @@ cp "$(location //memcontainers/images:loom)" "$(@D)/public/mc/loom.tar"
 cp "$(location //memcontainers/images:atlas)" "$(@D)/public/mc/atlas.tar"
 cp "$(location //memcontainers/images:paper)" "$(@D)/public/mc/paper.tar"
 cp "$(location //memcontainers/images:loom)" "$(@D)/public/mc/image.tar"
+cp "$(location //memcontainers/lib/catalog-compiler:wasm)" "$(@D)/public/mc/catalog-compiler.wasm"
 """,
 )
 

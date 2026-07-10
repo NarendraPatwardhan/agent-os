@@ -21,5 +21,7 @@ export { vmHostContext, installContextRoot } from "./vm/context.js";
 
 // The SDK itself, for embedders that drive VM lifecycle directly (create / connect
 // / restore / close) alongside the elements — e.g. a remote create→connect→kill flow.
-export { mc } from "@mc/core";
-export type { Vm, CreateOptions } from "@mc/core";
+// `tool`/`kit`/`z` ride along so a page can define typed host tools (`vm.tool`)
+// without importing @mc/core separately.
+export { mc, tool, kit, z } from "@mc/core";
+export type { Vm, CreateOptions, ToolDefinition, SessionHandle, SessionEvent } from "@mc/core";

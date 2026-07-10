@@ -12,6 +12,7 @@ import type { Chapter } from "./examples/types";
 // image="loom" etc.; the browser boot fetches /mc/<flavor>.tar per-instance (cached
 // per-URL), so flavors never leak across terminals. loom aliases the hero's image.tar
 // so the "Boot a VM" tab reuses the hero's already-warm fetch instead of re-downloading.
+// The catalog compiler backs runtime vm.tool (the host-tool examples in chapter 3).
 setArtifactSources({
   kernel: "/mc/kernel.wasm",
   images: {
@@ -21,6 +22,7 @@ setArtifactSources({
     atlas: "/mc/atlas.tar",
     paper: "/mc/paper.tar",
   },
+  catalogCompiler: "/mc/catalog-compiler.wasm",
 });
 
 const FALLBACK = chapters[0];

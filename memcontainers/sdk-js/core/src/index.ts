@@ -21,6 +21,8 @@ export type { CronAction, CronOptions, CronHandle, CronRunResult } from "./cron.
 export type { VmFs } from "./types.js";
 export { tool, kit } from "./tools.js";
 export type { ToolSpec } from "./tools.js";
+// zod, re-exported so embedders can type `tool()` inputs without a second install.
+export { z } from "zod";
 export { EmbeddedBackend, FanoutSink } from "./embedded.js";
 export { RemoteBackend } from "./remote.js";
 export type { RemoteBackendOptions } from "./remote.js";
