@@ -26,8 +26,8 @@ usage() {
   cat <<'EOF'
 usage: install.sh [--mode agentic|embedded] [--image minimal|posix|loom|atlas|paper] [--dir DIR] [--version TAG]
 
-Downloads the three runtime files needed to run AgentOS from GitHub releases:
-  mc-core.mjs, kernel.wasm, and one image tar.
+Downloads the runtime files needed to run AgentOS from GitHub releases:
+  mc-core.mjs, kernel.wasm, catalog-compiler.wasm, and one image tar.
 
 Modes:
   agentic   for Claude, Codex, opencode, and other coding agents; includes a skill file
@@ -143,8 +143,9 @@ description: Drive AgentOS — a WebAssembly-native VM/computer for agents — f
 
 AgentOS is a WebAssembly computer you drive from the host through the `mc` API exported by
 `mc-core.mjs` (the `@mc/core` bundle). It is the agent's own working machine, not a generic
-command runner. Use the three release artifacts installed alongside this file — `mc-core.mjs`,
-`kernel.wasm`, and one image `.tar` — and rebuild from source only when changing AgentOS itself.
+command runner. Use the release artifacts installed alongside this file — `mc-core.mjs`,
+`kernel.wasm`, one image `.tar`, and `catalog-compiler.wasm` (needed only when a VM uses connections)
+— and rebuild from source only when changing AgentOS itself.
 
 ## Images
 
@@ -205,8 +206,12 @@ Nothing ambient exists — no network, secrets, mounts, or host tools — until 
 - Host tools: `vm.tool(def)` (build defs with `tool()` / `kit()`). The agent inside calls them
   through `/svc/tools` and the Luau `tools` battery; the handler runs host-side. Register before
   asking the VM to use them.
-- Capability sugar: `mc.use("github.issues", token, { kernel, image })` derives the connection and
-  tool selector and turns on network in one call.
+- Capability sugar: `mc.use("github.issues", token, { kernel, image, catalogCompiler })` derives the
+  connection and tool selector and turns on network in one call.
+- Connections (OpenAPI/GraphQL specs → tool catalogs, via `mc.use` or `connections`) compile with
+  catalog-compiler.wasm — pass its bytes as
+  `catalogCompiler: new Uint8Array(readFileSync("./agent-os/catalog-compiler.wasm"))`. A plain VM
+  (exec/luau/fs) never needs it.
 - Network / mounts: `mc.create({ net: true, permissions: { network: "allow" }, mounts: [...] })`.
 
 ## Live agent sessions
@@ -225,7 +230,7 @@ Only snapshot/commit when the caller needs resumable state, and say what you are
 
 ## Slash commands
 
-If the agent framework supports them, keep each simple — load the three artifacts, boot one VM,
+If the agent framework supports them, keep each simple — load the artifacts, boot one VM,
 do the work, return concrete outputs (exit code + stdout + stderr), then close:
 
 - `/agentos-exec $ARGUMENTS` — run `$ARGUMENTS` with `vm.exec`.
@@ -257,7 +262,7 @@ print_example() {
   d="$(js_string "$abs_dir")"
 
   printf '\nInstalled AgentOS %s assets in %s\n' "$mode" "$abs_dir"
-  printf 'Three files: mc-core.mjs, kernel.wasm, %s   (more + checksums: %s)\n' \
+  printf 'Four files: mc-core.mjs, kernel.wasm, catalog-compiler.wasm, %s   (more + checksums: %s)\n' \
     "$image_asset" "$(release_page)"
   if [ "$mode" = "agentic" ]; then
     printf 'Skill (how to drive AgentOS): %s/skills/agent-os/SKILL.md\n' "$abs_dir"
@@ -328,6 +333,7 @@ printf 'Target: %s\n\n' "$ABS_DIR"
 
 download_asset "$BASE_URL" "mc-core.mjs" "${ABS_DIR}/mc-core.mjs"
 download_asset "$BASE_URL" "kernel.wasm" "${ABS_DIR}/kernel.wasm"
+download_asset "$BASE_URL" "catalog-compiler.wasm" "${ABS_DIR}/catalog-compiler.wasm"
 download_asset "$BASE_URL" "$IMAGE_ASSET" "${ABS_DIR}/${IMAGE_ASSET}"
 
 if [ "$MODE" = "agentic" ]; then
