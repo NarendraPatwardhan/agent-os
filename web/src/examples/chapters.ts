@@ -24,7 +24,7 @@ export const chapters: readonly Chapter[] = [
         language: "ts",
         source: `const vm = await mc.create();
 
-await vm.fs.write("/tmp/hello.txt", "hello-agent-os\\n");
+await vm.fs.write("/tmp/hello.txt", "hello-AgentOS\\n");
 console.log("staged /tmp/hello.txt from the host");
 await vm.exec("cat /tmp/hello.txt");`,
       },
@@ -512,7 +512,7 @@ await vm.luau(\`
 
   local title = pres:addSlide({ layout = "title" })
   title:setTitle("Weekly Ops")
-  title:setBody("Generated inside Agent OS")
+  title:setBody("Generated inside AgentOS")
 
   local s = pres:addSlide({ layout = "titleAndContent" })
   s:setTitle("Highlights")
@@ -1760,7 +1760,6 @@ await render.close();`,
       kind: "remote",
       id: "vm-pool",
       label: "VM pool",
-      defaultUrl: "http://127.0.0.1:8080",
       summary:
         "A server-side pool is an address convention, not a second VM API. Use a stable tenant or job key as the VM identifier: Create attaches or allocates that machine, Connect opens it, and later requests reuse the same persisted state.",
       notes: [

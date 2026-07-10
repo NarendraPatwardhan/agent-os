@@ -1,4 +1,4 @@
-//! Reusable wasmtime host for the agent-os kernel.
+//! Reusable wasmtime host for the mc kernel.
 //!
 //! Both the interactive `mc` CLI and the e2e suite drive a compiled `kernel.wasm` through
 //! this one library — A2 means the kernel only ever runs as wasm, so every behavior test
@@ -773,7 +773,7 @@ impl SnapshotHeader {
             return Err(anyhow!("snapshot too short ({} bytes)", snap.len()));
         }
         if &snap[0..4] != SNAPSHOT_MAGIC {
-            return Err(anyhow!("not an agent-os snapshot (bad magic)"));
+            return Err(anyhow!("not an AgentOS snapshot (bad magic)"));
         }
         let version = u32::from_le_bytes(snap[4..8].try_into().unwrap());
         if version != SNAPSHOT_VERSION {

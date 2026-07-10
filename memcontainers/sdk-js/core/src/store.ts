@@ -307,7 +307,7 @@ function hasOpfs(): boolean {
   return typeof navigator !== "undefined" && Boolean(navigator.storage?.getDirectory);
 }
 
-/** The default content store: `$MC_STORE` on Node/Bun, OPFS in browsers. agent-os has no single fixed
+/** The default content store: `$MC_STORE` on Node/Bun, OPFS in browsers. AgentOS has no single fixed
  *  flavor-store path, so callers may still pass an explicit `store` when they need a named image store. */
 export function defaultStore(): ContentStore {
   const root = envStoreRoot();

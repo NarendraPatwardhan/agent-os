@@ -136,7 +136,7 @@ interface SnapshotHeader {
 function parseSnapshotHeader(snap: Uint8Array): SnapshotHeader {
   if (snap.length < SNAPSHOT_HEADER_LEN) throw new Error(`snapshot too short (${snap.length} bytes)`);
   for (let i = 0; i < 4; i++) {
-    if (snap[i] !== SNAPSHOT_MAGIC[i]) throw new Error("not an agent-os snapshot (bad magic)");
+    if (snap[i] !== SNAPSHOT_MAGIC[i]) throw new Error("not an AgentOS snapshot (bad magic)");
   }
   const dv = new DataView(snap.buffer, snap.byteOffset, snap.byteLength);
   const version = dv.getUint32(4, true);

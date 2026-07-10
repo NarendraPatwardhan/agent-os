@@ -1,14 +1,15 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as stylex from "@stylexjs/stylex";
 import { setArtifactSources } from "@mc/elements";
 import type { McTerminal } from "@mc/elements";
-import { text } from "instrument";
+import { layout, text } from "instrument";
 import { color } from "instrument/tokens/color.stylex.js";
 import { space } from "instrument/tokens/space.stylex.js";
 import { radius } from "instrument/tokens/radius.stylex.js";
 import { font } from "instrument/tokens/type.stylex.js";
 import { container } from "instrument/tokens/size.stylex.js";
 import { media } from "instrument/tokens/media.stylex.js";
+import { duration, easing } from "instrument/tokens/motion.stylex.js";
 import { runAutoDemo, type AutoDemoHandle } from "./heroDemo";
 
 // Point @mc/elements' artifact loader at the Bazel-staged kernel/image that Vite
@@ -74,16 +75,52 @@ const styles = stylex.create({
     borderRadius: radius.card,
     borderWidth: "1px",
     borderStyle: "solid",
-    borderColor: color.border,
-    backgroundColor: color.bgPanel,
     fontFamily: font.mono,
     fontSize: "13px",
     color: color.ink,
     overflowWrap: "anywhere",
     justifyContent: { default: "flex-start", [media.mobile]: "center" },
+    appearance: "none",
+    textAlign: "left",
+    cursor: "pointer",
+    transitionProperty: "background-color, border-color",
+    transitionDuration: duration.fast,
+    transitionTimingFunction: easing.out,
+    backgroundColor: {
+      default: color.bgPanel,
+      ":hover": color.bgCard,
+    },
+    borderColor: {
+      default: color.border,
+      ":hover": color.borderHover,
+    },
+    outlineWidth: { default: null, ":focus-visible": "2px" },
+    outlineStyle: { default: null, ":focus-visible": "solid" },
+    outlineColor: { default: null, ":focus-visible": color.signal },
+    outlineOffset: { default: null, ":focus-visible": "2px" },
   },
   prompt: {
     color: color.inkSubtle,
+  },
+  commandText: {
+    minWidth: 0,
+  },
+  copyStatus: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+    paddingLeft: space.s3,
+    borderLeftWidth: "1px",
+    borderLeftStyle: "solid",
+    borderLeftColor: color.border,
+    color: color.inkMuted,
+  },
+  copyStatusDone: {
+    color: color.successText,
+  },
+  copyIcon: {
+    display: "block",
   },
   terminalWrap: {
     width: "100%",
@@ -140,7 +177,56 @@ function HeroTerminal() {
   );
 }
 
+function CopyIcon({ copied }: { readonly copied: boolean }) {
+  return (
+    <svg
+      {...stylex.props(styles.copyIcon)}
+      width="16"
+      height="16"
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {copied ? (
+        <path d="m4.5 10.5 3.4 3.4 7.6-7.8" />
+      ) : (
+        <>
+          <rect x="7" y="6" width="9" height="10" rx="1.5" />
+          <path d="M13 6V4.5A1.5 1.5 0 0 0 11.5 3h-7A1.5 1.5 0 0 0 3 4.5v8A1.5 1.5 0 0 0 4.5 14H7" />
+        </>
+      )}
+    </svg>
+  );
+}
+
 export function Hero() {
+  const [copied, setCopied] = useState(false);
+  const resetTimer = useRef<number | null>(null);
+  const origin = typeof window === "undefined" ? "" : window.location.origin;
+  const installCommand = `curl -fsSL ${origin}/install.sh | bash`;
+
+  useEffect(
+    () => () => {
+      if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+    },
+    [],
+  );
+
+  const copyInstallCommand = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(installCommand);
+      setCopied(true);
+      if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
+      resetTimer.current = window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      setCopied(false);
+    }
+  };
+
   return (
     <main {...stylex.props(styles.page)}>
       <div {...stylex.props(styles.shell)}>
@@ -156,9 +242,25 @@ export function Hero() {
             A WebAssembly VM with a Unix shell, files, processes, pipes, snapshots, and a
             host-controlled capability boundary.
           </p>
-          <span {...stylex.props(styles.command)}>
-            <span {...stylex.props(styles.prompt)}>$</span> curl -fsSL agent-os.opyt.cloud/install.sh | bash
-          </span>
+          <button
+            type="button"
+            {...stylex.props(styles.command)}
+            onClick={() => void copyInstallCommand()}
+            aria-label={`${copied ? "Copied" : "Copy"} install command`}
+            title="Copy install command"
+          >
+            <span {...stylex.props(styles.prompt)}>$</span>
+            <span {...stylex.props(styles.commandText)}>{installCommand}</span>
+            <span
+              {...stylex.props(styles.copyStatus, copied && styles.copyStatusDone)}
+              aria-hidden="true"
+            >
+              <CopyIcon copied={copied} />
+            </span>
+            <span {...stylex.props(layout.srOnly)} aria-live="polite">
+              {copied ? "Install command copied" : ""}
+            </span>
+          </button>
         </div>
 
         <div {...stylex.props(styles.terminalWrap)}>

@@ -1,6 +1,6 @@
-# agent-os — Systems Analysis
+# AgentOS — Systems Analysis
 
-> A thorough, ground-truth analysis of agent-os: what each system *is*, *why* it is shaped the
+> A thorough, ground-truth analysis of AgentOS: what each system *is*, *why* it is shaped the
 > way it is, *how* it works, and the invariants it upholds. This document is the single design
 > reference for the project. It is self-contained: it defines its own vocabulary, states the
 > constitution it is judged against, and cites the code by the *names* of things (line numbers
@@ -11,7 +11,7 @@
 > section here, the section wins — change the system, or change this document in the same commit
 > and say why. The core — the kernel, the contracts, the userland, the warm domain engines — is
 > built and green. The network/browser edge (the multi-tenant server, the JavaScript host family,
-> the `@mc/*` SDK, the web app) is a designed, lineage-proven system whose agent-os port is staged.
+> the `@mc/*` SDK, the web app) is a designed, lineage-proven system whose AgentOS port is staged.
 > The size-optimized **Zig kernel** is the one deliberately-staged reimplementation, gated by
 > behavior parity against the Rust kernel.
 
@@ -19,7 +19,7 @@
 
 ## 0. Executive summary
 
-agent-os is **a self-contained Unix that lives inside a single WebAssembly module.** The operating
+AgentOS is **a self-contained Unix that lives inside a single WebAssembly module.** The operating
 system — process table, scheduler, virtual filesystem, pipes, networking, inter-process services —
 compiles to `wasm32` and runs as one `kernel.wasm`. It hosts *guest* programs (a shell, coreutils, a
 Luau interpreter, SQLite, a typst compiler) which are themselves wasm modules, executed inside the
@@ -48,7 +48,7 @@ Three properties make this more than a toy:
    `/bin/sqlite` on the command line are the same binary, never two codebases that drift — and the
    warmth survives a snapshot.
 
-**The synthesis, and why it is shaped this way.** agent-os is engineered as a deliberate synthesis of
+**The synthesis, and why it is shaped this way.** AgentOS is engineered as a deliberate synthesis of
 two ancestors, sequenced for low risk (the full argument is §2.4):
 
 - A *mature* Rust wasm-microkernel (the lineage called **memcontainers**) supplies the system design,
@@ -60,7 +60,7 @@ two ancestors, sequenced for low risk (the full argument is §2.4):
   Zig kernel compiled to `wasm32`, driving guests through `wasmi` compiled to wasm and linked in as a
   C-ABI shim. It is the seed and the evidence for the eventual Zig kernel, not the starting point.
 
-agent-os keeps the design, puts *everything* on a zero-staleness Bazel build graph with the ABI lifted
+AgentOS keeps the design, puts *everything* on a zero-staleness Bazel build graph with the ABI lifted
 into language-neutral contracts, ships the kernel **Rust-first by porting** the proven code (the
 fastest path to a stable, green system and the lightest load on the agents building it), brings **Zig
 in immediately** for the C/C++ guest-compilation lane, and stages a later **Zig kernel** behind a
@@ -71,7 +71,7 @@ it proves bit-for-bit parity with the Rust kernel.
 
 ## 1. The systems at a glance
 
-agent-os is built from a small number of countable systems. The rest of this document is roughly one
+AgentOS is built from a small number of countable systems. The rest of this document is roughly one
 section per row. Paths are given in the repository's restructured layout (§15): the OS we author lives
 under `memcontainers/`, the build machinery under `bazel/`.
 
@@ -247,7 +247,7 @@ This produces a three-pillar structure, ordered by value and risk:
 
 The lineage taught two more things worth stating outright. First, **one landmine**: the embedded
 interpreter must run in *eager* compilation mode — lazy translation charges the guest's fuel to
-translate a function and corrupts the host on a dry-fuel resume (§4.3). agent-os inherits this verbatim
+translate a function and corrupts the host on a dry-fuel resume (§4.3). AgentOS inherits this verbatim
 for both kernels. Second, the build wounds the staged plan deliberately cures: a `cargo test` that runs
 against a stale kernel, image staging via `remove_dir_all`, hardcoded `../../target/...` guest paths,
 two tar implementations that must stay byte-identical, checked-in vendored C/C++, host fonts and a host
@@ -284,7 +284,7 @@ The constitution is also a list of refusals; each maps to an invariant.
 ## 3. System 1 — Contracts: the single source of truth
 
 This is the spine. The lineage froze its ABI as a Rust macro, which gave zero drift *within one
-language*. agent-os is polyglot from day one (a Rust kernel, Zig guest shims, a TS client, a future Zig
+language*. AgentOS is polyglot from day one (a Rust kernel, Zig guest shims, a TS client, a future Zig
 kernel), so the source of truth is lifted **out of any language into data**, and the build *projects*
 it into all of them.
 
@@ -723,7 +723,7 @@ readable directory: `ls /svc` lists known services and `cat /svc/<name>` reports
 spawns it with a service marker as `argv[1]`), the CLI (`_start`, which itself connects to and calls the
 warm instance), and the `require("…")` library shim. This deliberately departs from the older "two
 binaries per tool" (`<tool>-svc` resident loop plus a thin CLI) convention: that doubles the `/bin`
-surface and leaks an implementation mode into the user-visible namespace. agent-os ships **one binary
+surface and leaks an implementation mode into the user-visible namespace. AgentOS ships **one binary
 with two activation modes**, chosen by the kernel from the contract (the `svc_serve` path vs `_start`),
 not by `argv[0]`. Service-capability is therefore a *property, not a second artifact*: an `mc_service`
 custom section (stamped like `mc_tier`/`mc_budget`) plus an `/etc/services.d/<name>.json` fragment.
@@ -1134,8 +1134,8 @@ interchangeable: the TTY applies ONLCR (real CRLF), while the control-channel ex
 The kernel and its Rust host are enough to run an agent locally; the network and browser edge turns that
 into a multi-tenant service and an in-browser product. It rests on a fifth boundary — the **wire**
 contract — and on the A3 promise that the *same* `kernel.wasm` runs under a second, JavaScript host
-family. It is a designed, lineage-proven system; in agent-os its packages (`server/` at the repository
-root, `memcontainers/hosts/js/`, `memcontainers/sdk-js/`, `web/`) are the staged port. Note the placement:
+family. It is a designed, lineage-proven system; within the AgentOS repository, the staged port lives in
+`server/`, `memcontainers/hosts/js/`, `memcontainers/sdk-js/`, and `web/`. Note the placement:
 `server/` sits at the root beside `web/`, *not* under `memcontainers/hosts/` — the two hosts are the
 embedding *libraries* (wasmtime and JS); `mc-server` is a deployment surface that *uses* the wasmtime
 host, a consumer like the web app, not a host itself.
@@ -1281,7 +1281,7 @@ out in `mc.use("github.issues", token)`: it derives `{ ref: "github.org.main", a
 
 ### 14.1 Bazel — the zero-staleness graph
 
-The build is a first-class subject because eliminating build pain is a primary reason agent-os exists.
+The build is a first-class subject because eliminating build pain is a primary reason AgentOS exists.
 Every artifact — each `kernel.wasm`, every guest, every image, every generated binding — is a Bazel target
 with declared inputs. The load-bearing edge: a test **`data`-depends** on the exact kernel its sources
 produce, so "did you rebuild?" is structurally impossible. Rust deps come from two separate lockfiles kept
@@ -1436,7 +1436,7 @@ agent-os/                      ← the repository root: a Bazel/deps/docs shell
 
 Two placement decisions encode design judgments. **The service glue lives under `programs/`, the dep under
 `third_party/`.** For SQLite, Luau, and typst the upstream source is a pure dependency
-(`third_party/<tool>/` = the `http_archive` build file + patches), while the agent-os code that turns it
+(`third_party/<tool>/` = the `http_archive` build file + patches), while the AgentOS code that turns it
 into a warm service — the Zig or Rust serve loop, the `require()` library, the skill, the font extractor —
 is *our* program, so it sits with the other programs under `memcontainers/programs/<tool>/`. **The server
 and the web app sit at the root, outside the core.** They are consumers of the OS (the server embeds the
@@ -1446,13 +1446,16 @@ The build rules and the mc tooling are centralized under `bazel/` (the cross-cut
 build-graph executables), while the three domain-specific `defs.bzl` files that only one package uses stay
 with their package (the contracts codegen, the wasmtime host transition, the size budget).
 
-**Naming.** `agent-os` names the *repository and the build*; it is not a prefix. The running system's
-identity is **`mc`**, frozen into the ABI itself — the `mc` syscall module, `mc_sys_*`, `mc_ctl_*`, the
-`env` bridge, the `mc_tier`/`mc_budget`/`mc_service` custom sections — and carried through to binaries
+**Naming.** **AgentOS** is the public product name. `agent-os` is the *repository and distribution
+slug*; it is not a runtime prefix. The running system's identity is **`mc`**, frozen into the ABI itself —
+the `mc` syscall module, `mc_sys_*`, `mc_ctl_*`, the `env` bridge, and the
+`mc_tier`/`mc_budget`/`mc_service` custom sections — and carried through to binaries
 (`mc-server`, `tools`), services (`/svc/<name>`), and the JS scope (`@mc/*`, with `<mc-*>` elements).
-Nothing is prefixed `agent-os-`; Bazel labels need no prefix because the package path *is* the namespace
-(`//memcontainers/kernel/rust`, `//memcontainers/contracts:mc_zig`). `module(name = "agent-os")` is the one
-place the project name appears.
+Nothing in the runtime or ABI is prefixed `agent-os-`; Bazel labels need no prefix because the package
+path *is* the namespace (`//memcontainers/kernel/rust`, `//memcontainers/contracts:mc_zig`).
+`module(name = "agent-os")` is the canonical build identity. Platform forms follow their native
+conventions: Elixir modules use `AgentOS.*`, the OTP app and paths use `agent_os`, environment variables
+use `AGENTOS_*`, and stable protocol extensions use `x-agentos-*`.
 
 ---
 
@@ -1460,7 +1463,7 @@ place the project name appears.
 
 ### 16.1 The load-bearing properties
 
-These are the properties that distinguish agent-os, each enforced by multiple systems at once:
+These are the properties that distinguish AgentOS, each enforced by multiple systems at once:
 
 1. **Containment.** A guest's entire computer — fds, pids, the VFS, the network as files — lives in linear
    memory and is built from kernel objects, never host objects. The host's raw handles are a kernel↔host
@@ -1529,8 +1532,8 @@ while the contract is still soft.
 | Domain engines: SQLite (`atlas`) and typst (`paper`) | Built |
 | Images/flavors (minimal→atlas/paper), `pkgfsd`, the stamping/roster tools | Built |
 | Rust/wasmtime host (bridge, control, snapshot/restore, deterministic mode) | Built |
-| `mc-server` (actor-per-VM, REST+WS, quota/eviction, S3 store), the `wire` protocol | Designed (lineage-proven); agent-os port staged |
-| JS host family, `@mc/{core,agent,elements}` SDK, web app | Designed (lineage-proven); agent-os port staged |
+| `mc-server` (actor-per-VM, REST+WS, quota/eviction, S3 store), the `wire` protocol | Designed (lineage-proven); AgentOS port staged |
+| JS host family, `@mc/{core,agent,elements}` SDK, web app | Designed (lineage-proven); AgentOS port staged |
 | Zig kernel + the `wasmi` C-ABI interpreter shim | Staged — the parity-gated migration target (§14.3) |
 
 The one-line summary: **a complete OS core — the kernel, the contracts, the wasmtime host, the userland,
@@ -1588,4 +1591,4 @@ parity grid.
 - **the landmine** — the embedded `wasmi` must run in eager compilation mode; lazy translation charges
   guest fuel and corrupts the host on a dry-fuel resume.
 - **mc** — the system's identity, frozen into the ABI: the `mc` syscall module, `mc_sys_*`, `mc_ctl_*`, the
-  `env` bridge, `mc-server`, the `@mc/*` scope. (`agent-os` names the repo and build only.)
+  `env` bridge, `mc-server`, the `@mc/*` scope. (`agent-os` is the repository and distribution slug.)

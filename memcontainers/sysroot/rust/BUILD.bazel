@@ -1,7 +1,7 @@
 load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//bazel:wasm32_build_test.bzl", "wasm32_build_test")
 
-# sysroot/rust — the RUST lane of the agent-os guest sysroot (SYSTEMS.md; sibling of //memcontainers/sysroot/zig):
+# sysroot/rust — the RUST lane of the mc guest sysroot (SYSTEMS.md; sibling of //memcontainers/sysroot/zig):
 # the safe `mc` syscall surface every Rust wasm guest links. The `mc` import block is GENERATED from
 # contracts/syscalls.kdl — a guest `$emit` on the SAME `mc_syscall_table!` the kernel's
 # dispatch derives from (B2: a guest can't import a syscall the kernel doesn't serve, drift

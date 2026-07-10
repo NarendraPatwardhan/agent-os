@@ -1,4 +1,4 @@
-// publish.mjs — cut a GitHub release for agent-os over the REST API (no `gh` CLI).
+// publish.mjs — cut an AgentOS GitHub release over the REST API (no `gh` CLI).
 //
 // GitHub's documented flow is two REST calls + N uploads:
 //   GET    api.github.com/repos/{repo}/releases/tags/{tag}            -> existing release, or 404

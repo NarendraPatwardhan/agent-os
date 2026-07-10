@@ -3,7 +3,7 @@
 // The typed channel a host uses to drive and inspect a running kernel: boot, tick,
 // feed input, and read/write the VFS out-of-band (for image staging, snapshots, and
 // the server's exec jobs). memcontainers grew this organically and zmc's was ad hoc;
-// agent-os elevates it to a generated contract — the biggest structural upgrade that
+// AgentOS elevates it to a generated contract — the biggest structural upgrade that
 // makes the two kernels interchangeable (§4.2). Transcribed from memcontainers
 // crates/kernel/src/lib.rs `pub extern "C" fn mc_*`.
 //

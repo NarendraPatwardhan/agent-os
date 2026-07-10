@@ -1,7 +1,7 @@
 <div align="center">
-  <img src="./web/public/agentos.svg" alt="agent-os hero" width="270">
+  <img src="./web/public/agentos.svg" alt="AgentOS hero" width="270">
 
-  <h1>agent-os</h1>
+  <h1>AgentOS</h1>
 
   <p><strong>A WebAssembly-native computer for AI agents.</strong></p>
 
@@ -31,11 +31,11 @@
   </p>
 
   <p>
-    <img src="./docs/agent-os-browser-vm.png" alt="agent-os browser VM shell running in the web hero" width="980">
+    <img src="./docs/agent-os-browser-vm.png" alt="AgentOS browser VM shell running in the web hero" width="980">
   </p>
 </div>
 
-agent-os gives AI agents a real computer: a contained Unix-like workspace with a
+AgentOS gives AI agents a real computer: a contained Unix-like workspace with a
 shell, files, network access, tools, data engines, document generation, and a
 programmable scripting layer. It runs as WebAssembly, so the whole machine can be
 paused, forked, replayed, moved, or restored as a value.
@@ -81,7 +81,7 @@ Use it when an agent needs to do actual work, not just call one API at a time.
 
 ### The agent has a computer
 
-Most tool platforms expose a bag of remote function calls. agent-os gives the
+Most tool platforms expose a bag of remote function calls. AgentOS gives the
 agent an operating system. The agent can use a shell, write Luau, inspect files,
 run pipelines, store intermediate artifacts, and call tools from code.
 
@@ -252,7 +252,7 @@ Why it pays off:
 
 ## Integration Model
 
-agent-os supports integrations in four complementary ways:
+AgentOS supports integrations in four complementary ways:
 
 1. Host tools: define a typed tool in application code and expose it through
    `/svc/tools`.

@@ -1,4 +1,4 @@
-//! Shared types for the Agent OS sys interface (DESIGN.md §4.1).
+//! Shared types for the mc sys interface (DESIGN.md §4.1).
 
 const errno = @import("errno.zig");
 

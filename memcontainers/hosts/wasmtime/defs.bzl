@@ -10,7 +10,7 @@ The same transition is what e2e targets apply to their host dependency, so "e2e 
 release wasmtime" is structural — not a flag someone has to remember to pass.
 
 NOTE on host_musl: this transition does NOT force `//platforms:host_musl` yet, and
-deliberately so. The original design wanted musl to "match a prebuilt libwasmtime.a" — but agent-os
+deliberately so. The original design wanted musl to "match a prebuilt libwasmtime.a" — but AgentOS
 compiles wasmtime from source (crate_universe), so that premise is gone. And true musl is a
 real toolchain integration, not a platform string: rules_rust's gnu and musl toolchains are
 constraint-INDISTINGUISHABLE (both `target_compatible_with = [cpu:x86_64, os:linux]`), so

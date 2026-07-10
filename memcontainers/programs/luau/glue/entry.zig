@@ -38,7 +38,7 @@ comptime {
     _ = @import("wasi_shim.zig"); // residual wasi import forwarders (fd_close)
 }
 
-const kVersion = "luau (agent-os) — Luau 0.725";
+const kVersion = "luau (AgentOS) — Luau 0.725";
 
 // Exit codes: 0 ok · 1 runtime error · 2 syntax/usage error.
 const EXIT_OK: c_int = 0;

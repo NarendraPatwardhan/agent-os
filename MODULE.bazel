@@ -2,9 +2,9 @@
 
 Every artifact in this repo is a Bazel target with declared inputs; the packages
 under this module declare those targets, and this file pins the toolchains they
-build with. `agent-os` is the name of the *repository and build* and appears here
-and nowhere else — the running system's identity is `mc`, frozen into the ABI
-(SYSTEMS.md). Do not prefix anything `agent-os-*`.
+build with. `agent-os` is the repository and build slug; the running system's
+identity is `mc`, frozen into the ABI (SYSTEMS.md). Do not prefix runtime or ABI
+names `agent-os-*`.
 
 Toolchains land in two waves so that `bazel test //...` is green at every step:
   - ACTIVE now: the validated wasm32-freestanding spine (platforms + Zig 0.16 +

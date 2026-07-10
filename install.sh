@@ -18,7 +18,7 @@ cleanup() {
 trap cleanup EXIT
 
 die() {
-  printf 'agent-os install: %s\n' "$*" >&2
+  printf 'AgentOS install: %s\n' "$*" >&2
   exit 1
 }
 
@@ -279,7 +279,7 @@ Quickstart (Bun / Node 22+):
     image:  new Uint8Array(readFileSync("${d}/${image_asset}")),
     deterministic: true,
   });
-  try { console.log((await vm.exec("echo hello from agent-os")).stdout); }
+  try { console.log((await vm.exec("echo hello from AgentOS")).stdout); }
   finally { await vm.close(); }
 EOF
 }

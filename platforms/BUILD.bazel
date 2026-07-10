@@ -1,6 +1,6 @@
 load("@rules_zig//zig:toolchain.bzl", "zig_target_toolchain")
 
-# The target worlds agent-os compiles for, all in one home so a target's world is
+# The target worlds AgentOS compiles for, all in one home so a target's world is
 # visible from its `platform =`/transition — never a buried "excluded from
 # default-members" footnote (SYSTEMS.md).
 package(default_visibility = ["//visibility:public"])

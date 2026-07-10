@@ -1,6 +1,6 @@
 """cc_headers — expose a set of C/C++ headers as a CcInfo (compilation context only) WITHOUT a CC
 toolchain. The zig c++ build (rules_zig, via `deps`) consumes the CcInfo's include dirs + headers;
-the actual compile is done by zig, so no cc_library / cc_toolchain is needed (agent-os registers a
+the actual compile is done by zig, so no cc_library / cc_toolchain is needed (AgentOS registers a
 zig toolchain, not a CC one). See SYSTEM.md."""
 
 load("@bazel_skylib//lib:paths.bzl", "paths")

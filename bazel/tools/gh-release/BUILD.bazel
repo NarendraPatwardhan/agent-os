@@ -1,9 +1,9 @@
 load(":defs.bzl", "gh_release")
 
-# tools/gh-release — `bazel run` a GitHub release for agent-os straight from the graph, over the REST
+# tools/gh-release — `bazel run` an AgentOS GitHub release straight from the graph, over the REST
 # API (no `gh` CLI). The mechanism is in defs.bzl; this is the one concrete release target.
 #
-# First cut ships everything to run agent-os client-side: the one kernel.wasm, the five SHIPPED flavor
+# First cut ships everything to run AgentOS client-side: the one kernel.wasm, the five SHIPPED flavor
 # tars (minimal, posix, loom, atlas, paper), the self-contained @mc/core ESM bundle (mc-core.mjs —
 # @mc/host/@mc/contracts/zod inlined, imports with no npm install), and catalog-compiler.wasm (the
 # connection-catalog compiler the SDK loads when a VM declares OpenAPI/GraphQL connections). The tool

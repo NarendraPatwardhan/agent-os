@@ -1,5 +1,5 @@
 //! `json` — a lightweight, pure `no_std + alloc` alternative to `serde_json`
-//! (parse + serialize) shared across agent-os Rust components: the kernel reads
+//! (parse + serialize) shared across AgentOS Rust components: the kernel reads
 //! `/etc/services.d` fragments to
 //! activate resident services, and userspace tools can parse tool-call
 //! results instead of only hand-building request bodies. No syscalls, no `std`, no

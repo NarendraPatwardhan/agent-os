@@ -1,4 +1,4 @@
-//! POSIX-classic errno surface for the Agent OS syscall facade.
+//! POSIX-classic errno surface for the mc syscall facade.
 //! Everything above `sys/` only ever sees `Errno`.
 
 pub const Errno = enum(i32) {

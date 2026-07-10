@@ -10,6 +10,7 @@ import type { Example } from "../types";
 export function RemoteDriver({ example }: { example: Extract<Example, { kind: "remote" }> }) {
   const session = useVmSession();
   const r = useRemoteLifecycle(session, example.defaultUrl);
+  const pageOrigin = typeof window === "undefined" ? "" : window.location.origin;
 
   return (
     <ExampleShell
@@ -25,7 +26,7 @@ export function RemoteDriver({ example }: { example: Extract<Example, { kind: "r
                 onChange={(e) => r.setUrl(e.target.value)}
                 disabled={r.locked}
                 spellCheck={false}
-                placeholder="https://agentos.opyt.cloud"
+                placeholder={pageOrigin}
               />
               <span {...stylex.props(styles.urlSuffix)}>/v1</span>
             </span>

@@ -1,6 +1,6 @@
 --!strict
 --[[
-  typst.luau — compile Typst to PDF from agent-os Luau: `require("typst")`.
+  typst.luau — compile Typst to PDF from AgentOS Luau: `require("typst")`.
 
   The ergonomic face of the resident `typst` SERVICE. `typst.compile(source)` sends `.typ` source to the
   warm service — which keeps ~30 MB of fonts loaded across calls (SYSTEMS.md) — and returns the PDF

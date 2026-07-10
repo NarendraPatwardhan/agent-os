@@ -1,9 +1,9 @@
 ---
 name: agent-os-typst
-description: 'Compile Typst documents to PDF inside agent-os, and compose PDFs from generated data. Use this skill whenever the task mentions compiling `.typ` to PDF in the VM, generating a PDF report/whitepaper/resume/invoice from a script, `require("typst")`, `/bin/typst`, `typst compile`, the `paper` flavor, the typst resident service, `/usr/share/fonts`, or turning sqlite/xlsx data into a typeset PDF. Prefer the Luau `typst` library over shelling out to `$ typst`; use the CLI only for quick one-shot compiles. (For authoring Typst SYNTAX itself, see the separate `typst` authoring skill — this one is the agent-os service that runs the compiler.)'
+description: 'Compile Typst documents to PDF inside AgentOS, and compose PDFs from generated data. Use this skill whenever the task mentions compiling `.typ` to PDF in the VM, generating a PDF report/whitepaper/resume/invoice from a script, `require("typst")`, `/bin/typst`, `typst compile`, the `paper` flavor, the typst resident service, `/usr/share/fonts`, or turning sqlite/xlsx data into a typeset PDF. Prefer the Luau `typst` library over shelling out to `$ typst`; use the CLI only for quick one-shot compiles. (For authoring Typst SYNTAX itself, see the separate `typst` authoring skill — this one is the AgentOS service that runs the compiler.)'
 ---
 
-# Agent-OS Typst
+# AgentOS Typst
 
 Use the Luau `typst` library to compile Typst source to PDF — shipped as a VFS module by the `paper` flavor (not embedded in the interpreter, unlike `json`). The source of truth is the resident-service contract in `SYSTEMS.md`, the typst guest packaging in `third_party/typst/glue/BUILD.bazel`, and the paper flavor layer that ships `/bin/typst`, `/lib/luau/typst.luau`, and the baseline faces under `/usr/share/fonts`.
 
@@ -78,7 +78,7 @@ Use the narrowest real gate that proves the behavior:
 
 - Script type check: `/bin/luau --check script.luau`.
 - Script runtime: `/bin/luau script.luau`.
-- agent-os typst/kernel behavior: `bazel test //tests/e2e`.
+- AgentOS typst/kernel behavior: `bazel test //tests/e2e`.
 
 For PDF-producing scripts, validate the output, not just the exit code: check the bytes start with `%PDF-` and end with `%%EOF`, and re-read any generated file. When a compile is expected to fail, assert on the diagnostics (`pcall` the call and check the message), not just that it errored.
 

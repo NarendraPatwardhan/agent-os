@@ -28,8 +28,10 @@ export type RemoteLifecycle = {
  *  field is the base host; `mc.connect` appends `/v1/vms` (the "/v1" is shown on the
  *  input). `connect` attaches the created VM to the session's `manual` terminal;
  *  `kill` closes it server-side (DELETE) and tears the terminal down. */
-export function useRemoteLifecycle(session: VmSession, defaultUrl = "https://agentos.opyt.cloud"): RemoteLifecycle {
-  const [url, setUrl] = useState(defaultUrl);
+export function useRemoteLifecycle(session: VmSession, defaultUrl?: string): RemoteLifecycle {
+  const [url, setUrl] = useState(
+    () => defaultUrl ?? (typeof window === "undefined" ? "" : window.location.origin),
+  );
   const [apiKey, setApiKey] = useState("");
   const [vmId, setVmId] = useState(randomVmId);
   const [vm, setVm] = useState<Vm | null>(null);

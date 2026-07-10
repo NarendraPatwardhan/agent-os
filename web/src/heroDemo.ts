@@ -4,7 +4,7 @@
 const encoder = new TextEncoder();
 
 // Grounded in the loom image: the shell parses $(), pipes and redirection; awk/wc
-// exist in /bin; /etc/profile's first line names the OS ("# agent-os — …"). Keeps
+// exist in /bin; /etc/profile's first line names the OS ("# AgentOS — …"). Keeps
 // output to two short lines (the tool count, then the greeting).
 const DEFAULT_SCRIPT: readonly string[] = [
   "os=$(awk 'NR==1 {print $2}' /etc/profile)",

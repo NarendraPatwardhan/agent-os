@@ -1,4 +1,4 @@
-//! `toolcore` — pure catalog/search/schema logic for the agent-os tool plane.
+//! `toolcore` — pure catalog/search/schema logic for the mc tool plane.
 //!
 //! The resident `/svc/tools` broker owns syscalls and warmth; this crate owns the data contract:
 //! dotted tool addresses, sharded catalog parsing, deterministic lexical search, small JSON-Schema

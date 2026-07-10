@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "${AGENT_OS_SKIP_BADGE_HOOK:-}" == "1" ]]; then
+if [[ "${AGENTOS_SKIP_BADGE_HOOK:-}" == "1" ]]; then
   exit 0
 fi
 

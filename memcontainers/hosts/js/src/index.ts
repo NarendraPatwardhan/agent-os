@@ -1,4 +1,4 @@
-// @mc/host — the JavaScript host for the agent-os kernel, with behavioral parity to the Rust/wasmtime
+// @mc/host — the JavaScript host for the mc kernel, with behavioral parity to the Rust/wasmtime
 // host (A3). It implements the same `env` bridge over web APIs (`fetch`, `WebSocket`, `crypto`,
 // `node:fs`/OPFS) and drives the same tick loop, so the SAME kernel.wasm runs unchanged under bun, the
 // browser, and node. The `env` bridge and the `mc_ctl_*` export lookup are wired from the generated

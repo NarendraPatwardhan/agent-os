@@ -1,6 +1,6 @@
 --!strict
 --[[
-  sqlite.luau — the warm, typed SQLite data layer for agent-os Luau: `require("sqlite")`.
+  sqlite.luau — the warm, typed SQLite data layer for AgentOS Luau: `require("sqlite")`.
 
   The ergonomic face of the resident `sqlite` SERVICE. `sqlite.open(path)` holds a WARM connection
   (the service keeps the `sqlite3*` open across calls); `db:query` returns Lua VALUES (typed rows),

@@ -1,4 +1,4 @@
-//! agent-os guest sysroot — the safe `mc` syscall surface for wasm guest programs.
+//! mc guest sysroot — the safe `mc` syscall surface for wasm guest programs.
 //!
 //! A guest links this `no_std` rlib to get three things: the `mc` import block
 //! GENERATED from the syscall contract (so a guest can never import a syscall the kernel

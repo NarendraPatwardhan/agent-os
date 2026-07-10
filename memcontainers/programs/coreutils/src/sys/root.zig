@@ -1,4 +1,4 @@
-//! Agent OS-only syscall facade for coreutils.
+//! mc-only syscall facade for coreutils.
 //!
 //! This keeps nutils' applet-facing `sys` API, but removes the native/WASI backend
 //! selector. Shipped coreutils are pure mc guests; raw ABI imports come from

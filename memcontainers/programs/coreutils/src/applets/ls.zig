@@ -196,8 +196,8 @@ fn padLeft(out: *textio.BufOut, s: []const u8, width: usize) sys.Error!void {
     try out.extend(s);
 }
 
-/// One output line for `entry`. Short output preserves the original Agent OS
-/// coreutils behavior: directories and symlinks are always visibly classified.
+/// One output line for `entry`. Short output preserves the original behavior:
+/// directories and symlinks are always visibly classified.
 fn writeLine(ctx: *Ctx, out: *textio.BufOut, o: Opts, e: Entry) sys.Error!void {
     if (!o.long) {
         try out.extend(e.name);

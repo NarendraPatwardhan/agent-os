@@ -1,4 +1,4 @@
-//! /bin mcbox — Zig coreutils multicall over the Agent OS mc sysroot.
+//! /bin mcbox — Zig coreutils multicall over the mc sysroot.
 
 const std = @import("std");
 const agent_sys = @import("sys");

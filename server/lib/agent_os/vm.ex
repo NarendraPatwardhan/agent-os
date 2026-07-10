@@ -1,6 +1,6 @@
 defmodule AgentOS.Vm do
   @moduledoc """
-  One agent-os VM, owned by exactly one BEAM process — the **actor-per-VM** unit
+  One AgentOS VM, owned by exactly one BEAM process — the **actor-per-VM** unit
   (CONTROL_PLANE.md §7), the OTP realization of mc-server's `run_actor`.
 
   ## Why one process per VM

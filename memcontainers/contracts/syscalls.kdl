@@ -2,7 +2,7 @@
 //
 // The single source of truth for the user-space contract between a wasm guest and
 // the kernel (§4.2, §6). Transcribed from memcontainers crates/abi/src/lib.rs — the
-// frozen ABI at version 1.3 (52 syscalls), + agent-os's 5 resident-service rows (svc_*) → 1.4 (57).
+// frozen ABI at version 1.3 (52 syscalls), + AgentOS's 5 resident-service rows (svc_*) → 1.4 (57).
 // The projector emits from this one file:
 //   - the Rust kernel's `Pending` enum + wasmi `register_syscalls` bindings,
 //   - the Rust guest sysroot's `extern "C"` import block,

@@ -1,4 +1,4 @@
-//! `typst` — the Typst document compiler as an agent-os resident SERVICE (SYSTEMS.md). One std binary,
+//! `typst` — the Typst document compiler as an AgentOS resident SERVICE (SYSTEMS.md). One std binary,
 //! two modes (the kv/sqlite pattern): the kernel activates it with the service marker as argv[1] and it
 //! runs a warm `svc_serve` loop that loads ~30 MB of fonts ONCE and compiles `.typ` → PDF for every
 //! caller; run from the shell it is a thin `svc_connect`/`svc_call` CLIENT. The Luau library

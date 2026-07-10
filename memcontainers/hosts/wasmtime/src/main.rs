@@ -1,4 +1,4 @@
-//! `mc` — the agent-os runtime CLI. Loads a `kernel.wasm` (and an optional base image),
+//! `mc` — the AgentOS runtime CLI. Loads a `kernel.wasm` (and an optional base image),
 //! then drives it either interactively over a raw terminal or from a scripted input
 //! transcript (the mode the e2e suite uses). All the real work lives in the `host`
 //! library; this is the thin front door, named `mc` for the running system's identity,
@@ -14,7 +14,7 @@ mod terminal;
 use terminal::Terminal;
 
 #[derive(Parser, Debug)]
-#[command(name = "mc", about = "agent-os runtime — load and drive a kernel.wasm")]
+#[command(name = "mc", about = "AgentOS runtime — load and drive a kernel.wasm")]
 struct Cli {
     /// Path to the kernel.wasm artifact.
     #[arg(long, value_name = "PATH")]

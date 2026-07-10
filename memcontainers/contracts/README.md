@@ -1,6 +1,6 @@
 # contracts — the four boundaries
 
-This directory is the **single source of truth** for every boundary in agent-os
+This directory is the **single source of truth** for every boundary in AgentOS
 (SYSTEMS.md). None of the kernels, hosts, shims, or clients *is* the truth — the
 contract is — so they cannot drift.
 

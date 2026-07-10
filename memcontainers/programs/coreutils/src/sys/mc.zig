@@ -1,7 +1,7 @@
-//! The Agent OS kernel backend (DESIGN.md §4.2). This is the file that maps the
+//! The mc kernel backend (DESIGN.md §4.2). This is the file that maps the
 //! applet-facing `sys` API to the generated `mc` kernel ABI. The errno numbers, stat
 //! layout, open flags, and constants (signals, poll events, seek whence, tiers) are
-//! taken from the frozen contract in the Agent OS kernel source
+//! taken from the frozen mc contract
 //! (`memcontainers/contracts/syscalls.kdl` + `constants.kdl`, cross-checked against the
 //! kernel handlers). The 44-byte stat layout is size@0/kind@8/nlink@12/mode@16/
 //! mtime@20/atime@28/ctime@36, all ms.
