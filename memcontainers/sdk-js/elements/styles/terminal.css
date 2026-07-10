@@ -68,7 +68,9 @@
  *    as theme.background) ──────────────────────────────────────────────────── */
 .mc-term .xterm {
   width: 100%; height: 100%;
-  padding: var(--mc-term-pad, var(--space-6, 24px));
+  box-sizing: border-box;
+  padding: var(--mc-term-pad, var(--space-6, 24px)) var(--space-2, 8px)
+    var(--mc-term-pad, var(--space-6, 24px)) var(--mc-term-pad, var(--space-6, 24px));
   margin: 0; border: 0; border-radius: 0; box-shadow: none;
   overflow: hidden; font-variant-numeric: tabular-nums;
   background: var(--mc-term-bg);
@@ -82,7 +84,7 @@
 .mc-term .xterm-viewport {
   background: transparent !important;
   position: absolute; inset: 0;
-  right: calc(var(--space-2, 8px) - var(--mc-term-pad, var(--space-6, 24px))) !important;
+  right: 0 !important;
   overflow-y: auto !important;
   cursor: default;
   scrollbar-width: thin;
@@ -98,7 +100,7 @@
 .mc-term .xterm-viewport::-webkit-scrollbar-corner { background: transparent; }
 .mc-term .xterm-scrollable-element > .scrollbar {
   width: 5px !important;
-  right: calc(var(--space-2, 8px) - var(--mc-term-pad, var(--space-6, 24px))) !important;
+  right: 0 !important;
   border-radius: var(--radius-pill, 999px);
 }
 .mc-term .xterm-scrollable-element > .scrollbar > .slider {

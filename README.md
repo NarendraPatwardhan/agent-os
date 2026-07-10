@@ -13,7 +13,7 @@
     <img alt="SDK: TypeScript and Bun" src="https://img.shields.io/badge/SDK-TypeScript%20%2B%20Bun-3178c6">
 <!-- BEGIN generated:image-size-badges -->
     <br>
-    <img alt="Image size: minimal 1.1 MiB" src="https://img.shields.io/static/v1?label=minimal&amp;message=1.1%20MiB&amp;color=2e7d32">
+    <img alt="Image size: minimal 1.2 MiB" src="https://img.shields.io/static/v1?label=minimal&amp;message=1.2%20MiB&amp;color=2e7d32">
     <img alt="Image size: posix 2.2 MiB" src="https://img.shields.io/static/v1?label=posix&amp;message=2.2%20MiB&amp;color=2e7d32">
     <img alt="Image size: loom 6.2 MiB" src="https://img.shields.io/static/v1?label=loom&amp;message=6.2%20MiB&amp;color=d99a08">
     <img alt="Image size: atlas 7.2 MiB" src="https://img.shields.io/static/v1?label=atlas&amp;message=7.2%20MiB&amp;color=1565c0">

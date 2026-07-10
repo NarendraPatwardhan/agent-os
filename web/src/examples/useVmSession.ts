@@ -39,6 +39,18 @@ type Options = {
 };
 
 const crlf = (s: string): string => s.replace(/\r?\n/g, "\r\n");
+const ansi = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+
+function longestLine(...chunks: string[]): number {
+  return Math.max(
+    0,
+    ...chunks
+      .join("")
+      .replace(ansi, "")
+      .split(/\r?\n/)
+      .map((line) => line.length),
+  );
+}
 
 /** The shared VM/terminal substrate, once. Owns the race-safe mc-ready wiring, the
  *  reboot-by-key, the vm handle, the logs, and both boot modes. Every driver calls
@@ -130,8 +142,10 @@ export function useVmSession(opts: Options = {}): VmSession {
     setLogs: (lines) => setLogsState(lines),
     clearLogs: () => setLogsState([]),
     echoTerminal: (prompt, stdout) => {
-      const t = termRef.current?.terminal;
+      const element = termRef.current;
+      const t = element?.terminal;
       if (!t) return;
+      element.ensureColumns(longestLine(prompt, stdout));
       if (prompt) t.write(crlf(prompt));
       if (stdout) t.write(crlf(stdout));
     },

@@ -1799,6 +1799,8 @@ fn emit_codec_module(lang: &str, nodes: &[Node], contract: &str) -> String {
         "elixir" => o.push_str(&emit_elixir_messages(&messages, contract)),
         _ => o.push_str(&format!("// codec projection is not defined for {lang}\n")),
     }
+    o.truncate(o.trim_end().len());
+    o.push('\n');
     o
 }
 

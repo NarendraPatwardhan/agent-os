@@ -79,6 +79,41 @@ type Boot = {
   readonly deterministic?: boolean;
 };
 
+/** A user input for the `connect` kind (a credential, an owner/repo, a spec URL).
+ *  Values reach the program as `fields.‹key›` and fill "${key}" placeholders in the
+ *  connection template. */
+export type ConnectField = {
+  readonly key: string;
+  readonly label: string;
+  readonly placeholder?: string;
+  /** Prefilled value (editable). */
+  readonly value?: string;
+  /** Render as a password input — for tokens. */
+  readonly secret?: boolean;
+  /** May be left empty (e.g. a token for an API with anonymous reads — an empty
+   *  bearer credential downgrades the connection to auth none). */
+  readonly optional?: boolean;
+};
+
+/** A serializable connection declaration. Every "${key}" inside a string is
+ *  replaced with the matching field value before mc.create — so credentials are
+ *  typed by the user, never checked into this file. */
+export type ConnectionTemplate = {
+  readonly ref: string;
+  readonly auth:
+    | { readonly kind: "none" }
+    | { readonly kind: "bearer"; readonly token: string }
+    | { readonly kind: "header"; readonly name: string; readonly value: string }
+    | { readonly kind: "query"; readonly name: string; readonly value: string };
+  readonly tools?: readonly string[];
+  readonly origins?: readonly string[];
+  readonly spec?: {
+    readonly url: string;
+    readonly format: "openapi" | "microsoft-graph" | "google-discovery" | "graphql" | "mcp-remote";
+    readonly sourceFormat?: "json" | "yaml";
+  };
+};
+
 /** An example (a chapter subitem / pill). The `kind` selects its driver. */
 export type Example =
   // Editable code; play reboots the VM and runs the whole source (real exec).
@@ -87,6 +122,17 @@ export type Example =
   | (Base & Boot & { readonly kind: "program"; readonly code: Code; readonly artifacts?: readonly string[] })
   // Read-only code / step list; play reboots and runs the declarative steps.
   | (Base & Boot & { readonly kind: "commands"; readonly steps: readonly Step[]; readonly code?: Code })
+  // Editable code run on a VM booted WITH a declared connection; optional fields
+  // collect user inputs (credentials, repos, spec URLs) that fill the template and
+  // reach the program as `fields.‹key›`.
+  | (Base &
+      Boot & {
+        readonly kind: "connect";
+        readonly code: Code;
+        readonly connection: ConnectionTemplate;
+        readonly fields?: readonly ConnectField[];
+        readonly artifacts?: readonly string[];
+      })
   // The flavor picker — a span per image, each with a play button that boots it.
   | (Base & { readonly kind: "flavors" })
   // The remote create → connect → kill lifecycle form.

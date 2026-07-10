@@ -209,6 +209,10 @@ export class McTerminal extends LitElement {
   fit(): void {
     this.handle?.refit();
   }
+  /** Widen the backing grid without widening the element; the screen scrolls it. */
+  ensureColumns(columns: number): void {
+    this.handle?.ensureColumns(columns);
+  }
   /** The underlying xterm Terminal (advanced use / testing). */
   get terminal() {
     return this.handle?.term;

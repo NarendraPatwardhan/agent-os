@@ -23,6 +23,7 @@ export interface TerminalHandle {
   readonly term: Terminal;
   readonly fit: FitAddon;
   refit(): void;
+  ensureColumns(columns: number): void;
   dispose(): void;
 }
 
@@ -80,13 +81,27 @@ export function makeXterm(
 
   const term = new Terminal(options);
   const fit = new FitAddon();
+  let transcriptColumns = 0;
   term.loadAddon(fit);
   term.open(body);
 
   const refit = (): void => {
     if (!autoFit) return;
     try {
-      fit.fit();
+      const dims = fit.proposeDimensions();
+      if (!dims) return;
+      const columns = Math.max(dims.cols, transcriptColumns);
+      const element = term.element;
+      if (element && columns > dims.cols) {
+        const css = getComputedStyle(element);
+        const padding = Number.parseFloat(css.paddingLeft) + Number.parseFloat(css.paddingRight);
+        const contentWidth = Math.max(1, body.clientWidth - padding);
+        const cellWidth = contentWidth / dims.cols;
+        element.style.width = `${Math.ceil(cellWidth * columns + padding)}px`;
+      } else if (element) {
+        element.style.width = "100%";
+      }
+      term.resize(columns, dims.rows);
       term.scrollToBottom();
     } catch {
       /* element detached mid-fit */
@@ -94,11 +109,7 @@ export function makeXterm(
   };
 
   if (autoFit) {
-    try {
-      fit.fit();
-    } catch {
-      /* not laid out yet */
-    }
+    refit();
     // The first fit can run before fonts/layout settle, leaving rows too tall;
     // re-fit once the box and the mono font are ready.
     requestAnimationFrame(refit);
@@ -117,6 +128,10 @@ export function makeXterm(
     term,
     fit,
     refit,
+    ensureColumns(columns: number) {
+      transcriptColumns = Math.max(transcriptColumns, columns);
+      refit();
+    },
     dispose() {
       ro?.disconnect();
       scope.removeEventListener("click", onClick);

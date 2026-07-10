@@ -1,6 +1,7 @@
 import type { Example } from "../types";
 import { ProgramDriver } from "./ProgramDriver";
 import { CommandsDriver } from "./CommandsDriver";
+import { ConnectDriver } from "./ConnectDriver";
 import { FlavorsDriver } from "./FlavorsDriver";
 import { RemoteDriver } from "./RemoteDriver";
 import { ProseDriver } from "./ProseDriver";
@@ -14,6 +15,8 @@ export function ExampleDriver({ example }: { example: Example }) {
       return <ProgramDriver example={example} />;
     case "commands":
       return <CommandsDriver example={example} />;
+    case "connect":
+      return <ConnectDriver example={example} />;
     case "flavors":
       return <FlavorsDriver example={example} />;
     case "remote":

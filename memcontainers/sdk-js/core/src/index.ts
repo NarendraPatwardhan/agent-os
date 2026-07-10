@@ -23,6 +23,10 @@ export { tool, kit } from "./tools.js";
 export type { ToolSpec } from "./tools.js";
 // zod, re-exported so embedders can type `tool()` inputs without a second install.
 export { z } from "zod";
+// The curated-registry reader (§5.11) — build integration pickers from the same
+// entries the host compiles connections from.
+export { defaultCatalogCompiler } from "@mc/host";
+export type { RegistryEntry } from "@mc/host";
 export { EmbeddedBackend, FanoutSink } from "./embedded.js";
 export { RemoteBackend } from "./remote.js";
 export type { RemoteBackendOptions } from "./remote.js";

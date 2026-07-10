@@ -55,6 +55,7 @@ pub const BuildInput = struct {
         };
     }
 };
+
 // One exact path mapping for a multi-stage copy op.
 pub const COPY_PATH_MSG_ID: u16 = 4;
 pub const COPY_PATH_VERSION: u8 = 1;

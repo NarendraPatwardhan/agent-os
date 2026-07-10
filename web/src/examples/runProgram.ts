@@ -1,4 +1,4 @@
-import { kit, tool, z } from "@mc/elements";
+import { defaultCatalogCompiler, kit, loadCatalogCompiler, tool, z } from "@mc/elements";
 import type { Vm } from "@mc/elements";
 import type { VmSession } from "./useVmSession";
 
@@ -11,11 +11,18 @@ import type { VmSession } from "./useVmSession";
  *   • `luauSession()` / `tool(def)` / `fs` delegate to the real VM.
  *   • `type(cmd)` sends to the interactive shell (looks typed, no structured result).
  *   • console.log/error land in the panel below the terminal.
- *  The eval scope also carries the SDK's `tool`/`kit`/`z`, so a program can define
- *  typed host tools and register them with `vm.tool`. Only the `program` kind uses
- *  this `new Function` eval — non-editable demos use the declarative `runSteps`
- *  instead, so the eval surface stays minimal. */
-export async function runProgram(source: string, vm: Vm, session: VmSession): Promise<void> {
+ *  The eval scope also carries the SDK's `tool`/`kit`/`z` (so a program can define
+ *  typed host tools and register them with `vm.tool`) plus `fields` — the connect
+ *  kind's user inputs. `mc.registry()` reads the curated integration registry via
+ *  the staged catalog compiler. Only the program/connect kinds use this
+ *  `new Function` eval — non-editable demos use the declarative `runSteps` instead,
+ *  so the eval surface stays minimal. */
+export async function runProgram(
+  source: string,
+  vm: Vm,
+  session: VmSession,
+  fields: Record<string, string> = {},
+): Promise<void> {
   // Boot leaves a live `$ ` at the cursor; the first painted exec rides it, every
   // later one paints its own. A `type` hands the prompt back to the real shell.
   let promptAtCursor = true;
@@ -47,6 +54,12 @@ export async function runProgram(source: string, vm: Vm, session: VmSession): Pr
     connect: () => {
       throw new Error("mc.connect isn't available in this in-browser demo");
     },
+    registry: async () => {
+      const pending = loadCatalogCompiler();
+      if (!pending) throw new Error("catalog-compiler.wasm isn't registered on this page");
+      const cc = await defaultCatalogCompiler(await pending);
+      return cc.registryList();
+    },
   };
   const con = {
     log: (...args: unknown[]) => session.print(args.map(String).join(" ")),
@@ -58,7 +71,15 @@ export async function runProgram(source: string, vm: Vm, session: VmSession): Pr
     "tool",
     "kit",
     "z",
+    "fields",
     `return (async () => {\n${source}\n})();`,
-  ) as (m: typeof mc, c: typeof con, t: typeof tool, k: typeof kit, zz: typeof z) => Promise<void>;
-  await fn(mc, con, tool, kit, z);
+  ) as (
+    m: typeof mc,
+    c: typeof con,
+    t: typeof tool,
+    k: typeof kit,
+    zz: typeof z,
+    f: Record<string, string>,
+  ) => Promise<void>;
+  await fn(mc, con, tool, kit, z, fields);
 }

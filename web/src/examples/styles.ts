@@ -26,7 +26,7 @@ export const styles = stylex.create({
   },
   layout: {
     height: "100%",
-    maxWidth: "1560px",
+    maxWidth: "1760px",
     display: "grid",
     gridTemplateColumns: "380px minmax(0, 1fr)",
     gap: "clamp(24px, 2.2vw, 40px)",
@@ -42,7 +42,7 @@ export const styles = stylex.create({
     flex: 1,
     minHeight: 0,
     display: "grid",
-    gridTemplateColumns: "minmax(0, 1fr) clamp(340px, 30vw, 460px)",
+    gridTemplateColumns: "minmax(0, 1fr) clamp(432px, calc(100vw - 1260px), 660px)",
     gridTemplateRows: "auto minmax(0, 1fr)",
     columnGap: space.s6,
     rowGap: space.s3,

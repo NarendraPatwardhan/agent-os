@@ -14,14 +14,23 @@ export { McTerminal } from "./elements/mc-terminal.js";
 export { McEditor } from "./elements/mc-editor.js";
 
 // ── runtime helpers + types (for embedders) ─────────────────────────────────
-export { setArtifactSources, prefetchArtifacts } from "./vm/artifacts.js";
-export { makeVmHost } from "./vm/host.js";
+export { setArtifactSources, prefetchArtifacts, loadCatalogCompiler } from "./vm/artifacts.js";
+export { makeVmHost, resolveCreateOptions } from "./vm/host.js";
 export type { BootOptions, VmHost } from "./vm/host.js";
 export { vmHostContext, installContextRoot } from "./vm/context.js";
 
 // The SDK itself, for embedders that drive VM lifecycle directly (create / connect
 // / restore / close) alongside the elements — e.g. a remote create→connect→kill flow.
 // `tool`/`kit`/`z` ride along so a page can define typed host tools (`vm.tool`)
-// without importing @mc/core separately.
-export { mc, tool, kit, z } from "@mc/core";
-export type { Vm, CreateOptions, ToolDefinition, SessionHandle, SessionEvent } from "@mc/core";
+// without importing @mc/core separately; `defaultCatalogCompiler` reads the curated
+// registry (pair it with `loadCatalogCompiler` for the wasm bytes).
+export { mc, tool, kit, z, defaultCatalogCompiler } from "@mc/core";
+export type {
+  Vm,
+  CreateOptions,
+  ConnectionDefinition,
+  ToolDefinition,
+  SessionHandle,
+  SessionEvent,
+  RegistryEntry,
+} from "@mc/core";

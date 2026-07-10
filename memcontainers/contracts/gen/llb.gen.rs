@@ -60,6 +60,7 @@ impl BuildInput {
         })
     }
 }
+
 /// One exact path mapping for a multi-stage copy op.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CopyPath {

@@ -110,6 +110,10 @@ js_binary(
         "127.0.0.1",
         "--port",
         "5173",
+        # Workspace deps (@mc/elements) change under an unchanged lockfile, which vite's
+        # dep-optimizer cache can't see — force re-optimization so stale pre-bundles
+        # never miss a new export.
+        "--force",
     ],
     visibility = ["//visibility:public"],
 )

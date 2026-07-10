@@ -605,6 +605,12 @@ fn http_json_post(
         "Content-Type".to_string(),
         Value::String("application/json".to_string()),
     );
+    // Streamable-HTTP MCP servers require BOTH content types (they 406 otherwise) and may
+    // answer as SSE; plain-JSON endpoints (GraphQL) just see application/json first.
+    headers.insert(
+        "Accept".to_string(),
+        Value::String("application/json, text/event-stream".to_string()),
+    );
     if let Some(connection) = connection_ref {
         headers.insert(
             CONNECTION_HEADER.to_string(),
@@ -624,7 +630,41 @@ fn http_json_post(
         return Err(format!("host returned HTTP {status}"));
     }
     let bytes = out.map_err(|_| "host response failed".to_string())?;
-    String::from_utf8(bytes).map_err(|_| "host response was not UTF-8".to_string())
+    let text = String::from_utf8(bytes).map_err(|_| "host response was not UTF-8".to_string())?;
+    Ok(extract_sse_json(text))
+}
+
+/// An SSE answer carries the JSON-RPC response as `data:` lines — events are blank-line
+/// separated, one event's `data:` lines join with "\n". Return the frame carrying
+/// `result`/`error` (notification frames carry `method` instead), mirroring the host-side
+/// discovery extractor. A plain-JSON body passes through untouched.
+fn extract_sse_json(text: String) -> String {
+    let head = text.trim_start();
+    if !(head.starts_with("event:") || head.starts_with("data:") || head.starts_with(':')) {
+        return text;
+    }
+    let normalized = text.replace("\r\n", "\n");
+    let mut frames = Vec::new();
+    for block in normalized.split("\n\n") {
+        let data: Vec<&str> = block
+            .lines()
+            .filter_map(|line| {
+                line.strip_prefix("data:")
+                    .map(|rest| rest.strip_prefix(' ').unwrap_or(rest))
+            })
+            .collect();
+        if !data.is_empty() {
+            frames.push(data.join("\n"));
+        }
+    }
+    for frame in &frames {
+        if let Ok(msg) = serde_json::from_str::<Value>(frame) {
+            if msg.get("result").is_some() || msg.get("error").is_some() {
+                return frame.clone();
+            }
+        }
+    }
+    frames.pop().unwrap_or(text)
 }
 
 fn read_all_fd(fd: i32) -> Result<Vec<u8>, i32> {
@@ -880,5 +920,32 @@ impl OutStream {
         }
         self.source = StreamSource::Done;
         self.pending.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sse_tool_call_returns_the_response_frame() {
+        let stream = "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\"}\r\n\r\nevent: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"content\":[]}}\r\n\r\n";
+        let out = extract_sse_json(stream.to_string());
+        let value: Value = serde_json::from_str(&out).expect("response frame must be JSON");
+
+        assert!(
+            value.get("result").is_some(),
+            "expected response frame: {value}"
+        );
+        assert!(
+            value.get("method").is_none(),
+            "notification must be skipped: {value}"
+        );
+    }
+
+    #[test]
+    fn plain_json_tool_call_passes_through() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"result":{"data":true}}"#;
+        assert_eq!(extract_sse_json(body.to_string()), body);
     }
 }

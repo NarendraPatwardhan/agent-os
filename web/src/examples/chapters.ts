@@ -11,7 +11,7 @@ function ch(id: string, num: string, title: string, tagline: string, examples: r
   return { id, num, title, tagline, count: examples.length, examples };
 }
 
-// The book's ten chapters. Chapters 1–4 are authored; the rest carry the full TOC
+// The book's ten chapters. Chapters 1–5 are authored; the rest carry the full TOC
 // (prose placeholders) and get their walkthroughs next.
 export const chapters: readonly Chapter[] = [
   ch("first-contact", "1", "First Contact", "Three runtimes host the exact same VM surface — learn it once; it moves with you.", [
@@ -680,25 +680,35 @@ await vm.luau(\`
       id: "data-pdf",
       label: "Data → PDF",
       image: "paper",
-      artifacts: ["/tmp/q3.pdf"],
+      artifacts: ["/tmp/annual.pdf"],
       summary:
-        "The engines compose in one program: data in, typeset PDF out. paper ships Typst (not SQLite), so the data arrives here as a host-staged CSV; the same shape pairs SQLite with Typst on a custom flavor (§7.4) or across a snapshot handoff (§10.3).",
+        "The engines compose across the boundary: the embedding app computes a year of revenue (compounding growth + seasonality), stages it as a CSV, and one Luau program parses and typesets it. paper ships Typst (not SQLite); the same shape pairs SQLite with Typst on a custom flavor (§7.4) or across a snapshot handoff (§10.3).",
       notes: [
+        "Host JS is a first-class data source — compute there, stage with vm.fs.write, refine in-VM",
         "The expensive step — compile — runs once; assembling the source is cheap",
-        "string.split is a Luau builtin; the prelude adds string.splitlines and friends",
-        "Editing tip: this Luau rides in a JS template literal, so \\n escapes are eaten by JS first — use string.char(10) or splitlines",
+        "Editing tip: the Luau rides in a JS template literal, so \\n escapes are eaten by JS first — use string.char(10) or string.splitlines",
       ],
       code: {
         language: "ts",
         source: `const vm = await mc.create();
 
-await vm.fs.write("/tmp/sales.csv", "month,revenue\\nJul,182000\\nAug,204000\\nSep,231000\\n");
+// Compute a year of revenue on the host: 4% compounding growth + seasonality.
+const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const rows = ["month,revenue"];
+let base = 120000;
+months.forEach((m, i) => {
+  base *= 1.04;
+  const seasonal = 1 + 0.15 * Math.sin(((i + 10) / 12) * 2 * Math.PI);
+  rows.push(m + "," + Math.round(base * seasonal));
+});
+await vm.fs.write("/tmp/revenue.csv", rows.join("\\n") + "\\n");
+console.log("host generated " + months.length + " months of revenue");
 
 await vm.luau(\`
   local typst = require("typst")
 
   local rows = {}
-  for i, line in ipairs(string.splitlines(assert(sys.fs.read("/tmp/sales.csv")))) do
+  for i, line in ipairs(string.splitlines(assert(sys.fs.read("/tmp/revenue.csv")))) do
     if i > 1 and #line > 0 then
       local cols = string.split(line, ",")
       rows[#rows + 1] = string.format("[%s], [%s],", cols[1], cols[2])
@@ -706,13 +716,13 @@ await vm.luau(\`
   end
 
   local nl = string.char(10)
-  local src = "= Q3 Sales" .. nl .. "#table(columns: 2, " .. table.concat(rows, " ") .. ")"
+  local src = "= Annual Revenue" .. nl .. "#table(columns: 2, " .. table.concat(rows, " ") .. ")"
   local pdf = typst.compile(src)
-  sys.fs.write("/tmp/q3.pdf", pdf)
+  sys.fs.write("/tmp/annual.pdf", pdf)
   print("typeset " .. #rows .. " rows into " .. #pdf .. " bytes of PDF")
 \`);
 
-await vm.exec("ls -la /tmp/q3.pdf");`,
+await vm.exec("ls -la /tmp/annual.pdf");`,
       },
     },
     {
@@ -776,7 +786,355 @@ await vm.luau(\`
     },
   ]),
   ch("connecting-tools", "5", "Connecting Tools & Integrations", "The embedder declares connections; the agent inside only ever sees an address and JSON — the credential never enters the guest.", [
-    p("The model"), p("mc.use"), p("From the shell"), p("Envelope"), p("GitHub"), p("MS Graph"), p("Google"), p("GraphQL"), p("Remote MCP"), p("Any API"), p("Registry"), p("Capstone"),
+    {
+      kind: "connect",
+      id: "the-model",
+      label: "The model",
+      image: "loom",
+      connection: { ref: "deepwiki.org.main", auth: { kind: "none" }, tools: ["deepwiki"] },
+      summary:
+        "The tool model is a clean split: this page (the embedder) declares the connection — spec, credential, egress policy — and the agent inside only ever sees a tool address and JSON args. ▶ boots a VM with DeepWiki connected; the catalog the guest reads holds refs, never tokens.",
+      notes: [
+        "Address grammar: ‹integration›.‹owner›.‹connection›.‹tool› — ‹owner›.‹connection› defaults to org.main",
+        "‹owner›.‹connection› names the credential + origin allowlist the host resolves at egress",
+        "The /tools mirror is exactly what the agent sees — safe to log, diff, or show a reviewer",
+      ],
+      code: {
+        language: "ts",
+        source: `// ▶ declared page-side: { ref: "deepwiki.org.main", auth: { kind: "none" } }
+const vm = await mc.create();
+
+await vm.exec("tools list");
+await vm.exec("cat /tools/deepwiki/org/main/ask_question");`,
+      },
+    },
+    {
+      kind: "connect",
+      id: "mc-use",
+      label: "mc.use",
+      image: "loom",
+      connection: { ref: "github.org.main", auth: { kind: "bearer", token: "${token}" }, tools: ["github/issues"] },
+      fields: [
+        { key: "token", label: "GitHub token (optional — empty = anonymous, 60 req/h)", placeholder: "ghp_…", secret: true, optional: true },
+      ],
+      summary:
+        "For a curated integration, mc.use is the one-liner: name the capability (dotted integration.group) and hand over a key — it derives the connection + tool selector, turns on host-gated network, and injects the catalog. ▶ runs the equivalent expanded connection for github.issues so every Chapter 5 example shares one visible connection lifecycle.",
+      notes: [
+        'The capability must be dotted ("github.issues"); a slash form is rejected',
+        "The token goes to the host credential registry, not the guest; origins derive from the curated registry",
+        "Anonymous works for public repos; a token raises rate limits and unlocks private repos",
+      ],
+      code: {
+        language: "ts",
+        source: `// In an app: mc.use("github.issues", fields.token, { image: "loom" })
+// This lab expands that convenience call into the connection shown above.
+const vm = await mc.create();
+
+await vm.luau(\`
+  local tools = require("tools")
+  local issues = tools.call("github.org.main.issues-list-for-repo", {
+    path = { owner = "NarendraPatwardhan", repo = "agent-os" },
+    query = { per_page = 3, state = "all" },
+  })
+  assert(issues.ok, issues.err and issues.err.message)
+  print(#issues.data .. " issues fetched")
+  for _, issue in ipairs(issues.data) do print("#" .. issue.number .. "  " .. issue.title) end
+\`);`,
+      },
+    },
+    {
+      kind: "connect",
+      id: "from-the-shell",
+      label: "From the shell",
+      image: "loom",
+      connection: { ref: "deepwiki.org.main", auth: { kind: "none" }, tools: ["deepwiki"] },
+      summary:
+        "The tools applet exposes the whole catalog to shell and pipelines: list, ranked search, describe, call. Every call prints the same JSON contract, so ordinary filters can select exactly what the next step needs — here jq turns discovery into addresses and unwraps the tool's text response.",
+      notes: [
+        "call requires the caller's CAP_NET; discovery (list/search/describe) does not",
+        "Large or binary results land under /tmp/tools/results (or --output /path)",
+        "The subject here is this very repo — DeepWiki answers from NarendraPatwardhan/agent-os",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+await vm.exec("tools search wiki --limit 3 | jq -r '.items[].address'");
+await vm.exec(
+  \`tools call deepwiki.org.main.ask_question \` +
+  \`'{"repoName":"NarendraPatwardhan/agent-os","question":"What is an image flavor? Answer in one sentence."}' \` +
+  \`| jq -r '.data.content[0].text'\`
+);`,
+      },
+    },
+    {
+      kind: "connect",
+      id: "envelope",
+      label: "Envelope",
+      image: "loom",
+      connection: { ref: "github.org.main", auth: { kind: "none" }, tools: ["github/issues"] },
+      summary:
+        "Arguments follow the tool's source, and getting the envelope right is the difference between a call that works and one that 400s. REST splits parameters across the URL path, query string, and body — so OpenAPI/Graph/Discovery tools take { path, query, body }. GraphQL tools take flat variables; MCP tools take flat args.",
+      notes: [
+        'OpenAPI/Graph/Discovery: {"path":{…},"query":{…},"body":{…}} — mirror of the HTTP request',
+        "GraphQL: the operation's variables, flat. MCP: the tool's args, flat",
+        "tools describe ‹addr› shows the exact schema — this catalog compiled from GitHub's public spec, no credential",
+      ],
+      code: {
+        language: "ts",
+        source: `// GitHub's OpenAPI spec is public — the catalog compiles with auth none.
+const vm = await mc.create();
+
+await vm.exec("tools describe github.org.main.issues-create");`,
+      },
+    },
+    {
+      kind: "connect",
+      id: "github",
+      label: "GitHub",
+      image: "loom",
+      connection: { ref: "github.org.main", auth: { kind: "bearer", token: "${token}" }, tools: ["github/issues"] },
+      fields: [
+        { key: "token", label: "GitHub token (optional)", placeholder: "ghp_…", secret: true, optional: true },
+        { key: "owner", label: "Repo owner", value: "NarendraPatwardhan" },
+        { key: "repo", label: "Repo name", value: "agent-os" },
+      ],
+      summary:
+        "The explicit form of the same connection — declare ref + auth + a tool selector when you want a pinned spec or a custom origin. Point the fields at any repo you can read; the structured envelope carries owner/repo in path and paging in query.",
+      notes: [
+        "The field values reach this program as fields.owner / fields.repo",
+        "tools: [\"github/issues\"] narrows the compiled catalog to one group of the 1,000+ operation spec",
+        "Writes (issues-create) follow the same shape with a body — they need a token with scope",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+await vm.exec(
+  \`tools call github.org.main.issues-list-for-repo \` +
+  \`'{"path":{"owner":"\${fields.owner}","repo":"\${fields.repo}"},"query":{"per_page":3}}'\`
+);`,
+      },
+    },
+    {
+      kind: "connect",
+      id: "ms-graph",
+      label: "MS Graph",
+      image: "loom",
+      connection: { ref: "microsoft.org.work", auth: { kind: "bearer", token: "${token}" }, tools: ["microsoft/mail"] },
+      fields: [{ key: "token", label: "Graph access token (aka.ms/ge → Access token tab)", placeholder: "eyJ…", secret: true }],
+      summary:
+        "Microsoft Graph is a first-class spec format; microsoft is the whole-Graph bundle and the mail group narrows it to mailbox tools. Graph has no anonymous tier — paste an access token from Graph Explorer. Fair warning: the upstream Graph spec is ~38 MB, so the first boot chews for a while.",
+      notes: [
+        "The connection here is work, so addresses read microsoft.org.work.‹tool›",
+        "tools.describe shows the OData query params ($top, $filter, …)",
+        "The token lives page-side only — the guest sees addresses and JSON",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+await vm.luau(\`
+  local tools = require("tools")
+  local messages = tools.call("microsoft.org.work.listMessages", {})
+  assert(messages.ok, messages.err and messages.err.message)
+  for _, m in ipairs(messages.data.value or {}) do print(m.subject) end
+\`);`,
+      },
+    },
+    {
+      kind: "connect",
+      id: "google",
+      label: "Google",
+      image: "loom",
+      connection: { ref: "google-gmail.org.work", auth: { kind: "bearer", token: "${token}" }, tools: ["google-gmail"] },
+      fields: [
+        { key: "token", label: "Google OAuth token (developers.google.com/oauthplayground, Gmail scope)", placeholder: "ya29.…", secret: true },
+      ],
+      summary:
+        "Google APIs compile from the google-discovery format — each API is its own integration id (google-gmail, google-sheets, …). Gmail has no anonymous tier — mint a token in the OAuth playground with a Gmail scope, then list your own inbox from inside the sandbox.",
+      notes: [
+        "The address prefix is the integration id: google-gmail.org.work.gmail-users-messages-list",
+        "Discovery tools take the same { path, query, body } envelope as OpenAPI",
+        "google is the bundle if you want all of Workspace behind one consent",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+await vm.luau(\`
+  local tools = require("tools")
+  local res = tools.call("google-gmail.org.work.gmail-users-messages-list", {
+    path = { userId = "me" }, query = { maxResults = 5 },
+  })
+  assert(res.ok, res.err and res.err.message)
+  print("messages in your inbox page: " .. #(res.data.messages or {}))
+\`);`,
+      },
+    },
+    {
+      kind: "connect",
+      id: "graphql",
+      label: "GraphQL",
+      image: "loom",
+      connection: { ref: "anilist.org.main", auth: { kind: "none" }, tools: ["anilist"] },
+      summary:
+        "A graphql connection is discovered live — the endpoint is introspected at boot rather than compiled from a static file, and the tools appear as query.‹field› / mutation.‹field›. AniList is public and needs no key: search the schema, then call a query with flat variables.",
+      notes: [
+        "Introspection runs at create; a schema change upstream is picked up on the next boot",
+        "Variables are flat — no { path, query, body } envelope here",
+        "anilist ships in the curated registry, so origins are pre-vetted",
+      ],
+      code: {
+        language: "ts",
+        source: `// ▶ introspects https://graphql.anilist.co live and compiles query.* tools
+const vm = await mc.create();
+
+await vm.luau(\`
+  local tools = require("tools")
+  for _, hit in ipairs(tools.search("anime", { limit = 3 }).items) do print(hit.address) end
+
+  local res = tools.call("anilist.org.main.query.Media", { search = "Cowboy Bebop" })
+  assert(res.ok, res.err and res.err.message)
+  print(require("json").encode(res.data))
+\`);`,
+      },
+    },
+    {
+      kind: "connect",
+      id: "remote-mcp",
+      label: "Remote MCP",
+      image: "loom",
+      connection: { ref: "deepwiki.org.main", auth: { kind: "none" }, tools: ["deepwiki"] },
+      summary:
+        "An mcp-remote connection speaks the MCP handshake at boot; its tools take flat args. auth none + curated origins makes a public tool — and DeepWiki has an entry for this very repository, so the machine can ask questions about its own source code.",
+      notes: [
+        "The MCP session (initialize → tools/list) happens at create, host-side",
+        "ask_question is LLM-backed — give it ~20s to answer",
+        "12 MCP servers ship in the curated registry; deepwiki and context7 are featured",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+await vm.luau(\`
+  local tools = require("tools")
+  local res = tools.call("deepwiki.org.main.ask_question", {
+    repoName = "NarendraPatwardhan/agent-os",
+    question = "What is an image flavor, and how do layers relate to snapshots?",
+  })
+  assert(res.ok, res.err and res.err.message)
+  print(res.data.content[1].text)
+\`);`,
+      },
+    },
+    {
+      kind: "connect",
+      id: "any-api",
+      label: "Any API",
+      image: "loom",
+      connection: {
+        ref: "openmeteo.org.main",
+        auth: { kind: "none" },
+        origins: ["${origin}"],
+        spec: { url: "${specUrl}", format: "openapi", sourceFormat: "yaml" },
+      },
+      fields: [
+        {
+          key: "specUrl",
+          label: "OpenAPI spec URL",
+          value: "https://raw.githubusercontent.com/open-meteo/open-meteo/main/openapi/forecast.yml",
+        },
+        { key: "origin", label: "Allowed origin", value: "https://api.open-meteo.com" },
+      ],
+      summary:
+        "For an API that isn't in the registry, supply the spec yourself — a URL, bytes, or a pinned file. For a custom spec YOU set the origins: egress anywhere else fails closed. Prefilled with Open-Meteo's public forecast API; swap in your own spec + origin.",
+      notes: [
+        "Auth kinds: none / bearer / header / query — pick what the API expects",
+        "Formats: openapi, microsoft-graph, google-discovery, graphql, mcp-remote",
+        "Curated integrations derive origins from the vetted registry; custom specs must name theirs",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+await vm.exec("tools list");
+await vm.exec(
+  \`tools call openmeteo.org.main.v1-forecast \` +
+  \`'{"query":{"latitude":52.52,"longitude":13.41,"current_weather":true}}'\`
+);`,
+      },
+    },
+    {
+      kind: "program",
+      id: "registry",
+      label: "Registry",
+      image: "loom",
+      summary:
+        "The curated registry the host compiles connections from is readable — enumerate it to build an integration picker. Each entry carries its id, spec kind, source, and the vetted egress origins credentials are pinned to.",
+      notes: [
+        "mc.registry() reads the same catalog-compiler.wasm this page boots VMs with",
+        "Entry kinds: openapi, microsoft-graph, google-discovery, graphql, mcp-remote",
+        "servers is the curated origin allowlist — why a tampered upstream spec can't redirect your credential",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+const entries = await mc.registry();
+console.log(entries.length + " integrations in the curated registry");
+
+const byKind = {};
+for (const e of entries) byKind[e.kind] = (byKind[e.kind] ?? 0) + 1;
+for (const [kind, n] of Object.entries(byKind)) console.log(kind + ": " + n);
+
+for (const e of entries.filter((e) => e.kind === "mcp-remote").slice(0, 6)) {
+  console.log("· " + e.id + " → " + (e.endpoint ?? ""));
+}`,
+      },
+    },
+    {
+      kind: "connect",
+      id: "capstone",
+      label: "Capstone",
+      image: "atlas",
+      connection: { ref: "deepwiki.org.main", auth: { kind: "none" }, tools: ["deepwiki"] },
+      artifacts: ["/tmp/wiki.db"],
+      summary:
+        "Integrations and engines compose: a public MCP integration feeds SQLite for analysis — no credential anywhere, and the subject is this very repo. One Luau program pulls the wiki structure, lands it in a table, and queries it back; the database is yours to download.",
+      notes: [
+        "atlas = loom + the warm SQLite service, so tools and sqlite share one program",
+        "The same shape works for any integration — swap DeepWiki for Stripe and land invoices instead",
+        "Join it with mounted files (§6) or emit a PDF (§4) — same machine",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+await vm.luau(\`
+  local tools  = require("tools")
+  local sqlite = require("sqlite")
+
+  local res = tools.call("deepwiki.org.main.read_wiki_structure", {
+    repoName = "NarendraPatwardhan/agent-os",
+  })
+  assert(res.ok, res.err and res.err.message)
+
+  local db = assert(sqlite.open("/tmp/wiki.db"))
+  db:exec("CREATE TABLE pages (title TEXT)")
+  local stmt = db:prepare("INSERT INTO pages VALUES (?)")
+  local n = 0
+  for _, line in ipairs(string.splitlines(res.data.content[1].text)) do
+    local title = line:match("^%s*%-%s*(.+)")
+    if title then stmt:run(title); n += 1 end
+  end
+  stmt:close()
+  print(n .. " wiki pages catalogued")
+\`);
+
+await vm.exec(\`sqlite /tmp/wiki.db "SELECT title FROM pages LIMIT 5"\`);`,
+      },
+    },
   ]),
   ch("mounting-data", "6", "Mounting Data", "Host-backed storage as ordinary files: the agent reads a bucket, a repo, or a retrieval index with cat and ls.", [
     p("Host dir"), p("S3"), p("RAG mount"), p("Custom driver"), p("Mount vs conn"),
