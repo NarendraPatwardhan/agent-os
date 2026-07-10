@@ -13,6 +13,7 @@ import type {
   BuildDefinition,
   ContentStore,
   CreateOptions,
+  Driver,
   ImageManifest,
   PermissionRequest,
   ConnectionPolicyRule,
@@ -487,6 +488,59 @@ async function main(): Promise<void> {
     }
     if (!threwMixed) throw new Error("capabilityConnection should reject mixed integrations");
     console.log("phase: mc.use capability derivation OK");
+  }
+
+  // A declared host mount is machine boot state, so the long-lived login shell
+  // and subsequently spawned vm.exec tasks must observe the same namespace.
+  {
+    const mountedBytes = new TextEncoder().encode("mounted fixture\n");
+    const driver: Driver = {
+      readOnly: true,
+      async open(path) {
+        if (path === "/fixture.txt") return mountedBytes;
+        throw Object.assign(new Error(`missing ${path}`), { code: "ENOENT" });
+      },
+      async stat(path) {
+        return path === "/" || path === "." || path === ""
+          ? { kind: "dir", size: 0 }
+          : { kind: "file", size: mountedBytes.length };
+      },
+      async readdir() {
+        return [{ name: "fixture.txt", kind: "file" }];
+      },
+    };
+    const mountedVm = await mc.create({
+      kernel,
+      image,
+      mounts: [{ path: "/repo", driver, readOnly: true }],
+    });
+    try {
+      const scripted = await mountedVm.exec('read line < /repo/fixture.txt; echo "$line"');
+      if (scripted.exitCode !== 0 || scripted.stdout.trim() !== "mounted fixture") {
+        throw new Error(`declared mount missing from vm.exec: ${JSON.stringify(scripted)}`);
+      }
+
+      const shell = mountedVm.shell();
+      let transcript = "";
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          off();
+          reject(new Error(`declared mount missing from login shell: ${JSON.stringify(transcript)}`));
+        }, 2_000);
+        const off = shell.on((bytes) => {
+          transcript += new TextDecoder().decode(bytes);
+          if (transcript.includes("mounted fixture") && transcript.endsWith("$ ")) {
+            clearTimeout(timer);
+            off();
+            resolve();
+          }
+        });
+        shell.write('read line < /repo/fixture.txt; echo "$line"\n');
+      });
+      console.log("phase: declared mount is shared by vm.exec and login shell OK");
+    } finally {
+      await mountedVm.close();
+    }
   }
 
   // Remote create must preserve the same declarative tool-plane intent as embedded create. The client does

@@ -249,6 +249,19 @@ export function s3(opts: S3Options): Driver {
     body?: Uint8Array,
     extraHeaders?: Record<string, string>,
   ): Promise<Response> {
+    const url = `https://${host}${canonicalUri}${query ? `?${query}` : ""}`;
+    // Anonymous public-bucket access must stay a CORS-simple request. Adding the
+    // SigV4-only x-amz-* headers here would force a browser preflight even though
+    // there is no credential or signature; open-data buckets commonly allow
+    // anonymous GET/HEAD but intentionally reject those unnecessary headers.
+    if (!opts.credentials) {
+      return fetch(url, {
+        method,
+        ...(extraHeaders ? { headers: extraHeaders } : {}),
+        ...(body ? { body: body as BodyInit } : {}),
+      });
+    }
+
     const payload = body ?? new Uint8Array(0);
     const payloadHash = await sha256Hex(payload);
     const now = new Date();
@@ -298,7 +311,6 @@ export function s3(opts: S3Options): Driver {
         `SignedHeaders=${signedHeaders}, Signature=${signature}`;
     }
 
-    const url = `https://${host}${canonicalUri}${query ? `?${query}` : ""}`;
     return fetch(url, { method, headers, body: body as BodyInit | undefined });
   }
 

@@ -16,7 +16,10 @@ export function ProgramDriver({ example }: { example: Extract<Example, { kind: "
 
   const session = useVmSession({
     onReady: (vm, s) =>
-      runProgram(editorRef.current?.source ?? example.code.source, vm, s)
+      runProgram(editorRef.current?.source ?? example.code.source, vm, s, {}, {
+        image: example.image ?? "loom",
+        seedStore: example.labStore,
+      })
         .catch((e) => s.print(e instanceof Error ? e.message : String(e)))
         .then(() => artifacts.collect(vm)),
   });
@@ -24,7 +27,10 @@ export function ProgramDriver({ example }: { example: Extract<Example, { kind: "
   const play = (): void => {
     session.clearLogs();
     artifacts.reset();
-    session.bootBrowser(example.image ?? "loom", { deterministic: example.deterministic });
+    session.bootBrowser(example.image ?? "loom", {
+      deterministic: example.deterministic,
+      net: example.net,
+    });
   };
 
   return (

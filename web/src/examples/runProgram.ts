@@ -1,58 +1,216 @@
-import { defaultCatalogCompiler, kit, loadCatalogCompiler, tool, z } from "@mc/elements";
-import type { Vm } from "@mc/elements";
+import {
+  defaultCatalogCompiler,
+  kit,
+  llb as coreLlb,
+  loadCatalogCompiler,
+  mc as coreMc,
+  MemoryContentStore,
+  resolveCreateOptions,
+  s3,
+  tool,
+  vectorStore,
+  z,
+} from "@mc/elements";
+import type { CreateOptions, Vm } from "@mc/elements";
 import type { VmSession } from "./useVmSession";
 
-/** Run an editable program against the terminal's freshly-booted VM. `mc.create()`
- *  returns a REAL facade over that VM — no fakes:
- *   • `exec(cmd)` runs the real `vm.exec` (real {stdout,stderr,exitCode}) and, unless
- *     `echo:false`, paints `$ cmd` + its stdout into the terminal display.
- *   • `luau(src, args?)` stages the source at /tmp/program.luau and execs `/bin/luau`
- *     on it — the same write-then-exec the SDK's vm.luau does, at a stable painted path.
- *   • `luauSession()` / `tool(def)` / `fs` delegate to the real VM.
- *   • `type(cmd)` sends to the interactive shell (looks typed, no structured result).
- *   • console.log/error land in the panel below the terminal.
- *  The eval scope also carries the SDK's `tool`/`kit`/`z` (so a program can define
- *  typed host tools and register them with `vm.tool`) plus `fields` — the connect
- *  kind's user inputs. `mc.registry()` reads the curated integration registry via
- *  the staged catalog compiler. Only the program/connect kinds use this
- *  `new Function` eval — non-editable demos use the declarative `runSteps` instead,
- *  so the eval surface stays minimal. */
+type LabOptions = {
+  readonly image?: string;
+  readonly seedStore?: boolean;
+};
+
+type RecordState = { tip: ReturnType<typeof coreLlb.source> };
+
+/** Run editable lab code against real browser VMs. The short `mc.create()` used by
+ *  most pills resolves to the terminal's already-booted VM; lifecycle calls with
+ *  options (`mc.create({...})`, restore, fork, mounts, commits, and LLB solves)
+ *  delegate to the real SDK. This keeps the book-shaped snippets editable without
+ *  booting a second invisible machine before every example. */
 export async function runProgram(
   source: string,
   vm: Vm,
   session: VmSession,
   fields: Record<string, string> = {},
+  lab: LabOptions = {},
 ): Promise<void> {
-  // Boot leaves a live `$ ` at the cursor; the first painted exec rides it, every
-  // later one paints its own. A `type` hands the prompt back to the real shell.
+  const imageName = lab.image ?? "loom";
+  const external = new Set<Vm>();
   let promptAtCursor = true;
-  const exec = async (cmd: string, o?: { echo?: boolean }) => {
-    const r = await vm.exec(cmd);
-    if (o?.echo !== false) {
-      session.echoTerminal(`${promptAtCursor ? "" : "$ "}${cmd}\n`, r.stdout);
+  let activeRecord: RecordState | null = null;
+  let assets: Awaited<ReturnType<typeof resolveCreateOptions>> | null = null;
+  let store: MemoryContentStore | null = null;
+
+  const ensureAssets = async () => {
+    assets ??= await resolveCreateOptions({ image: imageName });
+    return assets;
+  };
+
+  const ensureStore = async (): Promise<MemoryContentStore> => {
+    if (store) return store;
+    const resolved = await ensureAssets();
+    if (!(resolved.image instanceof Uint8Array)) throw new Error(`could not seed ${imageName} image bytes`);
+    store = new MemoryContentStore();
+    const digest = await store.put(resolved.image);
+    await store.putManifest(imageName, {
+      schema: 1,
+      layers: [{ digest, size: resolved.image.length }],
+      config: {},
+    });
+    return store;
+  };
+
+  if (lab.seedStore) await ensureStore();
+
+  const shQuote = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`;
+  const paint = async (real: Vm, cmd: string, echo = true) => {
+    const r = await real.exec(cmd);
+    if (echo) {
+      session.echoTerminal(`${promptAtCursor ? "" : "$ "}${cmd}\n`, r.stdout || r.stderr);
       promptAtCursor = false;
     }
     return r;
   };
-  const shQuote = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`;
-  const ctx = {
-    exec,
-    type: (cmd: string) => {
-      session.send(`${cmd}\n`);
-      promptAtCursor = true;
-    },
-    fs: vm.fs,
-    luau: async (src: string, args: string[] = []) => {
-      await vm.fs.write("/tmp/program.luau", src);
-      return exec(["luau", "/tmp/program.luau", ...args.map(shQuote)].join(" "));
-    },
-    luauSession: () => vm.luauSession(),
-    tool: (def: Parameters<Vm["tool"]>[0]) => vm.tool(def),
+
+  const facade = (real: Vm, recordable = false): any => {
+    const record = (): RecordState | null => (recordable ? activeRecord : null);
+    const fs = {
+      read: (path: string) => real.fs.read(path),
+      readText: (path: string) => real.fs.readText(path),
+      ls: (path: string) => real.fs.ls(path),
+      stat: (path: string) => real.fs.stat(path),
+      readlink: (path: string) => real.fs.readlink(path),
+      write: (path: string, data: string | Uint8Array) => {
+        const r = record();
+        if (r) r.tip = coreLlb.write(r.tip, path, data);
+        return real.fs.write(path, data);
+      },
+      mkdir: (path: string) => {
+        const r = record();
+        if (r) r.tip = coreLlb.mkdir(r.tip, path);
+        return real.fs.mkdir(path);
+      },
+      rm: (path: string) => {
+        const r = record();
+        if (r) r.tip = coreLlb.rm(r.tip, path);
+        return real.fs.rm(path);
+      },
+      chmod: (path: string, mode: number) => {
+        const r = record();
+        if (r) r.tip = coreLlb.chmod(r.tip, path, mode);
+        return real.fs.chmod(path, mode);
+      },
+      symlink: (target: string, link: string) => {
+        const r = record();
+        if (r) r.tip = coreLlb.symlink(r.tip, target, link);
+        return real.fs.symlink(target, link);
+      },
+    };
+    return {
+      fs,
+      exec: async (cmd: string, opts?: { echo?: boolean }) => {
+        const r = record();
+        if (r) r.tip = coreLlb.exec(r.tip, cmd, { deterministic: true, tier: "full" });
+        return paint(real, cmd, opts?.echo !== false);
+      },
+      type: (cmd: string) => {
+        real.shell().write(`${cmd}\n`);
+        promptAtCursor = true;
+      },
+      luau: async (src: string, args: string[] = []) => {
+        await fs.write("/tmp/program.luau", src);
+        return paint(real, ["luau", "/tmp/program.luau", ...args.map(shQuote)].join(" "));
+      },
+      luauSession: () => real.luauSession(),
+      session: (kind?: string) => real.session(kind),
+      tool: (def: Parameters<Vm["tool"]>[0]) => real.tool(def),
+      mount: (path: string, driver: Parameters<Vm["mount"]>[1], opts?: { readOnly?: boolean }) =>
+        real.mount(path, driver, opts),
+      unmount: (path: string) => real.unmount(path),
+      snapshot: () => real.snapshot(),
+      cron: (...args: Parameters<Vm["cron"]>) => real.cron(...args),
+      fork: async () => {
+        const next = await real.fork();
+        external.add(next);
+        return facade(next);
+      },
+      commit: () => real.commit(),
+      status: () => real.status(),
+      serviceCall: (name: string, req?: Uint8Array) => real.serviceCall(name, req),
+      shell: (opts?: { language?: "sh" | "luau" }) => real.shell(opts),
+      close: async () => {
+        if (real === vm) return;
+        external.delete(real);
+        await real.close();
+      },
+    };
   };
+
+  const current = facade(vm, true);
+
+  const createExternal = async (opts: CreateOptions = {}): Promise<any> => {
+    const resolved = await ensureAssets();
+    let image = opts.image;
+    let selectedStore = opts.store ?? store ?? undefined;
+    if (image === undefined) image = resolved.image;
+    if (typeof image === "string" && !selectedStore) {
+      const other = await resolveCreateOptions({ image });
+      image = other.image;
+    }
+    const real = await coreMc.create({
+      ...opts,
+      runtime: "browser",
+      kernel: resolved.kernel,
+      image,
+      ...(selectedStore ? { store: selectedStore } : {}),
+      ...(resolved.catalogCompiler ? { catalogCompiler: resolved.catalogCompiler } : {}),
+    });
+    external.add(real);
+    return facade(real);
+  };
+
+  const restoreExternal = async (snapshot: Uint8Array, opts: CreateOptions = {}): Promise<any> => {
+    const resolved = await ensureAssets();
+    let image = opts.image;
+    const selectedStore = opts.store ?? store ?? undefined;
+    if (image === undefined) image = resolved.image;
+    const real = await coreMc.restore(snapshot, {
+      ...opts,
+      runtime: "browser",
+      kernel: resolved.kernel,
+      image,
+      ...(selectedStore ? { store: selectedStore } : {}),
+      ...(resolved.catalogCompiler ? { catalogCompiler: resolved.catalogCompiler } : {}),
+    });
+    external.add(real);
+    return facade(real);
+  };
+
+  const solveOptions = async () => {
+    const resolved = await ensureAssets();
+    return { store: await ensureStore(), kernel: resolved.kernel as Uint8Array };
+  };
+  const labLlb = {
+    ...coreLlb,
+    commit(input: Parameters<typeof coreLlb.commit>[0]) {
+      const pending = coreLlb.commit(input);
+      return {
+        asLayer: async () => pending.asLayer(await solveOptions()),
+        asImage: async () => pending.asImage(await solveOptions()),
+        asSnapshot: async () => pending.asSnapshot(await solveOptions()),
+      };
+    },
+  };
+
   const mc = {
-    create: async () => ctx,
-    connect: () => {
-      throw new Error("mc.connect isn't available in this in-browser demo");
+    create: async (opts?: CreateOptions) => (!opts || Object.keys(opts).length === 0 ? current : createExternal(opts)),
+    restore: restoreExternal,
+    record: async (opts: CreateOptions = {}) => {
+      const sourceRef = typeof opts.image === "string" ? opts.image : imageName;
+      activeRecord = { tip: coreLlb.source(sourceRef) };
+      return {
+        vm: current,
+        build: async () => coreLlb.toDefinition(activeRecord!.tip, { store: await ensureStore() }),
+      };
     },
     registry: async () => {
       const pending = loadCatalogCompiler();
@@ -65,6 +223,11 @@ export async function runProgram(
     log: (...args: unknown[]) => session.print(args.map(String).join(" ")),
     error: (...args: unknown[]) => session.print(args.map(String).join(" ")),
   };
+  const defaultStore = (): MemoryContentStore => {
+    if (!store) throw new Error("this example did not request a seeded browser content store");
+    return store;
+  };
+
   const fn = new Function(
     "mc",
     "console",
@@ -72,14 +235,17 @@ export async function runProgram(
     "kit",
     "z",
     "fields",
+    "llb",
+    "defaultStore",
+    "s3",
+    "vectorStore",
     `return (async () => {\n${source}\n})();`,
-  ) as (
-    m: typeof mc,
-    c: typeof con,
-    t: typeof tool,
-    k: typeof kit,
-    zz: typeof z,
-    f: Record<string, string>,
-  ) => Promise<void>;
-  await fn(mc, con, tool, kit, z, fields);
+  ) as (...args: any[]) => Promise<void>;
+
+  try {
+    await fn(mc, con, tool, kit, z, fields, labLlb, defaultStore, s3, vectorStore);
+  } finally {
+    activeRecord = null;
+    await Promise.all([...external].map((v) => v.close().catch(() => {})));
+  }
 }

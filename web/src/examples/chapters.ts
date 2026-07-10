@@ -1,18 +1,11 @@
 import type { Chapter, Example } from "./types";
 
-const kebab = (s: string): string =>
-  s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-
-/** A placeholder example (unauthored section) — carries only the tab label. */
-const p = (label: string): Example => ({ kind: "prose", id: kebab(label), label });
-
 // Build a chapter from its examples; count is derived from them.
 function ch(id: string, num: string, title: string, tagline: string, examples: readonly Example[]): Chapter {
   return { id, num, title, tagline, count: examples.length, examples };
 }
 
-// The book's ten chapters. Chapters 1–5 are authored; the rest carry the full TOC
-// (prose placeholders) and get their walkthroughs next.
+// The book's ten authored chapters.
 export const chapters: readonly Chapter[] = [
   ch("first-contact", "1", "First Contact", "Three runtimes host the exact same VM surface — learn it once; it moves with you.", [
     {
@@ -1140,18 +1133,705 @@ await vm.exec(\`sqlite /tmp/wiki.db "SELECT title FROM pages LIMIT 5"\`);`,
     },
   ]),
   ch("mounting-data", "6", "Mounting Data", "Host-backed storage as ordinary files: the agent reads a bucket, a repo, or a retrieval index with cat and ls.", [
-    p("Host dir"), p("S3"), p("RAG mount"), p("Custom driver"), p("Mount vs conn"),
+    {
+      kind: "files",
+      id: "host-dir",
+      label: "Host directory",
+      image: "posix",
+      mountPath: "/repo",
+      summary:
+        "A browser cannot silently open an arbitrary host path, so this is the honest browser counterpart to hostDir: you grant a directory handle, the page exposes it through a lazy read-only Driver, and the VM sees requested files at /repo without uploading the directory.",
+      notes: [
+        "On Bun/server, hostDir({ root, readOnly: true }) jails an ordinary OS directory instead",
+        "The guest gets files, never browser File handles — every read crosses the host-call bridge",
+        "Read-only mount + no network is a corpus the agent can inspect but cannot change or exfiltrate",
+      ],
+      code: {
+        language: "ts",
+        source: `// The picker mounted the selected directory at /repo, read-only.
+const vm = await mc.create();
+
+await vm.exec("find /repo -maxdepth 2 -type f | head -20");
+await vm.exec("find /repo -type f | wc -l");`,
+      },
+    },
+    {
+      kind: "s3",
+      id: "s3",
+      label: "S3",
+      image: "posix",
+      mountPath: "/artifacts",
+      summary:
+        "Mount a real S3 bucket as a directory. The form is prefilled with NOAA's public CORS Network open-data bucket, which supports anonymous browser reads; swap in any other public CORS-enabled bucket, or use SigV4 credentials from a server app.",
+      notes: [
+        "The SDK speaks SigV4 directly — no AWS SDK dependency",
+        "prefix exposes a jailed subtree; region defaults to us-east-1",
+        "CORS is a browser boundary, not an AgentOS limitation — server-side mounts do not need it",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+await vm.mount("/artifacts", s3({
+  bucket: fields.bucket,
+  region: fields.region,
+  prefix: fields.prefix,
+  readOnly: true,
+}), { readOnly: true });
+
+await vm.exec("ls -la /artifacts");
+await vm.exec("head -5 /artifacts/index.html");`,
+      },
+    },
+    {
+      kind: "program",
+      id: "rag-mount",
+      label: "RAG mount",
+      image: "posix",
+      summary:
+        "Retrieval becomes a file read: cat /rag/search/‹query› asks the host driver to embed the query and search its index. This miniature index is local and deterministic so you can inspect the entire mechanism; production supplies its real embedder and vector store behind the same two callbacks.",
+      notes: [
+        "vectorStore passes both the numeric vector and original query to search(vector, query)",
+        "The driver is read-only by default and exposes /search as an ordinary directory",
+        "No retrieval client ships into the guest — shell, Luau, and agents all use the same file",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+const docs = [
+  { text: "refund policy for failed card payments", v: [3, 2, 0] },
+  { text: "deploying the checkout worker", v: [0, 1, 3] },
+  { text: "invoice export troubleshooting", v: [1, 3, 0] },
+];
+const embed = async (q) => {
+  const s = q.toLowerCase();
+  return [+(s.includes("refund") || s.includes("payment")), +s.includes("invoice"), +s.includes("deploy")];
+};
+const search = async (qv) => docs
+  .map((d) => ({ ...d, score: d.v.reduce((n, x, i) => n + x * qv[i], 0) }))
+  .sort((a, b) => b.score - a.score)
+  .slice(0, 2)
+  .map((d) => d.score + "  " + d.text)
+  .join("\\n");
+
+await vm.mount("/rag", vectorStore({ embed, search }));
+await vm.exec("cat /rag/search/refund%20payment");`,
+      },
+    },
+    {
+      kind: "program",
+      id: "custom-driver",
+      label: "Custom driver",
+      image: "posix",
+      summary:
+        "A mount driver is just an async object. Implement open, stat, and readdir and the kernel can browse it; omit write methods and it is intrinsically read-only. This one serves a host-owned value that never exists in the image layer.",
+      notes: [
+        "Driver paths are mount-relative and absolute — /greeting here means /kv/greeting in the VM",
+        "Throw with code: ENOENT (etc.) to surface a POSIX errno; an uncoded throw maps to EIO",
+        "Add write/mkdir/unlink/rename to make a driver writable",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+const bytes = new TextEncoder().encode("hello from a host-backed driver\\n");
+
+const kv = {
+  async readdir(path) { return path === "/" ? [{ name: "greeting", kind: "file" }] : []; },
+  async stat(path) {
+    if (path === "/") return { kind: "dir", size: 0 };
+    if (path === "/greeting") return { kind: "file", size: bytes.length };
+    throw Object.assign(new Error("missing"), { code: "ENOENT" });
+  },
+  async open(path) {
+    if (path !== "/greeting") throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    return bytes;
+  },
+};
+
+await vm.mount("/kv", kv);
+await vm.exec("find /kv -maxdepth 1 -type f -print -exec cat {} \\\\;");`,
+      },
+    },
+    {
+      kind: "program",
+      id: "mount-vs-connection",
+      label: "Mount vs connection",
+      image: "loom",
+      summary:
+        "Mounts and connections solve different shapes and coexist in one machine. The mount below is browsable file-shaped context; the host tool is a typed action. The agent uses cat for one and tools call for the other — then composes their results in the same workspace.",
+      notes: [
+        "Mount: browse or stream a repo, bucket, corpus, or retrieval index",
+        "Connection/tool: validate a typed action with a schema, credential, and egress policy",
+        "Both are host attachments: snapshots retain guest-visible refs, not JS handles or closures",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+const context = new TextEncoder().encode("account=acme\\nplan=enterprise\\n");
+const corpus = {
+  readOnly: true,
+  async readdir() { return [{ name: "account.txt", kind: "file" }]; },
+  async stat(path) { return path === "/" ? { kind: "dir", size: 0 } : { kind: "file", size: context.length }; },
+  async open() { return context; },
+};
+
+await vm.mount("/corpus", corpus);
+await vm.tool(tool({
+  name: "account health",
+  description: "Return live health for an account",
+  input: z.object({ id: z.string() }),
+  run: ({ id }) => ({ id, health: "green" }),
+}));
+
+await vm.exec("cat /corpus/account.txt");
+await vm.exec(\`tools call host.org.main.account.health '{"id":"acme"}'\`);`,
+      },
+    },
   ]),
   ch("snapshot-fork-layers", "7", "Snapshot, Fork & Layers", "The whole computer — processes, warm services, filesystem — is a value you can capture, branch, and stack.", [
-    p("Snapshot"), p("Fork"), p("Layers"), p("Custom flavor"), p("Restore modes"),
+    {
+      kind: "program",
+      id: "snapshot",
+      label: "Snapshot",
+      image: "atlas",
+      summary:
+        "A snapshot captures the machine, not a command log. This run creates a live SQLite database, captures the VM, mutates the original, then restores the blob into another real VM — the restored branch still sees the earlier row and its warm service state.",
+      notes: [
+        "The blob contains processes, linear memory, filesystem, and resident services",
+        "Restoring does not replay setup commands; it resumes captured state",
+        "Host-only attachments such as credentials and JS closures must be supplied again",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+await vm.exec(\`sqlite /tmp/state.db "CREATE TABLE t(n); INSERT INTO t VALUES (42)"\`);
+
+const snapshot = await vm.snapshot();
+await vm.exec(\`sqlite /tmp/state.db "INSERT INTO t VALUES (99)"\`);
+
+const restored = await mc.restore(snapshot);
+await restored.exec(\`sqlite /tmp/state.db "SELECT n FROM t ORDER BY n"\`);
+console.log("snapshot blob: " + snapshot.length + " bytes; restored branch excludes the later 99");
+await restored.close();`,
+      },
+    },
+    {
+      kind: "program",
+      id: "fork",
+      label: "Fork",
+      image: "posix",
+      summary:
+        "fork() is snapshot + restore into a fresh independent VM. Two branches start with the same brief, then append different reviews; reading them back proves that neither branch wrote into the other or the base.",
+      notes: [
+        "The original stays live — fork does not swap or rewind it",
+        "Each child has an independent copy-on-write overlay over the same starting machine",
+        "Use it for parallel agent exploration after expensive shared setup",
+      ],
+      code: {
+        language: "ts",
+        source: `const base = await mc.create();
+await base.fs.write("/tmp/brief.md", "# Product launch\\n");
+
+const legal = await base.fork();
+const finance = await base.fork();
+await legal.exec("printf 'Legal review\\n' >> /tmp/brief.md", { echo: false });
+await finance.exec("printf 'Budget review\\n' >> /tmp/brief.md", { echo: false });
+
+console.log("LEGAL\\n" + (await legal.exec("cat /tmp/brief.md")).stdout);
+console.log("FINANCE\\n" + (await finance.exec("cat /tmp/brief.md")).stdout);
+console.log("BASE\\n" + (await base.exec("cat /tmp/brief.md")).stdout);
+await legal.close(); await finance.close();`,
+      },
+    },
+    {
+      kind: "program",
+      id: "layers",
+      label: "Layers",
+      image: "posix",
+      artifacts: ["/tmp/greet-layer.tar"],
+      summary:
+        "commit().asLayer() turns only the VM's diff-since-boot into a content-addressed tar layer. The digest identifies the bytes; download the layer and inspect it like any other OCI-style filesystem tar.",
+      notes: [
+        "A layer is portable filesystem state, not live process memory",
+        "The sha256 digest is over the exact tar bytes — identical diffs address identically",
+        "asSnapshot is the whole warm machine; asLayer is the stackable filesystem delta",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+await vm.fs.write("/usr/local/bin/greet", "#!/bin/sh\\necho hello from layer\\n");
+await vm.fs.chmod("/usr/local/bin/greet", 0o755);
+
+const layer = await vm.commit().asLayer();
+await vm.fs.write("/tmp/greet-layer.tar", layer.tar);
+console.log(layer.digest);
+console.log(layer.tar.length + " byte portable layer");`,
+      },
+    },
+    {
+      kind: "program",
+      id: "custom-flavor",
+      label: "Custom flavor",
+      image: "loom",
+      labStore: true,
+      summary:
+        "A named flavor is an ordered layer stack plus a runtime contract. This lab seeds an in-memory browser content store with loom, commits an Acme layer, writes a manifest, and boots that new flavor for real.",
+      notes: [
+        "The base layer is shared; the domain pack contains only its added files",
+        "Manifests carry tier, memory budget, and fuel alongside the ordered layer digests",
+        "A content store can be in memory, OPFS, or a server filesystem — the interface is the same",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+const store = defaultStore();
+const loom = await store.manifest("loom");
+
+await vm.fs.write("/home/user/acme.md", "# Acme support playbook\\n");
+await vm.fs.write("/home/user/acme-health", "#!/bin/sh\\necho acme-ok\\n");
+await vm.fs.chmod("/home/user/acme-health", 0o755);
+const layer = await vm.commit().asLayer();
+await store.put(layer.tar);
+await store.putManifest("acme-support", {
+  schema: 1,
+  layers: [...loom.layers, { digest: layer.digest, size: layer.tar.length }],
+  config: { tier: "full", budgetMib: 768 },
+});
+
+const custom = await mc.create({ image: "acme-support", store });
+await custom.exec("sh /home/user/acme-health; head -1 /home/user/acme.md");
+await custom.close();`,
+      },
+    },
+    {
+      kind: "program",
+      id: "restore-modes",
+      label: "Restore modes",
+      image: "loom",
+      summary:
+        "Snapshots retain the guest-visible tool catalog, but a JavaScript handler lives outside WebAssembly. Strict restore refuses to advertise a tool it cannot call; detached restore permits an inspection-only view; re-supplying the same tool makes strict restore whole again.",
+      notes: [
+        "strict is the default and fails before returning a misleading VM",
+        "detached preserves addresses and schemas for audit, but host handlers are absent",
+        "Connections, mounts, callbacks, and credentials follow the same attachment principle",
+      ],
+      code: {
+        language: "ts",
+        source: `const customerTool = tool({
+  name: "customer lookup",
+  description: "Look up one customer",
+  input: z.object({ id: z.string() }),
+  run: ({ id }) => ({ id, name: "Acme" }),
+});
+const vm = await mc.create();
+await vm.tool(customerTool);
+const snapshot = await vm.snapshot();
+
+try {
+  await mc.restore(snapshot);
+} catch (e) {
+  console.log("strict refused missing handler: " + e.message.split("\\n")[0]);
+}
+
+const detached = await mc.restore(snapshot, { restoreAttachments: "detached" });
+await detached.exec("tools list");
+await detached.close();
+
+const strict = await mc.restore(snapshot, { tools: [customerTool] });
+await strict.exec(\`tools call host.org.main.customer.lookup '{"id":"acme"}'\`);
+await strict.close();`,
+      },
+    },
   ]),
   ch("reproducible-builds", "8", "Reproducible Builds", "Driving a VM and building one are the same act — capture the steps and the machine becomes content-addressed.", [
-    p("Record"), p("llb graph"), p("Caching"),
+    {
+      kind: "program",
+      id: "record",
+      label: "Record",
+      image: "posix",
+      labStore: true,
+      summary:
+        "Record, don't rewrite. The same fs mutations and exec calls run live in this terminal while accumulating a canonical LLB definition. The definition is then solved as a warm snapshot and restored to prove it describes the machine you just drove.",
+      notes: [
+        "Reads are pure and omitted; write/mkdir/rm/chmod/symlink and exec advance the DAG",
+        "The Definition is portable contract data, not a JavaScript closure or command transcript",
+        "Host tools, mounts, and permission prompts are excluded because the LLB grammar cannot reproduce them",
+      ],
+      code: {
+        language: "ts",
+        source: `const store = defaultStore();
+const rec = await mc.record({ image: "posix" });
+await rec.vm.exec("mkdir -p /etc/agent");
+await rec.vm.fs.write("/etc/agent/policy.json", '{"network":"deny"}\\n');
+
+const definition = await rec.build();
+console.log(definition.ops.length + " canonical build operations");
+const warm = await llb.commit(definition).asSnapshot();
+
+const replay = await mc.restore(warm, { image: "posix", store });
+await replay.exec("cat /etc/agent/policy.json");
+await replay.close();`,
+      },
+    },
+    {
+      kind: "program",
+      id: "llb-graph",
+      label: "LLB graph",
+      image: "posix",
+      labStore: true,
+      summary:
+        "LLB authors the graph directly. Its verbs return opaque states and run nothing until commit; solving this write + exec graph produces a bootable manifest, then a second VM proves the built bytes and command output are really in the image.",
+      notes: [
+        "Nodes are content-addressed from operation, inputs, and arguments",
+        "write/mkdir/rm/chmod/symlink/exec/copy are steps; merge/diff/image compose graphs",
+        "asLayer selects a tar delta, asImage a bootable manifest, asSnapshot a warm machine",
+      ],
+      code: {
+        language: "ts",
+        source: `const store = defaultStore();
+const base = llb.source("posix");
+const configured = llb.exec(
+  llb.write(base, "/etc/flavor", "acme\\n"),
+  "mkdir -p /opt/acme && echo ready > /opt/acme/status",
+  { tier: "full" },
+);
+
+const image = await llb.commit(configured).asImage();
+console.log(image.layers.length + " ordered layers; build root " + image.build.rootDigest.slice(0, 20) + "…");
+const built = await mc.create({ image, store });
+await built.exec("cat /etc/flavor /opt/acme/status");
+await built.close();`,
+      },
+    },
+    {
+      kind: "program",
+      id: "caching",
+      label: "Caching",
+      image: "posix",
+      labStore: true,
+      summary:
+        "Solve the identical deterministic graph twice against one content store. The first solve materializes and snapshots the machine; the second resolves the same Merkle key and returns the cached warm snapshot instead of replaying the graph.",
+      notes: [
+        "Change one node and only its downstream subgraph receives new identities",
+        "deterministic + isolated is the strongest cache-sound step: no ambient clock, entropy, network, or persistence",
+        "Snapshot cache hits resume an already-booted machine, not merely an extracted filesystem",
+      ],
+      code: {
+        language: "ts",
+        source: `const store = defaultStore();
+const state = llb.write(llb.source("posix"), "/etc/cache-proof", "same inputs, same machine\\n");
+
+const t1 = performance.now();
+const first = await llb.commit(state).asSnapshot();
+const t2 = performance.now();
+const second = await llb.commit(state).asSnapshot();
+const t3 = performance.now();
+const same = first.length === second.length && first.every((b, i) => b === second[i]);
+console.log("same snapshot bytes: " + same);
+console.log("materialize " + Math.round(t2 - t1) + "ms · cached " + Math.round(t3 - t2) + "ms");
+
+const warm = await mc.restore(second, { image: "posix", store });
+await warm.exec("cat /etc/cache-proof");
+await warm.close();`,
+      },
+    },
   ]),
   ch("governance-safety", "9", "Governance & Safety", "Secrets stay host-side, egress goes through the host, and every capability is a dial the embedder sets.", [
-    p("Tiers"), p("Permissions"), p("Approval"), p("Secret-free"), p("Audit"),
+    {
+      kind: "program",
+      id: "tiers",
+      label: "Tiers",
+      image: "loom",
+      labStore: true,
+      summary:
+        "A tier is part of the image contract, not a hopeful runtime flag. This run derives a read-only flavor from loom and boots it; reads succeed, while a guest process trying to create a file receives a real permission failure.",
+      notes: [
+        "full → read-write → read-only → isolated is a descending capability ceiling",
+        "isolated confines read/compute to cwd and is the only fully deterministic tier",
+        "budgetMib and fuel live beside tier in the manifest and are enforced at boot",
+      ],
+      code: {
+        language: "ts",
+        source: `const store = defaultStore();
+const loom = await store.manifest("loom");
+await store.putManifest("read-only-lab", {
+  ...loom,
+  config: { tier: "read-only", budgetMib: 256 },
+});
+
+const restricted = await mc.create({ image: "read-only-lab", store });
+await restricted.exec(\`read first < /etc/profile; echo "$first"\`);
+const denied = await restricted.exec("echo nope > /tmp/should-not-exist");
+console.log("write exit " + denied.exitCode + " — " + (denied.stderr || "denied by tier").trim());
+await restricted.close();`,
+      },
+    },
+    {
+      kind: "program",
+      id: "permissions",
+      label: "Permissions",
+      image: "loom",
+      net: false,
+      summary:
+        "Permissions narrow ambient authority independently of the image tier. This second VM has network explicitly denied; Luau catches the failed sys.net request as an ordinary in-guest error while local computation continues.",
+      notes: [
+        "net installs the capability; permissions.network can deny it or restrict allowed origins",
+        "The trusted host vm.fs control channel remains the operator view — guest permissions govern guest work",
+        "Failure is local and inspectable, not a VM crash",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create({
+  net: false,
+  permissions: { network: "deny" },
+});
+
+await vm.luau(\`
+  local page, err = sys.net.get("https://example.com")
+  print("network allowed:", page ~= nil)
+  if not page then print("denied:", err) end
+  print("local work still runs:", 6 * 7)
+\`);
+await vm.close();`,
+      },
+    },
+    {
+      kind: "approval",
+      id: "approval",
+      label: "Approval",
+      image: "loom",
+      connection: { ref: "deepwiki.org.main", auth: { kind: "none" }, tools: ["deepwiki"] },
+      summary:
+        "Policy is enforced at the host credential/egress boundary. Press ▶ and this public MCP call stops before leaving the page; inspect the host-computed method, URL, and argument digest, then allow it once or reject it.",
+      notes: [
+        "Policies are connection-granular: integration.owner.connection.*, not per-tool names",
+        "With no approval handler, require_approval fails closed",
+        "The request contains method/url/origin/argsDigest — never credentials or untrusted catalog prose",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+await vm.exec(
+  \`tools call deepwiki.org.main.ask_question \` +
+  \`'{"repoName":"NarendraPatwardhan/agent-os","question":"Describe AgentOS in one sentence."}'\`
+);`,
+      },
+    },
+    {
+      kind: "connect",
+      id: "secret-free",
+      label: "Secret-free",
+      image: "loom",
+      connection: { ref: "github.org.main", auth: { kind: "bearer", token: "${token}" }, tools: ["github/issues"] },
+      fields: [{ key: "token", label: "Demo credential (edit it — it is never sent)", value: "demo-secret-42", secret: true }],
+      summary:
+        "The guest catalog carries a connection ref, never its credential. This page declares a demo bearer value, boots the GitHub catalog without making an API call, then the trusted host reads the guest-visible tool record and proves those secret bytes are absent.",
+      notes: [
+        "Credentials live in the host registry and are spliced only into an allowed outbound request",
+        "Catalog files are therefore safe to log, diff, snapshot, or show a reviewer",
+        "The comparison happens page-side after reading guest bytes — the credential is never passed into the VM",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+await vm.exec("cat /tools/github/org/main/issues-create");
+
+const visible = await vm.fs.readText("/tools/github/org/main/issues-create");
+console.log("credential present in guest catalog: " + visible.includes(fields.token));`,
+      },
+    },
+    {
+      kind: "connect",
+      id: "audit",
+      label: "Audit",
+      image: "loom",
+      connection: { ref: "deepwiki.org.main", auth: { kind: "none" }, tools: ["deepwiki"] },
+      summary:
+        "Discovery and schema inspection do not require the agent to invoke a tool. This pill prints the exact guest-visible contract for DeepWiki's question tool, giving a human or automated reviewer something concrete to approve before any call is attempted.",
+      notes: [
+        "Audit the address, description, input schema, output shape, and annotations — not a marketing name",
+        "Pair this review step with require_approval so enforcement survives prompt mistakes",
+        "No tool call occurs in this example; only the catalog contract is read",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+await vm.exec("tools describe deepwiki.org.main.ask_question");
+console.log("review complete — no egressing tool call was made");`,
+      },
+    },
   ]),
   ch("embedding-in-products", "10", "Embedding in Products", "The VM is a building block: per-event sandboxes, snapshot handoffs, keyed pools, cron — and this very page.", [
-    p("Webhook"), p("Queue worker"), p("Handoff"), p("VM pool"), p("Cron"), p("Web components"),
+    {
+      kind: "program",
+      id: "webhook",
+      label: "Webhook",
+      image: "loom",
+      summary:
+        "A webhook is untrusted input with a deadline. This walkthrough isolates one concrete GitHub delivery in a fresh VM, stages only its JSON body, and lets Luau reduce it to the small decision the host application needs.",
+      notes: [
+        "Signature verification and the HTTP 202 belong to the host framework; the VM receives only the verified event",
+        "One event per VM makes teardown the cleanup boundary — no tenant state can leak into the next delivery",
+        "The browser runs the exact VM portion here; no webhook server is being simulated",
+      ],
+      code: {
+        language: "ts",
+        source: `const delivery = {
+  id: "d7c4f9",
+  action: "opened",
+  repository: { full_name: "opyt/agent-os" },
+  issue: { number: 42, title: "Mounts differ in the shell" },
+};
+
+const vm = await mc.create();
+await vm.fs.write("/tmp/event.json", JSON.stringify(delivery));
+await vm.luau(\`
+  local json = require("json")
+  local event = json.decode(sys.fs.read("/tmp/event.json"))
+  print(event.action, event.repository.full_name, "#" .. event.issue.number)
+\`);
+console.log("delivery " + delivery.id + " processed — host may return 202");
+await vm.close();`,
+      },
+    },
+    {
+      kind: "program",
+      id: "queue-worker",
+      label: "Queue worker",
+      image: "posix",
+      artifacts: ["/workspace/result.txt"],
+      summary:
+        "A worker turns a queue message into three durable facts: command output, a real exit code, and a replayable VM snapshot. The replay below boots from that blob and proves the produced file is part of the handoff.",
+      notes: [
+        "Queue acknowledgement happens only after outputs and the snapshot have been persisted",
+        "A failed command is data — store exitCode and stderr instead of losing the machine state",
+        "The result file remains downloadable from the live worker VM after this run",
+      ],
+      code: {
+        language: "ts",
+        source: `const job = {
+  id: "job-042",
+  input: { customer: "acme", values: [7, 11, 24] },
+};
+
+const vm = await mc.create();
+await vm.fs.write("/workspace/input.json", JSON.stringify(job.input));
+await vm.exec("tr -d '{}[],\\\"' < /workspace/input.json > /workspace/result.txt");
+const result = await vm.exec("cat /workspace/result.txt");
+const snapshot = await vm.snapshot();
+console.log(job.id + " stored · exit " + result.exitCode + " · snapshot " + snapshot.length + " bytes");
+
+const replay = await mc.restore(snapshot);
+await replay.exec("cat /workspace/result.txt");
+await replay.close();`,
+      },
+    },
+    {
+      kind: "program",
+      id: "handoff",
+      label: "Handoff",
+      image: "atlas",
+      summary:
+        "Workflow steps do not need a shared daemon or an improvised archive format. The collect step returns the whole warm machine as bytes; render restores those bytes, consumes the staged source, and emits the next handoff.",
+      notes: [
+        "A snapshot carries memory, processes, filesystem state, and the image contract in one portable blob",
+        "Restore still receives the host capabilities for this step — snapshots never smuggle credentials or host handles",
+        "The second snapshot is independently persistable for retry, inspection, or another orchestrator step",
+      ],
+      code: {
+        language: "ts",
+        source: `const collect = await mc.create();
+await collect.exec("mkdir -p /work");
+await collect.fs.write("/work/source.json", JSON.stringify({ account: "acme", total: 73 }));
+await collect.exec("sha256sum /work/source.json > /work/source.sha256");
+const collected = await collect.snapshot();
+console.log("collect → " + collected.length + " snapshot bytes");
+
+const render = await mc.restore(collected);
+await render.exec("cat /work/source.json; cat /work/source.sha256");
+await render.fs.write("/work/report.txt", "account acme · total 73\\n");
+const rendered = await render.snapshot();
+console.log("render → " + rendered.length + " snapshot bytes");
+await render.close();`,
+      },
+    },
+    {
+      kind: "remote",
+      id: "vm-pool",
+      label: "VM pool",
+      defaultUrl: "http://127.0.0.1:8080",
+      summary:
+        "A server-side pool is an address convention, not a second VM API. Use a stable tenant or job key as the VM identifier: Create attaches or allocates that machine, Connect opens it, and later requests reuse the same persisted state.",
+      notes: [
+        "Try tenant:acme as the identifier; the key is the pool lookup and isolation boundary",
+        "Long-lived state belongs under /var/persist; ephemeral work can stay in /tmp or /workspace",
+        "This pill talks only to the AgentOS URL you enter — it does not substitute a fake local pool",
+      ],
+    },
+    {
+      kind: "program",
+      id: "cron",
+      label: "Cron",
+      image: "posix",
+      summary:
+        "Cron is a host-resident timer bound to a live VM handle. This accelerated lab fires immediately and then every 200 ms, appends three real heartbeats inside the guest, and stops itself at maxRuns.",
+      notes: [
+        "Production schedules accept five-field cron, macros such as @daily, intervals, or raw milliseconds",
+        "Actions can exec, prompt a session, or run a host callback against the VM",
+        "Closing the VM stops its jobs; durable server-resident scheduling is deliberately a separate concern",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+const job = vm.cron(
+  "@every 200ms",
+  { type: "exec", cmd: "echo heartbeat >> /tmp/heartbeat.log" },
+  {
+    immediate: true,
+    maxRuns: 3,
+    onRun: (_result, handle) => console.log("cron firing " + handle.runs),
+  },
+);
+
+console.log(job.id + " · " + job.schedule);
+await new Promise((resolve) => setTimeout(resolve, 550));
+await vm.exec("nl -ba /tmp/heartbeat.log");
+console.log("runs " + job.runs + " · stopped " + job.stopped);`,
+      },
+    },
+    {
+      kind: "commands",
+      id: "web-components",
+      label: "Web components",
+      image: "loom",
+      summary:
+        "The terminal on the right is the shipped embedding path, not a lookalike: @mc/elements loads the registered artifacts, boots the VM, binds xterm to its shell, and exposes the same lifecycle events to any framework.",
+      notes: [
+        "mc-sandbox provides one VM to child terminals and editors; mc-terminal may also boot standalone",
+        "Artifact URLs are application-owned and fetched once through the shared page cache",
+        "The components are Lit custom elements, so React, Vue, Svelte, or plain HTML can host them",
+      ],
+      code: {
+        language: "ts",
+        source: `setArtifactSources({
+  kernel: "/mc/kernel.wasm",
+  images: { loom: "/mc/loom.tar" },
+});
+prefetchArtifacts(undefined, "loom");
+defineElements();
+
+// One shared VM, any number of bound views:
+<mc-sandbox image="loom">
+  <mc-terminal></mc-terminal>
+  <mc-editor path="/workspace/brief.md"></mc-editor>
+</mc-sandbox>`,
+      },
+      steps: [
+        { do: "type", cmd: "echo '@mc/elements owns this live shell'" },
+        { do: "type", cmd: "printf 'components: '; ls /bin | wc -l" },
+      ],
+    },
   ]),
 ];

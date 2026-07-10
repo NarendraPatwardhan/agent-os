@@ -2142,7 +2142,10 @@ pub(crate) fn mc_ctl_symlink(
 /// convention: a mount's name IS its absolute path (conventionally under `/mnt/`).
 /// `read_only != 0` mounts it read-only (the namespace rejects writes). The mount
 /// goes into the ROOT namespace, so every subsequent `vm.exec`/`vm.session` (which
-/// forks root) and every `vm.fs.*` op resolves it. Returns 0 or a negative errno.
+/// forks root) and every `vm.fs.*` op resolves it. The guest login shell owns a
+/// per-process fork created during boot, so mirror the host mount into that one
+/// long-lived namespace as well; otherwise commands typed at the prompt disagree
+/// with `vm.exec` about what is mounted. Returns 0 or a negative errno.
 pub(crate) fn mc_ctl_mount(path_ptr: u32, path_len: u32, read_only: i32) -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
@@ -2159,10 +2162,20 @@ pub(crate) fn mc_ctl_mount(path_ptr: u32, path_len: u32, read_only: i32) -> i32 
         if !path.starts_with('/') {
             return -EINVAL;
         }
+        let read_only = read_only != 0;
         let fs = crate::fs::MountFs::new(&path);
         STATE
             .ns()
-            .mount_labeled(&path, Box::new(fs), "mountfs", read_only != 0);
+            .mount_labeled(&path, Box::new(fs), "mountfs", read_only);
+        let login_pid = *STATE.login_pid.get();
+        if let Some(login_ns) = STATE
+            .scheduler()
+            .get_task(login_pid)
+            .and_then(|task| task.namespace())
+        {
+            let login_fs = crate::fs::MountFs::new(&path);
+            login_ns.mount_labeled(&path, Box::new(login_fs), "mountfs", read_only);
+        }
         0
     }
 }
@@ -2180,7 +2193,20 @@ pub(crate) fn mc_ctl_unmount(path_ptr: u32, path_len: u32) -> i32 {
             None => return -EINVAL,
         };
         match STATE.ns().unmount(&path) {
-            Ok(()) => 0,
+            Ok(()) => {
+                let login_pid = *STATE.login_pid.get();
+                if let Some(login_ns) = STATE
+                    .scheduler()
+                    .get_task(login_pid)
+                    .and_then(|task| task.namespace())
+                {
+                    match login_ns.unmount(&path) {
+                        Ok(()) | Err(vfs::FsError::NotFound) => {}
+                        Err(e) => return ctl_neg_errno(e),
+                    }
+                }
+                0
+            }
             Err(e) => ctl_neg_errno(e),
         }
     }

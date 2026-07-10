@@ -24,11 +24,23 @@ export { vmHostContext, installContextRoot } from "./vm/context.js";
 // `tool`/`kit`/`z` ride along so a page can define typed host tools (`vm.tool`)
 // without importing @mc/core separately; `defaultCatalogCompiler` reads the curated
 // registry (pair it with `loadCatalogCompiler` for the wasm bytes).
-export { mc, tool, kit, z, defaultCatalogCompiler } from "@mc/core";
+export {
+  mc,
+  llb,
+  tool,
+  kit,
+  z,
+  defaultCatalogCompiler,
+  MemoryContentStore,
+} from "@mc/core";
+export { s3, vectorStore } from "@mc/core/drivers";
 export type {
   Vm,
   CreateOptions,
   ConnectionDefinition,
+  ContentStore,
+  Driver,
+  PermissionRequest,
   ToolDefinition,
   SessionHandle,
   SessionEvent,

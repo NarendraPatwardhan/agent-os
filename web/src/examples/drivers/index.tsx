@@ -4,6 +4,9 @@ import { CommandsDriver } from "./CommandsDriver";
 import { ConnectDriver } from "./ConnectDriver";
 import { FlavorsDriver } from "./FlavorsDriver";
 import { RemoteDriver } from "./RemoteDriver";
+import { FilesDriver } from "./FilesDriver";
+import { S3Driver } from "./S3Driver";
+import { ApprovalDriver } from "./ApprovalDriver";
 import { ProseDriver } from "./ProseDriver";
 
 /** The driver registry: dispatch an example to its component by `kind`. The switch
@@ -21,6 +24,12 @@ export function ExampleDriver({ example }: { example: Example }) {
       return <FlavorsDriver example={example} />;
     case "remote":
       return <RemoteDriver example={example} />;
+    case "files":
+      return <FilesDriver example={example} />;
+    case "s3":
+      return <S3Driver example={example} />;
+    case "approval":
+      return <ApprovalDriver example={example} />;
     case "prose":
       return <ProseDriver example={example} />;
   }

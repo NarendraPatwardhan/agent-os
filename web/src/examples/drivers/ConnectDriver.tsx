@@ -34,7 +34,9 @@ export function ConnectDriver({ example }: { example: Extract<Example, { kind: "
 
   const session = useVmSession({
     onReady: (vm, s) =>
-      runProgram(editorRef.current?.source ?? example.code.source, vm, s, values)
+      runProgram(editorRef.current?.source ?? example.code.source, vm, s, values, {
+        image: example.image ?? "loom",
+      })
         .catch((e) => s.print(e instanceof Error ? e.message : String(e)))
         .then(() => artifacts.collect(vm)),
   });

@@ -77,6 +77,7 @@ type Base = {
 type Boot = {
   readonly image?: ImageName;
   readonly deterministic?: boolean;
+  readonly net?: boolean;
 };
 
 /** A user input for the `connect` kind (a credential, an owner/repo, a spec URL).
@@ -119,7 +120,15 @@ export type Example =
   // Editable code; play reboots the VM and runs the whole source (real exec).
   // `artifacts` lists files the program leaves on disk — after a run, each one
   // that exists becomes a download chip under the terminal.
-  | (Base & Boot & { readonly kind: "program"; readonly code: Code; readonly artifacts?: readonly string[] })
+  | (Base &
+      Boot & {
+        readonly kind: "program";
+        readonly code: Code;
+        readonly artifacts?: readonly string[];
+        /** Seed an in-memory image store so lifecycle/LLB examples can build real
+         *  layers and manifests from the flavor this pill booted. */
+        readonly labStore?: boolean;
+      })
   // Read-only code / step list; play reboots and runs the declarative steps.
   | (Base & Boot & { readonly kind: "commands"; readonly steps: readonly Step[]; readonly code?: Code })
   // Editable code run on a VM booted WITH a declared connection; optional fields
@@ -137,6 +146,17 @@ export type Example =
   | (Base & { readonly kind: "flavors" })
   // The remote create → connect → kill lifecycle form.
   | (Base & { readonly kind: "remote"; readonly defaultUrl?: string })
+  // A browser-selected directory, mounted read-only through a real Driver.
+  | (Base & Boot & { readonly kind: "files"; readonly code: Code; readonly mountPath: string })
+  // A real anonymous/CORS-enabled S3 bucket mounted through the SDK's SigV4 driver.
+  | (Base & Boot & { readonly kind: "s3"; readonly code: Code; readonly mountPath: string })
+  // A connection call held at the host boundary until the visitor allows/rejects it.
+  | (Base &
+      Boot & {
+        readonly kind: "approval";
+        readonly code: Code;
+        readonly connection: ConnectionTemplate;
+      })
   // Placeholder / reading-only (an unauthored section).
   | (Base & { readonly kind: "prose" });
 

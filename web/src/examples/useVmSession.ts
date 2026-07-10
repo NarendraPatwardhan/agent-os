@@ -102,7 +102,13 @@ export function useVmSession(opts: Options = {}): VmSession {
     termRef.current = el;
     if (!el) return;
     el.addEventListener("mc-ready", onReady);
-    if (specRef.current?.kind === "attach") el.attach(specRef.current.vm);
+    if (specRef.current?.kind === "attach") {
+      // Set the explicit binding property before the element's connection
+      // microtask chooses an owner. Calling attach() alone paints the VM, but can
+      // still let a newly-connected manual terminal briefly choose another host.
+      el.vm = specRef.current.vm;
+      el.attach(specRef.current.vm);
+    }
   }).current;
 
   const reset = (): void => {
