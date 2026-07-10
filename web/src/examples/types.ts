@@ -82,7 +82,9 @@ type Boot = {
 /** An example (a chapter subitem / pill). The `kind` selects its driver. */
 export type Example =
   // Editable code; play reboots the VM and runs the whole source (real exec).
-  | (Base & Boot & { readonly kind: "program"; readonly code: Code })
+  // `artifacts` lists files the program leaves on disk — after a run, each one
+  // that exists becomes a download chip under the terminal.
+  | (Base & Boot & { readonly kind: "program"; readonly code: Code; readonly artifacts?: readonly string[] })
   // Read-only code / step list; play reboots and runs the declarative steps.
   | (Base & Boot & { readonly kind: "commands"; readonly steps: readonly Step[]; readonly code?: Code })
   // The flavor picker — a span per image, each with a play button that boots it.

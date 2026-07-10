@@ -295,6 +295,23 @@ export const styles = stylex.create({
     cursor: "pointer",
     opacity: { default: 1, ":disabled": 0.4 },
   },
+  artifactBtn: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
+    paddingBlock: "6px",
+    paddingInline: space.s3,
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: { default: color.borderStrong, ":hover": color.ink },
+    borderRadius: radius.chip,
+    backgroundColor: "transparent",
+    color: color.ink,
+    fontSize: "13px",
+    fontWeight: 550,
+    cursor: "pointer",
+  },
+  artifactSize: { color: color.inkMuted, fontWeight: 450 },
 
   // ── terminal column (TerminalPanel) ────────────────────────────────────────
   termCol: { gridColumn: "2", gridRow: "2", minWidth: 0, display: "flex", flexDirection: "column", gap: space.s3 },

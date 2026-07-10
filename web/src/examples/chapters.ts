@@ -11,7 +11,7 @@ function ch(id: string, num: string, title: string, tagline: string, examples: r
   return { id, num, title, tagline, count: examples.length, examples };
 }
 
-// The book's ten chapters. Chapters 1–3 are authored; the rest carry the full TOC
+// The book's ten chapters. Chapters 1–4 are authored; the rest carry the full TOC
 // (prose placeholders) and get their walkthroughs next.
 export const chapters: readonly Chapter[] = [
   ch("first-contact", "1", "First Contact", "Three runtimes host the exact same VM surface — learn it once; it moves with you.", [
@@ -377,6 +377,7 @@ await vm.exec(\`tools call host.org.main.crm.lookup '{"id":"acme"}'\`);`,
       id: "tool-doc",
       label: "Tool → doc",
       image: "loom",
+      artifacts: ["/tmp/account-brief.docx"],
       summary:
         "The capstone: one Luau program calls a host tool through the dotted proxy, then turns the result into a real .docx with the docx battery — no round-trip between the steps, no host-side Python. The closing ls shows the bytes on disk.",
       notes: [
@@ -415,7 +416,364 @@ await vm.exec("ls -la /tmp/account-brief.docx");`,
     },
   ]),
   ch("producing-artifacts", "4", "Producing Artifacts", "Warm Office and data engines build real OOXML, PDF, and SQLite bytes inside the VM — no host-side Python.", [
-    p("XLSX"), p("DOCX"), p("PPTX"), p("Typst PDF"), p("Diagnostics"), p("SQLite"), p("Vector search"), p("Data → PDF"), p("Batteries"), p("CLI twins"),
+    {
+      kind: "program",
+      id: "xlsx",
+      label: "XLSX",
+      image: "loom",
+      artifacts: ["/tmp/revenue.xlsx"],
+      summary:
+        "The xlsx battery assembles a real workbook inside the VM — headers, rows, and a live formula — then recalculates and validates before saving. The closing ls shows genuine OOXML bytes on disk.",
+      notes: [
+        "Set values with ws:setCell(ref, value); a formula is a value constructor — xlsx.formula(expr)",
+        "wb:scanErrors() is the non-negotiable preflight — it catches #REF!/#DIV/0! before the file ships",
+        "Read back with xlsx.open(path) / xlsx.load(bytes)",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+await vm.luau(\`
+  local xlsx = require("xlsx")
+
+  local wb = xlsx.new()
+  local ws = wb:addWorksheet("Revenue")
+  ws:setColumns({
+    { header = "Customer", key = "customer", width = 20 },
+    { header = "ARR",      key = "arr",      width = 14 },
+  })
+  ws:addRow({ customer = "Acme",   arr = 120000 })
+  ws:addRow({ customer = "Globex", arr = 90000 })
+  ws:setCell("B4", xlsx.formula("SUM(B2:B3)"))
+
+  wb:recalculate()
+  assert(#wb:scanErrors() == 0, "formula errors present")
+  assert(wb:save("/tmp/revenue.xlsx"))
+
+  local b4 = ws:cell("B4").value
+  print(b4.formula .. " = " .. b4.result.value)
+\`);
+
+await vm.exec("ls -la /tmp/revenue.xlsx");`,
+      },
+    },
+    {
+      kind: "program",
+      id: "docx",
+      label: "DOCX",
+      image: "loom",
+      artifacts: ["/tmp/incident.docx"],
+      summary:
+        "Word documents are built declaratively: block constructors are docx.* module functions, assembled through docx.new({ children }) — headings, paragraphs, lists, and tables in one pass.",
+      notes: [
+        "docx.heading(level, text) — level first; docx.list(items, { ordered = ? }) or bullet/numbered",
+        "Richer inlines: docx.run / hyperlink / image / chart",
+        "The only Document: methods are setHeader/setFooter/acceptRevisions/rejectRevisions/toBytes/save",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+await vm.luau(\`
+  local docx = require("docx")
+
+  local doc = docx.new({ children = {
+    docx.heading(1, "Incident Summary"),
+    docx.paragraph("The checkout error rate exceeded threshold for 12 minutes."),
+    docx.heading(2, "Actions"),
+    docx.list({ "Rolled back the worker", "Purged bad queue messages", "Added an alert" }),
+    docx.table({ rows = {
+      { cells = { docx.cell("Metric"),   docx.cell("Value") } },
+      { cells = { docx.cell("Downtime"), docx.cell("12 min") } },
+    } }),
+  } })
+
+  assert(doc:save("/tmp/incident.docx"))
+  print("saved /tmp/incident.docx")
+\`);
+
+await vm.exec("ls -la /tmp/incident.docx");`,
+      },
+    },
+    {
+      kind: "program",
+      id: "pptx",
+      label: "PPTX",
+      image: "loom",
+      artifacts: ["/tmp/ops.pptx"],
+      summary:
+        "Decks too: pptx.new picks the slide size, addSlide picks a layout, and each slide takes a title, a body (a string or a list of bullets), and speaker notes.",
+      notes: [
+        'Layouts: "title" | "titleAndContent" | "blank"; richer slides use addChart/addTable/addImage/addShape',
+        "slide:setBody takes a string or a list of bullets; setNotes writes speaker notes",
+        "Deck ops: duplicateSlide / moveSlide / removeSlide / save",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+await vm.luau(\`
+  local pptx = require("pptx")
+
+  local pres = pptx.new({ slideSize = "16:9" })
+
+  local title = pres:addSlide({ layout = "title" })
+  title:setTitle("Weekly Ops")
+  title:setBody("Generated inside Agent OS")
+
+  local s = pres:addSlide({ layout = "titleAndContent" })
+  s:setTitle("Highlights")
+  s:setBody({ "Deploys: 12", "Incidents: 1", "Open risks: 3" })
+  s:setNotes("Call out the open risks before wrapping.")
+
+  assert(pres:save("/tmp/ops.pptx"))
+  print("2 slides saved")
+\`);
+
+await vm.exec("ls -la /tmp/ops.pptx");`,
+      },
+    },
+    {
+      kind: "program",
+      id: "typst-pdf",
+      label: "Typst PDF",
+      image: "paper",
+      artifacts: ["/tmp/review.pdf"],
+      summary:
+        "The paper image runs a warm Typst service. typst.compile(source) returns (pdfBytes, warnings) and raises on a compile error — it does not return an { ok } table. The closing head shows the real %PDF- magic on disk.",
+      notes: [
+        "compile / compile_file both return (pdf, warnings); opts.root sets the import/image root",
+        "The warm service keeps ~30 MB of fonts hot across calls",
+        "Output is PDF only; @preview packages need network and aren't supported — vendor what you need",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+await vm.luau(\`
+  local typst = require("typst")
+
+  local pdf, warnings = typst.compile([[
+    = Quarterly Review
+    Revenue is up by *12%*.
+  ]])
+  print(#warnings .. " warnings")
+
+  sys.fs.write("/tmp/review.pdf", pdf)
+  print("wrote " .. #pdf .. " bytes")
+\`);
+
+await vm.exec("head -c 5 /tmp/review.pdf");`,
+      },
+    },
+    {
+      kind: "program",
+      id: "diagnostics",
+      label: "Diagnostics",
+      image: "paper",
+      artifacts: ["/tmp/out.pdf"],
+      summary:
+        "Because a bad compile raises, catch it with pcall and read the formatted diagnostic — severity: file:line:col: message. Fix the source in the editor (a real heading, no #unknown_fn) and ▶ writes the PDF instead.",
+      notes: [
+        "A failure surfaces as a raised error carrying the diagnostic — never a silently-empty result",
+        "Warnings are non-fatal and come back as the second return value on success",
+        "This is the loop an agent runs: compile, read the diagnostic, patch, retry",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+await vm.luau(\`
+  local typst = require("typst")
+
+  local ok, pdf_or_err = pcall(typst.compile, "= Broken #unknown_fn()")
+  if not ok then
+    print("compile failed:")
+    print(pdf_or_err)
+  else
+    sys.fs.write("/tmp/out.pdf", pdf_or_err)
+    print("wrote /tmp/out.pdf — " .. #pdf_or_err .. " bytes")
+  end
+\`);`,
+      },
+    },
+    {
+      kind: "program",
+      id: "sqlite",
+      label: "SQLite",
+      image: "atlas",
+      artifacts: ["/tmp/events.db"],
+      summary:
+        "The atlas image runs a warm SQLite service. sqlite.open returns (db, err); every value binds with positional ?; transaction(fn) commits on return and rolls back on error; rows() streams a cursor.",
+      notes: [
+        "db:query materializes; db:rows streams — pick by result size",
+        "Durable DBs live under /var/persist (needs CAP_PERSIST); /tmp is per-boot",
+        "/bin/sqlite is a shell twin of the same warm service",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+await vm.luau(\`
+  local sqlite = require("sqlite")
+  local db, err = sqlite.open("/tmp/events.db")
+  assert(db, err)
+
+  db:exec("CREATE TABLE events (kind TEXT, cents INTEGER)")
+  db:transaction(function(tx)
+    local stmt = tx:prepare("INSERT INTO events VALUES (?, ?)")
+    stmt:run("paid", 1200); stmt:run("refund", -200)
+    stmt:close()
+  end)
+
+  for row in db:rows("SELECT kind, cents FROM events ORDER BY cents DESC") do
+    print(row.kind, row.cents)
+  end
+  db:close()
+\`);`,
+      },
+    },
+    {
+      kind: "program",
+      id: "vector-search",
+      label: "Vector search",
+      image: "atlas",
+      artifacts: ["/tmp/memory.db"],
+      summary:
+        "atlas includes a built-in vector engine — a bespoke ANN virtual table called vann (not sqlite-vec). Create an index, insert tagged vectors, and search with partition + metadata filters, all in SQL's house.",
+      notes: [
+        "spec.vector = { name, type, dims, metric } — the key is dims; the search limit is k",
+        "Encode with sqlite.vec.f32/int8/bit; metrics: cosine / l2 / ip / hamming",
+        "At the shell it's CREATE VIRTUAL TABLE … USING vann(…) + WHERE embedding MATCH vec_f32('[…]') AND k = 5",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+await vm.luau(\`
+  local sqlite = require("sqlite")
+  local db = assert(sqlite.open("/tmp/memory.db"))
+
+  db:createVectorIndex("mem", {
+    vector     = { name = "embedding", type = "float", dims = 3, metric = "cosine" },
+    partitions = { "tenant" },
+    metadata   = { { name = "source", type = "text" } },
+    aux        = { "chunk" },
+  })
+
+  db:exec("INSERT INTO mem(rowid, embedding, tenant, source, chunk) VALUES (?, ?, ?, ?, ?)",
+    1, sqlite.vec.f32({ 0.1, 0.2, 0.3 }), "acme", "docs", "refund policy")
+  db:exec("INSERT INTO mem(rowid, embedding, tenant, source, chunk) VALUES (?, ?, ?, ?, ?)",
+    2, sqlite.vec.f32({ 0.9, 0.1, 0.0 }), "acme", "docs", "pricing tiers")
+
+  local hits = db:vectorSearch("mem", { 0.1, 0.2, 0.25 }, {
+    type = "f32", k = 2,
+    partition = { tenant = "acme" },
+    filter    = { source = "docs" },
+  })
+  for _, hit in ipairs(hits) do print(hit.rowid, hit.distance, hit.chunk) end
+\`);`,
+      },
+    },
+    {
+      kind: "program",
+      id: "data-pdf",
+      label: "Data → PDF",
+      image: "paper",
+      artifacts: ["/tmp/q3.pdf"],
+      summary:
+        "The engines compose in one program: data in, typeset PDF out. paper ships Typst (not SQLite), so the data arrives here as a host-staged CSV; the same shape pairs SQLite with Typst on a custom flavor (§7.4) or across a snapshot handoff (§10.3).",
+      notes: [
+        "The expensive step — compile — runs once; assembling the source is cheap",
+        "string.split is a Luau builtin; the prelude adds string.splitlines and friends",
+        "Editing tip: this Luau rides in a JS template literal, so \\n escapes are eaten by JS first — use string.char(10) or splitlines",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+await vm.fs.write("/tmp/sales.csv", "month,revenue\\nJul,182000\\nAug,204000\\nSep,231000\\n");
+
+await vm.luau(\`
+  local typst = require("typst")
+
+  local rows = {}
+  for i, line in ipairs(string.splitlines(assert(sys.fs.read("/tmp/sales.csv")))) do
+    if i > 1 and #line > 0 then
+      local cols = string.split(line, ",")
+      rows[#rows + 1] = string.format("[%s], [%s],", cols[1], cols[2])
+    end
+  end
+
+  local nl = string.char(10)
+  local src = "= Q3 Sales" .. nl .. "#table(columns: 2, " .. table.concat(rows, " ") .. ")"
+  local pdf = typst.compile(src)
+  sys.fs.write("/tmp/q3.pdf", pdf)
+  print("typeset " .. #rows .. " rows into " .. #pdf .. " bytes of PDF")
+\`);
+
+await vm.exec("ls -la /tmp/q3.pdf");`,
+      },
+    },
+    {
+      kind: "program",
+      id: "batteries",
+      label: "Batteries",
+      image: "loom",
+      summary:
+        "The four headline formats sit on a deep substrate — everything here is require()-able on any loom+ VM with zero staging. The natives run below: content hashing, base64, compression, and path handling, all inside the sandbox.",
+      notes: [
+        "Native (Zig): json, hash, encoding, deflate — plus the sys global under everything",
+        "Office substrate: opc/zip/xml for exact template preservation; calc is the xlsx formula engine; units for twips/EMUs",
+        "Agent utilities: http (needs CAP_NET), url, path, time, log, test, color",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+await vm.luau(\`
+  local hash     = require("hash")
+  local encoding = require("encoding")
+  local deflate  = require("deflate")
+  local path     = require("path")
+
+  print(hash.sha256("agent-os"))
+  print(encoding.base64.encode("bytes on the shelf"))
+
+  local packed = deflate.compress(string.rep("agent ", 200))
+  print(#packed .. " bytes compressed from 1200")
+
+  print(path.join("/var", "persist", "notes.txt"))
+\`);`,
+      },
+    },
+    {
+      kind: "program",
+      id: "cli-twins",
+      label: "CLI twins",
+      image: "atlas",
+      artifacts: ["/tmp/x.db"],
+      summary:
+        "Every warm engine has a /bin twin — the same service, reachable from a shell prompt or a pipeline. The CLI creates and sums a table, then require(\"sqlite\") reads the very same rows: shell and script paths agree, and both survive a snapshot.",
+      notes: [
+        "/bin/sqlite and require(\"sqlite\") are one warm service — one database, two doors",
+        "On paper: typst compile in.typ out.pdf; anywhere on loom+: luau script.luau / luau --check",
+        "Twins make engines pipeline-able: shell for plumbing, Luau for logic",
+      ],
+      code: {
+        language: "ts",
+        source: `const vm = await mc.create();
+
+await vm.exec(\`sqlite /tmp/x.db "CREATE TABLE t(n); INSERT INTO t VALUES (1),(2)"\`);
+await vm.exec(\`sqlite /tmp/x.db "SELECT sum(n) FROM t"\`);
+
+await vm.luau(\`
+  local sqlite = require("sqlite")
+  local db = assert(sqlite.open("/tmp/x.db"))
+  for row in db:rows("SELECT n FROM t") do print("luau sees n = " .. row.n) end
+\`);`,
+      },
+    },
   ]),
   ch("connecting-tools", "5", "Connecting Tools & Integrations", "The embedder declares connections; the agent inside only ever sees an address and JSON — the credential never enters the guest.", [
     p("The model"), p("mc.use"), p("From the shell"), p("Envelope"), p("GitHub"), p("MS Graph"), p("Google"), p("GraphQL"), p("Remote MCP"), p("Any API"), p("Registry"), p("Capstone"),
