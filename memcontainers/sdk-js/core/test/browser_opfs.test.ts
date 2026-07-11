@@ -390,7 +390,7 @@ async function main(): Promise<void> {
     if (result.opfs !== true) throw new Error(`browser test did not use OPFS: ${JSON.stringify(result)}`);
     if (result.rootDigest !== expectedRootDigest) {
       throw new Error(
-        `browser OPFS root digest diverged: browser=${JSON.stringify(result.rootDigest)} bun=${expectedRootDigest}`,
+        `browser OPFS root digest diverged: browser=${JSON.stringify(result.rootDigest)} local=${expectedRootDigest}`,
       );
     }
     if (result.text !== "browser-opfs") {

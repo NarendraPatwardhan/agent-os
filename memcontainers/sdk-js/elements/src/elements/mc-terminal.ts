@@ -7,7 +7,7 @@
 // injected DOM; the card chrome around it is styled by `mc-terminal { … }` in
 // styles/components.css.
 
-import type { Shell, Vm } from "@mc/core";
+import type { Runtime, Shell, Vm } from "@mc/core";
 import { LitElement, html } from "lit";
 import { property, state } from "lit/decorators.js";
 import { VmBinding } from "../vm/binding.js";
@@ -38,7 +38,7 @@ export class McTerminal extends LitElement {
   /** Enable network egress when booting a standalone VM. */
   @property({ type: Boolean }) net = false;
   /** Backend for standalone boot. Default `"browser"`. */
-  @property() runtime?: "browser" | "bun" | "remote";
+  @property() runtime?: Runtime;
   /** Image to boot standalone (logical name or URL). */
   @property() image?: string;
   /** Remote endpoint (runtime="remote"). */

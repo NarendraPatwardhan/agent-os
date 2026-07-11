@@ -24,7 +24,7 @@ system — process table, scheduler, virtual filesystem, pipes, networking, inte
 compiles to `wasm32` and runs as one `kernel.wasm`. It hosts *guest* programs (a shell, coreutils, a
 Luau interpreter, SQLite, a typst compiler) which are themselves wasm modules, executed inside the
 kernel by an embedded `wasmi` interpreter. A thin, untrusted **host** (native via wasmtime, or
-JavaScript via bun/browser) loads the kernel, supplies a tiny set of effect primitives, and ticks it
+JavaScript locally under Node/Bun or in the browser) loads the kernel, supplies a tiny set of effect primitives, and ticks it
 forward.
 
 The thesis, in one line: **the agent's entire computer is a portable, deterministic, snapshottable
@@ -111,7 +111,7 @@ batteries), 5k of Zig (the C/C++ guest glue), plus the contracts and the build g
 ```
    ┌──────────────────────────────────────────────────────────────────────┐
    │ HOST  (a driver, not a participant)                                    │
-   │   Rust/wasmtime  ·  JS/bun  ·  JS/browser   ── all load the SAME ──┐   │
+   │   Rust/wasmtime · JS/local (Node·Bun) · JS/browser ─ all load SAME ┐   │
    └─────────────────────────────┬───────────────────────────────────┐ │   │
             env bridge            │       mc_ctl_* control channel     │ │   │
    ┌─────────────────────────────▼───────────────────────────────────▼─▼─┐ │
@@ -183,7 +183,7 @@ Derived rules also cited in code: *single source of truth per boundary*, *contai
   projector is exercised across every language immediately.
 - **B3 — Vendor less, patch in place.** Third-party source enters via `http_archive` + patches; only
   patch files and Zig glue live in-tree.
-- **B4 — Hermetic toolchains.** Rust, Zig, and Node/bun are pinned Bazel toolchains. No host fonts, no
+- **B4 — Hermetic toolchains.** Rust, Zig, and Node/Bun are pinned Bazel toolchains. No host fonts, no
   host browser, no tool from `$PATH`.
 - **B5 — Size is a test and a lever.** Each `kernel.wasm` carries a size budget; per-guest budgets are
   enforced at exec.
@@ -1192,7 +1192,7 @@ wire version is bumped independently of the syscall ABI, and a server accepts on
 
 The JS host is a byte-for-byte behavioral mirror of the Rust host: it implements the same `env` bridge over
 web APIs (`fetch`, `WebSocket`, `crypto`, `node:fs`/OPFS) and runs the same tick loop, so the *same*
-`kernel.wasm` + `base.tar` run unchanged in bun and the browser, with no native addon and no server. The
+`kernel.wasm` + `base.tar` run unchanged in local Node/Bun and browser runtimes, with no native addon and no server. The
 async-drives-synchronous trick needs **no Asyncify, no `SharedArrayBuffer`, no `Atomics.wait`** — exactly
 because the network bridge is poll-based (a `fetch` is kicked off and drained *between* ticks) and the run
 loop yields a macrotask on idle ticks so the event loop can advance I/O. The host terminates TLS, so the
@@ -1427,7 +1427,7 @@ agent-os/                      ← the repository root: a Bazel/deps/docs shell
     │   └── typst/             #     the typst service glue (Rust), fonts extractor, lib, skill
     ├── hosts/                 #   the two embedding LIBRARIES
     │   ├── wasmtime/          #     the Rust host (lib + CLI)
-    │   └── js/                #     the TS host for bun/browser
+    │   └── js/                #     the TS host for local Node/Bun and browser runtimes
     ├── sdk-js/                #   the @mc/{core,agent,elements} TS libraries
     ├── images/                #   base + flavor images via pkg_tar (no staging)
     ├── conformance/           #   the ABI coverage gate
@@ -1567,7 +1567,7 @@ parity grid.
 - **kernel** — the OS; compiles to and runs only on wasm; ships as `kernel.wasm`. Two implementations
   (Rust now, Zig staged), one contract, parity-gated.
 - **host** — a driver that loads the kernel, supplies the bridge, and ticks it. Two families, one binary:
-  Rust/wasmtime and JS (bun/browser), behaviorally identical and parity-tested. (`mc-server` is a consumer
+  Rust/wasmtime and JS (local Node/Bun and browser), behaviorally identical and parity-tested. (`mc-server` is a consumer
   of the wasmtime host, not a host.)
 - **guest** — a user program run inside the kernel by the embedded `wasmi` interpreter.
 - **the four boundaries** — syscall (`mc`), bridge (`env`), control (`mc_ctl_*`), wire — each a contract,

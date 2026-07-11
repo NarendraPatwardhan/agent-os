@@ -51,6 +51,7 @@ import type {
   ImageConfig,
   ImageManifest,
   MountSpec,
+  Runtime,
   SessionHandle,
   Shell,
   ToolDefinition,
@@ -60,6 +61,15 @@ import type {
 
 const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
+
+function resolveRuntime(value: unknown): Runtime {
+  const runtime = value ?? "local";
+  if (runtime === "local" || runtime === "browser" || runtime === "remote") return runtime;
+  throw new Error(
+    `unsupported runtime ${JSON.stringify(runtime)} (expected "local", "browser", or "remote")`,
+  );
+}
+
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
@@ -1193,16 +1203,16 @@ export function capabilityConnection(
 export const mc = {
   /** Create a fresh VM. */
   async create(opts: CreateOptions = {}): Promise<Vm> {
-    const runtime = opts.runtime ?? "bun";
+    const runtime = resolveRuntime(opts.runtime);
     if (runtime === "remote") {
       const made = await makeRemote(opts, null);
       return new Vm(made.backend, made.opts, made.catalog);
     }
-    // Browser and Bun share the embedded backend — the kernel runs in-process
+    // Browser and local runtimes share the embedded backend — the kernel runs in-process
     // via WebAssembly + the JS bridge (fetch/WebSocket/crypto are browser-native).
     // The only difference is artifact loading: a browser caller fetches the
     // kernel.wasm (+ base.tar) and passes the bytes, since the workspace
-    // build paths (Bun.file) don't exist in a browser.
+    // build paths available under Node/Bun don't exist in a browser.
     if (runtime === "browser") validateBrowserArtifacts(opts);
     const made = await makeEmbedded(opts, null);
     return new Vm(made.backend, made.opts, made.catalog);
@@ -1230,7 +1240,7 @@ export const mc = {
 
   /** Restore a VM from a snapshot blob (embedded or remote). */
   async restore(snapshot: Uint8Array, opts: CreateOptions = {}): Promise<Vm> {
-    const runtime = opts.runtime ?? "bun";
+    const runtime = resolveRuntime(opts.runtime);
     if (runtime === "remote") {
       const made = await makeRemote(opts, snapshot);
       return new Vm(made.backend, made.opts, made.catalog);

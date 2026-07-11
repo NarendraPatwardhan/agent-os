@@ -8,13 +8,13 @@
 // are wired via ref + addEventListener, so they are not declared as props here.
 
 import type { DetailedHTMLProps, HTMLAttributes } from "react";
-import type { McTerminal, McEditor } from "@mc/elements";
+import type { McEditor, McTerminal, Runtime } from "@mc/elements";
 
 type McTerminalProps = DetailedHTMLProps<HTMLAttributes<McTerminal>, McTerminal> & {
   label?: string;
   net?: boolean;
   cursor?: "bar" | "block" | "underline";
-  runtime?: "browser" | "bun" | "remote";
+  runtime?: Runtime;
   image?: string;
   manual?: boolean;
   deterministic?: boolean;

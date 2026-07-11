@@ -16,12 +16,18 @@ import type {
   Driver,
   ImageManifest,
   PermissionRequest,
+  Runtime,
   ConnectionPolicyRule,
   SolvePlatform,
   SolveProgressEvent,
   ToolDefinition,
   Vm,
 } from "../src/index.js";
+
+const LOCAL_RUNTIME: Runtime = "local";
+// @ts-expect-error Alpha API: the old selector was removed rather than retained as an alias.
+const REMOVED_BUN_RUNTIME: Runtime = "bun";
+void REMOVED_BUN_RUNTIME;
 
 function runfile(rel: string | undefined, envVar: string): string {
   if (!rel) throw new Error(`${envVar} is not set (this test must run under \`bazel test\`)`);
@@ -453,6 +459,16 @@ async function main(): Promise<void> {
   const atlasImage = new Uint8Array(readFileSync(runfile(process.env.MC_ATLAS_IMAGE, "MC_ATLAS_IMAGE")));
   const loomImage = new Uint8Array(readFileSync(runfile(process.env.MC_LOOM_IMAGE, "MC_LOOM_IMAGE")));
   const githubFixture = readFileSync(runfile(process.env.MC_GITHUB_FIXTURE, "MC_GITHUB_FIXTURE"), "utf8");
+
+  let rejectedRemovedRuntime = false;
+  try {
+    await mc.create({ runtime: "bun", kernel, image } as unknown as CreateOptions);
+  } catch (error) {
+    rejectedRemovedRuntime = /unsupported runtime.*bun.*local.*browser.*remote/i.test(String(error));
+  }
+  if (!rejectedRemovedRuntime) {
+    throw new Error('removed runtime "bun" must fail with the supported runtime list');
+  }
 
   // mc.use capability sugar derives {ref, auth} + the tool selector (pure; no network).
   {
@@ -1838,7 +1854,7 @@ error("timed out waiting for restored warm sqlite child: " .. err)
 
   // Bytes passed directly → no MC_STORE / defaultKernel env path; the embedded backend (the JS host)
   // boots the kernel in-process.
-  const vm = await mc.create({ kernel, image, deterministic: true });
+  const vm = await mc.create({ runtime: LOCAL_RUNTIME, kernel, image, deterministic: true });
   try {
     const r = await vm.exec("echo core-ok");
     if (r.exitCode !== 0 || r.stdout.trim() !== "core-ok") {
@@ -1920,7 +1936,13 @@ error("timed out waiting for restored warm sqlite child: " .. err)
       await detached.close();
     }
 
-    const restored = await mc.restore(snap, { kernel, image, deterministic: true, tools: [dynamicTool] });
+    const restored = await mc.restore(snap, {
+      runtime: LOCAL_RUNTIME,
+      kernel,
+      image,
+      deterministic: true,
+      tools: [dynamicTool],
+    });
     try {
       const restoredCall = await restored.exec("tools call host.org.main.dynamicGreet '{\"name\":\"Restore\"}'");
       if (restoredCall.exitCode !== 0 || !restoredCall.stdout.includes('"message":"hello Restore"')) {

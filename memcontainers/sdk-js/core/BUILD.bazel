@@ -116,7 +116,7 @@ js_test(
 )
 
 # Design-doc browser build gate: solve the same canonical LLB Definition in
-# headless Chromium using OPFS and compare the root digest to the Bun solve.
+# headless Chromium using OPFS and compare the root digest to the local solve.
 mc_ts_project(
     name = "browser_opfs_test_lib",
     srcs = ["test/browser_opfs.test.ts"],

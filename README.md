@@ -133,7 +133,7 @@ import { hostDir, s3, vectorStore } from "@mc/core/drivers";
 import { z } from "zod";
 
 const vm = await mc.create({
-  runtime: "bun",
+  runtime: "local",
   image: "loom",
   net: true,
   deterministic: true,
@@ -195,7 +195,7 @@ Choose the image that matches the job:
 Driving a VM and *building* one are the same act. Every `vm.fs.write` and
 `vm.exec` is a build step — capture the steps and you get a content-addressed,
 incrementally-cached build that reproduces the exact same machine. Two surfaces
-expose this, and both run on every runtime: bun, browser, and remote.
+expose this, and both run on every runtime: local, browser, and remote.
 
 ### `record` — capture a session as a build
 

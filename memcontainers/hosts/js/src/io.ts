@@ -44,7 +44,7 @@ export class WritableSink implements StreamSink {
   }
 }
 
-/** The default stdout/stderr sinks: straight to the process streams (node/bun). */
+/** The default stdout/stderr sinks: straight to the process streams (Node/Bun). */
 export const processStdout = (): StreamSink =>
   new WritableSink((b) => void process.stdout.write(b));
 export const processStderr = (): StreamSink =>

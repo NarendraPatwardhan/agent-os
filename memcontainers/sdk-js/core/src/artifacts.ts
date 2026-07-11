@@ -1,5 +1,5 @@
-// Default kernel + base-image loading for the node/bun embedded backend, read via env vars so it works
-// under BOTH node and bun (no `Bun.file`) and against the bazel-built artifacts (which have no single
+// Default kernel + base-image loading for the local embedded backend, read via env vars so it works
+// under both Node and Bun (no `Bun.file`) and against the Bazel-built artifacts (which have no single
 // fixed source path). A browser caller passes `opts.kernel` + `opts.image` bytes directly (no
 // filesystem). Point these at the built artifacts via MC_KERNEL_WASM / MC_BASE_IMAGE, or pass
 // `opts.kernel` / `opts.image` to `mc.create`. The Node filesystem import is lazy so browser imports of

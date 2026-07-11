@@ -36,6 +36,7 @@ export {
 export { s3, vectorStore } from "@mc/core/drivers";
 export type {
   Vm,
+  Runtime,
   CreateOptions,
   ConnectionDefinition,
   ContentStore,

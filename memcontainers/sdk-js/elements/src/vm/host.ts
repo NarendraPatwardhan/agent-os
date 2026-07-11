@@ -10,12 +10,12 @@
 // mirror the same stream.
 
 import { mc } from "@mc/core";
-import type { CreateOptions, Shell, Vm } from "@mc/core";
+import type { CreateOptions, Runtime, Shell, Vm } from "@mc/core";
 import { loadCatalogCompiler, loadImage, loadKernel } from "./artifacts.js";
 
 /** Boot options as read off an element's attributes (URLs/names, never bytes). */
 export interface BootOptions {
-  runtime?: "browser" | "bun" | "remote";
+  runtime?: Runtime;
   /** Logical image name, a direct URL, or `null` for an empty in-memory fs. */
   image?: string | null;
   /** Kernel wasm URL override. */
@@ -54,7 +54,7 @@ export interface VmHost {
 }
 
 /** Turn boot attributes into CreateOptions, fetching kernel/image bytes for the
- *  embedded (browser/bun) runtimes. The remote runtime carries names/URLs, not bytes. */
+ *  embedded (local/browser) runtimes. The remote runtime carries names/URLs, not bytes. */
 export async function resolveCreateOptions(boot: BootOptions): Promise<CreateOptions> {
   const runtime = boot.runtime ?? "browser";
   if (runtime === "remote") {

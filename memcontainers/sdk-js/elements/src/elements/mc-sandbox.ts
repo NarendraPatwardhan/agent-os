@@ -5,7 +5,7 @@
 // one VM.
 
 import { ContextProvider } from "@lit/context";
-import type { Vm } from "@mc/core";
+import type { Runtime, Vm } from "@mc/core";
 import { LitElement, css, html } from "lit";
 import { property, state } from "lit/decorators.js";
 import { installContextRoot, vmHostContext } from "../vm/context.js";
@@ -70,7 +70,7 @@ export class McSandbox extends LitElement {
   ];
 
   /** Backend. Default `"browser"`. */
-  @property() runtime?: "browser" | "bun" | "remote";
+  @property() runtime?: Runtime;
   /** Logical image name, a URL, or empty for the default rootfs. */
   @property() image?: string;
   /** Enable network egress. */

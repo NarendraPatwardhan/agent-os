@@ -138,7 +138,7 @@ export class OpfsPersist implements PersistCapability {
 }
 
 /** Feature-detect a durable backing: OPFS first, then IndexedDB, else memory. The browser globals are
- *  real DOM types (lib.dom) but may be absent at runtime under node/bun, so each is `typeof`-guarded. */
+ *  real DOM types (lib.dom) but may be absent at runtime under Node/Bun, so each is `typeof`-guarded. */
 async function defaultBrowserKv(): Promise<BrowserKv> {
   if (typeof navigator !== "undefined" && typeof navigator.storage?.getDirectory === "function") {
     try {

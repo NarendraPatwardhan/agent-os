@@ -123,7 +123,7 @@ use_repo(crate, "crates", "host_crates", "nif_crates", "parse_crates", "typst_cr
 # aspect_bazel_lib — write_source_files + diff_test for the contract drift gate (B2).
 bazel_dep(name = "aspect_bazel_lib", version = "2.22.5")
 
-# JS/TS — the bun/browser host family (A3) and the @mc/* SDK (hosts/js, sdk-js/). The JS host loads the
+# JS/TS — the local Node/Bun + browser host family (A3) and the @mc/* SDK (hosts/js, sdk-js/). The JS host loads the
 # SAME kernel.wasm the wasmtime host does and consumes the generated TS contract descriptors (env_ts/
 # ctl_ts), so a contract change can't silently desync it (B2). pnpm-managed npm deps; hermetic node + tsc.
 bazel_dep(name = "aspect_rules_js", version = "3.2.2")

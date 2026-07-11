@@ -1,7 +1,7 @@
 // Public types for the unified consumer API (`mc` / `vm`).
 
 /** Which backend hosts the kernel. */
-export type Runtime = "bun" | "browser" | "remote";
+export type Runtime = "local" | "browser" | "remote";
 
 /** Declarative permissions. Network egress is gated host-side today; fs/tier
  *  enforcement applies to guests spawned inside the VM (e.g. the internal
@@ -13,7 +13,7 @@ export interface Permissions {
 
 /** Options for {@link mc.create}. */
 export interface CreateOptions {
-  /** Backend. Default `"bun"`. */
+  /** Backend. Default `"local"`. */
   runtime?: Runtime;
   /** Remote endpoint (runtime `"remote"` only). */
   endpoint?: string;
