@@ -84,10 +84,14 @@ defmodule AgentOS.Contracts.Constants do
   # signal
   def sighup, do: 1
   def sigint, do: 2
+  def sigquit, do: 3
   def sigkill, do: 9
+  def sigusr1, do: 10
+  def sigusr2, do: 12
   def sigterm, do: 15
   def sigchld, do: 17
   def sigcont, do: 18
+  def sigstop, do: 19
   def sigtstp, do: 20
   def sig_dfl, do: 0
   def sig_ign, do: 1
@@ -122,6 +126,9 @@ defmodule AgentOS.Contracts.Constants do
   def persist_get_present, do: 1
 
   # stat-record
+  def stat_node_file, do: 0
+  def stat_node_dir, do: 1
+  def stat_node_symlink, do: 2
   def stat_rec_size_off, do: 0
   def stat_rec_node_type_off, do: 8
   def stat_rec_nlink_off, do: 12

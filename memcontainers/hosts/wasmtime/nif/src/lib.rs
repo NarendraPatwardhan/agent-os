@@ -1,9 +1,8 @@
 //! host_nif — the BEAM's window into the wasmtime `host` library.
 //!
-//! Makes Elixir a THIRD host family (CONTROL_PLANE.md §6.1) by wrapping the EXISTING,
-//! contract-generated Rust host (`host::KernelHost`) in a Rustler NIF — *not* by
-//! re-implementing the `env` bridge, which would be a third hand-written boundary against B2
-//! and a third A3 parity target. Because the wasmtime host is underneath, snapshots stay
+//! Exposes the existing contract-generated Rust host (`host::KernelHost`) to Elixir through a
+//! Rustler NIF (SYSTEMS.md §13.1). It does *not* re-implement the `env` bridge or create another
+//! host family. Because the wasmtime host is underneath, snapshots stay
 //! byte-identical and the bridge stays single-sourced; Elixir inherits both for free.
 //!
 //! Ownership model: one supervised BEAM process owns one VM. `KernelHost` is `Send` but not
@@ -33,7 +32,9 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use constants_rust::{PERSIST_OP_DELETE, PERSIST_OP_GET, PERSIST_OP_LIST, PERSIST_OP_PUT};
+use constants_rust::{
+    EAGAIN, EMSGSIZE, PERSIST_OP_DELETE, PERSIST_OP_GET, PERSIST_OP_LIST, PERSIST_OP_PUT,
+};
 use ctl_rust::RelayEvent as WireRelayEvent;
 use host::{
     derive_connection_origins, CatalogConnection, CatalogInjectOptions, CatalogSpecSource,
@@ -48,8 +49,6 @@ mod atoms {
     rustler::atoms! { ok }
 }
 
-const EAGAIN: i32 = 6;
-const EMSGSIZE: i32 = 53;
 const WS_SEND_MARK: usize = 1024 * 1024;
 
 type NifConnectionDef = (String, String, String, String, Vec<String>);

@@ -1,4 +1,4 @@
-//! `rm` -- docs/analysis/applets-g-r.md: `fsutil.removeRecursive`/`exists`/`isDir` +
+//! `rm` -- DESIGN.md §1: `fsutil.removeRecursive`/`exists`/`isDir` +
 //! `sys.unlink`. `-r/-R/--recursive`, `-d/--dir`, `-f/--force` (ignore missing, never
 //! prompt, overrides `-i`), `-i` (prompt each), `-v/--verbose` (`removed FILE`).
 

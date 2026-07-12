@@ -1,6 +1,6 @@
 //! `file`'s detection engine (DESIGN.md §7.6): the ~35-entry byte-signature table
 //! ported from the vendored `infer` crate (`reference/crates/infer-0.16.0/src/matchers/`)
-//! plus the shebang/JSON/XML/HTML/text heuristics from `docs/analysis/applets-a-f.md`
+//! plus the port's shebang/JSON/XML/HTML/text heuristics
 //! (the `file` entry). A flat table + a handful of prefix probes; no libmagic.
 //!
 //! No `sys`/`std.fs`/`std.Io` dependency here -- this module is pure bytes-in,

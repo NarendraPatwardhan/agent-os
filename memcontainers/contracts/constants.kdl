@@ -5,15 +5,15 @@
 //
 // Values are the FROZEN `mc` ABI, transcribed from memcontainers crates/abi/src/lib.rs.
 // Do NOT renumber: the `mc` surface is a compatibility contract shared with
-// memcontainers (which acts as a third parity cross-check — VISION §8.2, §11).
+// the upstream memcontainers ABI, which remains a compatibility cross-check.
 //
-// Format note: KDL, per the VISION §13.1 lean ("KDL + a Rust projector"). Each node
+// Format note: KDL is parsed by the dependency-free Rust projector described in SYSTEMS.md §3. Each node
 // is `NAME value` or a grouping node with children. Bare integers are the constant's
 // value; comments carry the local "why" (C1).
 
 // Syscall ABI version, reported by mc_sys_abi_version as (major << 16) | minor.
 // Bump MINOR for additive changes (new syscalls); MAJOR only for a breaking change.
-// 1.4 adds the five resident-service syscalls (mc_sys_svc_*) — additive (SERVICES.md).
+// 1.4 adds the five resident-service syscalls (mc_sys_svc_*) — additive (SYSTEMS.md §7.2).
 // 1.5 widens svc_call/svc_recv with the handle-delegation args (handles_ptr/nhandles,
 // hbuf/hbuf_len) — a reshape of the still-unreleased svc_* layer; the frozen base ABI is unchanged.
 // 1.6 adds svc_respond's `last` chunk flag (bounded-buffer result streaming) — another reshape of the
@@ -140,16 +140,20 @@ poll {
     POLL_BLOCK -1  // timeout_ms sentinel: block until ready
 }
 
-// Signals + dispositions (minimal job control). Numbers match POSIX. A
+// Signals + dispositions used by the kernel, shell, and coreutils adapters. Numbers match POSIX. A
 // terminated task's exit status is 128 + signo; a stopped child's waitpid status
 // is STOPPED_STATUS_BASE + signo (out of the 0..=255 exit range, a WIFSTOPPED stand-in).
 signal {
     SIGHUP  1
     SIGINT  2
+    SIGQUIT 3
     SIGKILL 9
+    SIGUSR1 10
+    SIGUSR2 12
     SIGTERM 15
     SIGCHLD 17
     SIGCONT 18
+    SIGSTOP 19
     SIGTSTP 20
     SIG_DFL 0   // default action
     SIG_IGN 1   // ignore
@@ -195,13 +199,16 @@ persist-op {
     PERSIST_GET_PRESENT 1
 }
 
-// The fixed serve/mount STAT record both proxy filesystems agree on (the 44-byte record §7.1 names). A
+// The fixed stat record shared by the syscall ABI and both proxy filesystems. A
 // host driver (or a served guest) WRITES these little-endian fields at these byte offsets; the kernel's
 // fs/proxy.rs READS them back. The ONE place the BYTE LAYOUT lives — the offset analog of the
 // MOUNT_OP_/SERVE_DIRENT_ tables above — so the encoders (e.g. @mc/core mount.ts) and the kernel
-// decoder can never drift apart by hand. Layout:
+// decoder can never drift apart by hand. STAT_NODE_* names the node_type field. Layout:
 //   [size:u64 @0][node_type:u32 @8][nlink:u32 @12][mode:u32 @16][mtime:i64 @20][atime:i64 @28][ctime:i64 @36]
 stat-record {
+    STAT_NODE_FILE          0
+    STAT_NODE_DIR           1
+    STAT_NODE_SYMLINK       2
     STAT_REC_SIZE_OFF      0
     STAT_REC_NODE_TYPE_OFF 8
     STAT_REC_NLINK_OFF     12
@@ -216,7 +223,7 @@ stat-record {
 wire-version 2
 
 // ---------------------------------------------------------------------------
-// Resident services (SERVICES.md). The kernel spawns a service binary with this
+// Resident services (SYSTEMS.md §7.2). The kernel spawns a service binary with this
 // marker as argv[1]; the binary checks argv[1] against it to enter its svc_serve
 // loop instead of its CLI path (one binary, two modes — §3.3). The ONE place the
 // marker is written, shared by the kernel and every service binary (Rust + Zig),

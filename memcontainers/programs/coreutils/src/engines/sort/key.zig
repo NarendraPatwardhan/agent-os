@@ -1,5 +1,5 @@
 //! `-k` key grammar + GNU `begfield`/`limfield` field-extraction semantics
-//! (docs/analysis/applets-s-z.md `sort` entry). Applet-private -- nothing outside
+//! (DESIGN.md §1 `sort` entry). Applet-private -- nothing outside
 //! `sort.zig` imports this.
 //!
 //! Field/char positions are 1-based on the wire (`-k F1[.C1][OPTS],F2[.C2][OPTS]`);
@@ -145,7 +145,7 @@ pub fn parseKeySpec(s: []const u8) ?Key {
 
 /// Resolves a key's unset letters against the global order mode/transform flags
 /// (GNU: options attached to a key win; letters the key didn't specify fall back to
-/// the global flags -- DESIGN ruling recorded in docs/parity-ledger.md).
+/// the global flags -- DESIGN ruling recorded in DESIGN.md §2).
 pub fn resolveAgainstGlobal(k: Key, global_mode: Mode, global_fold: bool, global_dict: bool, global_ip: bool, global_blanks: bool, global_reverse: bool) Key {
     var r = k;
     if (!k.has_mode) r.mode = global_mode;

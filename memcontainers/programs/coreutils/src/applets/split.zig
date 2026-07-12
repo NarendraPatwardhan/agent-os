@@ -1,4 +1,4 @@
-//! `split` -- docs/analysis/uutils-applets.md: create output files containing consecutive
+//! `split` -- DESIGN.md §1: create output files containing consecutive
 //! or interleaved sections of input. Four chunking strategies (mutually exclusive):
 //!   * `-l N`/`--lines`      N lines per file (default 1000)
 //!   * `-b SIZE`/`--bytes`   SIZE bytes per file (K/M/G... suffixes, 1024 vs 1000 bases)

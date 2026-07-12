@@ -1,4 +1,4 @@
-//! `fetch` -- a minimal HTTP client (docs/analysis/applets-a-f.md). Builds a request blob
+//! `fetch` -- a minimal HTTP client (DESIGN.md §1). Builds a request blob
 //! `METHOD URL\n<header lines>\n[Content-Length: N\n]\n<body>` and hands it to
 //! `sys.httpRequest`, which returns a readable body fd (the kernel/host owns the
 //! connection + TLS; on the native backend an in-process HTTP client does the exchange).

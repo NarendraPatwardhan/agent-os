@@ -5,7 +5,7 @@ description: 'Write, run, debug, and validate Luau scripts and libraries inside 
 
 # Memcontainer Luau
 
-Luau is the in-VM agent scripting language for memcontainers. It runs as `/bin/luau`, ships embedded libraries, and sees the memcontainer kernel through `sys`. The source of truth is `ctx/LUAU.md`, `loom/lib/*`, `packages/core/src/memcontainer.ts`, and `crates/e2e/tests/luau.rs` plus `crates/e2e/tests/luau_libs.rs`.
+Luau is the in-VM agent scripting language for AgentOS. It runs as `/bin/luau`, ships embedded libraries, and sees the kernel through `sys`. The maintained sources are `SYSTEMS.md` section 10.3, `memcontainers/programs/luau/glue/lib/*`, `memcontainers/sdk-js/core/src/memcontainer.ts`, and `memcontainers/tests/e2e/src/loom.rs`.
 
 ## Execution Surfaces
 

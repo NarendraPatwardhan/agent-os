@@ -1,4 +1,4 @@
-//! `cat` -- docs/analysis/applets-a-f.md: two paths. No display flags -> verbatim
+//! `cat` -- DESIGN.md §1: two paths. No display flags -> verbatim
 //! 4096-byte-chunk streaming (bytes/CRLF preserved exactly). Any display flag ->
 //! byte-exact transform: 8192-byte reads, one line of carry across operands
 //! (unterminated final line joins the next file's first line), lineno/squeeze state

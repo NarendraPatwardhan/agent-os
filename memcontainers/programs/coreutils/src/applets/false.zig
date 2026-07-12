@@ -1,4 +1,4 @@
-//! `false` -- docs/analysis/applets-a-f.md: leading --help/-h (exit 0) / --version
+//! `false` -- DESIGN.md §1: leading --help/-h (exit 0) / --version
 //! (exit 0), scanning stops at `--`; parser is NOT run over operands. Exit 1
 //! otherwise. Deviation from GNU (documented in the matrix): GNU ignores everything
 //! including --help; this twin honors it only as the first argument.

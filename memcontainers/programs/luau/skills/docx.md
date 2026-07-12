@@ -5,7 +5,7 @@ description: 'Create, read, edit, and validate Microsoft Word .docx files from i
 
 # Memcontainer DOCX
 
-Use the embedded Luau Office stack, not host-side JS/Python generation, unless the task explicitly asks for a host workflow. The source of truth is `loom/lib/docx.luau`; use `crates/e2e/tests/luau_libs.rs` for proven examples and `ctx/LUAU.md` for capability boundaries.
+Use the embedded Luau Office stack, not host-side JS/Python generation, unless the task explicitly asks for a host workflow. The implementation is `memcontainers/programs/luau/glue/lib/docx.luau`; use `memcontainers/tests/e2e/src/loom.rs` and `web/src/examples/chapters.ts` for proven examples, and `SYSTEMS.md` section 10.3 for capability boundaries.
 
 ## Workflow
 

@@ -1,4 +1,4 @@
-//! `env` -- docs/analysis/applets-a-f.md: file-backed environment (`/env/<NAME>`,
+//! `env` -- DESIGN.md §1: file-backed environment (`/env/<NAME>`,
 //! DESIGN.md §4.3). `-i`/`--ignore-environment` (clear /env), `-u NAME`/`--unset`
 //! (repeatable), `-C DIR`/`--chdir`. Trailing args captured raw (clap
 //! `trailing_var_arg`+`allow_hyphen_values` semantics -- hand-parsed here): leading

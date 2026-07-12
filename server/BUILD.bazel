@@ -1,7 +1,6 @@
-# server — THE AgentOS control plane (Elixir/OTP): the kubernetes-style supervisor over the
-# wasm VMs (CONTROL_PLANE.md). The Rust mc-server lineage (memcontainers/crates/mc-server) is
-# kept OUT of this graph as a behavioral/parity oracle, not built here — this server IS the
-# control plane, in Elixir, driving VMs through the host_nif.
+# server — the AgentOS control-plane library (Elixir/OTP): the supervisor over wasm VMs
+# described in SYSTEMS.md §13.1. It drives VMs through host_nif and deliberately stops below
+# any HTTP/WebSocket deployment adapter.
 #
 # Mix-backed on the hermetic discord toolchain. The implementation targets are
 # target_compatible_with erlang_26_2, so a bare `bazel build //...` SKIPS them

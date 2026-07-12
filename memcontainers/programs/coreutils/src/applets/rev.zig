@@ -1,4 +1,4 @@
-//! `rev` -- docs/analysis/applets-g-r.md: facade-streaming, no real flags. Reverses the
+//! `rev` -- DESIGN.md §1: facade-streaming, no real flags. Reverses the
 //! **bytes** of each line and re-emits a bare LF (CRLF's trailing `\r` is stripped by
 //! `LineReader` and NOT re-inserted). Exit: 0; 1 if a FILE can't open (rest still
 //! stream, per `textio.streamLines`).

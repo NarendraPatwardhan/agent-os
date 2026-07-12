@@ -1,4 +1,4 @@
-//! `factor` -- docs/analysis/uutils-applets.md "factor": NUMBER operands (else stdin,
+//! `factor` -- DESIGN.md §1 "factor": NUMBER operands (else stdin,
 //! whitespace/tab/NUL split, byte-for-byte port of factor.rs's memchr3_iter loop
 //! including its "NUL swallows the next segment" quirk), `-h`/`--exponents` (NOT
 //! help -- prints `p^e` instead of repeating `p` e times).
@@ -11,7 +11,7 @@
 //!   - primality: the 12-prime SPRP base set {2..37} is a PROVEN deterministic
 //!     witness set for all of u64 (covers up to ~3.3e24 >> 2^64); u128 extends this
 //!     with the next ~29 small primes as EXTRA (non-adversarial-strength, not a
-//!     BPSW proof) witnesses -- see docs/parity-ledger.md for the scope ruling.
+//!     BPSW proof) witnesses -- see DESIGN.md §2 for the scope ruling.
 //!   - Pollard's rho with Brent's cycle-batching improvement for splitting
 //!     composites (deterministic PRNG seeded from n, so factor's own output is
 //!     reproducible run-to-run without touching any entropy source).
@@ -22,7 +22,7 @@
 //! wording rather than attempting arbitrary-precision Pollard rho -- verified with
 //! `timeout 5` that the oracle itself hangs indefinitely on a 61-digit semiprime of
 //! two ~30-digit primes, so there is no finite oracle output to match beyond this
-//! bound (docs/parity-ledger.md "factor: BigUint factorization is scope-bounded").
+//! bound (DESIGN.md §2 "factor: BigUint factorization is scope-bounded").
 //!
 //! Invalid-input error: `factor: {quoted} is not a valid positive integer` where
 //! `quoted` octal-escapes genuinely-invalid-UTF-8 bytes (NumError's algorithm) and
@@ -521,7 +521,7 @@ fn processStdin(ctx: *Ctx, out: *textio.BufOut, data: []const u8, exponents: boo
 pub fn run(ctx: *Ctx) u8 {
     const res = cli.parse(ctx, spec);
     const m = switch (res) {
-        // uutils-family ruling (parity-ledger.md): clap parse errors exit 1, not
+        // uutils-family ruling (DESIGN.md §2): clap parse errors exit 1, not
         // cli.zig's generic 2.
         .exit => |c| return if (c == 2) 1 else c,
         .ok => |mm| mm,

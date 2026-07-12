@@ -14,7 +14,7 @@
 //! directive class while porting), so the two code paths the reference has (native
 //! jiff fast path vs. the modifier path) collapse to one without any behavior change.
 //!
-//! Unsupported (deferred, see docs/parity-ledger.md): `%Q`/`%:Q` (IANA zone id --
+//! Unsupported (deferred, see DESIGN.md §2): `%Q`/`%:Q` (IANA zone id --
 //! meaningless without a tzdb, DESIGN.md §7.8 UTC+offset-only bound), locale-plural
 //! `%c`/`%x`/`%X`/`%r` beyond the fixed POSIX/C-locale expansions uutils itself uses
 //! (`Config::new().custom(PosixCustom::new())`), the `E`/`O` locale modifiers (jiff

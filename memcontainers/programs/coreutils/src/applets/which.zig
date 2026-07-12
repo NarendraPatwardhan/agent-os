@@ -1,4 +1,4 @@
-//! `which` -- docs/analysis/applets-s-z.md: `-a/--all`; `NAME...` (1+). A NAME
+//! `which` -- DESIGN.md §1: `-a/--all`; `NAME...` (1+). A NAME
 //! containing `/` is checked literally via `fsutil.exists`; otherwise `/env/PATH` is
 //! split on `:` and joined with NAME, first match wins (all matches with `-a`). Match =
 //! `exists()` (no exec-bit test). Exit 0 all found / 1 any missing / 2 no operand

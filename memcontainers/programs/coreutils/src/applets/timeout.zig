@@ -1,4 +1,4 @@
-//! `timeout` -- docs/analysis/applets-s-z.md: `-s/--signal SIG` (name with optional
+//! `timeout` -- DESIGN.md §1: `-s/--signal SIG` (name with optional
 //! `SIG` prefix, or number; map HUP/INT/KILL/TERM/CHLD/CONT/TSTP), `-k/--kill-after
 //! DURATION`, `--preserve-status`, `--foreground` (accepted no-op), `-v/--verbose`;
 //! `DURATION COMMAND [ARG]...` where DURATION uses sleep's grammar (`N[.frac][smhd]`).

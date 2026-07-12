@@ -1,4 +1,4 @@
-//! `tac` -- docs/analysis/applets-s-z.md: operands processed in REVERSE order, each
+//! `tac` -- DESIGN.md §1: operands processed in REVERSE order, each
 //! file's lines reversed. Seekable operands are read whole then split/reversed
 //! in-memory; stdin (or any non-seekable fd, probed via `sys.lseek`) is spilled to a
 //! `SpoolFile` first (in-memory fallback if `/scratch` is unavailable). One trailing

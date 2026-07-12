@@ -1,9 +1,10 @@
 // trap.h — the kernel-backed protected-call + raise primitives that stand in for C++ exceptions /
 // setjmp-longjmp in the Luau guest. This is the C declaration; trap.zig implements them (the
-// C/C++ → Zig rewrite, VISION §0.2). The guest is built `-fno-exceptions -fno-rtti` and runs under
+// C/C++ → Zig rewrite described in third_party/luau/SYSTEM.md). The guest is built
+// `-fno-exceptions -fno-rtti` and runs under
 // wasmi, which has neither the C++ exception runtime nor the wasm exception-handling proposal that
 // setjmp/longjmp require. The kernel supplies the unwind instead, via two `mc` syscalls
-// (ctx/LUAU.md §4.4):
+// (SYSTEMS.md §10.3):
 //
 //   mc_protected_call(fn, ud)  runs fn(ud) as a NESTED guest call — a trap boundary. Returns 0 if
 //                              fn returned normally, or the code passed to mc_raise() if it "threw".

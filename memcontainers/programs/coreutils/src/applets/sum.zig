@@ -1,4 +1,4 @@
-//! `sum` -- docs/analysis/uutils-applets.md "cksum + hash family". `-r` (default): BSD
+//! `sum` -- DESIGN.md §1 "cksum + hash family". `-r` (default): BSD
 //! algorithm, 1024-byte blocks, 5-digit zero-padded fields. `-s`/`--sysv`: System V
 //! algorithm, 512-byte blocks, unpadded (width-1) fields. Filenames are appended when
 //! more than one FILE is given OR the sole operand isn't `-`/omitted; multi-file mode

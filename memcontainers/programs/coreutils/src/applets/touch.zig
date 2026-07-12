@@ -1,4 +1,4 @@
-//! `touch` -- docs/analysis/applets-s-z.md: `-a`/`-m` (neither or both = both),
+//! `touch` -- DESIGN.md §1: `-a`/`-m` (neither or both = both),
 //! `-c/--no-create`, `-r/--reference FILE`, `-t STAMP` (`[[CC]YY]MMDDhhmm[.ss]`),
 //! `-d/--date STRING` (ISO subset `YYYY-MM-DD[ |T HH:MM[:SS]]`). Precedence
 //! `-t`/`-d` (whichever is given; `-t` wins if both) over `-r` over now. A missing file

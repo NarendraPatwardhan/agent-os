@@ -1,4 +1,4 @@
-//! `numfmt` -- docs/analysis/uutils-applets.md: converts numbers to/from human-readable
+//! `numfmt` -- DESIGN.md §1: converts numbers to/from human-readable
 //! scaled forms. Ports `uu_numfmt`'s `format.rs`/`options.rs`/`units.rs`/`numeric.rs`
 //! (0.9.0). All locale-dependent behavior (`--grouping`'s separator, the decimal
 //! point) is hard-coded to the C/POSIX locale (decimal sep `.`, grouping sep EMPTY --
@@ -39,7 +39,16 @@ const PROG = "numfmt";
 const Unit = enum { auto, si, iec, iec_i, none };
 
 const RawSuffix = enum {
-    k, m, g, t, p, e, z, y, r, q,
+    k,
+    m,
+    g,
+    t,
+    p,
+    e,
+    z,
+    y,
+    r,
+    q,
 
     fn fromChar(c: u8) ?RawSuffix {
         return switch (c) {
@@ -109,7 +118,11 @@ const ParsedNumber = union(enum) {
 };
 
 const RoundMethod = enum {
-    up, down, from_zero, towards_zero, nearest,
+    up,
+    down,
+    from_zero,
+    towards_zero,
+    nearest,
 
     fn round(self: RoundMethod, f: f64) f64 {
         return switch (self) {

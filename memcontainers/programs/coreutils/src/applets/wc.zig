@@ -1,4 +1,4 @@
-//! `wc` -- docs/analysis/applets-s-z.md: single-pass streaming counter (4 KiB reads).
+//! `wc` -- DESIGN.md §1: single-pass streaming counter (4 KiB reads).
 //! `-l/--lines -w/--words -m/--chars -c/--bytes -L/--max-line-length`; default = l w c.
 //! Print order is ALWAYS l w m c L (only selected fields), space-separated, UNPADDED
 //! (a deliberate GNU deviation), filename appended when named. Multi-file `total` row.

@@ -20,6 +20,8 @@ import {
   MOUNT_OP_WRITE,
   SERVE_DIRENT_FILE,
   SERVE_DIRENT_DIR,
+  STAT_NODE_FILE,
+  STAT_NODE_DIR,
   STAT_REC_SIZE_OFF,
   STAT_REC_NODE_TYPE_OFF,
   STAT_REC_NLINK_OFF,
@@ -81,7 +83,7 @@ function encodeStat(m: DriverMeta): Uint8Array {
   const dv = new DataView(out.buffer);
   const isDir = m.kind === "dir";
   dv.setBigUint64(STAT_REC_SIZE_OFF, BigInt(Math.max(0, Math.floor(m.size))), true);
-  dv.setUint32(STAT_REC_NODE_TYPE_OFF, isDir ? SERVE_DIRENT_DIR : SERVE_DIRENT_FILE, true);
+  dv.setUint32(STAT_REC_NODE_TYPE_OFF, isDir ? STAT_NODE_DIR : STAT_NODE_FILE, true);
   dv.setUint32(STAT_REC_NLINK_OFF, isDir ? 2 : 1, true);
   dv.setUint32(STAT_REC_MODE_OFF, isDir ? 0o755 : 0o644, true);
   // mtime/atime/ctime (i64 at STAT_REC_MTIME/ATIME/CTIME_OFF) stay 0 — synthetic.

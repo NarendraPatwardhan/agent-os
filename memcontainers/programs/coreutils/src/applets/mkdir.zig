@@ -1,4 +1,4 @@
-//! `mkdir` -- docs/analysis/applets-g-r.md: `fsutil::mkdirP` + `sys.mkdir`/`sys.chmod`.
+//! `mkdir` -- DESIGN.md §1: `fsutil::mkdirP` + `sys.mkdir`/`sys.chmod`.
 //! `-p/--parents`, `-m/--mode MODE` (octal only, masked `&0o7777`, applied to the
 //! FINAL component only via chmod after creation). No symbolic modes, no `-v`.
 

@@ -1,4 +1,4 @@
-//! `echo` -- docs/analysis/applets-a-f.md: hand-parsed (clap for help only). Leading
+//! `echo` -- DESIGN.md §1: hand-parsed (clap for help only). Leading
 //! flag run of `-n`/`-e`/`-E` (clustered, e.g. `-ne`); first non-flag operand ends
 //! flag parsing. `--help`/`-h`/`--version` honored only as the first argument.
 //! Operands joined by a single space, trailing bare LF unless `-n`. `-e` escapes:

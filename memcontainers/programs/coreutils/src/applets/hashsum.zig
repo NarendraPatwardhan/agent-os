@@ -1,4 +1,4 @@
-//! md5sum/sha1sum/sha256sum/sha512sum/b2sum -- docs/analysis/uutils-applets.md "cksum +
+//! md5sum/sha1sum/sha256sum/sha512sum/b2sum -- DESIGN.md §1 "cksum +
 //! hash family". One implementation (per uutils 0.9.0: these are ~6-line wrappers
 //! around `uu_checksum_common::{declare_standalone, standalone_with_length_main}`),
 //! parameterized per algorithm via comptime-generated `run` wrappers (registry.zig
@@ -20,7 +20,7 @@
 //! when verifying checksums". `--text` together with `--tag` (compute mode) is
 //! "--tag does not support --text mode". All exact strings verified against the
 //! oracle; clap-parse-error exit code is 1 here (not the cli.zig-generic 2 -- see
-//! docs/parity-ledger.md: this is a verified, deliberate uutils-family convention).
+//! DESIGN.md §2: this is a verified, deliberate uutils-family convention).
 
 const std = @import("std");
 const sys = @import("../sys/root.zig");

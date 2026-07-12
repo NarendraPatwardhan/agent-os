@@ -1,4 +1,2 @@
-# The kernel — one contract, one implementation on this branch: rust/. The size-optimized
-# Zig reimplementation and the parity-gated selector (SYSTEMS.md, B7) are staged on the
-# dedicated feature branch and land here only once they pass the parity gate; develop
-# carries the Rust kernel alone.
+# The kernel — one contract, one shipped implementation: rust/. The completed Zig-kernel
+# experiment is archived on feature/zig and is not a selector in this build graph (SYSTEMS.md §14.3).

@@ -1,4 +1,4 @@
-//! `wget` -- fetch a URL body to a file or stdout (docs/analysis/applets-s-z.md). A thin
+//! `wget` -- fetch a URL body to a file or stdout (DESIGN.md §1). A thin
 //! pump over `sys.httpGet(url) -> fd` (the kernel/host performs the request + TLS; the
 //! native backend does it in-process). Body only -- no status line, no redirects. Output
 //! goes to `-O FILE` (`-` = stdout) or stdout by default.

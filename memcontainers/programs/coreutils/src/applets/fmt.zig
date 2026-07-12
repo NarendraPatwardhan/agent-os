@@ -1,4 +1,4 @@
-//! `fmt` -- docs/analysis/uutils-applets.md: paragraph refill. Ports `uu_fmt`'s
+//! `fmt` -- DESIGN.md §1: paragraph refill. Ports `uu_fmt`'s
 //! `fmt.rs`/`parasplit.rs`/`linebreak.rs` (0.9.0): default = Knuth-Plass "optimal"
 //! line breaking (`break_knuth_plass`) with an exact demerits model; `-q`/mail
 //! headers use greedy breaking (`break_simple`).
@@ -32,7 +32,7 @@
 //! exact multiplication ASSOCIATION (`(x*x)*x` vs `x*(x*x)`) isn't independently
 //! verifiable from source alone; this port uses left-to-right `x*x*x`. Verified
 //! against the oracle on a broad corpus (default refill, `-w`, `-s`, `-c`, `-t`,
-//! `-p`, multi-paragraph, sentence detection, tabs) -- see parity-ledger.md for any
+//! `-p`, multi-paragraph, sentence detection, tabs) -- see DESIGN.md §2 for any
 //! residual divergence on adversarial inputs found after that sweep.
 
 const std = @import("std");

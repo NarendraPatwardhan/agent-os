@@ -1,4 +1,4 @@
-//! `xargs` -- docs/analysis/applets-s-z.md: slurps stdin (`textio.readAll`), splits on
+//! `xargs` -- DESIGN.md §1: slurps stdin (`textio.readAll`), splits on
 //! NUL (`-0/--null`) or ASCII whitespace, truncates at the `-E EOF` marker item (`-e`
 //! alias, optional attached value). Flags: `-n N` max args per batch, `-s BYTES` max
 //! chars (byte accounting = command+initial args+items, each + 1 for its NUL

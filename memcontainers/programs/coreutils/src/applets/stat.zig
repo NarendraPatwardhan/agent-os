@@ -1,11 +1,11 @@
-//! `stat` -- docs/analysis/applets-s-z.md: `lstat`/`readlink` raw (no dereferencing).
+//! `stat` -- DESIGN.md §1: `lstat`/`readlink` raw (no dereferencing).
 //! `-c/--format FMT` (literal, trailing `\n` per file); `--printf FMT` (interprets
 //! `\n \t \r \\ \"` escapes, no trailing newline; wins over `-c`); `FILE...` (1+, else
 //! `stat: missing operand`, exit 2). Directives: `%n %N %s %F %f %a %A %h %x/%X %y/%Y
 //! %z/%Z %u %g %U %G %i %d %t %T %o %b %%`; unknown -> literal `%c`. Default (no
 //! format) is an 8-line report: File/Size/Links/Type/Mode/Modify/Change/Access -- the
 //! exact field order/spacing chosen here (not pinned by the source matrix beyond that
-//! list) is documented in docs/milestones.md. Times are UTC via `core/civil.zig`.
+//! list) is documented in DESIGN.md §1. Times are UTC via `core/civil.zig`.
 //! Errors: `stat: <path>: <strerror>`, exit 1.
 
 const std = @import("std");

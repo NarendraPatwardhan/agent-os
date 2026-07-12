@@ -1,4 +1,4 @@
-//! `sort` -- docs/analysis/applets-s-z.md: THE largest hand-written applet (matrix:
+//! `sort` -- DESIGN.md §1: THE largest hand-written applet (matrix:
 //! "1122 lines" in the reference). External merge-sort with `-k` key grammar,
 //! ordering modes (`-n -g -h -V`), transforms (`-f -d -i -b -r`), `-c`/`-C` check
 //! mode, `-m` K-way merge mode, `-u`/`-s`/`-o`/`-t`/`-S`. `-h` is human-numeric-sort,
@@ -100,7 +100,7 @@ fn parseBufferSize(s: []const u8) ?usize {
 
 /// Global order-mode precedence when more than one of -n/-g/-h/-V is given: since
 /// `cli.zig`'s `Matches` doesn't retain cross-option argv order, a fixed precedence
-/// is used instead of "last flag wins" (source: spec, docs/parity-ledger.md):
+/// is used instead of "last flag wins" (source: spec, DESIGN.md §2):
 /// -g > -h > -V > -n.
 fn globalMode(m: cli.Matches) Mode {
     if (m.has("general-numeric-sort")) return .general;
@@ -127,7 +127,7 @@ pub fn run(ctx: *Ctx) u8 {
     // `-u` implies `-s`: with unique output, comparison is by key only -- the
     // whole-line last-resort is disabled so the FIRST line of each key-equal group
     // (in input order) is the one kept, matching GNU (matrix silent; ruling in
-    // docs/parity-ledger.md).
+    // DESIGN.md §2).
     const stable = m.has("stable") or unique;
     const check = m.has("check");
     const check_silent = m.has("check-silent");

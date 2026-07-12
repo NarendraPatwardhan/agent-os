@@ -1,4 +1,4 @@
-//! `cut` -- docs/analysis/applets-a-f.md: facade-streaming, bounded memory. Exactly one
+//! `cut` -- DESIGN.md §1: facade-streaming, bounded memory. Exactly one
 //! of `-b`/`-c` (share "Chars" mode) or `-f` (Fields mode). `-d DELIM` single byte
 //! (fields-only), `-s` only-delimited (fields-only), `-n` accepted no-op,
 //! `--complement`, `--output-delimiter=STRING`. LIST: comma-separated 1-based `lo-hi`

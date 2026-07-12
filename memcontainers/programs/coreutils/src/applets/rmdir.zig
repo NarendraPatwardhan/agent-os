@@ -1,4 +1,4 @@
-//! `rmdir` -- docs/analysis/applets-g-r.md: `sys.unlink` (kernel removes empty dirs)
+//! `rmdir` -- DESIGN.md §1: `sys.unlink` (kernel removes empty dirs)
 //! + `fsutil.isDir`. `-p/--parents` walks up unlinking now-empty ancestors until a
 //! non-dir/failure/root/`.`  is hit (silently stopping, not an error).
 

@@ -1,6 +1,6 @@
 //! A stream editor (sed): compiles a script into commands and runs them over the input's
 //! line cycle with a pattern space + hold space. Matches the common GNU/POSIX sed surface
-//! (the uutils-sed feature contract, docs/analysis/uutils-applets.md). Regex is the
+//! (the uutils-sed feature contract, DESIGN.md §1). Regex is the
 //! project Pike-VM (ERE); BRE (sed's default) is translated to ERE here. Backreferences
 //! INSIDE a pattern (`\1` in the regex itself) are a documented deferral -- `\1..\9` and
 //! `&` in the REPLACEMENT use the engine's capture spans and are supported.

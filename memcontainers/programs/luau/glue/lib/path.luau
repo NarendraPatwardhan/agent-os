@@ -1,7 +1,7 @@
 -- path.luau — POSIX path manipulation ('/'). Pure string ops plus a `glob` that
 -- walks the VFS via `sys.fs`. Path *semantics* (separators, normalization,
 -- globbing) are a domain of their own, so this is a module rather than more
--- `string` methods (ctx/LUAU.md boundary rule in SYSTEMS.md section 10.3).
+-- `string` methods (SYSTEMS.md §10.3 boundary rule in SYSTEMS.md section 10.3).
 
 local sys = sys
 local path = {}

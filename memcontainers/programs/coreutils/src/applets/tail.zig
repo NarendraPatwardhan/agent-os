@@ -1,4 +1,4 @@
-//! `tail` -- docs/analysis/applets-s-z.md: argv pre-pass rewrites obsolete `-<digits>`
+//! `tail` -- DESIGN.md §1: argv pre-pass rewrites obsolete `-<digits>`
 //! -> `-n N` and `+<digits>` -> `-n +N`. `-c/--bytes N|+N`, `-n/--lines N|+N` (default
 //! 10), `-q/--quiet`, `-v/--verbose`, `-f/--follow`. Four modes: `Lines(N)`/`Bytes(N)`
 //! keep a ring of the last N whole lines/bytes; `FromLine(+N)`/`FromByte(+N)` skip a

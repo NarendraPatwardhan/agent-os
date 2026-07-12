@@ -83,10 +83,14 @@ export const POLL_BLOCK = -1;
 // signal
 export const SIGHUP = 1;
 export const SIGINT = 2;
+export const SIGQUIT = 3;
 export const SIGKILL = 9;
+export const SIGUSR1 = 10;
+export const SIGUSR2 = 12;
 export const SIGTERM = 15;
 export const SIGCHLD = 17;
 export const SIGCONT = 18;
+export const SIGSTOP = 19;
 export const SIGTSTP = 20;
 export const SIG_DFL = 0;
 export const SIG_IGN = 1;
@@ -121,6 +125,9 @@ export const PERSIST_GET_ABSENT = 0;
 export const PERSIST_GET_PRESENT = 1;
 
 // stat-record
+export const STAT_NODE_FILE = 0;
+export const STAT_NODE_DIR = 1;
+export const STAT_NODE_SYMLINK = 2;
 export const STAT_REC_SIZE_OFF = 0;
 export const STAT_REC_NODE_TYPE_OFF = 8;
 export const STAT_REC_NLINK_OFF = 12;

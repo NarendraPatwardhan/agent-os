@@ -1,4 +1,4 @@
-//! `jq` -- a JSON query processor (docs/analysis/applets-g-r.md), matching jaq/jq on the
+//! `jq` -- a JSON query processor (DESIGN.md §1), matching jaq/jq on the
 //! common language core (engines/jqlang). CLI: -c compact, -r raw string output, -n null
 //! input, FILTER (required), [FILE]... (concatenated, parsed as a stream of JSON values;
 //! stdin default). Exit 0 ok, 2 usage/file-open, 3 compile error, 5 runtime/parse error.

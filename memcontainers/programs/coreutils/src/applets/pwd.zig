@@ -1,4 +1,4 @@
-//! `pwd` -- docs/analysis/applets-g-r.md: `sys.getcwd` + `/env/PWD` + `fsutil.canonicalize`.
+//! `pwd` -- DESIGN.md §1: `sys.getcwd` + `/env/PWD` + `fsutil.canonicalize`.
 //! `-L/--logical`, `-P/--physical` (default; `-P` wins if both given). `-L` accepts
 //! `/env/PWD` only if it's absolute, has no `.`/`..` component, and
 //! `canonicalize(pwd, .all) == physical cwd`; otherwise falls back to physical. No

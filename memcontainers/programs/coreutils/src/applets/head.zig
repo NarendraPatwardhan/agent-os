@@ -1,4 +1,4 @@
-//! `head` -- docs/analysis/applets-g-r.md: raw byte counting (no `LineReader`, byte-exact
+//! `head` -- DESIGN.md §1: raw byte counting (no `LineReader`, byte-exact
 //! streaming). `-c/--bytes N` first N bytes, `-n/--lines N` first N lines (default 10),
 //! obsolete `-N` (e.g. `head -5`) rewritten to `-n N` by an argv pre-pass. Count parsed
 //! by a custom decimal-only parser (non-digit => 0). Multi-file => `==> NAME <==`

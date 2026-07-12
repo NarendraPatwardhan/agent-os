@@ -1,4 +1,4 @@
-//! `seq` -- docs/analysis/applets-s-z.md: dual-path number sequencer, all arithmetic
+//! `seq` -- DESIGN.md §1: dual-path number sequencer, all arithmetic
 //! and formatting hand-rolled over core/fmtnum.
 //!
 //! Flags: `-w/--equal-width` (zero-pad to the widest rendered value; the pad goes

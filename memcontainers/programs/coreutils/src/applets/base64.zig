@@ -1,4 +1,4 @@
-//! `base64` -- docs/analysis/uutils-applets.md "base32/base64/basenc". Same shape as
+//! `base64` -- DESIGN.md §1 "base32/base64/basenc". Same shape as
 //! `base32` (own copy of the tiny CLI spec -- DESIGN.md §3 forbids applet-to-applet
 //! imports, so the identical flag set is duplicated rather than shared) over the
 //! standard base64 alphabet; all I/O delegated to `engines/codec.zig`'s `runBaseIO`.

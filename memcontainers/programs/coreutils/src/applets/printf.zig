@@ -1,4 +1,4 @@
-//! `printf` -- docs/analysis/applets-g-r.md: hand-parsed byte-exact engine (clap only
+//! `printf` -- DESIGN.md §1: hand-parsed byte-exact engine (clap only
 //! for leading `--help`/`--version`). Escapes `\a \b \f \n \r \t \v \\` (NOT `\e`),
 //! `\c` stop-everything, octal `\NNN` (<=3 digits; in `%b` arguments `\0` + <=3 more
 //! digits, GNU-lenient `\NNN` also accepted there), hex `\xHH` (1-2 digits), Unicode

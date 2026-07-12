@@ -1,7 +1,7 @@
 //! json.zig — the `json` battery (was loom/src/json_bindings.cpp; the C++ → Zig rewrite). C-native
 //! JSON encode/decode over the Lua C API: object ↔ string-keyed table, array ↔ 1..n table, JSON
 //! null ↔ the json.null sentinel. Expected failure (malformed input) → nil, message; misuse
-//! (encoding a function) raises. See third_party/luau/SYSTEM.md / ctx LUAU.md.
+//! (encoding a function) raises. See third_party/luau/SYSTEM.md and SYSTEMS.md §10.3.
 
 const std = @import("std");
 const lua = @import("lua.zig");

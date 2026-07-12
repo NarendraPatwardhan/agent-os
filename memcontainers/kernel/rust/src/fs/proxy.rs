@@ -18,9 +18,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::wasm::abi::{
-    SERVE_DIRENT_DIR, SERVE_DIRENT_FILE, SERVE_DIRENT_SYMLINK, STAT_REC_ATIME_OFF,
-    STAT_REC_CTIME_OFF, STAT_REC_LEN, STAT_REC_MODE_OFF, STAT_REC_MTIME_OFF, STAT_REC_NLINK_OFF,
-    STAT_REC_NODE_TYPE_OFF, STAT_REC_SIZE_OFF,
+    SERVE_DIRENT_DIR, SERVE_DIRENT_FILE, SERVE_DIRENT_SYMLINK, STAT_NODE_DIR, STAT_NODE_FILE,
+    STAT_NODE_SYMLINK, STAT_REC_ATIME_OFF, STAT_REC_CTIME_OFF, STAT_REC_LEN, STAT_REC_MODE_OFF,
+    STAT_REC_MTIME_OFF, STAT_REC_NLINK_OFF, STAT_REC_NODE_TYPE_OFF, STAT_REC_SIZE_OFF,
 };
 
 use crate::vfs::traits::{DirEntry, FsError, Metadata, NodeType, Result};
@@ -63,9 +63,9 @@ pub fn parse_metadata(data: &[u8]) -> Result<Metadata> {
     }
     let size = u64_at(data, STAT_REC_SIZE_OFF as usize)?;
     let node_type = match u32_at(data, STAT_REC_NODE_TYPE_OFF as usize)? {
-        SERVE_DIRENT_FILE => NodeType::File,
-        SERVE_DIRENT_DIR => NodeType::Dir,
-        SERVE_DIRENT_SYMLINK => return Err(FsError::NotImplemented),
+        value if value == STAT_NODE_FILE as u32 => NodeType::File,
+        value if value == STAT_NODE_DIR as u32 => NodeType::Dir,
+        value if value == STAT_NODE_SYMLINK as u32 => return Err(FsError::NotImplemented),
         _ => return Err(FsError::IoError),
     };
     Ok(Metadata {

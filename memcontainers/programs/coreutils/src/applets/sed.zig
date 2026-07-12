@@ -1,4 +1,4 @@
-//! `sed` -- stream editor (docs/analysis/uutils-applets.md). CLI: -n (no auto-print),
+//! `sed` -- stream editor (DESIGN.md §1). CLI: -n (no auto-print),
 //! -e SCRIPT (repeatable), -f FILE (repeatable), -E/-r (ERE), -i[=SUFFIX] (in-place),
 //! -s (separate files), -z (NUL line separator), --posix (no-op), first non-flag operand
 //! is the script when no -e/-f was given, remaining operands are input files. The engine
@@ -253,7 +253,6 @@ fn splitLines(ctx: *Ctx, data: []const u8, sep: u8) ![]const []const u8 {
     while (it.next()) |line| {
         if (pending) |p| try lines.append(ctx.gpa, p);
         pending = line;
-
     }
     if (pending) |p| {
         if (p.len != 0) try lines.append(ctx.gpa, p);

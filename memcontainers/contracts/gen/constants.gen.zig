@@ -83,10 +83,14 @@ pub const POLL_BLOCK: i32 = -1;
 // signal
 pub const SIGHUP: i32 = 1;
 pub const SIGINT: i32 = 2;
+pub const SIGQUIT: i32 = 3;
 pub const SIGKILL: i32 = 9;
+pub const SIGUSR1: i32 = 10;
+pub const SIGUSR2: i32 = 12;
 pub const SIGTERM: i32 = 15;
 pub const SIGCHLD: i32 = 17;
 pub const SIGCONT: i32 = 18;
+pub const SIGSTOP: i32 = 19;
 pub const SIGTSTP: i32 = 20;
 pub const SIG_DFL: i32 = 0;
 pub const SIG_IGN: i32 = 1;
@@ -121,6 +125,9 @@ pub const PERSIST_GET_ABSENT: u32 = 0;
 pub const PERSIST_GET_PRESENT: u32 = 1;
 
 // stat-record
+pub const STAT_NODE_FILE: i32 = 0;
+pub const STAT_NODE_DIR: i32 = 1;
+pub const STAT_NODE_SYMLINK: i32 = 2;
 pub const STAT_REC_SIZE_OFF: i32 = 0;
 pub const STAT_REC_NODE_TYPE_OFF: i32 = 8;
 pub const STAT_REC_NLINK_OFF: i32 = 12;

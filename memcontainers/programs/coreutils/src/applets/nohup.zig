@@ -1,4 +1,4 @@
-//! `nohup` -- docs/analysis/applets-g-r.md: no flags of its own (`--help`/`-h` first
+//! `nohup` -- DESIGN.md §1: no flags of its own (`--help`/`-h` first
 //! arg only); `COMMAND [ARG]...` passed verbatim. `sys.sigdisp(SIGHUP, ignore)` first.
 //! If `isatty(stdout)`: open/create/append `nohup.out` in the cwd, print
 //! `nohup: ignoring input and appending output to 'nohup.out'` to STDERR, and route the
@@ -7,7 +7,7 @@
 //! status; 125 own failures (missing operand, nohup.out open failure, sigdisp/wait
 //! failure -- the clap-usage exit is also 125); 127 command not runnable
 //! (`nohup: {cmd}: <strerror>`). The isatty(stdout) branch is unit-test-only territory
-//! under the parity runner (stdio is always pipes there), per docs/milestones.md.
+//! under the parity runner (stdio is always pipes there), per DESIGN.md §1.
 
 const std = @import("std");
 const sys = @import("../sys/root.zig");

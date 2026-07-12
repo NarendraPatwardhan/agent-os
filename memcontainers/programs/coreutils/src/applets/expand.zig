@@ -1,4 +1,4 @@
-//! `expand` -- docs/analysis/applets-g-r.md (M7a): converts tabs in each FILE to
+//! `expand` -- DESIGN.md §1 (M7a): converts tabs in each FILE to
 //! spaces. `-i`/`--initial` only converts LEADING tabs -- verified against the oracle
 //! and expand.rs: "leading" means "before the first non-blank" (space AND tab both
 //! count as blank; a backspace also ends the leading run since it isn't a space); a
@@ -278,7 +278,7 @@ fn writeSpaces(out: *textio.BufOut, n: usize) sys.Error!void {
 /// and the leading-blanks flag stay exact across the whole file instead of the
 /// oracle's per-4KiB-chunk `init` reset -- a deliberate, harmless simplification
 /// since it only differs on pathologically long single lines, which the corpus does
-/// not exercise (see docs/parity-ledger.md).
+/// not exercise (see DESIGN.md §2).
 fn expandBuf(out: *textio.BufOut, buf: []const u8, stops: []const usize, mode: RemainingMode, iflag: bool, utf8: bool, col: *usize) sys.Error!void {
     var i: usize = 0;
     var init_flag = true;

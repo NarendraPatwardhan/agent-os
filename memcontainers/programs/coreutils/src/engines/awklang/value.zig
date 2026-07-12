@@ -3,7 +3,7 @@
 //! coercion rule here -- including its quirks -- is deliberately replicated, not
 //! "fixed", per the awk applet's parity contract.
 //!
-//! Key quirks inherited from the oracle (see docs/parity-ledger.md for the full
+//! Key quirks inherited from the oracle (see DESIGN.md §2 for the full
 //! writeup):
 //!   - A STRING LITERAL that looks numeric (e.g. `"10"`) becomes a `numeric_string`
 //!     exactly like a field value would -- awk-rs has no separate "STRNUM" concept

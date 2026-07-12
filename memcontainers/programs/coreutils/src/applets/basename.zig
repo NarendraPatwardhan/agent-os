@@ -1,4 +1,4 @@
-//! `basename` -- docs/analysis/applets-a-f.md: pure string computation, tier_isolated.
+//! `basename` -- DESIGN.md §1: pure string computation, tier_isolated.
 //! `-a`/`--multiple` (every operand is a NAME), `-s`/`--suffix=SUFFIX` (implies -a),
 //! `-z`/`--zero`. Single-arg mode: positional[0] is NAME, positional[1] (if present)
 //! is an ad-hoc SUFFIX (classic two-operand `basename NAME SUFFIX` form). Byte-exact.

@@ -1,4 +1,4 @@
-//! `od` -- docs/analysis/uutils-applets.md: typed multi-format octal/decimal/hex/float/
+//! `od` -- DESIGN.md §1: typed multi-format octal/decimal/hex/float/
 //! char dumper. Custom argv scanner (mirrors uutils od's parse_formats.rs) since the
 //! declarative `core/cli.zig` parser can't express `-fvoxw16` clustering with mixed
 //! flag/value semantics and clap's "optional value" args (`-w[N]`, `-S[N]`). One
@@ -90,12 +90,29 @@ const help_doc = cli.Help{
 const Radix = enum { octal, decimal, hex, none };
 
 const FmtId = enum {
-    oct8, oct16, oct32, oct64,
-    hex8, hex16, hex32, hex64,
-    decu8, decu16, decu32, decu64,
-    decs8, decs16, decs32, decs64,
-    a_fmt, c_fmt,
-    f16_fmt, bf16_fmt, f32_fmt, f64_fmt, ld_fmt,
+    oct8,
+    oct16,
+    oct32,
+    oct64,
+    hex8,
+    hex16,
+    hex32,
+    hex64,
+    decu8,
+    decu16,
+    decu32,
+    decu64,
+    decs8,
+    decs16,
+    decs32,
+    decs64,
+    a_fmt,
+    c_fmt,
+    f16_fmt,
+    bf16_fmt,
+    f32_fmt,
+    f64_fmt,
+    ld_fmt,
 };
 
 fn byteSizeOf(id: FmtId) usize {
@@ -978,25 +995,29 @@ fn rjustInto(sink: *fmtnum.FixedSink, s: []const u8, width: usize) void {
 }
 
 const A_CHARS = [_][]const u8{
-    "nul", "soh", "stx", "etx", "eot", "enq", "ack", "bel", "bs", "ht", "nl", "vt", "ff", "cr",
-    "so", "si", "dle", "dc1", "dc2", "dc3", "dc4", "nak", "syn", "etb", "can", "em", "sub", "esc",
-    "fs", "gs", "rs", "us", "sp", "!", "\"", "#", "$", "%", "&", "'", "(", ")", "*", "+", ",", "-",
-    ".", "/", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ":", ";", "<", "=", ">", "?", "@",
-    "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S",
-    "T", "U", "V", "W", "X", "Y", "Z", "[", "\\", "]", "^", "_", "`", "a", "b", "c", "d", "e", "f",
-    "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y",
-    "z", "{", "|", "}", "~", "del",
+    "nul", "soh", "stx", "etx", "eot", "enq", "ack", "bel", "bs",  "ht",  "nl",  "vt", "ff",  "cr",
+    "so",  "si",  "dle", "dc1", "dc2", "dc3", "dc4", "nak", "syn", "etb", "can", "em", "sub", "esc",
+    "fs",  "gs",  "rs",  "us",  "sp",  "!",   "\"",  "#",   "$",   "%",   "&",   "'",  "(",   ")",
+    "*",   "+",   ",",   "-",   ".",   "/",   "0",   "1",   "2",   "3",   "4",   "5",  "6",   "7",
+    "8",   "9",   ":",   ";",   "<",   "=",   ">",   "?",   "@",   "A",   "B",   "C",  "D",   "E",
+    "F",   "G",   "H",   "I",   "J",   "K",   "L",   "M",   "N",   "O",   "P",   "Q",  "R",   "S",
+    "T",   "U",   "V",   "W",   "X",   "Y",   "Z",   "[",   "\\",  "]",   "^",   "_",  "`",   "a",
+    "b",   "c",   "d",   "e",   "f",   "g",   "h",   "i",   "j",   "k",   "l",   "m",  "n",   "o",
+    "p",   "q",   "r",   "s",   "t",   "u",   "v",   "w",   "x",   "y",   "z",   "{",  "|",   "}",
+    "~",   "del",
 };
 
 const C_CHARS = [_][]const u8{
     "\\0", "001", "002", "003", "004", "005", "006", "\\a", "\\b", "\\t", "\\n", "\\v", "\\f",
     "\\r", "016", "017", "020", "021", "022", "023", "024", "025", "026", "027", "030", "031",
-    "032", "033", "034", "035", "036", "037", " ", "!", "\"", "#", "$", "%", "&", "'", "(", ")",
-    "*", "+", ",", "-", ".", "/", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ":", ";", "<",
-    "=", ">", "?", "@", "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M", "N", "O",
-    "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "[", "\\", "]", "^", "_", "`", "a", "b",
-    "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u",
-    "v", "w", "x", "y", "z", "{", "|", "}", "~", "177",
+    "032", "033", "034", "035", "036", "037", " ",   "!",   "\"",  "#",   "$",   "%",   "&",
+    "'",   "(",   ")",   "*",   "+",   ",",   "-",   ".",   "/",   "0",   "1",   "2",   "3",
+    "4",   "5",   "6",   "7",   "8",   "9",   ":",   ";",   "<",   "=",   ">",   "?",   "@",
+    "A",   "B",   "C",   "D",   "E",   "F",   "G",   "H",   "I",   "J",   "K",   "L",   "M",
+    "N",   "O",   "P",   "Q",   "R",   "S",   "T",   "U",   "V",   "W",   "X",   "Y",   "Z",
+    "[",   "\\",  "]",   "^",   "_",   "`",   "a",   "b",   "c",   "d",   "e",   "f",   "g",
+    "h",   "i",   "j",   "k",   "l",   "m",   "n",   "o",   "p",   "q",   "r",   "s",   "t",
+    "u",   "v",   "w",   "x",   "y",   "z",   "{",   "|",   "}",   "~",   "177",
 };
 
 fn renderA(sink: *fmtnum.FixedSink, byte: u8) void {

@@ -1,4 +1,4 @@
-//! `paste` -- docs/analysis/applets-g-r.md (M7a): merges lines of FILE operands.
+//! `paste` -- DESIGN.md §1 (M7a): merges lines of FILE operands.
 //! `-s`/`--serial` pastes one file at a time (all its lines joined into one output
 //! row) instead of the default parallel mode (one output row per line-index across
 //! ALL files, short files contributing empty fields once exhausted). `-d LIST`
@@ -13,7 +13,7 @@
 //! as one field (verified against the oracle).
 //!
 //! Delimiter-cycle reset semantics (verified against the oracle by tracing byte-exact
-//! output, docs/parity-ledger.md): in PARALLEL mode the cycle resets to the first
+//! output, DESIGN.md §2): in PARALLEL mode the cycle resets to the first
 //! delimiter at the start of every output ROW (POSIX: "reset...after each file operand
 //! is processed" -- in practice, after each row is complete); in SERIAL mode the cycle
 //! is NEVER reset -- it runs continuously across every line of every file for the
@@ -24,7 +24,7 @@
 //! non-stdin operands are opened UP FRONT before any output; the first open failure
 //! aborts immediately with NO filename in the message (`paste: <strerror>`) and NO
 //! output at all -- this is a real divergence from cut/head's per-operand
-//! continue-on-error convention (see docs/parity-ledger.md).
+//! continue-on-error convention (see DESIGN.md §2).
 //!
 //! With exactly one input source and no `-s`, paste bypasses delimiter handling
 //! entirely and streams input to output byte-for-byte, appending the line/row

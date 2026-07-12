@@ -9,17 +9,16 @@
 
 const std = @import("std");
 const mc = @import("mc");
+const constants = @import("constants_zig");
 
 const alloc = std.heap.c_allocator;
-const O_READ: i32 = 1; // contracts/constants.kdl
-const EIO: i32 = 29;
 
 /// Read a whole file by path. Caller owns the returned buffer; null on failure, with the mc errno
 /// written to `err` when provided — so sys.fs.read can surface the errno NAME (the value/err idiom)
 /// while entry.zig / the require loader, which only need bytes-or-nothing, pass null.
 pub fn slurp(path: [*:0]const u8, err: ?*i32) ?[]u8 {
     var fd: u32 = 0;
-    const oe = mc.mc_sys_open(mc.addr(path), @intCast(std.mem.span(path).len), O_READ, mc.addr(&fd));
+    const oe = mc.mc_sys_open(mc.addr(path), @intCast(std.mem.span(path).len), constants.O_READ, mc.addr(&fd));
     if (oe != 0) {
         if (err) |p| p.* = oe;
         return null;
@@ -37,13 +36,13 @@ pub fn slurp(path: [*:0]const u8, err: ?*i32) ?[]u8 {
         }
         if (n == 0) break;
         list.appendSlice(alloc, buf[0..n]) catch {
-            if (err) |p| p.* = EIO;
+            if (err) |p| p.* = constants.EIO;
             list.deinit(alloc);
             return null;
         };
     }
     return list.toOwnedSlice(alloc) catch {
-        if (err) |p| p.* = EIO;
+        if (err) |p| p.* = constants.EIO;
         return null;
     };
 }

@@ -256,13 +256,15 @@ const STAT_MODE_OFF: usize = @intCast(constants.STAT_REC_MODE_OFF);
 const STAT_MTIME_OFF: usize = @intCast(constants.STAT_REC_MTIME_OFF);
 const STAT_ATIME_OFF: usize = @intCast(constants.STAT_REC_ATIME_OFF);
 const STAT_CTIME_OFF: usize = @intCast(constants.STAT_REC_CTIME_OFF);
+const STAT_NODE_DIR: u32 = @intCast(constants.STAT_NODE_DIR);
+const STAT_NODE_SYMLINK: u32 = @intCast(constants.STAT_NODE_SYMLINK);
 
 fn parseStat(buf: *const [STAT_LEN]u8) Stat {
     const kind = std.mem.readInt(u32, buf[STAT_NODE_TYPE_OFF..][0..4], .little);
     return .{
         .size = std.mem.readInt(u64, buf[STAT_SIZE_OFF..][0..8], .little),
-        .is_dir = kind == constants.SERVE_DIRENT_DIR,
-        .is_symlink = kind == constants.SERVE_DIRENT_SYMLINK,
+        .is_dir = kind == STAT_NODE_DIR,
+        .is_symlink = kind == STAT_NODE_SYMLINK,
         .nlink = std.mem.readInt(u32, buf[STAT_NLINK_OFF..][0..4], .little),
         .mode = @intCast(std.mem.readInt(u32, buf[STAT_MODE_OFF..][0..4], .little)),
         .mtime = std.mem.readInt(i64, buf[STAT_MTIME_OFF..][0..8], .little),

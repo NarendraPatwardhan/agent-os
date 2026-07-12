@@ -1,4 +1,4 @@
-//! `sleep` -- docs/analysis/applets-s-z.md: `DURATION...` (1+, summed). Each operand is
+//! `sleep` -- DESIGN.md §1: `DURATION...` (1+, summed). Each operand is
 //! `[digits][.frac][s|m|h|d]` (default unit `s`); the fractional part is truncated to
 //! millisecond resolution. Missing operand -> `sleep: missing operand`, exit 2. Invalid
 //! operand -> `sleep: invalid time interval '<x>'`, exit 1. Sleeps in `i32`-max chunks

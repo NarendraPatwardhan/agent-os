@@ -1,7 +1,7 @@
 //! Curated integration registry lifted from executor's preset tables.
 //!
-//! executor is MIT (c) Rhys Sullivan. Per `INVOKE.md`, AgentOS lifts factual metadata and
-//! normalization rules, not JavaScript implementation code. These entries are public integration
+//! executor is MIT (c) Rhys Sullivan. AgentOS lifts factual metadata and normalization rules, not
+//! JavaScript implementation code. These entries are public integration
 //! identifiers, names, summaries, icons, and source endpoints/spec URLs used by `/svc/adapters`.
 //! Source snapshot: <https://github.com/RhysSullivan/executor> at
 //! `44fff2f9db297676b1ec6e6cdabb46a9487a75c5`.

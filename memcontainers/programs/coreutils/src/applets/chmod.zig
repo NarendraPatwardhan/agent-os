@@ -1,4 +1,4 @@
-//! `chmod` -- docs/analysis/applets-a-f.md: `-R/--recursive` (post-order tree walk).
+//! `chmod` -- DESIGN.md §1: `-R/--recursive` (post-order tree walk).
 //! Hand-parsed (not `core/cli.zig`): the operand grammar is `chmod [-R] MODE FILE...`
 //! where MODE is the first non-`-R` token and may itself begin with `-` (symbolic
 //! modes like `go-w`), so a declarative flag parser can't disambiguate it from an

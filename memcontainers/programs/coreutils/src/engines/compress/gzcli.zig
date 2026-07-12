@@ -20,7 +20,7 @@
 //!   std's own header is fixed and gzip's OS byte is cosmetic (never round-tripped by
 //!   any of our own `-l`/`-t`/`-d` paths), byte-for-byte gzip parity beyond "a
 //!   conformant gzip member decodable by any gunzip" is out of scope -- see
-//!   docs/parity-ledger.md.
+//!   DESIGN.md §2.
 //! - **CRC/ISIZE verification on decompress**: `Decompress` parses the gzip trailer into
 //!   `container_metadata.gzip.{crc,count}` but (verified by reading
 //!   `std/compress/flate/Decompress.zig`) never actually compares them against the

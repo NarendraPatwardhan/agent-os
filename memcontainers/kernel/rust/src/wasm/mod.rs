@@ -64,8 +64,8 @@ const SVC_KIND_DRAIN_READY: u8 = 2;
 /// The persistence mount. Access to a path at or under it requires
 /// the `CAP_PERSIST` capability in addition to the usual FS read/write checks.
 const PERSIST_ROOT: &str = "/var/persist";
-/// Kernel/sysroot stat record size. Keep in lockstep with `write_stat_buf`.
-const STAT_BUF_LEN: usize = 44;
+/// Kernel/sysroot stat record size, projected from the shared contract.
+const STAT_BUF_LEN: usize = STAT_REC_LEN as usize;
 
 /// An entry in a guest's own fd table (fds ≥ 3). Standard fds 0/1/2 route to
 /// the task's stdin/stdout/stderr via `BuiltinCtx`.
@@ -537,7 +537,7 @@ impl SharedWs {
 /// Applies UNIFORMLY to every invocation — top-level and nested inside an
 /// `mc_sys_pcall` protected call alike. (Nested bodies once needed a special
 /// whole-budget slab to dodge a wasmi nested-`OutOfFuel`-resume failure; that was
-/// the lazy-translation corruption, now fixed by eager compilation — ctx/WASMI.md
+/// the lazy-translation corruption, now fixed by eager compilation — SYSTEMS.md §4.3
 /// — so the slab is gone and the `pcall_stack` governs only throw-unwinding.)
 const FUEL_QUANTUM: u64 = 2_000_000;
 
@@ -560,7 +560,7 @@ impl Budget {
         fuel: 50_000_000_000,
         table: 10_000,
     };
-    /// The absolute ceiling no budget may exceed (ctx/TYPST.md hard maxima).
+    /// The absolute ceiling no budget may exceed (SYSTEMS.md §10.4 hard maxima).
     pub const HARD: Budget = Budget {
         mem_bytes: 1024 * 1024 * 1024,
         fuel: 4_000_000_000_000,
@@ -617,7 +617,7 @@ pub fn new_engine() -> Engine {
     // agent) run safely on the normal cooperative `FUEL_QUANTUM` slices — no
     // single-slice workaround needed. Cost: the whole module is translated once at
     // load (cached permanently in `GuestRuntime`, captured in snapshots). Root
-    // cause + proof: ctx/WASMI.md.
+    // cause + proof: SYSTEMS.md §4.3.
     config.compilation_mode(wasmi::CompilationMode::Eager);
     Engine::new(&config)
 }
@@ -1602,7 +1602,8 @@ impl GuestProgram {
         self.resolve_guest_path(ctx, path_ptr, path_len, true, false)
     }
 
-    /// Write the 44-byte stat record into guest memory (layout documented below).
+    /// Write the contract-defined stat record into guest memory. Its length, field offsets, and
+    /// node-kind values are projected from `contracts/constants.kdl`.
     fn write_stat_buf(&mut self, ret_stat: u32, md: &crate::vfs::Metadata) -> Fulfilled {
         // Stat blob layout (little-endian, 44 bytes). MUST stay in lockstep with
         // the guest sysroot (`parse_stat`, `crates/sysroot`) and the WASI adapter
@@ -1610,18 +1611,25 @@ impl GuestProgram {
         //   size@0 u64 · kind@8 u32 · nlink@12 u32 · mode@16 u32 ·
         //   mtime@20 i64 · atime@28 i64 · ctime@36 i64   (times = ms since epoch)
         let mut buf = [0u8; STAT_BUF_LEN];
-        buf[..8].copy_from_slice(&md.size.to_le_bytes());
         let kind: u32 = match md.node_type {
-            NodeType::Dir => 1,
-            NodeType::Symlink => 2,
-            NodeType::File => 0,
+            NodeType::Dir => STAT_NODE_DIR as u32,
+            NodeType::Symlink => STAT_NODE_SYMLINK as u32,
+            NodeType::File => STAT_NODE_FILE as u32,
         };
-        buf[8..12].copy_from_slice(&kind.to_le_bytes());
-        buf[12..16].copy_from_slice(&md.nlink.to_le_bytes());
-        buf[16..20].copy_from_slice(&(md.mode as u32).to_le_bytes());
-        buf[20..28].copy_from_slice(&md.mtime.to_le_bytes());
-        buf[28..36].copy_from_slice(&md.atime.to_le_bytes());
-        buf[36..44].copy_from_slice(&md.ctime.to_le_bytes());
+        let size_off = STAT_REC_SIZE_OFF as usize;
+        let kind_off = STAT_REC_NODE_TYPE_OFF as usize;
+        let nlink_off = STAT_REC_NLINK_OFF as usize;
+        let mode_off = STAT_REC_MODE_OFF as usize;
+        let mtime_off = STAT_REC_MTIME_OFF as usize;
+        let atime_off = STAT_REC_ATIME_OFF as usize;
+        let ctime_off = STAT_REC_CTIME_OFF as usize;
+        buf[size_off..size_off + 8].copy_from_slice(&md.size.to_le_bytes());
+        buf[kind_off..kind_off + 4].copy_from_slice(&kind.to_le_bytes());
+        buf[nlink_off..nlink_off + 4].copy_from_slice(&md.nlink.to_le_bytes());
+        buf[mode_off..mode_off + 4].copy_from_slice(&(md.mode as u32).to_le_bytes());
+        buf[mtime_off..mtime_off + 8].copy_from_slice(&md.mtime.to_le_bytes());
+        buf[atime_off..atime_off + 8].copy_from_slice(&md.atime.to_le_bytes());
+        buf[ctime_off..ctime_off + 8].copy_from_slice(&md.ctime.to_le_bytes());
         match self.write_guest_bytes(ret_stat, &buf) {
             Ok(()) => Fulfilled::Resume(ESUCCESS),
             Err(e) => Fulfilled::Resume(e),
@@ -4305,7 +4313,7 @@ impl GuestProgram {
         // Uniform: every invocation gets exactly the cooperative quantum, whether
         // it is top-level or nested inside an `mc_sys_pcall` body. Eager compilation
         // keeps function translation out of the fuel-metered path, so OutOfFuel→
-        // resume is sound at every nesting depth (ctx/WASMI.md). The lifetime budget
+        // resume is sound at every nesting depth (SYSTEMS.md §4.3). The lifetime budget
         // is enforced where progress is recorded (the OutOfFuel handler), not here.
         let _ = self.store.set_fuel(FUEL_QUANTUM);
     }
@@ -4378,7 +4386,7 @@ impl Builtin for GuestProgram {
                     // Uniform for top-level AND nested (pcall) invocations: charge the
                     // quantum against the lifetime budget, then either kill a genuine
                     // runaway or park for cooperative resume next tick. Eager
-                    // compilation makes the resume sound at every depth (ctx/WASMI.md),
+                    // compilation makes the resume sound at every depth (SYSTEMS.md §4.3),
                     // so a nested body preempts at the normal quantum like any guest —
                     // no special slab, no kill-not-resume.
                     self.fuel_used = self.fuel_used.saturating_add(FUEL_QUANTUM);

@@ -1,4 +1,4 @@
-//! `yes` -- docs/analysis/applets-s-z.md: leading --help/-h/--version only. Line =
+//! `yes` -- DESIGN.md §1: leading --help/-h/--version only. Line =
 //! operands joined by spaces, else "y", plus "\n". Tight write loop, exits 0 the
 //! moment the reader closes (broken pipe is normal termination here, not an error).
 

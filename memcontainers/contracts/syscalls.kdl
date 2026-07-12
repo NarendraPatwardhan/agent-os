@@ -148,7 +148,7 @@ syscall "mc_sys_serve_respond" variant="ServeRespond" group="service" {
 // A guest `svc_serve`s a NAME and answers typed request/response calls while holding warm state.
 // Clients `svc_connect` a session and `svc_call` typed blobs, draining the response from a readable
 // result fd. Same cooperative re-poll dance as the served-fs rows above, but session-keyed (a caller
-// may hold several sessions) and value-shaped rather than filesystem-shaped. See SERVICES.md.
+// may hold several sessions) and value-shaped rather than filesystem-shaped. See SYSTEMS.md §7.2.
 syscall "mc_sys_svc_serve" variant="SvcServe" group="service" {
     arg "name_ptr" type="u32"; arg "name_len" type="u32"; arg "ret_fd" type="u32"
     doc "Register as the service `name` — authorized by the kernel's activation grant (the task it spawned for `name`), not a capability, so a service runs at its own narrow tier and names can't be squatted; server fd to ret_fd."
@@ -282,7 +282,7 @@ syscall "mc_sys_exit" variant="Exit" group="process" ret="noreturn" {
 // (exported __mc_pcall_run) as a NESTED guest call — a trap boundary. To "throw", a
 // guest records its code via set_throw then executes `unreachable`; wasmi unwinds the
 // nested call and the kernel returns the code as pcall's result (0 = returned
-// normally). See loom (the Luau guest) and memcontainers ctx/LUAU.md §4.4.
+// normally). See loom (the Luau guest) and SYSTEMS.md §10.3
 syscall "mc_sys_pcall" variant="Pcall" group="vm" ret="i32" {
     doc "Run the guest's stashed thunk as a nested call; return its throw code (0 = normal return)."
 }

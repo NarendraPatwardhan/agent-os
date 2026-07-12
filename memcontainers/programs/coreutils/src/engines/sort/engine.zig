@@ -1,4 +1,4 @@
-//! External merge-sort machinery for `sort` (docs/analysis/applets-s-z.md): `Batch`
+//! External merge-sort machinery for `sort` (DESIGN.md §1): `Batch`
 //! (offset/len line index over one data buffer), spill to `spool.Run`, FANIN=16
 //! multi-pass reduction, and the final K-way streaming merge. Applet-private.
 

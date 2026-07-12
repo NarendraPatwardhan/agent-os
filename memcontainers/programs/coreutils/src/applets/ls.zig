@@ -1,4 +1,4 @@
-//! `ls` -- docs/analysis/applets-g-r.md: `-a` all, `-l` long, `-h` human sizes
+//! `ls` -- DESIGN.md §1: `-a` all, `-l` long, `-h` human sizes
 //! (1024-based, `-l` only; `--help` is long-only, `-h` is NOT help), `-d` list operands
 //! themselves, `-R` recursive, `-S` by size desc, `-t` by mtime desc (ties by name),
 //! `-r` reverse, `-1` accepted no-op (always one per line), `-F` accepted no-op; `FILE...`

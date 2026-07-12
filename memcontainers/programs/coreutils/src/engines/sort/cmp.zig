@@ -1,4 +1,4 @@
-//! Comparison modes for `sort` (docs/analysis/applets-s-z.md): `parse_num`/
+//! Comparison modes for `sort` (DESIGN.md §1): `parse_num`/
 //! `human_val`/`version_cmp`/`str_cmp` plus `total_cmp`. Applet-private.
 
 const std = @import("std");
@@ -132,7 +132,7 @@ pub fn numCmp(a: f64, b: f64) Order {
 /// magnitude broken by leading-zero count DESCENDING -- `007 < 07 < 7`, matching
 /// GNU filevercmp's fractional-part rule), everything else bytewise. Simplified
 /// strverscmp -- not bug-for-bug glibc-compatible on adversarial inputs;
-/// source: spec (docs/parity-ledger.md).
+/// source: spec (DESIGN.md §2).
 pub fn versionCmp(a: []const u8, b: []const u8) Order {
     var i: usize = 0;
     var j: usize = 0;
@@ -226,7 +226,7 @@ pub fn keysEqual(a_line: []const u8, b_line: []const u8, keys: []const Key, sep:
 /// Keys in order, each independently reversible; if all tie and `!stable`, a
 /// whole-line bytewise last-resort (itself inheriting `global_reverse`, since it has
 /// no per-key letters of its own to override with -- ruling recorded in
-/// docs/parity-ledger.md: this is the SAME "unset letters inherit global" mechanism
+/// DESIGN.md §2: this is the SAME "unset letters inherit global" mechanism
 /// applied uniformly, not a separate "flip the final result" step).
 pub fn totalCmp(a_line: []const u8, b_line: []const u8, keys: []const Key, sep: ?u8, stable: bool, global_reverse: bool) Order {
     for (keys) |k| {

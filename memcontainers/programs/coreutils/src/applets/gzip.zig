@@ -1,4 +1,4 @@
-//! `gzip` -- docs/analysis/applets-g-r.md: thin CLI over `engines/compress/gzcli.zig`
+//! `gzip` -- DESIGN.md §1: thin CLI over `engines/compress/gzcli.zig`
 //! (which wraps `std.compress.flate`). Flags: `-d/--decompress` (+ `--uncompress`
 //! alias), `-c/--stdout` (+ `--to-stdout`), `-k/--keep`, `-f/--force`, `-r/--recursive`,
 //! `-l/--list`, `-t/--test`, `-q/--quiet` (no-op), `-v/--verbose` (no-op -- the matrix
@@ -14,7 +14,7 @@
 //! `core/cli.zig`'s `Matches`, which loses cross-key ordering), last one wins --
 //! `--fast`/`--best`/any `-1`..`-9` digit character in a short cluster (stopping a
 //! cluster scan at `S` so `-S9`'s suffix value `"9"` is never mistaken for `-9`).
-//! Ledgered in docs/parity-ledger.md.
+//! Ledgered in DESIGN.md §2.
 //!
 //! Whole-file-in-memory model throughout (DESIGN.md §8: compress engines are fed from
 //! fixed buffers, not fd-streamed) -- every operand is read to EOF, transformed, then

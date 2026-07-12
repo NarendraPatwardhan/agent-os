@@ -1,4 +1,4 @@
-//! `unexpand` -- docs/analysis/applets-g-r.md (M7a): converts runs of blanks (spaces
+//! `unexpand` -- DESIGN.md §1 (M7a): converts runs of blanks (spaces
 //! and tabs) to tabs. Default behavior converts only LEADING runs; `-a`/`--all`
 //! converts runs anywhere on the line; `-t LIST` (repeatable, comma-joined, same `/N`
 //! `+N` grammar as `expand` but comma-only separated -- no spaces) IMPLIES `-a`

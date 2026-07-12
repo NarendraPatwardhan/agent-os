@@ -7,30 +7,46 @@
 const std = @import("std");
 const lua = @import("lua.zig");
 const mc = @import("mc");
+const constants = @import("constants_zig");
 const fs = @import("fs.zig");
 const c = lua.c;
 const State = lua.State;
 
 const alloc = std.heap.c_allocator;
 
-// mc open flags (contracts/constants.kdl).
-const O_READ: i32 = 1;
-const O_WRITE: i32 = 2;
-const O_CREATE: i32 = 4;
-const O_TRUNC: i32 = 8;
-const O_APPEND: i32 = 16;
-
-// errno values (contracts/constants.kdl — WASI-style, what the mc syscalls return).
-const EIO: i32 = 29;
-const EINVAL: i32 = 28;
+const STAT_REC_LEN: usize = @intCast(constants.STAT_REC_LEN);
+const STAT_REC_SIZE_OFF: usize = @intCast(constants.STAT_REC_SIZE_OFF);
+const STAT_REC_NODE_TYPE_OFF: usize = @intCast(constants.STAT_REC_NODE_TYPE_OFF);
+const STAT_REC_MODE_OFF: usize = @intCast(constants.STAT_REC_MODE_OFF);
+const STAT_REC_MTIME_OFF: usize = @intCast(constants.STAT_REC_MTIME_OFF);
+const STAT_NODE_DIR: u32 = @intCast(constants.STAT_NODE_DIR);
+const STAT_NODE_SYMLINK: u32 = @intCast(constants.STAT_NODE_SYMLINK);
+const EIO: i32 = constants.EIO;
 
 fn errnoName(e: i32) [*:0]const u8 {
     return switch (e) {
-        2 => "EACCES",   6 => "EAGAIN",    8 => "EBADF",     10 => "ECHILD",
-        20 => "EEXIST",  27 => "EINTR",    28 => "EINVAL",   29 => "EIO",
-        31 => "EISDIR",  32 => "ELOOP",    33 => "EMFILE",   44 => "ENOENT",
-        52 => "ENOSYS",  54 => "ENOTDIR",  55 => "ENOTEMPTY", 63 => "EPERM",
-        64 => "EPIPE",   71 => "ESRCH",    75 => "EXDEV",    else => "EIO",
+        constants.EACCES => "EACCES",
+        constants.EAGAIN => "EAGAIN",
+        constants.EBADF => "EBADF",
+        constants.ECHILD => "ECHILD",
+        constants.EEXIST => "EEXIST",
+        constants.EINTR => "EINTR",
+        constants.EINVAL => "EINVAL",
+        constants.EIO => "EIO",
+        constants.EISDIR => "EISDIR",
+        constants.ELOOP => "ELOOP",
+        constants.EMFILE => "EMFILE",
+        constants.ENOENT => "ENOENT",
+        constants.ENOSYS => "ENOSYS",
+        constants.EMSGSIZE => "EMSGSIZE",
+        constants.ENOTDIR => "ENOTDIR",
+        constants.ENOTEMPTY => "ENOTEMPTY",
+        constants.EPERM => "EPERM",
+        constants.EPIPE => "EPIPE",
+        constants.ESRCH => "ESRCH",
+        constants.ETIMEDOUT => "ETIMEDOUT",
+        constants.EXDEV => "EXDEV",
+        else => "EIO",
     };
 }
 
@@ -74,13 +90,13 @@ fn lFsWrite(L: ?*State) callconv(.c) c_int {
     const path = c.luaL_checklstring(L, 1, &plen);
     var dlen: usize = 0;
     const data = c.luaL_checklstring(L, 2, &dlen);
-    var flags: i32 = O_WRITE | O_CREATE;
+    var flags: i32 = constants.O_WRITE | constants.O_CREATE;
     if (c.lua_type(L, 3) == c.LUA_TTABLE) {
         _ = c.lua_getfield(L, 3, "append");
-        flags |= if (c.lua_toboolean(L, -1) != 0) O_APPEND else O_TRUNC;
+        flags |= if (c.lua_toboolean(L, -1) != 0) constants.O_APPEND else constants.O_TRUNC;
         lua.pop(L, 1);
     } else {
-        flags |= O_TRUNC;
+        flags |= constants.O_TRUNC;
     }
     var fd: u32 = 0;
     var e = mc.mc_sys_open(mc.addr(path), @intCast(plen), flags, mc.addr(&fd));
@@ -91,7 +107,7 @@ fn lFsWrite(L: ?*State) callconv(.c) c_int {
         var n: u32 = 0;
         e = mc.mc_sys_write(@intCast(fd), mc.addr(data + off), @intCast(dlen - off), mc.addr(&n));
         if (e != 0) return fail(L, e);
-        if (n == 0) return fail(L, EIO);
+        if (n == 0) return fail(L, constants.EIO);
         off += n;
     }
     return okTrue(L);
@@ -115,7 +131,7 @@ fn lFsReaddir(L: ?*State) callconv(.c) c_int {
         // kind: lstat the entry (mc_sys_readdir yields names only).
         var full: [4096]u8 = undefined;
         const fl = joinPath(&full, path[0..plen], name);
-        var st: [44]u8 = undefined;
+        var st: [STAT_REC_LEN]u8 = undefined;
         var kind: [*:0]const u8 = "file";
         if (fl) |n| {
             if (mc.mc_sys_lstat(mc.addr(&full), @intCast(n), mc.addr(&st)) == 0)
@@ -141,23 +157,23 @@ fn joinPath(out: *[4096]u8, dir: []const u8, name: []const u8) ?usize {
     return n + name.len;
 }
 
-fn statKind(buf: *const [44]u8) [*:0]const u8 {
-    return switch (std.mem.readInt(u32, buf[8..12], .little)) {
-        1 => "dir",
-        2 => "symlink",
+fn statKind(buf: *const [STAT_REC_LEN]u8) [*:0]const u8 {
+    return switch (std.mem.readInt(u32, buf[STAT_REC_NODE_TYPE_OFF .. STAT_REC_NODE_TYPE_OFF + @sizeOf(u32)], .little)) {
+        STAT_NODE_DIR => "dir",
+        STAT_NODE_SYMLINK => "symlink",
         else => "file",
     };
 }
 
-fn statTable(L: ?*State, buf: *const [44]u8) c_int {
+fn statTable(L: ?*State, buf: *const [STAT_REC_LEN]u8) c_int {
     lua.newtable(L);
-    c.lua_pushinteger(L, @intCast(@as(i64, @bitCast(std.mem.readInt(u64, buf[0..8], .little)))));
+    c.lua_pushinteger(L, @intCast(@as(i64, @bitCast(std.mem.readInt(u64, buf[STAT_REC_SIZE_OFF .. STAT_REC_SIZE_OFF + @sizeOf(u64)], .little)))));
     c.lua_setfield(L, -2, "size");
     _ = c.lua_pushstring(L, statKind(buf));
     c.lua_setfield(L, -2, "kind");
-    c.lua_pushinteger(L, @intCast(std.mem.readInt(u32, buf[16..20], .little) & 0o777));
+    c.lua_pushinteger(L, @intCast(std.mem.readInt(u32, buf[STAT_REC_MODE_OFF .. STAT_REC_MODE_OFF + @sizeOf(u32)], .little) & 0o777));
     c.lua_setfield(L, -2, "mode");
-    c.lua_pushnumber(L, @floatFromInt(std.mem.readInt(i64, buf[20..28], .little)));
+    c.lua_pushnumber(L, @floatFromInt(std.mem.readInt(i64, buf[STAT_REC_MTIME_OFF .. STAT_REC_MTIME_OFF + @sizeOf(i64)], .little)));
     c.lua_setfield(L, -2, "mtime");
     return ok1(L);
 }
@@ -165,21 +181,21 @@ fn statTable(L: ?*State, buf: *const [44]u8) c_int {
 fn lFsStat(L: ?*State) callconv(.c) c_int {
     var plen: usize = 0;
     const path = c.luaL_checklstring(L, 1, &plen);
-    var st: [44]u8 = undefined;
+    var st: [STAT_REC_LEN]u8 = undefined;
     const e = mc.mc_sys_stat(mc.addr(path), @intCast(plen), mc.addr(&st));
     return if (e != 0) fail(L, e) else statTable(L, &st);
 }
 fn lFsLstat(L: ?*State) callconv(.c) c_int {
     var plen: usize = 0;
     const path = c.luaL_checklstring(L, 1, &plen);
-    var st: [44]u8 = undefined;
+    var st: [STAT_REC_LEN]u8 = undefined;
     const e = mc.mc_sys_lstat(mc.addr(path), @intCast(plen), mc.addr(&st));
     return if (e != 0) fail(L, e) else statTable(L, &st);
 }
 fn lFsExists(L: ?*State) callconv(.c) c_int {
     var plen: usize = 0;
     const path = c.luaL_checklstring(L, 1, &plen);
-    var st: [44]u8 = undefined;
+    var st: [STAT_REC_LEN]u8 = undefined;
     c.lua_pushboolean(L, @intFromBool(mc.mc_sys_lstat(mc.addr(path), @intCast(plen), mc.addr(&st)) == 0));
     return 1;
 }
@@ -248,9 +264,9 @@ const fs_funcs = [_]Reg{
     .{ .name = "readdir", .fn_ = &lFsReaddir },   .{ .name = "stat", .fn_ = &lFsStat },
     .{ .name = "lstat", .fn_ = &lFsLstat },       .{ .name = "exists", .fn_ = &lFsExists },
     .{ .name = "mkdir", .fn_ = &lFsMkdir },       .{ .name = "remove", .fn_ = &lFsRemove },
-    .{ .name = "rename", .fn_ = &lFsRename },      .{ .name = "symlink", .fn_ = &lFsSymlink },
-    .{ .name = "readlink", .fn_ = &lFsReadlink },  .{ .name = "chmod", .fn_ = &lFsChmod },
-    .{ .name = "cwd", .fn_ = &lFsCwd },            .{ .name = "chdir", .fn_ = &lFsChdir },
+    .{ .name = "rename", .fn_ = &lFsRename },     .{ .name = "symlink", .fn_ = &lFsSymlink },
+    .{ .name = "readlink", .fn_ = &lFsReadlink }, .{ .name = "chmod", .fn_ = &lFsChmod },
+    .{ .name = "cwd", .fn_ = &lFsCwd },           .{ .name = "chdir", .fn_ = &lFsChdir },
 };
 
 // ── sys.io — std streams + raw fd I/O. ────────────────────────────────────────────────────────────
@@ -269,7 +285,7 @@ fn lIoWrite(L: ?*State) callconv(.c) c_int {
         var n: u32 = 0;
         const e = mc.mc_sys_write(fd, mc.addr(data + off), @intCast(len - off), mc.addr(&n));
         if (e != 0) return fail(L, e);
-        if (n == 0) return fail(L, EIO);
+        if (n == 0) return fail(L, constants.EIO);
         off += n;
     }
     return okTrue(L);
@@ -354,7 +370,7 @@ fn lProcSpawn(L: ?*State) callconv(.c) c_int {
         _ = c.luaL_errorL(L, "sys.proc.spawn: missing argv array");
         return 0;
     }
-    const blob = buildArgv(L, c.lua_gettop(L)) orelse return fail(L, EINVAL);
+    const blob = buildArgv(L, c.lua_gettop(L)) orelse return fail(L, constants.EINVAL);
     defer alloc.free(blob);
     lua.pop(L, 1);
     _ = c.lua_getfield(L, 1, "stdin");
@@ -404,7 +420,7 @@ fn lProcRun(L: ?*State) callconv(.c) c_int {
         c.luaL_checktype(L, 1, c.LUA_TTABLE);
         c.lua_pushvalue(L, 1);
     }
-    const blob = buildArgv(L, c.lua_gettop(L)) orelse return fail(L, EINVAL);
+    const blob = buildArgv(L, c.lua_gettop(L)) orelse return fail(L, constants.EINVAL);
     defer alloc.free(blob);
     var rfd: u32 = 0;
     var wfd: u32 = 0;
@@ -726,15 +742,15 @@ pub export fn mc_open_sys(L: ?*State) void {
     c.lua_setfield(L, -2, "args");
     lua.pushcfunction(L, &lAbi, "abi");
     c.lua_setfield(L, -2, "abi");
-    c.lua_pushinteger(L, 0);
+    c.lua_pushinteger(L, constants.TIER_INHERIT);
     c.lua_setfield(L, -2, "TIER_INHERIT");
-    c.lua_pushinteger(L, 1);
+    c.lua_pushinteger(L, constants.TIER_FULL);
     c.lua_setfield(L, -2, "TIER_FULL");
-    c.lua_pushinteger(L, 2);
+    c.lua_pushinteger(L, constants.TIER_READ_WRITE);
     c.lua_setfield(L, -2, "TIER_READ_WRITE");
-    c.lua_pushinteger(L, 3);
+    c.lua_pushinteger(L, constants.TIER_READ_ONLY);
     c.lua_setfield(L, -2, "TIER_READ_ONLY");
-    c.lua_pushinteger(L, 4);
+    c.lua_pushinteger(L, constants.TIER_ISOLATED);
     c.lua_setfield(L, -2, "TIER_ISOLATED");
     lua.setglobal(L, "sys");
 }

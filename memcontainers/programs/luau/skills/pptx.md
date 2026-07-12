@@ -5,7 +5,7 @@ description: 'Create, read, edit, rearrange, and validate Microsoft PowerPoint .
 
 # Memcontainer PPTX
 
-Use the embedded Luau `pptx` library for presentation work. The source of truth is `loom/lib/pptx.luau`; shared chart and media support lives in `loom/lib/chart.luau` and `loom/lib/media.luau`. Use `crates/e2e/tests/luau_libs.rs` for current examples and `ctx/LUAU.md` for validation and limitations.
+Use the embedded Luau `pptx` library for presentation work. The implementation is `memcontainers/programs/luau/glue/lib/pptx.luau`; shared chart and media support lives beside it in `chart.luau` and `media.luau`. Use `web/src/examples/chapters.ts` for current examples and `SYSTEMS.md` section 10.3 for validation and limitations.
 
 ## Workflow
 

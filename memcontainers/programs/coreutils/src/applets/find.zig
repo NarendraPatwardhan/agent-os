@@ -1,4 +1,4 @@
-//! `find` -- docs/analysis/applets-a-f.md: hand-tokenized argv (no `core/cli.zig`; the
+//! `find` -- DESIGN.md §1: hand-tokenized argv (no `core/cli.zig`; the
 //! matrix says clap only collects raw ARGS here) -> a recursive-descent expression
 //! parser (precedence `-o < -a/implicit < !/-not < primary`) -> an AST tree-walked once
 //! per visited entry.

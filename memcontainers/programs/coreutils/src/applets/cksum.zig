@@ -1,4 +1,4 @@
-//! `cksum` -- docs/analysis/uutils-applets.md "cksum + hash family". Default (no
+//! `cksum` -- DESIGN.md §1 "cksum + hash family". Default (no
 //! `-a`) is the legacy POSIX CRC (`ALGO LEN FILE` text, exactly `sum`'s legacy
 //! formats for `-a sysv`/`-a bsd`). Non-legacy algorithms default to TAGGED output
 //! (`ALGO (FILE) = DIGEST`) -- the opposite default from the standalone `*sum` tools.

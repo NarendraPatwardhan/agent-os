@@ -269,34 +269,37 @@ impl McStat {
     }
 }
 
-/// Decode the kernel's 44-byte stat record (see `write_stat_buf`). WASI filestat
-/// carries no mode, so `mode@16` is skipped; the times become nanoseconds.
-fn parse_mc_stat(buf: &[u8; 44]) -> McStat {
-    let size = u64::from_le_bytes(buf[..8].try_into().unwrap());
-    let kind = u32::from_le_bytes(buf[8..12].try_into().unwrap());
-    let nlink = u32::from_le_bytes(buf[12..16].try_into().unwrap());
+/// Decode the generated stat-record contract. WASI filestat carries no mode, and the record's
+/// millisecond timestamps become nanoseconds.
+fn parse_mc_stat(buf: &[u8; STAT_REC_LEN as usize]) -> McStat {
+    let size_off = STAT_REC_SIZE_OFF as usize;
+    let kind_off = STAT_REC_NODE_TYPE_OFF as usize;
+    let nlink_off = STAT_REC_NLINK_OFF as usize;
+    let size = u64::from_le_bytes(buf[size_off..size_off + 8].try_into().unwrap());
+    let kind = u32::from_le_bytes(buf[kind_off..kind_off + 4].try_into().unwrap());
+    let nlink = u32::from_le_bytes(buf[nlink_off..nlink_off + 4].try_into().unwrap());
     let ms_to_ns = |o: usize| {
         (i64::from_le_bytes(buf[o..o + 8].try_into().unwrap()).max(0) as u64)
             .saturating_mul(1_000_000)
     };
     let filetype = match kind {
-        1 => FT_DIRECTORY,
-        2 => FT_SYMBOLIC_LINK,
+        value if value == STAT_NODE_DIR as u32 => FT_DIRECTORY,
+        value if value == STAT_NODE_SYMLINK as u32 => FT_SYMBOLIC_LINK,
         _ => FT_REGULAR_FILE,
     };
     McStat {
         size,
         filetype,
         nlink: nlink as u64,
-        mtim: ms_to_ns(20),
-        atim: ms_to_ns(28),
-        ctim: ms_to_ns(36),
+        mtim: ms_to_ns(STAT_REC_MTIME_OFF as usize),
+        atim: ms_to_ns(STAT_REC_ATIME_OFF as usize),
+        ctim: ms_to_ns(STAT_REC_CTIME_OFF as usize),
     }
 }
 
 /// Metadata for a path, following a trailing symlink.
 unsafe fn mc_stat(path: &[u8]) -> Result<McStat, i32> {
-    let mut buf = [0u8; 44];
+    let mut buf = [0u8; STAT_REC_LEN as usize];
     let e = mc_sys_stat(
         path.as_ptr() as i32,
         path.len() as i32,
@@ -310,7 +313,7 @@ unsafe fn mc_stat(path: &[u8]) -> Result<McStat, i32> {
 
 /// Metadata for a path, without following a trailing symlink.
 unsafe fn mc_lstat(path: &[u8]) -> Result<McStat, i32> {
-    let mut buf = [0u8; 44];
+    let mut buf = [0u8; STAT_REC_LEN as usize];
     let e = mc_sys_lstat(
         path.as_ptr() as i32,
         path.len() as i32,

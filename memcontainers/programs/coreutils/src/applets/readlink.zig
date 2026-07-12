@@ -1,4 +1,4 @@
-//! `readlink` -- docs/analysis/applets-g-r.md: `sys.lstat`/`sys.readlink` +
+//! `readlink` -- DESIGN.md §1: `sys.lstat`/`sys.readlink` +
 //! `fsutil.canonicalize`. Default mode is a one-level `readlink(2)` (`null` if the
 //! operand isn't a symlink); `-f/-e/-m` switch to full canonicalization with
 //! `Existence.parent/all/none` respectively. Errors are SILENT by default; `-v` prints

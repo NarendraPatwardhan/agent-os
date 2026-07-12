@@ -18,7 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 wasmtime = "43.0.0"
-# wasmparser — the import-section reader behind //tools/wasm-imports (the conformance §9.3 /
+# wasmparser — the import-section reader behind //bazel/tools/wasm-imports (the conformance §9.3 /
 # attestation §16.4 primitive). wasmtime 43 already pins this transitively; declaring it
 # direct here is what makes crate_universe surface the top-level `@host_crates//:wasmparser`
 # alias. Held at 0.245 (wasmtime 43's resolved line) so re-pinning reuses that crate rather

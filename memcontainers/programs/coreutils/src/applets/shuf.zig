@@ -1,4 +1,4 @@
-//! `shuf` -- docs/analysis/uutils-applets.md "shuf": shuffle input lines (default:
+//! `shuf` -- DESIGN.md §1 "shuf": shuffle input lines (default:
 //! read FILE/stdin, `\n`- or NUL-separated), or `-e ARG...` (echo mode: shuffle the
 //! operands themselves), or `-i LO-HI` (range mode: shuffle the integers LO..=HI).
 //! `-n/--head-count COUNT` caps output (repeated `-n` takes the MIN, an intentional
@@ -23,7 +23,7 @@
 //!     `next_u32` words -> Lemire's nearly-divisionless bounded generator.
 //!     VERIFIED byte-for-byte against the pinned oracle binary during development
 //!     (`shuf --random-seed=abc -i 1-10`, echo mode, `-r`, and more -- see
-//!     docs/parity-ledger.md) via a throwaway harness before any corpus was
+//!     DESIGN.md §2) via a throwaway harness before any corpus was
 //!     authored, per the milestone brief's requirement.
 //!   - `--random-source=FILE`: GNU's own reverse-engineered byte-consumption
 //!     adapter (`RandomSourceAdapter` below) -- rejection sampling one byte at a
@@ -235,7 +235,7 @@ const RngError = error{EndOfRandomSource} || sys.Error;
 /// GNU's own byte-consumption scheme for `--random-source`, reverse-engineered by
 /// uutils (module doc there): rejection sampling one byte at a time with leftover
 /// entropy recycled across calls. Verified byte-for-byte against the oracle with a
-/// pinned-bytes fixture (see docs/parity-ledger.md).
+/// pinned-bytes fixture (see DESIGN.md §2).
 const RandomSourceAdapter = struct {
     fd: sys.Fd,
     buf: [4096]u8 = undefined,
@@ -390,7 +390,7 @@ fn splitSeps(gpa: Allocator, data: []const u8, sep: u8) [][]const u8 {
 pub fn run(ctx: *Ctx) u8 {
     const res = cli.parse(ctx, spec);
     const m = switch (res) {
-        // uutils-family ruling (parity-ledger.md): clap parse errors exit 1.
+        // uutils-family ruling (DESIGN.md §2): clap parse errors exit 1.
         .exit => |c| return if (c == 2) 1 else c,
         .ok => |mm| mm,
     };

@@ -1,4 +1,4 @@
-//! `unzip` -- docs/analysis/applets-s-z.md: reader side of `engines/archive/
+//! `unzip` -- DESIGN.md §1: reader side of `engines/archive/
 //! zipwriter.zig` (see that file's module doc for why the reader is hand-rolled here
 //! instead of `std.zip`'s `Iterator`, which is wired to `std.Io.File`).
 //!

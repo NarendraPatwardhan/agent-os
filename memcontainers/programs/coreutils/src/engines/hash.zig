@@ -5,7 +5,7 @@
 //! length postfix, CRC32B, BSD rotate-sum, SysV fold-sum). Also the shared presentation
 //! layer (Tagged/Untagged/Raw formatting, hex/base64 digest encoding) and the `-c`
 //! check-file parser, ported from uutils 0.9.0's `uucore::checksum` (mod.rs/compute.rs/
-//! validate.rs) -- see docs/analysis/uutils-applets.md "cksum + hash family". The
+//! validate.rs) -- see DESIGN.md §1 "cksum + hash family". The
 //! oracle (`reference/uutils-coreutils/target/release/coreutils`) is the byte-parity
 //! target; GNU cksum is not.
 //!
@@ -585,7 +585,7 @@ pub const CliAlgo = enum {
 };
 
 pub const CLI_ALGO_NAMES = [_][]const u8{
-    "sysv", "bsd", "crc", "crc32b", "md5", "sha1", "sha2", "sha3", "blake2b",
+    "sysv", "bsd",    "crc",    "crc32b", "md5",    "sha1",   "sha2",     "sha3",     "blake2b",
     "sm3",  "sha224", "sha256", "sha384", "sha512", "blake3", "shake128", "shake256",
 };
 

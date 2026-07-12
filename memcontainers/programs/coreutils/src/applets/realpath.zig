@@ -1,4 +1,4 @@
-//! `realpath` -- docs/analysis/applets-g-r.md: `fsutil.canonicalize`/`lexicalAbs`.
+//! `realpath` -- DESIGN.md §1: `fsutil.canonicalize`/`lexicalAbs`.
 //! Default existence mode is `.parent`; `-e`/`-m` switch to `.all`/`.none`; `-s/--strip`
 //! bypasses symlink resolution entirely (`lexicalAbs`, which never fails). On failure,
 //! unless `-q`, re-probes with `lstat` to report `ELOOP` (path exists but couldn't be

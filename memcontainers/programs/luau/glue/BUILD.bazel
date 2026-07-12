@@ -46,6 +46,7 @@ zig_library(
     extra_srcs = glob(["lib/*.luau"]),  # @embedFile'd by stdlib.zig
     deps = [
         "@luau//:interp_headers",
+        "//memcontainers/contracts:constants_zig",
         "//memcontainers/sysroot/zig:mc",  # the shared mc syscall ABI (was a co-located mc.zig)
     ],
     visibility = ["//visibility:public"],
@@ -126,6 +127,7 @@ zig_binary(
     ],
     deps = [
         "@luau//:interp_headers",
+        "//memcontainers/contracts:constants_zig",
         "//memcontainers/sysroot/zig:mc",  # the shared mc syscall ABI (was a co-located mc.zig)
         # The wasi→mc adapter, FORCE-LINKED as an object (cc_object): its __imported_wasi_* defs
         # override wasi-libc's import stubs, converting luau's wasi imports (fd_write, args_get, …)

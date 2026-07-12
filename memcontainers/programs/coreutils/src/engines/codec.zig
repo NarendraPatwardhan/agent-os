@@ -1,6 +1,6 @@
 //! Codec engine (DESIGN.md §7.4): RFc4648 base16/base32/base32hex/base64/base64url,
 //! base2 (both bit orders), Z85, and Base58 -- ported from uutils 0.9.0's
-//! `uucore::encoding` + `uu_base32::base_common` (see docs/analysis/uutils-applets.md
+//! `uucore::encoding` + `uu_base32::base_common` (see DESIGN.md §1
 //! "base32/base64/basenc"). The oracle
 //! (`reference/uutils-coreutils/target/release/coreutils`) is the byte-parity target.
 //!
@@ -12,7 +12,7 @@
 //! `error: invalid input` abort on a very large input -- a distinction irrelevant at
 //! corpus scale). This keeps the state machine here linear and easy to verify against
 //! the oracle, at the cost of true O(1)-memory streaming for huge inputs. Ledger note:
-//! if this ever needs revisiting for multi-GB inputs, see docs/parity-ledger.md.
+//! if this ever needs revisiting for multi-GB inputs, see DESIGN.md §2.
 //!
 //! Both RFC 4648 families (base16/32/32hex/64/64url) share one bit-packing core
 //! (`bitsPerChar`); base2lsbf/msbf pack 1 bit per byte with an explicit bit order;
@@ -611,7 +611,6 @@ pub fn wrapAlloc(gpa: Allocator, encoded: []const u8, wrap_cols: ?usize) ![]u8 {
 }
 
 // ============================================================================ tests
-
 
 // ============================================================================
 // Shared CLI I/O orchestration for base32/base64/basenc (DESIGN.md §3: "nothing

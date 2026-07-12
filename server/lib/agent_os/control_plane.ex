@@ -1,10 +1,9 @@
 defmodule AgentOS.ControlPlane do
   @moduledoc """
   The public facade over the VM population — address VMs by `{namespace, key}`, get-or-create,
-  exec, snapshot, dispose, list. The OTP realization of mc-server's registry + REST surface
-  (CONTROL_PLANE.md §2.1): `Registry` for addressing, `DynamicSupervisor` for start-on-demand
-  and crash-only restart. The `namespace` is the tenancy boundary (and, later, the quota and
-  eviction boundary).
+  exec, snapshot, dispose, list. `Registry` provides addressing and `DynamicSupervisor`
+  provides start-on-demand and crash-only restart (SYSTEMS.md §13.1). The namespace is an
+  address boundary; a deployment layer decides tenancy, quotas, and eviction policy.
   """
 
   alias AgentOS.Vm

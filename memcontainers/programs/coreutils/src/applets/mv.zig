@@ -1,4 +1,4 @@
-//! `mv` -- docs/analysis/applets-g-r.md: `sys.rename` + `fsutil` EXDEV fallback.
+//! `mv` -- DESIGN.md §1: `sys.rename` + `fsutil` EXDEV fallback.
 //! `-f/--force` (no prompt, overrides `-i`/`-n`), `-i/--interactive`, `-n/--no-clobber`,
 //! `-v/--verbose` (`SOURCE -> DEST`). `SOURCE... DEST`, >= 2 operands; multi-source
 //! needs a directory DEST.

@@ -1,10 +1,8 @@
-//! The mc kernel backend (DESIGN.md §4.2). This is the file that maps the
+//! The mc kernel backend (the coreutils architecture). This is the file that maps the
 //! applet-facing `sys` API to the generated `mc` kernel ABI. The errno numbers, stat
 //! layout, open flags, and constants (signals, poll events, seek whence, tiers) are
-//! taken from the frozen mc contract
-//! (`memcontainers/contracts/syscalls.kdl` + `constants.kdl`, cross-checked against the
-//! kernel handlers). The 44-byte stat layout is size@0/kind@8/nlink@12/mode@16/
-//! mtime@20/atime@28/ctime@36, all ms.
+//! projected from the frozen mc contract (`memcontainers/contracts/syscalls.kdl` +
+//! `constants.kdl`). Stat records are decoded through generated lengths, offsets, and node kinds.
 //!
 //! Calling convention: every arg is a wasm `i32` on the wire. The raw ABI is imported from
 //! //memcontainers/sysroot/zig:sys, whose `mc` module is generated from contracts/syscalls.kdl.
@@ -25,6 +23,17 @@ const PollFd = types.PollFd;
 
 const agent_sys = @import("sys");
 const raw = agent_sys.mc;
+const constants = agent_sys.constants;
+const STAT_REC_LEN: usize = @intCast(constants.STAT_REC_LEN);
+const STAT_REC_SIZE_OFF: usize = @intCast(constants.STAT_REC_SIZE_OFF);
+const STAT_REC_NODE_TYPE_OFF: usize = @intCast(constants.STAT_REC_NODE_TYPE_OFF);
+const STAT_REC_NLINK_OFF: usize = @intCast(constants.STAT_REC_NLINK_OFF);
+const STAT_REC_MODE_OFF: usize = @intCast(constants.STAT_REC_MODE_OFF);
+const STAT_REC_MTIME_OFF: usize = @intCast(constants.STAT_REC_MTIME_OFF);
+const STAT_REC_ATIME_OFF: usize = @intCast(constants.STAT_REC_ATIME_OFF);
+const STAT_REC_CTIME_OFF: usize = @intCast(constants.STAT_REC_CTIME_OFF);
+const STAT_NODE_DIR: u32 = @intCast(constants.STAT_NODE_DIR);
+const STAT_NODE_SYMLINK: u32 = @intCast(constants.STAT_NODE_SYMLINK);
 
 fn mc_sys_open(path: [*]const u8, len: u32, flags: i32, out_fd: *u32) i32 {
     return raw.mc_sys_open(raw.addr(path), len, flags, raw.addr(out_fd));
@@ -47,10 +56,10 @@ fn mc_sys_ftruncate(fd: i32, size_lo: u32, size_hi: u32) i32 {
 fn mc_sys_readdir(path: [*]const u8, len: u32, out_buf: [*]u8, cap: u32, out_used: *u32) i32 {
     return raw.mc_sys_readdir(raw.addr(path), len, raw.addr(out_buf), cap, raw.addr(out_used));
 }
-fn mc_sys_stat(path: [*]const u8, len: u32, out_stat: *[44]u8) i32 {
+fn mc_sys_stat(path: [*]const u8, len: u32, out_stat: *[STAT_REC_LEN]u8) i32 {
     return raw.mc_sys_stat(raw.addr(path), len, raw.addr(out_stat));
 }
-fn mc_sys_lstat(path: [*]const u8, len: u32, out_stat: *[44]u8) i32 {
+fn mc_sys_lstat(path: [*]const u8, len: u32, out_stat: *[STAT_REC_LEN]u8) i32 {
     return raw.mc_sys_lstat(raw.addr(path), len, raw.addr(out_stat));
 }
 fn mc_sys_mkdir(path: [*]const u8, len: u32) i32 {
@@ -152,105 +161,70 @@ fn mc_sys_args(buf: [*]u8, cap: u32, out_total: *u32) i32 {
 
 // ---------------------------------------------------------------- open() flags (contracts/constants.kdl, per the glue)
 
-const O_READ: i32 = 1;
-const O_WRITE: i32 = 2;
-const O_CREATE: i32 = 4;
-const O_TRUNC: i32 = 8;
-const O_APPEND: i32 = 16;
-
 fn toOpenFlags(flags: O) i32 {
     var f: i32 = 0;
-    if (flags.read) f |= O_READ;
-    if (flags.write) f |= O_WRITE;
-    if (flags.create) f |= O_CREATE;
-    if (flags.trunc) f |= O_TRUNC;
-    if (flags.append) f |= O_APPEND;
+    if (flags.read) f |= constants.O_READ;
+    if (flags.write) f |= constants.O_WRITE;
+    if (flags.create) f |= constants.O_CREATE;
+    if (flags.trunc) f |= constants.O_TRUNC;
+    if (flags.append) f |= constants.O_APPEND;
     return f;
 }
 
-// spawn tier argument (DESIGN.md §14 R1 / mc-glue sys.zig's TIER_* globals). nutils'
-// `sys.spawn` has no tier parameter (DESIGN.md §4.1), so we always inherit the caller's
-// tier -- the kernel is the enforcement point for anything stricter.
-const TIER_INHERIT: i32 = 0;
-const TIER_FULL: i32 = 1;
-const TIER_READ_WRITE: i32 = 2;
-const TIER_READ_ONLY: i32 = 3;
-const TIER_ISOLATED: i32 = 4;
-comptime {
-    _ = TIER_FULL;
-    _ = TIER_READ_WRITE;
-    _ = TIER_READ_ONLY;
-    _ = TIER_ISOLATED;
-}
-
-// waitpid `opts` bit (mc-glue sys.zig's lProcWait: `opts |= 1` for a nohang wait).
-const WAIT_NOHANG: i32 = 1;
-
-// seek whence (constants.kdl §122-127)
-const SEEK_SET: i32 = 0;
-const SEEK_CUR: i32 = 1;
-const SEEK_END: i32 = 2;
 fn seekWhence(w: Whence) i32 {
     return switch (w) {
-        .set => SEEK_SET,
-        .cur => SEEK_CUR,
-        .end => SEEK_END,
+        .set => constants.SEEK_SET,
+        .cur => constants.SEEK_CUR,
+        .end => constants.SEEK_END,
     };
 }
-
-// poll events (constants.kdl §134-141)
-const POLLIN: i16 = 1;
-const POLLOUT: i16 = 4;
 
 // signal numbers + dispositions (constants.kdl §143-157). The kernel accepts sig 0..31;
-// the names not in its own table (quit/usr1/usr2/stop) use their standard POSIX numbers.
+// every name this adapter exposes is projected from the contract.
 fn sigNum(s: Sig) i32 {
     return switch (s) {
-        .hup => 1,
-        .int => 2,
-        .quit => 3,
-        .kill => 9,
-        .usr1 => 10,
-        .usr2 => 12,
-        .term => 15,
-        .chld => 17,
-        .cont => 18,
-        .stop => 19,
-        .tstp => 20,
+        .hup => constants.SIGHUP,
+        .int => constants.SIGINT,
+        .quit => constants.SIGQUIT,
+        .kill => constants.SIGKILL,
+        .usr1 => constants.SIGUSR1,
+        .usr2 => constants.SIGUSR2,
+        .term => constants.SIGTERM,
+        .chld => constants.SIGCHLD,
+        .cont => constants.SIGCONT,
+        .stop => constants.SIGSTOP,
+        .tstp => constants.SIGTSTP,
     };
 }
-const SIG_DFL: i32 = 0;
-const SIG_IGN: i32 = 1;
 
-// ---------------------------------------------------------------- errno mapping (DESIGN.md §14 R1)
+// ---------------------------------------------------------------- errno mapping
 //
-// WASI-standard numbers, taken verbatim from the glue's `errnoName` table
-// (reference/mc-glue/sys.zig). Anything the mc kernel returns outside this set maps to
+// Map the projected mc errno names into nutils' error set. Anything outside this set maps to
 // EUNKNOWN rather than guessing.
 
 fn mcErr(e: i32) Error {
     return switch (e) {
-        2 => error.EACCES,
-        6 => error.EAGAIN,
-        8 => error.EBADF,
-        10 => error.ECHILD,
-        20 => error.EEXIST,
-        27 => error.EINTR,
-        28 => error.EINVAL,
-        29 => error.EIO,
-        31 => error.EISDIR,
-        32 => error.ELOOP,
-        33 => error.EMFILE,
-        44 => error.ENOENT,
-        52 => error.ENOSYS,
-        54 => error.ENOTDIR,
-        55 => error.ENOTEMPTY,
-        53 => error.EMSGSIZE,
-        63 => error.EPERM,
-        64 => error.EPIPE,
-        71 => error.ESRCH,
-        73 => error.ETIMEDOUT,
-        75 => error.EXDEV,
+        constants.EACCES => error.EACCES,
+        constants.EAGAIN => error.EAGAIN,
+        constants.EBADF => error.EBADF,
+        constants.ECHILD => error.ECHILD,
+        constants.EEXIST => error.EEXIST,
+        constants.EINTR => error.EINTR,
+        constants.EINVAL => error.EINVAL,
+        constants.EIO => error.EIO,
+        constants.EISDIR => error.EISDIR,
+        constants.ELOOP => error.ELOOP,
+        constants.EMFILE => error.EMFILE,
+        constants.ENOENT => error.ENOENT,
+        constants.ENOSYS => error.ENOSYS,
+        constants.EMSGSIZE => error.EMSGSIZE,
+        constants.ENOTDIR => error.ENOTDIR,
+        constants.ENOTEMPTY => error.ENOTEMPTY,
+        constants.EPERM => error.EPERM,
+        constants.EPIPE => error.EPIPE,
+        constants.ESRCH => error.ESRCH,
+        constants.ETIMEDOUT => error.ETIMEDOUT,
+        constants.EXDEV => error.EXDEV,
         else => error.EUNKNOWN,
     };
 }
@@ -259,20 +233,17 @@ fn check(e: i32) Error!void {
     if (e != 0) return mcErr(e);
 }
 
-// ---------------------------------------------------------------- stat translation (DESIGN.md §14 R1)
+// ---------------------------------------------------------------- stat translation
 //
-// The 44-byte stat record (constants.kdl §198-213; kernel `write_stat_buf`,
-// wasm/mod.rs:1606-1629): size u64 LE @0, kind u32 @8 (0=file, 1=dir, 2=symlink),
-// nlink u32 @12, mode u32 @16, mtime i64 @20, atime i64 @28, ctime i64 @36 -- all times
-// in milliseconds since the epoch. Layout confirmed byte-exact against the frozen contract.
-fn statFromBuf(buf: *const [44]u8) Stat {
-    const size = std.mem.readInt(u64, buf[0..8], .little);
-    const kind = std.mem.readInt(u32, buf[8..12], .little);
-    const nlink = std.mem.readInt(u32, buf[12..16], .little);
-    const mode = std.mem.readInt(u32, buf[16..20], .little) & 0o7777;
-    const mtime_ms = std.mem.readInt(i64, buf[20..28], .little);
-    const atime_ms = std.mem.readInt(i64, buf[28..36], .little);
-    const ctime_ms = std.mem.readInt(i64, buf[36..44], .little);
+// Decode the generated stat-record contract. Times are milliseconds since the epoch.
+fn statFromBuf(buf: *const [STAT_REC_LEN]u8) Stat {
+    const size = std.mem.readInt(u64, buf[STAT_REC_SIZE_OFF .. STAT_REC_SIZE_OFF + @sizeOf(u64)], .little);
+    const kind = std.mem.readInt(u32, buf[STAT_REC_NODE_TYPE_OFF .. STAT_REC_NODE_TYPE_OFF + @sizeOf(u32)], .little);
+    const nlink = std.mem.readInt(u32, buf[STAT_REC_NLINK_OFF .. STAT_REC_NLINK_OFF + @sizeOf(u32)], .little);
+    const mode = std.mem.readInt(u32, buf[STAT_REC_MODE_OFF .. STAT_REC_MODE_OFF + @sizeOf(u32)], .little) & 0o7777;
+    const mtime_ms = std.mem.readInt(i64, buf[STAT_REC_MTIME_OFF .. STAT_REC_MTIME_OFF + @sizeOf(i64)], .little);
+    const atime_ms = std.mem.readInt(i64, buf[STAT_REC_ATIME_OFF .. STAT_REC_ATIME_OFF + @sizeOf(i64)], .little);
+    const ctime_ms = std.mem.readInt(i64, buf[STAT_REC_CTIME_OFF .. STAT_REC_CTIME_OFF + @sizeOf(i64)], .little);
     return .{
         .size = size,
         .mode = mode,
@@ -280,8 +251,8 @@ fn statFromBuf(buf: *const [44]u8) Stat {
         .atime_ms = atime_ms,
         .mtime_ms = mtime_ms,
         .ctime_ms = ctime_ms,
-        .is_dir = kind == 1,
-        .is_symlink = kind == 2,
+        .is_dir = kind == STAT_NODE_DIR,
+        .is_symlink = kind == STAT_NODE_SYMLINK,
     };
 }
 
@@ -324,13 +295,13 @@ pub fn lseek(fd: Fd, off: i64, whence: Whence) Error!u64 {
 }
 
 pub fn stat(path: []const u8) Error!Stat {
-    var buf: [44]u8 = undefined;
+    var buf: [STAT_REC_LEN]u8 = undefined;
     try check(mc_sys_stat(path.ptr, @intCast(path.len), &buf));
     return statFromBuf(&buf);
 }
 
 pub fn lstat(path: []const u8) Error!Stat {
-    var buf: [44]u8 = undefined;
+    var buf: [STAT_REC_LEN]u8 = undefined;
     try check(mc_sys_lstat(path.ptr, @intCast(path.len), &buf));
     return statFromBuf(&buf);
 }
@@ -352,7 +323,7 @@ pub fn link(target: []const u8, link_path: []const u8) Error!void {
 }
 
 pub fn unlink(path: []const u8) Error!void {
-    // kernel convention: unlink also removes empty directories (DESIGN.md §4.1) -- the
+    // kernel convention: unlink also removes empty directories (the coreutils architecture) -- the
     // glue's `mc_sys_unlink` is used unconditionally for files and directories alike.
     try check(mc_sys_unlink(path.ptr, @intCast(path.len)));
 }
@@ -406,8 +377,10 @@ pub fn getcwd(buf: []u8) Error!usize {
 // ---------------------------------------------------------------- proc
 
 pub fn spawn(argv_blob: []const u8, stdin: Fd, stdout: Fd, stderr: Fd) Error!Pid {
+    // nutils' `sys.spawn` has no tier parameter (the coreutils architecture), so it inherits the caller's tier;
+    // the kernel remains the enforcement point for anything stricter.
     var out_pid: u32 = 0;
-    try check(mc_sys_spawn(argv_blob.ptr, @intCast(argv_blob.len), stdin, stdout, stderr, TIER_INHERIT, &out_pid));
+    try check(mc_sys_spawn(argv_blob.ptr, @intCast(argv_blob.len), stdin, stdout, stderr, constants.TIER_INHERIT, &out_pid));
     return @intCast(out_pid);
 }
 
@@ -421,11 +394,11 @@ pub fn waitpid(pid: Pid) Error!i32 {
 }
 
 /// Non-blocking wait (opts=1, mc-glue's nohang bit). `got == 0` means "no child ready
-/// yet" (DESIGN.md task spec) rather than an error.
+/// yet" (the coreutils architecture) rather than an error.
 pub fn waitpidNohang(pid: Pid) Error!?i32 {
     var status: u32 = 0;
     var got: u32 = 0;
-    try check(mc_sys_waitpid(pid, WAIT_NOHANG, &status, &got));
+    try check(mc_sys_waitpid(pid, constants.WNOHANG, &status, &got));
     if (got == 0) return null;
     return @bitCast(status);
 }
@@ -461,8 +434,8 @@ pub fn nice(inc: i32) Error!i32 {
 /// exist (no handler pointers); SIGKILL is rejected with EINVAL by the kernel.
 pub fn sigdisp(sig: Sig, disp: Disp) Error!void {
     const d: i32 = switch (disp) {
-        .default => SIG_DFL,
-        .ignore => SIG_IGN,
+        .default => constants.SIG_DFL,
+        .ignore => constants.SIG_IGN,
     };
     try check(mc_sys_sigdisp(sigNum(sig), d));
 }
@@ -532,15 +505,15 @@ pub fn poll(fds: []PollFd, timeout_ms: i32) Error!usize {
     const n = @min(fds.len, buf.len);
     for (fds[0..n], 0..) |f, i| {
         var events: i16 = 0;
-        if (f.want_read) events |= POLLIN;
-        if (f.want_write) events |= POLLOUT;
+        if (f.want_read) events |= @intCast(constants.POLLIN);
+        if (f.want_write) events |= @intCast(constants.POLLOUT);
         buf[i] = .{ .fd = f.fd, .events = events, .revents = 0 };
     }
     var ready: u32 = 0;
     try check(mc_sys_poll(&buf, @intCast(n), timeout_ms, &ready));
     for (fds[0..n], 0..) |*f, i| {
-        f.readable = (buf[i].revents & POLLIN) != 0;
-        f.writable = (buf[i].revents & POLLOUT) != 0;
+        f.readable = (buf[i].revents & @as(i16, @intCast(constants.POLLIN))) != 0;
+        f.writable = (buf[i].revents & @as(i16, @intCast(constants.POLLOUT))) != 0;
     }
     return ready;
 }

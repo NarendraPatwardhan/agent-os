@@ -1,4 +1,4 @@
-//! `printenv` -- docs/analysis/applets-g-r.md: the `/env/<name>` file-backed environment
+//! `printenv` -- DESIGN.md §1: the `/env/<name>` file-backed environment
 //! model. No operands -> `envfs.list` (sorted), print `NAME=value` lines. With operands
 //! -> each set var's trimmed value on its own line; an unset var sets rc=1 with NO
 //! message. No `-0`.

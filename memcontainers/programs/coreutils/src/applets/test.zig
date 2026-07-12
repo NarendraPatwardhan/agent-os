@@ -1,4 +1,4 @@
-//! `test` / `[` -- docs/analysis/applets-s-z.md: hand-parsed expression evaluator (no
+//! `test` / `[` -- DESIGN.md §1: hand-parsed expression evaluator (no
 //! `cli.zig` for operands -- only a leading `--help`/`-h` for `test`, never for `[`).
 //! Recursive descent: `or := and (-o and)*`; `and := factor (-a factor)*`;
 //! `factor := "!" factor | "(" expr ")" | primary`. `primary` looks only at the

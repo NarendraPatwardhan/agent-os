@@ -1,4 +1,4 @@
-//! `uniq` -- docs/analysis/applets-s-z.md: streams, adjacent comparison. `-c/--count`
+//! `uniq` -- DESIGN.md §1: streams, adjacent comparison. `-c/--count`
 //! (right-justified width-7 count + space), `-d/--repeated`, `-D/--all-repeated` (bare;
 //! `-c`+`-D` rejected exit 1), `-u/--unique`, `-i/--ignore-case` (ASCII),
 //! `-f/--skip-fields N`, `-s/--skip-chars N`, `-w/--check-chars N`. Operands

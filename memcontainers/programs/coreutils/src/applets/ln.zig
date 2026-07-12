@@ -1,4 +1,4 @@
-//! `ln` -- docs/analysis/applets-g-r.md: hand-written, raw `sys.*` + `fsutil` path
+//! `ln` -- DESIGN.md §1: hand-written, raw `sys.*` + `fsutil` path
 //! math. Operand dispatch: `-t DIR` links every TARGET into DIR; `-T` requires exactly
 //! 2 operands (no directory redirection); 1 operand links `basename(TARGET)` into cwd;
 //! otherwise if the last operand is a directory, every preceding TARGET links into it;

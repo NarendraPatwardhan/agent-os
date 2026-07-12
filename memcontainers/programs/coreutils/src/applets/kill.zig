@@ -1,4 +1,4 @@
-//! `kill` -- docs/analysis/applets-g-r.md: hand-parsed (no `cli.zig`). Signal table
+//! `kill` -- DESIGN.md §1: hand-parsed (no `cli.zig`). Signal table
 //! (kernel subset, EXACT numbers): HUP=1, INT=2, KILL=9, TERM=15, CHLD=17, CONT=18,
 //! TSTP=20. `-s/--signal SIG`, bare `-SIGNAL` (`-9`/`-KILL`/`-HUP`, any leading-dash
 //! token that resolves to a signal, consumed only before the first PID is seen),

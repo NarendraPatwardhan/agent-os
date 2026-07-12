@@ -41,12 +41,12 @@ syscall surface). agent-os re-expresses it the agent-os way, and the divergences
 
 4. **Observed conformance → ENFORCED conformance** — the largest improvement. memcontainers verified
    import purity by inspection. agent-os fails the *build* on any drift:
-   - **`//tools/mc-attest`** — attestation (every import is a *declared `mc` syscall*, not just the
+   - **`//bazel/tools/mc-attest`** — attestation (every import is a *declared `mc` syscall*, not just the
      `mc` module) **and** tier fit (a syscall's cap-floor ⊆ the declared tier's caps). A
      `read-only` luau that imports `spawn`/`net` does not build.
-   - **`//tools/mc-abi-gate`** — pins the hand-written `extern "mc" fn` decls in `mc.zig` to the
-     projected contract (`contracts/gen/mc.gen.zig`); a parameter/return drift fails the build.
-   - **Section robustness** — `//tools/mc-stamp` is idempotent (never emits a duplicate
+   - **Generated imports** — the projector emits the concrete Zig `extern "mc" fn` declarations in
+     `memcontainers/contracts/gen/mc.gen.zig`; no hand-kept ABI or comparison gate remains.
+   - **Section robustness** — `//bazel/tools/mc-stamp` is idempotent (never emits a duplicate
      `mc_tier`/`mc_budget`); the **kernel** rejects a duplicate-or-malformed section at load, closing
      a tier-escalation (a corrupt `mc_tier` once silently inherited the parent's privilege).
    - **Trap-unwind export pair** — the kernel rejects a guest that exports exactly one of
@@ -164,11 +164,11 @@ is require-able without rebuilding the interpreter.)
 
 ## Tests
 
-`//tests/e2e:suite` boots the real kernel and runs the actual memcontainers/web recipes against
+`//memcontainers/tests/e2e:core` boots the real kernel and runs the actual recipes against
 `/bin/luau` + `/bin/luau-analyze` over the control exec channel — the batteries demo (require-driven
 json/hash/time + string extensions under the fuel budget), a real `.xlsx` generation (deflate +
 encoding + the xlsx battery), the Pike-VM regex battery, `sys.fs` round-trips, the typed_ok/typed_bad
 type checks, plus adversarial cases: the deflate bomb cap, the JSON number grammar, nested-pcall /
 error-in-error trap-unwind stress, and graceful degradation on a pathological-depth type. The tool
-gates (`mc-attest`, `mc-abi-gate`, `mc-stamp`) and the kernel/contract tests round out
+gates (`mc-attest`, `mc-stamp`) and the kernel/contract tests round out
 `bazel test //...`.

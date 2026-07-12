@@ -1,4 +1,4 @@
-//! `pathchk` -- docs/analysis/*: checks whether PATH operands are valid/portable.
+//! `pathchk` -- DESIGN.md §1: checks whether PATH operands are valid/portable.
 //! Multiple PATH operands, each checked independently (a violation on one does not
 //! stop the others from being checked); silent on success per-path, any violation
 //! prints one line to stderr and the overall exit code is 1 if ANY path failed.
@@ -23,7 +23,7 @@
 //! are accepted), while any OTHER error (e.g. `ENOTDIR` because some earlier
 //! component is a plain file, or a permission error) is fatal and its OS message is
 //! printed verbatim with a `(os error N)` suffix -- confirmed empirically against the
-//! oracle binary (see `docs/parity-ledger.md`-style notes in the final task report;
+//! oracle binary (see the parity policy in DESIGN.md §2;
 //! this file does not touch the ledger itself).
 //!
 //! PATH_MAX/FILENAME_MAX fallback: this Zig port's `sys` layer has no `pathconf`

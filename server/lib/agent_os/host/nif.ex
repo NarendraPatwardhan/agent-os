@@ -1,7 +1,7 @@
 defmodule AgentOS.Host.Nif do
   @moduledoc """
   Raw NIF binding to `libhost_nif.so` — the Rustler wrapper over the wasmtime
-  `host::KernelHost` (CONTROL_PLANE.md §6.1). This is the ONLY module that touches the NIF;
+  `host::KernelHost` (SYSTEMS.md §13.1). This is the ONLY module that touches the NIF;
   all process discipline (single-owner, crash-only, the tick loop) lives in `AgentOS.Vm`.
   Do not call these directly.
 

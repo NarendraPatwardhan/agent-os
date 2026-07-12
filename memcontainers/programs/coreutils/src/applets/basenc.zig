@@ -1,4 +1,4 @@
-//! `basenc` -- docs/analysis/uutils-applets.md "base32/base64/basenc". Same
+//! `basenc` -- DESIGN.md §1 "base32/base64/basenc". Same
 //! `-d/-i/-w` surface as base32/base64 (see those files), plus mutually-exclusive
 //! format selectors: `--base64 --base64url --base32 --base32hex --base16
 //! --base2lsbf --base2msbf --z85 --base58`. Exactly one is required; none given ->

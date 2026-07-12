@@ -169,27 +169,33 @@ fn waitpid_opts(pid: i32, opts: i32) -> Result<(i32, u32), i32> {
 
 /// Byte length of the stat record shared by `mc_sys_stat`, `mc_sys_lstat`, and
 /// served-filesystem `SERVE_OP_STAT` responses.
-pub const STAT_RECORD_LEN: usize = 44;
+pub const STAT_RECORD_LEN: usize = STAT_REC_LEN as usize;
 
-/// Encode a stat record (little-endian). MUST match the kernel's `write_stat_buf`:
-/// `size@0 u64`, `kind@8 u32` (0=file/1=dir/2=symlink), `nlink@12 u32`,
-/// `mode@16 u32`, `mtime@20 i64`, `atime@28 i64`, `ctime@36 i64` (times = ms since
-/// the Unix epoch). A guest file server uses this to answer `SERVE_OP_STAT`.
+/// Encode the little-endian stat record defined by the generated `STAT_REC_*` and
+/// `STAT_NODE_*` constants. Times are milliseconds since the Unix epoch. A guest file server uses
+/// this to answer `SERVE_OP_STAT`.
 pub fn encode_stat(stat: &Stat, buf: &mut [u8; STAT_RECORD_LEN]) {
-    buf[..8].copy_from_slice(&stat.size.to_le_bytes());
+    let size_off = STAT_REC_SIZE_OFF as usize;
+    let kind_off = STAT_REC_NODE_TYPE_OFF as usize;
+    let nlink_off = STAT_REC_NLINK_OFF as usize;
+    let mode_off = STAT_REC_MODE_OFF as usize;
+    let mtime_off = STAT_REC_MTIME_OFF as usize;
+    let atime_off = STAT_REC_ATIME_OFF as usize;
+    let ctime_off = STAT_REC_CTIME_OFF as usize;
+    buf[size_off..size_off + 8].copy_from_slice(&stat.size.to_le_bytes());
     let kind: u32 = if stat.is_dir {
-        1
+        STAT_NODE_DIR as u32
     } else if stat.is_symlink {
-        2
+        STAT_NODE_SYMLINK as u32
     } else {
-        0
+        STAT_NODE_FILE as u32
     };
-    buf[8..12].copy_from_slice(&kind.to_le_bytes());
-    buf[12..16].copy_from_slice(&stat.nlink.to_le_bytes());
-    buf[16..20].copy_from_slice(&(stat.mode as u32).to_le_bytes());
-    buf[20..28].copy_from_slice(&stat.mtime.to_le_bytes());
-    buf[28..36].copy_from_slice(&stat.atime.to_le_bytes());
-    buf[36..44].copy_from_slice(&stat.ctime.to_le_bytes());
+    buf[kind_off..kind_off + 4].copy_from_slice(&kind.to_le_bytes());
+    buf[nlink_off..nlink_off + 4].copy_from_slice(&stat.nlink.to_le_bytes());
+    buf[mode_off..mode_off + 4].copy_from_slice(&(stat.mode as u32).to_le_bytes());
+    buf[mtime_off..mtime_off + 8].copy_from_slice(&stat.mtime.to_le_bytes());
+    buf[atime_off..atime_off + 8].copy_from_slice(&stat.atime.to_le_bytes());
+    buf[ctime_off..ctime_off + 8].copy_from_slice(&stat.ctime.to_le_bytes());
 }
 
 /// Append one typed served-filesystem directory entry to `buf` at `off`. The wire
@@ -215,24 +221,21 @@ pub fn push_serve_dirent(buf: &mut [u8], off: usize, kind: u32, name: &str) -> O
     Some(end)
 }
 
-/// Decode the kernel's 44-byte stat record (little-endian). MUST match
-/// `write_stat_buf` in the kernel: `size@0 u64`, `kind@8 u32` (0=file/1=dir/
-/// 2=symlink), `nlink@12 u32`, `mode@16 u32`, `mtime@20 i64`, `atime@28 i64`,
-/// `ctime@36 i64` (times = ms since the Unix epoch).
+/// Decode the little-endian stat record defined by the generated contract constants.
 fn parse_stat(buf: &[u8; STAT_RECORD_LEN]) -> Stat {
     let u64_at = |o: usize| u64::from_le_bytes(buf[o..o + 8].try_into().unwrap());
     let u32_at = |o: usize| u32::from_le_bytes(buf[o..o + 4].try_into().unwrap());
     let i64_at = |o: usize| i64::from_le_bytes(buf[o..o + 8].try_into().unwrap());
-    let kind = u32_at(8);
+    let kind = u32_at(STAT_REC_NODE_TYPE_OFF as usize);
     Stat {
-        size: u64_at(0),
-        is_dir: kind == 1,
-        is_symlink: kind == 2,
-        nlink: u32_at(12),
-        mode: u32_at(16) as u16,
-        mtime: i64_at(20),
-        atime: i64_at(28),
-        ctime: i64_at(36),
+        size: u64_at(STAT_REC_SIZE_OFF as usize),
+        is_dir: kind == STAT_NODE_DIR as u32,
+        is_symlink: kind == STAT_NODE_SYMLINK as u32,
+        nlink: u32_at(STAT_REC_NLINK_OFF as usize),
+        mode: u32_at(STAT_REC_MODE_OFF as usize) as u16,
+        mtime: i64_at(STAT_REC_MTIME_OFF as usize),
+        atime: i64_at(STAT_REC_ATIME_OFF as usize),
+        ctime: i64_at(STAT_REC_CTIME_OFF as usize),
     }
 }
 

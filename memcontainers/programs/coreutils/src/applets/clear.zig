@@ -1,4 +1,4 @@
-//! `clear` -- docs/analysis/applets-a-f.md: leading --help/-h/--version only (parser
+//! `clear` -- DESIGN.md §1: leading --help/-h/--version only (parser
 //! not run over operands). Emits a fixed ANSI sequence (cursor home, erase screen,
 //! erase scrollback), no trailing LF. Deviation from ncurses: no -x/-T TERM, fixed
 //! sequence, not terminfo-driven.

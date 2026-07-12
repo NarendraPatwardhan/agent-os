@@ -1,4 +1,4 @@
-//! `file` -- docs/analysis/applets-a-f.md: wrapper over `infer` (magic-byte detection)
+//! `file` -- DESIGN.md §1: wrapper over `infer` (magic-byte detection)
 //! + hand-written text/shebang/JSON/XML/HTML heuristics, ported wholesale into
 //! `engines/magic.zig`. **Note the outlier: clap-error exit is 1, not the usual 2**
 //! (matrix: "file which returns 1"). Empty operand list -> `Usage: file [-bi] FILE...`

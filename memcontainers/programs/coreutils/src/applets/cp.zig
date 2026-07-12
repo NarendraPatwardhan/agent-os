@@ -1,4 +1,4 @@
-//! `cp` -- docs/analysis/applets-a-f.md: copy engine is entirely `core/fsutil.zig`.
+//! `cp` -- DESIGN.md §1: copy engine is entirely `core/fsutil.zig`.
 //! `-r/-R/--recursive`; `-a/--archive` (= `-R -p` + symlink-recreate); `-p/--preserve`
 //! (mtime/atime; mode is always copied via `preserveMeta`); `-n/--no-clobber`;
 //! `-i/--interactive`; `-f/--force` (unlink+retry on an undeletable dest); `-v/--verbose`.

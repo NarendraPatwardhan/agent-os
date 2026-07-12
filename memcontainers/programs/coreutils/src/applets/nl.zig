@@ -1,4 +1,4 @@
-//! `nl` -- docs/analysis/applets-g-r.md: facade-streaming (`stream_lines` + `BufOut`).
+//! `nl` -- DESIGN.md §1: facade-streaming (`stream_lines` + `BufOut`).
 //! `-b STYLE` (a/t=default/n), `-n FORMAT` (ln/rn=default/rz), `-w NUMBER` width
 //! (default 6, must be >0), `-s STRING` separator (default TAB), `-v NUMBER` start
 //! (default 1), `-i NUMBER` increment (default 1). The counter continues ACROSS

@@ -1,4 +1,4 @@
--- calc.luau — a pure-Luau Excel formula engine (ctx/LUAU.md / luau-extensions
+-- calc.luau — a pure-Luau Excel formula engine (SYSTEMS.md §10.3 / luau-extensions
 -- design Ch.12). Tokenize → parse (precedence-climbing) → evaluate against a
 -- host-provided cell/range resolver, with a dependency extractor for whole-workbook
 -- recalculation. Ported from fast-formula-parser (MIT, grammar/operators/error model)

@@ -1,4 +1,4 @@
-//! `awk` -- a POSIX-subset awk (docs/analysis/applets-a-f.md), matching the awk-rs 0.1.0
+//! `awk` -- a POSIX-subset awk (DESIGN.md §1), matching the awk-rs 0.1.0
 //! crate the memcontainers box wrapped. CLI: -F SEP (field separator; glued -FSEP ok),
 //! -v VAR=VALUE (repeatable pre-run assignment), -f FILE (repeatable program file), then a
 //! PROGRAM operand if no -f, then input FILEs (- = stdin). BEGIN/END run once around all

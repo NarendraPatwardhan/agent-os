@@ -1,4 +1,4 @@
-//! `tar` -- docs/analysis/applets-s-z.md: USTAR archiver over `engines/archive/tarx.zig`
+//! `tar` -- DESIGN.md §1: USTAR archiver over `engines/archive/tarx.zig`
 //! + the compress engines (`gzcli.zig` gzip both ways, `bzip2.zig` decode-only,
 //! `std.compress.xz` decode-only).
 //!

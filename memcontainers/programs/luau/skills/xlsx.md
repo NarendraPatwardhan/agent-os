@@ -5,7 +5,7 @@ description: 'Create, read, edit, recalculate, convert, and validate Microsoft E
 
 # Memcontainer XLSX
 
-Use the embedded Luau `xlsx` library for workbook work. The source of truth is `loom/lib/xlsx.luau`; supporting formula behavior lives in `loom/lib/calc.luau`. Use `crates/e2e/tests/luau_libs.rs` for current examples and `ctx/LUAU.md` for validation and limitations.
+Use the embedded Luau `xlsx` library for workbook work. The implementation is `memcontainers/programs/luau/glue/lib/xlsx.luau`; supporting formula behavior lives beside it in `calc.luau`. Use `memcontainers/tests/e2e/src/loom.rs` and `web/src/examples/chapters.ts` for current examples, and `SYSTEMS.md` section 10.3 for validation and limitations.
 
 ## Workflow
 

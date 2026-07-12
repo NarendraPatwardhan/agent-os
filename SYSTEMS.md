@@ -10,10 +10,9 @@
 > **Status.** This is a design contract, not a changelog. If a change to the system contradicts a
 > section here, the section wins — change the system, or change this document in the same commit
 > and say why. The core — the kernel, the contracts, the userland, the warm domain engines — is
-> built and green. The network/browser edge (the multi-tenant server, the JavaScript host family,
-> the `@mc/*` SDK, the web app) is a designed, lineage-proven system whose AgentOS port is staged.
-> The size-optimized **Zig kernel** is the one deliberately-staged reimplementation, gated by
-> behavior parity against the Rust kernel.
+> built and green. The Rust kernel, JavaScript host and SDK, browser workbench, and Elixir/OTP control-plane library
+> are built and tested. The completed Zig-kernel experiment is archived on `feature/zig`; Rust is the
+> sole kernel in `develop`.
 
 ---
 
@@ -24,7 +23,7 @@ system — process table, scheduler, virtual filesystem, pipes, networking, inte
 compiles to `wasm32` and runs as one `kernel.wasm`. It hosts *guest* programs (a shell, coreutils, a
 Luau interpreter, SQLite, a typst compiler) which are themselves wasm modules, executed inside the
 kernel by an embedded `wasmi` interpreter. A thin, untrusted **host** (native via wasmtime, or
-JavaScript locally under Node/Bun or in the browser) loads the kernel, supplies a tiny set of effect primitives, and ticks it
+JavaScript locally under Node.js or Bun, or in the browser) loads the kernel, supplies a tiny set of effect primitives, and ticks it
 forward.
 
 The thesis, in one line: **the agent's entire computer is a portable, deterministic, snapshottable
@@ -58,14 +57,13 @@ two ancestors, sequenced for low risk (the full argument is §2.4):
   stale-artifact hazards, hand-staged images, and checked-in vendored libraries.
 - An *early* Zig port (the lineage called **zmc**) proves the hard part of a smaller kernel works: a
   Zig kernel compiled to `wasm32`, driving guests through `wasmi` compiled to wasm and linked in as a
-  C-ABI shim. It is the seed and the evidence for the eventual Zig kernel, not the starting point.
+  C-ABI shim. It supplied evidence for the later archived experiment, not the shipped kernel.
 
 AgentOS keeps the design, puts *everything* on a zero-staleness Bazel build graph with the ABI lifted
-into language-neutral contracts, ships the kernel **Rust-first by porting** the proven code (the
-fastest path to a stable, green system and the lightest load on the agents building it), brings **Zig
-in immediately** for the C/C++ guest-compilation lane, and stages a later **Zig kernel** behind a
-behavior-parity gate. The single open frontier is that Zig kernel, which becomes the default only when
-it proves bit-for-bit parity with the Rust kernel.
+into language-neutral contracts, and ships the proven Rust kernel. Zig remains the C/C++ guest
+toolchain and guest-sysroot language. A separate Zig-kernel experiment reached functional parity but
+did not replace Rust because its interpreter cost outweighed the binary-size win; §14.3 records that
+decision without treating archived source as part of the live tree.
 
 ---
 
@@ -89,18 +87,19 @@ under `memcontainers/`, the build machinery under `bazel/`.
 | 10 | **Host-call & proxy** | Opaque host-backed calls; the shared proxy ABI for served/mounted fs | `…/src/host_call.rs`, `…/src/fs/proxy.rs` | built |
 | 11 | **Snapshots & determinism** | `(memory)` capture/restore; quiescence; the seal | `…/src/{persist,seal,sync}.rs` + host | built |
 | 12 | **Guest sysroot & WASI adapter** | The guest side of the ABI (Rust + Zig); WASI→mc shim | `memcontainers/sysroot/`, `memcontainers/wasi-adapter/` | built |
-| 13 | **Conformance & attestation** | Build-time import-purity + tier-fit gates | `memcontainers/conformance/`, `bazel/tools/{mc-attest,mc-abi-gate}` | built |
-| 14 | **Shell** | An OS-agnostic POSIX-ish shell engine driving `/bin/sh` and rescue shells | `memcontainers/shcore/{rust,zig}/`, `memcontainers/programs/sh` | built |
+| 13 | **Conformance & attestation** | Build-time import-purity + tier-fit gates | `memcontainers/conformance/`, `bazel/tools/mc-attest` | built |
+| 14 | **Shell** | An OS-agnostic POSIX-ish Zig shell engine driving `/bin/sh` | `memcontainers/shcore/`, `memcontainers/programs/sh/` | built |
 | 15 | **Userland `/bin`** | Multicall coreutils, partitioned by tier | `memcontainers/programs/coreutils/` | built |
 | 16 | **Luau scripting** | The primary user-facing language; embedded + VFS batteries | `memcontainers/programs/luau/` | built |
 | 17 | **Domain engines & adapters** | Heavy engines plus the shared tool-adapter service | `memcontainers/programs/{sqlite,typst,adapters}/`, `memcontainers/lib/parse/` | built |
 | 18 | **Images, flavors & packages** | Content-addressed layered images; demand-loaded packages | `memcontainers/images/`, `memcontainers/pkgcore/`, `bazel/tools/mc-roster` | built |
 | 19 | **Host (wasmtime)** | Loads `kernel.wasm`, supplies the bridge, ticks, performs effects | `memcontainers/hosts/wasmtime/` | built |
-| 20 | **The network & browser edge** | `mc-server` (actor-per-VM), the wire protocol, the JS host family, the `@mc/*` SDK, the web app | `server/`, `memcontainers/hosts/js/`, `memcontainers/sdk-js/`, `web/` | designed; port staged |
-| 21 | **Build, test & migration** | Bazel zero-staleness graph; no-mocks e2e; the two-kernel parity plan | `MODULE.bazel`, `bazel/`, `memcontainers/tests/`, `memcontainers/kernel/rust` | built (Zig kernel: reached functional parity, paused — see §14.3, lives on `feature/zig`) |
+| 20 | **Control, network & browser edge** | Elixir actor-per-VM core, wire contract/client, JS host family, SDK, and web app | `server/`, `memcontainers/hosts/js/`, `memcontainers/sdk-js/`, `web/` | built; served HTTP/WS adapter remains external |
+| 21 | **Build & test** | Bazel zero-staleness graph and no-mocks e2e | `MODULE.bazel`, `bazel/`, `memcontainers/tests/` | built |
 
-Roughly 52k lines of Rust (kernel, host, shell, coreutils, projector), 11k of Luau (the scripting
-batteries), 5k of Zig (the C/C++ guest glue), plus the contracts and the build graph.
+The implementation spans Rust (kernel and wasmtime host), Zig (shell, coreutils, and guest glue),
+TypeScript (JS host, SDK, and browser UI), Elixir (control plane), Luau (scripting batteries), the
+language-neutral contracts, and the Bazel graph.
 
 ---
 
@@ -120,7 +119,7 @@ batteries), 5k of Zig (the C/C++ guest glue), plus the contracts and the build g
    │   runs guests via an embedded wasmi interpreter over the mc syscall  │ │
    │   ABI:   GUEST = /bin/sh, coreutils, luau, sqlite, typst (Rust·Zig·C)│ │
    └──────────────────────────────────────────────────────────────────────┘ │
-   SERVER  mc-server ── wire protocol ──> SDK / clients (TS) ────────────────┘
+   SERVED HOST ADAPTER ── wire protocol ──> SDK / clients (TS) ──────────────┘
 ```
 
 The runtime nesting is **host → kernel.wasm → wasmi → guest.wasm**, with a fourth, kernel-mediated
@@ -156,7 +155,7 @@ binding on every kernel implementation), **B** (the build, the staging, the pari
 - **A1 — Self-contained.** The agent's Unix lives in wasm linear memory; a kernel fd is not a host fd,
   a kernel pid is not a host process.
 - **A2 — WASM only.** The kernel compiles to and runs on wasm exclusively. Never native, not even for
-  tests. (Both the Rust and Zig kernels obey this.)
+  tests.
 - **A3 — Two host families, one binary.** Rust and JS hosts load the same `kernel.wasm` and behave
   identically.
 - **A4 — The bridge is the only surface.** The kernel imports no symbol outside the `env` bridge — no
@@ -183,7 +182,7 @@ Derived rules also cited in code: *single source of truth per boundary*, *contai
   projector is exercised across every language immediately.
 - **B3 — Vendor less, patch in place.** Third-party source enters via `http_archive` + patches; only
   patch files and Zig glue live in-tree.
-- **B4 — Hermetic toolchains.** Rust, Zig, and Node/Bun are pinned Bazel toolchains. No host fonts, no
+- **B4 — Hermetic toolchains.** Rust, Zig, and JavaScript toolchains are pinned in Bazel. No host fonts, no
   host browser, no tool from `$PATH`.
 - **B5 — Size is a test and a lever.** Each `kernel.wasm` carries a size budget; per-guest budgets are
   enforced at exec.
@@ -219,17 +218,13 @@ of privilege bugs.
 - **Capability** — *what can it do?* An 8-bit set plus an optional confinement root, computed at exec as
   `parent ∩ binary ∩ requested`, monotonically narrowing.
 
-### 2.4 The synthesis, and why the kernel is Rust first
+### 2.4 The synthesis, and why the kernel remains Rust
 
-The deepest "why" of the whole project is its *sequencing*. The eventual goal for the kernel is Zig —
-smaller, freestanding, toolchain-unified. So why ship Rust first?
-
-**Because we can *port* a mature kernel instead of *rewriting* one.** The Rust lineage is a battle-
-tested, memory-safe wasm microkernel with thousands of lines of proven code. Porting it reuses that
-code, keeps `wasmi` as a native Rust crate (no C seam), and reaches a stable, green, fully-Bazelized
-system far faster and with far less authoring risk than a from-scratch Zig kernel. Zig's wins are real
-but secondary, and they are captured on a branch *after* everything around the kernel is solid —
-validated by parity, not by faith.
+The Rust lineage is a battle-tested, memory-safe wasm microkernel with thousands of lines of proven
+code. Porting it reused that code, kept `wasmi` as a native Rust crate with no C seam, and reached a
+stable, fully-Bazelized system quickly. A later Zig experiment validated the contracts and achieved a
+smaller binary, but its interpreter overhead lost on runtime performance. Rust therefore remains the
+shipped kernel; the experiment is a completed design probe, not an unfinished migration.
 
 This produces a three-pillar structure, ordered by value and risk:
 
@@ -239,16 +234,14 @@ This produces a three-pillar structure, ordered by value and risk:
    staleness, contracts projected to Rust + Zig + TS, vendor-less/patch-in-place, hermetic toolchains.
    This is the durable pillar you want whichever language the kernel is in, and it removes the single
    biggest pain of the lineage — an imperative build with stale-artifact hazards.
-3. **Staged implementation** (Rust now → Zig next, parity always): the kernel ships in Rust by porting;
-   Zig enters on day one only for the C/C++ guest-compilation lane (the hermetic `zig cc`/`c++`
-   toolchain compiling the patched SQLite/Luau sources, with the glue written in Zig); the Zig kernel
-   comes later on a branch, reimplemented against the *unchanged* contracts and accepted only by
-   behavior parity (B7).
+3. **Polyglot implementation:** Rust owns the kernel and native host; Zig owns the shell, coreutils,
+   guest sysroot, and C/C++ guest-compilation lane; TypeScript owns the second host family and SDK;
+   Elixir owns the multi-VM control core. Contracts, not language ownership, join those pieces.
 
 The lineage taught two more things worth stating outright. First, **one landmine**: the embedded
 interpreter must run in *eager* compilation mode — lazy translation charges the guest's fuel to
 translate a function and corrupts the host on a dry-fuel resume (§4.3). AgentOS inherits this verbatim
-for both kernels. Second, the build wounds the staged plan deliberately cures: a `cargo test` that runs
+in the shipped kernel. Second, the build wounds the Bazel graph deliberately cures: a `cargo test` that runs
 against a stale kernel, image staging via `remove_dir_all`, hardcoded `../../target/...` guest paths,
 two tar implementations that must stay byte-identical, checked-in vendored C/C++, host fonts and a host
 browser leaking in, generated files kept fresh by ad-hoc `--check` flags. Every one of these is
@@ -260,7 +253,7 @@ kernel's language. That is precisely why Bazel, not Zig, is the lead pillar.
 The constitution is also a list of refusals; each maps to an invariant.
 
 - **No host objects to the agent.** A1; the whole point. A kernel fd is never a host fd.
-- **No native kernel build, even for debugging.** A2 — for *both* kernels. Debug by driving the real
+- **No native kernel build, even for debugging.** A2. Debug by driving the real
   wasm in a host.
 - **No WASI / Component-Model / bindgen on the kernel.** A4. WASI exists only as a *guest* adapter that
   translates into `mc`.
@@ -269,23 +262,20 @@ The constitution is also a list of refusals; each maps to an invariant.
 - **No checked-in third-party source.** B3. Patches over vendoring; glue in Zig.
 - **No manual artifact copying or "rebuild first" steps.** B1. If a test needs a kernel, it
   `data`-depends on it.
-- **No mocks, no fakes.** B6. The real kernel, a real host, the real internet — and, under the parity
-  plan, *two* real kernels.
+- **No mocks, no fakes.** B6. Drive the real kernel through real hosts and real effects.
 - **No host-PATH tools or host-system files.** B4.
-- **No rewriting what we can port.** The Rust kernel transplants the lineage; we do not reimplement
-  proven code for novelty. Zig replaces it only on a branch, only behind parity.
-- **No second wasm interpreter "just for Zig."** The same `wasmi` backs both kernels (a native crate for
-  Rust, a C-ABI staticlib for Zig); we do not fork the execution model.
-- **No shipping a kernel by inspection.** B7. A kernel implementation ships only when parity says it
-  matches the others.
+- **No rewriting what we can port.** The Rust kernel transplants the lineage; do not reimplement proven
+  code for novelty.
+- **No shipping an alternative kernel by inspection.** B7. Any new implementation must earn its place
+  through parity against the shipped kernel.
 
 ---
 
 ## 3. System 1 — Contracts: the single source of truth
 
 This is the spine. The lineage froze its ABI as a Rust macro, which gave zero drift *within one
-language*. AgentOS is polyglot from day one (a Rust kernel, Zig guest shims, a TS client, a future Zig
-kernel), so the source of truth is lifted **out of any language into data**, and the build *projects*
+language*. AgentOS is polyglot (a Rust kernel and host, Zig guests, TypeScript hosts/clients, and an
+Elixir control plane), so the source of truth is lifted **out of any language into data**, and the build *projects*
 it into all of them.
 
 ### 3.1 The shape
@@ -336,10 +326,10 @@ deliberate:
   with an ordinary host build. All Rust projections are `#![no_std]` so they never collide with the
   kernel cdylib's panic handler.
 
-Per language: Rust gets a `&[&str]` names array, the macro table, and a `SYSCALL_CAPS` matrix; Zig gets
-a *descriptor data* array (it cannot generate callable externs — see §9.1); TypeScript gets `as const`
-arrays; Elixir gets the server/Moltres codecs; Markdown gets a reference table; wire also emits AsyncAPI
-and OpenAPI YAML.
+Per language: Rust gets names, callback tables, typed codecs, and a `SYSCALL_CAPS` matrix. Zig gets
+descriptor tables, typed codecs, and concrete guest-side `extern "mc" fn` declarations generated from
+the syscall rows. TypeScript and Elixir get constants and typed codecs; Markdown gets a reference
+table; wire also emits AsyncAPI and OpenAPI YAML.
 
 ### 3.3 Typed messages and schema projections
 
@@ -369,17 +359,16 @@ The build wires four gates, so the contract cannot diverge from any consumer:
 1. **`build_test`** compiles each Rust/Zig projection — an invalid generator output fails the build.
 2. **`diff_test`** (via `write_source_files`) compares the committed `gen/*.gen.*` against a fresh
    projection — a hand-edit or a stale copy fails.
-3. **The kernel consumes the macro table to build an exhaustive `match`** (Rust) — adding a syscall row
-   makes the kernel fail to compile until a handler exists. The same applies to the bridge and control
-   tables, and to the future Zig kernel's exhaustive `switch`.
-4. **`mc-attest` / `mc-abi-gate`** (§9.3) enforce, at build time, that every guest imports only declared
-   syscalls and that the hand-written Zig externs match the projected descriptors.
+3. **The kernel consumes the macro table to build an exhaustive `match`** — adding a syscall row makes
+   the kernel fail to compile until a handler exists. The same applies to bridge and control tables.
+4. **`mc-attest`** (§9.3) enforces, at build time, that every finished guest imports only declared
+   syscalls and only those allowed by its stamped capability tier. Zig guest externs are generated
+   directly, so there is no second declaration set to compare.
 
 The result: one `.kdl` edit regenerates every projection, and *every* consumer — kernel dispatch, guest
 sysroot, WASI adapter, host bridge, attestation matrices — either updates or fails to build. There is
-no path by which two sides of a boundary disagree silently. This is also the property that makes the two
-kernels interchangeable: because none of the kernels, hosts, shims, or clients *is* the source of truth,
-a Rust kernel, a Zig kernel, a Rust shim, a Rust server, and a TS client cannot drift.
+no path by which two sides of a boundary disagree silently. It also keeps alternative implementations
+possible: kernels, hosts, shims, servers, and clients consume a contract rather than becoming one.
 
 ### 3.5 Versioning
 
@@ -428,8 +417,8 @@ absent. They compose with — they do not replace — the host's capability gate
 
 **Tiers** are the spawn-time dial that selects a capability ceiling: `Full`, `ReadWrite`, `ReadOnly`,
 `Isolated` (plus `Inherit`). A binary declares its tier in an `mc_tier` custom section; a parent may
-request one at spawn. `Tier::caps()` is *generated from the contract*, so the Rust kernel and the future
-Zig kernel grant identical ceilings:
+request one at spawn. `Tier::caps()` is generated from the contract, so the kernel and every guest-side
+projection use identical ceilings:
 
 - `Full` = all eight bits.
 - `ReadWrite` = `FS_READ | FS_WRITE | AMBIENT | SCRATCH`.
@@ -512,8 +501,7 @@ fulfills the request against the real VFS / pipes / net and resumes the guest wi
 syscall maps to a `BlockedOn*` park; fuel exhaustion charges a quantum (2,000,000 instructions) and
 re-parks; an in-flight host operation maps to `Pending`. This composes guest scheduling onto the
 cooperative model with **no scheduler special-casing** — a guest is just another cooperative task. It is
-exactly this resumable-host-trap shape that makes the two-kernel parity plan achievable: both
-implementations drive the same interpreter verb.
+this resumable-host-trap shape that keeps scheduling policy outside guest implementations.
 
 **`pcall` / the trap-unwind shim.** C/C++ guests that need non-local exit (today only Luau, because
 `wasmi` has no exception proposal and the Zig wasi-libc++ ships no EH runtime) opt into a kernel-mediated
@@ -774,8 +762,7 @@ for image stacking, under the same egress guard.
 
 Determinism is structural: all mutable state is in linear memory; the only nondeterminism is the clock and
 entropy, both `CAP_AMBIENT`-gated. The host's deterministic mode pins a fixed clock and a seeded
-SplitMix64 RNG, so a run is byte-for-byte replayable — which is what makes record/replay testing and the
-planned two-kernel parity grid exact and cheap.
+SplitMix64 RNG, so a run is byte-for-byte replayable and record/replay testing is exact.
 
 The **seal** (`seal.rs`) is a small provenance system: an attribution line stored XOR-obfuscated with an
 LCG keystream (so it does not appear under `strings`) and gated by a compile-time checksum, printed first
@@ -797,17 +784,17 @@ comfort* — the generated externs already catch drift, and generating the ergon
 rich per-argument metadata for no benefit. Load-time metadata (tier/budget/service) is no longer in
 source; it is declared in the build and stamped post-link, so the build graph is its single source.
 
-The Zig sysroot is the counterpart for the C/C++ guest lane. Because Zig cannot *generate* callable extern
-declarations, the projector emits only descriptor *data*, and the callable `extern "mc" fn` signatures are
-hand-kept in `mc.zig` and pinned to the contract by a build-time gate. `svc.zig` is the resident-service
-serve-loop scaffolding (serve/recv/respond plus envelope decoding) reused by every Zig service. The
-service marker — the `argv[1]` string the kernel uses to spawn a binary in service mode — is a single
-projected constant, shared by the kernel and every service so the spawn and check sides cannot disagree.
+The Zig sysroot is the counterpart for the C/C++ guest lane. Zig comptime cannot synthesize callable
+function declarations, so the projector writes concrete `pub extern "mc" fn` declarations into
+`gen/mc.gen.zig`; `memcontainers/sysroot/zig:mc` compiles and re-exports that generated module. Unused
+externs are dropped by the linker, so each guest imports only the syscalls it references. `svc.zig` is
+the resident-service serve-loop scaffolding (serve/recv/respond plus envelope decoding) reused by Zig
+services. The service marker is a projected constant shared by the kernel and every service.
 
-A scar worth knowing whenever a `mc_sys_*` extern is hand-declared: the contract may *say* a call is
-`noreturn` (e.g. `exit`), but the kernel registers it as `(i32) -> i32`; declaring it `noreturn` changes
-the wasm import *type* and the kernel rejects the guest at spawn (`EINVAL`). Match the kernel's registered
-signature and let `mc-abi-gate` catch drift.
+A scar encoded in the generator: the contract may describe a call as logically `noreturn` (for example
+`exit`), but the kernel registers every syscall with an `i32` return. The generated Zig declaration
+therefore keeps that wire type; changing it would alter the wasm import signature and make spawn fail
+with `EINVAL`.
 
 ### 9.2 The WASI adapter
 
@@ -832,8 +819,7 @@ section and fails the build on (a) any non-`mc` import or unknown syscall name (
 syscall whose capability floor is not covered by the declared tier (tier-fit — a read-only box importing a
 write syscall fails), and (c) a `svc_serve` importer that lacks a grammar-valid `mc_service` section. No
 capabilities are hardcoded — it reads only the projected `SYSCALL_CAPS` and `tier_caps`, so a contract
-rename cannot silently pass. **`mc-abi-gate`** pins the hand-written Zig externs against the projected
-descriptors. And the broader conformance gate derives the syscall surface from the contract and checks
+rename cannot silently pass. The broader conformance gate derives the syscall surface from the contract and checks
 that no guest imports an undeclared symbol and every declared syscall is exercised by ≥ 1 guest or carries
 a documented exclusion. The interpreter additionally gets *behavioral vectors* (fuel exhaustion → re-park,
 host-trap → suspend/resume, budget enforcement) so a future kernel — or any interpreter swap — is provably
@@ -863,8 +849,8 @@ maximal-munch operators, quotes, all the substitutions, and here-docs, and delib
 classify keywords (POSIX recognizes them only by grammar position, so the parser upgrades a bare word
 in command position). The AST keeps words unexpanded because expansion is runtime-dependent.
 
-`shcore` is not the process layer: the Zig kernel must still bind `ShellOs` to real VFS/task/scheduler
-operations, and the guest `/bin/sh` path still depends on `mc_sys_spawn`/`mc_sys_waitpid`/job-control
+`shcore` is not the process layer: the guest adapter binds `ShellOs` to real VFS/task/scheduler
+operations through the sysroot, and `/bin/sh` still depends on `mc_sys_spawn`/`mc_sys_waitpid`/job-control
 syscalls. Shell-core verification proves the shell engine; kernel e2e proves the adapter and process
 syscalls.
 
@@ -880,20 +866,22 @@ expected POSIX one plus `test`/`[`.
 
 ### 10.2 The userland `/bin` (`programs/coreutils`)
 
-`/bin` is a busybox-style **multicall** binary: one Rust crate whose `main` dispatches on the `argv[0]`
-basename to an applet, all sharing one `uumain(args) -> i32` signature. It is compiled once per tier into
-a handful of boxes (`mcbox-{isolated,readonly,readwrite,full}`), differing only by which applets the `cfg`
-features compile in — so a session cranelift-compiles a small number of distinct guest modules, not
-dozens, and `clap`/`uucore`/regex link once per box. Applets come from three origins, never reimplemented
-when reuse exists: hand-written tools (`cat`, the facade tools) over the sysroot; external crates (`grep`
-over ripgrep, `jq` over jaq); and uutils `uu_*` used as-is (`base64`, the hash family, the formatters).
-They are partitioned by capability — pure compute in *isolated*, readers in *read-only*, mutators in
-*read-write*, spawn/net tools in *full* — and a macro builds both the applet roster and the `mc_tier`
-stamp from the same `cfg` list, so code, roster, and the generated `/bin` symlinks cannot disagree. Being
-`std`, the boxes emit WASI imports, which the adapter rewrites to `mc`. The hand-written tools reuse the
-`clap`/`uucore` a box links anyway (there is no second arg parser in `/bin`); the only hand-written-
-specific code is the mc-shaped facade — `fsutil` (tree walks), `textio` (line/chunked I/O), `spool`
-(`/scratch` spill) — that uucore does not provide.
+`/bin` is a Zig **multicall** userland derived from nutils. `main.zig` dispatches on the `argv[0]`
+basename, and every applet accepts the same `*Ctx` boundary. The source compiles directly against the
+generated Zig mc sysroot: it has no WASI import layer and no applet-local syscall declarations.
+
+`registry_data.zig` is the one applet roster. `registry.zig` pairs each row with its implementation,
+while `bazel/coreutils.bzl` reads the same data to stamp the `mc_applets` section and build image
+symlinks. The graph produces full and minimal boxes at each capability tier
+(`isolated`, `read-only`, `read-write`, `full`), so the code present in a box, its declared ceiling, and
+the commands linked into an image stay aligned.
+
+Applets own CLI policy; reusable algorithms live under `core/` and `engines/`—the shared option parser,
+text and filesystem facades, bounded spool, regex/glob/hash/archive/date/sort engines, and jq/awk/sed
+sub-languages. Native tests exercise pure logic, while real-artifact e2e boots the boxes through the
+kernel. [`programs/coreutils/DESIGN.md`](memcontainers/programs/coreutils/DESIGN.md) records the
+subsystem-level implementation decisions cited by source comments and is explicitly subordinate to
+this contract.
 
 ### 10.3 Luau (`programs/luau`) — the primary scripting language
 
@@ -1131,56 +1119,38 @@ interchangeable: the TTY applies ONLCR (real CRLF), while the control-channel ex
 
 ## 13. System 20 — The network and browser edge
 
-The kernel and its Rust host are enough to run an agent locally; the network and browser edge turns that
-into a multi-tenant service and an in-browser product. It rests on a fifth boundary — the **wire**
-contract — and on the A3 promise that the *same* `kernel.wasm` runs under a second, JavaScript host
-family. It is a designed, lineage-proven system; within the AgentOS repository, the staged port lives in
-`server/`, `memcontainers/hosts/js/`, `memcontainers/sdk-js/`, and `web/`. Note the placement:
-`server/` sits at the root beside `web/`, *not* under `memcontainers/hosts/` — the two hosts are the
-embedding *libraries* (wasmtime and JS); `mc-server` is a deployment surface that *uses* the wasmtime
-host, a consumer like the web app, not a host itself.
+The kernel and its Rust host are enough to run an agent locally. The rest of the edge has three built
+pieces: a JavaScript host that runs the same `kernel.wasm` under Node.js, Bun, and browsers; a unified
+client SDK plus web components; and an Elixir/OTP control-plane library that owns native wasmtime VMs
+through a NIF. The **wire** contract and TypeScript remote client define the served boundary, but this
+repository does not ship the Phoenix/HTTP/WebSocket adapter around the OTP library. A deployment adds
+that adapter without becoming another kernel host.
 
-### 13.1 `mc-server` — actor-per-VM over the wire
+### 13.1 The Elixir/OTP control plane — one owner per VM
 
-`mc-server` is an axum/Tokio service that hosts many kernel VMs and exposes each over REST plus one
-WebSocket. Its core decision is **one Tokio task per VM**: a `wasmtime` `Store` is `Send` but not `Sync`
-and the kernel is cooperative, so a single owning actor is the natural unit — and because the kernel's
-bridge is poll-based, a VM awaiting an LLM has *yielded* rather than blocking a thread, so one runtime
-carries thousands of idle VMs. The actor is reached through a command mailbox (exec, file ops,
-snapshot/evict/commit, mount, input, session) and ticks on a ~2 ms interval, forwarding new terminal bytes
-to subscribers and polling exec/session jobs.
+`server/` is an Elixir library, not an axum server. `AgentOS.ControlPlane` addresses VMs by
+`{namespace, key}` through a `Registry` and starts them under a `DynamicSupervisor`.
+`AgentOS.Vm` is one GenServer per VM. It is the sole owner of the NIF resource wrapping the existing
+Rust `KernelHost`, so mailbox serialization enforces the single-owner rule around each wasmtime store.
 
-A client addresses a VM by `(namespace, id)`; `POST /v1/vms` is get-or-create, and the REST surface
-mirrors the embedded API exactly: exec, snapshot, commit, and a full `GET|PUT|DELETE /fs/*path` file API,
-with snapshot upload carried on a separate raw object path rather than in control JSON. **Tenancy** is the
-namespace (an `X-MC-Namespace` header), which is also the quota and eviction boundary: a per-namespace
-`max_live` cap returns `429` past the limit, and an idle-TTL **eviction sweeper** snapshots a VM with zero
-attached WebSockets to its store and frees the slot — the next request to that id *lazily restores* it,
-serialized so two requests cannot both respawn. Snapshots persist to a pluggable object store (a filesystem
-backend that writes atomically via temp+rename and rejects path traversal; an S3 backend over SigV4). Auth is
-an optional bearer token (also accepted as a `?token=` query param on the WebSocket, since browsers cannot
-set headers there). Egress and host-calls relayed to the client reuse the kernel's
-poll-based bridge **unchanged**: a `WsHostCall` parks the guest until the client answers, and a gated net
-capability parks it until a permission response lands — "no kernel change."
+The facade exposes boot/restore, synchronous and structured exec, shell input/scrollback, filesystem
+operations, resident-service calls, snapshot/commit, status, mounts, and relay queues for HTTP,
+WebSocket, host-call, persistence, and tool-approval effects. The NIF runs blocking host work on dirty
+schedulers. Idle VMs do no background ticking; the owner advances a kernel only when commanded.
 
-Remote restore is a two-plane protocol. Snapshot bytes are data-plane objects: the client uploads the raw
-opaque VM image with `POST /v1/snapshots` and `content-type: application/octet-stream`; the server stores it
-atomically under the authenticated namespace, keyed by content, and returns a `sha256:<hex>` ref plus size.
-`POST /v1/vms/:id/restore` is then control-plane JSON only: `{ "snapshot": { "ref": "sha256:..." },
-"attachments": { ... } }`. A conforming backend does **not** accept `snapshotBase64` or a raw snapshot body on
-the restore endpoint. Restore attachments are limited to runtime authority and callback reattachment:
-`deterministic`, `workers`, `net`, `persist`, `hostCall`, `toolApproval`, egress `connections` containing
-only `{ref, auth, origins?}`, `connectionPolicies`, and host-call `hostTools`. They must reject boot/catalog
-inputs (`image`, `layers`, `catalogTools`, `catalogConnections`) and per-connection catalog inputs (`spec`,
-`tools`). The catalog tree and its digest are warm VM state captured by the snapshot; only `create` and fresh
-boot catalog injection may compile or mutate the catalog. Capabilities advertise this split explicitly with
-`restoreProtocols: ["snapshot-ref-v1"]`, `maxControlBodyBytes`, and `maxSnapshotBytes`.
+This package deliberately stops below transport. It contains no router, listener, bearer-token parser,
+quota store, eviction sweeper, or snapshot object store. A Phoenix or other host application may map
+the projected wire/REST contract onto `AgentOS.ControlPlane`, define tenancy and persistence policy,
+and relay effects. Those deployment concerns must not be claimed as built by this repository until an
+actual adapter and its end-to-end tests land.
 
 ### 13.2 The wire protocol
 
-`wire` is to the network what the syscall contract is to the kernel: the single place the client↔server
-protocol is written, projected into the Rust server and the TS client and pinned by a golden-vector
-corpus, so they cannot drift. A frame is `[kind:u8][seq:u64 LE][body]`; control kinds carry JSON, but the
+`wire` is to the network what the syscall contract is to the kernel: the single place the served
+client protocol is written. It projects the TypeScript client descriptors plus OpenAPI and AsyncAPI
+specifications. The Elixir control-plane library currently consumes the projected control and LLB
+messages; a future served adapter must consume the wire projection rather than transcribe it. A frame is
+`[kind:u8][seq:u64 LE][body]`; control kinds carry JSON, but the
 two highest-volume paths — terminal I/O and host-call/mount bulk — carry **length-prefixed raw binary,
 never base64**. Message kinds are grouped by concern: handshake (`HELLO`/`WELCOME`, the latter carrying a
 terminal byte offset to resume from), shell (`SHELL_IN`/`SHELL_OUT`), host-call relay
@@ -1192,7 +1162,7 @@ wire version is bumped independently of the syscall ABI, and a server accepts on
 
 The JS host is a byte-for-byte behavioral mirror of the Rust host: it implements the same `env` bridge over
 web APIs (`fetch`, `WebSocket`, `crypto`, `node:fs`/OPFS) and runs the same tick loop, so the *same*
-`kernel.wasm` + `base.tar` run unchanged in local Node/Bun and browser runtimes, with no native addon and no server. The
+`kernel.wasm` + `base.tar` run unchanged in local Node.js, Bun, and browser runtimes, with no native addon and no server. The
 async-drives-synchronous trick needs **no Asyncify, no `SharedArrayBuffer`, no `Atomics.wait`** — exactly
 because the network bridge is poll-based (a `fetch` is kicked off and drained *between* ticks) and the run
 loop yields a macrotask on idle ticks so the event loop can advance I/O. The host terminates TLS, so the
@@ -1209,15 +1179,15 @@ The SDK is the `@mc/*` scope. `@mc/core` is the unified `Vm` API over a pluggabl
 `vm.fs` file API, `snapshot`/`fork`/`restore`, `commit` (as a layer or a snapshot), `mount`, host-resident
 `tool`s, framed `session`s, and an interactive `shell` — with three interchangeable backends behind one
 interface: an **embedded** backend (the JS host in-process), a **remote** backend (REST + per-VM WebSocket
-to `mc-server`), and an auto-reconnecting unified socket. Its wire client is generated from the same `wire`
-contract as the server. `@mc/elements` is the integration package for embedding AgentOS into applications
+to a conforming served host), and an auto-reconnecting unified socket. Its wire client consumes the
+generated `wire` descriptors. `@mc/elements` is the integration package for embedding AgentOS into applications
 without hand-wiring VM boot, context propagation, terminal/editor surfaces, artifact loading, or remote
 connection setup; its `<mc-*>` elements resolve a `Vm` from an ancestor sandbox element or boot their own.
-The **web app** embeds live VMs in the browser: a real shell, a code+shell playground, and demos that
-exercise the whole stack — a Luau playground, an xlsx→typst report generator, a RAG sandbox, and an
-on-device WebGPU model — booting the cooperative `kernel.wasm` with OPFS persistence and *no* COOP/COEP
-headers (none are needed without `SharedArrayBuffer`). Real headless-Chrome CDP tests verify Luau,
-cross-reload OPFS durability, and document generation.
+The **web app** embeds live VMs in the browser: the hero is a real shell, and the example workbench
+drives the same API across images, shell/files, Luau, tools/connections, mounts, snapshots/builds,
+permissions, automation, and remote lifecycle. Bazel stages the kernel, every shipped flavor, and the
+catalog compiler under `/mc/`; flavors are fetched lazily. Browser tests boot real artifacts and verify
+the JS host, OPFS persistence, SDK behavior, and the component lifecycle.
 
 ### 13.5 The portable build plane
 
@@ -1239,9 +1209,9 @@ args)`; warm snapshots wait for zero inflight egress before capture. The store i
 across layer tarballs, blobs, manifests, and snapshots, with host-directory, in-memory, OPFS, and server
 backends behind the same interface.
 
-The same definition solves in every runtime. `solve-node.ts` is the Node/Bun platform backend; the
-browser path uses OPFS and is verified in headless Chromium; the server exposes `POST /v1/build` and raw
-blob endpoints so a remote backend can solve without the client sharing a filesystem. Build records attach
+The same definition solves in every runtime. `solve-node.ts` is the Node.js/Bun platform backend; the
+browser path uses OPFS and is verified in headless Chromium. The remote client can target a conforming
+served host with build and raw-blob endpoints; that transport is not implemented by `server/`. Build records attach
 `{definition, rootDigest, kernelDigest, storeRefs}` to the resulting image, so provenance is portable and
 attestable rather than an in-memory `BuildState`.
 
@@ -1298,7 +1268,7 @@ function of inputs, no wipe, no order); hardcoded `../../target/...` guest paths
 byte-identical tar implementations become one `pkg_tar` consumed by both the image and the tests;
 checked-in vendored C/C++ becomes `http_archive(patches=[…])` with the glue in Zig; generated-file
 freshness becomes `write_source_files` + `diff_test`; the size budget becomes a real `size_limit` test; and
-"is my port faithful?" becomes the two-kernel parity matrix. The thing that stays imperative is honest and
+cross-host behavior becomes a parity test over the same artifacts. The thing that stays imperative is honest and
 small: a few `bazel run` developer conveniences that orchestrate nothing about correctness.
 
 ### 14.2 Testing — no mocks, real artifacts
@@ -1317,49 +1287,21 @@ the contract. Two designed-in amplifiers leverage determinism: record/replay (re
 transcript and a final memory hash; a replay diffs the hash) and differential fuzzing (every crash
 reproducible from a seed).
 
-### 14.3 The staged migration — Rust now, Zig next, parity always
+### 14.3 The Zig-kernel experiment — completed and archived
 
-> **Status update (2026-07-08) — the Zig kernel reached functional parity, then paused; Rust stays the
-> sole default.** The port hit green functional parity with the Rust kernel (`core_zig` 82/82,
-> `extended_zig` 32/32, every subsystem) at roughly **half the binary size** (~0.63 vs ~1.23 MiB), but
-> with a **~1.2–2× runtime penalty** — near parity on warm-service work (sqlite ~1.12×) widening to
-> ~1.8–1.9× on boot-heavy suites. Both suspendable-interpreter engines were tried: **wasm3** (made
-> resumable via Binaryen Asyncify, which capped at a ~1.3× ceiling from its per-op instrumentation tax)
-> and then **WAMR** (natively re-entrant, which erased the pathological gaps and left only the intrinsic
-> interpreter-dispatch cost). That residual gap is a structural interpreter tradeoff, not a bug.
->
-> Because that penalty is not worth the size win as a shipped default, **the Zig kernel is no longer part
-> of main development** and has been removed from `develop`. The complete work — the functional port,
-> both engine experiments, the workload benchmarks, and the full retrospective — remains on the
-> **`feature/zig`** branch (see its `PERFORMANCE.md`). Rust stays the shipped kernel and the permanent B7
-> parity oracle; the plan below records how the staging was originally intended to run.
+The Zig port reached functional parity with the Rust kernel on its branch at roughly half the binary
+size, but carried a workload-dependent runtime penalty. Asyncified wasm3 and re-entrant WAMR removed
+different sources of overhead without removing the underlying interpreter-dispatch cost. The size win
+did not justify that performance tradeoff for the shipped runtime.
 
-The kernel ships **Rust-first by porting** rather than rewriting: that reuses thousands of lines of
-battle-tested, memory-safe code, keeps `wasmi` as a native crate (no C seam), and reaches a stable green
-system fastest. A **Zig kernel** comes later on a branch (`memcontainers/kernel/zig`), reimplemented
-against the *unchanged* contracts, for size and freestanding control. Its acceptance gate is **behavior
-parity**: the same e2e and conformance suites run against both kernels in a Bazel matrix, and the Zig
-kernel becomes the default only when it matches the Rust kernel across the entire suite (and on replay
-hashes and differential fuzzing, with the Rust kernel as oracle). The Rust kernel then stays as a permanent
-parity oracle and a perpetual contract-ambiguity detector — because two implementations of one contract
-surface anything the spec left underspecified as a parity diff. *This is what makes the migration safe: the
-rewrite is proven equal to a known-good implementation before it can win.*
+The decision is closed for `develop`: `memcontainers/kernel/rust` is the only kernel implementation in
+this tree, and Bazel has no kernel selector or parity matrix. The experiment, benchmarks, and
+retrospective remain on `feature/zig`. Zig is still a first-class hermetic toolchain for the shell,
+coreutils, sysroot, and C/C++ guest lane; archiving the kernel port did not remove those roles.
 
-The Zig kernel introduces exactly one new seam, isolated to itself: the **interpreter shim**
-(`memcontainers/kernel/interpreter`) — the same `wasmi` compiled to a wasm32 static library behind a small
-C ABI (the 5-exports + 2-callbacks integration proven in the Zig-port lineage), with the resumable/fuel
-state machine kept on the Rust side of the shim so the Zig kernel sees a clean verb ("run this guest until
-it syscalls, blocks, or exits"), not raw `wasmi`. The Rust kernel uses `wasmi` as an ordinary crate, so
-this C seam exists only for the Zig kernel; the execution model — eager compilation (the landmine), fuel,
-budgets — is fixed by the contract and shared, never forked.
-
-The phasing keeps something runnable and green at the end of every step. **Phase A** stands up the Bazel
-module and hermetic toolchains, ports the Rust kernel/sysroot/shell/coreutils/adapter/host into the graph,
-stands up the contracts + projector (Rust + Zig + TS consumers from day one), brings Zig in for the C/C++
-guest lane, and greens the suites plus the resident-services mechanism — *that* green is the definition of
-"stable" that gates Phase B. **Phase B** branches the Zig kernel against the unchanged contracts, brings up
-the interpreter shim, runs the parity matrix, and flips the default only when the Zig kernel reaches both
-parity and the tighter size budget.
+Any future alternative kernel starts as a new proposal against the unchanged language-neutral
+contracts and must prove behavioral parity before it can affect the default. Until then, documentation
+and build labels must describe the single Rust kernel that actually ships.
 
 ---
 
@@ -1376,7 +1318,7 @@ web app) sit outside the core.
 agent-os/                      ← the repository root: a Bazel/deps/docs shell
 ├── MODULE.bazel               # rules_rust + rules_zig + rules_js + rules_pkg; toolchains;
 │                              #   http_archive(luau, sqlite, …) WITH patches (B3); the crate universes
-├── BUILD.bazel                # root aliases (//:kernel → rust|zig, //:server, //:e2e, //:web)
+├── BUILD.bazel                # shared TS workspace config + generated README badge target
 ├── SYSTEMS.md  README.md      # this document; the quickstart
 │
 ├── bazel/                     # ★ the build machinery
@@ -1389,7 +1331,6 @@ agent-os/                      ← the repository root: a Bazel/deps/docs shell
 │   └── tools/                 #   the mc build-graph executables:
 │       ├── mc-stamp           #     append mc_tier/mc_budget/mc_service custom sections
 │       ├── mc-attest          #     import-purity + tier-fit gate (a build error)
-│       ├── mc-abi-gate        #     pin the hand-kept Zig externs to the contract
 │       ├── mc-roster          #     least-privilege /bin symlink generation
 │       ├── mc-svc-manifest    #     generate /etc/services.d fragments from stamped sections
 │       ├── size               #     the size_limit budget rule
@@ -1398,27 +1339,22 @@ agent-os/                      ← the repository root: a Bazel/deps/docs shell
 ├── platforms/                 # wasm32 platforms; toolchains are registered in MODULE.bazel (B4)
 │
 ├── third_party/               # ★ vendor LESS — only the dep fetch + patches live here (B3)
-│   ├── luau/  sqlite/  sed/    #   each: BUILD.<lib>.bazel (zig cc/c++ the patched archive), patches/
+│   ├── luau/  sqlite/          #   build definitions and patches for fetched upstream source
 │   │                          #   The SERVICE GLUE for these tools lives under memcontainers/programs/.
 │
-├── server/                    # mc-server (Rust/axum/tokio) — a deployment surface, NOT a host
-├── web/                       # the browser app + real-browser CDP tests
+├── server/                    # Elixir/OTP VM control-plane library over the wasmtime NIF
+├── web/                       # browser workbench; live VMs and executable SDK examples
 │
 └── memcontainers/             # ★ the OS we author
     ├── contracts/             #   THE FOUR BOUNDARIES — single source of truth
     │   ├── *.kdl  codegen/     #     the contracts + the projector
     │   ├── gen/  spec/         #     committed projections + generated specs (diff-gated)
-    ├── kernel/                #   the OS — two interchangeable implementations
-    │   ├── rust/              #     Phase A: ported; wasmi a native crate → kernel.wasm
-    │   ├── zig/               #     Phase B: the parity-gated reimplementation
-    │   └── interpreter/       #     wasmi → wasm32 staticlib + C ABI (consumed by kernel/zig only)
+    ├── kernel/rust/           #   the OS; wasmi is a native crate → kernel.wasm
     ├── sysroot/               #   the guest side of the ABI (Rust + Zig wrappers)
     ├── wasi-adapter/          #   WASI(preview1) → mc link-injected shim
-    ├── shcore/                #   the OS-agnostic shell engine
-    │   ├── rust/              #     current /bin/sh engine (the one native-test home)
-    │   └── zig/               #     Zig shell engine awaiting kernel/sysroot adapters
+    ├── shcore/                #   the OS-agnostic Zig shell engine
     ├── pkgcore/               #   pure logic for pkgfsd (sha256, catalog, path/url)
-    ├── lib/                   #   shared support libs (json, stdx)
+    ├── lib/                   #   shared support libs (catalog compiler, json, parse, stdx)
     ├── programs/              #   the guest userland AND the service glue
     │   ├── coreutils/         #     the per-tier multicall /bin
     │   ├── sh/  pkgfsd/  tools/  examples/    #     the rest of /bin + the example services
@@ -1427,11 +1363,11 @@ agent-os/                      ← the repository root: a Bazel/deps/docs shell
     │   └── typst/             #     the typst service glue (Rust), fonts extractor, lib, skill
     ├── hosts/                 #   the two embedding LIBRARIES
     │   ├── wasmtime/          #     the Rust host (lib + CLI)
-    │   └── js/                #     the TS host for local Node/Bun and browser runtimes
-    ├── sdk-js/                #   the @mc/{core,agent,elements} TS libraries
+    │   └── js/                #     TS host for local Node.js/Bun and browser runtimes
+    ├── sdk-js/                #   the @mc/{core,elements} TypeScript libraries
     ├── images/                #   base + flavor images via pkg_tar (no staging)
     ├── conformance/           #   the ABI coverage gate
-    └── tests/                 #   e2e (:core + :extended) + the kernel-parity grid
+    └── tests/                 #   real-artifact e2e suites (:core + :extended)
 ```
 
 Two placement decisions encode design judgments. **The service glue lives under `programs/`, the dep under
@@ -1441,7 +1377,8 @@ into a warm service — the Zig or Rust serve loop, the `require()` library, the
 is *our* program, so it sits with the other programs under `memcontainers/programs/<tool>/`. **The server
 and the web app sit at the root, outside the core.** They are consumers of the OS (the server embeds the
 wasmtime host; the web app embeds the JS host), parallel to how a deployment is not part of a kernel — the
-two *hosts* (the embedding libraries) are `memcontainers/hosts/{wasmtime,js}`; `mc-server` is not a host.
+two *hosts* (the embedding libraries) are `memcontainers/hosts/{wasmtime,js}`; the Elixir control plane
+is not another host implementation.
 The build rules and the mc tooling are centralized under `bazel/` (the cross-cutting Starlark rules and the
 build-graph executables), while the three domain-specific `defs.bzl` files that only one package uses stay
 with their package (the contracts codegen, the wasmtime host transition, the size budget).
@@ -1450,7 +1387,7 @@ with their package (the contracts codegen, the wasmtime host transition, the siz
 slug*; it is not a runtime prefix. The running system's identity is **`mc`**, frozen into the ABI itself —
 the `mc` syscall module, `mc_sys_*`, `mc_ctl_*`, the `env` bridge, and the
 `mc_tier`/`mc_budget`/`mc_service` custom sections — and carried through to binaries
-(`mc-server`, `tools`), services (`/svc/<name>`), and the JS scope (`@mc/*`, with `<mc-*>` elements).
+(`tools`), services (`/svc/<name>`), and the JS scope (`@mc/*`, with `<mc-*>` elements).
 Nothing in the runtime or ABI is prefixed `agent-os-`; Bazel labels need no prefix because the package
 path *is* the namespace (`//memcontainers/kernel/rust`, `//memcontainers/contracts:mc_zig`).
 `module(name = "agent-os")` is the canonical build identity. Platform forms follow their native
@@ -1491,27 +1428,25 @@ These are the properties that distinguish AgentOS, each enforced by multiple sys
 
 ### 16.2 Leverage the invariants already bought
 
-Several capabilities fall out of the invariants for nearly free; each is leverage, not new machinery, and
-several are *amplified* by the two-kernel plan. The ones marked **(ABI-shaped)** are cheapest to settle
+Several capabilities fall out of the invariants for nearly free; each is leverage, not new machinery.
+The ones marked **(ABI-shaped)** are cheapest to settle
 while the contract is still soft.
 
 - **Deterministic record / replay.** The kernel is pure and snapshottable: record the ordered
   bridge-input transcript plus the final memory hash as a golden; a replay re-feeds it and diffs the hash.
-  A whole regression class for nearly free, and the ideal bug report. With two kernels, the same recording
-  replays against both — a free, exact parity check.
+  A whole regression class for nearly free, and the ideal bug report.
 - **Differential fuzzing.** Determinism makes fuzzing honest: fuzz the syscall/bridge stream; every crash
-  is reproducible from its seed. Oracles: the kernel must never trap the host, and the grid (host↔host and
-  Rust-kernel↔Zig-kernel) must produce identical snapshots. This is the single strongest tool for
-  accepting the Zig kernel.
+  is reproducible from its seed. The kernel must never trap the host, and both host families must produce
+  identical snapshots from identical inputs.
 - **Generated observability (ABI-shaped).** Every call already flows through generated dispatch. Emit, from
   the same contract, an optional tracepoint per call into a linear-memory ring buffer drained via a control
-  call — uniform, zero-maintenance tracing, and a precise parity-diff localizer when two kernels disagree.
+  call — uniform, zero-maintenance tracing, and a precise cross-host diff localizer.
 - **A generated capability audit, and an attestable kernel.** Project the capability × syscall matrix as a
   diff-tested artifact; with content-addressed `kernel.wasm` hashes, a kernel can be signed and bound to
   its capability surface and conformance report, per implementation.
 - **A self-describing kernel.** Expose the ABI version, syscall surface, and capability matrix as files
   under `/sys`, generated from the contracts. An agent reasoning about its own sandbox introspects by
-  reading a file; identical under both kernels by construction.
+  reading a file; every host observes the same contract-derived view.
 - **Deterministic fault injection at the bridge.** Because the host implements every effect, it can
   deterministically inject real failures (`ENOSPC`, dropped connections, clock skew, fuel starvation) keyed
   to a replay seed — reproducible chaos, no mocks.
@@ -1532,43 +1467,40 @@ while the contract is still soft.
 | Domain engines: SQLite (`atlas`) and typst (`paper`) | Built |
 | Images/flavors (minimal→atlas/paper), `pkgfsd`, the stamping/roster tools | Built |
 | Rust/wasmtime host (bridge, control, snapshot/restore, deterministic mode) | Built |
-| `mc-server` (actor-per-VM, REST+WS, quota/eviction, S3 store), the `wire` protocol | Designed (lineage-proven); AgentOS port staged |
-| JS host family, `@mc/{core,agent,elements}` SDK, web app | Designed (lineage-proven); AgentOS port staged |
-| Zig kernel + the `wasmi` C-ABI interpreter shim | Staged — the parity-gated migration target (§14.3) |
+| Elixir/OTP actor-per-VM control plane over the wasmtime NIF | Built; transport/deployment adapter is outside this repository |
+| Wire contract + TypeScript remote client | Built; requires a conforming served host |
+| JS host family, `@mc/{core,elements}` SDK, web app | Built and tested with real browser artifacts |
+| Zig-kernel experiment | Archived on `feature/zig`; not present in `develop` (§14.3) |
 
-The one-line summary: **a complete OS core — the kernel, the contracts, the wasmtime host, the userland,
-and the warm domain engines (SQLite, typst) — is built and green on one ABI; the multi-tenant server, the
-JS host family, the `@mc/*` SDK, and the browser app are the designed, lineage-proven network edge being
-ported in; and the size-optimized Zig kernel is the single remaining, parity-gated step.**
+The one-line summary: **the OS core, both embedding host families, the SDK/browser workbench, and the
+Elixir VM-control library are built and green on one generated ABI; an HTTP/WebSocket deployment around
+the control plane is a separate integration, and the Zig-kernel experiment is archived.**
 
 ---
 
 ## 18. Open questions
 
-These are the live decisions; each is bounded by the invariants and most are insured by determinism or the
-parity grid.
+These are the live decisions; each is bounded by the invariants and most are insured by determinism and
+real-artifact conformance tests.
 
-1. **Do we keep the Rust kernel forever?** As a parity oracle it is cheap insurance and a
-   contract-ambiguity detector; as a maintained second implementation it is real cost. Likely keep it
-   through Zig-kernel maturity, then decide.
-2. **Interpreter longevity.** Pin the eager-mode `wasmi` indefinitely, or budget for a hardened fork? The
+1. **Interpreter longevity.** Pin the eager-mode `wasmi` indefinitely, or budget for a hardened fork? The
    behavioral vectors (§9.3) are the insurance for either.
-3. **A capability-request channel** for a fully-denied agent — a structured channel, never an ambient
+2. **A capability-request channel** for a fully-denied agent — a structured channel, never an ambient
    grant.
-4. **Server tenancy / eviction** policy as the VM count per host grows (the actor-per-VM model is in place;
-   the policy knobs are the open part).
-5. **The two ABI-shaped levers** (generated tracepoints, the zero-copy data plane) and the capability-audit
+3. **Served-host policy and transport** — tenancy, authentication, quota/eviction, snapshot storage, and
+   the HTTP/WebSocket adapter around the built actor-per-VM core.
+4. **The two ABI-shaped levers** (generated tracepoints, the zero-copy data plane) and the capability-audit
    annotations are cheapest to settle while the contract is still soft.
 
 ---
 
 ## 19. Glossary
 
-- **kernel** — the OS; compiles to and runs only on wasm; ships as `kernel.wasm`. Two implementations
-  (Rust now, Zig staged), one contract, parity-gated.
+- **kernel** — the OS; compiles to and runs only on wasm; the shipped implementation is Rust and the
+  artifact is `kernel.wasm`.
 - **host** — a driver that loads the kernel, supplies the bridge, and ticks it. Two families, one binary:
-  Rust/wasmtime and JS (local Node/Bun and browser), behaviorally identical and parity-tested. (`mc-server` is a consumer
-  of the wasmtime host, not a host.)
+  Rust/wasmtime and JS (local Node.js/Bun and browser), behaviorally identical and parity-tested. The
+  Elixir control plane is a consumer of the wasmtime host, not another host.
 - **guest** — a user program run inside the kernel by the embedded `wasmi` interpreter.
 - **the four boundaries** — syscall (`mc`), bridge (`env`), control (`mc_ctl_*`), wire — each a contract,
   each projected into every consuming language.
@@ -1586,9 +1518,9 @@ parity grid.
   content across flavors.
 - **the two lanes** — how a domain engine reaches `mc`: Rust engines drive `mc` natively through the Rust
   sysroot (typst); C/C++ engines are reached through their C API by a Zig glue driver (SQLite, Luau).
-- **parity oracle** — a known-good implementation a second one is differentially validated against (Rust
-  host ↔ JS host; Rust kernel ↔ Zig kernel).
+- **parity oracle** — a known-good implementation a second one is differentially validated against (the
+  Rust host is the oracle for the JS host).
 - **the landmine** — the embedded `wasmi` must run in eager compilation mode; lazy translation charges
   guest fuel and corrupts the host on a dry-fuel resume.
 - **mc** — the system's identity, frozen into the ABI: the `mc` syscall module, `mc_sys_*`, `mc_ctl_*`, the
-  `env` bridge, `mc-server`, the `@mc/*` scope. (`agent-os` is the repository and distribution slug.)
+  `env` bridge and the `@mc/*` scope. (`agent-os` is the repository and distribution slug.)

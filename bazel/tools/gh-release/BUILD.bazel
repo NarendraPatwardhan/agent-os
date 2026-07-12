@@ -13,7 +13,7 @@ load(":defs.bzl", "gh_release")
 #
 # Release notes are MANDATORY (--notes / --notes-file); GitHub auto-generated notes are never used.
 #
-# A real release is cut on MASTER (develop integrates; master tags releases — CLAUDE.md). This target
+# A real release is cut on master after develop has been promoted. This target
 # is defined here so it merges upward; run it from the master worktree on the release commit:
 #
 #   GITHUB_TOKEN=<token> bazel run //bazel/tools/gh-release:publish -- --tag v0.3.0 --notes-file NOTES.md --draft

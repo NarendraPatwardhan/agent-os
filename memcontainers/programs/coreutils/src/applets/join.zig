@@ -63,7 +63,7 @@
 //! group-representative line (matters under `-i`: `A 1` / `a 2` joins to `A 1 2`, not
 //! `a 1 2`).
 //!
-//! Known divergences from the real oracle (ledgered in docs/parity-ledger.md, not
+//! Known divergences from the real oracle (ledgered in DESIGN.md §2, not
 //! chased further here): usage-shaped errors that the oracle's clap layer reports with
 //! multi-paragraph text (missing/extra positional, unrecognized flag, `-a`/`-v` value
 //! outside {1,2}, a repeated `-o`) are reproduced here as a single `join: ...` line at

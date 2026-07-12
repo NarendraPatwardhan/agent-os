@@ -1,4 +1,4 @@
-//! `tsort` -- docs/analysis/*: topological sort of a graph described by whitespace-
+//! `tsort` -- DESIGN.md §1: topological sort of a graph described by whitespace-
 //! separated token PAIRS `From To` (an edge From->To). Reads one FILE operand
 //! (default `-` for stdin). Algorithm T (Knuth, TAOCP vol 1): repeatedly emit a
 //! zero-indegree node, decrementing its successors' indegree; the *initial* frontier

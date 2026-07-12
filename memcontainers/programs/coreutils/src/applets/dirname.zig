@@ -1,4 +1,4 @@
-//! `dirname` -- docs/analysis/applets-a-f.md: pure string computation, tier_isolated.
+//! `dirname` -- DESIGN.md §1: pure string computation, tier_isolated.
 //! `-z`/`--zero`. `dir()`: strip trailing '/' (keep single), find last '/': none→".",
 //! at index 0→"/", else drop the leaf and collapse the parent's trailing slashes.
 

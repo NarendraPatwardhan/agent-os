@@ -129,13 +129,16 @@ fn kv_survives_an_oversize_request() {
         .write_file(
             "/tmp/big.luau",
             br#"local fd = assert(sys.svc.connect("kv"))
-local r = sys.svc.call(fd, string.rep("x", 4096))
-print(r == nil)
+local r, err = sys.svc.call(fd, string.rep("x", 4096))
+print(tostring(r == nil) .. ":" .. tostring(err))
 "#,
         )
         .expect("write big.luau");
     // The oversize call fails (the kernel rejected it) — but kv was never killed.
-    assert_eq!(s.run_for_output("luau /tmp/big.luau"), "true\r\n");
+    assert_eq!(
+        s.run_for_output("luau /tmp/big.luau"),
+        "true:EMSGSIZE\r\n"
+    );
     // kv is unharmed: the prior key survives and it serves new calls.
     assert_eq!(s.run_for_output("kv get k"), "v\r\n");
     assert_eq!(s.run_for_output("kv put k2 v2"), "");

@@ -1,4 +1,4 @@
-//! `diff` -- docs/analysis/applets-a-f.md: wrapper-parity port of the Rust `similar`
+//! `diff` -- DESIGN.md §1: wrapper-parity port of the Rust `similar`
 //! based applet. Flags: `-u`/`--unified` (3 ctx, the DEFAULT format), `-U N`,
 //! `-c`/`--context` (3 ctx), `-C N`, `-r`/`-R`/`--recursive`, `-q`/`--brief`,
 //! `-i`/`--ignore-case`, `-w`/`--ignore-all-space`, `-B`/`--ignore-blank-lines`.
@@ -11,7 +11,7 @@
 //! "\ No newline at end of file" marker is ever produced (ruling, source: spec).
 //! Unified/context headers carry no timestamps (ruling, source: spec).
 //!
-//! Rulings recorded in docs/parity-ledger.md: default format = unified; `-C`/`-c`
+//! Rulings recorded in DESIGN.md §2: default format = unified; `-C`/`-c`
 //! take precedence over `-U`/`-u`; `-q` wins over format flags; normal format is
 //! implemented (emitNormal) but not reachable from any flag combination (open parity
 //! question for ring 4); `-B` diffs the blank-filtered arrays and hunk line numbers

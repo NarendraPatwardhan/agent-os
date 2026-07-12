@@ -3,12 +3,9 @@ load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("//bazel/tools/size:defs.bzl", "size_limit")
 load("//bazel:release_wasm.bzl", "release_wasm")
 
-# kernel/rust — the Phase-A kernel, PORTED from memcontainers crates/kernel, not
-# rewritten (SYSTEMS.md Phase A step 2). Compiles to wasm32-unknown-unknown; wasmi is
-# an ordinary NATIVE crate here — no C seam. The Zig kernel embeds wasm3 (C) directly via
-# Zig/C interop (ZIG_KERNEL.md), so there is no shared Rust interpreter package; this Rust
-# kernel keeps native wasmi and is never Asyncified. It sets the behavior bar the Zig
-# kernel must match (B7).
+# kernel/rust — the shipped kernel, ported from memcontainers rather than rewritten.
+# It compiles to wasm32-unknown-unknown and uses wasmi as an ordinary native Rust crate,
+# with no C seam or Asyncify transform (SYSTEMS.md §4).
 #
 # We ship ONE kernel: the cooperative build. Every guest runs on the cooperative
 # scheduler; the `threads` feature only WRAPS that scheduler in a Big Kernel Lock + worker

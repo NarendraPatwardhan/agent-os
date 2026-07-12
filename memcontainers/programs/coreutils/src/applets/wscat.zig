@@ -1,4 +1,4 @@
-//! `wscat` -- a line-oriented WebSocket client (docs/analysis/applets-s-z.md). Opens the
+//! `wscat` -- a line-oriented WebSocket client (DESIGN.md §1). Opens the
 //! connection with `sys.wsOpen(url) -> fd` (the kernel owns the connection + framing + TLS
 //! for wss) and shuttles bytes both ways with `sys.poll`: ws->stdout, stdin->ws. After
 //! stdin EOF it waits one idle window (250 ms) for any final server messages, then exits.

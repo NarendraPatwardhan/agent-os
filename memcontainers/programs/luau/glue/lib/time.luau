@@ -1,7 +1,7 @@
 -- time.luau — clocks, durations and ISO-8601 date math over `sys.time`. A module
 -- (not `os` sugar) because instants/durations are a small domain; it also
 -- encapsulates the frozen-clock determinism seam so scripts don't each poke
--- `sys.time` (ctx/LUAU.md). Stock `os.time`/`os.date` stay as raw primitives.
+-- `sys.time` (SYSTEMS.md §10.3). Stock `os.time`/`os.date` stay as raw primitives.
 
 local sys = sys
 local time = {}

@@ -1,4 +1,4 @@
-//! `true` -- docs/analysis/applets-s-z.md: leading --help/-h/--version only; always
+//! `true` -- DESIGN.md §1: leading --help/-h/--version only; always
 //! exits 0 otherwise (no diagnostics for anything else).
 
 const cli = @import("../core/cli.zig");

@@ -1,4 +1,4 @@
-//! `truncate` -- docs/analysis/applets-s-z.md: `-s/--size SIZE` (required; digits +
+//! `truncate` -- DESIGN.md §1: `-s/--size SIZE` (required; digits +
 //! optional `K/M/G` 1024-based suffix, absolute only -- no `+ - < > / %`), `FILE...`
 //! (1+). Each file is opened `write|create` then `sys.ftruncate`d. Missing `-s` or
 //! missing FILE operand -> exit 1. No `-c/-o/-r`.

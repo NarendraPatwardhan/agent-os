@@ -1,4 +1,4 @@
-//! `tree` -- docs/analysis/applets-s-z.md: hand-written recursive directory walk over
+//! `tree` -- DESIGN.md §1: hand-written recursive directory walk over
 //! `fsutil.list`/`join`/`isDir`. `-a` (dotfiles), `-d` (dirs only), `-f` (full path),
 //! `-L LEVEL` (`<= 0` disables the depth limit), `--noreport`. UTF-8 connectors
 //! `"├── "`/`"└── "`, continuation prefixes `"│   "`/`"    "`. Entries sorted. Each

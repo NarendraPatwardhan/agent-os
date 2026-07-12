@@ -1,4 +1,4 @@
-//! `tee` -- docs/analysis/applets-s-z.md: `-a/--append`, `FILE...` (0+). Opens each FILE
+//! `tee` -- DESIGN.md §1: `-a/--append`, `FILE...` (0+). Opens each FILE
 //! `write|create|(append|trunc)`; an open failure prints `tee: {f}: {strerror}`, sets
 //! rc=1, but tee CONTINUES with the rest. Reads stdin 8 KiB at a time and `writeAll`s
 //! each chunk to stdout AND to every successfully-opened fd, best-effort (write errors

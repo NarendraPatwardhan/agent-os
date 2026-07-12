@@ -1,4 +1,4 @@
-//! `fold` -- docs/analysis/applets-a-f.md: facade-streaming, wraps each input line at a
+//! `fold` -- DESIGN.md §1: facade-streaming, wraps each input line at a
 //! column width. `-b/--bytes` counts bytes not columns; `-s/--spaces` breaks at the
 //! last blank; `-w/--width WIDTH` (default 80, 0 falls back to 80). Obsolete `-WIDTH`
 //! (e.g. `fold -10`) is pre-rewritten to `-w WIDTH`. Column model: TAB -> next multiple

@@ -1,4 +1,4 @@
-//! `base32` -- docs/analysis/uutils-applets.md "base32/base64/basenc" (uucore
+//! `base32` -- DESIGN.md §1 "base32/base64/basenc" (uucore
 //! `base_common`). Thin CLI wrapper: parses flags, delegates all I/O to
 //! `engines/codec.zig`'s `runBaseIO` (shared with `base64`/`basenc` there, since
 //! applets may not import each other -- DESIGN.md §3).
@@ -10,7 +10,7 @@
 //! `invalid wrap size: '{value}'`. Decode error -> `error: invalid input` (stderr),
 //! exit 1, AFTER writing whatever prefix was already decodable (see codec.zig's
 //! module doc). All exit codes here are 1 (uutils-family clap convention, not the
-//! cli.zig-generic 2 -- see docs/parity-ledger.md).
+//! cli.zig-generic 2 -- see DESIGN.md §2).
 
 const std = @import("std");
 const cli = @import("../core/cli.zig");

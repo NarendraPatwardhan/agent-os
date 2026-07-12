@@ -1,10 +1,10 @@
-//! `time` -- docs/analysis/applets-s-z.md: `-p/--portability`, `-v/--verbose`,
+//! `time` -- DESIGN.md §1: `-p/--portability`, `-v/--verbose`,
 //! `-o/--output FILE`, `-a/--append`, `-f/--format FORMAT`; COMMAND required (missing
 //! -> usage, 125). Spawn (inherit stdio), t0/t1 via `sys.timeMonotonicMs`, waitpid with
 //! EINTR retry. There is no process accounting on the kernel, so user/sys are always
 //! `0.000`, CPU% is `?`, RSS/avg-mem are 0 -- integer-only formatting throughout.
 //!
-//! Report shapes (byte layouts chosen here, documented in docs/milestones.md since the
+//! Report shapes (byte layouts chosen here, documented in DESIGN.md §1 since the
 //! matrix pins only "real/user/sys `<m>m<s>.<mmm>s`" for the default and names the
 //! others):
 //!   default: "real\t<m>m<s>.<mmm>s\nuser\t0m0.000s\nsys\t0m0.000s\n"

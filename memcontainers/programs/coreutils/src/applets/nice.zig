@@ -1,4 +1,4 @@
-//! `nice` -- docs/analysis/applets-g-r.md: hand-parsed option grammar (`-n N`, `-nN`,
+//! `nice` -- DESIGN.md §1: hand-parsed option grammar (`-n N`, `-nN`,
 //! `--adjustment=N`, `--adjustment N`, legacy bare `-N`; default adjustment +10).
 //! `--help`/`-h` honored only as the FIRST argument; option parsing stops at the first
 //! operand. No COMMAND -> print current niceness (`sys.nice(0)`), exit 0. Otherwise

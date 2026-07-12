@@ -9,7 +9,7 @@ index 1960cc4..769b23b 100644
 +// mc PATCH: route the Parser's ParseError throw/catch through a trap-backed channel.
 +// The Luau guest is built -fno-exceptions (Zig's wasm32-wasi libc++ ships no C++
 +// exception runtime; the kernel's wasmi has no EH proposal). See
-+// third_party/luau/glue/error_channel.h and third_party/luau/PLAN.md for the rationale and the
++// third_party/luau/glue/error_channel.h and third_party/luau/SYSTEM.md for the rationale and the
 +// complete list of upstream edits.
 +#include "error_channel.h"
 +
@@ -22,7 +22,7 @@ index 1960cc4..769b23b 100644
  
 +// mc PATCH: the single global ParseError trap channel (single-threaded wasm
 +// guest). `Parser::parse`/`runParse` open a scope on it; the two
-+// `throw ParseError(...)` sites raise on it (see PATCHES.md).
++// `throw ParseError(...)` sites raise on it (see third_party/luau/SYSTEM.md).
 +static ::mc_eh::Channel<ParseError> mcParserEh;
 +
  using AttributeArgumentsValidator = std::function<std::vector<std::pair<Location, std::string>>(Location, const AstArray<AstExpr*>&)>;
@@ -51,7 +51,7 @@ index 1960cc4..769b23b 100644
 -    catch (ParseError& err)
 +    // mc PATCH: was `try { … } catch (ParseError& err) { … }`. Run the protected
 +    // body under a kernel trap boundary (the guest has no C++ EH / longjmp — see
-+    // third_party/luau/PLAN.md); a ParseError::raise inside traps to here.
++    // third_party/luau/SYSTEM.md); a ParseError::raise inside traps to here.
 +    AstStatBlock* root = nullptr;
 +    size_t lines = 0;
 +    bool raised = mcParserEh.run([&] {
@@ -79,7 +79,7 @@ index 1960cc4..769b23b 100644
 -    {
 -        Node* expr = f(p);
 -        size_t lines = p.lexer.current().location.end.line + (bufferSize > 0 && buffer[bufferSize - 1] != '\n');
-+    // mc PATCH: was `try { … } catch (ParseError& err) { … }` (see PATCHES.md).
++    // mc PATCH: was `try { … } catch (ParseError& err) { … }` (see third_party/luau/SYSTEM.md).
 +    Node* expr = nullptr;
 +    size_t lines = 0;
 +    bool raised = mcParserEh.run([&] {
@@ -133,7 +133,7 @@ index 6aa1193..2c9c430 100644
  
 +// mc PATCH: route the Compiler's CompileError/ParseErrors throw/catch through a
 +// trap-backed channel (the guest is built -fno-exceptions). See third_party/luau/glue/error_channel.h
-+// and third_party/luau/PLAN.md.
++// and third_party/luau/SYSTEM.md.
 +#include "error_channel.h"
 +
  LUAU_FASTINTVARIABLE(LuauCompileLoopUnrollThreshold, 25)
@@ -148,7 +148,7 @@ index 6aa1193..2c9c430 100644
 +// `compile()`. `mcParseErrorsEh` carries the `throw ParseErrors` in the
 +// `compileOrThrow(source)` overload — which this embedding never calls (it goes
 +// through `compile()`), so that channel has no handler and raising on it traps
-+// deterministically. See PATCHES.md.
++// deterministically. See third_party/luau/SYSTEM.md.
 +static ::mc_eh::Channel<CompileError> mcCompileEh;
 +static ::mc_eh::Channel<ParseErrors> mcParseErrorsEh;
 +
@@ -179,7 +179,7 @@ index 6aa1193..2c9c430 100644
  
 -    try
 -    {
-+    // mc PATCH: was `try { … } catch (CompileError& e) { … }` (see PATCHES.md).
++    // mc PATCH: was `try { … } catch (CompileError& e) { … }` (see third_party/luau/SYSTEM.md).
 +    std::string bytecode;
 +    bool raised = mcCompileEh.run([&] {
          BytecodeBuilder bcb(encoder);
@@ -214,7 +214,7 @@ index 038ada3..49d11c6 100644
 +// mc PATCH: the guest has neither a C++ exception runtime nor working
 +// setjmp/longjmp (both need wasm exception-handling, which wasmi lacks). The
 +// error-recovery functions below route Lua's protected calls and errors through
-+// the kernel trap-unwind shim instead. See third_party/luau/PLAN.md and ctx/LUAU.md §4.4.
++// the kernel trap-unwind shim instead. See third_party/luau/SYSTEM.md.
 +#include "trap.h"
  #include <stdlib.h>
 -#else

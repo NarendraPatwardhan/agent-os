@@ -1,4 +1,4 @@
-//! `tr` -- docs/analysis/applets-s-z.md: translate/delete/squeeze over a raw byte
+//! `tr` -- DESIGN.md §1: translate/delete/squeeze over a raw byte
 //! stream (8 KiB chunks, cross-chunk squeeze state).
 //!
 //! Flags: `-c`/`-C/--complement`, `-d/--delete`, `-s/--squeeze-repeats`,

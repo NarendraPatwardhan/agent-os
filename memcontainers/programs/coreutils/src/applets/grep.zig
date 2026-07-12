@@ -1,4 +1,4 @@
-//! `grep` -- docs/analysis/applets-g-r.md: ripgrep-family behavior (Rust `regex`
+//! `grep` -- DESIGN.md §1: ripgrep-family behavior (Rust `regex`
 //! dialect via `src/engines/regex.zig`, `BinaryDetection::quit(NUL)`, no mmap --
 //! whole-file read into memory). Hand-parsed argv (like find/cat/echo): `-e`'s optional
 //! attached value and `--color[=WHEN]`'s optional-value long flag don't fit

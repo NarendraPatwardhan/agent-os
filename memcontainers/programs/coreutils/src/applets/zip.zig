@@ -1,4 +1,4 @@
-//! `zip` -- docs/analysis/applets-s-z.md: full-rewrite ZIP archiver over
+//! `zip` -- DESIGN.md §1: full-rewrite ZIP archiver over
 //! `engines/archive/zipwriter.zig`. Every invocation loads whatever members already
 //! exist in `ARCHIVE` (decompressing each into memory), merges in the requested
 //! change (`upsert` by name for a normal add/replace, or drop-by-glob for `-d`), and
