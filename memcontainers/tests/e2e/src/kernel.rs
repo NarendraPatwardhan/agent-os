@@ -3,8 +3,71 @@
 //! interactive terminal's ONLCR (CRLF — see [`crate::tty`], SYSTEMS.md section 6). No guest programs needed except the
 //! one exec test, which proves the pipe stays raw.
 
-use crate::{boot, boot_loom, boot_posix, names, restore, restore_incremental};
+use crate::{boot, boot_loom, boot_posix, names, restore, restore_incremental, Session};
 use host::ExecOptions;
+
+/// A tiny valid guest with one exported memory, a no-op `_start`, and one byte of non-custom data.
+/// Varying `tag` changes compilation identity without changing behavior.
+fn tiny_guest(tag: u8) -> Vec<u8> {
+    vec![
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // wasm header
+        0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // type: () -> ()
+        0x03, 0x02, 0x01, 0x00, // one function of type 0
+        0x05, 0x03, 0x01, 0x00, 0x01, // one one-page memory
+        0x07, 0x13, 0x02, // two exports
+        0x06, b'm', b'e', b'm', b'o', b'r', b'y', 0x02, 0x00, // memory
+        0x06, b'_', b's', b't', b'a', b'r', b't', 0x00, 0x00, // _start
+        0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b, // no-op body
+        0x0b, 0x07, 0x01, 0x00, 0x41, 0x00, 0x0b, 0x01, tag, // active data segment
+    ]
+}
+
+fn semantically_invalid_guest(tag: u8) -> Vec<u8> {
+    let mut wasm = tiny_guest(tag);
+    let code = wasm
+        .windows(6)
+        .position(|window| window == [0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b])
+        .expect("tiny guest code section");
+    wasm[code + 5] = 0xff; // no function-ending `end` opcode
+    wasm
+}
+
+fn append_custom(mut wasm: Vec<u8>, name: &[u8], payload: &[u8]) -> Vec<u8> {
+    fn push_uleb(out: &mut Vec<u8>, mut value: usize) {
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            out.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
+    }
+
+    wasm.push(0);
+    push_uleb(&mut wasm, name.len() + payload.len() + 1);
+    push_uleb(&mut wasm, name.len());
+    wasm.extend_from_slice(name);
+    wasm.extend_from_slice(payload);
+    wasm
+}
+
+fn run_guest(session: &mut Session, bytes: &[u8]) -> String {
+    session
+        .host
+        .write_file("/tmp/admission-test.wasm", bytes)
+        .expect("write admission test guest");
+    session
+        .host
+        .chmod("/tmp/admission-test.wasm", 0o755)
+        .expect("chmod admission test guest");
+    // The rescue shell writes exec diagnostics to stderr, while this harness captures its terminal
+    // stdout. Echo the status through stdout so the assertion observes the real exec result.
+    session.run_for_output("/tmp/admission-test.wasm; echo status=$?")
+}
 
 /// WHY: the base image is a deterministic pkg_tar (SYSTEMS.md section 11) the kernel mounts as its lowest layer; the
 /// control channel (`mc_ctl_read`) reads guest files out-of-band. GUARANTEES: the image's
@@ -142,6 +205,72 @@ fn exec_channel_captures_raw_lf_not_crlf() {
     );
 }
 
+/// WHY: malformed policy metadata, invalid Wasm, and irrelevant custom sections used to reach the
+/// permanent wasmi arena before rejection or receive distinct FNV cache keys. GUARANTEES: 65 distinct
+/// examples of each invalid class consume no admission, while 65 custom-only variants of one valid
+/// executable all reuse one compilation identity and remain runnable beyond the 64-module ceiling.
+#[test]
+fn compilation_admission_validates_metadata_and_ignores_custom_sections() {
+    let mut s = boot();
+    s.drive_until_prompt(0);
+
+    for tag in 0..=64u8 {
+        let malformed = append_custom(tiny_guest(tag), b"mc_budget", &[tag]);
+        let output = run_guest(&mut s, &malformed);
+        assert_ne!(
+            output, "status=0\r\n",
+            "malformed metadata variant {tag} was admitted: {output:?}",
+        );
+    }
+
+    for tag in 0..=64u8 {
+        let output = run_guest(&mut s, &semantically_invalid_guest(tag));
+        assert_ne!(
+            output, "status=0\r\n",
+            "semantically invalid module {tag} was admitted: {output:?}",
+        );
+    }
+
+    for tag in 0..=64u8 {
+        let same_program = append_custom(tiny_guest(0), b"note", &[tag]);
+        let output = run_guest(&mut s, &same_program);
+        assert_eq!(
+            output, "status=0\r\n",
+            "custom-only variant {tag} should reuse one compiled module: {output:?}",
+        );
+    }
+}
+
+/// WHY: wasmi's arena and the registry live together in kernel linear memory, so A8 snapshots must
+/// preserve consumed compilation capacity exactly. GUARANTEES: the boot-time `/bin/sh` admission,
+/// 32 admissions before a snapshot, and 31 after restore fill the 64-module ceiling; the next identity
+/// fails, while an identity compiled before the snapshot remains runnable from cache after exhaustion.
+#[test]
+fn compilation_budget_and_cache_survive_snapshot_restore() {
+    let mut s = boot();
+    s.drive_until_prompt(0);
+    for tag in 0..32u8 {
+        assert_eq!(run_guest(&mut s, &tiny_guest(tag)), "status=0\r\n");
+    }
+
+    let snapshot = s.host.snapshot().expect("snapshot compilation registry");
+    let mut restored = restore(&snapshot);
+    for tag in 32..63u8 {
+        assert_eq!(run_guest(&mut restored, &tiny_guest(tag)), "status=0\r\n");
+    }
+
+    let rejected = run_guest(&mut restored, &tiny_guest(63));
+    assert_ne!(
+        rejected, "status=0\r\n",
+        "65th compilation identity should fail at the VM-wide ceiling: {rejected:?}",
+    );
+    assert_eq!(
+        run_guest(&mut restored, &tiny_guest(0)),
+        "status=0\r\n",
+        "cache hits must remain runnable after admission is exhausted",
+    );
+}
+
 /// WHY: A8 — the entire VM is a portable value: `snapshot` captures linear memory, `restore`
 /// rehydrates a fresh VM. GUARANTEES: state written before a snapshot is present in a VM restored
 /// from it — the round-trip preserves the filesystem, with no re-boot.
@@ -187,18 +316,28 @@ fn restoring_a_snapshot_twice_forks_independent_vms() {
 #[test]
 fn incremental_snapshot_restores_against_one_full_baseline() {
     let mut s = boot();
-    s.host.write_file("/tmp/base", b"baseline").expect("write baseline");
+    s.host
+        .write_file("/tmp/base", b"baseline")
+        .expect("write baseline");
     let base = s.host.snapshot().expect("full baseline");
-    s.host.write_file("/tmp/delta", b"incremental").expect("write delta");
+    s.host
+        .write_file("/tmp/delta", b"incremental")
+        .expect("write delta");
     let delta = s
         .host
         .snapshot_incremental(&base)
         .expect("incremental snapshot");
-    assert!(delta.len() < base.len(), "small mutation should produce a thin snapshot");
+    assert!(
+        delta.len() < base.len(),
+        "small mutation should produce a thin snapshot"
+    );
 
     let mut restored = restore_incremental(&delta, &base);
     assert_eq!(restored.host.read_file("/tmp/base").unwrap(), b"baseline");
-    assert_eq!(restored.host.read_file("/tmp/delta").unwrap(), b"incremental");
+    assert_eq!(
+        restored.host.read_file("/tmp/delta").unwrap(),
+        b"incremental"
+    );
 }
 
 /// WHY: Group G / A8 under Asyncify (ZIG_KERNEL section 7.4) — the DEEPEST snapshot guarantee. The two
@@ -232,7 +371,10 @@ fn snapshot_while_a_guest_is_suspended_resumes_identically() {
     );
 
     // Snapshot WHILE the guest is Asyncify-suspended, then rehydrate a fresh VM from the blob.
-    let snap = s.host.snapshot().expect("snapshot while a guest is suspended");
+    let snap = s
+        .host
+        .snapshot()
+        .expect("snapshot while a guest is suspended");
     let mut restored = restore(&snap);
 
     // The restored VM must RESUME the suspended loop and finish it — the result appears only now.

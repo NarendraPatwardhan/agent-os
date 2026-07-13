@@ -26,25 +26,27 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::fmt;
 
+use pkgcore::Sha256;
 use wasmi::{
     Caller, Engine, Global, Linker, Memory, Module, Store, StoreLimits, StoreLimitsBuilder,
     TypedFunc, TypedResumableCall, Val,
 };
+use wasmparser::{CompositeInnerType, Parser, Payload, Validator, WasmFeatures};
 
 use crate::builtins::{Builtin, BuiltinCtx, BuiltinStep};
 use crate::fs::servicefs::{
-    clear_activation, grant_holder, lookup_service, mark_failed, register_service,
-    service_registered, service_state, valid_service_name, DelegatedHandle, RespondOutcome,
+    DelegatedHandle, MAX_SVC_REQUEST_BYTES, RespondOutcome, SVC_RESPONSE_HIGH_WATER,
     ServiceChannel, ServiceInbound, ServiceState, SvcCallSource, SvcConnHandle, SvcRead,
-    SvcServeOwner, MAX_SVC_REQUEST_BYTES, SVC_RESPONSE_HIGH_WATER,
+    SvcServeOwner, clear_activation, grant_holder, lookup_service, mark_failed, register_service,
+    service_registered, service_state, valid_service_name,
 };
 use crate::fs::{MemFs, ServeChannel, ServedFs};
 use crate::host_call::{HostCallRead, HostCallSource};
 use crate::io::{EmptySource, PipeSink, PipeSource, ReadSource, TerminalSink, WriteSink};
 use crate::net::{HttpPoll, HttpReq, NetError, WsConn};
 use crate::task::{
-    BlockReason, Capabilities, TaskId, TaskState, Tier, CAP_AMBIENT, CAP_FS_READ, CAP_MOUNT,
-    CAP_NET, CAP_PERSIST, CAP_SCRATCH, CAP_SPAWN,
+    BlockReason, CAP_AMBIENT, CAP_FS_READ, CAP_MOUNT, CAP_NET, CAP_PERSIST, CAP_SCRATCH, CAP_SPAWN,
+    Capabilities, TaskId, TaskState, Tier,
 };
 use crate::vfs::{FileHandle, FsError, KPath, Namespace, NodeType, OpenFlags, SeekFrom};
 use crate::wasm::abi::*;
@@ -66,6 +68,29 @@ const SVC_KIND_DRAIN_READY: u8 = 2;
 const PERSIST_ROOT: &str = "/var/persist";
 /// Kernel/sysroot stat record size, projected from the shared contract.
 const STAT_BUF_LEN: usize = STAT_REC_LEN as usize;
+/// Maximum complete guest executable accepted for inspection. This bounds transient parser work,
+/// including custom sections that are deliberately excluded from compilation identity.
+const MAX_GUEST_WASM_SOURCE_BYTES: usize = 32 * 1024 * 1024;
+/// Wasmi never reclaims translated functions from an engine. These two VM-wide limits therefore
+/// bound permanent compilation state rather than acting as an evictable cache policy.
+const MAX_COMPILED_MODULES: usize = 64;
+const MAX_COMPILED_INPUT_BYTES: usize = 64 * 1024 * 1024;
+
+// Kernel-owned per-module compilation-shape limits. Wasmi's fixed `strict()` profile cannot be used:
+// it caps functions at 10k, data segments at 1k, and parameters at 32, while the measured shipped
+// Typst guest has 35,083 functions, 9,210 data segments, and a 33-parameter type. Only those dimensions
+// are raised, with explicit headroom; all others retain wasmi's defensive values, and the VM-wide
+// source/admission ceilings remain the outer bound.
+const MAX_MODULE_GLOBALS: u32 = 1_000;
+const MAX_MODULE_FUNCTIONS: u32 = 50_000;
+const MAX_MODULE_TABLES: u32 = 100;
+const MAX_MODULE_ELEMENT_SEGMENTS: u32 = 1_000;
+const MAX_MODULE_MEMORIES: u32 = 1;
+const MAX_MODULE_DATA_SEGMENTS: u32 = 16_384;
+const MAX_FUNCTION_PARAMS: usize = 64;
+const MAX_FUNCTION_RESULTS: usize = 32;
+const MIN_FUNCTION_DENSITY_THRESHOLD: u32 = 1_000;
+const MIN_AVG_FUNCTION_BODY_BYTES: u32 = 40;
 
 /// An entry in a guest's own fd table (fds ≥ 3). Standard fds 0/1/2 route to
 /// the task's stdin/stdout/stderr via `BuiltinCtx`.
@@ -215,7 +240,7 @@ impl ReadSource for SharedNetSource {
     }
 
     fn is_eof(&self) -> bool {
-        matches!(self.0 .0.borrow().phase, NetPhase::Eof)
+        matches!(self.0.0.borrow().phase, NetPhase::Eof)
     }
 }
 
@@ -377,11 +402,7 @@ fn parse_http_status(head: &[u8]) -> u16 {
             break;
         }
     }
-    if saw {
-        n
-    } else {
-        0
-    }
+    if saw { n } else { 0 }
 }
 
 /// Largest single WebSocket message the kernel will buffer per `recv`.
@@ -608,6 +629,8 @@ fn effective_budget(declared: Option<Budget>) -> Budget {
 pub fn new_engine() -> Engine {
     let mut config = wasmi::Config::default();
     config.consume_fuel(true);
+    configure_guest_wasm_features(&mut config);
+    config.ignore_custom_sections(true);
     // Eager: translate every function at `Module::new`, not lazily on first call.
     // wasmi's default `LazyTranslation` charges the *guest's fuel* for translating
     // a function the first time it is called; if a fuel slice runs dry mid-
@@ -622,20 +645,60 @@ pub fn new_engine() -> Engine {
     Engine::new(&config)
 }
 
+/// The one guest-Wasm language profile used by both engine-free preflight and wasmi. Wasmi 1.0.9
+/// does not expose its configured feature set, so the mapping below keeps the two validators in
+/// lockstep instead of letting unsupported proposals reach the permanent engine arena.
+fn guest_wasm_features() -> WasmFeatures {
+    let mut features = WasmFeatures::empty();
+    for feature in [
+        WasmFeatures::MUTABLE_GLOBAL,
+        WasmFeatures::SATURATING_FLOAT_TO_INT,
+        WasmFeatures::SIGN_EXTENSION,
+        WasmFeatures::REFERENCE_TYPES,
+        WasmFeatures::MULTI_VALUE,
+        WasmFeatures::BULK_MEMORY,
+        WasmFeatures::TAIL_CALL,
+        WasmFeatures::FLOATS,
+        WasmFeatures::MULTI_MEMORY,
+        WasmFeatures::MEMORY64,
+        WasmFeatures::EXTENDED_CONST,
+        WasmFeatures::GC_TYPES,
+    ] {
+        features.insert(feature);
+    }
+    features
+}
+
+fn configure_guest_wasm_features(config: &mut wasmi::Config) {
+    let features = guest_wasm_features();
+    config
+        .wasm_mutable_global(features.contains(WasmFeatures::MUTABLE_GLOBAL))
+        .wasm_saturating_float_to_int(features.contains(WasmFeatures::SATURATING_FLOAT_TO_INT))
+        .wasm_sign_extension(features.contains(WasmFeatures::SIGN_EXTENSION))
+        .wasm_reference_types(features.contains(WasmFeatures::REFERENCE_TYPES))
+        .wasm_multi_value(features.contains(WasmFeatures::MULTI_VALUE))
+        .wasm_bulk_memory(features.contains(WasmFeatures::BULK_MEMORY))
+        .wasm_tail_call(features.contains(WasmFeatures::TAIL_CALL))
+        .wasm_multi_memory(features.contains(WasmFeatures::MULTI_MEMORY))
+        .wasm_memory64(features.contains(WasmFeatures::MEMORY64))
+        .wasm_extended_const(features.contains(WasmFeatures::EXTENDED_CONST))
+        .wasm_custom_page_sizes(features.contains(WasmFeatures::CUSTOM_PAGE_SIZES))
+        .wasm_wide_arithmetic(features.contains(WasmFeatures::WIDE_ARITHMETIC));
+}
+
 /// The shared user-space runtime: the wasmi engine, ONE linker (the `mc_sys_*`
 /// host functions registered once and reused for every spawn), and a permanent
-/// compiled-`Module` cache keyed by a content hash of the program bytes.
+/// compiled-`Module` registry keyed by the compilation-relevant program bytes.
 ///
 /// Why the cache: `Module::new` translates the whole program, and wasmi keeps
 /// that translated code in an engine-wide arena that is never freed for the
 /// engine's lifetime (no `Drop for Module`, no arena removal). Re-translating a
 /// program on every spawn therefore piles duplicate code into the engine and
-/// grows kernel linear memory without bound. Compiling each distinct program
-/// exactly once caps that growth at the set of programs actually run — and makes
-/// spawns much cheaper (no re-decode of MB-scale binaries). The cache is
-/// PERMANENT by design: evicting a `Module` frees nothing (the engine retains
-/// its funcs) and recompiling would only re-leak, so there is deliberately no
-/// LRU. `Module`/`Engine` are `Arc`-backed, so caching and cloning are cheap.
+/// grows kernel linear memory without bound. Compiling each admitted program
+/// exactly once makes spawns much cheaper (no re-decode of MB-scale binaries).
+/// The registry is PERMANENT but BOUNDED: evicting a `Module` frees nothing (the
+/// engine retains its funcs) and recompiling would only re-leak, so there is
+/// deliberately no LRU. `Module`/`Engine` are `Arc`-backed, so cloning is cheap.
 ///
 /// Lives in `STATE`, created once at boot, so it is captured verbatim in a
 /// snapshot and restored byte-for-byte — restore needs no special handling.
@@ -645,7 +708,26 @@ pub struct GuestRuntime {
     /// (they only record into `Caller`'s `GuestState.pending`), and
     /// `Linker::instantiate_and_start` takes `&self`.
     linker: Linker<GuestState>,
-    cache: RefCell<BTreeMap<u64, Module>>,
+    compilations: RefCell<CompilationRegistry>,
+}
+
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+struct CompilationId {
+    digest: [u8; 32],
+    bytes: u32,
+}
+
+enum CompilationEntry {
+    Ready(Module),
+    /// A prevalidated module reached the permanent engine and compilation failed. Wasmi may already
+    /// have reserved arena entries, so remember and charge the attempt rather than retrying it.
+    Failed(Box<str>),
+}
+
+#[derive(Default)]
+struct CompilationRegistry {
+    entries: BTreeMap<CompilationId, CompilationEntry>,
+    admitted_bytes: usize,
 }
 
 impl GuestRuntime {
@@ -659,7 +741,7 @@ impl GuestRuntime {
         GuestRuntime {
             engine,
             linker,
-            cache: RefCell::new(BTreeMap::new()),
+            compilations: RefCell::new(CompilationRegistry::default()),
         }
     }
 
@@ -668,38 +750,79 @@ impl GuestRuntime {
         &self.engine
     }
 
-    /// Compile `bytes` to a `Module`, reusing a previously-compiled one when the
-    /// same program bytes were loaded before (content-addressed). The returned
-    /// `Module` is a cheap `Arc` clone; the cache borrow never spans
-    /// instantiation.
-    fn module_for(&self, bytes: &[u8]) -> Result<Module, String> {
-        let key = fnv1a_64(bytes);
+    /// Compile `bytes` to a `Module`, reusing a previously-compiled one when its non-custom sections
+    /// have the same `mcw1` identity. The returned `Module` is a cheap `Arc` clone; registry borrows
+    /// never span validation, compilation, or instantiation.
+    fn module_for(&self, bytes: &[u8], info: &GuestModuleInfo) -> Result<Module, String> {
         {
-            let cache = self.cache.borrow();
-            if let Some(m) = cache.get(&key) {
-                return Ok(m.clone());
+            let registry = self.compilations.borrow();
+            if let Some(entry) = registry.entries.get(&info.compilation_id) {
+                return match entry {
+                    CompilationEntry::Ready(module) => Ok(module.clone()),
+                    CompilationEntry::Failed(error) => Err(String::from(error.as_ref())),
+                };
+            }
+            check_compilation_capacity(&registry, info.compiled_input_bytes)?;
+        }
+
+        // Full semantic validation happens without a wasmi Engine, so malformed modules cannot
+        // reserve permanent engine arena entries. Validator state drops before eager compilation.
+        validate_guest_wasm(bytes)?;
+
+        // The kernel is single-threaded, but recheck immediately before the irreversible operation
+        // so the admission rule stays locally atomic if that ever changes.
+        {
+            let registry = self.compilations.borrow();
+            if let Some(entry) = registry.entries.get(&info.compilation_id) {
+                return match entry {
+                    CompilationEntry::Ready(module) => Ok(module.clone()),
+                    CompilationEntry::Failed(error) => Err(String::from(error.as_ref())),
+                };
+            }
+            check_compilation_capacity(&registry, info.compiled_input_bytes)?;
+        }
+
+        let compiled = Module::new(&self.engine, bytes)
+            .map_err(|error| format!("invalid wasm module: {error}"));
+        let mut registry = self.compilations.borrow_mut();
+        registry.admitted_bytes += info.compiled_input_bytes;
+        match compiled {
+            Ok(module) => {
+                registry
+                    .entries
+                    .insert(info.compilation_id, CompilationEntry::Ready(module.clone()));
+                Ok(module)
+            }
+            Err(error) => {
+                registry.entries.insert(
+                    info.compilation_id,
+                    CompilationEntry::Failed(error.clone().into_boxed_str()),
+                );
+                Err(error)
             }
         }
-        let module =
-            Module::new(&self.engine, bytes).map_err(|e| format!("invalid wasm module: {e}"))?;
-        self.cache.borrow_mut().insert(key, module.clone());
-        Ok(module)
     }
 }
 
-/// FNV-1a (64-bit) over `bytes` — a fast, dependency-free content hash for the
-/// module cache. The input is trusted, kernel-resident program bytes and the
-/// distinct-program count is tiny (the shipped toolset), so a 64-bit hash is far
-/// more than enough to avoid collisions.
-fn fnv1a_64(bytes: &[u8]) -> u64 {
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut h = OFFSET;
-    for &b in bytes {
-        h ^= b as u64;
-        h = h.wrapping_mul(PRIME);
+fn check_compilation_capacity(
+    registry: &CompilationRegistry,
+    requested_bytes: usize,
+) -> Result<(), String> {
+    let next_bytes = registry
+        .admitted_bytes
+        .checked_add(requested_bytes)
+        .ok_or_else(|| String::from("compiled module byte budget overflow"))?;
+    if registry.entries.len() >= MAX_COMPILED_MODULES || next_bytes > MAX_COMPILED_INPUT_BYTES {
+        return Err(format!(
+            "compiled module budget exhausted: modules={}/{} bytes={}/{} requested={}",
+            registry.entries.len(),
+            MAX_COMPILED_MODULES,
+            registry.admitted_bytes,
+            MAX_COMPILED_INPUT_BYTES,
+            requested_bytes,
+        ));
     }
-    h
+    Ok(())
 }
 
 /// The host error a syscall returns to suspend the guest. `wasmi` surfaces it
@@ -839,13 +962,13 @@ impl GuestProgram {
         argv: Vec<String>,
         path: &str,
     ) -> Result<GuestProgram, String> {
-        let module = rt.module_for(bytes)?;
-        // Conformance gate: a duplicate or present-but-malformed mc_tier/mc_budget is a hard load
-        // failure, not a silent fall-through (which would inherit the parent tier / default budget).
-        validate_mc_sections(bytes)?;
+        // Inspect policy metadata and compilation identity before the permanent wasmi engine sees
+        // the bytes. A malformed custom section can therefore never consume compilation state.
+        let info = inspect_guest_module(bytes)?;
+        let module = rt.module_for(bytes, &info)?;
         // The guest's effective budget: its declared `mc_budget` (or the default),
         // clamped to the VM ceiling (image manifest) and the hard maximum.
-        let budget = effective_budget(declared_budget(bytes));
+        let budget = effective_budget(info.metadata.budget);
         let state = GuestState {
             pending: None,
             timed_deadline: None,
@@ -2321,8 +2444,8 @@ impl GuestProgram {
         let channel = ServiceChannel::new();
         register_service(&name, channel.clone());
         clear_activation(&name); // grant consumed; the channel is now in the registry
-                                 // On `alloc_fd` failure the `SvcServeOwner` is dropped here, which closes the
-                                 // channel and deregisters `name` — no orphaned registration.
+        // On `alloc_fd` failure the `SvcServeOwner` is dropped here, which closes the
+        // channel and deregisters `name` — no orphaned registration.
         match self.alloc_fd(GuestFd::SvcServe(SvcServeOwner::new(name, channel))) {
             Some(fd) => match self.write_guest_u32(ret_fd, fd as u32) {
                 Ok(()) => Fulfilled::Resume(ESUCCESS),
@@ -4044,10 +4167,247 @@ pub fn exec_policy(
     (caps, root)
 }
 
+struct GuestModuleInfo {
+    compilation_id: CompilationId,
+    compiled_input_bytes: usize,
+    metadata: GuestMetadata,
+}
+
+#[derive(Default)]
+struct GuestMetadata {
+    tier: Option<Tier>,
+    budget: Option<Budget>,
+    service: Option<String>,
+}
+
+/// Validate the metadata envelope and derive the identity of the bytes wasmi actually compiles.
+/// `mcw1` excludes custom sections: policy metadata is applied per load, while names/debug payloads
+/// must not let an attacker manufacture duplicate translations of the same executable program.
+fn inspect_guest_module(bytes: &[u8]) -> Result<GuestModuleInfo, String> {
+    if bytes.len() > MAX_GUEST_WASM_SOURCE_BYTES {
+        return Err(format!(
+            "guest wasm exceeds source limit: bytes={} limit={}",
+            bytes.len(),
+            MAX_GUEST_WASM_SOURCE_BYTES,
+        ));
+    }
+    if bytes.len() < 8 || &bytes[..8] != b"\0asm\x01\0\0\0" {
+        return Err(String::from("invalid wasm module: bad magic or version"));
+    }
+
+    let mut digest = Sha256::new();
+    digest.update(b"mcw1");
+    digest.update(&bytes[..8]);
+    let mut compiled_input_bytes = 8usize;
+    let mut metadata = GuestMetadata::default();
+    let mut i = 8usize;
+    while i < bytes.len() {
+        let section_start = i;
+        let id = bytes[i];
+        i += 1;
+        let (size, size_len) = read_uleb(bytes, i)
+            .ok_or_else(|| String::from("invalid wasm module: truncated section size"))?;
+        i += size_len;
+        let body_start = i;
+        let body_end = body_start
+            .checked_add(size as usize)
+            .ok_or_else(|| String::from("invalid wasm module: section size overflow"))?;
+        if body_end > bytes.len() {
+            return Err(String::from(
+                "invalid wasm module: section past end of module",
+            ));
+        }
+
+        if id == 0 {
+            let (name_len, name_len_bytes) = read_uleb(bytes, body_start)
+                .ok_or_else(|| String::from("invalid wasm module: truncated custom name"))?;
+            let name_start = body_start
+                .checked_add(name_len_bytes)
+                .ok_or_else(|| String::from("invalid wasm module: custom name overflow"))?;
+            let name_end = name_start
+                .checked_add(name_len as usize)
+                .ok_or_else(|| String::from("invalid wasm module: custom name overflow"))?;
+            if name_end > body_end {
+                return Err(String::from(
+                    "invalid wasm module: custom name past section end",
+                ));
+            }
+            let name = &bytes[name_start..name_end];
+            core::str::from_utf8(name)
+                .map_err(|_| String::from("invalid wasm module: custom name is not UTF-8"))?;
+            let payload = &bytes[name_end..body_end];
+            match name {
+                b"mc_tier" => {
+                    if metadata.tier.is_some() {
+                        return Err(String::from("mc_tier: duplicate section"));
+                    }
+                    let tier = core::str::from_utf8(payload)
+                        .map_err(|_| String::from("mc_tier: not UTF-8"))?;
+                    metadata.tier = Some(
+                        Tier::parse(tier)
+                            .ok_or_else(|| format!("mc_tier: unknown tier `{tier}`"))?,
+                    );
+                }
+                b"mc_budget" => {
+                    if metadata.budget.is_some() {
+                        return Err(String::from("mc_budget: duplicate section"));
+                    }
+                    metadata.budget = Some(parse_budget_payload(payload)?);
+                }
+                b"mc_service" => {
+                    if metadata.service.is_some() {
+                        return Err(String::from("mc_service: duplicate section"));
+                    }
+                    let service = core::str::from_utf8(payload).map_err(|_| {
+                        String::from(
+                            "mc_service: not a valid service name ([a-z][a-z0-9-]*, <=31 bytes)",
+                        )
+                    })?;
+                    if !valid_service_name(service) {
+                        return Err(String::from(
+                            "mc_service: not a valid service name ([a-z][a-z0-9-]*, <=31 bytes)",
+                        ));
+                    }
+                    metadata.service = Some(String::from(service));
+                }
+                _ => {}
+            }
+        } else {
+            let section = &bytes[section_start..body_end];
+            digest.update(section);
+            compiled_input_bytes = compiled_input_bytes
+                .checked_add(section.len())
+                .ok_or_else(|| String::from("compiled module byte count overflow"))?;
+        }
+        i = body_end;
+    }
+
+    if metadata.service.is_some() && metadata.tier.is_none() {
+        return Err(String::from(
+            "mc_service present but mc_tier absent — a resident service must declare its tier",
+        ));
+    }
+
+    Ok(GuestModuleInfo {
+        compilation_id: CompilationId {
+            digest: digest.finalize(),
+            bytes: compiled_input_bytes as u32,
+        },
+        compiled_input_bytes,
+        metadata,
+    })
+}
+
+fn parse_budget_payload(payload: &[u8]) -> Result<Budget, String> {
+    if payload.len() < 24 {
+        return Err(String::from("mc_budget: truncated (< 24 bytes)"));
+    }
+    if u32::from_le_bytes(payload[..4].try_into().unwrap()) != 1 {
+        return Err(String::from("mc_budget: unknown version"));
+    }
+    let mem = u64::from_le_bytes(payload[4..12].try_into().unwrap());
+    let fuel = u64::from_le_bytes(payload[12..20].try_into().unwrap());
+    let table = u32::from_le_bytes(payload[20..24].try_into().unwrap());
+    Ok(Budget {
+        mem_bytes: usize::try_from(mem).unwrap_or(usize::MAX),
+        fuel,
+        table: table as usize,
+    })
+}
+
+/// Full engine-free validation for a cache miss. The shape pass rejects inputs at the same strict
+/// boundaries configured in wasmi before `Validator` allocates its complete type/function state.
+fn validate_guest_wasm(bytes: &[u8]) -> Result<(), String> {
+    let features = guest_wasm_features();
+    let mut parser = Parser::new(0);
+    parser.set_features(features);
+    for payload in parser.parse_all(bytes) {
+        let payload = payload.map_err(|error| format!("invalid wasm module: {error}"))?;
+        match payload {
+            Payload::TypeSection(types) => {
+                for group in types {
+                    let group = group.map_err(|error| format!("invalid wasm module: {error}"))?;
+                    for subtype in group.types() {
+                        let CompositeInnerType::Func(function) = &subtype.composite_type.inner
+                        else {
+                            return Err(String::from(
+                                "invalid wasm module: unsupported non-function type",
+                            ));
+                        };
+                        if function.params().len() > MAX_FUNCTION_PARAMS {
+                            return Err(format!(
+                                "invalid wasm module: function has more than {} parameters",
+                                MAX_FUNCTION_PARAMS,
+                            ));
+                        }
+                        if function.results().len() > MAX_FUNCTION_RESULTS {
+                            return Err(format!(
+                                "invalid wasm module: function has more than {} results",
+                                MAX_FUNCTION_RESULTS,
+                            ));
+                        }
+                    }
+                }
+            }
+            Payload::FunctionSection(section) => {
+                enforce_module_count("functions", section.count(), MAX_MODULE_FUNCTIONS)?;
+            }
+            Payload::TableSection(section) => {
+                enforce_module_count("tables", section.count(), MAX_MODULE_TABLES)?;
+            }
+            Payload::MemorySection(section) => {
+                enforce_module_count("memories", section.count(), MAX_MODULE_MEMORIES)?;
+            }
+            Payload::GlobalSection(section) => {
+                enforce_module_count("globals", section.count(), MAX_MODULE_GLOBALS)?;
+            }
+            Payload::ElementSection(section) => {
+                enforce_module_count(
+                    "element segments",
+                    section.count(),
+                    MAX_MODULE_ELEMENT_SEGMENTS,
+                )?;
+            }
+            Payload::DataSection(section) => {
+                enforce_module_count("data segments", section.count(), MAX_MODULE_DATA_SEGMENTS)?;
+            }
+            Payload::DataCountSection { count, .. } => {
+                enforce_module_count("data segments", count, MAX_MODULE_DATA_SEGMENTS)?;
+            }
+            Payload::CodeSectionStart { count, size, .. } => {
+                enforce_module_count("functions", count, MAX_MODULE_FUNCTIONS)?;
+                if size >= MIN_FUNCTION_DENSITY_THRESHOLD
+                    && (count == 0 || size / count < MIN_AVG_FUNCTION_BODY_BYTES)
+                {
+                    return Err(format!(
+                        "invalid wasm module: average function body is smaller than {} bytes",
+                        MIN_AVG_FUNCTION_BODY_BYTES,
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Validator::new_with_features(features)
+        .validate_all(bytes)
+        .map_err(|error| format!("invalid wasm module: {error}"))?;
+    Ok(())
+}
+
+fn enforce_module_count(name: &str, actual: u32, limit: u32) -> Result<(), String> {
+    if actual > limit {
+        return Err(format!(
+            "invalid wasm module: too many {name}: actual={actual} limit={limit}",
+        ));
+    }
+    Ok(())
+}
+
 /// Find the UNIQUE custom section named `name`: `Ok(None)` absent, `Ok(Some(payload))` exactly one,
 /// `Err` a DUPLICATE (ambiguous — which is authoritative?) or a malformed section boundary. The
 /// single bounds-checked section walk that [`declared_budget`], [`declared_tier`], and the load-time
-/// [`validate_mc_sections`] gate all share.
+/// [`inspect_guest_module`] gate all share.
 fn unique_custom<'a>(bytes: &'a [u8], name: &[u8]) -> Result<Option<&'a [u8]>, &'static str> {
     if bytes.len() < 8 || &bytes[..4] != b"\0asm" {
         return Ok(None);
@@ -4072,7 +4432,10 @@ fn unique_custom<'a>(bytes: &'a [u8], name: &[u8]) -> Result<Option<&'a [u8]>, &
             let name_end = name_start
                 .checked_add(name_len as usize)
                 .ok_or("custom name overflow")?;
-            if name_end <= body_end && &bytes[name_start..name_end] == name {
+            if name_end > body_end {
+                return Err("custom name past section end");
+            }
+            if &bytes[name_start..name_end] == name {
                 if found.is_some() {
                     return Err("duplicate section");
                 }
@@ -4084,67 +4447,10 @@ fn unique_custom<'a>(bytes: &'a [u8], name: &[u8]) -> Result<Option<&'a [u8]>, &
     Ok(found)
 }
 
-/// Reject a guest whose `mc_tier`/`mc_budget` is DUPLICATED or PRESENT-BUT-MALFORMED. Absent is fine
-/// (the guest inherits the parent tier / gets the default budget). This is the load-time gate
-/// ([`GuestProgram::load`]) that turns a corrupt or tampered section into a hard load failure rather
-/// than a silent fall-through — which for `mc_tier` would mean inheriting the PARENT's privilege
-/// instead of the declared restriction (a sandbox escalation), and for `mc_budget` the default ceiling.
-fn validate_mc_sections(bytes: &[u8]) -> Result<(), String> {
-    match unique_custom(bytes, b"mc_tier").map_err(|e| format!("mc_tier: {e}"))? {
-        Some(p) => {
-            let s = core::str::from_utf8(p).map_err(|_| String::from("mc_tier: not UTF-8"))?;
-            if Tier::parse(s).is_none() {
-                return Err(format!("mc_tier: unknown tier `{s}`"));
-            }
-        }
-        None => {}
-    }
-    match unique_custom(bytes, b"mc_budget").map_err(|e| format!("mc_budget: {e}"))? {
-        Some(p) => {
-            if p.len() < 24 {
-                return Err(String::from("mc_budget: truncated (< 24 bytes)"));
-            }
-            if u32::from_le_bytes([p[0], p[1], p[2], p[3]]) != 1 {
-                return Err(String::from("mc_budget: unknown version"));
-            }
-        }
-        None => {}
-    }
-    // mc_service (SYSTEMS.md): a corrupt/empty/ungrammatical service name must fail the load rather
-    // than silently read as "not a service" (which would skip the activation-time name check), or be
-    // accepted as a name the runtime `svc_serve`/`svc_connect` gate would then reject.
-    match unique_custom(bytes, b"mc_service").map_err(|e| format!("mc_service: {e}"))? {
-        Some(p) => {
-            match core::str::from_utf8(p) {
-                Ok(s) if valid_service_name(s) => {}
-                _ => {
-                    return Err(String::from(
-                        "mc_service: not a valid service name ([a-z][a-z0-9-]*, <=31 bytes)",
-                    ))
-                }
-            }
-            // A resident service has no parent to inherit a tier from, so a binary that declares a
-            // service name MUST also declare its tier — else activation has no capability ceiling to
-            // apply. Enforce it at LOAD, uniform with the build (mc-attest) and activation (spawn_service)
-            // gates, so the "service ⟹ tier" invariant holds at all three boundaries (codex audit).
-            if unique_custom(bytes, b"mc_tier")
-                .map_err(|e| format!("mc_tier: {e}"))?
-                .is_none()
-            {
-                return Err(String::from(
-                    "mc_service present but mc_tier absent — a resident service must declare its tier",
-                ));
-            }
-        }
-        None => {}
-    }
-    Ok(())
-}
-
 /// Read a program's declared resource budget from its (validated) `mc_budget` WASM custom section
 /// (emitted by `sysroot::declare_budget!`): little-endian `[u32 version=1][u64 mem][u64 fuel][u32
 /// table]`. `None` when absent (→ the default budget). Malformed/duplicate is rejected earlier by
-/// [`validate_mc_sections`] at load, so this only sees a well-formed-or-absent section.
+/// [`inspect_guest_module`] at load, so this only sees a well-formed-or-absent section.
 pub fn declared_budget(bytes: &[u8]) -> Option<Budget> {
     let p = unique_custom(bytes, b"mc_budget").ok().flatten()?;
     if p.len() < 24 || u32::from_le_bytes([p[0], p[1], p[2], p[3]]) != 1 {
@@ -4166,7 +4472,7 @@ pub fn declared_budget(bytes: &[u8]) -> Option<Budget> {
 
 /// Read a program's declared capability tier from its (validated) `mc_tier` WASM custom section
 /// (emitted by `sysroot::declare_tier!`). `None` when absent — the program then inherits its parent's
-/// privilege unchanged. Malformed/duplicate is rejected earlier by [`validate_mc_sections`] at load,
+/// privilege unchanged. Malformed/duplicate is rejected earlier by [`inspect_guest_module`] at load,
 /// so an absent section here genuinely means "inherit", never "the section was corrupt".
 pub fn declared_tier(bytes: &[u8]) -> Option<Tier> {
     let p = unique_custom(bytes, b"mc_tier").ok().flatten()?;
@@ -4175,7 +4481,7 @@ pub fn declared_tier(bytes: &[u8]) -> Option<Tier> {
 
 /// Read a program's declared SERVICE name from its (validated) `mc_service` WASM custom section
 /// (emitted by `sysroot::declare_service!` or `mc-stamp --service`). `None` when absent — the program
-/// is not a resident service. Malformed/duplicate is rejected at load by [`validate_mc_sections`], so
+/// is not a resident service. Malformed/duplicate is rejected at load by [`inspect_guest_module`], so
 /// an absent section here genuinely means "not a service", never "the section was corrupt".
 pub fn declared_service(bytes: &[u8]) -> Option<String> {
     let p = unique_custom(bytes, b"mc_service").ok().flatten()?;
@@ -4191,7 +4497,7 @@ fn read_uleb(bytes: &[u8], at: usize) -> Option<(u32, usize)> {
     loop {
         let byte = *bytes.get(at + n)?;
         n += 1;
-        if shift >= 32 {
+        if shift >= 32 || (shift == 28 && byte & 0xf0 != 0) {
             return None;
         }
         result |= ((byte & 0x7f) as u32) << shift;

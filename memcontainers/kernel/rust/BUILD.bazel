@@ -30,6 +30,7 @@ rust_shared_library(
     tags = ["manual"],
     deps = [
         "@crates//:wasmi",  # eager-mode =1.0.9 (the landmine), native dep
+        "@crates//:wasmparser",  # engine-free validation before permanent wasmi arena admission
         "@crates//:talc",   # wasm linear-memory allocator (A8: all state in linear mem)
         "//memcontainers/contracts:constants_rust",  # errno / caps / tiers / flags / signals (B2)
         "//memcontainers/contracts:mc_rust",         # the mc_syscall_table! macro + SYSCALL_NAMES (B2)

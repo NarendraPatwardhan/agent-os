@@ -18,3 +18,4 @@ talc = "5.0.3"
 # load-bearing landmine, SYSTEMS.md §4.3). A `^` range would
 # drift to 1.1.x and silently break that contract.
 wasmi = { version = "=1.0.9", default-features = false }
+wasmparser = { version = "=0.228.0", default-features = false, features = ["features", "validate"] }

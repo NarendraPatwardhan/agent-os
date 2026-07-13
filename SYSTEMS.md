@@ -470,7 +470,7 @@ before the skip, so a `SIGKILL` still lands promptly.
 
 This is how a guest actually runs. A `GuestRuntime` (created once at boot, captured in snapshots) holds
 one `wasmi` `Engine`, **one** reusable `Linker` with the `mc_sys_*` host functions registered once, and a
-**permanent** module cache.
+**permanent, bounded** compilation registry.
 
 **Engine configuration** is the load-bearing detail. Fuel metering is on (execution is bounded and
 resumable) and compilation mode is **eager**. The eager setting is not an optimization — it is a
@@ -479,13 +479,28 @@ lazy translation charges the *guest's* fuel to translate a function on first cal
 runs dry mid-translation, resuming that path corrupts the host (a SIGSEGV or a bogus integer conversion
 inside the sandbox). Eager translation moves all translation out of the fuel-metered path, so even heavy
 guests run on the normal cooperative quantum with no special-casing. The cost — translating the whole
-module once at load — is paid back by the cache.
+module once at load — is paid back by the registry. No secondary or disposable `wasmi` engine exists;
+preflight uses `wasmparser` and performs no translation.
 
-**The module cache is permanent by design.** `wasmi` keeps translated code in an engine-wide arena that
-is never freed for the engine's lifetime. Re-translating a program on every spawn would pile duplicate
-code into the engine and grow kernel memory without bound. So each distinct program is compiled exactly
-once, keyed by a content hash, and the cache is never evicted — evicting frees nothing and recompiling
-would only re-leak.
+**The compilation registry is permanent and bounded by design.** `wasmi` keeps translated code in an
+engine-wide arena that is never freed for the engine's lifetime. Eviction would therefore free nothing,
+and recompilation would only leak another translation. Before any new identity reaches that arena, the
+kernel caps the complete source at 32 MiB, validates `mc_*` metadata, enforces hostile-module shape
+limits, and runs full semantic validation through the exact `wasmparser` version and feature profile
+used by `wasmi`; `Module::new` then validates independently while performing the one eager translation.
+The kernel owns the shape profile because wasmi's non-configurable `strict()` preset rejects the shipped
+Typst guest (35,083 functions, 9,210 data segments, and a 33-parameter function type). The calibrated
+ceilings are 50,000 functions, 16,384 data segments, and 64 parameters; all other dimensions retain
+wasmi's strict values.
+
+Compilation identity is `SHA-256("mcw1" || wasm-header || non-custom-sections)`, paired with the hashed
+byte length. Custom sections are excluded because policy metadata is applied independently on every
+load and name/debug payloads do not change translated code; wasmi is correspondingly configured not to
+retain them. The VM admits at most 64 identities and 64 MiB of compilation-relevant input. A cache hit
+remains runnable after exhaustion. Once prevalidated bytes touch the permanent engine, the admission is
+charged even if eager translation fails, and the stable failure is tombstoned so retry cannot consume
+more arena state. The engine, registry, counters, ready modules, and tombstones are captured together,
+so full and incremental snapshots and every fork inherit the exact consumed budget.
 
 **Budgets.** A `Budget` is `{ mem_bytes, fuel, table }`. The default is 16 MiB / 50 billion fuel / 10k
 table entries; the hard ceiling is 1 GiB / 4 trillion / 1M. A guest may declare a budget in an
@@ -748,7 +763,7 @@ inherently asynchronous server.
 ## 8. System 11 — Snapshots, determinism, and the seal
 
 Snapshot/restore is a *host* operation built on A8. MCSN v2 stores the kernel's linear memory—the
-scheduler with every guest's `wasmi` store, the heap, the VFS, and the module cache—behind a projected
+scheduler with every guest's `wasmi` store, the heap, the VFS, and the compilation registry—behind a projected
 128-byte header. A restore instantiates the exact kernel identified by the header, writes memory, and
 does **not** call `mc_init`: the booted state *is* the image. It receives fresh capabilities and sinks
 (host handles are never serialized), and two restores from one value fork into independent VMs.
