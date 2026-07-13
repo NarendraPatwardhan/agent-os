@@ -4,6 +4,8 @@ import { surface, scheme } from "instrument";
 import { Hero } from "./Hero";
 import { BookIntro } from "./BookIntro";
 import { ExamplesShowcase } from "./ExamplesShowcase";
+import { ReferenceIntro } from "./ReferenceIntro";
+import { ReferenceShowcase } from "./ReferenceShowcase";
 
 // The app shell carries the base register (bg / ink / type) and pins the color
 // scheme to dark — the marketing site is dark-first.
@@ -13,6 +15,8 @@ export default function App() {
       <Hero />
       <BookIntro />
       <ExamplesShowcase />
+      <ReferenceIntro />
+      <ReferenceShowcase />
     </div>
   );
 }

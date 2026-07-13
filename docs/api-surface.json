@@ -1,0 +1,85 @@
+{
+  "surfaces": {
+    "mc": {
+      "source": "memcontainers/sdk-js/core/src/memcontainer.ts",
+      "doc": "mc.md",
+      "members": ["create", "use", "restore", "connect", "record"]
+    },
+    "Vm": {
+      "source": "memcontainers/sdk-js/core/src/memcontainer.ts",
+      "doc": "vm.md",
+      "members": [
+        "exec", "serviceCall", "luau", "luauSession", "snapshot", "fork", "commit", "tool",
+        "mount", "unmount", "session", "cron", "shell", "status", "inflightEgress", "memoryBytes",
+        "close"
+      ]
+    },
+    "vm.fs": {
+      "source": "memcontainers/sdk-js/core/src/types.ts",
+      "doc": "execution-files.md",
+      "members": ["read", "readText", "write", "ls", "stat", "readlink", "mkdir", "rm", "chmod", "symlink"]
+    },
+    "llb": {
+      "source": "memcontainers/sdk-js/core/src/llb.ts",
+      "doc": "llb.md",
+      "members": [
+        "source", "layer", "local", "http", "git", "write", "mkdir", "rm", "chmod", "symlink",
+        "exec", "copy", "merge", "diff", "image", "cache", "toDefinition", "fromDefinition",
+        "encodeDefinition", "decodeDefinition", "commit"
+      ]
+    }
+  },
+  "packages": {
+    "@mc/core": [
+      { "name": "capabilityConnection", "level": "internal", "doc": "advanced-api.md" },
+      { "name": "mc", "level": "stable", "doc": "mc.md" },
+      { "name": "Vm", "level": "stable", "doc": "vm.md" },
+      { "name": "llb", "level": "stable", "doc": "llb.md" },
+      { "name": "record", "level": "stable", "doc": "recording-remote-build.md" },
+      { "name": "startCron", "level": "internal", "doc": "advanced-api.md" },
+      { "name": "parseSchedule", "level": "advanced", "doc": "cron.md" },
+      { "name": "tool", "level": "stable", "doc": "tools.md" },
+      { "name": "kit", "level": "stable", "doc": "tools.md" },
+      { "name": "z", "level": "stable", "doc": "tools.md" },
+      { "name": "defaultCatalogCompiler", "level": "stable", "doc": "connections.md" },
+      { "name": "EmbeddedBackend", "level": "advanced", "doc": "advanced-api.md" },
+      { "name": "FanoutSink", "level": "advanced", "doc": "advanced-api.md" },
+      { "name": "RemoteBackend", "level": "advanced", "doc": "advanced-api.md" },
+      { "name": "remoteBuild", "level": "stable", "doc": "recording-remote-build.md" },
+      { "name": "defaultKernel", "level": "stable", "doc": "installation.md" },
+      { "name": "defaultImage", "level": "stable", "doc": "installation.md" },
+      { "name": "FsContentStore", "level": "stable", "doc": "images-stores.md" },
+      { "name": "MemoryContentStore", "level": "stable", "doc": "images-stores.md" },
+      { "name": "OpfsContentStore", "level": "stable", "doc": "images-stores.md" },
+      { "name": "defaultStore", "level": "stable", "doc": "images-stores.md" }
+    ],
+    "@mc/core/drivers": [
+      { "name": "hostDir", "level": "stable", "doc": "mounts-drivers.md" },
+      { "name": "s3", "level": "stable", "doc": "mounts-drivers.md" },
+      { "name": "vectorStore", "level": "stable", "doc": "mounts-drivers.md" }
+    ],
+    "@mc/elements": [
+      { "name": "defineElements", "level": "stable", "doc": "browser-elements.md" },
+      { "name": "McSandbox", "level": "stable", "doc": "browser-elements.md" },
+      { "name": "McXterm", "level": "stable", "doc": "browser-elements.md" },
+      { "name": "McTerminal", "level": "stable", "doc": "browser-elements.md" },
+      { "name": "McEditor", "level": "stable", "doc": "browser-elements.md" },
+      { "name": "setArtifactSources", "level": "stable", "doc": "browser-elements.md" },
+      { "name": "prefetchArtifacts", "level": "stable", "doc": "browser-elements.md" },
+      { "name": "loadCatalogCompiler", "level": "advanced", "doc": "browser-elements.md" },
+      { "name": "makeVmHost", "level": "advanced", "doc": "browser-elements.md" },
+      { "name": "resolveCreateOptions", "level": "advanced", "doc": "browser-elements.md" },
+      { "name": "vmHostContext", "level": "advanced", "doc": "browser-elements.md" },
+      { "name": "installContextRoot", "level": "internal", "doc": "advanced-api.md" },
+      { "name": "mc", "level": "reexport", "doc": "mc.md" },
+      { "name": "llb", "level": "reexport", "doc": "llb.md" },
+      { "name": "tool", "level": "reexport", "doc": "tools.md" },
+      { "name": "kit", "level": "reexport", "doc": "tools.md" },
+      { "name": "z", "level": "reexport", "doc": "tools.md" },
+      { "name": "defaultCatalogCompiler", "level": "reexport", "doc": "connections.md" },
+      { "name": "MemoryContentStore", "level": "reexport", "doc": "images-stores.md" },
+      { "name": "s3", "level": "reexport", "doc": "mounts-drivers.md" },
+      { "name": "vectorStore", "level": "reexport", "doc": "mounts-drivers.md" }
+    ]
+  }
+}

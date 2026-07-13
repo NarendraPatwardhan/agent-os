@@ -11,10 +11,10 @@
   </p>
 
   <p>
-    <a href="https://deepwiki.com/NarendraPatwardhan/agent-os"><img alt="Docs: DeepWiki" src="https://img.shields.io/badge/docs-DeepWiki-111111"></a>
+    <a href="https://agentos.opyt.cloud"><img alt="Try AgentOS" src="https://img.shields.io/badge/try-AgentOS-f5c542"></a>
+    <a href="https://deepwiki.com/NarendraPatwardhan/agent-os"><img alt="Developer docs: DeepWiki" src="https://img.shields.io/badge/developer%20docs-DeepWiki-111111"></a>
     <a href="./LICENSE"><img alt="License: BSL 1.1" src="https://img.shields.io/badge/license-BSL%201.1-f5c542"></a>
     <img alt="Runtime: WebAssembly" src="https://img.shields.io/badge/runtime-WebAssembly-654ff0">
-    <img alt="Build: Bazel" src="https://img.shields.io/badge/build-Bazel-43a047">
     <img alt="SDK: JavaScript" src="https://img.shields.io/badge/SDK-Node.js%20%7C%20Bun%20%7C%20Browser-3178c6">
 <!-- BEGIN generated:image-size-badges -->
     <br>
@@ -27,12 +27,11 @@
   </p>
 
   <p>
-    <a href="#install">Install</a> ·
-    <a href="#the-client-api">Client API</a> ·
-    <a href="#tools-connections-and-mounts">Capabilities</a> ·
-    <a href="#images">Images</a> ·
-    <a href="#browser-embedding">Browser</a> ·
-    <a href="#build-from-source">Build</a>
+    <a href="#what-you-can-build">What You Can Build</a> ·
+    <a href="#why-agentos">Why AgentOS</a> ·
+    <a href="#quickstart">Quickstart</a> ·
+    <a href="https://agentos.opyt.cloud/#examples">Examples</a> ·
+    <a href="./docs/index.md">API Reference</a>
   </p>
 
   <p>
@@ -40,42 +39,89 @@
   </p>
 </div>
 
-AgentOS is a contained computer for agent work, not a wrapper around the host shell. The guest gets
-its own filesystem, process table, Unix tools, scripting environment, and warm services. The host
-keeps control of network access, credentials, mounts, and tool implementations.
+AgentOS gives an agent a real, contained computer instead of a bag of disconnected function calls.
+The guest can inspect files, compose shell pipelines, write programs, call tools, query data, and
+produce artifacts without receiving ambient authority over the host.
 
-Use it to let an agent:
+The complete machine runs as WebAssembly. Its filesystem, processes, loaded programs, and warm
+services can be captured, moved, restored, or forked as a value. The same JavaScript `Vm` API runs in
+Node.js, Bun, the browser, and against a remote AgentOS host.
 
-- inspect files and compose shell pipelines in an isolated workspace;
-- write Luau programs that perform several tool calls without model round-trips;
-- process data in a warm SQLite service or generate documents with Typst;
-- access host functions and SaaS APIs without placing credentials in guest memory;
-- snapshot a complete working machine and fork it into independent branches; and
-- run the same `Vm` API locally, in a browser, or against a remote AgentOS host.
+## What You Can Build
 
-## Install
+| Product | What AgentOS provides |
+|---|---|
+| Coding agents | An isolated repo workspace, POSIX tools, Luau automation, static analysis, and structural Lua/Luau parsing and edits. |
+| Tool-using agents | Searchable, schema-bearing host tools that can be discovered and composed from the shell or Luau. |
+| SaaS automation | OpenAPI, GraphQL, Microsoft Graph, Google Discovery, and remote MCP connections with host-held credentials. |
+| Data and retrieval agents | A warm SQLite service, S3-backed files, vector-search mounts, and ordinary shell data pipelines. |
+| Document workflows | XLSX, DOCX, PPTX, ZIP, OPC, XML, media, chart, and warm Typst/PDF tooling. |
+| Browser sandboxes | The full VM in a page, durable OPFS-backed state, terminals, editors, and no server required for execution. |
+| Stateful agent branches | Whole-machine snapshots and independent forks that preserve files, processes, and warm services. |
+| Reproducible agent environments | Content-addressed images and LLB build graphs that cache work down to a ready-to-resume warm snapshot. |
+| Secure internal automation | Jailed host-directory mounts, origin-scoped network access, approval hooks, and secrets that never enter guest memory. |
+| Local and remote products | One VM surface across in-process Node.js/Bun, browser, and served remote runtimes. |
 
-The installer downloads a self-contained JavaScript bundle, `kernel.wasm`,
-`catalog-compiler.wasm`, and one image from the latest GitHub release:
+These capabilities compose. An agent can discover an API, read source data through a mount, join it in
+SQLite, edit code structurally, generate a PDF, and snapshot the completed workspace from one program.
+
+## Why AgentOS
+
+### The agent gets a computer
+
+Most agent runtimes expose one remote call at a time. AgentOS gives the model a shell, filesystem,
+processes, pipes, scripting, services, and persistent intermediate state. The agent can turn a plan
+into a program and do several steps without another model round-trip.
+
+### The host keeps the authority
+
+Credentials, network policy, mounts, and tool implementations stay outside the guest. The VM sees
+capability addresses and bytes—not bearer tokens, cloud clients, file descriptors, or raw host
+objects. Applications decide what the machine may reach and can require approval at the boundary.
+
+### Useful services stay warm
+
+The tools broker, SQLite, Typst, and other resident services start once and then serve shell commands,
+Luau programs, and host calls through the same implementation. A snapshot preserves that initialized
+state instead of reducing a workspace to a transcript and a directory archive.
+
+### State is a portable value
+
+Capture the entire running machine, restore it elsewhere, or fork it into independent branches. Full
+snapshots are self-contained; incremental snapshots carry only memory pages changed from a known full
+baseline. Images, layers, snapshots, and build definitions are content-addressed values.
+
+### One API runs everywhere
+
+The VM does not change shape when its host changes:
+
+| Runtime | Where the kernel runs | Good for |
+|---|---|---|
+| `local` | The current Node.js or Bun process | Applications, agents, CLIs, and local development |
+| `browser` | The current browser page | Interactive products, sandboxes, demos, and private local work |
+| `remote` | An AgentOS server | Durable services, shared infrastructure, and server-controlled execution |
+
+## Quickstart
+
+Install the runtime, kernel, catalog compiler, and an image from the AgentOS site:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/NarendraPatwardhan/agent-os/master/install.sh | bash
+curl -fsSL https://agentos.opyt.cloud/install.sh | bash
 ```
 
-Interactive installation offers two modes:
+The interactive installer offers two modes:
 
-- `agentic` installs the `loom` image and an AgentOS skill for coding agents;
-- `embedded` installs runtime artifacts for an application and defaults to `posix`.
+- `agentic` installs the programmable `loom` image and an AgentOS skill for coding agents.
+- `embedded` installs application runtime artifacts and defaults to the smaller `posix` image.
 
 For a non-interactive application install:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/NarendraPatwardhan/agent-os/master/install.sh \
+curl -fsSL https://agentos.opyt.cloud/install.sh \
   | AGENTOS_MODE=embedded AGENTOS_IMAGE=loom AGENTOS_DIR=./agent-os bash
 ```
 
-Node.js 22+ and Bun can load the same release bundle. Create `example.mjs` next to the installed
-`agent-os/` directory:
+Create `example.mjs` beside the installed `agent-os/` directory:
 
 ```js
 import { readFileSync } from "node:fs";
@@ -93,12 +139,19 @@ try {
   const result = await vm.exec("sort /workspace/input.txt | uniq -c | sort -rn");
   if (result.exitCode !== 0) throw new Error(result.stderr);
   process.stdout.write(result.stdout);
+
+  const branch = await vm.fork();
+  try {
+    await branch.fs.write("/workspace/next-step.txt", "continue independently\n");
+  } finally {
+    await branch.close();
+  }
 } finally {
   await vm.close();
 }
 ```
 
-Run it with either host runtime:
+Run it with either local host:
 
 ```sh
 node example.mjs
@@ -106,72 +159,22 @@ node example.mjs
 bun example.mjs
 ```
 
-Always close a VM in `finally`. An exit code describes the guest command; it does not release the
-host-side run loop or any registered capabilities.
+An exit code describes the guest command; `vm.close()` releases the host-side VM and its registered
+capabilities.
 
-## The client API
+## Capabilities Without Ambient Authority
 
-`@mc/core` and the release `mc-core.mjs` bundle expose the same surface:
+AgentOS starts without secrets, host directories, application callbacks, or unrestricted network
+access. The embedding application adds only what a workload needs:
 
-| API | Purpose |
-|---|---|
-| `mc.create(options)` | Boot a local, browser, or remote VM. |
-| `mc.restore(snapshot, options)` | Resume a whole-VM snapshot with host capabilities reattached. |
-| `mc.connect(endpoint, token).vm(id)` | Get or create a named VM through a served AgentOS endpoint. |
-| `vm.exec(command, options)` | Run a shell command and receive stdout, stderr, bytes, and the real exit code. |
-| `vm.luau(source, args)` | Run a Luau program from a `loom`, `atlas`, or `paper` image. |
-| `vm.fs` | Read, write, list, stat, symlink/readlink, chmod, create, and remove guest paths. |
-| `vm.shell()` | Open the byte-oriented interactive shell used by terminal clients. |
-| `vm.tool()` / `vm.mount()` | Add host-resident tools or host-backed filesystems to a live VM. |
-| `vm.snapshot()` / `vm.fork()` | Capture or branch the complete running machine; optionally emit a baseline-relative delta. |
-| `vm.commit().asLayer()` | Export the mutable filesystem overlay as a content-addressed tar layer. |
-| `vm.status()` / `vm.close()` | Inspect and dispose the VM host lifecycle. |
+- **Tools** expose application functions as discoverable, schema-bearing calls.
+- **Connections** turn OpenAPI, GraphQL, Microsoft Graph, Google Discovery, and MCP services into the
+  same tool catalog while keeping credentials at the host boundary.
+- **Mounts** expose a jailed host directory, S3 prefix, vector index, or custom data source as ordinary
+  guest files.
+- **Permissions** gate guest egress by origin, operation, and application approval policy.
 
-`vm.exec` accepts `cwd`, `env`, and `stdin` and never hides command failure:
-
-```js
-const result = await vm.exec("sha256sum report.pdf", {
-  cwd: "/work",
-  env: { LC_ALL: "C" },
-  stdin: "",
-});
-
-console.log(result.exitCode, result.stdout, result.stderr);
-```
-
-## Tools, connections, and mounts
-
-AgentOS starts without ambient network, secrets, host directories, or application callbacks. Add
-only the authority a workload needs.
-
-### Host tools
-
-A host tool is discoverable inside the VM, but its implementation stays in the embedding process.
-Tool registration needs the catalog compiler downloaded by the installer:
-
-```js
-import { readFileSync } from "node:fs";
-import { mc, tool, z } from "./agent-os/mc-core.mjs";
-
-const bytes = (path) => new Uint8Array(readFileSync(path));
-const customers = new Map([["acme", { name: "Acme", balance: 1250 }]]);
-
-const vm = await mc.create({
-  kernel: bytes("./agent-os/kernel.wasm"),
-  image: bytes("./agent-os/loom.tar"),
-  catalogCompiler: bytes("./agent-os/catalog-compiler.wasm"),
-  tools: [
-    tool({
-      name: "customer lookup",
-      description: "Find a customer by account id.",
-      input: z.object({ accountId: z.string() }),
-      run: ({ accountId }) => customers.get(accountId) ?? null,
-    }),
-  ],
-});
-```
-
-The guest can discover and call that tool from the shell:
+Inside the VM, the agent uses one consistent interface:
 
 ```sh
 tools search customer
@@ -179,202 +182,45 @@ tools describe host.org.main.customer.lookup
 tools call host.org.main.customer.lookup '{"accountId":"acme"}'
 ```
 
-Or from Luau:
-
-```lua
-local tools = require("tools")
-local result = tools.call("host.org.main.customer.lookup", { accountId = "acme" })
-print(result.ok, result.data.name)
-```
-
-### API connections
-
-Connections keep credentials and origin policy at the host boundary. `mc.use` is the concise path
-for a curated integration:
-
-```js
-const vm = await mc.use("github.issues", process.env.GITHUB_TOKEN, {
-  kernel,
-  image,
-  catalogCompiler,
-});
-```
-
-For a custom OpenAPI, GraphQL, Microsoft Graph, Google Discovery, or remote MCP source, pass a
-`connections` entry to `mc.create`. The guest catalog contains tool schemas and a connection
-reference—not the credential itself.
-
-### Host-backed filesystems
-
-Local applications can expose a jailed directory, S3 prefix, vector search, or a custom driver as
-ordinary guest files:
-
-```js
-import { hostDir, s3 } from "@mc/core/drivers";
-
-const vm = await mc.create({
-  kernel,
-  image,
-  mounts: [
-    { path: "/mnt/work", driver: hostDir({ root: "./workspace" }) },
-    { path: "/mnt/assets", driver: s3({ bucket: "acme-assets", readOnly: true }) },
-  ],
-});
-```
-
-Drivers run on the host and exchange bytes through the mount contract. The guest never receives a
-host file descriptor, S3 client, or raw infrastructure handle.
+The same catalog is available to Luau, so an agent can write and run a multi-step workflow rather than
+spending one model turn per tool call.
 
 ## Images
 
-Choose the smallest image that contains the workload:
+Choose the smallest environment that contains the workload:
 
-| Image | Includes | Typical use |
+| Image | Includes | Best for |
 |---|---|---|
 | `minimal` | Shell, boot services, minimal core commands, tools broker | Small custom harnesses |
 | `posix` | `minimal` plus the full coreutils command set | File and text automation |
-| `loom` | `posix` plus Luau, `luau-analyze`, Office batteries, and owned Lua/Luau parsers | Programmable agent work and structural code editing |
+| `loom` | `posix` plus Luau, static analysis, Office batteries, and owned Lua/Luau parsers | Programmable agents and structural code editing |
 | `atlas` | `loom` plus the warm SQLite service | Data and retrieval workflows |
 | `paper` | `loom` plus the warm Typst service and fonts | PDF and document generation |
 
-Images are layered, capability-stamped build artifacts. Switching images changes guest userland; it
-does not change the host API.
+Images are layered and capability-stamped. Switching images changes guest userland without changing
+the JavaScript API.
 
-The default `loom` image exposes lossless concrete trees and transactional edits through Luau:
+## State, Forks, and Reproducible Builds
 
-```luau
-local syntax = require("syntax")
-local doc = syntax.open("luau", "local function greet(name: string) return name end")
+`vm.snapshot()` captures the running computer. `vm.fork()` creates an independent branch with the
+same machine state and current host attachments. `vm.commit().asLayer()` exports filesystem changes as
+a reusable content-addressed layer.
 
-local names = syntax.compile_query(
-  "luau",
-  "(local_function_declaration name: (identifier) @name)"
-)
-for capture in doc:captures(names, { include_text = true }) do
-  print(capture.name, capture.text)
-end
-
-doc:edit({{ start_byte = 15, old_end_byte = 20, replacement = "hello" }})
-```
-
-Grammars are AgentOS-authored and generated at build time; the guest ships only the generated parser
-pack, the shared runtime, and the versioned service client.
-
-## Browser embedding
-
-The browser backend runs the same `kernel.wasm` in-process. Fetch and pass artifacts explicitly:
-
-```ts
-import { mc } from "@mc/core";
-
-async function bytes(url: string): Promise<Uint8Array> {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`failed to fetch ${url}: ${response.status}`);
-  return new Uint8Array(await response.arrayBuffer());
-}
-
-const vm = await mc.create({
-  runtime: "browser",
-  kernel: await bytes("/mc/kernel.wasm"),
-  image: await bytes("/mc/loom.tar"),
-});
-```
-
-For UI embedding, `@mc/elements` owns artifact loading and VM lifecycle for `<mc-terminal>`,
-`<mc-editor>`, and `<mc-sandbox>`. The repository web app uses this exact setup:
-
-```ts
-import { setArtifactSources } from "@mc/elements";
-import "@mc/elements";
-
-setArtifactSources({
-  kernel: "/mc/kernel.wasm",
-  images: { loom: "/mc/loom.tar", atlas: "/mc/atlas.tar" },
-  catalogCompiler: "/mc/catalog-compiler.wasm",
-});
-```
-
-```html
-<mc-terminal image="loom" net label="agent · live in your browser"></mc-terminal>
-```
-
-See [`web/src/ExamplesShowcase.tsx`](./web/src/ExamplesShowcase.tsx) and
-[`web/src/examples/chapters.ts`](./web/src/examples/chapters.ts) for executable examples of the
-client API, tools, mounts, snapshots, builds, approval flows, and remote lifecycle.
-
-## Snapshots and reproducible builds
-
-`vm.snapshot()` captures the whole machine—processes, filesystem state, warm services, and linear
-memory. Full snapshots are self-contained and remain the default. With a content store, incremental
-snapshots carry only pages changed from the VM's full baseline; the SDK stores and resolves that
-baseline by digest. `vm.fork()` restores the current state into an independent VM, while
-`vm.commit().asLayer()` exports only the mutable filesystem overlay:
+AgentOS can also record live VM mutations as an LLB definition or construct a build graph directly.
+Identical inputs reproduce the same machine, unchanged nodes remain cache hits, and a cached result
+can be a warm snapshot rather than a cold filesystem image.
 
 ```js
-import { readFileSync } from "node:fs";
-import { mc, MemoryContentStore } from "./agent-os/mc-core.mjs";
-
-const bytes = (path) => new Uint8Array(readFileSync(path));
-const kernel = bytes("./agent-os/kernel.wasm");
-const store = new MemoryContentStore();
-const vm = await mc.create({ kernel, image: bytes("./agent-os/loom.tar"), store });
-
 const snapshot = await vm.snapshot();
-const delta = await vm.snapshot({ mode: "incremental" });
-const resumed = await mc.restore(delta, { kernel, store });
-const fork = await vm.fork();
-const { digest, tar } = await vm.commit().asLayer();
+const branch = await vm.fork();
+const layer = await vm.commit().asLayer();
 ```
 
-A fork inherits the VM's current host tools and mounts. On a remote runtime it always receives a new
-server identity, even when the source was created with an explicit `id`; use
-`mc.restore(snapshot, { id, ... })` when replacing a particular named VM is intentional.
+## Explore AgentOS
 
-An incremental value references one full snapshot and never another incremental, so restore work is
-bounded. Keep the referenced full object when moving a delta between stores or remote servers.
-
-For applications with a content store, `mc.record()` captures live `vm.exec` and `vm.fs` mutations
-as a portable `llb` definition. `llb` definitions are deterministic DAGs of VM filesystem and
-execution steps; a cache hit can restore an already-warm snapshot rather than rebooting and replaying
-setup. The browser workbench includes live examples of both authored and recorded builds.
-
-## Build from source
-
-All source artifacts come from Bazel. Build the release-style client set and a chosen image together:
-
-```sh
-bazel build \
-  //memcontainers/kernel/rust:kernel \
-  //memcontainers/images:loom \
-  //memcontainers/lib/catalog-compiler:wasm \
-  //memcontainers/sdk-js/core:bundle
-```
-
-Outputs:
-
-```text
-bazel-bin/memcontainers/kernel/rust/kernel.wasm
-bazel-bin/memcontainers/images/loom.tar
-bazel-bin/memcontainers/lib/catalog-compiler/catalog-compiler.wasm
-bazel-bin/memcontainers/sdk-js/core/mc-core.mjs
-```
-
-Run the live browser workbench or produce its deployable bundle with the actual `web/` graph:
-
-```sh
-bazel run //web:dev
-bazel build //web:app
-```
-
-Useful verification targets:
-
-```sh
-bazel test //memcontainers/sdk-js/core:vm_test
-bazel test //memcontainers/tests/e2e:core
-bazel test //memcontainers/tests/e2e:extended
-bazel test //...
-```
-
-The repository architecture and invariants are maintained in [SYSTEMS.md](./SYSTEMS.md). Contract
-bindings are generated from [`memcontainers/contracts`](./memcontainers/contracts/README.md); do not
-hand-copy wire or ABI definitions into a consumer.
+| Resource | Use it for |
+|---|---|
+| [AgentOS by Example](https://agentos.opyt.cloud/#examples) | Live, editable demonstrations running in the browser VM |
+| [JavaScript API reference](./docs/index.md) | Public methods, options, runtime behavior, browser elements, and errors |
+| [DeepWiki](https://deepwiki.com/NarendraPatwardhan/agent-os) | Architecture, implementation details, and contributor documentation |
+| [SYSTEMS.md](./SYSTEMS.md) | The source-of-truth system invariants and design contract |

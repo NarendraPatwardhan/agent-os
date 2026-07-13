@@ -17,6 +17,30 @@ genrule(
     tools = ["//bazel/tools/readme-badges"],
 )
 
+load("@aspect_rules_js//js:defs.bzl", "js_library", "js_test")
+
+# The client reference is authored once, here, and consumed verbatim by the web
+# reader. Keeping it in a public library makes the otherwise out-of-package
+# Markdown an explicit Bazel edge of //web:app instead of an undeclared Vite read.
+js_library(
+    name = "reference_sources",
+    srcs = glob(["*.md"]) + ["api-surface.json"],
+    visibility = ["//visibility:public"],
+)
+
+# Docs are part of the API contract: all exported JS values must be classified,
+# local links/anchors must resolve, and every ```js fence must be JavaScript (not
+# TypeScript masquerading as a browser example).
+js_test(
+    name = "reference_test",
+    data = [
+        ":reference_sources",
+        "//memcontainers/sdk-js/core:api_sources",
+        "//memcontainers/sdk-js/elements:api_sources",
+    ],
+    entry_point = "tools/check.mjs",
+)
+
 genrule(
     name = "readme_with_badges",
     srcs = [

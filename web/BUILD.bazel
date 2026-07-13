@@ -27,10 +27,15 @@ WEB_SOURCES = [
 # @mc/elements ALONE — no transitive closure to re-declare. (The bundle keeps Node
 # builtins external; vite stubs them for the browser as before.)
 WEB_APP_DEPS = [
+    "//docs:reference_sources",
     ":node_modules/@fontsource-variable/inter",
     ":node_modules/@fontsource-variable/inter-tight",
     ":node_modules/@fontsource-variable/newsreader",
     ":node_modules/@fontsource/ibm-plex-mono",
+    ":node_modules/@lezer/common",
+    ":node_modules/@lezer/highlight",
+    ":node_modules/@lezer/javascript",
+    ":node_modules/@lezer/lr",
     ":node_modules/@mc/elements",
     ":node_modules/@stylexjs/stylex",
     ":node_modules/@stylexjs/unplugin",

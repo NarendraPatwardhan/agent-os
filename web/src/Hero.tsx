@@ -11,6 +11,7 @@ import { container } from "instrument/tokens/size.stylex.js";
 import { media } from "instrument/tokens/media.stylex.js";
 import { duration, easing } from "instrument/tokens/motion.stylex.js";
 import { runAutoDemo, type AutoDemoHandle } from "./heroDemo";
+import { CopyIcon } from "./CopyIcon";
 
 // Point @mc/elements' artifact loader at the Bazel-staged kernel/image that Vite
 // serves from /mc/ (see web/BUILD.bazel `hero_vm_assets`). Module scope: runs once,
@@ -177,32 +178,6 @@ function HeroTerminal() {
   );
 }
 
-function CopyIcon({ copied }: { readonly copied: boolean }) {
-  return (
-    <svg
-      {...stylex.props(styles.copyIcon)}
-      width="16"
-      height="16"
-      viewBox="0 0 20 20"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      {copied ? (
-        <path d="m4.5 10.5 3.4 3.4 7.6-7.8" />
-      ) : (
-        <>
-          <rect x="7" y="6" width="9" height="10" rx="1.5" />
-          <path d="M13 6V4.5A1.5 1.5 0 0 0 11.5 3h-7A1.5 1.5 0 0 0 3 4.5v8A1.5 1.5 0 0 0 4.5 14H7" />
-        </>
-      )}
-    </svg>
-  );
-}
-
 export function Hero() {
   const [copied, setCopied] = useState(false);
   const resetTimer = useRef<number | null>(null);
@@ -255,7 +230,7 @@ export function Hero() {
               {...stylex.props(styles.copyStatus, copied && styles.copyStatusDone)}
               aria-hidden="true"
             >
-              <CopyIcon copied={copied} />
+              <CopyIcon copied={copied} {...stylex.props(styles.copyIcon)} />
             </span>
             <span {...stylex.props(layout.srOnly)} aria-live="polite">
               {copied ? "Install command copied" : ""}

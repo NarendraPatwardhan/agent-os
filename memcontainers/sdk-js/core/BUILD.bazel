@@ -1,12 +1,26 @@
 # @mc/core — the unified Vm API over the embedded @mc/host backend, browser artifacts, and the
 # remote REST + typed WebSocket contract. Published under the @mc/* scope.
 load("//bazel:ts.bzl", "mc_ts_project")
-load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_run_binary", "js_test")
+load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_library", "js_run_binary", "js_test")
 load("@aspect_rules_js//npm:defs.bzl", "npm_package")
 load("@npm//:defs.bzl", "npm_link_all_packages")
 
 # Link @mc/core's deps (@mc/host, @mc/contracts, zod) into :node_modules/*.
 npm_link_all_packages(name = "node_modules")
+
+# Public API declaration inputs for the documentation coverage gate. This is a
+# source-only edge; consumers still link through :pkg / :bundle.
+js_library(
+    name = "api_sources",
+    srcs = [
+        "src/drivers.ts",
+        "src/index.ts",
+        "src/llb.ts",
+        "src/memcontainer.ts",
+        "src/types.ts",
+    ],
+    visibility = ["//docs:__pkg__"],
+)
 
 # Role-named (:lib), not :core — the package directory already namespaces it; the target names the role.
 mc_ts_project(

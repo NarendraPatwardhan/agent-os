@@ -93,6 +93,18 @@ importers:
       '@fontsource/ibm-plex-mono':
         specifier: ^5.2.0
         version: 5.2.7
+      '@lezer/common':
+        specifier: ^1.2.3
+        version: 1.5.2
+      '@lezer/highlight':
+        specifier: ^1.2.1
+        version: 1.2.3
+      '@lezer/javascript':
+        specifier: ^1.5.4
+        version: 1.5.4
+      '@lezer/lr':
+        specifier: ^1.4.8
+        version: 1.4.10
       '@mc/elements':
         specifier: workspace:*
         version: link:../memcontainers/sdk-js/elements
