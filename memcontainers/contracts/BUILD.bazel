@@ -42,7 +42,7 @@ abi_library(name = "ctl", contract = "control.kdl", langs = ["rust", "zig", "ts"
 abi_library(name = "wire", contract = "wire.kdl", langs = ["rust", "ts", "asyncapi", "openapi"])
 abi_library(name = "llb", contract = "llb.kdl", langs = ["rust", "zig", "ts", "elixir"])
 abi_library(name = "syntax", contract = "syntax.kdl", langs = ["rust", "zig", "luau"])
-abi_library(name = "snapshot", contract = "snapshot.kdl", langs = ["rust", "ts"])
+abi_library(name = "snapshot", contract = "snapshot.kdl", langs = ["rust", "ts", "elixir"])
 
 # The generated TS descriptors compiled into ONE consumable lib — the JS host (hosts/js) and @mc/core
 # wire their `env` bridge + `mc_ctl_*` export lookup from these (BRIDGE_IMPORTS / CONTROL_EXPORTS /

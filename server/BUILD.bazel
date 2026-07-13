@@ -29,6 +29,7 @@ write_source_files(
         "lib/agent_os/contracts/constants.ex": "//memcontainers/contracts:constants_elixir_gen",
         "lib/agent_os/contracts/control.ex": "//memcontainers/contracts:ctl_elixir_gen",
         "lib/agent_os/contracts/llb.ex": "//memcontainers/contracts:llb_elixir_gen",
+        "lib/agent_os/contracts/snapshot.ex": "//memcontainers/contracts:snapshot_elixir_gen",
     },
     visibility = ["//visibility:public"],
 )
@@ -124,6 +125,7 @@ pkg_tar(
         "//memcontainers/contracts:constants_elixir_gen": "lib/agent_os/contracts/constants.ex",
         "//memcontainers/contracts:ctl_elixir_gen": "lib/agent_os/contracts/control.ex",
         "//memcontainers/contracts:llb_elixir_gen": "lib/agent_os/contracts/llb.ex",
+        "//memcontainers/contracts:snapshot_elixir_gen": "lib/agent_os/contracts/snapshot.ex",
     },
     mode = "0644",
     modes = {
