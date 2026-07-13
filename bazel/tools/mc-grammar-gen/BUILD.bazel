@@ -3,13 +3,19 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 exports_files(["Cargo.toml", "Cargo.lock"])
 
 rust_library(
+    name = "parser_ast",
+    srcs = ["src/ast.rs"],
+    crate_name = "mc_parser_ast",
+    edition = "2024",
+)
+
+rust_library(
     name = "parser_ir",
     srcs = ["src/ir.rs"],
     crate_name = "mc_parser_ir",
     edition = "2024",
     deps = [
         "@grammar_gen_crates//:serde",
-        "@grammar_gen_crates//:serde_json",
     ],
 )
 
@@ -17,6 +23,33 @@ rust_library(
     name = "parser_dsl",
     srcs = ["src/dsl.rs"],
     crate_name = "mc_parser_dsl",
+    edition = "2024",
+    deps = [":parser_ast"],
+)
+
+rust_library(
+    name = "parser_format",
+    srcs = ["src/format.rs"],
+    crate_name = "mc_parser_format",
+    edition = "2024",
+    deps = [":parser_ast"],
+)
+
+rust_library(
+    name = "parser_elaborate",
+    srcs = ["src/elaborate.rs"],
+    crate_name = "mc_parser_elaborate",
+    edition = "2024",
+    deps = [
+        ":parser_ast",
+        ":parser_ir",
+    ],
+)
+
+rust_library(
+    name = "tree_sitter_backend",
+    srcs = ["src/tree_sitter_backend.rs"],
+    crate_name = "mc_tree_sitter_backend",
     edition = "2024",
     deps = [
         ":parser_ir",
@@ -31,7 +64,9 @@ rust_library(
     edition = "2024",
     deps = [
         ":parser_dsl",
+        ":parser_elaborate",
         ":parser_ir",
+        ":tree_sitter_backend",
         "@grammar_gen_crates//:serde_json",
         "@grammar_gen_crates//:sha2",
         "@tree_sitter//:generate",
@@ -47,13 +82,29 @@ rust_binary(
     visibility = ["//visibility:public"],
 )
 
+rust_binary(
+    name = "mc-grammar-fmt",
+    srcs = ["src/fmt_main.rs"],
+    crate_name = "mc_grammar_fmt",
+    edition = "2024",
+    deps = [
+        ":parser_dsl",
+        ":parser_format",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 rust_test(
     name = "dsl_test",
     srcs = ["src/dsl_test.rs"],
     crate_name = "mc_parser_dsl_test",
     edition = "2024",
     deps = [
+        ":parser_ast",
         ":parser_dsl",
+        ":parser_elaborate",
+        ":parser_format",
         ":parser_ir",
+        ":tree_sitter_backend",
     ],
 )

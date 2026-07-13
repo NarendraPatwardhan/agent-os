@@ -1,44 +1,83 @@
-language luau
-version "0.725.0"
-import "families/lua-core"
+grammar luau "0.725.0"
+
+use lua.core
 start source_file
 
-rule source_file = repeat(_statement)
-rule _dialect_statement = choice(type_alias_declaration, exported_type_alias_declaration, compound_assignment_statement, continue_statement)
-rule _dialect_expression = choice(if_expression, type_cast_expression, interpolated_string)
-rule _dialect_type_annotation = seq(":", field(type, type_expression))
-rule _dialect_return_type = seq(":", field(return_type, type_expression))
+source_file = body:_statement*
+  => module(body)
+     derives scope
 
-rule type_alias_declaration = seq("type", field(name, identifier), optional(type_parameters), "=", field(value, type_expression))
-rule exported_type_alias_declaration = seq("export", type_alias_declaration)
-rule type_parameters = seq("<", type_parameter, repeat(seq(",", type_parameter)), ">")
-rule type_parameter = seq(field(name, identifier), optional(seq("=", field(value, type_expression))))
-rule type_expression = choice(identifier, "nil", "boolean", "number", "string", "thread", "buffer", "any", "unknown", "never", singleton_type, table_type, function_type, union_type, intersection_type, optional_type, generic_type, typeof_type)
-rule singleton_type = choice(quoted_string, "true", "false")
-rule table_type = seq("{", optional(seq(type_field, repeat(seq(",", type_field)))), optional(","), "}")
-rule type_field = choice(seq(field(name, identifier), ":", field(value, type_expression)), seq("[", field(name, type_expression), "]", ":", field(value, type_expression)), type_expression)
-rule function_type = right(1, seq(optional(type_parameters), "(", optional(seq(type_expression, repeat(seq(",", type_expression)))), ")", "->", field(return_type, type_expression)))
-rule union_type = left(1, seq(field(left, type_expression), "|", field(right, type_expression)))
-rule intersection_type = left(2, seq(field(left, type_expression), "&", field(right, type_expression)))
-rule optional_type = left(3, seq(type_expression, "?"))
-rule generic_type = left(4, seq(identifier, "<", type_expression, repeat(seq(",", type_expression)), ">"))
-rule typeof_type = seq("typeof", "(", _expression, ")")
+extend _statement =
+  | type_alias_declaration
+  | exported_type_alias_declaration
+  | compound_assignment_statement
+  | continue_statement
 
-rule compound_assignment_statement = seq(field(left, variable), field(operator, choice("+=", "-=", "*=", "/=", "//=", "%=", "^=", "..=")), field(right, _expression))
-rule continue_statement = "continue"
-rule if_expression = right(1, seq("if", field(condition, _expression), "then", field(consequence, _expression), "else", field(alternative, _expression)))
-rule type_cast_expression = left(11, seq(field(value, _expression), "::", field(type, type_expression)))
-rule interpolated_string = token(seq("`", pattern("([^`\\\\]|\\\\.)*"), "`"))
+extend _expression = if_expression | type_cast_expression | interpolated_string
 
-conflict { type_expression, _expression }
-conflict { table_type, table_constructor }
+fill type_annotation = ":" type:type_expression
+fill return_type_annotation = ":" return_type:type_expression
 
-vocabulary source_file -> module { trait scope; }
-vocabulary type_alias_declaration -> declaration { role name = name; role value = value; trait declaration; }
-vocabulary exported_type_alias_declaration -> declaration { trait declaration; }
-vocabulary type_expression -> type
-vocabulary function_type -> type { role return_type = return_type; }
-vocabulary compound_assignment_statement -> assignment { role left = left; role right = right; }
-vocabulary if_expression -> branch { role condition = condition; }
-vocabulary type_cast_expression -> operator { role value = value; }
-vocabulary interpolated_string -> literal
+type_alias_declaration = "type" name:identifier type_parameters? "=" value:type_expression
+  => declaration(name)
+     derives declaration
+
+exported_type_alias_declaration = "export" type_alias_declaration
+type_parameters = "<" separated1(type_parameter, ",") ">"
+type_parameter = name:identifier ("=" value:type_expression)?
+
+type_expression =
+  | identifier
+  | "nil"
+  | "boolean"
+  | "number"
+  | "string"
+  | "thread"
+  | "buffer"
+  | "any"
+  | "unknown"
+  | "never"
+  | singleton_type
+  | table_type
+  | function_type
+  | union_type
+  | intersection_type
+  | optional_type
+  | generic_type
+  | typeof_type
+  => type
+
+singleton_type = quoted_string | "true" | "false"
+table_type = "{" (separated1(type_field, ",") ","?)? "}"
+
+type_field =
+  | name:identifier ":" value:type_expression
+  | "[" name:type_expression "]" ":" value:type_expression
+  | value:type_expression
+
+function_type = right 1: type_parameters? "(" separated(type_expression, ",") ")" "->" return_type:type_expression
+  => type
+
+union_type = left 1: left:type_expression "|" right:type_expression
+intersection_type = left 2: left:type_expression "&" right:type_expression
+optional_type = left 3: type_expression "?"
+generic_type = left 4: identifier "<" separated1(type_expression, ",") ">"
+typeof_type = "typeof" "(" _expression ")"
+
+compound_assignment_statement =
+  left:variable operator:("+=" | "-=" | "*=" | "/=" | "//=" | "%=" | "^=" | "..=") right:_expression
+  => assignment(left, right)
+
+continue_statement = "continue"
+
+if_expression = right 1: "if" condition:_expression "then" consequence:_expression "else" alternative:_expression
+  => branch(condition, body=consequence)
+
+type_cast_expression = left 11: value:_expression "::" type:type_expression
+  => operator(left=value)
+
+token interpolated_string = "`" /([^`\\]|\\.)*/ "`"
+  => literal
+
+conflict type_expression _expression
+conflict table_type table_constructor

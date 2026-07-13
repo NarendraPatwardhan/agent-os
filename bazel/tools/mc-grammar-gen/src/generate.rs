@@ -1,10 +1,12 @@
 //! Hermetic adapter from AgentOS grammar sources to the pinned Tree-sitter generator core.
 
 use mc_parser_dsl::parse;
+use mc_parser_elaborate::elaborate;
 use mc_parser_ir::{GrammarIr, SemanticMapping};
+use mc_tree_sitter_backend::grammar_json;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tree_sitter_generate::{ABI_VERSION_MAX, Diagnostic, OptLevel, generate_parser_in_directory};
@@ -28,9 +30,17 @@ pub struct Options {
 }
 
 #[derive(Default)]
+struct SemanticKind {
+    id: u32,
+    roles: BTreeMap<String, bool>,
+    traits: std::collections::BTreeSet<String>,
+}
+
+#[derive(Default)]
 struct Vocabulary {
     version: u32,
-    kinds: BTreeMap<String, u32>,
+    grammar_ir_version: u32,
+    kinds: BTreeMap<String, SemanticKind>,
     roles: BTreeMap<String, u32>,
     traits: BTreeMap<String, u32>,
 }
@@ -53,42 +63,83 @@ fn read_vocabulary(path: &Path) -> Result<Vocabulary, String> {
             })?;
             continue;
         }
+        if let Some(rest) = line.strip_prefix("grammar-ir-version ") {
+            out.grammar_ir_version = rest.trim().parse().map_err(|_| {
+                format!(
+                    "{}:{}: invalid grammar IR version",
+                    path.display(),
+                    line_no + 1
+                )
+            })?;
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("semantic-kind ") {
+            let (name, props) = quoted_declaration(path, line_no + 1, rest)?;
+            let id = declaration_id(path, line_no + 1, props)?;
+            let mut kind = SemanticKind {
+                id,
+                ..SemanticKind::default()
+            };
+            let body = props
+                .split_once('{')
+                .map_or("", |(_, body)| body.trim_end_matches('}'));
+            for item in body
+                .split(';')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+            {
+                if let Some(rest) = item.strip_prefix("role ") {
+                    let (role, props) = quoted_declaration(path, line_no + 1, rest)?;
+                    let required = props
+                        .split_whitespace()
+                        .find_map(|property| property.strip_prefix("required="))
+                        .unwrap_or("0");
+                    let required = match required {
+                        "0" => false,
+                        "1" => true,
+                        _ => {
+                            return Err(format!(
+                                "{}:{}: invalid required flag",
+                                path.display(),
+                                line_no + 1
+                            ));
+                        }
+                    };
+                    if kind.roles.insert(role, required).is_some() {
+                        return Err(format!(
+                            "{}:{}: duplicate semantic kind role",
+                            path.display(),
+                            line_no + 1
+                        ));
+                    }
+                } else if let Some(rest) = item.strip_prefix("trait ") {
+                    let (name, _) = quoted_declaration(path, line_no + 1, rest)?;
+                    if !kind.traits.insert(name) {
+                        return Err(format!(
+                            "{}:{}: duplicate semantic kind trait",
+                            path.display(),
+                            line_no + 1
+                        ));
+                    }
+                }
+            }
+            if out.kinds.insert(name.clone(), kind).is_some() {
+                return Err(format!(
+                    "{}:{}: duplicate semantic name {name}",
+                    path.display(),
+                    line_no + 1
+                ));
+            }
+            continue;
+        }
         for (prefix, map) in [
-            ("semantic-kind ", &mut out.kinds),
             ("semantic-role ", &mut out.roles),
             ("semantic-trait ", &mut out.traits),
         ] {
             if let Some(rest) = line.strip_prefix(prefix) {
-                let Some(after_quote) = rest.strip_prefix('"') else {
-                    return Err(format!(
-                        "{}:{}: expected quoted semantic name",
-                        path.display(),
-                        line_no + 1
-                    ));
-                };
-                let Some(end) = after_quote.find('"') else {
-                    return Err(format!(
-                        "{}:{}: unterminated semantic name",
-                        path.display(),
-                        line_no + 1
-                    ));
-                };
-                let name = &after_quote[..end];
-                let props = &after_quote[end + 1..];
-                let id = props
-                    .split_whitespace()
-                    .find_map(|p| p.strip_prefix("id="))
-                    .ok_or_else(|| {
-                        format!(
-                            "{}:{}: semantic declaration needs id",
-                            path.display(),
-                            line_no + 1
-                        )
-                    })?;
-                let id: u32 = id.trim_end_matches([';', '{']).parse().map_err(|_| {
-                    format!("{}:{}: invalid semantic id", path.display(), line_no + 1)
-                })?;
-                if map.insert(name.into(), id).is_some() {
+                let (name, props) = quoted_declaration(path, line_no + 1, rest)?;
+                let id = declaration_id(path, line_no + 1, props)?;
+                if map.insert(name.clone(), id).is_some() {
                     return Err(format!(
                         "{}:{}: duplicate semantic name {name}",
                         path.display(),
@@ -102,62 +153,40 @@ fn read_vocabulary(path: &Path) -> Result<Vocabulary, String> {
     if out.version == 0 {
         return Err(format!("{}: missing vocabulary-version", path.display()));
     }
+    if out.grammar_ir_version == 0 {
+        return Err(format!("{}: missing grammar-ir-version", path.display()));
+    }
     Ok(out)
 }
 
-fn merge(root: GrammarIr, modules: Vec<(String, GrammarIr)>) -> Result<GrammarIr, String> {
-    let declared: BTreeSet<_> = root.imports.iter().cloned().collect();
-    let supplied: BTreeMap<_, _> = modules.into_iter().collect();
-    for name in &declared {
-        if !supplied.contains_key(name) {
-            return Err(format!("undeclared Bazel input for imported module {name}"));
-        }
-    }
-    for name in supplied.keys() {
-        if !declared.contains(name) {
-            return Err(format!(
-                "module {name} was supplied but is not imported by the root"
-            ));
-        }
-    }
-    let mut out = GrammarIr::new(root.name.clone());
-    out.version = root.version.clone();
-    out.start = root.start.clone();
-    out.imports = root.imports.clone();
-    out.dialects = root.dialects.clone();
-    for name in &root.imports {
-        let module = &supplied[name];
-        for (rule_name, rule) in &module.rules {
-            if out.rules.insert(rule_name.clone(), rule.clone()).is_some() {
-                return Err(format!(
-                    "import collision for rule {rule_name} in module {name}"
-                ));
-            }
-        }
-        out.semantic.extend(module.semantic.clone());
-        out.extras.extend(module.extras.clone());
-        out.externals.extend(module.externals.clone());
-        out.inline.extend(module.inline.clone());
-        out.supertypes.extend(module.supertypes.clone());
-        out.conflicts.extend(module.conflicts.clone());
-        out.precedences.extend(module.precedences.clone());
-    }
-    for (name, rule) in root.rules {
-        if out.rules.insert(name.clone(), rule).is_some() {
-            return Err(format!(
-                "root rule {name} collides with an imported rule; use a distinct shared rule name"
-            ));
-        }
-    }
-    out.semantic.extend(root.semantic);
-    out.extras.extend(root.extras);
-    out.externals.extend(root.externals);
-    out.inline.extend(root.inline);
-    out.supertypes.extend(root.supertypes);
-    out.conflicts.extend(root.conflicts);
-    out.precedences.extend(root.precedences);
-    out.word = root.word;
-    Ok(out)
+fn quoted_declaration<'a>(
+    path: &Path,
+    line: usize,
+    source: &'a str,
+) -> Result<(String, &'a str), String> {
+    let Some(after_quote) = source.strip_prefix('"') else {
+        return Err(format!(
+            "{}:{line}: expected quoted semantic name",
+            path.display()
+        ));
+    };
+    let Some(end) = after_quote.find('"') else {
+        return Err(format!(
+            "{}:{line}: unterminated semantic name",
+            path.display()
+        ));
+    };
+    Ok((after_quote[..end].into(), &after_quote[end + 1..]))
+}
+
+fn declaration_id(path: &Path, line: usize, properties: &str) -> Result<u32, String> {
+    let id = properties
+        .split_whitespace()
+        .find_map(|property| property.strip_prefix("id="))
+        .ok_or_else(|| format!("{}:{line}: semantic declaration needs id", path.display()))?;
+    id.trim_end_matches([';', '{'])
+        .parse()
+        .map_err(|_| format!("{}:{line}: invalid semantic id", path.display()))
 }
 
 fn semantic_json(
@@ -175,6 +204,12 @@ fn semantic_json(
         })?;
         let mut roles = serde_json::Map::new();
         for (canonical, concrete) in &mapping.roles {
+            if !kind.roles.contains_key(canonical) {
+                return Err(format!(
+                    "{}:{}:{}: semantic kind {} does not define role {canonical}",
+                    mapping.span.source, mapping.span.line, mapping.span.column, mapping.semantic
+                ));
+            }
             let id = vocabulary.roles.get(canonical).ok_or_else(|| {
                 format!(
                     "{}:{}:{}: unknown semantic role {canonical}",
@@ -183,8 +218,22 @@ fn semantic_json(
             })?;
             roles.insert(canonical.clone(), json!({"id": id, "concrete": concrete}));
         }
+        for (role, required) in &kind.roles {
+            if *required && !mapping.roles.contains_key(role) {
+                return Err(format!(
+                    "{}:{}:{}: semantic kind {} requires role {role}",
+                    mapping.span.source, mapping.span.line, mapping.span.column, mapping.semantic
+                ));
+            }
+        }
         let mut traits = Vec::new();
         for name in &mapping.traits {
+            if !kind.traits.contains(name) {
+                return Err(format!(
+                    "{}:{}:{}: semantic kind {} does not define trait {name}",
+                    mapping.span.source, mapping.span.line, mapping.span.column, mapping.semantic
+                ));
+            }
             let id = vocabulary.traits.get(name).ok_or_else(|| {
                 format!(
                     "{}:{}:{}: unknown semantic trait {name}",
@@ -193,7 +242,7 @@ fn semantic_json(
             })?;
             traits.push(json!({"id": id, "name": name}));
         }
-        rows.push(json!({"concrete": mapping.concrete, "semantic": mapping.semantic, "semantic_id": kind, "roles": roles, "traits": traits}));
+        rows.push(json!({"concrete": mapping.concrete, "semantic": mapping.semantic, "semantic_id": kind.id, "roles": roles, "traits": traits}));
     }
     rows.sort_by(|a, b| a["concrete"].as_str().cmp(&b["concrete"].as_str()));
     Ok(json!({
@@ -237,11 +286,12 @@ pub fn run(options: Options) -> Result<(), String> {
             parse(&source, &path.to_string_lossy()).map_err(|e| e.to_string())?,
         ));
     }
-    let grammar = merge(root, modules)?;
     let vocabulary = read_vocabulary(&options.vocabulary)?;
+    let mut grammar = elaborate(root, modules)?;
+    grammar.ir_version = vocabulary.grammar_ir_version;
     let semantic = semantic_json(&grammar.semantic, &vocabulary, &grammar)?;
     let ir_value = serde_json::to_value(&grammar).map_err(|e| e.to_string())?;
-    let grammar_value = grammar.to_tree_sitter_json();
+    let grammar_value = grammar_json(&grammar);
     write_json(&options.outputs.ir, &ir_value)?;
     write_json(&options.outputs.grammar_json, &grammar_value)?;
     write_json(&options.outputs.semantics, &semantic)?;

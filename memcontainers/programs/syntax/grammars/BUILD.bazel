@@ -8,17 +8,35 @@ exports_files([
     "families/lua-core.grammar",
 ])
 
+sh_test(
+    name = "format_test",
+    srcs = ["format_test.sh"],
+    args = [
+        "$(location //bazel/tools/mc-grammar-gen:mc-grammar-fmt)",
+        "--check",
+        "$(location :families/lua-core.grammar)",
+        "$(location :lua.grammar)",
+        "$(location :luau.grammar)",
+    ],
+    data = [
+        ":families/lua-core.grammar",
+        ":lua.grammar",
+        ":luau.grammar",
+        "//bazel/tools/mc-grammar-gen:mc-grammar-fmt",
+    ],
+)
+
 mc_grammar(
     name = "lua",
     root = "lua.grammar",
-    modules = {"families/lua-core.grammar": "families/lua-core"},
+    modules = {"families/lua-core.grammar": "lua.core"},
     language = "lua",
 )
 
 mc_grammar(
     name = "luau",
     root = "luau.grammar",
-    modules = {"families/lua-core.grammar": "families/lua-core"},
+    modules = {"families/lua-core.grammar": "lua.core"},
     language = "luau",
 )
 

@@ -4,7 +4,7 @@
 
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const VOCABULARY_VERSION: u32 = 1;
-pub const GRAMMAR_IR_VERSION: u32 = 1;
+pub const GRAMMAR_IR_VERSION: u32 = 2;
 pub const SEMANTIC_KIND_MODULE: u32 = 1;
 pub const SEMANTIC_KIND_DECLARATION: u32 = 2;
 pub const SEMANTIC_KIND_FUNCTION: u32 = 3;

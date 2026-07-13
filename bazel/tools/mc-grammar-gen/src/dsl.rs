@@ -1,42 +1,42 @@
-//! Bootstrap parser for the declarative `.grammar` language. It is intentionally handwritten:
-//! parser generation must never depend on an already-generated parser or a guest image.
+//! Bootstrap parser for the AgentOS grammar language.
+//!
+//! It is intentionally handwritten: parser generation must not depend on an already-generated
+//! parser. The surface language is EBNF-like and lowers to a spanned AST; module composition and
+//! backend lowering happen in later compiler stages.
 
-use mc_parser_ir::{GRAMMAR_IR_VERSION, GrammarIr, Precedence, Rule, SemanticMapping, Span};
-use std::collections::{BTreeMap, BTreeSet};
+use mc_parser_ast::{
+    Associativity, Comment, Declaration, Expr, ExprKind, Module, ModuleKind, OperatorRow, Semantic,
+    Span,
+};
 use std::fmt;
 
 const MAX_SOURCE_BYTES: usize = 4 * 1024 * 1024;
-const MAX_RULES: usize = 8192;
-const MAX_TEMPLATES: usize = 1024;
-const MAX_EXPANSION_DEPTH: usize = 64;
+const MAX_DECLARATIONS: usize = 8192;
 
 #[derive(Clone, Debug, PartialEq)]
 enum TokenKind {
     Ident(String),
     String(String),
+    Regex(String, String),
     Number(i32),
-    LBrace,
-    RBrace,
     LParen,
     RParen,
     Comma,
     Eq,
-    Semi,
+    Colon,
     Pipe,
     Question,
     Star,
     Plus,
-    Arrow,
+    FatArrow,
+    Newline,
     Eof,
 }
 
 #[derive(Clone, Debug)]
 struct Token {
     kind: TokenKind,
-    start: usize,
-    end: usize,
-    line: usize,
-    column: usize,
+    span: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -64,6 +64,7 @@ struct Lexer<'a> {
     at: usize,
     line: usize,
     column: usize,
+    comments: Vec<Comment>,
 }
 
 impl<'a> Lexer<'a> {
@@ -74,9 +75,10 @@ impl<'a> Lexer<'a> {
             at: 0,
             line: 1,
             column: 1,
+            comments: Vec::new(),
         }
     }
-    fn err(&self, message: impl Into<String>) -> DslError {
+    fn error(&self, message: impl Into<String>) -> DslError {
         DslError {
             source: self.name.into(),
             line: self.line,
@@ -87,161 +89,184 @@ impl<'a> Lexer<'a> {
     fn peek(&self) -> Option<char> {
         self.source[self.at..].chars().next()
     }
+    fn starts_with(&self, value: &str) -> bool {
+        self.source[self.at..].starts_with(value)
+    }
     fn bump(&mut self) -> Option<char> {
-        let c = self.peek()?;
-        self.at += c.len_utf8();
-        if c == '\n' {
+        let value = self.peek()?;
+        self.at += value.len_utf8();
+        if value == '\n' {
             self.line += 1;
             self.column = 1;
         } else {
             self.column += 1;
         }
-        Some(c)
+        Some(value)
     }
-    fn skip(&mut self) {
+    fn span(&self, start: usize, line: usize, column: usize) -> Span {
+        Span {
+            source: self.name.into(),
+            start,
+            end: self.at,
+            line,
+            column,
+        }
+    }
+    fn skip_horizontal(&mut self) {
         loop {
-            while self.peek().is_some_and(char::is_whitespace) {
+            while self.peek().is_some_and(|c| matches!(c, ' ' | '\t' | '\r')) {
                 self.bump();
             }
-            if self.source[self.at..].starts_with("//") || self.peek() == Some('#') {
+            if self.starts_with("//") || self.peek() == Some('#') {
+                let (start, line, column) = (self.at, self.line, self.column);
                 while self.peek().is_some_and(|c| c != '\n') {
                     self.bump();
                 }
+                self.comments.push(Comment {
+                    text: self.source[start..self.at].trim_end().into(),
+                    span: self.span(start, line, column),
+                });
                 continue;
             }
             break;
         }
     }
     fn token(&mut self) -> Result<Token, DslError> {
-        self.skip();
+        self.skip_horizontal();
         let (start, line, column) = (self.at, self.line, self.column);
-        let Some(c) = self.bump() else {
+        let Some(value) = self.bump() else {
             return Ok(Token {
                 kind: TokenKind::Eof,
-                start,
-                end: start,
-                line,
-                column,
+                span: self.span(start, line, column),
             });
         };
-        let kind = match c {
-            '{' => TokenKind::LBrace,
-            '}' => TokenKind::RBrace,
+        let kind = match value {
+            '\n' => TokenKind::Newline,
             '(' => TokenKind::LParen,
             ')' => TokenKind::RParen,
             ',' => TokenKind::Comma,
-            '=' => TokenKind::Eq,
-            ';' => TokenKind::Semi,
+            ':' => TokenKind::Colon,
             '|' => TokenKind::Pipe,
             '?' => TokenKind::Question,
             '*' => TokenKind::Star,
             '+' => TokenKind::Plus,
-            '-' if self.peek() == Some('>') => {
+            '=' if self.peek() == Some('>') => {
                 self.bump();
-                TokenKind::Arrow
+                TokenKind::FatArrow
             }
-            '"' => {
-                let mut out = String::new();
+            '=' => TokenKind::Eq,
+            '"' => TokenKind::String(self.string()?),
+            '/' => {
+                let mut pattern = String::new();
+                let mut escaped = false;
                 loop {
-                    match self.bump().ok_or_else(|| self.err("unterminated string"))? {
-                        '"' => break,
-                        '\\' => match self.bump().ok_or_else(|| self.err("unterminated escape"))? {
-                            'n' => out.push('\n'),
-                            'r' => out.push('\r'),
-                            't' => out.push('\t'),
-                            '"' => out.push('"'),
-                            '\\' => out.push('\\'),
-                            other => return Err(self.err(format!("unsupported escape \\{other}"))),
-                        },
-                        other => out.push(other),
+                    let c = self
+                        .bump()
+                        .ok_or_else(|| self.error("unterminated regex literal"))?;
+                    if c == '\n' {
+                        return Err(self.error("regex literal cannot cross a newline"));
                     }
+                    if c == '/' && !escaped {
+                        break;
+                    }
+                    escaped = c == '\\' && !escaped;
+                    if c != '\\' {
+                        escaped = false;
+                    }
+                    pattern.push(c);
                 }
-                TokenKind::String(out)
+                let mut flags = String::new();
+                while self.peek().is_some_and(|c| c.is_ascii_alphabetic()) {
+                    flags.push(self.bump().unwrap());
+                }
+                TokenKind::Regex(pattern, flags)
             }
             c if c.is_ascii_digit()
-                || (c == '-' && self.peek().is_some_and(|n| n.is_ascii_digit())) =>
+                || (c == '-' && self.peek().is_some_and(|next| next.is_ascii_digit())) =>
             {
-                let mut s = String::from(c);
-                while self.peek().is_some_and(|n| n.is_ascii_digit()) {
-                    s.push(self.bump().unwrap());
+                let mut number = String::from(c);
+                while self.peek().is_some_and(|next| next.is_ascii_digit()) {
+                    number.push(self.bump().unwrap());
                 }
-                TokenKind::Number(s.parse().map_err(|_| self.err("integer is outside i32"))?)
+                TokenKind::Number(
+                    number
+                        .parse()
+                        .map_err(|_| self.error("integer is outside i32"))?,
+                )
             }
             c if is_ident_start(c) => {
-                let mut s = String::from(c);
+                let mut ident = String::from(c);
                 while self.peek().is_some_and(is_ident_continue) {
-                    s.push(self.bump().unwrap());
+                    ident.push(self.bump().unwrap());
                 }
-                TokenKind::Ident(s)
+                TokenKind::Ident(ident)
             }
-            other => return Err(self.err(format!("unexpected character {other:?}"))),
+            other => return Err(self.error(format!("unexpected character {other:?}"))),
         };
         Ok(Token {
             kind,
-            start,
-            end: self.at,
-            line,
-            column,
+            span: self.span(start, line, column),
         })
+    }
+    fn string(&mut self) -> Result<String, DslError> {
+        let mut out = String::new();
+        loop {
+            match self
+                .bump()
+                .ok_or_else(|| self.error("unterminated string"))?
+            {
+                '"' => return Ok(out),
+                '\n' => return Err(self.error("string cannot cross a newline")),
+                '\\' => match self
+                    .bump()
+                    .ok_or_else(|| self.error("unterminated escape"))?
+                {
+                    'n' => out.push('\n'),
+                    'r' => out.push('\r'),
+                    't' => out.push('\t'),
+                    '"' => out.push('"'),
+                    '\\' => out.push('\\'),
+                    other => return Err(self.error(format!("unsupported escape \\{other}"))),
+                },
+                other => out.push(other),
+            }
+        }
     }
 }
 
-fn is_ident_start(c: char) -> bool {
-    c == '_' || c.is_ascii_alphabetic()
+fn is_ident_start(value: char) -> bool {
+    value == '_' || value.is_ascii_alphabetic()
 }
-fn is_ident_continue(c: char) -> bool {
-    is_ident_start(c) || c.is_ascii_digit() || matches!(c, '-' | '.' | '/')
-}
-
-#[derive(Clone, Debug)]
-enum Expr {
-    String(String),
-    Symbol(String),
-    Number(i32),
-    Call(String, Vec<Expr>),
-    Choice(Vec<Expr>),
-    Optional(Box<Expr>),
-    Repeat(Box<Expr>),
-    Repeat1(Box<Expr>),
-}
-#[derive(Clone)]
-struct Template {
-    params: Vec<String>,
-    body: Expr,
-}
-enum Mutation {
-    Replace(String, Expr),
-    Extend(String, Expr),
-    Remove(String),
+fn is_ident_continue(value: char) -> bool {
+    is_ident_start(value) || value.is_ascii_digit() || matches!(value, '-' | '.' | '/')
 }
 
 struct Parser {
-    name: String,
+    source_name: String,
     tokens: Vec<Token>,
+    comments: Vec<Comment>,
     at: usize,
-    grammar: GrammarIr,
-    raw_rules: BTreeMap<String, Expr>,
-    templates: BTreeMap<String, Template>,
-    mutations: Vec<Mutation>,
 }
 
 impl Parser {
     fn token(&self) -> &Token {
         &self.tokens[self.at]
     }
+    fn peek_kind(&self, offset: usize) -> Option<&TokenKind> {
+        self.tokens.get(self.at + offset).map(|token| &token.kind)
+    }
     fn bump(&mut self) -> Token {
-        let t = self.tokens[self.at].clone();
-        if t.kind != TokenKind::Eof {
+        let token = self.tokens[self.at].clone();
+        if token.kind != TokenKind::Eof {
             self.at += 1;
         }
-        t
+        token
     }
-    fn err(&self, message: impl Into<String>) -> DslError {
-        let t = self.token();
+    fn error(&self, message: impl Into<String>) -> DslError {
         DslError {
-            source: self.name.clone(),
-            line: t.line,
-            column: t.column,
+            source: self.source_name.clone(),
+            line: self.token().span.line,
+            column: self.token().span.column,
             message: message.into(),
         }
     }
@@ -253,496 +278,637 @@ impl Parser {
             false
         }
     }
-    fn expect(&mut self, kind: &TokenKind) -> Result<(), DslError> {
-        if self.eat(kind) {
-            Ok(())
+    fn expect(&mut self, kind: &TokenKind) -> Result<Token, DslError> {
+        if &self.token().kind == kind {
+            Ok(self.bump())
         } else {
-            Err(self.err(format!("expected {kind:?}, found {:?}", self.token().kind)))
+            Err(self.error(format!("expected {kind:?}, found {:?}", self.token().kind)))
         }
     }
-    fn ident(&mut self) -> Result<String, DslError> {
-        match self.bump().kind {
-            TokenKind::Ident(v) | TokenKind::String(v) => Ok(v),
-            other => Err(self.err(format!("expected name, found {other:?}"))),
+    fn ident(&mut self) -> Result<(String, Span), DslError> {
+        let token = self.bump();
+        match token.kind {
+            TokenKind::Ident(value) => Ok((value, token.span)),
+            other => Err(DslError {
+                source: self.source_name.clone(),
+                line: token.span.line,
+                column: token.span.column,
+                message: format!("expected name, found {other:?}"),
+            }),
         }
     }
-    fn optional_semi(&mut self) {
-        self.eat(&TokenKind::Semi);
+    fn production_name(&mut self) -> Result<(String, Span), DslError> {
+        let (name, span) = self.ident()?;
+        if !name
+            .chars()
+            .all(|value| value == '_' || value.is_ascii_alphanumeric())
+        {
+            return Err(DslError {
+                source: self.source_name.clone(),
+                line: span.line,
+                column: span.column,
+                message: format!("production name {name:?} must be a C identifier"),
+            });
+        }
+        Ok((name, span))
     }
+    fn string_or_ident(&mut self) -> Result<String, DslError> {
+        let token = self.bump();
+        match token.kind {
+            TokenKind::Ident(value) | TokenKind::String(value) => Ok(value),
+            other => Err(self.error(format!("expected name or string, found {other:?}"))),
+        }
+    }
+    fn number(&mut self) -> Result<i32, DslError> {
+        let token = self.bump();
+        match token.kind {
+            TokenKind::Number(value) => Ok(value),
+            other => Err(self.error(format!("expected precedence integer, found {other:?}"))),
+        }
+    }
+    fn skip_newlines(&mut self) {
+        while self.eat(&TokenKind::Newline) {}
+    }
+    fn line_end(&mut self) -> Result<(), DslError> {
+        match self.token().kind {
+            TokenKind::Newline | TokenKind::Eof => Ok(()),
+            _ => Err(self.error("expected end of declaration")),
+        }
+    }
+    fn continuation_index(&self, base_column: usize) -> Option<usize> {
+        if self.token().kind != TokenKind::Newline {
+            return None;
+        }
+        let mut index = self.at;
+        while self
+            .tokens
+            .get(index)
+            .is_some_and(|token| token.kind == TokenKind::Newline)
+        {
+            index += 1;
+        }
+        let next = self.tokens.get(index)?;
+        (next.kind != TokenKind::Eof && next.span.column > base_column).then_some(index)
+    }
+    fn parse(mut self) -> Result<Module, DslError> {
+        self.skip_newlines();
+        let header = self.bump();
+        let kind = match header.kind {
+            TokenKind::Ident(value) if value == "grammar" => ModuleKind::Grammar,
+            TokenKind::Ident(value) if value == "family" => ModuleKind::Family,
+            _ => return Err(self.error("file must begin with `grammar` or `family`")),
+        };
+        let (name, name_span) = self.ident()?;
+        if kind == ModuleKind::Grammar
+            && !name
+                .chars()
+                .all(|value| value == '_' || value.is_ascii_alphanumeric())
+        {
+            return Err(DslError {
+                source: self.source_name.clone(),
+                line: name_span.line,
+                column: name_span.column,
+                message: format!("grammar name {name:?} must be a C identifier"),
+            });
+        }
+        let version = if matches!(
+            self.token().kind,
+            TokenKind::String(_) | TokenKind::Ident(_)
+        ) {
+            self.string_or_ident()?
+        } else {
+            String::new()
+        };
+        self.line_end()?;
+        self.skip_newlines();
 
-    fn parse(mut self) -> Result<GrammarIr, DslError> {
+        let mut module = Module {
+            kind,
+            name,
+            version,
+            start: None,
+            uses: Vec::new(),
+            declarations: Vec::new(),
+            comments: std::mem::take(&mut self.comments),
+            span: header.span,
+        };
         while self.token().kind != TokenKind::Eof {
-            let keyword = self.ident()?;
-            match keyword.as_str() {
-                "language" | "module" => self.grammar.name = self.ident()?,
-                "version" => self.grammar.version = self.ident()?,
-                "start" | "top" => self.grammar.start = self.ident()?,
-                "import" | "extends" => {
-                    let value = self.ident()?;
-                    self.grammar.imports.push(value);
-                }
-                "dialect" => {
-                    let value = self.ident()?;
-                    self.grammar.dialects.push(value);
-                }
-                "word" => self.grammar.word = Some(self.ident()?),
-                "inline" => {
-                    let values = self.name_set()?;
-                    self.grammar.inline.extend(values);
-                }
-                "supertypes" => {
-                    let values = self.name_set()?;
-                    self.grammar.supertypes.extend(values);
-                }
-                "extras" => {
-                    let values = self.expr_set()?;
-                    self.grammar.extras.extend(self.eval_all(values)?);
-                }
-                "externals" => {
-                    let values = self.name_set()?;
-                    self.grammar
-                        .externals
-                        .extend(values.into_iter().map(Rule::Symbol));
-                }
-                "conflict" => {
-                    let values = self.name_set()?;
-                    self.grammar.conflicts.push(values);
-                }
-                "precedence" => {
-                    let values = self.expr_set()?;
-                    self.grammar.precedences.push(self.eval_all(values)?);
-                }
-                "template" => self.parse_template()?,
-                "rule" | "token" => self.parse_rule(keyword == "token")?,
-                "replace" | "extend" | "remove" => self.parse_mutation(&keyword)?,
-                "vocabulary" => self.parse_vocabulary()?,
-                other => return Err(self.err(format!("unknown declaration {other}"))),
+            if module.declarations.len() > MAX_DECLARATIONS {
+                return Err(self.error(format!("declaration limit exceeded ({MAX_DECLARATIONS})")));
             }
-            self.optional_semi();
+            self.declaration(&mut module)?;
+            self.skip_newlines();
         }
-        if self.grammar.name.is_empty() {
-            return Err(self.err("missing language/module declaration"));
+        if module.kind == ModuleKind::Grammar && module.start.is_none() {
+            return Err(self.error("grammar is missing a start declaration"));
         }
-        if self.raw_rules.len() > MAX_RULES {
-            return Err(self.err(format!("rule limit exceeded ({MAX_RULES})")));
-        }
-        let raw = std::mem::take(&mut self.raw_rules);
-        for (name, expr) in raw {
-            let rule = self.eval(&expr, &BTreeMap::new(), &mut Vec::new(), 0)?;
-            self.grammar.rules.insert(name, rule);
-        }
-        for mutation in std::mem::take(&mut self.mutations) {
-            match mutation {
-                Mutation::Remove(name) => {
-                    if self.grammar.rules.remove(&name).is_none() {
-                        return Err(self.err(format!("cannot remove unknown rule {name}")));
-                    }
-                }
-                Mutation::Replace(name, expr) => {
-                    if !self.grammar.rules.contains_key(&name) {
-                        return Err(self.err(format!("cannot replace unknown rule {name}")));
-                    }
-                    let rule = self.eval(&expr, &BTreeMap::new(), &mut Vec::new(), 0)?;
-                    self.grammar.rules.insert(name, rule);
-                }
-                Mutation::Extend(name, expr) => {
-                    let Some(old) = self.grammar.rules.remove(&name) else {
-                        return Err(self.err(format!("cannot extend unknown rule {name}")));
-                    };
-                    let add = self.eval(&expr, &BTreeMap::new(), &mut Vec::new(), 0)?;
-                    let mut choices = match old {
-                        Rule::Choice(v) => v,
-                        other => vec![other],
-                    };
-                    choices.push(add);
-                    self.grammar.rules.insert(name, Rule::Choice(choices));
-                }
-            }
-        }
-        if self.grammar.start.is_empty() {
-            self.grammar.start = self
-                .grammar
-                .rules
-                .keys()
-                .next()
-                .cloned()
-                .unwrap_or_default();
-        }
-        if self.grammar.start.is_empty() || !self.grammar.rules.contains_key(&self.grammar.start) {
-            return Err(self.err(format!(
-                "start rule {:?} is not defined",
-                self.grammar.start
-            )));
-        }
-        Ok(self.grammar)
+        Ok(module)
     }
 
-    fn parse_rule(&mut self, token: bool) -> Result<(), DslError> {
-        let name = self.ident()?;
-        self.expect(&TokenKind::Eq)?;
-        let mut expr = self.expr()?;
-        if token {
-            expr = Expr::Call("token".into(), vec![expr]);
+    fn declaration(&mut self, module: &mut Module) -> Result<(), DslError> {
+        let (head, span) = self.ident()?;
+        let base_column = span.column;
+        match head.as_str() {
+            "use" => {
+                module.uses.push(self.string_or_ident()?);
+                self.line_end()
+            }
+            "start" => {
+                if module.start.replace(self.production_name()?.0).is_some() {
+                    return Err(self.error("duplicate start declaration"));
+                }
+                self.line_end()
+            }
+            "fragment" => self.fragment(span, module),
+            "token" => self.rule(span, module, false, true),
+            "open" => self.rule(span, module, true, false),
+            "extend" => self.extend(span, module),
+            "slot" => {
+                let (name, _) = self.production_name()?;
+                module.declarations.push(Declaration::Slot { name, span });
+                self.line_end()
+            }
+            "fill" => {
+                let (name, _) = self.production_name()?;
+                self.expect(&TokenKind::Eq)?;
+                let expression = self.expression(base_column)?;
+                module.declarations.push(Declaration::Fill {
+                    name,
+                    expression,
+                    span,
+                });
+                self.line_end()
+            }
+            "skip" => {
+                let expression = self.expression(base_column)?;
+                module
+                    .declarations
+                    .push(Declaration::Skip { expression, span });
+                self.line_end()
+            }
+            "external" => {
+                let names = self.names_to_line_end()?;
+                module
+                    .declarations
+                    .push(Declaration::Externals { names, span });
+                Ok(())
+            }
+            "word" => {
+                let name = self.production_name()?.0;
+                module.declarations.push(Declaration::Word { name, span });
+                self.line_end()
+            }
+            "conflict" => {
+                let names = self.names_to_line_end()?;
+                if names.len() < 2 {
+                    return Err(self.error("conflict requires at least two productions"));
+                }
+                module
+                    .declarations
+                    .push(Declaration::Conflict { names, span });
+                Ok(())
+            }
+            "map" => {
+                let concrete = self.production_name()?.0;
+                let arrow = self.expect(&TokenKind::FatArrow)?;
+                let kind = self.ident()?.0;
+                module.declarations.push(Declaration::Mapping {
+                    concrete,
+                    semantic: Semantic {
+                        kind,
+                        roles: Vec::new(),
+                        traits: Vec::new(),
+                        span: arrow.span,
+                    },
+                    span,
+                });
+                self.line_end()
+            }
+            "infix" | "prefix" => self.operator_table(span, module, head == "prefix"),
+            _ => {
+                if !head
+                    .chars()
+                    .all(|value| value == '_' || value.is_ascii_alphanumeric())
+                {
+                    return Err(DslError {
+                        source: self.source_name.clone(),
+                        line: span.line,
+                        column: span.column,
+                        message: format!("production name {head:?} must be a C identifier"),
+                    });
+                }
+                self.named_rule(head, span, module, false, false)
+            }
         }
-        if self.raw_rules.insert(name.clone(), expr).is_some() {
-            return Err(self.err(format!("duplicate rule {name}")));
-        }
-        Ok(())
     }
-    fn parse_template(&mut self) -> Result<(), DslError> {
-        if self.templates.len() >= MAX_TEMPLATES {
-            return Err(self.err(format!("template limit exceeded ({MAX_TEMPLATES})")));
+
+    fn names_to_line_end(&mut self) -> Result<Vec<String>, DslError> {
+        let mut names = Vec::new();
+        while !matches!(self.token().kind, TokenKind::Newline | TokenKind::Eof) {
+            if self.eat(&TokenKind::Comma) || self.eat(&TokenKind::Pipe) {
+                continue;
+            }
+            names.push(self.production_name()?.0);
         }
-        let name = self.ident()?;
+        if names.is_empty() {
+            return Err(self.error("expected at least one name"));
+        }
+        Ok(names)
+    }
+
+    fn fragment(&mut self, span: Span, module: &mut Module) -> Result<(), DslError> {
+        let name = self.production_name()?.0;
         self.expect(&TokenKind::LParen)?;
-        let mut params = Vec::new();
+        let mut parameters = Vec::new();
         if !self.eat(&TokenKind::RParen) {
             loop {
-                params.push(self.ident()?);
+                parameters.push(self.production_name()?.0);
                 if self.eat(&TokenKind::RParen) {
                     break;
                 }
                 self.expect(&TokenKind::Comma)?;
             }
         }
-        let unique: BTreeSet<_> = params.iter().collect();
-        if unique.len() != params.len() {
-            return Err(self.err("duplicate template parameter"));
-        }
         self.expect(&TokenKind::Eq)?;
-        let body = self.expr()?;
-        if self
-            .templates
-            .insert(name.clone(), Template { params, body })
-            .is_some()
-        {
-            return Err(self.err(format!("duplicate template {name}")));
-        }
-        Ok(())
+        let expression = self.expression(span.column)?;
+        module.declarations.push(Declaration::Fragment {
+            name,
+            parameters,
+            expression,
+            span,
+        });
+        self.line_end()
     }
-    fn parse_mutation(&mut self, op: &str) -> Result<(), DslError> {
-        self.eat(&TokenKind::Ident("rule".into()));
-        let name = self.ident()?;
-        match op {
-            "remove" => self.mutations.push(Mutation::Remove(name)),
-            "replace" | "extend" => {
-                self.expect(&TokenKind::Eq)?;
-                let expr = self.expr()?;
-                self.mutations.push(if op == "replace" {
-                    Mutation::Replace(name, expr)
-                } else {
-                    Mutation::Extend(name, expr)
-                });
-            }
-            _ => unreachable!(),
-        }
-        Ok(())
+
+    fn rule(
+        &mut self,
+        span: Span,
+        module: &mut Module,
+        open: bool,
+        token: bool,
+    ) -> Result<(), DslError> {
+        let name = self.production_name()?.0;
+        self.named_rule(name, span, module, open, token)
     }
-    fn parse_vocabulary(&mut self) -> Result<(), DslError> {
-        let concrete = self.ident()?;
-        self.expect(&TokenKind::Arrow)?;
-        let semantic = self.ident()?;
-        let token = self.token().clone();
-        let mut roles = BTreeMap::new();
-        let mut traits = Vec::new();
-        if self.eat(&TokenKind::LBrace) {
-            while !self.eat(&TokenKind::RBrace) {
-                match self.ident()?.as_str() {
-                    "role" => {
-                        let canonical = self.ident()?;
-                        self.expect(&TokenKind::Eq)?;
-                        roles.insert(canonical, self.ident()?);
-                    }
-                    "trait" => traits.push(self.ident()?),
-                    other => return Err(self.err(format!("unknown vocabulary property {other}"))),
-                }
-                self.optional_semi();
-                self.eat(&TokenKind::Comma);
-            }
-        }
-        self.grammar.semantic.push(SemanticMapping {
-            concrete,
+
+    fn named_rule(
+        &mut self,
+        name: String,
+        span: Span,
+        module: &mut Module,
+        open: bool,
+        token: bool,
+    ) -> Result<(), DslError> {
+        self.expect(&TokenKind::Eq)?;
+        let expression = self.expression(span.column)?;
+        let semantic = self.semantic(span.column)?;
+        module.declarations.push(Declaration::Rule {
+            name,
+            expression,
+            open,
+            token,
             semantic,
-            roles,
-            traits,
-            span: Span {
-                source: self.name.clone(),
-                start: token.start,
-                end: token.end,
-                line: token.line,
-                column: token.column,
-            },
+            span,
+        });
+        self.line_end()
+    }
+
+    fn extend(&mut self, span: Span, module: &mut Module) -> Result<(), DslError> {
+        let name = self.production_name()?.0;
+        self.expect(&TokenKind::Eq)?;
+        let expression = self.expression(span.column)?;
+        module.declarations.push(Declaration::Extend {
+            name,
+            expression,
+            span,
+        });
+        self.line_end()
+    }
+
+    fn operator_table(
+        &mut self,
+        span: Span,
+        module: &mut Module,
+        prefix: bool,
+    ) -> Result<(), DslError> {
+        let name = self.production_name()?.0;
+        let over = self.ident()?.0;
+        if over != "over" {
+            return Err(self.error("operator table expects `over <operand>`"));
+        }
+        let operand = self.production_name()?.0;
+        let semantic = self.semantic(span.column)?;
+        self.line_end()?;
+        let mut rows = Vec::new();
+        while let Some(index) = self.continuation_index(span.column) {
+            self.at = index;
+            let row_span = self.token().span.clone();
+            let associativity = match self.ident()?.0.as_str() {
+                "left" if !prefix => Associativity::Left,
+                "right" => Associativity::Right,
+                "plain" => Associativity::Plain,
+                "left" => return Err(self.error("prefix operators cannot be left-associative")),
+                other => return Err(self.error(format!("unknown associativity {other}"))),
+            };
+            let precedence = self.number()?;
+            self.eat(&TokenKind::Colon);
+            let operators = self.expression(row_span.column)?;
+            rows.push(OperatorRow {
+                associativity,
+                precedence,
+                operators,
+                span: row_span,
+            });
+            self.line_end()?;
+        }
+        if rows.is_empty() {
+            return Err(self.error("operator table requires at least one row"));
+        }
+        module.declarations.push(Declaration::OperatorTable {
+            name,
+            operand,
+            prefix,
+            rows,
+            semantic,
+            span,
         });
         Ok(())
     }
-    fn name_set(&mut self) -> Result<Vec<String>, DslError> {
-        self.expect(&TokenKind::LBrace)?;
-        let mut out = Vec::new();
-        while !self.eat(&TokenKind::RBrace) {
-            out.push(self.ident()?);
-            if !self.eat(&TokenKind::Comma) {
-                self.optional_semi();
+
+    fn semantic(&mut self, base_column: usize) -> Result<Option<Semantic>, DslError> {
+        let continuation = self.continuation_index(base_column);
+        if self.token().kind != TokenKind::FatArrow
+            && !continuation.is_some_and(|index| self.tokens[index].kind == TokenKind::FatArrow)
+        {
+            return Ok(None);
+        }
+        if let Some(index) = continuation {
+            self.at = index;
+        }
+        let arrow = self.expect(&TokenKind::FatArrow)?;
+        let kind = self.ident()?.0;
+        let mut roles = Vec::new();
+        if self.eat(&TokenKind::LParen) {
+            if !self.eat(&TokenKind::RParen) {
+                loop {
+                    let canonical = self.ident()?.0;
+                    let concrete = if self.eat(&TokenKind::Eq) {
+                        self.ident()?.0
+                    } else {
+                        canonical.clone()
+                    };
+                    roles.push((canonical, concrete));
+                    if self.eat(&TokenKind::RParen) {
+                        break;
+                    }
+                    self.expect(&TokenKind::Comma)?;
+                }
             }
         }
-        Ok(out)
-    }
-    fn expr_set(&mut self) -> Result<Vec<Expr>, DslError> {
-        self.expect(&TokenKind::LBrace)?;
-        let mut out = Vec::new();
-        while !self.eat(&TokenKind::RBrace) {
-            out.push(self.expr()?);
-            if !self.eat(&TokenKind::Comma) {
-                self.optional_semi();
+        let mut traits = Vec::new();
+        let continuation = self.continuation_index(base_column);
+        if matches!(&self.token().kind, TokenKind::Ident(value) if value == "derives")
+            || continuation.is_some_and(|index| matches!(&self.tokens[index].kind, TokenKind::Ident(value) if value == "derives"))
+        {
+            if let Some(index) = continuation {
+                self.at = index;
+            }
+            self.ident()?;
+            while !matches!(self.token().kind, TokenKind::Newline | TokenKind::Eof) {
+                if self.eat(&TokenKind::Comma) {
+                    continue;
+                }
+                traits.push(self.ident()?.0);
             }
         }
-        Ok(out)
+        Ok(Some(Semantic {
+            kind,
+            roles,
+            traits,
+            span: arrow.span,
+        }))
     }
-    fn expr(&mut self) -> Result<Expr, DslError> {
-        let mut values = vec![self.postfix()?];
-        while self.eat(&TokenKind::Pipe) {
-            values.push(self.postfix()?);
+
+    fn expression(&mut self, base_column: usize) -> Result<Expr, DslError> {
+        self.choice(base_column)
+    }
+
+    fn choice(&mut self, base_column: usize) -> Result<Expr, DslError> {
+        if let Some(index) = self.continuation_index(base_column) {
+            self.at = index;
         }
-        Ok(if values.len() == 1 {
-            values.pop().unwrap()
+        self.eat(&TokenKind::Pipe);
+        let first = self.sequence(base_column)?;
+        let span = first.span.clone();
+        let mut alternatives = vec![first];
+        loop {
+            if self.eat(&TokenKind::Pipe) {
+                alternatives.push(self.sequence(base_column)?);
+                continue;
+            }
+            let Some(index) = self.continuation_index(base_column) else {
+                break;
+            };
+            if self.tokens[index].kind != TokenKind::Pipe {
+                break;
+            }
+            self.at = index + 1;
+            alternatives.push(self.sequence(base_column)?);
+        }
+        Ok(if alternatives.len() == 1 {
+            alternatives.pop().unwrap()
         } else {
-            Expr::Choice(values)
+            Expr {
+                kind: ExprKind::Choice(alternatives),
+                span,
+            }
         })
     }
-    fn postfix(&mut self) -> Result<Expr, DslError> {
-        let mut expr = self.primary()?;
+
+    fn sequence(&mut self, base_column: usize) -> Result<Expr, DslError> {
+        let precedence = self.precedence_prefix();
+        let mut members = Vec::new();
         loop {
-            expr = if self.eat(&TokenKind::Question) {
-                Expr::Optional(Box::new(expr))
+            if !self.can_start_primary() {
+                let Some(index) = self.continuation_index(base_column) else {
+                    break;
+                };
+                if matches!(
+                    self.tokens[index].kind,
+                    TokenKind::Pipe | TokenKind::FatArrow
+                ) || matches!(&self.tokens[index].kind, TokenKind::Ident(value) if value == "derives")
+                    || !can_start(&self.tokens[index].kind)
+                {
+                    break;
+                }
+                self.at = index;
+            }
+            members.push(self.postfix()?);
+        }
+        if members.is_empty() {
+            return Err(self.error("expected grammar expression"));
+        }
+        let span = members[0].span.clone();
+        let content = if members.len() == 1 {
+            members.pop().unwrap()
+        } else {
+            Expr {
+                kind: ExprKind::Sequence(members),
+                span: span.clone(),
+            }
+        };
+        Ok(
+            if let Some((associativity, value, outer_span)) = precedence {
+                Expr {
+                    kind: ExprKind::Precedence {
+                        associativity,
+                        value,
+                        content: Box::new(content),
+                    },
+                    span: outer_span,
+                }
+            } else {
+                content
+            },
+        )
+    }
+
+    fn precedence_prefix(&mut self) -> Option<(Associativity, i32, Span)> {
+        let TokenKind::Ident(name) = self.token().kind.clone() else {
+            return None;
+        };
+        let associativity = match name.as_str() {
+            "left" => Associativity::Left,
+            "right" => Associativity::Right,
+            "plain" => Associativity::Plain,
+            _ => return None,
+        };
+        if !matches!(self.peek_kind(1), Some(TokenKind::Number(_)))
+            || self.peek_kind(2) != Some(&TokenKind::Colon)
+        {
+            return None;
+        }
+        let span = self.bump().span;
+        let value = self.number().unwrap();
+        self.expect(&TokenKind::Colon).unwrap();
+        Some((associativity, value, span))
+    }
+
+    fn can_start_primary(&self) -> bool {
+        can_start(&self.token().kind)
+            && !matches!(&self.token().kind, TokenKind::Ident(value) if value == "derives")
+    }
+
+    fn postfix(&mut self) -> Result<Expr, DslError> {
+        let mut expression = self.primary()?;
+        loop {
+            expression = if self.eat(&TokenKind::Question) {
+                let span = expression.span.clone();
+                Expr {
+                    kind: ExprKind::Optional(Box::new(expression)),
+                    span,
+                }
             } else if self.eat(&TokenKind::Star) {
-                Expr::Repeat(Box::new(expr))
+                let span = expression.span.clone();
+                Expr {
+                    kind: ExprKind::Repeat(Box::new(expression)),
+                    span,
+                }
             } else if self.eat(&TokenKind::Plus) {
-                Expr::Repeat1(Box::new(expr))
+                let span = expression.span.clone();
+                Expr {
+                    kind: ExprKind::Repeat1(Box::new(expression)),
+                    span,
+                }
             } else {
                 break;
             };
         }
-        Ok(expr)
+        Ok(expression)
     }
+
     fn primary(&mut self) -> Result<Expr, DslError> {
-        match self.bump().kind {
-            TokenKind::String(v) => Ok(Expr::String(v)),
-            TokenKind::Number(v) => Ok(Expr::Number(v)),
+        let token = self.bump();
+        match token.kind {
+            TokenKind::String(value) => Ok(Expr {
+                kind: ExprKind::Literal(value),
+                span: token.span,
+            }),
+            TokenKind::Regex(value, flags) => Ok(Expr {
+                kind: ExprKind::Pattern { value, flags },
+                span: token.span,
+            }),
             TokenKind::Ident(name) => {
-                if !self.eat(&TokenKind::LParen) {
-                    return Ok(Expr::Symbol(name));
+                if !name
+                    .chars()
+                    .all(|value| value == '_' || value.is_ascii_alphanumeric())
+                {
+                    return Err(DslError {
+                        source: self.source_name.clone(),
+                        line: token.span.line,
+                        column: token.span.column,
+                        message: format!("production name {name:?} must be a C identifier"),
+                    });
                 }
+                if self.eat(&TokenKind::Colon) {
+                    let content = self.postfix()?;
+                    return Ok(Expr {
+                        kind: ExprKind::Field {
+                            name,
+                            content: Box::new(content),
+                        },
+                        span: token.span,
+                    });
+                }
+                // Fragment application is lexical (`name(`). Whitespace before `(` means ordinary
+                // EBNF sequence: a symbol followed by a grouped expression.
+                if self.token().kind != TokenKind::LParen
+                    || token.span.end != self.token().span.start
+                {
+                    return Ok(Expr {
+                        kind: ExprKind::Symbol(name),
+                        span: token.span,
+                    });
+                }
+                self.bump();
                 let mut args = Vec::new();
+                self.skip_newlines();
                 if !self.eat(&TokenKind::RParen) {
                     loop {
-                        args.push(self.expr()?);
+                        args.push(self.expression(0)?);
+                        self.skip_newlines();
                         if self.eat(&TokenKind::RParen) {
                             break;
                         }
                         self.expect(&TokenKind::Comma)?;
+                        self.skip_newlines();
                     }
                 }
-                Ok(Expr::Call(name, args))
-            }
-            TokenKind::LParen => {
-                let out = self.expr()?;
-                self.expect(&TokenKind::RParen)?;
-                Ok(out)
-            }
-            other => Err(self.err(format!("expected rule expression, found {other:?}"))),
-        }
-    }
-    fn eval_all(&self, values: Vec<Expr>) -> Result<Vec<Rule>, DslError> {
-        values
-            .iter()
-            .map(|v| self.eval(v, &BTreeMap::new(), &mut Vec::new(), 0))
-            .collect()
-    }
-    fn eval(
-        &self,
-        expr: &Expr,
-        env: &BTreeMap<String, Expr>,
-        stack: &mut Vec<String>,
-        depth: usize,
-    ) -> Result<Rule, DslError> {
-        if depth > MAX_EXPANSION_DEPTH {
-            return Err(self.err(format!(
-                "template expansion depth exceeds {MAX_EXPANSION_DEPTH}: {}",
-                stack.join(" -> ")
-            )));
-        }
-        match expr {
-            Expr::String(v) => Ok(Rule::String(v.clone())),
-            Expr::Number(_) => Err(self.err("integer is valid only as a precedence argument")),
-            Expr::Symbol(v) => {
-                if let Some(bound) = env.get(v) {
-                    self.eval(bound, env, stack, depth + 1)
-                } else {
-                    Ok(Rule::Symbol(v.clone()))
-                }
-            }
-            Expr::Choice(v) => Ok(Rule::Choice(
-                v.iter()
-                    .map(|e| self.eval(e, env, stack, depth))
-                    .collect::<Result<_, _>>()?,
-            )),
-            Expr::Optional(v) => Ok(Rule::Choice(vec![
-                self.eval(v, env, stack, depth)?,
-                Rule::Blank,
-            ])),
-            Expr::Repeat(v) => Ok(Rule::Repeat(Box::new(self.eval(v, env, stack, depth)?))),
-            Expr::Repeat1(v) => Ok(Rule::Repeat1(Box::new(self.eval(v, env, stack, depth)?))),
-            Expr::Call(name, args) => self.eval_call(name, args, env, stack, depth),
-        }
-    }
-    fn eval_call(
-        &self,
-        name: &str,
-        args: &[Expr],
-        env: &BTreeMap<String, Expr>,
-        stack: &mut Vec<String>,
-        depth: usize,
-    ) -> Result<Rule, DslError> {
-        let eval = |e: &Expr, stack: &mut Vec<String>| self.eval(e, env, stack, depth + 1);
-        let one = |stack: &mut Vec<String>| -> Result<Rule, DslError> {
-            if args.len() != 1 {
-                return Err(self.err(format!("{name} expects one argument")));
-            }
-            eval(&args[0], stack)
-        };
-        let precedence = |e: &Expr| -> Result<Precedence, DslError> {
-            match e {
-                Expr::Number(v) => Ok(Precedence::Integer(*v)),
-                Expr::String(v) | Expr::Symbol(v) => Ok(Precedence::Named(v.clone())),
-                _ => Err(self.err("precedence must be an integer or name")),
-            }
-        };
-        match name {
-            "blank" => {
-                if !args.is_empty() {
-                    return Err(self.err("blank expects no arguments"));
-                }
-                Ok(Rule::Blank)
-            }
-            "seq" => Ok(Rule::Seq(
-                args.iter()
-                    .map(|e| eval(e, stack))
-                    .collect::<Result<_, _>>()?,
-            )),
-            "choice" => Ok(Rule::Choice(
-                args.iter()
-                    .map(|e| eval(e, stack))
-                    .collect::<Result<_, _>>()?,
-            )),
-            "repeat" => Ok(Rule::Repeat(Box::new(one(stack)?))),
-            "repeat1" => Ok(Rule::Repeat1(Box::new(one(stack)?))),
-            "optional" => Ok(Rule::Choice(vec![one(stack)?, Rule::Blank])),
-            "token" => Ok(Rule::Token(Box::new(one(stack)?))),
-            "immediate" => Ok(Rule::ImmediateToken(Box::new(one(stack)?))),
-            "string" => match args {
-                [Expr::String(v)] => Ok(Rule::String(v.clone())),
-                _ => Err(self.err("string expects one string")),
-            },
-            "pattern" => match args {
-                [Expr::String(v)] => Ok(Rule::Pattern {
-                    value: v.clone(),
-                    flags: String::new(),
-                }),
-                [Expr::String(v), Expr::String(flags)] => Ok(Rule::Pattern {
-                    value: v.clone(),
-                    flags: flags.clone(),
-                }),
-                _ => Err(self.err("pattern expects pattern and optional flags strings")),
-            },
-            "sym" => match args {
-                [Expr::Symbol(v)] | [Expr::String(v)] => Ok(Rule::Symbol(v.clone())),
-                _ => Err(self.err("sym expects one name")),
-            },
-            "field" => match args {
-                [Expr::Symbol(v), content] | [Expr::String(v), content] => Ok(Rule::Field {
-                    name: v.clone(),
-                    content: Box::new(eval(content, stack)?),
-                }),
-                _ => Err(self.err("field expects name and content")),
-            },
-            "alias" => match args {
-                [content, Expr::Symbol(v)] | [content, Expr::String(v)] => Ok(Rule::Alias {
-                    value: v.clone(),
-                    named: true,
-                    content: Box::new(eval(content, stack)?),
-                }),
-                [content, Expr::Symbol(v), Expr::Symbol(named)]
-                | [content, Expr::String(v), Expr::Symbol(named)] => Ok(Rule::Alias {
-                    value: v.clone(),
-                    named: named != "anonymous",
-                    content: Box::new(eval(content, stack)?),
-                }),
-                _ => Err(self.err("alias expects content, name, and optional named|anonymous")),
-            },
-            "prec" | "left" | "right" => {
-                if args.len() != 2 {
-                    return Err(self.err(format!("{name} expects precedence and content")));
-                }
-                let p = precedence(&args[0])?;
-                let c = Box::new(eval(&args[1], stack)?);
-                Ok(match name {
-                    "prec" => Rule::Prec {
-                        value: p,
-                        content: c,
-                    },
-                    "left" => Rule::PrecLeft {
-                        value: p,
-                        content: c,
-                    },
-                    _ => Rule::PrecRight {
-                        value: p,
-                        content: c,
-                    },
+                Ok(Expr {
+                    kind: ExprKind::Call { name, args },
+                    span: token.span,
                 })
             }
-            "dynamic" => match args {
-                [Expr::Number(v), content] => Ok(Rule::PrecDynamic {
-                    value: *v,
-                    content: Box::new(eval(content, stack)?),
-                }),
-                _ => Err(self.err("dynamic expects integer and content")),
-            },
-            "reserved" => match args {
-                [Expr::Symbol(v), content] | [Expr::String(v), content] => Ok(Rule::Reserved {
-                    context: v.clone(),
-                    content: Box::new(eval(content, stack)?),
-                }),
-                _ => Err(self.err("reserved expects context and content")),
-            },
-            template_name => {
-                let template = self.templates.get(template_name).ok_or_else(|| {
-                    self.err(format!("unknown rule combinator/template {template_name}"))
-                })?;
-                if template.params.len() != args.len() {
-                    return Err(self.err(format!(
-                        "template {template_name} expects {} arguments",
-                        template.params.len()
-                    )));
-                }
-                if stack.iter().any(|n| n == template_name) {
-                    return Err(self.err(format!(
-                        "recursive template: {} -> {template_name}",
-                        stack.join(" -> ")
-                    )));
-                }
-                let mut child = env.clone();
-                for (p, a) in template.params.iter().zip(args) {
-                    child.insert(p.clone(), a.clone());
-                }
-                stack.push(template_name.into());
-                let out = self.eval(&template.body, &child, stack, depth + 1);
-                stack.pop();
-                out
+            TokenKind::LParen => {
+                self.skip_newlines();
+                let expression = self.expression(0)?;
+                self.skip_newlines();
+                self.expect(&TokenKind::RParen)?;
+                Ok(expression)
             }
+            other => Err(self.error(format!("expected grammar expression, found {other:?}"))),
         }
     }
 }
 
-pub fn parse(source: &str, source_name: &str) -> Result<GrammarIr, DslError> {
+fn can_start(kind: &TokenKind) -> bool {
+    matches!(
+        kind,
+        TokenKind::Ident(_) | TokenKind::String(_) | TokenKind::Regex(_, _) | TokenKind::LParen
+    )
+}
+
+pub fn parse(source: &str, source_name: &str) -> Result<Module, DslError> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(DslError {
             source: source_name.into(),
@@ -762,16 +928,10 @@ pub fn parse(source: &str, source_name: &str) -> Result<GrammarIr, DslError> {
         }
     }
     Parser {
-        name: source_name.into(),
+        source_name: source_name.into(),
         tokens,
+        comments: lexer.comments,
         at: 0,
-        grammar: GrammarIr {
-            ir_version: GRAMMAR_IR_VERSION,
-            ..GrammarIr::default()
-        },
-        raw_rules: BTreeMap::new(),
-        templates: BTreeMap::new(),
-        mutations: Vec::new(),
     }
     .parse()
 }

@@ -1,99 +1,183 @@
-module lua_family
-version "1.0.0"
-start lua_family_unit
+family lua.core "1.0.0"
 
-template comma_list(item) = optional(seq(item, repeat(seq(",", item))))
-template comma_list1(item) = seq(item, repeat(seq(",", item)))
+fragment separated(item, separator) = (item (separator item)*)?
+fragment separated1(item, separator) = item (separator item)*
 
-extras { whitespace, line_comment, long_comment }
-externals { long_string_start, long_string_content, long_string_end, long_comment }
+skip whitespace | line_comment | long_comment
+external long_string_start | long_string_content | long_string_end | long_comment
 word identifier
 
-token whitespace = pattern("[\\t\\n\\r ]+")
-token line_comment = seq("--", pattern("[^\\n\\r]*"))
-token identifier = pattern("[A-Za-z_][A-Za-z0-9_]*")
-token number = pattern("(0[xX][0-9A-Fa-f]+(\\.[0-9A-Fa-f]*)?([pP][+-]?[0-9]+)?|[0-9]+(\\.[0-9]*)?([eE][+-]?[0-9]+)?|\\.[0-9]+([eE][+-]?[0-9]+)?)")
-token quoted_string = pattern("\"([^\"\\\\\\n\\r]|\\\\.)*\"|'([^'\\\\\\n\\r]|\\\\.)*'")
+token whitespace = /[\t\n\r ]+/
+token line_comment = "--" /[^\n\r]*/
+  => comment
+token identifier = /[A-Za-z_][A-Za-z0-9_]*/
+  => identifier
+token number = /(0[xX][0-9A-Fa-f]+(\.[0-9A-Fa-f]*)?([pP][+-]?[0-9]+)?|[0-9]+(\.[0-9]*)?([eE][+-]?[0-9]+)?|\.[0-9]+([eE][+-]?[0-9]+)?)/
+  => literal
+token quoted_string = /"([^"\\\n\r]|\\.)*"|'([^'\\\n\r]|\\.)*'/
+  => literal
 
-rule lua_family_unit = repeat(_statement)
-rule _statement = choice(empty_statement, assignment_statement, local_declaration, function_declaration, local_function_declaration, function_call, do_statement, while_statement, repeat_statement, if_statement, for_numeric_statement, for_generic_statement, return_statement, break_statement, goto_statement, label_statement, _dialect_statement)
-rule empty_statement = ";"
-rule assignment_statement = seq(comma_list1(variable), "=", comma_list1(_expression))
-rule local_declaration = seq("local", comma_list1(local_name), optional(seq("=", comma_list1(_expression))))
-rule local_name = seq(field(name, identifier), optional(_dialect_type_annotation))
-rule function_declaration = seq("function", field(name, function_name), field(parameters, parameters), optional(_dialect_return_type), field(body, optional(block)), "end")
-rule local_function_declaration = seq("local", "function", field(name, identifier), field(parameters, parameters), optional(_dialect_return_type), field(body, optional(block)), "end")
-rule function_name = seq(identifier, repeat(seq(".", identifier)), optional(seq(":", identifier)))
-rule parameters = seq("(", comma_list(parameter), optional(seq(optional(","), "...", optional(_dialect_type_annotation))), ")")
-rule parameter = seq(field(name, identifier), optional(_dialect_type_annotation))
-rule block = repeat1(_statement)
-rule do_statement = seq("do", field(body, optional(block)), "end")
-rule while_statement = seq("while", field(condition, _expression), "do", field(body, optional(block)), "end")
-rule repeat_statement = seq("repeat", field(body, optional(block)), "until", field(condition, _expression))
-rule if_statement = seq("if", field(condition, _expression), "then", field(body, optional(block)), repeat(elseif_clause), optional(else_clause), "end")
-rule elseif_clause = seq("elseif", field(condition, _expression), "then", field(body, optional(block)))
-rule else_clause = seq("else", field(body, optional(block)))
-rule for_numeric_statement = seq("for", field(name, identifier), "=", field(start, _expression), ",", field(end, _expression), optional(seq(",", field(step, _expression))), "do", field(body, optional(block)), "end")
-rule for_generic_statement = seq("for", field(name, comma_list1(identifier)), "in", field(value, comma_list1(_expression)), "do", field(body, optional(block)), "end")
-rule return_statement = right(0, seq("return", optional(comma_list1(_expression)), optional(";")))
-rule break_statement = "break"
-rule goto_statement = seq("goto", field(name, identifier))
-rule label_statement = seq("::", field(name, identifier), "::")
+slot type_annotation
+slot return_type_annotation
 
-rule _expression = choice(nil, boolean, number, quoted_string, long_string, vararg_expression, function_expression, table_constructor, variable, function_call, parenthesized_expression, unary_expression, binary_expression, _dialect_expression)
-rule nil = "nil"
-rule boolean = choice("true", "false")
-rule long_string = seq(long_string_start, repeat(long_string_content), long_string_end)
-rule vararg_expression = "..."
-rule function_expression = seq("function", field(parameters, parameters), optional(_dialect_return_type), field(body, optional(block)), "end")
-rule parenthesized_expression = seq("(", _expression, ")")
-rule unary_expression = right(12, seq(field(operator, choice("not", "#", "-", "~")), field(argument, _expression)))
-rule binary_expression = choice(
-  left(1, seq(field(left, _expression), field(operator, "or"), field(right, _expression))),
-  left(2, seq(field(left, _expression), field(operator, "and"), field(right, _expression))),
-  left(3, seq(field(left, _expression), field(operator, choice("<", ">", "<=", ">=", "~=", "==")), field(right, _expression))),
-  left(4, seq(field(left, _expression), field(operator, "|"), field(right, _expression))),
-  left(5, seq(field(left, _expression), field(operator, "~"), field(right, _expression))),
-  left(6, seq(field(left, _expression), field(operator, "&"), field(right, _expression))),
-  left(7, seq(field(left, _expression), field(operator, choice("<<", ">>")), field(right, _expression))),
-  right(8, seq(field(left, _expression), field(operator, ".."), field(right, _expression))),
-  left(9, seq(field(left, _expression), field(operator, choice("+", "-")), field(right, _expression))),
-  left(10, seq(field(left, _expression), field(operator, choice("*", "/", "//", "%")), field(right, _expression))),
-  right(13, seq(field(left, _expression), field(operator, "^"), field(right, _expression)))
-)
-rule variable = choice(identifier, index_expression, member_expression)
-rule index_expression = left(14, seq(field(receiver, _prefix_expression), "[", field(index, _expression), "]"))
-rule member_expression = left(14, seq(field(receiver, _prefix_expression), ".", field(name, identifier)))
-rule _prefix_expression = choice(identifier, parenthesized_expression, function_call, index_expression, member_expression)
-rule function_call = left(15, seq(field(callee, _prefix_expression), optional(seq(":", field(method, identifier))), field(arguments, arguments)))
-rule arguments = choice(seq("(", comma_list(_expression), ")"), table_constructor, quoted_string, long_string)
-rule table_constructor = seq("{", comma_list(field_entry), optional(","), "}")
-rule field_entry = choice(seq("[", field(name, _expression), "]", "=", field(value, _expression)), seq(field(name, identifier), "=", field(value, _expression)), field(value, _expression))
+lua_family_unit = body:_statement*
+  => module(body)
+     derives scope
 
-conflict { variable, function_call }
-conflict { _prefix_expression, _statement }
-conflict { _prefix_expression, variable }
-conflict { _expression, _prefix_expression }
-conflict { table_constructor, block }
+open _statement =
+  | empty_statement
+  | assignment_statement
+  | local_declaration
+  | function_declaration
+  | local_function_declaration
+  | function_call
+  | do_statement
+  | while_statement
+  | repeat_statement
+  | if_statement
+  | for_numeric_statement
+  | for_generic_statement
+  | return_statement
+  | break_statement
+  | goto_statement
+  | label_statement
 
-vocabulary lua_family_unit -> module { role body = body; trait scope; }
-vocabulary function_declaration -> function { role name = name; role parameters = parameters; role body = body; trait declaration; trait scope; }
-vocabulary local_function_declaration -> function { role name = name; role parameters = parameters; role body = body; trait declaration; trait scope; }
-vocabulary function_expression -> function { role parameters = parameters; role body = body; trait scope; }
-vocabulary parameter -> parameter { role name = name; trait declaration; }
-vocabulary function_call -> call { role callee = callee; role arguments = arguments; }
-vocabulary member_expression -> member { role receiver = receiver; role name = name; }
-vocabulary identifier -> identifier
-vocabulary number -> literal
-vocabulary quoted_string -> literal
-vocabulary long_string -> literal
-vocabulary table_constructor -> table
-vocabulary field_entry -> field { role name = name; role value = value; }
-vocabulary assignment_statement -> assignment { role left = left; role right = right; }
-vocabulary if_statement -> branch { role condition = condition; role body = body; }
-vocabulary while_statement -> loop { role condition = condition; role body = body; }
-vocabulary repeat_statement -> loop { role condition = condition; role body = body; }
-vocabulary return_statement -> return
-vocabulary block -> block { role body = body; trait scope; }
-vocabulary line_comment -> comment
-vocabulary long_comment -> comment
+empty_statement = ";"
+
+assignment_statement = left:separated1(variable, ",") "=" right:separated1(_expression, ",")
+  => assignment(left, right)
+
+local_declaration = "local" separated1(local_name, ",") ("=" separated1(_expression, ","))?
+local_name = name:identifier type_annotation?
+
+function_declaration =
+  "function" name:function_name parameters:parameters return_type_annotation? body:block? "end"
+  => function(name, parameters, body)
+     derives declaration, scope
+
+local_function_declaration =
+  "local" "function" name:identifier parameters:parameters return_type_annotation? body:block? "end"
+  => function(name, parameters, body)
+     derives declaration, scope
+
+function_name = identifier ("." identifier)* (":" identifier)?
+parameters = "(" separated(parameter, ",") (","? "..." type_annotation?)? ")"
+
+parameter = name:identifier type_annotation?
+  => parameter(name)
+     derives declaration
+
+block = body:_statement+
+  => block(body)
+     derives scope
+
+do_statement = "do" body:block? "end"
+
+while_statement = "while" condition:_expression "do" body:block? "end"
+  => loop(condition, body)
+
+repeat_statement = "repeat" body:block? "until" condition:_expression
+  => loop(condition, body)
+
+if_statement = "if" condition:_expression "then" body:block? elseif_clause* else_clause? "end"
+  => branch(condition, body)
+
+elseif_clause = "elseif" condition:_expression "then" body:block?
+else_clause = "else" body:block?
+
+for_numeric_statement =
+  "for" name:identifier "=" start:_expression "," end:_expression ("," step:_expression)? "do"
+  body:block? "end"
+
+for_generic_statement =
+  "for" name:separated1(identifier, ",") "in" value:separated1(_expression, ",") "do" body:block?
+  "end"
+
+return_statement = right 0: "return" value:separated1(_expression, ",")? ";"?
+  => return(value)
+
+break_statement = "break"
+goto_statement = "goto" name:identifier
+label_statement = "::" name:identifier "::"
+
+open _expression =
+  | nil
+  | boolean
+  | number
+  | quoted_string
+  | long_string
+  | vararg_expression
+  | function_expression
+  | table_constructor
+  | variable
+  | function_call
+  | parenthesized_expression
+  | unary_expression
+  | binary_expression
+
+nil = "nil"
+boolean = "true" | "false"
+
+long_string = long_string_start long_string_content* long_string_end
+  => literal
+
+vararg_expression = "..."
+
+function_expression = "function" parameters:parameters return_type_annotation? body:block? "end"
+  => function(parameters, body)
+     derives scope
+
+parenthesized_expression = "(" _expression ")"
+
+prefix unary_expression over _expression
+  => operator(right=argument)
+  right 12: "not" | "#" | "-" | "~"
+
+infix binary_expression over _expression
+  => operator(left, right)
+  left   1: "or"
+  left   2: "and"
+  left   3: "<" | ">" | "<=" | ">=" | "~=" | "=="
+  left   4: "|"
+  left   5: "~"
+  left   6: "&"
+  left   7: "<<" | ">>"
+  right  8: ".."
+  left   9: "+" | "-"
+  left  10: "*" | "/" | "//" | "%"
+  right 13: "^"
+
+variable = identifier | index_expression | member_expression
+index_expression = left 14: receiver:_prefix_expression "[" index:_expression "]"
+
+member_expression = left 14: receiver:_prefix_expression "." name:identifier
+  => member(receiver, name)
+
+open _prefix_expression =
+  | identifier
+  | parenthesized_expression
+  | function_call
+  | index_expression
+  | member_expression
+
+function_call = left 15: callee:_prefix_expression (":" method:identifier)? arguments:arguments
+  => call(callee, arguments)
+
+arguments = "(" separated(_expression, ",") ")" | table_constructor | quoted_string | long_string
+
+table_constructor = "{" separated(field_entry, ",") ","? "}"
+  => table
+
+field_entry =
+  | "[" name:_expression "]" "=" value:_expression
+  | name:identifier "=" value:_expression
+  | value:_expression
+  => field(name, value)
+
+map long_comment => comment
+
+conflict variable function_call
+conflict _prefix_expression _statement
+conflict _prefix_expression variable
+conflict _expression _prefix_expression
+conflict table_constructor block

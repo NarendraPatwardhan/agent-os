@@ -7,7 +7,7 @@
 
 protocol-version 1
 vocabulary-version 1
-grammar-ir-version 1
+grammar-ir-version 2
 
 // Stable semantic concepts. IDs are append-only; removed concepts remain reserved.
 semantic-kind "module" id=1 { role "body" required=1; trait "scope"; }

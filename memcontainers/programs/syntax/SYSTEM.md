@@ -9,8 +9,9 @@ The source of truth is split deliberately:
 
 - `contracts/syntax.kdl` owns protocol messages and the versioned semantic vocabulary. The contract
   projector generates Rust, Zig, and Luau codecs/constants; consumers do not copy wire IDs.
-- `bazel/tools/mc-grammar-gen` owns the `.grammar` frontend, typed Grammar IR, validation, and the
-  narrow adapter into the pinned Tree-sitter Rust generator.
+- `bazel/tools/mc-grammar-gen` owns the spanned `.grammar` AST, module elaborator, normalized typed
+  Grammar IR, canonical formatter, validation, and the narrow backend into the pinned Tree-sitter
+  Rust generator. Its language reference is in that directory's `README.md`.
 - `grammars/` contains AgentOS-authored grammars. Shared family modules are explicit inputs to
   `mc_grammar`; generated C, schemas, semantics, diagnostics, and manifests remain Bazel outputs.
 - `third_party/tree-sitter` is the pinned MIT-licensed generator/runtime dependency. Its JavaScript
@@ -44,7 +45,9 @@ memory and startup are paid only after first use.
 
 ## Verification
 
-- `//bazel/tools/mc-grammar-gen:dsl_test` covers frontend parsing and canonical IR.
+- `//bazel/tools/mc-grammar-gen:dsl_test` covers parsing, elaboration invariants, normalized IR, and
+  formatter idempotence/comment preservation.
+- `//memcontainers/programs/syntax/grammars:format_test` keeps every owned grammar canonical.
 - `//memcontainers/contracts:syntax_sync_tests` prevents checked-in projection drift.
 - Lua and Luau grammar targets prove family-module reuse and generator determinism.
 - `//memcontainers/tests/e2e:core --test_arg=syntax` crosses the real kernel, lazy service,
