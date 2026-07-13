@@ -1,14 +1,14 @@
-"""Always-release wasm kernel.
+"""Always-release WebAssembly compiler stage.
 
 The kernel is meaningless as a debug artifact — the multi-MB unoptimized build is never
 what ships, and we never want it. `release_wasm` pins the WHOLE kernel subgraph (wasmi,
 talc, the kernel cdylib) to `compilation_mode=opt` regardless of the top-level `-c`, AND
-transitions it onto the wasm32 platform, then surfaces the single optimized `.wasm`. The
+transitions it onto the wasm32 platform, then surfaces the compiler's single release `.wasm`. The
 cdylib is additionally built symbol-stripped (`-Cstrip=symbols`, in BUILD), so the default
-`bazel build //memcontainers/kernel/rust:kernel` is the small, stripped artifact every time.
+post-link `wasm_opt` stage produces the smaller artifact that ships.
 
-The B5 size-budget gate is now the reusable `//bazel/tools/size:defs.bzl` `size_limit` rule, so the
-kernel.wasm, the per-tier mcboxes, and the flavor layer tars all share one gate.
+The B5 size-budget gate is the reusable `//bazel/tools/size:defs.bzl` `size_limit` rule; the shipped
+kernel applies it after post-link optimization.
 """
 
 # Pin opt + the wasm platform (+ the size-opt on the kernel) for everything reachable from the cdylib.
@@ -50,7 +50,7 @@ def _release_wasm_impl(ctx):
 
 release_wasm = rule(
     implementation = _release_wasm_impl,
-    doc = "Surface a rust_shared_library as an always-opt, wasm32 kernel.wasm.",
+    doc = "Surface a rust_shared_library as an always-release wasm32 compiler-stage module.",
     attrs = {
         "lib": attr.label(
             mandatory = True,

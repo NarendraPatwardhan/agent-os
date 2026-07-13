@@ -1,4 +1,5 @@
 load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary", "zig_library")
+load("//bazel:wasm_opt.bzl", "wasm_opt")
 
 def coreutils_box(name, tier, tier_section, set_kind, srcs):
     zig_library(
@@ -41,15 +42,23 @@ def coreutils_box(name, tier, tier_section, set_kind, srcs):
         tags = ["manual"],
     )
 
+    # Optimize the final linked module before appending graph-authored tier and applet metadata.
+    # Both full and Minimal boxes pass through this one policy.
+    wasm_opt(
+        name = name + "_release",
+        wasm = ":" + name + "_wasm",
+        tags = ["manual"],
+    )
+
     native.genrule(
         name = name + "_opt",
         srcs = [
-            ":" + name + "_wasm",
+            ":" + name + "_release",
             ":" + name + "_applets",
         ],
         outs = [name + "_opt.wasm"],
         tools = ["//bazel/tools/mc-stamp"],
-        cmd = "$(execpath //bazel/tools/mc-stamp) $(execpath :%s_wasm) $@ %s 0 0 0 '' $(execpath :%s_applets)" % (name, tier_section, name),
+        cmd = "$(execpath //bazel/tools/mc-stamp) $(execpath :%s_release) $@ %s 0 0 0 '' $(execpath :%s_applets)" % (name, tier_section, name),
         visibility = ["//visibility:public"],
     )
 

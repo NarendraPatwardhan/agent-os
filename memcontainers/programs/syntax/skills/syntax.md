@@ -1,6 +1,6 @@
 # Structural code parsing
 
-The `syntax` flavor provides Lua 5.4 and Luau parsers through one warm resident service.
+The `loom` image provides Lua 5.4 and Luau parsers through one warm resident service.
 
 ```luau
 local syntax = require("syntax")

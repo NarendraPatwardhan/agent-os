@@ -13,4 +13,3 @@ pub use harness::*;
 
 mod sqlite;
 mod typst;
-mod syntax;

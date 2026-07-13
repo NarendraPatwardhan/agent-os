@@ -1,0 +1,16 @@
+load("@aspect_rules_js//js:defs.bzl", "js_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+# Official portable Binaryen distribution: the CLI launcher resolves wasm-opt.wasm beside itself.
+exports_files([
+    "wasm-opt.js",
+    "wasm-opt.wasm",
+])
+
+# Keep the launcher in the same Bazel package as the module it resolves beside itself.
+js_binary(
+    name = "wasm-opt",
+    data = ["wasm-opt.wasm"],
+    entry_point = "wasm-opt.js",
+)

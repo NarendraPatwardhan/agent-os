@@ -27,6 +27,7 @@ zig_configure_binary(
     actual = ":raw",
     mode = "release_small",
     target = "//platforms:wasm32_freestanding",
+    visibility = ["//bazel/tools/wasm-opt:__pkg__"],
 )
 
 # Asserts the wasm artifact actually builds — exercises rules_zig, the Zig 0.16

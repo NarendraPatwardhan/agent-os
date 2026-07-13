@@ -2,6 +2,7 @@ load("@rules_rust//rust:defs.bzl", "rust_shared_library")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("//bazel/tools/size:defs.bzl", "size_limit")
 load("//bazel:release_wasm.bzl", "release_wasm")
+load("//bazel:wasm_opt.bzl", "wasm_opt")
 
 # kernel/rust — the shipped kernel, ported from memcontainers rather than rewritten.
 # It compiles to wasm32-unknown-unknown and uses wasmi as an ordinary native Rust crate,
@@ -12,8 +13,9 @@ load("//bazel:release_wasm.bzl", "release_wasm")
 # exports for a future shared-memory multi-worker host, which does not exist yet — so it
 # is left off (the `#[cfg(feature = "threads")]` gates stay in the source, a one-flag
 # re-enable when such a host lands). The shipped artifact is ALWAYS release: `release_wasm`
-# (defs.bzl) pins the whole subgraph to opt and the cdylib is symbol-stripped, so
-# `//memcontainers/kernel/rust:kernel` is the small (~1.7 MB) wasm, never a multi-MB debug build.
+# pins the whole subgraph to opt, the cdylib is symbol-stripped, and `wasm_opt` applies the common
+# post-link policy, so `//memcontainers/kernel/rust:kernel` is the small artifact, never a multi-MB
+# debug build.
 
 # The cdylib. Tagged manual: a no_std cdylib has no host runtime, so `//...` builds it only through the
 # release_wasm transition below, which pins the size-opt GRAPH-WIDE (opt-level=z, fat LTO, panic=abort,
@@ -39,24 +41,30 @@ rust_shared_library(
     ],
 )
 
-# The shipped kernel: always opt + wasm32 + stripped. The rest of the graph consumes
-# //memcontainers/kernel/rust:kernel; tests data-depend on it (B1).
+# The compiler-stage kernel: always opt + wasm32 + stripped. Kept private; the rest of the graph
+# consumes only the post-link-optimized //memcontainers/kernel/rust:kernel (B1).
 release_wasm(
-    name = "kernel",
+    name = "kernel_release",
     lib = ":lib",
     size_opt = True,  # the size-gated artifact carries the full B5 size-opt (LTO + panic=abort)
-    # The shipped artifact: e2e / parity / conformance all data-dep it (B1).
+)
+
+# The shipped artifact: e2e / parity / conformance all data-depend on this exact output (B1).
+wasm_opt(
+    name = "kernel",
+    wasm = ":kernel_release",
     visibility = ["//visibility:public"],
 )
 
 # B5 size budget gate (the shared //bazel/tools/size rule) — a regression past the ceiling fails CI rather than
 # silently bloating the agent's footprint. memcontainers ships ~1.67 MB; we carry the resident-service
 # (svc) subsystem it lacks, but the B5 size-opt (LTO + panic=abort) more than pays for it — the artifact
-# is ~1.20 MB. Hold the ceiling TIGHT at 1.4 MB so a real regression trips it, not a slack 2 MB.
+# is ~1.11 MB after post-link optimization. Hold the ceiling tight enough to catch a meaningful
+# regression while leaving room for intentional kernel growth.
 size_limit(
     name = "size_limit",
     file = ":kernel",
-    max_bytes = 1400000,
+    max_bytes = 1200000,
 )
 
 # Anchors the kernel in the test graph: asserts kernel.wasm builds.

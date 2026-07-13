@@ -1,0 +1,22 @@
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("//bazel:wasm_opt.bzl", "wasm_opt")
+
+# The executable itself lives in the pinned external package so its launcher and sibling wasm module
+# remain co-located. This alias is the repository-owned tool label used by wasm_opt.bzl.
+alias(
+    name = "wasm-opt",
+    actual = "@binaryen//:wasm-opt",
+    visibility = ["//visibility:public"],
+)
+
+# Exercise the actual portable optimizer as a sandboxed build action, including its Node launcher,
+# sibling wasm module, explicit proposal policy, and output declaration.
+wasm_opt(
+    name = "smoke",
+    wasm = "//bazel/tools/smoke/zig:wasm",
+)
+
+build_test(
+    name = "build_test",
+    targets = [":smoke"],
+)

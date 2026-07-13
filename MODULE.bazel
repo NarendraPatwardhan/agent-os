@@ -161,6 +161,18 @@ bazel_dep(name = "rules_pkg", version = "1.0.1")  # pkg_tar — deterministic im
 # vendored copy in-tree); only the patch + BUILD file live under third_party/<lib>/.
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
+# Binaryen 130's portable Node distribution: wasm-opt itself compiled to WebAssembly plus its small
+# Node launcher. This is a HOST build tool, never guest/image content. The portable bundle is 2 MiB
+# compressed and produces byte-identical output to Binaryen's 102 MiB x86_64 native distribution,
+# while running under the hermetic rules_js Node toolchain on every supported host (B3/B4).
+http_archive(
+    name = "binaryen",
+    build_file = "//third_party/binaryen:BUILD.binaryen.bazel",
+    sha256 = "2581456ca8fa2f0e6512d17c8dce34ce8f133211d427afe0bec242ceff73ab77",
+    strip_prefix = "binaryen-version_130",
+    urls = ["https://github.com/WebAssembly/binaryen/releases/download/version_130/binaryen-version_130-node.tar.gz"],
+)
+
 # sqlite — the SQLite 3.51.0 amalgamation fetched from sqlite.org (SYSTEMS.md: fetch upstream via
 # http_archive; never commit a vendored copy). 3.51.0 ships native SQLITE_WASI support (the unix-dotfile
 # VFS over WASI fds), so the wasm32-wasi + mc build needs NO core patches — only the compile defines in

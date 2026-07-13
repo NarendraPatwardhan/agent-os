@@ -5,6 +5,7 @@ zig toolchain, not a CC one). See SYSTEMS.md §10."""
 
 load("@bazel_skylib//lib:paths.bzl", "paths")
 load("//bazel:release_wasm.bzl", "release_wasm")
+load("//bazel:wasm_opt.bzl", "wasm_opt")
 
 def _cc_headers_impl(ctx):
     # Make each `includes` entry exec-root-relative: <repo>/<package>/<inc>. For @luau (package "")
@@ -124,13 +125,13 @@ def _mc_program_impl(ctx):
 
 _mc_program = rule(
     implementation = _mc_program_impl,
-    doc = "Stamp a zig/C++ domain-tool wasm with its mc_tier + mc_budget custom sections (SYSTEMS.md) and attest it (import purity and tier-cap fit). Yields the load-ready " +
+    doc = "Stamp a post-link-optimized domain-tool wasm with its mc_tier + mc_budget custom sections (SYSTEMS.md) and attest it (import purity and tier-cap fit). Yields the load-ready " +
           "<name>.wasm + an McProgramInfo; a non-mc/unknown import or an over-tier syscall fails the build.",
     attrs = {
         "wasm": attr.label(
             allow_single_file = True,
             mandatory = True,
-            doc = "The linked guest wasm to stamp + attest.",
+            doc = "The optimized final linked guest wasm to stamp + attest.",
         ),
         "tier": attr.string(mandatory = True, doc = "Capability tier (isolated/read-only/read-write/full)."),
         # Budgets are strings because attr.int caps at signed 32-bit but `fuel` is ~2e12; mc-stamp
@@ -145,14 +146,21 @@ _mc_program = rule(
 )
 
 def mc_program(name, wasm, tier, mem = 0, fuel = 0, table = 0, service = "", visibility = None):
-    """Thin ergonomic wrapper over the `_mc_program` rule: takes INT budgets (e.g. 256 * 1024 * 1024)
-    so call sites stay self-documenting, and forwards them as strings (attr.int is 32-bit; fuel is ~2e12).
-    A 0 budget means "no mc_budget section" (the kernel default). `service` (optional) stamps the
-    mc_service section marking a resident service (SYSTEMS.md). Used by the Zig/C++ lane (a pre-built
-    `wasm`); the Rust lane wraps it via `mc_rust_program`."""
+    """Optimize, stamp, and attest a final linked guest wasm.
+
+    The private `<name>_opt` stage applies the repository-wide Binaryen policy before `_mc_program`
+    appends graph-authored metadata. INT budgets keep call sites self-documenting and are forwarded
+    as strings because attr.int is 32-bit while fuel is ~2e12. A 0 budget means "no mc_budget
+    section" (the kernel default). `service` optionally stamps the resident-service name. Used by
+    the Zig/C++ lane; the Rust lane wraps it via `mc_rust_program`."""
+    wasm_opt(
+        name = name + "_opt",
+        wasm = wasm,
+        tags = ["manual"],
+    )
     _mc_program(
         name = name,
-        wasm = wasm,
+        wasm = ":" + name + "_opt",
         tier = tier,
         mem = str(mem),
         fuel = str(fuel),
@@ -164,19 +172,19 @@ def mc_program(name, wasm, tier, mem = 0, fuel = 0, table = 0, service = "", vis
 def mc_rust_program(name, lib, tier, mem = 0, fuel = 0, table = 0, service = "", visibility = None):
     """A Rust guest PROGRAM, packaged uniformly with the Zig/C++ lane (SYSTEMS.md / codex #1). A
     Rust `rust_binary` (`lib`) declares NO metadata in its source; this rule transitions it to opt +
-    wasm32 (`release_wasm`), then stamps `mc_tier`/`mc_budget`/`mc_service` from the BUILD attributes
-    and attests it (`mc_program`). So both guest lanes declare tier/budget/service ONCE — in the build
+    wasm32 (`release_wasm`), then post-link optimizes, stamps `mc_tier`/`mc_budget`/`mc_service` from
+    the BUILD attributes, and attests it (`mc_program`). So both guest lanes declare
+    tier/budget/service ONCE — in the build
     graph, not the source — every guest is `mc-attest`ed, and the `McProgramInfo` provider carries the
-    metadata for downstream image/manifest rules. `release_wasm` stays the kernel-only transition; this
-    is its userland counterpart."""
+    metadata for downstream image/manifest rules."""
     release_wasm(
-        name = name + "_opt",
+        name = name + "_release",
         lib = lib,
         platform = "//platforms:wasm32_freestanding",
     )
     mc_program(
         name = name,
-        wasm = ":" + name + "_opt",
+        wasm = ":" + name + "_release",
         tier = tier,
         mem = mem,
         fuel = fuel,

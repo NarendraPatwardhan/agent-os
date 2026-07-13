@@ -7,7 +7,7 @@ load("//bazel:rust_e2e_test.bzl", "rust_e2e_test")
 # test — a kernel trap or a generated-bridge mismatch surfaces as a host error.
 #
 #   :core     — the fast invariants: boot, tty, shell, coreutils, kernel control channel,
-#               flavors, the svc primitives, the Luau loom boot. Sub-second; crate_root src/lib.rs.
+#               flavors, the svc primitives, and loom's Luau + syntax surface. crate_root src/lib.rs.
 #   :extended — the heavy DOMAIN services (sqlite, typst): real compiles/queries that run for
 #               millions of fuel slices, booting the large atlas/paper images. crate_root src/extended.rs.
 #
@@ -57,6 +57,5 @@ rust_e2e_test(
     data = [
         "//memcontainers/images:atlas",  # loom + the sqlite service + require("sqlite") — the sqlite e2e
         "//memcontainers/images:paper",  # loom + the typst service + require("typst") + /usr/share/fonts — the typst e2e
-        "//memcontainers/images:syntax",  # loom + the owned Lua/Luau parser service and generated client contract
     ],
 )

@@ -4,7 +4,7 @@ use crate::*;
 
 #[test]
 fn syntax_luau_parses_queries_and_edits_transactionally() {
-    let mut s = boot_syntax();
+    let mut s = boot_loom();
     s.host.write_file(
         "/tmp/syntax-e2e.luau",
         br#"local syntax = require("syntax")
@@ -39,7 +39,7 @@ doc:close()
 
 #[test]
 fn syntax_service_is_lazy_and_survives_stale_handles() {
-    let mut s = boot_syntax();
+    let mut s = boot_loom();
     assert_eq!(s.run_for_output("ls /svc | grep '^syntax$' || echo cold"), "cold\r\n");
     s.host.write_file(
         "/tmp/stale.luau",

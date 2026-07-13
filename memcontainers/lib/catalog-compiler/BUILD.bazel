@@ -3,6 +3,7 @@ load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@aspect_rules_js//js:defs.bzl", "js_test")
 load("//bazel:release_wasm.bzl", "release_wasm")
 load("//bazel:rust_opt_test.bzl", "rust_opt_test")
+load("//bazel:wasm_opt.bzl", "wasm_opt")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -44,11 +45,16 @@ release_wasm(
     platform = "//platforms:wasm32_freestanding",
 )
 
+wasm_opt(
+    name = "wasm_opt",
+    wasm = ":wasm_release",
+)
+
 genrule(
     name = "wasm",
-    srcs = [":wasm_release"],
+    srcs = [":wasm_opt"],
     outs = ["catalog-compiler.wasm"],
-    cmd = "cp $(location :wasm_release) $@",
+    cmd = "cp $(location :wasm_opt) $@",
 )
 
 build_test(

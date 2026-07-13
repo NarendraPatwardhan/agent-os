@@ -140,9 +140,17 @@ pkg_tar(
     visibility = ["//visibility:public"],
 )
 
-# loom — posix + the Luau pair, one-binary domain services. The first NON-coreutils flavor:
+# The owned structural parser is part of loom's default programmability surface. It stays lazy: every
+# loom descendant carries the parser pack, but pays resident memory and startup only after first use.
+mc_service_layer(
+    name = "syntax_layer",
+    lazy = ["//memcontainers/programs/syntax/glue:syntax"],
+)
+
+# loom — posix + the Luau pair and owned structural parsing. The first NON-coreutils flavor:
 # posix's full userland plus the stamped, pure-mc luau interpreter (mc_tier=full, 256 MiB · 2T · 40k,
-# json/hash/time/string batteries embedded) and luau-analyze type checker (256 MiB · 400B · 40k).
+# json/hash/time/string batteries embedded), luau-analyze type checker (256 MiB · 400B · 40k), and
+# the lazy Lua/Luau syntax service with its generated client, semantic metadata, and skill.
 pkg_tar(
     name = "loom",
     create_parents = False,
@@ -160,9 +168,16 @@ pkg_tar(
         "//memcontainers/programs/luau/skills:tools.md": "/skills/tools.md",
         "//memcontainers/programs/luau/skills:xlsx.md": "/skills/xlsx.md",
         "//memcontainers/programs/luau/skills:pptx.md": "/skills/pptx.md",
+        "//memcontainers/contracts:syntax_luau": "/lib/luau/syntax_wire.luau",
+        "//memcontainers/programs/syntax/lib:syntax.luau": "/lib/luau/syntax.luau",
+        "//memcontainers/programs/syntax/skills:syntax.md": "/skills/syntax.md",
+        "//memcontainers/programs/syntax/grammars:lua_semantics": "/usr/share/syntax/lua/semantics.json",
+        "//memcontainers/programs/syntax/grammars:lua_manifest": "/usr/share/syntax/lua/manifest.json",
+        "//memcontainers/programs/syntax/grammars:luau_semantics": "/usr/share/syntax/luau/semantics.json",
+        "//memcontainers/programs/syntax/grammars:luau_manifest": "/usr/share/syntax/luau/manifest.json",
     },
     owner = "0.0",
-    deps = [":posix"],
+    deps = [":posix", ":syntax_layer"],
     visibility = ["//visibility:public"],
 )
 
@@ -237,30 +252,5 @@ pkg_tar(
     owner = "0.0",
     # loom (shell + /bin/luau) + the typst service layer + the /usr/share/fonts baseline faces.
     deps = [":loom", ":paper_layer", "//memcontainers/programs/typst/fonts:typst_fonts_tar"],
-    visibility = ["//visibility:public"],
-)
-
-# syntax — loom plus the owned structural-parser platform. The generated Lua/Luau parser pack is a
-# lazy resident service; its Luau client and generated wire codec are VFS content, so loom remains
-# universal and parser/runtime size is paid only by this domain flavor.
-mc_service_layer(
-    name = "syntax_layer",
-    lazy = ["//memcontainers/programs/syntax/glue:syntax"],
-)
-
-pkg_tar(
-    name = "syntax",
-    create_parents = False,
-    files = {
-        "//memcontainers/contracts:syntax_luau": "/lib/luau/syntax_wire.luau",
-        "//memcontainers/programs/syntax/lib:syntax.luau": "/lib/luau/syntax.luau",
-        "//memcontainers/programs/syntax/skills:syntax.md": "/skills/syntax.md",
-        "//memcontainers/programs/syntax/grammars:lua_semantics": "/usr/share/syntax/lua/semantics.json",
-        "//memcontainers/programs/syntax/grammars:lua_manifest": "/usr/share/syntax/lua/manifest.json",
-        "//memcontainers/programs/syntax/grammars:luau_semantics": "/usr/share/syntax/luau/semantics.json",
-        "//memcontainers/programs/syntax/grammars:luau_manifest": "/usr/share/syntax/luau/manifest.json",
-    },
-    owner = "0.0",
-    deps = [":loom", ":syntax_layer"],
     visibility = ["//visibility:public"],
 )

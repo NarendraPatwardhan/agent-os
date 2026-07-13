@@ -96,8 +96,8 @@ pub fn boot_minimal() -> Session {
     Session { host, stdout }
 }
 
-/// Boot the `loom` image (posix + /bin/luau — the stamped, pure-mc Luau interpreter). For the
-/// domain-tool tests that run real Luau bytecode on the real kernel via the trap-unwind.
+/// Boot the `loom` image (posix + Luau + the lazy owned syntax service). For the domain-tool tests
+/// that run real Luau bytecode and structural parsing on the real kernel via the trap-unwind.
 pub fn boot_loom() -> Session {
     let (b, stdout) = builder("_main/memcontainers/images/loom.tar");
     let host = b.build().expect("kernel booted (loom image)");
@@ -164,14 +164,6 @@ pub fn boot_atlas() -> Session {
 pub fn boot_paper() -> Session {
     let (b, stdout) = builder("_main/memcontainers/images/paper.tar");
     let host = b.build().expect("kernel booted (paper image)");
-    Session { host, stdout }
-}
-
-/// Boot the `syntax` image: loom plus the lazy owned Lua/Luau parser service and generated Luau
-/// protocol client. Structural parser E2E runs here because it compiles two generated C parsers.
-pub fn boot_syntax() -> Session {
-    let (b, stdout) = builder("_main/memcontainers/images/syntax.tar");
-    let host = b.build().expect("kernel booted (syntax image)");
     Session { host, stdout }
 }
 

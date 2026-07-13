@@ -28,7 +28,7 @@ node spelling.
 syntax.kdl -> contract projector -> generated Zig/Luau/Rust wire APIs
 *.grammar  -> mc-grammar-gen     -> parser.c + node-types + semantics + manifest
 parser.c + Tree-sitter C runtime + scanner -> /bin/syntax
-/bin/syntax + syntax.luau + generated metadata -> syntax image (layered on loom)
+/bin/syntax + syntax.luau + generated metadata -> loom image
 ```
 
 The service owns parser instances, source buffers, trees, queries, and document revisions in guest
@@ -39,14 +39,15 @@ commit atomically. Guarded rewrites additionally verify SHA-256 digests and a sy
 
 Hard limits bound source/query sizes, open documents, traversal/query pages, guest memory, fuel, and
 table entries. The service uses the `isolated` tier (read-only VFS access, no ambient authority) and is
-lazily activated, so parser weight is absent from `loom` and paid only by the `syntax` flavor.
+lazily activated inside `loom`, so every programmable image has structural parsing while resident
+memory and startup are paid only after first use.
 
 ## Verification
 
 - `//bazel/tools/mc-grammar-gen:dsl_test` covers frontend parsing and canonical IR.
 - `//memcontainers/contracts:syntax_sync_tests` prevents checked-in projection drift.
 - Lua and Luau grammar targets prove family-module reuse and generator determinism.
-- `//memcontainers/tests/e2e:extended --test_arg=syntax` crosses the real kernel, lazy service,
+- `//memcontainers/tests/e2e:core --test_arg=syntax` crosses the real kernel, lazy service,
   generated Luau codec, C runtime, Zig glue, queries, incremental edits, guarded rewrites, and stale
   handles.
 

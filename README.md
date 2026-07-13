@@ -18,11 +18,11 @@
     <img alt="SDK: JavaScript" src="https://img.shields.io/badge/SDK-Node.js%20%7C%20Bun%20%7C%20Browser-3178c6">
 <!-- BEGIN generated:image-size-badges -->
     <br>
-    <img alt="Image size: minimal 1.2 MiB" src="https://img.shields.io/static/v1?label=minimal&amp;message=1.2%20MiB&amp;color=2e7d32">
-    <img alt="Image size: posix 2.2 MiB" src="https://img.shields.io/static/v1?label=posix&amp;message=2.2%20MiB&amp;color=2e7d32">
-    <img alt="Image size: loom 6.2 MiB" src="https://img.shields.io/static/v1?label=loom&amp;message=6.2%20MiB&amp;color=d99a08">
-    <img alt="Image size: atlas 7.2 MiB" src="https://img.shields.io/static/v1?label=atlas&amp;message=7.2%20MiB&amp;color=1565c0">
-    <img alt="Image size: paper 35.9 MiB" src="https://img.shields.io/static/v1?label=paper&amp;message=35.9%20MiB&amp;color=1565c0">
+    <img alt="Image size: minimal 890 KiB" src="https://img.shields.io/static/v1?label=minimal&amp;message=890%20KiB&amp;color=2e7d32">
+    <img alt="Image size: posix 1.9 MiB" src="https://img.shields.io/static/v1?label=posix&amp;message=1.9%20MiB&amp;color=2e7d32">
+    <img alt="Image size: loom 5.6 MiB" src="https://img.shields.io/static/v1?label=loom&amp;message=5.6%20MiB&amp;color=d99a08">
+    <img alt="Image size: atlas 6.4 MiB" src="https://img.shields.io/static/v1?label=atlas&amp;message=6.4%20MiB&amp;color=1565c0">
+    <img alt="Image size: paper 32.3 MiB" src="https://img.shields.io/static/v1?label=paper&amp;message=32.3%20MiB&amp;color=1565c0">
 <!-- END generated:image-size-badges -->
   </p>
 
@@ -233,15 +233,14 @@ Choose the smallest image that contains the workload:
 |---|---|---|
 | `minimal` | Shell, boot services, minimal core commands, tools broker | Small custom harnesses |
 | `posix` | `minimal` plus the full coreutils command set | File and text automation |
-| `loom` | `posix` plus Luau, `luau-analyze`, and Office batteries | Programmable agent work |
+| `loom` | `posix` plus Luau, `luau-analyze`, Office batteries, and owned Lua/Luau parsers | Programmable agent work and structural code editing |
 | `atlas` | `loom` plus the warm SQLite service | Data and retrieval workflows |
 | `paper` | `loom` plus the warm Typst service and fonts | PDF and document generation |
-| `syntax` | `loom` plus owned Lua/Luau parsers and the `syntax` library | Structural code inspection and safe edits |
 
 Images are layered, capability-stamped build artifacts. Switching images changes guest userland; it
 does not change the host API.
 
-The `syntax` image exposes lossless concrete trees and transactional edits through Luau:
+The default `loom` image exposes lossless concrete trees and transactional edits through Luau:
 
 ```luau
 local syntax = require("syntax")
@@ -327,7 +326,7 @@ All source artifacts come from Bazel. Build the release-style client set and a c
 ```sh
 bazel build \
   //memcontainers/kernel/rust:kernel \
-  //memcontainers/images:syntax \
+  //memcontainers/images:loom \
   //memcontainers/lib/catalog-compiler:wasm \
   //memcontainers/sdk-js/core:bundle
 ```
@@ -336,7 +335,7 @@ Outputs:
 
 ```text
 bazel-bin/memcontainers/kernel/rust/kernel.wasm
-bazel-bin/memcontainers/images/syntax.tar
+bazel-bin/memcontainers/images/loom.tar
 bazel-bin/memcontainers/lib/catalog-compiler/catalog-compiler.wasm
 bazel-bin/memcontainers/sdk-js/core/mc-core.mjs
 ```

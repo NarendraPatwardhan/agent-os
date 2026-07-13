@@ -21,6 +21,7 @@ typst), stamping mc_tier/mc_budget/mc_service from the build graph via `mc_progr
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 load("//bazel:release_wasm.bzl", "release_wasm")
 load("//bazel:mc_program.bzl", "mc_program")
+load("//bazel:wasm_opt.bzl", "wasm_opt")
 
 # Trampoline+relink rounds before giving up. Matches memcontainers' xtask MAX_ROUNDS; a high cap
 # is cheap because post-convergence rounds are cached.
@@ -105,11 +106,13 @@ def mc_box(name, srcs, crate_root, crate_name, crate_features, deps, edition = "
     """
     _convert_to_mc(name, srcs, crate_root, crate_name, crate_features, deps, edition, compile_data, rounds, [], visibility)
 
-    # Attestation: surface the converged box opt+wasm32-wasi, then FAIL THE BUILD if its mc
+    # Attestation: surface the converged box under the opt+wasm32-wasi transition, post-link optimize
+    # it, then FAIL THE BUILD if its mc
     # imports exceed its declared tier. //... reaches `<name>.attest`, so a mis-tiered box (an
     # applet importing a syscall its tier cannot use — spawn/net/mount in read-only, …) is a build
     # error, not a runtime surprise (the A9 default-deny gate, drift = build error).
-    release_wasm(name = name + "_opt", lib = name, platform = "//platforms:wasm32_wasi", visibility = visibility)
+    release_wasm(name = name + "_release", lib = name, platform = "//platforms:wasm32_wasi")
+    wasm_opt(name = name + "_opt", wasm = ":" + name + "_release", visibility = visibility)
     native.genrule(
         name = name + ".attest",
         srcs = [name + "_opt"],
@@ -133,7 +136,8 @@ def mc_box(name, srcs, crate_root, crate_name, crate_features, deps, edition = "
 def mc_wasi_program(name, srcs, crate_root, crate_name, deps, tier, service = "", mem = 0, fuel = 0, table = 0, crate_features = [], edition = "2021", compile_data = [], rounds = _MAX_ROUNDS, extra_rustc_flags = [], visibility = None):
     """A SINGLE std-wasi tool as an mc program/SERVICE (SYSTEMS.md — the Rust-std lane, e.g. typst):
     convert the wasm32-wasi crate to a pure-`mc` box (the adapter + trampoline fixpoint, shared with
-    `mc_box`), opt it (`release_wasm`), then stamp mc_tier/mc_budget/mc_service + attest (`mc_program`,
+    `mc_box`), transition it with `release_wasm`, then post-link optimize, stamp
+    mc_tier/mc_budget/mc_service, and attest (`mc_program`,
     whose validation action enforces import purity and tier fit). Unlike `mc_box` there is NO
     busybox roster — one tool, not a multi-applet box — and the metadata is declared in the BUILD (the
     `mc_rust_program` convention), not in the source. `service` (non-empty) stamps the mc_service section
@@ -142,14 +146,14 @@ def mc_wasi_program(name, srcs, crate_root, crate_name, deps, tier, service = ""
     Build under `--platforms=//platforms:wasm32_wasi`.
 
     Targets: `<name>` (the stamped service, McProgramInfo), `<name>_box` (the converged rust_binary),
-    `<name>_box_opt` (the release_wasm'd wasm mc_program stamps).
+    `<name>_box_release` (the transitioned wasm that mc_program post-link optimizes).
     """
     box = name + "_box"
     _convert_to_mc(box, srcs, crate_root, crate_name, crate_features, deps, edition, compile_data, rounds, extra_rustc_flags, None)
-    release_wasm(name = box + "_opt", lib = box, platform = "//platforms:wasm32_wasi")
+    release_wasm(name = box + "_release", lib = box, platform = "//platforms:wasm32_wasi")
     mc_program(
         name = name,
-        wasm = ":" + box + "_opt",
+        wasm = ":" + box + "_release",
         tier = tier,
         service = service,
         mem = mem,

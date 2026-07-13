@@ -10,7 +10,7 @@
 //! 5. **One binary** (kernel compiled once, ~1.6 ms per boot), grouped into modules by layer.
 //!
 //! This crate is the CORE suite: boot, line discipline, the shell, the coreutils, the kernel control
-//! channel, the flavors, the resident-service primitives, and the Luau loom boot — all sub-second.
+//! channel, the flavors, the resident-service primitives, and loom's Luau + syntax surface.
 //! The heavy DOMAIN services (sqlite, typst — real compiles that run for millions of fuel slices) live
 //! in the sibling `extended` suite (`src/extended.rs`), which shares this exact harness ([`harness`])
 //! but is a SEPARATE target so the core suite stays fast and CI can gate the two independently.
@@ -28,5 +28,6 @@ mod loom;
 mod process;
 mod shell;
 mod svc;
+mod syntax;
 mod system;
 mod tty;
