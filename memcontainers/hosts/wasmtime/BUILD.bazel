@@ -17,13 +17,6 @@ load(":defs.bzl", "host_release_binary")
 # magnitude slower, which would make e2e crawl. (host_musl static linking is deferred
 # — defs.bzl explains why it's a real toolchain integration, not just a platform string.)
 
-_RUSTC_FLAGS = [
-    # `tokio-net` is an optional feature (the async TokioNet egress the mc-server enables).
-    # Declare it as a KNOWN cfg so the off-by-default `cfg(feature = "tokio-net")` does not
-    # trip the unexpected-cfgs lint.
-    "--check-cfg=cfg(feature, values(\"tokio-net\"))",
-]
-
 rust_library(
     name = "host",
     srcs = glob(
@@ -34,7 +27,6 @@ rust_library(
         ],
     ),
     edition = "2021",
-    rustc_flags = _RUSTC_FLAGS,
     visibility = ["//visibility:public"],
     deps = [
         "@host_crates//:wasmtime",

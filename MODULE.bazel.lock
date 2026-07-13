@@ -713,8 +713,8 @@
         "recordedFileInputs": {
           "@@//bazel/tools/mc-grammar-gen/Cargo.lock": "fb58efedbb9b9b51a339cb5b589b1629195f07e56b035f22e5d32c2e97aa5c67",
           "@@//bazel/tools/mc-grammar-gen/Cargo.toml": "61d45f1ba4cc5b6bba334209622d2a5cb3198b86f5abb25e67005b811c934c2e",
-          "@@//memcontainers/hosts/wasmtime/Cargo.lock": "0309b9b28f027a6259496ccd96626d552365730ba940296a632376d6c69aaecf",
-          "@@//memcontainers/hosts/wasmtime/Cargo.toml": "11b06c79d88d201cca9ab2147654233333ca40543f251a8900c5aa0f5d1e1225",
+          "@@//memcontainers/hosts/wasmtime/Cargo.lock": "9b8d604211c4617352f2643fa6c6abe58624fda4f8b73430f8e203203acebf07",
+          "@@//memcontainers/hosts/wasmtime/Cargo.toml": "f25bed00a4c0d20508dbc4a253a5f3d3bc3615225eb9937cfc9f51a5569277df",
           "@@//memcontainers/hosts/wasmtime/nif/Cargo.lock": "7389b879cef25db6d83a33d7cd1d5ec050e2c71ddbbb7b0d749fa307cec2b207",
           "@@//memcontainers/hosts/wasmtime/nif/Cargo.toml": "4c943bef0901e62e501b4c5758197ee723e4f6426d54c110207693c043b6a6de",
           "@@//memcontainers/kernel/rust/Cargo.lock": "dab62dcef3ba6a4c360d50fae3a4848e39cceb9fd46882fba36410713e7d47f1",

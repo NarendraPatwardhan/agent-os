@@ -53,8 +53,6 @@ pub use connections::{
     PreparedConnectionRequest, PreparedHttpRequest,
 };
 pub use host_call::{DeniedHostCall, HostCallCapability, MapHostCall};
-#[cfg(feature = "tokio-net")]
-pub use net::TokioNet;
 pub use net::{
     DeniedNet, NetCapability, RealNet, ToolApprovalDecision, ToolApprovalFacts, ToolApprover,
 };
