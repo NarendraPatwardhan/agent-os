@@ -92,6 +92,17 @@ const MAX_FUNCTION_RESULTS: usize = 32;
 const MIN_FUNCTION_DENSITY_THRESHOLD: u32 = 1_000;
 const MIN_AVG_FUNCTION_BODY_BYTES: u32 = 40;
 
+macro_rules! bind_shell_export_names {
+    (
+        $buf:ident => ShBuf ($len:ident: u32) [u32];
+        $autocomplete:ident => ShAutocomplete ($request_len:ident: u32) [i32];
+    ) => {
+        const SH_BUF_EXPORT: &str = stringify!($buf);
+        const SH_AUTOCOMPLETE_EXPORT: &str = stringify!($autocomplete);
+    };
+}
+shell_rust::mc_shell_table!(bind_shell_export_names);
+
 /// An entry in a guest's own fd table (fds ≥ 3). Standard fds 0/1/2 route to
 /// the task's stdin/stdout/stderr via `BuiltinCtx`.
 enum GuestFd {
@@ -947,9 +958,18 @@ pub struct GuestProgram {
     /// The guest's exported `__stack_pointer` global, saved/restored across a
     /// trap-unwound `pcall`. `None` unless exported (paired with `pcall_run`).
     sp_global: Option<Global>,
+    /// Optional pure resident-shell control exports. Both must exist or neither;
+    /// accepting a half boundary would make completion state-dependent on which
+    /// generated symbol happened to link.
+    sh_buf: Option<TypedFunc<i32, i32>>,
+    sh_autocomplete: Option<TypedFunc<i32, i32>>,
 }
 
 impl GuestProgram {
+    pub fn supports_resident_control(&self) -> bool {
+        self.sh_buf.is_some() && self.sh_autocomplete.is_some()
+    }
+
     /// Instantiate `bytes` as a fresh guest against the shared [`GuestRuntime`].
     /// The program is compiled once and cached (`rt.module_for`) and the runtime's
     /// single linker is reused — only the per-spawn `Store` is new. Returns an
@@ -1001,6 +1021,18 @@ impl GuestProgram {
             .get_typed_func::<(), ()>(&store, "__mc_pcall_run")
             .ok();
         let sp_global = instance.get_global(&store, "__stack_pointer");
+        let sh_buf = instance
+            .get_typed_func::<i32, i32>(&store, SH_BUF_EXPORT)
+            .ok();
+        let sh_autocomplete = instance
+            .get_typed_func::<i32, i32>(&store, SH_AUTOCOMPLETE_EXPORT)
+            .ok();
+        if sh_buf.is_some() != sh_autocomplete.is_some() {
+            return Err(String::from(
+                "resident shell control boundary incomplete: mc_sh_buf and \
+                 mc_sh_autocomplete must be exported together",
+            ));
+        }
         // All-or-nothing: re-entering via __mc_pcall_run needs the shadow-stack pointer to
         // save/restore across the trap, and the pointer is meaningless without the dispatcher. A
         // guest exporting EXACTLY ONE (a mis-linked or hand-crafted shim) would half-arm the unwind
@@ -1024,7 +1056,56 @@ impl GuestProgram {
             pcall_stack: Vec::new(),
             pcall_run,
             sp_global,
+            sh_buf,
+            sh_autocomplete,
         })
+    }
+
+    fn resident_control(&mut self, request: &[u8]) -> Result<Vec<u8>, i32> {
+        let max_control_bytes = AUTOCOMPLETE_MAX_FRAME_BYTES as usize;
+        if request.len() > max_control_bytes {
+            return Err(EMSGSIZE);
+        }
+        if !self.pcall_stack.is_empty() {
+            return Err(EAGAIN);
+        }
+        let buf = self.sh_buf.ok_or(ENOSYS)?;
+        let call = self.sh_autocomplete.ok_or(ENOSYS)?;
+        self.store.set_fuel(FUEL_QUANTUM).map_err(|_| EIO)?;
+        let ptr = buf
+            .call(&mut self.store, request.len() as i32)
+            .map_err(|_| EIO)?;
+        if ptr < 0 || (ptr == 0 && !request.is_empty()) {
+            return Err(EMSGSIZE);
+        }
+        let start = ptr as usize;
+        let end = start.checked_add(request.len()).ok_or(EINVAL)?;
+        let memory = self.memory.data_mut(&mut self.store);
+        if end > memory.len() {
+            return Err(EINVAL);
+        }
+        memory[start..end].copy_from_slice(request);
+        let len = call
+            .call(&mut self.store, request.len() as i32)
+            .map_err(|_| EIO)?;
+        if len < 0 {
+            return Err(len.saturating_neg());
+        }
+        let len = len as usize;
+        if len > max_control_bytes {
+            return Err(EMSGSIZE);
+        }
+        let ptr = buf.call(&mut self.store, 0).map_err(|_| EIO)?;
+        if ptr < 0 || (ptr == 0 && len != 0) {
+            return Err(EINVAL);
+        }
+        let start = ptr as usize;
+        let end = start.checked_add(len).ok_or(EINVAL)?;
+        let memory = self.memory.data(&self.store);
+        if end > memory.len() {
+            return Err(EINVAL);
+        }
+        Ok(memory[start..end].to_vec())
     }
 
     /// Install a guest fd and return its number (≥ 3), or `None` if the
@@ -4626,6 +4707,14 @@ impl GuestProgram {
 }
 
 impl Builtin for GuestProgram {
+    fn control(&mut self, request: &[u8]) -> Result<Vec<u8>, i32> {
+        self.resident_control(request)
+    }
+
+    fn has_control(&self) -> bool {
+        self.supports_resident_control()
+    }
+
     fn step(&mut self, ctx: &mut BuiltinCtx<'_>) -> BuiltinStep {
         // Produce the first outcome to process this step, based on how the
         // previous step left us. A trap is routed through `on_trap`, which unwinds

@@ -2,9 +2,161 @@
 
 const std = @import("std");
 const shcore = @import("shcore");
+const shell_wire = @import("shell_zig");
 const sys = @import("sys");
 
 const shos = shcore.os;
+
+const AUTOCOMPLETE_MAX_REQUEST: usize = @intCast(sys.constants.AUTOCOMPLETE_MAX_FRAME_BYTES);
+const AUTOCOMPLETE_MAX_CANDIDATES: usize = @intCast(sys.constants.AUTOCOMPLETE_MAX_ITEMS);
+var autocomplete_buffer: std.ArrayList(u8) = .empty;
+var live_shell: ?*shcore.Shell = null;
+var live_repl_source: []const u8 = "";
+var live_repl_continuation = false;
+
+fn candidateLess(_: void, a: shcore.completion.Candidate, b: shcore.completion.Candidate) bool {
+    const order = std.mem.order(u8, a.value, b.value);
+    return order == .lt or (order == .eq and std.mem.lessThan(u8, a.kind, b.kind));
+}
+
+fn wireContext(context: shcore.completion.Context) []const u8 {
+    return switch (context) {
+        .command => shell_wire.CONTEXT_COMMAND,
+        .path => shell_wire.CONTEXT_PATH,
+        .directory => shell_wire.CONTEXT_DIRECTORY,
+        .variable => shell_wire.CONTEXT_VARIABLE,
+    };
+}
+
+fn wireQuote(quote: shcore.completion.Quote) []const u8 {
+    return switch (quote) {
+        .bare => shell_wire.QUOTE_BARE,
+        .single => shell_wire.QUOTE_SINGLE,
+        .double => shell_wire.QUOTE_DOUBLE,
+    };
+}
+
+fn parseWireQuote(value: []const u8) ?shcore.completion.Quote {
+    if (std.mem.eql(u8, value, shell_wire.QUOTE_BARE)) return .bare;
+    if (std.mem.eql(u8, value, shell_wire.QUOTE_SINGLE)) return .single;
+    if (std.mem.eql(u8, value, shell_wire.QUOTE_DOUBLE)) return .double;
+    return null;
+}
+
+fn replaceAutocompleteBuffer(bytes: []const u8) !i32 {
+    if (bytes.len > AUTOCOMPLETE_MAX_REQUEST) return -sys.EMSGSIZE;
+    autocomplete_buffer.clearRetainingCapacity();
+    try autocomplete_buffer.appendSlice(sys.wasm_allocator, bytes);
+    return @intCast(bytes.len);
+}
+
+fn shBuffer(len: u32) callconv(.c) u32 {
+    if (len != 0) {
+        if (len > AUTOCOMPLETE_MAX_REQUEST) return 0;
+        autocomplete_buffer.resize(sys.wasm_allocator, len) catch return 0;
+    }
+    return if (autocomplete_buffer.items.len == 0) 0 else @intCast(@intFromPtr(autocomplete_buffer.items.ptr));
+}
+
+fn shAutocomplete(request_len: u32) callconv(.c) i32 {
+    const sh = live_shell orelse return -sys.EAGAIN;
+    if (request_len > AUTOCOMPLETE_MAX_REQUEST or request_len != autocomplete_buffer.items.len)
+        return -sys.EINVAL;
+    if (request_len < 3) return -sys.EINVAL;
+
+    var arena_state = std.heap.ArenaAllocator.init(sys.wasm_allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const request = arena.dupe(u8, autocomplete_buffer.items) catch return -sys.EMSGSIZE;
+    const message_id = @as(u16, request[0]) | (@as(u16, request[1]) << 8);
+
+    if (message_id == shell_wire.PROBE_REQUEST_MSG_ID) {
+        const decoded = shell_wire.ProbeRequest.decode(arena, request) catch return -sys.EINVAL;
+        const result = if (decoded.interactive and live_repl_source.len != 0) blk: {
+            const combined = std.mem.concat(arena, u8, &.{ live_repl_source, decoded.source }) catch return -sys.EMSGSIZE;
+            var full = shcore.completion.probe(arena, combined, live_repl_source.len + decoded.cursor) catch return -sys.EINVAL;
+            if (full.replace_start < live_repl_source.len) {
+                // Submitted lines are immutable; splice only the live fragment.
+                const local = shcore.completion.probe(arena, decoded.source, decoded.cursor) catch return -sys.EINVAL;
+                full.replace_start = local.replace_start;
+                full.replace_end = local.replace_end;
+                full.prefix = local.prefix;
+            } else {
+                full.replace_start -= live_repl_source.len;
+                full.replace_end -= live_repl_source.len;
+            }
+            break :blk full;
+        } else shcore.completion.probe(arena, decoded.source, decoded.cursor) catch return -sys.EINVAL;
+        var candidates: std.ArrayList(shcore.completion.Candidate) = .empty;
+        const truncated = sh.appendCompletionCandidates(
+            arena,
+            result.context,
+            result.prefix,
+            &candidates,
+            AUTOCOMPLETE_MAX_CANDIDATES,
+            @intCast(sys.constants.AUTOCOMPLETE_MAX_SCAN_ENTRIES),
+        ) catch return -sys.EMSGSIZE;
+        std.mem.sort(shcore.completion.Candidate, candidates.items, {}, candidateLess);
+        var wire_candidates = arena.alloc(shell_wire.Candidate, candidates.items.len) catch return -sys.EMSGSIZE;
+        for (candidates.items, 0..) |candidate, i| wire_candidates[i] = .{
+            .value = candidate.value,
+            .kind = candidate.kind,
+        };
+        const response = shell_wire.ProbeResponse{
+            .replace_start = @intCast(result.replace_start),
+            .replace_end = @intCast(result.replace_end),
+            .prefix = result.prefix,
+            .context = wireContext(result.context),
+            .quote = wireQuote(result.quote),
+            .shell_candidates = wire_candidates,
+            .truncated = truncated,
+            .continuation = decoded.interactive and live_repl_continuation,
+        };
+        const encoded = response.encode(arena) catch return -sys.EMSGSIZE;
+        return replaceAutocompleteBuffer(encoded) catch -sys.EMSGSIZE;
+    }
+
+    if (message_id == shell_wire.RENDER_REQUEST_MSG_ID) {
+        const decoded = shell_wire.RenderRequest.decode(arena, request) catch return -sys.EINVAL;
+        const quote = parseWireQuote(decoded.quote) orelse return -sys.EINVAL;
+        if (decoded.candidates.len > AUTOCOMPLETE_MAX_CANDIDATES) return -sys.EMSGSIZE;
+        var raw_values = arena.alloc([]const u8, decoded.candidates.len) catch return -sys.EMSGSIZE;
+        var items = arena.alloc(shell_wire.Item, decoded.candidates.len) catch return -sys.EMSGSIZE;
+        for (decoded.candidates, 0..) |candidate, i| {
+            raw_values[i] = candidate.value;
+            items[i] = .{
+                .label = candidate.value,
+                .value = shcore.completion.renderValue(arena, candidate.value, quote) catch return -sys.EMSGSIZE,
+                .kind = candidate.kind,
+            };
+        }
+        const raw_prefix = shcore.completion.commonPrefix(raw_values);
+        const rendered_prefix = shcore.completion.renderValue(arena, raw_prefix, quote) catch return -sys.EMSGSIZE;
+        const response = shell_wire.CompletionResult{
+            .replace_start = decoded.replace_start,
+            .replace_end = decoded.replace_end,
+            .common_prefix = rendered_prefix,
+            .items = items,
+            .truncated = decoded.truncated,
+        };
+        const encoded = response.encode(arena) catch return -sys.EMSGSIZE;
+        return replaceAutocompleteBuffer(encoded) catch -sys.EMSGSIZE;
+    }
+
+    return -sys.EINVAL;
+}
+
+fn shellExportName(comptime variant: []const u8) []const u8 {
+    inline for (shell_wire.EXPORTS) |desc| {
+        if (std.mem.eql(u8, desc.variant, variant)) return desc.name;
+    }
+    @compileError("shell contract is missing export variant " ++ variant);
+}
+
+comptime {
+    @export(&shBuffer, .{ .name = shellExportName("ShBuf") });
+    @export(&shAutocomplete, .{ .name = shellExportName("ShAutocomplete") });
+}
 
 pub const panic = std.debug.FullPanic(struct {
     pub fn panic(msg: []const u8, first_trace_addr: ?usize) noreturn {
@@ -19,6 +171,7 @@ const HELP =
     \\sh - the Zig memcontainers shell
     \\
     \\Usage: sh                     start an interactive shell
+    \\       sh -l|--login          start a login shell and source /etc/profile
     \\       sh -c COMMAND [ARG]...  run COMMAND, then exit
     \\       sh FILE [ARG]...        run FILE as a shell script
     \\
@@ -309,8 +462,15 @@ fn exitCode(flow: shcore.Flow, status: i32) i32 {
 fn repl(allocator: std.mem.Allocator, sh: *shcore.Shell) void {
     var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
+    defer {
+        live_repl_source = "";
+        live_repl_continuation = false;
+    }
     sys.print("$ ");
     while (true) {
+        // Stable while the cooperative shell is suspended in readLine.
+        live_repl_source = buf.items;
+        live_repl_continuation = buf.items.len != 0;
         switch (readLine(allocator)) {
             .eof => {
                 if (std.mem.trim(u8, buf.items, " \t\r\n").len == 0) sys.print("\n");
@@ -369,7 +529,12 @@ fn runShell(allocator: std.mem.Allocator) !i32 {
         return 0;
     }
 
-    const mode: Mode = if (argv.len >= 2 and std.mem.eql(u8, argv[1], "-c"))
+    const login = argv.len >= 2 and
+        (std.mem.eql(u8, argv[1], "-l") or std.mem.eql(u8, argv[1], "--login"));
+
+    const mode: Mode = if (login)
+        .interactive
+    else if (argv.len >= 2 and std.mem.eql(u8, argv[1], "-c"))
         .{ .command = .{
             .source = if (argv.len >= 3) argv[2] else "",
             .args = if (argv.len >= 4) argv[3..] else &.{},
@@ -391,7 +556,11 @@ fn runShell(allocator: std.mem.Allocator) !i32 {
     }
     var shell_os = adapter.shellOs();
     var sh = shcore.init(allocator, &shell_os);
-    defer sh.deinit();
+    live_shell = &sh;
+    defer {
+        live_shell = null;
+        sh.deinit();
+    }
 
     return switch (mode) {
         .command => |cmd| blk: {
@@ -422,6 +591,19 @@ fn runShell(allocator: std.mem.Allocator) !i32 {
             break :blk exitCode(flow, sh.lastStatus());
         },
         .interactive => blk: {
+            if (login) {
+                switch (sys.readFileAlloc(allocator, "/etc/profile")) {
+                    .ok => |source| {
+                        defer allocator.free(source);
+                        const flow = try sh.run(source);
+                        switch (flow) {
+                            .exit => break :blk exitCode(flow, sh.lastStatus()),
+                            else => {},
+                        }
+                    },
+                    .err => {},
+                }
+            }
             repl(allocator, &sh);
             break :blk sh.lastStatus();
         },
@@ -429,6 +611,7 @@ fn runShell(allocator: std.mem.Allocator) !i32 {
 }
 
 pub export fn _start() void {
+    defer autocomplete_buffer.deinit(sys.wasm_allocator);
     const code = runShell(sys.wasm_allocator) catch {
         sys.eprint("sh: internal error\n");
         sys.exit(1);

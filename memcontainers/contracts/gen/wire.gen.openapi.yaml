@@ -219,6 +219,29 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ExecResult"
+  "/v1/vms/{id}/autocomplete":
+    post:
+      operationId: "post_v1_vms_id_autocomplete"
+      summary: "Inspect shell input without executing it. Request and response offsets are UTF-8 byte positions; SDKs translate to native string coordinates."
+      parameters:
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/Autocomplete"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AutocompleteResult"
   "/v1/vms/{id}/exec-jobs":
     post:
       operationId: "post_v1_vms_id_exec_jobs"
@@ -1129,6 +1152,61 @@ components:
           type: string
         "stderr":
           type: string
+    "Autocomplete":
+      type: object
+      required:
+        - "source"
+        - "cursor"
+      properties:
+        "source":
+          type: string
+        "cursor":
+          type: integer
+          format: int32
+        "cwd":
+          type: string
+          x-agentos-type: "Path"
+        "env":
+          type: object
+        "limit":
+          type: integer
+          format: int32
+    "AutocompleteItem":
+      type: object
+      required:
+        - "label"
+        - "value"
+        - "kind"
+      properties:
+        "label":
+          type: string
+        "value":
+          type: string
+        "kind":
+          type: string
+    "AutocompleteResult":
+      type: object
+      required:
+        - "replaceStart"
+        - "replaceEnd"
+        - "commonPrefix"
+        - "items"
+        - "truncated"
+      properties:
+        "replaceStart":
+          type: integer
+          format: int32
+        "replaceEnd":
+          type: integer
+          format: int32
+        "commonPrefix":
+          type: string
+        "items":
+          type: array
+          items:
+            $ref: "#/components/schemas/AutocompleteItem"
+        "truncated":
+          type: boolean
     "ExecJob":
       type: object
       required:

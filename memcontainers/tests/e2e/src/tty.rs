@@ -41,3 +41,84 @@ fn backspace_erases_and_redraws() {
     assert!(resp.contains("b\r\n"), "echo of 'b' missing — backspace failed to clear 'a':\n{resp:?}");
     assert!(resp.contains("\x08 \x08"), "expected the backspace redraw sequence:\n{resp:?}");
 }
+
+/// WHY: browser terminals reach completion through the cooked Tab key, while
+/// agents call the structured API; both must use the same resident-shell
+/// broker. GUARANTEES: a unique builtin prefix is inserted without submitting
+/// the line, then the completed command executes normally when Enter arrives.
+#[test]
+fn tab_completes_through_the_resident_shell_broker() {
+    let mut s = boot_posix();
+    let mark = s.mark();
+    s.send_raw(b"pw\t\n");
+    s.drive_until_prompt(mark);
+    let response = s.since(mark);
+    assert!(
+        response.contains("pwd \r\n"),
+        "Tab did not insert the unique builtin and trailing space: {response:?}"
+    );
+    assert!(
+        response.contains("/home/user\r\n"),
+        "completed command did not execute: {response:?}"
+    );
+}
+
+/// WHY: a root-relative prefix must enumerate `/`, not resolve the stripped
+/// empty directory against the shell cwd. GUARANTEES: the browser's exact
+/// `cd /b<Tab>` path inserts `/bin/` through the interactive broker.
+#[test]
+fn tab_completes_an_absolute_directory_from_root() {
+    let mut s = boot_posix();
+    let mark = s.mark();
+    s.send_raw(b"cd /b\t\n");
+    s.drive_until_prompt(mark);
+    let response = s.since(mark);
+    assert!(
+        response.contains("cd /bin/\r\n"),
+        "Tab did not complete the absolute directory: {response:?}"
+    );
+    assert!(
+        response.ends_with("$ "),
+        "completed cd did not return to the prompt: {response:?}"
+    );
+}
+
+/// WHY: the kernel cannot infer whether pid 1 is reading a primary or
+/// continuation line. GUARANTEES: double-Tab asks the resident shell for that
+/// state and redraws an incomplete logical command with `> `, never a
+/// hard-coded top-level prompt.
+#[test]
+fn tab_listing_preserves_the_continuation_prompt() {
+    let mut s = boot_posix();
+    let mark = s.mark();
+    s.send_raw(b"echo x |\n");
+    for _ in 0..20_000 {
+        s.host.tick().expect("tick to continuation prompt");
+        if s.since(mark).ends_with("> ") {
+            break;
+        }
+    }
+    assert!(
+        s.since(mark).ends_with("> "),
+        "shell did not enter continuation mode: {:?}",
+        s.since(mark)
+    );
+
+    let listing = s.mark();
+    s.send_raw(b"e\t\t");
+    for _ in 0..20_000 {
+        s.host.tick().expect("tick completion listing");
+        if s.since(listing).contains("\r\n> e") {
+            break;
+        }
+    }
+    let response = s.since(listing);
+    assert!(
+        response.contains("\r\n> e"),
+        "completion listing redrew the wrong prompt: {response:?}"
+    );
+
+    let reset = s.mark();
+    s.send_raw(&[0x03]);
+    s.drive_until_prompt(reset);
+}

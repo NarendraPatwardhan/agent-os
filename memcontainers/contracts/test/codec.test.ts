@@ -1,4 +1,5 @@
 import {
+  decodeDirEntries,
   decodeExecRequest,
   decodeRelayEvent,
   encodeExecRequest,
@@ -121,6 +122,16 @@ function controlCodecs(): void {
     () => decodeExecRequest(nonCanonicalExecRequestFrame()),
     ControlWireError,
     "non-canonical control strmap",
+  );
+  assertThrowsWire(
+    () => decodeExecRequest(Uint8Array.from([1, 0, 1, 0, 0, 0, 0, 0, 255, 255, 255, 255])),
+    ControlWireError,
+    "impossible control strmap count",
+  );
+  assertThrowsWire(
+    () => decodeDirEntries(Uint8Array.from([5, 0, 1, 255, 255, 255, 255])),
+    ControlWireError,
+    "impossible control list count",
   );
 
   const relay = decodeRelayEvent(

@@ -4,6 +4,7 @@ const std = @import("std");
 const arith = @import("arith.zig");
 const ast = @import("ast.zig");
 const builtins = @import("builtins.zig");
+const completion = @import("completion.zig");
 const echo = @import("echo.zig");
 const expand = @import("expand.zig");
 const glob = @import("glob.zig");
@@ -93,6 +94,44 @@ const Snapshot = struct {
     exported: std.StringHashMap([]const u8),
 };
 
+fn appendBoundedCompletion(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(completion.Candidate),
+    candidate: completion.Candidate,
+    limit: usize,
+) !bool {
+    for (out.items) |existing| {
+        if (std.mem.eql(u8, existing.value, candidate.value)) return false;
+    }
+    if (out.items.len < limit) {
+        try out.append(allocator, candidate);
+        return false;
+    }
+    if (limit == 0) return true;
+
+    var greatest: usize = 0;
+    for (out.items[1..], 1..) |existing, index| {
+        if (std.mem.lessThan(u8, out.items[greatest].value, existing.value)) greatest = index;
+    }
+    if (std.mem.lessThan(u8, candidate.value, out.items[greatest].value)) {
+        out.items[greatest] = candidate;
+    }
+    return true;
+}
+
+test "bounded completion keeps the lexical prefix and reports truncation" {
+    const allocator = std.testing.allocator;
+    var out: std.ArrayList(completion.Candidate) = .empty;
+    defer out.deinit(allocator);
+
+    try std.testing.expect(!try appendBoundedCompletion(allocator, &out, .{ .value = "z", .kind = "function" }, 2));
+    try std.testing.expect(!try appendBoundedCompletion(allocator, &out, .{ .value = "b", .kind = "builtin" }, 2));
+    try std.testing.expect(try appendBoundedCompletion(allocator, &out, .{ .value = "a", .kind = "builtin" }, 2));
+    try std.testing.expectEqualStrings("a", out.items[0].value);
+    try std.testing.expectEqualStrings("b", out.items[1].value);
+    try std.testing.expect(!try appendBoundedCompletion(allocator, &out, .{ .value = "a", .kind = "function" }, 2));
+}
+
 pub const Shell = struct {
     allocator: std.mem.Allocator,
     os: *os.ShellOs,
@@ -158,6 +197,50 @@ pub const Shell = struct {
 
     pub fn lastStatus(self: *const Shell) i32 {
         return self.last_status;
+    }
+
+    /// Add stateful shell names which the kernel cannot discover from the VFS.
+    /// Values are borrowed from the resident shell and remain valid only until
+    /// the next shell mutation.
+    pub fn appendCompletionCandidates(
+        self: *const Shell,
+        allocator: std.mem.Allocator,
+        context: completion.Context,
+        prefix: []const u8,
+        out: *std.ArrayList(completion.Candidate),
+        limit: usize,
+        scan_limit: usize,
+    ) !bool {
+        var scanned: usize = 0;
+        var truncated = false;
+        switch (context) {
+            .command => {
+                for (builtins.names) |name| {
+                    if (scanned >= scan_limit) return true;
+                    scanned += 1;
+                    if (std.mem.startsWith(u8, name, prefix))
+                        truncated = (try appendBoundedCompletion(allocator, out, .{ .value = name, .kind = "builtin" }, limit)) or truncated;
+                }
+                var it = self.funcs.keyIterator();
+                while (it.next()) |name| {
+                    if (scanned >= scan_limit) return true;
+                    scanned += 1;
+                    if (std.mem.startsWith(u8, name.*, prefix))
+                        truncated = (try appendBoundedCompletion(allocator, out, .{ .value = name.*, .kind = "function" }, limit)) or truncated;
+                }
+            },
+            .variable => {
+                var it = self.vars.keyIterator();
+                while (it.next()) |name| {
+                    if (scanned >= scan_limit) return true;
+                    scanned += 1;
+                    if (std.mem.startsWith(u8, name.*, prefix))
+                        truncated = (try appendBoundedCompletion(allocator, out, .{ .value = name.*, .kind = "variable" }, limit)) or truncated;
+                }
+            },
+            else => {},
+        }
+        return truncated;
     }
 
     pub fn run(self: *Shell, source: []const u8) !Flow {

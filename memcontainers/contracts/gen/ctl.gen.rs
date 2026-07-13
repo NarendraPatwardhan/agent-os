@@ -28,9 +28,9 @@ fn ctl_read_i64(bytes: &[u8], off: &mut usize) -> Result<i64, WireError> { let b
 fn ctl_read_bool(bytes: &[u8], off: &mut usize) -> Result<bool, WireError> { match ctl_read_u8(bytes, off)? { 0 => Ok(false), 1 => Ok(true), _ => Err(WireError::InvalidPresence) } }
 fn ctl_read_bytes(bytes: &[u8], off: &mut usize) -> Result<Vec<u8>, WireError> { let len = ctl_read_u32(bytes, off)? as usize; Ok(ctl_need(bytes, off, len)?.to_vec()) }
 fn ctl_read_str(bytes: &[u8], off: &mut usize) -> Result<String, WireError> { String::from_utf8(ctl_read_bytes(bytes, off)?).map_err(|_| WireError::InvalidUtf8) }
-fn ctl_read_strmap(bytes: &[u8], off: &mut usize) -> Result<BTreeMap<String, String>, WireError> { let n = ctl_read_u32(bytes, off)? as usize; let mut out = BTreeMap::new(); let mut prev: Option<String> = None; for _ in 0..n { let k = ctl_read_str(bytes, off)?; if prev.as_ref().map_or(false, |p| p >= &k) { return Err(WireError::NonCanonicalMap); } let v = ctl_read_str(bytes, off)?; prev = Some(k.clone()); out.insert(k, v); } Ok(out) }
+fn ctl_read_strmap(bytes: &[u8], off: &mut usize) -> Result<BTreeMap<String, String>, WireError> { let n = ctl_read_u32(bytes, off)? as usize; if n > bytes.len().saturating_sub(*off) / 8 { return Err(WireError::Truncated); } let mut out = BTreeMap::new(); let mut prev: Option<String> = None; for _ in 0..n { let k = ctl_read_str(bytes, off)?; if prev.as_ref().map_or(false, |p| p >= &k) { return Err(WireError::NonCanonicalMap); } let v = ctl_read_str(bytes, off)?; prev = Some(k.clone()); out.insert(k, v); } Ok(out) }
 
-fn ctl_read_message_list<T, F>(bytes: &[u8], off: &mut usize, mut decode: F) -> Result<Vec<T>, WireError> where F: FnMut(&[u8]) -> Result<T, WireError> { let n = ctl_read_u32(bytes, off)? as usize; let mut out = Vec::with_capacity(n); for _ in 0..n { let frame = ctl_read_bytes(bytes, off)?; out.push(decode(&frame)?); } Ok(out) }
+fn ctl_read_message_list<T, F>(bytes: &[u8], off: &mut usize, mut decode: F) -> Result<Vec<T>, WireError> where F: FnMut(&[u8]) -> Result<T, WireError> { let n = ctl_read_u32(bytes, off)? as usize; if n > bytes.len().saturating_sub(*off) / 4 { return Err(WireError::Truncated); } let mut out = Vec::with_capacity(n); for _ in 0..n { let frame = ctl_read_bytes(bytes, off)?; out.push(decode(&frame)?); } Ok(out) }
 
 /// Structured host-control exec request. `cmd` still runs under /bin/sh -c; cwd/env/stdin are applied by the kernel at spawn.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -508,6 +508,143 @@ impl RelayEvent {
     }
 }
 
+/// Side-effect-free shell autocomplete query. Cursor is a UTF-8 byte offset; cwd/env overlay the live login-shell context.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AutocompleteRequest {
+    pub source: Vec<u8>,
+    pub cursor: u32,
+    pub cwd: Option<String>,
+    pub env: BTreeMap<String, String>,
+    pub limit: u32,
+}
+
+pub const AUTOCOMPLETE_REQUEST_MSG_ID: u16 = 9;
+pub const AUTOCOMPLETE_REQUEST_VERSION: u8 = 1;
+impl AutocompleteRequest {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        ctl_put_u16(&mut out, AUTOCOMPLETE_REQUEST_MSG_ID);
+        out.push(AUTOCOMPLETE_REQUEST_VERSION);
+        ctl_put_bytes(&mut out, &self.source);
+        ctl_put_u32(&mut out, self.cursor);
+        match &self.cwd {
+            Some(v) => {
+                out.push(1);
+        ctl_put_str(&mut out, v);
+            }
+            None => out.push(0),
+        }
+        ctl_put_strmap(&mut out, &self.env);
+        ctl_put_u32(&mut out, self.limit);
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut off = 0usize;
+        if ctl_read_u16(bytes, &mut off)? != AUTOCOMPLETE_REQUEST_MSG_ID { return Err(WireError::WrongMessage); }
+        if ctl_read_u8(bytes, &mut off)? != AUTOCOMPLETE_REQUEST_VERSION { return Err(WireError::UnsupportedVersion); }
+        let source = ctl_read_bytes(bytes, &mut off)?;
+        let cursor = ctl_read_u32(bytes, &mut off)?;
+        let cwd = match ctl_read_u8(bytes, &mut off)? {
+            0 => None,
+            1 => Some(ctl_read_str(bytes, &mut off)?),
+            _ => return Err(WireError::InvalidPresence),
+        };
+        let env = ctl_read_strmap(bytes, &mut off)?;
+        let limit = ctl_read_u32(bytes, &mut off)?;
+        if off != bytes.len() { return Err(WireError::TrailingBytes); }
+        Ok(Self {
+            source,
+            cursor,
+            cwd,
+            env,
+            limit,
+        })
+    }
+}
+
+/// One autocomplete candidate. Value is quote-safe replacement text; label is presentation text.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AutocompleteItem {
+    pub label: String,
+    pub value: String,
+    pub kind: String,
+}
+
+pub const AUTOCOMPLETE_ITEM_MSG_ID: u16 = 10;
+pub const AUTOCOMPLETE_ITEM_VERSION: u8 = 1;
+impl AutocompleteItem {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        ctl_put_u16(&mut out, AUTOCOMPLETE_ITEM_MSG_ID);
+        out.push(AUTOCOMPLETE_ITEM_VERSION);
+        ctl_put_str(&mut out, &self.label);
+        ctl_put_str(&mut out, &self.value);
+        ctl_put_str(&mut out, &self.kind);
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut off = 0usize;
+        if ctl_read_u16(bytes, &mut off)? != AUTOCOMPLETE_ITEM_MSG_ID { return Err(WireError::WrongMessage); }
+        if ctl_read_u8(bytes, &mut off)? != AUTOCOMPLETE_ITEM_VERSION { return Err(WireError::UnsupportedVersion); }
+        let label = ctl_read_str(bytes, &mut off)?;
+        let value = ctl_read_str(bytes, &mut off)?;
+        let kind = ctl_read_str(bytes, &mut off)?;
+        if off != bytes.len() { return Err(WireError::TrailingBytes); }
+        Ok(Self {
+            label,
+            value,
+            kind,
+        })
+    }
+}
+
+/// Bounded autocomplete result over the exact source range the caller should replace.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct AutocompleteResult {
+    pub replace_start: u32,
+    pub replace_end: u32,
+    pub common_prefix: String,
+    pub items: Vec<AutocompleteItem>,
+    pub truncated: bool,
+}
+
+pub const AUTOCOMPLETE_RESULT_MSG_ID: u16 = 11;
+pub const AUTOCOMPLETE_RESULT_VERSION: u8 = 1;
+impl AutocompleteResult {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        ctl_put_u16(&mut out, AUTOCOMPLETE_RESULT_MSG_ID);
+        out.push(AUTOCOMPLETE_RESULT_VERSION);
+        ctl_put_u32(&mut out, self.replace_start);
+        ctl_put_u32(&mut out, self.replace_end);
+        ctl_put_str(&mut out, &self.common_prefix);
+        ctl_put_message_list(&mut out, &self.items, |v| v.encode());
+        ctl_put_bool(&mut out, self.truncated);
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut off = 0usize;
+        if ctl_read_u16(bytes, &mut off)? != AUTOCOMPLETE_RESULT_MSG_ID { return Err(WireError::WrongMessage); }
+        if ctl_read_u8(bytes, &mut off)? != AUTOCOMPLETE_RESULT_VERSION { return Err(WireError::UnsupportedVersion); }
+        let replace_start = ctl_read_u32(bytes, &mut off)?;
+        let replace_end = ctl_read_u32(bytes, &mut off)?;
+        let common_prefix = ctl_read_str(bytes, &mut off)?;
+        let items = ctl_read_message_list(bytes, &mut off, AutocompleteItem::decode)?;
+        let truncated = ctl_read_bool(bytes, &mut off)?;
+        if off != bytes.len() { return Err(WireError::TrailingBytes); }
+        Ok(Self {
+            replace_start,
+            replace_end,
+            common_prefix,
+            items,
+            truncated,
+        })
+    }
+}
+
 
 pub const CONTROL_EXPORTS: &[&str] = &[
     "mc_init",
@@ -530,6 +667,7 @@ pub const CONTROL_EXPORTS: &[&str] = &[
     "mc_ctl_exec_poll",
     "mc_ctl_exec_peek",
     "mc_ctl_exec_close",
+    "mc_ctl_autocomplete",
     "mc_ctl_svc_call_start",
     "mc_ctl_svc_call_poll",
     "mc_ctl_svc_call_close",
@@ -567,6 +705,7 @@ macro_rules! mc_control_table {
         mc_ctl_exec_poll => ExecPoll (job_id: u32) [i32];
         mc_ctl_exec_peek => ExecPeek (job_id: u32) [i32];
         mc_ctl_exec_close => ExecClose (job_id: u32) [i32];
+        mc_ctl_autocomplete => Autocomplete (request_len: u32) [i32];
         mc_ctl_svc_call_start => SvcCallStart (request_len: u32) [i32];
         mc_ctl_svc_call_poll => SvcCallPoll (job_id: u32) [i32];
         mc_ctl_svc_call_close => SvcCallClose (job_id: u32) [i32];

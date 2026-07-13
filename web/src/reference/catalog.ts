@@ -32,7 +32,7 @@ const GROUPS: ReadonlyArray<Readonly<{ title: string; pages: ReadonlyArray<PageD
       ["mc", "mc", "The top-level factory, restore, connection, and recording API."],
       ["create-options", "Create options", "Every mc.create and mc.restore option, field by field."],
       ["vm", "Vm", "The complete VM property and method index."],
-      ["execution-files", "Execution and files", "Commands, Luau, service calls, and vm.fs."],
+      ["execution-files", "Execution and files", "Commands, autocomplete, Luau, services, and vm.fs."],
       ["shells-sessions", "Shells and sessions", "Streaming shells and framed agent sessions."],
       ["cron", "Cron", "Schedules, actions, lifecycle, and parser rules."],
     ],

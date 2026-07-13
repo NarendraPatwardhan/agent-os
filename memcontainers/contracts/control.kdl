@@ -85,6 +85,31 @@ message "RelayEvent" id=8 version=1 {
   doc "Structured BEAM egress relay event. `kind` selects which optional payload fields are present."
 }
 
+message "AutocompleteRequest" id=9 version=1 {
+  field "source" type="bytes"
+  field "cursor" type="u32"
+  field "cwd" type="str" opt=1
+  field "env" type="strmap"
+  field "limit" type="u32"
+  doc "Side-effect-free shell autocomplete query. Cursor is a UTF-8 byte offset; cwd/env overlay the live login-shell context."
+}
+
+message "AutocompleteItem" id=10 version=1 {
+  field "label" type="str"
+  field "value" type="str"
+  field "kind" type="str"
+  doc "One autocomplete candidate. Value is quote-safe replacement text; label is presentation text."
+}
+
+message "AutocompleteResult" id=11 version=1 {
+  field "replace_start" type="u32"
+  field "replace_end" type="u32"
+  field "common_prefix" type="str"
+  field "items" type="list<AutocompleteItem>"
+  field "truncated" type="bool"
+  doc "Bounded autocomplete result over the exact source range the caller should replace."
+}
+
 // ── lifecycle / hot path (§4.4) ──────────────────────────────────────────────
 export "mc_init"   group="lifecycle" { ret "i32"; doc "Boot the kernel (load base image, start pid 1). 0 on success." }
 export "mc_tick"   group="lifecycle" { ret "i32"; doc "Run one bounded slice of kernel work. The host drives this loop; the kernel never blocks it." }
@@ -113,6 +138,9 @@ export "mc_ctl_exec_start" group="exec" { arg "request_len" type="u32"; ret "i32
 export "mc_ctl_exec_poll"  group="exec" { arg "job_id" type="u32"; ret "i32"; doc "Poll a host exec job. 0 means running; >0 is the encoded ExecOutcome byte length in the scratch buffer; negative errno on failure." }
 export "mc_ctl_exec_peek"  group="exec" { arg "job_id" type="u32"; ret "i32"; doc "Copy output captured so far without consuming it." }
 export "mc_ctl_exec_close" group="exec" { arg "job_id" type="u32"; ret "i32"; doc "Release a finished job." }
+
+// ── side-effect-free shell autocomplete ─────────────────────────────────────
+export "mc_ctl_autocomplete" group="autocomplete" { arg "request_len" type="u32"; ret "i32"; doc "Resolve an encoded AutocompleteRequest through the resident pid-1 shell and VFS; encoded AutocompleteResult byte length, -EAGAIN while a served filesystem is pending, or another negative errno." }
 
 // ── host-driven resident-service calls ───────────────────────────────────────
 // Trusted operator calls into a resident service. The service receives caller=SYSTEM_CALLER

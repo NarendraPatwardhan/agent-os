@@ -4,7 +4,7 @@
 //! one exec test, which proves the pipe stays raw.
 
 use crate::{boot, boot_loom, boot_posix, names, restore, restore_incremental, Session};
-use host::ExecOptions;
+use host::{AutocompleteOptions, ExecOptions};
 
 /// A tiny valid guest with one exported memory, a no-op `_start`, and one byte of non-custom data.
 /// Varying `tag` changes compilation identity without changing behavior.
@@ -64,8 +64,8 @@ fn run_guest(session: &mut Session, bytes: &[u8]) -> String {
         .host
         .chmod("/tmp/admission-test.wasm", 0o755)
         .expect("chmod admission test guest");
-    // The rescue shell writes exec diagnostics to stderr, while this harness captures its terminal
-    // stdout. Echo the status through stdout so the assertion observes the real exec result.
+    // The shell writes exec diagnostics to stderr, while this harness captures terminal stdout.
+    // Echo the status through stdout so the assertion observes the real exec result.
     session.run_for_output("/tmp/admission-test.wasm; echo status=$?")
 }
 
@@ -203,6 +203,81 @@ fn exec_channel_captures_raw_lf_not_crlf() {
         "exec pipe must stay raw LF, not CRLF: {:?}",
         r.stdout
     );
+}
+
+/// WHY: interactive Tab and headless clients must share one side-effect-free shell completion path,
+/// including shell quoting and the live VFS. GUARANTEES: the resident shell contributes builtins,
+/// the kernel contributes namespace entries, and a filename containing whitespace is returned as a
+/// presentation label plus splice-safe shell text without executing the line.
+#[test]
+fn autocomplete_uses_resident_shell_and_live_namespace() {
+    let mut s = boot();
+    let command = s
+        .host
+        .autocomplete(b"ec", 2, AutocompleteOptions::default())
+        .expect("complete builtin");
+    assert_eq!((command.replace_start, command.replace_end), (0, 2));
+    assert_eq!(command.common_prefix, "echo");
+    assert!(
+        command
+            .items
+            .iter()
+            .any(|item| item.label == "echo" && item.value == "echo" && item.kind == "builtin"),
+        "missing echo builtin: {:?}",
+        command.items
+    );
+
+    s.host
+        .write_file("/tmp/two words", b"value")
+        .expect("write completion fixture");
+    let path = s
+        .host
+        .autocomplete(b"cat /tmp/tw", 11, AutocompleteOptions::default())
+        .expect("complete path");
+    assert!(
+        path.items.iter().any(|item| {
+            item.label == "/tmp/two words"
+                && item.value == "/tmp/two\\ words"
+                && item.kind == "file"
+        }),
+        "missing quoted path: {:?}",
+        path.items
+    );
+
+    let absolute_directory = s
+        .host
+        .autocomplete(b"cd /b", 5, AutocompleteOptions::default())
+        .expect("complete absolute directory");
+    assert!(
+        absolute_directory.items.iter().any(|item| {
+            item.label == "/bin/" && item.value == "/bin/" && item.kind == "directory"
+        }),
+        "absolute root prefix resolved against cwd: {:?}",
+        absolute_directory.items
+    );
+
+    s.host.mkdir("/tmp/completion-order").expect("mkdir completion fixture");
+    for name in ["z", "b", "a"] {
+        s.host
+            .write_file(&format!("/tmp/completion-order/{name}"), b"")
+            .expect("write ordered completion fixture");
+    }
+    let bounded = s
+        .host
+        .autocomplete(
+            b"cat /tmp/completion-order/",
+            26,
+            AutocompleteOptions {
+                limit: 2,
+                ..AutocompleteOptions::default()
+            },
+        )
+        .expect("complete with a result limit");
+    assert_eq!(
+        bounded.items.iter().map(|item| item.label.as_str()).collect::<Vec<_>>(),
+        ["/tmp/completion-order/a", "/tmp/completion-order/b"]
+    );
+    assert!(bounded.truncated, "bounded completion did not report omitted matches");
 }
 
 /// WHY: malformed policy metadata, invalid Wasm, and irrelevant custom sections used to reach the

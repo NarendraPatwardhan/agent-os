@@ -4,10 +4,8 @@
 //! `ReadSource` (stdin). The concrete implementations resolve to:
 //!
 //!   - TerminalSink    → bridge::mc_stdout_write / mc_stderr_write
-//!   - FileSink        → Box<dyn FileHandle> for `>` and `>>`
 //!   - PipeSink        → *const Pipe for inter-task pipelines
 //!   - EmptySource     → immediate EOF (default stdin)
-//!   - FileSource      → Box<dyn FileHandle> for `<`
 //!   - PipeSource      → *const Pipe for inter-task pipelines
 //!
 //! PipeSink::write returns `Ok(0)` when the ring buffer is full but not yet
@@ -23,7 +21,7 @@ use core::cell::RefCell;
 
 use crate::bridge;
 use crate::ipc::Pipe;
-use crate::vfs::{FileHandle, FsError};
+use crate::vfs::FsError;
 
 pub trait WriteSink {
     /// Try to push `buf` into the sink. May write fewer bytes than `buf.len()`
@@ -123,7 +121,7 @@ pub trait ReadSource {
 ///
 /// Every tool/guest terminal write routes through this: guest fd 1/2 (via
 /// `TerminalSink`) and `/dev/cons`. The kernel's OWN terminal *chrome* — boot
-/// banners (`init.rs`) and the line-discipline keystroke echo + rescue prompt
+/// banners (`init.rs`) and the line-discipline keystroke echo
 /// (`lib.rs`) — writes CRLF directly to the host instead; it is the terminal
 /// layer itself, not LF tool output, so it sits below ONLCR by design.
 pub fn term_write_stdout(buf: &[u8]) {
@@ -267,29 +265,6 @@ impl ReadSource for BytesSource {
 // threads simultaneously.
 unsafe impl Send for BytesSource {}
 unsafe impl Sync for BytesSource {}
-
-// ------ File ------
-
-pub struct FileSink(pub Box<dyn FileHandle>);
-
-impl WriteSink for FileSink {
-    fn write(&mut self, buf: &[u8]) -> Result<usize, FsError> {
-        self.0.write(buf)
-    }
-}
-
-pub struct FileSource(pub Box<dyn FileHandle>);
-
-impl ReadSource for FileSource {
-    fn read(&mut self, buf: &mut [u8]) -> Result<usize, FsError> {
-        self.0.read(buf)
-    }
-    fn is_eof(&self) -> bool {
-        // The runner stops calling `read` once it observes 0; a file with
-        // bytes left always returns >0. Treat 0 as EOF unconditionally.
-        true
-    }
-}
 
 // ------ Pipe ------
 //

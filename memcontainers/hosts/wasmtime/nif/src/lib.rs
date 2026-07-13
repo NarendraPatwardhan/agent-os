@@ -37,11 +37,11 @@ use constants_rust::{
 };
 use ctl_rust::RelayEvent as WireRelayEvent;
 use host::{
-    derive_connection_origins, CatalogConnection, CatalogInjectOptions, CatalogSpecSource,
-    ConnectionCredential, ConnectionError, ConnectionPolicyAction, ConnectionPolicyOwner,
-    ConnectionPolicyRule, ConnectionRegistry, ExecOptions, ExecResult, HostCallCapability,
-    HostToolDef, KernelHost, KernelHostBuilder, NetCapability, PersistCapability, RealNet,
-    StreamSink, ToolApprovalDecision, ToolApprovalFacts, ToolApprover,
+    derive_connection_origins, AutocompleteOptions, CatalogConnection, CatalogInjectOptions,
+    CatalogSpecSource, ConnectionCredential, ConnectionError, ConnectionPolicyAction,
+    ConnectionPolicyOwner, ConnectionPolicyRule, ConnectionRegistry, ExecOptions, ExecResult,
+    HostCallCapability, HostToolDef, KernelHost, KernelHostBuilder, NetCapability,
+    PersistCapability, RealNet, StreamSink, ToolApprovalDecision, ToolApprovalFacts, ToolApprover,
 };
 use rustler::{Atom, Binary, Env, Error, NifResult, OwnedBinary, ResourceArc};
 
@@ -602,6 +602,14 @@ fn exec_options(
     }
 }
 
+fn autocomplete_options(cwd: String, env: NifExecEnv, limit: u32) -> AutocompleteOptions {
+    AutocompleteOptions {
+        cwd: if cwd.is_empty() { None } else { Some(cwd) },
+        env: env.into_iter().collect(),
+        limit,
+    }
+}
+
 fn decode_persist_request(req: &[u8]) -> Option<(u32, Vec<u8>, Vec<u8>)> {
     if req.len() < 8 {
         return None;
@@ -1120,6 +1128,40 @@ fn exec_stdout_peek<'a>(
 fn exec_cancel(vm: ResourceArc<Vm>, job: i32) -> NifResult<Atom> {
     vm_lock(&vm)?.exec_cancel(job).map_err(nif_err)?;
     Ok(atoms::ok())
+}
+
+/// Query the canonical resident shell without executing the input. All offsets are UTF-8 bytes;
+/// the JavaScript SDK translates them at its public string boundary.
+#[rustler::nif(name = "autocomplete_nif", schedule = "DirtyCpu")]
+fn autocomplete(
+    vm: ResourceArc<Vm>,
+    source: String,
+    cursor: u32,
+    cwd: String,
+    complete_env: NifExecEnv,
+    limit: u32,
+) -> NifResult<(Atom, (u32, u32, String, Vec<(String, String, String)>, bool))> {
+    let result = vm_lock(&vm)?
+        .autocomplete(
+            source.as_bytes(),
+            cursor,
+            autocomplete_options(cwd, complete_env, limit),
+        )
+        .map_err(nif_err)?;
+    Ok((
+        atoms::ok(),
+        (
+            result.replace_start,
+            result.replace_end,
+            result.common_prefix,
+            result
+                .items
+                .into_iter()
+                .map(|item| (item.label, item.value, item.kind))
+                .collect(),
+            result.truncated,
+        ),
+    ))
 }
 
 /// Call a resident service as host control (`SYSTEM_CALLER`) through the kernel service channel →

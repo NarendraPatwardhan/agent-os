@@ -36,7 +36,7 @@ export type { WarmDirective } from "./solve.js";
 export type { GitSource, LocalEntry, LocalSource, SolvePlatform, SolveProgressEvent } from "./solve.js";
 export { defaultKernel, defaultImage } from "./artifacts.js";
 export { FsContentStore, MemoryContentStore, OpfsContentStore, defaultStore } from "./store.js";
-export type { Backend, RawExecResult } from "./backend.js";
+export type { Backend, RawAutocompleteResult, RawExecResult } from "./backend.js";
 export type {
   Runtime,
   Permissions,
@@ -48,6 +48,9 @@ export type {
   ConnectionSpecSource,
   ExecOptions,
   ExecResult,
+  AutocompleteOptions,
+  AutocompleteItem,
+  AutocompleteResult,
   DirEntry,
   StatResult,
   JsonSchema,

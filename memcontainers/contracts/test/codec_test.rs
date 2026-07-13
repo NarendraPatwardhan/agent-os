@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use ctl_rust::{ExecRequest, RelayEvent, WireError as ControlWireError};
+use ctl_rust::{DirEntries, ExecRequest, RelayEvent, WireError as ControlWireError};
 use llb_rust::{BuildOp, Definition, DigestEdge, LayerRef, NodeDigest, WireError as LlbWireError};
 
 fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
@@ -92,6 +92,14 @@ fn control_codecs_are_canonical_and_fail_closed() {
     assert_eq!(
         ExecRequest::decode(&non_canonical_exec_request_frame()),
         Err(ControlWireError::NonCanonicalMap)
+    );
+    assert_eq!(
+        ExecRequest::decode(&[1, 0, 1, 0, 0, 0, 0, 0, 255, 255, 255, 255]),
+        Err(ControlWireError::Truncated)
+    );
+    assert_eq!(
+        DirEntries::decode(&[5, 0, 1, 255, 255, 255, 255]),
+        Err(ControlWireError::Truncated)
     );
 
     let relay = RelayEvent::decode(

@@ -9,7 +9,7 @@
       "source": "memcontainers/sdk-js/core/src/memcontainer.ts",
       "doc": "vm.md",
       "members": [
-        "exec", "serviceCall", "luau", "luauSession", "snapshot", "fork", "commit", "tool",
+        "exec", "autocomplete", "serviceCall", "luau", "luauSession", "snapshot", "fork", "commit", "tool",
         "mount", "unmount", "session", "cron", "shell", "status", "inflightEgress", "memoryBytes",
         "close"
       ]

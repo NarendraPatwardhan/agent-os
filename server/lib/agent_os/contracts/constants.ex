@@ -77,6 +77,13 @@ defmodule AgentOS.Contracts.Constants do
   # worker
   def max_workers, do: 4
 
+  # autocomplete
+  def autocomplete_max_source_bytes, do: 8192
+  def autocomplete_max_items, do: 128
+  def autocomplete_max_scan_entries, do: 4096
+  def autocomplete_max_path_segments, do: 256
+  def autocomplete_max_frame_bytes, do: 65536
+
   # poll
   def pollin, do: 1
   def pollout, do: 4

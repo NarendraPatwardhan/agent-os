@@ -14,7 +14,6 @@ mod ipc;
 mod net;
 mod persist;
 mod seal;
-mod shell;
 mod sync;
 mod task;
 mod vfs;
@@ -28,73 +27,28 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::cell::{RefCell, UnsafeCell};
 use ctl_rust::{
+    AutocompleteItem as CtlAutocompleteItem, AutocompleteRequest, AutocompleteResult,
     DirEntries as CtlDirEntries, DirEntry as CtlDirEntry, ExecOutcome, ExecRequest,
     FileStat as CtlFileStat, SvcRequest as CtlSvcRequest, SvcResponse as CtlSvcResponse,
 };
+use shell_rust::{
+    Candidate as ShellCandidate, ProbeRequest, ProbeResponse, RenderRequest, CONTEXT_COMMAND,
+    CONTEXT_DIRECTORY, CONTEXT_PATH, CONTEXT_VARIABLE,
+};
 
 use fs::ProcFs;
-use shell::{
-    parse_line, reap_finished, run_round, submit_pipeline, submit_pipeline_captured, Executor,
-    OutputCapture, Pipeline, PipelineSeq, Sep,
-};
-use task::{Scheduler, TaskId, TaskState};
+use task::{run_round, Scheduler, TaskId, TaskState};
 use vfs::{KPath, Namespace, NodeType, OpenFlags};
 use wasm::abi::{
-    errno_from_fs, EAGAIN, EINVAL, EIO, ENOENT, ENOTDIR, ESUCCESS, ETIMEDOUT, SERVICE_MARKER,
-    SIGHUP, SIGINT, SIGTSTP,
+    errno_from_fs, AUTOCOMPLETE_MAX_FRAME_BYTES, AUTOCOMPLETE_MAX_ITEMS,
+    AUTOCOMPLETE_MAX_PATH_SEGMENTS, AUTOCOMPLETE_MAX_SCAN_ENTRIES,
+    AUTOCOMPLETE_MAX_SOURCE_BYTES, EAGAIN, EINVAL, EIO, EMSGSIZE, ENOENT, ENOSYS, ENOTDIR,
+    ESUCCESS, ETIMEDOUT, SERVICE_MARKER, SIGHUP, SIGINT, SIGTSTP,
 };
 
-// ---------- ForegroundJob (the rescue shell) ----------
-
-/// State of a foreground pipeline sequence: one user-typed line that must
-/// complete before the prompt returns. The job advances one round per
-/// `mc_tick`; the line editor refuses to accept new input while one is live
-/// (input bytes stay queued in INPUT_BUFFER until the prompt comes back).
-///
-/// This is the **rescue shell** — the minimal in-kernel shell used only when
-/// `/bin/sh` is unavailable (a no-image boot, or the `mc_ctl_exec` fallback).
-/// It is a flat splitter (`parser::parse_line`): pipelines joined by `; && || &`
-/// with redirects, the integral builtins (`cd`/`export`/`true`/`false`/`tail`/
-/// `umount`), and external `$PATH` lookup. The full shell — expansions,
-/// substitution, control flow, functions — lives in `shcore` and runs as
-/// the guest `/bin/sh`. There is deliberately no `$()`/`${}`/`$VAR` here.
-struct ForegroundJob {
-    /// The parsed line: pipelines paired with the separator that follows each.
-    seq: PipelineSeq,
-    /// Index of the *next* stage to start.
-    next_stage: usize,
-    /// What the current stage is doing.
-    stage: StageState,
-    /// Exit code of the most recently completed stage; seeds `&&` / `||`
-    /// short-circuit decisions for the next stage.
-    last_status: i32,
-    /// Separator that *preceded* the next stage. Drives short-circuit logic.
-    pending_sep: Sep,
-    /// The shell's cwd as this job sees it (a `cd` in the line mutates this;
-    /// the interactive shell copies it back to the real cwd on completion).
-    cwd: String,
-    /// Optional inherited stdin for host-control rescue exec. Interactive
-    /// foreground jobs leave this empty and read from the console pipe instead.
-    stdin: Option<Box<dyn io::ReadSource>>,
-}
-
-/// Lifecycle of the current stage within a [`ForegroundJob`].
-enum StageState {
-    /// Between stages — ready to start the next one.
-    Idle,
-    /// The stage's pipeline is executing.
-    Running { pids: Vec<TaskId>, sep: Sep },
-}
-
-impl ForegroundJob {
-    /// Collect the pids of every task this job currently has live in the
-    /// scheduler.
-    fn live_pids(&self, out: &mut Vec<TaskId>) {
-        match &self.stage {
-            StageState::Running { pids, .. } => out.extend_from_slice(pids),
-            StageState::Idle => {}
-        }
-    }
+struct OutputCapture {
+    stdout: Rc<RefCell<Vec<u8>>>,
+    stderr: Rc<RefCell<Vec<u8>>>,
 }
 
 fn new_capture() -> OutputCapture {
@@ -104,55 +58,10 @@ fn new_capture() -> OutputCapture {
     }
 }
 
-/// Parse `line` into a rescue-shell foreground job. `Ok(None)` means the line
-/// was empty (the caller should just reprint the prompt); `Err` is a syntax
-/// error. (The flat splitter never fails today, but the signature keeps the
-/// caller's error path intact.)
-fn make_foreground(
-    line: &str,
-    last_status: i32,
-    cwd: String,
-    stdin: Option<Box<dyn io::ReadSource>>,
-) -> Result<Option<ForegroundJob>, String> {
-    let seq = match parse_line(line) {
-        Some(s) => s,
-        None => return Ok(None),
-    };
-    if seq.stages.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(ForegroundJob {
-        seq,
-        next_stage: 0,
-        stage: StageState::Idle,
-        last_status,
-        pending_sep: Sep::Then,
-        cwd,
-        stdin,
-    }))
-}
-
 // ---------- CtlExecJob ----------
 
-/// A host-initiated `exec` driven through the control channel
-/// (`mc_ctl_exec_*`). It reuses the foreground stage machine, but its output
-/// is captured into `cap` instead of the terminal and it is advanced
-/// independently of the interactive prompt — so an operator `exec` and the
-/// shell can run side by side. Its tasks share the single ready queue, so they
-/// are stepped by the same `run_round` as everything else; only the
-/// stage-bookkeeping and the captured output are per-job. The real exit code
-/// (already computed by `advance_foreground`) is recorded on completion.
-/// How a control-channel `exec` is being run.
 enum CtlBody {
-    /// A `/bin/sh -c "<cmd>"` guest task (the unified shell path).
     Guest { pid: TaskId },
-    /// The in-kernel rescue executor (used when `/bin/sh` is unavailable).
-    Rescue {
-        fg: ForegroundJob,
-        env: BTreeMap<String, String>,
-    },
-    /// Already finished (empty command / parse error).
-    Done,
 }
 
 struct CtlExecJob {
@@ -180,12 +89,22 @@ struct CtlSvcJob {
     state: CtlSvcState,
 }
 
+struct PendingAutocomplete {
+    request: AutocompleteRequest,
+    generation: u64,
+    list: bool,
+}
+
+struct ResolvedAutocomplete {
+    result: AutocompleteResult,
+    continuation: bool,
+}
+
 // ---------- SystemState ----------
 
 struct SystemState {
     ns: UnsafeCell<Option<Namespace>>,
     scheduler: UnsafeCell<Option<Scheduler>>,
-    executor: UnsafeCell<Option<Executor>>,
     /// The shared user-space runtime — the wasmi engine, one reusable linker,
     /// and the compiled-module cache — shared by all guests.
     guest_runtime: UnsafeCell<Option<wasm::GuestRuntime>>,
@@ -193,29 +112,21 @@ struct SystemState {
     /// expanded as `$VAR`, and used to resolve programs on `$PATH`.
     env: UnsafeCell<BTreeMap<String, String>>,
     initialized: UnsafeCell<bool>,
-    cwd: UnsafeCell<String>,
-    /// Backgrounded pipelines spawned with `&`. mc_tick advances each
-    /// one round per call.
-    background: UnsafeCell<Vec<Vec<TaskId>>>,
-    /// The currently-running foreground pipeline sequence, if any. The
-    /// line editor is paused (input stays queued) while this is `Some`.
-    foreground: UnsafeCell<Option<ForegroundJob>>,
     /// Host control-channel `exec` jobs (`mc_ctl_exec_*`), keyed by job id.
     /// Advanced each tick alongside the interactive foreground, but independent
     /// of the prompt.
     ctl_jobs: UnsafeCell<BTreeMap<u32, CtlExecJob>>,
     /// Host control-channel resident-service calls (`mc_ctl_svc_call_*`), keyed by job id.
     ctl_svc_jobs: UnsafeCell<BTreeMap<u32, CtlSvcJob>>,
+    pending_autocomplete: UnsafeCell<Option<PendingAutocomplete>>,
     /// Monotonic id source for `ctl_jobs` (starts at 1; 0 is never a job id).
     next_ctl_job: UnsafeCell<u32>,
-    /// Exit status of the last completed interactive foreground line (`$?`).
-    last_status: UnsafeCell<i32>,
-    /// True when pid 1 is the guest `/bin/sh` (cooked keyboard lines flow to its
-    /// stdin via `console_pipe`); false for the in-kernel rescue shell.
-    interactive_guest: UnsafeCell<bool>,
+    /// True while pid 1 is the canonical compatible `/bin/sh`. When false the
+    /// VM remains manageable through VFS/control APIs but has no shell facade.
+    shell_available: UnsafeCell<bool>,
     /// The console pipe feeding pid-1 `/bin/sh`'s stdin. The kernel cooks
     /// keyboard input (echo, backspace) and writes whole lines into it; the
-    /// guest blocks on its read end like any pipe. `None` in rescue mode.
+    /// guest blocks on its read end like any pipe. `None` in maintenance mode.
     console_pipe: UnsafeCell<Option<*const ipc::Pipe>>,
     /// Cooked console bytes not yet accepted by the (bounded) console pipe.
     /// A long pasted line can exceed the pipe's free space; rather than drop the
@@ -235,18 +146,14 @@ impl SystemState {
         Self {
             ns: UnsafeCell::new(None),
             scheduler: UnsafeCell::new(None),
-            executor: UnsafeCell::new(None),
             guest_runtime: UnsafeCell::new(None),
             env: UnsafeCell::new(BTreeMap::new()),
             initialized: UnsafeCell::new(false),
-            cwd: UnsafeCell::new(String::new()),
-            background: UnsafeCell::new(Vec::new()),
-            foreground: UnsafeCell::new(None),
             ctl_jobs: UnsafeCell::new(BTreeMap::new()),
             ctl_svc_jobs: UnsafeCell::new(BTreeMap::new()),
+            pending_autocomplete: UnsafeCell::new(None),
             next_ctl_job: UnsafeCell::new(1),
-            last_status: UnsafeCell::new(0),
-            interactive_guest: UnsafeCell::new(false),
+            shell_available: UnsafeCell::new(false),
             console_pipe: UnsafeCell::new(None),
             console_pending: UnsafeCell::new(Vec::new()),
             login_pid: UnsafeCell::new(0),
@@ -260,10 +167,6 @@ impl SystemState {
 
     unsafe fn scheduler(&self) -> &Scheduler {
         unsafe { (*self.scheduler.get()).as_ref().unwrap() }
-    }
-
-    unsafe fn executor(&self) -> &Executor {
-        unsafe { (*self.executor.get()).as_ref().unwrap() }
     }
 
     unsafe fn guest_runtime(&self) -> &wasm::GuestRuntime {
@@ -284,18 +187,6 @@ impl SystemState {
         }
     }
 
-    unsafe fn cwd(&self) -> &mut String {
-        unsafe { &mut *self.cwd.get() }
-    }
-
-    unsafe fn background(&self) -> &mut Vec<Vec<TaskId>> {
-        unsafe { &mut *self.background.get() }
-    }
-
-    unsafe fn foreground_slot(&self) -> &mut Option<ForegroundJob> {
-        unsafe { &mut *self.foreground.get() }
-    }
-
     unsafe fn ctl_jobs(&self) -> &mut BTreeMap<u32, CtlExecJob> {
         unsafe { &mut *self.ctl_jobs.get() }
     }
@@ -304,12 +195,12 @@ impl SystemState {
         unsafe { &mut *self.ctl_svc_jobs.get() }
     }
 
-    unsafe fn last_status(&self) -> &mut i32 {
-        unsafe { &mut *self.last_status.get() }
+    unsafe fn pending_autocomplete(&self) -> &mut Option<PendingAutocomplete> {
+        unsafe { &mut *self.pending_autocomplete.get() }
     }
 
-    unsafe fn interactive_guest(&self) -> bool {
-        unsafe { *self.interactive_guest.get() }
+    unsafe fn shell_available(&self) -> bool {
+        unsafe { *self.shell_available.get() }
     }
 
     /// The console pipe for pid-1 stdin (guest mode only).
@@ -346,7 +237,7 @@ pub(crate) fn guest_runtime() -> &'static wasm::GuestRuntime {
 }
 
 /// Address of the console pipe feeding pid-1 `/bin/sh`'s stdin, if an
-/// interactive guest is running (`None` for the rescue shell or a headless
+/// interactive guest is running (`None` for maintenance or a headless
 /// boot). `mc_sys_isatty` uses it to recognise fd 0 as the controlling
 /// terminal: the cooked console is a *pipe* (so `ReadSource::is_terminal` is
 /// false), but a child that inherits it shares the same pipe address — that
@@ -445,6 +336,12 @@ struct LineEditor {
     /// Numeric parameter accumulated inside a CSI sequence (e.g. the `3` in the
     /// Delete sequence `ESC [ 3 ~`).
     param: u16,
+    /// Monotonic edit/cursor generation used to discard stale lazy-FS
+    /// completion results.
+    generation: u64,
+    /// Exact line/cursor snapshot armed by the first ambiguous Tab. A second
+    /// Tab on the same snapshot lists candidates.
+    tab_armed: Option<(Vec<u8>, usize)>,
 }
 
 impl LineEditor {
@@ -457,11 +354,19 @@ impl LineEditor {
             stash: Vec::new(),
             esc: EscState::Normal,
             param: 0,
+            generation: 0,
+            tab_armed: None,
         }
+    }
+
+    fn touch(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.tab_armed = None;
     }
 
     /// Insert a byte at the cursor, reprinting the tail and walking back.
     fn insert(&mut self, b: u8) {
+        self.touch();
         self.line.insert(self.cursor, b);
         term_emit(&self.line[self.cursor..]);
         term_bs(self.line.len() - self.cursor - 1);
@@ -475,6 +380,7 @@ impl LineEditor {
         if self.cursor == 0 {
             return;
         }
+        self.touch();
         self.line.remove(self.cursor - 1);
         self.cursor -= 1;
         term_bs(1);
@@ -488,6 +394,7 @@ impl LineEditor {
         if self.cursor >= self.line.len() {
             return;
         }
+        self.touch();
         self.line.remove(self.cursor);
         term_emit(&self.line[self.cursor..]);
         term_emit(b" ");
@@ -496,6 +403,7 @@ impl LineEditor {
 
     fn left(&mut self) {
         if self.cursor > 0 {
+            self.touch();
             self.cursor -= 1;
             term_bs(1);
         }
@@ -503,17 +411,26 @@ impl LineEditor {
 
     fn right(&mut self) {
         if self.cursor < self.line.len() {
+            self.touch();
             term_emit(&self.line[self.cursor..self.cursor + 1]);
             self.cursor += 1;
         }
     }
 
     fn home(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        self.touch();
         term_bs(self.cursor);
         self.cursor = 0;
     }
 
     fn end(&mut self) {
+        if self.cursor == self.line.len() {
+            return;
+        }
+        self.touch();
         term_emit(&self.line[self.cursor..]);
         self.cursor = self.line.len();
     }
@@ -522,6 +439,7 @@ impl LineEditor {
     /// Walks to end-of-line, erases every column, then draws the new line — so
     /// it never touches the prompt to its left.
     fn replace_line(&mut self, next: Vec<u8>) {
+        self.touch();
         term_emit(&self.line[self.cursor..]);
         term_erase(self.line.len());
         self.line = next;
@@ -573,6 +491,7 @@ impl LineEditor {
     /// Discard the line being typed and reset the editing state (no history
     /// push). Used by Ctrl-C / Ctrl-Z.
     fn reset_line(&mut self) {
+        self.touch();
         self.line.clear();
         self.cursor = 0;
         self.hist_nav = None;
@@ -592,6 +511,25 @@ impl LineEditor {
             }
         }
         self.reset_line();
+    }
+
+    fn replace_range(&mut self, start: usize, end: usize, value: &[u8]) -> bool {
+        if start > self.cursor || self.cursor > end || end > self.line.len() {
+            return false;
+        }
+        let mut next = Vec::with_capacity(self.line.len() - (end - start) + value.len());
+        next.extend_from_slice(&self.line[..start]);
+        next.extend_from_slice(value);
+        next.extend_from_slice(&self.line[end..]);
+        let cursor = start + value.len();
+        term_emit(&self.line[self.cursor..]);
+        term_erase(self.line.len());
+        self.touch();
+        self.line = next;
+        self.cursor = cursor;
+        term_emit(&self.line);
+        term_bs(self.line.len() - self.cursor);
+        true
     }
 }
 
@@ -698,21 +636,18 @@ fn init_system() {
         }
 
         match init::boot_system() {
-            Ok((ns, scheduler, executor)) => {
+            Ok((ns, scheduler)) => {
                 *STATE.ns.get() = Some(ns);
                 *STATE.scheduler.get() = Some(scheduler);
-                *STATE.executor.get() = Some(executor);
                 *STATE.guest_runtime.get() = Some(wasm::GuestRuntime::new(wasm::new_engine()));
-                *STATE.cwd.get() = String::from("/home/user");
 
-                // Seed the environment, then apply `/etc/profile` exports.
+                // Seed the process environment. The canonical login shell
+                // sources `/etc/profile` through shcore after it starts.
                 {
                     let env = STATE.env();
                     env.insert(String::from("PATH"), String::from("/bin:/usr/bin"));
                     env.insert(String::from("HOME"), String::from("/home/user"));
                     env.insert(String::from("HOSTNAME"), String::from("agent-os"));
-                    let ns_ref = (*STATE.ns.get()).as_ref().unwrap();
-                    apply_profile_exports(ns_ref, env);
                 }
 
                 let sched_ptr: *const Scheduler =
@@ -743,7 +678,7 @@ fn init_system() {
 
                 // envfs: the shell environment as files at
                 // /env. Per-task: resolves against the calling task's env via
-                // the scheduler, falling back to the kernel boot/rescue env map.
+                // the scheduler, falling back to the kernel boot env map.
                 let env_ptr: *mut BTreeMap<String, String> = STATE.env();
                 let sched_ptr: *const Scheduler = STATE.scheduler();
                 let envfs = crate::fs::EnvFs::new(sched_ptr, env_ptr);
@@ -813,39 +748,39 @@ fn init_system() {
     }
 }
 
-/// Start the interactive login shell. Prefers the guest `/bin/sh` as pid 1
-/// (cooked keyboard lines flow to its stdin via the console pipe); falls back
-/// to the in-kernel rescue shell (detached, `mc_tick` is its body) when
-/// `/bin/sh` cannot be loaded (e.g. a no-image boot).
+/// Start the canonical interactive login shell. A missing or incompatible
+/// `/bin/sh` leaves the VM in explicit maintenance mode: VFS and structured
+/// control remain usable, but no second shell implementation is substituted.
 unsafe fn boot_login_shell() {
     unsafe {
         if try_guest_login_shell() {
-            *STATE.interactive_guest.get() = true;
+            *STATE.shell_available.get() = true;
         } else {
-            start_rescue_shell();
+            start_maintenance_init();
         }
     }
 }
 
-/// Start the in-kernel rescue shell and print its prompt.
-unsafe fn start_rescue_shell() {
+/// Keep pid 1 present as the orphan-reaping/session anchor when the image has
+/// no compatible shell. This task has no program and is deliberately not a
+/// command interpreter.
+unsafe fn start_maintenance_init() {
     unsafe {
         let sched = STATE.scheduler();
-        // Same pid-1 reuse as the guest login shell (see `try_guest_login_shell`).
         let pid = sched
             .spawn_with_id(
                 1,
                 None,
-                String::from("shell"),
-                String::from("shell"),
+                String::from("init"),
+                String::from("init"),
                 Vec::new(),
                 String::from("/home/user"),
             )
             .unwrap_or_else(|| {
                 sched.spawn(
                     None,
-                    String::from("shell"),
-                    String::from("shell"),
+                    String::from("init"),
+                    String::from("init"),
                     Vec::new(),
                     String::from("/home/user"),
                 )
@@ -857,10 +792,10 @@ unsafe fn start_rescue_shell() {
         let (caps, root) = boot_policy();
         sched.set_task_policy(pid, caps, root);
         *STATE.login_pid.get() = pid;
-        *STATE.interactive_guest.get() = false;
+        *STATE.shell_available.get() = false;
         *STATE.console_pipe.get() = None;
-        let prompt = b"$ ";
-        bridge::mc_stdout_write(prompt.as_ptr(), prompt.len());
+        let message = b"Shell unavailable: image must provide a compatible /bin/sh\r\n";
+        bridge::mc_stderr_write(message.as_ptr(), message.len());
     }
 }
 
@@ -890,14 +825,14 @@ unsafe fn flush_console() {
                 pending.drain(0..n);
             }
         } else {
-            // No console (rescue mode): nothing can consume it.
+            // Maintenance mode: no shell consumes console input.
             pending.clear();
         }
     }
 }
 
-/// Try to spawn `/bin/sh` as the login shell (a normal pid-1 task). Returns
-/// false if it cannot be resolved/loaded so the caller can fall back.
+/// Try to spawn a compatible `/bin/sh` as the login shell (a normal pid-1
+/// task). Compatibility includes the generated resident completion boundary.
 unsafe fn try_guest_login_shell() -> bool {
     unsafe {
         let sched = STATE.scheduler();
@@ -915,12 +850,15 @@ unsafe fn try_guest_login_shell() -> bool {
         let prog = match wasm::GuestProgram::load(
             engine,
             &bytes,
-            alloc::vec![String::from("sh")],
+            alloc::vec![String::from("sh"), String::from("--login")],
             &path,
         ) {
             Ok(p) => p,
             Err(_) => return false,
         };
+        if !prog.supports_resident_control() {
+            return false;
+        }
         // The login shell is always pid 1: reuse id 1 on respawn so `/proc/1`
         // never disappears (fall back to a fresh id only if 1 is somehow live).
         let pid = sched
@@ -950,8 +888,8 @@ unsafe fn try_guest_login_shell() -> bool {
         task.set_namespace(ns.fork(pid));
         task.set_stdin(Box::new(io::PipeSource::new(pipe)));
         task.set_program(Box::new(prog));
-        // Seed pid-1's per-task env from the boot env (PATH/HOME/HOSTNAME +
-        // /etc/profile exports); children then inherit a copy at spawn.
+        // Seed pid-1's per-task env from the boot env. `/bin/sh --login`
+        // sources `/etc/profile`; children then inherit the resulting state.
         task.env_mut().clone_from(STATE.env());
         // pid-1 boots at the image manifest's tier, or full when unset.
         let (caps, root) = boot_policy();
@@ -1158,21 +1096,14 @@ pub(crate) fn mc_tick() -> i32 {
 
         let scheduler = STATE.scheduler();
         let ns = STATE.ns();
-        let executor = STATE.executor();
-        let engine = STATE.guest_runtime();
-        // Snapshot $PATH for program resolution this tick (cloned so a guest
-        // `export PATH=...` mid-batch can't invalidate the borrow).
-        let path: String = STATE
-            .env()
-            .get("PATH")
-            .cloned()
-            .unwrap_or_else(|| String::from("/bin:/usr/bin"));
 
-        // 1. Drain input ONLY when no foreground is running. While a
-        //    foreground pipeline holds the prompt, typed bytes stay
-        //    queued in INPUT_BUFFER and get processed once it completes.
-        if STATE.foreground_slot().is_none() {
-            drain_input_line(scheduler, ns, executor, engine, &path);
+        // 1. Cook terminal input for the one canonical guest shell. In
+        // maintenance mode discard it so an absent shell cannot turn host
+        // input into unbounded kernel memory.
+        if STATE.shell_available() {
+            drain_input_line(scheduler);
+        } else {
+            INPUT_BUFFER.get().clear();
         }
 
         // 2. Wake any task whose pipe condition is now satisfied, then
@@ -1186,7 +1117,7 @@ pub(crate) fn mc_tick() -> i32 {
             run_round(scheduler, ns);
         }
 
-        // 2.6 Host-backed mount maintenance: flush parked write-commits and
+        // 2.5 Host-backed mount maintenance: flush parked write-commits and
         //     reclaim in-flight calls left by tasks that have since died (so a
         //     killed mid-mount-op task can't strand a host handle and pin
         //     `inflight_egress` non-zero forever). `SYSTEM_CALLER` (the host
@@ -1197,11 +1128,11 @@ pub(crate) fn mc_tick() -> i32 {
         fs::persistfs::drain_all(|caller| {
             caller == vfs::SYSTEM_CALLER || scheduler.get_task(caller).is_some()
         });
+        drive_pending_autocomplete();
 
-        // 2.5 Guest login-shell keep-alive: pid 1 must never disappear. If the
-        //     guest `/bin/sh` exited (e.g. `exit` / Ctrl-D), reap it and respawn
-        //     a fresh login shell, falling back to the rescue shell if needed.
-        if STATE.interactive_guest() {
+        // 2.6 Login-shell keep-alive. If the canonical shell can no longer be
+        // loaded, transition to explicit maintenance mode.
+        if STATE.shell_available() {
             let lp = *STATE.login_pid.get();
             let dead = scheduler
                 .get_task(lp)
@@ -1221,35 +1152,10 @@ pub(crate) fn mc_tick() -> i32 {
                 close_console_writer();
                 scheduler.drop_dead_pipes();
                 if try_guest_login_shell() {
-                    *STATE.interactive_guest.get() = true;
+                    *STATE.shell_available.get() = true;
                 } else {
-                    start_rescue_shell();
+                    start_maintenance_init();
                 }
-            }
-        }
-
-        // 3. Foreground stage machine: detect stage completion, advance
-        //    through `&&`/`||`/`;`, and emit the next prompt when the whole
-        //    sequence is done.
-        if let Some(fg) = STATE.foreground_slot() {
-            if advance_foreground(
-                fg,
-                scheduler,
-                ns,
-                executor,
-                engine,
-                &path,
-                STATE.env(),
-                None,
-            ) {
-                *STATE.last_status() = fg.last_status;
-                *STATE.cwd() = fg.cwd.clone();
-                *STATE.foreground_slot() = None;
-                let prompt = b"$ ";
-                bridge::mc_stdout_write(prompt.as_ptr(), prompt.len());
-                // Resume input drain in this same tick so a multi-line
-                // batch keeps moving without an idle round trip.
-                drain_input_line(scheduler, ns, executor, engine, &path);
             }
         }
 
@@ -1280,64 +1186,20 @@ pub(crate) fn mc_tick() -> i32 {
                             job.done = true;
                         }
                     }
-                    CtlBody::Rescue { fg, env } => {
-                        let path = env
-                            .get("PATH")
-                            .cloned()
-                            .unwrap_or_else(|| String::from("/bin:/usr/bin"));
-                        if advance_foreground(
-                            fg,
-                            scheduler,
-                            ns,
-                            executor,
-                            engine,
-                            &path,
-                            env,
-                            Some(&job.cap),
-                        ) {
-                            job.done = true;
-                            job.exit_code = fg.last_status;
-                        }
-                    }
-                    CtlBody::Done => {
-                        job.done = true;
-                    }
                 }
             }
-        }
-
-        // 4. Reap finished background pipelines (their tasks were stepped
-        //    in the round above).
-        let bg = STATE.background();
-        if !bg.is_empty() {
-            let mut keep: Vec<Vec<TaskId>> = Vec::new();
-            for pids in bg.drain(..) {
-                if !reap_finished(scheduler, &pids) {
-                    keep.push(pids);
-                }
-            }
-            *bg = keep;
         }
     }
     1
 }
 
-/// Consume bytes from INPUT_BUFFER through the line editor. Stops early
-/// (saving remaining bytes back) when a `\n` produces a foreground job.
-unsafe fn drain_input_line(
-    scheduler: &Scheduler,
-    ns: &Namespace,
-    executor: &Executor,
-    engine: &wasm::GuestRuntime,
-    path: &str,
-) {
-    let guest = unsafe { STATE.interactive_guest() };
+/// Consume bytes from INPUT_BUFFER through the cooked line editor and feed
+/// complete lines to the canonical guest shell.
+unsafe fn drain_input_line(scheduler: &Scheduler) {
     // Drain any console backlog first — a previous long line may not have fit
     // the pipe in one go. Done before the empty-input early-return so the
     // backlog keeps flowing across ticks even when nothing new is typed.
-    if guest {
-        unsafe { flush_console() };
-    }
+    unsafe { flush_console() };
 
     let input_buf = unsafe { INPUT_BUFFER.get() };
     if input_buf.is_empty() {
@@ -1401,7 +1263,9 @@ unsafe fn drain_input_line(
             ed.home(); // Ctrl-A → start of line
         } else if byte == 0x05 {
             ed.end(); // Ctrl-E → end of line
-        } else if guest && byte == 0x04 {
+        } else if byte == b'\t' {
+            interactive_autocomplete(ed);
+        } else if byte == 0x04 {
             // Ctrl-D on an empty line: close the console write end → the guest
             // shell sees EOF on its next read and exits (then is respawned).
             if ed.line.is_empty() {
@@ -1409,7 +1273,7 @@ unsafe fn drain_input_line(
                     p.close_write();
                 }
             }
-        } else if guest && byte == 0x03 {
+        } else if byte == 0x03 {
             // Ctrl-C: discard the partial line and deliver SIGINT to the
             // terminal's foreground process group. A running foreground command
             // (default disposition) dies; the shell ignores SIGINT, so at the
@@ -1418,7 +1282,7 @@ unsafe fn drain_input_line(
             ed.reset_line();
             let pgid = scheduler.foreground_pgid();
             scheduler.signal_group(pgid, SIGINT);
-        } else if guest && byte == 0x1a {
+        } else if byte == 0x1a {
             // Ctrl-Z: discard the partial line and deliver SIGTSTP to the
             // foreground group, suspending a running foreground command.
             term_emit(b"^Z\r\n");
@@ -1430,32 +1294,13 @@ unsafe fn drain_input_line(
             // Snapshot before commit (which clears the line + pushes to history).
             let line_bytes = ed.line.clone();
             ed.commit();
-            if guest {
-                // Queue the cooked line (with newline) for pid-1 sh's stdin and
-                // flush as much as the pipe accepts; the rest drains next tick
-                // (no truncation of a long line).
-                let mut bytes = line_bytes;
-                bytes.push(b'\n');
-                unsafe {
-                    STATE.console_pending().extend_from_slice(&bytes);
-                    flush_console();
-                }
-                // The guest prints its own prompt; nothing more to do here.
-            } else {
-                let started_foreground = if !line_bytes.is_empty() {
-                    let line_str = String::from_utf8_lossy(&line_bytes).into_owned();
-                    unsafe { submit_user_line(&line_str, scheduler, ns, executor, engine, path) }
-                } else {
-                    false
-                };
-                if started_foreground {
-                    // Save remaining bytes back for after foreground completes.
-                    let remaining: Vec<u8> = input[i..].to_vec();
-                    unsafe { INPUT_BUFFER.get().extend_from_slice(&remaining) };
-                    return;
-                }
-                // No foreground started → emit prompt right away.
-                term_emit(b"$ ");
+            // Queue the cooked line (with newline) for pid-1 sh's stdin and
+            // flush as much as the pipe accepts; the rest drains next tick.
+            let mut bytes = line_bytes;
+            bytes.push(b'\n');
+            unsafe {
+                STATE.console_pending().extend_from_slice(&bytes);
+                flush_console();
             }
         } else if byte.is_ascii_graphic() || byte == b' ' {
             ed.insert(byte);
@@ -1463,320 +1308,116 @@ unsafe fn drain_input_line(
     }
 }
 
-/// Parse a user line and either:
-///   - install a foreground job (returns true), or
-///   - run a line that completed immediately (integral builtin, background,
-///     or empty) and return false (the caller emits the prompt itself).
-unsafe fn submit_user_line(
-    line: &str,
-    scheduler: &Scheduler,
-    ns: &Namespace,
-    executor: &Executor,
-    engine: &wasm::GuestRuntime,
-    path: &str,
-) -> bool {
-    let cwd = unsafe { STATE.cwd().clone() };
-    let last = unsafe { *STATE.last_status() };
-    let mut fg = match make_foreground(line, last, cwd, None) {
-        Ok(Some(fg)) => fg,
-        Ok(None) => return false,
-        Err(e) => {
-            shell_stderr(&format!("{e}\r\n"));
-            return false;
+fn list_completions(editor: &LineEditor, completion: &ResolvedAutocomplete) {
+    let result = &completion.result;
+    term_emit(b"\r\n");
+    for (index, item) in result.items.iter().enumerate() {
+        if index != 0 {
+            term_emit(b"  ");
         }
-    };
-    // Advance once eagerly so the first stage (or its first substitution) lands
-    // in the ready queue now. If the whole line finished immediately (integral
-    // `cd`/`export`, background, or no-op), return false so the caller prints
-    // the prompt.
-    let done = advance_foreground(
-        &mut fg,
-        scheduler,
-        ns,
-        executor,
-        engine,
-        path,
-        unsafe { STATE.env() },
-        None,
-    );
-    if done {
-        unsafe {
-            *STATE.last_status() = fg.last_status;
-            *STATE.cwd() = fg.cwd.clone();
-        }
-        return false;
+        term_emit(item.label.as_bytes());
     }
-    unsafe { *STATE.foreground_slot() = Some(fg) };
-    true
+    if result.truncated {
+        term_emit(b"  ...");
+    }
+    term_emit(if completion.continuation { b"\r\n> " } else { b"\r\n$ " });
+    term_emit(&editor.line);
+    term_bs(editor.line.len().saturating_sub(editor.cursor));
 }
 
-fn shell_stderr(msg: &str) {
-    unsafe {
-        bridge::mc_stderr_write(msg.as_ptr(), msg.len());
-    }
-}
-
-/// If `pipeline` is a single shell-integral command (`cd` / `export`) with no
-/// redirections, return its name and (expanded) args so the caller can mutate
-/// shell state directly instead of spawning a task.
-fn integral(pipeline: &Pipeline) -> Option<(&'static str, Vec<String>)> {
-    if pipeline.commands.len() != 1 {
-        return None;
-    }
-    let c = &pipeline.commands[0];
-    if c.redirect_in.is_some() || c.redirect_out.is_some() {
-        return None;
-    }
-    match c.cmd.as_str() {
-        "cd" => Some(("cd", c.args.clone())),
-        "export" => Some(("export", c.args.clone())),
-        _ => None,
-    }
-}
-
-/// `cd` with already-expanded args. Mutates `cwd` in place; returns an exit code.
-fn apply_cd_args(
-    args: &[String],
-    ns: &Namespace,
-    env: &BTreeMap<String, String>,
-    cwd: &mut String,
-    emit_err: &dyn Fn(&[u8]),
-) -> i32 {
-    if args.len() > 1 {
-        emit_err(b"cd: too many arguments\r\n");
-        return 1;
-    }
-    let target = match args.first() {
-        Some(arg) => arg.clone(),
-        None => env
-            .get("HOME")
-            .cloned()
-            .unwrap_or_else(|| String::from("/")),
-    };
-    let p = builtins::fs::resolve_path(cwd, &target);
-    match ns.stat(&p) {
-        Ok(md) if md.node_type == NodeType::Dir => {
-            *cwd = String::from(p.as_str());
-            0
-        }
-        Ok(_) => {
-            emit_err(format!("cd: {}: not a directory\r\n", target).as_bytes());
-            1
-        }
-        Err(e) => {
-            emit_err(format!("cd: {}: {}\r\n", target, builtins::fs_error_str(e)).as_bytes());
-            1
-        }
-    }
-}
-
-/// `export` with already-expanded args (each a `NAME=VALUE` token).
-fn apply_exports_args(args: &[String], env: &mut BTreeMap<String, String>) {
-    for token in args {
-        if let Some((name, value)) = token.split_once('=') {
-            if !name.is_empty() {
-                env.insert(String::from(name), String::from(value));
-            }
-        }
-    }
-}
-
-/// Advance the rescue-shell job's *state* by one round: detect stage
-/// completion, apply `&&`/`||`/`;` short-circuiting, and submit the next stage.
-/// Returns true when the job has finished.
-///
-/// Task *stepping* is not done here — the actual `task.step()` calls flow
-/// through `run_round` (cooperative `mc_tick`) or `mc_worker_entry` (threaded).
-/// This function only observes task states and drives the stage machine, so it
-/// is identical in both scheduling modes. There is no substitution phase: the
-/// rescue shell runs flat, pre-split pipelines (the full shell is `/bin/sh`).
-fn advance_foreground(
-    fg: &mut ForegroundJob,
-    scheduler: &Scheduler,
-    ns: &Namespace,
-    executor: &Executor,
-    engine: &wasm::GuestRuntime,
-    path: &str,
-    env: &mut BTreeMap<String, String>,
-    capture: Option<&OutputCapture>,
-) -> bool {
-    let stage = core::mem::replace(&mut fg.stage, StageState::Idle);
-    if let StageState::Running { pids, sep } = stage {
-        // A stage is running: has it finished?
-        let all_zombie = pids.iter().all(|&p| {
-            scheduler
-                .get_task(p)
-                .map(|t| matches!(t.state, TaskState::Zombie))
-                .unwrap_or(true)
-        });
-        if all_zombie {
-            let last = *pids.last().expect("non-empty");
-            fg.last_status = scheduler.get_exit_code(last).unwrap_or(0);
-            for &pid in &pids {
-                scheduler.reap_zombie(pid);
-            }
-            scheduler.drop_dead_pipes();
-            fg.pending_sep = sep;
-            fg.stage = StageState::Idle;
-        } else {
-            fg.stage = StageState::Running { pids, sep };
-        }
-        return false;
-    }
-
-    // Idle: start subsequent stages until one runs in the foreground or the
-    // line is exhausted.
-    while fg.next_stage < fg.seq.stages.len() {
-        let idx = fg.next_stage;
-        let sep = fg.seq.stages[idx].1;
-        let should_run = if idx == 0 {
-            true
-        } else {
-            match fg.pending_sep {
-                Sep::AndAnd => fg.last_status == 0,
-                Sep::OrOr => fg.last_status != 0,
-                Sep::Then | Sep::Bg => true,
-            }
-        };
-        if !should_run {
-            fg.pending_sep = sep;
-            fg.next_stage += 1;
-            continue;
-        }
-        fg.next_stage += 1;
-        let pipeline = fg.seq.stages[idx].0.clone();
-        match run_stage(
-            fg, &pipeline, sep, scheduler, ns, executor, engine, path, env, capture,
-        ) {
-            Some(pids) => {
-                fg.stage = StageState::Running { pids, sep };
-                return false;
-            }
-            None => {
-                fg.pending_sep = sep;
-                continue;
-            }
-        }
-    }
-
-    // No more stages → done.
-    true
-}
-
-/// Run one already-parsed rescue-shell stage and either install it as the
-/// running foreground stage (returns the pids) or handle it inline — an
-/// integral `cd`/`export`, a background pipeline, an empty command, or a submit
-/// error (all return `None`, with `fg.last_status` set).
-#[allow(clippy::too_many_arguments)]
-fn run_stage(
-    fg: &mut ForegroundJob,
-    pipeline: &Pipeline,
-    sep: Sep,
-    scheduler: &Scheduler,
-    ns: &Namespace,
-    executor: &Executor,
-    engine: &wasm::GuestRuntime,
-    path: &str,
-    env: &mut BTreeMap<String, String>,
-    capture: Option<&OutputCapture>,
-) -> Option<Vec<TaskId>> {
-    let emit_out = |bytes: &[u8]| match capture {
-        Some(c) => c.stdout.borrow_mut().extend_from_slice(bytes),
-        None => unsafe { bridge::mc_stdout_write(bytes.as_ptr(), bytes.len()) },
-    };
-    let emit_err = |bytes: &[u8]| match capture {
-        Some(c) => c.stderr.borrow_mut().extend_from_slice(bytes),
-        None => unsafe { bridge::mc_stderr_write(bytes.as_ptr(), bytes.len()) },
-    };
-
-    // Shell-integral single command: mutate shell state directly, no task.
-    if let Some((name, args)) = integral(pipeline) {
-        let code = match name {
-            "cd" => apply_cd_args(&args, ns, env, &mut fg.cwd, &emit_err),
-            "export" => {
-                apply_exports_args(&args, env);
-                0
-            }
-            _ => 0,
-        };
-        fg.last_status = code;
-        return None;
-    }
-
-    if pipeline.commands.is_empty() {
-        fg.last_status = 0;
-        return None;
-    }
-
-    let submit_result = match capture {
-        Some(c) => submit_pipeline_captured(
-            scheduler,
-            ns,
-            executor,
-            engine,
-            path,
-            &fg.cwd,
-            pipeline,
-            c,
-            fg.stdin.as_ref().and_then(|s| s.inherit_for_child()),
-        ),
-        None => submit_pipeline(scheduler, ns, executor, engine, path, &fg.cwd, pipeline),
-    };
-    match submit_result {
-        Ok(pids) => {
-            if sep == Sep::Bg {
-                if let Some(&last) = pids.last() {
-                    emit_out(format!("[{}]\r\n", last).as_bytes());
-                }
-                unsafe {
-                    STATE.background().push(pids);
-                }
-                fg.last_status = 0;
-                None
-            } else {
-                Some(pids)
-            }
-        }
-        Err(msg) => {
-            emit_err(format!("{}\r\n", msg).as_bytes());
-            fg.last_status = 1;
-            None
-        }
-    }
-}
-
-/// Apply `NAME=VALUE` assignments (space-separated) to the environment.
-fn apply_exports(rest: &str, env: &mut BTreeMap<String, String>) {
-    for token in rest.split_whitespace() {
-        if let Some((name, value)) = token.split_once('=') {
-            if !name.is_empty() {
-                env.insert(String::from(name), String::from(value));
-            }
-        }
-    }
-}
-
-/// Apply the simple `export NAME=VALUE` lines from `/etc/profile` (skipping
-/// command-substitution lines we don't evaluate).
-fn apply_profile_exports(ns: &Namespace, env: &mut BTreeMap<String, String>) {
-    let Ok(mut f) = ns.open(&KPath::new("/etc/profile"), OpenFlags::READ) else {
+fn apply_interactive_autocomplete(
+    editor: &mut LineEditor,
+    completion: ResolvedAutocomplete,
+    list: bool,
+) {
+    let result = &completion.result;
+    if result.items.is_empty() {
+        term_emit(b"\x07");
+        editor.tab_armed = None;
         return;
-    };
-    let mut content = Vec::new();
-    let mut buf = [0u8; 4096];
-    loop {
-        match f.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => content.extend_from_slice(&buf[..n]),
-            Err(_) => return,
+    }
+    let start = result.replace_start as usize;
+    let end = result.replace_end as usize;
+    if start > editor.cursor || editor.cursor > end || end > editor.line.len() {
+        term_emit(b"\x07");
+        editor.tab_armed = None;
+        return;
+    }
+
+    if result.items.len() == 1 {
+        let item = &result.items[0];
+        let mut value = item.value.as_bytes().to_vec();
+        if item.kind != "directory" && end == editor.line.len() {
+            value.push(b' ');
+        }
+        if !editor.replace_range(start, end, &value) {
+            term_emit(b"\x07");
+        }
+        editor.tab_armed = None;
+        return;
+    }
+
+    let current = &editor.line[start..end];
+    if !result.common_prefix.is_empty() && result.common_prefix.as_bytes() != current {
+        if !editor.replace_range(start, end, result.common_prefix.as_bytes()) {
+            term_emit(b"\x07");
+            return;
         }
     }
-    let s = String::from_utf8_lossy(&content);
-    for line in s.lines() {
-        if let Some(rest) = line.trim().strip_prefix("export ") {
-            if !rest.contains("$(") {
-                apply_exports(rest, env);
-            }
+    if list {
+        list_completions(editor, &completion);
+    }
+    editor.tab_armed = Some((editor.line.clone(), editor.cursor));
+}
+
+fn interactive_autocomplete(editor: &mut LineEditor) {
+    let list = editor
+        .tab_armed
+        .as_ref()
+        .is_some_and(|(line, cursor)| line == &editor.line && *cursor == editor.cursor);
+    let pending = unsafe { STATE.pending_autocomplete() };
+    if pending
+        .as_ref()
+        .is_some_and(|request| request.generation == editor.generation)
+    {
+        if list {
+            pending.as_mut().expect("checked").list = true;
+        }
+        return;
+    }
+    let request = AutocompleteRequest {
+        source: editor.line.clone(),
+        cursor: editor.cursor as u32,
+        cwd: None,
+        env: BTreeMap::new(),
+        limit: AUTOCOMPLETE_MAX_ITEMS as u32,
+    };
+    match autocomplete(request.clone(), true) {
+        Ok(result) => apply_interactive_autocomplete(editor, result, list),
+        Err(EAGAIN) => {
+            *pending = Some(PendingAutocomplete {
+                request,
+                generation: editor.generation,
+                list,
+            });
+        }
+        Err(_) => term_emit(b"\x07"),
+    }
+}
+
+unsafe fn drive_pending_autocomplete() {
+    unsafe {
+        let Some(pending) = STATE.pending_autocomplete().take() else {
+            return;
+        };
+        let editor = EDITOR.get();
+        if pending.generation != editor.generation {
+            return;
+        }
+        match autocomplete(pending.request.clone(), true) {
+            Ok(result) => apply_interactive_autocomplete(editor, result, pending.list),
+            Err(EAGAIN) => *STATE.pending_autocomplete() = Some(pending),
+            Err(_) => term_emit(b"\x07"),
         }
     }
 }
@@ -2435,37 +2076,347 @@ pub(crate) fn mc_ctl_svc_call_close(job_id: u32) -> i32 {
     }
 }
 
-/// Register an immediately-finished control-exec job (used for empty/erroring
-/// command lines that produce no tasks). Returns the new job id.
-unsafe fn ctl_finish_immediate(exit_code: i32, cap: OutputCapture) -> i32 {
-    unsafe {
-        let id = STATE.alloc_ctl_id();
-        STATE.ctl_jobs().insert(
-            id,
-            CtlExecJob {
-                body: CtlBody::Done,
-                cap,
-                done: true,
-                exit_code,
-            },
-        );
-        id as i32
-    }
-}
-
 unsafe fn resolve_exec_cwd(requested: Option<&str>) -> Result<String, i32> {
     unsafe {
+        let task = STATE.scheduler().get_task(1).ok_or(-ENOENT)?;
+        let current = &*task.cwd.get();
+        let ns = task.namespace().unwrap_or_else(|| STATE.ns());
         match requested {
             Some(cwd) => {
-                let path = builtins::fs::resolve_path(STATE.cwd(), cwd);
-                match STATE.ns().stat(&path) {
+                let path = builtins::fs::resolve_path(current, cwd);
+                match ns.stat_as(task.id, &path) {
                     Ok(md) if md.node_type == NodeType::Dir => Ok(String::from(path.as_str())),
                     Ok(_) | Err(vfs::FsError::NotDir) => Err(-ENOTDIR),
                     Err(vfs::FsError::NotFound) => Err(-ENOENT),
                     Err(e) => Err(ctl_neg_errno(e)),
                 }
             }
-            None => Ok(STATE.cwd().clone()),
+            None => Ok(current.clone()),
+        }
+    }
+}
+
+fn autocomplete_fs_error(error: vfs::FsError) -> i32 {
+    if error == vfs::FsError::WouldBlock {
+        EAGAIN
+    } else {
+        errno_from_fs(error)
+    }
+}
+
+struct CompletionCandidates {
+    values: BTreeMap<String, String>,
+    limit: usize,
+    truncated: bool,
+}
+
+impl CompletionCandidates {
+    fn new(limit: usize, truncated: bool) -> Self {
+        Self {
+            values: BTreeMap::new(),
+            limit,
+            truncated,
+        }
+    }
+
+    fn insert(&mut self, value: String, kind: &str) {
+        if self.values.contains_key(&value) {
+            return;
+        }
+        if self.values.len() < self.limit {
+            self.values.insert(value, String::from(kind));
+            return;
+        }
+
+        self.truncated = true;
+        let replace = self
+            .values
+            .last_key_value()
+            .is_some_and(|(last, _)| value < *last);
+        if replace {
+            let last = self
+                .values
+                .last_key_value()
+                .map(|(key, _)| key.clone())
+                .expect("bounded candidate set is nonempty");
+            self.values.remove(&last);
+            self.values.insert(value, String::from(kind));
+        }
+    }
+}
+
+fn autocomplete_path_candidates(
+    ns: &Namespace,
+    caller: TaskId,
+    cwd: &str,
+    prefix: &str,
+    directories_only: bool,
+    executables_only: bool,
+    candidates: &mut CompletionCandidates,
+    scan_remaining: &mut usize,
+) -> Result<(), i32> {
+    let (typed_dir, base) = match prefix.rfind('/') {
+        Some(index) => (&prefix[..=index], &prefix[index + 1..]),
+        None => ("", prefix),
+    };
+    let search = if typed_dir.is_empty() {
+        builtins::fs::resolve_path(cwd, ".")
+    } else {
+        let directory = typed_dir.trim_end_matches('/');
+        builtins::fs::resolve_path(cwd, if directory.is_empty() { "/" } else { directory })
+    };
+    let entries = ns
+        .readdir(caller, &search)
+        .map_err(autocomplete_fs_error)?;
+    for entry in entries {
+        if *scan_remaining == 0 {
+            candidates.truncated = true;
+            break;
+        }
+        *scan_remaining -= 1;
+        if !entry.name.starts_with(base) || (!base.starts_with('.') && entry.name.starts_with('.')) {
+            continue;
+        }
+        let full = search.join(&entry.name);
+        let metadata = match ns.stat_as(caller, &full) {
+            Ok(metadata) => metadata,
+            Err(vfs::FsError::WouldBlock) => return Err(EAGAIN),
+            Err(_) => continue,
+        };
+        let is_dir = metadata.node_type == NodeType::Dir;
+        if directories_only && !is_dir {
+            continue;
+        }
+        if executables_only && (is_dir || !metadata.owner_executable()) {
+            continue;
+        }
+        let mut value = String::from(typed_dir);
+        value.push_str(&entry.name);
+        if is_dir {
+            value.push('/');
+        }
+        if value.len() > AUTOCOMPLETE_MAX_SOURCE_BYTES as usize {
+            candidates.truncated = true;
+            continue;
+        }
+        candidates.insert(
+            value,
+            if is_dir {
+                "directory"
+            } else if executables_only {
+                "command"
+            } else {
+                "file"
+            },
+        );
+    }
+    Ok(())
+}
+
+/// Resolve a shell completion request against pid 1's live shell state and
+/// namespace. The operation is read-only and bounded; `EAGAIN` is surfaced for
+/// lazy filesystem data so hosts can drive a tick and retry exactly as they do
+/// for structured readdir.
+fn autocomplete(req: AutocompleteRequest, interactive: bool) -> Result<ResolvedAutocomplete, i32> {
+    if req.source.len() > AUTOCOMPLETE_MAX_SOURCE_BYTES as usize {
+        return Err(EMSGSIZE);
+    }
+    let source = core::str::from_utf8(&req.source).map_err(|_| EINVAL)?;
+    let cursor = req.cursor as usize;
+    if cursor > source.len() || !source.is_char_boundary(cursor) {
+        return Err(EINVAL);
+    }
+    let limit = (req.limit as usize).clamp(1, AUTOCOMPLETE_MAX_ITEMS as usize);
+    let scheduler = unsafe { STATE.scheduler() };
+    let task = scheduler.get_task(1).ok_or(ENOENT)?;
+    if !task.has_control() {
+        return Err(ENOSYS);
+    }
+    let ns = task.namespace().unwrap_or_else(|| unsafe { STATE.ns() });
+    let live_cwd = unsafe { &*task.cwd.get() };
+    let cwd = match req.cwd.as_deref() {
+        Some(requested) => {
+            let resolved = builtins::fs::resolve_path(live_cwd, requested);
+            match ns.stat_as(task.id, &resolved) {
+                Ok(metadata) if metadata.node_type == NodeType::Dir => String::from(resolved.as_str()),
+                Ok(_) | Err(vfs::FsError::NotDir) => return Err(ENOTDIR),
+                Err(error) => return Err(autocomplete_fs_error(error)),
+            }
+        }
+        None => live_cwd.clone(),
+    };
+    let live_env = task.env();
+    let env_overlay = req.env;
+
+    let probe = ProbeRequest {
+        source: req.source.clone(),
+        cursor: req.cursor,
+        interactive,
+    };
+    let probe = ProbeResponse::decode(&task.control(&probe.encode())?).map_err(|_| EIO)?;
+    let start = probe.replace_start as usize;
+    let end = probe.replace_end as usize;
+    if start > cursor
+        || cursor > end
+        || end > source.len()
+        || !source.is_char_boundary(start)
+        || !source.is_char_boundary(end)
+        || probe.prefix.len() > AUTOCOMPLETE_MAX_SOURCE_BYTES as usize
+    {
+        return Err(EIO);
+    }
+
+    let mut candidates = CompletionCandidates::new(limit, probe.truncated);
+    let mut scan_remaining = AUTOCOMPLETE_MAX_SCAN_ENTRIES as usize;
+    for candidate in probe
+        .shell_candidates
+        .into_iter()
+        .take(AUTOCOMPLETE_MAX_ITEMS as usize)
+    {
+        candidates.insert(candidate.value, &candidate.kind);
+    }
+    match probe.context.as_str() {
+        CONTEXT_VARIABLE => {
+            for key in live_env.keys().chain(env_overlay.keys()) {
+                if scan_remaining == 0 {
+                    candidates.truncated = true;
+                    break;
+                }
+                scan_remaining -= 1;
+                if key.starts_with(&probe.prefix) {
+                    candidates.insert(key.clone(), "variable");
+                }
+            }
+        }
+        CONTEXT_COMMAND if probe.prefix.contains('/') => autocomplete_path_candidates(
+            ns,
+            task.id,
+            &cwd,
+            &probe.prefix,
+            false,
+            true,
+            &mut candidates,
+            &mut scan_remaining,
+        )?,
+        CONTEXT_COMMAND => {
+            let path = env_overlay
+                .get("PATH")
+                .or_else(|| live_env.get("PATH"))
+                .map(String::as_str)
+                .unwrap_or("/bin:/usr/bin");
+            for directory in path
+                .split(':')
+                .take(AUTOCOMPLETE_MAX_PATH_SEGMENTS as usize)
+            {
+                if scan_remaining == 0 {
+                    candidates.truncated = true;
+                    break;
+                }
+                let directory = if directory.is_empty() { "." } else { directory };
+                autocomplete_path_candidates(
+                    ns,
+                    task.id,
+                    &builtins::fs::resolve_path(&cwd, directory).0,
+                    &probe.prefix,
+                    false,
+                    true,
+                    &mut candidates,
+                    &mut scan_remaining,
+                )?;
+            }
+        }
+        CONTEXT_PATH => autocomplete_path_candidates(
+            ns,
+            task.id,
+            &cwd,
+            &probe.prefix,
+            false,
+            false,
+            &mut candidates,
+            &mut scan_remaining,
+        )?,
+        CONTEXT_DIRECTORY => autocomplete_path_candidates(
+            ns,
+            task.id,
+            &cwd,
+            &probe.prefix,
+            true,
+            false,
+            &mut candidates,
+            &mut scan_remaining,
+        )?,
+        _ => return Err(EIO),
+    }
+
+    let truncated = candidates.truncated;
+    let candidates: Vec<ShellCandidate> = candidates
+        .values
+        .into_iter()
+        .map(|(value, kind)| ShellCandidate { value, kind })
+        .collect();
+    let render = RenderRequest {
+        replace_start: probe.replace_start,
+        replace_end: probe.replace_end,
+        quote: probe.quote,
+        candidates,
+        truncated,
+    };
+    let rendered = shell_rust::CompletionResult::decode(&task.control(&render.encode())?)
+        .map_err(|_| EIO)?;
+    if rendered.replace_start != render.replace_start
+        || rendered.replace_end != render.replace_end
+        || rendered.items.len() > limit
+    {
+        return Err(EIO);
+    }
+    Ok(ResolvedAutocomplete {
+        result: AutocompleteResult {
+            replace_start: rendered.replace_start,
+            replace_end: rendered.replace_end,
+            common_prefix: rendered.common_prefix,
+            items: rendered
+                .items
+                .into_iter()
+                .map(|item| CtlAutocompleteItem {
+                    label: item.label,
+                    value: item.value,
+                    kind: item.kind,
+                })
+                .collect(),
+            truncated: rendered.truncated,
+        },
+        continuation: probe.continuation,
+    })
+}
+
+pub(crate) fn mc_ctl_autocomplete(request_len: u32) -> i32 {
+    let _bkl = sync::lock_kernel();
+    unsafe {
+        if !STATE.is_initialized() {
+            return -EIO;
+        }
+        if request_len as usize > AUTOCOMPLETE_MAX_FRAME_BYTES as usize {
+            return -EMSGSIZE;
+        }
+        let bytes = match ctl_bytes(0, request_len) {
+            Some(bytes) => bytes,
+            None => return -EINVAL,
+        };
+        let request = match AutocompleteRequest::decode(&bytes) {
+            Ok(request) => request,
+            Err(_) => return -EINVAL,
+        };
+        match autocomplete(request, false) {
+            Ok(completion) => {
+                let encoded = completion.result.encode();
+                if encoded.len() > AUTOCOMPLETE_MAX_FRAME_BYTES as usize {
+                    return -EMSGSIZE;
+                }
+                let len = encoded.len() as i32;
+                *CTL_BUFFER.get() = encoded;
+                len
+            }
+            Err(errno) => -errno,
         }
     }
 }
@@ -2560,7 +2511,10 @@ pub(crate) fn mc_ctl_exec_start(request_len: u32) -> i32 {
             Ok(cwd) => cwd,
             Err(errno) => return errno,
         };
-        let mut env = STATE.env().clone();
+        let mut env = match STATE.scheduler().get_task(1) {
+            Some(task) => task.env().clone(),
+            None => return -ENOENT,
+        };
         for (k, v) in req.env {
             env.insert(k, v);
         }
@@ -2584,50 +2538,7 @@ pub(crate) fn mc_ctl_exec_start(request_len: u32) -> i32 {
             return id as i32;
         }
 
-        // Fallback (no `/bin/sh`, e.g. no image): the in-kernel rescue executor.
-        let scheduler = STATE.scheduler();
-        let ns = STATE.ns();
-        let executor = STATE.executor();
-        let engine = STATE.guest_runtime();
-        let path: String = env
-            .get("PATH")
-            .cloned()
-            .unwrap_or_else(|| String::from("/bin:/usr/bin"));
-        let last = *STATE.last_status();
-        let rescue_stdin =
-            stdin.map(|bytes| Box::new(io::BytesSource::new(bytes)) as Box<dyn io::ReadSource>);
-        let mut fg = match make_foreground(&cmd, last, cwd, rescue_stdin) {
-            Ok(Some(fg)) => fg,
-            Ok(None) => return ctl_finish_immediate(0, cap),
-            Err(e) => {
-                cap.stderr
-                    .borrow_mut()
-                    .extend_from_slice(format!("{e}\r\n").as_bytes());
-                return ctl_finish_immediate(2, cap);
-            }
-        };
-        let done = advance_foreground(
-            &mut fg,
-            scheduler,
-            ns,
-            executor,
-            engine,
-            &path,
-            &mut env,
-            Some(&cap),
-        );
-        let exit_code = if done { fg.last_status } else { 0 };
-        let id = STATE.alloc_ctl_id();
-        STATE.ctl_jobs().insert(
-            id,
-            CtlExecJob {
-                body: CtlBody::Rescue { fg, env },
-                cap,
-                done,
-                exit_code,
-            },
-        );
-        id as i32
+        -ENOENT
     }
 }
 
@@ -2689,14 +2600,8 @@ pub(crate) fn mc_ctl_exec_close(job_id: u32) -> i32 {
     let _bkl = sync::lock_kernel();
     unsafe {
         if let Some(job) = STATE.ctl_jobs().remove(&job_id) {
-            let mut pids = Vec::new();
-            match job.body {
-                CtlBody::Guest { pid } => {
-                    pids.extend(task_subtree(STATE.scheduler(), pid));
-                }
-                CtlBody::Rescue { fg, .. } => fg.live_pids(&mut pids),
-                CtlBody::Done => {}
-            }
+            let CtlBody::Guest { pid } = job.body;
+            let pids = task_subtree(STATE.scheduler(), pid);
             if !pids.is_empty() {
                 let scheduler = STATE.scheduler();
                 for pid in pids {

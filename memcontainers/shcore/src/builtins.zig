@@ -31,6 +31,16 @@ pub const Builtin = enum {
     bind,
 };
 
+/// Canonical spellings exposed by the shell. Keep aliases here as well: this
+/// table is both the completion vocabulary and the registry's public surface.
+pub const names = [_][]const u8{
+    "cd",       "export", "unset", "exit",   "return", "read",  "set",
+    "shift",    "test",   "[",     ":",      "true",   "false", "echo",
+    "pwd",      "printf", ".",     "source", "eval",   "local", "break",
+    "continue", "jobs",   "fg",    "bg",     "kill",   "wait",  "command",
+    "umount",   "bind",
+};
+
 pub fn lookup(name: []const u8) ?Builtin {
     if (eq(name, "cd")) return .cd;
     if (eq(name, "export")) return .@"export";

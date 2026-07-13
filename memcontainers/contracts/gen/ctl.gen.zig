@@ -481,6 +481,137 @@ pub const RelayEvent = struct {
     }
 };
 
+// Side-effect-free shell autocomplete query. Cursor is a UTF-8 byte offset; cwd/env overlay the live login-shell context.
+pub const AUTOCOMPLETE_REQUEST_MSG_ID: u16 = 9;
+pub const AUTOCOMPLETE_REQUEST_VERSION: u8 = 1;
+pub const AutocompleteRequest = struct {
+    source: []const u8,
+    cursor: u32,
+    cwd: ?[]const u8 = null,
+    env: []const StringPair,
+    limit: u32,
+
+    pub fn encode(self: @This(), allocator: std.mem.Allocator) ![]u8 {
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(allocator);
+        try ctlPutU16(&out, allocator, AUTOCOMPLETE_REQUEST_MSG_ID);
+        try ctlPutU8(&out, allocator, AUTOCOMPLETE_REQUEST_VERSION);
+        try ctlPutBytes(&out, allocator, self.source);
+        try ctlPutU32(&out, allocator, self.cursor);
+        if (self.cwd) |v| {
+            try ctlPutU8(&out, allocator, 1);
+        try ctlPutBytes(&out, allocator, v);
+        } else {
+            try ctlPutU8(&out, allocator, 0);
+        }
+        try ctlPutStrMap(&out, allocator, self.env);
+        try ctlPutU32(&out, allocator, self.limit);
+        return out.toOwnedSlice(allocator);
+    }
+
+    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+        var off: usize = 0;
+        if ((try ctlReadU16(bytes, &off)) != AUTOCOMPLETE_REQUEST_MSG_ID) return WireError.WrongMessage;
+        if ((try ctlReadU8(bytes, &off)) != AUTOCOMPLETE_REQUEST_VERSION) return WireError.UnsupportedVersion;
+        const source = try ctlReadBytes(bytes, &off);
+        const cursor = try ctlReadU32(bytes, &off);
+        const cwd = switch (try ctlReadU8(bytes, &off)) {
+            0 => null,
+            1 => try ctlReadStr(bytes, &off),
+            else => return WireError.InvalidPresence,
+        };
+        const env = try ctlReadStrMap(allocator, bytes, &off);
+        const limit = try ctlReadU32(bytes, &off);
+        if (off != bytes.len) return WireError.TrailingBytes;
+        return .{
+            .source = source,
+            .cursor = cursor,
+            .cwd = cwd,
+            .env = env,
+            .limit = limit,
+        };
+    }
+};
+
+// One autocomplete candidate. Value is quote-safe replacement text; label is presentation text.
+pub const AUTOCOMPLETE_ITEM_MSG_ID: u16 = 10;
+pub const AUTOCOMPLETE_ITEM_VERSION: u8 = 1;
+pub const AutocompleteItem = struct {
+    label: []const u8,
+    value: []const u8,
+    kind: []const u8,
+
+    pub fn encode(self: @This(), allocator: std.mem.Allocator) ![]u8 {
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(allocator);
+        try ctlPutU16(&out, allocator, AUTOCOMPLETE_ITEM_MSG_ID);
+        try ctlPutU8(&out, allocator, AUTOCOMPLETE_ITEM_VERSION);
+        try ctlPutBytes(&out, allocator, self.label);
+        try ctlPutBytes(&out, allocator, self.value);
+        try ctlPutBytes(&out, allocator, self.kind);
+        return out.toOwnedSlice(allocator);
+    }
+
+    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+        _ = allocator;
+        var off: usize = 0;
+        if ((try ctlReadU16(bytes, &off)) != AUTOCOMPLETE_ITEM_MSG_ID) return WireError.WrongMessage;
+        if ((try ctlReadU8(bytes, &off)) != AUTOCOMPLETE_ITEM_VERSION) return WireError.UnsupportedVersion;
+        const label = try ctlReadStr(bytes, &off);
+        const value = try ctlReadStr(bytes, &off);
+        const kind = try ctlReadStr(bytes, &off);
+        if (off != bytes.len) return WireError.TrailingBytes;
+        return .{
+            .label = label,
+            .value = value,
+            .kind = kind,
+        };
+    }
+};
+
+// Bounded autocomplete result over the exact source range the caller should replace.
+pub const AUTOCOMPLETE_RESULT_MSG_ID: u16 = 11;
+pub const AUTOCOMPLETE_RESULT_VERSION: u8 = 1;
+pub const AutocompleteResult = struct {
+    replace_start: u32,
+    replace_end: u32,
+    common_prefix: []const u8,
+    items: []const AutocompleteItem,
+    truncated: bool,
+
+    pub fn encode(self: @This(), allocator: std.mem.Allocator) ![]u8 {
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(allocator);
+        try ctlPutU16(&out, allocator, AUTOCOMPLETE_RESULT_MSG_ID);
+        try ctlPutU8(&out, allocator, AUTOCOMPLETE_RESULT_VERSION);
+        try ctlPutU32(&out, allocator, self.replace_start);
+        try ctlPutU32(&out, allocator, self.replace_end);
+        try ctlPutBytes(&out, allocator, self.common_prefix);
+        try ctlPutMessageList(AutocompleteItem, &out, allocator, self.items);
+        try ctlPutBool(&out, allocator, self.truncated);
+        return out.toOwnedSlice(allocator);
+    }
+
+    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+        var off: usize = 0;
+        if ((try ctlReadU16(bytes, &off)) != AUTOCOMPLETE_RESULT_MSG_ID) return WireError.WrongMessage;
+        if ((try ctlReadU8(bytes, &off)) != AUTOCOMPLETE_RESULT_VERSION) return WireError.UnsupportedVersion;
+        const replace_start = try ctlReadU32(bytes, &off);
+        const replace_end = try ctlReadU32(bytes, &off);
+        const common_prefix = try ctlReadStr(bytes, &off);
+        const items = try ctlReadMessageList(AutocompleteItem, allocator, bytes, &off);
+        const truncated = try ctlReadBool(bytes, &off);
+        if (off != bytes.len) return WireError.TrailingBytes;
+        return .{
+            .replace_start = replace_start,
+            .replace_end = replace_end,
+            .common_prefix = common_prefix,
+            .items = items,
+            .truncated = truncated,
+        };
+    }
+};
+
 
 pub const Arg = struct { name: []const u8, ty: []const u8 };
 pub const Desc = struct { name: []const u8, variant: []const u8, args: []const Arg, ret: []const u8 };
@@ -506,6 +637,7 @@ pub const EXPORTS = [_]Desc{
     .{ .name = "mc_ctl_exec_poll", .variant = "ExecPoll", .args = &.{ .{ .name = "job_id", .ty = "u32" } }, .ret = "i32" },
     .{ .name = "mc_ctl_exec_peek", .variant = "ExecPeek", .args = &.{ .{ .name = "job_id", .ty = "u32" } }, .ret = "i32" },
     .{ .name = "mc_ctl_exec_close", .variant = "ExecClose", .args = &.{ .{ .name = "job_id", .ty = "u32" } }, .ret = "i32" },
+    .{ .name = "mc_ctl_autocomplete", .variant = "Autocomplete", .args = &.{ .{ .name = "request_len", .ty = "u32" } }, .ret = "i32" },
     .{ .name = "mc_ctl_svc_call_start", .variant = "SvcCallStart", .args = &.{ .{ .name = "request_len", .ty = "u32" } }, .ret = "i32" },
     .{ .name = "mc_ctl_svc_call_poll", .variant = "SvcCallPoll", .args = &.{ .{ .name = "job_id", .ty = "u32" } }, .ret = "i32" },
     .{ .name = "mc_ctl_svc_call_close", .variant = "SvcCallClose", .args = &.{ .{ .name = "job_id", .ty = "u32" } }, .ret = "i32" },

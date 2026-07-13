@@ -6,7 +6,7 @@
 
 import { EagainError } from "@mc/host";
 import type { KernelHost, MapHostCall, StreamSink } from "@mc/host";
-import type { Backend, RawExecResult } from "./backend.js";
+import type { Backend, RawAutocompleteResult, RawExecResult } from "./backend.js";
 import { makeFs } from "./fs.js";
 import { dispatchMount } from "./mount.js";
 import { assertSessionAgentType, sessionExec } from "./session.js";
@@ -24,6 +24,7 @@ import type {
   VmStatus,
   ContentStore,
   SnapshotOptions,
+  AutocompleteOptions,
 } from "./types.js";
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -211,6 +212,20 @@ export class EmbeddedBackend implements Backend {
     // command touched no mount.
     await this.drainCommits();
     return result;
+  }
+
+  async autocomplete(
+    source: Uint8Array,
+    cursor: number,
+    opts: Omit<AutocompleteOptions, "cursor"> = {},
+  ): Promise<RawAutocompleteResult> {
+    return this.withMountRetry(() =>
+      this.host.autocomplete(source, cursor, {
+        cwd: opts.cwd,
+        env: opts.env,
+        limit: opts.limit,
+      }),
+    );
   }
 
   /** A live agent session: runs the validated guest agent with the prompt path

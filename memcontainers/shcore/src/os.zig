@@ -1,9 +1,8 @@
 //! The Zig shell core's only boundary to the outside world.
 //!
-//! The rescue shell will bind this to kernel internals. A Zig /bin/sh guest will
-//! bind it to sysroot/zig mc syscalls. Every operation is synchronous; the
-//! kernel remains responsible for turning blocking guest syscalls into
-//! cooperative suspension.
+//! `/bin/sh` binds this to sysroot/zig mc syscalls. Every operation is
+//! synchronous; the kernel remains responsible for turning blocking guest
+//! syscalls into cooperative suspension.
 
 const std = @import("std");
 const constants = @import("constants_zig");

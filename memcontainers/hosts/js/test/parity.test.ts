@@ -45,6 +45,19 @@ async function main(): Promise<void> {
     throw new Error(`exec mismatch: exit=${echo.exitCode} stdout=${JSON.stringify(stdout)}`);
   }
 
+  // The same resident /bin/sh powers interactive Tab and this programmatic query. No guest task is
+  // spawned: the shell parses/renders while the kernel resolves its live namespace and PATH.
+  const completion = host.autocomplete(new TextEncoder().encode("ec"), 2);
+  const echoCandidate = completion.items.find((item) => item.label === "echo");
+  if (
+    completion.replaceStart !== 0 ||
+    completion.replaceEnd !== 2 ||
+    completion.commonPrefix !== "echo" ||
+    echoCandidate?.kind !== "builtin"
+  ) {
+    throw new Error(`autocomplete mismatch: ${JSON.stringify(completion)}`);
+  }
+
   // 2) A control-channel fs round-trip (mc_ctl_write / mc_ctl_read against the live VM).
   host.writeFile("/tmp/parity", new TextEncoder().encode("xyz"));
   const back = new TextDecoder().decode(host.readFile("/tmp/parity"));

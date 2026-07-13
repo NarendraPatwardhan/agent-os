@@ -192,6 +192,36 @@ export interface ExecOptions {
   stdin?: string | Uint8Array;
 }
 
+export interface AutocompleteOptions {
+  /** Cursor in JavaScript string (UTF-16 code-unit) coordinates. Defaults to the end. */
+  cursor?: number;
+  /** Resolve relative paths against this directory instead of the live shell cwd. */
+  cwd?: string;
+  /** Environment overlay, most notably PATH. */
+  env?: Record<string, string>;
+  /** Maximum returned candidates. Must be an integer from 1 through 128. */
+  limit?: number;
+}
+
+export interface AutocompleteItem {
+  /** Human-readable candidate text. */
+  label: string;
+  /** Shell-quoted text safe to splice into the returned replacement range. */
+  value: string;
+  /** Stable vocabulary such as builtin, function, variable, file, or directory. */
+  kind: string;
+}
+
+export interface AutocompleteResult {
+  /** Start/end of the replacement range in JavaScript UTF-16 coordinates. */
+  replaceStart: number;
+  replaceEnd: number;
+  /** Longest shell-quoted prefix shared by every returned item. */
+  commonPrefix: string;
+  items: AutocompleteItem[];
+  truncated: boolean;
+}
+
 /** A content-addressed store for committed layers, generic blobs (by `sha256:`
  *  digest), and image manifests (by flavor/image name). A local-dir
  *  implementation; a registry/persistfs-backed store is a later addition. */

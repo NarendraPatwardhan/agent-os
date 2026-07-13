@@ -40,8 +40,10 @@ pub enum Fd {
 }
 
 pub mod scheduler;
+pub mod runner;
 
 pub use scheduler::Scheduler;
+pub use runner::run_round;
 
 pub type TaskId = u32;
 
@@ -335,6 +337,22 @@ impl Task {
         self.env.get()
     }
 
+    /// Invoke the optional resident control boundary of this task's program.
+    /// This is only called between scheduler steps under the VM's single-thread
+    /// discipline, so the `UnsafeCell` borrow cannot overlap `Builtin::step`.
+    pub fn control(&self, request: &[u8]) -> Result<Vec<u8>, i32> {
+        let program = unsafe { &mut *self.program.get() };
+        program
+            .as_mut()
+            .ok_or(crate::wasm::abi::ENOENT)?
+            .control(request)
+    }
+
+    pub fn has_control(&self) -> bool {
+        let program = unsafe { &*self.program.get() };
+        program.as_ref().is_some_and(|program| program.has_control())
+    }
+
     /// Whether this task is stopped by `SIGTSTP`.
     pub fn sig_stopped(&self) -> bool {
         unsafe { *self.sig_stopped.get() }
@@ -602,7 +620,6 @@ impl Task {
             let ns = (*self.namespace.get()).as_ref().unwrap_or(fallback_ns);
             let mut ctx = BuiltinCtx {
                 ns,
-                root_ns: fallback_ns,
                 cwd,
                 stdin,
                 stdout,

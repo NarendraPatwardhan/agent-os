@@ -138,6 +138,16 @@ worker {
     MAX_WORKERS 4
 }
 
+// Side-effect-free shell autocomplete budgets. These bound resident guest
+// memory, control frames, namespace traversal, and every public host result.
+autocomplete {
+    AUTOCOMPLETE_MAX_SOURCE_BYTES 8192
+    AUTOCOMPLETE_MAX_ITEMS        128
+    AUTOCOMPLETE_MAX_SCAN_ENTRIES 4096
+    AUTOCOMPLETE_MAX_PATH_SEGMENTS 256
+    AUTOCOMPLETE_MAX_FRAME_BYTES  65536
+}
+
 // mc_sys_poll event/result bits. POLLERR/POLLHUP are output-only.
 poll {
     POLLIN     1   // readable without blocking

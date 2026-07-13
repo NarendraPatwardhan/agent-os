@@ -170,6 +170,20 @@ async function remoteVmServer(): Promise<{
         res.end(JSON.stringify({ id: decodeURIComponent(parts[3] ?? "restored") }));
         return;
       }
+      if (req.method === "POST" && req.url?.startsWith("/v1/vms/") && req.url.endsWith("/autocomplete")) {
+        const parsed = JSON.parse(body || "{}") as { source?: string; cursor?: number };
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            replaceStart: 0,
+            replaceEnd: parsed.cursor ?? 0,
+            commonPrefix: "echo",
+            items: [{ label: "echo", value: "echo", kind: "builtin" }],
+            truncated: false,
+          }),
+        );
+        return;
+      }
       if (req.method === "DELETE" && req.url?.startsWith("/v1/vms/")) {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true }));
@@ -624,6 +638,14 @@ async function main(): Promise<void> {
         tools: ["github/issues"],
         policies: [policy],
       });
+      const remoteCompletion = await remoteVm.autocomplete("ec");
+      if (
+        remoteCompletion.replaceStart !== 0 ||
+        remoteCompletion.replaceEnd !== 2 ||
+        remoteCompletion.items[0]?.label !== "echo"
+      ) {
+        throw new Error(`remote autocomplete mapping wrong: ${JSON.stringify(remoteCompletion)}`);
+      }
       await remoteVm.close();
 
       const create = remote.requests.find((req) => req.method === "POST" && req.url === "/v1/vms");
@@ -1992,6 +2014,25 @@ error("timed out waiting for restored warm sqlite child: " .. err)
         `vm.exec options mismatch: exit=${execOpts.exitCode} stdout=${JSON.stringify(execOpts.stdout)} stderr=${JSON.stringify(execOpts.stderr)}`,
       );
     }
+    await vm.fs.write("/tmp/💡 two", "completion");
+    const completionSource = "cat /tmp/💡\\ t";
+    const completion = await vm.autocomplete(completionSource);
+    const unicodePath = completion.items.find((item) => item.label === "/tmp/💡 two");
+    if (
+      completion.replaceStart !== 4 ||
+      completion.replaceEnd !== completionSource.length ||
+      unicodePath?.value !== "/tmp/💡\\ two" ||
+      unicodePath.kind !== "file"
+    ) {
+      throw new Error(`vm.autocomplete UTF-16/path mapping mismatch: ${JSON.stringify(completion)}`);
+    }
+    let splitSurrogateRejected = false;
+    try {
+      await vm.autocomplete("echo 💡", { cursor: 6 });
+    } catch (error) {
+      splitSurrogateRejected = error instanceof RangeError;
+    }
+    if (!splitSurrogateRejected) throw new Error("vm.autocomplete accepted a cursor inside a surrogate pair");
     let unsafeSessionRejected = false;
     try {
       vm.session("luau; echo unsafe");

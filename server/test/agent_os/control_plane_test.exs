@@ -20,6 +20,7 @@ defmodule AgentOS.ControlPlaneTest do
 
     assert ControlPlane.whereis(id) == nil
     assert ControlPlane.exec(id, "ls") == {:error, :not_found}
+    assert ControlPlane.autocomplete(id, "ec", 2) == {:error, :not_found}
     assert ControlPlane.send_input(id, "\n") == {:error, :not_found}
     assert ControlPlane.tick(id) == {:error, :not_found}
     assert ControlPlane.take_output(id) == {:error, :not_found}
@@ -114,6 +115,12 @@ defmodule AgentOS.ControlPlaneTest do
                poll_exec(id, job, 5_000)
 
       assert :ok = ControlPlane.mkdir(id, "/tmp/cp-exec-cwd")
+
+      assert {:ok, completion} = ControlPlane.autocomplete(id, "ec", 2)
+      assert completion.replace_start == 0
+      assert completion.replace_end == 2
+      assert completion.common_prefix == "echo"
+      assert Enum.any?(completion.items, &(&1.label == "echo" and &1.kind == "builtin"))
 
       assert {:ok,
               %{exit_code: 0, stdout: "/tmp/cp-exec-cwd\ntyped-env\ntyped-stdin", stderr: ""}} =

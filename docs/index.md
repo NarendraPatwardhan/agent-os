@@ -26,8 +26,8 @@ contributor documentation, see [AgentOS on DeepWiki](https://deepwiki.com/Narend
 
 ## Core operations
 
-- [Execution and files](./execution-files.md): `vm.exec()`, `vm.luau()`, `vm.serviceCall()`, and every
-  `vm.fs` method.
+- [Execution and files](./execution-files.md): `vm.exec()`, `vm.autocomplete()`, `vm.luau()`,
+  `vm.serviceCall()`, and every `vm.fs` method.
 - [Shells, sessions, and services](./shells-sessions.md): byte streams, interactive Luau, framed
   agent events, and resident-service calls.
 - [Cron](./cron.md): client-resident schedules, actions, handles, and parser rules.

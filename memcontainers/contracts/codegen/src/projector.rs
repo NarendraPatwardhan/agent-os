@@ -3,7 +3,7 @@
 //! projection; `abi_library` invokes it once per (module, language) pair.
 //!
 //! Invocation:  projector --module <m> --lang <l> --contract <path.kdl>
-//!   module = constants | mc | env | ctl | wire | llb | syntax | snapshot
+//!   module = constants | mc | env | ctl | wire | llb | syntax | snapshot | shell
 //!   lang   = rust | zig | ts | elixir | md | asyncapi | openapi      (which projection)
 //!
 //! Design (why this shape — C1):
@@ -1589,8 +1589,8 @@ fn emit_rust_messages(messages: &[Message]) -> String {
     o.push_str("fn ctl_read_bool(bytes: &[u8], off: &mut usize) -> Result<bool, WireError> { match ctl_read_u8(bytes, off)? { 0 => Ok(false), 1 => Ok(true), _ => Err(WireError::InvalidPresence) } }\n");
     o.push_str("fn ctl_read_bytes(bytes: &[u8], off: &mut usize) -> Result<Vec<u8>, WireError> { let len = ctl_read_u32(bytes, off)? as usize; Ok(ctl_need(bytes, off, len)?.to_vec()) }\n");
     o.push_str("fn ctl_read_str(bytes: &[u8], off: &mut usize) -> Result<String, WireError> { String::from_utf8(ctl_read_bytes(bytes, off)?).map_err(|_| WireError::InvalidUtf8) }\n");
-    o.push_str("fn ctl_read_strmap(bytes: &[u8], off: &mut usize) -> Result<BTreeMap<String, String>, WireError> { let n = ctl_read_u32(bytes, off)? as usize; let mut out = BTreeMap::new(); let mut prev: Option<String> = None; for _ in 0..n { let k = ctl_read_str(bytes, off)?; if prev.as_ref().map_or(false, |p| p >= &k) { return Err(WireError::NonCanonicalMap); } let v = ctl_read_str(bytes, off)?; prev = Some(k.clone()); out.insert(k, v); } Ok(out) }\n\n");
-    o.push_str("fn ctl_read_message_list<T, F>(bytes: &[u8], off: &mut usize, mut decode: F) -> Result<Vec<T>, WireError> where F: FnMut(&[u8]) -> Result<T, WireError> { let n = ctl_read_u32(bytes, off)? as usize; let mut out = Vec::with_capacity(n); for _ in 0..n { let frame = ctl_read_bytes(bytes, off)?; out.push(decode(&frame)?); } Ok(out) }\n\n");
+    o.push_str("fn ctl_read_strmap(bytes: &[u8], off: &mut usize) -> Result<BTreeMap<String, String>, WireError> { let n = ctl_read_u32(bytes, off)? as usize; if n > bytes.len().saturating_sub(*off) / 8 { return Err(WireError::Truncated); } let mut out = BTreeMap::new(); let mut prev: Option<String> = None; for _ in 0..n { let k = ctl_read_str(bytes, off)?; if prev.as_ref().map_or(false, |p| p >= &k) { return Err(WireError::NonCanonicalMap); } let v = ctl_read_str(bytes, off)?; prev = Some(k.clone()); out.insert(k, v); } Ok(out) }\n\n");
+    o.push_str("fn ctl_read_message_list<T, F>(bytes: &[u8], off: &mut usize, mut decode: F) -> Result<Vec<T>, WireError> where F: FnMut(&[u8]) -> Result<T, WireError> { let n = ctl_read_u32(bytes, off)? as usize; if n > bytes.len().saturating_sub(*off) / 4 { return Err(WireError::Truncated); } let mut out = Vec::with_capacity(n); for _ in 0..n { let frame = ctl_read_bytes(bytes, off)?; out.push(decode(&frame)?); } Ok(out) }\n\n");
 
     for m in messages {
         let const_prefix = screaming_snake(&m.name);
@@ -1693,17 +1693,17 @@ fn emit_ts_codec_field_put(o: &mut String, f: &MessageField, expr: &str) {
 
 fn ts_decode_expr(ty: &str) -> String {
     if let Some(inner) = list_inner(ty) {
-        return format!("ctlReadMessageList(cursor, decode{inner})");
+        return format!("ctlReadMessageList(wire, decode{inner})");
     }
     match ty {
-        "u32" => "ctlReadU32(cursor)".to_string(),
-        "i32" => "ctlReadI32(cursor)".to_string(),
-        "i64" => "ctlReadI64(cursor)".to_string(),
-        "bool" => "ctlReadBool(cursor)".to_string(),
-        "str" => "ctlReadStr(cursor)".to_string(),
-        "bytes" => "ctlReadBytes(cursor)".to_string(),
-        "strmap" => "ctlReadStrMap(cursor)".to_string(),
-        _ => format!("decode{ty}(ctlReadBytes(cursor))"),
+        "u32" => "ctlReadU32(wire)".to_string(),
+        "i32" => "ctlReadI32(wire)".to_string(),
+        "i64" => "ctlReadI64(wire)".to_string(),
+        "bool" => "ctlReadBool(wire)".to_string(),
+        "str" => "ctlReadStr(wire)".to_string(),
+        "bytes" => "ctlReadBytes(wire)".to_string(),
+        "strmap" => "ctlReadStrMap(wire)".to_string(),
+        _ => format!("decode{ty}(ctlReadBytes(wire))"),
     }
 }
 
@@ -1739,8 +1739,8 @@ fn emit_ts_messages(messages: &[Message]) -> String {
     o.push_str("function ctlReadBool(cursor: CtlCursor): boolean { const v = ctlReadU8(cursor); if (v === 0) return false; if (v === 1) return true; throw new WireError(\"invalid bool\"); }\n");
     o.push_str("function ctlReadBytes(cursor: CtlCursor): Uint8Array { const len = ctlReadU32(cursor); return ctlNeed(cursor, len).slice(); }\n");
     o.push_str("function ctlReadStr(cursor: CtlCursor): string { try { return CTL_TEXT_DECODER.decode(ctlReadBytes(cursor)); } catch { throw new WireError(\"invalid utf-8\"); } }\n");
-    o.push_str("function ctlReadStrMap(cursor: CtlCursor): Record<string, string> { const n = ctlReadU32(cursor); const out: Record<string, string> = {}; let prev: string | null = null; for (let i = 0; i < n; i++) { const k = ctlReadStr(cursor); if (prev !== null && prev >= k) throw new WireError(\"non-canonical strmap\"); out[k] = ctlReadStr(cursor); prev = k; } return out; }\n\n");
-    o.push_str("function ctlReadMessageList<T>(cursor: CtlCursor, decode: (bytes: Uint8Array) => T): T[] { const n = ctlReadU32(cursor); const out: T[] = []; for (let i = 0; i < n; i++) out.push(decode(ctlReadBytes(cursor))); return out; }\n\n");
+    o.push_str("function ctlReadStrMap(cursor: CtlCursor): Record<string, string> { const n = ctlReadU32(cursor); if (n > Math.floor((cursor.bytes.length - cursor.off) / 8)) throw new WireError(\"truncated frame\"); const out: Record<string, string> = {}; let prev: string | null = null; for (let i = 0; i < n; i++) { const k = ctlReadStr(cursor); if (prev !== null && prev >= k) throw new WireError(\"non-canonical strmap\"); out[k] = ctlReadStr(cursor); prev = k; } return out; }\n\n");
+    o.push_str("function ctlReadMessageList<T>(cursor: CtlCursor, decode: (bytes: Uint8Array) => T): T[] { const n = ctlReadU32(cursor); if (n > Math.floor((cursor.bytes.length - cursor.off) / 4)) throw new WireError(\"truncated frame\"); const out: T[] = []; for (let i = 0; i < n; i++) out.push(decode(ctlReadBytes(cursor))); return out; }\n\n");
 
     for m in messages {
         let const_prefix = screaming_snake(&m.name);
@@ -1790,9 +1790,9 @@ fn emit_ts_messages(messages: &[Message]) -> String {
             "export function decode{}(bytes: Uint8Array): {} {{\n",
             m.name, m.name
         ));
-        o.push_str("  const cursor: CtlCursor = { bytes, off: 0 };\n");
-        o.push_str(&format!("  if (ctlReadU16(cursor) !== {const_prefix}_MSG_ID) throw new WireError(\"wrong message id\");\n"));
-        o.push_str(&format!("  if (ctlReadU8(cursor) !== {const_prefix}_VERSION) throw new WireError(\"unsupported message version\");\n"));
+        o.push_str("  const wire: CtlCursor = { bytes, off: 0 };\n");
+        o.push_str(&format!("  if (ctlReadU16(wire) !== {const_prefix}_MSG_ID) throw new WireError(\"wrong message id\");\n"));
+        o.push_str(&format!("  if (ctlReadU8(wire) !== {const_prefix}_VERSION) throw new WireError(\"unsupported message version\");\n"));
         for f in &m.fields {
             if f.optional {
                 o.push_str(&format!(
@@ -1800,7 +1800,7 @@ fn emit_ts_messages(messages: &[Message]) -> String {
                     f.name,
                     ts_type(&f.ty)
                 ));
-                o.push_str(&format!("  switch (ctlReadU8(cursor)) {{\n    case 0: {} = undefined; break;\n    case 1: {} = {}; break;\n    default: throw new WireError(\"invalid optional presence\");\n  }}\n", f.name, f.name, ts_decode_expr(&f.ty)));
+                o.push_str(&format!("  switch (ctlReadU8(wire)) {{\n    case 0: {} = undefined; break;\n    case 1: {} = {}; break;\n    default: throw new WireError(\"invalid optional presence\");\n  }}\n", f.name, f.name, ts_decode_expr(&f.ty)));
             } else {
                 o.push_str(&format!(
                     "  const {} = {};\n",
@@ -1809,7 +1809,7 @@ fn emit_ts_messages(messages: &[Message]) -> String {
                 ));
             }
         }
-        o.push_str("  if (cursor.off !== bytes.length) throw new WireError(\"trailing bytes\");\n");
+        o.push_str("  if (wire.off !== bytes.length) throw new WireError(\"trailing bytes\");\n");
         o.push_str("  return {\n");
         for f in &m.fields {
             o.push_str(&format!("    {},\n", f.name));
@@ -2488,6 +2488,33 @@ fn emit_codec_module(lang: &str, nodes: &[Node], contract: &str) -> String {
     o.truncate(o.trim_end().len());
     o.push('\n');
     o
+}
+
+fn emit_shell_module(lang: &str, nodes: &[Node], contract: &str) -> String {
+    let mut out = emit_table(
+        lang,
+        contract,
+        &collect_rows(nodes, "export"),
+        &collect_codec_messages(nodes),
+        "mc_shell_table",
+        "SHELL_EXPORT_NAMES",
+        "EXPORTS",
+    );
+    for node in nodes {
+        let prefix = match node.name.as_str() {
+            "context" => "CONTEXT",
+            "quote" => "QUOTE",
+            _ => continue,
+        };
+        let value = node.arg_str(0);
+        let name = value.to_ascii_uppercase().replace('-', "_");
+        match lang {
+            "rust" => out.push_str(&format!("pub const {prefix}_{name}: &str = \"{value}\";\n")),
+            "zig" => out.push_str(&format!("pub const {prefix}_{name}: []const u8 = \"{value}\";\n")),
+            _ => {}
+        }
+    }
+    out
 }
 
 fn emit_vocabulary_constants(lang: &str, nodes: &[Node]) -> String {
@@ -3297,7 +3324,7 @@ fn main() -> ExitCode {
     }
     let (Some(lang), Some(module), Some(contract)) = (lang, module, contract) else {
         eprintln!(
-            "usage: projector --module <constants|mc|env|ctl|wire|llb|syntax> --lang <rust|zig|ts|elixir|luau|md|asyncapi|openapi> --contract <path.kdl>"
+            "usage: projector --module <constants|mc|env|ctl|wire|llb|syntax|snapshot|shell> --lang <rust|zig|ts|elixir|luau|md|asyncapi|openapi> --contract <path.kdl>"
         );
         return ExitCode::FAILURE;
     };
@@ -3348,6 +3375,7 @@ fn main() -> ExitCode {
         "llb" => emit_codec_module(&lang, &nodes, &file),
         "syntax" => emit_codec_module(&lang, &nodes, &file),
         "snapshot" => emit_snapshot(&lang, &nodes, &file),
+        "shell" => emit_shell_module(&lang, &nodes, &file),
         other => {
             eprintln!("projector: unknown module {other}");
             return ExitCode::FAILURE;

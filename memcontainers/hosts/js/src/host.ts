@@ -1,13 +1,20 @@
 import {
   EXPORTS,
   decodeDirEntries,
+  decodeAutocompleteResult,
   decodeExecOutcome,
   decodeFileStat,
   decodeSvcResponse,
   encodeExecRequest,
+  encodeAutocompleteRequest,
   encodeSvcRequest,
 } from "@mc/contracts/ctl";
-import { EAGAIN, MAX_WORKERS } from "@mc/contracts/constants";
+import {
+  AUTOCOMPLETE_MAX_FRAME_BYTES,
+  AUTOCOMPLETE_MAX_ITEMS,
+  EAGAIN,
+  MAX_WORKERS,
+} from "@mc/contracts/constants";
 import {
   SNAPSHOT_HEADER_LEN,
   SNAPSHOT_PAGE_SIZE,
@@ -87,6 +94,20 @@ export interface ExecOptions {
   cwd?: string;
   env?: Record<string, string>;
   stdin?: Uint8Array;
+}
+
+export interface AutocompleteOptions {
+  cwd?: string;
+  env?: Record<string, string>;
+  limit?: number;
+}
+
+export interface HostAutocompleteResult {
+  replaceStart: number;
+  replaceEnd: number;
+  commonPrefix: string;
+  items: Array<{ label: string; value: string; kind: string }>;
+  truncated: boolean;
 }
 
 /** A directory entry from `readdir`. */
@@ -662,6 +683,40 @@ export class KernelHost {
     const p = enc(path);
     this.ctlPut(p);
     ctlCheck("unmount", path, f(0, p.length));
+  }
+
+  /** Query the canonical resident shell without executing input. Offsets are
+   * UTF-8 byte positions; the SDK translates them to JavaScript string indices. */
+  autocomplete(
+    source: Uint8Array,
+    cursor: number,
+    opts: AutocompleteOptions = {},
+  ): HostAutocompleteResult {
+    const complete = this.ctlFn(this.exports.mc_ctl_autocomplete, "mc_ctl_autocomplete");
+    const request = encodeAutocompleteRequest({
+      source,
+      cursor,
+      cwd: opts.cwd,
+      env: opts.env ?? {},
+      limit: opts.limit ?? AUTOCOMPLETE_MAX_ITEMS,
+    });
+    if (request.length > AUTOCOMPLETE_MAX_FRAME_BYTES) {
+      throw new RangeError("autocomplete request exceeds the contract frame limit");
+    }
+    this.ctlPut(request);
+    const n = ctlCheck("autocomplete", "shell", complete(request.length));
+    const result = decodeAutocompleteResult(this.ctlGet(n));
+    return {
+      replaceStart: result.replace_start,
+      replaceEnd: result.replace_end,
+      commonPrefix: result.common_prefix,
+      items: result.items.map((item) => ({
+        label: item.label,
+        value: item.value,
+        kind: item.kind,
+      })),
+      truncated: result.truncated,
+    };
   }
 
   /** Begin a command without driving it to completion; returns a job id. Drive ticks yourself and call

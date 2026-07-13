@@ -50,6 +50,68 @@ if (result.exitCode !== 0) {
 
 SDK, transport, or host failures do reject. See [Errors and diagnostics](./errors.md).
 
+## `vm.autocomplete(source, options?)`
+
+Inspects a partially written shell line without running it. This is the same completion service used
+when an interactive AgentOS shell handles Tab, exposed for editors, command palettes, and agents that
+explore a VM without opening a terminal.
+
+```js
+const line = "cat /workspace/rep";
+const completion = await vm.autocomplete(line);
+
+for (const item of completion.items) {
+  console.log(item.label, item.kind);
+}
+```
+
+Completion reads the live VM state. It combines shell builtins, functions, and variables with
+executable `PATH` entries and files or directories visible in the VM namespace. It does not spawn a
+process, execute substitutions, or mutate shell history, cwd, variables, or the filesystem.
+
+### Options
+
+| Field | Shape | Meaning |
+|---|---|---|
+| `cursor` | number | Cursor in JavaScript string coordinates; defaults to `source.length` |
+| `cwd` | string | Resolve paths relative to this directory instead of the live shell cwd |
+| `env` | string-to-string object | Environment overlay used for variables and `PATH` lookup |
+| `limit` | integer from 1 through 128 | Maximum number of returned candidates |
+
+JavaScript string coordinates are UTF-16 code-unit indices, matching selection APIs in browsers.
+Passing a cursor inside a surrogate pair rejects with `RangeError`.
+
+### Result
+
+| Field | Shape | Meaning |
+|---|---|---|
+| `replaceStart` | number | Inclusive start of the text to replace |
+| `replaceEnd` | number | Exclusive end of the text to replace |
+| `commonPrefix` | string | Shell-safe text shared by all returned candidates |
+| `items` | array | Ordered completion candidates |
+| `truncated` | boolean | The result is not exhaustive because a candidate or scan limit was reached |
+
+Each item has a display `label`, a shell-safe `value`, and a `kind` such as `builtin`, `function`,
+`variable`, `command`, `file`, or `directory`. Insert `value`, not `label`: quoting and escaping are
+already correct for the source context.
+
+```js
+const line = "cat /workspace/tw";
+const result = await vm.autocomplete(line);
+const item = result.items.find((candidate) => candidate.label === "/workspace/two words.txt");
+
+if (item) {
+  const next = line.slice(0, result.replaceStart) + item.value + line.slice(result.replaceEnd);
+  // next is: cat /workspace/two\ words.txt
+}
+```
+
+`commonPrefix` can be spliced into the same range for conventional first-Tab behavior. If it does not
+extend the current word, present `items`; the built-in terminal does this on a repeated Tab.
+
+Autocomplete can report ordinary host errors when the requested cwd does not exist, a lazy mount
+cannot be resolved, or the image does not provide a compatible `/bin/sh`.
+
 ## `vm.luau(source, args?)`
 
 Writes `source` to a unique temporary file and runs `/bin/luau` with safely quoted arguments.

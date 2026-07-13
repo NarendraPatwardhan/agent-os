@@ -1,4 +1,3 @@
-# AgentOS — system-wide shell profile, sourced at login by the kernel's init.
-# The kernel applies the `export` assignments below to pid 1's environment.
+# AgentOS — system-wide profile, sourced by the canonical `/bin/sh --login`.
 export PATH=/bin:/usr/bin
 export EDITOR=vi

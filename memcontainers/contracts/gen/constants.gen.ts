@@ -76,6 +76,13 @@ export const WNOHANG = 1;
 // worker
 export const MAX_WORKERS = 4;
 
+// autocomplete
+export const AUTOCOMPLETE_MAX_SOURCE_BYTES = 8192;
+export const AUTOCOMPLETE_MAX_ITEMS = 128;
+export const AUTOCOMPLETE_MAX_SCAN_ENTRIES = 4096;
+export const AUTOCOMPLETE_MAX_PATH_SEGMENTS = 256;
+export const AUTOCOMPLETE_MAX_FRAME_BYTES = 65536;
+
 // poll
 export const POLLIN = 1;
 export const POLLOUT = 4;

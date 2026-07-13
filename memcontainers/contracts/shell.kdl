@@ -1,0 +1,73 @@
+// contracts/shell.kdl — resident /bin/sh introspection boundary.
+//
+// The kernel invokes these exports on the already-running pid-1 shell. The
+// shell owns parsing, incomplete-token analysis, local variables/functions,
+// and quote-correct rendering; the kernel owns VFS/PATH enumeration. Frames
+// use the ordinary generated message codec: [id:u16][version:u8][fields...].
+
+context "command"
+context "path"
+context "directory"
+context "variable"
+
+quote "bare"
+quote "single"
+quote "double"
+
+message "Candidate" id=1 version=1 {
+  field "value" type="str"
+  field "kind" type="str"
+}
+
+message "ProbeRequest" id=2 version=1 {
+  field "source" type="bytes"
+  field "cursor" type="u32"
+  field "interactive" type="bool"
+}
+
+message "ProbeResponse" id=3 version=1 {
+  field "replace_start" type="u32"
+  field "replace_end" type="u32"
+  field "prefix" type="str"
+  field "context" type="str"
+  field "quote" type="str"
+  field "shell_candidates" type="list<Candidate>"
+  field "truncated" type="bool"
+  field "continuation" type="bool"
+}
+
+message "RenderRequest" id=4 version=1 {
+  field "replace_start" type="u32"
+  field "replace_end" type="u32"
+  field "quote" type="str"
+  field "candidates" type="list<Candidate>"
+  field "truncated" type="bool"
+}
+
+message "Item" id=5 version=1 {
+  field "label" type="str"
+  field "value" type="str"
+  field "kind" type="str"
+}
+
+message "CompletionResult" id=6 version=1 {
+  field "replace_start" type="u32"
+  field "replace_end" type="u32"
+  field "common_prefix" type="str"
+  field "items" type="list<Item>"
+  field "truncated" type="bool"
+}
+
+// One shared buffer and one operation. `mc_sh_autocomplete` accepts either a
+// ProbeRequest or RenderRequest and returns the matching response in the same
+// buffer. Negative values are errno-style failures.
+export "mc_sh_buf" group="buffer" {
+  arg "len" type="u32"
+  ret "u32"
+  doc "Resize the resident-shell autocomplete buffer and return its guest-memory address."
+}
+export "mc_sh_autocomplete" group="autocomplete" {
+  arg "request_len" type="u32"
+  ret "i32"
+  doc "Probe incomplete shell source or render raw candidates using shcore semantics."
+}

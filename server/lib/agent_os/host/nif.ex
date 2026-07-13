@@ -23,7 +23,7 @@ defmodule AgentOS.Host.Nif do
 
   @on_load :load_nif
 
-  alias AgentOS.Contracts.Control
+  alias AgentOS.Contracts.{Constants, Control}
 
   @doc false
   def load_nif do
@@ -258,6 +258,22 @@ defmodule AgentOS.Host.Nif do
   @spec exec_cancel(vm(), integer()) :: :ok | {:error, reason()}
   def exec_cancel(vm, job) when is_integer(job) and job > 0, do: exec_cancel_nif(vm, job)
   def exec_cancel(_vm, _job), do: {:error, "exec_cancel expects a positive job id"}
+
+  @doc "Query shell completions without executing the input; offsets are UTF-8 byte positions."
+  @spec autocomplete(vm(), String.t(), non_neg_integer(), keyword() | map()) ::
+          {:ok, {non_neg_integer(), non_neg_integer(), String.t(), list(), boolean()}}
+          | {:error, reason()}
+  def autocomplete(vm, source, cursor, opts \\ [])
+
+  def autocomplete(vm, source, cursor, opts)
+      when is_binary(source) and is_integer(cursor) and cursor >= 0 do
+    with {:ok, {cwd, env, limit}} <- autocomplete_options(opts) do
+      autocomplete_nif(vm, source, cursor, cwd, env, limit)
+    end
+  end
+
+  def autocomplete(_vm, _source, _cursor, _opts),
+    do: {:error, "autocomplete expects binary source, a non-negative byte cursor, and valid options"}
 
   @doc """
   Call a resident service as host control (`SYSTEM_CALLER`) through the kernel service channel →
@@ -625,6 +641,9 @@ defmodule AgentOS.Host.Nif do
   def exec_cancel_nif(_vm, _job), do: nif_not_loaded()
 
   @doc false
+  def autocomplete_nif(_vm, _source, _cursor, _cwd, _env, _limit), do: nif_not_loaded()
+
+  @doc false
   def svc_call_nif(_vm, _service, _request), do: nif_not_loaded()
 
   @doc false
@@ -710,19 +729,30 @@ defmodule AgentOS.Host.Nif do
 
   defp exec_options(_opts), do: {:error, "exec options must be a keyword list or map"}
 
+  defp autocomplete_options(opts) when is_list(opts) or is_map(opts) do
+    with {:ok, cwd} <- normalize_cwd(opt(opts, :cwd, nil)),
+         {:ok, env} <- normalize_env(opt(opts, :env, nil)),
+         {:ok, limit} <- normalize_autocomplete_limit(opt(opts, :limit, 0)) do
+      {:ok, {cwd, env, limit}}
+    end
+  end
+
+  defp autocomplete_options(_opts),
+    do: {:error, "autocomplete options must be a keyword list or map"}
+
   defp opt(opts, key, default) when is_list(opts), do: Keyword.get(opts, key, default)
   defp opt(opts, key, default) when is_map(opts), do: Map.get(opts, key, default)
 
   defp normalize_cwd(nil), do: {:ok, ""}
   defp normalize_cwd(cwd) when is_binary(cwd), do: {:ok, cwd}
-  defp normalize_cwd(_cwd), do: {:error, "exec cwd must be a binary"}
+  defp normalize_cwd(_cwd), do: {:error, "cwd must be a binary"}
 
   defp normalize_env(nil), do: {:ok, []}
   defp normalize_env(env) when is_map(env), do: normalize_env_pairs(Map.to_list(env))
   defp normalize_env(env) when is_list(env), do: normalize_env_pairs(env)
 
   defp normalize_env(_env),
-    do: {:error, "exec env must be a map or list of binary key/value pairs"}
+    do: {:error, "env must be a map or list of binary key/value pairs"}
 
   defp normalize_env_pairs(pairs) do
     case Enum.reduce_while(pairs, {:ok, []}, fn
@@ -730,7 +760,7 @@ defmodule AgentOS.Host.Nif do
              {:cont, {:ok, [{key, value} | acc]}}
 
            _entry, _acc ->
-             {:halt, {:error, "exec env must be a map or list of binary key/value pairs"}}
+             {:halt, {:error, "env must be a map or list of binary key/value pairs"}}
          end) do
       {:ok, pairs} -> {:ok, Enum.reverse(pairs)}
       {:error, reason} -> {:error, reason}
@@ -740,6 +770,20 @@ defmodule AgentOS.Host.Nif do
   defp normalize_stdin(nil), do: {:ok, false, ""}
   defp normalize_stdin(stdin) when is_binary(stdin), do: {:ok, true, stdin}
   defp normalize_stdin(_stdin), do: {:error, "exec stdin must be a binary"}
+
+  defp normalize_autocomplete_limit(limit) when is_integer(limit) and limit >= 0 do
+    if limit <= Constants.autocomplete_max_items() do
+      {:ok, limit}
+    else
+      {:error,
+       "autocomplete limit must be an integer from 0 through #{Constants.autocomplete_max_items()}"}
+    end
+  end
+
+  defp normalize_autocomplete_limit(_limit),
+    do:
+      {:error,
+       "autocomplete limit must be an integer from 0 through #{Constants.autocomplete_max_items()}"}
 
   defp boot_args(base_image, opts) do
     with {:ok, layers} <- layers_arg(opts),

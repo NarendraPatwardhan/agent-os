@@ -2,7 +2,7 @@
 // The server owns kernel execution; this client owns only the consumer-side callbacks for
 // host-backed mounts, host tools, and interactive approval prompts.
 
-import type { Backend, RawExecResult } from "./backend.js";
+import type { Backend, RawAutocompleteResult, RawExecResult } from "./backend.js";
 import { makeFs } from "./fs.js";
 import { dispatchMount } from "./mount.js";
 import { assertSessionAgentType } from "./session.js";
@@ -22,6 +22,7 @@ import type {
   ToolDefinition,
   VmStatus,
   SnapshotOptions,
+  AutocompleteOptions,
 } from "./types.js";
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -62,6 +63,8 @@ interface RemoteExecResult {
   stdout: string;
   stderr: string;
 }
+
+interface RemoteAutocompleteResult extends RawAutocompleteResult {}
 
 interface RemoteFsStat {
   path: string;
@@ -210,6 +213,28 @@ export class RemoteBackend implements Backend {
       stderr: enc(result.stderr),
       exitCode: result.exitCode ?? (result.ok ? 0 : 1),
     };
+  }
+
+  async autocomplete(
+    source: Uint8Array,
+    cursor: number,
+    opts: Omit<AutocompleteOptions, "cursor"> = {},
+  ): Promise<RawAutocompleteResult> {
+    const response = await fetch(this.vmUrl("/autocomplete"), {
+      method: "POST",
+      headers: { ...this.headers, "content-type": "application/json" },
+      body: JSON.stringify({
+        source: dec(source),
+        cursor,
+        ...(opts.cwd === undefined ? {} : { cwd: opts.cwd }),
+        ...(opts.env === undefined ? {} : { env: opts.env }),
+        ...(opts.limit === undefined ? {} : { limit: opts.limit }),
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`remote autocomplete failed: ${response.status} ${await safeText(response)}`);
+    }
+    return (await response.json()) as RemoteAutocompleteResult;
   }
 
   async read(path: string): Promise<Uint8Array> {

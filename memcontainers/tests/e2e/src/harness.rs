@@ -68,13 +68,24 @@ fn builder(image: &str) -> (KernelHostBuilder, Arc<Mutex<Vec<u8>>>) {
     (b, stdout)
 }
 
-/// Boot the base image (rootfs only: /etc/profile + the in-kernel rescue shell). For kernel /
-/// control-channel tests that need no guest programs.
+/// Boot the base image (`/bin/sh` plus the system substrate). For kernel/control-channel tests that
+/// need no coreutils applets.
 pub fn boot() -> Session {
     let (b, stdout) = builder("_main/memcontainers/images/base.tar");
     let host = b
         .build()
         .expect("kernel booted under the host (base image)");
+    Session { host, stdout }
+}
+
+/// Boot the internal shell-less rootfs. This is the maintenance-mode fixture:
+/// the kernel and structured control plane remain alive, but there is no
+/// command interpreter and no completion fallback.
+pub fn boot_rootfs() -> Session {
+    let (b, stdout) = builder("_main/memcontainers/images/rootfs.tar");
+    let host = b
+        .build()
+        .expect("kernel booted under the host (shell-less rootfs)");
     Session { host, stdout }
 }
 

@@ -16,6 +16,7 @@ import type { KernelHost, ToolApprovalFacts, ToolApprover } from "@mc/host";
 // Boot-contract tier ordinals come from the generated contract — the single source of truth the
 // kernel's `Tier` also derives from (contracts/constants.kdl → constants.gen.ts), never a local copy.
 import {
+  AUTOCOMPLETE_MAX_ITEMS,
   TIER_INHERIT,
   TIER_FULL,
   TIER_READ_WRITE,
@@ -59,6 +60,8 @@ import type {
   VmFs,
   VmStatus,
   SnapshotOptions,
+  AutocompleteOptions,
+  AutocompleteResult,
 } from "./types.js";
 
 const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
@@ -200,6 +203,53 @@ export class Vm {
       stdoutBytes: r.stdout,
       stderrBytes: r.stderr,
       exitCode: r.exitCode,
+    };
+  }
+
+  /** Inspect shell input without executing it. Candidates include the resident
+   * shell's builtins/functions/variables plus namespace-aware PATH and file
+   * entries. Returned ranges use ordinary JavaScript string indices. */
+  async autocomplete(
+    source: string,
+    opts: AutocompleteOptions = {},
+  ): Promise<AutocompleteResult> {
+    if (
+      opts.limit !== undefined &&
+      (!Number.isInteger(opts.limit) || opts.limit < 1 || opts.limit > AUTOCOMPLETE_MAX_ITEMS)
+    ) {
+      throw new RangeError(`autocomplete limit must be an integer from 1 through ${AUTOCOMPLETE_MAX_ITEMS}`);
+    }
+    const cursor = opts.cursor ?? source.length;
+    if (!Number.isInteger(cursor) || cursor < 0 || cursor > source.length) {
+      throw new RangeError("autocomplete cursor is outside the source string");
+    }
+    if (
+      cursor > 0 &&
+      cursor < source.length &&
+      /[\uD800-\uDBFF]/u.test(source[cursor - 1]!) &&
+      /[\uDC00-\uDFFF]/u.test(source[cursor]!)
+    ) {
+      throw new RangeError("autocomplete cursor splits a Unicode surrogate pair");
+    }
+    const bytes = enc(source);
+    const byteCursor = enc(source.slice(0, cursor)).length;
+    const result = await this.backend.autocomplete(bytes, byteCursor, {
+      cwd: opts.cwd,
+      env: opts.env,
+      limit: opts.limit,
+    });
+    const indexAt = (offset: number): number => {
+      if (!Number.isInteger(offset) || offset < 0 || offset > bytes.length) {
+        throw new Error("backend returned an invalid autocomplete range");
+      }
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, offset)).length;
+    };
+    return {
+      replaceStart: indexAt(result.replaceStart),
+      replaceEnd: indexAt(result.replaceEnd),
+      commonPrefix: result.commonPrefix,
+      items: result.items,
+      truncated: result.truncated,
     };
   }
 

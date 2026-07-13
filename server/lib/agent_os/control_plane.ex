@@ -48,6 +48,12 @@ defmodule AgentOS.ControlPlane do
   @spec exec(Vm.id(), String.t(), keyword()) :: {:ok, map()} | {:error, :not_found}
   def exec(id, cmd, opts \\ []), do: with_vm(id, &Vm.exec(&1, cmd, opts))
 
+  @doc "Query shell completions on an existing VM without executing input."
+  @spec autocomplete(Vm.id(), String.t(), non_neg_integer(), keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def autocomplete(id, source, cursor, opts \\ []),
+    do: with_vm(id, &Vm.autocomplete(&1, source, cursor, opts))
+
   @doc "Feed terminal input bytes to an existing VM."
   @spec send_input(Vm.id(), binary()) :: :ok | {:error, term()}
   def send_input(id, bytes), do: with_vm(id, &Vm.send_input(&1, bytes))

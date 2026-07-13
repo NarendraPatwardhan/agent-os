@@ -10,7 +10,7 @@
 //! directly; the methods that are not (stat/readdir/unlink) use the
 //! currently-running task (sound under the single-threaded cooperative
 //! discipline). A `SYSTEM_CALLER` or unknown caller falls back to the kernel
-//! boot/rescue env map (`STATE.env`).
+//! boot env map (`STATE.env`).
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -44,7 +44,7 @@ impl EnvFs {
         }
     }
 
-    /// Resolve the env map for `caller`: the task's own env, or the boot/rescue
+    /// Resolve the env map for `caller`: the task's own env, or the boot
     /// fallback for `SYSTEM_CALLER` / an unknown pid. `SYSTEM_CALLER` (the
     /// caller-less FS methods pass it) resolves to the currently-running task.
     fn map_ptr(&self, caller: CallerId) -> *mut BTreeMap<String, String> {

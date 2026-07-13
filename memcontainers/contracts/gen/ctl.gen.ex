@@ -440,4 +440,112 @@ defmodule AgentOS.Contracts.Control do
   def relay_event_version, do: @relay_event_version
 
   # RELAY_EVENT
+  @autocomplete_request_msg_id 9
+  @autocomplete_request_version 1
+
+  def encode_autocomplete_request(msg) when is_map(msg) do
+    IO.iodata_to_binary([
+      put_u16(@autocomplete_request_msg_id),
+      put_u8(@autocomplete_request_version),
+      put_bytes(field!(msg, :source)),
+      put_u32(field!(msg, :cursor)),
+      case field(msg, :cwd) do
+        nil -> <<0>>
+        value -> [<<1>>, put_str(value)]
+      end,
+      put_strmap(field!(msg, :env)),
+      put_u32(field!(msg, :limit))
+    ])
+  end
+
+  def decode_autocomplete_request(bytes) when is_binary(bytes) do
+    with {:ok, rest} <- read_header(bytes, @autocomplete_request_msg_id, @autocomplete_request_version),
+         {:ok, source, rest} <- read_bytes(rest),
+         {:ok, cursor, rest} <- read_u32(rest),
+         {:ok, cwd, rest} <- read_opt(rest, fn rest -> read_str(rest) end),
+         {:ok, env, rest} <- read_strmap(rest),
+         {:ok, limit, rest} <- read_u32(rest),
+         :ok <- read_eof(rest) do
+      {:ok, %{
+        source: source,
+        cursor: cursor,
+        cwd: cwd,
+        env: env,
+        limit: limit,
+      }}
+    end
+  end
+
+  def autocomplete_request_msg_id, do: @autocomplete_request_msg_id
+  def autocomplete_request_version, do: @autocomplete_request_version
+
+  # AUTOCOMPLETE_REQUEST
+  @autocomplete_item_msg_id 10
+  @autocomplete_item_version 1
+
+  def encode_autocomplete_item(msg) when is_map(msg) do
+    IO.iodata_to_binary([
+      put_u16(@autocomplete_item_msg_id),
+      put_u8(@autocomplete_item_version),
+      put_str(field!(msg, :label)),
+      put_str(field!(msg, :value)),
+      put_str(field!(msg, :kind))
+    ])
+  end
+
+  def decode_autocomplete_item(bytes) when is_binary(bytes) do
+    with {:ok, rest} <- read_header(bytes, @autocomplete_item_msg_id, @autocomplete_item_version),
+         {:ok, label, rest} <- read_str(rest),
+         {:ok, value, rest} <- read_str(rest),
+         {:ok, kind, rest} <- read_str(rest),
+         :ok <- read_eof(rest) do
+      {:ok, %{
+        label: label,
+        value: value,
+        kind: kind,
+      }}
+    end
+  end
+
+  def autocomplete_item_msg_id, do: @autocomplete_item_msg_id
+  def autocomplete_item_version, do: @autocomplete_item_version
+
+  # AUTOCOMPLETE_ITEM
+  @autocomplete_result_msg_id 11
+  @autocomplete_result_version 1
+
+  def encode_autocomplete_result(msg) when is_map(msg) do
+    IO.iodata_to_binary([
+      put_u16(@autocomplete_result_msg_id),
+      put_u8(@autocomplete_result_version),
+      put_u32(field!(msg, :replace_start)),
+      put_u32(field!(msg, :replace_end)),
+      put_str(field!(msg, :common_prefix)),
+      put_message_list(field!(msg, :items), &encode_autocomplete_item/1),
+      put_bool(field!(msg, :truncated))
+    ])
+  end
+
+  def decode_autocomplete_result(bytes) when is_binary(bytes) do
+    with {:ok, rest} <- read_header(bytes, @autocomplete_result_msg_id, @autocomplete_result_version),
+         {:ok, replace_start, rest} <- read_u32(rest),
+         {:ok, replace_end, rest} <- read_u32(rest),
+         {:ok, common_prefix, rest} <- read_str(rest),
+         {:ok, items, rest} <- read_message_list(rest, &decode_autocomplete_item/1),
+         {:ok, truncated, rest} <- read_bool(rest),
+         :ok <- read_eof(rest) do
+      {:ok, %{
+        replace_start: replace_start,
+        replace_end: replace_end,
+        common_prefix: common_prefix,
+        items: items,
+        truncated: truncated,
+      }}
+    end
+  end
+
+  def autocomplete_result_msg_id, do: @autocomplete_result_msg_id
+  def autocomplete_result_version, do: @autocomplete_result_version
+
+  # AUTOCOMPLETE_RESULT
 end

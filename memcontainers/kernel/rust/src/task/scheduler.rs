@@ -167,8 +167,9 @@ impl Scheduler {
         unsafe { *self.current.get() }
     }
 
-    /// Detach a task from the ready queue and mark it Running. Used for pid 1 (the
-    /// shell), which lives inside `mc_tick` and must not be reachable by `scheduler.tick`.
+    /// Detach a task from the ready queue and mark it Running. Used for the
+    /// programless maintenance-mode pid 1: it remains a zero-work process
+    /// anchor and must never reach the ordinary task runner's no-program exit.
     pub fn detach(&self, id: TaskId) {
         unsafe {
             (*self.ready.get()).retain(|&tid| tid != id);

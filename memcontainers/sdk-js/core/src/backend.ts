@@ -15,6 +15,7 @@ import type {
   ToolDefinition,
   VmStatus,
   SnapshotOptions,
+  AutocompleteOptions,
 } from "./types.js";
 
 /** Raw exec result from a backend (bytes; the Vm decodes to strings). */
@@ -24,8 +25,22 @@ export interface RawExecResult {
   exitCode: number;
 }
 
+export interface RawAutocompleteResult {
+  replaceStart: number;
+  replaceEnd: number;
+  commonPrefix: string;
+  items: Array<{ label: string; value: string; kind: string }>;
+  truncated: boolean;
+}
+
 export interface Backend {
   exec(cmd: string, opts?: ExecOptions): Promise<RawExecResult>;
+  /** Source and offsets use UTF-8 bytes at this transport boundary. */
+  autocomplete(
+    source: Uint8Array,
+    cursor: number,
+    opts?: Omit<AutocompleteOptions, "cursor">,
+  ): Promise<RawAutocompleteResult>;
   read(path: string): Promise<Uint8Array>;
   write(path: string, data: Uint8Array): Promise<void>;
   ls(path: string): Promise<DirEntry[]>;

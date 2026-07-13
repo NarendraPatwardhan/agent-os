@@ -2,24 +2,17 @@
 // Boot sequence — initialize system, load base image, mount filesystems.
 
 use alloc::boxed::Box;
-use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::bridge;
-use crate::builtins::{
-    false_factory, tail_factory, true_factory, umount_factory, Builtin, BuiltinCtx, BuiltinStep,
-};
 use crate::fs::{CowFs, DevFs, MemFs, OverlayFs, PersistFs, TarFs};
-use crate::io::{EmptySource, TerminalSink};
-use crate::shell::{parse_line, Executor};
 use crate::task::Scheduler;
 use crate::vfs::traits::FileSystem;
 use crate::vfs::{KPath, Namespace, SYSTEM_CALLER};
 
-/// Boot the system: mount the filesystems and source `/etc/profile`. The login
-/// shell (the guest `/bin/sh` as pid 1, or the in-kernel rescue shell) is
+/// Boot the system and mount its filesystems. The canonical guest `/bin/sh` is
 /// started later by `lib.rs::init_system`, once the wasm engine exists.
-pub fn boot_system() -> Result<(Namespace, Scheduler, Executor), BootError> {
+pub fn boot_system() -> Result<(Namespace, Scheduler), BootError> {
     // Provenance seal — the boot banner line (product, version, owner,
     // license), decoded at runtime from obfuscated bytes (see `crate::seal`);
     // intentionally not a plaintext string in the binary. Printed first.
@@ -123,30 +116,12 @@ pub fn boot_system() -> Result<(Namespace, Scheduler, Executor), BootError> {
     let scheduler = Scheduler::new();
     let _ = namespace.mkdir(SYSTEM_CALLER, &KPath::new("/proc"));
 
-    let mut executor = Executor::new();
-    register_builtins(&mut executor);
-
-    let profile_msg = "Sourcing /etc/profile... ";
-    unsafe {
-        bridge::mc_stdout_write(profile_msg.as_ptr(), profile_msg.len());
-    }
-    match source_profile(&namespace, &executor, &scheduler) {
-        Ok(_) => unsafe {
-            let ok_msg = "ok\r\n";
-            bridge::mc_stdout_write(ok_msg.as_ptr(), ok_msg.len());
-        },
-        Err(_) => unsafe {
-            let skip_msg = "skipped\r\n";
-            bridge::mc_stdout_write(skip_msg.as_ptr(), skip_msg.len());
-        },
-    }
-
     let boot_complete_msg = "\r\n";
     unsafe {
         bridge::mc_stdout_write(boot_complete_msg.as_ptr(), boot_complete_msg.len());
     }
 
-    Ok((namespace, scheduler, executor))
+    Ok((namespace, scheduler))
 }
 
 /// Load the host-provided base image into an exactly-sized buffer.
@@ -212,108 +187,9 @@ fn parse_layers(buf: Vec<u8>) -> Option<Vec<Vec<u8>>> {
     }
 }
 
-fn source_profile(
-    namespace: &Namespace,
-    executor: &Executor,
-    scheduler: &Scheduler,
-) -> Result<(), BootError> {
-    namespace
-        .stat(&KPath::new("/etc/profile"))
-        .map_err(|_| BootError::ProfileNotFound)?;
-
-    let mut profile_content = Vec::new();
-    {
-        let mut handle = namespace
-            .open(&KPath::new("/etc/profile"), crate::vfs::OpenFlags::READ)
-            .map_err(|_| BootError::ProfileReadFailed)?;
-
-        let mut buf = [0u8; 4096];
-        loop {
-            match handle.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => profile_content.extend_from_slice(&buf[..n]),
-                Err(_) => return Err(BootError::ProfileReadFailed),
-            }
-        }
-    }
-
-    let profile_str = String::from_utf8_lossy(&profile_content);
-
-    // Drive each profile line through the registered builtin with empty
-    // stdin and discarded stdout/stderr. The shell features needed for
-    // `export ...` etc. live in the guest `/bin/sh`; for now profile sourcing
-    // is a best-effort scan that ignores missing builtins.
-    for line in profile_str.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some(seq) = parse_line(line) else {
-            continue;
-        };
-        for (pipeline, _sep) in &seq.stages {
-            let Some(cmd) = pipeline.commands.first() else {
-                continue;
-            };
-            let Some(factory) = executor.lookup(&cmd.cmd) else {
-                continue;
-            };
-            let mut prog: Box<dyn Builtin> = factory(cmd.args.clone());
-            let mut cwd = String::from("/home/user");
-            let mut stdin = EmptySource;
-            let mut stdout: Box<dyn crate::io::WriteSink> = Box::new(DiscardSink);
-            let mut stderr: Box<dyn crate::io::WriteSink> = Box::new(DiscardSink);
-            loop {
-                let mut ctx = BuiltinCtx {
-                    ns: namespace,
-                    root_ns: namespace,
-                    cwd: &mut cwd,
-                    stdin: &mut stdin,
-                    stdout: stdout.as_mut(),
-                    stderr: stderr.as_mut(),
-                    sched: scheduler,
-                    pid: 0,
-                };
-                match prog.step(&mut ctx) {
-                    BuiltinStep::Exit(_) => break,
-                    BuiltinStep::BlockedOnStdin => break, // no stdin source for profile
-                    BuiltinStep::BlockedOnStdout => continue,
-                    BuiltinStep::Pending => break, // boot must not wait on a capability
-                    BuiltinStep::BlockedOn(_) => break,
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-struct DiscardSink;
-impl crate::io::WriteSink for DiscardSink {
-    fn write(&mut self, buf: &[u8]) -> Result<usize, crate::vfs::FsError> {
-        Ok(buf.len())
-    }
-}
-
-fn register_builtins(executor: &mut Executor) {
-    let _ = TerminalSink::Stdout; // keep the symbol imported for callers
-                                  // Shell-integral builtins only. The POSIX coreutils
-                                  // (cat/ls/echo/wc/head/mkdir/rm/cp/mv/touch/pwd) AND the network clients
-                                  // (fetch/wscat, via `mc_sys_http_request`/`mc_sys_ws_open`) are wasm
-                                  // guests on `$PATH`. What remains: `tail` must
-                                  // buffer its whole input (no-alloc guests can't); `true`/`false` are
-                                  // control primitives; `umount` is a privileged mount-table op guests must
-                                  // not perform.
-    executor.register("umount", umount_factory);
-    executor.register("tail", tail_factory);
-    executor.register("true", true_factory);
-    executor.register("false", false_factory);
-}
-
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum BootError {
     HostLoadFailed,
     InvalidBaseImage,
-    ProfileNotFound,
-    ProfileReadFailed,
 }

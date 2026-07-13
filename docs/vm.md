@@ -17,6 +17,7 @@ tools and mounts so a fork can reattach the current state without sharing caller
 | Method | Result | Notes |
 |---|---|---|
 | `exec(command, options?)` | `Promise<ExecResult>` | Run a shell command to completion |
+| `autocomplete(source, options?)` | `Promise<AutocompleteResult>` | Inspect shell input without executing it |
 | `luau(source, args?)` | `Promise<ExecResult>` | Run a temporary Luau script |
 | `serviceCall(name, request?)` | `Promise<Uint8Array>` | Call a resident service |
 | `shell(options?)` | `Shell` | Open an interactive byte stream |
@@ -36,7 +37,7 @@ tools and mounts so a fork can reattach the current state without sharing caller
 
 ## Execution family
 
-`exec`, `luau`, and `serviceCall` are covered with result shapes and error behavior in
+`exec`, `autocomplete`, `luau`, and `serviceCall` are covered with result shapes and error behavior in
 [Execution and files](./execution-files.md). `shell`, `session`, and `luauSession` are covered in
 [Shells, sessions, and services](./shells-sessions.md).
 

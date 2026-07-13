@@ -127,6 +127,9 @@ impl KernelExports {
     pub(crate) fn require_ctl_unmount(&self) -> Result<TypedFunc<(i32, i32), i32>> {
         Self::require(&self.mc_ctl_unmount, "mc_ctl_unmount")
     }
+    pub(crate) fn require_ctl_autocomplete(&self) -> Result<TypedFunc<i32, i32>> {
+        Self::require(&self.mc_ctl_autocomplete, "mc_ctl_autocomplete")
+    }
     pub(crate) fn require_ctl_svc_call_start(&self) -> Result<TypedFunc<i32, i32>> {
         Self::require(&self.mc_ctl_svc_call_start, "mc_ctl_svc_call_start")
     }

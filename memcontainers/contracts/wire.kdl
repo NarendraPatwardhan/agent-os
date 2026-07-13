@@ -82,6 +82,9 @@ route "GET" "/v1/vms/{id}/ws" upgrade="websocket" protocol="wire" res="WireSocke
 route "POST" "/v1/vms/{id}/exec" req="Exec" res="ExecResult" {
   doc "Run a bounded command and return the final result. Use exec-jobs for long-running commands."
 }
+route "POST" "/v1/vms/{id}/autocomplete" req="Autocomplete" res="AutocompleteResult" {
+  doc "Inspect shell input without executing it. Request and response offsets are UTF-8 byte positions; SDKs translate to native string coordinates."
+}
 route "POST" "/v1/vms/{id}/exec-jobs" req="Exec" res="ExecJob" {
   doc "Start a long-running exec job."
 }
@@ -313,6 +316,25 @@ schema "ExecResult" kind="json" {
   field "exitCode" type="i32" required=0
   field "stdout" type="string" required=1
   field "stderr" type="string" required=1
+}
+schema "Autocomplete" kind="json" {
+  field "source" type="string" required=1
+  field "cursor" type="u32" required=1
+  field "cwd" type="Path" required=0
+  field "env" type="object" required=0
+  field "limit" type="u32" required=0
+}
+schema "AutocompleteItem" kind="json" {
+  field "label" type="string" required=1
+  field "value" type="string" required=1
+  field "kind" type="string" required=1
+}
+schema "AutocompleteResult" kind="json" {
+  field "replaceStart" type="u32" required=1
+  field "replaceEnd" type="u32" required=1
+  field "commonPrefix" type="string" required=1
+  field "items" type="AutocompleteItem[]" required=1
+  field "truncated" type="bool" required=1
 }
 schema "ExecJob" kind="json" {
   field "id" type="JobId" required=1

@@ -13,6 +13,7 @@ zig_binary(
     ],
     tags = ["manual"],
     deps = [
+        "//memcontainers/contracts:shell_zig",
         "//memcontainers/shcore:lib",
         "//memcontainers/sysroot/zig:sys",
     ],

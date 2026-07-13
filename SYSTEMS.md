@@ -397,6 +397,13 @@ A `Task` carries identity (`TaskId = u32`; pid 1 is the login shell, special-cas
 capabilities, a confinement root, the cooperative `program` (a `Box<dyn Builtin>`, e.g. a loaded
 guest), an fd table for descriptors ≥ 3, a per-process namespace, and job-control fields.
 
+Pid 1 is always the image's `/bin/sh`; the kernel contains no second parser, executor, or emergency
+shell. A missing or control-incompatible `/bin/sh` enters an explicit maintenance state: an inert pid 1
+keeps kernel ownership well-formed, terminal input is discarded on each tick, and the host sees
+one deterministic diagnostic instead of silently receiving different shell semantics. Structured exec
+and autocomplete fail explicitly in that state. This makes the image contract honest and keeps
+interactive, programmatic, and recovery behavior on one implementation.
+
 **Capabilities** are a `u8` bitset — exactly eight bits, by design (a ninth "is the moment to ask
 whether it is genuinely new authority"). The values are projected from `constants.kdl`, never
 hand-written:
@@ -908,6 +915,24 @@ subshells writing to a temp file between stages (avoiding deadlock on a full pip
 control is real: setpgid, foreground-pgid, SIGTSTP-driven stop, `fg`/`bg`. The builtin set is the
 expected POSIX one plus `test`/`[`.
 
+Shell completion follows the same ownership split. `shell.kdl` projects a small resident-control ABI
+and typed messages into Rust and Zig. The kernel sends a `ProbeRequest` to pid 1; shcore performs a
+tolerant cursor scan, classifies the word (`command`, `path`, `directory`, or `variable`), and returns
+the replacement range, quote context, and live shell-owned candidates (builtins, functions, private
+variables). The kernel then enumerates executable `PATH` entries, environment names, and VFS entries
+through pid 1's actual namespace, cwd, identity, and capability checks. A `RenderRequest` returns to
+shcore so escaping and common-prefix construction use the canonical shell grammar rather than a host
+approximation.
+
+That broker is side-effect-free and bounded: source is capped at 8 KiB, directory scans and `PATH`
+segments are capped, at most 128 ordered/deduplicated candidates cross the public boundary, and both
+resident messages are capped at 64 KiB. A lazy served filesystem returns `EAGAIN`; hosts drive the
+normal tick/mount relay and retry. No completion starts a guest task or evaluates substitutions, and a
+resident control call is refused while that program is already on its pcall stack. Interactive Tab and
+host control both invoke this one broker: first Tab inserts a longer common prefix or a unique item;
+repeated Tab lists candidates. A generation-stamped pending request is discarded if the line changes
+while lazy I/O is resolving.
+
 ### 10.2 The userland `/bin` (`programs/coreutils`)
 
 `/bin` is a Zig **multicall** userland derived from nutils. `main.zig` dispatches on the `argv[0]`
@@ -1137,7 +1162,8 @@ I/O, time (`CAP_AMBIENT`), entropy (`CAP_AMBIENT`), HTTP (request/poll/body/clos
 (connect/send/recv/close), host-call (start/poll/body/close), persistence (get/put/delete/list), an
 optional threading set, and lifecycle (`yield`/`exit`/`log`/boot). The control exports the host calls are
 lifecycle (`mc_init`/`mc_tick`/`mc_input`/`mc_resize`), a scratch-buffer VFS control channel, exec jobs,
-host-control service calls (`mc_ctl_svc_call_start`/`poll`/`close`), and snapshot/quiescence. Host-control
+side-effect-free shell autocomplete, host-control service calls
+(`mc_ctl_svc_call_start`/`poll`/`close`), and snapshot/quiescence. Host-control
 service calls are the trusted mutation path for resident services such as `/svc/tools`: the kernel stamps
 them as `SYSTEM_CALLER` with full caps and returns a bounded `[status][len][body]` result in the scratch
 buffer. Every export is looked up as an `Option` because the host loads the kernel at runtime and cannot
@@ -1148,8 +1174,9 @@ the shared scratch buffer; structured payloads inside that buffer are generated 
 `control.kdl`. `ExecRequest` is the canonical exec request: `cmd` still means `/bin/sh -c`, but `cwd`,
 `env`, and `stdin` are kernel-owned spawn facts, not strings the host rewrites into shell. The result is
 `ExecOutcome` with raw captured stdout/stderr bytes and the real exit code. Filesystem inspection returns
-`FileStat` and `DirEntries`; host-control resident-service calls use `SvcRequest`/`SvcResponse`; BEAM
-egress uses `RelayEvent`. This is deliberately the same model as the syscall table: adding a payload
+`FileStat` and `DirEntries`; autocomplete uses `AutocompleteRequest`/`AutocompleteResult` and preserves
+UTF-8 byte offsets at the host boundary; host-control resident-service calls use
+`SvcRequest`/`SvcResponse`; BEAM egress uses `RelayEvent`. This is deliberately the same model as the syscall table: adding a payload
 field updates the binary codec, OpenAPI projection, Rust host, JS host, Elixir edge, and conformance
 vectors from one contract edit, or the build fails.
 
@@ -1190,7 +1217,8 @@ that adapter without becoming another kernel host.
 `AgentOS.Vm` is one GenServer per VM. It is the sole owner of the NIF resource wrapping the existing
 Rust `KernelHost`, so mailbox serialization enforces the single-owner rule around each wasmtime store.
 
-The facade exposes boot/restore, synchronous and structured exec, shell input/scrollback, filesystem
+The facade exposes boot/restore, synchronous and structured exec, shell autocomplete,
+shell input/scrollback, filesystem
 operations, resident-service calls, snapshot/commit, status, mounts, and relay queues for HTTP,
 WebSocket, host-call, persistence, and tool-approval effects. The NIF runs blocking host work on dirty
 schedulers. Idle VMs do no background ticking; the owner advances a kernel only when commanded.
@@ -1233,12 +1261,15 @@ as the Rust e2e suite—A3 enforced, not asserted.
 
 ### 13.4 The `@mc/*` SDK and the web app
 
-The SDK is the `@mc/*` scope. `@mc/core` is the unified `Vm` API over a pluggable backend — `exec`, a
+The SDK is the `@mc/*` scope. `@mc/core` is the unified `Vm` API over a pluggable backend — `exec`,
+`autocomplete`, a
 `vm.fs` file API, `snapshot`/`fork`/`restore`, `commit` (as a layer or a snapshot), `mount`, host-resident
 `tool`s, framed `session`s, and an interactive `shell` — with three interchangeable backends behind one
 interface: an **embedded** backend (the JS host in-process), a **remote** backend (REST + per-VM WebSocket
 to a conforming served host), and an auto-reconnecting unified socket. Its wire client consumes the
-generated `wire` descriptors. `@mc/elements` is the integration package for embedding AgentOS into applications
+generated `wire` descriptors. Autocomplete uses UTF-8 byte positions below the backend boundary and
+translates them to JavaScript UTF-16 indices exactly once in `Vm`, so browser selections and remote
+results agree for non-ASCII input. `@mc/elements` is the integration package for embedding AgentOS into applications
 without hand-wiring VM boot, context propagation, terminal/editor surfaces, artifact loading, or remote
 connection setup; its `<mc-*>` elements resolve a `Vm` from an ancestor sandbox element or boot their own.
 The **web app** embeds live VMs in the browser: the hero is a real shell, and the example workbench
@@ -1340,7 +1371,8 @@ coreutils, the kernel control channel, the flavors, the resident-service primiti
 sub-second) and `//memcontainers/tests/e2e:extended` (the heavy domain services, SQLite and typst, whose
 real compiles and queries run for millions of fuel slices and boot the large `atlas`/`paper` images). The
 split lets CI gate the fast invariants without paying the domain compiles. The one legitimate native-test
-home is `shcore`, because it is pure logic, not the kernel. Conformance walks each guest's imports against
+home is `shcore`, because it is pure logic, not the kernel; its Zig tests are still declared and run as
+a Bazel target. Conformance walks each guest's imports against
 the contract. Two designed-in amplifiers leverage determinism: record/replay (record the bridge-input
 transcript and a final memory hash; a replay diffs the hash) and differential fuzzing (every crash
 reproducible from a seed).

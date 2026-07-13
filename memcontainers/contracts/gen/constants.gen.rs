@@ -77,6 +77,13 @@ pub const WNOHANG: i32 = 1;
 // worker
 pub const MAX_WORKERS: i32 = 4;
 
+// autocomplete
+pub const AUTOCOMPLETE_MAX_SOURCE_BYTES: i32 = 8192;
+pub const AUTOCOMPLETE_MAX_ITEMS: i32 = 128;
+pub const AUTOCOMPLETE_MAX_SCAN_ENTRIES: i32 = 4096;
+pub const AUTOCOMPLETE_MAX_PATH_SEGMENTS: i32 = 256;
+pub const AUTOCOMPLETE_MAX_FRAME_BYTES: i32 = 65536;
+
 // poll
 pub const POLLIN: i32 = 1;
 pub const POLLOUT: i32 = 4;

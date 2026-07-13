@@ -1,4 +1,4 @@
-load("@rules_zig//zig:defs.bzl", "zig_library")
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
 
 # shcore — the canonical Zig implementation of the OS-agnostic shell core.
 # Consumers bind its ShellOs boundary to their process/filesystem layer.
@@ -7,6 +7,7 @@ SHCORE_SRCS = [
     "src/arith.zig",
     "src/ast.zig",
     "src/builtins.zig",
+    "src/completion.zig",
     "src/echo.zig",
     "src/exec.zig",
     "src/expand.zig",
@@ -26,4 +27,11 @@ zig_library(
     srcs = SHCORE_SRCS,
     deps = ["//memcontainers/contracts:constants_zig"],
     visibility = ["//visibility:public"],
+)
+
+zig_test(
+    name = "shcore_test",
+    main = "src/shcore.zig",
+    srcs = SHCORE_SRCS,
+    deps = ["//memcontainers/contracts:constants_zig"],
 )

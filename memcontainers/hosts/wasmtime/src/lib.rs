@@ -18,10 +18,12 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Result};
-use constants_rust::MAX_WORKERS;
+use constants_rust::{AUTOCOMPLETE_MAX_FRAME_BYTES, AUTOCOMPLETE_MAX_ITEMS, MAX_WORKERS};
 use ctl_rust::{
-    DirEntries as WireDirEntries, ExecOutcome, ExecRequest, FileStat as WireFileStat,
-    SvcRequest as WireSvcRequest, SvcResponse as WireSvcResponse,
+    AutocompleteRequest as WireAutocompleteRequest,
+    AutocompleteResult as WireAutocompleteResult, DirEntries as WireDirEntries, ExecOutcome,
+    ExecRequest, FileStat as WireFileStat, SvcRequest as WireSvcRequest,
+    SvcResponse as WireSvcResponse,
 };
 use sha2::{Digest, Sha256};
 use snapshot_rust::{
@@ -680,8 +682,7 @@ impl KernelHostBuilder {
         )?;
 
         // The login shell (pid 1) prints its first prompt only after running, which needs
-        // ticks. Drive boot until the prompt settles so callers observe a ready shell. (The
-        // in-kernel rescue shell prints its prompt during mc_init, so this returns at once.)
+        // ticks. Drive boot until the prompt settles so callers observe a ready shell.
         for _ in 0..8192 {
             if host.at_prompt() {
                 break;
@@ -943,6 +944,29 @@ pub struct DirEntry {
     pub name: String,
     pub is_dir: bool,
     pub is_symlink: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct AutocompleteOptions {
+    pub cwd: Option<String>,
+    pub env: BTreeMap<String, String>,
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutocompleteItem {
+    pub label: String,
+    pub value: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutocompleteResult {
+    pub replace_start: u32,
+    pub replace_end: u32,
+    pub common_prefix: String,
+    pub items: Vec<AutocompleteItem>,
+    pub truncated: bool,
 }
 
 // ---------- KernelHost ----------
@@ -1518,6 +1542,60 @@ impl KernelHost {
             return Err(ctl_err("unmount", path, n));
         }
         Ok(())
+    }
+
+    /// Query the canonical resident shell without executing input. Cursor and
+    /// replacement offsets are UTF-8 byte positions.
+    pub fn autocomplete(
+        &mut self,
+        source: &[u8],
+        cursor: u32,
+        opts: AutocompleteOptions,
+    ) -> Result<AutocompleteResult> {
+        let complete = self.exports.require_ctl_autocomplete()?;
+        let request = WireAutocompleteRequest {
+            source: source.to_vec(),
+            cursor,
+            cwd: opts.cwd,
+            env: opts.env,
+            limit: if opts.limit == 0 {
+                AUTOCOMPLETE_MAX_ITEMS as u32
+            } else {
+                opts.limit
+            },
+        }
+        .encode();
+        if request.len() > AUTOCOMPLETE_MAX_FRAME_BYTES as usize {
+            return Err(anyhow!("autocomplete request exceeds the contract frame limit"));
+        }
+        let len = self.ctl_with_retry(|host| {
+            host.ctl_put(&request)?;
+            wt(
+                complete.call(&mut host.store, request.len() as i32),
+                "mc_ctl_autocomplete",
+            )
+        })?;
+        if len < 0 {
+            return Err(ctl_err("autocomplete", "shell", len));
+        }
+        let raw = self.ctl_get(len as usize)?;
+        let result = WireAutocompleteResult::decode(&raw)
+            .map_err(|error| anyhow!("malformed autocomplete frame from kernel: {error:?}"))?;
+        Ok(AutocompleteResult {
+            replace_start: result.replace_start,
+            replace_end: result.replace_end,
+            common_prefix: result.common_prefix,
+            items: result
+                .items
+                .into_iter()
+                .map(|item| AutocompleteItem {
+                    label: item.label,
+                    value: item.value,
+                    kind: item.kind,
+                })
+                .collect(),
+            truncated: result.truncated,
+        })
     }
 
     /// Call a resident service as host control (`SYSTEM_CALLER`) through the kernel-owned

@@ -109,6 +109,19 @@ defmodule AgentOS.Vm do
   def exec_cancel(server, job, opts \\ []),
     do: GenServer.call(server, {:exec_cancel, job}, timeout(opts))
 
+  @doc "Query shell completions without executing input; offsets are UTF-8 byte positions."
+  @spec autocomplete(server(), String.t(), non_neg_integer(), keyword()) ::
+          {:ok, map()} | {:error, Nif.reason()}
+  def autocomplete(server, source, cursor, opts \\ [])
+
+  def autocomplete(server, source, cursor, opts)
+      when is_binary(source) and is_integer(cursor) and cursor >= 0 and is_list(opts) do
+    GenServer.call(server, {:autocomplete, source, cursor, Keyword.take(opts, [:cwd, :env, :limit])}, timeout(opts))
+  end
+
+  def autocomplete(_server, _source, _cursor, _opts),
+    do: {:error, "autocomplete expects binary source, a non-negative byte cursor, and keyword options"}
+
   @doc "Call a resident service as host control through the kernel service channel."
   @spec svc_call(server(), String.t(), binary(), keyword()) ::
           {:ok, {integer(), binary()}} | {:error, Nif.reason()}
@@ -503,6 +516,29 @@ defmodule AgentOS.Vm do
 
   def handle_call({:exec_cancel, job}, _from, state) do
     {:reply, Nif.exec_cancel(state.nif, job), touch(state)}
+  end
+
+  def handle_call({:autocomplete, source, cursor, opts}, _from, state) do
+    reply =
+      case Nif.autocomplete(state.nif, source, cursor, opts) do
+        {:ok, {replace_start, replace_end, common_prefix, items, truncated}} ->
+          {:ok,
+           %{
+             replace_start: replace_start,
+             replace_end: replace_end,
+             common_prefix: common_prefix,
+             items:
+               Enum.map(items, fn {label, value, kind} ->
+                 %{label: label, value: value, kind: kind}
+               end),
+             truncated: truncated
+           }}
+
+        {:error, _reason} = error ->
+          error
+      end
+
+    {:reply, reply, touch(state)}
   end
 
   def handle_call({:svc_call, service, request}, _from, state) do
