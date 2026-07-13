@@ -326,6 +326,10 @@ const fork = await vm.fork();
 const { digest, tar } = await vm.commit().asLayer();
 ```
 
+A fork inherits the VM's current host tools and mounts. On a remote runtime it always receives a new
+server identity, even when the source was created with an explicit `id`; use
+`mc.restore(snapshot, { id, ... })` when replacing a particular named VM is intentional.
+
 An incremental value references one full snapshot and never another incremental, so restore work is
 bounded. Keep the referenced full object when moving a delta between stores or remote servers.
 

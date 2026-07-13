@@ -17,7 +17,8 @@ export interface CreateOptions {
   runtime?: Runtime;
   /** Remote endpoint (runtime `"remote"` only). */
   endpoint?: string;
-  /** Stable VM id for remote create/restore. Omit on create to let the server assign one. */
+  /** Stable destination id for an explicit remote create/restore. Omit on create to let the server
+   *  assign one. A {@link Vm.fork} always allocates a different remote identity. */
   id?: string;
   /** Bearer token (remote). */
   token?: string;

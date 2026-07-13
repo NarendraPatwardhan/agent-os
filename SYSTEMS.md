@@ -752,6 +752,10 @@ scheduler with every guest's `wasmi` store, the heap, the VFS, and the module ca
 128-byte header. A restore instantiates the exact kernel identified by the header, writes memory, and
 does **not** call `mc_init`: the booted state *is* the image. It receives fresh capabilities and sinks
 (host handles are never serialized), and two restores from one value fork into independent VMs.
+The SDK treats an explicit remote `id` as a destination selector for that create or restore operation,
+never as reusable VM state: `vm.fork()` omits it and allocates a new server identity. A fork reattaches
+the source VM's current host tools and mounts from its private live registries; those registries, not a
+mutated caller-owned `CreateOptions`, are the attachment source of truth.
 
 There are two value kinds:
 

@@ -64,6 +64,51 @@ import type {
 const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 
+/** Copy the mutable option containers a caller owns while deliberately retaining opaque resources
+ *  (content stores, drivers, callbacks, handlers, and large byte artifacts) by reference. This makes
+ *  each VM's declarative state private without pretending those resources are value objects. */
+function ownCreateOptions(opts: CreateOptions): CreateOptions {
+  return {
+    ...opts,
+    image:
+      opts.image && typeof opts.image === "object" && !(opts.image instanceof Uint8Array)
+        ? (copyJsonValue(opts.image) as ImageManifest)
+        : opts.image,
+    connections: opts.connections?.map((connection) => ({
+      ...connection,
+      auth: { ...connection.auth },
+      origins: connection.origins ? [...connection.origins] : undefined,
+      tools: connection.tools ? [...connection.tools] : undefined,
+      spec: connection.spec ? { ...connection.spec } : undefined,
+    })),
+    permissions: opts.permissions ? (copyJsonValue(opts.permissions) as CreateOptions["permissions"]) : undefined,
+    policies: opts.policies?.map((policy) => ({ ...policy })),
+    tools: opts.tools?.map((entry) => (typeof entry === "string" ? entry : ownToolDefinition(entry))),
+    mounts: opts.mounts?.map((mount) => ({ ...mount })),
+  };
+}
+
+function ownToolDefinition(def: ToolDefinition): ToolDefinition {
+  return {
+    ...def,
+    input: def.input ? (copyJsonValue(def.input) as ToolDefinition["input"]) : undefined,
+    output: def.output ? (copyJsonValue(def.output) as ToolDefinition["output"]) : undefined,
+    annotations: def.annotations
+      ? (copyJsonValue(def.annotations) as ToolDefinition["annotations"])
+      : undefined,
+  };
+}
+
+function copyJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(copyJsonValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, copyJsonValue(entry)]),
+    );
+  }
+  return value;
+}
+
 function resolveRuntime(value: unknown): Runtime {
   const runtime = value ?? "local";
   if (runtime === "local" || runtime === "browser" || runtime === "remote") return runtime;
@@ -120,17 +165,24 @@ export class Vm {
    *  re-runs live connection discovery (graphql introspection / the MCP handshake). `null` until first
    *  computed (lazily on the first post-restore `vm.tool`). */
   private connectionBundle: ToolCatalogBundle | null;
+  /** Create-time configuration that is safe to reuse for a restore. Resource identity and live
+   *  attachments are intentionally absent: an id belongs to one remote VM, while tools and mounts
+   *  are owned by the canonical registries above. */
+  private readonly baseOptions: Omit<CreateOptions, "id" | "tools" | "mounts">;
 
   /** @internal — use {@link mc.create}. */
   constructor(
     private readonly backend: Backend,
-    private readonly opts: CreateOptions,
+    opts: CreateOptions,
     catalog: CatalogState = { digest: "", generation: 0, connectionBundle: null },
   ) {
+    const owned = ownCreateOptions(opts);
+    const { id: _id, tools, mounts, ...baseOptions } = owned;
+    this.baseOptions = baseOptions;
     this.fs = makeFs(backend);
-    this.registeredTools = hostToolDefinitions(opts.tools);
-    this.registeredToolSelectors = catalogToolSelectors(opts.tools);
-    this.registeredMounts = [...(opts.mounts ?? [])];
+    this.registeredTools = hostToolDefinitions(tools);
+    this.registeredToolSelectors = catalogToolSelectors(tools);
+    this.registeredMounts = [...(mounts ?? [])];
     this.catalogDigest = catalog.digest;
     this.catalogGeneration = catalog.generation;
     this.connectionBundle = catalog.connectionBundle;
@@ -179,10 +231,20 @@ export class Vm {
     return this.backend.snapshot(opts);
   }
 
-  /** Fork: snapshot + restore into a fresh, independent VM (same options). */
+  /** Fork: snapshot + restore into a fresh, independent VM with the current host attachments. */
   async fork(): Promise<Vm> {
     const snap = await this.snapshot();
-    return mc.restore(snap, this.opts);
+    return mc.restore(snap, this.forkOptions());
+  }
+
+  /** Build a value-owned restore recipe from the VM's current state. No remote id is retained, so
+   *  restore must allocate a new identity even when this VM was created or restored under a name. */
+  private forkOptions(): CreateOptions {
+    return ownCreateOptions({
+      ...this.baseOptions,
+      tools: [...this.registeredToolSelectors, ...this.registeredTools],
+      mounts: [...this.registeredMounts],
+    });
   }
 
   /** The `commit` primitive: turn this VM's accrued state into a portable
@@ -204,7 +266,7 @@ export class Vm {
    *  {@link tool} / {@link kit}. The returned promise resolves only after the warm service has
    *  atomically accepted the new catalog. */
   async tool(def: ToolDefinition | ToolDefinition[]): Promise<void> {
-    const defs = Array.isArray(def) ? def : [def];
+    const defs = (Array.isArray(def) ? def : [def]).map(ownToolDefinition);
     const previous = [...this.registeredTools];
     const next = [...this.registeredTools];
     for (const d of defs) {
@@ -217,7 +279,7 @@ export class Vm {
       const generation = this.catalogGeneration + 1;
       const applied = await applyToolCatalog(
         this.backend,
-        this.opts,
+        this.baseOptions,
         next,
         generation,
         this.catalogDigest,
@@ -236,7 +298,6 @@ export class Vm {
       throw e;
     }
     this.registeredTools.splice(0, this.registeredTools.length, ...next);
-    this.opts.tools = [...this.registeredToolSelectors, ...this.registeredTools];
   }
 
   /** Install a host-backed driver as a `FileSystem` at `path`. The driver
@@ -251,7 +312,6 @@ export class Vm {
     const existing = this.registeredMounts.findIndex((m) => m.path === path);
     if (existing >= 0) this.registeredMounts[existing] = spec;
     else this.registeredMounts.push(spec);
-    this.opts.mounts = [...this.registeredMounts];
   }
 
   /** Remove a host-backed mount installed by {@link Vm.mount}. */
@@ -259,7 +319,6 @@ export class Vm {
     await this.backend.unmount(path);
     const existing = this.registeredMounts.findIndex((m) => m.path === path);
     if (existing >= 0) this.registeredMounts.splice(existing, 1);
-    this.opts.mounts = [...this.registeredMounts];
   }
 
   /** Open an in-VM agent session (the internal agent loop). Returns a handle with
@@ -1231,9 +1290,12 @@ export function capabilityConnection(
 export const mc = {
   /** Create a fresh VM. */
   async create(opts: CreateOptions = {}): Promise<Vm> {
-    const runtime = resolveRuntime(opts.runtime);
+    // Take ownership before the first await: caller mutation during construction must not change the
+    // VM being built, and reusing one options object for several VMs must not couple their state.
+    const owned = ownCreateOptions(opts);
+    const runtime = resolveRuntime(owned.runtime);
     if (runtime === "remote") {
-      const made = await makeRemote(opts, null);
+      const made = await makeRemote(owned, null);
       return new Vm(made.backend, made.opts, made.catalog);
     }
     // Browser and local runtimes share the embedded backend — the kernel runs in-process
@@ -1241,8 +1303,8 @@ export const mc = {
     // The only difference is artifact loading: a browser caller fetches the
     // kernel.wasm (+ base.tar) and passes the bytes, since the workspace
     // build paths available under Node/Bun don't exist in a browser.
-    if (runtime === "browser") validateBrowserArtifacts(opts);
-    const made = await makeEmbedded(opts, null);
+    if (runtime === "browser") validateBrowserArtifacts(owned);
+    const made = await makeEmbedded(owned, null);
     return new Vm(made.backend, made.opts, made.catalog);
   },
 
@@ -1268,15 +1330,16 @@ export const mc = {
 
   /** Restore a VM from a snapshot blob (embedded or remote). */
   async restore(snapshot: Uint8Array, opts: CreateOptions = {}): Promise<Vm> {
-    const runtime = resolveRuntime(opts.runtime);
+    const owned = ownCreateOptions(opts);
+    const runtime = resolveRuntime(owned.runtime);
     if (runtime === "remote") {
-      const made = await makeRemote(opts, snapshot);
+      const made = await makeRemote(owned, snapshot);
       return new Vm(made.backend, made.opts, made.catalog);
     }
-    if (runtime === "browser" && !(opts.kernel instanceof Uint8Array)) {
+    if (runtime === "browser" && !(owned.kernel instanceof Uint8Array)) {
       throw new Error("runtime 'browser' restore requires opts.kernel bytes");
     }
-    const made = await makeEmbedded(opts, snapshot);
+    const made = await makeEmbedded(owned, snapshot);
     return new Vm(made.backend, made.opts, made.catalog);
   },
 

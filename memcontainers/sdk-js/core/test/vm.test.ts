@@ -128,6 +128,7 @@ async function remoteVmServer(): Promise<{
   requests: RecordedRequest[];
   close(): Promise<void>;
 }> {
+  const snapshot = await fullSnapshotFixture("remote-fixture-kernel");
   const requests: RecordedRequest[] = [];
   const server = createServer((req, res) => {
     const chunks: Uint8Array[] = [];
@@ -150,6 +151,11 @@ async function remoteVmServer(): Promise<{
             size: chunks.reduce((n, chunk) => n + chunk.length, 0),
           }),
         );
+        return;
+      }
+      if (req.method === "POST" && req.url?.startsWith("/v1/vms/") && req.url.endsWith("/snapshots?mode=full")) {
+        res.writeHead(200, { "content-type": "application/octet-stream" });
+        res.end(snapshot);
         return;
       }
       if (req.method === "POST" && req.url === "/v1/vms") {
@@ -383,6 +389,22 @@ async function sha256Digest(bytes: Uint8Array): Promise<string> {
 
 async function sha256Bytes(bytes: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.digest("SHA-256", bytes as Uint8Array<ArrayBuffer>));
+}
+
+async function fullSnapshotFixture(kernelLabel: string): Promise<Uint8Array> {
+  const memory = new Uint8Array(65_536);
+  const header = writeSnapshotHeader(
+    "full",
+    memory.length,
+    0,
+    await sha256Bytes(new TextEncoder().encode(kernelLabel)),
+    await sha256Bytes(memory),
+    new Uint8Array(32),
+  );
+  const snapshot = new Uint8Array(header.length + memory.length);
+  snapshot.set(header);
+  snapshot.set(memory, header.length);
+  return snapshot;
 }
 
 class CountingStore implements ContentStore {
@@ -864,6 +886,64 @@ async function main(): Promise<void> {
       }
       console.log("phase: remote restore uploads snapshot refs and forwards attachment intent OK");
     } finally {
+      await remote.close();
+    }
+  }
+
+  // A remote VM's id selects that one resource; it is not part of the reusable restore recipe.
+  // Fork must allocate a new identity and must use the VM-owned attachment snapshot, even if the
+  // caller later mutates the options object it used to create the source VM.
+  {
+    const remote = await remoteVmServer();
+    const sourceOptions: CreateOptions = {
+      runtime: "remote",
+      endpoint: remote.origin,
+      id: "named-source",
+      connections: [{ ref: "github.org.main", auth: { kind: "bearer", token: "owned-token" } }],
+      policies: [{ owner: "org", pattern: "github.org.main.*", action: "approve" }],
+      tools: [],
+      mounts: [],
+    };
+    let source: Vm | undefined;
+    let forked: Vm | undefined;
+    try {
+      source = await mc.create(sourceOptions);
+      sourceOptions.id = "caller-mutated-id";
+      const auth = sourceOptions.connections![0]!.auth;
+      if (auth.kind !== "bearer") throw new Error("remote fork fixture auth changed kind");
+      auth.token = "caller-mutated-token";
+      sourceOptions.policies!.splice(0, 1);
+
+      forked = await source.fork();
+      const restore = remote.requests.find(
+        (req) => req.method === "POST" && req.url.endsWith("/restore"),
+      );
+      if (!restore) throw new Error(`remote fork did not restore a snapshot: ${JSON.stringify(remote.requests)}`);
+      if (
+        restore.url === "/v1/vms/named-source/restore" ||
+        restore.url === "/v1/vms/caller-mutated-id/restore"
+      ) {
+        throw new Error(`remote fork reused source identity: ${restore.url}`);
+      }
+      const body = JSON.parse(restore.body) as {
+        attachments?: {
+          connections?: Array<{ auth?: { kind?: string; token?: string } }>;
+          connectionPolicies?: unknown[];
+        };
+      };
+      if (
+        body.attachments?.connections?.[0]?.auth?.token !== "owned-token" ||
+        body.attachments.connectionPolicies?.length !== 1
+      ) {
+        throw new Error(`remote fork did not use private attachment state: ${restore.body}`);
+      }
+      if (sourceOptions.tools?.length !== 0 || sourceOptions.mounts?.length !== 0) {
+        throw new Error("remote VM construction mutated caller-owned attachment arrays");
+      }
+      console.log("phase: remote fork allocates an independent identity and owns its restore recipe OK");
+    } finally {
+      await forked?.close().catch(() => {});
+      await source?.close().catch(() => {});
       await remote.close();
     }
   }
@@ -1887,7 +1967,15 @@ error("timed out waiting for restored warm sqlite child: " .. err)
 
   // Bytes passed directly → no MC_STORE / defaultKernel env path; the embedded backend (the JS host)
   // boots the kernel in-process.
-  const vm = await mc.create({ runtime: LOCAL_RUNTIME, kernel, image, deterministic: true });
+  const vmOptions: CreateOptions = {
+    runtime: LOCAL_RUNTIME,
+    kernel,
+    image,
+    deterministic: true,
+    tools: [],
+    mounts: [],
+  };
+  const vm = await mc.create(vmOptions);
   try {
     const r = await vm.exec("echo core-ok");
     if (r.exitCode !== 0 || r.stdout.trim() !== "core-ok") {
@@ -1935,6 +2023,63 @@ error("timed out waiting for restored warm sqlite child: " .. err)
     if (after.exitCode !== 0 || !after.stdout.includes('"message":"hello Ada"')) {
       throw new Error(`runtime tool registration mismatch: exit=${after.exitCode} stdout=${after.stdout}`);
     }
+
+    const liveMountBytes = new TextEncoder().encode("fork-mounted\n");
+    const liveMount: Driver = {
+      readOnly: true,
+      async open(path) {
+        if (path === "/value.txt") return liveMountBytes;
+        throw Object.assign(new Error(`missing ${path}`), { code: "ENOENT" });
+      },
+      async stat(path) {
+        return path === "/" || path === "." || path === ""
+          ? { kind: "dir", size: 0 }
+          : { kind: "file", size: liveMountBytes.length };
+      },
+      async readdir() {
+        return [{ name: "value.txt", kind: "file" }];
+      },
+    };
+    await vm.mount("/runtime-owned", liveMount);
+    if (vmOptions.tools?.length !== 0 || vmOptions.mounts?.length !== 0) {
+      throw new Error("vm.tool()/mount() mutated caller-owned CreateOptions");
+    }
+
+    const sibling = await mc.create(vmOptions);
+    try {
+      const siblingTools = await sibling.exec("tools list");
+      let siblingSawMount = true;
+      try {
+        await sibling.fs.stat("/runtime-owned/value.txt");
+      } catch {
+        siblingSawMount = false;
+      }
+      if (!siblingTools.stdout.includes('"tools":[]') || siblingSawMount) {
+        throw new Error(
+          `VMs created from one options object leaked live attachments: tools=${siblingTools.stdout} mount=${siblingSawMount}`,
+        );
+      }
+    } finally {
+      await sibling.close();
+    }
+
+    const forked = await vm.fork();
+    try {
+      const forkedTool = await forked.exec("tools call host.org.main.dynamicGreet '{\"name\":\"Fork\"}'");
+      const forkedMount = await forked.fs.readText("/runtime-owned/value.txt");
+      if (!forkedTool.stdout.includes('"message":"hello Fork"') || forkedMount !== "fork-mounted\n") {
+        throw new Error(
+          `fork did not inherit canonical live attachments: tool=${forkedTool.stdout} mount=${JSON.stringify(forkedMount)}`,
+        );
+      }
+    } finally {
+      await forked.close();
+    }
+    await vm.unmount("/runtime-owned");
+    if (vmOptions.mounts?.length !== 0) {
+      throw new Error("vm.unmount() mutated caller-owned CreateOptions");
+    }
+    console.log("phase: fork inherits canonical live tools/mounts without mutating CreateOptions OK");
 
     // #1 + restore attachment contract: the warm catalog snapshots WITH the VM, but JS host-call
     // closures do not. Strict restore refuses to return a VM that advertises a host-call catalog entry
