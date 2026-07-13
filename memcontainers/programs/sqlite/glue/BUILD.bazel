@@ -15,11 +15,11 @@ cc_object(
 )
 
 zig_binary(
-    name = "sqlite_obj",
+    name = "sqlite_raw",
     main = "entry.zig",
     csrcs = [
         "@sqlite//:sqlite3.c",
-        "close_shim.c",  # override close() to route through the adapter — must be C, not Zig (see the file)
+        "//memcontainers/wasi-adapter:close_shim.c",  # shared override for Zig wasi-libc's direct fd_close
     ],
     extra_srcs = [
         "@sqlite//:sqlite3.h",
@@ -52,7 +52,7 @@ zig_binary(
 
 zig_configure_binary(
     name = "sqlite_wasm",
-    actual = ":sqlite_obj",
+    actual = ":sqlite_raw",
     mode = "release_small",
     threaded = "single",
     target = "//platforms:wasm32_wasi",

@@ -45,8 +45,8 @@ rust_binary(
 # surface (that copy was the bug). The kernel is a `data` dep, located via the runfiles crate
 # as //memcontainers/tests/e2e does.
 rust_opt_test(
-    name = "kernel_imports",
-    srcs = ["tests/kernel_imports.rs"],
+    name = "kernel_imports_test",
+    srcs = ["test/kernel_imports.rs"],
     edition = "2021",
     data = ["//memcontainers/kernel/rust:kernel"],
     deps = [

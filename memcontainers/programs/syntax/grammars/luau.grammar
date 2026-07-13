@@ -1,0 +1,44 @@
+language luau
+version "0.725.0"
+import "families/lua-core"
+start source_file
+
+rule source_file = repeat(_statement)
+rule _dialect_statement = choice(type_alias_declaration, exported_type_alias_declaration, compound_assignment_statement, continue_statement)
+rule _dialect_expression = choice(if_expression, type_cast_expression, interpolated_string)
+rule _dialect_type_annotation = seq(":", field(type, type_expression))
+rule _dialect_return_type = seq(":", field(return_type, type_expression))
+
+rule type_alias_declaration = seq("type", field(name, identifier), optional(type_parameters), "=", field(value, type_expression))
+rule exported_type_alias_declaration = seq("export", type_alias_declaration)
+rule type_parameters = seq("<", type_parameter, repeat(seq(",", type_parameter)), ">")
+rule type_parameter = seq(field(name, identifier), optional(seq("=", field(value, type_expression))))
+rule type_expression = choice(identifier, "nil", "boolean", "number", "string", "thread", "buffer", "any", "unknown", "never", singleton_type, table_type, function_type, union_type, intersection_type, optional_type, generic_type, typeof_type)
+rule singleton_type = choice(quoted_string, "true", "false")
+rule table_type = seq("{", optional(seq(type_field, repeat(seq(",", type_field)))), optional(","), "}")
+rule type_field = choice(seq(field(name, identifier), ":", field(value, type_expression)), seq("[", field(name, type_expression), "]", ":", field(value, type_expression)), type_expression)
+rule function_type = right(1, seq(optional(type_parameters), "(", optional(seq(type_expression, repeat(seq(",", type_expression)))), ")", "->", field(return_type, type_expression)))
+rule union_type = left(1, seq(field(left, type_expression), "|", field(right, type_expression)))
+rule intersection_type = left(2, seq(field(left, type_expression), "&", field(right, type_expression)))
+rule optional_type = left(3, seq(type_expression, "?"))
+rule generic_type = left(4, seq(identifier, "<", type_expression, repeat(seq(",", type_expression)), ">"))
+rule typeof_type = seq("typeof", "(", _expression, ")")
+
+rule compound_assignment_statement = seq(field(left, variable), field(operator, choice("+=", "-=", "*=", "/=", "//=", "%=", "^=", "..=")), field(right, _expression))
+rule continue_statement = "continue"
+rule if_expression = right(1, seq("if", field(condition, _expression), "then", field(consequence, _expression), "else", field(alternative, _expression)))
+rule type_cast_expression = left(11, seq(field(value, _expression), "::", field(type, type_expression)))
+rule interpolated_string = token(seq("`", pattern("([^`\\\\]|\\\\.)*"), "`"))
+
+conflict { type_expression, _expression }
+conflict { table_type, table_constructor }
+
+vocabulary source_file -> module { trait scope; }
+vocabulary type_alias_declaration -> declaration { role name = name; role value = value; trait declaration; }
+vocabulary exported_type_alias_declaration -> declaration { trait declaration; }
+vocabulary type_expression -> type
+vocabulary function_type -> type { role return_type = return_type; }
+vocabulary compound_assignment_statement -> assignment { role left = left; role right = right; }
+vocabulary if_expression -> branch { role condition = condition; }
+vocabulary type_cast_expression -> operator { role value = value; }
+vocabulary interpolated_string -> literal

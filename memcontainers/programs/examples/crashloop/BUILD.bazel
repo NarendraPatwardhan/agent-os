@@ -12,7 +12,7 @@ rust_binary(
     edition = "2021",
     tags = ["manual"],
     deps = [
-        "//memcontainers/sysroot/rust",
+        "//memcontainers/sysroot/rust:lib",
     ],
 )
 

@@ -21,7 +21,7 @@ import {
   type BrowserKv,
   MemoryKv,
   OpfsPersist,
-} from "../src/opfs-persist.js";
+} from "../src/opfs_persist.js";
 import type { PersistCapability } from "../src/types.js";
 
 const te = new TextEncoder();

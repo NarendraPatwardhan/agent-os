@@ -84,7 +84,7 @@ js_test(
 # live exec survive. The strongest proof the MCSN format is truly host-identical — not same-host only.
 mc_ts_project(
     name = "cross_host_lib",
-    srcs = ["test/cross-host.test.ts"],
+    srcs = ["test/cross_host.test.ts"],
     deps = [
         ":host",
         "//:node_modules/@types/bun",
@@ -98,7 +98,7 @@ js_test(
         "//memcontainers/kernel/rust:kernel",
         "//memcontainers/hosts/wasmtime:cross_host_snapshot",
     ],
-    entry_point = "test/cross-host.test.js",
+    entry_point = "test/cross_host.test.js",
     env = {
         "MC_KERNEL_WASM": "$(rlocationpath //memcontainers/kernel/rust:kernel)",
         "MC_CROSS_SNAPSHOT": "$(rlocationpath //memcontainers/hosts/wasmtime:cross_host_snapshot)",

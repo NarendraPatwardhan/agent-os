@@ -1,0 +1,16 @@
+diff --git a/crates/generate/src/generate.rs b/crates/generate/src/generate.rs
+index 3ecdbd1..74a1f7c 100644
+--- a/crates/generate/src/generate.rs
++++ b/crates/generate/src/generate.rs
+@@ -561 +560,0 @@ pub fn load_grammar_file(
+-        Some("js") => Ok(load_js_grammar_file(grammar_path, js_runtime)?),
+@@ -567 +566 @@ pub fn load_grammar_file(
+-#[cfg(feature = "load")]
++#[cfg(all(feature = "load", feature = "qjs-rt"))]
+diff --git a/crates/generate/src/render.rs b/crates/generate/src/render.rs
+index 836930f..4ab77d1 100644
+--- a/crates/generate/src/render.rs
++++ b/crates/generate/src/render.rs
+@@ -348 +348 @@ impl Renderer {
+-        add_line!(self, "#include \"tree_sitter/parser.h\"");
++        add_line!(self, "#include \"parser.h\"");

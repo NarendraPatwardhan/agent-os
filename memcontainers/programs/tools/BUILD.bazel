@@ -10,10 +10,10 @@ rust_binary(
     edition = "2021",
     tags = ["manual"],
     deps = [
-        "//memcontainers/lib/json:serde",
-        "//memcontainers/pkgcore",
-        "//memcontainers/sysroot/rust",
-        "//memcontainers/toolcore",
+        "//memcontainers/lib/json:lib",
+        "//memcontainers/pkgcore:lib",
+        "//memcontainers/sysroot/rust:lib",
+        "//memcontainers/toolcore:lib",
         "@crates//:talc",
     ],
 )

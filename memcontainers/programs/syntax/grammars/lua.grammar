@@ -1,0 +1,12 @@
+language lua
+version "5.4.0"
+import "families/lua-core"
+start source_file
+
+rule source_file = repeat(_statement)
+rule _dialect_statement = "__agentos_no_lua_dialect_statement__"
+rule _dialect_expression = "__agentos_no_lua_dialect_expression__"
+rule _dialect_type_annotation = "__agentos_no_lua_type_annotation__"
+rule _dialect_return_type = "__agentos_no_lua_return_type__"
+
+vocabulary source_file -> module { trait scope; }

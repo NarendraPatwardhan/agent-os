@@ -22,6 +22,7 @@ _EXT = {
     "zig": "zig",
     "ts": "ts",
     "elixir": "ex",
+    "luau": "luau",
     "md": "md",
     "asyncapi": "asyncapi.yaml",
     "openapi": "openapi.yaml",
@@ -73,6 +74,14 @@ def abi_library(name, contract, langs):
                 visibility = ["//visibility:public"],
             )
             build_test(name = "%s_zig_build_test" % name, targets = [":%s_zig" % name])
+        elif lang == "luau":
+            # Luau projections are VFS source consumed by the real /bin/luau in image E2E tests.
+            # Keep a named target so images/libraries depend on the fresh action output, never gen/.
+            native.filegroup(
+                name = "%s_luau" % name,
+                srcs = [":%s" % gen],
+                visibility = ["//visibility:public"],
+            )
 
     # B2 drift gate. Update the committed copies with `bazel run //memcontainers/contracts:<name>_sync`.
     write_source_files(

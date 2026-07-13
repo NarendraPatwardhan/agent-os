@@ -9,9 +9,9 @@ package(default_visibility = ["//visibility:public"])
 _SRCS = glob(["src/**/*.rs"])
 
 _DEPS = [
-    "//memcontainers/lib/parse",
-    "//memcontainers/pkgcore",
-    "//memcontainers/toolcore",
+    "//memcontainers/lib/parse:lib",
+    "//memcontainers/pkgcore:lib",
+    "//memcontainers/toolcore:lib",
     "@parse_crates//:serde",
     "@parse_crates//:serde_json",
 ]
@@ -39,16 +39,16 @@ rust_shared_library(
 )
 
 release_wasm(
-    name = "wasm_raw",
+    name = "wasm_release",
     lib = ":wasm_lib",
     platform = "//platforms:wasm32_freestanding",
 )
 
 genrule(
     name = "wasm",
-    srcs = [":wasm_raw"],
+    srcs = [":wasm_release"],
     outs = ["catalog-compiler.wasm"],
-    cmd = "cp $(location :wasm_raw) $@",
+    cmd = "cp $(location :wasm_release) $@",
 )
 
 build_test(

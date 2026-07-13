@@ -45,8 +45,8 @@ rust_library(
         "@host_crates//:serde_json",
         "@host_crates//:ureq",
         "@host_crates//:tungstenite",
-        "//memcontainers/toolcore",  # the single-source connection-policy engine (no host-local copy)
-        "//memcontainers/lib/parse",  # curated registry (servers) for host-side origin derivation
+        "//memcontainers/toolcore:lib",  # the single-source connection-policy engine (no host-local copy)
+        "//memcontainers/lib/parse:lib",  # curated registry (servers) for host-side origin derivation
         "//memcontainers/contracts:env_rust",  # the mc_bridge_table! macro → the host's env impls (B2)
         "//memcontainers/contracts:ctl_rust",  # the mc_control_table! macro → the kernel-export lookups (B2)
         "//memcontainers/contracts:constants_rust",  # EAGAIN/EMSGSIZE — ws send sentinels + ctl retry (B2)
@@ -83,7 +83,7 @@ host_release_binary(
 # Compile-check the library + the binary's own sources fast (fastbuild). The opt+musl `mc`
 # is exercised when built directly and, structurally, by every e2e boot.
 build_test(
-    name = "test",
+    name = "build_test",
     targets = [
         ":host",
         ":mc_bin",

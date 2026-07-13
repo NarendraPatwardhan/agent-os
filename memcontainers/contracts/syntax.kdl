@@ -1,0 +1,215 @@
+// contracts/syntax.kdl — syntax platform vocabulary + resident-service protocol.
+//
+// This is the single language-neutral boundary shared by the native Rust grammar generator,
+// the Zig /bin/syntax service, and /lib/luau/syntax.luau (SYSTEMS.md B2). The projector emits
+// the binary message codecs; mc-grammar-gen reads the vocabulary declarations when validating
+// each grammar's semantic map. Message frames are [id:u16][version:u8][fields...].
+
+protocol-version 1
+vocabulary-version 1
+grammar-ir-version 1
+
+// Stable semantic concepts. IDs are append-only; removed concepts remain reserved.
+semantic-kind "module" id=1 { role "body" required=1; trait "scope"; }
+semantic-kind "declaration" id=2 { role "name" required=1; trait "declaration"; }
+semantic-kind "function" id=3 { role "name" required=0; role "parameters" required=1; role "body" required=1; trait "declaration"; trait "scope"; }
+semantic-kind "parameter" id=4 { role "name" required=1; trait "declaration"; }
+semantic-kind "call" id=5 { role "callee" required=1; role "arguments" required=1; }
+semantic-kind "member" id=6 { role "receiver" required=1; role "name" required=1; }
+semantic-kind "identifier" id=7 { role "name" required=0; }
+semantic-kind "literal" id=8
+semantic-kind "type" id=9
+semantic-kind "block" id=10 { role "body" required=0; trait "scope"; }
+semantic-kind "assignment" id=11 { role "left" required=1; role "right" required=1; }
+semantic-kind "branch" id=12 { role "condition" required=1; role "body" required=1; }
+semantic-kind "loop" id=13 { role "condition" required=0; role "body" required=1; }
+semantic-kind "return" id=14 { role "value" required=0; }
+semantic-kind "import" id=15 { role "source" required=1; trait "declaration"; }
+semantic-kind "table" id=16
+semantic-kind "field" id=17 { role "name" required=0; role "value" required=1; }
+semantic-kind "operator" id=18 { role "left" required=0; role "right" required=0; }
+semantic-kind "comment" id=19
+
+semantic-role "name" id=1
+semantic-role "body" id=2
+semantic-role "parameters" id=3
+semantic-role "receiver" id=4
+semantic-role "arguments" id=5
+semantic-role "callee" id=6
+semantic-role "left" id=7
+semantic-role "right" id=8
+semantic-role "condition" id=9
+semantic-role "return_type" id=10
+semantic-role "value" id=11
+semantic-role "source" id=12
+
+semantic-trait "declaration" id=1
+semantic-trait "scope" id=2
+
+// Reusable value messages. Keep these before messages that contain them so every generated
+// language can compile without declaration-order tricks.
+message "Point" id=1 version=1 {
+  field "row" type="u32"
+  field "column" type="u32"
+}
+message "Range" id=2 version=1 {
+  field "start_byte" type="u32"
+  field "end_byte" type="u32"
+  field "start_point" type="Point"
+  field "end_point" type="Point"
+}
+message "SemanticTrait" id=3 version=1 { field "id" type="u32" }
+message "Diagnostic" id=4 version=1 {
+  field "severity" type="str"
+  field "code" type="str"
+  field "message" type="str"
+  field "range" type="Range" opt=1
+}
+message "LanguageDescriptor" id=5 version=1 {
+  field "name" type="str"
+  field "language_version" type="str"
+  field "grammar_version" type="str"
+  field "grammar_ir_version" type="u32"
+  field "vocabulary_version" type="u32"
+  field "tree_sitter_abi" type="u32"
+}
+message "NodeSummary" id=6 version=1 {
+  field "handle" type="u32"
+  field "concrete_kind" type="str"
+  field "semantic_kind" type="u32" opt=1
+  field "field_role" type="u32" opt=1
+  field "range" type="Range"
+  field "named" type="bool"
+  field "missing" type="bool"
+  field "error" type="bool"
+  field "child_count" type="u32"
+  field "traits" type="list<SemanticTrait>"
+}
+message "ChangedRange" id=7 version=1 { field "range" type="Range" }
+message "Edit" id=8 version=1 {
+  field "start_byte" type="u32"
+  field "old_end_byte" type="u32"
+  field "replacement" type="bytes"
+}
+message "RewriteEdit" id=9 version=1 {
+  field "start_byte" type="u32"
+  field "old_end_byte" type="u32"
+  field "expected_sha256" type="bytes"
+  field "replacement" type="bytes"
+}
+message "Capture" id=10 version=1 {
+  field "name" type="str"
+  field "node" type="NodeSummary"
+  field "text" type="bytes" opt=1
+}
+
+// Requests.
+message "LanguagesRequest" id=100 version=1 { field "reserved" type="u32" }
+message "OpenRequest" id=101 version=1 {
+  field "language" type="str"
+  field "source" type="bytes"
+}
+message "CloseRequest" id=102 version=1 { field "document" type="u32" }
+message "TreeRequest" id=103 version=1 {
+  field "document" type="u32"
+  field "revision" type="u32"
+  field "view" type="str"
+  field "max_depth" type="u32"
+  field "limit" type="u32"
+  field "cursor" type="u32" opt=1
+}
+message "NodeRequest" id=104 version=1 {
+  field "document" type="u32"
+  field "revision" type="u32"
+  field "node" type="u32"
+  field "view" type="str"
+}
+message "ChildrenRequest" id=105 version=1 {
+  field "document" type="u32"
+  field "revision" type="u32"
+  field "node" type="u32"
+  field "view" type="str"
+  field "named_only" type="bool"
+  field "limit" type="u32"
+  field "cursor" type="u32" opt=1
+}
+message "QueryCompileRequest" id=106 version=1 {
+  field "language" type="str"
+  field "source" type="str"
+  field "view" type="str"
+}
+message "QueryRequest" id=107 version=1 {
+  field "document" type="u32"
+  field "revision" type="u32"
+  field "query" type="u32"
+  field "range" type="Range" opt=1
+  field "include_text" type="bool"
+  field "limit" type="u32"
+  field "cursor" type="u32" opt=1
+}
+message "EditRequest" id=108 version=1 {
+  field "document" type="u32"
+  field "revision" type="u32"
+  field "edits" type="list<Edit>"
+}
+message "RewriteRequest" id=109 version=1 {
+  field "document" type="u32"
+  field "revision" type="u32"
+  field "validation" type="str"
+  field "edits" type="list<RewriteEdit>"
+}
+message "TextRequest" id=110 version=1 {
+  field "document" type="u32"
+  field "revision" type="u32"
+  field "range" type="Range" opt=1
+}
+message "DiagnosticsRequest" id=111 version=1 {
+  field "document" type="u32"
+  field "revision" type="u32"
+}
+message "QueryCloseRequest" id=112 version=1 { field "query" type="u32" }
+
+// Responses. Application failures always use ErrorResponse; kernel transport failures remain errno.
+message "ErrorResponse" id=200 version=1 {
+  field "code" type="str"
+  field "message" type="str"
+  field "current_revision" type="u32" opt=1
+}
+message "LanguagesResponse" id=201 version=1 { field "languages" type="list<LanguageDescriptor>" }
+message "OpenResponse" id=202 version=1 {
+  field "document" type="u32"
+  field "revision" type="u32"
+  field "root" type="NodeSummary"
+  field "diagnostics" type="list<Diagnostic>"
+}
+message "CloseResponse" id=203 version=1 { field "reserved" type="u32" }
+message "TreeResponse" id=204 version=1 {
+  field "nodes" type="list<NodeSummary>"
+  field "cursor" type="u32" opt=1
+}
+message "NodeResponse" id=205 version=1 { field "node" type="NodeSummary" }
+message "ChildrenResponse" id=206 version=1 {
+  field "nodes" type="list<NodeSummary>"
+  field "cursor" type="u32" opt=1
+}
+message "QueryCompileResponse" id=207 version=1 {
+  field "query" type="u32"
+  field "diagnostics" type="list<Diagnostic>"
+}
+message "QueryResponse" id=208 version=1 {
+  field "captures" type="list<Capture>"
+  field "cursor" type="u32" opt=1
+}
+message "EditResponse" id=209 version=1 {
+  field "revision" type="u32"
+  field "changed" type="list<ChangedRange>"
+  field "diagnostics" type="list<Diagnostic>"
+}
+message "RewriteResponse" id=210 version=1 {
+  field "revision" type="u32"
+  field "changed" type="list<ChangedRange>"
+  field "diagnostics" type="list<Diagnostic>"
+}
+message "TextResponse" id=211 version=1 { field "text" type="bytes" }
+message "DiagnosticsResponse" id=212 version=1 { field "diagnostics" type="list<Diagnostic>" }
+message "QueryCloseResponse" id=213 version=1 { field "reserved" type="u32" }

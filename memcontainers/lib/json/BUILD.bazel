@@ -2,14 +2,15 @@ load("@rules_rust//rust:defs.bzl", "rust_library")
 load("//bazel:rust_opt_test.bzl", "rust_opt_test")
 
 # A lightweight, pure no_std alternative to serde_json (parse + serialize), shared across AgentOS
-# Rust components — hence the `:serde` target. It imports as the `json` crate (crate_name), so it never
+# Rust components. The package exposes its primary library as `:lib`; it imports as the `json` crate
+# (crate_name), so it never
 # shadows the real serde. No syscalls, no external deps; the kernel/guest supplies the heap (alloc).
 # The kernel reads /etc/services.d fragments to activate resident services; userspace tools can parse
 # tool-call results rather than only hand-building request bodies. Under
 # `--test` the crate links std (the source is `#![cfg_attr(not(test), no_std)]`), so the unit tests run
 # natively. Ported from memcontainers' agentcore JSON core, with a Json→String serializer added.
 rust_library(
-    name = "serde",
+    name = "lib",
     srcs = ["src/lib.rs"],
     crate_name = "json",
     edition = "2021",
@@ -20,7 +21,7 @@ rust_library(
 # and serialize round-trips.
 rust_opt_test(
     name = "test",
-    crate = ":serde",
+    crate = ":lib",
     edition = "2021",
     size = "small",
 )

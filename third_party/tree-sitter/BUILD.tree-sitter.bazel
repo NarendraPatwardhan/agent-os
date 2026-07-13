@@ -1,0 +1,67 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@//bazel:mc_program.bzl", "cc_headers")
+
+package(default_visibility = ["//visibility:public"])
+
+licenses(["notice"])
+
+# The generator core only. `load` enables grammar.json + node-types generation; qjs-rt remains off,
+# so no JavaScript engine or dsl.js enters the host tool.
+rust_library(
+    name = "generate",
+    crate_name = "tree_sitter_generate",
+    crate_root = "crates/generate/src/generate.rs",
+    srcs = glob(["crates/generate/src/**/*.rs"]),
+    compile_data = glob([
+        "crates/generate/src/*.inc",
+        "crates/generate/src/templates/*",
+    ]),
+    crate_features = ["load"],
+    edition = "2024",
+    deps = [
+        "@grammar_gen_crates//:bitflags",
+        "@grammar_gen_crates//:dunce",
+        "@grammar_gen_crates//:indexmap",
+        "@grammar_gen_crates//:log",
+        "@grammar_gen_crates//:regex",
+        "@grammar_gen_crates//:regex-syntax",
+        "@grammar_gen_crates//:rustc-hash",
+        "@grammar_gen_crates//:semver",
+        "@grammar_gen_crates//:serde",
+        "@grammar_gen_crates//:serde_json",
+        "@grammar_gen_crates//:thiserror",
+        "@grammar_gen_crates//:topological-sort",
+    ],
+)
+
+filegroup(
+    name = "runtime_c",
+    srcs = ["lib/src/lib.c"],
+)
+
+filegroup(
+    name = "runtime_header_files",
+    srcs = [
+        "lib/include/tree_sitter/api.h",
+        "lib/src/parser.h",
+    ],
+)
+
+# lib.c includes the runtime's implementation .c/.h files directly. They are compile inputs, but are
+# deliberately not public @cImport headers: translating ICU's portability macros as a Zig module is
+# both unnecessary and invalid outside its configured C compilation context.
+filegroup(
+    name = "runtime_support",
+    srcs = glob(["lib/src/**"], exclude = ["lib/src/lib.c"]),
+)
+
+cc_headers(
+    name = "runtime_headers",
+    hdrs = [":runtime_header_files"],
+    includes = [
+        "lib/include",
+        "lib/src",
+    ],
+)
+
+exports_files(["LICENSE"])

@@ -167,6 +167,14 @@ pub fn boot_paper() -> Session {
     Session { host, stdout }
 }
 
+/// Boot the `syntax` image: loom plus the lazy owned Lua/Luau parser service and generated Luau
+/// protocol client. Structural parser E2E runs here because it compiles two generated C parsers.
+pub fn boot_syntax() -> Session {
+    let (b, stdout) = builder("_main/memcontainers/images/syntax.tar");
+    let host = b.build().expect("kernel booted (syntax image)");
+    Session { host, stdout }
+}
+
 /// Boot the `posix` image with a host-call tool registry installed (the tool-plane tests). The host
 /// refuses host calls by default (A9, `DeniedHostCall`); this opts in with a tool map.
 pub fn boot_posix_with_tools(tools: MapHostCall) -> Session {

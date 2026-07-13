@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="./web/public/agentos.svg" alt="AgentOS" width="270">
+  <img src="./web/public/agent-os.svg" alt="AgentOS" width="270">
 
   <h1>AgentOS</h1>
 
@@ -236,9 +236,30 @@ Choose the smallest image that contains the workload:
 | `loom` | `posix` plus Luau, `luau-analyze`, and Office batteries | Programmable agent work |
 | `atlas` | `loom` plus the warm SQLite service | Data and retrieval workflows |
 | `paper` | `loom` plus the warm Typst service and fonts | PDF and document generation |
+| `syntax` | `loom` plus owned Lua/Luau parsers and the `syntax` library | Structural code inspection and safe edits |
 
 Images are layered, capability-stamped build artifacts. Switching images changes guest userland; it
 does not change the host API.
+
+The `syntax` image exposes lossless concrete trees and transactional edits through Luau:
+
+```luau
+local syntax = require("syntax")
+local doc = syntax.open("luau", "local function greet(name: string) return name end")
+
+local names = syntax.compile_query(
+  "luau",
+  "(local_function_declaration name: (identifier) @name)"
+)
+for capture in doc:captures(names, { include_text = true }) do
+  print(capture.name, capture.text)
+end
+
+doc:edit({{ start_byte = 15, old_end_byte = 20, replacement = "hello" }})
+```
+
+Grammars are AgentOS-authored and generated at build time; the guest ships only the generated parser
+pack, the shared runtime, and the versioned service client.
 
 ## Browser embedding
 
@@ -306,7 +327,7 @@ All source artifacts come from Bazel. Build the release-style client set and a c
 ```sh
 bazel build \
   //memcontainers/kernel/rust:kernel \
-  //memcontainers/images:loom \
+  //memcontainers/images:syntax \
   //memcontainers/lib/catalog-compiler:wasm \
   //memcontainers/sdk-js/core:bundle
 ```
@@ -315,7 +336,7 @@ Outputs:
 
 ```text
 bazel-bin/memcontainers/kernel/rust/kernel.wasm
-bazel-bin/memcontainers/images/loom.tar
+bazel-bin/memcontainers/images/syntax.tar
 bazel-bin/memcontainers/lib/catalog-compiler/catalog-compiler.wasm
 bazel-bin/memcontainers/sdk-js/core/mc-core.mjs
 ```

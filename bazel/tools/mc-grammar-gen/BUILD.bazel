@@ -1,0 +1,59 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+exports_files(["Cargo.toml", "Cargo.lock"])
+
+rust_library(
+    name = "parser_ir",
+    srcs = ["src/ir.rs"],
+    crate_name = "mc_parser_ir",
+    edition = "2024",
+    deps = [
+        "@grammar_gen_crates//:serde",
+        "@grammar_gen_crates//:serde_json",
+    ],
+)
+
+rust_library(
+    name = "parser_dsl",
+    srcs = ["src/dsl.rs"],
+    crate_name = "mc_parser_dsl",
+    edition = "2024",
+    deps = [
+        ":parser_ir",
+        "@grammar_gen_crates//:serde_json",
+    ],
+)
+
+rust_library(
+    name = "parser_generate",
+    srcs = ["src/generate.rs"],
+    crate_name = "mc_parser_generate",
+    edition = "2024",
+    deps = [
+        ":parser_dsl",
+        ":parser_ir",
+        "@grammar_gen_crates//:serde_json",
+        "@grammar_gen_crates//:sha2",
+        "@tree_sitter//:generate",
+    ],
+)
+
+rust_binary(
+    name = "mc-grammar-gen",
+    srcs = ["src/main.rs"],
+    crate_name = "mc_grammar_gen",
+    edition = "2024",
+    deps = [":parser_generate"],
+    visibility = ["//visibility:public"],
+)
+
+rust_test(
+    name = "dsl_test",
+    srcs = ["src/dsl_test.rs"],
+    crate_name = "mc_parser_dsl_test",
+    edition = "2024",
+    deps = [
+        ":parser_dsl",
+        ":parser_ir",
+    ],
+)

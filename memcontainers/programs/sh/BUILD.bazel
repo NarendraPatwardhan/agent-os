@@ -2,7 +2,7 @@ load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
 load("//bazel:mc_program.bzl", "mc_program")
 
 # programs/sh — /bin/sh, the Zig guest shell over canonical
-# //memcontainers/shcore:shcore and //memcontainers/sysroot/zig:sys. It is
+# //memcontainers/shcore:lib and //memcontainers/sysroot/zig:sys. It is
 # freestanding and imports only `mc`; no WASI adapter and no Rust/C interop.
 zig_binary(
     name = "sh_raw",
@@ -13,7 +13,7 @@ zig_binary(
     ],
     tags = ["manual"],
     deps = [
-        "//memcontainers/shcore:shcore",
+        "//memcontainers/shcore:lib",
         "//memcontainers/sysroot/zig:sys",
     ],
 )

@@ -13,7 +13,7 @@ rust_binary(
     edition = "2021",
     tags = ["manual"],
     deps = [
-        "//memcontainers/sysroot/rust",  # mc syscall wrappers (incl. svc_*) + the _start/panic_handler runtime
+        "//memcontainers/sysroot/rust:lib",  # mc syscall wrappers (incl. svc_*) + the _start/panic_handler runtime
     ],
 )
 

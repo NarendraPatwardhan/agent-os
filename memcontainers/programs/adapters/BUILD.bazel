@@ -17,8 +17,8 @@ mc_wasi_program(
         "-Cstrip=symbols",
     ],
     deps = [
-        "//memcontainers/lib/parse",
-        "//memcontainers/sysroot/rust",
+        "//memcontainers/lib/parse:lib",
+        "//memcontainers/sysroot/rust:lib",
         "@parse_crates//:serde",
         "@parse_crates//:serde_json",
         "@parse_crates//:serde_yaml",

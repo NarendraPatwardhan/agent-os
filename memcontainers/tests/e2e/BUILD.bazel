@@ -32,7 +32,7 @@ rust_e2e_test(
     edition = "2021",
     deps = [
         "//memcontainers/hosts/wasmtime:host",
-        "//memcontainers/pkgcore",  # sha256_hex — to build a consistent catalog + cache fixture for the pkgfsd read test
+        "//memcontainers/pkgcore:lib",  # sha256_hex — to build a consistent catalog + cache fixture for the pkgfsd read test
         "@parse_crates//:serde_json",
         "@rules_rust//rust/runfiles",
     ],
@@ -57,5 +57,6 @@ rust_e2e_test(
     data = [
         "//memcontainers/images:atlas",  # loom + the sqlite service + require("sqlite") — the sqlite e2e
         "//memcontainers/images:paper",  # loom + the typst service + require("typst") + /usr/share/fonts — the typst e2e
+        "//memcontainers/images:syntax",  # loom + the owned Lua/Luau parser service and generated client contract
     ],
 )

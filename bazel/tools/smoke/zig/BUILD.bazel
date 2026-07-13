@@ -11,7 +11,7 @@ load("@bazel_skylib//rules:build_test.bzl", "build_test")
 # only meaningful under the wasm transition below — building it for the host
 # platform would fail for lack of an entry point (so `//...` must not pick it up).
 zig_binary(
-    name = "obj",
+    name = "raw",
     main = "smoke.zig",
     linkopts = [
         "-fno-entry",
@@ -24,7 +24,7 @@ zig_binary(
 # output is a real `.wasm` binary regardless of the default platform.
 zig_configure_binary(
     name = "wasm",
-    actual = ":obj",
+    actual = ":raw",
     mode = "release_small",
     target = "//platforms:wasm32_freestanding",
 )

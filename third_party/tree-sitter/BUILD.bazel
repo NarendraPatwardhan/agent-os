@@ -1,0 +1,6 @@
+exports_files([
+    "BUILD.tree-sitter.bazel",
+    "SYSTEM.md",
+])
+
+exports_files(glob(["patches/*.patch"]))

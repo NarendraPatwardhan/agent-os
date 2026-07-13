@@ -35,7 +35,7 @@ mc_wasi_program(
         "-Cstrip=symbols",
     ],
     deps = [
-        "//memcontainers/sysroot/rust",  # the svc_* serve syscalls + mc constants (EAGAIN, SERVICE_MARKER)
+        "//memcontainers/sysroot/rust:lib",  # the svc_* serve syscalls + mc constants (EAGAIN, SERVICE_MARKER)
         "@typst_crates//:typst",  # the compiler library (World + typst::compile)
         "@typst_crates//:typst-pdf",  # PagedDocument -> PDF bytes
         "@typst_crates//:time",  # epoch -> civil for World::today()

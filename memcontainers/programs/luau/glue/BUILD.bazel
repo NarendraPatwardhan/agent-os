@@ -28,7 +28,7 @@ build_test(
 zig_library(
     name = "glue",
     main = "glue.zig",
-    # In lockstep with :luau_obj's srcs (minus entry.zig, the binary's main) so this gate compiles
+    # In lockstep with :luau_raw's srcs (minus entry.zig, the binary's main) so this gate compiles
     # exactly what the binary compiles.
     srcs = [
         "deflate.zig",
@@ -59,7 +59,7 @@ build_test(
     targets = [":glue"],
 )
 
-# The wasi→mc adapter as a SELF-CONTAINED staticlib, link-injected into luau (see :luau_obj deps).
+# The wasi→mc adapter as a SELF-CONTAINED staticlib, link-injected into luau (see :luau_raw deps).
 # luau is not a Rust crate, so it links the staticlib (which bundles the core funcs + panic_handler)
 # rather than the bare object the rust mc_box uses.
 cc_object(
@@ -82,7 +82,7 @@ cc_headers(
 # kernel-mediated via the trap glue. (The wasi-adapter conversion to mc + the budget/tier/service
 # stamping + the import verify are layered on next.) See third_party/luau/SYSTEM.md.
 zig_binary(
-    name = "luau_obj",
+    name = "luau_raw",
     main = "entry.zig",
     srcs = [
         "deflate.zig",
@@ -141,7 +141,7 @@ zig_binary(
 
 zig_configure_binary(
     name = "luau_wasm",
-    actual = ":luau_obj",
+    actual = ":luau_raw",
     mode = "release_small",
     # wasm is single-threaded — std.heap.c_allocator's WasmAllocator is only implemented for
     # -fsingle-threaded (else @compileError("unimplemented")).
@@ -171,7 +171,7 @@ mc_program(
 # exceptions). The Ast Parser still routes parse errors through the trap, so trap.zig + the
 # __mc_pcall_run/__stack_pointer exports are kept.
 zig_binary(
-    name = "luau_analyze_obj",
+    name = "luau_analyze_raw",
     main = "analyze_entry.zig",
     srcs = [
         "trap.zig",
@@ -213,7 +213,7 @@ zig_binary(
 
 zig_configure_binary(
     name = "luau_analyze_wasm",
-    actual = ":luau_analyze_obj",
+    actual = ":luau_analyze_raw",
     mode = "release_small",
     threaded = "single",
     target = "//platforms:wasm32_wasi",

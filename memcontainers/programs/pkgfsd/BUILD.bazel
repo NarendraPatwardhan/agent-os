@@ -15,8 +15,8 @@ rust_binary(
     edition = "2021",
     tags = ["manual"],
     deps = [
-        "//memcontainers/pkgcore",  # the SHA-256 + catalog + path logic (unit-tested)
-        "//memcontainers/sysroot/rust",  # mc syscall wrappers (serve / netfs / persistfs) + the _start runtime
+        "//memcontainers/pkgcore:lib",  # the SHA-256 + catalog + path logic (unit-tested)
+        "//memcontainers/sysroot/rust:lib",  # mc syscall wrappers (serve / netfs / persistfs) + the _start runtime
         "@crates//:talc",  # the no_std wasm allocator (the catalog + pkgcore use alloc)
     ],
 )

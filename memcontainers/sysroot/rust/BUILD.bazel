@@ -10,7 +10,7 @@ load("//bazel:wasm32_build_test.bzl", "wasm32_build_test")
 # port the comfort). Compiles to wasm32-unknown-unknown; consumed by //memcontainers/programs.
 
 rust_library(
-    name = "rust",
+    name = "lib",
     crate_name = "sysroot",  # the crate stays `sysroot` (guests `use sysroot as rt`); only the label moved
     srcs = glob(["src/**/*.rs"]),
     edition = "2021",
@@ -28,5 +28,5 @@ rust_library(
 # Assert the sysroot compiles for its real target, wasm32.
 wasm32_build_test(
     name = "test",
-    lib = ":rust",
+    lib = ":lib",
 )

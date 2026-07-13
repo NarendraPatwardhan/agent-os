@@ -20,7 +20,8 @@ SHCORE_SRCS = [
 ]
 
 zig_library(
-    name = "shcore",
+    name = "lib",
+    import_name = "shcore",
     main = "src/shcore.zig",
     srcs = SHCORE_SRCS,
     deps = ["//memcontainers/contracts:constants_zig"],

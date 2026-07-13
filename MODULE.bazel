@@ -109,6 +109,14 @@ crate.from_cargo(
     manifests = ["//memcontainers/lib/parse:Cargo.toml"],
 )
 
+# Native parser-generator universe. Kept separate because tree-sitter-generate is a host build tool;
+# its std/regex graph must not feature-unify with the kernel or any guest engine.
+crate.from_cargo(
+    name = "grammar_gen_crates",
+    cargo_lockfile = "//bazel/tools/mc-grammar-gen:Cargo.lock",
+    manifests = ["//bazel/tools/mc-grammar-gen:Cargo.toml"],
+)
+
 # The NIF universe (std, native): just `rustler` for the BEAM host shim
 # (//memcontainers/hosts/wasmtime/nif). Its OWN lock — apart from @host_crates — so rustler
 # never feature-unifies with the host's wasmtime graph; the `host` crate it wraps is a Bazel
@@ -118,7 +126,7 @@ crate.from_cargo(
     cargo_lockfile = "//memcontainers/hosts/wasmtime/nif:Cargo.lock",
     manifests = ["//memcontainers/hosts/wasmtime/nif:Cargo.toml"],
 )
-use_repo(crate, "crates", "host_crates", "nif_crates", "parse_crates", "typst_crates")
+use_repo(crate, "crates", "grammar_gen_crates", "host_crates", "nif_crates", "parse_crates", "typst_crates")
 
 # aspect_bazel_lib — write_source_files + diff_test for the contract drift gate (B2).
 bazel_dep(name = "aspect_bazel_lib", version = "2.22.5")
@@ -186,6 +194,18 @@ http_archive(
     strip_prefix = "luau-0.725",
     type = "tar.gz",
     urls = ["https://github.com/luau-lang/luau/archive/refs/tags/0.725.tar.gz"],
+)
+
+# Tree-sitter generator + generic C runtime. AgentOS supplies its own declarative frontend and every
+# shipped grammar; only the proven generator/runtime core enters from this pinned archive (B3).
+http_archive(
+    name = "tree_sitter",
+    build_file = "//third_party/tree-sitter:BUILD.tree-sitter.bazel",
+    patch_args = ["-p1"],
+    patches = ["//third_party/tree-sitter:patches/0001-json-only-generator.patch"],
+    sha256 = "50546072d031b0cc1bf2075f3c2a22cdc94f95845059f3c68060389eab560a40",
+    strip_prefix = "tree-sitter-d11d18f746fdfd1826362c2531ce06808f386b02",
+    urls = ["https://github.com/tree-sitter/tree-sitter/archive/d11d18f746fdfd1826362c2531ce06808f386b02.tar.gz"],
 )
 # http_archive(name = "wasmtime", urls = ["..."], sha256 = "...")  # for hosts/wasmtime
 

@@ -1,0 +1,26 @@
+[package]
+name = "mc-grammar-gen"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "mc-grammar-gen"
+path = "src/main.rs"
+
+[dependencies]
+bitflags = "2.11.1"
+dunce = "1.0.5"
+indexmap = { version = "2.13.0", features = ["serde"] }
+log = "0.4.30"
+regex = "1.12.3"
+regex-syntax = "0.8.9"
+rustc-hash = "2.1.1"
+semver = { version = "1.0.27", features = ["serde"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.150", features = ["preserve_order"] }
+sha2 = "0.10.9"
+thiserror = "2.0.18"
+topological-sort = "0.2.2"
+
+[workspace]

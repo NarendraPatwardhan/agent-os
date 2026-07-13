@@ -8,12 +8,12 @@ load("//bazel:rust_opt_test.bzl", "rust_opt_test")
 exports_files(["Cargo.toml", "Cargo.lock"])
 
 rust_library(
-    name = "parse",
+    name = "lib",
     srcs = glob(["src/**/*.rs"]),
     crate_name = "mc_parse",
     edition = "2021",
     deps = [
-        "//memcontainers/pkgcore",
+        "//memcontainers/pkgcore:lib",
         "@parse_crates//:serde",
         "@parse_crates//:serde_json",
         "@parse_crates//:serde_yaml",
@@ -23,7 +23,7 @@ rust_library(
 
 rust_opt_test(
     name = "test",
-    crate = ":parse",
+    crate = ":lib",
     edition = "2021",
     size = "small",
 )

@@ -309,6 +309,9 @@ fn banner(lang: &str, contract: &str) -> String {
         "asyncapi" | "openapi" | "elixir" => {
             format!("# {line} from contracts/{contract} by //contracts/codegen:projector — do not edit.\n")
         }
+        "luau" => format!(
+            "-- {line} from contracts/{contract} by //contracts/codegen:projector — do not edit.\n"
+        ),
         // Rust projections are `no_std`: just consts/macros, usable by the no_std kernel
         // AND std hosts. Without this a std dependency would drag std's lang items
         // (panic_impl) into the kernel cdylib and collide with its `#[panic_handler]`.
@@ -340,6 +343,7 @@ fn emit_constants(lang: &str, nodes: &[Node], contract: &str) -> String {
     let mut o = banner(lang, contract);
     let comment = |o: &mut String, text: &str| match lang {
         "elixir" => o.push_str(&format!("\n  # {text}\n")),
+        "luau" => o.push_str(&format!("\n-- {text}\n")),
         _ => o.push_str(&format!("\n// {text}\n")),
     };
     let const_values: HashMap<String, i64> = nodes
@@ -354,6 +358,8 @@ fn emit_constants(lang: &str, nodes: &[Node], contract: &str) -> String {
 
     if lang == "elixir" {
         o.push_str(&format!("defmodule {} do\n", elixir_module_name(contract)));
+    } else if lang == "luau" {
+        o.push_str("local M = {}\n");
     }
 
     for n in nodes {
@@ -378,6 +384,9 @@ fn emit_constants(lang: &str, nodes: &[Node], contract: &str) -> String {
                             "  def sys_abi_major, do: {major}\n  def sys_abi_minor, do: {minor}\n  def abi_version, do: {version}\n"
                         ))
                     }
+                    "luau" => o.push_str(&format!(
+                        "M.SYS_ABI_MAJOR = {major}\nM.SYS_ABI_MINOR = {minor}\nM.abi_version = function() return M.SYS_ABI_MAJOR * 65536 + M.SYS_ABI_MINOR end\n"
+                    )),
                     _ => {}
                 }
             }
@@ -391,6 +400,7 @@ fn emit_constants(lang: &str, nodes: &[Node], contract: &str) -> String {
                     "zig" => o.push_str(&format!("pub const WIRE_VERSION: u32 = {v};\n")),
                     "ts" => o.push_str(&format!("export const WIRE_VERSION = {v};\n")),
                     "elixir" => o.push_str(&format!("  def wire_version, do: {v}\n")),
+                    "luau" => o.push_str(&format!("M.WIRE_VERSION = {v}\n")),
                     _ => {}
                 }
             }
@@ -456,6 +466,27 @@ fn emit_constants(lang: &str, nodes: &[Node], contract: &str) -> String {
                         }
                         o.push_str("      _ -> 0\n    end\n  end\n");
                     }
+                    "luau" => {
+                        o.push_str("M.tier_caps = function(tier)\n");
+                        for (name, expr) in &arms {
+                            let lua_expr = expr
+                                .split('|')
+                                .map(str::trim)
+                                .filter(|s| !s.is_empty())
+                                .map(|s| format!("M.{s}"))
+                                .collect::<Vec<_>>()
+                                .join(" + ");
+                            let lua_expr = if lua_expr.is_empty() {
+                                "0".to_string()
+                            } else {
+                                lua_expr
+                            };
+                            o.push_str(&format!(
+                                "  if tier == M.{name} then return {lua_expr} end\n"
+                            ));
+                        }
+                        o.push_str("  return 0\nend\n");
+                    }
                     _ => {}
                 }
             }
@@ -474,6 +505,7 @@ fn emit_constants(lang: &str, nodes: &[Node], contract: &str) -> String {
                         "  def {}, do: \"{value}\"\n",
                         elixir_fun_name(&cname)
                     )),
+                    "luau" => o.push_str(&format!("M.{cname} = \"{value}\"\n")),
                     _ => {}
                 }
             }
@@ -491,6 +523,7 @@ fn emit_constants(lang: &str, nodes: &[Node], contract: &str) -> String {
                         "elixir" => {
                             o.push_str(&format!("  def {}, do: {v}\n", elixir_fun_name(name)))
                         }
+                        "luau" => o.push_str(&format!("M.{name} = {v}\n")),
                         _ => {}
                     }
                 }
@@ -500,6 +533,8 @@ fn emit_constants(lang: &str, nodes: &[Node], contract: &str) -> String {
     }
     if lang == "elixir" {
         o.push_str("end\n");
+    } else if lang == "luau" {
+        o.push_str("return M\n");
     }
     o
 }
@@ -692,6 +727,28 @@ fn zig_type(ty: &str) -> String {
         "str" | "bytes" => "[]const u8".to_string(),
         "strmap" => "[]const StringPair".to_string(),
         _ => ty.to_string(),
+    }
+}
+
+fn zig_ident(name: &str) -> String {
+    match name {
+        "error" | "align" | "allowzero" | "and" | "anytype" | "asm" | "async" | "await"
+        | "break" | "catch" | "comptime" | "const" | "continue" | "defer" | "else" | "enum"
+        | "errdefer" | "export" | "extern" | "fn" | "for" | "if" | "inline" | "linksection"
+        | "noalias" | "noinline" | "nosuspend" | "opaque" | "or" | "orelse" | "packed" | "pub"
+        | "resume" | "return" | "struct" | "suspend" | "switch" | "test" | "threadlocal"
+        | "try" | "union" | "unreachable" | "usingnamespace" | "var" | "volatile" | "while" => {
+            format!("@\"{name}\"")
+        }
+        _ => name.to_string(),
+    }
+}
+
+fn zig_local(name: &str) -> String {
+    if zig_ident(name) == name {
+        name.to_string()
+    } else {
+        format!("{name}_value")
     }
 }
 
@@ -1338,6 +1395,177 @@ fn emit_ts_messages(messages: &[Message]) -> String {
     o
 }
 
+fn luau_encode_expr(ty: &str, expr: &str) -> String {
+    if let Some(inner) = list_inner(ty) {
+        return format!("put_list({expr}, M.encode_{inner})");
+    }
+    match ty {
+        "u32" => format!("put_u32({expr})"),
+        "i32" => format!("put_i32({expr})"),
+        "i64" => format!("put_i64({expr})"),
+        "bool" => format!("put_bool({expr})"),
+        "str" | "bytes" => format!("put_bytes({expr})"),
+        "strmap" => format!("put_strmap({expr})"),
+        _ => format!("put_bytes(M.encode_{ty}({expr}))"),
+    }
+}
+
+fn luau_decode_expr(ty: &str) -> String {
+    if let Some(inner) = list_inner(ty) {
+        return format!("read_list(bytes, off, M.decode_{inner})");
+    }
+    match ty {
+        "u32" => "read_u32(bytes, off)".to_string(),
+        "i32" => "read_i32(bytes, off)".to_string(),
+        "i64" => "read_i64(bytes, off)".to_string(),
+        "bool" => "read_bool(bytes, off)".to_string(),
+        "str" | "bytes" => "read_bytes(bytes, off)".to_string(),
+        "strmap" => "read_strmap(bytes, off)".to_string(),
+        _ => format!("read_message(bytes, off, M.decode_{ty})"),
+    }
+}
+
+/// Emit the resident-service client codec as ordinary Luau source. It deliberately uses only
+/// string.byte/string.char/table.concat so the generated boundary works in AgentOS's bounded Luau
+/// battery without host libraries or bit32. All integers exposed to syntax are <= u32 and therefore
+/// exactly representable by Luau's number type.
+fn emit_luau_messages(messages: &[Message]) -> String {
+    if messages.is_empty() {
+        return String::new();
+    }
+    let mut o = String::new();
+    o.push_str(
+        r#"local M = {}
+
+local function byte(bytes, at)
+  local v = string.byte(bytes, at)
+  if v == nil then error("syntax wire: truncated frame", 3) end
+  return v
+end
+local function put_u8(v) return string.char(v % 256) end
+local function put_u16(v) return string.char(v % 256, math.floor(v / 256) % 256) end
+local function put_u32(v)
+  return string.char(v % 256, math.floor(v / 256) % 256, math.floor(v / 65536) % 256, math.floor(v / 16777216) % 256)
+end
+local function put_i32(v) if v < 0 then v = v + 4294967296 end return put_u32(v) end
+local function put_i64(v)
+  local lo = v % 4294967296
+  local hi = math.floor(v / 4294967296)
+  if hi < 0 then hi = hi + 4294967296 end
+  return put_u32(lo) .. put_u32(hi)
+end
+local function put_bool(v) return put_u8(v and 1 or 0) end
+local function put_bytes(v) return put_u32(#v) .. v end
+local function put_strmap(values)
+  local keys = {}
+  for k in values do table.insert(keys, k) end
+  table.sort(keys)
+  local out = { put_u32(#keys) }
+  for _, k in keys do table.insert(out, put_bytes(k)); table.insert(out, put_bytes(values[k])) end
+  return table.concat(out)
+end
+local function put_list(values, encoder)
+  local out = { put_u32(#values) }
+  for _, value in values do table.insert(out, put_bytes(encoder(value))) end
+  return table.concat(out)
+end
+local function need(bytes, off, n)
+  if off + n - 1 > #bytes then error("syntax wire: truncated frame", 3) end
+  return string.sub(bytes, off, off + n - 1), off + n
+end
+local function read_u8(bytes, off) return byte(bytes, off), off + 1 end
+local function read_u16(bytes, off)
+  return byte(bytes, off) + byte(bytes, off + 1) * 256, off + 2
+end
+local function read_u32(bytes, off)
+  return byte(bytes, off) + byte(bytes, off + 1) * 256 + byte(bytes, off + 2) * 65536 + byte(bytes, off + 3) * 16777216, off + 4
+end
+local function read_i32(bytes, off)
+  local v; v, off = read_u32(bytes, off)
+  if v >= 2147483648 then v = v - 4294967296 end
+  return v, off
+end
+local function read_i64(bytes, off)
+  local lo, hi; lo, off = read_u32(bytes, off); hi, off = read_u32(bytes, off)
+  local v = lo + hi * 4294967296
+  if hi >= 2147483648 then v = v - 18446744073709551616 end
+  return v, off
+end
+local function read_bool(bytes, off)
+  local v; v, off = read_u8(bytes, off)
+  if v ~= 0 and v ~= 1 then error("syntax wire: invalid bool", 3) end
+  return v == 1, off
+end
+local function read_bytes(bytes, off)
+  local n; n, off = read_u32(bytes, off)
+  return need(bytes, off, n)
+end
+local function read_strmap(bytes, off)
+  local n; n, off = read_u32(bytes, off)
+  local out, prev = {}, nil
+  for _ = 1, n do
+    local k, v; k, off = read_bytes(bytes, off); v, off = read_bytes(bytes, off)
+    if prev ~= nil and prev >= k then error("syntax wire: non-canonical map", 3) end
+    out[k], prev = v, k
+  end
+  return out, off
+end
+local function read_message(bytes, off, decoder)
+  local frame; frame, off = read_bytes(bytes, off)
+  return decoder(frame), off
+end
+local function read_list(bytes, off, decoder)
+  local n; n, off = read_u32(bytes, off)
+  local out = {}
+  for i = 1, n do out[i], off = read_message(bytes, off, decoder) end
+  return out, off
+end
+local function header(bytes, expected)
+  local id, off = read_u16(bytes, 1)
+  local version
+  version, off = read_u8(bytes, off)
+  if id ~= expected then error("syntax wire: wrong message", 3) end
+  if version ~= 1 then error("syntax wire: unsupported version", 3) end
+  return off
+end
+local function finish(bytes, off)
+  if off ~= #bytes + 1 then error("syntax wire: trailing bytes", 3) end
+end
+
+"#,
+    );
+    for m in messages {
+        let prefix = screaming_snake(&m.name);
+        o.push_str(&format!("M.{prefix}_MSG_ID = {}\n", m.id));
+        o.push_str(&format!("M.{prefix}_VERSION = {}\n", m.version));
+        o.push_str(&format!("function M.encode_{}(msg)\n  local out = {{ put_u16(M.{prefix}_MSG_ID), put_u8(M.{prefix}_VERSION)", m.name));
+        for f in &m.fields {
+            let expr = luau_encode_expr(&f.ty, &format!("msg.{}", f.name));
+            if f.optional {
+                o.push_str(&format!(
+                    ", msg.{0} == nil and put_u8(0) or (put_u8(1) .. {expr})",
+                    f.name
+                ));
+            } else {
+                o.push_str(&format!(", {expr}"));
+            }
+        }
+        o.push_str(" }\n  return table.concat(out)\nend\n");
+        o.push_str(&format!("function M.decode_{}(bytes)\n  local off = header(bytes, M.{prefix}_MSG_ID)\n  local out = {{}}\n", m.name));
+        for f in &m.fields {
+            let expr = luau_decode_expr(&f.ty);
+            if f.optional {
+                o.push_str(&format!("  local has_{0}; has_{0}, off = read_u8(bytes, off)\n  if has_{0} == 1 then out.{0}, off = {expr} elseif has_{0} ~= 0 then error(\"syntax wire: invalid optional\", 2) end\n", f.name));
+            } else {
+                o.push_str(&format!("  out.{}, off = {expr}\n", f.name));
+            }
+        }
+        o.push_str("  finish(bytes, off)\n  return out\nend\n\n");
+    }
+    o.push_str("return M\n");
+    o
+}
+
 fn emit_zig_codec_field_put(o: &mut String, f: &MessageField, expr: &str) {
     if let Some(inner) = list_inner(&f.ty) {
         o.push_str(&format!(
@@ -1392,7 +1620,7 @@ fn emit_zig_messages(messages: &[Message]) -> String {
     o.push_str("fn ctlPutBool(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: bool) !void { try ctlPutU8(out, allocator, if (v) 1 else 0); }\n");
     o.push_str("fn ctlPutBytes(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: []const u8) !void { try ctlPutU32(out, allocator, @intCast(v.len)); try out.appendSlice(allocator, v); }\n");
     o.push_str("fn ctlPairLess(_: void, a: StringPair, b: StringPair) bool { return std.mem.lessThan(u8, a.key, b.key); }\n");
-    o.push_str("fn ctlPutStrMap(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: []const StringPair) !void { var pairs = try allocator.dupe(StringPair, v); defer allocator.free(pairs); std.mem.sort(StringPair, pairs, {}, ctlPairLess); try ctlPutU32(out, allocator, @intCast(pairs.len)); var prev: ?[]const u8 = null; for (pairs) |p| { if (prev) |last| { if (std.mem.eql(u8, last, p.key)) return WireError.NonCanonicalMap; } try ctlPutBytes(out, allocator, p.key); try ctlPutBytes(out, allocator, p.value); prev = p.key; } }\n");
+    o.push_str("fn ctlPutStrMap(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: []const StringPair) !void { const pairs = try allocator.dupe(StringPair, v); defer allocator.free(pairs); std.mem.sort(StringPair, pairs, {}, ctlPairLess); try ctlPutU32(out, allocator, @intCast(pairs.len)); var prev: ?[]const u8 = null; for (pairs) |p| { if (prev) |last| { if (std.mem.eql(u8, last, p.key)) return WireError.NonCanonicalMap; } try ctlPutBytes(out, allocator, p.key); try ctlPutBytes(out, allocator, p.value); prev = p.key; } }\n");
     o.push_str("fn ctlPutMessageList(comptime T: type, out: *std.ArrayList(u8), allocator: std.mem.Allocator, values: []const T) !void { try ctlPutU32(out, allocator, @intCast(values.len)); for (values) |value| { const frame = try value.encode(allocator); defer allocator.free(frame); try ctlPutBytes(out, allocator, frame); } }\n");
     o.push_str("fn ctlNeed(bytes: []const u8, off: *usize, len: usize) WireError![]const u8 { const end = off.* + len; if (end < off.* or end > bytes.len) return WireError.Truncated; const out = bytes[off.*..end]; off.* = end; return out; }\n");
     o.push_str("fn ctlReadU8(bytes: []const u8, off: *usize) WireError!u8 { return (try ctlNeed(bytes, off, 1))[0]; }\n");
@@ -1423,10 +1651,11 @@ fn emit_zig_messages(messages: &[Message]) -> String {
         o.push_str(&format!("pub const {} = struct {{\n", m.name));
         for f in &m.fields {
             let ty = zig_type(&f.ty);
+            let field = zig_ident(&f.name);
             if f.optional {
-                o.push_str(&format!("    {}: ?{} = null,\n", f.name, ty));
+                o.push_str(&format!("    {field}: ?{} = null,\n", ty));
             } else {
-                o.push_str(&format!("    {}: {},\n", f.name, ty));
+                o.push_str(&format!("    {field}: {},\n", ty));
             }
         }
         o.push_str("\n    pub fn encode(self: @This(), allocator: std.mem.Allocator) ![]u8 {\n");
@@ -1438,33 +1667,44 @@ fn emit_zig_messages(messages: &[Message]) -> String {
             "        try ctlPutU8(&out, allocator, {const_prefix}_VERSION);\n"
         ));
         for f in &m.fields {
+            let field = zig_ident(&f.name);
             if f.optional {
                 o.push_str(&format!(
-                    "        if (self.{}) |v| {{\n            try ctlPutU8(&out, allocator, 1);\n",
-                    f.name
+                    "        if (self.{field}) |v| {{\n            try ctlPutU8(&out, allocator, 1);\n"
                 ));
                 emit_zig_codec_field_put(&mut o, f, "v");
                 o.push_str(
                     "        } else {\n            try ctlPutU8(&out, allocator, 0);\n        }\n",
                 );
             } else {
-                emit_zig_codec_field_put(&mut o, f, &format!("self.{}", f.name));
+                emit_zig_codec_field_put(&mut o, f, &format!("self.{field}"));
             }
         }
         o.push_str("        return out.toOwnedSlice(allocator);\n    }\n\n");
         o.push_str(
             "    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {\n",
         );
+        let decode_uses_allocator = m.fields.iter().any(|f| {
+            list_inner(&f.ty).is_some()
+                || f.ty == "strmap"
+                || !matches!(
+                    f.ty.as_str(),
+                    "u32" | "i32" | "i64" | "bool" | "str" | "bytes"
+                )
+        });
+        if !decode_uses_allocator {
+            o.push_str("        _ = allocator;\n");
+        }
         o.push_str("        var off: usize = 0;\n");
         o.push_str(&format!("        if ((try ctlReadU16(bytes, &off)) != {const_prefix}_MSG_ID) return WireError.WrongMessage;\n"));
         o.push_str(&format!("        if ((try ctlReadU8(bytes, &off)) != {const_prefix}_VERSION) return WireError.UnsupportedVersion;\n"));
         for f in &m.fields {
+            let local = zig_local(&f.name);
             if f.optional {
-                o.push_str(&format!("        const {} = switch (try ctlReadU8(bytes, &off)) {{\n            0 => null,\n            1 => {},\n            else => return WireError.InvalidPresence,\n        }};\n", f.name, zig_decode_expr(&f.ty)));
+                o.push_str(&format!("        const {local} = switch (try ctlReadU8(bytes, &off)) {{\n            0 => null,\n            1 => {},\n            else => return WireError.InvalidPresence,\n        }};\n", zig_decode_expr(&f.ty)));
             } else {
                 o.push_str(&format!(
-                    "        const {} = {};\n",
-                    f.name,
+                    "        const {local} = {};\n",
                     zig_decode_expr(&f.ty)
                 ));
             }
@@ -1472,7 +1712,11 @@ fn emit_zig_messages(messages: &[Message]) -> String {
         o.push_str("        if (off != bytes.len) return WireError.TrailingBytes;\n");
         o.push_str("        return .{\n");
         for f in &m.fields {
-            o.push_str(&format!("            .{} = {},\n", f.name, f.name));
+            o.push_str(&format!(
+                "            .{} = {},\n",
+                zig_ident(&f.name),
+                zig_local(&f.name)
+            ));
         }
         o.push_str("        };\n    }\n};\n\n");
     }
@@ -1528,10 +1772,7 @@ fn emit_zig_syscall_types(rows: &[Row]) -> String {
     for r in rows {
         o.push_str(&format!("pub const {}Args = struct {{\n", r.variant));
         for (name, ty) in &r.args {
-            o.push_str(&format!(
-                "    {name}: {},\n",
-                zig_syscall_storage_ty(ty),
-            ));
+            o.push_str(&format!("    {name}: {},\n", zig_syscall_storage_ty(ty),));
         }
         o.push_str("};\n\n");
     }
@@ -1608,7 +1849,10 @@ fn emit_zig_syscall_externs(rows: &[Row]) -> String {
             );
             ""
         };
-        o.push_str(&format!("pub extern \"mc\" fn {}({args}) i32;{note}\n", r.name));
+        o.push_str(&format!(
+            "pub extern \"mc\" fn {}({args}) i32;{note}\n",
+            r.name
+        ));
     }
     o
 }
@@ -1792,16 +2036,82 @@ fn emit_table(
 fn emit_codec_module(lang: &str, nodes: &[Node], contract: &str) -> String {
     let messages = collect_codec_messages(nodes);
     let mut o = banner(lang, contract);
+    let vocabulary = emit_vocabulary_constants(lang, nodes);
     match lang {
-        "rust" => o.push_str(&emit_rust_messages(&messages)),
-        "zig" => o.push_str(&emit_zig_messages(&messages)),
+        "rust" => {
+            let messages = emit_rust_messages(&messages);
+            let inner = "#![allow(dead_code)]\n\n";
+            o.push_str(inner);
+            o.push_str(&vocabulary);
+            o.push_str(messages.strip_prefix(inner).unwrap_or(&messages));
+        }
+        "zig" => {
+            o.push_str(&vocabulary);
+            o.push_str(&emit_zig_messages(&messages));
+        }
         "ts" => o.push_str(&emit_ts_messages(&messages)),
         "elixir" => o.push_str(&emit_elixir_messages(&messages, contract)),
+        "luau" => {
+            let body = emit_luau_messages(&messages);
+            o.push_str(&body.replacen(
+                "local M = {}\n",
+                &format!("local M = {{}}\n{vocabulary}"),
+                1,
+            ));
+        }
         _ => o.push_str(&format!("// codec projection is not defined for {lang}\n")),
     }
     o.truncate(o.trim_end().len());
     o.push('\n');
     o
+}
+
+fn emit_vocabulary_constants(lang: &str, nodes: &[Node]) -> String {
+    let mut out = String::new();
+    for node in nodes {
+        let (prefix, is_version) = match node.name.as_str() {
+            "protocol-version" => ("PROTOCOL_VERSION".to_string(), true),
+            "vocabulary-version" => ("VOCABULARY_VERSION".to_string(), true),
+            "grammar-ir-version" => ("GRAMMAR_IR_VERSION".to_string(), true),
+            "semantic-kind" => (
+                format!(
+                    "SEMANTIC_KIND_{}",
+                    node.arg_str(0).to_ascii_uppercase().replace('-', "_")
+                ),
+                false,
+            ),
+            "semantic-role" => (
+                format!(
+                    "SEMANTIC_ROLE_{}",
+                    node.arg_str(0).to_ascii_uppercase().replace('-', "_")
+                ),
+                false,
+            ),
+            "semantic-trait" => (
+                format!(
+                    "SEMANTIC_TRAIT_{}",
+                    node.arg_str(0).to_ascii_uppercase().replace('-', "_")
+                ),
+                false,
+            ),
+            _ => continue,
+        };
+        let value = if is_version {
+            node.args.first().map(Val::as_int).unwrap_or(0)
+        } else {
+            node.props.get("id").map(Val::as_int).unwrap_or(0)
+        };
+        match lang {
+            "rust" => out.push_str(&format!("pub const {prefix}: u32 = {value};\n")),
+            "zig" => out.push_str(&format!("pub const {prefix}: u32 = {value};\n")),
+            "luau" => out.push_str(&format!("M.{prefix} = {value}\n")),
+            _ => {}
+        }
+    }
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    out
 }
 
 #[derive(Clone)]
@@ -2019,7 +2329,10 @@ fn resolve_schema_fields(schema: &Schema, messages: &BTreeMap<String, Message>) 
                     )
                 });
             if !seen_names.insert(project.name.clone()) {
-                panic!("schema {} has duplicate field {}", schema.name, project.name);
+                panic!(
+                    "schema {} has duplicate field {}",
+                    schema.name, project.name
+                );
             }
             out.push(Field {
                 name: project.name.clone(),
@@ -2209,13 +2522,19 @@ fn emit_openapi(nodes: &[Node], contract: &str, contract_path: &str) -> String {
         .unwrap_or(0);
     let routes = collect_routes(nodes);
     let schemas = collect_schemas(nodes);
-    let messages: BTreeMap<String, Message> = schema_source_messages(nodes, contract_path, &schemas)
-        .into_iter()
-        .map(|m| (m.name.clone(), m))
-        .collect();
+    let messages: BTreeMap<String, Message> =
+        schema_source_messages(nodes, contract_path, &schemas)
+            .into_iter()
+            .map(|m| (m.name.clone(), m))
+            .collect();
     let resolved_fields: BTreeMap<String, Vec<Field>> = schemas
         .iter()
-        .map(|schema| (schema.name.clone(), resolve_schema_fields(schema, &messages)))
+        .map(|schema| {
+            (
+                schema.name.clone(),
+                resolve_schema_fields(schema, &messages),
+            )
+        })
         .collect();
     let schema_names: BTreeSet<String> = schemas.iter().map(|s| s.name.clone()).collect();
     let schema_kinds: BTreeMap<String, String> = schemas
@@ -2324,10 +2643,7 @@ fn emit_openapi(nodes: &[Node], contract: &str, contract_path: &str) -> String {
             }
             _ => {
                 out.push_str("      type: object\n");
-                let required = fields
-                    .iter()
-                    .filter(|f| f.required)
-                    .collect::<Vec<_>>();
+                let required = fields.iter().filter(|f| f.required).collect::<Vec<_>>();
                 if !required.is_empty() {
                     out.push_str("      required:\n");
                     for field in required {
@@ -2463,7 +2779,7 @@ fn main() -> ExitCode {
         i += 2;
     }
     let (Some(lang), Some(module), Some(contract)) = (lang, module, contract) else {
-        eprintln!("usage: projector --module <constants|mc|env|ctl|wire|llb> --lang <rust|zig|ts|elixir|md|asyncapi|openapi> --contract <path.kdl>");
+        eprintln!("usage: projector --module <constants|mc|env|ctl|wire|llb|syntax> --lang <rust|zig|ts|elixir|luau|md|asyncapi|openapi> --contract <path.kdl>");
         return ExitCode::FAILURE;
     };
 
@@ -2511,6 +2827,7 @@ fn main() -> ExitCode {
         ),
         "wire" => emit_wire(&lang, &nodes, &file, &contract),
         "llb" => emit_codec_module(&lang, &nodes, &file),
+        "syntax" => emit_codec_module(&lang, &nodes, &file),
         other => {
             eprintln!("projector: unknown module {other}");
             return ExitCode::FAILURE;

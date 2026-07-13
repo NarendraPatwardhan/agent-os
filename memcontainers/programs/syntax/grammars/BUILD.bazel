@@ -1,0 +1,32 @@
+load("//bazel:mc_grammar.bzl", "mc_grammar")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "lua.grammar",
+    "luau.grammar",
+    "families/lua-core.grammar",
+])
+
+mc_grammar(
+    name = "lua",
+    root = "lua.grammar",
+    modules = {"families/lua-core.grammar": "families/lua-core"},
+    language = "lua",
+)
+
+mc_grammar(
+    name = "luau",
+    root = "luau.grammar",
+    modules = {"families/lua-core.grammar": "families/lua-core"},
+    language = "luau",
+)
+
+filegroup(name = "lua_parser_c", srcs = [":lua"], output_group = "parser_c")
+filegroup(name = "luau_parser_c", srcs = [":luau"], output_group = "parser_c")
+filegroup(name = "lua_semantics_c", srcs = [":lua"], output_group = "semantics_c")
+filegroup(name = "luau_semantics_c", srcs = [":luau"], output_group = "semantics_c")
+filegroup(name = "lua_semantics", srcs = [":lua"], output_group = "semantics")
+filegroup(name = "luau_semantics", srcs = [":luau"], output_group = "semantics")
+filegroup(name = "lua_manifest", srcs = [":lua"], output_group = "manifest")
+filegroup(name = "luau_manifest", srcs = [":luau"], output_group = "manifest")

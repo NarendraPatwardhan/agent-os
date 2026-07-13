@@ -1,0 +1,69 @@
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary", "zig_library")
+load("//bazel:mc_program.bzl", "cc_object", "mc_program")
+load("//bazel:mc_grammar.bzl", "mc_syntax_registry")
+
+cc_object(name = "wasi_adapter_link", obj = "//memcontainers/wasi-adapter:wasi_adapter_staticlib")
+
+mc_syntax_registry(
+    name = "registry",
+    grammars = [
+        "//memcontainers/programs/syntax/grammars:lua",
+        "//memcontainers/programs/syntax/grammars:luau",
+    ],
+)
+filegroup(name = "registry_header", srcs = [":registry"], output_group = "header")
+filegroup(name = "registry_zig", srcs = [":registry"], output_group = "zig")
+
+zig_library(
+    name = "registry_lib",
+    main = ":registry_zig",
+    import_name = "syntax_registry",
+)
+
+zig_binary(
+    name = "syntax_raw",
+    main = "entry.zig",
+    srcs = ["scanner.zig"],
+    csrcs = [
+        "@tree_sitter//:runtime_c",
+        "//memcontainers/wasi-adapter:close_shim.c",
+        "//memcontainers/programs/syntax/grammars:lua_parser_c",
+        "//memcontainers/programs/syntax/grammars:luau_parser_c",
+        "//memcontainers/programs/syntax/grammars:lua_semantics_c",
+        "//memcontainers/programs/syntax/grammars:luau_semantics_c",
+    ],
+    extra_srcs = [
+        "@tree_sitter//:runtime_support",
+    ],
+    linkopts = ["-lc"],
+    deps = [
+        "@tree_sitter//:runtime_headers",
+        "//memcontainers/contracts:syntax_zig",
+        "//memcontainers/sysroot/zig:mc",
+        "//memcontainers/sysroot/zig:svc",
+        "//memcontainers/sysroot/zig:sys",
+        ":registry_lib",
+        ":wasi_adapter_link",
+    ],
+    tags = ["manual"],
+)
+
+zig_configure_binary(
+    name = "syntax_wasm",
+    actual = ":syntax_raw",
+    mode = "release_small",
+    threaded = "single",
+    target = "//platforms:wasm32_wasi",
+    tags = ["manual"],
+)
+
+mc_program(
+    name = "syntax",
+    wasm = ":syntax_wasm",
+    tier = "isolated",
+    service = "syntax",
+    mem = 256 * 1024 * 1024,
+    fuel = 1000000000000,
+    table = 20000,
+    visibility = ["//visibility:public"],
+)

@@ -17,8 +17,8 @@ export type { CatalogBundle, RegistryEntry, RegistryGroup } from "./catalog_comp
 export { DeniedNet, HostNet } from "./net.js";
 export type { NetApprover, ToolApprovalFacts, ToolApprover, HostNetOptions } from "./net.js";
 export { DeniedPersist } from "./persist_core.js";
-export { OpfsPersist, OpfsKv, IdbKv, MemoryKv } from "./opfs-persist.js";
-export type { BrowserKv } from "./opfs-persist.js";
+export { OpfsPersist, OpfsKv, IdbKv, MemoryKv } from "./opfs_persist.js";
+export type { BrowserKv } from "./opfs_persist.js";
 export { DeniedHostCall, MapHostCall } from "./host_call.js";
 export type { HostCallCapability, ToolHandler, RawToolHandler } from "./host_call.js";
 export { Mem } from "./memory.js";
