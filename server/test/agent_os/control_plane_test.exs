@@ -141,6 +141,12 @@ defmodule AgentOS.ControlPlaneTest do
       assert {:ok, snapshot} = ControlPlane.snapshot(id)
       assert binary_part(snapshot, 0, 4) == "MCSN"
 
+      assert {:ok, incremental} = ControlPlane.snapshot(id, mode: :incremental)
+      assert binary_part(incremental, 0, 4) == "MCSN"
+      assert byte_size(incremental) < byte_size(snapshot)
+      assert {:error, bad_mode} = ControlPlane.snapshot(id, mode: :chain)
+      assert bad_mode =~ "snapshot mode"
+
       assert {:ok, fork_pid} =
                ControlPlane.create(fork_id,
                  wasm: wasm,

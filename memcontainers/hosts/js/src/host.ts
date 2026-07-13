@@ -7,7 +7,15 @@ import {
   encodeExecRequest,
   encodeSvcRequest,
 } from "@mc/contracts/ctl";
-import { EAGAIN } from "@mc/contracts/constants";
+import { EAGAIN, MAX_WORKERS } from "@mc/contracts/constants";
+import {
+  SNAPSHOT_HEADER_LEN,
+  SNAPSHOT_PAGE_SIZE,
+  parseSnapshot,
+  snapshotBitmapLen,
+  writeSnapshotHeader,
+  type SnapshotView,
+} from "@mc/contracts/snapshot";
 import { Mem } from "./memory.js";
 import { makeBridge, type HostState } from "./bridge.js";
 import { processStdout, processStderr } from "./io.js";
@@ -40,7 +48,7 @@ type ExportFn<Row extends { args: readonly unknown[]; ret: string }> = (
 type ContractExports = { [Row in (typeof EXPORTS)[number] as Row["name"]]?: ExportFn<Row> };
 
 // The mandatory trio the host cannot drive a kernel without (the rest gate on the kernel build).
-const REQUIRED_EXPORTS = ["mc_init", "mc_tick", "mc_input"] as const;
+const REQUIRED_EXPORTS = ["mc_init", "mc_tick", "mc_input", "mc_worker_count"] as const;
 type RequiredExport = (typeof REQUIRED_EXPORTS)[number];
 
 type KernelExports = { memory: WebAssembly.Memory } & Required<Pick<ContractExports, RequiredExport>> &
@@ -119,38 +127,67 @@ const ctlCheck = (op: string, path: string, n: number): number => {
   return n;
 };
 
-// Snapshot format (A8) — must match the Rust/wasmtime host (SnapshotHeader) byte-for-byte, so a
-// snapshot taken under one host restores under the other (A3):
-//   magic("MCSN") | version:u32 | scratchAddr:u32 | scratchLen:u32 | workers:u32 | memLen:u32 | image
-const SNAPSHOT_MAGIC = new Uint8Array([0x4d, 0x43, 0x53, 0x4e]); // "MCSN"
-const SNAPSHOT_VERSION = 1;
-const SNAPSHOT_HEADER_LEN = 24;
+const sha256 = async (bytes: Uint8Array): Promise<Uint8Array> =>
+  new Uint8Array(await crypto.subtle.digest("SHA-256", bytes as Uint8Array<ArrayBuffer>));
+const digestEqual = (a: Uint8Array, b: Uint8Array): boolean =>
+  a.length === b.length && a.every((value, i) => value === b[i]);
 
-interface SnapshotHeader {
-  scratchAddr: number;
-  scratchLen: number;
-  workers: number;
-  memLen: number;
+async function validateSnapshot(
+  snapshot: Uint8Array,
+  base: Uint8Array | undefined,
+  kernelDigest: Uint8Array,
+): Promise<{ view: SnapshotView; baseView?: SnapshotView }> {
+  const view = parseSnapshot(snapshot);
+  if (!digestEqual(view.kernelDigest, kernelDigest)) {
+    throw new Error("invalid snapshot: kernel_digest_mismatch");
+  }
+  if (view.kind === "full") {
+    if (base) throw new Error("invalid snapshot: unexpected_base_snapshot");
+    return { view };
+  }
+  if (!base) throw new Error("invalid snapshot: missing_base_snapshot");
+  if (!digestEqual(await sha256(base), view.baseSnapshotDigest)) {
+    throw new Error("invalid snapshot: base_snapshot_digest_mismatch");
+  }
+  const baseView = parseSnapshot(base);
+  if (baseView.kind !== "full") throw new Error("invalid snapshot: incremental_base_not_full");
+  if (!digestEqual(baseView.kernelDigest, kernelDigest)) {
+    throw new Error("invalid snapshot: base_kernel_digest_mismatch");
+  }
+  if (!digestEqual(await sha256(baseView.pages), baseView.memoryDigest)) {
+    throw new Error("invalid snapshot: base_memory_digest_mismatch");
+  }
+  if (baseView.memoryLen > view.memoryLen) throw new Error("invalid snapshot: memory_shrank");
+  return { view, baseView };
 }
 
-function parseSnapshotHeader(snap: Uint8Array): SnapshotHeader {
-  if (snap.length < SNAPSHOT_HEADER_LEN) throw new Error(`snapshot too short (${snap.length} bytes)`);
-  for (let i = 0; i < 4; i++) {
-    if (snap[i] !== SNAPSHOT_MAGIC[i]) throw new Error("not an AgentOS snapshot (bad magic)");
+/** Reconstruct directly in the already-sized wasm memory so restore never holds a second complete
+ * memory image next to the module. */
+async function applySnapshot(
+  view: SnapshotView,
+  baseView: SnapshotView | undefined,
+  memory: Uint8Array,
+): Promise<void> {
+  if (memory.length !== view.memoryLen) {
+    throw new Error("invalid snapshot: restored_memory_length_mismatch");
   }
-  const dv = new DataView(snap.buffer, snap.byteOffset, snap.byteLength);
-  const version = dv.getUint32(4, true);
-  if (version !== SNAPSHOT_VERSION) {
-    throw new Error(`unsupported snapshot version ${version} (host expects ${SNAPSHOT_VERSION})`);
+  if (!baseView) {
+    memory.set(view.pages);
+  } else {
+    memory.fill(0);
+    memory.set(baseView.pages);
+    let changed = 0;
+    for (let page = 0; page < view.memoryLen / SNAPSHOT_PAGE_SIZE; page++) {
+      if ((view.bitmap[page >>> 3]! & (1 << (page & 7))) === 0) continue;
+      const start = page * SNAPSHOT_PAGE_SIZE;
+      memory.set(view.pages.subarray(changed, changed + SNAPSHOT_PAGE_SIZE), start);
+      changed += SNAPSHOT_PAGE_SIZE;
+    }
+    if (changed !== view.pages.length) throw new Error("invalid snapshot: changed_page_length");
   }
-  const scratchAddr = dv.getUint32(8, true);
-  const scratchLen = dv.getUint32(12, true);
-  const workers = dv.getUint32(16, true);
-  const memLen = dv.getUint32(20, true);
-  if (snap.length < SNAPSHOT_HEADER_LEN + memLen) {
-    throw new Error(`snapshot truncated: need ${SNAPSHOT_HEADER_LEN + memLen}, have ${snap.length}`);
+  if (!digestEqual(await sha256(memory), view.memoryDigest)) {
+    throw new Error("invalid snapshot: memory_digest_mismatch");
   }
-  return { scratchAddr, scratchLen, workers, memLen };
 }
 
 /** Frame an ordered layer stack for `mc_load_base_image`: `"MCLS" [u32 count] ([u32 len][bytes])…`
@@ -291,6 +328,7 @@ export class KernelHostBuilder {
   }
 
   async build(): Promise<KernelHost> {
+    const kernelDigest = await sha256(this.wasm);
     const st = this.newState();
     const { instance } = await WebAssembly.instantiate(this.wasm, {
       env: makeBridge(st),
@@ -307,16 +345,22 @@ export class KernelHostBuilder {
     // mc_init internally negotiates `mc_threads_init` and calls `mc_load_base_image` back into our
     // bridge.
     exports.mc_init();
+    st.workersGranted = exports.mc_worker_count();
+    if (st.workersGranted < 0 || st.workersGranted > MAX_WORKERS ||
+        (st.workersGranted > 0 && !exports.mc_worker_entry)) {
+      throw new Error("kernel returned invalid worker state after boot");
+    }
 
-    return new KernelHost(st, exports, scratchAddr, Mem.pageSize);
+    return new KernelHost(st, exports, scratchAddr, Mem.pageSize, kernelDigest);
   }
 
   /** Rebuild a host from a snapshot ({@link KernelHost.snapshot}) instead of booting: write the saved
    *  linear-memory image and do NOT call `mc_init` — the booted state IS the image. The restore/fork
    *  primitive (A8). Reuses the builder's wasm + capabilities + sinks; pass fresh capabilities so a
    *  restored VM never shares the original's host handles. */
-  async restore(snapshot: Uint8Array): Promise<KernelHost> {
-    const hdr = parseSnapshotHeader(snapshot);
+  async restore(snapshot: Uint8Array, base?: Uint8Array): Promise<KernelHost> {
+    const kernelDigest = await sha256(this.wasm);
+    const { view, baseView } = await validateSnapshot(snapshot, base, kernelDigest);
     const st = this.newState();
     const { instance } = await WebAssembly.instantiate(this.wasm, {
       env: makeBridge(st),
@@ -328,14 +372,31 @@ export class KernelHostBuilder {
     // Grow to the snapshot's size and write the image. No scratch grow and no mc_init: the image
     // already contains the scratch page and the booted state.
     const curBytes = exports.memory.buffer.byteLength;
-    if (hdr.memLen > curBytes) {
-      exports.memory.grow(Math.ceil((hdr.memLen - curBytes) / Mem.pageSize));
+    const scratchAddr = curBytes;
+    const minimum = scratchAddr + SNAPSHOT_PAGE_SIZE;
+    if (view.memoryLen < minimum) {
+      throw new Error(`invalid snapshot: memory_too_small (need at least ${minimum}, have ${view.memoryLen})`);
     }
-    const image = snapshot.subarray(SNAPSHOT_HEADER_LEN, SNAPSHOT_HEADER_LEN + hdr.memLen);
-    new Uint8Array(exports.memory.buffer).set(image, 0);
-    st.workersGranted = hdr.workers;
+    if (view.memoryLen > curBytes) {
+      try {
+        exports.memory.grow((view.memoryLen - curBytes) / SNAPSHOT_PAGE_SIZE);
+      } catch (error) {
+        throw new Error(`invalid snapshot: memory_limit (${String(error)})`);
+      }
+    }
+    if (exports.memory.buffer.byteLength !== view.memoryLen) {
+      throw new Error("invalid snapshot: restored_memory_length_mismatch");
+    }
+    await applySnapshot(view, baseView, new Uint8Array(exports.memory.buffer));
+    st.workersGranted = exports.mc_worker_count();
+    if (st.workersGranted < 0 || st.workersGranted > MAX_WORKERS) {
+      throw new Error("invalid snapshot: worker_count_out_of_range");
+    }
+    if (st.workersGranted > 0 && !exports.mc_worker_entry) {
+      throw new Error("invalid snapshot: workers_without_worker_export");
+    }
 
-    return new KernelHost(st, exports, hdr.scratchAddr, hdr.scratchLen);
+    return new KernelHost(st, exports, scratchAddr, SNAPSHOT_PAGE_SIZE, kernelDigest);
   }
 }
 
@@ -347,6 +408,7 @@ export class KernelHost {
     private readonly exports: KernelExports,
     private readonly scratchAddr: number,
     private readonly scratchLen: number,
+    private readonly kernelDigest: Uint8Array,
   ) {}
 
   /** One cooperative step. Returns false once the kernel called `mc_exit`. */
@@ -730,25 +792,83 @@ export class KernelHost {
   /** Capture the entire VM as a portable byte blob (A8): the linear-memory image — all kernel and guest
    *  state — behind a small header. Refuses while a host-egress operation is in flight (its raw host
    *  handle would not survive a restore). Pair with {@link KernelHostBuilder.restore}. */
-  snapshot(): Uint8Array {
+  async snapshot(): Promise<Uint8Array> {
+    this.ensureSnapshotReady();
+    // Hashing is asynchronous in JS. Freeze the linear-memory image before the first await so the
+    // SDK pump cannot advance the kernel between hashing and copying the payload.
+    const mem = new Uint8Array(this.exports.memory.buffer).slice();
+    const header = writeSnapshotHeader(
+      "full",
+      mem.length,
+      0,
+      this.kernelDigest,
+      await sha256(mem),
+      new Uint8Array(32),
+    );
+    const out = new Uint8Array(header.length + mem.length);
+    out.set(header);
+    out.set(mem, header.length);
+    return out;
+  }
+
+  /** Cumulative changed-page snapshot against one full baseline. Incrementals never chain. */
+  async snapshotIncremental(base: Uint8Array): Promise<Uint8Array> {
+    this.ensureSnapshotReady();
+    const baseView = parseSnapshot(base);
+    if (baseView.kind !== "full") throw new Error("incremental snapshot base must be full");
+    if (!digestEqual(baseView.kernelDigest, this.kernelDigest)) {
+      throw new Error("incremental snapshot base uses a different kernel");
+    }
+    if (!digestEqual(await sha256(baseView.pages), baseView.memoryDigest)) {
+      throw new Error("incremental snapshot base memory digest mismatch");
+    }
+    // Keep the digest, bitmap, and page payload tied to one instant even while async hashing yields.
+    const mem = new Uint8Array(this.exports.memory.buffer).slice();
+    if (baseView.memoryLen > mem.length) throw new Error("incremental snapshot memory cannot shrink");
+    const bitmap = new Uint8Array(snapshotBitmapLen(mem.length));
+    const changed: Uint8Array[] = [];
+    for (let page = 0; page < mem.length / SNAPSHOT_PAGE_SIZE; page++) {
+      const start = page * SNAPSHOT_PAGE_SIZE;
+      const current = mem.subarray(start, start + SNAPSHOT_PAGE_SIZE);
+      const prior = start < baseView.memoryLen
+        ? baseView.pages.subarray(start, start + SNAPSHOT_PAGE_SIZE)
+        : undefined;
+      let differs = prior === undefined;
+      if (prior) {
+        for (let i = 0; i < SNAPSHOT_PAGE_SIZE; i++) {
+          if (current[i] !== prior[i]) { differs = true; break; }
+        }
+      } else {
+        differs = current.some((b) => b !== 0);
+      }
+      if (differs) {
+        bitmap[page >>> 3] |= 1 << (page & 7);
+        changed.push(current.slice());
+      }
+    }
+    const header = writeSnapshotHeader(
+      "incremental",
+      mem.length,
+      changed.length,
+      this.kernelDigest,
+      await sha256(mem),
+      await sha256(base),
+    );
+    const out = new Uint8Array(header.length + bitmap.length + changed.length * SNAPSHOT_PAGE_SIZE);
+    out.set(header);
+    out.set(bitmap, header.length);
+    let off = header.length + bitmap.length;
+    for (const page of changed) { out.set(page, off); off += page.length; }
+    return out;
+  }
+
+  private ensureSnapshotReady(): void {
     const inflight = this.inflightEgress();
     if (inflight > 0) {
       throw new Error(
         `cannot snapshot: ${inflight} host-egress operation(s) in flight; quiesce first`,
       );
     }
-    const mem = new Uint8Array(this.exports.memory.buffer);
-    const memLen = mem.length;
-    const out = new Uint8Array(SNAPSHOT_HEADER_LEN + memLen);
-    const dv = new DataView(out.buffer);
-    out.set(SNAPSHOT_MAGIC, 0);
-    dv.setUint32(4, SNAPSHOT_VERSION, true);
-    dv.setUint32(8, this.scratchAddr >>> 0, true);
-    dv.setUint32(12, this.scratchLen, true);
-    dv.setUint32(16, this.st.workersGranted >>> 0, true);
-    dv.setUint32(20, memLen, true);
-    out.set(mem, SNAPSHOT_HEADER_LEN);
-    return out;
   }
 
   /** Serialize the live CoW overlay into a content-addressed `.tar` layer (the `commit` primitive):

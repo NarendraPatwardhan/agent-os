@@ -21,6 +21,7 @@ import type {
   ToolContext,
   ToolDefinition,
   VmStatus,
+  SnapshotOptions,
 } from "./types.js";
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -289,8 +290,9 @@ export class RemoteBackend implements Backend {
     }
   }
 
-  async snapshot(): Promise<Uint8Array> {
-    const response = await fetch(this.vmUrl("/snapshots"), {
+  async snapshot(opts: SnapshotOptions = {}): Promise<Uint8Array> {
+    const mode = opts.mode ?? "full";
+    const response = await fetch(`${this.vmUrl("/snapshots")}?mode=${encodeURIComponent(mode)}`, {
       method: "POST",
       headers: this.headers,
     });

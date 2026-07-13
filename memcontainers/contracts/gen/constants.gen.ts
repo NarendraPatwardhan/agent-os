@@ -73,6 +73,9 @@ export const SEEK_END = 2;
 // waitpid
 export const WNOHANG = 1;
 
+// worker
+export const MAX_WORKERS = 4;
+
 // poll
 export const POLLIN = 1;
 export const POLLOUT = 4;

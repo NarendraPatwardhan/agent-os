@@ -74,6 +74,9 @@ pub const SEEK_END: i32 = 2;
 // waitpid
 pub const WNOHANG: i32 = 1;
 
+// worker
+pub const MAX_WORKERS: i32 = 4;
+
 // poll
 pub const POLLIN: i32 = 1;
 pub const POLLOUT: i32 = 4;

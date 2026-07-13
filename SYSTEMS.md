@@ -747,11 +747,35 @@ inherently asynchronous server.
 
 ## 8. System 11 — Snapshots, determinism, and the seal
 
-Snapshot/restore is a *host* operation built on A8. The host dumps the kernel's entire linear memory —
-the scheduler with every guest's `wasmi` store, the heap, the VFS, the module cache — behind a small
-header, and rebuilds a fresh instance *without* calling `mc_init`: the booted state *is* the image. A
-restored VM gets fresh capabilities and sinks (it never shares the original's host handles), and two
-restores from one snapshot fork into independent VMs.
+Snapshot/restore is a *host* operation built on A8. MCSN v2 stores the kernel's linear memory—the
+scheduler with every guest's `wasmi` store, the heap, the VFS, and the module cache—behind a projected
+128-byte header. A restore instantiates the exact kernel identified by the header, writes memory, and
+does **not** call `mc_init`: the booted state *is* the image. It receives fresh capabilities and sinks
+(host handles are never serialized), and two restores from one value fork into independent VMs.
+
+There are two value kinds:
+
+- **full** is self-contained: header plus the exact page-aligned memory image;
+- **incremental** is a cumulative page delta against exactly one full baseline: a page bitmap plus
+  replacement 64-KiB pages in ascending order. The header names the baseline by SHA-256. Deltas never
+  reference deltas, so restore depth is always one and a long checkpoint history cannot become a
+  replay chain.
+
+`contracts/snapshot.kdl` owns the magic, version, kinds, offsets, page size, digest layout, and maximum
+memory length; the projector emits the same zero-copy structural codec for Rust and TypeScript. Both
+hosts verify the kernel digest, baseline object digest, baseline memory digest, final memory digest,
+bitmap cardinality, exact payload length, memory alignment and bounds before exposing a VM. Restore
+reconstructs directly into already-sized WebAssembly memory rather than allocating a second declared
+memory image. The scratch page is derived from the matching module's initial memory end, and the worker
+count is read back from restored kernel state and bounded by the generated shared `MAX_WORKERS`; neither
+is attacker-controlled header metadata. Malformed values therefore fail as values rather than creating
+hybrid memory, zero-length input loops, invalid slices, or unbounded per-tick work.
+
+The SDK captures one full baseline when an embedded VM becomes ready. On an incremental snapshot it
+stores that baseline in the caller's snapshot CAS and returns only the delta; restore resolves the
+header's digest from the same CAS. A remote server keeps the corresponding full object in its own CAS,
+so a same-server restore needs only the delta; a caller moving the delta to another server must seed that
+server with the referenced full object. Full snapshots remain the default and require no store.
 
 The kernel exposes only what the host cannot infer: **`mc_inflight_egress`**, the count of live
 HTTP/WebSocket/host-call handles plus resident-service calls mid-flight. The host **refuses to snapshot
@@ -1183,9 +1207,10 @@ loop yields a macrotask on idle ticks so the event loop can advance I/O. The hos
 kernel only ever sees plaintext. Persistence in the browser solves the sync-bridge/async-storage mismatch
 with a write-behind cache over OPFS → IndexedDB → memory. One JS-specific hazard is handled explicitly:
 `WebAssembly.Memory.grow` detaches the backing buffer, so the memory view is re-derived on every access
-(what wasmtime hides behind `data_mut`, the JS host does by hand). The snapshot format is identical to the
-Rust host's, and a parity test boots the *same* artifacts the Rust e2e suite uses and asserts identical
-output — A3 enforced, not asserted.
+(what wasmtime hides behind `data_mut`, the JS host does by hand). WebCrypto hashing is asynchronous, so
+snapshot capture first freezes one synchronous copy; the digest and payload can never observe different
+ticks. Shared malformed vectors and cross-host full/incremental restore tests boot the *same* artifacts
+as the Rust e2e suite—A3 enforced, not asserted.
 
 ### 13.4 The `@mc/*` SDK and the web app
 

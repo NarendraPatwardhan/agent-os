@@ -183,6 +183,7 @@ defmodule AgentOS.Host.Nif do
       restore_nif(
         wasm,
         snapshot,
+        Keyword.get(opts, :base_snapshot),
         deterministic,
         workers,
         net_relay,
@@ -404,6 +405,11 @@ defmodule AgentOS.Host.Nif do
   @spec snapshot(vm()) :: {:ok, binary()} | {:error, reason()}
   def snapshot(vm), do: snapshot_nif(vm)
 
+  @doc "Capture changed pages relative to one full baseline snapshot."
+  @spec snapshot_incremental(vm(), binary()) :: {:ok, binary()} | {:error, reason()}
+  def snapshot_incremental(vm, base) when is_binary(base), do: snapshot_incremental_nif(vm, base)
+  def snapshot_incremental(_vm, _base), do: {:error, "incremental snapshot base must be binary"}
+
   @doc """
   Compile and inject a host-side tool catalog through the wasmtime host. `connections` carry
   spec/group selectors compiled via `catalog-compiler.wasm`; `host_tools` carry host-call tool
@@ -584,6 +590,7 @@ defmodule AgentOS.Host.Nif do
   def restore_nif(
         _wasm,
         _snapshot,
+        _base_snapshot,
         _deterministic,
         _workers,
         _net,
@@ -661,6 +668,9 @@ defmodule AgentOS.Host.Nif do
 
   @doc false
   def snapshot_nif(_vm), do: nif_not_loaded()
+
+  @doc false
+  def snapshot_incremental_nif(_vm, _base), do: nif_not_loaded()
 
   @doc false
   def inject_catalog_nif(_vm, _compiler_wasm, _generation, _tools, _host_tools, _connections),

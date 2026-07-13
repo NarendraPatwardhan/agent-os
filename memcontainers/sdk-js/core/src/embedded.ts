@@ -22,6 +22,8 @@ import type {
   ToolContext,
   ToolDefinition,
   VmStatus,
+  ContentStore,
+  SnapshotOptions,
 } from "./types.js";
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
@@ -101,6 +103,8 @@ export class EmbeddedBackend implements Backend {
     private readonly host: KernelHost,
     private readonly stdout: FanoutSink,
     private readonly tools: MapHostCall,
+    private readonly snapshotBase?: Uint8Array,
+    private readonly snapshotStore?: ContentStore,
   ) {
     this.pumpDone = this.pump();
   }
@@ -327,8 +331,14 @@ export class EmbeddedBackend implements Backend {
     this.host.unmount(path);
     this.tools.unregister(path);
   }
-  async snapshot(): Promise<Uint8Array> {
-    return this.host.snapshot();
+  async snapshot(opts: SnapshotOptions = {}): Promise<Uint8Array> {
+    if ((opts.mode ?? "full") === "full") return this.host.snapshot();
+    if (!this.snapshotBase) throw new Error("incremental snapshot has no full baseline");
+    if (!this.snapshotStore?.putSnapshotObject) {
+      throw new Error("incremental snapshots require a content store with snapshot-object support");
+    }
+    await this.snapshotStore.putSnapshotObject(this.snapshotBase);
+    return this.host.snapshotIncremental(this.snapshotBase);
   }
   async commitLayer(): Promise<{ digest: string; tar: Uint8Array }> {
     if (!this.running) throw new Error("VM closed");

@@ -79,6 +79,31 @@ js_test(
     entry_point = "test/persist.test.js",
 )
 
+mc_ts_project(
+    name = "snapshot_test_lib",
+    srcs = ["test/snapshot.test.ts"],
+    deps = [
+        ":host",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+js_test(
+    name = "snapshot_test",
+    data = [
+        ":snapshot_test_lib",
+        "//memcontainers/conformance:snapshot_vectors_json",
+        "//memcontainers/images:base",
+        "//memcontainers/kernel/rust:kernel",
+    ],
+    entry_point = "test/snapshot.test.js",
+    env = {
+        "MC_BASE_IMAGE": "$(rlocationpath //memcontainers/images:base)",
+        "MC_KERNEL_WASM": "$(rlocationpath //memcontainers/kernel/rust:kernel)",
+        "MC_SNAPSHOT_VECTORS": "$(rlocationpath //memcontainers/conformance:snapshot_vectors_json)",
+    },
+)
+
 # Cross-host parity (A3/A8): rehydrate a snapshot the WASMTIME host produced
 # (//memcontainers/hosts/wasmtime:cross_host_snapshot) under THIS host, asserting the saved state and a
 # live exec survive. The strongest proof the MCSN format is truly host-identical — not same-host only.
@@ -96,11 +121,13 @@ js_test(
     data = [
         ":cross_host_lib",
         "//memcontainers/kernel/rust:kernel",
+        "//memcontainers/hosts/wasmtime:cross_host_incremental_snapshot",
         "//memcontainers/hosts/wasmtime:cross_host_snapshot",
     ],
     entry_point = "test/cross_host.test.js",
     env = {
         "MC_KERNEL_WASM": "$(rlocationpath //memcontainers/kernel/rust:kernel)",
         "MC_CROSS_SNAPSHOT": "$(rlocationpath //memcontainers/hosts/wasmtime:cross_host_snapshot)",
+        "MC_CROSS_INCREMENTAL": "$(rlocationpath //memcontainers/hosts/wasmtime:cross_host_incremental_snapshot)",
     },
 )

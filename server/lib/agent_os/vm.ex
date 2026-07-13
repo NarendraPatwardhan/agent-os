@@ -55,7 +55,7 @@ defmodule AgentOS.Vm do
   # exists to prevent; older bytes are dropped and `shell_base` advances past them.
   @shell_log_cap 262_144
 
-  defstruct [:id, :nif, :booted_at, :last_active_ms, shell_log: "", shell_base: 0]
+  defstruct [:id, :nif, :booted_at, :last_active_ms, :snapshot_base, shell_log: "", shell_base: 0]
 
   # ── Client API ────────────────────────────────────────────────────────────
 
@@ -154,8 +154,11 @@ defmodule AgentOS.Vm do
   def shell_since(_server, _cursor), do: {:error, "shell_since expects a non-negative cursor"}
 
   @doc "Snapshot the whole VM into a portable blob (refuses while egress is in flight)."
-  @spec snapshot(server()) :: {:ok, binary()} | {:error, Nif.reason()}
-  def snapshot(server), do: GenServer.call(server, :snapshot, @default_call_timeout)
+  @spec snapshot(server(), keyword()) :: {:ok, binary()} | {:error, Nif.reason()}
+  def snapshot(server, opts \\ []) do
+    mode = Keyword.get(opts, :mode, :full)
+    GenServer.call(server, {:snapshot, mode}, @default_call_timeout)
+  end
 
   @doc "Serialize the live CoW overlay into a content-addressed tar layer."
   @spec commit_layer(server(), keyword()) ::
@@ -428,13 +431,27 @@ defmodule AgentOS.Vm do
           :ok ->
             now = now_ms()
 
-            {:ok,
-             %__MODULE__{
-               id: Keyword.fetch!(opts, :id),
-               nif: nif,
-               booted_at: now,
-               last_active_ms: now
-             }}
+            base_result =
+              if fresh_boot do
+                Nif.snapshot(nif)
+              else
+                {:ok, Keyword.get(opts, :base_snapshot, Keyword.fetch!(opts, :snapshot))}
+              end
+
+            case base_result do
+              {:ok, base} ->
+                {:ok,
+                 %__MODULE__{
+                   id: Keyword.fetch!(opts, :id),
+                   nif: nif,
+                   booted_at: now,
+                   last_active_ms: now,
+                   snapshot_base: base
+                 }}
+
+              {:error, reason} ->
+                {:stop, "failed to capture snapshot baseline: #{reason}"}
+            end
 
           {:error, reason} ->
             {:stop, reason}
@@ -509,8 +526,16 @@ defmodule AgentOS.Vm do
     {:reply, {:ok, %{bytes: bytes, total: total, from: from}}, state}
   end
 
-  def handle_call(:snapshot, _from, state) do
+  def handle_call({:snapshot, :full}, _from, state) do
     {:reply, Nif.snapshot(state.nif), state}
+  end
+
+  def handle_call({:snapshot, :incremental}, _from, state) do
+    {:reply, Nif.snapshot_incremental(state.nif, state.snapshot_base), state}
+  end
+
+  def handle_call({:snapshot, mode}, _from, state) do
+    {:reply, {:error, "snapshot mode must be :full or :incremental, got #{inspect(mode)}"}, state}
   end
 
   def handle_call(:commit_layer, _from, state) do
@@ -670,7 +695,8 @@ defmodule AgentOS.Vm do
         :policies,
         :tool_approval,
         :host_call,
-        :persist
+        :persist,
+        :base_snapshot
       ])
 
   defp timeout(opts), do: Keyword.get(opts, :timeout, @default_call_timeout)

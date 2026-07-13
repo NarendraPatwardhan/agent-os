@@ -536,6 +536,7 @@ pub const CONTROL_EXPORTS: &[&str] = &[
     "mc_commit_layer",
     "mc_inflight_egress",
     "mc_pending_commits",
+    "mc_worker_count",
     "mc_quiesce_request",
     "mc_quiesce_release",
     "mc_worker_entry",
@@ -572,6 +573,7 @@ macro_rules! mc_control_table {
         mc_commit_layer => CommitLayer () [i32];
         mc_inflight_egress => InflightEgress () [i32];
         mc_pending_commits => PendingCommits () [i32];
+        mc_worker_count => WorkerCount () [i32];
         #[cfg(feature = "threads")] mc_quiesce_request => QuiesceRequest () [i32];
         #[cfg(feature = "threads")] mc_quiesce_release => QuiesceRelease () [i32];
         #[cfg(feature = "threads")] mc_worker_entry => WorkerEntry (arg: i32) [i32];

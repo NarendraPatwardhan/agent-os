@@ -801,8 +801,7 @@ fn init_system() {
                 // `mc_tick` then coordinates only.
                 #[cfg(feature = "threads")]
                 {
-                    const MAX_WORKERS: i32 = 4;
-                    let n = bridge::mc_threads_init(MAX_WORKERS);
+                    let n = bridge::mc_threads_init(constants_rust::MAX_WORKERS);
                     sync::set_workers(n);
                 }
             }
@@ -2749,6 +2748,12 @@ pub(crate) fn mc_pending_commits() -> i32 {
         }
     }
     (fs::mountfs::pending_commit_count() + fs::persistfs::pending_commit_count()) as i32
+}
+
+/// Scheduler driving state is snapshot-resident. A restoring host queries it after copying the
+/// memory image instead of trusting duplicated header metadata (A8/C1).
+pub(crate) fn mc_worker_count() -> i32 {
+    sync::workers()
 }
 
 // ---------- Threading exports ----------

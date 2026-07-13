@@ -74,6 +74,9 @@ defmodule AgentOS.Contracts.Constants do
   # waitpid
   def wnohang, do: 1
 
+  # worker
+  def max_workers, do: 4
+
   # poll
   def pollin, do: 1
   def pollout, do: 4

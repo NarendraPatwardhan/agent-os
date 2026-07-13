@@ -14,6 +14,7 @@ import type {
   StatResult,
   ToolDefinition,
   VmStatus,
+  SnapshotOptions,
 } from "./types.js";
 
 /** Raw exec result from a backend (bytes; the Vm decodes to strings). */
@@ -35,7 +36,7 @@ export interface Backend {
   chmod(path: string, mode: number): Promise<void>;
   /** Create a symbolic link at `link` with target text `target`. */
   symlink(target: string, link: string): Promise<void>;
-  snapshot(): Promise<Uint8Array>;
+  snapshot(opts?: SnapshotOptions): Promise<Uint8Array>;
   /** The `commit` primitive: serialize the live CoW overlay into a content-
    *  addressed `.tar` layer — `{ digest, tar }`. */
   commitLayer(): Promise<{ digest: string; tar: Uint8Array }>;

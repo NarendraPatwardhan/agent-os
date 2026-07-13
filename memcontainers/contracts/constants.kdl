@@ -131,6 +131,13 @@ waitpid {
     WNOHANG 1
 }
 
+// Maximum parallel scheduler workers the kernel can negotiate. A restored snapshot carries the
+// negotiated count in linear memory, so both hosts validate it against this same ceiling before
+// using it as a per-tick loop bound.
+worker {
+    MAX_WORKERS 4
+}
+
 // mc_sys_poll event/result bits. POLLERR/POLLHUP are output-only.
 poll {
     POLLIN     1   // readable without blocking

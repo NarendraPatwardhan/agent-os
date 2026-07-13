@@ -203,6 +203,17 @@ pub fn restore(snapshot: &[u8]) -> Session {
     Session { host, stdout }
 }
 
+/// Rehydrate a cumulative page delta against its exact full baseline.
+pub fn restore_incremental(snapshot: &[u8], base: &[u8]) -> Session {
+    let (sink, stdout) = CaptureSink::new();
+    let host = KernelHostBuilder::new(runfile(&kernel_rlocation()))
+        .with_stdout(Box::new(sink))
+        .deterministic()
+        .restore_incremental(snapshot, base)
+        .expect("restore incremental snapshot");
+    Session { host, stdout }
+}
+
 impl Session {
     /// The full terminal transcript so far (CRLF and all).
     pub fn transcript(&self) -> String {

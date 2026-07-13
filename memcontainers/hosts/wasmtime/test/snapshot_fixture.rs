@@ -5,7 +5,8 @@
 //! would fail or lose state — so this fixture turns the "a snapshot taken under one host restores under
 //! the other" claim into an executable proof instead of a by-construction assertion.
 //!
-//! argv: `<kernel.wasm> <base.tar> <out.bin>`.
+//! argv: `<kernel.wasm> <base.tar> <out.bin>` for a full snapshot, or
+//! `<kernel.wasm> <base.tar> <out.bin> incremental` for a length-prefixed baseline + thin fixture.
 
 use host::{CaptureSink, KernelHostBuilder};
 
@@ -26,6 +27,23 @@ fn main() {
         .deterministic()
         .build()
         .expect("boot kernel.wasm under the wasmtime host");
+
+    if args.get(4).map(String::as_str) == Some("incremental") {
+        let base_snap = host.snapshot().expect("snapshot the baseline VM");
+        host.write_file("/tmp/xhost", MARKER)
+            .expect("write the cross-host marker through the control channel");
+        let delta = host
+            .snapshot_incremental(&base_snap)
+            .expect("snapshot changed pages");
+        let mut bundle = Vec::with_capacity(4 + base_snap.len() + delta.len());
+        bundle.extend_from_slice(&(base_snap.len() as u32).to_le_bytes());
+        bundle.extend_from_slice(&base_snap);
+        bundle.extend_from_slice(&delta);
+        std::fs::write(out, &bundle)
+            .unwrap_or_else(|e| panic!("write incremental bundle {out}: {e}"));
+        eprintln!("cross-host incremental snapshot: {} bytes over {} byte baseline", delta.len(), base_snap.len());
+        return;
+    }
 
     host.write_file("/tmp/xhost", MARKER)
         .expect("write the cross-host marker through the control channel");

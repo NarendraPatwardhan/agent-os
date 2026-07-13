@@ -512,6 +512,7 @@ pub const EXPORTS = [_]Desc{
     .{ .name = "mc_commit_layer", .variant = "CommitLayer", .args = &.{  }, .ret = "i32" },
     .{ .name = "mc_inflight_egress", .variant = "InflightEgress", .args = &.{  }, .ret = "i32" },
     .{ .name = "mc_pending_commits", .variant = "PendingCommits", .args = &.{  }, .ret = "i32" },
+    .{ .name = "mc_worker_count", .variant = "WorkerCount", .args = &.{  }, .ret = "i32" },
     .{ .name = "mc_quiesce_request", .variant = "QuiesceRequest", .args = &.{  }, .ret = "i32" },
     .{ .name = "mc_quiesce_release", .variant = "QuiesceRelease", .args = &.{  }, .ret = "i32" },
     .{ .name = "mc_worker_entry", .variant = "WorkerEntry", .args = &.{ .{ .name = "arg", .ty = "i32" } }, .ret = "i32" },

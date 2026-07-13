@@ -1,0 +1,18 @@
+// MCSN v2 — portable full and baseline-relative VM snapshots.
+//
+// The projector emits the Rust and TypeScript framing codecs from this contract. A full snapshot
+// carries the complete linear-memory image. An incremental snapshot carries a bitmap and replacement
+// pages relative to one content-addressed FULL snapshot; incrementals never chain.
+snapshot magic=0x4e53434d version=2 header-len=128 page-size=65536 max-memory-len=1073741824 digest-len=32 kind-full=1 kind-incremental=2 {
+  field "magic" offset=0 type="u32"
+  field "version" offset=4 type="u32"
+  field "kind" offset=8 type="u32"
+  field "header_len" offset=12 type="u32"
+  field "page_size" offset=16 type="u32"
+  field "memory_len" offset=20 type="u32"
+  field "changed_pages" offset=24 type="u32"
+  field "reserved" offset=28 type="u32"
+  field "kernel_digest" offset=32 type="sha256"
+  field "memory_digest" offset=64 type="sha256"
+  field "base_snapshot_digest" offset=96 type="sha256"
+}

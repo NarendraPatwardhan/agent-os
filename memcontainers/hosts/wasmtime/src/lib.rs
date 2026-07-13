@@ -18,11 +18,16 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Result};
+use constants_rust::MAX_WORKERS;
 use ctl_rust::{
     DirEntries as WireDirEntries, ExecOutcome, ExecRequest, FileStat as WireFileStat,
     SvcRequest as WireSvcRequest, SvcResponse as WireSvcResponse,
 };
 use sha2::{Digest, Sha256};
+use snapshot_rust::{
+    parse_snapshot, snapshot_bitmap_len, write_snapshot_header, SnapshotDigest, SnapshotKind,
+    SNAPSHOT_HEADER_LEN, SNAPSHOT_PAGE_SIZE,
+};
 use wasmtime::{Caller, Config, Engine, Instance, Linker, Memory, Module, Store};
 
 /// Lowercase hex sha-256 — the one content-address helper shared across the host modules (catalog
@@ -34,6 +39,10 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
         out.push_str(&format!("{b:02x}"));
     }
     out
+}
+
+fn sha256_digest(bytes: &[u8]) -> SnapshotDigest {
+    Sha256::digest(bytes).into()
 }
 
 mod bridge;
@@ -73,7 +82,7 @@ fn wt<T>(r: std::result::Result<T, wasmtime::Error>, msg: &'static str) -> Resul
     r.map_err(|e| anyhow!("{msg}: {e}"))
 }
 
-const WASM_PAGE_SIZE: u64 = 65536;
+const WASM_PAGE_SIZE: u64 = SNAPSHOT_PAGE_SIZE as u64;
 const DEFAULT_WORKERS: i32 = 2;
 const KERNEL_WASM_STACK_BYTES: usize = 2_621_440;
 
@@ -633,6 +642,7 @@ impl KernelHostBuilder {
     }
 
     pub fn build(self) -> Result<KernelHost> {
+        let kernel_digest = sha256_digest(&self.wasm_bytes);
         let (engine, module) = get_or_compile(&self.wasm_bytes)?;
         let state = self.into_state();
         let (mut store, instance, memory) = instantiate(&engine, &module, state)?;
@@ -645,7 +655,8 @@ impl KernelHostBuilder {
             memory.grow(&mut store, 1),
             "growing memory for input scratch page",
         )?;
-        let scratch_addr = (prev_pages * WASM_PAGE_SIZE) as i32;
+        let scratch_addr = u32::try_from(prev_pages * WASM_PAGE_SIZE)
+            .map_err(|_| anyhow!("kernel scratch address exceeds wasm32"))? as i32;
         let scratch_len = WASM_PAGE_SIZE as usize;
 
         let mc_init = wt(
@@ -658,7 +669,15 @@ impl KernelHostBuilder {
         // the advertised request — so the host never invokes the worker export more times
         // than the kernel agreed.
         let workers = store.data().workers_granted;
-        let mut host = finalize(store, instance, memory, scratch_addr, scratch_len, workers)?;
+        let mut host = finalize(
+            store,
+            instance,
+            memory,
+            scratch_addr,
+            scratch_len,
+            workers,
+            kernel_digest,
+        )?;
 
         // The login shell (pid 1) prints its first prompt only after running, which needs
         // ticks. Drive boot until the prompt settles so callers observe a ready shell. (The
@@ -680,26 +699,70 @@ impl KernelHostBuilder {
     /// primitive. Pass fresh capabilities; a restored VM never shares the original's host
     /// handles.
     pub fn restore(self, snapshot: &[u8]) -> Result<KernelHost> {
-        let hdr = SnapshotHeader::parse(snapshot)?;
+        self.restore_with_base(snapshot, None)
+    }
+
+    /// Restore an incremental snapshot against its exact full baseline.
+    pub fn restore_incremental(self, snapshot: &[u8], base: &[u8]) -> Result<KernelHost> {
+        self.restore_with_base(snapshot, Some(base))
+    }
+
+    fn restore_with_base(self, snapshot: &[u8], base: Option<&[u8]>) -> Result<KernelHost> {
+        let kernel_digest = sha256_digest(&self.wasm_bytes);
+        let validated = validate_snapshot(snapshot, base, &kernel_digest)?;
+        let image_len = validated.view.memory_len;
         let (engine, module) = get_or_compile(&self.wasm_bytes)?;
         let state = self.into_state();
         let (mut store, instance, memory) = instantiate(&engine, &module, state)?;
 
         let cur = memory.data(&store).len();
-        if hdr.mem_len > cur {
-            let extra = ((hdr.mem_len - cur) as u64).div_ceil(WASM_PAGE_SIZE);
+        let scratch_addr = cur;
+        let scratch_addr_wire = u32::try_from(scratch_addr)
+            .map_err(|_| anyhow!("invalid snapshot: scratch_address_overflow"))? as i32;
+        let scratch_len = SNAPSHOT_PAGE_SIZE;
+        let minimum = scratch_addr
+            .checked_add(scratch_len)
+            .ok_or_else(|| anyhow!("invalid snapshot: memory_minimum_overflow"))?;
+        if image_len < minimum {
+            return Err(anyhow!(
+                "invalid snapshot: memory_too_small (need at least {minimum}, have {})",
+                image_len
+            ));
+        }
+        if image_len > cur {
+            let extra = ((image_len - cur) as u64).div_ceil(WASM_PAGE_SIZE);
             wt(memory.grow(&mut store, extra), "growing memory for restore")?;
         }
-        let image = &snapshot[SNAPSHOT_HEADER_LEN..SNAPSHOT_HEADER_LEN + hdr.mem_len];
-        memory.data_mut(&mut store)[..hdr.mem_len].copy_from_slice(image);
+        if memory.data(&store).len() != image_len {
+            return Err(anyhow!("invalid snapshot: restored_memory_length_mismatch"));
+        }
+        apply_snapshot(validated, memory.data_mut(&mut store))?;
+
+        let worker_count = wt(
+            instance
+                .get_typed_func::<(), i32>(&mut store, "mc_worker_count")
+                .map_err(|e| wasmtime::Error::msg(e.to_string())),
+            "looking up mc_worker_count",
+        )?;
+        let workers = wt(worker_count.call(&mut store, ()), "calling mc_worker_count")?;
+        if !(0..=MAX_WORKERS).contains(&workers) {
+            return Err(anyhow!("invalid snapshot: worker_count_out_of_range"));
+        }
+        let has_worker = instance
+            .get_typed_func::<i32, i32>(&mut store, "mc_worker_entry")
+            .is_ok();
+        if workers > 0 && !has_worker {
+            return Err(anyhow!("invalid snapshot: workers_without_worker_export"));
+        }
 
         finalize(
             store,
             instance,
             memory,
-            hdr.scratch_addr,
-            hdr.scratch_len,
-            hdr.workers,
+            scratch_addr_wire,
+            scratch_len,
+            workers,
+            kernel_digest,
         )
     }
 }
@@ -738,6 +801,7 @@ fn finalize(
     scratch_addr: i32,
     scratch_len: usize,
     workers: i32,
+    kernel_digest: SnapshotDigest,
 ) -> Result<KernelHost> {
     let exports = KernelExports::lookup(&instance, &mut store);
     Ok(KernelHost {
@@ -748,55 +812,91 @@ fn finalize(
         workers,
         scratch_addr,
         scratch_len,
+        kernel_digest,
     })
 }
 
-// ---------- Snapshot format ----------
+// ---------- Snapshot materialization ----------
 
-const SNAPSHOT_MAGIC: &[u8; 4] = b"MCSN";
-const SNAPSHOT_VERSION: u32 = 1;
-/// magic(4) + version(4) + scratch_addr(4) + scratch_len(4) + workers(4) + mem_len(4)
-const SNAPSHOT_HEADER_LEN: usize = 24;
-
-struct SnapshotHeader {
-    scratch_addr: i32,
-    scratch_len: usize,
-    workers: i32,
-    mem_len: usize,
+struct ValidatedSnapshot<'a> {
+    view: snapshot_rust::SnapshotView<'a>,
+    base: Option<snapshot_rust::SnapshotView<'a>>,
 }
 
-impl SnapshotHeader {
-    fn parse(snap: &[u8]) -> Result<SnapshotHeader> {
-        if snap.len() < SNAPSHOT_HEADER_LEN {
-            return Err(anyhow!("snapshot too short ({} bytes)", snap.len()));
-        }
-        if &snap[0..4] != SNAPSHOT_MAGIC {
-            return Err(anyhow!("not an AgentOS snapshot (bad magic)"));
-        }
-        let version = u32::from_le_bytes(snap[4..8].try_into().unwrap());
-        if version != SNAPSHOT_VERSION {
-            return Err(anyhow!(
-                "unsupported snapshot version {version} (host expects {SNAPSHOT_VERSION})"
-            ));
-        }
-        let scratch_addr = i32::from_le_bytes(snap[8..12].try_into().unwrap());
-        let scratch_len = u32::from_le_bytes(snap[12..16].try_into().unwrap()) as usize;
-        let workers = i32::from_le_bytes(snap[16..20].try_into().unwrap());
-        let mem_len = u32::from_le_bytes(snap[20..24].try_into().unwrap()) as usize;
-        if snap.len() < SNAPSHOT_HEADER_LEN + mem_len {
-            return Err(anyhow!(
-                "snapshot truncated: need {} bytes, have {}",
-                SNAPSHOT_HEADER_LEN + mem_len,
-                snap.len()
-            ));
-        }
-        Ok(SnapshotHeader {
-            scratch_addr,
-            scratch_len,
-            workers,
-            mem_len,
-        })
+/// Validate an MCSN v2 full or incremental value without allocating its declared memory size.
+/// Incrementals are relative to exactly one full snapshot identified by SHA-256; recursive chains
+/// are rejected before the module is grown.
+fn validate_snapshot<'a>(
+    snapshot: &'a [u8],
+    base: Option<&'a [u8]>,
+    kernel_digest: &SnapshotDigest,
+) -> Result<ValidatedSnapshot<'a>> {
+    let view = parse_snapshot(snapshot).map_err(|e| anyhow!("invalid snapshot: {e}"))?;
+    if &view.kernel_digest != kernel_digest {
+        return Err(anyhow!("invalid snapshot: kernel_digest_mismatch"));
     }
+    let base_view = match view.kind {
+        SnapshotKind::Full => {
+            if base.is_some() {
+                return Err(anyhow!("invalid snapshot: unexpected_base_snapshot"));
+            }
+            None
+        }
+        SnapshotKind::Incremental => {
+            let base = base.ok_or_else(|| anyhow!("invalid snapshot: missing_base_snapshot"))?;
+            if sha256_digest(base) != view.base_snapshot_digest {
+                return Err(anyhow!("invalid snapshot: base_snapshot_digest_mismatch"));
+            }
+            let base_view = parse_snapshot(base)
+                .map_err(|e| anyhow!("invalid base snapshot: {e}"))?;
+            if base_view.kind != SnapshotKind::Full {
+                return Err(anyhow!("invalid snapshot: incremental_base_not_full"));
+            }
+            if base_view.kernel_digest != *kernel_digest {
+                return Err(anyhow!("invalid snapshot: base_kernel_digest_mismatch"));
+            }
+            if sha256_digest(base_view.pages) != base_view.memory_digest {
+                return Err(anyhow!("invalid snapshot: base_memory_digest_mismatch"));
+            }
+            if base_view.memory_len > view.memory_len {
+                return Err(anyhow!("invalid snapshot: memory_shrank"));
+            }
+            Some(base_view)
+        }
+    };
+    Ok(ValidatedSnapshot { view, base: base_view })
+}
+
+/// Reconstruct directly into the already-sized wasm memory. This keeps restore to one memory image
+/// instead of allocating an attacker-sized intermediate buffer next to the module's memory.
+fn apply_snapshot(validated: ValidatedSnapshot<'_>, memory: &mut [u8]) -> Result<()> {
+    if memory.len() != validated.view.memory_len {
+        return Err(anyhow!("invalid snapshot: restored_memory_length_mismatch"));
+    }
+    match validated.base {
+        None => memory.copy_from_slice(validated.view.pages),
+        Some(base_view) => {
+            memory.fill(0);
+            memory[..base_view.memory_len].copy_from_slice(base_view.pages);
+            let mut changed = validated.view.pages.chunks_exact(SNAPSHOT_PAGE_SIZE);
+            for page in 0..(validated.view.memory_len / SNAPSHOT_PAGE_SIZE) {
+                if validated.view.bitmap[page / 8] & (1 << (page % 8)) != 0 {
+                    let bytes = changed
+                        .next()
+                        .ok_or_else(|| anyhow!("invalid snapshot: missing_changed_page"))?;
+                    let start = page * SNAPSHOT_PAGE_SIZE;
+                    memory[start..start + SNAPSHOT_PAGE_SIZE].copy_from_slice(bytes);
+                }
+            }
+            if changed.next().is_some() {
+                return Err(anyhow!("invalid snapshot: extra_changed_page"));
+            }
+        }
+    }
+    if sha256_digest(memory) != validated.view.memory_digest {
+        return Err(anyhow!("invalid snapshot: memory_digest_mismatch"));
+    }
+    Ok(())
 }
 
 // ---------- Structured results ----------
@@ -856,6 +956,7 @@ pub struct KernelHost {
     workers: i32,
     scratch_addr: i32,
     scratch_len: usize,
+    kernel_digest: SnapshotDigest,
 }
 
 impl KernelHost {
@@ -878,7 +979,8 @@ impl KernelHost {
         for chunk in bytes.chunks(self.scratch_len) {
             {
                 let data = self.memory.data_mut(&mut self.store);
-                let start = self.scratch_addr as usize;
+                // Wasm pointers travel through an i32 lane but are unsigned 32-bit offsets.
+                let start = self.scratch_addr as u32 as usize;
                 let end = start + chunk.len();
                 if end > data.len() {
                     return Err(anyhow!(
@@ -1057,6 +1159,77 @@ impl KernelHost {
     /// restore; let in-flight requests finish first. Pair with
     /// [`KernelHostBuilder::restore`] to rehydrate or fork.
     pub fn snapshot(&mut self) -> Result<Vec<u8>> {
+        self.ensure_snapshot_ready()?;
+        let mem = self.memory.data(&self.store);
+        let memory_digest = sha256_digest(mem);
+        let mut out = vec![0; SNAPSHOT_HEADER_LEN + mem.len()];
+        write_snapshot_header(
+            &mut out,
+            SnapshotKind::Full,
+            mem.len(),
+            0,
+            &self.kernel_digest,
+            &memory_digest,
+            &[0; 32],
+        )
+        .map_err(|e| anyhow!("encoding snapshot: {e}"))?;
+        out[SNAPSHOT_HEADER_LEN..].copy_from_slice(mem);
+        Ok(out)
+    }
+
+    /// Capture a cumulative page delta against one full baseline. The result embeds the baseline's
+    /// content digest and never references another incremental, keeping restore depth bounded at one.
+    pub fn snapshot_incremental(&mut self, base: &[u8]) -> Result<Vec<u8>> {
+        self.ensure_snapshot_ready()?;
+        let base_view = parse_snapshot(base).map_err(|e| anyhow!("invalid base snapshot: {e}"))?;
+        if base_view.kind != SnapshotKind::Full {
+            return Err(anyhow!("incremental snapshot base must be full"));
+        }
+        if base_view.kernel_digest != self.kernel_digest {
+            return Err(anyhow!("incremental snapshot base uses a different kernel"));
+        }
+        if sha256_digest(base_view.pages) != base_view.memory_digest {
+            return Err(anyhow!("incremental snapshot base memory digest mismatch"));
+        }
+        let mem = self.memory.data(&self.store);
+        if base_view.memory_len > mem.len() {
+            return Err(anyhow!("incremental snapshot memory cannot shrink"));
+        }
+        let bitmap_len = snapshot_bitmap_len(mem.len());
+        let mut bitmap = vec![0u8; bitmap_len];
+        let mut pages = Vec::new();
+        let zero = [0u8; SNAPSHOT_PAGE_SIZE];
+        for (page, current) in mem.chunks_exact(SNAPSHOT_PAGE_SIZE).enumerate() {
+            let prior = if page * SNAPSHOT_PAGE_SIZE < base_view.memory_len {
+                &base_view.pages[page * SNAPSHOT_PAGE_SIZE..(page + 1) * SNAPSHOT_PAGE_SIZE]
+            } else {
+                &zero
+            };
+            if current != prior {
+                bitmap[page / 8] |= 1 << (page % 8);
+                pages.extend_from_slice(current);
+            }
+        }
+        let changed_pages = pages.len() / SNAPSHOT_PAGE_SIZE;
+        let memory_digest = sha256_digest(mem);
+        let base_digest = sha256_digest(base);
+        let mut out = vec![0; SNAPSHOT_HEADER_LEN + bitmap.len() + pages.len()];
+        write_snapshot_header(
+            &mut out,
+            SnapshotKind::Incremental,
+            mem.len(),
+            changed_pages,
+            &self.kernel_digest,
+            &memory_digest,
+            &base_digest,
+        )
+        .map_err(|e| anyhow!("encoding incremental snapshot: {e}"))?;
+        out[SNAPSHOT_HEADER_LEN..SNAPSHOT_HEADER_LEN + bitmap.len()].copy_from_slice(&bitmap);
+        out[SNAPSHOT_HEADER_LEN + bitmap.len()..].copy_from_slice(&pages);
+        Ok(out)
+    }
+
+    fn ensure_snapshot_ready(&mut self) -> Result<()> {
         if let Some(f) = self.exports.mc_inflight_egress.clone() {
             let n = wt(f.call(&mut self.store, ()), "mc_inflight_egress")?;
             if n > 0 {
@@ -1065,17 +1238,7 @@ impl KernelHost {
                 ));
             }
         }
-        let mem = self.memory.data(&self.store);
-        let mem_len = mem.len();
-        let mut out = Vec::with_capacity(SNAPSHOT_HEADER_LEN + mem_len);
-        out.extend_from_slice(SNAPSHOT_MAGIC);
-        out.extend_from_slice(&SNAPSHOT_VERSION.to_le_bytes());
-        out.extend_from_slice(&(self.scratch_addr as u32).to_le_bytes());
-        out.extend_from_slice(&(self.scratch_len as u32).to_le_bytes());
-        out.extend_from_slice(&(self.workers as u32).to_le_bytes());
-        out.extend_from_slice(&(mem_len as u32).to_le_bytes());
-        out.extend_from_slice(mem);
-        Ok(out)
+        Ok(())
     }
 }
 

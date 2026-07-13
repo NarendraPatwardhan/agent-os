@@ -134,7 +134,8 @@ route "PUT" "/v1/vms/{id}/fs/symlinks" req="FsSymlink" res="FsSymlinkResult" {
 }
 
 route "POST" "/v1/vms/{id}/snapshots" res="SnapshotBytes" {
-  doc "Return a VM snapshot as bytes. Fails while in-flight egress/host work is not quiesced."
+  query "mode" type="string" required=0
+  doc "Return a full (default) or incremental VM snapshot as bytes. Incremental values reference the VM's content-addressed full baseline."
 }
 route "POST" "/v1/vms/{id}/layers" res="LayerTar" {
   doc "Commit the writable layer as a tar artifact."

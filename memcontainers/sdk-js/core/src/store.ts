@@ -69,6 +69,7 @@ export class MemoryContentStore implements ContentStore {
   private readonly blobs = new Map<string, Uint8Array>();
   private readonly manifests = new Map<string, ImageManifest>();
   private readonly snapshots = new Map<string, Uint8Array>();
+  private readonly snapshotObjects = new Map<string, Uint8Array>();
 
   async layer(digest: string): Promise<Uint8Array> {
     digestHex(digest);
@@ -114,6 +115,19 @@ export class MemoryContentStore implements ContentStore {
 
   async putSnapshot(key: string, snap: Uint8Array): Promise<void> {
     this.snapshots.set(manifestName(key), cloneBytes(snap));
+  }
+
+  async snapshotObject(digest: string): Promise<Uint8Array> {
+    digestHex(digest);
+    const snapshot = this.snapshotObjects.get(digest);
+    if (!snapshot) throw new Error(`snapshot not found: ${digest}`);
+    return cloneBytes(snapshot);
+  }
+
+  async putSnapshotObject(snapshot: Uint8Array): Promise<string> {
+    const digest = `sha256:${await sha256Hex(snapshot)}`;
+    this.snapshotObjects.set(digest, cloneBytes(snapshot));
+    return digest;
   }
 }
 
@@ -192,6 +206,19 @@ export class FsContentStore implements ContentStore {
     await mkdir(this.snapshotsDir(), { recursive: true });
     await writeFile(await nodeJoin(this.snapshotsDir(), `${manifestName(key)}.snap`), snap);
   }
+
+  async snapshotObject(digest: string): Promise<Uint8Array> {
+    const { readFile } = await nodeFs();
+    return new Uint8Array(await readFile(await nodeJoin(this.snapshotsDir(), `${digestHex(digest)}.mcsn`)));
+  }
+
+  async putSnapshotObject(snapshot: Uint8Array): Promise<string> {
+    const digest = `sha256:${await sha256Hex(snapshot)}`;
+    const { mkdir, writeFile } = await nodeFs();
+    await mkdir(this.snapshotsDir(), { recursive: true });
+    await writeFile(await nodeJoin(this.snapshotsDir(), `${digestHex(digest)}.mcsn`), snapshot);
+    return digest;
+  }
 }
 
 /** An Origin Private File System backed {@link ContentStore}. Browser solves use this for persistent
@@ -251,6 +278,16 @@ export class OpfsContentStore implements ContentStore {
   async putSnapshot(key: string, snap: Uint8Array): Promise<void> {
     await opfsWrite(await this.dir("snapshots"), `${manifestName(key)}.snap`, snap);
   }
+
+  async snapshotObject(digest: string): Promise<Uint8Array> {
+    return opfsRead(await this.dir("snapshot-objects"), `${digestHex(digest)}.mcsn`);
+  }
+
+  async putSnapshotObject(snapshot: Uint8Array): Promise<string> {
+    const digest = `sha256:${await sha256Hex(snapshot)}`;
+    await opfsWrite(await this.dir("snapshot-objects"), `${digestHex(digest)}.mcsn`, snapshot);
+    return digest;
+  }
 }
 
 class LazyContentStore implements ContentStore {
@@ -296,6 +333,19 @@ class LazyContentStore implements ContentStore {
     const store = await this.store();
     if (!store.putSnapshot) throw new Error("default content store does not support snapshots");
     return store.putSnapshot(key, snap);
+  }
+
+
+  async snapshotObject(digest: string): Promise<Uint8Array> {
+    const store = await this.store();
+    if (!store.snapshotObject) throw new Error("default content store does not support snapshot objects");
+    return store.snapshotObject(digest);
+  }
+
+  async putSnapshotObject(snapshot: Uint8Array): Promise<string> {
+    const store = await this.store();
+    if (!store.putSnapshotObject) throw new Error("default content store does not support snapshot objects");
+    return store.putSnapshotObject(snapshot);
   }
 }
 

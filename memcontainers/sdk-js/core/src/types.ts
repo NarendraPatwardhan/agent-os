@@ -211,6 +211,15 @@ export interface ContentStore {
    *  read/write a whole-VM image keyed by a node digest. `null` on a miss. */
   snapshot?(key: string): Promise<Uint8Array | null>;
   putSnapshot?(key: string, snap: Uint8Array): Promise<void>;
+  /** Read a content-addressed MCSN snapshot object. Incremental snapshots reference one of these. */
+  snapshotObject?(digest: string): Promise<Uint8Array>;
+  /** Store a full MCSN snapshot by content digest, returning its `sha256:` reference. */
+  putSnapshotObject?(snapshot: Uint8Array): Promise<string>;
+}
+
+export interface SnapshotOptions {
+  /** Full is self-contained and remains the default. Incremental requires the VM's content store. */
+  mode?: "full" | "incremental";
 }
 
 /** One host-backed mount to install at boot (`mc.create({ mounts: [...] })`) or

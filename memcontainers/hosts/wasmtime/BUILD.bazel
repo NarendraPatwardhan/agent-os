@@ -42,6 +42,7 @@ rust_library(
         "//memcontainers/contracts:env_rust",  # the mc_bridge_table! macro → the host's env impls (B2)
         "//memcontainers/contracts:ctl_rust",  # the mc_control_table! macro → the kernel-export lookups (B2)
         "//memcontainers/contracts:constants_rust",  # EAGAIN/EMSGSIZE — ws send sentinels + ctl retry (B2)
+        "//memcontainers/contracts:snapshot_rust",  # MCSN v2 full/incremental framing + validation (B2/A3)
     ],
 )
 
@@ -121,6 +122,24 @@ rust_opt_test(
     deps = [":host"],
 )
 
+rust_opt_test(
+    name = "snapshot_test",
+    srcs = ["test/snapshot.rs"],
+    crate_root = "test/snapshot.rs",
+    edition = "2021",
+    data = [
+        "//memcontainers/conformance:snapshot_vectors.json",
+        "//memcontainers/images:base",
+        "//memcontainers/kernel/rust:kernel",
+    ],
+    deps = [
+        ":host",
+        "@host_crates//:serde",
+        "@host_crates//:serde_json",
+        "@rules_rust//rust/runfiles",
+    ],
+)
+
 # Run the fixture over the SAME kernel + base the e2e boots (B1) to produce the cross-host snapshot the
 # JS `//memcontainers/hosts/js:cross_host_test` consumes — so the snapshot a test restores is always the
 # one this kernel produces, never a stale checked-in blob.
@@ -133,6 +152,19 @@ genrule(
     outs = ["cross_host_snapshot.bin"],
     cmd = "$(execpath :snapshot_fixture) $(execpath //memcontainers/kernel/rust:kernel) " +
           "$(execpath //memcontainers/images:base) $@",
+    tools = [":snapshot_fixture"],
+    visibility = ["//visibility:public"],
+)
+
+genrule(
+    name = "cross_host_incremental_snapshot",
+    srcs = [
+        "//memcontainers/kernel/rust:kernel",
+        "//memcontainers/images:base",
+    ],
+    outs = ["cross_host_incremental_snapshot.bin"],
+    cmd = "$(execpath :snapshot_fixture) $(execpath //memcontainers/kernel/rust:kernel) " +
+          "$(execpath //memcontainers/images:base) $@ incremental",
     tools = [":snapshot_fixture"],
     visibility = ["//visibility:public"],
 )

@@ -27,6 +27,12 @@ async function main(): Promise<void> {
   const snapshot = new Uint8Array(
     readFileSync(runfile(process.env.MC_CROSS_SNAPSHOT, "MC_CROSS_SNAPSHOT")),
   );
+  const incrementalBundle = new Uint8Array(
+    readFileSync(runfile(process.env.MC_CROSS_INCREMENTAL, "MC_CROSS_INCREMENTAL")),
+  );
+  const baseLen = new DataView(incrementalBundle.buffer, incrementalBundle.byteOffset).getUint32(0, true);
+  const incrementalBase = incrementalBundle.subarray(4, 4 + baseLen);
+  const incremental = incrementalBundle.subarray(4 + baseLen);
 
   const discard: StreamSink = { write() {} };
 
@@ -50,8 +56,18 @@ async function main(): Promise<void> {
     throw new Error(`restored VM is not live: exit=${echo.exitCode}`);
   }
 
+  const thin = await new KernelHostBuilder(wasm)
+    .deterministic()
+    .withStdout(discard)
+    .withStderr(discard)
+    .withLog(discard)
+    .restore(incremental, incrementalBase);
+  if (new TextDecoder().decode(thin.readFile("/tmp/xhost")) !== MARKER) {
+    throw new Error("Rust incremental snapshot did not restore under the JS host");
+  }
+
   console.log(
-    "CROSS-HOST OK — a wasmtime-host snapshot restored under the JS host; marker + exec verified.",
+    "CROSS-HOST OK — wasmtime full + incremental snapshots restored under the JS host.",
   );
 }
 

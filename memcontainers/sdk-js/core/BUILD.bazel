@@ -87,6 +87,7 @@ mc_ts_project(
     srcs = ["test/vm.test.ts"],
     deps = [
         ":lib",
+        ":node_modules/@mc/contracts",
         "//:node_modules/@types/bun",
     ],
 )

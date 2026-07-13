@@ -125,6 +125,7 @@ export "mc_ctl_svc_call_close" group="service" { arg "job_id" type="u32"; ret "i
 export "mc_commit_layer"     group="snapshot" { ret "i32"; doc "Commit the current writable layer into a content-addressed image layer." }
 export "mc_inflight_egress"  group="snapshot" { ret "i32"; doc "Count of in-flight egress operations (a snapshot must wait for 0)." }
 export "mc_pending_commits"  group="snapshot" { ret "i32"; doc "Count of pending layer commits." }
+export "mc_worker_count"     group="snapshot" { ret "i32"; doc "Return the restored scheduler worker count; hosts derive driving state from memory rather than snapshot metadata." }
 // Quiescence is only meaningful with worker threads (a coop kernel is already quiescent
 // between ticks), so these exist only in the threads build — cfg-gated, but still part of
 // the canonical control surface the contract describes.

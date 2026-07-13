@@ -3,7 +3,7 @@
 //! projection; `abi_library` invokes it once per (module, language) pair.
 //!
 //! Invocation:  projector --module <m> --lang <l> --contract <path.kdl>
-//!   module = constants | mc | env | ctl | wire   (which boundary / schema)
+//!   module = constants | mc | env | ctl | wire | llb | syntax | snapshot
 //!   lang   = rust | zig | ts | elixir | md | asyncapi | openapi      (which projection)
 //!
 //! Design (why this shape — C1):
@@ -545,6 +545,280 @@ fn emit_constants(lang: &str, nodes: &[Node], contract: &str) -> String {
         o.push_str("return M\n");
     }
     o
+}
+
+/// Emit the MCSN snapshot framing codec. Snapshot payloads are deliberately not expressed through
+/// the generic message codec: full images can be gigabytes and incremental images need borrowed
+/// bitmap/page slices, so a zero-copy fixed header is the correct boundary. The KDL owns every wire
+/// value; this emitter owns the one validation algorithm projected into both host languages (B2/A3).
+fn emit_snapshot(lang: &str, nodes: &[Node], contract: &str) -> String {
+    let root = nodes.iter().find(|n| n.name == "snapshot").expect("snapshot contract");
+    let p = |name: &str| root.props.get(name).map(Val::as_int).unwrap_or(0).to_string();
+    let off = |name: &str| {
+        root.children_named("field")
+            .find(|field| field.arg_str(0) == name)
+            .and_then(|field| field.props.get("offset"))
+            .unwrap_or_else(|| panic!("snapshot field {name} needs an offset"))
+            .as_int()
+            .to_string()
+    };
+    let template = match lang {
+        "rust" => r#"
+pub const SNAPSHOT_MAGIC: u32 = $MAGIC;
+pub const SNAPSHOT_VERSION: u32 = $VERSION;
+pub const SNAPSHOT_HEADER_LEN: usize = $HEADER_LEN;
+pub const SNAPSHOT_PAGE_SIZE: usize = $PAGE_SIZE;
+pub const SNAPSHOT_MAX_MEMORY_LEN: usize = $MAX_MEMORY_LEN;
+pub const SNAPSHOT_DIGEST_LEN: usize = $DIGEST_LEN;
+pub const SNAPSHOT_KIND_FULL: u32 = $KIND_FULL;
+pub const SNAPSHOT_KIND_INCREMENTAL: u32 = $KIND_INCREMENTAL;
+
+pub type SnapshotDigest = [u8; SNAPSHOT_DIGEST_LEN];
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SnapshotKind { Full, Incremental }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SnapshotError {
+    TooShort, BadMagic, UnsupportedVersion, UnknownKind, BadHeaderLength, BadPageSize,
+    EmptyMemory, MemoryTooLarge, MisalignedMemory, ReservedNonzero, MissingDigest, UnexpectedBase,
+    MissingBase, UnexpectedChangedPages, BadBitmap, LengthMismatch,
+}
+
+impl core::fmt::Display for SnapshotError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let code = match self {
+            Self::TooShort => "too_short", Self::BadMagic => "bad_magic",
+            Self::UnsupportedVersion => "unsupported_version", Self::UnknownKind => "unknown_kind",
+            Self::BadHeaderLength => "bad_header_length", Self::BadPageSize => "bad_page_size",
+            Self::EmptyMemory => "empty_memory", Self::MemoryTooLarge => "memory_too_large",
+            Self::MisalignedMemory => "misaligned_memory",
+            Self::ReservedNonzero => "reserved_nonzero", Self::MissingDigest => "missing_digest",
+            Self::UnexpectedBase => "unexpected_base", Self::MissingBase => "missing_base",
+            Self::UnexpectedChangedPages => "unexpected_changed_pages", Self::BadBitmap => "bad_bitmap",
+            Self::LengthMismatch => "length_mismatch",
+        };
+        f.write_str(code)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct SnapshotView<'a> {
+    pub kind: SnapshotKind,
+    pub memory_len: usize,
+    pub changed_pages: usize,
+    pub kernel_digest: SnapshotDigest,
+    pub memory_digest: SnapshotDigest,
+    pub base_snapshot_digest: SnapshotDigest,
+    pub bitmap: &'a [u8],
+    pub pages: &'a [u8],
+}
+
+fn u32_at(bytes: &[u8], off: usize) -> u32 {
+    u32::from_le_bytes([bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]])
+}
+fn digest_at(bytes: &[u8], off: usize) -> SnapshotDigest {
+    let mut out = [0; SNAPSHOT_DIGEST_LEN];
+    out.copy_from_slice(&bytes[off..off + SNAPSHOT_DIGEST_LEN]);
+    out
+}
+fn missing(d: &SnapshotDigest) -> bool { d.iter().all(|b| *b == 0) }
+
+pub fn snapshot_bitmap_len(memory_len: usize) -> usize {
+    let pages = memory_len / SNAPSHOT_PAGE_SIZE;
+    pages.div_ceil(8)
+}
+
+pub fn parse_snapshot(bytes: &[u8]) -> Result<SnapshotView<'_>, SnapshotError> {
+    if bytes.len() < SNAPSHOT_HEADER_LEN { return Err(SnapshotError::TooShort); }
+    if u32_at(bytes, $OFF_MAGIC) != SNAPSHOT_MAGIC { return Err(SnapshotError::BadMagic); }
+    if u32_at(bytes, $OFF_VERSION) != SNAPSHOT_VERSION { return Err(SnapshotError::UnsupportedVersion); }
+    let kind = match u32_at(bytes, $OFF_KIND) {
+        SNAPSHOT_KIND_FULL => SnapshotKind::Full,
+        SNAPSHOT_KIND_INCREMENTAL => SnapshotKind::Incremental,
+        _ => return Err(SnapshotError::UnknownKind),
+    };
+    if u32_at(bytes, $OFF_HEADER_LEN) as usize != SNAPSHOT_HEADER_LEN { return Err(SnapshotError::BadHeaderLength); }
+    if u32_at(bytes, $OFF_PAGE_SIZE) as usize != SNAPSHOT_PAGE_SIZE { return Err(SnapshotError::BadPageSize); }
+    let memory_len = u32_at(bytes, $OFF_MEMORY_LEN) as usize;
+    if memory_len == 0 { return Err(SnapshotError::EmptyMemory); }
+    if memory_len > SNAPSHOT_MAX_MEMORY_LEN { return Err(SnapshotError::MemoryTooLarge); }
+    if memory_len % SNAPSHOT_PAGE_SIZE != 0 { return Err(SnapshotError::MisalignedMemory); }
+    let changed_pages = u32_at(bytes, $OFF_CHANGED_PAGES) as usize;
+    if u32_at(bytes, $OFF_RESERVED) != 0 { return Err(SnapshotError::ReservedNonzero); }
+    let kernel_digest = digest_at(bytes, $OFF_KERNEL_DIGEST);
+    let memory_digest = digest_at(bytes, $OFF_MEMORY_DIGEST);
+    let base_snapshot_digest = digest_at(bytes, $OFF_BASE_DIGEST);
+    if missing(&kernel_digest) || missing(&memory_digest) { return Err(SnapshotError::MissingDigest); }
+    let payload = &bytes[SNAPSHOT_HEADER_LEN..];
+    match kind {
+        SnapshotKind::Full => {
+            if !missing(&base_snapshot_digest) { return Err(SnapshotError::UnexpectedBase); }
+            if changed_pages != 0 { return Err(SnapshotError::UnexpectedChangedPages); }
+            if payload.len() != memory_len { return Err(SnapshotError::LengthMismatch); }
+            Ok(SnapshotView { kind, memory_len, changed_pages, kernel_digest, memory_digest,
+                base_snapshot_digest, bitmap: &[], pages: payload })
+        }
+        SnapshotKind::Incremental => {
+            if missing(&base_snapshot_digest) { return Err(SnapshotError::MissingBase); }
+            let bitmap_len = snapshot_bitmap_len(memory_len);
+            if payload.len() < bitmap_len { return Err(SnapshotError::LengthMismatch); }
+            let bitmap = &payload[..bitmap_len];
+            let memory_pages = memory_len / SNAPSHOT_PAGE_SIZE;
+            if memory_pages % 8 != 0 && bitmap.last().is_some_and(|b| *b >> (memory_pages % 8) != 0) {
+                return Err(SnapshotError::BadBitmap);
+            }
+            let pop = bitmap.iter().map(|b| b.count_ones() as usize).sum::<usize>();
+            if pop != changed_pages { return Err(SnapshotError::BadBitmap); }
+            let page_bytes = changed_pages.checked_mul(SNAPSHOT_PAGE_SIZE).ok_or(SnapshotError::LengthMismatch)?;
+            if payload.len() != bitmap_len + page_bytes { return Err(SnapshotError::LengthMismatch); }
+            Ok(SnapshotView { kind, memory_len, changed_pages, kernel_digest, memory_digest,
+                base_snapshot_digest, bitmap, pages: &payload[bitmap_len..] })
+        }
+    }
+}
+
+pub fn write_snapshot_header(out: &mut [u8], kind: SnapshotKind, memory_len: usize,
+    changed_pages: usize, kernel_digest: &SnapshotDigest, memory_digest: &SnapshotDigest,
+    base_snapshot_digest: &SnapshotDigest) -> Result<(), SnapshotError> {
+    if out.len() < SNAPSHOT_HEADER_LEN { return Err(SnapshotError::TooShort); }
+    if memory_len == 0 { return Err(SnapshotError::EmptyMemory); }
+    if memory_len > SNAPSHOT_MAX_MEMORY_LEN { return Err(SnapshotError::MemoryTooLarge); }
+    if memory_len % SNAPSHOT_PAGE_SIZE != 0 { return Err(SnapshotError::MisalignedMemory); }
+    if missing(kernel_digest) || missing(memory_digest) { return Err(SnapshotError::MissingDigest); }
+    match kind {
+        SnapshotKind::Full if !missing(base_snapshot_digest) => return Err(SnapshotError::UnexpectedBase),
+        SnapshotKind::Full if changed_pages != 0 => return Err(SnapshotError::UnexpectedChangedPages),
+        SnapshotKind::Incremental if missing(base_snapshot_digest) => return Err(SnapshotError::MissingBase),
+        SnapshotKind::Incremental if changed_pages > memory_len / SNAPSHOT_PAGE_SIZE =>
+            return Err(SnapshotError::LengthMismatch),
+        _ => {}
+    }
+    let memory_len = u32::try_from(memory_len).map_err(|_| SnapshotError::LengthMismatch)?;
+    let changed_pages = u32::try_from(changed_pages).map_err(|_| SnapshotError::LengthMismatch)?;
+    out[..SNAPSHOT_HEADER_LEN].fill(0);
+    out[$OFF_MAGIC..$OFF_MAGIC + 4].copy_from_slice(&SNAPSHOT_MAGIC.to_le_bytes());
+    out[$OFF_VERSION..$OFF_VERSION + 4].copy_from_slice(&SNAPSHOT_VERSION.to_le_bytes());
+    out[$OFF_KIND..$OFF_KIND + 4].copy_from_slice(&(match kind { SnapshotKind::Full => SNAPSHOT_KIND_FULL,
+        SnapshotKind::Incremental => SNAPSHOT_KIND_INCREMENTAL }).to_le_bytes());
+    out[$OFF_HEADER_LEN..$OFF_HEADER_LEN + 4].copy_from_slice(&(SNAPSHOT_HEADER_LEN as u32).to_le_bytes());
+    out[$OFF_PAGE_SIZE..$OFF_PAGE_SIZE + 4].copy_from_slice(&(SNAPSHOT_PAGE_SIZE as u32).to_le_bytes());
+    out[$OFF_MEMORY_LEN..$OFF_MEMORY_LEN + 4].copy_from_slice(&memory_len.to_le_bytes());
+    out[$OFF_CHANGED_PAGES..$OFF_CHANGED_PAGES + 4].copy_from_slice(&changed_pages.to_le_bytes());
+    out[$OFF_KERNEL_DIGEST..$OFF_KERNEL_DIGEST + SNAPSHOT_DIGEST_LEN].copy_from_slice(kernel_digest);
+    out[$OFF_MEMORY_DIGEST..$OFF_MEMORY_DIGEST + SNAPSHOT_DIGEST_LEN].copy_from_slice(memory_digest);
+    out[$OFF_BASE_DIGEST..$OFF_BASE_DIGEST + SNAPSHOT_DIGEST_LEN].copy_from_slice(base_snapshot_digest);
+    Ok(())
+}
+"#,
+        "ts" => r#"
+export const SNAPSHOT_MAGIC = $MAGIC;
+export const SNAPSHOT_VERSION = $VERSION;
+export const SNAPSHOT_HEADER_LEN = $HEADER_LEN;
+export const SNAPSHOT_PAGE_SIZE = $PAGE_SIZE;
+export const SNAPSHOT_MAX_MEMORY_LEN = $MAX_MEMORY_LEN;
+export const SNAPSHOT_DIGEST_LEN = $DIGEST_LEN;
+export const SNAPSHOT_KIND_FULL = $KIND_FULL;
+export const SNAPSHOT_KIND_INCREMENTAL = $KIND_INCREMENTAL;
+export type SnapshotKind = "full" | "incremental";
+export type SnapshotErrorCode = "too_short" | "bad_magic" | "unsupported_version" | "unknown_kind" |
+  "bad_header_length" | "bad_page_size" | "empty_memory" | "memory_too_large" | "misaligned_memory" |
+  "reserved_nonzero" | "missing_digest" | "unexpected_base" | "missing_base" |
+  "unexpected_changed_pages" | "bad_bitmap" | "length_mismatch";
+export class SnapshotFormatError extends Error {
+  constructor(readonly code: SnapshotErrorCode) { super(`invalid snapshot: ${code}`); this.name = "SnapshotFormatError"; }
+}
+export interface SnapshotView {
+  kind: SnapshotKind; memoryLen: number; changedPages: number; kernelDigest: Uint8Array;
+  memoryDigest: Uint8Array; baseSnapshotDigest: Uint8Array; bitmap: Uint8Array; pages: Uint8Array;
+}
+const missing = (d: Uint8Array): boolean => d.every((b) => b === 0);
+export const snapshotBitmapLen = (memoryLen: number): number => Math.ceil(memoryLen / SNAPSHOT_PAGE_SIZE / 8);
+export function parseSnapshot(bytes: Uint8Array): SnapshotView {
+  const fail = (code: SnapshotErrorCode): never => { throw new SnapshotFormatError(code); };
+  if (bytes.length < SNAPSHOT_HEADER_LEN) fail("too_short");
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (dv.getUint32($OFF_MAGIC, true) !== SNAPSHOT_MAGIC) fail("bad_magic");
+  if (dv.getUint32($OFF_VERSION, true) !== SNAPSHOT_VERSION) fail("unsupported_version");
+  const rawKind = dv.getUint32($OFF_KIND, true);
+  const kind: SnapshotKind = rawKind === SNAPSHOT_KIND_FULL ? "full" :
+    rawKind === SNAPSHOT_KIND_INCREMENTAL ? "incremental" : fail("unknown_kind");
+  if (dv.getUint32($OFF_HEADER_LEN, true) !== SNAPSHOT_HEADER_LEN) fail("bad_header_length");
+  if (dv.getUint32($OFF_PAGE_SIZE, true) !== SNAPSHOT_PAGE_SIZE) fail("bad_page_size");
+  const memoryLen = dv.getUint32($OFF_MEMORY_LEN, true);
+  if (memoryLen === 0) fail("empty_memory");
+  if (memoryLen > SNAPSHOT_MAX_MEMORY_LEN) fail("memory_too_large");
+  if (memoryLen % SNAPSHOT_PAGE_SIZE !== 0) fail("misaligned_memory");
+  const changedPages = dv.getUint32($OFF_CHANGED_PAGES, true);
+  if (dv.getUint32($OFF_RESERVED, true) !== 0) fail("reserved_nonzero");
+  const kernelDigest = bytes.slice($OFF_KERNEL_DIGEST, $OFF_KERNEL_DIGEST + SNAPSHOT_DIGEST_LEN),
+    memoryDigest = bytes.slice($OFF_MEMORY_DIGEST, $OFF_MEMORY_DIGEST + SNAPSHOT_DIGEST_LEN),
+    baseSnapshotDigest = bytes.slice($OFF_BASE_DIGEST, $OFF_BASE_DIGEST + SNAPSHOT_DIGEST_LEN);
+  if (missing(kernelDigest) || missing(memoryDigest)) fail("missing_digest");
+  const payload = bytes.subarray(SNAPSHOT_HEADER_LEN);
+  if (kind === "full") {
+    if (!missing(baseSnapshotDigest)) fail("unexpected_base");
+    if (changedPages !== 0) fail("unexpected_changed_pages");
+    if (payload.length !== memoryLen) fail("length_mismatch");
+    return { kind, memoryLen, changedPages, kernelDigest, memoryDigest, baseSnapshotDigest,
+      bitmap: new Uint8Array(0), pages: payload };
+  }
+  if (missing(baseSnapshotDigest)) fail("missing_base");
+  const bitmapLen = snapshotBitmapLen(memoryLen);
+  if (payload.length < bitmapLen) fail("length_mismatch");
+  const bitmap = payload.subarray(0, bitmapLen), memoryPages = memoryLen / SNAPSHOT_PAGE_SIZE;
+  if (memoryPages % 8 !== 0 && (bitmap[bitmap.length - 1]! >>> (memoryPages % 8)) !== 0) fail("bad_bitmap");
+  let pop = 0;
+  for (const byte of bitmap) { let b = byte; while (b !== 0) { b &= b - 1; pop++; } }
+  if (pop !== changedPages) fail("bad_bitmap");
+  if (payload.length !== bitmapLen + changedPages * SNAPSHOT_PAGE_SIZE) fail("length_mismatch");
+  return { kind, memoryLen, changedPages, kernelDigest, memoryDigest, baseSnapshotDigest,
+    bitmap, pages: payload.subarray(bitmapLen) };
+}
+export function writeSnapshotHeader(kind: SnapshotKind, memoryLen: number, changedPages: number,
+  kernelDigest: Uint8Array, memoryDigest: Uint8Array, baseSnapshotDigest: Uint8Array): Uint8Array {
+  if (!Number.isInteger(memoryLen) || !Number.isInteger(changedPages) ||
+      changedPages < 0 || changedPages > 0xffffffff ||
+      kernelDigest.length !== SNAPSHOT_DIGEST_LEN || memoryDigest.length !== SNAPSHOT_DIGEST_LEN ||
+      baseSnapshotDigest.length !== SNAPSHOT_DIGEST_LEN) throw new SnapshotFormatError("length_mismatch");
+  if (memoryLen <= 0) throw new SnapshotFormatError("empty_memory");
+  if (memoryLen > SNAPSHOT_MAX_MEMORY_LEN) throw new SnapshotFormatError("memory_too_large");
+  if (memoryLen % SNAPSHOT_PAGE_SIZE !== 0) throw new SnapshotFormatError("misaligned_memory");
+  if (missing(kernelDigest) || missing(memoryDigest)) throw new SnapshotFormatError("missing_digest");
+  if (kind === "full" && !missing(baseSnapshotDigest)) throw new SnapshotFormatError("unexpected_base");
+  if (kind === "full" && changedPages !== 0) throw new SnapshotFormatError("unexpected_changed_pages");
+  if (kind === "incremental" && missing(baseSnapshotDigest)) throw new SnapshotFormatError("missing_base");
+  if (kind === "incremental" && changedPages > memoryLen / SNAPSHOT_PAGE_SIZE)
+    throw new SnapshotFormatError("length_mismatch");
+  const out = new Uint8Array(SNAPSHOT_HEADER_LEN), dv = new DataView(out.buffer);
+  dv.setUint32($OFF_MAGIC, SNAPSHOT_MAGIC, true); dv.setUint32($OFF_VERSION, SNAPSHOT_VERSION, true);
+  dv.setUint32($OFF_KIND, kind === "full" ? SNAPSHOT_KIND_FULL : SNAPSHOT_KIND_INCREMENTAL, true);
+  dv.setUint32($OFF_HEADER_LEN, SNAPSHOT_HEADER_LEN, true); dv.setUint32($OFF_PAGE_SIZE, SNAPSHOT_PAGE_SIZE, true);
+  dv.setUint32($OFF_MEMORY_LEN, memoryLen, true); dv.setUint32($OFF_CHANGED_PAGES, changedPages, true);
+  out.set(kernelDigest, $OFF_KERNEL_DIGEST); out.set(memoryDigest, $OFF_MEMORY_DIGEST);
+  out.set(baseSnapshotDigest, $OFF_BASE_DIGEST); return out;
+}
+"#,
+        _ => return format!("{}// snapshot projection is not defined for {lang}\n", banner(lang, contract)),
+    };
+    let replacements = [
+        ("$MAGIC", p("magic")), ("$VERSION", p("version")),
+        ("$HEADER_LEN", p("header-len")), ("$PAGE_SIZE", p("page-size")),
+        ("$MAX_MEMORY_LEN", p("max-memory-len")),
+        ("$DIGEST_LEN", p("digest-len")), ("$KIND_FULL", p("kind-full")),
+        ("$KIND_INCREMENTAL", p("kind-incremental")),
+        ("$OFF_MAGIC", off("magic")), ("$OFF_VERSION", off("version")),
+        ("$OFF_KIND", off("kind")), ("$OFF_HEADER_LEN", off("header_len")),
+        ("$OFF_PAGE_SIZE", off("page_size")), ("$OFF_MEMORY_LEN", off("memory_len")),
+        ("$OFF_CHANGED_PAGES", off("changed_pages")), ("$OFF_RESERVED", off("reserved")),
+        ("$OFF_KERNEL_DIGEST", off("kernel_digest")), ("$OFF_MEMORY_DIGEST", off("memory_digest")),
+        ("$OFF_BASE_DIGEST", off("base_snapshot_digest")),
+    ];
+    let mut out = banner(lang, contract);
+    let mut body = template.to_string();
+    for (needle, value) in replacements { body = body.replace(needle, &value); }
+    out.push_str(&body);
+    out
 }
 
 /// A row of a "table" boundary (syscall / import / export): name + typed args + ret.
@@ -2931,6 +3205,7 @@ fn main() -> ExitCode {
         "wire" => emit_wire(&lang, &nodes, &file, &contract),
         "llb" => emit_codec_module(&lang, &nodes, &file),
         "syntax" => emit_codec_module(&lang, &nodes, &file),
+        "snapshot" => emit_snapshot(&lang, &nodes, &file),
         other => {
             eprintln!("projector: unknown module {other}");
             return ExitCode::FAILURE;

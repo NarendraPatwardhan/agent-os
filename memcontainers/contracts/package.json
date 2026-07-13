@@ -9,6 +9,7 @@
     "./ctl": { "types": "./gen/ctl.gen.d.ts", "default": "./gen/ctl.gen.js" },
     "./constants": { "types": "./gen/constants.gen.d.ts", "default": "./gen/constants.gen.js" },
     "./llb": { "types": "./gen/llb.gen.d.ts", "default": "./gen/llb.gen.js" },
+    "./snapshot": { "types": "./gen/snapshot.gen.d.ts", "default": "./gen/snapshot.gen.js" },
     "./wire": { "types": "./gen/wire.gen.d.ts", "default": "./gen/wire.gen.js" }
   }
 }

@@ -1,4 +1,4 @@
-# contracts — the four boundaries
+# contracts — projected boundaries
 
 This directory is the **single source of truth** for every boundary in AgentOS
 (SYSTEMS.md). None of the kernels, hosts, shims, or clients *is* the truth — the
@@ -11,18 +11,21 @@ contract is — so they cannot drift.
 | `control.kdl` | control | host → kernel | `mc_ctl_*` |
 | `wire.kdl` | wire | server ↔ client | — |
 | `constants.kdl` | shared | — | errno, tiers, flags, ABI version |
+| `snapshot.kdl` | snapshot value | host ↔ host/store | MCSN v2 |
+| `llb.kdl` | build graph | client ↔ solver | LLB |
+| `syntax.kdl` | syntax service | Luau ↔ `/svc/syntax` | framed messages |
 
-Values are transcribed from the frozen `mc` ABI in memcontainers `crates/abi` and
-`crates/wire`. **Do not renumber** — the `mc` surface is a compatibility contract
-shared with memcontainers (SYSTEMS.md).
+The syscall values originate in the frozen `mc` ABI. **Do not renumber them.** New AgentOS-native
+boundaries such as MCSN, LLB, and syntax are owned here directly and change through their declared
+version policy.
 
 ## How a contract becomes code
 
 ```
-contracts/syscalls.kdl ──(//contracts/codegen:projector)──> mc.gen.rs   (kernel + sysroot)
-                                                           ├─> mc.gen.zig  (Zig kernel + C/C++ shims)
-                                                           ├─> mc.gen.ts   (TS client)
-                                                           └─> mc.gen.md   (docs)
+contracts/*.kdl ──(//contracts/codegen:projector)──> gen/*.rs
+                                                ├─> gen/*.zig
+                                                ├─> gen/*.ts / *.ex / *.luau
+                                                └─> OpenAPI / AsyncAPI / Markdown
 ```
 
 `abi_library` (`codegen/defs.bzl`) runs the projector once per language and wires a
@@ -43,7 +46,7 @@ contracts/syscalls.kdl ──(//contracts/codegen:projector)──> mc.gen.rs   
 
 The `.kdl` files are complete and authoritative, and the **projector**
 (`codegen/src/projector.rs`) is implemented: a dependency-light KDL reader plus
-emitters for Rust, Zig, TS, Markdown, AsyncAPI, and OpenAPI. The `abi_library()` calls in
+emitters for Rust, Zig, TypeScript, Elixir, Luau, Markdown, AsyncAPI, and OpenAPI. The `abi_library()` calls in
 `BUILD.bazel` are live — every boundary is generated into `gen/`, the Rust and Zig
 projections are compile-validated by `build_test`, and all are drift-gated by
 `diff_test`. Consume them as `//contracts:mc_rust`, `:env_zig`, `:wire_ts`, …

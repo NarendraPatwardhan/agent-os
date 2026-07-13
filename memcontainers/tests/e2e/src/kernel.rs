@@ -3,7 +3,7 @@
 //! interactive terminal's ONLCR (CRLF — see [`crate::tty`], SYSTEMS.md section 6). No guest programs needed except the
 //! one exec test, which proves the pipe stays raw.
 
-use crate::{boot, boot_loom, boot_posix, names, restore};
+use crate::{boot, boot_loom, boot_posix, names, restore, restore_incremental};
 use host::ExecOptions;
 
 /// WHY: the base image is a deterministic pkg_tar (SYSTEMS.md section 11) the kernel mounts as its lowest layer; the
@@ -179,6 +179,26 @@ fn restoring_a_snapshot_twice_forks_independent_vms() {
 
     assert_eq!(a.host.read_file("/tmp/fork").expect("read a"), b"branch-a");
     assert_eq!(b.host.read_file("/tmp/fork").expect("read b"), b"branch-b");
+}
+
+/// WHY: an incremental A8 value excludes every unchanged base page but must reconstruct the same
+/// runnable VM as a full snapshot. GUARANTEES: the delta is smaller than its full baseline for a
+/// small mutation, preserves both baseline and post-baseline state, and restores without booting.
+#[test]
+fn incremental_snapshot_restores_against_one_full_baseline() {
+    let mut s = boot();
+    s.host.write_file("/tmp/base", b"baseline").expect("write baseline");
+    let base = s.host.snapshot().expect("full baseline");
+    s.host.write_file("/tmp/delta", b"incremental").expect("write delta");
+    let delta = s
+        .host
+        .snapshot_incremental(&base)
+        .expect("incremental snapshot");
+    assert!(delta.len() < base.len(), "small mutation should produce a thin snapshot");
+
+    let mut restored = restore_incremental(&delta, &base);
+    assert_eq!(restored.host.read_file("/tmp/base").unwrap(), b"baseline");
+    assert_eq!(restored.host.read_file("/tmp/delta").unwrap(), b"incremental");
 }
 
 /// WHY: Group G / A8 under Asyncify (ZIG_KERNEL section 7.4) — the DEEPEST snapshot guarantee. The two

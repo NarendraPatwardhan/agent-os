@@ -53,7 +53,7 @@ async function main(): Promise<void> {
   // 3) Snapshot → restore (A8): the MCSN image round-trips through this host, and the rehydrated VM
   //    continues from the saved state — the /tmp/parity file survives and the restored VM is live.
   //    Cross-host Rust→JS/JS→Rust restore is the stronger parity proof and belongs in the shared suite.
-  const snap = host.snapshot();
+  const snap = await host.snapshot();
   const restored = await new KernelHostBuilder(wasm)
     .deterministic() // fresh capabilities — a restored VM never shares the original's host handles
     .withStdout(discard)
@@ -69,8 +69,23 @@ async function main(): Promise<void> {
     throw new Error(`restored VM is not live: exit=${echo2.exitCode}`);
   }
 
+  // 4) Incremental MCSN v2: only pages changed after `snap` are carried, while restore reconstructs
+  //    the complete runnable memory image against that one full baseline.
+  host.writeFile("/tmp/incremental", new TextEncoder().encode("thin"));
+  const incremental = await host.snapshotIncremental(snap);
+  if (incremental.length >= snap.length) throw new Error("small mutation did not produce a thin snapshot");
+  const thinRestored = await new KernelHostBuilder(wasm)
+    .deterministic()
+    .withStdout(discard)
+    .withStderr(discard)
+    .withLog(discard)
+    .restore(incremental, snap);
+  if (new TextDecoder().decode(thinRestored.readFile("/tmp/incremental")) !== "thin") {
+    throw new Error("incremental snapshot lost post-baseline state");
+  }
+
   console.log(
-    `PARITY OK — JS host booted kernel.wasm in ${bootTicks} ticks; exec + ctl-fs + snapshot/restore verified.`,
+    `PARITY OK — JS host booted kernel.wasm in ${bootTicks} ticks; full + incremental restore verified.`,
   );
 }
 

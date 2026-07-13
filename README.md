@@ -123,7 +123,7 @@ host-side run loop or any registered capabilities.
 | `vm.fs` | Read, write, list, stat, symlink/readlink, chmod, create, and remove guest paths. |
 | `vm.shell()` | Open the byte-oriented interactive shell used by terminal clients. |
 | `vm.tool()` / `vm.mount()` | Add host-resident tools or host-backed filesystems to a live VM. |
-| `vm.snapshot()` / `vm.fork()` | Capture or branch the complete running machine. |
+| `vm.snapshot()` / `vm.fork()` | Capture or branch the complete running machine; optionally emit a baseline-relative delta. |
 | `vm.commit().asLayer()` | Export the mutable filesystem overlay as a content-addressed tar layer. |
 | `vm.status()` / `vm.close()` | Inspect and dispose the VM host lifecycle. |
 
@@ -305,14 +305,29 @@ client API, tools, mounts, snapshots, builds, approval flows, and remote lifecyc
 ## Snapshots and reproducible builds
 
 `vm.snapshot()` captures the whole machine—processes, filesystem state, warm services, and linear
-memory. `vm.fork()` restores that state into an independent VM, while `vm.commit().asLayer()` exports
-only the mutable filesystem overlay:
+memory. Full snapshots are self-contained and remain the default. With a content store, incremental
+snapshots carry only pages changed from the VM's full baseline; the SDK stores and resolves that
+baseline by digest. `vm.fork()` restores the current state into an independent VM, while
+`vm.commit().asLayer()` exports only the mutable filesystem overlay:
 
 ```js
+import { readFileSync } from "node:fs";
+import { mc, MemoryContentStore } from "./agent-os/mc-core.mjs";
+
+const bytes = (path) => new Uint8Array(readFileSync(path));
+const kernel = bytes("./agent-os/kernel.wasm");
+const store = new MemoryContentStore();
+const vm = await mc.create({ kernel, image: bytes("./agent-os/loom.tar"), store });
+
 const snapshot = await vm.snapshot();
+const delta = await vm.snapshot({ mode: "incremental" });
+const resumed = await mc.restore(delta, { kernel, store });
 const fork = await vm.fork();
 const { digest, tar } = await vm.commit().asLayer();
 ```
+
+An incremental value references one full snapshot and never another incremental, so restore work is
+bounded. Keep the referenced full object when moving a delta between stores or remote servers.
 
 For applications with a content store, `mc.record()` captures live `vm.exec` and `vm.fs` mutations
 as a portable `llb` definition. `llb` definitions are deterministic DAGs of VM filesystem and

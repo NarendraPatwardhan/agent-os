@@ -77,8 +77,8 @@ defmodule AgentOS.ControlPlane do
     do: with_vm(id, &Vm.svc_call(&1, service, request, opts))
 
   @doc "Snapshot an existing VM."
-  @spec snapshot(Vm.id()) :: {:ok, binary()} | {:error, :not_found}
-  def snapshot(id), do: with_vm(id, &Vm.snapshot/1)
+  @spec snapshot(Vm.id(), keyword()) :: {:ok, binary()} | {:error, :not_found}
+  def snapshot(id, opts \\ []), do: with_vm(id, &Vm.snapshot(&1, opts))
 
   @doc "Serialize an existing VM's live CoW overlay into a content-addressed tar layer."
   @spec commit_layer(Vm.id(), keyword()) :: {:ok, map()} | {:error, term()}

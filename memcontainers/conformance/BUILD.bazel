@@ -2,9 +2,17 @@ package(default_visibility = ["//visibility:public"])
 
 load("//bazel:rust_opt_test.bzl", "rust_opt_test")
 load("//bazel:ts.bzl", "mc_ts_project")
-load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("@aspect_rules_js//js:defs.bzl", "js_library", "js_test")
 
-exports_files(["control_vectors.json"])
+exports_files([
+    "control_vectors.json",
+    "snapshot_vectors.json",
+])
+
+js_library(
+    name = "snapshot_vectors_json",
+    srcs = ["snapshot_vectors.json"],
+)
 
 rust_opt_test(
     name = "abi_test",

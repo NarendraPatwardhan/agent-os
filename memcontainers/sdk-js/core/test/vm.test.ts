@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { writeSnapshotHeader } from "@mc/contracts/snapshot";
 import { capabilityConnection, FsContentStore, MemoryContentStore, llb, mc, remoteBuild } from "../src/index.js";
 import type {
   BuildDefinition,
@@ -374,10 +375,14 @@ function runGit(cwd: string, args: string[]): string {
 }
 
 async function sha256Digest(bytes: Uint8Array): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes as Uint8Array<ArrayBuffer>));
+  const digest = await sha256Bytes(bytes);
   let hex = "";
   for (const byte of digest) hex += byte.toString(16).padStart(2, "0");
   return `sha256:${hex}`;
+}
+
+async function sha256Bytes(bytes: Uint8Array): Promise<Uint8Array> {
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", bytes as Uint8Array<ArrayBuffer>));
 }
 
 class CountingStore implements ContentStore {
@@ -442,6 +447,16 @@ class CountingStore implements ContentStore {
     if (!this.inner.putSnapshot) throw new Error("inner content store does not support snapshots");
     this.putSnapshotKeys.push(key);
     return this.inner.putSnapshot(key, snap);
+  }
+
+  snapshotObject(digest: string): Promise<Uint8Array> {
+    if (!this.inner.snapshotObject) throw new Error("inner content store does not support snapshot objects");
+    return this.inner.snapshotObject(digest);
+  }
+
+  async putSnapshotObject(snapshot: Uint8Array): Promise<string> {
+    if (!this.inner.putSnapshotObject) throw new Error("inner content store does not support snapshot objects");
+    return this.inner.putSnapshotObject(snapshot);
   }
 }
 
@@ -783,7 +798,24 @@ async function main(): Promise<void> {
   {
     const remote = await remoteVmServer();
     try {
-      const restored = await mc.restore(new Uint8Array([1, 2, 3]), {
+      // Remote restore validates the MCSN envelope before touching the network. Use a minimal,
+      // structurally valid full snapshot here; the remote fixture is responsible only for proving
+      // that those exact opaque bytes cross the data plane.
+      const memory = new Uint8Array(65_536);
+      const kernelDigest = await sha256Bytes(new TextEncoder().encode("remote-fixture-kernel"));
+      const memoryDigest = await sha256Bytes(memory);
+      const header = writeSnapshotHeader(
+        "full",
+        memory.length,
+        0,
+        kernelDigest,
+        memoryDigest,
+        new Uint8Array(32),
+      );
+      const remoteSnapshot = new Uint8Array(header.length + memory.length);
+      remoteSnapshot.set(header);
+      remoteSnapshot.set(memory, header.length);
+      const restored = await mc.restore(remoteSnapshot, {
         runtime: "remote",
         endpoint: remote.origin,
         token: "server-token",
@@ -796,7 +828,8 @@ async function main(): Promise<void> {
       if (!upload) throw new Error(`remote restore did not upload snapshot bytes: ${JSON.stringify(remote.requests)}`);
       if (
         upload.headers["content-type"] !== "application/octet-stream" ||
-        JSON.stringify(upload.bodyBytes) !== JSON.stringify([1, 2, 3])
+        upload.bodyBytes.length !== remoteSnapshot.length ||
+        upload.bodyBytes.some((byte, index) => byte !== remoteSnapshot[index])
       ) {
         throw new Error(`remote restore snapshot upload was not raw bytes: ${JSON.stringify(upload)}`);
       }
@@ -1955,6 +1988,36 @@ error("timed out waiting for restored warm sqlite child: " .. err)
     }
   } finally {
     await vm.close();
+  }
+
+  // Incremental snapshots are self-describing deltas over one content-addressed full baseline.
+  // The SDK owns that baseline lifecycle: create captures it, snapshot stores it by digest, and
+  // restore resolves it without requiring callers to pass a second byte array manually.
+  {
+    const store = new MemoryContentStore();
+    const source = await mc.create({ runtime: LOCAL_RUNTIME, kernel, image, store, deterministic: true });
+    let delta: Uint8Array;
+    let full: Uint8Array;
+    try {
+      await source.fs.write("/tmp/incremental-sdk", "survives");
+      delta = await source.snapshot({ mode: "incremental" });
+      full = await source.snapshot();
+      if (delta.length >= full.length) {
+        throw new Error(`incremental snapshot was not smaller than full: delta=${delta.length} full=${full.length}`);
+      }
+    } finally {
+      await source.close();
+    }
+
+    const restored = await mc.restore(delta!, { runtime: LOCAL_RUNTIME, kernel, store, deterministic: true });
+    try {
+      if ((await restored.fs.readText("/tmp/incremental-sdk")) !== "survives") {
+        throw new Error("SDK incremental restore did not reconstruct the full memory image");
+      }
+    } finally {
+      await restored.close();
+    }
+    console.log("phase: SDK incremental snapshot resolves its content-addressed full baseline OK");
   }
 
   const server = await recordingServer();

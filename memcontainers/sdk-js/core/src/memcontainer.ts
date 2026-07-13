@@ -22,6 +22,7 @@ import {
   TIER_READ_ONLY,
   TIER_ISOLATED,
 } from "@mc/contracts/constants";
+import { parseSnapshot } from "@mc/contracts/snapshot";
 import { EmbeddedBackend, FanoutSink } from "./embedded.js";
 import { defaultImage, defaultKernel } from "./artifacts.js";
 import { defaultStore } from "./store.js";
@@ -57,6 +58,7 @@ import type {
   ToolDefinition,
   VmFs,
   VmStatus,
+  SnapshotOptions,
 } from "./types.js";
 
 const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
@@ -173,8 +175,8 @@ export class Vm {
   }
 
   /** Capture the whole VM as a portable blob (A8). */
-  snapshot(): Promise<Uint8Array> {
-    return this.backend.snapshot();
+  snapshot(opts: SnapshotOptions = {}): Promise<Uint8Array> {
+    return this.backend.snapshot(opts);
   }
 
   /** Fork: snapshot + restore into a fresh, independent VM (same options). */
@@ -523,10 +525,21 @@ async function makeEmbedded(
   }
 
   let host: KernelHost;
+  let snapshotBase: Uint8Array;
+  const store = opts.store ?? (imageNeedsStore(opts.image) ? defaultStore() : undefined);
   if (snapshot) {
-    host = await builder.restore(snapshot);
+    const view = parseSnapshot(snapshot);
+    let base: Uint8Array | undefined;
+    if (view.kind === "incremental") {
+      if (!store?.snapshotObject) {
+        throw new Error("restoring an incremental snapshot requires a content-addressed snapshot store");
+      }
+      const ref = `sha256:${Array.from(view.baseSnapshotDigest, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+      base = await store.snapshotObject(ref);
+    }
+    host = await builder.restore(snapshot, base);
+    snapshotBase = view.kind === "full" ? snapshot.slice() : base!.slice();
   } else {
-    const store = opts.store ?? (imageNeedsStore(opts.image) ? defaultStore() : undefined);
     const layers = await resolveImage(opts.image, store);
     const cfg = await imageConfig(opts.image, store);
     host = await builder
@@ -534,8 +547,9 @@ async function makeEmbedded(
       .withContract(tierOrdinal(cfg.tier), contractI32(cfg.budgetMib), contractFuel(cfg.fuel))
       .build();
     host.bootToPrompt(); // drive boot only to the first prompt (no settle wait)
+    snapshotBase = await host.snapshot();
   }
-  const backend = new EmbeddedBackend(host, stdout, tools);
+  const backend = new EmbeddedBackend(host, stdout, tools, snapshotBase, store);
   try {
     // Re-register the host-call HANDLERS (the JS closures) on both paths — they can never live in a
     // snapshot, so a restored VM must be handed them again to route its host-tool catalog entries.
@@ -1115,6 +1129,20 @@ async function makeRemote(
 
   if (snapshot) {
     id = opts.id ?? remoteId();
+    const view = parseSnapshot(snapshot);
+    if (view.kind === "incremental" && opts.store?.snapshotObject) {
+      const baseRef = `sha256:${Array.from(view.baseSnapshotDigest, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+      // Seed a different server when the caller has the baseline locally. If not, the target server
+      // may already own it (the normal same-server checkpoint/restore path) and resolves the digest
+      // from its snapshot CAS when processing the restore request.
+      let localBase: Uint8Array | undefined;
+      try {
+        localBase = await opts.store.snapshotObject(baseRef);
+      } catch {
+        // The target CAS may already own it; the restore response is authoritative.
+      }
+      if (localBase) await remoteUploadSnapshot(endpoint, headers, localBase);
+    }
     const snapshotRef = await remoteUploadSnapshot(endpoint, headers, snapshot);
     const response = await fetch(`${endpoint}/v1/vms/${encodeURIComponent(id)}/restore`, {
       method: "POST",

@@ -929,6 +929,7 @@ fn boot(
 fn restore(
     wasm: Binary,
     snapshot: Binary,
+    base_snapshot: Option<Binary>,
     deterministic: bool,
     workers: Option<i32>,
     net_relay: bool,
@@ -991,9 +992,12 @@ fn restore(
             relay: relay.clone(),
         }));
     }
-    let host = with_capture(builder, &out)
-        .restore(snapshot.as_slice())
-        .map_err(nif_err)?;
+    let builder = with_capture(builder, &out);
+    let host = match base_snapshot {
+        Some(base) => builder.restore_incremental(snapshot.as_slice(), base.as_slice()),
+        None => builder.restore(snapshot.as_slice()),
+    }
+    .map_err(nif_err)?;
     Ok((
         atoms::ok(),
         ResourceArc::new(Vm {
@@ -1251,6 +1255,20 @@ fn status(vm: ResourceArc<Vm>) -> NifResult<(Atom, (u64, Option<i32>, bool, i32,
 #[rustler::nif(name = "snapshot_nif", schedule = "DirtyCpu")]
 fn snapshot<'a>(env: Env<'a>, vm: ResourceArc<Vm>) -> NifResult<(Atom, Binary<'a>)> {
     let bytes = vm_lock(&vm)?.snapshot().map_err(nif_err)?;
+    Ok((atoms::ok(), to_binary(env, &bytes)?))
+}
+
+/// Capture changed pages relative to one full baseline. The returned value embeds the baseline
+/// digest; storage and dependency resolution remain BEAM/control-plane responsibilities.
+#[rustler::nif(name = "snapshot_incremental_nif", schedule = "DirtyCpu")]
+fn snapshot_incremental<'a>(
+    env: Env<'a>,
+    vm: ResourceArc<Vm>,
+    base: Binary,
+) -> NifResult<(Atom, Binary<'a>)> {
+    let bytes = vm_lock(&vm)?
+        .snapshot_incremental(base.as_slice())
+        .map_err(nif_err)?;
     Ok((atoms::ok(), to_binary(env, &bytes)?))
 }
 

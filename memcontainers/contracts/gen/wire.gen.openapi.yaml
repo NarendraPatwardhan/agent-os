@@ -544,11 +544,16 @@ paths:
   "/v1/vms/{id}/snapshots":
     post:
       operationId: "post_v1_vms_id_snapshots"
-      summary: "Return a VM snapshot as bytes. Fails while in-flight egress/host work is not quiesced."
+      summary: "Return a full (default) or incremental VM snapshot as bytes. Incremental values reference the VM's content-addressed full baseline."
       parameters:
         - name: "id"
           in: path
           required: true
+          schema:
+            type: string
+        - name: "mode"
+          in: query
+          required: false
           schema:
             type: string
       responses:
