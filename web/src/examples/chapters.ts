@@ -5,9 +5,12 @@ function ch(id: string, num: string, title: string, tagline: string, examples: r
   return { id, num, title, tagline, count: examples.length, examples };
 }
 
+const firstContactIntro =
+  "AgentOS exposes the same VM API through three runtimes: local runs under Node.js or Bun, browser runs entirely in the page, and remote connects to a served AgentOS host. The opening example — and most examples in this book — uses the browser runtime unless stated otherwise.";
+
 // The book's ten authored chapters.
 export const chapters: readonly Chapter[] = [
-  ch("first-contact", "1", "First Contact", "Three runtimes host the exact same VM surface — learn it once; it moves with you.", [
+  ch("first-contact", "1", "First Contact", firstContactIntro, [
     {
       kind: "program",
       id: "boot-a-vm",

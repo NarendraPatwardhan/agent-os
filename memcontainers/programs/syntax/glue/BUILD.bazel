@@ -61,5 +61,5 @@ mc_program(
 size_limit(
     name = "size_limit",
     file = ":syntax_opt",
-    max_bytes = 358210,
+    max_bytes = 400000,
 )

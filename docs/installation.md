@@ -38,8 +38,7 @@ const vm = await mc.create({
 });
 ```
 
-This path is supported by Node.js 22+ and Bun. The runtime selector is `"local"` in both hosts;
-`"bun"` is not a runtime name.
+This path is supported by Node.js 22+ and Bun. The runtime selector is `"local"` in both hosts.
 
 ## Package imports
 
