@@ -2,6 +2,7 @@ defmodule AgentOS.ControlPlaneTest do
   use ExUnit.Case, async: false
 
   alias AgentOS.ControlPlane
+  alias AgentOS.Contracts.Snapshot
 
   # Exercises the OTP control-plane layer (the supervision tree + registry + facade) with REAL
   # processes and no mocks (B6) — and without a kernel.wasm, by covering the addressing/error
@@ -80,6 +81,14 @@ defmodule AgentOS.ControlPlaneTest do
                )
 
       assert is_pid(pid)
+      assert {:error, :already_exists} =
+               ControlPlane.create_new(id,
+                 wasm: wasm,
+                 base_image: image,
+                 deterministic: true,
+                 workers: 0
+               )
+
       assert {:ok, status} = ControlPlane.status(id)
       assert status.at_prompt
       assert status.workers == 0
@@ -140,10 +149,17 @@ defmodule AgentOS.ControlPlaneTest do
 
       assert {:ok, snapshot} = ControlPlane.snapshot(id)
       assert binary_part(snapshot, 0, 4) == "MCSN"
+      base_snapshot = ControlPlane.snapshot_base(id)
+      assert binary_part(base_snapshot, 0, 4) == "MCSN"
 
       assert {:ok, incremental} = ControlPlane.snapshot(id, mode: :incremental)
       assert binary_part(incremental, 0, 4) == "MCSN"
       assert byte_size(incremental) < byte_size(snapshot)
+      assert {:ok, %{kind: :incremental, base_snapshot_digest: base_digest}} =
+               Snapshot.parse(incremental)
+
+      assert byte_size(base_digest) == Snapshot.snapshot_digest_len()
+      refute base_digest == :binary.copy(<<0>>, Snapshot.snapshot_digest_len())
       assert {:error, bad_mode} = ControlPlane.snapshot(id, mode: :chain)
       assert bad_mode =~ "snapshot mode"
 

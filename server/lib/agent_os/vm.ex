@@ -160,6 +160,10 @@ defmodule AgentOS.Vm do
     GenServer.call(server, {:snapshot, mode}, @default_call_timeout)
   end
 
+  @doc "The immutable full baseline used by incremental snapshots for this VM."
+  @spec snapshot_base(server()) :: binary()
+  def snapshot_base(server), do: GenServer.call(server, :snapshot_base)
+
   @doc "Serialize the live CoW overlay into a content-addressed tar layer."
   @spec commit_layer(server(), keyword()) ::
           {:ok, %{tar: binary(), digest: String.t()}} | {:error, Nif.reason()}
@@ -536,6 +540,10 @@ defmodule AgentOS.Vm do
 
   def handle_call({:snapshot, mode}, _from, state) do
     {:reply, {:error, "snapshot mode must be :full or :incremental, got #{inspect(mode)}"}, state}
+  end
+
+  def handle_call(:snapshot_base, _from, state) do
+    {:reply, state.snapshot_base, state}
   end
 
   def handle_call(:commit_layer, _from, state) do

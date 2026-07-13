@@ -25,6 +25,16 @@ defmodule AgentOS.ControlPlane do
     end
   end
 
+  @doc "Create a VM only when `id` is unoccupied; unlike `create/2`, never converges on an existing VM."
+  @spec create_new(Vm.id(), keyword()) :: {:ok, pid()} | {:error, :already_exists | term()}
+  def create_new(id, opts) do
+    case DynamicSupervisor.start_child(@supervisor, {Vm, Keyword.put(opts, :id, id)}) do
+      {:ok, pid} -> {:ok, pid}
+      {:error, {:already_started, _pid}} -> {:error, :already_exists}
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
   @doc "The pid of the VM at `id`, or `nil`."
   @spec whereis(Vm.id()) :: pid() | nil
   def whereis(id) do
@@ -79,6 +89,10 @@ defmodule AgentOS.ControlPlane do
   @doc "Snapshot an existing VM."
   @spec snapshot(Vm.id(), keyword()) :: {:ok, binary()} | {:error, :not_found}
   def snapshot(id, opts \\ []), do: with_vm(id, &Vm.snapshot(&1, opts))
+
+  @doc "Read the immutable full baseline that backs an existing VM's incremental snapshots."
+  @spec snapshot_base(Vm.id()) :: binary() | {:error, :not_found}
+  def snapshot_base(id), do: with_vm(id, &Vm.snapshot_base/1)
 
   @doc "Serialize an existing VM's live CoW overlay into a content-addressed tar layer."
   @spec commit_layer(Vm.id(), keyword()) :: {:ok, map()} | {:error, term()}
