@@ -1,0 +1,2 @@
+# Unified diffs require a leading context marker even on blank source lines.
+third_party/tree-sitter/patches/*.patch whitespace=-blank-at-eol

@@ -39,6 +39,146 @@ pub const SEMANTIC_ROLE_SOURCE: u32 = 12;
 pub const SEMANTIC_TRAIT_DECLARATION: u32 = 1;
 pub const SEMANTIC_TRAIT_SCOPE: u32 = 2;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticRoleSpec { pub name: &'static str, pub id: u32, pub required: bool }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticTraitSpec { pub name: &'static str, pub id: u32 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticKindSpec {
+    pub name: &'static str,
+    pub id: u32,
+    pub roles: &'static [SemanticRoleSpec],
+    pub traits: &'static [SemanticTraitSpec],
+}
+const SEMANTIC_KIND_MODULE_ROLES: &[SemanticRoleSpec] = &[
+    SemanticRoleSpec { name: "body", id: 2, required: true },
+];
+const SEMANTIC_KIND_MODULE_TRAITS: &[SemanticTraitSpec] = &[
+    SemanticTraitSpec { name: "scope", id: 2 },
+];
+const SEMANTIC_KIND_DECLARATION_ROLES: &[SemanticRoleSpec] = &[
+    SemanticRoleSpec { name: "name", id: 1, required: true },
+];
+const SEMANTIC_KIND_DECLARATION_TRAITS: &[SemanticTraitSpec] = &[
+    SemanticTraitSpec { name: "declaration", id: 1 },
+];
+const SEMANTIC_KIND_FUNCTION_ROLES: &[SemanticRoleSpec] = &[
+    SemanticRoleSpec { name: "name", id: 1, required: false },
+    SemanticRoleSpec { name: "parameters", id: 3, required: true },
+    SemanticRoleSpec { name: "body", id: 2, required: true },
+];
+const SEMANTIC_KIND_FUNCTION_TRAITS: &[SemanticTraitSpec] = &[
+    SemanticTraitSpec { name: "declaration", id: 1 },
+    SemanticTraitSpec { name: "scope", id: 2 },
+];
+const SEMANTIC_KIND_PARAMETER_ROLES: &[SemanticRoleSpec] = &[
+    SemanticRoleSpec { name: "name", id: 1, required: true },
+];
+const SEMANTIC_KIND_PARAMETER_TRAITS: &[SemanticTraitSpec] = &[
+    SemanticTraitSpec { name: "declaration", id: 1 },
+];
+const SEMANTIC_KIND_CALL_ROLES: &[SemanticRoleSpec] = &[
+    SemanticRoleSpec { name: "callee", id: 6, required: true },
+    SemanticRoleSpec { name: "arguments", id: 5, required: true },
+];
+const SEMANTIC_KIND_CALL_TRAITS: &[SemanticTraitSpec] = &[
+];
+const SEMANTIC_KIND_MEMBER_ROLES: &[SemanticRoleSpec] = &[
+    SemanticRoleSpec { name: "receiver", id: 4, required: true },
+    SemanticRoleSpec { name: "name", id: 1, required: true },
+];
+const SEMANTIC_KIND_MEMBER_TRAITS: &[SemanticTraitSpec] = &[
+];
+const SEMANTIC_KIND_IDENTIFIER_ROLES: &[SemanticRoleSpec] = &[
+    SemanticRoleSpec { name: "name", id: 1, required: false },
+];
+const SEMANTIC_KIND_IDENTIFIER_TRAITS: &[SemanticTraitSpec] = &[
+];
+const SEMANTIC_KIND_LITERAL_ROLES: &[SemanticRoleSpec] = &[
+];
+const SEMANTIC_KIND_LITERAL_TRAITS: &[SemanticTraitSpec] = &[
+];
+const SEMANTIC_KIND_TYPE_ROLES: &[SemanticRoleSpec] = &[
+];
+const SEMANTIC_KIND_TYPE_TRAITS: &[SemanticTraitSpec] = &[
+];
+const SEMANTIC_KIND_BLOCK_ROLES: &[SemanticRoleSpec] = &[
+    SemanticRoleSpec { name: "body", id: 2, required: false },
+];
+const SEMANTIC_KIND_BLOCK_TRAITS: &[SemanticTraitSpec] = &[
+    SemanticTraitSpec { name: "scope", id: 2 },
+];
+const SEMANTIC_KIND_ASSIGNMENT_ROLES: &[SemanticRoleSpec] = &[
+    SemanticRoleSpec { name: "left", id: 7, required: true },
+    SemanticRoleSpec { name: "right", id: 8, required: true },
+];
+const SEMANTIC_KIND_ASSIGNMENT_TRAITS: &[SemanticTraitSpec] = &[
+];
+const SEMANTIC_KIND_BRANCH_ROLES: &[SemanticRoleSpec] = &[
+    SemanticRoleSpec { name: "condition", id: 9, required: true },
+    SemanticRoleSpec { name: "body", id: 2, required: true },
+];
+const SEMANTIC_KIND_BRANCH_TRAITS: &[SemanticTraitSpec] = &[
+];
+const SEMANTIC_KIND_LOOP_ROLES: &[SemanticRoleSpec] = &[
+    SemanticRoleSpec { name: "condition", id: 9, required: false },
+    SemanticRoleSpec { name: "body", id: 2, required: true },
+];
+const SEMANTIC_KIND_LOOP_TRAITS: &[SemanticTraitSpec] = &[
+];
+const SEMANTIC_KIND_RETURN_ROLES: &[SemanticRoleSpec] = &[
+    SemanticRoleSpec { name: "value", id: 11, required: false },
+];
+const SEMANTIC_KIND_RETURN_TRAITS: &[SemanticTraitSpec] = &[
+];
+const SEMANTIC_KIND_IMPORT_ROLES: &[SemanticRoleSpec] = &[
+    SemanticRoleSpec { name: "source", id: 12, required: true },
+];
+const SEMANTIC_KIND_IMPORT_TRAITS: &[SemanticTraitSpec] = &[
+    SemanticTraitSpec { name: "declaration", id: 1 },
+];
+const SEMANTIC_KIND_TABLE_ROLES: &[SemanticRoleSpec] = &[
+];
+const SEMANTIC_KIND_TABLE_TRAITS: &[SemanticTraitSpec] = &[
+];
+const SEMANTIC_KIND_FIELD_ROLES: &[SemanticRoleSpec] = &[
+    SemanticRoleSpec { name: "name", id: 1, required: false },
+    SemanticRoleSpec { name: "value", id: 11, required: true },
+];
+const SEMANTIC_KIND_FIELD_TRAITS: &[SemanticTraitSpec] = &[
+];
+const SEMANTIC_KIND_OPERATOR_ROLES: &[SemanticRoleSpec] = &[
+    SemanticRoleSpec { name: "left", id: 7, required: false },
+    SemanticRoleSpec { name: "right", id: 8, required: false },
+];
+const SEMANTIC_KIND_OPERATOR_TRAITS: &[SemanticTraitSpec] = &[
+];
+const SEMANTIC_KIND_COMMENT_ROLES: &[SemanticRoleSpec] = &[
+];
+const SEMANTIC_KIND_COMMENT_TRAITS: &[SemanticTraitSpec] = &[
+];
+pub const SEMANTIC_KINDS: &[SemanticKindSpec] = &[
+    SemanticKindSpec { name: "module", id: 1, roles: SEMANTIC_KIND_MODULE_ROLES, traits: SEMANTIC_KIND_MODULE_TRAITS },
+    SemanticKindSpec { name: "declaration", id: 2, roles: SEMANTIC_KIND_DECLARATION_ROLES, traits: SEMANTIC_KIND_DECLARATION_TRAITS },
+    SemanticKindSpec { name: "function", id: 3, roles: SEMANTIC_KIND_FUNCTION_ROLES, traits: SEMANTIC_KIND_FUNCTION_TRAITS },
+    SemanticKindSpec { name: "parameter", id: 4, roles: SEMANTIC_KIND_PARAMETER_ROLES, traits: SEMANTIC_KIND_PARAMETER_TRAITS },
+    SemanticKindSpec { name: "call", id: 5, roles: SEMANTIC_KIND_CALL_ROLES, traits: SEMANTIC_KIND_CALL_TRAITS },
+    SemanticKindSpec { name: "member", id: 6, roles: SEMANTIC_KIND_MEMBER_ROLES, traits: SEMANTIC_KIND_MEMBER_TRAITS },
+    SemanticKindSpec { name: "identifier", id: 7, roles: SEMANTIC_KIND_IDENTIFIER_ROLES, traits: SEMANTIC_KIND_IDENTIFIER_TRAITS },
+    SemanticKindSpec { name: "literal", id: 8, roles: SEMANTIC_KIND_LITERAL_ROLES, traits: SEMANTIC_KIND_LITERAL_TRAITS },
+    SemanticKindSpec { name: "type", id: 9, roles: SEMANTIC_KIND_TYPE_ROLES, traits: SEMANTIC_KIND_TYPE_TRAITS },
+    SemanticKindSpec { name: "block", id: 10, roles: SEMANTIC_KIND_BLOCK_ROLES, traits: SEMANTIC_KIND_BLOCK_TRAITS },
+    SemanticKindSpec { name: "assignment", id: 11, roles: SEMANTIC_KIND_ASSIGNMENT_ROLES, traits: SEMANTIC_KIND_ASSIGNMENT_TRAITS },
+    SemanticKindSpec { name: "branch", id: 12, roles: SEMANTIC_KIND_BRANCH_ROLES, traits: SEMANTIC_KIND_BRANCH_TRAITS },
+    SemanticKindSpec { name: "loop", id: 13, roles: SEMANTIC_KIND_LOOP_ROLES, traits: SEMANTIC_KIND_LOOP_TRAITS },
+    SemanticKindSpec { name: "return", id: 14, roles: SEMANTIC_KIND_RETURN_ROLES, traits: SEMANTIC_KIND_RETURN_TRAITS },
+    SemanticKindSpec { name: "import", id: 15, roles: SEMANTIC_KIND_IMPORT_ROLES, traits: SEMANTIC_KIND_IMPORT_TRAITS },
+    SemanticKindSpec { name: "table", id: 16, roles: SEMANTIC_KIND_TABLE_ROLES, traits: SEMANTIC_KIND_TABLE_TRAITS },
+    SemanticKindSpec { name: "field", id: 17, roles: SEMANTIC_KIND_FIELD_ROLES, traits: SEMANTIC_KIND_FIELD_TRAITS },
+    SemanticKindSpec { name: "operator", id: 18, roles: SEMANTIC_KIND_OPERATOR_ROLES, traits: SEMANTIC_KIND_OPERATOR_TRAITS },
+    SemanticKindSpec { name: "comment", id: 19, roles: SEMANTIC_KIND_COMMENT_ROLES, traits: SEMANTIC_KIND_COMMENT_TRAITS },
+];
+
 extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::string::String;

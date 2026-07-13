@@ -307,7 +307,9 @@ fn banner(lang: &str, contract: &str) -> String {
     );
     match lang {
         "asyncapi" | "openapi" | "elixir" => {
-            format!("# {line} from contracts/{contract} by //contracts/codegen:projector — do not edit.\n")
+            format!(
+                "# {line} from contracts/{contract} by //contracts/codegen:projector — do not edit.\n"
+            )
         }
         "luau" => format!(
             "-- {line} from contracts/{contract} by //contracts/codegen:projector — do not edit.\n"
@@ -408,7 +410,10 @@ fn emit_constants(lang: &str, nodes: &[Node], contract: &str) -> String {
             // resolver that ORs the named cap bits (the CAP_* consts emitted above), so the
             // kernel's Tier::caps() derives from this one place and both kernels agree.
             "tier-caps" => {
-                comment(&mut o, "tier → capability ceiling — the kernel's Tier::caps() consumes this (single source)");
+                comment(
+                    &mut o,
+                    "tier → capability ceiling — the kernel's Tier::caps() consumes this (single source)",
+                );
                 let arms: Vec<(String, String)> = n
                     .children
                     .iter()
@@ -496,7 +501,10 @@ fn emit_constants(lang: &str, nodes: &[Node], contract: &str) -> String {
             "service-marker" => {
                 let cname = n.name.to_uppercase().replace('-', "_");
                 let value = n.arg_str(0);
-                comment(&mut o, "the argv[1] marker the kernel passes to spawn a binary in SERVICE mode (SYSTEMS.md)");
+                comment(
+                    &mut o,
+                    "the argv[1] marker the kernel passes to spawn a binary in SERVICE mode (SYSTEMS.md)",
+                );
                 match lang {
                     "rust" => o.push_str(&format!("pub const {cname}: &str = \"{value}\";\n")),
                     "zig" => o.push_str(&format!("pub const {cname}: []const u8 = \"{value}\";\n")),
@@ -2109,8 +2117,101 @@ fn emit_vocabulary_constants(lang: &str, nodes: &[Node]) -> String {
         }
     }
     if !out.is_empty() {
+        if lang == "rust" {
+            out.push_str(&emit_rust_vocabulary_descriptors(nodes));
+        }
         out.push('\n');
     }
+    out
+}
+
+fn rust_vocabulary_ident(value: &str) -> String {
+    value.to_ascii_uppercase().replace('-', "_")
+}
+
+/// Host generators must consume the same parsed contract model as every runtime projection. The
+/// constants above are sufficient for wire users; these compact descriptors additionally retain
+/// the semantic constraints that `mc-grammar-gen` validates while elaborating an owned grammar.
+fn emit_rust_vocabulary_descriptors(nodes: &[Node]) -> String {
+    let roles = nodes
+        .iter()
+        .filter(|node| node.name == "semantic-role")
+        .map(|node| {
+            (
+                node.arg_str(0),
+                node.props.get("id").map(Val::as_int).unwrap_or(0),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let traits = nodes
+        .iter()
+        .filter(|node| node.name == "semantic-trait")
+        .map(|node| {
+            (
+                node.arg_str(0),
+                node.props.get("id").map(Val::as_int).unwrap_or(0),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let kinds = nodes
+        .iter()
+        .filter(|node| node.name == "semantic-kind")
+        .collect::<Vec<_>>();
+    if kinds.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::from(
+        "\n#[derive(Clone, Copy, Debug, Eq, PartialEq)]\n\
+         pub struct SemanticRoleSpec { pub name: &'static str, pub id: u32, pub required: bool }\n\
+         #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n\
+         pub struct SemanticTraitSpec { pub name: &'static str, pub id: u32 }\n\
+         #[derive(Clone, Copy, Debug, Eq, PartialEq)]\n\
+         pub struct SemanticKindSpec {\n\
+         \x20   pub name: &'static str,\n\
+         \x20   pub id: u32,\n\
+         \x20   pub roles: &'static [SemanticRoleSpec],\n\
+         \x20   pub traits: &'static [SemanticTraitSpec],\n\
+         }\n",
+    );
+
+    for kind in &kinds {
+        let ident = rust_vocabulary_ident(kind.arg_str(0));
+        out.push_str(&format!(
+            "const SEMANTIC_KIND_{ident}_ROLES: &[SemanticRoleSpec] = &[\n"
+        ));
+        for role in kind.children_named("role") {
+            let name = role.arg_str(0);
+            let id = roles.get(name).copied().unwrap_or(0);
+            let required = role.props.get("required").map(Val::as_int).unwrap_or(0) != 0;
+            out.push_str(&format!(
+                "    SemanticRoleSpec {{ name: \"{name}\", id: {id}, required: {required} }},\n"
+            ));
+        }
+        out.push_str("];\n");
+        out.push_str(&format!(
+            "const SEMANTIC_KIND_{ident}_TRAITS: &[SemanticTraitSpec] = &[\n"
+        ));
+        for semantic_trait in kind.children_named("trait") {
+            let name = semantic_trait.arg_str(0);
+            let id = traits.get(name).copied().unwrap_or(0);
+            out.push_str(&format!(
+                "    SemanticTraitSpec {{ name: \"{name}\", id: {id} }},\n"
+            ));
+        }
+        out.push_str("];\n");
+    }
+
+    out.push_str("pub const SEMANTIC_KINDS: &[SemanticKindSpec] = &[\n");
+    for kind in &kinds {
+        let name = kind.arg_str(0);
+        let ident = rust_vocabulary_ident(name);
+        let id = kind.props.get("id").map(Val::as_int).unwrap_or(0);
+        out.push_str(&format!(
+            "    SemanticKindSpec {{ name: \"{name}\", id: {id}, roles: SEMANTIC_KIND_{ident}_ROLES, traits: SEMANTIC_KIND_{ident}_TRAITS }},\n"
+        ));
+    }
+    out.push_str("];\n");
     out
 }
 
@@ -2779,7 +2880,9 @@ fn main() -> ExitCode {
         i += 2;
     }
     let (Some(lang), Some(module), Some(contract)) = (lang, module, contract) else {
-        eprintln!("usage: projector --module <constants|mc|env|ctl|wire|llb|syntax> --lang <rust|zig|ts|elixir|luau|md|asyncapi|openapi> --contract <path.kdl>");
+        eprintln!(
+            "usage: projector --module <constants|mc|env|ctl|wire|llb|syntax> --lang <rust|zig|ts|elixir|luau|md|asyncapi|openapi> --contract <path.kdl>"
+        );
         return ExitCode::FAILURE;
     };
 

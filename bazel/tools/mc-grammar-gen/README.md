@@ -1,8 +1,9 @@
 # AgentOS grammar language
 
-`mc-grammar-gen` compiles AgentOS-owned `.grammar` files into normalized Grammar IR and then into
-Tree-sitter's generated C parser format. The authoring language is a small EBNF language: it does not
-embed JavaScript, Rust, or Tree-sitter's `grammar.js` combinator API.
+`mc-grammar-gen` compiles AgentOS-owned `.grammar` files into normalized Grammar IR and Tree-sitter
+grammar JSON. `mc-syntax-pack` then generates the selected languages together, producing independent
+parsers with shared immutable table storage and a native semantic registry. The authoring language is
+a small EBNF language: it does not embed JavaScript, Rust, or Tree-sitter's `grammar.js` combinator API.
 
 ## A small grammar
 
@@ -119,12 +120,16 @@ The implementation has four deliberate stages:
 
 ```text
 .grammar -> spanned surface AST -> module elaboration -> normalized Grammar IR
-         -> isolated Tree-sitter grammar.json backend -> generated parser.c
+         -> isolated Tree-sitter grammar.json backend
+all selected grammar JSON + semantic IR -> typed Tree-sitter generator -> parser pack
 ```
 
 The AST owns author intent and source spans. Elaboration owns fragments, `open`/`extend`, slots,
 operator tables, name resolution, semantic validation, and nullable-repetition checks. Grammar IR is
-versioned and backend-neutral. Only `tree_sitter_backend.rs` knows Tree-sitter's JSON schema.
+versioned and backend-neutral. Only `tree_sitter_backend.rs` knows Tree-sitter's JSON schema. The pack
+stage works on the generator's typed model, validates its shared layout before rendering, and emits
+parser C, node schemas, native semantic tables, provenance manifests, and a sharing report as host
+build outputs.
 
 Tokens are deliberately lexical: after fragment expansion they may contain literals, regexes,
 choices, sequences, repetition, and precedence, but no production references or syntax fields.

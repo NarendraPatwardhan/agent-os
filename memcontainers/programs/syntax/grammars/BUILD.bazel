@@ -1,4 +1,4 @@
-load("//bazel:mc_grammar.bzl", "mc_grammar")
+load("//bazel:mc_grammar.bzl", "mc_grammar", "mc_syntax_pack")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -33,18 +33,23 @@ mc_grammar(
     language = "lua",
 )
 
+mc_syntax_pack(
+    name = "syntax_pack",
+    grammars = [
+        ":lua",
+        ":luau",
+    ],
+)
+
+filegroup(name = "syntax_pack_csrcs", srcs = [":syntax_pack"], output_group = "csrcs")
+filegroup(name = "syntax_registry_zig", srcs = [":syntax_pack"], output_group = "registry_zig")
+filegroup(name = "syntax_node_types", srcs = [":syntax_pack"], output_group = "node_types")
+filegroup(name = "syntax_manifests", srcs = [":syntax_pack"], output_group = "manifests")
+filegroup(name = "syntax_pack_report", srcs = [":syntax_pack"], output_group = "report")
+
 mc_grammar(
     name = "luau",
     root = "luau.grammar",
     modules = {"families/lua-core.grammar": "lua.core"},
     language = "luau",
 )
-
-filegroup(name = "lua_parser_c", srcs = [":lua"], output_group = "parser_c")
-filegroup(name = "luau_parser_c", srcs = [":luau"], output_group = "parser_c")
-filegroup(name = "lua_semantics_c", srcs = [":lua"], output_group = "semantics_c")
-filegroup(name = "luau_semantics_c", srcs = [":luau"], output_group = "semantics_c")
-filegroup(name = "lua_semantics", srcs = [":lua"], output_group = "semantics")
-filegroup(name = "luau_semantics", srcs = [":luau"], output_group = "semantics")
-filegroup(name = "lua_manifest", srcs = [":lua"], output_group = "manifest")
-filegroup(name = "luau_manifest", srcs = [":luau"], output_group = "manifest")

@@ -214,7 +214,10 @@ http_archive(
     name = "tree_sitter",
     build_file = "//third_party/tree-sitter:BUILD.tree-sitter.bazel",
     patch_args = ["-p1"],
-    patches = ["//third_party/tree-sitter:patches/0001-json-only-generator.patch"],
+    patches = [
+        "//third_party/tree-sitter:patches/0001-json-only-generator.patch",
+        "//third_party/tree-sitter:patches/0002-structured-parser-pack.patch",
+    ],
     sha256 = "50546072d031b0cc1bf2075f3c2a22cdc94f95845059f3c68060389eab560a40",
     strip_prefix = "tree-sitter-d11d18f746fdfd1826362c2531ce06808f386b02",
     urls = ["https://github.com/tree-sitter/tree-sitter/archive/d11d18f746fdfd1826362c2531ce06808f386b02.tar.gz"],

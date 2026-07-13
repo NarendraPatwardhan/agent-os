@@ -27,166 +27,29 @@ const StoredNode = struct {
     value: c.TSNode,
 };
 
-const SemanticRole = struct { concrete: []u8, id: u32 };
-const SemanticEntry = struct {
-    concrete: []u8,
-    semantic_id: u32,
-    traits: []wire.SemanticTrait,
-    roles: []SemanticRole,
-
-    fn deinit(self: *SemanticEntry) void {
-        alloc.free(self.concrete);
-        alloc.free(self.traits);
-        for (self.roles) |role| alloc.free(role.concrete);
-        alloc.free(self.roles);
-    }
-};
-const SemanticMap = struct {
-    language_version: []u8,
-    grammar_version: []u8,
-    grammar_ir_version: u32,
-    vocabulary_version: u32,
-    tree_sitter_abi: u32,
-    entries: std.ArrayList(SemanticEntry) = .empty,
-
-    fn deinit(self: *SemanticMap) void {
-        alloc.free(self.language_version);
-        alloc.free(self.grammar_version);
-        for (self.entries.items) |*item| item.deinit();
-        self.entries.deinit(alloc);
-    }
-    fn entry(self: *const SemanticMap, concrete: []const u8) ?*const SemanticEntry {
-        for (self.entries.items) |*item| if (std.mem.eql(u8, item.concrete, concrete)) return item;
-        return null;
-    }
-};
-
 const Document = struct {
     owner: u32,
-    language_name: []u8,
+    descriptor: *const registry.Descriptor,
     parser: *c.TSParser,
     tree: *c.TSTree,
     source: []u8,
-    semantic: SemanticMap,
     revision: u32 = 1,
     nodes: std.ArrayList(StoredNode) = .empty,
     next_node_handle: u32 = 1,
 
     fn deinit(self: *Document) void {
         self.nodes.deinit(alloc);
-        self.semantic.deinit();
         c.ts_tree_delete(self.tree);
         c.ts_parser_delete(self.parser);
         alloc.free(self.source);
-        alloc.free(self.language_name);
     }
 };
-
-fn jsonU32(value: std.json.Value) ?u32 {
-    return switch (value) {
-        .integer => |number| if (number >= 0 and number <= std.math.maxInt(u32)) @intCast(number) else null,
-        else => null,
-    };
-}
-fn parseSemanticEntry(row_value: std.json.Value) !SemanticEntry {
-    const row = switch (row_value) {
-        .object => |object| object,
-        else => return error.InvalidSemanticMap,
-    };
-    const concrete = switch (row.get("concrete") orelse return error.InvalidSemanticMap) {
-        .string => |value| value,
-        else => return error.InvalidSemanticMap,
-    };
-    const semantic_id = jsonU32(row.get("semantic_id") orelse return error.InvalidSemanticMap) orelse return error.InvalidSemanticMap;
-    const traits_value = switch (row.get("traits") orelse return error.InvalidSemanticMap) {
-        .array => |array| array,
-        else => return error.InvalidSemanticMap,
-    };
-    const traits = try alloc.alloc(wire.SemanticTrait, traits_value.items.len);
-    errdefer alloc.free(traits);
-    for (traits_value.items, 0..) |trait_value, index| {
-        const object = switch (trait_value) {
-            .object => |value| value,
-            else => return error.InvalidSemanticMap,
-        };
-        traits[index] = .{ .id = jsonU32(object.get("id") orelse return error.InvalidSemanticMap) orelse return error.InvalidSemanticMap };
-    }
-    const roles_value = switch (row.get("roles") orelse return error.InvalidSemanticMap) {
-        .object => |object| object,
-        else => return error.InvalidSemanticMap,
-    };
-    const roles = try alloc.alloc(SemanticRole, roles_value.count());
-    var initialized_roles: usize = 0;
-    errdefer {
-        for (roles[0..initialized_roles]) |role| alloc.free(role.concrete);
-        alloc.free(roles);
-    }
-    var roles_it = roles_value.iterator();
-    while (roles_it.next()) |role_value| {
-        const object = switch (role_value.value_ptr.*) {
-            .object => |value| value,
-            else => return error.InvalidSemanticMap,
-        };
-        const role_concrete = switch (object.get("concrete") orelse return error.InvalidSemanticMap) {
-            .string => |value| value,
-            else => return error.InvalidSemanticMap,
-        };
-        roles[initialized_roles] = .{ .concrete = try alloc.dupe(u8, role_concrete), .id = jsonU32(object.get("id") orelse return error.InvalidSemanticMap) orelse return error.InvalidSemanticMap };
-        initialized_roles += 1;
-    }
-    const owned_concrete = try alloc.dupe(u8, concrete);
-    errdefer alloc.free(owned_concrete);
-    return .{ .concrete = owned_concrete, .semantic_id = semantic_id, .traits = traits, .roles = roles };
-}
-fn loadSemanticMap(source: []const u8) !SemanticMap {
-    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, source, .{});
-    defer parsed.deinit();
-    const root = switch (parsed.value) {
-        .object => |object| object,
-        else => return error.InvalidSemanticMap,
-    };
-    const rows = switch (root.get("mappings") orelse return error.InvalidSemanticMap) {
-        .array => |array| array,
-        else => return error.InvalidSemanticMap,
-    };
-    const language_version = switch (root.get("language_version") orelse return error.InvalidSemanticMap) {
-        .string => |value| value,
-        else => return error.InvalidSemanticMap,
-    };
-    const grammar_version = switch (root.get("grammar_version") orelse return error.InvalidSemanticMap) {
-        .string => |value| value,
-        else => return error.InvalidSemanticMap,
-    };
-    var result = build: {
-        const owned_language_version = try alloc.dupe(u8, language_version);
-        errdefer alloc.free(owned_language_version);
-        const owned_grammar_version = try alloc.dupe(u8, grammar_version);
-        errdefer alloc.free(owned_grammar_version);
-        break :build SemanticMap{
-            .language_version = owned_language_version,
-            .grammar_version = owned_grammar_version,
-            .grammar_ir_version = jsonU32(root.get("grammar_ir_version") orelse return error.InvalidSemanticMap) orelse return error.InvalidSemanticMap,
-            .vocabulary_version = jsonU32(root.get("vocabulary_version") orelse return error.InvalidSemanticMap) orelse return error.InvalidSemanticMap,
-            .tree_sitter_abi = jsonU32(root.get("tree_sitter_abi") orelse return error.InvalidSemanticMap) orelse return error.InvalidSemanticMap,
-        };
-    };
-    errdefer result.deinit();
-    for (rows.items) |row_value| {
-        var entry = try parseSemanticEntry(row_value);
-        result.entries.append(alloc, entry) catch |failure| {
-            entry.deinit();
-            return failure;
-        };
-    }
-    return result;
-}
 const CompiledQuery = struct {
     owner: u32,
-    language_name: []u8,
+    descriptor: *const registry.Descriptor,
     query: *c.TSQuery,
     fn deinit(self: *CompiledQuery) void {
         c.ts_query_delete(self.query);
-        alloc.free(self.language_name);
     }
 };
 
@@ -308,29 +171,13 @@ fn sessionDocumentCount(session: u32) usize {
     }
     return n;
 }
-fn descriptor(name: []const u8) ?registry.Descriptor {
-    for (registry.descriptors) |item| if (std.mem.eql(u8, item.name, name)) return item;
-    return null;
-}
-
 fn languages(server: *svc.Server, req: svc.Request) void {
     _ = wire.LanguagesRequest.decode(alloc, req.blob) catch return sendError(server, req, "malformed_request", "invalid languages request", null);
     var list: std.ArrayList(wire.LanguageDescriptor) = .empty;
     defer list.deinit(alloc);
-    var maps: std.ArrayList(SemanticMap) = .empty;
-    defer {
-        for (maps.items) |*map| map.deinit();
-        maps.deinit(alloc);
-    }
     for (registry.descriptors) |d| {
-        const map = loadSemanticMap(registry.semantics(d.name) orelse return sendError(server, req, "invalid_semantics", "generated semantics are absent", null)) catch return sendError(server, req, "invalid_semantics", "generated semantics are invalid", null);
-        maps.append(alloc, map) catch {
-            var owned = map;
-            owned.deinit();
-            return sendError(server, req, "out_of_memory", "language metadata allocation failed", null);
-        };
-        const stored = &maps.items[maps.items.len - 1];
-        list.append(alloc, .{ .name = d.name, .language_version = stored.language_version, .grammar_version = stored.grammar_version, .grammar_ir_version = stored.grammar_ir_version, .vocabulary_version = stored.vocabulary_version, .tree_sitter_abi = stored.tree_sitter_abi }) catch return sendError(server, req, "out_of_memory", "language list allocation failed", null);
+        const map = d.semantic;
+        list.append(alloc, .{ .name = d.name, .language_version = map.language_version, .grammar_version = map.grammar_version, .grammar_ir_version = map.grammar_ir_version, .vocabulary_version = map.vocabulary_version, .tree_sitter_abi = map.tree_sitter_abi }) catch return sendError(server, req, "out_of_memory", "language list allocation failed", null);
     }
     respond(server, req, wire.LanguagesResponse{ .languages = list.items });
 }
@@ -338,11 +185,8 @@ fn open(server: *svc.Server, req: svc.Request) void {
     const msg = wire.OpenRequest.decode(alloc, req.blob) catch return sendError(server, req, "malformed_request", "invalid open request", null);
     if (msg.source.len > MAX_SOURCE) return sendError(server, req, "source_too_large", "source exceeds 768 KiB", null);
     if (sessionDocumentCount(req.session) >= MAX_DOCUMENTS_PER_SESSION) return sendError(server, req, "document_limit", "session document limit reached", null);
-    _ = descriptor(msg.language) orelse return sendError(server, req, "unknown_language", "language is not installed", null);
+    const descriptor = registry.descriptor(msg.language) orelse return sendError(server, req, "unknown_language", "language is not installed", null);
     const language = registry.language(c, msg.language) orelse return sendError(server, req, "unknown_language", "language is not installed", null);
-    var semantic = loadSemanticMap(registry.semantics(msg.language) orelse return sendError(server, req, "invalid_semantics", "generated semantics are absent", null)) catch |failure| return sendError(server, req, "invalid_semantics", @errorName(failure), null);
-    var semantic_owned = true;
-    defer if (semantic_owned) semantic.deinit();
     const parser = c.ts_parser_new() orelse return sendError(server, req, "out_of_memory", "parser allocation failed", null);
     if (!c.ts_parser_set_language(parser, language)) {
         c.ts_parser_delete(parser);
@@ -363,14 +207,7 @@ fn open(server: *svc.Server, req: svc.Request) void {
         c.ts_parser_delete(parser);
         return sendError(server, req, "out_of_memory", "document allocation failed", null);
     };
-    doc.* = .{ .owner = req.session, .language_name = alloc.dupe(u8, msg.language) catch {
-        alloc.destroy(doc);
-        c.ts_tree_delete(parsed);
-        alloc.free(source);
-        c.ts_parser_delete(parser);
-        return sendError(server, req, "out_of_memory", "language allocation failed", null);
-    }, .parser = parser, .tree = parsed, .source = source, .semantic = semantic };
-    semantic_owned = false;
+    doc.* = .{ .owner = req.session, .descriptor = descriptor, .parser = parser, .tree = parsed, .source = source };
     const id = next_document;
     next_document +%= 1;
     if (next_document == 0) next_document = 1;
@@ -406,15 +243,13 @@ fn summarize(doc: *Document, node_value: c.TSNode, field_role: ?u32) !wire.NodeS
     if (doc.next_node_handle == 0) doc.next_node_handle = 1;
     try doc.nodes.append(alloc, .{ .handle = handle, .value = node_value });
     const concrete = std.mem.span(c.ts_node_type(node_value));
-    const semantic = doc.semantic.entry(concrete);
-    return .{ .handle = handle, .concrete_kind = concrete, .semantic_kind = if (semantic) |entry| entry.semantic_id else null, .field_role = field_role, .range = range(node_value), .named = c.ts_node_is_named(node_value), .missing = c.ts_node_is_missing(node_value), .@"error" = c.ts_node_is_error(node_value), .child_count = c.ts_node_child_count(node_value), .traits = if (semantic) |entry| entry.traits else &.{} };
+    const semantic = registry.entry(doc.descriptor.semantic, c.ts_node_symbol(node_value));
+    return .{ .handle = handle, .concrete_kind = concrete, .semantic_kind = if (semantic) |entry| entry.semantic_id else null, .field_role = field_role, .range = range(node_value), .named = c.ts_node_is_named(node_value), .missing = c.ts_node_is_missing(node_value), .@"error" = c.ts_node_is_error(node_value), .child_count = c.ts_node_child_count(node_value), .traits = if (semantic) |entry| registry.entryTraits(entry) else &.{} };
 }
-fn childRole(doc: *const Document, parent: c.TSNode, index: u32) ?u32 {
-    const field_ptr = c.ts_node_field_name_for_child(parent, index) orelse return null;
-    const field = std.mem.span(field_ptr);
-    const parent_entry = doc.semantic.entry(std.mem.span(c.ts_node_type(parent))) orelse return null;
-    for (parent_entry.roles) |role| if (std.mem.eql(u8, role.concrete, field)) return role.id;
-    return null;
+fn childRole(doc: *const Document, parent: c.TSNode, field_id: u16) ?u32 {
+    if (field_id == 0) return null;
+    const parent_entry = registry.entry(doc.descriptor.semantic, c.ts_node_symbol(parent)) orelse return null;
+    return registry.entryRole(parent_entry, field_id);
 }
 fn checkedDoc(server: *svc.Server, req: svc.Request, id: u32, revision: u32) ?*Document {
     const doc = ownedDocument(req.session, id) orelse {
@@ -476,12 +311,19 @@ fn children(server: *svc.Server, req: svc.Request) void {
     const limit: u32 = @min(msg.limit, MAX_PAGE_NODES);
     var out: std.ArrayList(wire.NodeSummary) = .empty;
     defer out.deinit(alloc);
-    var i = start;
+    var i: u32 = 0;
     const count = c.ts_node_child_count(parent);
-    while (i < count and out.items.len < limit) : (i += 1) {
-        const child = c.ts_node_child(parent, i);
-        if (msg.named_only and !c.ts_node_is_named(child)) continue;
-        out.append(alloc, summarize(doc, child, childRole(doc, parent, i)) catch return sendError(server, req, "out_of_memory", "node allocation failed", null)) catch return sendError(server, req, "out_of_memory", "page allocation failed", null);
+    var cursor = c.ts_tree_cursor_new(parent);
+    defer c.ts_tree_cursor_delete(&cursor);
+    if (count != 0 and c.ts_tree_cursor_goto_first_child(&cursor)) {
+        while (i < count and out.items.len < limit) : (i += 1) {
+            const child = c.ts_tree_cursor_current_node(&cursor);
+            if (i >= start and (!msg.named_only or c.ts_node_is_named(child))) {
+                const role = childRole(doc, parent, c.ts_tree_cursor_current_field_id(&cursor));
+                out.append(alloc, summarize(doc, child, role) catch return sendError(server, req, "out_of_memory", "node allocation failed", null)) catch return sendError(server, req, "out_of_memory", "page allocation failed", null);
+            }
+            if (i + 1 < count and !c.ts_tree_cursor_goto_next_sibling(&cursor)) break;
+        }
     }
     respond(server, req, wire.ChildrenResponse{ .nodes = out.items, .cursor = if (i < count) i else null });
 }
@@ -514,6 +356,7 @@ fn diagnostics(server: *svc.Server, req: svc.Request) void {
 fn compileQuery(server: *svc.Server, req: svc.Request) void {
     const msg = wire.QueryCompileRequest.decode(alloc, req.blob) catch return sendError(server, req, "malformed_request", "invalid query request", null);
     if (msg.source.len > MAX_QUERY) return sendError(server, req, "query_too_large", "query exceeds 64 KiB", null);
+    const descriptor = registry.descriptor(msg.language) orelse return sendError(server, req, "unknown_language", "language is not installed", null);
     const language = registry.language(c, msg.language) orelse return sendError(server, req, "unknown_language", "language is not installed", null);
     if (!std.mem.eql(u8, msg.view, "concrete") and !std.mem.eql(u8, msg.view, "semantic")) return sendError(server, req, "invalid_view", "view must be concrete or semantic", null);
     if (std.mem.eql(u8, msg.view, "semantic")) return sendError(server, req, "semantic_query_unavailable", "semantic query compiler is not initialized", null);
@@ -524,11 +367,7 @@ fn compileQuery(server: *svc.Server, req: svc.Request) void {
         c.ts_query_delete(q);
         return sendError(server, req, "out_of_memory", "query allocation failed", null);
     };
-    value.* = .{ .owner = req.session, .language_name = alloc.dupe(u8, msg.language) catch {
-        alloc.destroy(value);
-        c.ts_query_delete(q);
-        return sendError(server, req, "out_of_memory", "query allocation failed", null);
-    }, .query = q };
+    value.* = .{ .owner = req.session, .descriptor = descriptor, .query = q };
     const id = next_query;
     next_query +%= 1;
     if (next_query == 0) next_query = 1;
@@ -543,7 +382,7 @@ fn runQuery(server: *svc.Server, req: svc.Request) void {
     const msg = wire.QueryRequest.decode(alloc, req.blob) catch return sendError(server, req, "malformed_request", "invalid query execution request", null);
     const doc = checkedDoc(server, req, msg.document, msg.revision) orelse return;
     const query = ownedQuery(req.session, msg.query) orelse return sendError(server, req, "stale_handle", "query handle is closed or foreign", null);
-    if (!std.mem.eql(u8, doc.language_name, query.language_name)) return sendError(server, req, "language_mismatch", "query and document languages differ", doc.revision);
+    if (doc.descriptor != query.descriptor) return sendError(server, req, "language_mismatch", "query and document languages differ", doc.revision);
     const cursor = c.ts_query_cursor_new() orelse return sendError(server, req, "out_of_memory", "query cursor allocation failed", null);
     defer c.ts_query_cursor_delete(cursor);
     c.ts_query_cursor_exec(cursor, query.query, c.ts_tree_root_node(doc.tree));

@@ -3,29 +3,26 @@ use std::path::PathBuf;
 
 fn usage() -> ! {
     eprintln!(
-        "usage: mc-grammar-gen --root FILE [--module ID=FILE] --vocabulary syntax.kdl --ir OUT --grammar-json OUT --parser-c OUT --node-types OUT --semantics OUT --semantics-c OUT --diagnostics OUT --manifest OUT"
+        "usage: mc-grammar-gen --root FILE [--module ID=FILE] --ir OUT --grammar-json OUT --semantics OUT --diagnostics OUT"
     );
     std::process::exit(2)
 }
 fn main() {
     let mut args = std::env::args().skip(1);
     let mut root = None;
-    let mut vocabulary = None;
     let mut modules = Vec::new();
     let mut values = std::collections::BTreeMap::new();
     while let Some(flag) = args.next() {
         let value = args.next().unwrap_or_else(|| usage());
         match flag.as_str() {
             "--root" => root = Some(PathBuf::from(value)),
-            "--vocabulary" => vocabulary = Some(PathBuf::from(value)),
             "--module" => {
                 let Some((id, path)) = value.split_once('=') else {
                     usage()
                 };
                 modules.push((id.into(), PathBuf::from(path)));
             }
-            "--ir" | "--grammar-json" | "--parser-c" | "--node-types" | "--semantics"
-            | "--semantics-c" | "--diagnostics" | "--manifest" => {
+            "--ir" | "--grammar-json" | "--semantics" | "--diagnostics" => {
                 values.insert(flag, PathBuf::from(value));
             }
             _ => usage(),
@@ -35,16 +32,11 @@ fn main() {
     let options = Options {
         root: root.unwrap_or_else(|| usage()),
         modules,
-        vocabulary: vocabulary.unwrap_or_else(|| usage()),
         outputs: Outputs {
             ir: take("--ir"),
             grammar_json: take("--grammar-json"),
-            parser_c: take("--parser-c"),
-            node_types: take("--node-types"),
             semantics: take("--semantics"),
-            semantics_c: take("--semantics-c"),
             diagnostics: take("--diagnostics"),
-            manifest: take("--manifest"),
         },
     };
     if let Err(error) = run(options) {

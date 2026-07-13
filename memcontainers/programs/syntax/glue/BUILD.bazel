@@ -1,23 +1,14 @@
 load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary", "zig_library")
 load("//bazel:mc_program.bzl", "cc_object", "mc_program")
-load("//bazel:mc_grammar.bzl", "mc_syntax_registry")
+load("//bazel/tools/size:defs.bzl", "size_limit")
 
 cc_object(name = "wasi_adapter_link", obj = "//memcontainers/wasi-adapter:wasi_adapter_staticlib")
 
-mc_syntax_registry(
-    name = "registry",
-    grammars = [
-        "//memcontainers/programs/syntax/grammars:lua",
-        "//memcontainers/programs/syntax/grammars:luau",
-    ],
-)
-filegroup(name = "registry_header", srcs = [":registry"], output_group = "header")
-filegroup(name = "registry_zig", srcs = [":registry"], output_group = "zig")
-
 zig_library(
     name = "registry_lib",
-    main = ":registry_zig",
+    main = "//memcontainers/programs/syntax/grammars:syntax_registry_zig",
     import_name = "syntax_registry",
+    deps = ["//memcontainers/contracts:syntax_zig"],
 )
 
 zig_binary(
@@ -27,10 +18,7 @@ zig_binary(
     csrcs = [
         "@tree_sitter//:runtime_c",
         "//memcontainers/wasi-adapter:close_shim.c",
-        "//memcontainers/programs/syntax/grammars:lua_parser_c",
-        "//memcontainers/programs/syntax/grammars:luau_parser_c",
-        "//memcontainers/programs/syntax/grammars:lua_semantics_c",
-        "//memcontainers/programs/syntax/grammars:luau_semantics_c",
+        "//memcontainers/programs/syntax/grammars:syntax_pack_csrcs",
     ],
     extra_srcs = [
         "@tree_sitter//:runtime_support",
@@ -66,4 +54,12 @@ mc_program(
     fuel = 1000000000000,
     table = 20000,
     visibility = ["//visibility:public"],
+)
+
+# Native semantic tables and the shared Lua-family parser pack make this a meaningful regression
+# boundary: growth must be explained by parser or service capability, not regenerated table drift.
+size_limit(
+    name = "size_limit",
+    file = ":syntax_opt",
+    max_bytes = 358210,
 )

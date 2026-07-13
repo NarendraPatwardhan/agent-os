@@ -67,8 +67,8 @@ rust_library(
         ":parser_elaborate",
         ":parser_ir",
         ":tree_sitter_backend",
+        "//memcontainers/contracts:syntax_rust",
         "@grammar_gen_crates//:serde_json",
-        "@grammar_gen_crates//:sha2",
         "@tree_sitter//:generate",
     ],
 )
@@ -79,6 +79,28 @@ rust_binary(
     crate_name = "mc_grammar_gen",
     edition = "2024",
     deps = [":parser_generate"],
+    visibility = ["//visibility:public"],
+)
+
+rust_library(
+    name = "parser_pack",
+    srcs = ["src/pack.rs"],
+    crate_name = "mc_parser_pack",
+    edition = "2024",
+    deps = [
+        "@grammar_gen_crates//:rustc-hash",
+        "@grammar_gen_crates//:serde_json",
+        "@grammar_gen_crates//:sha2",
+        "@tree_sitter//:generate",
+    ],
+)
+
+rust_binary(
+    name = "mc-syntax-pack",
+    srcs = ["src/pack_main.rs"],
+    crate_name = "mc_syntax_pack",
+    edition = "2024",
+    deps = [":parser_pack"],
     visibility = ["//visibility:public"],
 )
 

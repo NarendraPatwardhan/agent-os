@@ -10,27 +10,38 @@ The source of truth is split deliberately:
 - `contracts/syntax.kdl` owns protocol messages and the versioned semantic vocabulary. The contract
   projector generates Rust, Zig, and Luau codecs/constants; consumers do not copy wire IDs.
 - `bazel/tools/mc-grammar-gen` owns the spanned `.grammar` AST, module elaborator, normalized typed
-  Grammar IR, canonical formatter, validation, and the narrow backend into the pinned Tree-sitter
-  Rust generator. Its language reference is in that directory's `README.md`.
+  Grammar IR, canonical formatter, validation, and parser-pack generator. Its language reference is
+  in that directory's `README.md`.
 - `grammars/` contains AgentOS-authored grammars. Shared family modules are explicit inputs to
-  `mc_grammar`; generated C, schemas, semantics, diagnostics, and manifests remain Bazel outputs.
+  `mc_grammar`. That rule projects only host IR; `mc_syntax_pack` consumes all selected languages in
+  one action and owns generated C, schemas, native semantic tables, diagnostics, and manifests.
 - `third_party/tree-sitter` is the pinned MIT-licensed generator/runtime dependency. Its JavaScript
-  frontend, CLI product surface, and community grammars are not used.
+  frontend, CLI product surface, and community grammars are not used. A narrow patch exposes typed
+  prepared-parser tables and a renderer layout hook; the packer never scrapes generated C.
 - `glue/` links the generic C runtime, generated parsers, and external scanner behind Zig service
   lifecycle and resource policy. `/lib/luau/syntax.luau` is the typed guest client.
 
-The lossless concrete syntax tree remains language-specific. `semantics.json` projects concrete
-nodes and fields onto the shared vocabulary; semantic identity is never inferred from coincidental
-node spelling.
+The lossless concrete syntax tree remains language-specific. Host-side semantic IR projects concrete
+nodes and fields onto the shared vocabulary; the packer compiles that projection into immutable Zig
+tables indexed by Tree-sitter symbol and field IDs. Semantic identity is never inferred from
+coincidental node spelling, and the guest neither ships nor parses semantic JSON.
 
 ## Build and runtime flow
 
 ```text
 syntax.kdl -> contract projector -> generated Zig/Luau/Rust wire APIs
-*.grammar  -> mc-grammar-gen     -> parser.c + node-types + semantics + manifest
-parser.c + Tree-sitter C runtime + scanner -> /bin/syntax
-/bin/syntax + syntax.luau + generated metadata -> loom image
+*.grammar  -> mc-grammar-gen     -> typed grammar JSON + semantic IR
+all grammar IR -> mc-syntax-pack -> per-language parser C + shared tables + native registry
+parser pack + Tree-sitter C runtime + scanner -> /bin/syntax
+/bin/syntax + syntax.luau -> loom image
 ```
+
+Each language remains an independent Tree-sitter automaton. The packer deterministically renumbers
+implementation IDs, then interns only byte-identical action lists and small parse-table rows across
+the finished automata. It does not merge grammar states or broaden either language. Parser manifests,
+node schemas, and the sharing report remain host build outputs for provenance and inspection; they are
+not runtime assets. Until the native registry projects Tree-sitter's public alias-symbol domain, the
+packer rejects grammar aliases rather than emitting a semantic table that could misidentify them.
 
 The service owns parser instances, source buffers, trees, queries, and document revisions in guest
 linear memory. Handles are session-owned. Node handles are monotonic and never recycled within a
@@ -50,6 +61,8 @@ memory and startup are paid only after first use.
 - `//memcontainers/programs/syntax/grammars:format_test` keeps every owned grammar canonical.
 - `//memcontainers/contracts:syntax_sync_tests` prevents checked-in projection drift.
 - Lua and Luau grammar targets prove family-module reuse and generator determinism.
+- `//memcontainers/programs/syntax/glue:size_limit` holds the optimized service at its measured
+  native-table/parser-pack ceiling.
 - `//memcontainers/tests/e2e:core --test_arg=syntax` crosses the real kernel, lazy service,
   generated Luau codec, C runtime, Zig glue, queries, incremental edits, guarded rewrites, and stale
   handles.

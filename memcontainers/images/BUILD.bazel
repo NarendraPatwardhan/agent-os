@@ -150,7 +150,8 @@ mc_service_layer(
 # loom — posix + the Luau pair and owned structural parsing. The first NON-coreutils flavor:
 # posix's full userland plus the stamped, pure-mc luau interpreter (mc_tier=full, 256 MiB · 2T · 40k,
 # json/hash/time/string batteries embedded), luau-analyze type checker (256 MiB · 400B · 40k), and
-# the lazy Lua/Luau syntax service with its generated client, semantic metadata, and skill.
+# the lazy Lua/Luau syntax service with its generated client and skill. Parser and semantic tables
+# are compiled into the service; host-side manifests remain build outputs rather than guest files.
 pkg_tar(
     name = "loom",
     create_parents = False,
@@ -171,10 +172,6 @@ pkg_tar(
         "//memcontainers/contracts:syntax_luau": "/lib/luau/syntax_wire.luau",
         "//memcontainers/programs/syntax/lib:syntax.luau": "/lib/luau/syntax.luau",
         "//memcontainers/programs/syntax/skills:syntax.md": "/skills/syntax.md",
-        "//memcontainers/programs/syntax/grammars:lua_semantics": "/usr/share/syntax/lua/semantics.json",
-        "//memcontainers/programs/syntax/grammars:lua_manifest": "/usr/share/syntax/lua/manifest.json",
-        "//memcontainers/programs/syntax/grammars:luau_semantics": "/usr/share/syntax/luau/semantics.json",
-        "//memcontainers/programs/syntax/grammars:luau_manifest": "/usr/share/syntax/luau/manifest.json",
     },
     owner = "0.0",
     deps = [":posix", ":syntax_layer"],

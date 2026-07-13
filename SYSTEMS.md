@@ -965,12 +965,14 @@ flavor's `.luau` libs (VFS layers): code is the binary, assets are layered VFS c
 **syntax** is the structural-code engine shipped as part of the default `loom` programmability layer.
 Parser generation stays on the host: AgentOS's Rust `mc-grammar-gen` parses an owned declarative
 DSL into a typed Grammar IR, validates semantic vocabulary references from `contracts/syntax.kdl`, and
-feeds a pinned, JSON-only slice of Tree-sitter's Rust generator. No JavaScript runtime or community
-grammar participates. The guest `/bin/syntax` takes the C-API-through-Zig lane: it links the generic
-Tree-sitter C runtime, generated Lua/Luau parsers, and the shared external scanner behind one lazy,
-isolated resident service. The generated binary protocol and semantic constants come from the contract
-projector in Rust, Zig, and Luau, satisfying B2 across all three faces. Concrete CSTs remain lossless and
-language-specific; generated semantic maps provide the explicitly versioned common vocabulary. See
+feeds a pinned, JSON-only slice of Tree-sitter's Rust generator. A host pack action preserves separate
+Lua/Luau automata while interning only byte-identical immutable table payloads, and projects semantic IR
+into native symbol/field-ID tables. No JavaScript runtime or community grammar participates. The guest
+`/bin/syntax` takes the C-API-through-Zig lane: it links the generic Tree-sitter C runtime, generated
+parser pack, and the shared external scanner behind one lazy, isolated resident service. The generated
+binary protocol and semantic constants come from the contract projector in Rust, Zig, and Luau,
+satisfying B2 across all three faces. Concrete CSTs remain lossless and language-specific; generated
+native semantic tables provide the explicitly versioned common vocabulary without runtime JSON. See
 [`programs/syntax/SYSTEM.md`](memcontainers/programs/syntax/SYSTEM.md).
 
 ---

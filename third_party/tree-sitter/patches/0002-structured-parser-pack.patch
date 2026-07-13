@@ -1,0 +1,368 @@
+diff --git i/crates/generate/src/generate.rs w/crates/generate/src/generate.rs
+index 7174732..e696483 100644
+--- i/crates/generate/src/generate.rs
++++ w/crates/generate/src/generate.rs
+@@ -17,18 +17,18 @@ use serde::{Deserialize, Serialize};
+ use thiserror::Error;
+ 
+ mod bitvec;
+-mod build_tables;
++pub mod build_tables;
+ mod dedup;
+-mod grammars;
++pub mod grammars;
+ mod nfa;
+-mod node_types;
++pub mod node_types;
+ pub mod parse_grammar;
+ mod prepare_grammar;
+ #[cfg(feature = "qjs-rt")]
+ mod quickjs;
+-mod render;
+-mod rules;
+-mod tables;
++pub mod render;
++pub mod rules;
++pub mod tables;
+ 
+ pub use build_tables::ParseTableBuilderError;
+ use build_tables::build_tables;
+@@ -38,7 +38,7 @@ pub use parse_grammar::ParseGrammarError;
+ use parse_grammar::parse_grammar;
+ pub use prepare_grammar::PrepareGrammarError;
+ use prepare_grammar::prepare_grammar;
+-use render::render_c_code;
++use render::{SharedParseLayout, render_c_code, render_c_code_with_layout};
+ pub use render::{ABI_VERSION_MAX, ABI_VERSION_MIN, RenderError};
+ 
+ struct JSONOutput {
+@@ -57,6 +57,20 @@ struct GeneratedParser {
+     node_types_json: String,
+ }
+ 
++/// Structured parser output for downstream bundle renderers. Consumers can transform and verify
++/// typed tables without scraping the generated C representation.
++pub struct PreparedParser {
++    pub name: String,
++    pub tables: build_tables::Tables,
++    pub syntax_grammar: SyntaxGrammar,
++    pub lexical_grammar: LexicalGrammar,
++    pub simple_aliases: BTreeMap<Symbol, Alias>,
++    pub supertype_symbol_map: BTreeMap<Symbol, Vec<node_types::ChildType>>,
++    pub node_types_json: String,
++    pub abi_version: usize,
++    pub semantic_version: Option<(u8, u8, u8)>,
++}
++
+ // NOTE: This constant must be kept in sync with the definition of
+ // `TREE_SITTER_LANGUAGE_VERSION` in `lib/include/tree_sitter/api.h`.
+ const LANGUAGE_VERSION: usize = 15;
+@@ -425,6 +439,62 @@ pub fn generate_parser_for_grammar(
+     Ok((input_grammar.name, parser.c_code))
+ }
+ 
++pub fn prepare_parser_for_grammar(
++    grammar_json: &str,
++    semantic_version: Option<(u8, u8, u8)>,
++    diagnostics: &mut Vec<Diagnostic>,
++) -> GenerateResult<PreparedParser> {
++    let input_grammar = parse_grammar(grammar_json, diagnostics)?;
++    let JSONOutput {
++        syntax_grammar,
++        lexical_grammar,
++        inlines,
++        simple_aliases,
++        variable_info,
++        node_types_json,
++    } = generate_node_types_from_grammar(&input_grammar, diagnostics)?;
++    let supertype_symbol_map =
++        node_types::get_supertype_symbol_map(&syntax_grammar, &simple_aliases, &variable_info);
++    let tables = build_tables(
++        &syntax_grammar,
++        &lexical_grammar,
++        &simple_aliases,
++        &variable_info,
++        &inlines,
++        None,
++        OptLevel::default(),
++        diagnostics,
++    )?;
++    Ok(PreparedParser {
++        name: input_grammar.name,
++        tables,
++        syntax_grammar,
++        lexical_grammar,
++        simple_aliases,
++        supertype_symbol_map,
++        node_types_json,
++        abi_version: LANGUAGE_VERSION,
++        semantic_version,
++    })
++}
++
++pub fn render_prepared_parser(
++    parser: PreparedParser,
++    layout: SharedParseLayout,
++) -> GenerateResult<String> {
++    Ok(render_c_code_with_layout(
++        &parser.name,
++        parser.tables,
++        parser.syntax_grammar,
++        parser.lexical_grammar,
++        parser.simple_aliases,
++        parser.abi_version,
++        parser.semantic_version,
++        parser.supertype_symbol_map,
++        layout,
++    )?)
++}
++
+ fn generate_node_types_from_grammar(
+     input_grammar: &InputGrammar,
+     diagnostics: &mut Vec<Diagnostic>,
+diff --git i/crates/generate/src/render.rs w/crates/generate/src/render.rs
+index bc1cbd0..ed917c5 100644
+--- i/crates/generate/src/render.rs
++++ w/crates/generate/src/render.rs
+@@ -103,6 +103,16 @@ struct Generator {
+     supertype_map: BTreeMap<String, Vec<ChildType>>,
+     abi_version: usize,
+     metadata: Option<Metadata>,
++    shared_parse_layout: Option<SharedParseLayout>,
++}
++
++#[derive(Default)]
++pub struct SharedParseLayout {
++    pub large_state_count: usize,
++    pub action_ids: FxHashMap<ParseTableEntry, usize>,
++    pub small_state_offsets: Vec<usize>,
++    pub small_table_symbol: String,
++    pub action_table_symbol: String,
+ }
+ 
+ struct LargeCharacterSetInfo {
+@@ -328,15 +338,20 @@ impl Generator {
+         // Determine which states should use the "small state" representation, and which should
+         // use the normal array representation.
+         let threshold = cmp::min(SMALL_STATE_THRESHOLD, self.parse_table.symbols.len() / 2);
+-        self.large_state_count = self
+-            .parse_table
+-            .states
+-            .iter()
+-            .enumerate()
+-            .take_while(|(i, s)| {
+-                *i <= 1 || s.terminal_entries.len() + s.nonterminal_entries.len() > threshold
+-            })
+-            .count();
++        self.large_state_count = self.shared_parse_layout.as_ref().map_or_else(
++            || {
++                self.parse_table
++                    .states
++                    .iter()
++                    .enumerate()
++                    .take_while(|(i, s)| {
++                        *i <= 1
++                            || s.terminal_entries.len() + s.nonterminal_entries.len() > threshold
++                    })
++                    .count()
++            },
++            |layout| layout.large_state_count,
++        );
+     }
+ 
+     fn add_header(&mut self) {
+@@ -1292,15 +1307,17 @@ impl Generator {
+         let mut parse_table_entries = FxHashMap::default();
+         let mut next_parse_action_list_index = 0;
+ 
+-        // Parse action lists zero is for the default value, when a symbol is not valid.
+-        Self::get_parse_action_list_id(
+-            &ParseTableEntry {
+-                actions: Vec::new(),
+-                reusable: false,
+-            },
+-            &mut parse_table_entries,
+-            &mut next_parse_action_list_index,
+-        );
++        // Parse action list zero is the default value when a symbol is not valid.
++        if self.shared_parse_layout.is_none() {
++            Self::get_parse_action_list_id(
++                &ParseTableEntry {
++                    actions: Vec::new(),
++                    reusable: false,
++                },
++                &mut parse_table_entries,
++                &mut next_parse_action_list_index,
++            );
++        }
+ 
+         add_line!(
+             self,
+@@ -1343,7 +1360,7 @@ impl Generator {
+             }
+ 
+             for (symbol, entry) in &terminal_entries {
+-                let entry_id = Self::get_parse_action_list_id(
++                let entry_id = self.parse_action_list_id(
+                     entry,
+                     &mut parse_table_entries,
+                     &mut next_parse_action_list_index,
+@@ -1360,6 +1377,23 @@ impl Generator {
+         add_line!(self, "");
+ 
+         if self.large_state_count < self.parse_table.states.len() {
++            if let Some((small_table_symbol, offsets)) = self.shared_parse_layout.as_ref().map(
++                |layout| (layout.small_table_symbol.clone(), layout.small_state_offsets.clone()),
++            ) {
++                add_line!(self, "extern const uint16_t {small_table_symbol}[];");
++                add_line!(self, "static const uint32_t ts_small_parse_table_map[] = {{");
++                indent!(self);
++                for i in self.large_state_count..self.parse_table.states.len() {
++                    add_line!(
++                        self,
++                        "[SMALL_STATE({i})] = {},",
++                        offsets[i - self.large_state_count]
++                    );
++                }
++                dedent!(self);
++                add_line!(self, "}};");
++                add_line!(self, "");
++            } else {
+             add_line!(self, "static const uint16_t ts_small_parse_table[] = {{");
+             indent!(self);
+ 
+@@ -1383,7 +1417,7 @@ impl Generator {
+                 // So in the "small state" representation, group symbols by their action
+                 // in order to avoid repeating the action.
+                 for (symbol, entry) in &terminal_entries {
+-                    let entry_id = Self::get_parse_action_list_id(
++                    let entry_id = self.parse_action_list_id(
+                         entry,
+                         &mut parse_table_entries,
+                         &mut next_parse_action_list_index,
+@@ -1457,18 +1491,27 @@ impl Generator {
+             dedent!(self);
+             add_line!(self, "}};");
+             add_line!(self, "");
++            }
+         }
+-        if next_parse_action_list_index >= usize::from(u16::MAX) {
+-            Err(RenderError::ParseTable(next_parse_action_list_index))?;
++        if let Some(action_table_symbol) = self
++            .shared_parse_layout
++            .as_ref()
++            .map(|layout| layout.action_table_symbol.clone())
++        {
++            add_line!(self, "extern const TSParseActionEntry {action_table_symbol}[];");
++            add_line!(self, "");
++        } else {
++            if next_parse_action_list_index >= usize::from(u16::MAX) {
++                Err(RenderError::ParseTable(next_parse_action_list_index))?;
++            }
++            let mut parse_table_entries = parse_table_entries
++                .into_iter()
++                .map(|(entry, i)| (i, entry))
++                .collect::<Vec<_>>();
++            parse_table_entries.sort_by_key(|(index, _)| *index);
++            self.add_parse_action_list(parse_table_entries);
+         }
+ 
+-        let mut parse_table_entries = parse_table_entries
+-            .into_iter()
+-            .map(|(entry, i)| (i, entry))
+-            .collect::<Vec<_>>();
+-        parse_table_entries.sort_by_key(|(index, _)| *index);
+-        self.add_parse_action_list(parse_table_entries);
+-
+         Ok(())
+     }
+ 
+@@ -1591,10 +1634,18 @@ impl Generator {
+         // Parse table
+         add_line!(self, ".parse_table = &ts_parse_table[0][0],");
+         if self.large_state_count < self.parse_table.states.len() {
+-            add_line!(self, ".small_parse_table = ts_small_parse_table,");
++            let small_table = self.shared_parse_layout.as_ref().map_or(
++                "ts_small_parse_table",
++                |layout| layout.small_table_symbol.as_str(),
++            );
++            add_line!(self, ".small_parse_table = {small_table},");
+             add_line!(self, ".small_parse_table_map = ts_small_parse_table_map,");
+         }
+-        add_line!(self, ".parse_actions = ts_parse_actions,");
++        let action_table = self.shared_parse_layout.as_ref().map_or(
++            "ts_parse_actions",
++            |layout| layout.action_table_symbol.as_str(),
++        );
++        add_line!(self, ".parse_actions = {action_table},");
+ 
+         // Metadata
+         add_line!(self, ".symbol_names = ts_symbol_names,");
+@@ -1696,6 +1747,22 @@ impl Generator {
+         }
+     }
+ 
++    fn parse_action_list_id(
++        &self,
++        entry: &ParseTableEntry,
++        local_entries: &mut FxHashMap<ParseTableEntry, usize>,
++        next_local_index: &mut usize,
++    ) -> usize {
++        if let Some(layout) = &self.shared_parse_layout {
++            *layout
++                .action_ids
++                .get(entry)
++                .expect("shared parse layout omitted an action list")
++        } else {
++            Self::get_parse_action_list_id(entry, local_entries, next_local_index)
++        }
++    }
++
+     fn get_field_map_id(
+         flat_field_map: Vec<(String, FieldLocation)>,
+         flat_field_maps: &mut Vec<(usize, Vec<(String, FieldLocation)>)>,
+@@ -1981,3 +2048,44 @@ pub fn render_c_code(
+     }
+     .generate()
+ }
++
++#[expect(
++    clippy::too_many_arguments,
++    reason = "all parameters are required for bundled code generation"
++)]
++pub fn render_c_code_with_layout(
++    name: &str,
++    tables: Tables,
++    syntax_grammar: SyntaxGrammar,
++    lexical_grammar: LexicalGrammar,
++    default_aliases: AliasMap,
++    abi_version: usize,
++    semantic_version: Option<(u8, u8, u8)>,
++    supertype_symbol_map: BTreeMap<Symbol, Vec<ChildType>>,
++    shared_parse_layout: SharedParseLayout,
++) -> RenderResult<String> {
++    if !(ABI_VERSION_MIN..=ABI_VERSION_MAX).contains(&abi_version) {
++        Err(RenderError::ABI(abi_version))?;
++    }
++    Generator {
++        language_name: name.to_string(),
++        parse_table: tables.parse_table,
++        main_lex_table: tables.main_lex_table,
++        keyword_lex_table: tables.keyword_lex_table,
++        large_character_sets: tables.large_character_sets,
++        large_character_set_info: Vec::new(),
++        syntax_grammar,
++        lexical_grammar,
++        default_aliases,
++        abi_version,
++        metadata: semantic_version.map(|(major, minor, patch)| Metadata {
++            major,
++            minor,
++            patch,
++        }),
++        supertype_symbol_map,
++        shared_parse_layout: Some(shared_parse_layout),
++        ..Default::default()
++    }
++    .generate()
++}
