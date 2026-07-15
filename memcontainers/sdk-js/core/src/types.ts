@@ -1,5 +1,7 @@
 // Public types for the unified consumer API (`mc` / `vm`).
 
+import type { SidecarGrantDescriptor, SidecarHost } from "./sidecars.js";
+
 /** Which backend hosts the kernel. */
 export type Runtime = "local" | "browser" | "remote";
 
@@ -71,6 +73,12 @@ export interface CreateOptions {
   /** Host-backed filesystem mounts to install at boot (see {@link MountSpec} and
    *  the drivers at `@mc/core/drivers`). */
   mounts?: MountSpec[];
+  /** Named private sidecar authorities. Embedded runtimes only; connectors and credentials are
+   * retained as live host attachments and never serialized. */
+  sidecarHosts?: Readonly<Record<string, SidecarHost>>;
+  /** Portable, contract-generated grants. Embedded grants name one entry in `sidecarHosts`; remote
+   * grants omit their host because the served AgentOS instance owns placement. */
+  sidecars?: Readonly<Record<string, SidecarGrantDescriptor>>;
   /** Deterministic clock + RNG (for reproducible runs / tests). */
   deterministic?: boolean;
 }
@@ -398,6 +406,8 @@ export type JsonSchema = Record<string, unknown>;
  *  and leave their inputs/outputs inspectable inside the sandbox. */
 export interface ToolContext {
   fs: VmFs;
+  /** Cancelled when the guest closes the host-call result before the handler completes. */
+  signal?: AbortSignal;
 }
 
 /** A host-resident tool a guest can invoke through `/svc/tools`. The `name` is the host-call binding

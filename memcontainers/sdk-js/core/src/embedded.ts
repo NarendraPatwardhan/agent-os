@@ -7,6 +7,7 @@
 import { EagainError } from "@mc/host";
 import type { KernelHost, MapHostCall, StreamSink } from "@mc/host";
 import type { Backend, RawAutocompleteResult, RawExecResult } from "./backend.js";
+import type { SidecarBackend } from "./sidecars.js";
 import { makeFs } from "./fs.js";
 import { dispatchMount } from "./mount.js";
 import { assertSessionAgentType, sessionExec } from "./session.js";
@@ -104,6 +105,7 @@ export class EmbeddedBackend implements Backend {
     private readonly host: KernelHost,
     private readonly stdout: FanoutSink,
     private readonly tools: MapHostCall,
+    readonly sidecars: SidecarBackend,
     private readonly snapshotBase?: Uint8Array,
     private readonly snapshotStore?: ContentStore,
   ) {
@@ -114,8 +116,8 @@ export class EmbeddedBackend implements Backend {
    *  handler runs in this process and receives the parsed JSON args. */
   tool(def: ToolDefinition): void {
     assertSafeToolBindingName(def.name);
-    this.tools.register(def.name, (argsJson: string) =>
-      runToolJson(def, argsJson, this.toolContext),
+    this.tools.register(def.name, (argsJson: string, context) =>
+      runToolJson(def, argsJson, { ...this.toolContext, signal: context.signal }),
     );
   }
 
@@ -403,6 +405,7 @@ export class EmbeddedBackend implements Backend {
     } catch {
       /* best-effort on teardown */
     }
+    await this.sidecars.close();
     this.running = false;
     await this.pumpDone;
   }

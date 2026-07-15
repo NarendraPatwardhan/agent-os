@@ -44,6 +44,7 @@ const GROUPS: ReadonlyArray<Readonly<{ title: string; pages: ReadonlyArray<PageD
       ["connections", "Connections", "External APIs, credentials, discovery, and catalog compilation."],
       ["permissions", "Permissions and policy", "Network gates, allowlists, approvals, and denials."],
       ["mounts-drivers", "Mounts and drivers", "The driver contract plus hostDir, S3, and vector stores."],
+      ["sidecars", "Sidecars", "Leased external resources, grants, lifecycle, fork behavior, and host connectors."],
     ],
   },
   {

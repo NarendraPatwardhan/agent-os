@@ -102,6 +102,7 @@ function browserHtml(): Uint8Array {
       "@mc/contracts/ctl": "/core/node_modules/@mc/contracts/gen/ctl.gen.js",
       "@mc/contracts/env": "/core/node_modules/@mc/contracts/gen/env.gen.js",
       "@mc/contracts/llb": "/core/node_modules/@mc/contracts/gen/llb.gen.js",
+      "@mc/contracts/sidecar": "/core/node_modules/@mc/contracts/gen/sidecar.gen.js",
       "@mc/contracts/snapshot": "/core/node_modules/@mc/contracts/gen/snapshot.gen.js",
       "@mc/contracts/wire": "/core/node_modules/@mc/contracts/gen/wire.gen.js",
       zod: "/core/node_modules/zod/index.js",

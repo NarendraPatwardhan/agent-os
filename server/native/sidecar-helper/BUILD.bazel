@@ -1,0 +1,36 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+rust_library(
+    name = "lib",
+    srcs = ["src/lib.rs"],
+    crate_name = "sidecar_helper",
+    deps = ["//memcontainers/contracts:sidecar_rust"],
+    edition = "2021",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+rust_binary(
+    name = "sidecar-helper",
+    srcs = ["src/main.rs"],
+    crate_name = "agentos_sidecar_helper",
+    edition = "2021",
+    rustc_flags = [
+        "-Cstrip=symbols",
+        "-Ctarget-feature=+crt-static",
+    ],
+    deps = [":lib"],
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+rust_test(
+    name = "test",
+    srcs = ["src/lib.rs"],
+    crate_name = "sidecar_helper_test",
+    deps = ["//memcontainers/contracts:sidecar_rust"],
+    edition = "2021",
+    target_compatible_with = ["@platforms//os:linux"],
+)
+
+exports_files(["sidecar-helper.conf"])

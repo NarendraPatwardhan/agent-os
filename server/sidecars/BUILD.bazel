@@ -1,0 +1,39 @@
+load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+
+package(default_visibility = ["//visibility:public"])
+
+pkg_tar(
+    name = "firecracker_runner_bundle",
+    files = {
+        ":README.md": "README.md",
+        "//server/native/sidecar-helper:sidecar-helper.conf": "etc/sidecar-helper.conf",
+        "//server/native/sidecar-helper:sidecar-helper": "bin/agentos-sidecar-helper",
+        "//server/sidecars/runner:health_initramfs": "libexec/health-initramfs.cpio",
+        "@firecracker//:firecracker": "libexec/firecracker-v1.15.1-x86_64",
+        "@firecracker//:jailer": "libexec/jailer-v1.15.1-x86_64",
+        "@firecracker//:LICENSE": "share/licenses/firecracker/LICENSE",
+        "@firecracker//:NOTICE": "share/licenses/firecracker/NOTICE",
+        "@firecracker//:THIRD-PARTY": "share/licenses/firecracker/THIRD-PARTY",
+        "@firecracker_kernel//file": "libexec/vmlinux-6.1.155",
+    },
+    mode = "0644",
+    modes = {
+        "bin": "0755",
+        "bin/agentos-sidecar-helper": "0755",
+        "etc": "0755",
+        "libexec": "0755",
+        "libexec/firecracker-v1.15.1-x86_64": "0755",
+        "libexec/jailer-v1.15.1-x86_64": "0755",
+        "share": "0755",
+        "share/licenses": "0755",
+        "share/licenses/firecracker": "0755",
+    },
+    owner = "0.0",
+    package_dir = "agent-os-sidecar",
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+)
+
+exports_files(["README.md"])

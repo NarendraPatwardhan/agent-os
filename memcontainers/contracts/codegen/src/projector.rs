@@ -3,8 +3,8 @@
 //! projection; `abi_library` invokes it once per (module, language) pair.
 //!
 //! Invocation:  projector --module <m> --lang <l> --contract <path.kdl>
-//!   module = constants | mc | env | ctl | wire | llb | syntax | snapshot | shell
-//!   lang   = rust | zig | ts | elixir | md | asyncapi | openapi      (which projection)
+//!   module = constants | mc | env | ctl | wire | llb | syntax | sidecar | runner | snapshot | shell
+//!   lang   = rust | zig | ts | elixir | luau | md | asyncapi | openapi      (which projection)
 //!
 //! Design (why this shape — C1):
 //!   - DETERMINISM (A7/B2): same inputs → byte-identical output. No clock, no env,
@@ -1291,6 +1291,7 @@ fn emit_elixir_messages(messages: &[Message], contract: &str) -> String {
     o.push_str(&format!("defmodule {} do\n", elixir_module_name(contract)));
     o.push_str("  @moduledoc false\n\n");
     let uses_i32 = messages_use_type(messages, "i32");
+    let uses_strmap = messages_use_type(messages, "strmap");
     let uses_message_list = messages_use_list_type(messages);
     let uses_scalar_message = messages_use_scalar_message_type(messages);
     o.push_str(
@@ -1347,7 +1348,11 @@ fn emit_elixir_messages(messages: &[Message], contract: &str) -> String {
     end
   end
 
-  defp read_strmap(bytes) do
+"#,
+    );
+    if uses_strmap {
+        o.push_str(
+            r#"  defp read_strmap(bytes) do
     with {:ok, n, rest} <- read_u32(bytes) do
       read_strmap_entries(n, rest, nil, %{})
     end
@@ -1363,7 +1368,11 @@ fn emit_elixir_messages(messages: &[Message], contract: &str) -> String {
     end
   end
 
-  defp read_opt(bytes, fun) do
+"#,
+        );
+    }
+    o.push_str(
+        r#"  defp read_opt(bytes, fun) do
     case read_u8(bytes) do
       {:ok, 0, rest} -> {:ok, nil, rest}
       {:ok, 1, rest} -> fun.(rest)
@@ -1384,13 +1393,18 @@ fn emit_elixir_messages(messages: &[Message], contract: &str) -> String {
   defp put_bytes(bytes), do: [put_u32(byte_size(bytes)), bytes]
   defp put_str(value), do: put_bytes(value)
 
-  defp put_strmap(map) do
+"#,
+    );
+    if uses_strmap {
+        o.push_str(
+            r#"  defp put_strmap(map) do
     entries = map |> Enum.map(fn {k, v} -> {to_string(k), to_string(v)} end) |> Enum.sort()
     [put_u32(length(entries)), Enum.map(entries, fn {k, v} -> [put_str(k), put_str(v)] end)]
   end
 
 "#,
-    );
+        );
+    }
     if uses_message_list {
         o.push_str(
             r#"  defp read_message_list(bytes, decoder) do
@@ -2473,8 +2487,22 @@ fn emit_codec_module(lang: &str, nodes: &[Node], contract: &str) -> String {
             o.push_str(&vocabulary);
             o.push_str(&emit_zig_messages(&messages));
         }
-        "ts" => o.push_str(&emit_ts_messages(&messages)),
-        "elixir" => o.push_str(&emit_elixir_messages(&messages, contract)),
+        "ts" => {
+            o.push_str(&vocabulary);
+            o.push_str(&emit_ts_messages(&messages));
+        }
+        "elixir" => {
+            let body = emit_elixir_messages(&messages, contract);
+            if vocabulary.is_empty() {
+                o.push_str(&body);
+            } else {
+                o.push_str(&body.replacen(
+                    "  @moduledoc false\n\n",
+                    &format!("  @moduledoc false\n\n{vocabulary}\n"),
+                    1,
+                ));
+            }
+        }
         "luau" => {
             let body = emit_luau_messages(&messages);
             o.push_str(&body.replacen(
@@ -2520,6 +2548,23 @@ fn emit_shell_module(lang: &str, nodes: &[Node], contract: &str) -> String {
 fn emit_vocabulary_constants(lang: &str, nodes: &[Node]) -> String {
     let mut out = String::new();
     for node in nodes {
+        if node.name == "string-constant" {
+            let prefix = screaming_snake(node.arg_str(0));
+            let value = node.props.get("value").map(Val::as_str).unwrap_or("");
+            let value = escape_string_constant(lang, value);
+            match lang {
+                "rust" => out.push_str(&format!("pub const {prefix}: &str = \"{value}\";\n")),
+                "zig" => out.push_str(&format!("pub const {prefix}: []const u8 = \"{value}\";\n")),
+                "ts" => out.push_str(&format!("export const {prefix} = \"{value}\" as const;\n")),
+                "elixir" => {
+                    let fun = prefix.to_ascii_lowercase();
+                    out.push_str(&format!("  @{fun} \"{value}\"\n  def {fun}, do: @{fun}\n"));
+                }
+                "luau" => out.push_str(&format!("M.{prefix} = \"{value}\"\n")),
+                _ => {}
+            }
+            continue;
+        }
         let (prefix, is_version) = match node.name.as_str() {
             "protocol-version" => ("PROTOCOL_VERSION".to_string(), true),
             "vocabulary-version" => ("VOCABULARY_VERSION".to_string(), true),
@@ -2545,9 +2590,12 @@ fn emit_vocabulary_constants(lang: &str, nodes: &[Node]) -> String {
                 ),
                 false,
             ),
+            "constant" => (screaming_snake(node.arg_str(0)), false),
             _ => continue,
         };
-        let value = if is_version {
+        let value = if node.name == "constant" {
+            node.props.get("value").map(Val::as_int).unwrap_or(0)
+        } else if is_version {
             node.args.first().map(Val::as_int).unwrap_or(0)
         } else {
             node.props.get("id").map(Val::as_int).unwrap_or(0)
@@ -2555,6 +2603,11 @@ fn emit_vocabulary_constants(lang: &str, nodes: &[Node]) -> String {
         match lang {
             "rust" => out.push_str(&format!("pub const {prefix}: u32 = {value};\n")),
             "zig" => out.push_str(&format!("pub const {prefix}: u32 = {value};\n")),
+            "ts" => out.push_str(&format!("export const {prefix} = {value} as const;\n")),
+            "elixir" => {
+                let fun = prefix.to_ascii_lowercase();
+                out.push_str(&format!("  @{fun} {value}\n  def {fun}, do: @{fun}\n"));
+            }
             "luau" => out.push_str(&format!("M.{prefix} = {value}\n")),
             _ => {}
         }
@@ -2566,6 +2619,27 @@ fn emit_vocabulary_constants(lang: &str, nodes: &[Node]) -> String {
         out.push('\n');
     }
     out
+}
+
+fn escape_string_constant(lang: &str, value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            character if character.is_ascii_control() => {
+                escaped.push_str(&format!("\\x{:02x}", character as u32));
+            }
+            character => escaped.push(character),
+        }
+    }
+    if lang == "elixir" {
+        escaped = escaped.replace("#{", "\\#{");
+    }
+    escaped
 }
 
 fn rust_vocabulary_ident(value: &str) -> String {
@@ -2675,6 +2749,7 @@ struct Route {
     protocol: Option<String>,
     doc: String,
     queries: Vec<QueryParam>,
+    headers: Vec<QueryParam>,
 }
 
 #[derive(Clone)]
@@ -2735,6 +2810,14 @@ fn collect_routes(nodes: &[Node]) -> Vec<Route> {
                     name: q.arg_str(0).to_string(),
                     ty: q.prop_str("type").unwrap_or("string").to_string(),
                     required: prop_bool(q, "required", false),
+                })
+                .collect(),
+            headers: n
+                .children_named("header")
+                .map(|header| QueryParam {
+                    name: header.arg_str(0).to_string(),
+                    ty: header.prop_str("type").unwrap_or("string").to_string(),
+                    required: prop_bool(header, "required", false),
                 })
                 .collect(),
         })
@@ -3035,7 +3118,7 @@ fn emit_content(
 
 fn emit_parameters(out: &mut String, route: &Route, schema_names: &BTreeSet<String>) {
     let params = path_params(&route.path);
-    if params.is_empty() && route.queries.is_empty() {
+    if params.is_empty() && route.queries.is_empty() && route.headers.is_empty() {
         return;
     }
     out.push_str("      parameters:\n");
@@ -3055,6 +3138,16 @@ fn emit_parameters(out: &mut String, route: &Route, schema_names: &BTreeSet<Stri
         ));
         out.push_str("          schema:\n");
         emit_openapi_schema_for_type(out, &query.ty, 12, schema_names);
+    }
+    for header in &route.headers {
+        out.push_str(&format!("        - name: {}\n", yaml_quote(&header.name)));
+        out.push_str("          in: header\n");
+        out.push_str(&format!(
+            "          required: {}\n",
+            if header.required { "true" } else { "false" }
+        ));
+        out.push_str("          schema:\n");
+        emit_openapi_schema_for_type(out, &header.ty, 12, schema_names);
     }
 }
 
@@ -3236,6 +3329,7 @@ fn emit_wire(lang: &str, nodes: &[Node], contract: &str, contract_path: &str) ->
         .unwrap_or(0);
     let msgs: Vec<&Node> = nodes.iter().filter(|n| n.name == "message").collect();
     let mut o = banner(lang, contract);
+    o.push_str(&emit_vocabulary_constants(lang, nodes));
     match lang {
         "rust" => {
             o.push_str(&format!("\npub const WIRE_VERSION: u32 = {version};\npub const HEADER_LEN: usize = {header_len};\n\n"));
@@ -3324,7 +3418,7 @@ fn main() -> ExitCode {
     }
     let (Some(lang), Some(module), Some(contract)) = (lang, module, contract) else {
         eprintln!(
-            "usage: projector --module <constants|mc|env|ctl|wire|llb|syntax|snapshot|shell> --lang <rust|zig|ts|elixir|luau|md|asyncapi|openapi> --contract <path.kdl>"
+            "usage: projector --module <constants|mc|env|ctl|wire|llb|syntax|sidecar|runner|snapshot|shell> --lang <rust|zig|ts|elixir|luau|md|asyncapi|openapi> --contract <path.kdl>"
         );
         return ExitCode::FAILURE;
     };
@@ -3372,8 +3466,9 @@ fn main() -> ExitCode {
             "EXPORTS",
         ),
         "wire" => emit_wire(&lang, &nodes, &file, &contract),
-        "llb" => emit_codec_module(&lang, &nodes, &file),
-        "syntax" => emit_codec_module(&lang, &nodes, &file),
+        "llb" | "syntax" | "sidecar" | "runner" => {
+            emit_codec_module(&lang, &nodes, &file)
+        }
         "snapshot" => emit_snapshot(&lang, &nodes, &file),
         "shell" => emit_shell_module(&lang, &nodes, &file),
         other => {

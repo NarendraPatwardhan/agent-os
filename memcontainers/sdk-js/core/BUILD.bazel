@@ -17,6 +17,7 @@ js_library(
         "src/index.ts",
         "src/llb.ts",
         "src/memcontainer.ts",
+        "src/sidecars.ts",
         "src/types.ts",
     ],
     visibility = ["//docs:__pkg__"],
@@ -128,6 +129,21 @@ js_test(
         "MC_GITHUB_FIXTURE": "$(rlocationpath :github_issues_fixture)",
         "MC_GRAPHQL_FIXTURE": "$(rlocationpath :graphql_introspection_fixture)",
     },
+)
+
+mc_ts_project(
+    name = "sidecars_test_lib",
+    srcs = ["test/sidecars.test.ts"],
+    deps = [
+        ":lib",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+js_test(
+    name = "sidecars_test",
+    data = [":sidecars_test_lib"],
+    entry_point = "test/sidecars.test.js",
 )
 
 # Design-doc browser build gate: solve the same canonical LLB Definition in

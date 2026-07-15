@@ -3,6 +3,7 @@
 // in-VM tool catalog, while the actual handler remains a host-call function keyed by `ToolDefinition.name`.
 
 import type { CatalogCompiler } from "@mc/host";
+import { SIDECAR_HOST_BINDING } from "@mc/contracts/sidecar";
 import { z } from "zod";
 import type { JsonSchema, ToolContext, ToolDefinition } from "./types.js";
 
@@ -155,6 +156,7 @@ export async function mergeToolCatalogBundles(
 export function isSafeToolBindingName(name: string): boolean {
   return (
     name.length > 0 &&
+    name !== SIDECAR_HOST_BINDING &&
     !name.startsWith("/") &&
     name.trim() === name &&
     !/[\u0000-\u001f\u007f]/u.test(name)
@@ -164,7 +166,7 @@ export function isSafeToolBindingName(name: string): boolean {
 export function assertSafeToolBindingName(name: string): void {
   if (!isSafeToolBindingName(name)) {
     throw new Error(
-      `tool name '${name}' must be non-empty, must not start with '/', and must not contain control characters`,
+      `tool name '${name}' must be non-empty, must not be the reserved '${SIDECAR_HOST_BINDING}' binding, must not start with '/', and must not contain control characters`,
     );
   }
 }

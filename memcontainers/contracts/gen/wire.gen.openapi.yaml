@@ -2,7 +2,7 @@
 openapi: 3.0.3
 info:
   title: AgentOS REST API
-  version: "2"
+  version: "3"
   description: "Request/response API for AgentOS VM lifecycle, exec, filesystem, snapshots, layers, and mounts. Live terminal, relay, permissions, and streamed sessions use the typed WebSocket in asyncapi.yaml."
 security:
   - bearerAuth: []
@@ -625,7 +625,457 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Vm"
+                $ref: "#/components/schemas/ForkVmResult"
+  "/v1/vms/{id}/sidecar-grants/{grant}":
+    put:
+      operationId: "put_v1_vms_id_sidecar_grants_grant"
+      summary: "Enable a portable sidecar grant. Provider placement remains server-owned."
+      parameters:
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "grant"
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SidecarGrantWire"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SidecarGrantWire"
+    delete:
+      operationId: "delete_v1_vms_id_sidecar_grants_grant"
+      summary: "Disable a sidecar grant, optionally deleting its active instances."
+      parameters:
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "grant"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "destroy"
+          in: query
+          required: false
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DisposeSidecar"
+  "/v1/vms/{id}/sidecars":
+    get:
+      operationId: "get_v1_vms_id_sidecars"
+      summary: "List sidecar instances owned by this VM."
+      parameters:
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "kind"
+          in: query
+          required: false
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SidecarInstanceList"
+    post:
+      operationId: "post_v1_vms_id_sidecars"
+      summary: "Create one sidecar under an enabled grant."
+      parameters:
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SidecarCreateWire"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SidecarInstanceWire"
+  "/v1/vms/{id}/sidecars/{sidecar}":
+    get:
+      operationId: "get_v1_vms_id_sidecars_sidecar"
+      summary: "Inspect one VM-owned sidecar instance."
+      parameters:
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "sidecar"
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SidecarInstanceWire"
+    delete:
+      operationId: "delete_v1_vms_id_sidecars_sidecar"
+      summary: "Idempotently delete one VM-owned sidecar instance."
+      parameters:
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "sidecar"
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DisposeSidecar"
+  "/v1/vms/{id}/sidecars/{sidecar}/operations/{operation}":
+    post:
+      operationId: "post_v1_vms_id_sidecars_sidecar_operations_operation"
+      summary: "Invoke one generated operation on a VM-owned sidecar."
+      parameters:
+        - name: "id"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "sidecar"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "operation"
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SidecarCallWire"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SidecarResultWire"
+  "/v1/sidecar-scopes":
+    post:
+      operationId: "post_v1_sidecar_scopes"
+      summary: "Attach a leased sidecar authority to an embedded VM. Authentication and namespace mapping remain adapter-owned."
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSidecarScope"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SidecarScope"
+  "/v1/sidecar-scopes/{scope}/renew":
+    post:
+      operationId: "post_v1_sidecar_scopes_scope_renew"
+      summary: "Renew an embedded VM sidecar authority lease."
+      parameters:
+        - name: "scope"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "x-agentos-sidecar-scope"
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RenewSidecarScope"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SidecarScope"
+  "/v1/sidecar-scopes/{scope}":
+    delete:
+      operationId: "delete_v1_sidecar_scopes_scope"
+      summary: "Close an embedded authority scope and cascade cleanup."
+      parameters:
+        - name: "scope"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "x-agentos-sidecar-scope"
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DisposeSidecar"
+  "/v1/sidecar-scopes/{scope}/grants/{grant}":
+    put:
+      operationId: "put_v1_sidecar_scopes_scope_grants_grant"
+      summary: "Enable a portable grant inside an embedded authority scope."
+      parameters:
+        - name: "scope"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "grant"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "x-agentos-sidecar-scope"
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SidecarGrantWire"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SidecarGrantWire"
+    delete:
+      operationId: "delete_v1_sidecar_scopes_scope_grants_grant"
+      summary: "Disable an embedded authority grant."
+      parameters:
+        - name: "scope"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "grant"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "destroy"
+          in: query
+          required: false
+          schema:
+            type: boolean
+        - name: "x-agentos-sidecar-scope"
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DisposeSidecar"
+  "/v1/sidecar-scopes/{scope}/sidecars":
+    get:
+      operationId: "get_v1_sidecar_scopes_scope_sidecars"
+      summary: "List instances in an embedded authority scope."
+      parameters:
+        - name: "scope"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "kind"
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: "x-agentos-sidecar-scope"
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SidecarInstanceList"
+    post:
+      operationId: "post_v1_sidecar_scopes_scope_sidecars"
+      summary: "Create an instance in an embedded authority scope."
+      parameters:
+        - name: "scope"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "x-agentos-sidecar-scope"
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SidecarCreateWire"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SidecarInstanceWire"
+  "/v1/sidecar-scopes/{scope}/sidecars/{sidecar}":
+    get:
+      operationId: "get_v1_sidecar_scopes_scope_sidecars_sidecar"
+      summary: "Inspect one embedded-scope instance."
+      parameters:
+        - name: "scope"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "sidecar"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "x-agentos-sidecar-scope"
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SidecarInstanceWire"
+    delete:
+      operationId: "delete_v1_sidecar_scopes_scope_sidecars_sidecar"
+      summary: "Delete one embedded-scope instance."
+      parameters:
+        - name: "scope"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "sidecar"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "x-agentos-sidecar-scope"
+          in: header
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DisposeSidecar"
+  "/v1/sidecar-scopes/{scope}/sidecars/{sidecar}/operations/{operation}":
+    post:
+      operationId: "post_v1_sidecar_scopes_scope_sidecars_sidecar_operations_operation"
+      summary: "Invoke one generated operation in an embedded authority scope."
+      parameters:
+        - name: "scope"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "sidecar"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "operation"
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: "x-agentos-sidecar-scope"
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SidecarCallWire"
+      responses:
+        "200":
+          description: "OK"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SidecarResultWire"
   "/v1/vms/{id}/mounts":
     get:
       operationId: "get_v1_vms_id_mounts"
@@ -735,6 +1185,10 @@ components:
           type: array
           items:
             type: string
+        "sidecars":
+          type: array
+          items:
+            $ref: "#/components/schemas/SidecarCapabilityWire"
     "CreateVm":
       type: object
       properties:
@@ -782,6 +1236,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ConnectionPolicyRule"
+        "sidecars":
+          type: array
+          items:
+            $ref: "#/components/schemas/SidecarGrantWire"
     "ConnectionDefinition":
       type: object
       required:
@@ -1062,6 +1520,10 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/HostToolDefinition"
+        "sidecars":
+          type: array
+          items:
+            $ref: "#/components/schemas/SidecarGrantWire"
     "RestoreConnectionDefinition":
       type: object
       required:
@@ -1321,6 +1783,306 @@ components:
         "id":
           type: string
           x-agentos-type: "VmId"
+    "ForkVmResult":
+      type: object
+      required:
+        - "vm"
+        - "warnings"
+      properties:
+        "vm":
+          $ref: "#/components/schemas/Vm"
+        "warnings":
+          type: array
+          items:
+            $ref: "#/components/schemas/SidecarWarningWire"
+    "SidecarCapabilityWire":
+      type: object
+      required:
+        - "kind"
+        - "version"
+        - "contractDigest"
+        - "placements"
+        - "fork"
+        - "maxInstancesPerVm"
+      properties:
+        "kind":
+          type: string
+          x-agentos-source-field: "kind"
+        "version":
+          type: integer
+          format: int32
+          x-agentos-source-field: "version"
+        "contractDigest":
+          type: string
+          x-agentos-source-field: "contract_digest"
+        "placements":
+          type: array
+          items:
+            type: string
+          x-agentos-source-field: "placements"
+          x-agentos-encoding: "values"
+        "fork":
+          type: integer
+          format: int32
+          x-agentos-source-field: "fork_policy"
+        "maxInstancesPerVm":
+          type: integer
+          format: int32
+          x-agentos-source-field: "max_instances_per_vm"
+    "SidecarGrantWire":
+      type: object
+      required:
+        - "name"
+        - "kind"
+        - "version"
+        - "contractDigest"
+        - "guest"
+        - "maxInstances"
+        - "fork"
+        - "configBase64"
+      properties:
+        "name":
+          type: string
+          x-agentos-source-field: "name"
+        "kind":
+          type: string
+          x-agentos-source-field: "kind"
+        "version":
+          type: integer
+          format: int32
+          x-agentos-source-field: "version"
+        "contractDigest":
+          type: string
+          x-agentos-source-field: "contract_digest"
+        "guest":
+          type: boolean
+          x-agentos-source-field: "guest"
+        "maxInstances":
+          type: integer
+          format: int32
+          x-agentos-source-field: "max_instances"
+        "fork":
+          type: integer
+          format: int32
+          x-agentos-source-field: "fork_policy"
+        "configBase64":
+          type: string
+          x-agentos-source-field: "config"
+          x-agentos-encoding: "base64"
+    "SidecarCreateWire":
+      type: object
+      required:
+        - "grant"
+        - "kind"
+        - "bodyBase64"
+        - "idempotencyKey"
+        - "timeoutMs"
+      properties:
+        "grant":
+          type: string
+          x-agentos-source-field: "grant"
+        "kind":
+          type: string
+          x-agentos-source-field: "kind"
+        "bodyBase64":
+          type: string
+          x-agentos-source-field: "body"
+          x-agentos-encoding: "base64"
+        "idempotencyKey":
+          type: string
+          x-agentos-source-field: "idempotency_key"
+        "timeoutMs":
+          type: integer
+          format: int64
+          x-agentos-source-field: "timeout_ms"
+    "SidecarCallWire":
+      type: object
+      required:
+        - "id"
+        - "generation"
+        - "grant"
+        - "kind"
+        - "operation"
+        - "bodyBase64"
+        - "timeoutMs"
+      properties:
+        "id":
+          type: string
+          x-agentos-source-field: "id"
+        "generation":
+          type: integer
+          format: int32
+          x-agentos-source-field: "generation"
+        "grant":
+          type: string
+          x-agentos-source-field: "grant"
+        "kind":
+          type: string
+          x-agentos-source-field: "kind"
+        "operation":
+          type: string
+          x-agentos-source-field: "operation"
+        "bodyBase64":
+          type: string
+          x-agentos-source-field: "body"
+          x-agentos-encoding: "base64"
+        "idempotencyKey":
+          type: string
+          x-agentos-source-field: "idempotency_key"
+        "timeoutMs":
+          type: integer
+          format: int64
+          x-agentos-source-field: "timeout_ms"
+    "SidecarInstanceWire":
+      type: object
+      required:
+        - "id"
+        - "grant"
+        - "kind"
+        - "generation"
+        - "state"
+        - "createdAtMs"
+        - "expiresAtMs"
+        - "metadataBase64"
+      properties:
+        "id":
+          type: string
+          x-agentos-source-field: "id"
+        "grant":
+          type: string
+          x-agentos-source-field: "grant"
+        "kind":
+          type: string
+          x-agentos-source-field: "kind"
+        "generation":
+          type: integer
+          format: int32
+          x-agentos-source-field: "generation"
+        "state":
+          type: integer
+          format: int32
+          x-agentos-source-field: "state"
+        "createdAtMs":
+          type: integer
+          format: int64
+          x-agentos-source-field: "created_at_ms"
+        "expiresAtMs":
+          type: integer
+          format: int64
+          x-agentos-source-field: "expires_at_ms"
+        "metadataBase64":
+          type: string
+          x-agentos-source-field: "metadata"
+          x-agentos-encoding: "base64"
+    "SidecarInstanceList":
+      type: object
+      required:
+        - "items"
+      properties:
+        "items":
+          type: array
+          items:
+            $ref: "#/components/schemas/SidecarInstanceWire"
+          x-agentos-source-field: "items"
+    "SidecarResultWire":
+      type: object
+      required:
+        - "ok"
+        - "bodyBase64"
+      properties:
+        "ok":
+          type: boolean
+          x-agentos-source-field: "ok"
+        "bodyBase64":
+          type: string
+          x-agentos-source-field: "body"
+          x-agentos-encoding: "base64"
+        "error":
+          $ref: "#/components/schemas/SidecarErrorWire"
+          x-agentos-source-field: "error"
+    "SidecarErrorWire":
+      type: object
+      required:
+        - "code"
+        - "message"
+        - "retryable"
+      properties:
+        "code":
+          type: string
+          x-agentos-source-field: "code"
+        "message":
+          type: string
+          x-agentos-source-field: "message"
+        "retryable":
+          type: boolean
+          x-agentos-source-field: "retryable"
+        "detailsBase64":
+          type: string
+          x-agentos-source-field: "details"
+          x-agentos-encoding: "base64"
+    "SidecarWarningWire":
+      type: object
+      required:
+        - "code"
+        - "message"
+      properties:
+        "code":
+          type: string
+          x-agentos-source-field: "code"
+        "message":
+          type: string
+          x-agentos-source-field: "message"
+        "kind":
+          type: string
+          x-agentos-source-field: "kind"
+        "grant":
+          type: string
+          x-agentos-source-field: "grant"
+        "id":
+          type: string
+          x-agentos-source-field: "id"
+    "CreateSidecarScope":
+      type: object
+      required:
+        - "clientRef"
+        - "grants"
+      properties:
+        "clientRef":
+          type: string
+        "grants":
+          type: array
+          items:
+            $ref: "#/components/schemas/SidecarGrantWire"
+        "leaseTtlMs":
+          type: integer
+          format: int32
+    "RenewSidecarScope":
+      type: object
+      properties:
+        "leaseTtlMs":
+          type: integer
+          format: int32
+    "SidecarScope":
+      type: object
+      required:
+        - "id"
+        - "token"
+        - "expiresAtMs"
+      properties:
+        "id":
+          type: string
+        "token":
+          type: string
+        "expiresAtMs":
+          type: integer
+          format: int64
+    "DisposeSidecar":
+      type: object
+      required:
+        - "ok"
+      properties:
+        "ok":
+          type: boolean
     "Mount":
       type: object
       required:

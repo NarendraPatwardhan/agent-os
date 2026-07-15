@@ -3,6 +3,8 @@
 // host-backed mounts, host tools, and interactive approval prompts.
 
 import type { Backend, RawAutocompleteResult, RawExecResult } from "./backend.js";
+import { forkRemoteVm, RemoteVmSidecarBackend } from "./sidecars.js";
+import type { VmWarning } from "./sidecars.js";
 import { makeFs } from "./fs.js";
 import { dispatchMount } from "./mount.js";
 import { assertSessionAgentType } from "./session.js";
@@ -94,6 +96,7 @@ interface RemotePermissionRequest {
 }
 
 export class RemoteBackend implements Backend {
+  readonly sidecars: RemoteVmSidecarBackend;
   private readonly base: string;
   private readonly headers: Record<string, string>;
   private readonly token?: string;
@@ -111,6 +114,7 @@ export class RemoteBackend implements Backend {
     this.token = opts.token;
     this.vmId = opts.vmId;
     this.onPermission = opts.onPermission;
+    this.sidecars = new RemoteVmSidecarBackend(this.base, opts.token, opts.vmId);
   }
 
   private vmUrl(path = ""): string {
@@ -134,7 +138,7 @@ export class RemoteBackend implements Backend {
         this.wsUrl(),
         this.token ? { vmId: this.vmId, token: this.token } : { vmId: this.vmId },
       );
-      socket.hostCall = async (name, body) => {
+      socket.hostCall = async (name, body, signal) => {
         if (name.startsWith("/")) {
           const driver = this.drivers.get(name);
           return driver ? dispatchMount(driver, body) : new Uint8Array(0);
@@ -142,12 +146,17 @@ export class RemoteBackend implements Backend {
         const def = this.tools.get(name);
         if (!def) return new Uint8Array(0);
         const argsJson = dec(body).replace(/\0+$/u, "");
-        return enc(await runToolJson(def, argsJson, this.toolContext));
+        return enc(await runToolJson(def, argsJson, { ...this.toolContext, signal }));
       };
       socket.frameHandlers.add((kind, json) => this.handlePermissionFrame(socket, kind, json));
       this.socket = socket;
     }
     return this.socket;
+  }
+
+  /** @internal — allocate a new remote VM identity through the VM transport. */
+  fork(): Promise<{ id: string; warnings: VmWarning[] }> {
+    return forkRemoteVm(this.base, this.token, this.vmId);
   }
 
   private handlePermissionFrame(socket: UnifiedSocket, kind: number, json: unknown): boolean {

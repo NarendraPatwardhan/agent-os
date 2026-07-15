@@ -6,11 +6,12 @@ import {
   Kind,
   decodeFrame,
   decodeHostCall,
+  decodeHostCancel,
   encodeFrame,
   encodeHostResult,
 } from "./wire.js";
 
-export type HostCallDispatcher = (name: string, body: Uint8Array) => Promise<Uint8Array>;
+export type HostCallDispatcher = (name: string, body: Uint8Array, signal: AbortSignal) => Promise<Uint8Array>;
 export type FrameHandler = (kind: number, json: unknown) => boolean;
 
 const BACKOFF_MIN_MS = 250;
@@ -26,7 +27,7 @@ export class UnifiedSocket {
   private seq = 0;
   private readonly shellBuf: Uint8Array[] = [];
   private readonly pending: Array<{ kind: number; body: Uint8Array | object }> = [];
-  private readonly inflight = new Set<number>();
+  private readonly inflight = new Map<number, AbortController>();
   private readonly answered = new Map<number, Uint8Array>();
 
   readonly shellListeners = new Set<(bytes: Uint8Array) => void>();
@@ -131,11 +132,27 @@ export class UnifiedSocket {
           return;
         }
         if (this.inflight.has(id)) return;
-        this.inflight.add(id);
-        const result = this.hostCall ? await this.hostCall(name, body) : new Uint8Array(0);
-        this.inflight.delete(id);
-        this.rememberAnswer(id, result);
-        this.send(Kind.HostResult, encodeHostResult(id, result));
+        const abort = new AbortController();
+        this.inflight.set(id, abort);
+        try {
+          const result = this.hostCall ? await this.hostCall(name, body, abort.signal) : new Uint8Array(0);
+          if (abort.signal.aborted) return;
+          this.rememberAnswer(id, result);
+          this.send(Kind.HostResult, encodeHostResult(id, result));
+        } catch {
+          if (!abort.signal.aborted) this.send(Kind.HostResult, encodeHostResult(id, new Uint8Array(0)));
+        } finally {
+          this.inflight.delete(id);
+        }
+        return;
+      }
+      case Kind.HostCancel: {
+        if (!decoded.bytes) return;
+        try {
+          this.inflight.get(decodeHostCancel(decoded.bytes))?.abort();
+        } catch {
+          // Malformed cancellation cannot be allowed to disturb unrelated calls.
+        }
         return;
       }
       default:
@@ -197,6 +214,8 @@ export class UnifiedSocket {
 
   close(): void {
     this.wantOpen = false;
+    for (const controller of this.inflight.values()) controller.abort();
+    this.inflight.clear();
     try {
       this.ws?.close();
     } catch {

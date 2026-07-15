@@ -36,6 +36,7 @@ use constants_rust::{
     EAGAIN, EMSGSIZE, PERSIST_OP_DELETE, PERSIST_OP_GET, PERSIST_OP_LIST, PERSIST_OP_PUT,
 };
 use ctl_rust::RelayEvent as WireRelayEvent;
+use sidecar_rust::SIDECAR_HOST_BINDING;
 use host::{
     derive_connection_origins, AutocompleteOptions, CatalogConnection, CatalogInjectOptions,
     CatalogSpecSource, ConnectionCredential, ConnectionError, ConnectionPolicyAction,
@@ -129,6 +130,10 @@ enum EgressRelayEvent {
         name: String,
         body: Vec<u8>,
     },
+    HostCallClose {
+        handle: i32,
+        sidecar: bool,
+    },
     PersistGet {
         handle: i32,
         key: Vec<u8>,
@@ -178,6 +183,8 @@ struct HttpSlot {
 
 #[derive(Default)]
 struct HostCallSlot {
+    dispatched: bool,
+    sidecar: bool,
     done: bool,
     failed: bool,
     result: Vec<u8>,
@@ -401,12 +408,16 @@ impl ToolApprover for BeamToolApprover {
 #[derive(Clone)]
 struct BeamHostCall {
     relay: Arc<Mutex<RelayState>>,
+    sidecar_only: bool,
 }
 
 impl HostCallCapability for BeamHostCall {
     fn start(&mut self, req: &[u8]) -> i32 {
         let nul = req.iter().position(|&b| b == 0).unwrap_or(req.len());
         let name = String::from_utf8_lossy(&req[..nul]).into_owned();
+        if self.sidecar_only && name != SIDECAR_HOST_BINDING {
+            return -1;
+        }
         let body = if nul < req.len() {
             req[nul + 1..].to_vec()
         } else {
@@ -417,7 +428,13 @@ impl HostCallCapability for BeamHostCall {
             return -1;
         };
         let handle = relay.alloc_handle();
-        relay.host_calls.insert(handle, HostCallSlot::default());
+        relay.host_calls.insert(
+            handle,
+            HostCallSlot {
+                sidecar: name == SIDECAR_HOST_BINDING,
+                ..HostCallSlot::default()
+            },
+        );
         relay
             .events
             .push_back(EgressRelayEvent::HostCall { handle, name, body });
@@ -455,11 +472,19 @@ impl HostCallCapability for BeamHostCall {
 
     fn close(&mut self, handle: i32) {
         if let Ok(mut relay) = self.relay.lock() {
-            relay.host_calls.remove(&handle);
+            let closed = relay
+                .host_calls
+                .remove(&handle)
+                .map(|slot| (slot.dispatched && !slot.done, slot.sidecar));
             relay.events.retain(|event| match event {
                 EgressRelayEvent::HostCall { handle: h, .. } => *h != handle,
                 _ => true,
             });
+            if let Some((true, sidecar)) = closed {
+                relay
+                    .events
+                    .push_back(EgressRelayEvent::HostCallClose { handle, sidecar });
+            }
         }
     }
 }
@@ -816,6 +841,7 @@ fn build_builder(
     connection_policies: Vec<NifPolicyRule>,
     tool_approval_relay: bool,
     host_call_relay: bool,
+    host_call_sidecar_only: bool,
     persist_relay: bool,
     out: &Arc<Mutex<Vec<u8>>>,
     relay: &Arc<Mutex<RelayState>>,
@@ -871,6 +897,7 @@ fn build_builder(
     if host_call_relay {
         builder = builder.with_host_call(Box::new(BeamHostCall {
             relay: relay.clone(),
+            sidecar_only: host_call_sidecar_only,
         }));
     }
     if persist_relay {
@@ -896,6 +923,7 @@ fn boot(
     connection_policies: Vec<NifPolicyRule>,
     tool_approval_relay: bool,
     host_call_relay: bool,
+    host_call_sidecar_only: bool,
     persist_relay: bool,
 ) -> NifResult<(Atom, ResourceArc<Vm>)> {
     let out = Arc::new(Mutex::new(Vec::new()));
@@ -916,6 +944,7 @@ fn boot(
         connection_policies,
         tool_approval_relay,
         host_call_relay,
+        host_call_sidecar_only,
         persist_relay,
         &out,
         &relay,
@@ -946,6 +975,7 @@ fn restore(
     connection_policies: Vec<NifPolicyRule>,
     tool_approval_relay: bool,
     host_call_relay: bool,
+    host_call_sidecar_only: bool,
     persist_relay: bool,
 ) -> NifResult<(Atom, ResourceArc<Vm>)> {
     let out = Arc::new(Mutex::new(Vec::new()));
@@ -993,6 +1023,7 @@ fn restore(
     if host_call_relay {
         builder = builder.with_host_call(Box::new(BeamHostCall {
             relay: relay.clone(),
+            sidecar_only: host_call_sidecar_only,
         }));
     }
     if persist_relay {
@@ -1382,6 +1413,13 @@ fn wire_relay_event(relay: &mut RelayState, event: EgressRelayEvent) -> WireRela
             frame.body = Some(body);
             frame
         }
+        EgressRelayEvent::HostCallClose { handle, sidecar } => {
+            let mut frame = relay_frame("host_call_close", handle);
+            if sidecar {
+                frame.name = Some(SIDECAR_HOST_BINDING.to_string());
+            }
+            frame
+        }
         EgressRelayEvent::PersistGet { handle, key } => {
             let mut frame = relay_frame("persist_get", handle);
             frame.key = Some(key);
@@ -1442,9 +1480,45 @@ fn relay_next<'a>(env: Env<'a>, vm: ResourceArc<Vm>) -> NifResult<(Atom, Option<
     let Some(event) = relay.events.pop_front() else {
         return Ok((atoms::ok(), None));
     };
-
-    let bytes = wire_relay_event(&mut relay, event).encode();
+    let bytes = dispatch_relay_event(&mut relay, event);
     Ok((atoms::ok(), Some(to_binary(env, &bytes)?)))
+}
+
+/// Remove only a reserved sidecar call. Other relay events retain their queue positions, so the
+/// control plane can advance sidecars during exec without taking ownership of unrelated egress.
+#[rustler::nif(name = "relay_next_sidecar_nif")]
+fn relay_next_sidecar<'a>(
+    env: Env<'a>,
+    vm: ResourceArc<Vm>,
+) -> NifResult<(Atom, Option<Binary<'a>>)> {
+    let mut relay = relay_lock(&vm)?;
+    let Some(position) = relay.events.iter().position(|event| {
+        matches!(
+            event,
+            EgressRelayEvent::HostCall { name, .. } if name == SIDECAR_HOST_BINDING
+        ) || matches!(
+            event,
+            EgressRelayEvent::HostCallClose { sidecar: true, .. }
+        )
+    }) else {
+        return Ok((atoms::ok(), None));
+    };
+    let event = relay
+        .events
+        .remove(position)
+        .ok_or_else(|| nif_err("sidecar relay queue changed during selection"))?;
+
+    let bytes = dispatch_relay_event(&mut relay, event);
+    Ok((atoms::ok(), Some(to_binary(env, &bytes)?)))
+}
+
+fn dispatch_relay_event(relay: &mut RelayState, event: EgressRelayEvent) -> Vec<u8> {
+    if let EgressRelayEvent::HostCall { handle, .. } = &event {
+        if let Some(slot) = relay.host_calls.get_mut(handle) {
+            slot.dispatched = true;
+        }
+    }
+    wire_relay_event(relay, event).encode()
 }
 
 #[rustler::nif(name = "relay_persist_respond_nif")]

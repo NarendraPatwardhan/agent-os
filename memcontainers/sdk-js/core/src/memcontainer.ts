@@ -24,6 +24,7 @@ import {
   TIER_ISOLATED,
 } from "@mc/contracts/constants";
 import { parseSnapshot } from "@mc/contracts/snapshot";
+import { SIDECAR_HOST_BINDING } from "@mc/contracts/sidecar";
 import { EmbeddedBackend, FanoutSink } from "./embedded.js";
 import { defaultImage, defaultKernel } from "./artifacts.js";
 import { defaultStore } from "./store.js";
@@ -41,6 +42,14 @@ import { startCron } from "./cron.js";
 import type { CronAction, CronHandle, CronOptions } from "./cron.js";
 import type { Backend } from "./backend.js";
 import { RemoteBackend } from "./remote.js";
+import {
+  EmbeddedSidecarBackend,
+  VmSidecars,
+  ownSidecarDescriptors,
+  portableSidecarGrants,
+  validateSidecarDescriptor,
+  type SidecarGrantDescriptor,
+} from "./sidecars.js";
 import type { ToolCatalogBundle } from "./tools.js";
 import type {
   ContentStore,
@@ -88,6 +97,8 @@ function ownCreateOptions(opts: CreateOptions): CreateOptions {
     policies: opts.policies?.map((policy) => ({ ...policy })),
     tools: opts.tools?.map((entry) => (typeof entry === "string" ? entry : ownToolDefinition(entry))),
     mounts: opts.mounts?.map((mount) => ({ ...mount })),
+    sidecarHosts: opts.sidecarHosts ? { ...opts.sidecarHosts } : undefined,
+    sidecars: ownSidecarDescriptors(opts.sidecars),
   };
 }
 
@@ -145,12 +156,16 @@ interface CatalogState {
 export class Vm {
   /** Filesystem ops (`vm.fs.read` / `write` / `ls` / `stat` / `mkdir` / `rm`). */
   readonly fs: VmFs;
+  /** Generic lifecycle for attached sidecars; kind modules build typed facades over this surface. */
+  readonly sidecars: VmSidecars;
   /** All registered tools (boot-time + runtime), mirrored into the `/svc/tools` live catalog. */
   private readonly registeredTools: ToolDefinition[];
   /** String entries from `create({ tools })`, used as connection group selectors. */
   private readonly registeredToolSelectors: string[];
   /** Host-backed mounts that must be re-registered when this VM is forked. */
   private readonly registeredMounts: MountSpec[];
+  /** Contract-owned sidecar grants. Host aliases remain private attachment metadata. */
+  private readonly registeredSidecars: Record<string, SidecarGrantDescriptor>;
   /** Tool alias names already handled for this VM (created or deliberately skipped). */
   private readonly handledToolAliases = new Set<string>();
   /** Live cron jobs, stopped on {@link Vm.close}. */
@@ -171,7 +186,7 @@ export class Vm {
   /** Create-time configuration that is safe to reuse for a restore. Resource identity and live
    *  attachments are intentionally absent: an id belongs to one remote VM, while tools and mounts
    *  are owned by the canonical registries above. */
-  private readonly baseOptions: Omit<CreateOptions, "id" | "tools" | "mounts">;
+  private readonly baseOptions: Omit<CreateOptions, "id" | "tools" | "mounts" | "sidecars">;
 
   /** @internal — use {@link mc.create}. */
   constructor(
@@ -180,12 +195,14 @@ export class Vm {
     catalog: CatalogState = { digest: "", generation: 0, connectionBundle: null },
   ) {
     const owned = ownCreateOptions(opts);
-    const { id: _id, tools, mounts, ...baseOptions } = owned;
+    const { id: _id, tools, mounts, sidecars, ...baseOptions } = owned;
     this.baseOptions = baseOptions;
     this.fs = makeFs(backend);
     this.registeredTools = hostToolDefinitions(tools);
     this.registeredToolSelectors = catalogToolSelectors(tools);
     this.registeredMounts = [...(mounts ?? [])];
+    this.registeredSidecars = ownSidecarDescriptors(sidecars) ?? {};
+    this.sidecars = new VmSidecars(backend.sidecars, this.registeredSidecars);
     this.catalogDigest = catalog.digest;
     this.catalogGeneration = catalog.generation;
     this.connectionBundle = catalog.connectionBundle;
@@ -283,8 +300,38 @@ export class Vm {
 
   /** Fork: snapshot + restore into a fresh, independent VM with the current host attachments. */
   async fork(): Promise<Vm> {
-    const snap = await this.snapshot();
-    return mc.restore(snap, this.forkOptions());
+    if (this.backend instanceof RemoteBackend) {
+      const result = await this.backend.fork();
+      const childOptions = this.forkOptions();
+      const childBackend = new RemoteBackend({ endpoint: childOptions.endpoint!, token: childOptions.token, vmId: result.id, onPermission: childOptions.onPermission });
+      try {
+        for (const tool of this.registeredTools) childBackend.tool(tool);
+        if (this.registeredTools.length || this.registeredMounts.length || childOptions.onPermission) await childBackend.connect();
+        for (const mount of this.registeredMounts) {
+          await childBackend.mount(mount.path, mount.driver, mount.readOnly ?? mount.driver.readOnly ?? false);
+        }
+        const catalog = await readRestoredCatalogState(childBackend);
+        const child = new Vm(childBackend, childOptions, catalog);
+        this.sidecars.emit(result.warnings);
+        child.sidecars.emit(result.warnings);
+        return child;
+      } catch (error) {
+        await childBackend.close();
+        throw error;
+      }
+    }
+    const beginFork = this.backend.sidecars.beginFork;
+    if (!beginFork) throw new Error("embedded sidecar backend does not implement fork admission");
+    const barrier = await beginFork.call(this.backend.sidecars);
+    try {
+      const snap = await this.snapshot();
+      const child = await mc.restore(snap, this.forkOptions());
+      this.sidecars.emit(barrier.warnings);
+      child.sidecars.emit(barrier.warnings);
+      return child;
+    } finally {
+      barrier.release();
+    }
   }
 
   /** Build a value-owned restore recipe from the VM's current state. No remote id is retained, so
@@ -294,6 +341,7 @@ export class Vm {
       ...this.baseOptions,
       tools: [...this.registeredToolSelectors, ...this.registeredTools],
       mounts: [...this.registeredMounts],
+      sidecars: ownSidecarDescriptors(this.registeredSidecars),
     });
   }
 
@@ -658,7 +706,14 @@ async function makeEmbedded(
     host.bootToPrompt(); // drive boot only to the first prompt (no settle wait)
     snapshotBase = await host.snapshot();
   }
-  const backend = new EmbeddedBackend(host, stdout, tools, snapshotBase, store);
+  const sidecars = await EmbeddedSidecarBackend.attach(
+    opts.sidecarHosts ?? {},
+    opts.sidecars ?? {},
+    undefined,
+    opts.runtime === "browser" ? "remote" : undefined,
+  );
+  tools.registerRaw(SIDECAR_HOST_BINDING, (body, context) => sidecars.handleGuestCall(body, context.signal));
+  const backend = new EmbeddedBackend(host, stdout, tools, sidecars, snapshotBase, store);
   try {
     // Re-register the host-call HANDLERS (the JS closures) on both paths — they can never live in a
     // snapshot, so a restored VM must be handed them again to route its host-tool catalog entries.
@@ -1166,6 +1221,7 @@ async function remoteCreateBody(opts: CreateOptions, id?: string): Promise<Recor
   const connections = await remoteConnections(opts.connections);
   const catalogTools = catalogToolSelectors(opts.tools);
   const hostTools = remoteHostTools(hostToolDefinitions(opts.tools));
+  const sidecars = portableSidecarGrants(opts.sidecars);
   return dropUndefined({
     ...(id ? { id } : {}),
     ...remoteImageFields(opts.image),
@@ -1178,6 +1234,7 @@ async function remoteCreateBody(opts: CreateOptions, id?: string): Promise<Recor
     ...(opts.policies && opts.policies.length ? { connectionPolicies: opts.policies } : {}),
     ...(catalogTools.length ? { catalogTools } : {}),
     ...(hostTools.length ? { hostTools } : {}),
+    ...(sidecars.length ? { sidecars } : {}),
   });
 }
 
@@ -1194,6 +1251,7 @@ function remoteRestoreConnections(defs: readonly ConnectionDefinition[] | undefi
 function remoteRestoreAttachments(opts: CreateOptions): Record<string, unknown> {
   const connections = remoteRestoreConnections(opts.connections);
   const hostTools = remoteHostTools(hostToolDefinitions(opts.tools));
+  const sidecars = portableSidecarGrants(opts.sidecars);
   return dropUndefined({
     ...(opts.deterministic ? { deterministic: true } : {}),
     net: remoteNetPolicy(opts),
@@ -1203,6 +1261,7 @@ function remoteRestoreAttachments(opts: CreateOptions): Record<string, unknown> 
     ...(connections.length ? { connections } : {}),
     ...(opts.policies && opts.policies.length ? { connectionPolicies: opts.policies } : {}),
     ...(hostTools.length ? { hostTools } : {}),
+    ...(sidecars.length ? { sidecars } : {}),
   });
 }
 
@@ -1228,6 +1287,9 @@ async function makeRemote(
   opts: CreateOptions,
   snapshot: Uint8Array | null,
 ): Promise<{ backend: Backend; opts: CreateOptions; catalog: CatalogState }> {
+  if (opts.sidecarHosts && Object.keys(opts.sidecarHosts).length > 0) {
+    throw new Error("runtime 'remote' forbids sidecarHosts; the served AgentOS host owns sidecar placement");
+  }
   if (!opts.endpoint) {
     throw new Error("runtime 'remote' requires opts.endpoint");
   }

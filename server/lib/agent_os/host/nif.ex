@@ -49,6 +49,7 @@ defmodule AgentOS.Host.Nif do
   @type contract :: {tier :: integer(), budget_mib :: integer(), fuel :: integer()}
   @type net_mode :: :deny | :relay | :real
   @type relay_mode :: :deny | :relay
+  @type host_call_mode :: relay_mode() | :sidecar
   @type persist_mode :: :deny | :relay
   @type connection_auth ::
           :none
@@ -87,7 +88,7 @@ defmodule AgentOS.Host.Nif do
           | {:connections, [connection_def()]}
           | {:connection_policies, [connection_policy_rule()]}
           | {:tool_approval, :deny | :relay}
-          | {:host_call, relay_mode()}
+          | {:host_call, host_call_mode()}
           | {:persist, persist_mode()}
 
   @type catalog_spec ::
@@ -108,6 +109,11 @@ defmodule AgentOS.Host.Nif do
   @type relay_event ::
           %{kind: :http, handle: pos_integer(), request: binary()}
           | %{kind: :host_call, handle: pos_integer(), name: String.t(), body: binary()}
+          | %{
+              optional(:name) => String.t(),
+              kind: :host_call_close,
+              handle: pos_integer()
+            }
           | %{kind: :persist_get, handle: pos_integer(), key: binary()}
           | %{kind: :persist_put, handle: pos_integer(), key: binary(), value: binary()}
           | %{kind: :persist_delete, handle: pos_integer(), key: binary()}
@@ -132,7 +138,8 @@ defmodule AgentOS.Host.Nif do
   deterministic clock/RNG for parity tests, boot contract, worker count, and the explicit P2
   relay switches.
 
-  `:host_call` and `:persist` accept `:deny` or `:relay`. `:net` accepts `:deny`,
+  `:host_call` accepts `:deny`, `:relay`, or the restricted `:sidecar` mode;
+  `:persist` accepts `:deny` or `:relay`. `:net` accepts `:deny`,
   `:relay`, or `:real`; real net may also receive host-only `:connections`, whose
   secrets are injected by the Rust host when a guest request names `X-MC-Connection`.
   Secret-bearing connections must include the absolute `http`/`https` origins allowed to
@@ -160,7 +167,8 @@ defmodule AgentOS.Host.Nif do
         connections,
         connection_policies,
         tool_approval,
-        host_call,
+        elem(host_call, 0),
+        elem(host_call, 1),
         persist
       )
     end
@@ -191,7 +199,8 @@ defmodule AgentOS.Host.Nif do
         connections,
         connection_policies,
         tool_approval,
-        host_call,
+        elem(host_call, 0),
+        elem(host_call, 1),
         persist
       )
     end
@@ -273,7 +282,9 @@ defmodule AgentOS.Host.Nif do
   end
 
   def autocomplete(_vm, _source, _cursor, _opts),
-    do: {:error, "autocomplete expects binary source, a non-negative byte cursor, and valid options"}
+    do:
+      {:error,
+       "autocomplete expects binary source, a non-negative byte cursor, and valid options"}
 
   @doc """
   Call a resident service as host control (`SYSTEM_CALLER`) through the kernel service channel →
@@ -476,6 +487,17 @@ defmodule AgentOS.Host.Nif do
     end
   end
 
+  @doc false
+  @spec relay_next_sidecar(vm()) :: {:ok, relay_event() | nil} | {:error, reason()}
+  def relay_next_sidecar(vm) do
+    case relay_next_sidecar_nif(vm) do
+      {:ok, nil} -> {:ok, nil}
+      {:ok, frame} when is_binary(frame) -> decode_relay_event(frame)
+      {:ok, other} -> {:error, "invalid sidecar relay event frame #{inspect(other)}"}
+      {:error, _reason} = err -> err
+    end
+  end
+
   @doc "Answer an HTTP relay event with a complete buffered response."
   @spec relay_http_respond(
           vm(),
@@ -598,6 +620,7 @@ defmodule AgentOS.Host.Nif do
         _connection_policies,
         _tool_approval,
         _host_call,
+        _host_call_sidecar_only,
         _persist
       ),
       do: nif_not_loaded()
@@ -615,6 +638,7 @@ defmodule AgentOS.Host.Nif do
         _connection_policies,
         _tool_approval,
         _host_call,
+        _host_call_sidecar_only,
         _persist
       ),
       do: nif_not_loaded()
@@ -697,6 +721,9 @@ defmodule AgentOS.Host.Nif do
 
   @doc false
   def relay_next_nif(_vm), do: nif_not_loaded()
+
+  @doc false
+  def relay_next_sidecar_nif(_vm), do: nif_not_loaded()
 
   @doc false
   def relay_http_respond_nif(_vm, _handle, _ok, _head, _body), do: nif_not_loaded()
@@ -860,9 +887,9 @@ defmodule AgentOS.Host.Nif do
 
   defp capability_args(opts) do
     with {:ok, net} <- net_arg(opts),
-         {:ok, host_call} <- relay_mode_arg(opts, :host_call),
+         {:ok, host_call} <- host_call_mode_arg(opts),
          {:ok, persist} <- persist_mode_arg(opts) do
-      {:ok, net, host_call == :relay, persist == :relay}
+      {:ok, net, {host_call != :deny, host_call == :sidecar}, persist == :relay}
     end
   end
 
@@ -1245,10 +1272,10 @@ defmodule AgentOS.Host.Nif do
 
   defp map_get_any(_other, _keys, default), do: default
 
-  defp relay_mode_arg(opts, key) do
-    case Keyword.get(opts, key, :deny) do
-      mode when mode in [:deny, :relay] -> {:ok, mode}
-      _other -> {:error, "#{key} must be :deny or :relay"}
+  defp host_call_mode_arg(opts) do
+    case Keyword.get(opts, :host_call, :deny) do
+      mode when mode in [:deny, :relay, :sidecar] -> {:ok, mode}
+      _other -> {:error, "host_call must be :deny, :relay, or :sidecar"}
     end
   end
 
@@ -1311,6 +1338,17 @@ defmodule AgentOS.Host.Nif do
          {:ok, name} <- relay_required("host_call", fields, :name),
          {:ok, body} <- relay_required("host_call", fields, :body) do
       {:ok, %{kind: :host_call, handle: handle, name: name, body: body}}
+    end
+  end
+
+  defp relay_event("host_call_close", handle, fields) do
+    with :ok <- relay_fields("host_call_close", fields, [:name]) do
+      event = %{kind: :host_call_close, handle: handle}
+
+      case Map.get(fields, :name) do
+        nil -> {:ok, event}
+        name -> {:ok, Map.put(event, :name, name)}
+      end
     end
   end
 

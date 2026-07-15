@@ -94,3 +94,69 @@ fn exec_rest_schema_is_a_projection_of_exec_request() {
         "OpenAPI Exec component lost stdin encoding markers"
     );
 }
+
+#[test]
+fn sidecar_rest_envelopes_are_contract_projections() {
+    let sidecar = runfile("_main/memcontainers/contracts/sidecar.kdl");
+    let wire = runfile("_main/memcontainers/contracts/wire.kdl");
+    let openapi = runfile("_main/memcontainers/contracts/gen/wire.gen.openapi.yaml");
+
+    for (schema, message) in [
+        ("SidecarInstanceList", "SidecarInstances"),
+        ("SidecarResultWire", "SidecarResult"),
+        ("SidecarErrorWire", "SidecarError"),
+    ] {
+        assert!(
+            sidecar.contains(&format!("message \"{message}\"")),
+            "missing source message {message}"
+        );
+        assert!(
+            wire.contains(&format!(
+                "schema \"{schema}\" kind=\"json\" source=\"sidecar.kdl\" from-message=\"{message}\""
+            )),
+            "{schema} must derive from {message}"
+        );
+        assert!(
+            component_block(&openapi, schema).contains("x-agentos-source-field:"),
+            "OpenAPI {schema} lost its contract source markers"
+        );
+    }
+
+    let result = block_after(&wire, "schema \"SidecarResultWire\"");
+    assert!(!result.contains("field \"ok\""));
+    assert!(result.contains(
+        "project \"bodyBase64\" from=\"body\" type=\"string\" encoding=\"base64\""
+    ));
+
+    let error = block_after(&wire, "schema \"SidecarErrorWire\"");
+    for field in message_fields(&block_after(&sidecar, "message \"SidecarError\"")) {
+        assert!(
+            !error.contains(&format!("field \"{field}\"")),
+            "SidecarErrorWire must not locally redeclare {field}"
+        );
+    }
+}
+
+#[test]
+fn embedded_sidecar_scope_auth_is_projected_from_wire_contract() {
+    let wire = runfile("_main/memcontainers/contracts/wire.kdl");
+    let wire_ts = runfile("_main/memcontainers/contracts/gen/wire.gen.ts");
+    let openapi = runfile("_main/memcontainers/contracts/gen/wire.gen.openapi.yaml");
+    let header = "x-agentos-sidecar-scope";
+
+    assert!(wire.contains(&format!(
+        "string-constant \"SIDECAR_SCOPE_HEADER\" value=\"{header}\""
+    )));
+    assert!(wire_ts.contains(&format!(
+        "export const SIDECAR_SCOPE_HEADER = \"{header}\" as const;"
+    )));
+
+    let projected = format!(
+        "        - name: \"{header}\"\n          in: header\n          required: true"
+    );
+    assert_eq!(
+        openapi.matches(&projected).count(),
+        9,
+        "every authenticated embedded-scope route must project the credential header"
+    );
+}

@@ -2,7 +2,7 @@
 asyncapi: 3.0.0
 info:
   title: AgentOS wire protocol
-  version: "2"
+  version: "3"
 channels:
   vm:
     messages:
@@ -36,6 +36,11 @@ channels:
         x-direction: "client->server"
         x-body: "binary"
         summary: "The client's result for a relayed host call."
+      HOST_CANCEL:
+        x-tag: 34
+        x-direction: "server->client"
+        x-body: "binary"
+        summary: "Cancel a previously dispatched host call after the guest closed its result handle."
       SESSION_START:
         x-tag: 48
         x-direction: "client->server"

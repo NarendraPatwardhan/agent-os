@@ -1,0 +1,166 @@
+// Generic sidecar control plane. Sidecar kinds put their typed configuration and operation payloads
+// in `bytes`; the kind contract owns those bytes. This module owns only lifecycle, identity, bounds,
+// cancellation, fork/restore semantics, and the stable result envelope.
+protocol-version 1
+
+constant "SIDECAR_MAX_HOSTS" value=16
+constant "SIDECAR_MAX_GRANTS" value=32
+constant "SIDECAR_MAX_INSTANCES_PER_GRANT" value=8
+constant "SIDECAR_MAX_INSTANCES_PER_VM" value=32
+constant "SIDECAR_MAX_INFLIGHT_PER_INSTANCE" value=16
+constant "SIDECAR_MAX_INFLIGHT_PER_VM" value=64
+constant "SIDECAR_MAX_REQUEST_BYTES" value=1048576
+constant "SIDECAR_MAX_RESULT_BYTES" value=8388608
+constant "SIDECAR_MAX_NAME_BYTES" value=64
+constant "SIDECAR_MAX_KIND_BYTES" value=96
+constant "SIDECAR_MAX_DIGEST_BYTES" value=96
+constant "SIDECAR_MAX_OPERATION_BYTES" value=128
+constant "SIDECAR_MAX_IDEMPOTENCY_BYTES" value=128
+constant "SIDECAR_WARNING_BUFFER" value=64
+constant "SIDECAR_DEFAULT_OPERATION_TIMEOUT_MS" value=60000
+constant "SIDECAR_MAX_OPERATION_TIMEOUT_MS" value=300000
+constant "SIDECAR_DEFAULT_LEASE_TTL_MS" value=60000
+constant "SIDECAR_DEFAULT_RENEW_MS" value=20000
+constant "SIDECAR_MIN_LEASE_TTL_MS" value=100
+constant "SIDECAR_MAX_LEASE_TTL_MS" value=300000
+constant "SIDECAR_MIN_RENEW_MS" value=10
+constant "SIDECAR_MAX_RENEW_MS" value=30000
+string-constant "SIDECAR_HOST_BINDING" value="mc.sidecar"
+
+// Stable result and warning codes. Consumers may use native enums/atoms internally, but every value
+// that crosses the sidecar boundary is projected from this vocabulary.
+string-constant "SIDECAR_ERROR_CANCELLED" value="cancelled"
+string-constant "SIDECAR_ERROR_CLOSING" value="sidecar_closing"
+string-constant "SIDECAR_ERROR_CONTRACT_MISMATCH" value="sidecar_contract_mismatch"
+string-constant "SIDECAR_ERROR_DETACHED" value="sidecar_detached"
+string-constant "SIDECAR_ERROR_GRANT_EXISTS" value="sidecar_grant_exists"
+string-constant "SIDECAR_ERROR_GRANT_MISSING" value="sidecar_grant_missing"
+string-constant "SIDECAR_ERROR_HOST_MISSING" value="sidecar_host_missing"
+string-constant "SIDECAR_ERROR_IDEMPOTENCY_CONFLICT" value="sidecar_idempotency_conflict"
+string-constant "SIDECAR_ERROR_IN_USE" value="sidecar_in_use"
+string-constant "SIDECAR_ERROR_INVALID_REQUEST" value="sidecar_invalid_request"
+string-constant "SIDECAR_ERROR_LIMIT" value="sidecar_limit"
+string-constant "SIDECAR_ERROR_NOT_FOUND" value="sidecar_not_found"
+string-constant "SIDECAR_ERROR_NOT_READY" value="sidecar_not_ready"
+string-constant "SIDECAR_ERROR_PERMISSION_DENIED" value="sidecar_permission_denied"
+string-constant "SIDECAR_ERROR_PROVIDER_FAILED" value="sidecar_provider_failed"
+string-constant "SIDECAR_ERROR_SCOPE_MISSING" value="sidecar_scope_missing"
+string-constant "SIDECAR_ERROR_STALE_GENERATION" value="sidecar_stale_generation"
+string-constant "SIDECAR_ERROR_TIMEOUT" value="timeout"
+string-constant "SIDECAR_ERROR_UNAVAILABLE" value="sidecar_unavailable"
+string-constant "SIDECAR_ERROR_UNSUPPORTED_FORK_POLICY" value="sidecar_unsupported_fork_policy"
+string-constant "SIDECAR_WARNING_FORK_OMITTED" value="sidecar_fork_omitted"
+
+// Numeric vocabularies are stable wire values. Names are projected by higher-level typed facades.
+constant "SIDECAR_STATE_ALLOCATING" value=1
+constant "SIDECAR_STATE_STARTING" value=2
+constant "SIDECAR_STATE_READY" value=3
+constant "SIDECAR_STATE_SUSPENDED" value=4
+constant "SIDECAR_STATE_FAILED" value=5
+constant "SIDECAR_STATE_CLOSING" value=6
+constant "SIDECAR_STATE_CLOSED" value=7
+constant "SIDECAR_STATE_DETACHED" value=8
+constant "SIDECAR_FORK_OMIT" value=1
+constant "SIDECAR_FORK_CLONE" value=2
+
+message "SidecarString" id=1 version=1 {
+  field "value" type="str"
+}
+
+message "SidecarStrings" id=2 version=1 {
+  field "items" type="list<SidecarString>"
+}
+
+message "SidecarGrant" id=3 version=1 {
+  field "name" type="str"
+  field "kind" type="str"
+  field "version" type="u32"
+  field "contract_digest" type="str"
+  field "guest" type="bool"
+  field "max_instances" type="u32"
+  field "fork_policy" type="u32"
+  field "config" type="bytes"
+}
+
+message "SidecarCapability" id=4 version=1 {
+  field "kind" type="str"
+  field "version" type="u32"
+  field "contract_digest" type="str"
+  field "placements" type="SidecarStrings"
+  field "fork_policy" type="u32"
+  field "max_instances_per_vm" type="u32"
+}
+
+message "SidecarInstance" id=5 version=1 {
+  field "id" type="str"
+  field "grant" type="str"
+  field "kind" type="str"
+  field "generation" type="u32"
+  field "state" type="u32"
+  field "created_at_ms" type="i64"
+  field "expires_at_ms" type="i64"
+  field "metadata" type="bytes"
+}
+
+message "SidecarInstances" id=6 version=1 {
+  field "items" type="list<SidecarInstance>"
+}
+
+message "SidecarCreate" id=7 version=1 {
+  field "grant" type="str"
+  field "kind" type="str"
+  field "body" type="bytes"
+  field "idempotency_key" type="str"
+  field "timeout_ms" type="i64"
+}
+
+message "SidecarCall" id=8 version=1 {
+  field "id" type="str"
+  field "generation" type="u32"
+  field "grant" type="str"
+  field "kind" type="str"
+  field "operation" type="str"
+  field "body" type="bytes"
+  field "idempotency_key" type="str" opt=1
+  field "timeout_ms" type="i64"
+}
+
+message "SidecarError" id=9 version=1 {
+  field "code" type="str"
+  field "message" type="str"
+  field "retryable" type="bool"
+  field "details" type="bytes" opt=1
+}
+
+message "SidecarResult" id=10 version=1 {
+  field "ok" type="bool"
+  field "body" type="bytes"
+  field "error" type="SidecarError" opt=1
+}
+
+message "SidecarWarning" id=11 version=1 {
+  field "code" type="str"
+  field "message" type="str"
+  field "kind" type="str" opt=1
+  field "grant" type="str" opt=1
+  field "id" type="str" opt=1
+}
+
+message "SidecarDelete" id=12 version=1 {
+  field "id" type="str"
+  field "generation" type="u32"
+  field "grant" type="str"
+  field "kind" type="str"
+}
+
+message "SidecarGet" id=13 version=1 {
+  field "id" type="str"
+  field "generation" type="u32"
+  field "grant" type="str"
+  field "kind" type="str"
+}
+
+message "SidecarList" id=14 version=1 {
+  field "grant" type="str"
+  field "kind" type="str"
+}

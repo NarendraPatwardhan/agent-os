@@ -20,7 +20,7 @@ export { DeniedPersist } from "./persist_core.js";
 export { OpfsPersist, OpfsKv, IdbKv, MemoryKv } from "./opfs_persist.js";
 export type { BrowserKv } from "./opfs_persist.js";
 export { DeniedHostCall, MapHostCall } from "./host_call.js";
-export type { HostCallCapability, ToolHandler, RawToolHandler } from "./host_call.js";
+export type { HostCallCapability, HostCallContext, ToolHandler, RawToolHandler } from "./host_call.js";
 export { Mem } from "./memory.js";
 export type {
   StreamSink,

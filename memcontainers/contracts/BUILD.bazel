@@ -1,6 +1,6 @@
-# The four boundaries, single source of truth (SYSTEMS.md, B2). The .kdl files here
-# are DEFINED once; every Rust/Zig/TS reference elsewhere is a generated *.gen.*
-# projection, never a hand-written copy.
+# Language-neutral contracts, each projected only into languages with a real consumer
+# (SYSTEMS.md, B2). The four kernel boundaries live here alongside higher-level portable
+# protocols; no consumer maintains a hand-written copy.
 package(default_visibility = ["//visibility:public"])
 
 # Let consumers data-depend on a raw contract (e.g. the conformance import oracle
@@ -15,6 +15,8 @@ exports_files([
     "syntax.kdl",
     "snapshot.kdl",
     "shell.kdl",
+    "sidecar.kdl",
+    "runner.kdl",
     # The generated Zig `mc` module IS the guest sysroot's `mc` (//memcontainers/sysroot/zig:mc
     # compiles it under import_name "mc"): a guest `@import("mc")` gets the whole generated
     # boundary — every syscall extern + the `addr` helper — with nothing hand-kept (Zig 0.16
@@ -45,6 +47,8 @@ abi_library(name = "llb", contract = "llb.kdl", langs = ["rust", "zig", "ts", "e
 abi_library(name = "syntax", contract = "syntax.kdl", langs = ["rust", "zig", "luau"])
 abi_library(name = "snapshot", contract = "snapshot.kdl", langs = ["rust", "ts", "elixir"])
 abi_library(name = "shell", contract = "shell.kdl", langs = ["rust", "zig"])
+abi_library(name = "sidecar", contract = "sidecar.kdl", langs = ["rust", "ts", "elixir"])
+abi_library(name = "runner", contract = "runner.kdl", langs = ["zig", "elixir"])
 
 # The generated TS descriptors compiled into ONE consumable lib — the JS host (hosts/js) and @mc/core
 # wire their `env` bridge + `mc_ctl_*` export lookup from these (BRIDGE_IMPORTS / CONTROL_EXPORTS /
@@ -62,6 +66,7 @@ mc_ts_project(
         "gen/env.gen.ts",
         "gen/llb.gen.ts",
         "gen/snapshot.gen.ts",
+        "gen/sidecar.gen.ts",
         "gen/wire.gen.ts",
     ],
 )
@@ -94,7 +99,9 @@ rust_test(
     edition = "2021",
     data = [
         "control.kdl",
+        "sidecar.kdl",
         "gen/wire.gen.openapi.yaml",
+        "gen/wire.gen.ts",
         "wire.kdl",
     ],
     deps = ["@rules_rust//rust/runfiles"],

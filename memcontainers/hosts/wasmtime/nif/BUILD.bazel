@@ -24,6 +24,7 @@ rust_shared_library(
     deps = [
         "//memcontainers/contracts:constants_rust",
         "//memcontainers/contracts:ctl_rust",
+        "//memcontainers/contracts:sidecar_rust",
         "//memcontainers/hosts/wasmtime:host",
         "@nif_crates//:rustler",
     ],

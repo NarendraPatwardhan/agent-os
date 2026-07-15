@@ -41,6 +41,7 @@ def abi_library(name, contract, langs):
         projector_srcs = [contract]
         if name == "wire":
             projector_srcs.append("control.kdl")
+            projector_srcs.append("sidecar.kdl")
 
         native.genrule(
             name = gen,

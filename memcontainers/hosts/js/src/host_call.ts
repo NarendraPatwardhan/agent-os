@@ -30,23 +30,28 @@ export class DeniedHostCall implements HostCallCapability {
 
 /** A handler for a named tool: given the args string (typically JSON), return a result (text or
  *  bytes). May be async. */
-export type ToolHandler = (args: string) => Promise<Uint8Array | string> | Uint8Array | string;
+export interface HostCallContext {
+  /** Aborted when the guest closes the host-call result before consuming it. */
+  signal: AbortSignal;
+}
+
+export type ToolHandler = (args: string, context: HostCallContext) => Promise<Uint8Array | string> | Uint8Array | string;
 
 /** A binary-safe handler: given the request body (the bytes after `name\0`, verbatim — no UTF-8
  *  decode, no trailing-NUL trim), return a result. Used by host-backed mount drivers, whose WRITE op
  *  carries binary file content. */
-export type RawToolHandler = (body: Uint8Array) => Promise<Uint8Array | string> | Uint8Array | string;
+export type RawToolHandler = (body: Uint8Array, context: HostCallContext) => Promise<Uint8Array | string> | Uint8Array | string;
 
 interface Slot {
   result?: Uint8Array;
   offset: number;
   failed: boolean;
   done: boolean;
+  abort: AbortController;
 }
 
 /** A registry of named (possibly async) handlers — the host-call capability for the JS host, driven by
- *  `vm.tool` (UTF-8 `tools`) and `vm.mount` (binary-safe `raw` handlers, keyed by absolute mount
- *  path). */
+ *  `vm.tool` (UTF-8 `tools`) and binary-safe internal/mount handlers. */
 export class MapHostCall implements HostCallCapability {
   private readonly tools = new Map<string, ToolHandler>();
   private readonly raw = new Map<string, RawToolHandler>();
@@ -71,13 +76,14 @@ export class MapHostCall implements HostCallCapability {
 
   /** Allocate a slot and run `produce` (sync or async); the result streams back via `body` once it
    *  resolves. */
-  private startSlot(produce: () => Promise<Uint8Array | string> | Uint8Array | string): number {
+  private startSlot(produce: (context: HostCallContext) => Promise<Uint8Array | string> | Uint8Array | string): number {
     const handle = this.next;
     this.next = this.next + 1 < 1 ? 1 : this.next + 1;
-    const slot: Slot = { offset: 0, failed: false, done: false };
+    const abort = new AbortController();
+    const slot: Slot = { offset: 0, failed: false, done: false, abort };
     this.slots.set(handle, slot);
     Promise.resolve()
-      .then(produce)
+      .then(() => produce({ signal: abort.signal }))
       .then((res) => {
         slot.result = typeof res === "string" ? new TextEncoder().encode(res) : res;
         slot.done = true;
@@ -90,16 +96,14 @@ export class MapHostCall implements HostCallCapability {
   }
 
   start(req: Uint8Array): number {
-    // Mount drivers register binary-safe handlers keyed by absolute path; tools register UTF-8
-    // handlers keyed by bare name. The two key spaces are disjoint (mount names start with `/`), so
-    // check raw first — passing the body verbatim (no UTF-8 decode, no NUL-trim, since a binary WRITE
-    // may end in 0x00).
+    // Raw handlers include mount paths and reserved internal bindings such as `mc.sidecar`; check them
+    // before the public UTF-8 tool map and pass the body verbatim.
     const rawNul = req.indexOf(0);
     const rawName = new TextDecoder().decode(rawNul < 0 ? req : req.subarray(0, rawNul));
     const rawHandler = this.raw.get(rawName);
     if (rawHandler) {
       const body = rawNul < 0 ? new Uint8Array(0) : req.subarray(rawNul + 1);
-      return this.startSlot(() => rawHandler(body));
+      return this.startSlot((context) => rawHandler(body, context));
     }
 
     // argv blobs are NUL-terminated; trim trailing NUL(s) before splitting so the args string doesn't
@@ -112,7 +116,7 @@ export class MapHostCall implements HostCallCapability {
     const args = nul < 0 ? "" : new TextDecoder().decode(req.subarray(nul + 1));
     const handler = this.tools.get(name);
     if (!handler) return -1;
-    return this.startSlot(() => handler(args));
+    return this.startSlot((context) => handler(args, context));
   }
 
   poll(handle: number): number {
@@ -133,6 +137,7 @@ export class MapHostCall implements HostCallCapability {
   }
 
   close(handle: number): void {
+    this.slots.get(handle)?.abort.abort();
     this.slots.delete(handle);
   }
 }

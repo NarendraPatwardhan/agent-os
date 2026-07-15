@@ -170,6 +170,11 @@ async function remoteVmServer(): Promise<{
         res.end(JSON.stringify({ id: decodeURIComponent(parts[3] ?? "restored") }));
         return;
       }
+      if (req.method === "POST" && req.url?.startsWith("/v1/vms/") && req.url.endsWith("/forks")) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ vm: { id: "remote-fork" }, warnings: [] }));
+        return;
+      }
       if (req.method === "POST" && req.url?.startsWith("/v1/vms/") && req.url.endsWith("/autocomplete")) {
         const parsed = JSON.parse(body || "{}") as { source?: string; cursor?: number };
         res.writeHead(200, { "content-type": "application/json" });
@@ -912,9 +917,9 @@ async function main(): Promise<void> {
     }
   }
 
-  // A remote VM's id selects that one resource; it is not part of the reusable restore recipe.
-  // Fork must allocate a new identity and must use the VM-owned attachment snapshot, even if the
-  // caller later mutates the options object it used to create the source VM.
+  // A served host owns the remote fork transaction and attachment state. The client asks the source
+  // VM to fork atomically, receives a fresh identity, and never reconstructs a restore request from
+  // caller-owned options.
   {
     const remote = await remoteVmServer();
     const sourceOptions: CreateOptions = {
@@ -937,32 +942,17 @@ async function main(): Promise<void> {
       sourceOptions.policies!.splice(0, 1);
 
       forked = await source.fork();
-      const restore = remote.requests.find(
-        (req) => req.method === "POST" && req.url.endsWith("/restore"),
+      const fork = remote.requests.find(
+        (req) => req.method === "POST" && req.url === "/v1/vms/named-source/forks",
       );
-      if (!restore) throw new Error(`remote fork did not restore a snapshot: ${JSON.stringify(remote.requests)}`);
-      if (
-        restore.url === "/v1/vms/named-source/restore" ||
-        restore.url === "/v1/vms/caller-mutated-id/restore"
-      ) {
-        throw new Error(`remote fork reused source identity: ${restore.url}`);
-      }
-      const body = JSON.parse(restore.body) as {
-        attachments?: {
-          connections?: Array<{ auth?: { kind?: string; token?: string } }>;
-          connectionPolicies?: unknown[];
-        };
-      };
-      if (
-        body.attachments?.connections?.[0]?.auth?.token !== "owned-token" ||
-        body.attachments.connectionPolicies?.length !== 1
-      ) {
-        throw new Error(`remote fork did not use private attachment state: ${restore.body}`);
+      if (!fork) throw new Error(`remote fork did not use the server transaction: ${JSON.stringify(remote.requests)}`);
+      if (remote.requests.some((req) => req.method === "POST" && req.url.endsWith("/restore"))) {
+        throw new Error("remote fork reconstructed a client-side restore instead of delegating to the server");
       }
       if (sourceOptions.tools?.length !== 0 || sourceOptions.mounts?.length !== 0) {
         throw new Error("remote VM construction mutated caller-owned attachment arrays");
       }
-      console.log("phase: remote fork allocates an independent identity and owns its restore recipe OK");
+      console.log("phase: remote fork delegates one atomic independent-identity transaction to the server OK");
     } finally {
       await forked?.close().catch(() => {});
       await source?.close().catch(() => {});

@@ -6,6 +6,7 @@ defmodule AgentOS.ControlPlane do
   address boundary; a deployment layer decides tenancy, quotas, and eviction policy.
   """
 
+  alias AgentOS.Contracts.Sidecar
   alias AgentOS.Vm
 
   @registry AgentOS.VmRegistry
@@ -18,20 +19,24 @@ defmodule AgentOS.ControlPlane do
   """
   @spec create(Vm.id(), keyword()) :: {:ok, pid()} | {:error, term()}
   def create(id, opts) do
-    case DynamicSupervisor.start_child(@supervisor, {Vm, Keyword.put(opts, :id, id)}) do
-      {:ok, pid} -> {:ok, pid}
-      {:error, {:already_started, pid}} -> {:ok, pid}
-      {:error, reason} -> {:error, reason}
+    with {:ok, opts} <- sidecar_vm_opts(opts) do
+      case DynamicSupervisor.start_child(@supervisor, {Vm, Keyword.put(opts, :id, id)}) do
+        {:ok, pid} -> {:ok, pid}
+        {:error, {:already_started, pid}} -> {:ok, pid}
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 
   @doc "Create a VM only when `id` is unoccupied; unlike `create/2`, never converges on an existing VM."
   @spec create_new(Vm.id(), keyword()) :: {:ok, pid()} | {:error, :already_exists | term()}
   def create_new(id, opts) do
-    case DynamicSupervisor.start_child(@supervisor, {Vm, Keyword.put(opts, :id, id)}) do
-      {:ok, pid} -> {:ok, pid}
-      {:error, {:already_started, _pid}} -> {:error, :already_exists}
-      {:error, reason} -> {:error, reason}
+    with {:ok, opts} <- sidecar_vm_opts(opts) do
+      case DynamicSupervisor.start_child(@supervisor, {Vm, Keyword.put(opts, :id, id)}) do
+        {:ok, pid} -> {:ok, pid}
+        {:error, {:already_started, _pid}} -> {:error, :already_exists}
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 
@@ -46,7 +51,11 @@ defmodule AgentOS.ControlPlane do
 
   @doc "Run a command on an existing VM."
   @spec exec(Vm.id(), String.t(), keyword()) :: {:ok, map()} | {:error, :not_found}
-  def exec(id, cmd, opts \\ []), do: with_vm(id, &Vm.exec(&1, cmd, opts))
+  def exec(id, cmd, opts \\ []) do
+    with_vm(id, fn pid ->
+      Vm.exec_interleaved(pid, cmd, opts, fn -> route_sidecar_egress(id, pid) end)
+    end)
+  end
 
   @doc "Query shell completions on an existing VM without executing input."
   @spec autocomplete(Vm.id(), String.t(), non_neg_integer(), keyword()) ::
@@ -155,7 +164,26 @@ defmodule AgentOS.ControlPlane do
 
   @doc "Drain the next outbound egress relay event for an existing VM."
   @spec egress_next(Vm.id(), keyword()) :: {:ok, map() | nil} | {:error, term()}
-  def egress_next(id, opts \\ []), do: with_vm(id, &Vm.egress_next(&1, opts))
+  def egress_next(id, opts \\ []),
+    do: egress_next_unclaimed(id, opts, Sidecar.sidecar_max_inflight_per_vm() + 1)
+
+  @doc "Fork a VM and its sidecar grants under one sidecar admission barrier."
+  @spec fork(Vm.id(), Vm.id(), keyword()) ::
+          {:ok, %{pid: pid(), warnings: [map()]}} | {:error, term()}
+  def fork(id, child_id, opts) do
+    with {:ok, warnings} <- AgentOS.Sidecars.begin_fork(id) do
+      try do
+        with {:ok, snapshot} <- snapshot(id),
+             grants when is_map(grants) <- AgentOS.Sidecars.grants(id),
+             {:ok, pid} <-
+               create_new(child_id, Keyword.merge(opts, snapshot: snapshot, sidecars: grants)) do
+          {:ok, %{pid: pid, warnings: warnings}}
+        end
+      after
+        _ = AgentOS.Sidecars.end_fork(id)
+      end
+    end
+  end
 
   @doc "Answer an HTTP egress relay event."
   @spec egress_http_respond(
@@ -231,8 +259,12 @@ defmodule AgentOS.ControlPlane do
   @spec dispose(Vm.id()) :: :ok | {:error, :not_found}
   def dispose(id) do
     case whereis(id) do
-      nil -> {:error, :not_found}
-      pid -> DynamicSupervisor.terminate_child(@supervisor, pid)
+      nil ->
+        {:error, :not_found}
+
+      pid ->
+        _ = AgentOS.Sidecars.close_vm(id)
+        DynamicSupervisor.terminate_child(@supervisor, pid)
     end
   end
 
@@ -244,6 +276,67 @@ defmodule AgentOS.ControlPlane do
     case whereis(id) do
       nil -> {:error, :not_found}
       pid -> fun.(pid)
+    end
+  end
+
+  defp sidecar_vm_opts(opts) do
+    if Enum.any?(Keyword.get(opts, :sidecars) || [], fn
+         {_name, grant} -> sidecar_guest?(grant)
+         grant -> sidecar_guest?(grant)
+       end) do
+      case Keyword.fetch(opts, :host_call) do
+        :error -> {:ok, Keyword.put(opts, :host_call, :sidecar)}
+        {:ok, :deny} -> {:error, :sidecar_permission_denied}
+        {:ok, _explicit_mode} -> {:ok, opts}
+      end
+    else
+      {:ok, opts}
+    end
+  end
+
+  defp sidecar_guest?(grant) when is_map(grant),
+    do: Map.get(grant, :guest, Map.get(grant, "guest", false)) == true
+
+  defp sidecar_guest?(_grant), do: false
+
+  defp egress_next_unclaimed(_id, _opts, 0), do: {:error, :sidecar_egress_limit}
+
+  defp egress_next_unclaimed(id, opts, remaining) do
+    with_vm(id, fn pid ->
+      case Vm.egress_next(pid, opts) do
+        {:ok, nil} = empty ->
+          empty
+
+        {:ok, event} ->
+          case AgentOS.Sidecars.dispatch_egress(id, event) do
+            :claimed -> egress_next_unclaimed(id, opts, remaining - 1)
+            :unclaimed -> {:ok, event}
+          end
+
+        {:error, _reason} = error ->
+          error
+      end
+    end)
+  end
+
+  defp route_sidecar_egress(id, pid),
+    do: route_sidecar_egress(id, pid, Sidecar.sidecar_max_inflight_per_vm() + 1)
+
+  defp route_sidecar_egress(_id, _pid, 0), do: {:error, :sidecar_egress_limit}
+
+  defp route_sidecar_egress(id, pid, remaining) do
+    case Vm.egress_next_sidecar(pid) do
+      {:ok, nil} ->
+        :ok
+
+      {:ok, event} ->
+        case AgentOS.Sidecars.dispatch_egress(id, event) do
+          :claimed -> route_sidecar_egress(id, pid, remaining - 1)
+          :unclaimed -> {:error, :invalid_sidecar_egress}
+        end
+
+      {:error, _reason} = error ->
+        error
     end
   end
 end

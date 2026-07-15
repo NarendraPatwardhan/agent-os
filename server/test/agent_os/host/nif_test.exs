@@ -31,17 +31,21 @@ defmodule AgentOS.Host.NifTest do
     assert AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil, net: :open) ==
              {:error, "net must be :deny, :relay, :real, or {:real, connections}"}
 
-    assert AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil, connections: [{"openai.org.main", {:bearer, "tok"}}]) ==
+    assert AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil,
+             connections: [{"openai.org.main", {:bearer, "tok"}}]
+           ) ==
              {:error, "connections require net: :real"}
 
     assert AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil,
              net: {:real, [{"openai.org.main", {:bearer, "tok"}}]},
              connections: [{"google.org.main", {:bearer, "tok"}}]
            ) ==
-             {:error, "connections must be specified either in net: {:real, ...} or :connections, not both"}
+             {:error,
+              "connections must be specified either in net: {:real, ...} or :connections, not both"}
 
     assert AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil, net: :real, connections: [:bad]) ==
-             {:error, "connection must be {ref, auth}, {ref, auth, origins}, or %{ref: ref, auth: auth}"}
+             {:error,
+              "connection must be {ref, auth}, {ref, auth, origins}, or %{ref: ref, auth: auth}"}
 
     # A secret connection whose origins can't be derived (an integration NOT in the curated registry, so
     # no `servers` to fall back to) is rejected — every secret connection must reach a known origin.
@@ -60,7 +64,7 @@ defmodule AgentOS.Host.NifTest do
     assert msg =~ "kernel.wasm"
 
     assert AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil, host_call: :open) ==
-             {:error, "host_call must be :deny or :relay"}
+             {:error, "host_call must be :deny, :relay, or :sidecar"}
 
     assert AgentOS.Host.Nif.boot(<<0, 1, 2, 3>>, nil, persist: :open) ==
              {:error, "persist must be :deny or :relay"}
@@ -73,7 +77,9 @@ defmodule AgentOS.Host.NifTest do
     assert AgentOS.Host.Nif.restore(<<0, 1, 2, 3>>, <<>>, workers: -1) ==
              {:error, "workers must be nil or a non-negative integer"}
 
-    assert AgentOS.Host.Nif.restore(<<0, 1, 2, 3>>, <<>>, connections: [{"openai.org.main", {:bearer, "tok"}}]) ==
+    assert AgentOS.Host.Nif.restore(<<0, 1, 2, 3>>, <<>>,
+             connections: [{"openai.org.main", {:bearer, "tok"}}]
+           ) ==
              {:error, "connections require net: :real"}
 
     assert AgentOS.Host.Nif.restore(<<0, 1, 2, 3>>, <<>>, persist: :open) ==

@@ -23,10 +23,13 @@ uses them rather than as TypeScript-only interfaces.
 | `parseSchedule` | advanced | [Cron](./cron.md#parseschedule-schedule-utc) |
 | `record` | stable | [Recording](./recording-remote-build.md#record-options-and-mc-record-options) |
 | `RemoteBackend` | advanced | [Advanced API](./advanced-api.md#remotebackend) |
+| `remoteSidecars` | advanced | [Sidecars](./sidecars.md#remotesidecars-options) |
 | `remoteBuild` | stable | [Remote build](./recording-remote-build.md#remotebuild-input-options) |
+| `SidecarError` | stable | [Sidecars](./sidecars.md#sidecarerror) |
 | `startCron` | internal | [Cron](./cron.md#startcron) |
 | `tool` | stable | [Host tools](./tools.md#tool-spec) |
 | `Vm` | stable | [`Vm`](./vm.md) |
+| `VmSidecars` | stable | [Sidecars](./sidecars.md#vm-sidecars) |
 | `z` | stable | [Host tools](./tools.md#z) |
 
 ## `@mc/core/drivers`

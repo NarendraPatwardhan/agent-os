@@ -15,8 +15,9 @@
 // highest-volume paths (terminal + mount content). The server stamps a monotonic
 // `seq` on every frame it sends and skips the client's inbound seq.
 
-version 2   // bump MINOR for additive changes; MAJOR for a breaking change. The handshake carries it; a server accepts only its own major.
+version 3   // bump for every wire-surface change; the handshake accepts only this exact version while AgentOS is alpha.
 header-len 9   // [kind:u8][seq:u64 LE]
+string-constant "SIDECAR_SCOPE_HEADER" value="x-agentos-sidecar-scope"
 
 // Kind tags (the frame's first byte). Numeric ranges are intentional:
 //   0x0x handshake · 0x1x shell · 0x2x host-call relay · 0x3x sessions · 0x4x permissions.
@@ -27,6 +28,7 @@ message "SHELL_IN"            tag=0x10 dir="client->server" body="binary" { doc 
 message "SHELL_OUT"           tag=0x11 dir="server->client" body="binary" { doc "Terminal output bytes from the VM." }
 message "HOST_CALL"           tag=0x20 dir="server->client" body="binary" { doc "Relayed host-call request the client must service (tool / mount driver)." }
 message "HOST_RESULT"         tag=0x21 dir="client->server" body="binary" { doc "The client's result for a relayed host call." }
+message "HOST_CANCEL"          tag=0x22 dir="server->client" body="binary" { doc "Cancel a previously dispatched host call after the guest closed its result handle." }
 message "SESSION_START"       tag=0x30 dir="client->server" body="json"   { doc "Begin an agent session." }
 message "SESSION_EVENT"       tag=0x31 dir="server->client" body="json"   { doc "A streamed session event (agent step, output, status)." }
 message "SESSION_END"         tag=0x32 dir="server->client" body="json"   { doc "Session terminated, with a final status." }
@@ -143,8 +145,74 @@ route "POST" "/v1/vms/{id}/snapshots" res="SnapshotBytes" {
 route "POST" "/v1/vms/{id}/layers" res="LayerTar" {
   doc "Commit the writable layer as a tar artifact."
 }
-route "POST" "/v1/vms/{id}/forks" req="ForkVm" res="Vm" {
+route "POST" "/v1/vms/{id}/forks" req="ForkVm" res="ForkVmResult" {
   doc "Snapshot the current VM and create another VM."
+}
+
+route "PUT" "/v1/vms/{id}/sidecar-grants/{grant}" req="SidecarGrantWire" res="SidecarGrantWire" {
+  doc "Enable a portable sidecar grant. Provider placement remains server-owned."
+}
+route "DELETE" "/v1/vms/{id}/sidecar-grants/{grant}" res="DisposeSidecar" {
+  query "destroy" type="bool" required=0
+  doc "Disable a sidecar grant, optionally deleting its active instances."
+}
+route "GET" "/v1/vms/{id}/sidecars" res="SidecarInstanceList" {
+  query "kind" type="string" required=0
+  doc "List sidecar instances owned by this VM."
+}
+route "POST" "/v1/vms/{id}/sidecars" req="SidecarCreateWire" res="SidecarInstanceWire" {
+  doc "Create one sidecar under an enabled grant."
+}
+route "GET" "/v1/vms/{id}/sidecars/{sidecar}" res="SidecarInstanceWire" {
+  doc "Inspect one VM-owned sidecar instance."
+}
+route "DELETE" "/v1/vms/{id}/sidecars/{sidecar}" res="DisposeSidecar" {
+  doc "Idempotently delete one VM-owned sidecar instance."
+}
+route "POST" "/v1/vms/{id}/sidecars/{sidecar}/operations/{operation}" req="SidecarCallWire" res="SidecarResultWire" {
+  doc "Invoke one generated operation on a VM-owned sidecar."
+}
+
+route "POST" "/v1/sidecar-scopes" req="CreateSidecarScope" res="SidecarScope" {
+  doc "Attach a leased sidecar authority to an embedded VM. Authentication and namespace mapping remain adapter-owned."
+}
+route "POST" "/v1/sidecar-scopes/{scope}/renew" req="RenewSidecarScope" res="SidecarScope" {
+  header "x-agentos-sidecar-scope" type="string" required=1
+  doc "Renew an embedded VM sidecar authority lease."
+}
+route "DELETE" "/v1/sidecar-scopes/{scope}" res="DisposeSidecar" {
+  header "x-agentos-sidecar-scope" type="string" required=1
+  doc "Close an embedded authority scope and cascade cleanup."
+}
+route "PUT" "/v1/sidecar-scopes/{scope}/grants/{grant}" req="SidecarGrantWire" res="SidecarGrantWire" {
+  header "x-agentos-sidecar-scope" type="string" required=1
+  doc "Enable a portable grant inside an embedded authority scope."
+}
+route "DELETE" "/v1/sidecar-scopes/{scope}/grants/{grant}" res="DisposeSidecar" {
+  header "x-agentos-sidecar-scope" type="string" required=1
+  query "destroy" type="bool" required=0
+  doc "Disable an embedded authority grant."
+}
+route "GET" "/v1/sidecar-scopes/{scope}/sidecars" res="SidecarInstanceList" {
+  header "x-agentos-sidecar-scope" type="string" required=1
+  query "kind" type="string" required=0
+  doc "List instances in an embedded authority scope."
+}
+route "POST" "/v1/sidecar-scopes/{scope}/sidecars" req="SidecarCreateWire" res="SidecarInstanceWire" {
+  header "x-agentos-sidecar-scope" type="string" required=1
+  doc "Create an instance in an embedded authority scope."
+}
+route "GET" "/v1/sidecar-scopes/{scope}/sidecars/{sidecar}" res="SidecarInstanceWire" {
+  header "x-agentos-sidecar-scope" type="string" required=1
+  doc "Inspect one embedded-scope instance."
+}
+route "DELETE" "/v1/sidecar-scopes/{scope}/sidecars/{sidecar}" res="DisposeSidecar" {
+  header "x-agentos-sidecar-scope" type="string" required=1
+  doc "Delete one embedded-scope instance."
+}
+route "POST" "/v1/sidecar-scopes/{scope}/sidecars/{sidecar}/operations/{operation}" req="SidecarCallWire" res="SidecarResultWire" {
+  header "x-agentos-sidecar-scope" type="string" required=1
+  doc "Invoke one generated operation in an embedded authority scope."
 }
 
 route "GET" "/v1/vms/{id}/mounts" res="MountList" {
@@ -173,6 +241,7 @@ schema "Capabilities" kind="json" {
   field "restoreProtocols" type="string[]" required=1
   field "images" type="ImageFlavor[]" required=1
   field "features" type="string[]" required=1
+  field "sidecars" type="SidecarCapabilityWire[]" required=0
 }
 schema "CreateVm" kind="json" {
   field "id" type="VmId" required=0
@@ -188,6 +257,7 @@ schema "CreateVm" kind="json" {
   field "catalogTools" type="string[]" required=0
   field "hostTools" type="HostToolDefinition[]" required=0
   field "connectionPolicies" type="ConnectionPolicyRule[]" required=0
+  field "sidecars" type="SidecarGrantWire[]" required=0
 }
 schema "ConnectionDefinition" kind="json" {
   field "ref" type="ConnectionRef" required=1
@@ -288,6 +358,7 @@ schema "RestoreAttachments" kind="json" {
   field "connections" type="RestoreConnectionDefinition[]" required=0
   field "connectionPolicies" type="ConnectionPolicyRule[]" required=0
   field "hostTools" type="HostToolDefinition[]" required=0
+  field "sidecars" type="SidecarGrantWire[]" required=0
 }
 schema "RestoreConnectionDefinition" kind="json" {
   field "ref" type="ConnectionRef" required=1
@@ -376,6 +447,66 @@ schema "FsSymlinkResult" kind="json" {
 }
 schema "ForkVm" kind="json" {
   field "id" type="VmId" required=0
+}
+schema "ForkVmResult" kind="json" {
+  field "vm" type="Vm" required=1
+  field "warnings" type="SidecarWarningWire[]" required=1
+}
+schema "SidecarCapabilityWire" kind="json" source="sidecar.kdl" from-message="SidecarCapability" {
+  project "contractDigest" from="contract_digest" type="string"
+  project "placements" from="placements" type="string[]" encoding="values"
+  project "fork" from="fork_policy" type="u32"
+  project "maxInstancesPerVm" from="max_instances_per_vm" type="u32"
+}
+schema "SidecarGrantWire" kind="json" source="sidecar.kdl" from-message="SidecarGrant" {
+  project "contractDigest" from="contract_digest" type="string"
+  project "maxInstances" from="max_instances" type="u32"
+  project "fork" from="fork_policy" type="u32"
+  project "configBase64" from="config" type="string" encoding="base64"
+}
+schema "SidecarCreateWire" kind="json" source="sidecar.kdl" from-message="SidecarCreate" {
+  project "bodyBase64" from="body" type="string" encoding="base64"
+  project "idempotencyKey" from="idempotency_key" type="string"
+  project "timeoutMs" from="timeout_ms" type="i64"
+}
+schema "SidecarCallWire" kind="json" source="sidecar.kdl" from-message="SidecarCall" {
+  project "bodyBase64" from="body" type="string" encoding="base64"
+  project "idempotencyKey" from="idempotency_key" type="string" required=0
+  project "timeoutMs" from="timeout_ms" type="i64"
+}
+schema "SidecarInstanceWire" kind="json" source="sidecar.kdl" from-message="SidecarInstance" {
+  project "state" from="state" type="u32"
+  project "createdAtMs" from="created_at_ms" type="i64"
+  project "expiresAtMs" from="expires_at_ms" type="i64"
+  project "metadataBase64" from="metadata" type="string" encoding="base64"
+}
+schema "SidecarInstanceList" kind="json" source="sidecar.kdl" from-message="SidecarInstances" {
+  project "items" from="items" type="SidecarInstanceWire[]"
+}
+schema "SidecarResultWire" kind="json" source="sidecar.kdl" from-message="SidecarResult" {
+  project "bodyBase64" from="body" type="string" encoding="base64"
+  project "error" from="error" type="SidecarErrorWire" required=0
+}
+schema "SidecarErrorWire" kind="json" source="sidecar.kdl" from-message="SidecarError" {
+  project "detailsBase64" from="details" type="string" encoding="base64" required=0
+}
+schema "SidecarWarningWire" kind="json" source="sidecar.kdl" from-message="SidecarWarning" {
+}
+schema "CreateSidecarScope" kind="json" {
+  field "clientRef" type="string" required=1
+  field "grants" type="SidecarGrantWire[]" required=1
+  field "leaseTtlMs" type="u32" required=0
+}
+schema "RenewSidecarScope" kind="json" {
+  field "leaseTtlMs" type="u32" required=0
+}
+schema "SidecarScope" kind="json" {
+  field "id" type="string" required=1
+  field "token" type="string" required=1
+  field "expiresAtMs" type="i64" required=1
+}
+schema "DisposeSidecar" kind="json" {
+  field "ok" type="bool" required=1
 }
 schema "Mount" kind="json" {
   field "id" type="MountId" required=1

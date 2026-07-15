@@ -2,12 +2,11 @@ defmodule AgentOS.ControlPlaneTest do
   use ExUnit.Case, async: false
 
   alias AgentOS.ControlPlane
+  alias AgentOS.Contracts.Sidecar
   alias AgentOS.Contracts.Snapshot
 
-  # Exercises the OTP control-plane layer (the supervision tree + registry + facade) with REAL
-  # processes and no mocks (B6) — and without a kernel.wasm, by covering the addressing/error
-  # paths. Booting a real VM through the facade is the end-to-end step that needs the kernel +
-  # image artifacts wired as test data.
+  # Addressing tests exercise the real supervision tree; integration cases data-depend on the exact
+  # kernel and images produced by Bazel and drive them through the real NIF host (B1/B6).
 
   test "the supervision tree is up: registry + dynamic supervisor are running" do
     assert is_pid(Process.whereis(AgentOS.VmRegistry))
@@ -82,6 +81,7 @@ defmodule AgentOS.ControlPlaneTest do
                )
 
       assert is_pid(pid)
+
       assert {:error, :already_exists} =
                ControlPlane.create_new(id,
                  wasm: wasm,
@@ -162,6 +162,7 @@ defmodule AgentOS.ControlPlaneTest do
       assert {:ok, incremental} = ControlPlane.snapshot(id, mode: :incremental)
       assert binary_part(incremental, 0, 4) == "MCSN"
       assert byte_size(incremental) < byte_size(snapshot)
+
       assert {:ok, %{kind: :incremental, base_snapshot_digest: base_digest}} =
                Snapshot.parse(incremental)
 
@@ -266,6 +267,98 @@ defmodule AgentOS.ControlPlaneTest do
     after
       ControlPlane.dispose(id)
     end
+  end
+
+  @tag timeout: 120_000
+  test "normal exec interleaves guest sidecars while denying unrelated host calls" do
+    wasm = runfile!("memcontainers/kernel/rust/kernel.wasm")
+    loom = runfile!("memcontainers/images/loom.tar")
+    id = unique_id("guest-sidecar")
+
+    request =
+      Sidecar.encode_sidecar_create(%{
+        grant: "echo",
+        kind: "test.echo",
+        body: "guest-metadata",
+        idempotency_key: "guest-create",
+        timeout_ms: 1_000
+      })
+
+    script = """
+    local sys = require("sys")
+    local out = assert(sys.host.call("#{Sidecar.sidecar_host_binding()}", "#{luau_bytes(request)}"))
+    local hex = table.create(#out)
+    for i = 1, #out do hex[i] = string.format("%02X", string.byte(out, i)) end
+    print(table.concat(hex))
+    """
+
+    denied = """
+    local sys = require("sys")
+    local out = sys.host.call("unrelated", "")
+    print(out == nil)
+    """
+
+    try do
+      assert {:ok, _pid} =
+               ControlPlane.create(id,
+                 wasm: wasm,
+                 base_image: loom,
+                 deterministic: true,
+                 workers: 0,
+                 sidecars: %{
+                   "echo" => %{
+                     kind: "test.echo",
+                     version: 1,
+                     contract_digest: "test-echo-v1",
+                     guest: true,
+                     max_instances: 1,
+                     fork: Sidecar.sidecar_fork_omit(),
+                     config: <<>>
+                   }
+                 }
+               )
+
+      assert :ok = ControlPlane.write_file(id, "/tmp/sidecar.luau", script)
+      assert {:ok, %{exit_code: 0, stdout: hex, stderr: ""}} =
+               ControlPlane.exec(id, "luau /tmp/sidecar.luau", timeout: 10_000)
+
+      assert {:ok, response} = hex |> String.trim() |> Base.decode16(case: :mixed)
+      assert {:ok, %{ok: true, body: instance_frame}} = Sidecar.decode_sidecar_result(response)
+      assert {:ok, %{state: state, metadata: "guest-metadata"}} =
+               Sidecar.decode_sidecar_instance(instance_frame)
+
+      assert state == Sidecar.sidecar_state_ready()
+
+      assert :ok = ControlPlane.write_file(id, "/tmp/denied.luau", denied)
+      assert {:ok, %{exit_code: 0, stdout: "true\n", stderr: ""}} =
+               ControlPlane.exec(id, "luau /tmp/denied.luau", timeout: 10_000)
+
+      assert {:ok, nil} = ControlPlane.egress_next(id)
+    after
+      ControlPlane.dispose(id)
+    end
+  end
+
+  test "an explicit host-call denial is not widened for a guest sidecar grant" do
+    id = unique_id("sidecar-denied")
+
+    assert {:error, :sidecar_permission_denied} =
+             ControlPlane.create(id,
+               host_call: :deny,
+               sidecars: %{
+                 "echo" => %{
+                   kind: "test.echo",
+                   version: 1,
+                   contract_digest: "test-echo-v1",
+                   guest: true,
+                   max_instances: 1,
+                   fork: Sidecar.sidecar_fork_omit(),
+                   config: <<>>
+                 }
+               }
+             )
+
+    assert ControlPlane.whereis(id) == nil
   end
 
   @tag timeout: 120_000
@@ -455,6 +548,12 @@ defmodule AgentOS.ControlPlaneTest do
     do: {"test-ns", "#{prefix}-#{System.unique_integer([:positive])}"}
 
   defp tool_body(body), do: String.trim_trailing(body, <<0>>)
+
+  defp luau_bytes(bytes) do
+    bytes
+    |> :binary.bin_to_list()
+    |> Enum.map_join(fn byte -> "\\#{byte |> Integer.to_string() |> String.pad_leading(3, "0")}" end)
+  end
 
   defp runfile!(path) do
     roots =

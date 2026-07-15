@@ -27,12 +27,15 @@ JavaScript locally under Node.js or Bun, or in the browser) loads the kernel, su
 forward.
 
 The thesis, in one line: **the agent's entire computer is a portable, deterministic, snapshottable
-value.** Because all mutable state lives in linear memory, a host can pause, fork, migrate, or resume
-a running agent by copying bytes — no kernel cooperation needed. Because the only nondeterminism
+value.** Because all mutable machine state lives in linear memory, a host can pause, fork, migrate, or
+resume a running agent by copying bytes — no kernel cooperation needed. Because the only nondeterminism
 (clock, entropy) is capability-gated, the same inputs produce the same outputs, which makes
 record/replay and differential testing exact. Because the kernel speaks exactly one ABI to guests and
 one bridge to hosts — both generated from language-neutral contracts — nothing can drift, and any
 wasm-targeting language can be a guest.
+
+Host attachments are deliberately outside that value. Tools, mounts, credentials, and leased sidecars
+are re-supplied by the embedder; a raw snapshot never claims to contain an external machine or service.
 
 Three properties make this more than a toy:
 
@@ -94,7 +97,7 @@ under `memcontainers/`, the build machinery under `bazel/`.
 | 17 | **Domain engines & adapters** | Heavy engines, owned syntax parsing, and the shared tool-adapter service | `memcontainers/programs/{sqlite,typst,syntax,adapters}/`, `memcontainers/lib/parse/` | built |
 | 18 | **Images, flavors & packages** | Content-addressed layered images; demand-loaded packages | `memcontainers/images/`, `memcontainers/pkgcore/`, `bazel/tools/mc-roster` | built |
 | 19 | **Host (wasmtime)** | Loads `kernel.wasm`, supplies the bridge, ticks, performs effects | `memcontainers/hosts/wasmtime/` | built |
-| 20 | **Control, network & browser edge** | Elixir actor-per-VM core, wire contract/client, JS host family, SDK, and web app | `server/`, `memcontainers/hosts/js/`, `memcontainers/sdk-js/`, `web/` | built; served HTTP/WS adapter remains external |
+| 20 | **Control, sidecar, network & browser edge** | Elixir actor-per-VM and sidecar core, wire contract/client, JS host family, SDK, and web app | `server/`, `memcontainers/hosts/js/`, `memcontainers/sdk-js/`, `web/` | built; served HTTP/WS adapter and typed browser sidecar remain external |
 | 21 | **Build & test** | Bazel zero-staleness graph and no-mocks e2e | `MODULE.bazel`, `bazel/`, `memcontainers/tests/` | built |
 
 The implementation spans Rust (kernel and wasmtime host), Zig (shell, coreutils, and guest glue),
@@ -105,7 +108,7 @@ language-neutral contracts, and the Bazel graph.
 
 ## 2. Foundations: the model and its constitution
 
-### 2.1 Three layers, four contracts, one binary
+### 2.1 Three layers, four runtime boundaries, one binary
 
 ```
    ┌──────────────────────────────────────────────────────────────────────┐
@@ -166,7 +169,9 @@ binding on every kernel implementation), **B** (the build, the staging, the pari
   filesystem and no C runtime. A guest pointer is an offset into the guest's own linear memory.
 - **A7 — Deterministic by default.** Same host inputs → same host outputs; nondeterminism only via
   `CAP_AMBIENT`.
-- **A8 — Snapshottable.** All mutable state is in linear memory; capture it to pause/fork/resume.
+- **A8 — Snapshottable.** All mutable machine state is in linear memory; capture it to
+  pause/fork/resume. Host attachments are re-supplied explicitly and external sidecars declare their
+  own fork/checkpoint policy.
 - **A9 — Capability-gated egress.** Any bridge import reaching outside is gateable; denial surfaces as
   an in-kernel error, never a host exception. Default-deny.
 
@@ -288,9 +293,14 @@ memcontainers/contracts/
 ├── control.kdl    # the `mc_ctl_*` host→kernel channel
 ├── wire.kdl       # the server↔client protocol
 ├── constants.kdl  # errno, capabilities, tiers, ABI version, the service marker
+├── sidecar.kdl    # portable external-resource lifecycle and guest envelope
+├── runner.kdl     # private provider↔runner framing
+├── llb.kdl        # portable build graph
+├── snapshot.kdl   # portable full/incremental snapshot format
+├── shell.kdl      # shell context and completion vocabulary
+├── syntax.kdl     # shared parser and semantic vocabulary
 ├── codegen/       # the projector (a dependency-free Rust binary)
-├── gen/           # the committed, diff-gated projections
-└── spec/          # generated specs (AsyncAPI/OpenAPI/wire-vectors) — diff-tested outputs
+└── gen/           # the committed, diff-gated projections and protocol specifications
 ```
 
 A contract is written in a small KDL subset. A syscall row, for example, names the **exact wasm import
@@ -314,10 +324,10 @@ arguments** the kernel bounds-checks; 64-bit values are split into lo/hi or pass
 
 ### 3.2 The projector
 
-`memcontainers/contracts/codegen/src/projector.rs` is a dependency-free Rust binary. Invoked
-as `projector --module <constants|mc|env|ctl|wire|llb> --lang <rust|zig|ts|elixir|md|asyncapi|openapi>`, it parses a
-contract into a tiny KDL node model and walks it with a per-language emitter. Its design choices are
-deliberate:
+`memcontainers/contracts/codegen/src/projector.rs` is a dependency-free Rust binary. It is invoked
+with a named module, target language, and KDL source; supported modules and languages are printed by
+its usage error and kept in the same dispatch table as the emitters. It parses a contract into a tiny
+KDL node model and walks it with a per-language emitter. Its design choices are deliberate:
 
 - **Determinism** — no clock, no environment, file-order iteration → byte-identical output every run.
   This is the only way the diff gate can be stable.
@@ -1201,12 +1211,13 @@ interchangeable: the TTY applies ONLCR (real CRLF), while the control-channel ex
 
 ---
 
-## 13. System 20 — The network and browser edge
+## 13. System 20 — The control, sidecar, network, and browser edge
 
-The kernel and its Rust host are enough to run an agent locally. The rest of the edge has three built
+The kernel and its Rust host are enough to run an agent locally. The rest of the edge has four built
 pieces: a JavaScript host that runs the same `kernel.wasm` under Node.js, Bun, and browsers; a unified
-client SDK plus web components; and an Elixir/OTP control-plane library that owns native wasmtime VMs
-through a NIF. The **wire** contract and TypeScript remote client define the served boundary, but this
+client SDK plus web components; an Elixir/OTP control-plane library that owns native wasmtime VMs
+through a NIF; and a generic sidecar lifecycle with a reference Firecracker runner. The **wire**
+contract and TypeScript remote client define the served boundary, but this
 repository does not ship the Phoenix/HTTP/WebSocket adapter around the OTP library. A deployment adds
 that adapter without becoming another kernel host.
 
@@ -1240,8 +1251,10 @@ two highest-volume paths — terminal I/O and host-call/mount bulk — carry **l
 never base64**. Message kinds are grouped by concern: handshake (`HELLO`/`WELCOME`, the latter carrying a
 terminal byte offset to resume from), shell (`SHELL_IN`/`SHELL_OUT`), host-call relay
 (`HOST_CALL`/`HOST_RESULT`), sessions (`SESSION_START`/`EVENT`/`END`), and permissions
-(`PERMISSION_REQUEST`/`RESPONSE`). The server stamps a monotonic sequence on every outbound frame. The
-wire version is bumped independently of the syscall ABI, and a server accepts only its own major.
+(`PERMISSION_REQUEST`/`RESPONSE`). `HOST_CANCEL` closes an in-flight host operation when its guest
+handle disappears; it is not an advisory event. The server stamps a monotonic sequence on every
+outbound frame. The wire version is bumped independently of the syscall ABI, and a server accepts only
+the exact projected version while AgentOS is alpha.
 
 ### 13.3 The JavaScript host family — two hosts, one binary
 
@@ -1264,8 +1277,9 @@ as the Rust e2e suite—A3 enforced, not asserted.
 The SDK is the `@mc/*` scope. `@mc/core` is the unified `Vm` API over a pluggable backend — `exec`,
 `autocomplete`, a
 `vm.fs` file API, `snapshot`/`fork`/`restore`, `commit` (as a layer or a snapshot), `mount`, host-resident
-`tool`s, framed `session`s, and an interactive `shell` — with three interchangeable backends behind one
-interface: an **embedded** backend (the JS host in-process), a **remote** backend (REST + per-VM WebSocket
+`tool`s, sidecar grant attachment, framed `session`s, and an interactive `shell` — with three
+interchangeable backends behind one interface: an **embedded** backend (the JS host in-process), a
+**remote** backend (REST + per-VM WebSocket
 to a conforming served host), and an auto-reconnecting unified socket. Its wire client consumes the
 generated `wire` descriptors. Autocomplete uses UTF-8 byte positions below the backend boundary and
 translates them to JavaScript UTF-16 indices exactly once in `Vm`, so browser selections and remote
@@ -1333,6 +1347,53 @@ the response into the catalog. Compilation itself is the host-instantiated `cata
 zero-import module) producing the sharded, content-addressed bundle of §11. The capability surface bottoms
 out in `mc.use("github.issues", token)`: it derives `{ ref: "github.org.main", auth }` and the
 `github/issues` selector and creates a VM in one call.
+
+### 13.7 Sidecars — leased external resources, not hidden tools
+
+A **sidecar** is a leased, stateful host attachment owned by one AgentOS VM and realized by a host-side
+provider. It is outside the kernel's linear memory and therefore outside a raw MCSN snapshot. It is not
+a resident service, a syscall, or a tool-catalog record. The portable lifecycle contract lives in
+`memcontainers/contracts/sidecar.kdl`; `memcontainers/contracts/runner.kdl` separately defines
+the bounded framed protocol between an infrastructure provider and its runner. Each contract is projected
+only into languages with a real consumer: the lifecycle is consumed by Rust, TypeScript, and Elixir;
+the runner protocol by Zig and Elixir. Limits, states, errors, and message IDs are not transcribed by
+consumers. The split is a trust boundary, not a second description of the same API: `sidecar` crosses
+SDK, guest, and OTP ownership; `runner` remains private to one provider and never reaches a client or
+guest program running inside AgentOS.
+
+In `@mc/core`, an embedded VM binds a portable grant to a named private `SidecarHost`. The alias resolves
+an endpoint or local authority but never enters guest memory, a snapshot, or a remote VM request. A
+remote VM sends only grants and lets its served host choose placement. Every VM owns its attachment
+objects and live grant registry; `vm.fork()` does not retain a remote VM identity. Guest-originated
+operations use the reserved binary-safe `mc.sidecar` host binding, which ordinary tools cannot register
+and which never appears in `tools list` or `/tools`. The generic lifecycle is exposed as `vm.sidecars`;
+kind-specific resource APIs, CLIs, and Luau modules will layer over it. The first browser kind is
+intentionally not part of this foundation.
+
+The transportless OTP realization is a sibling of `AgentOS.Vm`, not state stuffed into the wasmtime
+owner. One `Scope` owns a VM's grants, idempotency records, admission barrier, and leases; one `Instance`
+owns each logical identity and private provider reference. Provider lifecycle and invocation work is
+deadline-bounded, caller loss triggers best-effort provider cancellation, VM loss cascades cleanup, and
+a bounded journal plus provider reconciliation is the crash backstop. Provider capabilities declare
+kind/version/digest, placement, fork policy, and limits before allocation. The built-in local
+placement policy chooses only providers advertising `:local`; a consuming platform may supply fleet
+placement without changing
+the lifecycle contract.
+
+Fork is an explicit transaction: close admission, drain active operations, snapshot the AgentOS VM,
+create the child with the same grants but no shared provider identity, then reopen admission. The only
+implemented provider policy is `omit`, which succeeds with structured `sidecar_fork_omitted` warnings;
+`clone` is rejected until independent provider cloning exists. Raw full and incremental snapshots stay
+portable and never silently capture or reattach an external resource.
+
+The reference infrastructure provider boots a contract-speaking runner in a jailed Firecracker
+microVM. Production launch goes through a root-owned, fixed-command helper that validates its root-owned
+configuration and artifacts, creates the network namespace, invokes jailer under cgroup v2, and performs
+idempotent cleanup/reconciliation. Its machine-specific binaries, kernel, helper, and conformance
+initramfs ship only in the separate `//server/sidecars:firecracker_runner_bundle`; the ordinary AgentOS
+package remains portable. `//server:kvm_test` is the real vertical proof: it boots the pinned microVM,
+validates the generated hello, exchanges generated request/response frames, and removes the runner.
+Chromium, a browser facade, and production fleet scheduling are not claimed by this layer.
 
 ---
 
@@ -1517,10 +1578,11 @@ These are the properties that distinguish AgentOS, each enforced by multiple sys
    checked as an in-kernel `EPERM` at every privileged syscall — *and* checked again at build time by
    attestation (a tool that imports more than its tier allows fails to compile). Default is deny; egress is
    gated; an `Isolated` task is fully confined and fully deterministic.
-3. **Snapshottability as a free consequence of design.** Because all mutable state is in linear memory and
+3. **Snapshottability as a free consequence of design.** Because all mutable OS state is in linear memory and
    the only nondeterminism is capability-gated, a snapshot is a memory copy, a restore is "the booted state
    *is* the image," and warmth (a SQLite connection, a font set) rides along — gated only by an
-   inflight-egress quiesce so no raw host handle is captured.
+   inflight-egress quiesce so no raw host handle is captured. External attachments are re-supplied;
+   sidecars use explicit lifecycle policy rather than weakening the snapshot format.
 4. **One ABI, generated, un-driftable.** Four boundaries live in language-neutral contracts and project
    into every consumer; a mismatch is a failed diff test, a failed build test, an attestation error, or a
    non-exhaustive-match compile error. This is what lets any wasm language be a guest and two kernel
@@ -1576,12 +1638,14 @@ while the contract is still soft.
 | Rust/wasmtime host (bridge, control, snapshot/restore, deterministic mode) | Built |
 | Elixir/OTP actor-per-VM control plane over the wasmtime NIF | Built; transport/deployment adapter is outside this repository |
 | Wire contract + TypeScript remote client | Built; requires a conforming served host |
+| Generic sidecar contracts, SDK attachment backend, OTP lifecycle, and Firecracker reference runner | Built; browser kind and served adapter are not included |
 | JS host family, `@mc/{core,elements}` SDK, web app | Built and tested with real browser artifacts |
 | Zig-kernel experiment | Archived on `feature/zig`; not present in `develop` (§14.3) |
 
-The one-line summary: **the OS core, both embedding host families, the SDK/browser workbench, and the
-Elixir VM-control library are built and green on one generated ABI; an HTTP/WebSocket deployment around
-the control plane is a separate integration, and the Zig-kernel experiment is archived.**
+The one-line summary: **the OS core, both embedding host families, the SDK/browser workbench, the
+Elixir VM-control library, and the generic sidecar/Firecracker foundation are built and green on
+generated contracts; an HTTP/WebSocket deployment around the control plane is a separate integration,
+and the Zig-kernel experiment is archived.**
 
 ---
 
@@ -1617,6 +1681,8 @@ real-artifact conformance tests.
   kernel work; the host drives the loop and the kernel never blocks it.
 - **snapshot** — the kernel's linear memory captured by the host; pause/fork/resume with no kernel
   cooperation, taken only at an inflight-egress-quiescent boundary.
+- **sidecar** — a leased, stateful external resource owned by one VM scope and operated through a
+  generated kind contract; it is a host attachment, not guest memory, a resident service, or a tool.
 - **resident service** — a long-lived guest that serves a name under `/svc` and answers typed calls with
   its engine warm; one binary, two activation modes (the `svc_serve` loop and the `_start` CLI), reached
   also as a `require()` library.

@@ -160,6 +160,7 @@ bazel_dep(name = "rules_pkg", version = "1.0.1")  # pkg_tar — deterministic im
 # Third-party guests — vendor LESS, patch in place (B3). Upstream SOURCE via http_archive (never a
 # vendored copy in-tree); only the patch + BUILD file live under third_party/<lib>/.
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
 
 # Binaryen 130's portable Node distribution: wasm-opt itself compiled to WebAssembly plus its small
 # Node launcher. This is a HOST build tool, never guest/image content. The portable bundle is 2 MiB
@@ -221,6 +222,26 @@ http_archive(
     sha256 = "50546072d031b0cc1bf2075f3c2a22cdc94f95845059f3c68060389eab560a40",
     strip_prefix = "tree-sitter-d11d18f746fdfd1826362c2531ce06808f386b02",
     urls = ["https://github.com/tree-sitter/tree-sitter/archive/d11d18f746fdfd1826362c2531ce06808f386b02.tar.gz"],
+)
+
+# Firecracker runner inputs. These are deployment artifacts rather than source dependencies, but they
+# remain Bazel-addressed and digest-pinned so the reference runner and its KVM proof cannot silently
+# pick up host-installed versions (B4). The architecture-specific bundle is deliberately separate from
+# the ordinary AgentOS package.
+http_archive(
+    name = "firecracker",
+    build_file = "//third_party/firecracker:BUILD.firecracker.bazel",
+    sha256 = "d4a32ab2322d887ca1bc4a4e7afa9cc35393e6362dfc2b3becb389d362e4275a",
+    strip_prefix = "release-v1.15.1-x86_64",
+    urls = ["https://github.com/firecracker-microvm/firecracker/releases/download/v1.15.1/firecracker-v1.15.1-x86_64.tgz"],
+)
+
+http_file(
+    name = "firecracker_kernel",
+    downloaded_file_path = "vmlinux-6.1.155",
+    executable = False,
+    sha256 = "e20e46d0c36c55c0d1014eb20576171b3f3d922260d9f792017aeff53af3d4f2",
+    urls = ["https://s3.amazonaws.com/spec.ccfc.min/firecracker-ci/v1.15/x86_64/vmlinux-6.1.155"],
 )
 # http_archive(name = "wasmtime", urls = ["..."], sha256 = "...")  # for hosts/wasmtime
 

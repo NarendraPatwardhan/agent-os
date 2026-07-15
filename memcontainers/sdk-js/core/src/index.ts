@@ -21,6 +21,24 @@ export type { CronAction, CronOptions, CronHandle, CronRunResult } from "./cron.
 export type { VmFs } from "./types.js";
 export { tool, kit } from "./tools.js";
 export type { ToolSpec } from "./tools.js";
+export { remoteSidecars, SidecarError, VmSidecars } from "./sidecars.js";
+export type {
+  RemoteSidecarHostOptions,
+  SidecarAuthority,
+  SidecarCapability,
+  SidecarContractDescriptor,
+  SidecarCreateRequest,
+  SidecarForkPolicy,
+  SidecarGrant,
+  SidecarGrantDescriptor,
+  SidecarHost,
+  SidecarHostContext,
+  SidecarInstance,
+  SidecarInvokeRequest,
+  SidecarPlacement,
+  SidecarProviderDescription,
+  VmWarning,
+} from "./sidecars.js";
 // zod, re-exported so embedders can type `tool()` inputs without a second install.
 export { z } from "zod";
 // The curated-registry reader (§5.11) — build integration pickers from the same

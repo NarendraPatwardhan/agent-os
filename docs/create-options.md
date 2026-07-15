@@ -24,6 +24,8 @@ fields—`mc.use()`. Applicability and defaults vary by runtime.
 | `tools` | tool definitions or selectors | `[]` | Host handlers and connection tool groups |
 | `restoreAttachments` | `"strict"`, `"detached"` | `"strict"` | Restore-time attachment validation |
 | `mounts` | mount records | `[]` | Host-backed filesystems installed at boot |
+| `sidecarHosts` | host-alias map | `{}` | Embedded-only private sidecar authority routes |
+| `sidecars` | grant-descriptor map | `{}` | Portable sidecar grants attached at boot |
 | `deterministic` | boolean | `false` | Repeatable guest clock and random source |
 
 ## `runtime`
@@ -156,6 +158,13 @@ const mounts = [
 
 `readOnly` defaults first to `driver.readOnly`, then `false`. Mount objects are privately copied, but
 driver instances are retained by reference. See [Mounts and drivers](./mounts-drivers.md).
+
+## `sidecarHosts` and `sidecars`
+
+`sidecars` contains portable, contract-bound grants. Embedded VMs resolve each grant's private `host`
+alias through `sidecarHosts`; remote VMs forbid aliases and let the served host choose placement.
+Neither provider references nor credentials enter guest memory or snapshots. See
+[Sidecars](./sidecars.md).
 
 ## `deterministic`
 

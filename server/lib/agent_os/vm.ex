@@ -22,11 +22,9 @@ defmodule AgentOS.Vm do
 
   ## Blocking
 
-  `exec/3` runs synchronously: the NIF ticks the kernel to completion on a DirtyCpu thread, so
-  it never stalls a BEAM scheduler — only *this* actor's mailbox, which is correct (one VM runs
-  one command at a time). For streaming or long-running commands, use the structured
-  `exec_start/2` + `exec_poll/2` + `exec_stdout_peek/2` lifecycle; it still serializes through
-  this actor and reuses the Rust host's control channel.
+  `exec/3` is the direct, synchronous primitive. The served control plane uses
+  `exec_interleaved/4`, which drives the same structured exec protocol one bounded tick at a time
+  so host-owned egress can make progress between calls. Both paths preserve single ownership.
 
   ## Egress relay
 
@@ -55,7 +53,15 @@ defmodule AgentOS.Vm do
   # exists to prevent; older bytes are dropped and `shell_base` advances past them.
   @shell_log_cap 262_144
 
-  defstruct [:id, :nif, :booted_at, :last_active_ms, :snapshot_base, shell_log: "", shell_base: 0]
+  defstruct [
+    :id,
+    :nif,
+    :booted_at,
+    :last_active_ms,
+    :snapshot_base,
+    shell_log: "",
+    shell_base: 0
+  ]
 
   # ── Client API ────────────────────────────────────────────────────────────
 
@@ -81,6 +87,36 @@ defmodule AgentOS.Vm do
 
   def exec(_server, _cmd, _opts),
     do: {:error, "exec expects a binary command and keyword options"}
+
+  @doc false
+  @spec exec_interleaved(server(), String.t(), keyword(), (-> :ok | {:error, term()})) ::
+          {:ok, map()} | {:error, term()}
+  def exec_interleaved(server, cmd, opts, on_yield)
+      when is_binary(cmd) and is_list(opts) and is_function(on_yield, 0) do
+    max_ticks = Keyword.get(opts, :max_ticks, @default_max_ticks)
+    call_timeout = timeout(opts)
+
+    cond do
+      not is_integer(max_ticks) or max_ticks < 0 ->
+        {:error, "max_ticks must be a non-negative integer"}
+
+      call_timeout != :infinity and (not is_integer(call_timeout) or call_timeout <= 0) ->
+        {:error, "timeout must be a positive integer or :infinity"}
+
+      true ->
+        deadline =
+          if call_timeout == :infinity,
+            do: :infinity,
+            else: System.monotonic_time(:millisecond) + call_timeout
+
+        with {:ok, job} <- exec_start(server, cmd, opts) do
+          drive_exec(server, job, cmd, max_ticks, deadline, on_yield)
+        end
+    end
+  end
+
+  def exec_interleaved(_server, _cmd, _opts, _on_yield),
+    do: {:error, "exec_interleaved expects a command, keyword options, and a zero-arity callback"}
 
   @doc "Start a structured exec job. Poll it with `exec_poll/2`; cancel it with `exec_cancel/2`."
   @spec exec_start(server(), String.t(), keyword()) :: {:ok, integer()} | {:error, Nif.reason()}
@@ -116,11 +152,17 @@ defmodule AgentOS.Vm do
 
   def autocomplete(server, source, cursor, opts)
       when is_binary(source) and is_integer(cursor) and cursor >= 0 and is_list(opts) do
-    GenServer.call(server, {:autocomplete, source, cursor, Keyword.take(opts, [:cwd, :env, :limit])}, timeout(opts))
+    GenServer.call(
+      server,
+      {:autocomplete, source, cursor, Keyword.take(opts, [:cwd, :env, :limit])},
+      timeout(opts)
+    )
   end
 
   def autocomplete(_server, _source, _cursor, _opts),
-    do: {:error, "autocomplete expects binary source, a non-negative byte cursor, and keyword options"}
+    do:
+      {:error,
+       "autocomplete expects binary source, a non-negative byte cursor, and keyword options"}
 
   @doc "Call a resident service as host control through the kernel service channel."
   @spec svc_call(server(), String.t(), binary(), keyword()) ::
@@ -306,6 +348,10 @@ defmodule AgentOS.Vm do
           {:ok, Nif.relay_event() | nil} | {:error, Nif.reason()}
   def egress_next(server, opts \\ []), do: GenServer.call(server, :egress_next, timeout(opts))
 
+  @doc false
+  def egress_next_sidecar(server, opts \\ []),
+    do: GenServer.call(server, :egress_next_sidecar, timeout(opts))
+
   @doc "Answer an HTTP relay event."
   @spec egress_http_respond(
           server(),
@@ -457,14 +503,27 @@ defmodule AgentOS.Vm do
 
             case base_result do
               {:ok, base} ->
-                {:ok,
-                 %__MODULE__{
-                   id: Keyword.fetch!(opts, :id),
-                   nif: nif,
-                   booted_at: now,
-                   last_active_ms: now,
-                   snapshot_base: base
-                 }}
+                id = Keyword.fetch!(opts, :id)
+
+                case AgentOS.Sidecars.attach_vm(
+                       id,
+                       self(),
+                       Keyword.get(opts, :sidecars, []),
+                       Keyword.get(opts, :sidecar_options, [])
+                     ) do
+                  {:ok, _scope} ->
+                    {:ok,
+                     %__MODULE__{
+                       id: id,
+                       nif: nif,
+                       booted_at: now,
+                       last_active_ms: now,
+                       snapshot_base: base
+                     }}
+
+                  {:error, reason} ->
+                    {:stop, "failed to attach sidecars: #{inspect(reason)}"}
+                end
 
               {:error, reason} ->
                 {:stop, "failed to capture snapshot baseline: #{reason}"}
@@ -649,6 +708,10 @@ defmodule AgentOS.Vm do
     {:reply, Nif.relay_next(state.nif), state}
   end
 
+  def handle_call(:egress_next_sidecar, _from, state) do
+    {:reply, Nif.relay_next_sidecar(state.nif), state}
+  end
+
   def handle_call({:egress_http_respond, handle, status, reason, headers, body}, _from, state) do
     reply = Nif.relay_http_respond(state.nif, handle, status, reason, headers, body)
     {:reply, reply, touch(state)}
@@ -704,6 +767,53 @@ defmodule AgentOS.Vm do
       {:ok, false} -> :exited
       {:error, _reason} = err -> err
     end
+  end
+
+  defp drive_exec(server, job, cmd, remaining, deadline, on_yield) do
+    with :ok <- on_yield.() do
+      case exec_poll(server, job) do
+        {:ok, nil} -> drive_running_exec(server, job, cmd, remaining, deadline, on_yield)
+        done -> done
+      end
+    else
+      {:error, _reason} = error -> cancel_exec(server, job, error)
+      other -> cancel_exec(server, job, {:error, {:invalid_exec_yield, other}})
+    end
+  end
+
+  defp drive_running_exec(server, job, cmd, 0, _deadline, _on_yield),
+    do: cancel_exec(server, job, {:error, "exec '#{cmd}' exhausted its tick budget"})
+
+  defp drive_running_exec(server, job, cmd, remaining, deadline, on_yield) do
+    if deadline_expired?(deadline) do
+      cancel_exec(server, job, {:error, "exec '#{cmd}' timed out"})
+    else
+      case tick(server) do
+        :running ->
+          Process.sleep(1)
+          drive_exec(server, job, cmd, remaining - 1, deadline, on_yield)
+
+        :exited ->
+          case exec_poll(server, job) do
+            {:ok, nil} ->
+              cancel_exec(server, job, {:error, "kernel exited before exec '#{cmd}' completed"})
+
+            done ->
+              done
+          end
+
+        {:error, _reason} = error ->
+          cancel_exec(server, job, error)
+      end
+    end
+  end
+
+  defp deadline_expired?(:infinity), do: false
+  defp deadline_expired?(deadline), do: System.monotonic_time(:millisecond) >= deadline
+
+  defp cancel_exec(server, job, error) do
+    _ = exec_cancel(server, job)
+    error
   end
 
   # Append freshly-drained terminal output to the bounded scrollback, dropping the oldest bytes

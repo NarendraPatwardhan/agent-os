@@ -1,6 +1,89 @@
-ExUnit.start()
+ExUnit.start(exclude: if(System.get_env("AGENT_OS_KVM_E2E") == "1", do: [], else: [kvm: true]))
 
-case AgentOS.Supervisor.start_link() do
+defmodule AgentOS.TestSidecarProvider do
+  @behaviour AgentOS.Sidecars.Provider
+
+  def capabilities(_opts) do
+    [
+      %{
+        kind: "test.echo",
+        version: 1,
+        contract_digest: "test-echo-v1",
+        placements: [:local],
+        fork: :omit,
+        max_instances_per_vm: 2
+      }
+    ]
+  end
+
+  def create(_context, %{body: "oversized-metadata"}, _opts),
+    do: {:ok, make_ref(), :binary.copy(<<0>>, AgentOS.Contracts.Sidecar.sidecar_max_result_bytes() + 1)}
+
+  def create(_context, request, _opts), do: {:ok, make_ref(), request.body}
+  def inspect(_context, _ref, _opts), do: {:ok, %{state: :ready}}
+  def renew(_context, _ref, _expires_at_ms, _opts), do: :ok
+
+  def invoke(_context, _ref, "echo", body, _opts), do: {:ok, body}
+
+  def invoke(_context, _ref, "wait", body, opts) do
+    {owner, started_ref, result} = :erlang.binary_to_term(body, [:safe])
+    send(owner, {started_ref, :sidecar_call_started})
+    Process.sleep(Keyword.get(opts, :test_wait_ms, 50))
+    {:ok, result}
+  end
+
+  def invoke(_context, _ref, _operation, _body, _opts), do: {:error, :sidecar_operation_missing}
+  def delete(_context, _ref, _opts), do: :ok
+  def cancel(_context, _ref, _call_ref, _opts), do: :ok
+end
+
+defmodule AgentOS.TestRunfiles do
+  def find!(suffix) do
+    case System.get_env("RUNFILES_MANIFEST_FILE") do
+      manifest when is_binary(manifest) ->
+        manifest
+        |> File.stream!()
+        |> Enum.find_value(fn line ->
+          line = String.trim_trailing(line)
+
+          case String.split(line, " ", parts: 2) do
+            [logical, physical] -> if String.ends_with?(logical, suffix), do: physical
+            [logical] -> if String.ends_with?(logical, suffix), do: logical
+          end
+        end)
+
+      _ ->
+        System.get_env("RUNFILES_DIR", "")
+        |> Path.join("**/#{suffix}")
+        |> Path.wildcard(match_dot: true)
+        |> List.first()
+    end || raise "missing Bazel runfile ending in #{suffix}"
+  end
+end
+
+sidecar_providers =
+  if System.get_env("AGENT_OS_KVM_E2E") == "1" do
+    work_root = Path.join(System.tmp_dir!(), "agentos-firecracker-#{System.unique_integer([:positive])}")
+    Application.put_env(:agent_os, :firecracker_test_root, work_root)
+
+    [
+      {AgentOS.Sidecars.Providers.Firecracker,
+       launch: :direct,
+       development: true,
+       health_runner: true,
+       work_root: work_root,
+       firecracker: AgentOS.TestRunfiles.find!("firecracker-v1.15.1-x86_64"),
+       jailer: AgentOS.TestRunfiles.find!("jailer-v1.15.1-x86_64"),
+       kernel: AgentOS.TestRunfiles.find!("vmlinux-6.1.155"),
+       initramfs: AgentOS.TestRunfiles.find!("health-initramfs.cpio"),
+       memory_mib: 128,
+       vcpus: 1}
+    ]
+  else
+    [AgentOS.TestSidecarProvider]
+  end
+
+case AgentOS.Supervisor.start_link(sidecars: [providers: sidecar_providers]) do
   {:ok, _pid} -> :ok
   {:error, {:already_started, _pid}} -> :ok
 end

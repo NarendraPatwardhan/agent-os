@@ -17,6 +17,7 @@ import type {
   SnapshotOptions,
   AutocompleteOptions,
 } from "./types.js";
+import type { SidecarBackend } from "./sidecars.js";
 
 /** Raw exec result from a backend (bytes; the Vm decodes to strings). */
 export interface RawExecResult {
@@ -34,6 +35,7 @@ export interface RawAutocompleteResult {
 }
 
 export interface Backend {
+  readonly sidecars: SidecarBackend;
   exec(cmd: string, opts?: ExecOptions): Promise<RawExecResult>;
   /** Source and offsets use UTF-8 bytes at this transport boundary. */
   autocomplete(

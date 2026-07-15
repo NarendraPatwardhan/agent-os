@@ -1,7 +1,9 @@
 // @generated from contracts/wire.kdl by //contracts/codegen:projector — do not edit.
 #![no_std]
+pub const SIDECAR_SCOPE_HEADER: &str = "x-agentos-sidecar-scope";
 
-pub const WIRE_VERSION: u32 = 2;
+
+pub const WIRE_VERSION: u32 = 3;
 pub const HEADER_LEN: usize = 9;
 
 pub const HELLO: u8 = 0x00;
@@ -10,6 +12,7 @@ pub const SHELL_IN: u8 = 0x10;
 pub const SHELL_OUT: u8 = 0x11;
 pub const HOST_CALL: u8 = 0x20;
 pub const HOST_RESULT: u8 = 0x21;
+pub const HOST_CANCEL: u8 = 0x22;
 pub const SESSION_START: u8 = 0x30;
 pub const SESSION_EVENT: u8 = 0x31;
 pub const SESSION_END: u8 = 0x32;
@@ -24,6 +27,7 @@ pub const MESSAGES: &[WireMessage] = &[
     WireMessage { name: "SHELL_OUT", tag: 0x11, dir: "server->client", body: "binary" },
     WireMessage { name: "HOST_CALL", tag: 0x20, dir: "server->client", body: "binary" },
     WireMessage { name: "HOST_RESULT", tag: 0x21, dir: "client->server", body: "binary" },
+    WireMessage { name: "HOST_CANCEL", tag: 0x22, dir: "server->client", body: "binary" },
     WireMessage { name: "SESSION_START", tag: 0x30, dir: "client->server", body: "json" },
     WireMessage { name: "SESSION_EVENT", tag: 0x31, dir: "server->client", body: "json" },
     WireMessage { name: "SESSION_END", tag: 0x32, dir: "server->client", body: "json" },

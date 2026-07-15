@@ -1,0 +1,35 @@
+// Framed control protocol between a host-side provider and a sidecar guest agent. The outer
+// transport is u32 big-endian length + one encoded message. Requests are bounded by sidecar.kdl.
+// A connection carries one operation at a time; disconnect cancels that operation, and reconnect
+// starts a fresh lane. Cancellation therefore needs no second, race-prone control message.
+protocol-version 1
+
+// A legal sidecar result plus the runner envelope must fit in one frame.
+constant "RUNNER_MAX_FRAME_BYTES" value=8392704
+constant "RUNNER_DEFAULT_VSOCK_PORT" value=52
+string-constant "RUNNER_HEALTH_KIND" value="agentos.health.v1"
+string-constant "RUNNER_HEALTH_CONTRACT_DIGEST" value="sha256:515a069b3ebe4d7e6fbb23496b4e71908ad2b5046b00345b3cfe833c4ea82339"
+
+message "RunnerHello" id=1 version=1 {
+  field "protocol_version" type="u32"
+  field "agent" type="str"
+  field "kind" type="str"
+  field "version" type="u32"
+  field "contract_digest" type="str"
+}
+
+message "RunnerRequest" id=2 version=1 {
+  field "request_id" type="str"
+  field "kind" type="str"
+  field "operation" type="str"
+  field "body" type="bytes"
+  field "timeout_ms" type="i64"
+}
+
+message "RunnerResponse" id=3 version=1 {
+  field "request_id" type="str"
+  field "ok" type="bool"
+  field "body" type="bytes"
+  field "error_code" type="str" opt=1
+  field "error_message" type="str" opt=1
+}

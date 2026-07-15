@@ -10,6 +10,7 @@ import {
   SHELL_OUT,
   HOST_CALL,
   HOST_RESULT,
+  HOST_CANCEL,
   SESSION_START,
   SESSION_EVENT,
   SESSION_END,
@@ -27,6 +28,7 @@ export const Kind = {
   ShellOut: SHELL_OUT,
   HostCall: HOST_CALL,
   HostResult: HOST_RESULT,
+  HostCancel: HOST_CANCEL,
   SessionStart: SESSION_START,
   SessionEvent: SESSION_EVENT,
   SessionEnd: SESSION_END,
@@ -102,4 +104,9 @@ export function decodeHostResult(body: Uint8Array): { id: number; result: Uint8A
   if (body.length < 4) throw new Error("short host-result frame");
   const id = new DataView(body.buffer, body.byteOffset, body.byteLength).getInt32(0, true);
   return { id, result: body.subarray(4) };
+}
+
+export function decodeHostCancel(body: Uint8Array): number {
+  if (body.length !== 4) throw new Error("invalid host-cancel frame");
+  return new DataView(body.buffer, body.byteOffset, body.byteLength).getInt32(0, true);
 }

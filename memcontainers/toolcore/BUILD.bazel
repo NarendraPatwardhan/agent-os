@@ -9,7 +9,10 @@ rust_library(
     crate_name = "toolcore",
     edition = "2021",
     visibility = ["//visibility:public"],
-    deps = ["//memcontainers/lib/json:lib"],
+    deps = [
+        "//memcontainers/contracts:sidecar_rust",
+        "//memcontainers/lib/json:lib",
+    ],
 )
 
 rust_opt_test(

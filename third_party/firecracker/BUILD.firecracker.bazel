@@ -1,0 +1,27 @@
+package(default_visibility = ["//visibility:public"])
+
+# File names are versioned by upstream. Stable Bazel target names keep the rest of the runner graph
+# independent of that packaging detail while MODULE.bazel owns the version and archive digest.
+filegroup(
+    name = "firecracker",
+    srcs = ["firecracker-v1.15.1-x86_64"],
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+)
+
+filegroup(
+    name = "jailer",
+    srcs = ["jailer-v1.15.1-x86_64"],
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+)
+
+exports_files([
+    "LICENSE",
+    "NOTICE",
+    "THIRD-PARTY",
+])

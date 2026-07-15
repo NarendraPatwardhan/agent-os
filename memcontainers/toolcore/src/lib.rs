@@ -15,6 +15,7 @@ use alloc::vec::Vec;
 use core::cmp::Ordering;
 
 use json::Json;
+use sidecar_rust::SIDECAR_HOST_BINDING;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArgsMode {
@@ -499,10 +500,12 @@ fn valid_sha(s: &str) -> bool {
 
 /// Host-call tool bindings live in a UTF-8 key space separated from raw mount handlers. Raw handlers are
 /// keyed by absolute paths and request blobs are NUL-framed, so catalog bindings must be plain non-empty
-/// names: no raw-handler `/...` namespace, no framing byte, and no control characters. Public so both
-/// hosts validate host-tool bindings against this one definition (no per-host mirror).
+/// names: no raw-handler `/...` namespace, no framing byte, no control characters, and no reserved
+/// kernel bindings. Public so both hosts validate host-tool bindings against this one definition (no
+/// per-host mirror).
 pub fn valid_binding_name(name: &str) -> bool {
     !name.is_empty()
+        && name != SIDECAR_HOST_BINDING
         && !name.starts_with('/')
         && name.trim() == name
         && !name.as_bytes().iter().any(|b| b.is_ascii_control())
@@ -1169,7 +1172,7 @@ mod tests {
 
     #[test]
     fn rejects_unsafe_binding_names() {
-        for bad in ["", "/mnt/search", " greet", "greet "] {
+        for bad in ["", "/mnt/search", " greet", "greet ", SIDECAR_HOST_BINDING] {
             let shard = alloc::format!(r#"{{"binding":{{"type":"host_call","name":"{bad}"}}}}"#);
             assert_eq!(
                 hydrate_record(&entry("host.org.main.greet", "Greet"), &shard).unwrap_err(),
