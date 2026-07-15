@@ -552,8 +552,17 @@ fn emit_constants(lang: &str, nodes: &[Node], contract: &str) -> String {
 /// bitmap/page slices, so a zero-copy fixed header is the correct boundary. The KDL owns every wire
 /// value; this emitter owns the one validation algorithm projected into both host languages (B2/A3).
 fn emit_snapshot(lang: &str, nodes: &[Node], contract: &str) -> String {
-    let root = nodes.iter().find(|n| n.name == "snapshot").expect("snapshot contract");
-    let p = |name: &str| root.props.get(name).map(Val::as_int).unwrap_or(0).to_string();
+    let root = nodes
+        .iter()
+        .find(|n| n.name == "snapshot")
+        .expect("snapshot contract");
+    let p = |name: &str| {
+        root.props
+            .get(name)
+            .map(Val::as_int)
+            .unwrap_or(0)
+            .to_string()
+    };
     let off = |name: &str| {
         root.children_named("field")
             .find(|field| field.arg_str(0) == name)
@@ -563,7 +572,8 @@ fn emit_snapshot(lang: &str, nodes: &[Node], contract: &str) -> String {
             .to_string()
     };
     let template = match lang {
-        "rust" => r#"
+        "rust" => {
+            r#"
 pub const SNAPSHOT_MAGIC: u32 = $MAGIC;
 pub const SNAPSHOT_VERSION: u32 = $VERSION;
 pub const SNAPSHOT_HEADER_LEN: usize = $HEADER_LEN;
@@ -710,8 +720,10 @@ pub fn write_snapshot_header(out: &mut [u8], kind: SnapshotKind, memory_len: usi
     out[$OFF_BASE_DIGEST..$OFF_BASE_DIGEST + SNAPSHOT_DIGEST_LEN].copy_from_slice(base_snapshot_digest);
     Ok(())
 }
-"#,
-        "ts" => r#"
+"#
+        }
+        "ts" => {
+            r#"
 export const SNAPSHOT_MAGIC = $MAGIC;
 export const SNAPSHOT_VERSION = $VERSION;
 export const SNAPSHOT_HEADER_LEN = $HEADER_LEN;
@@ -798,8 +810,10 @@ export function writeSnapshotHeader(kind: SnapshotKind, memoryLen: number, chang
   out.set(kernelDigest, $OFF_KERNEL_DIGEST); out.set(memoryDigest, $OFF_MEMORY_DIGEST);
   out.set(baseSnapshotDigest, $OFF_BASE_DIGEST); return out;
 }
-"#,
-        "elixir" => r#"
+"#
+        }
+        "elixir" => {
+            r#"
 defmodule AgentOS.Contracts.Snapshot do
   @moduledoc "Projected MCSN snapshot framing and validation."
 
@@ -940,25 +954,41 @@ defmodule AgentOS.Contracts.Snapshot do
   defp divisible(value, divisor, _error) when rem(value, divisor) == 0, do: :ok
   defp divisible(_value, _divisor, error), do: {:error, error}
 end
-"#,
-        _ => return format!("{}// snapshot projection is not defined for {lang}\n", banner(lang, contract)),
+"#
+        }
+        _ => {
+            return format!(
+                "{}// snapshot projection is not defined for {lang}\n",
+                banner(lang, contract)
+            )
+        }
     };
     let replacements = [
-        ("$MAGIC", p("magic")), ("$VERSION", p("version")),
-        ("$HEADER_LEN", p("header-len")), ("$PAGE_SIZE", p("page-size")),
+        ("$MAGIC", p("magic")),
+        ("$VERSION", p("version")),
+        ("$HEADER_LEN", p("header-len")),
+        ("$PAGE_SIZE", p("page-size")),
         ("$MAX_MEMORY_LEN", p("max-memory-len")),
-        ("$DIGEST_LEN", p("digest-len")), ("$KIND_FULL", p("kind-full")),
+        ("$DIGEST_LEN", p("digest-len")),
+        ("$KIND_FULL", p("kind-full")),
         ("$KIND_INCREMENTAL", p("kind-incremental")),
-        ("$OFF_MAGIC", off("magic")), ("$OFF_VERSION", off("version")),
-        ("$OFF_KIND", off("kind")), ("$OFF_HEADER_LEN", off("header_len")),
-        ("$OFF_PAGE_SIZE", off("page_size")), ("$OFF_MEMORY_LEN", off("memory_len")),
-        ("$OFF_CHANGED_PAGES", off("changed_pages")), ("$OFF_RESERVED", off("reserved")),
-        ("$OFF_KERNEL_DIGEST", off("kernel_digest")), ("$OFF_MEMORY_DIGEST", off("memory_digest")),
+        ("$OFF_MAGIC", off("magic")),
+        ("$OFF_VERSION", off("version")),
+        ("$OFF_KIND", off("kind")),
+        ("$OFF_HEADER_LEN", off("header_len")),
+        ("$OFF_PAGE_SIZE", off("page_size")),
+        ("$OFF_MEMORY_LEN", off("memory_len")),
+        ("$OFF_CHANGED_PAGES", off("changed_pages")),
+        ("$OFF_RESERVED", off("reserved")),
+        ("$OFF_KERNEL_DIGEST", off("kernel_digest")),
+        ("$OFF_MEMORY_DIGEST", off("memory_digest")),
         ("$OFF_BASE_DIGEST", off("base_snapshot_digest")),
     ];
     let mut out = banner(lang, contract);
     let mut body = template.to_string();
-    for (needle, value) in replacements { body = body.replace(needle, &value); }
+    for (needle, value) in replacements {
+        body = body.replace(needle, &value);
+    }
     out.push_str(&body);
     out
 }
@@ -2538,7 +2568,9 @@ fn emit_shell_module(lang: &str, nodes: &[Node], contract: &str) -> String {
         let name = value.to_ascii_uppercase().replace('-', "_");
         match lang {
             "rust" => out.push_str(&format!("pub const {prefix}_{name}: &str = \"{value}\";\n")),
-            "zig" => out.push_str(&format!("pub const {prefix}_{name}: []const u8 = \"{value}\";\n")),
+            "zig" => out.push_str(&format!(
+                "pub const {prefix}_{name}: []const u8 = \"{value}\";\n"
+            )),
             _ => {}
         }
     }
@@ -3466,9 +3498,7 @@ fn main() -> ExitCode {
             "EXPORTS",
         ),
         "wire" => emit_wire(&lang, &nodes, &file, &contract),
-        "llb" | "syntax" | "sidecar" | "runner" => {
-            emit_codec_module(&lang, &nodes, &file)
-        }
+        "llb" | "syntax" | "sidecar" | "runner" => emit_codec_module(&lang, &nodes, &file),
         "snapshot" => emit_snapshot(&lang, &nodes, &file),
         "shell" => emit_shell_module(&lang, &nodes, &file),
         other => {

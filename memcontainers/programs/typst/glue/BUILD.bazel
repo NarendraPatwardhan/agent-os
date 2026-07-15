@@ -7,23 +7,16 @@
 load("//bazel:mc_box.bzl", "mc_wasi_program")
 
 # Exposes the crate_universe manifest + lock @typst_crates resolves from.
-exports_files(["Cargo.toml", "Cargo.lock"])
+exports_files([
+    "Cargo.toml",
+    "Cargo.lock",
+])
 
 mc_wasi_program(
     name = "typst",
     srcs = glob(["src/**/*.rs"]),
-    crate_root = "src/main.rs",
     crate_name = "typst_svc",
-    # read-write: the service reads sources/fonts + the clock + random (comemo), and the CLI mode writes
-    # the output PDF (std::fs::write) — CAP_FS_READ|WRITE|CLOCK|RANDOM, exactly memcontainers' tier. No
-    # CAP_PERSIST/net/spawn, so not `full`.
-    tier = "read-write",
-    service = "typst",  # the mc_service section — it serves the "typst" name (mc-attest enforces it)
-    # typst far exceeds the 16 MiB / 50e9-fuel defaults: ~30 MB of warm fonts + the engine + deep
-    # recursion. memcontainers' budget; the kernel clamps to its hard ceilings (1 GiB / 4e12 fuel).
-    mem = 512 * 1024 * 1024,
-    fuel = 2000000000000,
-    table = 200000,
+    crate_root = "src/main.rs",
     extra_rustc_flags = [
         # The 64 MiB shadow stack (memcontainers' build.rs). typst's layout/realization recursion
         # overflows the default 1 MiB wasm stack — there is no guard page, so it silently corrupts
@@ -34,13 +27,23 @@ mc_wasi_program(
         # time; the import/export + mc_* custom sections are untouched, so attest still reads imports.
         "-Cstrip=symbols",
     ],
+    fuel = 2000000000000,
+    # typst far exceeds the 16 MiB / 50e9-fuel defaults: ~30 MB of warm fonts + the engine + deep
+    # recursion. memcontainers' budget; the kernel clamps to its hard ceilings (1 GiB / 4e12 fuel).
+    mem = 512 * 1024 * 1024,
+    service = "typst",  # the mc_service section — it serves the "typst" name (mc-attest enforces it)
+    table = 200000,
+    # read-write: the service reads sources/fonts + the clock + random (comemo), and the CLI mode writes
+    # the output PDF (std::fs::write) — CAP_FS_READ|WRITE|CLOCK|RANDOM, exactly memcontainers' tier. No
+    # CAP_PERSIST/net/spawn, so not `full`.
+    tier = "read-write",
+    visibility = ["//visibility:public"],
     deps = [
         "//memcontainers/sysroot/rust:lib",  # the svc_* serve syscalls + mc constants (EAGAIN, SERVICE_MARKER)
-        "@typst_crates//:typst",  # the compiler library (World + typst::compile)
-        "@typst_crates//:typst-pdf",  # PagedDocument -> PDF bytes
-        "@typst_crates//:time",  # epoch -> civil for World::today()
         "@typst_crates//:serde",  # the request/response protocol structs
         "@typst_crates//:serde_json",
+        "@typst_crates//:time",  # epoch -> civil for World::today()
+        "@typst_crates//:typst",  # the compiler library (World + typst::compile)
+        "@typst_crates//:typst-pdf",  # PagedDocument -> PDF bytes
     ],
-    visibility = ["//visibility:public"],
 )

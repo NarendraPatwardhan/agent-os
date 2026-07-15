@@ -26,7 +26,9 @@ export interface Recorder {
 export async function record(opts: CreateOptions = {}): Promise<Recorder> {
   const sourceRef = opts.image === undefined ? "base:latest" : opts.image;
   if (typeof sourceRef !== "string") {
-    throw new Error("mc.record: opts.image must be a string source ref (inline images/null are outside the LLB source grammar)");
+    throw new Error(
+      "mc.record: opts.image must be a string source ref (inline images/null are outside the LLB source grammar)",
+    );
   }
   if (opts.tools?.length) {
     throw new Error("mc.record: host tools are outside the LLB source grammar");
@@ -96,6 +98,7 @@ export async function record(opts: CreateOptions = {}): Promise<Recorder> {
 
   return {
     vm: recordedVm,
-    build: () => (opts.store ? llb.toDefinition(tip, { store: opts.store }) : llb.toDefinition(tip)),
+    build: () =>
+      opts.store ? llb.toDefinition(tip, { store: opts.store }) : llb.toDefinition(tip),
   };
 }

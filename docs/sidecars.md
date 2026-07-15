@@ -13,10 +13,10 @@ snapshot.
 
 `mc.create()` and `mc.restore()` accept two sidecar fields:
 
-| Field | Purpose |
-|---|---|
+| Field          | Purpose                                                                    |
+| -------------- | -------------------------------------------------------------------------- |
 | `sidecarHosts` | Embedded-only map of private host aliases to `SidecarHost` implementations |
-| `sidecars` | Map of grant names to contract-bound grant descriptors |
+| `sidecars`     | Map of grant names to contract-bound grant descriptors                     |
 
 An embedded `local` or `browser` VM requires every descriptor to name a `host` alias. The alias is
 resolved during attachment and never enters guest memory. A `remote` VM forbids `sidecarHosts` and
@@ -24,17 +24,17 @@ host aliases because its served AgentOS host owns provider placement.
 
 A grant descriptor contains:
 
-| Field | Meaning |
-|---|---|
-| `contract.kind` | Stable sidecar kind name |
-| `contract.version` | Kind protocol version |
-| `contract.digest` | Exact generated kind-contract digest |
-| `grant.kind`, `grant.version`, `grant.contractDigest` | Must exactly match `contract` |
-| `grant.guest` | Whether guest code may use this grant |
-| `grant.maxInstances` | Per-grant instance ceiling |
-| `grant.fork` | Fork policy; currently `"omit"` |
-| `grant.config` | Kind-defined configuration bytes |
-| `host` | Embedded-only private host alias |
+| Field                                                 | Meaning                               |
+| ----------------------------------------------------- | ------------------------------------- |
+| `contract.kind`                                       | Stable sidecar kind name              |
+| `contract.version`                                    | Kind protocol version                 |
+| `contract.digest`                                     | Exact generated kind-contract digest  |
+| `grant.kind`, `grant.version`, `grant.contractDigest` | Must exactly match `contract`         |
+| `grant.guest`                                         | Whether guest code may use this grant |
+| `grant.maxInstances`                                  | Per-grant instance ceiling            |
+| `grant.fork`                                          | Fork policy; currently `"omit"`       |
+| `grant.config`                                        | Kind-defined configuration bytes      |
+| `host`                                                | Embedded-only private host alias      |
 
 Descriptors and byte arrays are copied into VM-owned attachment state. Mutating the caller's options
 after creation does not change the live VM.
@@ -43,18 +43,18 @@ after creation does not change the live VM.
 
 Every `Vm` exposes one `VmSidecars` facade:
 
-| Method | Result | Meaning |
-|---|---|---|
-| `capabilities()` | `Promise<SidecarCapability[]>` | Discover kind/version/digest and provider limits |
-| `enable(name, descriptor)` | `Promise<void>` | Add a validated grant |
-| `disable(name, options?)` | `Promise<void>` | Remove a grant; `destroy` also removes its instances |
-| `create(request)` | `Promise<SidecarInstance>` | Create one leased instance with an idempotency key |
-| `retrieve(id)` | `Promise<SidecarInstance>` | Refresh one instance |
-| `list(kind?)` | `Promise<SidecarInstance[]>` | List VM-owned instances |
-| `invoke(request)` | `Promise<Uint8Array>` | Run one kind-defined operation |
-| `delete(id)` | `Promise<void>` | Idempotently destroy one instance |
-| `warnings()` | warning array | Read retained non-fatal lifecycle warnings |
-| `onWarning(listener)` | unsubscribe function | Observe new warnings |
+| Method                     | Result                         | Meaning                                              |
+| -------------------------- | ------------------------------ | ---------------------------------------------------- |
+| `capabilities()`           | `Promise<SidecarCapability[]>` | Discover kind/version/digest and provider limits     |
+| `enable(name, descriptor)` | `Promise<void>`                | Add a validated grant                                |
+| `disable(name, options?)`  | `Promise<void>`                | Remove a grant; `destroy` also removes its instances |
+| `create(request)`          | `Promise<SidecarInstance>`     | Create one leased instance with an idempotency key   |
+| `retrieve(id)`             | `Promise<SidecarInstance>`     | Refresh one instance                                 |
+| `list(kind?)`              | `Promise<SidecarInstance[]>`   | List VM-owned instances                              |
+| `invoke(request)`          | `Promise<Uint8Array>`          | Run one kind-defined operation                       |
+| `delete(id)`               | `Promise<void>`                | Idempotently destroy one instance                    |
+| `warnings()`               | warning array                  | Read retained non-fatal lifecycle warnings           |
+| `onWarning(listener)`      | unsubscribe function           | Observe new warnings                                 |
 
 Create and invoke requests carry a grant, kind, bounded binary body, and timeout. Calls additionally
 carry the instance ID and generation, preventing a stale handle from addressing a replacement
@@ -74,12 +74,12 @@ cascades best-effort cleanup; provider leases and reconciliation are the crash b
 
 Sidecar lifecycle failures throw `SidecarError`. Its public fields are:
 
-| Field | Meaning |
-|---|---|
-| `code` | Stable contract code such as `sidecar_limit` or `sidecar_stale_generation` |
-| `message` | Human-readable explanation safe for the current API boundary |
-| `retryable` | Whether retrying may succeed without changing the request |
-| `details` | Optional kind-defined diagnostic bytes |
+| Field       | Meaning                                                                    |
+| ----------- | -------------------------------------------------------------------------- |
+| `code`      | Stable contract code such as `sidecar_limit` or `sidecar_stale_generation` |
+| `message`   | Human-readable explanation safe for the current API boundary               |
+| `retryable` | Whether retrying may succeed without changing the request                  |
+| `details`   | Optional kind-defined diagnostic bytes                                     |
 
 Provider exceptions and private diagnostics are normalized before crossing into guest or client
 code.
@@ -89,11 +89,11 @@ code.
 `remoteSidecars()` is the advanced connector for an embedded VM whose sidecar authority is served by
 another AgentOS host. Options are:
 
-| Field | Meaning |
-|---|---|
-| `endpoint` | Base URL of the sidecar host |
-| `token` | Optional Bearer credential for creating a leased scope |
-| `fetch` | Optional Fetch-compatible transport implementation |
+| Field      | Meaning                                                |
+| ---------- | ------------------------------------------------------ |
+| `endpoint` | Base URL of the sidecar host                           |
+| `token`    | Optional Bearer credential for creating a leased scope |
+| `fetch`    | Optional Fetch-compatible transport implementation     |
 
 Each host attachment creates a fresh scope. The connector renews its private scope credential and
 closes the scope with the VM. Reusing the connector object does not share a scope, lease, or sidecar

@@ -38,7 +38,11 @@ async function nodeJoin(...parts: string[]): Promise<string> {
   return join(...parts);
 }
 
-async function opfsWrite(handle: FileSystemDirectoryHandle, name: string, bytes: Uint8Array): Promise<void> {
+async function opfsWrite(
+  handle: FileSystemDirectoryHandle,
+  name: string,
+  bytes: Uint8Array,
+): Promise<void> {
   const file = await handle.getFileHandle(name, { create: true });
   const writable = await file.createWritable();
   try {
@@ -53,7 +57,10 @@ async function opfsRead(handle: FileSystemDirectoryHandle, name: string): Promis
   return new Uint8Array(await file.arrayBuffer());
 }
 
-async function opfsMaybeRead(handle: FileSystemDirectoryHandle, name: string): Promise<Uint8Array | null> {
+async function opfsMaybeRead(
+  handle: FileSystemDirectoryHandle,
+  name: string,
+): Promise<Uint8Array | null> {
   try {
     return await opfsRead(handle, name);
   } catch (error) {
@@ -185,7 +192,10 @@ export class FsContentStore implements ContentStore {
     name = manifestName(name);
     const { mkdir, writeFile } = await nodeFs();
     await mkdir(this.manifestsDir(), { recursive: true });
-    await writeFile(await nodeJoin(this.manifestsDir(), `${name}.json`), JSON.stringify(m, null, 2));
+    await writeFile(
+      await nodeJoin(this.manifestsDir(), `${name}.json`),
+      JSON.stringify(m, null, 2),
+    );
   }
 
   private snapshotsDir(): string {
@@ -195,7 +205,9 @@ export class FsContentStore implements ContentStore {
   async snapshot(key: string): Promise<Uint8Array | null> {
     try {
       const { readFile } = await nodeFs();
-      return new Uint8Array(await readFile(await nodeJoin(this.snapshotsDir(), `${manifestName(key)}.snap`)));
+      return new Uint8Array(
+        await readFile(await nodeJoin(this.snapshotsDir(), `${manifestName(key)}.snap`)),
+      );
     } catch {
       return null; // miss
     }
@@ -209,7 +221,9 @@ export class FsContentStore implements ContentStore {
 
   async snapshotObject(digest: string): Promise<Uint8Array> {
     const { readFile } = await nodeFs();
-    return new Uint8Array(await readFile(await nodeJoin(this.snapshotsDir(), `${digestHex(digest)}.mcsn`)));
+    return new Uint8Array(
+      await readFile(await nodeJoin(this.snapshotsDir(), `${digestHex(digest)}.mcsn`)),
+    );
   }
 
   async putSnapshotObject(snapshot: Uint8Array): Promise<string> {
@@ -268,7 +282,11 @@ export class OpfsContentStore implements ContentStore {
 
   async putManifest(name: string, m: ImageManifest): Promise<void> {
     name = manifestName(name);
-    await opfsWrite(await this.dir("manifests"), `${name}.json`, new TextEncoder().encode(JSON.stringify(m, null, 2)));
+    await opfsWrite(
+      await this.dir("manifests"),
+      `${name}.json`,
+      new TextEncoder().encode(JSON.stringify(m, null, 2)),
+    );
   }
 
   async snapshot(key: string): Promise<Uint8Array | null> {
@@ -335,16 +353,17 @@ class LazyContentStore implements ContentStore {
     return store.putSnapshot(key, snap);
   }
 
-
   async snapshotObject(digest: string): Promise<Uint8Array> {
     const store = await this.store();
-    if (!store.snapshotObject) throw new Error("default content store does not support snapshot objects");
+    if (!store.snapshotObject)
+      throw new Error("default content store does not support snapshot objects");
     return store.snapshotObject(digest);
   }
 
   async putSnapshotObject(snapshot: Uint8Array): Promise<string> {
     const store = await this.store();
-    if (!store.putSnapshotObject) throw new Error("default content store does not support snapshot objects");
+    if (!store.putSnapshotObject)
+      throw new Error("default content store does not support snapshot objects");
     return store.putSnapshotObject(snapshot);
   }
 }

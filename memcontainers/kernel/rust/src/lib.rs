@@ -41,9 +41,9 @@ use task::{run_round, Scheduler, TaskId, TaskState};
 use vfs::{KPath, Namespace, NodeType, OpenFlags};
 use wasm::abi::{
     errno_from_fs, AUTOCOMPLETE_MAX_FRAME_BYTES, AUTOCOMPLETE_MAX_ITEMS,
-    AUTOCOMPLETE_MAX_PATH_SEGMENTS, AUTOCOMPLETE_MAX_SCAN_ENTRIES,
-    AUTOCOMPLETE_MAX_SOURCE_BYTES, EAGAIN, EINVAL, EIO, EMSGSIZE, ENOENT, ENOSYS, ENOTDIR,
-    ESUCCESS, ETIMEDOUT, SERVICE_MARKER, SIGHUP, SIGINT, SIGTSTP,
+    AUTOCOMPLETE_MAX_PATH_SEGMENTS, AUTOCOMPLETE_MAX_SCAN_ENTRIES, AUTOCOMPLETE_MAX_SOURCE_BYTES,
+    EAGAIN, EINVAL, EIO, EMSGSIZE, ENOENT, ENOSYS, ENOTDIR, ESUCCESS, ETIMEDOUT, SERVICE_MARKER,
+    SIGHUP, SIGINT, SIGTSTP,
 };
 
 struct OutputCapture {
@@ -1320,7 +1320,11 @@ fn list_completions(editor: &LineEditor, completion: &ResolvedAutocomplete) {
     if result.truncated {
         term_emit(b"  ...");
     }
-    term_emit(if completion.continuation { b"\r\n> " } else { b"\r\n$ " });
+    term_emit(if completion.continuation {
+        b"\r\n> "
+    } else {
+        b"\r\n$ "
+    });
     term_emit(&editor.line);
     term_bs(editor.line.len().saturating_sub(editor.cursor));
 }
@@ -2165,16 +2169,15 @@ fn autocomplete_path_candidates(
         let directory = typed_dir.trim_end_matches('/');
         builtins::fs::resolve_path(cwd, if directory.is_empty() { "/" } else { directory })
     };
-    let entries = ns
-        .readdir(caller, &search)
-        .map_err(autocomplete_fs_error)?;
+    let entries = ns.readdir(caller, &search).map_err(autocomplete_fs_error)?;
     for entry in entries {
         if *scan_remaining == 0 {
             candidates.truncated = true;
             break;
         }
         *scan_remaining -= 1;
-        if !entry.name.starts_with(base) || (!base.starts_with('.') && entry.name.starts_with('.')) {
+        if !entry.name.starts_with(base) || (!base.starts_with('.') && entry.name.starts_with('.'))
+        {
             continue;
         }
         let full = search.join(&entry.name);
@@ -2238,7 +2241,9 @@ fn autocomplete(req: AutocompleteRequest, interactive: bool) -> Result<ResolvedA
         Some(requested) => {
             let resolved = builtins::fs::resolve_path(live_cwd, requested);
             match ns.stat_as(task.id, &resolved) {
-                Ok(metadata) if metadata.node_type == NodeType::Dir => String::from(resolved.as_str()),
+                Ok(metadata) if metadata.node_type == NodeType::Dir => {
+                    String::from(resolved.as_str())
+                }
                 Ok(_) | Err(vfs::FsError::NotDir) => return Err(ENOTDIR),
                 Err(error) => return Err(autocomplete_fs_error(error)),
             }
@@ -2361,8 +2366,8 @@ fn autocomplete(req: AutocompleteRequest, interactive: bool) -> Result<ResolvedA
         candidates,
         truncated,
     };
-    let rendered = shell_rust::CompletionResult::decode(&task.control(&render.encode())?)
-        .map_err(|_| EIO)?;
+    let rendered =
+        shell_rust::CompletionResult::decode(&task.control(&render.encode())?).map_err(|_| EIO)?;
     if rendered.replace_start != render.replace_start
         || rendered.replace_end != render.replace_end
         || rendered.items.len() > limit

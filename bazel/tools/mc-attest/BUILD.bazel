@@ -9,18 +9,18 @@ rust_binary(
     name = "mc-attest",
     srcs = ["src/main.rs"],
     edition = "2021",
-    deps = [
-        "//memcontainers/contracts:mc_rust",  # SYSCALL_CAPS (syscall → cap-floor names)
-        "//memcontainers/contracts:constants_rust",  # tier_caps + CAP_*/TIER_* bits
-    ],
     visibility = ["//visibility:public"],
+    deps = [
+        "//memcontainers/contracts:constants_rust",  # tier_caps + CAP_*/TIER_* bits
+        "//memcontainers/contracts:mc_rust",  # SYSCALL_CAPS (syscall → cap-floor names)
+    ],
 )
 
 # The gate's logic, unit-tested directly (it's pure): minimal crafted boxes prove it ACCEPTS
 # tier-fitting imports and REJECTS over-reach (spawn/net at read-only, ambient at isolated).
 rust_opt_test(
     name = "test",
+    size = "small",
     crate = ":mc-attest",
     edition = "2021",
-    size = "small",
 )

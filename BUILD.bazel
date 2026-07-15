@@ -1,3 +1,7 @@
+load("@aspect_bazel_lib//lib:write_source_files.bzl", "write_source_files")
+load("@aspect_rules_ts//ts:defs.bzl", "ts_config")
+load("@npm//:defs.bzl", "npm_link_all_packages")
+
 # Root package: shared workspace configuration and repository-level generated files.
 # User-facing artifacts keep role-named targets in their owning packages (for example
 # //memcontainers/kernel/rust:kernel, //web:app, and //memcontainers/tests/e2e:core).
@@ -7,8 +11,6 @@ exports_files([
     "zig_index.json",
 ])
 
-load("@aspect_rules_ts//ts:defs.bzl", "ts_config")
-
 # The one shared TypeScript config for the whole JS workspace (hosts/js, sdk-js/, the contract TS
 # descriptors). mc_ts_project (//bazel:ts.bzl) pins every TS target to this — one config, no drift.
 ts_config(
@@ -17,20 +19,16 @@ ts_config(
     visibility = ["//visibility:public"],
 )
 
-load("@npm//:defs.bzl", "npm_link_all_packages")
-
 # Link the root package's npm deps (typescript, @types/bun) into //:node_modules/* so the TS targets
 # (the JS host, the @mc/* SDK) can depend on them.
 npm_link_all_packages(name = "node_modules")
 
-load("@aspect_bazel_lib//lib:write_source_files.bzl", "write_source_files")
-
 write_source_files(
     name = "update-readme-badges",
+    diff_test_failure_message = "README image-size badges are stale. Run `bazel run //docs:update-readme-badges`.",
     files = {
         "README.md": "//docs:readme_with_badges",
     },
-    diff_test_failure_message = "README image-size badges are stale. Run `bazel run //docs:update-readme-badges`.",
     suggested_update_target = "//docs:update-readme-badges",
     visibility = ["//visibility:public"],
 )

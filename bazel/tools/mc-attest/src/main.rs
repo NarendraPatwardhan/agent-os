@@ -15,8 +15,8 @@
 use std::process::ExitCode;
 
 use constants_rust::{
-    tier_caps, CAP_AMBIENT, CAP_FS_READ, CAP_FS_WRITE, CAP_MOUNT, CAP_NET, CAP_PERSIST, CAP_SCRATCH,
-    CAP_SPAWN, TIER_FULL, TIER_ISOLATED, TIER_READ_ONLY, TIER_READ_WRITE,
+    tier_caps, CAP_AMBIENT, CAP_FS_READ, CAP_FS_WRITE, CAP_MOUNT, CAP_NET, CAP_PERSIST,
+    CAP_SCRATCH, CAP_SPAWN, TIER_FULL, TIER_ISOLATED, TIER_READ_ONLY, TIER_READ_WRITE,
 };
 use mc_rust::{SYSCALL_CAPS, SYSCALL_NAMES};
 
@@ -202,12 +202,16 @@ fn attest(wasm: &[u8]) -> Result<(), String> {
     // the kernel grants it to serve only that name. A server without the section is malformed; a
     // section that is present (server or not) must carry a grammar-valid name, the same shape the
     // kernel's svc_serve/svc_connect gate enforces, so the build catches a bad name before boot.
-    let serves = imps.iter().any(|(m, n)| m == "mc" && n == "mc_sys_svc_serve");
+    let serves = imps
+        .iter()
+        .any(|(m, n)| m == "mc" && n == "mc_sys_svc_serve");
     match custom_section(wasm, "mc_service") {
         None if serves => {
-            return Err("imports svc_serve but has no mc_service section (a resident service must \
+            return Err(
+                "imports svc_serve but has no mc_service section (a resident service must \
                         declare its name, SYSTEMS.md)"
-                .to_string());
+                    .to_string(),
+            );
         }
         Some(p) => {
             let name = String::from_utf8_lossy(&p).into_owned();
@@ -226,11 +230,15 @@ fn attest(wasm: &[u8]) -> Result<(), String> {
         // extends). A stray wasi/env import means the boundary leaked — fail the build, don't silently
         // skip it (the gap that let mc_program ship un-attested).
         if module != "mc" {
-            violations.push(format!("non-mc import `{module}::{name}` (a guest imports only `mc`)"));
+            violations.push(format!(
+                "non-mc import `{module}::{name}` (a guest imports only `mc`)"
+            ));
             continue;
         }
         if !SYSCALL_NAMES.contains(&name.as_str()) {
-            violations.push(format!("unknown mc import `{name}` (imports must be declared syscalls)"));
+            violations.push(format!(
+                "unknown mc import `{name}` (imports must be declared syscalls)"
+            ));
             continue;
         }
         let floor = match SYSCALL_CAPS.iter().find(|(s, _)| *s == name) {
@@ -249,7 +257,10 @@ fn attest(wasm: &[u8]) -> Result<(), String> {
     if violations.is_empty() {
         Ok(())
     } else {
-        Err(format!("tier `{tier_str}` cannot use: {}", violations.join(", ")))
+        Err(format!(
+            "tier `{tier_str}` cannot use: {}",
+            violations.join(", ")
+        ))
     }
 }
 

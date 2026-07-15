@@ -11,19 +11,19 @@
  * Focus is :focus-visible + outline only. Disabled is explicit muted
  * color, never opacity.
  */
-import * as stylex from '@stylexjs/stylex';
-import { color } from './tokens/color.stylex.js';
-import { font, fontSize, fontWeight, tracking } from './tokens/type.stylex.js';
-import { space } from './tokens/space.stylex.js';
-import { size } from './tokens/size.stylex.js';
-import { radius } from './tokens/radius.stylex.js';
-import { duration, easing } from './tokens/motion.stylex.js';
-import { media } from './tokens/media.stylex.js';
+import * as stylex from "@stylexjs/stylex";
+import { color } from "./tokens/color.stylex.js";
+import { font, fontSize, fontWeight, tracking } from "./tokens/type.stylex.js";
+import { space } from "./tokens/space.stylex.js";
+import { size } from "./tokens/size.stylex.js";
+import { radius } from "./tokens/radius.stylex.js";
+import { duration, easing } from "./tokens/motion.stylex.js";
+import { media } from "./tokens/media.stylex.js";
 
 /* Skeleton sweep lives here because keyframes cannot cross files. */
 const sweep = stylex.keyframes({
-  from: { transform: 'translateX(-100%)' },
-  to: { transform: 'translateX(100%)' },
+  from: { transform: "translateX(-100%)" },
+  to: { transform: "translateX(100%)" },
 });
 
 export const controls = stylex.create({
@@ -32,78 +32,78 @@ export const controls = stylex.create({
    * theme scope it recolors with zero extra markup.
    * ------------------------------------------------------------------ */
   button: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
     gap: space.s2,
     height: size.controlMd,
-    minHeight: { default: null, [media.pointerCoarse]: '44px' },
+    minHeight: { default: null, [media.pointerCoarse]: "44px" },
     paddingInline: space.s4,
-    borderWidth: '1px',
-    borderStyle: 'solid',
-    borderColor: 'transparent',
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: "transparent",
     borderRadius: radius.control,
     backgroundColor: {
       default: color.accent,
-      ':hover': color.accentHover,
-      ':disabled': color.bgSunken,
+      ":hover": color.accentHover,
+      ":disabled": color.bgSunken,
     },
     color: {
       default: color.accentContrast,
-      ':disabled': color.inkDisabled,
+      ":disabled": color.inkDisabled,
     },
     fontFamily: font.sans,
     fontSize: fontSize.body,
     fontWeight: fontWeight.medium,
     letterSpacing: tracking.ui,
-    lineHeight: '1',
-    whiteSpace: 'nowrap',
-    textDecorationLine: 'none',
-    cursor: { default: 'pointer', ':disabled': 'not-allowed' },
-    userSelect: 'none',
-    transitionProperty: 'background-color, border-color, color, transform',
+    lineHeight: "1",
+    whiteSpace: "nowrap",
+    textDecorationLine: "none",
+    cursor: { default: "pointer", ":disabled": "not-allowed" },
+    userSelect: "none",
+    transitionProperty: "background-color, border-color, color, transform",
     transitionDuration: duration.fast,
     transitionTimingFunction: easing.out,
-    transform: { default: null, ':active': 'translateY(0.5px)' },
-    pointerEvents: { default: null, ':disabled': 'none' },
-    outlineWidth: { default: null, ':focus-visible': '2px' },
-    outlineStyle: { default: null, ':focus-visible': 'solid' },
-    outlineColor: { default: null, ':focus-visible': color.signal },
-    outlineOffset: { default: null, ':focus-visible': '2px' },
+    transform: { default: null, ":active": "translateY(0.5px)" },
+    pointerEvents: { default: null, ":disabled": "none" },
+    outlineWidth: { default: null, ":focus-visible": "2px" },
+    outlineStyle: { default: null, ":focus-visible": "solid" },
+    outlineColor: { default: null, ":focus-visible": color.signal },
+    outlineOffset: { default: null, ":focus-visible": "2px" },
   },
   buttonGhost: {
     backgroundColor: {
-      default: 'transparent',
-      ':hover': 'color-mix(in oklab, currentColor 6%, transparent)',
-      ':disabled': 'transparent',
+      default: "transparent",
+      ":hover": "color-mix(in oklab, currentColor 6%, transparent)",
+      ":disabled": "transparent",
     },
-    color: { default: color.ink, ':disabled': color.inkDisabled },
+    color: { default: color.ink, ":disabled": color.inkDisabled },
     borderColor: {
       default: color.borderStrong,
-      ':hover': color.borderHover,
-      ':disabled': color.border,
+      ":hover": color.borderHover,
+      ":disabled": color.border,
     },
   },
   buttonQuiet: {
     backgroundColor: {
-      default: 'transparent',
-      ':hover': 'color-mix(in oklab, currentColor 8%, transparent)',
-      ':disabled': 'transparent',
+      default: "transparent",
+      ":hover": "color-mix(in oklab, currentColor 8%, transparent)",
+      ":disabled": "transparent",
     },
     color: {
       default: color.inkMuted,
-      ':hover': color.ink,
-      ':disabled': color.inkDisabled,
+      ":hover": color.ink,
+      ":disabled": color.inkDisabled,
     },
-    borderColor: 'transparent',
+    borderColor: "transparent",
   },
   buttonDanger: {
     backgroundColor: {
       default: color.dangerBase,
-      ':hover': color.dangerHover,
-      ':disabled': color.bgSunken,
+      ":hover": color.dangerHover,
+      ":disabled": color.bgSunken,
     },
-    color: { default: color.dangerContrast, ':disabled': color.inkDisabled },
+    color: { default: color.dangerContrast, ":disabled": color.inkDisabled },
   },
   buttonSm: {
     height: size.controlSm,
@@ -117,9 +117,9 @@ export const controls = stylex.create({
   },
   /* Square icon button — REQUIRES aria-label. */
   buttonIcon: {
-    aspectRatio: '1',
+    aspectRatio: "1",
     paddingInline: 0,
-    minWidth: { default: null, [media.pointerCoarse]: '44px' },
+    minWidth: { default: null, [media.pointerCoarse]: "44px" },
   },
 
   /* --------------------------------------------------------------------
@@ -129,47 +129,47 @@ export const controls = stylex.create({
    * leaves signal blue. For non-Base-UI markup, apply fieldInvalid.
    * ------------------------------------------------------------------ */
   field: {
-    display: 'block',
-    width: '100%',
+    display: "block",
+    width: "100%",
     height: size.controlMd,
-    minHeight: { default: null, [media.pointerCoarse]: '44px' },
+    minHeight: { default: null, [media.pointerCoarse]: "44px" },
     paddingInline: space.s3,
-    borderWidth: '1px',
-    borderStyle: 'solid',
+    borderWidth: "1px",
+    borderStyle: "solid",
     borderColor: {
       default: color.borderStrong,
-      ':hover': color.borderHover,
-      ':disabled': color.border,
-      '[data-invalid]': color.dangerBorder,
+      ":hover": color.borderHover,
+      ":disabled": color.border,
+      "[data-invalid]": color.dangerBorder,
     },
     borderRadius: radius.control,
-    backgroundColor: { default: color.bgPanel, ':disabled': color.bgSunken },
-    color: { default: color.ink, ':disabled': color.inkDisabled },
+    backgroundColor: { default: color.bgPanel, ":disabled": color.bgSunken },
+    color: { default: color.ink, ":disabled": color.inkDisabled },
     fontFamily: font.sans,
     fontSize: fontSize.body,
     letterSpacing: tracking.ui,
-    transitionProperty: 'border-color',
+    transitionProperty: "border-color",
     transitionDuration: duration.fast,
     transitionTimingFunction: easing.out,
-    '::placeholder': { color: color.inkSubtle },
-    outlineWidth: { default: null, ':focus-visible': '2px' },
-    outlineStyle: { default: null, ':focus-visible': 'solid' },
+    "::placeholder": { color: color.inkSubtle },
+    outlineWidth: { default: null, ":focus-visible": "2px" },
+    outlineStyle: { default: null, ":focus-visible": "solid" },
     outlineColor: {
       default: null,
-      ':focus-visible': color.signal,
-      '[data-invalid]:focus-visible': color.dangerBase,
+      ":focus-visible": color.signal,
+      "[data-invalid]:focus-visible": color.dangerBase,
     },
-    outlineOffset: { default: null, ':focus-visible': '2px' },
+    outlineOffset: { default: null, ":focus-visible": "2px" },
   },
   fieldMultiline: {
-    height: 'auto',
+    height: "auto",
     minHeight: size.controlLg,
     paddingBlock: space.s2,
-    resize: 'vertical',
+    resize: "vertical",
   },
   fieldInvalid: {
-    borderColor: { default: color.dangerBorder, ':hover': color.dangerBorder },
-    outlineColor: { default: null, ':focus-visible': color.dangerBase },
+    borderColor: { default: color.dangerBorder, ":hover": color.dangerBorder },
+    outlineColor: { default: null, ":focus-visible": color.dangerBase },
   },
 
   /* --------------------------------------------------------------------
@@ -182,32 +182,32 @@ export const controls = stylex.create({
    * ------------------------------------------------------------------ */
   interactive: {
     borderRadius: radius.control,
-    cursor: 'pointer',
+    cursor: "pointer",
     backgroundColor: {
-      default: 'transparent',
-      ':hover': 'color-mix(in oklab, currentColor 7%, transparent)',
-      ':active': 'color-mix(in oklab, currentColor 12%, transparent)',
+      default: "transparent",
+      ":hover": "color-mix(in oklab, currentColor 7%, transparent)",
+      ":active": "color-mix(in oklab, currentColor 12%, transparent)",
     },
-    transitionProperty: 'background-color, color',
+    transitionProperty: "background-color, color",
     transitionDuration: duration.fast,
     transitionTimingFunction: easing.out,
-    outlineWidth: { default: null, ':focus-visible': '2px' },
-    outlineStyle: { default: null, ':focus-visible': 'solid' },
-    outlineColor: { default: null, ':focus-visible': color.signal },
-    outlineOffset: { default: null, ':focus-visible': '-2px' },
+    outlineWidth: { default: null, ":focus-visible": "2px" },
+    outlineStyle: { default: null, ":focus-visible": "solid" },
+    outlineColor: { default: null, ":focus-visible": color.signal },
+    outlineOffset: { default: null, ":focus-visible": "-2px" },
   },
   interactiveSelected: {
     backgroundColor: {
       default: color.frost,
-      ':hover': color.frostHover,
-      ':active': color.frostHover,
+      ":hover": color.frostHover,
+      ":active": color.frostHover,
     },
     color: color.ink,
   },
   interactiveDisabled: {
     color: color.inkDisabled,
-    backgroundColor: 'transparent',
-    pointerEvents: 'none',
+    backgroundColor: "transparent",
+    pointerEvents: "none",
   },
 
   /* --------------------------------------------------------------------
@@ -215,23 +215,23 @@ export const controls = stylex.create({
    *   stylex.props(controls.badge, controls.statusSuccess)
    * ------------------------------------------------------------------ */
   badge: {
-    display: 'inline-flex',
-    alignItems: 'center',
+    display: "inline-flex",
+    alignItems: "center",
     gap: space.s1,
     paddingInline: space.s2,
-    paddingBlock: '3px',
+    paddingBlock: "3px",
     borderRadius: radius.pill,
-    borderWidth: '1px',
-    borderStyle: 'solid',
+    borderWidth: "1px",
+    borderStyle: "solid",
     borderColor: color.border,
     fontFamily: font.mono,
     fontSize: fontSize.caption,
     fontWeight: fontWeight.medium,
-    lineHeight: '1',
+    lineHeight: "1",
     letterSpacing: tracking.eyebrow,
-    textTransform: 'uppercase',
-    whiteSpace: 'nowrap',
-    fontVariantNumeric: 'tabular-nums',
+    textTransform: "uppercase",
+    whiteSpace: "nowrap",
+    fontVariantNumeric: "tabular-nums",
   },
 
   /* Status treatments — soft bg + matching text + matching border as ONE
@@ -260,26 +260,26 @@ export const controls = stylex.create({
   statusDangerSolid: {
     backgroundColor: color.dangerBase,
     color: color.dangerContrast,
-    borderColor: 'transparent',
+    borderColor: "transparent",
   },
   statusSuccessSolid: {
     backgroundColor: color.successBase,
     color: color.successContrast,
-    borderColor: 'transparent',
+    borderColor: "transparent",
   },
 
   /* --------------------------------------------------------------------
    * KBD — keyboard hint chip. Honest ornament.
    * ------------------------------------------------------------------ */
   kbd: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minWidth: '20px',
-    minHeight: '20px',
-    paddingInline: '5px',
-    borderWidth: '1px',
-    borderStyle: 'solid',
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    minWidth: "20px",
+    minHeight: "20px",
+    paddingInline: "5px",
+    borderWidth: "1px",
+    borderStyle: "solid",
     borderColor: color.border,
     borderRadius: radius.r1,
     backgroundColor: color.bgSunken,
@@ -287,7 +287,7 @@ export const controls = stylex.create({
     fontFamily: font.mono,
     fontSize: fontSize.caption,
     fontWeight: fontWeight.medium,
-    lineHeight: '1',
+    lineHeight: "1",
   },
 
   /* --------------------------------------------------------------------
@@ -295,33 +295,33 @@ export const controls = stylex.create({
    * and hide content). Sweep collapses under reduced motion.
    * ------------------------------------------------------------------ */
   skeleton: {
-    position: 'relative',
-    overflow: 'hidden',
+    position: "relative",
+    overflow: "hidden",
     backgroundColor: color.bgSunken,
     borderRadius: radius.chip,
-    color: 'transparent',
-    userSelect: 'none',
-    pointerEvents: 'none',
-    '::after': {
+    color: "transparent",
+    userSelect: "none",
+    pointerEvents: "none",
+    "::after": {
       content: '""',
-      position: 'absolute',
+      position: "absolute",
       top: 0,
       right: 0,
       bottom: 0,
       left: 0,
-      transform: 'translateX(-100%)',
+      transform: "translateX(-100%)",
       backgroundImage:
-        'linear-gradient(90deg, transparent, light-dark(oklch(1 0 0 / 0.6), oklch(1 0 0 / 0.06)), transparent)',
+        "linear-gradient(90deg, transparent, light-dark(oklch(1 0 0 / 0.6), oklch(1 0 0 / 0.06)), transparent)",
       animationName: sweep,
-      animationDuration: '1.4s',
+      animationDuration: "1.4s",
       animationTimingFunction: easing.out,
-      animationIterationCount: 'infinite',
+      animationIterationCount: "infinite",
     },
   },
   skeletonStill: {
     /* Compose after skeleton under prefers-reduced-motion contexts that
      * the app manages, or for static placeholders. */
-    '::after': { animationName: 'none' },
+    "::after": { animationName: "none" },
   },
 
   /* --------------------------------------------------------------------
@@ -330,28 +330,28 @@ export const controls = stylex.create({
    * ------------------------------------------------------------------ */
   link: {
     color: color.ink,
-    textDecorationLine: 'underline',
+    textDecorationLine: "underline",
     textDecorationColor: {
       default: color.linkUnderline,
-      ':hover': color.linkUnderlineHover,
+      ":hover": color.linkUnderlineHover,
     },
-    textDecorationThickness: '1px',
-    textUnderlineOffset: '0.15em',
-    transitionProperty: 'text-decoration-color',
+    textDecorationThickness: "1px",
+    textUnderlineOffset: "0.15em",
+    transitionProperty: "text-decoration-color",
     transitionDuration: duration.fast,
     transitionTimingFunction: easing.out,
-    outlineWidth: { default: null, ':focus-visible': '2px' },
-    outlineStyle: { default: null, ':focus-visible': 'solid' },
-    outlineColor: { default: null, ':focus-visible': color.signal },
-    outlineOffset: { default: null, ':focus-visible': '2px' },
+    outlineWidth: { default: null, ":focus-visible": "2px" },
+    outlineStyle: { default: null, ":focus-visible": "solid" },
+    outlineColor: { default: null, ":focus-visible": color.signal },
+    outlineOffset: { default: null, ":focus-visible": "2px" },
   },
 
   /* Reusable focus ring for custom interactive elements not covered by a
    * recipe above (e.g. a canvas node). Same channel, same hue. */
   focusRing: {
-    outlineWidth: { default: null, ':focus-visible': '2px' },
-    outlineStyle: { default: null, ':focus-visible': 'solid' },
-    outlineColor: { default: null, ':focus-visible': color.signal },
-    outlineOffset: { default: null, ':focus-visible': '2px' },
+    outlineWidth: { default: null, ":focus-visible": "2px" },
+    outlineStyle: { default: null, ":focus-visible": "solid" },
+    outlineColor: { default: null, ":focus-visible": color.signal },
+    outlineOffset: { default: null, ":focus-visible": "2px" },
   },
 });

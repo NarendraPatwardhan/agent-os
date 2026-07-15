@@ -132,7 +132,11 @@ export function ConfirmDialog({
       </header>
       {children ? <div {...stylex.props(styles.body)}>{children}</div> : null}
       <footer {...stylex.props(styles.footer)}>
-        <button type="button" onClick={onCancel} {...stylex.props(controls.button, controls.buttonQuiet)}>
+        <button
+          type="button"
+          onClick={onCancel}
+          {...stylex.props(controls.button, controls.buttonQuiet)}
+        >
           {cancelLabel}
         </button>
         <span {...stylex.props(accentSignal)}>

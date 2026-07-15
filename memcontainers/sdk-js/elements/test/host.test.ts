@@ -42,16 +42,37 @@ function testDecide(): void {
   const host = {} as VmHost;
 
   const explicit = decideVmSource({ explicitVm: vm, providedHost: host, standaloneAllowed: true });
-  assert(explicit.kind === "explicit" && explicit.vm === vm, "explicit .vm must win over everything");
+  assert(
+    explicit.kind === "explicit" && explicit.vm === vm,
+    "explicit .vm must win over everything",
+  );
 
-  const provided = decideVmSource({ explicitVm: undefined, providedHost: host, standaloneAllowed: true });
-  assert(provided.kind === "provided" && provided.host === host, "provider must beat standalone boot");
+  const provided = decideVmSource({
+    explicitVm: undefined,
+    providedHost: host,
+    standaloneAllowed: true,
+  });
+  assert(
+    provided.kind === "provided" && provided.host === host,
+    "provider must beat standalone boot",
+  );
 
-  const standalone = decideVmSource({ explicitVm: undefined, providedHost: undefined, standaloneAllowed: true });
+  const standalone = decideVmSource({
+    explicitVm: undefined,
+    providedHost: undefined,
+    standaloneAllowed: true,
+  });
   assert(standalone.kind === "standalone", "standalone when allowed and nothing is provided");
 
-  const undecided = decideVmSource({ explicitVm: undefined, providedHost: undefined, standaloneAllowed: false });
-  assert(undecided.kind === "undecided", "undecided when standalone is not allowed (a late provider may still bind)");
+  const undecided = decideVmSource({
+    explicitVm: undefined,
+    providedHost: undefined,
+    standaloneAllowed: false,
+  });
+  assert(
+    undecided.kind === "undecided",
+    "undecided when standalone is not allowed (a late provider may still bind)",
+  );
 
   console.log("phase: decideVmSource priority explicit > provided > standalone > undecided OK");
 }
@@ -81,7 +102,8 @@ async function main(): Promise<void> {
     server.listen(0, "127.0.0.1", () => resolve());
   });
   const address = server.address();
-  if (!address || typeof address === "string") throw new Error("artifact server did not bind a TCP port");
+  if (!address || typeof address === "string")
+    throw new Error("artifact server did not bind a TCP port");
   const origin = `http://127.0.0.1:${address.port}`;
   setArtifactSources({ kernel: `${origin}/kernel.wasm`, image: `${origin}/image.tar` });
 
@@ -119,7 +141,10 @@ async function main(): Promise<void> {
     host.subscribe((vm) => {
       lateVm = vm;
     })();
-    assert(lateVm === baseVm, "a subscriber added after boot must fire immediately with the current VM");
+    assert(
+      lateVm === baseVm,
+      "a subscriber added after boot must fire immediately with the current VM",
+    );
     unsub();
 
     const snap = await host.snapshot();
@@ -147,7 +172,10 @@ async function main(): Promise<void> {
     opened.push(restored);
     assert(restored !== baseVm, "restore must produce a new VM");
     assert(host.vm === restored, "restore must swap in the new VM");
-    assert(swappedTo === restored, "restore must notify subscribers with the new VM (bound widgets re-bind)");
+    assert(
+      swappedTo === restored,
+      "restore must notify subscribers with the new VM (bound widgets re-bind)",
+    );
     unsubRestore();
     unsubWatch();
     console.log("phase: restore swaps the VM and notifies subscribers OK");

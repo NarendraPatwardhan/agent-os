@@ -35,7 +35,9 @@ async function main(): Promise<void> {
 
   const bootTicks = host.bootToPrompt();
   if (!host.atPrompt()) {
-    throw new Error(`kernel did not reach a shell prompt within the boot budget (${bootTicks} ticks)`);
+    throw new Error(
+      `kernel did not reach a shell prompt within the boot budget (${bootTicks} ticks)`,
+    );
   }
 
   // 1) A real command through the control-channel exec path: captured stdout + the real exit code.
@@ -86,7 +88,8 @@ async function main(): Promise<void> {
   //    the complete runnable memory image against that one full baseline.
   host.writeFile("/tmp/incremental", new TextEncoder().encode("thin"));
   const incremental = await host.snapshotIncremental(snap);
-  if (incremental.length >= snap.length) throw new Error("small mutation did not produce a thin snapshot");
+  if (incremental.length >= snap.length)
+    throw new Error("small mutation did not produce a thin snapshot");
   const thinRestored = await new KernelHostBuilder(wasm)
     .deterministic()
     .withStdout(discard)

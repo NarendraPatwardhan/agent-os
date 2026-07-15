@@ -4,7 +4,9 @@ import { fileURLToPath } from "node:url";
 
 const docs = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repo = resolve(docs, "..");
-const markdownFiles = readdirSync(docs).filter((name) => name.endsWith(".md")).sort();
+const markdownFiles = readdirSync(docs)
+  .filter((name) => name.endsWith(".md"))
+  .sort();
 const failures = [];
 
 function fail(message) {
@@ -91,7 +93,9 @@ function exportedNames(path, directFunctions = false) {
   const source = readFileSync(path, "utf8");
   const names = new Set();
   if (directFunctions) {
-    for (const match of source.matchAll(/^export\s+(?:async\s+)?(?:function|class|const)\s+([A-Za-z_$][\w$]*)/gm)) {
+    for (const match of source.matchAll(
+      /^export\s+(?:async\s+)?(?:function|class|const)\s+([A-Za-z_$][\w$]*)/gm,
+    )) {
       names.add(match[1]);
     }
     return names;
@@ -100,7 +104,12 @@ function exportedNames(path, directFunctions = false) {
     for (const part of match[1].split(",")) {
       const clean = part.replace(/\/\/.*$/gm, "").trim();
       if (!clean || clean.startsWith("type ")) continue;
-      names.add(clean.split(/\s+as\s+/).at(-1).trim());
+      names.add(
+        clean
+          .split(/\s+as\s+/)
+          .at(-1)
+          .trim(),
+      );
     }
   }
   return names;
@@ -129,7 +138,10 @@ function declaredMethods(body) {
   return methods;
 }
 
-const memcontainerSource = readFileSync(join(repo, "memcontainers/sdk-js/core/src/memcontainer.ts"), "utf8");
+const memcontainerSource = readFileSync(
+  join(repo, "memcontainers/sdk-js/core/src/memcontainer.ts"),
+  "utf8",
+);
 const typeSource = readFileSync(join(repo, "memcontainers/sdk-js/core/src/types.ts"), "utf8");
 const llbSource = readFileSync(join(repo, "memcontainers/sdk-js/core/src/llb.ts"), "utf8");
 const actualSurfaces = {
@@ -141,14 +153,16 @@ const actualSurfaces = {
 
 for (const [surface, definition] of Object.entries(manifest.surfaces)) {
   try {
-    if (!statSync(join(repo, definition.source)).isFile()) fail(`${surface}: missing source ${definition.source}`);
+    if (!statSync(join(repo, definition.source)).isFile())
+      fail(`${surface}: missing source ${definition.source}`);
   } catch {
     fail(`${surface}: missing source ${definition.source}`);
   }
   const classified = new Set(definition.members);
   const actualMembers = actualSurfaces[surface] ?? new Set();
   for (const member of actualMembers) {
-    if (!classified.has(member)) fail(`${surface}: public member ${member} is not classified in api-surface.json`);
+    if (!classified.has(member))
+      fail(`${surface}: public member ${member} is not classified in api-surface.json`);
   }
   for (const member of classified) {
     if (!actualMembers.has(member)) fail(`${surface}: stale member ${member} in api-surface.json`);
@@ -159,7 +173,10 @@ for (const [surface, definition] of Object.entries(manifest.surfaces)) {
     continue;
   }
   for (const member of classified) {
-    if (!document.text.includes(`\`${member}`) && !document.text.includes(`\`${surface}.${member}`)) {
+    if (
+      !document.text.includes(`\`${member}`) &&
+      !document.text.includes(`\`${surface}.${member}`)
+    ) {
       fail(`${surface}.${member}: not named in ${definition.doc}`);
     }
   }
@@ -168,10 +185,12 @@ for (const [surface, definition] of Object.entries(manifest.surfaces)) {
 for (const [pkg, exports] of Object.entries(manifest.packages)) {
   const classified = new Set(exports.map((entry) => entry.name));
   for (const name of actual[pkg] ?? []) {
-    if (!classified.has(name)) fail(`${pkg}: exported value ${name} is not classified in api-surface.json`);
+    if (!classified.has(name))
+      fail(`${pkg}: exported value ${name} is not classified in api-surface.json`);
   }
   for (const entry of exports) {
-    if (!(actual[pkg] ?? new Set()).has(entry.name)) fail(`${pkg}: stale manifest entry ${entry.name}`);
+    if (!(actual[pkg] ?? new Set()).has(entry.name))
+      fail(`${pkg}: stale manifest entry ${entry.name}`);
     const target = join(docs, entry.doc);
     if (!statSync(target).isFile()) fail(`${pkg}.${entry.name}: missing document ${entry.doc}`);
   }
@@ -182,4 +201,6 @@ if (failures.length) {
   process.exit(1);
 }
 
-console.log(`DOCS OK — ${markdownFiles.length} pages; links, JS fences, and exported values verified.`);
+console.log(
+  `DOCS OK — ${markdownFiles.length} pages; links, JS fences, and exported values verified.`,
+);

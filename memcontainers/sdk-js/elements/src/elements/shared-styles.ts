@@ -15,7 +15,10 @@ export const baseStyles = css`
     box-sizing: border-box;
     display: block;
     color: var(--mc-fg, var(--fg, #1b1b1f));
-    font-family: var(--mc-font-sans, var(--font-sans, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif));
+    font-family: var(
+      --mc-font-sans,
+      var(--font-sans, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif)
+    );
     -webkit-font-smoothing: antialiased;
   }
   :host([hidden]) {

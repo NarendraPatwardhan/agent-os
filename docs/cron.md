@@ -23,13 +23,13 @@ const job = vm.cron(
 
 ## Schedule forms
 
-| Form | Example | Meaning |
-|---|---|---|
-| Milliseconds | `5000` | Fixed interval |
-| Interval string | `"@every 30s"` | Fixed wall-clock duration |
+| Form            | Example         | Meaning                                        |
+| --------------- | --------------- | ---------------------------------------------- |
+| Milliseconds    | `5000`          | Fixed interval                                 |
+| Interval string | `"@every 30s"`  | Fixed wall-clock duration                      |
 | Cron expression | `"0 9 * * 1-5"` | Five fields: minute, hour, day, month, weekday |
-| Macro | `"@daily"` | Named cron expression |
-| One shot | `"@reboot"` | Run once on the next event-loop turn |
+| Macro           | `"@daily"`      | Named cron expression                          |
+| One shot        | `"@reboot"`     | Run once on the next event-loop turn           |
 
 Intervals accept `ms`, `s`, `m`, `h`, `d`, and `w`, including compounds such as `1h30m`.
 
@@ -63,7 +63,7 @@ The run result contains the prompt's `session` event list.
 async (liveVm) => {
   const status = await liveVm.status();
   console.log(status);
-}
+};
 ```
 
 The callback receives the live `Vm` and may use any method. Its result is not retained in
@@ -71,27 +71,27 @@ The callback receives the live `Vm` and may use any method. Its result is not re
 
 ## Options
 
-| Field | Default | Meaning |
-|---|---|---|
-| `immediate` | `false` | Fire once on the next turn, then continue scheduling |
-| `maxRuns` | unlimited | Stop after this many firings |
-| `timezone` | `"local"` | Interpret cron expressions in local time or UTC |
-| `onRun` | none | Called after a successful action |
-| `onError` | none | Called when an action throws |
+| Field       | Default   | Meaning                                              |
+| ----------- | --------- | ---------------------------------------------------- |
+| `immediate` | `false`   | Fire once on the next turn, then continue scheduling |
+| `maxRuns`   | unlimited | Stop after this many firings                         |
+| `timezone`  | `"local"` | Interpret cron expressions in local time or UTC      |
+| `onRun`     | none      | Called after a successful action                     |
+| `onError`   | none      | Called when an action throws                         |
 
 Timezone does not affect interval schedules. A throwing action does not kill a repeating job. Without
 `onError`, that exception is swallowed so later firings still occur.
 
 ## `CronHandle`
 
-| Member | Meaning |
-|---|---|
-| `id` | Unique client-side job id |
-| `schedule` | Registered string, or `<number>ms` |
-| `runs` | Number of firings started |
-| `stopped` | Whether the job is permanently stopped |
-| `next()` | Next `Date`, or `null` |
-| `stop()` | Idempotently stop and clear the timer |
+| Member     | Meaning                                |
+| ---------- | -------------------------------------- |
+| `id`       | Unique client-side job id              |
+| `schedule` | Registered string, or `<number>ms`     |
+| `runs`     | Number of firings started              |
+| `stopped`  | Whether the job is permanently stopped |
+| `next()`   | Next `Date`, or `null`                 |
+| `stop()`   | Idempotently stop and clear the timer  |
 
 ```js
 console.log(job.id, job.next());

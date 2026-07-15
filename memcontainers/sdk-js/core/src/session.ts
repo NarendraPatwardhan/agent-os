@@ -4,7 +4,10 @@ export const SESSION_PROMPT_ENV = "MC_SESSION_PROMPT_PATH";
 
 const AGENT_SEGMENT = /^[A-Za-z0-9_.-]+$/;
 
-export function sessionExec(agentType: string, promptPath: string): { cmd: string; opts: ExecOptions } {
+export function sessionExec(
+  agentType: string,
+  promptPath: string,
+): { cmd: string; opts: ExecOptions } {
   assertSessionAgentType(agentType);
   return {
     cmd: `${agentType} "$${SESSION_PROMPT_ENV}"`,
@@ -14,7 +17,9 @@ export function sessionExec(agentType: string, promptPath: string): { cmd: strin
 
 export function assertSessionAgentType(agentType: string): void {
   if (!validSessionAgentType(agentType)) {
-    throw new Error("agentType must be a bare command or absolute guest path without shell metacharacters");
+    throw new Error(
+      "agentType must be a bare command or absolute guest path without shell metacharacters",
+    );
   }
 }
 
@@ -31,5 +36,11 @@ function validSessionAgentType(agentType: string): boolean {
 }
 
 function validSegment(part: string): boolean {
-  return part !== "" && part !== "." && part !== ".." && !part.startsWith("-") && AGENT_SEGMENT.test(part);
+  return (
+    part !== "" &&
+    part !== "." &&
+    part !== ".." &&
+    !part.startsWith("-") &&
+    AGENT_SEGMENT.test(part)
+  );
 }

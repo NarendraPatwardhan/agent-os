@@ -54,7 +54,13 @@ export function Hint({ children }: { children: ReactNode }) {
 // ── artifact download chips ───────────────────────────────────────────────────
 type Artifact = { readonly path: string; readonly size: number };
 
-const EXT_ICON: Record<string, IconId> = { xlsx: "xlsx", docx: "docx", pptx: "pptx", pdf: "pdf", db: "sqlite" };
+const EXT_ICON: Record<string, IconId> = {
+  xlsx: "xlsx",
+  docx: "docx",
+  pptx: "pptx",
+  pdf: "pdf",
+  db: "sqlite",
+};
 const EXT_MIME: Record<string, string> = {
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -99,7 +105,9 @@ export function useArtifacts(paths: readonly string[] | undefined): Artifacts {
     const vm = vmRef.current;
     if (!vm) return;
     const bytes = await vm.fs.read(artifact.path);
-    const blob = new Blob([bytes as BlobPart], { type: EXT_MIME[ext(artifact.path)] ?? "application/octet-stream" });
+    const blob = new Blob([bytes as BlobPart], {
+      type: EXT_MIME[ext(artifact.path)] ?? "application/octet-stream",
+    });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -129,12 +137,22 @@ export function useArtifacts(paths: readonly string[] | undefined): Artifacts {
 }
 
 /** The left panel frame: summary + notes header, then the driver's control surface. */
-export function ExampleShell({ example, left, terminal }: { example: Example; left: ReactNode; terminal: ReactNode }) {
+export function ExampleShell({
+  example,
+  left,
+  terminal,
+}: {
+  example: Example;
+  left: ReactNode;
+  terminal: ReactNode;
+}) {
   return (
     <>
       <div {...stylex.props(styles.content, motion.enter)}>
         <div {...stylex.props(styles.contentInner)}>
-          {example.summary ? <p {...stylex.props(styles.lede, text.body)}>{example.summary}</p> : null}
+          {example.summary ? (
+            <p {...stylex.props(styles.lede, text.body)}>{example.summary}</p>
+          ) : null}
           {example.notes && example.notes.length > 0 ? (
             <ul {...stylex.props(styles.notes)}>
               {example.notes.map((n) => (

@@ -19,20 +19,20 @@ shell.write(new TextEncoder().encode("ls -la\n"));
 
 ### Options
 
-| Field | Values | Default |
-|---|---|---|
-| `language` | `"sh"`, `"luau"` | `"sh"` |
+| Field      | Values           | Default |
+| ---------- | ---------------- | ------- |
+| `language` | `"sh"`, `"luau"` | `"sh"`  |
 
 `language: "luau"` writes `luau\n` into a shell and enters the Luau REPL. Exiting that nested process
 returns to the underlying shell.
 
 ### Shell methods
 
-| Method | Meaning |
-|---|---|
+| Method         | Meaning                                                    |
+| -------------- | ---------------------------------------------------------- |
 | `on(callback)` | Subscribe to output bytes; returns an unsubscribe function |
-| `write(data)` | Send string or bytes as keystrokes/input |
-| `history()` | Return all bytes emitted so far |
+| `write(data)`  | Send string or bytes as keystrokes/input                   |
+| `history()`    | Return all bytes emitted so far                            |
 
 `write()` is not line buffered. Append `\n` when you mean Enter. `history()` is used by terminals to
 replay boot output and scrollback after attaching.
@@ -60,11 +60,11 @@ unsafe names are rejected rather than interpolated into a command.
 
 ### Session handle
 
-| Member | Meaning |
-|---|---|
-| `id` | Session identifier |
+| Member         | Meaning                                                            |
+| -------------- | ------------------------------------------------------------------ |
+| `id`           | Session identifier                                                 |
 | `prompt(text)` | Run one prompt and resolve with all framed events from that prompt |
-| `on(callback)` | Subscribe to events as they arrive; returns unsubscribe |
+| `on(callback)` | Subscribe to events as they arrive; returns unsubscribe            |
 
 A session event always has `type` and may have `text` plus program-defined JSON fields. Consumers
 should switch on known `type` values and preserve or ignore unknown fields for forward compatibility.
@@ -85,13 +85,13 @@ Each prompt is executed as a Luau script. Structured log-battery events become `
 
 ## When to use which API
 
-| Need | API |
-|---|---|
-| One command and complete stdout/stderr | `vm.exec()` |
-| One multi-step Luau program | `vm.luau()` |
-| Human or xterm interaction | `vm.shell()` |
-| Structured streaming agent events | `vm.session()` |
-| Raw resident-service protocol | `vm.serviceCall()` |
+| Need                                   | API                |
+| -------------------------------------- | ------------------ |
+| One command and complete stdout/stderr | `vm.exec()`        |
+| One multi-step Luau program            | `vm.luau()`        |
+| Human or xterm interaction             | `vm.shell()`       |
+| Structured streaming agent events      | `vm.session()`     |
+| Raw resident-service protocol          | `vm.serviceCall()` |
 
 ## Resident services
 

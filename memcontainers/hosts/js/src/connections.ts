@@ -184,7 +184,11 @@ function validateCredential(credential: ConnectionCredential): void {
       }
       return;
     case "query":
-      if (credential.name.length === 0 || hasControl(credential.name) || !validSecret(credential.value)) {
+      if (
+        credential.name.length === 0 ||
+        hasControl(credential.name) ||
+        !validSecret(credential.value)
+      ) {
         throw new Error("invalid query credential");
       }
   }

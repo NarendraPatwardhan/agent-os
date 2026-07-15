@@ -10,11 +10,7 @@ Importing the package registers all four elements. Include its stylesheet for li
 editor presentation.
 
 ```js
-import {
-  defineElements,
-  prefetchArtifacts,
-  setArtifactSources,
-} from "@mc/elements";
+import { defineElements, prefetchArtifacts, setArtifactSources } from "@mc/elements";
 import "@mc/elements/styles.css";
 
 setArtifactSources({
@@ -40,11 +36,11 @@ explicit registration flows and is a no-op during SSR where `customElements` doe
 
 Configures the page-global artifact registry before elements boot.
 
-| Field | Meaning |
-|---|---|
-| `kernel` | Default kernel URL |
-| `image` | Default image URL; updates `default` and `base:latest` aliases |
-| `images` | Additional or overriding logical-name-to-URL map |
+| Field             | Meaning                                                         |
+| ----------------- | --------------------------------------------------------------- |
+| `kernel`          | Default kernel URL                                              |
+| `image`           | Default image URL; updates `default` and `base:latest` aliases  |
+| `images`          | Additional or overriding logical-name-to-URL map                |
 | `catalogCompiler` | Compiler URL for connections and runtime host-tool registration |
 
 URLs are fetched once per URL and cached as promises. A failed fetch is removed from the cache so a
@@ -83,48 +79,48 @@ and an optional status slot, but no VM chrome.
 
 ### Attributes and properties
 
-| Name | Shape | Default | Meaning |
-|---|---|---|---|
-| `runtime` | `local`, `browser`, `remote` | `browser` | Hosting runtime |
-| `image` | logical name or URL | default image | Image source |
-| `net` | boolean | false | Enable network |
-| `endpoint` | string | none | Remote endpoint |
-| `token` | string | none | Remote bearer token |
-| `deterministic` | boolean | false | Repeatable clock/RNG |
-| `kernel` | URL string | registered default | Kernel override |
-| `show-status` | boolean | false | Render default status pill |
-| `controlledVm` | JavaScript `Vm` property | none | Externally owned VM |
+| Name            | Shape                        | Default            | Meaning                    |
+| --------------- | ---------------------------- | ------------------ | -------------------------- |
+| `runtime`       | `local`, `browser`, `remote` | `browser`          | Hosting runtime            |
+| `image`         | logical name or URL          | default image      | Image source               |
+| `net`           | boolean                      | false              | Enable network             |
+| `endpoint`      | string                       | none               | Remote endpoint            |
+| `token`         | string                       | none               | Remote bearer token        |
+| `deterministic` | boolean                      | false              | Repeatable clock/RNG       |
+| `kernel`        | URL string                   | registered default | Kernel override            |
+| `show-status`   | boolean                      | false              | Render default status pill |
+| `controlledVm`  | JavaScript `Vm` property     | none               | Externally owned VM        |
 
 Controlled mode never closes the supplied VM. Set `controlledVm` before connection. The application
 remains responsible for its lifetime.
 
 ### Read-only properties
 
-| Property | Meaning |
-|---|---|
-| `vm` | Current VM, or `undefined` before boot |
-| `vmHost` | Stable host/context object |
+| Property | Meaning                                |
+| -------- | -------------------------------------- |
+| `vm`     | Current VM, or `undefined` before boot |
+| `vmHost` | Stable host/context object             |
 
 ### Methods
 
-| Method | Meaning |
-|---|---|
-| `snapshot()` | Capture current VM |
-| `fork()` | Return an independent VM; sandbox keeps the original |
+| Method           | Meaning                                                  |
+| ---------------- | -------------------------------------------------------- |
+| `snapshot()`     | Capture current VM                                       |
+| `fork()`         | Return an independent VM; sandbox keeps the original     |
 | `restore(bytes)` | Replace owned VM with restored state and rebind children |
-| `reboot()` | Replace owned VM with a fresh boot from the same options |
+| `reboot()`       | Replace owned VM with a fresh boot from the same options |
 
 Restore and reboot are rejected in controlled mode because the sandbox does not own the external
 handle it would replace.
 
 ### Events
 
-| Event | `detail` | Meaning |
-|---|---|---|
-| `mc-boot` | `{ vm }` | Initial VM is ready |
-| `mc-error` | `{ error }` | Boot failed; error is display text |
-| `mc-fork` | `{ vm }` | `fork()` returned a branch |
-| `mc-vm-changed` | `{ vm }` | Restore or reboot swapped the provided VM |
+| Event           | `detail`    | Meaning                                   |
+| --------------- | ----------- | ----------------------------------------- |
+| `mc-boot`       | `{ vm }`    | Initial VM is ready                       |
+| `mc-error`      | `{ error }` | Boot failed; error is display text        |
+| `mc-fork`       | `{ vm }`    | `fork()` returned a branch                |
+| `mc-vm-changed` | `{ vm }`    | Restore or reboot swapped the provided VM |
 
 Events bubble and cross shadow boundaries.
 
@@ -139,51 +135,46 @@ An xterm terminal bound to `vm.shell()`. It may live inside a sandbox, receive `
 standalone VM.
 
 ```html
-<mc-terminal
-  image="loom"
-  label="agent · browser"
-  cursor="block"
-  line-height="1.5"
-></mc-terminal>
+<mc-terminal image="loom" label="agent · browser" cursor="block" line-height="1.5"></mc-terminal>
 ```
 
 ### Attributes and properties
 
-| Name | Default | Meaning |
-|---|---|---|
-| `cols`, `rows` | auto-fit | Fixed terminal grid dimensions |
-| `cursor` | `bar` | `bar`, `block`, or `underline` |
-| `line-height` | xterm default | Line-height multiplier |
-| `language` | `sh` | Dedicated `sh` or `luau` shell |
-| `replay-history` | true | Replay shell history on attach |
-| `net` | false | Standalone VM network |
-| `runtime` | `browser` | Standalone runtime |
-| `image`, `endpoint`, `token`, `kernel` | none/default | Standalone boot inputs |
-| `deterministic` | false | Standalone deterministic mode |
-| `label` | browser-live caption | Title-bar text |
-| `working` | false | Reflected working indicator |
-| `manual` | false | Wait for explicit VM; never standalone-boot |
-| `vm` | none | Explicit JavaScript VM property |
+| Name                                   | Default              | Meaning                                     |
+| -------------------------------------- | -------------------- | ------------------------------------------- |
+| `cols`, `rows`                         | auto-fit             | Fixed terminal grid dimensions              |
+| `cursor`                               | `bar`                | `bar`, `block`, or `underline`              |
+| `line-height`                          | xterm default        | Line-height multiplier                      |
+| `language`                             | `sh`                 | Dedicated `sh` or `luau` shell              |
+| `replay-history`                       | true                 | Replay shell history on attach              |
+| `net`                                  | false                | Standalone VM network                       |
+| `runtime`                              | `browser`            | Standalone runtime                          |
+| `image`, `endpoint`, `token`, `kernel` | none/default         | Standalone boot inputs                      |
+| `deterministic`                        | false                | Standalone deterministic mode               |
+| `label`                                | browser-live caption | Title-bar text                              |
+| `working`                              | false                | Reflected working indicator                 |
+| `manual`                               | false                | Wait for explicit VM; never standalone-boot |
+| `vm`                                   | none                 | Explicit JavaScript VM property             |
 
 ### Methods and properties
 
-| Member | Meaning |
-|---|---|
-| `attach(vm)` | Bind an externally supplied VM |
-| `send(data)` | Write string/bytes to shell input |
-| `focus()` | Focus xterm |
-| `fit()` | Refit to element dimensions |
+| Member                 | Meaning                                            |
+| ---------------------- | -------------------------------------------------- |
+| `attach(vm)`           | Bind an externally supplied VM                     |
+| `send(data)`           | Write string/bytes to shell input                  |
+| `focus()`              | Focus xterm                                        |
+| `fit()`                | Refit to element dimensions                        |
 | `ensureColumns(count)` | Widen backing grid and permit horizontal scrolling |
-| `terminal` | Underlying xterm instance for advanced use |
+| `terminal`             | Underlying xterm instance for advanced use         |
 
 ### Events
 
-| Event | `detail` |
-|---|---|
-| `mc-ready` | `{ vm }` |
-| `mc-data` | user-input `Uint8Array` |
-| `mc-output` | `{ bytes, text }` |
-| `mc-exit` | none |
+| Event       | `detail`                |
+| ----------- | ----------------------- |
+| `mc-ready`  | `{ vm }`                |
+| `mc-data`   | user-input `Uint8Array` |
+| `mc-output` | `{ bytes, text }`       |
+| `mc-exit`   | none                    |
 
 `mc-data` describes terminal user input. Calling `send()` writes to the shell but does not synthesize a
 user event.
@@ -209,8 +200,7 @@ or save a guest path.
 
 ```html
 <mc-editor language="javascript" line-wrapping>
-  const result = await vm.exec("date");
-  console.log(result.stdout);
+  const result = await vm.exec("date"); console.log(result.stdout);
 </mc-editor>
 ```
 
@@ -219,41 +209,41 @@ There is no `path` attribute. Applications bind files through JavaScript using `
 
 ### Attributes and properties
 
-| Name | Default | Meaning |
-|---|---|---|
-| `language` | `javascript` | `javascript`, `typescript`, or `plain` editor grammar |
-| `value` | empty/seed text | Two-way source string |
-| `read-only` | false | Disable edits and caret |
-| `line-wrapping` | false | Soft-wrap lines |
-| `auto-focus` | false | Focus after mount |
-| `extensions` | none | JavaScript-only CodeMirror extension list set before render |
+| Name            | Default         | Meaning                                                     |
+| --------------- | --------------- | ----------------------------------------------------------- |
+| `language`      | `javascript`    | `javascript`, `typescript`, or `plain` editor grammar       |
+| `value`         | empty/seed text | Two-way source string                                       |
+| `read-only`     | false           | Disable edits and caret                                     |
+| `line-wrapping` | false           | Soft-wrap lines                                             |
+| `auto-focus`    | false           | Focus after mount                                           |
+| `extensions`    | none            | JavaScript-only CodeMirror extension list set before render |
 
 The editor lazily imports CodeMirror. Changing language/read-only/wrapping reconfigures it without
 discarding document or undo history.
 
 ### Methods, properties, and events
 
-| Member | Meaning |
-|---|---|
-| `source` | Current editor text |
-| `run()` | Emit `mc-run` |
-| `focus()` | Focus CodeMirror |
-| `input` | Standard bubbling change event |
-| `mc-run` | Bubbling event with `{ source }`; also emitted by Mod-Enter |
+| Member    | Meaning                                                     |
+| --------- | ----------------------------------------------------------- |
+| `source`  | Current editor text                                         |
+| `run()`   | Emit `mc-run`                                               |
+| `focus()` | Focus CodeMirror                                            |
+| `input`   | Standard bubbling change event                              |
+| `mc-run`  | Bubbling event with `{ source }`; also emitted by Mod-Enter |
 
 ## `VmHost`
 
 `makeVmHost(bootOptions)` starts booting immediately and returns a stable lifecycle object:
 
-| Member | Meaning |
-|---|---|
-| `vm`, `shell` | Current resources, initially undefined |
-| `ready` | First-boot promise |
-| `createOpts` | Resolved byte-based options after load |
-| `subscribe(callback)` | Observe VM swaps; returns unsubscribe |
-| `snapshot`, `fork` | Act on current VM |
-| `restore`, `reboot` | Swap owned VM and notify subscribers |
-| `close` | Dispose owned VM |
+| Member                | Meaning                                |
+| --------------------- | -------------------------------------- |
+| `vm`, `shell`         | Current resources, initially undefined |
+| `ready`               | First-boot promise                     |
+| `createOpts`          | Resolved byte-based options after load |
+| `subscribe(callback)` | Observe VM swaps; returns unsubscribe  |
+| `snapshot`, `fork`    | Act on current VM                      |
+| `restore`, `reboot`   | Swap owned VM and notify subscribers   |
+| `close`               | Dispose owned VM                       |
 
 `resolveCreateOptions(bootOptions)` performs only artifact/runtime resolution and returns ordinary core
 create options. It is useful when an application wants the element loader but owns `mc.create()` itself.

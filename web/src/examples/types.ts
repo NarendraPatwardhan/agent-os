@@ -130,7 +130,8 @@ export type Example =
         readonly labStore?: boolean;
       })
   // Read-only code / step list; play reboots and runs the declarative steps.
-  | (Base & Boot & { readonly kind: "commands"; readonly steps: readonly Step[]; readonly code?: Code })
+  | (Base &
+      Boot & { readonly kind: "commands"; readonly steps: readonly Step[]; readonly code?: Code })
   // Editable code run on a VM booted WITH a declared connection; optional fields
   // collect user inputs (credentials, repos, spec URLs) that fill the template and
   // reach the program as `fields.‹key›`.

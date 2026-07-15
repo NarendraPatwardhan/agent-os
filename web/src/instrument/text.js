@@ -8,9 +8,9 @@
  * Roles never use the `font` shorthand (it silently resets
  * font-variant-numeric and would wipe tabular figures).
  */
-import * as stylex from '@stylexjs/stylex';
-import { color } from './tokens/color.stylex.js';
-import { font, fontSize, fontWeight, leading, tracking } from './tokens/type.stylex.js';
+import * as stylex from "@stylexjs/stylex";
+import { color } from "./tokens/color.stylex.js";
+import { font, fontSize, fontWeight, leading, tracking } from "./tokens/type.stylex.js";
 
 export const text = stylex.create({
   /* ----- Hierarchy roles ----- */
@@ -20,7 +20,7 @@ export const text = stylex.create({
     fontWeight: fontWeight.strong,
     lineHeight: leading.display,
     letterSpacing: tracking.display,
-    textWrap: 'balance',
+    textWrap: "balance",
   },
   heading: {
     fontFamily: font.display,
@@ -28,7 +28,7 @@ export const text = stylex.create({
     fontWeight: fontWeight.strong,
     lineHeight: leading.heading,
     letterSpacing: tracking.heading,
-    textWrap: 'balance',
+    textWrap: "balance",
   },
   title: {
     fontFamily: font.sans,
@@ -43,7 +43,7 @@ export const text = stylex.create({
     fontWeight: fontWeight.regular,
     lineHeight: leading.body,
     letterSpacing: tracking.ui,
-    textWrap: 'pretty',
+    textWrap: "pretty",
   },
   bodyLg: {
     fontFamily: font.sans,
@@ -51,7 +51,7 @@ export const text = stylex.create({
     fontWeight: fontWeight.regular,
     lineHeight: leading.bodyLg,
     letterSpacing: tracking.ui,
-    textWrap: 'pretty',
+    textWrap: "pretty",
   },
   label: {
     fontFamily: font.sans,
@@ -73,9 +73,9 @@ export const text = stylex.create({
     fontFamily: font.mono,
     fontSize: fontSize.caption,
     fontWeight: fontWeight.medium,
-    lineHeight: '1',
+    lineHeight: "1",
     letterSpacing: tracking.eyebrow,
-    textTransform: 'uppercase',
+    textTransform: "uppercase",
     color: color.inkSubtle,
   },
   micro: {
@@ -100,7 +100,7 @@ export const text = stylex.create({
     fontWeight: fontWeight.regular,
     lineHeight: leading.bodyLg,
     letterSpacing: tracking.normal,
-    textWrap: 'pretty',
+    textWrap: "pretty",
   },
 
   /* The italic swap — the system's one flourish.
@@ -108,9 +108,9 @@ export const text = stylex.create({
    * One per screen. Never in chrome, never in body copy. */
   swap: {
     fontFamily: font.serif,
-    fontStyle: 'italic',
+    fontStyle: "italic",
     fontWeight: fontWeight.regular,
-    fontSize: '1.02em', // optical match against the sans
+    fontSize: "1.02em", // optical match against the sans
     letterSpacing: tracking.normal,
   },
 
@@ -125,33 +125,33 @@ export const text = stylex.create({
   accent: { color: color.accentText },
 
   /* ----- Numerals ----- */
-  numeral: { fontVariantNumeric: 'tabular-nums' },
+  numeral: { fontVariantNumeric: "tabular-nums" },
   /* Muted decimals: <span {...props(text.numeralUnit)}>.50 USD</span>
    * inside a numeral — magnitude first, precision on request. */
   numeralUnit: {
     color: color.inkSubtle,
-    fontSize: '0.6em',
+    fontSize: "0.6em",
     fontWeight: fontWeight.regular,
     letterSpacing: tracking.normal,
   },
 
   /* ----- Line behavior ----- */
   truncate: {
-    overflow: 'hidden',
-    textOverflow: 'ellipsis',
-    whiteSpace: 'nowrap',
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
   },
 
   /* Links: ink with a gray underline that darkens on hover.
    * Navigation, not alarm — the signal's jobs are focus and info only. */
   link: {
     color: color.ink,
-    textDecorationLine: 'underline',
+    textDecorationLine: "underline",
     textDecorationColor: {
       default: color.linkUnderline,
-      ':hover': color.linkUnderlineHover,
+      ":hover": color.linkUnderlineHover,
     },
-    textDecorationThickness: '1px',
-    textUnderlineOffset: '0.18em',
+    textDecorationThickness: "1px",
+    textUnderlineOffset: "0.18em",
   },
 });

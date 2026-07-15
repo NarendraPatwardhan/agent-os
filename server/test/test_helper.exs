@@ -17,7 +17,9 @@ defmodule AgentOS.TestSidecarProvider do
   end
 
   def create(_context, %{body: "oversized-metadata"}, _opts),
-    do: {:ok, make_ref(), :binary.copy(<<0>>, AgentOS.Contracts.Sidecar.sidecar_max_result_bytes() + 1)}
+    do:
+      {:ok, make_ref(),
+       :binary.copy(<<0>>, AgentOS.Contracts.Sidecar.sidecar_max_result_bytes() + 1)}
 
   def create(_context, request, _opts), do: {:ok, make_ref(), request.body}
   def inspect(_context, _ref, _opts), do: {:ok, %{state: :ready}}
@@ -63,7 +65,9 @@ end
 
 sidecar_providers =
   if System.get_env("AGENT_OS_KVM_E2E") == "1" do
-    work_root = Path.join(System.tmp_dir!(), "agentos-firecracker-#{System.unique_integer([:positive])}")
+    work_root =
+      Path.join(System.tmp_dir!(), "agentos-firecracker-#{System.unique_integer([:positive])}")
+
     Application.put_env(:agent_os, :firecracker_test_root, work_root)
 
     [

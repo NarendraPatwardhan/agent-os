@@ -9,9 +9,7 @@ called through the host-call bridge. The guest never receives the host resource 
 const vm = await mc.create({
   kernel,
   image,
-  mounts: [
-    { path: "/mnt/data", driver, readOnly: true },
-  ],
+  mounts: [{ path: "/mnt/data", driver, readOnly: true }],
 });
 ```
 
@@ -33,20 +31,20 @@ reference.
 
 Read operations are required:
 
-| Method | Result |
-|---|---|
-| `open(path)` | Whole file as `Uint8Array` |
-| `stat(path)` | `{ kind: "file" | "dir", size }` |
-| `readdir(path)` | List of `{ name, kind }` |
+| Method          | Result                     |
+| --------------- | -------------------------- |
+| `open(path)`    | Whole file as `Uint8Array` |
+| `stat(path)`    | `{ kind: "file"            | "dir", size }` |
+| `readdir(path)` | List of `{ name, kind }`   |
 
 Write operations are optional:
 
-| Method | Meaning |
-|---|---|
-| `write(path, data)` | Create or truncate a file |
-| `mkdir(path)` | Create one directory |
-| `unlink(path)` | Remove a file or empty directory |
-| `rename(from, to)` | Rename within the mount |
+| Method              | Meaning                          |
+| ------------------- | -------------------------------- |
+| `write(path, data)` | Create or truncate a file        |
+| `mkdir(path)`       | Create one directory             |
+| `unlink(path)`      | Remove a file or empty directory |
+| `rename(from, to)`  | Rename within the mount          |
 
 All paths are absolute relative to the mounted root: `/foo/bar`, not the guest's full
 `/mnt/data/foo/bar` path.
@@ -78,15 +76,15 @@ const driver = {
 
 Throw an `Error` with one of these `code` values to produce a specific guest errno:
 
-| Code | Meaning |
-|---|---|
-| `ENOENT` | Missing path |
-| `EACCES` | Access denied |
-| `EEXIST` | Path already exists |
-| `ENOTDIR` | Expected directory |
-| `EISDIR` | Expected file |
-| `ENOTEMPTY` | Directory not empty |
-| `EINVAL` | Invalid argument/path |
+| Code        | Meaning               |
+| ----------- | --------------------- |
+| `ENOENT`    | Missing path          |
+| `EACCES`    | Access denied         |
+| `EEXIST`    | Path already exists   |
+| `ENOTDIR`   | Expected directory    |
+| `EISDIR`    | Expected file         |
+| `ENOTEMPTY` | Directory not empty   |
+| `EINVAL`    | Invalid argument/path |
 
 An uncoded exception maps to `EIO`. Do not expose cloud SDK errors or host filesystem paths directly
 to untrusted guest code.
@@ -130,13 +128,13 @@ const driver = s3({
 });
 ```
 
-| Option | Default | Meaning |
-|---|---|---|
-| `bucket` | required | S3 bucket name |
-| `region` | `us-east-1` | Signing/endpoint region |
-| `prefix` | empty | Key prefix exposed as mount root |
-| `credentials` | anonymous | Static SigV4 credentials |
-| `readOnly` | false | Driver-level read-only preference |
+| Option        | Default     | Meaning                           |
+| ------------- | ----------- | --------------------------------- |
+| `bucket`      | required    | S3 bucket name                    |
+| `region`      | `us-east-1` | Signing/endpoint region           |
+| `prefix`      | empty       | Key prefix exposed as mount root  |
+| `credentials` | anonymous   | Static SigV4 credentials          |
+| `readOnly`    | false       | Driver-level read-only preference |
 
 Anonymous requests omit SigV4-only headers so public buckets can remain CORS-simple. Credentialed
 requests require the browser/host to reach the bucket endpoint.
@@ -145,11 +143,11 @@ requests require the browser/host to reach the bucket endpoint.
 
 Read-mostly retrieval-as-files driver.
 
-| Option | Required | Meaning |
-|---|---|---|
-| `embed(query)` | yes | Resolve the decoded query to a numeric vector |
-| `search(vector, query)` | yes | Return the text representation of the matching results |
-| `readOnly` | no | Driver-level read-only preference; defaults to `true` |
+| Option                  | Required | Meaning                                                |
+| ----------------------- | -------- | ------------------------------------------------------ |
+| `embed(query)`          | yes      | Resolve the decoded query to a numeric vector          |
+| `search(vector, query)` | yes      | Return the text representation of the matching results |
+| `readOnly`              | no       | Driver-level read-only preference; defaults to `true`  |
 
 ```js
 const driver = vectorStore({

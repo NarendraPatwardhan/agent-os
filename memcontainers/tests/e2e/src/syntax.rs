@@ -31,19 +31,32 @@ doc:close()
     .expect("write syntax e2e script");
     let out = s.run_for_output_heavy("luau /tmp/syntax-e2e.luau");
     assert!(out.contains("lua\tluau\r\n"), "language registry:\n{out}");
-    assert!(out.contains("source_file\t1\t0\r\n"), "concrete/semantic root and diagnostics:\n{out}");
-    assert!(out.contains("name\tgreet\r\n"), "concrete query capture:\n{out}");
-    assert!(out.contains("local function hello"), "incremental edit:\n{out}");
+    assert!(
+        out.contains("source_file\t1\t0\r\n"),
+        "concrete/semantic root and diagnostics:\n{out}"
+    );
+    assert!(
+        out.contains("name\tgreet\r\n"),
+        "concrete query capture:\n{out}"
+    );
+    assert!(
+        out.contains("local function hello"),
+        "incremental edit:\n{out}"
+    );
     assert!(out.contains("return \"ok\" end"), "guarded rewrite:\n{out}");
 }
 
 #[test]
 fn syntax_service_is_lazy_and_survives_stale_handles() {
     let mut s = boot_loom();
-    assert_eq!(s.run_for_output("ls /svc | grep '^syntax$' || echo cold"), "cold\r\n");
-    s.host.write_file(
-        "/tmp/stale.luau",
-        br#"local syntax = require("syntax")
+    assert_eq!(
+        s.run_for_output("ls /svc | grep '^syntax$' || echo cold"),
+        "cold\r\n"
+    );
+    s.host
+        .write_file(
+            "/tmp/stale.luau",
+            br#"local syntax = require("syntax")
 local doc = syntax.open("lua", "return 1")
 local old = doc:root()
 doc:edit({ { start_byte = 7, old_end_byte = 8, replacement = "2" } })
@@ -51,9 +64,15 @@ local ok, err = pcall(function() return doc:node(old.handle) end)
 print(ok, string.find(tostring(err), "stale_handle") ~= nil)
 doc:close()
 "#,
-    )
-    .expect("write stale handle script");
-    assert_eq!(s.run_for_output_heavy("luau /tmp/stale.luau"), "false\ttrue\r\n");
+        )
+        .expect("write stale handle script");
+    assert_eq!(
+        s.run_for_output_heavy("luau /tmp/stale.luau"),
+        "false\ttrue\r\n"
+    );
     assert_eq!(s.run_for_output("ls /svc | grep '^syntax$'"), "syntax\r\n");
-    assert_eq!(s.run_for_output("syntax languages"), "lua\t5.4.0\r\nluau\t0.725.0\r\n");
+    assert_eq!(
+        s.run_for_output("syntax languages"),
+        "lua\t5.4.0\r\nluau\t0.725.0\r\n"
+    );
 }

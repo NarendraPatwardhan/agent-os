@@ -17,7 +17,15 @@ function driverError(code: DriverError["code"], message: string): DriverError {
   return e;
 }
 
-const FS_CODES = ["ENOENT", "EACCES", "EEXIST", "ENOTDIR", "EISDIR", "ENOTEMPTY", "EINVAL"] as const;
+const FS_CODES = [
+  "ENOENT",
+  "EACCES",
+  "EEXIST",
+  "ENOTDIR",
+  "EISDIR",
+  "ENOTEMPTY",
+  "EINVAL",
+] as const;
 
 /** Map a Node `fs` error to a {@link DriverError} (Node already uses POSIX codes). */
 function mapFsError(e: unknown): DriverError {
@@ -188,7 +196,9 @@ function uriEncode(str: string, keepSlash: boolean): string {
   let out = "";
   for (const ch of str) {
     if (/[A-Za-z0-9\-_.~]/.test(ch) || (keepSlash && ch === "/")) out += ch;
-    else for (const b of new TextEncoder().encode(ch)) out += `%${b.toString(16).toUpperCase().padStart(2, "0")}`;
+    else
+      for (const b of new TextEncoder().encode(ch))
+        out += `%${b.toString(16).toUpperCase().padStart(2, "0")}`;
   }
   return out;
 }
@@ -274,7 +284,8 @@ export function s3(opts: S3Options): Driver {
       "x-amz-date": amzDate,
       ...(extraHeaders ?? {}),
     };
-    if (opts.credentials?.sessionToken) headers["x-amz-security-token"] = opts.credentials.sessionToken;
+    if (opts.credentials?.sessionToken)
+      headers["x-amz-security-token"] = opts.credentials.sessionToken;
 
     const signedHeaderNames = Object.keys(headers)
       .map((h) => h.toLowerCase())

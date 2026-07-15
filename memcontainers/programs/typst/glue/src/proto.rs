@@ -67,8 +67,8 @@ impl Header {
 
 /// Build a response frame: `[u32 LE header_len][header JSON][body…]`.
 pub fn frame(header: &Header, body: &[u8]) -> Vec<u8> {
-    let hjson = serde_json::to_vec(header)
-        .unwrap_or_else(|_| br#"{"ok":false,"diagnostics":[]}"#.to_vec());
+    let hjson =
+        serde_json::to_vec(header).unwrap_or_else(|_| br#"{"ok":false,"diagnostics":[]}"#.to_vec());
     let mut out = Vec::with_capacity(4 + hjson.len() + body.len());
     out.extend_from_slice(&(hjson.len() as u32).to_le_bytes());
     out.extend_from_slice(&hjson);

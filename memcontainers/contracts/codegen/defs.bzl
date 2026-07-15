@@ -12,10 +12,10 @@ Consumers depend on the library target (`//memcontainers/contracts:mc_rust`, …
 output — never the committed `gen/` copy, so the binding a build uses is never stale.
 """
 
+load("@aspect_bazel_lib//lib:write_source_files.bzl", "write_source_files")
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@rules_rust//rust:defs.bzl", "rust_library")
 load("@rules_zig//zig:defs.bzl", "zig_library")
-load("@bazel_skylib//rules:build_test.bzl", "build_test")
-load("@aspect_bazel_lib//lib:write_source_files.bzl", "write_source_files")
 
 _EXT = {
     "rust": "rs",

@@ -1,4 +1,7 @@
 # discord/rules_erlang enters the build via //MODULE.bazel's archive_override (B3: the dep
 # fetch + patches live in-tree, the source does not). This package exists only to export the
 # override patch so the archive_override can reference it by label.
-exports_files(["patches/0001-erlang_config-otp-public-visibility.patch"])
+exports_files([
+    "patches/0001-erlang_config-otp-public-visibility.patch",
+    "patches/0002-quiet-install-lock-contention.patch",
+])

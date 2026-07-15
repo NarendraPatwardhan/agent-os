@@ -16,7 +16,14 @@ export function ApprovalDriver({ example }: { example: Extract<Example, { kind: 
   const vmRef = useRef<Vm | null>(null);
   const [pending, setPending] = useState<ToolRequest | null>(null);
   const session = useVmSession({
-    onReady: (vm, s) => runProgram(editorRef.current?.source ?? example.code.source, vm, s, {}, { image: example.image ?? "loom" }),
+    onReady: (vm, s) =>
+      runProgram(
+        editorRef.current?.source ?? example.code.source,
+        vm,
+        s,
+        {},
+        { image: example.image ?? "loom" },
+      ),
   });
 
   useEffect(() => () => void vmRef.current?.close().catch(() => {}), []);
@@ -38,7 +45,9 @@ export function ApprovalDriver({ example }: { example: Extract<Example, { kind: 
         const vm = await mc.create({
           ...base,
           connections: [connection],
-          policies: [{ owner: "org", pattern: `${example.connection.ref}.*`, action: "require_approval" }],
+          policies: [
+            { owner: "org", pattern: `${example.connection.ref}.*`, action: "require_approval" },
+          ],
           onPermission: (req) => {
             if (req.kind === "network") {
               req.allow({ remember: "session" });
@@ -77,7 +86,12 @@ export function ApprovalDriver({ example }: { example: Extract<Example, { kind: 
         example={example}
         left={
           <div {...stylex.props(styles.codeWrap)}>
-            <mc-editor ref={editorRef} {...stylex.props(styles.editor)} value={example.code.source} language="typescript" />
+            <mc-editor
+              ref={editorRef}
+              {...stylex.props(styles.editor)}
+              value={example.code.source}
+              language="typescript"
+            />
             <PlayButton place="abs" onClick={play} label="Boot governed VM and run" />
           </div>
         }

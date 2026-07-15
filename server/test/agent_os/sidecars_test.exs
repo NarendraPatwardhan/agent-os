@@ -99,7 +99,9 @@ defmodule AgentOS.SidecarsTest do
 
   test "provider limits apply across grants of the same kind" do
     vm_id = id()
-    assert {:ok, _scope} = Sidecars.attach_vm(vm_id, self(), %{"left" => grant(), "right" => grant()})
+
+    assert {:ok, _scope} =
+             Sidecars.attach_vm(vm_id, self(), %{"left" => grant(), "right" => grant()})
 
     for {name, key} <- [{"left", "left-1"}, {"right", "right-1"}] do
       assert {:ok, _instance} =
@@ -127,7 +129,9 @@ defmodule AgentOS.SidecarsTest do
   test "clone grants are rejected until providers can produce independent state" do
     vm_id = id()
     clone = %{grant() | fork: Sidecar.sidecar_fork_clone()}
-    assert {:error, :sidecar_unsupported_fork_policy} = Sidecars.attach_vm(vm_id, self(), %{"echo" => clone})
+
+    assert {:error, :sidecar_unsupported_fork_policy} =
+             Sidecars.attach_vm(vm_id, self(), %{"echo" => clone})
   end
 
   test "lease renewal must leave time for a missed heartbeat" do
@@ -250,6 +254,7 @@ defmodule AgentOS.SidecarsTest do
              })
 
     assert [first_entry, second_entry] = AgentOS.Sidecars.Journal.Memory.pending()
+
     assert {first_entry.journal_id, first_entry.id, first_entry.tag} ==
              {first, "sc_abcdefghijkl", "first"}
 
@@ -263,11 +268,15 @@ defmodule AgentOS.SidecarsTest do
 
   defp await_open_scope(vm_id, attempts) do
     case Sidecars.list(vm_id) do
-      items when is_list(items) -> items
+      items when is_list(items) ->
+        items
+
       {:error, :sidecar_closing} when attempts > 0 ->
         Process.sleep(10)
         await_open_scope(vm_id, attempts - 1)
-      other -> flunk("sidecar scope did not reopen: #{inspect(other)}")
+
+      other ->
+        flunk("sidecar scope did not reopen: #{inspect(other)}")
     end
   end
 end

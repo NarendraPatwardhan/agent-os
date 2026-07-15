@@ -6,16 +6,17 @@ load("//bazel:mc_box.bzl", "mc_wasi_program")
 mc_wasi_program(
     name = "adapters",
     srcs = glob(["src/**/*.rs"]),
-    crate_root = "src/main.rs",
     crate_name = "adapters_svc",
-    tier = "full",
-    service = "adapters",
-    mem = 256 * 1024 * 1024,
-    fuel = 300000000000,
-    table = 40000,
+    crate_root = "src/main.rs",
     extra_rustc_flags = [
         "-Cstrip=symbols",
     ],
+    fuel = 300000000000,
+    mem = 256 * 1024 * 1024,
+    service = "adapters",
+    table = 40000,
+    tier = "full",
+    visibility = ["//visibility:public"],
     deps = [
         "//memcontainers/lib/parse:lib",
         "//memcontainers/sysroot/rust:lib",
@@ -23,5 +24,4 @@ mc_wasi_program(
         "@parse_crates//:serde_json",
         "@parse_crates//:serde_yaml",
     ],
-    visibility = ["//visibility:public"],
 )

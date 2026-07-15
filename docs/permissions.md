@@ -8,10 +8,14 @@ Capabilities are installed explicitly by the embedder.
 `permissions.fs` accepts:
 
 ```js
-"allow"
-"deny"
-{ allow: ["read"] }
-{ allow: ["read", "write"] }
+"allow";
+"deny";
+{
+  allow: ["read"];
+}
+{
+  allow: ["read", "write"];
+}
 ```
 
 This policy applies to guest-spawned work such as an internal agent. The host control surface remains
@@ -25,9 +29,11 @@ is the intersection of all relevant restrictions.
 `permissions.network` accepts:
 
 ```js
-"allow"
-"deny"
-{ allow: ["api.example.com", "objects.example.com"] }
+"allow";
+"deny";
+{
+  allow: ["api.example.com", "objects.example.com"];
+}
 ```
 
 Behavior:
@@ -64,25 +70,25 @@ callback exists, prompted operations fail closed.
 
 ### Network request
 
-| Field | Meaning |
-|---|---|
-| `id` | Host-generated request id |
-| `kind` | `"network"` |
-| `host` | Requested hostname |
-| `url` | Requested URL |
-| `allow({ remember? })` | Permit once or for the session |
-| `reject(message?)` | Deny with an optional host message |
+| Field                  | Meaning                            |
+| ---------------------- | ---------------------------------- |
+| `id`                   | Host-generated request id          |
+| `kind`                 | `"network"`                        |
+| `host`                 | Requested hostname                 |
+| `url`                  | Requested URL                      |
+| `allow({ remember? })` | Permit once or for the session     |
+| `reject(message?)`     | Deny with an optional host message |
 
 ### Tool-approval request
 
-| Field | Meaning |
-|---|---|
-| `id` | Host-generated request id |
-| `kind` | `"tool_approval"` |
-| `connection` | Resolved connection ref |
-| `method` | Actual outgoing HTTP method |
-| `url` | Actual outgoing URL |
-| `origin` | Credential recipient origin |
+| Field        | Meaning                            |
+| ------------ | ---------------------------------- |
+| `id`         | Host-generated request id          |
+| `kind`       | `"tool_approval"`                  |
+| `connection` | Resolved connection ref            |
+| `method`     | Actual outgoing HTTP method        |
+| `url`        | Actual outgoing URL                |
+| `origin`     | Credential recipient origin        |
 | `argsDigest` | Optional digest of arguments/facts |
 
 These facts are computed from the actual outgoing request. They are not trusted catalog prose
@@ -97,11 +103,11 @@ const policies = [
 ];
 ```
 
-| Field | Values |
-|---|---|
-| `owner` | `org`, `user` |
-| `pattern` | connection or coarser prefix |
-| `action` | `approve`, `require_approval`, `block` |
+| Field     | Values                                 |
+| --------- | -------------------------------------- |
+| `owner`   | `org`, `user`                          |
+| `pattern` | connection or coarser prefix           |
+| `action`  | `approve`, `require_approval`, `block` |
 
 Policy is connection-granular because credential splicing knows the connection, method, URL, and
 origin—not the catalog tool address. Valid patterns include:

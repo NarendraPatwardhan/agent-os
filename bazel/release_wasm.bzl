@@ -44,6 +44,7 @@ def _release_wasm_impl(ctx):
     lib = ctx.attr.lib[0]
     wasm = [f for f in lib[DefaultInfo].files.to_list() if f.extension == "wasm"][0]
     out = ctx.actions.declare_file(ctx.label.name + ".wasm")
+
     # Re-export the transitioned cdylib's .wasm under a stable name (kernel.wasm).
     ctx.actions.symlink(output = out, target_file = wasm)
     return [DefaultInfo(files = depset([out]), runfiles = ctx.runfiles(files = [out]))]

@@ -948,7 +948,11 @@ mod policy_tests {
         ConnectionPolicySet,
     };
 
-    fn rule(owner: ConnectionPolicyOwner, pattern: &str, action: ConnectionPolicyAction) -> ConnectionPolicyRule {
+    fn rule(
+        owner: ConnectionPolicyOwner,
+        pattern: &str,
+        action: ConnectionPolicyAction,
+    ) -> ConnectionPolicyRule {
         ConnectionPolicyRule {
             owner,
             pattern: pattern.into(),
@@ -961,21 +965,32 @@ mod policy_tests {
         use ConnectionPolicyAction::*;
         use ConnectionPolicyOwner::*;
         let addr = "github.org.main.*";
-        assert_eq!(ConnectionPolicySet::new(vec![]).unwrap().resolve(addr), None);
         assert_eq!(
-            ConnectionPolicySet::new(vec![rule(Org, "*", Block)]).unwrap().resolve(addr),
+            ConnectionPolicySet::new(vec![]).unwrap().resolve(addr),
+            None
+        );
+        assert_eq!(
+            ConnectionPolicySet::new(vec![rule(Org, "*", Block)])
+                .unwrap()
+                .resolve(addr),
             Some(Block)
         );
         assert_eq!(
-            ConnectionPolicySet::new(vec![rule(Org, "github.*", RequireApproval)]).unwrap().resolve(addr),
+            ConnectionPolicySet::new(vec![rule(Org, "github.*", RequireApproval)])
+                .unwrap()
+                .resolve(addr),
             Some(RequireApproval)
         );
         assert_eq!(
-            ConnectionPolicySet::new(vec![rule(User, "github.org.main.*", Approve)]).unwrap().resolve(addr),
+            ConnectionPolicySet::new(vec![rule(User, "github.org.main.*", Approve)])
+                .unwrap()
+                .resolve(addr),
             Some(Approve)
         );
         assert_eq!(
-            ConnectionPolicySet::new(vec![rule(Org, "github.org.other.*", Block)]).unwrap().resolve(addr),
+            ConnectionPolicySet::new(vec![rule(Org, "github.org.other.*", Block)])
+                .unwrap()
+                .resolve(addr),
             None
         );
     }
@@ -1028,7 +1043,10 @@ mod policy_tests {
         // The rejection is actionable, not a bare variant name: it points at connection granularity so a
         // user reaching for a per-tool rule learns why and what they CAN express.
         let msg = ConnectionPolicyError::InvalidPattern.message();
-        assert!(msg.contains("connection") && msg.contains("not an individual tool"), "{msg}");
+        assert!(
+            msg.contains("connection") && msg.contains("not an individual tool"),
+            "{msg}"
+        );
         for pat in ["*", "github.*", "github.org.*", "github.org.main.*"] {
             assert!(
                 ConnectionPolicySet::new(vec![rule(Org, pat, Block)]).is_ok(),
@@ -1194,16 +1212,34 @@ mod tests {
     fn catalog_apply_cas_is_idempotency_first() {
         let (a, b) = ("a".repeat(64), "b".repeat(64));
         // Idempotent: the incoming catalog already equals the live one — a no-op regardless of base.
-        assert_eq!(catalog_apply_decision(&a, &a, None), CatalogApplyDecision::NoOp);
-        assert_eq!(catalog_apply_decision(&a, &a, Some(&a)), CatalogApplyDecision::NoOp);
+        assert_eq!(
+            catalog_apply_decision(&a, &a, None),
+            CatalogApplyDecision::NoOp
+        );
+        assert_eq!(
+            catalog_apply_decision(&a, &a, Some(&a)),
+            CatalogApplyDecision::NoOp
+        );
         // The C1 regression: a retry after a lost response still carries the OLD base, but the live
         // catalog is already the result — this must be a no-op, NOT a conflict.
-        assert_eq!(catalog_apply_decision(&a, &a, Some(&b)), CatalogApplyDecision::NoOp);
+        assert_eq!(
+            catalog_apply_decision(&a, &a, Some(&b)),
+            CatalogApplyDecision::NoOp
+        );
         // A genuinely new result with no base, or a base that matches live, applies.
-        assert_eq!(catalog_apply_decision(&b, &a, None), CatalogApplyDecision::Apply);
-        assert_eq!(catalog_apply_decision(&b, &a, Some(&a)), CatalogApplyDecision::Apply);
+        assert_eq!(
+            catalog_apply_decision(&b, &a, None),
+            CatalogApplyDecision::Apply
+        );
+        assert_eq!(
+            catalog_apply_decision(&b, &a, Some(&a)),
+            CatalogApplyDecision::Apply
+        );
         // A genuinely new result against a stale base is a lost-update conflict.
-        assert_eq!(catalog_apply_decision(&b, &a, Some(&b)), CatalogApplyDecision::Conflict);
+        assert_eq!(
+            catalog_apply_decision(&b, &a, Some(&b)),
+            CatalogApplyDecision::Conflict
+        );
     }
 
     #[test]

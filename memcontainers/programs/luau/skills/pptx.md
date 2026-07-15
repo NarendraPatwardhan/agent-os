@@ -1,6 +1,6 @@
 ---
 name: memcontainer-pptx
-description: 'Create, read, edit, rearrange, and validate Microsoft PowerPoint .pptx presentations from inside a memcontainer or from a host agent using a memcontainer VM. Use this skill whenever the task mentions decks, slides, presentations, .pptx files, speaker notes, comments, templates, layouts, placeholders, images, charts, tables, bullets, backgrounds, shapes, slide duplication, slide ordering, or any presentation deliverable. Prefer the memcontainers Luau `pptx` library over JS/Python presentation libraries; use external renderers/readers only as validation when available.'
+description: "Create, read, edit, rearrange, and validate Microsoft PowerPoint .pptx presentations from inside a memcontainer or from a host agent using a memcontainer VM. Use this skill whenever the task mentions decks, slides, presentations, .pptx files, speaker notes, comments, templates, layouts, placeholders, images, charts, tables, bullets, backgrounds, shapes, slide duplication, slide ordering, or any presentation deliverable. Prefer the memcontainers Luau `pptx` library over JS/Python presentation libraries; use external renderers/readers only as validation when available."
 ---
 
 # Memcontainer PPTX

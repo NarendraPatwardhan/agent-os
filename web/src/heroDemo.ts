@@ -21,7 +21,10 @@ export interface AutoDemoHandle {
   cancel(): void;
 }
 
-export function runAutoDemo(write: DemoWriter, script: readonly string[] = DEFAULT_SCRIPT): AutoDemoHandle {
+export function runAutoDemo(
+  write: DemoWriter,
+  script: readonly string[] = DEFAULT_SCRIPT,
+): AutoDemoHandle {
   let cancelled = false;
   const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 

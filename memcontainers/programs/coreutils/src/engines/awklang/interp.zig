@@ -32,17 +32,17 @@ const Tok = union(enum) {
 const Kw = enum { BEGIN, END, function, @"if", @"else", @"while", @"for", do, @"break", @"continue", next, exit, @"return", delete, in, getline, print, printf };
 
 const keywords = std.StaticStringMap(Kw).initComptime(.{
-    .{ "BEGIN", .BEGIN }, .{ "END", .END }, .{ "function", .function }, .{ "func", .function },
-    .{ "if", .@"if" }, .{ "else", .@"else" }, .{ "while", .@"while" }, .{ "for", .@"for" },
-    .{ "do", .do }, .{ "break", .@"break" }, .{ "continue", .@"continue" }, .{ "next", .next },
-    .{ "exit", .exit }, .{ "return", .@"return" }, .{ "delete", .delete }, .{ "in", .in },
-    .{ "getline", .getline }, .{ "print", .print }, .{ "printf", .printf },
+    .{ "BEGIN", .BEGIN },     .{ "END", .END },          .{ "function", .function },    .{ "func", .function },
+    .{ "if", .@"if" },        .{ "else", .@"else" },     .{ "while", .@"while" },       .{ "for", .@"for" },
+    .{ "do", .do },           .{ "break", .@"break" },   .{ "continue", .@"continue" }, .{ "next", .next },
+    .{ "exit", .exit },       .{ "return", .@"return" }, .{ "delete", .delete },        .{ "in", .in },
+    .{ "getline", .getline }, .{ "print", .print },      .{ "printf", .printf },
 });
 
 const builtins = std.StaticStringMap(void).initComptime(.{
-    .{"length"}, .{"substr"}, .{"index"}, .{"split"}, .{"sub"}, .{"gsub"}, .{"match"},
-    .{"sprintf"}, .{"sin"}, .{"cos"}, .{"atan2"}, .{"exp"}, .{"log"}, .{"sqrt"}, .{"int"},
-    .{"rand"}, .{"srand"}, .{"tolower"}, .{"toupper"}, .{"system"}, .{"close"},
+    .{"length"},  .{"substr"}, .{"index"}, .{"split"},   .{"sub"},     .{"gsub"},   .{"match"},
+    .{"sprintf"}, .{"sin"},    .{"cos"},   .{"atan2"},   .{"exp"},     .{"log"},    .{"sqrt"},
+    .{"int"},     .{"rand"},   .{"srand"}, .{"tolower"}, .{"toupper"}, .{"system"}, .{"close"},
 });
 
 const Lexer = struct {
@@ -625,8 +625,9 @@ const Parser = struct {
     fn parseAssign(self: *Parser, in_print: bool) anyerror!*Expr {
         const l = try self.parseOr(in_print);
         const assign_ops = [_]struct { s: []const u8, op: u8 }{
-            .{ .s = "=", .op = '=' }, .{ .s = "+=", .op = '+' }, .{ .s = "-=", .op = '-' },
-            .{ .s = "*=", .op = '*' }, .{ .s = "/=", .op = '/' }, .{ .s = "%=", .op = '%' }, .{ .s = "^=", .op = '^' },
+            .{ .s = "=", .op = '=' },  .{ .s = "+=", .op = '+' }, .{ .s = "-=", .op = '-' },
+            .{ .s = "*=", .op = '*' }, .{ .s = "/=", .op = '/' }, .{ .s = "%=", .op = '%' },
+            .{ .s = "^=", .op = '^' },
         };
         for (assign_ops) |ao| {
             if (self.isOp(ao.s)) {

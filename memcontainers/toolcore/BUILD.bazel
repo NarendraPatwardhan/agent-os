@@ -17,7 +17,7 @@ rust_library(
 
 rust_opt_test(
     name = "test",
+    size = "small",
     crate = ":lib",
     edition = "2021",
-    size = "small",
 )

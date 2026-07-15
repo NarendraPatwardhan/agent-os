@@ -73,12 +73,16 @@ local rFontsXform = {
 	tag = "w:rFonts",
 	localName = "rFonts",
 	render = function(_, font)
-		if not font then return nil end
+		if not font then
+			return nil
+		end
 		return xml.element("w:rFonts", { ["w:ascii"] = font, ["w:hAnsi"] = font, ["w:cs"] = font })
 	end,
 	parse = function(_, el)
 		for _, a in ipairs(el.attributes) do
-			if a.name.local_ == "ascii" then return a.value end
+			if a.name.local_ == "ascii" then
+				return a.value
+			end
 		end
 		return nil
 	end,
@@ -89,23 +93,45 @@ local rFontsXform = {
 local rPrXform = xform.composite({
 	tag = "w:rPr",
 	children = {
-		{ key = "style", xform = xform.scalar({ tag = "w:rStyle", attr = "w:val", kind = "string" }) },
+		{
+			key = "style",
+			xform = xform.scalar({ tag = "w:rStyle", attr = "w:val", kind = "string" }),
+		},
 		{ key = "font", xform = rFontsXform },
-		{ key = "bold", xform = xform.scalar({ tag = "w:b", kind = "bool", boolStyle = "presence" }) },
-		{ key = "italic", xform = xform.scalar({ tag = "w:i", kind = "bool", boolStyle = "presence" }) },
-		{ key = "strike", xform = xform.scalar({ tag = "w:strike", kind = "bool", boolStyle = "presence" }) },
-		{ key = "color", xform = xform.scalar({ tag = "w:color", attr = "w:val", kind = "string" }) },
+		{
+			key = "bold",
+			xform = xform.scalar({ tag = "w:b", kind = "bool", boolStyle = "presence" }),
+		},
+		{
+			key = "italic",
+			xform = xform.scalar({ tag = "w:i", kind = "bool", boolStyle = "presence" }),
+		},
+		{
+			key = "strike",
+			xform = xform.scalar({ tag = "w:strike", kind = "bool", boolStyle = "presence" }),
+		},
+		{
+			key = "color",
+			xform = xform.scalar({ tag = "w:color", attr = "w:val", kind = "string" }),
+		},
 		{
 			key = "size",
 			xform = xform.scalar({
 				tag = "w:sz",
 				attr = "w:val",
 				kind = "int",
-				encode = function(pt) return tostring(math.floor(pt * 2)) end,
-				decode = function(s) return tonumber(s) / 2 end,
+				encode = function(pt)
+					return tostring(math.floor(pt * 2))
+				end,
+				decode = function(s)
+					return tonumber(s) / 2
+				end,
 			}),
 		},
-		{ key = "underline", xform = xform.scalar({ tag = "w:u", attr = "w:val", kind = "string" }) },
+		{
+			key = "underline",
+			xform = xform.scalar({ tag = "w:u", attr = "w:val", kind = "string" }),
+		},
 	},
 })
 
@@ -114,7 +140,9 @@ local textXform = {
 	tag = "w:t",
 	localName = "t",
 	render = function(_, text)
-		if text == nil then return nil end
+		if text == nil then
+			return nil
+		end
 		return xml.element("w:t", { ["xml:space"] = "preserve" }, { xml.text(text) })
 	end,
 	parse = function(_, el)
@@ -125,7 +153,9 @@ local textXform = {
 -- w:r — a run: rPr (self-pruning) + text.
 local runXform = xform.composite({
 	tag = "w:r",
-	new = function() return {} end,
+	new = function()
+		return {}
+	end,
 	children = {
 		{ key = "properties", xform = rPrXform },
 		{ key = "text", xform = textXform },
@@ -137,12 +167,22 @@ local spacingXform = {
 	tag = "w:spacing",
 	localName = "spacing",
 	render = function(_, sp)
-		if not sp then return nil end
+		if not sp then
+			return nil
+		end
 		local a = {}
-		if sp.before then a["w:before"] = tostring(sp.before) end
-		if sp.after then a["w:after"] = tostring(sp.after) end
-		if sp.line then a["w:line"] = tostring(sp.line) end
-		if next(a) == nil then return nil end
+		if sp.before then
+			a["w:before"] = tostring(sp.before)
+		end
+		if sp.after then
+			a["w:after"] = tostring(sp.after)
+		end
+		if sp.line then
+			a["w:line"] = tostring(sp.line)
+		end
+		if next(a) == nil then
+			return nil
+		end
 		return xml.element("w:spacing", a)
 	end,
 	parse = function(_, el)
@@ -160,11 +200,15 @@ local tabsXform = {
 	tag = "w:tabs",
 	localName = "tabs",
 	render = function(_, tabs)
-		if not tabs or #tabs == 0 then return nil end
+		if not tabs or #tabs == 0 then
+			return nil
+		end
 		local el = xml.element("w:tabs")
 		for _, t in ipairs(tabs) do
 			local a = { ["w:val"] = t.align or "left", ["w:pos"] = tostring(t.pos or 0) }
-			if t.leader then a["w:leader"] = t.leader end
+			if t.leader then
+				a["w:leader"] = t.leader
+			end
 			el.children[#el.children + 1] = xml.element("w:tab", a)
 		end
 		return el
@@ -175,9 +219,15 @@ local tabsXform = {
 			if c.kind == "element" and c.name.local_ == "tab" then
 				local t = {}
 				for _, a in ipairs(c.attributes) do
-					if a.name.local_ == "val" then t.align = a.value end
-					if a.name.local_ == "pos" then t.pos = tonumber(a.value) end
-					if a.name.local_ == "leader" then t.leader = a.value end
+					if a.name.local_ == "val" then
+						t.align = a.value
+					end
+					if a.name.local_ == "pos" then
+						t.pos = tonumber(a.value)
+					end
+					if a.name.local_ == "leader" then
+						t.leader = a.value
+					end
 				end
 				tabs[#tabs + 1] = t
 			end
@@ -192,7 +242,9 @@ local numPrXform = {
 	tag = "w:numPr",
 	localName = "numPr",
 	render = function(_, num)
-		if not num then return nil end
+		if not num then
+			return nil
+		end
 		return xml.element("w:numPr", {}, {
 			xml.element("w:ilvl", { ["w:val"] = tostring(num.level or 0) }),
 			xml.element("w:numId", { ["w:val"] = tostring(num.ordered and 2 or 1) }),
@@ -204,10 +256,16 @@ local numPrXform = {
 			if c.kind == "element" then
 				local v
 				for _, a in ipairs(c.attributes) do
-					if a.name.local_ == "val" then v = a.value end
+					if a.name.local_ == "val" then
+						v = a.value
+					end
 				end
-				if c.name.local_ == "ilvl" then num.level = tonumber(v) end
-				if c.name.local_ == "numId" then num.ordered = (v == "2") end
+				if c.name.local_ == "ilvl" then
+					num.level = tonumber(v)
+				end
+				if c.name.local_ == "numId" then
+					num.ordered = (v == "2")
+				end
 			end
 		end
 		return num
@@ -218,11 +276,17 @@ local numPrXform = {
 local pPrXform = xform.composite({
 	tag = "w:pPr",
 	children = {
-		{ key = "style", xform = xform.scalar({ tag = "w:pStyle", attr = "w:val", kind = "string" }) },
+		{
+			key = "style",
+			xform = xform.scalar({ tag = "w:pStyle", attr = "w:val", kind = "string" }),
+		},
 		{ key = "numbering", xform = numPrXform },
 		{ key = "tabs", xform = tabsXform },
 		{ key = "spacing", xform = spacingXform },
-		{ key = "alignment", xform = xform.scalar({ tag = "w:jc", attr = "w:val", kind = "string" }) },
+		{
+			key = "alignment",
+			xform = xform.scalar({ tag = "w:jc", attr = "w:val", kind = "string" }),
+		},
 	},
 })
 
@@ -253,13 +317,25 @@ local function render_image_run(img)
 			xml.element("a:prstGeom", { prst = "rect" }, { xml.element("a:avLst") }),
 		}),
 	})
-	local inline = xml.element("wp:inline", { distT = "0", distB = "0", distL = "0", distR = "0" }, {
-		xml.element("wp:extent", { cx = w, cy = h }),
-		xml.element("wp:effectExtent", { l = "0", t = "0", r = "0", b = "0" }),
-		xml.element("wp:docPr", { id = id, name = "Picture " .. id }),
-		xml.element("wp:cNvGraphicFramePr", {}, { xml.element("a:graphicFrameLocks", { noChangeAspect = "1" }) }),
-		xml.element("a:graphic", {}, { xml.element("a:graphicData", { uri = PIC_URI }, { pic }) }),
-	})
+	local inline = xml.element(
+		"wp:inline",
+		{ distT = "0", distB = "0", distL = "0", distR = "0" },
+		{
+			xml.element("wp:extent", { cx = w, cy = h }),
+			xml.element("wp:effectExtent", { l = "0", t = "0", r = "0", b = "0" }),
+			xml.element("wp:docPr", { id = id, name = "Picture " .. id }),
+			xml.element(
+				"wp:cNvGraphicFramePr",
+				{},
+				{ xml.element("a:graphicFrameLocks", { noChangeAspect = "1" }) }
+			),
+			xml.element(
+				"a:graphic",
+				{},
+				{ xml.element("a:graphicData", { uri = PIC_URI }, { pic }) }
+			),
+		}
+	)
 	return xml.element("w:r", {}, { xml.element("w:drawing", {}, { inline }) })
 end
 
@@ -268,27 +344,39 @@ end
 local function render_chart_run(ch)
 	local w, h = tostring(ch.width or 5486400), tostring(ch.height or 3200400)
 	local id = tostring(ch._docId or 1)
-	local inline = xml.element("wp:inline", { distT = "0", distB = "0", distL = "0", distR = "0" }, {
-		xml.element("wp:extent", { cx = w, cy = h }),
-		xml.element("wp:effectExtent", { l = "0", t = "0", r = "0", b = "0" }),
-		xml.element("wp:docPr", { id = id, name = "Chart " .. id }),
-		xml.element("wp:cNvGraphicFramePr"),
-		xml.element("a:graphic", {}, {
-			xml.element("a:graphicData", { uri = CHART_URI }, {
-				xml.element("c:chart", { ["xmlns:c"] = NS_C, ["xmlns:r"] = NS_R, ["r:id"] = ch._rid }),
+	local inline = xml.element(
+		"wp:inline",
+		{ distT = "0", distB = "0", distL = "0", distR = "0" },
+		{
+			xml.element("wp:extent", { cx = w, cy = h }),
+			xml.element("wp:effectExtent", { l = "0", t = "0", r = "0", b = "0" }),
+			xml.element("wp:docPr", { id = id, name = "Chart " .. id }),
+			xml.element("wp:cNvGraphicFramePr"),
+			xml.element("a:graphic", {}, {
+				xml.element("a:graphicData", { uri = CHART_URI }, {
+					xml.element(
+						"c:chart",
+						{ ["xmlns:c"] = NS_C, ["xmlns:r"] = NS_R, ["r:id"] = ch._rid }
+					),
+				}),
 			}),
-		}),
-	})
+		}
+	)
 	return xml.element("w:r", {}, { xml.element("w:drawing", {}, { inline }) })
 end
 
 -- A w:hyperlink wrapping its runs. An external link carries r:id (rel allocated in
 -- prepare); an internal link to a bookmark carries w:anchor (no rel).
 local function render_hyperlink(hl)
-	local el = xml.element("w:hyperlink", hl.anchor and { ["w:anchor"] = hl.anchor } or { ["r:id"] = hl._rid })
+	local el = xml.element(
+		"w:hyperlink",
+		hl.anchor and { ["w:anchor"] = hl.anchor } or { ["r:id"] = hl._rid }
+	)
 	for _, run in ipairs(hl.children or {}) do
 		local r = runXform.render({}, run)
-		if r then el.children[#el.children + 1] = r end
+		if r then
+			el.children[#el.children + 1] = r
+		end
 	end
 	return el
 end
@@ -300,7 +388,9 @@ local function render_bookmark(node)
 	local out = { xml.element("w:bookmarkStart", { ["w:id"] = id, ["w:name"] = node.name }) }
 	for _, run in ipairs(node.children or {}) do
 		local r = runXform.render({}, run)
-		if r then out[#out + 1] = r end
+		if r then
+			out[#out + 1] = r
+		end
 	end
 	out[#out + 1] = xml.element("w:bookmarkEnd", { ["w:id"] = id })
 	return out
@@ -325,18 +415,28 @@ end
 local function render_revision(node)
 	local tag = (node.kind == "deletion") and "w:del" or "w:ins"
 	local attrs = { ["w:id"] = tostring(node._id), ["w:author"] = node.author or "Author" }
-	if node.date then attrs["w:date"] = node.date end
+	if node.date then
+		attrs["w:date"] = node.date
+	end
 	local el = xml.element(tag, attrs)
 	for _, run in ipairs(node.children or {}) do
 		if node.kind == "deletion" then
 			local r = xml.element("w:r")
 			local rPr = rPrXform.render({}, run.properties)
-			if rPr then r.children[#r.children + 1] = rPr end
-			r.children[#r.children + 1] = xml.element("w:delText", { ["xml:space"] = "preserve" }, { xml.text(run.text or "") })
+			if rPr then
+				r.children[#r.children + 1] = rPr
+			end
+			r.children[#r.children + 1] = xml.element(
+				"w:delText",
+				{ ["xml:space"] = "preserve" },
+				{ xml.text(run.text or "") }
+			)
 			el.children[#el.children + 1] = r
 		else
 			local r = runXform.render({}, run)
-			if r then el.children[#el.children + 1] = r end
+			if r then
+				el.children[#el.children + 1] = r
+			end
 		end
 	end
 	return el
@@ -350,7 +450,9 @@ local function render_commented(node)
 	local out = { xml.element("w:commentRangeStart", { ["w:id"] = id }) }
 	for _, run in ipairs(node.children or {}) do
 		local r = runXform.render({}, run)
-		if r then out[#out + 1] = r end
+		if r then
+			out[#out + 1] = r
+		end
 	end
 	out[#out + 1] = xml.element("w:commentRangeEnd", { ["w:id"] = id })
 	out[#out + 1] = xml.element("w:r", {}, {
@@ -365,7 +467,9 @@ end
 local function render_paragraph(para)
 	local p = xml.element("w:p")
 	local pPr = pPrXform.render({}, para.properties)
-	if pPr then p.children[#p.children + 1] = pPr end
+	if pPr then
+		p.children[#p.children + 1] = pPr
+	end
 	for _, child in ipairs(para.children or {}) do
 		if child.kind == "image" then
 			p.children[#p.children + 1] = render_image_run(child)
@@ -391,7 +495,9 @@ local function render_paragraph(para)
 			end
 		else
 			local el = runXform.render({}, child)
-			if el then p.children[#p.children + 1] = el end
+			if el then
+				p.children[#p.children + 1] = el
+			end
 		end
 	end
 	return p
@@ -431,8 +537,10 @@ local function render_table(tbl)
 
 	local borders = xml.element("w:tblBorders")
 	for _, side in ipairs({ "top", "left", "bottom", "right", "insideH", "insideV" }) do
-		borders.children[#borders.children + 1] =
-			xml.element("w:" .. side, { ["w:val"] = "single", ["w:sz"] = "4", ["w:space"] = "0", ["w:color"] = "auto" })
+		borders.children[#borders.children + 1] = xml.element(
+			"w:" .. side,
+			{ ["w:val"] = "single", ["w:sz"] = "4", ["w:space"] = "0", ["w:color"] = "auto" }
+		)
 	end
 	t.children[1] = xml.element("w:tblPr", {}, {
 		xml.element("w:tblW", { ["w:w"] = "0", ["w:type"] = "auto" }),
@@ -456,13 +564,21 @@ end
 -- (e.g. "1-3") feeds the TOC switch; `placeholder` is the pre-population text.
 local function render_toc(toc)
 	local instr = string.format(' TOC \\o "%s" \\h \\z \\u ', toc.levels or "1-3")
-	local function fld(t) return xml.element("w:r", {}, { xml.element("w:fldChar", { ["w:fldCharType"] = t }) }) end
+	local function fld(t)
+		return xml.element("w:r", {}, { xml.element("w:fldChar", { ["w:fldCharType"] = t }) })
+	end
 	return xml.element("w:p", {}, {
 		xml.element("w:pPr", {}, { xml.element("w:pStyle", { ["w:val"] = "TOC" }) }),
 		fld("begin"),
-		xml.element("w:r", {}, { xml.element("w:instrText", { ["xml:space"] = "preserve" }, { xml.text(instr) }) }),
+		xml.element(
+			"w:r",
+			{},
+			{ xml.element("w:instrText", { ["xml:space"] = "preserve" }, { xml.text(instr) }) }
+		),
 		fld("separate"),
-		xml.element("w:r", {}, { xml.element("w:t", {}, { xml.text(toc.placeholder or "Right-click to update field.") }) }),
+		xml.element("w:r", {}, {
+			xml.element("w:t", {}, { xml.text(toc.placeholder or "Right-click to update field.") }),
+		}),
 		fld("end"),
 	})
 end
@@ -490,7 +606,9 @@ function docx.run(s)
 	end
 	local props = {}
 	for _, k in ipairs(RUN_PROP_KEYS) do
-		if s[k] ~= nil then props[k] = s[k] end
+		if s[k] ~= nil then
+			props[k] = s[k]
+		end
 	end
 	return { kind = "run", text = s.text, properties = next(props) and props or nil }
 end
@@ -512,10 +630,18 @@ function docx.paragraph(spec)
 		return { kind = "paragraph", children = { docx.run(spec) } }
 	end
 	local props = {}
-	if spec.style then props.style = spec.style end
-	if spec.alignment then props.alignment = spec.alignment end
-	if spec.spacing then props.spacing = spec.spacing end
-	if spec.tabs then props.tabs = spec.tabs end
+	if spec.style then
+		props.style = spec.style
+	end
+	if spec.alignment then
+		props.alignment = spec.alignment
+	end
+	if spec.spacing then
+		props.spacing = spec.spacing
+	end
+	if spec.tabs then
+		props.tabs = spec.tabs
+	end
 	return {
 		kind = "paragraph",
 		properties = next(props) and props or nil,
@@ -582,7 +708,12 @@ end
 -- Document:acceptRevisions() / :rejectRevisions().
 function docx.insertion(content, opts)
 	opts = opts or {}
-	return { kind = "insertion", children = runs_of(content), author = opts.author, date = opts.date }
+	return {
+		kind = "insertion",
+		children = runs_of(content),
+		author = opts.author,
+		date = opts.date,
+	}
 end
 function docx.deletion(content, opts)
 	opts = opts or {}
@@ -653,10 +784,21 @@ end
 -- docx.bullet(text, level?) / docx.numbered(text, level?) → a single list
 -- paragraph (style ListParagraph + a numPr referencing the bullet/decimal list).
 function docx.bullet(text, level)
-	return { kind = "paragraph", properties = { style = "ListParagraph", numbering = { ordered = false, level = level or 0 } }, children = { docx.run(text) } }
+	return {
+		kind = "paragraph",
+		properties = {
+			style = "ListParagraph",
+			numbering = { ordered = false, level = level or 0 },
+		},
+		children = { docx.run(text) },
+	}
 end
 function docx.numbered(text, level)
-	return { kind = "paragraph", properties = { style = "ListParagraph", numbering = { ordered = true, level = level or 0 } }, children = { docx.run(text) } }
+	return {
+		kind = "paragraph",
+		properties = { style = "ListParagraph", numbering = { ordered = true, level = level or 0 } },
+		children = { docx.run(text) },
+	}
 end
 
 -- docx.list(items, opts?) → an ARRAY of list paragraphs. items[i] is a string or
@@ -691,36 +833,56 @@ local HEADINGS = {
 local function render_styles()
 	local root = xml.element("w:styles", { ["xmlns:w"] = NS_W })
 	root.children[#root.children + 1] = xml.element("w:docDefaults", {}, {
-		xml.element("w:rPrDefault", {}, { xml.element("w:rPr", {}, {
-			xml.element("w:rFonts", { ["w:ascii"] = "Calibri", ["w:hAnsi"] = "Calibri", ["w:cs"] = "Calibri" }),
-			xml.element("w:sz", { ["w:val"] = "22" }),
-		}) }),
+		xml.element("w:rPrDefault", {}, {
+			xml.element("w:rPr", {}, {
+				xml.element(
+					"w:rFonts",
+					{ ["w:ascii"] = "Calibri", ["w:hAnsi"] = "Calibri", ["w:cs"] = "Calibri" }
+				),
+				xml.element("w:sz", { ["w:val"] = "22" }),
+			}),
+		}),
 		xml.element("w:pPrDefault"),
 	})
 	-- Normal (the default paragraph style)
-	root.children[#root.children + 1] = xml.element("w:style", { ["w:type"] = "paragraph", ["w:default"] = "1", ["w:styleId"] = "Normal" }, {
-		xml.element("w:name", { ["w:val"] = "Normal" }),
-	})
+	root.children[#root.children + 1] = xml.element(
+		"w:style",
+		{ ["w:type"] = "paragraph", ["w:default"] = "1", ["w:styleId"] = "Normal" },
+		{
+			xml.element("w:name", { ["w:val"] = "Normal" }),
+		}
+	)
 	for _, h in ipairs(HEADINGS) do
-		root.children[#root.children + 1] = xml.element("w:style", { ["w:type"] = "paragraph", ["w:styleId"] = h.id }, {
-			xml.element("w:name", { ["w:val"] = h.name }),
-			xml.element("w:basedOn", { ["w:val"] = "Normal" }),
-			xml.element("w:pPr", {}, {
-				xml.element("w:keepNext"),
-				xml.element("w:spacing", { ["w:before"] = tostring(h.before), ["w:after"] = "0" }),
-			}),
-			xml.element("w:rPr", {}, {
-				xml.element("w:b"),
-				xml.element("w:sz", { ["w:val"] = tostring(h.sz) }),
-			}),
-		})
+		root.children[#root.children + 1] = xml.element(
+			"w:style",
+			{ ["w:type"] = "paragraph", ["w:styleId"] = h.id },
+			{
+				xml.element("w:name", { ["w:val"] = h.name }),
+				xml.element("w:basedOn", { ["w:val"] = "Normal" }),
+				xml.element("w:pPr", {}, {
+					xml.element("w:keepNext"),
+					xml.element(
+						"w:spacing",
+						{ ["w:before"] = tostring(h.before), ["w:after"] = "0" }
+					),
+				}),
+				xml.element("w:rPr", {}, {
+					xml.element("w:b"),
+					xml.element("w:sz", { ["w:val"] = tostring(h.sz) }),
+				}),
+			}
+		)
 	end
 	-- ListParagraph (used by bulleted / numbered lists)
-	root.children[#root.children + 1] = xml.element("w:style", { ["w:type"] = "paragraph", ["w:styleId"] = "ListParagraph" }, {
-		xml.element("w:name", { ["w:val"] = "List Paragraph" }),
-		xml.element("w:basedOn", { ["w:val"] = "Normal" }),
-		xml.element("w:pPr", {}, { xml.element("w:ind", { ["w:left"] = "720" }) }),
-	})
+	root.children[#root.children + 1] = xml.element(
+		"w:style",
+		{ ["w:type"] = "paragraph", ["w:styleId"] = "ListParagraph" },
+		{
+			xml.element("w:name", { ["w:val"] = "List Paragraph" }),
+			xml.element("w:basedOn", { ["w:val"] = "Normal" }),
+			xml.element("w:pPr", {}, { xml.element("w:ind", { ["w:left"] = "720" }) }),
+		}
+	)
 	-- footnote / comment styles (character refs + their body paragraph styles)
 	local function char_style(id, name)
 		return xml.element("w:style", { ["w:type"] = "character", ["w:styleId"] = id }, {
@@ -756,17 +918,32 @@ local function render_numbering()
 				xml.element("w:lvlText", { ["w:val"] = levelText(lvl) }),
 				xml.element("w:lvlJc", { ["w:val"] = "left" }),
 				xml.element("w:pPr", {}, {
-					xml.element("w:ind", { ["w:left"] = tostring(720 * (lvl + 1)), ["w:hanging"] = "360" }),
+					xml.element(
+						"w:ind",
+						{ ["w:left"] = tostring(720 * (lvl + 1)), ["w:hanging"] = "360" }
+					),
 				}),
 			})
 		end
 		return abs
 	end
 	local bullets = { "\226\151\143", "\226\151\139", "\226\150\170" } -- ● ○ ▪
-	root.children[#root.children + 1] = abstract_list(0, "bullet", function(lvl) return bullets[lvl + 1] or "\226\128\162" end)
-	root.children[#root.children + 1] = abstract_list(1, "decimal", function(lvl) return "%" .. (lvl + 1) .. "." end)
-	root.children[#root.children + 1] = xml.element("w:num", { ["w:numId"] = "1" }, { xml.element("w:abstractNumId", { ["w:val"] = "0" }) })
-	root.children[#root.children + 1] = xml.element("w:num", { ["w:numId"] = "2" }, { xml.element("w:abstractNumId", { ["w:val"] = "1" }) })
+	root.children[#root.children + 1] = abstract_list(0, "bullet", function(lvl)
+		return bullets[lvl + 1] or "\226\128\162"
+	end)
+	root.children[#root.children + 1] = abstract_list(1, "decimal", function(lvl)
+		return "%" .. (lvl + 1) .. "."
+	end)
+	root.children[#root.children + 1] = xml.element(
+		"w:num",
+		{ ["w:numId"] = "1" },
+		{ xml.element("w:abstractNumId", { ["w:val"] = "0" }) }
+	)
+	root.children[#root.children + 1] = xml.element(
+		"w:num",
+		{ ["w:numId"] = "2" },
+		{ xml.element("w:abstractNumId", { ["w:val"] = "1" }) }
+	)
 	return root
 end
 
@@ -780,9 +957,13 @@ local function render_notes(notes, which)
 	local refStyle = (which == "endnote") and "EndnoteReference" or "FootnoteReference"
 	local root = xml.element("w:" .. which .. "s", { ["xmlns:w"] = NS_W })
 	local function reserved(kind, id)
-		root.children[#root.children + 1] = xml.element(item, { ["w:type"] = kind, ["w:id"] = id }, {
-			xml.element("w:p", {}, { xml.element("w:r", {}, { xml.element("w:" .. kind) }) }),
-		})
+		root.children[#root.children + 1] = xml.element(
+			item,
+			{ ["w:type"] = kind, ["w:id"] = id },
+			{
+				xml.element("w:p", {}, { xml.element("w:r", {}, { xml.element("w:" .. kind) }) }),
+			}
+		)
 	end
 	reserved("separator", "-1")
 	reserved("continuationSeparator", "0")
@@ -800,7 +981,9 @@ local function render_notes(notes, which)
 			end
 			for _, run in ipairs(block.children or {}) do
 				local r = runXform.render({}, run)
-				if r then p.children[#p.children + 1] = r end
+				if r then
+					p.children[#p.children + 1] = r
+				end
 			end
 			note.children[#note.children + 1] = p
 		end
@@ -815,13 +998,25 @@ local function render_comments(comments)
 	local root = xml.element("w:comments", { ["xmlns:w"] = NS_W })
 	for _, cm in ipairs(comments) do
 		local attrs = { ["w:id"] = tostring(cm._id), ["w:author"] = cm.author or "Author" }
-		if cm.initials then attrs["w:initials"] = cm.initials end
-		if cm.date then attrs["w:date"] = cm.date end
+		if cm.initials then
+			attrs["w:initials"] = cm.initials
+		end
+		if cm.date then
+			attrs["w:date"] = cm.date
+		end
 		root.children[#root.children + 1] = xml.element("w:comment", attrs, {
 			xml.element("w:p", {}, {
-				xml.element("w:pPr", {}, { xml.element("w:pStyle", { ["w:val"] = "CommentText" }) }),
+				xml.element(
+					"w:pPr",
+					{},
+					{ xml.element("w:pStyle", { ["w:val"] = "CommentText" }) }
+				),
 				xml.element("w:r", {}, {
-					xml.element("w:rPr", {}, { xml.element("w:rStyle", { ["w:val"] = "CommentReference" }) }),
+					xml.element(
+						"w:rPr",
+						{},
+						{ xml.element("w:rStyle", { ["w:val"] = "CommentReference" }) }
+					),
 					xml.element("w:annotationRef"),
 				}),
 				xml.element("w:r", {}, {
@@ -868,21 +1063,28 @@ local function render_sectPr(section, headerRid, footerRid)
 	local m = page.margin or { top = 1440, right = 1440, bottom = 1440, left = 1440 }
 	local sp = xml.element("w:sectPr")
 	if headerRid then
-		sp.children[#sp.children + 1] = xml.element("w:headerReference", { ["w:type"] = "default", ["r:id"] = headerRid })
+		sp.children[#sp.children + 1] =
+			xml.element("w:headerReference", { ["w:type"] = "default", ["r:id"] = headerRid })
 	end
 	if footerRid then
-		sp.children[#sp.children + 1] = xml.element("w:footerReference", { ["w:type"] = "default", ["r:id"] = footerRid })
+		sp.children[#sp.children + 1] =
+			xml.element("w:footerReference", { ["w:type"] = "default", ["r:id"] = footerRid })
 	end
-	sp.children[#sp.children + 1] = xml.element("w:pgSz", { ["w:w"] = tostring(size.w), ["w:h"] = tostring(size.h) })
+	sp.children[#sp.children + 1] =
+		xml.element("w:pgSz", { ["w:w"] = tostring(size.w), ["w:h"] = tostring(size.h) })
 	sp.children[#sp.children + 1] = xml.element("w:pgMar", {
-		["w:top"] = tostring(m.top), ["w:right"] = tostring(m.right),
-		["w:bottom"] = tostring(m.bottom), ["w:left"] = tostring(m.left),
+		["w:top"] = tostring(m.top),
+		["w:right"] = tostring(m.right),
+		["w:bottom"] = tostring(m.bottom),
+		["w:left"] = tostring(m.left),
 	})
 	-- multi-column layout (w:cols comes after pgMar in CT_SectPr order)
 	local cols = section and section.properties and section.properties.columns
 	if cols then
 		local a = { ["w:num"] = tostring(cols.num or 1), ["w:space"] = tostring(cols.space or 708) }
-		if cols.equalWidth ~= false then a["w:equalWidth"] = "1" end
+		if cols.equalWidth ~= false then
+			a["w:equalWidth"] = "1"
+		end
 		sp.children[#sp.children + 1] = xml.element("w:cols", a)
 	end
 	return sp
@@ -891,10 +1093,15 @@ end
 local function render_core_props(core)
 	core = core or {}
 	local root = xml.element("cp:coreProperties", {
-		["xmlns:cp"] = NS_CORE, ["xmlns:dc"] = NS_DC, ["xmlns:dcterms"] = NS_DCTERMS, ["xmlns:xsi"] = NS_XSI,
+		["xmlns:cp"] = NS_CORE,
+		["xmlns:dc"] = NS_DC,
+		["xmlns:dcterms"] = NS_DCTERMS,
+		["xmlns:xsi"] = NS_XSI,
 	})
 	local function add(tag, val)
-		if val then root.children[#root.children + 1] = xml.element(tag, {}, { xml.text(val) }) end
+		if val then
+			root.children[#root.children + 1] = xml.element(tag, {}, { xml.text(val) })
+		end
 	end
 	add("dc:title", core.title)
 	add("dc:creator", core.creator)
@@ -1029,7 +1236,8 @@ local function prepare_blocks(blocks, ctx)
 					end
 				elseif child.kind == "chart" then
 					ctx.charts[#ctx.charts + 1] = child
-					child._rid = ctx.docRels:add(RELT.chart, "charts/chart" .. #ctx.charts .. ".xml")
+					child._rid =
+						ctx.docRels:add(RELT.chart, "charts/chart" .. #ctx.charts .. ".xml")
 					child._docId = ctx.idGen()
 					child._n = #ctx.charts
 				elseif child.kind == "hyperlink" then
@@ -1115,7 +1323,11 @@ function Document.toBytes(self)
 	-- footnotes.xml / endnotes.xml / comments.xml, only when referenced
 	if #ctx.footnotes > 0 then
 		docRels:add(RELT.footnotes, "footnotes.xml")
-		pkg:addPart("/word/footnotes.xml", doc(render_notes(ctx.footnotes, "footnote")), CT.footnotes)
+		pkg:addPart(
+			"/word/footnotes.xml",
+			doc(render_notes(ctx.footnotes, "footnote")),
+			CT.footnotes
+		)
 	end
 	if #ctx.endnotes > 0 then
 		docRels:add(RELT.endnotes, "endnotes.xml")
@@ -1135,7 +1347,11 @@ function Document.toBytes(self)
 	end
 	if self.footer or self.pageNumbers then
 		footerRid = docRels:add(RELT.footer, "footer1.xml")
-		pkg:addPart("/word/footer1.xml", doc(render_hf("w:ftr", self.footer or {}, self.pageNumbers)), CT.footer)
+		pkg:addPart(
+			"/word/footer1.xml",
+			doc(render_hf("w:ftr", self.footer or {}, self.pageNumbers)),
+			CT.footer
+		)
 	end
 
 	-- PHASE 2: render (pure — reads the allocated rIds).
@@ -1146,9 +1362,14 @@ function Document.toBytes(self)
 		end
 	end
 	-- the last section's sectPr is a direct child of w:body
-	body.children[#body.children + 1] = render_sectPr(self.sections[#self.sections], headerRid, footerRid)
+	body.children[#body.children + 1] =
+		render_sectPr(self.sections[#self.sections], headerRid, footerRid)
 	local root = xml.element("w:document", {
-		["xmlns:w"] = NS_W, ["xmlns:r"] = NS_R, ["xmlns:wp"] = NS_WP, ["xmlns:a"] = NS_A, ["xmlns:pic"] = NS_PIC,
+		["xmlns:w"] = NS_W,
+		["xmlns:r"] = NS_R,
+		["xmlns:wp"] = NS_WP,
+		["xmlns:a"] = NS_A,
+		["xmlns:pic"] = NS_PIC,
 	}, { body })
 
 	pkg:addPart("/word/document.xml", doc(root), CT.document)
@@ -1167,7 +1388,11 @@ function Document.toBytes(self)
 		local chartRels = pkg:relsFor(chartName)
 		local embedRid = chartRels:add(RELT.package, "../embeddings/workbook" .. ch._n .. ".xlsx")
 		pkg:addPart(chartName, doc(chart.render(ch.model, { externalRid = embedRid })), CT.chart)
-		pkg:addPart("/word/embeddings/workbook" .. ch._n .. ".xlsx", chart.embeddedWorkbook(ch.model), CT.spreadsheet)
+		pkg:addPart(
+			"/word/embeddings/workbook" .. ch._n .. ".xlsx",
+			chart.embeddedWorkbook(ch.model),
+			CT.spreadsheet
+		)
 	end
 
 	pkg:addPart("/docProps/core.xml", doc(render_core_props(self.properties.core)), CT.core)
@@ -1191,13 +1416,17 @@ end
 
 local function child(el, lname)
 	for _, c in ipairs(el.children) do
-		if c.kind == "element" and c.name.local_ == lname then return c end
+		if c.kind == "element" and c.name.local_ == lname then
+			return c
+		end
 	end
 	return nil
 end
 local function attr(el, lname)
 	for _, a in ipairs(el.attributes) do
-		if a.name.local_ == lname then return a.value end
+		if a.name.local_ == lname then
+			return a.value
+		end
 	end
 	return nil
 end
@@ -1206,9 +1435,13 @@ end
 local function find_desc(el, lname)
 	for _, c in ipairs(el.children or {}) do
 		if c.kind == "element" then
-			if c.name.local_ == lname then return c end
+			if c.name.local_ == lname then
+				return c
+			end
 			local d = find_desc(c, lname)
-			if d then return d end
+			if d then
+				return d
+			end
 		end
 	end
 	return nil
@@ -1216,7 +1449,9 @@ end
 
 local function r_attr(el, lname)
 	for _, a in ipairs(el.attributes) do
-		if a.name.prefix == "r" and a.name.local_ == lname then return a.value end
+		if a.name.prefix == "r" and a.name.local_ == lname then
+			return a.value
+		end
 	end
 	return nil
 end
@@ -1233,7 +1468,9 @@ local function parse_run(r)
 	run.kind = "run"
 	if run.text == nil then
 		local dt = child(r, "delText")
-		if dt then run.text = xml.textOf(dt) end
+		if dt then
+			run.text = xml.textOf(dt)
+		end
 	end
 	return run
 end
@@ -1260,12 +1497,18 @@ local function parse_paragraph(el, pkg, rels, ctx)
 	end
 	local function close_range()
 		local top = table.remove(stack)
-		if not top then return end
+		if not top then
+			return
+		end
 		if top.t == "bookmark" then
 			emit({ kind = "bookmark", name = top.name, children = top.buf, _id = tonumber(top.id) })
 		else
 			local def = ctx and ctx.comments and ctx.comments[top.id]
-			emit({ kind = "commented", children = top.buf, comment = def or { _id = tonumber(top.id) } })
+			emit({
+				kind = "commented",
+				children = top.buf,
+				comment = def or { _id = tonumber(top.id) },
+			})
 		end
 	end
 	for _, c in ipairs(el.children) do
@@ -1276,14 +1519,17 @@ local function parse_paragraph(el, pkg, rels, ctx)
 			elseif ln == "commentRangeStart" then
 				stack[#stack + 1] = { t = "comment", id = attr(c, "id"), buf = {} }
 			elseif ln == "bookmarkStart" then
-				stack[#stack + 1] = { t = "bookmark", id = attr(c, "id"), name = attr(c, "name"), buf = {} }
+				stack[#stack + 1] =
+					{ t = "bookmark", id = attr(c, "id"), name = attr(c, "name"), buf = {} }
 			elseif ln == "commentRangeEnd" or ln == "bookmarkEnd" then
 				close_range()
 			elseif ln == "ins" or ln == "del" then
 				local node = {
 					kind = (ln == "ins") and "insertion" or "deletion",
-					children = {}, _id = tonumber(attr(c, "id")),
-					author = attr(c, "author"), date = attr(c, "date"),
+					children = {},
+					_id = tonumber(attr(c, "id")),
+					author = attr(c, "author"),
+					date = attr(c, "date"),
 				}
 				for _, r in ipairs(c.children) do
 					if r.kind == "element" and r.name.local_ == "r" then
@@ -1299,11 +1545,21 @@ local function parse_paragraph(el, pkg, rels, ctx)
 				elseif fnref then
 					local id = attr(fnref, "id")
 					local def = ctx and ctx.footnotes and ctx.footnotes[id]
-					emit({ kind = "footnote", _id = tonumber(id), content = def and def.content, text = def and def.text })
+					emit({
+						kind = "footnote",
+						_id = tonumber(id),
+						content = def and def.content,
+						text = def and def.text,
+					})
 				elseif enref then
 					local id = attr(enref, "id")
 					local def = ctx and ctx.endnotes and ctx.endnotes[id]
-					emit({ kind = "endnote", _id = tonumber(id), content = def and def.content, text = def and def.text })
+					emit({
+						kind = "endnote",
+						_id = tonumber(id),
+						content = def and def.content,
+						text = def and def.text,
+					})
 				elseif find_desc(c, "commentReference") then
 					-- the trailing reference marker run — its range was already emitted
 				else
@@ -1321,7 +1577,9 @@ local function parse_paragraph(el, pkg, rels, ctx)
 							local part = pkg:getPart(rels:targetOf(r_attr(cchart, "id")) or "")
 							if part then
 								local cd = xml.parse(part.bytes)
-								if cd then item.model = chart.parse(cd.root) end
+								if cd then
+									item.model = chart.parse(cd.root)
+								end
 							end
 						end
 						emit(item)
@@ -1336,7 +1594,9 @@ local function parse_paragraph(el, pkg, rels, ctx)
 						if blip and rels then
 							local target = rels:targetOf(r_attr(blip, "embed"))
 							local part = target and pkg:getPart(target)
-							if part then img.bytes = part.bytes end
+							if part then
+								img.bytes = part.bytes
+							end
 						end
 						emit(img)
 					else
@@ -1397,8 +1657,10 @@ local function parse_sectPr(el)
 	if pgMar then
 		props.page = props.page or {}
 		props.page.margin = {
-			top = tonumber(attr(pgMar, "top")), right = tonumber(attr(pgMar, "right")),
-			bottom = tonumber(attr(pgMar, "bottom")), left = tonumber(attr(pgMar, "left")),
+			top = tonumber(attr(pgMar, "top")),
+			right = tonumber(attr(pgMar, "right")),
+			bottom = tonumber(attr(pgMar, "bottom")),
+			left = tonumber(attr(pgMar, "left")),
 		}
 	end
 	local cols = child(el, "cols")
@@ -1417,14 +1679,19 @@ end
 -- (footer page numbers) is dropped from content but flagged via the second return.
 local function parse_hf(pkg, partName)
 	local part = pkg:getPart(partName)
-	if not part then return nil, false end
+	if not part then
+		return nil, false
+	end
 	local root = assert(xml.parse(part.bytes)).root
 	local hfRels = pkg.rels[partName]
 	local blocks, pageNumbers = {}, false
 	for _, c in ipairs(root.children) do
 		if c.kind == "element" then
 			if c.name.local_ == "p" then
-				if child(c, "fldSimple") and (attr(child(c, "fldSimple"), "instr") or ""):find("PAGE") then
+				if
+					child(c, "fldSimple")
+					and (attr(child(c, "fldSimple"), "instr") or ""):find("PAGE")
+				then
 					pageNumbers = true
 				else
 					blocks[#blocks + 1] = parse_paragraph(c, pkg, hfRels)
@@ -1461,7 +1728,9 @@ end
 -- comments.xml → ({ [id]=def }, { def… }); def = { _id, author, initials, date, text }.
 local function parse_comments(pkg, partName)
 	local part = pkg:getPart(partName)
-	if not part then return {}, {} end
+	if not part then
+		return {}, {}
+	end
 	local root = assert(xml.parse(part.bytes)).root
 	local byId, list = {}, {}
 	for _, c in ipairs(root.children) do
@@ -1484,7 +1753,9 @@ end
 -- notes are skipped. `which` = "footnote" | "endnote" selects the item element name.
 local function parse_notes(pkg, partName, which)
 	local part = pkg:getPart(partName)
-	if not part then return {}, {} end
+	if not part then
+		return {}, {}
+	end
 	local root = assert(xml.parse(part.bytes)).root
 	local byId, list = {}, {}
 	for _, c in ipairs(root.children) do
@@ -1505,13 +1776,19 @@ end
 -- model (one section; runs/paragraphs/tables); unknown parts stay in the package.
 function docx.load(bytes)
 	local pkg, err = opc.read(bytes)
-	if not pkg then return nil, err end
-	if pkg:detectFormat() ~= "docx" then return nil, "docx/not-a-document" end
+	if not pkg then
+		return nil, err
+	end
+	if pkg:detectFormat() ~= "docx" then
+		return nil, "docx/not-a-document"
+	end
 
 	local rootRels = pkg.rels[""]
 	local docName
 	for _, rel in ipairs(rootRels.items) do
-		if rel.type == RELT.officeDocument then docName = rootRels:targetOf(rel.id) end
+		if rel.type == RELT.officeDocument then
+			docName = rootRels:targetOf(rel.id)
+		end
 	end
 	local docDoc = assert(xml.parse(pkg:getPart(docName).bytes))
 	local docRels = pkg.rels[docName]
@@ -1556,16 +1833,24 @@ function docx.load(bytes)
 	end
 
 	return setmetatable({
-		sections = { section }, properties = { core = {} }, package = pkg,
-		header = header, footer = footer, pageNumbers = pageNumbers,
-		comments = commentList, footnotes = footnoteList, endnotes = endnoteList,
+		sections = { section },
+		properties = { core = {} },
+		package = pkg,
+		header = header,
+		footer = footer,
+		pageNumbers = pageNumbers,
+		comments = commentList,
+		footnotes = footnoteList,
+		endnotes = endnoteList,
 	}, Document)
 end
 
 function docx.open(path)
 	local sys = sys
 	local bytes, err = sys.fs.read(path)
-	if not bytes then return nil, err end
+	if not bytes then
+		return nil, err
+	end
 	return docx.load(bytes)
 end
 

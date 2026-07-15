@@ -455,7 +455,8 @@ pub unsafe extern "C" fn cc_discovery_request(
 ) -> u64 {
     let kind = str::from_utf8(read(kind_ptr, kind_len)).unwrap_or("");
     let endpoint = str::from_utf8(read(endpoint_ptr, endpoint_len)).unwrap_or("");
-    let to_str = |v: serde_json::Value| serde_json::to_string(&v).expect("discovery body serializes");
+    let to_str =
+        |v: serde_json::Value| serde_json::to_string(&v).expect("discovery body serializes");
     let out = match kind {
         "graphql" => json!({
             "protocol": "graphql",
@@ -515,7 +516,9 @@ fn parse_policy_rules(bytes: &[u8]) -> Result<Vec<toolcore::policy::ConnectionPo
     Ok(out)
 }
 
-fn policy_action_name(action: Option<toolcore::policy::ConnectionPolicyAction>) -> Option<&'static str> {
+fn policy_action_name(
+    action: Option<toolcore::policy::ConnectionPolicyAction>,
+) -> Option<&'static str> {
     use toolcore::policy::ConnectionPolicyAction;
     action.map(|a| match a {
         ConnectionPolicyAction::Approve => "approve",

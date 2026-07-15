@@ -13,8 +13,16 @@ fn boot_reaches_login_prompt() {
     let s = boot();
     assert!(s.host.at_prompt(), "shell did not settle at a prompt");
     let out = s.transcript();
-    for marker in ["Booting", "Loading image", "Mounting /dev", "Mounting /var/persist"] {
-        assert!(out.contains(marker), "boot transcript missing {marker:?}; got:\n{out}");
+    for marker in [
+        "Booting",
+        "Loading image",
+        "Mounting /dev",
+        "Mounting /var/persist",
+    ] {
+        assert!(
+            out.contains(marker),
+            "boot transcript missing {marker:?}; got:\n{out}"
+        );
     }
 }
 
@@ -25,7 +33,10 @@ fn boot_reaches_login_prompt() {
 #[test]
 fn shell_less_image_enters_explicit_maintenance_mode() {
     let mut s = boot_rootfs();
-    assert!(!s.host.at_prompt(), "maintenance mode must not fake a shell prompt");
+    assert!(
+        !s.host.at_prompt(),
+        "maintenance mode must not fake a shell prompt"
+    );
 
     let profile = s
         .host

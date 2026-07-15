@@ -16,10 +16,16 @@ export function ProgramDriver({ example }: { example: Extract<Example, { kind: "
 
   const session = useVmSession({
     onReady: (vm, s) =>
-      runProgram(editorRef.current?.source ?? example.code.source, vm, s, {}, {
-        image: example.image ?? "loom",
-        seedStore: example.labStore,
-      })
+      runProgram(
+        editorRef.current?.source ?? example.code.source,
+        vm,
+        s,
+        {},
+        {
+          image: example.image ?? "loom",
+          seedStore: example.labStore,
+        },
+      )
         .catch((e) => s.print(e instanceof Error ? e.message : String(e)))
         .then(() => artifacts.collect(vm)),
   });
@@ -38,7 +44,12 @@ export function ProgramDriver({ example }: { example: Extract<Example, { kind: "
       example={example}
       left={
         <div {...stylex.props(styles.codeWrap)}>
-          <mc-editor ref={editorRef} {...stylex.props(styles.editor)} value={example.code.source} language="typescript" />
+          <mc-editor
+            ref={editorRef}
+            {...stylex.props(styles.editor)}
+            value={example.code.source}
+            language="typescript"
+          />
           <PlayButton place="abs" onClick={play} label="Reboot and run" />
         </div>
       }

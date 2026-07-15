@@ -11,11 +11,11 @@
  *
  * Also import 'instrument/reset.css' once, at the app root.
  */
-export { text } from './text.js';
-export { layout } from './layout.js';
-export { surface } from './surface.js';
-export { controls } from './controls.js';
-export { motion } from './motion.js';
+export { text } from "./text.js";
+export { layout } from "./layout.js";
+export { surface } from "./surface.js";
+export { controls } from "./controls.js";
+export { motion } from "./motion.js";
 export {
   scheme,
   accentBrand,
@@ -24,4 +24,4 @@ export {
   accentSuccess,
   densityCompact,
   densityComfortable,
-} from './themes.js';
+} from "./themes.js";

@@ -1,3 +1,26 @@
+load("@aspect_rules_js//js:defs.bzl", "js_test")
+
+# @mc/contracts — the generated descriptors as a linkable workspace package, so @mc/host and @mc/core
+# import the contract (BRIDGE_IMPORTS / CONTROL_EXPORTS / errnos / tier ordinals) BY NAME with no deep
+# relative reach into gen/. One subpath export per descriptor (see package.json).
+load("@aspect_rules_js//npm:defs.bzl", "npm_package")
+load("@rules_rust//rust:defs.bzl", "rust_test")
+
+# The generated TS descriptors compiled into ONE consumable lib — the JS host (hosts/js) and @mc/core
+# wire their `env` bridge + `mc_ctl_*` export lookup from these (BRIDGE_IMPORTS / CONTROL_EXPORTS /
+# constants), so the boundary the kernel + Rust host derive from is the one the JS side derives from
+# too (B2, no drift). The committed gen/*.gen.ts are kept fresh by the abi_library diff gates above.
+load("//bazel:ts.bzl", "mc_ts_project")
+
+# ---------------------------------------------------------------------------
+# Projections (SYSTEMS.md). One contract → the languages that consume it.
+# Each call generates the bindings, compile-validates the rust/zig ones, and gates
+# drift via gen/ + diff_test (B2). Consumers depend on the library targets
+# (:mc_rust, :env_zig, …); update the committed gen/ copies with
+# `bazel run //memcontainers/contracts:<name>_sync`.
+# ---------------------------------------------------------------------------
+load("//memcontainers/contracts/codegen:defs.bzl", "abi_library")
+
 # Language-neutral contracts, each projected only into languages with a real consumer
 # (SYSTEMS.md, B2). The four kernel boundaries live here alongside higher-level portable
 # protocols; no consumer maintains a hand-written copy.
@@ -29,34 +52,118 @@ filegroup(
     srcs = glob(["*.kdl"]),
 )
 
-# ---------------------------------------------------------------------------
-# Projections (SYSTEMS.md). One contract → the languages that consume it.
-# Each call generates the bindings, compile-validates the rust/zig ones, and gates
-# drift via gen/ + diff_test (B2). Consumers depend on the library targets
-# (:mc_rust, :env_zig, …); update the committed gen/ copies with
-# `bazel run //memcontainers/contracts:<name>_sync`.
-# ---------------------------------------------------------------------------
-load("//memcontainers/contracts/codegen:defs.bzl", "abi_library")
+abi_library(
+    name = "constants",
+    contract = "constants.kdl",
+    langs = [
+        "rust",
+        "zig",
+        "ts",
+        "elixir",
+    ],
+)
 
-abi_library(name = "constants", contract = "constants.kdl", langs = ["rust", "zig", "ts", "elixir"])
-abi_library(name = "mc", contract = "syscalls.kdl", langs = ["rust", "zig", "ts", "md"])
-abi_library(name = "env", contract = "bridge.kdl", langs = ["rust", "zig", "ts"])
-abi_library(name = "ctl", contract = "control.kdl", langs = ["rust", "zig", "ts", "elixir"])
-abi_library(name = "wire", contract = "wire.kdl", langs = ["rust", "ts", "asyncapi", "openapi"])
-abi_library(name = "llb", contract = "llb.kdl", langs = ["rust", "zig", "ts", "elixir"])
-abi_library(name = "syntax", contract = "syntax.kdl", langs = ["rust", "zig", "luau"])
-abi_library(name = "snapshot", contract = "snapshot.kdl", langs = ["rust", "ts", "elixir"])
-abi_library(name = "shell", contract = "shell.kdl", langs = ["rust", "zig"])
-abi_library(name = "sidecar", contract = "sidecar.kdl", langs = ["rust", "ts", "elixir"])
-abi_library(name = "runner", contract = "runner.kdl", langs = ["zig", "elixir"])
+abi_library(
+    name = "mc",
+    contract = "syscalls.kdl",
+    langs = [
+        "rust",
+        "zig",
+        "ts",
+        "md",
+    ],
+)
 
-# The generated TS descriptors compiled into ONE consumable lib — the JS host (hosts/js) and @mc/core
-# wire their `env` bridge + `mc_ctl_*` export lookup from these (BRIDGE_IMPORTS / CONTROL_EXPORTS /
-# constants), so the boundary the kernel + Rust host derive from is the one the JS side derives from
-# too (B2, no drift). The committed gen/*.gen.ts are kept fresh by the abi_library diff gates above.
-load("//bazel:ts.bzl", "mc_ts_project")
-load("@aspect_rules_js//js:defs.bzl", "js_test")
-load("@rules_rust//rust:defs.bzl", "rust_test")
+abi_library(
+    name = "env",
+    contract = "bridge.kdl",
+    langs = [
+        "rust",
+        "zig",
+        "ts",
+    ],
+)
+
+abi_library(
+    name = "ctl",
+    contract = "control.kdl",
+    langs = [
+        "rust",
+        "zig",
+        "ts",
+        "elixir",
+    ],
+)
+
+abi_library(
+    name = "wire",
+    contract = "wire.kdl",
+    langs = [
+        "rust",
+        "ts",
+        "asyncapi",
+        "openapi",
+    ],
+)
+
+abi_library(
+    name = "llb",
+    contract = "llb.kdl",
+    langs = [
+        "rust",
+        "zig",
+        "ts",
+        "elixir",
+    ],
+)
+
+abi_library(
+    name = "syntax",
+    contract = "syntax.kdl",
+    langs = [
+        "rust",
+        "zig",
+        "luau",
+    ],
+)
+
+abi_library(
+    name = "snapshot",
+    contract = "snapshot.kdl",
+    langs = [
+        "rust",
+        "ts",
+        "elixir",
+    ],
+)
+
+abi_library(
+    name = "shell",
+    contract = "shell.kdl",
+    langs = [
+        "rust",
+        "zig",
+    ],
+)
+
+abi_library(
+    name = "sidecar",
+    contract = "sidecar.kdl",
+    langs = [
+        "rust",
+        "ts",
+        "elixir",
+    ],
+)
+
+abi_library(
+    name = "runner",
+    contract = "runner.kdl",
+    langs = [
+        "zig",
+        "elixir",
+    ],
+)
 
 mc_ts_project(
     name = "ts",
@@ -65,8 +172,8 @@ mc_ts_project(
         "gen/ctl.gen.ts",
         "gen/env.gen.ts",
         "gen/llb.gen.ts",
-        "gen/snapshot.gen.ts",
         "gen/sidecar.gen.ts",
+        "gen/snapshot.gen.ts",
         "gen/wire.gen.ts",
     ],
 )
@@ -96,27 +203,22 @@ rust_test(
 rust_test(
     name = "wire_projection_test",
     srcs = ["test/wire_projection_test.rs"],
-    edition = "2021",
     data = [
         "control.kdl",
-        "sidecar.kdl",
         "gen/wire.gen.openapi.yaml",
         "gen/wire.gen.ts",
+        "sidecar.kdl",
         "wire.kdl",
     ],
+    edition = "2021",
     deps = ["@rules_rust//rust/runfiles"],
 )
-
-# @mc/contracts — the generated descriptors as a linkable workspace package, so @mc/host and @mc/core
-# import the contract (BRIDGE_IMPORTS / CONTROL_EXPORTS / errnos / tier ordinals) BY NAME with no deep
-# relative reach into gen/. One subpath export per descriptor (see package.json).
-load("@aspect_rules_js//npm:defs.bzl", "npm_package")
 
 npm_package(
     name = "pkg",
     srcs = [
-        ":ts",
         "package.json",
+        ":ts",
     ],
     package = "@mc/contracts",
     visibility = ["//visibility:public"],

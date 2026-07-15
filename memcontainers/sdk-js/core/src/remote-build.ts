@@ -67,7 +67,11 @@ class RemoteDefinitionStore implements ContentStore {
 
 function isBuildDefinition(input: BuildRef): input is BuildDefinition {
   const candidate = input as Partial<BuildDefinition>;
-  return Array.isArray(candidate.ops) && typeof candidate.root === "number" && typeof candidate.version === "number";
+  return (
+    Array.isArray(candidate.ops) &&
+    typeof candidate.root === "number" &&
+    typeof candidate.version === "number"
+  );
 }
 
 async function requireOk(response: Response, action: string): Promise<void> {
@@ -88,7 +92,9 @@ async function responseBytes(response: Response): Promise<Uint8Array> {
 }
 
 async function sha256Digest(bytes: Uint8Array): Promise<string> {
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes as Uint8Array<ArrayBuffer>));
+  const digest = new Uint8Array(
+    await crypto.subtle.digest("SHA-256", bytes as Uint8Array<ArrayBuffer>),
+  );
   let hex = "";
   for (const byte of digest) hex += byte.toString(16).padStart(2, "0");
   return `sha256:${hex}`;
@@ -113,7 +119,9 @@ async function uploadDefinitionBlobs(
         await remoteStore.blob(digest);
         continue;
       } catch {
-        throw new Error(`remote build Definition references blob ${digest}; pass opts.store so it can be uploaded`);
+        throw new Error(
+          `remote build Definition references blob ${digest}; pass opts.store so it can be uploaded`,
+        );
       }
     }
     const uploaded = await remoteStore.putBlob(await localStore.blob(digest));
@@ -162,14 +170,20 @@ async function validateRemoteBuildResult(
     );
   }
   if (!digestPattern.test(result.rootDigest)) {
-    throw new Error(`remote build returned invalid rootDigest: ${JSON.stringify(result.rootDigest)}`);
+    throw new Error(
+      `remote build returned invalid rootDigest: ${JSON.stringify(result.rootDigest)}`,
+    );
   }
   if (!digestPattern.test(result.kernelDigest)) {
-    throw new Error(`remote build returned invalid kernelDigest: ${JSON.stringify(result.kernelDigest)}`);
+    throw new Error(
+      `remote build returned invalid kernelDigest: ${JSON.stringify(result.kernelDigest)}`,
+    );
   }
   const expectedManifestRef = `node-${result.rootDigest.slice("sha256:".length)}`;
   if (result.manifestRef !== expectedManifestRef) {
-    throw new Error(`remote build manifestRef mismatch: expected ${expectedManifestRef}, got ${result.manifestRef}`);
+    throw new Error(
+      `remote build manifestRef mismatch: expected ${expectedManifestRef}, got ${result.manifestRef}`,
+    );
   }
   const build = result.image?.build;
   if (!build || build.definition.digest !== expectedDefinitionDigest) {
@@ -206,7 +220,9 @@ async function validateRemoteBuildResult(
     throw new Error("remote build layers mismatch between image manifest and build provenance");
   }
   if (!sameJson([...expectedBlobRefs].sort(), [...build.storeRefs.blobs].sort())) {
-    throw new Error("remote build blob refs mismatch between posted Definition and build provenance");
+    throw new Error(
+      "remote build blob refs mismatch between posted Definition and build provenance",
+    );
   }
   return result;
 }
@@ -217,7 +233,10 @@ async function validateRemoteBuildResult(
  * out-of-line through `/v1/blobs`. The canonical definition bytes are then posted to `/v1/build`; the
  * client describes the graph, the server materializes it next to its store.
  */
-export async function remoteBuild(input: BuildRef, opts: RemoteBuildOptions): Promise<RemoteBuildResult> {
+export async function remoteBuild(
+  input: BuildRef,
+  opts: RemoteBuildOptions,
+): Promise<RemoteBuildResult> {
   const store = new RemoteDefinitionStore(opts);
   const definition = isBuildDefinition(input) ? input : await llb.toDefinition(input, { store });
   if (isBuildDefinition(input)) await uploadDefinitionBlobs(definition, opts.store, store);

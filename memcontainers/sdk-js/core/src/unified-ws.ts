@@ -11,7 +11,11 @@ import {
   encodeHostResult,
 } from "./wire.js";
 
-export type HostCallDispatcher = (name: string, body: Uint8Array, signal: AbortSignal) => Promise<Uint8Array>;
+export type HostCallDispatcher = (
+  name: string,
+  body: Uint8Array,
+  signal: AbortSignal,
+) => Promise<Uint8Array>;
 export type FrameHandler = (kind: number, json: unknown) => boolean;
 
 const BACKOFF_MIN_MS = 250;
@@ -135,12 +139,15 @@ export class UnifiedSocket {
         const abort = new AbortController();
         this.inflight.set(id, abort);
         try {
-          const result = this.hostCall ? await this.hostCall(name, body, abort.signal) : new Uint8Array(0);
+          const result = this.hostCall
+            ? await this.hostCall(name, body, abort.signal)
+            : new Uint8Array(0);
           if (abort.signal.aborted) return;
           this.rememberAnswer(id, result);
           this.send(Kind.HostResult, encodeHostResult(id, result));
         } catch {
-          if (!abort.signal.aborted) this.send(Kind.HostResult, encodeHostResult(id, new Uint8Array(0)));
+          if (!abort.signal.aborted)
+            this.send(Kind.HostResult, encodeHostResult(id, new Uint8Array(0)));
         } finally {
           this.inflight.delete(id);
         }

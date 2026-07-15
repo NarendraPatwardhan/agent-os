@@ -43,7 +43,10 @@ fn wasmtime_instantiates_plain_wasm_and_compiles_fixture() {
     let engine = Engine::default();
     let module = Module::new(&engine, &wasm).expect("compile catalog compiler");
     let imports: Vec<_> = module.imports().collect();
-    assert!(imports.is_empty(), "compiler wasm must not import host/WASI symbols: {imports:?}");
+    assert!(
+        imports.is_empty(),
+        "compiler wasm must not import host/WASI symbols: {imports:?}"
+    );
 
     let mut store = Store::new(&engine, ());
     let linker = Linker::new(&engine);
@@ -89,9 +92,12 @@ fn wasmtime_instantiates_plain_wasm_and_compiles_fixture() {
     let resolved = read_return(&mut store, &memory, &free, resolved_pair);
     free.call(&mut store, (petstore_ptr, petstore.len() as u32))
         .unwrap();
-    assert!(String::from_utf8(resolved).unwrap().contains("\"kind\":\"openapi\""));
+    assert!(String::from_utf8(resolved)
+        .unwrap()
+        .contains("\"kind\":\"openapi\""));
 
-    let source = runfile("_main/memcontainers/lib/catalog-compiler/data/github_issues.openapi.json");
+    let source =
+        runfile("_main/memcontainers/lib/catalog-compiler/data/github_issues.openapi.json");
     let opts = runfile("_main/memcontainers/lib/catalog-compiler/data/github_issues.opts.json");
     let src_ptr = alloc.call(&mut store, source.len() as u32).unwrap();
     memory
@@ -114,5 +120,7 @@ fn wasmtime_instantiates_plain_wasm_and_compiles_fixture() {
     let out = read_return(&mut store, &memory, &free, pair);
     assert!(out.windows("index.json".len()).any(|w| w == b"index.json"));
     assert!(out.windows("records/".len()).any(|w| w == b"records/"));
-    assert!(!out.windows("connection_ref".len()).any(|w| w == b"connection_ref"));
+    assert!(!out
+        .windows("connection_ref".len())
+        .any(|w| w == b"connection_ref"));
 }

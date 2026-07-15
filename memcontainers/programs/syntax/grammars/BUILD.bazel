@@ -28,9 +28,9 @@ sh_test(
 
 mc_grammar(
     name = "lua",
-    root = "lua.grammar",
-    modules = {"families/lua-core.grammar": "lua.core"},
     language = "lua",
+    modules = {"families/lua-core.grammar": "lua.core"},
+    root = "lua.grammar",
 )
 
 mc_syntax_pack(
@@ -41,15 +41,39 @@ mc_syntax_pack(
     ],
 )
 
-filegroup(name = "syntax_pack_csrcs", srcs = [":syntax_pack"], output_group = "csrcs")
-filegroup(name = "syntax_registry_zig", srcs = [":syntax_pack"], output_group = "registry_zig")
-filegroup(name = "syntax_node_types", srcs = [":syntax_pack"], output_group = "node_types")
-filegroup(name = "syntax_manifests", srcs = [":syntax_pack"], output_group = "manifests")
-filegroup(name = "syntax_pack_report", srcs = [":syntax_pack"], output_group = "report")
+filegroup(
+    name = "syntax_pack_csrcs",
+    srcs = [":syntax_pack"],
+    output_group = "csrcs",
+)
+
+filegroup(
+    name = "syntax_registry_zig",
+    srcs = [":syntax_pack"],
+    output_group = "registry_zig",
+)
+
+filegroup(
+    name = "syntax_node_types",
+    srcs = [":syntax_pack"],
+    output_group = "node_types",
+)
+
+filegroup(
+    name = "syntax_manifests",
+    srcs = [":syntax_pack"],
+    output_group = "manifests",
+)
+
+filegroup(
+    name = "syntax_pack_report",
+    srcs = [":syntax_pack"],
+    output_group = "report",
+)
 
 mc_grammar(
     name = "luau",
-    root = "luau.grammar",
-    modules = {"families/lua-core.grammar": "lua.core"},
     language = "luau",
+    modules = {"families/lua-core.grammar": "lua.core"},
+    root = "luau.grammar",
 )

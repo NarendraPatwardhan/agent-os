@@ -54,4 +54,6 @@ const mean = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length;
 
 console.log(`tool-plane create benchmark (${iterations} iterations, github issues fixture)`);
 console.log(`  cold (compile + inject):  ${cold.toFixed(1)} ms`);
-console.log(`  warm (cached compile):    p50 ${p(warm, 0.5).toFixed(1)} ms, mean ${mean(warm).toFixed(1)} ms, min ${warm[0].toFixed(1)} ms`);
+console.log(
+  `  warm (cached compile):    p50 ${p(warm, 0.5).toFixed(1)} ms, mean ${mean(warm).toFixed(1)} ms, min ${warm[0].toFixed(1)} ms`,
+);

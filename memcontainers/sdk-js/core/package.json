@@ -6,8 +6,14 @@
   "description": "Unified Vm API over embedded, browser, and remote AgentOS runtimes. The @mc/* SDK consumer surface.",
   "types": "./src/index.d.ts",
   "exports": {
-    ".": { "types": "./src/index.d.ts", "default": "./src/index.js" },
-    "./drivers": { "types": "./src/drivers.d.ts", "default": "./src/drivers.js" }
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./drivers": {
+      "types": "./src/drivers.d.ts",
+      "default": "./src/drivers.js"
+    }
   },
   "dependencies": {
     "@mc/host": "workspace:*",

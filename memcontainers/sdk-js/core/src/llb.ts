@@ -17,7 +17,13 @@ import type {
   Definition as ContractDefinition,
 } from "@mc/contracts/llb";
 import type { ContentStore, ExecOptions, ImageConfig, ImageManifest } from "./types.js";
-import { commitImage, commitImageWithBuildRecord, commitLayer, commitSnapshot, type SolveOptions } from "./solve.js";
+import {
+  commitImage,
+  commitImageWithBuildRecord,
+  commitLayer,
+  commitSnapshot,
+  type SolveOptions,
+} from "./solve.js";
 import { defaultStore } from "./store.js";
 
 /** A node in the build DAG (internal — consumers hold an opaque {@link BuildState}). */
@@ -25,15 +31,45 @@ export type BuildNode =
   | { readonly op: "source"; readonly ref: string }
   | { readonly op: "layer"; readonly ref: string }
   | { readonly op: "local"; readonly path: string; readonly dest: string }
-  | { readonly op: "http"; readonly url: string; readonly dest: string; readonly expectedDigest?: string }
+  | {
+      readonly op: "http";
+      readonly url: string;
+      readonly dest: string;
+      readonly expectedDigest?: string;
+    }
   | { readonly op: "git"; readonly repo: string; readonly ref: string; readonly dest: string }
-  | { readonly op: "write"; readonly input: BuildNode; readonly path: string; readonly data: Uint8Array }
+  | {
+      readonly op: "write";
+      readonly input: BuildNode;
+      readonly path: string;
+      readonly data: Uint8Array;
+    }
   | { readonly op: "mkdir"; readonly input: BuildNode; readonly path: string }
   | { readonly op: "rm"; readonly input: BuildNode; readonly path: string }
-  | { readonly op: "chmod"; readonly input: BuildNode; readonly path: string; readonly mode: number }
-  | { readonly op: "symlink"; readonly input: BuildNode; readonly target: string; readonly link: string }
-  | { readonly op: "exec"; readonly input: BuildNode; readonly cmd: string; readonly opts: ExecOpts }
-  | { readonly op: "copy"; readonly dest: BuildNode; readonly src: BuildNode; readonly paths: readonly CopyPath[] }
+  | {
+      readonly op: "chmod";
+      readonly input: BuildNode;
+      readonly path: string;
+      readonly mode: number;
+    }
+  | {
+      readonly op: "symlink";
+      readonly input: BuildNode;
+      readonly target: string;
+      readonly link: string;
+    }
+  | {
+      readonly op: "exec";
+      readonly input: BuildNode;
+      readonly cmd: string;
+      readonly opts: ExecOpts;
+    }
+  | {
+      readonly op: "copy";
+      readonly dest: BuildNode;
+      readonly src: BuildNode;
+      readonly paths: readonly CopyPath[];
+    }
   | { readonly op: "merge"; readonly a: BuildNode; readonly b: BuildNode }
   | { readonly op: "diff"; readonly lower: BuildNode; readonly upper: BuildNode }
   | { readonly op: "image"; readonly parts: readonly BuildNode[]; readonly config: ImageConfig }
@@ -118,7 +154,11 @@ const OP_GIT = 15;
 
 function isBuildDefinition(value: BuildRef): value is BuildDefinition {
   const candidate = value as Partial<BuildDefinition>;
-  return Array.isArray(candidate.ops) && typeof candidate.root === "number" && typeof candidate.version === "number";
+  return (
+    Array.isArray(candidate.ops) &&
+    typeof candidate.root === "number" &&
+    typeof candidate.version === "number"
+  );
 }
 
 function definitionBlobRefs(definition: BuildDefinition): string[] {
@@ -137,7 +177,13 @@ function definitionStore(opts: DefinitionOptions, why: string): ContentStore {
   }
 }
 
-const emptyOp = (kind: number): ContractBuildOp => ({ kind, parts: [], copy_paths: [], env: {}, mounts: [] });
+const emptyOp = (kind: number): ContractBuildOp => ({
+  kind,
+  parts: [],
+  copy_paths: [],
+  env: {},
+  mounts: [],
+});
 
 const inputRef = (index: number): { index: number } => ({ index });
 
@@ -147,7 +193,8 @@ function requireIndex(
   at: number,
   states: BuildState[],
 ): BuildState {
-  if (value === undefined || value === null) throw new Error(`llb Definition op ${at} missing ${field}`);
+  if (value === undefined || value === null)
+    throw new Error(`llb Definition op ${at} missing ${field}`);
   if (!Number.isInteger(value) || value < 0 || value >= states.length) {
     throw new Error(`llb Definition op ${at} has invalid ${field} index ${value}`);
   }
@@ -155,7 +202,8 @@ function requireIndex(
 }
 
 function requireString(value: string | null | undefined, field: string, at: number): string {
-  if (value === undefined || value === null) throw new Error(`llb Definition op ${at} missing ${field}`);
+  if (value === undefined || value === null)
+    throw new Error(`llb Definition op ${at} missing ${field}`);
   return value;
 }
 
@@ -169,7 +217,8 @@ function validateSourceRef(ref: string, field = "source_ref"): string {
 }
 
 function requireMode(value: number | null | undefined, field: string, at: number): number {
-  if (value === undefined || value === null) throw new Error(`llb Definition op ${at} missing ${field}`);
+  if (value === undefined || value === null)
+    throw new Error(`llb Definition op ${at} missing ${field}`);
   return validateMode(value, `llb Definition op ${at} ${field}`);
 }
 
@@ -289,7 +338,8 @@ function opAllowedFields(kind: number): ReadonlySet<keyof ContractBuildOp> | nul
 function unusedFieldEmpty(value: unknown): boolean {
   if (value === undefined || value === null) return true;
   if (Array.isArray(value)) return value.length === 0;
-  if (typeof value === "object" && value.constructor === Object) return Object.keys(value).length === 0;
+  if (typeof value === "object" && value.constructor === Object)
+    return Object.keys(value).length === 0;
   return false;
 }
 
@@ -304,7 +354,10 @@ function assertNoUnusedBuildOpFields(op: ContractBuildOp, at: number): void {
   }
 }
 
-async function resolveBuildState(input: BuildRef, opts: DefinitionOptions = {}): Promise<BuildState> {
+async function resolveBuildState(
+  input: BuildRef,
+  opts: DefinitionOptions = {},
+): Promise<BuildState> {
   return isBuildDefinition(input) ? fromDefinition(input, opts) : input;
 }
 
@@ -316,7 +369,10 @@ export function decodeDefinition(bytes: Uint8Array): BuildDefinition {
   return decodeContractDefinition(bytes);
 }
 
-export async function toDefinition(state: BuildState, opts: DefinitionOptions = {}): Promise<BuildDefinition> {
+export async function toDefinition(
+  state: BuildState,
+  opts: DefinitionOptions = {},
+): Promise<BuildDefinition> {
   const indexes = new Map<BuildNode, number>();
   const ops: ContractBuildOp[] = [];
 
@@ -353,7 +409,9 @@ export async function toDefinition(state: BuildState, opts: DefinitionOptions = 
         break;
       case "write": {
         const input = await visit(node.input);
-        const data_digest = await definitionStore(opts, "write payload serialization").putBlob(node.data);
+        const data_digest = await definitionStore(opts, "write payload serialization").putBlob(
+          node.data,
+        );
         op = { ...emptyOp(OP_WRITE), input, path: node.path, data_digest };
         break;
       }
@@ -364,7 +422,12 @@ export async function toDefinition(state: BuildState, opts: DefinitionOptions = 
         op = { ...emptyOp(OP_RM), input: await visit(node.input), path: node.path };
         break;
       case "chmod":
-        op = { ...emptyOp(OP_CHMOD), input: await visit(node.input), path: node.path, mode: node.mode };
+        op = {
+          ...emptyOp(OP_CHMOD),
+          input: await visit(node.input),
+          path: node.path,
+          mode: node.mode,
+        };
         break;
       case "symlink":
         op = {
@@ -376,7 +439,9 @@ export async function toDefinition(state: BuildState, opts: DefinitionOptions = 
         break;
       case "exec": {
         const input = await visit(node.input);
-        const mounts = node.opts.mounts ? await Promise.all(node.opts.mounts.map((m) => visit(m.node))) : [];
+        const mounts = node.opts.mounts
+          ? await Promise.all(node.opts.mounts.map((m) => visit(m.node)))
+          : [];
         const stdin =
           node.opts.stdin === undefined
             ? undefined
@@ -411,7 +476,11 @@ export async function toDefinition(state: BuildState, opts: DefinitionOptions = 
         op = { ...emptyOp(OP_MERGE), a: await visit(node.a), b: await visit(node.b) };
         break;
       case "diff":
-        op = { ...emptyOp(OP_DIFF), lower: await visit(node.lower), upper: await visit(node.upper) };
+        op = {
+          ...emptyOp(OP_DIFF),
+          lower: await visit(node.lower),
+          upper: await visit(node.upper),
+        };
         break;
       case "image": {
         const parts = await Promise.all(node.parts.map(visit));
@@ -439,11 +508,18 @@ export async function toDefinition(state: BuildState, opts: DefinitionOptions = 
   return { version: LLB_DEFINITION_VERSION, ops, root };
 }
 
-export async function fromDefinition(definition: BuildDefinition, opts: DefinitionOptions = {}): Promise<BuildState> {
+export async function fromDefinition(
+  definition: BuildDefinition,
+  opts: DefinitionOptions = {},
+): Promise<BuildState> {
   if (definition.version !== LLB_DEFINITION_VERSION) {
     throw new Error(`unsupported llb Definition version ${definition.version}`);
   }
-  if (!Number.isInteger(definition.root) || definition.root < 0 || definition.root >= definition.ops.length) {
+  if (
+    !Number.isInteger(definition.root) ||
+    definition.root < 0 ||
+    definition.root >= definition.ops.length
+  ) {
     throw new Error(`llb Definition root index ${definition.root} is out of range`);
   }
 
@@ -456,7 +532,10 @@ export async function fromDefinition(definition: BuildDefinition, opts: Definiti
       case OP_SOURCE:
         state = st({
           op: "source",
-          ref: validateSourceRef(requireString(op.source_ref, "source_ref", i), `op ${i} source_ref`),
+          ref: validateSourceRef(
+            requireString(op.source_ref, "source_ref", i),
+            `op ${i} source_ref`,
+          ),
         });
         break;
       case OP_LAYER:
@@ -537,13 +616,17 @@ export async function fromDefinition(definition: BuildDefinition, opts: Definiti
             env: { ...op.env },
             ...(op.stdin !== undefined && op.stdin !== null ? { stdin: op.stdin.slice() } : {}),
             ...(op.tier ? { tier: op.tier as ImageConfig["tier"] } : {}),
-            ...(op.budget_mib !== undefined && op.budget_mib !== null ? { budgetMib: op.budget_mib } : {}),
+            ...(op.budget_mib !== undefined && op.budget_mib !== null
+              ? { budgetMib: op.budget_mib }
+              : {}),
             ...(op.fuel !== undefined && op.fuel !== null ? { fuel: op.fuel } : {}),
             ...(op.deterministic !== undefined && op.deterministic !== null
               ? { deterministic: op.deterministic }
               : {}),
             ...(op.net !== undefined && op.net !== null ? { net: op.net } : {}),
-            ...(op.mounts.length ? { mounts: op.mounts.map((m) => requireIndex(m.index, "mount", i, states)) } : {}),
+            ...(op.mounts.length
+              ? { mounts: op.mounts.map((m) => requireIndex(m.index, "mount", i, states)) }
+              : {}),
           },
         });
         break;

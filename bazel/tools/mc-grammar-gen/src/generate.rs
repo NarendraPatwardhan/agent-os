@@ -4,7 +4,7 @@ use mc_parser_dsl::parse;
 use mc_parser_elaborate::elaborate;
 use mc_parser_ir::{GrammarIr, SemanticMapping};
 use mc_tree_sitter_backend::grammar_json;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};

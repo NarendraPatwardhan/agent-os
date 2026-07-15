@@ -11,7 +11,11 @@
         "parameters": [
           { "name": "owner", "in": "path", "required": true, "schema": { "type": "string" } },
           { "name": "repo", "in": "path", "required": true, "schema": { "type": "string" } },
-          { "name": "state", "in": "query", "schema": { "type": "string", "enum": ["open", "closed", "all"] } }
+          {
+            "name": "state",
+            "in": "query",
+            "schema": { "type": "string", "enum": ["open", "closed", "all"] }
+          }
         ],
         "responses": {
           "200": {

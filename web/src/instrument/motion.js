@@ -12,12 +12,12 @@
  * Reduced motion: durations collapse at the token level (motion.stylex.js);
  * animation durations here use the same vars, so everything honors it.
  */
-import * as stylex from '@stylexjs/stylex';
-import { duration, easing } from './tokens/motion.stylex.js';
+import * as stylex from "@stylexjs/stylex";
+import { duration, easing } from "./tokens/motion.stylex.js";
 
 const enterUp = stylex.keyframes({
-  from: { opacity: 0, transform: 'translateY(8px)', filter: 'blur(8px)' },
-  to: { opacity: 1, transform: 'translateY(0)', filter: 'blur(0)' },
+  from: { opacity: 0, transform: "translateY(8px)", filter: "blur(8px)" },
+  to: { opacity: 1, transform: "translateY(0)", filter: "blur(0)" },
 });
 
 const enterFade = stylex.keyframes({
@@ -26,8 +26,8 @@ const enterFade = stylex.keyframes({
 });
 
 const exitFade = stylex.keyframes({
-  from: { opacity: 1, filter: 'blur(0)' },
-  to: { opacity: 0, filter: 'blur(4px)' },
+  from: { opacity: 1, filter: "blur(0)" },
+  to: { opacity: 0, filter: "blur(4px)" },
 });
 
 export const motion = stylex.create({
@@ -37,14 +37,14 @@ export const motion = stylex.create({
     animationName: enterUp,
     animationDuration: duration.slow,
     animationTimingFunction: easing.outQuint,
-    animationFillMode: 'backwards',
+    animationFillMode: "backwards",
   },
   /* For frequent chrome (frequency budget): opacity only, fast. */
   enterInstant: {
     animationName: enterFade,
     animationDuration: duration.fast,
     animationTimingFunction: easing.out,
-    animationFillMode: 'backwards',
+    animationFillMode: "backwards",
   },
   /* Exits whisper: opacity + blur, no positional movement, faster than
    * the enter. (Apply while unmounting via your framework's exit hook.) */
@@ -52,7 +52,7 @@ export const motion = stylex.create({
     animationName: exitFade,
     animationDuration: duration.fast,
     animationTimingFunction: easing.out,
-    animationFillMode: 'forwards',
+    animationFillMode: "forwards",
   },
   delay: (d) => ({
     animationDelay: d,
@@ -69,30 +69,30 @@ export const motion = stylex.create({
    * translate/height) from measured geometry — the tabs underline is the
    * reference implementation. */
   indicator: {
-    position: 'absolute',
-    transitionProperty: 'translate, width, height',
+    position: "absolute",
+    transitionProperty: "translate, width, height",
     transitionDuration: duration.base,
     transitionTimingFunction: easing.outQuint,
-    pointerEvents: 'none',
+    pointerEvents: "none",
   },
   /* Container size-morph: height/width interpolate as content changes.
    * interpolate-size lets `auto` participate in the transition on
    * supporting engines; elsewhere the transition simply doesn't run
    * (graceful, never broken). */
   morph: {
-    interpolateSize: 'allow-keywords',
-    transitionProperty: 'height, width',
+    interpolateSize: "allow-keywords",
+    transitionProperty: "height, width",
     transitionDuration: duration.slow,
     transitionTimingFunction: easing.outQuint,
-    overflow: 'hidden',
+    overflow: "hidden",
   },
   /* Content inside a morphing container: fades/settles AFTER the
    * container has begun moving (container leads, content follows). */
   followThrough: {
-    transitionProperty: 'opacity, translate, filter',
+    transitionProperty: "opacity, translate, filter",
     transitionDuration: duration.base,
     transitionTimingFunction: easing.out,
-    transitionDelay: '60ms',
+    transitionDelay: "60ms",
   },
   /* The veil arrival: blur + scrim animate on the layer BEHIND an
    * arriving surface (dialogs, sheets, side panels). Pair with a
@@ -100,24 +100,24 @@ export const motion = stylex.create({
    * backdrop-filter from blur(0) to the target. Enter only — exits
    * whisper (opacity), and frequent chrome gets none of this. */
   veil: {
-    transitionProperty: 'backdrop-filter, background-color, opacity',
+    transitionProperty: "backdrop-filter, background-color, opacity",
     transitionDuration: duration.slow,
     transitionTimingFunction: easing.outQuint,
   },
 
   /* ----- Transition presets (interruptible interaction motion) ----- */
   colors: {
-    transitionProperty: 'background-color, border-color, color, fill, stroke',
+    transitionProperty: "background-color, border-color, color, fill, stroke",
     transitionDuration: duration.fast,
     transitionTimingFunction: easing.out,
   },
   surface: {
-    transitionProperty: 'box-shadow, transform, opacity',
+    transitionProperty: "box-shadow, transform, opacity",
     transitionDuration: duration.base,
     transitionTimingFunction: easing.out,
   },
   panel: {
-    transitionProperty: 'transform, opacity, width, height',
+    transitionProperty: "transform, opacity, width, height",
     transitionDuration: duration.slow,
     transitionTimingFunction: easing.outQuint,
   },

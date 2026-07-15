@@ -23,9 +23,16 @@ function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
 }
 
-function assertBytes(actual: Uint8Array | null | undefined, expected: Uint8Array, message: string): void {
+function assertBytes(
+  actual: Uint8Array | null | undefined,
+  expected: Uint8Array,
+  message: string,
+): void {
   assert(actual !== undefined && actual !== null, `${message}: missing bytes`);
-  assert(actual.length === expected.length, `${message}: length ${actual.length} !== ${expected.length}`);
+  assert(
+    actual.length === expected.length,
+    `${message}: length ${actual.length} !== ${expected.length}`,
+  );
   for (let i = 0; i < expected.length; i++) {
     assert(actual[i] === expected[i], `${message}: byte ${i} ${actual[i]} !== ${expected[i]}`);
   }
@@ -43,7 +50,10 @@ function assertThrowsWire(
   try {
     fn();
   } catch (error) {
-    assert(error instanceof WireError, `${message}: expected ${WireError.name}, got ${(error as Error).name}`);
+    assert(
+      error instanceof WireError,
+      `${message}: expected ${WireError.name}, got ${(error as Error).name}`,
+    );
     return;
   }
   throw new Error(`${message}: expected throw`);
@@ -110,9 +120,21 @@ function controlCodecs(): void {
   assert(exec.env.ALPHA === "a" && exec.env.ZED === "z", "ExecRequest env changed");
   assertBytes(exec.stdin, new Uint8Array(), "ExecRequest empty stdin must stay present");
 
-  assertThrowsWire(() => decodeExecRequest(Uint8Array.from([2, 0, 1])), ControlWireError, "wrong control message id");
-  assertThrowsWire(() => decodeExecRequest(Uint8Array.from([1, 0, 2])), ControlWireError, "wrong control version");
-  assertThrowsWire(() => decodeExecRequest(unsorted.slice(0, unsorted.length - 1)), ControlWireError, "truncated control frame");
+  assertThrowsWire(
+    () => decodeExecRequest(Uint8Array.from([2, 0, 1])),
+    ControlWireError,
+    "wrong control message id",
+  );
+  assertThrowsWire(
+    () => decodeExecRequest(Uint8Array.from([1, 0, 2])),
+    ControlWireError,
+    "wrong control version",
+  );
+  assertThrowsWire(
+    () => decodeExecRequest(unsorted.slice(0, unsorted.length - 1)),
+    ControlWireError,
+    "truncated control frame",
+  );
   assertThrowsWire(
     () => decodeExecRequest(Uint8Array.from([...unsorted, 0])),
     ControlWireError,
@@ -199,10 +221,26 @@ function llbCodecs(): void {
   assert(digest.edges.length === 2, "NodeDigest edges list changed");
   assert(digest.layers[0]?.producer === "node-1", "NodeDigest layer list changed");
 
-  assertThrowsWire(() => decodeDefinition(Uint8Array.from([8, 0, 1])), LlbWireError, "wrong LLB message id");
-  assertThrowsWire(() => decodeDefinition(Uint8Array.from([3, 0, 2])), LlbWireError, "wrong LLB version");
-  assertThrowsWire(() => decodeDefinition(encoded.slice(0, encoded.length - 1)), LlbWireError, "truncated LLB frame");
-  assertThrowsWire(() => decodeDefinition(Uint8Array.from([...encoded, 0])), LlbWireError, "trailing LLB bytes");
+  assertThrowsWire(
+    () => decodeDefinition(Uint8Array.from([8, 0, 1])),
+    LlbWireError,
+    "wrong LLB message id",
+  );
+  assertThrowsWire(
+    () => decodeDefinition(Uint8Array.from([3, 0, 2])),
+    LlbWireError,
+    "wrong LLB version",
+  );
+  assertThrowsWire(
+    () => decodeDefinition(encoded.slice(0, encoded.length - 1)),
+    LlbWireError,
+    "truncated LLB frame",
+  );
+  assertThrowsWire(
+    () => decodeDefinition(Uint8Array.from([...encoded, 0])),
+    LlbWireError,
+    "trailing LLB bytes",
+  );
 }
 
 controlCodecs();

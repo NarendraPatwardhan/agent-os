@@ -10,7 +10,9 @@ import type { Example } from "../types";
 export function CommandsDriver({ example }: { example: Extract<Example, { kind: "commands" }> }) {
   const session = useVmSession({
     onReady: (vm, s) =>
-      runSteps(example.steps, vm, s).catch((e) => s.print(e instanceof Error ? e.message : String(e))),
+      runSteps(example.steps, vm, s).catch((e) =>
+        s.print(e instanceof Error ? e.message : String(e)),
+      ),
   });
 
   const play = (): void => {
@@ -48,7 +50,13 @@ export function CommandsDriver({ example }: { example: Extract<Example, { kind: 
           <PlayButton place="abs" onClick={play} label="Reboot and run" />
         </div>
       }
-      terminal={<TerminalPanel session={session} label="agent · live in your browser" hint={<Hint>press ▶ to run</Hint>} />}
+      terminal={
+        <TerminalPanel
+          session={session}
+          label="agent · live in your browser"
+          hint={<Hint>press ▶ to run</Hint>}
+        />
+      }
     />
   );
 }

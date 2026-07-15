@@ -1,6 +1,6 @@
 ---
 name: memcontainer-docx
-description: 'Create, read, edit, and validate Microsoft Word .docx files from inside a memcontainer or from a host agent using a memcontainer VM. Use this skill whenever the task mentions Word documents, .docx files, reports, memos, letters, templates, headings, tables of contents, comments, footnotes, endnotes, tracked changes, page numbers, headers, footers, bookmarks, hyperlinks, images, charts, or any document deliverable that should be produced as .docx. Prefer the memcontainers Luau `docx` library over JavaScript/Python document libraries, and use external readers only as validation when available.'
+description: "Create, read, edit, and validate Microsoft Word .docx files from inside a memcontainer or from a host agent using a memcontainer VM. Use this skill whenever the task mentions Word documents, .docx files, reports, memos, letters, templates, headings, tables of contents, comments, footnotes, endnotes, tracked changes, page numbers, headers, footers, bookmarks, hyperlinks, images, charts, or any document deliverable that should be produced as .docx. Prefer the memcontainers Luau `docx` library over JavaScript/Python document libraries, and use external readers only as validation when available."
 ---
 
 # Memcontainer DOCX

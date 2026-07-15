@@ -35,12 +35,18 @@ export interface HostCallContext {
   signal: AbortSignal;
 }
 
-export type ToolHandler = (args: string, context: HostCallContext) => Promise<Uint8Array | string> | Uint8Array | string;
+export type ToolHandler = (
+  args: string,
+  context: HostCallContext,
+) => Promise<Uint8Array | string> | Uint8Array | string;
 
 /** A binary-safe handler: given the request body (the bytes after `name\0`, verbatim — no UTF-8
  *  decode, no trailing-NUL trim), return a result. Used by host-backed mount drivers, whose WRITE op
  *  carries binary file content. */
-export type RawToolHandler = (body: Uint8Array, context: HostCallContext) => Promise<Uint8Array | string> | Uint8Array | string;
+export type RawToolHandler = (
+  body: Uint8Array,
+  context: HostCallContext,
+) => Promise<Uint8Array | string> | Uint8Array | string;
 
 interface Slot {
   result?: Uint8Array;
@@ -76,7 +82,9 @@ export class MapHostCall implements HostCallCapability {
 
   /** Allocate a slot and run `produce` (sync or async); the result streams back via `body` once it
    *  resolves. */
-  private startSlot(produce: (context: HostCallContext) => Promise<Uint8Array | string> | Uint8Array | string): number {
+  private startSlot(
+    produce: (context: HostCallContext) => Promise<Uint8Array | string> | Uint8Array | string,
+  ): number {
     const handle = this.next;
     this.next = this.next + 1 < 1 ? 1 : this.next + 1;
     const abort = new AbortController();

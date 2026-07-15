@@ -148,7 +148,10 @@ export class HostNet implements NetCapability {
         "Forbidden",
         [["content-type", "application/json"]],
         new TextEncoder().encode(
-          JSON.stringify({ ok: false, err: { code: "declined", message: "tool approval declined" } }),
+          JSON.stringify({
+            ok: false,
+            err: { code: "declined", message: "tool approval declined" },
+          }),
         ),
       );
     };

@@ -151,7 +151,8 @@ defmodule AgentOS.Host.Nif do
   def boot(wasm, base_image, opts)
       when is_binary(wasm) and (is_binary(base_image) or is_nil(base_image)) and is_list(opts) do
     with {:ok, layers, deterministic, contract, workers, net, connection_policies, tool_approval,
-          host_call, persist} <-
+          host_call,
+          persist} <-
            boot_args(base_image, opts) do
       {net_relay, net_real, connections} = net
 

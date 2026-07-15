@@ -35,18 +35,18 @@ use wasmparser::{CompositeInnerType, Parser, Payload, Validator, WasmFeatures};
 
 use crate::builtins::{Builtin, BuiltinCtx, BuiltinStep};
 use crate::fs::servicefs::{
-    DelegatedHandle, MAX_SVC_REQUEST_BYTES, RespondOutcome, SVC_RESPONSE_HIGH_WATER,
+    clear_activation, grant_holder, lookup_service, mark_failed, register_service,
+    service_registered, service_state, valid_service_name, DelegatedHandle, RespondOutcome,
     ServiceChannel, ServiceInbound, ServiceState, SvcCallSource, SvcConnHandle, SvcRead,
-    SvcServeOwner, clear_activation, grant_holder, lookup_service, mark_failed, register_service,
-    service_registered, service_state, valid_service_name,
+    SvcServeOwner, MAX_SVC_REQUEST_BYTES, SVC_RESPONSE_HIGH_WATER,
 };
 use crate::fs::{MemFs, ServeChannel, ServedFs};
 use crate::host_call::{HostCallRead, HostCallSource};
 use crate::io::{EmptySource, PipeSink, PipeSource, ReadSource, TerminalSink, WriteSink};
 use crate::net::{HttpPoll, HttpReq, NetError, WsConn};
 use crate::task::{
-    BlockReason, CAP_AMBIENT, CAP_FS_READ, CAP_MOUNT, CAP_NET, CAP_PERSIST, CAP_SCRATCH, CAP_SPAWN,
-    Capabilities, TaskId, TaskState, Tier,
+    BlockReason, Capabilities, TaskId, TaskState, Tier, CAP_AMBIENT, CAP_FS_READ, CAP_MOUNT,
+    CAP_NET, CAP_PERSIST, CAP_SCRATCH, CAP_SPAWN,
 };
 use crate::vfs::{FileHandle, FsError, KPath, Namespace, NodeType, OpenFlags, SeekFrom};
 use crate::wasm::abi::*;
@@ -251,7 +251,7 @@ impl ReadSource for SharedNetSource {
     }
 
     fn is_eof(&self) -> bool {
-        matches!(self.0.0.borrow().phase, NetPhase::Eof)
+        matches!(self.0 .0.borrow().phase, NetPhase::Eof)
     }
 }
 
@@ -413,7 +413,11 @@ fn parse_http_status(head: &[u8]) -> u16 {
             break;
         }
     }
-    if saw { n } else { 0 }
+    if saw {
+        n
+    } else {
+        0
+    }
 }
 
 /// Largest single WebSocket message the kernel will buffer per `recv`.
@@ -2525,8 +2529,8 @@ impl GuestProgram {
         let channel = ServiceChannel::new();
         register_service(&name, channel.clone());
         clear_activation(&name); // grant consumed; the channel is now in the registry
-        // On `alloc_fd` failure the `SvcServeOwner` is dropped here, which closes the
-        // channel and deregisters `name` — no orphaned registration.
+                                 // On `alloc_fd` failure the `SvcServeOwner` is dropped here, which closes the
+                                 // channel and deregisters `name` — no orphaned registration.
         match self.alloc_fd(GuestFd::SvcServe(SvcServeOwner::new(name, channel))) {
             Some(fd) => match self.write_guest_u32(ret_fd, fd as u32) {
                 Ok(()) => Fulfilled::Resume(ESUCCESS),

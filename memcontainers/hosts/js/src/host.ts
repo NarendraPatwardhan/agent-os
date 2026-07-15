@@ -58,7 +58,9 @@ type ContractExports = { [Row in (typeof EXPORTS)[number] as Row["name"]]?: Expo
 const REQUIRED_EXPORTS = ["mc_init", "mc_tick", "mc_input", "mc_worker_count"] as const;
 type RequiredExport = (typeof REQUIRED_EXPORTS)[number];
 
-type KernelExports = { memory: WebAssembly.Memory } & Required<Pick<ContractExports, RequiredExport>> &
+type KernelExports = { memory: WebAssembly.Memory } & Required<
+  Pick<ContractExports, RequiredExport>
+> &
   Omit<ContractExports, RequiredExport>;
 
 // Validate the booted kernel's control exports against the contract: every export it actually provides
@@ -367,8 +369,11 @@ export class KernelHostBuilder {
     // bridge.
     exports.mc_init();
     st.workersGranted = exports.mc_worker_count();
-    if (st.workersGranted < 0 || st.workersGranted > MAX_WORKERS ||
-        (st.workersGranted > 0 && !exports.mc_worker_entry)) {
+    if (
+      st.workersGranted < 0 ||
+      st.workersGranted > MAX_WORKERS ||
+      (st.workersGranted > 0 && !exports.mc_worker_entry)
+    ) {
       throw new Error("kernel returned invalid worker state after boot");
     }
 
@@ -396,7 +401,9 @@ export class KernelHostBuilder {
     const scratchAddr = curBytes;
     const minimum = scratchAddr + SNAPSHOT_PAGE_SIZE;
     if (view.memoryLen < minimum) {
-      throw new Error(`invalid snapshot: memory_too_small (need at least ${minimum}, have ${view.memoryLen})`);
+      throw new Error(
+        `invalid snapshot: memory_too_small (need at least ${minimum}, have ${view.memoryLen})`,
+      );
     }
     if (view.memoryLen > curBytes) {
       try {
@@ -612,7 +619,13 @@ export class KernelHost {
   }
 
   /** Stat a path: `{ size, isDir, isSymlink, nlink, mode }` (the link itself for a symlink). */
-  stat(path: string): { size: number; isDir: boolean; isSymlink: boolean; nlink: number; mode: number } {
+  stat(path: string): {
+    size: number;
+    isDir: boolean;
+    isSymlink: boolean;
+    nlink: number;
+    mode: number;
+  } {
     const f = this.ctlFn(this.exports.mc_ctl_stat, "mc_ctl_stat");
     const p = enc(path);
     this.ctlPut(p);
@@ -879,19 +892,24 @@ export class KernelHost {
     }
     // Keep the digest, bitmap, and page payload tied to one instant even while async hashing yields.
     const mem = new Uint8Array(this.exports.memory.buffer).slice();
-    if (baseView.memoryLen > mem.length) throw new Error("incremental snapshot memory cannot shrink");
+    if (baseView.memoryLen > mem.length)
+      throw new Error("incremental snapshot memory cannot shrink");
     const bitmap = new Uint8Array(snapshotBitmapLen(mem.length));
     const changed: Uint8Array[] = [];
     for (let page = 0; page < mem.length / SNAPSHOT_PAGE_SIZE; page++) {
       const start = page * SNAPSHOT_PAGE_SIZE;
       const current = mem.subarray(start, start + SNAPSHOT_PAGE_SIZE);
-      const prior = start < baseView.memoryLen
-        ? baseView.pages.subarray(start, start + SNAPSHOT_PAGE_SIZE)
-        : undefined;
+      const prior =
+        start < baseView.memoryLen
+          ? baseView.pages.subarray(start, start + SNAPSHOT_PAGE_SIZE)
+          : undefined;
       let differs = prior === undefined;
       if (prior) {
         for (let i = 0; i < SNAPSHOT_PAGE_SIZE; i++) {
-          if (current[i] !== prior[i]) { differs = true; break; }
+          if (current[i] !== prior[i]) {
+            differs = true;
+            break;
+          }
         }
       } else {
         differs = current.some((b) => b !== 0);
@@ -913,7 +931,10 @@ export class KernelHost {
     out.set(header);
     out.set(bitmap, header.length);
     let off = header.length + bitmap.length;
-    for (const page of changed) { out.set(page, off); off += page.length; }
+    for (const page of changed) {
+      out.set(page, off);
+      off += page.length;
+    }
     return out;
   }
 
@@ -932,7 +953,9 @@ export class KernelHost {
   async commitLayer(): Promise<{ digest: string; tar: Uint8Array }> {
     const inflight = this.inflightEgress();
     if (inflight > 0) {
-      throw new Error(`cannot commit: ${inflight} host-egress operation(s) in flight; quiesce first`);
+      throw new Error(
+        `cannot commit: ${inflight} host-egress operation(s) in flight; quiesce first`,
+      );
     }
     const commit = this.exports.mc_commit_layer;
     if (!commit) throw new Error("kernel lacks mc_commit_layer (commit unsupported)");

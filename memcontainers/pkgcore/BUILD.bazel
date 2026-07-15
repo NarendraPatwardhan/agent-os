@@ -7,8 +7,8 @@ load("//bazel:rust_opt_test.bzl", "rust_opt_test")
 # run natively. Ported from memcontainers' pkgcore.
 rust_library(
     name = "lib",
-    crate_name = "pkgcore",
     srcs = ["src/lib.rs"],
+    crate_name = "pkgcore",
     edition = "2021",
     visibility = ["//visibility:public"],
 )
@@ -17,7 +17,7 @@ rust_library(
 # lookup, the cache/registry path joins.
 rust_opt_test(
     name = "test",
+    size = "small",
     crate = ":lib",
     edition = "2021",
-    size = "small",
 )

@@ -5,20 +5,20 @@ methods in all three cases, but hosting, artifact resolution, persistence, and o
 
 ## At a glance
 
-| Behavior | `local` | `browser` | `remote` |
-|---|---|---|---|
-| Default selector | Yes | No | No |
-| Kernel location | Node/Bun process | Browser page | Served host |
-| Raw kernel bytes | Accepted | Required | Not sent |
-| Raw image tar | Accepted | Accepted | Rejected |
-| Named image | Requires store | Requires browser store | Resolved by server |
-| Host tools | In process | In page | Relayed over control WebSocket |
-| Host mounts | In process | In page | Relayed over control WebSocket |
-| `persist: true` | VM-lifetime memory | OPFS, IndexedDB fallback | Rejected by client contract |
-| `memoryBytes()` | Measured | Measured | Returns `0` |
-| Named VM identity | None | None | `id` or `mc.connect()` key |
-| Full snapshot | Local bytes | Browser bytes | Server capture returned as bytes |
-| Incremental snapshot | Caller store | Caller browser store | Server snapshot store |
+| Behavior             | `local`            | `browser`                | `remote`                         |
+| -------------------- | ------------------ | ------------------------ | -------------------------------- |
+| Default selector     | Yes                | No                       | No                               |
+| Kernel location      | Node/Bun process   | Browser page             | Served host                      |
+| Raw kernel bytes     | Accepted           | Required                 | Not sent                         |
+| Raw image tar        | Accepted           | Accepted                 | Rejected                         |
+| Named image          | Requires store     | Requires browser store   | Resolved by server               |
+| Host tools           | In process         | In page                  | Relayed over control WebSocket   |
+| Host mounts          | In process         | In page                  | Relayed over control WebSocket   |
+| `persist: true`      | VM-lifetime memory | OPFS, IndexedDB fallback | Rejected by client contract      |
+| `memoryBytes()`      | Measured           | Measured                 | Returns `0`                      |
+| Named VM identity    | None               | None                     | `id` or `mc.connect()` key       |
+| Full snapshot        | Local bytes        | Browser bytes            | Server capture returned as bytes |
+| Incremental snapshot | Caller store       | Caller browser store     | Server snapshot store            |
 
 ## Local
 

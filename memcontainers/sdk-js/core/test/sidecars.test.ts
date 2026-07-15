@@ -70,20 +70,40 @@ class Authority implements SidecarAuthority {
     this.instances.set(instance.id, instance);
     return instance;
   }
-  async retrieve(id: string): Promise<SidecarInstance> { return this.instances.get(id)!; }
-  async list(kind?: string): Promise<SidecarInstance[]> { return [...this.instances.values()].filter((item) => !kind || item.kind === kind); }
-  async invoke(request: SidecarInvokeRequest): Promise<Uint8Array> { return request.body.slice(); }
-  async delete(id: string): Promise<void> { this.deletes += 1; this.instances.delete(id); }
+  async retrieve(id: string): Promise<SidecarInstance> {
+    return this.instances.get(id)!;
+  }
+  async list(kind?: string): Promise<SidecarInstance[]> {
+    return [...this.instances.values()].filter((item) => !kind || item.kind === kind);
+  }
+  async invoke(request: SidecarInvokeRequest): Promise<Uint8Array> {
+    return request.body.slice();
+  }
+  async delete(id: string): Promise<void> {
+    this.deletes += 1;
+    this.instances.delete(id);
+  }
   async close(): Promise<void> {}
 }
 
-async function backend(authority = new Authority()): Promise<{ backend: EmbeddedSidecarBackend; authority: Authority }> {
+async function backend(
+  authority = new Authority(),
+): Promise<{ backend: EmbeddedSidecarBackend; authority: Authority }> {
   const host: SidecarHost = {
-    async describe() { return { kinds: [capability] }; },
-    async attach() { return authority; },
+    async describe() {
+      return { kinds: [capability] };
+    },
+    async attach() {
+      return authority;
+    },
   };
   return {
-    backend: await EmbeddedSidecarBackend.attach({ runner: host }, { echo: descriptor }, "vm_test", "local"),
+    backend: await EmbeddedSidecarBackend.attach(
+      { runner: host },
+      { echo: descriptor },
+      "vm_test",
+      "local",
+    ),
     authority,
   };
 }
@@ -92,29 +112,39 @@ async function main(): Promise<void> {
   {
     const authority = new Authority();
     const host: SidecarHost = {
-      async describe() { return { kinds: [capability] }; },
-      async attach() { return authority; },
+      async describe() {
+        return { kinds: [capability] };
+      },
+      async attach() {
+        return authority;
+      },
     };
     const backend = await EmbeddedSidecarBackend.attach({ runner: host }, {}, "vm_facade", "local");
     const descriptors: Record<string, SidecarGrantDescriptor> = {};
     const sidecars = new VmSidecars(backend, descriptors);
     await sidecars.enable("echo", descriptor);
     assert.equal(descriptors.echo?.host, "runner");
-    assert.deepEqual((await sidecars.capabilities()).map((item) => item.kind), ["test.echo"]);
+    assert.deepEqual(
+      (await sidecars.capabilities()).map((item) => item.kind),
+      ["test.echo"],
+    );
     const instance = await sidecars.create({
       grant: "echo",
       kind: "test.echo",
       body: new Uint8Array(),
       idempotencyKey: "facade-create",
     });
-    assert.deepEqual(await sidecars.invoke({
-      id: instance.id,
-      generation: instance.generation,
-      grant: instance.grant,
-      kind: instance.kind,
-      operation: "echo",
-      body: new Uint8Array([4, 2]),
-    }), new Uint8Array([4, 2]));
+    assert.deepEqual(
+      await sidecars.invoke({
+        id: instance.id,
+        generation: instance.generation,
+        grant: instance.grant,
+        kind: instance.kind,
+        operation: "echo",
+        body: new Uint8Array([4, 2]),
+      }),
+      new Uint8Array([4, 2]),
+    );
     await sidecars.delete(instance.id);
     await sidecars.disable("echo");
     assert.equal(descriptors.echo, undefined);
@@ -123,14 +153,20 @@ async function main(): Promise<void> {
 
   {
     const attached = await backend();
-    const request = { grant: "echo", kind: "test.echo", body: new Uint8Array([1]), idempotencyKey: "create-1" };
+    const request = {
+      grant: "echo",
+      kind: "test.echo",
+      body: new Uint8Array([1]),
+      idempotencyKey: "create-1",
+    };
     const first = await attached.backend.create(request);
     const second = await attached.backend.create(request);
     assert.equal(second.id, first.id);
     assert.equal(attached.authority.creates, 1);
     await assert.rejects(
       attached.backend.create({ ...request, body: new Uint8Array([2]) }),
-      (error: unknown) => error instanceof SidecarError && error.code === SIDECAR_ERROR_IDEMPOTENCY_CONFLICT,
+      (error: unknown) =>
+        error instanceof SidecarError && error.code === SIDECAR_ERROR_IDEMPOTENCY_CONFLICT,
     );
     const concurrent = { ...request, idempotencyKey: "create-2" };
     const [left, right] = await Promise.all([
@@ -144,27 +180,52 @@ async function main(): Promise<void> {
 
   await assert.rejects(
     EmbeddedSidecarBackend.attach(
-      { runner: { async describe() { return { kinds: [{ ...capability, fork: "clone" }] }; }, async attach() { return new Authority(); } } },
+      {
+        runner: {
+          async describe() {
+            return { kinds: [{ ...capability, fork: "clone" }] };
+          },
+          async attach() {
+            return new Authority();
+          },
+        },
+      },
       { echo: { ...descriptor, grant: { ...grant, fork: "clone" } } },
     ),
-    (error: unknown) => error instanceof SidecarError && error.code === SIDECAR_ERROR_UNSUPPORTED_FORK_POLICY,
+    (error: unknown) =>
+      error instanceof SidecarError && error.code === SIDECAR_ERROR_UNSUPPORTED_FORK_POLICY,
   );
 
   await assert.rejects(
     EmbeddedSidecarBackend.attach(
-      { runner: { async describe() { return { kinds: [{ ...capability, placements: ["local", "local"] }] }; }, async attach() { return new Authority(); } } },
+      {
+        runner: {
+          async describe() {
+            return { kinds: [{ ...capability, placements: ["local", "local"] }] };
+          },
+          async attach() {
+            return new Authority();
+          },
+        },
+      },
       { echo: descriptor },
       "vm_duplicate_placement",
       "local",
     ),
-    (error: unknown) => error instanceof SidecarError && error.code === SIDECAR_ERROR_PROVIDER_FAILED,
+    (error: unknown) =>
+      error instanceof SidecarError && error.code === SIDECAR_ERROR_PROVIDER_FAILED,
   );
 
   {
     let attaches = 0;
     const host: SidecarHost = {
-      async describe() { return { kinds: [capability] }; },
-      async attach() { attaches += 1; return new Authority(); },
+      async describe() {
+        return { kinds: [capability] };
+      },
+      async attach() {
+        attaches += 1;
+        return new Authority();
+      },
     };
     const attached = await EmbeddedSidecarBackend.attach({ runner: host }, {}, "vm_lazy", "local");
     assert.equal(attaches, 0);
@@ -176,8 +237,12 @@ async function main(): Promise<void> {
   {
     const authority = new Authority();
     const host: SidecarHost = {
-      async describe() { return { kinds: [capability] }; },
-      async attach() { return authority; },
+      async describe() {
+        return { kinds: [capability] };
+      },
+      async attach() {
+        return authority;
+      },
     };
     const right = { ...descriptor, host: "runner" };
     const attached = await EmbeddedSidecarBackend.attach(
@@ -186,10 +251,25 @@ async function main(): Promise<void> {
       "vm_kind_limit",
       "local",
     );
-    await attached.create({ grant: "left", kind: "test.echo", body: new Uint8Array(), idempotencyKey: "left-1" });
-    await attached.create({ grant: "right", kind: "test.echo", body: new Uint8Array(), idempotencyKey: "right-1" });
+    await attached.create({
+      grant: "left",
+      kind: "test.echo",
+      body: new Uint8Array(),
+      idempotencyKey: "left-1",
+    });
+    await attached.create({
+      grant: "right",
+      kind: "test.echo",
+      body: new Uint8Array(),
+      idempotencyKey: "right-1",
+    });
     await assert.rejects(
-      attached.create({ grant: "right", kind: "test.echo", body: new Uint8Array(), idempotencyKey: "right-2" }),
+      attached.create({
+        grant: "right",
+        kind: "test.echo",
+        body: new Uint8Array(),
+        idempotencyKey: "right-2",
+      }),
       SidecarError,
     );
     await attached.close();
@@ -209,7 +289,12 @@ async function main(): Promise<void> {
     });
     const attached = await backend(authority);
     await assert.rejects(
-      attached.backend.create({ grant: "echo", kind: "test.echo", body: new Uint8Array(), idempotencyKey: "bad" }),
+      attached.backend.create({
+        grant: "echo",
+        kind: "test.echo",
+        body: new Uint8Array(),
+        idempotencyKey: "bad",
+      }),
       SidecarError,
     );
     await attached.backend.close();
@@ -217,13 +302,20 @@ async function main(): Promise<void> {
 
   {
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
-      init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
-    })) as typeof globalThis.fetch;
+    globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      })) as typeof globalThis.fetch;
     try {
       const remote = new RemoteVmSidecarBackend("https://sidecars.invalid", undefined, "vm_test");
       await assert.rejects(
-        remote.create({ grant: "echo", kind: "test.echo", body: new Uint8Array(), idempotencyKey: "timeout", timeoutMs: 5 }),
+        remote.create({
+          grant: "echo",
+          kind: "test.echo",
+          body: new Uint8Array(),
+          idempotencyKey: "timeout",
+          timeoutMs: 5,
+        }),
         (error: unknown) => error instanceof SidecarError && error.code === SIDECAR_ERROR_TIMEOUT,
       );
     } finally {
@@ -234,12 +326,17 @@ async function main(): Promise<void> {
   {
     const authority = new Authority();
     let cancelled = false;
-    authority.invoke = async (request) => new Promise<Uint8Array>((_resolve, reject) => {
-      request.signal?.addEventListener("abort", () => {
-        cancelled = true;
-        reject(new Error("cancelled"));
-      }, { once: true });
-    });
+    authority.invoke = async (request) =>
+      new Promise<Uint8Array>((_resolve, reject) => {
+        request.signal?.addEventListener(
+          "abort",
+          () => {
+            cancelled = true;
+            reject(new Error("cancelled"));
+          },
+          { once: true },
+        );
+      });
     const attached = await backend(authority);
     const instance = await attached.backend.create({
       grant: "echo",
@@ -279,7 +376,12 @@ async function main(): Promise<void> {
     });
     const attached = await backend(authority);
     await assert.rejects(
-      attached.backend.create({ grant: "echo", kind: "test.echo", body: new Uint8Array(), idempotencyKey: "bad-metadata" }),
+      attached.backend.create({
+        grant: "echo",
+        kind: "test.echo",
+        body: new Uint8Array(),
+        idempotencyKey: "bad-metadata",
+      }),
       SidecarError,
     );
     assert.equal(authority.deletes, 1);
@@ -288,15 +390,21 @@ async function main(): Promise<void> {
 
   {
     const authority = new Authority();
-    authority.create = async () => { throw new Error("provider-token-must-not-escape"); };
+    authority.create = async () => {
+      throw new Error("provider-token-must-not-escape");
+    };
     const attached = await backend(authority);
-    const response = decodeSidecarResult(await attached.backend.handleGuestCall(encodeSidecarCreate({
-      grant: "echo",
-      kind: "test.echo",
-      body: new Uint8Array(),
-      idempotency_key: "guest-error",
-      timeout_ms: 1_000,
-    })));
+    const response = decodeSidecarResult(
+      await attached.backend.handleGuestCall(
+        encodeSidecarCreate({
+          grant: "echo",
+          kind: "test.echo",
+          body: new Uint8Array(),
+          idempotency_key: "guest-error",
+          timeout_ms: 1_000,
+        }),
+      ),
+    );
     assert.equal(response.ok, false);
     assert.equal(response.error?.code, SIDECAR_ERROR_PROVIDER_FAILED);
     assert.equal(response.error?.message, "sidecar provider failed");
@@ -307,14 +415,23 @@ async function main(): Promise<void> {
     const authority = new Authority();
     let release!: () => void;
     let started!: () => void;
-    const invoked = new Promise<void>((resolve) => { started = resolve; });
+    const invoked = new Promise<void>((resolve) => {
+      started = resolve;
+    });
     authority.invoke = async (request) => {
       started();
-      await new Promise<void>((resolve) => { release = resolve; });
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
       return request.body.slice();
     };
     const attached = await backend(authority);
-    const instance = await attached.backend.create({ grant: "echo", kind: "test.echo", body: new Uint8Array(), idempotencyKey: "fork" });
+    const instance = await attached.backend.create({
+      grant: "echo",
+      kind: "test.echo",
+      body: new Uint8Array(),
+      idempotencyKey: "fork",
+    });
     const call = attached.backend.invoke({
       id: instance.id,
       generation: instance.generation,
@@ -339,7 +456,9 @@ async function main(): Promise<void> {
     await attached.backend.close();
   }
 
-  console.log("SIDECARS OK — embedded ownership, idempotency, fork policy, and provider identity verified.");
+  console.log(
+    "SIDECARS OK — embedded ownership, idempotency, fork policy, and provider identity verified.",
+  );
 }
 
 main().catch((error) => {

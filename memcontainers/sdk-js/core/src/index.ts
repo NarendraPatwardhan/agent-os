@@ -51,7 +51,13 @@ export type { RemoteBackendOptions } from "./remote.js";
 export { remoteBuild } from "./remote-build.js";
 export type { RemoteBuildOptions, RemoteBuildResult } from "./remote-build.js";
 export type { WarmDirective } from "./solve.js";
-export type { GitSource, LocalEntry, LocalSource, SolvePlatform, SolveProgressEvent } from "./solve.js";
+export type {
+  GitSource,
+  LocalEntry,
+  LocalSource,
+  SolvePlatform,
+  SolveProgressEvent,
+} from "./solve.js";
 export { defaultKernel, defaultImage } from "./artifacts.js";
 export { FsContentStore, MemoryContentStore, OpfsContentStore, defaultStore } from "./store.js";
 export type { Backend, RawAutocompleteResult, RawExecResult } from "./backend.js";

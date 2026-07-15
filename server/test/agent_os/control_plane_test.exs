@@ -319,17 +319,20 @@ defmodule AgentOS.ControlPlaneTest do
                )
 
       assert :ok = ControlPlane.write_file(id, "/tmp/sidecar.luau", script)
+
       assert {:ok, %{exit_code: 0, stdout: hex, stderr: ""}} =
                ControlPlane.exec(id, "luau /tmp/sidecar.luau", timeout: 10_000)
 
       assert {:ok, response} = hex |> String.trim() |> Base.decode16(case: :mixed)
       assert {:ok, %{ok: true, body: instance_frame}} = Sidecar.decode_sidecar_result(response)
+
       assert {:ok, %{state: state, metadata: "guest-metadata"}} =
                Sidecar.decode_sidecar_instance(instance_frame)
 
       assert state == Sidecar.sidecar_state_ready()
 
       assert :ok = ControlPlane.write_file(id, "/tmp/denied.luau", denied)
+
       assert {:ok, %{exit_code: 0, stdout: "true\n", stderr: ""}} =
                ControlPlane.exec(id, "luau /tmp/denied.luau", timeout: 10_000)
 
@@ -552,7 +555,9 @@ defmodule AgentOS.ControlPlaneTest do
   defp luau_bytes(bytes) do
     bytes
     |> :binary.bin_to_list()
-    |> Enum.map_join(fn byte -> "\\#{byte |> Integer.to_string() |> String.pad_leading(3, "0")}" end)
+    |> Enum.map_join(fn byte ->
+      "\\#{byte |> Integer.to_string() |> String.pad_leading(3, "0")}"
+    end)
   end
 
   defp runfile!(path) do

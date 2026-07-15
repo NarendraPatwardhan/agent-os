@@ -20,10 +20,9 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{anyhow, Result};
 use constants_rust::{AUTOCOMPLETE_MAX_FRAME_BYTES, AUTOCOMPLETE_MAX_ITEMS, MAX_WORKERS};
 use ctl_rust::{
-    AutocompleteRequest as WireAutocompleteRequest,
-    AutocompleteResult as WireAutocompleteResult, DirEntries as WireDirEntries, ExecOutcome,
-    ExecRequest, FileStat as WireFileStat, SvcRequest as WireSvcRequest,
-    SvcResponse as WireSvcResponse,
+    AutocompleteRequest as WireAutocompleteRequest, AutocompleteResult as WireAutocompleteResult,
+    DirEntries as WireDirEntries, ExecOutcome, ExecRequest, FileStat as WireFileStat,
+    SvcRequest as WireSvcRequest, SvcResponse as WireSvcResponse,
 };
 use sha2::{Digest, Sha256};
 use snapshot_rust::{
@@ -658,7 +657,8 @@ impl KernelHostBuilder {
             "growing memory for input scratch page",
         )?;
         let scratch_addr = u32::try_from(prev_pages * WASM_PAGE_SIZE)
-            .map_err(|_| anyhow!("kernel scratch address exceeds wasm32"))? as i32;
+            .map_err(|_| anyhow!("kernel scratch address exceeds wasm32"))?
+            as i32;
         let scratch_len = WASM_PAGE_SIZE as usize;
 
         let mc_init = wt(
@@ -719,7 +719,8 @@ impl KernelHostBuilder {
         let cur = memory.data(&store).len();
         let scratch_addr = cur;
         let scratch_addr_wire = u32::try_from(scratch_addr)
-            .map_err(|_| anyhow!("invalid snapshot: scratch_address_overflow"))? as i32;
+            .map_err(|_| anyhow!("invalid snapshot: scratch_address_overflow"))?
+            as i32;
         let scratch_len = SNAPSHOT_PAGE_SIZE;
         let minimum = scratch_addr
             .checked_add(scratch_len)
@@ -848,8 +849,8 @@ fn validate_snapshot<'a>(
             if sha256_digest(base) != view.base_snapshot_digest {
                 return Err(anyhow!("invalid snapshot: base_snapshot_digest_mismatch"));
             }
-            let base_view = parse_snapshot(base)
-                .map_err(|e| anyhow!("invalid base snapshot: {e}"))?;
+            let base_view =
+                parse_snapshot(base).map_err(|e| anyhow!("invalid base snapshot: {e}"))?;
             if base_view.kind != SnapshotKind::Full {
                 return Err(anyhow!("invalid snapshot: incremental_base_not_full"));
             }
@@ -865,7 +866,10 @@ fn validate_snapshot<'a>(
             Some(base_view)
         }
     };
-    Ok(ValidatedSnapshot { view, base: base_view })
+    Ok(ValidatedSnapshot {
+        view,
+        base: base_view,
+    })
 }
 
 /// Reconstruct directly into the already-sized wasm memory. This keeps restore to one memory image
@@ -1566,7 +1570,9 @@ impl KernelHost {
         }
         .encode();
         if request.len() > AUTOCOMPLETE_MAX_FRAME_BYTES as usize {
-            return Err(anyhow!("autocomplete request exceeds the contract frame limit"));
+            return Err(anyhow!(
+                "autocomplete request exceeds the contract frame limit"
+            ));
         }
         let len = self.ctl_with_retry(|host| {
             host.ctl_put(&request)?;

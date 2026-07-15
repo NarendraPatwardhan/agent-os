@@ -114,7 +114,8 @@ export class CatalogCompiler {
   async registryList(): Promise<RegistryEntry[]> {
     const raw = await this.readReturn(this.exports.cc_registry_list());
     const parsed: unknown = JSON.parse(dec(raw));
-    if (!Array.isArray(parsed)) throw new Error("catalog compiler registry.list returned a non-array");
+    if (!Array.isArray(parsed))
+      throw new Error("catalog compiler registry.list returned a non-array");
     return parsed.map(registryEntry);
   }
 
@@ -126,7 +127,9 @@ export class CatalogCompiler {
       const parsed: unknown = JSON.parse(dec(raw));
       if (isObject(parsed) && isObject(parsed.error)) {
         const message =
-          typeof parsed.error.message === "string" ? parsed.error.message : `unknown integration ${id}`;
+          typeof parsed.error.message === "string"
+            ? parsed.error.message
+            : `unknown integration ${id}`;
         throw new Error(message);
       }
       return registryEntry(parsed);
@@ -186,10 +189,14 @@ export class CatalogCompiler {
     const bytes = enc(address);
     const ptr = this.write(bytes);
     try {
-      const res: unknown = JSON.parse(dec(await this.readReturn(this.exports.cc_validate_address(ptr, bytes.length))));
+      const res: unknown = JSON.parse(
+        dec(await this.readReturn(this.exports.cc_validate_address(ptr, bytes.length))),
+      );
       if (isObject(res) && isObject(res.error)) {
         throw new Error(
-          typeof res.error.message === "string" ? res.error.message : `invalid tool address '${address}'`,
+          typeof res.error.message === "string"
+            ? res.error.message
+            : `invalid tool address '${address}'`,
         );
       }
     } finally {
@@ -199,11 +206,15 @@ export class CatalogCompiler {
 
   /** Parse + validate a connection reference via the single-source toolcore grammar, returning its three
    *  segments. Throws on an invalid reference (the wasmtime host rejects the same). */
-  async parseRef(reference: string): Promise<{ integration: string; owner: string; connection: string }> {
+  async parseRef(
+    reference: string,
+  ): Promise<{ integration: string; owner: string; connection: string }> {
     const bytes = enc(reference);
     const ptr = this.write(bytes);
     try {
-      const res: unknown = JSON.parse(dec(await this.readReturn(this.exports.cc_parse_ref(ptr, bytes.length))));
+      const res: unknown = JSON.parse(
+        dec(await this.readReturn(this.exports.cc_parse_ref(ptr, bytes.length))),
+      );
       if (
         isObject(res) &&
         typeof res.integration === "string" &&
@@ -223,10 +234,14 @@ export class CatalogCompiler {
     const bytes = enc(name);
     const ptr = this.write(bytes);
     try {
-      const res: unknown = JSON.parse(dec(await this.readReturn(this.exports.cc_validate_binding(ptr, bytes.length))));
+      const res: unknown = JSON.parse(
+        dec(await this.readReturn(this.exports.cc_validate_binding(ptr, bytes.length))),
+      );
       if (isObject(res) && isObject(res.error)) {
         throw new Error(
-          typeof res.error.message === "string" ? res.error.message : `invalid tool binding name '${name}'`,
+          typeof res.error.message === "string"
+            ? res.error.message
+            : `invalid tool binding name '${name}'`,
         );
       }
     } finally {
@@ -240,10 +255,14 @@ export class CatalogCompiler {
     const bytes = enc(rulesJson);
     const ptr = this.write(bytes);
     try {
-      const res: unknown = JSON.parse(dec(await this.readReturn(this.exports.cc_validate_policy(ptr, bytes.length))));
+      const res: unknown = JSON.parse(
+        dec(await this.readReturn(this.exports.cc_validate_policy(ptr, bytes.length))),
+      );
       if (isObject(res) && isObject(res.error)) {
         throw new Error(
-          typeof res.error.message === "string" ? `invalid connection policy: ${res.error.message}` : "invalid connection policy",
+          typeof res.error.message === "string"
+            ? `invalid connection policy: ${res.error.message}`
+            : "invalid connection policy",
         );
       }
     } finally {
@@ -260,10 +279,16 @@ export class CatalogCompiler {
     const addrPtr = this.write(addr);
     try {
       const res: unknown = JSON.parse(
-        dec(await this.readReturn(this.exports.cc_policy_resolve(rulesPtr, rules.length, addrPtr, addr.length))),
+        dec(
+          await this.readReturn(
+            this.exports.cc_policy_resolve(rulesPtr, rules.length, addrPtr, addr.length),
+          ),
+        ),
       );
       const action = isObject(res) ? res.action : null;
-      return action === "approve" || action === "require_approval" || action === "block" ? action : null;
+      return action === "approve" || action === "require_approval" || action === "block"
+        ? action
+        : null;
     } finally {
       this.exports.cc_free(rulesPtr, rules.length);
       this.exports.cc_free(addrPtr, addr.length);
@@ -285,7 +310,9 @@ export class CatalogCompiler {
 }
 
 async function readDefaultCompilerWasm(): Promise<Uint8Array> {
-  const proc = globalThis as typeof globalThis & { process?: { env?: Record<string, string | undefined> } };
+  const proc = globalThis as typeof globalThis & {
+    process?: { env?: Record<string, string | undefined> };
+  };
   const rel = proc.process?.env?.MC_CATALOG_COMPILER_WASM;
   if (!rel) {
     throw new Error(
@@ -308,7 +335,8 @@ function decodeFramedBundle(bytes: Uint8Array): Map<string, Uint8Array> {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   let pos = 0;
   const readU32 = (): number => {
-    if (pos + 4 > bytes.length) throw new Error("catalog compiler returned a truncated bundle frame");
+    if (pos + 4 > bytes.length)
+      throw new Error("catalog compiler returned a truncated bundle frame");
     const n = dv.getUint32(pos, true);
     pos += 4;
     return n;
@@ -326,7 +354,8 @@ function decodeFramedBundle(bytes: Uint8Array): Map<string, Uint8Array> {
     out.set(path, bytes.subarray(pos, pos + byteLen).slice());
     pos += byteLen;
   }
-  if (pos !== bytes.length) throw new Error("catalog compiler returned a bundle frame with trailing bytes");
+  if (pos !== bytes.length)
+    throw new Error("catalog compiler returned a bundle frame with trailing bytes");
   return out;
 }
 

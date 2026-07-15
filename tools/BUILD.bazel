@@ -1,0 +1,120 @@
+load("@aspect_rules_lint//format:defs.bzl", "format_multirun")
+load("@npm//:@johnnymorganz/stylua-bin/package_json.bzl", stylua_bin = "bin")
+load("@npm//:@wasm-fmt/clang-format/package_json.bzl", clang_format_bin = "bin")
+load("@npm//:oxfmt/package_json.bzl", oxfmt_bin = "bin")
+load("@rules_multirun//:defs.bzl", "multirun")
+load("//bazel:elixir_transition.bzl", "elixir_binary")
+load("//tools/format:defs.bzl", "source_formatter")
+load("//tools/format:js_tool.bzl", "js_tool")
+load("//tools/format:zig.bzl", "zig_formatter")
+
+package(default_visibility = ["//visibility:public"])
+
+oxfmt_bin.oxfmt_binary(name = "oxfmt-bin")
+
+stylua_bin.stylua_binary(name = "stylua-bin")
+
+clang_format_bin.clang_format_binary(name = "clang-format-bin")
+
+js_tool(
+    name = "oxfmt",
+    actual = ":oxfmt-bin",
+)
+
+js_tool(
+    name = "stylua",
+    actual = ":stylua-bin",
+)
+
+js_tool(
+    name = "clang-format",
+    actual = ":clang-format-bin",
+)
+
+zig_formatter(name = "zig-fmt")
+
+elixir_binary(
+    name = "elixir-fmt",
+    actual = "//tools/format:elixir-fmt-tool",
+)
+
+# Standard languages use rules_lint's tracked-file discovery and .gitattributes ownership gates.
+format_multirun(
+    name = "format_standard",
+    c = ":clang-format",
+    cc = ":clang-format",
+    jobs = 1,  # C and C++ both claim headers; serialize them to avoid concurrent rewrites.
+    rust = "@rules_rust//tools/upstream_wrapper:rustfmt",
+    shell = "@aspect_rules_lint//format:shfmt",
+    shell_check_args = [
+        "-d",
+        "-i",
+        "2",
+    ],
+    shell_fix_args = [
+        "-w",
+        "-i",
+        "2",
+    ],
+    starlark = "@buildifier_prebuilt//:buildifier",
+)
+
+source_formatter(
+    name = "format_oxc",
+    language = "oxc",
+    tool = ":oxfmt",
+)
+
+source_formatter(
+    name = "format_zig",
+    language = "zig",
+    tool = ":zig-fmt",
+)
+
+source_formatter(
+    name = "format_elixir",
+    language = "elixir",
+    tool = ":elixir-fmt",
+)
+
+source_formatter(
+    name = "format_luau",
+    language = "luau",
+    tool = ":stylua",
+)
+
+source_formatter(
+    name = "format_grammar",
+    language = "grammar",
+    tool = "//bazel/tools/mc-grammar-gen:mc-grammar-fmt",
+)
+
+multirun(
+    name = "format",
+    commands = [
+        ":format_standard",
+        ":format_oxc",
+        ":format_zig",
+        ":format_elixir",
+        ":format_luau",
+        ":format_grammar",
+    ],
+    jobs = 4,
+    keep_going = True,
+    print_command = True,
+)
+
+multirun(
+    name = "format.check",
+    commands = [
+        ":format_standard.check",
+        ":format_oxc.check",
+        ":format_zig.check",
+        ":format_elixir.check",
+        ":format_luau.check",
+        ":format_grammar.check",
+    ],
+    jobs = 4,
+    keep_going = True,
+    print_command = True,
+)

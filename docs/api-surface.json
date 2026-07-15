@@ -9,23 +9,67 @@
       "source": "memcontainers/sdk-js/core/src/memcontainer.ts",
       "doc": "vm.md",
       "members": [
-        "exec", "autocomplete", "serviceCall", "luau", "luauSession", "snapshot", "fork", "commit", "tool",
-        "mount", "unmount", "session", "cron", "shell", "status", "inflightEgress", "memoryBytes",
+        "exec",
+        "autocomplete",
+        "serviceCall",
+        "luau",
+        "luauSession",
+        "snapshot",
+        "fork",
+        "commit",
+        "tool",
+        "mount",
+        "unmount",
+        "session",
+        "cron",
+        "shell",
+        "status",
+        "inflightEgress",
+        "memoryBytes",
         "close"
       ]
     },
     "vm.fs": {
       "source": "memcontainers/sdk-js/core/src/types.ts",
       "doc": "execution-files.md",
-      "members": ["read", "readText", "write", "ls", "stat", "readlink", "mkdir", "rm", "chmod", "symlink"]
+      "members": [
+        "read",
+        "readText",
+        "write",
+        "ls",
+        "stat",
+        "readlink",
+        "mkdir",
+        "rm",
+        "chmod",
+        "symlink"
+      ]
     },
     "llb": {
       "source": "memcontainers/sdk-js/core/src/llb.ts",
       "doc": "llb.md",
       "members": [
-        "source", "layer", "local", "http", "git", "write", "mkdir", "rm", "chmod", "symlink",
-        "exec", "copy", "merge", "diff", "image", "cache", "toDefinition", "fromDefinition",
-        "encodeDefinition", "decodeDefinition", "commit"
+        "source",
+        "layer",
+        "local",
+        "http",
+        "git",
+        "write",
+        "mkdir",
+        "rm",
+        "chmod",
+        "symlink",
+        "exec",
+        "copy",
+        "merge",
+        "diff",
+        "image",
+        "cache",
+        "toDefinition",
+        "fromDefinition",
+        "encodeDefinition",
+        "decodeDefinition",
+        "commit"
       ]
     }
   },

@@ -47,8 +47,8 @@ export function BookIntro() {
           Ready to dive in?
         </h2>
         <p {...stylex.props(text.bodyLg, text.muted, styles.description)}>
-          Explore AgentOS by Example—a hands-on guide to building with real VMs, files,
-          tools, snapshots, and more.
+          Explore AgentOS by Example—a hands-on guide to building with real VMs, files, tools,
+          snapshots, and more.
         </p>
         <a href="#examples" {...stylex.props(controls.link, text.body, styles.link)}>
           Start with First Contact <span aria-hidden="true">↓</span>

@@ -27,52 +27,157 @@
 }
 
 /* ── xterm structural (functional layout only) ─────────────────────────────── */
-.mc-term .xterm { position: relative; cursor: text; user-select: none; -webkit-user-select: none; }
-.mc-term .xterm.focus,
-.mc-term .xterm:focus { outline: none; }
-.mc-term .xterm-helpers { position: absolute; top: 0; z-index: 5; }
-.mc-term .xterm-helper-textarea {
-  padding: 0; border: 0; margin: 0; position: absolute; opacity: 0;
-  left: -9999em; top: 0; width: 0; height: 0; z-index: -5;
-  white-space: nowrap; overflow: hidden; resize: none;
+.mc-term .xterm {
+  position: relative;
+  cursor: text;
+  user-select: none;
+  -webkit-user-select: none;
 }
-.mc-term .composition-view { background: transparent; color: inherit; display: none; position: absolute; white-space: nowrap; z-index: 1; }
-.mc-term .composition-view.active { display: block; }
-.mc-term .xterm-screen { position: relative; }
-.mc-term .xterm-screen canvas { position: absolute; left: 0; top: 0; }
-.mc-term .xterm-char-measure-element { display: inline-block; visibility: hidden; position: absolute; top: 0; left: -9999em; line-height: normal; }
-.mc-term .xterm.enable-mouse-events { cursor: default; }
+.mc-term .xterm.focus,
+.mc-term .xterm:focus {
+  outline: none;
+}
+.mc-term .xterm-helpers {
+  position: absolute;
+  top: 0;
+  z-index: 5;
+}
+.mc-term .xterm-helper-textarea {
+  padding: 0;
+  border: 0;
+  margin: 0;
+  position: absolute;
+  opacity: 0;
+  left: -9999em;
+  top: 0;
+  width: 0;
+  height: 0;
+  z-index: -5;
+  white-space: nowrap;
+  overflow: hidden;
+  resize: none;
+}
+.mc-term .composition-view {
+  background: transparent;
+  color: inherit;
+  display: none;
+  position: absolute;
+  white-space: nowrap;
+  z-index: 1;
+}
+.mc-term .composition-view.active {
+  display: block;
+}
+.mc-term .xterm-screen {
+  position: relative;
+}
+.mc-term .xterm-screen canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+}
+.mc-term .xterm-char-measure-element {
+  display: inline-block;
+  visibility: hidden;
+  position: absolute;
+  top: 0;
+  left: -9999em;
+  line-height: normal;
+}
+.mc-term .xterm.enable-mouse-events {
+  cursor: default;
+}
 .mc-term .xterm.xterm-cursor-pointer,
-.mc-term .xterm .xterm-cursor-pointer { cursor: pointer; }
-.mc-term .xterm.column-select.focus { cursor: crosshair; }
+.mc-term .xterm .xterm-cursor-pointer {
+  cursor: pointer;
+}
+.mc-term .xterm.column-select.focus {
+  cursor: crosshair;
+}
 .mc-term .xterm-accessibility:not(.debug),
-.mc-term .xterm-message { position: absolute; inset: 0; z-index: 10; color: transparent; pointer-events: none; }
-.mc-term .xterm-accessibility-tree:not(.debug) *::selection { color: transparent; }
-.mc-term .xterm-accessibility-tree { font-family: monospace; user-select: text; white-space: pre; }
-.mc-term .xterm-accessibility-tree > div { transform-origin: left; width: fit-content; }
-.mc-term .live-region { position: absolute; left: -9999px; width: 1px; height: 1px; overflow: hidden; }
-.mc-term .xterm-dim { opacity: 1 !important; } /* kill xterm's dim rendering */
-.mc-term .xterm-underline-1 { text-decoration: underline; }
-.mc-term .xterm-underline-2 { text-decoration: double underline; }
-.mc-term .xterm-underline-3 { text-decoration: wavy underline; }
-.mc-term .xterm-underline-4 { text-decoration: dotted underline; }
-.mc-term .xterm-underline-5 { text-decoration: dashed underline; }
-.mc-term .xterm-overline { text-decoration: overline; }
-.mc-term .xterm-strikethrough { text-decoration: line-through; }
-.mc-term .xterm-screen .xterm-decoration-container .xterm-decoration { z-index: 6; position: absolute; }
-.mc-term .xterm-screen .xterm-decoration-container .xterm-decoration.xterm-decoration-top-layer { z-index: 7; }
-.mc-term .xterm-decoration-overview-ruler { z-index: 8; position: absolute; top: 0; right: 0; pointer-events: none; }
-.mc-term .xterm-decoration-top { z-index: 2; position: relative; }
+.mc-term .xterm-message {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  color: transparent;
+  pointer-events: none;
+}
+.mc-term .xterm-accessibility-tree:not(.debug) *::selection {
+  color: transparent;
+}
+.mc-term .xterm-accessibility-tree {
+  font-family: monospace;
+  user-select: text;
+  white-space: pre;
+}
+.mc-term .xterm-accessibility-tree > div {
+  transform-origin: left;
+  width: fit-content;
+}
+.mc-term .live-region {
+  position: absolute;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+.mc-term .xterm-dim {
+  opacity: 1 !important;
+} /* kill xterm's dim rendering */
+.mc-term .xterm-underline-1 {
+  text-decoration: underline;
+}
+.mc-term .xterm-underline-2 {
+  text-decoration: double underline;
+}
+.mc-term .xterm-underline-3 {
+  text-decoration: wavy underline;
+}
+.mc-term .xterm-underline-4 {
+  text-decoration: dotted underline;
+}
+.mc-term .xterm-underline-5 {
+  text-decoration: dashed underline;
+}
+.mc-term .xterm-overline {
+  text-decoration: overline;
+}
+.mc-term .xterm-strikethrough {
+  text-decoration: line-through;
+}
+.mc-term .xterm-screen .xterm-decoration-container .xterm-decoration {
+  z-index: 6;
+  position: absolute;
+}
+.mc-term .xterm-screen .xterm-decoration-container .xterm-decoration.xterm-decoration-top-layer {
+  z-index: 7;
+}
+.mc-term .xterm-decoration-overview-ruler {
+  z-index: 8;
+  position: absolute;
+  top: 0;
+  right: 0;
+  pointer-events: none;
+}
+.mc-term .xterm-decoration-top {
+  z-index: 2;
+  position: relative;
+}
 
 /* ── the .xterm surface: a padded dark-ink panel (same value xterm.ts feeds xterm
  *    as theme.background) ──────────────────────────────────────────────────── */
 .mc-term .xterm {
-  width: 100%; height: 100%;
+  width: 100%;
+  height: 100%;
   box-sizing: border-box;
   padding: var(--mc-term-pad, var(--space-6, 24px)) var(--space-2, 8px)
     var(--mc-term-pad, var(--space-6, 24px)) var(--mc-term-pad, var(--space-6, 24px));
-  margin: 0; border: 0; border-radius: 0; box-shadow: none;
-  overflow: hidden; font-variant-numeric: tabular-nums;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
   background: var(--mc-term-bg);
 }
 
@@ -83,48 +188,95 @@
  *    padding so it rides near the edge while text stays inset. ────────────────── */
 .mc-term .xterm-viewport {
   background: transparent !important;
-  position: absolute; inset: 0;
+  position: absolute;
+  inset: 0;
   right: 0 !important;
   overflow-y: auto !important;
   cursor: default;
   scrollbar-width: thin;
-  scrollbar-color: var(--mc-scrollbar, color-mix(in oklch, var(--neutral-7, oklch(0.42 0.014 250)) 60%, transparent)) transparent;
+  scrollbar-color: var(
+      --mc-scrollbar,
+      color-mix(in oklch, var(--neutral-7, oklch(0.42 0.014 250)) 60%, transparent)
+    )
+    transparent;
 }
-.mc-term .xterm-viewport::-webkit-scrollbar { width: 5px !important; height: 5px; }
-.mc-term .xterm-viewport::-webkit-scrollbar-track { background: transparent; }
+.mc-term .xterm-viewport::-webkit-scrollbar {
+  width: 5px !important;
+  height: 5px;
+}
+.mc-term .xterm-viewport::-webkit-scrollbar-track {
+  background: transparent;
+}
 .mc-term .xterm-viewport::-webkit-scrollbar-thumb {
-  background: var(--mc-scrollbar, color-mix(in oklch, var(--neutral-7, oklch(0.42 0.014 250)) 60%, transparent));
-  border: 1px solid transparent; border-radius: var(--radius-pill, 999px); background-clip: padding-box;
+  background: var(
+    --mc-scrollbar,
+    color-mix(in oklch, var(--neutral-7, oklch(0.42 0.014 250)) 60%, transparent)
+  );
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill, 999px);
+  background-clip: padding-box;
 }
-.mc-term .xterm-viewport::-webkit-scrollbar-thumb:hover { background: var(--mc-scrollbar-hover, var(--neutral-8, oklch(0.52 0.014 250))); background-clip: padding-box; }
-.mc-term .xterm-viewport::-webkit-scrollbar-corner { background: transparent; }
+.mc-term .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--mc-scrollbar-hover, var(--neutral-8, oklch(0.52 0.014 250)));
+  background-clip: padding-box;
+}
+.mc-term .xterm-viewport::-webkit-scrollbar-corner {
+  background: transparent;
+}
 .mc-term .xterm-scrollable-element > .scrollbar {
   width: 5px !important;
   right: 0 !important;
   border-radius: var(--radius-pill, 999px);
 }
 .mc-term .xterm-scrollable-element > .scrollbar > .slider {
-  width: 5px !important; left: 0 !important; border-radius: var(--radius-pill, 999px);
-  background: var(--mc-scrollbar, color-mix(in oklch, var(--neutral-7, oklch(0.42 0.014 250)) 60%, transparent)) !important;
+  width: 5px !important;
+  left: 0 !important;
+  border-radius: var(--radius-pill, 999px);
+  background: var(
+    --mc-scrollbar,
+    color-mix(in oklch, var(--neutral-7, oklch(0.42 0.014 250)) 60%, transparent)
+  ) !important;
 }
-.mc-term .xterm-scrollable-element > .scrollbar > .slider:hover { background: var(--mc-scrollbar-hover, var(--neutral-8, oklch(0.52 0.014 250))) !important; }
+.mc-term .xterm-scrollable-element > .scrollbar > .slider:hover {
+  background: var(--mc-scrollbar-hover, var(--neutral-8, oklch(0.52 0.014 250))) !important;
+}
 
 /* ── glyph-height accent cursor. xterm's DOM renderer fills the whole cell for the
  *    block cursor (a fat box taller than the glyphs); neutralize it and paint our
  *    own block sized to the text, behind the glyph (so the accent glyph reads as
  *    inverted text). ──────────────────────────────────────────────────────────── */
 .mc-term .xterm-cursor.xterm-cursor-block {
-  box-shadow: none !important; background-color: transparent !important;
-  position: relative; z-index: 0;
+  box-shadow: none !important;
+  background-color: transparent !important;
+  position: relative;
+  z-index: 0;
 }
 .mc-term .xterm-cursor.xterm-cursor-block::before {
-  content: ""; position: absolute; left: 0; top: 50%;
-  width: 1ch; height: 1.15em; transform: translateY(-50%);
-  background: var(--mc-cursor, var(--accent, oklch(0.92 0.006 250))); border-radius: 1px; z-index: -1;
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 1ch;
+  height: 1.15em;
+  transform: translateY(-50%);
+  background: var(--mc-cursor, var(--accent, oklch(0.92 0.006 250)));
+  border-radius: 1px;
+  z-index: -1;
 }
-.mc-term .xterm:not(.focus) .xterm-cursor.xterm-cursor-block::before { opacity: 0.35; }
-.mc-term .xterm.focus .xterm-cursor.xterm-cursor-block::before { opacity: 1; animation: mc-cursor-blink 1.1s step-end infinite; }
-@keyframes mc-cursor-blink { 50% { opacity: 0; } }
+.mc-term .xterm:not(.focus) .xterm-cursor.xterm-cursor-block::before {
+  opacity: 0.35;
+}
+.mc-term .xterm.focus .xterm-cursor.xterm-cursor-block::before {
+  opacity: 1;
+  animation: mc-cursor-blink 1.1s step-end infinite;
+}
+@keyframes mc-cursor-blink {
+  50% {
+    opacity: 0;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
-  .mc-term .xterm.focus .xterm-cursor.xterm-cursor-block::before { animation: none; }
+  .mc-term .xterm.focus .xterm-cursor.xterm-cursor-block::before {
+    animation: none;
+  }
 }

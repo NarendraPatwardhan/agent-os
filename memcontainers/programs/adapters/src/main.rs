@@ -493,7 +493,6 @@ fn read_source(req: &Request) -> Result<String, String> {
     Err("compile requires source or source_path".to_string())
 }
 
-
 fn invoke(req: Request) -> Response {
     match req.adapter.as_deref() {
         Some("openapi") => invoke_openapi(req),
@@ -966,8 +965,7 @@ mod tests {
         let request = openapi_http_request(&binding, &args, None).expect("request");
         let request = String::from_utf8(request).expect("utf8 request");
 
-        assert!(request.starts_with(
-            "GET https://api.example.test/forecast?hourly=temperature_2m%2Crain\n"
-        ));
+        assert!(request
+            .starts_with("GET https://api.example.test/forecast?hourly=temperature_2m%2Crain\n"));
     }
 }

@@ -33,7 +33,11 @@ function isTableDivider(line: string): boolean {
 }
 
 function cells(line: string): string[] {
-  return line.trim().replace(/^\||\|$/g, "").split("|").map((cell) => cell.trim());
+  return line
+    .trim()
+    .replace(/^\||\|$/g, "")
+    .split("|")
+    .map((cell) => cell.trim());
 }
 
 function startsBlock(lines: string[], index: number): boolean {
@@ -142,7 +146,10 @@ function parseMarkdown(source: string): Block[] {
   return blocks;
 }
 
-function localTarget(target: string, currentSlug: string): { slug: string; anchor?: string } | null {
+function localTarget(
+  target: string,
+  currentSlug: string,
+): { slug: string; anchor?: string } | null {
   if (/^(?:https?:|mailto:)/.test(target)) return null;
   if (target.startsWith("#")) return { slug: currentSlug, anchor: target.slice(1) };
   const [path, anchor] = target.split("#", 2);
@@ -150,7 +157,12 @@ function localTarget(target: string, currentSlug: string): { slug: string; ancho
   return { slug: path.replace(/^\.\//, "").replace(/\.md$/, ""), anchor: anchor || undefined };
 }
 
-function inline(textValue: string, currentSlug: string, navigate: Navigate, heading = false): ReactNode[] {
+function inline(
+  textValue: string,
+  currentSlug: string,
+  navigate: Navigate,
+  heading = false,
+): ReactNode[] {
   const pieces = textValue.split(/(\[[^\]]+\]\([^)]+\)|`[^`]+`|\*\*[^*]+\*\*|\*[^*]+\*)/g);
   return pieces.filter(Boolean).map((piece, index) => {
     const link = piece.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
@@ -163,7 +175,14 @@ function inline(textValue: string, currentSlug: string, navigate: Navigate, head
         <a
           key={index}
           href={href}
-          onClick={local ? (event) => { event.preventDefault(); navigate(local.slug, local.anchor); } : undefined}
+          onClick={
+            local
+              ? (event) => {
+                  event.preventDefault();
+                  navigate(local.slug, local.anchor);
+                }
+              : undefined
+          }
           rel={local ? undefined : "noreferrer"}
           target={local ? undefined : "_blank"}
           {...stylex.props(text.link)}
@@ -173,10 +192,18 @@ function inline(textValue: string, currentSlug: string, navigate: Navigate, head
       );
     }
     if (/^`[^`]+`$/.test(piece)) {
-      return <code key={index} {...stylex.props(heading ? styles.headingCode : styles.inlineCode)}>{piece.slice(1, -1)}</code>;
+      return (
+        <code key={index} {...stylex.props(heading ? styles.headingCode : styles.inlineCode)}>
+          {piece.slice(1, -1)}
+        </code>
+      );
     }
     if (/^\*\*[^*]+\*\*$/.test(piece)) {
-      return <strong key={index} {...stylex.props(text.strong)}>{inline(piece.slice(2, -2), currentSlug, navigate, heading)}</strong>;
+      return (
+        <strong key={index} {...stylex.props(text.strong)}>
+          {inline(piece.slice(2, -2), currentSlug, navigate, heading)}
+        </strong>
+      );
     }
     if (/^\*[^*]+\*$/.test(piece)) return <em key={index}>{piece.slice(1, -1)}</em>;
     return piece;
@@ -190,7 +217,13 @@ const styles = stylex.create({
   h3: { marginTop: space.s6, marginBottom: space.s3, scrollMarginTop: space.s6 },
   h4: { marginTop: space.s5, marginBottom: space.s2, scrollMarginTop: space.s6 },
   paragraph: { marginBottom: space.s4, maxWidth: "76ch", color: color.inkMuted },
-  list: { marginBottom: space.s5, paddingLeft: space.s5, display: "grid", gap: space.s2, color: color.inkMuted },
+  list: {
+    marginBottom: space.s5,
+    paddingLeft: space.s5,
+    display: "grid",
+    gap: space.s2,
+    color: color.inkMuted,
+  },
   unordered: { listStyleType: "disc" },
   ordered: { listStyleType: "decimal" },
   listItem: { paddingLeft: space.s1 },
@@ -263,7 +296,8 @@ const styles = stylex.create({
 
 function CodeBlock({ language, code }: Readonly<{ language: string; code: string }>) {
   const [copied, setCopied] = useState(false);
-  const renderedCode = typeof window === "undefined" ? code : code.replaceAll("{domain}", window.location.origin);
+  const renderedCode =
+    typeof window === "undefined" ? code : code.replaceAll("{domain}", window.location.origin);
   const copy = async (): Promise<void> => {
     if (!navigator.clipboard) return;
     try {
@@ -314,24 +348,88 @@ export function MarkdownArticle({
       {blocks.map((block, index) => {
         if (block.kind === "heading") {
           const id = `reference-${slug}-${block.anchor}`;
-          if (block.depth === 1) return <h1 key={index} id={id} {...stylex.props(text.display, styles.h1)}>{inline(block.text, slug, navigate, true)}</h1>;
-          if (block.depth === 2) return <h2 key={index} id={id} {...stylex.props(text.heading, styles.h2)}>{inline(block.text, slug, navigate, true)}</h2>;
-          if (block.depth === 3) return <h3 key={index} id={id} {...stylex.props(text.title, styles.h3)}>{inline(block.text, slug, navigate, true)}</h3>;
-          return <h4 key={index} id={id} {...stylex.props(text.body, text.strong, styles.h4)}>{inline(block.text, slug, navigate, true)}</h4>;
+          if (block.depth === 1)
+            return (
+              <h1 key={index} id={id} {...stylex.props(text.display, styles.h1)}>
+                {inline(block.text, slug, navigate, true)}
+              </h1>
+            );
+          if (block.depth === 2)
+            return (
+              <h2 key={index} id={id} {...stylex.props(text.heading, styles.h2)}>
+                {inline(block.text, slug, navigate, true)}
+              </h2>
+            );
+          if (block.depth === 3)
+            return (
+              <h3 key={index} id={id} {...stylex.props(text.title, styles.h3)}>
+                {inline(block.text, slug, navigate, true)}
+              </h3>
+            );
+          return (
+            <h4 key={index} id={id} {...stylex.props(text.body, text.strong, styles.h4)}>
+              {inline(block.text, slug, navigate, true)}
+            </h4>
+          );
         }
-        if (block.kind === "paragraph") return <p key={index} {...stylex.props(text.bodyLg, styles.paragraph)}>{inline(block.text, slug, navigate)}</p>;
-        if (block.kind === "quote") return <blockquote key={index} {...stylex.props(text.bodyLg, styles.quote)}>{inline(block.text, slug, navigate)}</blockquote>;
-        if (block.kind === "code") return <CodeBlock key={index} language={block.language} code={block.code} />;
+        if (block.kind === "paragraph")
+          return (
+            <p key={index} {...stylex.props(text.bodyLg, styles.paragraph)}>
+              {inline(block.text, slug, navigate)}
+            </p>
+          );
+        if (block.kind === "quote")
+          return (
+            <blockquote key={index} {...stylex.props(text.bodyLg, styles.quote)}>
+              {inline(block.text, slug, navigate)}
+            </blockquote>
+          );
+        if (block.kind === "code")
+          return <CodeBlock key={index} language={block.language} code={block.code} />;
         if (block.kind === "rule") return <hr key={index} {...stylex.props(styles.rule)} />;
         if (block.kind === "list") {
           const List = block.ordered ? "ol" : "ul";
-          return <List key={index} role="list" {...stylex.props(text.bodyLg, styles.list, block.ordered ? styles.ordered : styles.unordered)}>{block.items.map((item, itemIndex) => <li key={itemIndex} {...stylex.props(styles.listItem)}>{inline(item, slug, navigate)}</li>)}</List>;
+          return (
+            <List
+              key={index}
+              role="list"
+              {...stylex.props(
+                text.bodyLg,
+                styles.list,
+                block.ordered ? styles.ordered : styles.unordered,
+              )}
+            >
+              {block.items.map((item, itemIndex) => (
+                <li key={itemIndex} {...stylex.props(styles.listItem)}>
+                  {inline(item, slug, navigate)}
+                </li>
+              ))}
+            </List>
+          );
         }
         return (
           <div key={index} {...stylex.props(styles.tableScroll)}>
             <table {...stylex.props(text.body, styles.table)}>
-              <thead {...stylex.props(styles.tableHead)}><tr>{block.head.map((cell, cellIndex) => <th key={cellIndex} {...stylex.props(styles.tableCell, styles.tableHeadCell)}>{inline(cell, slug, navigate)}</th>)}</tr></thead>
-              <tbody>{block.rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex} {...stylex.props(styles.tableCell)}>{inline(cell, slug, navigate)}</td>)}</tr>)}</tbody>
+              <thead {...stylex.props(styles.tableHead)}>
+                <tr>
+                  {block.head.map((cell, cellIndex) => (
+                    <th key={cellIndex} {...stylex.props(styles.tableCell, styles.tableHeadCell)}>
+                      {inline(cell, slug, navigate)}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {block.rows.map((row, rowIndex) => (
+                  <tr key={rowIndex}>
+                    {row.map((cell, cellIndex) => (
+                      <td key={cellIndex} {...stylex.props(styles.tableCell)}>
+                        {inline(cell, slug, navigate)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
             </table>
           </div>
         );

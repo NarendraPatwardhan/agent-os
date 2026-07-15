@@ -6,7 +6,10 @@
   "description": "JavaScript host for the mc kernel — behavioral parity with the Rust/wasmtime host (A3). Loads the same kernel.wasm; consumes the generated @mc/contracts descriptors for its env bridge and mc_ctl_* export lookup.",
   "types": "./src/index.d.ts",
   "exports": {
-    ".": { "types": "./src/index.d.ts", "default": "./src/index.js" }
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    }
   },
   "dependencies": {
     "@mc/contracts": "workspace:*"

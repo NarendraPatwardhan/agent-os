@@ -46,7 +46,9 @@ defmodule AgentOS.FirecrackerTest do
                timeout_ms: 5_000
              })
 
-    instance_root = Path.join(Application.fetch_env!(:agent_os, :firecracker_test_root), instance.id)
+    instance_root =
+      Path.join(Application.fetch_env!(:agent_os, :firecracker_test_root), instance.id)
+
     assert File.dir?(instance_root)
     assert :ok = Sidecars.close_vm(vm_id)
     refute File.exists?(instance_root)

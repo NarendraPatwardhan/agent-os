@@ -41,12 +41,14 @@ function concat(chunks: readonly Uint8Array[]): Uint8Array {
 }
 
 function normalizeVmPath(path: string, field: string): string {
-  if (!path.startsWith("/")) throw new Error(`llb.git ${field} must be absolute: ${JSON.stringify(path)}`);
+  if (!path.startsWith("/"))
+    throw new Error(`llb.git ${field} must be absolute: ${JSON.stringify(path)}`);
   if (path.includes("\0")) throw new Error(`llb.git ${field} contains NUL`);
   const parts: string[] = [];
   for (const part of path.split("/")) {
     if (!part || part === ".") continue;
-    if (part === "..") throw new Error(`llb.git ${field} must not contain '..': ${JSON.stringify(path)}`);
+    if (part === "..")
+      throw new Error(`llb.git ${field} must not contain '..': ${JSON.stringify(path)}`);
     parts.push(part);
   }
   return `/${parts.join("/")}`;
@@ -60,7 +62,14 @@ async function archiveGitSource(repo: string, ref: string, dest: string): Promis
       throw new Error(`llb.git resolved invalid commit for ${repo} ${ref}: ${commit}`);
     }
     const prefix = gitArchivePrefix(dest);
-    const tar = await gitBytes(["-C", local.repo, "archive", "--format=tar", `--prefix=${prefix}`, commit]);
+    const tar = await gitBytes([
+      "-C",
+      local.repo,
+      "archive",
+      "--format=tar",
+      `--prefix=${prefix}`,
+      commit,
+    ]);
     const archiveDigest = `sha256:${await sha256hex(tar)}`;
     return { commit, archiveDigest, tar };
   } finally {
@@ -68,7 +77,9 @@ async function archiveGitSource(repo: string, ref: string, dest: string): Promis
   }
 }
 
-async function localGitRepo(repo: string): Promise<{ repo: string; cleanup?: () => Promise<void> }> {
+async function localGitRepo(
+  repo: string,
+): Promise<{ repo: string; cleanup?: () => Promise<void> }> {
   const stat = await lstat(repo).catch(() => null);
   if (stat?.isDirectory()) return { repo };
 
@@ -101,7 +112,11 @@ function gitBytes(args: string[]): Promise<Uint8Array> {
     child.on("error", reject);
     child.on("close", (code) => {
       if (code !== 0) {
-        reject(new Error(`git ${args.join(" ")} failed (${code}): ${new TextDecoder().decode(concat(stderr))}`));
+        reject(
+          new Error(
+            `git ${args.join(" ")} failed (${code}): ${new TextDecoder().decode(concat(stderr))}`,
+          ),
+        );
         return;
       }
       resolve(concat(stdout));

@@ -82,7 +82,17 @@
     background: oklch(1 0 0 / 0.22);
   }
   mc-terminal .title {
-    font: var(--fw-medium, 500) var(--fs-12, 0.75rem)/ 1 var(--font-mono, "Geist Mono", "SF Mono", SFMono-Regular, ui-monospace, Menlo, Consolas, monospace);
+    font: var(--fw-medium, 500) var(--fs-12, 0.75rem)/1
+      var(
+        --font-mono,
+        "Geist Mono",
+        "SF Mono",
+        SFMono-Regular,
+        ui-monospace,
+        Menlo,
+        Consolas,
+        monospace
+      );
     letter-spacing: var(--ls-ui, -0.005em);
     color: var(--mc-fg-subtle);
     margin-left: var(--space-1, 4px);
@@ -93,12 +103,23 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    font: var(--fw-medium, 500) var(--fs-10, 0.625rem)/ 1 var(--font-mono, "Geist Mono", "SF Mono", SFMono-Regular, ui-monospace, Menlo, Consolas, monospace);
+    font: var(--fw-medium, 500) var(--fs-10, 0.625rem)/1
+      var(
+        --font-mono,
+        "Geist Mono",
+        "SF Mono",
+        SFMono-Regular,
+        ui-monospace,
+        Menlo,
+        Consolas,
+        monospace
+      );
     letter-spacing: var(--ls-eyebrow, 0.12em);
     text-transform: uppercase;
     color: var(--mc-fg-subtle);
     opacity: 0;
-    transition: opacity var(--motion-panel, 240ms) var(--ease-standard, cubic-bezier(0.2, 0.8, 0.2, 1));
+    transition: opacity var(--motion-panel, 240ms)
+      var(--ease-standard, cubic-bezier(0.2, 0.8, 0.2, 1));
   }
   mc-terminal[data-live] .live-dot {
     opacity: 1;
@@ -116,7 +137,9 @@
     animation: mc-working-spin 700ms linear infinite;
   }
   @keyframes mc-working-spin {
-    to { transform: rotate(360deg); }
+    to {
+      transform: rotate(360deg);
+    }
   }
   mc-terminal .live-dot i {
     width: 7px;

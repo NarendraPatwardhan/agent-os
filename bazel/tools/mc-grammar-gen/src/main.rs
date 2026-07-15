@@ -1,4 +1,4 @@
-use mc_parser_generate::{Options, Outputs, run};
+use mc_parser_generate::{run, Options, Outputs};
 use std::path::PathBuf;
 
 fn usage() -> ! {

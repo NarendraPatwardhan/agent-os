@@ -29,11 +29,18 @@ export function FlavorsDriver({ example }: { example: Extract<Example, { kind: "
           {FLAVORS.map((fl) => (
             <div key={fl.id} {...stylex.props(styles.flavorSpan)}>
               <div {...stylex.props(styles.flavorHead)}>
-                <span {...stylex.props(styles.flavorName, fl.id === flavor && styles.flavorNameOn)}>{fl.id}</span>
+                <span {...stylex.props(styles.flavorName, fl.id === flavor && styles.flavorNameOn)}>
+                  {fl.id}
+                </span>
                 <span {...stylex.props(styles.flavorMeta)}>
                   {fl.size} · on {fl.stacks}
                 </span>
-                <PlayButton place="right" size={16} onClick={() => boot(fl.id)} label={`Boot ${fl.id}`} />
+                <PlayButton
+                  place="right"
+                  size={16}
+                  onClick={() => boot(fl.id)}
+                  label={`Boot ${fl.id}`}
+                />
               </div>
               <p {...stylex.props(styles.flavorHas, text.body)}>{fl.has}</p>
               <p {...stylex.props(styles.flavorBest, text.body, text.subtle)}>{fl.bestFor}</p>
@@ -41,7 +48,13 @@ export function FlavorsDriver({ example }: { example: Extract<Example, { kind: "
           ))}
         </div>
       }
-      terminal={<TerminalPanel session={session} label={`agent · ${flavor ?? ""}`} hint={<Hint>pick an image to boot it</Hint>} />}
+      terminal={
+        <TerminalPanel
+          session={session}
+          label={`agent · ${flavor ?? ""}`}
+          hint={<Hint>pick an image to boot it</Hint>}
+        />
+      }
     />
   );
 }

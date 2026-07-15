@@ -103,7 +103,9 @@ defmodule AgentOS.Sidecars do
     AgentOS.Sidecars.Egress.cancel_vm(vm_id)
 
     case whereis(vm_id) do
-      nil -> :ok
+      nil ->
+        :ok
+
       scope ->
         case safe_scope_call(fn -> Scope.close(scope) end) do
           {:error, :sidecar_scope_missing} -> :ok
@@ -169,8 +171,8 @@ defmodule AgentOS.Sidecars do
 
     cond do
       not opaque_id?(request.id) or
-          not identifier?(request.grant, Sidecar.sidecar_max_name_bytes()) or
-          not identifier?(request.kind, Sidecar.sidecar_max_kind_bytes(), true) or
+        not identifier?(request.grant, Sidecar.sidecar_max_name_bytes()) or
+        not identifier?(request.kind, Sidecar.sidecar_max_kind_bytes(), true) or
           not identifier?(request.operation, Sidecar.sidecar_max_operation_bytes(), true) ->
         {:error, :sidecar_invalid_request}
 
@@ -219,8 +221,8 @@ defmodule AgentOS.Sidecars do
 
     if identifier?(request.grant, Sidecar.sidecar_max_name_bytes()) and
          identifier?(request.kind, Sidecar.sidecar_max_kind_bytes(), true),
-      do: {:ok, request},
-      else: {:error, :sidecar_invalid_request}
+       do: {:ok, request},
+       else: {:error, :sidecar_invalid_request}
   end
 
   defp normalize_list(_raw), do: {:error, :sidecar_invalid_request}

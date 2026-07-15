@@ -45,12 +45,10 @@ document = body:separated(item, ",")
 
     let grammar = elaborate(root, vec![("demo.core".into(), family)]).unwrap();
     assert_eq!(grammar.start, "document");
-    assert!(
-        grammar
-            .semantic
-            .iter()
-            .any(|mapping| { mapping.concrete == "document" && mapping.semantic == "module" })
-    );
+    assert!(grammar
+        .semantic
+        .iter()
+        .any(|mapping| { mapping.concrete == "document" && mapping.semantic == "module" }));
     assert!(matches!(grammar.rules["identifier"], Rule::Token(_)));
     let Rule::Choice(rows) = &grammar.rules["binary_expression"] else {
         panic!("operator rows")

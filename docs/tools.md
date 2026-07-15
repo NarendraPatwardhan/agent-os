@@ -38,15 +38,15 @@ const lookupCustomer = tool({
 
 ### Tool spec
 
-| Field | Required | Meaning |
-|---|---|---|
-| `name` | yes outside `kit()` | Host binding name; also used to derive the default address |
-| `description` | no | Human/model-facing description |
-| `input` | no | Zod schema used for validation and JSON Schema projection; raw arguments pass through when omitted |
-| `output` | no | JSON Schema for the result |
-| `annotations` | no | Tool-plane metadata such as read-only or approval hints |
-| `address` | no | Explicit full catalog address |
-| `run` | yes | Host-side handler receiving parsed input and context |
+| Field         | Required            | Meaning                                                                                            |
+| ------------- | ------------------- | -------------------------------------------------------------------------------------------------- |
+| `name`        | yes outside `kit()` | Host binding name; also used to derive the default address                                         |
+| `description` | no                  | Human/model-facing description                                                                     |
+| `input`       | no                  | Zod schema used for validation and JSON Schema projection; raw arguments pass through when omitted |
+| `output`      | no                  | JSON Schema for the result                                                                         |
+| `annotations` | no                  | Tool-plane metadata such as read-only or approval hints                                            |
+| `address`     | no                  | Explicit full catalog address                                                                      |
+| `run`         | yes                 | Host-side handler receiving parsed input and context                                               |
 
 The default address is `host.org.main.<normalized-name>`. Whitespace and punctuation in a name become
 dot-separated address parts.
@@ -87,14 +87,14 @@ const definition = {
 
 ### Definition shape
 
-| Field | Shape |
-|---|---|
-| `name` | nonempty safe binding string |
-| `address` | optional catalog address |
-| `description` | optional string |
-| `input` | optional JSON Schema object |
-| `output` | optional JSON Schema object |
-| `annotations` | optional JSON object |
+| Field                 | Shape                                |
+| --------------------- | ------------------------------------ |
+| `name`                | nonempty safe binding string         |
+| `address`             | optional catalog address             |
+| `description`         | optional string                      |
+| `input`               | optional JSON Schema object          |
+| `output`              | optional JSON Schema object          |
+| `annotations`         | optional JSON object                 |
 | `run(input, context)` | sync or async JSON-compatible result |
 
 Names may not begin with `/` or contain control characters. Leading `/` is reserved for raw

@@ -1,6 +1,9 @@
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
 
-exports_files(["Cargo.toml", "Cargo.lock"])
+exports_files([
+    "Cargo.toml",
+    "Cargo.lock",
+])
 
 rust_library(
     name = "parser_ast",
@@ -78,8 +81,8 @@ rust_binary(
     srcs = ["src/main.rs"],
     crate_name = "mc_grammar_gen",
     edition = "2024",
-    deps = [":parser_generate"],
     visibility = ["//visibility:public"],
+    deps = [":parser_generate"],
 )
 
 rust_library(
@@ -100,8 +103,8 @@ rust_binary(
     srcs = ["src/pack_main.rs"],
     crate_name = "mc_syntax_pack",
     edition = "2024",
-    deps = [":parser_pack"],
     visibility = ["//visibility:public"],
+    deps = [":parser_pack"],
 )
 
 rust_binary(
@@ -109,11 +112,11 @@ rust_binary(
     srcs = ["src/fmt_main.rs"],
     crate_name = "mc_grammar_fmt",
     edition = "2024",
+    visibility = ["//visibility:public"],
     deps = [
         ":parser_dsl",
         ":parser_format",
     ],
-    visibility = ["//visibility:public"],
 )
 
 rust_test(

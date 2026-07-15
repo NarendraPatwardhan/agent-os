@@ -5,12 +5,12 @@ root exports that are not part of the public client API so applications can avoi
 
 ## Availability levels
 
-| Level | Meaning |
-|---|---|
-| Stable | Supported client surface |
-| Advanced | Supported seam for infrastructure authors; requires deeper lifecycle knowledge |
-| Internal | Not public API; may change without notice |
-| Re-export | Same value documented at its owning package |
+| Level     | Meaning                                                                        |
+| --------- | ------------------------------------------------------------------------------ |
+| Stable    | Supported client surface                                                       |
+| Advanced  | Supported seam for infrastructure authors; requires deeper lifecycle knowledge |
+| Internal  | Not public API; may change without notice                                      |
+| Re-export | Same value documented at its owning package                                    |
 
 ## `Backend`
 

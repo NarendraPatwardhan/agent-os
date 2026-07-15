@@ -6,6 +6,8 @@ version constraints. Keep that platform switch on the dependency edge into
 //server instead of asking humans to flip Bazel's top-level --config.
 """
 
+ELIXIR_ONLY = ["@erlang_config//:erlang_26_2"]
+
 def _elixir_platform_impl(_settings, _attr):
     return {
         "//command_line_option:host_platform": "//platforms:erlang_internal_platform",
@@ -21,12 +23,12 @@ _elixir_platform_transition = transition(
     ],
 )
 
-def _elixir_test_impl(ctx):
+def _elixir_executable_impl(ctx):
     actual_target = ctx.attr.actual[0]
     actual = actual_target[DefaultInfo]
     executable = actual.files_to_run.executable
     if executable == None:
-        fail("elixir_test actual target must be executable")
+        fail("Elixir transition target must be executable")
 
     out = ctx.actions.declare_file(ctx.label.name)
     ctx.actions.symlink(output = out, target_file = executable, is_executable = True)
@@ -62,8 +64,23 @@ def _elixir_file_impl(ctx):
     )]
 
 elixir_test = rule(
-    implementation = _elixir_test_impl,
+    implementation = _elixir_executable_impl,
     test = True,
+    attrs = {
+        "actual": attr.label(
+            mandatory = True,
+            executable = True,
+            cfg = _elixir_platform_transition,
+        ),
+        "_allowlist_function_transition": attr.label(
+            default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
+        ),
+    },
+)
+
+elixir_binary = rule(
+    implementation = _elixir_executable_impl,
+    executable = True,
     attrs = {
         "actual": attr.label(
             mandatory = True,

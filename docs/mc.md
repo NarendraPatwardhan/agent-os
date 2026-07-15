@@ -9,13 +9,13 @@ import { mc } from "@mc/core";
 
 ## Method summary
 
-| Method | Result | Purpose |
-|---|---|---|
-| `mc.create(options?)` | `Promise<Vm>` | Create a fresh VM |
-| `mc.restore(snapshot, options?)` | `Promise<Vm>` | Restore a full or incremental snapshot |
-| `mc.use(capability, credential, options?)` | `Promise<Vm>` | Create a VM with one curated integration |
-| `mc.connect(endpoint, token?).vm(key)` | `Promise<Vm>` | Get or create a named remote VM |
-| `mc.record(options?)` | `Promise<Recorder>` | Drive a live VM while recording an LLB definition |
+| Method                                     | Result              | Purpose                                           |
+| ------------------------------------------ | ------------------- | ------------------------------------------------- |
+| `mc.create(options?)`                      | `Promise<Vm>`       | Create a fresh VM                                 |
+| `mc.restore(snapshot, options?)`           | `Promise<Vm>`       | Restore a full or incremental snapshot            |
+| `mc.use(capability, credential, options?)` | `Promise<Vm>`       | Create a VM with one curated integration          |
+| `mc.connect(endpoint, token?).vm(key)`     | `Promise<Vm>`       | Get or create a named remote VM                   |
+| `mc.record(options?)`                      | `Promise<Recorder>` | Drive a live VM while recording an LLB definition |
 
 ## `mc.create(options?)`
 

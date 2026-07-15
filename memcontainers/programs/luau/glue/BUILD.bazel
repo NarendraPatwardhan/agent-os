@@ -13,8 +13,8 @@ load("//bazel:mc_program.bzl", "cc_headers", "cc_object", "mc_program")
 zig_library(
     name = "trap",
     main = "trap.zig",
-    deps = ["//memcontainers/sysroot/zig:mc"],
     visibility = ["//visibility:public"],
+    deps = ["//memcontainers/sysroot/zig:mc"],
 )
 
 build_test(
@@ -27,7 +27,6 @@ build_test(
 # entry.zig. cdeps brings @luau's headers so the bindings' @cImport "lua.h" resolves.
 zig_library(
     name = "glue",
-    main = "glue.zig",
     # In lockstep with :luau_raw's srcs (minus entry.zig, the binary's main) so this gate compiles
     # exactly what the binary compiles.
     srcs = [
@@ -44,12 +43,13 @@ zig_library(
         "wasi_shim.zig",
     ],
     extra_srcs = glob(["lib/*.luau"]),  # @embedFile'd by stdlib.zig
+    main = "glue.zig",
+    visibility = ["//visibility:public"],
     deps = [
-        "@luau//:interp_headers",
         "//memcontainers/contracts:constants_zig",
         "//memcontainers/sysroot/zig:mc",  # the shared mc syscall ABI (was a co-located mc.zig)
+        "@luau//:interp_headers",
     ],
-    visibility = ["//visibility:public"],
 )
 
 # Compile-gate the glue (trap + sys + stdlib + the Lua C API @cImport) in `bazel test //...`. The
@@ -83,7 +83,6 @@ cc_headers(
 # stamping + the import verify are layered on next.) See third_party/luau/SYSTEM.md.
 zig_binary(
     name = "luau_raw",
-    main = "entry.zig",
     srcs = [
         "deflate.zig",
         "encoding.zig",
@@ -97,13 +96,6 @@ zig_binary(
         "trap.zig",
         "wasi_shim.zig",
     ],
-    csrcs = ["@luau//:interp_srcs"],
-    extra_srcs = glob(["lib/*.luau"]) + [  # the .luau batteries, @embedFile'd by stdlib.zig
-        "@luau//:interp_all_hdrs",
-        "error_channel.h",
-        "force_extern_c.h",
-        "trap.h",
-    ],
     copts = [
         # Force Luau's public C API to extern "C" so the Zig entry's C-mode @cImport links it (else
         # the API is C++-mangled, resolves to `env` imports, and the VM is dead-stripped).
@@ -111,6 +103,14 @@ zig_binary(
         "memcontainers/programs/luau/glue/force_extern_c.h",
         "-fno-exceptions",
         "-fno-rtti",
+    ],
+    csrcs = ["@luau//:interp_srcs"],
+    extra_srcs = glob(["lib/*.luau"]) + [
+        # the .luau batteries, @embedFile'd by stdlib.zig
+        "@luau//:interp_all_hdrs",
+        "error_channel.h",
+        "force_extern_c.h",
+        "trap.h",
     ],
     # -lc / -lc++ reach the global zig build args (zig_build.bzl:500), enabling wasi-libc + libc++
     # for the csrcs compile (Luau #includes <string.h>, <cstdint>, <vector>, …) AND making argv
@@ -125,6 +125,8 @@ zig_binary(
         "--export=__mc_pcall_run",
         "--export=__stack_pointer",
     ],
+    main = "entry.zig",
+    tags = ["manual"],
     deps = [
         "@luau//:interp_headers",
         "//memcontainers/contracts:constants_zig",
@@ -136,18 +138,17 @@ zig_binary(
         ":wasi_adapter_link",
         ":glue_incs",
     ],
-    tags = ["manual"],
 )
 
 zig_configure_binary(
     name = "luau_wasm",
     actual = ":luau_raw",
     mode = "release_small",
+    tags = ["manual"],
+    target = "//platforms:wasm32_wasi",
     # wasm is single-threaded — std.heap.c_allocator's WasmAllocator is only implemented for
     # -fsingle-threaded (else @compileError("unimplemented")).
     threaded = "single",
-    target = "//platforms:wasm32_wasi",
-    tags = ["manual"],
     visibility = ["//visibility:public"],
 )
 
@@ -155,12 +156,12 @@ zig_configure_binary(
 # (256 MiB · 2T fuel · 40k table, SYSTEMS.md section 4.3) custom sections the kernel reads at exec.
 mc_program(
     name = "luau",
-    wasm = ":luau_wasm",
-    tier = "full",
-    mem = 256 * 1024 * 1024,
     fuel = 2000000000000,
+    mem = 256 * 1024 * 1024,
     table = 40000,
+    tier = "full",
     visibility = ["//visibility:public"],
+    wasm = ":luau_wasm",
 )
 
 # /bin/luau-analyze — the Luau type checker (SYSTEMS.md section 10.3). Same zig c++ recipe as luau, but the csrcs are
@@ -172,10 +173,16 @@ mc_program(
 # __mc_pcall_run/__stack_pointer exports are kept.
 zig_binary(
     name = "luau_analyze_raw",
-    main = "analyze_entry.zig",
     srcs = [
         "trap.zig",
         "wasi_shim.zig",
+    ],
+    copts = [
+        # Force-include the analysis EH shim into every TU (mc_analysis_abort + try/catch neutralize).
+        "-include",
+        "memcontainers/programs/luau/glue/analysis_eh_shim.h",
+        "-fno-exceptions",
+        "-fno-rtti",
     ],
     csrcs = [
         "@luau//:analyze_srcs",
@@ -188,46 +195,40 @@ zig_binary(
         "error_channel.h",
         "trap.h",
     ],
-    copts = [
-        # Force-include the analysis EH shim into every TU (mc_analysis_abort + try/catch neutralize).
-        "-include",
-        "memcontainers/programs/luau/glue/analysis_eh_shim.h",
-        "-fno-exceptions",
-        "-fno-rtti",
-    ],
     linkopts = [
         "-lc",
         "-lc++",
         "--export=__mc_pcall_run",
         "--export=__stack_pointer",
     ],
+    main = "analyze_entry.zig",
+    tags = ["manual"],
     deps = [
-        "@luau//:analysis_incs",
-        "@luau//:interp_incs",
-        "//memcontainers/sysroot/zig:mc",  # the shared mc syscall ABI (via trap.zig)
         ":glue_incs",
         ":wasi_adapter_link",
+        "//memcontainers/sysroot/zig:mc",  # the shared mc syscall ABI (via trap.zig)
+        "@luau//:analysis_incs",
+        "@luau//:interp_incs",
     ],
-    tags = ["manual"],
 )
 
 zig_configure_binary(
     name = "luau_analyze_wasm",
     actual = ":luau_analyze_raw",
     mode = "release_small",
-    threaded = "single",
-    target = "//platforms:wasm32_wasi",
     tags = ["manual"],
+    target = "//platforms:wasm32_wasi",
+    threaded = "single",
     visibility = ["//visibility:public"],
 )
 
 # luau-analyze's budget: 256 MiB · 400B fuel (type inference is bounded, not a runtime) · 40k table.
 mc_program(
     name = "luau-analyze",
-    wasm = ":luau_analyze_wasm",
-    tier = "full",
-    mem = 256 * 1024 * 1024,
     fuel = 400000000000,
+    mem = 256 * 1024 * 1024,
     table = 40000,
+    tier = "full",
     visibility = ["//visibility:public"],
+    wasm = ":luau_analyze_wasm",
 )

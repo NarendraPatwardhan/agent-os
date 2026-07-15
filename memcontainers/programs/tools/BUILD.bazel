@@ -22,11 +22,11 @@ rust_binary(
 # operations stay inside the VM and are deterministic.
 mc_rust_program(
     name = "tools",
-    lib = ":tools_bin",
-    tier = "full",
-    service = "tools",
-    mem = 256 * 1024 * 1024,
     fuel = 2000000000000,
+    lib = ":tools_bin",
+    mem = 256 * 1024 * 1024,
+    service = "tools",
     table = 10000,
+    tier = "full",
     visibility = ["//visibility:public"],
 )

@@ -1,19 +1,19 @@
 # contracts — projected boundaries
 
 This directory is the **single source of truth** for every boundary in AgentOS
-(SYSTEMS.md). None of the kernels, hosts, shims, or clients *is* the truth — the
+(SYSTEMS.md). None of the kernels, hosts, shims, or clients _is_ the truth — the
 contract is — so they cannot drift.
 
-| File | Boundary | Direction | Module |
-|---|---|---|---|
-| `syscalls.kdl` | syscall | guest → kernel | `mc` |
-| `bridge.kdl` | bridge | kernel → host | `env` |
-| `control.kdl` | control | host → kernel | `mc_ctl_*` |
-| `wire.kdl` | wire | server ↔ client | — |
-| `constants.kdl` | shared | — | errno, tiers, flags, ABI version |
-| `snapshot.kdl` | snapshot value | host ↔ host/store | MCSN v2 |
-| `llb.kdl` | build graph | client ↔ solver | LLB |
-| `syntax.kdl` | syntax service | Luau ↔ `/svc/syntax` | framed messages |
+| File            | Boundary       | Direction            | Module                           |
+| --------------- | -------------- | -------------------- | -------------------------------- |
+| `syscalls.kdl`  | syscall        | guest → kernel       | `mc`                             |
+| `bridge.kdl`    | bridge         | kernel → host        | `env`                            |
+| `control.kdl`   | control        | host → kernel        | `mc_ctl_*`                       |
+| `wire.kdl`      | wire           | server ↔ client      | —                                |
+| `constants.kdl` | shared         | —                    | errno, tiers, flags, ABI version |
+| `snapshot.kdl`  | snapshot value | host ↔ host/store    | MCSN v2                          |
+| `llb.kdl`       | build graph    | client ↔ solver      | LLB                              |
+| `syntax.kdl`    | syntax service | Luau ↔ `/svc/syntax` | framed messages                  |
 
 The syscall values originate in the frozen `mc` ABI. **Do not renumber them.** New AgentOS-native
 boundaries such as MCSN, LLB, and syntax are owned here directly and change through their declared

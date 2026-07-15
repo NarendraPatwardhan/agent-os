@@ -27,7 +27,8 @@ defmodule AgentOS.Sidecars.ProviderRegistry do
 
   @impl true
   def init(opts) do
-    placement = normalize_placement!(Keyword.get(opts, :placement), Keyword.get(opts, :placement_opts, []))
+    placement =
+      normalize_placement!(Keyword.get(opts, :placement), Keyword.get(opts, :placement_opts, []))
 
     providers =
       opts
@@ -83,7 +84,9 @@ defmodule AgentOS.Sidecars.ProviderRegistry do
   end
 
   def handle_call(:capabilities, _from, state) do
-    capabilities = state.by_kind |> Map.values() |> Enum.map(&elem(&1, 2)) |> Enum.sort_by(& &1.kind)
+    capabilities =
+      state.by_kind |> Map.values() |> Enum.map(&elem(&1, 2)) |> Enum.sort_by(& &1.kind)
+
     {:reply, capabilities, state}
   end
 
@@ -117,8 +120,11 @@ defmodule AgentOS.Sidecars.ProviderRegistry do
 
     capabilities =
       case Task.yield(task, @capability_timeout) || Task.shutdown(task, :brutal_kill) do
-        {:ok, result} -> result
-        _timeout_or_exit -> raise ArgumentError, "#{inspect(provider)} capability discovery failed"
+        {:ok, result} ->
+          result
+
+        _timeout_or_exit ->
+          raise ArgumentError, "#{inspect(provider)} capability discovery failed"
       end
 
     unless is_list(capabilities) and capabilities != [] and

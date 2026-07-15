@@ -46,6 +46,7 @@ defmodule AgentOS.Sidecars.Scope do
 
   def begin_fork(server),
     do: GenServer.call(server, :begin_fork, :infinity)
+
   def end_fork(server), do: GenServer.call(server, :end_fork)
   def close(server), do: GenServer.call(server, :close, 65_000)
 
@@ -53,6 +54,7 @@ defmodule AgentOS.Sidecars.Scope do
   def init(opts) do
     owner = Keyword.fetch!(opts, :owner)
     vm_id = Keyword.fetch!(opts, :vm_id)
+
     {default_placement, default_placement_opts} =
       AgentOS.Sidecars.ProviderRegistry.placement()
 
@@ -67,9 +69,11 @@ defmodule AgentOS.Sidecars.Scope do
               is_integer(renew_ms) and
               renew_ms in Sidecar.sidecar_min_renew_ms()..Sidecar.sidecar_max_renew_ms() and
               renew_ms * 2 <= lease_ttl_ms) || {:error, :sidecar_invalid_request},
-         true <- valid_placement?(placement, placement_opts) || {:error, :sidecar_invalid_request},
+         true <-
+           valid_placement?(placement, placement_opts) || {:error, :sidecar_invalid_request},
          {:ok, grants} <- validate_grants(Keyword.get(opts, :grants, [])) do
       schedule_renewal(renew_ms)
+
       {:ok,
        %{
          vm_id: vm_id,
@@ -128,7 +132,7 @@ defmodule AgentOS.Sidecars.Scope do
   def handle_call({:create, request, guest}, _from, state) do
     with true <- state.accepting || {:error, :sidecar_closing},
          {:ok, grant} <- grant_for(state, request),
-         true <- (not guest or grant.guest) || {:error, :sidecar_permission_denied},
+         true <- not guest or grant.guest || {:error, :sidecar_permission_denied},
          :ok <- instance_limit(state, request.grant, grant),
          {:new, digest} <- idempotency(state, request),
          {:ok, {provider, provider_opts}} <- select_provider(state, request),
@@ -176,7 +180,9 @@ defmodule AgentOS.Sidecars.Scope do
   end
 
   def handle_call({:retrieve, id}, _from, state) do
-    reply = if state.accepting, do: retrieve_from_state(state, id), else: {:error, :sidecar_closing}
+    reply =
+      if state.accepting, do: retrieve_from_state(state, id), else: {:error, :sidecar_closing}
+
     {:reply, reply, state}
   end
 
@@ -184,7 +190,7 @@ defmodule AgentOS.Sidecars.Scope do
     reply =
       with true <- state.accepting || {:error, :sidecar_closing},
            {:ok, grant} <- grant_for(state, request),
-           true <- (not guest or grant.guest) || {:error, :sidecar_permission_denied},
+           true <- not guest or grant.guest || {:error, :sidecar_permission_denied},
            {:ok, item} <- instance_for(state, request.id),
            {:ok, info} <- checked_instance_info(item, request) do
         {:ok, info}
@@ -216,7 +222,7 @@ defmodule AgentOS.Sidecars.Scope do
     reply =
       with true <- state.accepting || {:error, :sidecar_closing},
            {:ok, grant} <- grant_for(state, request),
-           true <- (not guest or grant.guest) || {:error, :sidecar_permission_denied} do
+           true <- not guest or grant.guest || {:error, :sidecar_permission_denied} do
         state.instances
         |> Enum.filter(fn {_id, item} ->
           item.grant == request.grant and item.kind == request.kind
@@ -242,7 +248,7 @@ defmodule AgentOS.Sidecars.Scope do
            map_size(state.tickets) < Sidecar.sidecar_max_inflight_per_vm() ||
              {:error, :sidecar_limit},
          {:ok, grant} <- grant_for(state, request),
-         true <- (not guest or grant.guest) || {:error, :sidecar_permission_denied},
+         true <- not guest or grant.guest || {:error, :sidecar_permission_denied},
          {:ok, item} <- instance_for(state, request.id),
          true <-
            (item.grant == request.grant and item.kind == request.kind) ||
@@ -270,7 +276,7 @@ defmodule AgentOS.Sidecars.Scope do
   def handle_call({:delete_checked, request, guest}, _from, state) do
     with true <- state.accepting || {:error, :sidecar_closing},
          {:ok, grant} <- grant_for(state, request),
-         true <- (not guest or grant.guest) || {:error, :sidecar_permission_denied} do
+         true <- not guest or grant.guest || {:error, :sidecar_permission_denied} do
       case Map.get(state.instances, request.id) do
         nil ->
           {:reply, :ok, state}
@@ -293,6 +299,7 @@ defmodule AgentOS.Sidecars.Scope do
 
       map_size(state.tickets) == 0 ->
         {warnings, next} = quiesce(state)
+
         {:reply, {:ok, warnings},
          %{next | fork_owner: caller, fork_owner_ref: Process.monitor(caller)}}
 

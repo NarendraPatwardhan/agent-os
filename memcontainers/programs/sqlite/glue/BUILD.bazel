@@ -16,16 +16,6 @@ cc_object(
 
 zig_binary(
     name = "sqlite_raw",
-    main = "entry.zig",
-    csrcs = [
-        "@sqlite//:sqlite3.c",
-        "//memcontainers/wasi-adapter:close_shim.c",  # shared override for Zig wasi-libc's direct fd_close
-    ],
-    extra_srcs = [
-        "@sqlite//:sqlite3.h",
-        "sqlite.zig",
-        "vann.zig",
-    ],
     # The WASI build defines (memcontainers' proven set): WASI mode (unix-dotfile VFS, no shared memory;
     # rollback journal — sqlite's default — fits this single-threaded, sole-opener service),
     # single-threaded, no extension loading / memstatus / URI / deprecated APIs / double-quoted strings.
@@ -38,25 +28,35 @@ zig_binary(
         "-DSQLITE_OMIT_DEPRECATED",
         "-DSQLITE_USE_URI=0",
     ],
+    csrcs = [
+        "@sqlite//:sqlite3.c",
+        "//memcontainers/wasi-adapter:close_shim.c",  # shared override for Zig wasi-libc's direct fd_close
+    ],
+    extra_srcs = [
+        "@sqlite//:sqlite3.h",
+        "sqlite.zig",
+        "vann.zig",
+    ],
     # -lc reaches the global zig build args (wasi-libc for sqlite3.c's <string.h>/<stdlib.h>/… and the
     # WASI fd I/O the adapter rewrites). No -lc++ (sqlite is C).
     linkopts = ["-lc"],
+    main = "entry.zig",
+    tags = ["manual"],
     deps = [
+        ":wasi_adapter_link",
         "//memcontainers/sysroot/zig:mc",  # the shared mc syscall ABI (was a co-located mc.zig)
         "//memcontainers/sysroot/zig:svc",  # the shared serve-loop scaffolding (serve / recv-envelope / respond)
-        ":wasi_adapter_link",
         "@sqlite//:incs",
     ],
-    tags = ["manual"],
 )
 
 zig_configure_binary(
     name = "sqlite_wasm",
     actual = ":sqlite_raw",
     mode = "release_small",
-    threaded = "single",
-    target = "//platforms:wasm32_wasi",
     tags = ["manual"],
+    target = "//platforms:wasm32_wasi",
+    threaded = "single",
     visibility = ["//visibility:public"],
 )
 
@@ -64,11 +64,11 @@ zig_configure_binary(
 # full-only in the coarse tier model) + mc_budget (64 MiB page cache · 100B fuel · 10k table).
 mc_program(
     name = "sqlite",
-    wasm = ":sqlite_wasm",
-    tier = "full",
-    service = "sqlite",  # the mc_service section — it serves the "sqlite" name (mc-attest enforces this)
-    mem = 64 * 1024 * 1024,
     fuel = 100000000000,
+    mem = 64 * 1024 * 1024,
+    service = "sqlite",  # the mc_service section — it serves the "sqlite" name (mc-attest enforces this)
     table = 10000,
+    tier = "full",
     visibility = ["//visibility:public"],
+    wasm = ":sqlite_wasm",
 )

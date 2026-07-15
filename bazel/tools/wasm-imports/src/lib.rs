@@ -199,7 +199,10 @@ mod tests {
     fn collects_function_imports_from_the_named_module() {
         let got = imported_function_symbols(&fixture_wasm(), "mc").unwrap();
         let want: BTreeSet<String> = ["sys_write"].iter().map(|s| s.to_string()).collect();
-        assert_eq!(got, want, "only the mc *function* import should be returned");
+        assert_eq!(
+            got, want,
+            "only the mc *function* import should be returned"
+        );
     }
 
     #[test]
@@ -223,7 +226,10 @@ mod tests {
     fn ignores_non_function_imports() {
         // `shared_mem` is a memory import from "mc"; it must never appear.
         let got = imported_function_symbols(&fixture_wasm(), "mc").unwrap();
-        assert!(!got.contains("shared_mem"), "memory imports are not syscalls");
+        assert!(
+            !got.contains("shared_mem"),
+            "memory imports are not syscalls"
+        );
     }
 
     #[test]

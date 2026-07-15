@@ -30,7 +30,10 @@ async function main(): Promise<void> {
   const incrementalBundle = new Uint8Array(
     readFileSync(runfile(process.env.MC_CROSS_INCREMENTAL, "MC_CROSS_INCREMENTAL")),
   );
-  const baseLen = new DataView(incrementalBundle.buffer, incrementalBundle.byteOffset).getUint32(0, true);
+  const baseLen = new DataView(incrementalBundle.buffer, incrementalBundle.byteOffset).getUint32(
+    0,
+    true,
+  );
   const incrementalBase = incrementalBundle.subarray(4, 4 + baseLen);
   const incremental = incrementalBundle.subarray(4 + baseLen);
 
@@ -66,9 +69,7 @@ async function main(): Promise<void> {
     throw new Error("Rust incremental snapshot did not restore under the JS host");
   }
 
-  console.log(
-    "CROSS-HOST OK — wasmtime full + incremental snapshots restored under the JS host.",
-  );
+  console.log("CROSS-HOST OK — wasmtime full + incremental snapshots restored under the JS host.");
 }
 
 main().catch((e) => {

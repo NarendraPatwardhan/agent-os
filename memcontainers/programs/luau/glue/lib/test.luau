@@ -79,7 +79,7 @@ end
 
 -- Assert that `fn` raises.
 function test.throws(fn, msg)
-	if (pcall(fn)) then
+	if pcall(fn) then
 		error(msg or "expected an error", 2)
 	end
 end

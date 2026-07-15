@@ -1,6 +1,9 @@
 import type { SVGProps } from "react";
 
-export function CopyIcon({ copied, ...props }: Readonly<{ copied: boolean } & SVGProps<SVGSVGElement>>) {
+export function CopyIcon({
+  copied,
+  ...props
+}: Readonly<{ copied: boolean } & SVGProps<SVGSVGElement>>) {
   return (
     <svg
       width="16"

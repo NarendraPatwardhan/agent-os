@@ -6,11 +6,11 @@ load("//bazel:mc_program.bzl", "mc_program")
 # freestanding and imports only `mc`; no WASI adapter and no Rust/C interop.
 zig_binary(
     name = "sh_raw",
-    main = "src/main.zig",
     linkopts = [
         "-fno-entry",
         "-rdynamic",
     ],
+    main = "src/main.zig",
     tags = ["manual"],
     deps = [
         "//memcontainers/contracts:shell_zig",
@@ -23,14 +23,14 @@ zig_configure_binary(
     name = "sh_wasm",
     actual = ":sh_raw",
     mode = "release_small",
+    tags = ["manual"],
     target = "//platforms:wasm32_freestanding",
     threaded = "single",
-    tags = ["manual"],
 )
 
 mc_program(
     name = "sh",
-    wasm = ":sh_wasm",
     tier = "full",
     visibility = ["//visibility:public"],
+    wasm = ":sh_wasm",
 )

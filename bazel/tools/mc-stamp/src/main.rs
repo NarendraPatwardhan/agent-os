@@ -112,7 +112,9 @@ fn main() {
     // one-shot tool, which carries no such section. A present name must fit the grammar.
     if let Some(svc) = a.get(7) {
         if !svc.is_empty() && !valid_service_name(svc) {
-            eprintln!("mc-stamp: invalid service name `{svc}` (must be [a-z][a-z0-9-]*, <=31 bytes)");
+            eprintln!(
+                "mc-stamp: invalid service name `{svc}` (must be [a-z][a-z0-9-]*, <=31 bytes)"
+            );
             exit(2);
         }
     }
@@ -129,7 +131,10 @@ fn main() {
     }
 
     // Idempotent: drop any pre-existing mc_* metadata so we never emit a duplicate.
-    let mut wasm = strip_custom_sections(&wasm, &[b"mc_tier", b"mc_budget", b"mc_service", b"mc_applets"]);
+    let mut wasm = strip_custom_sections(
+        &wasm,
+        &[b"mc_tier", b"mc_budget", b"mc_service", b"mc_applets"],
+    );
     append_custom(b"mc_tier", tier, &mut wasm);
 
     // An all-zero budget means "no declared budget" — emit no mc_budget section so the guest gets the
@@ -210,8 +215,16 @@ mod tests {
         append_custom(b"mc_applets", b"cat\n", &mut w2);
         assert_eq!(count(&w2, b"mc_tier"), 1, "re-stamp duplicated mc_tier");
         assert_eq!(count(&w2, b"mc_budget"), 1, "re-stamp duplicated mc_budget");
-        assert_eq!(count(&w2, b"mc_service"), 1, "re-stamp duplicated mc_service");
-        assert_eq!(count(&w2, b"mc_applets"), 1, "re-stamp duplicated mc_applets");
+        assert_eq!(
+            count(&w2, b"mc_service"),
+            1,
+            "re-stamp duplicated mc_service"
+        );
+        assert_eq!(
+            count(&w2, b"mc_applets"),
+            1,
+            "re-stamp duplicated mc_applets"
+        );
     }
 
     // The service-name grammar — the same vector lives in mc-attest and the kernel; keep them in sync.

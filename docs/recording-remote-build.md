@@ -34,16 +34,16 @@ try {
 
 ### What is recorded
 
-| Operation | Recorded |
-|---|---|
-| `vm.fs.write` | yes |
-| `vm.fs.mkdir` | yes |
-| `vm.fs.rm` | yes |
-| `vm.fs.chmod` | yes |
-| `vm.fs.symlink` | yes |
-| `vm.exec` | yes |
-| filesystem reads/stat/list | no; they do not mutate the build result |
-| snapshots, tools, mounts, sessions | no |
+| Operation                          | Recorded                                |
+| ---------------------------------- | --------------------------------------- |
+| `vm.fs.write`                      | yes                                     |
+| `vm.fs.mkdir`                      | yes                                     |
+| `vm.fs.rm`                         | yes                                     |
+| `vm.fs.chmod`                      | yes                                     |
+| `vm.fs.symlink`                    | yes                                     |
+| `vm.exec`                          | yes                                     |
+| filesystem reads/stat/list         | no; they do not mutate the build result |
+| snapshots, tools, mounts, sessions | no                                      |
 
 Operations still execute live. The caller sees real results and can make decisions, while the recorder
 advances an immutable build-state tip.
@@ -66,9 +66,9 @@ decide later mutations are application control flow; only the resulting operatio
 
 ## Recorder shape
 
-| Member | Meaning |
-|---|---|
-| `vm` | Live `Vm` proxy with mutation recording |
+| Member    | Meaning                                          |
+| --------- | ------------------------------------------------ |
+| `vm`      | Live `Vm` proxy with mutation recording          |
 | `build()` | Resolve the current tip to a portable definition |
 
 Calling `build()` does not close the VM and does not solve the definition. It snapshots the recorded
@@ -77,9 +77,7 @@ graph structure at that point.
 ## Replay
 
 ```js
-const image = await llb
-  .commit(definition)
-  .asImage({ store, kernel });
+const image = await llb.commit(definition).asImage({ store, kernel });
 
 const vm = await mc.create({ image, store, kernel });
 ```
@@ -101,11 +99,11 @@ const result = await remoteBuild(definition, {
 
 ### Options
 
-| Field | Required | Meaning |
-|---|---|---|
-| `endpoint` | yes | Served build API base URL |
-| `token` | no | Bearer token |
-| `store` | for local definition blobs | Source of out-of-line payloads |
+| Field      | Required                   | Meaning                        |
+| ---------- | -------------------------- | ------------------------------ |
+| `endpoint` | yes                        | Served build API base URL      |
+| `token`    | no                         | Bearer token                   |
+| `store`    | for local definition blobs | Source of out-of-line payloads |
 
 For a `BuildState`, the client first projects the graph into a canonical definition. For a prebuilt
 definition, it finds every referenced payload blob. Missing blobs are uploaded to `/v1/blobs` from the
@@ -113,14 +111,14 @@ provided local store. The definition bytes are posted to `/v1/build`.
 
 ## Remote build result
 
-| Field | Meaning |
-|---|---|
+| Field              | Meaning                                    |
+| ------------------ | ------------------------------------------ |
 | `definitionDigest` | Digest of the exact posted canonical bytes |
-| `rootDigest` | Canonical build-root digest |
-| `kernelDigest` | Kernel artifact used by the server |
-| `manifestRef` | Server name for the resulting image |
-| `image` | Returned `ImageManifest` with provenance |
-| `layers` | Result layer digest/size list |
+| `rootDigest`       | Canonical build-root digest                |
+| `kernelDigest`     | Kernel artifact used by the server         |
+| `manifestRef`      | Server name for the resulting image        |
+| `image`            | Returned `ImageManifest` with provenance   |
+| `layers`           | Result layer digest/size list              |
 
 The client validates the response rather than trusting descriptive JSON. It checks definition bytes
 and digest, digest formatting, manifest naming, root and kernel provenance, layer equality, and blob

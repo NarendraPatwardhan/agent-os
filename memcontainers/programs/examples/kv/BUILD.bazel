@@ -22,7 +22,7 @@ rust_binary(
 mc_rust_program(
     name = "kv",
     lib = ":kv_bin",
-    tier = "isolated",
     service = "kv",
+    tier = "isolated",
     visibility = ["//visibility:public"],
 )

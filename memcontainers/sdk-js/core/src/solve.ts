@@ -320,7 +320,10 @@ async function nodeDigestInput(node: BuildNode, ctx: SolveCtx): Promise<Contract
           src: 1,
           copy_paths: node.paths.map((path) => ({ src_path: path.from, dest_path: path.to })),
         }),
-        edges: [edge("dest", await nodeDigest(node.dest, ctx)), edge("src", await nodeDigest(node.src, ctx))],
+        edges: [
+          edge("dest", await nodeDigest(node.dest, ctx)),
+          edge("src", await nodeDigest(node.src, ctx)),
+        ],
         kernel_digest: await digestKernel(ctx),
       });
     }
@@ -332,7 +335,10 @@ async function nodeDigestInput(node: BuildNode, ctx: SolveCtx): Promise<Contract
     case "diff":
       return digestInput({
         op: digestOp(OP_DIFF, { lower: 0, upper: 1 }),
-        edges: [edge("lower", await nodeDigest(node.lower, ctx)), edge("upper", await nodeDigest(node.upper, ctx))],
+        edges: [
+          edge("lower", await nodeDigest(node.lower, ctx)),
+          edge("upper", await nodeDigest(node.upper, ctx)),
+        ],
         kernel_digest: await digestKernel(ctx),
       });
     case "image": {
@@ -487,7 +493,11 @@ function localSourceCached(path: string, ctx: SolveCtx): Promise<LocalSource> {
   return r;
 }
 
-function httpSourceCached(url: string, expectedDigest: string | undefined, ctx: SolveCtx): Promise<HttpSource> {
+function httpSourceCached(
+  url: string,
+  expectedDigest: string | undefined,
+  ctx: SolveCtx,
+): Promise<HttpSource> {
   const key = `${url}\0${expectedDigest ?? ""}`;
   let r = ctx.httpSources.get(key);
   if (!r) {
@@ -497,7 +507,12 @@ function httpSourceCached(url: string, expectedDigest: string | undefined, ctx: 
   return r;
 }
 
-function gitSourceCached(repo: string, ref: string, dest: string, ctx: SolveCtx): Promise<GitSource> {
+function gitSourceCached(
+  repo: string,
+  ref: string,
+  dest: string,
+  ctx: SolveCtx,
+): Promise<GitSource> {
   const key = `${repo}\0${ref}\0${dest}`;
   let r = ctx.gitSources.get(key);
   if (!r) {
@@ -534,11 +549,7 @@ function cacheable(node: BuildNode): boolean {
       case "symlink":
         return cacheable(node.input);
       case "exec":
-        return (
-          cacheable(node.input) &&
-          node.opts.net !== true &&
-          node.opts.deterministic !== false
-        );
+        return cacheable(node.input) && node.opts.net !== true && node.opts.deterministic !== false;
       case "copy":
         return cacheable(node.dest) && cacheable(node.src);
       case "merge":
@@ -577,7 +588,11 @@ async function solveOnce(node: BuildNode, digest: string, ctx: SolveCtx): Promis
   try {
     const result = await materialize(node, ctx);
     if (cacheable(node)) {
-      await ctx.store.putManifest(memoKey, { schema: 1, layers: result.layers, config: result.config });
+      await ctx.store.putManifest(memoKey, {
+        schema: 1,
+        layers: result.layers,
+        config: result.config,
+      });
     }
     await emitProgress(ctx, { type: "completed", digest, op: node.op });
     return result;
@@ -603,17 +618,29 @@ async function materialize(node: BuildNode, ctx: SolveCtx): Promise<ResolvedImag
     }
     case "local": {
       const { digest, tar } = await runLocalSource(node.path, node.dest, ctx);
-      return { layers: [{ digest, size: tar.length, producer: await nodeDigest(node, ctx) }], config: {} };
+      return {
+        layers: [{ digest, size: tar.length, producer: await nodeDigest(node, ctx) }],
+        config: {},
+      };
     }
     case "http": {
       const { digest, tar } = await runHttpSource(node.url, node.dest, node.expectedDigest, ctx);
-      return { layers: [{ digest, size: tar.length, producer: await nodeDigest(node, ctx) }], config: {} };
+      return {
+        layers: [{ digest, size: tar.length, producer: await nodeDigest(node, ctx) }],
+        config: {},
+      };
     }
     case "git": {
       const git = await gitSourceCached(node.repo, node.ref, node.dest, ctx);
       await ctx.store.put(git.tar);
       return {
-        layers: [{ digest: git.archiveDigest, size: git.tar.length, producer: await nodeDigest(node, ctx) }],
+        layers: [
+          {
+            digest: git.archiveDigest,
+            size: git.tar.length,
+            producer: await nodeDigest(node, ctx),
+          },
+        ],
         config: {},
       };
     }
@@ -663,7 +690,10 @@ async function materialize(node: BuildNode, ctx: SolveCtx): Promise<ResolvedImag
         return { layers: upper.layers.filter((l) => !lowerSet.has(l.producer)), config: {} };
       }
       const { digest, tar } = await runDiffStep(lower, upper, ctx);
-      return { layers: [{ digest, size: tar.length, producer: await nodeDigest(node, ctx) }], config: {} };
+      return {
+        layers: [{ digest, size: tar.length, producer: await nodeDigest(node, ctx) }],
+        config: {},
+      };
     }
     case "image": {
       const parts = await Promise.all(node.parts.map((n) => solve(n, ctx)));
@@ -712,7 +742,12 @@ function mergeConfigs(images: readonly ResolvedImage[]): ImageConfig {
 
 type RunNode = Extract<
   BuildNode,
-  { op: "write" } | { op: "mkdir" } | { op: "rm" } | { op: "chmod" } | { op: "symlink" } | { op: "exec" }
+  | { op: "write" }
+  | { op: "mkdir" }
+  | { op: "rm" }
+  | { op: "chmod" }
+  | { op: "symlink" }
+  | { op: "exec" }
 >;
 type CopyNode = Extract<BuildNode, { op: "copy" }>;
 
@@ -723,7 +758,7 @@ async function runStep(
   ctx: SolveCtx,
 ): Promise<{ digest: string; tar: Uint8Array; config: ImageConfig }> {
   const isExec = node.op === "exec";
-  const det = isExec ? node.opts.deterministic ?? true : true;
+  const det = isExec ? (node.opts.deterministic ?? true) : true;
   const config: ImageConfig = isExec
     ? {
         ...base.config,
@@ -733,7 +768,10 @@ async function runStep(
       }
     : base.config;
   const manifest: ImageManifest = { schema: 1, layers: publicLayers(base.layers), config };
-  const mounts = isExec && node.opts.mounts ? await (await solvePlatform(ctx)).cacheMounts(node.opts.mounts) : [];
+  const mounts =
+    isExec && node.opts.mounts
+      ? await (await solvePlatform(ctx)).cacheMounts(node.opts.mounts)
+      : [];
 
   const vm = await mc.create({
     image: manifest,
@@ -940,7 +978,8 @@ function normalizeTarPath(raw: string): string | null {
   const parts: string[] = [];
   for (const part of path.split("/")) {
     if (!part || part === ".") continue;
-    if (part === "..") throw new Error(`llb.diff layer contains parent path escape: ${JSON.stringify(raw)}`);
+    if (part === "..")
+      throw new Error(`llb.diff layer contains parent path escape: ${JSON.stringify(raw)}`);
     parts.push(part);
   }
   return parts.length ? `/${parts.join("/")}` : null;
@@ -968,7 +1007,8 @@ function tarOctal(tar: Uint8Array, start: number, length: number): number {
   const text = tarString(tar, start, length).trim();
   if (!text) return 0;
   const value = Number.parseInt(text, 8);
-  if (!Number.isFinite(value)) throw new Error(`llb.diff layer contains invalid tar size: ${JSON.stringify(text)}`);
+  if (!Number.isFinite(value))
+    throw new Error(`llb.diff layer contains invalid tar size: ${JSON.stringify(text)}`);
   return value;
 }
 
@@ -1031,7 +1071,10 @@ async function runHttpSource(
   }
 }
 
-async function fetchHttpSource(url: string, expectedDigest: string | undefined): Promise<HttpSource> {
+async function fetchHttpSource(
+  url: string,
+  expectedDigest: string | undefined,
+): Promise<HttpSource> {
   const parsed = new URL(url);
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(`llb.http URL must use http or https: ${url}`);
@@ -1043,12 +1086,18 @@ async function fetchHttpSource(url: string, expectedDigest: string | undefined):
   const bytes = new Uint8Array(await response.arrayBuffer());
   const digest = `sha256:${await sha256hex(bytes)}`;
   if (expectedDigest !== undefined && expectedDigest !== digest) {
-    throw new Error(`llb.http digest mismatch for ${url}: expected ${expectedDigest}, got ${digest}`);
+    throw new Error(
+      `llb.http digest mismatch for ${url}: expected ${expectedDigest}, got ${digest}`,
+    );
   }
   return { digest, bytes };
 }
 
-async function writeLocalEntries(fs: VmFs, dest: string, entries: readonly LocalEntry[]): Promise<void> {
+async function writeLocalEntries(
+  fs: VmFs,
+  dest: string,
+  entries: readonly LocalEntry[],
+): Promise<void> {
   await ensureDir(fs, dest);
   for (const entry of entries) {
     if (!entry.rel) {
@@ -1077,12 +1126,14 @@ async function writeLocalEntries(fs: VmFs, dest: string, entries: readonly Local
 }
 
 function normalizeVmPath(path: string, field: string): string {
-  if (!path.startsWith("/")) throw new Error(`llb.copy ${field} must be absolute: ${JSON.stringify(path)}`);
+  if (!path.startsWith("/"))
+    throw new Error(`llb.copy ${field} must be absolute: ${JSON.stringify(path)}`);
   if (path.includes("\0")) throw new Error(`llb.copy ${field} contains NUL`);
   const parts: string[] = [];
   for (const part of path.split("/")) {
     if (!part || part === ".") continue;
-    if (part === "..") throw new Error(`llb.copy ${field} must not contain '..': ${JSON.stringify(path)}`);
+    if (part === "..")
+      throw new Error(`llb.copy ${field} must not contain '..': ${JSON.stringify(path)}`);
     parts.push(part);
   }
   return `/${parts.join("/")}`;
@@ -1222,7 +1273,9 @@ async function sameFile(aFs: VmFs, bFs: VmFs, path: string): Promise<boolean> {
 }
 
 function sameStat(a: StatResult, b: StatResult): boolean {
-  return a.size === b.size && a.isDir === b.isDir && a.isSymlink === b.isSymlink && a.mode === b.mode;
+  return (
+    a.size === b.size && a.isDir === b.isDir && a.isSymlink === b.isSymlink && a.mode === b.mode
+  );
 }
 
 /** Resolve an `llb.source` ref to a layer stack + config. A named flavor / built
@@ -1248,7 +1301,10 @@ async function resolveSource(ref: string, store: ContentStore): Promise<Resolved
 // --------------------------------------------------------------------------
 
 /** The portable `.tar` layer the node produced (its tip layer). */
-export async function commitLayer(node: BuildNode, opts: SolveOptions = {}): Promise<{ digest: string; tar: Uint8Array }> {
+export async function commitLayer(
+  node: BuildNode,
+  opts: SolveOptions = {},
+): Promise<{ digest: string; tar: Uint8Array }> {
   const store = opts.store ?? defaultStore();
   const resolved = await solve(node, newCtx(store, opts));
   const tip = resolved.layers[resolved.layers.length - 1];
@@ -1258,7 +1314,10 @@ export async function commitLayer(node: BuildNode, opts: SolveOptions = {}): Pro
 
 /** The full resolved image (the whole layer stack + runtime config) — boot it with
  *  `mc.create({ image })`. */
-export async function commitImage(node: BuildNode, opts: SolveOptions = {}): Promise<ImageManifest> {
+export async function commitImage(
+  node: BuildNode,
+  opts: SolveOptions = {},
+): Promise<ImageManifest> {
   return (await solveImageWithMetadata(node, opts)).manifest;
 }
 
@@ -1322,7 +1381,10 @@ function buildRecord(
 
 /** The whole-VM memory image of the node's result, memoized by node digest
  *  for cache-safe DAGs so a re-solve can restore instead of re-stacking layers. */
-export async function commitSnapshot(node: BuildNode, opts: SolveOptions = {}): Promise<Uint8Array> {
+export async function commitSnapshot(
+  node: BuildNode,
+  opts: SolveOptions = {},
+): Promise<Uint8Array> {
   const store = opts.store ?? defaultStore();
   const ctx = newCtx(store, opts);
   const digest = await nodeDigest(node, ctx);
@@ -1333,13 +1395,24 @@ export async function commitSnapshot(node: BuildNode, opts: SolveOptions = {}): 
     if (cached) return cached;
   }
   const resolved = await solve(node, ctx);
-  const manifest: ImageManifest = { schema: 1, layers: publicLayers(resolved.layers), config: resolved.config };
-  const vm = await mc.create({ image: manifest, store, kernel: await kernelBytes(ctx), deterministic: true });
+  const manifest: ImageManifest = {
+    schema: 1,
+    layers: publicLayers(resolved.layers),
+    config: resolved.config,
+  };
+  const vm = await mc.create({
+    image: manifest,
+    store,
+    kernel: await kernelBytes(ctx),
+    deterministic: true,
+  });
   try {
     await applyWarm(vm, opts.warm);
     const inflight = await vm.inflightEgress();
     if (inflight !== 0) {
-      throw new Error(`llb.commit().asSnapshot(): warm-up left ${inflight} host-egress operation(s) in flight`);
+      throw new Error(
+        `llb.commit().asSnapshot(): warm-up left ${inflight} host-egress operation(s) in flight`,
+      );
     }
     const snap = await vm.snapshot();
     if (canCache && store.putSnapshot) await store.putSnapshot(snapshotKey, snap);
@@ -1359,7 +1432,9 @@ async function applyWarm(vm: Vm, warm: readonly WarmDirective[] | undefined): Pr
           stdin: directive.stdin,
         });
         if (result.exitCode !== 0) {
-          throw new Error(`llb warm exec "${directive.cmd}" failed (exit ${result.exitCode}): ${result.stderr}`);
+          throw new Error(
+            `llb warm exec "${directive.cmd}" failed (exit ${result.exitCode}): ${result.stderr}`,
+          );
         }
         break;
       }

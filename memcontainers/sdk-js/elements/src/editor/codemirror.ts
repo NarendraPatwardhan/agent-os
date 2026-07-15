@@ -60,7 +60,10 @@ const tokenHighlight = HighlightStyle.define([
     tag: [t.keyword, t.modifier, t.controlKeyword, t.operatorKeyword],
     color: "var(--mc-code-key, var(--accent-text, oklch(0.46 0.15 65)))",
   },
-  { tag: [t.string, t.special(t.string), t.regexp], color: "var(--mc-code-str, oklch(0.55 0.13 150))" },
+  {
+    tag: [t.string, t.special(t.string), t.regexp],
+    color: "var(--mc-code-str, oklch(0.55 0.13 150))",
+  },
   { tag: [t.number, t.bool, t.null, t.atom], color: "var(--mc-code-num, oklch(0.55 0.13 60))" },
   {
     tag: [t.lineComment, t.blockComment, t.docComment],
@@ -76,7 +79,10 @@ const tokenHighlight = HighlightStyle.define([
     color: "var(--mc-code-key, var(--accent-text, oklch(0.46 0.15 65)))",
   },
   { tag: [t.propertyName, t.variableName], color: "var(--mc-fg, var(--fg, inherit))" },
-  { tag: [t.operator, t.punctuation, t.separator, t.bracket], color: "var(--mc-fg-muted, var(--fg-muted, inherit))" },
+  {
+    tag: [t.operator, t.punctuation, t.separator, t.bracket],
+    color: "var(--mc-fg-muted, var(--fg-muted, inherit))",
+  },
 ]);
 
 const tokenTheme = EditorView.theme({
@@ -118,7 +124,10 @@ const tokenTheme = EditorView.theme({
   ".cm-activeLine": {
     backgroundColor: "var(--mc-active-line, color-mix(in oklab, currentColor 5%, transparent))",
   },
-  ".cm-activeLineGutter": { backgroundColor: "transparent", color: "var(--mc-fg-muted, var(--fg-muted, inherit))" },
+  ".cm-activeLineGutter": {
+    backgroundColor: "transparent",
+    color: "var(--mc-fg-muted, var(--fg-muted, inherit))",
+  },
   ".cm-lineNumbers .cm-gutterElement": { padding: "0 6px 0 10px" },
   "&.cm-focused": { outline: "none" },
   ".cm-cursor, .cm-dropCursor": {
@@ -130,7 +139,8 @@ const tokenTheme = EditorView.theme({
       "var(--mc-selection, color-mix(in oklab, var(--mc-accent, var(--accent, #d8a531)) 22%, transparent))",
   },
   ".cm-matchingBracket": {
-    backgroundColor: "color-mix(in oklab, var(--mc-accent, var(--accent, #d8a531)) 22%, transparent)",
+    backgroundColor:
+      "color-mix(in oklab, var(--mc-accent, var(--accent, #d8a531)) 22%, transparent)",
     outline: "none",
   },
 });
@@ -202,8 +212,10 @@ export function makeEditor(opts: MakeEditorOptions): EditorHandle {
     view,
     update(next) {
       const effects = [];
-      if (next.language !== undefined) effects.push(languageConf.reconfigure(languageExtension(next.language)));
-      if (next.readOnly !== undefined) effects.push(readOnlyConf.reconfigure(readOnlyExtension(next.readOnly)));
+      if (next.language !== undefined)
+        effects.push(languageConf.reconfigure(languageExtension(next.language)));
+      if (next.readOnly !== undefined)
+        effects.push(readOnlyConf.reconfigure(readOnlyExtension(next.readOnly)));
       if (next.lineWrapping !== undefined)
         effects.push(wrapConf.reconfigure(next.lineWrapping ? EditorView.lineWrapping : []));
       if (effects.length > 0) view.dispatch({ effects });

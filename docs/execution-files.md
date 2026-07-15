@@ -17,24 +17,24 @@ const result = await vm.exec("sort input.txt | uniq -c | sort -rn", {
 
 ### Options
 
-| Field | Shape | Meaning |
-|---|---|---|
-| `cwd` | string | Working directory; relative paths resolve against the VM's live cwd |
-| `env` | string-to-string object | Overrides layered over the live boot environment |
-| `stdin` | string or `Uint8Array` | Bytes presented on file descriptor 0 |
+| Field   | Shape                   | Meaning                                                             |
+| ------- | ----------------------- | ------------------------------------------------------------------- |
+| `cwd`   | string                  | Working directory; relative paths resolve against the VM's live cwd |
+| `env`   | string-to-string object | Overrides layered over the live boot environment                    |
+| `stdin` | string or `Uint8Array`  | Bytes presented on file descriptor 0                                |
 
 `command` is a shell line, not an argv array. Pipes, redirection, command substitution, `&&`, and
 other supported shell syntax are interpreted inside the VM.
 
 ### Result
 
-| Field | Shape | Meaning |
-|---|---|---|
-| `stdout` | string | UTF-8-decoded standard output |
-| `stderr` | string | UTF-8-decoded standard error |
-| `stdoutBytes` | `Uint8Array` | Original output bytes |
-| `stderrBytes` | `Uint8Array` | Original error bytes |
-| `exitCode` | number | Real guest process exit status |
+| Field         | Shape        | Meaning                        |
+| ------------- | ------------ | ------------------------------ |
+| `stdout`      | string       | UTF-8-decoded standard output  |
+| `stderr`      | string       | UTF-8-decoded standard error   |
+| `stdoutBytes` | `Uint8Array` | Original output bytes          |
+| `stderrBytes` | `Uint8Array` | Original error bytes           |
+| `exitCode`    | number       | Real guest process exit status |
 
 Use the byte fields for binary or lossless output. UTF-8 decoding is convenient but cannot preserve
 arbitrary byte sequences.
@@ -71,25 +71,25 @@ process, execute substitutions, or mutate shell history, cwd, variables, or the 
 
 ### Options
 
-| Field | Shape | Meaning |
-|---|---|---|
-| `cursor` | number | Cursor in JavaScript string coordinates; defaults to `source.length` |
-| `cwd` | string | Resolve paths relative to this directory instead of the live shell cwd |
-| `env` | string-to-string object | Environment overlay used for variables and `PATH` lookup |
-| `limit` | integer from 1 through 128 | Maximum number of returned candidates |
+| Field    | Shape                      | Meaning                                                                |
+| -------- | -------------------------- | ---------------------------------------------------------------------- |
+| `cursor` | number                     | Cursor in JavaScript string coordinates; defaults to `source.length`   |
+| `cwd`    | string                     | Resolve paths relative to this directory instead of the live shell cwd |
+| `env`    | string-to-string object    | Environment overlay used for variables and `PATH` lookup               |
+| `limit`  | integer from 1 through 128 | Maximum number of returned candidates                                  |
 
 JavaScript string coordinates are UTF-16 code-unit indices, matching selection APIs in browsers.
 Passing a cursor inside a surrogate pair rejects with `RangeError`.
 
 ### Result
 
-| Field | Shape | Meaning |
-|---|---|---|
-| `replaceStart` | number | Inclusive start of the text to replace |
-| `replaceEnd` | number | Exclusive end of the text to replace |
-| `commonPrefix` | string | Shell-safe text shared by all returned candidates |
-| `items` | array | Ordered completion candidates |
-| `truncated` | boolean | The result is not exhaustive because a candidate or scan limit was reached |
+| Field          | Shape   | Meaning                                                                    |
+| -------------- | ------- | -------------------------------------------------------------------------- |
+| `replaceStart` | number  | Inclusive start of the text to replace                                     |
+| `replaceEnd`   | number  | Exclusive end of the text to replace                                       |
+| `commonPrefix` | string  | Shell-safe text shared by all returned candidates                          |
+| `items`        | array   | Ordered completion candidates                                              |
+| `truncated`    | boolean | The result is not exhaustive because a candidate or scan limit was reached |
 
 Each item has a display `label`, a shell-safe `value`, and a `kind` such as `builtin`, `function`,
 `variable`, `command`, `file`, or `directory`. Insert `value`, not `label`: quoting and escaping are
@@ -179,10 +179,10 @@ The parent directory must exist.
 
 Returns directory entries:
 
-| Field | Meaning |
-|---|---|
-| `name` | Basename only |
-| `isDir` | Entry is a directory |
+| Field       | Meaning                         |
+| ----------- | ------------------------------- |
+| `name`      | Basename only                   |
+| `isDir`     | Entry is a directory            |
 | `isSymlink` | Entry itself is a symbolic link |
 
 ```js
@@ -195,13 +195,13 @@ for (const entry of await vm.fs.ls("/workspace")) {
 
 Returns lstat-style metadata; a symlink is reported as a symlink instead of being followed.
 
-| Field | Meaning |
-|---|---|
-| `size` | File size in bytes |
-| `isDir` | Path is a directory |
+| Field       | Meaning                 |
+| ----------- | ----------------------- |
+| `size`      | File size in bytes      |
+| `isDir`     | Path is a directory     |
 | `isSymlink` | Path is a symbolic link |
-| `nlink` | Link count |
-| `mode` | POSIX mode bits |
+| `nlink`     | Link count              |
+| `mode`      | POSIX mode bits         |
 
 ### `readlink(path)`
 

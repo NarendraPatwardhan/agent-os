@@ -60,7 +60,7 @@ Snapshot capture refuses while host egress is in flight. This includes network o
 and resident-service calls whose WebAssembly stack is suspended waiting for the host.
 
 ```js
-if (await vm.inflightEgress() !== 0) {
+if ((await vm.inflightEgress()) !== 0) {
   throw new Error("VM is not ready to snapshot");
 }
 const snapshot = await vm.snapshot();
@@ -153,11 +153,11 @@ new identity.
 
 ## Snapshot versus layer
 
-| Need | Use |
-|---|---|
-| Resume processes and warm services | Snapshot |
-| Branch the running computer | Fork |
-| Reuse filesystem changes as an image input | Layer |
+| Need                                         | Use            |
+| -------------------------------------------- | -------------- |
+| Resume processes and warm services           | Snapshot       |
+| Branch the running computer                  | Fork           |
+| Reuse filesystem changes as an image input   | Layer          |
 | Reproduce how the filesystem was constructed | LLB definition |
 
 Layers and build definitions are covered in [Images and content stores](./images-stores.md) and

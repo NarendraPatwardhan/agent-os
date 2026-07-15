@@ -25,10 +25,10 @@ rust_binary(
 # (it needs CAP_NET + CAP_PERSIST to fetch + cache); 64 MiB · 50B fuel · 10k table.
 mc_rust_program(
     name = "pkgfsd",
-    lib = ":pkgfsd_bin",
-    tier = "full",
-    mem = 64 * 1024 * 1024,
     fuel = 50000000000,
+    lib = ":pkgfsd_bin",
+    mem = 64 * 1024 * 1024,
     table = 10000,
+    tier = "full",
     visibility = ["//visibility:public"],
 )

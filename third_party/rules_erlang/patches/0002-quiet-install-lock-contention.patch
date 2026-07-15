@@ -1,0 +1,12 @@
+Treat an existing shared OTP installation directory as normal lock contention.
+
+maybe_install_erlang uses atomic mkdir as a cross-action installation lock. Losing that race is
+expected and correctly skips extraction, but plain mkdir also emits a misleading error on stderr.
+Silence only that lock-acquisition attempt; real extraction failures remain visible and fatal under
+the caller's `set -e`. B3 patch-in-place.
+
+--- a/tools/erlang_toolchain.bzl
++++ b/tools/erlang_toolchain.bzl
+@@ -62 +62 @@
+-if mkdir "{install_path}"; then
++if mkdir "{install_path}" 2>/dev/null; then

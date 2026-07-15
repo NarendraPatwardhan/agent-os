@@ -101,13 +101,16 @@ defmodule AgentOS.Sidecars.Providers.Firecracker do
 
   defp validate_launch_mode(opts) do
     case Keyword.get(opts, :launch, :jailed) do
-      :jailed -> Firecracker.Helper.preflight(opts)
+      :jailed ->
+        Firecracker.Helper.preflight(opts)
+
       :direct ->
         if Keyword.get(opts, :development, false),
           do: :ok,
           else: {:error, :direct_firecracker_forbidden}
 
-      _other -> {:error, :invalid_firecracker_launch_mode}
+      _other ->
+        {:error, :invalid_firecracker_launch_mode}
     end
   end
 
@@ -126,10 +129,7 @@ defmodule AgentOS.Sidecars.Providers.Firecracker do
     case DynamicSupervisor.start_child(
            AgentOS.SidecarFirecrackerSupervisor,
            {Firecracker.Supervisor,
-            id: context.id,
-            context: context,
-            request: request,
-            provider_opts: opts}
+            id: context.id, context: context, request: request, provider_opts: opts}
          ) do
       {:error, :max_children} -> {:error, :sidecar_limit}
       result -> result

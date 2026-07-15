@@ -108,7 +108,10 @@ fn exclusions() -> BTreeMap<&'static str, &'static str> {
 fn shipped_guests_import_only_the_declared_mc_surface() {
     let declared = declared_syscalls();
     let guests = all_guests();
-    assert!(!guests.is_empty(), "no wasm guests found in conformance images");
+    assert!(
+        !guests.is_empty(),
+        "no wasm guests found in conformance images"
+    );
 
     let mut failures = Vec::new();
     for guest in guests {

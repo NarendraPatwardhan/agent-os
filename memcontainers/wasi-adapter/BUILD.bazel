@@ -1,7 +1,10 @@
 load("@rules_rust//rust:defs.bzl", "rust_library", "rust_static_library")
 load("//bazel:wasm32_build_test.bzl", "wasm32_build_test")
 
-exports_files(["close_shim.c"], visibility = ["//visibility:public"])
+exports_files(
+    ["close_shim.c"],
+    visibility = ["//visibility:public"],
+)
 
 # wasi-adapter — a guest-side WASI preview1 shim implemented over `mc_sys_*` (SYSTEMS.md),
 # ported from memcontainers crates/wasi/adapter. It DEFINES the `wasi_snapshot_preview1` functions
@@ -47,10 +50,10 @@ genrule(
 rust_static_library(
     name = "wasi_adapter_staticlib",
     srcs = glob(["src/**/*.rs"]),
-    crate_name = "wasi",
     # `standalone` turns on the adapter's own #[panic_handler] — required for a final staticlib with
     # no surrounding Rust runtime (the no-Rust domain tools).
     crate_features = ["standalone"],
+    crate_name = "wasi",
     edition = "2021",
     rustc_flags = ["-Ccodegen-units=1"],
     tags = ["manual"],

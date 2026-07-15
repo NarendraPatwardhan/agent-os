@@ -65,19 +65,42 @@ function parseArgs(argv) {
       return v;
     };
     switch (a) {
-      case "--tag": opts.tag = val(); break;
-      case "--name": opts.name = val(); break;
-      case "--target": opts.target = val(); break;
-      case "--notes": opts.notes = val(); break;
-      case "--notes-file": opts.notesFile = val(); break;
-      case "--draft": opts.draft = true; break;
-      case "--prerelease": opts.prerelease = true; break;
-      case "--repo": opts.repo = val(); break;
-      case "--token-file": opts.tokenFile = val(); break;
-      case "--dry-run": opts.dryRun = true; break;
+      case "--tag":
+        opts.tag = val();
+        break;
+      case "--name":
+        opts.name = val();
+        break;
+      case "--target":
+        opts.target = val();
+        break;
+      case "--notes":
+        opts.notes = val();
+        break;
+      case "--notes-file":
+        opts.notesFile = val();
+        break;
+      case "--draft":
+        opts.draft = true;
+        break;
+      case "--prerelease":
+        opts.prerelease = true;
+        break;
+      case "--repo":
+        opts.repo = val();
+        break;
+      case "--token-file":
+        opts.tokenFile = val();
+        break;
+      case "--dry-run":
+        opts.dryRun = true;
+        break;
       case "-h":
-      case "--help": printHelp(); process.exit(0);
-      default: die(`unknown argument ${JSON.stringify(a)} (try --help)`);
+      case "--help":
+        printHelp();
+        process.exit(0);
+      default:
+        die(`unknown argument ${JSON.stringify(a)} (try --help)`);
     }
   }
   if (!opts.tag) die("missing required --tag <tag> (try --help)");
@@ -96,7 +119,9 @@ function resolveNotes(opts) {
       die(`--notes-file ${opts.notesFile}: ${e.message}`);
     }
   } else {
-    die("release notes are required: pass --notes <text> or --notes-file <path> (notes are never auto-generated)");
+    die(
+      "release notes are required: pass --notes <text> or --notes-file <path> (notes are never auto-generated)",
+    );
   }
   if (body.trim() === "") {
     die("release notes are empty — provide real notes (notes are never auto-generated)");
@@ -112,7 +137,10 @@ function runfilesDir() {
 // runfiles tree and checked readable. A missing asset is a hard error (the data-dep didn't build).
 function resolveAssets() {
   const raw = process.env.MC_RELEASE_ASSETS;
-  if (!raw) die("MC_RELEASE_ASSETS not set — run via `bazel run //bazel/tools/gh-release:publish`, not node directly");
+  if (!raw)
+    die(
+      "MC_RELEASE_ASSETS not set — run via `bazel run //bazel/tools/gh-release:publish`, not node directly",
+    );
   const map = JSON.parse(raw);
   const rf = runfilesDir();
   const assets = [];
@@ -154,7 +182,10 @@ function readToken(opts) {
 
 // fetch with bounded retry: retry on a network error or a 5xx (transient), never on a 4xx (the
 // request itself is wrong — surface it immediately).
-async function ghFetch(url, { method = "GET", token, body, contentType, accept = "application/vnd.github+json" } = {}) {
+async function ghFetch(
+  url,
+  { method = "GET", token, body, contentType, accept = "application/vnd.github+json" } = {},
+) {
   const headers = { Accept: accept, "User-Agent": UA, "X-GitHub-Api-Version": API_VERSION };
   if (token) headers.Authorization = `Bearer ${token}`;
   if (contentType) headers["Content-Type"] = contentType;
@@ -183,7 +214,9 @@ async function errBody(res, ctx) {
 }
 
 async function findRelease(repo, tag, token) {
-  const res = await ghFetch(`${API}/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`, { token });
+  const res = await ghFetch(`${API}/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`, {
+    token,
+  });
   if (res.status === 404) return null;
   if (!res.ok) die(await errBody(res, `look up release ${tag}`));
   return res.json();
@@ -223,7 +256,10 @@ async function updateReleaseBody(repo, releaseId, body, token) {
 }
 
 async function deleteAsset(repo, assetId, token) {
-  const res = await ghFetch(`${API}/repos/${repo}/releases/assets/${assetId}`, { method: "DELETE", token });
+  const res = await ghFetch(`${API}/repos/${repo}/releases/assets/${assetId}`, {
+    method: "DELETE",
+    token,
+  });
   if (!res.ok && res.status !== 404) die(await errBody(res, `delete stale asset ${assetId}`));
 }
 
@@ -232,7 +268,12 @@ async function uploadAsset(uploadUrlTemplate, asset, token) {
   const base = uploadUrlTemplate.split("{")[0];
   const url = `${base}?name=${encodeURIComponent(asset.name)}`;
   const body = asset.bytes ?? readFileSync(asset.path); // Buffer; fetch sets Content-Length from its length
-  const res = await ghFetch(url, { method: "POST", token, contentType: "application/octet-stream", body });
+  const res = await ghFetch(url, {
+    method: "POST",
+    token,
+    contentType: "application/octet-stream",
+    body,
+  });
   if (!res.ok) die(await errBody(res, `upload ${asset.name}`));
   return res.json();
 }
@@ -246,7 +287,8 @@ function human(n) {
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   const repo = opts.repo ?? process.env.MC_RELEASE_REPO;
-  if (!repo) die("no repo: set MC_RELEASE_REPO (via the gh_release macro) or pass --repo owner/repo");
+  if (!repo)
+    die("no repo: set MC_RELEASE_REPO (via the gh_release macro) or pass --repo owner/repo");
   const notes = resolveNotes(opts); // required — fails before any network/token work if missing or empty
   const assets = resolveAssets();
   const sums = sha256SumsAsset(assets);
@@ -257,7 +299,9 @@ async function main() {
 
   if (opts.dryRun) {
     console.error(`\n--- SHA256SUMS ---\n${sums.bytes.toString("utf8").trimEnd()}`);
-    console.error(`\n--dry-run: ${assets.length} assets + SHA256SUMS resolved; notes present (${notes.trim().length} chars); no GitHub calls made.`);
+    console.error(
+      `\n--dry-run: ${assets.length} assets + SHA256SUMS resolved; notes present (${notes.trim().length} chars); no GitHub calls made.`,
+    );
     console.error(`would create release ${opts.tag}${opts.draft ? " (draft)" : ""} on ${repo}.`);
     return;
   }
@@ -265,7 +309,9 @@ async function main() {
   const token = readToken(opts);
   let release = await findRelease(repo, opts.tag, token);
   if (release) {
-    console.error(`\nrelease ${opts.tag} exists (#${release.id}) — reusing; syncing notes, replacing same-named assets`);
+    console.error(
+      `\nrelease ${opts.tag} exists (#${release.id}) — reusing; syncing notes, replacing same-named assets`,
+    );
     await updateReleaseBody(repo, release.id, notes, token);
   } else {
     release = await createRelease(repo, opts, notes, token);
@@ -278,7 +324,9 @@ async function main() {
       await deleteAsset(repo, existing.get(a.name), token);
     }
     const up = await uploadAsset(release.upload_url, a, token);
-    console.error(`  uploaded ${a.name.padEnd(16)} ${human(a.size).padStart(10)}  ${up.browser_download_url}`);
+    console.error(
+      `  uploaded ${a.name.padEnd(16)} ${human(a.size).padStart(10)}  ${up.browser_download_url}`,
+    );
   }
 
   console.error(`\n✓ ${release.html_url}`);

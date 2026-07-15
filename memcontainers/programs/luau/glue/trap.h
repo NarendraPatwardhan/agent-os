@@ -7,7 +7,8 @@
 // (SYSTEMS.md §10.3):
 //
 //   mc_protected_call(fn, ud)  runs fn(ud) as a NESTED guest call — a trap boundary. Returns 0 if
-//                              fn returned normally, or the code passed to mc_raise() if it "threw".
+//                              fn returned normally, or the code passed to mc_raise() if it
+//                              "threw".
 //   mc_raise(code)             records `code` then traps; wasmi unwinds the native stack to the
 //                              nearest mc_protected_call boundary. Never returns.
 //

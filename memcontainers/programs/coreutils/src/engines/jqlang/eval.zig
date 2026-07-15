@@ -180,7 +180,7 @@ const Parser = struct {
         const l = try self.parseAdd();
         const cmp = [_]struct { s: []const u8, op: Op }{
             .{ .s = "==", .op = .eq }, .{ .s = "!=", .op = .ne }, .{ .s = "<=", .op = .le },
-            .{ .s = ">=", .op = .ge }, .{ .s = "<", .op = .lt }, .{ .s = ">", .op = .gt },
+            .{ .s = ">=", .op = .ge }, .{ .s = "<", .op = .lt },  .{ .s = ">", .op = .gt },
         };
         for (cmp) |c| {
             if (self.eatOp(c.s)) {
@@ -776,7 +776,6 @@ pub const Interp = struct {
     fn evalCall(self: *Interp, name: []const u8, args: []*Node, input: Value, env: *Env, ctx: *anyopaque, emit: Emit) Error!void {
         try @import("builtins.zig").call(self, name, args, input, env, ctx, emit);
     }
-
 };
 
 // ============================================================ path helpers

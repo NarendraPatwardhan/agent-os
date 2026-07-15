@@ -23,7 +23,10 @@
 
 .tocLabel {
   color: var(--fg-subtle, #9a9aa0);
-  font: 650 0.75rem / 1.2 "Inter Tight Variable", "Inter", sans-serif;
+  font:
+    650 0.75rem / 1.2 "Inter Tight Variable",
+    "Inter",
+    sans-serif;
   letter-spacing: 0.08em;
   text-transform: uppercase;
 }
@@ -47,12 +50,10 @@
   scrollbar-width: none;
   -webkit-mask-image:
     linear-gradient(to top, transparent, white 90%),
-    linear-gradient(to bottom, transparent, white 100%),
-    linear-gradient(white, white);
+    linear-gradient(to bottom, transparent, white 100%), linear-gradient(white, white);
   mask-image:
     linear-gradient(to top, transparent, white 90%),
-    linear-gradient(to bottom, transparent, white 100%),
-    linear-gradient(white, white);
+    linear-gradient(to bottom, transparent, white 100%), linear-gradient(white, white);
   -webkit-mask-size:
     100% var(--toc-top-mask-height),
     100% var(--toc-bottom-mask-height),
@@ -61,15 +62,23 @@
     100% var(--toc-top-mask-height),
     100% var(--toc-bottom-mask-height),
     100% 100%;
-  -webkit-mask-position: 0 0, 0 100%, 0 0;
-  mask-position: 0 0, 0 100%, 0 0;
+  -webkit-mask-position:
+    0 0,
+    0 100%,
+    0 0;
+  mask-position:
+    0 0,
+    0 100%,
+    0 0;
   -webkit-mask-repeat: no-repeat, no-repeat, no-repeat;
   mask-repeat: no-repeat, no-repeat, no-repeat;
   -webkit-mask-composite: xor;
   mask-composite: exclude;
   animation-name: showTopTocMask, hideBottomTocMask;
   animation-fill-mode: both;
-  animation-range: 0% 3%, 97% 100%;
+  animation-range:
+    0% 3%,
+    97% 100%;
   animation-timeline: scroll(self), scroll(self);
 }
 
@@ -163,19 +172,33 @@
 }
 
 @keyframes showTopTocMask {
-  from { --toc-top-mask-height: 0px; }
-  to { --toc-top-mask-height: var(--toc-mask-height); }
+  from {
+    --toc-top-mask-height: 0px;
+  }
+  to {
+    --toc-top-mask-height: var(--toc-mask-height);
+  }
 }
 
 @keyframes hideBottomTocMask {
-  from { --toc-bottom-mask-height: var(--toc-mask-height); }
-  to { --toc-bottom-mask-height: 0px; }
+  from {
+    --toc-bottom-mask-height: var(--toc-mask-height);
+  }
+  to {
+    --toc-bottom-mask-height: 0px;
+  }
 }
 
 @keyframes translateTocItem {
-  0% { transform: translateX(-10px); }
-  50% { transform: translateX(54px); }
-  100% { transform: translateX(-10px); }
+  0% {
+    transform: translateX(-10px);
+  }
+  50% {
+    transform: translateX(54px);
+  }
+  100% {
+    transform: translateX(-10px);
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -6,8 +6,8 @@
 //! full Luau Analysis engine (file:line:col diagnostics).
 
 use host::{
-    ConnectionCredential, ConnectionRegistry, MapHostCall, RealNet, ConnectionPolicyAction,
-    ConnectionPolicyOwner, ConnectionPolicyRule,
+    ConnectionCredential, ConnectionPolicyAction, ConnectionPolicyOwner, ConnectionPolicyRule,
+    ConnectionRegistry, MapHostCall, RealNet,
 };
 use pkgcore::sha256_hex;
 use std::io::{Read, Write};
@@ -798,7 +798,11 @@ fn adapters_compile_graphql_and_tools_call_it() {
     ]);
     let mut registry = ConnectionRegistry::new();
     registry
-        .insert("gql.org.main", ConnectionCredential::None, [base_url.clone()])
+        .insert(
+            "gql.org.main",
+            ConnectionCredential::None,
+            [base_url.clone()],
+        )
         .expect("none GraphQL connection");
     let mut s = boot_loom_with_net_and_tools(
         Box::new(
@@ -934,7 +938,11 @@ fn adapters_compile_remote_mcp_and_tools_call_it() {
     ]);
     let mut registry = ConnectionRegistry::new();
     registry
-        .insert("deepwiki.org.main", ConnectionCredential::None, [base_url.clone()])
+        .insert(
+            "deepwiki.org.main",
+            ConnectionCredential::None,
+            [base_url.clone()],
+        )
         .expect("none MCP connection");
     let mut s = boot_loom_with_net_and_tools(
         Box::new(

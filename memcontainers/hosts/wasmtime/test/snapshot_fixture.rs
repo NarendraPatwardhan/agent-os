@@ -41,7 +41,11 @@ fn main() {
         bundle.extend_from_slice(&delta);
         std::fs::write(out, &bundle)
             .unwrap_or_else(|e| panic!("write incremental bundle {out}: {e}"));
-        eprintln!("cross-host incremental snapshot: {} bytes over {} byte baseline", delta.len(), base_snap.len());
+        eprintln!(
+            "cross-host incremental snapshot: {} bytes over {} byte baseline",
+            delta.len(),
+            base_snap.len()
+        );
         return;
     }
 
@@ -50,5 +54,8 @@ fn main() {
     let snap = host.snapshot().expect("snapshot the booted VM");
 
     std::fs::write(out, &snap).unwrap_or_else(|e| panic!("write snapshot {out}: {e}"));
-    eprintln!("cross-host snapshot: {} bytes produced by the wasmtime host", snap.len());
+    eprintln!(
+        "cross-host snapshot: {} bytes produced by the wasmtime host",
+        snap.len()
+    );
 }

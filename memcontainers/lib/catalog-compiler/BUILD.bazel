@@ -1,6 +1,6 @@
-load("@rules_rust//rust:defs.bzl", "rust_library", "rust_shared_library")
-load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_shared_library")
 load("//bazel:release_wasm.bzl", "release_wasm")
 load("//bazel:rust_opt_test.bzl", "rust_opt_test")
 load("//bazel:wasm_opt.bzl", "wasm_opt")
@@ -66,22 +66,22 @@ build_test(
 # target whose output is bin/<pkg>/test (a `:test` rust_test) would collide with that `test/` dir.
 rust_opt_test(
     name = "unit_test",
+    size = "small",
     crate = ":lib",
     edition = "2021",
-    size = "small",
 )
 
 rust_opt_test(
     name = "wasmtime_test",
+    size = "small",
     srcs = ["test/wasmtime.rs"],
     crate_root = "test/wasmtime.rs",
-    edition = "2021",
-    size = "small",
     data = [
-        ":wasm",
         "data/github_issues.openapi.json",
         "data/github_issues.opts.json",
+        ":wasm",
     ],
+    edition = "2021",
     deps = [
         "@host_crates//:wasmtime",
         "@rules_rust//rust/runfiles",
@@ -91,10 +91,10 @@ rust_opt_test(
 js_test(
     name = "node_test",
     data = [
-        ":wasm",
-        "test/node.test.mjs",
         "data/github_issues.openapi.json",
         "data/github_issues.opts.json",
+        "test/node.test.mjs",
+        ":wasm",
     ],
     entry_point = "test/node.test.mjs",
     env = {

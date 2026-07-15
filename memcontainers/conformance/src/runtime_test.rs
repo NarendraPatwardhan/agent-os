@@ -69,7 +69,12 @@ fn typed_control_exec_stat_readdir_and_service_roundtrip() {
             },
         )
         .expect("typed exec");
-    assert_eq!(exec.exit_code, 0, "stderr={}", String::from_utf8_lossy(&exec.stderr));
+    assert_eq!(
+        exec.exit_code,
+        0,
+        "stderr={}",
+        String::from_utf8_lossy(&exec.stderr)
+    );
     assert_eq!(
         String::from_utf8(exec.stdout).expect("exec stdout utf8"),
         "/tmp/conformance\nfrom-env\nfrom-stdin"
@@ -79,7 +84,11 @@ fn typed_control_exec_stat_readdir_and_service_roundtrip() {
         .service_call("kv", b"put\0answer\0forty-two")
         .expect("kv put via host control");
     assert_eq!(put.status, 0);
-    assert!(put.body.is_empty(), "put body should be empty: {:?}", put.body);
+    assert!(
+        put.body.is_empty(),
+        "put body should be empty: {:?}",
+        put.body
+    );
     let get = host
         .service_call("kv", b"get\0answer")
         .expect("kv get via host control");
@@ -138,18 +147,17 @@ fn host_trap_unwinds_pcall_and_the_vm_remains_live() {
     let out = String::from_utf8(result.stdout).expect("pcall stdout utf8");
     assert!(out.contains("caught=true"), "pcall did not resume: {out}");
     assert!(out.contains("stress=true"), "pcall stress failed: {out}");
-    assert!(out.contains("4"), "VM did not stay live after trap unwind: {out}");
+    assert!(
+        out.contains("4"),
+        "VM did not stay live after trap unwind: {out}"
+    );
 }
 
 #[test]
 fn runtime_fuel_ceiling_kills_a_runaway_guest() {
     let mut host = boot_with_contract("_main/memcontainers/images/posix.tar", 0, 0, 10_000_000);
     let result = host
-        .exec(
-            "while true; do :; done",
-            500_000,
-            ExecOptions::default(),
-        )
+        .exec("while true; do :; done", 500_000, ExecOptions::default())
         .expect("runaway exec should finish by budget kill");
     assert_eq!(result.exit_code, 137, "runaway exit status");
     let stderr = String::from_utf8_lossy(&result.stderr);

@@ -1,3 +1,5 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library", "js_test")
+
 genrule(
     name = "image_size_badges_fragment",
     srcs = [
@@ -16,8 +18,6 @@ genrule(
           "paper=$(execpath //memcontainers/images:paper) > $@",
     tools = ["//bazel/tools/readme-badges"],
 )
-
-load("@aspect_rules_js//js:defs.bzl", "js_library", "js_test")
 
 # The client reference is authored once, here, and consumed verbatim by the web
 # reader. Keeping it in a public library makes the otherwise out-of-package

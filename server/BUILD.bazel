@@ -1,3 +1,7 @@
+load("@aspect_bazel_lib//lib:write_source_files.bzl", "write_source_files")
+load("@rules_elixir//:defs.bzl", "mix_library", "mix_test")
+load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+
 # server — the AgentOS control-plane library (Elixir/OTP): the supervisor over wasm VMs
 # described in SYSTEMS.md §13.1. It drives VMs through host_nif and deliberately stops below
 # any HTTP/WebSocket deployment adapter.
@@ -11,13 +15,10 @@
 # (//memcontainers/hosts/wasmtime/nif:host_nif_release) is staged into priv/ and
 # loaded at runtime by AgentOS.Host.Nif — Bazel builds the release .so, mix never
 # compiles it.
-load("//bazel:elixir_transition.bzl", "elixir_file", "elixir_test")
-load("@aspect_bazel_lib//lib:write_source_files.bzl", "write_source_files")
-load("@rules_elixir//:defs.bzl", "mix_library", "mix_test")
-load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+load("//bazel:elixir_transition.bzl", "ELIXIR_ONLY", "elixir_file", "elixir_test")
 
-_ELIXIR_ONLY = ["@erlang_config//:erlang_26_2"]
 _SERVER_SRCS = glob(["lib/**/*.ex"])
+
 _PACKAGE_SRCS = glob(
     ["lib/**/*.ex"],
     exclude = ["lib/agent_os/contracts/*.ex"],
@@ -39,44 +40,44 @@ write_source_files(
 # Production library — `mix compile` into the agent_os app, with the NIF cdylib staged in priv/.
 mix_library(
     name = "lib",
+    srcs = _SERVER_SRCS,
     app_name = "agent_os",
     mix_config = ":mix.exs",
-    srcs = _SERVER_SRCS,
     priv = ["//memcontainers/hosts/wasmtime/nif:host_nif_release"],  # libhost_nif.so -> priv/
     tags = ["manual"],
-    target_compatible_with = _ELIXIR_ONLY,
+    target_compatible_with = ELIXIR_ONLY,
     visibility = ["//visibility:public"],
 )
 
 # Test library — same sources compiled with MIX_ENV=test.
 mix_library(
     name = "lib_test",
-    app_name = "agent_os",
-    mix_env = "test",
-    mix_config = ":mix.exs",
     srcs = _SERVER_SRCS,
+    app_name = "agent_os",
+    mix_config = ":mix.exs",
+    mix_env = "test",
     priv = ["//memcontainers/hosts/wasmtime/nif:host_nif_release"],
     tags = ["manual"],
-    target_compatible_with = _ELIXIR_ONLY,
+    target_compatible_with = ELIXIR_ONLY,
 )
 
 # `mix test` against the pre-compiled MIX_ENV=test lib (the NIF smoke test + the OTP layer test).
 mix_test(
     name = "mix_test_impl",
+    srcs = glob(["test/**/*.exs"]),
     data = [
-        "//memcontainers/images:minimal",
         "//memcontainers/images:loom",
+        "//memcontainers/images:minimal",
         "//memcontainers/images:posix",
         "//memcontainers/kernel/rust:kernel",
     ],
-    lib = ":lib_test",
-    srcs = glob(["test/**/*.exs"]),
-    target_compatible_with = _ELIXIR_ONLY,
     env = {
         "ERL_COMPILER_OPTIONS": "deterministic",
         "ELIXIR_ERL_OPTIONS": "+fnu",
     },
+    lib = ":lib_test",
     tags = ["manual"],
+    target_compatible_with = ELIXIR_ONLY,
 )
 
 # Public test entry point. Run this without `--config=elixir`; the wrapper scopes
@@ -94,11 +95,15 @@ elixir_test(
 # execution host does not expose /dev/kvm.
 mix_test(
     name = "kvm_test_impl",
+    srcs = [
+        "test/agent_os/firecracker_test.exs",
+        "test/test_helper.exs",
+    ],
     data = [
-        "@firecracker//:firecracker",
+        "//server/sidecars/runner:health_initramfs",
+        "@firecracker",
         "@firecracker//:jailer",
         "@firecracker_kernel//file",
-        "//server/sidecars/runner:health_initramfs",
     ],
     env = {
         "AGENT_OS_KVM_E2E": "1",
@@ -106,15 +111,11 @@ mix_test(
         "ERL_COMPILER_OPTIONS": "deterministic",
     },
     lib = ":lib_test",
-    srcs = [
-        "test/agent_os/firecracker_test.exs",
-        "test/test_helper.exs",
-    ],
     tags = [
         "manual",
         "requires-kvm",
     ],
-    target_compatible_with = _ELIXIR_ONLY,
+    target_compatible_with = ELIXIR_ONLY,
 )
 
 elixir_test(
@@ -141,11 +142,12 @@ pkg_tar(
     owner = "0.0",
     package_dir = "agent_os",
     tags = ["manual"],
-    target_compatible_with = _ELIXIR_ONLY,
+    target_compatible_with = ELIXIR_ONLY,
 )
 
 pkg_tar(
     name = "agent_os_package_src",
+    srcs = ["mix.exs"] + _PACKAGE_SRCS,
     create_parents = False,
     mode = "0644",
     modes = {
@@ -156,12 +158,11 @@ pkg_tar(
         "lib/agent_os/sidecars/firecracker": "0755",
         "lib/agent_os/sidecars/providers": "0755",
     },
-    srcs = ["mix.exs"] + _PACKAGE_SRCS,
     owner = "0.0",
     package_dir = "agent_os",
     strip_prefix = ".",
     tags = ["manual"],
-    target_compatible_with = _ELIXIR_ONLY,
+    target_compatible_with = ELIXIR_ONLY,
 )
 
 pkg_tar(
@@ -184,7 +185,7 @@ pkg_tar(
     owner = "0.0",
     package_dir = "agent_os",
     tags = ["manual"],
-    target_compatible_with = _ELIXIR_ONLY,
+    target_compatible_with = ELIXIR_ONLY,
 )
 
 # The runtime payload makes the package complete for a host app that consumes agent_os outside
@@ -210,7 +211,7 @@ pkg_tar(
     owner = "0.0",
     package_dir = "agent_os",
     tags = ["manual"],
-    target_compatible_with = _ELIXIR_ONLY,
+    target_compatible_with = ELIXIR_ONLY,
 )
 
 # A complete path-dependency-shaped runtime package for external Mix/Phoenix consumers:
@@ -251,10 +252,10 @@ pkg_tar(
     },
     owner = "0.0",
     tags = ["manual"],
-    target_compatible_with = _ELIXIR_ONLY,
+    target_compatible_with = ELIXIR_ONLY,
     deps = [
-        ":agent_os_package_nif",
         ":agent_os_package_contracts",
+        ":agent_os_package_nif",
         ":agent_os_package_runtime",
         ":agent_os_package_src",
     ],

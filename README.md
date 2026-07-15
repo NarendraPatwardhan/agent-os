@@ -49,18 +49,18 @@ Node.js, Bun, the browser, and against a remote AgentOS host.
 
 ## What You Can Build
 
-| Product | What AgentOS provides |
-|---|---|
-| Coding agents | An isolated repo workspace, POSIX tools, Luau automation, static analysis, and structural Lua/Luau parsing and edits. |
-| Tool-using agents | Searchable, schema-bearing host tools that can be discovered and composed from the shell or Luau. |
-| SaaS automation | OpenAPI, GraphQL, Microsoft Graph, Google Discovery, and remote MCP connections with host-held credentials. |
-| Data and retrieval agents | A warm SQLite service, S3-backed files, vector-search mounts, and ordinary shell data pipelines. |
-| Document workflows | XLSX, DOCX, PPTX, ZIP, OPC, XML, media, chart, and warm Typst/PDF tooling. |
-| Browser sandboxes | The full VM in a page, durable OPFS-backed state, terminals, editors, and no server required for execution. |
-| Stateful agent branches | Whole-machine snapshots and independent forks that preserve files, processes, and warm services. |
-| Reproducible agent environments | Content-addressed images and LLB build graphs that cache work down to a ready-to-resume warm snapshot. |
-| Secure internal automation | Jailed host-directory mounts, origin-scoped network access, approval hooks, and secrets that never enter guest memory. |
-| Local and remote products | One VM surface across in-process Node.js/Bun, browser, and served remote runtimes. |
+| Product                         | What AgentOS provides                                                                                                  |
+| ------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Coding agents                   | An isolated repo workspace, POSIX tools, Luau automation, static analysis, and structural Lua/Luau parsing and edits.  |
+| Tool-using agents               | Searchable, schema-bearing host tools that can be discovered and composed from the shell or Luau.                      |
+| SaaS automation                 | OpenAPI, GraphQL, Microsoft Graph, Google Discovery, and remote MCP connections with host-held credentials.            |
+| Data and retrieval agents       | A warm SQLite service, S3-backed files, vector-search mounts, and ordinary shell data pipelines.                       |
+| Document workflows              | XLSX, DOCX, PPTX, ZIP, OPC, XML, media, chart, and warm Typst/PDF tooling.                                             |
+| Browser sandboxes               | The full VM in a page, durable OPFS-backed state, terminals, editors, and no server required for execution.            |
+| Stateful agent branches         | Whole-machine snapshots and independent forks that preserve files, processes, and warm services.                       |
+| Reproducible agent environments | Content-addressed images and LLB build graphs that cache work down to a ready-to-resume warm snapshot.                 |
+| Secure internal automation      | Jailed host-directory mounts, origin-scoped network access, approval hooks, and secrets that never enter guest memory. |
+| Local and remote products       | One VM surface across in-process Node.js/Bun, browser, and served remote runtimes.                                     |
 
 These capabilities compose. An agent can discover an API, read source data through a mount, join it in
 SQLite, edit code structurally, generate a PDF, and snapshot the completed workspace from one program.
@@ -95,11 +95,11 @@ baseline. Images, layers, snapshots, and build definitions are content-addressed
 
 The VM does not change shape when its host changes:
 
-| Runtime | Where the kernel runs | Good for |
-|---|---|---|
-| `local` | The current Node.js or Bun process | Applications, agents, CLIs, and local development |
-| `browser` | The current browser page | Interactive products, sandboxes, demos, and private local work |
-| `remote` | An AgentOS server | Durable services, shared infrastructure, and server-controlled execution |
+| Runtime   | Where the kernel runs              | Good for                                                                 |
+| --------- | ---------------------------------- | ------------------------------------------------------------------------ |
+| `local`   | The current Node.js or Bun process | Applications, agents, CLIs, and local development                        |
+| `browser` | The current browser page           | Interactive products, sandboxes, demos, and private local work           |
+| `remote`  | An AgentOS server                  | Durable services, shared infrastructure, and server-controlled execution |
 
 ## Quickstart
 
@@ -189,13 +189,13 @@ spending one model turn per tool call.
 
 Choose the smallest environment that contains the workload:
 
-| Image | Includes | Best for |
-|---|---|---|
-| `minimal` | Shell, boot services, minimal core commands, tools broker | Small custom harnesses |
-| `posix` | `minimal` plus the full coreutils command set | File and text automation |
-| `loom` | `posix` plus Luau, static analysis, Office batteries, and owned Lua/Luau parsers | Programmable agents and structural code editing |
-| `atlas` | `loom` plus the warm SQLite service | Data and retrieval workflows |
-| `paper` | `loom` plus the warm Typst service and fonts | PDF and document generation |
+| Image     | Includes                                                                         | Best for                                        |
+| --------- | -------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `minimal` | Shell, boot services, minimal core commands, tools broker                        | Small custom harnesses                          |
+| `posix`   | `minimal` plus the full coreutils command set                                    | File and text automation                        |
+| `loom`    | `posix` plus Luau, static analysis, Office batteries, and owned Lua/Luau parsers | Programmable agents and structural code editing |
+| `atlas`   | `loom` plus the warm SQLite service                                              | Data and retrieval workflows                    |
+| `paper`   | `loom` plus the warm Typst service and fonts                                     | PDF and document generation                     |
 
 Images are layered and capability-stamped. Switching images changes guest userland without changing
 the JavaScript API.
@@ -218,9 +218,9 @@ const layer = await vm.commit().asLayer();
 
 ## Explore AgentOS
 
-| Resource | Use it for |
-|---|---|
-| [AgentOS by Example](https://agentos.opyt.cloud/#examples) | Live, editable demonstrations running in the browser VM |
-| [JavaScript API reference](./docs/index.md) | Public methods, options, runtime behavior, browser elements, and errors |
-| [DeepWiki](https://deepwiki.com/NarendraPatwardhan/agent-os) | Architecture, implementation details, and contributor documentation |
-| [SYSTEMS.md](./SYSTEMS.md) | The source-of-truth system invariants and design contract |
+| Resource                                                     | Use it for                                                              |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| [AgentOS by Example](https://agentos.opyt.cloud/#examples)   | Live, editable demonstrations running in the browser VM                 |
+| [JavaScript API reference](./docs/index.md)                  | Public methods, options, runtime behavior, browser elements, and errors |
+| [DeepWiki](https://deepwiki.com/NarendraPatwardhan/agent-os) | Architecture, implementation details, and contributor documentation     |
+| [SYSTEMS.md](./SYSTEMS.md)                                   | The source-of-truth system invariants and design contract               |

@@ -31,20 +31,67 @@ const FALLBACK = chapters[0];
 // Logo assignments copied from the preserved pre-reset showcase. Only its icon
 // vocabulary/associations are reused; none of its components or examples are.
 const ICON_BY_ID: Readonly<Record<string, IconId>> = {
-  "boot-a-vm": "terminal", remote: "key", images: "tar",
-  pipelines: "terminal", "vm-fs": "file", "vm-shell": "terminal", determinism: "cron",
-  "vm-luau": "luau", sessions: "luau", analyze: "luau", sys: "terminal",
-  "require-tools": "tools", "vm-tool": "tools", kits: "tools", "tool-doc": "docx",
-  xlsx: "xlsx", docx: "docx", pptx: "pptx", "typst-pdf": "pdf", diagnostics: "pdf",
-  sqlite: "sqlite", "vector-search": "vector", "data-pdf": "pdf", batteries: "luau", "cli-twins": "terminal",
-  "the-model": "tools", "mc-use": "github", "from-the-shell": "terminal", envelope: "tools",
-  github: "github", "ms-graph": "microsoft", google: "google", graphql: "graphql",
-  "remote-mcp": "mcp", "any-api": "globe", registry: "tools", capstone: "stripe",
-  "host-dir": "mount", s3: "mount", "rag-mount": "vector", "custom-driver": "mount", "mount-vs-connection": "tools",
-  snapshot: "snapshot", fork: "fork", layers: "tar", "custom-flavor": "tar", "restore-modes": "lock",
-  record: "build", "llb-graph": "build", caching: "snapshot",
-  tiers: "lock", permissions: "globe", approval: "lock", "secret-free": "key", audit: "tools",
-  webhook: "globe", "queue-worker": "build", handoff: "snapshot", "vm-pool": "fork", cron: "cron", "web-components": "terminal",
+  "boot-a-vm": "terminal",
+  remote: "key",
+  images: "tar",
+  pipelines: "terminal",
+  "vm-fs": "file",
+  "vm-shell": "terminal",
+  determinism: "cron",
+  "vm-luau": "luau",
+  sessions: "luau",
+  analyze: "luau",
+  sys: "terminal",
+  "require-tools": "tools",
+  "vm-tool": "tools",
+  kits: "tools",
+  "tool-doc": "docx",
+  xlsx: "xlsx",
+  docx: "docx",
+  pptx: "pptx",
+  "typst-pdf": "pdf",
+  diagnostics: "pdf",
+  sqlite: "sqlite",
+  "vector-search": "vector",
+  "data-pdf": "pdf",
+  batteries: "luau",
+  "cli-twins": "terminal",
+  "the-model": "tools",
+  "mc-use": "github",
+  "from-the-shell": "terminal",
+  envelope: "tools",
+  github: "github",
+  "ms-graph": "microsoft",
+  google: "google",
+  graphql: "graphql",
+  "remote-mcp": "mcp",
+  "any-api": "globe",
+  registry: "tools",
+  capstone: "stripe",
+  "host-dir": "mount",
+  s3: "mount",
+  "rag-mount": "vector",
+  "custom-driver": "mount",
+  "mount-vs-connection": "tools",
+  snapshot: "snapshot",
+  fork: "fork",
+  layers: "tar",
+  "custom-flavor": "tar",
+  "restore-modes": "lock",
+  record: "build",
+  "llb-graph": "build",
+  caching: "snapshot",
+  tiers: "lock",
+  permissions: "globe",
+  approval: "lock",
+  "secret-free": "key",
+  audit: "tools",
+  webhook: "globe",
+  "queue-worker": "build",
+  handoff: "snapshot",
+  "vm-pool": "fork",
+  cron: "cron",
+  "web-components": "terminal",
 };
 
 const DEFAULT_ICON: Readonly<Record<Example["kind"], IconId>> = {
@@ -83,7 +130,12 @@ export function ExamplesShowcase() {
   const [exampleId, setExampleId] = useState<string | null>(null);
   const pillRow = useRef<HTMLDivElement>(null);
   const pillButtons = useRef(new Map<string, HTMLButtonElement>());
-  const [indicator, setIndicator] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const [indicator, setIndicator] = useState<{
+    left: number;
+    top: number;
+    width: number;
+    height: number;
+  } | null>(null);
   // The clicked example if it belongs to this chapter, else the first — so switching
   // chapters resets to the first example automatically.
   const activeId = examples.find((e) => e.id === exampleId)?.id ?? examples[0]?.id ?? null;
@@ -137,7 +189,12 @@ export function ExamplesShowcase() {
               driver's content + terminal in row 2 (aligned tops). */}
           <div {...stylex.props(styles.workRow)}>
             {examples.length >= 2 ? (
-              <div ref={pillRow} {...stylex.props(styles.pillRow)} role="tablist" aria-label="Examples">
+              <div
+                ref={pillRow}
+                {...stylex.props(styles.pillRow)}
+                role="tablist"
+                aria-label="Examples"
+              >
                 {indicator ? (
                   <span
                     aria-hidden="true"
@@ -160,7 +217,11 @@ export function ExamplesShowcase() {
                     role="tab"
                     aria-selected={ex.id === activeId}
                     onClick={() => setExampleId(ex.id)}
-                    {...stylex.props(styles.pill, motion.colors, ex.id === activeId && styles.pillActive)}
+                    {...stylex.props(
+                      styles.pill,
+                      motion.colors,
+                      ex.id === activeId && styles.pillActive,
+                    )}
                   >
                     <Icon id={iconFor(ex)} size={16} />
                     {ex.label}

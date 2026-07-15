@@ -26,10 +26,10 @@ _SETS = {
 [
     coreutils_box(
         name = "mcbox-" + infix + tier,
+        srcs = COREUTILS_SRCS,
+        set_kind = set_kind,
         tier = tier,
         tier_section = tier_section,
-        set_kind = set_kind,
-        srcs = COREUTILS_SRCS,
     )
     for tier, tier_section in _TIERS.items()
     for infix, set_kind in _SETS.items()

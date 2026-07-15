@@ -4,7 +4,12 @@
   "private": true,
   "type": "module",
   "description": "Browser workbench for AgentOS VMs.",
-  "browserslist": ["Chrome >= 123", "Edge >= 123", "Firefox >= 120", "Safari >= 17.5"],
+  "browserslist": [
+    "Chrome >= 123",
+    "Edge >= 123",
+    "Firefox >= 120",
+    "Safari >= 17.5"
+  ],
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",

@@ -5,10 +5,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  PERSIST_GET_ABSENT,
-  PERSIST_GET_PRESENT,
-} from "@mc/contracts/constants";
+import { PERSIST_GET_ABSENT, PERSIST_GET_PRESENT } from "@mc/contracts/constants";
 import {
   DiskPersist,
   PERSIST_OP_DELETE,
@@ -17,11 +14,7 @@ import {
   PERSIST_OP_PUT,
   decodePersistRequest,
 } from "../src/persist.js";
-import {
-  type BrowserKv,
-  MemoryKv,
-  OpfsPersist,
-} from "../src/opfs_persist.js";
+import { type BrowserKv, MemoryKv, OpfsPersist } from "../src/opfs_persist.js";
 import type { PersistCapability } from "../src/types.js";
 
 const te = new TextEncoder();
@@ -35,7 +28,11 @@ function text(b: Uint8Array): string {
   return td.decode(b);
 }
 
-function request(op: number, key: string | Uint8Array, value: string | Uint8Array = ""): Uint8Array {
+function request(
+  op: number,
+  key: string | Uint8Array,
+  value: string | Uint8Array = "",
+): Uint8Array {
   const k = typeof key === "string" ? bytes(key) : key;
   const v = typeof value === "string" ? bytes(value) : value;
   const out = new Uint8Array(8 + k.length + v.length);
@@ -56,7 +53,10 @@ function assertEq(actual: number, expected: number, msg: string): void {
 }
 
 function assertBytes(actual: Uint8Array, expected: Uint8Array, msg: string): void {
-  assert(actual.length === expected.length, `${msg}: length ${actual.length} != ${expected.length}`);
+  assert(
+    actual.length === expected.length,
+    `${msg}: length ${actual.length} != ${expected.length}`,
+  );
   for (let i = 0; i < actual.length; i++) {
     assert(actual[i] === expected[i], `${msg}: byte ${i} ${actual[i]} != ${expected[i]}`);
   }
@@ -97,7 +97,11 @@ async function waitReady(cap: PersistCapability, handle: number): Promise<void> 
   throw new Error(`handle ${handle} did not become ready`);
 }
 
-async function drainAsync(cap: PersistCapability, handle: number, chunkSize = 3): Promise<Uint8Array> {
+async function drainAsync(
+  cap: PersistCapability,
+  handle: number,
+  chunkSize = 3,
+): Promise<Uint8Array> {
   await waitReady(cap, handle);
   return readReady(cap, handle, chunkSize);
 }
@@ -131,7 +135,8 @@ function deferred<T>(): {
 }
 
 class ControlledKv implements BrowserKv {
-  readonly puts: Array<{ hexKey: string; value: string; gate: ReturnType<typeof deferred<void>> }> = [];
+  readonly puts: Array<{ hexKey: string; value: string; gate: ReturnType<typeof deferred<void>> }> =
+    [];
   readonly deletes: Array<{ hexKey: string; gate: ReturnType<typeof deferred<void>> }> = [];
 
   constructor(private readonly initial = new Map<string, Uint8Array>()) {}
@@ -185,11 +190,22 @@ async function testDiskPersist(): Promise<void> {
     const putB = cap.start(request(PERSIST_OP_PUT, "dir/b", "two"));
     assertBytes(readReady(cap, putB), new Uint8Array(0), "disk second PUT body");
 
-    assertBytes(readReady(cap, cap.start(request(PERSIST_OP_GET, "dir/a")), 2), presentBody("one"), "disk GET body");
+    assertBytes(
+      readReady(cap, cap.start(request(PERSIST_OP_GET, "dir/a")), 2),
+      presentBody("one"),
+      "disk GET body",
+    );
     const listed = parseList(readReady(cap, cap.start(request(PERSIST_OP_LIST, "dir/"))));
-    assert(JSON.stringify(listed) === JSON.stringify(["dir/a", "dir/b"]), `disk LIST mismatch: ${listed}`);
+    assert(
+      JSON.stringify(listed) === JSON.stringify(["dir/a", "dir/b"]),
+      `disk LIST mismatch: ${listed}`,
+    );
 
-    assertBytes(readReady(cap, cap.start(request(PERSIST_OP_DELETE, "dir/a"))), new Uint8Array(0), "disk DELETE body");
+    assertBytes(
+      readReady(cap, cap.start(request(PERSIST_OP_DELETE, "dir/a"))),
+      new Uint8Array(0),
+      "disk DELETE body",
+    );
     const deleted = readReady(cap, cap.start(request(PERSIST_OP_GET, "dir/a")));
     assertBytes(deleted, new Uint8Array([PERSIST_GET_ABSENT]), "disk deleted body");
   } finally {
@@ -249,6 +265,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((e) => {
-  console.error("PERSIST FAIL:", e instanceof Error ? e.stack ?? e.message : e);
+  console.error("PERSIST FAIL:", e instanceof Error ? (e.stack ?? e.message) : e);
   process.exit(1);
 });

@@ -1,0 +1,15 @@
+{
+  "printWidth": 100,
+  "proseWrap": "preserve",
+  "semi": true,
+  "singleQuote": false,
+  "sortImports": false,
+  "sortPackageJson": false,
+  "ignorePatterns": [
+    "bazel-*",
+    "third_party/**",
+    "memcontainers/contracts/gen/**",
+    "server/lib/agent_os/contracts/*.ex",
+    "memcontainers/programs/syntax/grammars/gen/**"
+  ]
+}

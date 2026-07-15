@@ -19,7 +19,10 @@ WEB_SOURCES = [
     "vite.config.ts",
 ] + [
     "tools/vite.mjs",
-] + glob(["public/**", "src/**"]) + [
+] + glob([
+    "public/**",
+    "src/**",
+]) + [
     ":hero_vm_assets",
 ]
 
@@ -190,13 +193,13 @@ js_run_binary(
     srcs = WEB_APP_DEPS + [
         ":sources",
     ],
-    out_dirs = ["dist"],
     args = [
         "build",
         "--outDir",
         "dist",
     ],
     chdir = package_name(),
+    out_dirs = ["dist"],
     tool = ":vite_bin",
     visibility = ["//visibility:public"],
 )

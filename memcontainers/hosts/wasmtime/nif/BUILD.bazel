@@ -35,7 +35,7 @@ rust_shared_library(
 # wasmtime/cranelift debug builds are not the runtime we ship.
 host_release_shared_library(
     name = "host_nif_release",
-    lib = ":host_nif",
     out = "libhost_nif.so",
+    lib = ":host_nif",
     visibility = ["//visibility:public"],
 )

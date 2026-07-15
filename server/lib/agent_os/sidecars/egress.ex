@@ -60,8 +60,7 @@ defmodule AgentOS.Sidecars.Egress do
   end
 
   def handle_call(
-        {:dispatch, vm_id,
-         %{kind: :host_call_close, name: @binding, handle: handle}},
+        {:dispatch, vm_id, %{kind: :host_call_close, name: @binding, handle: handle}},
         _from,
         state
       ) do
@@ -74,6 +73,7 @@ defmodule AgentOS.Sidecars.Egress do
       {task, tasks} ->
         Process.demonitor(task.ref, [:flush])
         Task.shutdown(task, :brutal_kill)
+
         {:reply, :claimed,
          %{
            state
@@ -129,7 +129,9 @@ defmodule AgentOS.Sidecars.Egress do
 
   defp drop_ref(state, ref) do
     case Map.pop(state.refs, ref) do
-      {nil, _refs} -> state
+      {nil, _refs} ->
+        state
+
       {{vm_id, _handle} = key, refs} ->
         %{
           state
@@ -266,7 +268,10 @@ defmodule AgentOS.Sidecars.Egress do
   end
 
   defp stable_error(reason) do
-    Logger.warning("sidecar operation failed", reason: inspect(reason, limit: 20, printable_limit: 256))
+    Logger.warning("sidecar operation failed",
+      reason: inspect(reason, limit: 20, printable_limit: 256)
+    )
+
     {Sidecar.sidecar_error_provider_failed(), "sidecar provider failed", false}
   end
 

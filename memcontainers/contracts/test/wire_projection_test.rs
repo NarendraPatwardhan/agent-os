@@ -47,9 +47,7 @@ fn component_block(openapi: &str, name: &str) -> String {
         .find(&header)
         .unwrap_or_else(|| panic!("missing OpenAPI component {name}"));
     let rest = &openapi[start + header.len()..];
-    let end = rest
-        .find("\n    \"")
-        .unwrap_or(rest.len());
+    let end = rest.find("\n    \"").unwrap_or(rest.len());
     rest[..end].to_string()
 }
 
@@ -65,7 +63,9 @@ fn exec_rest_schema_is_a_projection_of_exec_request() {
 
     let exec_schema = block_after(&wire, "schema \"Exec\"");
     assert!(
-        wire.contains("schema \"Exec\" kind=\"json\" source=\"control.kdl\" from-message=\"ExecRequest\""),
+        wire.contains(
+            "schema \"Exec\" kind=\"json\" source=\"control.kdl\" from-message=\"ExecRequest\""
+        ),
         "Exec schema must derive from ExecRequest, not a hand-kept duplicate"
     );
     for field in &exec_request_fields {
@@ -76,8 +76,9 @@ fn exec_rest_schema_is_a_projection_of_exec_request() {
     }
     assert!(
         exec_schema.contains("project \"stdin\" from=\"stdin\" type=\"string\" encoding=\"utf8\"")
-            && exec_schema
-                .contains("project \"stdinBase64\" from=\"stdin\" type=\"string\" encoding=\"base64\""),
+            && exec_schema.contains(
+                "project \"stdinBase64\" from=\"stdin\" type=\"string\" encoding=\"base64\""
+            ),
         "stdin text/base64 REST projections must stay explicit"
     );
 
@@ -124,9 +125,9 @@ fn sidecar_rest_envelopes_are_contract_projections() {
 
     let result = block_after(&wire, "schema \"SidecarResultWire\"");
     assert!(!result.contains("field \"ok\""));
-    assert!(result.contains(
-        "project \"bodyBase64\" from=\"body\" type=\"string\" encoding=\"base64\""
-    ));
+    assert!(
+        result.contains("project \"bodyBase64\" from=\"body\" type=\"string\" encoding=\"base64\"")
+    );
 
     let error = block_after(&wire, "schema \"SidecarErrorWire\"");
     for field in message_fields(&block_after(&sidecar, "message \"SidecarError\"")) {
@@ -151,9 +152,8 @@ fn embedded_sidecar_scope_auth_is_projected_from_wire_contract() {
         "export const SIDECAR_SCOPE_HEADER = \"{header}\" as const;"
     )));
 
-    let projected = format!(
-        "        - name: \"{header}\"\n          in: header\n          required: true"
-    );
+    let projected =
+        format!("        - name: \"{header}\"\n          in: header\n          required: true");
     assert_eq!(
         openapi.matches(&projected).count(),
         9,

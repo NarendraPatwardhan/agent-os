@@ -2,7 +2,7 @@
 //! renumbers internal implementation IDs and interns byte-identical immutable table payloads.
 
 use rustc_hash::FxHashMap;
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -14,7 +14,7 @@ use tree_sitter_generate::tables::{
     GotoAction, ParseAction, ParseState, ParseTableEntry, ProductionInfo,
 };
 use tree_sitter_generate::{
-    Diagnostic, PreparedParser, prepare_parser_for_grammar, render_prepared_parser,
+    prepare_parser_for_grammar, render_prepared_parser, Diagnostic, PreparedParser,
 };
 
 const ABI_VERSION: u32 = tree_sitter_generate::ABI_VERSION_MAX as u32;

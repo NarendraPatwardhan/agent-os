@@ -89,7 +89,9 @@ export async function connectionToolCatalogBundle(
  * fails closed at the splice if still empty — derivation never widens an explicit allowlist). Only
  * curated `servers`/`endpoint` (our constant) are used; a live spec's servers are never trusted here.
  */
-export async function deriveConnectionOrigins(opts: CreateOptions): Promise<ConnectionDefinition[]> {
+export async function deriveConnectionOrigins(
+  opts: CreateOptions,
+): Promise<ConnectionDefinition[]> {
   const connections = opts.connections ?? [];
   const needs = connections.some((c) => !(c.origins && c.origins.length) && !c.spec);
   if (!needs) return connections;
@@ -112,7 +114,10 @@ export async function deriveConnectionOrigins(opts: CreateOptions): Promise<Conn
  *  (`servers`, else the `endpoint`'s origin). A candidate that resolves but has no origin data does NOT
  *  stop the search — a `-rest`/`-openapi` sibling may carry them (the peer of the wasmtime host's
  *  `derive_connection_origins`). Empty if none do. */
-async function deriveRegistryOrigins(compiler: CatalogCompiler, integration: string): Promise<string[]> {
+async function deriveRegistryOrigins(
+  compiler: CatalogCompiler,
+  integration: string,
+): Promise<string[]> {
   for (const id of [integration, `${integration}-rest`, `${integration}-openapi`]) {
     try {
       const origins = registryOrigins(await compiler.registryResolve(id));
@@ -230,7 +235,12 @@ async function acquireSource(
 ): Promise<SourceBytes> {
   const spec = connection.spec;
   if (spec && "bytes" in spec) {
-    return cachedSource(spec.bytes, sourceFormat(spec, undefined), sourceBaseUrl(spec), sourceEndpoint(spec));
+    return cachedSource(
+      spec.bytes,
+      sourceFormat(spec, undefined),
+      sourceBaseUrl(spec),
+      sourceEndpoint(spec),
+    );
   }
   if (spec && "path" in spec) {
     const { readFileSync } = await import("node:fs");
@@ -260,7 +270,8 @@ async function acquireSource(
       };
     }
     const response = await fetch(url);
-    if (!response.ok) throw new Error(`catalog source fetch failed for ${url}: HTTP ${response.status}`);
+    if (!response.ok)
+      throw new Error(`catalog source fetch failed for ${url}: HTTP ${response.status}`);
     const loaded = await cachedSource(
       new Uint8Array(await response.arrayBuffer()),
       sourceFormat(spec, url),
@@ -325,7 +336,10 @@ function resolvedCompileOpts(
   });
 }
 
-function filterForGroup(group: string | undefined, registryGroup: RegistryGroup | undefined): CompileFilter {
+function filterForGroup(
+  group: string | undefined,
+  registryGroup: RegistryGroup | undefined,
+): CompileFilter {
   const f = registryGroup?.filter;
   if (f) {
     return {
@@ -370,7 +384,9 @@ async function bundleFromCompilerEntries(
   if (!isObject(parsed) || !Array.isArray(parsed.tools)) {
     throw new Error("catalog compiler bundle index has invalid shape");
   }
-  const tools = parsed.tools.map((tool) => indexTool(tool, ref)).sort((a, b) => a.address.localeCompare(b.address));
+  const tools = parsed.tools
+    .map((tool) => indexTool(tool, ref))
+    .sort((a, b) => a.address.localeCompare(b.address));
   const index = { generation, tools };
   const rewrittenIndexBytes = enc(JSON.stringify(index));
   const records = [...entries.entries()]
@@ -401,11 +417,15 @@ function indexTool(
 
 function rePrefixAddress(address: string, ref: RefParts): string {
   const parts = address.split(".");
-  if (parts.length < 4) throw new Error(`catalog compiler emitted invalid tool address '${address}'`);
+  if (parts.length < 4)
+    throw new Error(`catalog compiler emitted invalid tool address '${address}'`);
   return [ref.integration, ref.owner, ref.connection, ...parts.slice(3)].join(".");
 }
 
-function sourceFormat(source: ConnectionSpecSource | undefined, pathOrUrl: string | undefined): CatalogSourceFormat {
+function sourceFormat(
+  source: ConnectionSpecSource | undefined,
+  pathOrUrl: string | undefined,
+): CatalogSourceFormat {
   if (source?.sourceFormat) return source.sourceFormat;
   return pathOrUrl?.match(/\.ya?ml($|[?#])/i) ? "yaml" : "json";
 }

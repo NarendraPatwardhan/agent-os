@@ -37,7 +37,8 @@ pub struct Layout {
 impl Config {
     pub fn load(path: &Path) -> Result<Self, String> {
         validate_trusted_ancestors(path)?;
-        let metadata = fs::metadata(path).map_err(|error| format!("read config metadata: {error}"))?;
+        let metadata =
+            fs::metadata(path).map_err(|error| format!("read config metadata: {error}"))?;
         if metadata.uid() != 0 || metadata.permissions().mode() & 0o022 != 0 {
             return Err("config must be root-owned and not group/other writable".into());
         }
@@ -74,7 +75,12 @@ impl Config {
             }
         }
 
-        let get = |key| values.get(key).copied().ok_or_else(|| format!("missing {key}"));
+        let get = |key| {
+            values
+                .get(key)
+                .copied()
+                .ok_or_else(|| format!("missing {key}"))
+        };
         let path = |key| -> Result<PathBuf, String> {
             let out = PathBuf::from(get(key)?);
             if !out.is_absolute()
@@ -91,8 +97,12 @@ impl Config {
         };
 
         let config = Self {
-            runner_uid: get("runner_uid")?.parse().map_err(|_| "invalid runner_uid")?,
-            runner_gid: get("runner_gid")?.parse().map_err(|_| "invalid runner_gid")?,
+            runner_uid: get("runner_uid")?
+                .parse()
+                .map_err(|_| "invalid runner_uid")?,
+            runner_gid: get("runner_gid")?
+                .parse()
+                .map_err(|_| "invalid runner_gid")?,
             chroot_base: path("chroot_base")?,
             firecracker: path("firecracker")?,
             jailer: path("jailer")?,
@@ -155,7 +165,10 @@ impl Config {
             .file_name()
             .ok_or("firecracker path has no file name")?;
         let root = self.chroot_base.join(executable).join(id).join("root");
-        let lease = root.parent().ok_or("jail root has no parent")?.join(".agentos-lease");
+        let lease = root
+            .parent()
+            .ok_or("jail root has no parent")?
+            .join(".agentos-lease");
         Ok(Layout {
             api: root.join("run/firecracker.socket"),
             vsock: root.join("run/vsock.socket"),
@@ -275,7 +288,10 @@ pub fn launch(config: &Config, id: &str) -> Result<i32, String> {
             "--id",
             id,
             "--exec-file",
-            config.firecracker.to_str().ok_or("invalid firecracker path")?,
+            config
+                .firecracker
+                .to_str()
+                .ok_or("invalid firecracker path")?,
             "--uid",
             &config.runner_uid.to_string(),
             "--gid",
@@ -323,16 +339,23 @@ pub fn renew(config: &Config, id: &str) -> Result<(), String> {
     let layout = config.layout(id)?;
     let metadata = fs::symlink_metadata(&layout.lease)
         .map_err(|error| format!("inspect sidecar lease: {error}"))?;
-    if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.uid() != 0
+    if !metadata.is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != 0
         || metadata.permissions().mode() & 0o022 != 0
     {
-        return Err("sidecar lease must be a root-owned regular file not writable by group/other".into());
+        return Err(
+            "sidecar lease must be a root-owned regular file not writable by group/other".into(),
+        );
     }
     fs::write(&layout.lease, b"1\n").map_err(|error| format!("renew sidecar lease: {error}"))
 }
 
 pub fn reconcile(config: &Config) -> Result<(), String> {
-    let executable = config.firecracker.file_name().ok_or("invalid firecracker path")?;
+    let executable = config
+        .firecracker
+        .file_name()
+        .ok_or("invalid firecracker path")?;
     let instances = config.chroot_base.join(executable);
     let entries = match fs::read_dir(&instances) {
         Ok(entries) => entries,
@@ -446,11 +469,16 @@ fn checked(program: &Path, args: &[&str]) -> Result<(), String> {
 }
 
 fn checked_wait(child: std::process::Child, label: &str) -> Result<(), String> {
-    let output = child.wait_with_output().map_err(|error| format!("wait for {label}: {error}"))?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| format!("wait for {label}: {error}"))?;
     if output.status.success() {
         Ok(())
     } else {
-        Err(format!("{label} failed: {}", String::from_utf8_lossy(&output.stderr).trim()))
+        Err(format!(
+            "{label} failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
     }
 }
 
@@ -466,12 +494,18 @@ mod tests {
     fn parses_strict_rooted_configuration() {
         let config = Config::parse(sample()).unwrap();
         assert_eq!(config.runner_uid, 1000);
-        assert_eq!(config.layout("sc_abcdefghijkl").unwrap().netns, "agentos-sc_abcdefghijkl");
+        assert_eq!(
+            config.layout("sc_abcdefghijkl").unwrap().netns,
+            "agentos-sc_abcdefghijkl"
+        );
     }
 
     #[test]
     fn rejects_traversal_duplicate_keys_and_untrusted_ids() {
-        assert!(Config::parse(&sample().replace("/var/lib/agent-os/jailer", "/var/lib/../tmp")).is_err());
+        assert!(
+            Config::parse(&sample().replace("/var/lib/agent-os/jailer", "/var/lib/../tmp"))
+                .is_err()
+        );
         assert!(Config::parse(&(sample().to_owned() + "runner_uid=1001\n")).is_err());
         assert!(Config::parse(&(sample().to_owned() + "typo=/tmp\n")).is_err());
         assert!(validate_id("../../escape").is_err());

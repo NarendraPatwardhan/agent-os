@@ -7,14 +7,14 @@ manifests, blobs, and snapshot objects addressable by digest or name.
 
 `mc.create({ image })` accepts:
 
-| Value | Meaning |
-|---|---|
-| raw `Uint8Array` | One tar layer |
+| Value              | Meaning                                                    |
+| ------------------ | ---------------------------------------------------------- |
+| raw `Uint8Array`   | One tar layer                                              |
 | flavor/name string | Manifest resolved through a content store or remote server |
-| `sha256:<hex>` | Diff layer stacked over the default embedded base |
-| image manifest | Explicit ordered layer stack and config |
-| `"base:latest"` | Default embedded base image |
-| `null` | Empty in-memory root filesystem |
+| `sha256:<hex>`     | Diff layer stacked over the default embedded base          |
+| image manifest     | Explicit ordered layer stack and config                    |
+| `"base:latest"`    | Default embedded base image                                |
+| `null`             | Empty in-memory root filesystem                            |
 
 Raw tar bytes are embedded-only. Named and digest inputs require a store unless the remote server
 resolves them.
@@ -41,11 +41,11 @@ Layers are ordered lowest to highest. Each digest resolves to a tar object in th
 
 ### Runtime config
 
-| Field | Meaning |
-|---|---|
-| `tier` | `full`, `read-write`, `read-only`, or `isolated` |
-| `budgetMib` | Per-guest memory ceiling |
-| `fuel` | Per-guest execution-fuel ceiling |
+| Field       | Meaning                                          |
+| ----------- | ------------------------------------------------ |
+| `tier`      | `full`, `read-write`, `read-only`, or `isolated` |
+| `budgetMib` | Per-guest memory ceiling                         |
+| `fuel`      | Per-guest execution-fuel ceiling                 |
 
 The config is enforced at boot; it is not descriptive metadata that a caller may ignore.
 
@@ -82,23 +82,23 @@ does not contain running process state.
 
 Required layer/blob/manifest methods:
 
-| Method | Meaning |
-|---|---|
-| `layer(digest)` | Read tar layer bytes |
-| `put(tar)` | Store tar and return SHA-256 digest |
-| `blob(digest)` | Read arbitrary content-addressed bytes |
-| `putBlob(bytes)` | Store arbitrary bytes |
-| `manifest(name)` | Read named image manifest |
-| `putManifest(name, manifest)` | Store named manifest |
+| Method                        | Meaning                                |
+| ----------------------------- | -------------------------------------- |
+| `layer(digest)`               | Read tar layer bytes                   |
+| `put(tar)`                    | Store tar and return SHA-256 digest    |
+| `blob(digest)`                | Read arbitrary content-addressed bytes |
+| `putBlob(bytes)`              | Store arbitrary bytes                  |
+| `manifest(name)`              | Read named image manifest              |
+| `putManifest(name, manifest)` | Store named manifest                   |
 
 Optional snapshot methods:
 
-| Method | Meaning |
-|---|---|
-| `snapshot(key)` | Read LLB warm-snapshot memo, or `null` |
-| `putSnapshot(key, bytes)` | Store LLB warm-snapshot memo |
-| `snapshotObject(digest)` | Read full snapshot object for an incremental delta |
-| `putSnapshotObject(bytes)` | Store full snapshot by content digest |
+| Method                     | Meaning                                            |
+| -------------------------- | -------------------------------------------------- |
+| `snapshot(key)`            | Read LLB warm-snapshot memo, or `null`             |
+| `putSnapshot(key, bytes)`  | Store LLB warm-snapshot memo                       |
+| `snapshotObject(digest)`   | Read full snapshot object for an incremental delta |
+| `putSnapshotObject(bytes)` | Store full snapshot by content digest              |
 
 Custom stores should return owned bytes or otherwise prevent callers from mutating stored content.
 

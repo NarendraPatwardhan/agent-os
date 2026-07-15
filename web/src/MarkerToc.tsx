@@ -28,8 +28,17 @@ export function MarkerToc({ chapters, activeId, onSelect }: MarkerTocProps) {
         {chapters.map((chapter) => {
           const on = chapter.id === activeId;
           return (
-            <li className={styles.tocItem} data-active={on} key={chapter.id} ref={on ? active : undefined}>
-              <button className={styles.tocButton} type="button" onClick={() => onSelect(chapter.id)}>
+            <li
+              className={styles.tocItem}
+              data-active={on}
+              key={chapter.id}
+              ref={on ? active : undefined}
+            >
+              <button
+                className={styles.tocButton}
+                type="button"
+                onClick={() => onSelect(chapter.id)}
+              >
                 <span className={styles.tocIndex}>{chapter.num.padStart(2, "0")}</span>
                 <span className={styles.tocText}>
                   {chapter.title}

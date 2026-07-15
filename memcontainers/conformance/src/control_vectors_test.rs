@@ -15,8 +15,10 @@ fn runfile(path: &str) -> Vec<u8> {
 }
 
 fn vectors() -> Value {
-    serde_json::from_slice(&runfile("_main/memcontainers/conformance/control_vectors.json"))
-        .expect("parse control_vectors.json")
+    serde_json::from_slice(&runfile(
+        "_main/memcontainers/conformance/control_vectors.json",
+    ))
+    .expect("parse control_vectors.json")
 }
 
 fn hex_to_bytes(hex: &str) -> Vec<u8> {
@@ -65,7 +67,10 @@ fn rust_control_codecs_match_the_shared_positive_vectors() {
         stderr: b"err\n".to_vec(),
     };
     assert_eq!(outcome.encode(), positive("ExecOutcome"));
-    assert_eq!(ExecOutcome::decode(&positive("ExecOutcome")).unwrap(), outcome);
+    assert_eq!(
+        ExecOutcome::decode(&positive("ExecOutcome")).unwrap(),
+        outcome
+    );
 
     let stat = FileStat {
         size: 12345,
@@ -97,7 +102,10 @@ fn rust_control_codecs_match_the_shared_positive_vectors() {
         ],
     };
     assert_eq!(entries.encode(), positive("DirEntries"));
-    assert_eq!(DirEntries::decode(&positive("DirEntries")).unwrap(), entries);
+    assert_eq!(
+        DirEntries::decode(&positive("DirEntries")).unwrap(),
+        entries
+    );
 
     let svc_request = SvcRequest {
         service: "kv".to_string(),

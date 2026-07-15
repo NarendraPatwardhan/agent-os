@@ -14,7 +14,11 @@ function javascriptTokens(code: string): Token[] {
   return tokens;
 }
 
-function matchedTokens(code: string, expression: RegExp, classify: (value: string) => string): Token[] {
+function matchedTokens(
+  code: string,
+  expression: RegExp,
+  classify: (value: string) => string,
+): Token[] {
   const tokens: Token[] = [];
   for (const match of code.matchAll(expression)) {
     const value = match[0];
@@ -42,7 +46,12 @@ function htmlTokens(code: string): Token[] {
   return matchedTokens(
     code,
     /<!--[\s\S]*?-->|<\/?[A-Za-z][^>]*>|&(?:[A-Za-z]+|#[0-9]+);/g,
-    (value) => value.startsWith("<!--") ? "tok-comment" : value.startsWith("&") ? "tok-string" : "tok-typeName",
+    (value) =>
+      value.startsWith("<!--")
+        ? "tok-comment"
+        : value.startsWith("&")
+          ? "tok-string"
+          : "tok-typeName",
   );
 }
 
@@ -82,11 +91,24 @@ function styleFor(classes: string) {
   if (classes.includes("tok-invalid")) return styles.invalid;
   if (classes.includes("tok-comment")) return styles.comment;
   if (classes.includes("tok-string") || classes.includes("tok-regexp")) return styles.string;
-  if (classes.includes("tok-number") || classes.includes("tok-bool") || classes.includes("tok-null") || classes.includes("tok-atom")) return styles.number;
+  if (
+    classes.includes("tok-number") ||
+    classes.includes("tok-bool") ||
+    classes.includes("tok-null") ||
+    classes.includes("tok-atom")
+  )
+    return styles.number;
   if (classes.includes("tok-keyword") || classes.includes("tok-meta")) return styles.keyword;
-  if (classes.includes("tok-typeName") || classes.includes("tok-className") || classes.includes("tok-namespace")) return styles.typeName;
-  if (classes.includes("tok-function") || classes.includes("tok-labelName")) return styles.functionName;
-  if (classes.includes("tok-variableName") || classes.includes("tok-propertyName")) return styles.variable;
+  if (
+    classes.includes("tok-typeName") ||
+    classes.includes("tok-className") ||
+    classes.includes("tok-namespace")
+  )
+    return styles.typeName;
+  if (classes.includes("tok-function") || classes.includes("tok-labelName"))
+    return styles.functionName;
+  if (classes.includes("tok-variableName") || classes.includes("tok-propertyName"))
+    return styles.variable;
   return styles.operator;
 }
 

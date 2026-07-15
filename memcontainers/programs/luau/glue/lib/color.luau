@@ -57,25 +57,44 @@ color.auto = { kind = "auto" }
 
 -- Theme slot → DrawingML scheme name (dk1/lt1 map to tx1/bg1 in `schemeClr`).
 local SCHEME = {
-	dk1 = "tx1", lt1 = "bg1", dk2 = "tx2", lt2 = "bg2",
-	accent1 = "accent1", accent2 = "accent2", accent3 = "accent3",
-	accent4 = "accent4", accent5 = "accent5", accent6 = "accent6",
-	hlink = "hlink", folHlink = "folHlink",
+	dk1 = "tx1",
+	lt1 = "bg1",
+	dk2 = "tx2",
+	lt2 = "bg2",
+	accent1 = "accent1",
+	accent2 = "accent2",
+	accent3 = "accent3",
+	accent4 = "accent4",
+	accent5 = "accent5",
+	accent6 = "accent6",
+	hlink = "hlink",
+	folHlink = "folHlink",
 }
 color.SCHEME = SCHEME
 
 -- Map a theme slot to the xlsx `<color theme="N">` index (the styles.xml order:
 -- lt1,dk1,lt2,dk2,accent1..6,hlink,folHlink — note lt/dk are swapped vs DrawingML).
 local THEME_INDEX = {
-	lt1 = 0, dk1 = 1, lt2 = 2, dk2 = 3,
-	accent1 = 4, accent2 = 5, accent3 = 6, accent4 = 7, accent5 = 8, accent6 = 9,
-	hlink = 10, folHlink = 11,
+	lt1 = 0,
+	dk1 = 1,
+	lt2 = 2,
+	dk2 = 3,
+	accent1 = 4,
+	accent2 = 5,
+	accent3 = 6,
+	accent4 = 7,
+	accent5 = 8,
+	accent6 = 9,
+	hlink = 10,
+	folHlink = 11,
 }
 color.THEME_INDEX = THEME_INDEX
 
 -- A stable canonical string for style dedup (Ch.05): same color → same key.
 function color.canon(c)
-	if not c then return "" end
+	if not c then
+		return ""
+	end
 	if c.kind == "theme" then
 		return "theme:" .. c.slot .. ":" .. tostring(c.tint) .. ":" .. tostring(c.shade)
 	end

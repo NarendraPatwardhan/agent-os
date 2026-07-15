@@ -8,13 +8,13 @@
  * backdrop-filter creates a stacking context that TRAPS descendant
  * popovers regardless of these values — portal to <body> instead.
  */
-import * as stylex from '@stylexjs/stylex';
+import * as stylex from "@stylexjs/stylex";
 
 export const layer = stylex.defineConsts({
-  sticky: '20',
-  drawer: '40',
-  popover: '60',
-  command: '70',
-  toast: '80',
-  tooltip: '90',
+  sticky: "20",
+  drawer: "40",
+  popover: "60",
+  command: "70",
+  toast: "80",
+  tooltip: "90",
 });

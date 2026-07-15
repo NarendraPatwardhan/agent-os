@@ -15,10 +15,10 @@ name = "typst"
 path = "src/main.rs"
 
 [dependencies]
-typst = "0.14.2"          # the compiler library (World trait + typst::compile)
-typst-pdf = "0.14.2"      # PagedDocument -> PDF bytes
+typst = "0.14.2" # the compiler library (World trait + typst::compile)
+typst-pdf = "0.14.2" # PagedDocument -> PDF bytes
 time = { version = "0.3", default-features = false } # epoch -> civil for World::today()
-serde = { version = "1", features = ["derive"] }     # the svc request/response protocol structs
+serde = { version = "1", features = ["derive"] } # the svc request/response protocol structs
 serde_json = "1"
 # typst-assets is HOST-ONLY: //memcontainers/programs/typst/fonts:extract materializes baseline faces into the
 # /usr/share/fonts layer (SYSTEMS.md §10.4). The engine itself does NOT embed fonts — it scans the layer

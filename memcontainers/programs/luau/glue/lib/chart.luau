@@ -34,10 +34,17 @@ end
 
 -- A cached string reference: <c:strRef><c:f>…</c:f><c:strCache>…</c:strCache></c:strRef>.
 local function str_ref(f, strings)
-	local cache = xml.element("c:strCache", {}, { xml.element("c:ptCount", { val = tostring(#strings) }) })
+	local cache = xml.element(
+		"c:strCache",
+		{},
+		{ xml.element("c:ptCount", { val = tostring(#strings) }) }
+	)
 	for i, s in ipairs(strings) do
-		cache.children[#cache.children + 1] =
-			xml.element("c:pt", { idx = tostring(i - 1) }, { xml.element("c:v", {}, { xml.text(tostring(s)) }) })
+		cache.children[#cache.children + 1] = xml.element(
+			"c:pt",
+			{ idx = tostring(i - 1) },
+			{ xml.element("c:v", {}, { xml.text(tostring(s)) }) }
+		)
 	end
 	return xml.element("c:strRef", {}, { xml.element("c:f", {}, { xml.text(f) }), cache })
 end
@@ -49,8 +56,11 @@ local function num_ref(f, numbers)
 		xml.element("c:ptCount", { val = tostring(#numbers) }),
 	})
 	for i, n in ipairs(numbers) do
-		cache.children[#cache.children + 1] =
-			xml.element("c:pt", { idx = tostring(i - 1) }, { xml.element("c:v", {}, { xml.text(tostring(n)) }) })
+		cache.children[#cache.children + 1] = xml.element(
+			"c:pt",
+			{ idx = tostring(i - 1) },
+			{ xml.element("c:v", {}, { xml.text(tostring(n)) }) }
+		)
 	end
 	return xml.element("c:numRef", {}, { xml.element("c:f", {}, { xml.text(f) }), cache })
 end
@@ -71,7 +81,11 @@ local function title_el(text)
 			xml.element("c:rich", {}, {
 				xml.element("a:bodyPr"),
 				xml.element("a:lstStyle"),
-				xml.element("a:p", {}, { xml.element("a:r", {}, { xml.element("a:t", {}, { xml.text(text) }) }) }),
+				xml.element(
+					"a:p",
+					{},
+					{ xml.element("a:r", {}, { xml.element("a:t", {}, { xml.text(text) }) }) }
+				),
 			}),
 		}),
 		xml.element("c:overlay", { val = "0" }),
@@ -105,9 +119,21 @@ function chart.render(model, opts)
 		typeEl.children[#typeEl.children + 1] = xml.element("c:ser", {}, {
 			xml.element("c:idx", { val = tostring(si - 1) }),
 			xml.element("c:order", { val = tostring(si - 1) }),
-			xml.element("c:tx", {}, { str_ref(sheet .. "!$" .. colL .. "$1", { ser.name or ("Series " .. si) }) }),
-			xml.element("c:cat", {}, { str_ref(sheet .. "!$A$2:$A$" .. (n + 1), model.categories) }),
-			xml.element("c:val", {}, { num_ref(sheet .. "!$" .. colL .. "$2:$" .. colL .. "$" .. (n + 1), ser.values) }),
+			xml.element(
+				"c:tx",
+				{},
+				{ str_ref(sheet .. "!$" .. colL .. "$1", { ser.name or ("Series " .. si) }) }
+			),
+			xml.element(
+				"c:cat",
+				{},
+				{ str_ref(sheet .. "!$A$2:$A$" .. (n + 1), model.categories) }
+			),
+			xml.element(
+				"c:val",
+				{},
+				{ num_ref(sheet .. "!$" .. colL .. "$2:$" .. colL .. "$" .. (n + 1), ser.values) }
+			),
 		})
 	end
 	if typ == "pie" then
@@ -134,11 +160,19 @@ function chart.render(model, opts)
 	cChart.children[#cChart.children + 1] = xml.element("c:plotVisOnly", { val = "1" })
 	cChart.children[#cChart.children + 1] = xml.element("c:dispBlanksAs", { val = "gap" })
 
-	local space = xml.element("c:chartSpace", { ["xmlns:c"] = NS_C, ["xmlns:a"] = NS_A, ["xmlns:r"] = NS_R }, { cChart })
+	local space = xml.element(
+		"c:chartSpace",
+		{ ["xmlns:c"] = NS_C, ["xmlns:a"] = NS_A, ["xmlns:r"] = NS_R },
+		{ cChart }
+	)
 	if opts.externalRid then
-		space.children[#space.children + 1] = xml.element("c:externalData", { ["r:id"] = opts.externalRid }, {
-			xml.element("c:autoUpdate", { val = "0" }),
-		})
+		space.children[#space.children + 1] = xml.element(
+			"c:externalData",
+			{ ["r:id"] = opts.externalRid },
+			{
+				xml.element("c:autoUpdate", { val = "0" }),
+			}
+		)
 	end
 	return space
 end
@@ -168,20 +202,26 @@ end
 
 local function child(el, lname)
 	for _, c in ipairs(el.children or {}) do
-		if c.kind == "element" and c.name.local_ == lname then return c end
+		if c.kind == "element" and c.name.local_ == lname then
+			return c
+		end
 	end
 	return nil
 end
 local function children(el, lname)
 	local out = {}
 	for _, c in ipairs(el.children or {}) do
-		if c.kind == "element" and c.name.local_ == lname then out[#out + 1] = c end
+		if c.kind == "element" and c.name.local_ == lname then
+			out[#out + 1] = c
+		end
 	end
 	return out
 end
 local function attr(el, lname)
 	for _, a in ipairs(el.attributes) do
-		if a.name.local_ == lname then return a.value end
+		if a.name.local_ == lname then
+			return a.value
+		end
 	end
 	return nil
 end
@@ -189,7 +229,9 @@ end
 -- Pull a ref's cached points (strCache/numCache) in idx order → an array.
 local function cache_points(ref, cacheTag)
 	local cache = ref and child(ref, cacheTag)
-	if not cache then return {} end
+	if not cache then
+		return {}
+	end
 	local out = {}
 	for _, pt in ipairs(children(cache, "pt")) do
 		out[tonumber(attr(pt, "idx")) + 1] = xml.textOf(child(pt, "v"))
@@ -200,7 +242,9 @@ end
 function chart.parse(space)
 	local cChart = child(space, "chart")
 	local plotArea = cChart and child(cChart, "plotArea")
-	if not plotArea then return nil end
+	if not plotArea then
+		return nil
+	end
 	local model = { categories = {}, series = {} }
 
 	local typeEl, typ
@@ -227,7 +271,9 @@ function chart.parse(space)
 		for _, lname in ipairs({ "tx", "rich", "p", "r", "t" }) do
 			t = t and child(t, lname)
 		end
-		if t then model.title = xml.textOf(t) end
+		if t then
+			model.title = xml.textOf(t)
+		end
 	end
 
 	if typeEl then

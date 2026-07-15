@@ -64,7 +64,12 @@ fn main() -> ExitCode {
     let mut count = 0usize;
     for (i, data) in typst_assets::fonts().enumerate() {
         // 0644: plain data the engine reads at startup (not executable).
-        append_file(&mut tar, &format!("usr/share/fonts/face_{i:02}.ttf"), data, b"0000644\0");
+        append_file(
+            &mut tar,
+            &format!("usr/share/fonts/face_{i:02}.ttf"),
+            data,
+            b"0000644\0",
+        );
         count += 1;
     }
     if count == 0 {

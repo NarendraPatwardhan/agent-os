@@ -1,8 +1,8 @@
-load("@rules_rust//rust:defs.bzl", "rust_shared_library")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
-load("//bazel/tools/size:defs.bzl", "size_limit")
+load("@rules_rust//rust:defs.bzl", "rust_shared_library")
 load("//bazel:release_wasm.bzl", "release_wasm")
 load("//bazel:wasm_opt.bzl", "wasm_opt")
+load("//bazel/tools/size:defs.bzl", "size_limit")
 
 # kernel/rust — the shipped kernel, ported from memcontainers rather than rewritten.
 # It compiles to wasm32-unknown-unknown and uses wasmi as an ordinary native Rust crate,
@@ -29,17 +29,17 @@ rust_shared_library(
     ],
     tags = ["manual"],
     deps = [
+        "//memcontainers/contracts:constants_rust",  # errno / caps / tiers / flags / signals (B2)
+        "//memcontainers/contracts:ctl_rust",  # the mc_control_table! macro → the mc_ctl_* exports (B2)
+        "//memcontainers/contracts:env_rust",  # the mc_bridge_table! macro → the env extern block (B2)
+        "//memcontainers/contracts:mc_rust",  # the mc_syscall_table! macro + SYSCALL_NAMES (B2)
+        "//memcontainers/contracts:shell_rust",  # resident /bin/sh probe/render boundary (B2)
+        "//memcontainers/lib/json:lib",  # no_std JSON: read /etc/services.d fragments for service activation
+        "//memcontainers/pkgcore:lib",  # no_std SHA-256 for toolsfs shard integrity checks
+        "//memcontainers/toolcore:lib",  # no_std tool catalog parser for the read-only /tools tree
+        "@crates//:talc",  # wasm linear-memory allocator (A8: all state in linear mem)
         "@crates//:wasmi",  # eager-mode =1.0.9 (the landmine), native dep
         "@crates//:wasmparser",  # engine-free validation before permanent wasmi arena admission
-        "@crates//:talc",   # wasm linear-memory allocator (A8: all state in linear mem)
-        "//memcontainers/contracts:constants_rust",  # errno / caps / tiers / flags / signals (B2)
-        "//memcontainers/contracts:mc_rust",         # the mc_syscall_table! macro + SYSCALL_NAMES (B2)
-        "//memcontainers/contracts:shell_rust",      # resident /bin/sh probe/render boundary (B2)
-        "//memcontainers/contracts:env_rust",        # the mc_bridge_table! macro → the env extern block (B2)
-        "//memcontainers/contracts:ctl_rust",        # the mc_control_table! macro → the mc_ctl_* exports (B2)
-        "//memcontainers/lib/json:lib",              # no_std JSON: read /etc/services.d fragments for service activation
-        "//memcontainers/pkgcore:lib",               # no_std SHA-256 for toolsfs shard integrity checks
-        "//memcontainers/toolcore:lib",              # no_std tool catalog parser for the read-only /tools tree
     ],
 )
 
@@ -54,8 +54,8 @@ release_wasm(
 # The shipped artifact: e2e / parity / conformance all data-depend on this exact output (B1).
 wasm_opt(
     name = "kernel",
-    wasm = ":kernel_release",
     visibility = ["//visibility:public"],
+    wasm = ":kernel_release",
 )
 
 # B5 size budget gate (the shared //bazel/tools/size rule) — a regression past the ceiling fails CI rather than

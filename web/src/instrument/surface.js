@@ -9,19 +9,19 @@
  * no matter what it floats above; light-mode depth is hairline + shadow,
  * dark-mode depth is the lightness step baked into the bg tokens.
  */
-import * as stylex from '@stylexjs/stylex';
-import { color } from './tokens/color.stylex.js';
-import { shadow } from './tokens/shadow.stylex.js';
-import { radius } from './tokens/radius.stylex.js';
-import { font, fontSize, fontWeight, leading, tracking } from './tokens/type.stylex.js';
-import { layer } from './tokens/layer.stylex.js';
+import * as stylex from "@stylexjs/stylex";
+import { color } from "./tokens/color.stylex.js";
+import { shadow } from "./tokens/shadow.stylex.js";
+import { radius } from "./tokens/radius.stylex.js";
+import { font, fontSize, fontWeight, leading, tracking } from "./tokens/type.stylex.js";
+import { layer } from "./tokens/layer.stylex.js";
 
 export const surface = stylex.create({
   /* App root: put this on <body> or your top-level element. Sets the
    * base register and lets light-dark() resolve (follow the OS; pin with
    * scheme.light/dark from themes.js). */
   root: {
-    colorScheme: 'light dark',
+    colorScheme: "light dark",
     backgroundColor: color.bgCanvas,
     color: color.ink,
     fontFamily: font.sans,
@@ -29,8 +29,8 @@ export const surface = stylex.create({
     fontWeight: fontWeight.regular,
     lineHeight: leading.body,
     letterSpacing: tracking.ui,
-    WebkitFontSmoothing: 'antialiased',
-    MozOsxFontSmoothing: 'grayscale',
+    WebkitFontSmoothing: "antialiased",
+    MozOsxFontSmoothing: "grayscale",
   },
 
   /* ----- The ladder ----- */
@@ -47,15 +47,15 @@ export const surface = stylex.create({
     /* Structural chrome — sidebars, headers, rails. Hairline, no shadow,
      * no radius: panels are architecture, not objects. */
     backgroundColor: color.bgPanel,
-    borderWidth: '1px',
-    borderStyle: 'solid',
+    borderWidth: "1px",
+    borderStyle: "solid",
     borderColor: color.border,
     color: color.ink,
   },
   card: {
     backgroundColor: color.bgCard,
-    borderWidth: '1px',
-    borderStyle: 'solid',
+    borderWidth: "1px",
+    borderStyle: "solid",
     borderColor: color.border,
     boxShadow: shadow.rest,
     borderRadius: radius.card,
@@ -66,8 +66,8 @@ export const surface = stylex.create({
    * the UA's serif (surfaces are atomic). */
   popover: {
     backgroundColor: color.bgPopover,
-    borderWidth: '1px',
-    borderStyle: 'solid',
+    borderWidth: "1px",
+    borderStyle: "solid",
     borderColor: color.border,
     boxShadow: shadow.overlay,
     borderRadius: radius.card,
@@ -80,8 +80,8 @@ export const surface = stylex.create({
   },
   modal: {
     backgroundColor: color.bgModal,
-    borderWidth: '1px',
-    borderStyle: 'solid',
+    borderWidth: "1px",
+    borderStyle: "solid",
     borderColor: color.border,
     boxShadow: shadow.modal,
     borderRadius: radius.modal,
@@ -94,8 +94,8 @@ export const surface = stylex.create({
   },
   toast: {
     backgroundColor: color.bgToast,
-    borderWidth: '1px',
-    borderStyle: 'solid',
+    borderWidth: "1px",
+    borderStyle: "solid",
     borderColor: color.border,
     boxShadow: shadow.toast,
     borderRadius: radius.card,
@@ -118,26 +118,26 @@ export const surface = stylex.create({
   veil: {
     backgroundColor: {
       default: color.bgVeil,
-      '@media (forced-colors: active)': 'Canvas',
+      "@media (forced-colors: active)": "Canvas",
     },
-    backdropFilter: 'blur(20px) saturate(1.1)',
+    backdropFilter: "blur(20px) saturate(1.1)",
     boxShadow: `inset 0 1px 0 ${color.veilHighlight}`,
-    borderWidth: { default: null, '@media (forced-colors: active)': '1px' },
-    borderStyle: { default: null, '@media (forced-colors: active)': 'solid' },
-    borderColor: { default: null, '@media (forced-colors: active)': 'CanvasText' },
+    borderWidth: { default: null, "@media (forced-colors: active)": "1px" },
+    borderStyle: { default: null, "@media (forced-colors: active)": "solid" },
+    borderColor: { default: null, "@media (forced-colors: active)": "CanvasText" },
     borderRadius: radius.modal,
     color: color.ink,
   },
   veilRaised: {
     backgroundColor: {
       default: color.bgVeilRaised,
-      '@media (forced-colors: active)': 'Canvas',
+      "@media (forced-colors: active)": "Canvas",
     },
-    backdropFilter: 'blur(28px) saturate(1.1)',
+    backdropFilter: "blur(28px) saturate(1.1)",
     boxShadow: `inset 0 1px 0 ${color.veilHighlight}, ${shadow.overlay}`,
-    borderWidth: { default: null, '@media (forced-colors: active)': '1px' },
-    borderStyle: { default: null, '@media (forced-colors: active)': 'solid' },
-    borderColor: { default: null, '@media (forced-colors: active)': 'CanvasText' },
+    borderWidth: { default: null, "@media (forced-colors: active)": "1px" },
+    borderStyle: { default: null, "@media (forced-colors: active)": "solid" },
+    borderColor: { default: null, "@media (forced-colors: active)": "CanvasText" },
     borderRadius: radius.card,
     color: color.ink,
     fontFamily: font.sans,
@@ -149,13 +149,13 @@ export const surface = stylex.create({
   veilDeep: {
     backgroundColor: {
       default: color.bgVeilDeep,
-      '@media (forced-colors: active)': 'Canvas',
+      "@media (forced-colors: active)": "Canvas",
     },
-    backdropFilter: 'blur(36px) saturate(1.1)',
+    backdropFilter: "blur(36px) saturate(1.1)",
     boxShadow: `inset 0 1px 0 ${color.veilHighlight}, ${shadow.modal}`,
-    borderWidth: { default: null, '@media (forced-colors: active)': '1px' },
-    borderStyle: { default: null, '@media (forced-colors: active)': 'solid' },
-    borderColor: { default: null, '@media (forced-colors: active)': 'CanvasText' },
+    borderWidth: { default: null, "@media (forced-colors: active)": "1px" },
+    borderStyle: { default: null, "@media (forced-colors: active)": "solid" },
+    borderColor: { default: null, "@media (forced-colors: active)": "CanvasText" },
     borderRadius: radius.modal,
     color: color.ink,
     fontFamily: font.sans,
@@ -168,7 +168,7 @@ export const surface = stylex.create({
    * (is-panning) or wherever backdrop sampling is too expensive — swaps
    * glass for its opaque stand-in. */
   veilFrozen: {
-    backdropFilter: 'none',
+    backdropFilter: "none",
     backgroundColor: color.bgVeilOpaque,
   },
 
@@ -179,25 +179,22 @@ export const surface = stylex.create({
    * structure; diffusion is for regions. */
   diffuse: {
     backgroundColor: color.bgVeil,
-    backdropFilter: 'blur(20px) saturate(1.1)',
-    maskImage:
-      'linear-gradient(to right, transparent 0, black 64px, black 100%)',
+    backdropFilter: "blur(20px) saturate(1.1)",
+    maskImage: "linear-gradient(to right, transparent 0, black 64px, black 100%)",
   },
   diffuseLeft: {
-    maskImage:
-      'linear-gradient(to left, transparent 0, black 64px, black 100%)',
+    maskImage: "linear-gradient(to left, transparent 0, black 64px, black 100%)",
   },
   diffuseTop: {
-    maskImage:
-      'linear-gradient(to bottom, transparent 0, black 48px, black 100%)',
+    maskImage: "linear-gradient(to bottom, transparent 0, black 48px, black 100%)",
   },
 
   /* ----- Edges and rules ----- */
   /* 0.5px divider — a true hairline on modern displays; the cheapest
    * "this was designed" tell in the system. */
   divider: {
-    borderTopWidth: '0.5px',
-    borderTopStyle: 'solid',
+    borderTopWidth: "0.5px",
+    borderTopStyle: "solid",
     borderTopColor: color.border,
   },
 
@@ -208,30 +205,30 @@ export const surface = stylex.create({
    * no glassmorphism. */
   dotGrid: {
     backgroundImage:
-      'radial-gradient(circle, light-dark(oklch(0.91 0 0), oklch(0.30 0 0)) 1px, transparent 1px)',
-    backgroundSize: '16px 16px',
+      "radial-gradient(circle, light-dark(oklch(0.91 0 0), oklch(0.30 0 0)) 1px, transparent 1px)",
+    backgroundSize: "16px 16px",
   },
   /* Wide register for far zoom-out on canvases — same dots, 32px pitch. */
   dotGridWide: {
-    backgroundSize: '32px 32px',
+    backgroundSize: "32px 32px",
   },
   /* 45° hairline hatch for wells and drop zones. */
   hatch: {
     backgroundImage:
-      'repeating-linear-gradient(45deg, light-dark(oklch(0.91 0 0 / 0.55), oklch(0.30 0 0 / 0.55)) 0 1px, transparent 1px 8px)',
+      "repeating-linear-gradient(45deg, light-dark(oklch(0.91 0 0 / 0.55), oklch(0.30 0 0 / 0.55)) 0 1px, transparent 1px 8px)",
   },
   /* Dashed seam — a 0.5px dashed rule marking a REAL layout boundary
    * (editorial/marketing surfaces only; product chrome uses divider). */
   seam: {
-    borderTopWidth: '0.5px',
-    borderTopStyle: 'dashed',
+    borderTopWidth: "0.5px",
+    borderTopStyle: "dashed",
     borderTopColor: color.border,
   },
 
   /* ----- Scrims — for hand-portaled overlays only; native <dialog> gets
    * its scrim from ::backdrop in reset.css. ----- */
   scrim: {
-    position: 'fixed',
+    position: "fixed",
     top: 0,
     right: 0,
     bottom: 0,
@@ -240,7 +237,7 @@ export const surface = stylex.create({
     zIndex: layer.drawer,
   },
   scrimStrong: {
-    position: 'fixed',
+    position: "fixed",
     top: 0,
     right: 0,
     bottom: 0,

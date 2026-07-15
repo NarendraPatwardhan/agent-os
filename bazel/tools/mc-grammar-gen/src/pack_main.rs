@@ -1,4 +1,4 @@
-use mc_parser_pack::{LanguageInput, PackOptions, run};
+use mc_parser_pack::{run, LanguageInput, PackOptions};
 use std::path::PathBuf;
 
 fn usage() -> ! {

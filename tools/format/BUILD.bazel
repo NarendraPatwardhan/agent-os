@@ -1,0 +1,30 @@
+load("@rules_elixir//:defs.bzl", "elixir_app")
+load("@rules_erlang//:escript.bzl", "escript_archive", "escript_wrapper")
+load("//bazel:elixir_transition.bzl", "ELIXIR_ONLY")
+
+package(default_visibility = ["//tools:__pkg__"])
+
+exports_files(["runner.sh"])
+
+elixir_app(
+    srcs = ["elixir_formatter.ex"],
+    app_name = "agent_os_formatter",
+    target_compatible_with = ELIXIR_ONLY,
+)
+
+escript_archive(
+    name = "elixir-fmt-inner",
+    app = ":erlang_app",
+    headers = [
+        "shebang",
+        '{emu_args, "-escript main Elixir.AgentOS.Formatter -hidden"}',
+    ],
+    target_compatible_with = ELIXIR_ONLY,
+)
+
+escript_wrapper(
+    name = "elixir-fmt-tool",
+    out = "elixir-fmt",
+    escript = ":elixir-fmt-inner",
+    target_compatible_with = ELIXIR_ONLY,
+)

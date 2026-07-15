@@ -175,7 +175,9 @@ export class RemoteBackend implements Backend {
       settled = true;
       socket.send(
         Kind.PermissionResponse,
-        opts.message ? { id: msg.id, allow, remember: opts.remember, message: opts.message } : { id: msg.id, allow, remember: opts.remember },
+        opts.message
+          ? { id: msg.id, allow, remember: opts.remember, message: opts.message }
+          : { id: msg.id, allow, remember: opts.remember },
       );
     };
 
@@ -184,26 +186,27 @@ export class RemoteBackend implements Backend {
       return true;
     }
 
-    const req: PermissionRequest = msg.kind === "tool_approval"
-      ? {
-          id: msg.id,
-          kind: "tool_approval",
-          connection: str(msg.connection),
-          method: str(msg.method),
-          url: str(msg.url),
-          origin: str(msg.origin),
-          ...(typeof msg.argsDigest === "string" ? { argsDigest: msg.argsDigest } : {}),
-          allow: (opts?: { remember?: "once" | "session" }) => respond(true, opts),
-          reject: (message?: string) => respond(false, { message }),
-        }
-      : {
-          id: msg.id,
-          kind: "network",
-          host: str(msg.host),
-          url: str(msg.url),
-          allow: (opts?: { remember?: "once" | "session" }) => respond(true, opts),
-          reject: (message?: string) => respond(false, { message }),
-        };
+    const req: PermissionRequest =
+      msg.kind === "tool_approval"
+        ? {
+            id: msg.id,
+            kind: "tool_approval",
+            connection: str(msg.connection),
+            method: str(msg.method),
+            url: str(msg.url),
+            origin: str(msg.origin),
+            ...(typeof msg.argsDigest === "string" ? { argsDigest: msg.argsDigest } : {}),
+            allow: (opts?: { remember?: "once" | "session" }) => respond(true, opts),
+            reject: (message?: string) => respond(false, { message }),
+          }
+        : {
+            id: msg.id,
+            kind: "network",
+            host: str(msg.host),
+            url: str(msg.url),
+            allow: (opts?: { remember?: "once" | "session" }) => respond(true, opts),
+            reject: (message?: string) => respond(false, { message }),
+          };
 
     void Promise.resolve(this.onPermission(req)).catch(() => respond(false));
     return true;
@@ -215,7 +218,8 @@ export class RemoteBackend implements Backend {
       headers: { ...this.headers, "content-type": "application/json" },
       body: JSON.stringify(execBody(cmd, opts)),
     });
-    if (!response.ok) throw new Error(`remote exec failed: ${response.status} ${await safeText(response)}`);
+    if (!response.ok)
+      throw new Error(`remote exec failed: ${response.status} ${await safeText(response)}`);
     const result = (await response.json()) as RemoteExecResult;
     return {
       stdout: enc(result.stdout),
@@ -248,7 +252,8 @@ export class RemoteBackend implements Backend {
 
   async read(path: string): Promise<Uint8Array> {
     const response = await fetch(this.urlWithPath("/fs/files", path), { headers: this.headers });
-    if (!response.ok) throw new Error(`remote read ${path}: ${response.status} ${await safeText(response)}`);
+    if (!response.ok)
+      throw new Error(`remote read ${path}: ${response.status} ${await safeText(response)}`);
     return responseBytes(response);
   }
 
@@ -258,12 +263,14 @@ export class RemoteBackend implements Backend {
       headers: { ...this.headers, "content-type": "application/octet-stream" },
       body: data as BodyInit,
     });
-    if (!response.ok) throw new Error(`remote write ${path}: ${response.status} ${await safeText(response)}`);
+    if (!response.ok)
+      throw new Error(`remote write ${path}: ${response.status} ${await safeText(response)}`);
   }
 
   async ls(path: string): Promise<DirEntry[]> {
     const response = await fetch(this.urlWithPath("/fs/entries", path), { headers: this.headers });
-    if (!response.ok) throw new Error(`remote ls ${path}: ${response.status} ${await safeText(response)}`);
+    if (!response.ok)
+      throw new Error(`remote ls ${path}: ${response.status} ${await safeText(response)}`);
     const body = (await response.json()) as { items?: RemoteFsStat[] };
     return (body.items ?? []).map((entry) => ({
       name: basename(entry.path),
@@ -274,13 +281,15 @@ export class RemoteBackend implements Backend {
 
   async stat(path: string): Promise<StatResult> {
     const response = await fetch(this.urlWithPath("/fs/stat", path), { headers: this.headers });
-    if (!response.ok) throw new Error(`remote stat ${path}: ${response.status} ${await safeText(response)}`);
+    if (!response.ok)
+      throw new Error(`remote stat ${path}: ${response.status} ${await safeText(response)}`);
     return statFromWire((await response.json()) as RemoteFsStat);
   }
 
   async readlink(path: string): Promise<string> {
     const response = await fetch(this.urlWithPath("/fs/symlinks", path), { headers: this.headers });
-    if (!response.ok) throw new Error(`remote readlink ${path}: ${response.status} ${await safeText(response)}`);
+    if (!response.ok)
+      throw new Error(`remote readlink ${path}: ${response.status} ${await safeText(response)}`);
     const body = (await response.json()) as { target?: unknown };
     if (typeof body.target !== "string") {
       throw new Error(`remote readlink ${path}: malformed response`);
@@ -293,7 +302,8 @@ export class RemoteBackend implements Backend {
       method: "PUT",
       headers: this.headers,
     });
-    if (!response.ok) throw new Error(`remote mkdir ${path}: ${response.status} ${await safeText(response)}`);
+    if (!response.ok)
+      throw new Error(`remote mkdir ${path}: ${response.status} ${await safeText(response)}`);
   }
 
   async rm(path: string): Promise<void> {
@@ -301,7 +311,8 @@ export class RemoteBackend implements Backend {
       method: "DELETE",
       headers: this.headers,
     });
-    if (!response.ok) throw new Error(`remote rm ${path}: ${response.status} ${await safeText(response)}`);
+    if (!response.ok)
+      throw new Error(`remote rm ${path}: ${response.status} ${await safeText(response)}`);
   }
 
   async chmod(path: string, mode: number): Promise<void> {
@@ -310,7 +321,8 @@ export class RemoteBackend implements Backend {
       headers: { ...this.headers, "content-type": "application/json" },
       body: JSON.stringify({ mode }),
     });
-    if (!response.ok) throw new Error(`remote chmod ${path}: ${response.status} ${await safeText(response)}`);
+    if (!response.ok)
+      throw new Error(`remote chmod ${path}: ${response.status} ${await safeText(response)}`);
   }
 
   async symlink(target: string, link: string): Promise<void> {
@@ -320,7 +332,9 @@ export class RemoteBackend implements Backend {
       body: JSON.stringify({ target, link }),
     });
     if (!response.ok) {
-      throw new Error(`remote symlink ${link} -> ${target}: ${response.status} ${await safeText(response)}`);
+      throw new Error(
+        `remote symlink ${link} -> ${target}: ${response.status} ${await safeText(response)}`,
+      );
     }
   }
 
@@ -330,7 +344,8 @@ export class RemoteBackend implements Backend {
       method: "POST",
       headers: this.headers,
     });
-    if (!response.ok) throw new Error(`remote snapshot failed: ${response.status} ${await safeText(response)}`);
+    if (!response.ok)
+      throw new Error(`remote snapshot failed: ${response.status} ${await safeText(response)}`);
     return responseBytes(response);
   }
 
@@ -339,7 +354,8 @@ export class RemoteBackend implements Backend {
       method: "POST",
       headers: this.headers,
     });
-    if (!response.ok) throw new Error(`remote layer commit failed: ${response.status} ${await safeText(response)}`);
+    if (!response.ok)
+      throw new Error(`remote layer commit failed: ${response.status} ${await safeText(response)}`);
     const tar = await responseBytes(response);
     const digest = response.headers.get("x-mc-digest") ?? (await sha256Digest(tar));
     return { digest, tar };
@@ -414,7 +430,8 @@ export class RemoteBackend implements Backend {
       body: JSON.stringify({ path }),
     });
     this.drivers.delete(path);
-    if (!response.ok) throw new Error(`remote unmount ${path}: ${response.status} ${await safeText(response)}`);
+    if (!response.ok)
+      throw new Error(`remote unmount ${path}: ${response.status} ${await safeText(response)}`);
   }
 
   shell(): Shell {
@@ -499,7 +516,8 @@ export class RemoteBackend implements Backend {
 
   private async remoteVm(): Promise<RemoteVm> {
     const response = await fetch(this.vmUrl(), { headers: this.headers });
-    if (!response.ok) throw new Error(`remote status failed: ${response.status} ${await safeText(response)}`);
+    if (!response.ok)
+      throw new Error(`remote status failed: ${response.status} ${await safeText(response)}`);
     return (await response.json()) as RemoteVm;
   }
 }
@@ -543,7 +561,10 @@ async function responseBytes(response: Response): Promise<Uint8Array> {
 
 async function sha256Digest(bytes: Uint8Array): Promise<string> {
   const subtle = globalThis.crypto?.subtle;
-  if (!subtle) throw new Error("remote layer commit response omitted x-mc-digest and crypto.subtle is unavailable");
+  if (!subtle)
+    throw new Error(
+      "remote layer commit response omitted x-mc-digest and crypto.subtle is unavailable",
+    );
   const digest = await subtle.digest("SHA-256", bytes);
   return `sha256:${hex(new Uint8Array(digest))}`;
 }

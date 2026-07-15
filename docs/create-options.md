@@ -5,28 +5,28 @@ fields—`mc.use()`. Applicability and defaults vary by runtime.
 
 ## Complete field dictionary
 
-| Field | Values | Default | Meaning |
-|---|---|---|---|
-| `runtime` | `"local"`, `"browser"`, `"remote"` | `"local"` | Where the kernel is hosted |
-| `endpoint` | URL string | none | Required for `remote` |
-| `id` | string | server allocated | Explicit remote create/restore destination |
-| `token` | string | none | Bearer token sent to the remote endpoint |
-| `image` | bytes, name, digest, manifest, or `null` | `"base:latest"` | Initial filesystem/image contract |
-| `store` | content-store object | `defaultStore()` where possible | Resolves images, layers, blobs, and snapshot objects |
-| `kernel` | `Uint8Array` | `defaultKernel()` locally | Embedded kernel bytes |
-| `net` | boolean | `false` | Installs host network capability |
-| `connections` | connection records | `[]` | Host credentials and API catalog sources |
-| `catalogCompiler` | `Uint8Array` | environment-backed locally | Catalog compiler WebAssembly |
-| `persist` | boolean | `false` | Enables `/var/persist` capability/backing |
-| `permissions` | permission object | capability defaults | Guest filesystem and network policy |
-| `policies` | policy rules | method classification | Connection egress policy |
-| `onPermission` | callback | deny prompted operations | Interactive network/tool approval |
-| `tools` | tool definitions or selectors | `[]` | Host handlers and connection tool groups |
-| `restoreAttachments` | `"strict"`, `"detached"` | `"strict"` | Restore-time attachment validation |
-| `mounts` | mount records | `[]` | Host-backed filesystems installed at boot |
-| `sidecarHosts` | host-alias map | `{}` | Embedded-only private sidecar authority routes |
-| `sidecars` | grant-descriptor map | `{}` | Portable sidecar grants attached at boot |
-| `deterministic` | boolean | `false` | Repeatable guest clock and random source |
+| Field                | Values                                   | Default                         | Meaning                                              |
+| -------------------- | ---------------------------------------- | ------------------------------- | ---------------------------------------------------- |
+| `runtime`            | `"local"`, `"browser"`, `"remote"`       | `"local"`                       | Where the kernel is hosted                           |
+| `endpoint`           | URL string                               | none                            | Required for `remote`                                |
+| `id`                 | string                                   | server allocated                | Explicit remote create/restore destination           |
+| `token`              | string                                   | none                            | Bearer token sent to the remote endpoint             |
+| `image`              | bytes, name, digest, manifest, or `null` | `"base:latest"`                 | Initial filesystem/image contract                    |
+| `store`              | content-store object                     | `defaultStore()` where possible | Resolves images, layers, blobs, and snapshot objects |
+| `kernel`             | `Uint8Array`                             | `defaultKernel()` locally       | Embedded kernel bytes                                |
+| `net`                | boolean                                  | `false`                         | Installs host network capability                     |
+| `connections`        | connection records                       | `[]`                            | Host credentials and API catalog sources             |
+| `catalogCompiler`    | `Uint8Array`                             | environment-backed locally      | Catalog compiler WebAssembly                         |
+| `persist`            | boolean                                  | `false`                         | Enables `/var/persist` capability/backing            |
+| `permissions`        | permission object                        | capability defaults             | Guest filesystem and network policy                  |
+| `policies`           | policy rules                             | method classification           | Connection egress policy                             |
+| `onPermission`       | callback                                 | deny prompted operations        | Interactive network/tool approval                    |
+| `tools`              | tool definitions or selectors            | `[]`                            | Host handlers and connection tool groups             |
+| `restoreAttachments` | `"strict"`, `"detached"`                 | `"strict"`                      | Restore-time attachment validation                   |
+| `mounts`             | mount records                            | `[]`                            | Host-backed filesystems installed at boot            |
+| `sidecarHosts`       | host-alias map                           | `{}`                            | Embedded-only private sidecar authority routes       |
+| `sidecars`           | grant-descriptor map                     | `{}`                            | Portable sidecar grants attached at boot             |
+| `deterministic`      | boolean                                  | `false`                         | Repeatable guest clock and random source             |
 
 ## `runtime`
 
@@ -51,14 +51,14 @@ Secrets in `token` belong to the control-plane connection. API credentials belon
 
 Accepted forms:
 
-| Form | Interpretation |
-|---|---|
-| `Uint8Array` | One raw tar layer; embedded runtimes only |
-| `"minimal"`, `"loom"`, etc. | Named manifest resolved by store or server |
-| `"base:latest"` | Default embedded base image |
-| `"sha256:..."` | One committed diff layer over the default base |
-| image manifest object | Ordered layer stack plus runtime config |
-| `null` | Empty in-memory root filesystem |
+| Form                        | Interpretation                                 |
+| --------------------------- | ---------------------------------------------- |
+| `Uint8Array`                | One raw tar layer; embedded runtimes only      |
+| `"minimal"`, `"loom"`, etc. | Named manifest resolved by store or server     |
+| `"base:latest"`             | Default embedded base image                    |
+| `"sha256:..."`              | One committed diff layer over the default base |
+| image manifest object       | Ordered layer stack plus runtime config        |
+| `null`                      | Empty in-memory root filesystem                |
 
 A browser cannot resolve the implicit default without bytes or a browser store. A remote create does
 not upload raw tar bytes. See [Images and content stores](./images-stores.md).
@@ -151,9 +151,7 @@ Snapshots never serialize JavaScript closures or credentials.
 ## `mounts`
 
 ```js
-const mounts = [
-  { path: "/mnt/work", driver, readOnly: true },
-];
+const mounts = [{ path: "/mnt/work", driver, readOnly: true }];
 ```
 
 `readOnly` defaults first to `driver.readOnly`, then `false`. Mount objects are privately copied, but

@@ -6,9 +6,9 @@ rust_library(
     name = "lib",
     srcs = ["src/lib.rs"],
     crate_name = "sidecar_helper",
-    deps = ["//memcontainers/contracts:sidecar_rust"],
     edition = "2021",
     target_compatible_with = ["@platforms//os:linux"],
+    deps = ["//memcontainers/contracts:sidecar_rust"],
 )
 
 rust_binary(
@@ -20,17 +20,17 @@ rust_binary(
         "-Cstrip=symbols",
         "-Ctarget-feature=+crt-static",
     ],
-    deps = [":lib"],
     target_compatible_with = ["@platforms//os:linux"],
+    deps = [":lib"],
 )
 
 rust_test(
     name = "test",
     srcs = ["src/lib.rs"],
     crate_name = "sidecar_helper_test",
-    deps = ["//memcontainers/contracts:sidecar_rust"],
     edition = "2021",
     target_compatible_with = ["@platforms//os:linux"],
+    deps = ["//memcontainers/contracts:sidecar_rust"],
 )
 
 exports_files(["sidecar-helper.conf"])

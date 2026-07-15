@@ -29,7 +29,10 @@ export function S3Driver({ example }: { example: Extract<Example, { kind: "s3" }
       return;
     }
     session.clearLogs();
-    session.bootBrowser(example.image ?? "posix", { net: true, deterministic: example.deterministic });
+    session.bootBrowser(example.image ?? "posix", {
+      net: true,
+      deterministic: example.deterministic,
+    });
   };
 
   return (
@@ -40,24 +43,49 @@ export function S3Driver({ example }: { example: Extract<Example, { kind: "s3" }
           <div {...stylex.props(styles.form)}>
             <label {...stylex.props(styles.field)}>
               <span {...stylex.props(styles.fieldLabel)}>Public S3 bucket (CORS enabled)</span>
-              <input {...stylex.props(styles.input)} value={bucket} onChange={(e) => setBucket(e.target.value)} placeholder="my-public-bucket" />
+              <input
+                {...stylex.props(styles.input)}
+                value={bucket}
+                onChange={(e) => setBucket(e.target.value)}
+                placeholder="my-public-bucket"
+              />
             </label>
             <label {...stylex.props(styles.field)}>
               <span {...stylex.props(styles.fieldLabel)}>Region</span>
-              <input {...stylex.props(styles.input)} value={region} onChange={(e) => setRegion(e.target.value)} />
+              <input
+                {...stylex.props(styles.input)}
+                value={region}
+                onChange={(e) => setRegion(e.target.value)}
+              />
             </label>
             <label {...stylex.props(styles.field)}>
               <span {...stylex.props(styles.fieldLabel)}>Prefix (optional)</span>
-              <input {...stylex.props(styles.input)} value={prefix} onChange={(e) => setPrefix(e.target.value)} placeholder="jobs/123" />
+              <input
+                {...stylex.props(styles.input)}
+                value={prefix}
+                onChange={(e) => setPrefix(e.target.value)}
+                placeholder="jobs/123"
+              />
             </label>
           </div>
           <div {...stylex.props(styles.codeWrap)}>
-            <mc-editor ref={editorRef} {...stylex.props(styles.editor)} value={example.code.source} language="typescript" />
+            <mc-editor
+              ref={editorRef}
+              {...stylex.props(styles.editor)}
+              value={example.code.source}
+              language="typescript"
+            />
             <PlayButton place="abs" onClick={play} label="Mount S3 and run" />
           </div>
         </>
       }
-      terminal={<TerminalPanel session={session} label={`agent · s3://${bucket}`} hint={<Hint>configure a bucket, then press ▶</Hint>} />}
+      terminal={
+        <TerminalPanel
+          session={session}
+          label={`agent · s3://${bucket}`}
+          hint={<Hint>configure a bucket, then press ▶</Hint>}
+        />
+      }
     />
   );
 }

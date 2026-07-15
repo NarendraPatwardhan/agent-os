@@ -6,7 +6,10 @@
   "description": "Lit <mc-*> web components over @mc/core VMs — <mc-sandbox>, <mc-terminal>, <mc-xterm>, <mc-editor>. Restyled onto the design-system base.",
   "types": "./src/index.d.ts",
   "exports": {
-    ".": { "types": "./src/index.d.ts", "default": "./dist/index.js" },
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./dist/index.js"
+    },
     "./styles.css": "./styles/index.css"
   },
   "devDependencies": {

@@ -123,21 +123,29 @@ export class McSandbox extends LitElement {
   private startBoot(): void {
     this.phase = "booting";
     this.setAttribute("phase", this.phase);
-    const host = this.controlledVm ? makeControlledHost(this.controlledVm) : makeVmHost(this.bootOptions());
+    const host = this.controlledVm
+      ? makeControlledHost(this.controlledVm)
+      : makeVmHost(this.bootOptions());
     this.host = host;
     this.provider.setValue(host);
     host.ready
       .then((vm) => {
         this.phase = "ready";
         this.setAttribute("phase", this.phase);
-        this.dispatchEvent(new CustomEvent("mc-boot", { detail: { vm }, bubbles: true, composed: true }));
+        this.dispatchEvent(
+          new CustomEvent("mc-boot", { detail: { vm }, bubbles: true, composed: true }),
+        );
       })
       .catch((e: unknown) => {
         this.phase = "error";
         this.errorText = e instanceof Error ? e.message : String(e);
         this.setAttribute("phase", this.phase);
         this.dispatchEvent(
-          new CustomEvent("mc-error", { detail: { error: this.errorText }, bubbles: true, composed: true }),
+          new CustomEvent("mc-error", {
+            detail: { error: this.errorText },
+            bubbles: true,
+            composed: true,
+          }),
         );
       });
   }
@@ -190,14 +198,18 @@ export class McSandbox extends LitElement {
   async fork(): Promise<Vm> {
     if (!this.host) throw new Error("<mc-sandbox> has no VM");
     const vm = await this.host.fork();
-    this.dispatchEvent(new CustomEvent("mc-fork", { detail: { vm }, bubbles: true, composed: true }));
+    this.dispatchEvent(
+      new CustomEvent("mc-fork", { detail: { vm }, bubbles: true, composed: true }),
+    );
     return vm;
   }
   /** Rewind this sandbox's VM to a snapshot (consumers re-bind). */
   async restore(blob: Uint8Array): Promise<Vm> {
     if (!this.host) throw new Error("<mc-sandbox> has no VM");
     const vm = await this.host.restore(blob);
-    this.dispatchEvent(new CustomEvent("mc-vm-changed", { detail: { vm }, bubbles: true, composed: true }));
+    this.dispatchEvent(
+      new CustomEvent("mc-vm-changed", { detail: { vm }, bubbles: true, composed: true }),
+    );
     return vm;
   }
   /** Boot a fresh VM from the same attributes, replacing the current one (consumers
@@ -205,7 +217,9 @@ export class McSandbox extends LitElement {
   async reboot(): Promise<Vm> {
     if (!this.host) throw new Error("<mc-sandbox> has no VM");
     const vm = await this.host.reboot();
-    this.dispatchEvent(new CustomEvent("mc-vm-changed", { detail: { vm }, bubbles: true, composed: true }));
+    this.dispatchEvent(
+      new CustomEvent("mc-vm-changed", { detail: { vm }, bubbles: true, composed: true }),
+    );
     return vm;
   }
 }

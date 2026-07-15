@@ -47,17 +47,17 @@ need() {
 
 normalize_mode() {
   case "$1" in
-    1|a|agent|agentic|claude|codex|opencode) printf 'agentic' ;;
-    2|e|embed|embedded|product|products) printf 'embedded' ;;
-    *) die "unknown mode '$1' (expected agentic or embedded)" ;;
+  1 | a | agent | agentic | claude | codex | opencode) printf 'agentic' ;;
+  2 | e | embed | embedded | product | products) printf 'embedded' ;;
+  *) die "unknown mode '$1' (expected agentic or embedded)" ;;
   esac
 }
 
 normalize_image() {
   case "$1" in
-    minimal|posix|loom|atlas|paper) printf '%s.tar' "$1" ;;
-    minimal.tar|posix.tar|loom.tar|atlas.tar|paper.tar) printf '%s' "$1" ;;
-    *) die "unknown image '$1' (expected minimal, posix, loom, atlas, or paper)" ;;
+  minimal | posix | loom | atlas | paper) printf '%s.tar' "$1" ;;
+  minimal.tar | posix.tar | loom.tar | atlas.tar | paper.tar) printf '%s' "$1" ;;
+  *) die "unknown image '$1' (expected minimal, posix, loom, atlas, or paper)" ;;
   esac
 }
 
@@ -286,33 +286,33 @@ EOF
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --mode)
-      shift
-      [ "$#" -gt 0 ] || die "--mode needs a value"
-      MODE="$1"
-      ;;
-    --image)
-      shift
-      [ "$#" -gt 0 ] || die "--image needs a value"
-      IMAGE="$1"
-      ;;
-    --dir)
-      shift
-      [ "$#" -gt 0 ] || die "--dir needs a value"
-      INSTALL_DIR="$1"
-      ;;
-    --version)
-      shift
-      [ "$#" -gt 0 ] || die "--version needs a value"
-      VERSION="$1"
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      die "unknown argument: $1"
-      ;;
+  --mode)
+    shift
+    [ "$#" -gt 0 ] || die "--mode needs a value"
+    MODE="$1"
+    ;;
+  --image)
+    shift
+    [ "$#" -gt 0 ] || die "--image needs a value"
+    IMAGE="$1"
+    ;;
+  --dir)
+    shift
+    [ "$#" -gt 0 ] || die "--dir needs a value"
+    INSTALL_DIR="$1"
+    ;;
+  --version)
+    shift
+    [ "$#" -gt 0 ] || die "--version needs a value"
+    VERSION="$1"
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *)
+    die "unknown argument: $1"
+    ;;
   esac
   shift
 done

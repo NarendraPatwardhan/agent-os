@@ -6,16 +6,16 @@ package(default_visibility = ["//visibility:public"])
 zig_binary(
     name = "health_guest_raw",
     main = "guest.zig",
-    deps = ["//memcontainers/contracts:runner_zig"],
     tags = ["manual"],
+    deps = ["//memcontainers/contracts:runner_zig"],
 )
 
 zig_configure_binary(
     name = "health_guest",
     actual = ":health_guest_raw",
     mode = "release_small",
-    threaded = "single",
     tags = ["manual"],
+    threaded = "single",
 )
 
 rust_binary(

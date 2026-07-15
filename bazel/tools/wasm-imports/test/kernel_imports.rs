@@ -10,7 +10,7 @@
 //! kernel.wasm is a `data` dep (B1, SYSTEMS.md section 14.1), located via the runfiles crate as //memcontainers/tests/e2e does.
 
 use env_rust::BRIDGE_IMPORTS;
-use wasm_imports::{ImportedSymbols, imported_function_symbols};
+use wasm_imports::{imported_function_symbols, ImportedSymbols};
 
 /// Resolve a `data`-dep artifact by its workspace-relative runfiles path (same helper shape
 /// as //memcontainers/tests/e2e). The kernel lands at `_main/memcontainers/kernel/rust/kernel.wasm` in runfiles.

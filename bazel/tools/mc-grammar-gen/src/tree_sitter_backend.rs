@@ -1,7 +1,7 @@
 //! The only layer that knows Tree-sitter's grammar.json schema.
 
 use mc_parser_ir::{Associativity, GrammarIr, Precedence, Rule};
-use serde_json::{Map, Value, json};
+use serde_json::{json, Map, Value};
 
 fn precedence_value(value: &Precedence) -> Value {
     match value {

@@ -58,17 +58,46 @@ end
 -- ===========================================================================
 
 local KIND = {
-	string = { enc = function(v) return v end, dec = function(s) return s end },
+	string = {
+		enc = function(v)
+			return v
+		end,
+		dec = function(s)
+			return s
+		end,
+	},
 	int = {
-		enc = function(v) return tostring(math.floor(v)) end,
-		dec = function(s) return math.floor(tonumber(s) or 0) end,
+		enc = function(v)
+			return tostring(math.floor(v))
+		end,
+		dec = function(s)
+			return math.floor(tonumber(s) or 0)
+		end,
 	},
-	float = { enc = function(v) return tostring(v) end, dec = function(s) return tonumber(s) end },
+	float = {
+		enc = function(v)
+			return tostring(v)
+		end,
+		dec = function(s)
+			return tonumber(s)
+		end,
+	},
 	bool = {
-		enc = function(v) return v and "true" or "false" end,
-		dec = function(s) return s == "true" or s == "1" end,
+		enc = function(v)
+			return v and "true" or "false"
+		end,
+		dec = function(s)
+			return s == "true" or s == "1"
+		end,
 	},
-	enum = { enc = function(v) return v end, dec = function(s) return s end },
+	enum = {
+		enc = function(v)
+			return v
+		end,
+		dec = function(s)
+			return s
+		end,
+	},
 }
 
 xform.KIND = KIND
@@ -284,7 +313,8 @@ function xform.list(spec)
 			array = array or {}
 			local el = xml.element(spec.tag)
 			if spec.countAttr then
-				el.attributes[#el.attributes + 1] = { name = xml.name(spec.countAttr), value = tostring(#array) }
+				el.attributes[#el.attributes + 1] =
+					{ name = xml.name(spec.countAttr), value = tostring(#array) }
 			end
 			for _, it in ipairs(array) do
 				local childEl = spec.item.render(ctx, it)

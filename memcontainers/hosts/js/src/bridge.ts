@@ -70,11 +70,7 @@ export function makeBridge(st: HostState): WebAssembly.ModuleImports {
   /** Drain a capability that writes into a host-side temp buffer, then copy the written prefix into
    *  guest memory at `buf` — the pattern shared by http_poll/http_body/ws_recv/host_call_body/
    *  persist_body. */
-  const drainInto = (
-    buf: number,
-    cap: number,
-    call: (tmp: Uint8Array) => number,
-  ): number => {
+  const drainInto = (buf: number, cap: number, call: (tmp: Uint8Array) => number): number => {
     if (!st.mem.canAccess(buf, cap)) return -1;
     const tmp = new Uint8Array(cap);
     const n = call(tmp);
@@ -83,7 +79,8 @@ export function makeBridge(st: HostState): WebAssembly.ModuleImports {
   };
 
   const readOrNull = (ptr: number, len: number): Uint8Array | null => st.mem.tryRead(ptr, len);
-  const readOrEmpty = (ptr: number, len: number): Uint8Array => readOrNull(ptr, len) ?? new Uint8Array(0);
+  const readOrEmpty = (ptr: number, len: number): Uint8Array =>
+    readOrNull(ptr, len) ?? new Uint8Array(0);
 
   const env: Record<string, WebAssembly.ImportValue> = {
     // ---- terminal I/O ------------------------------------------------------

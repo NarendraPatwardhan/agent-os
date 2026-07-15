@@ -20,7 +20,7 @@ rust_binary(
 mc_rust_program(
     name = "crashloop",
     lib = ":crashloop_bin",
-    tier = "isolated",
     service = "crashloop",
+    tier = "isolated",
     visibility = ["//visibility:public"],
 )

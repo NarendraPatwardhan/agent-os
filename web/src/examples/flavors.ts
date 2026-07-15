@@ -16,14 +16,16 @@ export const FLAVORS: readonly Flavor[] = [
     size: "2.3 MB",
     stacks: "base",
     has: "The full coreutils userland — every command, across four per-tier boxes with least-privilege /bin routing.",
-    bestFor: "A known environment agents already understand — every standard Unix tool where they expect it.",
+    bestFor:
+      "A known environment agents already understand — every standard Unix tool where they expect it.",
   },
   {
     id: "loom",
     size: "6.2 MB",
     stacks: "posix",
     has: "posix plus the Luau pair — /bin/luau (interpreter, with JSON/hash/time/string batteries) and luau-analyze — and the Office skill docs.",
-    bestFor: "Programmability: compose steps in Luau and build Office documents. The default browser flavor.",
+    bestFor:
+      "Programmability: compose steps in Luau and build Office documents. The default browser flavor.",
   },
   {
     id: "atlas",

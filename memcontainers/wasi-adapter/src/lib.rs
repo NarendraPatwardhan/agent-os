@@ -888,7 +888,15 @@ pub unsafe extern "C" fn __imported_wasi_snapshot_preview1_fd_filestat_get(
         };
         return match mc_stat(&base[..n]) {
             Ok(st) => {
-                write_filestat(ret, st.size, FT_DIRECTORY, st.nlink, st.atim, st.mtim, st.ctim);
+                write_filestat(
+                    ret,
+                    st.size,
+                    FT_DIRECTORY,
+                    st.nlink,
+                    st.atim,
+                    st.mtim,
+                    st.ctim,
+                );
                 0
             }
             Err(e) => e,

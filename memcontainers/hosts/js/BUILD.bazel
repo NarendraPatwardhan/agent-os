@@ -1,7 +1,7 @@
-load("//bazel:ts.bzl", "mc_ts_project")
 load("@aspect_rules_js//js:defs.bzl", "js_test")
 load("@aspect_rules_js//npm:defs.bzl", "npm_package")
 load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//bazel:ts.bzl", "mc_ts_project")
 
 # Link @mc/host's own deps (@mc/contracts) into :node_modules/*.
 npm_link_all_packages(name = "node_modules")
@@ -14,11 +14,11 @@ npm_link_all_packages(name = "node_modules")
 mc_ts_project(
     name = "host",
     srcs = glob(["src/**/*.ts"]),
+    visibility = ["//visibility:public"],
     deps = [
         ":node_modules/@mc/contracts",  # BRIDGE_IMPORTS / CONTROL_EXPORTS / errnos — by name, no reach-in
         "//:node_modules/@types/bun",  # process, node:fs/node:path globals (the node/bun durability path)
     ],
-    visibility = ["//visibility:public"],
 )
 
 # @mc/host as a linkable workspace package, so @mc/core imports it BY NAME instead of reaching into
@@ -27,8 +27,8 @@ mc_ts_project(
 npm_package(
     name = "pkg",
     srcs = [
-        ":host",
         "package.json",
+        ":host",
     ],
     package = "@mc/host",
     visibility = ["//visibility:public"],
@@ -50,8 +50,8 @@ js_test(
     name = "parity_test",
     data = [
         ":parity_lib",
-        "//memcontainers/kernel/rust:kernel",
         "//memcontainers/images:base",
+        "//memcontainers/kernel/rust:kernel",
     ],
     entry_point = "test/parity.test.js",
     env = {
@@ -120,9 +120,9 @@ js_test(
     name = "cross_host_test",
     data = [
         ":cross_host_lib",
-        "//memcontainers/kernel/rust:kernel",
         "//memcontainers/hosts/wasmtime:cross_host_incremental_snapshot",
         "//memcontainers/hosts/wasmtime:cross_host_snapshot",
+        "//memcontainers/kernel/rust:kernel",
     ],
     entry_point = "test/cross_host.test.js",
     env = {

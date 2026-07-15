@@ -256,7 +256,9 @@ fn autocomplete_uses_resident_shell_and_live_namespace() {
         absolute_directory.items
     );
 
-    s.host.mkdir("/tmp/completion-order").expect("mkdir completion fixture");
+    s.host
+        .mkdir("/tmp/completion-order")
+        .expect("mkdir completion fixture");
     for name in ["z", "b", "a"] {
         s.host
             .write_file(&format!("/tmp/completion-order/{name}"), b"")
@@ -274,10 +276,17 @@ fn autocomplete_uses_resident_shell_and_live_namespace() {
         )
         .expect("complete with a result limit");
     assert_eq!(
-        bounded.items.iter().map(|item| item.label.as_str()).collect::<Vec<_>>(),
+        bounded
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>(),
         ["/tmp/completion-order/a", "/tmp/completion-order/b"]
     );
-    assert!(bounded.truncated, "bounded completion did not report omitted matches");
+    assert!(
+        bounded.truncated,
+        "bounded completion did not report omitted matches"
+    );
 }
 
 /// WHY: malformed policy metadata, invalid Wasm, and irrelevant custom sections used to reach the

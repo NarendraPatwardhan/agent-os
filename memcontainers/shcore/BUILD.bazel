@@ -22,16 +22,16 @@ SHCORE_SRCS = [
 
 zig_library(
     name = "lib",
+    srcs = SHCORE_SRCS,
     import_name = "shcore",
     main = "src/shcore.zig",
-    srcs = SHCORE_SRCS,
-    deps = ["//memcontainers/contracts:constants_zig"],
     visibility = ["//visibility:public"],
+    deps = ["//memcontainers/contracts:constants_zig"],
 )
 
 zig_test(
     name = "shcore_test",
-    main = "src/shcore.zig",
     srcs = SHCORE_SRCS,
+    main = "src/shcore.zig",
     deps = ["//memcontainers/contracts:constants_zig"],
 )

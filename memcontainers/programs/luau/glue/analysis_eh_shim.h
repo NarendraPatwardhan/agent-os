@@ -26,7 +26,7 @@
 extern "C" {
 #endif
 // Print `what` to stderr and exit non-zero. Defined in analyze_main.cpp.
-__attribute__((noreturn)) void mc_analysis_abort(const char* what);
+__attribute__((noreturn)) void mc_analysis_abort(const char *what);
 #ifdef __cplusplus
 }
 #endif
@@ -49,25 +49,22 @@ struct mutex {
     bool try_lock() { return true; }
 };
 struct condition_variable {
-    template <class L>
-    void wait(L&) {}
-    template <class L, class P>
-    void wait(L&, P) {}
+    template <class L> void wait(L &) {}
+    template <class L, class P> void wait(L &, P) {}
     void notify_one() {}
     void notify_all() {}
 };
 struct scoped_lock {
-    template <class... A>
-    explicit scoped_lock(A&&...) {}
+    template <class... A> explicit scoped_lock(A &&...) {}
 };
 struct unique_lock {
     unique_lock() = default;
-    template <class... A>
-    explicit unique_lock(A&&...) {}
+    template <class... A> explicit unique_lock(A &&...) {}
     void lock() {}
     void unlock() {}
 };
-}  // namespace mc_nothread
-// Frontend's one std::mutex use is redirected to mc_nothread::mutex by 0004-mc-frontend-nothread.patch
-// (a proper upstream patch, B3 — not a using-declaration into namespace std, which is UB).
+} // namespace mc_nothread
+// Frontend's one std::mutex use is redirected to mc_nothread::mutex by
+// 0004-mc-frontend-nothread.patch (a proper upstream patch, B3 — not a using-declaration into
+// namespace std, which is UB).
 #endif

@@ -16,11 +16,11 @@ owns a connection to a server-side VM. Closing the handle disposes the resource 
 
 A runtime says where the kernel is hosted:
 
-| Runtime | Kernel location | Artifact loading |
-|---|---|---|
-| `local` | Current Node.js or Bun process | Bytes or environment-backed local files |
-| `browser` | Current browser page | Browser-fetched bytes or a browser content store |
-| `remote` | Served AgentOS endpoint | Server-side image references |
+| Runtime   | Kernel location                | Artifact loading                                 |
+| --------- | ------------------------------ | ------------------------------------------------ |
+| `local`   | Current Node.js or Bun process | Bytes or environment-backed local files          |
+| `browser` | Current browser page           | Browser-fetched bytes or a browser content store |
+| `remote`  | Served AgentOS endpoint        | Server-side image references                     |
 
 The runtime changes hosting and transport, not the high-level `Vm` API. See the full
 [runtime matrix](./runtimes.md).
@@ -29,13 +29,13 @@ The runtime changes hosting and transport, not the high-level `Vm` API. See the 
 
 An image is the initial guest filesystem plus a runtime contract. A flavor is a shipped, named image:
 
-| Flavor | Adds | Typical use |
-|---|---|---|
-| `minimal` | Shell, core services, tools broker | Narrow custom harnesses |
-| `posix` | Full coreutils command set | File and text automation |
-| `loom` | Luau, analyzers, Office batteries, syntax parsing | Default programmable agent workspace |
-| `atlas` | Warm SQLite and vector support over `loom` | Data and retrieval workflows |
-| `paper` | Warm Typst and fonts over `loom` | Documents and PDFs |
+| Flavor    | Adds                                              | Typical use                          |
+| --------- | ------------------------------------------------- | ------------------------------------ |
+| `minimal` | Shell, core services, tools broker                | Narrow custom harnesses              |
+| `posix`   | Full coreutils command set                        | File and text automation             |
+| `loom`    | Luau, analyzers, Office batteries, syntax parsing | Default programmable agent workspace |
+| `atlas`   | Warm SQLite and vector support over `loom`        | Data and retrieval workflows         |
+| `paper`   | Warm Typst and fonts over `loom`                  | Documents and PDFs                   |
 
 Images are ordered stacks of content-addressed tar layers. A richer flavor reuses lower layers; it is
 not a second kernel or a different client API.

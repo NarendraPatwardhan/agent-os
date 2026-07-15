@@ -1,22 +1,115 @@
 [
-  { "name": "legacy-version", "mutation": "u32", "offset": 4, "value": 1, "error": "unsupported_version" },
+  {
+    "name": "legacy-version",
+    "mutation": "u32",
+    "offset": 4,
+    "value": 1,
+    "error": "unsupported_version"
+  },
   { "name": "unknown-kind", "mutation": "u32", "offset": 8, "value": 99, "error": "unknown_kind" },
-  { "name": "wrong-header-size", "mutation": "u32", "offset": 12, "value": 24, "error": "bad_header_length" },
-  { "name": "wrong-page-size", "mutation": "u32", "offset": 16, "value": 4096, "error": "bad_page_size" },
+  {
+    "name": "wrong-header-size",
+    "mutation": "u32",
+    "offset": 12,
+    "value": 24,
+    "error": "bad_header_length"
+  },
+  {
+    "name": "wrong-page-size",
+    "mutation": "u32",
+    "offset": 16,
+    "value": 4096,
+    "error": "bad_page_size"
+  },
   { "name": "empty-memory", "mutation": "u32", "offset": 20, "value": 0, "error": "empty_memory" },
-  { "name": "oversized-memory", "mutation": "u32", "offset": 20, "value": 1073807360, "error": "memory_too_large" },
-  { "name": "misaligned-memory", "mutation": "u32", "offset": 20, "value": 1, "error": "misaligned_memory" },
-  { "name": "full-with-changed-pages", "mutation": "u32", "offset": 24, "value": 1, "error": "unexpected_changed_pages" },
-  { "name": "reserved-bits", "mutation": "u32", "offset": 28, "value": 1, "error": "reserved_nonzero" },
-  { "name": "missing-kernel-digest", "mutation": "zero", "offset": 32, "length": 32, "error": "missing_digest" },
-  { "name": "missing-memory-digest", "mutation": "zero", "offset": 64, "length": 32, "error": "missing_digest" },
-  { "name": "full-with-base", "mutation": "byte", "offset": 96, "value": 1, "error": "unexpected_base" },
+  {
+    "name": "oversized-memory",
+    "mutation": "u32",
+    "offset": 20,
+    "value": 1073807360,
+    "error": "memory_too_large"
+  },
+  {
+    "name": "misaligned-memory",
+    "mutation": "u32",
+    "offset": 20,
+    "value": 1,
+    "error": "misaligned_memory"
+  },
+  {
+    "name": "full-with-changed-pages",
+    "mutation": "u32",
+    "offset": 24,
+    "value": 1,
+    "error": "unexpected_changed_pages"
+  },
+  {
+    "name": "reserved-bits",
+    "mutation": "u32",
+    "offset": 28,
+    "value": 1,
+    "error": "reserved_nonzero"
+  },
+  {
+    "name": "missing-kernel-digest",
+    "mutation": "zero",
+    "offset": 32,
+    "length": 32,
+    "error": "missing_digest"
+  },
+  {
+    "name": "missing-memory-digest",
+    "mutation": "zero",
+    "offset": 64,
+    "length": 32,
+    "error": "missing_digest"
+  },
+  {
+    "name": "full-with-base",
+    "mutation": "byte",
+    "offset": 96,
+    "value": 1,
+    "error": "unexpected_base"
+  },
   { "name": "trailing-byte", "mutation": "append", "error": "length_mismatch" },
   { "name": "truncated-image", "mutation": "truncate", "error": "length_mismatch" },
   { "name": "corrupt-image", "mutation": "flip", "offset": 128, "error": "memory_digest_mismatch" },
-  { "name": "incremental-missing-base-digest", "source": "incremental", "mutation": "zero", "offset": 96, "length": 32, "error": "missing_base" },
-  { "name": "incremental-bitmap-count-mismatch", "source": "incremental", "mutation": "u32", "offset": 24, "value": 1, "error": "bad_bitmap" },
-  { "name": "incremental-bitmap-without-count", "source": "incremental", "mutation": "byte", "offset": 128, "value": 1, "error": "bad_bitmap" },
-  { "name": "incremental-wrong-base-reference", "source": "incremental", "mutation": "flip", "offset": 96, "error": "base_snapshot_digest_mismatch" },
-  { "name": "incremental-wrong-memory-digest", "source": "incremental", "mutation": "flip", "offset": 64, "error": "memory_digest_mismatch" }
+  {
+    "name": "incremental-missing-base-digest",
+    "source": "incremental",
+    "mutation": "zero",
+    "offset": 96,
+    "length": 32,
+    "error": "missing_base"
+  },
+  {
+    "name": "incremental-bitmap-count-mismatch",
+    "source": "incremental",
+    "mutation": "u32",
+    "offset": 24,
+    "value": 1,
+    "error": "bad_bitmap"
+  },
+  {
+    "name": "incremental-bitmap-without-count",
+    "source": "incremental",
+    "mutation": "byte",
+    "offset": 128,
+    "value": 1,
+    "error": "bad_bitmap"
+  },
+  {
+    "name": "incremental-wrong-base-reference",
+    "source": "incremental",
+    "mutation": "flip",
+    "offset": 96,
+    "error": "base_snapshot_digest_mismatch"
+  },
+  {
+    "name": "incremental-wrong-memory-digest",
+    "source": "incremental",
+    "mutation": "flip",
+    "offset": 64,
+    "error": "memory_digest_mismatch"
+  }
 ]

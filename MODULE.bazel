@@ -130,6 +130,9 @@ use_repo(crate, "crates", "grammar_gen_crates", "host_crates", "nif_crates", "pa
 
 # aspect_bazel_lib — write_source_files + diff_test for the contract drift gate (B2).
 bazel_dep(name = "aspect_bazel_lib", version = "2.22.5")
+bazel_dep(name = "aspect_rules_lint", version = "2.7.2")
+bazel_dep(name = "buildifier_prebuilt", version = "8.5.1.2")
+bazel_dep(name = "rules_multirun", version = "0.11.0")
 
 # JS/TS — the local Node.js/Bun + browser host family (A3) and the @mc/* SDK (hosts/js, sdk-js/). The JS host loads the
 # SAME kernel.wasm the wasmtime host does and consumes the generated TS contract descriptors (env_ts/
@@ -160,6 +163,7 @@ bazel_dep(name = "rules_pkg", version = "1.0.1")  # pkg_tar — deterministic im
 # Third-party guests — vendor LESS, patch in place (B3). Upstream SOURCE via http_archive (never a
 # vendored copy in-tree); only the patch + BUILD file live under third_party/<lib>/.
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
 http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
 
 # Binaryen 130's portable Node distribution: wasm-opt itself compiled to WebAssembly plus its small
@@ -265,7 +269,10 @@ archive_override(
     patch_strip = 1,
     # B3 patch-in-place: make the source-built OTP target public so discord/rules_elixir's
     # elixir_build can reference it cross-repo (the integration gap between the two pinned forks).
-    patches = ["//third_party/rules_erlang:patches/0001-erlang_config-otp-public-visibility.patch"],
+    patches = [
+        "//third_party/rules_erlang:patches/0001-erlang_config-otp-public-visibility.patch",
+        "//third_party/rules_erlang:patches/0002-quiet-install-lock-contention.patch",
+    ],
     strip_prefix = "rules_erlang-b4b01911b99944fa0c9efb66bf3d9030ee784fa9/",
     url = "https://github.com/discord/rules_erlang/archive/b4b01911b99944fa0c9efb66bf3d9030ee784fa9.tar.gz",
 )
@@ -279,7 +286,10 @@ git_override(
     # it otherwise), so a bare `bazel build //...` SKIPS the Elixir package as incompatible and
     # only the scoped transition wrappers configure it. Without this the macro-internal
     # *_compile targets fail toolchain resolution under the default platform.
-    patches = ["//third_party/rules_elixir:patches/0001-forward-target-compatible-with.patch"],
+    patches = [
+        "//third_party/rules_elixir:patches/0001-forward-target-compatible-with.patch",
+        "//third_party/rules_elixir:patches/0002-elixir-app-compatibility.patch",
+    ],
     remote = "https://github.com/discord/rules_elixir.git",
 )
 

@@ -93,9 +93,13 @@ function ownCreateOptions(opts: CreateOptions): CreateOptions {
       tools: connection.tools ? [...connection.tools] : undefined,
       spec: connection.spec ? { ...connection.spec } : undefined,
     })),
-    permissions: opts.permissions ? (copyJsonValue(opts.permissions) as CreateOptions["permissions"]) : undefined,
+    permissions: opts.permissions
+      ? (copyJsonValue(opts.permissions) as CreateOptions["permissions"])
+      : undefined,
     policies: opts.policies?.map((policy) => ({ ...policy })),
-    tools: opts.tools?.map((entry) => (typeof entry === "string" ? entry : ownToolDefinition(entry))),
+    tools: opts.tools?.map((entry) =>
+      typeof entry === "string" ? entry : ownToolDefinition(entry),
+    ),
     mounts: opts.mounts?.map((mount) => ({ ...mount })),
     sidecarHosts: opts.sidecarHosts ? { ...opts.sidecarHosts } : undefined,
     sidecars: ownSidecarDescriptors(opts.sidecars),
@@ -117,7 +121,10 @@ function copyJsonValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(copyJsonValue);
   if (value && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, copyJsonValue(entry)]),
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+        key,
+        copyJsonValue(entry),
+      ]),
     );
   }
   return value;
@@ -226,15 +233,14 @@ export class Vm {
   /** Inspect shell input without executing it. Candidates include the resident
    * shell's builtins/functions/variables plus namespace-aware PATH and file
    * entries. Returned ranges use ordinary JavaScript string indices. */
-  async autocomplete(
-    source: string,
-    opts: AutocompleteOptions = {},
-  ): Promise<AutocompleteResult> {
+  async autocomplete(source: string, opts: AutocompleteOptions = {}): Promise<AutocompleteResult> {
     if (
       opts.limit !== undefined &&
       (!Number.isInteger(opts.limit) || opts.limit < 1 || opts.limit > AUTOCOMPLETE_MAX_ITEMS)
     ) {
-      throw new RangeError(`autocomplete limit must be an integer from 1 through ${AUTOCOMPLETE_MAX_ITEMS}`);
+      throw new RangeError(
+        `autocomplete limit must be an integer from 1 through ${AUTOCOMPLETE_MAX_ITEMS}`,
+      );
     }
     const cursor = opts.cursor ?? source.length;
     if (!Number.isInteger(cursor) || cursor < 0 || cursor > source.length) {
@@ -303,12 +309,26 @@ export class Vm {
     if (this.backend instanceof RemoteBackend) {
       const result = await this.backend.fork();
       const childOptions = this.forkOptions();
-      const childBackend = new RemoteBackend({ endpoint: childOptions.endpoint!, token: childOptions.token, vmId: result.id, onPermission: childOptions.onPermission });
+      const childBackend = new RemoteBackend({
+        endpoint: childOptions.endpoint!,
+        token: childOptions.token,
+        vmId: result.id,
+        onPermission: childOptions.onPermission,
+      });
       try {
         for (const tool of this.registeredTools) childBackend.tool(tool);
-        if (this.registeredTools.length || this.registeredMounts.length || childOptions.onPermission) await childBackend.connect();
+        if (
+          this.registeredTools.length ||
+          this.registeredMounts.length ||
+          childOptions.onPermission
+        )
+          await childBackend.connect();
         for (const mount of this.registeredMounts) {
-          await childBackend.mount(mount.path, mount.driver, mount.readOnly ?? mount.driver.readOnly ?? false);
+          await childBackend.mount(
+            mount.path,
+            mount.driver,
+            mount.readOnly ?? mount.driver.readOnly ?? false,
+          );
         }
         const catalog = await readRestoredCatalogState(childBackend);
         const child = new Vm(childBackend, childOptions, catalog);
@@ -565,13 +585,19 @@ function validateBrowserArtifacts(opts: CreateOptions): void {
     );
   }
   if (opts.image === undefined || opts.image === "base:latest") {
-    throw new Error("runtime 'browser' requires opts.image bytes, a browser-readable image store, or null");
+    throw new Error(
+      "runtime 'browser' requires opts.image bytes, a browser-readable image store, or null",
+    );
   }
   if (typeof opts.image === "string" && opts.image.startsWith("sha256:")) {
-    throw new Error("runtime 'browser' cannot resolve sha256 diff layers without default base image bytes");
+    throw new Error(
+      "runtime 'browser' cannot resolve sha256 diff layers without default base image bytes",
+    );
   }
   if (imageNeedsStore(opts.image) && !opts.store) {
-    throw new Error("runtime 'browser' image references require opts.store, or pass fetched image bytes as opts.image");
+    throw new Error(
+      "runtime 'browser' image references require opts.store, or pass fetched image bytes as opts.image",
+    );
   }
 }
 
@@ -607,7 +633,9 @@ function netAllowlist(opts: CreateOptions): Set<string> | undefined {
  *  (a host→decision promise). Default-deny on any handler error. */
 function makeApprover(
   onPermission: CreateOptions["onPermission"],
-): ((host: string, url: string) => Promise<{ allow: boolean; remember?: "once" | "session" }>) | undefined {
+):
+  | ((host: string, url: string) => Promise<{ allow: boolean; remember?: "once" | "session" }>)
+  | undefined {
   if (!onPermission) return undefined;
   let id = 0;
   return (host, url) =>
@@ -617,7 +645,8 @@ function makeApprover(
         kind: "network" as const,
         host,
         url,
-        allow: (o?: { remember?: "once" | "session" }) => resolve({ allow: true, remember: o?.remember }),
+        allow: (o?: { remember?: "once" | "session" }) =>
+          resolve({ allow: true, remember: o?.remember }),
         reject: () => resolve({ allow: false }),
       };
       void Promise.resolve(onPermission(req)).catch(() => resolve({ allow: false }));
@@ -689,7 +718,9 @@ async function makeEmbedded(
     let base: Uint8Array | undefined;
     if (view.kind === "incremental") {
       if (!store?.snapshotObject) {
-        throw new Error("restoring an incremental snapshot requires a content-addressed snapshot store");
+        throw new Error(
+          "restoring an incremental snapshot requires a content-addressed snapshot store",
+        );
       }
       const ref = `sha256:${Array.from(view.baseSnapshotDigest, (b) => b.toString(16).padStart(2, "0")).join("")}`;
       base = await store.snapshotObject(ref);
@@ -712,7 +743,9 @@ async function makeEmbedded(
     undefined,
     opts.runtime === "browser" ? "remote" : undefined,
   );
-  tools.registerRaw(SIDECAR_HOST_BINDING, (body, context) => sidecars.handleGuestCall(body, context.signal));
+  tools.registerRaw(SIDECAR_HOST_BINDING, (body, context) =>
+    sidecars.handleGuestCall(body, context.signal),
+  );
   const backend = new EmbeddedBackend(host, stdout, tools, sidecars, snapshotBase, store);
   try {
     // Re-register the host-call HANDLERS (the JS closures) on both paths — they can never live in a
@@ -726,7 +759,8 @@ async function makeEmbedded(
     const catalog = snapshot
       ? await readRestoredCatalogState(backend)
       : await seedToolCatalog(backend, opts, hostTools);
-    if (snapshot) await validateRestoredCatalogAttachments(backend, opts, hostTools, catalog.generation);
+    if (snapshot)
+      await validateRestoredCatalogAttachments(backend, opts, hostTools, catalog.generation);
     await seedToolAliases(backend, hostTools, undefined, snapshot !== null);
     // Install boot-time mounts before the backend is returned (and before any
     // exec), so the first command already sees them. Declaration order is kept.
@@ -760,7 +794,11 @@ async function readRestoredCatalogState(backend: Backend): Promise<CatalogState>
     const index = await backend.read("/etc/tools/catalog/index.json");
     digest = await sha256Hex(index);
     const parsed: unknown = JSON.parse(dec(index));
-    if (parsed && typeof parsed === "object" && typeof (parsed as { generation?: unknown }).generation === "number") {
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      typeof (parsed as { generation?: unknown }).generation === "number"
+    ) {
       generation = (parsed as { generation: number }).generation;
     }
   } catch {
@@ -817,7 +855,10 @@ function restoredBinding(value: unknown): RestoredBinding | null {
   };
 }
 
-async function readRestoredBinding(backend: Backend, tool: RestoredIndexTool): Promise<RestoredBinding | null> {
+async function readRestoredBinding(
+  backend: Backend,
+  tool: RestoredIndexTool,
+): Promise<RestoredBinding | null> {
   try {
     const shard = JSON.parse(dec(await backend.read(`/etc/tools/catalog/records/${tool.sha}`)));
     return restoredBinding(shard);
@@ -903,7 +944,9 @@ async function validateRestoredCatalogAttachments(
         tool.sha !== expectedTool.sha ||
         !bytesEqual(actualBytes, expectedTool.bytes)
       ) {
-        issues.push(`${tool.address} -> supplied host tool '${name}' does not match the restored catalog shard`);
+        issues.push(
+          `${tool.address} -> supplied host tool '${name}' does not match the restored catalog shard`,
+        );
       }
       continue;
     }
@@ -1094,7 +1137,9 @@ function remoteNetPolicy(opts: CreateOptions): string {
 
 function remotePersistPolicy(opts: CreateOptions): string {
   if (opts.persist) {
-    throw new Error("remote runtime: persist requires a server-side persistence policy; client-side persist relay is not in the wire contract");
+    throw new Error(
+      "remote runtime: persist requires a server-side persistence policy; client-side persist relay is not in the wire contract",
+    );
   }
   return "deny";
 }
@@ -1129,9 +1174,11 @@ function dropUndefined<T extends Record<string, unknown>>(obj: T): Record<string
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
-  const buffer = (globalThis as unknown as {
-    Buffer?: { from(input: Uint8Array): { toString(encoding: "base64"): string } };
-  }).Buffer;
+  const buffer = (
+    globalThis as unknown as {
+      Buffer?: { from(input: Uint8Array): { toString(encoding: "base64"): string } };
+    }
+  ).Buffer;
   if (buffer) return buffer.from(bytes).toString("base64");
 
   const btoaFn = (globalThis as unknown as { btoa?: (input: string) => string }).btoa;
@@ -1156,7 +1203,9 @@ async function readRemoteSpecPath(path: string): Promise<Uint8Array> {
   }
 }
 
-function remoteSpecOptions(spec: NonNullable<ConnectionDefinition["spec"]>): Record<string, unknown> {
+function remoteSpecOptions(
+  spec: NonNullable<ConnectionDefinition["spec"]>,
+): Record<string, unknown> {
   return dropUndefined({
     format: spec.format,
     sourceFormat: spec.sourceFormat,
@@ -1175,7 +1224,9 @@ async function remoteConnectionSpec(
   return { ...opts, bytesBase64: bytesToBase64(await readRemoteSpecPath(spec.path)) };
 }
 
-async function remoteConnections(defs: readonly ConnectionDefinition[] | undefined): Promise<Record<string, unknown>[]> {
+async function remoteConnections(
+  defs: readonly ConnectionDefinition[] | undefined,
+): Promise<Record<string, unknown>[]> {
   return Promise.all(
     (defs ?? []).map(async (connection) =>
       dropUndefined({
@@ -1217,7 +1268,10 @@ function remoteImageFields(image: CreateOptions["image"]): Record<string, unknow
   return { layers: image.layers.map((layer) => layer.digest) };
 }
 
-async function remoteCreateBody(opts: CreateOptions, id?: string): Promise<Record<string, unknown>> {
+async function remoteCreateBody(
+  opts: CreateOptions,
+  id?: string,
+): Promise<Record<string, unknown>> {
   const connections = await remoteConnections(opts.connections);
   const catalogTools = catalogToolSelectors(opts.tools);
   const hostTools = remoteHostTools(hostToolDefinitions(opts.tools));
@@ -1238,7 +1292,9 @@ async function remoteCreateBody(opts: CreateOptions, id?: string): Promise<Recor
   });
 }
 
-function remoteRestoreConnections(defs: readonly ConnectionDefinition[] | undefined): Record<string, unknown>[] {
+function remoteRestoreConnections(
+  defs: readonly ConnectionDefinition[] | undefined,
+): Record<string, unknown>[] {
   return (defs ?? []).map((connection) =>
     dropUndefined({
       ref: connection.ref,
@@ -1288,13 +1344,17 @@ async function makeRemote(
   snapshot: Uint8Array | null,
 ): Promise<{ backend: Backend; opts: CreateOptions; catalog: CatalogState }> {
   if (opts.sidecarHosts && Object.keys(opts.sidecarHosts).length > 0) {
-    throw new Error("runtime 'remote' forbids sidecarHosts; the served AgentOS host owns sidecar placement");
+    throw new Error(
+      "runtime 'remote' forbids sidecarHosts; the served AgentOS host owns sidecar placement",
+    );
   }
   if (!opts.endpoint) {
     throw new Error("runtime 'remote' requires opts.endpoint");
   }
   const endpoint = opts.endpoint.replace(/\/$/, "");
-  const headers: Record<string, string> = opts.token ? { authorization: `Bearer ${opts.token}` } : {};
+  const headers: Record<string, string> = opts.token
+    ? { authorization: `Bearer ${opts.token}` }
+    : {};
   const hostTools = hostToolDefinitions(opts.tools);
   let id: string;
 
@@ -1351,10 +1411,15 @@ async function makeRemote(
     // discovery, policy, and catalog mutation stay on the same authority boundary as wasmtime. The JS client
     // only registers callback closures and reads the server-injected/restored catalog digest as the CAS base.
     const catalog = await readRestoredCatalogState(backend);
-    if (snapshot) await validateRestoredCatalogAttachments(backend, opts, hostTools, catalog.generation);
+    if (snapshot)
+      await validateRestoredCatalogAttachments(backend, opts, hostTools, catalog.generation);
     await seedToolAliases(backend, hostTools, undefined, snapshot !== null);
     for (const mount of opts.mounts ?? []) {
-      await backend.mount(mount.path, mount.driver, mount.readOnly ?? mount.driver.readOnly ?? false);
+      await backend.mount(
+        mount.path,
+        mount.driver,
+        mount.readOnly ?? mount.driver.readOnly ?? false,
+      );
     }
     return { backend, opts, catalog };
   } catch (e) {

@@ -10,7 +10,9 @@ use crate::boot_posix;
 #[test]
 fn pipe_routes_output_between_commands() {
     let mut s = boot_posix();
-    s.host.write_file("/tmp/lines", b"foo\nbar\nbaz\n").expect("write");
+    s.host
+        .write_file("/tmp/lines", b"foo\nbar\nbaz\n")
+        .expect("write");
     assert_eq!(s.run_for_output("cat /tmp/lines | grep bar"), "bar\r\n");
 }
 

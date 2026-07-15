@@ -91,7 +91,12 @@ export function RemoteDriver({ example }: { example: Extract<Example, { kind: "r
                 <PlayIcon size={16} />
                 Connect
               </button>
-              <button type="button" {...stylex.props(styles.killBtn)} onClick={r.kill} disabled={!r.vm}>
+              <button
+                type="button"
+                {...stylex.props(styles.killBtn)}
+                onClick={r.kill}
+                disabled={!r.vm}
+              >
                 Kill VM
               </button>
             </>

@@ -5,25 +5,28 @@ load("//bazel:rust_opt_test.bzl", "rust_opt_test")
 # This is deliberately under `memcontainers/lib`: OpenAPI/GraphQL/Graph/Google parsing is adapter
 # logic, not root `{x}core` substrate. The crate is std + serde; resident services consume it through
 # the WASI lane, while native tests exercise deterministic catalog emission without booting a VM.
-exports_files(["Cargo.toml", "Cargo.lock"])
+exports_files([
+    "Cargo.toml",
+    "Cargo.lock",
+])
 
 rust_library(
     name = "lib",
     srcs = glob(["src/**/*.rs"]),
     crate_name = "mc_parse",
     edition = "2021",
+    visibility = ["//visibility:public"],
     deps = [
         "//memcontainers/pkgcore:lib",
         "@parse_crates//:serde",
         "@parse_crates//:serde_json",
         "@parse_crates//:serde_yaml",
     ],
-    visibility = ["//visibility:public"],
 )
 
 rust_opt_test(
     name = "test",
+    size = "small",
     crate = ":lib",
     edition = "2021",
-    size = "small",
 )

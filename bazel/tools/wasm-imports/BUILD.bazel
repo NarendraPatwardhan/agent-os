@@ -47,8 +47,8 @@ rust_binary(
 rust_opt_test(
     name = "kernel_imports_test",
     srcs = ["test/kernel_imports.rs"],
-    edition = "2021",
     data = ["//memcontainers/kernel/rust:kernel"],
+    edition = "2021",
     deps = [
         ":lib",
         "//memcontainers/contracts:env_rust",

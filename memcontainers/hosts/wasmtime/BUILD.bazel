@@ -1,5 +1,5 @@
-load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
 load("//bazel:rust_opt_test.bzl", "rust_opt_test")
 load(":defs.bzl", "host_release_binary")
 
@@ -22,27 +22,27 @@ rust_library(
     srcs = glob(
         ["src/**/*.rs"],
         exclude = [
-            "src/main.rs",      # the `mc` binary crate root
+            "src/main.rs",  # the `mc` binary crate root
             "src/terminal.rs",  # raw-TTY handling, used only by the binary
         ],
     ),
     edition = "2021",
     visibility = ["//visibility:public"],
     deps = [
-        "@host_crates//:wasmtime",
+        "//memcontainers/contracts:constants_rust",  # EAGAIN/EMSGSIZE — ws send sentinels + ctl retry (B2)
+        "//memcontainers/contracts:ctl_rust",  # the mc_control_table! macro → the kernel-export lookups (B2)
+        "//memcontainers/contracts:env_rust",  # the mc_bridge_table! macro → the host's env impls (B2)
+        "//memcontainers/contracts:snapshot_rust",  # MCSN v2 full/incremental framing + validation (B2/A3)
+        "//memcontainers/lib/parse:lib",  # curated registry (servers) for host-side origin derivation
+        "//memcontainers/toolcore:lib",  # the single-source connection-policy engine (no host-local copy)
         "@host_crates//:anyhow",
-        "@host_crates//:sha2",
         "@host_crates//:rand",
         "@host_crates//:serde",
         "@host_crates//:serde_json",
-        "@host_crates//:ureq",
+        "@host_crates//:sha2",
         "@host_crates//:tungstenite",
-        "//memcontainers/toolcore:lib",  # the single-source connection-policy engine (no host-local copy)
-        "//memcontainers/lib/parse:lib",  # curated registry (servers) for host-side origin derivation
-        "//memcontainers/contracts:env_rust",  # the mc_bridge_table! macro → the host's env impls (B2)
-        "//memcontainers/contracts:ctl_rust",  # the mc_control_table! macro → the kernel-export lookups (B2)
-        "//memcontainers/contracts:constants_rust",  # EAGAIN/EMSGSIZE — ws send sentinels + ctl retry (B2)
-        "//memcontainers/contracts:snapshot_rust",  # MCSN v2 full/incremental framing + validation (B2/A3)
+        "@host_crates//:ureq",
+        "@host_crates//:wasmtime",
     ],
 )
 
@@ -96,17 +96,17 @@ rust_binary(
 
 rust_opt_test(
     name = "tool_plane_test",
+    size = "medium",
     srcs = ["test/tool_plane.rs"],
     crate_root = "test/tool_plane.rs",
-    edition = "2021",
-    size = "medium",
     data = [
-        "//memcontainers/kernel/rust:kernel",
         "//memcontainers/images:loom",
-        "//memcontainers/lib/catalog-compiler:wasm",
+        "//memcontainers/kernel/rust:kernel",
         "//memcontainers/lib/catalog-compiler:data/github_issues.openapi.json",
         "//memcontainers/lib/catalog-compiler:data/graphql.introspection.json",
+        "//memcontainers/lib/catalog-compiler:wasm",
     ],
+    edition = "2021",
     deps = [
         ":host",
         "@rules_rust//rust/runfiles",
@@ -126,12 +126,12 @@ rust_opt_test(
     name = "snapshot_test",
     srcs = ["test/snapshot.rs"],
     crate_root = "test/snapshot.rs",
-    edition = "2021",
     data = [
         "//memcontainers/conformance:snapshot_vectors.json",
         "//memcontainers/images:base",
         "//memcontainers/kernel/rust:kernel",
     ],
+    edition = "2021",
     deps = [
         ":host",
         "@host_crates//:serde",

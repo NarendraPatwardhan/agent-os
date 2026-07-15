@@ -26,7 +26,9 @@ function readReturn(exports, pair) {
   return bytes;
 }
 
-const wasm = readFileSync(runfile(process.env.MC_CATALOG_COMPILER_WASM, "MC_CATALOG_COMPILER_WASM"));
+const wasm = readFileSync(
+  runfile(process.env.MC_CATALOG_COMPILER_WASM, "MC_CATALOG_COMPILER_WASM"),
+);
 const source = readFileSync(runfile(process.env.MC_GITHUB_FIXTURE, "MC_GITHUB_FIXTURE"));
 const opts = readFileSync(runfile(process.env.MC_GITHUB_OPTS, "MC_GITHUB_OPTS"));
 

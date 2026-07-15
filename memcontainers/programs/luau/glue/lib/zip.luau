@@ -139,7 +139,9 @@ function zip.read(bytes)
 		local lho = string.unpack("<I4", bytes, pos + 42)
 		local name = bytes:sub(pos + 46, pos + 46 + nlen - 1)
 		local extra = bytes:sub(pos + 46 + nlen, pos + 46 + nlen + elen - 1)
-		local comment = clen > 0 and bytes:sub(pos + 46 + nlen + elen, pos + 46 + nlen + elen + clen - 1) or nil
+		local comment = clen > 0
+				and bytes:sub(pos + 46 + nlen + elen, pos + 46 + nlen + elen + clen - 1)
+			or nil
 
 		-- ZIP64 extended information extra field (0x0001): real 64-bit sizes/offset.
 		if usize == U32_MAX or csize == U32_MAX or lho == U32_MAX then

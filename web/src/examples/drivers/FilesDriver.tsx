@@ -170,10 +170,18 @@ export function FilesDriver({ example }: { example: Extract<Example, { kind: "fi
     readonly kind: "directory" | "files";
   } | null>(null);
   const [dragging, setDragging] = useState(false);
-  const canPickDirectory = typeof window !== "undefined" && typeof (window as DirectoryPickerWindow).showDirectoryPicker === "function";
+  const canPickDirectory =
+    typeof window !== "undefined" &&
+    typeof (window as DirectoryPickerWindow).showDirectoryPicker === "function";
   const session = useVmSession({
     onReady: (vm, s) =>
-      runProgram(editorRef.current?.source ?? example.code.source, vm, s, {}, { image: example.image ?? "posix" }),
+      runProgram(
+        editorRef.current?.source ?? example.code.source,
+        vm,
+        s,
+        {},
+        { image: example.image ?? "posix" },
+      ),
   });
 
   useEffect(
@@ -194,18 +202,23 @@ export function FilesDriver({ example }: { example: Extract<Example, { kind: "fi
       fileInputRef.current?.click();
       return;
     }
-    void picker.call(window, { mode: "read" }).then(select).catch((error: unknown) => {
-      if ((error as DOMException | undefined)?.name !== "AbortError") {
-        session.setLogs([error instanceof Error ? error.message : String(error)]);
-      }
-    });
+    void picker
+      .call(window, { mode: "read" })
+      .then(select)
+      .catch((error: unknown) => {
+        if ((error as DOMException | undefined)?.name !== "AbortError") {
+          session.setLogs([error instanceof Error ? error.message : String(error)]);
+        }
+      });
   };
 
   const drop = (event: React.DragEvent<HTMLDivElement>): void => {
     event.preventDefault();
     setDragging(false);
     void (async () => {
-      const item = Array.from(event.dataTransfer.items).find((candidate) => candidate.kind === "file") as HandleItem | undefined;
+      const item = Array.from(event.dataTransfer.items).find(
+        (candidate) => candidate.kind === "file",
+      ) as HandleItem | undefined;
       const handle = await item?.getAsFileSystemHandle?.();
       if (handle?.kind === "directory") {
         select(handle as FileSystemDirectoryHandle);
@@ -218,7 +231,9 @@ export function FilesDriver({ example }: { example: Extract<Example, { kind: "fi
           driver: selectedFilesDriver(files),
           kind: "files",
         });
-        session.setLogs([`${files.length} file${files.length === 1 ? "" : "s"} ready to mount flat at ${example.mountPath}`]);
+        session.setLogs([
+          `${files.length} file${files.length === 1 ? "" : "s"} ready to mount flat at ${example.mountPath}`,
+        ]);
         return;
       }
       session.setLogs(["drop a directory or one or more files here"]);
@@ -227,7 +242,9 @@ export function FilesDriver({ example }: { example: Extract<Example, { kind: "fi
 
   const play = (): void => {
     if (!directory) {
-      session.setLogs(["choose files or drop a directory first — the browser never grants host files implicitly"]);
+      session.setLogs([
+        "choose files or drop a directory first — the browser never grants host files implicitly",
+      ]);
       return;
     }
     if (busyRef.current) return;
@@ -238,7 +255,9 @@ export function FilesDriver({ example }: { example: Extract<Example, { kind: "fi
       try {
         await vmRef.current?.close().catch(() => {});
         vmRef.current = null;
-        session.print(`mounting ${directory.name} at ${example.mountPath} before the shell starts…`);
+        session.print(
+          `mounting ${directory.name} at ${example.mountPath} before the shell starts…`,
+        );
         const base = await resolveCreateOptions({
           image: example.image ?? "posix",
           net: example.net,
@@ -279,14 +298,19 @@ export function FilesDriver({ example }: { example: Extract<Example, { kind: "fi
                 driver: selectedFilesDriver(files),
                 kind: "files",
               });
-              session.setLogs([`${files.length} file${files.length === 1 ? "" : "s"} ready to mount flat at ${example.mountPath}`]);
+              session.setLogs([
+                `${files.length} file${files.length === 1 ? "" : "s"} ready to mount flat at ${example.mountPath}`,
+              ]);
               event.target.value = "";
             }}
           />
           <div
             role="group"
             aria-label="Directory to expose read-only"
-            onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
+            onDragEnter={(event) => {
+              event.preventDefault();
+              setDragging(true);
+            }}
             onDragOver={(event) => event.preventDefault()}
             onDragLeave={() => setDragging(false)}
             onDrop={drop}
@@ -297,10 +321,14 @@ export function FilesDriver({ example }: { example: Extract<Example, { kind: "fi
               directory && pickerStyles.selected,
             )}
           >
-            <span {...stylex.props(pickerStyles.icon)}><Icon id="file" size={24} /></span>
+            <span {...stylex.props(pickerStyles.icon)}>
+              <Icon id="file" size={24} />
+            </span>
             {directory ? (
               <>
-                <span {...stylex.props(pickerStyles.selectedName, text.label)}>{directory.name}</span>
+                <span {...stylex.props(pickerStyles.selectedName, text.label)}>
+                  {directory.name}
+                </span>
                 <span {...stylex.props(text.caption, text.muted)}>
                   {directory.kind === "directory"
                     ? "Directory handle granted · mounted only when you press ▶"
@@ -318,13 +346,26 @@ export function FilesDriver({ example }: { example: Extract<Example, { kind: "fi
               </>
             )}
             <div {...stylex.props(pickerStyles.actions)}>
-              <button type="button" onClick={pick} {...stylex.props(controls.button, controls.buttonGhost)}>
-                {directory ? "Choose another" : canPickDirectory ? "Choose directory" : "Choose files"}
+              <button
+                type="button"
+                onClick={pick}
+                {...stylex.props(controls.button, controls.buttonGhost)}
+              >
+                {directory
+                  ? "Choose another"
+                  : canPickDirectory
+                    ? "Choose directory"
+                    : "Choose files"}
               </button>
             </div>
           </div>
           <div {...stylex.props(styles.codeWrap)}>
-            <mc-editor ref={editorRef} {...stylex.props(styles.editor)} value={example.code.source} language="typescript" />
+            <mc-editor
+              ref={editorRef}
+              {...stylex.props(styles.editor)}
+              value={example.code.source}
+              language="typescript"
+            />
             <PlayButton place="abs" onClick={play} label="Mount directory and run" />
           </div>
         </>

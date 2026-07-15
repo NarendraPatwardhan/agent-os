@@ -16,7 +16,15 @@ function doc(fill: string, letter: string): ReactElement {
     <g>
       <path d="M4 1h8.6L17 5.4V19H4z" fill={fill} />
       <path d="M12.6 1L17 5.4h-4.4z" fill="#fff" opacity="0.35" />
-      <text x="10" y="14.6" textAnchor="middle" fontSize="8.4" fontWeight="700" fontFamily="system-ui, sans-serif" fill="#fff">
+      <text
+        x="10"
+        y="14.6"
+        textAnchor="middle"
+        fontSize="8.4"
+        fontWeight="700"
+        fontFamily="system-ui, sans-serif"
+        fill="#fff"
+      >
         {letter}
       </text>
     </g>
@@ -32,7 +40,15 @@ const STROKE = {
 } as const;
 
 const ICONS: Record<IconId, ReactElement> = {
-  play: <path d="M6 3.5v13l10.5-6.5z" fill="#3fcf6f" stroke="#3fcf6f" strokeWidth="1.4" strokeLinejoin="round" />,
+  play: (
+    <path
+      d="M6 3.5v13l10.5-6.5z"
+      fill="#3fcf6f"
+      stroke="#3fcf6f"
+      strokeWidth="1.4"
+      strokeLinejoin="round"
+    />
+  ),
   terminal: (
     <g {...STROKE}>
       <rect x="2" y="3.5" width="16" height="13" rx="2" />
@@ -52,7 +68,12 @@ const ICONS: Record<IconId, ReactElement> = {
     <g>
       <path d="M4 1h8.6L17 5.4V19H4z" fill="#d93831" />
       <path d="M12.6 1L17 5.4h-4.4z" fill="#fff" opacity="0.35" />
-      <path d="M6.6 9.4h7.8M6.6 12.2h7.8M6.6 15h5" stroke="#fff" strokeWidth="1.5" strokeLinecap="round" />
+      <path
+        d="M6.6 9.4h7.8M6.6 12.2h7.8M6.6 15h5"
+        stroke="#fff"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+      />
     </g>
   ),
   sqlite: (
@@ -86,10 +107,21 @@ const ICONS: Record<IconId, ReactElement> = {
   github: (
     <g>
       <circle cx="10" cy="10.6" r="7.6" fill="#181717" stroke="#8b8d92" strokeWidth="0.9" />
-      <path d="M5.4 4.4l2.5 1.2M14.6 4.4l-2.5 1.2" stroke="#8b8d92" strokeWidth="1.4" strokeLinecap="round" />
+      <path
+        d="M5.4 4.4l2.5 1.2M14.6 4.4l-2.5 1.2"
+        stroke="#8b8d92"
+        strokeWidth="1.4"
+        strokeLinecap="round"
+      />
       <circle cx="7.4" cy="9.8" r="1.1" fill="#e8e8ea" />
       <circle cx="12.6" cy="9.8" r="1.1" fill="#e8e8ea" />
-      <path d="M8.2 13.4c1.1.9 2.5.9 3.6 0" stroke="#e8e8ea" strokeWidth="1.2" strokeLinecap="round" fill="none" />
+      <path
+        d="M8.2 13.4c1.1.9 2.5.9 3.6 0"
+        stroke="#e8e8ea"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        fill="none"
+      />
     </g>
   ),
   microsoft: (
@@ -132,7 +164,15 @@ const ICONS: Record<IconId, ReactElement> = {
   stripe: (
     <g>
       <rect x="2.5" y="2.5" width="15" height="15" rx="3.4" fill="#635bff" />
-      <text x="10" y="14" textAnchor="middle" fontSize="10" fontWeight="700" fontFamily="system-ui, sans-serif" fill="#fff">
+      <text
+        x="10"
+        y="14"
+        textAnchor="middle"
+        fontSize="10"
+        fontWeight="700"
+        fontFamily="system-ui, sans-serif"
+        fill="#fff"
+      >
         S
       </text>
     </g>

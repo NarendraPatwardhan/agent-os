@@ -39,11 +39,11 @@ pub enum Fd {
     Writer(Box<dyn WriteSink>),
 }
 
-pub mod scheduler;
 pub mod runner;
+pub mod scheduler;
 
-pub use scheduler::Scheduler;
 pub use runner::run_round;
+pub use scheduler::Scheduler;
 
 pub type TaskId = u32;
 
@@ -350,7 +350,9 @@ impl Task {
 
     pub fn has_control(&self) -> bool {
         let program = unsafe { &*self.program.get() };
-        program.as_ref().is_some_and(|program| program.has_control())
+        program
+            .as_ref()
+            .is_some_and(|program| program.has_control())
     }
 
     /// Whether this task is stopped by `SIGTSTP`.

@@ -19,8 +19,8 @@ typst), stamping mc_tier/mc_budget/mc_service from the build graph via `mc_progr
 """
 
 load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library")
-load("//bazel:release_wasm.bzl", "release_wasm")
 load("//bazel:mc_program.bzl", "mc_program")
+load("//bazel:release_wasm.bzl", "release_wasm")
 load("//bazel:wasm_opt.bzl", "wasm_opt")
 
 # Trampoline+relink rounds before giving up. Matches memcontainers' xtask MAX_ROUNDS; a high cap

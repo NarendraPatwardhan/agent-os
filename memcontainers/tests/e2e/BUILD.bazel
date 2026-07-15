@@ -29,6 +29,14 @@ rust_e2e_test(
     name = "core",
     srcs = _E2E_SRCS,
     crate_root = "src/lib.rs",
+    data = [
+        "//memcontainers/images:base",  # rootfs + sh/pkgfsd/tools (the boot + kernel/control-channel tests)
+        "//memcontainers/images:loom",  # posix + /bin/luau — the Luau domain-tool boot e2e
+        "//memcontainers/images:minimal",  # base + the curated minimal coreutils set (the flavor test)
+        "//memcontainers/images:posix",  # base + the full coreutils set (the shell / coreutils / system tests)
+        "//memcontainers/images:rootfs",  # shell-less image: explicit maintenance-mode proof
+        "//memcontainers/images:svc_test",  # loom + the kv + crashloop example services — the resident-service proof
+    ],
     edition = "2021",
     deps = [
         "//memcontainers/hosts/wasmtime:host",
@@ -36,27 +44,19 @@ rust_e2e_test(
         "@parse_crates//:serde_json",
         "@rules_rust//rust/runfiles",
     ],
-    data = [
-        "//memcontainers/images:rootfs",  # shell-less image: explicit maintenance-mode proof
-        "//memcontainers/images:base",  # rootfs + sh/pkgfsd/tools (the boot + kernel/control-channel tests)
-        "//memcontainers/images:minimal",  # base + the curated minimal coreutils set (the flavor test)
-        "//memcontainers/images:posix",  # base + the full coreutils set (the shell / coreutils / system tests)
-        "//memcontainers/images:loom",  # posix + /bin/luau — the Luau domain-tool boot e2e
-        "//memcontainers/images:svc_test",  # loom + the kv + crashloop example services — the resident-service proof
-    ],
 )
 
 rust_e2e_test(
     name = "extended",
     srcs = _E2E_SRCS,
     crate_root = "src/extended.rs",
+    data = [
+        "//memcontainers/images:atlas",  # loom + the sqlite service + require("sqlite") — the sqlite e2e
+        "//memcontainers/images:paper",  # loom + the typst service + require("typst") + /usr/share/fonts — the typst e2e
+    ],
     edition = "2021",
     deps = [
         "//memcontainers/hosts/wasmtime:host",
         "@rules_rust//rust/runfiles",
-    ],
-    data = [
-        "//memcontainers/images:atlas",  # loom + the sqlite service + require("sqlite") — the sqlite e2e
-        "//memcontainers/images:paper",  # loom + the typst service + require("typst") + /usr/share/fonts — the typst e2e
     ],
 )

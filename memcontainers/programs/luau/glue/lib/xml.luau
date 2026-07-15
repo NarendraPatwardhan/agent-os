@@ -179,17 +179,23 @@ end
 
 -- Escape text content: &, <, > (and \r, to keep CRLF from round-tripping wrong).
 local function escape_text(s)
-	return (s:gsub("[&<>\r]", { ["&"] = "&amp;", ["<"] = "&lt;", [">"] = "&gt;", ["\r"] = "&#13;" }))
+	return (
+		s:gsub("[&<>\r]", { ["&"] = "&amp;", ["<"] = "&lt;", [">"] = "&gt;", ["\r"] = "&#13;" })
+	)
 end
 
 -- Escape an attribute value: &, <, the quote in use, and whitespace that must
 -- survive a round-trip (tab/newline/CR normalize to spaces otherwise).
 local function escape_attr(s)
 	return (
-		s:gsub(
-			'[&<"\t\n\r]',
-			{ ["&"] = "&amp;", ["<"] = "&lt;", ['"'] = "&quot;", ["\t"] = "&#9;", ["\n"] = "&#10;", ["\r"] = "&#13;" }
-		)
+		s:gsub('[&<"\t\n\r]', {
+			["&"] = "&amp;",
+			["<"] = "&lt;",
+			['"'] = "&quot;",
+			["\t"] = "&#9;",
+			["\n"] = "&#10;",
+			["\r"] = "&#13;",
+		})
 	)
 end
 
@@ -284,7 +290,10 @@ function xml.parseSax(source, handler, opts)
 	local resolveNs = opts.resolveNamespaces ~= false
 	local maxDepth = opts.maxDepth or 256
 	local entities = {}
-	local limits = { expansions = 0, maxExpansions = (opts.entityLimits and opts.entityLimits.maxEntityExpansions) or 1000 }
+	local limits = {
+		expansions = 0,
+		maxExpansions = (opts.entityLimits and opts.entityLimits.maxEntityExpansions) or 1000,
+	}
 
 	-- Namespace scope stack (each entry maps prefix → uri; "" key = default ns).
 	local scopes = {}
@@ -324,7 +333,10 @@ function xml.parseSax(source, handler, opts)
 			-- trailing character data
 			local rest = src:sub(i)
 			if rest:find("%S") and depth == 0 then
-				return fail({ code = "xml/unexpected-eof", message = "character data after root element" })
+				return fail({
+					code = "xml/unexpected-eof",
+					message = "character data after root element",
+				})
 			end
 			if handler.onText and depth > 0 then
 				local v, e = unescape(rest, entities, limits)
@@ -343,7 +355,10 @@ function xml.parseSax(source, handler, opts)
 			end
 			if depth == 0 then
 				if v:find("%S") then
-					return fail({ code = "xml/invalid-char", message = "character data outside the root element" })
+					return fail({
+						code = "xml/invalid-char",
+						message = "character data outside the root element",
+					})
 				end
 			elseif handler.onText then
 				handler.onText(v)
@@ -365,7 +380,11 @@ function xml.parseSax(source, handler, opts)
 			if tagstack[#tagstack] ~= qualified then
 				return fail({
 					code = "xml/mismatched-tag",
-					message = "</" .. qualified .. "> does not match <" .. (tagstack[#tagstack] or "(none)") .. ">",
+					message = "</"
+						.. qualified
+						.. "> does not match <"
+						.. (tagstack[#tagstack] or "(none)")
+						.. ">",
 				})
 			end
 			local nm = resolve_name(qualified, false)
@@ -416,19 +435,28 @@ function xml.parseSax(source, handler, opts)
 				end
 				local dtd = src:sub(i, close)
 				if dtd:find("SYSTEM") or dtd:find("PUBLIC") then
-					return fail({ code = "xml/invalid-char", message = "external DTD/entities are not allowed" })
+					return fail({
+						code = "xml/invalid-char",
+						message = "external DTD/entities are not allowed",
+					})
 				end
 				for name, val in dtd:gmatch('<!ENTITY%s+([%w_%-%.]+)%s+"([^"]*)"%s*>') do
 					entities[name] = val
 				end
 				i = close + 1
 			else
-				return fail({ code = "xml/invalid-tag", message = "unrecognized markup declaration" })
+				return fail({
+					code = "xml/invalid-tag",
+					message = "unrecognized markup declaration",
+				})
 			end
 		elseif c2 == "?" then
 			local close = src:find("?>", i + 2, true)
 			if not close then
-				return fail({ code = "xml/unexpected-eof", message = "unterminated processing instruction" })
+				return fail({
+					code = "xml/unexpected-eof",
+					message = "unterminated processing instruction",
+				})
 			end
 			local body = src:sub(i + 2, close - 1)
 			local target = body:match("^([^%s]+)")
@@ -436,8 +464,10 @@ function xml.parseSax(source, handler, opts)
 			if target and target:lower() == "xml" then
 				if handler.onDecl then
 					handler.onDecl({
-						version = value:match('version%s*=%s*"([^"]*)"') or value:match("version%s*=%s*'([^']*)'"),
-						encoding = value:match('encoding%s*=%s*"([^"]*)"') or value:match("encoding%s*=%s*'([^']*)'"),
+						version = value:match('version%s*=%s*"([^"]*)"')
+							or value:match("version%s*=%s*'([^']*)'"),
+						encoding = value:match('encoding%s*=%s*"([^"]*)"')
+							or value:match("encoding%s*=%s*'([^']*)'"),
 						standalone = (value:match('standalone%s*=%s*"([^"]*)"') == "yes") or nil,
 					})
 				end
@@ -489,18 +519,27 @@ function xml.parseSax(source, handler, opts)
 				local _, ws2 = src:find("^%s*", j)
 				j = ws2 + 1
 				if src:sub(j, j) ~= "=" then
-					return fail({ code = "xml/invalid-attr", message = "attribute '" .. aname .. "' has no value" })
+					return fail({
+						code = "xml/invalid-attr",
+						message = "attribute '" .. aname .. "' has no value",
+					})
 				end
 				j += 1
 				local _, ws3 = src:find("^%s*", j)
 				j = ws3 + 1
 				local quote = src:sub(j, j)
 				if quote ~= '"' and quote ~= "'" then
-					return fail({ code = "xml/invalid-attr", message = "attribute value must be quoted" })
+					return fail({
+						code = "xml/invalid-attr",
+						message = "attribute value must be quoted",
+					})
 				end
 				local vend = src:find(quote, j + 1, true)
 				if not vend then
-					return fail({ code = "xml/unexpected-eof", message = "unterminated attribute value" })
+					return fail({
+						code = "xml/unexpected-eof",
+						message = "unterminated attribute value",
+					})
 				end
 				local avalue, e = unescape(src:sub(j + 1, vend - 1), entities, limits)
 				if not avalue then
@@ -525,7 +564,10 @@ function xml.parseSax(source, handler, opts)
 			local seen = {}
 			for _, a in ipairs(raw_attrs) do
 				if seen[a.qname] then
-					return fail({ code = "xml/invalid-attr", message = "duplicate attribute '" .. a.qname .. "'" })
+					return fail({
+						code = "xml/invalid-attr",
+						message = "duplicate attribute '" .. a.qname .. "'",
+					})
 				end
 				seen[a.qname] = true
 			end
@@ -538,7 +580,10 @@ function xml.parseSax(source, handler, opts)
 
 			if depth == 0 then
 				if seenRoot then
-					return fail({ code = "xml/multiple-roots", message = "more than one root element" })
+					return fail({
+						code = "xml/multiple-roots",
+						message = "more than one root element",
+					})
 				end
 				seenRoot = true
 			end
@@ -555,7 +600,10 @@ function xml.parseSax(source, handler, opts)
 				tagstack[#tagstack + 1] = qualified
 				depth += 1
 				if depth > maxDepth then
-					return fail({ code = "xml/invalid-char", message = "maximum nesting depth exceeded" })
+					return fail({
+						code = "xml/invalid-char",
+						message = "maximum nesting depth exceeded",
+					})
 				end
 			end
 			i = j
@@ -563,7 +611,10 @@ function xml.parseSax(source, handler, opts)
 	end
 
 	if depth ~= 0 then
-		return fail({ code = "xml/unexpected-eof", message = "unexpected end of input: unclosed elements" })
+		return fail({
+			code = "xml/unexpected-eof",
+			message = "unexpected end of input: unclosed elements",
+		})
 	end
 	return true
 end
@@ -639,7 +690,13 @@ function xml.parse(source, opts)
 		return nil, err
 	end
 	if not doc.root then
-		return nil, { code = "xml/multiple-roots", message = "document has no root element", line = 1, col = 1 }
+		return nil,
+			{
+				code = "xml/multiple-roots",
+				message = "document has no root element",
+				line = 1,
+				col = 1,
+			}
 	end
 	return doc
 end
@@ -719,7 +776,13 @@ function xml.serialize(node, opts)
 	if node.kind == "document" then
 		if opts.declaration ~= false then
 			local d = node.declaration or {}
-			w:raw('<?xml version="' .. (d.version or "1.0") .. '" encoding="' .. (d.encoding or "UTF-8") .. '"')
+			w:raw(
+				'<?xml version="'
+					.. (d.version or "1.0")
+					.. '" encoding="'
+					.. (d.encoding or "UTF-8")
+					.. '"'
+			)
 			if d.standalone then
 				w:raw(' standalone="yes"')
 			end

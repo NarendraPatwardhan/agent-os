@@ -5,10 +5,10 @@
 
 ## Properties
 
-| Property | Shape | Meaning |
-|---|---|---|
-| `vm.fs` | filesystem object | Trusted host view of the guest filesystem |
-| `vm.sidecars` | `VmSidecars` | Lifecycle facade for this VM's external resources |
+| Property      | Shape             | Meaning                                           |
+| ------------- | ----------------- | ------------------------------------------------- |
+| `vm.fs`       | filesystem object | Trusted host view of the guest filesystem         |
+| `vm.sidecars` | `VmSidecars`      | Lifecycle facade for this VM's external resources |
 
 Host attachments are deliberately not exposed as mutable option arrays. The VM privately tracks live
 tools and mounts so a fork can reattach the current state without sharing caller-owned option objects.
@@ -17,26 +17,26 @@ fork policy rather than being serialized into a snapshot. See [Sidecars](./sidec
 
 ## Complete method index
 
-| Method | Result | Notes |
-|---|---|---|
-| `exec(command, options?)` | `Promise<ExecResult>` | Run a shell command to completion |
-| `autocomplete(source, options?)` | `Promise<AutocompleteResult>` | Inspect shell input without executing it |
-| `luau(source, args?)` | `Promise<ExecResult>` | Run a temporary Luau script |
-| `serviceCall(name, request?)` | `Promise<Uint8Array>` | Call a resident service |
-| `shell(options?)` | `Shell` | Open an interactive byte stream |
-| `session(agentType?)` | `SessionHandle` | Open a framed agent session |
-| `luauSession()` | `SessionHandle` | Alias for `session("luau")` |
-| `cron(schedule, action, options?)` | `CronHandle` | Start a client-resident schedule |
-| `tool(definitionOrList)` | `Promise<void>` | Add or replace live host tools |
-| `mount(path, driver, options?)` | `Promise<void>` | Attach a host filesystem |
-| `unmount(path)` | `Promise<void>` | Detach a host filesystem |
-| `snapshot(options?)` | `Promise<Uint8Array>` | Capture full or incremental VM state |
-| `fork()` | `Promise<Vm>` | Create an independent branch |
-| `commit()` | selector object | Export a layer or snapshot |
-| `status()` | `Promise<VmStatus>` | Read running/memory/egress status |
-| `inflightEgress()` | `Promise<number>` | Count host-egress operations |
-| `memoryBytes()` | number | Read WebAssembly memory size; remote returns `0` |
-| `close()` | `Promise<void>` | Stop jobs and dispose the VM |
+| Method                             | Result                        | Notes                                            |
+| ---------------------------------- | ----------------------------- | ------------------------------------------------ |
+| `exec(command, options?)`          | `Promise<ExecResult>`         | Run a shell command to completion                |
+| `autocomplete(source, options?)`   | `Promise<AutocompleteResult>` | Inspect shell input without executing it         |
+| `luau(source, args?)`              | `Promise<ExecResult>`         | Run a temporary Luau script                      |
+| `serviceCall(name, request?)`      | `Promise<Uint8Array>`         | Call a resident service                          |
+| `shell(options?)`                  | `Shell`                       | Open an interactive byte stream                  |
+| `session(agentType?)`              | `SessionHandle`               | Open a framed agent session                      |
+| `luauSession()`                    | `SessionHandle`               | Alias for `session("luau")`                      |
+| `cron(schedule, action, options?)` | `CronHandle`                  | Start a client-resident schedule                 |
+| `tool(definitionOrList)`           | `Promise<void>`               | Add or replace live host tools                   |
+| `mount(path, driver, options?)`    | `Promise<void>`               | Attach a host filesystem                         |
+| `unmount(path)`                    | `Promise<void>`               | Detach a host filesystem                         |
+| `snapshot(options?)`               | `Promise<Uint8Array>`         | Capture full or incremental VM state             |
+| `fork()`                           | `Promise<Vm>`                 | Create an independent branch                     |
+| `commit()`                         | selector object               | Export a layer or snapshot                       |
+| `status()`                         | `Promise<VmStatus>`           | Read running/memory/egress status                |
+| `inflightEgress()`                 | `Promise<number>`             | Count host-egress operations                     |
+| `memoryBytes()`                    | number                        | Read WebAssembly memory size; remote returns `0` |
+| `close()`                          | `Promise<void>`               | Stop jobs and dispose the VM                     |
 
 ## Execution family
 
@@ -111,11 +111,11 @@ const snapshot = await vm.commit().asSnapshot();
 
 Returns:
 
-| Field | Meaning |
-|---|---|
-| `running` | False after the embedded kernel exits; remote status is mapped from server state |
-| `memoryBytes` | WebAssembly linear-memory bytes, or `0` when unavailable remotely |
-| `inflightEgress` | Current host network/host-call/service operations |
+| Field            | Meaning                                                                          |
+| ---------------- | -------------------------------------------------------------------------------- |
+| `running`        | False after the embedded kernel exits; remote status is mapped from server state |
+| `memoryBytes`    | WebAssembly linear-memory bytes, or `0` when unavailable remotely                |
+| `inflightEgress` | Current host network/host-call/service operations                                |
 
 Use `status()` when a consistent asynchronous status record is useful. The dedicated memory and
 egress methods are convenient fast paths.

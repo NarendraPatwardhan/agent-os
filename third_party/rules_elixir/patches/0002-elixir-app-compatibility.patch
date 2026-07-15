@@ -1,0 +1,81 @@
+Forward compatibility and tags through the elixir_app macro.
+
+The macro expands one logical Elixir application into several compilation and provider targets.
+Keeping constraints only on the final app target still makes wildcard builds configure the
+intermediate targets and fail Elixir toolchain resolution under the ordinary AgentOS platform.
+Forward these common attributes to every generated target so transition-wrapped tools can coexist
+with `bazel build //...` without changing the top-level platform. B3 patch-in-place, matching the
+same scoped-platform fix already applied to mix_library.
+
+--- a/private/elixir_app.bzl
++++ b/private/elixir_app.bzl
+@@ -21,6 +21,8 @@
+         data = [],
+         priv = [],
+         license_files = [],
++        target_compatible_with = [],
++        tags = [],
+         **kwargs):
+     """compiles elixir sources in a manner compatible with @rules_erlang
+ 
+@@ -60,6 +62,8 @@
+             name = "xrl_yrl_generated",
+             srcs = xrl_yrl_srcs,
+             outs = xrl_yrl_outs,
++            target_compatible_with = target_compatible_with,
++            tags = tags,
+         )
+         erlang_generated_srcs = [":xrl_yrl_generated"]
+ 
+@@ -75,6 +79,8 @@
+             data = data,
+             dest = "erlang_ebin",
+             erlc_opts = erlc_opts if erlc_opts != None else DEFAULT_ERLC_OPTS,
++            target_compatible_with = target_compatible_with,
++            tags = tags,
+         )
+         erlang_beam = [":erlang_beam_files"]
+ 
+@@ -88,6 +94,8 @@
+         ez_deps = ez_deps,
+         deps = deps,
+         data = data,
++        target_compatible_with = target_compatible_with,
++        tags = tags,
+     )
+ 
+     all_modules = [":beam_files"]
+@@ -104,6 +112,8 @@
+         app_description = app_description,
+         extra_apps = ["elixir"] + extra_apps,
+         modules = all_modules,
++        target_compatible_with = target_compatible_with,
++        tags = tags,
+         **kwargs
+     )
+ 
+@@ -127,6 +137,8 @@
+         priv = priv,
+         license_files = license_files,
+         deps = deps,
++        target_compatible_with = target_compatible_with,
++        tags = tags,
+     )
+ 
+     erlang_app_filter_module_conflicts(
+@@ -134,6 +146,8 @@
+         dest = "unconsolidated",
+         src = Label("@rules_elixir//elixir:elixir"),
+         without = [":ebin"],
++        target_compatible_with = target_compatible_with,
++        tags = tags,
+     )
+ 
+     erlang_app_info(
+@@ -149,4 +163,6 @@
+         deps = [
+             ":elixir_without_app_overlap",
+         ] + deps,
++        target_compatible_with = target_compatible_with,
++        tags = tags,
+     )

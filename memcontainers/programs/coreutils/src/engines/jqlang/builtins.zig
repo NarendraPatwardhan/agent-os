@@ -16,7 +16,10 @@ pub fn call(interp: *ev.Interp, name: []const u8, args: []*ev.Node, input: Value
     // zero-arg builtins
     if (args.len == 0) {
         if (eq(name, "length")) return emit(ctx, try lengthOf(input));
-        if (eq(name, "utf8bytelength")) { if (input != .string) return error.JqRuntime; return emit(ctx, .{ .number = @floatFromInt(input.string.len) }); }
+        if (eq(name, "utf8bytelength")) {
+            if (input != .string) return error.JqRuntime;
+            return emit(ctx, .{ .number = @floatFromInt(input.string.len) });
+        }
         if (eq(name, "keys") or eq(name, "keys_unsorted")) return emit(ctx, try keys(gpa, input, eq(name, "keys")));
         // Type filters: emit input iff it has the named type (jq numbers/strings/...).
         if (eq(name, "numbers")) return if (input == .number) emit(ctx, input);
@@ -78,7 +81,6 @@ pub fn call(interp: *ev.Interp, name: []const u8, args: []*ev.Node, input: Value
     if (eq(name, "range")) return rangeFilter(interp, args, input, env, ctx, emit);
     return error.JqRuntime;
 }
-
 
 fn eq(a: []const u8, b: []const u8) bool {
     return std.mem.eql(u8, a, b);
@@ -241,9 +243,15 @@ fn firstOf(obj: []const Entry, names: []const []const u8) ?Value {
 fn num1(v: Value, comptime f: fn (f64) f64) Value {
     return if (v == .number) .{ .number = f(v.number) } else v;
 }
-fn floorF(x: f64) f64 { return @floor(x); }
-fn ceilF(x: f64) f64 { return @ceil(x); }
-fn sqrtF(x: f64) f64 { return @sqrt(x); }
+fn floorF(x: f64) f64 {
+    return @floor(x);
+}
+fn ceilF(x: f64) f64 {
+    return @ceil(x);
+}
+fn sqrtF(x: f64) f64 {
+    return @sqrt(x);
+}
 fn absF(x: f64) f64 {
     return @abs(x);
 }

@@ -124,7 +124,9 @@ struct LenientValue(Value);
 
 impl<'de> Deserialize<'de> for LenientValue {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_any(LenientVisitor).map(LenientValue)
+        deserializer
+            .deserialize_any(LenientVisitor)
+            .map(LenientValue)
     }
 }
 
@@ -355,8 +357,13 @@ fn compile_operation(
         let raw = p.schema.clone();
         p.schema = normalize_schema(root, &raw, SchemaUse::Input, 0, &mut input_defs);
     }
-    let (body_schema, body_required, request_content_type) =
-        request_body(root, op_value.get("requestBody"), diagnostics, &tool_id, &mut input_defs)?;
+    let (body_schema, body_required, request_content_type) = request_body(
+        root,
+        op_value.get("requestBody"),
+        diagnostics,
+        &tool_id,
+        &mut input_defs,
+    )?;
 
     let mut output_defs = Map::new();
     let (response_schema, response_content_type) =

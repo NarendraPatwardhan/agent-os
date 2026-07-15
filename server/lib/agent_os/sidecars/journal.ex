@@ -3,7 +3,9 @@ defmodule AgentOS.Sidecars.Journal do
 
   @callback append(map()) :: {:ok, reference() | binary()} | {:error, term()}
   @callback complete(reference() | binary(), map()) :: :ok | {:error, term()}
-  @callback pending() :: [%{required(:journal_id) => reference() | binary(), optional(atom()) => term()}]
+  @callback pending() :: [
+              %{required(:journal_id) => reference() | binary(), optional(atom()) => term()}
+            ]
 
   def append(entry), do: implementation().append(entry)
   def complete(id, result), do: implementation().complete(id, result)

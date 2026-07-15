@@ -48,7 +48,13 @@ local function jpeg_dims(s)
 		else
 			local len = string.byte(s, i + 2) * 256 + string.byte(s, i + 3)
 			-- SOF0..SOF15, excluding DHT (C4), JPG (C8), DAC (CC)
-			if marker >= 0xC0 and marker <= 0xCF and marker ~= 0xC4 and marker ~= 0xC8 and marker ~= 0xCC then
+			if
+				marker >= 0xC0
+				and marker <= 0xCF
+				and marker ~= 0xC4
+				and marker ~= 0xC8
+				and marker ~= 0xCC
+			then
 				local h = string.byte(s, i + 5) * 256 + string.byte(s, i + 6)
 				local w = string.byte(s, i + 7) * 256 + string.byte(s, i + 8)
 				return w, h

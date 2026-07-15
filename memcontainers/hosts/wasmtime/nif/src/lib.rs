@@ -36,7 +36,6 @@ use constants_rust::{
     EAGAIN, EMSGSIZE, PERSIST_OP_DELETE, PERSIST_OP_GET, PERSIST_OP_LIST, PERSIST_OP_PUT,
 };
 use ctl_rust::RelayEvent as WireRelayEvent;
-use sidecar_rust::SIDECAR_HOST_BINDING;
 use host::{
     derive_connection_origins, AutocompleteOptions, CatalogConnection, CatalogInjectOptions,
     CatalogSpecSource, ConnectionCredential, ConnectionError, ConnectionPolicyAction,
@@ -45,6 +44,7 @@ use host::{
     PersistCapability, RealNet, StreamSink, ToolApprovalDecision, ToolApprovalFacts, ToolApprover,
 };
 use rustler::{Atom, Binary, Env, Error, NifResult, OwnedBinary, ResourceArc};
+use sidecar_rust::SIDECAR_HOST_BINDING;
 
 mod atoms {
     rustler::atoms! { ok }
@@ -1171,7 +1171,10 @@ fn autocomplete(
     cwd: String,
     complete_env: NifExecEnv,
     limit: u32,
-) -> NifResult<(Atom, (u32, u32, String, Vec<(String, String, String)>, bool))> {
+) -> NifResult<(
+    Atom,
+    (u32, u32, String, Vec<(String, String, String)>, bool),
+)> {
     let result = vm_lock(&vm)?
         .autocomplete(
             source.as_bytes(),
@@ -1496,10 +1499,7 @@ fn relay_next_sidecar<'a>(
         matches!(
             event,
             EgressRelayEvent::HostCall { name, .. } if name == SIDECAR_HOST_BINDING
-        ) || matches!(
-            event,
-            EgressRelayEvent::HostCallClose { sidecar: true, .. }
-        )
+        ) || matches!(event, EgressRelayEvent::HostCallClose { sidecar: true, .. })
     }) else {
         return Ok((atoms::ok(), None));
     };

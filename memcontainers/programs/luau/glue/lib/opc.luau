@@ -17,7 +17,8 @@ local opc = {}
 
 local CT_NS = "http://schemas.openxmlformats.org/package/2006/content-types"
 local REL_NS = "http://schemas.openxmlformats.org/package/2006/relationships"
-local REL_OFFICE_DOC = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
+local REL_OFFICE_DOC =
+	"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument"
 
 -- Format root content-types → format tag (Package.detectFormat).
 local FORMAT_BY_CT = {

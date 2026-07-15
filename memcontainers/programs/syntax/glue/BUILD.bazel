@@ -2,18 +2,20 @@ load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary", "zig_libr
 load("//bazel:mc_program.bzl", "cc_object", "mc_program")
 load("//bazel/tools/size:defs.bzl", "size_limit")
 
-cc_object(name = "wasi_adapter_link", obj = "//memcontainers/wasi-adapter:wasi_adapter_staticlib")
+cc_object(
+    name = "wasi_adapter_link",
+    obj = "//memcontainers/wasi-adapter:wasi_adapter_staticlib",
+)
 
 zig_library(
     name = "registry_lib",
-    main = "//memcontainers/programs/syntax/grammars:syntax_registry_zig",
     import_name = "syntax_registry",
+    main = "//memcontainers/programs/syntax/grammars:syntax_registry_zig",
     deps = ["//memcontainers/contracts:syntax_zig"],
 )
 
 zig_binary(
     name = "syntax_raw",
-    main = "entry.zig",
     srcs = ["scanner.zig"],
     csrcs = [
         "@tree_sitter//:runtime_c",
@@ -24,36 +26,37 @@ zig_binary(
         "@tree_sitter//:runtime_support",
     ],
     linkopts = ["-lc"],
+    main = "entry.zig",
+    tags = ["manual"],
     deps = [
-        "@tree_sitter//:runtime_headers",
+        ":registry_lib",
+        ":wasi_adapter_link",
         "//memcontainers/contracts:syntax_zig",
         "//memcontainers/sysroot/zig:mc",
         "//memcontainers/sysroot/zig:svc",
         "//memcontainers/sysroot/zig:sys",
-        ":registry_lib",
-        ":wasi_adapter_link",
+        "@tree_sitter//:runtime_headers",
     ],
-    tags = ["manual"],
 )
 
 zig_configure_binary(
     name = "syntax_wasm",
     actual = ":syntax_raw",
     mode = "release_small",
-    threaded = "single",
-    target = "//platforms:wasm32_wasi",
     tags = ["manual"],
+    target = "//platforms:wasm32_wasi",
+    threaded = "single",
 )
 
 mc_program(
     name = "syntax",
-    wasm = ":syntax_wasm",
-    tier = "isolated",
-    service = "syntax",
-    mem = 256 * 1024 * 1024,
     fuel = 1000000000000,
+    mem = 256 * 1024 * 1024,
+    service = "syntax",
     table = 20000,
+    tier = "isolated",
     visibility = ["//visibility:public"],
+    wasm = ":syntax_wasm",
 )
 
 # Native semantic tables and the shared Lua-family parser pack make this a meaningful regression

@@ -1,5 +1,5 @@
-load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
 
 # Bootstrap smoke target — the green anchor for `bazel test //...` while the real
 # wasm targets (kernel/, programs/) are still being ported. It proves the spine the
@@ -12,11 +12,11 @@ load("@bazel_skylib//rules:build_test.bzl", "build_test")
 # platform would fail for lack of an entry point (so `//...` must not pick it up).
 zig_binary(
     name = "raw",
-    main = "smoke.zig",
     linkopts = [
         "-fno-entry",
         "-rdynamic",
     ],
+    main = "smoke.zig",
     tags = ["manual"],
 )
 

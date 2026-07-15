@@ -185,8 +185,12 @@ defmodule AgentOS.Sidecars.Firecracker.Daemon do
 
   defp wait_loop(path, deadline) do
     cond do
-      File.exists?(path) -> :ok
-      System.monotonic_time(:millisecond) >= deadline -> {:error, :firecracker_api_timeout}
+      File.exists?(path) ->
+        :ok
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        {:error, :firecracker_api_timeout}
+
       true ->
         Process.sleep(10)
         wait_loop(path, deadline)
@@ -203,5 +207,6 @@ defmodule AgentOS.Sidecars.Firecracker.Daemon do
     do:
       is_binary(id) and byte_size(id) in 15..64 and
         Regex.match?(~r/^sc_[A-Za-z0-9_-]+$/, id)
+
   defp via(id), do: {:via, Registry, {AgentOS.SidecarRegistry, {:firecracker_daemon, id}}}
 end

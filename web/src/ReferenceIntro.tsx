@@ -41,8 +41,8 @@ export function ReferenceIntro() {
           Turn examples into applications.
         </h2>
         <p {...stylex.props(text.bodyLg, text.muted, styles.description)}>
-          Explore every public method, option, runtime boundary, browser element, and failure mode in
-          one searchable guide.
+          Explore every public method, option, runtime boundary, browser element, and failure mode
+          in one searchable guide.
         </p>
         <a href="#reference" {...stylex.props(controls.link, text.body, styles.link)}>
           Explore the API <span aria-hidden="true">↓</span>

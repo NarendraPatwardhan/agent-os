@@ -322,6 +322,7 @@ defmodule AgentOS.Sidecars.Instance do
   defp release_waiters(state), do: state
 
   defp delete_provider(%{deleted: true} = state), do: {:ok, state}
+
   defp delete_provider(%{delete_attempted: true} = state),
     do: {{:error, :sidecar_delete_pending}, state}
 
@@ -342,7 +343,6 @@ defmodule AgentOS.Sidecars.Instance do
       {:error, reason} -> {{:error, reason}, %{state | state: :failed}}
     end
   end
-
 
   defp provider_create(provider, context, request, provider_opts) do
     provider_call(request.timeout_ms, fn -> provider.create(context, request, provider_opts) end)
@@ -388,8 +388,12 @@ defmodule AgentOS.Sidecars.Instance do
       Task.Supervisor.async_nolink(AgentOS.SidecarTaskSupervisor, fun)
 
     case Task.yield(task, timeout) do
-      {:ok, result} -> result
-      {:exit, reason} -> {:error, {:provider_exit, reason}}
+      {:ok, result} ->
+        result
+
+      {:exit, reason} ->
+        {:error, {:provider_exit, reason}}
+
       nil ->
         _ = Task.shutdown(task, :brutal_kill)
         {:error, :timeout}

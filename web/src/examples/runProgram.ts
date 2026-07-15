@@ -48,7 +48,8 @@ export async function runProgram(
   const ensureStore = async (): Promise<MemoryContentStore> => {
     if (store) return store;
     const resolved = await ensureAssets();
-    if (!(resolved.image instanceof Uint8Array)) throw new Error(`could not seed ${imageName} image bytes`);
+    if (!(resolved.image instanceof Uint8Array))
+      throw new Error(`could not seed ${imageName} image bytes`);
     store = new MemoryContentStore();
     const digest = await store.put(resolved.image);
     await store.putManifest(imageName, {
@@ -202,7 +203,8 @@ export async function runProgram(
   };
 
   const mc = {
-    create: async (opts?: CreateOptions) => (!opts || Object.keys(opts).length === 0 ? current : createExternal(opts)),
+    create: async (opts?: CreateOptions) =>
+      !opts || Object.keys(opts).length === 0 ? current : createExternal(opts),
     restore: restoreExternal,
     record: async (opts: CreateOptions = {}) => {
       const sourceRef = typeof opts.image === "string" ? opts.image : imageName;

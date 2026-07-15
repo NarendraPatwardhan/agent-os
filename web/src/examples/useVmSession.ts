@@ -5,7 +5,12 @@ import type { McTerminal, Vm } from "@mc/elements";
  *  prop drives the browser boot per-instance); `attach` binds an externally-created
  *  VM (a remote handle, a fork) to a `manual` terminal. */
 export type BootSpec =
-  | { readonly kind: "browser"; readonly image: string; readonly net?: boolean; readonly deterministic?: boolean }
+  | {
+      readonly kind: "browser";
+      readonly image: string;
+      readonly net?: boolean;
+      readonly deterministic?: boolean;
+    }
   | { readonly kind: "attach"; readonly vm: Vm };
 
 export type VmSession = {
@@ -84,7 +89,9 @@ export function useVmSession(opts: Options = {}): VmSession {
     try {
       const pending = optsRef.current.onReady?.(vm, sessionRef.current!);
       void Promise.resolve(pending)
-        .catch((error) => sessionRef.current?.print(error instanceof Error ? error.message : String(error)))
+        .catch((error) =>
+          sessionRef.current?.print(error instanceof Error ? error.message : String(error)),
+        )
         .finally(() => {
           if (runRef.current === run) setWorking(false);
         });
@@ -128,7 +135,12 @@ export function useVmSession(opts: Options = {}): VmSession {
     vm: vmRef.current,
     bootBrowser: (image, o) => {
       reset();
-      setSpec({ kind: "browser", image, net: o?.net ?? true, deterministic: o?.deterministic ?? false });
+      setSpec({
+        kind: "browser",
+        image,
+        net: o?.net ?? true,
+        deterministic: o?.deterministic ?? false,
+      });
       setBootKey((k) => k + 1);
     },
     attach: (vm) => {

@@ -20,6 +20,7 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
   @impl true
   def init(opts) do
     id = Keyword.fetch!(opts, :id)
+
     contract = %{
       kind: Keyword.fetch!(opts, :kind),
       version: Keyword.fetch!(opts, :version),
@@ -41,7 +42,13 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
     else
       {:error, reason} ->
         diagnostics = AgentOS.Sidecars.Firecracker.Daemon.diagnostics(id)
-        IO.binwrite(:stderr, ["Firecracker runner failed during vsock startup:\n", diagnostics, "\n"])
+
+        IO.binwrite(:stderr, [
+          "Firecracker runner failed during vsock startup:\n",
+          diagnostics,
+          "\n"
+        ])
+
         {:stop, {reason, diagnostics}}
     end
   end
@@ -78,10 +85,10 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
 
     case connect(state.path, state.contract, @connect_timeout) do
       {:ok, socket, metadata} ->
-        {:noreply,
-         start_next(%{state | socket: socket, metadata: metadata, current: nil})}
+        {:noreply, start_next(%{state | socket: socket, metadata: metadata, current: nil})}
 
-      {:error, reason} -> {:stop, reason, %{state | current: nil}}
+      {:error, reason} ->
+        {:stop, reason, %{state | current: nil}}
     end
   end
 
@@ -99,7 +106,10 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
     {:noreply, start_next(%{state | current: nil})}
   end
 
-  def handle_info({:DOWN, ref, :process, _pid, reason}, %{current: %{task: %{ref: ref}} = current} = state) do
+  def handle_info(
+        {:DOWN, ref, :process, _pid, reason},
+        %{current: %{task: %{ref: ref}} = current} = state
+      ) do
     GenServer.reply(current.from, {:error, {:runner_exit, reason}})
     {:noreply, start_next(%{state | current: nil})}
   end

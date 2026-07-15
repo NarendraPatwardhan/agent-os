@@ -21,11 +21,11 @@ zig_library(
 zig_library(
     name = "sys",
     main = "sys.zig",
+    visibility = ["//visibility:public"],
     deps = [
         ":mc",
         "//memcontainers/contracts:constants_zig",
     ],
-    visibility = ["//visibility:public"],
 )
 
 # The resident-service serve-loop scaffolding (serve / recv-envelope / respond) over the svc_* server
@@ -33,9 +33,9 @@ zig_library(
 zig_library(
     name = "svc",
     main = "svc.zig",
+    visibility = ["//visibility:public"],
     deps = [
         ":mc",
         "//memcontainers/contracts:constants_zig",  # the projected SERVICE_MARKER (codex #5), re-exported by svc.zig
     ],
-    visibility = ["//visibility:public"],
 )

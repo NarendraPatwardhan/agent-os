@@ -99,7 +99,15 @@ end
 function time.format(secs, fmt)
 	local t = time.utc(secs)
 	if fmt == nil or fmt == "iso" then
-		return string.format("%04d-%02d-%02dT%02d:%02d:%02dZ", t.year, t.month, t.day, t.hour, t.min, t.sec)
+		return string.format(
+			"%04d-%02d-%02dT%02d:%02d:%02dZ",
+			t.year,
+			t.month,
+			t.day,
+			t.hour,
+			t.min,
+			t.sec
+		)
 	elseif fmt == "date" then
 		return string.format("%04d-%02d-%02d", t.year, t.month, t.day)
 	elseif fmt == "time" then

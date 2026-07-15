@@ -18,7 +18,7 @@ rust_binary(
 # The strip-then-append idempotency, unit-tested: a re-stamp replaces rather than duplicates.
 rust_opt_test(
     name = "test",
+    size = "small",
     crate = ":mc-stamp",
     edition = "2021",
-    size = "small",
 )

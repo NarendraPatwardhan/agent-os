@@ -1,8 +1,8 @@
-package(default_visibility = ["//visibility:public"])
-
+load("@aspect_rules_js//js:defs.bzl", "js_library", "js_test")
 load("//bazel:rust_opt_test.bzl", "rust_opt_test")
 load("//bazel:ts.bzl", "mc_ts_project")
-load("@aspect_rules_js//js:defs.bzl", "js_library", "js_test")
+
+package(default_visibility = ["//visibility:public"])
 
 exports_files([
     "control_vectors.json",
@@ -16,10 +16,9 @@ js_library(
 
 rust_opt_test(
     name = "abi_test",
+    size = "medium",
     srcs = ["src/abi_test.rs"],
     crate_root = "src/abi_test.rs",
-    edition = "2021",
-    size = "medium",
     data = [
         "//memcontainers/images:atlas",
         "//memcontainers/images:minimal",
@@ -27,6 +26,7 @@ rust_opt_test(
         "//memcontainers/images:posix",
         "//memcontainers/images:svc_test",
     ],
+    edition = "2021",
     deps = [
         "//bazel/tools/wasm-imports:lib",
         "//memcontainers/contracts:mc_rust",
@@ -38,8 +38,8 @@ rust_opt_test(
     name = "control_vectors_rust_test",
     srcs = ["src/control_vectors_test.rs"],
     crate_root = "src/control_vectors_test.rs",
-    edition = "2021",
     data = [":control_vectors.json"],
+    edition = "2021",
     deps = [
         "//memcontainers/contracts:ctl_rust",
         "@host_crates//:serde_json",
@@ -49,16 +49,16 @@ rust_opt_test(
 
 rust_opt_test(
     name = "runtime_test",
+    size = "medium",
     srcs = ["src/runtime_test.rs"],
     crate_root = "src/runtime_test.rs",
-    edition = "2021",
-    size = "medium",
     data = [
         "//memcontainers/images:loom",
         "//memcontainers/images:posix",
         "//memcontainers/images:svc_test",
         "//memcontainers/kernel/rust:kernel",
     ],
+    edition = "2021",
     deps = [
         "//memcontainers/hosts/wasmtime:host",
         "@rules_rust//rust/runfiles",

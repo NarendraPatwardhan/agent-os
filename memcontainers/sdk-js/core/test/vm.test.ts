@@ -9,7 +9,14 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeSnapshotHeader } from "@mc/contracts/snapshot";
-import { capabilityConnection, FsContentStore, MemoryContentStore, llb, mc, remoteBuild } from "../src/index.js";
+import {
+  capabilityConnection,
+  FsContentStore,
+  MemoryContentStore,
+  llb,
+  mc,
+  remoteBuild,
+} from "../src/index.js";
 import type {
   BuildDefinition,
   ContentStore,
@@ -79,7 +86,8 @@ async function recordingServer(): Promise<{
     server.listen(0, "127.0.0.1", () => resolve());
   });
   const address = server.address();
-  if (!address || typeof address === "string") throw new Error("recording server did not bind a TCP port");
+  if (!address || typeof address === "string")
+    throw new Error("recording server did not bind a TCP port");
   return {
     origin: `http://127.0.0.1:${address.port}`,
     requests,
@@ -112,7 +120,8 @@ async function bytesServer(routeBytes: Map<string, Uint8Array>): Promise<{
     server.listen(0, "127.0.0.1", () => resolve());
   });
   const address = server.address();
-  if (!address || typeof address === "string") throw new Error("bytes server did not bind a TCP port");
+  if (!address || typeof address === "string")
+    throw new Error("bytes server did not bind a TCP port");
   return {
     origin: `http://127.0.0.1:${address.port}`,
     requests,
@@ -153,7 +162,11 @@ async function remoteVmServer(): Promise<{
         );
         return;
       }
-      if (req.method === "POST" && req.url?.startsWith("/v1/vms/") && req.url.endsWith("/snapshots?mode=full")) {
+      if (
+        req.method === "POST" &&
+        req.url?.startsWith("/v1/vms/") &&
+        req.url.endsWith("/snapshots?mode=full")
+      ) {
         res.writeHead(200, { "content-type": "application/octet-stream" });
         res.end(snapshot);
         return;
@@ -164,7 +177,11 @@ async function remoteVmServer(): Promise<{
         res.end(JSON.stringify({ id: parsed.id ?? "remote-test" }));
         return;
       }
-      if (req.method === "POST" && req.url?.startsWith("/v1/vms/") && req.url.endsWith("/restore")) {
+      if (
+        req.method === "POST" &&
+        req.url?.startsWith("/v1/vms/") &&
+        req.url.endsWith("/restore")
+      ) {
         const parts = req.url.split("/");
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ id: decodeURIComponent(parts[3] ?? "restored") }));
@@ -175,7 +192,11 @@ async function remoteVmServer(): Promise<{
         res.end(JSON.stringify({ vm: { id: "remote-fork" }, warnings: [] }));
         return;
       }
-      if (req.method === "POST" && req.url?.startsWith("/v1/vms/") && req.url.endsWith("/autocomplete")) {
+      if (
+        req.method === "POST" &&
+        req.url?.startsWith("/v1/vms/") &&
+        req.url.endsWith("/autocomplete")
+      ) {
         const parsed = JSON.parse(body || "{}") as { source?: string; cursor?: number };
         res.writeHead(200, { "content-type": "application/json" });
         res.end(
@@ -204,7 +225,8 @@ async function remoteVmServer(): Promise<{
     server.listen(0, "127.0.0.1", () => resolve());
   });
   const address = server.address();
-  if (!address || typeof address === "string") throw new Error("remote VM test server did not bind a TCP port");
+  if (!address || typeof address === "string")
+    throw new Error("remote VM test server did not bind a TCP port");
   return {
     origin: `http://127.0.0.1:${address.port}`,
     requests,
@@ -216,7 +238,11 @@ async function remoteVmServer(): Promise<{
 }
 
 async function remoteBuildServer(
-  opts: { corruptDefinitionDigest?: boolean; corruptDefinitionBytes?: boolean; corruptBlobRefs?: boolean } = {},
+  opts: {
+    corruptDefinitionDigest?: boolean;
+    corruptDefinitionBytes?: boolean;
+    corruptBlobRefs?: boolean;
+  } = {},
 ): Promise<{
   origin: string;
   requests: RecordedRequest[];
@@ -274,7 +300,9 @@ async function remoteBuildServer(
           const definitionDigest = opts.corruptDefinitionDigest
             ? `sha256:${"e".repeat(64)}`
             : await sha256Digest(bytes);
-          const provenanceBytes = opts.corruptDefinitionBytes ? new Uint8Array([0xde, 0xad]) : bytes;
+          const provenanceBytes = opts.corruptDefinitionBytes
+            ? new Uint8Array([0xde, 0xad])
+            : bytes;
           const rootDigest = `sha256:${"b".repeat(64)}`;
           const kernelDigest = `sha256:${"c".repeat(64)}`;
           const layer = { digest: `sha256:${"d".repeat(64)}`, size: 123 };
@@ -327,7 +355,8 @@ async function remoteBuildServer(
     server.listen(0, "127.0.0.1", () => resolve());
   });
   const address = server.address();
-  if (!address || typeof address === "string") throw new Error("remote build test server did not bind a TCP port");
+  if (!address || typeof address === "string")
+    throw new Error("remote build test server did not bind a TCP port");
   return {
     origin: `http://127.0.0.1:${address.port}`,
     requests,
@@ -491,12 +520,14 @@ class CountingStore implements ContentStore {
   }
 
   snapshotObject(digest: string): Promise<Uint8Array> {
-    if (!this.inner.snapshotObject) throw new Error("inner content store does not support snapshot objects");
+    if (!this.inner.snapshotObject)
+      throw new Error("inner content store does not support snapshot objects");
     return this.inner.snapshotObject(digest);
   }
 
   async putSnapshotObject(snapshot: Uint8Array): Promise<string> {
-    if (!this.inner.putSnapshotObject) throw new Error("inner content store does not support snapshot objects");
+    if (!this.inner.putSnapshotObject)
+      throw new Error("inner content store does not support snapshot objects");
     return this.inner.putSnapshotObject(snapshot);
   }
 }
@@ -512,15 +543,24 @@ async function main(): Promise<void> {
   process.env.MC_BASE_IMAGE = imagePath;
   const kernel = new Uint8Array(readFileSync(kernelPath));
   const image = new Uint8Array(readFileSync(imagePath));
-  const atlasImage = new Uint8Array(readFileSync(runfile(process.env.MC_ATLAS_IMAGE, "MC_ATLAS_IMAGE")));
-  const loomImage = new Uint8Array(readFileSync(runfile(process.env.MC_LOOM_IMAGE, "MC_LOOM_IMAGE")));
-  const githubFixture = readFileSync(runfile(process.env.MC_GITHUB_FIXTURE, "MC_GITHUB_FIXTURE"), "utf8");
+  const atlasImage = new Uint8Array(
+    readFileSync(runfile(process.env.MC_ATLAS_IMAGE, "MC_ATLAS_IMAGE")),
+  );
+  const loomImage = new Uint8Array(
+    readFileSync(runfile(process.env.MC_LOOM_IMAGE, "MC_LOOM_IMAGE")),
+  );
+  const githubFixture = readFileSync(
+    runfile(process.env.MC_GITHUB_FIXTURE, "MC_GITHUB_FIXTURE"),
+    "utf8",
+  );
 
   let rejectedRemovedRuntime = false;
   try {
     await mc.create({ runtime: "bun", kernel, image } as unknown as CreateOptions);
   } catch (error) {
-    rejectedRemovedRuntime = /unsupported runtime.*bun.*local.*browser.*remote/i.test(String(error));
+    rejectedRemovedRuntime = /unsupported runtime.*bun.*local.*browser.*remote/i.test(
+      String(error),
+    );
   }
   if (!rejectedRemovedRuntime) {
     throw new Error('removed runtime "bun" must fail with the supported runtime list');
@@ -537,7 +577,11 @@ async function main(): Promise<void> {
     ) {
       throw new Error(`capabilityConnection single wrong: ${JSON.stringify(single)}`);
     }
-    const multi = capabilityConnection(["github.issues", "github.pulls"], { kind: "header", name: "X-Key", value: "v" });
+    const multi = capabilityConnection(["github.issues", "github.pulls"], {
+      kind: "header",
+      name: "X-Key",
+      value: "v",
+    });
     if (
       multi.connections.length !== 1 ||
       multi.connections[0]!.auth.kind !== "header" ||
@@ -551,7 +595,8 @@ async function main(): Promise<void> {
     } catch {
       threwBad = true;
     }
-    if (!threwBad) throw new Error("capabilityConnection should reject a capability without a group");
+    if (!threwBad)
+      throw new Error("capabilityConnection should reject a capability without a group");
     let threwMixed = false;
     try {
       capabilityConnection(["github.issues", "slack.messages"], "tok");
@@ -597,7 +642,9 @@ async function main(): Promise<void> {
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(() => {
           off();
-          reject(new Error(`declared mount missing from login shell: ${JSON.stringify(transcript)}`));
+          reject(
+            new Error(`declared mount missing from login shell: ${JSON.stringify(transcript)}`),
+          );
         }, 2_000);
         const off = shell.on((bytes) => {
           transcript += new TextDecoder().decode(bytes);
@@ -620,7 +667,11 @@ async function main(): Promise<void> {
   {
     const remote = await remoteVmServer();
     try {
-      const policy: ConnectionPolicyRule = { owner: "org", pattern: "github.org.main.*", action: "approve" };
+      const policy: ConnectionPolicyRule = {
+        owner: "org",
+        pattern: "github.org.main.*",
+        action: "approve",
+      };
       const specBytes = new TextEncoder().encode(githubFixture);
       const remoteVm = await mc.create({
         runtime: "remote",
@@ -654,14 +705,19 @@ async function main(): Promise<void> {
       await remoteVm.close();
 
       const create = remote.requests.find((req) => req.method === "POST" && req.url === "/v1/vms");
-      if (!create) throw new Error(`remote create did not POST /v1/vms: ${JSON.stringify(remote.requests)}`);
+      if (!create)
+        throw new Error(`remote create did not POST /v1/vms: ${JSON.stringify(remote.requests)}`);
       if (create.headers.authorization !== "Bearer server-token") {
         throw new Error(`remote create omitted bearer token: ${JSON.stringify(create.headers)}`);
       }
       const body = JSON.parse(create.body) as {
         id?: string;
         net?: string;
-        connections?: Array<{ ref?: string; auth?: { kind?: string; token?: string }; spec?: Record<string, unknown> }>;
+        connections?: Array<{
+          ref?: string;
+          auth?: { kind?: string; token?: string };
+          spec?: Record<string, unknown>;
+        }>;
         catalogTools?: string[];
         connectionPolicies?: ConnectionPolicyRule[];
       };
@@ -704,14 +760,17 @@ async function main(): Promise<void> {
       });
       await recorder.vm.close();
       const create = remote.requests.find((req) => req.method === "POST" && req.url === "/v1/vms");
-      if (!create) throw new Error(`remote record did not create a VM: ${JSON.stringify(remote.requests)}`);
+      if (!create)
+        throw new Error(`remote record did not create a VM: ${JSON.stringify(remote.requests)}`);
       const body = JSON.parse(create.body) as { id?: string; image?: string };
       if (body.id !== "remote-record" || body.image !== "remote-base") {
         throw new Error(`remote record did not forward VM create intent: ${create.body}`);
       }
       const definition = await recorder.build();
       if (definition.ops.length !== 1 || definition.ops[0]?.source_ref !== "remote-base") {
-        throw new Error(`remote record did not produce a replayable source DAG: ${JSON.stringify(definition)}`);
+        throw new Error(
+          `remote record did not produce a replayable source DAG: ${JSON.stringify(definition)}`,
+        );
       }
       console.log("phase: remote record creates live VM and emits portable source DAG OK");
     } finally {
@@ -728,15 +787,23 @@ async function main(): Promise<void> {
       const result = await remoteBuild(state, { endpoint: remote.origin, token: "server-token" });
       const blob = remote.requests.find((req) => req.method === "POST" && req.url === "/v1/blobs");
       const build = remote.requests.find((req) => req.method === "POST" && req.url === "/v1/build");
-      if (!blob || !build) throw new Error(`remote build did not use blob/build routes: ${JSON.stringify(remote.requests)}`);
-      if (blob.headers.authorization !== "Bearer server-token" || build.headers.authorization !== "Bearer server-token") {
+      if (!blob || !build)
+        throw new Error(
+          `remote build did not use blob/build routes: ${JSON.stringify(remote.requests)}`,
+        );
+      if (
+        blob.headers.authorization !== "Bearer server-token" ||
+        build.headers.authorization !== "Bearer server-token"
+      ) {
         throw new Error(`remote build omitted bearer token: ${JSON.stringify(remote.requests)}`);
       }
 
       const payload = new TextEncoder().encode("remote-build");
       const payloadDigest = await sha256Digest(payload);
       if (Buffer.compare(Buffer.from(blob.bodyBytes), Buffer.from(payload)) !== 0) {
-        throw new Error(`remote build uploaded wrong blob bytes: ${JSON.stringify(blob.bodyBytes)}`);
+        throw new Error(
+          `remote build uploaded wrong blob bytes: ${JSON.stringify(blob.bodyBytes)}`,
+        );
       }
       if (!remote.blobs.has(payloadDigest)) {
         throw new Error(`remote build did not upload write payload by digest: ${payloadDigest}`);
@@ -760,22 +827,35 @@ async function main(): Promise<void> {
         result.image.build?.storeRefs.blobs[0] !== payloadDigest ||
         result.manifestRef !== "node-" + result.rootDigest.slice("sha256:".length)
       ) {
-        throw new Error(`remote build result did not preserve server provenance: ${JSON.stringify(result)}`);
+        throw new Error(
+          `remote build result did not preserve server provenance: ${JSON.stringify(result)}`,
+        );
       }
 
       const prebuiltStore = new MemoryContentStore();
-      const prebuiltState = llb.write(llb.source("remote-base"), "/data/prebuilt.txt", "prebuilt-definition");
+      const prebuiltState = llb.write(
+        llb.source("remote-base"),
+        "/data/prebuilt.txt",
+        "prebuilt-definition",
+      );
       const prebuiltDefinition = await llb.toDefinition(prebuiltState, { store: prebuiltStore });
       const prebuiltDigest = prebuiltDefinition.ops[1]?.data_digest;
-      if (!prebuiltDigest) throw new Error(`prebuilt Definition did not externalize write bytes: ${JSON.stringify(prebuiltDefinition)}`);
+      if (!prebuiltDigest)
+        throw new Error(
+          `prebuilt Definition did not externalize write bytes: ${JSON.stringify(prebuiltDefinition)}`,
+        );
       let missingStoreRejected = false;
       try {
         await remoteBuild(prebuiltDefinition, { endpoint: remote.origin, token: "server-token" });
       } catch (error) {
-        missingStoreRejected = /pass opts\.store/.test(error instanceof Error ? error.message : String(error));
+        missingStoreRejected = /pass opts\.store/.test(
+          error instanceof Error ? error.message : String(error),
+        );
       }
       if (!missingStoreRejected) {
-        throw new Error("remote build accepted a prebuilt Definition with missing server blobs and no local store");
+        throw new Error(
+          "remote build accepted a prebuilt Definition with missing server blobs and no local store",
+        );
       }
       const prebuiltResult = await remoteBuild(prebuiltDefinition, {
         endpoint: remote.origin,
@@ -786,7 +866,9 @@ async function main(): Promise<void> {
         !remote.blobs.has(prebuiltDigest) ||
         !prebuiltResult.image.build?.storeRefs.blobs.includes(prebuiltDigest)
       ) {
-        throw new Error(`remote build did not upload prebuilt Definition blob refs: ${JSON.stringify(prebuiltResult)}`);
+        throw new Error(
+          `remote build did not upload prebuilt Definition blob refs: ${JSON.stringify(prebuiltResult)}`,
+        );
       }
       console.log("phase: remote build uploads blobs and posts canonical LLB Definition OK");
     } finally {
@@ -799,10 +881,14 @@ async function main(): Promise<void> {
       try {
         await remoteBuild(llb.source("remote-base"), { endpoint: corrupt.origin });
       } catch (error) {
-        rejected = /definition digest mismatch/.test(error instanceof Error ? error.message : String(error));
+        rejected = /definition digest mismatch/.test(
+          error instanceof Error ? error.message : String(error),
+        );
       }
       if (!rejected) {
-        throw new Error("remote build accepted a server result whose provenance did not match the posted Definition");
+        throw new Error(
+          "remote build accepted a server result whose provenance did not match the posted Definition",
+        );
       }
       console.log("phase: remote build rejects mismatched server provenance OK");
     } finally {
@@ -815,10 +901,14 @@ async function main(): Promise<void> {
       try {
         await remoteBuild(llb.source("remote-base"), { endpoint: corruptBytes.origin });
       } catch (error) {
-        rejected = /definition bytes mismatch/.test(error instanceof Error ? error.message : String(error));
+        rejected = /definition bytes mismatch/.test(
+          error instanceof Error ? error.message : String(error),
+        );
       }
       if (!rejected) {
-        throw new Error("remote build accepted server provenance whose embedded Definition bytes did not match the digest");
+        throw new Error(
+          "remote build accepted server provenance whose embedded Definition bytes did not match the digest",
+        );
       }
       console.log("phase: remote build rejects mismatched embedded Definition bytes OK");
     } finally {
@@ -831,10 +921,14 @@ async function main(): Promise<void> {
       try {
         await remoteBuild(llb.source("remote-base"), { endpoint: corruptBlobRefs.origin });
       } catch (error) {
-        rejected = /blob refs mismatch/.test(error instanceof Error ? error.message : String(error));
+        rejected = /blob refs mismatch/.test(
+          error instanceof Error ? error.message : String(error),
+        );
       }
       if (!rejected) {
-        throw new Error("remote build accepted server provenance whose blob refs did not match the posted Definition");
+        throw new Error(
+          "remote build accepted server provenance whose blob refs did not match the posted Definition",
+        );
       }
       console.log("phase: remote build rejects mismatched blob refs OK");
     } finally {
@@ -873,19 +967,29 @@ async function main(): Promise<void> {
         policies: [{ owner: "org", pattern: "github.org.main.*", action: "approve" }],
       });
       await restored.close();
-      const upload = remote.requests.find((req) => req.method === "POST" && req.url === "/v1/snapshots");
-      if (!upload) throw new Error(`remote restore did not upload snapshot bytes: ${JSON.stringify(remote.requests)}`);
+      const upload = remote.requests.find(
+        (req) => req.method === "POST" && req.url === "/v1/snapshots",
+      );
+      if (!upload)
+        throw new Error(
+          `remote restore did not upload snapshot bytes: ${JSON.stringify(remote.requests)}`,
+        );
       if (
         upload.headers["content-type"] !== "application/octet-stream" ||
         upload.bodyBytes.length !== remoteSnapshot.length ||
         upload.bodyBytes.some((byte, index) => byte !== remoteSnapshot[index])
       ) {
-        throw new Error(`remote restore snapshot upload was not raw bytes: ${JSON.stringify(upload)}`);
+        throw new Error(
+          `remote restore snapshot upload was not raw bytes: ${JSON.stringify(upload)}`,
+        );
       }
       const restore = remote.requests.find(
         (req) => req.method === "POST" && req.url === "/v1/vms/restore-catalog/restore",
       );
-      if (!restore) throw new Error(`remote restore did not POST restore endpoint: ${JSON.stringify(remote.requests)}`);
+      if (!restore)
+        throw new Error(
+          `remote restore did not POST restore endpoint: ${JSON.stringify(remote.requests)}`,
+        );
       const body = JSON.parse(restore.body) as {
         snapshot?: { ref?: string };
         attachments?: {
@@ -945,14 +1049,21 @@ async function main(): Promise<void> {
       const fork = remote.requests.find(
         (req) => req.method === "POST" && req.url === "/v1/vms/named-source/forks",
       );
-      if (!fork) throw new Error(`remote fork did not use the server transaction: ${JSON.stringify(remote.requests)}`);
+      if (!fork)
+        throw new Error(
+          `remote fork did not use the server transaction: ${JSON.stringify(remote.requests)}`,
+        );
       if (remote.requests.some((req) => req.method === "POST" && req.url.endsWith("/restore"))) {
-        throw new Error("remote fork reconstructed a client-side restore instead of delegating to the server");
+        throw new Error(
+          "remote fork reconstructed a client-side restore instead of delegating to the server",
+        );
       }
       if (sourceOptions.tools?.length !== 0 || sourceOptions.mounts?.length !== 0) {
         throw new Error("remote VM construction mutated caller-owned attachment arrays");
       }
-      console.log("phase: remote fork delegates one atomic independent-identity transaction to the server OK");
+      console.log(
+        "phase: remote fork delegates one atomic independent-identity transaction to the server OK",
+      );
     } finally {
       await forked?.close().catch(() => {});
       await source?.close().catch(() => {});
@@ -983,9 +1094,16 @@ async function main(): Promise<void> {
       await vm.close();
     }
     const snapshot = await llb
-      .commit(llb.write(llb.source("memory-base"), "/home/user/memory-snapshot.txt", "memory-snapshot"))
+      .commit(
+        llb.write(llb.source("memory-base"), "/home/user/memory-snapshot.txt", "memory-snapshot"),
+      )
       .asSnapshot({ store, kernel });
-    const restored = await mc.restore(snapshot, { kernel, image: "memory-base", store, deterministic: true });
+    const restored = await mc.restore(snapshot, {
+      kernel,
+      image: "memory-base",
+      store,
+      deterministic: true,
+    });
     try {
       const out = await restored.fs.readText("/home/user/memory-snapshot.txt");
       if (out !== "memory-snapshot") {
@@ -1037,7 +1155,12 @@ async function main(): Promise<void> {
         throw new Error(`recorded live exec failed: ${liveExec.stderr}`);
       }
       const recordedManifest = await llb.commit(await recorder.build()).asImage({ store, kernel });
-      const replay = await mc.create({ kernel, image: recordedManifest, store, deterministic: true });
+      const replay = await mc.create({
+        kernel,
+        image: recordedManifest,
+        store,
+        deterministic: true,
+      });
       try {
         const wrote = await replay.fs.readText("/home/user/recorded-dir/keep");
         const link = await replay.fs.readText("/home/user/recorded-link");
@@ -1072,13 +1195,17 @@ async function main(): Promise<void> {
     }
     console.log("phase: llb record round-trip replays fs mutations and exec options OK");
 
-    const manifest = await llb.commit(llb.image([base, written], { tier: "full" })).asImage({ store, kernel });
+    const manifest = await llb
+      .commit(llb.image([base, written], { tier: "full" }))
+      .asImage({ store, kernel });
     if (
       manifest.layers.length !== 2 ||
       manifest.layers[0]?.digest !== baseDigest ||
       manifest.layers[1]?.digest === baseDigest
     ) {
-      throw new Error(`llb image duplicated or misordered layers: ${JSON.stringify(manifest.layers)}`);
+      throw new Error(
+        `llb image duplicated or misordered layers: ${JSON.stringify(manifest.layers)}`,
+      );
     }
     if (manifest.config.budgetMib !== 512 || manifest.config.tier !== "full") {
       throw new Error(`llb image did not compose config: ${JSON.stringify(manifest.config)}`);
@@ -1130,7 +1257,12 @@ async function main(): Promise<void> {
       },
     );
     const execChangedManifest = await llb.commit(execEnvChanged).asImage({ store, kernel });
-    const execChangedVm = await mc.create({ kernel, image: execChangedManifest, store, deterministic: true });
+    const execChangedVm = await mc.create({
+      kernel,
+      image: execChangedManifest,
+      store,
+      deterministic: true,
+    });
     try {
       const env = await execChangedVm.fs.readText("/home/user/llb-env");
       if (env !== "changed") {
@@ -1141,11 +1273,15 @@ async function main(): Promise<void> {
     }
 
     if (execManifest.config.tier !== "read-write") {
-      throw new Error(`llb exec default tier was not read-write: ${JSON.stringify(execManifest.config)}`);
+      throw new Error(
+        `llb exec default tier was not read-write: ${JSON.stringify(execManifest.config)}`,
+      );
     }
     let defaultSpawnDenied = false;
     try {
-      await llb.commit(llb.exec(base, "sh -c 'printf child > /home/user/llb-child'")).asImage({ store, kernel });
+      await llb
+        .commit(llb.exec(base, "sh -c 'printf child > /home/user/llb-child'"))
+        .asImage({ store, kernel });
     } catch (err) {
       defaultSpawnDenied = /denied|permission|cap|spawn|exit/i.test(String(err));
     }
@@ -1155,16 +1291,25 @@ async function main(): Promise<void> {
     const fullSpawnManifest = await llb
       .commit(llb.exec(base, "sh -c 'printf child > /home/user/llb-child'", { tier: "full" }))
       .asImage({ store, kernel });
-    const fullSpawnVm = await mc.create({ kernel, image: fullSpawnManifest, store, deterministic: true });
+    const fullSpawnVm = await mc.create({
+      kernel,
+      image: fullSpawnManifest,
+      store,
+      deterministic: true,
+    });
     try {
       const child = await fullSpawnVm.fs.readText("/home/user/llb-child");
       if (child !== "child") {
-        throw new Error(`llb exec explicit full tier did not spawn child shell: ${JSON.stringify(child)}`);
+        throw new Error(
+          `llb exec explicit full tier did not spawn child shell: ${JSON.stringify(child)}`,
+        );
       }
     } finally {
       await fullSpawnVm.close();
     }
-    console.log("phase: llb exec defaults to read-write and requires explicit full for child spawn");
+    console.log(
+      "phase: llb exec defaults to read-write and requires explicit full for child spawn",
+    );
 
     const branchA = llb.write(base, "/etc/llb-a", "a\n");
     const branchB = llb.write(base, "/etc/llb-b", "b\n");
@@ -1175,14 +1320,18 @@ async function main(): Promise<void> {
       mergedLayerDigests[0] !== baseDigest ||
       new Set(mergedLayerDigests).size !== mergedLayerDigests.length
     ) {
-      throw new Error(`llb merge did not deduplicate shared provenance: ${JSON.stringify(mergedManifest.layers)}`);
+      throw new Error(
+        `llb merge did not deduplicate shared provenance: ${JSON.stringify(mergedManifest.layers)}`,
+      );
     }
     const mergedVm = await mc.create({ kernel, image: mergedManifest, store, deterministic: true });
     try {
       const a = await mergedVm.fs.readText("/etc/llb-a");
       const b = await mergedVm.fs.readText("/etc/llb-b");
       if (a !== "a\n" || b !== "b\n") {
-        throw new Error(`llb merge lost branch bytes: a=${JSON.stringify(a)} b=${JSON.stringify(b)}`);
+        throw new Error(
+          `llb merge lost branch bytes: a=${JSON.stringify(a)} b=${JSON.stringify(b)}`,
+        );
       }
     } finally {
       await mergedVm.close();
@@ -1193,18 +1342,26 @@ async function main(): Promise<void> {
       diffManifest.layers.length !== 1 ||
       diffManifest.layers[0]?.digest !== manifest.layers[1]?.digest
     ) {
-      throw new Error(`llb ancestral diff did not subtract lower provenance: ${JSON.stringify(diffManifest.layers)}`);
+      throw new Error(
+        `llb ancestral diff did not subtract lower provenance: ${JSON.stringify(diffManifest.layers)}`,
+      );
     }
     const diffVm = await mc.create({
       kernel,
-      image: { schema: 1, layers: [{ digest: baseDigest, size: image.length }, ...diffManifest.layers], config: {} },
+      image: {
+        schema: 1,
+        layers: [{ digest: baseDigest, size: image.length }, ...diffManifest.layers],
+        config: {},
+      },
       store,
       deterministic: true,
     });
     try {
       const out = await diffVm.fs.readText("/etc/llb-flavor");
       if (out !== "acme\n") {
-        throw new Error(`llb ancestral diff layer did not replay over lower: ${JSON.stringify(out)}`);
+        throw new Error(
+          `llb ancestral diff layer did not replay over lower: ${JSON.stringify(out)}`,
+        );
       }
     } finally {
       await diffVm.close();
@@ -1227,7 +1384,9 @@ async function main(): Promise<void> {
         aWhiteouted = true;
       }
       if (b !== "b\n" || !aWhiteouted) {
-        throw new Error(`llb disjoint diff did not replay: b=${JSON.stringify(b)} aWhiteouted=${aWhiteouted}`);
+        throw new Error(
+          `llb disjoint diff did not replay: b=${JSON.stringify(b)} aWhiteouted=${aWhiteouted}`,
+        );
       }
     } finally {
       await disjointVm.close();
@@ -1243,7 +1402,11 @@ async function main(): Promise<void> {
       "/home/user/stage/share/data.txt",
       "copied-data",
     );
-    const fatModeStage = llb.chmod(llb.chmod(fatFiles, "/home/user/stage/bin/app", 0o755), "/home/user/stage/share", 0o700);
+    const fatModeStage = llb.chmod(
+      llb.chmod(fatFiles, "/home/user/stage/bin/app", 0o755),
+      "/home/user/stage/share",
+      0o700,
+    );
     const fatStage = llb.symlink(fatModeStage, "data.txt", "/home/user/stage/share/data-link");
     const fatManifest = await llb.commit(fatStage).asImage({ store, kernel });
     const copiedStage = llb.copy(base, fatStage, [
@@ -1291,10 +1454,12 @@ async function main(): Promise<void> {
       await copyVm.close();
     }
     const copyDefinition = await llb.toDefinition(copiedStage, { store });
-    const copyFromDefinition = await llb.commit(llb.decodeDefinition(llb.encodeDefinition(copyDefinition))).asImage({
-      store,
-      kernel,
-    });
+    const copyFromDefinition = await llb
+      .commit(llb.decodeDefinition(llb.encodeDefinition(copyDefinition)))
+      .asImage({
+        store,
+        kernel,
+      });
     if (JSON.stringify(copyFromDefinition.layers) !== JSON.stringify(copyManifest.layers)) {
       throw new Error(
         `llb.copy Definition replay diverged: definition=${JSON.stringify(copyFromDefinition.layers)} direct=${JSON.stringify(copyManifest.layers)}`,
@@ -1316,7 +1481,12 @@ async function main(): Promise<void> {
       const child = await localVm.fs.readText("/home/user/local-src/nested/child.txt");
       const nestedMode = (await localVm.fs.stat("/home/user/local-src/nested")).mode;
       const childMode = (await localVm.fs.stat("/home/user/local-src/nested/child.txt")).mode;
-      if (root !== "local-root-v1" || child !== "local-child" || nestedMode !== 0o700 || childMode !== 0o755) {
+      if (
+        root !== "local-root-v1" ||
+        child !== "local-child" ||
+        nestedMode !== 0o700 ||
+        childMode !== 0o755
+      ) {
         throw new Error(
           `llb.local mismatch: root=${JSON.stringify(root)} child=${JSON.stringify(child)} nestedMode=${nestedMode.toString(8)} childMode=${childMode.toString(8)}`,
         );
@@ -1325,10 +1495,12 @@ async function main(): Promise<void> {
       await localVm.close();
     }
     const localDefinition = await llb.toDefinition(localStage, { store });
-    const localFromDefinition = await llb.commit(llb.decodeDefinition(llb.encodeDefinition(localDefinition))).asImage({
-      store,
-      kernel,
-    });
+    const localFromDefinition = await llb
+      .commit(llb.decodeDefinition(llb.encodeDefinition(localDefinition)))
+      .asImage({
+        store,
+        kernel,
+      });
     if (JSON.stringify(localFromDefinition.layers) !== JSON.stringify(localManifest.layers)) {
       throw new Error(
         `llb.local Definition replay diverged: definition=${JSON.stringify(localFromDefinition.layers)} direct=${JSON.stringify(localManifest.layers)}`,
@@ -1336,7 +1508,12 @@ async function main(): Promise<void> {
     }
     writeFileSync(join(localRoot, "root.txt"), "local-root-v2");
     const changedManifest = await llb.commit(localStage).asImage({ store, kernel });
-    const changedVm = await mc.create({ kernel, image: changedManifest, store, deterministic: true });
+    const changedVm = await mc.create({
+      kernel,
+      image: changedManifest,
+      store,
+      deterministic: true,
+    });
     try {
       const root = await changedVm.fs.readText("/home/user/local-src/root.txt");
       if (
@@ -1375,11 +1552,18 @@ async function main(): Promise<void> {
     const memoryLocalManifest = await llb
       .commit(llb.local("mem://context", { dest: "/home/user/memory-local" }))
       .asImage({ store, kernel, platform: memoryPlatform });
-    const memoryLocalVm = await mc.create({ kernel, image: memoryLocalManifest, store, deterministic: true });
+    const memoryLocalVm = await mc.create({
+      kernel,
+      image: memoryLocalManifest,
+      store,
+      deterministic: true,
+    });
     try {
       const value = await memoryLocalVm.fs.readText("/home/user/memory-local/nested/value.txt");
       if (value !== "memory-platform") {
-        throw new Error(`llb injected local-source platform bytes mismatch: ${JSON.stringify(value)}`);
+        throw new Error(
+          `llb injected local-source platform bytes mismatch: ${JSON.stringify(value)}`,
+        );
       }
     } finally {
       await memoryLocalVm.close();
@@ -1396,7 +1580,9 @@ async function main(): Promise<void> {
       const httpStage = llb.http(url, { dest: "/home/user/http/artifact.bin", sha256 });
       const httpManifest = await llb.commit(httpStage).asImage({ store, kernel });
       if (http.requests.length !== 1) {
-        throw new Error(`llb.http asImage fetched ${http.requests.length} times while building one source`);
+        throw new Error(
+          `llb.http asImage fetched ${http.requests.length} times while building one source`,
+        );
       }
       const httpVm = await mc.create({ kernel, image: httpManifest, store, deterministic: true });
       try {
@@ -1408,10 +1594,12 @@ async function main(): Promise<void> {
         await httpVm.close();
       }
       const httpDefinition = await llb.toDefinition(httpStage, { store });
-      const httpFromDefinition = await llb.commit(llb.decodeDefinition(llb.encodeDefinition(httpDefinition))).asImage({
-        store,
-        kernel,
-      });
+      const httpFromDefinition = await llb
+        .commit(llb.decodeDefinition(llb.encodeDefinition(httpDefinition)))
+        .asImage({
+          store,
+          kernel,
+        });
       if (JSON.stringify(httpFromDefinition.layers) !== JSON.stringify(httpManifest.layers)) {
         throw new Error(
           `llb.http Definition replay diverged: definition=${JSON.stringify(httpFromDefinition.layers)} direct=${JSON.stringify(httpManifest.layers)}`,
@@ -1419,19 +1607,29 @@ async function main(): Promise<void> {
       }
       let digestRejected = false;
       try {
-        await llb.commit(llb.http(url, { dest: "/home/user/http/bad.bin", sha256: `sha256:${"0".repeat(64)}` })).asImage({
-          store,
-          kernel,
-        });
+        await llb
+          .commit(
+            llb.http(url, { dest: "/home/user/http/bad.bin", sha256: `sha256:${"0".repeat(64)}` }),
+          )
+          .asImage({
+            store,
+            kernel,
+          });
       } catch {
         digestRejected = true;
       }
-      if (!digestRejected) throw new Error("llb.http accepted bytes that did not match the pinned digest");
+      if (!digestRejected)
+        throw new Error("llb.http accepted bytes that did not match the pinned digest");
 
       httpRoutes.set("/artifact.bin", new TextEncoder().encode("http-source-v2"));
       const changedHttp = llb.http(url, { dest: "/home/user/http/artifact.bin" });
       const changedHttpManifest = await llb.commit(changedHttp).asImage({ store, kernel });
-      const changedHttpVm = await mc.create({ kernel, image: changedHttpManifest, store, deterministic: true });
+      const changedHttpVm = await mc.create({
+        kernel,
+        image: changedHttpManifest,
+        store,
+        deterministic: true,
+      });
       try {
         const body = await changedHttpVm.fs.readText("/home/user/http/artifact.bin");
         if (
@@ -1465,16 +1663,20 @@ async function main(): Promise<void> {
       const app = await gitVm.fs.readText("/home/user/git-src/src/app.txt");
       const readme = await gitVm.fs.readText("/home/user/git-src/README.md");
       if (app !== "git-v1" || readme !== "readme-v1") {
-        throw new Error(`llb.git bytes mismatch: app=${JSON.stringify(app)} readme=${JSON.stringify(readme)}`);
+        throw new Error(
+          `llb.git bytes mismatch: app=${JSON.stringify(app)} readme=${JSON.stringify(readme)}`,
+        );
       }
     } finally {
       await gitVm.close();
     }
     const gitDefinition = await llb.toDefinition(gitStage, { store });
-    const gitFromDefinition = await llb.commit(llb.decodeDefinition(llb.encodeDefinition(gitDefinition))).asImage({
-      store,
-      kernel,
-    });
+    const gitFromDefinition = await llb
+      .commit(llb.decodeDefinition(llb.encodeDefinition(gitDefinition)))
+      .asImage({
+        store,
+        kernel,
+      });
     if (JSON.stringify(gitFromDefinition.layers) !== JSON.stringify(gitManifest.layers)) {
       throw new Error(
         `llb.git Definition replay diverged: definition=${JSON.stringify(gitFromDefinition.layers)} direct=${JSON.stringify(gitManifest.layers)}`,
@@ -1486,10 +1688,18 @@ async function main(): Promise<void> {
     runGit(gitRoot, ["commit", "--quiet", "-m", "v2"]);
     const changedGit = llb.git(`file://${gitRoot}`, { ref: "HEAD", dest: "/home/user/git-src" });
     const changedGitManifest = await llb.commit(changedGit).asImage({ store, kernel });
-    const changedGitVm = await mc.create({ kernel, image: changedGitManifest, store, deterministic: true });
+    const changedGitVm = await mc.create({
+      kernel,
+      image: changedGitManifest,
+      store,
+      deterministic: true,
+    });
     try {
       const app = await changedGitVm.fs.readText("/home/user/git-src/src/app.txt");
-      if (app !== "git-v2" || JSON.stringify(changedGitManifest.layers) === JSON.stringify(gitManifest.layers)) {
+      if (
+        app !== "git-v2" ||
+        JSON.stringify(changedGitManifest.layers) === JSON.stringify(gitManifest.layers)
+      ) {
         throw new Error(
           `llb.git cache key ignored resolved commit: app=${JSON.stringify(app)} before=${JSON.stringify(gitManifest.layers)} after=${JSON.stringify(changedGitManifest.layers)}`,
         );
@@ -1510,7 +1720,11 @@ async function main(): Promise<void> {
 
     const cachedFsOps = llb.symlink(
       llb.chmod(
-        llb.write(llb.mkdir(base, "/home/user/llb-fs-cache"), "/home/user/llb-fs-cache/file", "fs-cache\n"),
+        llb.write(
+          llb.mkdir(base, "/home/user/llb-fs-cache"),
+          "/home/user/llb-fs-cache/file",
+          "fs-cache\n",
+        ),
         "/home/user/llb-fs-cache/file",
         0o600,
       ),
@@ -1535,7 +1749,9 @@ async function main(): Promise<void> {
       const link = await fsVm.fs.readText("/home/user/llb-fs-cache-link");
       const mode = (await fsVm.fs.stat("/home/user/llb-fs-cache/file")).mode;
       if (link !== "fs-cache\n" || mode !== 0o600) {
-        throw new Error(`llb file-op replay mismatch: link=${JSON.stringify(link)} mode=${mode.toString(8)}`);
+        throw new Error(
+          `llb file-op replay mismatch: link=${JSON.stringify(link)} mode=${mode.toString(8)}`,
+        );
       }
     } finally {
       await fsVm.close();
@@ -1550,7 +1766,9 @@ async function main(): Promise<void> {
       store.putBlobDigests.length !== 1 ||
       definition.ops.some((op) => "ref" in (op as unknown as Record<string, unknown>))
     ) {
-      throw new Error(`llb Definition did not use clean out-of-line payloads: ${JSON.stringify(definition)}`);
+      throw new Error(
+        `llb Definition did not use clean out-of-line payloads: ${JSON.stringify(definition)}`,
+      );
     }
     const encodedDefinition = llb.encodeDefinition(definition);
     const decodedDefinition = llb.decodeDefinition(encodedDefinition);
@@ -1617,7 +1835,9 @@ async function main(): Promise<void> {
     if (!legacyNetworkDefinitionRejected) {
       throw new Error("llb Definition accepted an HTTP source_ref instead of requiring an http op");
     }
-    const emptyStdinDefinition = await llb.toDefinition(llb.exec(base, "true", { stdin: "" }), { store });
+    const emptyStdinDefinition = await llb.toDefinition(llb.exec(base, "true", { stdin: "" }), {
+      store,
+    });
     const emptyStdinOp = emptyStdinDefinition.ops.find((op) => op.cmd === "true");
     const emptyStdinState = await llb.fromDefinition(emptyStdinDefinition, { store });
     if (
@@ -1628,18 +1848,24 @@ async function main(): Promise<void> {
       !(emptyStdinState.node.opts.stdin instanceof Uint8Array) ||
       emptyStdinState.node.opts.stdin.length !== 0
     ) {
-      throw new Error(`llb Definition lost present-but-empty stdin: ${JSON.stringify(emptyStdinDefinition)}`);
+      throw new Error(
+        `llb Definition lost present-but-empty stdin: ${JSON.stringify(emptyStdinDefinition)}`,
+      );
     }
     const definitionManifest = await llb.commit(decodedDefinition).asImage({ store, kernel });
     const directDefinitionManifest = await llb.commit(cachedFsOps).asImage({ store, kernel });
-    if (JSON.stringify(definitionManifest.layers) !== JSON.stringify(directDefinitionManifest.layers)) {
+    if (
+      JSON.stringify(definitionManifest.layers) !== JSON.stringify(directDefinitionManifest.layers)
+    ) {
       throw new Error(
         `llb Definition commit diverged from direct DAG: definition=${JSON.stringify(definitionManifest.layers)} direct=${JSON.stringify(directDefinitionManifest.layers)}`,
       );
     }
     const buildRecord = definitionManifest.build;
     if (!buildRecord || !directDefinitionManifest.build) {
-      throw new Error(`llb image did not carry build provenance: ${JSON.stringify(definitionManifest)}`);
+      throw new Error(
+        `llb image did not carry build provenance: ${JSON.stringify(definitionManifest)}`,
+      );
     }
     const expectedDefinitionDigest = await sha256Digest(encodedDefinition);
     const expectedKernelDigest = await sha256Digest(kernel);
@@ -1661,7 +1887,10 @@ async function main(): Promise<void> {
     const provenanceDefinitionManifest = await llb
       .commit(llb.decodeDefinition(recordedDefinitionBytes))
       .asImage({ store, kernel });
-    if (JSON.stringify(provenanceDefinitionManifest.layers) !== JSON.stringify(definitionManifest.layers)) {
+    if (
+      JSON.stringify(provenanceDefinitionManifest.layers) !==
+      JSON.stringify(definitionManifest.layers)
+    ) {
       throw new Error(
         `llb build provenance definition did not replay: provenance=${JSON.stringify(provenanceDefinitionManifest.layers)} definition=${JSON.stringify(definitionManifest.layers)}`,
       );
@@ -1670,21 +1899,33 @@ async function main(): Promise<void> {
     const storedProvenanceManifest = await store.manifest("llb-provenance");
     if (
       storedProvenanceManifest.build?.definition.digest !== buildRecord.definition.digest ||
-      JSON.stringify(storedProvenanceManifest.build.definition.bytes) !== JSON.stringify(buildRecord.definition.bytes)
+      JSON.stringify(storedProvenanceManifest.build.definition.bytes) !==
+        JSON.stringify(buildRecord.definition.bytes)
     ) {
-      throw new Error(`llb build provenance did not survive manifest storage: ${JSON.stringify(storedProvenanceManifest)}`);
+      throw new Error(
+        `llb build provenance did not survive manifest storage: ${JSON.stringify(storedProvenanceManifest)}`,
+      );
     }
-    const definitionVm = await mc.create({ kernel, image: definitionManifest, store, deterministic: true });
+    const definitionVm = await mc.create({
+      kernel,
+      image: definitionManifest,
+      store,
+      deterministic: true,
+    });
     try {
       const link = await definitionVm.fs.readText("/home/user/llb-fs-cache-link");
       const mode = (await definitionVm.fs.stat("/home/user/llb-fs-cache/file")).mode;
       if (link !== "fs-cache\n" || mode !== 0o600) {
-        throw new Error(`llb Definition replay mismatch: link=${JSON.stringify(link)} mode=${mode.toString(8)}`);
+        throw new Error(
+          `llb Definition replay mismatch: link=${JSON.stringify(link)} mode=${mode.toString(8)}`,
+        );
       }
     } finally {
       await definitionVm.close();
     }
-    console.log("phase: llb Definition codec round-trip and build provenance commit bootable file ops OK");
+    console.log(
+      "phase: llb Definition codec round-trip and build provenance commit bootable file ops OK",
+    );
 
     const cached = llb.write(base, "/etc/llb-cached", "cached\n");
     store.reset();
@@ -1773,7 +2014,9 @@ async function main(): Promise<void> {
     if (staleHit) {
       throw new Error("llb VM-booting node reused a cached layer after kernel bytes changed");
     }
-    console.log("phase: llb cache soundness covers in-flight, deterministic, net, and kernel-key cases");
+    console.log(
+      "phase: llb cache soundness covers in-flight, deterministic, net, and kernel-key cases",
+    );
 
     const snapshotNode = llb.write(base, "/home/user/snapshot-base", "snapshot-base");
     const snapshotManifest = await llb.commit(snapshotNode).asImage({ store, kernel });
@@ -1807,9 +2050,16 @@ async function main(): Promise<void> {
       store.putSnapshotKeys.length !== 3 ||
       new Set(store.putSnapshotKeys).size !== store.putSnapshotKeys.length
     ) {
-      throw new Error(`llb warm snapshot did not use distinct memo keys: ${JSON.stringify(store.putSnapshotKeys)}`);
+      throw new Error(
+        `llb warm snapshot did not use distinct memo keys: ${JSON.stringify(store.putSnapshotKeys)}`,
+      );
     }
-    const coldVm = await mc.restore(coldSnapshot, { kernel, image: snapshotManifest, store, deterministic: true });
+    const coldVm = await mc.restore(coldSnapshot, {
+      kernel,
+      image: snapshotManifest,
+      store,
+      deterministic: true,
+    });
     try {
       let coldHasWarmMarker = false;
       try {
@@ -1818,11 +2068,17 @@ async function main(): Promise<void> {
       } catch {
         // Expected: no warm directive ran for the cold snapshot.
       }
-      if (coldHasWarmMarker) throw new Error("cold llb snapshot unexpectedly contained warm marker");
+      if (coldHasWarmMarker)
+        throw new Error("cold llb snapshot unexpectedly contained warm marker");
     } finally {
       await coldVm.close();
     }
-    const warmVm = await mc.restore(warmSnapshot, { kernel, image: snapshotManifest, store, deterministic: true });
+    const warmVm = await mc.restore(warmSnapshot, {
+      kernel,
+      image: snapshotManifest,
+      store,
+      deterministic: true,
+    });
     try {
       const marker = await warmVm.fs.readText("/home/user/warm-marker");
       if (marker !== "warm:stdin") {
@@ -1948,7 +2204,8 @@ error("timed out waiting for restored warm sqlite child: " .. err)
       } catch {
         // Expected: the cold snapshot never started the SQLite client.
       }
-      if (coldPrepared) throw new Error("cold atlas snapshot unexpectedly had a prepared SQLite statement");
+      if (coldPrepared)
+        throw new Error("cold atlas snapshot unexpectedly had a prepared SQLite statement");
     } finally {
       await sqliteColdVm.close();
     }
@@ -1961,7 +2218,9 @@ error("timed out waiting for restored warm sqlite child: " .. err)
     try {
       const ready = await sqliteWarmVm.fs.readText("/home/user/sqlite-ready");
       if (ready !== "prepared") {
-        throw new Error(`atlas warm snapshot did not restore the prepared marker: ${JSON.stringify(ready)}`);
+        throw new Error(
+          `atlas warm snapshot did not restore the prepared marker: ${JSON.stringify(ready)}`,
+        );
       }
       await sqliteWarmVm.fs.write("/home/user/sqlite-go", "1");
       const result = await sqliteWarmVm.exec("luau /home/user/sqlite-wait-result.luau");
@@ -1999,7 +2258,10 @@ error("timed out waiting for restored warm sqlite child: " .. err)
       env: { MC_EXEC_FLAG: "typed-env" },
       stdin: "typed-stdin\n",
     });
-    if (execOpts.exitCode !== 0 || execOpts.stdout !== "/home/user/exec-cwd\ntyped-env\ntyped-stdin") {
+    if (
+      execOpts.exitCode !== 0 ||
+      execOpts.stdout !== "/home/user/exec-cwd\ntyped-env\ntyped-stdin"
+    ) {
       throw new Error(
         `vm.exec options mismatch: exit=${execOpts.exitCode} stdout=${JSON.stringify(execOpts.stdout)} stderr=${JSON.stringify(execOpts.stderr)}`,
       );
@@ -2014,7 +2276,9 @@ error("timed out waiting for restored warm sqlite child: " .. err)
       unicodePath?.value !== "/tmp/💡\\ two" ||
       unicodePath.kind !== "file"
     ) {
-      throw new Error(`vm.autocomplete UTF-16/path mapping mismatch: ${JSON.stringify(completion)}`);
+      throw new Error(
+        `vm.autocomplete UTF-16/path mapping mismatch: ${JSON.stringify(completion)}`,
+      );
     }
     let splitSurrogateRejected = false;
     try {
@@ -2022,7 +2286,8 @@ error("timed out waiting for restored warm sqlite child: " .. err)
     } catch (error) {
       splitSurrogateRejected = error instanceof RangeError;
     }
-    if (!splitSurrogateRejected) throw new Error("vm.autocomplete accepted a cursor inside a surrogate pair");
+    if (!splitSurrogateRejected)
+      throw new Error("vm.autocomplete accepted a cursor inside a surrogate pair");
     let unsafeSessionRejected = false;
     try {
       vm.session("luau; echo unsafe");
@@ -2041,7 +2306,9 @@ error("timed out waiting for restored warm sqlite child: " .. err)
     // vm.tool() updates the warm service's live catalog instead of only rewriting the boot catalog tree.
     const before = await vm.exec("tools list");
     if (before.exitCode !== 0 || !before.stdout.includes('"tools":[]')) {
-      throw new Error(`initial tools catalog mismatch: exit=${before.exitCode} stdout=${before.stdout}`);
+      throw new Error(
+        `initial tools catalog mismatch: exit=${before.exitCode} stdout=${before.stdout}`,
+      );
     }
     const dynamicTool: ToolDefinition = {
       name: "dynamic greet",
@@ -2050,9 +2317,11 @@ error("timed out waiting for restored warm sqlite child: " .. err)
       run: (input) => ({ message: `hello ${String(input.name ?? "world")}` }),
     };
     await vm.tool(dynamicTool);
-    const after = await vm.exec("tools call host.org.main.dynamicGreet '{\"name\":\"Ada\"}'");
+    const after = await vm.exec('tools call host.org.main.dynamicGreet \'{"name":"Ada"}\'');
     if (after.exitCode !== 0 || !after.stdout.includes('"message":"hello Ada"')) {
-      throw new Error(`runtime tool registration mismatch: exit=${after.exitCode} stdout=${after.stdout}`);
+      throw new Error(
+        `runtime tool registration mismatch: exit=${after.exitCode} stdout=${after.stdout}`,
+      );
     }
 
     const liveMountBytes = new TextEncoder().encode("fork-mounted\n");
@@ -2096,9 +2365,14 @@ error("timed out waiting for restored warm sqlite child: " .. err)
 
     const forked = await vm.fork();
     try {
-      const forkedTool = await forked.exec("tools call host.org.main.dynamicGreet '{\"name\":\"Fork\"}'");
+      const forkedTool = await forked.exec(
+        'tools call host.org.main.dynamicGreet \'{"name":"Fork"}\'',
+      );
       const forkedMount = await forked.fs.readText("/runtime-owned/value.txt");
-      if (!forkedTool.stdout.includes('"message":"hello Fork"') || forkedMount !== "fork-mounted\n") {
+      if (
+        !forkedTool.stdout.includes('"message":"hello Fork"') ||
+        forkedMount !== "fork-mounted\n"
+      ) {
         throw new Error(
           `fork did not inherit canonical live attachments: tool=${forkedTool.stdout} mount=${JSON.stringify(forkedMount)}`,
         );
@@ -2110,7 +2384,9 @@ error("timed out waiting for restored warm sqlite child: " .. err)
     if (vmOptions.mounts?.length !== 0) {
       throw new Error("vm.unmount() mutated caller-owned CreateOptions");
     }
-    console.log("phase: fork inherits canonical live tools/mounts without mutating CreateOptions OK");
+    console.log(
+      "phase: fork inherits canonical live tools/mounts without mutating CreateOptions OK",
+    );
 
     // #1 + restore attachment contract: the warm catalog snapshots WITH the VM, but JS host-call
     // closures do not. Strict restore refuses to return a VM that advertises a host-call catalog entry
@@ -2136,7 +2412,10 @@ error("timed out waiting for restored warm sqlite child: " .. err)
     });
     try {
       const detachedList = await detached.exec("tools list");
-      if (detachedList.exitCode !== 0 || !detachedList.stdout.includes("host.org.main.dynamicGreet")) {
+      if (
+        detachedList.exitCode !== 0 ||
+        !detachedList.stdout.includes("host.org.main.dynamicGreet")
+      ) {
         throw new Error(
           `detached restore clobbered the warm catalog (dynamicGreet missing): exit=${detachedList.exitCode} stdout=${detachedList.stdout}`,
         );
@@ -2153,8 +2432,13 @@ error("timed out waiting for restored warm sqlite child: " .. err)
       tools: [dynamicTool],
     });
     try {
-      const restoredCall = await restored.exec("tools call host.org.main.dynamicGreet '{\"name\":\"Restore\"}'");
-      if (restoredCall.exitCode !== 0 || !restoredCall.stdout.includes('"message":"hello Restore"')) {
+      const restoredCall = await restored.exec(
+        'tools call host.org.main.dynamicGreet \'{"name":"Restore"}\'',
+      );
+      if (
+        restoredCall.exitCode !== 0 ||
+        !restoredCall.stdout.includes('"message":"hello Restore"')
+      ) {
         throw new Error(
           `strict restore did not reattach dynamicGreet: exit=${restoredCall.exitCode} stdout=${restoredCall.stdout}`,
         );
@@ -2171,7 +2455,13 @@ error("timed out waiting for restored warm sqlite child: " .. err)
   // restore resolves it without requiring callers to pass a second byte array manually.
   {
     const store = new MemoryContentStore();
-    const source = await mc.create({ runtime: LOCAL_RUNTIME, kernel, image, store, deterministic: true });
+    const source = await mc.create({
+      runtime: LOCAL_RUNTIME,
+      kernel,
+      image,
+      store,
+      deterministic: true,
+    });
     let delta: Uint8Array;
     let full: Uint8Array;
     try {
@@ -2179,13 +2469,20 @@ error("timed out waiting for restored warm sqlite child: " .. err)
       delta = await source.snapshot({ mode: "incremental" });
       full = await source.snapshot();
       if (delta.length >= full.length) {
-        throw new Error(`incremental snapshot was not smaller than full: delta=${delta.length} full=${full.length}`);
+        throw new Error(
+          `incremental snapshot was not smaller than full: delta=${delta.length} full=${full.length}`,
+        );
       }
     } finally {
       await source.close();
     }
 
-    const restored = await mc.restore(delta!, { runtime: LOCAL_RUNTIME, kernel, store, deterministic: true });
+    const restored = await mc.restore(delta!, {
+      runtime: LOCAL_RUNTIME,
+      kernel,
+      store,
+      deterministic: true,
+    });
     try {
       if ((await restored.fs.readText("/tmp/incremental-sdk")) !== "survives") {
         throw new Error("SDK incremental restore did not reconstruct the full memory image");
@@ -2248,10 +2545,12 @@ error("timed out waiting for restored warm sqlite child: " .. err)
     }
 
     const called = await githubVm.exec(
-      "tools call github.org.main.issues-list '{\"path\":{\"owner\":\"octo\",\"repo\":\"hello\"},\"query\":{\"state\":\"open\"}}'",
+      'tools call github.org.main.issues-list \'{"path":{"owner":"octo","repo":"hello"},"query":{"state":"open"}}\'',
     );
     if (called.exitCode !== 0 || !called.stdout.includes('"marker":"js-host-adapter"')) {
-      throw new Error(`generated GitHub tool call mismatch: exit=${called.exitCode} stdout=${called.stdout}`);
+      throw new Error(
+        `generated GitHub tool call mismatch: exit=${called.exitCode} stdout=${called.stdout}`,
+      );
     }
     const listRequests = [...server.requests];
     if (listRequests.length !== 1) {
@@ -2262,17 +2561,24 @@ error("timed out waiting for restored warm sqlite child: " .. err)
       throw new Error(`adapter request shape mismatch: ${request.method} ${request.url}`);
     }
     if (request.headers.authorization !== "Bearer fixture-token") {
-      throw new Error(`connection credential was not spliced at host egress: ${JSON.stringify(request.headers)}`);
+      throw new Error(
+        `connection credential was not spliced at host egress: ${JSON.stringify(request.headers)}`,
+      );
     }
 
     clearRequests(server.requests);
     console.log("phase: destructive allow");
     approvalMode = "allow";
-    const allowed = await githubVm.exec(`tools call github.org.main.issues-create '${issueCreateArgs("allow")}'`);
+    const allowed = await githubVm.exec(
+      `tools call github.org.main.issues-create '${issueCreateArgs("allow")}'`,
+    );
     if (allowed.exitCode !== 0 || !allowed.stdout.includes('"marker":"js-host-adapter"')) {
-      throw new Error(`destructive approval allow did not proceed: exit=${allowed.exitCode} stdout=${allowed.stdout}`);
+      throw new Error(
+        `destructive approval allow did not proceed: exit=${allowed.exitCode} stdout=${allowed.stdout}`,
+      );
     }
-    if (count(defaultPrompts) !== 1) throw new Error(`expected one tool approval prompt, saw ${count(defaultPrompts)}`);
+    if (count(defaultPrompts) !== 1)
+      throw new Error(`expected one tool approval prompt, saw ${count(defaultPrompts)}`);
     const approval = defaultPrompts[0]!;
     if (
       approval.connection !== "github.org.main" ||
@@ -2285,7 +2591,9 @@ error("timed out waiting for restored warm sqlite child: " .. err)
     }
     const allowedRequests = [...server.requests];
     if (allowedRequests.length !== 1 || allowedRequests[0]!.method !== "POST") {
-      throw new Error(`destructive allow did not reach upstream exactly once: ${JSON.stringify(allowedRequests)}`);
+      throw new Error(
+        `destructive allow did not reach upstream exactly once: ${JSON.stringify(allowedRequests)}`,
+      );
     }
     if (allowedRequests[0]!.headers.authorization !== "Bearer fixture-token") {
       throw new Error("credential was not spliced after destructive approval");
@@ -2294,34 +2602,44 @@ error("timed out waiting for restored warm sqlite child: " .. err)
     clearRequests(server.requests);
     console.log("phase: destructive reject");
     approvalMode = "reject";
-    const rejected = await githubVm.exec(`tools call github.org.main.issues-create '${issueCreateArgs("reject")}'`);
+    const rejected = await githubVm.exec(
+      `tools call github.org.main.issues-create '${issueCreateArgs("reject")}'`,
+    );
     if (count(defaultPrompts) !== 2) {
-      throw new Error(`expected two total approval prompts after rejection, saw ${count(defaultPrompts)}`);
+      throw new Error(
+        `expected two total approval prompts after rejection, saw ${count(defaultPrompts)}`,
+      );
     }
     const rejectedRequests = [...server.requests];
     if (rejectedRequests.length !== 0 || rejected.stdout.includes('"marker":"js-host-adapter"')) {
-      throw new Error(`destructive rejection was not fail-closed: stdout=${rejected.stdout} requests=${rejectedRequests.length}`);
+      throw new Error(
+        `destructive rejection was not fail-closed: stdout=${rejected.stdout} requests=${rejectedRequests.length}`,
+      );
     }
 
     clearRequests(server.requests);
     console.log("phase: non-destructive GET");
     const promptsBeforeGet = count(defaultPrompts);
     const get = await githubVm.exec(
-      "tools call github.org.main.issues-list '{\"path\":{\"owner\":\"octo\",\"repo\":\"hello\"},\"query\":{\"state\":\"open\"}}'",
+      'tools call github.org.main.issues-list \'{"path":{"owner":"octo","repo":"hello"},"query":{"state":"open"}}\'',
     );
     if (get.exitCode !== 0 || !get.stdout.includes('"marker":"js-host-adapter"')) {
       throw new Error(`non-destructive GET failed: exit=${get.exitCode} stdout=${get.stdout}`);
     }
     const getRequests = [...server.requests];
     if (getRequests.length !== 1 || getRequests[0]!.method !== "GET") {
-      throw new Error(`non-destructive GET did not reach upstream once: ${JSON.stringify(getRequests)}`);
+      throw new Error(
+        `non-destructive GET did not reach upstream once: ${JSON.stringify(getRequests)}`,
+      );
     }
     if (count(defaultPrompts) !== promptsBeforeGet) throw new Error("GET raised tool approval");
 
     clearRequests(server.requests);
     console.log("phase: block policy");
     const blockPrompts: ToolApprovalFact[] = [];
-    const blockPolicy: ConnectionPolicyRule[] = [{ owner: "org", pattern: "github.org.main.*", action: "block" }];
+    const blockPolicy: ConnectionPolicyRule[] = [
+      { owner: "org", pattern: "github.org.main.*", action: "block" },
+    ];
     const blockVm = await mc.create(
       githubOptions({
         policies: blockPolicy,
@@ -2333,11 +2651,17 @@ error("timed out waiting for restored warm sqlite child: " .. err)
     );
     created.push(blockVm);
     const blocked = await blockVm.exec(
-      "tools call github.org.main.issues-list '{\"path\":{\"owner\":\"octo\",\"repo\":\"hello\"},\"query\":{\"state\":\"open\"}}'",
+      'tools call github.org.main.issues-list \'{"path":{"owner":"octo","repo":"hello"},"query":{"state":"open"}}\'',
     );
     const blockRequests = [...server.requests];
-    if (blockPrompts.length !== 0 || blockRequests.length !== 0 || blocked.stdout.includes('"marker":"js-host-adapter"')) {
-      throw new Error(`block policy did not fail closed without prompt: stdout=${blocked.stdout} prompts=${blockPrompts.length} requests=${blockRequests.length}`);
+    if (
+      blockPrompts.length !== 0 ||
+      blockRequests.length !== 0 ||
+      blocked.stdout.includes('"marker":"js-host-adapter"')
+    ) {
+      throw new Error(
+        `block policy did not fail closed without prompt: stdout=${blocked.stdout} prompts=${blockPrompts.length} requests=${blockRequests.length}`,
+      );
     }
 
     clearRequests(server.requests);
@@ -2351,13 +2675,19 @@ error("timed out waiting for restored warm sqlite child: " .. err)
       }),
     );
     created.push(approveVm);
-    const approved = await approveVm.exec(`tools call github.org.main.issues-create '${issueCreateArgs("policy")}'`);
+    const approved = await approveVm.exec(
+      `tools call github.org.main.issues-create '${issueCreateArgs("policy")}'`,
+    );
     if (approved.exitCode !== 0 || !approved.stdout.includes('"marker":"js-host-adapter"')) {
-      throw new Error(`approve policy did not send destructive request: exit=${approved.exitCode} stdout=${approved.stdout}`);
+      throw new Error(
+        `approve policy did not send destructive request: exit=${approved.exitCode} stdout=${approved.stdout}`,
+      );
     }
     const approveRequests = [...server.requests];
     if (approveRequests.length !== 1 || approveRequests[0]!.method !== "POST") {
-      throw new Error(`approve policy did not reach upstream once: ${JSON.stringify(approveRequests)}`);
+      throw new Error(
+        `approve policy did not reach upstream once: ${JSON.stringify(approveRequests)}`,
+      );
     }
 
     clearRequests(server.requests);
@@ -2405,7 +2735,9 @@ assert(fetched.status == 200, tostring(fetched.status))
 print("bypass-ok")
 `);
     if (bypass.exitCode !== 0 || !bypass.stdout.includes("bypass-ok")) {
-      throw new Error(`direct/raw bypass proof failed: exit=${bypass.exitCode} stdout=${bypass.stdout} stderr=${bypass.stderr}`);
+      throw new Error(
+        `direct/raw bypass proof failed: exit=${bypass.exitCode} stdout=${bypass.stdout} stderr=${bypass.stderr}`,
+      );
     }
     const bypassUrls = bypassPrompts.map((p) => `${p.method} ${p.url}`).sort();
     if (
@@ -2413,7 +2745,9 @@ print("bypass-ok")
       !bypassUrls.includes(`DELETE ${server.origin}/direct`) ||
       !bypassUrls.includes(`DELETE ${server.origin}/raw`)
     ) {
-      throw new Error(`direct/raw requests were not gated at host egress: ${JSON.stringify(bypassPrompts)}`);
+      throw new Error(
+        `direct/raw requests were not gated at host egress: ${JSON.stringify(bypassPrompts)}`,
+      );
     }
     const bypassRequests = [...server.requests];
     const upstreamBypass = bypassRequests.map((r) => `${r.method} ${r.url}`).sort();
@@ -2423,7 +2757,9 @@ print("bypass-ok")
       !upstreamBypass.includes("DELETE /raw") ||
       bypassRequests.some((r) => r.headers.authorization !== "Bearer fixture-token")
     ) {
-      throw new Error(`direct/raw requests did not reach upstream with spliced credentials: ${JSON.stringify(bypassRequests)}`);
+      throw new Error(
+        `direct/raw requests did not reach upstream with spliced credentials: ${JSON.stringify(bypassRequests)}`,
+      );
     }
 
     // ── Live discovery: GraphQL introspection + remote-MCP initialize→tools/list handshake. The host
@@ -2433,11 +2769,22 @@ print("bypass-ok")
     // `discovers_graphql_catalog_via_authenticated_introspection` serves. Both hosts run the shared
     // catalog-compiler.wasm over it, so they MUST yield the identical golden tool set
     // (gql.org.main.query.viewer + gql.org.main.mutation.updateName) — a divergence here is a transport bug.
-    const introspection = readFileSync(runfile(process.env.MC_GRAPHQL_FIXTURE, "MC_GRAPHQL_FIXTURE"), "utf8");
+    const introspection = readFileSync(
+      runfile(process.env.MC_GRAPHQL_FIXTURE, "MC_GRAPHQL_FIXTURE"),
+      "utf8",
+    );
     const mcpToolsList = JSON.stringify({
       jsonrpc: "2.0",
       id: 2,
-      result: { tools: [{ name: "search", description: "search docs", inputSchema: { type: "object", properties: {} } }] },
+      result: {
+        tools: [
+          {
+            name: "search",
+            description: "search docs",
+            inputSchema: { type: "object", properties: {} },
+          },
+        ],
+      },
     });
     const discoSeen: { auth: string | null; method?: string }[] = [];
     const disco = createServer((req, res) => {
@@ -2461,9 +2808,15 @@ print("bypass-ok")
         } else if (msg.method === "tools/list") {
           // Multi-event SSE: a notification frame BEFORE the response frame, so the host must select the
           // JSON-RPC response (carrying `result`) and not concatenate every `data:` line (C2).
-          const notification = JSON.stringify({ jsonrpc: "2.0", method: "notifications/message", params: { level: "info" } });
+          const notification = JSON.stringify({
+            jsonrpc: "2.0",
+            method: "notifications/message",
+            params: { level: "info" },
+          });
           res.writeHead(200, { "content-type": "text/event-stream" });
-          res.end(`event: message\ndata: ${notification}\n\nevent: message\ndata: ${mcpToolsList}\n\n`);
+          res.end(
+            `event: message\ndata: ${notification}\n\nevent: message\ndata: ${mcpToolsList}\n\n`,
+          );
         } else {
           res.writeHead(400).end();
         }
@@ -2484,14 +2837,21 @@ print("bypass-ok")
         net: true,
         permissions: { network: "allow" },
         connections: [
-          { ref: "gql.org.main", auth: { kind: "bearer", token: "gql-tok" }, origins: [discoOriginNonCanonical], spec: { format: "graphql", url: `${discoOrigin}/graphql` } },
+          {
+            ref: "gql.org.main",
+            auth: { kind: "bearer", token: "gql-tok" },
+            origins: [discoOriginNonCanonical],
+            spec: { format: "graphql", url: `${discoOrigin}/graphql` },
+          },
         ],
       });
       created.push(gqlVm);
       const gqlList = await gqlVm.exec("tools list");
       const gqlGolden = ["gql.org.main.query.viewer", "gql.org.main.mutation.updateName"];
       if (gqlList.exitCode !== 0 || !gqlGolden.every((t) => gqlList.stdout.includes(t))) {
-        throw new Error(`graphql discovery did not yield the parity golden ${JSON.stringify(gqlGolden)}: ${gqlList.stdout}`);
+        throw new Error(
+          `graphql discovery did not yield the parity golden ${JSON.stringify(gqlGolden)}: ${gqlList.stdout}`,
+        );
       }
 
       const mcpVm = await mc.create({
@@ -2501,7 +2861,12 @@ print("bypass-ok")
         net: true,
         permissions: { network: "allow" },
         connections: [
-          { ref: "mcp.org.main", auth: { kind: "bearer", token: "mcp-tok" }, origins: [discoOrigin], spec: { format: "mcp-remote", url: `${discoOrigin}/mcp` } },
+          {
+            ref: "mcp.org.main",
+            auth: { kind: "bearer", token: "mcp-tok" },
+            origins: [discoOrigin],
+            spec: { format: "mcp-remote", url: `${discoOrigin}/mcp` },
+          },
         ],
       });
       created.push(mcpVm);
@@ -2510,10 +2875,16 @@ print("bypass-ok")
         throw new Error(`mcp discovery produced no tools: ${mcpList.stdout}`);
       }
       // The credential was spliced host-side on the discovery calls, and the MCP handshake ran in order.
-      if (!discoSeen.some((s) => s.auth === "Bearer gql-tok") || !discoSeen.some((s) => s.auth === "Bearer mcp-tok")) {
+      if (
+        !discoSeen.some((s) => s.auth === "Bearer gql-tok") ||
+        !discoSeen.some((s) => s.auth === "Bearer mcp-tok")
+      ) {
         throw new Error(`discovery did not splice the credential: ${JSON.stringify(discoSeen)}`);
       }
-      if (!discoSeen.some((s) => s.method === "initialize") || !discoSeen.some((s) => s.method === "tools/list")) {
+      if (
+        !discoSeen.some((s) => s.method === "initialize") ||
+        !discoSeen.some((s) => s.method === "tools/list")
+      ) {
         throw new Error(`mcp handshake incomplete: ${JSON.stringify(discoSeen)}`);
       }
     } finally {
@@ -2528,7 +2899,9 @@ print("bypass-ok")
       openapi: "3.0.0",
       info: { title: "public", version: "1" },
       servers: [{ url: server.origin }],
-      paths: { "/ping": { get: { operationId: "ping", responses: { "200": { description: "ok" } } } } },
+      paths: {
+        "/ping": { get: { operationId: "ping", responses: { "200": { description: "ok" } } } },
+      },
     });
     const publicVm = await mc.create({
       kernel,
@@ -2548,17 +2921,23 @@ print("bypass-ok")
     created.push(publicVm);
     const pinged = await publicVm.exec("tools call public.org.main.ping '{}'");
     if (pinged.exitCode !== 0) {
-      throw new Error(`origins-only public tool call failed: exit=${pinged.exitCode} stdout=${pinged.stdout}`);
+      throw new Error(
+        `origins-only public tool call failed: exit=${pinged.exitCode} stdout=${pinged.stdout}`,
+      );
     }
     const publicReqs = [...server.requests];
     if (publicReqs.length !== 1 || publicReqs[0]!.url !== "/ping") {
       throw new Error(`public tool did not reach upstream once: ${JSON.stringify(publicReqs)}`);
     }
     if (publicReqs[0]!.headers.authorization !== undefined) {
-      throw new Error(`auth:none must carry no credential, got ${publicReqs[0]!.headers.authorization}`);
+      throw new Error(
+        `auth:none must carry no credential, got ${publicReqs[0]!.headers.authorization}`,
+      );
     }
     if (publicReqs[0]!.headers["x-mc-connection"] !== undefined) {
-      throw new Error(`connection marker must be stripped host-side, got ${publicReqs[0]!.headers["x-mc-connection"]}`);
+      throw new Error(
+        `connection marker must be stripped host-side, got ${publicReqs[0]!.headers["x-mc-connection"]}`,
+      );
     }
 
     // S1: auth:none with NO origins is rejected at create — a connection marker can't be an unrestricted
@@ -2572,7 +2951,12 @@ print("bypass-ok")
         net: true,
         permissions: { network: "allow" },
         connections: [
-          { ref: "empty.org.main", auth: { kind: "none" }, origins: [], spec: { bytes: new TextEncoder().encode(publicOpenapi), format: "openapi" } },
+          {
+            ref: "empty.org.main",
+            auth: { kind: "none" },
+            origins: [],
+            spec: { bytes: new TextEncoder().encode(publicOpenapi), format: "openapi" },
+          },
         ],
       });
       created.push(v);

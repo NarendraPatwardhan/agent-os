@@ -14,25 +14,25 @@ const github = {
 };
 ```
 
-| Field | Required | Meaning |
-|---|---|---|
-| `ref` | yes | `integration.owner.name`; owner is `org` or `user` |
-| `auth` | yes | Host-side authentication record |
+| Field     | Required  | Meaning                                            |
+| --------- | --------- | -------------------------------------------------- |
+| `ref`     | yes       | `integration.owner.name`; owner is `org` or `user` |
+| `auth`    | yes       | Host-side authentication record                    |
 | `origins` | sometimes | Absolute origins allowed to receive the credential |
-| `spec` | no | Custom source or override for the API description |
-| `tools` | no | Per-connection tool groups |
+| `spec`    | no        | Custom source or override for the API description  |
+| `tools`   | no        | Per-connection tool groups                         |
 
 For a curated integration, origins are derived from the registry's server list when omitted. Passing
 origins narrows that list. A custom spec should declare origins explicitly.
 
 ## Authentication records
 
-| Kind | Shape | Effect |
-|---|---|---|
-| Anonymous | `{ kind: "none" }` | No credential attached |
-| Bearer | `{ kind: "bearer", token }` | `Authorization: Bearer ...` |
-| Header | `{ kind: "header", name, value }` | Custom request header |
-| Query | `{ kind: "query", name, value }` | Query parameter |
+| Kind      | Shape                             | Effect                      |
+| --------- | --------------------------------- | --------------------------- |
+| Anonymous | `{ kind: "none" }`                | No credential attached      |
+| Bearer    | `{ kind: "bearer", token }`       | `Authorization: Bearer ...` |
+| Header    | `{ kind: "header", name, value }` | Custom request header       |
+| Query     | `{ kind: "query", name, value }`  | Query parameter             |
 
 Authentication is spliced after origin and policy checks. Guest code cannot choose a different
 recipient for a registered credential.
@@ -87,20 +87,26 @@ Top-level string entries in `tools` are catalog selectors, not host tool handler
 A custom source uses exactly one transport:
 
 ```js
-{ bytes, format, sourceFormat, baseUrl, endpoint }
-{ path, format, sourceFormat, baseUrl, endpoint }
-{ url, format, sourceFormat, baseUrl, endpoint }
+{
+  (bytes, format, sourceFormat, baseUrl, endpoint);
+}
+{
+  (path, format, sourceFormat, baseUrl, endpoint);
+}
+{
+  (url, format, sourceFormat, baseUrl, endpoint);
+}
 ```
 
-| Field | Meaning |
-|---|---|
-| `bytes` | Already-acquired spec bytes |
-| `path` | Node/Bun client path; read by the JavaScript host |
-| `url` | Public or credential-authorized source URL |
-| `format` | API family |
-| `sourceFormat` | `json` or `yaml` for textual specs |
-| `baseUrl` | Override request server/base URL |
-| `endpoint` | Discovery endpoint for GraphQL or MCP |
+| Field          | Meaning                                           |
+| -------------- | ------------------------------------------------- |
+| `bytes`        | Already-acquired spec bytes                       |
+| `path`         | Node/Bun client path; read by the JavaScript host |
+| `url`          | Public or credential-authorized source URL        |
+| `format`       | API family                                        |
+| `sourceFormat` | `json` or `yaml` for textual specs                |
+| `baseUrl`      | Override request server/base URL                  |
+| `endpoint`     | Discovery endpoint for GraphQL or MCP             |
 
 Supported formats are `openapi`, `microsoft-graph`, `google-discovery`, `graphql`, and `mcp-remote`.
 
@@ -138,16 +144,16 @@ operations so catalog compare-and-swap and attachment checks are preserved.
 
 ## Registry entry
 
-| Field | Meaning |
-|---|---|
-| `id` | Integration id |
-| `name` | Display name |
-| `kind` | Supported catalog format |
-| `url` | Static spec URL, when used |
-| `endpoint` | Live discovery endpoint, when used |
-| `defaultGroups` | Tool groups selected by default |
-| `groups` | Named filters |
-| `servers` | Curated credential-recipient origins |
+| Field           | Meaning                              |
+| --------------- | ------------------------------------ |
+| `id`            | Integration id                       |
+| `name`          | Display name                         |
+| `kind`          | Supported catalog format             |
+| `url`           | Static spec URL, when used           |
+| `endpoint`      | Live discovery endpoint, when used   |
+| `defaultGroups` | Tool groups selected by default      |
+| `groups`        | Named filters                        |
+| `servers`       | Curated credential-recipient origins |
 
 ## Credential security
 

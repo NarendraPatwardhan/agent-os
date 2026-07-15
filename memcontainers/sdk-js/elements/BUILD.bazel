@@ -1,8 +1,8 @@
-load("//bazel:ts.bzl", "mc_ts_project")
 load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_library", "js_run_binary", "js_test")
 load("@aspect_rules_js//npm:defs.bzl", "npm_package")
 load("@aspect_rules_ts//ts:defs.bzl", "ts_config")
 load("@npm//:defs.bzl", "npm_link_all_packages")
+load("//bazel:ts.bzl", "mc_ts_project")
 
 # Link @mc/elements' deps (@mc/core, lit, @lit/context, xterm, codemirror) into :node_modules/*.
 npm_link_all_packages(name = "node_modules")
@@ -20,8 +20,8 @@ js_library(
 ts_config(
     name = "tsconfig",
     src = "tsconfig.json",
-    deps = ["//:tsconfig"],
     visibility = ["//visibility:private"],
+    deps = ["//:tsconfig"],
 )
 
 # Role-named (:lib) like sibling SDK packages — the directory already says "elements".
@@ -29,21 +29,21 @@ mc_ts_project(
     name = "lib",
     srcs = glob(["src/**/*.ts"]),
     tsconfig = ":tsconfig",
+    visibility = ["//visibility:public"],
     deps = [
-        ":node_modules/@mc/core",
-        ":node_modules/lit",
-        ":node_modules/@lit/context",
-        ":node_modules/@xterm/xterm",
-        ":node_modules/@xterm/addon-fit",
         ":node_modules/@codemirror/commands",
         ":node_modules/@codemirror/lang-javascript",
         ":node_modules/@codemirror/language",
         ":node_modules/@codemirror/state",
         ":node_modules/@codemirror/view",
         ":node_modules/@lezer/highlight",
+        ":node_modules/@lit/context",
+        ":node_modules/@mc/core",
+        ":node_modules/@xterm/addon-fit",
+        ":node_modules/@xterm/xterm",
+        ":node_modules/lit",
         "//:node_modules/@types/bun",
     ],
-    visibility = ["//visibility:public"],
 )
 
 # Bundle the compiled lib into a code-split ESM dist/ with rolldown, inlining every
@@ -74,12 +74,12 @@ js_run_binary(
         ":node_modules/lit",
         ":node_modules/rolldown",
     ],
-    out_dirs = ["dist"],
     args = [
         "src/index.js",
         "dist",
     ],
     chdir = package_name(),
+    out_dirs = ["dist"],
     tool = ":bundle_bin",
 )
 
@@ -90,9 +90,9 @@ js_run_binary(
 npm_package(
     name = "pkg",
     srcs = [
+        "package.json",
         ":bundle",
         ":lib",
-        "package.json",
     ] + glob(["styles/*.css"]),
     package = "@mc/elements",
     visibility = ["//visibility:public"],

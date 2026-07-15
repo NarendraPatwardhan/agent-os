@@ -14,7 +14,9 @@ use crate::boot_posix;
 #[test]
 fn cat_streams_a_file() {
     let mut s = boot_posix();
-    s.host.write_file("/tmp/note", b"agent-os e2e\n").expect("write");
+    s.host
+        .write_file("/tmp/note", b"agent-os e2e\n")
+        .expect("write");
     assert_eq!(s.run_for_output("cat /tmp/note"), "agent-os e2e\r\n");
 }
 
@@ -32,7 +34,9 @@ fn base64_encodes_via_uutils() {
 #[test]
 fn grep_selects_matching_lines() {
     let mut s = boot_posix();
-    s.host.write_file("/tmp/lines", b"foo\nbar\nbaz\nqux\n").expect("write");
+    s.host
+        .write_file("/tmp/lines", b"foo\nbar\nbaz\nqux\n")
+        .expect("write");
     assert_eq!(s.run_for_output("grep ba /tmp/lines"), "bar\r\nbaz\r\n");
 }
 
@@ -41,8 +45,13 @@ fn grep_selects_matching_lines() {
 #[test]
 fn sed_substitutes_via_vendored_sed() {
     let mut s = boot_posix();
-    s.host.write_file("/tmp/sed-in", b"hello world\n").expect("write");
-    assert_eq!(s.run_for_output("sed s/world/agent-os/ /tmp/sed-in"), "hello agent-os\r\n");
+    s.host
+        .write_file("/tmp/sed-in", b"hello world\n")
+        .expect("write");
+    assert_eq!(
+        s.run_for_output("sed s/world/agent-os/ /tmp/sed-in"),
+        "hello agent-os\r\n"
+    );
 }
 
 /// WHY: `jq` is the crates.io external tool (the jaq engine). GUARANTEES: a JSON filter selects the
@@ -50,7 +59,9 @@ fn sed_substitutes_via_vendored_sed() {
 #[test]
 fn jq_filters_json() {
     let mut s = boot_posix();
-    s.host.write_file("/tmp/j.json", b"{\"name\":\"agent-os\",\"n\":42}").expect("write");
+    s.host
+        .write_file("/tmp/j.json", b"{\"name\":\"agent-os\",\"n\":42}")
+        .expect("write");
     assert_eq!(s.run_for_output("jq .n /tmp/j.json"), "42\r\n");
 }
 
@@ -59,7 +70,9 @@ fn jq_filters_json() {
 #[test]
 fn head_selects_first_lines() {
     let mut s = boot_posix();
-    s.host.write_file("/tmp/multi", b"alpha\nbeta\ngamma\n").expect("write");
+    s.host
+        .write_file("/tmp/multi", b"alpha\nbeta\ngamma\n")
+        .expect("write");
     assert_eq!(s.run_for_output("head -2 /tmp/multi"), "alpha\r\nbeta\r\n");
 }
 
@@ -68,10 +81,15 @@ fn head_selects_first_lines() {
 #[test]
 fn gzip_round_trips() {
     let mut s = boot_posix();
-    s.host.write_file("/tmp/gz", b"hello flate2 round-trip\n").expect("write");
+    s.host
+        .write_file("/tmp/gz", b"hello flate2 round-trip\n")
+        .expect("write");
     s.run_for_output("gzip /tmp/gz"); // → /tmp/gz.gz, removes /tmp/gz (silent)
     s.run_for_output("gzip -d /tmp/gz.gz"); // → /tmp/gz (silent)
-    assert_eq!(s.run_for_output("cat /tmp/gz"), "hello flate2 round-trip\r\n");
+    assert_eq!(
+        s.run_for_output("cat /tmp/gz"),
+        "hello flate2 round-trip\r\n"
+    );
 }
 
 /// WHY: `mv` mutates the filesystem (the read-write tier). GUARANTEES: the destination gets the
@@ -83,7 +101,10 @@ fn mv_renames_a_file() {
     s.host.write_file("/tmp/x", b"aaa\n").expect("write /tmp/x");
     s.run_for_output("mv /tmp/x /tmp/y");
     assert_eq!(s.host.read_file("/tmp/y").expect("read /tmp/y"), b"aaa\n");
-    assert!(s.host.read_file("/tmp/x").is_err(), "source must be gone after mv");
+    assert!(
+        s.host.read_file("/tmp/x").is_err(),
+        "source must be gone after mv"
+    );
 }
 
 /// WHY: `cp` copies (read-write) while leaving the source. GUARANTEES: destination and source both
@@ -91,8 +112,16 @@ fn mv_renames_a_file() {
 #[test]
 fn cp_copies_a_file() {
     let mut s = boot_posix();
-    s.host.write_file("/tmp/src", b"copy me\n").expect("write /tmp/src");
+    s.host
+        .write_file("/tmp/src", b"copy me\n")
+        .expect("write /tmp/src");
     s.run_for_output("cp /tmp/src /tmp/dst");
-    assert_eq!(s.host.read_file("/tmp/dst").expect("read /tmp/dst"), b"copy me\n");
-    assert_eq!(s.host.read_file("/tmp/src").expect("read /tmp/src"), b"copy me\n");
+    assert_eq!(
+        s.host.read_file("/tmp/dst").expect("read /tmp/dst"),
+        b"copy me\n"
+    );
+    assert_eq!(
+        s.host.read_file("/tmp/src").expect("read /tmp/src"),
+        b"copy me\n"
+    );
 }

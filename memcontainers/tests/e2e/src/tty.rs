@@ -12,7 +12,11 @@ use crate::boot_posix;
 #[test]
 fn console_output_is_crlf() {
     let mut s = boot_posix();
-    assert_eq!(s.run_for_output("echo hi"), "hi\r\n", "console output must be ONLCR (CRLF)");
+    assert_eq!(
+        s.run_for_output("echo hi"),
+        "hi\r\n",
+        "console output must be ONLCR (CRLF)"
+    );
 }
 
 /// WHY: the cooked line discipline echoes typed characters back to the terminal, terminating the
@@ -22,7 +26,10 @@ fn console_output_is_crlf() {
 fn typed_command_is_echoed_with_crlf() {
     let mut s = boot_posix();
     let response = s.send_line("echo abc");
-    assert!(response.contains("echo abc\r\n"), "typed line not echoed with CRLF; got:\n{response:?}");
+    assert!(
+        response.contains("echo abc\r\n"),
+        "typed line not echoed with CRLF; got:\n{response:?}"
+    );
 }
 
 /// WHY: backspace (0x7F) must erase the most recent character from the line buffer BEFORE Enter, and
@@ -38,8 +45,14 @@ fn backspace_erases_and_redraws() {
     s.send_raw(b"b\n"); // 'b' + Enter → the line is "echo b"
     s.drive_until_prompt(m);
     let resp = s.since(m);
-    assert!(resp.contains("b\r\n"), "echo of 'b' missing — backspace failed to clear 'a':\n{resp:?}");
-    assert!(resp.contains("\x08 \x08"), "expected the backspace redraw sequence:\n{resp:?}");
+    assert!(
+        resp.contains("b\r\n"),
+        "echo of 'b' missing — backspace failed to clear 'a':\n{resp:?}"
+    );
+    assert!(
+        resp.contains("\x08 \x08"),
+        "expected the backspace redraw sequence:\n{resp:?}"
+    );
 }
 
 /// WHY: browser terminals reach completion through the cooked Tab key, while

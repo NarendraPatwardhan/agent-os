@@ -69,13 +69,13 @@ commit becomes part of the cache key.
 
 Every filesystem constructor returns a new `BuildState`; it does not mutate the input state.
 
-| Function | Meaning |
-|---|---|
-| `llb.write(input, path, data)` | Create/truncate a text or byte file |
-| `llb.mkdir(input, path)` | Create one directory |
-| `llb.rm(input, path)` | Remove a file, symlink, or empty directory |
-| `llb.chmod(input, path, mode)` | Set permission bits from `0` through `0o7777` |
-| `llb.symlink(input, target, link)` | Create a symbolic link |
+| Function                           | Meaning                                       |
+| ---------------------------------- | --------------------------------------------- |
+| `llb.write(input, path, data)`     | Create/truncate a text or byte file           |
+| `llb.mkdir(input, path)`           | Create one directory                          |
+| `llb.rm(input, path)`              | Remove a file, symlink, or empty directory    |
+| `llb.chmod(input, path, mode)`     | Set permission bits from `0` through `0o7777` |
+| `llb.symlink(input, target, link)` | Create a symbolic link                        |
 
 Large `write` payloads are stored as blobs when converting the graph to a portable definition.
 
@@ -97,15 +97,15 @@ const compiled = llb.exec(source, "./configure && make install", {
 });
 ```
 
-| Option | Default | Meaning |
-|---|---|---|
-| `cwd`, `env`, `stdin` | ordinary exec defaults | Included in node identity |
-| `tier` | `read-write` | Build-step guest authority |
-| `budgetMib` | image/kernel default | Guest memory limit |
-| `fuel` | image/kernel default | Execution limit |
-| `deterministic` | `true` | Repeatable clock/random source |
-| `net` | `false` | Enable network and disable pure-result caching |
-| `mounts` | `[]` | Persistent `llb.cache()` states |
+| Option                | Default                | Meaning                                        |
+| --------------------- | ---------------------- | ---------------------------------------------- |
+| `cwd`, `env`, `stdin` | ordinary exec defaults | Included in node identity                      |
+| `tier`                | `read-write`           | Build-step guest authority                     |
+| `budgetMib`           | image/kernel default   | Guest memory limit                             |
+| `fuel`                | image/kernel default   | Execution limit                                |
+| `deterministic`       | `true`                 | Repeatable clock/random source                 |
+| `net`                 | `false`                | Enable network and disable pure-result caching |
+| `mounts`              | `[]`                   | Persistent `llb.cache()` states                |
 
 A nonzero command exit rejects the solve with exit status and stderr.
 
@@ -192,13 +192,13 @@ a full VM snapshot. Snapshot results may be memoized by node/warm/kernel identit
 
 ## Solve options
 
-| Field | Meaning |
-|---|---|
-| `store` | Layer/blob/manifest/snapshot storage; defaults to `defaultStore()` |
-| `kernel` | Kernel bytes for VM-executing nodes |
-| `warm` | Ordered exec/service warm-up directives before snapshot |
-| `onProgress` | Sync or async structured progress callback |
-| `platform` | Local/git/cache integration hooks |
+| Field        | Meaning                                                            |
+| ------------ | ------------------------------------------------------------------ |
+| `store`      | Layer/blob/manifest/snapshot storage; defaults to `defaultStore()` |
+| `kernel`     | Kernel bytes for VM-executing nodes                                |
+| `warm`       | Ordered exec/service warm-up directives before snapshot            |
+| `onProgress` | Sync or async structured progress callback                         |
+| `platform`   | Local/git/cache integration hooks                                  |
 
 Progress events are `started`, `cached`, `completed`, or `failed`, each carrying the node digest and
 operation. Failed events also carry an error string.
@@ -206,8 +206,12 @@ operation. Failed events also carry an error string.
 Warm directives are either:
 
 ```js
-{ kind: "exec", cmd, cwd, env, stdin }
-{ kind: "svc", name, request }
+{
+  kind: ("exec", cmd, cwd, env, stdin);
+}
+{
+  kind: ("svc", name, request);
+}
 ```
 
 ## Cache model

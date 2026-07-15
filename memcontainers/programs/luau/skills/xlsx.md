@@ -1,6 +1,6 @@
 ---
 name: memcontainer-xlsx
-description: 'Create, read, edit, recalculate, convert, and validate Microsoft Excel .xlsx spreadsheets from inside a memcontainer or from a host agent using a memcontainer VM. Use this skill whenever the task mentions spreadsheets, Excel, .xlsx, .csv, .tsv, worksheets, formulas, formula errors, charts, tables, filters, freeze panes, data validation, conditional formatting, named ranges, comments, images, or tabular deliverables that should become .xlsx. Prefer the memcontainers Luau `xlsx` library and its `calc` engine over JS/Python spreadsheet libraries; use external readers only as validation when available.'
+description: "Create, read, edit, recalculate, convert, and validate Microsoft Excel .xlsx spreadsheets from inside a memcontainer or from a host agent using a memcontainer VM. Use this skill whenever the task mentions spreadsheets, Excel, .xlsx, .csv, .tsv, worksheets, formulas, formula errors, charts, tables, filters, freeze panes, data validation, conditional formatting, named ranges, comments, images, or tabular deliverables that should become .xlsx. Prefer the memcontainers Luau `xlsx` library and its `calc` engine over JS/Python spreadsheet libraries; use external readers only as validation when available."
 ---
 
 # Memcontainer XLSX

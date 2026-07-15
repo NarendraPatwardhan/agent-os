@@ -56,8 +56,8 @@ fn stamped_service(wasm: &[u8]) -> Result<String, String> {
     if wasm.len() < 8 || &wasm[..4] != b"\0asm" {
         return Err("not a wasm module".into());
     }
-    let payload =
-        custom_section(wasm, "mc_service").ok_or("no mc_service section (not a resident service)")?;
+    let payload = custom_section(wasm, "mc_service")
+        .ok_or("no mc_service section (not a resident service)")?;
     let name = String::from_utf8(payload).map_err(|_| "mc_service is not UTF-8")?;
     if !valid_service_name(&name) {
         return Err(format!(

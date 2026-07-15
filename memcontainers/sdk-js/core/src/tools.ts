@@ -63,7 +63,13 @@ export async function toolCatalogBundle(
   generation = 0,
 ): Promise<ToolCatalogBundle> {
   const addresses = new Set<string>();
-  const records: { address: string; integration: string; description: string; sha: string; bytes: Uint8Array }[] = [];
+  const records: {
+    address: string;
+    integration: string;
+    description: string;
+    sha: string;
+    bytes: Uint8Array;
+  }[] = [];
   for (const d of defs) {
     // Validate the binding name + address shape against the single-source toolcore engine (the wasmtime
     // host rejects the same), so a host tool accepted here can't be one the other host rejects. (The
@@ -123,7 +129,10 @@ export async function mergeToolCatalogBundles(
   bundles: ToolCatalogBundle[],
   generation: number,
 ): Promise<ToolCatalogBundle> {
-  const byAddress = new Map<string, { address: string; integration: string; description: string; sha: string }>();
+  const byAddress = new Map<
+    string,
+    { address: string; integration: string; description: string; sha: string }
+  >();
   const records = new Map<string, Uint8Array>();
   for (const bundle of bundles) {
     for (const record of bundle.records) {
@@ -134,7 +143,8 @@ export async function mergeToolCatalogBundles(
       records.set(record.sha, record.bytes);
     }
     for (const tool of bundle.index.tools) {
-      if (byAddress.has(tool.address)) throw new Error(`duplicate tool catalog address '${tool.address}'`);
+      if (byAddress.has(tool.address))
+        throw new Error(`duplicate tool catalog address '${tool.address}'`);
       byAddress.set(tool.address, { ...tool });
     }
   }

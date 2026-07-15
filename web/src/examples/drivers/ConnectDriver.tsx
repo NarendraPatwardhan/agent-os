@@ -10,7 +10,8 @@ import type { Example } from "../types";
 
 /** Fill every "${key}" placeholder in the template's strings with field values. */
 function fill(node: unknown, values: Record<string, string>): unknown {
-  if (typeof node === "string") return node.replace(/\$\{(\w+)\}/g, (_, k: string) => values[k] ?? "");
+  if (typeof node === "string")
+    return node.replace(/\$\{(\w+)\}/g, (_, k: string) => values[k] ?? "");
   if (Array.isArray(node)) return node.map((v) => fill(v, values));
   if (node && typeof node === "object")
     return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, fill(v, values)]));
@@ -64,7 +65,9 @@ export function ConnectDriver({ example }: { example: Extract<Example, { kind: "
       try {
         await vmRef.current?.close().catch(() => {});
         vmRef.current = null;
-        session.print(`declaring ${example.connection.ref} — fetching the spec + compiling the catalog…`);
+        session.print(
+          `declaring ${example.connection.ref} — fetching the spec + compiling the catalog…`,
+        );
         const base = await resolveCreateOptions({ image: example.image ?? "loom", net: true });
         const connection = fill(example.connection, values) as ConnectionDefinition;
         // An empty bearer credential means "go anonymous" (APIs with public reads).
@@ -115,7 +118,12 @@ export function ConnectDriver({ example }: { example: Extract<Example, { kind: "
             </div>
           ) : null}
           <div {...stylex.props(styles.codeWrap)}>
-            <mc-editor ref={editorRef} {...stylex.props(styles.editor)} value={example.code.source} language="typescript" />
+            <mc-editor
+              ref={editorRef}
+              {...stylex.props(styles.editor)}
+              value={example.code.source}
+              language="typescript"
+            />
             <PlayButton place="abs" onClick={play} label="Connect and run" />
           </div>
         </>

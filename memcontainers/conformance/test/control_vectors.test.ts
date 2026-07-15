@@ -38,7 +38,9 @@ function runfile(rel: string | undefined, envVar: string): string {
 }
 
 function vectors(): VectorDoc {
-  return JSON.parse(readFileSync(runfile(process.env.MC_CONTROL_VECTORS, "MC_CONTROL_VECTORS"), "utf8"));
+  return JSON.parse(
+    readFileSync(runfile(process.env.MC_CONTROL_VECTORS, "MC_CONTROL_VECTORS"), "utf8"),
+  );
 }
 
 function hex(bytes: Uint8Array): string {
@@ -63,13 +65,20 @@ function positive(message: string): Uint8Array {
 }
 
 function assertEqualBytes(actual: Uint8Array, expected: Uint8Array, message: string): void {
-  assert(actual.length === expected.length, `${message}: length ${actual.length} !== ${expected.length}`);
+  assert(
+    actual.length === expected.length,
+    `${message}: length ${actual.length} !== ${expected.length}`,
+  );
   for (let i = 0; i < actual.length; i++) {
     assert(actual[i] === expected[i], `${message}: byte ${i} ${actual[i]} !== ${expected[i]}`);
   }
 }
 
-function assertOptionalBytes(actual: Uint8Array | null | undefined, expected: Uint8Array, message: string): void {
+function assertOptionalBytes(
+  actual: Uint8Array | null | undefined,
+  expected: Uint8Array,
+  message: string,
+): void {
   assert(actual !== undefined && actual !== null, `${message}: missing bytes`);
   assertEqualBytes(actual, expected, message);
 }
@@ -81,14 +90,26 @@ function positiveVectors(): void {
     env: { ZED: "last", ALPHA: "first" },
     stdin: new Uint8Array([112, 97, 121, 108, 111, 97, 100, 10, 0]),
   };
-  assert(hex(encodeExecRequest(exec)) === hex(positive("ExecRequest")), "ExecRequest fixture drifted");
+  assert(
+    hex(encodeExecRequest(exec)) === hex(positive("ExecRequest")),
+    "ExecRequest fixture drifted",
+  );
   const decodedExec = decodeExecRequest(positive("ExecRequest"));
-  assert(decodedExec.cmd === exec.cmd && decodedExec.cwd === exec.cwd, "ExecRequest decoded scalar fields changed");
-  assert(decodedExec.env.ALPHA === "first" && decodedExec.env.ZED === "last", "ExecRequest decoded env changed");
+  assert(
+    decodedExec.cmd === exec.cmd && decodedExec.cwd === exec.cwd,
+    "ExecRequest decoded scalar fields changed",
+  );
+  assert(
+    decodedExec.env.ALPHA === "first" && decodedExec.env.ZED === "last",
+    "ExecRequest decoded env changed",
+  );
   assertOptionalBytes(decodedExec.stdin, exec.stdin, "ExecRequest decoded stdin changed");
 
   const outcome = { exit_code: 7, stdout: te.encode("out\n"), stderr: te.encode("err\n") };
-  assert(hex(encodeExecOutcome(outcome)) === hex(positive("ExecOutcome")), "ExecOutcome fixture drifted");
+  assert(
+    hex(encodeExecOutcome(outcome)) === hex(positive("ExecOutcome")),
+    "ExecOutcome fixture drifted",
+  );
   const decodedOutcome = decodeExecOutcome(positive("ExecOutcome"));
   assert(decodedOutcome.exit_code === 7, "ExecOutcome exit code changed");
   assertEqualBytes(decodedOutcome.stdout, outcome.stdout, "ExecOutcome stdout changed");
@@ -97,7 +118,10 @@ function positiveVectors(): void {
   const stat = { size: 12345, is_dir: false, is_symlink: true, nlink: 2, mode: 0o120777 };
   assert(hex(encodeFileStat(stat)) === hex(positive("FileStat")), "FileStat fixture drifted");
   const decodedStat = decodeFileStat(positive("FileStat"));
-  assert(decodedStat.size === 12345 && decodedStat.is_symlink && decodedStat.nlink === 2, "FileStat decoded fields changed");
+  assert(
+    decodedStat.size === 12345 && decodedStat.is_symlink && decodedStat.nlink === 2,
+    "FileStat decoded fields changed",
+  );
 
   const entries = {
     entries: [
@@ -106,19 +130,31 @@ function positiveVectors(): void {
       { name: "sub", is_dir: true, is_symlink: false },
     ],
   };
-  assert(hex(encodeDirEntries(entries)) === hex(positive("DirEntries")), "DirEntries fixture drifted");
+  assert(
+    hex(encodeDirEntries(entries)) === hex(positive("DirEntries")),
+    "DirEntries fixture drifted",
+  );
   const decodedEntries = decodeDirEntries(positive("DirEntries"));
   assert(decodedEntries.entries.length === 3, "DirEntries decoded length changed");
-  assert(decodedEntries.entries[1]?.name === "link" && decodedEntries.entries[1]?.is_symlink, "DirEntries symlink changed");
+  assert(
+    decodedEntries.entries[1]?.name === "link" && decodedEntries.entries[1]?.is_symlink,
+    "DirEntries symlink changed",
+  );
 
   const svcRequest = { service: "kv", request: te.encode("put\0answer\0forty-two") };
-  assert(hex(encodeSvcRequest(svcRequest)) === hex(positive("SvcRequest")), "SvcRequest fixture drifted");
+  assert(
+    hex(encodeSvcRequest(svcRequest)) === hex(positive("SvcRequest")),
+    "SvcRequest fixture drifted",
+  );
   const decodedSvcRequest = decodeSvcRequest(positive("SvcRequest"));
   assert(decodedSvcRequest.service === "kv", "SvcRequest service changed");
   assertEqualBytes(decodedSvcRequest.request, svcRequest.request, "SvcRequest body changed");
 
   const svcResponse = { status: 0, body: te.encode("42") };
-  assert(hex(encodeSvcResponse(svcResponse)) === hex(positive("SvcResponse")), "SvcResponse fixture drifted");
+  assert(
+    hex(encodeSvcResponse(svcResponse)) === hex(positive("SvcResponse")),
+    "SvcResponse fixture drifted",
+  );
   const decodedSvcResponse = decodeSvcResponse(positive("SvcResponse"));
   assert(decodedSvcResponse.status === 0, "SvcResponse status changed");
   assertEqualBytes(decodedSvcResponse.body, svcResponse.body, "SvcResponse body changed");
@@ -130,9 +166,15 @@ function positiveVectors(): void {
     body: new Uint8Array([0, 1, 2, 255]),
     args_digest: "sha256:0123456789abcdef",
   };
-  assert(hex(encodeRelayEvent(relay)) === hex(positive("RelayEvent")), "RelayEvent fixture drifted");
+  assert(
+    hex(encodeRelayEvent(relay)) === hex(positive("RelayEvent")),
+    "RelayEvent fixture drifted",
+  );
   const decodedRelay = decodeRelayEvent(positive("RelayEvent"));
-  assert(decodedRelay.kind === "host_call" && decodedRelay.handle === 42, "RelayEvent scalar fields changed");
+  assert(
+    decodedRelay.kind === "host_call" && decodedRelay.handle === 42,
+    "RelayEvent scalar fields changed",
+  );
   assert(decodedRelay.name === "tool.exec", "RelayEvent name changed");
   assertOptionalBytes(decodedRelay.body, relay.body, "RelayEvent body changed");
   assert(decodedRelay.args_digest === "sha256:0123456789abcdef", "RelayEvent args digest changed");
@@ -155,7 +197,10 @@ function negativeVectors(): void {
     } catch (error) {
       assert(error instanceof WireError, `${vector.message}:${vector.name}: expected WireError`);
       const expected = expectedMessages[vector.error];
-      assert(expected !== undefined, `${vector.message}:${vector.name}: unknown expected error ${vector.error}`);
+      assert(
+        expected !== undefined,
+        `${vector.message}:${vector.name}: unknown expected error ${vector.error}`,
+      );
       assert(
         error.message === expected,
         `${vector.message}:${vector.name}: ${JSON.stringify(error.message)} !== ${JSON.stringify(expected)}`,

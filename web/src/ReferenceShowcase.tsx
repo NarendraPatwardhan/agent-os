@@ -39,7 +39,11 @@ const styles = stylex.create({
     width: "100%",
     minHeight: "100dvh",
     paddingBlock: "clamp(48px, 7vw, 96px)",
-    paddingInline: { default: "clamp(32px, 5vw, 80px)", [media.tablet]: space.s6, [media.mobile]: space.s4 },
+    paddingInline: {
+      default: "clamp(32px, 5vw, 80px)",
+      [media.tablet]: space.s6,
+      [media.mobile]: space.s4,
+    },
     borderTopWidth: "1px",
     borderTopStyle: "solid",
     borderTopColor: color.border,
@@ -50,7 +54,11 @@ const styles = stylex.create({
     maxWidth: "1440px",
     marginInline: "auto",
     display: "grid",
-    gridTemplateColumns: { default: "280px minmax(0, 1fr)", [media.tablet]: "1fr", [media.mobile]: "1fr" },
+    gridTemplateColumns: {
+      default: "280px minmax(0, 1fr)",
+      [media.tablet]: "1fr",
+      [media.mobile]: "1fr",
+    },
     gap: { default: "clamp(48px, 6vw, 96px)", [media.tablet]: space.s6, [media.mobile]: space.s6 },
     alignItems: "start",
   },
@@ -64,7 +72,12 @@ const styles = stylex.create({
     gap: space.s5,
   },
   navHeader: { display: "flex", flexDirection: "column", gap: space.s3 },
-  navTitle: { display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: space.s3 },
+  navTitle: {
+    display: "flex",
+    alignItems: "baseline",
+    justifyContent: "space-between",
+    gap: space.s3,
+  },
   count: { color: color.inkSubtle },
   search: { width: "100%", backgroundColor: color.bgPanel },
   mobileSelect: {
@@ -77,7 +90,11 @@ const styles = stylex.create({
     overflowX: "hidden",
     paddingRight: { default: space.s2, [media.tablet]: 0, [media.mobile]: 0 },
     display: { default: "flex", [media.tablet]: "grid", [media.mobile]: "none" },
-    gridTemplateColumns: { default: null, [media.tablet]: "repeat(2, minmax(0, 1fr))", [media.mobile]: null },
+    gridTemplateColumns: {
+      default: null,
+      [media.tablet]: "repeat(2, minmax(0, 1fr))",
+      [media.mobile]: null,
+    },
     flexDirection: "column",
     gap: space.s5,
   },
@@ -185,14 +202,23 @@ export function ReferenceShowcase() {
   const normalizedQuery = query.trim().toLowerCase();
   const visible = useMemo(() => {
     if (!normalizedQuery) return new Set(referencePages.map((entry) => entry.slug));
-    return new Set(referencePages
-      .filter((entry) => `${entry.title}\n${entry.summary}\n${entry.source}`.toLowerCase().includes(normalizedQuery))
-      .map((entry) => entry.slug));
+    return new Set(
+      referencePages
+        .filter((entry) =>
+          `${entry.title}\n${entry.summary}\n${entry.source}`
+            .toLowerCase()
+            .includes(normalizedQuery),
+        )
+        .map((entry) => entry.slug),
+    );
   }, [normalizedQuery]);
 
   const visibleCount = visible.size;
   const previous = activeIndex > 0 ? referencePages[activeIndex - 1] : null;
-  const next = activeIndex >= 0 && activeIndex < referencePages.length - 1 ? referencePages[activeIndex + 1] : null;
+  const next =
+    activeIndex >= 0 && activeIndex < referencePages.length - 1
+      ? referencePages[activeIndex + 1]
+      : null;
 
   return (
     <section ref={section} id="reference" {...stylex.props(styles.area)} aria-label="API reference">
@@ -201,7 +227,9 @@ export function ReferenceShowcase() {
           <div {...stylex.props(styles.navHeader)}>
             <div {...stylex.props(styles.navTitle)}>
               <span {...stylex.props(text.eyebrow)}>Reference</span>
-              <span {...stylex.props(text.micro, styles.count)}>{visibleCount}/{referencePages.length}</span>
+              <span {...stylex.props(text.micro, styles.count)}>
+                {visibleCount}/{referencePages.length}
+              </span>
             </div>
             <input
               type="search"
@@ -222,7 +250,11 @@ export function ReferenceShowcase() {
                 const pages = group.pages.filter((entry) => visible.has(entry.slug));
                 return pages.length ? (
                   <optgroup key={group.title} label={group.title}>
-                    {pages.map((entry) => <option key={entry.slug} value={entry.slug}>{entry.title}</option>)}
+                    {pages.map((entry) => (
+                      <option key={entry.slug} value={entry.slug}>
+                        {entry.title}
+                      </option>
+                    ))}
                   </optgroup>
                 ) : null;
               })}
@@ -234,14 +266,23 @@ export function ReferenceShowcase() {
               if (!pages.length) return null;
               return (
                 <div key={group.title} {...stylex.props(styles.group)}>
-                  <span {...stylex.props(text.micro, text.subtle, styles.groupTitle)}>{group.title}</span>
+                  <span {...stylex.props(text.micro, text.subtle, styles.groupTitle)}>
+                    {group.title}
+                  </span>
                   {pages.map((entry) => (
                     <a
                       key={entry.slug}
                       href={referenceHash(entry.slug)}
                       aria-current={entry.slug === page.slug ? "page" : undefined}
-                      onClick={(event) => { event.preventDefault(); navigate(entry.slug); }}
-                      {...stylex.props(text.body, styles.navLink, entry.slug === page.slug && styles.navLinkActive)}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        navigate(entry.slug);
+                      }}
+                      {...stylex.props(
+                        text.body,
+                        styles.navLink,
+                        entry.slug === page.slug && styles.navLinkActive,
+                      )}
                     >
                       {entry.title}
                     </a>
@@ -249,7 +290,9 @@ export function ReferenceShowcase() {
                 </div>
               );
             })}
-            {visibleCount === 0 ? <p {...stylex.props(text.body, styles.empty)}>No reference page matches “{query}”.</p> : null}
+            {visibleCount === 0 ? (
+              <p {...stylex.props(text.body, styles.empty)}>No reference page matches “{query}”.</p>
+            ) : null}
           </nav>
         </aside>
 
@@ -261,13 +304,27 @@ export function ReferenceShowcase() {
           <MarkdownArticle source={page.source} slug={page.slug} navigate={navigate} />
           <nav {...stylex.props(styles.pager)} aria-label="Adjacent reference pages">
             {previous ? (
-              <a href={referenceHash(previous.slug)} onClick={(event) => { event.preventDefault(); navigate(previous.slug); }} {...stylex.props(styles.pagerLink)}>
+              <a
+                href={referenceHash(previous.slug)}
+                onClick={(event) => {
+                  event.preventDefault();
+                  navigate(previous.slug);
+                }}
+                {...stylex.props(styles.pagerLink)}
+              >
                 <span {...stylex.props(text.micro, text.subtle)}>← Previous</span>
                 <span {...stylex.props(text.body, text.strong)}>{previous.title}</span>
               </a>
             ) : null}
             {next ? (
-              <a href={referenceHash(next.slug)} onClick={(event) => { event.preventDefault(); navigate(next.slug); }} {...stylex.props(styles.pagerLink, styles.pagerRight)}>
+              <a
+                href={referenceHash(next.slug)}
+                onClick={(event) => {
+                  event.preventDefault();
+                  navigate(next.slug);
+                }}
+                {...stylex.props(styles.pagerLink, styles.pagerRight)}
+              >
                 <span {...stylex.props(text.micro, text.subtle)}>Next →</span>
                 <span {...stylex.props(text.body, text.strong)}>{next.title}</span>
               </a>

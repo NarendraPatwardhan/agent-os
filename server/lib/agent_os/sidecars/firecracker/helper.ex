@@ -13,7 +13,8 @@ defmodule AgentOS.Sidecars.Firecracker.Helper do
   def preflight(opts) do
     with {:ok, helper} <- helper_path(opts),
          {output, 0} <- System.cmd(helper, ["sys-test"], stderr_to_stdout: true),
-         true <- String.starts_with?(output, "agentos-sidecar-helper ") || {:error, :invalid_helper} do
+         true <-
+           String.starts_with?(output, "agentos-sidecar-helper ") || {:error, :invalid_helper} do
       :ok
     else
       {_, _status} -> {:error, :sidecar_helper_unavailable}

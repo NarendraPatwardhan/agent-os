@@ -1,9 +1,10 @@
-# @mc/core — the unified Vm API over the embedded @mc/host backend, browser artifacts, and the
-# remote REST + typed WebSocket contract. Published under the @mc/* scope.
-load("//bazel:ts.bzl", "mc_ts_project")
 load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_library", "js_run_binary", "js_test")
 load("@aspect_rules_js//npm:defs.bzl", "npm_package")
 load("@npm//:defs.bzl", "npm_link_all_packages")
+
+# @mc/core — the unified Vm API over the embedded @mc/host backend, browser artifacts, and the
+# remote REST + typed WebSocket contract. Published under the @mc/* scope.
+load("//bazel:ts.bzl", "mc_ts_project")
 
 # Link @mc/core's deps (@mc/host, @mc/contracts, zod) into :node_modules/*.
 npm_link_all_packages(name = "node_modules")
@@ -27,13 +28,13 @@ js_library(
 mc_ts_project(
     name = "lib",
     srcs = glob(["src/**/*.ts"]),
+    visibility = ["//visibility:public"],
     deps = [
-        ":node_modules/@mc/host",  # the embedded backend drives the in-process kernel host
         ":node_modules/@mc/contracts",  # the contract SsoT: tier ordinals + mount-op/dirent/errno constants
+        ":node_modules/@mc/host",  # the embedded backend drives the in-process kernel host
         ":node_modules/zod",  # typed-tool input validation
         "//:node_modules/@types/bun",  # process + node:fs (artifacts/store loaders)
     ],
-    visibility = ["//visibility:public"],
 )
 
 # @mc/core as a linkable workspace package. Keep this parallel to @mc/host and @mc/contracts so
@@ -41,8 +42,8 @@ mc_ts_project(
 npm_package(
     name = "pkg",
     srcs = [
-        ":lib",
         "package.json",
+        ":lib",
     ],
     package = "@mc/core",
     visibility = ["//visibility:public"],
@@ -63,10 +64,10 @@ js_run_binary(
     name = "bundle",
     srcs = [
         ":lib",
-        ":node_modules/@mc/host",
         ":node_modules/@mc/contracts",
-        ":node_modules/zod",
+        ":node_modules/@mc/host",
         ":node_modules/rolldown",
+        ":node_modules/zod",
     ],
     outs = ["mc-core.mjs"],
     args = [
@@ -110,13 +111,13 @@ mc_ts_project(
 js_test(
     name = "vm_test",
     data = [
-        ":vm_test_lib",
         ":github_issues_fixture",
         ":graphql_introspection_fixture",
-        "//memcontainers/kernel/rust:kernel",
+        ":vm_test_lib",
         "//memcontainers/images:atlas",
         "//memcontainers/images:base",
         "//memcontainers/images:loom",
+        "//memcontainers/kernel/rust:kernel",
         "//memcontainers/lib/catalog-compiler:wasm",
     ],
     entry_point = "test/vm.test.js",
