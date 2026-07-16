@@ -4,9 +4,11 @@ defmodule AgentOS.Sidecars.Firecracker.Daemon do
 
   require Logger
 
-  alias AgentOS.Sidecars.Firecracker.{Client, Helper}
+  alias AgentOS.Sidecars.Firecracker.{Client, Helper, Snapshot}
 
   @boot_timeout 15_000
+  @snapshot_api_timeout 60_000
+  @snapshot_timeout 120_000
 
   def start_link(opts) do
     id = Keyword.fetch!(opts, :id)
@@ -18,6 +20,7 @@ defmodule AgentOS.Sidecars.Firecracker.Daemon do
   def diagnostics(id), do: GenServer.call(via(id), :diagnostics)
   def cgroup(id), do: GenServer.call(via(id), :cgroup)
   def measurements(id), do: GenServer.call(via(id), :measurements)
+  def capture(id, key), do: GenServer.call(via(id), {:capture, key}, @snapshot_timeout)
 
   @impl true
   def init(opts) do
@@ -76,6 +79,51 @@ defmodule AgentOS.Sidecars.Firecracker.Daemon do
   def handle_call(:cgroup, _from, state), do: {:reply, Map.get(state.paths, :cgroup), state}
   def handle_call(:measurements, _from, state), do: {:reply, {:ok, state.measurements}, state}
 
+  def handle_call({:capture, key}, _from, %{state: :ready} = state) do
+    started_at = monotonic_us()
+    api_paths = Snapshot.api_paths(Keyword.get(state.provider_opts, :launch, :jailed))
+
+    result =
+      with :ok <- Client.patch(state.paths.api, "/vm", %{state: "Paused"}),
+           paused_at = monotonic_us(),
+           :ok <-
+             Client.put(
+               state.paths.api,
+               "/snapshot/create",
+               %{
+                 snapshot_type: "Full",
+                 snapshot_path: api_paths.state,
+                 mem_file_path: api_paths.memory
+               },
+               @snapshot_api_timeout
+             ),
+           captured_at = monotonic_us(),
+           :ok <-
+             Snapshot.publish(state.id, key, state.paths.snapshot_output, state.provider_opts),
+           published_at = monotonic_us() do
+        {:ok,
+         %{
+           pause_us: paused_at - started_at,
+           capture_us: captured_at - paused_at,
+           publish_us: published_at - captured_at
+         }}
+      end
+
+    case result do
+      {:ok, measurements} ->
+        {:reply, {:ok, measurements},
+         %{
+           state
+           | state: :paused,
+             measurements: Map.merge(state.measurements, measurements)
+         }}
+
+      {:error, reason} ->
+        _ = Client.patch(state.paths.api, "/vm", %{state: "Resumed"})
+        {:reply, {:error, reason}, state}
+    end
+  end
+
   @impl true
   def handle_info({_port, {:data, data}}, state) do
     console = state.console <> data
@@ -104,7 +152,12 @@ defmodule AgentOS.Sidecars.Firecracker.Daemon do
   defp prepare_paths(id, opts) do
     case Keyword.get(opts, :launch, :jailed) do
       :jailed ->
-        Helper.layout(id, opts)
+        with {:ok, paths} <- Helper.layout(id, opts) do
+          {:ok,
+           Map.merge(paths, %{
+             snapshot_output: Snapshot.host_output_paths(paths.root)
+           })}
+        end
 
       :direct ->
         root = Keyword.fetch!(opts, :work_root)
@@ -117,18 +170,22 @@ defmodule AgentOS.Sidecars.Firecracker.Daemon do
 
           with :ok <- File.mkdir_p(directory) do
             vsock = Path.join(directory, "vsock.sock")
+            snapshot_key = Keyword.get(opts, :snapshot_key)
 
-            {:ok,
-             %{
-               root: directory,
-               api: Path.join(directory, "api.sock"),
-               vsock: vsock,
-               vsock_api: vsock,
-               firecracker: firecracker,
-               kernel: kernel,
-               initramfs: initramfs,
-               cgroup: Keyword.get(opts, :cgroup)
-             }}
+            with :ok <- maybe_stage_snapshot(snapshot_key, directory, opts) do
+              {:ok,
+               %{
+                 root: directory,
+                 api: Path.join(directory, "api.sock"),
+                 vsock: vsock,
+                 vsock_api: "vsock.sock",
+                 firecracker: firecracker,
+                 kernel: kernel,
+                 initramfs: initramfs,
+                 cgroup: Keyword.get(opts, :cgroup),
+                 snapshot_output: Snapshot.direct_output_paths(directory)
+               }}
+            end
           end
         else
           {:error, :invalid_firecracker_path}
@@ -138,6 +195,9 @@ defmodule AgentOS.Sidecars.Firecracker.Daemon do
     KeyError -> {:error, :missing_firecracker_path}
     ArgumentError -> {:error, :invalid_firecracker_path}
   end
+
+  defp maybe_stage_snapshot(nil, _root, _opts), do: :ok
+  defp maybe_stage_snapshot(key, root, opts), do: Snapshot.stage(key, root, opts)
 
   defp absolute_regular!(opts, key) do
     path = Keyword.fetch!(opts, key)
@@ -214,15 +274,33 @@ defmodule AgentOS.Sidecars.Firecracker.Daemon do
 
     with :ok <- wait_for_socket(paths.api, @boot_timeout),
          api_ready_at = monotonic_us(),
-         :ok <- configure(paths, opts) do
-      configured_at = monotonic_us()
+         :ok <- configure_or_restore(paths, opts) do
+      booted_at = monotonic_us()
+      phase = if Keyword.has_key?(opts, :snapshot_key), do: :restore_us, else: :configure_us
 
-      {:ok,
-       %{
-         api_ready_us: api_ready_at - started_at,
-         configure_us: configured_at - api_ready_at
-       }}
+      {:ok, %{phase => booted_at - api_ready_at, api_ready_us: api_ready_at - started_at}}
     end
+  end
+
+  defp configure_or_restore(paths, opts) do
+    case Keyword.get(opts, :snapshot_key) do
+      nil -> configure(paths, opts)
+      _key -> restore(paths, opts)
+    end
+  end
+
+  defp restore(paths, opts) do
+    snapshot = Snapshot.restore_api_paths(Keyword.get(opts, :launch, :jailed))
+
+    body = %{
+      snapshot_path: snapshot.state,
+      mem_backend: %{backend_type: "File", backend_path: snapshot.memory},
+      track_dirty_pages: false,
+      resume_vm: true,
+      clock_realtime: true
+    }
+
+    Client.put(paths.api, "/snapshot/load", body)
   end
 
   defp wait_for_socket(path, timeout) do

@@ -25,8 +25,10 @@ action because it creates a narrow setuid boundary.
 
 1. Create a dedicated unprivileged runner account and group. Set their numeric IDs in
    `/etc/agent-os/sidecar-helper.conf`.
-2. Create `/var/lib/agent-os/jailer` as a root-owned directory that is not writable by group or other
-   users.
+2. Create `/var/lib/agent-os/jailer` and `/var/lib/agent-os/snapshots` as root-owned directories that
+   are not writable by group or other users. The latter holds immutable, compatibility-keyed prepared
+   memory bases; it must be on the same filesystem as the jail roots so instances can share the memory
+   file through read-only hard links.
 3. Install Firecracker, jailer, the kernel, and runner initramfs at the absolute root-owned paths in
    the configuration. Executables must not be group/other writable.
 4. Install the configuration as root-owned and mode `0644` or stricter.
@@ -66,13 +68,25 @@ Configure the provider when adding `AgentOS.Supervisor` to the consuming OTP app
    providers: [
      {AgentOS.Sidecars.Providers.Firecracker,
       helper: "/usr/local/libexec/agentos-sidecar-helper",
-      browser_runner: true}
+      browser_runner: true,
+      prepared: true}
    ]
  ]}
 ```
 
 Production launch defaults to the jailed helper. Direct Firecracker launch is rejected unless both
 `launch: :direct` and `development: true` are explicit; it is only for local KVM conformance.
+
+With `prepared: true`, the provider binds a browser base to the exact Firecracker, guest kernel,
+initramfs, machine profile, host kernel, and CPU identity. The first internal preparation boots
+Chromium, uses the runner protocol to quiesce its connection service, publishes an immutable full-memory
+base through the helper, and terminates the preparation VM without resuming it. A restored instance must
+complete its browser handshake before the base is released to concurrent callers; failed validation
+removes the base. Fresh browser identities then load it with private copy-on-write memory. A consuming
+service should complete preparation before opening its public listener; Moltres does this in its
+supervision tree. Snapshot files are node-local implementation artifacts, not MCSN values or portable
+release payloads. The helper retains the active base and one prior compatibility generation for rolling
+replacement; older generations are removed after a new base is published.
 
 The host application remains responsible for authentication, tenancy, quotas, scheduling, and mapping
 its HTTP or WebSocket edge onto `AgentOS.Sidecars`. Guests receive only grant names and the reserved

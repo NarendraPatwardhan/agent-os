@@ -104,6 +104,7 @@ abi_library(
     langs = [
         "rust",
         "ts",
+        "elixir",
         "asyncapi",
         "openapi",
     ],
@@ -223,6 +224,7 @@ rust_test(
     srcs = ["test/wire_projection_test.rs"],
     data = [
         "control.kdl",
+        "gen/wire.gen.ex",
         "gen/wire.gen.openapi.yaml",
         "gen/wire.gen.ts",
         "sidecar.kdl",

@@ -141,6 +141,7 @@ fn sidecar_rest_envelopes_are_contract_projections() {
 #[test]
 fn embedded_sidecar_scope_auth_is_projected_from_wire_contract() {
     let wire = runfile("_main/memcontainers/contracts/wire.kdl");
+    let wire_ex = runfile("_main/memcontainers/contracts/gen/wire.gen.ex");
     let wire_ts = runfile("_main/memcontainers/contracts/gen/wire.gen.ts");
     let openapi = runfile("_main/memcontainers/contracts/gen/wire.gen.openapi.yaml");
     let header = "x-agentos-sidecar-scope";
@@ -151,6 +152,8 @@ fn embedded_sidecar_scope_auth_is_projected_from_wire_contract() {
     assert!(wire_ts.contains(&format!(
         "export const SIDECAR_SCOPE_HEADER = \"{header}\" as const;"
     )));
+    assert!(wire_ex.contains(&format!("@sidecar_scope_header \"{header}\"")));
+    assert!(wire_ex.contains("def sidecar_scope_header, do: @sidecar_scope_header"));
 
     let projected =
         format!("        - name: \"{header}\"\n          in: header\n          required: true");

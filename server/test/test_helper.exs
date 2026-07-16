@@ -72,6 +72,8 @@ sidecar_providers =
     work_root =
       Path.join(System.tmp_dir!(), "agentos-firecracker-#{System.unique_integer([:positive])}")
 
+    File.rm_rf!(work_root)
+    ExUnit.after_suite(fn _result -> File.rm_rf!(work_root) end)
     Application.put_env(:agent_os, :firecracker_test_root, work_root)
 
     browser? = System.get_env("AGENT_OS_BROWSER_KVM_E2E") == "1"
@@ -102,6 +104,8 @@ sidecar_providers =
        development: true,
        health_runner: not browser?,
        browser_runner: browser?,
+       prepared: browser?,
+       prepared_directory: Path.join(work_root, "prepared"),
        profiles: browser_profile,
        work_root: work_root,
        firecracker: AgentOS.TestRunfiles.find!("firecracker-v1.15.1-x86_64"),

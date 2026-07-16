@@ -3375,6 +3375,9 @@ fn emit_wire(lang: &str, nodes: &[Node], contract: &str, contract_path: &str) ->
         .unwrap_or(0);
     let msgs: Vec<&Node> = nodes.iter().filter(|n| n.name == "message").collect();
     let mut o = banner(lang, contract);
+    if lang == "elixir" {
+        o.push_str(&format!("defmodule {} do\n", elixir_module_name(contract)));
+    }
     o.push_str(&emit_vocabulary_constants(lang, nodes));
     match lang {
         "rust" => {
@@ -3417,6 +3420,31 @@ fn emit_wire(lang: &str, nodes: &[Node], contract: &str, contract_path: &str) ->
             }
             o.push_str("] as const;\n");
         }
+        "elixir" => {
+            o.push_str(&format!(
+                "  @wire_version {version}\n  def wire_version, do: @wire_version\n  @header_len {header_len}\n  def header_len, do: @header_len\n\n"
+            ));
+            for m in &msgs {
+                let tag = m.props.get("tag").map(Val::as_int).unwrap_or(0);
+                o.push_str(&format!(
+                    "  def {}, do: 0x{:02x}\n",
+                    elixir_fun_name(&m.arg_str(0)),
+                    tag
+                ));
+            }
+            o.push_str("\n  def messages do\n    [\n");
+            for m in &msgs {
+                let tag = m.props.get("tag").map(Val::as_int).unwrap_or(0);
+                o.push_str(&format!(
+                    "      %{{name: \"{}\", tag: 0x{:02x}, dir: \"{}\", body: \"{}\"}},\n",
+                    m.arg_str(0),
+                    tag,
+                    m.prop_str("dir").unwrap_or(""),
+                    m.prop_str("body").unwrap_or("")
+                ));
+            }
+            o.push_str("    ]\n  end\n");
+        }
         "asyncapi" => {
             o = banner("asyncapi", contract);
             o.push_str("asyncapi: 3.0.0\n");
@@ -3441,6 +3469,9 @@ fn emit_wire(lang: &str, nodes: &[Node], contract: &str, contract_path: &str) ->
             }
         }
         _ => {}
+    }
+    if lang == "elixir" {
+        o.push_str("end\n");
     }
     o
 }

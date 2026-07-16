@@ -60,6 +60,7 @@ defmodule AgentOS.Supervisor do
        name: AgentOS.SidecarFirecrackerSupervisor,
        strategy: :one_for_one,
        max_children: firecracker_limit},
+      {AgentOS.Sidecars.Firecracker.Prepared, []},
       {AgentOS.Sidecars.ProviderRegistry,
        providers: Keyword.get(sidecar_opts, :providers, []),
        placement: Keyword.get(sidecar_opts, :placement, AgentOS.Sidecars.Placement.Local),

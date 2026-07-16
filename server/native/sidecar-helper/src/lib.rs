@@ -6,10 +6,11 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime};
 
-pub const VERSION: &str = "1";
+pub const VERSION: &str = "2";
 pub const CONFIG_PATH: &str = "/etc/agent-os/sidecar-helper.conf";
 const RECONCILE_GRACE: Duration =
     Duration::from_millis(sidecar_rust::SIDECAR_MAX_RENEW_MS as u64 * 2);
+const SNAPSHOT_BASE_LIMIT: usize = 2;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
@@ -20,6 +21,7 @@ pub struct Config {
     pub jailer: PathBuf,
     pub kernel: PathBuf,
     pub initramfs: PathBuf,
+    pub snapshot_base: PathBuf,
     pub profiles: BTreeMap<String, PathBuf>,
     pub uplink: String,
     pub ip: PathBuf,
@@ -69,6 +71,7 @@ impl Config {
                         | "jailer"
                         | "kernel"
                         | "initramfs"
+                        | "snapshot_base"
                         | "uplink"
                         | "ip"
                         | "nft"
@@ -127,6 +130,7 @@ impl Config {
             jailer: path("jailer")?,
             kernel: path("kernel")?,
             initramfs: path("initramfs")?,
+            snapshot_base: path("snapshot_base")?,
             profiles,
             uplink: get("uplink")?.to_owned(),
             ip: path("ip")?,
@@ -166,7 +170,10 @@ impl Config {
         for (profile, path) in &self.profiles {
             validate_artifact(&format!("profile.{profile}"), path, false)?;
         }
-        for (label, path) in [("chroot_base", &self.chroot_base)] {
+        for (label, path) in [
+            ("chroot_base", &self.chroot_base),
+            ("snapshot_base", &self.snapshot_base),
+        ] {
             validate_trusted_ancestors(path).map_err(|error| format!("{label}: {error}"))?;
             let metadata = fs::metadata(path).map_err(|error| format!("{label}: {error}"))?;
             if !metadata.is_dir()
@@ -474,8 +481,12 @@ pub fn launch(
     id: &str,
     profile: Option<&str>,
     network: bool,
+    snapshot_key: Option<&str>,
 ) -> Result<i32, String> {
     let layout = prepare(config, id, profile, network)?;
+    if let Some(key) = snapshot_key {
+        stage_snapshot(config, &layout, key)?;
+    }
     let status = Command::new(&config.ip)
         .args(["netns", "exec", &layout.netns])
         .arg(&config.jailer)
@@ -505,6 +516,156 @@ pub fn launch(
         .status()
         .map_err(|error| format!("start jailer: {error}"))?;
     Ok(status.code().unwrap_or(125))
+}
+
+pub fn snapshot_available(config: &Config, key: &str) -> Result<bool, String> {
+    let root = snapshot_root(config, key)?;
+    let state = root.join("vmstate");
+    let memory = root.join("memory");
+    if !root.exists() {
+        return Ok(false);
+    }
+    validate_snapshot_file(&state, 0)?;
+    validate_snapshot_file(&memory, 0)?;
+    Ok(true)
+}
+
+pub fn remove_snapshot(config: &Config, key: &str) -> Result<(), String> {
+    let root = snapshot_root(config, key)?;
+    match fs::remove_dir_all(&root) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("remove prepared snapshot: {error}")),
+    }
+}
+
+pub fn publish_snapshot(config: &Config, id: &str, key: &str) -> Result<(), String> {
+    validate_snapshot_key(key)?;
+    if snapshot_available(config, key)? {
+        return Ok(());
+    }
+
+    let layout = config.layout(id)?;
+    let state = layout.root.join("run/prepared.vmstate");
+    let memory = layout.root.join("run/prepared.memory");
+    validate_snapshot_file(&state, config.runner_uid)?;
+    validate_snapshot_file(&memory, config.runner_uid)?;
+
+    let temporary = config
+        .snapshot_base
+        .join(format!(".{key}-{}", std::process::id()));
+    let destination = snapshot_root(config, key)?;
+    match fs::create_dir(&temporary) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            fs::remove_dir_all(&temporary)
+                .map_err(|remove| format!("remove stale snapshot staging directory: {remove}"))?;
+            fs::create_dir(&temporary)
+                .map_err(|create| format!("create snapshot staging directory: {create}"))?;
+        }
+        Err(error) => return Err(format!("create snapshot staging directory: {error}")),
+    }
+
+    let published = (|| {
+        fs::rename(&state, temporary.join("vmstate"))
+            .map_err(|error| format!("stage snapshot state: {error}"))?;
+        fs::rename(&memory, temporary.join("memory"))
+            .map_err(|error| format!("stage snapshot memory: {error}"))?;
+        for path in [temporary.join("vmstate"), temporary.join("memory")] {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o444))
+                .map_err(|error| format!("protect snapshot artifact: {error}"))?;
+            fs::File::open(&path)
+                .and_then(|file| file.sync_all())
+                .map_err(|error| format!("sync snapshot artifact: {error}"))?;
+        }
+        fs::File::open(&temporary)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| format!("sync snapshot directory: {error}"))?;
+        match fs::rename(&temporary, &destination) {
+            Ok(()) => Ok(()),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::AlreadyExists
+                    && snapshot_available(config, key)? =>
+            {
+                Ok(())
+            }
+            Err(error) => Err(format!("publish snapshot: {error}")),
+        }
+    })();
+
+    if temporary.exists() {
+        let _ = fs::remove_dir_all(&temporary);
+    }
+    published?;
+    prune_snapshots(config, key)
+}
+
+fn prune_snapshots(config: &Config, keep: &str) -> Result<(), String> {
+    let mut snapshots = fs::read_dir(&config.snapshot_base)
+        .map_err(|error| format!("read snapshot base: {error}"))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let key = entry.file_name().into_string().ok()?;
+            if key == keep || validate_snapshot_key(&key).is_err() || !entry.path().is_dir() {
+                return None;
+            }
+            let modified = entry.metadata().ok()?.modified().ok()?;
+            Some((modified, entry.path()))
+        })
+        .collect::<Vec<_>>();
+    snapshots.sort_by_key(|(modified, _path)| std::cmp::Reverse(*modified));
+    for (_modified, path) in snapshots.into_iter().skip(SNAPSHOT_BASE_LIMIT - 1) {
+        fs::remove_dir_all(&path)
+            .map_err(|error| format!("remove obsolete snapshot {}: {error}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn stage_snapshot(config: &Config, layout: &Layout, key: &str) -> Result<(), String> {
+    if !snapshot_available(config, key)? {
+        return Err("prepared snapshot is unavailable".into());
+    }
+    let source = snapshot_root(config, key)?;
+    let target = layout.root.join("snapshot");
+    fs::create_dir(&target).map_err(|error| format!("create snapshot jail directory: {error}"))?;
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o555))
+        .map_err(|error| format!("protect snapshot jail directory: {error}"))?;
+    fs::hard_link(source.join("vmstate"), target.join("vmstate"))
+        .map_err(|error| format!("stage snapshot state: {error}"))?;
+    fs::hard_link(source.join("memory"), target.join("memory"))
+        .map_err(|error| format!("stage snapshot memory: {error}"))
+}
+
+fn snapshot_root(config: &Config, key: &str) -> Result<PathBuf, String> {
+    validate_snapshot_key(key)?;
+    Ok(config.snapshot_base.join(key))
+}
+
+fn validate_snapshot_key(key: &str) -> Result<(), String> {
+    if key.len() == 64
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        Ok(())
+    } else {
+        Err("invalid prepared snapshot key".into())
+    }
+}
+
+fn validate_snapshot_file(path: &Path, owner: u32) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("inspect snapshot {}: {error}", path.display()))?;
+    if metadata.is_file()
+        && !metadata.file_type().is_symlink()
+        && metadata.len() > 0
+        && metadata.uid() == owner
+        && metadata.permissions().mode() & 0o022 == 0
+    {
+        Ok(())
+    } else {
+        Err(format!("invalid snapshot artifact {}", path.display()))
+    }
 }
 
 pub fn cleanup(config: &Config, id: &str) -> Result<(), String> {
@@ -945,7 +1106,7 @@ mod tests {
     use super::*;
 
     fn sample() -> &'static str {
-        "runner_uid=1000\nrunner_gid=1000\nchroot_base=/var/lib/agent-os/jailer\nfirecracker=/opt/agent-os/firecracker\njailer=/opt/agent-os/jailer\nkernel=/opt/agent-os/vmlinux\ninitramfs=/opt/agent-os/initramfs\nuplink=eth0\nip=/usr/bin/ip\nnft=/usr/bin/nft\nsysctl=/usr/sbin/sysctl\nrm=/usr/bin/rm\n"
+        "runner_uid=1000\nrunner_gid=1000\nchroot_base=/var/lib/agent-os/jailer\nfirecracker=/opt/agent-os/firecracker\njailer=/opt/agent-os/jailer\nkernel=/opt/agent-os/vmlinux\ninitramfs=/opt/agent-os/initramfs\nsnapshot_base=/var/lib/agent-os/snapshots\nuplink=eth0\nip=/usr/bin/ip\nnft=/usr/bin/nft\nsysctl=/usr/sbin/sysctl\nrm=/usr/bin/rm\n"
     }
 
     #[test]
@@ -955,6 +1116,10 @@ mod tests {
         assert_eq!(
             config.layout("sc_abcdefghijkl").unwrap().netns,
             "agentos-sc_abcdefghijkl"
+        );
+        assert_eq!(
+            config.snapshot_base,
+            PathBuf::from("/var/lib/agent-os/snapshots")
         );
     }
 
@@ -983,6 +1148,9 @@ mod tests {
         assert!(Config::parse(&sample().replace("uplink=eth0", "uplink=../eth0")).is_err());
         assert!(Config::parse(&(sample().to_owned() + "profile.Bad=/tmp/rootfs\n")).is_err());
         assert!(validate_id("../../escape").is_err());
+        assert!(validate_snapshot_key(&"a".repeat(64)).is_ok());
+        assert!(validate_snapshot_key(&"A".repeat(64)).is_err());
+        assert!(validate_snapshot_key("../snapshot").is_err());
     }
 
     #[test]

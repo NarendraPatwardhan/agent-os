@@ -12,6 +12,7 @@ defmodule AgentOS.Sidecars.Providers.Firecracker do
 
   alias AgentOS.Contracts.{Browser, Runner}
   alias AgentOS.Sidecars.{Firecracker, Journal}
+  alias AgentOS.Sidecars.Firecracker.{Prepared, Snapshot}
 
   @impl true
   def capabilities(opts) do
@@ -64,16 +65,98 @@ defmodule AgentOS.Sidecars.Providers.Firecracker do
          :ok <- validate_launch_mode(opts),
          {:ok, runner_opts} <- runner_opts(context.kind, opts),
          :ok <- validate_machine(runner_opts),
-         {:ok, supervisor} <- start_runner(context, request, runner_opts) do
+         {:ok, provider_ref, value} <- create_runner(context, request, runner_opts) do
+      log_startup(context, started_at)
+      {:ok, provider_ref, value}
+    end
+  end
+
+  defp create_runner(context, request, opts) do
+    if Snapshot.enabled?(opts) and context.kind == Browser.browser_kind() do
+      create_prepared(context, request, opts)
+    else
+      start_ready_runner(context, request, opts)
+    end
+  end
+
+  defp create_prepared(context, request, opts) do
+    with {:ok, key} <- Snapshot.key(context.kind, opts),
+         {:ok, available?} <- snapshot_available(key, opts) do
+      case Prepared.claim(key, available?) do
+        :ready ->
+          case start_ready_runner(context, request, Keyword.put(opts, :snapshot_key, key)) do
+            {:ok, _provider_ref, _metadata} = ready ->
+              ready
+
+            {:error, _reason} = error ->
+              _ = Snapshot.invalidate(key, opts)
+              error
+          end
+
+        :build ->
+          build_prepared(context, request, key, opts)
+
+        :retry ->
+          create_prepared(context, request, opts)
+      end
+    end
+  end
+
+  defp build_prepared(context, request, key, opts) do
+    capture =
+      case start_ready_runner(context, request, opts) do
+        {:ok, provider_ref, _metadata} ->
+          result = capture_base(context.id, key)
+          _ = terminate_runner(provider_ref.supervisor)
+          result
+
+        {:error, _reason} = error ->
+          error
+      end
+
+    case capture do
+      :ok ->
+        case start_ready_runner(context, request, Keyword.put(opts, :snapshot_key, key)) do
+          {:ok, _provider_ref, _metadata} = ready ->
+            :ok = Prepared.ready(key)
+            ready
+
+          {:error, _reason} = error ->
+            _ = Snapshot.invalidate(key, opts)
+            :ok = Prepared.failed(key)
+            error
+        end
+
+      {:error, _reason} = error ->
+        :ok = Prepared.failed(key)
+        error
+    end
+  end
+
+  defp capture_base(id, key) do
+    with :ok <- Firecracker.Relay.prepare_snapshot(id),
+         {:ok, _measurements} <- Firecracker.Daemon.capture(id, key) do
+      :ok
+    end
+  end
+
+  defp start_ready_runner(context, request, opts) do
+    with {:ok, supervisor} <- start_runner(context, request, opts) do
       case metadata(context.id) do
         {:ok, value} ->
-          log_startup(context, started_at)
           {:ok, %{id: context.id, supervisor: supervisor}, value}
 
         {:error, reason} ->
           _ = terminate_runner(supervisor)
           {:error, reason}
       end
+    end
+  end
+
+  defp snapshot_available(key, opts) do
+    case Snapshot.available?(key, opts) do
+      value when is_boolean(value) -> {:ok, value}
+      {:error, _reason} = error -> error
     end
   end
 

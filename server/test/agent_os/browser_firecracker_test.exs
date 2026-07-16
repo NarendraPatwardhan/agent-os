@@ -6,33 +6,18 @@ defmodule AgentOS.BrowserFirecrackerTest do
   alias AgentOS.Sidecars
 
   test "real browser runner boots and executes its projected page protocol" do
+    prepare_snapshot()
+
     vm_id = {"browser-kvm", Integer.to_string(System.unique_integer([:positive]))}
     started_at = System.monotonic_time(:microsecond)
 
-    grant = %{
-      kind: Browser.browser_kind(),
-      version: Browser.browser_version(),
-      contract_digest: Browser.browser_contract_digest(),
-      guest: true,
-      max_instances: 1,
-      fork: Sidecar.sidecar_fork_omit(),
-      config: <<>>
-    }
-
-    assert {:ok, _scope} = Sidecars.attach_vm(vm_id, self(), %{"web" => grant})
-
-    create =
-      Browser.encode_browser_create_options(%{
-        headless: true,
-        timeout_seconds: 60,
-        viewport: %{width: 800, height: 600}
-      })
+    assert {:ok, _scope} = Sidecars.attach_vm(vm_id, self(), %{"web" => grant()})
 
     assert {:ok, instance} =
              Sidecars.create(vm_id, %{
                grant: "web",
                kind: Browser.browser_kind(),
-               body: create,
+               body: create_options(),
                idempotency_key: "browser-kvm",
                timeout_ms: 60_000
              })
@@ -43,7 +28,30 @@ defmodule AgentOS.BrowserFirecrackerTest do
     assert {:ok, relay} = AgentOS.Sidecars.Firecracker.Relay.measurements(instance.id)
     startup = daemon |> Map.merge(relay) |> Map.put(:create_us, create_us)
     assert Enum.all?(startup, fn {_phase, duration} -> is_integer(duration) and duration >= 0 end)
-    IO.puts("browser cold start (microseconds): #{inspect(startup, sorted: true)}")
+    assert Map.has_key?(startup, :restore_us)
+    IO.puts("browser prepared start (microseconds): #{inspect(startup, sorted: true)}")
+
+    other_vm = {"browser-clone", Integer.to_string(System.unique_integer([:positive]))}
+    assert {:ok, _scope} = Sidecars.attach_vm(other_vm, self(), %{"web" => grant()})
+
+    assert {:ok, other} =
+             Sidecars.create(other_vm, %{
+               grant: "web",
+               kind: Browser.browser_kind(),
+               body: create_options(),
+               idempotency_key: "browser-clone",
+               timeout_ms: 60_000
+             })
+
+    assert {:ok, other_metadata} = Browser.decode_browser_metadata(other.metadata)
+    identity_page = "<script>document.title=Math.random().toString()</script>"
+    identity_url = "data:text/html;base64," <> Base.encode64(identity_page)
+    navigate(vm_id, instance, metadata.active_page_id, identity_url)
+    navigate(other_vm, other, other_metadata.active_page_id, identity_url)
+    first_identity = title(vm_id, instance, metadata.active_page_id)
+    second_identity = title(other_vm, other, other_metadata.active_page_id)
+    refute first_identity == second_identity
+    assert :ok = Sidecars.close_vm(other_vm)
 
     html =
       """
@@ -60,20 +68,18 @@ defmodule AgentOS.BrowserFirecrackerTest do
       <div style="height: 2000px"></div>
       """
 
-    goto =
-      Browser.encode_browser_goto_request(%{
-        page_id: metadata.active_page_id,
-        url: "data:text/html;base64," <> Base.encode64(html),
-        wait_until: Browser.browser_wait_load()
-      })
+    page =
+      navigate(
+        vm_id,
+        instance,
+        metadata.active_page_id,
+        "data:text/html;base64," <> Base.encode64(html)
+      )
 
-    assert {:ok, page_bytes} = invoke(vm_id, instance, Browser.browser_op_pages_goto(), goto)
-    assert {:ok, page} = Browser.decode_browser_page(page_bytes)
     assert page.id == metadata.active_page_id
 
+    assert title(vm_id, instance, page.id) == "AgentOS"
     target = Browser.encode_browser_page_target(%{page_id: page.id})
-    assert {:ok, title_bytes} = invoke(vm_id, instance, Browser.browser_op_pages_title(), target)
-    assert {:ok, %{value: "AgentOS"}} = Browser.decode_browser_string(title_bytes)
 
     text = Browser.encode_browser_locator_request(%{page_id: page.id, selector: "main"})
     assert {:ok, text_bytes} = invoke(vm_id, instance, Browser.browser_op_pages_text(), text)
@@ -142,10 +148,66 @@ defmodule AgentOS.BrowserFirecrackerTest do
     assert :ok = Sidecars.close_vm(vm_id)
   end
 
+  defp prepare_snapshot do
+    vm_id = {"browser-prepare", Integer.to_string(System.unique_integer([:positive]))}
+    assert {:ok, _scope} = Sidecars.attach_vm(vm_id, self(), %{"web" => grant()})
+
+    assert {:ok, _instance} =
+             Sidecars.create(vm_id, %{
+               grant: "web",
+               kind: Browser.browser_kind(),
+               body: create_options(),
+               idempotency_key: "browser-prepare",
+               timeout_ms: 60_000
+             })
+
+    assert :ok = Sidecars.close_vm(vm_id)
+  end
+
+  defp grant do
+    %{
+      kind: Browser.browser_kind(),
+      version: Browser.browser_version(),
+      contract_digest: Browser.browser_contract_digest(),
+      guest: true,
+      max_instances: 1,
+      fork: Sidecar.sidecar_fork_omit(),
+      config: <<>>
+    }
+  end
+
+  defp create_options do
+    Browser.encode_browser_create_options(%{
+      headless: true,
+      timeout_seconds: 60,
+      viewport: %{width: 800, height: 600}
+    })
+  end
+
   defp assert_text(vm_id, instance, page_id, expected) do
     request = Browser.encode_browser_locator_request(%{page_id: page_id, selector: "#out"})
     assert {:ok, bytes} = invoke(vm_id, instance, Browser.browser_op_pages_text(), request)
     assert {:ok, %{value: ^expected}} = Browser.decode_browser_string(bytes)
+  end
+
+  defp navigate(vm_id, instance, page_id, url) do
+    request =
+      Browser.encode_browser_goto_request(%{
+        page_id: page_id,
+        url: url,
+        wait_until: Browser.browser_wait_load()
+      })
+
+    assert {:ok, bytes} = invoke(vm_id, instance, Browser.browser_op_pages_goto(), request)
+    assert {:ok, page} = Browser.decode_browser_page(bytes)
+    page
+  end
+
+  defp title(vm_id, instance, page_id) do
+    request = Browser.encode_browser_page_target(%{page_id: page_id})
+    assert {:ok, bytes} = invoke(vm_id, instance, Browser.browser_op_pages_title(), request)
+    assert {:ok, %{value: value}} = Browser.decode_browser_string(bytes)
+    value
   end
 
   defp invoke(vm_id, instance, operation, body) do

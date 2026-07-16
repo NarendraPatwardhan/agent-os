@@ -14,6 +14,8 @@ defmodule AgentOS.Contracts.Runner do
   def runner_health_contract_digest, do: @runner_health_contract_digest
   @runner_init_operation "init"
   def runner_init_operation, do: @runner_init_operation
+  @runner_prepare_snapshot_operation "prepare-snapshot"
+  def runner_prepare_snapshot_operation, do: @runner_prepare_snapshot_operation
 
 
   defp field!(map, key) do

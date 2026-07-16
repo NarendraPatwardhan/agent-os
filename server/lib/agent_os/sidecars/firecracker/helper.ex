@@ -9,16 +9,21 @@ defmodule AgentOS.Sidecars.Firecracker.Helper do
     "kernel" => :kernel,
     "initramfs" => :initramfs
   }
+  @artifact_keys %{
+    "firecracker" => :firecracker,
+    "jailer" => :jailer,
+    "kernel" => :kernel,
+    "initramfs" => :initramfs
+  }
 
   def preflight(opts) do
     with {:ok, helper} <- helper_path(opts),
          {output, 0} <- System.cmd(helper, ["sys-test"], stderr_to_stdout: true),
-         true <-
-           String.starts_with?(output, "agentos-sidecar-helper ") || {:error, :invalid_helper} do
+         true <- output == "agentos-sidecar-helper 2\n" || {:error, :invalid_helper} do
       :ok
     else
-      {_, _status} -> {:error, :sidecar_helper_unavailable}
       {:error, _reason} = error -> error
+      {_output, status} when is_integer(status) -> {:error, :sidecar_helper_unavailable}
     end
   end
 
@@ -31,7 +36,14 @@ defmodule AgentOS.Sidecars.Firecracker.Helper do
         end
 
       network_args = if Keyword.get(opts, :network, false), do: ["--network"], else: []
-      args = ["jailer"] ++ profile_args ++ network_args ++ ["--id", id]
+
+      snapshot_args =
+        case Keyword.get(opts, :snapshot_key) do
+          nil -> []
+          key -> ["--snapshot", key]
+        end
+
+      args = ["jailer"] ++ profile_args ++ network_args ++ snapshot_args ++ ["--id", id]
 
       port =
         Port.open({:spawn_executable, String.to_charlist(helper)}, [
@@ -45,6 +57,51 @@ defmodule AgentOS.Sidecars.Firecracker.Helper do
     end
   rescue
     error -> {:error, {:sidecar_helper_failed, error}}
+  end
+
+  def artifacts(profile, opts) do
+    with {:ok, helper} <- helper_path(opts) do
+      profile_args = if is_binary(profile), do: ["--profile", profile], else: []
+
+      case System.cmd(helper, ["artifacts" | profile_args], stderr_to_stdout: true) do
+        {output, 0} -> parse_values(output, @artifact_keys)
+        {_output, _status} -> {:error, :sidecar_helper_failed}
+      end
+    end
+  end
+
+  def snapshot_available?(key, opts) do
+    with {:ok, helper} <- helper_path(opts) do
+      case System.cmd(helper, ["snapshot-status", "--key", key], stderr_to_stdout: true) do
+        {"ready\n", 0} -> true
+        {"missing\n", 0} -> false
+        {_output, _status} -> {:error, :sidecar_helper_failed}
+      end
+    end
+  end
+
+  def publish_snapshot(id, key, opts) do
+    with {:ok, helper} <- helper_path(opts),
+         {_output, 0} <-
+           System.cmd(helper, ["snapshot-publish", "--id", id, "--key", key],
+             stderr_to_stdout: true
+           ) do
+      :ok
+    else
+      {:error, _reason} = error -> error
+      {_output, _status} -> {:error, :firecracker_snapshot_publish_failed}
+    end
+  end
+
+  def remove_snapshot(key, opts) do
+    with {:ok, helper} <- helper_path(opts),
+         {_output, 0} <-
+           System.cmd(helper, ["snapshot-delete", "--key", key], stderr_to_stdout: true) do
+      :ok
+    else
+      {:error, _reason} = error -> error
+      {_output, _status} -> {:error, :firecracker_snapshot_remove_failed}
+    end
   end
 
   def layout(id, opts) do
@@ -63,8 +120,8 @@ defmodule AgentOS.Sidecars.Firecracker.Helper do
          vsock_api: "/run/vsock.socket"
        }}
     else
-      {_output, _status} -> {:error, :sidecar_helper_failed}
       {:error, _reason} = error -> error
+      {_output, status} when is_integer(status) -> {:error, :sidecar_helper_failed}
     end
   end
 
@@ -122,9 +179,6 @@ defmodule AgentOS.Sidecars.Firecracker.Helper do
 
       {:error, :sidecar_helper_unavailable} = error ->
         if Keyword.get(opts, :development, false), do: :ok, else: error
-
-      error ->
-        error
     end
   end
 
@@ -142,8 +196,8 @@ defmodule AgentOS.Sidecars.Firecracker.Helper do
            {_output, 0} <- System.cmd(helper, ["renew", "--id", id], stderr_to_stdout: true) do
         :ok
       else
-        {_output, _status} -> {:error, :sidecar_renew_failed}
         {:error, _reason} = error -> error
+        {_output, status} when is_integer(status) -> {:error, :sidecar_renew_failed}
       end
     else
       :ok
@@ -168,26 +222,35 @@ defmodule AgentOS.Sidecars.Firecracker.Helper do
         Regex.match?(~r/^sc_[A-Za-z0-9_-]+$/, id)
 
   defp parse_layout(output) do
+    keys = [:api, :vsock, :cgroup, :netns, :kernel, :initramfs]
+
+    with {:ok, values} <- parse_values(output, @layout_keys),
+         true <- Enum.all?(keys, &Map.has_key?(values, &1)) do
+      {:ok, values}
+    else
+      _other -> {:error, :invalid_helper_layout}
+    end
+  end
+
+  defp parse_values(output, allowed) do
     values =
       output
       |> String.split("\n", trim: true)
       |> Enum.reduce_while(%{}, fn line, acc ->
         case String.split(line, "=", parts: 2) do
-          [key, value] ->
-            case Map.fetch(@layout_keys, key) do
+          [key, value] when value != "" ->
+            case Map.fetch(allowed, key) do
               {:ok, atom} -> {:cont, Map.put(acc, atom, value)}
               :error -> {:halt, :invalid}
             end
 
-          _ ->
+          _other ->
             {:halt, :invalid}
         end
       end)
 
-    keys = [:api, :vsock, :cgroup, :netns, :kernel, :initramfs]
-
-    if is_map(values) and Enum.all?(keys, &Map.has_key?(values, &1)),
+    if is_map(values) and map_size(values) == map_size(allowed),
       do: {:ok, values},
-      else: {:error, :invalid_helper_layout}
+      else: {:error, :invalid_helper_output}
   end
 end

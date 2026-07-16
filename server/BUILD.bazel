@@ -41,6 +41,7 @@ write_source_files(
         "lib/agent_os/contracts/runner.ex": "//memcontainers/contracts:runner_elixir_gen",
         "lib/agent_os/contracts/sidecar.ex": "//memcontainers/contracts:sidecar_elixir_gen",
         "lib/agent_os/contracts/snapshot.ex": "//memcontainers/contracts:snapshot_elixir_gen",
+        "lib/agent_os/contracts/wire.ex": "//memcontainers/contracts:wire_elixir_gen",
     },
     visibility = ["//visibility:public"],
 )
@@ -227,6 +228,7 @@ pkg_tar(
         "//memcontainers/contracts:runner_elixir_gen": "lib/agent_os/contracts/runner.ex",
         "//memcontainers/contracts:sidecar_elixir_gen": "lib/agent_os/contracts/sidecar.ex",
         "//memcontainers/contracts:snapshot_elixir_gen": "lib/agent_os/contracts/snapshot.ex",
+        "//memcontainers/contracts:wire_elixir_gen": "lib/agent_os/contracts/wire.ex",
     },
     mode = "0644",
     modes = {

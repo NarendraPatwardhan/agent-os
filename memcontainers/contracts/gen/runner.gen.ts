@@ -5,6 +5,7 @@ export const RUNNER_DEFAULT_VSOCK_PORT = 52 as const;
 export const RUNNER_HEALTH_KIND = "agentos.health.v1" as const;
 export const RUNNER_HEALTH_CONTRACT_DIGEST = "sha256:515a069b3ebe4d7e6fbb23496b4e71908ad2b5046b00345b3cfe833c4ea82339" as const;
 export const RUNNER_INIT_OPERATION = "init" as const;
+export const RUNNER_PREPARE_SNAPSHOT_OPERATION = "prepare-snapshot" as const;
 
 
 const CTL_TEXT_ENCODER = new TextEncoder();

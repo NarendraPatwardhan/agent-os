@@ -53,6 +53,7 @@ import {
 import {
   PROTOCOL_VERSION,
   RUNNER_INIT_OPERATION,
+  RUNNER_PREPARE_SNAPSHOT_OPERATION,
   RUNNER_MAX_FRAME_BYTES,
   decodeRunnerRequest,
   encodeRunnerHello,
@@ -110,9 +111,11 @@ async function serve(): Promise<never> {
     operationDeadline = Date.now() + timeout(request);
     try {
       if (request.kind !== BROWSER_KIND) throw fault(SIDECAR_ERROR_CONTRACT_MISMATCH, "wrong kind");
+      const prepareSnapshot = request.operation === RUNNER_PREPARE_SNAPSHOT_OPERATION;
       const body = await dispatch(request);
       remaining(operationDeadline);
       writeFrame(encodeRunnerResponse({ request_id: request.request_id, ok: true, body }));
+      if (prepareSnapshot) process.exit(0);
     } catch (error) {
       const value = normalizeFault(error);
       writeFrame(
@@ -132,6 +135,11 @@ async function serve(): Promise<never> {
 
 async function dispatch(request: RunnerRequest): Promise<Uint8Array> {
   if (request.operation === RUNNER_INIT_OPERATION) return initialize(request.body);
+  if (request.operation === RUNNER_PREPARE_SNAPSHOT_OPERATION) {
+    if (request.body.length !== 0)
+      throw fault(SIDECAR_ERROR_INVALID_REQUEST, "snapshot request must be empty");
+    return new Uint8Array();
+  }
   if (!cdp) throw fault(SIDECAR_ERROR_NOT_READY, "browser has not been initialized");
 
   switch (request.operation) {
@@ -317,7 +325,7 @@ async function initialize(bytes: Uint8Array): Promise<Uint8Array> {
   defaultTimeoutMs = options.timeout_seconds * 1_000;
 
   cdp ??= await connectCdp();
-  const page = await selectedPage(undefined, Math.min(defaultTimeoutMs, 15_000));
+  const page = await freshPage(Math.min(defaultTimeoutMs, 15_000));
   initialized = true;
   return encodeBrowserMetadata({ headless: true, viewport, active_page_id: pageId(page.targetId) });
 }
@@ -355,6 +363,46 @@ interface TargetInfo {
 interface PageHandle {
   targetId: string;
   sessionId: string;
+}
+
+async function freshPage(timeoutMs: number): Promise<PageHandle> {
+  const existingContexts = await requiredCdp().call<{ browserContextIds: string[] }>(
+    "Target.getBrowserContexts",
+    {},
+    undefined,
+    timeoutMs,
+  );
+  const context = await requiredCdp().call<{ browserContextId: string }>(
+    "Target.createBrowserContext",
+    {},
+    undefined,
+    timeoutMs,
+  );
+  const created = await requiredCdp().call<{ targetId: string }>(
+    "Target.createTarget",
+    { url: "about:blank", browserContextId: context.browserContextId },
+    undefined,
+    timeoutMs,
+  );
+
+  for (const browserContextId of existingContexts.browserContextIds) {
+    await requiredCdp().call(
+      "Target.disposeBrowserContext",
+      { browserContextId },
+      undefined,
+      timeoutMs,
+    );
+  }
+  for (const target of await pageTargets(timeoutMs)) {
+    if (target.targetId === created.targetId) continue;
+    await requiredCdp().call(
+      "Target.closeTarget",
+      { targetId: target.targetId },
+      undefined,
+      timeoutMs,
+    );
+  }
+  return selectedPage(pageId(created.targetId), timeoutMs);
 }
 
 async function pageTargets(timeoutMs = defaultTimeoutMs): Promise<TargetInfo[]> {

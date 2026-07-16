@@ -1,5 +1,6 @@
 use sidecar_helper::{
-    cleanup, launch, network_host_init, prepare, reconcile, renew, Config, CONFIG_PATH, VERSION,
+    cleanup, launch, network_host_init, prepare, publish_snapshot, reconcile, remove_snapshot,
+    renew, snapshot_available, Config, CONFIG_PATH, VERSION,
 };
 use std::env;
 use std::fs;
@@ -101,17 +102,17 @@ fn run() -> Result<(), String> {
         }
         [command, flag, id] if flag == "--id" && command == "renew" => renew(&config, id),
         [command, flag, id] if flag == "--id" && command == "jailer" => {
-            std::process::exit(launch(&config, id, None, false)?);
+            std::process::exit(launch(&config, id, None, false, None)?);
         }
         [command, profile_flag, profile, id_flag, id]
             if profile_flag == "--profile" && id_flag == "--id" && command == "jailer" =>
         {
-            std::process::exit(launch(&config, id, Some(profile), false)?);
+            std::process::exit(launch(&config, id, Some(profile), false, None)?);
         }
         [command, network_flag, id_flag, id]
             if network_flag == "--network" && id_flag == "--id" && command == "jailer" =>
         {
-            std::process::exit(launch(&config, id, None, true)?);
+            std::process::exit(launch(&config, id, None, true, None)?);
         }
         [command, profile_flag, profile, network_flag, id_flag, id]
             if profile_flag == "--profile"
@@ -119,9 +120,82 @@ fn run() -> Result<(), String> {
                 && id_flag == "--id"
                 && command == "jailer" =>
         {
-            std::process::exit(launch(&config, id, Some(profile), true)?);
+            std::process::exit(launch(&config, id, Some(profile), true, None)?);
+        }
+        [command, snapshot_flag, key, id_flag, id]
+            if snapshot_flag == "--snapshot" && id_flag == "--id" && command == "jailer" =>
+        {
+            std::process::exit(launch(&config, id, None, false, Some(key))?);
+        }
+        [command, profile_flag, profile, snapshot_flag, key, id_flag, id]
+            if profile_flag == "--profile"
+                && snapshot_flag == "--snapshot"
+                && id_flag == "--id"
+                && command == "jailer" =>
+        {
+            std::process::exit(launch(&config, id, Some(profile), false, Some(key))?);
+        }
+        [command, network_flag, snapshot_flag, key, id_flag, id]
+            if network_flag == "--network"
+                && snapshot_flag == "--snapshot"
+                && id_flag == "--id"
+                && command == "jailer" =>
+        {
+            std::process::exit(launch(&config, id, None, true, Some(key))?);
+        }
+        [
+            command,
+            profile_flag,
+            profile,
+            network_flag,
+            snapshot_flag,
+            key,
+            id_flag,
+            id,
+        ] if profile_flag == "--profile"
+            && network_flag == "--network"
+            && snapshot_flag == "--snapshot"
+            && id_flag == "--id"
+            && command == "jailer" =>
+        {
+            std::process::exit(launch(&config, id, Some(profile), true, Some(key))?);
+        }
+        [command] if command == "artifacts" => print_artifacts(&config, None),
+        [command, profile_flag, profile]
+            if command == "artifacts" && profile_flag == "--profile" =>
+        {
+            print_artifacts(&config, Some(profile))
+        }
+        [command, key_flag, key]
+            if command == "snapshot-status" && key_flag == "--key" =>
+        {
+            if snapshot_available(&config, key)? {
+                println!("ready");
+                Ok(())
+            } else {
+                println!("missing");
+                Ok(())
+            }
+        }
+        [command, id_flag, id, key_flag, key]
+            if command == "snapshot-publish" && id_flag == "--id" && key_flag == "--key" =>
+        {
+            publish_snapshot(&config, id, key)
+        }
+        [command, key_flag, key]
+            if command == "snapshot-delete" && key_flag == "--key" =>
+        {
+            remove_snapshot(&config, key)
         }
         [command, flag, id] if flag == "--id" && command == "cleanup" => cleanup(&config, id),
-        _ => Err("usage: version | sys-test | network-host-init | reconcile | layout|prepare|renew|jailer|cleanup [--profile PROFILE] [--network] --id ID".into()),
+        _ => Err("usage: version | sys-test | network-host-init | reconcile | artifacts [--profile PROFILE] | snapshot-status|snapshot-delete --key KEY | snapshot-publish --id ID --key KEY | layout|prepare|renew|jailer|cleanup [--profile PROFILE] [--network] [--snapshot KEY] --id ID".into()),
     }
+}
+
+fn print_artifacts(config: &Config, profile: Option<&str>) -> Result<(), String> {
+    println!("firecracker={}", config.firecracker.display());
+    println!("jailer={}", config.jailer.display());
+    println!("kernel={}", config.kernel.display());
+    println!("initramfs={}", config.initramfs(profile)?.display());
+    Ok(())
 }

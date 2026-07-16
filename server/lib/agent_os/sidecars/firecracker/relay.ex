@@ -17,6 +17,7 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
   def cancel(id, call_ref), do: GenServer.cast(via(id), {:cancel, call_ref})
   def metadata(id), do: GenServer.call(via(id), :metadata)
   def measurements(id), do: GenServer.call(via(id), :measurements)
+  def prepare_snapshot(id), do: GenServer.call(via(id), :prepare_snapshot, @connect_timeout)
 
   @impl true
   def init(opts) do
@@ -63,6 +64,14 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
   def handle_call(:metadata, _from, state), do: {:reply, {:ok, state.metadata}, state}
   def handle_call(:measurements, _from, state), do: {:reply, {:ok, state.measurements}, state}
 
+  def handle_call(:prepare_snapshot, _from, %{current: nil} = state) do
+    result = prepare_snapshot(state.socket, state.contract, @connect_timeout)
+    close_socket(state.socket)
+    {:reply, result, %{state | socket: nil}}
+  end
+
+  def handle_call(:prepare_snapshot, _from, state), do: {:reply, {:error, :sidecar_in_use}, state}
+
   def handle_call({:invoke, call_ref, operation, body, timeout}, from, state) do
     request_id = "rq_" <> Integer.to_string(state.serial + 1, 36)
 
@@ -88,7 +97,7 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
   def handle_cast({:cancel, call_ref}, %{current: %{call_ref: call_ref} = current} = state) do
     Task.shutdown(current.task, :brutal_kill)
     GenServer.reply(current.from, {:error, :cancelled})
-    reconnect(%{state | current: nil})
+    reconnect_after_call(%{state | current: nil})
   end
 
   def handle_cast({:cancel, call_ref}, state) do
@@ -110,7 +119,7 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
 
       {:disconnect, reply} ->
         GenServer.reply(current.from, reply)
-        reconnect(next)
+        reconnect_after_call(next)
     end
   end
 
@@ -119,7 +128,7 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
         %{current: %{task: %{ref: ref}} = current} = state
       ) do
     GenServer.reply(current.from, {:error, {:runner_exit, reason}})
-    reconnect(%{state | current: nil})
+    reconnect_after_call(%{state | current: nil})
   end
 
   def handle_info({_ref, _result}, state), do: {:noreply, state}
@@ -128,7 +137,7 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
   @impl true
   def terminate(_reason, state) do
     if state.current, do: Task.shutdown(state.current.task, :brutal_kill)
-    :gen_tcp.close(state.socket)
+    close_socket(state.socket)
     :ok
   end
 
@@ -188,8 +197,8 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
     {removed, :queue.from_list(kept)}
   end
 
-  defp reconnect(state) do
-    :gen_tcp.close(state.socket)
+  defp reconnect_after_call(state) do
+    close_socket(state.socket)
 
     case connect(state.path, state.contract, state.init_body, @connect_timeout) do
       {:ok, socket, metadata, measurements} ->
@@ -200,6 +209,9 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
         {:stop, reason, state}
     end
   end
+
+  defp close_socket(nil), do: :ok
+  defp close_socket(socket), do: :gen_tcp.close(socket)
 
   defp connect(path, contract, init_body, timeout) do
     started_at = monotonic_us()
@@ -302,6 +314,32 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
          true <- response.request_id == request_id || {:error, :runner_response_mismatch},
          true <- response.ok || {:error, {:runner, response.error_code, response.error_message}} do
       {:ok, response.body}
+    end
+  end
+
+  defp prepare_snapshot(socket, contract, timeout) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    request_id = "snapshot"
+
+    frame =
+      Runner.encode_runner_request(%{
+        request_id: request_id,
+        kind: contract.kind,
+        operation: Runner.runner_prepare_snapshot_operation(),
+        body: <<>>,
+        timeout_ms: timeout
+      })
+
+    with :ok <- write_frame(socket, frame),
+         {:ok, response_frame} <- read_frame(socket, remaining_timeout(deadline)),
+         {:ok, response} <- Runner.decode_runner_response(response_frame),
+         true <- response.request_id == request_id || {:error, :runner_response_mismatch},
+         true <- response.ok || {:error, {:runner, response.error_code, response.error_message}},
+         <<>> <- response.body,
+         {:error, :closed} <- :gen_tcp.recv(socket, 0, remaining_timeout(deadline)) do
+      :ok
+    else
+      _other -> {:error, :firecracker_snapshot_quiesce_failed}
     end
   end
 
