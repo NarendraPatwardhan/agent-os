@@ -18,26 +18,32 @@ snapshot.
 | `sidecarHosts` | Embedded-only map of private host aliases to `SidecarHost` implementations |
 | `sidecars`     | Map of grant names to contract-bound grant descriptors                     |
 
+Typed sidecar helpers may attach a guest layer on a fresh boot. Embedded `local` and `browser` VMs take
+the layer bytes from the descriptor; remote VMs take only `guest: true` and let the served AgentOS host
+install its configured copy. Host-only grants do not change the filesystem, duplicate layers are not
+applied twice, and restores retain the filesystem already captured by the snapshot.
+
 An embedded `local` or `browser` VM requires every descriptor to name a `host` alias. The alias is
 resolved during attachment and never enters guest memory. A `remote` VM forbids `sidecarHosts` and
 host aliases because its served AgentOS host owns provider placement.
 
 A grant descriptor contains:
 
-| Field                                                 | Meaning                               |
-| ----------------------------------------------------- | ------------------------------------- |
-| `contract.kind`                                       | Stable sidecar kind name              |
-| `contract.version`                                    | Kind protocol version                 |
-| `contract.digest`                                     | Exact generated kind-contract digest  |
-| `grant.kind`, `grant.version`, `grant.contractDigest` | Must exactly match `contract`         |
-| `grant.guest`                                         | Whether guest code may use this grant |
-| `grant.maxInstances`                                  | Per-grant instance ceiling            |
-| `grant.fork`                                          | Fork policy; currently `"omit"`       |
-| `grant.config`                                        | Kind-defined configuration bytes      |
-| `host`                                                | Embedded-only private host alias      |
+| Field                                                 | Meaning                              |
+| ----------------------------------------------------- | ------------------------------------ |
+| `contract.kind`                                       | Stable sidecar kind name             |
+| `contract.version`                                    | Kind protocol version                |
+| `contract.digest`                                     | Exact generated kind-contract digest |
+| `grant.kind`, `grant.version`, `grant.contractDigest` | Must exactly match `contract`        |
+| `grant.guest`                                         | Portable permission for guest calls  |
+| `grant.maxInstances`                                  | Per-grant instance ceiling           |
+| `grant.fork`                                          | Fork policy; currently `"omit"`      |
+| `grant.config`                                        | Kind-defined configuration bytes     |
+| `host`                                                | Embedded-only private host alias     |
 
-Descriptors and byte arrays are copied into VM-owned attachment state. Mutating the caller's options
-after creation does not change the live VM.
+Descriptors and byte arrays are copied into VM-owned attachment state. Typed helpers keep private guest
+layer attachments outside the portable grant and snapshots. Mutating the caller's options after creation
+does not change the live VM.
 
 ## `vm.sidecars`
 

@@ -8,6 +8,7 @@ defmodule AgentOS.Sidecars.Firecracker.Supervisor do
   def init(opts) do
     id = Keyword.fetch!(opts, :id)
     context = Keyword.fetch!(opts, :context)
+    request = Keyword.fetch!(opts, :request)
 
     children = [
       {AgentOS.Sidecars.Firecracker.Daemon, opts},
@@ -15,7 +16,8 @@ defmodule AgentOS.Sidecars.Firecracker.Supervisor do
        id: id,
        kind: context.kind,
        version: context.version,
-       contract_digest: context.contract_digest},
+       contract_digest: context.contract_digest,
+       init_body: request.body},
       {AgentOS.Sidecars.Firecracker.Meter, id: id}
     ]
 

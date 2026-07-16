@@ -76,29 +76,29 @@ AgentOS is built from a small number of countable systems. The rest of this docu
 section per row. Paths are given in the repository's restructured layout (§15): the OS we author lives
 under `memcontainers/`, the build machinery under `bazel/`.
 
-| #   | System                                       | Role                                                                                         | Where                                                                                | Status                                                                  |
-| --- | -------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
-| 1   | **Contracts / ABI projector**                | The single source of truth for every boundary; generates bindings for every language         | `memcontainers/contracts/`                                                           | built                                                                   |
-| 2   | **Kernel: process & scheduler**              | Tasks, capabilities, tiers, cooperative scheduling, signals, job control                     | `memcontainers/kernel/rust/src/task/`                                                | built                                                                   |
-| 3   | **Kernel: wasm runtime**                     | Runs guests in `wasmi`; fuel, budgets, the syscall suspend/resume dance, pcall               | `memcontainers/kernel/rust/src/wasm/`                                                | built                                                                   |
-| 4   | **Kernel: VFS & namespaces**                 | Plan-9 per-process mount tables; the filesystem trait                                        | `memcontainers/kernel/rust/src/vfs/`                                                 | built                                                                   |
-| 5   | **Filesystem backends**                      | memfs, cowfs, overlayfs, tarfs, persistfs, procfs, envfs, devfs, netfs                       | `memcontainers/kernel/rust/src/fs/`                                                  | built                                                                   |
-| 6   | **IPC: pipes**                               | Ref-counted ring-buffer pipes for real pipelines                                             | `memcontainers/kernel/rust/src/ipc/`                                                 | built                                                                   |
-| 7   | **Served filesystems**                       | A guest can _be_ a filesystem (9P-style) over the VFS                                        | `…/src/fs/servedfs.rs`                                                               | built                                                                   |
-| 8   | **Resident services**                        | Warm, typed cross-guest request/response engines under `/svc`                                | `…/src/fs/servicefs.rs`                                                              | built                                                                   |
-| 9   | **Networking**                               | Host-terminated HTTP/WebSocket; `/net` file tree                                             | `…/src/net/`, `…/src/fs/netfs.rs`                                                    | built                                                                   |
-| 10  | **Host-call & proxy**                        | Opaque host-backed calls; the shared proxy ABI for served/mounted fs                         | `…/src/host_call.rs`, `…/src/fs/proxy.rs`                                            | built                                                                   |
-| 11  | **Snapshots & determinism**                  | `(memory)` capture/restore; quiescence; the seal                                             | `…/src/{persist,seal,sync}.rs` + host                                                | built                                                                   |
-| 12  | **Guest sysroot & WASI adapter**             | The guest side of the ABI (Rust + Zig); WASI→mc shim                                         | `memcontainers/sysroot/`, `memcontainers/wasi-adapter/`                              | built                                                                   |
-| 13  | **Conformance & attestation**                | Build-time import-purity + tier-fit gates                                                    | `memcontainers/conformance/`, `bazel/tools/mc-attest`                                | built                                                                   |
-| 14  | **Shell**                                    | An OS-agnostic POSIX-ish Zig shell engine driving `/bin/sh`                                  | `memcontainers/shcore/`, `memcontainers/programs/sh/`                                | built                                                                   |
-| 15  | **Userland `/bin`**                          | Multicall coreutils, partitioned by tier                                                     | `memcontainers/programs/coreutils/`                                                  | built                                                                   |
-| 16  | **Luau scripting**                           | The primary user-facing language; embedded + VFS batteries                                   | `memcontainers/programs/luau/`                                                       | built                                                                   |
-| 17  | **Domain engines & adapters**                | Heavy engines, owned syntax parsing, and the shared tool-adapter service                     | `memcontainers/programs/{sqlite,typst,syntax,adapters}/`, `memcontainers/lib/parse/` | built                                                                   |
-| 18  | **Images, flavors & packages**               | Content-addressed layered images; demand-loaded packages                                     | `memcontainers/images/`, `memcontainers/pkgcore/`, `bazel/tools/mc-roster`           | built                                                                   |
-| 19  | **Host (wasmtime)**                          | Loads `kernel.wasm`, supplies the bridge, ticks, performs effects                            | `memcontainers/hosts/wasmtime/`                                                      | built                                                                   |
-| 20  | **Control, sidecar, network & browser edge** | Elixir actor-per-VM and sidecar core, wire contract/client, JS host family, SDK, and web app | `server/`, `memcontainers/hosts/js/`, `memcontainers/sdk-js/`, `web/`                | built; served HTTP/WS adapter and typed browser sidecar remain external |
-| 21  | **Build & test**                             | Bazel zero-staleness graph and no-mocks e2e                                                  | `MODULE.bazel`, `bazel/`, `memcontainers/tests/`                                     | built                                                                   |
+| #   | System                                       | Role                                                                                         | Where                                                                                | Status                                                                               |
+| --- | -------------------------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| 1   | **Contracts / ABI projector**                | The single source of truth for every boundary; generates bindings for every language         | `memcontainers/contracts/`                                                           | built                                                                                |
+| 2   | **Kernel: process & scheduler**              | Tasks, capabilities, tiers, cooperative scheduling, signals, job control                     | `memcontainers/kernel/rust/src/task/`                                                | built                                                                                |
+| 3   | **Kernel: wasm runtime**                     | Runs guests in `wasmi`; fuel, budgets, the syscall suspend/resume dance, pcall               | `memcontainers/kernel/rust/src/wasm/`                                                | built                                                                                |
+| 4   | **Kernel: VFS & namespaces**                 | Plan-9 per-process mount tables; the filesystem trait                                        | `memcontainers/kernel/rust/src/vfs/`                                                 | built                                                                                |
+| 5   | **Filesystem backends**                      | memfs, cowfs, overlayfs, tarfs, persistfs, procfs, envfs, devfs, netfs                       | `memcontainers/kernel/rust/src/fs/`                                                  | built                                                                                |
+| 6   | **IPC: pipes**                               | Ref-counted ring-buffer pipes for real pipelines                                             | `memcontainers/kernel/rust/src/ipc/`                                                 | built                                                                                |
+| 7   | **Served filesystems**                       | A guest can _be_ a filesystem (9P-style) over the VFS                                        | `…/src/fs/servedfs.rs`                                                               | built                                                                                |
+| 8   | **Resident services**                        | Warm, typed cross-guest request/response engines under `/svc`                                | `…/src/fs/servicefs.rs`                                                              | built                                                                                |
+| 9   | **Networking**                               | Host-terminated HTTP/WebSocket; `/net` file tree                                             | `…/src/net/`, `…/src/fs/netfs.rs`                                                    | built                                                                                |
+| 10  | **Host-call & proxy**                        | Opaque host-backed calls; the shared proxy ABI for served/mounted fs                         | `…/src/host_call.rs`, `…/src/fs/proxy.rs`                                            | built                                                                                |
+| 11  | **Snapshots & determinism**                  | `(memory)` capture/restore; quiescence; the seal                                             | `…/src/{persist,seal,sync}.rs` + host                                                | built                                                                                |
+| 12  | **Guest sysroot & WASI adapter**             | The guest side of the ABI (Rust + Zig); WASI→mc shim                                         | `memcontainers/sysroot/`, `memcontainers/wasi-adapter/`                              | built                                                                                |
+| 13  | **Conformance & attestation**                | Build-time import-purity + tier-fit gates                                                    | `memcontainers/conformance/`, `bazel/tools/mc-attest`                                | built                                                                                |
+| 14  | **Shell**                                    | An OS-agnostic POSIX-ish Zig shell engine driving `/bin/sh`                                  | `memcontainers/shcore/`, `memcontainers/programs/sh/`                                | built                                                                                |
+| 15  | **Userland `/bin`**                          | Multicall coreutils, partitioned by tier                                                     | `memcontainers/programs/coreutils/`                                                  | built                                                                                |
+| 16  | **Luau scripting**                           | The primary user-facing language; embedded + VFS batteries                                   | `memcontainers/programs/luau/`                                                       | built                                                                                |
+| 17  | **Domain engines & adapters**                | Heavy engines, owned syntax parsing, and the shared tool-adapter service                     | `memcontainers/programs/{sqlite,typst,syntax,adapters}/`, `memcontainers/lib/parse/` | built                                                                                |
+| 18  | **Images, flavors & packages**               | Content-addressed layered images; demand-loaded packages                                     | `memcontainers/images/`, `memcontainers/pkgcore/`, `bazel/tools/mc-roster`           | built                                                                                |
+| 19  | **Host (wasmtime)**                          | Loads `kernel.wasm`, supplies the bridge, ticks, performs effects                            | `memcontainers/hosts/wasmtime/`                                                      | built                                                                                |
+| 20  | **Control, sidecar, network & browser edge** | Elixir actor-per-VM and sidecar core, wire contract/client, JS host family, SDK, and web app | `server/`, `memcontainers/hosts/js/`, `memcontainers/sdk-js/`, `web/`                | built; served HTTP/WS adapter remains external; browser KVM test requires a KVM host |
+| 21  | **Build & test**                             | Bazel zero-staleness graph and no-mocks e2e                                                  | `MODULE.bazel`, `bazel/`, `memcontainers/tests/`                                     | built                                                                                |
 
 The implementation spans Rust (kernel and wasmtime host), Zig (shell, coreutils, and guest glue),
 TypeScript (JS host, SDK, and browser UI), Elixir (control plane), Luau (scripting batteries), the
@@ -1358,20 +1358,31 @@ provider. It is outside the kernel's linear memory and therefore outside a raw M
 a resident service, a syscall, or a tool-catalog record. The portable lifecycle contract lives in
 `memcontainers/contracts/sidecar.kdl`; `memcontainers/contracts/runner.kdl` separately defines
 the bounded framed protocol between an infrastructure provider and its runner. Each contract is projected
-only into languages with a real consumer: the lifecycle is consumed by Rust, TypeScript, and Elixir;
-the runner protocol by Zig and Elixir. Limits, states, errors, and message IDs are not transcribed by
-consumers. The split is a trust boundary, not a second description of the same API: `sidecar` crosses
-SDK, guest, and OTP ownership; `runner` remains private to one provider and never reaches a client or
-guest program running inside AgentOS.
+only into languages with a real consumer: the lifecycle is consumed by Rust, TypeScript, Elixir, and
+Luau; the runner protocol by Zig, TypeScript, and Elixir. Limits, states, errors, and message IDs are not
+transcribed by consumers. The split is a trust boundary, not a second description of the same API:
+`sidecar` crosses SDK, guest, and OTP ownership; `runner` remains private to one provider and never
+reaches a client or guest program running inside AgentOS.
 
 In `@mc/core`, an embedded VM binds a portable grant to a named private `SidecarHost`. The alias resolves
 an endpoint or local authority but never enters guest memory, a snapshot, or a remote VM request. A
 remote VM sends only grants and lets its served host choose placement. Every VM owns its attachment
 objects and live grant registry; `vm.fork()` does not retain a remote VM identity. Guest-originated
 operations use the reserved binary-safe `mc.sidecar` host binding, which ordinary tools cannot register
-and which never appears in `tools list` or `/tools`. The generic lifecycle is exposed as `vm.sidecars`;
-kind-specific resource APIs, CLIs, and Luau modules will layer over it. The first browser kind is
-intentionally not part of this foundation.
+and which never appears in `tools list` or `/tools`. The generic lifecycle remains exposed as
+`vm.sidecars`; the first typed projection layers `vm.browsers`, `/bin/browser`, and
+`require("browser").use(...)` over the generated browser contract without replacing that generic
+substrate.
+
+Guest-visible clients are optional **guest layers**, not permanent members of an image flavor. A typed
+descriptor keeps the portable `guest` permission bit separate from its private layer attachment. On an
+embedded `local` or `browser` VM, `guest` receives the layer bytes and the host appends one owned,
+contract-associated copy above the requested image before boot. On a `remote` VM, `guest = true` carries
+only the portable permission and the served AgentOS host appends its configured layer. Supplying bytes
+to a remote VM or `true` to an embedded VM is rejected rather than silently changing authority. Host-only
+grants add nothing; byte-identical layers for one contract are deduplicated, while conflicting bytes are
+rejected. Restore never reapplies a layer because full and incremental snapshots already contain the
+selected guest filesystem. Guest layers are create-time attachments and cannot be enabled on a running VM.
 
 The transportless OTP realization is a sibling of `AgentOS.Vm`, not state stuffed into the wasmtime
 owner. One `Scope` owns a VM's grants, idempotency records, admission barrier, and leases; one `Instance`
@@ -1392,11 +1403,22 @@ portable and never silently capture or reattach an external resource.
 The reference infrastructure provider boots a contract-speaking runner in a jailed Firecracker
 microVM. Production launch goes through a root-owned, fixed-command helper that validates its root-owned
 configuration and artifacts, creates the network namespace, invokes jailer under cgroup v2, and performs
-idempotent cleanup/reconciliation. Its machine-specific binaries, kernel, helper, and conformance
-initramfs ship only in the separate `//server/sidecars:firecracker_runner_bundle`; the ordinary AgentOS
-package remains portable. `//server:kvm_test` is the real vertical proof: it boots the pinned microVM,
-validates the generated hello, exchanges generated request/response frames, and removes the runner.
-Chromium, a browser facade, and production fleet scheduling are not claimed by this layer.
+idempotent cleanup/reconciliation. Network-enabled profiles additionally receive a TAP, an owned veth
+route, public-IPv4-only NAT, and host/private/link-local/reserved destination filtering; profiles without
+guest networking do not depend on that host ruleset. Machine-specific binaries, the kernel, the helper,
+and runner initramfs images ship only in the separate
+`//server/sidecars:firecracker_runner_bundle`; the ordinary AgentOS package remains portable.
+`//server:kvm_test` boots the pinned health microVM, validates the generated hello, exchanges generated
+request/response frames, and removes the runner.
+
+The first typed kind is a browser. `browser.kdl` projects the lifecycle configuration, page/computer
+operations, limits, and payloads into every consumer. The runner image uses a digest-pinned Chromium
+headless shell plus Bun and a bounded generated-contract CDP adapter; it does not expose raw CDP or ship
+Playwright. `/bin/browser`, the Luau battery, and `vm.browsers` share that vocabulary. The image builds
+deterministically from OCI layers into an initramfs. `//server:browser_kvm_test` is the real cold-boot
+vertical and exercises navigation, selectors, keyboard/mouse input, scrolling, screenshots, and cleanup;
+it must run on Linux x86_64 with `/dev/kvm`. Prepared snapshots, scoped channels, and production fleet
+scheduling are not claimed by this layer.
 
 ---
 
@@ -1630,25 +1652,25 @@ while the contract is still soft.
 
 ## 17. Implementation status
 
-| Area                                                                                               | Status                                                         |
-| -------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| Contracts + projector (Rust/Zig/TS/MD/AsyncAPI)                                                    | Built; 57 syscalls at ABI 1.7                                  |
-| Rust kernel (scheduler, wasm runtime, VFS, filesystems, pipes, services, net, snapshots)           | Built                                                          |
-| Guest sysroot (Rust + Zig), WASI adapter, conformance/attestation                                  | Built                                                          |
-| Shell, multicall coreutils, Luau (+ batteries)                                                     | Built                                                          |
-| Domain engines: SQLite (`atlas`), typst (`paper`), and syntax parsing (`loom`)                     | Built                                                          |
-| Images/flavors (minimal→loom→atlas/paper), `pkgfsd`, the stamping/roster tools                     | Built                                                          |
-| Rust/wasmtime host (bridge, control, snapshot/restore, deterministic mode)                         | Built                                                          |
-| Elixir/OTP actor-per-VM control plane over the wasmtime NIF                                        | Built; transport/deployment adapter is outside this repository |
-| Wire contract + TypeScript remote client                                                           | Built; requires a conforming served host                       |
-| Generic sidecar contracts, SDK attachment backend, OTP lifecycle, and Firecracker reference runner | Built; browser kind and served adapter are not included        |
-| JS host family, `@mc/{core,elements}` SDK, web app                                                 | Built and tested with real browser artifacts                   |
-| Zig-kernel experiment                                                                              | Archived on `feature/zig`; not present in `develop` (§14.3)    |
+| Area                                                                                                | Status                                                                 |
+| --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Contracts + projector (Rust/Zig/TS/MD/AsyncAPI)                                                     | Built; 57 syscalls at ABI 1.7                                          |
+| Rust kernel (scheduler, wasm runtime, VFS, filesystems, pipes, services, net, snapshots)            | Built                                                                  |
+| Guest sysroot (Rust + Zig), WASI adapter, conformance/attestation                                   | Built                                                                  |
+| Shell, multicall coreutils, Luau (+ batteries)                                                      | Built                                                                  |
+| Domain engines: SQLite (`atlas`), typst (`paper`), and syntax parsing (`loom`)                      | Built                                                                  |
+| Images/flavors (minimal→loom→atlas/paper), `pkgfsd`, the stamping/roster tools                      | Built                                                                  |
+| Rust/wasmtime host (bridge, control, snapshot/restore, deterministic mode)                          | Built                                                                  |
+| Elixir/OTP actor-per-VM control plane over the wasmtime NIF                                         | Built; transport/deployment adapter is outside this repository         |
+| Wire contract + TypeScript remote client                                                            | Built; requires a conforming served host                               |
+| Generic sidecar contracts, typed browser surfaces, OTP lifecycle, and Firecracker reference runners | Built; served adapter and production runner deployment remain external |
+| JS host family, `@mc/{core,elements}` SDK, web app                                                  | Built and tested with real browser artifacts                           |
+| Zig-kernel experiment                                                                               | Archived on `feature/zig`; not present in `develop` (§14.3)            |
 
 The one-line summary: **the OS core, both embedding host families, the SDK/browser workbench, the
-Elixir VM-control library, and the generic sidecar/Firecracker foundation are built and green on
-generated contracts; an HTTP/WebSocket deployment around the control plane is a separate integration,
-and the Zig-kernel experiment is archived.**
+Elixir VM-control library, and the generic sidecar/Firecracker foundation plus its first typed browser
+runner are built on generated contracts; an HTTP/WebSocket deployment and production runner fleet remain
+separate integrations, and the Zig-kernel experiment is archived.**
 
 ---
 

@@ -12,6 +12,8 @@ defmodule AgentOS.Contracts.Runner do
   def runner_health_kind, do: @runner_health_kind
   @runner_health_contract_digest "sha256:515a069b3ebe4d7e6fbb23496b4e71908ad2b5046b00345b3cfe833c4ea82339"
   def runner_health_contract_digest, do: @runner_health_contract_digest
+  @runner_init_operation "init"
+  def runner_init_operation, do: @runner_init_operation
 
 
   defp field!(map, key) do

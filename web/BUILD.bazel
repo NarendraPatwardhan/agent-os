@@ -64,6 +64,7 @@ genrule(
         "//memcontainers/images:atlas",
         "//memcontainers/images:paper",
         "//memcontainers/lib/catalog-compiler:wasm",
+        "//memcontainers/programs/browser:browserctl_layer",
     ],
     outs = [
         "public/mc/kernel.wasm",
@@ -74,6 +75,7 @@ genrule(
         "public/mc/atlas.tar",
         "public/mc/paper.tar",
         "public/mc/catalog-compiler.wasm",
+        "public/mc/browserctl.tar",
     ],
     cmd = """
 mkdir -p "$(@D)/public/mc"
@@ -85,6 +87,7 @@ cp "$(location //memcontainers/images:atlas)" "$(@D)/public/mc/atlas.tar"
 cp "$(location //memcontainers/images:paper)" "$(@D)/public/mc/paper.tar"
 cp "$(location //memcontainers/images:loom)" "$(@D)/public/mc/image.tar"
 cp "$(location //memcontainers/lib/catalog-compiler:wasm)" "$(@D)/public/mc/catalog-compiler.wasm"
+cp "$(location //memcontainers/programs/browser:browserctl_layer)" "$(@D)/public/mc/browserctl.tar"
 """,
 )
 

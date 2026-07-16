@@ -41,6 +41,9 @@ contributor documentation, see [AgentOS on DeepWiki](https://deepwiki.com/Narend
   precedence.
 - [Mounts and drivers](./mounts-drivers.md): the custom driver contract plus `hostDir()`, `s3()`, and
   `vectorStore()`.
+- [Sidecars](./sidecars.md): grants, host attachments, external-resource lifecycle, and fork behavior.
+- [Browser sidecars](./browser-sidecars.md): typed Chromium sessions, pages, input, screenshots,
+  cleanup, and the hosted or self-hosted infrastructure they require.
 
 ## State and builds
 

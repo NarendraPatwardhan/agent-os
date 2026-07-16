@@ -19,7 +19,8 @@ defmodule AgentOS.ControlPlane do
   """
   @spec create(Vm.id(), keyword()) :: {:ok, pid()} | {:error, term()}
   def create(id, opts) do
-    with {:ok, opts} <- sidecar_vm_opts(opts) do
+    with {:ok, opts} <- sidecar_vm_opts(opts),
+         {:ok, opts} <- AgentOS.GuestLayers.compose(opts) do
       case DynamicSupervisor.start_child(@supervisor, {Vm, Keyword.put(opts, :id, id)}) do
         {:ok, pid} -> {:ok, pid}
         {:error, {:already_started, pid}} -> {:ok, pid}
@@ -31,7 +32,8 @@ defmodule AgentOS.ControlPlane do
   @doc "Create a VM only when `id` is unoccupied; unlike `create/2`, never converges on an existing VM."
   @spec create_new(Vm.id(), keyword()) :: {:ok, pid()} | {:error, :already_exists | term()}
   def create_new(id, opts) do
-    with {:ok, opts} <- sidecar_vm_opts(opts) do
+    with {:ok, opts} <- sidecar_vm_opts(opts),
+         {:ok, opts} <- AgentOS.GuestLayers.compose(opts) do
       case DynamicSupervisor.start_child(@supervisor, {Vm, Keyword.put(opts, :id, id)}) do
         {:ok, pid} -> {:ok, pid}
         {:error, {:already_started, _pid}} -> {:error, :already_exists}

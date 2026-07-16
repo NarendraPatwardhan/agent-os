@@ -22,6 +22,20 @@ export type { VmFs } from "./types.js";
 export { tool, kit } from "./tools.js";
 export type { ToolSpec } from "./tools.js";
 export { remoteSidecars, SidecarError, VmSidecars } from "./sidecars.js";
+export { browser, VmBrowsers, VmBrowserComputer, VmBrowserPages } from "./browsers.js";
+export type {
+  BrowserCreateOptions,
+  BrowserKeyOptions,
+  BrowserLocatorOptions,
+  BrowserOptions,
+  BrowserPageOptions,
+  BrowserPoint,
+  BrowserScreenshotOptions,
+  BrowserScrollOptions,
+  BrowserSession,
+  BrowserTypeOptions,
+  BrowserWaitUntil,
+} from "./browsers.js";
 export type {
   RemoteSidecarHostOptions,
   SidecarAuthority,

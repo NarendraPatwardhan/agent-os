@@ -1,4 +1,8 @@
-ExUnit.start(exclude: if(System.get_env("AGENT_OS_KVM_E2E") == "1", do: [], else: [kvm: true]))
+kvm? =
+  System.get_env("AGENT_OS_KVM_E2E") == "1" or
+    System.get_env("AGENT_OS_BROWSER_KVM_E2E") == "1"
+
+ExUnit.start(exclude: if(kvm?, do: [], else: [kvm: true]))
 
 defmodule AgentOS.TestSidecarProvider do
   @behaviour AgentOS.Sidecars.Provider
@@ -64,22 +68,46 @@ defmodule AgentOS.TestRunfiles do
 end
 
 sidecar_providers =
-  if System.get_env("AGENT_OS_KVM_E2E") == "1" do
+  if kvm? do
     work_root =
       Path.join(System.tmp_dir!(), "agentos-firecracker-#{System.unique_integer([:positive])}")
 
     Application.put_env(:agent_os, :firecracker_test_root, work_root)
 
+    browser? = System.get_env("AGENT_OS_BROWSER_KVM_E2E") == "1"
+
+    initramfs =
+      if browser? do
+        AgentOS.TestRunfiles.find!("server/sidecars/browser/initramfs.cpio")
+      else
+        AgentOS.TestRunfiles.find!("health-initramfs.cpio")
+      end
+
+    browser_profile =
+      if browser? do
+        %{
+          AgentOS.Contracts.Browser.browser_kind() => [
+            profile: nil,
+            initramfs: initramfs,
+            network: false
+          ]
+        }
+      else
+        %{}
+      end
+
     [
       {AgentOS.Sidecars.Providers.Firecracker,
        launch: :direct,
        development: true,
-       health_runner: true,
+       health_runner: not browser?,
+       browser_runner: browser?,
+       profiles: browser_profile,
        work_root: work_root,
        firecracker: AgentOS.TestRunfiles.find!("firecracker-v1.15.1-x86_64"),
        jailer: AgentOS.TestRunfiles.find!("jailer-v1.15.1-x86_64"),
        kernel: AgentOS.TestRunfiles.find!("vmlinux-6.1.155"),
-       initramfs: AgentOS.TestRunfiles.find!("health-initramfs.cpio"),
+       initramfs: initramfs,
        memory_mib: 128,
        vcpus: 1}
     ]

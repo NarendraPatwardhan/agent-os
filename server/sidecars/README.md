@@ -12,10 +12,11 @@ runner bundle separately:
 bazel build //server/sidecars:firecracker_runner_bundle
 ```
 
-The resulting tar contains the pinned Firecracker and jailer binaries, pinned Linux kernel, static
-health runner initramfs, root helper, and a configuration template. The health runner exists for KVM
-conformance testing; a real sidecar kind supplies a runner initramfs implementing that kind's generated
-contract while retaining the same host lifecycle and runner envelope.
+The resulting tar contains the pinned Firecracker and jailer binaries, pinned Linux kernel, the health
+and browser runner initramfs images, root helper, and a configuration template. The health runner is the
+small KVM conformance probe. The browser runner is a complete Chromium + Bun environment implementing
+the generated browser contract over the same lifecycle and runner envelope. OCI conversion strips all
+setuid and setgid bits; browser processes cannot regain root through general-purpose base-image tools.
 
 ## Host installation
 
@@ -31,7 +32,8 @@ action because it creates a narrow setuid boundary.
 4. Install the configuration as root-owned and mode `0644` or stricter.
 5. Install `agentos-sidecar-helper` as root-owned mode `4755`. The helper accepts only fixed lifecycle
    verbs and validated AgentOS sidecar IDs; the BEAM cannot supply commands or artifact paths.
-6. Initialize the dedicated nftables table once after install or network-policy changes:
+6. If any configured runner kind enables network egress, set `uplink` to the host interface those
+   sidecars may use and initialize the dedicated nftables table once after install:
 
    ```sh
    /path/to/agentos-sidecar-helper network-host-init
@@ -43,9 +45,15 @@ action because it creates a narrow setuid boundary.
    /path/to/agentos-sidecar-helper sys-test
    ```
 
-The sample network policy is fail-closed: the runner namespace receives a TAP device but no external
-route. Kind-specific outbound networking should be installed by an operator-owned policy component,
-not accepted from a VM request.
+Every jailed runner receives its own network namespace. Network-enabled runners additionally receive a
+TAP and owned veth route; the dedicated nftables table permits public IPv4 traffic through `uplink`,
+with NAT at both isolation boundaries. Host, loopback, link-local, private, carrier-grade NAT,
+documentation, multicast, and reserved destinations are denied, including cloud metadata ranges. The
+table also denies special-purpose destinations from the IANA registry, traffic from runner interfaces
+to host input, and installs no inbound route. Interface
+ownership is tied to the full sidecar ID so a hash or address collision fails creation instead of
+cleaning up another runner's network. Runners without the network option do not depend on that table and
+receive no guest NIC.
 
 ## Server wiring
 
@@ -58,7 +66,7 @@ Configure the provider when adding `AgentOS.Supervisor` to the consuming OTP app
    providers: [
      {AgentOS.Sidecars.Providers.Firecracker,
       helper: "/usr/local/libexec/agentos-sidecar-helper",
-      capability: my_generated_sidecar_capability}
+      browser_runner: true}
    ]
  ]}
 ```
@@ -75,4 +83,5 @@ Run the real reference vertical on a KVM host with:
 
 ```sh
 bazel test //server:kvm_test
+bazel test //server:browser_kvm_test
 ```

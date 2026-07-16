@@ -142,7 +142,8 @@ defmodule AgentOS.Sidecars.Scope do
            grant: request.grant,
            kind: request.kind,
            version: grant.version,
-           contract_digest: grant.contract_digest
+           contract_digest: grant.contract_digest,
+           grant_config: grant.config
          },
          child <-
            {Instance,

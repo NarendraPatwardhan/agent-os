@@ -28,6 +28,7 @@ gh_release(
         "//memcontainers/images:atlas": "atlas.tar",
         "//memcontainers/images:paper": "paper.tar",
         "//memcontainers/sdk-js/core:bundle": "mc-core.mjs",
+        "//memcontainers/programs/browser:browserctl_layer": "browserctl.tar",
         "//memcontainers/lib/catalog-compiler:wasm": "catalog-compiler.wasm",
     },
     repo = "NarendraPatwardhan/agent-os",

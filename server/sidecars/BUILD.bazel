@@ -9,6 +9,7 @@ pkg_tar(
         "//server/native/sidecar-helper:sidecar-helper.conf": "etc/sidecar-helper.conf",
         "//server/native/sidecar-helper:sidecar-helper": "bin/agentos-sidecar-helper",
         "//server/sidecars/runner:health_initramfs": "libexec/health-initramfs.cpio",
+        "//server/sidecars/browser:initramfs": "libexec/browser-initramfs.cpio",
         "@firecracker//:firecracker": "libexec/firecracker-v1.15.1-x86_64",
         "@firecracker//:jailer": "libexec/jailer-v1.15.1-x86_64",
         "@firecracker//:LICENSE": "share/licenses/firecracker/LICENSE",

@@ -4,6 +4,7 @@ pub const RUNNER_MAX_FRAME_BYTES: u32 = 8392704;
 pub const RUNNER_DEFAULT_VSOCK_PORT: u32 = 52;
 pub const RUNNER_HEALTH_KIND: []const u8 = "agentos.health.v1";
 pub const RUNNER_HEALTH_CONTRACT_DIGEST: []const u8 = "sha256:515a069b3ebe4d7e6fbb23496b4e71908ad2b5046b00345b3cfe833c4ea82339";
+pub const RUNNER_INIT_OPERATION: []const u8 = "init";
 
 
 const std = @import("std");

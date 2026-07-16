@@ -2,6 +2,11 @@ load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary", "zig_library")
 load("//bazel:mc_program.bzl", "cc_headers", "cc_object", "mc_program")
 
+exports_files(
+    ["lib/browser.luau"],
+    visibility = ["//memcontainers/programs/browser:__pkg__"],
+)
+
 # The Luau glue, written in ZIG (the C/C++ → Zig rewrite, SYSTEMS.md). The patched upstream Luau
 # (C++, fetched by the @luau http_archive) links against this. trap + the mc syscall shim are
 # self-contained (no Lua C API); the bindings (sys/stdlib + json/hash/re/encoding/deflate + the

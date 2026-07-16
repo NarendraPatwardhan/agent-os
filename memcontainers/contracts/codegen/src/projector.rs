@@ -3,7 +3,7 @@
 //! projection; `abi_library` invokes it once per (module, language) pair.
 //!
 //! Invocation:  projector --module <m> --lang <l> --contract <path.kdl>
-//!   module = constants | mc | env | ctl | wire | llb | syntax | sidecar | runner | snapshot | shell
+//!   module = constants | mc | env | ctl | wire | llb | syntax | sidecar | browser | runner | snapshot | shell
 //!   lang   = rust | zig | ts | elixir | luau | md | asyncapi | openapi      (which projection)
 //!
 //! Design (why this shape — C1):
@@ -1321,6 +1321,7 @@ fn emit_elixir_messages(messages: &[Message], contract: &str) -> String {
     o.push_str(&format!("defmodule {} do\n", elixir_module_name(contract)));
     o.push_str("  @moduledoc false\n\n");
     let uses_i32 = messages_use_type(messages, "i32");
+    let uses_i64 = messages_use_type(messages, "i64");
     let uses_strmap = messages_use_type(messages, "strmap");
     let uses_message_list = messages_use_list_type(messages);
     let uses_scalar_message = messages_use_scalar_message_type(messages);
@@ -1351,10 +1352,18 @@ fn emit_elixir_messages(messages: &[Message], contract: &str) -> String {
   defp read_u16(_bytes), do: {:error, "truncated frame"}
   defp read_u32(<<value::unsigned-little-32, rest::binary>>), do: {:ok, value, rest}
   defp read_u32(_bytes), do: {:error, "truncated frame"}
-  defp read_i64(<<value::signed-little-64, rest::binary>>), do: {:ok, value, rest}
+"#,
+    );
+    if uses_i64 {
+        o.push_str(
+            r#"  defp read_i64(<<value::signed-little-64, rest::binary>>), do: {:ok, value, rest}
   defp read_i64(_bytes), do: {:error, "truncated frame"}
 
-  defp read_bool(bytes) do
+"#,
+        );
+    }
+    o.push_str(
+        r#"  defp read_bool(bytes) do
     case read_u8(bytes) do
       {:ok, 0, rest} -> {:ok, false, rest}
       {:ok, 1, rest} -> {:ok, true, rest}
@@ -1417,8 +1426,13 @@ fn emit_elixir_messages(messages: &[Message], contract: &str) -> String {
   defp put_u8(value), do: <<value::unsigned-little-8>>
   defp put_u16(value), do: <<value::unsigned-little-16>>
   defp put_u32(value), do: <<value::unsigned-little-32>>
-  defp put_i64(value), do: <<value::signed-little-64>>
-  defp put_bool(true), do: <<1>>
+"#,
+    );
+    if uses_i64 {
+        o.push_str("  defp put_i64(value), do: <<value::signed-little-64>>\n");
+    }
+    o.push_str(
+        r#"  defp put_bool(true), do: <<1>>
   defp put_bool(false), do: <<0>>
   defp put_bytes(bytes), do: [put_u32(byte_size(bytes)), bytes]
   defp put_str(value), do: put_bytes(value)
@@ -3450,7 +3464,7 @@ fn main() -> ExitCode {
     }
     let (Some(lang), Some(module), Some(contract)) = (lang, module, contract) else {
         eprintln!(
-            "usage: projector --module <constants|mc|env|ctl|wire|llb|syntax|sidecar|runner|snapshot|shell> --lang <rust|zig|ts|elixir|luau|md|asyncapi|openapi> --contract <path.kdl>"
+            "usage: projector --module <constants|mc|env|ctl|wire|llb|syntax|sidecar|browser|runner|snapshot|shell> --lang <rust|zig|ts|elixir|luau|md|asyncapi|openapi> --contract <path.kdl>"
         );
         return ExitCode::FAILURE;
     };
@@ -3498,7 +3512,9 @@ fn main() -> ExitCode {
             "EXPORTS",
         ),
         "wire" => emit_wire(&lang, &nodes, &file, &contract),
-        "llb" | "syntax" | "sidecar" | "runner" => emit_codec_module(&lang, &nodes, &file),
+        "llb" | "syntax" | "sidecar" | "browser" | "runner" => {
+            emit_codec_module(&lang, &nodes, &file)
+        }
         "snapshot" => emit_snapshot(&lang, &nodes, &file),
         "shell" => emit_shell_module(&lang, &nodes, &file),
         other => {

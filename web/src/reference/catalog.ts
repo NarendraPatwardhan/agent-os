@@ -73,6 +73,11 @@ const GROUPS: ReadonlyArray<Readonly<{ title: string; pages: ReadonlyArray<PageD
         "Sidecars",
         "Leased external resources, grants, lifecycle, fork behavior, and host connectors.",
       ],
+      [
+        "browser-sidecars",
+        "Browser sidecars",
+        "Typed Chromium sessions, pages, computer input, capture, and lifecycle.",
+      ],
     ],
   },
   {

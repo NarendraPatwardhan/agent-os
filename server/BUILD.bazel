@@ -1,3 +1,4 @@
+load("@aspect_bazel_lib//lib:copy_file.bzl", "copy_file")
 load("@aspect_bazel_lib//lib:write_source_files.bzl", "write_source_files")
 load("@rules_elixir//:defs.bzl", "mix_library", "mix_test")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
@@ -24,12 +25,19 @@ _PACKAGE_SRCS = glob(
     exclude = ["lib/agent_os/contracts/*.ex"],
 )
 
+copy_file(
+    name = "browserctl_artifact",
+    src = "//memcontainers/programs/browser:browserctl_layer",
+    out = "browserctl.tar",
+)
+
 write_source_files(
     name = "agent_os_contracts_sync",
     files = {
         "lib/agent_os/contracts/constants.ex": "//memcontainers/contracts:constants_elixir_gen",
         "lib/agent_os/contracts/control.ex": "//memcontainers/contracts:ctl_elixir_gen",
         "lib/agent_os/contracts/llb.ex": "//memcontainers/contracts:llb_elixir_gen",
+        "lib/agent_os/contracts/browser.ex": "//memcontainers/contracts:browser_elixir_gen",
         "lib/agent_os/contracts/runner.ex": "//memcontainers/contracts:runner_elixir_gen",
         "lib/agent_os/contracts/sidecar.ex": "//memcontainers/contracts:sidecar_elixir_gen",
         "lib/agent_os/contracts/snapshot.ex": "//memcontainers/contracts:snapshot_elixir_gen",
@@ -43,7 +51,10 @@ mix_library(
     srcs = _SERVER_SRCS,
     app_name = "agent_os",
     mix_config = ":mix.exs",
-    priv = ["//memcontainers/hosts/wasmtime/nif:host_nif_release"],  # libhost_nif.so -> priv/
+    priv = [
+        ":browserctl_artifact",
+        "//memcontainers/hosts/wasmtime/nif:host_nif_release",
+    ],
     tags = ["manual"],
     target_compatible_with = ELIXIR_ONLY,
     visibility = ["//visibility:public"],
@@ -56,7 +67,10 @@ mix_library(
     app_name = "agent_os",
     mix_config = ":mix.exs",
     mix_env = "test",
-    priv = ["//memcontainers/hosts/wasmtime/nif:host_nif_release"],
+    priv = [
+        ":browserctl_artifact",
+        "//memcontainers/hosts/wasmtime/nif:host_nif_release",
+    ],
     tags = ["manual"],
     target_compatible_with = ELIXIR_ONLY,
 )
@@ -127,6 +141,43 @@ elixir_test(
     ],
 )
 
+# Browser runner vertical proof. Kept separate from the small health runner because its complete
+# Chromium rootfs is intentionally large and should only enter the graph when this KVM lane is asked
+# for explicitly.
+mix_test(
+    name = "browser_kvm_test_impl",
+    srcs = [
+        "test/agent_os/browser_firecracker_test.exs",
+        "test/test_helper.exs",
+    ],
+    data = [
+        "//server/sidecars/browser:initramfs",
+        "@firecracker",
+        "@firecracker//:jailer",
+        "@firecracker_kernel//file",
+    ],
+    env = {
+        "AGENT_OS_BROWSER_KVM_E2E": "1",
+        "ELIXIR_ERL_OPTIONS": "+fnu",
+        "ERL_COMPILER_OPTIONS": "deterministic",
+    },
+    lib = ":lib_test",
+    tags = [
+        "manual",
+        "requires-kvm",
+    ],
+    target_compatible_with = ELIXIR_ONLY,
+)
+
+elixir_test(
+    name = "browser_kvm_test",
+    actual = ":browser_kvm_test_impl",
+    tags = [
+        "manual",
+        "requires-kvm",
+    ],
+)
+
 # The native payload for a Mix-consuming host app. Keep it as a separate layer so the pure Elixir
 # package layout stays obvious and the platform-shaped cdylib is isolated under priv/.
 pkg_tar(
@@ -172,6 +223,7 @@ pkg_tar(
         "//memcontainers/contracts:constants_elixir_gen": "lib/agent_os/contracts/constants.ex",
         "//memcontainers/contracts:ctl_elixir_gen": "lib/agent_os/contracts/control.ex",
         "//memcontainers/contracts:llb_elixir_gen": "lib/agent_os/contracts/llb.ex",
+        "//memcontainers/contracts:browser_elixir_gen": "lib/agent_os/contracts/browser.ex",
         "//memcontainers/contracts:runner_elixir_gen": "lib/agent_os/contracts/runner.ex",
         "//memcontainers/contracts:sidecar_elixir_gen": "lib/agent_os/contracts/sidecar.ex",
         "//memcontainers/contracts:snapshot_elixir_gen": "lib/agent_os/contracts/snapshot.ex",
@@ -200,6 +252,7 @@ pkg_tar(
         "//memcontainers/images:minimal": "priv/images/minimal.tar",
         "//memcontainers/images:paper": "priv/images/paper.tar",
         "//memcontainers/images:posix": "priv/images/posix.tar",
+        ":browserctl_artifact": "priv/browserctl.tar",
         "//memcontainers/kernel/rust:kernel": "priv/kernel/kernel.wasm",
     },
     mode = "0644",

@@ -39,12 +39,15 @@ exports_files([
     "snapshot.kdl",
     "shell.kdl",
     "sidecar.kdl",
+    "browser.kdl",
     "runner.kdl",
     # The generated Zig `mc` module IS the guest sysroot's `mc` (//memcontainers/sysroot/zig:mc
     # compiles it under import_name "mc"): a guest `@import("mc")` gets the whole generated
     # boundary — every syscall extern + the `addr` helper — with nothing hand-kept (Zig 0.16
     # dropped `usingnamespace`, so a re-export skin isn't viable).
     "gen/mc.gen.zig",
+    "gen/browser.gen.luau",
+    "gen/sidecar.gen.luau",
 ])
 
 filegroup(
@@ -153,6 +156,18 @@ abi_library(
         "rust",
         "ts",
         "elixir",
+        "luau",
+    ],
+)
+
+abi_library(
+    name = "browser",
+    contract = "browser.kdl",
+    langs = [
+        "rust",
+        "ts",
+        "elixir",
+        "luau",
     ],
 )
 
@@ -161,6 +176,7 @@ abi_library(
     contract = "runner.kdl",
     langs = [
         "zig",
+        "ts",
         "elixir",
     ],
 )
@@ -168,10 +184,12 @@ abi_library(
 mc_ts_project(
     name = "ts",
     srcs = [
+        "gen/browser.gen.ts",
         "gen/constants.gen.ts",
         "gen/ctl.gen.ts",
         "gen/env.gen.ts",
         "gen/llb.gen.ts",
+        "gen/runner.gen.ts",
         "gen/sidecar.gen.ts",
         "gen/snapshot.gen.ts",
         "gen/wire.gen.ts",

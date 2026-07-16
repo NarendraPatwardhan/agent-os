@@ -8,6 +8,7 @@ uses them rather than as TypeScript-only interfaces.
 | Symbol                   | Level    | Reference                                                                     |
 | ------------------------ | -------- | ----------------------------------------------------------------------------- |
 | `capabilityConnection`   | internal | [Advanced API](./advanced-api.md#capabilityconnection)                        |
+| `browser`                | stable   | [Browser sidecars](./browser-sidecars.md#browser-options)                     |
 | `defaultCatalogCompiler` | stable   | [Connections](./connections.md#catalog-compiler)                              |
 | `defaultImage`           | stable   | [Installation](./installation.md#default-artifact-loaders)                    |
 | `defaultKernel`          | stable   | [Installation](./installation.md#default-artifact-loaders)                    |
@@ -29,6 +30,9 @@ uses them rather than as TypeScript-only interfaces.
 | `startCron`              | internal | [Cron](./cron.md#startcron)                                                   |
 | `tool`                   | stable   | [Host tools](./tools.md#tool-spec)                                            |
 | `Vm`                     | stable   | [`Vm`](./vm.md)                                                               |
+| `VmBrowserComputer`      | stable   | [Browser sidecars](./browser-sidecars.md#vm-browsers-computer)                |
+| `VmBrowserPages`         | stable   | [Browser sidecars](./browser-sidecars.md#vm-browsers-pages)                   |
+| `VmBrowsers`             | stable   | [Browser sidecars](./browser-sidecars.md#vm-browsers)                         |
 | `VmSidecars`             | stable   | [Sidecars](./sidecars.md#vm-sidecars)                                         |
 | `z`                      | stable   | [Host tools](./tools.md#z)                                                    |
 

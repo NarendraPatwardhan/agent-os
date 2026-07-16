@@ -24,12 +24,21 @@ defmodule AgentOS.Sidecars.Firecracker.Helper do
 
   def launch(id, _paths, opts) do
     with {:ok, helper} <- helper_path(opts) do
+      profile_args =
+        case Keyword.get(opts, :profile) do
+          nil -> []
+          profile when is_binary(profile) -> ["--profile", profile]
+        end
+
+      network_args = if Keyword.get(opts, :network, false), do: ["--network"], else: []
+      args = ["jailer"] ++ profile_args ++ network_args ++ ["--id", id]
+
       port =
         Port.open({:spawn_executable, String.to_charlist(helper)}, [
           :binary,
           :exit_status,
           :stderr_to_stdout,
-          {:args, ["jailer", "--id", id]}
+          {:args, args}
         ])
 
       {:ok, port}

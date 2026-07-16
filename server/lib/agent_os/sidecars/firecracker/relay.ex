@@ -16,6 +16,7 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
 
   def cancel(id, call_ref), do: GenServer.cast(via(id), {:cancel, call_ref})
   def metadata(id), do: GenServer.call(via(id), :metadata)
+  def measurements(id), do: GenServer.call(via(id), :measurements)
 
   @impl true
   def init(opts) do
@@ -27,13 +28,18 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
       digest: Keyword.fetch!(opts, :contract_digest)
     }
 
+    init_body = Keyword.fetch!(opts, :init_body)
+
     with {:ok, path} <- AgentOS.Sidecars.Firecracker.Daemon.socket(id),
-         {:ok, socket, metadata} <- connect(path, contract, @connect_timeout) do
+         {:ok, socket, metadata, measurements} <-
+           connect(path, contract, init_body, @connect_timeout) do
       {:ok,
        %{
          path: path,
          socket: socket,
          metadata: metadata,
+         measurements: measurements,
+         init_body: init_body,
          contract: contract,
          serial: 0,
          current: nil,
@@ -41,7 +47,7 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
        }}
     else
       {:error, reason} ->
-        diagnostics = AgentOS.Sidecars.Firecracker.Daemon.diagnostics(id)
+        diagnostics = diagnostics(id)
 
         IO.binwrite(:stderr, [
           "Firecracker runner failed during vsock startup:\n",
@@ -55,6 +61,7 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
 
   @impl true
   def handle_call(:metadata, _from, state), do: {:reply, {:ok, state.metadata}, state}
+  def handle_call(:measurements, _from, state), do: {:reply, {:ok, state.measurements}, state}
 
   def handle_call({:invoke, call_ref, operation, body, timeout}, from, state) do
     request_id = "rq_" <> Integer.to_string(state.serial + 1, 36)
@@ -65,7 +72,7 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
       request_id: request_id,
       operation: operation,
       body: body,
-      timeout: timeout
+      deadline: System.monotonic_time(:millisecond) + timeout
     }
 
     next = %{state | serial: state.serial + 1}
@@ -81,15 +88,7 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
   def handle_cast({:cancel, call_ref}, %{current: %{call_ref: call_ref} = current} = state) do
     Task.shutdown(current.task, :brutal_kill)
     GenServer.reply(current.from, {:error, :cancelled})
-    :gen_tcp.close(state.socket)
-
-    case connect(state.path, state.contract, @connect_timeout) do
-      {:ok, socket, metadata} ->
-        {:noreply, start_next(%{state | socket: socket, metadata: metadata, current: nil})}
-
-      {:error, reason} ->
-        {:stop, reason, %{state | current: nil}}
-    end
+    reconnect(%{state | current: nil})
   end
 
   def handle_cast({:cancel, call_ref}, state) do
@@ -102,8 +101,17 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
   def handle_info({ref, result}, %{current: %{task: %{ref: ref}} = current} = state)
       when is_reference(ref) do
     Process.demonitor(ref, [:flush])
-    GenServer.reply(current.from, result)
-    {:noreply, start_next(%{state | current: nil})}
+    next = %{state | current: nil}
+
+    case result do
+      {:reply, reply} ->
+        GenServer.reply(current.from, reply)
+        {:noreply, start_next(next)}
+
+      {:disconnect, reply} ->
+        GenServer.reply(current.from, reply)
+        reconnect(next)
+    end
   end
 
   def handle_info(
@@ -111,7 +119,7 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
         %{current: %{task: %{ref: ref}} = current} = state
       ) do
     GenServer.reply(current.from, {:error, {:runner_exit, reason}})
-    {:noreply, start_next(%{state | current: nil})}
+    reconnect(%{state | current: nil})
   end
 
   def handle_info({_ref, _result}, state), do: {:noreply, state}
@@ -125,31 +133,45 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
   end
 
   defp start_entry(state, entry) do
-    socket = state.socket
+    timeout = entry.deadline - System.monotonic_time(:millisecond)
 
-    task =
-      Task.Supervisor.async_nolink(AgentOS.SidecarTaskSupervisor, fn ->
-        frame =
-          Runner.encode_runner_request(%{
-            request_id: entry.request_id,
-            kind: state.contract.kind,
-            operation: entry.operation,
-            body: entry.body,
-            timeout_ms: entry.timeout
-          })
+    if timeout <= 0 do
+      GenServer.reply(entry.from, {:error, :timeout})
+      start_next(state)
+    else
+      socket = state.socket
 
-        with :ok <- write_frame(socket, frame),
-             {:ok, response_frame} <- read_frame(socket, entry.timeout),
-             {:ok, response} <- Runner.decode_runner_response(response_frame),
-             true <-
-               response.request_id == entry.request_id || {:error, :runner_response_mismatch} do
-          if response.ok,
-            do: {:ok, response.body},
-            else: {:error, {:runner, response.error_code, response.error_message}}
-        end
-      end)
+      task =
+        Task.Supervisor.async_nolink(AgentOS.SidecarTaskSupervisor, fn ->
+          frame =
+            Runner.encode_runner_request(%{
+              request_id: entry.request_id,
+              kind: state.contract.kind,
+              operation: entry.operation,
+              body: entry.body,
+              timeout_ms: timeout
+            })
 
-    %{state | current: Map.put(entry, :task, task)}
+          result =
+            with :ok <- write_frame(socket, frame),
+                 {:ok, response_frame} <- read_frame(socket, timeout),
+                 {:ok, response} <- Runner.decode_runner_response(response_frame),
+                 true <-
+                   response.request_id == entry.request_id || {:error, :runner_response_mismatch} do
+              if response.ok,
+                do: {:ok, response.body},
+                else: {:error, {:runner, response.error_code, response.error_message}}
+            end
+
+          case result do
+            {:ok, _body} = reply -> {:reply, reply}
+            {:error, {:runner, _code, _message}} = reply -> {:reply, reply}
+            {:error, _reason} = reply -> {:disconnect, reply}
+          end
+        end)
+
+      %{state | current: Map.put(entry, :task, task)}
+    end
   end
 
   defp start_next(state) do
@@ -166,25 +188,42 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
     {removed, :queue.from_list(kept)}
   end
 
-  defp connect(path, contract, timeout) do
-    deadline = System.monotonic_time(:millisecond) + timeout
-    connect_loop(path, contract, deadline)
+  defp reconnect(state) do
+    :gen_tcp.close(state.socket)
+
+    case connect(state.path, state.contract, state.init_body, @connect_timeout) do
+      {:ok, socket, metadata, measurements} ->
+        {:noreply,
+         start_next(%{state | socket: socket, metadata: metadata, measurements: measurements})}
+
+      {:error, reason} ->
+        {:stop, reason, state}
+    end
   end
 
-  defp connect_loop(path, contract, deadline) do
+  defp connect(path, contract, init_body, timeout) do
+    started_at = monotonic_us()
+    deadline = System.monotonic_time(:millisecond) + timeout
+    connect_loop(path, contract, init_body, started_at, deadline)
+  end
+
+  defp connect_loop(path, contract, init_body, started_at, deadline) do
+    connect_timeout = min(1_000, remaining_timeout(deadline))
+
     case :gen_tcp.connect(
            {:local, String.to_charlist(path)},
            0,
            [:binary, active: false, packet: :raw],
-           1_000
+           connect_timeout
          ) do
       {:ok, socket} ->
         result =
           with :ok <-
                  :gen_tcp.send(socket, "CONNECT #{Runner.runner_default_vsock_port()}\n"),
-               {:ok, line} <- read_line(socket, <<>>, 64),
+               {:ok, line} <- read_line(socket, <<>>, 64, deadline),
                true <- String.starts_with?(line, "OK ") || {:error, :vsock_rejected},
-               {:ok, hello_frame} <- read_frame(socket, 1_000),
+               connected_at = monotonic_us(),
+               {:ok, hello_frame} <- read_frame(socket, remaining_timeout(deadline)),
                {:ok, hello} <- Runner.decode_runner_hello(hello_frame),
                true <-
                  hello.protocol_version == Runner.protocol_version() ||
@@ -193,20 +232,31 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
                true <- hello.version == contract.version || {:error, :runner_version_mismatch},
                true <-
                  hello.contract_digest == contract.digest ||
-                   {:error, :runner_contract_mismatch} do
-            {:ok, socket, hello_frame}
+                   {:error, :runner_contract_mismatch},
+               hello_at = monotonic_us(),
+               {:ok, metadata} <- initialize(socket, contract, init_body, hello_frame, deadline) do
+            initialized_at = monotonic_us()
+
+            {:ok, socket, metadata,
+             %{
+               vsock_connect_us: connected_at - started_at,
+               hello_us: hello_at - connected_at,
+               initialize_us: initialized_at - hello_at,
+               relay_us: initialized_at - started_at
+             }}
           end
 
         case result do
-          {:ok, _socket, _metadata} = ok ->
+          {:ok, _socket, _metadata, _measurements} = ok ->
             ok
 
           {:error, reason} ->
             :gen_tcp.close(socket)
 
-            if System.monotonic_time(:millisecond) < deadline do
+            if retryable_handshake?(reason) and
+                 System.monotonic_time(:millisecond) < deadline do
               Process.sleep(10)
-              connect_loop(path, contract, deadline)
+              connect_loop(path, contract, init_body, started_at, deadline)
             else
               {:error, {:vsock_handshake, reason}}
             end
@@ -215,21 +265,58 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
       {:error, reason} ->
         if System.monotonic_time(:millisecond) < deadline do
           Process.sleep(10)
-          connect_loop(path, contract, deadline)
+          connect_loop(path, contract, init_body, started_at, deadline)
         else
           {:error, {:vsock_connect, reason}}
         end
     end
   end
 
-  defp read_line(_socket, acc, 0), do: {:error, {:invalid_vsock_handshake, acc}}
+  defp retryable_handshake?(reason),
+    do: reason in [:vsock_rejected, :timeout, :closed, :econnrefused]
 
-  defp read_line(socket, acc, remaining) do
-    case :gen_tcp.recv(socket, 1, 1_000) do
+  defp diagnostics(id) do
+    AgentOS.Sidecars.Firecracker.Daemon.diagnostics(id)
+  catch
+    :exit, _reason -> <<>>
+  end
+
+  defp initialize(_socket, _contract, <<>>, hello_frame, _deadline), do: {:ok, hello_frame}
+
+  defp initialize(socket, contract, body, _hello_frame, deadline) do
+    request_id = "init"
+    timeout = remaining_timeout(deadline)
+
+    frame =
+      Runner.encode_runner_request(%{
+        request_id: request_id,
+        kind: contract.kind,
+        operation: Runner.runner_init_operation(),
+        body: body,
+        timeout_ms: timeout
+      })
+
+    with :ok <- write_frame(socket, frame),
+         {:ok, response_frame} <- read_frame(socket, remaining_timeout(deadline)),
+         {:ok, response} <- Runner.decode_runner_response(response_frame),
+         true <- response.request_id == request_id || {:error, :runner_response_mismatch},
+         true <- response.ok || {:error, {:runner, response.error_code, response.error_message}} do
+      {:ok, response.body}
+    end
+  end
+
+  defp read_line(_socket, acc, 0, _deadline), do: {:error, {:invalid_vsock_handshake, acc}}
+
+  defp read_line(socket, acc, remaining, deadline) do
+    case :gen_tcp.recv(socket, 1, remaining_timeout(deadline)) do
       {:ok, "\n"} -> {:ok, acc}
-      {:ok, byte} -> read_line(socket, acc <> byte, remaining - 1)
+      {:ok, byte} -> read_line(socket, acc <> byte, remaining - 1, deadline)
       error -> error
     end
+  end
+
+  defp remaining_timeout(deadline) do
+    max(deadline - System.monotonic_time(:millisecond), 1)
   end
 
   defp write_frame(socket, frame) do
@@ -239,14 +326,19 @@ defmodule AgentOS.Sidecars.Firecracker.Relay do
   end
 
   defp read_frame(socket, timeout) do
-    with {:ok, <<length::unsigned-big-32>>} <- :gen_tcp.recv(socket, 4, timeout),
+    deadline = System.monotonic_time(:millisecond) + timeout
+
+    with {:ok, <<length::unsigned-big-32>>} <-
+           :gen_tcp.recv(socket, 4, remaining_timeout(deadline)),
          true <-
            length in 1..Runner.runner_max_frame_bytes() ||
              {:error, :runner_frame_too_large},
-         {:ok, frame} <- :gen_tcp.recv(socket, length, timeout) do
+         {:ok, frame} <- :gen_tcp.recv(socket, length, remaining_timeout(deadline)) do
       {:ok, frame}
     end
   end
+
+  defp monotonic_us, do: System.monotonic_time(:microsecond)
 
   defp via(id), do: {:via, Registry, {AgentOS.SidecarRegistry, {:firecracker_relay, id}}}
 end

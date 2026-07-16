@@ -12,7 +12,8 @@ defmodule AgentOS.Sidecars.Provider do
           grant: String.t(),
           kind: String.t(),
           version: pos_integer(),
-          contract_digest: String.t()
+          contract_digest: String.t(),
+          grant_config: binary()
         }
   @type provider_ref :: term()
 

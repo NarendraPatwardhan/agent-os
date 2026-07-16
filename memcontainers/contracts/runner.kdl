@@ -9,6 +9,7 @@ constant "RUNNER_MAX_FRAME_BYTES" value=8392704
 constant "RUNNER_DEFAULT_VSOCK_PORT" value=52
 string-constant "RUNNER_HEALTH_KIND" value="agentos.health.v1"
 string-constant "RUNNER_HEALTH_CONTRACT_DIGEST" value="sha256:515a069b3ebe4d7e6fbb23496b4e71908ad2b5046b00345b3cfe833c4ea82339"
+string-constant "RUNNER_INIT_OPERATION" value="init"
 
 message "RunnerHello" id=1 version=1 {
   field "protocol_version" type="u32"

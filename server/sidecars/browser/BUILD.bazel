@@ -1,0 +1,115 @@
+load("@aspect_bazel_lib//lib:copy_file.bzl", "copy_file")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load")
+load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
+load("//bazel:ts.bzl", "mc_ts_project")
+load("//bazel/tools/size:defs.bzl", "size_limit")
+load(":defs.bzl", "browser_initramfs")
+
+package(default_visibility = ["//visibility:public"])
+
+zig_binary(
+    name = "bridge_raw",
+    main = "bridge.zig",
+    tags = ["manual"],
+    deps = ["//memcontainers/contracts:runner_zig"],
+)
+
+zig_configure_binary(
+    name = "bridge",
+    actual = ":bridge_raw",
+    mode = "release_small",
+    tags = ["manual"],
+    threaded = "single",
+)
+
+exports_files([
+    "init.sh",
+    "service.ts",
+])
+
+copy_file(
+    name = "browser_wire",
+    src = "//memcontainers/contracts:browser_ts_gen",
+    out = "browser.gen.ts",
+)
+
+copy_file(
+    name = "runner_wire",
+    src = "//memcontainers/contracts:runner_ts_gen",
+    out = "runner.gen.ts",
+)
+
+copy_file(
+    name = "sidecar_wire",
+    src = "//memcontainers/contracts:sidecar_ts_gen",
+    out = "sidecar.gen.ts",
+)
+
+mc_ts_project(
+    name = "service_check",
+    srcs = [
+        "service.ts",
+        ":browser_wire",
+        ":runner_wire",
+        ":sidecar_wire",
+    ],
+    deps = ["//:node_modules/@types/bun"],
+)
+
+pkg_tar(
+    name = "runtime_layer",
+    files = {
+        ":bridge": "opt/browser/bridge",
+        ":browser_wire": "opt/browser/browser.gen.ts",
+        ":init.sh": "init",
+        ":runner_wire": "opt/browser/runner.gen.ts",
+        ":service.ts": "opt/browser/service.ts",
+        ":sidecar_wire": "opt/browser/sidecar.gen.ts",
+        "@bun_browser//:bun": "usr/bin/bun",
+        "@busybox_browser//file": "usr/bin/busybox",
+    },
+    mode = "0644",
+    modes = {
+        "init": "0755",
+        "opt": "0755",
+        "opt/browser": "0755",
+        "opt/browser/bridge": "0755",
+        "usr": "0755",
+        "usr/bin": "0755",
+        "usr/bin/busybox": "0755",
+        "usr/bin/bun": "0755",
+    },
+    owner = "0.0",
+)
+
+oci_image(
+    name = "image",
+    base = "@headless_shell//:headless_shell",
+    entrypoint = ["/init"],
+    tars = [":runtime_layer"],
+)
+
+browser_initramfs(
+    name = "initramfs",
+    image = ":image",
+    target_compatible_with = [
+        "@platforms//cpu:x86_64",
+        "@platforms//os:linux",
+    ],
+)
+
+# Chromium dominates this separately shipped artifact. Bound the complete boot image so an upstream
+# base-image or runtime change cannot silently inflate every browser runner allocation.
+size_limit(
+    name = "size_limit",
+    file = ":initramfs",
+    max_bytes = 475000000,
+)
+
+oci_load(
+    name = "image_load",
+    image = ":image",
+    repo_tags = ["agentos/browser-sidecar:dev"],
+    tags = ["manual"],
+)

@@ -86,11 +86,16 @@ export interface SidecarGrant {
   readonly config: Uint8Array;
 }
 
+/** @internal Private attachment key used by typed sidecar descriptors. */
+export const GUEST_LAYER: unique symbol = Symbol("mc.sidecar.guest-layer");
+
 export interface SidecarGrantDescriptor {
   readonly contract: SidecarContractDescriptor;
   readonly grant: SidecarGrant;
   /** Private attachment route. Required for embedded VMs and forbidden for remote VMs. */
   readonly host?: string;
+  /** @internal Never serialized in the portable grant. */
+  readonly [GUEST_LAYER]?: true | Uint8Array;
 }
 
 export interface SidecarCapability {
@@ -222,6 +227,12 @@ export class VmSidecars {
 
   async enable(name: string, descriptor: SidecarGrantDescriptor): Promise<void> {
     const owned = ownSidecarDescriptor(descriptor);
+    if (owned[GUEST_LAYER] !== undefined) {
+      throw new SidecarError(
+        SIDECAR_ERROR_INVALID_REQUEST,
+        "guest layers are create-time attachments and cannot be enabled on a running VM",
+      );
+    }
     await this.backend.enable(name, owned);
     this.descriptors[name] = owned;
   }
@@ -283,6 +294,12 @@ export function ownSidecarDescriptor(descriptor: SidecarGrantDescriptor): Sideca
     contract: { ...descriptor.contract },
     grant: { ...descriptor.grant, config: descriptor.grant.config.slice() },
     ...(descriptor.host === undefined ? {} : { host: descriptor.host }),
+    ...(descriptor[GUEST_LAYER] === undefined
+      ? {}
+      : {
+          [GUEST_LAYER]:
+            descriptor[GUEST_LAYER] === true ? (true as const) : descriptor[GUEST_LAYER].slice(),
+        }),
   };
 }
 
@@ -362,6 +379,37 @@ export function validateSidecarDescriptor(
     throw new SidecarError(
       SIDECAR_ERROR_UNSUPPORTED_FORK_POLICY,
       `sidecar grant '${name}' requests clone semantics that are not implemented`,
+    );
+  }
+  const guestLayer = descriptor[GUEST_LAYER];
+  if (guestLayer !== undefined && !grant.guest) {
+    throw new SidecarError(
+      SIDECAR_ERROR_INVALID_REQUEST,
+      `sidecar grant '${name}' provides a guest layer without guest access`,
+    );
+  }
+  if (guestLayer instanceof Uint8Array && guestLayer.length === 0) {
+    throw new SidecarError(
+      SIDECAR_ERROR_INVALID_REQUEST,
+      `sidecar grant '${name}' provides an empty guest layer`,
+    );
+  }
+  if (guestLayer !== undefined && guestLayer !== true && !(guestLayer instanceof Uint8Array)) {
+    throw new SidecarError(
+      SIDECAR_ERROR_INVALID_REQUEST,
+      `sidecar grant '${name}' has an invalid guest layer`,
+    );
+  }
+  if (runtime === "embedded" && guestLayer === true) {
+    throw new SidecarError(
+      SIDECAR_ERROR_INVALID_REQUEST,
+      `embedded sidecar grant '${name}' requires guest layer bytes`,
+    );
+  }
+  if (runtime === "remote" && guestLayer instanceof Uint8Array) {
+    throw new SidecarError(
+      SIDECAR_ERROR_INVALID_REQUEST,
+      `remote sidecar grant '${name}' must delegate its guest layer to the server`,
     );
   }
   if (runtime === "embedded" && descriptor.host === undefined) {

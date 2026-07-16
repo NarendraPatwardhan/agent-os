@@ -79,13 +79,49 @@ fn run() -> Result<(), String> {
             Ok(())
         }
         [command, flag, id] if flag == "--id" && command == "prepare" => {
-            prepare(&config, id).map(|_| ())
+            prepare(&config, id, None, false).map(|_| ())
+        }
+        [command, profile_flag, profile, id_flag, id]
+            if profile_flag == "--profile" && id_flag == "--id" && command == "prepare" =>
+        {
+            prepare(&config, id, Some(profile), false).map(|_| ())
+        }
+        [command, network_flag, id_flag, id]
+            if network_flag == "--network" && id_flag == "--id" && command == "prepare" =>
+        {
+            prepare(&config, id, None, true).map(|_| ())
+        }
+        [command, profile_flag, profile, network_flag, id_flag, id]
+            if profile_flag == "--profile"
+                && network_flag == "--network"
+                && id_flag == "--id"
+                && command == "prepare" =>
+        {
+            prepare(&config, id, Some(profile), true).map(|_| ())
         }
         [command, flag, id] if flag == "--id" && command == "renew" => renew(&config, id),
         [command, flag, id] if flag == "--id" && command == "jailer" => {
-            std::process::exit(launch(&config, id)?);
+            std::process::exit(launch(&config, id, None, false)?);
+        }
+        [command, profile_flag, profile, id_flag, id]
+            if profile_flag == "--profile" && id_flag == "--id" && command == "jailer" =>
+        {
+            std::process::exit(launch(&config, id, Some(profile), false)?);
+        }
+        [command, network_flag, id_flag, id]
+            if network_flag == "--network" && id_flag == "--id" && command == "jailer" =>
+        {
+            std::process::exit(launch(&config, id, None, true)?);
+        }
+        [command, profile_flag, profile, network_flag, id_flag, id]
+            if profile_flag == "--profile"
+                && network_flag == "--network"
+                && id_flag == "--id"
+                && command == "jailer" =>
+        {
+            std::process::exit(launch(&config, id, Some(profile), true)?);
         }
         [command, flag, id] if flag == "--id" && command == "cleanup" => cleanup(&config, id),
-        _ => Err("usage: version | sys-test | network-host-init | reconcile | layout|prepare|renew|jailer|cleanup --id ID".into()),
+        _ => Err("usage: version | sys-test | network-host-init | reconcile | layout|prepare|renew|jailer|cleanup [--profile PROFILE] [--network] --id ID".into()),
     }
 }

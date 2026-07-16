@@ -1,0 +1,127 @@
+// Browser sidecar v1. The generic sidecar contract owns lifecycle and identity; this contract owns
+// the configuration, operation vocabulary, and typed payloads shared by host JavaScript, the AgentOS
+// guest surfaces, and the browser runner.
+protocol-version 1
+
+string-constant "BROWSER_KIND" value="browser"
+// SHA-256 of this contract with the digest declaration itself omitted.
+string-constant "BROWSER_CONTRACT_DIGEST" value="sha256:467c154dc423f6db81ceabce046c3044e2ca7dd780b4fbb3eb3e26fa29f83fca"
+string-constant "BROWSER_RUNNER_PROFILE" value="browser"
+
+constant "BROWSER_VERSION" value=1
+constant "BROWSER_DEFAULT_TIMEOUT_SECONDS" value=300
+constant "BROWSER_MIN_TIMEOUT_SECONDS" value=10
+constant "BROWSER_MAX_TIMEOUT_SECONDS" value=300
+constant "BROWSER_DEFAULT_VIEWPORT_WIDTH" value=1280
+constant "BROWSER_DEFAULT_VIEWPORT_HEIGHT" value=720
+constant "BROWSER_MIN_VIEWPORT_EDGE" value=320
+constant "BROWSER_MAX_VIEWPORT_EDGE" value=4096
+constant "BROWSER_MAX_URL_BYTES" value=16384
+constant "BROWSER_MAX_PAGE_ID_BYTES" value=96
+constant "BROWSER_MAX_SELECTOR_BYTES" value=4096
+constant "BROWSER_MAX_TEXT_BYTES" value=1048576
+constant "BROWSER_MAX_TYPE_DELAY_MS" value=1000
+constant "BROWSER_MAX_PAGES" value=32
+constant "BROWSER_MAX_SCREENSHOT_EDGE" value=16384
+constant "BROWSER_MAX_SCREENSHOT_PIXELS" value=16777216
+
+constant "BROWSER_WAIT_LOAD" value=1
+constant "BROWSER_WAIT_DOM_CONTENT_LOADED" value=2
+constant "BROWSER_WAIT_NETWORK_IDLE" value=3
+constant "BROWSER_WAIT_COMMIT" value=4
+
+string-constant "BROWSER_OP_PAGES_LIST" value="pages.list"
+string-constant "BROWSER_OP_PAGES_GOTO" value="pages.goto"
+string-constant "BROWSER_OP_PAGES_TITLE" value="pages.title"
+string-constant "BROWSER_OP_PAGES_TEXT" value="pages.text"
+string-constant "BROWSER_OP_PAGES_CLICK" value="pages.click"
+string-constant "BROWSER_OP_PAGES_FILL" value="pages.fill"
+string-constant "BROWSER_OP_COMPUTER_SCREENSHOT" value="computer.screenshot"
+string-constant "BROWSER_OP_COMPUTER_CLICK" value="computer.click"
+string-constant "BROWSER_OP_COMPUTER_TYPE" value="computer.type"
+string-constant "BROWSER_OP_COMPUTER_KEY" value="computer.key"
+string-constant "BROWSER_OP_COMPUTER_SCROLL" value="computer.scroll"
+
+message "BrowserViewport" id=1 version=1 {
+  field "width" type="u32"
+  field "height" type="u32"
+}
+
+message "BrowserCreateOptions" id=2 version=1 {
+  field "headless" type="bool"
+  field "timeout_seconds" type="u32"
+  field "viewport" type="BrowserViewport" opt=1
+}
+
+message "BrowserMetadata" id=3 version=1 {
+  field "headless" type="bool"
+  field "viewport" type="BrowserViewport"
+  field "active_page_id" type="str"
+}
+
+message "BrowserPage" id=4 version=1 {
+  field "id" type="str"
+  field "url" type="str"
+  field "title" type="str"
+}
+
+message "BrowserPages" id=5 version=1 {
+  field "items" type="list<BrowserPage>"
+}
+
+message "BrowserPageTarget" id=6 version=1 {
+  field "page_id" type="str" opt=1
+}
+
+message "BrowserGotoRequest" id=7 version=1 {
+  field "page_id" type="str" opt=1
+  field "url" type="str"
+  field "wait_until" type="u32"
+}
+
+message "BrowserLocatorRequest" id=8 version=1 {
+  field "page_id" type="str" opt=1
+  field "selector" type="str"
+}
+
+message "BrowserFillRequest" id=9 version=1 {
+  field "page_id" type="str" opt=1
+  field "selector" type="str"
+  field "value" type="str"
+}
+
+message "BrowserPointRequest" id=10 version=1 {
+  field "page_id" type="str" opt=1
+  field "x" type="u32"
+  field "y" type="u32"
+}
+
+message "BrowserTypeRequest" id=11 version=1 {
+  field "page_id" type="str" opt=1
+  field "text" type="str"
+  field "delay_ms" type="u32"
+}
+
+message "BrowserKeyRequest" id=12 version=1 {
+  field "page_id" type="str" opt=1
+  field "key" type="str"
+}
+
+message "BrowserScrollRequest" id=13 version=1 {
+  field "page_id" type="str" opt=1
+  field "delta_x" type="i32"
+  field "delta_y" type="i32"
+}
+
+message "BrowserScreenshotRequest" id=14 version=1 {
+  field "page_id" type="str" opt=1
+  field "full_page" type="bool"
+}
+
+message "BrowserString" id=15 version=1 {
+  field "value" type="str"
+}
+
+message "BrowserBytes" id=16 version=1 {
+  field "value" type="bytes"
+}

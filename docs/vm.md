@@ -9,11 +9,15 @@
 | ------------- | ----------------- | ------------------------------------------------- |
 | `vm.fs`       | filesystem object | Trusted host view of the guest filesystem         |
 | `vm.sidecars` | `VmSidecars`      | Lifecycle facade for this VM's external resources |
+| `vm.browsers` | `VmBrowsers`      | Typed browser-sidecar lifecycle, pages, and input |
 
 Host attachments are deliberately not exposed as mutable option arrays. The VM privately tracks live
 tools and mounts so a fork can reattach the current state without sharing caller-owned option objects.
 Sidecar grants are also private attachment state; external sidecar instances follow their declared
 fork policy rather than being serialized into a snapshot. See [Sidecars](./sidecars.md).
+
+`vm.browsers` layers the generated browser contract over that lifecycle; see
+[Browser sidecars](./browser-sidecars.md).
 
 ## Complete method index
 

@@ -2,6 +2,8 @@ defmodule AgentOS.Sidecars.Firecracker.Daemon do
   @moduledoc false
   use GenServer, restart: :transient
 
+  require Logger
+
   alias AgentOS.Sidecars.Firecracker.{Client, Helper}
 
   @boot_timeout 15_000
@@ -15,18 +17,26 @@ defmodule AgentOS.Sidecars.Firecracker.Daemon do
   def socket(id), do: GenServer.call(via(id), :socket)
   def diagnostics(id), do: GenServer.call(via(id), :diagnostics)
   def cgroup(id), do: GenServer.call(via(id), :cgroup)
+  def measurements(id), do: GenServer.call(via(id), :measurements)
 
   @impl true
   def init(opts) do
+    started_at = monotonic_us()
     Process.flag(:trap_exit, true)
     id = Keyword.fetch!(opts, :id)
     provider_opts = Keyword.fetch!(opts, :provider_opts)
 
     with {:ok, paths} <- prepare_paths(id, provider_opts) do
+      paths_ready_at = monotonic_us()
+
       case launch(id, paths, provider_opts) do
         {:ok, port} ->
+          launched_at = monotonic_us()
+
           case boot(paths, provider_opts) do
-            :ok ->
+            {:ok, boot_measurements} ->
+              ready_at = monotonic_us()
+
               {:ok,
                %{
                  id: id,
@@ -34,7 +44,13 @@ defmodule AgentOS.Sidecars.Firecracker.Daemon do
                  port: port,
                  state: :ready,
                  provider_opts: provider_opts,
-                 console: <<>>
+                 console: <<>>,
+                 measurements:
+                   Map.merge(boot_measurements, %{
+                     layout_us: paths_ready_at - started_at,
+                     spawn_us: launched_at - paths_ready_at,
+                     daemon_us: ready_at - started_at
+                   })
                }}
 
             {:error, reason} ->
@@ -58,6 +74,7 @@ defmodule AgentOS.Sidecars.Firecracker.Daemon do
   def handle_call(:socket, _from, state), do: {:reply, {:ok, state.paths.vsock}, state}
   def handle_call(:diagnostics, _from, state), do: {:reply, state.console, state}
   def handle_call(:cgroup, _from, state), do: {:reply, Map.get(state.paths, :cgroup), state}
+  def handle_call(:measurements, _from, state), do: {:reply, {:ok, state.measurements}, state}
 
   @impl true
   def handle_info({_port, {:data, data}}, state) do
@@ -66,8 +83,16 @@ defmodule AgentOS.Sidecars.Firecracker.Daemon do
     {:noreply, %{state | console: binary_part(console, byte_size(console) - keep, keep)}}
   end
 
-  def handle_info({port, {:exit_status, status}}, %{port: port} = state),
-    do: {:stop, {:firecracker_exit, status}, %{state | state: :failed}}
+  def handle_info({port, {:exit_status, status}}, %{port: port} = state) do
+    Logger.error([
+      "Firecracker exited with status ",
+      Integer.to_string(status),
+      ":\n",
+      state.console
+    ])
+
+    {:stop, {:firecracker_exit, status}, %{state | state: :failed}}
+  end
 
   @impl true
   def terminate(_reason, state) do
@@ -166,15 +191,37 @@ defmodule AgentOS.Sidecars.Firecracker.Daemon do
              guest_cid: cid,
              uds_path: paths.vsock_api
            }),
+         :ok <- configure_network(paths, opts),
          :ok <- Client.put(paths.api, "/actions", %{action_type: "InstanceStart"}) do
       :ok
     end
   end
 
-  defp boot(paths, opts) do
-    with :ok <- wait_for_socket(paths.api, @boot_timeout),
-         :ok <- configure(paths, opts) do
+  defp configure_network(paths, opts) do
+    if Keyword.get(opts, :network, false) do
+      Client.put(paths.api, "/network-interfaces/eth0", %{
+        iface_id: "eth0",
+        guest_mac: "06:00:ac:1e:00:02",
+        host_dev_name: "tap0"
+      })
+    else
       :ok
+    end
+  end
+
+  defp boot(paths, opts) do
+    started_at = monotonic_us()
+
+    with :ok <- wait_for_socket(paths.api, @boot_timeout),
+         api_ready_at = monotonic_us(),
+         :ok <- configure(paths, opts) do
+      configured_at = monotonic_us()
+
+      {:ok,
+       %{
+         api_ready_us: api_ready_at - started_at,
+         configure_us: configured_at - api_ready_at
+       }}
     end
   end
 
@@ -207,6 +254,8 @@ defmodule AgentOS.Sidecars.Firecracker.Daemon do
     do:
       is_binary(id) and byte_size(id) in 15..64 and
         Regex.match?(~r/^sc_[A-Za-z0-9_-]+$/, id)
+
+  defp monotonic_us, do: System.monotonic_time(:microsecond)
 
   defp via(id), do: {:via, Registry, {AgentOS.SidecarRegistry, {:firecracker_daemon, id}}}
 end

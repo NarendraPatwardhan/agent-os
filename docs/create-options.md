@@ -164,6 +164,11 @@ alias through `sidecarHosts`; remote VMs forbid aliases and let the served host 
 Neither provider references nor credentials enter guest memory or snapshots. See
 [Sidecars](./sidecars.md).
 
+On a fresh embedded boot, a typed sidecar descriptor may carry an owned guest layer above the requested
+image. A remote descriptor carries only `guest: true`; the served host owns the corresponding layer.
+Repeated grants for one contract share byte-identical layers and reject conflicting bytes. Restores do
+not reapply layers because the snapshot already contains the selected filesystem.
+
 ## `deterministic`
 
 Pins guest-visible time and randomness to repeatable sources. It is intended for testing and pure

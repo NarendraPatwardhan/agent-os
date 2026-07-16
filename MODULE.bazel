@@ -158,6 +158,16 @@ use_repo(rules_ts_ext, "npm_typescript")
 
 # Images + contract drift gates.
 bazel_dep(name = "rules_pkg", version = "1.0.1")  # pkg_tar — deterministic images, no manual staging
+bazel_dep(name = "rules_oci", version = "2.3.0")  # digest-pinned browser runner base image
+
+oci = use_extension("@rules_oci//oci:extensions.bzl", "oci")
+oci.pull(
+    name = "headless_shell",
+    digest = "sha256:7f8ec4782f1b138c30900e65ae53795d5966fbf52168b8fc062843db3e6d5be5",
+    image = "docker.io/chromedp/headless-shell",
+    platforms = ["linux/amd64"],
+)
+use_repo(oci, "headless_shell", "headless_shell_linux_amd64")
 # bazel_dep(name = "aspect_bazel_lib", version = "2.X")  # write_source_files + diff_test (B2)
 
 # Third-party guests — vendor LESS, patch in place (B3). Upstream SOURCE via http_archive (never a
@@ -165,6 +175,33 @@ bazel_dep(name = "rules_pkg", version = "1.0.1")  # pkg_tar — deterministic im
 http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
 http_file = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_file")
+
+http_file(
+    name = "umoci",
+    downloaded_file_path = "umoci",
+    executable = True,
+    sha256 = "b51c267ec394499e42c6fde47f240b7b7dba57ea49df0b5acd304378b82a3b71",
+    urls = ["https://github.com/opencontainers/umoci/releases/download/v0.6.0/umoci.linux.amd64"],
+)
+
+http_file(
+    name = "busybox_browser",
+    downloaded_file_path = "busybox",
+    executable = True,
+    sha256 = "6e123e7f3202a8c1e9b1f94d8941580a25135382b99e8d3e34fb858bba311348",
+    urls = ["https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox"],
+)
+
+# The headless-shell base intentionally contains no JavaScript runtime. Add Bun only because the browser
+# control adapter needs one; if a future complete base already supplies a suitable runtime, retain it.
+http_archive(
+    name = "bun_browser",
+    build_file = "//third_party/browser:BUILD.bun.bazel",
+    sha256 = "a063908ae08b7852ca10939bbdc6ceed3ddabce8fb9402dce83d65d73b36e6c7",
+    strip_prefix = "bun-linux-x64-baseline",
+    type = "zip",
+    urls = ["https://github.com/oven-sh/bun/releases/download/bun-v1.3.14/bun-linux-x64-baseline.zip"],
+)
 
 # Binaryen 130's portable Node distribution: wasm-opt itself compiled to WebAssembly plus its small
 # Node launcher. This is a HOST build tool, never guest/image content. The portable bundle is 2 MiB
@@ -259,8 +296,8 @@ http_file(
 # Module resolution is global, so these always resolve. Toolchain selection is
 # scoped by //bazel:elixir_transition.bzl for public //server entry points; the
 # raw //server implementation targets are target_compatible_with the erlang
-# constraint, so a plain `bazel build //...` SKIPS them. (Containerization via
-# rules_oci is a near-term follow-up; not wired yet.)
+# constraint, so a plain `bazel build //...` SKIPS them. Elixir server containerization is not yet
+# wired; the rules_oci dependency above currently serves the browser runner image only.
 # ---------------------------------------------------------------------------
 bazel_dep(name = "rules_erlang", version = "3.16.0")
 archive_override(

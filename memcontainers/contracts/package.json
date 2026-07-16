@@ -21,6 +21,10 @@
       "types": "./gen/llb.gen.d.ts",
       "default": "./gen/llb.gen.js"
     },
+    "./browser": {
+      "types": "./gen/browser.gen.d.ts",
+      "default": "./gen/browser.gen.js"
+    },
     "./sidecar": {
       "types": "./gen/sidecar.gen.d.ts",
       "default": "./gen/sidecar.gen.js"

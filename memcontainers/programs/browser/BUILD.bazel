@@ -1,0 +1,54 @@
+load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//bazel:mc_program.bzl", "mc_rust_program")
+load("//bazel/tools/size:defs.bzl", "size_limit")
+
+rust_binary(
+    name = "browser_bin",
+    srcs = ["src/main.rs"],
+    crate_root = "src/main.rs",
+    edition = "2021",
+    tags = ["manual"],
+    deps = [
+        "//memcontainers/contracts:browser_rust",
+        "//memcontainers/contracts:constants_rust",
+        "//memcontainers/contracts:sidecar_rust",
+        "//memcontainers/lib/json:lib",
+        "//memcontainers/sysroot/rust:lib",
+        "@crates//:talc",
+    ],
+)
+
+mc_rust_program(
+    name = "browser",
+    fuel = 2000000000000,
+    lib = ":browser_bin",
+    mem = 32 * 1024 * 1024,
+    table = 1000,
+    tier = "full",
+    visibility = ["//visibility:public"],
+)
+
+# Keep the generated-contract client small enough that adding typed sidecar kinds remains an explicit
+# image-size decision.
+size_limit(
+    name = "size_limit",
+    file = ":browser_opt",
+    max_bytes = 100000,
+)
+
+# Guest-facing browser control is one optional deterministic layer. Embedded callers attach its
+# bytes through browser({ guest: browserctl }); remote AgentOS servers install their packaged copy.
+pkg_tar(
+    name = "browserctl_layer",
+    create_parents = False,
+    files = {
+        ":browser": "/bin/browser",
+        "//memcontainers/contracts:gen/browser.gen.luau": "/lib/luau/_browser_wire.luau",
+        "//memcontainers/contracts:gen/sidecar.gen.luau": "/lib/luau/_sidecar_wire.luau",
+        "//memcontainers/programs/browser/skills:browser.md": "/skills/browser.md",
+        "//memcontainers/programs/luau/glue:lib/browser.luau": "/lib/luau/browser.luau",
+    },
+    owner = "0.0",
+    visibility = ["//visibility:public"],
+)

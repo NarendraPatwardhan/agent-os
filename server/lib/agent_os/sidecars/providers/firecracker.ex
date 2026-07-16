@@ -8,44 +8,97 @@ defmodule AgentOS.Sidecars.Providers.Firecracker do
   """
 
   @behaviour AgentOS.Sidecars.Provider
+  require Logger
 
-  alias AgentOS.Contracts.Runner
+  alias AgentOS.Contracts.{Browser, Runner}
   alias AgentOS.Sidecars.{Firecracker, Journal}
 
   @impl true
   def capabilities(opts) do
-    if Keyword.get(opts, :health_runner, false) do
-      [
-        %{
-          kind: Runner.runner_health_kind(),
-          version: 1,
-          contract_digest: Runner.runner_health_contract_digest(),
-          placements: [:local],
-          fork: :omit,
-          max_instances_per_vm: Keyword.get(opts, :max_instances_per_vm, 8)
-        }
-      ]
-    else
+    health =
+      if Keyword.get(opts, :health_runner, false) do
+        [
+          %{
+            kind: Runner.runner_health_kind(),
+            version: 1,
+            contract_digest: Runner.runner_health_contract_digest(),
+            placements: [:local],
+            fork: :omit,
+            max_instances_per_vm: Keyword.get(opts, :max_instances_per_vm, 8)
+          }
+        ]
+      else
+        []
+      end
+
+    browser =
+      if Keyword.get(opts, :browser_runner, false) do
+        [
+          %{
+            kind: Browser.browser_kind(),
+            version: Browser.browser_version(),
+            contract_digest: Browser.browser_contract_digest(),
+            placements: [:local],
+            fork: :omit,
+            max_instances_per_vm: Keyword.get(opts, :max_instances_per_vm, 8)
+          }
+        ]
+      else
+        []
+      end
+
+    custom =
       case Keyword.fetch(opts, :capability) do
         {:ok, capability} -> [capability]
-        :error -> []
+        :error -> Keyword.get(opts, :capabilities, [])
       end
-    end
+
+    health ++ browser ++ custom
   end
 
   @impl true
   def create(context, request, opts) do
-    with :ok <- validate_launch_mode(opts),
-         :ok <- validate_machine(opts),
-         {:ok, supervisor} <- start_runner(context, request, opts) do
+    started_at = monotonic_us()
+
+    with :ok <- validate_grant(context),
+         :ok <- validate_launch_mode(opts),
+         {:ok, runner_opts} <- runner_opts(context.kind, opts),
+         :ok <- validate_machine(runner_opts),
+         {:ok, supervisor} <- start_runner(context, request, runner_opts) do
       case metadata(context.id) do
         {:ok, value} ->
+          log_startup(context, started_at)
           {:ok, %{id: context.id, supervisor: supervisor}, value}
 
         {:error, reason} ->
           _ = terminate_runner(supervisor)
           {:error, reason}
       end
+    end
+  end
+
+  defp runner_opts(kind, opts) do
+    profiles = Keyword.get(opts, :profiles, %{})
+
+    defaults =
+      if kind == Browser.browser_kind() do
+        [profile: Browser.browser_runner_profile(), memory_mib: 1536, network: true]
+      else
+        []
+      end
+
+    case profiles do
+      profiles when is_map(profiles) ->
+        case Map.get(profiles, kind, []) do
+          profile when is_list(profile) ->
+            {:ok, opts |> Keyword.merge(defaults) |> Keyword.merge(profile)}
+
+          _invalid ->
+            {:error, :invalid_firecracker_profile}
+        end
+
+      _invalid ->
+        {:error, :invalid_firecracker_profile}
     end
   end
 
@@ -114,6 +167,16 @@ defmodule AgentOS.Sidecars.Providers.Firecracker do
     end
   end
 
+  defp validate_grant(%{kind: kind, grant_config: config}) do
+    if kind == Browser.browser_kind() do
+      if config == <<>>, do: :ok, else: {:error, :sidecar_invalid_request}
+    else
+      :ok
+    end
+  end
+
+  defp validate_grant(_context), do: :ok
+
   defp validate_machine(opts) do
     memory = Keyword.get(opts, :memory_mib, 128)
     vcpus = Keyword.get(opts, :vcpus, 1)
@@ -141,4 +204,24 @@ defmodule AgentOS.Sidecars.Providers.Firecracker do
   catch
     :exit, reason -> {:error, {:firecracker_runner_exit, reason}}
   end
+
+  defp log_startup(context, started_at) do
+    with {:ok, daemon} <- Firecracker.Daemon.measurements(context.id),
+         {:ok, relay} <- Firecracker.Relay.measurements(context.id) do
+      measurements =
+        daemon
+        |> Map.merge(relay)
+        |> Map.put(:provider_us, monotonic_us() - started_at)
+
+      Logger.info("Firecracker sidecar ready",
+        sidecar_id: context.id,
+        sidecar_kind: context.kind,
+        startup_us: measurements
+      )
+    end
+  catch
+    :exit, _reason -> :ok
+  end
+
+  defp monotonic_us, do: System.monotonic_time(:microsecond)
 end

@@ -27,6 +27,7 @@ import { parseSnapshot } from "@mc/contracts/snapshot";
 import { SIDECAR_HOST_BINDING } from "@mc/contracts/sidecar";
 import { EmbeddedBackend, FanoutSink } from "./embedded.js";
 import { defaultImage, defaultKernel } from "./artifacts.js";
+import { embeddedGuestLayers } from "./guest-layers.js";
 import { defaultStore } from "./store.js";
 import { record } from "./record.js";
 import { makeFs } from "./fs.js";
@@ -50,6 +51,7 @@ import {
   validateSidecarDescriptor,
   type SidecarGrantDescriptor,
 } from "./sidecars.js";
+import { VmBrowsers } from "./browsers.js";
 import type { ToolCatalogBundle } from "./tools.js";
 import type {
   ContentStore,
@@ -165,6 +167,8 @@ export class Vm {
   readonly fs: VmFs;
   /** Generic lifecycle for attached sidecars; kind modules build typed facades over this surface. */
   readonly sidecars: VmSidecars;
+  /** Browser sidecars attached to this VM, exposed as typed lifecycle and automation resources. */
+  readonly browsers: VmBrowsers;
   /** All registered tools (boot-time + runtime), mirrored into the `/svc/tools` live catalog. */
   private readonly registeredTools: ToolDefinition[];
   /** String entries from `create({ tools })`, used as connection group selectors. */
@@ -210,6 +214,7 @@ export class Vm {
     this.registeredMounts = [...(mounts ?? [])];
     this.registeredSidecars = ownSidecarDescriptors(sidecars) ?? {};
     this.sidecars = new VmSidecars(backend.sidecars, this.registeredSidecars);
+    this.browsers = new VmBrowsers(backend.sidecars);
     this.catalogDigest = catalog.digest;
     this.catalogGeneration = catalog.generation;
     this.connectionBundle = catalog.connectionBundle;
@@ -728,10 +733,11 @@ async function makeEmbedded(
     host = await builder.restore(snapshot, base);
     snapshotBase = view.kind === "full" ? snapshot.slice() : base!.slice();
   } else {
-    const layers = await resolveImage(opts.image, store);
+    const layers = (await resolveImage(opts.image, store)) ?? [];
+    layers.push(...embeddedGuestLayers(opts.sidecars));
     const cfg = await imageConfig(opts.image, store);
     host = await builder
-      .withLayers(layers ?? [])
+      .withLayers(layers)
       .withContract(tierOrdinal(cfg.tier), contractI32(cfg.budgetMib), contractFuel(cfg.fuel))
       .build();
     host.bootToPrompt(); // drive boot only to the first prompt (no settle wait)
