@@ -208,6 +208,57 @@ db:close()
     );
 }
 
+/// FTS5 is part of the shipped WASI SQLite engine, not a host-side or dynamically loaded helper.
+/// Exercise the real atlas service through `require("sqlite")`: virtual-table creation, parameterized
+/// MATCH, BM25 ordering, highlight/snippet helpers, phrase/prefix/column queries, and mutation sync.
+#[test]
+fn sqlite_fts5_builtin_searches_ranks_and_tracks_mutations() {
+    let mut s = boot_atlas();
+    s.host
+        .write_file(
+            "/tmp/fts5.luau",
+            br#"local sqlite = require("sqlite")
+local db = assert(sqlite.open("/tmp/fts5.db"))
+print(db:queryvalue("SELECT sqlite_compileoption_used('ENABLE_FTS5')"))
+db:exec([[CREATE VIRTUAL TABLE docs USING fts5(
+  title,
+  heading,
+  body,
+  collection_id UNINDEXED,
+  tokenize='unicode61 remove_diacritics 2'
+)]])
+db:exec("INSERT INTO docs(rowid, title, heading, body, collection_id) VALUES (?, ?, ?, ?, ?)", 1, "AgentOS Search", "Local retrieval", "Local full text search and portable snapshots", "docs")
+db:exec("INSERT INTO docs(rowid, title, heading, body, collection_id) VALUES (?, ?, ?, ?, ?)", 2, "Snapshot Guide", "Persistence", "Portable snapshots across machines", "guides")
+db:exec("INSERT INTO docs(rowid, title, heading, body, collection_id) VALUES (?, ?, ?, ?, ?)", 3, "Vector API", "Retrieval", "Nearest neighbour embeddings", "api")
+
+local ranked = db:queryone([[SELECT
+  rowid,
+  title,
+  bm25(docs) < 0 AS has_rank,
+  highlight(docs, 0, '[', ']') AS marked,
+  instr(snippet(docs, 2, '<b>', '</b>', '...', 8), '<b>search</b>') > 0 AS has_snippet
+FROM docs WHERE docs MATCH ? ORDER BY bm25(docs), rowid LIMIT 1]], "search")
+print(ranked.rowid, ranked.title, ranked.has_rank, ranked.marked, ranked.has_snippet)
+
+local phrase = db:queryvalue("SELECT group_concat(rowid, ',') FROM (SELECT rowid FROM docs WHERE docs MATCH ? ORDER BY rowid)", '"portable snapshots"')
+local prefix = db:queryvalue("SELECT group_concat(rowid, ',') FROM (SELECT rowid FROM docs WHERE docs MATCH ? ORDER BY rowid)", "snap*")
+local title = db:queryvalue("SELECT rowid FROM docs WHERE docs MATCH ?", "title:agentos")
+print(phrase, prefix, title)
+
+db:exec("UPDATE docs SET body = ? WHERE rowid = ?", "Incremental backups", 2)
+print(db:queryvalue("SELECT group_concat(rowid, ',') FROM (SELECT rowid FROM docs WHERE docs MATCH ? ORDER BY rowid)", '"portable snapshots"'))
+db:exec("DELETE FROM docs WHERE rowid = ?", 1)
+print(db:queryvalue("SELECT count(*) FROM docs WHERE docs MATCH ?", "search"))
+db:close()
+"#,
+        )
+        .expect("write fts5.luau");
+    assert_eq!(
+        s.run_for_output("luau /tmp/fts5.luau"),
+        "1\r\n1\tAgentOS Search\t1\tAgentOS [Search]\t1\r\n1,2\t1,2\t1\r\n1\r\n0\r\n"
+    );
+}
+
 /// `vann` vector indexes are exposed through the Luau sqlite library: agents can create a typed
 /// vector table, bind tagged vector BLOBs, combine KNN with partition/metadata filters, and get typed
 /// rows back with exact distances ordered by nearest neighbour.

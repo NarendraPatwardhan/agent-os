@@ -22,6 +22,10 @@ zig_binary(
     copts = [
         "-DSQLITE_WASI",
         "-DSQLITE_THREADSAFE=0",
+        # Site search uses SQLite's built-in FTS5 virtual table. Keep it
+        # compiled into the amalgamation; runtime extension loading stays
+        # omitted, so the guest never needs or accepts an external plugin.
+        "-DSQLITE_ENABLE_FTS5",
         "-DSQLITE_OMIT_LOAD_EXTENSION",
         "-DSQLITE_DEFAULT_MEMSTATUS=0",
         "-DSQLITE_DQS=0",
