@@ -77,6 +77,14 @@ defmodule AgentOS.Contracts.Constants do
   # worker
   def max_workers, do: 4
 
+  # tick
+  def tick_waiting, do: 0
+  def tick_runnable, do: 1
+
+  # exec-mode
+  def exec_mode_shell, do: 1
+  def exec_mode_direct, do: 2
+
   # autocomplete
   def autocomplete_max_source_bytes, do: 8192
   def autocomplete_max_items, do: 128

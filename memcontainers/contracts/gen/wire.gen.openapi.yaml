@@ -2,7 +2,7 @@
 openapi: 3.0.3
 info:
   title: AgentOS REST API
-  version: "3"
+  version: "4"
   description: "Request/response API for AgentOS VM lifecycle, exec, filesystem, snapshots, layers, and mounts. Live terminal, relay, permissions, and streamed sessions use the typed WebSocket in asyncapi.yaml."
 security:
   - bearerAuth: []
@@ -199,7 +199,7 @@ paths:
   "/v1/vms/{id}/exec":
     post:
       operationId: "post_v1_vms_id_exec"
-      summary: "Run a bounded command and return the final result. Use exec-jobs for long-running commands."
+      summary: "Run bounded shell syntax or literal argv and return the final result. Use exec-jobs for long-running processes."
       parameters:
         - name: "id"
           in: path
@@ -245,7 +245,7 @@ paths:
   "/v1/vms/{id}/exec-jobs":
     post:
       operationId: "post_v1_vms_id_exec_jobs"
-      summary: "Start a long-running exec job."
+      summary: "Start a long-running shell or direct-argv execution job."
       parameters:
         - name: "id"
           in: path
@@ -1570,11 +1570,20 @@ components:
     "Exec":
       type: object
       required:
-        - "cmd"
+        - "mode"
+        - "argv"
       properties:
-        "cmd":
+        "mode":
           type: string
-          x-agentos-source-field: "cmd"
+          x-agentos-source-field: "mode"
+        "command":
+          type: string
+          x-agentos-source-field: "command"
+        "argv":
+          type: array
+          items:
+            type: string
+          x-agentos-source-field: "argv"
         "cwd":
           type: string
           x-agentos-type: "Path"

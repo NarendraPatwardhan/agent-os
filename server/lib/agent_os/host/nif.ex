@@ -210,8 +210,8 @@ defmodule AgentOS.Host.Nif do
   def restore(_wasm, _snapshot, _opts),
     do: {:error, "restore expects binary wasm, binary snapshot, and keyword options"}
 
-  @doc "Drive one bounded `mc_tick`: `{:ok, true}` while running, `{:ok, false}` once exited."
-  @spec tick(vm()) :: {:ok, boolean()} | {:error, reason()}
+  @doc "Drive one bounded `mc_tick`: `{:ok, :runnable | :waiting | :exited}`."
+  @spec tick(vm()) :: {:ok, :runnable | :waiting | :exited} | {:error, reason()}
   def tick(vm), do: tick_nif(vm)
 
   @doc "Feed bytes to the kernel as terminal input."
@@ -238,6 +238,25 @@ defmodule AgentOS.Host.Nif do
   def exec(_vm, _cmd, _max_ticks, _opts),
     do: {:error, "exec expects a binary command, non-negative max_ticks, and valid options"}
 
+  @doc "Execute one program with literal argv values, without invoking a shell."
+  @spec run(vm(), String.t(), [String.t()], non_neg_integer(), keyword() | map()) ::
+          {:ok, {integer(), binary(), binary()}} | {:error, reason()}
+  def run(vm, program, args, max_ticks, opts \\ [])
+
+  def run(vm, program, args, max_ticks, opts)
+      when is_binary(program) and is_list(args) and is_integer(max_ticks) and max_ticks >= 0 do
+    if Enum.all?(args, &is_binary/1) do
+      with {:ok, {cwd, env, stdin_present, stdin}} <- exec_options(opts) do
+        run_nif(vm, program, args, max_ticks, cwd, env, stdin_present, stdin)
+      end
+    else
+      {:error, "run expects every argument to be a binary"}
+    end
+  end
+
+  def run(_vm, _program, _args, _max_ticks, _opts),
+    do: {:error, "run expects a program, argv list, non-negative max_ticks, and valid options"}
+
   @doc "Start a structured exec job without driving it to completion."
   @spec exec_start(vm(), String.t(), keyword() | map()) :: {:ok, integer()} | {:error, reason()}
   def exec_start(vm, cmd, opts \\ [])
@@ -250,6 +269,24 @@ defmodule AgentOS.Host.Nif do
 
   def exec_start(_vm, _cmd, _opts),
     do: {:error, "exec_start expects a binary command and valid options"}
+
+  @doc "Start a direct argv exec job without invoking a shell."
+  @spec run_start(vm(), String.t(), [String.t()], keyword() | map()) ::
+          {:ok, integer()} | {:error, reason()}
+  def run_start(vm, program, args, opts \\ [])
+
+  def run_start(vm, program, args, opts) when is_binary(program) and is_list(args) do
+    if Enum.all?(args, &is_binary/1) do
+      with {:ok, {cwd, env, stdin_present, stdin}} <- exec_options(opts) do
+        run_start_nif(vm, program, args, cwd, env, stdin_present, stdin)
+      end
+    else
+      {:error, "run_start expects every argument to be a binary"}
+    end
+  end
+
+  def run_start(_vm, _program, _args, _opts),
+    do: {:error, "run_start expects a program, argv list, and valid options"}
 
   @doc "Poll a structured exec job; `nil` means still running."
   @spec exec_poll(vm(), integer()) ::
@@ -654,7 +691,24 @@ defmodule AgentOS.Host.Nif do
   def exec_nif(_vm, _cmd, _max_ticks, _cwd, _env, _stdin_present, _stdin), do: nif_not_loaded()
 
   @doc false
+  def run_nif(
+        _vm,
+        _program,
+        _args,
+        _max_ticks,
+        _cwd,
+        _env,
+        _stdin_present,
+        _stdin
+      ),
+      do: nif_not_loaded()
+
+  @doc false
   def exec_start_nif(_vm, _cmd, _cwd, _env, _stdin_present, _stdin), do: nif_not_loaded()
+
+  @doc false
+  def run_start_nif(_vm, _program, _args, _cwd, _env, _stdin_present, _stdin),
+    do: nif_not_loaded()
 
   @doc false
   def exec_poll_nif(_vm, _job), do: nif_not_loaded()

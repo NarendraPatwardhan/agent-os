@@ -37,8 +37,11 @@ function bytesBase64(bytes: Uint8Array): string {
   return btoa(raw);
 }
 
-function execBody(cmd: string, opts: ExecOptions = {}): Record<string, unknown> {
-  const body: Record<string, unknown> = { cmd };
+function execBody(
+  request: { mode: "shell"; command: string } | { mode: "direct"; argv: readonly string[] },
+  opts: ExecOptions = {},
+): Record<string, unknown> {
+  const body: Record<string, unknown> = { ...request };
   if (opts.cwd !== undefined) body.cwd = opts.cwd;
   if (opts.env !== undefined) body.env = opts.env;
   if (typeof opts.stdin === "string") body.stdin = opts.stdin;
@@ -216,7 +219,27 @@ export class RemoteBackend implements Backend {
     const response = await fetch(this.vmUrl("/exec"), {
       method: "POST",
       headers: { ...this.headers, "content-type": "application/json" },
-      body: JSON.stringify(execBody(cmd, opts)),
+      body: JSON.stringify(execBody({ mode: "shell", command: cmd }, opts)),
+    });
+    if (!response.ok)
+      throw new Error(`remote exec failed: ${response.status} ${await safeText(response)}`);
+    const result = (await response.json()) as RemoteExecResult;
+    return {
+      stdout: enc(result.stdout),
+      stderr: enc(result.stderr),
+      exitCode: result.exitCode ?? (result.ok ? 0 : 1),
+    };
+  }
+
+  async run(
+    program: string,
+    args: readonly string[] = [],
+    opts: ExecOptions = {},
+  ): Promise<RawExecResult> {
+    const response = await fetch(this.vmUrl("/exec"), {
+      method: "POST",
+      headers: { ...this.headers, "content-type": "application/json" },
+      body: JSON.stringify(execBody({ mode: "direct", argv: [program, ...args] }, opts)),
     });
     if (!response.ok)
       throw new Error(`remote exec failed: ${response.status} ${await safeText(response)}`);

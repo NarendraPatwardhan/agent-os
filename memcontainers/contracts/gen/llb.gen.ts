@@ -80,6 +80,30 @@ export function decodeCopyPath(bytes: Uint8Array): CopyPath {
   };
 }
 
+// One literal argument in a direct LLB run operation. Empty values are significant.
+export interface BuildArg {
+  value: string;
+}
+export const BUILD_ARG_MSG_ID = 8;
+export const BUILD_ARG_VERSION = 1;
+export function encodeBuildArg(msg: BuildArg): Uint8Array {
+  const out: number[] = [];
+  ctlPutU16(out, BUILD_ARG_MSG_ID);
+  ctlPutU8(out, BUILD_ARG_VERSION);
+  ctlPutStr(out, msg.value);
+  return Uint8Array.from(out);
+}
+export function decodeBuildArg(bytes: Uint8Array): BuildArg {
+  const wire: CtlCursor = { bytes, off: 0 };
+  if (ctlReadU16(wire) !== BUILD_ARG_MSG_ID) throw new WireError("wrong message id");
+  if (ctlReadU8(wire) !== BUILD_ARG_VERSION) throw new WireError("unsupported message version");
+  const value = ctlReadStr(wire);
+  if (wire.off !== bytes.length) throw new WireError("trailing bytes");
+  return {
+    value,
+  };
+}
+
 // One portable LLB op. `kind` is the SDK's closed op enum; unused fields must be absent or empty.
 export interface BuildOp {
   kind: number;
@@ -105,6 +129,8 @@ export interface BuildOp {
   link?: string | null;
   mode?: number | null;
   cmd?: string | null;
+  form?: string | null;
+  argv: BuildArg[];
   cwd?: string | null;
   env: Record<string, string>;
   stdin?: Uint8Array | null;
@@ -119,7 +145,7 @@ export interface BuildOp {
   config_fuel?: number | null;
 }
 export const BUILD_OP_MSG_ID = 2;
-export const BUILD_OP_VERSION = 1;
+export const BUILD_OP_VERSION = 2;
 export function encodeBuildOp(msg: BuildOp): Uint8Array {
   const out: number[] = [];
   ctlPutU16(out, BUILD_OP_MSG_ID);
@@ -247,6 +273,13 @@ export function encodeBuildOp(msg: BuildOp): Uint8Array {
     ctlPutU8(out, 1);
   ctlPutStr(out, msg.cmd);
   }
+  if (msg.form === undefined || msg.form === null) {
+    ctlPutU8(out, 0);
+  } else {
+    ctlPutU8(out, 1);
+  ctlPutStr(out, msg.form);
+  }
+  ctlPutMessageList(out, msg.argv, encodeBuildArg);
   if (msg.cwd === undefined || msg.cwd === null) {
     ctlPutU8(out, 0);
   } else {
@@ -438,6 +471,13 @@ export function decodeBuildOp(bytes: Uint8Array): BuildOp {
     case 1: cmd = ctlReadStr(wire); break;
     default: throw new WireError("invalid optional presence");
   }
+  let form: string | undefined;
+  switch (ctlReadU8(wire)) {
+    case 0: form = undefined; break;
+    case 1: form = ctlReadStr(wire); break;
+    default: throw new WireError("invalid optional presence");
+  }
+  const argv = ctlReadMessageList(wire, decodeBuildArg);
   let cwd: string | undefined;
   switch (ctlReadU8(wire)) {
     case 0: cwd = undefined; break;
@@ -525,6 +565,8 @@ export function decodeBuildOp(bytes: Uint8Array): BuildOp {
     link,
     mode,
     cmd,
+    form,
+    argv,
     cwd,
     env,
     stdin,
@@ -609,7 +651,7 @@ export interface NodeDigest {
   kernel_digest?: string | null;
 }
 export const NODE_DIGEST_MSG_ID = 7;
-export const NODE_DIGEST_VERSION = 1;
+export const NODE_DIGEST_VERSION = 2;
 export function encodeNodeDigest(msg: NodeDigest): Uint8Array {
   const out: number[] = [];
   ctlPutU16(out, NODE_DIGEST_MSG_ID);
@@ -657,7 +699,7 @@ export interface Definition {
   root: number;
 }
 export const DEFINITION_MSG_ID = 3;
-export const DEFINITION_VERSION = 1;
+export const DEFINITION_VERSION = 2;
 export function encodeDefinition(msg: Definition): Uint8Array {
   const out: number[] = [];
   ctlPutU16(out, DEFINITION_MSG_ID);

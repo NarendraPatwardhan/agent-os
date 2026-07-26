@@ -5,7 +5,7 @@ produces better retries and prevents leaked VMs.
 
 ## Guest command failure
 
-`vm.exec()` and `vm.luau()` resolve normally when the guest process exits nonzero.
+`vm.exec()`, `vm.run()`, and `vm.luau()` resolve normally when the guest process exits nonzero.
 
 ```js
 const result = await vm.exec("compile-project");

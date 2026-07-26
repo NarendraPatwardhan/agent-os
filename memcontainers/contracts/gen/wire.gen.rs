@@ -3,7 +3,7 @@
 pub const SIDECAR_SCOPE_HEADER: &str = "x-agentos-sidecar-scope";
 
 
-pub const WIRE_VERSION: u32 = 3;
+pub const WIRE_VERSION: u32 = 4;
 pub const HEADER_LEN: usize = 9;
 
 pub const HELLO: u8 = 0x00;

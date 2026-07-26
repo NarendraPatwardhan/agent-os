@@ -4,7 +4,8 @@
 // `Definition`; NOTHING runs until `llb.commit(state).asLayer()/.asSnapshot()`
 // triggers the solver (`solve.ts`). The verbs map 1:1 onto the VM build primitives —
 // `source` = a flavor/image, `write`/`mkdir`/`rm`/`chmod`/`symlink` = `vm.fs.*`,
-// `exec` = `vm.exec`, `merge`/`image` = stacked layers, `diff` = the CoW overlay, `commit` = the
+// `exec` = shell syntax via `vm.exec`, `run` = literal argv via `vm.run`,
+// `merge`/`image` = stacked layers, `diff` = the CoW overlay, `commit` = the
 // `commit` primitive. "Primitives, not a frontend": no Dockerfile parser.
 
 import {
@@ -61,7 +62,9 @@ export type BuildNode =
   | {
       readonly op: "exec";
       readonly input: BuildNode;
-      readonly cmd: string;
+      readonly execution:
+        | { readonly mode: "shell"; readonly command: string }
+        | { readonly mode: "direct"; readonly argv: readonly string[] };
       readonly opts: ExecOpts;
     }
   | {
@@ -75,7 +78,7 @@ export type BuildNode =
   | { readonly op: "image"; readonly parts: readonly BuildNode[]; readonly config: ImageConfig }
   | { readonly op: "cache"; readonly path: string };
 
-/** Options for an `llb.exec` node. */
+/** Options shared by `llb.exec` and `llb.run` nodes. */
 export interface ExecOpts extends ExecOptions {
   /** Capability tier to boot the build VM at. Defaults to `read-write`, which can
    *  read inputs, write the overlay, and use scratch, but cannot spawn child tools,
@@ -134,7 +137,7 @@ export interface DefinitionOptions {
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const st = (node: BuildNode): BuildState => ({ node });
 
-const LLB_DEFINITION_VERSION = 1;
+const LLB_DEFINITION_VERSION = 2;
 const OP_SOURCE = 0;
 const OP_LAYER = 1;
 const OP_WRITE = 2;
@@ -181,6 +184,7 @@ const emptyOp = (kind: number): ContractBuildOp => ({
   kind,
   parts: [],
   copy_paths: [],
+  argv: [],
   env: {},
   mounts: [],
 });
@@ -229,6 +233,25 @@ function validateMode(mode: number, field = "mode"): number {
   return mode;
 }
 
+function validateDirectArgv(argv: readonly string[], field: string): void {
+  if (argv.length === 0 || argv[0] === "") {
+    throw new Error(`${field} requires a non-empty program`);
+  }
+  for (const value of argv) {
+    if (typeof value !== "string") throw new Error(`${field} argv values must be strings`);
+    if (value.includes("\0")) throw new Error(`${field} argv values must not contain NUL`);
+  }
+}
+
+function copyExecOpts(opts: ExecOpts): ExecOpts {
+  return {
+    ...opts,
+    env: opts.env ? { ...opts.env } : undefined,
+    stdin: opts.stdin instanceof Uint8Array ? opts.stdin.slice() : opts.stdin,
+    mounts: opts.mounts ? [...opts.mounts] : undefined,
+  };
+}
+
 function requireCopyPaths(paths: readonly ContractCopyPath[], at: number): CopyPath[] {
   if (!paths.length) throw new Error(`llb Definition op ${at} needs at least one copy path`);
   return paths.map((path) => ({ from: path.src_path, to: path.dest_path }));
@@ -268,6 +291,8 @@ const BUILD_OP_FIELDS = [
   "link",
   "mode",
   "cmd",
+  "form",
+  "argv",
   "cwd",
   "env",
   "stdin",
@@ -308,6 +333,8 @@ function opAllowedFields(kind: number): ReadonlySet<keyof ContractBuildOp> | nul
           "kind",
           "input",
           "cmd",
+          "form",
+          "argv",
           "cwd",
           "env",
           "stdin",
@@ -451,7 +478,12 @@ export async function toDefinition(
         op = {
           ...emptyOp(OP_EXEC),
           input,
-          cmd: node.cmd,
+          form: node.execution.mode,
+          cmd: node.execution.mode === "shell" ? node.execution.command : undefined,
+          argv:
+            node.execution.mode === "direct"
+              ? node.execution.argv.map((value) => ({ value }))
+              : [],
           cwd: node.opts.cwd,
           env: { ...(node.opts.env ?? {}) },
           stdin,
@@ -606,11 +638,31 @@ export async function fromDefinition(
           link: requireString(op.link, "link", i),
         });
         break;
-      case OP_EXEC:
+      case OP_EXEC: {
+        const execution = (() => {
+          if (op.form === "shell") {
+            if (op.argv.length !== 0) {
+              throw new Error(`llb Definition op ${i} shell exec must not contain argv`);
+            }
+            return {
+              mode: "shell" as const,
+              command: requireString(op.cmd, "cmd", i),
+            };
+          }
+          if (op.form === "direct") {
+            if (op.cmd !== undefined && op.cmd !== null) {
+              throw new Error(`llb Definition op ${i} direct exec must not contain cmd`);
+            }
+            const argv = op.argv.map(({ value }) => value);
+            validateDirectArgv(argv, `llb Definition op ${i}`);
+            return { mode: "direct" as const, argv };
+          }
+          throw new Error(`llb Definition op ${i} has invalid form ${op.form}`);
+        })();
         state = st({
           op: "exec",
           input: requireIndex(op.input, "input", i, states).node,
-          cmd: requireString(op.cmd, "cmd", i),
+          execution,
           opts: {
             ...(op.cwd ? { cwd: op.cwd } : {}),
             env: { ...op.env },
@@ -630,6 +682,7 @@ export async function fromDefinition(
           },
         });
         break;
+      }
       case OP_COPY:
         state = st({
           op: "copy",
@@ -721,12 +774,24 @@ export const llb = {
     return st({
       op: "exec",
       input: input.node,
-      cmd,
-      opts: {
-        ...opts,
-        stdin: opts.stdin instanceof Uint8Array ? opts.stdin.slice() : opts.stdin,
-        mounts: opts.mounts ? [...opts.mounts] : undefined,
-      },
+      execution: { mode: "shell", command: cmd },
+      opts: copyExecOpts(opts),
+    });
+  },
+  /** Run one executable with literal argv boundaries (an `ExecOp` — `vm.run`). */
+  run(
+    input: BuildState,
+    program: string,
+    args: readonly string[] = [],
+    opts: ExecOpts = {},
+  ): BuildState {
+    const argv = [program, ...args];
+    validateDirectArgv(argv, "llb.run");
+    return st({
+      op: "exec",
+      input: input.node,
+      execution: { mode: "direct", argv },
+      opts: copyExecOpts(opts),
     });
   },
   /** Copy paths from one resolved build graph into another. Each mapping places

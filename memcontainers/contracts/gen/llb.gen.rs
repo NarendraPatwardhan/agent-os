@@ -94,6 +94,35 @@ impl CopyPath {
     }
 }
 
+/// One literal argument in a direct LLB run operation. Empty values are significant.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BuildArg {
+    pub value: String,
+}
+
+pub const BUILD_ARG_MSG_ID: u16 = 8;
+pub const BUILD_ARG_VERSION: u8 = 1;
+impl BuildArg {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        ctl_put_u16(&mut out, BUILD_ARG_MSG_ID);
+        out.push(BUILD_ARG_VERSION);
+        ctl_put_str(&mut out, &self.value);
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut off = 0usize;
+        if ctl_read_u16(bytes, &mut off)? != BUILD_ARG_MSG_ID { return Err(WireError::WrongMessage); }
+        if ctl_read_u8(bytes, &mut off)? != BUILD_ARG_VERSION { return Err(WireError::UnsupportedVersion); }
+        let value = ctl_read_str(bytes, &mut off)?;
+        if off != bytes.len() { return Err(WireError::TrailingBytes); }
+        Ok(Self {
+            value,
+        })
+    }
+}
+
 /// One portable LLB op. `kind` is the SDK's closed op enum; unused fields must be absent or empty.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BuildOp {
@@ -120,6 +149,8 @@ pub struct BuildOp {
     pub link: Option<String>,
     pub mode: Option<u32>,
     pub cmd: Option<String>,
+    pub form: Option<String>,
+    pub argv: Vec<BuildArg>,
     pub cwd: Option<String>,
     pub env: BTreeMap<String, String>,
     pub stdin: Option<Vec<u8>>,
@@ -135,7 +166,7 @@ pub struct BuildOp {
 }
 
 pub const BUILD_OP_MSG_ID: u16 = 2;
-pub const BUILD_OP_VERSION: u8 = 1;
+pub const BUILD_OP_VERSION: u8 = 2;
 impl BuildOp {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -284,6 +315,14 @@ impl BuildOp {
             }
             None => out.push(0),
         }
+        match &self.form {
+            Some(v) => {
+                out.push(1);
+        ctl_put_str(&mut out, v);
+            }
+            None => out.push(0),
+        }
+        ctl_put_message_list(&mut out, &self.argv, |v| v.encode());
         match &self.cwd {
             Some(v) => {
                 out.push(1);
@@ -466,6 +505,12 @@ impl BuildOp {
             1 => Some(ctl_read_str(bytes, &mut off)?),
             _ => return Err(WireError::InvalidPresence),
         };
+        let form = match ctl_read_u8(bytes, &mut off)? {
+            0 => None,
+            1 => Some(ctl_read_str(bytes, &mut off)?),
+            _ => return Err(WireError::InvalidPresence),
+        };
+        let argv = ctl_read_message_list(bytes, &mut off, BuildArg::decode)?;
         let cwd = match ctl_read_u8(bytes, &mut off)? {
             0 => None,
             1 => Some(ctl_read_str(bytes, &mut off)?),
@@ -543,6 +588,8 @@ impl BuildOp {
             link,
             mode,
             cmd,
+            form,
+            argv,
             cwd,
             env,
             stdin,
@@ -640,7 +687,7 @@ pub struct NodeDigest {
 }
 
 pub const NODE_DIGEST_MSG_ID: u16 = 7;
-pub const NODE_DIGEST_VERSION: u8 = 1;
+pub const NODE_DIGEST_VERSION: u8 = 2;
 impl NodeDigest {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -694,7 +741,7 @@ pub struct Definition {
 }
 
 pub const DEFINITION_MSG_ID: u16 = 3;
-pub const DEFINITION_VERSION: u8 = 1;
+pub const DEFINITION_VERSION: u8 = 2;
 impl Definition {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();

@@ -10,24 +10,27 @@
 //! only nondeterminism is the clock + entropy, and the deterministic sources make a run
 //! byte-for-byte replayable, SYSTEMS.md section 8).
 
-use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, Result};
-use constants_rust::{AUTOCOMPLETE_MAX_FRAME_BYTES, AUTOCOMPLETE_MAX_ITEMS, MAX_WORKERS};
+use anyhow::{Result, anyhow};
+use constants_rust::{
+    AUTOCOMPLETE_MAX_FRAME_BYTES, AUTOCOMPLETE_MAX_ITEMS, EXEC_MODE_DIRECT, EXEC_MODE_SHELL,
+    MAX_WORKERS, TICK_RUNNABLE, TICK_WAITING,
+};
 use ctl_rust::{
     AutocompleteRequest as WireAutocompleteRequest, AutocompleteResult as WireAutocompleteResult,
-    DirEntries as WireDirEntries, ExecOutcome, ExecRequest, FileStat as WireFileStat,
+    DirEntries as WireDirEntries, ExecArg, ExecOutcome, ExecRequest, FileStat as WireFileStat,
     SvcRequest as WireSvcRequest, SvcResponse as WireSvcResponse,
 };
 use sha2::{Digest, Sha256};
 use snapshot_rust::{
-    parse_snapshot, snapshot_bitmap_len, write_snapshot_header, SnapshotDigest, SnapshotKind,
-    SNAPSHOT_HEADER_LEN, SNAPSHOT_PAGE_SIZE,
+    SNAPSHOT_HEADER_LEN, SNAPSHOT_PAGE_SIZE, SnapshotDigest, SnapshotKind, parse_snapshot,
+    snapshot_bitmap_len, write_snapshot_header,
 };
 use wasmtime::{Caller, Config, Engine, Instance, Linker, Memory, Module, Store};
 
@@ -55,12 +58,12 @@ mod net;
 mod persist;
 
 pub use catalog::{
-    read_default_catalog_compiler_wasm, CatalogApplyStatus, CatalogConnection,
-    CatalogInjectOptions, CatalogSpecSource, HostToolDef,
+    CatalogApplyStatus, CatalogConnection, CatalogInjectOptions, CatalogSpecSource, HostToolDef,
+    read_default_catalog_compiler_wasm,
 };
 pub use connections::{
-    derive_connection_origins, ConnectionCredential, ConnectionError, ConnectionRegistry,
-    PreparedConnectionRequest, PreparedHttpRequest,
+    ConnectionCredential, ConnectionError, ConnectionRegistry, PreparedConnectionRequest,
+    PreparedHttpRequest, derive_connection_origins,
 };
 pub use host_call::{DeniedHostCall, HostCallCapability, MapHostCall};
 pub use net::{
@@ -687,7 +690,7 @@ impl KernelHostBuilder {
             if host.at_prompt() {
                 break;
             }
-            if !host.tick()? {
+            if host.tick()? == TickState::Exited {
                 break;
             }
         }
@@ -906,6 +909,19 @@ fn apply_snapshot(validated: ValidatedSnapshot<'_>, memory: &mut [u8]) -> Result
 
 // ---------- Structured results ----------
 
+/// Outcome of one bounded kernel drive.
+///
+/// `Runnable` means another bounded tick can make immediate progress. `Waiting`
+/// means every live task is parked on a pipe, child, timer, host I/O, or another
+/// pollable dependency, so a synchronous driver should yield before polling
+/// again. Kernel exit is reported separately from the control return value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TickState {
+    Runnable,
+    Waiting,
+    Exited,
+}
+
 /// Result of a structured `exec` (control channel): captured streams plus the real exit
 /// code — no prompt scraping.
 #[derive(Debug, Clone)]
@@ -1028,35 +1044,50 @@ impl KernelHost {
         Ok(())
     }
 
-    /// Run one `mc_tick`. `Ok(true)` to continue, `Ok(false)` once the kernel has called
-    /// `mc_exit`. The kernel's own return value is ignored today (always 1).
-    pub fn tick(&mut self) -> Result<bool> {
+    /// Run one bounded `mc_tick`, preserving the kernel-owned runnable/waiting
+    /// distinction so callers pace only work that genuinely needs the host.
+    pub fn tick(&mut self) -> Result<TickState> {
         if self.store.data().exit_code.is_some() {
-            return Ok(false);
+            return Ok(TickState::Exited);
         }
         let tick = self.exports.require_tick()?;
-        let _ = wt(tick.call(&mut self.store, ()), "calling mc_tick")?;
+        let mut work = wt(tick.call(&mut self.store, ()), "calling mc_tick")?;
         // In threaded mode `mc_tick` only coordinates; drive the workers to step tasks for
         // this tick. No-op when cooperative.
-        self.drive_workers()?;
-        Ok(self.store.data().exit_code.is_none())
+        if let Some(worker_work) = self.drive_workers()? {
+            work = worker_work;
+        }
+        if self.store.data().exit_code.is_some() {
+            return Ok(TickState::Exited);
+        }
+        match work {
+            TICK_RUNNABLE => Ok(TickState::Runnable),
+            TICK_WAITING => Ok(TickState::Waiting),
+            other => Err(anyhow!(
+                "mc_tick returned invalid work state {other}; kernel and host contracts disagree"
+            )),
+        }
     }
 
     /// Drive each provisioned worker once for this tick. `mc_worker_entry` runs one bounded
     /// round per call (stepping each ready task once), so calling it once per worker
     /// performs a fixed, bounded amount of work per tick — mirroring the cooperative
     /// one-round-per-tick schedule. No-op on the cooperative-only artifact or `workers==0`.
-    fn drive_workers(&mut self) -> Result<()> {
+    fn drive_workers(&mut self) -> Result<Option<i32>> {
         let Some(worker) = self.exports.mc_worker_entry.clone() else {
-            return Ok(());
+            return Ok(None);
         };
+        let mut work = None;
         for w in 0..self.workers {
             if self.store.data().exit_code.is_some() {
                 break;
             }
-            let _ = wt(worker.call(&mut self.store, w), "calling mc_worker_entry")?;
+            work = Some(wt(
+                worker.call(&mut self.store, w),
+                "calling mc_worker_entry",
+            )?);
         }
-        Ok(())
+        Ok(work)
     }
 
     /// Number of workers advertised to the kernel (0 = cooperative).
@@ -1116,7 +1147,8 @@ impl KernelHost {
         let mut settle = 0usize;
         let mut last = self.bytes_written();
         for n in 0..max_ticks {
-            if !self.tick()? {
+            let state = self.tick()?;
+            if state == TickState::Exited {
                 return Ok(n + 1);
             }
             let now = self.bytes_written();
@@ -1131,7 +1163,9 @@ impl KernelHost {
                     return Ok(n + 1);
                 }
             }
-            std::thread::sleep(pace);
+            if state == TickState::Waiting {
+                std::thread::sleep(pace);
+            }
         }
         Ok(max_ticks)
     }
@@ -1146,7 +1180,8 @@ impl KernelHost {
         let mut last = self.bytes_written();
         let mut idle = 0usize;
         for n in 0..max_ticks {
-            if !self.tick()? {
+            let state = self.tick()?;
+            if state == TickState::Exited {
                 return Ok(n + 1);
             }
             let now = self.bytes_written();
@@ -1158,6 +1193,9 @@ impl KernelHost {
             } else {
                 idle = 0;
                 last = now;
+            }
+            if state == TickState::Waiting {
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
         }
         Ok(max_ticks)
@@ -1328,13 +1366,29 @@ impl KernelHost {
     /// re-`ctl_put` its request each round — a tick never touches the control buffer, but
     /// re-laying it is cheap and robust.
     fn ctl_with_retry(&mut self, mut attempt: impl FnMut(&mut Self) -> Result<i32>) -> Result<i32> {
+        let mut pace_before_tick = false;
         for _ in 0..CTL_RETRY_TICKS {
             let n = attempt(self)?;
-            if n == -EAGAIN {
-                self.tick()?;
-                continue;
+            if n != -EAGAIN {
+                return Ok(n);
             }
-            return Ok(n);
+
+            // Always retry the control operation immediately after a tick. Only
+            // pace before the following tick if the kernel was still waiting;
+            // this avoids adding a trailing millisecond when the prior tick
+            // completed the host-backed operation.
+            if pace_before_tick {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            match self.tick()? {
+                TickState::Runnable => pace_before_tick = false,
+                TickState::Waiting => pace_before_tick = true,
+                TickState::Exited => {
+                    return Err(anyhow!(
+                        "kernel exited while a control-channel operation was pending"
+                    ));
+                }
+            }
         }
         Err(anyhow!(
             "control-channel op stuck on EAGAIN after {CTL_RETRY_TICKS} ticks (a host mount driver may be hung)"
@@ -1626,9 +1680,32 @@ impl KernelHost {
             return Err(ctl_err("service_call", service, job));
         }
         for _ in 0..CTL_RETRY_TICKS {
-            let len = wt(poll.call(&mut self.store, job), "mc_ctl_svc_call_poll")?;
+            let mut len = wt(poll.call(&mut self.store, job), "mc_ctl_svc_call_poll")?;
             if len == 0 {
-                self.tick()?;
+                let state = self.tick()?;
+                // Poll again before pacing. The tick may have completed the
+                // service call, and sleeping after useful completion would
+                // reintroduce the fixed latency this driver is designed to
+                // remove.
+                len = wt(poll.call(&mut self.store, job), "mc_ctl_svc_call_poll")?;
+                if len > 0 {
+                    return self.read_service_call_result(len as usize);
+                }
+                if len < 0 {
+                    let _ = close.call(&mut self.store, job);
+                    return Err(ctl_err("service_call_poll", service, len));
+                }
+                match state {
+                    TickState::Waiting => std::thread::sleep(std::time::Duration::from_millis(1)),
+                    TickState::Runnable => {}
+                    TickState::Exited => {
+                        let _ = close.call(&mut self.store, job);
+                        return Err(anyhow!(
+                            "kernel exited before service call '{}' completed",
+                            service
+                        ));
+                    }
+                }
                 continue;
             }
             if len < 0 {
@@ -1654,30 +1731,58 @@ impl KernelHost {
         })
     }
 
-    /// Begin a command without driving it to completion. Returns a job id; drive ticks
-    /// yourself and call [`exec_poll`](Self::exec_poll) until it returns `Some`. A job
-    /// survives `snapshot`/`restore`.
-    pub fn exec_start(&mut self, cmd: &str, opts: ExecOptions) -> Result<i32> {
+    fn exec_request_start(&mut self, request: ExecRequest, label: &str) -> Result<i32> {
         let start = self.exports.require_ctl_exec_start()?;
-        let req = ExecRequest {
-            cmd: cmd.to_string(),
-            cwd: opts.cwd,
-            env: opts.env,
-            stdin: opts.stdin,
-        };
-        let req = req.encode();
-        self.ctl_put(&req)?;
+        let request = request.encode();
+        self.ctl_put(&request)?;
         let job = wt(
-            start.call(&mut self.store, req.len() as i32),
+            start.call(&mut self.store, request.len() as i32),
             "mc_ctl_exec_start",
         )?;
         if job < 0 {
-            return Err(ctl_err("exec", cmd, job));
+            return Err(ctl_err("exec", label, job));
         }
         Ok(job)
     }
 
-    /// Poll a job from [`exec_start`](Self::exec_start). `None` while running;
+    /// Begin an explicit shell command without driving it to completion. A job
+    /// survives `snapshot`/`restore`.
+    pub fn exec_start(&mut self, cmd: &str, opts: ExecOptions) -> Result<i32> {
+        self.exec_request_start(
+            ExecRequest {
+                mode: EXEC_MODE_SHELL,
+                command: Some(cmd.to_string()),
+                argv: Vec::new(),
+                cwd: opts.cwd,
+                env: opts.env,
+                stdin: opts.stdin,
+            },
+            cmd,
+        )
+    }
+
+    /// Begin a direct argv execution without invoking `/bin/sh`.
+    pub fn run_start(&mut self, program: &str, args: &[String], opts: ExecOptions) -> Result<i32> {
+        let mut argv = Vec::with_capacity(args.len() + 1);
+        argv.push(ExecArg {
+            value: program.to_string(),
+        });
+        argv.extend(args.iter().cloned().map(|value| ExecArg { value }));
+        self.exec_request_start(
+            ExecRequest {
+                mode: EXEC_MODE_DIRECT,
+                command: None,
+                argv,
+                cwd: opts.cwd,
+                env: opts.env,
+                stdin: opts.stdin,
+            },
+            program,
+        )
+    }
+
+    /// Poll a job from [`exec_start`](Self::exec_start) or
+    /// [`run_start`](Self::run_start). `None` while running;
     /// `Some(result)` once finished (the job is then freed).
     pub fn exec_poll(&mut self, job: i32) -> Result<Option<ExecResult>> {
         let poll = self.exports.require_ctl_exec_poll()?;
@@ -1717,29 +1822,50 @@ impl KernelHost {
         Ok(())
     }
 
-    /// Run `cmd` to completion, returning captured stdout/stderr and the real exit code.
-    /// Drives ticks (pacing idle ticks so in-flight host I/O can resolve) up to `max_ticks`.
-    pub fn exec(&mut self, cmd: &str, max_ticks: usize, opts: ExecOptions) -> Result<ExecResult> {
-        let job = self.exec_start(cmd, opts)?;
+    fn drive_exec_job(&mut self, job: i32, label: &str, max_ticks: usize) -> Result<ExecResult> {
         for _ in 0..max_ticks {
-            if let Some(r) = self.exec_poll(job)? {
-                return Ok(r);
+            if let Some(result) = self.exec_poll(job)? {
+                return Ok(result);
             }
-            if !self.tick()? {
-                if let Some(r) = self.exec_poll(job)? {
-                    return Ok(r);
+            let state = self.tick()?;
+            if let Some(result) = self.exec_poll(job)? {
+                return Ok(result);
+            }
+            match state {
+                TickState::Exited => {
+                    let _ = self.exec_cancel(job);
+                    return Err(anyhow!("kernel exited before exec '{}' completed", label));
                 }
-                let _ = self.exec_cancel(job);
-                return Err(anyhow!("kernel exited before exec '{}' completed", cmd));
+                TickState::Waiting => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                TickState::Runnable => {}
             }
-            std::thread::sleep(std::time::Duration::from_millis(1));
         }
         let _ = self.exec_cancel(job);
         Err(anyhow!(
             "exec '{}' did not finish within {} ticks",
-            cmd,
+            label,
             max_ticks
         ))
+    }
+
+    /// Run an explicit shell command to completion.
+    pub fn exec(&mut self, cmd: &str, max_ticks: usize, opts: ExecOptions) -> Result<ExecResult> {
+        let job = self.exec_start(cmd, opts)?;
+        self.drive_exec_job(job, cmd, max_ticks)
+    }
+
+    /// Execute one program with literal argv values, without invoking a shell.
+    pub fn run(
+        &mut self,
+        program: &str,
+        args: &[String],
+        max_ticks: usize,
+        opts: ExecOptions,
+    ) -> Result<ExecResult> {
+        let job = self.run_start(program, args, opts)?;
+        self.drive_exec_job(job, program, max_ticks)
     }
 
     fn read_exec_result(&mut self, len: usize) -> Result<ExecResult> {

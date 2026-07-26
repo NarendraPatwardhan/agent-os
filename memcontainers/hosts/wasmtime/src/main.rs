@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use host::{DiskPersist, KernelHostBuilder, RealNet, StdioSink};
+use host::{DiskPersist, KernelHostBuilder, RealNet, StdioSink, TickState};
 
 mod terminal;
 use terminal::Terminal;
@@ -102,7 +102,7 @@ fn main() -> Result<()> {
             }
         }
 
-        if !host.tick()? {
+        if host.tick()? == TickState::Exited {
             break;
         }
 

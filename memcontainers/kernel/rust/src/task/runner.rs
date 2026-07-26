@@ -47,7 +47,8 @@ pub fn run_next(sched: &Scheduler, ns: &Namespace) -> bool {
                 sched.requeue(pid);
             }
         }
-        Some(BuiltinStep::Pending) => sched.requeue(pid),
+        Some(BuiltinStep::Pending) => sched.block_task(pid, BlockReason::Poll),
+        Some(BuiltinStep::Runnable) => sched.requeue(pid),
         Some(BuiltinStep::BlockedOn(reason)) => sched.block_task(pid, reason),
         None => {
             task.clear_program();

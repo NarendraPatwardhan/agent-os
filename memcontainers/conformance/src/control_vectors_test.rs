@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use ctl_rust::{
-    DirEntries, DirEntry, ExecOutcome, ExecRequest, FileStat, RelayEvent, SvcRequest, SvcResponse,
-    WireError,
+    DirEntries, DirEntry, ExecArg, ExecOutcome, ExecRequest, FileStat, RelayEvent, SvcRequest,
+    SvcResponse, WireError,
 };
 use serde_json::Value;
 
@@ -48,15 +48,30 @@ fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
 
 #[test]
 fn rust_control_codecs_match_the_shared_positive_vectors() {
+    let empty_arg = ExecArg {
+        value: String::new(),
+    };
+    assert_eq!(empty_arg.encode(), positive("ExecArg"));
+    assert_eq!(ExecArg::decode(&positive("ExecArg")).unwrap(), empty_arg);
+
     let exec = ExecRequest {
-        cmd: "printf $ALPHA && cat".to_string(),
+        mode: 2,
+        command: None,
+        argv: ["printf", "%s|%s", "a b", ""]
+            .into_iter()
+            .map(|value| ExecArg {
+                value: value.to_string(),
+            })
+            .collect(),
         cwd: Some("/work".to_string()),
         env: map(&[("ZED", "last"), ("ALPHA", "first")]),
         stdin: Some(b"payload\n\0".to_vec()),
     };
     assert_eq!(exec.encode(), positive("ExecRequest"));
     let decoded = ExecRequest::decode(&positive("ExecRequest")).unwrap();
-    assert_eq!(decoded.cmd, exec.cmd);
+    assert_eq!(decoded.mode, exec.mode);
+    assert_eq!(decoded.command, exec.command);
+    assert_eq!(decoded.argv, exec.argv);
     assert_eq!(decoded.cwd, exec.cwd);
     assert_eq!(decoded.env, map(&[("ALPHA", "first"), ("ZED", "last")]));
     assert_eq!(decoded.stdin.as_deref(), Some(b"payload\n\0".as_slice()));

@@ -19,12 +19,19 @@
 // Message shape: `message "<Name>" id=<u16> version=<u8> { field "<n>" type="<closed-type|list<Message>>" opt=1 }`.
 
 // ── typed scratch-buffer payloads ───────────────────────────────────────────
-message "ExecRequest" id=1 version=1 {
-  field "cmd" type="str"
+message "ExecArg" id=12 version=1 {
+  field "value" type="str"
+  doc "One direct-execution argv value. Empty values are significant and preserved."
+}
+
+message "ExecRequest" id=1 version=2 {
+  field "mode" type="i32"
+  field "command" type="str" opt=1
+  field "argv" type="list<ExecArg>"
   field "cwd" type="str" opt=1
   field "env" type="strmap"
   field "stdin" type="bytes" opt=1
-  doc "Structured host-control exec request. `cmd` still runs under /bin/sh -c; cwd/env/stdin are applied by the kernel at spawn."
+  doc "Explicit host-control execution request. EXEC_MODE_SHELL requires command and empty argv; EXEC_MODE_DIRECT requires non-empty argv and no command. cwd/env/stdin share one kernel process path."
 }
 
 message "ExecOutcome" id=2 version=1 {
@@ -112,7 +119,7 @@ message "AutocompleteResult" id=11 version=1 {
 
 // ── lifecycle / hot path (§4.4) ──────────────────────────────────────────────
 export "mc_init"   group="lifecycle" { ret "i32"; doc "Boot the kernel (load base image, start pid 1). 0 on success." }
-export "mc_tick"   group="lifecycle" { ret "i32"; doc "Run one bounded slice of kernel work. The host drives this loop; the kernel never blocks it." }
+export "mc_tick"   group="lifecycle" { ret "i32"; doc "Run one bounded slice of kernel work. Returns TICK_RUNNABLE when another slice can make immediate progress, otherwise TICK_WAITING; kernel exit is reported through mc_exit." }
 export "mc_input"  group="lifecycle" { arg "ptr" type="cptr"; arg "len" type="len"; ret "void"; doc "Feed len bytes of terminal input to the foreground task." }
 export "mc_resize" group="lifecycle" { arg "cols" type="i32"; arg "rows" type="i32"; ret "void"; doc "Notify the kernel of a terminal resize." }
 

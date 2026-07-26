@@ -358,11 +358,12 @@ graph messages.
 
 The REST surface can project a message instead of hand-copying its fields. `schema "Exec"` in `wire.kdl`
 derives from `message "ExecRequest"` in `control.kdl`, so the kernel control payload and the REST request
-body share one source declaration for `cmd`, `cwd`, `env`, and `stdin`. REST-specific shape differences
-are explicit `project` annotations: `cwd` keeps the public `Path` alias, `env` remains optional at the
-JSON edge while the binary message carries an empty map, and `stdin` has both UTF-8 text and base64
-presentations. The only local fields on the REST `Exec` schema are actual REST-only controls
-(`timeoutMs`, `maxTicks`). The OpenAPI projection marks derived properties with
+body share one source declaration for `mode`, `command`, `argv`, `cwd`, `env`, and `stdin`. REST-specific
+shape differences are explicit `project` annotations: the binary integer discriminator projects to the
+public string `mode`, the binary `list<ExecArg>` projects to a JSON string array, `cwd` keeps the public
+`Path` alias, `env` remains optional at the JSON edge while the binary message carries an empty map, and
+`stdin` has both UTF-8 text and base64 presentations. The only local fields on the REST `Exec` schema are
+actual REST-only controls (`timeoutMs`, `maxTicks`). The OpenAPI projection marks derived properties with
 `x-agentos-source-field` and stdin encodings, and the projector rejects a local field that redeclares a
 projected source field.
 
@@ -478,13 +479,18 @@ A _step_ is driven by the pipeline driver, not the scheduler itself: pop a ready
 ones, bounded so an all-stopped queue terminates), process its pending signals, apply a
 cooperative-`nice` skip check, run `task.step()`, and dispatch the returned `BuiltinStep` — `Exit` (close
 streams, free program, reap), `BlockedOnStdin/Stdout` (park on the pipe behind the stream, or requeue if
-it is a terminal/file), `Pending` (made no progress — requeue), or `BlockedOn(reason)` (park).
+it is a terminal/file), `Runnable` (the bounded slice made progress and has immediate work — requeue),
+`Pending` (made no progress while polling a timer, host I/O, or lazy VFS dependency — park until the
+next host-driven tick), or `BlockedOn(reason)` (park).
 
 Waking is mostly event-driven: at the top of each tick, pipe blockers are woken when the pipe has
 data/space or the peer closed; `WaitChild` waiters are woken by `exit_task` and the signal engine rather
-than polled. Prioritization is POSIX `nice` done _relatively_: a task above the minimum ready-nice burns
-skip credits before stepping, so a niced job yields CPU without starving — and signals are processed
-before the skip, so a `SIGKILL` still lands promptly.
+than polled. Poll waiters are woken exactly once at the start of the next host-driven tick. At the end
+of the round `mc_tick` reports `TICK_RUNNABLE` only when another bounded slice can make immediate
+progress; otherwise it reports `TICK_WAITING`, allowing both host families to yield without inserting
+a delay after productive work. Prioritization is POSIX `nice` done _relatively_: a task above the
+minimum ready-nice burns skip credits before stepping, so a niced job yields CPU without starving —
+and signals are processed before the skip, so a `SIGKILL` still lands promptly.
 
 ### 4.3 The wasm runtime (`wasm/`)
 
@@ -535,9 +541,10 @@ fulfills the request against the real VFS / pipes / net and resumes the guest wi
 `Pending` enum is _generated from the same syscall table_ the host functions are, so the exhaustive
 `fulfill` match cannot compile until a new syscall has a handler — drift is impossible. A would-block
 syscall maps to a `BlockedOn*` park; fuel exhaustion charges a quantum (2,000,000 instructions) and
-re-parks; an in-flight host operation maps to `Pending`. This composes guest scheduling onto the
-cooperative model with **no scheduler special-casing** — a guest is just another cooperative task. It is
-this resumable-host-trap shape that keeps scheduling policy outside guest implementations.
+reports immediately-runnable work; an in-flight host operation maps to `Pending` and is polled once on
+the next host-driven tick. This composes guest scheduling onto the cooperative model with **no
+guest-specific scheduler special-casing** — a guest is just another cooperative task. It is this
+resumable-host-trap shape that keeps scheduling policy outside guest implementations.
 
 **`pcall` / the trap-unwind shim.** C/C++ guests that need non-local exit (today only Luau, because
 `wasmi` has no exception proposal and the Zig wasi-libc++ ships no EH runtime) opt into a kernel-mediated
@@ -894,7 +901,7 @@ equivalent.
 `wasm-imports` oracle, failing on any non-`mc` function import, undeclared syscall import, uncovered
 declared syscall without a documented exclusion, or stale exclusion whose syscall is now covered. It also
 pins the typed host-control messages as language-neutral vectors (`control_vectors.json`) consumed by both
-the Rust and TypeScript generated codecs: `ExecRequest`/`ExecOutcome`, `FileStat`, `DirEntries`,
+the Rust and TypeScript generated codecs: `ExecArg`/`ExecRequest`/`ExecOutcome`, `FileStat`, `DirEntries`,
 `SvcRequest`/`SvcResponse`, and `RelayEvent`, including malformed frames. Finally, it boots the real Rust
 kernel under the wasmtime host for runtime vectors over typed exec/stat/readdir/service calls, fuel
 re-parking, pcall trap unwind/resume, and fuel-ceiling termination.
@@ -1182,13 +1189,24 @@ them as `SYSTEM_CALLER` with full caps and returns a bounded `[status][len][body
 buffer. Every export is looked up as an `Option` because the host loads the kernel at runtime and cannot
 know which exports a given artifact carries.
 
+One `mc_tick` always performs one bounded scheduler round. Its generated return values distinguish
+`TICK_RUNNABLE` from `TICK_WAITING`; kernel exit remains the separate `mc_exit` bridge event. The
+wasmtime, JavaScript, and OTP drivers therefore run productive slices back-to-back, poll the completed
+operation immediately after each slice, and yield only when the kernel says all live work is waiting.
+JavaScript additionally caps a runnable burst before yielding a macrotask so cancellation and browser
+I/O remain responsive. The kernel, not a host heuristic, owns this scheduling fact.
+
 The control channel has two generated layers. The export signatures (`mc_ctl_*`) are the fixed ABI over
 the shared scratch buffer; structured payloads inside that buffer are generated `message` codecs from
-`control.kdl`. `ExecRequest` is the canonical exec request: `cmd` still means `/bin/sh -c`, but `cwd`,
-`env`, and `stdin` are kernel-owned spawn facts, not strings the host rewrites into shell. The result is
-`ExecOutcome` with raw captured stdout/stderr bytes and the real exit code. Filesystem inspection returns
-`FileStat` and `DirEntries`; autocomplete uses `AutocompleteRequest`/`AutocompleteResult` and preserves
-UTF-8 byte offsets at the host boundary; host-control resident-service calls use
+`control.kdl`. `ExecRequest` v2 has a required execution discriminator. Shell mode requires one command
+and no argv, then the kernel forms `["sh", "-c", command]`; direct mode requires a non-empty argv and no
+command, and preserves every argument boundary including empty strings. Both modes, and guest
+`mc_sys_spawn`, converge on the same kernel program-resolution, capability, namespace, environment, cwd,
+stream, process-group, and task-creation implementation. There is no legacy request decoder or implicit
+default mode. The result is `ExecOutcome` with raw captured stdout/stderr bytes and the real exit code.
+Filesystem inspection returns `FileStat` and `DirEntries`; autocomplete uses
+`AutocompleteRequest`/`AutocompleteResult` and preserves UTF-8 byte offsets at the host boundary;
+host-control resident-service calls use
 `SvcRequest`/`SvcResponse`; BEAM egress uses `RelayEvent`. This is deliberately the same model as the syscall table: adding a payload
 field updates the binary codec, OpenAPI projection, Rust host, JS host, Elixir edge, and conformance
 vectors from one contract edit, or the build fails.
@@ -1231,7 +1249,7 @@ that adapter without becoming another kernel host.
 `AgentOS.Vm` is one GenServer per VM. It is the sole owner of the NIF resource wrapping the existing
 Rust `KernelHost`, so mailbox serialization enforces the single-owner rule around each wasmtime store.
 
-The facade exposes boot/restore, synchronous and structured exec, shell autocomplete,
+The facade exposes boot/restore, explicit shell execution and direct argv execution, shell autocomplete,
 shell input/scrollback, filesystem
 operations, resident-service calls, snapshot/commit, status, mounts, and relay queues for HTTP,
 WebSocket, host-call, persistence, and tool-approval effects. The NIF runs blocking host work on dirty
@@ -1303,8 +1321,12 @@ same canonical `message` codec family as control: a portable `Definition` is a D
 `write`, `mkdir`, `rm`, `chmod`, `symlink`, `copy`, `exec`, `merge`, `diff`, `image`, and `cache` nodes.
 `@mc/core` records or authors that DAG, serializes it with `toDefinition`, round-trips it with
 `fromDefinition`, and hashes each vertex over the kernel digest, resolved inputs, and full structured
-arguments. For `exec`, those arguments include the same `{cmd,cwd,env,stdin}` facts carried by
-`ExecRequest`; the build cache cannot ignore cwd/env/stdin without changing the digest.
+arguments. Build-plane execution uses the same explicit distinction: `llb.exec` records shell syntax,
+while `llb.run` records literal argv. The portable `BuildOp` carries `form`, optional `cmd`, and a typed
+argv list plus `{cwd,env,stdin}`; invalid shell/direct field combinations fail during Definition
+rehydration. The build cache hashes the form, every argument boundary (including empty strings), and all
+execution options. This is a separate portable DAG contract rather than an alternate host-control
+decoder.
 
 `solve` materializes a `Definition` by booting real VMs, applying each node, and committing real image
 layers or snapshots. Shared vertices are registered as in-flight promises before they await, so concurrent
@@ -1703,7 +1725,8 @@ real-artifact conformance tests.
 - **capability / tier** — an 8-bit authority set, and the spawn-time dial (`Full`/`ReadWrite`/`ReadOnly`/
   `Isolated`) that selects its ceiling; narrows toward the leaves of the process tree.
 - **fuel / tick** — a `wasmi` execution budget (2,000,000 instructions/quantum) and one bounded slice of
-  kernel work; the host drives the loop and the kernel never blocks it.
+  kernel work; the host drives the loop, the kernel never blocks it, and the tick result says whether
+  another slice is immediately runnable or all work is waiting.
 - **snapshot** — the kernel's linear memory captured by the host; pause/fork/resume with no kernel
   cooperation, taken only at an inflight-egress-quiescent boundary.
 - **sidecar** — a leased, stateful external resource owned by one VM scope and operated through a

@@ -626,16 +626,26 @@ impl Scheduler {
         }
     }
 
+    /// Wake tasks that asked to be polled after the host had a chance to run.
+    ///
+    /// Poll waiters are deliberately distinct from immediately-runnable tasks:
+    /// this is the kernel-owned scheduling fact that lets every host avoid a
+    /// fixed delay after productive fuel slices without busy-spinning on
+    /// unresolved network, timer, served-fs, or mount operations.
+    pub fn wake_pollers(&self) {
+        unsafe {
+            let pollers: Vec<TaskId> = (*self.blocked.get())
+                .iter()
+                .filter_map(|(&id, reason)| matches!(reason, BlockReason::Poll).then_some(id))
+                .collect();
+            for id in pollers {
+                self.unblock(id);
+            }
+        }
+    }
+
     pub fn ready_count(&self) -> usize {
         unsafe { (*self.ready.get()).len() }
-    }
-
-    pub fn blocked_count(&self) -> usize {
-        unsafe { (*self.blocked.get()).len() }
-    }
-
-    pub fn has_work(&self) -> bool {
-        self.ready_count() > 0 || self.blocked_count() > 0
     }
 
     /// The lowest niceness among currently-runnable (ready, not stopped) tasks, or

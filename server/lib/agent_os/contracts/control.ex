@@ -120,14 +120,44 @@ defmodule AgentOS.Contracts.Control do
   defp read_i32(_bytes), do: {:error, "truncated frame"}
   defp put_i32(value), do: <<value::signed-little-32>>
 
+  @exec_arg_msg_id 12
+  @exec_arg_version 1
+
+  def encode_exec_arg(msg) when is_map(msg) do
+    IO.iodata_to_binary([
+      put_u16(@exec_arg_msg_id),
+      put_u8(@exec_arg_version),
+      put_str(field!(msg, :value))
+    ])
+  end
+
+  def decode_exec_arg(bytes) when is_binary(bytes) do
+    with {:ok, rest} <- read_header(bytes, @exec_arg_msg_id, @exec_arg_version),
+         {:ok, value, rest} <- read_str(rest),
+         :ok <- read_eof(rest) do
+      {:ok, %{
+        value: value,
+      }}
+    end
+  end
+
+  def exec_arg_msg_id, do: @exec_arg_msg_id
+  def exec_arg_version, do: @exec_arg_version
+
+  # EXEC_ARG
   @exec_request_msg_id 1
-  @exec_request_version 1
+  @exec_request_version 2
 
   def encode_exec_request(msg) when is_map(msg) do
     IO.iodata_to_binary([
       put_u16(@exec_request_msg_id),
       put_u8(@exec_request_version),
-      put_str(field!(msg, :cmd)),
+      put_i32(field!(msg, :mode)),
+      case field(msg, :command) do
+        nil -> <<0>>
+        value -> [<<1>>, put_str(value)]
+      end,
+      put_message_list(field!(msg, :argv), &encode_exec_arg/1),
       case field(msg, :cwd) do
         nil -> <<0>>
         value -> [<<1>>, put_str(value)]
@@ -142,13 +172,17 @@ defmodule AgentOS.Contracts.Control do
 
   def decode_exec_request(bytes) when is_binary(bytes) do
     with {:ok, rest} <- read_header(bytes, @exec_request_msg_id, @exec_request_version),
-         {:ok, cmd, rest} <- read_str(rest),
+         {:ok, mode, rest} <- read_i32(rest),
+         {:ok, command, rest} <- read_opt(rest, fn rest -> read_str(rest) end),
+         {:ok, argv, rest} <- read_message_list(rest, &decode_exec_arg/1),
          {:ok, cwd, rest} <- read_opt(rest, fn rest -> read_str(rest) end),
          {:ok, env, rest} <- read_strmap(rest),
          {:ok, stdin, rest} <- read_opt(rest, fn rest -> read_bytes(rest) end),
          :ok <- read_eof(rest) do
       {:ok, %{
-        cmd: cmd,
+        mode: mode,
+        command: command,
+        argv: argv,
         cwd: cwd,
         env: env,
         stdin: stdin,

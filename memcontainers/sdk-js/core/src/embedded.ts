@@ -4,7 +4,7 @@
 // Centralizing ticking means concurrent exec + shell never double-drive or race
 // (JS is single-threaded; structured ops run between the pump's ticks).
 
-import { EagainError } from "@mc/host";
+import { EagainError, RUNNABLE_BURST_TICKS, TickState } from "@mc/host";
 import type { KernelHost, MapHostCall, StreamSink } from "@mc/host";
 import type { Backend, RawAutocompleteResult, RawExecResult } from "./backend.js";
 import type { SidecarBackend } from "./sidecars.js";
@@ -130,10 +130,11 @@ export class EmbeddedBackend implements Backend {
   }
 
   private async pump(): Promise<void> {
+    let runnableBurst = 0;
     while (this.running) {
-      let alive = true;
+      let state: TickState;
       try {
-        alive = this.host.tick();
+        state = this.host.tick();
       } catch (e) {
         this.failAll(asError(e));
         this.running = false;
@@ -176,14 +177,23 @@ export class EmbeddedBackend implements Backend {
           t.onEnd();
         }
       }
-      if (!alive) {
+      if (state === TickState.Exited) {
         this.running = false;
         this.failAll(new Error("VM exited"));
         break;
       }
       const busy =
         this.resolvers.size > 0 || this.sessions.size > 0 || this.stdout.listeners.size > 0;
-      await sleep(busy ? 1 : 15);
+      if (state === TickState.Runnable && busy && ++runnableBurst < RUNNABLE_BURST_TICKS) {
+        continue;
+      }
+      if (state === TickState.Runnable) {
+        runnableBurst = 0;
+        await sleep(0);
+      } else {
+        runnableBurst = 0;
+        await sleep(busy ? 1 : 15);
+      }
     }
   }
 
@@ -193,15 +203,11 @@ export class EmbeddedBackend implements Backend {
     this.rejecters.clear();
   }
 
-  async exec(cmd: string, opts: ExecOptions = {}): Promise<RawExecResult> {
+  private async completeExec(start: () => number): Promise<RawExecResult> {
     if (!this.running) throw new Error("VM closed");
     let job: number;
     try {
-      job = this.host.execStart(cmd, {
-        cwd: opts.cwd,
-        env: opts.env,
-        stdin: execStdinBytes(opts.stdin),
-      });
+      job = start();
     } catch (e) {
       throw asError(e);
     }
@@ -214,6 +220,30 @@ export class EmbeddedBackend implements Backend {
     // command touched no mount.
     await this.drainCommits();
     return result;
+  }
+
+  async exec(cmd: string, opts: ExecOptions = {}): Promise<RawExecResult> {
+    return this.completeExec(() =>
+      this.host.execStart(cmd, {
+        cwd: opts.cwd,
+        env: opts.env,
+        stdin: execStdinBytes(opts.stdin),
+      }),
+    );
+  }
+
+  async run(
+    program: string,
+    args: readonly string[] = [],
+    opts: ExecOptions = {},
+  ): Promise<RawExecResult> {
+    return this.completeExec(() =>
+      this.host.runStart(program, args, {
+        cwd: opts.cwd,
+        env: opts.env,
+        stdin: execStdinBytes(opts.stdin),
+      }),
+    );
   }
 
   async autocomplete(
@@ -256,8 +286,8 @@ export class EmbeddedBackend implements Backend {
           events.push(e);
           for (const l of listeners) l(e);
         };
-        const { cmd, opts } = sessionExec(agentType, promptFile);
-        const job = backend.host.execStart(cmd, {
+        const { program, args, opts } = sessionExec(agentType, promptFile);
+        const job = backend.host.runStart(program, args, {
           cwd: opts.cwd,
           env: opts.env,
           stdin: execStdinBytes(opts.stdin),
@@ -302,7 +332,7 @@ export class EmbeddedBackend implements Backend {
     while (this.host.pendingCommits() > 0 && Date.now() < deadline) {
       // Stop early if the VM has exited — its commits can't drain, so don't spin
       // to the deadline (this is what keeps close() from hanging on a dead VM).
-      if (!this.host.tick()) break;
+      if (this.host.tick() === TickState.Exited) break;
       await sleep(0);
     }
   }

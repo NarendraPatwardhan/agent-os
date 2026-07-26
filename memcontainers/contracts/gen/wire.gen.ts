@@ -2,7 +2,7 @@
 export const SIDECAR_SCOPE_HEADER = "x-agentos-sidecar-scope" as const;
 
 
-export const WIRE_VERSION = 3;
+export const WIRE_VERSION = 4;
 export const HEADER_LEN = 9;
 
 export const HELLO = 0x00;

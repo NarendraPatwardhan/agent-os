@@ -210,6 +210,15 @@ async function remoteVmServer(): Promise<{
         );
         return;
       }
+      if (
+        req.method === "POST" &&
+        req.url?.startsWith("/v1/vms/") &&
+        req.url.endsWith("/exec")
+      ) {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true, exitCode: 0, stdout: "remote-exec", stderr: "" }));
+        return;
+      }
       if (req.method === "DELETE" && req.url?.startsWith("/v1/vms/")) {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true }));
@@ -324,7 +333,7 @@ async function remoteBuildServer(
                 build: {
                   schema: 1,
                   definition: {
-                    encoding: "mc.llb.definition.v1",
+                    encoding: "mc.llb.definition.v2",
                     digest: definitionDigest,
                     bytes: [...provenanceBytes],
                   },
@@ -702,6 +711,8 @@ async function main(): Promise<void> {
       ) {
         throw new Error(`remote autocomplete mapping wrong: ${JSON.stringify(remoteCompletion)}`);
       }
+      await remoteVm.exec("echo shell");
+      await remoteVm.run("printf", ["%s", "direct arg"]);
       await remoteVm.close();
 
       const create = remote.requests.find((req) => req.method === "POST" && req.url === "/v1/vms");
@@ -740,6 +751,29 @@ async function main(): Promise<void> {
       }
       if (JSON.stringify(body.connectionPolicies) !== JSON.stringify([policy])) {
         throw new Error(`remote create did not forward connection policies: ${create.body}`);
+      }
+      const execRequests = remote.requests.filter(
+        (request) => request.method === "POST" && request.url.endsWith("/exec"),
+      );
+      const shellExec = JSON.parse(execRequests[0]?.body ?? "{}") as Record<string, unknown>;
+      const directExec = JSON.parse(execRequests[1]?.body ?? "{}") as Record<string, unknown>;
+      if (
+        shellExec.mode !== "shell" ||
+        shellExec.command !== "echo shell" ||
+        "cmd" in shellExec ||
+        "argv" in shellExec
+      ) {
+        throw new Error(`remote shell exec did not use the explicit request: ${execRequests[0]?.body}`);
+      }
+      if (
+        directExec.mode !== "direct" ||
+        JSON.stringify(directExec.argv) !== JSON.stringify(["printf", "%s", "direct arg"]) ||
+        "command" in directExec ||
+        "cmd" in directExec
+      ) {
+        throw new Error(
+          `remote direct exec did not preserve argv: ${execRequests[1]?.body}`,
+        );
       }
       console.log("phase: remote create forwards catalog intent OK");
     } finally {
@@ -1154,6 +1188,20 @@ async function main(): Promise<void> {
       if (liveExec.exitCode !== 0) {
         throw new Error(`recorded live exec failed: ${liveExec.stderr}`);
       }
+      const liveDirect = await recorder.vm.run(
+        "sh",
+        [
+          "-c",
+          'printf "%s|%s" "$1" "$2" > recorded-direct',
+          "direct-record",
+          "literal arg",
+          "",
+        ],
+        { cwd: "/home/user/recorded-dir" },
+      );
+      if (liveDirect.exitCode !== 0) {
+        throw new Error(`recorded live run failed: ${liveDirect.stderr}`);
+      }
       const recordedManifest = await llb.commit(await recorder.build()).asImage({ store, kernel });
       const replay = await mc.create({
         kernel,
@@ -1167,6 +1215,7 @@ async function main(): Promise<void> {
         const cwd = await replay.fs.readText("/home/user/recorded-dir/exec-cwd");
         const env = await replay.fs.readText("/home/user/recorded-dir/exec-env");
         const stdin = await replay.fs.readText("/home/user/recorded-dir/exec-stdin");
+        const direct = await replay.fs.readText("/home/user/recorded-dir/recorded-direct");
         const mode = (await replay.fs.stat("/home/user/recorded-dir/keep")).mode;
         let removedMissing = false;
         try {
@@ -1180,11 +1229,12 @@ async function main(): Promise<void> {
           cwd !== "/home/user/recorded-dir\n" ||
           env !== "record-env" ||
           stdin !== "record-stdin" ||
+          direct !== "literal arg|" ||
           mode !== 0o600 ||
           !removedMissing
         ) {
           throw new Error(
-            `record replay bytes mismatch: write=${JSON.stringify(wrote)} link=${JSON.stringify(link)} cwd=${JSON.stringify(cwd)} env=${JSON.stringify(env)} stdin=${JSON.stringify(stdin)} mode=${mode.toString(8)} removedMissing=${removedMissing}`,
+            `record replay bytes mismatch: write=${JSON.stringify(wrote)} link=${JSON.stringify(link)} cwd=${JSON.stringify(cwd)} env=${JSON.stringify(env)} stdin=${JSON.stringify(stdin)} direct=${JSON.stringify(direct)} mode=${mode.toString(8)} removedMissing=${removedMissing}`,
           );
         }
       } finally {
@@ -1246,6 +1296,54 @@ async function main(): Promise<void> {
       await execVm.close();
     }
     console.log("phase: llb exec forwards cwd/env/stdin through typed ExecRequest");
+
+    const runState = llb.run(
+      base,
+      "sh",
+      [
+        "-c",
+        'read line; printf "%s|%s|%s|%s" "$1" "$2" "$RUN_FLAG" "$line" > llb-run',
+        "direct-llb",
+        "literal arg",
+        "",
+      ],
+      {
+        cwd: "/home/user",
+        env: { RUN_FLAG: "typed-env" },
+        stdin: "typed-stdin\n",
+      },
+    );
+    const runDefinition = await llb.toDefinition(runState, { store });
+    const runOp = runDefinition.ops.find((op) => op.form === "direct");
+    if (
+      runDefinition.version !== 2 ||
+      !runOp ||
+      runOp.cmd !== undefined ||
+      JSON.stringify(runOp.argv.map(({ value }) => value)) !==
+        JSON.stringify([
+          "sh",
+          "-c",
+          'read line; printf "%s|%s|%s|%s" "$1" "$2" "$RUN_FLAG" "$line" > llb-run',
+          "direct-llb",
+          "literal arg",
+          "",
+        ])
+    ) {
+      throw new Error(`llb direct Definition changed form or argv: ${JSON.stringify(runDefinition)}`);
+    }
+    const runManifest = await llb
+      .commit(llb.decodeDefinition(llb.encodeDefinition(runDefinition)))
+      .asImage({ store, kernel });
+    const runVm = await mc.create({ kernel, image: runManifest, store, deterministic: true });
+    try {
+      const result = await runVm.fs.readText("/home/user/llb-run");
+      if (result !== "literal arg||typed-env|typed-stdin") {
+        throw new Error(`llb direct replay changed argv/options: ${JSON.stringify(result)}`);
+      }
+    } finally {
+      await runVm.close();
+    }
+    console.log("phase: llb run preserves direct argv and options through Definition replay");
 
     const execEnvChanged = llb.exec(
       base,
@@ -1779,7 +1877,7 @@ async function main(): Promise<void> {
       );
     }
     const dirtySourceDefinition: BuildDefinition = {
-      version: 1,
+      version: 2,
       root: 0,
       ops: [
         {
@@ -1787,6 +1885,7 @@ async function main(): Promise<void> {
           source_ref: "llb-base",
           parts: [],
           copy_paths: [],
+          argv: [],
           env: { SHOULD_NOT_EXIST: "1" },
           mounts: [],
         },
@@ -1814,7 +1913,7 @@ async function main(): Promise<void> {
     try {
       await llb.fromDefinition(
         {
-          version: 1,
+          version: 2,
           root: 0,
           ops: [
             {
@@ -1822,6 +1921,7 @@ async function main(): Promise<void> {
               source_ref: "https://example.test/artifact.tar",
               parts: [],
               copy_paths: [],
+              argv: [],
               env: {},
               mounts: [],
             },
@@ -1873,7 +1973,7 @@ async function main(): Promise<void> {
     const recordedDefinitionBytes = Uint8Array.from(buildRecord.definition.bytes);
     if (
       buildRecord.schema !== 1 ||
-      buildRecord.definition.encoding !== "mc.llb.definition.v1" ||
+      buildRecord.definition.encoding !== "mc.llb.definition.v2" ||
       buildRecord.definition.digest !== expectedDefinitionDigest ||
       buildRecord.kernelDigest !== expectedKernelDigest ||
       buildRecord.rootDigest !== directDefinitionManifest.build.rootDigest ||
@@ -2252,6 +2352,28 @@ error("timed out waiting for restored warm sqlite child: " .. err)
     if (r.exitCode !== 0 || r.stdout.trim() !== "core-ok") {
       throw new Error(`vm.exec mismatch: exit=${r.exitCode} stdout=${JSON.stringify(r.stdout)}`);
     }
+    // The base fixture intentionally has no coreutils. Select its real `sh`
+    // executable directly and pass hostile/empty positional argv literally.
+    const direct = await vm.run("sh", [
+      "-c",
+      'printf "<%s>|<%s>|<%s>\\n" "$1" "$2" "$3"',
+      "direct-sdk",
+      "a b",
+      "$HOME;touch /tmp/sdk-direct-shell-leak",
+      "",
+    ]);
+    if (
+      direct.exitCode !== 0 ||
+      direct.stdout !== "<a b>|<$HOME;touch /tmp/sdk-direct-shell-leak>|<>\n"
+    ) {
+      throw new Error(`vm.run mismatch: ${JSON.stringify(direct)}`);
+    }
+    let directShellLeak = false;
+    try {
+      await vm.fs.stat("/tmp/sdk-direct-shell-leak");
+      directShellLeak = true;
+    } catch {}
+    if (directShellLeak) throw new Error("vm.run interpreted argv as shell syntax");
     await vm.fs.mkdir("/home/user/exec-cwd");
     const execOpts = await vm.exec('pwd; printf "$MC_EXEC_FLAG\\n"; read line; printf "$line"', {
       cwd: "/home/user/exec-cwd",

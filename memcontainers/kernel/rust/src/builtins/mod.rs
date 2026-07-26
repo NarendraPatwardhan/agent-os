@@ -22,10 +22,14 @@ pub enum BuiltinStep {
     /// `BlockReason::PipeWrite`.
     BlockedOnStdout,
     /// The builtin made no progress this step and wants to be re-stepped
-    /// next tick — e.g. a network builtin waiting on a host capability
-    /// whose response is not ready yet. The runner re-readies the task
-    /// (it is not parked on a pipe). One poll per tick, bounded.
+    /// after the host yields — e.g. a network builtin waiting on a host
+    /// capability whose response is not ready yet. The runner parks it as a
+    /// poll waiter; the next host-driven tick wakes it exactly once.
     Pending,
+    /// The builtin consumed its bounded slice and has immediately-runnable
+    /// work remaining. Fuel preemption reports this state, allowing the host
+    /// to drive another bounded tick without inserting an artificial delay.
+    Runnable,
     /// Park the task on an explicit block reason. Used by user-space guests
     /// to block on an arbitrary pipe fd or on `waitpid` — the runner calls
     /// `block_task(pid, reason)` directly.

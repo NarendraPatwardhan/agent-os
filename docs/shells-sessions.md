@@ -1,7 +1,8 @@
 # Shells, sessions, and services
 
-Use `vm.exec()` for bounded commands, `vm.shell()` for terminal-style byte streaming, and
-`vm.session()` for framed agent events. They are different interaction models over the same VM.
+Use `vm.exec()` for bounded shell syntax, `vm.run()` for a bounded literal program invocation,
+`vm.shell()` for terminal-style byte streaming, and `vm.session()` for framed agent events. They are
+different interaction models over the same VM.
 
 ## `vm.shell(options?)`
 
@@ -69,12 +70,10 @@ unsafe names are rejected rather than interpolated into a command.
 A session event always has `type` and may have `text` plus program-defined JSON fields. Consumers
 should switch on known `type` values and preserve or ignore unknown fields for forward compatibility.
 
-## `vm.luauSession()`
-
-Equivalent to `vm.session("luau")`.
+Pass `"luau"` to open a live Luau session:
 
 ```js
-const session = vm.luauSession();
+const session = vm.session("luau");
 const events = await session.prompt(`
 local log = require("log")
 log.info("hello from Luau")
@@ -85,13 +84,14 @@ Each prompt is executed as a Luau script. Structured log-battery events become `
 
 ## When to use which API
 
-| Need                                   | API                |
-| -------------------------------------- | ------------------ |
-| One command and complete stdout/stderr | `vm.exec()`        |
-| One multi-step Luau program            | `vm.luau()`        |
-| Human or xterm interaction             | `vm.shell()`       |
-| Structured streaming agent events      | `vm.session()`     |
-| Raw resident-service protocol          | `vm.serviceCall()` |
+| Need                                            | API                |
+| ----------------------------------------------- | ------------------ |
+| Shell pipelines, redirection, or expansion      | `vm.exec()`        |
+| One executable with exact argument boundaries   | `vm.run()`         |
+| One multi-step Luau program                     | `vm.luau()`        |
+| Human or xterm interaction                      | `vm.shell()`       |
+| Structured streaming agent events               | `vm.session()`     |
+| Raw resident-service protocol                   | `vm.serviceCall()` |
 
 ## Resident services
 

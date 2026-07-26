@@ -155,11 +155,14 @@ try {
   const vm = await mc.create({ runtime: "browser", kernel, image: manifest, store, deterministic: true });
   try {
     const text = await vm.fs.readText("/home/user/browser-opfs.txt");
+    const direct = await vm.run("sh", ["-c", "printf browser-direct"]);
+    if (direct.exitCode !== 0) throw new Error("browser direct exec failed: " + direct.stderr);
     globalThis.__MC_BROWSER_RESULT__ = {
       ok: true,
       opfs: Boolean(navigator.storage?.getDirectory),
       rootDigest: manifest.build?.rootDigest ?? "",
       text,
+      direct: direct.stdout,
     };
     mark("done");
   } finally {
@@ -439,6 +442,9 @@ async function main(): Promise<void> {
     }
     if (result.text !== "browser-opfs") {
       throw new Error(`browser OPFS image bytes mismatch: ${JSON.stringify(result)}`);
+    }
+    if (result.direct !== "browser-direct") {
+      throw new Error(`browser direct exec mismatch: ${JSON.stringify(result)}`);
     }
     console.log("phase: browser OPFS solves the same LLB Definition root digest OK");
   } finally {

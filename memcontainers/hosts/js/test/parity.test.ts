@@ -7,8 +7,8 @@
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { KernelHostBuilder } from "../src/index.js";
-import type { StreamSink } from "../src/index.js";
+import { KernelHostBuilder, TickState } from "../src/index.js";
+import type { ExecResult, StreamSink } from "../src/index.js";
 
 /** Resolve a bazel runfile: `$(rlocationpath)` yields a runfiles-relative path; RUNFILES_DIR roots it. */
 function runfile(rel: string | undefined, envVar: string): string {
@@ -40,11 +40,55 @@ async function main(): Promise<void> {
     );
   }
 
+  // The generated tick state is the same scheduling fact the Rust host consumes: an idle login
+  // shell waits. `true` is a shell builtin and may complete inside one bounded slice, so completion
+  // is polled immediately rather than requiring a synthetic intermediate runnable state.
+  let idleState = TickState.Runnable;
+  for (let i = 0; i < 8 && idleState !== TickState.Waiting; i++) idleState = host.tick();
+  if (idleState !== TickState.Waiting) {
+    throw new Error(`idle shell did not settle to waiting: ${idleState}`);
+  }
+  const tickJob = host.execStart("true");
+  let tickResult: ExecResult | null = null;
+  for (let i = 0; i < 32 && !tickResult; i++) {
+    host.tick();
+    tickResult = host.execPoll(tickJob);
+  }
+  if (tickResult?.exitCode !== 0) {
+    throw new Error(`tick-state exec mismatch: result=${JSON.stringify(tickResult)}`);
+  }
+
   // 1) A real command through the control-channel exec path: captured stdout + the real exit code.
   const echo = await host.exec("echo parity-ok");
   const stdout = new TextDecoder().decode(echo.stdout).trim();
   if (echo.exitCode !== 0 || stdout !== "parity-ok") {
     throw new Error(`exec mismatch: exit=${echo.exitCode} stdout=${JSON.stringify(stdout)}`);
+  }
+
+  // The base fixture intentionally has no coreutils. Select its real `sh`
+  // executable directly and pass hostile/empty positional argv literally.
+  const direct = await host.run("sh", [
+    "-c",
+    'printf "<%s>|<%s>|<%s>\\n" "$1" "$2" "$3"',
+    "direct-parity",
+    "a b",
+    "$HOME;touch /tmp/js-direct-shell-leak",
+    "",
+  ]);
+  const directStdout = new TextDecoder().decode(direct.stdout);
+  if (
+    direct.exitCode !== 0 ||
+    directStdout !== "<a b>|<$HOME;touch /tmp/js-direct-shell-leak>|<>\n"
+  ) {
+    throw new Error(
+      `direct exec mismatch: exit=${direct.exitCode} stdout=${JSON.stringify(directStdout)}`,
+    );
+  }
+  try {
+    host.stat("/tmp/js-direct-shell-leak");
+    throw new Error("direct argv was interpreted as shell syntax");
+  } catch (error) {
+    if ((error as Error).message === "direct argv was interpreted as shell syntax") throw error;
   }
 
   // The same resident /bin/sh powers interactive Tab and this programmatic query. No guest task is

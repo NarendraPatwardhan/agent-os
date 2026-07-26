@@ -216,7 +216,7 @@ Nothing ambient exists — no network, secrets, mounts, or host tools — until 
 
 ## Live agent sessions
 
-`vm.session(agentType?)` / `vm.luauSession()` → `{ id, prompt(text) → SessionEvent[], on(cb) }`.
+`vm.session(agentType?)` → `{ id, prompt(text) → SessionEvent[], on(cb) }`.
 `prompt` runs a Luau agent program and streams framed JSON events; subscribe with `on`. Prefer a
 session over one-shot `exec` for an interactive agent loop.
 

@@ -1,7 +1,8 @@
 # Execution and files
 
-AgentOS exposes the guest from two complementary host views: commands through `vm.exec()` and direct
-file operations through `vm.fs`. Both operate on the same live VM state.
+AgentOS exposes the guest from three complementary host views: shell commands through `vm.exec()`,
+literal program invocation through `vm.run()`, and direct file operations through `vm.fs`. All three
+operate on the same live VM state.
 
 ## `vm.exec(command, options?)`
 
@@ -49,6 +50,37 @@ if (result.exitCode !== 0) {
 ```
 
 SDK, transport, or host failures do reject. See [Errors and diagnostics](./errors.md).
+
+## `vm.run(program, args?, options?)`
+
+Executes one program with exact argument boundaries and does not invoke a shell.
+
+```js
+const result = await vm.run(
+  "sort",
+  ["--field-separator=,", "--key=2,2n", "input data.csv"],
+  {
+    cwd: "/workspace",
+    env: { LC_ALL: "C" },
+    stdin: "",
+  },
+);
+```
+
+`args` defaults to an empty array. The options and `ExecResult` are identical to `vm.exec()`.
+Arguments—including empty strings and strings containing spaces or shell metacharacters—reach the
+program literally:
+
+```js
+await vm.run("printf", ["<%s>\\n", "", "$HOME", "two words"]);
+```
+
+Use `run()` whenever the executable and arguments are already structured. It avoids shell parsing
+and eliminates quoting ambiguity. Use `exec()` when the input intentionally contains shell syntax
+such as pipelines, redirections, substitutions, or `&&`.
+
+The program and every argument must be strings without embedded NUL bytes. Invalid text is rejected
+instead of being truncated or reinterpreted.
 
 ## `vm.autocomplete(source, options?)`
 
@@ -124,7 +156,8 @@ print(json.encode({ value = arg[1] }))`,
 );
 ```
 
-The result is the same `ExecResult` as `vm.exec()`. The image must contain `/bin/luau`; use `loom`,
+The result is the same `ExecResult` as `vm.exec()` and `vm.run()`. The image must contain
+`/bin/luau`; use `loom`,
 `atlas`, `paper`, or a custom image built on that layer.
 
 This method is the JavaScript API for running Luau. The Luau batteries themselves are a guest API and

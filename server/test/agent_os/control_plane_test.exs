@@ -135,6 +135,24 @@ defmodule AgentOS.ControlPlaneTest do
       assert {:ok, %{exit_code: 0, stdout: <<0, 1, 2, "raw", 255>>, stderr: ""}} =
                ControlPlane.exec(id, "cat", stdin: <<0, 1, 2, "raw", 255>>)
 
+      assert {:ok,
+              %{
+                exit_code: 0,
+                stdout: "<a b>|<$HOME;touch /tmp/beam-direct-shell-leak>|<>\n",
+                stderr: ""
+              }} =
+               ControlPlane.run(id, "printf", [
+                 "<%s>|<%s>|<%s>\\n",
+                 "a b",
+                 "$HOME;touch /tmp/beam-direct-shell-leak",
+                 ""
+               ])
+
+      assert {:error, _} = ControlPlane.stat(id, "/tmp/beam-direct-shell-leak")
+
+      assert {:ok, %{exit_code: 0, stdout: <<0, 1, 2, "direct", 255>>, stderr: ""}} =
+               ControlPlane.run(id, "cat", [], stdin: <<0, 1, 2, "direct", 255>>)
+
       assert {:error, missing_cwd} = ControlPlane.exec(id, "true", cwd: "/tmp/missing-cwd")
       assert missing_cwd =~ "errno 44"
 
@@ -394,7 +412,7 @@ defmodule AgentOS.ControlPlaneTest do
                next_relay(id, write_job, 5_000)
 
       assert :ok = ControlPlane.egress_persist_respond(id, put.handle, "")
-      assert :running = ControlPlane.tick(id, 8)
+      assert ControlPlane.tick(id, 8) in [:runnable, :waiting]
       assert {:ok, status} = ControlPlane.status(id)
       assert status.pending_commits == 0
 

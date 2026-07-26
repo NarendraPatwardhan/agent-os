@@ -81,7 +81,7 @@ Large `write` payloads are stored as blobs when converting the graph to a portab
 
 ## `llb.exec(input, command, options?)`
 
-Runs a real VM command while solving.
+Runs shell syntax in a real VM while solving.
 
 ```js
 const compiled = llb.exec(source, "./configure && make install", {
@@ -108,6 +108,23 @@ const compiled = llb.exec(source, "./configure && make install", {
 | `mounts`              | `[]`                   | Persistent `llb.cache()` states                |
 
 A nonzero command exit rejects the solve with exit status and stderr.
+
+## `llb.run(input, program, args?, options?)`
+
+Runs one executable with literal argument boundaries while solving:
+
+```js
+const compiled = llb.run(source, "make", ["install", "PREFIX=/opt/app"], {
+  cwd: "/src",
+  env: { LC_ALL: "C" },
+  deterministic: true,
+});
+```
+
+`args` defaults to an empty array and the options are the same as `llb.exec()`. The execution form,
+program, exact arguments, and all options participate in the node identity. Use `llb.run()` when the
+program and arguments are already structured; use `llb.exec()` for intentional shell syntax such as
+pipelines, redirection, expansion, or `&&`.
 
 ## `llb.cache(path)`
 

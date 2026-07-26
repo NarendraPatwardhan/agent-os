@@ -88,35 +88,70 @@ defmodule AgentOS.Vm do
   def exec(_server, _cmd, _opts),
     do: {:error, "exec expects a binary command and keyword options"}
 
+  @doc "Execute one program with literal argv values, without invoking a shell."
+  @spec run(server(), String.t(), [String.t()], keyword()) ::
+          {:ok, map()} | {:error, Nif.reason()}
+  def run(server, program, args, opts \\ [])
+
+  def run(server, program, args, opts)
+      when is_binary(program) and is_list(args) and is_list(opts) do
+    if Enum.all?(args, &is_binary/1) do
+      max_ticks = Keyword.get(opts, :max_ticks, @default_max_ticks)
+      GenServer.call(
+        server,
+        {:run, program, args, max_ticks, exec_opts(opts)},
+        timeout(opts)
+      )
+    else
+      {:error, "run expects every argument to be a binary"}
+    end
+  end
+
+  def run(_server, _program, _args, _opts),
+    do: {:error, "run expects a program, argv list, and keyword options"}
+
   @doc false
   @spec exec_interleaved(server(), String.t(), keyword(), (-> :ok | {:error, term()})) ::
           {:ok, map()} | {:error, term()}
   def exec_interleaved(server, cmd, opts, on_yield)
       when is_binary(cmd) and is_list(opts) and is_function(on_yield, 0) do
-    max_ticks = Keyword.get(opts, :max_ticks, @default_max_ticks)
-    call_timeout = timeout(opts)
-
-    cond do
-      not is_integer(max_ticks) or max_ticks < 0 ->
-        {:error, "max_ticks must be a non-negative integer"}
-
-      call_timeout != :infinity and (not is_integer(call_timeout) or call_timeout <= 0) ->
-        {:error, "timeout must be a positive integer or :infinity"}
-
-      true ->
-        deadline =
-          if call_timeout == :infinity,
-            do: :infinity,
-            else: System.monotonic_time(:millisecond) + call_timeout
-
-        with {:ok, job} <- exec_start(server, cmd, opts) do
-          drive_exec(server, job, cmd, max_ticks, deadline, on_yield)
-        end
-    end
+    exec_request_interleaved(
+      server,
+      fn -> exec_start(server, cmd, opts) end,
+      cmd,
+      opts,
+      on_yield
+    )
   end
 
   def exec_interleaved(_server, _cmd, _opts, _on_yield),
     do: {:error, "exec_interleaved expects a command, keyword options, and a zero-arity callback"}
+
+  @doc false
+  @spec run_interleaved(
+          server(),
+          String.t(),
+          [String.t()],
+          keyword(),
+          (-> :ok | {:error, term()})
+        ) :: {:ok, map()} | {:error, term()}
+  def run_interleaved(server, program, args, opts, on_yield)
+      when is_binary(program) and is_list(args) and is_list(opts) and is_function(on_yield, 0) do
+    if Enum.all?(args, &is_binary/1) do
+      exec_request_interleaved(
+        server,
+        fn -> run_start(server, program, args, opts) end,
+        program,
+        opts,
+        on_yield
+      )
+    else
+      {:error, "run_interleaved expects every argument to be a binary"}
+    end
+  end
+
+  def run_interleaved(_server, _program, _args, _opts, _on_yield),
+    do: {:error, "run_interleaved expects a program, argv list, options, and callback"}
 
   @doc "Start a structured exec job. Poll it with `exec_poll/2`; cancel it with `exec_cancel/2`."
   @spec exec_start(server(), String.t(), keyword()) :: {:ok, integer()} | {:error, Nif.reason()}
@@ -127,6 +162,27 @@ defmodule AgentOS.Vm do
 
   def exec_start(_server, _cmd, _opts),
     do: {:error, "exec_start expects a binary command and keyword options"}
+
+  @doc "Start a direct argv exec job. Poll it with `exec_poll/2`; cancel it with `exec_cancel/2`."
+  @spec run_start(server(), String.t(), [String.t()], keyword()) ::
+          {:ok, integer()} | {:error, Nif.reason()}
+  def run_start(server, program, args, opts \\ [])
+
+  def run_start(server, program, args, opts)
+      when is_binary(program) and is_list(args) and is_list(opts) do
+    if Enum.all?(args, &is_binary/1) do
+      GenServer.call(
+        server,
+        {:run_start, program, args, exec_opts(opts)},
+        timeout(opts)
+      )
+    else
+      {:error, "run_start expects every argument to be a binary"}
+    end
+  end
+
+  def run_start(_server, _program, _args, _opts),
+    do: {:error, "run_start expects a program, argv list, and keyword options"}
 
   @doc "Poll a structured exec job; `{:ok, nil}` means still running."
   @spec exec_poll(server(), integer(), keyword()) ::
@@ -182,8 +238,9 @@ defmodule AgentOS.Vm do
 
   def send_input(_server, _bytes), do: {:error, "send_input expects binary bytes"}
 
-  @doc "Drive `n` bounded ticks (default 1): `:running`, `:exited`, or `{:error, reason}`."
-  @spec tick(server(), pos_integer()) :: :running | :exited | {:error, Nif.reason()}
+  @doc "Drive `n` bounded ticks (default 1): `:runnable`, `:waiting`, `:exited`, or an error."
+  @spec tick(server(), pos_integer()) ::
+          :runnable | :waiting | :exited | {:error, Nif.reason()}
   def tick(server, n \\ 1)
 
   def tick(server, n) when n > 0, do: GenServer.call(server, {:tick, n})
@@ -554,8 +611,25 @@ defmodule AgentOS.Vm do
     {:reply, reply, touch(state)}
   end
 
+  def handle_call({:run, program, args, max_ticks, exec_opts}, _from, state) do
+    reply =
+      case Nif.run(state.nif, program, args, max_ticks, exec_opts) do
+        {:ok, {exit_code, stdout, stderr}} ->
+          {:ok, exec_result(exit_code, stdout, stderr)}
+
+        {:error, _reason} = err ->
+          err
+      end
+
+    {:reply, reply, touch(state)}
+  end
+
   def handle_call({:exec_start, cmd, exec_opts}, _from, state) do
     {:reply, Nif.exec_start(state.nif, cmd, exec_opts), touch(state)}
+  end
+
+  def handle_call({:run_start, program, args, exec_opts}, _from, state) do
+    {:reply, Nif.run_start(state.nif, program, args, exec_opts), touch(state)}
   end
 
   def handle_call({:exec_poll, job}, _from, state) do
@@ -758,21 +832,57 @@ defmodule AgentOS.Vm do
     {:reply, Nif.relay_ws_close(state.nif, handle), touch(state)}
   end
 
-  # Tick up to `n` times, stopping early if the kernel exits or errors.
-  defp tick_n(_nif, 0), do: :running
-
+  # Tick exactly `n` times, returning the final work state and stopping early
+  # only if the kernel exits or errors.
   defp tick_n(nif, n) do
     case Nif.tick(nif) do
-      {:ok, true} -> tick_n(nif, n - 1)
-      {:ok, false} -> :exited
+      {:ok, state} when state in [:runnable, :waiting] and n > 1 -> tick_n(nif, n - 1)
+      {:ok, state} when state in [:runnable, :waiting, :exited] -> state
       {:error, _reason} = err -> err
     end
   end
 
+  defp exec_request_interleaved(server, start, label, opts, on_yield) do
+    max_ticks = Keyword.get(opts, :max_ticks, @default_max_ticks)
+    call_timeout = timeout(opts)
+
+    cond do
+      not is_integer(max_ticks) or max_ticks < 0 ->
+        {:error, "max_ticks must be a non-negative integer"}
+
+      call_timeout != :infinity and (not is_integer(call_timeout) or call_timeout <= 0) ->
+        {:error, "timeout must be a positive integer or :infinity"}
+
+      true ->
+        deadline =
+          if call_timeout == :infinity,
+            do: :infinity,
+            else: System.monotonic_time(:millisecond) + call_timeout
+
+        with {:ok, job} <- start.() do
+          drive_exec(server, job, label, max_ticks, deadline, on_yield)
+        end
+    end
+  end
+
   defp drive_exec(server, job, cmd, remaining, deadline, on_yield) do
+    drive_exec(server, job, cmd, remaining, deadline, on_yield, false)
+  end
+
+  defp drive_exec(server, job, cmd, remaining, deadline, on_yield, pace_before_tick) do
     with :ok <- on_yield.() do
       case exec_poll(server, job) do
-        {:ok, nil} -> drive_running_exec(server, job, cmd, remaining, deadline, on_yield)
+        {:ok, nil} ->
+          drive_running_exec(
+            server,
+            job,
+            cmd,
+            remaining,
+            deadline,
+            on_yield,
+            pace_before_tick
+          )
+
         done -> done
       end
     else
@@ -781,17 +891,29 @@ defmodule AgentOS.Vm do
     end
   end
 
-  defp drive_running_exec(server, job, cmd, 0, _deadline, _on_yield),
+  defp drive_running_exec(server, job, cmd, 0, _deadline, _on_yield, _pace_before_tick),
     do: cancel_exec(server, job, {:error, "exec '#{cmd}' exhausted its tick budget"})
 
-  defp drive_running_exec(server, job, cmd, remaining, deadline, on_yield) do
+  defp drive_running_exec(
+         server,
+         job,
+         cmd,
+         remaining,
+         deadline,
+         on_yield,
+         pace_before_tick
+       ) do
     if deadline_expired?(deadline) do
       cancel_exec(server, job, {:error, "exec '#{cmd}' timed out"})
     else
+      if pace_before_tick, do: Process.sleep(1)
+
       case tick(server) do
-        :running ->
-          Process.sleep(1)
-          drive_exec(server, job, cmd, remaining - 1, deadline, on_yield)
+        :runnable ->
+          drive_exec(server, job, cmd, remaining - 1, deadline, on_yield, false)
+
+        :waiting ->
+          drive_exec(server, job, cmd, remaining - 1, deadline, on_yield, true)
 
         :exited ->
           case exec_poll(server, job) do

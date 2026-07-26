@@ -89,9 +89,37 @@ pub const CopyPath = struct {
     }
 };
 
+// One literal argument in a direct LLB run operation. Empty values are significant.
+pub const BUILD_ARG_MSG_ID: u16 = 8;
+pub const BUILD_ARG_VERSION: u8 = 1;
+pub const BuildArg = struct {
+    value: []const u8,
+
+    pub fn encode(self: @This(), allocator: std.mem.Allocator) ![]u8 {
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(allocator);
+        try ctlPutU16(&out, allocator, BUILD_ARG_MSG_ID);
+        try ctlPutU8(&out, allocator, BUILD_ARG_VERSION);
+        try ctlPutBytes(&out, allocator, self.value);
+        return out.toOwnedSlice(allocator);
+    }
+
+    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+        _ = allocator;
+        var off: usize = 0;
+        if ((try ctlReadU16(bytes, &off)) != BUILD_ARG_MSG_ID) return WireError.WrongMessage;
+        if ((try ctlReadU8(bytes, &off)) != BUILD_ARG_VERSION) return WireError.UnsupportedVersion;
+        const value = try ctlReadStr(bytes, &off);
+        if (off != bytes.len) return WireError.TrailingBytes;
+        return .{
+            .value = value,
+        };
+    }
+};
+
 // One portable LLB op. `kind` is the SDK's closed op enum; unused fields must be absent or empty.
 pub const BUILD_OP_MSG_ID: u16 = 2;
-pub const BUILD_OP_VERSION: u8 = 1;
+pub const BUILD_OP_VERSION: u8 = 2;
 pub const BuildOp = struct {
     kind: u32,
     source_ref: ?[]const u8 = null,
@@ -116,6 +144,8 @@ pub const BuildOp = struct {
     link: ?[]const u8 = null,
     mode: ?u32 = null,
     cmd: ?[]const u8 = null,
+    form: ?[]const u8 = null,
+    argv: []const BuildArg,
     cwd: ?[]const u8 = null,
     env: []const StringPair,
     stdin: ?[]const u8 = null,
@@ -257,6 +287,13 @@ pub const BuildOp = struct {
         } else {
             try ctlPutU8(&out, allocator, 0);
         }
+        if (self.form) |v| {
+            try ctlPutU8(&out, allocator, 1);
+        try ctlPutBytes(&out, allocator, v);
+        } else {
+            try ctlPutU8(&out, allocator, 0);
+        }
+        try ctlPutMessageList(BuildArg, &out, allocator, self.argv);
         if (self.cwd) |v| {
             try ctlPutU8(&out, allocator, 1);
         try ctlPutBytes(&out, allocator, v);
@@ -429,6 +466,12 @@ pub const BuildOp = struct {
             1 => try ctlReadStr(bytes, &off),
             else => return WireError.InvalidPresence,
         };
+        const form = switch (try ctlReadU8(bytes, &off)) {
+            0 => null,
+            1 => try ctlReadStr(bytes, &off),
+            else => return WireError.InvalidPresence,
+        };
+        const argv = try ctlReadMessageList(BuildArg, allocator, bytes, &off);
         const cwd = switch (try ctlReadU8(bytes, &off)) {
             0 => null,
             1 => try ctlReadStr(bytes, &off),
@@ -506,6 +549,8 @@ pub const BuildOp = struct {
             .link = link,
             .mode = mode,
             .cmd = cmd,
+            .form = form,
+            .argv = argv,
             .cwd = cwd,
             .env = env,
             .stdin = stdin,
@@ -592,7 +637,7 @@ pub const LayerRef = struct {
 
 // Canonical cache-key input for one solved LLB vertex: op args, child digests, resolved mutable-source facts, source layers, and kernel identity when a VM is booted.
 pub const NODE_DIGEST_MSG_ID: u16 = 7;
-pub const NODE_DIGEST_VERSION: u8 = 1;
+pub const NODE_DIGEST_VERSION: u8 = 2;
 pub const NodeDigest = struct {
     op: BuildOp,
     edges: []const DigestEdge,
@@ -648,7 +693,7 @@ pub const NodeDigest = struct {
 
 // A portable LLB build graph. `root` indexes into `ops`; edges only point at earlier ops.
 pub const DEFINITION_MSG_ID: u16 = 3;
-pub const DEFINITION_VERSION: u8 = 1;
+pub const DEFINITION_VERSION: u8 = 2;
 pub const Definition = struct {
     version: u32,
     ops: []const BuildOp,

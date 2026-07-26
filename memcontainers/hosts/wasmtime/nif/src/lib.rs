@@ -37,17 +37,18 @@ use constants_rust::{
 };
 use ctl_rust::RelayEvent as WireRelayEvent;
 use host::{
-    derive_connection_origins, AutocompleteOptions, CatalogConnection, CatalogInjectOptions,
-    CatalogSpecSource, ConnectionCredential, ConnectionError, ConnectionPolicyAction,
-    ConnectionPolicyOwner, ConnectionPolicyRule, ConnectionRegistry, ExecOptions, ExecResult,
-    HostCallCapability, HostToolDef, KernelHost, KernelHostBuilder, NetCapability,
-    PersistCapability, RealNet, StreamSink, ToolApprovalDecision, ToolApprovalFacts, ToolApprover,
+    AutocompleteOptions, CatalogConnection, CatalogInjectOptions, CatalogSpecSource,
+    ConnectionCredential, ConnectionError, ConnectionPolicyAction, ConnectionPolicyOwner,
+    ConnectionPolicyRule, ConnectionRegistry, ExecOptions, ExecResult, HostCallCapability,
+    HostToolDef, KernelHost, KernelHostBuilder, NetCapability, PersistCapability, RealNet,
+    StreamSink, TickState, ToolApprovalDecision, ToolApprovalFacts, ToolApprover,
+    derive_connection_origins,
 };
 use rustler::{Atom, Binary, Env, Error, NifResult, OwnedBinary, ResourceArc};
 use sidecar_rust::SIDECAR_HOST_BINDING;
 
 mod atoms {
-    rustler::atoms! { ok }
+    rustler::atoms! { ok, runnable, waiting, exited }
 }
 
 const WS_SEND_MARK: usize = 1024 * 1024;
@@ -697,7 +698,7 @@ fn build_connection_policies(defs: Vec<NifPolicyRule>) -> NifResult<Vec<Connecti
                 _ => {
                     return Err(nif_err(format!(
                         "unknown connection policy owner {owner:?}"
-                    )))
+                    )));
                 }
             };
             let action = match action.as_str() {
@@ -707,7 +708,7 @@ fn build_connection_policies(defs: Vec<NifPolicyRule>) -> NifResult<Vec<Connecti
                 _ => {
                     return Err(nif_err(format!(
                         "unknown connection policy action {action:?}"
-                    )))
+                    )));
                 }
             };
             Ok(ConnectionPolicyRule {
@@ -801,11 +802,7 @@ fn build_host_tools(defs: Vec<NifHostTool>) -> Vec<HostToolDef> {
 }
 
 fn opt_string(value: String) -> Option<String> {
-    if value.is_empty() {
-        None
-    } else {
-        Some(value)
-    }
+    if value.is_empty() { None } else { Some(value) }
 }
 
 fn payload_string(label: &str, payload: Vec<u8>) -> NifResult<String> {
@@ -1047,11 +1044,15 @@ fn restore(
     ))
 }
 
-/// Drive one bounded `mc_tick`. `{:ok, true}` while running, `{:ok, false}` once exited.
+/// Drive one bounded `mc_tick`, preserving whether immediate work remains.
 #[rustler::nif(name = "tick_nif", schedule = "DirtyCpu")]
-fn tick(vm: ResourceArc<Vm>) -> NifResult<(Atom, bool)> {
-    let alive = vm_lock(&vm)?.tick().map_err(nif_err)?;
-    Ok((atoms::ok(), alive))
+fn tick(vm: ResourceArc<Vm>) -> NifResult<(Atom, Atom)> {
+    let state = match vm_lock(&vm)?.tick().map_err(nif_err)? {
+        TickState::Runnable => atoms::runnable(),
+        TickState::Waiting => atoms::waiting(),
+        TickState::Exited => atoms::exited(),
+    };
+    Ok((atoms::ok(), state))
 }
 
 /// Feed bytes to the kernel as terminal input.
@@ -1112,6 +1113,37 @@ fn exec<'a>(
     ))
 }
 
+/// Execute one program with literal argv values, without invoking a shell.
+#[rustler::nif(name = "run_nif", schedule = "DirtyCpu")]
+fn run<'a>(
+    env: Env<'a>,
+    vm: ResourceArc<Vm>,
+    program: String,
+    argv: Vec<String>,
+    max_ticks: u64,
+    cwd: String,
+    exec_env: NifExecEnv,
+    stdin_present: bool,
+    stdin: Binary<'a>,
+) -> NifResult<(Atom, (i32, Binary<'a>, Binary<'a>))> {
+    let result: ExecResult = vm_lock(&vm)?
+        .run(
+            &program,
+            &argv,
+            ticks_to_usize(max_ticks)?,
+            exec_options(cwd, exec_env, stdin_present, stdin),
+        )
+        .map_err(nif_err)?;
+    Ok((
+        atoms::ok(),
+        (
+            result.exit_code,
+            to_binary(env, &result.stdout)?,
+            to_binary(env, &result.stderr)?,
+        ),
+    ))
+}
+
 #[rustler::nif(name = "exec_start_nif", schedule = "DirtyCpu")]
 fn exec_start<'a>(
     vm: ResourceArc<Vm>,
@@ -1123,6 +1155,26 @@ fn exec_start<'a>(
 ) -> NifResult<(Atom, i32)> {
     let job = vm_lock(&vm)?
         .exec_start(&cmd, exec_options(cwd, exec_env, stdin_present, stdin))
+        .map_err(nif_err)?;
+    Ok((atoms::ok(), job))
+}
+
+#[rustler::nif(name = "run_start_nif", schedule = "DirtyCpu")]
+fn run_start<'a>(
+    vm: ResourceArc<Vm>,
+    program: String,
+    argv: Vec<String>,
+    cwd: String,
+    exec_env: NifExecEnv,
+    stdin_present: bool,
+    stdin: Binary<'a>,
+) -> NifResult<(Atom, i32)> {
+    let job = vm_lock(&vm)?
+        .run_start(
+            &program,
+            &argv,
+            exec_options(cwd, exec_env, stdin_present, stdin),
+        )
         .map_err(nif_err)?;
     Ok((atoms::ok(), job))
 }

@@ -140,6 +140,10 @@ try {
   if (result.exitCode !== 0) throw new Error(result.stderr);
   process.stdout.write(result.stdout);
 
+  // Exact argv, with no shell parsing or quoting.
+  const exact = await vm.run("printf", ["<%s>\\n", "two words"]);
+  if (exact.exitCode !== 0) throw new Error(exact.stderr);
+
   const branch = await vm.fork();
   try {
     await branch.fs.write("/workspace/next-step.txt", "continue independently\n");
@@ -159,8 +163,8 @@ node example.mjs
 bun example.mjs
 ```
 
-An exit code describes the guest command; `vm.close()` releases the host-side VM and its registered
-capabilities.
+Use `vm.exec()` for shell syntax and `vm.run()` for an executable plus literal arguments. An exit code
+describes the guest process; `vm.close()` releases the host-side VM and its registered capabilities.
 
 ## Capabilities Without Ambient Authority
 

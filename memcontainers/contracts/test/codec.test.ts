@@ -83,8 +83,11 @@ function str(out: number[], value: string): void {
 function nonCanonicalExecRequestFrame(): Uint8Array {
   const out: number[] = [];
   u16(out, 1);
+  u8(out, 2);
+  u32(out, 1);
   u8(out, 1);
   str(out, "env");
+  u32(out, 0);
   u8(out, 0);
   u32(out, 2);
   str(out, "z");
@@ -96,18 +99,22 @@ function nonCanonicalExecRequestFrame(): Uint8Array {
 }
 
 function emptyBuildOp(kind: number): BuildOp {
-  return { kind, parts: [], copy_paths: [], env: {}, mounts: [] };
+  return { kind, parts: [], copy_paths: [], argv: [], env: {}, mounts: [] };
 }
 
 function controlCodecs(): void {
   const unsorted = encodeExecRequest({
-    cmd: "cat",
+    mode: 1,
+    command: "cat",
+    argv: [],
     cwd: "/tmp",
     env: { ZED: "z", ALPHA: "a" },
     stdin: new Uint8Array(),
   });
   const sorted = encodeExecRequest({
-    cmd: "cat",
+    mode: 1,
+    command: "cat",
+    argv: [],
     cwd: "/tmp",
     env: { ALPHA: "a", ZED: "z" },
     stdin: new Uint8Array(),
@@ -115,10 +122,22 @@ function controlCodecs(): void {
   assertEqualBytes(unsorted, sorted, "ExecRequest env map must encode canonically");
 
   const exec = decodeExecRequest(unsorted);
-  assert(exec.cmd === "cat", "ExecRequest cmd changed");
+  assert(exec.mode === 1, "ExecRequest mode changed");
+  assert(exec.command === "cat", "ExecRequest command changed");
+  assert(exec.argv.length === 0, "shell ExecRequest gained argv");
   assert(exec.cwd === "/tmp", "ExecRequest cwd changed");
   assert(exec.env.ALPHA === "a" && exec.env.ZED === "z", "ExecRequest env changed");
   assertBytes(exec.stdin, new Uint8Array(), "ExecRequest empty stdin must stay present");
+
+  const direct = decodeExecRequest(
+    encodeExecRequest({
+      mode: 2,
+      argv: [{ value: "printf" }, { value: "" }],
+      env: {},
+    }),
+  );
+  assert(direct.argv[0]?.value === "printf", "direct program changed");
+  assert(direct.argv[1]?.value === "", "empty direct argument changed");
 
   assertThrowsWire(
     () => decodeExecRequest(Uint8Array.from([2, 0, 1])),
@@ -126,7 +145,7 @@ function controlCodecs(): void {
     "wrong control message id",
   );
   assertThrowsWire(
-    () => decodeExecRequest(Uint8Array.from([1, 0, 2])),
+    () => decodeExecRequest(Uint8Array.from([1, 0, 1])),
     ControlWireError,
     "wrong control version",
   );
@@ -146,7 +165,10 @@ function controlCodecs(): void {
     "non-canonical control strmap",
   );
   assertThrowsWire(
-    () => decodeExecRequest(Uint8Array.from([1, 0, 1, 0, 0, 0, 0, 0, 255, 255, 255, 255])),
+    () =>
+      decodeExecRequest(
+        Uint8Array.from([1, 0, 2, 1, 0, 0, 0, 0, 255, 255, 255, 255]),
+      ),
     ControlWireError,
     "impossible control strmap count",
   );
@@ -182,6 +204,7 @@ function llbCodecs(): void {
   const exec = {
     ...emptyBuildOp(7),
     input: 0,
+    form: "shell",
     cmd: "printf $VALUE",
     cwd: "/work",
     env: { ZED: "z", ALPHA: "a" },
@@ -189,12 +212,22 @@ function llbCodecs(): void {
     deterministic: true,
     tier: "read-write",
   };
-  const definition: Definition = { version: 1, ops: [source, exec], root: 1 };
+  const direct = {
+    ...emptyBuildOp(7),
+    input: 1,
+    form: "direct",
+    argv: ["printf", "%s", "literal value", ""].map((value) => ({ value })),
+  };
+  const definition: Definition = { version: 2, ops: [source, exec, direct], root: 2 };
   const encoded = encodeDefinition(definition);
   const decoded = decodeDefinition(encoded);
   const reencoded = encodeDefinition(decoded);
   assertEqualBytes(reencoded, encoded, "Definition encode/decode must be canonical");
   assert(decoded.ops[1]?.cmd === "printf $VALUE", "Definition nested BuildOp changed");
+  assert(
+    decoded.ops[2]?.argv.map(({ value }) => value).join("\0") === "printf\0%s\0literal value\0",
+    "Definition direct argv changed",
+  );
   assertBytes(decoded.ops[1]?.stdin, new Uint8Array(), "Definition empty stdin must stay present");
 
   const unsortedDigest: NodeDigest = {
@@ -227,7 +260,7 @@ function llbCodecs(): void {
     "wrong LLB message id",
   );
   assertThrowsWire(
-    () => decodeDefinition(Uint8Array.from([3, 0, 2])),
+    () => decodeDefinition(Uint8Array.from([3, 0, 3])),
     LlbWireError,
     "wrong LLB version",
   );

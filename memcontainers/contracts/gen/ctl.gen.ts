@@ -28,20 +28,53 @@ function ctlReadStrMap(cursor: CtlCursor): Record<string, string> { const n = ct
 
 function ctlReadMessageList<T>(cursor: CtlCursor, decode: (bytes: Uint8Array) => T): T[] { const n = ctlReadU32(cursor); if (n > Math.floor((cursor.bytes.length - cursor.off) / 4)) throw new WireError("truncated frame"); const out: T[] = []; for (let i = 0; i < n; i++) out.push(decode(ctlReadBytes(cursor))); return out; }
 
-// Structured host-control exec request. `cmd` still runs under /bin/sh -c; cwd/env/stdin are applied by the kernel at spawn.
+// One direct-execution argv value. Empty values are significant and preserved.
+export interface ExecArg {
+  value: string;
+}
+export const EXEC_ARG_MSG_ID = 12;
+export const EXEC_ARG_VERSION = 1;
+export function encodeExecArg(msg: ExecArg): Uint8Array {
+  const out: number[] = [];
+  ctlPutU16(out, EXEC_ARG_MSG_ID);
+  ctlPutU8(out, EXEC_ARG_VERSION);
+  ctlPutStr(out, msg.value);
+  return Uint8Array.from(out);
+}
+export function decodeExecArg(bytes: Uint8Array): ExecArg {
+  const wire: CtlCursor = { bytes, off: 0 };
+  if (ctlReadU16(wire) !== EXEC_ARG_MSG_ID) throw new WireError("wrong message id");
+  if (ctlReadU8(wire) !== EXEC_ARG_VERSION) throw new WireError("unsupported message version");
+  const value = ctlReadStr(wire);
+  if (wire.off !== bytes.length) throw new WireError("trailing bytes");
+  return {
+    value,
+  };
+}
+
+// Explicit host-control execution request. EXEC_MODE_SHELL requires command and empty argv; EXEC_MODE_DIRECT requires non-empty argv and no command. cwd/env/stdin share one kernel process path.
 export interface ExecRequest {
-  cmd: string;
+  mode: number;
+  command?: string | null;
+  argv: ExecArg[];
   cwd?: string | null;
   env: Record<string, string>;
   stdin?: Uint8Array | null;
 }
 export const EXEC_REQUEST_MSG_ID = 1;
-export const EXEC_REQUEST_VERSION = 1;
+export const EXEC_REQUEST_VERSION = 2;
 export function encodeExecRequest(msg: ExecRequest): Uint8Array {
   const out: number[] = [];
   ctlPutU16(out, EXEC_REQUEST_MSG_ID);
   ctlPutU8(out, EXEC_REQUEST_VERSION);
-  ctlPutStr(out, msg.cmd);
+  ctlPutI32(out, msg.mode);
+  if (msg.command === undefined || msg.command === null) {
+    ctlPutU8(out, 0);
+  } else {
+    ctlPutU8(out, 1);
+  ctlPutStr(out, msg.command);
+  }
+  ctlPutMessageList(out, msg.argv, encodeExecArg);
   if (msg.cwd === undefined || msg.cwd === null) {
     ctlPutU8(out, 0);
   } else {
@@ -61,7 +94,14 @@ export function decodeExecRequest(bytes: Uint8Array): ExecRequest {
   const wire: CtlCursor = { bytes, off: 0 };
   if (ctlReadU16(wire) !== EXEC_REQUEST_MSG_ID) throw new WireError("wrong message id");
   if (ctlReadU8(wire) !== EXEC_REQUEST_VERSION) throw new WireError("unsupported message version");
-  const cmd = ctlReadStr(wire);
+  const mode = ctlReadI32(wire);
+  let command: string | undefined;
+  switch (ctlReadU8(wire)) {
+    case 0: command = undefined; break;
+    case 1: command = ctlReadStr(wire); break;
+    default: throw new WireError("invalid optional presence");
+  }
+  const argv = ctlReadMessageList(wire, decodeExecArg);
   let cwd: string | undefined;
   switch (ctlReadU8(wire)) {
     case 0: cwd = undefined; break;
@@ -77,7 +117,9 @@ export function decodeExecRequest(bytes: Uint8Array): ExecRequest {
   }
   if (wire.off !== bytes.length) throw new WireError("trailing bytes");
   return {
-    cmd,
+    mode,
+    command,
+    argv,
     cwd,
     env,
     stdin,

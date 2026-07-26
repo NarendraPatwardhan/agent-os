@@ -74,6 +74,7 @@ mix_library(
     ],
     tags = ["manual"],
     target_compatible_with = ELIXIR_ONLY,
+    visibility = ["//benchmarks:__pkg__"],
 )
 
 # `mix test` against the pre-compiled MIX_ENV=test lib (the NIF smoke test + the OTP layer test).

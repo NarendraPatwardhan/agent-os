@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   decodeDirEntries,
+  decodeExecArg,
   decodeExecOutcome,
   decodeExecRequest,
   decodeFileStat,
@@ -9,6 +10,7 @@ import {
   decodeSvcRequest,
   decodeSvcResponse,
   encodeDirEntries,
+  encodeExecArg,
   encodeExecOutcome,
   encodeExecRequest,
   encodeFileStat,
@@ -84,8 +86,14 @@ function assertOptionalBytes(
 }
 
 function positiveVectors(): void {
+  const emptyArg = { value: "" };
+  assert(hex(encodeExecArg(emptyArg)) === hex(positive("ExecArg")), "ExecArg fixture drifted");
+  assert(decodeExecArg(positive("ExecArg")).value === "", "ExecArg empty value changed");
+
   const exec = {
-    cmd: "printf $ALPHA && cat",
+    mode: 2,
+    command: undefined,
+    argv: ["printf", "%s|%s", "a b", ""].map((value) => ({ value })),
     cwd: "/work",
     env: { ZED: "last", ALPHA: "first" },
     stdin: new Uint8Array([112, 97, 121, 108, 111, 97, 100, 10, 0]),
@@ -96,7 +104,10 @@ function positiveVectors(): void {
   );
   const decodedExec = decodeExecRequest(positive("ExecRequest"));
   assert(
-    decodedExec.cmd === exec.cmd && decodedExec.cwd === exec.cwd,
+    decodedExec.mode === exec.mode &&
+      decodedExec.command === undefined &&
+      decodedExec.argv.map(({ value }) => value).join("\0") === "printf\0%s|%s\0a b\0" &&
+      decodedExec.cwd === exec.cwd,
     "ExecRequest decoded scalar fields changed",
   );
   assert(

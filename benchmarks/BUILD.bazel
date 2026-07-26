@@ -1,0 +1,244 @@
+load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_test")
+load("@rules_elixir//:defs.bzl", "mix_test")
+load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("//bazel:elixir_transition.bzl", "ELIXIR_ONLY", "elixir_test")
+load("//bazel:ts.bzl", "mc_ts_project")
+load("//memcontainers/hosts/wasmtime:defs.bzl", "host_release_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "README.md",
+    "SPEC.md",
+    "schema/result.schema.json",
+])
+
+mc_ts_project(
+    name = "shared_result_lib",
+    srcs = ["shared/result.ts"],
+)
+
+mc_ts_project(
+    name = "shared_system_lib",
+    srcs = ["shared/system.ts"],
+    deps = ["//:node_modules/@types/bun"],
+)
+
+mc_ts_project(
+    name = "shared_core_lib",
+    srcs = ["shared/core.ts"],
+    deps = ["//memcontainers/sdk-js/core:lib"],
+)
+
+mc_ts_project(
+    name = "tools_lib",
+    srcs = [
+        "tools/aggregate.ts",
+        "tools/validate.ts",
+    ],
+    deps = [
+        ":shared_result_lib",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+js_binary(
+    name = "validate",
+    data = [":tools_lib"],
+    entry_point = "tools/validate.js",
+)
+
+js_binary(
+    name = "aggregate",
+    data = [":tools_lib"],
+    entry_point = "tools/aggregate.js",
+)
+
+mc_ts_project(
+    name = "test_lib",
+    srcs = [
+        "test/result.test.ts",
+        "test/validate.test.ts",
+    ],
+    deps = [
+        ":shared_result_lib",
+        ":tools_lib",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+js_test(
+    name = "stats_tests",
+    data = [":test_lib"],
+    entry_point = "test/result.test.js",
+)
+
+js_test(
+    name = "validate_tests",
+    data = [":test_lib"],
+    entry_point = "test/validate.test.js",
+)
+
+test_suite(
+    name = "tests",
+    tests = [
+        ":stats_tests",
+        ":validate_tests",
+    ],
+)
+
+mc_ts_project(
+    name = "js_runner_lib",
+    srcs = ["js/runner.ts"],
+    deps = [
+        ":shared_core_lib",
+        ":shared_result_lib",
+        ":shared_system_lib",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+js_binary(
+    name = "js",
+    data = [
+        ":js_runner_lib",
+        "//memcontainers/images:atlas",
+        "//memcontainers/images:loom",
+        "//memcontainers/images:minimal",
+        "//memcontainers/images:paper",
+        "//memcontainers/images:posix",
+        "//memcontainers/kernel/rust:kernel",
+    ],
+    entry_point = "js/runner.js",
+    env = {
+        "MC_ATLAS_IMAGE": "$(rlocationpath //memcontainers/images:atlas)",
+        "MC_KERNEL_WASM": "$(rlocationpath //memcontainers/kernel/rust:kernel)",
+        "MC_LOOM_IMAGE": "$(rlocationpath //memcontainers/images:loom)",
+        "MC_MINIMAL_IMAGE": "$(rlocationpath //memcontainers/images:minimal)",
+        "MC_PAPER_IMAGE": "$(rlocationpath //memcontainers/images:paper)",
+        "MC_POSIX_IMAGE": "$(rlocationpath //memcontainers/images:posix)",
+    },
+)
+
+mc_ts_project(
+    name = "browser_page_lib",
+    srcs = ["browser/page.ts"],
+    deps = [
+        ":shared_core_lib",
+        ":shared_result_lib",
+    ],
+)
+
+mc_ts_project(
+    name = "browser_runner_lib",
+    srcs = ["browser/runner.ts"],
+    deps = [
+        ":shared_result_lib",
+        ":tools_lib",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+js_binary(
+    name = "browser",
+    data = [
+        ":browser_page_lib",
+        ":browser_runner_lib",
+        "//memcontainers/images:atlas",
+        "//memcontainers/images:loom",
+        "//memcontainers/images:minimal",
+        "//memcontainers/images:paper",
+        "//memcontainers/images:posix",
+        "//memcontainers/kernel/rust:kernel",
+        "//memcontainers/sdk-js/core:lib",
+    ],
+    entry_point = "browser/runner.js",
+    env = {
+        "MC_ATLAS_IMAGE": "$(rlocationpath //memcontainers/images:atlas)",
+        "MC_KERNEL_WASM": "$(rlocationpath //memcontainers/kernel/rust:kernel)",
+        "MC_LOOM_IMAGE": "$(rlocationpath //memcontainers/images:loom)",
+        "MC_MINIMAL_IMAGE": "$(rlocationpath //memcontainers/images:minimal)",
+        "MC_PAPER_IMAGE": "$(rlocationpath //memcontainers/images:paper)",
+        "MC_POSIX_IMAGE": "$(rlocationpath //memcontainers/images:posix)",
+    },
+)
+
+mc_ts_project(
+    name = "remote_runner_lib",
+    srcs = ["remote/runner.ts"],
+    deps = [
+        ":shared_core_lib",
+        ":shared_result_lib",
+        ":shared_system_lib",
+        ":tools_lib",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+js_binary(
+    name = "remote",
+    data = [":remote_runner_lib"],
+    entry_point = "remote/runner.js",
+)
+
+rust_binary(
+    name = "wasmtime_bin",
+    srcs = ["wasmtime/main.rs"],
+    crate_root = "wasmtime/main.rs",
+    data = [
+        "//memcontainers/images:atlas",
+        "//memcontainers/images:loom",
+        "//memcontainers/images:minimal",
+        "//memcontainers/images:paper",
+        "//memcontainers/images:posix",
+        "//memcontainers/kernel/rust:kernel",
+    ],
+    edition = "2021",
+    tags = ["manual"],
+    deps = [
+        "//memcontainers/hosts/wasmtime:host",
+        "@host_crates//:anyhow",
+        "@host_crates//:serde",
+        "@host_crates//:serde_json",
+        "@host_crates//:sha2",
+    ],
+)
+
+host_release_binary(
+    name = "wasmtime",
+    bin = ":wasmtime_bin",
+)
+
+mix_test(
+    name = "beam_impl",
+    srcs = [
+        "test/benchmark_test.exs",
+        "test/test_helper.exs",
+    ],
+    data = [
+        ":mix.exs",
+        "//memcontainers/images:atlas",
+        "//memcontainers/images:posix",
+        "//memcontainers/kernel/rust:kernel",
+    ],
+    env = {
+        "ELIXIR_ERL_OPTIONS": "+fnu",
+        "ERL_COMPILER_OPTIONS": "deterministic",
+    },
+    lib = "//server:lib_test",
+    # rules_elixir's mix_test assumes its test and library share a Bazel package. Keep the
+    # benchmark sources here while making the server-owned compiled app visible at the basenames
+    # its generated runner expects.
+    setup = """
+ln -s "$(realpath ../server/lib_test_compile_ebin)" lib_test_compile_ebin
+ln -s "$(realpath ../server/priv)" priv
+""",
+    tags = ["manual"],
+    target_compatible_with = ELIXIR_ONLY,
+)
+
+elixir_test(
+    name = "beam",
+    actual = ":beam_impl",
+    tags = ["manual"],
+)

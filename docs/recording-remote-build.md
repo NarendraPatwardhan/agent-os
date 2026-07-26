@@ -24,7 +24,7 @@ const recorder = await mc.record({
 try {
   await recorder.vm.fs.mkdir("/opt/app");
   await recorder.vm.fs.write("/opt/app/config.json", JSON.stringify(config));
-  await recorder.vm.exec("chmod 600 /opt/app/config.json");
+  await recorder.vm.run("chmod", ["600", "/opt/app/config.json"]);
 
   const definition = await recorder.build();
 } finally {
@@ -42,6 +42,7 @@ try {
 | `vm.fs.chmod`                      | yes                                     |
 | `vm.fs.symlink`                    | yes                                     |
 | `vm.exec`                          | yes                                     |
+| `vm.run`                           | yes                                     |
 | filesystem reads/stat/list         | no; they do not mutate the build result |
 | snapshots, tools, mounts, sessions | no                                      |
 

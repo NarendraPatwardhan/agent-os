@@ -145,9 +145,6 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** POSIX single-quote an argv element so it survives the shell `vm.exec` runs. */
-const shQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
-
 export type { VmFs } from "./types.js";
 
 /** The live tool-catalog state a backend hands to its {@link Vm}: the committed index digest (the CAS base
@@ -235,6 +232,22 @@ export class Vm {
     };
   }
 
+  /** Execute one program with literal argv values, without invoking a shell. */
+  async run(
+    program: string,
+    args: readonly string[] = [],
+    opts: ExecOptions = {},
+  ): Promise<ExecResult> {
+    const r = await this.backend.run(program, args, opts);
+    return {
+      stdout: dec(r.stdout),
+      stderr: dec(r.stderr),
+      stdoutBytes: r.stdout,
+      stderrBytes: r.stderr,
+      exitCode: r.exitCode,
+    };
+  }
+
   /** Inspect shell input without executing it. Candidates include the resident
    * shell's builtins/functions/variables plus namespace-aware PATH and file
    * entries. Returned ranges use ordinary JavaScript string indices. */
@@ -293,15 +306,7 @@ export class Vm {
   async luau(src: string, args: string[] = []): Promise<ExecResult> {
     const path = `/tmp/.mc-luau-${++this.luauSeq}.luau`;
     await this.backend.write(path, enc(src));
-    const cmd = ["luau", path, ...args].map(shQuote).join(" ");
-    return this.exec(cmd);
-  }
-
-  /** Open a live Luau session: a thin alias for `session("luau")`. Each
-   *  `prompt(src)` runs `src` as a Luau script and streams the framed JSON events
-   *  it emits via the `log` battery (`log.event{…}` / `log.info(…)`). */
-  luauSession(): SessionHandle {
-    return this.session("luau");
+    return this.run("luau", [path, ...args]);
   }
 
   /** Capture the whole VM as a portable blob (A8). */

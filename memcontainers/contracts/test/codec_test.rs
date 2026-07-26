@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
 
-use ctl_rust::{DirEntries, ExecRequest, RelayEvent, WireError as ControlWireError};
-use llb_rust::{BuildOp, Definition, DigestEdge, LayerRef, NodeDigest, WireError as LlbWireError};
+use ctl_rust::{DirEntries, ExecArg, ExecRequest, RelayEvent, WireError as ControlWireError};
+use llb_rust::{
+    BuildArg, BuildOp, Definition, DigestEdge, LayerRef, NodeDigest, WireError as LlbWireError,
+};
 
 fn map(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
     pairs
@@ -34,8 +36,11 @@ fn str_bytes(out: &mut Vec<u8>, value: &str) {
 fn non_canonical_exec_request_frame() -> Vec<u8> {
     let mut out = Vec::new();
     u16(&mut out, 1);
+    u8(&mut out, 2);
+    u32(&mut out, 1);
     u8(&mut out, 1);
     str_bytes(&mut out, "env");
+    u32(&mut out, 0);
     u8(&mut out, 0);
     u32(&mut out, 2);
     str_bytes(&mut out, "z");
@@ -49,14 +54,18 @@ fn non_canonical_exec_request_frame() -> Vec<u8> {
 #[test]
 fn control_codecs_are_canonical_and_fail_closed() {
     let unsorted = ExecRequest {
-        cmd: "cat".to_string(),
+        mode: 1,
+        command: Some("cat".to_string()),
+        argv: Vec::new(),
         cwd: Some("/tmp".to_string()),
         env: map(&[("ZED", "z"), ("ALPHA", "a")]),
         stdin: Some(Vec::new()),
     }
     .encode();
     let sorted = ExecRequest {
-        cmd: "cat".to_string(),
+        mode: 1,
+        command: Some("cat".to_string()),
+        argv: Vec::new(),
         cwd: Some("/tmp".to_string()),
         env: map(&[("ALPHA", "a"), ("ZED", "z")]),
         stdin: Some(Vec::new()),
@@ -65,18 +74,42 @@ fn control_codecs_are_canonical_and_fail_closed() {
     assert_eq!(unsorted, sorted);
 
     let exec = ExecRequest::decode(&unsorted).unwrap();
-    assert_eq!(exec.cmd, "cat");
+    assert_eq!(exec.mode, 1);
+    assert_eq!(exec.command.as_deref(), Some("cat"));
+    assert!(exec.argv.is_empty());
     assert_eq!(exec.cwd.as_deref(), Some("/tmp"));
     assert_eq!(exec.env.get("ALPHA").map(String::as_str), Some("a"));
     assert_eq!(exec.env.get("ZED").map(String::as_str), Some("z"));
     assert_eq!(exec.stdin.as_deref(), Some(&[][..]));
+
+    let direct = ExecRequest::decode(
+        &ExecRequest {
+            mode: 2,
+            command: None,
+            argv: vec![
+                ExecArg {
+                    value: "printf".to_string(),
+                },
+                ExecArg {
+                    value: String::new(),
+                },
+            ],
+            cwd: None,
+            env: BTreeMap::new(),
+            stdin: None,
+        }
+        .encode(),
+    )
+    .unwrap();
+    assert_eq!(direct.argv[0].value, "printf");
+    assert_eq!(direct.argv[1].value, "");
 
     assert_eq!(
         ExecRequest::decode(&[2, 0, 1]),
         Err(ControlWireError::WrongMessage)
     );
     assert_eq!(
-        ExecRequest::decode(&[1, 0, 2]),
+        ExecRequest::decode(&[1, 0, 1]),
         Err(ControlWireError::UnsupportedVersion)
     );
     assert_eq!(
@@ -94,7 +127,7 @@ fn control_codecs_are_canonical_and_fail_closed() {
         Err(ControlWireError::NonCanonicalMap)
     );
     assert_eq!(
-        ExecRequest::decode(&[1, 0, 1, 0, 0, 0, 0, 0, 255, 255, 255, 255]),
+        ExecRequest::decode(&[1, 0, 2, 1, 0, 0, 0, 0, 255, 255, 255, 255]),
         Err(ControlWireError::Truncated)
     );
     assert_eq!(
@@ -144,6 +177,7 @@ fn llb_codecs_are_canonical_and_fail_closed() {
     let exec = BuildOp {
         kind: 7,
         input: Some(0),
+        form: Some("shell".to_string()),
         cmd: Some("printf $VALUE".to_string()),
         cwd: Some("/work".to_string()),
         env: map(&[("ZED", "z"), ("ALPHA", "a")]),
@@ -153,14 +187,37 @@ fn llb_codecs_are_canonical_and_fail_closed() {
         ..Default::default()
     };
     let definition = Definition {
-        version: 1,
-        ops: vec![source, exec.clone()],
-        root: 1,
+        version: 2,
+        ops: vec![
+            source,
+            exec.clone(),
+            BuildOp {
+                kind: 7,
+                input: Some(1),
+                form: Some("direct".to_string()),
+                argv: ["printf", "%s", "literal value", ""]
+                    .into_iter()
+                    .map(|value| BuildArg {
+                        value: value.to_string(),
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+        ],
+        root: 2,
     };
     let encoded = definition.encode();
     let decoded = Definition::decode(&encoded).unwrap();
     assert_eq!(decoded.encode(), encoded);
     assert_eq!(decoded.ops[1].cmd.as_deref(), Some("printf $VALUE"));
+    assert_eq!(
+        decoded.ops[2]
+            .argv
+            .iter()
+            .map(|arg| arg.value.as_str())
+            .collect::<Vec<_>>(),
+        vec!["printf", "%s", "literal value", ""]
+    );
     assert_eq!(decoded.ops[1].stdin.as_deref(), Some(&[][..]));
 
     let unsorted_digest = NodeDigest {
@@ -200,7 +257,7 @@ fn llb_codecs_are_canonical_and_fail_closed() {
         Err(LlbWireError::WrongMessage)
     );
     assert_eq!(
-        Definition::decode(&[3, 0, 2]),
+        Definition::decode(&[3, 0, 3]),
         Err(LlbWireError::UnsupportedVersion)
     );
     assert_eq!(

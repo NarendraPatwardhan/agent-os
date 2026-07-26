@@ -1,6 +1,6 @@
 ---
 name: memcontainer-luau
-description: 'Write, run, debug, and validate Luau scripts and libraries inside memcontainers or from a host agent using a memcontainer VM. Use this skill whenever the task involves `/bin/luau`, `vm.luau`, `vm.luauSession`, `vm.shell({ language: "luau" })`, memcontainer syscalls, `sys.fs`, `sys.proc`, `sys.net`, `sys.host.call`, embedded Luau batteries, agent scripts, JSON tool calls, structured logs, or using Luau to manipulate files such as docx/xlsx/pptx inside the sandbox.'
+description: 'Write, run, debug, and validate Luau scripts and libraries inside memcontainers or from a host agent using a memcontainer VM. Use this skill whenever the task involves `/bin/luau`, `vm.luau`, `vm.session("luau")`, `vm.shell({ language: "luau" })`, memcontainer syscalls, `sys.fs`, `sys.proc`, `sys.net`, `sys.host.call`, embedded Luau batteries, agent scripts, JSON tool calls, structured logs, or using Luau to manipulate files such as docx/xlsx/pptx inside the sandbox.'
 ---
 
 # Memcontainer Luau
@@ -20,11 +20,11 @@ From the TypeScript host surface, prefer:
 
 ```ts
 await vm.luau("print(json.encode({ ok = true }))");
-const session = vm.luauSession(); // alias for vm.session("luau")
+const session = vm.session("luau");
 const shell = vm.shell({ language: "luau" });
 ```
 
-Use `vm.luau(src, args)` for batch scripts, `vm.luauSession()` for framed event streams, and the Luau shell for interactive investigation.
+Use `vm.luau(src, args)` for batch scripts, `vm.session("luau")` for framed event streams, and the Luau shell for interactive investigation.
 
 ## System API
 

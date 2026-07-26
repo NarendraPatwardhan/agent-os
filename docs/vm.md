@@ -24,12 +24,12 @@ fork policy rather than being serialized into a snapshot. See [Sidecars](./sidec
 | Method                             | Result                        | Notes                                            |
 | ---------------------------------- | ----------------------------- | ------------------------------------------------ |
 | `exec(command, options?)`          | `Promise<ExecResult>`         | Run a shell command to completion                |
+| `run(program, args?, options?)`    | `Promise<ExecResult>`         | Run one program with literal arguments           |
 | `autocomplete(source, options?)`   | `Promise<AutocompleteResult>` | Inspect shell input without executing it         |
 | `luau(source, args?)`              | `Promise<ExecResult>`         | Run a temporary Luau script                      |
 | `serviceCall(name, request?)`      | `Promise<Uint8Array>`         | Call a resident service                          |
 | `shell(options?)`                  | `Shell`                       | Open an interactive byte stream                  |
 | `session(agentType?)`              | `SessionHandle`               | Open a framed agent session                      |
-| `luauSession()`                    | `SessionHandle`               | Alias for `session("luau")`                      |
 | `cron(schedule, action, options?)` | `CronHandle`                  | Start a client-resident schedule                 |
 | `tool(definitionOrList)`           | `Promise<void>`               | Add or replace live host tools                   |
 | `mount(path, driver, options?)`    | `Promise<void>`               | Attach a host filesystem                         |
@@ -44,8 +44,8 @@ fork policy rather than being serialized into a snapshot. See [Sidecars](./sidec
 
 ## Execution family
 
-`exec`, `autocomplete`, `luau`, and `serviceCall` are covered with result shapes and error behavior in
-[Execution and files](./execution-files.md). `shell`, `session`, and `luauSession` are covered in
+`exec`, `run`, `autocomplete`, `luau`, and `serviceCall` are covered with result shapes and error
+behavior in [Execution and files](./execution-files.md). `shell` and `session` are covered in
 [Shells, sessions, and services](./shells-sessions.md).
 
 ## `vm.tool(definitionOrList)`

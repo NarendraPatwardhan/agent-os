@@ -77,6 +77,14 @@ pub const WNOHANG: i32 = 1;
 // worker
 pub const MAX_WORKERS: i32 = 4;
 
+// tick
+pub const TICK_WAITING: i32 = 0;
+pub const TICK_RUNNABLE: i32 = 1;
+
+// exec-mode
+pub const EXEC_MODE_SHELL: i32 = 1;
+pub const EXEC_MODE_DIRECT: i32 = 2;
+
 // autocomplete
 pub const AUTOCOMPLETE_MAX_SOURCE_BYTES: i32 = 8192;
 pub const AUTOCOMPLETE_MAX_ITEMS: i32 = 128;

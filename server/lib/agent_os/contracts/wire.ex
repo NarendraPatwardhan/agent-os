@@ -3,7 +3,7 @@ defmodule AgentOS.Contracts.Wire do
   @sidecar_scope_header "x-agentos-sidecar-scope"
   def sidecar_scope_header, do: @sidecar_scope_header
 
-  @wire_version 3
+  @wire_version 4
   def wire_version, do: @wire_version
   @header_len 9
   def header_len, do: @header_len

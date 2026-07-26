@@ -212,7 +212,7 @@ console.log("exit " + result.exitCode + " — stdout is JSON the host can parse"
         label: "Sessions",
         image: "loom",
         summary:
-          "vm.luauSession() keeps a resident interpreter. Each prompt(src) runs Luau and streams the framed events it emits via the log battery — the shape an embedding app tails to show live progress. vm.luau is the one-shot batch counterpart; a session is the streaming one.",
+          'vm.session("luau") keeps a resident interpreter. Each prompt(src) runs Luau and streams the framed events it emits via the log battery — the shape an embedding app tails to show live progress. vm.luau is the one-shot batch counterpart; a session is the streaming one.',
         notes: [
           "session.on(cb) fires per event as it arrives; prompt() resolves with the full event list",
           "log.event({ … }) emits the record verbatim (+ a timestamp); level helpers like log.info emit { level, msg, time }",
@@ -222,7 +222,7 @@ console.log("exit " + result.exitCode + " — stdout is JSON the host can parse"
           language: "ts",
           source: `const vm = await mc.create();
 
-const session = vm.luauSession();
+const session = vm.session("luau");
 session.on((e) => console.log("event:", e.type ?? e.level, e.text ?? e.msg ?? ""));
 
 const events = await session.prompt(\`

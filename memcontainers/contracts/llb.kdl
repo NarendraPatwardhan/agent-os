@@ -16,7 +16,12 @@ message "CopyPath" id=4 version=1 {
   doc "One exact path mapping for a multi-stage copy op."
 }
 
-message "BuildOp" id=2 version=1 {
+message "BuildArg" id=8 version=1 {
+  field "value" type="str"
+  doc "One literal argument in a direct LLB run operation. Empty values are significant."
+}
+
+message "BuildOp" id=2 version=2 {
   field "kind" type="u32"
 
   field "source_ref" type="str" opt=1
@@ -43,6 +48,8 @@ message "BuildOp" id=2 version=1 {
   field "mode" type="u32" opt=1
 
   field "cmd" type="str" opt=1
+  field "form" type="str" opt=1
+  field "argv" type="list<BuildArg>"
   field "cwd" type="str" opt=1
   field "env" type="strmap"
   field "stdin" type="bytes" opt=1
@@ -72,7 +79,7 @@ message "LayerRef" id=6 version=1 {
   doc "Resolved layer metadata folded into source-node cache keys."
 }
 
-message "NodeDigest" id=7 version=1 {
+message "NodeDigest" id=7 version=2 {
   field "op" type="BuildOp"
   field "edges" type="list<DigestEdge>"
   field "resolved" type="strmap"
@@ -81,7 +88,7 @@ message "NodeDigest" id=7 version=1 {
   doc "Canonical cache-key input for one solved LLB vertex: op args, child digests, resolved mutable-source facts, source layers, and kernel identity when a VM is booted."
 }
 
-message "Definition" id=3 version=1 {
+message "Definition" id=3 version=2 {
   field "version" type="u32"
   field "ops" type="list<BuildOp>"
   field "root" type="u32"

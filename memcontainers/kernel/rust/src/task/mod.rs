@@ -6,9 +6,9 @@
 //! [`Namespace`], job-control state (pgid, pending signals, stop latches), and its
 //! private environment.
 //!
-//! Pid 1 is special: it is the shell, which runs entirely inside `mc_tick` and never
-//! goes through `scheduler.tick()`. It is spawned `Running`, has no program, and is kept
-//! off the ready queue (see `init::boot_system` and `Scheduler::spawn_init`).
+//! Pid 1 is the canonical image-provided `/bin/sh`. It is an ordinary cooperatively
+//! scheduled guest task while the shell is available; maintenance mode keeps an inert
+//! pid 1 only when that image contract cannot be satisfied.
 //!
 //! Capabilities are the kernel-side POLICY layer and only ever **narrow** down
 //! the process tree: a child's set is `parent ∩ binary-tier ∩ requested-tier`. Eight
@@ -167,7 +167,7 @@ impl Tier {
     /// scratch would re-introduce clock-derived mtimes).
     pub fn caps(self) -> Capabilities {
         use constants_rust::{
-            tier_caps, TIER_FULL, TIER_ISOLATED, TIER_READ_ONLY, TIER_READ_WRITE,
+            TIER_FULL, TIER_ISOLATED, TIER_READ_ONLY, TIER_READ_WRITE, tier_caps,
         };
         let ordinal = match self {
             Tier::Full => TIER_FULL,
@@ -186,9 +186,19 @@ impl Tier {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockReason {
-    PipeRead { pipe_ptr: usize },
-    PipeWrite { pipe_ptr: usize },
-    WaitChild { child_id: TaskId },
+    PipeRead {
+        pipe_ptr: usize,
+    },
+    PipeWrite {
+        pipe_ptr: usize,
+    },
+    WaitChild {
+        child_id: TaskId,
+    },
+    /// No progress is possible until the host has had an opportunity to
+    /// advance a timer, network request, mount driver, or another external
+    /// dependency. Woken once at the start of the next host-driven tick.
+    Poll,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

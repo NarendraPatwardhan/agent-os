@@ -59,6 +59,17 @@ defmodule AgentOS.ControlPlane do
     end)
   end
 
+  @doc "Execute one program with literal argv values on an existing VM."
+  @spec run(Vm.id(), String.t(), [String.t()], keyword()) ::
+          {:ok, map()} | {:error, term()}
+  def run(id, program, args, opts \\ []) do
+    with_vm(id, fn pid ->
+      Vm.run_interleaved(pid, program, args, opts, fn ->
+        route_sidecar_egress(id, pid)
+      end)
+    end)
+  end
+
   @doc "Query shell completions on an existing VM without executing input."
   @spec autocomplete(Vm.id(), String.t(), non_neg_integer(), keyword()) ::
           {:ok, map()} | {:error, term()}
@@ -70,7 +81,8 @@ defmodule AgentOS.ControlPlane do
   def send_input(id, bytes), do: with_vm(id, &Vm.send_input(&1, bytes))
 
   @doc "Drive one or more bounded ticks on an existing VM."
-  @spec tick(Vm.id(), pos_integer()) :: :running | :exited | {:error, term()}
+  @spec tick(Vm.id(), pos_integer()) ::
+          :runnable | :waiting | :exited | {:error, term()}
   def tick(id, n \\ 1), do: with_vm(id, &Vm.tick(&1, n))
 
   @doc "Drain terminal output captured since the last call."
@@ -84,6 +96,12 @@ defmodule AgentOS.ControlPlane do
   @doc "Start a structured exec job on an existing VM."
   @spec exec_start(Vm.id(), String.t(), keyword()) :: {:ok, integer()} | {:error, term()}
   def exec_start(id, cmd, opts \\ []), do: with_vm(id, &Vm.exec_start(&1, cmd, opts))
+
+  @doc "Start a direct argv exec job on an existing VM."
+  @spec run_start(Vm.id(), String.t(), [String.t()], keyword()) ::
+          {:ok, integer()} | {:error, term()}
+  def run_start(id, program, args, opts \\ []),
+    do: with_vm(id, &Vm.run_start(&1, program, args, opts))
 
   @doc "Poll a structured exec job on an existing VM."
   @spec exec_poll(Vm.id(), integer(), keyword()) :: {:ok, nil | map()} | {:error, term()}

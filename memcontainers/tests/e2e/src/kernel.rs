@@ -3,8 +3,10 @@
 //! interactive terminal's ONLCR (CRLF — see [`crate::tty`], SYSTEMS.md section 6). No guest programs needed except the
 //! one exec test, which proves the pipe stays raw.
 
-use crate::{boot, boot_loom, boot_posix, names, restore, restore_incremental, Session};
-use host::{AutocompleteOptions, ExecOptions};
+use std::collections::BTreeMap;
+
+use crate::{Session, boot, boot_loom, boot_posix, names, restore, restore_incremental};
+use host::{AutocompleteOptions, ExecOptions, TickState};
 
 /// A tiny valid guest with one exported memory, a no-op `_start`, and one byte of non-custom data.
 /// Varying `tag` changes compilation identity without changing behavior.
@@ -203,6 +205,145 @@ fn exec_channel_captures_raw_lf_not_crlf() {
         "exec pipe must stay raw LF, not CRLF: {:?}",
         r.stdout
     );
+}
+
+/// WHY: structured callers already possess argument boundaries and must not pay
+/// for or be reinterpreted by `/bin/sh`. GUARANTEES: direct execution preserves
+/// spaces, shell metacharacters, and empty argv values; shares cwd/env/stdin and
+/// captured streams with shell execution; and leaves shell syntax inert.
+#[test]
+fn direct_exec_preserves_argv_and_shared_exec_options() {
+    let mut s = boot_posix();
+    let args = vec![
+        String::from("<%s>|<%s>|<%s>\n"),
+        String::from("a b"),
+        String::from("$HOME;touch /tmp/direct-shell-leak"),
+        String::new(),
+    ];
+    let literal = s
+        .host
+        .run("printf", &args, 200_000, ExecOptions::default())
+        .expect("direct printf");
+    assert_eq!(literal.exit_code, 0);
+    assert_eq!(
+        literal.stdout,
+        b"<a b>|<$HOME;touch /tmp/direct-shell-leak>|<>\n"
+    );
+    assert!(
+        s.host.stat("/tmp/direct-shell-leak").is_err(),
+        "direct argv was interpreted as shell syntax"
+    );
+
+    s.host.mkdir("/tmp/direct-cwd").expect("create direct cwd");
+    let cwd = s
+        .host
+        .run(
+            "pwd",
+            &[],
+            200_000,
+            ExecOptions {
+                cwd: Some(String::from("/tmp/direct-cwd")),
+                ..ExecOptions::default()
+            },
+        )
+        .expect("direct pwd");
+    assert_eq!(cwd.stdout, b"/tmp/direct-cwd\n");
+
+    let stdin = s
+        .host
+        .run(
+            "cat",
+            &[],
+            200_000,
+            ExecOptions {
+                stdin: Some(b"direct\0stdin".to_vec()),
+                ..ExecOptions::default()
+            },
+        )
+        .expect("direct cat");
+    assert_eq!(stdin.stdout, b"direct\0stdin");
+
+    let env = s
+        .host
+        .run(
+            "printenv",
+            &[String::from("DIRECT_FLAG")],
+            200_000,
+            ExecOptions {
+                env: BTreeMap::from([(String::from("DIRECT_FLAG"), String::from("literal-env"))]),
+                ..ExecOptions::default()
+            },
+        )
+        .expect("direct printenv");
+    assert_eq!(env.stdout, b"literal-env\n");
+
+    let failure = s
+        .host
+        .run(
+            "sh",
+            &[
+                String::from("-c"),
+                String::from("printf direct-stderr >&2; exit 7"),
+            ],
+            200_000,
+            ExecOptions::default(),
+        )
+        .expect("direct nonzero command");
+    assert_eq!(failure.exit_code, 7);
+    assert_eq!(failure.stderr, b"direct-stderr");
+
+    assert!(
+        s.host.run("true", &[], 0, ExecOptions::default()).is_err(),
+        "direct execution ignored its tick budget"
+    );
+
+    let job = s
+        .host
+        .run_start("sleep", &[String::from("30")], ExecOptions::default())
+        .expect("start direct sleeping exec");
+    let _ = s.host.tick().expect("drive direct sleeping exec");
+    s.host
+        .exec_cancel(job)
+        .expect("cancel direct sleeping exec");
+    let health = s
+        .host
+        .exec("true", 200_000, ExecOptions::default())
+        .expect("exec after direct cancellation");
+    assert_eq!(health.exit_code, 0);
+}
+
+/// WHY: hosts previously slept after every tick because the kernel did not distinguish productive
+/// fuel slices from a task polling a timer or host dependency. GUARANTEES: an exec reports immediate
+/// runnable work while its process tree is being advanced, then reports waiting once `sleep` is
+/// genuinely parked; cancellation leaves the same VM healthy for the next command.
+#[test]
+fn tick_state_distinguishes_runnable_work_from_waiting() {
+    let mut s = boot_posix();
+    let job = s
+        .host
+        .exec_start("sleep 30", ExecOptions::default())
+        .expect("start sleeping exec");
+    let mut saw_runnable = false;
+    let mut saw_waiting = false;
+    for _ in 0..128 {
+        match s.host.tick().expect("drive sleeping exec") {
+            TickState::Runnable => saw_runnable = true,
+            TickState::Waiting => {
+                saw_waiting = true;
+                break;
+            }
+            TickState::Exited => panic!("kernel exited while classifying exec work"),
+        }
+    }
+    assert!(saw_runnable, "exec never exposed immediately-runnable work");
+    assert!(saw_waiting, "sleep never reached a genuine waiting state");
+
+    s.host.exec_cancel(job).expect("cancel sleeping exec");
+    let health = s
+        .host
+        .exec("true", 200_000, ExecOptions::default())
+        .expect("exec after cancellation");
+    assert_eq!(health.exit_code, 0);
 }
 
 /// WHY: interactive Tab and headless clients must share one side-effect-free shell completion path,
@@ -443,8 +584,9 @@ fn snapshot_while_a_guest_is_suspended_resumes_identically() {
     // Each tick must report more work pending; a loop that finished this fast would not prove a
     // mid-flight snapshot, so fail loudly (raise the iteration count) rather than degrade silently.
     for _ in 0..5 {
-        assert!(
+        assert_eq!(
             s.host.tick().expect("tick"),
+            TickState::Runnable,
             "the heavy guest finished before we could snapshot it mid-suspend — raise the loop count"
         );
     }

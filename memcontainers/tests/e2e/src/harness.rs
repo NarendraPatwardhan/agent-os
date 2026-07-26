@@ -19,6 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use host::{
     CaptureSink, DirEntry, DiskPersist, KernelHost, KernelHostBuilder, MapHostCall, NetCapability,
+    TickState,
 };
 
 /// Generous tick budget for one shell operation (a pipeline can yield across many ticks).
@@ -260,7 +261,7 @@ impl Session {
     /// variant raises it for typst compiles.
     fn drive_until_prompt_budget(&mut self, baseline: usize, max_ticks: usize) {
         for _ in 0..max_ticks {
-            if !self.host.tick().expect("tick") {
+            if self.host.tick().expect("tick") == TickState::Exited {
                 return;
             }
             let buf = self.stdout.lock().unwrap();
@@ -327,7 +328,7 @@ impl Session {
         self.send_raw(line.as_bytes());
         self.send_raw(b"\n");
         for _ in 0..ticks {
-            if !self.host.tick().expect("tick") {
+            if self.host.tick().expect("tick") == TickState::Exited {
                 break;
             }
         }

@@ -13,7 +13,11 @@ import {
   AUTOCOMPLETE_MAX_FRAME_BYTES,
   AUTOCOMPLETE_MAX_ITEMS,
   EAGAIN,
+  EXEC_MODE_DIRECT,
+  EXEC_MODE_SHELL,
   MAX_WORKERS,
+  TICK_RUNNABLE,
+  TICK_WAITING,
 } from "@mc/contracts/constants";
 import {
   SNAPSHOT_HEADER_LEN,
@@ -40,6 +44,13 @@ import type {
 } from "./types.js";
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+export const RUNNABLE_BURST_TICKS = 64;
+
+export enum TickState {
+  Waiting = "waiting",
+  Runnable = "runnable",
+  Exited = "exited",
+}
 
 // The kernel's control-export surface, DERIVED from the generated contract (ctl.gen.ts `EXPORTS`) — no
 // hand-written ABI (B2), so the host's typed call sites can't desync from the contract. A wasm
@@ -439,28 +450,38 @@ export class KernelHost {
     private readonly kernelDigest: Uint8Array,
   ) {}
 
-  /** One cooperative step. Returns false once the kernel called `mc_exit`. */
-  tick(): boolean {
-    if (this.st.exitCode !== null) return false;
+  /** One bounded cooperative step, including whether another step can make
+   *  immediate progress without yielding to the host. */
+  tick(): TickState {
+    if (this.st.exitCode !== null) return TickState.Exited;
+    let work: number;
     try {
-      this.exports.mc_tick();
+      work = this.exports.mc_tick();
     } catch (e) {
       // A `mc_exit` is `-> !` in the kernel, so the wasm may hit `unreachable` right after our bridge
       // records the code; treat that as a clean exit.
-      if (this.st.exitCode !== null) return false;
+      if (this.st.exitCode !== null) return TickState.Exited;
       throw e;
     }
-    this.driveWorkers();
-    return this.st.exitCode === null;
+    const workerWork = this.driveWorkers();
+    if (workerWork !== undefined) work = workerWork;
+    if (this.st.exitCode !== null) return TickState.Exited;
+    if (work === TICK_RUNNABLE) return TickState.Runnable;
+    if (work === TICK_WAITING) return TickState.Waiting;
+    throw new Error(
+      `mc_tick returned invalid work state ${work}; kernel and host contracts disagree`,
+    );
   }
 
-  private driveWorkers(): void {
+  private driveWorkers(): number | undefined {
     const worker = this.exports.mc_worker_entry;
-    if (!worker) return; // cooperative artifact: no-op
+    if (!worker) return undefined; // cooperative artifact: no-op
+    let work: number | undefined;
     for (let w = 0; w < this.st.workersGranted; w++) {
       if (this.st.exitCode !== null) break;
-      worker(w);
+      work = worker(w);
     }
+    return work;
   }
 
   /** Push input bytes (keystrokes / a scripted line) via the scratch page + `mc_input`, exactly like
@@ -503,7 +524,7 @@ export class KernelHost {
   bootToPrompt(maxTicks = 8_192): number {
     for (let n = 0; n < maxTicks; n++) {
       if (this.atPrompt()) return n;
-      if (!this.tick()) return n + 1; // kernel exited before a prompt
+      if (this.tick() === TickState.Exited) return n + 1; // kernel exited before a prompt
     }
     return maxTicks;
   }
@@ -516,7 +537,8 @@ export class KernelHost {
     let settle = 0;
     let last = this.bytesWritten();
     for (let n = 0; n < maxTicks; n++) {
-      if (!this.tick()) return n + 1;
+      const state = this.tick();
+      if (state === TickState.Exited) return n + 1;
       const now = this.bytesWritten();
       if (now !== last) {
         last = now;
@@ -527,7 +549,7 @@ export class KernelHost {
         settle++;
         if (settle >= SETTLE_TICKS) return n + 1;
       }
-      await sleep(5);
+      if (state === TickState.Waiting) await sleep(5);
     }
     return maxTicks;
   }
@@ -538,7 +560,8 @@ export class KernelHost {
     let last = this.bytesWritten();
     let idle = 0;
     for (let n = 0; n < maxTicks; n++) {
-      if (!this.tick()) return n + 1;
+      const state = this.tick();
+      if (state === TickState.Exited) return n + 1;
       const now = this.bytesWritten();
       if (now === last) {
         if (++idle >= idleTicksRequired) return n + 1;
@@ -546,7 +569,7 @@ export class KernelHost {
         idle = 0;
         last = now;
       }
-      await sleep(5);
+      if (state === TickState.Waiting) await sleep(5);
     }
     return maxTicks;
   }
@@ -732,25 +755,49 @@ export class KernelHost {
     };
   }
 
-  /** Begin a command without driving it to completion; returns a job id. Drive ticks yourself and call
-   *  {@link execPoll} until it returns a result. A job survives `snapshot`/`restore`, so a command
-   *  begun in one VM can finish in a forked/rehydrated one. */
-  execStart(cmd: string, opts: ExecOptions = {}): number {
+  private execRequestStart(
+    request: Parameters<typeof encodeExecRequest>[0],
+    label: string,
+  ): number {
     const start = this.ctlFn(this.exports.mc_ctl_exec_start, "mc_ctl_exec_start");
-    const req = encodeExecRequest({
-      cmd,
-      cwd: opts.cwd,
-      env: opts.env ?? {},
-      stdin: opts.stdin,
-    });
-    this.ctlPut(req);
-    const job = start(req.length);
-    if (job < 0) throw ctlErr("exec", cmd, job);
+    const encoded = encodeExecRequest(request);
+    this.ctlPut(encoded);
+    const job = start(encoded.length);
+    if (job < 0) throw ctlErr("exec", label, job);
     return job;
   }
 
-  /** Poll a job from {@link execStart}. `null` while running; the result once finished (the job is then
-   *  freed). */
+  /** Begin an explicit shell command without driving it to completion. */
+  execStart(command: string, opts: ExecOptions = {}): number {
+    return this.execRequestStart(
+      {
+        mode: EXEC_MODE_SHELL,
+        command,
+        argv: [],
+        cwd: opts.cwd,
+        env: opts.env ?? {},
+        stdin: opts.stdin,
+      },
+      command,
+    );
+  }
+
+  /** Begin one program with literal argv values, without invoking `/bin/sh`. */
+  runStart(program: string, args: readonly string[] = [], opts: ExecOptions = {}): number {
+    return this.execRequestStart(
+      {
+        mode: EXEC_MODE_DIRECT,
+        argv: [program, ...args].map((value) => ({ value })),
+        command: undefined,
+        cwd: opts.cwd,
+        env: opts.env ?? {},
+        stdin: opts.stdin,
+      },
+      program,
+    );
+  }
+
+  /** Poll a job from {@link execStart} or {@link runStart}. */
   execPoll(job: number): ExecResult | null {
     const poll = this.ctlFn(this.exports.mc_ctl_exec_poll, "mc_ctl_exec_poll");
     const status = poll(job);
@@ -810,38 +857,66 @@ export class KernelHost {
   /** Run a host-originated resident-service call to completion. */
   async svcCall(name: string, req: Uint8Array, maxTicks = 20_000): Promise<Uint8Array> {
     const job = this.svcCallStart(name, req);
+    let runnableBurst = 0;
     for (let i = 0; i < maxTicks; i++) {
       const r = this.svcCallPoll(job);
       if (r) return r;
-      if (!this.tick()) {
-        const r2 = this.svcCallPoll(job);
-        if (r2) return r2;
+      const state = this.tick();
+      const completed = this.svcCallPoll(job);
+      if (completed) return completed;
+      if (state === TickState.Exited) {
         this.svcCallCancel(job);
         throw new Error(`kernel exited before service call '${name}' completed`);
       }
-      await sleep(1);
+      if (state === TickState.Waiting) {
+        runnableBurst = 0;
+        await sleep(1);
+      } else if (++runnableBurst >= RUNNABLE_BURST_TICKS) {
+        runnableBurst = 0;
+        await sleep(0);
+      }
     }
     this.svcCallCancel(job);
     throw new Error(`service call '${name}' did not finish within ${maxTicks} ticks`);
   }
 
-  /** Run `cmd` to completion: captured stdout/stderr + the real exit code. Drives ticks, yielding a
-   *  macrotask between them so in-flight `fetch`/WS can resolve (mirrors the Rust host's `exec`). */
-  async exec(cmd: string, opts: ExecOptions = {}, maxTicks = 20_000): Promise<ExecResult> {
-    const job = this.execStart(cmd, opts);
+  private async driveExec(job: number, label: string, maxTicks: number): Promise<ExecResult> {
+    let runnableBurst = 0;
     for (let i = 0; i < maxTicks; i++) {
       const r = this.execPoll(job);
       if (r) return r;
-      if (!this.tick()) {
-        const r2 = this.execPoll(job);
-        if (r2) return r2;
+      const state = this.tick();
+      const completed = this.execPoll(job);
+      if (completed) return completed;
+      if (state === TickState.Exited) {
         this.execCancel(job);
-        throw new Error(`kernel exited before exec '${cmd}' completed`);
+        throw new Error(`kernel exited before exec '${label}' completed`);
       }
-      await sleep(1);
+      if (state === TickState.Waiting) {
+        runnableBurst = 0;
+        await sleep(1);
+      } else if (++runnableBurst >= RUNNABLE_BURST_TICKS) {
+        runnableBurst = 0;
+        await sleep(0);
+      }
     }
     this.execCancel(job);
-    throw new Error(`exec '${cmd}' did not finish within ${maxTicks} ticks`);
+    throw new Error(`exec '${label}' did not finish within ${maxTicks} ticks`);
+  }
+
+  /** Run an explicit shell command to completion. */
+  async exec(command: string, opts: ExecOptions = {}, maxTicks = 20_000): Promise<ExecResult> {
+    return this.driveExec(this.execStart(command, opts), command, maxTicks);
+  }
+
+  /** Execute one program with literal argv values, without invoking a shell. */
+  async run(
+    program: string,
+    args: readonly string[] = [],
+    opts: ExecOptions = {},
+    maxTicks = 20_000,
+  ): Promise<ExecResult> {
+    return this.driveExec(this.runStart(program, args, opts), program, maxTicks);
   }
 
   /** Number of host-egress operations (HTTP/WebSocket) currently in flight. A non-zero value means

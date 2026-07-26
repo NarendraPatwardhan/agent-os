@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agentos.dev/schemas/benchmark-result-v1.json",
+  "title": "AgentOS benchmark result",
+  "type": "object",
+  "required": ["schema", "run", "measurements", "checks", "skips"],
+  "additionalProperties": false,
+  "properties": {
+    "schema": { "const": "agentos.benchmark.v1" },
+    "run": {
+      "type": "object",
+      "required": ["id", "timestamp", "runner", "runtime", "profile", "system", "artifacts"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "runner": { "type": "string", "minLength": 1 },
+        "runtime": { "type": "string", "minLength": 1 },
+        "profile": { "enum": ["smoke", "standard", "stress"] },
+        "system": { "type": "object" },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "sha256", "bytes"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+              "bytes": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "measurements": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "unit", "dimensions", "samples", "failures", "stats"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9_.-]+$" },
+          "unit": { "enum": ["ns", "us", "ms", "s", "bytes", "bytes_per_second", "ops_per_second", "count", "ratio", "percent", "usd"] },
+          "dimensions": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } },
+          "samples": { "type": "array", "items": { "type": "number", "minimum": 0 } },
+          "failures": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["iteration", "error"],
+              "additionalProperties": false,
+              "properties": {
+                "iteration": { "type": "integer", "minimum": 0 },
+                "error": { "type": "string" }
+              }
+            }
+          },
+          "stats": {
+            "type": ["object", "null"],
+            "required": ["count", "p50", "p95"],
+            "additionalProperties": false,
+            "properties": {
+              "count": { "type": "integer", "minimum": 1 },
+              "p50": { "type": "number", "minimum": 0 },
+              "p95": { "type": "number", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "ok"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "ok": { "type": "boolean" },
+          "detail": { "type": "string" }
+        }
+      }
+    },
+    "skips": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "runs": {
+      "type": "array",
+      "items": { "$ref": "#" }
+    }
+  }
+}

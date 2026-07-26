@@ -88,6 +88,14 @@ export type WarmDirective =
       stdin?: string | Uint8Array;
     }
   | {
+      kind: "run";
+      program: string;
+      args?: readonly string[];
+      cwd?: string;
+      env?: Record<string, string>;
+      stdin?: string | Uint8Array;
+    }
+  | {
       kind: "svc";
       name: string;
       request?: Uint8Array;
@@ -145,6 +153,16 @@ async function warmDigest(warm: readonly WarmDirective[] | undefined): Promise<s
         parts.push(
           "exec",
           directive.cmd,
+          directive.cwd ?? "",
+          JSON.stringify(sortedEnv(directive.env)),
+          directive.stdin === undefined ? "" : await sha256hex(stdinBytes(directive.stdin)!),
+        );
+        break;
+      case "run":
+        parts.push(
+          "run",
+          directive.program,
+          JSON.stringify(directive.args ?? []),
           directive.cwd ?? "",
           JSON.stringify(sortedEnv(directive.env)),
           directive.stdin === undefined ? "" : await sha256hex(stdinBytes(directive.stdin)!),
@@ -295,7 +313,12 @@ async function nodeDigestInput(node: BuildNode, ctx: SolveCtx): Promise<Contract
       return digestInput({
         op: digestOp(OP_EXEC, {
           input: 0,
-          cmd: node.cmd,
+          form: node.execution.mode,
+          cmd: node.execution.mode === "shell" ? node.execution.command : undefined,
+          argv:
+            node.execution.mode === "direct"
+              ? node.execution.argv.map((value) => ({ value }))
+              : [],
           cwd: node.opts.cwd,
           env: { ...(node.opts.env ?? {}) },
           stdin: stdinBytes(node.opts.stdin),
@@ -375,7 +398,7 @@ function digestInput(input: {
 }
 
 function digestOp(kind: number, fields: Partial<ContractBuildOp> = {}): ContractBuildOp {
-  return { kind, parts: [], copy_paths: [], env: {}, mounts: [], ...fields };
+  return { kind, parts: [], copy_paths: [], argv: [], env: {}, mounts: [], ...fields };
 }
 
 function inputRef(index: number): { index: number } {
@@ -799,13 +822,25 @@ async function runStep(
         await vm.fs.symlink(node.target, node.link);
         break;
       case "exec": {
-        const r = await vm.exec(node.cmd, {
+        const execOpts = {
           cwd: node.opts.cwd,
           env: node.opts.env,
           stdin: node.opts.stdin,
-        });
+        };
+        const r =
+          node.execution.mode === "shell"
+            ? await vm.exec(node.execution.command, execOpts)
+            : await vm.run(
+                node.execution.argv[0]!,
+                node.execution.argv.slice(1),
+                execOpts,
+              );
         if (r.exitCode !== 0) {
-          throw new Error(`llb.exec "${node.cmd}" failed (exit ${r.exitCode}): ${r.stderr}`);
+          const label =
+            node.execution.mode === "shell"
+              ? node.execution.command
+              : JSON.stringify(node.execution.argv);
+          throw new Error(`llb exec ${label} failed (exit ${r.exitCode}): ${r.stderr}`);
         }
         break;
       }
@@ -1366,7 +1401,7 @@ function buildRecord(
   return {
     schema: 1,
     definition: {
-      encoding: "mc.llb.definition.v1",
+      encoding: "mc.llb.definition.v2",
       digest: definitionDigest,
       bytes: [...definitionBytes],
     },
@@ -1434,6 +1469,19 @@ async function applyWarm(vm: Vm, warm: readonly WarmDirective[] | undefined): Pr
         if (result.exitCode !== 0) {
           throw new Error(
             `llb warm exec "${directive.cmd}" failed (exit ${result.exitCode}): ${result.stderr}`,
+          );
+        }
+        break;
+      }
+      case "run": {
+        const result = await vm.run(directive.program, directive.args ?? [], {
+          cwd: directive.cwd,
+          env: directive.env,
+          stdin: directive.stdin,
+        });
+        if (result.exitCode !== 0) {
+          throw new Error(
+            `llb warm run ${JSON.stringify([directive.program, ...(directive.args ?? [])])} failed (exit ${result.exitCode}): ${result.stderr}`,
           );
         }
         break;

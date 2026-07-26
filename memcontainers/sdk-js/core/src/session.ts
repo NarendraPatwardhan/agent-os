@@ -1,17 +1,16 @@
 import type { ExecOptions } from "./types.js";
 
-export const SESSION_PROMPT_ENV = "MC_SESSION_PROMPT_PATH";
-
 const AGENT_SEGMENT = /^[A-Za-z0-9_.-]+$/;
 
 export function sessionExec(
   agentType: string,
   promptPath: string,
-): { cmd: string; opts: ExecOptions } {
+): { program: string; args: string[]; opts: ExecOptions } {
   assertSessionAgentType(agentType);
   return {
-    cmd: `${agentType} "$${SESSION_PROMPT_ENV}"`,
-    opts: { env: { [SESSION_PROMPT_ENV]: promptPath } },
+    program: agentType,
+    args: [promptPath],
+    opts: {},
   };
 }
 

@@ -32,23 +32,62 @@ fn ctl_read_strmap(bytes: &[u8], off: &mut usize) -> Result<BTreeMap<String, Str
 
 fn ctl_read_message_list<T, F>(bytes: &[u8], off: &mut usize, mut decode: F) -> Result<Vec<T>, WireError> where F: FnMut(&[u8]) -> Result<T, WireError> { let n = ctl_read_u32(bytes, off)? as usize; if n > bytes.len().saturating_sub(*off) / 4 { return Err(WireError::Truncated); } let mut out = Vec::with_capacity(n); for _ in 0..n { let frame = ctl_read_bytes(bytes, off)?; out.push(decode(&frame)?); } Ok(out) }
 
-/// Structured host-control exec request. `cmd` still runs under /bin/sh -c; cwd/env/stdin are applied by the kernel at spawn.
+/// One direct-execution argv value. Empty values are significant and preserved.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ExecArg {
+    pub value: String,
+}
+
+pub const EXEC_ARG_MSG_ID: u16 = 12;
+pub const EXEC_ARG_VERSION: u8 = 1;
+impl ExecArg {
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        ctl_put_u16(&mut out, EXEC_ARG_MSG_ID);
+        out.push(EXEC_ARG_VERSION);
+        ctl_put_str(&mut out, &self.value);
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, WireError> {
+        let mut off = 0usize;
+        if ctl_read_u16(bytes, &mut off)? != EXEC_ARG_MSG_ID { return Err(WireError::WrongMessage); }
+        if ctl_read_u8(bytes, &mut off)? != EXEC_ARG_VERSION { return Err(WireError::UnsupportedVersion); }
+        let value = ctl_read_str(bytes, &mut off)?;
+        if off != bytes.len() { return Err(WireError::TrailingBytes); }
+        Ok(Self {
+            value,
+        })
+    }
+}
+
+/// Explicit host-control execution request. EXEC_MODE_SHELL requires command and empty argv; EXEC_MODE_DIRECT requires non-empty argv and no command. cwd/env/stdin share one kernel process path.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ExecRequest {
-    pub cmd: String,
+    pub mode: i32,
+    pub command: Option<String>,
+    pub argv: Vec<ExecArg>,
     pub cwd: Option<String>,
     pub env: BTreeMap<String, String>,
     pub stdin: Option<Vec<u8>>,
 }
 
 pub const EXEC_REQUEST_MSG_ID: u16 = 1;
-pub const EXEC_REQUEST_VERSION: u8 = 1;
+pub const EXEC_REQUEST_VERSION: u8 = 2;
 impl ExecRequest {
     pub fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
         ctl_put_u16(&mut out, EXEC_REQUEST_MSG_ID);
         out.push(EXEC_REQUEST_VERSION);
-        ctl_put_str(&mut out, &self.cmd);
+        ctl_put_i32(&mut out, self.mode);
+        match &self.command {
+            Some(v) => {
+                out.push(1);
+        ctl_put_str(&mut out, v);
+            }
+            None => out.push(0),
+        }
+        ctl_put_message_list(&mut out, &self.argv, |v| v.encode());
         match &self.cwd {
             Some(v) => {
                 out.push(1);
@@ -71,7 +110,13 @@ impl ExecRequest {
         let mut off = 0usize;
         if ctl_read_u16(bytes, &mut off)? != EXEC_REQUEST_MSG_ID { return Err(WireError::WrongMessage); }
         if ctl_read_u8(bytes, &mut off)? != EXEC_REQUEST_VERSION { return Err(WireError::UnsupportedVersion); }
-        let cmd = ctl_read_str(bytes, &mut off)?;
+        let mode = ctl_read_i32(bytes, &mut off)?;
+        let command = match ctl_read_u8(bytes, &mut off)? {
+            0 => None,
+            1 => Some(ctl_read_str(bytes, &mut off)?),
+            _ => return Err(WireError::InvalidPresence),
+        };
+        let argv = ctl_read_message_list(bytes, &mut off, ExecArg::decode)?;
         let cwd = match ctl_read_u8(bytes, &mut off)? {
             0 => None,
             1 => Some(ctl_read_str(bytes, &mut off)?),
@@ -85,7 +130,9 @@ impl ExecRequest {
         };
         if off != bytes.len() { return Err(WireError::TrailingBytes); }
         Ok(Self {
-            cmd,
+            mode,
+            command,
+            argv,
             cwd,
             env,
             stdin,

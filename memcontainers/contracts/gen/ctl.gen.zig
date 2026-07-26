@@ -29,11 +29,41 @@ fn ctlReadStrMap(allocator: std.mem.Allocator, bytes: []const u8, off: *usize) !
 
 fn ctlReadMessageList(comptime T: type, allocator: std.mem.Allocator, bytes: []const u8, off: *usize) ![]const T { const n = try ctlReadU32(bytes, off); var out = try allocator.alloc(T, @intCast(n)); errdefer allocator.free(out); var i: usize = 0; while (i < out.len) : (i += 1) out[i] = try T.decode(allocator, try ctlReadBytes(bytes, off)); return out; }
 
-// Structured host-control exec request. `cmd` still runs under /bin/sh -c; cwd/env/stdin are applied by the kernel at spawn.
+// One direct-execution argv value. Empty values are significant and preserved.
+pub const EXEC_ARG_MSG_ID: u16 = 12;
+pub const EXEC_ARG_VERSION: u8 = 1;
+pub const ExecArg = struct {
+    value: []const u8,
+
+    pub fn encode(self: @This(), allocator: std.mem.Allocator) ![]u8 {
+        var out: std.ArrayList(u8) = .empty;
+        errdefer out.deinit(allocator);
+        try ctlPutU16(&out, allocator, EXEC_ARG_MSG_ID);
+        try ctlPutU8(&out, allocator, EXEC_ARG_VERSION);
+        try ctlPutBytes(&out, allocator, self.value);
+        return out.toOwnedSlice(allocator);
+    }
+
+    pub fn decode(allocator: std.mem.Allocator, bytes: []const u8) !@This() {
+        _ = allocator;
+        var off: usize = 0;
+        if ((try ctlReadU16(bytes, &off)) != EXEC_ARG_MSG_ID) return WireError.WrongMessage;
+        if ((try ctlReadU8(bytes, &off)) != EXEC_ARG_VERSION) return WireError.UnsupportedVersion;
+        const value = try ctlReadStr(bytes, &off);
+        if (off != bytes.len) return WireError.TrailingBytes;
+        return .{
+            .value = value,
+        };
+    }
+};
+
+// Explicit host-control execution request. EXEC_MODE_SHELL requires command and empty argv; EXEC_MODE_DIRECT requires non-empty argv and no command. cwd/env/stdin share one kernel process path.
 pub const EXEC_REQUEST_MSG_ID: u16 = 1;
-pub const EXEC_REQUEST_VERSION: u8 = 1;
+pub const EXEC_REQUEST_VERSION: u8 = 2;
 pub const ExecRequest = struct {
-    cmd: []const u8,
+    mode: i32,
+    command: ?[]const u8 = null,
+    argv: []const ExecArg,
     cwd: ?[]const u8 = null,
     env: []const StringPair,
     stdin: ?[]const u8 = null,
@@ -43,7 +73,14 @@ pub const ExecRequest = struct {
         errdefer out.deinit(allocator);
         try ctlPutU16(&out, allocator, EXEC_REQUEST_MSG_ID);
         try ctlPutU8(&out, allocator, EXEC_REQUEST_VERSION);
-        try ctlPutBytes(&out, allocator, self.cmd);
+        try ctlPutI32(&out, allocator, self.mode);
+        if (self.command) |v| {
+            try ctlPutU8(&out, allocator, 1);
+        try ctlPutBytes(&out, allocator, v);
+        } else {
+            try ctlPutU8(&out, allocator, 0);
+        }
+        try ctlPutMessageList(ExecArg, &out, allocator, self.argv);
         if (self.cwd) |v| {
             try ctlPutU8(&out, allocator, 1);
         try ctlPutBytes(&out, allocator, v);
@@ -64,7 +101,13 @@ pub const ExecRequest = struct {
         var off: usize = 0;
         if ((try ctlReadU16(bytes, &off)) != EXEC_REQUEST_MSG_ID) return WireError.WrongMessage;
         if ((try ctlReadU8(bytes, &off)) != EXEC_REQUEST_VERSION) return WireError.UnsupportedVersion;
-        const cmd = try ctlReadStr(bytes, &off);
+        const mode = try ctlReadI32(bytes, &off);
+        const command = switch (try ctlReadU8(bytes, &off)) {
+            0 => null,
+            1 => try ctlReadStr(bytes, &off),
+            else => return WireError.InvalidPresence,
+        };
+        const argv = try ctlReadMessageList(ExecArg, allocator, bytes, &off);
         const cwd = switch (try ctlReadU8(bytes, &off)) {
             0 => null,
             1 => try ctlReadStr(bytes, &off),
@@ -78,7 +121,9 @@ pub const ExecRequest = struct {
         };
         if (off != bytes.len) return WireError.TrailingBytes;
         return .{
-            .cmd = cmd,
+            .mode = mode,
+            .command = command,
+            .argv = argv,
             .cwd = cwd,
             .env = env,
             .stdin = stdin,

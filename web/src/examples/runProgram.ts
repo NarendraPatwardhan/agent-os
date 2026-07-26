@@ -63,13 +63,16 @@ export async function runProgram(
   if (lab.seedStore) await ensureStore();
 
   const shQuote = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`;
-  const paint = async (real: Vm, cmd: string, echo = true) => {
-    const r = await real.exec(cmd);
+  const showResult = (line: string, r: Awaited<ReturnType<Vm["exec"]>>, echo = true) => {
     if (echo) {
-      session.echoTerminal(`${promptAtCursor ? "" : "$ "}${cmd}\n`, r.stdout || r.stderr);
+      session.echoTerminal(`${promptAtCursor ? "" : "$ "}${line}\n`, r.stdout || r.stderr);
       promptAtCursor = false;
     }
     return r;
+  };
+  const paint = async (real: Vm, cmd: string, echo = true) => {
+    const r = await real.exec(cmd);
+    return showResult(cmd, r, echo);
   };
 
   const facade = (real: Vm, recordable = false): any => {
@@ -113,15 +116,25 @@ export async function runProgram(
         if (r) r.tip = coreLlb.exec(r.tip, cmd, { deterministic: true, tier: "full" });
         return paint(real, cmd, opts?.echo !== false);
       },
+      run: async (program: string, args: string[] = [], opts?: { echo?: boolean }) => {
+        const r = record();
+        if (r)
+          r.tip = coreLlb.run(r.tip, program, args, { deterministic: true, tier: "full" });
+        const result = await real.run(program, args);
+        return showResult([program, ...args].map(shQuote).join(" "), result, opts?.echo !== false);
+      },
       type: (cmd: string) => {
         real.shell().write(`${cmd}\n`);
         promptAtCursor = true;
       },
       luau: async (src: string, args: string[] = []) => {
         await fs.write("/tmp/program.luau", src);
-        return paint(real, ["luau", "/tmp/program.luau", ...args.map(shQuote)].join(" "));
+        const result = await real.run("luau", ["/tmp/program.luau", ...args]);
+        return showResult(
+          ["luau", "/tmp/program.luau", ...args].map(shQuote).join(" "),
+          result,
+        );
       },
-      luauSession: () => real.luauSession(),
       session: (kind?: string) => real.session(kind),
       tool: (def: Parameters<Vm["tool"]>[0]) => real.tool(def),
       mount: (path: string, driver: Parameters<Vm["mount"]>[1], opts?: { readOnly?: boolean }) =>

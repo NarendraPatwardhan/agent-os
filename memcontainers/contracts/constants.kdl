@@ -138,6 +138,22 @@ worker {
     MAX_WORKERS 4
 }
 
+// Result of one mc_tick / mc_worker_entry drive. The host may immediately run another bounded
+// slice only when TICK_RUNNABLE is returned. TICK_WAITING means all live work is parked on a
+// pipe, child, timer, host I/O, or another pollable dependency, so the host must yield before
+// polling again. Kernel exit remains the separate mc_exit bridge event.
+tick {
+    TICK_WAITING  0
+    TICK_RUNNABLE 1
+}
+
+// Required ExecRequest discriminator. There is deliberately no implicit or legacy mode:
+// every caller must choose shell syntax or direct argv execution explicitly.
+exec-mode {
+    EXEC_MODE_SHELL  1
+    EXEC_MODE_DIRECT 2
+}
+
 // Side-effect-free shell autocomplete budgets. These bound resident guest
 // memory, control frames, namespace traversal, and every public host result.
 autocomplete {

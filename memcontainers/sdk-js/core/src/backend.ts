@@ -37,6 +37,7 @@ export interface RawAutocompleteResult {
 export interface Backend {
   readonly sidecars: SidecarBackend;
   exec(cmd: string, opts?: ExecOptions): Promise<RawExecResult>;
+  run(program: string, args?: readonly string[], opts?: ExecOptions): Promise<RawExecResult>;
   /** Source and offsets use UTF-8 bytes at this transport boundary. */
   autocomplete(
     source: Uint8Array,

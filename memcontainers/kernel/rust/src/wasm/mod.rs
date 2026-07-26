@@ -35,18 +35,18 @@ use wasmparser::{CompositeInnerType, Parser, Payload, Validator, WasmFeatures};
 
 use crate::builtins::{Builtin, BuiltinCtx, BuiltinStep};
 use crate::fs::servicefs::{
-    clear_activation, grant_holder, lookup_service, mark_failed, register_service,
-    service_registered, service_state, valid_service_name, DelegatedHandle, RespondOutcome,
+    DelegatedHandle, MAX_SVC_REQUEST_BYTES, RespondOutcome, SVC_RESPONSE_HIGH_WATER,
     ServiceChannel, ServiceInbound, ServiceState, SvcCallSource, SvcConnHandle, SvcRead,
-    SvcServeOwner, MAX_SVC_REQUEST_BYTES, SVC_RESPONSE_HIGH_WATER,
+    SvcServeOwner, clear_activation, grant_holder, lookup_service, mark_failed, register_service,
+    service_registered, service_state, valid_service_name,
 };
 use crate::fs::{MemFs, ServeChannel, ServedFs};
 use crate::host_call::{HostCallRead, HostCallSource};
 use crate::io::{EmptySource, PipeSink, PipeSource, ReadSource, TerminalSink, WriteSink};
 use crate::net::{HttpPoll, HttpReq, NetError, WsConn};
 use crate::task::{
-    BlockReason, Capabilities, TaskId, TaskState, Tier, CAP_AMBIENT, CAP_FS_READ, CAP_MOUNT,
-    CAP_NET, CAP_PERSIST, CAP_SCRATCH, CAP_SPAWN,
+    BlockReason, CAP_AMBIENT, CAP_FS_READ, CAP_MOUNT, CAP_NET, CAP_PERSIST, CAP_SCRATCH, CAP_SPAWN,
+    Capabilities, Scheduler, TaskId, TaskState, Tier,
 };
 use crate::vfs::{FileHandle, FsError, KPath, Namespace, NodeType, OpenFlags, SeekFrom};
 use crate::wasm::abi::*;
@@ -251,7 +251,7 @@ impl ReadSource for SharedNetSource {
     }
 
     fn is_eof(&self) -> bool {
-        matches!(self.0 .0.borrow().phase, NetPhase::Eof)
+        matches!(self.0.0.borrow().phase, NetPhase::Eof)
     }
 }
 
@@ -413,11 +413,7 @@ fn parse_http_status(head: &[u8]) -> u16 {
             break;
         }
     }
-    if saw {
-        n
-    } else {
-        0
-    }
+    if saw { n } else { 0 }
 }
 
 /// Largest single WebSocket message the kernel will buffer per `recv`.
@@ -2529,8 +2525,8 @@ impl GuestProgram {
         let channel = ServiceChannel::new();
         register_service(&name, channel.clone());
         clear_activation(&name); // grant consumed; the channel is now in the registry
-                                 // On `alloc_fd` failure the `SvcServeOwner` is dropped here, which closes the
-                                 // channel and deregisters `name` — no orphaned registration.
+        // On `alloc_fd` failure the `SvcServeOwner` is dropped here, which closes the
+        // channel and deregisters `name` — no orphaned registration.
         match self.alloc_fd(GuestFd::SvcServe(SvcServeOwner::new(name, channel))) {
             Some(fd) => match self.write_guest_u32(ret_fd, fd as u32) {
                 Ok(()) => Fulfilled::Resume(ESUCCESS),
@@ -3628,16 +3624,22 @@ impl GuestProgram {
             Some(b) => b,
             None => return Fulfilled::Resume(EINVAL),
         };
-        let argv: Vec<String> = blob
+        // The syscall format has one trailing NUL terminator. Remove only that
+        // terminator, then preserve every remaining segment, including empty
+        // arguments. Invalid UTF-8 is a malformed argv, never something to
+        // silently discard.
+        let payload = blob.strip_suffix(&[0]).unwrap_or(blob.as_slice());
+        let argv: Vec<String> = match payload
             .split(|&b| b == 0)
-            .filter(|s| !s.is_empty())
-            .filter_map(|s| core::str::from_utf8(s).ok().map(String::from))
-            .collect();
-        let prog_name = match argv.first() {
-            Some(n) => n.clone(),
-            None => return Fulfilled::Resume(EINVAL),
+            .map(|value| core::str::from_utf8(value).map(String::from))
+            .collect()
+        {
+            Ok(argv) => argv,
+            Err(_) => return Fulfilled::Resume(EINVAL),
         };
-        let args: Vec<String> = argv.iter().skip(1).cloned().collect();
+        if argv.first().is_none_or(String::is_empty) {
+            return Fulfilled::Resume(EINVAL);
+        }
 
         let cwd = ctx.cwd.clone();
         let live_path = ctx
@@ -3645,41 +3647,7 @@ impl GuestProgram {
             .get_task(ctx.pid)
             .and_then(|task| task.env().get("PATH").cloned())
             .unwrap_or_else(|| self.path.clone());
-        let bytes = match resolve_program_lookup(ctx.ns, &cwd, &prog_name, &live_path) {
-            ProgLookup::Found(b) => b,
-            ProgLookup::NotFound => return Fulfilled::Resume(ENOENT),
-            ProgLookup::Blocked => {
-                // The program lives on a served fs (e.g. `/pkg/bin/<tool>` via
-                // pkgfsd) whose open is mid-dance. Re-arm this spawn and yield —
-                // the next tick re-resolves once the server answers, so `exec`
-                // from a served filesystem is transparent. Idempotent:
-                // nothing has been spawned yet, and the argv pointer is stable.
-                self.store.data_mut().pending = Some(Pending::Spawn {
-                    argv_ptr,
-                    argv_len,
-                    in_fd,
-                    out_fd,
-                    err_fd,
-                    tier,
-                    ret_pid,
-                });
-                return Fulfilled::Block(BuiltinStep::Pending);
-            }
-        };
-
-        // Exec is the policy point: the child's privilege is the parent's,
-        // narrowed by both the binary's declared tier and the tier the parent
-        // requested at spawn. Capabilities only ever shrink down the tree.
         let requested = Tier::from_arg(tier);
-        let binary = declared_tier(&bytes);
-        let (child_caps, child_root) =
-            exec_policy(parent_caps, parent_root, binary, requested, &cwd);
-
-        let child_prog = match GuestProgram::load(crate::guest_runtime(), &bytes, argv, &live_path)
-        {
-            Ok(g) => g,
-            Err(_) => return Fulfilled::Resume(EINVAL),
-        };
 
         // Build the child's std streams from the parent's fds before creating
         // the task (so a borrow of `self.files` doesn't overlap the scheduler).
@@ -3696,40 +3664,41 @@ impl GuestProgram {
             Err(e) => return Fulfilled::Resume(e),
         };
 
-        let child_pid = ctx
-            .sched
-            .spawn(Some(ctx.pid), prog_name.clone(), prog_name, args, cwd);
-        ctx.sched.set_task_policy(child_pid, child_caps, child_root);
-        if let Some(child) = ctx.sched.get_task(child_pid) {
-            child.set_stdin(stdin);
-            child.set_stdout(stdout);
-            child.set_stderr(stderr);
-            child.set_program(Box::new(child_prog));
-            // The child inherits a fork of this task's per-process namespace,
-            // so the parent's binds carry down but the
-            // child's later binds do not leak back up.
-            let child_ns = ctx.ns.fork(child_pid);
-            // A scratch-capable child gets a fresh, PRIVATE `/scratch` tmpfs
-            // gated on CAP_SCRATCH — so a `read-only` tool (which lacks
-            // CAP_FS_WRITE) can spill working files there without write-anywhere
-            // authority, and without sharing the space with any other task (each
-            // mounts its own MemFs, dropped when the task's namespace drops).
-            if child_caps.has(CAP_SCRATCH) {
-                child_ns.mount_labeled_caps(
-                    "/scratch",
-                    Box::new(MemFs::new()),
-                    "scratchfs",
-                    false,
-                    CAP_SCRATCH,
-                );
-            } else {
-                // The forked namespace may carry the parent's scratch mount.
-                // Children without CAP_SCRATCH must not inherit even a readable
-                // view of that private task-local storage.
-                let _ = child_ns.unmount("/scratch");
+        let child_pid = match spawn_program(
+            ctx.sched,
+            ctx.ns,
+            ctx.pid,
+            argv,
+            cwd,
+            live_path,
+            parent_caps,
+            parent_root,
+            requested,
+            stdin,
+            stdout,
+            stderr,
+            None,
+            false,
+        ) {
+            Ok(pid) => pid,
+            Err(SpawnProgramError::NotFound) => return Fulfilled::Resume(ENOENT),
+            Err(SpawnProgramError::Invalid) => return Fulfilled::Resume(EINVAL),
+            Err(SpawnProgramError::Blocked) => {
+                // The program lives on a served fs (e.g. `/pkg/bin/<tool>` via
+                // pkgfsd) whose open is mid-dance. Re-arm this spawn and yield;
+                // no task or stream ownership was committed before resolution.
+                self.store.data_mut().pending = Some(Pending::Spawn {
+                    argv_ptr,
+                    argv_len,
+                    in_fd,
+                    out_fd,
+                    err_fd,
+                    tier,
+                    ret_pid,
+                });
+                return Fulfilled::Block(BuiltinStep::Pending);
             }
-            child.set_namespace(child_ns);
-        }
+        };
 
         match self.write_guest_u32(ret_pid, child_pid as u32) {
             Ok(()) => Fulfilled::Resume(ESUCCESS),
@@ -4250,6 +4219,101 @@ pub fn exec_policy(
         parent_root
     };
     (caps, root)
+}
+
+/// Failure before an argv execution has committed a task.
+pub(crate) enum SpawnProgramError {
+    Invalid,
+    NotFound,
+    Blocked,
+}
+
+/// Canonical argv-aware program creation used by both host-control execution
+/// and the guest `mc_sys_spawn` syscall.
+///
+/// Resolution, module loading, capability narrowing, task metadata, standard
+/// streams, per-process namespaces, and private scratch setup live here exactly
+/// once. Callers differ only in how they obtain argv and the stream handles.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_program(
+    scheduler: &Scheduler,
+    namespace: &Namespace,
+    parent_pid: TaskId,
+    argv: Vec<String>,
+    cwd: String,
+    path: String,
+    parent_caps: Capabilities,
+    parent_root: Option<String>,
+    requested_tier: Option<Tier>,
+    stdin: Box<dyn ReadSource>,
+    stdout: Box<dyn WriteSink>,
+    stderr: Box<dyn WriteSink>,
+    env: Option<BTreeMap<String, String>>,
+    separate_pgid: bool,
+) -> Result<TaskId, SpawnProgramError> {
+    let program_name = argv
+        .first()
+        .filter(|value| !value.is_empty())
+        .cloned()
+        .ok_or(SpawnProgramError::Invalid)?;
+    if argv.iter().any(|value| value.contains('\0')) {
+        return Err(SpawnProgramError::Invalid);
+    }
+
+    let bytes = match resolve_program_lookup(namespace, &cwd, &program_name, &path) {
+        ProgLookup::Found(bytes) => bytes,
+        ProgLookup::NotFound => return Err(SpawnProgramError::NotFound),
+        ProgLookup::Blocked => return Err(SpawnProgramError::Blocked),
+    };
+    let (child_caps, child_root) = exec_policy(
+        parent_caps,
+        parent_root,
+        declared_tier(&bytes),
+        requested_tier,
+        &cwd,
+    );
+    let child_program = GuestProgram::load(crate::guest_runtime(), &bytes, argv.clone(), &path)
+        .map_err(|_| SpawnProgramError::Invalid)?;
+    let args = argv.iter().skip(1).cloned().collect();
+    let child_pid = scheduler.spawn(
+        Some(parent_pid),
+        program_name.clone(),
+        program_name,
+        args,
+        cwd,
+    );
+    scheduler.set_task_policy(child_pid, child_caps, child_root);
+    if separate_pgid {
+        scheduler.set_pgid(child_pid, 0);
+    }
+
+    let child = scheduler
+        .get_task(child_pid)
+        .expect("spawned program task must exist");
+    if let Some(env) = env {
+        child.env_mut().clone_from(&env);
+    }
+    child.set_stdin(stdin);
+    child.set_stdout(stdout);
+    child.set_stderr(stderr);
+    child.set_program(Box::new(child_program));
+
+    // The child inherits a fork of its parent's per-process namespace, so
+    // binds carry down but later child binds do not leak upward.
+    let child_ns = namespace.fork(child_pid);
+    if child_caps.has(CAP_SCRATCH) {
+        child_ns.mount_labeled_caps(
+            "/scratch",
+            Box::new(MemFs::new()),
+            "scratchfs",
+            false,
+            CAP_SCRATCH,
+        );
+    } else {
+        let _ = child_ns.unmount("/scratch");
+    }
+    child.set_namespace(child_ns);
+    Ok(child_pid)
 }
 
 struct GuestModuleInfo {
@@ -4794,7 +4858,7 @@ impl Builtin for GuestProgram {
                         return BuiltinStep::Exit(137);
                     }
                     self.resume = Some(Resume::OutOfFuel(inv));
-                    return BuiltinStep::Pending;
+                    return BuiltinStep::Runnable;
                 }
                 TypedResumableCall::HostTrap(inv) => {
                     // `mc_sys_pcall` is intercepted to start a nested protected

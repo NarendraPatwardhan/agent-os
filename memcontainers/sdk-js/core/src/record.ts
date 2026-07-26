@@ -1,5 +1,5 @@
 // Record, don't author. An agent already drives a VM through `vm.fs` mutations
-// + `vm.exec` — that stream IS an `llb` trace in disguise. `mc.record` returns a
+// + `vm.exec`/`vm.run` — that stream IS an `llb` trace in disguise. `mc.record` returns a
 // VM whose mutating ops run LIVE (the agent sees real results) AND append onto a
 // build DAG rooted at `llb.source(image)`. `build()` emits the canonical portable
 // Definition, so a recorded session can move across runtimes and replay as a
@@ -80,8 +80,8 @@ export async function record(opts: CreateOptions = {}): Promise<Recorder> {
     },
   };
 
-  // A Proxy intercepts `exec` + `fs`; every other member delegates to the real VM
-  // (bound to it, so `this` is never the proxy).
+  // A Proxy intercepts both execution forms + `fs`; every other member delegates
+  // to the real VM (bound to it, so `this` is never the proxy).
   const recordedVm = new Proxy(vm, {
     get(target, prop, _receiver) {
       if (prop === "fs") return recordedFs;
@@ -89,6 +89,12 @@ export async function record(opts: CreateOptions = {}): Promise<Recorder> {
         return (cmd: string, opts: ExecOptions = {}) => {
           tip = llb.exec(tip, cmd, { ...execOpts, ...opts });
           return target.exec(cmd, opts);
+        };
+      }
+      if (prop === "run") {
+        return (program: string, args: readonly string[] = [], opts: ExecOptions = {}) => {
+          tip = llb.run(tip, program, args, { ...execOpts, ...opts });
+          return target.run(program, args, opts);
         };
       }
       const value = Reflect.get(target, prop, target);

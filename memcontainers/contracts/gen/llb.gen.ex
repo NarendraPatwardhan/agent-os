@@ -176,8 +176,33 @@ defmodule AgentOS.Contracts.LLB do
   def copy_path_version, do: @copy_path_version
 
   # COPY_PATH
+  @build_arg_msg_id 8
+  @build_arg_version 1
+
+  def encode_build_arg(msg) when is_map(msg) do
+    IO.iodata_to_binary([
+      put_u16(@build_arg_msg_id),
+      put_u8(@build_arg_version),
+      put_str(field!(msg, :value))
+    ])
+  end
+
+  def decode_build_arg(bytes) when is_binary(bytes) do
+    with {:ok, rest} <- read_header(bytes, @build_arg_msg_id, @build_arg_version),
+         {:ok, value, rest} <- read_str(rest),
+         :ok <- read_eof(rest) do
+      {:ok, %{
+        value: value,
+      }}
+    end
+  end
+
+  def build_arg_msg_id, do: @build_arg_msg_id
+  def build_arg_version, do: @build_arg_version
+
+  # BUILD_ARG
   @build_op_msg_id 2
-  @build_op_version 1
+  @build_op_version 2
 
   def encode_build_op(msg) when is_map(msg) do
     IO.iodata_to_binary([
@@ -266,6 +291,11 @@ defmodule AgentOS.Contracts.LLB do
         nil -> <<0>>
         value -> [<<1>>, put_str(value)]
       end,
+      case field(msg, :form) do
+        nil -> <<0>>
+        value -> [<<1>>, put_str(value)]
+      end,
+      put_message_list(field!(msg, :argv), &encode_build_arg/1),
       case field(msg, :cwd) do
         nil -> <<0>>
         value -> [<<1>>, put_str(value)]
@@ -336,6 +366,8 @@ defmodule AgentOS.Contracts.LLB do
          {:ok, link, rest} <- read_opt(rest, fn rest -> read_str(rest) end),
          {:ok, mode, rest} <- read_opt(rest, fn rest -> read_u32(rest) end),
          {:ok, cmd, rest} <- read_opt(rest, fn rest -> read_str(rest) end),
+         {:ok, form, rest} <- read_opt(rest, fn rest -> read_str(rest) end),
+         {:ok, argv, rest} <- read_message_list(rest, &decode_build_arg/1),
          {:ok, cwd, rest} <- read_opt(rest, fn rest -> read_str(rest) end),
          {:ok, env, rest} <- read_strmap(rest),
          {:ok, stdin, rest} <- read_opt(rest, fn rest -> read_bytes(rest) end),
@@ -373,6 +405,8 @@ defmodule AgentOS.Contracts.LLB do
         link: link,
         mode: mode,
         cmd: cmd,
+        form: form,
+        argv: argv,
         cwd: cwd,
         env: env,
         stdin: stdin,
@@ -453,7 +487,7 @@ defmodule AgentOS.Contracts.LLB do
 
   # LAYER_REF
   @node_digest_msg_id 7
-  @node_digest_version 1
+  @node_digest_version 2
 
   def encode_node_digest(msg) when is_map(msg) do
     IO.iodata_to_binary([
@@ -493,7 +527,7 @@ defmodule AgentOS.Contracts.LLB do
 
   # NODE_DIGEST
   @definition_msg_id 3
-  @definition_version 1
+  @definition_version 2
 
   def encode_definition(msg) when is_map(msg) do
     IO.iodata_to_binary([

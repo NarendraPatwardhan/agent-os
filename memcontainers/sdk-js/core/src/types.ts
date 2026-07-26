@@ -165,7 +165,7 @@ export interface BuildRecord {
   schema: 1;
   /** Canonical encoded `llb.Definition` bytes, plus their content digest. */
   definition: {
-    encoding: "mc.llb.definition.v1";
+    encoding: "mc.llb.definition.v2";
     digest: string;
     bytes: number[];
   };

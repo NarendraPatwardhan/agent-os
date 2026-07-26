@@ -76,6 +76,14 @@ export const WNOHANG = 1;
 // worker
 export const MAX_WORKERS = 4;
 
+// tick
+export const TICK_WAITING = 0;
+export const TICK_RUNNABLE = 1;
+
+// exec-mode
+export const EXEC_MODE_SHELL = 1;
+export const EXEC_MODE_DIRECT = 2;
+
 // autocomplete
 export const AUTOCOMPLETE_MAX_SOURCE_BYTES = 8192;
 export const AUTOCOMPLETE_MAX_ITEMS = 128;

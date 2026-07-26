@@ -32,18 +32,18 @@ use ctl_rust::{
     FileStat as CtlFileStat, SvcRequest as CtlSvcRequest, SvcResponse as CtlSvcResponse,
 };
 use shell_rust::{
-    Candidate as ShellCandidate, ProbeRequest, ProbeResponse, RenderRequest, CONTEXT_COMMAND,
-    CONTEXT_DIRECTORY, CONTEXT_PATH, CONTEXT_VARIABLE,
+    CONTEXT_COMMAND, CONTEXT_DIRECTORY, CONTEXT_PATH, CONTEXT_VARIABLE,
+    Candidate as ShellCandidate, ProbeRequest, ProbeResponse, RenderRequest,
 };
 
 use fs::ProcFs;
-use task::{run_round, Scheduler, TaskId, TaskState};
+use task::{Scheduler, TaskId, TaskState, run_round};
 use vfs::{KPath, Namespace, NodeType, OpenFlags};
 use wasm::abi::{
-    errno_from_fs, AUTOCOMPLETE_MAX_FRAME_BYTES, AUTOCOMPLETE_MAX_ITEMS,
-    AUTOCOMPLETE_MAX_PATH_SEGMENTS, AUTOCOMPLETE_MAX_SCAN_ENTRIES, AUTOCOMPLETE_MAX_SOURCE_BYTES,
-    EAGAIN, EINVAL, EIO, EMSGSIZE, ENOENT, ENOSYS, ENOTDIR, ESUCCESS, ETIMEDOUT, SERVICE_MARKER,
-    SIGHUP, SIGINT, SIGTSTP,
+    AUTOCOMPLETE_MAX_FRAME_BYTES, AUTOCOMPLETE_MAX_ITEMS, AUTOCOMPLETE_MAX_PATH_SEGMENTS,
+    AUTOCOMPLETE_MAX_SCAN_ENTRIES, AUTOCOMPLETE_MAX_SOURCE_BYTES, EAGAIN, EINVAL, EIO, EMSGSIZE,
+    ENOENT, ENOSYS, ENOTDIR, ESUCCESS, ETIMEDOUT, EXEC_MODE_DIRECT, EXEC_MODE_SHELL,
+    SERVICE_MARKER, SIGHUP, SIGINT, SIGTSTP, TICK_RUNNABLE, TICK_WAITING, errno_from_fs,
 };
 
 struct OutputCapture {
@@ -1091,7 +1091,7 @@ pub(crate) fn mc_tick() -> i32 {
         *STATE.wall_ms.get() = bridge::mc_time_now();
         if !STATE.is_initialized() {
             init_system();
-            return 1;
+            return TICK_RUNNABLE;
         }
 
         let scheduler = STATE.scheduler();
@@ -1112,6 +1112,10 @@ pub(crate) fn mc_tick() -> i32 {
         //    round advances them together. In threaded mode the stepping is
         //    delegated to `mc_worker_entry` (the host drains the ready
         //    queue via workers between ticks), so `mc_tick` only coordinates.
+        // Poll waiters run at most once per host-driven tick. Keeping them out
+        // of the ready queue between ticks distinguishes genuine immediate
+        // work from a timer/host-I/O retry without moving policy into a host.
+        scheduler.wake_pollers();
         scheduler.check_unblocked();
         if !sync::threaded() {
             run_round(scheduler, ns);
@@ -1189,8 +1193,12 @@ pub(crate) fn mc_tick() -> i32 {
                 }
             }
         }
+        if scheduler.ready_count() > 0 {
+            TICK_RUNNABLE
+        } else {
+            TICK_WAITING
+        }
     }
-    1
 }
 
 /// Consume bytes from INPUT_BUFFER through the cooked line editor and feed
@@ -2426,61 +2434,46 @@ pub(crate) fn mc_ctl_autocomplete(request_len: u32) -> i32 {
     }
 }
 
-/// Spawn `/bin/sh -c "<cmd>"` as a guest task with stdout/stderr captured into
-/// `cap`. Returns its pid, or `None` if `/bin/sh` can't be loaded.
-unsafe fn spawn_ctl_sh(
-    cmd: &str,
+/// Spawn one explicit host-control execution request through the same
+/// argv-aware loader and task construction used by `mc_sys_spawn`.
+unsafe fn spawn_ctl_exec(
+    argv: Vec<String>,
     cwd: &str,
     env: &BTreeMap<String, String>,
     stdin: Option<&[u8]>,
     cap: &OutputCapture,
-) -> Option<TaskId> {
+) -> Result<TaskId, wasm::SpawnProgramError> {
     unsafe {
         let sched = STATE.scheduler();
         let ns = STATE.ns();
-        let engine = STATE.guest_runtime();
         let path: String = env
             .get("PATH")
             .cloned()
             .unwrap_or_else(|| String::from("/bin:/usr/bin"));
-        let bytes = wasm::resolve_program(ns, cwd, "sh", &path)?;
-        let argv = alloc::vec![String::from("sh"), String::from("-c"), String::from(cmd)];
-        let prog = wasm::GuestProgram::load(engine, &bytes, argv.clone(), &path).ok()?;
-        let pid = sched.spawn(
-            Some(1),
-            String::from("sh"),
-            String::from("sh"),
-            argv[1..].to_vec(),
-            String::from(cwd),
-        );
-        // A structured operator exec is not the interactive foreground job.
-        // Keep it out of the terminal's foreground process group so Ctrl-C /
-        // Ctrl-Z typed at the prompt do not accidentally signal it.
-        sched.set_pgid(pid, 0);
-        let task = sched.get_task(pid).expect("spawned ctl sh");
-        task.set_namespace(ns.fork(pid));
-        // Seed this control-channel command from the decoded ExecRequest context:
-        // live boot env overlaid by request env, explicit cwd, and optional stdin.
-        task.env_mut().clone_from(env);
-        if let Some(stdin) = stdin {
-            task.set_stdin(Box::new(io::BytesSource::new(stdin.to_vec())));
-        }
-        task.set_stdout(Box::new(io::CaptureSink(cap.stdout.clone())));
-        task.set_stderr(Box::new(io::CaptureSink(cap.stderr.clone())));
-        task.set_program(Box::new(prog));
         let (parent_caps, parent_root) = sched
             .get_task(1)
             .map(|parent| (parent.caps, parent.confine_root.clone()))
             .unwrap_or_else(|| (task::Capabilities::all(), None));
-        let (caps, root) = wasm::exec_policy(
+        let input: Box<dyn io::ReadSource> = match stdin {
+            Some(bytes) => Box::new(io::BytesSource::new(bytes.to_vec())),
+            None => Box::new(io::EmptySource),
+        };
+        wasm::spawn_program(
+            sched,
+            ns,
+            1,
+            argv,
+            String::from(cwd),
+            path,
             parent_caps,
             parent_root,
-            wasm::declared_tier(&bytes),
             None,
-            cwd,
-        );
-        sched.set_task_policy(pid, caps, root);
-        Some(pid)
+            input,
+            Box::new(io::CaptureSink(cap.stdout.clone())),
+            Box::new(io::CaptureSink(cap.stderr.clone())),
+            Some(env.clone()),
+            true,
+        )
     }
 }
 
@@ -2523,27 +2516,41 @@ pub(crate) fn mc_ctl_exec_start(request_len: u32) -> i32 {
         for (k, v) in req.env {
             env.insert(k, v);
         }
+        let argv = match (req.mode, req.command, req.argv.is_empty()) {
+            (EXEC_MODE_SHELL, Some(command), true) if !command.contains('\0') => {
+                alloc::vec![String::from("sh"), String::from("-c"), command]
+            }
+            (EXEC_MODE_DIRECT, None, false) => {
+                let argv: Vec<String> = req.argv.into_iter().map(|arg| arg.value).collect();
+                if argv.first().is_none_or(String::is_empty)
+                    || argv.iter().any(|arg| arg.contains('\0'))
+                {
+                    return -EINVAL;
+                }
+                argv
+            }
+            _ => return -EINVAL,
+        };
         let stdin = req.stdin;
-        let cmd = req.cmd;
         let cap = new_capture();
 
-        // Preferred path: run the command through the unified guest `/bin/sh -c`,
-        // capturing its stdout/stderr under pid 1's live capability ceiling.
-        if let Some(pid) = spawn_ctl_sh(&cmd, &cwd, &env, stdin.as_deref(), &cap) {
-            let id = STATE.alloc_ctl_id();
-            STATE.ctl_jobs().insert(
-                id,
-                CtlExecJob {
-                    body: CtlBody::Guest { pid },
-                    cap,
-                    done: false,
-                    exit_code: 0,
-                },
-            );
-            return id as i32;
-        }
-
-        -ENOENT
+        let pid = match spawn_ctl_exec(argv, &cwd, &env, stdin.as_deref(), &cap) {
+            Ok(pid) => pid,
+            Err(wasm::SpawnProgramError::Invalid) => return -EINVAL,
+            Err(wasm::SpawnProgramError::NotFound) => return -ENOENT,
+            Err(wasm::SpawnProgramError::Blocked) => return -EAGAIN,
+        };
+        let id = STATE.alloc_ctl_id();
+        STATE.ctl_jobs().insert(
+            id,
+            CtlExecJob {
+                body: CtlBody::Guest { pid },
+                cap,
+                done: false,
+                exit_code: 0,
+            },
+        );
+        id as i32
     }
 }
 
@@ -2673,8 +2680,9 @@ pub(crate) fn mc_worker_count() -> i32 {
 /// per tick to drive task execution. Under the BKL it wakes any unblocked
 /// tasks and runs one bounded round — stepping each currently-ready task
 /// exactly once (`run_round`, the same primitive cooperative `mc_tick`
-/// uses) — then returns 1 if work remains (ready or blocked tasks) or 0
-/// when idle / a quiesce is pending.
+/// uses) — then returns `TICK_RUNNABLE` only if another bounded slice can
+/// make immediate progress. Blocked and poll-waiting tasks return
+/// `TICK_WAITING`.
 ///
 /// Bounding to one round per call (rather than draining to empty) is what
 /// keeps an unbounded producer such as `cat /dev/zero > /dev/null &` from
@@ -2690,20 +2698,20 @@ pub(crate) fn mc_worker_entry(_arg: i32) -> i32 {
     // a worker does no work and returns, so its wasm stack unwinds and the
     // host can park it with all kernel state at rest in linear memory.
     if sync::quiesce_requested() {
-        return 0;
+        return TICK_WAITING;
     }
     unsafe {
         if !STATE.is_initialized() {
-            return 0;
+            return TICK_WAITING;
         }
         let scheduler = STATE.scheduler();
         let ns = STATE.ns();
         scheduler.check_unblocked();
         run_round(scheduler, ns);
-        if scheduler.has_work() {
-            1
+        if scheduler.ready_count() > 0 {
+            TICK_RUNNABLE
         } else {
-            0
+            TICK_WAITING
         }
     }
 }

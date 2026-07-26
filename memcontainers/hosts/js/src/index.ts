@@ -5,7 +5,13 @@
 // contract descriptors (env.gen.ts / ctl.gen.ts), so the boundary the kernel + Rust host derive from is
 // the one the JS host derives from too — it cannot silently desync (B2).
 
-export { KernelHost, KernelHostBuilder, EagainError } from "./host.js";
+export {
+  KernelHost,
+  KernelHostBuilder,
+  EagainError,
+  TickState,
+  RUNNABLE_BURST_TICKS,
+} from "./host.js";
 export type { ExecResult, ExecOptions, DirEntry } from "./host.js";
 export { CaptureSink, WritableSink, processStdout, processStderr } from "./io.js";
 export { SystemClock, FixedClock, OsRng, SeededRng } from "./sources.js";

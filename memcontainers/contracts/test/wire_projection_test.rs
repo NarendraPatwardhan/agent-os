@@ -59,7 +59,10 @@ fn exec_rest_schema_is_a_projection_of_exec_request() {
 
     let exec_request = block_after(&control, "message \"ExecRequest\"");
     let exec_request_fields = message_fields(&exec_request);
-    assert_eq!(exec_request_fields, ["cmd", "cwd", "env", "stdin"]);
+    assert_eq!(
+        exec_request_fields,
+        ["mode", "command", "argv", "cwd", "env", "stdin"]
+    );
 
     let exec_schema = block_after(&wire, "schema \"Exec\"");
     assert!(
