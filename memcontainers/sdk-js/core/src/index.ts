@@ -74,6 +74,17 @@ export type {
 } from "./solve.js";
 export { defaultKernel, defaultImage } from "./artifacts.js";
 export { FsContentStore, MemoryContentStore, OpfsContentStore, defaultStore } from "./store.js";
+export {
+  clearSessionTemplateIndex,
+  defaultTemplateFill,
+  ensureImageTemplate,
+  imageClassKey,
+  layerContentDigests,
+  lookupImageTemplate,
+  publishImageTemplate,
+  sessionTemplateIndexSize,
+} from "./template_cache.js";
+export type { TemplateFillPolicy } from "./template_cache.js";
 export type { Backend, RawAutocompleteResult, RawExecResult } from "./backend.js";
 export type {
   Runtime,

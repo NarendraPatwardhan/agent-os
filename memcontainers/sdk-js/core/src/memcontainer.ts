@@ -29,6 +29,12 @@ import { EmbeddedBackend, FanoutSink } from "./embedded.js";
 import { defaultImage, defaultKernel } from "./artifacts.js";
 import { embeddedGuestLayers } from "./guest-layers.js";
 import { defaultStore } from "./store.js";
+import {
+  defaultTemplateFill,
+  ensureImageTemplate,
+  imageClassKey,
+  layerContentDigests,
+} from "./template_cache.js";
 import { record } from "./record.js";
 import { makeFs } from "./fs.js";
 import { mergeToolCatalogBundles, toolCatalogBundle } from "./tools.js";
@@ -312,6 +318,19 @@ export class Vm {
   /** Capture the whole VM as a portable blob (A8). */
   snapshot(opts: SnapshotOptions = {}): Promise<Uint8Array> {
     return this.backend.snapshot(opts);
+  }
+
+  /**
+   * Explicit epoch pin (PERF-011): capture a full of the **current** machine and bind it
+   * as the incremental baseline. Image-class templates are preferred for fleets; use this
+   * when a long-lived branch wants a tighter parent than the boot template.
+   * Returns the content digest (`sha256:…`).
+   */
+  pinBase(): Promise<string> {
+    if (!this.backend.pinBase) {
+      throw new Error("pinBase is only available on the embedded backend");
+    }
+    return this.backend.pinBase();
   }
 
   /** Fork: snapshot + restore into a fresh, independent VM with the current host attachments. */
@@ -721,23 +740,39 @@ async function makeEmbedded(
   }
 
   let host: KernelHost;
-  let snapshotBase: Uint8Array | undefined;
+  /** PERF-011 active base: digest-only when possible so VMs share one CAS full. */
+  let activeBase: { digest?: string; bytes?: Uint8Array } | undefined;
+  // Prefer an explicit store; otherwise only allocate a default when image resolution needs one.
+  // Template fill may further require snapshot-object support on that store.
+  const explicitStore = opts.store !== undefined;
   const store = opts.store ?? (imageNeedsStore(opts.image) ? defaultStore() : undefined);
   if (snapshot) {
     const view = parseSnapshot(snapshot);
     let base: Uint8Array | undefined;
+    let baseDigest: string | undefined;
     if (view.kind === "incremental") {
       if (!store?.snapshotObject) {
         throw new Error(
           "restoring an incremental snapshot requires a content-addressed snapshot store",
         );
       }
-      const ref = `sha256:${Array.from(view.baseId, (b) => b.toString(16).padStart(2, "0")).join("")}`;
-      base = await store.snapshotObject(ref);
+      baseDigest = `sha256:${Array.from(view.baseId, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+      base = await store.snapshotObject(baseDigest);
     }
     host = await builder.restore(snapshot, base);
-    snapshotBase = view.kind === "full" ? snapshot : base;
+    if (view.kind === "full") {
+      // Prefer CAS digest binding when the store can hold full MCSN objects.
+      if (store?.putSnapshotObject) {
+        const digest = await store.putSnapshotObject(snapshot);
+        activeBase = { digest };
+      } else {
+        activeBase = { bytes: snapshot };
+      }
+    } else if (baseDigest) {
+      activeBase = { digest: baseDigest };
+    }
   } else {
+    // Boot stack = image layers + create-time sidecar guest layers (VFS content in MCSN).
     const layers = (await resolveImage(opts.image, store)) ?? [];
     layers.push(...embeddedGuestLayers(opts.sidecars));
     const cfg = await imageConfig(opts.image, store);
@@ -746,6 +781,24 @@ async function makeEmbedded(
       .withContract(tierOrdinal(cfg.tier), contractI32(cfg.budgetMib), contractFuel(cfg.fuel))
       .build();
     host.bootToPrompt(); // drive boot only to the first prompt (no settle wait)
+
+    // PERF-011: bind boot-stack template full at boot-ready (pre catalog/mounts).
+    // Class key covers the full withLayers stack (image + guest layers).
+    const fill = opts.templateFill ?? defaultTemplateFill(opts.runtime, explicitStore);
+    if (fill !== "off" && store?.putSnapshotObject && store.snapshotObject) {
+      const classKey = imageClassKey(
+        host.kernelDigestBytes(),
+        await layerContentDigests(layers),
+      );
+      const template = await ensureImageTemplate({
+        store,
+        classKey,
+        policy: fill,
+        capture: () => host.snapshot(true),
+      });
+      // Digest-only bind: load bytes from CAS ephemerally on incremental (share one full).
+      if (template) activeBase = { digest: template.digest };
+    }
   }
   const sidecars = await EmbeddedSidecarBackend.attach(
     opts.sidecarHosts ?? {},
@@ -756,7 +809,7 @@ async function makeEmbedded(
   tools.registerRaw(SIDECAR_HOST_BINDING, (body, context) =>
     sidecars.handleGuestCall(body, context.signal),
   );
-  const backend = new EmbeddedBackend(host, stdout, tools, sidecars, snapshotBase, store);
+  const backend = new EmbeddedBackend(host, stdout, tools, sidecars, activeBase, store);
   try {
     // Re-register the host-call HANDLERS (the JS closures) on both paths — they can never live in a
     // snapshot, so a restored VM must be handed them again to route its host-tool catalog entries.

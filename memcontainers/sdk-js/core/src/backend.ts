@@ -55,6 +55,11 @@ export interface Backend {
   /** Create a symbolic link at `link` with target text `target`. */
   symlink(target: string, link: string): Promise<void>;
   snapshot(opts?: SnapshotOptions): Promise<Uint8Array>;
+  /**
+   * Optional PERF-011 epoch pin: bind a full MCSN of the current machine as the
+   * incremental baseline. Embedded only; remote may omit.
+   */
+  pinBase?(): Promise<string>;
   /** The `commit` primitive: serialize the live CoW overlay into a content-
    *  addressed `.tar` layer — `{ digest, tar }`. */
   commitLayer(): Promise<{ digest: string; tar: Uint8Array }>;

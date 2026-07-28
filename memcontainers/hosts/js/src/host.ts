@@ -37,6 +37,7 @@ import { DeniedNet } from "./net.js";
 import { DeniedPersist } from "./persist_core.js";
 import { DeniedHostCall } from "./host_call.js";
 import type { HostCallCapability } from "./host_call.js";
+import { getCompiledKernelModule } from "./module_cache.js";
 import type {
   StreamSink,
   ClockSource,
@@ -453,7 +454,9 @@ export class KernelHostBuilder {
   async build(): Promise<KernelHost> {
     const kernelDigest = await sha256(this.wasm);
     const st = this.newState();
-    const { instance } = await WebAssembly.instantiate(this.wasm, {
+    // PERF-011: compile once per kernel digest; instantiate per VM (A3 with wasmtime MODULE_CACHE).
+    const module = await getCompiledKernelModule(this.wasm, kernelDigest);
+    const instance = await WebAssembly.instantiate(module, {
       env: makeBridge(st),
     });
     checkControlExports(instance.exports);
@@ -489,7 +492,9 @@ export class KernelHostBuilder {
     const kernelDigest = await sha256(this.wasm);
     const { view, baseView, baseTree } = await validateSnapshot(snapshot, base, kernelDigest);
     const st = this.newState();
-    const { instance } = await WebAssembly.instantiate(this.wasm, {
+    // PERF-011: same Module cache as cold build — restore never recompiles the kernel.
+    const module = await getCompiledKernelModule(this.wasm, kernelDigest);
+    const instance = await WebAssembly.instantiate(module, {
       env: makeBridge(st),
     });
     checkControlExports(instance.exports);
@@ -592,6 +597,10 @@ export interface CommandPerf {
 /** A booted kernel instance. Mirrors the Rust `KernelHost` driving API
  *  (`tick`/`send_input`/`at_prompt`/`run_script`/…), camelCased. */
 export class KernelHost {
+  /**
+   * Optional host-local baseline for incremental when the same full ArrayBuffer is reused
+   * (reference equality). CAS loads produce new buffers and always re-hash (corrupt fail-closed).
+   */
   private snapshotBase?: { bytes: Uint8Array; id: Uint8Array; tree: IntegrityTree };
   /** Session preference for PERF-013 (field name differs from `perfEnabled()` accessor). */
   private perfTracing = false;
@@ -606,6 +615,11 @@ export class KernelHost {
     snapshotBase?: { bytes: Uint8Array; id: Uint8Array; tree: IntegrityTree },
   ) {
     this.snapshotBase = snapshotBase;
+  }
+
+  /** SHA-256 of the kernel wasm (32 bytes). Used for image-class template keys (PERF-011). */
+  kernelDigestBytes(): Uint8Array {
+    return this.kernelDigest.slice();
   }
 
   private requirePerf(): (op: number) => number {
@@ -1289,6 +1303,8 @@ export class KernelHost {
       throw new Error("incremental snapshot base uses a different kernel");
     }
     const baseId = await baselineId(baseView.kernelDigest, baseView.memoryRoot, baseView.memoryLen);
+    // Fast path only when the same ArrayBuffer is reused (retainAsBaseline). CAS loads clone
+    // bytes, so they re-hash and fail closed on corrupt payloads.
     let baseTree: IntegrityTree;
     if (
       this.snapshotBase &&
@@ -1301,7 +1317,8 @@ export class KernelHost {
       if (!digestEqual(await baseTree.root(), baseView.memoryRoot)) {
         throw new Error("incremental snapshot base memory root mismatch");
       }
-      this.snapshotBase = { bytes: base, id: baseId, tree: baseTree.clone() };
+      // Do not retain CAS-loaded baseline bytes on the host (PERF-011 density).
+      // Only retainAsBaseline (same ArrayBuffer as a prior full capture) uses the fast path.
     }
     // Discover and copy changed pages synchronously. After this point async
     // hashing reads only the immutable baseline and these copied pages.

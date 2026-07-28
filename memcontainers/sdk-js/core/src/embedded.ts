@@ -134,10 +134,51 @@ export class EmbeddedBackend implements Backend {
     private readonly stdout: FanoutSink,
     private readonly tools: MapHostCall,
     readonly sidecars: SidecarBackend,
-    private snapshotBase?: Uint8Array,
+    /**
+     * Bound full baseline for incremental capture (PERF-011). Prefer digest-only
+     * binding to the content store so VMs share one CAS object; bytes are loaded
+     * lazily on first incremental (or supplied on restore/pin).
+     */
+    private activeBase?: { digest?: string; bytes?: Uint8Array },
     private readonly snapshotStore?: ContentStore,
   ) {
     this.pumpDone = this.pump();
+  }
+
+  /**
+   * Explicit epoch pin (PERF-011): capture a full MCSN of the **current** live machine,
+   * store it as a content-addressed object, and bind it as `active_base` for later
+   * incrementals. Does not update the boot-stack template index.
+   * Retains **digest only** so the full lives in the CAS, not as a private VM copy.
+   */
+  async pinBase(): Promise<string> {
+    if (!this.snapshotStore?.putSnapshotObject) {
+      throw new Error("pinBase requires a content store with putSnapshotObject");
+    }
+    const full = await this.host.snapshot(true);
+    const digest = await this.snapshotStore.putSnapshotObject(full);
+    this.activeBase = { digest };
+    return digest;
+  }
+
+  /** Whether this VM has a bound full baseline for incremental capture. */
+  hasSnapshotBase(): boolean {
+    return this.activeBase?.bytes !== undefined || this.activeBase?.digest !== undefined;
+  }
+
+  /**
+   * Load baseline full bytes for one incremental capture.
+   * Prefer CAS by digest (no long-lived private full on the VM). Ephemeral load only.
+   */
+  private async resolveActiveBase(): Promise<Uint8Array> {
+    if (this.activeBase?.digest && this.snapshotStore?.snapshotObject) {
+      return this.snapshotStore.snapshotObject(this.activeBase.digest);
+    }
+    if (this.activeBase?.bytes) return this.activeBase.bytes;
+    throw new Error(
+      "incremental snapshot requires a bound full baseline " +
+        "(boot-stack template, restore from full/incremental, or pinBase)",
+    );
   }
 
   /** Register a host tool the VM can invoke through `/svc/tools`. The
@@ -488,17 +529,17 @@ export class EmbeddedBackend implements Backend {
   }
   async snapshot(opts: SnapshotOptions = {}): Promise<Uint8Array> {
     if ((opts.mode ?? "full") === "full") return this.host.snapshot();
-    if (!this.snapshotStore?.putSnapshotObject) {
+    if (!this.snapshotStore?.putSnapshotObject || !this.snapshotStore.snapshotObject) {
       throw new Error("incremental snapshots require a content store with snapshot-object support");
     }
-    if (!this.snapshotBase) {
-      const baseline = await this.host.snapshot(true);
-      await this.snapshotStore.putSnapshotObject(baseline);
-      this.snapshotBase = baseline;
-      return baseline;
-    }
-    await this.snapshotStore.putSnapshotObject(this.snapshotBase);
-    return this.host.snapshotIncremental(this.snapshotBase);
+    // PERF-011: never invent a full on incremental. Base must already be bound
+    // (boot-stack template at create, restore, or pinBase).
+    const base = await this.resolveActiveBase();
+    // Ensure CAS has the object (no-op if already stored under this content digest).
+    const digest = await this.snapshotStore.putSnapshotObject(base);
+    // Prefer digest-only binding after the first successful CAS put (density).
+    this.activeBase = { digest };
+    return this.host.snapshotIncremental(base);
   }
   async commitLayer(): Promise<{ digest: string; tar: Uint8Array }> {
     if (!this.running) throw new Error("VM closed");

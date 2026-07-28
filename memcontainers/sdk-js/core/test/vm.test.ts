@@ -2138,10 +2138,9 @@ async function main(): Promise<void> {
         },
       ],
     });
-    if (
-      store.putSnapshotKeys.length !== 3 ||
-      new Set(store.putSnapshotKeys).size !== store.putSnapshotKeys.length
-    ) {
+    // Warm-memo keys only (PERF-011 image-class templates use the separate `mc-template.*` namespace).
+    const warmMemoKeys = store.putSnapshotKeys.filter((k) => k.startsWith("snapshot-"));
+    if (warmMemoKeys.length !== 3 || new Set(warmMemoKeys).size !== warmMemoKeys.length) {
       throw new Error(
         `llb warm snapshot did not use distinct memo keys: ${JSON.stringify(store.putSnapshotKeys)}`,
       );
@@ -2273,13 +2272,13 @@ error("timed out waiting for restored warm sqlite child: " .. err)
         },
       ],
     });
-    const sqliteSnapshotKeys = [...store.putSnapshotKeys];
+    const sqliteSnapshotKeys = store.putSnapshotKeys.filter((k) => k.startsWith("snapshot-"));
     if (
       sqliteSnapshotKeys.length !== 2 ||
       new Set(sqliteSnapshotKeys).size !== sqliteSnapshotKeys.length
     ) {
       throw new Error(
-        `llb atlas warm snapshot did not use distinct memo keys: ${JSON.stringify(sqliteSnapshotKeys)}`,
+        `llb atlas warm snapshot did not use distinct memo keys: ${JSON.stringify(store.putSnapshotKeys)}`,
       );
     }
     const sqliteColdVm = await mc.restore(sqliteColdSnapshot, {
@@ -2564,9 +2563,8 @@ error("timed out waiting for restored warm sqlite child: " .. err)
     await vm.close();
   }
 
-  // Incremental snapshots are self-describing deltas over one content-addressed full baseline.
-  // The SDK owns that baseline lifecycle lazily: the first incremental request establishes a full
-  // baseline, later requests store/reference it, and restore resolves it without a second byte array.
+  // Incremental snapshots are deltas over a bound full baseline (PERF-011 image-class template).
+  // Create with a store fills the template on first ready boot; incremental never invents a full.
   {
     const store = new MemoryContentStore();
     const source = await mc.create({
@@ -2579,12 +2577,13 @@ error("timed out waiting for restored warm sqlite child: " .. err)
     let delta: Uint8Array;
     let full: Uint8Array;
     try {
-      const baseline = await source.snapshot({ mode: "incremental" });
-      if (baseline[8] !== 1)
-        throw new Error("first incremental request did not return a full baseline");
       await source.fs.write("/tmp/incremental-sdk", "survives");
       delta = await source.snapshot({ mode: "incremental" });
       full = await source.snapshot();
+      // kind byte: 1 = full, 2 = incremental (contracts/snapshot)
+      if (delta[8] === 1) {
+        throw new Error("incremental snapshot returned a full MCSN (template invent regression)");
+      }
       if (delta.length >= full.length) {
         throw new Error(
           `incremental snapshot was not smaller than full: delta=${delta.length} full=${full.length}`,
@@ -2608,6 +2607,109 @@ error("timed out waiting for restored warm sqlite child: " .. err)
       await restored.close();
     }
     console.log("phase: SDK incremental snapshot resolves its content-addressed full baseline OK");
+  }
+
+  // Second create of the same boot stack must not re-snapshot a template (PERF-011 on_demand).
+  {
+    const {
+      clearSessionTemplateIndex,
+      sessionTemplateIndexSize,
+      imageClassKey,
+      layerContentDigests,
+    } = await import("../src/template_cache.js");
+    clearSessionTemplateIndex();
+    const store = new MemoryContentStore();
+    const a = await mc.create({
+      runtime: LOCAL_RUNTIME,
+      kernel,
+      image,
+      store,
+      deterministic: true,
+    });
+    await a.close();
+    if (sessionTemplateIndexSize() !== 1) {
+      throw new Error(`expected one session template after first create, got ${sessionTemplateIndexSize()}`);
+    }
+    const b = await mc.create({
+      runtime: LOCAL_RUNTIME,
+      kernel,
+      image,
+      store,
+      deterministic: true,
+    });
+    try {
+      if (sessionTemplateIndexSize() !== 1) {
+        throw new Error("second create of same boot stack minted another template");
+      }
+      await b.fs.write("/tmp/t2", "ok");
+      const delta = await b.snapshot({ mode: "incremental" });
+      if (delta[8] === 1) throw new Error("second-VM incremental returned full");
+    } finally {
+      await b.close();
+    }
+
+    // Guest layers change the boot stack → distinct class keys.
+    const k1 = imageClassKey(await sha256Bytes(kernel), await layerContentDigests([image]));
+    const guest = new Uint8Array([0x6d, 0x63, 0x67, 0x75, 0x65, 0x73, 0x74]); // "mcguest"
+    const k2 = imageClassKey(
+      await sha256Bytes(kernel),
+      await layerContentDigests([image, guest]),
+    );
+    if (k1 === k2) throw new Error("guest layer must change boot-stack class key");
+
+    console.log("phase: PERF-011 boot-stack template reused across creates OK");
+  }
+
+  // Local without explicit store does not pay template capture (create-latency policy).
+  {
+    const { clearSessionTemplateIndex, sessionTemplateIndexSize } = await import(
+      "../src/template_cache.js"
+    );
+    clearSessionTemplateIndex();
+    const vm = await mc.create({
+      runtime: LOCAL_RUNTIME,
+      kernel,
+      image,
+      deterministic: true,
+      // no store
+    });
+    try {
+      if (sessionTemplateIndexSize() !== 0) {
+        throw new Error("local create without store must not mint a session template");
+      }
+    } finally {
+      await vm.close();
+    }
+    console.log("phase: PERF-011 local default templateFill off without store OK");
+  }
+
+  // Incremental without a bound base fails closed (templateFill off).
+  {
+    const store = new MemoryContentStore();
+    const vm = await mc.create({
+      runtime: LOCAL_RUNTIME,
+      kernel,
+      image,
+      store,
+      deterministic: true,
+      templateFill: "off",
+    });
+    try {
+      let failed = false;
+      try {
+        await vm.snapshot({ mode: "incremental" });
+      } catch (e) {
+        failed = String(e).includes("bound full baseline");
+      }
+      if (!failed) throw new Error("incremental without baseline must fail closed");
+      await vm.pinBase();
+      await vm.fs.write("/tmp/pinned", "x");
+      const delta = await vm.snapshot({ mode: "incremental" });
+      if (delta[8] === 1) throw new Error("post-pinBase incremental returned full");
+    } finally {
+      await vm.close();
+    }
+    console.log("phase: PERF-011 pinBase and fail-closed incremental OK");
   }
 
   const server = await recordingServer();

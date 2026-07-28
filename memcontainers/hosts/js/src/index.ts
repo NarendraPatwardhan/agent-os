@@ -13,6 +13,11 @@ export {
   RUNNABLE_BURST_TICKS,
 } from "./host.js";
 export type { ExecResult, ExecOptions, DirEntry, CommandPerf } from "./host.js";
+export {
+  getCompiledKernelModule,
+  clearCompiledKernelModules,
+  compiledKernelModuleCount,
+} from "./module_cache.js";
 export { CaptureSink, WritableSink, processStdout, processStderr } from "./io.js";
 export { SystemClock, FixedClock, OsRng, SeededRng } from "./sources.js";
 export { ConnectionRegistry, originAllowed } from "./connections.js";

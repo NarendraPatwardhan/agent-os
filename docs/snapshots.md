@@ -31,24 +31,36 @@ The restored VM is a new handle. Closing the source does not close the restored 
 
 ## Incremental snapshots
 
-Incremental mode stores only memory pages changed from the VM's full baseline:
+Incremental mode stores only memory pages changed from a **bound full baseline**:
 
 ```js
 const store = new MemoryContentStore();
+// First create of this image class captures one template full (on_demand fill).
 const vm = await mc.create({ kernel, image, store });
-
+await vm.fs.write("/tmp/x", "hi");
 const delta = await vm.snapshot({ mode: "incremental" });
 const restored = await mc.restore(delta, { kernel, store });
 ```
 
-The SDK stores the full baseline as a content-addressed snapshot object and writes its digest into the
-delta. An incremental snapshot refers directly to one full object, never to another delta, so restore
-work is bounded.
+The baseline is a content-addressed full MCSN (image-class **template**, restore parent, or an
+explicit `vm.pinBase()` epoch pin). Incremental capture **never invents** a new full: missing a
+bound base fails closed. The delta names the baseline by digest; restore depth is always one.
+
+Boot-stack templates (PERF-011 / SYSTEMS.md §8):
+
+- Key: kernel digest + ordered digests of **every** boot layer (image stack **and** create-time
+  sidecar guest layers). Host-only sidecar grants do not enter the key. Cardinality tracks distinct
+  boot stacks, not live VM count.
+- **Browser:** default `templateFill: "on_demand"` — first ready boot of a class fills the cache.
+- **Local:** on_demand only when `store` is **explicitly** passed; otherwise off (no surprise capture).
+- **Server prewarm:** `templateFill: "prepopulated"` only binds; use `publishImageTemplate` to seed.
+- Create binds the template **after** `bootToPrompt` and **before** catalog/mounts so tools/mounts
+  do not split the class.
 
 Requirements for embedded incremental capture and restore:
 
-- the VM has a `ContentStore`;
-- the store implements `putSnapshotObject()` and `snapshotObject()`; and
+- the VM has a `ContentStore` with `putSnapshotObject` / `snapshotObject`;
+- the VM has a bound full baseline (template, restore, or `pinBase`); and
 - the referenced full object moves with the delta when crossing stores.
 
 Remote incremental snapshots use the server's snapshot-object store. Moving a delta to another server

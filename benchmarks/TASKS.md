@@ -449,6 +449,57 @@ across VMs.
   (no leaked Modules, templates, or object URLs).
 - Multi-VM isolation and cancellation tests pass.
 
+**Status**
+
+Implemented on the JS/SDK path (host Module cache + boot-stack template CAS + fail-closed
+incremental):
+
+- `WebAssembly.Module` cache by kernel digest (`module_cache.ts`); rejected compiles are dropped.
+- Boot-stack template fulls (`template_cache.ts`): key = kernel digest + ordered digests of
+  **image layers and sidecar guest layers**; `putSnapshotObject` + optional `mc-template.<hash>`
+  index; concurrent ensure shares one in-flight promise.
+- Create binds `active_base` by **digest only** after `bootToPrompt` (pre catalog/mounts).
+- `templateFill`: browser default `on_demand`; local `on_demand` only with explicit `store`, else
+  `off`; `prepopulated` for server seed via `publishImageTemplate`.
+- Incremental never invents a full; requires template / restore / `Vm.pinBase()`; CAS load is
+  ephemeral (no long-lived private full on the SDK).
+
+**Follow-ups (addressed in implementation)**
+
+1. ~~Class key covers boot stack~~ — kernel + ordered digests of image **and** sidecar guest layers.
+2. ~~Concurrent first fill~~ — `inflightEnsure` promise map shares one capture per class key.
+3. ~~Module compile poison~~ — rejected `WebAssembly.compile` promises are dropped from the map.
+4. ~~Density after incremental~~ — digest-only `active_base` on the SDK; ephemeral CAS load per
+   delta; host does not retain CAS-loaded baseline bytes (only same-ArrayBuffer retainAsBaseline).
+5. ~~Create-latency policy~~ — browser default `on_demand`; local only when `store` is explicit;
+   otherwise `off`.
+
+**Residuals to clean up** (not blocking the core design; track here)
+
+1. **Durable class index should not duplicate the full MCSN.**  
+   Mint today writes the full once via `putSnapshotObject` and again under
+   `putSnapshot("mc-template.<hash>")`. Store only the content digest (or a tiny pointer) in the
+   keyed index, then resolve the body with `snapshotObject(digest)`.
+
+2. **In-flight ensure key should include store identity.**  
+   `inflightEnsure` is keyed by class key alone. Concurrent ensures against *different*
+   `ContentStore` instances with the same class key could share one capture. Tag the in-flight map
+   by store (or disable sharing across stores).
+
+3. **Naming / dead API surface.**  
+   Rename `imageClassKey` → `bootStackClassKey` (or equivalent) to match boot-stack docs; wire or
+   remove the unused `warmRecipe` parameter.
+
+4. **Public test helpers.**  
+   `clearSessionTemplateIndex` / `sessionTemplateIndexSize` / `clearCompiledKernelModules` are on
+   the package export surface for tests. Prefer `@internal` / test-only entry points if the public
+   API is tightened later.
+
+5. **Original PERF-011 density work still open:**  
+   Worker pools (compile/hash/transfer only; no shared tick universe), `ArrayBuffer` ownership
+   transfer between workers, linear-memory initial size/growth audit per image, dispose refcounts
+   for Module/template, multi-VM isolation under neighbor dispose.
+
 ### PERF-012 — Use one efficient hosted execution channel
 
 **Problem**

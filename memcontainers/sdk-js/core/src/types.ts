@@ -81,6 +81,18 @@ export interface CreateOptions {
   sidecars?: Readonly<Record<string, SidecarGrantDescriptor>>;
   /** Deterministic clock + RNG (for reproducible runs / tests). */
   deterministic?: boolean;
+  /**
+   * How boot-stack MCSN template fulls are filled when a content store supports
+   * `snapshotObject` / `putSnapshotObject` (PERF-011 / SYSTEMS.md §8).
+   *
+   * - `"on_demand"`: first ready boot of a boot-stack class captures one full and caches it;
+   *   later boots of the same class reuse it. Default for `runtime: "browser"`, and for
+   *   local/other when `store` is **explicitly** passed.
+   * - `"prepopulated"`: only bind a template if the store already has one (server prewarm).
+   * - `"off"`: do not bind a template at create (incremental requires pin or restore).
+   *   Default for local boots without an explicit store (no surprise full capture).
+   */
+  templateFill?: "on_demand" | "prepopulated" | "off";
 }
 
 export type ConnectionAuth =
@@ -257,7 +269,11 @@ export interface ContentStore {
 }
 
 export interface SnapshotOptions {
-  /** Full is self-contained and remains the default. Incremental requires the VM's content store. */
+  /**
+   * Full is self-contained and remains the default.
+   * Incremental requires a content store and a bound full baseline (image-class template
+   * from create, restore, or {@link Vm.pinBase}) — it never invents a new full.
+   */
   mode?: "full" | "incremental";
 }
 
