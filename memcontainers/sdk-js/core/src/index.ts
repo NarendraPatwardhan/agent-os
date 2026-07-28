@@ -76,11 +76,11 @@ export { defaultKernel, defaultImage } from "./artifacts.js";
 export { FsContentStore, MemoryContentStore, OpfsContentStore, defaultStore } from "./store.js";
 export {
   defaultTemplateFill,
-  ensureBootStackTemplate,
-  bootStackClassKey,
+  ensureTemplate,
+  templateClassKey,
   layerContentDigests,
-  lookupBootStackTemplate,
-  publishBootStackTemplate,
+  lookupTemplate,
+  publishTemplate,
 } from "./template_cache.js";
 export type { TemplateFillPolicy, TemplateHit } from "./template_cache.js";
 export type { Backend, RawAutocompleteResult, RawExecResult } from "./backend.js";

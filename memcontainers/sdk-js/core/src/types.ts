@@ -82,10 +82,10 @@ export interface CreateOptions {
   /** Deterministic clock + RNG (for reproducible runs / tests). */
   deterministic?: boolean;
   /**
-   * How boot-stack MCSN template fulls are filled when a content store supports
+   * How MCSN template fulls are filled when a content store supports
    * `snapshotObject` / `putSnapshotObject` (PERF-011 / SYSTEMS.md §8).
    *
-   * - `"on_demand"`: first ready boot of a boot-stack class captures one full and caches it;
+   * - `"on_demand"`: first ready boot of a template class captures one full and caches it;
    *   later boots of the same class reuse it. Default for `runtime: "browser"`, and for
    *   local/other when `store` is **explicitly** passed.
    * - `"prepopulated"`: only bind a template if the store already has one (server prewarm).
@@ -271,7 +271,7 @@ export interface ContentStore {
 export interface SnapshotOptions {
   /**
    * Full is self-contained and remains the default.
-   * Incremental requires a content store and a bound full baseline (boot-stack template
+   * Incremental requires a content store and a bound full baseline (template
    * from create, restore, or {@link Vm.pinBase}) — it never invents a new full.
    */
   mode?: "full" | "incremental";

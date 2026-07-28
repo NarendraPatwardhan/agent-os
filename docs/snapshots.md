@@ -46,14 +46,14 @@ The baseline is a content-addressed full MCSN (image-class **template**, restore
 explicit `vm.pinBase()` epoch pin). Incremental capture **never invents** a new full: missing a
 bound base fails closed. The delta names the baseline by digest; restore depth is always one.
 
-Boot-stack templates (PERF-011 / SYSTEMS.md §8):
+Templates (PERF-011 / SYSTEMS.md §8):
 
 - Key: kernel digest + ordered digests of **every** boot layer (image stack **and** create-time
   sidecar guest layers). Host-only sidecar grants do not enter the key. Cardinality tracks distinct
-  boot stacks, not live VM count.
+  template classes, not live VM count.
 - **Browser:** default `templateFill: "on_demand"` — first ready boot of a class fills the cache.
 - **Local:** on_demand only when `store` is **explicitly** passed; otherwise off (no surprise capture).
-- **Server prewarm:** `templateFill: "prepopulated"` only binds; use `publishBootStackTemplate` to seed.
+- **Server prewarm:** `templateFill: "prepopulated"` only binds; use `publishTemplate` to seed.
 - Class index keys (`mc-template.<hash>`) store a **UTF-8 content digest** only; the full MCSN body is
   solely in `putSnapshotObject` / `snapshotObject` (legacy full-MCSN index values are migrated on read).
 - Create binds the template **after** `bootToPrompt` and **before** catalog/mounts so tools/mounts

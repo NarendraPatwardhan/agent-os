@@ -31,8 +31,8 @@ import { embeddedGuestLayers } from "./guest-layers.js";
 import { defaultStore } from "./store.js";
 import {
   defaultTemplateFill,
-  ensureBootStackTemplate,
-  bootStackClassKey,
+  ensureTemplate,
+  templateClassKey,
   layerContentDigests,
 } from "./template_cache.js";
 import { record } from "./record.js";
@@ -772,7 +772,7 @@ async function makeEmbedded(
       activeBase = { digest: baseDigest };
     }
   } else {
-    // Boot stack = image layers + create-time sidecar guest layers (VFS content in MCSN).
+    // Create-time layers = image layers + create-time sidecar guest layers (VFS content in MCSN).
     const layers = (await resolveImage(opts.image, store)) ?? [];
     layers.push(...embeddedGuestLayers(opts.sidecars));
     const cfg = await imageConfig(opts.image, store);
@@ -782,15 +782,15 @@ async function makeEmbedded(
       .build();
     host.bootToPrompt(); // drive boot only to the first prompt (no settle wait)
 
-    // PERF-011: bind boot-stack template full at boot-ready (pre catalog/mounts).
+    // PERF-011: bind template full at boot-ready (pre catalog/mounts).
     // Class key covers the full withLayers stack (image + guest layers).
     const fill = opts.templateFill ?? defaultTemplateFill(opts.runtime, explicitStore);
     if (fill !== "off" && store?.putSnapshotObject && store.snapshotObject) {
-      const classKey = bootStackClassKey(
+      const classKey = templateClassKey(
         host.kernelDigestBytes(),
         await layerContentDigests(layers),
       );
-      const template = await ensureBootStackTemplate({
+      const template = await ensureTemplate({
         store,
         classKey,
         policy: fill,

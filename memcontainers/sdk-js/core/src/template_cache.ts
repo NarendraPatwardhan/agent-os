@@ -1,8 +1,8 @@
-//! Boot-stack template full cache (PERF-011 / SYSTEMS.md §8).
+//! MCSN template cache (PERF-011 / SYSTEMS.md §8).
 //!
-//! A template is one full MCSN for a **boot stack class**:
-//! `(kernel_digest, ordered digests of every layer actually passed to withLayers)`.
-//! That includes the image flavor stack **and** create-time sidecar guest layers
+//! A template is one full MCSN shared by VMs that boot the same layer set:
+//! `(kernel_digest, ordered digests of every layer passed to withLayers)`.
+//! That includes the image flavor layers **and** create-time sidecar guest layers
 //! (guest layers are VFS content in the MCSN, not host-only attachments).
 //!
 //! Live VMs bind `active_base` to the template's content digest and keep private
@@ -25,7 +25,7 @@
 import type { ContentStore, Runtime } from "./types.js";
 import { parseSnapshot } from "@mc/contracts/snapshot";
 
-/** How boot-stack template fulls are obtained when a VM becomes ready. */
+/** How template fulls are obtained when a VM becomes ready. */
 export type TemplateFillPolicy = "on_demand" | "prepopulated" | "off";
 
 /** Digest of a cached template full (`sha256:…`). Bytes are loaded from CAS on demand. */
@@ -98,21 +98,18 @@ export function defaultTemplateFill(
 }
 
 /**
- * Stable boot-stack class key for the template index.
+ * Stable template class key for the template index.
  *
  * `layerDigests` must be `sha256:…` of **every** layer passed to `withLayers`, in
  * stack order: image layers then create-time sidecar guest layers. Host-only
  * sidecar grants (no guest layer) do not appear here.
  */
-export function bootStackClassKey(
+export function templateClassKey(
   kernelDigest: Uint8Array,
   layerDigests: readonly string[],
 ): string {
   return `${hexOf(kernelDigest)}|${layerDigests.join(",")}`;
 }
-
-/** @deprecated Use {@link bootStackClassKey}. */
-export const imageClassKey = bootStackClassKey;
 
 /** Content digests of each layer's tar bytes (stack order). */
 export async function layerContentDigests(layers: readonly Uint8Array[]): Promise<string[]> {
@@ -125,7 +122,7 @@ function requireSnapshotObjects(store: ContentStore): {
 } {
   if (!store.snapshotObject || !store.putSnapshotObject) {
     throw new Error(
-      "boot-stack templates require a content store with snapshotObject/putSnapshotObject",
+      "templates require a content store with snapshotObject/putSnapshotObject",
     );
   }
   return {
@@ -194,7 +191,7 @@ async function writeDurableDigest(
  * Look up a cached template for `classKey` without capturing.
  * Returns the content digest only (load bytes via `snapshotObject` when needed).
  */
-export async function lookupBootStackTemplate(
+export async function lookupTemplate(
   store: ContentStore,
   classKey: string,
 ): Promise<TemplateHit | null> {
@@ -226,9 +223,6 @@ export async function lookupBootStackTemplate(
   return null;
 }
 
-/** @deprecated Use {@link lookupBootStackTemplate}. */
-export const lookupImageTemplate = lookupBootStackTemplate;
-
 async function mintTemplate(
   store: ContentStore,
   classKey: string,
@@ -238,7 +232,7 @@ async function mintTemplate(
   const full = await capture();
   const view = parseSnapshot(full);
   if (view.kind !== "full") {
-    throw new Error("boot-stack template capture must produce a full MCSN");
+    throw new Error("template capture must produce a full MCSN");
   }
   const digest = await objects.putSnapshotObject(full);
   sessionClassIndex.set(sessionKey(store, classKey), digest);
@@ -251,7 +245,7 @@ async function mintTemplate(
  *
  * Concurrent callers for the same (store, classKey) share one in-flight promise.
  */
-export async function ensureBootStackTemplate(args: {
+export async function ensureTemplate(args: {
   store: ContentStore;
   classKey: string;
   policy: TemplateFillPolicy;
@@ -266,7 +260,7 @@ export async function ensureBootStackTemplate(args: {
   if (existing) return existing;
 
   const work = (async (): Promise<TemplateHit | null> => {
-    const hit = await lookupBootStackTemplate(store, classKey);
+    const hit = await lookupTemplate(store, classKey);
     if (hit) return hit;
     if (policy === "prepopulated") return null;
     return mintTemplate(store, classKey, capture);
@@ -280,14 +274,11 @@ export async function ensureBootStackTemplate(args: {
   }
 }
 
-/** @deprecated Use {@link ensureBootStackTemplate}. */
-export const ensureImageTemplate = ensureBootStackTemplate;
-
 /**
  * Publish a template full into the cache (server prepopulate / explicit seed).
  * `full` must be a full MCSN. Returns the content digest.
  */
-export async function publishBootStackTemplate(
+export async function publishTemplate(
   store: ContentStore,
   classKey: string,
   full: Uint8Array,
@@ -295,16 +286,13 @@ export async function publishBootStackTemplate(
   const objects = requireSnapshotObjects(store);
   const view = parseSnapshot(full);
   if (view.kind !== "full") {
-    throw new Error("publishBootStackTemplate requires a full MCSN");
+    throw new Error("publishTemplate requires a full MCSN");
   }
   const digest = await objects.putSnapshotObject(full);
   sessionClassIndex.set(sessionKey(store, classKey), digest);
   await writeDurableDigest(store, classKey, digest);
   return digest;
 }
-
-/** @deprecated Use {@link publishBootStackTemplate}. */
-export const publishImageTemplate = publishBootStackTemplate;
 
 // ── test-only helpers (not re-exported from @mc/core package index) ──────────
 

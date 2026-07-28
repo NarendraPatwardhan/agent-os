@@ -2609,13 +2609,13 @@ error("timed out waiting for restored warm sqlite child: " .. err)
     console.log("phase: SDK incremental snapshot resolves its content-addressed full baseline OK");
   }
 
-  // Second create of the same boot stack must not re-snapshot a template (PERF-011 on_demand).
+  // Second create of the same template class must not re-snapshot a template (PERF-011 on_demand).
   // Test helpers imported from the module path (not the public package surface).
   {
     const {
       clearSessionTemplateIndex,
       sessionTemplateIndexSize,
-      bootStackClassKey,
+      templateClassKey,
       layerContentDigests,
     } = await import("../src/template_cache.js");
     clearSessionTemplateIndex();
@@ -2640,7 +2640,7 @@ error("timed out waiting for restored warm sqlite child: " .. err)
     });
     try {
       if (sessionTemplateIndexSize() !== 1) {
-        throw new Error("second create of same boot stack minted another template");
+        throw new Error("second create of same template class minted another template");
       }
       await b.fs.write("/tmp/t2", "ok");
       const delta = await b.snapshot({ mode: "incremental" });
@@ -2649,14 +2649,14 @@ error("timed out waiting for restored warm sqlite child: " .. err)
       await b.close();
     }
 
-    // Guest layers change the boot stack → distinct class keys.
-    const k1 = bootStackClassKey(await sha256Bytes(kernel), await layerContentDigests([image]));
+    // Guest layers change the template class → distinct class keys.
+    const k1 = templateClassKey(await sha256Bytes(kernel), await layerContentDigests([image]));
     const guest = new Uint8Array([0x6d, 0x63, 0x67, 0x75, 0x65, 0x73, 0x74]); // "mcguest"
-    const k2 = bootStackClassKey(
+    const k2 = templateClassKey(
       await sha256Bytes(kernel),
       await layerContentDigests([image, guest]),
     );
-    if (k1 === k2) throw new Error("guest layer must change boot-stack class key");
+    if (k1 === k2) throw new Error("guest layer must change template class key");
 
     // Neighbor dispose must not break a live peer's template binding (PERF-011 isolation).
     clearSessionTemplateIndex();
@@ -2686,7 +2686,7 @@ error("timed out waiting for restored warm sqlite child: " .. err)
       await peerB.close();
     }
 
-    console.log("phase: PERF-011 boot-stack template reuse + neighbor dispose isolation OK");
+    console.log("phase: PERF-011 template reuse + neighbor dispose isolation OK");
   }
 
   // Local without explicit store does not pay template capture (create-latency policy).
@@ -2714,7 +2714,7 @@ error("timed out waiting for restored warm sqlite child: " .. err)
 
   // Durable class index stores a digest pointer, not a second full MCSN.
   {
-    const { clearSessionTemplateIndex, lookupBootStackTemplate, bootStackClassKey, layerContentDigests } =
+    const { clearSessionTemplateIndex, lookupTemplate, templateClassKey, layerContentDigests } =
       await import("../src/template_cache.js");
     clearSessionTemplateIndex();
     const store = new MemoryContentStore();
@@ -2731,7 +2731,7 @@ error("timed out waiting for restored warm sqlite child: " .. err)
       store,
       deterministic: true,
     });
-    const classKey = bootStackClassKey(
+    const classKey = templateClassKey(
       await sha256Bytes(kernel),
       await layerContentDigests([image]),
     );
@@ -2744,7 +2744,7 @@ error("timed out waiting for restored warm sqlite child: " .. err)
       throw new Error(`durable class index should be a digest pointer, got ${indexSizes[0]} bytes`);
     }
     clearSessionTemplateIndex();
-    const hit = await lookupBootStackTemplate(store, classKey);
+    const hit = await lookupTemplate(store, classKey);
     if (!hit?.digest.startsWith("sha256:")) {
       throw new Error("durable template index did not resolve after session clear");
     }

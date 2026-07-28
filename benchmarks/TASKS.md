@@ -451,7 +451,7 @@ across VMs.
 
 **Status**
 
-Implemented on the JS/SDK path (host Module cache + boot-stack template CAS + fail-closed
+Implemented on the JS/SDK path (host Module cache + template CAS + fail-closed
 incremental):
 
 - `WebAssembly.Module` cache by kernel digest (`module_cache.ts`); rejected compiles are dropped.
@@ -460,13 +460,13 @@ incremental):
   index; concurrent ensure shares one in-flight promise.
 - Create binds `active_base` by **digest only** after `bootToPrompt` (pre catalog/mounts).
 - `templateFill`: browser default `on_demand`; local `on_demand` only with explicit `store`, else
-  `off`; `prepopulated` for server seed via `publishImageTemplate`.
+  `off`; `prepopulated` for server seed via `publishTemplate`.
 - Incremental never invents a full; requires template / restore / `Vm.pinBase()`; CAS load is
   ephemeral (no long-lived private full on the SDK).
 
 **Follow-ups (addressed in implementation)**
 
-1. ~~Class key covers boot stack~~ — kernel + ordered digests of image **and** sidecar guest layers.
+1. ~~Class key covers create-time layers~~ — kernel + ordered digests of image **and** sidecar guest layers.
 2. ~~Concurrent first fill~~ — `inflightEnsure` promise map shares one capture per class key.
 3. ~~Module compile poison~~ — rejected `WebAssembly.compile` promises are dropped from the map.
 4. ~~Density after incremental~~ — digest-only `active_base` on the SDK; ephemeral CAS load per
@@ -481,8 +481,8 @@ Addressed:
 1. ~~Durable class index~~ — `mc-template.<hash>` stores a UTF-8 content digest only; body is solely
    `putSnapshotObject`. Legacy full-MCSN index values are migrated on read.
 2. ~~In-flight ensure key~~ — keyed by `WeakMap` store id + class key.
-3. ~~Naming~~ — `bootStackClassKey` / `ensureBootStackTemplate` / `publishBootStackTemplate`;
-   `warmRecipe` removed; deprecated aliases kept in-module only.
+3. ~~Naming~~ — `templateClassKey` / `ensureTemplate` / `publishTemplate`;
+   `warmRecipe` and old image-class aliases removed (no deprecated shims).
 4. ~~Public test helpers~~ — cleared from `@mc/core` and `@mc/host` package exports; tests import
    module paths directly.
 5. ~~Module dispose refcount~~ — `getCompiledKernelModule` retains; `releaseCompiledKernelModule` on

@@ -822,9 +822,10 @@ content-addressed **template** (or an explicit epoch pin), not a private per-VM 
 
 - A live VM holds an **active base binding** (digest pointer into a snapshot CAS/cache) plus its own
   private linear memory. It does **not** need a private copy of the full template bytes.
-- Template identity is the **boot stack**: kernel digest + ordered digests of every layer applied
-  before boot (image layers and create-time sidecar **guest layers**). Host-only sidecar grants do
-  not affect MCSN and do not enter the key. Cardinality tracks distinct boot stacks, not live VMs.
+- Template identity is the create-time **layer set**: kernel digest + ordered digests of every layer
+  applied before boot (image layers and create-time sidecar **guest layers**). Host-only sidecar
+  grants do not affect MCSN and do not enter the key. Cardinality tracks distinct layer sets, not
+  live VMs.
 - **Server** CAS entries are **prepopulated** (release publish, prewarm, pool seed).
 - **Browser** uses the **same** cache shape, filled **on demand**: first ready boot of a class
   captures one full; later boots of that class reuse it. Local embedded defaults to on-demand only
@@ -1309,13 +1310,14 @@ as the Rust e2e suite—A3 enforced, not asserted.
 
 Multi-VM density in the page follows the same A8 split as the server: **immutable** host values may be
 shared; **live** machine state may not. A `WebAssembly.Module` is cached once per kernel digest.
-**Template fulls** are content-addressed MCSN objects keyed by the **boot stack** (kernel digest +
-ordered digests of every layer passed to boot — image stack **and** create-time sidecar guest layers;
-host-only grants do not enter the key). In the browser that cache is filled **on demand** (first ready
-boot of a class snapshots once; later boots reuse it). On a server the same cache is **prepopulated**.
-Each VM keeps private linear memory and only a digest binding to its active base. Workers, if used, are
-for compile/hash/transfer — not a shared tick loop and not `SharedArrayBuffer`. See §8 for baseline
-binding and incremental rules; PERF-011 is the implementation backlog for this packing.
+**Template fulls** are content-addressed MCSN objects keyed by create-time **layer set** (kernel digest
++ ordered digests of every layer passed to boot — image layers **and** create-time sidecar guest
+layers; host-only grants do not enter the key). In the browser that cache is filled **on demand**
+(first ready boot of a given key snapshots once; later boots reuse it). On a server the same cache is
+**prepopulated**. Each VM keeps private linear memory and only a digest binding to its active base.
+Workers, if used, are for compile/hash/transfer — not a shared tick loop and not `SharedArrayBuffer`.
+See §8 for baseline binding and incremental rules; PERF-011 is the implementation backlog for this
+packing.
 
 ### 13.4 The `@mc/*` SDK and the web app
 

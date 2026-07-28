@@ -153,7 +153,7 @@ export class EmbeddedBackend implements Backend {
   /**
    * Explicit epoch pin (PERF-011): capture a full MCSN of the **current** live machine,
    * store it as a content-addressed object, and bind it as `active_base` for later
-   * incrementals. Does not update the boot-stack template index.
+   * incrementals. Does not update the template index.
    * Retains **digest only** so the full lives in the CAS, not as a private VM copy.
    */
   async pinBase(): Promise<string> {
@@ -182,7 +182,7 @@ export class EmbeddedBackend implements Backend {
     if (this.activeBase?.bytes) return this.activeBase.bytes;
     throw new Error(
       "incremental snapshot requires a bound full baseline " +
-        "(boot-stack template, restore from full/incremental, or pinBase)",
+        "(template, restore from full/incremental, or pinBase)",
     );
   }
 
@@ -538,7 +538,7 @@ export class EmbeddedBackend implements Backend {
       throw new Error("incremental snapshots require a content store with snapshot-object support");
     }
     // PERF-011: never invent a full on incremental. Base must already be bound
-    // (boot-stack template at create, restore, or pinBase).
+    // (template at create, restore, or pinBase).
     const base = await this.resolveActiveBase();
     // Ensure CAS has the object (no-op if already stored under this content digest).
     const digest = await this.snapshotStore.putSnapshotObject(base);
