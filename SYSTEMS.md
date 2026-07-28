@@ -817,11 +817,25 @@ count is read back from restored kernel state and bounded by the generated share
 is attacker-controlled header metadata. Malformed values therefore fail as values rather than creating
 hybrid memory, zero-length input loops, invalid slices, or unbounded per-tick work.
 
-The SDK captures one full baseline when an embedded VM becomes ready. On an incremental snapshot it
-stores that baseline in the caller's snapshot CAS and returns only the delta; restore resolves the
-header's digest from the same CAS. A remote server keeps the corresponding full object in its own CAS,
-so a same-server restore needs only the delta; a caller moving the delta to another server must seed that
-server with the referenced full object. Full snapshots remain the default and require no store.
+Incremental snapshots name exactly one **full baseline** by content digest. That full is a
+content-addressed **template** (or an explicit epoch pin), not a private per-VM side buffer:
+
+- A live VM holds an **active base binding** (digest pointer into a snapshot CAS/cache) plus its own
+  private linear memory. It does **not** need a private copy of the full template bytes.
+- **Server** CAS entries for image classes are **prepopulated** (release publish, prewarm, pool seed).
+  The number of retained fulls tracks the product catalog (images × warm recipes × kernel
+  generations), not the live VM population.
+- **Browser** uses the **same** cache shape, filled **on demand**: the first successful boot of a
+  given image class to ready takes **one** full snapshot and stores it under that class key; later
+  boots of the same class reuse the cached full and do not snapshot again. Distinct classes add
+  distinct entries.
+- Binding is set by create-from-template, restore-from-full, restore-from-incremental (header base
+  digest), or an explicit pin. Incremental capture requires a bound base present in the store and
+  **never invents** a new full. Full snapshots without a store remain the default portable value.
+
+A remote same-service restore or fork should reference the baseline by digest/handle; a caller that
+moves only a delta to another store must seed that store with the named full. Host attachments are
+always re-supplied on restore (A8).
 
 The kernel exposes only what the host cannot infer: **`mc_inflight_egress`**, the count of live
 HTTP/WebSocket/host-call handles plus resident-service calls mid-flight. The host **refuses to snapshot
@@ -1292,6 +1306,16 @@ with a write-behind cache over OPFS → IndexedDB → memory. One JS-specific ha
 snapshot capture first freezes one synchronous copy; the digest and payload can never observe different
 ticks. Shared malformed vectors and cross-host full/incremental restore tests boot the _same_ artifacts
 as the Rust e2e suite—A3 enforced, not asserted.
+
+Multi-VM density in the page follows the same A8 split as the server: **immutable** host values may be
+shared; **live** machine state may not. A `WebAssembly.Module` is cached once per kernel digest.
+Image-class **template fulls** live in a content-addressed snapshot cache with the same key shape as
+the server (`kernel` + `image` digests, optional warm recipe). In the browser that cache is filled
+**on demand** (first ready boot of a class snapshots once; later boots of that class reuse it). On a
+server the same cache is **prepopulated**. Each VM keeps private linear memory and only a digest
+binding to its active base. Workers, if used, are for compile/hash/transfer — not a shared tick
+loop and not `SharedArrayBuffer`. See §8 for baseline binding and incremental rules; PERF-011 is the
+implementation backlog for this packing.
 
 ### 13.4 The `@mc/*` SDK and the web app
 

@@ -35,9 +35,9 @@ The existing results expose several concrete system costs:
 - Large branch populations are created and exercised sequentially. They also duplicate enough
   resident memory to force a normal development host into memory pressure at the 1,000-machine
   scale.
-- Browser construction retains a full boot snapshot even when the caller never requests
-  incremental snapshots. The renderer also carries the JavaScript module graph, compiled kernel,
-  linear memory, artifacts, and snapshot buffers.
+- Browser construction can retain a private full MCSN per live VM and recompile the kernel per
+  machine. The renderer also carries the JavaScript module graph, compiled kernel, linear memory,
+  image artifacts, and snapshot buffers that should be shared by image class, not duplicated per VM.
 - Hosted operations use separate request/response paths and transfer snapshot bytes where stable
   server-side state references would suffice.
 - Resident service warm-up is valuable today. Prewarmed Typst restores have reduced first execution
@@ -377,28 +377,76 @@ in-kernel cache helps only after the cost has already been paid within that mach
 **Problem**
 
 One browser VM currently adds the renderer, JavaScript SDK graph, compiled kernel, linear memory,
-image artifacts, and retained snapshot buffers. Repeated VM construction can duplicate immutable
-work.
+image artifacts, and retained snapshot buffers. Repeated VM construction re-pays **immutable** work
+that should be amortized by image class (and kernel digest), not by live VM count. Private full MCSN
+baselines per machine destroy multi-VM density in the page.
+
+**Design (image-class template cache; A8-safe)**
+
+Baselines are **content-addressed template fulls**, not per-VM accidents:
+
+| Piece | Role | Cardinality |
+|---|---|---|
+| **Template full** | One full MCSN for an image class `(kernel_digest, image_digest [, warm_recipe])` in a CAS/cache | Catalog / distinct kinds used — **not** live VM count |
+| **Active base binding** | Per live VM: digest pointer into the cache | One pointer per VM (no private full required) |
+| **Live machine** | Private linear memory + host attachments (A8) | One per VM |
+
+Sharing is only of **immutable cache values**. Live `SystemState` and host handles are never shared
+across VMs.
+
+**Same cache shape, different fill policy**
+
+- **Server (local or remote):** cache is **prepopulated** (release publish / prewarm / pool seed) for
+  supported image classes. Population size tracks the product catalog.
+- **Browser:** **same** cache model, filled **on demand**. First successful boot of image class `K`
+  to ready → take **one** full snapshot → store under `K`. Later boots of `K` in that session (or
+  durable browser store) **must not snapshot again**; they bind `active_base` to the cached digest
+  (and may restore from it when the product path is warm-start). First boot of a different image
+  class adds another entry.
+
+**Not** the design:
+
+- Invent a new full on first `snapshot({ mode: "incremental" })` (late freeze, multiplies bases).
+- Retain a private full on every VM at ready “just in case.”
+- Chain incrementals or share live kernel state across machines.
+
+**Incremental and pin rules**
+
+- `snapshot(incremental)` requires a bound `active_base` present in the cache; it emits a delta only
+  and never mints a full.
+- Binding is established by create-from-template, restore-from-full, restore-from-incremental (header
+  base digest), or an **explicit** `pinBase` / epoch pin after deliberate work.
+- Default multi-agent fleets use **lineage base** = image-class template. Epoch pins are rare,
+  content-addressed (identical pins collapse), and product-gated.
 
 **Implementation**
 
-- Cache `WebAssembly.Module` objects once per kernel digest.
-- Reuse a bounded pool of runtime workers where isolation permits it.
-- Share immutable image and template buffers across machines.
-- Do not capture or retain a full boot snapshot unless incremental snapshots or local fork require
-  it.
-- Retain baseline digest and page metadata lazily.
-- Transfer buffer ownership between workers instead of copying large `ArrayBuffer` values.
+- Cache `WebAssembly.Module` objects once per **kernel digest** (content identity, not URL).
+- Implement the image-class template-full cache (browser on-demand fill; server prepopulate) and
+  per-VM `active_base` binding as above.
+- Share immutable image/tar and template full buffers (or OPFS-backed objects) by digest; refcount
+  and drop only when unused.
+- Compute integrity-tree / base metadata **once per template digest**, not once per VM.
+- Reuse a bounded pool of workers only for compile / hash / transfer work — never a shared tick
+  universe or shared mutable kernel (no `SharedArrayBuffer` product path; SYSTEMS §13.3).
+- Transfer large `ArrayBuffer` ownership between workers instead of copying.
 - Audit linear-memory initial size and growth policy per image.
-- Release disposed workers, memories, snapshots, and object URLs promptly.
+- On dispose: drop private memory and host attachments; release Module/template only at refcount
+  zero; revoke object URLs; multi-VM isolation must hold when a neighbor is disposed.
 
 **Acceptance**
 
-- Creating additional compatible machines does not recompile the kernel.
-- A VM that never snapshots does not retain an unused full boot snapshot.
+- Creating additional VMs of the same image class does not recompile the kernel and does not mint a
+  second template full (cache hit).
+- Distinct image classes produce at most one template full each under on-demand fill (browser) or
+  the prepopulated catalog (server).
+- A VM that never uses incremental/fork does not retain a **private** unused full; it may share the
+  class template only while other VMs of that class still need it.
+- Incremental capture never invents a baseline; missing binding fails closed.
 - Browser startup, first command, idle VM memory, and incremental per-VM memory improve at p50 and
   p95.
-- Disposal returns memory close to the pre-VM renderer baseline after garbage collection settles.
+- Disposal returns memory close to the pre-VM renderer baseline after garbage collection settles
+  (no leaked Modules, templates, or object URLs).
 - Multi-VM isolation and cancellation tests pass.
 
 ### PERF-012 — Use one efficient hosted execution channel
