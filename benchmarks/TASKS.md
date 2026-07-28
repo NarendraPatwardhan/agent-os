@@ -474,31 +474,28 @@ incremental):
 5. ~~Create-latency policy~~ — browser default `on_demand`; local only when `store` is explicit;
    otherwise `off`.
 
-**Residuals to clean up** (not blocking the core design; track here)
+**Residuals**
 
-1. **Durable class index should not duplicate the full MCSN.**  
-   Mint today writes the full once via `putSnapshotObject` and again under
-   `putSnapshot("mc-template.<hash>")`. Store only the content digest (or a tiny pointer) in the
-   keyed index, then resolve the body with `snapshotObject(digest)`.
+Addressed:
 
-2. **In-flight ensure key should include store identity.**  
-   `inflightEnsure` is keyed by class key alone. Concurrent ensures against *different*
-   `ContentStore` instances with the same class key could share one capture. Tag the in-flight map
-   by store (or disable sharing across stores).
+1. ~~Durable class index~~ — `mc-template.<hash>` stores a UTF-8 content digest only; body is solely
+   `putSnapshotObject`. Legacy full-MCSN index values are migrated on read.
+2. ~~In-flight ensure key~~ — keyed by `WeakMap` store id + class key.
+3. ~~Naming~~ — `bootStackClassKey` / `ensureBootStackTemplate` / `publishBootStackTemplate`;
+   `warmRecipe` removed; deprecated aliases kept in-module only.
+4. ~~Public test helpers~~ — cleared from `@mc/core` and `@mc/host` package exports; tests import
+   module paths directly.
+5. ~~Module dispose refcount~~ — `getCompiledKernelModule` retains; `releaseCompiledKernelModule` on
+   `EmbeddedBackend.close`.
+6. ~~Neighbor dispose isolation~~ — covered in `vm_test` (close A, incremental on B).
+7. ~~Cold-boot memory note~~ — host documents +1 scratch page only at boot (no eager image pre-grow).
 
-3. **Naming / dead API surface.**  
-   Rename `imageClassKey` → `bootStackClassKey` (or equivalent) to match boot-stack docs; wire or
-   remove the unused `warmRecipe` parameter.
+Still open (larger / separate work):
 
-4. **Public test helpers.**  
-   `clearSessionTemplateIndex` / `sessionTemplateIndexSize` / `clearCompiledKernelModules` are on
-   the package export surface for tests. Prefer `@internal` / test-only entry points if the public
-   API is tightened later.
-
-5. **Original PERF-011 density work still open:**  
-   Worker pools (compile/hash/transfer only; no shared tick universe), `ArrayBuffer` ownership
-   transfer between workers, linear-memory initial size/growth audit per image, dispose refcounts
-   for Module/template, multi-VM isolation under neighbor dispose.
+- Dedicated worker pools for compile/hash/transfer (Module cache already single-flights compile on
+  the main thread; no shared tick universe).
+- Structured `ArrayBuffer` transfer between workers once a pool exists.
+- Deeper per-image linear-memory growth policy (beyond the boot scratch-page audit).
 
 ### PERF-012 — Use one efficient hosted execution channel
 

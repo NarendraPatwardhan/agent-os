@@ -2610,11 +2610,12 @@ error("timed out waiting for restored warm sqlite child: " .. err)
   }
 
   // Second create of the same boot stack must not re-snapshot a template (PERF-011 on_demand).
+  // Test helpers imported from the module path (not the public package surface).
   {
     const {
       clearSessionTemplateIndex,
       sessionTemplateIndexSize,
-      imageClassKey,
+      bootStackClassKey,
       layerContentDigests,
     } = await import("../src/template_cache.js");
     clearSessionTemplateIndex();
@@ -2649,15 +2650,43 @@ error("timed out waiting for restored warm sqlite child: " .. err)
     }
 
     // Guest layers change the boot stack → distinct class keys.
-    const k1 = imageClassKey(await sha256Bytes(kernel), await layerContentDigests([image]));
+    const k1 = bootStackClassKey(await sha256Bytes(kernel), await layerContentDigests([image]));
     const guest = new Uint8Array([0x6d, 0x63, 0x67, 0x75, 0x65, 0x73, 0x74]); // "mcguest"
-    const k2 = imageClassKey(
+    const k2 = bootStackClassKey(
       await sha256Bytes(kernel),
       await layerContentDigests([image, guest]),
     );
     if (k1 === k2) throw new Error("guest layer must change boot-stack class key");
 
-    console.log("phase: PERF-011 boot-stack template reused across creates OK");
+    // Neighbor dispose must not break a live peer's template binding (PERF-011 isolation).
+    clearSessionTemplateIndex();
+    const peerStore = new MemoryContentStore();
+    const peerA = await mc.create({
+      runtime: LOCAL_RUNTIME,
+      kernel,
+      image,
+      store: peerStore,
+      deterministic: true,
+    });
+    const peerB = await mc.create({
+      runtime: LOCAL_RUNTIME,
+      kernel,
+      image,
+      store: peerStore,
+      deterministic: true,
+    });
+    await peerA.close();
+    try {
+      await peerB.fs.write("/tmp/after-neighbor-close", "ok");
+      const delta = await peerB.snapshot({ mode: "incremental" });
+      if (delta[8] === 1) {
+        throw new Error("peer B incremental failed after peer A dispose");
+      }
+    } finally {
+      await peerB.close();
+    }
+
+    console.log("phase: PERF-011 boot-stack template reuse + neighbor dispose isolation OK");
   }
 
   // Local without explicit store does not pay template capture (create-latency policy).
@@ -2681,6 +2710,49 @@ error("timed out waiting for restored warm sqlite child: " .. err)
       await vm.close();
     }
     console.log("phase: PERF-011 local default templateFill off without store OK");
+  }
+
+  // Durable class index stores a digest pointer, not a second full MCSN.
+  {
+    const { clearSessionTemplateIndex, lookupBootStackTemplate, bootStackClassKey, layerContentDigests } =
+      await import("../src/template_cache.js");
+    clearSessionTemplateIndex();
+    const store = new MemoryContentStore();
+    const indexSizes: number[] = [];
+    const origPut = store.putSnapshot.bind(store);
+    store.putSnapshot = async (key: string, snap: Uint8Array) => {
+      if (key.startsWith("mc-template.")) indexSizes.push(snap.length);
+      return origPut(key, snap);
+    };
+    const vm = await mc.create({
+      runtime: LOCAL_RUNTIME,
+      kernel,
+      image,
+      store,
+      deterministic: true,
+    });
+    const classKey = bootStackClassKey(
+      await sha256Bytes(kernel),
+      await layerContentDigests([image]),
+    );
+    await vm.close();
+    if (indexSizes.length !== 1) {
+      throw new Error(`expected one mc-template putSnapshot, got ${indexSizes.length}`);
+    }
+    // sha256:<64 hex> is 71 bytes; a full MCSN is hundreds of KB+.
+    if (indexSizes[0]! > 96) {
+      throw new Error(`durable class index should be a digest pointer, got ${indexSizes[0]} bytes`);
+    }
+    clearSessionTemplateIndex();
+    const hit = await lookupBootStackTemplate(store, classKey);
+    if (!hit?.digest.startsWith("sha256:")) {
+      throw new Error("durable template index did not resolve after session clear");
+    }
+    const body = await store.snapshotObject!(hit.digest);
+    if (body.length < 1000) {
+      throw new Error("CAS template body looks too small for a full MCSN");
+    }
+    console.log("phase: PERF-011 durable template index is digest-only OK");
   }
 
   // Incremental without a bound base fails closed (templateFill off).

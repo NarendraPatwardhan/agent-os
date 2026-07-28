@@ -463,8 +463,9 @@ export class KernelHostBuilder {
     const exports = instance.exports as unknown as KernelExports;
     st.mem = new Mem(exports.memory);
 
-    // Reserve a scratch page for input BEFORE mc_init (so the kernel's first allocation already sees
-    // the larger memory) — matches the Rust host.
+    // PERF-011 memory audit: cold boot grows linear memory by exactly one page for the
+    // host scratch buffer before mc_init (matches the Rust host). Further growth is only
+    // guest/kernel demand or restore sizing — not eager pre-allocation per image.
     const prevPages = exports.memory.grow(1);
     const scratchAddr = prevPages * Mem.pageSize;
 

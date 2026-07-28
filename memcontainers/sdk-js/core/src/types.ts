@@ -271,7 +271,7 @@ export interface ContentStore {
 export interface SnapshotOptions {
   /**
    * Full is self-contained and remains the default.
-   * Incremental requires a content store and a bound full baseline (image-class template
+   * Incremental requires a content store and a bound full baseline (boot-stack template
    * from create, restore, or {@link Vm.pinBase}) — it never invents a new full.
    */
   mode?: "full" | "incremental";

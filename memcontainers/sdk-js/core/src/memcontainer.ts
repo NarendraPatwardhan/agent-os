@@ -31,8 +31,8 @@ import { embeddedGuestLayers } from "./guest-layers.js";
 import { defaultStore } from "./store.js";
 import {
   defaultTemplateFill,
-  ensureImageTemplate,
-  imageClassKey,
+  ensureBootStackTemplate,
+  bootStackClassKey,
   layerContentDigests,
 } from "./template_cache.js";
 import { record } from "./record.js";
@@ -322,7 +322,7 @@ export class Vm {
 
   /**
    * Explicit epoch pin (PERF-011): capture a full of the **current** machine and bind it
-   * as the incremental baseline. Image-class templates are preferred for fleets; use this
+   * as the incremental baseline. Boot-stack templates are preferred for fleets; use this
    * when a long-lived branch wants a tighter parent than the boot template.
    * Returns the content digest (`sha256:…`).
    */
@@ -786,15 +786,16 @@ async function makeEmbedded(
     // Class key covers the full withLayers stack (image + guest layers).
     const fill = opts.templateFill ?? defaultTemplateFill(opts.runtime, explicitStore);
     if (fill !== "off" && store?.putSnapshotObject && store.snapshotObject) {
-      const classKey = imageClassKey(
+      const classKey = bootStackClassKey(
         host.kernelDigestBytes(),
         await layerContentDigests(layers),
       );
-      const template = await ensureImageTemplate({
+      const template = await ensureBootStackTemplate({
         store,
         classKey,
         policy: fill,
-        capture: () => host.snapshot(true),
+        // Do not retainAsBaseline: template lives in CAS; host need not keep a private full.
+        capture: () => host.snapshot(false),
       });
       // Digest-only bind: load bytes from CAS ephemerally on incremental (share one full).
       if (template) activeBase = { digest: template.digest };

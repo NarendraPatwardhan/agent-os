@@ -8,9 +8,15 @@
 //! Live VMs bind `active_base` to the template's content digest and keep private
 //! linear memory — they do not each retain a private full.
 //!
+//! Storage layout (reuses existing {@link ContentStore} APIs only):
+//! - Body: `putSnapshotObject` / `snapshotObject` (content-addressed full MCSN).
+//! - Class index: `putSnapshot` / `snapshot` under `mc-template.<hash>` stores **only**
+//!   the UTF-8 content digest (not a second full copy).
+//!
 //! Fill policy:
 //! - **on_demand**: first ready boot of a class captures one full and caches it;
-//!   later boots of the same class reuse it. Concurrent first fills share one in-flight promise.
+//!   later boots of the same class reuse it. Concurrent first fills share one in-flight promise
+//!   **per store**.
 //! - **prepopulated** (server): only look up; never mint at create time.
 //! - **off**: do not bind a template at create.
 //!
@@ -22,13 +28,37 @@ import { parseSnapshot } from "@mc/contracts/snapshot";
 /** How boot-stack template fulls are obtained when a VM becomes ready. */
 export type TemplateFillPolicy = "on_demand" | "prepopulated" | "off";
 
-export type TemplateHit = { digest: string; bytes: Uint8Array };
+/** Digest of a cached template full (`sha256:…`). Bytes are loaded from CAS on demand. */
+export type TemplateHit = { digest: string };
 
-/** Session L1: class key → content digest (`sha256:…`). Survives for the page/process. */
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+const DIGEST_RE = /^sha256:[0-9a-f]{64}$/;
+
+/** Per-store session L1: inflightKey → content digest. */
 const sessionClassIndex = new Map<string, string>();
 
-/** In-flight ensure work so concurrent first creates of the same class share one capture. */
+/** In-flight ensure work, keyed by store identity + class key. */
 const inflightEnsure = new Map<string, Promise<TemplateHit | null>>();
+
+/** Stable identity for a ContentStore instance (process-local). */
+const storeIds = new WeakMap<object, string>();
+let storeIdSeq = 0;
+
+function storeId(store: ContentStore): string {
+  // ContentStore is always an object in our implementations.
+  const obj = store as object;
+  let id = storeIds.get(obj);
+  if (!id) {
+    id = `store-${++storeIdSeq}`;
+    storeIds.set(obj, id);
+  }
+  return id;
+}
+
+function sessionKey(store: ContentStore, classKey: string): string {
+  return `${storeId(store)}\0${classKey}`;
+}
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const h = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes as Uint8Array<ArrayBuffer>));
@@ -48,16 +78,15 @@ function hexOf(digest: Uint8Array): string {
  * Those APIs only allow `[A-Za-z0-9._-]`, so the full class key is hashed.
  */
 async function durableIndexKey(classKey: string): Promise<string> {
-  const hex = await sha256Hex(new TextEncoder().encode(classKey));
+  const hex = await sha256Hex(enc.encode(classKey));
   return `mc-template.${hex}`;
 }
 
 /**
  * Default fill policy (PERF-011 create-latency):
  * - **browser**: on_demand when a snapshot-capable store is available (density goal).
- * - **local / other**: on_demand only when the caller **explicitly** passed a store
- *   (signal they want snapshot/template support); otherwise off so plain boots
- *   do not pay a full MCSN capture.
+ * - **local / other**: on_demand only when the caller **explicitly** passed a store;
+ *   otherwise off so plain boots do not pay a full MCSN capture.
  */
 export function defaultTemplateFill(
   runtime?: Runtime,
@@ -75,13 +104,15 @@ export function defaultTemplateFill(
  * stack order: image layers then create-time sidecar guest layers. Host-only
  * sidecar grants (no guest layer) do not appear here.
  */
-export function imageClassKey(
+export function bootStackClassKey(
   kernelDigest: Uint8Array,
   layerDigests: readonly string[],
-  warmRecipe = "",
 ): string {
-  return `${hexOf(kernelDigest)}|${layerDigests.join(",")}|${warmRecipe}`;
+  return `${hexOf(kernelDigest)}|${layerDigests.join(",")}`;
 }
+
+/** @deprecated Use {@link bootStackClassKey}. */
+export const imageClassKey = bootStackClassKey;
 
 /** Content digests of each layer's tar bytes (stack order). */
 export async function layerContentDigests(layers: readonly Uint8Array[]): Promise<string[]> {
@@ -103,41 +134,100 @@ function requireSnapshotObjects(store: ContentStore): {
   };
 }
 
+function encodeDigestPointer(digest: string): Uint8Array {
+  if (!DIGEST_RE.test(digest)) throw new Error(`invalid template digest pointer: ${digest}`);
+  return enc.encode(digest);
+}
+
+function decodeDigestPointer(raw: Uint8Array): string | null {
+  // Prefer the compact pointer form.
+  try {
+    const text = dec.decode(raw).trim();
+    if (DIGEST_RE.test(text)) return text;
+  } catch {
+    /* fall through */
+  }
+  return null;
+}
+
 /**
- * Look up a cached template full for `classKey` without capturing.
- * Returns null on miss.
+ * Read class → digest from the durable index. Migrates legacy full-MCSN index
+ * values (pre-pointer) into digest-only form when found.
  */
-export async function lookupImageTemplate(
+async function readDurableDigest(
+  store: ContentStore,
+  classKey: string,
+  objects: { putSnapshotObject: (s: Uint8Array) => Promise<string> },
+): Promise<string | null> {
+  if (!store.snapshot) return null;
+  const key = await durableIndexKey(classKey);
+  const indexed = await store.snapshot(key);
+  if (!indexed) return null;
+
+  const pointer = decodeDigestPointer(indexed);
+  if (pointer) return pointer;
+
+  // Legacy: index held a full MCSN. Promote body to putSnapshotObject and rewrite index.
+  try {
+    const view = parseSnapshot(indexed);
+    if (view.kind !== "full") return null;
+    const digest = await objects.putSnapshotObject(indexed);
+    if (store.putSnapshot) {
+      await store.putSnapshot(key, encodeDigestPointer(digest));
+    }
+    return digest;
+  } catch {
+    return null;
+  }
+}
+
+async function writeDurableDigest(
+  store: ContentStore,
+  classKey: string,
+  digest: string,
+): Promise<void> {
+  if (!store.putSnapshot) return;
+  await store.putSnapshot(await durableIndexKey(classKey), encodeDigestPointer(digest));
+}
+
+/**
+ * Look up a cached template for `classKey` without capturing.
+ * Returns the content digest only (load bytes via `snapshotObject` when needed).
+ */
+export async function lookupBootStackTemplate(
   store: ContentStore,
   classKey: string,
 ): Promise<TemplateHit | null> {
   const objects = requireSnapshotObjects(store);
+  const sk = sessionKey(store, classKey);
 
-  const sessionDigest = sessionClassIndex.get(classKey);
+  const sessionDigest = sessionClassIndex.get(sk);
   if (sessionDigest) {
     try {
-      const bytes = await objects.snapshotObject(sessionDigest);
-      return { digest: sessionDigest, bytes };
+      // Prove the body still exists; discard session entry on miss.
+      await objects.snapshotObject(sessionDigest);
+      return { digest: sessionDigest };
     } catch {
-      sessionClassIndex.delete(classKey);
+      sessionClassIndex.delete(sk);
     }
   }
 
-  if (store.snapshot) {
-    const indexed = await store.snapshot(await durableIndexKey(classKey));
-    if (indexed) {
-      const view = parseSnapshot(indexed);
-      if (view.kind !== "full") {
-        throw new Error("boot-stack template index must store a full MCSN");
-      }
-      const digest = await objects.putSnapshotObject(indexed);
-      sessionClassIndex.set(classKey, digest);
-      return { digest, bytes: indexed };
+  const durable = await readDurableDigest(store, classKey, objects);
+  if (durable) {
+    try {
+      await objects.snapshotObject(durable);
+      sessionClassIndex.set(sk, durable);
+      return { digest: durable };
+    } catch {
+      return null;
     }
   }
 
   return null;
 }
+
+/** @deprecated Use {@link lookupBootStackTemplate}. */
+export const lookupImageTemplate = lookupBootStackTemplate;
 
 async function mintTemplate(
   store: ContentStore,
@@ -151,23 +241,17 @@ async function mintTemplate(
     throw new Error("boot-stack template capture must produce a full MCSN");
   }
   const digest = await objects.putSnapshotObject(full);
-  sessionClassIndex.set(classKey, digest);
-  if (store.putSnapshot) {
-    await store.putSnapshot(await durableIndexKey(classKey), full);
-  }
-  return { digest, bytes: full };
+  sessionClassIndex.set(sessionKey(store, classKey), digest);
+  await writeDurableDigest(store, classKey, digest);
+  return { digest };
 }
 
 /**
- * Ensure a template full exists for `classKey`.
+ * Ensure a template full exists for `classKey` on `store`.
  *
- * Concurrent callers for the same key share one in-flight promise (single capture).
- *
- * - **on_demand** miss → `capture()` (must return a full MCSN at boot-ready), store it, return it.
- * - **prepopulated** miss → null (caller leaves VM unbound).
- * - **off** → null.
+ * Concurrent callers for the same (store, classKey) share one in-flight promise.
  */
-export async function ensureImageTemplate(args: {
+export async function ensureBootStackTemplate(args: {
   store: ContentStore;
   classKey: string;
   policy: TemplateFillPolicy;
@@ -177,29 +261,33 @@ export async function ensureImageTemplate(args: {
   const { store, classKey, policy, capture } = args;
   if (policy === "off") return null;
 
-  const existing = inflightEnsure.get(classKey);
+  const key = sessionKey(store, classKey);
+  const existing = inflightEnsure.get(key);
   if (existing) return existing;
 
   const work = (async (): Promise<TemplateHit | null> => {
-    const hit = await lookupImageTemplate(store, classKey);
+    const hit = await lookupBootStackTemplate(store, classKey);
     if (hit) return hit;
     if (policy === "prepopulated") return null;
     return mintTemplate(store, classKey, capture);
   })();
 
-  inflightEnsure.set(classKey, work);
+  inflightEnsure.set(key, work);
   try {
     return await work;
   } finally {
-    if (inflightEnsure.get(classKey) === work) inflightEnsure.delete(classKey);
+    if (inflightEnsure.get(key) === work) inflightEnsure.delete(key);
   }
 }
+
+/** @deprecated Use {@link ensureBootStackTemplate}. */
+export const ensureImageTemplate = ensureBootStackTemplate;
 
 /**
  * Publish a template full into the cache (server prepopulate / explicit seed).
  * `full` must be a full MCSN. Returns the content digest.
  */
-export async function publishImageTemplate(
+export async function publishBootStackTemplate(
   store: ContentStore,
   classKey: string,
   full: Uint8Array,
@@ -207,23 +295,26 @@ export async function publishImageTemplate(
   const objects = requireSnapshotObjects(store);
   const view = parseSnapshot(full);
   if (view.kind !== "full") {
-    throw new Error("publishImageTemplate requires a full MCSN");
+    throw new Error("publishBootStackTemplate requires a full MCSN");
   }
   const digest = await objects.putSnapshotObject(full);
-  sessionClassIndex.set(classKey, digest);
-  if (store.putSnapshot) {
-    await store.putSnapshot(await durableIndexKey(classKey), full);
-  }
+  sessionClassIndex.set(sessionKey(store, classKey), digest);
+  await writeDurableDigest(store, classKey, digest);
   return digest;
 }
 
-/** Test helper: clear the in-process class→digest index and in-flight map. */
+/** @deprecated Use {@link publishBootStackTemplate}. */
+export const publishImageTemplate = publishBootStackTemplate;
+
+// ── test-only helpers (not re-exported from @mc/core package index) ──────────
+
+/** @internal Test helper: clear session index and in-flight map. */
 export function clearSessionTemplateIndex(): void {
   sessionClassIndex.clear();
   inflightEnsure.clear();
 }
 
-/** Test helper: session index size. */
+/** @internal Test helper: session index size. */
 export function sessionTemplateIndexSize(): number {
   return sessionClassIndex.size;
 }

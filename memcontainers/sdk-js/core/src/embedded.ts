@@ -4,7 +4,12 @@
 // Centralizing ticking means concurrent exec + shell never double-drive or race
 // (JS is single-threaded; structured ops run between the pump's ticks).
 
-import { EagainError, RUNNABLE_BURST_TICKS, TickState } from "@mc/host";
+import {
+  EagainError,
+  RUNNABLE_BURST_TICKS,
+  TickState,
+  releaseCompiledKernelModule,
+} from "@mc/host";
 import type { KernelHost, MapHostCall, StreamSink } from "@mc/host";
 import type { Backend, RawAutocompleteResult, RawExecResult } from "./backend.js";
 import type { SidecarBackend } from "./sidecars.js";
@@ -592,6 +597,13 @@ export class EmbeddedBackend implements Backend {
     await this.sidecars.close();
     this.running = false;
     await this.pumpDone;
+    // PERF-011: drop one Module cache retain so the last closed VM can free the compile.
+    try {
+      releaseCompiledKernelModule(this.host.kernelDigestBytes());
+    } catch {
+      /* best-effort */
+    }
+    this.activeBase = undefined;
   }
 }
 
