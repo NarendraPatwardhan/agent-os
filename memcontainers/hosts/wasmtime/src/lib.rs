@@ -792,6 +792,8 @@ impl KernelHostBuilder {
                 }
             }
         });
+        // Diagnostic counters are not machine identity (A8): scrub after restoring the image.
+        host.scrub_perf()?;
         Ok(host)
     }
 }
@@ -843,6 +845,8 @@ fn finalize(
         scratch_len,
         kernel_digest,
         snapshot_base: None,
+        perf_enabled: false,
+        last_command_perf: None,
     })
 }
 
@@ -1061,6 +1065,42 @@ pub struct AutocompleteResult {
 
 // ---------- KernelHost ----------
 
+/// `mc_ctl_perf` ops — keep in lockstep with `control.kdl` / kernel `perf` module.
+const MC_CTL_PERF_SCRUB: i32 = 0;
+const MC_CTL_PERF_ENABLE: i32 = 1;
+const MC_CTL_PERF_READ: i32 = 2;
+
+/// Kernel counter block: 11 little-endian u64s from `mc_ctl_perf(op=2)`.
+const KERNEL_PERF_U64_COUNT: usize = 11;
+const KERNEL_PERF_BLOCK_BYTES: usize = KERNEL_PERF_U64_COUNT * 8;
+
+/// Host-side stage breakdown for one command (PERF-013). Only populated when
+/// [`KernelHost::set_perf_enabled`] is true — the default hot path never times.
+///
+/// Kernel counter fields are **deltas over the command** (after − before).
+/// `kernel_memory_len` is a gauge: kernel linear-memory bytes (not guest wasmi memory).
+#[derive(Debug, Clone, Default)]
+pub struct CommandPerf {
+    pub wall_ms: f64,
+    pub tick_ms: f64,
+    pub pace_ms: f64,
+    pub host_ticks: u64,
+    pub host_runnable: u64,
+    pub host_waiting: u64,
+    pub kernel_ticks: u64,
+    pub kernel_runnable: u64,
+    pub kernel_waiting: u64,
+    pub tasks_spawned: u64,
+    pub pipes_created: u64,
+    pub module_cache_hits: u64,
+    pub module_cache_misses: u64,
+    pub blocked_poll: u64,
+    pub blocked_pipe: u64,
+    pub blocked_wait_child: u64,
+    /// Kernel linear-memory length in bytes (gauge at end of command).
+    pub kernel_memory_len: u64,
+}
+
 pub struct KernelHost {
     store: Store<HostState>,
     _instance: Instance,
@@ -1072,6 +1112,9 @@ pub struct KernelHost {
     scratch_len: usize,
     kernel_digest: SnapshotDigest,
     snapshot_base: Option<VerifiedBaseline>,
+    /// When false (default), command drivers skip all timing and kernel counter reads.
+    perf_enabled: bool,
+    last_command_perf: Option<CommandPerf>,
 }
 
 #[derive(Clone)]
@@ -1309,6 +1352,9 @@ impl KernelHost {
     /// is in flight, since an open connection's raw host handle would not survive a
     /// restore; let in-flight requests finish first. Pair with
     /// [`KernelHostBuilder::restore`] to rehydrate or fork.
+    ///
+    /// PERF-013 counters are scrubbed before the memory image is read so diagnostic state
+    /// is never machine identity (A8).
     pub fn snapshot(&mut self) -> Result<Vec<u8>> {
         let mut out = vec![0; self.snapshot_len()];
         self.snapshot_into(&mut out)?;
@@ -1324,83 +1370,93 @@ impl KernelHost {
     /// language bindings allocate the final binary once rather than copying a
     /// VM-sized temporary `Vec` into it afterward.
     pub fn snapshot_into(&mut self, out: &mut [u8]) -> Result<()> {
-        self.ensure_snapshot_ready()?;
-        let memory_len = self.memory.data_size(&self.store);
-        let expected = SNAPSHOT_HEADER_LEN
-            .checked_add(memory_len)
-            .ok_or_else(|| anyhow!("snapshot size overflow"))?;
-        if out.len() != expected {
-            return Err(anyhow!(
-                "snapshot destination length mismatch: expected {expected}, got {}",
-                out.len()
-            ));
-        }
-        let mem = self.memory.data(&self.store);
-        out[SNAPSHOT_HEADER_LEN..].copy_from_slice(mem);
-        let memory_root = IntegrityTree::from_memory(&out[SNAPSHOT_HEADER_LEN..]).root();
-        write_snapshot_header(
-            out,
-            SnapshotKind::Full,
-            memory_len,
-            0,
-            &self.kernel_digest,
-            &memory_root,
-            &[0; 32],
-        )
-        .map_err(|e| anyhow!("encoding snapshot: {e}"))?;
-        Ok(())
+        self.with_perf_scrubbed_for_snapshot(|host| {
+            host.ensure_snapshot_ready()?;
+            let memory_len = host.memory.data_size(&host.store);
+            let expected = SNAPSHOT_HEADER_LEN
+                .checked_add(memory_len)
+                .ok_or_else(|| anyhow!("snapshot size overflow"))?;
+            if out.len() != expected {
+                return Err(anyhow!(
+                    "snapshot destination length mismatch: expected {expected}, got {}",
+                    out.len()
+                ));
+            }
+            let mem = host.memory.data(&host.store);
+            out[SNAPSHOT_HEADER_LEN..].copy_from_slice(mem);
+            let memory_root = IntegrityTree::from_memory(&out[SNAPSHOT_HEADER_LEN..]).root();
+            write_snapshot_header(
+                out,
+                SnapshotKind::Full,
+                memory_len,
+                0,
+                &host.kernel_digest,
+                &memory_root,
+                &[0; 32],
+            )
+            .map_err(|e| anyhow!("encoding snapshot: {e}"))?;
+            Ok(())
+        })
     }
 
     /// Stream one full snapshot to an empty seekable object without allocating
     /// another VM-sized buffer. The payload is written in integrity-chunk
     /// order, then the completed header is backfilled at offset zero.
     pub fn snapshot_to<W: Write + Seek>(&mut self, sink: &mut W) -> Result<SnapshotWriteResult> {
-        self.ensure_snapshot_ready()?;
-        if sink
-            .seek(SeekFrom::End(0))
-            .map_err(|error| anyhow!("seeking snapshot sink: {error}"))?
-            != 0
-        {
-            return Err(anyhow!("snapshot sink must be empty"));
-        }
-        sink.seek(SeekFrom::Start(0))
-            .map_err(|error| anyhow!("seeking snapshot sink: {error}"))?;
-        sink.write_all(&[0; SNAPSHOT_HEADER_LEN])
-            .map_err(|error| anyhow!("writing snapshot header: {error}"))?;
+        self.with_perf_scrubbed_for_snapshot(|host| {
+            host.ensure_snapshot_ready()?;
+            if sink
+                .seek(SeekFrom::End(0))
+                .map_err(|error| anyhow!("seeking snapshot sink: {error}"))?
+                != 0
+            {
+                return Err(anyhow!("snapshot sink must be empty"));
+            }
+            sink.seek(SeekFrom::Start(0))
+                .map_err(|error| anyhow!("seeking snapshot sink: {error}"))?;
+            sink.write_all(&[0; SNAPSHOT_HEADER_LEN])
+                .map_err(|error| anyhow!("writing snapshot header: {error}"))?;
 
-        let memory = self.memory.data(&self.store);
-        let mut hashes = Vec::with_capacity(memory.len().div_ceil(SNAPSHOT_INTEGRITY_CHUNK_SIZE));
-        for (chunk, bytes) in memory.chunks(SNAPSHOT_INTEGRITY_CHUNK_SIZE).enumerate() {
-            hashes.push(hash_chunk(chunk, bytes));
-            sink.write_all(bytes)
-                .map_err(|error| anyhow!("writing snapshot chunk {chunk}: {error}"))?;
-        }
-        let tree = IntegrityTree::new(hashes, memory.len());
-        let root = tree.root();
-        let mut header = [0; SNAPSHOT_HEADER_LEN];
-        write_snapshot_header(
-            &mut header,
-            SnapshotKind::Full,
-            memory.len(),
-            0,
-            &self.kernel_digest,
-            &root,
-            &[0; 32],
-        )
-        .map_err(|e| anyhow!("encoding snapshot: {e}"))?;
-        sink.seek(SeekFrom::Start(0))
-            .map_err(|error| anyhow!("seeking snapshot header: {error}"))?;
-        sink.write_all(&header)
-            .map_err(|error| anyhow!("writing snapshot header: {error}"))?;
-        Ok(SnapshotWriteResult {
-            bytes: SNAPSHOT_HEADER_LEN + memory.len(),
-            id: baseline_id(&self.kernel_digest, &root, memory.len()),
+            let memory = host.memory.data(&host.store);
+            let mut hashes =
+                Vec::with_capacity(memory.len().div_ceil(SNAPSHOT_INTEGRITY_CHUNK_SIZE));
+            for (chunk, bytes) in memory.chunks(SNAPSHOT_INTEGRITY_CHUNK_SIZE).enumerate() {
+                hashes.push(hash_chunk(chunk, bytes));
+                sink.write_all(bytes)
+                    .map_err(|error| anyhow!("writing snapshot chunk {chunk}: {error}"))?;
+            }
+            let tree = IntegrityTree::new(hashes, memory.len());
+            let root = tree.root();
+            let mut header = [0; SNAPSHOT_HEADER_LEN];
+            write_snapshot_header(
+                &mut header,
+                SnapshotKind::Full,
+                memory.len(),
+                0,
+                &host.kernel_digest,
+                &root,
+                &[0; 32],
+            )
+            .map_err(|e| anyhow!("encoding snapshot: {e}"))?;
+            sink.seek(SeekFrom::Start(0))
+                .map_err(|error| anyhow!("seeking snapshot header: {error}"))?;
+            sink.write_all(&header)
+                .map_err(|error| anyhow!("writing snapshot header: {error}"))?;
+            Ok(SnapshotWriteResult {
+                bytes: SNAPSHOT_HEADER_LEN + memory.len(),
+                id: baseline_id(&host.kernel_digest, &root, memory.len()),
+            })
         })
     }
 
     /// Capture a cumulative page delta against one full baseline. The result embeds the baseline's
     /// content digest and never references another incremental, keeping restore depth bounded at one.
     pub fn snapshot_incremental(&mut self, base: &[u8]) -> Result<Vec<u8>> {
+        // Scrub diagnostic state before reading memory for the delta payload (A8).
+        self.with_perf_scrubbed_for_snapshot(|host| host.snapshot_incremental_inner(base))
+    }
+
+    fn snapshot_incremental_inner(&mut self, base: &[u8]) -> Result<Vec<u8>> {
         self.ensure_snapshot_ready()?;
         let base_view = parse_snapshot(base).map_err(|e| anyhow!("invalid base snapshot: {e}"))?;
         if base_view.kind != SnapshotKind::Full {
@@ -2032,13 +2088,156 @@ impl KernelHost {
         Ok(())
     }
 
+    /// Enable or disable PERF-013 instrumentation. Off by default: production drivers never
+    /// call `Instant` and kernel counter bumps are a predicted-false branch.
+    ///
+    /// Fail-closed: the kernel **must** export `mc_ctl_perf` (rebuild the kernel with this
+    /// control surface). Returns an error if the export is missing or the call fails.
+    pub fn set_perf_enabled(&mut self, on: bool) -> Result<()> {
+        self.last_command_perf = None;
+        let f = self.exports.require_ctl_perf()?;
+        let op = if on {
+            MC_CTL_PERF_ENABLE
+        } else {
+            MC_CTL_PERF_SCRUB
+        };
+        let rc = wt(f.call(&mut self.store, op), "mc_ctl_perf")?;
+        if rc < 0 {
+            return Err(anyhow!("mc_ctl_perf({op}) failed with {rc}"));
+        }
+        self.perf_enabled = on;
+        Ok(())
+    }
+
+    /// Scrub kernel diagnostic counters (disable + zero). Used when tracing is active before
+    /// snapshot, and always after restore (A8). Does not run on the default snapshot path.
+    pub fn scrub_perf(&mut self) -> Result<()> {
+        self.last_command_perf = None;
+        let f = self.exports.require_ctl_perf()?;
+        let rc = wt(f.call(&mut self.store, MC_CTL_PERF_SCRUB), "mc_ctl_perf scrub")?;
+        if rc < 0 {
+            return Err(anyhow!("mc_ctl_perf(scrub) failed with {rc}"));
+        }
+        self.perf_enabled = false;
+        Ok(())
+    }
+
+    /// Take the most recent command's stage breakdown, if instrumentation was on.
+    pub fn take_command_perf(&mut self) -> Option<CommandPerf> {
+        self.last_command_perf.take()
+    }
+
+    /// Whether host-side command tracing is currently desired.
+    pub fn perf_enabled(&self) -> bool {
+        self.perf_enabled
+    }
+
+    /// Run `f` for a snapshot capture. When perf is **off** (the default), pure passthrough —
+    /// no ctl traffic. When perf is **on**, scrub before reading memory (A8), then re-enable.
+    fn with_perf_scrubbed_for_snapshot<R>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<R>,
+    ) -> Result<R> {
+        if !self.perf_enabled {
+            return f(self);
+        }
+        self.scrub_perf()?;
+        match f(self) {
+            Ok(value) => {
+                // Prefer the capture result; re-enable is best-effort session restore.
+                let _ = self.set_perf_enabled(true);
+                Ok(value)
+            }
+            Err(err) => {
+                let _ = self.set_perf_enabled(true);
+                Err(err)
+            }
+        }
+    }
+
+    fn read_kernel_perf(&mut self) -> Result<CommandPerf> {
+        let f = self.exports.require_ctl_perf()?;
+        let n = wt(f.call(&mut self.store, MC_CTL_PERF_READ), "mc_ctl_perf read")?;
+        if n < 0 {
+            return Err(anyhow!("mc_ctl_perf(read) failed with {n}"));
+        }
+        let bytes = self.ctl_get(n as usize)?;
+        if bytes.len() < KERNEL_PERF_BLOCK_BYTES {
+            return Err(anyhow!("mc_ctl_perf counter block too short"));
+        }
+        let mut u64s = [0u64; KERNEL_PERF_U64_COUNT];
+        for (i, slot) in u64s.iter_mut().enumerate() {
+            let start = i * 8;
+            *slot = u64::from_le_bytes(bytes[start..start + 8].try_into().unwrap());
+        }
+        Ok(CommandPerf {
+            kernel_ticks: u64s[0],
+            kernel_runnable: u64s[1],
+            kernel_waiting: u64s[2],
+            tasks_spawned: u64s[3],
+            pipes_created: u64s[4],
+            module_cache_hits: u64s[5],
+            module_cache_misses: u64s[6],
+            blocked_poll: u64s[7],
+            blocked_pipe: u64s[8],
+            blocked_wait_child: u64s[9],
+            kernel_memory_len: u64s[10],
+            ..CommandPerf::default()
+        })
+    }
+
     fn drive_exec_job(&mut self, job: i32, label: &str, max_ticks: usize) -> Result<ExecResult> {
+        // Single loop: when perf is off, Instant paths are never entered (zero timing cost).
+        // Clear any previous take-able sample so failure/timeout never returns stale data.
+        let trace = self.perf_enabled;
+        if trace {
+            self.last_command_perf = None;
+        }
+        let wall0 = trace.then(Instant::now);
+        let before = if trace {
+            Some(self.read_kernel_perf()?)
+        } else {
+            None
+        };
+        let mut tick_ms = 0.0f64;
+        let mut pace_ms = 0.0f64;
+        let mut host_ticks = 0u64;
+        let mut host_runnable = 0u64;
+        let mut host_waiting = 0u64;
+
         for _ in 0..max_ticks {
             if let Some(result) = self.exec_poll(job)? {
+                if let (Some(w0), Some(b)) = (wall0, before) {
+                    self.record_command_perf(
+                        w0,
+                        tick_ms,
+                        pace_ms,
+                        host_ticks,
+                        host_runnable,
+                        host_waiting,
+                        b,
+                    )?;
+                }
                 return Ok(result);
             }
+            let t0 = trace.then(Instant::now);
             let state = self.tick()?;
+            if let Some(t0) = t0 {
+                tick_ms += t0.elapsed().as_secs_f64() * 1000.0;
+                host_ticks += 1;
+            }
             if let Some(result) = self.exec_poll(job)? {
+                if let (Some(w0), Some(b)) = (wall0, before) {
+                    self.record_command_perf(
+                        w0,
+                        tick_ms,
+                        pace_ms,
+                        host_ticks,
+                        host_runnable,
+                        host_waiting,
+                        b,
+                    )?;
+                }
                 return Ok(result);
             }
             match state {
@@ -2047,9 +2246,20 @@ impl KernelHost {
                     return Err(anyhow!("kernel exited before exec '{}' completed", label));
                 }
                 TickState::Waiting => {
-                    std::thread::sleep(std::time::Duration::from_millis(1));
+                    if trace {
+                        host_waiting += 1;
+                        let p0 = Instant::now();
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                        pace_ms += p0.elapsed().as_secs_f64() * 1000.0;
+                    } else {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
                 }
-                TickState::Runnable => {}
+                TickState::Runnable => {
+                    if trace {
+                        host_runnable += 1;
+                    }
+                }
             }
         }
         let _ = self.exec_cancel(job);
@@ -2058,6 +2268,45 @@ impl KernelHost {
             label,
             max_ticks
         ))
+    }
+
+    fn record_command_perf(
+        &mut self,
+        wall0: Instant,
+        tick_ms: f64,
+        pace_ms: f64,
+        host_ticks: u64,
+        host_runnable: u64,
+        host_waiting: u64,
+        before: CommandPerf,
+    ) -> Result<()> {
+        let after = self.read_kernel_perf()?;
+        self.last_command_perf = Some(CommandPerf {
+            wall_ms: wall0.elapsed().as_secs_f64() * 1000.0,
+            tick_ms,
+            pace_ms,
+            host_ticks,
+            host_runnable,
+            host_waiting,
+            kernel_ticks: after.kernel_ticks.saturating_sub(before.kernel_ticks),
+            kernel_runnable: after.kernel_runnable.saturating_sub(before.kernel_runnable),
+            kernel_waiting: after.kernel_waiting.saturating_sub(before.kernel_waiting),
+            tasks_spawned: after.tasks_spawned.saturating_sub(before.tasks_spawned),
+            pipes_created: after.pipes_created.saturating_sub(before.pipes_created),
+            module_cache_hits: after
+                .module_cache_hits
+                .saturating_sub(before.module_cache_hits),
+            module_cache_misses: after
+                .module_cache_misses
+                .saturating_sub(before.module_cache_misses),
+            blocked_poll: after.blocked_poll.saturating_sub(before.blocked_poll),
+            blocked_pipe: after.blocked_pipe.saturating_sub(before.blocked_pipe),
+            blocked_wait_child: after
+                .blocked_wait_child
+                .saturating_sub(before.blocked_wait_child),
+            kernel_memory_len: after.kernel_memory_len,
+        });
+        Ok(())
     }
 
     /// Run an explicit shell command to completion.

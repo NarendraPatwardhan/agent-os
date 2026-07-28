@@ -686,6 +686,7 @@ pub const EXPORTS = [_]Desc{
     .{ .name = "mc_ctl_svc_call_start", .variant = "SvcCallStart", .args = &.{ .{ .name = "request_len", .ty = "u32" } }, .ret = "i32" },
     .{ .name = "mc_ctl_svc_call_poll", .variant = "SvcCallPoll", .args = &.{ .{ .name = "job_id", .ty = "u32" } }, .ret = "i32" },
     .{ .name = "mc_ctl_svc_call_close", .variant = "SvcCallClose", .args = &.{ .{ .name = "job_id", .ty = "u32" } }, .ret = "i32" },
+    .{ .name = "mc_ctl_perf", .variant = "Perf", .args = &.{ .{ .name = "op", .ty = "i32" } }, .ret = "i32" },
     .{ .name = "mc_commit_layer", .variant = "CommitLayer", .args = &.{  }, .ret = "i32" },
     .{ .name = "mc_inflight_egress", .variant = "InflightEgress", .args = &.{  }, .ret = "i32" },
     .{ .name = "mc_pending_commits", .variant = "PendingCommits", .args = &.{  }, .ret = "i32" },

@@ -447,6 +447,29 @@ alongside the relevant implementation, not treated as a documentation project.
 pipeline, and resident service can be attributed to measured stages rather than inferred from wall
 time.
 
+**Status**
+
+Implemented as **opt-in** instrumentation (default off):
+
+- Kernel: `mc_ctl_perf` scrub/enable/read; counters for ticks, runnable/waiting, tasks, pipes,
+  Ready-only module-cache hits/misses, block reasons, kernel linear-memory length
+  (`memcontainers/kernel/rust/src/perf.rs`). Counters live **outside** `SystemState`, boot scrubbed.
+  Snapshot path: **no ctl call when tracing is off**; scrub only while enabled. Restore always
+  scrubs so images cannot leave diagnostics enabled (A8).
+- Hosts (A3): Wasmtime, JS (including embedded pump), and OTP/NIF share the same contract export.
+  Fail-closed if `mc_ctl_perf` is missing when enabling. Single exec driver with conditional timing.
+  Concurrent pump jobs **share** tick/pace cost evenly. OTP: `set_perf_enabled` /
+  `take_command_perf` on `ControlPlane` / `Vm` / NIF; use sync `Vm.exec` for stage attribution
+  (interleaved control-plane exec is for egress-yielding production traffic).
+- Benchmarks: `MC_PERF=1|true|yes` on Wasmtime and BEAM runners emits `perf.*` series and sample
+  thirds; run metadata includes CPU governor/freq and swap/fault gauges when available.
+
+Per-command allocator bytes are not tracked (no cheap guest allocator hook without slowing the
+default path). Kernel counter **deltas** are process-global: concurrent commands' kernel fields may
+overlap; host tick/pace fields are the primary exclusive attribution (shared evenly across concurrent
+JS pump jobs). `take_command_perf` / `takeCommandPerf` is a single last-completed sample (serial
+exec is the supported attribution path; OTP benchmarks use sync `Vm.exec` for that reason).
+
 ### PERF-014 — Measure equivalent cold and warm workloads
 
 - Explicitly warm the exact command, module, filesystem size, and service operation before recording

@@ -75,6 +75,86 @@ fn both_host_families_reject_the_shared_malformed_snapshot_vectors() {
 }
 
 #[test]
+fn perf_counters_are_scrubbed_across_snapshot_and_restore() {
+    let kernel = runfile("_main/memcontainers/kernel/rust/kernel.wasm");
+    let image = runfile("_main/memcontainers/images/base.tar");
+    let (sink, _) = CaptureSink::new();
+    let mut host = KernelHostBuilder::new(kernel.clone())
+        .with_base_image(Some(image.clone()))
+        .with_stdout(Box::new(sink))
+        .deterministic()
+        .build()
+        .unwrap();
+
+    // Default path: tracing off → no command perf, snapshot still works.
+    assert!(!host.perf_enabled());
+    host.exec("true", 20_000, Default::default()).unwrap();
+    assert!(
+        host.take_command_perf().is_none(),
+        "default path must not publish command perf"
+    );
+    let cold_snap = host.snapshot().unwrap();
+    assert!(!cold_snap.is_empty());
+
+    host.set_perf_enabled(true).expect("enable perf");
+    assert!(host.perf_enabled());
+    // Generate kernel work so counters would be non-zero if left enabled in the image.
+    host.exec("true", 20_000, Default::default()).unwrap();
+    let first = host.take_command_perf().expect("perf after traced exec");
+    assert!(first.wall_ms >= 0.0);
+    assert!(
+        first.host_ticks > 0 || first.kernel_ticks > 0,
+        "traced exec must record host or kernel ticks; got {first:?}"
+    );
+    // Take is destructive.
+    assert!(host.take_command_perf().is_none());
+
+    // Snapshot while tracing is on: scrub-before-copy, then re-enable session preference.
+    host.exec("true", 20_000, Default::default()).unwrap();
+    let _ = host.take_command_perf();
+    let snap = host.snapshot().unwrap();
+    assert!(
+        host.perf_enabled(),
+        "snapshot must restore tracing preference after scrub-before-copy"
+    );
+
+    // Restore always scrubs: diagnostics cannot ride in as machine identity (A8).
+    let (sink2, _) = CaptureSink::new();
+    let mut restored = KernelHostBuilder::new(kernel)
+        .with_base_image(Some(image))
+        .with_stdout(Box::new(sink2))
+        .deterministic()
+        .restore(&snap)
+        .unwrap();
+    assert!(
+        !restored.perf_enabled(),
+        "restore must leave host tracing off after scrub"
+    );
+    restored.exec("true", 20_000, Default::default()).unwrap();
+    assert!(
+        restored.take_command_perf().is_none(),
+        "restored host must not publish perf until re-enabled"
+    );
+
+    restored.set_perf_enabled(true).unwrap();
+    restored.exec("true", 20_000, Default::default()).unwrap();
+    let perf = restored
+        .take_command_perf()
+        .expect("command perf after re-enable");
+    assert!(perf.wall_ms >= 0.0);
+    assert!(perf.host_ticks > 0 || perf.kernel_ticks > 0);
+
+    // Explicit scrub clears enable for a clean machine identity.
+    restored.scrub_perf().unwrap();
+    assert!(!restored.perf_enabled());
+    restored.exec("true", 20_000, Default::default()).unwrap();
+    assert!(
+        restored.take_command_perf().is_none(),
+        "scrubbed host must not publish command perf"
+    );
+}
+
+#[test]
 fn caller_owned_full_snapshot_is_exact_and_byte_identical() {
     let kernel = runfile("_main/memcontainers/kernel/rust/kernel.wasm");
     let image = runfile("_main/memcontainers/images/base.tar");

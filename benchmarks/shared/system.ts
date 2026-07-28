@@ -36,6 +36,34 @@ export async function processMemory(): Promise<Record<string, number>> {
   );
 }
 
+/** Host pressure / frequency metadata for PERF-013. Best-effort; missing fields are omitted. */
+export async function hostPerfMetadata(): Promise<Record<string, unknown>> {
+  const [governor, scalingCur, scalingMax, vmstat, pressure] = await Promise.all([
+    maybeFile("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor"),
+    maybeFile("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq"),
+    maybeFile("/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq"),
+    maybeFile("/proc/vmstat"),
+    maybeFile("/proc/pressure/cpu"),
+  ]);
+  const out: Record<string, unknown> = {};
+  if (governor) out.cpuGovernor = governor.trim();
+  if (scalingCur) out.cpuFreqKhz = Number(scalingCur.trim());
+  if (scalingMax) out.cpuMaxFreqKhz = Number(scalingMax.trim());
+  if (vmstat) {
+    const pgmaj = vmstat.match(/^pgmajfault\s+(\d+)$/m);
+    const pswpin = vmstat.match(/^pswpin\s+(\d+)$/m);
+    const pswpout = vmstat.match(/^pswpout\s+(\d+)$/m);
+    if (pgmaj) out.majorFaults = Number(pgmaj[1]);
+    if (pswpin) out.swapIn = Number(pswpin[1]);
+    if (pswpout) out.swapOut = Number(pswpout[1]);
+  }
+  if (pressure) {
+    const some = pressure.match(/^some avg10=([0-9.]+)/m);
+    if (some) out.cpuPressureAvg10 = Number(some[1]);
+  }
+  return out;
+}
+
 export async function systemMetadata(): Promise<Record<string, unknown>> {
   const cpuList = cpus();
   return {
@@ -48,6 +76,7 @@ export async function systemMetadata(): Promise<Record<string, unknown>> {
     totalMemoryBytes: totalmem(),
     runtime: `${process.release.name} ${process.version}`,
     process: await processMemory(),
+    perf: await hostPerfMetadata(),
   };
 }
 

@@ -466,6 +466,92 @@ defmodule AgentOS.Host.Nif do
     end
   end
 
+  @doc """
+  PERF-013: enable or disable command-stage instrumentation on this VM.
+
+  Off by default (no host clocks; kernel counters idle). Fail-closed if the kernel
+  lacks `mc_ctl_perf`. When on, `exec`/`run` populate a take-able stage breakdown.
+  """
+  @spec set_perf_enabled(vm(), boolean()) :: :ok | {:error, reason()}
+  def set_perf_enabled(vm, on) when is_boolean(on), do: set_perf_enabled_nif(vm, on)
+  def set_perf_enabled(_vm, _on), do: {:error, "set_perf_enabled expects a boolean"}
+
+  @doc "PERF-013: scrub kernel diagnostic counters (disable + zero)."
+  @spec scrub_perf(vm()) :: :ok | {:error, reason()}
+  def scrub_perf(vm), do: scrub_perf_nif(vm)
+
+  @doc """
+  PERF-013: take the last command's stage breakdown, or `nil` when tracing is off
+  or no command has completed since the last take/enable.
+
+  Map keys match the Wasmtime/JS `CommandPerf` surface (snake_case). Timing fields
+  are floats (ms); counter fields are non-negative integers.
+  """
+  # Fixed wire order from host_nif `command_perf_vec` (3 timings + 14 counters).
+  @command_perf_field_count 17
+
+  @spec take_command_perf(vm()) :: {:ok, map() | nil} | {:error, reason()}
+  def take_command_perf(vm) do
+    case take_command_perf_nif(vm) do
+      {:ok, []} ->
+        {:ok, nil}
+
+      {:ok, values} when is_list(values) and length(values) == @command_perf_field_count ->
+        {:ok, command_perf_map(values)}
+
+      {:ok, values} when is_list(values) ->
+        {:error,
+         "command perf block has #{length(values)} fields, expected #{@command_perf_field_count}"}
+
+      {:error, _reason} = err ->
+        err
+    end
+  end
+
+  defp command_perf_map([
+         wall_ms,
+         tick_ms,
+         pace_ms,
+         host_ticks,
+         host_runnable,
+         host_waiting,
+         kernel_ticks,
+         kernel_runnable,
+         kernel_waiting,
+         tasks_spawned,
+         pipes_created,
+         module_cache_hits,
+         module_cache_misses,
+         blocked_poll,
+         blocked_pipe,
+         blocked_wait_child,
+         kernel_memory_len
+       ]) do
+    %{
+      wall_ms: wall_ms,
+      tick_ms: tick_ms,
+      pace_ms: pace_ms,
+      host_ticks: trunc_count(host_ticks),
+      host_runnable: trunc_count(host_runnable),
+      host_waiting: trunc_count(host_waiting),
+      kernel_ticks: trunc_count(kernel_ticks),
+      kernel_runnable: trunc_count(kernel_runnable),
+      kernel_waiting: trunc_count(kernel_waiting),
+      tasks_spawned: trunc_count(tasks_spawned),
+      pipes_created: trunc_count(pipes_created),
+      module_cache_hits: trunc_count(module_cache_hits),
+      module_cache_misses: trunc_count(module_cache_misses),
+      blocked_poll: trunc_count(blocked_poll),
+      blocked_pipe: trunc_count(blocked_pipe),
+      blocked_wait_child: trunc_count(blocked_wait_child),
+      kernel_memory_len: trunc_count(kernel_memory_len)
+    }
+  end
+
+  defp trunc_count(v) when is_float(v), do: trunc(v)
+  defp trunc_count(v) when is_integer(v), do: v
+  defp trunc_count(v), do: trunc(v)
+
   @doc "Capture the whole VM (linear memory + header) into a portable blob (A8)."
   @spec snapshot(vm()) :: {:ok, binary()} | {:error, reason()}
   def snapshot(vm), do: snapshot_nif(vm)
@@ -763,6 +849,15 @@ defmodule AgentOS.Host.Nif do
 
   @doc false
   def status_nif(_vm), do: nif_not_loaded()
+
+  @doc false
+  def set_perf_enabled_nif(_vm, _on), do: nif_not_loaded()
+
+  @doc false
+  def scrub_perf_nif(_vm), do: nif_not_loaded()
+
+  @doc false
+  def take_command_perf_nif(_vm), do: nif_not_loaded()
 
   @doc false
   def snapshot_nif(_vm), do: nif_not_loaded()

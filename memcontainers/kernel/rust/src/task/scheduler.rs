@@ -84,6 +84,7 @@ impl Scheduler {
             let id = *self.next_id.get();
             *self.next_id.get() += 1;
             self.install_task(id, parent_id, name, command, args, cwd);
+            crate::perf_on_task_spawned();
             id
         }
     }
@@ -106,6 +107,7 @@ impl Scheduler {
                 return None;
             }
             self.install_task(id, parent_id, name, command, args, cwd);
+            crate::perf_on_task_spawned();
             let nx = &mut *self.next_id.get();
             *nx = (*nx).max(id + 1);
             Some(id)
@@ -185,6 +187,7 @@ impl Scheduler {
         unsafe {
             let pipes = &mut *self.pipes.get();
             pipes.push(Box::new(Pipe::new()));
+            crate::perf_on_pipe_created();
             let p = pipes.last().expect("just pushed").as_ref();
             // Erase the lifetime to the scheduler's; safe because the scheduler outlives
             // all pipes (it owns them) and the Box is never moved out of the Vec.
@@ -250,6 +253,7 @@ impl Scheduler {
     pub fn block_current(&self, reason: BlockReason) {
         unsafe {
             if let Some(id) = *self.current.get() {
+                crate::perf_on_blocked(reason);
                 (*self.blocked.get()).insert(id, reason);
                 if let Some(task) = self.get_task_mut(id) {
                     task.state = TaskState::Blocked(reason);
@@ -263,6 +267,7 @@ impl Scheduler {
     /// reports it must wait on a pipe.
     pub fn block_task(&self, id: TaskId, reason: BlockReason) {
         unsafe {
+            crate::perf_on_blocked(reason);
             (*self.ready.get()).retain(|&tid| tid != id);
             (*self.blocked.get()).insert(id, reason);
             if let Some(task) = self.get_task_mut(id) {

@@ -76,6 +76,26 @@ defmodule AgentOS.Vm do
     GenServer.start_link(__MODULE__, opts, name: via(id))
   end
 
+  @doc """
+  PERF-013: enable or disable command-stage instrumentation on this VM.
+
+  Off by default. When on, subsequent `exec`/`run` fill a take-able stage map via
+  `take_command_perf/1`.
+  """
+  @spec set_perf_enabled(server(), boolean()) :: :ok | {:error, Nif.reason()}
+  def set_perf_enabled(server, on) when is_boolean(on),
+    do: GenServer.call(server, {:set_perf_enabled, on})
+
+  def set_perf_enabled(_server, _on), do: {:error, "set_perf_enabled expects a boolean"}
+
+  @doc "PERF-013: scrub kernel diagnostic counters (disable + zero)."
+  @spec scrub_perf(server()) :: :ok | {:error, Nif.reason()}
+  def scrub_perf(server), do: GenServer.call(server, :scrub_perf)
+
+  @doc "PERF-013: take the last command's stage breakdown, or `nil` when tracing is off."
+  @spec take_command_perf(server()) :: {:ok, map() | nil} | {:error, Nif.reason()}
+  def take_command_perf(server), do: GenServer.call(server, :take_command_perf)
+
   @doc "Run `cmd` to completion → `{:ok, %{exit_code, stdout, stderr}}` or `{:error, reason}`."
   @spec exec(server(), String.t(), keyword()) :: {:ok, map()} | {:error, Nif.reason()}
   def exec(server, cmd, opts \\ [])
@@ -589,6 +609,18 @@ defmodule AgentOS.Vm do
   end
 
   @impl true
+  def handle_call({:set_perf_enabled, on}, _from, state) do
+    {:reply, Nif.set_perf_enabled(state.nif, on), touch(state)}
+  end
+
+  def handle_call(:scrub_perf, _from, state) do
+    {:reply, Nif.scrub_perf(state.nif), touch(state)}
+  end
+
+  def handle_call(:take_command_perf, _from, state) do
+    {:reply, Nif.take_command_perf(state.nif), touch(state)}
+  end
+
   def handle_call({:exec, cmd, max_ticks, exec_opts}, _from, state) do
     reply =
       case Nif.exec(state.nif, cmd, max_ticks, exec_opts) do

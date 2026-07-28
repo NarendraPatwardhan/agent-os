@@ -136,6 +136,10 @@ defmodule AgentOSBenchmarkTest do
                workers: 0
              )
 
+    if perf_enabled?() do
+      assert :ok = ControlPlane.set_perf_enabled(vm_id, true)
+    end
+
     try do
       result =
         measure_exec(result, vm_id, "exec.shell_builtin.steady", "true", samples, %{
@@ -276,7 +280,8 @@ defmodule AgentOSBenchmarkTest do
           ],
           semantics: %{
             coldStart: "first command on a fresh machine",
-            wasmtimeCompilationMode: "opt"
+            wasmtimeCompilationMode: "opt",
+            perfTracing: perf_enabled?()
           }
         },
         measurements: result.measurements,
@@ -295,11 +300,15 @@ defmodule AgentOSBenchmarkTest do
 
   defp measure_exec(result, id, name, command, samples, dimensions) do
     Enum.reduce(0..(samples - 1), result, fn iteration, result ->
+      # Direct Vm.exec uses the host drive_exec path (PERF-013 stages). Interleaved
+      # ControlPlane.exec is for egress-yielding production traffic, not stage attribution.
       started = System.monotonic_time()
 
-      case ControlPlane.exec(id, command) do
+      case with_vm_exec(id, fn pid -> AgentOS.Vm.exec(pid, command) end) do
         {:ok, %{exit_code: 0}} ->
-          Result.sample(result, name, "ms", elapsed_ms(started), dimensions)
+          result
+          |> Result.sample(name, "ms", elapsed_ms(started), dimensions)
+          |> maybe_sample_command_perf(id, name, dimensions)
 
         other ->
           Result.failure(
@@ -318,9 +327,11 @@ defmodule AgentOSBenchmarkTest do
     Enum.reduce(0..(samples - 1), result, fn iteration, result ->
       started = System.monotonic_time()
 
-      case ControlPlane.run(id, program, args) do
+      case with_vm_exec(id, fn pid -> AgentOS.Vm.run(pid, program, args) end) do
         {:ok, %{exit_code: 0}} ->
-          Result.sample(result, name, "ms", elapsed_ms(started), dimensions)
+          result
+          |> Result.sample(name, "ms", elapsed_ms(started), dimensions)
+          |> maybe_sample_command_perf(id, name, dimensions)
 
         other ->
           Result.failure(
@@ -333,6 +344,49 @@ defmodule AgentOSBenchmarkTest do
           )
       end
     end)
+  end
+
+  # Prefer direct Vm.exec/run so PERF-013 stages come from host drive_exec (not the
+  # interleaved ControlPlane path used for production egress yielding).
+  defp with_vm_exec(id, fun) do
+    case ControlPlane.whereis(id) do
+      pid when is_pid(pid) -> fun.(pid)
+      nil -> {:error, :not_found}
+    end
+  end
+
+  defp maybe_sample_command_perf(result, id, parent, dimensions) do
+    if perf_enabled?() do
+      case ControlPlane.take_command_perf(id) do
+        {:ok, %{pace_ms: pace, tick_ms: tick, host_ticks: ticks} = perf} ->
+          dims = Map.put(dimensions, :parent, parent)
+
+          result
+          |> Result.sample("perf.pace_ms", "ms", pace, dims)
+          |> Result.sample("perf.tick_ms", "ms", tick, dims)
+          |> Result.sample("perf.host_ticks", "count", ticks, dims)
+          |> Result.sample(
+            "perf.module_cache_misses",
+            "count",
+            Map.get(perf, :module_cache_misses, 0),
+            dims
+          )
+          |> Result.sample("perf.tasks_spawned", "count", Map.get(perf, :tasks_spawned, 0), dims)
+          |> Result.sample("perf.pipes_created", "count", Map.get(perf, :pipes_created, 0), dims)
+
+        _ ->
+          result
+      end
+    else
+      result
+    end
+  end
+
+  defp perf_enabled? do
+    case System.get_env("MC_PERF") do
+      nil -> false
+      v -> String.downcase(String.trim(v)) in ["1", "true", "yes"]
+    end
   end
 
   defp first_exec_population(result, kernel, posix, samples) do

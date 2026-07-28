@@ -37,7 +37,7 @@ use constants_rust::{
 };
 use ctl_rust::RelayEvent as WireRelayEvent;
 use host::{
-    AutocompleteOptions, CatalogConnection, CatalogInjectOptions, CatalogSpecSource,
+    AutocompleteOptions, CatalogConnection, CatalogInjectOptions, CatalogSpecSource, CommandPerf,
     ConnectionCredential, ConnectionError, ConnectionPolicyAction, ConnectionPolicyOwner,
     ConnectionPolicyRule, ConnectionRegistry, ExecOptions, ExecResult, HostCallCapability,
     HostToolDef, KernelHost, KernelHostBuilder, NetCapability, PersistCapability, RealNet,
@@ -1376,6 +1376,60 @@ fn status(vm: ResourceArc<Vm>) -> NifResult<(Atom, (u64, Option<i32>, bool, i32,
             pending_commits,
         ),
     ))
+}
+
+/// PERF-013: enable/disable host+kernel command instrumentation. Fail-closed if the kernel
+/// lacks `mc_ctl_perf`. Off by default (zero timing cost on the exec path).
+#[rustler::nif(name = "set_perf_enabled_nif", schedule = "DirtyCpu")]
+fn set_perf_enabled(vm: ResourceArc<Vm>, on: bool) -> NifResult<Atom> {
+    vm_lock(&vm)?.set_perf_enabled(on).map_err(nif_err)?;
+    Ok(atoms::ok())
+}
+
+/// PERF-013: scrub kernel diagnostic counters (disable + zero). Used after restore and when
+/// the owner wants a clean machine identity.
+#[rustler::nif(name = "scrub_perf_nif", schedule = "DirtyCpu")]
+fn scrub_perf(vm: ResourceArc<Vm>) -> NifResult<Atom> {
+    vm_lock(&vm)?.scrub_perf().map_err(nif_err)?;
+    Ok(atoms::ok())
+}
+
+/// PERF-013: take the most recent command's stage breakdown (empty list when tracing is off).
+/// Fixed field order matches `AgentOS.Host.Nif.command_perf_map/1` (`COMMAND_PERF_FIELD_COUNT`).
+#[rustler::nif(name = "take_command_perf_nif")]
+fn take_command_perf(vm: ResourceArc<Vm>) -> NifResult<(Atom, Vec<f64>)> {
+    let values = match vm_lock(&vm)?.take_command_perf() {
+        Some(p) => command_perf_vec(p),
+        None => Vec::new(),
+    };
+    Ok((atoms::ok(), values))
+}
+
+/// Wire length for `take_command_perf_nif` → Elixir (`@command_perf_field_count`).
+const COMMAND_PERF_FIELD_COUNT: usize = 17;
+
+fn command_perf_vec(p: CommandPerf) -> Vec<f64> {
+    let values = vec![
+        p.wall_ms,
+        p.tick_ms,
+        p.pace_ms,
+        p.host_ticks as f64,
+        p.host_runnable as f64,
+        p.host_waiting as f64,
+        p.kernel_ticks as f64,
+        p.kernel_runnable as f64,
+        p.kernel_waiting as f64,
+        p.tasks_spawned as f64,
+        p.pipes_created as f64,
+        p.module_cache_hits as f64,
+        p.module_cache_misses as f64,
+        p.blocked_poll as f64,
+        p.blocked_pipe as f64,
+        p.blocked_wait_child as f64,
+        p.kernel_memory_len as f64,
+    ];
+    debug_assert_eq!(values.len(), COMMAND_PERF_FIELD_COUNT);
+    values
 }
 
 /// Capture the whole VM (linear memory + a small header) into a portable blob (A8). The host

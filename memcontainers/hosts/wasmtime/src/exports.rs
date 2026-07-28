@@ -148,4 +148,7 @@ impl KernelExports {
     pub(crate) fn require_ctl_exec_close(&self) -> Result<TypedFunc<i32, i32>> {
         Self::require(&self.mc_ctl_exec_close, "mc_ctl_exec_close")
     }
+    pub(crate) fn require_ctl_perf(&self) -> Result<TypedFunc<i32, i32>> {
+        Self::require(&self.mc_ctl_perf, "mc_ctl_perf")
+    }
 }

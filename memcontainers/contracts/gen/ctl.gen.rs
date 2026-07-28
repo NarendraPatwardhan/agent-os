@@ -718,6 +718,7 @@ pub const CONTROL_EXPORTS: &[&str] = &[
     "mc_ctl_svc_call_start",
     "mc_ctl_svc_call_poll",
     "mc_ctl_svc_call_close",
+    "mc_ctl_perf",
     "mc_commit_layer",
     "mc_inflight_egress",
     "mc_pending_commits",
@@ -756,6 +757,7 @@ macro_rules! mc_control_table {
         mc_ctl_svc_call_start => SvcCallStart (request_len: u32) [i32];
         mc_ctl_svc_call_poll => SvcCallPoll (job_id: u32) [i32];
         mc_ctl_svc_call_close => SvcCallClose (job_id: u32) [i32];
+        mc_ctl_perf => Perf (op: i32) [i32];
         mc_commit_layer => CommitLayer () [i32];
         mc_inflight_egress => InflightEgress () [i32];
         mc_pending_commits => PendingCommits () [i32];

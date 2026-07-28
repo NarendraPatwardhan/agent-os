@@ -477,6 +477,7 @@ export class KernelHostBuilder {
       throw new Error("kernel returned invalid worker state after boot");
     }
 
+    // Kernel boots with perf scrubbed (`mc_init`); no host ctl call needed on the cold path.
     return new KernelHost(st, exports, scratchAddr, Mem.pageSize, kernelDigest);
   }
 
@@ -541,7 +542,7 @@ export class KernelHostBuilder {
             id: view.baseId,
             tree: baseTree!,
           };
-    return new KernelHost(
+    const host = new KernelHost(
       st,
       exports,
       scratchAddr,
@@ -549,13 +550,52 @@ export class KernelHostBuilder {
       kernelDigest,
       verifiedBase,
     );
+    // Scrub after restore so a snapshot taken while tracing was on cannot leave
+    // kernel diagnostics enabled (A8). One ctl call on restore only — not on every snapshot.
+    host.scrubPerf();
+    return host;
   }
+}
+
+/** `mc_ctl_perf` ops — keep in lockstep with `control.kdl` / kernel `perf` module. */
+const MC_CTL_PERF_SCRUB = 0;
+const MC_CTL_PERF_ENABLE = 1;
+const MC_CTL_PERF_READ = 2;
+
+/** Kernel counter block: 11 little-endian u64s from `mc_ctl_perf(op=2)`. */
+const KERNEL_PERF_U64_COUNT = 11;
+const KERNEL_PERF_BLOCK_BYTES = KERNEL_PERF_U64_COUNT * 8;
+
+/** Host-side stage breakdown for one command (PERF-013). Only filled when perf is enabled.
+ *  Kernel fields are deltas over the command; `kernelMemoryLen` is a gauge (kernel linear memory). */
+export interface CommandPerf {
+  wallMs: number;
+  tickMs: number;
+  paceMs: number;
+  hostTicks: number;
+  hostRunnable: number;
+  hostWaiting: number;
+  kernelTicks: number;
+  kernelRunnable: number;
+  kernelWaiting: number;
+  tasksSpawned: number;
+  pipesCreated: number;
+  moduleCacheHits: number;
+  moduleCacheMisses: number;
+  blockedPoll: number;
+  blockedPipe: number;
+  blockedWaitChild: number;
+  /** Kernel linear-memory bytes (not guest wasmi memory). */
+  kernelMemoryLen: number;
 }
 
 /** A booted kernel instance. Mirrors the Rust `KernelHost` driving API
  *  (`tick`/`send_input`/`at_prompt`/`run_script`/…), camelCased. */
 export class KernelHost {
   private snapshotBase?: { bytes: Uint8Array; id: Uint8Array; tree: IntegrityTree };
+  /** Session preference for PERF-013 (field name differs from `perfEnabled()` accessor). */
+  private perfTracing = false;
+  private lastCommandPerf?: CommandPerf;
 
   constructor(
     private readonly st: HostState,
@@ -566,6 +606,107 @@ export class KernelHost {
     snapshotBase?: { bytes: Uint8Array; id: Uint8Array; tree: IntegrityTree },
   ) {
     this.snapshotBase = snapshotBase;
+  }
+
+  private requirePerf(): (op: number) => number {
+    const perf = this.exports.mc_ctl_perf;
+    if (typeof perf !== "function") {
+      throw new Error(
+        "this kernel artifact lacks the `mc_ctl_perf` export; rebuild the kernel (PERF-013)",
+      );
+    }
+    return perf;
+  }
+
+  /**
+   * Enable PERF-013 kernel counters + host stage timing. Off by default so production
+   * drivers never pay for `performance.now()` timing. Fail-closed if the kernel lacks
+   * `mc_ctl_perf`.
+   */
+  setPerfEnabled(on: boolean): void {
+    this.lastCommandPerf = undefined;
+    const op = on ? MC_CTL_PERF_ENABLE : MC_CTL_PERF_SCRUB;
+    const rc = this.requirePerf()(op);
+    if (rc < 0) throw new Error(`mc_ctl_perf(${op}) failed with ${rc}`);
+    this.perfTracing = on;
+  }
+
+  /**
+   * Scrub kernel diagnostic counters (disable + zero). Used when tracing is active before
+   * snapshot, and always after restore (A8). Not invoked on the default snapshot path.
+   */
+  scrubPerf(): void {
+    this.lastCommandPerf = undefined;
+    const rc = this.requirePerf()(MC_CTL_PERF_SCRUB);
+    if (rc < 0) throw new Error(`mc_ctl_perf(scrub) failed with ${rc}`);
+    this.perfTracing = false;
+  }
+
+  takeCommandPerf(): CommandPerf | undefined {
+    const p = this.lastCommandPerf;
+    this.lastCommandPerf = undefined;
+    return p;
+  }
+
+  /** Whether host-side command tracing is currently desired (A3: mirrors Rust `perf_enabled`). */
+  perfEnabled(): boolean {
+    return this.perfTracing;
+  }
+
+  /** Snapshot kernel counter block (absolute values). Used by the SDK pump (A3). */
+  readKernelPerfCounters(): CommandPerf {
+    return this.readKernelPerf();
+  }
+
+  /** Install a completed command breakdown (SDK pump path shares the host API). */
+  publishCommandPerf(perf: CommandPerf): void {
+    if (this.perfTracing) this.lastCommandPerf = perf;
+  }
+
+  private readKernelPerf(): CommandPerf {
+    const n = this.requirePerf()(MC_CTL_PERF_READ);
+    if (n < 0) throw new Error(`mc_ctl_perf(read) failed with ${n}`);
+    const bytes = this.ctlGet(n);
+    if (bytes.length < KERNEL_PERF_BLOCK_BYTES) {
+      throw new Error("mc_ctl_perf counter block too short");
+    }
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const u64 = (i: number) => Number(view.getBigUint64(i * 8, true));
+    return {
+      wallMs: 0,
+      tickMs: 0,
+      paceMs: 0,
+      hostTicks: 0,
+      hostRunnable: 0,
+      hostWaiting: 0,
+      kernelTicks: u64(0),
+      kernelRunnable: u64(1),
+      kernelWaiting: u64(2),
+      tasksSpawned: u64(3),
+      pipesCreated: u64(4),
+      moduleCacheHits: u64(5),
+      moduleCacheMisses: u64(6),
+      blockedPoll: u64(7),
+      blockedPipe: u64(8),
+      blockedWaitChild: u64(9),
+      kernelMemoryLen: u64(10),
+    };
+  }
+
+  /**
+   * Snapshot capture wrapper. When perf is **off** (default), this is a pure passthrough —
+   * no ctl traffic. When perf is **on**, scrub before reading memory (A8), then re-enable.
+   */
+  private async withPerfScrubbedForSnapshot<T>(fn: () => T | Promise<T>): Promise<T> {
+    if (!this.perfTracing) {
+      return await fn();
+    }
+    this.scrubPerf();
+    try {
+      return await fn();
+    } finally {
+      this.setPerfEnabled(true);
+    }
   }
 
   /** One bounded cooperative step, including whether another step can make
@@ -999,23 +1140,72 @@ export class KernelHost {
   }
 
   private async driveExec(job: number, label: string, maxTicks: number): Promise<ExecResult> {
+    // Single loop: when perf is off, performance.now is never called (zero timing cost).
+    // Clear any previous take-able sample so failure/timeout never returns stale data.
+    const trace = this.perfTracing;
+    if (trace) this.lastCommandPerf = undefined;
+    const wall0 = trace ? performance.now() : 0;
+    const before = trace ? this.readKernelPerf() : null;
+    let tickMs = 0;
+    let paceMs = 0;
+    let hostTicks = 0;
+    let hostRunnable = 0;
+    let hostWaiting = 0;
     let runnableBurst = 0;
+
+    const finish = (result: ExecResult): ExecResult => {
+      if (trace && before) {
+        const after = this.readKernelPerf();
+        this.lastCommandPerf = {
+          wallMs: performance.now() - wall0,
+          tickMs,
+          paceMs,
+          hostTicks,
+          hostRunnable,
+          hostWaiting,
+          kernelTicks: Math.max(0, after.kernelTicks - before.kernelTicks),
+          kernelRunnable: Math.max(0, after.kernelRunnable - before.kernelRunnable),
+          kernelWaiting: Math.max(0, after.kernelWaiting - before.kernelWaiting),
+          tasksSpawned: Math.max(0, after.tasksSpawned - before.tasksSpawned),
+          pipesCreated: Math.max(0, after.pipesCreated - before.pipesCreated),
+          moduleCacheHits: Math.max(0, after.moduleCacheHits - before.moduleCacheHits),
+          moduleCacheMisses: Math.max(0, after.moduleCacheMisses - before.moduleCacheMisses),
+          blockedPoll: Math.max(0, after.blockedPoll - before.blockedPoll),
+          blockedPipe: Math.max(0, after.blockedPipe - before.blockedPipe),
+          blockedWaitChild: Math.max(0, after.blockedWaitChild - before.blockedWaitChild),
+          kernelMemoryLen: after.kernelMemoryLen,
+        };
+      }
+      return result;
+    };
+
     for (let i = 0; i < maxTicks; i++) {
       const r = this.execPoll(job);
-      if (r) return r;
+      if (r) return finish(r);
+      const t0 = trace ? performance.now() : 0;
       const state = this.tick();
+      if (trace) {
+        tickMs += performance.now() - t0;
+        hostTicks++;
+      }
       const completed = this.execPoll(job);
-      if (completed) return completed;
+      if (completed) return finish(completed);
       if (state === TickState.Exited) {
         this.execCancel(job);
         throw new Error(`kernel exited before exec '${label}' completed`);
       }
       if (state === TickState.Waiting) {
+        if (trace) hostWaiting++;
         runnableBurst = 0;
+        const p0 = trace ? performance.now() : 0;
         await sleep(1);
-      } else if (++runnableBurst >= RUNNABLE_BURST_TICKS) {
-        runnableBurst = 0;
-        await sleep(0);
+        if (trace) paceMs += performance.now() - p0;
+      } else {
+        if (trace) hostRunnable++;
+        if (++runnableBurst >= RUNNABLE_BURST_TICKS) {
+          runnableBurst = 0;
+          await sleep(0);
+        }
       }
     }
     this.execCancel(job);
@@ -1052,39 +1242,46 @@ export class KernelHost {
 
   /** Capture the entire VM as a portable byte blob (A8): the linear-memory image — all kernel and guest
    *  state — behind a small header. Refuses while a host-egress operation is in flight (its raw host
-   *  handle would not survive a restore). Pair with {@link KernelHostBuilder.restore}. */
+   *  handle would not survive a restore). Pair with {@link KernelHostBuilder.restore}.
+   *  PERF-013 counters are scrubbed before the memory image is read (A8). */
   async snapshot(retainAsBaseline = false): Promise<Uint8Array> {
-    this.ensureSnapshotReady();
-    // Copy synchronously into the final object before the first await. The SDK
-    // pump therefore cannot advance the kernel between the integrity root and
-    // payload, and no second VM-sized staging array is retained.
-    const memory = new Uint8Array(this.exports.memory.buffer);
-    const out = new Uint8Array(SNAPSHOT_HEADER_LEN + memory.length);
-    out.set(memory, SNAPSHOT_HEADER_LEN);
-    const payload = out.subarray(SNAPSHOT_HEADER_LEN);
-    const tree = await IntegrityTree.fromMemory(payload);
-    const memoryRoot = await tree.root();
-    const header = writeSnapshotHeader(
-      "full",
-      payload.length,
-      0,
-      this.kernelDigest,
-      memoryRoot,
-      new Uint8Array(32),
-    );
-    out.set(header);
-    if (retainAsBaseline) {
-      this.snapshotBase = {
-        bytes: out,
-        id: await baselineId(this.kernelDigest, memoryRoot, payload.length),
-        tree,
-      };
-    }
-    return out;
+    return this.withPerfScrubbedForSnapshot(async () => {
+      this.ensureSnapshotReady();
+      // Copy synchronously into the final object before the first await. The SDK
+      // pump therefore cannot advance the kernel between the integrity root and
+      // payload, and no second VM-sized staging array is retained.
+      const memory = new Uint8Array(this.exports.memory.buffer);
+      const out = new Uint8Array(SNAPSHOT_HEADER_LEN + memory.length);
+      out.set(memory, SNAPSHOT_HEADER_LEN);
+      const payload = out.subarray(SNAPSHOT_HEADER_LEN);
+      const tree = await IntegrityTree.fromMemory(payload);
+      const memoryRoot = await tree.root();
+      const header = writeSnapshotHeader(
+        "full",
+        payload.length,
+        0,
+        this.kernelDigest,
+        memoryRoot,
+        new Uint8Array(32),
+      );
+      out.set(header);
+      if (retainAsBaseline) {
+        this.snapshotBase = {
+          bytes: out,
+          id: await baselineId(this.kernelDigest, memoryRoot, payload.length),
+          tree,
+        };
+      }
+      return out;
+    });
   }
 
   /** Cumulative changed-page snapshot against one full baseline. Incrementals never chain. */
   async snapshotIncremental(base: Uint8Array): Promise<Uint8Array> {
+    return this.withPerfScrubbedForSnapshot(async () => this.snapshotIncrementalInner(base));
+  }
+
+  private async snapshotIncrementalInner(base: Uint8Array): Promise<Uint8Array> {
     this.ensureSnapshotReady();
     const baseView = parseSnapshot(base);
     if (baseView.kind !== "full") throw new Error("incremental snapshot base must be full");

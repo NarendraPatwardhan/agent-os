@@ -769,7 +769,10 @@ impl GuestRuntime {
             let registry = self.compilations.borrow();
             if let Some(entry) = registry.entries.get(&info.compilation_id) {
                 return match entry {
-                    CompilationEntry::Ready(module) => Ok(module.clone()),
+                    CompilationEntry::Ready(module) => {
+                        crate::perf_on_module_hit();
+                        Ok(module.clone())
+                    }
                     CompilationEntry::Failed(error) => Err(String::from(error.as_ref())),
                 };
             }
@@ -786,13 +789,17 @@ impl GuestRuntime {
             let registry = self.compilations.borrow();
             if let Some(entry) = registry.entries.get(&info.compilation_id) {
                 return match entry {
-                    CompilationEntry::Ready(module) => Ok(module.clone()),
+                    CompilationEntry::Ready(module) => {
+                        crate::perf_on_module_hit();
+                        Ok(module.clone())
+                    }
                     CompilationEntry::Failed(error) => Err(String::from(error.as_ref())),
                 };
             }
             check_compilation_capacity(&registry, info.compiled_input_bytes)?;
         }
 
+        crate::perf_on_module_miss();
         let compiled = Module::new(&self.engine, bytes)
             .map_err(|error| format!("invalid wasm module: {error}"));
         let mut registry = self.compilations.borrow_mut();

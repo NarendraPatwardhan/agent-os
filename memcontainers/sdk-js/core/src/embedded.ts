@@ -88,10 +88,38 @@ export class FanoutSink implements StreamSink {
   }
 }
 
+/**
+ * Per-job host stage accumulators for PERF-013 (only when host perf is enabled).
+ * Shared pump ticks/pace are divided evenly across concurrent jobs so totals stay
+ * comparable to the single-job Wasmtime driver (A3).
+ */
+type JobPerfTrace = {
+  wall0: number;
+  before: {
+    kernelTicks: number;
+    kernelRunnable: number;
+    kernelWaiting: number;
+    tasksSpawned: number;
+    pipesCreated: number;
+    moduleCacheHits: number;
+    moduleCacheMisses: number;
+    blockedPoll: number;
+    blockedPipe: number;
+    blockedWaitChild: number;
+  };
+  tickMs: number;
+  paceMs: number;
+  hostTicks: number;
+  hostRunnable: number;
+  hostWaiting: number;
+};
+
 export class EmbeddedBackend implements Backend {
   private running = true;
   private readonly resolvers = new Map<number, (r: RawExecResult) => void>();
   private readonly rejecters = new Map<number, (e: Error) => void>();
+  /** PERF-013 traces for in-flight exec jobs (A3 parity with driveExec). */
+  private readonly jobPerf = new Map<number, JobPerfTrace>();
   /** Running agent sessions tailed by the pump (job → tail state). */
   private readonly sessions = new Map<
     number,
@@ -132,6 +160,8 @@ export class EmbeddedBackend implements Backend {
   private async pump(): Promise<void> {
     let runnableBurst = 0;
     while (this.running) {
+      const trace = this.host.perfEnabled() && this.jobPerf.size > 0;
+      const t0 = trace ? performance.now() : 0;
       let state: TickState;
       try {
         state = this.host.tick();
@@ -139,6 +169,19 @@ export class EmbeddedBackend implements Backend {
         this.failAll(asError(e));
         this.running = false;
         break;
+      }
+      if (trace) {
+        // Share host tick cost across concurrent jobs so serial-equivalent totals stay honest.
+        const n = this.jobPerf.size;
+        if (n > 0) {
+          const tickMs = (performance.now() - t0) / n;
+          for (const p of this.jobPerf.values()) {
+            p.tickMs += tickMs;
+            p.hostTicks += 1 / n;
+            if (state === TickState.Runnable) p.hostRunnable += 1 / n;
+            else if (state === TickState.Waiting) p.hostWaiting += 1 / n;
+          }
+        }
       }
       for (const job of [...this.resolvers.keys()]) {
         let done: RawExecResult | null = null;
@@ -148,9 +191,11 @@ export class EmbeddedBackend implements Backend {
           this.rejecters.get(job)?.(asError(e));
           this.resolvers.delete(job);
           this.rejecters.delete(job);
+          this.jobPerf.delete(job);
           continue;
         }
         if (done) {
+          this.finishJobPerf(job);
           this.resolvers.get(job)?.(done);
           this.resolvers.delete(job);
           this.rejecters.delete(job);
@@ -174,6 +219,7 @@ export class EmbeddedBackend implements Backend {
         if (done) {
           emitSessionLines(done.stdout, t.emitted, t.onEvent);
           this.sessions.delete(job);
+          this.jobPerf.delete(job);
           t.onEnd();
         }
       }
@@ -192,15 +238,76 @@ export class EmbeddedBackend implements Backend {
         await sleep(0);
       } else {
         runnableBurst = 0;
+        const p0 = trace ? performance.now() : 0;
         await sleep(busy ? 1 : 15);
+        if (trace) {
+          const n = this.jobPerf.size;
+          // Jobs may have completed during the sleep; only attribute when still traced.
+          if (n > 0) {
+            const pace = (performance.now() - p0) / n;
+            for (const p of this.jobPerf.values()) p.paceMs += pace;
+          }
+        }
       }
     }
+  }
+
+  private beginJobPerf(job: number): void {
+    if (!this.host.perfEnabled()) return;
+    const k = this.host.readKernelPerfCounters();
+    this.jobPerf.set(job, {
+      wall0: performance.now(),
+      before: {
+        kernelTicks: k.kernelTicks,
+        kernelRunnable: k.kernelRunnable,
+        kernelWaiting: k.kernelWaiting,
+        tasksSpawned: k.tasksSpawned,
+        pipesCreated: k.pipesCreated,
+        moduleCacheHits: k.moduleCacheHits,
+        moduleCacheMisses: k.moduleCacheMisses,
+        blockedPoll: k.blockedPoll,
+        blockedPipe: k.blockedPipe,
+        blockedWaitChild: k.blockedWaitChild,
+      },
+      tickMs: 0,
+      paceMs: 0,
+      hostTicks: 0,
+      hostRunnable: 0,
+      hostWaiting: 0,
+    });
+  }
+
+  private finishJobPerf(job: number): void {
+    const t = this.jobPerf.get(job);
+    this.jobPerf.delete(job);
+    if (!t || !this.host.perfEnabled()) return;
+    const after = this.host.readKernelPerfCounters();
+    this.host.publishCommandPerf({
+      wallMs: performance.now() - t.wall0,
+      tickMs: t.tickMs,
+      paceMs: t.paceMs,
+      hostTicks: Math.round(t.hostTicks),
+      hostRunnable: Math.round(t.hostRunnable),
+      hostWaiting: Math.round(t.hostWaiting),
+      kernelTicks: Math.max(0, after.kernelTicks - t.before.kernelTicks),
+      kernelRunnable: Math.max(0, after.kernelRunnable - t.before.kernelRunnable),
+      kernelWaiting: Math.max(0, after.kernelWaiting - t.before.kernelWaiting),
+      tasksSpawned: Math.max(0, after.tasksSpawned - t.before.tasksSpawned),
+      pipesCreated: Math.max(0, after.pipesCreated - t.before.pipesCreated),
+      moduleCacheHits: Math.max(0, after.moduleCacheHits - t.before.moduleCacheHits),
+      moduleCacheMisses: Math.max(0, after.moduleCacheMisses - t.before.moduleCacheMisses),
+      blockedPoll: Math.max(0, after.blockedPoll - t.before.blockedPoll),
+      blockedPipe: Math.max(0, after.blockedPipe - t.before.blockedPipe),
+      blockedWaitChild: Math.max(0, after.blockedWaitChild - t.before.blockedWaitChild),
+      kernelMemoryLen: after.kernelMemoryLen,
+    });
   }
 
   private failAll(err: Error): void {
     for (const reject of this.rejecters.values()) reject(err);
     this.resolvers.clear();
     this.rejecters.clear();
+    this.jobPerf.clear();
   }
 
   private async completeExec(start: () => number): Promise<RawExecResult> {
@@ -211,6 +318,7 @@ export class EmbeddedBackend implements Backend {
     } catch (e) {
       throw asError(e);
     }
+    this.beginJobPerf(job);
     const result = await new Promise<RawExecResult>((resolve, reject) => {
       this.resolvers.set(job, resolve);
       this.rejecters.set(job, reject);

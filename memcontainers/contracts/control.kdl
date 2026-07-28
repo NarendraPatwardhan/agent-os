@@ -156,6 +156,12 @@ export "mc_ctl_svc_call_start" group="service" { arg "request_len" type="u32"; r
 export "mc_ctl_svc_call_poll"  group="service" { arg "job_id" type="u32"; ret "i32"; doc "Poll a host-control service call. 0 means running; >0 is the encoded SvcResponse byte length in the scratch buffer; negative errno on failure." }
 export "mc_ctl_svc_call_close" group="service" { arg "job_id" type="u32"; ret "i32"; doc "Release a host-control service call job." }
 
+// ── opt-in performance counters (PERF-013) ───────────────────────────────────
+// Diagnostic session state only — NOT machine identity (A8). Disabled by default (predicted-false
+// branch on updates). Hosts scrub (op=0) only when tracing is on before snapshot, and always after
+// restore. The default snapshot path does not touch this export.
+export "mc_ctl_perf" group="perf" { arg "op" type="i32"; ret "i32"; doc "op=0 scrub (disable+zero, MCSN-safe); op=1 enable+zero; op=2 write fixed little-endian u64 counter block to ctl buffer and return its byte length (11 u64s). Layout: ticks, runnable, waiting, tasks_spawned, pipes_created, module_cache_hits (Ready only), module_cache_misses, blocked_poll, blocked_pipe, blocked_wait_child, kernel_memory_len (kernel linear memory bytes, not guest wasmi)." }
+
 // ── layers / snapshots / quiescence (A8) ─────────────────────────────────────
 export "mc_commit_layer"     group="snapshot" { ret "i32"; doc "Commit the current writable layer into a content-addressed image layer." }
 export "mc_inflight_egress"  group="snapshot" { ret "i32"; doc "Count of in-flight egress operations (a snapshot must wait for 0)." }

@@ -338,6 +338,34 @@ fn command_output(program: &str, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+fn host_perf_metadata() -> serde_json::Value {
+    let governor = fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor")
+        .ok()
+        .map(|s| s.trim().to_owned());
+    let freq = fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok());
+    let max_freq = fs::read_to_string("/sys/devices/system/cpu/cpu0/cpufreq/scaling_max_freq")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok());
+    let vmstat = fs::read_to_string("/proc/vmstat").unwrap_or_default();
+    let pick = |key: &str| {
+        vmstat.lines().find_map(|line| {
+            let mut parts = line.split_whitespace();
+            (parts.next() == Some(key)).then(|| parts.next()?.parse::<u64>().ok()).flatten()
+        })
+    };
+    serde_json::json!({
+        "cpuGovernor": governor,
+        "cpuFreqKhz": freq,
+        "cpuMaxFreqKhz": max_freq,
+        "majorFaults": pick("pgmajfault"),
+        "swapIn": pick("pswpin"),
+        "swapOut": pick("pswpout"),
+        "perfTracing": perf_enabled(),
+    })
+}
+
 fn system_metadata() -> serde_json::Value {
     let cpuinfo = fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
     let cpu_model = cpuinfo
@@ -365,8 +393,110 @@ fn system_metadata() -> serde_json::Value {
             "rssBytes": proc_bytes("VmRSS:"),
             "peakRssBytes": proc_bytes("VmHWM:"),
             "pssBytes": pss_bytes()
-        }
+        },
+        "perf": host_perf_metadata(),
     })
+}
+
+/// Opt-in PERF-013 tracing. Accepts `1` / `true` / `yes` (case-insensitive). Unset or other values = off.
+fn perf_enabled() -> bool {
+    match std::env::var("MC_PERF") {
+        Ok(v) => {
+            let v = v.trim();
+            v == "1" || v.eq_ignore_ascii_case("true") || v.eq_ignore_ascii_case("yes")
+        }
+        Err(_) => false,
+    }
+}
+
+/// PERF-013: p50 of first/middle/last third of an ordered sample series (in-order, not sorted).
+fn record_sample_thirds(
+    results: &mut Results,
+    name: &str,
+    dims: &BTreeMap<String, serde_json::Value>,
+) {
+    let values: Vec<f64> = {
+        let Some(m) = results
+            .doc
+            .measurements
+            .iter()
+            .find(|m| m.name == name && m.dimensions == *dims)
+        else {
+            return;
+        };
+        if m.samples.len() < 3 {
+            return;
+        }
+        m.samples.clone()
+    };
+    let n = values.len();
+    let third = (n / 3).max(1);
+    let p50 = |slice: &[f64]| {
+        let mut s = slice.to_vec();
+        s.sort_by(f64::total_cmp);
+        s[((0.5 * s.len() as f64).ceil() as usize).max(1) - 1]
+    };
+    let first_p50 = p50(&values[..third]);
+    let last_p50 = p50(&values[n - third..]);
+    let middle = &values[third..n - third];
+    let middle_p50 = if middle.is_empty() {
+        // Degenerate sizes keep first/last; middle falls back to overall mid-sample.
+        p50(&values)
+    } else {
+        p50(middle)
+    };
+    let mut d = dims.clone();
+    d.insert("parent".to_owned(), text(name));
+    d.insert("portion".to_owned(), text("first"));
+    results.sample("perf.sample_third_p50", "ms", first_p50, d.clone());
+    d.insert("portion".to_owned(), text("middle"));
+    results.sample("perf.sample_third_p50", "ms", middle_p50, d.clone());
+    d.insert("portion".to_owned(), text("last"));
+    results.sample("perf.sample_third_p50", "ms", last_p50, d.clone());
+    if first_p50 > 0.0 {
+        d.insert("portion".to_owned(), text("last_over_first"));
+        results.sample(
+            "perf.sample_third_ratio",
+            "ratio",
+            last_p50 / first_p50,
+            d,
+        );
+    }
+}
+
+fn sample_command_perf(
+    results: &mut Results,
+    host: &mut KernelHost,
+    parent: &str,
+    dims: &BTreeMap<String, serde_json::Value>,
+) {
+    let Some(p) = host.take_command_perf() else {
+        return;
+    };
+    let mut d = dims.clone();
+    d.insert("parent".to_owned(), text(parent));
+    results.sample("perf.pace_ms", "ms", p.pace_ms, d.clone());
+    results.sample("perf.tick_ms", "ms", p.tick_ms, d.clone());
+    results.sample("perf.host_ticks", "count", p.host_ticks as f64, d.clone());
+    results.sample(
+        "perf.module_cache_misses",
+        "count",
+        p.module_cache_misses as f64,
+        d.clone(),
+    );
+    results.sample(
+        "perf.tasks_spawned",
+        "count",
+        p.tasks_spawned as f64,
+        d.clone(),
+    );
+    results.sample("perf.pipes_created", "count", p.pipes_created as f64, d.clone());
+    results.sample(
+        "perf.kernel_memory_len",
+        "bytes",
+        p.kernel_memory_len as f64,
+        d,
+    );
 }
 
 fn startup_suite(results: &mut Results, kernel: &Artifact, images: &[&Artifact], profile: Profile) {
@@ -455,7 +585,10 @@ fn repeated_exec(
     for iteration in 0..count {
         let start = Instant::now();
         match exec_checked(host, command, max_ticks) {
-            Ok(()) => results.sample(name, "ms", ms(start), dims.clone()),
+            Ok(()) => {
+                results.sample(name, "ms", ms(start), dims.clone());
+                sample_command_perf(results, host, name, &dims);
+            }
             Err(error) => results.failure(name, "ms", iteration, error, dims.clone()),
         }
     }
@@ -474,7 +607,10 @@ fn repeated_run(
     for iteration in 0..count {
         let start = Instant::now();
         match run_checked(host, program, args, max_ticks) {
-            Ok(()) => results.sample(name, "ms", ms(start), dims.clone()),
+            Ok(()) => {
+                results.sample(name, "ms", ms(start), dims.clone());
+                sample_command_perf(results, host, name, &dims);
+            }
             Err(error) => results.failure(name, "ms", iteration, error, dims.clone()),
         }
     }
@@ -504,6 +640,9 @@ fn execution_state_suite(
     );
 
     let mut host = quiet_builder(&kernel.bytes, &posix.bytes).build()?;
+    if perf_enabled() {
+        host.set_perf_enabled(true)?;
+    }
     repeated_exec(
         results,
         &mut host,
@@ -513,6 +652,7 @@ fn execution_state_suite(
         with_temp("steady-state"),
         20_000,
     );
+    record_sample_thirds(results, "exec.shell_builtin.steady", &with_temp("steady-state"));
     repeated_exec(
         results,
         &mut host,

@@ -12,6 +12,7 @@ mod init;
 mod io;
 mod ipc;
 mod net;
+mod perf;
 mod persist;
 mod seal;
 mod sync;
@@ -1075,6 +1076,8 @@ pub(crate) fn wall_now_ms() -> i64 {
 }
 
 pub(crate) fn mc_init() -> i32 {
+    // Diagnostic counters are never machine identity (A8); boot starts scrubbed.
+    perf::PERF.scrub();
     init_system();
     0
 }
@@ -1193,11 +1196,13 @@ pub(crate) fn mc_tick() -> i32 {
                 }
             }
         }
-        if scheduler.ready_count() > 0 {
+        let work = if scheduler.ready_count() > 0 {
             TICK_RUNNABLE
         } else {
             TICK_WAITING
-        }
+        };
+        perf::PERF.on_tick(work == TICK_RUNNABLE);
+        work
     }
 }
 
@@ -2088,6 +2093,66 @@ pub(crate) fn mc_ctl_svc_call_close(job_id: u32) -> i32 {
     }
 }
 
+// Thin wrappers so task/wasm can bump diagnostic counters without naming `perf::PERF`.
+#[inline(always)]
+pub(crate) fn perf_on_task_spawned() {
+    perf::PERF.on_task_spawned();
+}
+#[inline(always)]
+pub(crate) fn perf_on_pipe_created() {
+    perf::PERF.on_pipe_created();
+}
+#[inline(always)]
+pub(crate) fn perf_on_module_hit() {
+    perf::PERF.on_module_hit();
+}
+#[inline(always)]
+pub(crate) fn perf_on_module_miss() {
+    perf::PERF.on_module_miss();
+}
+#[inline(always)]
+pub(crate) fn perf_on_blocked(reason: task::BlockReason) {
+    match reason {
+        task::BlockReason::Poll => perf::PERF.on_blocked_poll(),
+        task::BlockReason::PipeRead { .. } | task::BlockReason::PipeWrite { .. } => {
+            perf::PERF.on_blocked_pipe()
+        }
+        task::BlockReason::WaitChild { .. } => perf::PERF.on_blocked_wait_child(),
+    }
+}
+
+/// Opt-in PERF-013 control: scrub/enable/read. See `control.kdl` `mc_ctl_perf`.
+/// Hosts scrub before snapshot and after restore so diagnostic state is not machine identity (A8).
+pub(crate) fn mc_ctl_perf(op: i32) -> i32 {
+    let _bkl = sync::lock_kernel();
+    match op {
+        perf::PERF_OP_SCRUB => {
+            // Full scrub: enabled=false and all counters zero (MCSN-safe).
+            perf::PERF.scrub();
+            0
+        }
+        perf::PERF_OP_ENABLE => {
+            perf::PERF.set_enabled(true);
+            0
+        }
+        perf::PERF_OP_READ => {
+            // Kernel linear-memory size (not guest wasmi memory).
+            #[cfg(target_arch = "wasm32")]
+            {
+                let pages = core::arch::wasm32::memory_size(0) as u64;
+                perf::PERF.set_kernel_memory_len(pages * 65536);
+            }
+            let mut buf = [0u8; perf::PERF_COUNTER_BLOCK_BYTES];
+            let n = perf::PERF.write_block(&mut buf);
+            unsafe {
+                *CTL_BUFFER.get() = buf[..n].to_vec();
+            }
+            n as i32
+        }
+        _ => -EINVAL,
+    }
+}
+
 unsafe fn resolve_exec_cwd(requested: Option<&str>) -> Result<String, i32> {
     unsafe {
         let task = STATE.scheduler().get_task(1).ok_or(-ENOENT)?;
@@ -2708,11 +2773,13 @@ pub(crate) fn mc_worker_entry(_arg: i32) -> i32 {
         let ns = STATE.ns();
         scheduler.check_unblocked();
         run_round(scheduler, ns);
-        if scheduler.ready_count() > 0 {
+        let work = if scheduler.ready_count() > 0 {
             TICK_RUNNABLE
         } else {
             TICK_WAITING
-        }
+        };
+        perf::PERF.on_tick(work == TICK_RUNNABLE);
+        work
     }
 }
 

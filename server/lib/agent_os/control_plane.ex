@@ -51,6 +51,21 @@ defmodule AgentOS.ControlPlane do
     end
   end
 
+  @doc "PERF-013: enable or disable command-stage instrumentation on an existing VM."
+  @spec set_perf_enabled(Vm.id(), boolean()) :: :ok | {:error, term()}
+  def set_perf_enabled(id, on) when is_boolean(on),
+    do: with_vm(id, &Vm.set_perf_enabled(&1, on))
+
+  def set_perf_enabled(_id, _on), do: {:error, "set_perf_enabled expects a boolean"}
+
+  @doc "PERF-013: scrub kernel diagnostic counters on an existing VM."
+  @spec scrub_perf(Vm.id()) :: :ok | {:error, term()}
+  def scrub_perf(id), do: with_vm(id, &Vm.scrub_perf/1)
+
+  @doc "PERF-013: take the last command's stage breakdown, or `nil` when tracing is off."
+  @spec take_command_perf(Vm.id()) :: {:ok, map() | nil} | {:error, term()}
+  def take_command_perf(id), do: with_vm(id, &Vm.take_command_perf/1)
+
   @doc "Run a command on an existing VM."
   @spec exec(Vm.id(), String.t(), keyword()) :: {:ok, map()} | {:error, :not_found}
   def exec(id, cmd, opts \\ []) do
