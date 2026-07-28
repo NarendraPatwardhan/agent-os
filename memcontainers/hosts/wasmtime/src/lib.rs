@@ -10,15 +10,15 @@
 //! only nondeterminism is the clock + entropy, and the deterministic sources make a run
 //! byte-for-byte replayable, SYSTEMS.md section 8).
 
+use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
 use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::{Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use constants_rust::{
     AUTOCOMPLETE_MAX_FRAME_BYTES, AUTOCOMPLETE_MAX_ITEMS, EXEC_MODE_DIRECT, EXEC_MODE_SHELL,
     MAX_WORKERS, TICK_RUNNABLE, TICK_WAITING,
@@ -30,8 +30,8 @@ use ctl_rust::{
 };
 use sha2::{Digest, Sha256};
 use snapshot_rust::{
-    SNAPSHOT_HEADER_LEN, SNAPSHOT_INTEGRITY_CHUNK_SIZE, SNAPSHOT_PAGE_SIZE, SnapshotDigest,
-    SnapshotKind, parse_snapshot, snapshot_bitmap_len, write_snapshot_header,
+    parse_snapshot, snapshot_bitmap_len, write_snapshot_header, SnapshotDigest, SnapshotKind,
+    SNAPSHOT_HEADER_LEN, SNAPSHOT_INTEGRITY_CHUNK_SIZE, SNAPSHOT_PAGE_SIZE,
 };
 use wasmtime::{Caller, Config, Engine, Instance, Linker, Memory, Module, Store};
 
@@ -59,15 +59,15 @@ mod net;
 mod persist;
 mod snapshot;
 
-use snapshot::{IntegrityTree, baseline_id, hash_chunk};
+use snapshot::{baseline_id, hash_chunk, IntegrityTree};
 
 pub use catalog::{
-    CatalogApplyStatus, CatalogConnection, CatalogInjectOptions, CatalogSpecSource, HostToolDef,
-    read_default_catalog_compiler_wasm,
+    read_default_catalog_compiler_wasm, CatalogApplyStatus, CatalogConnection,
+    CatalogInjectOptions, CatalogSpecSource, HostToolDef,
 };
 pub use connections::{
-    ConnectionCredential, ConnectionError, ConnectionRegistry, PreparedConnectionRequest,
-    PreparedHttpRequest, derive_connection_origins,
+    derive_connection_origins, ConnectionCredential, ConnectionError, ConnectionRegistry,
+    PreparedConnectionRequest, PreparedHttpRequest,
 };
 pub use host_call::{DeniedHostCall, HostCallCapability, MapHostCall};
 pub use net::{
@@ -938,7 +938,9 @@ fn apply_snapshot(validated: ValidatedSnapshot<'_>, memory: &mut [u8]) -> Result
             if changed.next().is_some() {
                 return Err(anyhow!("invalid snapshot: extra_changed_page"));
             }
-            let mut tree = validated.base_tree.expect("incremental validation supplies a tree");
+            let mut tree = validated
+                .base_tree
+                .expect("incremental validation supplies a tree");
             let chunks = memory.len().div_ceil(SNAPSHOT_INTEGRITY_CHUNK_SIZE);
             let mut affected = vec![false; chunks];
             for page in 0..(validated.view.memory_len / SNAPSHOT_PAGE_SIZE) {
@@ -2114,7 +2116,10 @@ impl KernelHost {
     pub fn scrub_perf(&mut self) -> Result<()> {
         self.last_command_perf = None;
         let f = self.exports.require_ctl_perf()?;
-        let rc = wt(f.call(&mut self.store, MC_CTL_PERF_SCRUB), "mc_ctl_perf scrub")?;
+        let rc = wt(
+            f.call(&mut self.store, MC_CTL_PERF_SCRUB),
+            "mc_ctl_perf scrub",
+        )?;
         if rc < 0 {
             return Err(anyhow!("mc_ctl_perf(scrub) failed with {rc}"));
         }
@@ -2157,7 +2162,10 @@ impl KernelHost {
 
     fn read_kernel_perf(&mut self) -> Result<CommandPerf> {
         let f = self.exports.require_ctl_perf()?;
-        let n = wt(f.call(&mut self.store, MC_CTL_PERF_READ), "mc_ctl_perf read")?;
+        let n = wt(
+            f.call(&mut self.store, MC_CTL_PERF_READ),
+            "mc_ctl_perf read",
+        )?;
         if n < 0 {
             return Err(anyhow!("mc_ctl_perf(read) failed with {n}"));
         }

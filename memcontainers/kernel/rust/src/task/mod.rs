@@ -167,7 +167,7 @@ impl Tier {
     /// scratch would re-introduce clock-derived mtimes).
     pub fn caps(self) -> Capabilities {
         use constants_rust::{
-            TIER_FULL, TIER_ISOLATED, TIER_READ_ONLY, TIER_READ_WRITE, tier_caps,
+            tier_caps, TIER_FULL, TIER_ISOLATED, TIER_READ_ONLY, TIER_READ_WRITE,
         };
         let ordinal = match self {
             Tier::Full => TIER_FULL,

@@ -271,7 +271,7 @@ async function applySnapshot(
       const affected = new Set<number>();
       for (let page = 0; page < view.memoryLen / SNAPSHOT_PAGE_SIZE; page++) {
         if ((view.bitmap[page >>> 3]! & (1 << (page & 7))) !== 0) {
-          affected.add(Math.floor(page * SNAPSHOT_PAGE_SIZE / SNAPSHOT_INTEGRITY_CHUNK_SIZE));
+          affected.add(Math.floor((page * SNAPSHOT_PAGE_SIZE) / SNAPSHOT_INTEGRITY_CHUNK_SIZE));
         }
       }
       for (const chunk of affected) {
@@ -284,19 +284,19 @@ async function applySnapshot(
     } else {
       const rebuildFrom = Math.floor(baseTree!.memoryLen / SNAPSHOT_INTEGRITY_CHUNK_SIZE);
       const chunkCount = Math.ceil(memory.length / SNAPSHOT_INTEGRITY_CHUNK_SIZE);
-      const leaves = baseTree!.leaves().slice(0, rebuildFrom).map((hash) => hash.slice());
+      const leaves = baseTree!
+        .leaves()
+        .slice(0, rebuildFrom)
+        .map((hash) => hash.slice());
       for (let chunk = rebuildFrom; chunk < chunkCount; chunk++) {
         const start = chunk * SNAPSHOT_INTEGRITY_CHUNK_SIZE;
         leaves.push(
-          await hashChunk(
-            chunk,
-            memory.subarray(start, start + SNAPSHOT_INTEGRITY_CHUNK_SIZE),
-          ),
+          await hashChunk(chunk, memory.subarray(start, start + SNAPSHOT_INTEGRITY_CHUNK_SIZE)),
         );
       }
       for (let page = 0; page < view.memoryLen / SNAPSHOT_PAGE_SIZE; page++) {
         if ((view.bitmap[page >>> 3]! & (1 << (page & 7))) === 0) continue;
-        const chunk = Math.floor(page * SNAPSHOT_PAGE_SIZE / SNAPSHOT_INTEGRITY_CHUNK_SIZE);
+        const chunk = Math.floor((page * SNAPSHOT_PAGE_SIZE) / SNAPSHOT_INTEGRITY_CHUNK_SIZE);
         if (chunk >= rebuildFrom) continue;
         const start = chunk * SNAPSHOT_INTEGRITY_CHUNK_SIZE;
         leaves[chunk] = await hashChunk(
@@ -1288,11 +1288,7 @@ export class KernelHost {
     if (!digestEqual(baseView.kernelDigest, this.kernelDigest)) {
       throw new Error("incremental snapshot base uses a different kernel");
     }
-    const baseId = await baselineId(
-      baseView.kernelDigest,
-      baseView.memoryRoot,
-      baseView.memoryLen,
-    );
+    const baseId = await baselineId(baseView.kernelDigest, baseView.memoryRoot, baseView.memoryLen);
     let baseTree: IntegrityTree;
     if (
       this.snapshotBase &&
@@ -1337,23 +1333,20 @@ export class KernelHost {
     for (const page of changed) {
       const pageStart = page.index * SNAPSHOT_PAGE_SIZE;
       const chunk = Math.floor(pageStart / SNAPSHOT_INTEGRITY_CHUNK_SIZE);
-      materializeChunk(chunk).set(
-        page.bytes,
-        pageStart - chunk * SNAPSHOT_INTEGRITY_CHUNK_SIZE,
-      );
+      materializeChunk(chunk).set(page.bytes, pageStart - chunk * SNAPSHOT_INTEGRITY_CHUNK_SIZE);
     }
     if (baseTree.memoryLen === memory.length) {
       for (const [chunk, bytes] of chunkBytes) {
-        await baseTree.update(
-          chunk,
-          await hashChunk(chunk, bytes),
-        );
+        await baseTree.update(chunk, await hashChunk(chunk, bytes));
       }
       memoryRoot = await baseTree.root();
     } else {
       const rebuildFrom = Math.floor(baseTree.memoryLen / SNAPSHOT_INTEGRITY_CHUNK_SIZE);
       const chunkCount = Math.ceil(memory.length / SNAPSHOT_INTEGRITY_CHUNK_SIZE);
-      const leaves = baseTree.leaves().slice(0, rebuildFrom).map((hash) => hash.slice());
+      const leaves = baseTree
+        .leaves()
+        .slice(0, rebuildFrom)
+        .map((hash) => hash.slice());
       for (let chunk = rebuildFrom; chunk < chunkCount; chunk++) {
         leaves.push(await hashChunk(chunk, materializeChunk(chunk)));
       }

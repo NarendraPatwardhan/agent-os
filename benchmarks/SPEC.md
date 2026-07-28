@@ -117,18 +117,18 @@ not a benchmark failure.
 
 ## Runner coverage
 
-| Metric family | Wasmtime | JS SDK | Browser | OTP/NIF |
-|---|:---:|:---:|:---:|:---:|
-| Cold start | yes | yes | yes | Posix |
-| Steady commands/pipeline | yes | yes | yes | yes |
-| Filesystem bandwidth | yes | yes | yes |  |
-| Snapshot/restore/fork | yes | yes | yes | full/restore |
-| Branch population cost | yes |  |  |  |
-| Native memory/density | yes |  |  |  |
-| Browser startup/VM memory |  |  | yes |  |
-| SQLite/Typst warm state | yes | yes | yes | SQLite |
-| Replay | yes | yes |  |  |
-| Failure containment | yes |  |  | malformed kernel |
+| Metric family             | Wasmtime | JS SDK | Browser |     OTP/NIF      |
+| ------------------------- | :------: | :----: | :-----: | :--------------: |
+| Cold start                |   yes    |  yes   |   yes   |      Posix       |
+| Steady commands/pipeline  |   yes    |  yes   |   yes   |       yes        |
+| Filesystem bandwidth      |   yes    |  yes   |   yes   |                  |
+| Snapshot/restore/fork     |   yes    |  yes   |   yes   |   full/restore   |
+| Branch population cost    |   yes    |        |         |                  |
+| Native memory/density     |   yes    |        |         |                  |
+| Browser startup/VM memory |          |        |   yes   |                  |
+| SQLite/Typst warm state   |   yes    |  yes   |   yes   |      SQLite      |
+| Replay                    |   yes    |  yes   |         |                  |
+| Failure containment       |   yes    |        |         | malformed kernel |
 
 An empty cell means that lane does not emit that metric.
 

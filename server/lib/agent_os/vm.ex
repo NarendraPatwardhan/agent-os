@@ -117,6 +117,7 @@ defmodule AgentOS.Vm do
       when is_binary(program) and is_list(args) and is_list(opts) do
     if Enum.all?(args, &is_binary/1) do
       max_ticks = Keyword.get(opts, :max_ticks, @default_max_ticks)
+
       GenServer.call(
         server,
         {:run, program, args, max_ticks, exec_opts(opts)},
@@ -570,6 +571,7 @@ defmodule AgentOS.Vm do
         case catalog_result do
           :ok ->
             now = now_ms()
+
             base =
               if fresh_boot,
                 do: nil,
@@ -915,7 +917,8 @@ defmodule AgentOS.Vm do
             pace_before_tick
           )
 
-        done -> done
+        done ->
+          done
       end
     else
       {:error, _reason} = error -> cancel_exec(server, job, error)

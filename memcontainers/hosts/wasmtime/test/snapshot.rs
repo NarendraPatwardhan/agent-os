@@ -1,7 +1,7 @@
 use host::{CaptureSink, KernelHostBuilder};
 use runfiles::Runfiles;
 use serde::Deserialize;
-use snapshot_rust::{SNAPSHOT_HEADER_LEN, SNAPSHOT_PAGE_SIZE, SnapshotKind, parse_snapshot};
+use snapshot_rust::{parse_snapshot, SnapshotKind, SNAPSHOT_HEADER_LEN, SNAPSHOT_PAGE_SIZE};
 use std::io::Cursor;
 
 #[derive(Deserialize)]
@@ -179,12 +179,11 @@ fn caller_owned_full_snapshot_is_exact_and_byte_identical() {
     assert_eq!(streamed.into_inner(), owned);
 
     let mut nonempty = Cursor::new(vec![0]);
-    assert!(
-        host.snapshot_to(&mut nonempty)
-            .unwrap_err()
-            .to_string()
-            .contains("sink must be empty")
-    );
+    assert!(host
+        .snapshot_to(&mut nonempty)
+        .unwrap_err()
+        .to_string()
+        .contains("sink must be empty"));
 
     let mut short = vec![0; host.snapshot_len() - 1];
     let error = host.snapshot_into(&mut short).unwrap_err().to_string();

@@ -30,17 +30,18 @@ export const hashChunk = (index: number, chunk: Uint8Array): Promise<ChunkHash> 
 
 export async function chunkHashes(memory: Uint8Array): Promise<ChunkHash[]> {
   const pending: Promise<ChunkHash>[] = [];
-  for (let start = 0, index = 0; start < memory.length; start += SNAPSHOT_INTEGRITY_CHUNK_SIZE, index++) {
+  for (
+    let start = 0, index = 0;
+    start < memory.length;
+    start += SNAPSHOT_INTEGRITY_CHUNK_SIZE, index++
+  ) {
     pending.push(hashChunk(index, memory.subarray(start, start + SNAPSHOT_INTEGRITY_CHUNK_SIZE)));
   }
   return Promise.all(pending);
 }
 
-const hashNode = (
-  level: number,
-  left: ChunkHash,
-  right: ChunkHash,
-): Promise<ChunkHash> => sha256Parts([NODE_DOMAIN, u32le(level), left, right]);
+const hashNode = (level: number, left: ChunkHash, right: ChunkHash): Promise<ChunkHash> =>
+  sha256Parts([NODE_DOMAIN, u32le(level), left, right]);
 
 export class IntegrityTree {
   private constructor(
@@ -103,5 +104,4 @@ export const baselineId = (
   kernelDigest: Uint8Array,
   memoryRoot: Uint8Array,
   memoryLen: number,
-): Promise<ChunkHash> =>
-  sha256Parts([BASE_DOMAIN, kernelDigest, memoryRoot, u32le(memoryLen)]);
+): Promise<ChunkHash> => sha256Parts([BASE_DOMAIN, kernelDigest, memoryRoot, u32le(memoryLen)]);

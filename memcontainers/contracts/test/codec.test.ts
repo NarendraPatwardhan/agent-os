@@ -165,10 +165,7 @@ function controlCodecs(): void {
     "non-canonical control strmap",
   );
   assertThrowsWire(
-    () =>
-      decodeExecRequest(
-        Uint8Array.from([1, 0, 2, 1, 0, 0, 0, 0, 255, 255, 255, 255]),
-      ),
+    () => decodeExecRequest(Uint8Array.from([1, 0, 2, 1, 0, 0, 0, 0, 255, 255, 255, 255])),
     ControlWireError,
     "impossible control strmap count",
   );

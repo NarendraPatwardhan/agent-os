@@ -95,7 +95,9 @@ const secondGeneration = await restored.snapshotIncremental(valid);
 const restoredAgain = await new KernelHostBuilder(wasm)
   .deterministic()
   .restore(secondGeneration, valid);
-if (new TextDecoder().decode(restoredAgain.readFile("/tmp/after-restore")) !== "second generation") {
+if (
+  new TextDecoder().decode(restoredAgain.readFile("/tmp/after-restore")) !== "second generation"
+) {
   throw new Error("restored incremental could not produce a second-generation delta");
 }
 

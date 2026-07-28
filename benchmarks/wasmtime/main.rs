@@ -352,7 +352,9 @@ fn host_perf_metadata() -> serde_json::Value {
     let pick = |key: &str| {
         vmstat.lines().find_map(|line| {
             let mut parts = line.split_whitespace();
-            (parts.next() == Some(key)).then(|| parts.next()?.parse::<u64>().ok()).flatten()
+            (parts.next() == Some(key))
+                .then(|| parts.next()?.parse::<u64>().ok())
+                .flatten()
         })
     };
     serde_json::json!({
@@ -455,12 +457,7 @@ fn record_sample_thirds(
     results.sample("perf.sample_third_p50", "ms", last_p50, d.clone());
     if first_p50 > 0.0 {
         d.insert("portion".to_owned(), text("last_over_first"));
-        results.sample(
-            "perf.sample_third_ratio",
-            "ratio",
-            last_p50 / first_p50,
-            d,
-        );
+        results.sample("perf.sample_third_ratio", "ratio", last_p50 / first_p50, d);
     }
 }
 
@@ -490,7 +487,12 @@ fn sample_command_perf(
         p.tasks_spawned as f64,
         d.clone(),
     );
-    results.sample("perf.pipes_created", "count", p.pipes_created as f64, d.clone());
+    results.sample(
+        "perf.pipes_created",
+        "count",
+        p.pipes_created as f64,
+        d.clone(),
+    );
     results.sample(
         "perf.kernel_memory_len",
         "bytes",
@@ -652,7 +654,11 @@ fn execution_state_suite(
         with_temp("steady-state"),
         20_000,
     );
-    record_sample_thirds(results, "exec.shell_builtin.steady", &with_temp("steady-state"));
+    record_sample_thirds(
+        results,
+        "exec.shell_builtin.steady",
+        &with_temp("steady-state"),
+    );
     repeated_exec(
         results,
         &mut host,
@@ -1297,10 +1303,7 @@ fn parse_args() -> Result<Args> {
             _ => return Err(anyhow!("unknown or incomplete argument {:?}", args[i])),
         }
     }
-    Ok(Args {
-        profile,
-        output,
-    })
+    Ok(Args { profile, output })
 }
 
 fn git_metadata() -> serde_json::Value {

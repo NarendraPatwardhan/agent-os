@@ -481,9 +481,7 @@ export async function toDefinition(
           form: node.execution.mode,
           cmd: node.execution.mode === "shell" ? node.execution.command : undefined,
           argv:
-            node.execution.mode === "direct"
-              ? node.execution.argv.map((value) => ({ value }))
-              : [],
+            node.execution.mode === "direct" ? node.execution.argv.map((value) => ({ value })) : [],
           cwd: node.opts.cwd,
           env: { ...(node.opts.env ?? {}) },
           stdin,

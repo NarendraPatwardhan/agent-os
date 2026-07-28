@@ -316,9 +316,7 @@ async function nodeDigestInput(node: BuildNode, ctx: SolveCtx): Promise<Contract
           form: node.execution.mode,
           cmd: node.execution.mode === "shell" ? node.execution.command : undefined,
           argv:
-            node.execution.mode === "direct"
-              ? node.execution.argv.map((value) => ({ value }))
-              : [],
+            node.execution.mode === "direct" ? node.execution.argv.map((value) => ({ value })) : [],
           cwd: node.opts.cwd,
           env: { ...(node.opts.env ?? {}) },
           stdin: stdinBytes(node.opts.stdin),
@@ -830,11 +828,7 @@ async function runStep(
         const r =
           node.execution.mode === "shell"
             ? await vm.exec(node.execution.command, execOpts)
-            : await vm.run(
-                node.execution.argv[0]!,
-                node.execution.argv.slice(1),
-                execOpts,
-              );
+            : await vm.run(node.execution.argv[0]!, node.execution.argv.slice(1), execOpts);
         if (r.exitCode !== 0) {
           const label =
             node.execution.mode === "shell"

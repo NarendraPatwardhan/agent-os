@@ -21,17 +21,17 @@ usable under failure.
 
 ## Measurement coverage
 
-| Area | Measurement |
-|---|---|
-| Startup | First shell command by image and first external Posix process |
-| Steady execution | Shell syntax, direct argv, external process, and three-stage pipeline latency |
-| Filesystem | Structured read and write bandwidth |
-| State | Full and incremental snapshot latency and size, restore latency, and incremental/full ratio |
-| Branching | Single-fork latency and retained-population creation time |
-| Native memory | Idle and active RSS per machine and machines per GiB |
-| Browser | Chromium startup and incremental RSS for one idle Posix VM |
-| Resident services | SQLite and Typst cold, warm, and restored-warm latency |
-| Replay and robustness | Replay rate, cancellation, malformed input, and resource exhaustion |
+| Area                  | Measurement                                                                                 |
+| --------------------- | ------------------------------------------------------------------------------------------- |
+| Startup               | First shell command by image and first external Posix process                               |
+| Steady execution      | Shell syntax, direct argv, external process, and three-stage pipeline latency               |
+| Filesystem            | Structured read and write bandwidth                                                         |
+| State                 | Full and incremental snapshot latency and size, restore latency, and incremental/full ratio |
+| Branching             | Single-fork latency and retained-population creation time                                   |
+| Native memory         | Idle and active RSS per machine and machines per GiB                                        |
+| Browser               | Chromium startup and incremental RSS for one idle Posix VM                                  |
+| Resident services     | SQLite and Typst cold, warm, and restored-warm latency                                      |
+| Replay and robustness | Replay rate, cancellation, malformed input, and resource exhaustion                         |
 
 ## Methodology
 
@@ -113,11 +113,11 @@ bazel "--output_user_root=${BAZEL_CACHE}" run //benchmarks:validate -- \
 
 ## Profiles and publication
 
-| Profile | Purpose | Samples per distribution | Retained branches | Machines per fresh memory probe |
-|---|---|---:|---:|---:|
-| `smoke` | Harness validation only | 3 | 8 | 8 |
-| `standard` | Repeatable single-system result | 30 | 1,000 | 20 |
-| `stress` | Explicit scale result | 100 | 10,000 | 100 |
+| Profile    | Purpose                         | Samples per distribution | Retained branches | Machines per fresh memory probe |
+| ---------- | ------------------------------- | -----------------------: | ----------------: | ------------------------------: |
+| `smoke`    | Harness validation only         |                        3 |                 8 |                               8 |
+| `standard` | Repeatable single-system result |                       30 |             1,000 |                              20 |
+| `stress`   | Explicit scale result           |                      100 |            10,000 |                             100 |
 
 Use `--samples N` and `--branches N` to override a profile. Stress is never selected implicitly.
 

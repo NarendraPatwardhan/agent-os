@@ -33,18 +33,18 @@ use ctl_rust::{
     FileStat as CtlFileStat, SvcRequest as CtlSvcRequest, SvcResponse as CtlSvcResponse,
 };
 use shell_rust::{
-    CONTEXT_COMMAND, CONTEXT_DIRECTORY, CONTEXT_PATH, CONTEXT_VARIABLE,
-    Candidate as ShellCandidate, ProbeRequest, ProbeResponse, RenderRequest,
+    Candidate as ShellCandidate, ProbeRequest, ProbeResponse, RenderRequest, CONTEXT_COMMAND,
+    CONTEXT_DIRECTORY, CONTEXT_PATH, CONTEXT_VARIABLE,
 };
 
 use fs::ProcFs;
-use task::{Scheduler, TaskId, TaskState, run_round};
+use task::{run_round, Scheduler, TaskId, TaskState};
 use vfs::{KPath, Namespace, NodeType, OpenFlags};
 use wasm::abi::{
-    AUTOCOMPLETE_MAX_FRAME_BYTES, AUTOCOMPLETE_MAX_ITEMS, AUTOCOMPLETE_MAX_PATH_SEGMENTS,
-    AUTOCOMPLETE_MAX_SCAN_ENTRIES, AUTOCOMPLETE_MAX_SOURCE_BYTES, EAGAIN, EINVAL, EIO, EMSGSIZE,
-    ENOENT, ENOSYS, ENOTDIR, ESUCCESS, ETIMEDOUT, EXEC_MODE_DIRECT, EXEC_MODE_SHELL,
-    SERVICE_MARKER, SIGHUP, SIGINT, SIGTSTP, TICK_RUNNABLE, TICK_WAITING, errno_from_fs,
+    errno_from_fs, AUTOCOMPLETE_MAX_FRAME_BYTES, AUTOCOMPLETE_MAX_ITEMS,
+    AUTOCOMPLETE_MAX_PATH_SEGMENTS, AUTOCOMPLETE_MAX_SCAN_ENTRIES, AUTOCOMPLETE_MAX_SOURCE_BYTES,
+    EAGAIN, EINVAL, EIO, EMSGSIZE, ENOENT, ENOSYS, ENOTDIR, ESUCCESS, ETIMEDOUT, EXEC_MODE_DIRECT,
+    EXEC_MODE_SHELL, SERVICE_MARKER, SIGHUP, SIGINT, SIGTSTP, TICK_RUNNABLE, TICK_WAITING,
 };
 
 struct OutputCapture {

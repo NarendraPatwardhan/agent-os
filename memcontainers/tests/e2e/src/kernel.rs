@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::{Session, boot, boot_loom, boot_posix, names, restore, restore_incremental};
+use crate::{boot, boot_loom, boot_posix, names, restore, restore_incremental, Session};
 use host::{AutocompleteOptions, ExecOptions, TickState};
 
 /// A tiny valid guest with one exported memory, a no-op `_start`, and one byte of non-custom data.

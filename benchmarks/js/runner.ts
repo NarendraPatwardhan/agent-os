@@ -184,15 +184,11 @@ async function executionAndStateSuite(
       profile.samples,
       { ...common, temperature: "steady-state", module: "coreutils" },
     );
-    await directCommand(
-      result,
-      vm,
-      "exec.direct_minimal.steady",
-      "true",
-      [],
-      profile.samples,
-      { ...common, temperature: "steady-state", module: "coreutils" },
-    );
+    await directCommand(result, vm, "exec.direct_minimal.steady", "true", [], profile.samples, {
+      ...common,
+      temperature: "steady-state",
+      module: "coreutils",
+    });
     await directCommand(
       result,
       vm,

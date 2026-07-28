@@ -84,14 +84,14 @@ Each prompt is executed as a Luau script. Structured log-battery events become `
 
 ## When to use which API
 
-| Need                                            | API                |
-| ----------------------------------------------- | ------------------ |
-| Shell pipelines, redirection, or expansion      | `vm.exec()`        |
-| One executable with exact argument boundaries   | `vm.run()`         |
-| One multi-step Luau program                     | `vm.luau()`        |
-| Human or xterm interaction                      | `vm.shell()`       |
-| Structured streaming agent events               | `vm.session()`     |
-| Raw resident-service protocol                   | `vm.serviceCall()` |
+| Need                                          | API                |
+| --------------------------------------------- | ------------------ |
+| Shell pipelines, redirection, or expansion    | `vm.exec()`        |
+| One executable with exact argument boundaries | `vm.run()`         |
+| One multi-step Luau program                   | `vm.luau()`        |
+| Human or xterm interaction                    | `vm.shell()`       |
+| Structured streaming agent events             | `vm.session()`     |
+| Raw resident-service protocol                 | `vm.serviceCall()` |
 
 ## Resident services
 

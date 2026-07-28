@@ -37,12 +37,12 @@ use constants_rust::{
 };
 use ctl_rust::RelayEvent as WireRelayEvent;
 use host::{
-    AutocompleteOptions, CatalogConnection, CatalogInjectOptions, CatalogSpecSource, CommandPerf,
-    ConnectionCredential, ConnectionError, ConnectionPolicyAction, ConnectionPolicyOwner,
-    ConnectionPolicyRule, ConnectionRegistry, ExecOptions, ExecResult, HostCallCapability,
-    HostToolDef, KernelHost, KernelHostBuilder, NetCapability, PersistCapability, RealNet,
-    StreamSink, TickState, ToolApprovalDecision, ToolApprovalFacts, ToolApprover,
-    derive_connection_origins,
+    derive_connection_origins, AutocompleteOptions, CatalogConnection, CatalogInjectOptions,
+    CatalogSpecSource, CommandPerf, ConnectionCredential, ConnectionError, ConnectionPolicyAction,
+    ConnectionPolicyOwner, ConnectionPolicyRule, ConnectionRegistry, ExecOptions, ExecResult,
+    HostCallCapability, HostToolDef, KernelHost, KernelHostBuilder, NetCapability,
+    PersistCapability, RealNet, StreamSink, TickState, ToolApprovalDecision, ToolApprovalFacts,
+    ToolApprover,
 };
 use rustler::{Atom, Binary, Env, Error, NifResult, OwnedBinary, ResourceArc};
 use sidecar_rust::SIDECAR_HOST_BINDING;
@@ -802,7 +802,11 @@ fn build_host_tools(defs: Vec<NifHostTool>) -> Vec<HostToolDef> {
 }
 
 fn opt_string(value: String) -> Option<String> {
-    if value.is_empty() { None } else { Some(value) }
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 fn payload_string(label: &str, payload: Vec<u8>) -> NifResult<String> {
@@ -1437,8 +1441,8 @@ fn command_perf_vec(p: CommandPerf) -> Vec<f64> {
 #[rustler::nif(name = "snapshot_nif", schedule = "DirtyCpu")]
 fn snapshot<'a>(env: Env<'a>, vm: ResourceArc<Vm>) -> NifResult<(Atom, Binary<'a>)> {
     let mut host = vm_lock(&vm)?;
-    let mut binary =
-        OwnedBinary::new(host.snapshot_len()).ok_or_else(|| nif_err("allocating snapshot binary"))?;
+    let mut binary = OwnedBinary::new(host.snapshot_len())
+        .ok_or_else(|| nif_err("allocating snapshot binary"))?;
     host.snapshot_into(binary.as_mut_slice()).map_err(nif_err)?;
     Ok((atoms::ok(), binary.release(env)))
 }

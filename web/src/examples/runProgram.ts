@@ -118,8 +118,7 @@ export async function runProgram(
       },
       run: async (program: string, args: string[] = [], opts?: { echo?: boolean }) => {
         const r = record();
-        if (r)
-          r.tip = coreLlb.run(r.tip, program, args, { deterministic: true, tier: "full" });
+        if (r) r.tip = coreLlb.run(r.tip, program, args, { deterministic: true, tier: "full" });
         const result = await real.run(program, args);
         return showResult([program, ...args].map(shQuote).join(" "), result, opts?.echo !== false);
       },
@@ -130,10 +129,7 @@ export async function runProgram(
       luau: async (src: string, args: string[] = []) => {
         await fs.write("/tmp/program.luau", src);
         const result = await real.run("luau", ["/tmp/program.luau", ...args]);
-        return showResult(
-          ["luau", "/tmp/program.luau", ...args].map(shQuote).join(" "),
-          result,
-        );
+        return showResult(["luau", "/tmp/program.luau", ...args].map(shQuote).join(" "), result);
       },
       session: (kind?: string) => real.session(kind),
       tool: (def: Parameters<Vm["tool"]>[0]) => real.tool(def),

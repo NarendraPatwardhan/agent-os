@@ -41,8 +41,25 @@
         "additionalProperties": false,
         "properties": {
           "name": { "type": "string", "pattern": "^[a-z0-9_.-]+$" },
-          "unit": { "enum": ["ns", "us", "ms", "s", "bytes", "bytes_per_second", "ops_per_second", "count", "ratio", "percent", "usd"] },
-          "dimensions": { "type": "object", "additionalProperties": { "type": ["string", "number", "boolean"] } },
+          "unit": {
+            "enum": [
+              "ns",
+              "us",
+              "ms",
+              "s",
+              "bytes",
+              "bytes_per_second",
+              "ops_per_second",
+              "count",
+              "ratio",
+              "percent",
+              "usd"
+            ]
+          },
+          "dimensions": {
+            "type": "object",
+            "additionalProperties": { "type": ["string", "number", "boolean"] }
+          },
           "samples": { "type": "array", "items": { "type": "number", "minimum": 0 } },
           "failures": {
             "type": "array",

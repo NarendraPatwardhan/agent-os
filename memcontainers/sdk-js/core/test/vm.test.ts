@@ -210,11 +210,7 @@ async function remoteVmServer(): Promise<{
         );
         return;
       }
-      if (
-        req.method === "POST" &&
-        req.url?.startsWith("/v1/vms/") &&
-        req.url.endsWith("/exec")
-      ) {
+      if (req.method === "POST" && req.url?.startsWith("/v1/vms/") && req.url.endsWith("/exec")) {
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify({ ok: true, exitCode: 0, stdout: "remote-exec", stderr: "" }));
         return;
@@ -763,7 +759,9 @@ async function main(): Promise<void> {
         "cmd" in shellExec ||
         "argv" in shellExec
       ) {
-        throw new Error(`remote shell exec did not use the explicit request: ${execRequests[0]?.body}`);
+        throw new Error(
+          `remote shell exec did not use the explicit request: ${execRequests[0]?.body}`,
+        );
       }
       if (
         directExec.mode !== "direct" ||
@@ -771,9 +769,7 @@ async function main(): Promise<void> {
         "command" in directExec ||
         "cmd" in directExec
       ) {
-        throw new Error(
-          `remote direct exec did not preserve argv: ${execRequests[1]?.body}`,
-        );
+        throw new Error(`remote direct exec did not preserve argv: ${execRequests[1]?.body}`);
       }
       console.log("phase: remote create forwards catalog intent OK");
     } finally {
@@ -1190,13 +1186,7 @@ async function main(): Promise<void> {
       }
       const liveDirect = await recorder.vm.run(
         "sh",
-        [
-          "-c",
-          'printf "%s|%s" "$1" "$2" > recorded-direct',
-          "direct-record",
-          "literal arg",
-          "",
-        ],
+        ["-c", 'printf "%s|%s" "$1" "$2" > recorded-direct', "direct-record", "literal arg", ""],
         { cwd: "/home/user/recorded-dir" },
       );
       if (liveDirect.exitCode !== 0) {
@@ -1329,7 +1319,9 @@ async function main(): Promise<void> {
           "",
         ])
     ) {
-      throw new Error(`llb direct Definition changed form or argv: ${JSON.stringify(runDefinition)}`);
+      throw new Error(
+        `llb direct Definition changed form or argv: ${JSON.stringify(runDefinition)}`,
+      );
     }
     const runManifest = await llb
       .commit(llb.decodeDefinition(llb.encodeDefinition(runDefinition)))
@@ -2588,7 +2580,8 @@ error("timed out waiting for restored warm sqlite child: " .. err)
     let full: Uint8Array;
     try {
       const baseline = await source.snapshot({ mode: "incremental" });
-      if (baseline[8] !== 1) throw new Error("first incremental request did not return a full baseline");
+      if (baseline[8] !== 1)
+        throw new Error("first incremental request did not return a full baseline");
       await source.fs.write("/tmp/incremental-sdk", "survives");
       delta = await source.snapshot({ mode: "incremental" });
       full = await source.snapshot();

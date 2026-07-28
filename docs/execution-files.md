@@ -56,15 +56,11 @@ SDK, transport, or host failures do reject. See [Errors and diagnostics](./error
 Executes one program with exact argument boundaries and does not invoke a shell.
 
 ```js
-const result = await vm.run(
-  "sort",
-  ["--field-separator=,", "--key=2,2n", "input data.csv"],
-  {
-    cwd: "/workspace",
-    env: { LC_ALL: "C" },
-    stdin: "",
-  },
-);
+const result = await vm.run("sort", ["--field-separator=,", "--key=2,2n", "input data.csv"], {
+  cwd: "/workspace",
+  env: { LC_ALL: "C" },
+  stdin: "",
+});
 ```
 
 `args` defaults to an empty array. The options and `ExecResult` are identical to `vm.exec()`.

@@ -1,5 +1,5 @@
 use sha2::{Digest, Sha256};
-use snapshot_rust::{SNAPSHOT_INTEGRITY_CHUNK_SIZE, SnapshotDigest};
+use snapshot_rust::{SnapshotDigest, SNAPSHOT_INTEGRITY_CHUNK_SIZE};
 
 const LEAF_DOMAIN: &[u8] = b"MCSN4-CHUNK\0";
 const NODE_DOMAIN: &[u8] = b"MCSN4-NODE\0";

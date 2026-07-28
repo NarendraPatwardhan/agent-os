@@ -297,15 +297,11 @@ async function main(): Promise<void> {
       selected.samples,
       { image: "posix", host: "browser", temperature: "steady-state" },
     );
-    await directCommand(
-      result,
-      vm,
-      "exec.direct_minimal.steady",
-      "true",
-      [],
-      selected.samples,
-      { image: "posix", host: "browser", temperature: "steady-state" },
-    );
+    await directCommand(result, vm, "exec.direct_minimal.steady", "true", [], selected.samples, {
+      image: "posix",
+      host: "browser",
+      temperature: "steady-state",
+    });
     await directCommand(
       result,
       vm,
@@ -441,7 +437,6 @@ async function main(): Promise<void> {
       });
       await restored.value.close();
     }
-
   } finally {
     await vm.close();
   }
