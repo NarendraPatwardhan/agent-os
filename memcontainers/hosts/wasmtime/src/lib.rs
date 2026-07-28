@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::io::{Seek, SeekFrom, Write};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -29,8 +30,8 @@ use ctl_rust::{
 };
 use sha2::{Digest, Sha256};
 use snapshot_rust::{
-    SNAPSHOT_HEADER_LEN, SNAPSHOT_PAGE_SIZE, SnapshotDigest, SnapshotKind, parse_snapshot,
-    snapshot_bitmap_len, write_snapshot_header,
+    SNAPSHOT_HEADER_LEN, SNAPSHOT_INTEGRITY_CHUNK_SIZE, SNAPSHOT_PAGE_SIZE, SnapshotDigest,
+    SnapshotKind, parse_snapshot, snapshot_bitmap_len, write_snapshot_header,
 };
 use wasmtime::{Caller, Config, Engine, Instance, Linker, Memory, Module, Store};
 
@@ -56,6 +57,9 @@ mod exports;
 mod host_call;
 mod net;
 mod persist;
+mod snapshot;
+
+use snapshot::{IntegrityTree, baseline_id, hash_chunk};
 
 pub use catalog::{
     CatalogApplyStatus, CatalogConnection, CatalogInjectOptions, CatalogSpecSource, HostToolDef,
@@ -715,6 +719,8 @@ impl KernelHostBuilder {
         let kernel_digest = sha256_digest(&self.wasm_bytes);
         let validated = validate_snapshot(snapshot, base, &kernel_digest)?;
         let image_len = validated.view.memory_len;
+        let view = validated.view;
+        let baseline_tree = validated.base_tree.clone();
         let (engine, module) = get_or_compile(&self.wasm_bytes)?;
         let state = self.into_state();
         let (mut store, instance, memory) = instantiate(&engine, &module, state)?;
@@ -741,7 +747,7 @@ impl KernelHostBuilder {
         if memory.data(&store).len() != image_len {
             return Err(anyhow!("invalid snapshot: restored_memory_length_mismatch"));
         }
-        apply_snapshot(validated, memory.data_mut(&mut store))?;
+        let restored_tree = apply_snapshot(validated, memory.data_mut(&mut store))?;
 
         let worker_count = wt(
             instance
@@ -760,7 +766,7 @@ impl KernelHostBuilder {
             return Err(anyhow!("invalid snapshot: workers_without_worker_export"));
         }
 
-        finalize(
+        let mut host = finalize(
             store,
             instance,
             memory,
@@ -768,7 +774,25 @@ impl KernelHostBuilder {
             scratch_len,
             workers,
             kernel_digest,
-        )
+        )?;
+        host.snapshot_base = Some(match view.kind {
+            SnapshotKind::Full => VerifiedBaseline {
+                id: baseline_id(&view.kernel_digest, &view.memory_root, view.memory_len),
+                address: snapshot.as_ptr() as usize,
+                len: snapshot.len(),
+                tree: restored_tree,
+            },
+            SnapshotKind::Incremental => {
+                let base = base.expect("incremental validation requires a base");
+                VerifiedBaseline {
+                    id: view.base_id,
+                    address: base.as_ptr() as usize,
+                    len: base.len(),
+                    tree: baseline_tree.expect("incremental validation supplies a base tree"),
+                }
+            }
+        });
+        Ok(host)
     }
 }
 
@@ -818,6 +842,7 @@ fn finalize(
         scratch_addr,
         scratch_len,
         kernel_digest,
+        snapshot_base: None,
     })
 }
 
@@ -826,11 +851,11 @@ fn finalize(
 struct ValidatedSnapshot<'a> {
     view: snapshot_rust::SnapshotView<'a>,
     base: Option<snapshot_rust::SnapshotView<'a>>,
+    base_tree: Option<IntegrityTree>,
 }
 
-/// Validate an MCSN v2 full or incremental value without allocating its declared memory size.
-/// Incrementals are relative to exactly one full snapshot identified by SHA-256; recursive chains
-/// are rejected before the module is grown.
+/// Validate MCSN framing and the full baseline before allocating the declared memory.
+/// Incrementals are relative to exactly one full snapshot; recursive chains are rejected.
 fn validate_snapshot<'a>(
     snapshot: &'a [u8],
     base: Option<&'a [u8]>,
@@ -840,18 +865,15 @@ fn validate_snapshot<'a>(
     if &view.kernel_digest != kernel_digest {
         return Err(anyhow!("invalid snapshot: kernel_digest_mismatch"));
     }
-    let base_view = match view.kind {
+    let (base_view, base_tree) = match view.kind {
         SnapshotKind::Full => {
             if base.is_some() {
                 return Err(anyhow!("invalid snapshot: unexpected_base_snapshot"));
             }
-            None
+            (None, None)
         }
         SnapshotKind::Incremental => {
             let base = base.ok_or_else(|| anyhow!("invalid snapshot: missing_base_snapshot"))?;
-            if sha256_digest(base) != view.base_snapshot_digest {
-                return Err(anyhow!("invalid snapshot: base_snapshot_digest_mismatch"));
-            }
             let base_view =
                 parse_snapshot(base).map_err(|e| anyhow!("invalid base snapshot: {e}"))?;
             if base_view.kind != SnapshotKind::Full {
@@ -860,29 +882,42 @@ fn validate_snapshot<'a>(
             if base_view.kernel_digest != *kernel_digest {
                 return Err(anyhow!("invalid snapshot: base_kernel_digest_mismatch"));
             }
-            if sha256_digest(base_view.pages) != base_view.memory_digest {
-                return Err(anyhow!("invalid snapshot: base_memory_digest_mismatch"));
+            let tree = IntegrityTree::from_memory(base_view.pages);
+            if tree.root() != base_view.memory_root {
+                return Err(anyhow!("invalid snapshot: base_memory_root_mismatch"));
+            }
+            let id = baseline_id(
+                &base_view.kernel_digest,
+                &base_view.memory_root,
+                base_view.memory_len,
+            );
+            if id != view.base_id {
+                return Err(anyhow!("invalid snapshot: base_id_mismatch"));
             }
             if base_view.memory_len > view.memory_len {
                 return Err(anyhow!("invalid snapshot: memory_shrank"));
             }
-            Some(base_view)
+            (Some(base_view), Some(tree))
         }
     };
     Ok(ValidatedSnapshot {
         view,
         base: base_view,
+        base_tree,
     })
 }
 
 /// Reconstruct directly into the already-sized wasm memory. This keeps restore to one memory image
 /// instead of allocating an attacker-sized intermediate buffer next to the module's memory.
-fn apply_snapshot(validated: ValidatedSnapshot<'_>, memory: &mut [u8]) -> Result<()> {
+fn apply_snapshot(validated: ValidatedSnapshot<'_>, memory: &mut [u8]) -> Result<IntegrityTree> {
     if memory.len() != validated.view.memory_len {
         return Err(anyhow!("invalid snapshot: restored_memory_length_mismatch"));
     }
-    match validated.base {
-        None => memory.copy_from_slice(validated.view.pages),
+    let tree = match validated.base {
+        None => {
+            memory.copy_from_slice(validated.view.pages);
+            IntegrityTree::from_memory(memory)
+        }
         Some(base_view) => {
             memory.fill(0);
             memory[..base_view.memory_len].copy_from_slice(base_view.pages);
@@ -899,12 +934,47 @@ fn apply_snapshot(validated: ValidatedSnapshot<'_>, memory: &mut [u8]) -> Result
             if changed.next().is_some() {
                 return Err(anyhow!("invalid snapshot: extra_changed_page"));
             }
+            let mut tree = validated.base_tree.expect("incremental validation supplies a tree");
+            let chunks = memory.len().div_ceil(SNAPSHOT_INTEGRITY_CHUNK_SIZE);
+            let mut affected = vec![false; chunks];
+            for page in 0..(validated.view.memory_len / SNAPSHOT_PAGE_SIZE) {
+                if validated.view.bitmap[page / 8] & (1 << (page % 8)) != 0 {
+                    affected[page * SNAPSHOT_PAGE_SIZE / SNAPSHOT_INTEGRITY_CHUNK_SIZE] = true;
+                }
+            }
+            if tree.memory_len() == memory.len() {
+                for (chunk, changed) in affected.into_iter().enumerate() {
+                    if !changed {
+                        continue;
+                    }
+                    let start = chunk * SNAPSHOT_INTEGRITY_CHUNK_SIZE;
+                    let end = (start + SNAPSHOT_INTEGRITY_CHUNK_SIZE).min(memory.len());
+                    tree.update(chunk, hash_chunk(chunk, &memory[start..end]));
+                }
+                tree
+            } else {
+                let rebuild_from = tree.memory_len() / SNAPSHOT_INTEGRITY_CHUNK_SIZE;
+                let mut leaves = tree.leaves()[..rebuild_from].to_vec();
+                for chunk in rebuild_from..chunks {
+                    let start = chunk * SNAPSHOT_INTEGRITY_CHUNK_SIZE;
+                    let end = (start + SNAPSHOT_INTEGRITY_CHUNK_SIZE).min(memory.len());
+                    leaves.push(hash_chunk(chunk, &memory[start..end]));
+                }
+                for (chunk, changed) in affected.into_iter().take(rebuild_from).enumerate() {
+                    if changed {
+                        let start = chunk * SNAPSHOT_INTEGRITY_CHUNK_SIZE;
+                        let end = start + SNAPSHOT_INTEGRITY_CHUNK_SIZE;
+                        leaves[chunk] = hash_chunk(chunk, &memory[start..end]);
+                    }
+                }
+                IntegrityTree::new(leaves, memory.len())
+            }
         }
+    };
+    if tree.root() != validated.view.memory_root {
+        return Err(anyhow!("invalid snapshot: memory_root_mismatch"));
     }
-    if sha256_digest(memory) != validated.view.memory_digest {
-        return Err(anyhow!("invalid snapshot: memory_digest_mismatch"));
-    }
-    Ok(())
+    Ok(tree)
 }
 
 // ---------- Structured results ----------
@@ -1001,6 +1071,21 @@ pub struct KernelHost {
     scratch_addr: i32,
     scratch_len: usize,
     kernel_digest: SnapshotDigest,
+    snapshot_base: Option<VerifiedBaseline>,
+}
+
+#[derive(Clone)]
+struct VerifiedBaseline {
+    id: SnapshotDigest,
+    address: usize,
+    len: usize,
+    tree: IntegrityTree,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SnapshotWriteResult {
+    pub bytes: usize,
+    pub id: SnapshotDigest,
 }
 
 impl KernelHost {
@@ -1225,22 +1310,92 @@ impl KernelHost {
     /// restore; let in-flight requests finish first. Pair with
     /// [`KernelHostBuilder::restore`] to rehydrate or fork.
     pub fn snapshot(&mut self) -> Result<Vec<u8>> {
+        let mut out = vec![0; self.snapshot_len()];
+        self.snapshot_into(&mut out)?;
+        Ok(out)
+    }
+
+    /// Exact destination size for [`snapshot_into`](Self::snapshot_into).
+    pub fn snapshot_len(&self) -> usize {
+        SNAPSHOT_HEADER_LEN + self.memory.data_size(&self.store)
+    }
+
+    /// Capture directly into one exact caller-owned destination. This lets
+    /// language bindings allocate the final binary once rather than copying a
+    /// VM-sized temporary `Vec` into it afterward.
+    pub fn snapshot_into(&mut self, out: &mut [u8]) -> Result<()> {
         self.ensure_snapshot_ready()?;
+        let memory_len = self.memory.data_size(&self.store);
+        let expected = SNAPSHOT_HEADER_LEN
+            .checked_add(memory_len)
+            .ok_or_else(|| anyhow!("snapshot size overflow"))?;
+        if out.len() != expected {
+            return Err(anyhow!(
+                "snapshot destination length mismatch: expected {expected}, got {}",
+                out.len()
+            ));
+        }
         let mem = self.memory.data(&self.store);
-        let memory_digest = sha256_digest(mem);
-        let mut out = vec![0; SNAPSHOT_HEADER_LEN + mem.len()];
+        out[SNAPSHOT_HEADER_LEN..].copy_from_slice(mem);
+        let memory_root = IntegrityTree::from_memory(&out[SNAPSHOT_HEADER_LEN..]).root();
         write_snapshot_header(
-            &mut out,
+            out,
             SnapshotKind::Full,
-            mem.len(),
+            memory_len,
             0,
             &self.kernel_digest,
-            &memory_digest,
+            &memory_root,
             &[0; 32],
         )
         .map_err(|e| anyhow!("encoding snapshot: {e}"))?;
-        out[SNAPSHOT_HEADER_LEN..].copy_from_slice(mem);
-        Ok(out)
+        Ok(())
+    }
+
+    /// Stream one full snapshot to an empty seekable object without allocating
+    /// another VM-sized buffer. The payload is written in integrity-chunk
+    /// order, then the completed header is backfilled at offset zero.
+    pub fn snapshot_to<W: Write + Seek>(&mut self, sink: &mut W) -> Result<SnapshotWriteResult> {
+        self.ensure_snapshot_ready()?;
+        if sink
+            .seek(SeekFrom::End(0))
+            .map_err(|error| anyhow!("seeking snapshot sink: {error}"))?
+            != 0
+        {
+            return Err(anyhow!("snapshot sink must be empty"));
+        }
+        sink.seek(SeekFrom::Start(0))
+            .map_err(|error| anyhow!("seeking snapshot sink: {error}"))?;
+        sink.write_all(&[0; SNAPSHOT_HEADER_LEN])
+            .map_err(|error| anyhow!("writing snapshot header: {error}"))?;
+
+        let memory = self.memory.data(&self.store);
+        let mut hashes = Vec::with_capacity(memory.len().div_ceil(SNAPSHOT_INTEGRITY_CHUNK_SIZE));
+        for (chunk, bytes) in memory.chunks(SNAPSHOT_INTEGRITY_CHUNK_SIZE).enumerate() {
+            hashes.push(hash_chunk(chunk, bytes));
+            sink.write_all(bytes)
+                .map_err(|error| anyhow!("writing snapshot chunk {chunk}: {error}"))?;
+        }
+        let tree = IntegrityTree::new(hashes, memory.len());
+        let root = tree.root();
+        let mut header = [0; SNAPSHOT_HEADER_LEN];
+        write_snapshot_header(
+            &mut header,
+            SnapshotKind::Full,
+            memory.len(),
+            0,
+            &self.kernel_digest,
+            &root,
+            &[0; 32],
+        )
+        .map_err(|e| anyhow!("encoding snapshot: {e}"))?;
+        sink.seek(SeekFrom::Start(0))
+            .map_err(|error| anyhow!("seeking snapshot header: {error}"))?;
+        sink.write_all(&header)
+            .map_err(|error| anyhow!("writing snapshot header: {error}"))?;
+        Ok(SnapshotWriteResult {
+            bytes: SNAPSHOT_HEADER_LEN + memory.len(),
+            id: baseline_id(&self.kernel_digest, &root, memory.len()),
+        })
     }
 
     /// Capture a cumulative page delta against one full baseline. The result embeds the baseline's
@@ -1254,9 +1409,33 @@ impl KernelHost {
         if base_view.kernel_digest != self.kernel_digest {
             return Err(anyhow!("incremental snapshot base uses a different kernel"));
         }
-        if sha256_digest(base_view.pages) != base_view.memory_digest {
-            return Err(anyhow!("incremental snapshot base memory digest mismatch"));
-        }
+        let base_id = baseline_id(
+            &base_view.kernel_digest,
+            &base_view.memory_root,
+            base_view.memory_len,
+        );
+        let base_tree = match &self.snapshot_base {
+            Some(verified)
+                if verified.id == base_id
+                    && verified.address == base.as_ptr() as usize
+                    && verified.len == base.len() =>
+            {
+                verified.tree.clone()
+            }
+            _ => {
+                let tree = IntegrityTree::from_memory(base_view.pages);
+                if tree.root() != base_view.memory_root {
+                    return Err(anyhow!("incremental snapshot base memory root mismatch"));
+                }
+                self.snapshot_base = Some(VerifiedBaseline {
+                    id: base_id,
+                    address: base.as_ptr() as usize,
+                    len: base.len(),
+                    tree: tree.clone(),
+                });
+                tree
+            }
+        };
         let mem = self.memory.data(&self.store);
         if base_view.memory_len > mem.len() {
             return Err(anyhow!("incremental snapshot memory cannot shrink"));
@@ -1277,8 +1456,39 @@ impl KernelHost {
             }
         }
         let changed_pages = pages.len() / SNAPSHOT_PAGE_SIZE;
-        let memory_digest = sha256_digest(mem);
-        let base_digest = sha256_digest(base);
+        let mut affected = vec![false; mem.len().div_ceil(SNAPSHOT_INTEGRITY_CHUNK_SIZE)];
+        for page in 0..(mem.len() / SNAPSHOT_PAGE_SIZE) {
+            if bitmap[page / 8] & (1 << (page % 8)) != 0 {
+                affected[page * SNAPSHOT_PAGE_SIZE / SNAPSHOT_INTEGRITY_CHUNK_SIZE] = true;
+            }
+        }
+        let memory_root = if base_tree.memory_len() == mem.len() {
+            let mut tree = base_tree;
+            for (chunk, changed) in affected.into_iter().enumerate() {
+                if changed {
+                    let start = chunk * SNAPSHOT_INTEGRITY_CHUNK_SIZE;
+                    let end = (start + SNAPSHOT_INTEGRITY_CHUNK_SIZE).min(mem.len());
+                    tree.update(chunk, hash_chunk(chunk, &mem[start..end]));
+                }
+            }
+            tree.root()
+        } else {
+            let rebuild_from = base_tree.memory_len() / SNAPSHOT_INTEGRITY_CHUNK_SIZE;
+            let mut leaves = base_tree.leaves()[..rebuild_from].to_vec();
+            for chunk in rebuild_from..affected.len() {
+                let start = chunk * SNAPSHOT_INTEGRITY_CHUNK_SIZE;
+                let end = (start + SNAPSHOT_INTEGRITY_CHUNK_SIZE).min(mem.len());
+                leaves.push(hash_chunk(chunk, &mem[start..end]));
+            }
+            for (chunk, changed) in affected.into_iter().take(rebuild_from).enumerate() {
+                if changed {
+                    let start = chunk * SNAPSHOT_INTEGRITY_CHUNK_SIZE;
+                    let end = start + SNAPSHOT_INTEGRITY_CHUNK_SIZE;
+                    leaves[chunk] = hash_chunk(chunk, &mem[start..end]);
+                }
+            }
+            IntegrityTree::new(leaves, mem.len()).root()
+        };
         let mut out = vec![0; SNAPSHOT_HEADER_LEN + bitmap.len() + pages.len()];
         write_snapshot_header(
             &mut out,
@@ -1286,8 +1496,8 @@ impl KernelHost {
             mem.len(),
             changed_pages,
             &self.kernel_digest,
-            &memory_digest,
-            &base_digest,
+            &memory_root,
+            &base_id,
         )
         .map_err(|e| anyhow!("encoding incremental snapshot: {e}"))?;
         out[SNAPSHOT_HEADER_LEN..SNAPSHOT_HEADER_LEN + bitmap.len()].copy_from_slice(&bitmap);

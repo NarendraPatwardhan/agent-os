@@ -174,18 +174,22 @@ defmodule AgentOS.ControlPlaneTest do
 
       assert {:ok, snapshot} = ControlPlane.snapshot(id)
       assert binary_part(snapshot, 0, 4) == "MCSN"
-      base_snapshot = ControlPlane.snapshot_base(id)
-      assert binary_part(base_snapshot, 0, 4) == "MCSN"
+      assert ControlPlane.snapshot_base(id) == nil
+
+      assert {:ok, base_snapshot} = ControlPlane.snapshot(id, mode: :incremental)
+      assert {:ok, %{kind: :full}} = Snapshot.parse(base_snapshot)
+      assert ControlPlane.snapshot_base(id) == base_snapshot
+      assert :ok = ControlPlane.write_file(id, "/tmp/incremental-change", "changed")
 
       assert {:ok, incremental} = ControlPlane.snapshot(id, mode: :incremental)
       assert binary_part(incremental, 0, 4) == "MCSN"
       assert byte_size(incremental) < byte_size(snapshot)
 
-      assert {:ok, %{kind: :incremental, base_snapshot_digest: base_digest}} =
+      assert {:ok, %{kind: :incremental, base_id: base_id}} =
                Snapshot.parse(incremental)
 
-      assert byte_size(base_digest) == Snapshot.snapshot_digest_len()
-      refute base_digest == :binary.copy(<<0>>, Snapshot.snapshot_digest_len())
+      assert byte_size(base_id) == Snapshot.snapshot_digest_len()
+      refute base_id == :binary.copy(<<0>>, Snapshot.snapshot_digest_len())
       assert {:error, bad_mode} = ControlPlane.snapshot(id, mode: :chain)
       assert bad_mode =~ "snapshot mode"
 

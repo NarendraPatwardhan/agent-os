@@ -721,7 +721,7 @@ async function makeEmbedded(
   }
 
   let host: KernelHost;
-  let snapshotBase: Uint8Array;
+  let snapshotBase: Uint8Array | undefined;
   const store = opts.store ?? (imageNeedsStore(opts.image) ? defaultStore() : undefined);
   if (snapshot) {
     const view = parseSnapshot(snapshot);
@@ -732,11 +732,11 @@ async function makeEmbedded(
           "restoring an incremental snapshot requires a content-addressed snapshot store",
         );
       }
-      const ref = `sha256:${Array.from(view.baseSnapshotDigest, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+      const ref = `sha256:${Array.from(view.baseId, (b) => b.toString(16).padStart(2, "0")).join("")}`;
       base = await store.snapshotObject(ref);
     }
     host = await builder.restore(snapshot, base);
-    snapshotBase = view.kind === "full" ? snapshot.slice() : base!.slice();
+    snapshotBase = view.kind === "full" ? snapshot : base;
   } else {
     const layers = (await resolveImage(opts.image, store)) ?? [];
     layers.push(...embeddedGuestLayers(opts.sidecars));
@@ -746,7 +746,6 @@ async function makeEmbedded(
       .withContract(tierOrdinal(cfg.tier), contractI32(cfg.budgetMib), contractFuel(cfg.fuel))
       .build();
     host.bootToPrompt(); // drive boot only to the first prompt (no settle wait)
-    snapshotBase = await host.snapshot();
   }
   const sidecars = await EmbeddedSidecarBackend.attach(
     opts.sidecarHosts ?? {},
@@ -1373,7 +1372,7 @@ async function makeRemote(
     id = opts.id ?? remoteId();
     const view = parseSnapshot(snapshot);
     if (view.kind === "incremental" && opts.store?.snapshotObject) {
-      const baseRef = `sha256:${Array.from(view.baseSnapshotDigest, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+      const baseRef = `sha256:${Array.from(view.baseId, (b) => b.toString(16).padStart(2, "0")).join("")}`;
       // Seed a different server when the caller has the baseline locally. If not, the target server
       // may already own it (the normal same-server checkpoint/restore path) and resolves the digest
       // from its snapshot CAS when processing the restore request.

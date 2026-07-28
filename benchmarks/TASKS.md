@@ -186,7 +186,7 @@ isolating command-local state.
 - Repeated shell, expansion, redirection, and pipeline latency improve at p50 and p95.
 - A failed or cancelled command cannot poison the next command.
 
-### PERF-004 — Make prewarmed images a product primitive
+### PERF-004* — Make prewarmed images a product primitive
 
 **Problem**
 
@@ -465,8 +465,8 @@ reproduces under an interleaved run.
 ### PERF-015 — Use identical release artifacts across lanes
 
 - Resolve every image and kernel through one release manifest.
-- Record and compare the SHA-256 digest and byte size used by native, JavaScript, browser, OTP, and
-  hosted runners.
+- Record and compare the SHA-256 digest and byte size used by native, JavaScript, browser, and OTP
+  runners.
 - Fail a cross-lane aggregate when supposedly identical workload dimensions use different
   artifacts.
 - Keep intentional platform variants explicit in dimensions rather than silently comparing them.
@@ -504,8 +504,6 @@ unstarted job.
 - Prevent swap from turning branch creation into disk-I/O latency.
 - Run at least 30 successful samples per exact standard workload and 100 for stress investigations.
 - Store raw results, artifact digests, host metadata, and suite revision together.
-- Run the hosted standard and stress profiles against a dedicated server rather than a developer
-  process competing with local builds.
 
 **Done when:** repeated runs on the same release and host class have stable p50 and p95 values, and
 performance regressions can be distinguished from host pressure.

@@ -1,9 +1,10 @@
 // @generated from contracts/snapshot.kdl by //contracts/codegen:projector — do not edit.
 
 export const SNAPSHOT_MAGIC = 1314079565;
-export const SNAPSHOT_VERSION = 2;
+export const SNAPSHOT_VERSION = 4;
 export const SNAPSHOT_HEADER_LEN = 128;
 export const SNAPSHOT_PAGE_SIZE = 65536;
+export const SNAPSHOT_INTEGRITY_CHUNK_SIZE = 1048576;
 export const SNAPSHOT_MAX_MEMORY_LEN = 1073741824;
 export const SNAPSHOT_DIGEST_LEN = 32;
 export const SNAPSHOT_KIND_FULL = 1;
@@ -11,14 +12,14 @@ export const SNAPSHOT_KIND_INCREMENTAL = 2;
 export type SnapshotKind = "full" | "incremental";
 export type SnapshotErrorCode = "too_short" | "bad_magic" | "unsupported_version" | "unknown_kind" |
   "bad_header_length" | "bad_page_size" | "empty_memory" | "memory_too_large" | "misaligned_memory" |
-  "reserved_nonzero" | "missing_digest" | "unexpected_base" | "missing_base" |
+  "bad_integrity_chunk_size" | "missing_digest" | "unexpected_base" | "missing_base" |
   "unexpected_changed_pages" | "bad_bitmap" | "length_mismatch";
 export class SnapshotFormatError extends Error {
   constructor(readonly code: SnapshotErrorCode) { super(`invalid snapshot: ${code}`); this.name = "SnapshotFormatError"; }
 }
 export interface SnapshotView {
   kind: SnapshotKind; memoryLen: number; changedPages: number; kernelDigest: Uint8Array;
-  memoryDigest: Uint8Array; baseSnapshotDigest: Uint8Array; bitmap: Uint8Array; pages: Uint8Array;
+  memoryRoot: Uint8Array; baseId: Uint8Array; bitmap: Uint8Array; pages: Uint8Array;
 }
 const missing = (d: Uint8Array): boolean => d.every((b) => b === 0);
 export const snapshotBitmapLen = (memoryLen: number): number => Math.ceil(memoryLen / SNAPSHOT_PAGE_SIZE / 8);
@@ -38,20 +39,21 @@ export function parseSnapshot(bytes: Uint8Array): SnapshotView {
   if (memoryLen > SNAPSHOT_MAX_MEMORY_LEN) fail("memory_too_large");
   if (memoryLen % SNAPSHOT_PAGE_SIZE !== 0) fail("misaligned_memory");
   const changedPages = dv.getUint32(24, true);
-  if (dv.getUint32(28, true) !== 0) fail("reserved_nonzero");
+  if (dv.getUint32(28, true) !== SNAPSHOT_INTEGRITY_CHUNK_SIZE)
+    fail("bad_integrity_chunk_size");
   const kernelDigest = bytes.slice(32, 32 + SNAPSHOT_DIGEST_LEN),
-    memoryDigest = bytes.slice(64, 64 + SNAPSHOT_DIGEST_LEN),
-    baseSnapshotDigest = bytes.slice(96, 96 + SNAPSHOT_DIGEST_LEN);
-  if (missing(kernelDigest) || missing(memoryDigest)) fail("missing_digest");
+    memoryRoot = bytes.slice(64, 64 + SNAPSHOT_DIGEST_LEN),
+    baseId = bytes.slice(96, 96 + SNAPSHOT_DIGEST_LEN);
+  if (missing(kernelDigest) || missing(memoryRoot)) fail("missing_digest");
   const payload = bytes.subarray(SNAPSHOT_HEADER_LEN);
   if (kind === "full") {
-    if (!missing(baseSnapshotDigest)) fail("unexpected_base");
+    if (!missing(baseId)) fail("unexpected_base");
     if (changedPages !== 0) fail("unexpected_changed_pages");
     if (payload.length !== memoryLen) fail("length_mismatch");
-    return { kind, memoryLen, changedPages, kernelDigest, memoryDigest, baseSnapshotDigest,
+    return { kind, memoryLen, changedPages, kernelDigest, memoryRoot, baseId,
       bitmap: new Uint8Array(0), pages: payload };
   }
-  if (missing(baseSnapshotDigest)) fail("missing_base");
+  if (missing(baseId)) fail("missing_base");
   const bitmapLen = snapshotBitmapLen(memoryLen);
   if (payload.length < bitmapLen) fail("length_mismatch");
   const bitmap = payload.subarray(0, bitmapLen), memoryPages = memoryLen / SNAPSHOT_PAGE_SIZE;
@@ -60,22 +62,22 @@ export function parseSnapshot(bytes: Uint8Array): SnapshotView {
   for (const byte of bitmap) { let b = byte; while (b !== 0) { b &= b - 1; pop++; } }
   if (pop !== changedPages) fail("bad_bitmap");
   if (payload.length !== bitmapLen + changedPages * SNAPSHOT_PAGE_SIZE) fail("length_mismatch");
-  return { kind, memoryLen, changedPages, kernelDigest, memoryDigest, baseSnapshotDigest,
+  return { kind, memoryLen, changedPages, kernelDigest, memoryRoot, baseId,
     bitmap, pages: payload.subarray(bitmapLen) };
 }
 export function writeSnapshotHeader(kind: SnapshotKind, memoryLen: number, changedPages: number,
-  kernelDigest: Uint8Array, memoryDigest: Uint8Array, baseSnapshotDigest: Uint8Array): Uint8Array {
+  kernelDigest: Uint8Array, memoryRoot: Uint8Array, baseId: Uint8Array): Uint8Array {
   if (!Number.isInteger(memoryLen) || !Number.isInteger(changedPages) ||
       changedPages < 0 || changedPages > 0xffffffff ||
-      kernelDigest.length !== SNAPSHOT_DIGEST_LEN || memoryDigest.length !== SNAPSHOT_DIGEST_LEN ||
-      baseSnapshotDigest.length !== SNAPSHOT_DIGEST_LEN) throw new SnapshotFormatError("length_mismatch");
+      kernelDigest.length !== SNAPSHOT_DIGEST_LEN || memoryRoot.length !== SNAPSHOT_DIGEST_LEN ||
+      baseId.length !== SNAPSHOT_DIGEST_LEN) throw new SnapshotFormatError("length_mismatch");
   if (memoryLen <= 0) throw new SnapshotFormatError("empty_memory");
   if (memoryLen > SNAPSHOT_MAX_MEMORY_LEN) throw new SnapshotFormatError("memory_too_large");
   if (memoryLen % SNAPSHOT_PAGE_SIZE !== 0) throw new SnapshotFormatError("misaligned_memory");
-  if (missing(kernelDigest) || missing(memoryDigest)) throw new SnapshotFormatError("missing_digest");
-  if (kind === "full" && !missing(baseSnapshotDigest)) throw new SnapshotFormatError("unexpected_base");
+  if (missing(kernelDigest) || missing(memoryRoot)) throw new SnapshotFormatError("missing_digest");
+  if (kind === "full" && !missing(baseId)) throw new SnapshotFormatError("unexpected_base");
   if (kind === "full" && changedPages !== 0) throw new SnapshotFormatError("unexpected_changed_pages");
-  if (kind === "incremental" && missing(baseSnapshotDigest)) throw new SnapshotFormatError("missing_base");
+  if (kind === "incremental" && missing(baseId)) throw new SnapshotFormatError("missing_base");
   if (kind === "incremental" && changedPages > memoryLen / SNAPSHOT_PAGE_SIZE)
     throw new SnapshotFormatError("length_mismatch");
   const out = new Uint8Array(SNAPSHOT_HEADER_LEN), dv = new DataView(out.buffer);
@@ -83,6 +85,7 @@ export function writeSnapshotHeader(kind: SnapshotKind, memoryLen: number, chang
   dv.setUint32(8, kind === "full" ? SNAPSHOT_KIND_FULL : SNAPSHOT_KIND_INCREMENTAL, true);
   dv.setUint32(12, SNAPSHOT_HEADER_LEN, true); dv.setUint32(16, SNAPSHOT_PAGE_SIZE, true);
   dv.setUint32(20, memoryLen, true); dv.setUint32(24, changedPages, true);
-  out.set(kernelDigest, 32); out.set(memoryDigest, 64);
-  out.set(baseSnapshotDigest, 96); return out;
+  dv.setUint32(28, SNAPSHOT_INTEGRITY_CHUNK_SIZE, true);
+  out.set(kernelDigest, 32); out.set(memoryRoot, 64);
+  out.set(baseId, 96); return out;
 }

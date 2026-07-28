@@ -454,7 +454,6 @@ async function main(): Promise<void> {
     semantics: {
       coldStart: "first command on a fresh machine",
     },
-    hostCostPerHour: args.hostCostPerHour,
   });
 
   for (const image of [minimal, posix, loom, atlas, paper]) {

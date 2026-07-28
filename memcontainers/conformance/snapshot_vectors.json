@@ -1,9 +1,9 @@
 [
   {
-    "name": "legacy-version",
+    "name": "old-version",
     "mutation": "u32",
     "offset": 4,
-    "value": 1,
+    "value": 2,
     "error": "unsupported_version"
   },
   { "name": "unknown-kind", "mutation": "u32", "offset": 8, "value": 99, "error": "unknown_kind" },
@@ -44,11 +44,11 @@
     "error": "unexpected_changed_pages"
   },
   {
-    "name": "reserved-bits",
+    "name": "wrong-integrity-chunk-size",
     "mutation": "u32",
     "offset": 28,
     "value": 1,
-    "error": "reserved_nonzero"
+    "error": "bad_integrity_chunk_size"
   },
   {
     "name": "missing-kernel-digest",
@@ -58,7 +58,7 @@
     "error": "missing_digest"
   },
   {
-    "name": "missing-memory-digest",
+    "name": "missing-memory-root",
     "mutation": "zero",
     "offset": 64,
     "length": 32,
@@ -73,9 +73,9 @@
   },
   { "name": "trailing-byte", "mutation": "append", "error": "length_mismatch" },
   { "name": "truncated-image", "mutation": "truncate", "error": "length_mismatch" },
-  { "name": "corrupt-image", "mutation": "flip", "offset": 128, "error": "memory_digest_mismatch" },
+  { "name": "corrupt-image", "mutation": "flip", "offset": 128, "error": "memory_root_mismatch" },
   {
-    "name": "incremental-missing-base-digest",
+    "name": "incremental-missing-base-id",
     "source": "incremental",
     "mutation": "zero",
     "offset": 96,
@@ -99,17 +99,17 @@
     "error": "bad_bitmap"
   },
   {
-    "name": "incremental-wrong-base-reference",
+    "name": "incremental-wrong-base-id",
     "source": "incremental",
     "mutation": "flip",
     "offset": 96,
-    "error": "base_snapshot_digest_mismatch"
+    "error": "base_id_mismatch"
   },
   {
-    "name": "incremental-wrong-memory-digest",
+    "name": "incremental-wrong-memory-root",
     "source": "incremental",
     "mutation": "flip",
     "offset": 64,
-    "error": "memory_digest_mismatch"
+    "error": "memory_root_mismatch"
   }
 ]

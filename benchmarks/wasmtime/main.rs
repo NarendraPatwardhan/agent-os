@@ -83,8 +83,6 @@ struct Run {
     git: serde_json::Value,
     command: Vec<String>,
     semantics: serde_json::Value,
-    #[serde(rename = "hostCostPerHour", skip_serializing_if = "Option::is_none")]
-    host_cost_per_hour: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -1093,7 +1091,6 @@ fn deterministic_suite(
 struct Args {
     profile: Profile,
     output: Option<String>,
-    host_cost_per_hour: Option<f64>,
 }
 
 fn parse_args() -> Result<Args> {
@@ -1126,7 +1123,6 @@ fn parse_args() -> Result<Args> {
     };
     let mut profile = profiles("smoke").unwrap();
     let mut output = None;
-    let mut host_cost_per_hour = None;
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < args.len() {
@@ -1158,23 +1154,12 @@ fn parse_args() -> Result<Args> {
                 output = Some(value.clone());
                 i += 2;
             }
-            ("--host-cost-per-hour", Some(value)) => {
-                let parsed: f64 = value
-                    .parse()
-                    .context("--host-cost-per-hour must be numeric")?;
-                if !parsed.is_finite() || parsed < 0.0 {
-                    return Err(anyhow!("--host-cost-per-hour must be non-negative"));
-                }
-                host_cost_per_hour = Some(parsed);
-                i += 2;
-            }
             _ => return Err(anyhow!("unknown or incomplete argument {:?}", args[i])),
         }
     }
     Ok(Args {
         profile,
         output,
-        host_cost_per_hour,
     })
 }
 
@@ -1250,7 +1235,6 @@ fn main() -> Result<()> {
             "wasmtimeCompilationMode": "opt",
             "memoryPopulation": args.profile.memory_machines
         }),
-        host_cost_per_hour: args.host_cost_per_hour,
     };
     let mut results = Results::new(run);
     startup_suite(

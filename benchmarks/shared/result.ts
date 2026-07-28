@@ -161,11 +161,9 @@ export class ResultBuilder {
 export function parseArgs(argv: string[]): {
   profile: Profile;
   output?: string;
-  hostCostPerHour?: number;
 } {
   let selected = profile(undefined);
   let output: string | undefined;
-  let hostCostPerHour: number | undefined;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     const value = argv[i + 1];
@@ -181,16 +179,11 @@ export function parseArgs(argv: string[]): {
     } else if (arg === "--output" && value) {
       output = value;
       i++;
-    } else if (arg === "--host-cost-per-hour" && value) {
-      hostCostPerHour = Number(value);
-      if (!Number.isFinite(hostCostPerHour) || hostCostPerHour < 0)
-        throw new Error(`${arg} must be a non-negative number`);
-      i++;
     } else {
       throw new Error(`unknown or incomplete argument: ${arg}`);
     }
   }
-  return { profile: selected, output, hostCostPerHour };
+  return { profile: selected, output };
 }
 
 function positiveInt(value: string, flag: string): number {

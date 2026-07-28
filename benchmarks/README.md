@@ -1,8 +1,8 @@
 # AgentOS benchmarks
 
 This directory contains the reproducible AgentOS benchmark suite. It measures shipped AgentOS
-artifacts through the native Wasmtime host, the public JavaScript SDK, Chromium, the OTP/NIF server
-path, and an optional remote AgentOS deployment.
+artifacts through the native Wasmtime host, the public JavaScript SDK, Chromium, and the OTP/NIF
+server path.
 
 ## What the benchmarks answer
 
@@ -13,7 +13,6 @@ path, and an optional remote AgentOS deployment.
 5. What does AgentOS add to a browser?
 6. Do SQLite, documents, and other resident tools benefit from warm state?
 7. Is execution deterministic and contained at failure boundaries?
-8. What latency and cost remain in hosted use after network time is removed?
 
 These measurements cover the decisions that determine whether an execution environment is practical:
 how long users wait for work to begin, how much work a host can sustain, how many isolated machines
@@ -33,8 +32,6 @@ usable under failure.
 | Browser | Chromium startup and incremental RSS for one idle Posix VM |
 | Resident services | SQLite and Typst cold, warm, and restored-warm latency |
 | Replay and robustness | Replay rate, cancellation, malformed input, and resource exhaustion |
-| Remote | Network baseline and network-adjusted create, exec, snapshot, and fork latency |
-| Economics | Episodes per second and optional cost per million episodes |
 
 ## Methodology
 
@@ -53,8 +50,6 @@ Results are reported as populations rather than single demonstrations:
 - Native memory samples use fresh host processes and include the host process tree.
 - Browser memory is the process-tree RSS added by AgentOS and one Posix VM in a fresh Chromium
   profile.
-- Remote operation latency subtracts the measured average network round trip once and reports the
-  adjustment with the result.
 - Commands, runtime versions, system metadata, source state, and artifact digests travel with the
   result.
 
@@ -73,7 +68,6 @@ available alternative for latency and the lowest-cost alternative for economics.
 - `//benchmarks:browser` measures the browser API and launches fresh Chromium processes for browser
   startup and VM-memory populations.
 - `//benchmarks:beam` measures the AgentOS OTP control plane and release NIF.
-- `//benchmarks:remote` measures the public SDK against an operator-supplied deployment.
 
 ## Quick start
 
@@ -103,26 +97,6 @@ repository-wide Elixir platform. Choose a larger BEAM population with
 `--test_env=AGENTOS_BENCHMARK_PROFILE=standard` or `stress`.
 
 Chromium defaults to `/usr/bin/chromium`; set `CHROMIUM_BIN` to use another executable.
-
-### Remote benchmark
-
-The credential is accepted only through `AGENTOS_BENCHMARK_TOKEN`. It is never accepted as a flag,
-hardcoded, or written to result metadata.
-
-```bash
-AGENTOS_BENCHMARK_TOKEN=... \
-  bazel "--output_user_root=${BAZEL_CACHE}" run //benchmarks:remote -- \
-  --endpoint https://your-agentos-host.example/v1 \
-  --profile standard \
-  --output /tmp/agentos-remote.json
-```
-
-The remote runner first measures a population of `/healthz` round trips. It computes their arithmetic
-mean and subtracts that mean from every operation sample. Results contain the network baseline and
-only the adjusted operation series. They do not contain a second raw operation series.
-
-Pass `--host-cost-per-hour USD` only when you have a real price for the measured host. Without it the
-runner reports throughput but does not invent a cost.
 
 ### Aggregate and validate
 

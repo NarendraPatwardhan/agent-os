@@ -980,13 +980,13 @@ async function main(): Promise<void> {
       // that those exact opaque bytes cross the data plane.
       const memory = new Uint8Array(65_536);
       const kernelDigest = await sha256Bytes(new TextEncoder().encode("remote-fixture-kernel"));
-      const memoryDigest = await sha256Bytes(memory);
+      const memoryRoot = await sha256Bytes(new TextEncoder().encode("remote-fixture-root"));
       const header = writeSnapshotHeader(
         "full",
         memory.length,
         0,
         kernelDigest,
-        memoryDigest,
+        memoryRoot,
         new Uint8Array(32),
       );
       const remoteSnapshot = new Uint8Array(header.length + memory.length);
@@ -2573,8 +2573,8 @@ error("timed out waiting for restored warm sqlite child: " .. err)
   }
 
   // Incremental snapshots are self-describing deltas over one content-addressed full baseline.
-  // The SDK owns that baseline lifecycle: create captures it, snapshot stores it by digest, and
-  // restore resolves it without requiring callers to pass a second byte array manually.
+  // The SDK owns that baseline lifecycle lazily: the first incremental request establishes a full
+  // baseline, later requests store/reference it, and restore resolves it without a second byte array.
   {
     const store = new MemoryContentStore();
     const source = await mc.create({
@@ -2587,6 +2587,8 @@ error("timed out waiting for restored warm sqlite child: " .. err)
     let delta: Uint8Array;
     let full: Uint8Array;
     try {
+      const baseline = await source.snapshot({ mode: "incremental" });
+      if (baseline[8] !== 1) throw new Error("first incremental request did not return a full baseline");
       await source.fs.write("/tmp/incremental-sdk", "survives");
       delta = await source.snapshot({ mode: "incremental" });
       full = await source.snapshot();

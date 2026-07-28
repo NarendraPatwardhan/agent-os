@@ -272,8 +272,8 @@ defmodule AgentOS.Vm do
     GenServer.call(server, {:snapshot, mode}, @default_call_timeout)
   end
 
-  @doc "The immutable full baseline used by incremental snapshots for this VM."
-  @spec snapshot_base(server()) :: binary()
+  @doc "The full baseline used by incremental snapshots, or nil before one is established."
+  @spec snapshot_base(server()) :: binary() | nil
   def snapshot_base(server), do: GenServer.call(server, :snapshot_base)
 
   @doc "Serialize the live CoW overlay into a content-addressed tar layer."
@@ -550,40 +550,31 @@ defmodule AgentOS.Vm do
         case catalog_result do
           :ok ->
             now = now_ms()
+            base =
+              if fresh_boot,
+                do: nil,
+                else: Keyword.get(opts, :base_snapshot, Keyword.fetch!(opts, :snapshot))
 
-            base_result =
-              if fresh_boot do
-                Nif.snapshot(nif)
-              else
-                {:ok, Keyword.get(opts, :base_snapshot, Keyword.fetch!(opts, :snapshot))}
-              end
+            id = Keyword.fetch!(opts, :id)
 
-            case base_result do
-              {:ok, base} ->
-                id = Keyword.fetch!(opts, :id)
-
-                case AgentOS.Sidecars.attach_vm(
-                       id,
-                       self(),
-                       Keyword.get(opts, :sidecars, []),
-                       Keyword.get(opts, :sidecar_options, [])
-                     ) do
-                  {:ok, _scope} ->
-                    {:ok,
-                     %__MODULE__{
-                       id: id,
-                       nif: nif,
-                       booted_at: now,
-                       last_active_ms: now,
-                       snapshot_base: base
-                     }}
-
-                  {:error, reason} ->
-                    {:stop, "failed to attach sidecars: #{inspect(reason)}"}
-                end
+            case AgentOS.Sidecars.attach_vm(
+                   id,
+                   self(),
+                   Keyword.get(opts, :sidecars, []),
+                   Keyword.get(opts, :sidecar_options, [])
+                 ) do
+              {:ok, _scope} ->
+                {:ok,
+                 %__MODULE__{
+                   id: id,
+                   nif: nif,
+                   booted_at: now,
+                   last_active_ms: now,
+                   snapshot_base: base
+                 }}
 
               {:error, reason} ->
-                {:stop, "failed to capture snapshot baseline: #{reason}"}
+                {:stop, "failed to attach sidecars: #{inspect(reason)}"}
             end
 
           {:error, reason} ->
@@ -704,7 +695,16 @@ defmodule AgentOS.Vm do
   end
 
   def handle_call({:snapshot, :incremental}, _from, state) do
-    {:reply, Nif.snapshot_incremental(state.nif, state.snapshot_base), state}
+    case state.snapshot_base do
+      nil ->
+        case Nif.snapshot(state.nif) do
+          {:ok, base} = reply -> {:reply, reply, %{state | snapshot_base: base}}
+          {:error, _reason} = reply -> {:reply, reply, state}
+        end
+
+      base ->
+        {:reply, Nif.snapshot_incremental(state.nif, base), state}
+    end
   end
 
   def handle_call({:snapshot, mode}, _from, state) do

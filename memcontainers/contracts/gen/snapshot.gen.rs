@@ -2,9 +2,10 @@
 #![no_std]
 
 pub const SNAPSHOT_MAGIC: u32 = 1314079565;
-pub const SNAPSHOT_VERSION: u32 = 2;
+pub const SNAPSHOT_VERSION: u32 = 4;
 pub const SNAPSHOT_HEADER_LEN: usize = 128;
 pub const SNAPSHOT_PAGE_SIZE: usize = 65536;
+pub const SNAPSHOT_INTEGRITY_CHUNK_SIZE: usize = 1048576;
 pub const SNAPSHOT_MAX_MEMORY_LEN: usize = 1073741824;
 pub const SNAPSHOT_DIGEST_LEN: usize = 32;
 pub const SNAPSHOT_KIND_FULL: u32 = 1;
@@ -18,7 +19,7 @@ pub enum SnapshotKind { Full, Incremental }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SnapshotError {
     TooShort, BadMagic, UnsupportedVersion, UnknownKind, BadHeaderLength, BadPageSize,
-    EmptyMemory, MemoryTooLarge, MisalignedMemory, ReservedNonzero, MissingDigest, UnexpectedBase,
+    EmptyMemory, MemoryTooLarge, MisalignedMemory, BadIntegrityChunkSize, MissingDigest, UnexpectedBase,
     MissingBase, UnexpectedChangedPages, BadBitmap, LengthMismatch,
 }
 
@@ -30,7 +31,7 @@ impl core::fmt::Display for SnapshotError {
             Self::BadHeaderLength => "bad_header_length", Self::BadPageSize => "bad_page_size",
             Self::EmptyMemory => "empty_memory", Self::MemoryTooLarge => "memory_too_large",
             Self::MisalignedMemory => "misaligned_memory",
-            Self::ReservedNonzero => "reserved_nonzero", Self::MissingDigest => "missing_digest",
+            Self::BadIntegrityChunkSize => "bad_integrity_chunk_size", Self::MissingDigest => "missing_digest",
             Self::UnexpectedBase => "unexpected_base", Self::MissingBase => "missing_base",
             Self::UnexpectedChangedPages => "unexpected_changed_pages", Self::BadBitmap => "bad_bitmap",
             Self::LengthMismatch => "length_mismatch",
@@ -45,8 +46,8 @@ pub struct SnapshotView<'a> {
     pub memory_len: usize,
     pub changed_pages: usize,
     pub kernel_digest: SnapshotDigest,
-    pub memory_digest: SnapshotDigest,
-    pub base_snapshot_digest: SnapshotDigest,
+    pub memory_root: SnapshotDigest,
+    pub base_id: SnapshotDigest,
     pub bitmap: &'a [u8],
     pub pages: &'a [u8],
 }
@@ -82,22 +83,24 @@ pub fn parse_snapshot(bytes: &[u8]) -> Result<SnapshotView<'_>, SnapshotError> {
     if memory_len > SNAPSHOT_MAX_MEMORY_LEN { return Err(SnapshotError::MemoryTooLarge); }
     if memory_len % SNAPSHOT_PAGE_SIZE != 0 { return Err(SnapshotError::MisalignedMemory); }
     let changed_pages = u32_at(bytes, 24) as usize;
-    if u32_at(bytes, 28) != 0 { return Err(SnapshotError::ReservedNonzero); }
+    if u32_at(bytes, 28) as usize != SNAPSHOT_INTEGRITY_CHUNK_SIZE {
+        return Err(SnapshotError::BadIntegrityChunkSize);
+    }
     let kernel_digest = digest_at(bytes, 32);
-    let memory_digest = digest_at(bytes, 64);
-    let base_snapshot_digest = digest_at(bytes, 96);
-    if missing(&kernel_digest) || missing(&memory_digest) { return Err(SnapshotError::MissingDigest); }
+    let memory_root = digest_at(bytes, 64);
+    let base_id = digest_at(bytes, 96);
+    if missing(&kernel_digest) || missing(&memory_root) { return Err(SnapshotError::MissingDigest); }
     let payload = &bytes[SNAPSHOT_HEADER_LEN..];
     match kind {
         SnapshotKind::Full => {
-            if !missing(&base_snapshot_digest) { return Err(SnapshotError::UnexpectedBase); }
+            if !missing(&base_id) { return Err(SnapshotError::UnexpectedBase); }
             if changed_pages != 0 { return Err(SnapshotError::UnexpectedChangedPages); }
             if payload.len() != memory_len { return Err(SnapshotError::LengthMismatch); }
-            Ok(SnapshotView { kind, memory_len, changed_pages, kernel_digest, memory_digest,
-                base_snapshot_digest, bitmap: &[], pages: payload })
+            Ok(SnapshotView { kind, memory_len, changed_pages, kernel_digest, memory_root,
+                base_id, bitmap: &[], pages: payload })
         }
         SnapshotKind::Incremental => {
-            if missing(&base_snapshot_digest) { return Err(SnapshotError::MissingBase); }
+            if missing(&base_id) { return Err(SnapshotError::MissingBase); }
             let bitmap_len = snapshot_bitmap_len(memory_len);
             if payload.len() < bitmap_len { return Err(SnapshotError::LengthMismatch); }
             let bitmap = &payload[..bitmap_len];
@@ -109,24 +112,24 @@ pub fn parse_snapshot(bytes: &[u8]) -> Result<SnapshotView<'_>, SnapshotError> {
             if pop != changed_pages { return Err(SnapshotError::BadBitmap); }
             let page_bytes = changed_pages.checked_mul(SNAPSHOT_PAGE_SIZE).ok_or(SnapshotError::LengthMismatch)?;
             if payload.len() != bitmap_len + page_bytes { return Err(SnapshotError::LengthMismatch); }
-            Ok(SnapshotView { kind, memory_len, changed_pages, kernel_digest, memory_digest,
-                base_snapshot_digest, bitmap, pages: &payload[bitmap_len..] })
+            Ok(SnapshotView { kind, memory_len, changed_pages, kernel_digest, memory_root,
+                base_id, bitmap, pages: &payload[bitmap_len..] })
         }
     }
 }
 
 pub fn write_snapshot_header(out: &mut [u8], kind: SnapshotKind, memory_len: usize,
-    changed_pages: usize, kernel_digest: &SnapshotDigest, memory_digest: &SnapshotDigest,
-    base_snapshot_digest: &SnapshotDigest) -> Result<(), SnapshotError> {
+    changed_pages: usize, kernel_digest: &SnapshotDigest, memory_root: &SnapshotDigest,
+    base_id: &SnapshotDigest) -> Result<(), SnapshotError> {
     if out.len() < SNAPSHOT_HEADER_LEN { return Err(SnapshotError::TooShort); }
     if memory_len == 0 { return Err(SnapshotError::EmptyMemory); }
     if memory_len > SNAPSHOT_MAX_MEMORY_LEN { return Err(SnapshotError::MemoryTooLarge); }
     if memory_len % SNAPSHOT_PAGE_SIZE != 0 { return Err(SnapshotError::MisalignedMemory); }
-    if missing(kernel_digest) || missing(memory_digest) { return Err(SnapshotError::MissingDigest); }
+    if missing(kernel_digest) || missing(memory_root) { return Err(SnapshotError::MissingDigest); }
     match kind {
-        SnapshotKind::Full if !missing(base_snapshot_digest) => return Err(SnapshotError::UnexpectedBase),
+        SnapshotKind::Full if !missing(base_id) => return Err(SnapshotError::UnexpectedBase),
         SnapshotKind::Full if changed_pages != 0 => return Err(SnapshotError::UnexpectedChangedPages),
-        SnapshotKind::Incremental if missing(base_snapshot_digest) => return Err(SnapshotError::MissingBase),
+        SnapshotKind::Incremental if missing(base_id) => return Err(SnapshotError::MissingBase),
         SnapshotKind::Incremental if changed_pages > memory_len / SNAPSHOT_PAGE_SIZE =>
             return Err(SnapshotError::LengthMismatch),
         _ => {}
@@ -142,8 +145,10 @@ pub fn write_snapshot_header(out: &mut [u8], kind: SnapshotKind, memory_len: usi
     out[16..16 + 4].copy_from_slice(&(SNAPSHOT_PAGE_SIZE as u32).to_le_bytes());
     out[20..20 + 4].copy_from_slice(&memory_len.to_le_bytes());
     out[24..24 + 4].copy_from_slice(&changed_pages.to_le_bytes());
+    out[28..28 + 4]
+        .copy_from_slice(&(SNAPSHOT_INTEGRITY_CHUNK_SIZE as u32).to_le_bytes());
     out[32..32 + SNAPSHOT_DIGEST_LEN].copy_from_slice(kernel_digest);
-    out[64..64 + SNAPSHOT_DIGEST_LEN].copy_from_slice(memory_digest);
-    out[96..96 + SNAPSHOT_DIGEST_LEN].copy_from_slice(base_snapshot_digest);
+    out[64..64 + SNAPSHOT_DIGEST_LEN].copy_from_slice(memory_root);
+    out[96..96 + SNAPSHOT_DIGEST_LEN].copy_from_slice(base_id);
     Ok(())
 }

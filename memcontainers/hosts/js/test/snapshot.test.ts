@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { KernelHostBuilder } from "../src/index.js";
+import { SNAPSHOT_HEADER_LEN, SNAPSHOT_PAGE_SIZE, parseSnapshot } from "@mc/contracts/snapshot";
 import type { StreamSink } from "../src/index.js";
 
 interface Vector {
@@ -73,4 +74,63 @@ for (const vector of vectors) {
   }
   throw new Error(`${vector.name}: malformed snapshot restored`);
 }
-console.log("shared malformed MCSN v2 vectors rejected by the JS host");
+
+const tracked = Uint8Array.from({ length: 4096 }, (_, i) => (i * 31) & 0xff);
+host.writeFile("/tmp/tracked", tracked);
+const trackedDelta = await host.snapshotIncremental(valid);
+const trackedView = parseSnapshot(trackedDelta);
+if (trackedView.changedPages <= 0) throw new Error("4-KiB write did not change a snapshot page");
+if (trackedView.changedPages >= trackedView.memoryLen / SNAPSHOT_PAGE_SIZE) {
+  throw new Error("4-KiB mutation unexpectedly captured every page");
+}
+if (trackedDelta.length >= SNAPSHOT_HEADER_LEN + trackedView.memoryLen) {
+  throw new Error("incremental must be smaller than a full snapshot");
+}
+const restored = await new KernelHostBuilder(wasm).deterministic().restore(trackedDelta, valid);
+if (!restored.readFile("/tmp/tracked").every((byte, i) => byte === tracked[i])) {
+  throw new Error("incremental restore did not preserve the 4-KiB mutation");
+}
+restored.writeFile("/tmp/after-restore", new TextEncoder().encode("second generation"));
+const secondGeneration = await restored.snapshotIncremental(valid);
+const restoredAgain = await new KernelHostBuilder(wasm)
+  .deterministic()
+  .restore(secondGeneration, valid);
+if (new TextDecoder().decode(restoredAgain.readFile("/tmp/after-restore")) !== "second generation") {
+  throw new Error("restored incremental could not produce a second-generation delta");
+}
+
+const replacement = new Uint8Array(4096).fill(0xa7);
+host.writeFile("/tmp/tracked", replacement);
+const badBase = valid.slice();
+badBase[SNAPSHOT_HEADER_LEN] ^= 1;
+try {
+  await host.snapshotIncremental(badBase);
+  throw new Error("corrupt incremental baseline was accepted");
+} catch (error) {
+  if (error instanceof Error && error.message === "corrupt incremental baseline was accepted") {
+    throw error;
+  }
+}
+const afterFailure = await host.snapshotIncremental(valid);
+const restoredAfterFailure = await new KernelHostBuilder(wasm)
+  .deterministic()
+  .restore(afterFailure, valid);
+if (!restoredAfterFailure.readFile("/tmp/tracked").every((byte) => byte === 0xa7)) {
+  throw new Error("rejected incremental attempt lost later writes");
+}
+
+const baseLen = parseSnapshot(valid).memoryLen;
+const growth = new Uint8Array(baseLen).fill(0x5c);
+host.writeFile("/tmp/growth", growth);
+const growthDelta = await host.snapshotIncremental(valid);
+if (parseSnapshot(growthDelta).memoryLen <= baseLen) {
+  throw new Error("large write did not exercise incremental memory growth");
+}
+const restoredGrowth = await new KernelHostBuilder(wasm)
+  .deterministic()
+  .restore(growthDelta, valid);
+if (!restoredGrowth.readFile("/tmp/growth").every((byte) => byte === 0x5c)) {
+  throw new Error("incremental memory-growth restore lost the large file");
+}
+
+console.log("shared malformed MCSN v4 vectors and exact incremental tracking passed");

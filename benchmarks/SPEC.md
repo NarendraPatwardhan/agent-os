@@ -11,7 +11,6 @@ The benchmark product answers:
 5. What does AgentOS add to a browser?
 6. Do SQLite, documents, and other resident tools benefit from warm state?
 7. Is execution deterministic and contained at failure boundaries?
-8. What latency and cost remain in hosted use after network time is removed?
 
 The schema is `agentos.benchmark.v1`. Each runner emits one result document. Aggregation preserves
 the source documents and creates no synthetic samples.
@@ -31,9 +30,6 @@ machine.
 
 Cold means the first command on a fresh machine. Warm means repeated work on an existing machine.
 `restored-warm` means a snapshot taken after service warm-up was restored before the measured command.
-
-`remote.create.latency` measures hosted provisioning separately. It is not added to
-`cold_start.shell`.
 
 ### Steady execution
 
@@ -119,54 +115,20 @@ recorded.
 Latency is numeric. Containment outcomes are checks. Rejecting malformed input is a successful check,
 not a benchmark failure.
 
-### Remote and economics
-
-`transport.network_round_trip` is a population of warmed `/healthz` requests. The runner computes:
-
-```
-network_mean = sum(network_round_trip_samples) / sample_count
-adjusted_operation = max(0, observed_operation - network_mean)
-```
-
-Only the network baseline and adjusted operation samples are emitted. The adjusted operations are:
-
-- `remote.create.latency`
-- `cold_start.shell`
-- `exec.external_module.steady`
-- `exec.direct_minimal.steady`
-- `exec.direct_external.steady`
-- `snapshot.full.latency` and `snapshot.full.size`
-- `machine.fork`
-
-Their dimensions identify `host=remote`, the measured image, the adjustment method, and the exact
-network mean. Credentials come only from `AGENTOS_BENCHMARK_TOKEN` and never enter metadata.
-
-`economics.episodes_per_second` is derived from the adjusted steady remote execution population. When
-and only when `--host-cost-per-hour` is supplied:
-
-```
-economics.cost_per_million_episodes =
-  1_000_000 / episodes_per_second / 3600 * host_cost_per_hour
-```
-
-The result stores the supplied price and episode definition.
-
 ## Runner coverage
 
-| Metric family | Wasmtime | JS SDK | Browser | OTP/NIF | Remote |
-|---|:---:|:---:|:---:|:---:|:---:|
-| Cold start | yes | yes | yes | Posix | yes |
-| Steady commands/pipeline | yes | yes | yes | yes | exec |
-| Filesystem bandwidth | yes | yes | yes |  |  |
-| Snapshot/restore/fork | yes | yes | yes | full/restore | full/fork |
-| Branch population cost | yes |  |  |  |  |
-| Native memory/density | yes |  |  |  |  |
-| Browser startup/VM memory |  |  | yes |  |  |
-| SQLite/Typst warm state | yes | yes | yes | SQLite |  |
-| Replay | yes | yes |  |  |  |
-| Failure containment | yes |  |  | malformed kernel |  |
-| Network-adjusted hosted path |  |  |  |  | yes |
-| Cost per million episodes |  |  |  |  | optional |
+| Metric family | Wasmtime | JS SDK | Browser | OTP/NIF |
+|---|:---:|:---:|:---:|:---:|
+| Cold start | yes | yes | yes | Posix |
+| Steady commands/pipeline | yes | yes | yes | yes |
+| Filesystem bandwidth | yes | yes | yes |  |
+| Snapshot/restore/fork | yes | yes | yes | full/restore |
+| Branch population cost | yes |  |  |  |
+| Native memory/density | yes |  |  |  |
+| Browser startup/VM memory |  |  | yes |  |
+| SQLite/Typst warm state | yes | yes | yes | SQLite |
+| Replay | yes | yes |  |  |
+| Failure containment | yes |  |  | malformed kernel |
 
 An empty cell means that lane does not emit that metric.
 
@@ -196,5 +158,4 @@ A valid result:
 - retains failed observations;
 - uses release-mode Wasmtime for the native lane;
 - never labels provisioning/setup time as cold start;
-- never substitutes linear-memory capacity, snapshot size, JS heap, or allocator totals for RSS;
-- reports one network-adjusted version of each remote operation.
+- never substitutes linear-memory capacity, snapshot size, JS heap, or allocator totals for RSS.

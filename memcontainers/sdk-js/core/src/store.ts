@@ -2,12 +2,26 @@
 // (SYSTEMS.md §11). This module is runtime-neutral: browser callers can import the core SDK without
 // resolving `node:*`, and the concrete store is selected by the caller or by `defaultStore()`.
 import type { ContentStore, ImageManifest } from "./types.js";
+import { parseSnapshot } from "@mc/contracts/snapshot";
+
+const BASE_DOMAIN = new TextEncoder().encode("MCSN4-BASE\0");
 
 async function sha256Hex(bytes: Uint8Array): Promise<string> {
   const h = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes as Uint8Array<ArrayBuffer>));
   let hex = "";
   for (const b of h) hex += b.toString(16).padStart(2, "0");
   return hex;
+}
+
+async function snapshotObjectDigest(snapshot: Uint8Array): Promise<string> {
+  const view = parseSnapshot(snapshot);
+  if (view.kind !== "full") throw new Error("only full snapshots are content-store baselines");
+  const input = new Uint8Array(BASE_DOMAIN.length + 32 + 32 + 4);
+  input.set(BASE_DOMAIN);
+  input.set(view.kernelDigest, BASE_DOMAIN.length);
+  input.set(view.memoryRoot, BASE_DOMAIN.length + 32);
+  new DataView(input.buffer).setUint32(input.length - 4, view.memoryLen, true);
+  return `sha256:${await sha256Hex(input)}`;
 }
 
 function digestHex(digest: string): string {
@@ -132,7 +146,7 @@ export class MemoryContentStore implements ContentStore {
   }
 
   async putSnapshotObject(snapshot: Uint8Array): Promise<string> {
-    const digest = `sha256:${await sha256Hex(snapshot)}`;
+    const digest = await snapshotObjectDigest(snapshot);
     this.snapshotObjects.set(digest, cloneBytes(snapshot));
     return digest;
   }
@@ -227,7 +241,7 @@ export class FsContentStore implements ContentStore {
   }
 
   async putSnapshotObject(snapshot: Uint8Array): Promise<string> {
-    const digest = `sha256:${await sha256Hex(snapshot)}`;
+    const digest = await snapshotObjectDigest(snapshot);
     const { mkdir, writeFile } = await nodeFs();
     await mkdir(this.snapshotsDir(), { recursive: true });
     await writeFile(await nodeJoin(this.snapshotsDir(), `${digestHex(digest)}.mcsn`), snapshot);
@@ -302,7 +316,7 @@ export class OpfsContentStore implements ContentStore {
   }
 
   async putSnapshotObject(snapshot: Uint8Array): Promise<string> {
-    const digest = `sha256:${await sha256Hex(snapshot)}`;
+    const digest = await snapshotObjectDigest(snapshot);
     await opfsWrite(await this.dir("snapshot-objects"), `${digestHex(digest)}.mcsn`, snapshot);
     return digest;
   }

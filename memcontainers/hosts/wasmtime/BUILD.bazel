@@ -134,6 +134,7 @@ rust_opt_test(
     edition = "2021",
     deps = [
         ":host",
+        "//memcontainers/contracts:snapshot_rust",
         "@host_crates//:serde",
         "@host_crates//:serde_json",
         "@rules_rust//rust/runfiles",

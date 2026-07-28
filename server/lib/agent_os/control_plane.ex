@@ -125,8 +125,8 @@ defmodule AgentOS.ControlPlane do
   @spec snapshot(Vm.id(), keyword()) :: {:ok, binary()} | {:error, :not_found}
   def snapshot(id, opts \\ []), do: with_vm(id, &Vm.snapshot(&1, opts))
 
-  @doc "Read the immutable full baseline that backs an existing VM's incremental snapshots."
-  @spec snapshot_base(Vm.id()) :: binary() | {:error, :not_found}
+  @doc "Read the full incremental baseline, or nil before the first incremental snapshot."
+  @spec snapshot_base(Vm.id()) :: binary() | nil | {:error, :not_found}
   def snapshot_base(id), do: with_vm(id, &Vm.snapshot_base/1)
 
   @doc "Serialize an existing VM's live CoW overlay into a content-addressed tar layer."

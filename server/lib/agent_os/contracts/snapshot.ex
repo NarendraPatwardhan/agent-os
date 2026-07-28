@@ -4,9 +4,10 @@ defmodule AgentOS.Contracts.Snapshot do
   @moduledoc "Projected MCSN snapshot framing and validation."
 
   @snapshot_magic 1314079565
-  @snapshot_version 2
+  @snapshot_version 4
   @snapshot_header_len 128
   @snapshot_page_size 65536
+  @snapshot_integrity_chunk_size 1048576
   @snapshot_max_memory_len 1073741824
   @snapshot_digest_len 32
   @snapshot_kind_full 1
@@ -16,6 +17,7 @@ defmodule AgentOS.Contracts.Snapshot do
   def snapshot_version, do: @snapshot_version
   def snapshot_header_len, do: @snapshot_header_len
   def snapshot_page_size, do: @snapshot_page_size
+  def snapshot_integrity_chunk_size, do: @snapshot_integrity_chunk_size
   def snapshot_max_memory_len, do: @snapshot_max_memory_len
   def snapshot_digest_len, do: @snapshot_digest_len
 
@@ -33,8 +35,8 @@ defmodule AgentOS.Contracts.Snapshot do
     memory_len = u32_at(bytes, 20)
     changed_pages = u32_at(bytes, 24)
     kernel_digest = digest_at(bytes, 32)
-    memory_digest = digest_at(bytes, 64)
-    base_snapshot_digest = digest_at(bytes, 96)
+    memory_root = digest_at(bytes, 64)
+    base_id = digest_at(bytes, 96)
     payload = binary_part(bytes, @snapshot_header_len, byte_size(bytes) - @snapshot_header_len)
 
     with :ok <- equal(u32_at(bytes, 0), @snapshot_magic, :bad_magic),
@@ -45,31 +47,32 @@ defmodule AgentOS.Contracts.Snapshot do
          :ok <- positive(memory_len, :empty_memory),
          :ok <- at_most(memory_len, @snapshot_max_memory_len, :memory_too_large),
          :ok <- divisible(memory_len, @snapshot_page_size, :misaligned_memory),
-         :ok <- equal(u32_at(bytes, 28), 0, :reserved_nonzero),
+         :ok <- equal(u32_at(bytes, 28), @snapshot_integrity_chunk_size,
+           :bad_integrity_chunk_size),
          :ok <- present(kernel_digest, :missing_digest),
-         :ok <- present(memory_digest, :missing_digest) do
-      parse_payload(kind, memory_len, changed_pages, kernel_digest, memory_digest,
-        base_snapshot_digest, payload)
+         :ok <- present(memory_root, :missing_digest) do
+      parse_payload(kind, memory_len, changed_pages, kernel_digest, memory_root,
+        base_id, payload)
     end
   end
 
   def parse(_bytes), do: {:error, :too_short}
 
-  defp parse_payload(:full, memory_len, changed_pages, kernel_digest, memory_digest,
-         base_snapshot_digest, payload) do
-    with :ok <- missing(base_snapshot_digest, :unexpected_base),
+  defp parse_payload(:full, memory_len, changed_pages, kernel_digest, memory_root,
+         base_id, payload) do
+    with :ok <- missing(base_id, :unexpected_base),
          :ok <- equal(changed_pages, 0, :unexpected_changed_pages),
          :ok <- equal(byte_size(payload), memory_len, :length_mismatch) do
-      {:ok, snapshot_view(:full, memory_len, changed_pages, kernel_digest, memory_digest,
-        base_snapshot_digest, <<>>, payload)}
+      {:ok, snapshot_view(:full, memory_len, changed_pages, kernel_digest, memory_root,
+        base_id, <<>>, payload)}
     end
   end
 
-  defp parse_payload(:incremental, memory_len, changed_pages, kernel_digest, memory_digest,
-         base_snapshot_digest, payload) do
+  defp parse_payload(:incremental, memory_len, changed_pages, kernel_digest, memory_root,
+         base_id, payload) do
     bitmap_len = snapshot_bitmap_len(memory_len)
 
-    with :ok <- present(base_snapshot_digest, :missing_base),
+    with :ok <- present(base_id, :missing_base),
          :ok <- at_least(byte_size(payload), bitmap_len, :length_mismatch) do
       bitmap = binary_part(payload, 0, bitmap_len)
       pages = binary_part(payload, bitmap_len, byte_size(payload) - bitmap_len)
@@ -79,20 +82,20 @@ defmodule AgentOS.Contracts.Snapshot do
            :ok <- equal(bitmap_popcount(bitmap), changed_pages, :bad_bitmap),
            :ok <- equal(byte_size(pages), changed_pages * @snapshot_page_size, :length_mismatch) do
         {:ok, snapshot_view(:incremental, memory_len, changed_pages, kernel_digest,
-          memory_digest, base_snapshot_digest, bitmap, pages)}
+          memory_root, base_id, bitmap, pages)}
       end
     end
   end
 
-  defp snapshot_view(kind, memory_len, changed_pages, kernel_digest, memory_digest,
-         base_snapshot_digest, bitmap, pages) do
+  defp snapshot_view(kind, memory_len, changed_pages, kernel_digest, memory_root,
+         base_id, bitmap, pages) do
     %{
       kind: kind,
       memory_len: memory_len,
       changed_pages: changed_pages,
       kernel_digest: kernel_digest,
-      memory_digest: memory_digest,
-      base_snapshot_digest: base_snapshot_digest,
+      memory_root: memory_root,
+      base_id: base_id,
       bitmap: bitmap,
       pages: pages
     }

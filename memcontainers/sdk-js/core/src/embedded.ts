@@ -106,7 +106,7 @@ export class EmbeddedBackend implements Backend {
     private readonly stdout: FanoutSink,
     private readonly tools: MapHostCall,
     readonly sidecars: SidecarBackend,
-    private readonly snapshotBase?: Uint8Array,
+    private snapshotBase?: Uint8Array,
     private readonly snapshotStore?: ContentStore,
   ) {
     this.pumpDone = this.pump();
@@ -380,9 +380,14 @@ export class EmbeddedBackend implements Backend {
   }
   async snapshot(opts: SnapshotOptions = {}): Promise<Uint8Array> {
     if ((opts.mode ?? "full") === "full") return this.host.snapshot();
-    if (!this.snapshotBase) throw new Error("incremental snapshot has no full baseline");
     if (!this.snapshotStore?.putSnapshotObject) {
       throw new Error("incremental snapshots require a content store with snapshot-object support");
+    }
+    if (!this.snapshotBase) {
+      const baseline = await this.host.snapshot(true);
+      await this.snapshotStore.putSnapshotObject(baseline);
+      this.snapshotBase = baseline;
+      return baseline;
     }
     await this.snapshotStore.putSnapshotObject(this.snapshotBase);
     return this.host.snapshotIncremental(this.snapshotBase);

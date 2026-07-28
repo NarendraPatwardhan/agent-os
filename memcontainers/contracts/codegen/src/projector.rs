@@ -578,6 +578,7 @@ pub const SNAPSHOT_MAGIC: u32 = $MAGIC;
 pub const SNAPSHOT_VERSION: u32 = $VERSION;
 pub const SNAPSHOT_HEADER_LEN: usize = $HEADER_LEN;
 pub const SNAPSHOT_PAGE_SIZE: usize = $PAGE_SIZE;
+pub const SNAPSHOT_INTEGRITY_CHUNK_SIZE: usize = $INTEGRITY_CHUNK_SIZE;
 pub const SNAPSHOT_MAX_MEMORY_LEN: usize = $MAX_MEMORY_LEN;
 pub const SNAPSHOT_DIGEST_LEN: usize = $DIGEST_LEN;
 pub const SNAPSHOT_KIND_FULL: u32 = $KIND_FULL;
@@ -591,7 +592,7 @@ pub enum SnapshotKind { Full, Incremental }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SnapshotError {
     TooShort, BadMagic, UnsupportedVersion, UnknownKind, BadHeaderLength, BadPageSize,
-    EmptyMemory, MemoryTooLarge, MisalignedMemory, ReservedNonzero, MissingDigest, UnexpectedBase,
+    EmptyMemory, MemoryTooLarge, MisalignedMemory, BadIntegrityChunkSize, MissingDigest, UnexpectedBase,
     MissingBase, UnexpectedChangedPages, BadBitmap, LengthMismatch,
 }
 
@@ -603,7 +604,7 @@ impl core::fmt::Display for SnapshotError {
             Self::BadHeaderLength => "bad_header_length", Self::BadPageSize => "bad_page_size",
             Self::EmptyMemory => "empty_memory", Self::MemoryTooLarge => "memory_too_large",
             Self::MisalignedMemory => "misaligned_memory",
-            Self::ReservedNonzero => "reserved_nonzero", Self::MissingDigest => "missing_digest",
+            Self::BadIntegrityChunkSize => "bad_integrity_chunk_size", Self::MissingDigest => "missing_digest",
             Self::UnexpectedBase => "unexpected_base", Self::MissingBase => "missing_base",
             Self::UnexpectedChangedPages => "unexpected_changed_pages", Self::BadBitmap => "bad_bitmap",
             Self::LengthMismatch => "length_mismatch",
@@ -618,8 +619,8 @@ pub struct SnapshotView<'a> {
     pub memory_len: usize,
     pub changed_pages: usize,
     pub kernel_digest: SnapshotDigest,
-    pub memory_digest: SnapshotDigest,
-    pub base_snapshot_digest: SnapshotDigest,
+    pub memory_root: SnapshotDigest,
+    pub base_id: SnapshotDigest,
     pub bitmap: &'a [u8],
     pub pages: &'a [u8],
 }
@@ -655,22 +656,24 @@ pub fn parse_snapshot(bytes: &[u8]) -> Result<SnapshotView<'_>, SnapshotError> {
     if memory_len > SNAPSHOT_MAX_MEMORY_LEN { return Err(SnapshotError::MemoryTooLarge); }
     if memory_len % SNAPSHOT_PAGE_SIZE != 0 { return Err(SnapshotError::MisalignedMemory); }
     let changed_pages = u32_at(bytes, $OFF_CHANGED_PAGES) as usize;
-    if u32_at(bytes, $OFF_RESERVED) != 0 { return Err(SnapshotError::ReservedNonzero); }
+    if u32_at(bytes, $OFF_INTEGRITY_CHUNK_SIZE) as usize != SNAPSHOT_INTEGRITY_CHUNK_SIZE {
+        return Err(SnapshotError::BadIntegrityChunkSize);
+    }
     let kernel_digest = digest_at(bytes, $OFF_KERNEL_DIGEST);
-    let memory_digest = digest_at(bytes, $OFF_MEMORY_DIGEST);
-    let base_snapshot_digest = digest_at(bytes, $OFF_BASE_DIGEST);
-    if missing(&kernel_digest) || missing(&memory_digest) { return Err(SnapshotError::MissingDigest); }
+    let memory_root = digest_at(bytes, $OFF_MEMORY_ROOT);
+    let base_id = digest_at(bytes, $OFF_BASE_ID);
+    if missing(&kernel_digest) || missing(&memory_root) { return Err(SnapshotError::MissingDigest); }
     let payload = &bytes[SNAPSHOT_HEADER_LEN..];
     match kind {
         SnapshotKind::Full => {
-            if !missing(&base_snapshot_digest) { return Err(SnapshotError::UnexpectedBase); }
+            if !missing(&base_id) { return Err(SnapshotError::UnexpectedBase); }
             if changed_pages != 0 { return Err(SnapshotError::UnexpectedChangedPages); }
             if payload.len() != memory_len { return Err(SnapshotError::LengthMismatch); }
-            Ok(SnapshotView { kind, memory_len, changed_pages, kernel_digest, memory_digest,
-                base_snapshot_digest, bitmap: &[], pages: payload })
+            Ok(SnapshotView { kind, memory_len, changed_pages, kernel_digest, memory_root,
+                base_id, bitmap: &[], pages: payload })
         }
         SnapshotKind::Incremental => {
-            if missing(&base_snapshot_digest) { return Err(SnapshotError::MissingBase); }
+            if missing(&base_id) { return Err(SnapshotError::MissingBase); }
             let bitmap_len = snapshot_bitmap_len(memory_len);
             if payload.len() < bitmap_len { return Err(SnapshotError::LengthMismatch); }
             let bitmap = &payload[..bitmap_len];
@@ -682,24 +685,24 @@ pub fn parse_snapshot(bytes: &[u8]) -> Result<SnapshotView<'_>, SnapshotError> {
             if pop != changed_pages { return Err(SnapshotError::BadBitmap); }
             let page_bytes = changed_pages.checked_mul(SNAPSHOT_PAGE_SIZE).ok_or(SnapshotError::LengthMismatch)?;
             if payload.len() != bitmap_len + page_bytes { return Err(SnapshotError::LengthMismatch); }
-            Ok(SnapshotView { kind, memory_len, changed_pages, kernel_digest, memory_digest,
-                base_snapshot_digest, bitmap, pages: &payload[bitmap_len..] })
+            Ok(SnapshotView { kind, memory_len, changed_pages, kernel_digest, memory_root,
+                base_id, bitmap, pages: &payload[bitmap_len..] })
         }
     }
 }
 
 pub fn write_snapshot_header(out: &mut [u8], kind: SnapshotKind, memory_len: usize,
-    changed_pages: usize, kernel_digest: &SnapshotDigest, memory_digest: &SnapshotDigest,
-    base_snapshot_digest: &SnapshotDigest) -> Result<(), SnapshotError> {
+    changed_pages: usize, kernel_digest: &SnapshotDigest, memory_root: &SnapshotDigest,
+    base_id: &SnapshotDigest) -> Result<(), SnapshotError> {
     if out.len() < SNAPSHOT_HEADER_LEN { return Err(SnapshotError::TooShort); }
     if memory_len == 0 { return Err(SnapshotError::EmptyMemory); }
     if memory_len > SNAPSHOT_MAX_MEMORY_LEN { return Err(SnapshotError::MemoryTooLarge); }
     if memory_len % SNAPSHOT_PAGE_SIZE != 0 { return Err(SnapshotError::MisalignedMemory); }
-    if missing(kernel_digest) || missing(memory_digest) { return Err(SnapshotError::MissingDigest); }
+    if missing(kernel_digest) || missing(memory_root) { return Err(SnapshotError::MissingDigest); }
     match kind {
-        SnapshotKind::Full if !missing(base_snapshot_digest) => return Err(SnapshotError::UnexpectedBase),
+        SnapshotKind::Full if !missing(base_id) => return Err(SnapshotError::UnexpectedBase),
         SnapshotKind::Full if changed_pages != 0 => return Err(SnapshotError::UnexpectedChangedPages),
-        SnapshotKind::Incremental if missing(base_snapshot_digest) => return Err(SnapshotError::MissingBase),
+        SnapshotKind::Incremental if missing(base_id) => return Err(SnapshotError::MissingBase),
         SnapshotKind::Incremental if changed_pages > memory_len / SNAPSHOT_PAGE_SIZE =>
             return Err(SnapshotError::LengthMismatch),
         _ => {}
@@ -715,9 +718,11 @@ pub fn write_snapshot_header(out: &mut [u8], kind: SnapshotKind, memory_len: usi
     out[$OFF_PAGE_SIZE..$OFF_PAGE_SIZE + 4].copy_from_slice(&(SNAPSHOT_PAGE_SIZE as u32).to_le_bytes());
     out[$OFF_MEMORY_LEN..$OFF_MEMORY_LEN + 4].copy_from_slice(&memory_len.to_le_bytes());
     out[$OFF_CHANGED_PAGES..$OFF_CHANGED_PAGES + 4].copy_from_slice(&changed_pages.to_le_bytes());
+    out[$OFF_INTEGRITY_CHUNK_SIZE..$OFF_INTEGRITY_CHUNK_SIZE + 4]
+        .copy_from_slice(&(SNAPSHOT_INTEGRITY_CHUNK_SIZE as u32).to_le_bytes());
     out[$OFF_KERNEL_DIGEST..$OFF_KERNEL_DIGEST + SNAPSHOT_DIGEST_LEN].copy_from_slice(kernel_digest);
-    out[$OFF_MEMORY_DIGEST..$OFF_MEMORY_DIGEST + SNAPSHOT_DIGEST_LEN].copy_from_slice(memory_digest);
-    out[$OFF_BASE_DIGEST..$OFF_BASE_DIGEST + SNAPSHOT_DIGEST_LEN].copy_from_slice(base_snapshot_digest);
+    out[$OFF_MEMORY_ROOT..$OFF_MEMORY_ROOT + SNAPSHOT_DIGEST_LEN].copy_from_slice(memory_root);
+    out[$OFF_BASE_ID..$OFF_BASE_ID + SNAPSHOT_DIGEST_LEN].copy_from_slice(base_id);
     Ok(())
 }
 "#
@@ -728,6 +733,7 @@ export const SNAPSHOT_MAGIC = $MAGIC;
 export const SNAPSHOT_VERSION = $VERSION;
 export const SNAPSHOT_HEADER_LEN = $HEADER_LEN;
 export const SNAPSHOT_PAGE_SIZE = $PAGE_SIZE;
+export const SNAPSHOT_INTEGRITY_CHUNK_SIZE = $INTEGRITY_CHUNK_SIZE;
 export const SNAPSHOT_MAX_MEMORY_LEN = $MAX_MEMORY_LEN;
 export const SNAPSHOT_DIGEST_LEN = $DIGEST_LEN;
 export const SNAPSHOT_KIND_FULL = $KIND_FULL;
@@ -735,14 +741,14 @@ export const SNAPSHOT_KIND_INCREMENTAL = $KIND_INCREMENTAL;
 export type SnapshotKind = "full" | "incremental";
 export type SnapshotErrorCode = "too_short" | "bad_magic" | "unsupported_version" | "unknown_kind" |
   "bad_header_length" | "bad_page_size" | "empty_memory" | "memory_too_large" | "misaligned_memory" |
-  "reserved_nonzero" | "missing_digest" | "unexpected_base" | "missing_base" |
+  "bad_integrity_chunk_size" | "missing_digest" | "unexpected_base" | "missing_base" |
   "unexpected_changed_pages" | "bad_bitmap" | "length_mismatch";
 export class SnapshotFormatError extends Error {
   constructor(readonly code: SnapshotErrorCode) { super(`invalid snapshot: ${code}`); this.name = "SnapshotFormatError"; }
 }
 export interface SnapshotView {
   kind: SnapshotKind; memoryLen: number; changedPages: number; kernelDigest: Uint8Array;
-  memoryDigest: Uint8Array; baseSnapshotDigest: Uint8Array; bitmap: Uint8Array; pages: Uint8Array;
+  memoryRoot: Uint8Array; baseId: Uint8Array; bitmap: Uint8Array; pages: Uint8Array;
 }
 const missing = (d: Uint8Array): boolean => d.every((b) => b === 0);
 export const snapshotBitmapLen = (memoryLen: number): number => Math.ceil(memoryLen / SNAPSHOT_PAGE_SIZE / 8);
@@ -762,20 +768,21 @@ export function parseSnapshot(bytes: Uint8Array): SnapshotView {
   if (memoryLen > SNAPSHOT_MAX_MEMORY_LEN) fail("memory_too_large");
   if (memoryLen % SNAPSHOT_PAGE_SIZE !== 0) fail("misaligned_memory");
   const changedPages = dv.getUint32($OFF_CHANGED_PAGES, true);
-  if (dv.getUint32($OFF_RESERVED, true) !== 0) fail("reserved_nonzero");
+  if (dv.getUint32($OFF_INTEGRITY_CHUNK_SIZE, true) !== SNAPSHOT_INTEGRITY_CHUNK_SIZE)
+    fail("bad_integrity_chunk_size");
   const kernelDigest = bytes.slice($OFF_KERNEL_DIGEST, $OFF_KERNEL_DIGEST + SNAPSHOT_DIGEST_LEN),
-    memoryDigest = bytes.slice($OFF_MEMORY_DIGEST, $OFF_MEMORY_DIGEST + SNAPSHOT_DIGEST_LEN),
-    baseSnapshotDigest = bytes.slice($OFF_BASE_DIGEST, $OFF_BASE_DIGEST + SNAPSHOT_DIGEST_LEN);
-  if (missing(kernelDigest) || missing(memoryDigest)) fail("missing_digest");
+    memoryRoot = bytes.slice($OFF_MEMORY_ROOT, $OFF_MEMORY_ROOT + SNAPSHOT_DIGEST_LEN),
+    baseId = bytes.slice($OFF_BASE_ID, $OFF_BASE_ID + SNAPSHOT_DIGEST_LEN);
+  if (missing(kernelDigest) || missing(memoryRoot)) fail("missing_digest");
   const payload = bytes.subarray(SNAPSHOT_HEADER_LEN);
   if (kind === "full") {
-    if (!missing(baseSnapshotDigest)) fail("unexpected_base");
+    if (!missing(baseId)) fail("unexpected_base");
     if (changedPages !== 0) fail("unexpected_changed_pages");
     if (payload.length !== memoryLen) fail("length_mismatch");
-    return { kind, memoryLen, changedPages, kernelDigest, memoryDigest, baseSnapshotDigest,
+    return { kind, memoryLen, changedPages, kernelDigest, memoryRoot, baseId,
       bitmap: new Uint8Array(0), pages: payload };
   }
-  if (missing(baseSnapshotDigest)) fail("missing_base");
+  if (missing(baseId)) fail("missing_base");
   const bitmapLen = snapshotBitmapLen(memoryLen);
   if (payload.length < bitmapLen) fail("length_mismatch");
   const bitmap = payload.subarray(0, bitmapLen), memoryPages = memoryLen / SNAPSHOT_PAGE_SIZE;
@@ -784,22 +791,22 @@ export function parseSnapshot(bytes: Uint8Array): SnapshotView {
   for (const byte of bitmap) { let b = byte; while (b !== 0) { b &= b - 1; pop++; } }
   if (pop !== changedPages) fail("bad_bitmap");
   if (payload.length !== bitmapLen + changedPages * SNAPSHOT_PAGE_SIZE) fail("length_mismatch");
-  return { kind, memoryLen, changedPages, kernelDigest, memoryDigest, baseSnapshotDigest,
+  return { kind, memoryLen, changedPages, kernelDigest, memoryRoot, baseId,
     bitmap, pages: payload.subarray(bitmapLen) };
 }
 export function writeSnapshotHeader(kind: SnapshotKind, memoryLen: number, changedPages: number,
-  kernelDigest: Uint8Array, memoryDigest: Uint8Array, baseSnapshotDigest: Uint8Array): Uint8Array {
+  kernelDigest: Uint8Array, memoryRoot: Uint8Array, baseId: Uint8Array): Uint8Array {
   if (!Number.isInteger(memoryLen) || !Number.isInteger(changedPages) ||
       changedPages < 0 || changedPages > 0xffffffff ||
-      kernelDigest.length !== SNAPSHOT_DIGEST_LEN || memoryDigest.length !== SNAPSHOT_DIGEST_LEN ||
-      baseSnapshotDigest.length !== SNAPSHOT_DIGEST_LEN) throw new SnapshotFormatError("length_mismatch");
+      kernelDigest.length !== SNAPSHOT_DIGEST_LEN || memoryRoot.length !== SNAPSHOT_DIGEST_LEN ||
+      baseId.length !== SNAPSHOT_DIGEST_LEN) throw new SnapshotFormatError("length_mismatch");
   if (memoryLen <= 0) throw new SnapshotFormatError("empty_memory");
   if (memoryLen > SNAPSHOT_MAX_MEMORY_LEN) throw new SnapshotFormatError("memory_too_large");
   if (memoryLen % SNAPSHOT_PAGE_SIZE !== 0) throw new SnapshotFormatError("misaligned_memory");
-  if (missing(kernelDigest) || missing(memoryDigest)) throw new SnapshotFormatError("missing_digest");
-  if (kind === "full" && !missing(baseSnapshotDigest)) throw new SnapshotFormatError("unexpected_base");
+  if (missing(kernelDigest) || missing(memoryRoot)) throw new SnapshotFormatError("missing_digest");
+  if (kind === "full" && !missing(baseId)) throw new SnapshotFormatError("unexpected_base");
   if (kind === "full" && changedPages !== 0) throw new SnapshotFormatError("unexpected_changed_pages");
-  if (kind === "incremental" && missing(baseSnapshotDigest)) throw new SnapshotFormatError("missing_base");
+  if (kind === "incremental" && missing(baseId)) throw new SnapshotFormatError("missing_base");
   if (kind === "incremental" && changedPages > memoryLen / SNAPSHOT_PAGE_SIZE)
     throw new SnapshotFormatError("length_mismatch");
   const out = new Uint8Array(SNAPSHOT_HEADER_LEN), dv = new DataView(out.buffer);
@@ -807,8 +814,9 @@ export function writeSnapshotHeader(kind: SnapshotKind, memoryLen: number, chang
   dv.setUint32($OFF_KIND, kind === "full" ? SNAPSHOT_KIND_FULL : SNAPSHOT_KIND_INCREMENTAL, true);
   dv.setUint32($OFF_HEADER_LEN, SNAPSHOT_HEADER_LEN, true); dv.setUint32($OFF_PAGE_SIZE, SNAPSHOT_PAGE_SIZE, true);
   dv.setUint32($OFF_MEMORY_LEN, memoryLen, true); dv.setUint32($OFF_CHANGED_PAGES, changedPages, true);
-  out.set(kernelDigest, $OFF_KERNEL_DIGEST); out.set(memoryDigest, $OFF_MEMORY_DIGEST);
-  out.set(baseSnapshotDigest, $OFF_BASE_DIGEST); return out;
+  dv.setUint32($OFF_INTEGRITY_CHUNK_SIZE, SNAPSHOT_INTEGRITY_CHUNK_SIZE, true);
+  out.set(kernelDigest, $OFF_KERNEL_DIGEST); out.set(memoryRoot, $OFF_MEMORY_ROOT);
+  out.set(baseId, $OFF_BASE_ID); return out;
 }
 "#
         }
@@ -821,6 +829,7 @@ defmodule AgentOS.Contracts.Snapshot do
   @snapshot_version $VERSION
   @snapshot_header_len $HEADER_LEN
   @snapshot_page_size $PAGE_SIZE
+  @snapshot_integrity_chunk_size $INTEGRITY_CHUNK_SIZE
   @snapshot_max_memory_len $MAX_MEMORY_LEN
   @snapshot_digest_len $DIGEST_LEN
   @snapshot_kind_full $KIND_FULL
@@ -830,6 +839,7 @@ defmodule AgentOS.Contracts.Snapshot do
   def snapshot_version, do: @snapshot_version
   def snapshot_header_len, do: @snapshot_header_len
   def snapshot_page_size, do: @snapshot_page_size
+  def snapshot_integrity_chunk_size, do: @snapshot_integrity_chunk_size
   def snapshot_max_memory_len, do: @snapshot_max_memory_len
   def snapshot_digest_len, do: @snapshot_digest_len
 
@@ -847,8 +857,8 @@ defmodule AgentOS.Contracts.Snapshot do
     memory_len = u32_at(bytes, $OFF_MEMORY_LEN)
     changed_pages = u32_at(bytes, $OFF_CHANGED_PAGES)
     kernel_digest = digest_at(bytes, $OFF_KERNEL_DIGEST)
-    memory_digest = digest_at(bytes, $OFF_MEMORY_DIGEST)
-    base_snapshot_digest = digest_at(bytes, $OFF_BASE_DIGEST)
+    memory_root = digest_at(bytes, $OFF_MEMORY_ROOT)
+    base_id = digest_at(bytes, $OFF_BASE_ID)
     payload = binary_part(bytes, @snapshot_header_len, byte_size(bytes) - @snapshot_header_len)
 
     with :ok <- equal(u32_at(bytes, $OFF_MAGIC), @snapshot_magic, :bad_magic),
@@ -859,31 +869,32 @@ defmodule AgentOS.Contracts.Snapshot do
          :ok <- positive(memory_len, :empty_memory),
          :ok <- at_most(memory_len, @snapshot_max_memory_len, :memory_too_large),
          :ok <- divisible(memory_len, @snapshot_page_size, :misaligned_memory),
-         :ok <- equal(u32_at(bytes, $OFF_RESERVED), 0, :reserved_nonzero),
+         :ok <- equal(u32_at(bytes, $OFF_INTEGRITY_CHUNK_SIZE), @snapshot_integrity_chunk_size,
+           :bad_integrity_chunk_size),
          :ok <- present(kernel_digest, :missing_digest),
-         :ok <- present(memory_digest, :missing_digest) do
-      parse_payload(kind, memory_len, changed_pages, kernel_digest, memory_digest,
-        base_snapshot_digest, payload)
+         :ok <- present(memory_root, :missing_digest) do
+      parse_payload(kind, memory_len, changed_pages, kernel_digest, memory_root,
+        base_id, payload)
     end
   end
 
   def parse(_bytes), do: {:error, :too_short}
 
-  defp parse_payload(:full, memory_len, changed_pages, kernel_digest, memory_digest,
-         base_snapshot_digest, payload) do
-    with :ok <- missing(base_snapshot_digest, :unexpected_base),
+  defp parse_payload(:full, memory_len, changed_pages, kernel_digest, memory_root,
+         base_id, payload) do
+    with :ok <- missing(base_id, :unexpected_base),
          :ok <- equal(changed_pages, 0, :unexpected_changed_pages),
          :ok <- equal(byte_size(payload), memory_len, :length_mismatch) do
-      {:ok, snapshot_view(:full, memory_len, changed_pages, kernel_digest, memory_digest,
-        base_snapshot_digest, <<>>, payload)}
+      {:ok, snapshot_view(:full, memory_len, changed_pages, kernel_digest, memory_root,
+        base_id, <<>>, payload)}
     end
   end
 
-  defp parse_payload(:incremental, memory_len, changed_pages, kernel_digest, memory_digest,
-         base_snapshot_digest, payload) do
+  defp parse_payload(:incremental, memory_len, changed_pages, kernel_digest, memory_root,
+         base_id, payload) do
     bitmap_len = snapshot_bitmap_len(memory_len)
 
-    with :ok <- present(base_snapshot_digest, :missing_base),
+    with :ok <- present(base_id, :missing_base),
          :ok <- at_least(byte_size(payload), bitmap_len, :length_mismatch) do
       bitmap = binary_part(payload, 0, bitmap_len)
       pages = binary_part(payload, bitmap_len, byte_size(payload) - bitmap_len)
@@ -893,20 +904,20 @@ defmodule AgentOS.Contracts.Snapshot do
            :ok <- equal(bitmap_popcount(bitmap), changed_pages, :bad_bitmap),
            :ok <- equal(byte_size(pages), changed_pages * @snapshot_page_size, :length_mismatch) do
         {:ok, snapshot_view(:incremental, memory_len, changed_pages, kernel_digest,
-          memory_digest, base_snapshot_digest, bitmap, pages)}
+          memory_root, base_id, bitmap, pages)}
       end
     end
   end
 
-  defp snapshot_view(kind, memory_len, changed_pages, kernel_digest, memory_digest,
-         base_snapshot_digest, bitmap, pages) do
+  defp snapshot_view(kind, memory_len, changed_pages, kernel_digest, memory_root,
+         base_id, bitmap, pages) do
     %{
       kind: kind,
       memory_len: memory_len,
       changed_pages: changed_pages,
       kernel_digest: kernel_digest,
-      memory_digest: memory_digest,
-      base_snapshot_digest: base_snapshot_digest,
+      memory_root: memory_root,
+      base_id: base_id,
       bitmap: bitmap,
       pages: pages
     }
@@ -968,6 +979,7 @@ end
         ("$VERSION", p("version")),
         ("$HEADER_LEN", p("header-len")),
         ("$PAGE_SIZE", p("page-size")),
+        ("$INTEGRITY_CHUNK_SIZE", p("integrity-chunk-size")),
         ("$MAX_MEMORY_LEN", p("max-memory-len")),
         ("$DIGEST_LEN", p("digest-len")),
         ("$KIND_FULL", p("kind-full")),
@@ -979,10 +991,10 @@ end
         ("$OFF_PAGE_SIZE", off("page_size")),
         ("$OFF_MEMORY_LEN", off("memory_len")),
         ("$OFF_CHANGED_PAGES", off("changed_pages")),
-        ("$OFF_RESERVED", off("reserved")),
+        ("$OFF_INTEGRITY_CHUNK_SIZE", off("integrity_chunk_size")),
         ("$OFF_KERNEL_DIGEST", off("kernel_digest")),
-        ("$OFF_MEMORY_DIGEST", off("memory_digest")),
-        ("$OFF_BASE_DIGEST", off("base_snapshot_digest")),
+        ("$OFF_MEMORY_ROOT", off("memory_root")),
+        ("$OFF_BASE_ID", off("base_id")),
     ];
     let mut out = banner(lang, contract);
     let mut body = template.to_string();

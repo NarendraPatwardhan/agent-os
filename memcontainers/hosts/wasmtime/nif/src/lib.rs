@@ -1382,8 +1382,11 @@ fn status(vm: ResourceArc<Vm>) -> NifResult<(Atom, (u64, Option<i32>, bool, i32,
 /// refuses while egress is in flight; that surfaces as `{:error, message}`.
 #[rustler::nif(name = "snapshot_nif", schedule = "DirtyCpu")]
 fn snapshot<'a>(env: Env<'a>, vm: ResourceArc<Vm>) -> NifResult<(Atom, Binary<'a>)> {
-    let bytes = vm_lock(&vm)?.snapshot().map_err(nif_err)?;
-    Ok((atoms::ok(), to_binary(env, &bytes)?))
+    let mut host = vm_lock(&vm)?;
+    let mut binary =
+        OwnedBinary::new(host.snapshot_len()).ok_or_else(|| nif_err("allocating snapshot binary"))?;
+    host.snapshot_into(binary.as_mut_slice()).map_err(nif_err)?;
+    Ok((atoms::ok(), binary.release(env)))
 }
 
 /// Capture changed pages relative to one full baseline. The returned value embeds the baseline

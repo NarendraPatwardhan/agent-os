@@ -21,12 +21,14 @@ import {
 } from "@mc/contracts/constants";
 import {
   SNAPSHOT_HEADER_LEN,
+  SNAPSHOT_INTEGRITY_CHUNK_SIZE,
   SNAPSHOT_PAGE_SIZE,
   parseSnapshot,
   snapshotBitmapLen,
   writeSnapshotHeader,
   type SnapshotView,
 } from "@mc/contracts/snapshot";
+import { IntegrityTree, baselineId, hashChunk } from "./snapshot_integrity.js";
 import { Mem } from "./memory.js";
 import { makeBridge, type HostState } from "./bridge.js";
 import { processStdout, processStderr } from "./io.js";
@@ -166,11 +168,48 @@ const sha256 = async (bytes: Uint8Array): Promise<Uint8Array> =>
 const digestEqual = (a: Uint8Array, b: Uint8Array): boolean =>
   a.length === b.length && a.every((value, i) => value === b[i]);
 
+function changedPages(current: Uint8Array, baseline: Uint8Array): number[] {
+  const wordsPerPage = SNAPSHOT_PAGE_SIZE / Uint32Array.BYTES_PER_ELEMENT;
+  const currentWords = new Uint32Array(
+    current.buffer,
+    current.byteOffset,
+    current.byteLength / Uint32Array.BYTES_PER_ELEMENT,
+  );
+  const baselineWords = new Uint32Array(
+    baseline.buffer,
+    baseline.byteOffset,
+    baseline.byteLength / Uint32Array.BYTES_PER_ELEMENT,
+  );
+  const changed: number[] = [];
+  for (let page = 0; page < current.length / SNAPSHOT_PAGE_SIZE; page++) {
+    const first = page * wordsPerPage;
+    const end = first + wordsPerPage;
+    let differs = false;
+    if (first < baselineWords.length) {
+      for (let word = first; word < end; word++) {
+        if (currentWords[word] !== baselineWords[word]) {
+          differs = true;
+          break;
+        }
+      }
+    } else {
+      for (let word = first; word < end; word++) {
+        if (currentWords[word] !== 0) {
+          differs = true;
+          break;
+        }
+      }
+    }
+    if (differs) changed.push(page);
+  }
+  return changed;
+}
+
 async function validateSnapshot(
   snapshot: Uint8Array,
   base: Uint8Array | undefined,
   kernelDigest: Uint8Array,
-): Promise<{ view: SnapshotView; baseView?: SnapshotView }> {
+): Promise<{ view: SnapshotView; baseView?: SnapshotView; baseTree?: IntegrityTree }> {
   const view = parseSnapshot(snapshot);
   if (!digestEqual(view.kernelDigest, kernelDigest)) {
     throw new Error("invalid snapshot: kernel_digest_mismatch");
@@ -180,19 +219,25 @@ async function validateSnapshot(
     return { view };
   }
   if (!base) throw new Error("invalid snapshot: missing_base_snapshot");
-  if (!digestEqual(await sha256(base), view.baseSnapshotDigest)) {
-    throw new Error("invalid snapshot: base_snapshot_digest_mismatch");
-  }
   const baseView = parseSnapshot(base);
   if (baseView.kind !== "full") throw new Error("invalid snapshot: incremental_base_not_full");
   if (!digestEqual(baseView.kernelDigest, kernelDigest)) {
     throw new Error("invalid snapshot: base_kernel_digest_mismatch");
   }
-  if (!digestEqual(await sha256(baseView.pages), baseView.memoryDigest)) {
-    throw new Error("invalid snapshot: base_memory_digest_mismatch");
+  const baseTree = await IntegrityTree.fromMemory(baseView.pages);
+  if (!digestEqual(await baseTree.root(), baseView.memoryRoot)) {
+    throw new Error("invalid snapshot: base_memory_root_mismatch");
+  }
+  if (
+    !digestEqual(
+      await baselineId(baseView.kernelDigest, baseView.memoryRoot, baseView.memoryLen),
+      view.baseId,
+    )
+  ) {
+    throw new Error("invalid snapshot: base_id_mismatch");
   }
   if (baseView.memoryLen > view.memoryLen) throw new Error("invalid snapshot: memory_shrank");
-  return { view, baseView };
+  return { view, baseView, baseTree };
 }
 
 /** Reconstruct directly in the already-sized wasm memory so restore never holds a second complete
@@ -200,13 +245,16 @@ async function validateSnapshot(
 async function applySnapshot(
   view: SnapshotView,
   baseView: SnapshotView | undefined,
+  baseTree: IntegrityTree | undefined,
   memory: Uint8Array,
-): Promise<void> {
+): Promise<IntegrityTree> {
   if (memory.length !== view.memoryLen) {
     throw new Error("invalid snapshot: restored_memory_length_mismatch");
   }
+  let tree: IntegrityTree;
   if (!baseView) {
     memory.set(view.pages);
+    tree = await IntegrityTree.fromMemory(memory);
   } else {
     memory.fill(0);
     memory.set(baseView.pages);
@@ -218,10 +266,51 @@ async function applySnapshot(
       changed += SNAPSHOT_PAGE_SIZE;
     }
     if (changed !== view.pages.length) throw new Error("invalid snapshot: changed_page_length");
+    if (baseTree && baseTree.memoryLen === memory.length) {
+      tree = baseTree;
+      const affected = new Set<number>();
+      for (let page = 0; page < view.memoryLen / SNAPSHOT_PAGE_SIZE; page++) {
+        if ((view.bitmap[page >>> 3]! & (1 << (page & 7))) !== 0) {
+          affected.add(Math.floor(page * SNAPSHOT_PAGE_SIZE / SNAPSHOT_INTEGRITY_CHUNK_SIZE));
+        }
+      }
+      for (const chunk of affected) {
+        const start = chunk * SNAPSHOT_INTEGRITY_CHUNK_SIZE;
+        await tree.update(
+          chunk,
+          await hashChunk(chunk, memory.subarray(start, start + SNAPSHOT_INTEGRITY_CHUNK_SIZE)),
+        );
+      }
+    } else {
+      const rebuildFrom = Math.floor(baseTree!.memoryLen / SNAPSHOT_INTEGRITY_CHUNK_SIZE);
+      const chunkCount = Math.ceil(memory.length / SNAPSHOT_INTEGRITY_CHUNK_SIZE);
+      const leaves = baseTree!.leaves().slice(0, rebuildFrom).map((hash) => hash.slice());
+      for (let chunk = rebuildFrom; chunk < chunkCount; chunk++) {
+        const start = chunk * SNAPSHOT_INTEGRITY_CHUNK_SIZE;
+        leaves.push(
+          await hashChunk(
+            chunk,
+            memory.subarray(start, start + SNAPSHOT_INTEGRITY_CHUNK_SIZE),
+          ),
+        );
+      }
+      for (let page = 0; page < view.memoryLen / SNAPSHOT_PAGE_SIZE; page++) {
+        if ((view.bitmap[page >>> 3]! & (1 << (page & 7))) === 0) continue;
+        const chunk = Math.floor(page * SNAPSHOT_PAGE_SIZE / SNAPSHOT_INTEGRITY_CHUNK_SIZE);
+        if (chunk >= rebuildFrom) continue;
+        const start = chunk * SNAPSHOT_INTEGRITY_CHUNK_SIZE;
+        leaves[chunk] = await hashChunk(
+          chunk,
+          memory.subarray(start, start + SNAPSHOT_INTEGRITY_CHUNK_SIZE),
+        );
+      }
+      tree = await IntegrityTree.create(leaves, memory.length);
+    }
   }
-  if (!digestEqual(await sha256(memory), view.memoryDigest)) {
-    throw new Error("invalid snapshot: memory_digest_mismatch");
+  if (!digestEqual(await tree.root(), view.memoryRoot)) {
+    throw new Error("invalid snapshot: memory_root_mismatch");
   }
+  return tree;
 }
 
 /** Frame an ordered layer stack for `mc_load_base_image`: `"MCLS" [u32 count] ([u32 len][bytes])…`
@@ -397,7 +486,7 @@ export class KernelHostBuilder {
    *  restored VM never shares the original's host handles. */
   async restore(snapshot: Uint8Array, base?: Uint8Array): Promise<KernelHost> {
     const kernelDigest = await sha256(this.wasm);
-    const { view, baseView } = await validateSnapshot(snapshot, base, kernelDigest);
+    const { view, baseView, baseTree } = await validateSnapshot(snapshot, base, kernelDigest);
     const st = this.newState();
     const { instance } = await WebAssembly.instantiate(this.wasm, {
       env: makeBridge(st),
@@ -426,7 +515,12 @@ export class KernelHostBuilder {
     if (exports.memory.buffer.byteLength !== view.memoryLen) {
       throw new Error("invalid snapshot: restored_memory_length_mismatch");
     }
-    await applySnapshot(view, baseView, new Uint8Array(exports.memory.buffer));
+    const restoredTree = await applySnapshot(
+      view,
+      baseView,
+      baseTree,
+      new Uint8Array(exports.memory.buffer),
+    );
     st.workersGranted = exports.mc_worker_count();
     if (st.workersGranted < 0 || st.workersGranted > MAX_WORKERS) {
       throw new Error("invalid snapshot: worker_count_out_of_range");
@@ -435,20 +529,44 @@ export class KernelHostBuilder {
       throw new Error("invalid snapshot: workers_without_worker_export");
     }
 
-    return new KernelHost(st, exports, scratchAddr, SNAPSHOT_PAGE_SIZE, kernelDigest);
+    const verifiedBase =
+      view.kind === "full"
+        ? {
+            bytes: snapshot,
+            id: await baselineId(view.kernelDigest, view.memoryRoot, view.memoryLen),
+            tree: restoredTree,
+          }
+        : {
+            bytes: base!,
+            id: view.baseId,
+            tree: baseTree!,
+          };
+    return new KernelHost(
+      st,
+      exports,
+      scratchAddr,
+      SNAPSHOT_PAGE_SIZE,
+      kernelDigest,
+      verifiedBase,
+    );
   }
 }
 
 /** A booted kernel instance. Mirrors the Rust `KernelHost` driving API
  *  (`tick`/`send_input`/`at_prompt`/`run_script`/…), camelCased. */
 export class KernelHost {
+  private snapshotBase?: { bytes: Uint8Array; id: Uint8Array; tree: IntegrityTree };
+
   constructor(
     private readonly st: HostState,
     private readonly exports: KernelExports,
     private readonly scratchAddr: number,
     private readonly scratchLen: number,
     private readonly kernelDigest: Uint8Array,
-  ) {}
+    snapshotBase?: { bytes: Uint8Array; id: Uint8Array; tree: IntegrityTree },
+  ) {
+    this.snapshotBase = snapshotBase;
+  }
 
   /** One bounded cooperative step, including whether another step can make
    *  immediate progress without yielding to the host. */
@@ -935,22 +1053,33 @@ export class KernelHost {
   /** Capture the entire VM as a portable byte blob (A8): the linear-memory image — all kernel and guest
    *  state — behind a small header. Refuses while a host-egress operation is in flight (its raw host
    *  handle would not survive a restore). Pair with {@link KernelHostBuilder.restore}. */
-  async snapshot(): Promise<Uint8Array> {
+  async snapshot(retainAsBaseline = false): Promise<Uint8Array> {
     this.ensureSnapshotReady();
-    // Hashing is asynchronous in JS. Freeze the linear-memory image before the first await so the
-    // SDK pump cannot advance the kernel between hashing and copying the payload.
-    const mem = new Uint8Array(this.exports.memory.buffer).slice();
+    // Copy synchronously into the final object before the first await. The SDK
+    // pump therefore cannot advance the kernel between the integrity root and
+    // payload, and no second VM-sized staging array is retained.
+    const memory = new Uint8Array(this.exports.memory.buffer);
+    const out = new Uint8Array(SNAPSHOT_HEADER_LEN + memory.length);
+    out.set(memory, SNAPSHOT_HEADER_LEN);
+    const payload = out.subarray(SNAPSHOT_HEADER_LEN);
+    const tree = await IntegrityTree.fromMemory(payload);
+    const memoryRoot = await tree.root();
     const header = writeSnapshotHeader(
       "full",
-      mem.length,
+      payload.length,
       0,
       this.kernelDigest,
-      await sha256(mem),
+      memoryRoot,
       new Uint8Array(32),
     );
-    const out = new Uint8Array(header.length + mem.length);
     out.set(header);
-    out.set(mem, header.length);
+    if (retainAsBaseline) {
+      this.snapshotBase = {
+        bytes: out,
+        id: await baselineId(this.kernelDigest, memoryRoot, payload.length),
+        tree,
+      };
+    }
     return out;
   }
 
@@ -962,53 +1091,95 @@ export class KernelHost {
     if (!digestEqual(baseView.kernelDigest, this.kernelDigest)) {
       throw new Error("incremental snapshot base uses a different kernel");
     }
-    if (!digestEqual(await sha256(baseView.pages), baseView.memoryDigest)) {
-      throw new Error("incremental snapshot base memory digest mismatch");
+    const baseId = await baselineId(
+      baseView.kernelDigest,
+      baseView.memoryRoot,
+      baseView.memoryLen,
+    );
+    let baseTree: IntegrityTree;
+    if (
+      this.snapshotBase &&
+      this.snapshotBase.bytes === base &&
+      digestEqual(this.snapshotBase.id, baseId)
+    ) {
+      baseTree = this.snapshotBase.tree.clone();
+    } else {
+      baseTree = await IntegrityTree.fromMemory(baseView.pages);
+      if (!digestEqual(await baseTree.root(), baseView.memoryRoot)) {
+        throw new Error("incremental snapshot base memory root mismatch");
+      }
+      this.snapshotBase = { bytes: base, id: baseId, tree: baseTree.clone() };
     }
-    // Keep the digest, bitmap, and page payload tied to one instant even while async hashing yields.
-    const mem = new Uint8Array(this.exports.memory.buffer).slice();
-    if (baseView.memoryLen > mem.length)
+    // Discover and copy changed pages synchronously. After this point async
+    // hashing reads only the immutable baseline and these copied pages.
+    const memory = new Uint8Array(this.exports.memory.buffer);
+    if (baseView.memoryLen > memory.length)
       throw new Error("incremental snapshot memory cannot shrink");
-    const bitmap = new Uint8Array(snapshotBitmapLen(mem.length));
-    const changed: Uint8Array[] = [];
-    for (let page = 0; page < mem.length / SNAPSHOT_PAGE_SIZE; page++) {
+    const bitmap = new Uint8Array(snapshotBitmapLen(memory.length));
+    const changed: { index: number; bytes: Uint8Array }[] = [];
+    for (const page of changedPages(memory, baseView.pages)) {
       const start = page * SNAPSHOT_PAGE_SIZE;
-      const current = mem.subarray(start, start + SNAPSHOT_PAGE_SIZE);
-      const prior =
-        start < baseView.memoryLen
-          ? baseView.pages.subarray(start, start + SNAPSHOT_PAGE_SIZE)
-          : undefined;
-      let differs = prior === undefined;
-      if (prior) {
-        for (let i = 0; i < SNAPSHOT_PAGE_SIZE; i++) {
-          if (current[i] !== prior[i]) {
-            differs = true;
-            break;
-          }
-        }
-      } else {
-        differs = current.some((b) => b !== 0);
+      const current = memory.subarray(start, start + SNAPSHOT_PAGE_SIZE);
+      bitmap[page >>> 3] |= 1 << (page & 7);
+      changed.push({ index: page, bytes: current.slice() });
+    }
+    let memoryRoot: Uint8Array;
+    const chunkBytes = new Map<number, Uint8Array>();
+    const materializeChunk = (chunk: number): Uint8Array => {
+      let bytes = chunkBytes.get(chunk);
+      if (bytes) return bytes;
+      const start = chunk * SNAPSHOT_INTEGRITY_CHUNK_SIZE;
+      const end = Math.min(start + SNAPSHOT_INTEGRITY_CHUNK_SIZE, memory.length);
+      bytes = new Uint8Array(end - start);
+      if (start < baseView.memoryLen) {
+        bytes.set(baseView.pages.subarray(start, Math.min(end, baseView.memoryLen)));
       }
-      if (differs) {
-        bitmap[page >>> 3] |= 1 << (page & 7);
-        changed.push(current.slice());
+      chunkBytes.set(chunk, bytes);
+      return bytes;
+    };
+    for (const page of changed) {
+      const pageStart = page.index * SNAPSHOT_PAGE_SIZE;
+      const chunk = Math.floor(pageStart / SNAPSHOT_INTEGRITY_CHUNK_SIZE);
+      materializeChunk(chunk).set(
+        page.bytes,
+        pageStart - chunk * SNAPSHOT_INTEGRITY_CHUNK_SIZE,
+      );
+    }
+    if (baseTree.memoryLen === memory.length) {
+      for (const [chunk, bytes] of chunkBytes) {
+        await baseTree.update(
+          chunk,
+          await hashChunk(chunk, bytes),
+        );
       }
+      memoryRoot = await baseTree.root();
+    } else {
+      const rebuildFrom = Math.floor(baseTree.memoryLen / SNAPSHOT_INTEGRITY_CHUNK_SIZE);
+      const chunkCount = Math.ceil(memory.length / SNAPSHOT_INTEGRITY_CHUNK_SIZE);
+      const leaves = baseTree.leaves().slice(0, rebuildFrom).map((hash) => hash.slice());
+      for (let chunk = rebuildFrom; chunk < chunkCount; chunk++) {
+        leaves.push(await hashChunk(chunk, materializeChunk(chunk)));
+      }
+      for (const [chunk, bytes] of chunkBytes) {
+        if (chunk < rebuildFrom) leaves[chunk] = await hashChunk(chunk, bytes);
+      }
+      memoryRoot = await (await IntegrityTree.create(leaves, memory.length)).root();
     }
     const header = writeSnapshotHeader(
       "incremental",
-      mem.length,
+      memory.length,
       changed.length,
       this.kernelDigest,
-      await sha256(mem),
-      await sha256(base),
+      memoryRoot,
+      baseId,
     );
     const out = new Uint8Array(header.length + bitmap.length + changed.length * SNAPSHOT_PAGE_SIZE);
     out.set(header);
     out.set(bitmap, header.length);
     let off = header.length + bitmap.length;
     for (const page of changed) {
-      out.set(page, off);
-      off += page.length;
+      out.set(page.bytes, off);
+      off += page.bytes.length;
     }
     return out;
   }
