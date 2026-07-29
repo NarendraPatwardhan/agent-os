@@ -82,8 +82,8 @@ class BrowserBackend implements SidecarBackend {
 }
 
 async function main(): Promise<void> {
-  const browserctl = new Uint8Array([1, 2, 3]);
-  const descriptor = browser({ host: "cloud", guest: browserctl, maxInstances: 2 });
+  const browserCtl = new Uint8Array([1, 2, 3]);
+  const descriptor = browser({ host: "cloud", guest: browserCtl, maxInstances: 2 });
   assert.deepEqual(descriptor.contract, {
     kind: BROWSER_KIND,
     version: BROWSER_VERSION,
@@ -91,9 +91,9 @@ async function main(): Promise<void> {
   });
   assert.equal(descriptor.host, "cloud");
   assert.equal(descriptor.grant.guest, true);
-  assert.deepEqual(descriptor[GUEST_LAYER], browserctl);
-  assert.notEqual(descriptor[GUEST_LAYER], browserctl);
-  browserctl[0] = 9;
+  assert.deepEqual(descriptor[GUEST_LAYER], browserCtl);
+  assert.notEqual(descriptor[GUEST_LAYER], browserCtl);
+  browserCtl[0] = 9;
   assert.deepEqual(descriptor[GUEST_LAYER], new Uint8Array([1, 2, 3]));
   assert.equal(browser({ guest: true })[GUEST_LAYER], true);
   assert.equal(browser()[GUEST_LAYER], undefined);

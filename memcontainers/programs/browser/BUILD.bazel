@@ -38,9 +38,9 @@ size_limit(
 )
 
 # Guest-facing browser control is one optional deterministic layer. Embedded callers attach its
-# bytes through browser({ guest: browserctl }); remote AgentOS servers install their packaged copy.
+# bytes through browser({ guest: browserCtl }); remote AgentOS servers install their packaged copy.
 pkg_tar(
-    name = "browserctl_layer",
+    name = "browser_ctl_layer",
     create_parents = False,
     files = {
         ":browser": "/bin/browser",

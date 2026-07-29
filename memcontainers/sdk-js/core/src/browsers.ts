@@ -66,7 +66,7 @@ export type BrowserWaitUntil = "load" | "domcontentloaded" | "networkidle" | "co
 export interface BrowserOptions {
   /** Embedded-only route to a configured sidecar host. Remote VMs reject this field. */
   host?: string;
-  /** Guest control: provide browserctl.tar bytes to an embedded VM, or `true` when a remote AgentOS
+  /** Guest control: provide browser-ctl.tar bytes to an embedded VM, or `true` when a remote AgentOS
    * server should install its configured copy. Omit or use `false` for host-only control. */
   guest?: boolean | Uint8Array;
   maxInstances?: number;

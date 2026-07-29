@@ -26,9 +26,9 @@ _PACKAGE_SRCS = glob(
 )
 
 copy_file(
-    name = "browserctl_artifact",
-    src = "//memcontainers/programs/browser:browserctl_layer",
-    out = "browserctl.tar",
+    name = "browser_ctl_artifact",
+    src = "//memcontainers/programs/browser:browser_ctl_layer",
+    out = "browser-ctl.tar",
 )
 
 write_source_files(
@@ -53,7 +53,7 @@ mix_library(
     app_name = "agent_os",
     mix_config = ":mix.exs",
     priv = [
-        ":browserctl_artifact",
+        ":browser_ctl_artifact",
         "//memcontainers/hosts/wasmtime/nif:host_nif_release",
     ],
     tags = ["manual"],
@@ -69,7 +69,7 @@ mix_library(
     mix_config = ":mix.exs",
     mix_env = "test",
     priv = [
-        ":browserctl_artifact",
+        ":browser_ctl_artifact",
         "//memcontainers/hosts/wasmtime/nif:host_nif_release",
     ],
     tags = ["manual"],
@@ -255,7 +255,7 @@ pkg_tar(
         "//memcontainers/images:minimal": "priv/images/minimal.tar",
         "//memcontainers/images:paper": "priv/images/paper.tar",
         "//memcontainers/images:posix": "priv/images/posix.tar",
-        ":browserctl_artifact": "priv/browserctl.tar",
+        ":browser_ctl_artifact": "priv/browser-ctl.tar",
         "//memcontainers/kernel/rust:kernel": "priv/kernel/kernel.wasm",
     },
     mode = "0644",

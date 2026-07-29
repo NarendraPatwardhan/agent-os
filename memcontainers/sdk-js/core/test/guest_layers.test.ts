@@ -61,7 +61,7 @@ const host: SidecarHost = {
 async function main(): Promise<void> {
   const kernel = runfile("MC_KERNEL_WASM");
   const image = runfile("MC_LOOM_IMAGE");
-  const browserctl = runfile("MC_BROWSERCTL_LAYER");
+  const browserCtl = runfile("MC_BROWSER_CTL_LAYER");
 
   const hostOnly = await mc.create({
     kernel,
@@ -80,7 +80,7 @@ async function main(): Promise<void> {
     kernel,
     image,
     sidecarHosts: { runner: host },
-    sidecars: { web: browser({ host: "runner", guest: browserctl }) },
+    sidecars: { web: browser({ host: "runner", guest: browserCtl }) },
   });
   try {
     await guest.fs.stat("/bin/browser");
@@ -112,7 +112,7 @@ async function main(): Promise<void> {
     mc.create({
       runtime: "remote",
       endpoint: "https://agent.invalid",
-      sidecars: { web: browser({ guest: browserctl }) },
+      sidecars: { web: browser({ guest: browserCtl }) },
     }),
     /must delegate its guest layer to the server/u,
   );

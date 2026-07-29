@@ -8,7 +8,14 @@ fi
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-bazel run --ui_event_filters=-info,-stdout,-stderr --noshow_progress //docs:update-readme-badges
+# Worktrees share one cache next to the bare repo (sibling of this worktree).
+# Absolute-ize so Bazel gets a stable startup option regardless of cwd.
+bazel_cache="$(cd "$repo_root/../bazel-cache" && pwd)"
+
+bazel --output_user_root="$bazel_cache" run \
+  --ui_event_filters=-info,-stdout,-stderr \
+  --noshow_progress \
+  //docs:update-readme-badges
 if ! git diff --quiet -- README.md; then
   git add README.md
 fi

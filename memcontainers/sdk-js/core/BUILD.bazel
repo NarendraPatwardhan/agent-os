@@ -180,11 +180,11 @@ js_test(
         ":guest_layers_test_lib",
         "//memcontainers/images:loom",
         "//memcontainers/kernel/rust:kernel",
-        "//memcontainers/programs/browser:browserctl_layer",
+        "//memcontainers/programs/browser:browser_ctl_layer",
     ],
     entry_point = "test/guest_layers.test.js",
     env = {
-        "MC_BROWSERCTL_LAYER": "$(rlocationpath //memcontainers/programs/browser:browserctl_layer)",
+        "MC_BROWSER_CTL_LAYER": "$(rlocationpath //memcontainers/programs/browser:browser_ctl_layer)",
         "MC_KERNEL_WASM": "$(rlocationpath //memcontainers/kernel/rust:kernel)",
         "MC_LOOM_IMAGE": "$(rlocationpath //memcontainers/images:loom)",
     },

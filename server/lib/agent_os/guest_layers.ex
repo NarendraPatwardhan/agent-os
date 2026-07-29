@@ -10,11 +10,11 @@ defmodule AgentOS.GuestLayers do
 
   @layers [
     %{
-      id: "browserctl",
+      id: "browser-ctl",
       kind: Browser.browser_kind(),
       version: Browser.browser_version(),
       contract_digest: Browser.browser_contract_digest(),
-      artifact: "browserctl.tar"
+      artifact: "browser-ctl.tar"
     }
   ]
 

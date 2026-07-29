@@ -49,7 +49,7 @@ addressable browser identifier.
 
 `browser()` returns a contract-bound sidecar grant descriptor. It allocates nothing by itself.
 
-Guest browser control is one released layer, `browserctl.tar`, carrying `/bin/browser`,
+Guest browser control is one released layer, `browser-ctl.tar`, carrying `/bin/browser`,
 `require("browser")`, its generated wire module, and `/skills/browser.md`. An embedded caller passes
 those bytes as `guest`; a remote caller passes `true` and the served AgentOS host installs its configured
 copy. With the default `false`, browser control remains available through `vm.browsers` without adding
@@ -58,7 +58,7 @@ guest files.
 | Option         | Default | Meaning                                                                    |
 | -------------- | ------- | -------------------------------------------------------------------------- |
 | `host`         | none    | Private host alias for an embedded VM; forbidden on a remote VM            |
-| `guest`        | `false` | Embedded `browserctl.tar` bytes, or `true` for a server-owned remote layer |
+| `guest`        | `false` | Embedded `browser-ctl.tar` bytes, or `true` for a server-owned remote layer |
 | `maxInstances` | `1`     | Maximum live browser instances under this grant                            |
 
 For an embedded `local` VM, connect the descriptor to a private sidecar host:
@@ -66,7 +66,7 @@ For an embedded `local` VM, connect the descriptor to a private sidecar host:
 ```js
 import { browser, mc, remoteSidecars } from "@mc/core";
 
-const browserctl = new Uint8Array(await (await fetch("/mc/browserctl.tar")).arrayBuffer());
+const browserCtl = new Uint8Array(await (await fetch("/mc/browser-ctl.tar")).arrayBuffer());
 
 const vm = await mc.create({
   runtime: "local",
@@ -74,14 +74,14 @@ const vm = await mc.create({
     cloud: remoteSidecars({ endpoint, token }),
   },
   sidecars: {
-    web: browser({ host: "cloud", guest: browserctl }),
+    web: browser({ host: "cloud", guest: browserCtl }),
   },
 });
 ```
 
 An AgentOS VM embedded in a browser page cannot start Firecracker itself, so it also uses a private
 remote sidecar host. A `remote` AgentOS VM omits both `host` and `sidecarHosts`, uses `guest: true`, and
-lets its served host choose placement and install `browserctl.tar`. Host aliases, tokens, and embedded
+lets its served host choose placement and install `browser-ctl.tar`. Host aliases, tokens, and embedded
 layer attachments never enter the portable grant or snapshots.
 
 ## `vm.browsers`
