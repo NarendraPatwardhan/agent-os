@@ -29,6 +29,7 @@
   <p>
     <a href="#what-you-can-build">What You Can Build</a> ·
     <a href="#why-agentos">Why AgentOS</a> ·
+    <a href="#performance">Performance</a> ·
     <a href="#quickstart">Quickstart</a> ·
     <a href="https://agentos.opyt.cloud/#examples">Examples</a> ·
     <a href="./docs/index.md">API Reference</a>
@@ -100,6 +101,24 @@ The VM does not change shape when its host changes:
 | `local`   | The current Node.js or Bun process | Applications, agents, CLIs, and local development                        |
 | `browser` | The current browser page           | Interactive products, sandboxes, demos, and private local work           |
 | `remote`  | An AgentOS server                  | Durable services, shared infrastructure, and server-controlled execution |
+
+## Performance
+
+Standard-profile p50s on the intersection of the browser and server (BEAM NIF) lanes.
+Boot and command costs are wall-clock milliseconds. Full snapshot and restore are
+**ms per MB** of MCSN payload so hosts with different resident memory stay comparable.
+
+| Metric | Unit | Browser | Server | Why |
+| ------ | ---- | ------- | ------ | --- |
+| cold_start.shell (posix) | ms | 17 | **5.9** | Time to a usable shell after create — first agent turn and interactive “is it up?” feel. |
+| exec.shell_builtin.steady | ms | 18 | **4.6** | Cost of ordinary shell work (`cd`, `echo`, builtins) once the machine is warm. |
+| exec.direct_minimal.steady | ms | 15 | **1.8** | Structured minimal exec without a nested shell — lower bound for host-driven commands. |
+| exec.direct_external.steady | ms | 15 | **1.9** | Structured launch of an external guest program — typical “run this tool” path agents use. |
+| exec.pipeline.three_stage | ms | 32 | **19** | Multi-process pipes; real agent workflows chain filters, not single commands. |
+| snapshot.full.latency | ms/MB | **5.1** | 6.0 | How expensive a complete checkpoint is per MB of machine state (branch / handoff / save). |
+| snapshot.restore_full | ms/MB | **5.5** | 7.3 | How fast you can rehydrate a full snapshot per MB (resume, move, or spin a branch). |
+| resident.sqlite.first (atlas) | ms | **189** | 261 | First hit against a warm SQLite service after boot — cold data-path for retrieval agents. |
+| resident.sqlite.warm (atlas) | ms | 84 | **42** | Repeat SQLite work once the resident service is hot — steady query / tool loop cost. |
 
 ## Quickstart
 
