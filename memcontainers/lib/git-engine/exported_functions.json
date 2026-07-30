@@ -1,0 +1,11 @@
+[
+  "_malloc",
+  "_free",
+  "_ge_open",
+  "_ge_close",
+  "_ge_run_json",
+  "_ge_import_pack",
+  "_ge_last_error",
+  "_ge_free",
+  "_ge_version"
+]

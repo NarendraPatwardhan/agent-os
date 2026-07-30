@@ -20,6 +20,14 @@ common --incompatible_strict_action_env
 common --copt=-w
 common --host_copt=-w
 
+# Host git engine (GIT.md PR0+): hermetic_cc zig-cc enables UBSan by default;
+# libgit2 intentionally does unaligned loads (pack/hash). Disable so native
+# git-engine smoke/abi tests do not abort under zig-cc.
+build --copt=-fno-sanitize=undefined --host_copt=-fno-sanitize=undefined
+build --linkopt=-fno-sanitize=undefined --host_linkopt=-fno-sanitize=undefined
+
+# hermetic_cc zig cache lives under $HOME/.cache/zig; allow sandbox access.
+build --sandbox_add_mount_pair=/home
 # No global target platform: host-side tools (the contracts projector, later the
 # server) build for the autodetected host. musl is a property of the ONE binary that
 # links a prebuilt libwasmtime.a — hosts/wasmtime — and is applied there per-target in

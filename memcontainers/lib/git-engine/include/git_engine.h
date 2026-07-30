@@ -1,0 +1,62 @@
+/* git_engine.h — host-side Run ABI (AgentOS GIT.md function face).
+ *
+ * One engine instance ≈ one gitfs mount. worktree_root for ge_open must be an
+ * absolute path to an existing directory. Paths in args are worktree-relative
+ * (no absolute paths, no ".."). Network dial is forbidden: remotes are
+ * host-mediated apply ops only (pack.import / refs.import / clone.apply).
+ *
+ * JSON envelopes (K18):
+ *   Request:  { "op": "...", "args": { ... } }
+ *   Response: { "ok": bool, "code": 0|1|2, "stdout"?, "stderr"?, "result"? }
+ *
+ * code: 0 ok, 1 operational error, 2 usage / unknown op / bad JSON.
+ */
+
+#ifndef GIT_ENGINE_H_
+#define GIT_ENGINE_H_
+
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#if defined(_WIN32)
+#define GE_API __declspec(dllexport)
+#else
+#define GE_API __attribute__((visibility("default")))
+#endif
+
+typedef struct ge_engine ge_engine;
+
+/* Create engine bound to worktree_root (absolute path; directory must exist).
+ * Does not create a repo until op "init". */
+GE_API ge_engine *ge_open(const char *worktree_root);
+
+GE_API void ge_close(ge_engine *e);
+
+/* Sole function face. Returns heap JSON string (caller free()s with ge_free
+ * or free). Never returns NULL — on OOM returns a static error JSON that must
+ * not be freed (check ge_response_is_static). Prefer ge_free always safe. */
+GE_API char *ge_run_json(ge_engine *e, const char *request_json);
+
+/* Binary pack import (GIT_DESIGN §3.3). Chunks may be streamed; final!=0
+ * finalizes the indexer into the ODB. Returns 0 on success, <0 on error. */
+GE_API int ge_import_pack(ge_engine *e, const uint8_t *chunk, size_t len,
+                          int final);
+
+/* Last engine error string (valid until next ge_* call). */
+GE_API const char *ge_last_error(const ge_engine *e);
+
+/* Free a string returned by ge_run_json (or no-op for static fallbacks). */
+GE_API void ge_free(void *p);
+
+/* Identity of this spike build (for op "version"). */
+GE_API const char *ge_version(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* GIT_ENGINE_H_ */

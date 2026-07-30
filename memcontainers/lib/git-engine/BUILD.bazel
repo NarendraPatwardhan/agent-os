@@ -1,22 +1,25 @@
-load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_test")
+load("@emsdk//emscripten_toolchain:wasm_rules.bzl", "wasm_cc_binary")
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_shared_library", "cc_test")
+load("//bazel:force_opt.bzl", "force_opt")
+load("//bazel:pick_file.bzl", "pick_file")
+load("//bazel:wasm_opt.bzl", "wasm_opt")
+load("//bazel/tools/size:defs.bzl", "size_limit")
 
-# Host-side git engine packaging (GIT.md PR0).
-# Product ge_* Run ABI lands in PR1; emcc wasm in PR2.
+# Host-side git engine (GIT.md PR0–PR2): libgit2 + ge_* Run ABI.
 package(default_visibility = ["//visibility:public"])
 
-# Trivial hermetic link against BCR libgit2 (zig cc via hermetic_cc_toolchain).
-# L6: do not select HTTPS/SSH features on @libgit2.
+# ---------------------------------------------------------------------------
+# PR0 — packaging smoke (still useful after PR1)
+# ---------------------------------------------------------------------------
+
 cc_binary(
     name = "smoke",
     srcs = ["smoke.c"],
     deps = ["@libgit2//:libgit2"],
-    # Notices in runfiles for L4 packaging prep (not a link dep).
     data = ["//third_party/libgit2:notices"],
-    # Prefer static link of BCR libgit2 + bundled deps (avoids pcre_free / .so order issues).
     linkstatic = True,
 )
 
-# Same source as a test target so `bazel test` exercises the smoke path in CI.
 cc_test(
     name = "smoke_test",
     srcs = ["smoke.c"],
@@ -26,8 +29,158 @@ cc_test(
     linkstatic = True,
 )
 
-# License materials for release packaging (PR0b / PR2 will attach to wasm/so).
+# ---------------------------------------------------------------------------
+# PR1 — Run ABI library + fixtures
+# ---------------------------------------------------------------------------
+
+cc_library(
+    name = "git_engine_lib",
+    srcs = [
+        "src/engine.c",
+        "src/engine_ops_extra.c",
+        "src/json_min.c",
+        "src/json_min.h",
+    ],
+    hdrs = ["include/git_engine.h"],
+    includes = [
+        "include",
+        "src",
+    ],
+    deps = ["@libgit2//:libgit2"],
+    copts = [
+        "-Wno-unused-parameter",
+    ],
+    linkstatic = True,
+)
+
+alias(
+    name = "git_engine",
+    actual = ":git_engine_lib",
+)
+
+cc_shared_library(
+    name = "libgit_engine",
+    shared_lib_name = "libgit_engine.so",
+    deps = [":git_engine_lib"],
+)
+
+# Native ABI fixture: init→commit→log + dial refuse (GIT.md PR1 exit ops).
+cc_test(
+    name = "abi_fixture_test",
+    srcs = ["abi_fixture_test.c"],
+    deps = [":git_engine_lib"],
+    data = glob(["testdata/abi/**"]),
+    size = "small",
+    linkstatic = True,
+)
+
+exports_files([
+    "exported_functions.json",
+    "testdata/abi/local_init_commit.json",
+    "testdata/abi/dial_forbidden.json",
+])
+
 filegroup(
     name = "license_files",
     srcs = ["//third_party/libgit2:license_files"],
+)
+
+# ---------------------------------------------------------------------------
+# PR2 — Emscripten host wasm (createGitEngineModule) + monorepo wasm_opt + size gate
+# ---------------------------------------------------------------------------
+
+_WASM_SIZE_COPTS = [
+    "-Os",
+    "-DNDEBUG",
+]
+
+_WASM_LINKOPTS = [
+    "-Os",
+    "--no-entry",
+    "-sMODULARIZE=1",
+    "-sEXPORT_ES6=1",
+    "-sEXPORT_NAME=createGitEngineModule",
+    "-sENVIRONMENT=web,worker,node",
+    "-sALLOW_MEMORY_GROWTH=1",
+    "-sSTACK_SIZE=2MB",
+    "-sASSERTIONS=0",
+    "-sSTACK_OVERFLOW_CHECK=0",
+    "-sFILESYSTEM=1",
+    "-sEXPORTED_FUNCTIONS=@$(location :exported_functions.json)",
+    "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8','getValue','setValue','HEAPU8','FS','PATH']",
+]
+
+cc_binary(
+    name = "git_engine_wasm_bin",
+    srcs = ["wasm_stub.c"],
+    deps = [":git_engine_lib"],
+    copts = _WASM_SIZE_COPTS,
+    linkopts = _WASM_LINKOPTS,
+    additional_linker_inputs = [":exported_functions.json"],
+    tags = ["manual"],
+)
+
+wasm_cc_binary(
+    name = "git_engine_wasm_emcc",
+    cc_target = ":git_engine_wasm_bin",
+    outputs = [
+        "git_engine_emcc.js",
+        "git_engine_emcc.wasm",
+    ],
+    tags = ["manual"],
+)
+
+force_opt(
+    name = "git_engine_wasm_emcc_release",
+    target = ":git_engine_wasm_emcc",
+    tags = ["manual"],
+)
+
+pick_file(
+    name = "git_engine_emcc_js",
+    src = ":git_engine_wasm_emcc_release",
+    extension = ".js",
+    out = "git_engine.js",
+    tags = ["manual"],
+)
+
+pick_file(
+    name = "git_engine_emcc_wasm",
+    src = ":git_engine_wasm_emcc_release",
+    extension = ".wasm",
+    out = "git_engine_emcc_raw.wasm",
+    tags = ["manual"],
+)
+
+# Monorepo Binaryen policy (-Oz --converge).
+wasm_opt(
+    name = "git_engine_opt",
+    wasm = ":git_engine_emcc_wasm",
+)
+
+# Optimized product name + emcc's default basename (locateFile("git_engine_wasm_bin.wasm")).
+genrule(
+    name = "git_engine_wasm_file",
+    srcs = [":git_engine_opt"],
+    outs = [
+        "git_engine.wasm",
+        "git_engine_wasm_bin.wasm",
+    ],
+    cmd = "cp $< $(location git_engine.wasm) && cp $< $(location git_engine_wasm_bin.wasm)",
+)
+
+filegroup(
+    name = "git_engine_wasm",
+    srcs = [
+        ":git_engine_emcc_js",
+        ":git_engine_wasm_file",
+        "//third_party/libgit2:notices",
+    ],
+)
+
+# Soft gate ≤2 MiB (GIT.md); monorepo B5 size_limit rule.
+size_limit(
+    name = "git_engine_wasm_size_limit",
+    file = "git_engine.wasm",
+    max_bytes = 2 * 1024 * 1024,
 )

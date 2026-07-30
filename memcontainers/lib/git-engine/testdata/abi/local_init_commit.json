@@ -1,0 +1,33 @@
+{
+  "name": "local_init_commit",
+  "steps": [
+    { "request": { "op": "init" }, "expect": { "ok": true, "code": 0 } },
+    {
+      "request": {
+        "op": "write",
+        "args": { "path": "hello.txt", "content": "hello from abi fixture\n" }
+      },
+      "expect": { "ok": true, "code": 0 }
+    },
+    {
+      "request": { "op": "add", "args": { "path": "hello.txt" } },
+      "expect": { "ok": true, "code": 0 }
+    },
+    {
+      "request": {
+        "op": "commit",
+        "args": {
+          "message": "initial",
+          "name": "Fixture",
+          "email": "fixture@test",
+          "when_unix": 1700000000
+        }
+      },
+      "expect": { "ok": true, "code": 0 }
+    },
+    {
+      "request": { "op": "rev-parse", "args": { "rev": "HEAD" } },
+      "expect": { "ok": true, "code": 0 }
+    }
+  ]
+}
