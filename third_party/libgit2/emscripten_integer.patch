@@ -1,0 +1,20 @@
+--- a/src/util/integer.h
++++ b/src/util/integer.h
+@@ -53,7 +53,15 @@
+ #if (__has_builtin(__builtin_add_overflow) || \
+      (defined(__GNUC__) && (__GNUC__ >= 5)))
+ 
+-# if (SIZE_MAX == UINT_MAX)
++# if defined(__EMSCRIPTEN__)
++/* Emscripten/WebAssembly: size_t is unsigned long even when 32-bit, so
++ * SIZE_MAX == UINT_MAX would wrongly pick __builtin_uadd_overflow (unsigned int*).
++ */
++#  define git__add_sizet_overflow(out, one, two) \
++     __builtin_uaddl_overflow(one, two, out)
++#  define git__multiply_sizet_overflow(out, one, two) \
++     __builtin_umull_overflow(one, two, out)
++# elif (SIZE_MAX == UINT_MAX)
+ #  define git__add_sizet_overflow(out, one, two) \
+      __builtin_uadd_overflow(one, two, out)
+ #  define git__multiply_sizet_overflow(out, one, two) \
+      __builtin_umul_overflow(one, two, out)

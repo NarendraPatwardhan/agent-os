@@ -1,0 +1,33 @@
+load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_test")
+
+# Host-side git engine packaging (GIT.md PR0).
+# Product ge_* Run ABI lands in PR1; emcc wasm in PR2.
+package(default_visibility = ["//visibility:public"])
+
+# Trivial hermetic link against BCR libgit2 (zig cc via hermetic_cc_toolchain).
+# L6: do not select HTTPS/SSH features on @libgit2.
+cc_binary(
+    name = "smoke",
+    srcs = ["smoke.c"],
+    deps = ["@libgit2//:libgit2"],
+    # Notices in runfiles for L4 packaging prep (not a link dep).
+    data = ["//third_party/libgit2:notices"],
+    # Prefer static link of BCR libgit2 + bundled deps (avoids pcre_free / .so order issues).
+    linkstatic = True,
+)
+
+# Same source as a test target so `bazel test` exercises the smoke path in CI.
+cc_test(
+    name = "smoke_test",
+    srcs = ["smoke.c"],
+    deps = ["@libgit2//:libgit2"],
+    data = ["//third_party/libgit2:notices"],
+    size = "small",
+    linkstatic = True,
+)
+
+# License materials for release packaging (PR0b / PR2 will attach to wasm/so).
+filegroup(
+    name = "license_files",
+    srcs = ["//third_party/libgit2:license_files"],
+)

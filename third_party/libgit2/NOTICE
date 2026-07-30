@@ -1,0 +1,25 @@
+libgit2 — third-party notice (AgentOS monorepo)
+================================================
+
+This package links against **libgit2** for the host git engine (see workspace
+GIT.md — host source plane, GPL-2.0 with linking exception).
+
+| Field | Value |
+|-------|--------|
+| Project | libgit2 |
+| Version | **1.9.2** (BCR module `libgit2` **1.9.2.bcr.1**) |
+| Upstream | https://github.com/libgit2/libgit2 |
+| License | **GPL-2.0** with **linking exception** (see `upstream/COPYING`) |
+
+Monorepo patches (applied via `single_version_override` in MODULE.bazel):
+
+- `emscripten_integer.patch` — correct size_t overflow builtins under Emscripten
+  (required for the PR2 emcc `git_engine.wasm` product path).
+
+Product engine targets keep HTTPS/SSH backends **off** (GIT.md L6): remotes are
+host-mediated; the engine does not dial.
+
+Corresponding source for the pin + patches: Bazel target
+`//third_party/libgit2:corresponding_source`.
+
+Upstream license texts: `third_party/libgit2/upstream/`.
