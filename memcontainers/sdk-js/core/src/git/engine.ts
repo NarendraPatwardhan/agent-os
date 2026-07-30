@@ -1,0 +1,75 @@
+/**
+ * SDK GitEngine — single-writer queue over GitBridge + optional gitfs driver.
+ * Remotes (clone/fetch/push) fail closed until PR9–PR10 orchestrator.
+ */
+
+import type { Driver } from "../types.js";
+import { GitBridge } from "./bridge.js";
+import { createGitFsDriver } from "./gitfs.js";
+import type { GitEngineLoadOptions, GitRequest, GitResponse } from "./types.js";
+
+const REMOTE_OPS = new Set(["clone", "fetch", "pull", "push"]);
+
+export class GitEngine {
+  private queue: Promise<unknown> = Promise.resolve();
+
+  constructor(
+    readonly bridge: GitBridge,
+    readonly readOnly = false,
+  ) {}
+
+  static async load(opts: GitEngineLoadOptions): Promise<GitEngine> {
+    const bridge = await GitBridge.create(opts.baseUrl, {
+      workRoot: opts.workRoot,
+    });
+    return new GitEngine(bridge, !!opts.readOnly);
+  }
+
+  private serial<T>(fn: () => T | Promise<T>): Promise<T> {
+    const run = this.queue.then(fn, fn) as Promise<T>;
+    this.queue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /** Function face: Run({op,args}) → Response. */
+  async run(req: GitRequest): Promise<GitResponse> {
+    return this.serial(async () => {
+      const op = String(req.op || "").toLowerCase();
+      if (REMOTE_OPS.has(op)) {
+        return {
+          ok: false,
+          code: 1,
+          stdout: "",
+          stderr:
+            "remotes require host_call git + orchestrator (PR9–PR10); engine must not dial\n",
+        };
+      }
+      return this.bridge.run(req);
+    });
+  }
+
+  async importPack(
+    chunk: Uint8Array,
+    meta: { final?: boolean } = {},
+  ): Promise<void> {
+    return this.serial(async () => {
+      this.bridge.importPack(chunk, !!meta.final);
+    });
+  }
+
+  /** MountFs driver (worktree + ctl). Coherence: close write then status via open. */
+  asMountDriver(): Driver {
+    return createGitFsDriver(this.bridge, { readOnly: this.readOnly });
+  }
+
+  version(): string {
+    return this.bridge.version();
+  }
+
+  async close(): Promise<void> {
+    this.bridge.close();
+  }
+}

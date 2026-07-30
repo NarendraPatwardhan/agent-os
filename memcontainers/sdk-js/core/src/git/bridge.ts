@@ -1,0 +1,219 @@
+/**
+ * Emscripten createGitEngineModule bridge over ge_* (GIT.md PR2/PR3).
+ * Worktree lives in module MEMFS; gitfs projects it into the guest VFS.
+ */
+
+import type { GitRequest, GitResponse } from "./types.js";
+
+export const DEFAULT_WORK_ROOT = "/work";
+
+export type EmscriptenGitModule = {
+  UTF8ToString(ptr: number): string;
+  stringToUTF8(s: string, ptr: number, max: number): void;
+  lengthBytesUTF8(s: string): number;
+  _malloc(n: number): number;
+  _free(ptr: number): void;
+  HEAPU8: Uint8Array;
+  FS: EmscriptenFS;
+  _ge_open(rootPtr: number): number;
+  _ge_close(eng: number): void;
+  _ge_run_json(eng: number, reqPtr: number): number;
+  _ge_import_pack(eng: number, ptr: number, len: number, final: number): number;
+  _ge_free(ptr: number): void;
+  _ge_version(): number;
+  _ge_last_error(eng: number): number;
+};
+
+export type EmscriptenFS = {
+  mkdir(path: string): void;
+  mkdirTree?(path: string): void;
+  readdir(path: string): string[];
+  stat(path: string): { mode: number; size?: number };
+  isDir(mode: number): boolean;
+  readFile(path: string, opts?: { encoding?: string }): Uint8Array | string;
+  writeFile(path: string, data: Uint8Array | string): void;
+  unlink(path: string): void;
+  rmdir(path: string): void;
+  rename(from: string, to: string): void;
+  analyzePath?(path: string): { exists: boolean };
+};
+
+export class GitBridge {
+  constructor(
+    readonly mod: EmscriptenGitModule,
+    public eng: number,
+    readonly workRoot: string = DEFAULT_WORK_ROOT,
+  ) {}
+
+  static async create(
+    baseUrl: string,
+    opts: { workRoot?: string } = {},
+  ): Promise<GitBridge> {
+    const root = baseUrl.endsWith("/") ? baseUrl : baseUrl + "/";
+    const workRoot = opts.workRoot ?? DEFAULT_WORK_ROOT;
+    // Prefer .mjs (always ESM). Fall back to .js when package.json type=module is present.
+    const modUrl = await resolveEngineModuleUrl(root);
+    const createGitEngineModule = await loadCreate(modUrl);
+    const mod = (await createGitEngineModule({
+      locateFile: (p: string) => {
+        const name = String(p).endsWith(".wasm") ? "git_engine.wasm" : p;
+        const url = new URL(name, root).href;
+        if (
+          typeof process !== "undefined" &&
+          process.versions?.node &&
+          url.startsWith("file:")
+        ) {
+          return new URL(url).pathname;
+        }
+        return url;
+      },
+    })) as EmscriptenGitModule;
+
+    ensureDir(mod.FS, workRoot);
+
+    const rootPtr = cstr(mod, workRoot);
+    const eng = mod._ge_open(rootPtr);
+    mod._free(rootPtr);
+    if (!eng) {
+      throw new Error("ge_open failed (need absolute existing MEMFS dir)");
+    }
+    return new GitBridge(mod, eng, workRoot);
+  }
+
+  version(): string {
+    return this.mod.UTF8ToString(this.mod._ge_version()) || "unknown";
+  }
+
+  lastError(): string {
+    return this.mod.UTF8ToString(this.mod._ge_last_error(this.eng)) || "";
+  }
+
+  run(req: GitRequest): GitResponse {
+    const json = JSON.stringify({
+      op: req.op,
+      ...(req.args !== undefined ? { args: req.args } : {}),
+    });
+    const reqPtr = cstr(this.mod, json);
+    const outPtr = this.mod._ge_run_json(this.eng, reqPtr);
+    this.mod._free(reqPtr);
+    const text = this.mod.UTF8ToString(outPtr);
+    this.mod._ge_free(outPtr);
+    try {
+      return JSON.parse(text) as GitResponse;
+    } catch {
+      throw new Error(`invalid engine JSON: ${text.slice(0, 200)}`);
+    }
+  }
+
+  importPack(chunk: Uint8Array, final = false): void {
+    const len = chunk?.byteLength ?? 0;
+    let ptr = 0;
+    if (len > 0) {
+      ptr = this.mod._malloc(len);
+      this.mod.HEAPU8.set(chunk, ptr);
+    }
+    const rc = this.mod._ge_import_pack(this.eng, ptr, len, final ? 1 : 0);
+    if (ptr) this.mod._free(ptr);
+    if (rc !== 0) {
+      throw new Error(this.lastError() || `ge_import_pack failed (${rc})`);
+    }
+  }
+
+  abs(rel: string): string {
+    const p = normalizeRel(rel);
+    return p ? `${this.workRoot}/${p}` : this.workRoot;
+  }
+
+  get FS(): EmscriptenFS {
+    return this.mod.FS;
+  }
+
+  close(): void {
+    if (this.eng) {
+      this.mod._ge_close(this.eng);
+      this.eng = 0;
+    }
+  }
+}
+
+export function normalizeRel(path: string): string {
+  let p = String(path || "").replace(/\\/g, "/");
+  while (p.startsWith("/")) p = p.slice(1);
+  if (p === "." || p === "") return "";
+  if (p.includes("..")) {
+    const err = new Error("path escapes worktree") as Error & { code?: string };
+    err.code = "EACCES";
+    throw err;
+  }
+  return p;
+}
+
+function ensureDir(FS: EmscriptenFS, path: string): void {
+  if (typeof FS.mkdirTree === "function") {
+    try {
+      FS.mkdirTree(path);
+      return;
+    } catch {
+      /* fall through */
+    }
+  }
+  const parts = path.split("/").filter(Boolean);
+  let cur = "";
+  for (const part of parts) {
+    cur += "/" + part;
+    try {
+      FS.mkdir(cur);
+    } catch {
+      /* exists */
+    }
+  }
+}
+
+function cstr(mod: EmscriptenGitModule, s: string): number {
+  const n = mod.lengthBytesUTF8(s) + 1;
+  const p = mod._malloc(n);
+  mod.stringToUTF8(s, p, n);
+  return p;
+}
+
+async function resolveEngineModuleUrl(root: string): Promise<string> {
+  const candidates = ["git_engine.mjs", "git_engine.js"];
+  if (typeof process !== "undefined" && process.versions?.node) {
+    const { existsSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    for (const name of candidates) {
+      const href = new URL(name, root).href;
+      try {
+        const p = fileURLToPath(href);
+        if (existsSync(p)) return href;
+      } catch {
+        /* non-file URL */
+      }
+    }
+  }
+  return new URL(candidates[0], root).href;
+}
+
+async function loadCreate(
+  modUrl: string,
+): Promise<(opts?: object) => Promise<EmscriptenGitModule>> {
+  // emcc EXPORT_ES6 emits `export default createGitEngineModule` — always ESM.
+  // Load via .mjs (or .js under type:module) so Node does not treat it as CJS.
+  let href = modUrl;
+  if (
+    !modUrl.startsWith("file:") &&
+    !modUrl.startsWith("http:") &&
+    !modUrl.startsWith("https:") &&
+    !modUrl.startsWith("data:")
+  ) {
+    const { pathToFileURL } = await import("node:url");
+    href = pathToFileURL(modUrl).href;
+  }
+  const m = (await import(/* @vite-ignore */ href)) as {
+    default?: (opts?: object) => Promise<EmscriptenGitModule>;
+    createGitEngineModule?: (opts?: object) => Promise<EmscriptenGitModule>;
+  };
+  const fn = m.default ?? m.createGitEngineModule;
+  if (typeof fn === "function") return fn;
+  throw new Error(`cannot load createGitEngineModule from ${href}`);
+}

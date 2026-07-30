@@ -93,6 +93,17 @@ export interface CreateOptions {
    *   Default for local boots without an explicit store (no surprise full capture).
    */
   templateFill?: "on_demand" | "prepopulated" | "off";
+  /**
+   * Enable host git engine packaging (GIT.md PR3+). When true, callers may
+   * `GitEngine.load({ baseUrl: gitEngineBaseUrl })` and mount `asMountDriver()`.
+   * Default false — no engine load at create until embedder opts in.
+   */
+  experimentalGitEngine?: boolean;
+  /**
+   * Directory URL/path of `git_engine.js` + `git_engine.wasm` when
+   * `experimentalGitEngine` is used (Bazel `//memcontainers/lib/git-engine:git_engine_wasm`).
+   */
+  gitEngineBaseUrl?: string;
 }
 
 export type ConnectionAuth =

@@ -99,6 +99,35 @@ genrule(
 # Core-level runtime test: a real mc.create() boots the kernel through @mc/host and @mc/contracts package
 # deps (the host parity test only covers @mc/host itself). Same load-bearing data edge as the Rust e2e:
 # the kernel + image it boots are the ones its sources produce.
+# Host git engine (GIT.md PR3–PR5): Run + gitfs ctl without full VM boot.
+mc_ts_project(
+    name = "git_engine_test_lib",
+    srcs = ["test/git_engine.test.ts"],
+    deps = [
+        ":lib",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+js_test(
+    name = "git_engine_test",
+    data = [
+        # core package.json → Node treats test/src .js as ESM.
+        "package.json",
+        ":git_engine_test_lib",
+        # Engine artifacts only (not :git_engine_wasm — that pulls NOTICE across packages).
+        "//memcontainers/lib/git-engine:git_engine_emcc_js",
+        "//memcontainers/lib/git-engine:git_engine_mjs",
+        "//memcontainers/lib/git-engine:git_engine_wasm_file",
+    ],
+    entry_point = "test/git_engine.test.js",
+    env = {
+        # Path of git_engine.mjs under runfiles; test derives the sibling wasm dir.
+        "MC_GIT_ENGINE_JS": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_mjs)",
+    },
+    timeout = "moderate",
+)
+
 mc_ts_project(
     name = "vm_test_lib",
     srcs = ["test/vm.test.ts"],

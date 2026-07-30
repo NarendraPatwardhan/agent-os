@@ -169,10 +169,20 @@ genrule(
     cmd = "cp $< $(location git_engine.wasm) && cp $< $(location git_engine_wasm_bin.wasm)",
 )
 
+# .mjs alias so Node/browsers load EXPORT_ES6 without needing a sibling package.json
+# (rules_js cannot copy cross-package source package.json into js_test runfiles).
+genrule(
+    name = "git_engine_mjs",
+    srcs = [":git_engine_emcc_js"],
+    outs = ["git_engine.mjs"],
+    cmd = "cp $< $@",
+)
+
 filegroup(
     name = "git_engine_wasm",
     srcs = [
         ":git_engine_emcc_js",
+        ":git_engine_mjs",
         ":git_engine_wasm_file",
         "//third_party/libgit2:notices",
     ],
