@@ -55,6 +55,9 @@ GE_API void ge_free(void *p);
 /* Identity of this spike build (for op "version"). */
 GE_API const char *ge_version(void);
 
+/* Absolute worktree root bound at ge_open (valid until ge_close). */
+GE_API const char *ge_worktree_root(const ge_engine *e);
+
 #ifdef __cplusplus
 }
 #endif

@@ -53,15 +53,59 @@ cc_library(
     linkstatic = True,
 )
 
+# Port RPC + mount + smart-HTTP/orch (PR7–PR10c). Not linked into emcc wasm.
+cc_library(
+    name = "git_engine_port_lib",
+    srcs = [
+        "src/orch.c",
+        "src/port_frame.c",
+        "src/port_handle.c",
+        "src/port_mount.c",
+        "src/smart_http.c",
+    ],
+    hdrs = [
+        "include/ge_http.h",
+        "include/ge_port.h",
+        "include/git_engine.h",
+    ],
+    includes = [
+        "include",
+        "src",
+    ],
+    deps = [":git_engine_lib"],
+    copts = ["-Wno-unused-parameter"],
+    linkstatic = True,
+)
+
 alias(
     name = "git_engine",
     actual = ":git_engine_lib",
 )
 
+# PR7a — BEAM-owned Port binary (length-prefixed frames on stdin/stdout).
+cc_binary(
+    name = "git-engine",
+    srcs = ["src/port_main.c"],
+    deps = [":git_engine_port_lib"],
+    linkstatic = True,
+    visibility = ["//visibility:public"],
+)
+
+# PR7d — c-shared packaging (Port remains primary; .so for host load path later).
 cc_shared_library(
     name = "libgit_engine",
     shared_lib_name = "libgit_engine.so",
     deps = [":git_engine_lib"],
+)
+
+filegroup(
+    name = "git_engine_server_artifacts",
+    srcs = [
+        ":git-engine",
+        ":libgit_engine",
+        "//third_party/libgit2:notices",
+    ],
+    visibility = ["//visibility:public"],
 )
 
 # Native ABI fixture: init→commit→log + dial refuse (GIT.md PR1 exit ops).
@@ -74,15 +118,42 @@ cc_test(
     linkstatic = True,
 )
 
+# PR7a/b — Port Run + binary MOUNT_OP ctl smoke.
+cc_test(
+    name = "port_smoke_test",
+    srcs = ["port_smoke_test.c"],
+    deps = [":git_engine_port_lib"],
+    size = "small",
+    linkstatic = True,
+)
+
+# PR7c — dual-runner native golden (emcc side: //sdk-js/core:git_engine_test).
+cc_test(
+    name = "abi_dual_test",
+    srcs = ["abi_dual_test.c"],
+    deps = [":git_engine_lib"],
+    data = glob(["testdata/abi/**", "testdata/orch/**"]),
+    size = "small",
+    linkstatic = True,
+)
+
 exports_files([
     "exported_functions.json",
     "testdata/abi/local_init_commit.json",
     "testdata/abi/dial_forbidden.json",
+    "testdata/orch/clone_algorithm.json",
+    "testdata/orch/fetch_algorithm.json",
 ])
 
 filegroup(
     name = "license_files",
     srcs = ["//third_party/libgit2:license_files"],
+)
+
+filegroup(
+    name = "orch_algorithm_traces",
+    srcs = glob(["testdata/orch/**"]),
+    visibility = ["//visibility:public"],
 )
 
 # ---------------------------------------------------------------------------

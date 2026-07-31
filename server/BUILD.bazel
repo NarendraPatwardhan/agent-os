@@ -55,6 +55,7 @@ mix_library(
     priv = [
         ":browser_ctl_artifact",
         "//memcontainers/hosts/wasmtime/nif:host_nif_release",
+        "//memcontainers/lib/git-engine:git-engine",
     ],
     tags = ["manual"],
     target_compatible_with = ELIXIR_ONLY,
@@ -71,6 +72,7 @@ mix_library(
     priv = [
         ":browser_ctl_artifact",
         "//memcontainers/hosts/wasmtime/nif:host_nif_release",
+        "//memcontainers/lib/git-engine:git-engine",
     ],
     tags = ["manual"],
     target_compatible_with = ELIXIR_ONLY,
@@ -86,10 +88,12 @@ mix_test(
         "//memcontainers/images:minimal",
         "//memcontainers/images:posix",
         "//memcontainers/kernel/rust:kernel",
+        "//memcontainers/lib/git-engine:git-engine",
     ],
     env = {
         "ERL_COMPILER_OPTIONS": "deterministic",
         "ELIXIR_ERL_OPTIONS": "+fnu",
+        "AGENTOS_GIT_ENGINE": "$(rootpath //memcontainers/lib/git-engine:git-engine)",
     },
     lib = ":lib_test",
     tags = ["manual"],

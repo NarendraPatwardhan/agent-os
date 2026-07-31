@@ -70,6 +70,10 @@ static char *resp_usage(const char *msg) {
 
 const char *ge_version(void) { return GE_VERSION; }
 
+const char *ge_worktree_root(const ge_engine *e) {
+  return e ? e->root : NULL;
+}
+
 const char *ge_last_error(const ge_engine *e) {
   return e ? e->err : "null engine";
 }

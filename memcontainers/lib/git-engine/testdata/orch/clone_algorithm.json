@@ -1,0 +1,13 @@
+{
+  "name": "clone_public_https",
+  "algorithm": [
+    "resolve_remote_url",
+    "list_refs",
+    "select_head_tip",
+    "fetch_packs",
+    "import_pack_binary",
+    "refs_import",
+    "clone_apply"
+  ],
+  "notes": "Shared golden steps for TS remote-orchestrator.ts and C orch.c (GIT.md K20)."
+}
