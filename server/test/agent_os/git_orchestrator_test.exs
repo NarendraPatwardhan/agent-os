@@ -257,4 +257,119 @@ defmodule AgentOS.Git.OrchestratorTest do
     assert json =~ "\"code\":2" or json =~ "need args.url"
     :ok = GitEngine.stop(pid)
   end
+
+  # ── P1.7 foundation: async git host_call via Vm ────────────────────────────
+
+  @tag timeout: 120_000
+  test "try_answer_git_host_call returns :answered without blocking on remote orch" do
+    # Real kernel VM + attach_git with fixture transport (no network).
+    # Proves P1.6: name "git" is claimed async (GenServer returns immediately).
+    wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
+    posix = runfile_bytes("memcontainers/images/posix.tar")
+    path = engine_path()
+
+    if is_nil(wasm) or is_nil(posix) do
+      # Residual: full guest CAP_NET e2e needs kernel/images + host_nif runfiles.
+      IO.puts(:stderr, "skipping Vm async git test: kernel/posix runfiles missing")
+    else
+      id = {"git-async", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
+      pack = File.read!(Path.expand("../fixtures/git/minimal.pack", __DIR__))
+      tip = File.read!(Path.expand("../fixtures/git/minimal.tip", __DIR__)) |> String.trim()
+
+      transport = fn
+        :list_refs, _ ->
+          # Artificial delay so a sync path would freeze the GenServer call.
+          Process.sleep(200)
+          {:ok, [%{name: "refs/heads/main", hash: tip}]}
+
+        :fetch_packs, _ ->
+          {:ok, pack}
+      end
+
+      try do
+        assert {:ok, _pid} =
+                 AgentOS.ControlPlane.create(id,
+                   wasm: wasm,
+                   base_image: posix,
+                   deterministic: true,
+                   workers: 0,
+                   host_call: :relay
+                 )
+
+        assert :ok =
+                 AgentOS.ControlPlane.attach_git(id,
+                   executable: path,
+                   allowed_origins: [@fixture_origin],
+                   transport: transport
+                 )
+
+        info0 = AgentOS.ControlPlane.info(id)
+        assert info0.git_attached == true
+        assert info0.git_allowed_origins == [@fixture_origin]
+
+        event = %{
+          kind: :host_call,
+          handle: 9_001,
+          name: "git",
+          body: ~s({"op":"clone","args":{"url":"#{@fixture_url}"}})
+        }
+
+        # Must return promptly — not blocked on the 200ms fixture sleep.
+        {usec, reply} =
+          :timer.tc(fn ->
+            AgentOS.Vm.try_answer_git_host_call(AgentOS.ControlPlane.whereis(id), event)
+          end)
+
+        assert reply == :answered
+        assert usec < 150_000, "try_answer_git_host_call blocked (#{usec}µs); expected async"
+
+        # Inflight task drains; allow NIF fail on synthetic handle.
+        assert_eventually(fn ->
+          AgentOS.ControlPlane.info(id).git_inflight == 0
+        end)
+
+        # Detach cancels any residual tasks cleanly.
+        assert :ok = AgentOS.ControlPlane.detach_git(id)
+        assert AgentOS.ControlPlane.info(id).git_attached == false
+      after
+        AgentOS.ControlPlane.dispose(id)
+      end
+    end
+  end
+
+  defp runfile_bytes(rel) do
+    roots =
+      [
+        System.get_env("RUNFILES_DIR") && Path.join(System.get_env("RUNFILES_DIR"), "_main"),
+        System.get_env("RUNFILES_DIR"),
+        System.get_env("TEST_SRCDIR") && System.get_env("TEST_WORKSPACE") &&
+          Path.join([System.get_env("TEST_SRCDIR"), System.get_env("TEST_WORKSPACE")]),
+        System.get_env("TEST_SRCDIR") && Path.join(System.get_env("TEST_SRCDIR"), "_main"),
+        Path.expand("../../bazel-bin", __DIR__),
+        Path.expand("..", File.cwd!())
+      ]
+      |> Enum.reject(&is_nil/1)
+
+    case Enum.find_value(roots, fn root ->
+           candidate = Path.join(root, rel)
+           if File.regular?(candidate), do: candidate
+         end) do
+      nil -> nil
+      file -> File.read!(file)
+    end
+  end
+
+  defp assert_eventually(fun, attempts \\ 50) do
+    cond do
+      fun.() ->
+        true
+
+      attempts <= 0 ->
+        flunk("condition not met in time")
+
+      true ->
+        Process.sleep(20)
+        assert_eventually(fun, attempts - 1)
+    end
+  end
 end

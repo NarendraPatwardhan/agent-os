@@ -1,7 +1,10 @@
 /**
  * Durable backends for host git engine (GIT.md PR8a OPFS / PR8b server disk).
- * Engine object DB lives under worktree .git; durability = persist that tree
- * across reload (browser OPFS) or keep Port root on disk (server).
+ *
+ * These are opaque byte stores only. {@link GitEngine.load} may attach one and
+ * hold a snapshot at engine level; it does **not** rebind MEMFS from the blob.
+ * deferred: durability not rebinding MEMFS yet — do not treat attach/checkpoint
+ * as worktree restore.
  */
 
 export interface DurableBackend {

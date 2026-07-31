@@ -103,7 +103,13 @@
       { "name": "FsContentStore", "level": "stable", "doc": "images-stores.md" },
       { "name": "MemoryContentStore", "level": "stable", "doc": "images-stores.md" },
       { "name": "OpfsContentStore", "level": "stable", "doc": "images-stores.md" },
-      { "name": "defaultStore", "level": "stable", "doc": "images-stores.md" }
+      { "name": "defaultStore", "level": "stable", "doc": "images-stores.md" },
+      { "name": "GitEngine", "level": "experimental", "doc": "git.md" },
+      { "name": "registerGitHostCall", "level": "experimental", "doc": "git.md" },
+      { "name": "gitHostCallHandler", "level": "experimental", "doc": "git.md" },
+      { "name": "GitRemoteOrchestrator", "level": "advanced", "doc": "git.md" },
+      { "name": "materializeLlbGit", "level": "experimental", "doc": "git.md" },
+      { "name": "createEngineGitSource", "level": "experimental", "doc": "git.md" }
     ],
     "@mc/core/drivers": [
       { "name": "hostDir", "level": "stable", "doc": "mounts-drivers.md" },

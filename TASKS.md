@@ -6,9 +6,10 @@
 That file holds the complete review: executive grades, C1–C8 with evidence, H1–H15, medium naming/org, per-layer agent deep-dives, full GIT.md remaining inventory (A–F), deferred lists, and priorities. **Update checkboxes here; do not shrink the report.**
 
 **Branch:** `feature/cgit`  
-**Rule:** Parallelize non-overlapping streams; serial only for shared contracts / merge.
+**Rule:** Parallelize non-overlapping streams; serial only for shared contracts / merge.  
+**Orchestrator standard:** no silent success, no soft tests, no doc lies, no dual policy primitives.
 
-Legend: `[ ]` open · `[~]` in progress · `[x]` done · `[!]` blocked
+Legend: `[ ]` open · `[~]` in progress · `[x]` done · `[!]` blocked · `[D]` deferred (not a bug)
 
 ---
 
@@ -29,103 +30,82 @@ Legend: `[ ]` open · `[~]` in progress · `[x]` done · `[!]` blocked
 
 ---
 
-## Parallelization plan
-
-| Stream | Touch areas | Depends on |
-|--------|-------------|------------|
-| **A — C engine** | `memcontainers/lib/git-engine/**` | none |
-| **B — Thin CLI** | `memcontainers/programs/git/**` | none |
-| **C — TS single-writer** | `sdk-js/core/src/git/{engine,gitfs,bridge}.ts` | none |
-| **D — BEAM remotes** | `server/lib/agent_os/git/**`, tests | none |
-| **E — Docs** | `CRITICAL_REVIEW.md`, `TASKS.md`, later `GIT.md` | after code P0 |
-| **F — Pack fixture** | `testdata/pack/`, server fixtures | A apply + D tests |
-| **G — Public API** | `sdk-js/core/src/index.ts`, docs | after C |
-
-**Serial constraints**
-- Stream A owns all C; no parallel editors on `engine.c` / `port_handle.c`.
-- BEAM empty-pack honesty + origin policy land together (stream D).
-- Pack fixture (F) then re-point D/JS success tests at real PACK bytes.
-- GIT.md K16/K20 sync after code stabilizes (E last).
-
----
-
 ## P0 — Block remotes GA / multi-tenant server
 
-| ID | Task | Stream | Status | Notes |
-|----|------|--------|--------|-------|
-| P0.1 | BEAM origin allowlist + scheme/userinfo + max pack + HTTP status fail-closed | D | [x] | `smart_http.ex` + orch pre-dial gate; mix 12 passed |
-| P0.2 | Never `ok:true` on empty/non-PACK; remove empty-pack apply skip | D | [x] | empty pack → ok:false; tests assert |
-| P0.3 | Real minimal PACK fixture; assert import path | F | [~] | bytes on disk (`testdata/pack/`, `server/test/fixtures/git/`); orch tests use synthetic non-empty PACK — full import→worktree e2e still open |
-| P0.4 | `fetch.apply` real or fail closed — no silent success | A | [x] | requires name+hash; remote-tracking + FETCH_HEAD; C tests green; **serial glue:** BEAM+TS orch now pass args |
-| P0.5 | Port type-1 = `ge_run_json` only; C orch test/type-5 only | A | [x] | type-1 dial refuse; type-5 test-only |
-| P0.6 | Thin CLI remotes **before** `find_git_root` | B | [x] | `main.rs`; git.wasm build OK |
-| P0.7 | `ge_free` safe on static OOM; `ge_response_is_static` if claimed | A | [x] | implemented + wasm export |
-| P0.8 | One shared serial lock GitEngine + gitfs + importPack | C | [x] | `GitBridge.serial`; all 5 js git tests green |
-| P0.9 | K28: no default Agent@example.com; require or host-inject identity | A | [x] | commit requires name+email; host-policy inject still P1/P2 |
+| ID | Task | Status | Notes |
+|----|------|--------|-------|
+| P0.1 | BEAM origin allowlist + scheme/userinfo + max pack + HTTP status fail-closed | [x] | `smart_http.ex` + orch |
+| P0.2 | Never `ok:true` on empty/non-PACK; remove empty-pack apply skip | [x] | tests assert fail |
+| P0.3 | Real minimal PACK fixture; import → worktree e2e | [x] | pack dir fix + `git_engine_pack_test.exs` → README |
+| P0.4 | `fetch.apply` real or fail closed — no silent success | [x] | name+hash + remote-tracking |
+| P0.5 | Port type-1 = `ge_run_json` only; C orch test/type-5 only | [x] | dial refuse |
+| P0.6 | Thin CLI remotes **before** `find_git_root` | [x] | `main.rs` |
+| P0.7 | `ge_free` safe on static OOM; `ge_response_is_static` | [x] | wasm export |
+| P0.8 | One shared serial lock GitEngine + gitfs + importPack | [x] | `GitBridge.serial` |
+| P0.9 | K28: no default Agent@example.com; require identity | [x] | commit requires name+email |
 
 ---
 
 ## P1 — Product honesty
 
-| ID | Task | Status |
-|----|------|--------|
-| P1.1 | Growable write/stdout; drop spike 64 KiB caps where practical | [ ] |
-| P1.2 | Wire durable into load **or** unexport + document deferred | [ ] |
-| P1.3 | Narrow `@mc/core` exports; fix `docs/api-surface.json` | [ ] |
-| P1.4 | Link `docs/git.md`; document `experimentalGitEngine` create options | [ ] |
-| P1.5 | Wasm `size_limit` → optimized artifact; L5 NOTICE CI | [ ] |
-| P1.6 | Async BEAM git host_call (Task.Supervisor like sidecars) | [ ] |
-| P1.7 | Guest CAP_NET / attach_git demux test | [ ] |
-| P1.8 | Import `originAllowed` from `@mc/host` (drop duplicate) | [ ] |
+| ID | Task | Status | Notes |
+|----|------|--------|-------|
+| P1.1 | Growable write/stdout; drop spike 64 KiB caps | [x] | `jmin_get_string_alloc` + heap status/log/diff/show |
+| P1.2 | Wire durable into load **or** unexport + document deferred | [x] | engine-level only; classes off public barrel; MEMFS rebind deferred |
+| P1.3 | Narrow `@mc/core` exports; fix `docs/api-surface.json` | [x] | product face only |
+| P1.4 | Link `docs/git.md`; document `experimentalGitEngine` | [x] | index + create-options |
+| P1.5 | Wasm `size_limit` → optimized artifact; L5 NOTICE CI | [x] | `:git_engine.wasm` + `assert_ship_files` |
+| P1.6 | Async BEAM git host_call (Task.Supervisor) | [x] | remotes async; mount sync; cancel on detach |
+| P1.7 | Guest CAP_NET / attach_git demux test | [~] | async claim + fixture transport under Vm; full guest e2e residual |
+| P1.8 | Import `originAllowed` from `@mc/host` (drop duplicate) | [x] | connections + legacy orch allowlist |
 
 ---
 
 ## P2 — Designed PR tails
 
-| ID | Task | Status |
-|----|------|--------|
-| P2.1 | Push packbuilder (JS) or server read-only remotes documented | [ ] |
-| P2.2 | Thin CLI phase-A surface or document reduced CLI | [ ] |
-| P2.3 | PR7d c-shared load path **or** demote K15 language | [ ] |
-| P2.4 | LLB CI requires engine; system-git emergency + red tests | [ ] |
-| P2.5 | Sparse + pack cache production wiring | [ ] |
-| P2.6 | Server PR11: connection ref + credential splice | [ ] |
-| P2.7 | `add all=true` worktree walk | [ ] |
-| P2.8 | Shared executable golden orch vectors (TS ↔ BEAM) | [ ] |
+| ID | Task | Status | Notes |
+|----|------|--------|-------|
+| P2.1 | Push packbuilder (JS) or server read-only remotes documented | [ ] | server stub + injectible `buildPushPack`; need real or honest RO |
+| P2.2 | Thin CLI phase-A surface or document reduced CLI | [x] | docs/git.md reduced surface |
+| P2.3 | PR7d c-shared load path **or** demote K15 language | [x] | demoted in GIT.md/docs |
+| P2.4 | LLB CI requires engine; system-git emergency + red tests | [x] | fail-closed test + docs |
+| P2.5 | Sparse + pack cache production wiring | [ ] | APIs exist; wire defaults |
+| P2.6 | Server PR11: connection ref + credential splice | [x] | attach_git allow_origins/auth host-owned |
+| P2.7 | `add all=true` worktree walk | [x] | recursive stage |
+| P2.8 | Shared executable golden orch vectors (TS ↔ BEAM) | [ ] | step prose remains |
 
 ---
 
 ## P3 — PR16 polish
 
-| ID | Task | Status |
-|----|------|--------|
-| P3.1 | Single design-of-record `GIT.md`; fix K16/K20/Open-Q#10 contradictions | [ ] |
-| P3.2 | Graduate `experimentalGitEngine`; metrics | [ ] |
-| P3.3 | Product agent docs (one-mount, no objects façade, ctl flush) | [ ] |
-| P3.4 | Status Draft → accurate progress table | [ ] |
+| ID | Task | Status | Notes |
+|----|------|--------|-------|
+| P3.1 | Single design-of-record `GIT.md`; fix K16/K20 contradictions | [x] | worktree GIT.md |
+| P3.2 | Graduate `experimentalGitEngine`; metrics | [ ] | stay experimental until remotes GA criteria |
+| P3.3 | Product agent docs (one-mount, no objects façade, ctl flush) | [ ] | |
+| P3.4 | Status Draft → accurate progress table | [x] | Implementing + TASKS pointer |
 
 ---
 
 ## Explicitly deferred (not bugs)
 
 See **CRITICAL_REVIEW.md → Remaining work → Explicitly deferred**.  
-Full git-core parity, wasmi multi‑MiB VCS, gojs, Go NIF, `.git/objects` façade v1, submodules, composite Rust intercept, multi-mount post-v1, ambient credentials.
+Full git-core parity, wasmi multi‑MiB VCS, gojs, Go NIF, `.git/objects` façade v1, submodules, composite Rust intercept, multi-mount post-v1, ambient credentials, OPFS full ODB, streaming large stdout, catalog `git run`.
 
 ---
 
-## Wave 1 status
+## Wave status
 
-| Stream | Goal | Code present? | Verified green? |
-|--------|------|---------------|-----------------|
-| A | P0.4, P0.5, P0.7, P0.9 | yes | C `//memcontainers/lib/git-engine:all` (agent) + recheck abi/port |
-| B | P0.6 | yes | `//memcontainers/programs/git:all` build |
-| C | P0.8 | yes | all 5 `git_*` js_tests |
-| D | P0.1, P0.2 | yes | mix 12 passed (absolute `AGENTOS_GIT_ENGINE`) |
-| F | P0.3 pack bytes | partial | fixtures staged; full worktree e2e open |
-| E | Full report on disk | **yes** | `CRITICAL_REVIEW.md` + this tracker |
-| Serial glue | BEAM/TS `fetch.apply` args after P0.4 | yes | mix + `git_remote_test` recheck |
+| Wave | Goal | Verified |
+|------|------|----------|
+| 1 | P0.1–P0.9 (+ report) | C/JS/mix; commit `03bfa22` |
+| 2 | P1.1–P1.6, P1.8, P0.3 e2e, docs/build, P2.2–P2.4, P2.6–P2.7, P3.1/P3.4 | C + JS git_* + mix 16; path-safety residual fixed |
+| 3 | P2.1, P2.5, P2.8, P1.7 tighten, P3.2–P3.3 | in progress |
 
-**Next:** commit Wave 1 (report + P0 code); then P0.3 real pack e2e / P1.
+### Orchestrator residual fixes (post Wave 2 agents)
+- `op_branch_create` inverted `safe_relpath` / `strstr` logic → fail closed only
+- `port_mount` `normalize_rel` uses `ge_safe_relpath` (not `strstr ..`)
+- TS `checkLegacyAllowlist` uses `originAllowed` (host primitive)
 
 ---
 
@@ -133,6 +113,6 @@ Full git-core parity, wasmi multi‑MiB VCS, gojs, Go NIF, `.git/objects` façad
 
 | Date | Change |
 |------|--------|
-| 2026-07-31 | Wave 1 agents landed P0.1–P0.2, P0.4–P0.9 uncommitted; serial glue for `fetch.apply` args; report filed in `CRITICAL_REVIEW.md`. |
-| 2026-07-31 | `CRITICAL_REVIEW.md` written (full report). `TASKS.md` is tracker + map into report. |
-| 2026-07-31 | Earlier: checklist-only TASKS.md (insufficient — report was not filed). |
+| 2026-07-31 | Wave 2 agents + serial polish; pack indexer path fix; async Vm remotes; docs/build honesty |
+| 2026-07-31 | Wave 1 commit `03bfa22` P0 hardening + CRITICAL_REVIEW.md |
+| 2026-07-31 | Full CRITICAL_REVIEW.md filed; TASKS is tracker only |

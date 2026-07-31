@@ -1,6 +1,7 @@
 /* PR1: native ABI fixture — init→write→add→commit→log + dial refuse (GIT.md). */
 #include "git_engine.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +32,173 @@ static int expect_fail(ge_engine *e, const char *req, const char *needle) {
     fprintf(stderr, "expected fail(%s) for %s\n%s\n", needle ? needle : "", req, resp);
   ge_free(resp);
   return ok ? 0 : 1;
+}
+
+/* P1.1: write content larger than the old 64 KiB stack buffer. */
+static int test_large_write(ge_engine *e) {
+  const size_t content_len = 70000; /* > 64 KiB */
+  size_t cap = content_len + 128;
+  char *req = (char *)malloc(cap);
+  if (!req) {
+    fprintf(stderr, "oom large write req\n");
+    return 1;
+  }
+  int n = snprintf(req, cap, "{\"op\":\"write\",\"args\":{\"path\":\"big.txt\",\"content\":\"");
+  if (n < 0 || (size_t)n >= cap) {
+    free(req);
+    fprintf(stderr, "large write prefix overflow\n");
+    return 1;
+  }
+  size_t used = (size_t)n;
+  for (size_t i = 0; i < content_len; i++) {
+    if (used + 2 >= cap) {
+      cap *= 2;
+      char *p = (char *)realloc(req, cap);
+      if (!p) {
+        free(req);
+        fprintf(stderr, "oom grow large write\n");
+        return 1;
+      }
+      req = p;
+    }
+    req[used++] = 'A';
+  }
+  const char *tail = "\"}}";
+  size_t tlen = strlen(tail);
+  if (used + tlen + 1 >= cap) {
+    cap = used + tlen + 1;
+    char *p = (char *)realloc(req, cap);
+    if (!p) {
+      free(req);
+      return 1;
+    }
+    req = p;
+  }
+  memcpy(req + used, tail, tlen + 1);
+
+  int bad = expect_ok(e, req);
+  free(req);
+  if (bad) {
+    fprintf(stderr, "large write (>64KiB) failed\n");
+    return 1;
+  }
+
+  /* Confirm bytes on disk. */
+  char path[4096];
+  snprintf(path, sizeof(path), "%s/big.txt", ge_worktree_root(e));
+  FILE *f = fopen(path, "rb");
+  if (!f) {
+    fprintf(stderr, "big.txt missing after write\n");
+    return 1;
+  }
+  if (fseek(f, 0, SEEK_END) != 0) {
+    fclose(f);
+    return 1;
+  }
+  long sz = ftell(f);
+  fclose(f);
+  if (sz != (long)content_len) {
+    fprintf(stderr, "big.txt size %ld want %zu\n", sz, content_len);
+    return 1;
+  }
+  return 0;
+}
+
+/* P2.7: add all=true stages files created via write (incl. nested). */
+static int test_add_all(ge_engine *e) {
+  if (expect_ok(e, "{\"op\":\"write\",\"args\":{\"path\":\"all_a.txt\",\"content\":\"a\\n\"}}"))
+    return 1;
+  if (expect_ok(e, "{\"op\":\"write\",\"args\":{\"path\":\"sub/all_b.txt\",\"content\":\"b\\n\"}}"))
+    return 1;
+  if (expect_ok(e, "{\"op\":\"add\",\"args\":{\"all\":true}}"))
+    return 1;
+
+  char *resp = ge_run_json(e, "{\"op\":\"status\",\"args\":{\"short\":true}}");
+  if (!resp) {
+    fprintf(stderr, "status null after add all\n");
+    return 1;
+  }
+  int bad = (strstr(resp, "\"ok\":true") == NULL) ||
+            (strstr(resp, "all_a.txt") == NULL) ||
+            (strstr(resp, "all_b.txt") == NULL);
+  /* Staged new files should show A in index column (short status "A "). */
+  if (!bad && strstr(resp, "A ") == NULL && strstr(resp, "A?") == NULL)
+    bad = 1;
+  if (bad)
+    fprintf(stderr, "add all status unexpected:\n%s\n", resp);
+  ge_free(resp);
+  return bad ? 1 : 0;
+}
+
+/* H3: pack import total size cap 64 MiB — fail closed (size gate, no valid pack). */
+static int test_pack_cap(ge_engine *e) {
+  const size_t cap = 64u * 1024u * 1024u;
+  uint8_t dummy = 0;
+
+  /* Single-chunk oversize: len alone exceeds cap; buffer not read past gate. */
+  if (ge_import_pack(e, &dummy, cap + 1, 0) == 0) {
+    fprintf(stderr, "expected single-chunk oversize fail\n");
+    return 1;
+  }
+  const char *err = ge_last_error(e);
+  if (!err || strstr(err, "64 MiB") == NULL) {
+    fprintf(stderr, "expected 64 MiB error, got: %s\n", err ? err : "(null)");
+    return 1;
+  }
+
+  /* Multi-chunk: after any successful small append, a further chunk of size
+   * GE_PACK_MAX_BYTES must fail the accumulate gate (pack_bytes > 0). Size is
+   * checked before append, so dummy is not overrun. */
+  size_t first = 256;
+  uint8_t *chunk = (uint8_t *)calloc(1, first);
+  if (!chunk) {
+    fprintf(stderr, "oom pack chunk\n");
+    return 1;
+  }
+  /* Minimal PACK header (v2, 0 objects) — enough for indexer_append to buffer. */
+  if (first >= 12) {
+    memcpy(chunk, "PACK", 4);
+    chunk[7] = 2; /* version 2 big-endian */
+  }
+  int rc1 = ge_import_pack(e, chunk, first, 0);
+  free(chunk);
+  if (rc1 != 0) {
+    fprintf(stderr, "note: first pack append failed (%s); multi-chunk size path "
+                    "skipped (single-chunk cap ok)\n",
+            ge_last_error(e));
+    return 0;
+  }
+  if (ge_import_pack(e, &dummy, cap, 0) == 0) {
+    fprintf(stderr, "expected multi-chunk oversize fail\n");
+    return 1;
+  }
+  err = ge_last_error(e);
+  if (!err || strstr(err, "64 MiB") == NULL) {
+    fprintf(stderr, "expected multi 64 MiB error, got: %s\n", err ? err : "(null)");
+    return 1;
+  }
+  return 0;
+}
+
+/* Path safety: foo..bar allowed; ../x and a/../b rejected. */
+static int test_path_safety(ge_engine *e) {
+  if (expect_ok(e, "{\"op\":\"write\",\"args\":{\"path\":\"foo..bar\",\"content\":\"ok\\n\"}}")) {
+    fprintf(stderr, "foo..bar should be allowed\n");
+    return 1;
+  }
+  if (expect_fail(e, "{\"op\":\"write\",\"args\":{\"path\":\"../x\",\"content\":\"n\"}}", NULL)) {
+    fprintf(stderr, "../x should be rejected\n");
+    return 1;
+  }
+  if (expect_fail(e, "{\"op\":\"write\",\"args\":{\"path\":\"a/../b\",\"content\":\"n\"}}", NULL)) {
+    fprintf(stderr, "a/../b should be rejected\n");
+    return 1;
+  }
+  if (expect_fail(e, "{\"op\":\"write\",\"args\":{\"path\":\"/abs\",\"content\":\"n\"}}", NULL)) {
+    fprintf(stderr, "absolute path should be rejected\n");
+    return 1;
+  }
+  return 0;
 }
 
 int main(void) {
@@ -95,8 +263,24 @@ int main(void) {
   if (expect_fail(e, "{\"op\":\"fetch.apply\",\"args\":{}}", "fetch.apply"))
     goto fail;
 
-  /* path escape */
+  /* path escape (legacy case still rejected) */
   if (expect_fail(e, "{\"op\":\"write\",\"args\":{\"path\":\"../x\",\"content\":\"n\"}}", NULL))
+    goto fail;
+
+  /* P1.1 large write */
+  if (test_large_write(e))
+    goto fail;
+
+  /* P2.7 add all=true */
+  if (test_add_all(e))
+    goto fail;
+
+  /* Path segment safety (foo..bar ok) */
+  if (test_path_safety(e))
+    goto fail;
+
+  /* H3 pack size cap */
+  if (test_pack_cap(e))
     goto fail;
 
   ge_close(e);

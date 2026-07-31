@@ -27,6 +27,8 @@ fields—`mc.use()`. Applicability and defaults vary by runtime.
 | `sidecarHosts`       | host-alias map                           | `{}`                            | Embedded-only private sidecar authority routes       |
 | `sidecars`           | grant-descriptor map                     | `{}`                            | Portable sidecar grants attached at boot             |
 | `deterministic`      | boolean                                  | `false`                         | Repeatable guest clock and random source             |
+| `experimentalGitEngine` | boolean                               | `false`                         | Opt-in host git engine (libgit2 emcc); **experimental** |
+| `gitEngineBaseUrl`   | directory URL string                     | none                            | Dir URL of `git_engine.mjs` + `git_engine.wasm`; required when engine is on |
 
 ## `runtime`
 
@@ -173,3 +175,33 @@ not reapply layers because the snapshot already contains the selected filesystem
 
 Pins guest-visible time and randomness to repeatable sources. It is intended for testing and pure
 build steps. It does not cache or sanitize external network responses.
+
+## `experimentalGitEngine` and `gitEngineBaseUrl`
+
+**Experimental.** Opt-in host source-plane git (libgit2 + emcc wasm). Not graduated product GA;
+remotes, durability, and full porcelain remain incomplete. See [Git](./git.md).
+
+When `experimentalGitEngine` is `true`:
+
+- `gitEngineBaseUrl` is **required** — a directory URL whose contents include `git_engine.mjs` and
+  `git_engine.wasm` (from `//memcontainers/lib/git-engine:git_engine_wasm`);
+- the host loads the engine, registers MapHostCall name `"git"` for CAP_NET remotes, and mounts
+  gitfs at `/workspace/repo` unless that path is already present in `mounts`.
+
+```js
+const vm = await mc.create({
+  experimentalGitEngine: true,
+  gitEngineBaseUrl: new URL("./git-engine/", import.meta.url).href,
+  connections: [
+    {
+      ref: "github.user.work",
+      auth: { kind: "bearer", token },
+      origins: ["https://github.com"],
+    },
+  ],
+});
+```
+
+Omit both fields (or leave the flag false) for VMs that do not need host git. Remote runtime
+placement and server Port wiring are covered on [Git](./git.md); design of record is workspace-root
+`GIT.md`.

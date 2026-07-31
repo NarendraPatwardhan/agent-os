@@ -65,11 +65,6 @@ export type { RemoteBackendOptions } from "./remote.js";
 export { remoteBuild } from "./remote-build.js";
 export type { RemoteBuildOptions, RemoteBuildResult } from "./remote-build.js";
 export type { WarmDirective } from "./solve.js";
-export {
-  nodeSolvePlatform,
-  nodeSolvePlatformWithEngine,
-  defaultNodeSolvePlatform,
-} from "./solve-node.js";
 export type {
   GitSource,
   LocalEntry,
@@ -79,34 +74,16 @@ export type {
 } from "./solve.js";
 export { defaultKernel, defaultImage } from "./artifacts.js";
 export { FsContentStore, MemoryContentStore, OpfsContentStore, defaultStore } from "./store.js";
-// Host git engine (GIT.md PR3–PR10) — opt-in via experimentalGitEngine / GitEngine.load.
+// Host git engine (GIT.md) — product-facing surface only. Internals (GitBridge,
+// FixtureSmartHttp, durable classes, pack caches, connection helpers) stay on
+// `./git/*` for tests/advanced embeds; do not treat them as stable @mc/core API.
 export {
   GitEngine,
-  GitBridge,
-  createGitFsDriver,
   GitRemoteOrchestrator,
   gitHostCallHandler,
   registerGitHostCall,
-  FixtureSmartHttp,
-  FetchSmartHttp,
-  MemoryDurable,
-  OpfsDurable,
-  DiskDurable,
-  openDurable,
-  resolveGitRemote,
-  evaluatePushPolicy,
-  matchConnectionPattern,
-  spliceCredentialHeaders,
-  spliceCredentialUrl,
-  redactRemoteForLog,
-  originAllowed,
-  MemoryPackCache,
-  DiskPackCache,
-  importPackCached,
   materializeLlbGit,
   createEngineGitSource,
-  DEFAULT_WORK_ROOT,
-  normalizeRel,
 } from "./git/index.js";
 export type {
   GitRequest,
@@ -114,14 +91,7 @@ export type {
   GitEngineLoadOptions,
   GitEngineCreateOptions,
   OrchestratorOptions,
-  RefAdvertisement,
-  SmartHttpTransport,
-  PushCommand,
-  ReceiveStatus,
   DurableBackend,
-  GitRemoteBinding,
-  ResolveRemoteOptions,
-  PackCache,
 } from "./git/index.js";
 export {
   defaultTemplateFill,

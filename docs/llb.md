@@ -65,6 +65,11 @@ const source = llb.git("https://github.com/acme/app.git", {
 Pinned commits are cache-sound. Mutable branches are resolved during each solve and their resolved
 commit becomes part of the cache key.
 
+On Node/Bun the default solve path is **host git engine first** (`MC_GIT_ENGINE_DIR` must point at
+`git_engine.mjs` + `git_engine.wasm`). Ambient system `git` is **not** used unless the emergency
+escape hatch `MC_GIT_USE_SYSTEM=1` is set. Without engine env and without that hatch, solve fails
+closed. See [Git](./git.md).
+
 ## Filesystem nodes
 
 Every filesystem constructor returns a new `BuildState`; it does not mutate the input state.

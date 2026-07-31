@@ -46,15 +46,30 @@ async function main() {
     throw new Error(`engine must refuse dial: ${JSON.stringify(dial)}`);
   }
 
-  // Durable memory backend round-trip
+  // Durable: opaque store round-trip + engine-level attach (no MEMFS rebind)
   const dur = new MemoryDurable("t");
   await dur.save(new TextEncoder().encode("snap"));
   const loaded = await dur.load();
   if (!loaded || new TextDecoder().decode(loaded) !== "snap") {
     throw new Error("MemoryDurable failed");
   }
+  const engDurable = await GitEngine.load({
+    baseUrl: pathToFileURL(dir.endsWith("/") ? dir : dir + "/").href,
+    durable: dur,
+  });
+  const engSnap = engDurable.durableSnapshot;
+  if (!engSnap || new TextDecoder().decode(engSnap) !== "snap") {
+    throw new Error("GitEngine.load must surface durable snapshot engine-level only");
+  }
+  await engDurable.checkpoint(new TextEncoder().encode("snap2"));
+  const afterCp = await dur.load();
+  if (!afterCp || new TextDecoder().decode(afterCp) !== "snap2") {
+    throw new Error("checkpoint must persist opaque bytes");
+  }
+  await engDurable.close();
 
-  // Empty pack orchestrator path with fixture (list-refs only — pack may be empty)
+  // Empty pack orchestrator path with fixture: list-refs must work; clone must fail closed
+  // (no real objects) — do not soft-accept success.
   const http = new FixtureSmartHttp();
   const hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   http.add(
@@ -63,15 +78,18 @@ async function main() {
     new Uint8Array(0),
   );
   const orch = new GitRemoteOrchestrator(eng, { http });
-  // Empty pack import may fail clone.apply without real objects — still exercises ListRefs + import path.
   const r = await orch.handle({
     op: "clone",
     args: { url: "https://example.com/demo.git" },
   });
-  // Accept either success (if engine tolerates empty pack) or import/apply failure after list-refs.
   if (r.ok === undefined) throw new Error("no response");
   if (String(r.stderr || "").includes("list-refs failed")) {
     throw new Error(`list-refs should use fixture: ${JSON.stringify(r)}`);
+  }
+  if (r.ok) {
+    throw new Error(
+      `empty pack clone must fail closed (no objects), got success: ${JSON.stringify(r)}`,
+    );
   }
 
   // MapHostCall-shaped handler

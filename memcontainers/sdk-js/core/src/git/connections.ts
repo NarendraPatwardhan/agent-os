@@ -4,16 +4,20 @@
  * Guest never sees secrets. CLI may pass public `url` and/or `connection` /
  * `agentos` ref. Credential splice is host-only (smart-HTTP headers).
  *
- * Origin authorization mirrors `@mc/host` `originAllowed` (canonical http(s)
- * origin equality; empty origins = fail closed).
+ * Origin authorization uses `@mc/host` `originAllowed` (canonical http(s)
+ * origin equality; empty origins = fail closed via `.some` on empty list).
  */
 
+import { originAllowed } from "@mc/host";
 import type {
   ConnectionAuth,
   ConnectionDefinition,
   ConnectionPolicyAction,
   ConnectionPolicyRule,
 } from "../types.js";
+
+/** Re-export host primitive so git call sites share one definition with catalog/splice. */
+export { originAllowed };
 
 export interface GitRemoteBinding {
   /** Public locator without userinfo (no secrets). */
@@ -38,7 +42,11 @@ function fail(
   return { ok: false, code, stderr };
 }
 
-/** Normalize http(s) URL to origin; reject userinfo / non-http(s). */
+/**
+ * Git-specific public URL origin: http(s) only, no userinfo.
+ * Host does not export its private `requestOrigin`; keep this thin wrapper for
+ * locator validation (same rules as host parse).
+ */
 export function requestOrigin(value: string): string | null {
   try {
     const url = new URL(value);
@@ -53,20 +61,6 @@ export function requestOrigin(value: string): string | null {
   } catch {
     return null;
   }
-}
-
-/**
- * Same semantics as `@mc/host` originAllowed: canonical origin equality only.
- * Empty allowlist → deny (fail closed).
- */
-export function originAllowed(
-  allowedOrigins: readonly string[],
-  url: string,
-): boolean {
-  if (!allowedOrigins.length) return false;
-  const target = requestOrigin(url);
-  if (target === null) return false;
-  return allowedOrigins.some((origin) => requestOrigin(origin) === target);
 }
 
 /** Public git locator: http(s) only, no userinfo. Keeps path for repo URLs. */

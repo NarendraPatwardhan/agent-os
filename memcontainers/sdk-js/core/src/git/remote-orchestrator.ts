@@ -7,6 +7,7 @@ import type { ConnectionDefinition, ConnectionPolicyRule } from "../types.js";
 import type { GitEngine } from "./engine.js";
 import type { GitRequest, GitResponse } from "./types.js";
 import {
+  originAllowed,
   redactRemoteForLog,
   resolveGitRemote,
   type ResolveRemoteOptions,
@@ -133,20 +134,16 @@ export class GitRemoteOrchestrator {
   }
 
   private checkLegacyAllowlist(url: string): GitResponse | null {
+    // Empty list = no legacy allowlist (connection-bound policy still applies).
     if (this.allowOrigins.length === 0) return null;
-    try {
-      const u = new URL(url);
-      const ok = this.allowOrigins.some((o) => o === url || o === u.origin);
-      if (!ok) {
-        return {
-          ok: false,
-          code: 1,
-          stdout: "",
-          stderr: `git: origin not allowlisted: ${url}\n`,
-        };
-      }
-    } catch {
-      return { ok: false, code: 1, stdout: "", stderr: "git: bad remote url\n" };
+    // Same primitive as @mc/host / resolveGitRemote (canonical origin equality).
+    if (!originAllowed(this.allowOrigins, url)) {
+      return {
+        ok: false,
+        code: 1,
+        stdout: "",
+        stderr: `git: origin not allowlisted: ${url}\n`,
+      };
     }
     return null;
   }

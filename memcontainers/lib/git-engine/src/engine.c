@@ -1,10 +1,14 @@
 /* Host git engine: Run ABI over libgit2 (AgentOS spike substrate). */
 
 #include "git_engine.h"
+#include "ge_engine_priv.h"
 #include "json_min.h"
 
 #include "git2.h"
 
+#include <dirent.h>
+#include <stdarg.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -12,16 +16,6 @@
 #include <time.h>
 
 #define GE_VERSION "agentos-git-engine/0.1.0+libgit2-1.9.2"
-
-struct ge_engine {
-  char root[4096];
-  git_repository *repo;
-  char err[512];
-  /* Streaming pack indexer (network-free apply path). */
-  git_indexer *indexer;
-  git_odb *odb;
-  git_indexer_progress progress;
-};
 
 void ge_set_err(ge_engine *e, const char *msg) {
   if (!e)
@@ -37,19 +31,78 @@ void ge_set_err_git(ge_engine *e, const char *prefix) {
     ge_set_err(e, prefix);
 }
 
+/* Segment-based relative path check: reject absolute, empty segments, "." / ".."
+ * segments, and backslash. Allows names like "foo..bar" (not a ".." segment). */
 int ge_safe_relpath(const char *path) {
   if (!path || !*path)
     return 0;
-  if (path[0] == '/')
+  if (path[0] == '/' || path[0] == '\\')
     return 0;
-  if (strstr(path, "..") != NULL)
-    return 0;
+  const char *p = path;
+  while (*p) {
+    /* Start of segment. */
+    if (*p == '/' || *p == '\\')
+      return 0; /* leading separator or empty segment from consecutive seps */
+    const char *seg = p;
+    while (*p && *p != '/' && *p != '\\')
+      p++;
+    size_t seglen = (size_t)(p - seg);
+    if (seglen == 0)
+      return 0;
+    if (seglen == 1 && seg[0] == '.')
+      return 0;
+    if (seglen == 2 && seg[0] == '.' && seg[1] == '.')
+      return 0;
+    if (*p == '/' || *p == '\\') {
+      p++;
+      if (!*p)
+        return 0; /* trailing slash → empty final segment */
+    }
+  }
   return 1;
+}
+
+/* Growable string builder (status/log stdout). */
+static int sb_ensure(char **buf, size_t *cap, size_t need) {
+  if (need <= *cap)
+    return 0;
+  size_t ncap = *cap ? *cap : 4096;
+  while (ncap < need) {
+    if (ncap > (SIZE_MAX / 2))
+      return -1;
+    ncap *= 2;
+  }
+  char *p = (char *)realloc(*buf, ncap);
+  if (!p)
+    return -1;
+  *buf = p;
+  *cap = ncap;
+  return 0;
+}
+
+static int sb_printf(char **buf, size_t *len, size_t *cap, const char *fmt, ...) {
+  for (;;) {
+    size_t avail = (*cap > *len) ? (*cap - *len) : 0;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf((*buf ? *buf + *len : NULL), avail, fmt, ap);
+    va_end(ap);
+    if (n < 0)
+      return -1;
+    if ((size_t)n + 1 <= avail) {
+      *len += (size_t)n;
+      return 0;
+    }
+    if (sb_ensure(buf, cap, *len + (size_t)n + 1) != 0)
+      return -1;
+  }
 }
 
 void ge_join_path(char *out, size_t cap, const char *root, const char *rel) {
   snprintf(out, cap, "%s/%s", root, rel);
 }
+
+static void import_pack_reset(ge_engine *e);
 
 #define set_err ge_set_err
 #define set_err_git ge_set_err_git
@@ -122,14 +175,7 @@ ge_engine *ge_open(const char *worktree_root) {
 void ge_close(ge_engine *e) {
   if (!e)
     return;
-  if (e->indexer) {
-    git_indexer_free(e->indexer);
-    e->indexer = NULL;
-  }
-  if (e->odb) {
-    git_odb_free(e->odb);
-    e->odb = NULL;
-  }
+  import_pack_reset(e);
   if (e->repo) {
     git_repository_free(e->repo);
     e->repo = NULL;
@@ -150,8 +196,8 @@ int ge_ensure_repo(ge_engine *e) {
 
 /* From engine_ops_extra.c */
 int op_rm(ge_engine *e, const char *args);
-int op_diff(ge_engine *e, char *out, size_t out_cap);
-int op_show(ge_engine *e, const char *args, char *out, size_t out_cap);
+int op_diff(ge_engine *e, char **out_owned);
+int op_show(ge_engine *e, const char *args, char **out_owned);
 int op_reset(ge_engine *e, const char *args);
 int op_tag(ge_engine *e, const char *args);
 int op_config(ge_engine *e, const char *args, char *out, size_t out_cap);
@@ -177,22 +223,31 @@ static int op_init(ge_engine *e) {
 
 static int op_write(ge_engine *e, const char *args) {
   char path[1024];
-  char content[65536];
   if (jmin_get_string(args, "path", path, sizeof(path)) != 0 || !safe_relpath(path)) {
     set_err(e, "write: bad path");
     return -1;
   }
-  if (jmin_get_string(args, "content", content, sizeof(content)) != 0) {
+  char *content = NULL;
+  size_t content_len = 0;
+  int gsrc = jmin_get_string_alloc(args, "content", &content, &content_len, GE_WRITE_MAX_BYTES);
+  if (gsrc == -2) {
+    set_err(e, "write: content exceeds 16 MiB cap");
+    return -1;
+  }
+  if (gsrc == -3) {
+    set_err(e, "write: out of memory");
+    return -1;
+  }
+  if (gsrc != 0) {
     set_err(e, "write: missing content");
     return -1;
   }
   char full[4096];
   join_path(full, sizeof(full), e->root, path);
-  /* mkdir -p parent (one level only for spike; multi-level loop) */
+  /* mkdir -p parent (multi-level). */
   char *slash = strrchr(full, '/');
   if (slash && slash != full) {
     *slash = '\0';
-    /* create nested dirs roughly */
     char tmp[4096];
     snprintf(tmp, sizeof(tmp), "%s", full);
     for (char *p = tmp + 1; *p; p++) {
@@ -207,16 +262,18 @@ static int op_write(ge_engine *e, const char *args) {
   }
   FILE *f = fopen(full, "wb");
   if (!f) {
+    free(content);
     set_err(e, "write: open failed");
     return -1;
   }
-  size_t n = strlen(content);
-  if (fwrite(content, 1, n, f) != n) {
+  if (content_len > 0 && fwrite(content, 1, content_len, f) != content_len) {
     fclose(f);
+    free(content);
     set_err(e, "write: short write");
     return -1;
   }
   fclose(f);
+  free(content);
   return 0;
 }
 
@@ -273,6 +330,75 @@ static int index_add_file(ge_engine *e, git_index *index, const char *rel) {
   return 0;
 }
 
+/* Recursive worktree walk for add all=true. rel is worktree-relative ("" = root). */
+static int walk_add(ge_engine *e, git_index *index, const char *rel) {
+  char full[4096];
+  if (rel && rel[0])
+    join_path(full, sizeof(full), e->root, rel);
+  else
+    snprintf(full, sizeof(full), "%s", e->root);
+
+  DIR *d = opendir(full);
+  if (!d) {
+    set_err(e, "add: cannot open worktree directory");
+    return -1;
+  }
+  int rc = 0;
+  struct dirent *de;
+  while ((de = readdir(d)) != NULL) {
+    const char *name = de->d_name;
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0)
+      continue;
+    /* Skip .git at worktree root (and any nested .git). */
+    if (strcmp(name, ".git") == 0)
+      continue;
+
+    char child_rel[2048];
+    if (rel && rel[0]) {
+      if ((size_t)snprintf(child_rel, sizeof(child_rel), "%s/%s", rel, name) >=
+          sizeof(child_rel)) {
+        set_err(e, "add: path too long");
+        rc = -1;
+        break;
+      }
+    } else {
+      if ((size_t)snprintf(child_rel, sizeof(child_rel), "%s", name) >= sizeof(child_rel)) {
+        set_err(e, "add: path too long");
+        rc = -1;
+        break;
+      }
+    }
+    if (!safe_relpath(child_rel)) {
+      set_err(e, "add: bad path during walk");
+      rc = -1;
+      break;
+    }
+
+    char child_full[4096];
+    join_path(child_full, sizeof(child_full), e->root, child_rel);
+    struct stat st;
+    if (lstat(child_full, &st) != 0) {
+      set_err(e, "add: lstat failed");
+      rc = -1;
+      break;
+    }
+    if (S_ISDIR(st.st_mode)) {
+      if (walk_add(e, index, child_rel) != 0) {
+        rc = -1;
+        break;
+      }
+    } else if (S_ISREG(st.st_mode)) {
+      if (index_add_file(e, index, child_rel) != 0) {
+        rc = -1;
+        break;
+      }
+    }
+    /* Skip symlinks and special files. */
+  }
+  closedir(d);
+  return rc;
+}
+
 static int op_add(ge_engine *e, const char *args) {
   if (ensure_repo(e) != 0)
     return -1;
@@ -286,13 +412,11 @@ static int op_add(ge_engine *e, const char *args) {
   }
   int rc = 0;
   if (all) {
-    /* Simple worktree walk is deferred; require explicit paths on Wasm. */
-    set_err(e, "add: all=true not supported in this spike (pass path)");
-    rc = -1;
+    rc = walk_add(e, index, "");
   } else if (jmin_get_string(args, "path", path, sizeof(path)) == 0) {
     rc = index_add_file(e, index, path);
   } else {
-    set_err(e, "add: provide path");
+    set_err(e, "add: provide path or all=true");
     rc = -1;
   }
   if (rc == 0 && git_index_write(index) != 0) {
@@ -380,7 +504,10 @@ static int op_commit(ge_engine *e, const char *args, char *hash_out, size_t hash
   return 0;
 }
 
-static int op_status(ge_engine *e, int short_fmt, char *out, size_t out_cap) {
+/* *out_owned is malloc'd on success (possibly empty string); caller frees. */
+static int op_status(ge_engine *e, int short_fmt, char **out_owned) {
+  if (out_owned)
+    *out_owned = NULL;
   if (ensure_repo(e) != 0)
     return -1;
   git_status_list *list = NULL;
@@ -392,22 +519,24 @@ static int op_status(ge_engine *e, int short_fmt, char *out, size_t out_cap) {
     set_err_git(e, "status");
     return -1;
   }
+  char *buf = NULL;
+  size_t len = 0, cap = 0;
   size_t n = git_status_list_entrycount(list);
-  size_t used = 0;
-  out[0] = '\0';
+  int fail = 0;
   if (!short_fmt) {
-    used += (size_t)snprintf(out + used, out_cap - used, "On branch ");
     const char *branch = NULL;
     git_reference *head = NULL;
     if (git_repository_head(&head, e->repo) == 0) {
       branch = git_reference_shorthand(head);
-      used += (size_t)snprintf(out + used, out_cap - used, "%s\n", branch ? branch : "HEAD");
+      if (sb_printf(&buf, &len, &cap, "On branch %s\n", branch ? branch : "HEAD") != 0)
+        fail = 1;
       git_reference_free(head);
     } else {
-      used += (size_t)snprintf(out + used, out_cap - used, "(unknown)\n");
+      if (sb_printf(&buf, &len, &cap, "On branch (unknown)\n") != 0)
+        fail = 1;
     }
   }
-  for (size_t i = 0; i < n && used + 8 < out_cap; i++) {
+  for (size_t i = 0; !fail && i < n; i++) {
     const git_status_entry *ent = git_status_byindex(list, i);
     const char *path = ent->head_to_index ? ent->head_to_index->new_file.path
                        : ent->index_to_workdir ? ent->index_to_workdir->new_file.path
@@ -425,19 +554,39 @@ static int op_status(ge_engine *e, int short_fmt, char *out, size_t out_cap) {
       xy[1] = 'M';
     else if (ent->status & GIT_STATUS_WT_DELETED)
       xy[1] = 'D';
-    if (short_fmt)
-      used += (size_t)snprintf(out + used, out_cap - used, "%c%c %s\n", xy[0], xy[1], path);
-    else
-      used += (size_t)snprintf(out + used, out_cap - used, "  %c%c %s\n", xy[0], xy[1], path);
+    if (short_fmt) {
+      if (sb_printf(&buf, &len, &cap, "%c%c %s\n", xy[0], xy[1], path) != 0)
+        fail = 1;
+    } else {
+      if (sb_printf(&buf, &len, &cap, "  %c%c %s\n", xy[0], xy[1], path) != 0)
+        fail = 1;
+    }
   }
-  if (n == 0 && !short_fmt)
-    used += (size_t)snprintf(out + used, out_cap - used, "nothing to commit, working tree clean\n");
+  if (!fail && n == 0 && !short_fmt) {
+    if (sb_printf(&buf, &len, &cap, "nothing to commit, working tree clean\n") != 0)
+      fail = 1;
+  }
   git_status_list_free(list);
-  (void)used;
+  if (fail) {
+    free(buf);
+    set_err(e, "status: out of memory");
+    return -1;
+  }
+  if (!buf) {
+    buf = (char *)calloc(1, 1);
+    if (!buf) {
+      set_err(e, "status: out of memory");
+      return -1;
+    }
+  }
+  *out_owned = buf;
   return 0;
 }
 
-static int op_log(ge_engine *e, const char *args, char *out, size_t out_cap) {
+/* *out_owned is malloc'd on success; caller frees. */
+static int op_log(ge_engine *e, const char *args, char **out_owned) {
+  if (out_owned)
+    *out_owned = NULL;
   if (ensure_repo(e) != 0)
     return -1;
   int64_t max_count = 10;
@@ -456,22 +605,37 @@ static int op_log(ge_engine *e, const char *args, char *out, size_t out_cap) {
     set_err_git(e, "log: push_head");
     return -1;
   }
-  out[0] = '\0';
-  size_t used = 0;
+  char *buf = NULL;
+  size_t len = 0, cap = 0;
   git_oid oid;
   int64_t count = 0;
-  while (count < max_count && git_revwalk_next(&oid, walk) == 0) {
+  int fail = 0;
+  while (!fail && count < max_count && git_revwalk_next(&oid, walk) == 0) {
     git_commit *c = NULL;
     if (git_commit_lookup(&c, e->repo, &oid) != 0)
       continue;
     char hex[GIT_OID_HEXSZ + 1];
     git_oid_tostr(hex, sizeof(hex), &oid);
     const char *msg = git_commit_summary(c);
-    used += (size_t)snprintf(out + used, out_cap - used, "%s %s\n", hex, msg ? msg : "");
+    if (sb_printf(&buf, &len, &cap, "%s %s\n", hex, msg ? msg : "") != 0)
+      fail = 1;
     git_commit_free(c);
     count++;
   }
   git_revwalk_free(walk);
+  if (fail) {
+    free(buf);
+    set_err(e, "log: out of memory");
+    return -1;
+  }
+  if (!buf) {
+    buf = (char *)calloc(1, 1);
+    if (!buf) {
+      set_err(e, "log: out of memory");
+      return -1;
+    }
+  }
+  *out_owned = buf;
   return 0;
 }
 
@@ -517,12 +681,10 @@ static int op_branch_list(ge_engine *e, char *out, size_t out_cap) {
 static int op_branch_create(ge_engine *e, const char *name) {
   if (ensure_repo(e) != 0)
     return -1;
+  /* Hierarchical names (feature/x) OK; reject empty / . / .. segments. */
   if (!name || !*name || !safe_relpath(name)) {
-    /* branch names aren't paths but reject .. */
-    if (!name || !*name || strstr(name, "..")) {
-      set_err(e, "branch: bad name");
-      return -1;
-    }
+    set_err(e, "branch: bad name");
+    return -1;
   }
   git_oid oid;
   if (git_reference_name_to_id(&oid, e->repo, "HEAD") != 0) {
@@ -578,6 +740,22 @@ static int op_checkout(ge_engine *e, const char *name) {
 
 /* --- network-free apply path --- */
 
+/* Drop pack indexer state after success or poison (fail closed). */
+static void import_pack_reset(ge_engine *e) {
+  if (!e)
+    return;
+  if (e->indexer) {
+    git_indexer_free(e->indexer);
+    e->indexer = NULL;
+  }
+  if (e->odb) {
+    git_odb_free(e->odb);
+    e->odb = NULL;
+  }
+  e->pack_bytes = 0;
+  memset(&e->progress, 0, sizeof(e->progress));
+}
+
 int ge_import_pack(ge_engine *e, const uint8_t *chunk, size_t len, int final) {
   if (!e) {
     return -1;
@@ -585,17 +763,31 @@ int ge_import_pack(ge_engine *e, const uint8_t *chunk, size_t len, int final) {
   if (ensure_repo(e) != 0)
     return -1;
 
+  /* Size gate before any append — works on fake chunks (no pack parse needed). */
+  if (chunk && len > 0) {
+    if (len > GE_PACK_MAX_BYTES || e->pack_bytes > GE_PACK_MAX_BYTES - len) {
+      import_pack_reset(e);
+      set_err(e, "import_pack: exceeds 64 MiB cap");
+      return -1;
+    }
+  }
+
   if (!e->indexer) {
     if (git_repository_odb(&e->odb, e->repo) != 0) {
       set_err_git(e, "import_pack: odb");
+      import_pack_reset(e);
       return -1;
     }
-    /* Write into .git/objects via indexer with append_odb */
-    char objects[4096];
-    snprintf(objects, sizeof(objects), "%s/.git/objects", e->root);
+    /* libgit2 indexer path is the pack *directory* (.git/objects/pack), not
+     * .git/objects — writing into objects/ leaves pack-*.{pack,idx} where the
+     * ODB never discovers them (refs.import / clone.apply then fail closed). */
+    char packdir[4096];
+    snprintf(packdir, sizeof(packdir), "%s/.git/objects/pack", e->root);
+    mkdir(packdir, 0755);
     git_indexer_options iopts = GIT_INDEXER_OPTIONS_INIT;
-    if (git_indexer_new(&e->indexer, objects, 0, e->odb, &iopts) != 0) {
+    if (git_indexer_new(&e->indexer, packdir, 0, e->odb, &iopts) != 0) {
       set_err_git(e, "import_pack: indexer");
+      import_pack_reset(e);
       return -1;
     }
     memset(&e->progress, 0, sizeof(e->progress));
@@ -604,17 +796,19 @@ int ge_import_pack(ge_engine *e, const uint8_t *chunk, size_t len, int final) {
   if (chunk && len > 0) {
     if (git_indexer_append(e->indexer, chunk, len, &e->progress) != 0) {
       set_err_git(e, "import_pack: append");
+      import_pack_reset(e);
       return -1;
     }
+    e->pack_bytes += len;
   }
 
   if (final) {
     if (git_indexer_commit(e->indexer, &e->progress) != 0) {
       set_err_git(e, "import_pack: commit");
+      import_pack_reset(e);
       return -1;
     }
-    git_indexer_free(e->indexer);
-    e->indexer = NULL;
+    import_pack_reset(e);
   }
   return 0;
 }
@@ -814,18 +1008,24 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
   if (strcmp(op, "status") == 0) {
     int short_fmt = 0;
     (void)jmin_get_bool(args, "short", &short_fmt);
-    char buf[16384];
-    if (op_status(e, short_fmt, buf, sizeof(buf)) != 0)
+    char *buf = NULL;
+    if (op_status(e, short_fmt, &buf) != 0) {
+      free(buf);
       return resp_err(1, e->err);
-    char *r = resp_ok(buf, NULL);
+    }
+    char *r = resp_ok(buf ? buf : "", NULL);
+    free(buf);
     return r ? r : ge_static_oom;
   }
 
   if (strcmp(op, "log") == 0) {
-    char buf[16384];
-    if (op_log(e, args, buf, sizeof(buf)) != 0)
+    char *buf = NULL;
+    if (op_log(e, args, &buf) != 0) {
+      free(buf);
       return resp_err(1, e->err);
-    char *r = resp_ok(buf, NULL);
+    }
+    char *r = resp_ok(buf ? buf : "", NULL);
+    free(buf);
     return r ? r : ge_static_oom;
   }
 
@@ -876,17 +1076,23 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     return resp_ok("", NULL);
   }
   if (strcmp(op, "diff") == 0) {
-    char buf[65536];
-    if (op_diff(e, buf, sizeof(buf)) != 0)
+    char *buf = NULL;
+    if (op_diff(e, &buf) != 0) {
+      free(buf);
       return resp_err(1, e->err);
-    char *r = resp_ok(buf, NULL);
+    }
+    char *r = resp_ok(buf ? buf : "", NULL);
+    free(buf);
     return r ? r : ge_static_oom;
   }
   if (strcmp(op, "show") == 0) {
-    char buf[16384];
-    if (op_show(e, args, buf, sizeof(buf)) != 0)
+    char *buf = NULL;
+    if (op_show(e, args, &buf) != 0) {
+      free(buf);
       return resp_err(1, e->err);
-    char *r = resp_ok(buf, NULL);
+    }
+    char *r = resp_ok(buf ? buf : "", NULL);
+    free(buf);
     return r ? r : ge_static_oom;
   }
   if (strcmp(op, "reset") == 0) {

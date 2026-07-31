@@ -1,5 +1,8 @@
 /* Additional Run ops for GIT_DESIGN phase A + apply helpers. */
+#include "git_engine.h"
+#include "ge_engine_priv.h"
 #include "json_min.h"
+
 #include "git2.h"
 
 #include <stdio.h>
@@ -7,22 +10,6 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-/* Shared with engine.c via external linkage of helpers we re-declare. */
-typedef struct ge_engine {
-  char root[4096];
-  git_repository *repo;
-  char err[512];
-  git_indexer *indexer;
-  git_odb *odb;
-  git_indexer_progress progress;
-} ge_engine;
-
-void ge_set_err(ge_engine *e, const char *msg);
-void ge_set_err_git(ge_engine *e, const char *prefix);
-int ge_ensure_repo(ge_engine *e);
-int ge_safe_relpath(const char *path);
-void ge_join_path(char *out, size_t cap, const char *root, const char *rel);
 
 int op_rm(ge_engine *e, const char *args) {
   if (ge_ensure_repo(e) != 0)
@@ -50,7 +37,10 @@ int op_rm(ge_engine *e, const char *args) {
   return 0;
 }
 
-int op_diff(ge_engine *e, char *out, size_t out_cap) {
+/* *out_owned is malloc'd on success; caller frees. Never truncates. */
+int op_diff(ge_engine *e, char **out_owned) {
+  if (out_owned)
+    *out_owned = NULL;
   if (ge_ensure_repo(e) != 0)
     return -1;
   git_diff *diff = NULL;
@@ -65,13 +55,27 @@ int op_diff(ge_engine *e, char *out, size_t out_cap) {
     ge_set_err_git(e, "diff: to_buf");
     return -1;
   }
-  snprintf(out, out_cap, "%s", buf.ptr ? buf.ptr : "");
+  size_t n = buf.ptr ? buf.size : 0;
+  char *out = (char *)malloc(n + 1);
+  if (!out) {
+    git_buf_dispose(&buf);
+    git_diff_free(diff);
+    ge_set_err(e, "diff: out of memory");
+    return -1;
+  }
+  if (n > 0)
+    memcpy(out, buf.ptr, n);
+  out[n] = '\0';
   git_buf_dispose(&buf);
   git_diff_free(diff);
+  *out_owned = out;
   return 0;
 }
 
-int op_show(ge_engine *e, const char *args, char *out, size_t out_cap) {
+/* *out_owned is malloc'd on success; caller frees. Never truncates. */
+int op_show(ge_engine *e, const char *args, char **out_owned) {
+  if (out_owned)
+    *out_owned = NULL;
   if (ge_ensure_repo(e) != 0)
     return -1;
   char rev[256] = "HEAD";
@@ -91,9 +95,25 @@ int op_show(ge_engine *e, const char *args, char *out, size_t out_cap) {
   git_oid_tostr(hex, sizeof(hex), git_commit_id(c));
   const git_signature *a = git_commit_author(c);
   const char *msg = git_commit_message(c);
-  snprintf(out, out_cap, "commit %s\nAuthor: %s <%s>\n\n%s\n", hex,
-           a ? a->name : "?", a ? a->email : "?", msg ? msg : "");
+  const char *an = a ? a->name : "?";
+  const char *ae = a ? a->email : "?";
+  const char *m = msg ? msg : "";
+  /* Exact size: avoid fixed-buffer truncation of large commit messages. */
+  int need = snprintf(NULL, 0, "commit %s\nAuthor: %s <%s>\n\n%s\n", hex, an, ae, m);
+  if (need < 0) {
+    git_object_free(obj);
+    ge_set_err(e, "show: format");
+    return -1;
+  }
+  char *out = (char *)malloc((size_t)need + 1);
+  if (!out) {
+    git_object_free(obj);
+    ge_set_err(e, "show: out of memory");
+    return -1;
+  }
+  snprintf(out, (size_t)need + 1, "commit %s\nAuthor: %s <%s>\n\n%s\n", hex, an, ae, m);
   git_object_free(obj);
+  *out_owned = out;
   return 0;
 }
 

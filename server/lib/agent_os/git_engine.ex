@@ -88,7 +88,10 @@ defmodule AgentOS.GitEngine do
   * `name == "git"` → **BEAM** `AgentOS.Git.Orchestrator` (HTTPS) + Port apply
   * `name` equals `mount_path` → binary MOUNT_OP type 4
 
-  Options (keyword): `:transport`, `:auth` (passed to orch). Secrets stay in BEAM.
+  Options (keyword, host-owned — never trust guest body for secrets/policy):
+  * `:transport` — injectable SmartHttp transport (tests)
+  * `:auth` — `%{kind: :none | :bearer | :header, ...}`
+  * `:allowed_origins` / allowlist — fail-closed product remotes
   """
   @spec handle_host_call(pid(), String.t(), binary(), keyword()) ::
           {:ok, binary()} | {:error, term()}

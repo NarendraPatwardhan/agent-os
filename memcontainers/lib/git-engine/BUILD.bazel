@@ -1,9 +1,11 @@
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@emsdk//emscripten_toolchain:wasm_rules.bzl", "wasm_cc_binary")
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_shared_library", "cc_test")
 load("//bazel:force_opt.bzl", "force_opt")
 load("//bazel:pick_file.bzl", "pick_file")
 load("//bazel:wasm_opt.bzl", "wasm_opt")
 load("//bazel/tools/size:defs.bzl", "size_limit")
+load(":ship_gate.bzl", "assert_ship_files")
 
 # Host-side git engine (GIT.md PR0–PR2): libgit2 + ge_* Run ABI.
 package(default_visibility = ["//visibility:public"])
@@ -38,6 +40,7 @@ cc_library(
     srcs = [
         "src/engine.c",
         "src/engine_ops_extra.c",
+        "src/ge_engine_priv.h",
         "src/json_min.c",
         "src/json_min.h",
     ],
@@ -259,9 +262,28 @@ filegroup(
     ],
 )
 
-# Soft gate ≤2 MiB (GIT.md); monorepo B5 size_limit rule.
+# Soft gate ≤2 MiB on the optimized product wasm (genrule out of :git_engine_wasm_file).
+# Label form — same pattern as //memcontainers/programs/git:git_size_limit (file = ":git").
+# `bazel test //memcontainers/lib/git-engine:git_engine_wasm_size_limit` builds the wasm chain.
 size_limit(
     name = "git_engine_wasm_size_limit",
-    file = "git_engine.wasm",
+    file = ":git_engine.wasm",
     max_bytes = 2 * 1024 * 1024,
+)
+
+# L5 fail-closed: ship filegroup must keep NOTICE + upstream COPYING/AUTHORS.
+# Analysis-only (cheap) — does not force emcc; drops from :git_engine_wasm fail analysis.
+assert_ship_files(
+    name = "git_engine_wasm_l5_notices_check",
+    ship = ":git_engine_wasm",
+    required = [
+        "NOTICE",
+        "COPYING",
+        "AUTHORS",
+    ],
+)
+
+build_test(
+    name = "git_engine_wasm_l5_notices",
+    targets = [":git_engine_wasm_l5_notices_check"],
 )

@@ -5,6 +5,13 @@
 #include <stdint.h>
 
 int jmin_get_string(const char *json, const char *key, char *out, size_t out_cap);
+/* Heap-allocate decoded string. max_bytes is the decoded-byte cap (not JSON span).
+ * On success: returns 0, *out is malloc'd (caller free()s), *out_len is set if non-NULL.
+ * On miss/invalid: -1 and *out = NULL.
+ * On oversize: -2 and *out = NULL (fail closed, never truncate).
+ * On OOM: -3 and *out = NULL. */
+int jmin_get_string_alloc(const char *json, const char *key, char **out, size_t *out_len,
+                          size_t max_bytes);
 int jmin_get_bool(const char *json, const char *key, int *out);
 int jmin_get_int64(const char *json, const char *key, int64_t *out);
 const char *jmin_args_object(const char *json);

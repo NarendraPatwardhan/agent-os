@@ -341,3 +341,23 @@ js_test(
     timeout = "short",
 )
 
+# P2.4 — engine-first llb.git; no ambient system git without MC_GIT_USE_SYSTEM=1.
+mc_ts_project(
+    name = "git_llb_fail_closed_test_lib",
+    srcs = ["test/git_llb_fail_closed.test.ts"],
+    deps = [
+        ":lib",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+js_test(
+    name = "git_llb_fail_closed_test",
+    data = [
+        "package.json",
+        ":git_llb_fail_closed_test_lib",
+    ],
+    entry_point = "test/git_llb_fail_closed.test.js",
+    timeout = "short",
+)
+

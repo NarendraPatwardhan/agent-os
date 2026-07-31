@@ -6,6 +6,7 @@
  */
 
 #include "ge_port.h"
+#include "ge_engine_priv.h"
 #include "git_engine.h"
 #include "json_min.h"
 
@@ -96,7 +97,8 @@ static int normalize_rel(const char *path, char *out, size_t cap) {
     return -1;
   while (*path == '/')
     path++;
-  if (strstr(path, "..") != NULL)
+  /* Segment-based: allow "foo..bar", reject ".." / "../x" / "a/../b". */
+  if (!ge_safe_relpath(path))
     return -1;
   if (strlen(path) >= cap)
     return -1;

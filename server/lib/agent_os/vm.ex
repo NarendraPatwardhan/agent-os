@@ -63,6 +63,14 @@ defmodule AgentOS.Vm do
     :git_engine,
     :git_engine_mon,
     git_mount_path: nil,
+    # Host-owned remote policy (never from guest body). See attach_git/2.
+    git_allowed_origins: [],
+    git_auth: nil,
+    # Test-only injectable SmartHttp transport (fixture double).
+    git_transport: nil,
+    # Inflight async remote host_calls: handle => Task.t(), ref => handle.
+    git_tasks: %{},
+    git_task_refs: %{},
     shell_log: "",
     shell_base: 0
   ]
@@ -420,23 +428,38 @@ defmodule AgentOS.Vm do
   @doc """
   Attach a BEAM-owned native `git-engine` Port for this VM (GIT.md K15/K22).
 
-  Options: `:executable`, `:root`, `:mount_path` (default `"/workspace/repo"`).
-  Replaces any prior attachment. Stops the previous Port first.
+  Options:
+  * `:executable`, `:root`, `:mount_path` (default `"/workspace/repo"`)
+  * `:allowed_origins` / `:allow_origins` — host-owned origin allowlist for product
+    remotes (empty/missing fails closed; guest body cannot smuggle origins)
+  * `:auth` — `%{kind: :none | :bearer | :header, ...}` kept in BEAM only
+  * `:transport` — injectable SmartHttp transport (tests / fixture double only)
+
+  Replaces any prior attachment. Stops the previous Port and cancels inflight
+  remote host_calls first.
   """
   @spec attach_git(server(), keyword()) :: :ok | {:error, term()}
   def attach_git(server, opts \\ []) when is_list(opts),
     do: GenServer.call(server, {:attach_git, opts}, timeout(opts))
 
-  @doc "Detach and stop the git-engine Port for this VM."
+  @doc "Detach and stop the git-engine Port for this VM; fail inflight remote handles."
   @spec detach_git(server(), keyword()) :: :ok
   def detach_git(server, opts \\ []),
     do: GenServer.call(server, :detach_git, timeout(opts))
 
   @doc """
   If `event` is a host_call for name `\"git\"` or this VM's gitfs mount path,
-  answer it via the Port and return `:answered`. Otherwise `:unclaimed`.
+  claim it and return `:answered`.
+
+  * `name == \"git\"` (remote orch / HTTPS) is **async**: spawn under
+    `AgentOS.SidecarTaskSupervisor`, return immediately, then answer via
+    `egress_host_call_respond/3` or fail the handle. Host opts come from
+    `attach_git/2` (origins/auth/transport) — never from the guest body.
+  * Mount-path host_calls (gitfs type-4) stay **synchronous** so single-writer
+    Port ordering is preserved.
   """
-  @spec try_answer_git_host_call(server(), map(), keyword()) :: :answered | :unclaimed | {:error, term()}
+  @spec try_answer_git_host_call(server(), map(), keyword()) ::
+          :answered | :unclaimed | {:error, term()}
   def try_answer_git_host_call(server, event, opts \\ []) when is_map(event),
     do: GenServer.call(server, {:try_answer_git_host_call, event}, timeout(opts))
 
@@ -620,7 +643,12 @@ defmodule AgentOS.Vm do
                   last_active_ms: now,
                   snapshot_base: base,
                   git_engine: nil,
-                  git_mount_path: nil
+                  git_mount_path: nil,
+                  git_allowed_origins: [],
+                  git_auth: nil,
+                  git_transport: nil,
+                  git_tasks: %{},
+                  git_task_refs: %{}
                 }
 
                 case maybe_attach_git_on_boot(state0, opts) do
@@ -862,7 +890,9 @@ defmodule AgentOS.Vm do
        booted_at: state.booted_at,
        idle_ms: now_ms() - state.last_active_ms,
        git_attached: is_pid(state.git_engine) and Process.alive?(state.git_engine),
-       git_mount_path: state.git_mount_path
+       git_mount_path: state.git_mount_path,
+       git_inflight: map_size(state.git_tasks || %{}),
+       git_allowed_origins: state.git_allowed_origins || []
      }, state}
   end
 
@@ -1073,6 +1103,9 @@ defmodule AgentOS.Vm do
   defp do_attach_git(state, opts) do
     state = do_detach_git(state)
     mount_path = Keyword.get(opts, :mount_path, "/workspace/repo")
+    allowed = git_allowed_origins_from_opts(opts)
+    auth = Keyword.get(opts, :auth)
+    transport = Keyword.get(opts, :transport)
 
     # Unlinked start + monitor so engine crash does not kill the VM actor.
     case AgentOS.GitEngine.start(
@@ -1091,7 +1124,10 @@ defmodule AgentOS.Vm do
                state
                | git_engine: pid,
                  git_mount_path: mount_path,
-                 git_engine_mon: ref
+                 git_engine_mon: ref,
+                 git_allowed_origins: allowed,
+                 git_auth: auth,
+                 git_transport: transport
              }}
 
           {:error, reason} ->
@@ -1105,23 +1141,65 @@ defmodule AgentOS.Vm do
     end
   end
 
-  defp do_detach_git(%{git_engine: pid, git_mount_path: path, git_engine_mon: mon} = state)
-       when is_pid(pid) do
+  defp git_allowed_origins_from_opts(opts) do
+    case Keyword.get(opts, :allowed_origins, Keyword.get(opts, :allow_origins, [])) do
+      list when is_list(list) -> list
+      :any -> :any
+      _ -> []
+    end
+  end
+
+  defp do_detach_git(state) do
+    state = cancel_git_tasks(state)
+    mon = Map.get(state, :git_engine_mon)
+    pid = Map.get(state, :git_engine)
+    path = Map.get(state, :git_mount_path)
+
     if is_reference(mon), do: Process.demonitor(mon, [:flush])
     if is_binary(path), do: _ = Nif.unmount(state.nif, path)
-    if Process.alive?(pid), do: _ = AgentOS.GitEngine.stop(pid)
-    %{state | git_engine: nil, git_mount_path: nil, git_engine_mon: nil}
+    if is_pid(pid) and Process.alive?(pid), do: _ = AgentOS.GitEngine.stop(pid)
+
+    %{
+      state
+      | git_engine: nil,
+        git_mount_path: nil,
+        git_engine_mon: nil,
+        git_allowed_origins: [],
+        git_auth: nil,
+        git_transport: nil
+    }
   end
 
-  defp do_detach_git(%{git_engine: pid, git_mount_path: path} = state) when is_pid(pid) do
-    if is_binary(path), do: _ = Nif.unmount(state.nif, path)
-    if Process.alive?(pid), do: _ = AgentOS.GitEngine.stop(pid)
-    %{state | git_engine: nil, git_mount_path: nil, git_engine_mon: nil}
+  # Fail outstanding remote handles and kill tasks so they cannot double-respond.
+  defp cancel_git_tasks(state) do
+    tasks = state.git_tasks || %{}
+
+    Enum.each(tasks, fn {handle, task} ->
+      if is_reference(task.ref), do: Process.demonitor(task.ref, [:flush])
+      Task.shutdown(task, :brutal_kill)
+      _ = Nif.relay_host_call_fail(state.nif, handle)
+    end)
+
+    %{state | git_tasks: %{}, git_task_refs: %{}}
   end
 
-  defp do_detach_git(state),
-    do: %{state | git_engine: nil, git_mount_path: nil, git_engine_mon: nil}
+  defp git_host_opts(state) do
+    opts = [allowed_origins: state.git_allowed_origins || []]
 
+    opts =
+      case state.git_auth do
+        nil -> opts
+        auth -> Keyword.put(opts, :auth, auth)
+      end
+
+    case state.git_transport do
+      fun when is_function(fun, 2) -> Keyword.put(opts, :transport, fun)
+      _ -> opts
+    end
+  end
+
+  # Remote orch (`name == "git"`) is async so HTTPS cannot freeze the VM actor.
+  # Mount-path host_calls stay sync (single-writer Port ordering).
   defp answer_git_event(
          %{git_engine: pid} = state,
          %{kind: :host_call, handle: handle, name: name, body: body}
@@ -1132,34 +1210,127 @@ defmodule AgentOS.Vm do
         _ = Nif.relay_host_call_fail(state.nif, handle)
         {:answered, do_detach_git(state)}
 
+      name == "git" ->
+        answer_git_remote_async(state, pid, handle, body)
+
       true ->
-        case AgentOS.GitEngine.handle_host_call(pid, name, body) do
-          {:ok, result} when is_binary(result) ->
-            case Nif.relay_host_call_respond(state.nif, handle, result) do
-              :ok -> {:answered, state}
-              {:error, reason} -> {:error, reason}
-            end
-
-          {:error, :not_git} ->
-            :unclaimed
-
-          {:error, :eio} ->
-            _ = Nif.relay_host_call_fail(state.nif, handle)
-            {:answered, do_detach_git(state)}
-
-          {:error, _reason} ->
-            _ = Nif.relay_host_call_fail(state.nif, handle)
-            {:answered, state}
-        end
+        answer_git_mount_sync(state, pid, handle, name, body)
     end
   end
 
   defp answer_git_event(_state, _event), do: :unclaimed
 
+  defp answer_git_remote_async(state, pid, handle, body) do
+    tasks = state.git_tasks || %{}
+
+    if Map.has_key?(tasks, handle) do
+      # Already claimed — do not spawn a second task (double-respond risk).
+      {:answered, state}
+    else
+      orch_opts = git_host_opts(state)
+
+      # async_nolink → owner receives {ref, result} then DOWN; NIF answer stays on Vm.
+      task =
+        Task.Supervisor.async_nolink(AgentOS.SidecarTaskSupervisor, fn ->
+          result = AgentOS.GitEngine.handle_host_call(pid, "git", body, orch_opts)
+          {handle, result}
+        end)
+
+      state = %{
+        state
+        | git_tasks: Map.put(tasks, handle, task),
+          git_task_refs: Map.put(state.git_task_refs || %{}, task.ref, handle)
+      }
+
+      {:answered, state}
+    end
+  end
+
+  defp answer_git_mount_sync(state, pid, handle, name, body) do
+    case AgentOS.GitEngine.handle_host_call(pid, name, body, []) do
+      {:ok, result} when is_binary(result) ->
+        case Nif.relay_host_call_respond(state.nif, handle, result) do
+          :ok -> {:answered, state}
+          {:error, reason} -> {:error, reason}
+        end
+
+      {:error, :not_git} ->
+        :unclaimed
+
+      {:error, :eio} ->
+        _ = Nif.relay_host_call_fail(state.nif, handle)
+        {:answered, do_detach_git(state)}
+
+      {:error, _reason} ->
+        _ = Nif.relay_host_call_fail(state.nif, handle)
+        {:answered, state}
+    end
+  end
+
+  defp finish_git_task(state, ref, handle, result) do
+    tasks = Map.delete(state.git_tasks || %{}, handle)
+    refs = Map.delete(state.git_task_refs || %{}, ref)
+    state = %{state | git_tasks: tasks, git_task_refs: refs}
+
+    # Drop result if engine was detached while the task ran (handle already failed).
+    if is_nil(state.git_engine) do
+      state
+    else
+      case result do
+        {:ok, bin} when is_binary(bin) ->
+          _ = Nif.relay_host_call_respond(state.nif, handle, bin)
+          state
+
+        {:error, :eio} ->
+          _ = Nif.relay_host_call_fail(state.nif, handle)
+          do_detach_git(state)
+
+        {:error, _reason} ->
+          _ = Nif.relay_host_call_fail(state.nif, handle)
+          state
+
+        _other ->
+          _ = Nif.relay_host_call_fail(state.nif, handle)
+          state
+      end
+    end
+  end
+
   @impl true
-  def handle_info({:DOWN, mon, :process, pid, _reason}, %{git_engine: pid, git_engine_mon: mon} = state) do
-    # Port owner died — unmount and clear so host_calls do not hang unclaimed.
+  def handle_info({ref, {handle, result}}, %{git_task_refs: refs} = state)
+      when is_reference(ref) and is_integer(handle) and is_map(refs) do
+    if Map.has_key?(refs, ref) do
+      Process.demonitor(ref, [:flush])
+      {:noreply, touch(finish_git_task(state, ref, handle, result))}
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_info(
+        {:DOWN, mon, :process, pid, _reason},
+        %{git_engine: pid, git_engine_mon: mon} = state
+      ) do
+    # Port owner died — unmount, cancel inflight remotes, clear state.
     {:noreply, do_detach_git(state)}
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{git_task_refs: refs} = state)
+      when is_reference(ref) and is_map(refs) do
+    case Map.pop(refs, ref) do
+      {nil, _refs} ->
+        {:noreply, state}
+
+      {handle, next_refs} ->
+        # Task crashed before returning a result — fail the handle closed.
+        tasks = Map.delete(state.git_tasks || %{}, handle)
+
+        if not is_nil(state.git_engine) do
+          _ = Nif.relay_host_call_fail(state.nif, handle)
+        end
+
+        {:noreply, touch(%{state | git_tasks: tasks, git_task_refs: next_refs})}
+    end
   end
 
   def handle_info(_msg, state), do: {:noreply, state}

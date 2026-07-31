@@ -1,5 +1,7 @@
 /** Portable Run ABI envelopes (GIT.md K18). */
 
+import type { DurableBackend } from "./durable.js";
+
 export interface GitRequest {
   op: string;
   args?: unknown;
@@ -22,6 +24,15 @@ export interface GitEngineLoadOptions {
   /** Override MEMFS worktree root inside the module (default `/work`). */
   workRoot?: string;
   readOnly?: boolean;
+  /**
+   * Optional opaque durable store attached to the engine.
+   *
+   * deferred: durability not rebinding MEMFS yet — a stored snapshot is loaded
+   * into engine-level state only (`GitEngine.durableSnapshot`) and is **not**
+   * restored into the worktree. {@link GitEngine.checkpoint} persists
+   * caller-supplied (or last-known) opaque bytes; it does not dump MEMFS.
+   */
+  durable?: DurableBackend;
 }
 
 export interface GitEngineCreateOptions {

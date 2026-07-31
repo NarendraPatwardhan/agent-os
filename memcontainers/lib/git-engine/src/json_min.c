@@ -41,6 +41,31 @@ static const char *find_key(const char *json, const char *key) {
   return NULL;
 }
 
+/* Decode one JSON string char escape at *v (points at char after '\\'). */
+static int decode_escape(const char **vp, char *outc) {
+  const char *v = *vp;
+  if (!*v)
+    return -1;
+  switch (*v) {
+  case 'n':
+    *outc = '\n';
+    break;
+  case 't':
+    *outc = '\t';
+    break;
+  case '"':
+  case '\\':
+  case '/':
+    *outc = *v;
+    break;
+  default:
+    *outc = *v;
+    break;
+  }
+  *vp = v + 1;
+  return 0;
+}
+
 int jmin_get_string(const char *json, const char *key, char *out, size_t out_cap) {
   if (!out || out_cap == 0)
     return -1;
@@ -53,29 +78,78 @@ int jmin_get_string(const char *json, const char *key, char *out, size_t out_cap
   while (*v && *v != '"' && i + 1 < out_cap) {
     if (*v == '\\' && v[1]) {
       v++;
-      switch (*v) {
-      case 'n':
-        out[i++] = '\n';
-        break;
-      case 't':
-        out[i++] = '\t';
-        break;
-      case '"':
-      case '\\':
-      case '/':
-        out[i++] = *v;
-        break;
-      default:
-        out[i++] = *v;
-        break;
-      }
-      v++;
+      char c;
+      if (decode_escape(&v, &c) != 0)
+        return -1;
+      out[i++] = c;
       continue;
     }
     out[i++] = *v++;
   }
   out[i] = '\0';
+  /* Fail closed on truncation or unclosed string — never silent truncate. */
   return (*v == '"') ? 0 : -1;
+}
+
+int jmin_get_string_alloc(const char *json, const char *key, char **out, size_t *out_len,
+                          size_t max_bytes) {
+  if (!out)
+    return -1;
+  *out = NULL;
+  if (out_len)
+    *out_len = 0;
+
+  const char *v = find_key(json, key);
+  if (!v || *v != '"')
+    return -1;
+  v++;
+
+  /* Pass 1: measure decoded length; reject oversize before allocate. */
+  size_t n = 0;
+  const char *p = v;
+  while (*p && *p != '"') {
+    if (*p == '\\' && p[1]) {
+      p += 2;
+      n++;
+    } else {
+      p++;
+      n++;
+    }
+    if (n > max_bytes)
+      return -2;
+  }
+  if (*p != '"')
+    return -1;
+
+  char *buf = (char *)malloc(n + 1);
+  if (!buf)
+    return -3;
+
+  /* Pass 2: decode into heap buffer. */
+  size_t i = 0;
+  p = v;
+  while (*p && *p != '"' && i < n) {
+    if (*p == '\\' && p[1]) {
+      p++;
+      char c;
+      if (decode_escape(&p, &c) != 0) {
+        free(buf);
+        return -1;
+      }
+      buf[i++] = c;
+      continue;
+    }
+    buf[i++] = *p++;
+  }
+  if (*p != '"') {
+    free(buf);
+    return -1;
+  }
+  buf[i] = '\0';
+  *out = buf;
+  if (out_len)
+    *out_len = i;
+  return 0;
 }
 
 int jmin_get_bool(const char *json, const char *key, int *out) {
