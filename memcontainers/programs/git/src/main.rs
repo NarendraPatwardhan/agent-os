@@ -60,6 +60,9 @@ fn main() -> i32 {
     let mut req = [0u8; MAX_BODY];
     let req_len = match build_request(cmd, &args[..argc], &mut req) {
         Ok(n) => n,
+        Err(REMOTE_VIA_HOST_CALL) => {
+            return remote_host_call(cmd, &args[..argc]);
+        }
         Err(code) => return code,
     };
 
@@ -121,7 +124,57 @@ fn main() -> i32 {
     }
     rt::close(fd);
 
-    let body = &resp[..total];
+    emit_response(&resp[..total])
+}
+
+/// PR10b: remote argv → `mc_sys_host_call` name `git` + Request JSON (CAP_NET).
+fn remote_host_call(cmd: &[u8], args: &[&[u8]]) -> i32 {
+    let mut body = [0u8; MAX_BODY];
+    let body_len = match build_remote_request(cmd, args, &mut body) {
+        Ok(n) => n,
+        Err(code) => return code,
+    };
+    // req = "git\0" + JSON
+    let mut req = [0u8; MAX_BODY + 8];
+    req[0] = b'g';
+    req[1] = b'i';
+    req[2] = b't';
+    req[3] = 0;
+    if 4 + body_len > req.len() {
+        eprint(b"git: remote request too large\n");
+        return 1;
+    }
+    req[4..4 + body_len].copy_from_slice(&body[..body_len]);
+    let fd = match rt::host_call(&req[..4 + body_len]) {
+        Ok(f) => f,
+        Err(_) => {
+            eprint(b"git: host_call git failed (need CAP_NET + MapHostCall git)\n");
+            return 1;
+        }
+    };
+    let mut resp = [0u8; MAX_RESP];
+    let mut total = 0usize;
+    loop {
+        match rt::read(fd, &mut resp[total..]) {
+            Ok(0) => break,
+            Ok(n) => {
+                total += n;
+                if total >= MAX_RESP {
+                    break;
+                }
+            }
+            Err(_) => {
+                let _ = rt::close(fd);
+                eprint(b"git: host_call read failed\n");
+                return 1;
+            }
+        }
+    }
+    let _ = rt::close(fd);
+    emit_response(&resp[..total])
+}
+
+fn emit_response(body: &[u8]) -> i32 {
     let code = parse_code(body).unwrap_or(1);
     if let Some(s) = parse_string_field(body, b"stdout") {
         print(s);
@@ -136,6 +189,40 @@ fn main() -> i32 {
     } else {
         1
     }
+}
+
+fn build_remote_request(cmd: &[u8], args: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
+    let argc = args.len();
+    if cmd == b"fetch" || cmd == b"pull" {
+        if argc >= 3 {
+            return fmt_op_url(cmd, args[2], out);
+        }
+        return copy_bytes(b"{\"op\":\"fetch\",\"args\":{}}", out);
+    }
+    if cmd == b"push" {
+        if argc >= 3 {
+            return fmt_op_url(b"push", args[2], out);
+        }
+        return copy_bytes(b"{\"op\":\"push\",\"args\":{}}", out);
+    }
+    if cmd == b"clone" {
+        if argc < 3 {
+            eprint(b"usage: git clone <url>\n");
+            return Err(2);
+        }
+        return fmt_op_url(b"clone", args[2], out);
+    }
+    Err(2)
+}
+
+fn fmt_op_url(op: &[u8], url: &[u8], out: &mut [u8]) -> Result<usize, i32> {
+    let mut i = 0usize;
+    i = push(out, i, b"{\"op\":\"")?;
+    i = push(out, i, op)?;
+    i = push(out, i, b"\",\"args\":{\"url\":\"")?;
+    i = push_escaped(out, i, url)?;
+    i = push(out, i, b"\"}}")?;
+    Ok(i)
 }
 
 fn build_request(cmd: &[u8], args: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
@@ -172,13 +259,16 @@ fn build_request(cmd: &[u8], args: &[&[u8]], out: &mut [u8]) -> Result<usize, i3
         let rev = if argc >= 3 { args[2] } else { b"HEAD" };
         return fmt_rev_parse(rev, out);
     }
+    // Remotes: not via ctl — handled in main via host_call "git" (PR10b).
     if cmd == b"clone" || cmd == b"fetch" || cmd == b"pull" || cmd == b"push" {
-        eprint(b"git: remotes require host_call git (CAP_NET); not via thin ctl\n");
-        return Err(1);
+        return Err(REMOTE_VIA_HOST_CALL);
     }
     eprint(b"git: unknown or unsupported command\n");
     Err(2)
 }
+
+/// Sentinel: build_request asks main to use host_call path.
+const REMOTE_VIA_HOST_CALL: i32 = -100;
 
 fn fmt_op_path(op: &[u8], path: &[u8], out: &mut [u8]) -> Result<usize, i32> {
     let mut i = 0usize;

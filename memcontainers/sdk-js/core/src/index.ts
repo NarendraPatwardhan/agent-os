@@ -74,11 +74,20 @@ export type {
 } from "./solve.js";
 export { defaultKernel, defaultImage } from "./artifacts.js";
 export { FsContentStore, MemoryContentStore, OpfsContentStore, defaultStore } from "./store.js";
-// Host git engine (GIT.md PR3–PR5) — opt-in via experimentalGitEngine / GitEngine.load.
+// Host git engine (GIT.md PR3–PR10) — opt-in via experimentalGitEngine / GitEngine.load.
 export {
   GitEngine,
   GitBridge,
   createGitFsDriver,
+  GitRemoteOrchestrator,
+  gitHostCallHandler,
+  registerGitHostCall,
+  FixtureSmartHttp,
+  FetchSmartHttp,
+  MemoryDurable,
+  OpfsDurable,
+  DiskDurable,
+  openDurable,
   DEFAULT_WORK_ROOT,
   normalizeRel,
 } from "./git/index.js";
@@ -87,8 +96,11 @@ export type {
   GitResponse,
   GitEngineLoadOptions,
   GitEngineCreateOptions,
-} from "./git/index.js";
-export {
+  OrchestratorOptions,
+  RefAdvertisement,
+  SmartHttpTransport,
+  DurableBackend,
+} from "./git/index.js";export {
   defaultTemplateFill,
   ensureTemplate,
   templateClassKey,

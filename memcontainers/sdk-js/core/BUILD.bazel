@@ -128,6 +128,32 @@ js_test(
     timeout = "moderate",
 )
 
+# PR9–PR10a: smart-HTTP fixture orch + MapHostCall "git" + ctl refuse.
+mc_ts_project(
+    name = "git_remote_test_lib",
+    srcs = ["test/git_remote.test.ts"],
+    deps = [
+        ":lib",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+js_test(
+    name = "git_remote_test",
+    data = [
+        "package.json",
+        ":git_remote_test_lib",
+        "//memcontainers/lib/git-engine:git_engine_emcc_js",
+        "//memcontainers/lib/git-engine:git_engine_mjs",
+        "//memcontainers/lib/git-engine:git_engine_wasm_file",
+    ],
+    entry_point = "test/git_remote.test.js",
+    env = {
+        "MC_GIT_ENGINE_JS": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_mjs)",
+    },
+    timeout = "moderate",
+)
+
 mc_ts_project(
     name = "vm_test_lib",
     srcs = ["test/vm.test.ts"],

@@ -17,10 +17,11 @@ rust_binary(
     ],
 )
 
+# full tier: local porcelain is fs-only, but remotes use mc_sys_host_call ("git") which needs CAP_NET (A9).
 mc_rust_program(
     name = "git",
     lib = ":git_bin",
-    tier = "isolated",
+    tier = "full",
     visibility = ["//visibility:public"],
 )
 
