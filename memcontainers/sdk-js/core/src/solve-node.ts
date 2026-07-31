@@ -3,6 +3,7 @@ import { lstat, mkdtemp, readFile, readdir, readlink, rm } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { hostDir } from "./drivers.js";
 import type { BuildState } from "./llb.js";
 import type { GitSource, LocalEntry, LocalSource, SolvePlatform } from "./solve.js";
@@ -54,8 +55,12 @@ function normalizeVmPath(path: string, field: string): string {
   return `/${parts.join("/")}`;
 }
 
-async function archiveGitSource(repo: string, ref: string, dest: string): Promise<GitSource> {
-  const local = await localGitRepo(repo);
+/**
+ * @deprecated Escape hatch only (`MC_GIT_USE_SYSTEM=1`). Product path is the host
+ * libgit2 engine + GitRemoteOrchestrator — never ambient system git.
+ */
+async function archiveGitSourceSystem(repo: string, ref: string, dest: string): Promise<GitSource> {
+  const local = await localGitRepoSystem(repo);
   try {
     const commit = (await gitOutput(["-C", local.repo, "rev-parse", `${ref}^{commit}`])).trim();
     if (!/^[0-9a-f]{40}$/.test(commit)) {
@@ -77,7 +82,7 @@ async function archiveGitSource(repo: string, ref: string, dest: string): Promis
   }
 }
 
-async function localGitRepo(
+async function localGitRepoSystem(
   repo: string,
 ): Promise<{ repo: string; cleanup?: () => Promise<void> }> {
   const stat = await lstat(repo).catch(() => null);
@@ -122,6 +127,25 @@ function gitBytes(args: string[]): Promise<Uint8Array> {
       resolve(concat(stdout));
     });
   });
+}
+
+function resolveEngineBaseUrl(): string {
+  const dir =
+    process.env.MC_GIT_ENGINE_DIR ||
+    process.env.MC_GIT_ENGINE_BASE_URL ||
+    "";
+  if (!dir) {
+    throw new Error(
+      "llb.git requires the host git engine (set MC_GIT_ENGINE_DIR to the directory " +
+        "containing git_engine.mjs/wasm). System git is not used. " +
+        "Emergency only: MC_GIT_USE_SYSTEM=1",
+    );
+  }
+  if (dir.startsWith("file:") || dir.startsWith("http:") || dir.startsWith("https:")) {
+    return dir.endsWith("/") ? dir : dir + "/";
+  }
+  const base = dir.endsWith("/") ? dir : dir + "/";
+  return pathToFileURL(base).href;
 }
 
 async function scanLocalSource(root: string): Promise<LocalSource> {
@@ -195,17 +219,26 @@ async function cacheMounts(mounts: readonly BuildState[]): Promise<MountSpec[]> 
 }
 
 /**
- * Default Node platform: system `git` for llb.git (transitional).
- * Prefer {@link nodeSolvePlatformWithEngine} when MC_GIT_ENGINE_DIR is set (PR15).
+ * Default Node platform: **host git engine** for `llb.git` (GIT.md PR15).
+ * Never shells out to ambient system `git` unless `MC_GIT_USE_SYSTEM=1`.
  */
 export const nodeSolvePlatform: SolvePlatform = {
   localSource: scanLocalSource,
-  gitSource: archiveGitSource,
+  gitSource: async (repo, ref, dest) => {
+    if (process.env.MC_GIT_USE_SYSTEM === "1") {
+      return archiveGitSourceSystem(repo, ref, dest);
+    }
+    const platform = await nodeSolvePlatformWithEngine({
+      baseUrl: resolveEngineBaseUrl(),
+      packCacheDir: process.env.MC_GIT_PACK_CACHE,
+    });
+    return platform.gitSource(repo, ref, dest);
+  },
   cacheMounts,
 };
 
 /**
- * Node solve platform with llb.git on the shared GitRemoteOrchestrator stack (PR15).
+ * Node solve platform with llb.git on the shared GitRemoteOrchestrator stack.
  * `baseUrl` points at emcc git_engine.mjs/wasm (same as GitEngine.load).
  */
 export async function nodeSolvePlatformWithEngine(opts: {
@@ -233,16 +266,7 @@ export async function nodeSolvePlatformWithEngine(opts: {
   };
 }
 
-/** Auto-select engine platform when MC_GIT_ENGINE_DIR is set, else system git. */
+/** Same as {@link nodeSolvePlatform} (engine-first). Kept for call sites. */
 export async function defaultNodeSolvePlatform(): Promise<SolvePlatform> {
-  const dir = process.env.MC_GIT_ENGINE_DIR;
-  if (dir) {
-    const { pathToFileURL } = await import("node:url");
-    const base = dir.endsWith("/") ? dir : dir + "/";
-    return nodeSolvePlatformWithEngine({
-      baseUrl: pathToFileURL(base).href,
-      packCacheDir: process.env.MC_GIT_PACK_CACHE,
-    });
-  }
   return nodeSolvePlatform;
 }
