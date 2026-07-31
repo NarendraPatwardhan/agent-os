@@ -1,10 +1,6 @@
-/* Host smart-HTTP (public HTTPS) — C server family (GIT.md PR9, K16).
- * ListRefs + shallow UploadPack over libcurl-less raw sockets is out of scope
- * for the first land; we implement the algorithm surface with:
- *   - in-process fake fixture transport (tests)
- *   - optional real HTTPS via POSIX sockets + minimal pkt-line (best-effort)
- *
- * Browser/JS uses the TS twin in smart-http.ts; golden algorithm traces shared.
+/* Fixture smart-HTTP for Port unit tests only (GIT.md K16 revised).
+ * Product server remotes: BEAM HTTPS (AgentOS.Git.SmartHttp) + Port apply.
+ * Browser/JS: TS smart-http.ts. C engine never dials in production.
  */
 
 #include "ge_port.h"

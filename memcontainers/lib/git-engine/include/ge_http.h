@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Test double / policy stubs for host smart-HTTP (GIT.md PR9). */
+/* Fixture smart-HTTP for Port unit tests only (GIT.md K16: product server uses BEAM HTTPS). */
 void ge_http_fixture_clear(void);
 int ge_http_fixture_add(const char *url, const char *refs_json, const uint8_t *pack,
                         size_t pack_len);

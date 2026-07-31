@@ -1,15 +1,17 @@
 defmodule AgentOS.GitEngine do
   @moduledoc """
-  BEAM-owned Port to the native C `git-engine` process (GIT.md PR7a–PR10c).
+  BEAM-owned Port to the native C `git-engine` process (GIT.md PR7+).
 
   Length-prefixed frames on the child's stdin/stdout:
 
       <<length::little-32, type::8, payload::binary-size(length-1)>>
 
-  Types: 1 Run, 2 pack chunk, 3 pack meta, 4 binary MOUNT_OP, 5 remote orch.
+  Types: 1 Run, 2 pack chunk, 3 pack meta, 4 binary MOUNT_OP.
+  Type 5 is legacy/test-only; product remotes use BEAM HTTPS orch (see
+  `AgentOS.Git.Orchestrator`) then Port apply frames.
 
   Lifecycle: start when a gitfs mount attaches (or explicitly); stop with the VM.
-  Port exit fails subsequent ops closed (`:eio`).
+  Port exit fails subsequent ops closed (`:eio`). Engine never dials the network.
   """
 
   use GenServer
@@ -41,7 +43,7 @@ defmodule AgentOS.GitEngine do
     GenServer.start(__MODULE__, opts)
   end
 
-  @doc "JSON Run (`ge_run_json`). Local ops only; remotes use `remote/2`."
+  @doc "JSON Run (`ge_run_json`). Local porcelain only (engine dial-free)."
   @spec run(pid(), String.t() | map()) :: {:ok, map()} | {:error, term()}
   def run(pid, request) when is_pid(pid) do
     json = if is_binary(request), do: request, else: encode_request(request)
@@ -60,7 +62,10 @@ defmodule AgentOS.GitEngine do
     GenServer.call(pid, {:mount_op, body}, 60_000)
   end
 
-  @doc "Remote orch entry (clone/fetch) — C smart-HTTP + apply (PR10c)."
+  @doc """
+  Legacy type-5 frame to C fixture orch. Product remotes use
+  `AgentOS.Git.Orchestrator.run/3` (BEAM HTTPS) instead.
+  """
   @spec remote(pid(), String.t() | map()) :: {:ok, map()} | {:error, term()}
   def remote(pid, request) when is_pid(pid) do
     json = if is_binary(request), do: request, else: encode_request(request)
@@ -78,33 +83,27 @@ defmodule AgentOS.GitEngine do
   end
 
   @doc """
-  Route a relayed host_call to this engine (PR7b / PR10c demux helper).
+  Route a relayed host_call (PR7b / PR10c demux helper).
 
-  * `name == "git"` → remote orch (type 5)
-  * `name` equals `mount_path` → binary MOUNT_OP (type 4)
+  * `name == "git"` → **BEAM** `AgentOS.Git.Orchestrator` (HTTPS) + Port apply
+  * `name` equals `mount_path` → binary MOUNT_OP type 4
 
-  Connection-bound remotes (`args.connection` / credential splice) are the JS
-  orchestrator path (PR11). The C Port path accepts public URL remotes only and
-  refuses connection refs so secrets are never expected here.
+  Options (keyword): `:transport`, `:auth` (passed to orch). Secrets stay in BEAM.
   """
-  @spec handle_host_call(pid(), String.t(), binary()) :: {:ok, binary()} | {:error, term()}
-  def handle_host_call(pid, "git", body) when is_pid(pid) and is_binary(body) do
-    if connection_bound_request?(body) do
-      {:ok,
-       ~s({"ok":false,"code":1,"stdout":"","stderr":"git: connection-bound remotes require JS orchestrator (PR11); use public url on server Port"})}
-    else
-      case remote(pid, body) do
-        {:ok, map} when is_map(map) ->
-          raw = Map.get(map, "raw")
-          if is_binary(raw), do: {:ok, raw}, else: {:ok, encode_request(map)}
+  @spec handle_host_call(pid(), String.t(), binary(), keyword()) ::
+          {:ok, binary()} | {:error, term()}
+  def handle_host_call(pid, name, body, opts \\ [])
 
-        {:error, _} = err ->
-          err
-      end
+  def handle_host_call(pid, "git", body, opts)
+      when is_pid(pid) and is_binary(body) and is_list(opts) do
+    case AgentOS.Git.Orchestrator.run(pid, body, opts) do
+      {:ok, json} when is_binary(json) -> {:ok, json}
+      {:error, _} = err -> err
     end
   end
 
-  def handle_host_call(pid, name, body) when is_pid(pid) and is_binary(name) and is_binary(body) do
+  def handle_host_call(pid, name, body, _opts)
+      when is_pid(pid) and is_binary(name) and is_binary(body) do
     case GenServer.call(pid, :mount_path, 5_000) do
       path when is_binary(path) and path == name ->
         mount_op(pid, body)
@@ -234,10 +233,6 @@ defmodule AgentOS.GitEngine do
 
   defp encode_request(map) when is_map(map), do: AgentOS.GitEngine.Jason_like.encode!(map)
 
-  defp connection_bound_request?(body) when is_binary(body) do
-    String.contains?(body, "\"connection\"") or String.contains?(body, "\"agentos\"")
-  end
-
   defp reply_frame(state, type, payload, decode) do
     case request_response(state, type, payload) do
       {:ok, resp_payload, state2} ->
@@ -313,7 +308,8 @@ defmodule AgentOS.GitEngine do
   end
 
   defp take_frame(<<len::little-32, rest::binary>>) when byte_size(rest) >= len and len >= 1 do
-    <<type::8, payload::binary-size(len - 1), next::binary>> = rest
+    plen = len - 1
+    <<type::8, payload::binary-size(^plen), next::binary>> = rest
     {:ok, type, payload, next}
   end
 
@@ -328,14 +324,13 @@ defmodule AgentOS.GitEngine do
   end
 
   defp safe_json_decode(bin) do
-    if function_exported?(:json, :decode, 1) do
-      case :json.decode(bin) do
-        {:ok, term} -> {:ok, json_keys_to_string(term)}
-        error -> {:error, error}
-      end
-    else
-      # Fallback: return raw under "raw" if no decoder — tests use :json on OTP 27+.
-      {:ok, %{"raw" => bin, "ok" => String.contains?(bin, "\"ok\":true")}}
+    # OTP 27+ `:json.decode/1` returns the term directly (raises on error).
+    try do
+      term = :json.decode(bin)
+      {:ok, json_keys_to_string(term)}
+    rescue
+      _ ->
+        {:ok, %{"raw" => bin, "ok" => String.contains?(bin, "\"ok\":true")}}
     end
   end
 
@@ -369,38 +364,57 @@ defmodule AgentOS.GitEngine.Jason_like do
   @moduledoc false
 
   def encode!(map) when is_map(map) do
+    # Prefer OTP :json when present; it may return iodata (charlist chunks).
     if function_exported?(:json, :encode, 1) do
-      case :json.encode(map) do
-        bin when is_binary(bin) -> bin
-        {:ok, bin} -> bin
-      end
+      map
+      |> atom_keys_to_string()
+      |> :json.encode()
+      |> IO.iodata_to_binary()
     else
       # Tiny encoder for %{op, args} maps used by tests.
       op = Map.get(map, :op) || Map.get(map, "op") || ""
       args = Map.get(map, :args) || Map.get(map, "args")
 
       if args do
-        ~s({"op":"#{op}","args":#{encode_value(args)}})
+        ~s({"op":"#{escape(op)}","args":#{encode_value(args)}})
       else
-        ~s({"op":"#{op}"})
+        ~s({"op":"#{escape(op)}"})
       end
     end
   end
+
+  defp atom_keys_to_string(map) when is_map(map) do
+    Map.new(map, fn
+      {k, v} when is_atom(k) -> {Atom.to_string(k), atom_keys_to_string(v)}
+      {k, v} -> {k, atom_keys_to_string(v)}
+    end)
+  end
+
+  defp atom_keys_to_string(list) when is_list(list), do: Enum.map(list, &atom_keys_to_string/1)
+  defp atom_keys_to_string(other), do: other
 
   defp encode_value(map) when is_map(map) do
     parts =
       Enum.map(map, fn {k, v} ->
         key = if is_atom(k), do: Atom.to_string(k), else: to_string(k)
-        ~s("#{key}":#{encode_value(v)})
+        ~s("#{escape(key)}":#{encode_value(v)})
       end)
 
     "{" <> Enum.join(parts, ",") <> "}"
   end
 
-  defp encode_value(s) when is_binary(s), do: ~s("#{s}")
+  defp encode_value(s) when is_binary(s), do: ~s("#{escape(s)}")
   defp encode_value(n) when is_integer(n), do: Integer.to_string(n)
   defp encode_value(true), do: "true"
   defp encode_value(false), do: "false"
   defp encode_value(nil), do: "null"
-  defp encode_value(other), do: ~s("#{inspect(other)}")
+  defp encode_value(other), do: ~s("#{escape(inspect(other))}")
+
+  defp escape(s) when is_binary(s) do
+    s
+    |> String.replace("\\", "\\\\")
+    |> String.replace("\"", "\\\"")
+    |> String.replace("\n", "\\n")
+    |> String.replace("\r", "\\r")
+  end
 end

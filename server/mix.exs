@@ -16,7 +16,8 @@ defmodule AgentOS.MixProject do
 
   def application do
     [
-      extra_applications: [:crypto, :logger]
+      # :inets + :ssl — BEAM HTTPS for git remotes (K16; same host egress family as kernel HTTP).
+      extra_applications: [:crypto, :logger, :inets, :ssl, :public_key]
     ]
   end
 
