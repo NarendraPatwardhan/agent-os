@@ -239,6 +239,14 @@ defmodule AgentOS.ControlPlane do
   def egress_http_fail(id, handle, opts \\ []),
     do: with_vm(id, &Vm.egress_http_fail(&1, handle, opts))
 
+  @doc "Attach BEAM-owned git-engine Port to a VM (gitfs + remotes). See `AgentOS.Vm.attach_git/2`."
+  @spec attach_git(Vm.id(), keyword()) :: :ok | {:error, term()}
+  def attach_git(id, opts \\ []), do: with_vm(id, &Vm.attach_git(&1, opts))
+
+  @doc "Detach git-engine Port from a VM."
+  @spec detach_git(Vm.id(), keyword()) :: :ok | {:error, term()}
+  def detach_git(id, opts \\ []), do: with_vm(id, &Vm.detach_git(&1, opts))
+
   @doc "Answer a host_call egress relay event."
   @spec egress_host_call_respond(Vm.id(), integer(), binary(), keyword()) ::
           :ok | {:error, term()}
@@ -344,8 +352,16 @@ defmodule AgentOS.ControlPlane do
 
         {:ok, event} ->
           case AgentOS.Sidecars.dispatch_egress(id, event) do
-            :claimed -> egress_next_unclaimed(id, opts, remaining - 1)
-            :unclaimed -> {:ok, event}
+            :claimed ->
+              egress_next_unclaimed(id, opts, remaining - 1)
+
+            :unclaimed ->
+              # GIT.md PR7b/PR10c: BEAM answers gitfs mount + host_call "git" via Port.
+              case Vm.try_answer_git_host_call(pid, event, opts) do
+                :answered -> egress_next_unclaimed(id, opts, remaining - 1)
+                :unclaimed -> {:ok, event}
+                {:error, _reason} = error -> error
+              end
           end
 
         {:error, _reason} = error ->

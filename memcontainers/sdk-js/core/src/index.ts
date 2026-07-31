@@ -88,6 +88,12 @@ export {
   OpfsDurable,
   DiskDurable,
   openDurable,
+  resolveGitRemote,
+  evaluatePushPolicy,
+  matchConnectionPattern,
+  spliceCredentialHeaders,
+  spliceCredentialUrl,
+  redactRemoteForLog,
   DEFAULT_WORK_ROOT,
   normalizeRel,
 } from "./git/index.js";
@@ -99,8 +105,13 @@ export type {
   OrchestratorOptions,
   RefAdvertisement,
   SmartHttpTransport,
+  PushCommand,
+  ReceiveStatus,
   DurableBackend,
-} from "./git/index.js";export {
+  GitRemoteBinding,
+  ResolveRemoteOptions,
+} from "./git/index.js";
+export {
   defaultTemplateFill,
   ensureTemplate,
   templateClassKey,

@@ -154,6 +154,32 @@ js_test(
     timeout = "moderate",
 )
 
+# PR11: connection-ref remotes + credential splice (no secret leak).
+mc_ts_project(
+    name = "git_connections_test_lib",
+    srcs = ["test/git_connections.test.ts"],
+    deps = [
+        ":lib",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+js_test(
+    name = "git_connections_test",
+    data = [
+        "package.json",
+        ":git_connections_test_lib",
+        "//memcontainers/lib/git-engine:git_engine_emcc_js",
+        "//memcontainers/lib/git-engine:git_engine_mjs",
+        "//memcontainers/lib/git-engine:git_engine_wasm_file",
+    ],
+    entry_point = "test/git_connections.test.js",
+    env = {
+        "MC_GIT_ENGINE_JS": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_mjs)",
+    },
+    timeout = "moderate",
+)
+
 mc_ts_project(
     name = "vm_test_lib",
     srcs = ["test/vm.test.ts"],

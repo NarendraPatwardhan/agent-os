@@ -21,6 +21,8 @@ export {
 export type {
   RefAdvertisement,
   SmartHttpTransport,
+  PushCommand,
+  ReceiveStatus,
 } from "./smart-http.js";
 export {
   MemoryDurable,
@@ -29,6 +31,15 @@ export {
   openDurable,
 } from "./durable.js";
 export type { DurableBackend } from "./durable.js";
+export {
+  resolveGitRemote,
+  evaluatePushPolicy,
+  matchConnectionPattern,
+  spliceCredentialHeaders,
+  spliceCredentialUrl,
+  redactRemoteForLog,
+} from "./connections.js";
+export type { GitRemoteBinding, ResolveRemoteOptions } from "./connections.js";
 export type {
   GitRequest,
   GitResponse,

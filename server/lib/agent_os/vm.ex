@@ -59,6 +59,9 @@ defmodule AgentOS.Vm do
     :booted_at,
     :last_active_ms,
     :snapshot_base,
+    # Optional BEAM-owned native git-engine Port (GIT.md PR7+ / PR10c demux).
+    :git_engine,
+    git_mount_path: nil,
     shell_log: "",
     shell_base: 0
   ]
@@ -413,6 +416,29 @@ defmodule AgentOS.Vm do
 
   def unmount(_server, _path, _opts), do: {:error, "unmount expects a binary path"}
 
+  @doc """
+  Attach a BEAM-owned native `git-engine` Port for this VM (GIT.md K15/K22).
+
+  Options: `:executable`, `:root`, `:mount_path` (default `"/workspace/repo"`).
+  Replaces any prior attachment. Stops the previous Port first.
+  """
+  @spec attach_git(server(), keyword()) :: :ok | {:error, term()}
+  def attach_git(server, opts \\ []) when is_list(opts),
+    do: GenServer.call(server, {:attach_git, opts}, timeout(opts))
+
+  @doc "Detach and stop the git-engine Port for this VM."
+  @spec detach_git(server(), keyword()) :: :ok
+  def detach_git(server, opts \\ []),
+    do: GenServer.call(server, :detach_git, timeout(opts))
+
+  @doc """
+  If `event` is a host_call for name `\"git\"` or this VM's gitfs mount path,
+  answer it via the Port and return `:answered`. Otherwise `:unclaimed`.
+  """
+  @spec try_answer_git_host_call(server(), map(), keyword()) :: :answered | :unclaimed | {:error, term()}
+  def try_answer_git_host_call(server, event, opts \\ []) when is_map(event),
+    do: GenServer.call(server, {:try_answer_git_host_call, event}, timeout(opts))
+
   @doc "Liveness/age info."
   @spec info(server()) :: map()
   def info(server), do: GenServer.call(server, :info)
@@ -586,14 +612,20 @@ defmodule AgentOS.Vm do
                    Keyword.get(opts, :sidecar_options, [])
                  ) do
               {:ok, _scope} ->
-                {:ok,
-                 %__MODULE__{
-                   id: id,
-                   nif: nif,
-                   booted_at: now,
-                   last_active_ms: now,
-                   snapshot_base: base
-                 }}
+                state0 = %__MODULE__{
+                  id: id,
+                  nif: nif,
+                  booted_at: now,
+                  last_active_ms: now,
+                  snapshot_base: base,
+                  git_engine: nil,
+                  git_mount_path: nil
+                }
+
+                case maybe_attach_git_on_boot(state0, opts) do
+                  {:ok, state} -> {:ok, state}
+                  {:error, reason} -> {:stop, reason}
+                end
 
               {:error, reason} ->
                 {:stop, "failed to attach sidecars: #{inspect(reason)}"}
@@ -803,9 +835,34 @@ defmodule AgentOS.Vm do
     {:reply, Nif.unmount(state.nif, path), touch(state)}
   end
 
+  def handle_call({:attach_git, opts}, _from, state) do
+    case do_attach_git(state, opts) do
+      {:ok, state2} -> {:reply, :ok, touch(state2)}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call(:detach_git, _from, state) do
+    {:reply, :ok, touch(do_detach_git(state))}
+  end
+
+  def handle_call({:try_answer_git_host_call, event}, _from, state) do
+    case answer_git_event(state, event) do
+      {:answered, state2} -> {:reply, :answered, touch(state2)}
+      :unclaimed -> {:reply, :unclaimed, state}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
   def handle_call(:info, _from, state) do
     {:reply,
-     %{id: state.id, booted_at: state.booted_at, idle_ms: now_ms() - state.last_active_ms}, state}
+     %{
+       id: state.id,
+       booted_at: state.booted_at,
+       idle_ms: now_ms() - state.last_active_ms,
+       git_attached: is_pid(state.git_engine) and Process.alive?(state.git_engine),
+       git_mount_path: state.git_mount_path
+     }, state}
   end
 
   def handle_call(:status, _from, state) do
@@ -992,6 +1049,91 @@ defmodule AgentOS.Vm do
 
   defp touch(state), do: %{state | last_active_ms: now_ms()}
   defp now_ms, do: System.monotonic_time(:millisecond)
+
+  defp maybe_attach_git_on_boot(state, opts) do
+    case Keyword.get(opts, :git) do
+      nil ->
+        {:ok, state}
+
+      false ->
+        {:ok, state}
+
+      true ->
+        do_attach_git(state, [])
+
+      git_opts when is_list(git_opts) ->
+        do_attach_git(state, git_opts)
+
+      _other ->
+        {:error, "git boot option must be true | false | keyword list"}
+    end
+  end
+
+  defp do_attach_git(state, opts) do
+    state = do_detach_git(state)
+    mount_path = Keyword.get(opts, :mount_path, "/workspace/repo")
+
+    case AgentOS.GitEngine.start_link(
+           executable: Keyword.get(opts, :executable),
+           root: Keyword.get(opts, :root),
+           mount_path: mount_path
+         ) do
+      {:ok, pid} ->
+        # Mount the kernel MountFs slot that will host_call this path; BEAM answers via Port type 4.
+        read_only = Keyword.get(opts, :read_only, false)
+
+        case Nif.mount(state.nif, mount_path, read_only) do
+          :ok ->
+            {:ok, %{state | git_engine: pid, git_mount_path: mount_path}}
+
+          {:error, reason} ->
+            _ = AgentOS.GitEngine.stop(pid)
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  defp do_detach_git(%{git_engine: pid, git_mount_path: path} = state) when is_pid(pid) do
+    if is_binary(path), do: _ = Nif.unmount(state.nif, path)
+    if Process.alive?(pid), do: _ = AgentOS.GitEngine.stop(pid)
+    %{state | git_engine: nil, git_mount_path: nil}
+  end
+
+  defp do_detach_git(state), do: %{state | git_engine: nil, git_mount_path: nil}
+
+  defp answer_git_event(%{git_engine: pid} = state, %{kind: :host_call, handle: handle, name: name, body: body})
+       when is_pid(pid) and is_integer(handle) and is_binary(name) and is_binary(body) do
+    if not Process.alive?(pid) do
+      _ = Nif.relay_host_call_fail(state.nif, handle)
+      {:answered, %{state | git_engine: nil}}
+    else
+      case AgentOS.GitEngine.handle_host_call(pid, name, body) do
+        {:ok, result} when is_binary(result) ->
+          case Nif.relay_host_call_respond(state.nif, handle, result) do
+            :ok -> {:answered, state}
+            {:error, reason} -> {:error, reason}
+          end
+
+        {:error, :not_git} ->
+          :unclaimed
+
+        {:error, _reason} ->
+          _ = Nif.relay_host_call_fail(state.nif, handle)
+          {:answered, state}
+      end
+    end
+  end
+
+  defp answer_git_event(_state, _event), do: :unclaimed
+
+  @impl true
+  def terminate(_reason, state) do
+    _ = do_detach_git(state)
+    :ok
+  end
 
   defp nif_opts(opts),
     do:

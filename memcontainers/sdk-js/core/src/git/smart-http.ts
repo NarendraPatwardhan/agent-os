@@ -1,7 +1,10 @@
 /**
- * Host smart-HTTP (browser/JS) — ListRefs + FetchPacks (GIT.md PR9, K16).
- * Server twin is C ge_http_* (fixture transport). No credentials in v1.
+ * Host smart-HTTP (browser/JS) — ListRefs + FetchPacks + PushPacks (GIT.md PR9/PR12).
+ * Server twin is C ge_http_*. Credentials spliced only via request headers (PR11).
  */
+
+import type { ConnectionAuth } from "../types.js";
+import { spliceCredentialHeaders, spliceCredentialUrl } from "./connections.js";
 
 export interface RefAdvertisement {
   name: string;
@@ -9,14 +12,34 @@ export interface RefAdvertisement {
   peeled?: string;
 }
 
+export interface ReceiveStatus {
+  ok: boolean;
+  message?: string;
+}
+
+export interface PushCommand {
+  /** old OID or zeros for create */
+  oldHash: string;
+  /** new OID or zeros for delete */
+  newHash: string;
+  name: string;
+}
+
 export interface SmartHttpTransport {
-  listRefs(url: string): Promise<RefAdvertisement[]>;
+  listRefs(url: string, auth?: ConnectionAuth): Promise<RefAdvertisement[]>;
   fetchPacks(
     url: string,
     want: string[],
     have: string[],
     depth?: number,
+    auth?: ConnectionAuth,
   ): Promise<Uint8Array>;
+  pushPacks?(
+    url: string,
+    commands: PushCommand[],
+    pack: Uint8Array,
+    auth?: ConnectionAuth,
+  ): Promise<ReceiveStatus>;
 }
 
 /** In-memory test double (shared algorithm with C fixtures). */
@@ -25,6 +48,11 @@ export class FixtureSmartHttp implements SmartHttpTransport {
     string,
     { refs: RefAdvertisement[]; pack: Uint8Array }
   >();
+  lastAuth: ConnectionAuth | undefined;
+  lastPush:
+    | { url: string; commands: PushCommand[]; packLen: number }
+    | undefined;
+  pushResult: ReceiveStatus = { ok: true };
 
   add(url: string, refs: RefAdvertisement[], pack: Uint8Array): void {
     this.fixtures.set(url, { refs, pack });
@@ -32,9 +60,12 @@ export class FixtureSmartHttp implements SmartHttpTransport {
 
   clear(): void {
     this.fixtures.clear();
+    this.lastAuth = undefined;
+    this.lastPush = undefined;
   }
 
-  async listRefs(url: string): Promise<RefAdvertisement[]> {
+  async listRefs(url: string, auth?: ConnectionAuth): Promise<RefAdvertisement[]> {
+    this.lastAuth = auth;
     const f = this.fixtures.get(url);
     if (!f) throw new Error(`git: list-refs failed: no fixture for ${url}`);
     return f.refs.map((r) => ({ ...r }));
@@ -45,35 +76,54 @@ export class FixtureSmartHttp implements SmartHttpTransport {
     _want: string[],
     _have: string[],
     _depth?: number,
+    auth?: ConnectionAuth,
   ): Promise<Uint8Array> {
+    this.lastAuth = auth;
     const f = this.fixtures.get(url);
     if (!f) throw new Error(`git: upload-pack failed: no fixture for ${url}`);
     return f.pack.slice();
   }
+
+  async pushPacks(
+    url: string,
+    commands: PushCommand[],
+    pack: Uint8Array,
+    auth?: ConnectionAuth,
+  ): Promise<ReceiveStatus> {
+    this.lastAuth = auth;
+    this.lastPush = { url, commands, packLen: pack.byteLength };
+    return this.pushResult;
+  }
 }
 
 /**
- * Public HTTPS smart-HTTP using fetch (browser/Node).
- * Minimal pkt-line info/refs + upload-pack; no credential splice (PR11).
+ * Public HTTPS smart-HTTP using fetch (browser/Node) with optional credential splice.
  */
 export class FetchSmartHttp implements SmartHttpTransport {
-  async listRefs(url: string): Promise<RefAdvertisement[]> {
-    const base = url.replace(/\/$/, "");
+  constructor(private readonly defaultAuth?: ConnectionAuth) {}
+
+  private headers(auth?: ConnectionAuth): Record<string, string> {
+    return spliceCredentialHeaders(auth ?? this.defaultAuth ?? { kind: "none" });
+  }
+
+  private url(url: string, auth?: ConnectionAuth): string {
+    return spliceCredentialUrl(url, auth ?? this.defaultAuth ?? { kind: "none" });
+  }
+
+  async listRefs(url: string, auth?: ConnectionAuth): Promise<RefAdvertisement[]> {
+    const base = this.url(url, auth).replace(/\/$/, "");
+    const hdrs = this.headers(auth);
     const infoUrl = `${base}/info/refs?service=git-upload-pack`;
-    const res = await fetch(infoUrl, {
-      headers: { "git-protocol": "version=2" },
+    let res = await fetch(infoUrl, {
+      headers: { ...hdrs, "git-protocol": "version=2" },
     });
     if (!res.ok) {
-      // Fall back to v1 dumb/smart advertisement
-      const res1 = await fetch(`${base}/info/refs?service=git-upload-pack`);
-      if (!res1.ok) {
-        throw new Error(`git: list-refs failed: HTTP ${res1.status}`);
+      res = await fetch(`${base}/info/refs?service=git-upload-pack`, { headers: hdrs });
+      if (!res.ok) {
+        throw new Error(`git: list-refs failed: HTTP ${res.status}`);
       }
-      const text = await res1.text();
-      return parseInfoRefs(text);
     }
-    const text = await res.text();
-    return parseInfoRefs(text);
+    return parseInfoRefs(await res.text());
   }
 
   async fetchPacks(
@@ -81,12 +131,14 @@ export class FetchSmartHttp implements SmartHttpTransport {
     want: string[],
     have: string[],
     depth?: number,
+    auth?: ConnectionAuth,
   ): Promise<Uint8Array> {
-    const base = url.replace(/\/$/, "");
+    const base = this.url(url, auth).replace(/\/$/, "");
     const body = buildUploadPackBody(want, have, depth);
     const res = await fetch(`${base}/git-upload-pack`, {
       method: "POST",
       headers: {
+        ...this.headers(auth),
         "content-type": "application/x-git-upload-pack-request",
         accept: "application/x-git-upload-pack-result",
       },
@@ -95,22 +147,42 @@ export class FetchSmartHttp implements SmartHttpTransport {
     if (!res.ok) {
       throw new Error(`git: upload-pack failed: HTTP ${res.status}`);
     }
-    const buf = new Uint8Array(await res.arrayBuffer());
-    return extractPack(buf);
+    return extractPack(new Uint8Array(await res.arrayBuffer()));
+  }
+
+  async pushPacks(
+    url: string,
+    commands: PushCommand[],
+    pack: Uint8Array,
+    auth?: ConnectionAuth,
+  ): Promise<ReceiveStatus> {
+    const base = this.url(url, auth).replace(/\/$/, "");
+    const body = buildReceivePackBody(commands, pack);
+    const res = await fetch(`${base}/git-receive-pack`, {
+      method: "POST",
+      headers: {
+        ...this.headers(auth),
+        "content-type": "application/x-git-receive-pack-request",
+        accept: "application/x-git-receive-pack-result",
+      },
+      body,
+    });
+    if (!res.ok) {
+      return { ok: false, message: `HTTP ${res.status}` };
+    }
+    const text = await res.text();
+    const failed = /ng /.test(text) || /error/i.test(text);
+    return { ok: !failed, message: text.slice(0, 200) };
   }
 }
 
 function parseInfoRefs(text: string): RefAdvertisement[] {
   const refs: RefAdvertisement[] = [];
-  // Skip service banner lines; accept "hash name" lines (pkt-line or plain).
   for (const raw of text.split("\n")) {
     let line = raw.trim();
     if (!line || line.startsWith("#")) continue;
-    // pkt-line: 4 hex length prefix
-    if (/^[0-9a-fA-F]{4}/.test(line) && line.length > 4) {
-      line = line.slice(4);
-    }
-    if (line.startsWith("001e") || line.includes("git-upload-pack")) continue;
+    if (/^[0-9a-fA-F]{4}/.test(line) && line.length > 4) line = line.slice(4);
+    if (line.includes("git-upload-pack") || line.includes("git-receive-pack")) continue;
     const m = line.match(/^([0-9a-f]{40})\s+(\S+)/i);
     if (!m) continue;
     const name = m[2]!.split("\0")[0]!;
@@ -141,9 +213,20 @@ function buildUploadPackBody(
   return new TextEncoder().encode(s);
 }
 
-/** Strip sideband / pkt framing when present; otherwise return as-is. */
+function buildReceivePackBody(commands: PushCommand[], pack: Uint8Array): Uint8Array {
+  let s = "";
+  for (const c of commands) {
+    s += pkt(`${c.oldHash} ${c.newHash} ${c.name}`);
+  }
+  s += "0000";
+  const head = new TextEncoder().encode(s);
+  const out = new Uint8Array(head.length + pack.length);
+  out.set(head, 0);
+  out.set(pack, head.length);
+  return out;
+}
+
 function extractPack(buf: Uint8Array): Uint8Array {
-  // PACK signature
   for (let i = 0; i + 4 <= buf.length; i++) {
     if (
       buf[i] === 0x50 &&
