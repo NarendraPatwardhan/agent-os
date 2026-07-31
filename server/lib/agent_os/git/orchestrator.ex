@@ -7,6 +7,11 @@ defmodule AgentOS.Git.Orchestrator do
 
   **HTTPS is BEAM** (`AgentOS.Git.SmartHttp`). **Apply is C Port** (`AgentOS.GitEngine`).
   No Node. Engine never dials.
+
+  Security / honesty (P0.1 / P0.2):
+  * URL scheme/userinfo/host + origin allowlist are checked **before** any HTTP
+  * Empty packs never short-circuit to `ok:true` — apply requires non-empty pack
+    and a successful import
   """
 
   alias AgentOS.Git.SmartHttp
@@ -20,6 +25,12 @@ defmodule AgentOS.Git.Orchestrator do
   Options:
   * `:transport` — injectable SmartHttp transport (tests)
   * `:auth` — `%{kind: :none | :bearer | :header, ...}`
+  * `:allowed_origins` — list of canonical `http(s)://host[:port]` origins
+    (required for product dials; empty/missing fails closed). Prefer explicit
+    lists in tests. `:any` is fixture-transport only (see SmartHttp).
+  * `:require_origin_allowlist` — default `true`; set `false` only with
+    injected fixture transport
+  * `:max_pack_bytes` — response/pack size cap (default 64 MiB)
   * `:read_only` — reject push when true
   """
   @spec run(pid(), request(), keyword()) :: {:ok, binary()} | {:error, term()}
@@ -43,46 +54,43 @@ defmodule AgentOS.Git.Orchestrator do
 
   defp clone(engine_pid, req, opts) do
     with {:ok, url} <- url_of(req),
+         {:ok, _origin} <- SmartHttp.ensure_url_allowed(url, opts),
          {:ok, refs} <- SmartHttp.list_refs(url, opts),
          {:ok, tip} <- pick_tip(refs, ref_of(req)),
          {:ok, pack} <-
            SmartHttp.fetch_packs(url, [tip.hash], [], Keyword.put(opts, :depth, depth_of(req))),
+         :ok <- require_non_empty_pack(pack),
          :ok <- apply_init(engine_pid),
          :ok <- apply_pack(engine_pid, pack),
-         :ok <- maybe_apply_refs_and_checkout(engine_pid, tip, pack, :clone) do
+         :ok <- apply_refs_and_checkout(engine_pid, tip, :clone) do
       {:ok, response(true, 0, "cloned #{redact_url(url)}\n", "")}
     else
-      {:error, {:list_refs_failed, r}} ->
-        {:ok, response(false, 1, "", "git: list-refs failed: #{inspect(r)}\n")}
-
-      {:error, {:upload_pack_failed, r}} ->
-        {:ok, response(false, 1, "", "git: upload-pack failed: #{inspect(r)}\n")}
-
-      {:error, :no_refs} ->
-        {:ok, response(false, 1, "", "git: no refs in advertisement\n")}
-
-      {:error, :ref_not_found} ->
-        {:ok, response(false, 1, "", "git: ref not found\n")}
-
-      {:error, :bad_url} ->
-        {:ok, response(false, 2, "", "clone/fetch need args.url\n")}
-
-      {:error, reason} ->
-        {:ok, response(false, 1, "", "git: #{inspect(reason)}\n")}
+      err -> map_remote_error(err, :clone)
     end
   end
 
   defp fetch(engine_pid, req, opts) do
     with {:ok, url} <- url_of(req),
+         {:ok, _origin} <- SmartHttp.ensure_url_allowed(url, opts),
          {:ok, refs} <- SmartHttp.list_refs(url, opts),
          {:ok, tip} <- pick_tip(refs, ref_of(req)),
          have <- local_haves(engine_pid),
          {:ok, pack} <-
            SmartHttp.fetch_packs(url, [tip.hash], have, Keyword.put(opts, :depth, depth_of(req))),
+         :ok <- require_non_empty_pack(pack),
          :ok <- apply_pack(engine_pid, pack),
-         :ok <- maybe_apply_refs_and_checkout(engine_pid, tip, pack, :fetch) do
+         :ok <- apply_refs_and_checkout(engine_pid, tip, :fetch) do
       {:ok, response(true, 0, "fetched\n", "")}
     else
+      err -> map_remote_error(err, :fetch)
+    end
+  end
+
+  defp require_non_empty_pack(pack) when is_binary(pack) and pack != <<>>, do: :ok
+  defp require_non_empty_pack(_), do: {:error, :empty_pack}
+
+  defp map_remote_error(err, mode) do
+    case err do
       {:error, {:list_refs_failed, r}} ->
         {:ok, response(false, 1, "", "git: list-refs failed: #{inspect(r)}\n")}
 
@@ -98,8 +106,35 @@ defmodule AgentOS.Git.Orchestrator do
       {:error, :bad_url} ->
         {:ok, response(false, 2, "", "clone/fetch need args.url\n")}
 
-      {:error, reason} ->
+      {:error, :bad_remote_url} ->
+        {:ok,
+         response(
+           false,
+           1,
+           "",
+           "git: remote url must be http(s) without embedded credentials\n"
+         )}
+
+      {:error, :origin_not_allowed} ->
+        {:ok, response(false, 1, "", "git: origin not allowlisted\n")}
+
+      {:error, :empty_pack} ->
+        {:ok, response(false, 1, "", "git: empty pack from remote\n")}
+
+      {:error, :no_pack_magic} ->
+        {:ok, response(false, 1, "", "git: response missing PACK magic\n")}
+
+      {:error, :body_too_large} ->
+        {:ok, response(false, 1, "", "git: pack/body exceeds max_pack_bytes\n")}
+
+      {:error, {:http_status, status}} ->
+        {:ok, response(false, 1, "", "git: HTTP status #{status}\n")}
+
+      {:error, reason} when mode == :fetch ->
         {:ok, response(false, 1, "", "git: fetch failed: #{inspect(reason)}\n")}
+
+      {:error, reason} ->
+        {:ok, response(false, 1, "", "git: #{inspect(reason)}\n")}
     end
   end
 
@@ -112,18 +147,14 @@ defmodule AgentOS.Git.Orchestrator do
     end
   end
 
-  defp apply_pack(_pid, pack) when pack == <<>>, do: :ok
+  # Empty pack must never succeed — product honesty (P0.2).
+  defp apply_pack(_pid, pack) when pack == <<>>, do: {:error, :empty_pack}
 
   defp apply_pack(pid, pack) when is_binary(pack) do
     # Stream in 1 MiB chunks for large packs.
     chunk = 1024 * 1024
     size = byte_size(pack)
-
-    if size == 0 do
-      GitEngine.import_pack(pid, <<>>, final: true)
-    else
-      do_import_chunks(pid, pack, 0, size, chunk)
-    end
+    do_import_chunks(pid, pack, 0, size, chunk)
   end
 
   defp do_import_chunks(pid, _pack, off, size, _chunk) when off >= size do
@@ -144,16 +175,12 @@ defmodule AgentOS.Git.Orchestrator do
     end
   end
 
-  # Empty pack (fixture tests): list_refs/fetch_packs still ran; cannot import OIDs.
-  # Real HTTPS always returns a pack with objects.
-  defp maybe_apply_refs_and_checkout(_pid, _tip, pack, _mode) when pack == <<>>, do: :ok
-
-  defp maybe_apply_refs_and_checkout(pid, tip, _pack, :clone) do
+  defp apply_refs_and_checkout(pid, tip, :clone) do
     with :ok <- apply_refs(pid, tip), do: apply_clone(pid, tip)
   end
 
-  defp maybe_apply_refs_and_checkout(pid, tip, _pack, :fetch) do
-    with :ok <- apply_refs(pid, tip), do: apply_fetch(pid)
+  defp apply_refs_and_checkout(pid, tip, :fetch) do
+    with :ok <- apply_refs(pid, tip), do: apply_fetch(pid, tip)
   end
 
   defp apply_refs(pid, %{name: name, hash: hash}) do
@@ -173,8 +200,12 @@ defmodule AgentOS.Git.Orchestrator do
     end
   end
 
-  defp apply_fetch(pid) do
-    case GitEngine.run(pid, %{"op" => "fetch.apply"}) do
+  # P0.4: engine fetch.apply requires name+hash (no silent no-op success).
+  defp apply_fetch(pid, %{name: name, hash: hash}) do
+    case GitEngine.run(pid, %{
+           "op" => "fetch.apply",
+           "args" => %{"name" => name, "hash" => hash, "remote" => "origin"}
+         }) do
       {:ok, m} -> if ok?(m), do: :ok, else: {:error, m}
       err -> err
     end
@@ -229,6 +260,7 @@ defmodule AgentOS.Git.Orchestrator do
   defp ref_of(req) do
     args = Map.get(req, "args") || %{}
     args = if is_map(args), do: stringify_keys(args), else: %{}
+
     case Map.get(args, "ref") do
       r when is_binary(r) and r != "" -> r
       _ -> nil
@@ -270,8 +302,12 @@ defmodule AgentOS.Git.Orchestrator do
 
   defp ok?(m) when is_map(m) do
     case Map.get(m, "ok", Map.get(m, :ok)) do
-      true -> true
-      "true" -> true
+      true ->
+        true
+
+      "true" ->
+        true
+
       _ ->
         raw = Map.get(m, "raw")
         is_binary(raw) and String.contains?(raw, "\"ok\":true")

@@ -78,7 +78,17 @@ const char *ge_last_error(const ge_engine *e) {
   return e ? e->err : "null engine";
 }
 
+/* OOM fallback for ge_run_json — never free this pointer (P0.7). */
+static char ge_static_oom[] =
+    "{\"ok\":false,\"code\":1,\"stdout\":\"\",\"stderr\":\"out of memory\"}";
+
+int ge_response_is_static(const void *p) {
+  return p == (const void *)ge_static_oom;
+}
+
 void ge_free(void *p) {
+  if (!p || p == (void *)ge_static_oom)
+    return;
   free(p);
 }
 
@@ -297,15 +307,19 @@ static int op_commit(ge_engine *e, const char *args, char *hash_out, size_t hash
   if (ensure_repo(e) != 0)
     return -1;
   char message[4096];
-  char name[256] = "Agent";
-  char email[256] = "agent@example.com";
+  char name[256] = "";
+  char email[256] = "";
   int64_t when_unix = 0;
   if (jmin_get_string(args, "message", message, sizeof(message)) != 0 || !message[0]) {
     set_err(e, "commit: message required");
     return -1;
   }
-  (void)jmin_get_string(args, "name", name, sizeof(name));
-  (void)jmin_get_string(args, "email", email, sizeof(email));
+  /* K28: host must inject identity; never invent Agent/agent@example.com. */
+  if (jmin_get_string(args, "name", name, sizeof(name)) != 0 || !name[0] ||
+      jmin_get_string(args, "email", email, sizeof(email)) != 0 || !email[0]) {
+    set_err(e, "commit: name and email required (host identity policy K28)");
+    return -1;
+  }
   (void)jmin_get_int64(args, "when_unix", &when_unix);
 
   git_index *index = NULL;
@@ -657,9 +671,85 @@ static int op_clone_apply(ge_engine *e, const char *args) {
   return 0;
 }
 
+/* After pack.import + refs.import: update remote-tracking / FETCH_HEAD.
+ * Requires name + hash; fails closed if args are empty (no silent success). */
+static int op_fetch_apply(ge_engine *e, const char *args) {
+  if (ensure_repo(e) != 0)
+    return -1;
+
+  char name[256] = "";
+  char hash[64] = "";
+  char remote[128] = "origin";
+  if (jmin_get_string(args, "name", name, sizeof(name)) != 0 || !name[0] ||
+      jmin_get_string(args, "hash", hash, sizeof(hash)) != 0 || !hash[0]) {
+    set_err(e, "fetch.apply: need name and hash (fetch.apply not fully implemented "
+               "without refs)");
+    return -1;
+  }
+  (void)jmin_get_string(args, "remote", remote, sizeof(remote));
+  if (!remote[0])
+    snprintf(remote, sizeof(remote), "origin");
+
+  git_oid oid;
+  if (git_oid_fromstr(&oid, hash) != 0) {
+    set_err(e, "fetch.apply: bad hash");
+    return -1;
+  }
+
+  /* Tip object should exist after pack.import; allow ref-only if present in ODB. */
+  git_object *obj = NULL;
+  if (git_object_lookup(&obj, e->repo, &oid, GIT_OBJECT_ANY) != 0) {
+    set_err(e, "fetch.apply: tip object missing (import pack first)");
+    return -1;
+  }
+  git_object_free(obj);
+
+  /* Ensure the advertised/local ref name points at the tip. */
+  git_reference *ref = NULL;
+  if (git_reference_create(&ref, e->repo, name, &oid, 1, "fetch.apply") != 0) {
+    set_err_git(e, "fetch.apply: create ref");
+    return -1;
+  }
+  git_reference_free(ref);
+
+  /* Remote-tracking: refs/remotes/<remote>/<branch> from heads/* names. */
+  const char *short_branch = NULL;
+  if (strncmp(name, "refs/heads/", 11) == 0)
+    short_branch = name + 11;
+  else if (strncmp(name, "refs/remotes/", 13) == 0) {
+    /* Already a remote-tracking name; still refresh FETCH_HEAD below. */
+    short_branch = NULL;
+  } else {
+    /* tags or other: use last path segment as tracking short name */
+    const char *slash = strrchr(name, '/');
+    short_branch = slash ? slash + 1 : name;
+  }
+  if (short_branch && *short_branch) {
+    char tracking[320];
+    snprintf(tracking, sizeof(tracking), "refs/remotes/%s/%s", remote, short_branch);
+    git_reference *tr = NULL;
+    if (git_reference_create(&tr, e->repo, tracking, &oid, 1, "fetch.apply") != 0) {
+      set_err_git(e, "fetch.apply: remote-tracking");
+      return -1;
+    }
+    git_reference_free(tr);
+  }
+
+  /* FETCH_HEAD file (not a symbolic ref) — minimal single-line form. */
+  {
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/.git/FETCH_HEAD", e->root);
+    FILE *f = fopen(path, "wb");
+    if (f) {
+      fprintf(f, "%s\t\tbranch '%s' of remote '%s'\n", hash,
+              short_branch && *short_branch ? short_branch : name, remote);
+      fclose(f);
+    }
+  }
+  return 0;
+}
+
 char *ge_run_json(ge_engine *e, const char *request_json) {
-  static char static_oom[] =
-      "{\"ok\":false,\"code\":1,\"stdout\":\"\",\"stderr\":\"out of memory\"}";
   if (!e)
     return resp_usage("null engine");
   if (!request_json)
@@ -688,7 +778,7 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
 
   if (strcmp(op, "version") == 0 || strcmp(op, "help") == 0) {
     char *r = resp_ok(GE_VERSION "\n", NULL);
-    return r ? r : static_oom;
+    return r ? r : ge_static_oom;
   }
 
   if (strcmp(op, "init") == 0) {
@@ -718,7 +808,7 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     char stdout_s[160];
     snprintf(stdout_s, sizeof(stdout_s), "[%.7s] commit\n%s\n", hash, hash);
     char *r = resp_ok(stdout_s, result);
-    return r ? r : static_oom;
+    return r ? r : ge_static_oom;
   }
 
   if (strcmp(op, "status") == 0) {
@@ -728,7 +818,7 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     if (op_status(e, short_fmt, buf, sizeof(buf)) != 0)
       return resp_err(1, e->err);
     char *r = resp_ok(buf, NULL);
-    return r ? r : static_oom;
+    return r ? r : ge_static_oom;
   }
 
   if (strcmp(op, "log") == 0) {
@@ -736,7 +826,7 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     if (op_log(e, args, buf, sizeof(buf)) != 0)
       return resp_err(1, e->err);
     char *r = resp_ok(buf, NULL);
-    return r ? r : static_oom;
+    return r ? r : ge_static_oom;
   }
 
   if (strcmp(op, "rev-parse") == 0) {
@@ -746,7 +836,7 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     char result[80];
     snprintf(result, sizeof(result), "{\"hash\":\"%s\"}", hex);
     char *r = resp_ok(hex, result);
-    return r ? r : static_oom;
+    return r ? r : ge_static_oom;
   }
 
   if (strcmp(op, "branch") == 0) {
@@ -768,7 +858,7 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     if (op_branch_list(e, buf, sizeof(buf)) != 0)
       return resp_err(1, e->err);
     char *r = resp_ok(buf, NULL);
-    return r ? r : static_oom;
+    return r ? r : ge_static_oom;
   }
 
   if (strcmp(op, "checkout") == 0 || strcmp(op, "switch") == 0) {
@@ -790,14 +880,14 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     if (op_diff(e, buf, sizeof(buf)) != 0)
       return resp_err(1, e->err);
     char *r = resp_ok(buf, NULL);
-    return r ? r : static_oom;
+    return r ? r : ge_static_oom;
   }
   if (strcmp(op, "show") == 0) {
     char buf[16384];
     if (op_show(e, args, buf, sizeof(buf)) != 0)
       return resp_err(1, e->err);
     char *r = resp_ok(buf, NULL);
-    return r ? r : static_oom;
+    return r ? r : ge_static_oom;
   }
   if (strcmp(op, "reset") == 0) {
     if (op_reset(e, args) != 0)
@@ -814,21 +904,21 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     if (op_config(e, args, buf, sizeof(buf)) != 0)
       return resp_err(1, e->err);
     char *r = resp_ok(buf, NULL);
-    return r ? r : static_oom;
+    return r ? r : ge_static_oom;
   }
   if (strcmp(op, "remote") == 0) {
     char buf[8192] = "";
     if (op_remote(e, args, buf, sizeof(buf)) != 0)
       return resp_err(1, e->err);
     char *r = resp_ok(buf, NULL);
-    return r ? r : static_oom;
+    return r ? r : ge_static_oom;
   }
   if (strcmp(op, "tips") == 0) {
     char tips[16384];
     if (op_tips(e, tips, sizeof(tips)) != 0)
       return resp_err(1, e->err);
     char *r = resp_ok("", tips);
-    return r ? r : static_oom;
+    return r ? r : ge_static_oom;
   }
 
   if (strcmp(op, "refs.import") == 0) {
@@ -854,6 +944,8 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
   }
 
   if (strcmp(op, "fetch.apply") == 0) {
+    if (op_fetch_apply(e, args) != 0)
+      return resp_err(1, e->err);
     return resp_ok("", NULL);
   }
 
@@ -862,7 +954,7 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     if (op_push_prepare(e, result, sizeof(result)) != 0)
       return resp_err(1, e->err);
     char *r = resp_ok("", result);
-    return r ? r : static_oom;
+    return r ? r : ge_static_oom;
   }
   if (strcmp(op, "push.complete") == 0) {
     if (op_push_complete(e, args) != 0)

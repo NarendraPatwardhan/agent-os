@@ -36,9 +36,9 @@ GE_API ge_engine *ge_open(const char *worktree_root);
 
 GE_API void ge_close(ge_engine *e);
 
-/* Sole function face. Returns heap JSON string (caller free()s with ge_free
- * or free). Never returns NULL — on OOM returns a static error JSON that must
- * not be freed (check ge_response_is_static). Prefer ge_free always safe. */
+/* Sole function face. Returns heap JSON string (caller free()s with ge_free).
+ * Never returns NULL — on OOM returns a static error JSON. ge_free is always
+ * safe (no-op for static fallbacks); ge_response_is_static reports which. */
 GE_API char *ge_run_json(ge_engine *e, const char *request_json);
 
 /* Binary pack import (GIT_DESIGN §3.3). Chunks may be streamed; final!=0
@@ -51,6 +51,9 @@ GE_API const char *ge_last_error(const ge_engine *e);
 
 /* Free a string returned by ge_run_json (or no-op for static fallbacks). */
 GE_API void ge_free(void *p);
+
+/* Non-zero if p is a static ge_run_json fallback (must not free() directly). */
+GE_API int ge_response_is_static(const void *p);
 
 /* Identity of this spike build (for op "version"). */
 GE_API const char *ge_version(void);

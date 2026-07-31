@@ -368,7 +368,15 @@ export class GitRemoteOrchestrator {
     });
     if (!imp.ok) return imp;
 
-    const fa = await this.engine.run({ op: "fetch.apply" });
+    // P0.4: engine requires name+hash (no silent no-op success).
+    const fa = await this.engine.run({
+      op: "fetch.apply",
+      args: {
+        name: tip.name,
+        hash: tip.hash,
+        remote: typeof args.remote === "string" ? args.remote : "origin",
+      },
+    });
     if (!fa.ok) return fa;
     return { ok: true, code: 0, stdout: "fetched\n", stderr: "" };
   }

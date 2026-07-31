@@ -7,5 +7,6 @@
   "_ge_import_pack",
   "_ge_last_error",
   "_ge_free",
+  "_ge_response_is_static",
   "_ge_version"
 ]

@@ -46,13 +46,12 @@ int main(void) {
   if (expect_ok(e, "{\"op\":\"log\",\"args\":{\"max_count\":5}}") != 0)
     return 1;
 
-  /* Dial refuse must stay fail-closed at Run face (orch uses type 5 / intercept). */
+  /* Dial refuse must stay fail-closed at Run face (type-1); C orch is type-5 only. */
   char *dial = ge_run_json(e, "{\"op\":\"clone\",\"args\":{\"url\":\"https://example.com/r.git\"}}");
   if (!dial) {
     fprintf(stderr, "null dial\n");
     return 1;
   }
-  /* Direct ge_run_json still refuses (engine purity). Port intercept uses orch. */
   int refused = strstr(dial, "\"ok\":false") != NULL || strstr(dial, "\"ok\": false") != NULL;
   ge_free(dial);
   if (!refused) {

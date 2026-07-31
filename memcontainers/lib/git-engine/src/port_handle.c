@@ -6,18 +6,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-static int is_remote_op(const char *json) {
-  char op[64] = "";
-  if (jmin_get_string(json, "op", op, sizeof(op)) != 0)
-    return 0;
-  for (char *p = op; *p; p++) {
-    if (*p >= 'A' && *p <= 'Z')
-      *p = (char)(*p - 'A' + 'a');
-  }
-  return strcmp(op, "clone") == 0 || strcmp(op, "fetch") == 0 || strcmp(op, "pull") == 0 ||
-         strcmp(op, "push") == 0;
-}
-
 static void wr_i32_le(uint8_t *p, int32_t v) {
   uint32_t u = (uint32_t)v;
   p[0] = (uint8_t)(u & 0xff);
@@ -27,6 +15,8 @@ static void wr_i32_le(uint8_t *p, int32_t v) {
 }
 
 int ge_port_handle(ge_engine *e, uint8_t type, const uint8_t *payload, size_t len, FILE *out) {
+  /* Type-1 RUN: always ge_run_json — remotes dial-refuse at the engine face.
+   * C orch is type-5 only (test / fixture path), not product type-1. */
   if (type == GE_FRAME_RUN) {
     char *req = (char *)malloc(len + 1);
     if (!req)
@@ -35,14 +25,7 @@ int ge_port_handle(ge_engine *e, uint8_t type, const uint8_t *payload, size_t le
       memcpy(req, payload, len);
     req[len] = 0;
 
-    char *resp = NULL;
-    if (is_remote_op(req)) {
-      /* Host-mediated remotes: never pass to ge_run dial refuse — use C orch. */
-      if (ge_remote_orchestrate(e, req, &resp) != 0 || !resp)
-        resp = jmin_response(0, 1, "", "remote orchestrate failed", NULL);
-    } else {
-      resp = ge_run_json(e, req);
-    }
+    char *resp = ge_run_json(e, req);
     free(req);
     if (!resp)
       return -1;
@@ -82,6 +65,8 @@ int ge_port_handle(ge_engine *e, uint8_t type, const uint8_t *payload, size_t le
     return rc;
   }
 
+  /* Type-5 REMOTE: test-only C orchestrator (fixtures). Product remotes use
+   * host/BEAM orch + type-1 apply ops; do not route product clone/fetch here. */
   if (type == GE_FRAME_REMOTE) {
     char *req = (char *)malloc(len + 1);
     if (!req)

@@ -34,16 +34,10 @@ export function createGitFsDriver(
     stderr: "",
   });
   let generation = 0;
-  let chain: Promise<unknown> = Promise.resolve();
 
-  const serial = <T>(fn: () => T | Promise<T>): Promise<T> => {
-    const p = chain.then(fn, fn) as Promise<T>;
-    chain = p.then(
-      () => undefined,
-      () => undefined,
-    );
-    return p;
-  };
+  // Shared with GitEngine.run / importPack via bridge.serial (single-writer).
+  const serial = <T>(fn: () => T | Promise<T>): Promise<T> =>
+    bridge.serial(fn);
 
   const FS = () => bridge.FS;
 
@@ -74,6 +68,7 @@ export function createGitFsDriver(
     }
   }
 
+  /** Must run inside bridge.serial (uses sync bridge.run). */
   function branchNameFromHead(): string {
     try {
       const br = bridge.run({ op: "branch" });
@@ -103,7 +98,7 @@ export function createGitFsDriver(
     readOnly,
 
     async open(path: string): Promise<Uint8Array> {
-      return serial(async () => {
+      return serial(() => {
         const p = normalizeRel(path);
         if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
         if (p === ".git/mc/ctl" || p === ".git/mc/out/last") {
@@ -136,105 +131,115 @@ export function createGitFsDriver(
     },
 
     async stat(path: string): Promise<DriverMeta> {
-      const p = normalizeRel(path);
-      if (p === "" || p === ".") {
-        return { kind: "dir", size: 0 };
-      }
-      if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
-      if (
-        p === ".git" ||
-        p === ".git/mc" ||
-        p === ".git/mc/out" ||
-        p === ".git/refs" ||
-        p === ".git/objects"
-      ) {
-        return { kind: "dir", size: 0 };
-      }
-      if (p === ".git/mc/ctl" || p === ".git/mc/out/last") {
+      return serial(() => {
+        const p = normalizeRel(path);
+        if (p === "" || p === ".") {
+          return { kind: "dir" as const, size: 0 };
+        }
+        if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
+        if (
+          p === ".git" ||
+          p === ".git/mc" ||
+          p === ".git/mc/out" ||
+          p === ".git/refs" ||
+          p === ".git/objects"
+        ) {
+          return { kind: "dir" as const, size: 0 };
+        }
+        if (p === ".git/mc/ctl" || p === ".git/mc/out/last") {
+          return {
+            kind: "file" as const,
+            size: new TextEncoder().encode(lastResponse).length,
+          };
+        }
+        if (p === ".git/mc/generation") {
+          return { kind: "file" as const, size: String(generation).length + 1 };
+        }
+        if (p === ".git/HEAD") {
+          return { kind: "file" as const, size: 32 };
+        }
+        const abs = bridge.abs(p);
+        if (!exists(abs)) throw fsErr("ENOENT", p);
+        const st = FS().stat(abs);
         return {
-          kind: "file",
-          size: new TextEncoder().encode(lastResponse).length,
+          kind: (FS().isDir(st.mode) ? "dir" : "file") as "dir" | "file",
+          size: st.size ?? 0,
         };
-      }
-      if (p === ".git/mc/generation") {
-        return { kind: "file", size: String(generation).length + 1 };
-      }
-      if (p === ".git/HEAD") {
-        return { kind: "file", size: 32 };
-      }
-      const abs = bridge.abs(p);
-      if (!exists(abs)) throw fsErr("ENOENT", p);
-      const st = FS().stat(abs);
-      return {
-        kind: FS().isDir(st.mode) ? "dir" : "file",
-        size: st.size ?? 0,
-      };
+      });
     },
 
     async readdir(path: string): Promise<DriverEntry[]> {
-      const p = normalizeRel(path);
-      if (p === "" || p === ".") {
-        const names = FS()
-          .readdir(bridge.workRoot)
-          .filter((n) => n !== "." && n !== "..");
-        const out: DriverEntry[] = names
-          .filter((name) => inCone(name) || name === ".git")
-          .map((name) => {
-            const st = FS().stat(bridge.abs(name));
-            return { name, kind: FS().isDir(st.mode) ? "dir" : "file" };
-          });
-        if (!out.some((e) => e.name === ".git")) {
-          out.push({ name: ".git", kind: "dir" });
-        }
-        // Cone top-level dirs that may not exist yet on MEMFS
-        for (const c of cone) {
-          const top = c.split("/").filter(Boolean)[0];
-          if (top && !out.some((e) => e.name === top)) {
-            out.push({ name: top, kind: "dir" });
+      return serial(() => {
+        const p = normalizeRel(path);
+        if (p === "" || p === ".") {
+          const names = FS()
+            .readdir(bridge.workRoot)
+            .filter((n) => n !== "." && n !== "..");
+          const out: DriverEntry[] = names
+            .filter((name) => inCone(name) || name === ".git")
+            .map((name) => {
+              const st = FS().stat(bridge.abs(name));
+              return {
+                name,
+                kind: (FS().isDir(st.mode) ? "dir" : "file") as "dir" | "file",
+              };
+            });
+          if (!out.some((e) => e.name === ".git")) {
+            out.push({ name: ".git", kind: "dir" });
           }
+          // Cone top-level dirs that may not exist yet on MEMFS
+          for (const c of cone) {
+            const top = c.split("/").filter(Boolean)[0];
+            if (top && !out.some((e) => e.name === top)) {
+              out.push({ name: top, kind: "dir" });
+            }
+          }
+          return out;
         }
-        return out;
-      }
-      if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
-      if (p === ".git") {
-        return [
-          { name: "HEAD", kind: "file" },
-          { name: "mc", kind: "dir" },
-          { name: "refs", kind: "dir" },
-        ];
-      }
-      if (p === ".git/mc") {
-        return [
-          { name: "ctl", kind: "file" },
-          { name: "out", kind: "dir" },
-          { name: "generation", kind: "file" },
-        ];
-      }
-      if (p === ".git/mc/out") {
-        return [{ name: "last", kind: "file" }];
-      }
-      if (p === ".git/refs") {
-        return [];
-      }
-      const abs = bridge.abs(p);
-      if (!exists(abs)) throw fsErr("ENOENT", p);
-      const st = FS().stat(abs);
-      if (!FS().isDir(st.mode)) throw fsErr("ENOTDIR", p);
-      return FS()
-        .readdir(abs)
-        .filter((n) => n !== "." && n !== "..")
-        .filter((name) => {
-          const child = p ? `${p}/${name}` : name;
-          return inCone(child) || isGitMeta(child);
-        })
-        .map((name) => {
-          const s = FS().stat(`${abs}/${name}`);
-          return { name, kind: FS().isDir(s.mode) ? "dir" : "file" };
-        });
+        if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
+        if (p === ".git") {
+          return [
+            { name: "HEAD", kind: "file" as const },
+            { name: "mc", kind: "dir" as const },
+            { name: "refs", kind: "dir" as const },
+          ];
+        }
+        if (p === ".git/mc") {
+          return [
+            { name: "ctl", kind: "file" as const },
+            { name: "out", kind: "dir" as const },
+            { name: "generation", kind: "file" as const },
+          ];
+        }
+        if (p === ".git/mc/out") {
+          return [{ name: "last", kind: "file" as const }];
+        }
+        if (p === ".git/refs") {
+          return [];
+        }
+        const abs = bridge.abs(p);
+        if (!exists(abs)) throw fsErr("ENOENT", p);
+        const st = FS().stat(abs);
+        if (!FS().isDir(st.mode)) throw fsErr("ENOTDIR", p);
+        return FS()
+          .readdir(abs)
+          .filter((n) => n !== "." && n !== "..")
+          .filter((name) => {
+            const child = p ? `${p}/${name}` : name;
+            return inCone(child) || isGitMeta(child);
+          })
+          .map((name) => {
+            const s = FS().stat(`${abs}/${name}`);
+            return {
+              name,
+              kind: (FS().isDir(s.mode) ? "dir" : "file") as "dir" | "file",
+            };
+          });
+      });
     },
 
     async write(path: string, data: Uint8Array): Promise<void> {
-      return serial(async () => {
+      return serial(() => {
         if (readOnly) throw fsErr("EACCES", "read-only mount");
         const p = normalizeRel(path);
         if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
@@ -289,48 +294,54 @@ export function createGitFsDriver(
     },
 
     async mkdir(path: string): Promise<void> {
-      if (readOnly) throw fsErr("EACCES", "read-only mount");
-      const p = normalizeRel(path);
-      if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
-      if (isGitMeta(path) && p !== ".git") {
-        if (p.startsWith(".git")) throw fsErr("EACCES", "synthetic .git");
-      }
-      const abs = bridge.abs(p);
-      ensureParent(FS(), abs);
-      try {
-        FS().mkdir(abs);
-      } catch {
-        /* EEXIST ok */
-      }
+      return serial(() => {
+        if (readOnly) throw fsErr("EACCES", "read-only mount");
+        const p = normalizeRel(path);
+        if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
+        if (isGitMeta(path) && p !== ".git") {
+          if (p.startsWith(".git")) throw fsErr("EACCES", "synthetic .git");
+        }
+        const abs = bridge.abs(p);
+        ensureParent(FS(), abs);
+        try {
+          FS().mkdir(abs);
+        } catch {
+          /* EEXIST ok */
+        }
+      });
     },
 
     async unlink(path: string): Promise<void> {
-      if (readOnly) throw fsErr("EACCES", "read-only mount");
-      const p = normalizeRel(path);
-      if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
-      if (isGitMeta(path)) throw fsErr("EACCES", "synthetic .git");
-      const abs = bridge.abs(p);
-      if (!exists(abs)) throw fsErr("ENOENT", p);
-      const st = FS().stat(abs);
-      if (FS().isDir(st.mode)) FS().rmdir(abs);
-      else FS().unlink(abs);
+      return serial(() => {
+        if (readOnly) throw fsErr("EACCES", "read-only mount");
+        const p = normalizeRel(path);
+        if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
+        if (isGitMeta(path)) throw fsErr("EACCES", "synthetic .git");
+        const abs = bridge.abs(p);
+        if (!exists(abs)) throw fsErr("ENOENT", p);
+        const st = FS().stat(abs);
+        if (FS().isDir(st.mode)) FS().rmdir(abs);
+        else FS().unlink(abs);
+      });
     },
 
     async rename(from: string, to: string): Promise<void> {
-      if (readOnly) throw fsErr("EACCES", "read-only mount");
-      const fp = normalizeRel(from);
-      const tp = normalizeRel(to);
-      if ((!inCone(fp) && !isGitMeta(fp)) || (!inCone(tp) && !isGitMeta(tp))) {
-        throw fsErr("ENOENT", from);
-      }
-      if (isGitMeta(from) || isGitMeta(to)) {
-        throw fsErr("EACCES", "synthetic .git");
-      }
-      const a = bridge.abs(from);
-      const b = bridge.abs(to);
-      if (!exists(a)) throw fsErr("ENOENT", from);
-      ensureParent(FS(), b);
-      FS().rename(a, b);
+      return serial(() => {
+        if (readOnly) throw fsErr("EACCES", "read-only mount");
+        const fp = normalizeRel(from);
+        const tp = normalizeRel(to);
+        if ((!inCone(fp) && !isGitMeta(fp)) || (!inCone(tp) && !isGitMeta(tp))) {
+          throw fsErr("ENOENT", from);
+        }
+        if (isGitMeta(from) || isGitMeta(to)) {
+          throw fsErr("EACCES", "synthetic .git");
+        }
+        const a = bridge.abs(from);
+        const b = bridge.abs(to);
+        if (!exists(a)) throw fsErr("ENOENT", from);
+        ensureParent(FS(), b);
+        FS().rename(a, b);
+      });
     },
   };
 }

@@ -1,5 +1,5 @@
 /**
- * SDK GitEngine — single-writer queue over GitBridge + optional gitfs driver.
+ * SDK GitEngine — single-writer via GitBridge.serial + optional gitfs driver.
  * Local Run only; remotes go through host_call `"git"` + GitRemoteOrchestrator.
  */
 
@@ -11,8 +11,6 @@ import type { GitEngineLoadOptions, GitRequest, GitResponse } from "./types.js";
 const REMOTE_OPS = new Set(["clone", "fetch", "pull", "push"]);
 
 export class GitEngine {
-  private queue: Promise<unknown> = Promise.resolve();
-
   constructor(
     readonly bridge: GitBridge,
     readonly readOnly = false,
@@ -25,18 +23,9 @@ export class GitEngine {
     return new GitEngine(bridge, !!opts.readOnly);
   }
 
-  private serial<T>(fn: () => T | Promise<T>): Promise<T> {
-    const run = this.queue.then(fn, fn) as Promise<T>;
-    this.queue = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    return run;
-  }
-
   /** Function face: Run({op,args}) → Response. */
   async run(req: GitRequest): Promise<GitResponse> {
-    return this.serial(async () => {
+    return this.bridge.serial(() => {
       const op = String(req.op || "").toLowerCase();
       if (REMOTE_OPS.has(op)) {
         return {
@@ -55,7 +44,7 @@ export class GitEngine {
     chunk: Uint8Array,
     meta: { final?: boolean } = {},
   ): Promise<void> {
-    return this.serial(async () => {
+    return this.bridge.serial(() => {
       this.bridge.importPack(chunk, !!meta.final);
     });
   }

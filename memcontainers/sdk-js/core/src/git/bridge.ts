@@ -39,6 +39,9 @@ export type EmscriptenFS = {
 };
 
 export class GitBridge {
+  /** Single-writer promise queue for libgit2 + MEMFS worktree access. */
+  private queue: Promise<unknown> = Promise.resolve();
+
   constructor(
     readonly mod: EmscriptenGitModule,
     public eng: number,
@@ -80,6 +83,23 @@ export class GitBridge {
     return new GitBridge(mod, eng, workRoot);
   }
 
+  /**
+   * Shared serial mutex: all engine `run` / `importPack` and gitfs MEMFS ops
+   * must go through this so concurrent mount ctl + host_call remotes + eng.run
+   * cannot interleave libgit2.
+   *
+   * Nested `serial` while already inside a `serial` callback deadlocks — call
+   * sync {@link run} / {@link importPack} / FS from within an outer serial body.
+   */
+  serial<T>(fn: () => T | Promise<T>): Promise<T> {
+    const run = this.queue.then(fn, fn) as Promise<T>;
+    this.queue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
   version(): string {
     return this.mod.UTF8ToString(this.mod._ge_version()) || "unknown";
   }
@@ -88,6 +108,7 @@ export class GitBridge {
     return this.mod.UTF8ToString(this.mod._ge_last_error(this.eng)) || "";
   }
 
+  /** Sync WASM ge_run_json. Callers that may race must wrap with {@link serial}. */
   run(req: GitRequest): GitResponse {
     const json = JSON.stringify({
       op: req.op,
@@ -105,6 +126,7 @@ export class GitBridge {
     }
   }
 
+  /** Sync WASM ge_import_pack. Callers that may race must wrap with {@link serial}. */
   importPack(chunk: Uint8Array, final = false): void {
     const len = chunk?.byteLength ?? 0;
     let ptr = 0;

@@ -85,6 +85,16 @@ int main(void) {
   if (expect_fail(e, "{\"op\":\"pull\"}", "host-mediated"))
     goto fail;
 
+  /* K28: commit without host identity fails closed (no default Agent). */
+  if (expect_fail(e, "{\"op\":\"commit\",\"args\":{\"message\":\"no-id\"}}", "K28"))
+    goto fail;
+
+  /* fetch.apply with no refs fails closed (no silent success). */
+  if (expect_fail(e, "{\"op\":\"fetch.apply\"}", "fetch.apply"))
+    goto fail;
+  if (expect_fail(e, "{\"op\":\"fetch.apply\",\"args\":{}}", "fetch.apply"))
+    goto fail;
+
   /* path escape */
   if (expect_fail(e, "{\"op\":\"write\",\"args\":{\"path\":\"../x\",\"content\":\"n\"}}", NULL))
     goto fail;

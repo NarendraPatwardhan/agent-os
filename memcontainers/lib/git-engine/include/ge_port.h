@@ -4,11 +4,13 @@
  *   length = 1 + payload_len  (covers type byte + payload)
  *
  * Types:
- *   1  JSON Run request → JSON Response (payload UTF-8)
+ *   1  JSON Run request → JSON Response (payload UTF-8). Always ge_run_json;
+ *      clone/fetch/pull/push dial-refuse (no C orch on type-1).
  *   2  pack chunk (raw bytes) → response type 2, payload i32le status (0 ok)
  *   3  pack meta (u8 final flag, 1 = finalize) → type 3, i32le status
  *   4  binary MOUNT_OP body (peer of dispatchMount) → [i32 status][payload]
- *   5  remote orch Request JSON (clone/fetch/…) → Response JSON (PR9–PR10c)
+ *   5  remote orch Request JSON (clone/fetch/…) → Response JSON — test-only
+ *      C orchestrator (fixtures); product remotes are host/BEAM-mediated.
  */
 
 #ifndef GE_PORT_H_
@@ -43,7 +45,8 @@ int ge_port_handle(ge_engine *e, uint8_t type, const uint8_t *payload, size_t le
 int ge_mount_dispatch(ge_engine *e, const uint8_t *body, size_t body_len, uint8_t **out,
                       size_t *out_len);
 
-/* Host smart-HTTP + orchestrator (PR9–PR10). */
+/* Host smart-HTTP + C orchestrator (PR9–PR10). Test/fixture path only (type-5);
+ * product remotes use BEAM orch + pack/refs/*.apply on type-1. */
 int ge_remote_orchestrate(ge_engine *e, const char *request_json, char **response_json);
 
 #endif /* GE_PORT_H_ */

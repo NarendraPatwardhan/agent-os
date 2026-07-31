@@ -5,7 +5,19 @@ defmodule AgentOS.Git.SmartHttp do
   Product path uses OTP `:httpc` + `:ssl` — the same host family as control-plane
   HTTPS egress for the kernel. **No Node. No C TLS.**
 
-  Injectable `transport` callback for tests (fixture double).
+  Security (P0.1):
+  * Only `http`/`https` schemes; reject userinfo; require host
+  * Origin allowlist (`:allowed_origins`) fail-closed by default
+  * Non-2xx HTTP status → error
+  * Response/pack size capped (default 64 MiB)
+  * `extract_pack/1` errors when no `PACK` magic (never returns the whole body)
+  * Autoredirect disabled on `:httpc`
+
+  Injectable `transport` callback for tests (fixture double). The
+  `allowed_origins: :any` / `require_origin_allowlist: false` escape hatches are
+  **only** honored when a fixture `:transport` is injected — product dials always
+  need an explicit matching allowlist. Prefer tests pass
+  `allowed_origins: ["https://example.com"]` matching the fixture URL.
   """
 
   @type ref :: %{name: String.t(), hash: String.t()}
@@ -16,6 +28,146 @@ defmodule AgentOS.Git.SmartHttp do
 
   @type transport :: (atom(), term() -> {:ok, term()} | {:error, term()})
 
+  # Match TS DEFAULT_MAX_PACK_BYTES / product pack-cache default.
+  @default_max_pack_bytes 64 * 1024 * 1024
+
+  @doc "Default max response/pack body size in bytes (64 MiB)."
+  def default_max_pack_bytes, do: @default_max_pack_bytes
+
+  # ── Origin / URL policy (mirror TS requestOrigin / originAllowed) ───────────
+
+  @doc """
+  Normalize an http(s) URL to its canonical origin (`scheme://host[:port]`).
+
+  Rejects non-http(s), missing host, and any userinfo (embedded credentials).
+  Host is lowercased; default ports (80/443) are omitted.
+  Returns `{:ok, origin}` or `:error`.
+  """
+  @spec request_origin(String.t()) :: {:ok, String.t()} | :error
+  def request_origin(value) when is_binary(value) do
+    case URI.parse(value) do
+      %URI{scheme: scheme, host: host, port: port, userinfo: userinfo}
+      when scheme in ["http", "https"] and is_binary(host) and host != "" ->
+        if userinfo_present?(userinfo) do
+          :error
+        else
+          {:ok, normalize_origin(scheme, host, port)}
+        end
+
+      _ ->
+        :error
+    end
+  end
+
+  def request_origin(_), do: :error
+
+  @doc """
+  Canonical origin equality allowlist (empty list → deny).
+
+  Both the candidate URL and each allowlist entry are normalized via
+  `request_origin/1` so `:443` / host case differences still match.
+  """
+  @spec origin_allowed?([String.t()], String.t()) :: boolean()
+  def origin_allowed?(allowed_origins, url)
+      when is_list(allowed_origins) and is_binary(url) do
+    if allowed_origins == [] do
+      false
+    else
+      case request_origin(url) do
+        {:ok, target} ->
+          Enum.any?(allowed_origins, fn origin ->
+            case request_origin(origin) do
+              {:ok, ^target} -> true
+              _ -> false
+            end
+          end)
+
+        :error ->
+          false
+      end
+    end
+  end
+
+  def origin_allowed?(_, _), do: false
+
+  @doc """
+  Gate a remote URL before any HTTP dial (or before fixture transport).
+
+  Options:
+  * `:allowed_origins` — list of canonical origins, or `:any` (fixture-only)
+  * `:require_origin_allowlist` — default `true`; empty/missing list fails closed
+  * `:transport` — when a 2-arity fun is present, test escape hatches apply
+
+  Returns `{:ok, origin}` or `{:error, reason}`.
+  """
+  @spec ensure_url_allowed(String.t(), keyword()) ::
+          {:ok, String.t()} | {:error, atom()}
+  def ensure_url_allowed(url, opts \\ []) when is_binary(url) and is_list(opts) do
+    case request_origin(url) do
+      :error ->
+        {:error, :bad_remote_url}
+
+      {:ok, origin} ->
+        if allowlist_permits?(url, origin, opts) do
+          {:ok, origin}
+        else
+          {:error, :origin_not_allowed}
+        end
+    end
+  end
+
+  defp allowlist_permits?(url, _origin, opts) do
+    allowed = Keyword.get(opts, :allowed_origins)
+    require? = Keyword.get(opts, :require_origin_allowlist, true)
+    fixture? = injected_transport?(opts)
+
+    case allowed do
+      :any ->
+        # Escape hatch: only with injected fixture transport.
+        fixture?
+
+      list when is_list(list) and list != [] ->
+        origin_allowed?(list, url)
+
+      list when is_list(list) and list == [] ->
+        # Empty allowlist: fail closed unless explicitly opted out under fixture.
+        not require? and fixture?
+
+      nil ->
+        # Missing allowlist: fail closed unless explicitly opted out under fixture.
+        not require? and fixture?
+
+      _ ->
+        false
+    end
+  end
+
+  defp injected_transport?(opts) do
+    case Keyword.get(opts, :transport) do
+      fun when is_function(fun, 2) -> true
+      _ -> false
+    end
+  end
+
+  defp userinfo_present?(nil), do: false
+  defp userinfo_present?(""), do: false
+  defp userinfo_present?(s) when is_binary(s), do: true
+  defp userinfo_present?(_), do: true
+
+  defp normalize_origin(scheme, host, port) do
+    scheme = String.downcase(scheme)
+    host = String.downcase(host)
+    default = if scheme == "https", do: 443, else: 80
+
+    if is_nil(port) or port == default do
+      "#{scheme}://#{host}"
+    else
+      "#{scheme}://#{host}:#{port}"
+    end
+  end
+
+  # ── Public transport API ───────────────────────────────────────────────────
+
   @doc "List refs via info/refs?service=git-upload-pack."
   @spec list_refs(String.t(), keyword()) :: {:ok, [ref()]} | {:error, term()}
   def list_refs(url, opts \\ []) when is_binary(url) do
@@ -24,7 +176,9 @@ defmodule AgentOS.Git.SmartHttp do
         fun.(:list_refs, {url, opts})
 
       _ ->
-        http_list_refs(url, opts)
+        with {:ok, _origin} <- ensure_url_allowed(url, opts) do
+          http_list_refs(url, opts)
+        end
     end
   end
 
@@ -38,7 +192,9 @@ defmodule AgentOS.Git.SmartHttp do
         fun.(:fetch_packs, {url, want, have, opts})
 
       _ ->
-        http_fetch_packs(url, want, have, opts)
+        with {:ok, _origin} <- ensure_url_allowed(url, opts) do
+          http_fetch_packs(url, want, have, opts)
+        end
     end
   end
 
@@ -49,9 +205,10 @@ defmodule AgentOS.Git.SmartHttp do
     base = String.trim_trailing(url, "/")
     info = base <> "/info/refs?service=git-upload-pack"
     headers = auth_headers(Keyword.get(opts, :auth, %{kind: :none}))
+    max = max_bytes(opts)
 
-    case request(:get, info, headers, "") do
-      {:ok, {_status, _hdrs, body}} when is_binary(body) ->
+    case request(:get, info, headers, "", max) do
+      {:ok, body} when is_binary(body) ->
         {:ok, parse_info_refs(body)}
 
       {:error, reason} ->
@@ -69,12 +226,32 @@ defmodule AgentOS.Git.SmartHttp do
         {"accept", "application/x-git-upload-pack-result"}
       ] ++ auth_headers(Keyword.get(opts, :auth, %{kind: :none}))
 
-    case request(:post, base <> "/git-upload-pack", headers, body) do
-      {:ok, {_status, _hdrs, resp}} when is_binary(resp) ->
-        {:ok, extract_pack(resp)}
+    max = max_bytes(opts)
+
+    case request(:post, base <> "/git-upload-pack", headers, body, max) do
+      {:ok, resp} when is_binary(resp) ->
+        case extract_pack(resp) do
+          {:ok, pack} ->
+            if byte_size(pack) > max do
+              {:error, {:upload_pack_failed, :body_too_large}}
+            else
+              {:ok, pack}
+            end
+
+          {:error, reason} ->
+            {:error, {:upload_pack_failed, reason}}
+        end
 
       {:error, reason} ->
         {:error, {:upload_pack_failed, reason}}
+    end
+  end
+
+  defp max_bytes(opts) do
+    case Keyword.get(opts, :max_pack_bytes, @default_max_pack_bytes) do
+      n when is_integer(n) and n > 0 -> n
+      0 -> @default_max_pack_bytes
+      _ -> @default_max_pack_bytes
     end
   end
 
@@ -84,10 +261,18 @@ defmodule AgentOS.Git.SmartHttp do
     :ok
   end
 
-  defp request(method, url, headers, body) when is_binary(url) do
+  defp request(method, url, headers, body, max_bytes) when is_binary(url) do
     url_char = String.to_charlist(url)
     hdrs = Enum.map(headers, fn {k, v} -> {as_charlist(k), as_charlist(v)} end)
-    http_opts = [timeout: 60_000, connect_timeout: 30_000, ssl: [verify: :verify_peer, cacerts: :public_key.cacerts_get()]]
+
+    # Fail closed on redirects (no silent host pivot). Peer verify via system CAs.
+    http_opts = [
+      timeout: 60_000,
+      connect_timeout: 30_000,
+      autoredirect: false,
+      ssl: [verify: :verify_peer, cacerts: :public_key.cacerts_get()]
+    ]
+
     opts = [body_format: :binary]
 
     result =
@@ -106,8 +291,20 @@ defmodule AgentOS.Git.SmartHttp do
       end
 
     case result do
-      {:ok, {{_v, status, _reason}, resp_headers, resp_body}} ->
-        {:ok, {status, resp_headers, resp_body}}
+      {:ok, {{_v, status, _reason}, _resp_headers, resp_body}} ->
+        cond do
+          status < 200 or status >= 300 ->
+            {:error, {:http_status, status}}
+
+          not is_binary(resp_body) ->
+            {:error, :bad_body}
+
+          byte_size(resp_body) > max_bytes ->
+            {:error, :body_too_large}
+
+          true ->
+            {:ok, resp_body}
+        end
 
       {:error, reason} ->
         {:error, reason}
@@ -183,10 +380,18 @@ defmodule AgentOS.Git.SmartHttp do
     :io_lib.format("~4.16.0b", [len]) |> IO.iodata_to_binary() |> Kernel.<>(body)
   end
 
-  defp extract_pack(buf) when is_binary(buf) do
+  @doc """
+  Slice a smart-HTTP response down to the pack payload starting at `PACK`.
+
+  Returns `{:error, :no_pack_magic}` when the body has no pack — never the whole body.
+  """
+  @spec extract_pack(binary()) :: {:ok, binary()} | {:error, :no_pack_magic}
+  def extract_pack(buf) when is_binary(buf) do
     case :binary.match(buf, "PACK") do
-      {idx, _} -> binary_part(buf, idx, byte_size(buf) - idx)
-      :nomatch -> buf
+      {idx, _} -> {:ok, binary_part(buf, idx, byte_size(buf) - idx)}
+      :nomatch -> {:error, :no_pack_magic}
     end
   end
+
+  def extract_pack(_), do: {:error, :no_pack_magic}
 end

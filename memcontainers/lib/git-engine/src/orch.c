@@ -201,7 +201,14 @@ int ge_remote_orchestrate(ge_engine *e, const char *request_json, char **respons
     }
     ge_free(r2);
   } else {
-    char *r2 = ge_run_json(e, "{\"op\":\"fetch.apply\"}");
+    snprintf(req, sizeof(req),
+             "{\"op\":\"fetch.apply\",\"args\":{\"name\":\"%s\",\"hash\":\"%s\"}}", name,
+             hash);
+    char *r2 = ge_run_json(e, req);
+    if (!r2 || strstr(r2, "\"ok\":false") || strstr(r2, "\"ok\": false")) {
+      ge_free(r2);
+      return (*response_json = resp_err_s(1, "fetch.apply failed")) ? 0 : -1;
+    }
     ge_free(r2);
   }
 

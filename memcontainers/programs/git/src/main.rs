@@ -1,8 +1,9 @@
-//! Thin pure-mc `/bin/git` (GIT.md PR6) — local porcelain via ctl only.
+//! Thin pure-mc `/bin/git` (GIT.md PR6) — local porcelain via ctl; remotes via host_call.
 //!
-//! Discovers gitfs root by walking parents for `.git/mc/ctl`, then:
+//! Local cmds discover gitfs root by walking parents for `.git/mc/ctl`, then:
 //!   write Request JSON → open/read Response (never close-only).
-//! Remotes fail closed (host_call git is PR10).
+//! Remote cmds (`clone`/`fetch`/`pull`/`push`) skip root discovery and use
+//! `host_call` name `git` (CAP_NET; PR10b) — clone works outside a repo.
 
 #![no_std]
 #![no_main]
@@ -43,9 +44,15 @@ fn main() -> i32 {
         return 0;
     }
     if cmd == b"help" || cmd == b"--help" {
-        eprint(b"usage: git <init|status|add|commit|log|rev-parse|branch|checkout|version>\n");
-        eprint(b"local porcelain via /.git/mc/ctl; remotes require host_call git (PR10)\n");
+        eprint(b"usage: git <init|status|add|commit|log|rev-parse|branch|checkout|version|clone|fetch|pull|push>\n");
+        eprint(b"local porcelain via /.git/mc/ctl (needs repo); remotes via host_call git (CAP_NET; clone works outside a repo)\n");
         return 0;
+    }
+
+    // Remotes must not require an existing gitfs root (clone has none yet;
+    // fetch/pull/push may be invoked before discovery and use host_call).
+    if cmd == b"clone" || cmd == b"fetch" || cmd == b"pull" || cmd == b"push" {
+        return remote_host_call(cmd, &args[..argc]);
     }
 
     let mut root = [0u8; MAX_PATH];
@@ -60,9 +67,6 @@ fn main() -> i32 {
     let mut req = [0u8; MAX_BODY];
     let req_len = match build_request(cmd, &args[..argc], &mut req) {
         Ok(n) => n,
-        Err(REMOTE_VIA_HOST_CALL) => {
-            return remote_host_call(cmd, &args[..argc]);
-        }
         Err(code) => return code,
     };
 
@@ -259,16 +263,10 @@ fn build_request(cmd: &[u8], args: &[&[u8]], out: &mut [u8]) -> Result<usize, i3
         let rev = if argc >= 3 { args[2] } else { b"HEAD" };
         return fmt_rev_parse(rev, out);
     }
-    // Remotes: not via ctl — handled in main via host_call "git" (PR10b).
-    if cmd == b"clone" || cmd == b"fetch" || cmd == b"pull" || cmd == b"push" {
-        return Err(REMOTE_VIA_HOST_CALL);
-    }
+    // Remotes are handled in main before find_git_root / build_request.
     eprint(b"git: unknown or unsupported command\n");
     Err(2)
 }
-
-/// Sentinel: build_request asks main to use host_call path.
-const REMOTE_VIA_HOST_CALL: i32 = -100;
 
 fn fmt_op_path(op: &[u8], path: &[u8], out: &mut [u8]) -> Result<usize, i32> {
     let mut i = 0usize;
