@@ -27,6 +27,7 @@ defmodule AgentOS.Git.SmartHttp do
           %{kind: :none}
           | %{kind: :bearer, token: String.t()}
           | %{kind: :header, name: String.t(), value: String.t()}
+          | %{kind: :basic, username: String.t(), password: String.t()}
 
   @type transport :: (atom(), term() -> {:ok, term()} | {:error, term()})
 
@@ -35,6 +36,18 @@ defmodule AgentOS.Git.SmartHttp do
 
   @doc "Default max response/pack body size in bytes (64 MiB)."
   def default_max_pack_bytes, do: @default_max_pack_bytes
+
+  @doc """
+  Build request headers from an auth map (R43).
+
+  Supports `:none`, `:bearer`, `:header`, and `:basic` (user/pass → Base64
+  `Authorization: Basic …`). Mirrors JS `spliceCredentialHeaders` where the
+  kinds overlap. Accepts atom or string keys/kinds.
+
+  **Never** puts credentials into the URL — headers only. Used by list/fetch/push.
+  """
+  @spec auth_headers(map() | keyword() | nil) :: [{String.t(), String.t()}]
+  def auth_headers(auth), do: do_auth_headers(normalize_auth(auth))
 
   # ── Origin / URL policy (mirror TS requestOrigin / originAllowed) ───────────
 
@@ -208,6 +221,14 @@ defmodule AgentOS.Git.SmartHttp do
 
   Returns `{:ok, %{ok: true|false, message: ...}}` from report-status, or
   `{:error, reason}` for transport/policy failures.
+
+  ## R41 — pack body buffering
+
+  The receive-pack request body is built as a **single binary**
+  (`commands pkt-lines + pack`). OTP `:httpc` posts that buffer in one shot.
+  Size is gated by `:max_pack_bytes` (default **64 MiB**, same as upload-pack).
+  Chunked/streamed request bodies for multi-GiB packs are not implemented;
+  raise the cap only when memory allows, or push smaller tip sets.
   """
   @spec push_packs(String.t(), [push_command()], binary(), keyword()) ::
           {:ok, receive_status()} | {:error, term()}
@@ -368,10 +389,55 @@ defmodule AgentOS.Git.SmartHttp do
   defp as_charlist(s) when is_binary(s), do: String.to_charlist(s)
   defp as_charlist(s) when is_list(s), do: s
 
-  defp auth_headers(%{kind: :none}), do: []
-  defp auth_headers(%{kind: :bearer, token: t}), do: [{"authorization", "Bearer " <> t}]
-  defp auth_headers(%{kind: :header, name: n, value: v}), do: [{String.downcase(n), v}]
-  defp auth_headers(_), do: []
+  defp normalize_auth(nil), do: %{kind: :none}
+  defp normalize_auth(auth) when is_list(auth), do: normalize_auth(Map.new(auth))
+
+  defp normalize_auth(auth) when is_map(auth) do
+    kind = parse_auth_kind(Map.get(auth, :kind) || Map.get(auth, "kind"))
+
+    %{kind: kind}
+    |> put_auth_field(auth, :token, ["token"])
+    |> put_auth_field(auth, :name, ["name"])
+    |> put_auth_field(auth, :value, ["value"])
+    |> put_auth_field(auth, :username, ["username", "user"])
+    |> put_auth_field(auth, :password, ["password", "pass"])
+  end
+
+  defp normalize_auth(_), do: %{kind: :none}
+
+  defp parse_auth_kind(k) when k in [:none, :bearer, :header, :basic], do: k
+  defp parse_auth_kind("none"), do: :none
+  defp parse_auth_kind("bearer"), do: :bearer
+  defp parse_auth_kind("header"), do: :header
+  defp parse_auth_kind("basic"), do: :basic
+  defp parse_auth_kind(_), do: :none
+
+  defp put_auth_field(acc, auth, atom_key, string_keys) do
+    val =
+      Map.get(auth, atom_key) ||
+        Enum.find_value(string_keys, fn k -> Map.get(auth, k) end)
+
+    if is_binary(val), do: Map.put(acc, atom_key, val), else: acc
+  end
+
+  defp do_auth_headers(%{kind: :none}), do: []
+
+  defp do_auth_headers(%{kind: :bearer, token: t}) when is_binary(t) and t != "" do
+    [{"authorization", "Bearer " <> t}]
+  end
+
+  defp do_auth_headers(%{kind: :header, name: n, value: v})
+       when is_binary(n) and n != "" and is_binary(v) do
+    [{String.downcase(n), v}]
+  end
+
+  defp do_auth_headers(%{kind: :basic, username: u, password: p})
+       when is_binary(u) and is_binary(p) do
+    token = Base.encode64(u <> ":" <> p)
+    [{"authorization", "Basic " <> token}]
+  end
+
+  defp do_auth_headers(_), do: []
 
   # ── pkt-line helpers ───────────────────────────────────────────────────────
 

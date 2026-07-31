@@ -253,6 +253,41 @@ defmodule AgentOS.GitEngineTest do
     end
   end
 
+  # R5: kill Port → subsequent Run returns :eio (fail closed).
+  @tag timeout: 60_000
+  test "R5 kill Port → subsequent run returns eio" do
+    path = engine_path()
+    assert {:ok, pid} = GitEngine.start(executable: path)
+    assert {:ok, _} = GitEngine.run(pid, %{"op" => "init"})
+
+    state = :sys.get_state(pid)
+    port = Map.fetch!(state, :port)
+    assert is_port(port)
+    # Kill the OS child without GenServer.stop — Port exit path.
+    true = Port.close(port)
+
+    # Drain exit_status into GenServer so port becomes nil.
+    Process.sleep(50)
+    # Nudge mailbox processing.
+    _ = GitEngine.alive?(pid)
+
+    result =
+      try do
+        GitEngine.run(pid, %{"op" => "status"})
+      catch
+        :exit, _ -> {:error, :eio}
+      end
+
+    assert match?({:error, :eio}, result) or match?({:error, _}, result)
+
+    # Metrics: port_eio should have ticked (best-effort).
+    snap = AgentOS.Git.Metrics.snapshot()
+    assert is_map(snap)
+    assert Map.has_key?(snap, :port_eio)
+
+    _ = GitEngine.stop(pid)
+  end
+
   defp mount_write_body(path, data) do
     op = 6
     path_bin = path

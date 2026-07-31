@@ -114,8 +114,9 @@ defmodule AgentOS.GitEngine do
 
   Options (keyword, host-owned — never trust guest body for secrets/policy):
   * `:transport` — injectable SmartHttp transport (tests)
-  * `:auth` — `%{kind: :none | :bearer | :header, ...}`
+  * `:auth` — `%{kind: :none | :bearer | :header | :basic, ...}`
   * `:allowed_origins` / allowlist — fail-closed product remotes
+  * `:pack_cache` — optional `AgentOS.Git.PackCache` pid / `:default`
   """
   @spec handle_host_call(pid(), String.t(), binary(), keyword()) ::
           {:ok, binary()} | {:error, term()}
@@ -201,6 +202,7 @@ defmodule AgentOS.GitEngine do
   end
 
   def handle_call(_msg, _from, %{port: nil} = state) do
+    _ = AgentOS.Git.Metrics.inc(:port_eio)
     {:reply, {:error, :eio}, state}
   end
 

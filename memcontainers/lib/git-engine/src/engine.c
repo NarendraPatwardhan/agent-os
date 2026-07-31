@@ -622,7 +622,53 @@ static int op_commit(ge_engine *e, const char *args, char *hash_out, size_t hash
   return 0;
 }
 
-/* *out_owned is malloc'd on success (possibly empty string); caller frees. */
+/* Map libgit2 status flags → porcelain-v1 XY codes (subset where API allows). */
+static void status_xy(unsigned st, char xy[3]) {
+  xy[0] = ' ';
+  xy[1] = ' ';
+  xy[2] = '\0';
+  if (st & GIT_STATUS_IGNORED) {
+    xy[0] = '!';
+    xy[1] = '!';
+    return;
+  }
+  if (st & GIT_STATUS_CONFLICTED) {
+    xy[0] = 'U';
+    xy[1] = 'U';
+    return;
+  }
+  /* Index column (HEAD → index). */
+  if (st & GIT_STATUS_INDEX_NEW)
+    xy[0] = 'A';
+  else if (st & GIT_STATUS_INDEX_MODIFIED)
+    xy[0] = 'M';
+  else if (st & GIT_STATUS_INDEX_DELETED)
+    xy[0] = 'D';
+  else if (st & GIT_STATUS_INDEX_RENAMED)
+    xy[0] = 'R';
+  else if (st & GIT_STATUS_INDEX_TYPECHANGE)
+    xy[0] = 'T';
+  /* Worktree column (index → workdir). Untracked alone is ?? (not " ?"). */
+  if (st & GIT_STATUS_WT_NEW) {
+    if (xy[0] == ' ') {
+      xy[0] = '?';
+      xy[1] = '?';
+    } else {
+      xy[1] = '?';
+    }
+  } else if (st & GIT_STATUS_WT_MODIFIED)
+    xy[1] = 'M';
+  else if (st & GIT_STATUS_WT_DELETED)
+    xy[1] = 'D';
+  else if (st & GIT_STATUS_WT_RENAMED)
+    xy[1] = 'R';
+  else if (st & GIT_STATUS_WT_TYPECHANGE)
+    xy[1] = 'T';
+}
+
+/* *out_owned is malloc'd on success (possibly empty string); caller frees.
+ * Default: porcelain-v1 lines (`XY path` / `XY old -> new`).
+ * short:true: same XY lines (short format; no branch header). */
 static int op_status(ge_engine *e, int short_fmt, char **out_owned) {
   if (out_owned)
     *out_owned = NULL;
@@ -632,7 +678,7 @@ static int op_status(ge_engine *e, int short_fmt, char **out_owned) {
   git_status_options opts = GIT_STATUS_OPTIONS_INIT;
   opts.show = GIT_STATUS_SHOW_INDEX_AND_WORKDIR;
   opts.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED | GIT_STATUS_OPT_RENAMES_HEAD_TO_INDEX |
-               GIT_STATUS_OPT_RECURSE_UNTRACKED_DIRS;
+               GIT_STATUS_OPT_RENAMES_INDEX_TO_WORKDIR | GIT_STATUS_OPT_RECURSE_UNTRACKED_DIRS;
   if (git_status_list_new(&list, e->repo, &opts) != 0) {
     set_err_git(e, "status");
     return -1;
@@ -641,48 +687,34 @@ static int op_status(ge_engine *e, int short_fmt, char **out_owned) {
   size_t len = 0, cap = 0;
   size_t n = git_status_list_entrycount(list);
   int fail = 0;
-  if (!short_fmt) {
-    const char *branch = NULL;
-    git_reference *head = NULL;
-    if (git_repository_head(&head, e->repo) == 0) {
-      branch = git_reference_shorthand(head);
-      if (sb_printf(&buf, &len, &cap, "On branch %s\n", branch ? branch : "HEAD") != 0)
-        fail = 1;
-      git_reference_free(head);
-    } else {
-      if (sb_printf(&buf, &len, &cap, "On branch (unknown)\n") != 0)
-        fail = 1;
-    }
-  }
+  (void)short_fmt; /* short and porcelain-v1 share XY line shape */
   for (size_t i = 0; !fail && i < n; i++) {
     const git_status_entry *ent = git_status_byindex(list, i);
-    const char *path = ent->head_to_index ? ent->head_to_index->new_file.path
-                       : ent->index_to_workdir ? ent->index_to_workdir->new_file.path
-                                               : "?";
-    char xy[3] = {' ', ' ', '\0'};
-    if (ent->status & GIT_STATUS_INDEX_NEW)
-      xy[0] = 'A';
-    else if (ent->status & GIT_STATUS_INDEX_MODIFIED)
-      xy[0] = 'M';
-    else if (ent->status & GIT_STATUS_INDEX_DELETED)
-      xy[0] = 'D';
-    if (ent->status & GIT_STATUS_WT_NEW)
-      xy[1] = '?';
-    else if (ent->status & GIT_STATUS_WT_MODIFIED)
-      xy[1] = 'M';
-    else if (ent->status & GIT_STATUS_WT_DELETED)
-      xy[1] = 'D';
-    if (short_fmt) {
-      if (sb_printf(&buf, &len, &cap, "%c%c %s\n", xy[0], xy[1], path) != 0)
+    char xy[3];
+    status_xy(ent->status, xy);
+
+    const char *path = NULL;
+    const char *old_path = NULL;
+    if (ent->head_to_index) {
+      path = ent->head_to_index->new_file.path;
+      if (ent->status & GIT_STATUS_INDEX_RENAMED)
+        old_path = ent->head_to_index->old_file.path;
+    }
+    if (!path && ent->index_to_workdir) {
+      path = ent->index_to_workdir->new_file.path;
+      if (!old_path && (ent->status & GIT_STATUS_WT_RENAMED))
+        old_path = ent->index_to_workdir->old_file.path;
+    }
+    if (!path)
+      path = "?";
+
+    if (old_path && old_path[0] && path && strcmp(old_path, path) != 0) {
+      if (sb_printf(&buf, &len, &cap, "%c%c %s -> %s\n", xy[0], xy[1], old_path, path) != 0)
         fail = 1;
     } else {
-      if (sb_printf(&buf, &len, &cap, "  %c%c %s\n", xy[0], xy[1], path) != 0)
+      if (sb_printf(&buf, &len, &cap, "%c%c %s\n", xy[0], xy[1], path) != 0)
         fail = 1;
     }
-  }
-  if (!fail && n == 0 && !short_fmt) {
-    if (sb_printf(&buf, &len, &cap, "nothing to commit, working tree clean\n") != 0)
-      fail = 1;
   }
   git_status_list_free(list);
   if (fail) {

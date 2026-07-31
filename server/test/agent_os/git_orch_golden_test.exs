@@ -16,7 +16,10 @@ defmodule AgentOS.Git.OrchGoldenTest do
   @golden_names [
     "clone_success_steps.json",
     "clone_empty_pack_fail.json",
-    "origin_denied.json"
+    "origin_denied.json",
+    "fetch_success_steps.json",
+    "pull_ff_steps.json",
+    "push_readonly.json"
   ]
 
   @push_read_only "git: push rejected (read-only mount)"
@@ -142,6 +145,7 @@ defmodule AgentOS.Git.OrchGoldenTest do
     pack = load_pack(golden_path, fixture)
     refs = load_refs(golden_path, fixture)
     origins = Map.get(fixture, "allowed_origins") || []
+    read_only = Map.get(fixture, "read_only") == true
     expect = Map.fetch!(step, "expect")
 
     req = %{
@@ -152,7 +156,8 @@ defmodule AgentOS.Git.OrchGoldenTest do
     assert {:ok, json} =
              Orchestrator.run(pid, req,
                transport: fixture_transport(refs, pack),
-               allowed_origins: origins
+               allowed_origins: origins,
+               read_only: read_only
              )
 
     resp = decode_json!(json)

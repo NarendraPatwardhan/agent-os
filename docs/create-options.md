@@ -29,7 +29,7 @@ fields—`mc.use()`. Applicability and defaults vary by runtime.
 | `deterministic`      | boolean                                  | `false`                         | Repeatable guest clock and random source             |
 | `experimentalGitEngine` | boolean                               | `false`                         | Opt-in host git engine (libgit2 emcc); **experimental** |
 | `gitEngineBaseUrl`   | directory URL string                     | none                            | Dir URL of `git_engine.mjs` + `git_engine.wasm`; required when engine is on |
-| `gitSparseCone`      | `string[]`                               | none                            | Cone-only sparse prefixes for default gitfs + post-clone `sparse-set` |
+| `gitSparseCone`      | `string[]`                               | none                            | Cone-mode sparse prefixes for default gitfs + post-clone `sparse-set` (multi-pattern; engine also accepts basic `!path` negation — not full sparse language) |
 
 ## `runtime`
 
@@ -190,8 +190,9 @@ When `experimentalGitEngine` is `true`:
 - the host loads the engine, registers MapHostCall name `"git"` for CAP_NET remotes (process-scoped
   pack cache on by default), and mounts gitfs at `/workspace/repo` unless that path is already
   present in `mounts`;
-- optional `gitSparseCone` applies **cone-only** sparse prefixes to that mount and to post-clone
-  engine `sparse-set` (not full sparse-checkout pattern parity).
+- optional `gitSparseCone` applies **cone-mode** sparse prefixes to that mount and to post-clone
+  engine `sparse-set`. Engine also accepts multi-pattern strings/arrays and basic `!path`
+  negation lines written into `sparse-checkout` — **not** full git sparse-checkout pattern language.
 
 ```js
 const vm = await mc.create({

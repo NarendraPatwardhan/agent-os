@@ -121,30 +121,31 @@ mc.create({
   experimentalGitEngine: true,
   gitEngineBaseUrl: new URL("./git-engine/", import.meta.url).href,
   // registers host_call "git" (process pack cache default), mounts gitfs at /workspace/repo
-  // optional cone-only sparse: gitSparseCone: ["src", "docs"],
+  // optional cone sparse (multi-pattern; not full sparse language): gitSparseCone: ["src", "docs"],
   connections: [{ ref: "github.user.work", auth: { kind: "bearer", token }, origins: ["https://github.com"] }],
 });
 ```
 
 ## `experimentalGitEngine` graduation criteria (P3.2)
 
-**Do not graduate to stable yet.** Remotes are not GA. Keep `docs/api-surface.json` level
-`experimental` until **all** of the following hold:
+**Do not graduate to stable yet.** Remotes are **not** GA. Keep `docs/api-surface.json` level
+`experimental` until **all** of the following hold. Status notes (honest; do not flip the flag
+on partial progress):
 
-1. **Origin / connection policy** — empty origins fail closed; credential splice host-only; no
-   secrets in guest/ctl/engine args (already required; must remain green in dual-host tests).
-2. **Pack e2e** — real pack import → refs → clone/fetch apply on **both** JS wasm and BEAM Port
-   (minimal.pack class fixtures + golden orch vectors).
-3. **Push or explicit RO** — either a real packbuilder path on each product host, **or** documented
-   read-only remotes with stable reject messages (server is RO for push today).
-4. **Single-writer** — one engine queue per gitfs mount; no concurrent writers; K21 one-mount rule
-   enforced in product attach paths.
-5. **CAP_NET e2e** — guest without CAP_NET gets EPERM on remotes; with CAP_NET + allowlisted origin,
-   shallow clone/fetch works on JS and server attach paths.
-6. **Metrics / observability** — basic engine/orch failure counters or equivalent product hooks
-   (PR16 polish), not silent false-green.
+| # | Criterion | Status |
+|---|-----------|--------|
+| 1 | **Origin / connection policy** — empty origins fail closed; credential splice host-only; no secrets in guest/ctl/engine args | **Met in unit/fixture** — bare-URL + empty `allowOrigins` fail closed (JS); dual-host policy tests green; must stay green |
+| 2 | **Pack e2e** — pack import → refs → clone/fetch apply on **both** JS wasm and BEAM Port (`minimal.pack` + golden orch vectors) | **Met (fixture class)** — abi/pack fixtures + `clone_success_steps` / empty-pack / origin_denied goldens on TS + BEAM; live public HTTPS still residual (R4) |
+| 3 | **Push or explicit RO** — packbuilder path on each product host **or** documented RO with stable reject | **Met** — JS + BEAM pack.build + receive-pack push when not read-only; RO mounts reject with stable `git: push rejected (read-only mount)` |
+| 4 | **Single-writer** — one engine queue per gitfs mount; K21 one-mount | **Partial** — bridge/Port serialise engine ops; multi-mount hard-fail enforcement still thin (R66) |
+| 5 | **CAP_NET e2e** — guest without CAP_NET → EPERM; with CAP_NET + allowlist → shallow clone/fetch on JS **and** server attach | **Open (R1–R3)** — unit demux + fixture transport only; **no** booted-guest CAP_NET e2e on either host |
+| 6 | **Metrics / observability** — engine/orch failure counters (PR16), not silent false-green | **Open (R85–R89)** — design only |
 
-Until then: flag stays experimental; docs and api-surface must not claim GA remotes.
+**Blocker for graduation:** criterion **5** (guest CAP_NET e2e). Identity inject (K28), shallow
+default `depth=1`, and push server path are **not** substitutes for guest remotes e2e.
+
+Until **all** rows are met (especially R1): flag stays experimental; docs and api-surface must
+**not** claim GA remotes.
 
 ## Residual: full guest CAP_NET e2e (P1.7)
 

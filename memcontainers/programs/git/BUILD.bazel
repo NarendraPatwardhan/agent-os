@@ -32,8 +32,9 @@ size_limit(
     max_bytes = 256 * 1024,
 )
 
-# Optional image layer: /bin/git for flavors that want local ctl porcelain (GIT.md PR6).
-# Compose onto base/minimal/posix via pkg_tar deps — not part of default base.
+# Image layer: /bin/git for local ctl porcelain + CAP_NET remotes (GIT.md PR6).
+# Wired into loom (and descendants atlas/paper/svc-test) via images/BUILD.bazel deps.
+# Not on bare base/minimal/posix — those stay command-set only.
 pkg_tar(
     name = "git_layer",
     create_parents = False,

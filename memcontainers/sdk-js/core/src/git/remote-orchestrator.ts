@@ -25,6 +25,7 @@ import {
   type ImportPackOptions,
   type PackCache,
 } from "./pack-cache.js";
+import { recordRemoteResult } from "./metrics.js";
 
 export interface OrchestratorOptions extends ResolveRemoteOptions {
   http?: SmartHttpTransport;
@@ -215,16 +216,24 @@ export class GitRemoteOrchestrator {
   /** Host_call name "git" body: Request JSON → Response JSON. */
   async handle(req: GitRequest): Promise<GitResponse> {
     const op = String(req.op || "").toLowerCase();
-    if (op === "clone") return this.clone(req);
-    if (op === "fetch") return this.fetch(req, { pull: false });
-    if (op === "pull") return this.fetch(req, { pull: true });
-    if (op === "push") return this.push(req);
-    return {
-      ok: false,
-      code: 2,
-      stdout: "",
-      stderr: `unknown remote op: ${op}\n`,
-    };
+    let resp: GitResponse;
+    if (op === "clone") resp = await this.clone(req);
+    else if (op === "fetch") resp = await this.fetch(req, { pull: false });
+    else if (op === "pull") resp = await this.fetch(req, { pull: true });
+    else if (op === "push") resp = await this.push(req);
+    else {
+      resp = {
+        ok: false,
+        code: 2,
+        stdout: "",
+        stderr: `unknown remote op: ${op}\n`,
+      };
+    }
+    // R85–R88: optional in-process counters (redacted; no packs/tokens).
+    if (op === "clone" || op === "fetch" || op === "pull" || op === "push") {
+      recordRemoteResult(op, !!resp.ok);
+    }
+    return resp;
   }
 
   private resolve(req: GitRequest) {
@@ -280,7 +289,11 @@ export class GitRemoteOrchestrator {
     return null;
   }
 
-  /** R37: all advertised heads (+ primary tip if not a head). Engine is single-ref → loop. */
+  /**
+   * R37/R94: all advertised heads (+ primary tip if not a head).
+   * Prefer one `refs.import` with `args.refs` array; fall back to per-ref loop
+   * if the array form fails (older engine / partial multi-want objects).
+   */
   private async importAllHeads(
     refs: RefAdvertisement[],
     primaryName: string,
@@ -302,13 +315,22 @@ export class GitRemoteOrchestrator {
     if (!toImport.size && primaryName && primaryHash) {
       toImport.set(primaryName, primaryHash);
     }
+    if (!toImport.size) return null;
+
+    const refsArr = [...toImport].map(([name, hash]) => ({ name, hash }));
+    const bulk = await this.engine.run({
+      op: "refs.import",
+      args: { refs: refsArr },
+    });
+    if (bulk.ok) return null;
+
+    // Loop fallback: primary tip must succeed; other heads best-effort.
     for (const [name, hash] of toImport) {
       const imp = await this.engine.run({
         op: "refs.import",
         args: { name, hash },
       });
       if (!imp.ok) {
-        // Primary tip must succeed; other heads best-effort (objects may be absent).
         if (name === primaryName) return imp;
       }
     }

@@ -8,7 +8,11 @@ import {
 
 export { GitBridge, DEFAULT_WORK_ROOT, normalizeRel } from "./bridge.js";
 export { GitEngine } from "./engine.js";
-export { createGitFsDriver } from "./gitfs.js";
+export {
+  createGitFsDriver,
+  isGitFsDriver,
+  GITFS_DRIVER_KIND,
+} from "./gitfs.js";
 export {
   GitRemoteOrchestrator,
   gitHostCallHandler,
@@ -30,8 +34,16 @@ export {
   OpfsDurable,
   DiskDurable,
   openDurable,
+  encodeDurableBlob,
+  decodeDurableBlob,
+  AGIT_MAGIC,
 } from "./durable.js";
-export type { DurableBackend } from "./durable.js";
+export type {
+  DurableBackend,
+  DurableEnvelopeMeta,
+  DurableRefTip,
+  DecodedDurableBlob,
+} from "./durable.js";
 export {
   resolveGitRemote,
   evaluatePushPolicy,
@@ -70,6 +82,13 @@ export type {
   GitEngineLoadOptions,
   GitEngineCreateOptions,
 } from "./types.js";
+export {
+  snapshotGitCounters,
+  resetGitCounters,
+  recordRemoteResult,
+  incGitCounter,
+} from "./metrics.js";
+export type { GitCounterKey } from "./metrics.js";
 
 /** Register MapHostCall name `"git"` → TS orchestrator (PR10a; CAP_NET on guest). */
 export function registerGitHostCall(

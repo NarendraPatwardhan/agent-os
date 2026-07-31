@@ -290,6 +290,44 @@ int jmin_array_next_object(const char **cursor, const char **obj) {
   return 0;
 }
 
+int jmin_array_next_string(const char **cursor, char *out, size_t out_cap) {
+  if (!cursor || !*cursor || !out || out_cap == 0)
+    return -1;
+  out[0] = '\0';
+  const char *p = skip_ws(*cursor);
+  if (*p == '[')
+    p = skip_ws(p + 1);
+  else if (*p == ',')
+    p = skip_ws(p + 1);
+  if (*p == ']' || !*p) {
+    *cursor = p;
+    return -1;
+  }
+  if (*p != '"') {
+    /* Non-string element: fail closed. */
+    *cursor = p;
+    return -1;
+  }
+  p++; /* past opening quote */
+  size_t i = 0;
+  while (*p && *p != '"' && i + 1 < out_cap) {
+    if (*p == '\\' && p[1]) {
+      p++;
+      char c;
+      if (decode_escape(&p, &c) != 0)
+        return -1;
+      out[i++] = c;
+      continue;
+    }
+    out[i++] = *p++;
+  }
+  if (*p != '"')
+    return -1; /* truncate or unclosed */
+  out[i] = '\0';
+  *cursor = p + 1;
+  return 0;
+}
+
 /* Top-level key lookup inside one object `{...}` only (no sibling leak). */
 static const char *find_key_in_object(const char *obj, const char *key) {
   if (!obj || *obj != '{' || !key)

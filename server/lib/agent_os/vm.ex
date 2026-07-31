@@ -68,6 +68,10 @@ defmodule AgentOS.Vm do
     git_auth: nil,
     # Test-only injectable SmartHttp transport (fixture double).
     git_transport: nil,
+    # Push approval (R31) — host-owned; never from guest body.
+    git_require_approval: false,
+    git_on_push_approval: nil,
+    git_push_approval: false,
     # Inflight async remote host_calls: handle => Task.t(), ref => handle.
     # At most one Task runs at a time; further remotes wait in git_remote_queue
     # so clone/fetch import+apply steps cannot interleave on the shared Port.
@@ -429,7 +433,7 @@ defmodule AgentOS.Vm do
   def unmount(_server, _path, _opts), do: {:error, "unmount expects a binary path"}
 
   @doc """
-  Attach a BEAM-owned native `git-engine` Port for this VM (GIT.md K15/K22).
+  Attach a BEAM-owned native `git-engine` Port for this VM (GIT.md K15/K22 / K21).
 
   Options:
   * `:executable`, `:root`, `:mount_path` (default `"/workspace/repo"`)
@@ -441,9 +445,12 @@ defmodule AgentOS.Vm do
   * `:identity` / `:git_identity` — `%{name: binary, email: binary}` host policy
     identity injected into Port `commit` when args omit name/email (K28). Never
     invents a default identity when unset.
+  * `:on_push_approval` / `:push_approval` / `:require_approval` — push approval
+    opts forwarded to `AgentOS.Git.Orchestrator` via host_call demux (R31).
 
-  Replaces any prior attachment. Stops the previous Port and cancels inflight
-  remote host_calls first.
+  **K21 / R66:** at most one git engine per VM. If a live engine is already
+  attached, returns `{:error, :git_already_attached}` without opening a second
+  Port. Call `detach_git/2` first to replace.
   """
   @spec attach_git(server(), keyword()) :: :ok | {:error, term()}
   def attach_git(server, opts \\ []) when is_list(opts),
@@ -455,8 +462,8 @@ defmodule AgentOS.Vm do
     do: GenServer.call(server, :detach_git, timeout(opts))
 
   @doc """
-  If `event` is a host_call for name `\"git\"` or this VM's gitfs mount path,
-  claim it and return `:answered`.
+  If `event` is a host_call (or host_call_close) for name `\"git\"` or this VM's
+  gitfs mount path, claim it and return `:answered`.
 
   * `name == \"git\"` (remote orch / HTTPS) is **async**: spawn under
     `AgentOS.SidecarTaskSupervisor`, return immediately, then answer via
@@ -466,6 +473,8 @@ defmodule AgentOS.Vm do
     Orchestrator import+apply cannot interleave on the shared git-engine Port.
   * Mount-path host_calls (gitfs type-4) stay **synchronous** so single-writer
     Port ordering is preserved.
+  * `host_call_close` for name `\"git\"` cancels the inflight Task (or drops a
+    queued remote) without double-responding — mirrors sidecar cancel (R100).
   """
   @spec try_answer_git_host_call(server(), map(), keyword()) ::
           :answered | :unclaimed | {:error, term()}
@@ -1117,46 +1126,60 @@ defmodule AgentOS.Vm do
   end
 
   defp do_attach_git(state, opts) do
-    state = do_detach_git(state)
-    mount_path = Keyword.get(opts, :mount_path, "/workspace/repo")
-    allowed = git_allowed_origins_from_opts(opts)
-    auth = Keyword.get(opts, :auth)
-    transport = Keyword.get(opts, :transport)
+    # K21 / R66: fail closed while a live engine is attached — do not open a
+    # second Port (would leak). Caller must detach_git first.
+    if is_pid(state.git_engine) and Process.alive?(state.git_engine) do
+      {:error, :git_already_attached}
+    else
+      # Clear half-dead refs (crashed engine) without claiming a second Port first.
+      state = do_detach_git(state)
+      mount_path = Keyword.get(opts, :mount_path, "/workspace/repo")
+      allowed = git_allowed_origins_from_opts(opts)
+      auth = Keyword.get(opts, :auth)
+      transport = Keyword.get(opts, :transport)
 
-    identity = Keyword.get(opts, :identity) || Keyword.get(opts, :git_identity)
+      identity = Keyword.get(opts, :identity) || Keyword.get(opts, :git_identity)
 
-    # Unlinked start + monitor so engine crash does not kill the VM actor.
-    case AgentOS.GitEngine.start(
-           executable: Keyword.get(opts, :executable),
-           root: Keyword.get(opts, :root),
-           mount_path: mount_path,
-           identity: identity
-         ) do
-      {:ok, pid} ->
-        ref = Process.monitor(pid)
-        read_only = Keyword.get(opts, :read_only, false)
+      require_approval = Keyword.get(opts, :require_approval, false) == true
+      on_push_approval = Keyword.get(opts, :on_push_approval)
+      push_approval = Keyword.get(opts, :push_approval, false) == true
 
-        case Nif.mount(state.nif, mount_path, read_only) do
-          :ok ->
-            {:ok,
-             %{
-               state
-               | git_engine: pid,
-                 git_mount_path: mount_path,
-                 git_engine_mon: ref,
-                 git_allowed_origins: allowed,
-                 git_auth: auth,
-                 git_transport: transport
-             }}
+      # Unlinked start + monitor so engine crash does not kill the VM actor.
+      case AgentOS.GitEngine.start(
+             executable: Keyword.get(opts, :executable),
+             root: Keyword.get(opts, :root),
+             mount_path: mount_path,
+             identity: identity
+           ) do
+        {:ok, pid} ->
+          ref = Process.monitor(pid)
+          read_only = Keyword.get(opts, :read_only, false)
 
-          {:error, reason} ->
-            Process.demonitor(ref, [:flush])
-            _ = AgentOS.GitEngine.stop(pid)
-            {:error, reason}
-        end
+          case Nif.mount(state.nif, mount_path, read_only) do
+            :ok ->
+              {:ok,
+               %{
+                 state
+                 | git_engine: pid,
+                   git_mount_path: mount_path,
+                   git_engine_mon: ref,
+                   git_allowed_origins: allowed,
+                   git_auth: auth,
+                   git_transport: transport,
+                   git_require_approval: require_approval,
+                   git_on_push_approval: on_push_approval,
+                   git_push_approval: push_approval
+               }}
 
-      {:error, reason} ->
-        {:error, reason}
+            {:error, reason} ->
+              Process.demonitor(ref, [:flush])
+              _ = AgentOS.GitEngine.stop(pid)
+              {:error, reason}
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
     end
   end
 
@@ -1197,6 +1220,9 @@ defmodule AgentOS.Vm do
         git_allowed_origins: [],
         git_auth: nil,
         git_transport: nil,
+        git_require_approval: false,
+        git_on_push_approval: nil,
+        git_push_approval: false,
         git_remote_queue: []
     }
   end
@@ -1220,6 +1246,26 @@ defmodule AgentOS.Vm do
     %{state | git_tasks: %{}, git_task_refs: %{}, git_remote_queue: []}
   end
 
+  # R100: cancel one inflight/queued remote by handle (host_call_close).
+  # Mirrors sidecar: kill Task, drop queue entry; do not double-respond.
+  defp cancel_git_handle(state, handle) when is_integer(handle) do
+    tasks = state.git_tasks || %{}
+    queue = state.git_remote_queue || []
+
+    case Map.pop(tasks, handle) do
+      {nil, _tasks} ->
+        new_queue = Enum.reject(queue, fn {h, _body} -> h == handle end)
+        %{state | git_remote_queue: new_queue}
+
+      {task, rest} ->
+        if is_reference(task.ref), do: Process.demonitor(task.ref, [:flush])
+        Task.shutdown(task, :brutal_kill)
+        refs = Map.delete(state.git_task_refs || %{}, task.ref)
+        state = %{state | git_tasks: rest, git_task_refs: refs}
+        maybe_start_next_git_remote(state)
+    end
+  end
+
   defp git_host_opts(state) do
     opts = [allowed_origins: state.git_allowed_origins || []]
 
@@ -1229,9 +1275,50 @@ defmodule AgentOS.Vm do
         auth -> Keyword.put(opts, :auth, auth)
       end
 
-    case state.git_transport do
-      fun when is_function(fun, 2) -> Keyword.put(opts, :transport, fun)
-      _ -> opts
+    opts =
+      case state.git_transport do
+        fun when is_function(fun, 2) -> Keyword.put(opts, :transport, fun)
+        _ -> opts
+      end
+
+    opts =
+      if state.git_require_approval == true do
+        Keyword.put(opts, :require_approval, true)
+      else
+        opts
+      end
+
+    opts =
+      case state.git_on_push_approval do
+        fun when is_function(fun) -> Keyword.put(opts, :on_push_approval, fun)
+        _ -> opts
+      end
+
+    if state.git_push_approval == true do
+      Keyword.put(opts, :push_approval, true)
+    else
+      opts
+    end
+  end
+
+  # R100: guest closed the host_call handle — cancel Task / drop queue.
+  defp answer_git_event(
+         state,
+         %{kind: :host_call_close, handle: handle, name: name}
+       )
+       when is_integer(handle) and is_binary(name) do
+    mount = state.git_mount_path
+
+    cond do
+      name == "git" ->
+        {:answered, cancel_git_handle(state, handle)}
+
+      is_binary(mount) and name == mount ->
+        # Mount ops are sync; nothing to cancel, but claim the close.
+        {:answered, state}
+
+      true ->
+        :unclaimed
     end
   end
 

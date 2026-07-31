@@ -500,6 +500,167 @@ defmodule AgentOS.Git.OrchestratorTest do
     assert ng =~ "ng "
   end
 
+  # ── R43 Auth kinds (header injection, no network) ─────────────────────────
+
+  test "auth_headers injects bearer, header, basic; never embeds secrets in URL helpers" do
+    assert [] = SmartHttp.auth_headers(%{kind: :none})
+    assert [] = SmartHttp.auth_headers(nil)
+
+    assert [{"authorization", "Bearer tok-xyz"}] =
+             SmartHttp.auth_headers(%{kind: :bearer, token: "tok-xyz"})
+
+    assert [{"x-api-key", "secret-key"}] =
+             SmartHttp.auth_headers(%{kind: :header, name: "X-Api-Key", value: "secret-key"})
+
+    basic = SmartHttp.auth_headers(%{kind: :basic, username: "alice", password: "s3cr3t"})
+    assert [{"authorization", value}] = basic
+    assert String.starts_with?(value, "Basic ")
+    decoded = value |> String.replace_prefix("Basic ", "") |> Base.decode64!()
+    assert decoded == "alice:s3cr3t"
+
+    # String keys / kinds (connection-catalog style)
+    assert [{"authorization", "Bearer t2"}] =
+             SmartHttp.auth_headers(%{"kind" => "bearer", "token" => "t2"})
+
+    assert [{"authorization", "Basic " <> _}] =
+             SmartHttp.auth_headers(%{"kind" => "basic", "username" => "u", "password" => "p"})
+
+    # Unknown kind → no headers (do not invent)
+    assert [] = SmartHttp.auth_headers(%{kind: :query, name: "t", value: "v"})
+  end
+
+  # ── R40 BEAM pack cache (download-key; credentials never in key) ───────────
+
+  test "upload_pack_cache_key is stable and excludes credentials" do
+    alias AgentOS.Git.PackCache
+
+    k1 =
+      PackCache.upload_pack_cache_key(
+        "https://example.com/r.git",
+        ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+        [],
+        1
+      )
+
+    k2 =
+      PackCache.upload_pack_cache_key(
+        "https://example.com/r.git",
+        # reverse order → same key after sort
+        ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+        [],
+        1
+      )
+
+    assert k1 == k2
+    assert k1 =~ "upload-pack:v1:"
+    assert k1 =~ "https://example.com/r.git"
+    assert k1 =~ ":d1"
+    secret = "s3cr3t-bearer-token"
+    refute k1 =~ secret
+    refute k1 =~ "Authorization"
+    refute k1 =~ "Bearer"
+  end
+
+  @tag timeout: 60_000
+  test "second clone with pack_cache does not call fetch_packs twice" do
+    alias AgentOS.Git.PackCache
+
+    path = engine_path()
+    pack = minimal_pack_bytes()
+    assert byte_size(pack) > 0
+
+    {:ok, cache} = PackCache.start_link()
+    fetch_count = :atomics.new(1, signed: false)
+
+    tip = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+    transport = fn
+      :list_refs, {_url, _opts} ->
+        {:ok, [%{name: "refs/heads/main", hash: tip}]}
+
+      :fetch_packs, {_url, _want, _have, _opts} ->
+        :atomics.add(fetch_count, 1, 1)
+        {:ok, pack}
+
+      :push_packs, _ ->
+        flunk("clone must not push")
+    end
+
+    # Auth must not affect cache key — same secret on both clones.
+    secret = "s3cr3t-bearer-token"
+
+    opts = [
+      transport: transport,
+      allowed_origins: [@fixture_origin],
+      pack_cache: cache,
+      auth: %{kind: :bearer, token: secret}
+    ]
+
+    root1 =
+      Path.join(
+        System.tmp_dir!(),
+        "orch-cache1-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    root2 =
+      Path.join(
+        System.tmp_dir!(),
+        "orch-cache2-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.mkdir_p!(root1)
+    File.mkdir_p!(root2)
+
+    try do
+      assert {:ok, pid1} = GitEngine.start(executable: path, root: root1)
+
+      assert {:ok, json1} =
+               Orchestrator.run(
+                 pid1,
+                 ~s({"op":"clone","args":{"url":"#{@fixture_url}"}}),
+                 opts
+               )
+
+      # Import of 0-object pack may fail; transport count is what we assert.
+      assert is_binary(json1)
+      assert :atomics.get(fetch_count, 1) == 1
+
+      pack_key =
+        PackCache.upload_pack_cache_key(
+          @fixture_url,
+          [tip],
+          [],
+          1
+        )
+
+      dig = PackCache.get_by_key(cache, pack_key)
+      assert is_binary(dig), "pack cache key miss after first clone: #{pack_key}"
+      refute pack_key =~ secret
+      refute dig =~ secret
+      assert PackCache.get(cache, dig) == pack
+
+      assert {:ok, pid2} = GitEngine.start(executable: path, root: root2)
+
+      assert {:ok, json2} =
+               Orchestrator.run(
+                 pid2,
+                 ~s({"op":"clone","args":{"url":"#{@fixture_url}"}}),
+                 opts
+               )
+
+      assert is_binary(json2)
+      assert :atomics.get(fetch_count, 1) == 1,
+             "second clone must hit pack cache (fetch_packs stays 1)"
+
+      :ok = GitEngine.stop(pid1)
+      :ok = GitEngine.stop(pid2)
+    after
+      PackCache.stop(cache)
+      File.rm_rf(root1)
+      File.rm_rf(root2)
+    end
+  end
+
   # ── P1.7 foundation: async git host_call via Vm ────────────────────────────
 
   @tag timeout: 120_000
@@ -674,6 +835,318 @@ defmodule AgentOS.Git.OrchestratorTest do
         AgentOS.ControlPlane.dispose(id)
       end
     end
+  end
+
+  # ── R31 push approval ──────────────────────────────────────────────────────
+
+  @tag timeout: 30_000
+  test "R31 require_approval without fun rejects push (fail closed)" do
+    path = engine_path()
+    assert {:ok, pid} = GitEngine.start(executable: path)
+
+    dialed = :atomics.new(1, signed: false)
+
+    transport = fn
+      :list_refs, _ ->
+        :atomics.put(dialed, 1, 1)
+        {:ok, [%{name: "refs/heads/master", hash: "0000000000000000000000000000000000000000"}]}
+
+      :push_packs, _ ->
+        :atomics.put(dialed, 1, 1)
+        {:ok, %{ok: true, message: "ok"}}
+    end
+
+    # Seed a commit so push.prepare has commands (else fails earlier).
+    assert {:ok, _} = GitEngine.run(pid, %{"op" => "init"})
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "write",
+               "args" => %{"path" => "p.txt", "content" => "p\n"}
+             })
+
+    assert {:ok, _} = GitEngine.run(pid, %{"op" => "add", "args" => %{"path" => "p.txt"}})
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "commit",
+               "args" => %{
+                 "message" => "c",
+                 "name" => "P",
+                 "email" => "p@p",
+                 "when_unix" => 1_700_000_200
+               }
+             })
+
+    assert {:ok, json} =
+             Orchestrator.run(
+               pid,
+               ~s({"op":"push","args":{"url":"#{@fixture_url}"}}),
+               transport: transport,
+               allowed_origins: [@fixture_origin],
+               require_approval: true
+             )
+
+    assert json =~ "requires approval"
+    # Lease list_refs may run before approval; receive-pack must not.
+    refute json =~ "pushed"
+    :ok = GitEngine.stop(pid)
+  end
+
+  @tag timeout: 60_000
+  test "R31 on_push_approval true allows push" do
+    path = engine_path()
+    assert {:ok, pid} = GitEngine.start(executable: path)
+    assert {:ok, _} = GitEngine.run(pid, %{"op" => "init"})
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "write",
+               "args" => %{"path" => "a.txt", "content" => "a\n"}
+             })
+
+    assert {:ok, _} = GitEngine.run(pid, %{"op" => "add", "args" => %{"path" => "a.txt"}})
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "commit",
+               "args" => %{
+                 "message" => "c",
+                 "name" => "P",
+                 "email" => "p@p",
+                 "when_unix" => 1_700_000_201
+               }
+             })
+
+    zero = "0000000000000000000000000000000000000000"
+    approved? = :atomics.new(1, signed: false)
+
+    transport = fn
+      :list_refs, _ ->
+        {:ok, [%{name: "refs/heads/master", hash: zero}]}
+
+      :push_packs, _ ->
+        {:ok, %{ok: true, message: "ok"}}
+    end
+
+    assert {:ok, json} =
+             Orchestrator.run(
+               pid,
+               ~s({"op":"push","args":{"url":"#{@fixture_url}"}}),
+               transport: transport,
+               allowed_origins: [@fixture_origin],
+               require_approval: true,
+               on_push_approval: fn ctx ->
+                 :atomics.put(approved?, 1, 1)
+                 assert is_map(ctx)
+                 assert is_binary(ctx.url)
+                 true
+               end
+             )
+
+    assert json =~ "pushed" or json =~ "\"ok\":true"
+    assert :atomics.get(approved?, 1) == 1
+    :ok = GitEngine.stop(pid)
+  end
+
+  # ── R66 second attach fail-closed ──────────────────────────────────────────
+
+  @tag timeout: 120_000
+  test "R66 second attach_git fails closed without leaking Port" do
+    wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
+    posix = runfile_bytes("memcontainers/images/posix.tar")
+    path = engine_path()
+
+    if is_nil(wasm) or is_nil(posix) do
+      IO.puts(:stderr, "skipping R66 attach test: kernel/posix runfiles missing")
+    else
+      id = {"git-k21", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
+
+      try do
+        assert {:ok, _pid} =
+                 AgentOS.ControlPlane.create(id,
+                   wasm: wasm,
+                   base_image: posix,
+                   deterministic: true,
+                   workers: 0,
+                   host_call: :relay
+                 )
+
+        assert :ok =
+                 AgentOS.ControlPlane.attach_git(id,
+                   executable: path,
+                   allowed_origins: [@fixture_origin]
+                 )
+
+        info1 = AgentOS.ControlPlane.info(id)
+        assert info1.git_attached == true
+
+        # Second attach must not open another Port.
+        assert {:error, :git_already_attached} =
+                 AgentOS.ControlPlane.attach_git(id,
+                   executable: path,
+                   allowed_origins: [@fixture_origin]
+                 )
+
+        # First attachment still live.
+        info2 = AgentOS.ControlPlane.info(id)
+        assert info2.git_attached == true
+
+        # Detach then re-attach works.
+        assert :ok = AgentOS.ControlPlane.detach_git(id)
+        assert AgentOS.ControlPlane.info(id).git_attached == false
+
+        assert :ok =
+                 AgentOS.ControlPlane.attach_git(id,
+                   executable: path,
+                   allowed_origins: [@fixture_origin]
+                 )
+
+        assert AgentOS.ControlPlane.info(id).git_attached == true
+        assert :ok = AgentOS.ControlPlane.detach_git(id)
+      after
+        AgentOS.ControlPlane.dispose(id)
+      end
+    end
+  end
+
+  # ── R5 attach path detaches on engine death ────────────────────────────────
+
+  @tag timeout: 120_000
+  test "R5 Process.exit engine → attach path detaches" do
+    wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
+    posix = runfile_bytes("memcontainers/images/posix.tar")
+    path = engine_path()
+
+    if is_nil(wasm) or is_nil(posix) do
+      IO.puts(:stderr, "skipping R5 attach detach test: kernel/posix runfiles missing")
+    else
+      id = {"git-eio", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
+
+      try do
+        assert {:ok, _vm} =
+                 AgentOS.ControlPlane.create(id,
+                   wasm: wasm,
+                   base_image: posix,
+                   deterministic: true,
+                   workers: 0,
+                   host_call: :relay
+                 )
+
+        assert :ok =
+                 AgentOS.ControlPlane.attach_git(id,
+                   executable: path,
+                   allowed_origins: [@fixture_origin]
+                 )
+
+        vm = AgentOS.ControlPlane.whereis(id)
+        st = :sys.get_state(vm)
+        eng = st.git_engine
+        assert is_pid(eng) and Process.alive?(eng)
+
+        Process.exit(eng, :kill)
+
+        assert_eventually(fn ->
+          AgentOS.ControlPlane.info(id).git_attached == false
+        end)
+      after
+        AgentOS.ControlPlane.dispose(id)
+      end
+    end
+  end
+
+  # ── R100 host_call_close cancels inflight remote ───────────────────────────
+
+  @tag timeout: 120_000
+  test "R100 host_call_close cancels queued/inflight git remote" do
+    wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
+    posix = runfile_bytes("memcontainers/images/posix.tar")
+    path = engine_path()
+
+    if is_nil(wasm) or is_nil(posix) do
+      IO.puts(:stderr, "skipping R100 close test: kernel/posix runfiles missing")
+    else
+      id = {"git-close", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
+      pack = File.read!(Path.expand("../fixtures/git/minimal.pack", __DIR__))
+      tip = File.read!(Path.expand("../fixtures/git/minimal.tip", __DIR__)) |> String.trim()
+      gate = :atomics.new(1, signed: false)
+
+      transport = fn
+        :list_refs, _ ->
+          # Hold until close so Task is still running.
+          for _ <- 1..50, :atomics.get(gate, 1) == 0, do: Process.sleep(20)
+          {:ok, [%{name: "refs/heads/main", hash: tip}]}
+
+        :fetch_packs, _ ->
+          {:ok, pack}
+      end
+
+      try do
+        assert {:ok, _} =
+                 AgentOS.ControlPlane.create(id,
+                   wasm: wasm,
+                   base_image: posix,
+                   deterministic: true,
+                   workers: 0,
+                   host_call: :relay
+                 )
+
+        assert :ok =
+                 AgentOS.ControlPlane.attach_git(id,
+                   executable: path,
+                   allowed_origins: [@fixture_origin],
+                   transport: transport
+                 )
+
+        vm = AgentOS.ControlPlane.whereis(id)
+
+        open_ev = %{
+          kind: :host_call,
+          handle: 9_201,
+          name: "git",
+          body: ~s({"op":"clone","args":{"url":"#{@fixture_url}"}})
+        }
+
+        assert :answered = AgentOS.Vm.try_answer_git_host_call(vm, open_ev)
+        Process.sleep(30)
+        assert AgentOS.ControlPlane.info(id).git_inflight >= 1
+
+        close_ev = %{kind: :host_call_close, handle: 9_201, name: "git"}
+        assert :answered = AgentOS.Vm.try_answer_git_host_call(vm, close_ev)
+
+        # Release transport in case Task was past list_refs.
+        :atomics.put(gate, 1, 1)
+
+        assert_eventually(fn ->
+          AgentOS.ControlPlane.info(id).git_inflight == 0
+        end)
+
+        assert :ok = AgentOS.ControlPlane.detach_git(id)
+      after
+        AgentOS.ControlPlane.dispose(id)
+      end
+    end
+  end
+
+  # ── R85 metrics ────────────────────────────────────────────────────────────
+
+  @tag timeout: 30_000
+  test "R85 metrics counters tick on orch clone deny" do
+    AgentOS.Git.Metrics.reset()
+    path = engine_path()
+    assert {:ok, pid} = GitEngine.start(executable: path)
+
+    assert {:ok, _json} =
+             Orchestrator.run(
+               pid,
+               ~s({"op":"clone","args":{"url":"#{@fixture_url}"}}),
+               transport: fixture_transport(),
+               allowed_origins: ["https://other.example"]
+             )
+
+    snap = AgentOS.Git.Metrics.snapshot()
+    assert snap.clone_error >= 1
+    :ok = GitEngine.stop(pid)
   end
 
   defp runfile_bytes(rel) do

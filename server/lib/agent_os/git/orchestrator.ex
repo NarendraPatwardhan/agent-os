@@ -16,11 +16,13 @@ defmodule AgentOS.Git.Orchestrator do
   * **Push is supported** when not `read_only: true` (packbuilder + receive-pack)
   * Secrets only in BEAM request headers (never URL userinfo)
 
-  Shared executable golden vectors (K20 / P2.8):
-  `memcontainers/lib/git-engine/testdata/orch/{clone_success_steps,clone_empty_pack_fail,origin_denied}.json`
+  Shared executable golden vectors (K20 / P2.8 / R81):
+  `memcontainers/lib/git-engine/testdata/orch/{clone_success_steps,clone_empty_pack_fail,origin_denied,fetch_success_steps,pull_ff_steps,push_readonly}.json`
   (also under `server/test/fixtures/git/orch/`).
   """
 
+  alias AgentOS.Git.Metrics
+  alias AgentOS.Git.PackCache
   alias AgentOS.Git.SmartHttp
   alias AgentOS.GitEngine
 
@@ -28,13 +30,14 @@ defmodule AgentOS.Git.Orchestrator do
 
   @zero_oid "0000000000000000000000000000000000000000"
   @push_read_only "git: push rejected (read-only mount)"
+  @push_requires_approval "git: push requires approval"
 
   @doc """
   Handle a guest/SDK remote Request JSON against a live git-engine Port pid.
 
   Options:
   * `:transport` — injectable SmartHttp transport (tests)
-  * `:auth` — `%{kind: :none | :bearer | :header, ...}`
+  * `:auth` — `%{kind: :none | :bearer | :header | :basic, ...}`
   * `:allowed_origins` — list of canonical `http(s)://host[:port]` origins
     (required for product dials; empty/missing fails closed). Prefer explicit
     lists in tests. `:any` is fixture-transport only (see SmartHttp).
@@ -42,6 +45,14 @@ defmodule AgentOS.Git.Orchestrator do
     injected fixture transport
   * `:max_pack_bytes` — response/pack size cap (default 64 MiB)
   * `:read_only` — when `true`, push is rejected with a stable read-only error
+  * `:pack_cache` — `AgentOS.Git.PackCache` pid (or `:default` for process
+    singleton). Download-key is url+wants+haves+depth only — **never** auth.
+    Omit / `nil` / `false` disables cache.
+  * `:require_approval` — when `true`, push must be approved (R31)
+  * `:on_push_approval` — fun `(ctx :: map()) -> boolean` or `/0`; called when
+    `require_approval` is set. Default when missing: reject (fail closed).
+  * `:push_approval` — boolean shorthand when `require_approval` is set and no
+    fun is provided (`true` allows, `false` rejects)
 
   **Push** (when not read-only): `push.prepare` → list-refs lease → pack.build
   from new tip OIDs → smart-HTTP receive-pack → `push.complete`. Empty pack on
@@ -52,13 +63,38 @@ defmodule AgentOS.Git.Orchestrator do
     with {:ok, req} <- decode_request(request) do
       op = req |> Map.get("op", Map.get(req, :op, "")) |> to_string() |> String.downcase()
 
-      case op do
-        "clone" -> clone(engine_pid, req, opts)
-        "fetch" -> fetch(engine_pid, req, opts, false)
-        "pull" -> fetch(engine_pid, req, opts, true)
-        "push" -> push(engine_pid, req, opts)
-        _ -> {:ok, response(false, 2, "", "unknown remote op: #{op}")}
-      end
+      result =
+        case op do
+          "clone" -> clone(engine_pid, req, opts)
+          "fetch" -> fetch(engine_pid, req, opts, false)
+          "pull" -> fetch(engine_pid, req, opts, true)
+          "push" -> push(engine_pid, req, opts)
+          _ -> {:ok, response(false, 2, "", "unknown remote op: #{op}")}
+        end
+
+      record_metrics(op, result)
+      result
+    end
+  end
+
+  defp record_metrics(op, result) do
+    case result do
+      {:ok, json} when is_binary(json) ->
+        ok? =
+          String.contains?(json, "\"ok\":true") or String.contains?(json, ~s("ok":true))
+
+        Metrics.record_remote_result(op, ok?)
+
+      {:error, :eio} ->
+        Metrics.inc(:port_eio)
+        Metrics.record_remote_result(op, false)
+
+      {:error, _} ->
+        Metrics.inc(:rpc_error)
+        Metrics.record_remote_result(op, false)
+
+      _ ->
+        :ok
     end
   end
 
@@ -68,8 +104,8 @@ defmodule AgentOS.Git.Orchestrator do
          {:ok, refs} <- SmartHttp.list_refs(url, opts),
          {:ok, tip} <- pick_tip(refs, ref_of(req)),
          wants <- want_oids(refs, tip.hash),
-         {:ok, pack} <-
-           SmartHttp.fetch_packs(url, wants, [], Keyword.put(opts, :depth, depth_of(req))),
+         depth <- depth_of(req),
+         {:ok, pack} <- resolve_pack(url, wants, [], depth, opts),
          :ok <- require_non_empty_pack(pack),
          :ok <- apply_init(engine_pid),
          :ok <- apply_pack(engine_pid, pack),
@@ -88,8 +124,8 @@ defmodule AgentOS.Git.Orchestrator do
          {:ok, tip} <- pick_tip(refs, ref_of(req)),
          have <- local_haves(engine_pid),
          wants <- want_oids(refs, tip.hash),
-         {:ok, pack} <-
-           SmartHttp.fetch_packs(url, wants, have, Keyword.put(opts, :depth, depth_of(req))),
+         depth <- depth_of(req),
+         {:ok, pack} <- resolve_pack(url, wants, have, depth, opts),
          :ok <- require_non_empty_pack(pack),
          :ok <- apply_pack(engine_pid, pack),
          :ok <- apply_refs_and_checkout(engine_pid, tip, refs, :fetch),
@@ -111,7 +147,58 @@ defmodule AgentOS.Git.Orchestrator do
     end
   end
 
+  # R40: download-key hit skips transport. Key = url+wants+haves+depth only (no auth).
+  defp resolve_pack(url, wants, haves, depth, opts) do
+    cache = pack_cache_of(opts)
+    pack_key = PackCache.upload_pack_cache_key(url, wants, haves, depth)
+
+    with {:ok, pack} <- pack_from_cache_or_transport(cache, pack_key, url, wants, haves, depth, opts) do
+      maybe_store_pack(cache, pack_key, pack)
+      {:ok, pack}
+    end
+  end
+
+  defp pack_from_cache_or_transport(nil, _key, url, wants, haves, depth, opts) do
+    SmartHttp.fetch_packs(url, wants, haves, Keyword.put(opts, :depth, depth))
+  end
+
+  defp pack_from_cache_or_transport(cache, pack_key, url, wants, haves, depth, opts) do
+    case PackCache.get_by_key(cache, pack_key) do
+      dig when is_binary(dig) ->
+        case PackCache.get(cache, dig) do
+          pack when is_binary(pack) and pack != <<>> ->
+            {:ok, pack}
+
+          _ ->
+            SmartHttp.fetch_packs(url, wants, haves, Keyword.put(opts, :depth, depth))
+        end
+
+      _ ->
+        SmartHttp.fetch_packs(url, wants, haves, Keyword.put(opts, :depth, depth))
+    end
+  end
+
+  defp maybe_store_pack(nil, _key, _pack), do: :ok
+
+  defp maybe_store_pack(cache, pack_key, pack) when is_binary(pack) and pack != <<>> do
+    dig = PackCache.put(cache, pack)
+    PackCache.put_key(cache, pack_key, dig)
+    :ok
+  end
+
+  defp maybe_store_pack(_cache, _key, _pack), do: :ok
+
+  defp pack_cache_of(opts) do
+    case Keyword.get(opts, :pack_cache) do
+      pid when is_pid(pid) -> pid
+      :default -> PackCache.default_process_cache()
+      true -> PackCache.default_process_cache()
+      _ -> nil
+    end
+  end
+
   # PR12 / R44–R47: push.prepare → list-refs lease → pack_build → receive-pack → complete.
+  # R31: optional require_approval / on_push_approval / push_approval gate.
   defp push(engine_pid, req, opts) do
     if Keyword.get(opts, :read_only, false) do
       {:ok, response(false, 1, "", @push_read_only <> "\n")}
@@ -126,6 +213,7 @@ defmodule AgentOS.Git.Orchestrator do
          {:ok, prep} <- run_push_prepare(engine_pid),
          {:ok, remote_refs} <- SmartHttp.list_refs(url, opts),
          {:ok, commands} <- build_push_commands(prep, remote_refs),
+         :ok <- maybe_require_push_approval(url, commands, opts),
          {:ok, pack, delete_only?} <- build_push_pack(engine_pid, commands),
          :ok <- require_push_pack(pack, delete_only?),
          {:ok, status} <- SmartHttp.push_packs(url, commands, pack, opts),
@@ -139,7 +227,43 @@ defmodule AgentOS.Git.Orchestrator do
          response(false, 1, "", "git: remote rejected push: #{msg}\n")}
       end
     else
-      err -> map_remote_error(err, :push)
+      {:error, :push_requires_approval} ->
+        {:ok, response(false, 1, "", @push_requires_approval <> "\n")}
+
+      err ->
+        map_remote_error(err, :push)
+    end
+  end
+
+  # R31: when require_approval is true, call on_push_approval or use push_approval bool.
+  # Default without fun / without true push_approval → reject (fail closed).
+  defp maybe_require_push_approval(url, commands, opts) do
+    if Keyword.get(opts, :require_approval, false) == true do
+      ctx = %{url: url, commands: commands}
+
+      allowed =
+        case Keyword.get(opts, :on_push_approval) do
+          fun when is_function(fun, 1) ->
+            try do
+              fun.(ctx) == true
+            rescue
+              _ -> false
+            end
+
+          fun when is_function(fun, 0) ->
+            try do
+              fun.() == true
+            rescue
+              _ -> false
+            end
+
+          _ ->
+            Keyword.get(opts, :push_approval, false) == true
+        end
+
+      if allowed, do: :ok, else: {:error, :push_requires_approval}
+    else
+      :ok
     end
   end
 
@@ -449,7 +573,7 @@ defmodule AgentOS.Git.Orchestrator do
     with :ok <- apply_all_heads(pid, resolved, refs), do: apply_fetch(pid, resolved)
   end
 
-  # R37: import all advertised heads (engine is single-ref → loop).
+  # R37/R94: single refs.import with args.refs array; loop fallback if array fails.
   defp apply_all_heads(pid, tip, refs) when is_list(refs) do
     primary = %{name: tip.name || ref_name_of(tip, refs), hash: tip.hash}
 
@@ -467,15 +591,40 @@ defmodule AgentOS.Git.Orchestrator do
       |> Enum.uniq_by(& &1.name)
       |> Enum.filter(&(&1.name != "" and &1.hash != ""))
 
-    Enum.reduce_while(to_import, :ok, fn %{name: name} = entry, :ok ->
-      case apply_refs(pid, entry) do
-        :ok ->
-          {:cont, :ok}
+    case apply_refs_array(pid, to_import) do
+      :ok ->
+        :ok
 
-        err ->
-          if name == primary.name, do: {:halt, err}, else: {:cont, :ok}
-      end
-    end)
+      _array_err ->
+        # Best-effort per-ref: primary tip must succeed; other heads optional
+        # (objects may be absent for non-tip heads on partial multi-want).
+        Enum.reduce_while(to_import, :ok, fn %{name: name} = entry, :ok ->
+          case apply_refs(pid, entry) do
+            :ok ->
+              {:cont, :ok}
+
+            err ->
+              if name == primary.name, do: {:halt, err}, else: {:cont, :ok}
+          end
+        end)
+    end
+  end
+
+  defp apply_refs_array(_pid, []), do: :ok
+
+  defp apply_refs_array(pid, entries) when is_list(entries) do
+    refs =
+      Enum.map(entries, fn %{name: name, hash: hash} ->
+        %{"name" => name, "hash" => hash}
+      end)
+
+    case GitEngine.run(pid, %{
+           "op" => "refs.import",
+           "args" => %{"refs" => refs}
+         }) do
+      {:ok, m} -> if ok?(m), do: :ok, else: {:error, m}
+      err -> err
+    end
   end
 
   defp apply_refs(pid, %{name: name, hash: hash}) do

@@ -21,10 +21,13 @@ const char *jmin_args_object(const char *json);
  * jmin_array_next_object: walk objects inside an array; *cursor is in/out
  *   (init to array '[' or first element). Returns 0 and sets *obj to '{' of
  *   next object; -1 when exhausted or non-object element.
+ * jmin_array_next_string: walk string elements; *cursor in/out (init to '[').
+ *   Returns 0 and fills out; -1 when exhausted or non-string element.
  * jmin_obj_get_string: like jmin_get_string but only top-level keys of one
  *   object starting at '{' (does not leak into following siblings). */
 const char *jmin_get_array(const char *json, const char *key);
 int jmin_array_next_object(const char **cursor, const char **obj);
+int jmin_array_next_string(const char **cursor, char *out, size_t out_cap);
 int jmin_obj_get_string(const char *obj, const char *key, char *out, size_t out_cap);
 
 char *jmin_escape(const char *s);

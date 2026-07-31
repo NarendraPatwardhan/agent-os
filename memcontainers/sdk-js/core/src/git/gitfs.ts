@@ -9,6 +9,12 @@ import { normalizeRel } from "./bridge.js";
 
 const REMOTE_OPS = new Set(["clone", "fetch", "pull", "push"]);
 
+/**
+ * Brand symbol for gitfs drivers (K21 / R66). Hosts use this to enforce at most
+ * one gitfs mount per VM without coupling to constructor identity.
+ */
+export const GITFS_DRIVER_KIND = Symbol.for("agentos.gitfs");
+
 export interface GitFsDriverOptions {
   readOnly?: boolean;
   /**
@@ -16,6 +22,15 @@ export interface GitFsDriverOptions {
    * (e.g. `["src/", "docs/"]`). Empty = full tree. Synthetic `.git` always visible.
    */
   sparseCone?: string[];
+}
+
+/** True when `driver` was produced by {@link createGitFsDriver}. */
+export function isGitFsDriver(driver: unknown): boolean {
+  return (
+    !!driver &&
+    typeof driver === "object" &&
+    (driver as { [GITFS_DRIVER_KIND]?: boolean })[GITFS_DRIVER_KIND] === true
+  );
 }
 
 /** Build a {@link Driver} for `mc.create({ mounts: [{ path, driver }] })`. */
@@ -68,15 +83,21 @@ export function createGitFsDriver(
     }
   }
 
-  /** Must run inside bridge.serial (uses sync bridge.run). */
-  function branchNameFromHead(): string {
+  /**
+   * R23: synthetic `.git/HEAD` from engine branch / rev-parse — not hard-coded master
+   * after checkout/clone. Detached → raw OID; unborn only falls back to master.
+   * Must run inside bridge.serial (uses sync bridge.run).
+   */
+  function syntheticHeadContent(): string {
     try {
       const br = bridge.run({ op: "branch" });
       const line = (br.stdout || "").split("\n").find((l) => l.startsWith("* "));
       if (line) {
         const name = line.slice(2).trim();
-        // Detached: "* (HEAD detached at abc)" — fall through
-        if (name && !name.startsWith("(")) return name;
+        // Detached: "* (HEAD detached at abc…)" — fall through to rev-parse
+        if (name && !name.startsWith("(")) {
+          return `ref: refs/heads/${name}\n`;
+        }
       }
     } catch {
       /* */
@@ -84,17 +105,17 @@ export function createGitFsDriver(
     try {
       const r = bridge.run({ op: "rev-parse", args: { rev: "HEAD" } });
       if (r.ok && r.stdout?.trim()) {
-        // Symbolic HEAD may print ref name when args include --abbrev-ref; default short
-        const s = r.stdout.trim();
-        if (!/^[0-9a-f]{40}$/i.test(s)) return s;
+        const s = r.stdout.trim().split(/\s+/)[0] ?? "";
+        if (/^[0-9a-f]{40}$/i.test(s)) return `${s}\n`; // detached
+        if (s) return `ref: refs/heads/${s}\n`;
       }
     } catch {
       /* unborn */
     }
-    return "master";
+    return "ref: refs/heads/master\n";
   }
 
-  return {
+  const driver: Driver = {
     readOnly,
 
     async open(path: string): Promise<Uint8Array> {
@@ -108,8 +129,7 @@ export function createGitFsDriver(
           return new TextEncoder().encode(String(generation) + "\n");
         }
         if (p === ".git/HEAD") {
-          const name = branchNameFromHead();
-          return new TextEncoder().encode(`ref: refs/heads/${name}\n`);
+          return new TextEncoder().encode(syntheticHeadContent());
         }
         if (
           p === ".git" ||
@@ -344,6 +364,15 @@ export function createGitFsDriver(
       });
     },
   };
+
+  // K21 brand so hosts can fail closed on a second gitfs mount (R66).
+  Object.defineProperty(driver, GITFS_DRIVER_KIND, {
+    value: true,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
+  return driver;
 }
 
 function ensureParent(

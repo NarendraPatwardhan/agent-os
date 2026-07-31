@@ -32,6 +32,7 @@ import type {
   SnapshotOptions,
   AutocompleteOptions,
 } from "./types.js";
+import { isGitFsDriver } from "./git/gitfs.js";
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
@@ -123,6 +124,8 @@ export class EmbeddedBackend implements Backend {
   private running = true;
   private readonly resolvers = new Map<number, (r: RawExecResult) => void>();
   private readonly rejecters = new Map<number, (e: Error) => void>();
+  /** K21: at most one gitfs mount path per VM (R66 fail-closed). */
+  private gitFsMountPath: string | null = null;
   /** PERF-013 traces for in-flight exec jobs (A3 parity with driveExec). */
   private readonly jobPerf = new Map<number, JobPerfTrace>();
   /** Running agent sessions tailed by the pump (job → tail state). */
@@ -523,14 +526,24 @@ export class EmbeddedBackend implements Backend {
   }
 
   /** Install a host-backed driver at `path`: register the driver as a binary-safe
-   *  host-call handler keyed by the mount path, then mount a `MountFs` there. */
+   *  host-call handler keyed by the mount path, then mount a `MountFs` there.
+   *  K21/R66: a second gitfs driver mount fails closed with a clear error. */
   async mount(path: string, driver: Driver, readOnly: boolean): Promise<void> {
+    if (isGitFsDriver(driver)) {
+      if (this.gitFsMountPath != null && this.gitFsMountPath !== path) {
+        throw new Error(
+          `gitfs already mounted at ${this.gitFsMountPath}; v1 allows at most one gitfs mount per VM (K21)`,
+        );
+      }
+      this.gitFsMountPath = path;
+    }
     this.tools.registerRaw(path, (body) => dispatchMount(driver, body));
     this.host.mount(path, readOnly || !!driver.readOnly);
   }
   async unmount(path: string): Promise<void> {
     this.host.unmount(path);
     this.tools.unregister(path);
+    if (this.gitFsMountPath === path) this.gitFsMountPath = null;
   }
   async snapshot(opts: SnapshotOptions = {}): Promise<Uint8Array> {
     if ((opts.mode ?? "full") === "full") return this.host.snapshot();

@@ -37,12 +37,13 @@ export interface GitEngineLoadOptions {
    */
   sparseCone?: string[];
   /**
-   * Optional opaque durable store attached to the engine.
+   * Optional durable store attached to the engine.
    *
-   * deferred: durability not rebinding MEMFS yet — a stored snapshot is loaded
-   * into engine-level state only (`GitEngine.durableSnapshot`) and is **not**
-   * restored into the worktree. {@link GitEngine.checkpoint} persists
-   * caller-supplied (or last-known) opaque bytes; it does not dump MEMFS.
+   * When the blob is an **AGIT** pack+refs envelope, {@link GitEngine.load}
+   * rebinds objects/refs/worktree via `importPack` + `refs.import` +
+   * `clone.apply`. {@link GitEngine.checkpoint} (no arg) exports the live
+   * repo as AGIT — not a MEMFS filesystem dump. Legacy non-AGIT opaque bytes
+   * attach engine-level only (no rebind).
    */
   durable?: DurableBackend;
   /**

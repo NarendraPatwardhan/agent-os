@@ -5,7 +5,13 @@
 
 import type { Driver } from "../types.js";
 import { GitBridge } from "./bridge.js";
-import type { DurableBackend } from "./durable.js";
+import {
+  decodeDurableBlob,
+  encodeDurableBlob,
+  type DecodedDurableBlob,
+  type DurableBackend,
+  type DurableRefTip,
+} from "./durable.js";
 import { createGitFsDriver } from "./gitfs.js";
 import type {
   GitEngineLoadOptions,
@@ -15,6 +21,7 @@ import type {
 } from "./types.js";
 
 const REMOTE_OPS = new Set(["clone", "fetch", "pull", "push"]);
+const OID_RE = /^[0-9a-f]{40}$/i;
 
 function normalizeIdentity(
   id: GitIdentity | undefined,
@@ -28,7 +35,7 @@ function normalizeIdentity(
 
 export class GitEngine {
   private readonly durable: DurableBackend | undefined;
-  /** Last opaque durable bytes (not a MEMFS worktree image). */
+  /** Last durable snapshot bytes (AGIT envelope when produced by checkpoint). */
   private _durableSnapshot: Uint8Array | null = null;
   /** Default cone prefixes for asMountDriver (cone-only, not full sparse parity). */
   private readonly sparseCone: string[] | undefined;
@@ -58,31 +65,39 @@ export class GitEngine {
       opts.sparseCone,
       opts.gitIdentity,
     );
-    // deferred: durability not rebinding MEMFS yet — engine-level snapshot only
     if (opts.durable) {
       const snap = await opts.durable.load();
-      if (snap) engine._durableSnapshot = snap;
+      if (snap && snap.byteLength > 0) {
+        engine._durableSnapshot = snap.slice();
+        const decoded = decodeDurableBlob(snap);
+        if (decoded) {
+          await engine.rebindFromEnvelope(decoded);
+        }
+        // Non-AGIT legacy opaque: attach engine-level only (no MEMFS rebind).
+      }
     }
     return engine;
   }
 
   /**
-   * Opaque bytes last loaded from / saved to the attached durable backend.
-   * Not applied to the MEMFS worktree (deferred: durability not rebinding MEMFS yet).
+   * Last durable snapshot bytes (AGIT envelope when produced by
+   * {@link checkpoint} / {@link close}). Copy returned.
    */
   get durableSnapshot(): Uint8Array | null {
     return this._durableSnapshot ? this._durableSnapshot.slice() : null;
   }
 
   /**
-   * Persist opaque bytes to the attached durable backend (no-op if none).
-   * Does **not** serialize the MEMFS worktree — pass `snapshot` explicitly, or
-   * re-save the last known engine-level snapshot.
+   * Persist durable state. With no `snapshot` arg, serializes the live repo
+   * (pack of local tips + refs + HEAD) as an AGIT envelope. Explicit `snapshot`
+   * overrides (advanced/tests) and is saved as-is without re-export.
    */
   async checkpoint(snapshot?: Uint8Array): Promise<void> {
     if (!this.durable) return;
-    const data = snapshot ?? this._durableSnapshot;
-    if (!data) return;
+    const data =
+      snapshot !== undefined
+        ? snapshot
+        : await this.exportDurableSnapshot();
     const copy = data.slice();
     await this.durable.save(copy);
     this._durableSnapshot = copy;
@@ -162,10 +177,131 @@ export class GitEngine {
   }
 
   async close(): Promise<void> {
-    // Persist last known opaque snapshot only (not a MEMFS dump).
-    if (this.durable && this._durableSnapshot) {
-      await this.durable.save(this._durableSnapshot);
+    // Export real pack+refs when durable is attached (same path as checkpoint).
+    if (this.durable) {
+      try {
+        const snap = await this.exportDurableSnapshot();
+        await this.durable.save(snap);
+        this._durableSnapshot = snap;
+      } catch {
+        // Fall back to last known good snapshot if live export fails
+        // (e.g. unborn HEAD / no commits yet).
+        if (this._durableSnapshot) {
+          await this.durable.save(this._durableSnapshot);
+        }
+      }
     }
     this.bridge.close();
+  }
+
+  /**
+   * Serialize live repo as AGIT envelope: all tip OIDs in a pack + refs + HEAD.
+   * Uses pack+refs (ODB-correct), not a MEMFS path dump.
+   */
+  private async exportDurableSnapshot(): Promise<Uint8Array> {
+    return this.bridge.serial(() => {
+      const tips = this.listTipsSync();
+      if (!tips.length) {
+        throw new Error(
+          "durable export: no refs to serialize (unborn or empty repo)",
+        );
+      }
+      const oids = [
+        ...new Set(
+          tips
+            .map((t) => t.hash)
+            .filter((h) => typeof h === "string" && OID_RE.test(h)),
+        ),
+      ];
+      if (!oids.length) {
+        throw new Error("durable export: no tip oids");
+      }
+      const pack = this.bridge.packBuild(oids);
+      const head = this.readHeadNameSync(tips);
+      return encodeDurableBlob({ v: 1, refs: tips, head }, pack);
+    });
+  }
+
+  /** Rebind a fresh engine from a decoded AGIT envelope (init → pack → refs → checkout). */
+  private async rebindFromEnvelope(
+    decoded: DecodedDurableBlob,
+  ): Promise<void> {
+    const { meta, pack } = decoded;
+    return this.bridge.serial(() => {
+      const init = this.bridge.run({ op: "init" });
+      if (!init.ok) {
+        throw new Error(
+          `durable rebind init failed: ${String(init.stderr || init.stdout || "")}`,
+        );
+      }
+      if (pack.byteLength > 0) {
+        this.bridge.importPack(pack, true);
+      }
+      if (meta.refs.length > 0) {
+        const imp = this.bridge.run({
+          op: "refs.import",
+          args: { refs: meta.refs },
+        });
+        if (!imp.ok) {
+          throw new Error(
+            `durable rebind refs.import failed: ${String(imp.stderr || imp.stdout || "")}`,
+          );
+        }
+      }
+      const head = meta.head || "refs/heads/main";
+      const apply = this.bridge.run({
+        op: "clone.apply",
+        args: { head },
+      });
+      if (!apply.ok) {
+        throw new Error(
+          `durable rebind clone.apply failed: ${String(apply.stderr || apply.stdout || "")}`,
+        );
+      }
+    });
+  }
+
+  /** Sync tips list (must run inside bridge.serial). */
+  private listTipsSync(): DurableRefTip[] {
+    const tipsResp = this.bridge.run({ op: "tips" });
+    if (!tipsResp.ok || tipsResp.result == null) return [];
+    let tips = tipsResp.result as DurableRefTip[] | string;
+    if (typeof tips === "string") {
+      try {
+        tips = JSON.parse(tips) as DurableRefTip[];
+      } catch {
+        return [];
+      }
+    }
+    if (!Array.isArray(tips)) return [];
+    const out: DurableRefTip[] = [];
+    for (const t of tips) {
+      if (
+        t &&
+        typeof t.name === "string" &&
+        t.name &&
+        typeof t.hash === "string" &&
+        OID_RE.test(t.hash)
+      ) {
+        out.push({ name: t.name, hash: t.hash.toLowerCase() });
+      }
+    }
+    return out;
+  }
+
+  /** Read symbolic HEAD name; fallback to first heads tip or main. */
+  private readHeadNameSync(tips: DurableRefTip[]): string {
+    try {
+      const path = `${this.bridge.workRoot}/.git/HEAD`;
+      const raw = this.bridge.FS.readFile(path, { encoding: "utf8" });
+      const text =
+        typeof raw === "string" ? raw : new TextDecoder().decode(raw);
+      const m = text.trim().match(/^ref:\s*(\S+)/);
+      if (m?.[1]) return m[1];
+    } catch {
+      /* missing HEAD */
+    }
+    const headTip = tips.find((t) => t.name.startsWith("refs/heads/"));
+    return headTip?.name ?? "refs/heads/main";
   }
 }

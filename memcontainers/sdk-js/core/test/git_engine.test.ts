@@ -6,7 +6,11 @@
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { GitEngine } from "../src/git/index.js";
+import {
+  decodeDurableBlob,
+  GitEngine,
+  MemoryDurable,
+} from "../src/git/index.js";
 
 function runfile(rel: string | undefined, envVar: string): string {
   if (!rel) {
@@ -209,6 +213,15 @@ async function main() {
 
   // PR4/PR5: gitfs worktree + synthetic .git + ctl drain
   const driver = eng.asMountDriver();
+  // R66: brand for K21 second-mount fail-closed
+  const { isGitFsDriver } = await import("../src/git/gitfs.js");
+  if (!isGitFsDriver(driver)) {
+    throw new Error("asMountDriver must brand gitfs driver (K21)");
+  }
+  const driver2 = eng.asMountDriver();
+  if (!isGitFsDriver(driver2)) {
+    throw new Error("second asMountDriver must also brand gitfs");
+  }
 
   const rootEntries = await driver.readdir("/");
   if (!rootEntries.some((e) => e.name === ".git" && e.kind === "dir")) {
@@ -223,6 +236,13 @@ async function main() {
   const head = new TextDecoder().decode(await driver.open("/.git/HEAD"));
   if (!head.startsWith("ref: refs/heads/")) {
     throw new Error(`synthetic HEAD: ${JSON.stringify(head)}`);
+  }
+  // R23: after checkout, synthetic HEAD tracks the branch (not hard-coded master).
+  await eng.run({ op: "branch", args: { name: "feature-head" } });
+  await eng.run({ op: "checkout", args: { name: "feature-head" } });
+  const headFeature = new TextDecoder().decode(await driver.open("/.git/HEAD"));
+  if (headFeature.trim() !== "ref: refs/heads/feature-head") {
+    throw new Error(`synthetic HEAD after checkout: ${JSON.stringify(headFeature)}`);
   }
 
   // Ctl protocol: write Request → open/read Response (MountFs drain; never close-only)
@@ -294,13 +314,109 @@ async function main() {
   if (new TextDecoder().decode(keep) !== "keep\n") {
     throw new Error("in-cone open failed");
   }
-  // Engine sparse-set (cone-only config write + checkout when HEAD exists).
+  // Engine sparse-set: multi-pattern + basic negation (not full sparse language).
   const ss = await eng.run({
     op: "sparse-set",
-    args: { patterns: "keep" },
+    args: { patterns: ["keep", "!drop"] },
   });
   if (!ss.ok) {
     throw new Error(`sparse-set: ${JSON.stringify(ss)}`);
+  }
+  // Porcelain-v1 status (default): untracked as ?? when present; staged XY form.
+  const stPorcelain = await eng.run({ op: "status" });
+  if (!stPorcelain.ok) {
+    throw new Error(`status porcelain: ${JSON.stringify(stPorcelain)}`);
+  }
+  if (String(stPorcelain.stdout || "").includes("On branch")) {
+    throw new Error("status default must be porcelain-v1, not human On branch");
+  }
+
+  // R52–R55: durable rebind — pack+refs AGIT envelope restores objects + worktree.
+  const dur = new MemoryDurable("rebind");
+  const engDur = await GitEngine.load({
+    baseUrl: baseUrl(dir),
+    durable: dur,
+  });
+  let dr = await engDur.run({ op: "init" });
+  if (!dr.ok) throw new Error(`durable init: ${JSON.stringify(dr)}`);
+  dr = await engDur.run({
+    op: "write",
+    args: { path: "persist.txt", content: "durable-roundtrip\n" },
+  });
+  if (!dr.ok) throw new Error(`durable write: ${JSON.stringify(dr)}`);
+  dr = await engDur.run({ op: "add", args: { path: "persist.txt" } });
+  if (!dr.ok) throw new Error(`durable add: ${JSON.stringify(dr)}`);
+  dr = await engDur.run({
+    op: "commit",
+    args: {
+      message: "durable commit",
+      name: "Dur",
+      email: "dur@test",
+      when_unix: 1_700_000_100,
+    },
+  });
+  if (!dr.ok) throw new Error(`durable commit: ${JSON.stringify(dr)}`);
+  const headBefore = (
+    await engDur.run({ op: "rev-parse", args: { rev: "HEAD" } })
+  ).stdout!.trim().split(/\s+/)[0];
+  if (!headBefore || headBefore.length !== 40) {
+    throw new Error(`durable HEAD before: ${headBefore}`);
+  }
+  await engDur.checkpoint();
+  const saved = await dur.load();
+  if (!saved || !decodeDurableBlob(saved)) {
+    throw new Error("checkpoint must write AGIT pack+refs envelope");
+  }
+  await engDur.close();
+
+  const engRestored = await GitEngine.load({
+    baseUrl: baseUrl(dir),
+    durable: dur,
+  });
+  const headAfter = (
+    await engRestored.run({ op: "rev-parse", args: { rev: "HEAD" } })
+  ).stdout!.trim().split(/\s+/)[0];
+  if (headAfter !== headBefore) {
+    throw new Error(
+      `durable rebind HEAD mismatch: ${headBefore} → ${headAfter}`,
+    );
+  }
+  const fileR = await engRestored.run({
+    op: "show",
+    args: { rev: "HEAD:persist.txt" },
+  });
+  // Prefer worktree path via driver if show path form unavailable.
+  const driverR = engRestored.asMountDriver();
+  let body = "";
+  try {
+    body = new TextDecoder().decode(await driverR.open("/persist.txt"));
+  } catch {
+    body = String(fileR.stdout || "");
+  }
+  if (!body.includes("durable-roundtrip")) {
+    throw new Error(
+      `durable rebind worktree missing file content: ${JSON.stringify({ body, fileR })}`,
+    );
+  }
+  await engRestored.close();
+
+  // R85–R88: metrics counters are inspectable / resettable
+  const {
+    resetGitCounters,
+    snapshotGitCounters,
+    recordRemoteResult,
+  } = await import("../src/git/metrics.js");
+  resetGitCounters();
+  recordRemoteResult("clone", true);
+  recordRemoteResult("clone", false);
+  recordRemoteResult("push", true);
+  const snap = snapshotGitCounters();
+  if (snap.clone_ok !== 1 || snap.clone_error !== 1 || snap.push_ok !== 1) {
+    throw new Error(`metrics snapshot unexpected: ${JSON.stringify(snap)}`);
+  }
+  resetGitCounters();
+  if (snapshotGitCounters().clone_ok !== 0) {
+    throw new Error("metrics reset failed");
   }
 
   await eng.close();

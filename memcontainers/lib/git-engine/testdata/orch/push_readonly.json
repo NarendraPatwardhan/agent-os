@@ -1,0 +1,31 @@
+{
+  "name": "push_readonly",
+  "version": 1,
+  "description": "Push on a read-only mount fails closed with stable message (R81 server RO).",
+  "fixture": {
+    "url": "https://example.com/demo.git",
+    "allowed_origins": ["https://example.com"],
+    "refs": [
+      {
+        "name": "refs/heads/main",
+        "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
+    "pack": "",
+    "read_only": true
+  },
+  "steps": [
+    {
+      "id": "orchestrator_response",
+      "op": "push",
+      "args": {
+        "url": "https://example.com/demo.git"
+      },
+      "expect": {
+        "ok": false,
+        "stderr_contains": ["push rejected (read-only mount)"],
+        "stdout_not_contains": ["pushed"]
+      }
+    }
+  ]
+}

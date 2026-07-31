@@ -24,6 +24,8 @@ interface GoldenFixture {
   refs: GoldenRef[];
   pack?: string;
   pack_from?: string;
+  /** When true, orchestrator rejects push (R81). */
+  read_only?: boolean;
 }
 
 interface StepExpect {
@@ -56,6 +58,9 @@ const GOLDEN_NAMES = [
   "clone_success_steps.json",
   "clone_empty_pack_fail.json",
   "origin_denied.json",
+  "fetch_success_steps.json",
+  "pull_ff_steps.json",
+  "push_readonly.json",
 ] as const;
 
 function engineDir(): string {
@@ -174,6 +179,7 @@ async function runGolden(dir: string, engBase: string, name: string): Promise<vo
   const orch = new GitRemoteOrchestrator(eng, {
     http,
     allowOrigins: fixture.allowed_origins,
+    readOnly: !!fixture.read_only,
   });
 
   const execSteps = golden.steps.filter((s) => s.op && s.expect);

@@ -230,7 +230,28 @@ int ge_mount_dispatch(ge_engine *e, const uint8_t *body, size_t body_len, uint8_
     return (*out = fail_status(GE_EACCES, out_len)) ? 0 : -1;
   }
   if (strcmp(rel, ".git/HEAD") == 0) {
-    const char *head = "ref: refs/heads/master\n";
+    /* R23: synthesize HEAD from engine symbolic-ref / detached OID — not hard-coded master. */
+    char head[320];
+    head[0] = '\0';
+    if (e && e->repo) {
+      git_reference *href = NULL;
+      if (git_reference_lookup(&href, e->repo, "HEAD") == 0) {
+        if (git_reference_type(href) == GIT_REFERENCE_SYMBOLIC) {
+          const char *t = git_reference_symbolic_target(href);
+          snprintf(head, sizeof(head), "ref: %s\n", t && t[0] ? t : "refs/heads/master");
+        } else {
+          const git_oid *oid = git_reference_target(href);
+          if (oid) {
+            char hex[GIT_OID_HEXSZ + 1];
+            git_oid_tostr(hex, sizeof(hex), oid);
+            snprintf(head, sizeof(head), "%s\n", hex);
+          }
+        }
+        git_reference_free(href);
+      }
+    }
+    if (!head[0])
+      snprintf(head, sizeof(head), "ref: refs/heads/master\n");
     if (op == MOUNT_OP_OPEN)
       return (*out = ok_payload((const uint8_t *)head, strlen(head), out_len)) ? 0 : -1;
     if (op == MOUNT_OP_STAT)

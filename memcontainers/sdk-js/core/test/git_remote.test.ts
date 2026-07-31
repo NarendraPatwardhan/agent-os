@@ -48,7 +48,8 @@ async function main() {
     throw new Error(`engine must refuse dial: ${JSON.stringify(dial)}`);
   }
 
-  // Durable: opaque store round-trip + engine-level attach (no MEMFS rebind)
+  // Durable: backend byte store + legacy non-AGIT attach (engine-level only).
+  // Real pack+refs rebind is covered in git_engine.test (R52–R55).
   const dur = new MemoryDurable("t");
   await dur.save(new TextEncoder().encode("snap"));
   const loaded = await dur.load();
@@ -61,12 +62,15 @@ async function main() {
   });
   const engSnap = engDurable.durableSnapshot;
   if (!engSnap || new TextDecoder().decode(engSnap) !== "snap") {
-    throw new Error("GitEngine.load must surface durable snapshot engine-level only");
+    throw new Error(
+      "GitEngine.load must surface legacy non-AGIT snapshot engine-level only",
+    );
   }
+  // Explicit snapshot override still persists caller bytes as-is.
   await engDurable.checkpoint(new TextEncoder().encode("snap2"));
   const afterCp = await dur.load();
   if (!afterCp || new TextDecoder().decode(afterCp) !== "snap2") {
-    throw new Error("checkpoint must persist opaque bytes");
+    throw new Error("checkpoint(explicit) must persist caller bytes");
   }
   await engDurable.close();
 

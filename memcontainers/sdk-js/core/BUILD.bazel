@@ -178,6 +178,27 @@ genrule(
 )
 
 genrule(
+    name = "orch_golden_fetch_success",
+    srcs = ["//memcontainers/lib/git-engine:testdata/orch/fetch_success_steps.json"],
+    outs = ["testdata/orch/fetch_success_steps.json"],
+    cmd = "cp $< $@",
+)
+
+genrule(
+    name = "orch_golden_pull_ff",
+    srcs = ["//memcontainers/lib/git-engine:testdata/orch/pull_ff_steps.json"],
+    outs = ["testdata/orch/pull_ff_steps.json"],
+    cmd = "cp $< $@",
+)
+
+genrule(
+    name = "orch_golden_push_readonly",
+    srcs = ["//memcontainers/lib/git-engine:testdata/orch/push_readonly.json"],
+    outs = ["testdata/orch/push_readonly.json"],
+    cmd = "cp $< $@",
+)
+
+genrule(
     name = "orch_golden_minimal_pack",
     srcs = ["//memcontainers/lib/git-engine:testdata/pack/minimal.pack"],
     outs = ["testdata/pack/minimal.pack"],
@@ -208,6 +229,9 @@ js_test(
         ":orch_golden_clone_success",
         ":orch_golden_empty_pack",
         ":orch_golden_origin_denied",
+        ":orch_golden_fetch_success",
+        ":orch_golden_pull_ff",
+        ":orch_golden_push_readonly",
         ":orch_golden_minimal_pack",
         ":orch_golden_minimal_tip",
         "//memcontainers/lib/git-engine:git_engine_emcc_js",

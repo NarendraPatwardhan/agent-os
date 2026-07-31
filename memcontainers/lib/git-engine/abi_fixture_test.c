@@ -469,6 +469,85 @@ static int test_truncated_stdout(ge_engine *e) {
   return 0;
 }
 
+/* R20: default status is porcelain-v1 XY lines; untracked is ??; short keeps XY shape. */
+static int test_status_porcelain(ge_engine *e) {
+  if (expect_ok(e, "{\"op\":\"write\",\"args\":{\"path\":\"porc_new.txt\",\"content\":\"n\\n\"}}"))
+    return 1;
+  /* Default (not short): porcelain-v1 — no "On branch", untracked as ?? */
+  char *resp = ge_run_json(e, "{\"op\":\"status\"}");
+  if (!resp || strstr(resp, "\"ok\":true") == NULL) {
+    fprintf(stderr, "status porcelain null/fail\n%s\n", resp ? resp : "(null)");
+    ge_free(resp);
+    return 1;
+  }
+  if (strstr(resp, "On branch") != NULL) {
+    fprintf(stderr, "status default should be porcelain-v1 (no On branch):\n%s\n", resp);
+    ge_free(resp);
+    return 1;
+  }
+  if (strstr(resp, "?? porc_new.txt") == NULL && strstr(resp, "??porc_new.txt") == NULL) {
+    /* JSON-escaped: ?? porc_new.txt may appear as ?? porc_new.txt in stdout string */
+    if (strstr(resp, "?? porc_new.txt") == NULL && strstr(resp, "??") == NULL) {
+      fprintf(stderr, "status porcelain missing ?? untracked:\n%s\n", resp);
+      ge_free(resp);
+      return 1;
+    }
+  }
+  ge_free(resp);
+
+  if (expect_ok(e, "{\"op\":\"add\",\"args\":{\"path\":\"porc_new.txt\"}}"))
+    return 1;
+  resp = ge_run_json(e, "{\"op\":\"status\",\"args\":{\"short\":true}}");
+  if (!resp || strstr(resp, "\"ok\":true") == NULL ||
+      (strstr(resp, "A  porc_new.txt") == NULL && strstr(resp, "A porc_new.txt") == NULL &&
+       strstr(resp, "A ") == NULL)) {
+    fprintf(stderr, "status short staged A unexpected:\n%s\n", resp ? resp : "(null)");
+    ge_free(resp);
+    return 1;
+  }
+  ge_free(resp);
+  return 0;
+}
+
+/* R59: multi-pattern string/array + basic !negation written to sparse-checkout. */
+static int test_sparse_set_patterns(ge_engine *e) {
+  if (expect_ok(e, "{\"op\":\"sparse-set\",\"args\":{\"patterns\":[\"src\",\"docs\",\"!vendor\"]}}"))
+    return 1;
+  char sc[4096];
+  snprintf(sc, sizeof(sc), "%s/.git/info/sparse-checkout", ge_worktree_root(e));
+  FILE *f = fopen(sc, "rb");
+  if (!f) {
+    fprintf(stderr, "sparse-checkout missing after array patterns\n");
+    return 1;
+  }
+  char buf[2048];
+  size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+  fclose(f);
+  buf[n] = '\0';
+  if (strstr(buf, "/src/") == NULL || strstr(buf, "/docs/") == NULL ||
+      strstr(buf, "!/vendor/") == NULL) {
+    fprintf(stderr, "sparse-checkout content unexpected:\n%s\n", buf);
+    return 1;
+  }
+  /* Newline-separated multi + negation */
+  if (expect_ok(e, "{\"op\":\"sparse-set\",\"args\":{\"patterns\":\"keep\\n!drop\"}}"))
+    return 1;
+  f = fopen(sc, "rb");
+  if (!f)
+    return 1;
+  n = fread(buf, 1, sizeof(buf) - 1, f);
+  fclose(f);
+  buf[n] = '\0';
+  if (strstr(buf, "/keep/") == NULL || strstr(buf, "!/drop/") == NULL) {
+    fprintf(stderr, "sparse-checkout newline patterns unexpected:\n%s\n", buf);
+    return 1;
+  }
+  /* Unsafe negation fails closed */
+  if (expect_fail(e, "{\"op\":\"sparse-set\",\"args\":{\"patterns\":\"!../x\"}}", "unsafe"))
+    return 1;
+  return 0;
+}
+
 int main(void) {
   printf("%s\n", ge_version());
 
@@ -569,6 +648,14 @@ int main(void) {
 
   /* R25 truncated stdout + out/last */
   if (test_truncated_stdout(e))
+    goto fail;
+
+  /* R20 porcelain-v1 status */
+  if (test_status_porcelain(e))
+    goto fail;
+
+  /* R59 multi-pattern + negation sparse-set */
+  if (test_sparse_set_patterns(e))
     goto fail;
 
   ge_close(e);

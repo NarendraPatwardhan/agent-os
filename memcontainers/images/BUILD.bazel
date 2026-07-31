@@ -162,6 +162,7 @@ mc_service_layer(
 # json/hash/time/string batteries embedded), luau-analyze type checker (256 MiB · 400B · 40k), and
 # the lazy Lua/Luau syntax service with its generated client and skill. Parser and semantic tables
 # are compiled into the service; host-side manifests remain build outputs rather than guest files.
+# R78: also carries thin pure-mc /bin/git (ctl porcelain + CAP_NET remotes) via git_layer.
 pkg_tar(
     name = "loom",
     create_parents = False,
@@ -188,6 +189,7 @@ pkg_tar(
     deps = [
         ":posix",
         ":syntax_layer",
+        "//memcontainers/programs/git:git_layer",
     ],
 )
 

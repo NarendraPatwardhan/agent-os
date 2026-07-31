@@ -446,13 +446,41 @@ int op_push_complete(ge_engine *e, const char *args) {
   return 0;
 }
 
-/* PR14: sparse-checkout cone projection (patterns, one path per call or newline list). */
+/* PR14 / R59: sparse-checkout cone projection.
+ * patterns: string (newline-separated), JSON string array, or single path key.
+ * Basic negation lines: `!path` → written as !/path/ (still not full git sparse language).
+ * Unsafe paths fail closed. */
 int op_sparse_set(ge_engine *e, const char *args) {
   if (ge_ensure_repo(e) != 0)
     return -1;
   char patterns[4096] = "";
-  if (jmin_get_string(args, "patterns", patterns, sizeof(patterns)) != 0 &&
-      jmin_get_string(args, "path", patterns, sizeof(patterns)) != 0) {
+  const char *arr = args ? jmin_get_array(args, "patterns") : NULL;
+  if (arr) {
+    /* JSON array of pattern strings → newline-joined buffer. */
+    const char *cur = arr;
+    char item[512];
+    size_t used = 0;
+    patterns[0] = '\0';
+    while (jmin_array_next_string(&cur, item, sizeof(item)) == 0) {
+      size_t il = strlen(item);
+      if (il == 0)
+        continue;
+      if (used + il + 2 >= sizeof(patterns)) {
+        ge_set_err(e, "sparse-set: patterns too long");
+        return -1;
+      }
+      if (used)
+        patterns[used++] = '\n';
+      memcpy(patterns + used, item, il);
+      used += il;
+      patterns[used] = '\0';
+    }
+    if (!patterns[0]) {
+      ge_set_err(e, "sparse-set: need patterns or path");
+      return -1;
+    }
+  } else if (jmin_get_string(args, "patterns", patterns, sizeof(patterns)) != 0 &&
+             jmin_get_string(args, "path", patterns, sizeof(patterns)) != 0) {
     ge_set_err(e, "sparse-set: need patterns or path");
     return -1;
   }
@@ -465,24 +493,41 @@ int op_sparse_set(ge_engine *e, const char *args) {
     ge_set_err(e, "sparse-set: cannot write sparse-checkout");
     return -1;
   }
-  /* Cone: always include root dirs for matching paths */
+  /* Cone header: include root files, exclude other top-level dirs by default. */
   fprintf(f, "/*\n!/*/\n");
-  /* patterns may be newline-separated; each must be a safe relative path */
+  /* patterns: newline-separated; optional leading '!' for negation; safe relpath only. */
   for (char *p = patterns, *n; p && *p; p = n) {
     n = strchr(p, '\n');
     if (n)
       *n++ = 0;
-    while (*p == ' ' || *p == '/')
+    while (*p == ' ' || *p == '\t')
       p++;
     if (!*p)
       continue;
-    if (!ge_safe_relpath(p)) {
+    int negate = 0;
+    if (*p == '!') {
+      negate = 1;
+      p++;
+      while (*p == ' ' || *p == '\t')
+        p++;
+    }
+    while (*p == '/')
+      p++;
+    /* Strip trailing slash for safety check. */
+    size_t plen = strlen(p);
+    while (plen > 0 && (p[plen - 1] == '/' || p[plen - 1] == ' ' || p[plen - 1] == '\t')) {
+      p[--plen] = '\0';
+    }
+    if (!*p || !ge_safe_relpath(p)) {
       fclose(f);
       unlink(sc);
       ge_set_err(e, "sparse-set: unsafe pattern");
       return -1;
     }
-    fprintf(f, "/%s/\n/%s/**\n", p, p);
+    if (negate)
+      fprintf(f, "!/%s/\n!/%s/**\n", p, p);
+    else
+      fprintf(f, "/%s/\n/%s/**\n", p, p);
   }
   fclose(f);
 
