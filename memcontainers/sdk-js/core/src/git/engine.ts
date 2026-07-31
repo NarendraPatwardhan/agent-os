@@ -61,8 +61,11 @@ export class GitEngine {
   }
 
   /** MountFs driver (worktree + ctl). Coherence: close write then status via open. */
-  asMountDriver(): Driver {
-    return createGitFsDriver(this.bridge, { readOnly: this.readOnly });
+  asMountDriver(opts?: { sparseCone?: string[] }): Driver {
+    return createGitFsDriver(this.bridge, {
+      readOnly: this.readOnly,
+      sparseCone: opts?.sparseCone,
+    });
   }
 
   version(): string {

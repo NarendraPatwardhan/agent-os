@@ -8,6 +8,9 @@ export interface PackCache {
   put(pack: Uint8Array): Promise<string>;
   has(digest: string): Promise<boolean>;
   clear(): Promise<void>;
+  /** Optional download-key index (url+want+have+depth → pack digest) for K29 dedup. */
+  getByKey?(key: string): Promise<string | null>;
+  putKey?(key: string, digest: string): Promise<void>;
 }
 
 async function sha256hex(data: Uint8Array): Promise<string> {
@@ -22,6 +25,7 @@ async function sha256hex(data: Uint8Array): Promise<string> {
 /** In-memory pack cache (tests / small sessions). */
 export class MemoryPackCache implements PackCache {
   private readonly map = new Map<string, Uint8Array>();
+  private readonly keys = new Map<string, string>();
 
   async get(digest: string): Promise<Uint8Array | null> {
     const v = this.map.get(digest);
@@ -40,6 +44,15 @@ export class MemoryPackCache implements PackCache {
 
   async clear(): Promise<void> {
     this.map.clear();
+    this.keys.clear();
+  }
+
+  async getByKey(key: string): Promise<string | null> {
+    return this.keys.get(key) ?? null;
+  }
+
+  async putKey(key: string, digest: string): Promise<void> {
+    this.keys.set(key, digest);
   }
 }
 

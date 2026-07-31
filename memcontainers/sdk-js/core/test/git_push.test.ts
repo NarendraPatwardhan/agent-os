@@ -69,9 +69,14 @@ async function main() {
     });
 
     const http = new FixtureSmartHttp();
-    http.add("https://example.com/r.git", [], new Uint8Array(0));
     let approved = false;
-    const orch = new GitRemoteOrchestrator(eng, {
+    // Fixture advertises remote so lease path runs; inject pack builder.
+    http.add(
+      "https://example.com/r.git",
+      [{ name: "refs/heads/master", hash: "0000000000000000000000000000000000000000" }],
+      new Uint8Array(0),
+    );
+    const orchWithPack = new GitRemoteOrchestrator(eng, {
       http,
       connections: [
         {
@@ -87,24 +92,22 @@ async function main() {
         approved = true;
         return true;
       },
+      buildPushPack: async () => new Uint8Array([0x50, 0x41, 0x43, 0x4b]),
     });
-
-    const r = await orch.handle({
+    const r = await orchWithPack.handle({
       op: "push",
       args: {
         url: "https://example.com/r.git",
         connection: "git.user.demo",
       },
     });
-    // push.prepare may yield commands from tips; approval path exercised when commands exist
-    if (r.ok) {
-      if (!approved) throw new Error("approval not invoked on success");
-      if (!http.lastPush || http.lastPush.url !== "https://example.com/r.git") {
-        throw new Error(`push not recorded: ${JSON.stringify(http.lastPush)}`);
-      }
-    } else if (!String(r.stderr || "").includes("push")) {
-      // Accept prepare-empty if engine has no tips shape — still not a crash
-      void r;
+    if (!r.ok) throw new Error(`expected push ok: ${JSON.stringify(r)}`);
+    if (!approved) throw new Error("approval not invoked on success");
+    if (!http.lastPush || http.lastPush.url !== "https://example.com/r.git") {
+      throw new Error(`push not recorded: ${JSON.stringify(http.lastPush)}`);
+    }
+    if (http.lastPush.packLen === 0) {
+      throw new Error("expected non-empty pack for create/update");
     }
     await eng.close();
   }

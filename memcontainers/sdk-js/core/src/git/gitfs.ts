@@ -225,6 +225,7 @@ export function createGitFsDriver(
       return serial(async () => {
         if (readOnly) throw fsErr("EACCES", "read-only mount");
         const p = normalizeRel(path);
+        if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
         const bytes =
           data instanceof Uint8Array
             ? data

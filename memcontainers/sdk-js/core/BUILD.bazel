@@ -322,3 +322,22 @@ js_test(
     timeout = "moderate",
 )
 
+mc_ts_project(
+    name = "git_pack_cache_test_lib",
+    srcs = ["test/git_pack_cache.test.ts"],
+    deps = [
+        ":lib",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+js_test(
+    name = "git_pack_cache_test",
+    data = [
+        "package.json",
+        ":git_pack_cache_test_lib",
+    ],
+    entry_point = "test/git_pack_cache.test.js",
+    timeout = "short",
+)
+

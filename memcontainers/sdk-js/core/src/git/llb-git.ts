@@ -38,20 +38,30 @@ export async function materializeLlbGit(
   const args: Record<string, unknown> = { url, depth: 1 };
   if (connection) args.connection = connection;
   if (ref) args.ref = ref;
+  // Note: `dest` is only an archive path prefix for LLB layers — not a sparse cone.
 
   const resp = await orch.handle({ op: "clone", args });
   if (!resp.ok) {
     return { ok: false, stderr: resp.stderr ?? "clone failed" };
   }
 
-  if (dest && dest !== "/" && dest !== ".") {
-    const cone = dest.replace(/^\//, "").replace(/\/?$/, "");
-    await engine.run({ op: "sparse-set", args: { path: cone } });
+  if (ref) {
+    const co = await engine.run({ op: "checkout", args: { name: ref } });
+    if (!co.ok) {
+      // try detach to hash from rev-parse after import
+      const rp = await engine.run({ op: "rev-parse", args: { rev: ref } });
+      if (!rp.ok) {
+        return {
+          ok: false,
+          stderr: co.stderr ?? `checkout ${ref} failed`,
+        };
+      }
+    }
   }
 
   const rev = await engine.run({
     op: "rev-parse",
-    args: { rev: ref && !ref.includes("/") ? ref : "HEAD" },
+    args: { rev: "HEAD" },
   });
   const commit = rev.ok ? rev.stdout?.trim().split(/\s+/)[0] : undefined;
 
@@ -211,10 +221,6 @@ export function createEngineGitSource(
       });
       if (!r.ok || !r.commit) {
         throw new Error(r.stderr ?? "llb.git engine materialize failed");
-      }
-      // Checkout exact ref if provided
-      if (ref) {
-        await engine.run({ op: "checkout", args: { name: ref } }).catch(() => undefined);
       }
       const tar = worktreeToTar(engine.bridge, dest);
       const archiveDigest = `sha256:${await sha256hex(tar)}`;
