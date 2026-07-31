@@ -65,6 +65,11 @@ export class DiskPackCache implements PackCache {
     return `${this.dir.replace(/\/$/, "")}/${id}.pack`;
   }
 
+  private keyPath(key: string): string {
+    // Content-hash the key so it is a safe filename.
+    return `${this.dir.replace(/\/$/, "")}/keys/${simpleHash(key)}.key`;
+  }
+
   async get(digest: string): Promise<Uint8Array | null> {
     try {
       const { readFile } = await import("node:fs/promises");
@@ -105,6 +110,33 @@ export class DiskPackCache implements PackCache {
       /* */
     }
   }
+
+  async getByKey(key: string): Promise<string | null> {
+    try {
+      const { readFile } = await import("node:fs/promises");
+      const dig = (await readFile(this.keyPath(key), "utf8")).trim();
+      return dig || null;
+    } catch {
+      return null;
+    }
+  }
+
+  async putKey(key: string, digest: string): Promise<void> {
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    const dir = `${this.dir.replace(/\/$/, "")}/keys`;
+    await mkdir(dir, { recursive: true });
+    await writeFile(this.keyPath(key), digest, "utf8");
+  }
+}
+
+function simpleHash(s: string): string {
+  // FNV-1a 32-bit → hex (enough for cache key filenames).
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
 }
 
 /** Soft default: refuse packs larger than 64 MiB unless opt-in. */

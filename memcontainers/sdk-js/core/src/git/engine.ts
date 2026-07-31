@@ -1,6 +1,6 @@
 /**
  * SDK GitEngine — single-writer queue over GitBridge + optional gitfs driver.
- * Remotes (clone/fetch/push) fail closed until PR9–PR10 orchestrator.
+ * Local Run only; remotes go through host_call `"git"` + GitRemoteOrchestrator.
  */
 
 import type { Driver } from "../types.js";

@@ -171,9 +171,46 @@ export class FetchSmartHttp implements SmartHttpTransport {
       return { ok: false, message: `HTTP ${res.status}` };
     }
     const text = await res.text();
-    const failed = /ng /.test(text) || /error/i.test(text);
-    return { ok: !failed, message: text.slice(0, 200) };
+    return parseReceiveStatus(text);
   }
+}
+
+/** Parse smart receive-pack report-status body (pkt-line or plain). */
+export function parseReceiveStatus(text: string): ReceiveStatus {
+  const lines = decodePktOrPlainLines(text);
+  const unpack = lines.find((l) => l.startsWith("unpack "));
+  if (unpack && unpack !== "unpack ok") {
+    return { ok: false, message: unpack.slice(0, 200) };
+  }
+  const ng = lines.find((l) => l.startsWith("ng "));
+  if (ng) return { ok: false, message: ng.slice(0, 200) };
+  // No report-status: treat as ok if no explicit failure markers.
+  return { ok: true, message: "ok" };
+}
+
+function decodePktOrPlainLines(text: string): string[] {
+  const out: string[] = [];
+  let i = 0;
+  while (i + 4 <= text.length) {
+    const hex = text.slice(i, i + 4);
+    if (!/^[0-9a-fA-F]{4}$/.test(hex)) break;
+    const n = parseInt(hex, 16);
+    if (n === 0) {
+      i += 4;
+      continue;
+    }
+    if (n < 4 || i + n > text.length) break;
+    const body = text.slice(i + 4, i + n).replace(/\n$/, "");
+    if (body) out.push(body);
+    i += n;
+  }
+  if (!out.length) {
+    for (const line of text.split("\n")) {
+      const t = line.trim();
+      if (t) out.push(t);
+    }
+  }
+  return out;
 }
 
 function parseInfoRefs(text: string): RefAdvertisement[] {

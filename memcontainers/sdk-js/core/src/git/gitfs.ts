@@ -76,18 +76,25 @@ export function createGitFsDriver(
 
   function branchNameFromHead(): string {
     try {
-      const r = bridge.run({ op: "rev-parse", args: { rev: "HEAD" } });
-      void r;
-    } catch {
-      /* unborn */
-    }
-    // Reduced: prefer master/main via branch list
-    try {
       const br = bridge.run({ op: "branch" });
       const line = (br.stdout || "").split("\n").find((l) => l.startsWith("* "));
-      if (line) return line.slice(2).trim() || "master";
+      if (line) {
+        const name = line.slice(2).trim();
+        // Detached: "* (HEAD detached at abc)" — fall through
+        if (name && !name.startsWith("(")) return name;
+      }
     } catch {
       /* */
+    }
+    try {
+      const r = bridge.run({ op: "rev-parse", args: { rev: "HEAD" } });
+      if (r.ok && r.stdout?.trim()) {
+        // Symbolic HEAD may print ref name when args include --abbrev-ref; default short
+        const s = r.stdout.trim();
+        if (!/^[0-9a-f]{40}$/i.test(s)) return s;
+      }
+    } catch {
+      /* unborn */
     }
     return "master";
   }
@@ -133,6 +140,7 @@ export function createGitFsDriver(
       if (p === "" || p === ".") {
         return { kind: "dir", size: 0 };
       }
+      if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
       if (
         p === ".git" ||
         p === ".git/mc" ||
@@ -215,6 +223,10 @@ export function createGitFsDriver(
       return FS()
         .readdir(abs)
         .filter((n) => n !== "." && n !== "..")
+        .filter((name) => {
+          const child = p ? `${p}/${name}` : name;
+          return inCone(child) || isGitMeta(child);
+        })
         .map((name) => {
           const s = FS().stat(`${abs}/${name}`);
           return { name, kind: FS().isDir(s.mode) ? "dir" : "file" };
@@ -279,6 +291,7 @@ export function createGitFsDriver(
     async mkdir(path: string): Promise<void> {
       if (readOnly) throw fsErr("EACCES", "read-only mount");
       const p = normalizeRel(path);
+      if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
       if (isGitMeta(path) && p !== ".git") {
         if (p.startsWith(".git")) throw fsErr("EACCES", "synthetic .git");
       }
@@ -294,6 +307,7 @@ export function createGitFsDriver(
     async unlink(path: string): Promise<void> {
       if (readOnly) throw fsErr("EACCES", "read-only mount");
       const p = normalizeRel(path);
+      if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
       if (isGitMeta(path)) throw fsErr("EACCES", "synthetic .git");
       const abs = bridge.abs(p);
       if (!exists(abs)) throw fsErr("ENOENT", p);
@@ -304,6 +318,11 @@ export function createGitFsDriver(
 
     async rename(from: string, to: string): Promise<void> {
       if (readOnly) throw fsErr("EACCES", "read-only mount");
+      const fp = normalizeRel(from);
+      const tp = normalizeRel(to);
+      if ((!inCone(fp) && !isGitMeta(fp)) || (!inCone(tp) && !isGitMeta(tp))) {
+        throw fsErr("ENOENT", from);
+      }
       if (isGitMeta(from) || isGitMeta(to)) {
         throw fsErr("EACCES", "synthetic .git");
       }

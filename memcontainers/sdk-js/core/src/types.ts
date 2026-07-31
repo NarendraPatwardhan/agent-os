@@ -94,14 +94,15 @@ export interface CreateOptions {
    */
   templateFill?: "on_demand" | "prepopulated" | "off";
   /**
-   * Enable host git engine packaging (GIT.md PR3+). When true, callers may
-   * `GitEngine.load({ baseUrl: gitEngineBaseUrl })` and mount `asMountDriver()`.
-   * Default false — no engine load at create until embedder opts in.
+   * Enable host git engine (GIT.md). When true with `gitEngineBaseUrl`:
+   * loads emcc engine, registers MapHostCall `"git"`, and mounts gitfs at
+   * `/workspace/repo` unless that path is already in `mounts`. Default false.
    */
   experimentalGitEngine?: boolean;
   /**
-   * Directory URL/path of `git_engine.js` + `git_engine.wasm` when
-   * `experimentalGitEngine` is used (Bazel `//memcontainers/lib/git-engine:git_engine_wasm`).
+   * Directory URL of `git_engine.mjs` + `git_engine.wasm`
+   * (`//memcontainers/lib/git-engine:git_engine_wasm`). Required when
+   * `experimentalGitEngine` is true.
    */
   gitEngineBaseUrl?: string;
 }

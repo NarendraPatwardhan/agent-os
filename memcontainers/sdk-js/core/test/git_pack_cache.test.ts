@@ -39,6 +39,11 @@ async function main() {
   }
   if (!threw) throw new Error("size gate should throw");
 
+  await cache.putKey("upload-pack:v1:test", d1);
+  if ((await cache.getByKey!("upload-pack:v1:test")) !== d1) {
+    throw new Error("getByKey mismatch");
+  }
+
   console.log("git_pack_cache.test SUCCESS");
 }
 

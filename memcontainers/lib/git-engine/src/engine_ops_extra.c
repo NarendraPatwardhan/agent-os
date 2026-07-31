@@ -296,6 +296,29 @@ int op_branch_delete(ge_engine *e, const char *name) {
   return 0;
 }
 
+/* Escape a string into JSON string content (no surrounding quotes). */
+static size_t json_escape_into(char *dst, size_t cap, const char *src) {
+  size_t o = 0;
+  if (!src)
+    src = "";
+  for (const unsigned char *p = (const unsigned char *)src; *p && o + 2 < cap; p++) {
+    if (*p == '"' || *p == '\\') {
+      if (o + 3 >= cap)
+        break;
+      dst[o++] = '\\';
+      dst[o++] = (char)*p;
+    } else if (*p < 0x20) {
+      /* skip control chars in ref names */
+      continue;
+    } else {
+      dst[o++] = (char)*p;
+    }
+  }
+  if (o < cap)
+    dst[o] = 0;
+  return o;
+}
+
 /* List local tips for fetch have[]: result JSON array of {name,hash}. */
 int op_tips(ge_engine *e, char *result_json, size_t cap) {
   if (ge_ensure_repo(e) != 0)
@@ -312,11 +335,13 @@ int op_tips(ge_engine *e, char *result_json, size_t cap) {
   while (git_reference_next(&ref, it) == 0) {
     if (git_reference_type(ref) == GIT_REFERENCE_DIRECT) {
       char hex[GIT_OID_HEXSZ + 1];
+      char ename[512];
       git_oid_tostr(hex, sizeof(hex), git_reference_target(ref));
       const char *name = git_reference_name(ref);
-      used += (size_t)snprintf(result_json + used, cap - used,
+      json_escape_into(ename, sizeof(ename), name ? name : "");
+      used += (size_t)snprintf(result_json + used, cap > used ? cap - used : 0,
                                "%s{\"name\":\"%s\",\"hash\":\"%s\"}", first ? "" : ",",
-                               name ? name : "", hex);
+                               ename, hex);
       first = 0;
     }
     git_reference_free(ref);
@@ -388,12 +413,21 @@ int op_sparse_set(ge_engine *e, const char *args) {
   }
   /* Cone: always include root dirs for matching paths */
   fprintf(f, "/*\n!/*/\n");
-  /* patterns may be newline-separated */
+  /* patterns may be newline-separated; each must be a safe relative path */
   for (char *p = patterns, *n; p && *p; p = n) {
     n = strchr(p, '\n');
-    if (n) *n++ = 0;
-    while (*p == ' ' || *p == '/') p++;
-    if (!*p) continue;
+    if (n)
+      *n++ = 0;
+    while (*p == ' ' || *p == '/')
+      p++;
+    if (!*p)
+      continue;
+    if (!ge_safe_relpath(p)) {
+      fclose(f);
+      unlink(sc);
+      ge_set_err(e, "sparse-set: unsafe pattern");
+      return -1;
+    }
     fprintf(f, "/%s/\n/%s/**\n", p, p);
   }
   fclose(f);

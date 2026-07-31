@@ -1,4 +1,4 @@
-/** Host git engine SDK (GIT.md PR3–PR10). */
+/** Host git engine SDK (GIT.md host source plane). */
 
 import type { GitEngine } from "./engine.js";
 import {
@@ -17,6 +17,7 @@ export type { OrchestratorOptions } from "./remote-orchestrator.js";
 export {
   FixtureSmartHttp,
   FetchSmartHttp,
+  parseReceiveStatus,
 } from "./smart-http.js";
 export type {
   RefAdvertisement,

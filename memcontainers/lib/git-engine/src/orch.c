@@ -28,40 +28,87 @@ static char *resp_err_s(int code, const char *stderr_s) {
   return jmin_response(0, code, "", stderr_s ? stderr_s : "error", NULL);
 }
 
-/* Minimal extract of first "hash" string in refs advertisement JSON. */
+/* Prefer refs/heads/main, then master, then first heads/*, then first object. */
+static int extract_named(const char *refs_json, const char *want_name, char *name_out,
+                         size_t name_cap, char *hash_out, size_t hash_cap) {
+  const char *p = refs_json;
+  while ((p = strstr(p, "\"name\"")) != NULL) {
+    const char *q = strchr(p, ':');
+    if (!q)
+      break;
+    q = strchr(q, '"');
+    if (!q)
+      break;
+    q++;
+    const char *q2 = strchr(q, '"');
+    if (!q2)
+      break;
+    size_t nlen = (size_t)(q2 - q);
+    char name[256];
+    if (nlen >= sizeof(name)) {
+      p = q2 + 1;
+      continue;
+    }
+    memcpy(name, q, nlen);
+    name[nlen] = 0;
+    const char *h = strstr(q2, "\"hash\"");
+    if (!h) {
+      p = q2 + 1;
+      continue;
+    }
+    const char *hq = strchr(h, ':');
+    if (!hq) {
+      p = q2 + 1;
+      continue;
+    }
+    hq = strchr(hq, '"');
+    if (!hq) {
+      p = q2 + 1;
+      continue;
+    }
+    hq++;
+    const char *hq2 = strchr(hq, '"');
+    if (!hq2 || (size_t)(hq2 - hq) >= hash_cap) {
+      p = q2 + 1;
+      continue;
+    }
+    if (want_name && strcmp(name, want_name) != 0) {
+      p = q2 + 1;
+      continue;
+    }
+    if (nlen >= name_cap) {
+      p = q2 + 1;
+      continue;
+    }
+    memcpy(name_out, name, nlen);
+    name_out[nlen] = 0;
+    memcpy(hash_out, hq, (size_t)(hq2 - hq));
+    hash_out[hq2 - hq] = 0;
+    return 0;
+  }
+  return -1;
+}
+
 static int first_ref(const char *refs_json, char *name_out, size_t name_cap, char *hash_out,
                      size_t hash_cap) {
-  const char *h = strstr(refs_json, "\"hash\"");
-  const char *n = strstr(refs_json, "\"name\"");
-  if (!h || !n)
-    return -1;
-  /* name */
-  const char *q = strchr(n, ':');
-  if (!q)
-    return -1;
-  q = strchr(q, '"');
-  if (!q)
-    return -1;
-  q++;
-  const char *q2 = strchr(q, '"');
-  if (!q2 || (size_t)(q2 - q) >= name_cap)
-    return -1;
-  memcpy(name_out, q, (size_t)(q2 - q));
-  name_out[q2 - q] = 0;
-  /* hash */
-  q = strchr(h, ':');
-  if (!q)
-    return -1;
-  q = strchr(q, '"');
-  if (!q)
-    return -1;
-  q++;
-  q2 = strchr(q, '"');
-  if (!q2 || (size_t)(q2 - q) >= hash_cap)
-    return -1;
-  memcpy(hash_out, q, (size_t)(q2 - q));
-  hash_out[q2 - q] = 0;
-  return 0;
+  if (extract_named(refs_json, "refs/heads/main", name_out, name_cap, hash_out, hash_cap) == 0)
+    return 0;
+  if (extract_named(refs_json, "refs/heads/master", name_out, name_cap, hash_out, hash_cap) == 0)
+    return 0;
+  /* first heads/* */
+  const char *p = refs_json;
+  while ((p = strstr(p, "\"name\"")) != NULL) {
+    char nbuf[256], hbuf[64];
+    if (extract_named(p, NULL, nbuf, sizeof(nbuf), hbuf, sizeof(hbuf)) == 0) {
+      if (strncmp(nbuf, "refs/heads/", 11) == 0) {
+        snprintf(name_out, name_cap, "%s", nbuf);
+        snprintf(hash_out, hash_cap, "%s", hbuf);
+        return 0;
+      }
+    }
+    p++;
+  }
+  return extract_named(refs_json, NULL, name_out, name_cap, hash_out, hash_cap);
 }
 
 int ge_remote_orchestrate(ge_engine *e, const char *request_json, char **response_json) {
@@ -79,7 +126,10 @@ int ge_remote_orchestrate(ge_engine *e, const char *request_json, char **respons
 
   if (strcmp(op, "clone") != 0 && strcmp(op, "fetch") != 0 && strcmp(op, "pull") != 0) {
     if (strcmp(op, "push") == 0)
-      return (*response_json = resp_err_s(1, "push requires PR12 / approval path")) ? 0 : -1;
+      return (*response_json = resp_err_s(
+                  1, "git: push on C Port requires packbuilder (JS orch has full PR12 path)"))
+                 ? 0
+                 : -1;
     return (*response_json = resp_err_s(2, "unknown remote op")) ? 0 : -1;
   }
 

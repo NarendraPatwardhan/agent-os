@@ -810,7 +810,39 @@ async function makeEmbedded(
   tools.registerRaw(SIDECAR_HOST_BINDING, (body, context) =>
     sidecars.handleGuestCall(body, context.signal),
   );
+
+  // Host git engine (GIT.md): opt-in loads emcc module, registers MapHostCall "git",
+  // and optionally mounts gitfs at /workspace/repo (K27 default).
+  let gitEngine: { close(): Promise<void>; asMountDriver: () => import("./types.js").Driver } | undefined;
+  if (opts.experimentalGitEngine) {
+    const base = opts.gitEngineBaseUrl;
+    if (!base) {
+      throw new Error(
+        "experimentalGitEngine requires gitEngineBaseUrl (dir URL of git_engine.mjs/wasm)",
+      );
+    }
+    const { GitEngine, registerGitHostCall } = await import("./git/index.js");
+    const eng = await GitEngine.load({ baseUrl: base });
+    registerGitHostCall(tools, eng, {
+      connections: opts.connections,
+      policies: opts.policies,
+    });
+    gitEngine = eng;
+  }
+
   const backend = new EmbeddedBackend(host, stdout, tools, sidecars, activeBase, store);
+  if (gitEngine) {
+    const eng = gitEngine;
+    const origClose = backend.close.bind(backend);
+    backend.close = async () => {
+      try {
+        await eng.close();
+      } catch {
+        /* best-effort */
+      }
+      return origClose();
+    };
+  }
   try {
     // Re-register the host-call HANDLERS (the JS closures) on both paths — they can never live in a
     // snapshot, so a restored VM must be handed them again to route its host-tool catalog entries.
@@ -830,6 +862,14 @@ async function makeEmbedded(
     // exec), so the first command already sees them. Declaration order is kept.
     for (const m of opts.mounts ?? []) {
       await backend.mount(m.path, m.driver, m.readOnly ?? m.driver.readOnly ?? false);
+    }
+    // Default gitfs mount when engine is enabled and embedder did not declare one.
+    if (gitEngine) {
+      const gitPath = "/workspace/repo";
+      const declared = (opts.mounts ?? []).some((m) => m.path === gitPath);
+      if (!declared) {
+        await backend.mount(gitPath, gitEngine.asMountDriver(), false);
+      }
     }
     return { backend, opts, catalog };
   } catch (e) {
