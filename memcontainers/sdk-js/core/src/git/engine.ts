@@ -7,9 +7,24 @@ import type { Driver } from "../types.js";
 import { GitBridge } from "./bridge.js";
 import type { DurableBackend } from "./durable.js";
 import { createGitFsDriver } from "./gitfs.js";
-import type { GitEngineLoadOptions, GitRequest, GitResponse } from "./types.js";
+import type {
+  GitEngineLoadOptions,
+  GitIdentity,
+  GitRequest,
+  GitResponse,
+} from "./types.js";
 
 const REMOTE_OPS = new Set(["clone", "fetch", "pull", "push"]);
+
+function normalizeIdentity(
+  id: GitIdentity | undefined,
+): GitIdentity | undefined {
+  if (!id) return undefined;
+  const name = typeof id.name === "string" ? id.name.trim() : "";
+  const email = typeof id.email === "string" ? id.email.trim() : "";
+  if (!name || !email) return undefined;
+  return { name, email };
+}
 
 export class GitEngine {
   private readonly durable: DurableBackend | undefined;
@@ -17,15 +32,19 @@ export class GitEngine {
   private _durableSnapshot: Uint8Array | null = null;
   /** Default cone prefixes for asMountDriver (cone-only, not full sparse parity). */
   private readonly sparseCone: string[] | undefined;
+  /** Host policy identity for commit inject (K28). */
+  private readonly identity: GitIdentity | undefined;
 
   constructor(
     readonly bridge: GitBridge,
     readonly readOnly = false,
     durable?: DurableBackend,
     sparseCone?: string[],
+    identity?: GitIdentity,
   ) {
     this.durable = durable;
     this.sparseCone = sparseCone?.length ? sparseCone : undefined;
+    this.identity = normalizeIdentity(identity);
   }
 
   static async load(opts: GitEngineLoadOptions): Promise<GitEngine> {
@@ -37,6 +56,7 @@ export class GitEngine {
       !!opts.readOnly,
       opts.durable,
       opts.sparseCone,
+      opts.gitIdentity,
     );
     // deferred: durability not rebinding MEMFS yet — engine-level snapshot only
     if (opts.durable) {
@@ -81,8 +101,31 @@ export class GitEngine {
             "remotes require host_call git + orchestrator (PR9–PR10); engine must not dial\n",
         };
       }
-      return this.bridge.run(req);
+      return this.bridge.run(this.injectCommitIdentity(req));
     });
+  }
+
+  /**
+   * K28: when host identity is configured and commit args omit name/email,
+   * inject them. Never invents a default identity when unset.
+   */
+  private injectCommitIdentity(req: GitRequest): GitRequest {
+    if (!this.identity) return req;
+    const op = String(req.op || "").toLowerCase();
+    if (op !== "commit") return req;
+    const base =
+      req.args && typeof req.args === "object" && !Array.isArray(req.args)
+        ? { ...(req.args as Record<string, unknown>) }
+        : {};
+    const name =
+      typeof base.name === "string" && base.name.trim()
+        ? base.name
+        : this.identity.name;
+    const email =
+      typeof base.email === "string" && base.email.trim()
+        ? base.email
+        : this.identity.email;
+    return { ...req, args: { ...base, name, email } };
   }
 
   async importPack(

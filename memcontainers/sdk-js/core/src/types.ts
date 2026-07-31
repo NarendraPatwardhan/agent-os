@@ -111,6 +111,12 @@ export interface CreateOptions {
    * sparse-checkout pattern parity. Only applied when `experimentalGitEngine` is on.
    */
   gitSparseCone?: string[];
+  /**
+   * Host commit identity for the experimental git engine (K28).
+   * When set, `GitEngine.run` injects name/email into `commit` if args omit them.
+   * Never invents a default identity when unset (no Agent/agent@example.com).
+   */
+  gitIdentity?: { name: string; email: string };
 }
 
 export type ConnectionAuth =

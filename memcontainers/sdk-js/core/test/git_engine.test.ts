@@ -92,6 +92,113 @@ async function main() {
   });
   if (!r.ok) throw new Error(`commit: ${JSON.stringify(r)}`);
 
+  // R27: host identity inject — commit without name/email succeeds when configured.
+  // Never invents Agent@example.com when identity is unset (covered by engine K28).
+  const engId = await GitEngine.load({
+    baseUrl: baseUrl(dir),
+    gitIdentity: { name: "Host Policy", email: "host@policy.test" },
+  });
+  let ir = await engId.run({ op: "init" });
+  if (!ir.ok) throw new Error(`id init: ${JSON.stringify(ir)}`);
+  ir = await engId.run({
+    op: "write",
+    args: { path: "id.txt", content: "id\n" },
+  });
+  if (!ir.ok) throw new Error(`id write: ${JSON.stringify(ir)}`);
+  ir = await engId.run({ op: "add", args: { path: "id.txt" } });
+  if (!ir.ok) throw new Error(`id add: ${JSON.stringify(ir)}`);
+  ir = await engId.run({
+    op: "commit",
+    args: { message: "injected identity", when_unix: 1_700_000_001 },
+  });
+  if (!ir.ok) {
+    throw new Error(`identity inject commit failed: ${JSON.stringify(ir)}`);
+  }
+  // Without identity, missing name/email still fails closed (no invented author).
+  const engNoId = await GitEngine.load({ baseUrl: baseUrl(dir) });
+  await engNoId.run({ op: "init" });
+  await engNoId.run({
+    op: "write",
+    args: { path: "x.txt", content: "x\n" },
+  });
+  await engNoId.run({ op: "add", args: { path: "x.txt" } });
+  const noId = await engNoId.run({
+    op: "commit",
+    args: { message: "no identity" },
+  });
+  if (noId.ok || !String(noId.stderr || "").includes("name and email")) {
+    throw new Error(`commit without identity must fail K28: ${JSON.stringify(noId)}`);
+  }
+  // R34 helper: reset mode ff-only fails on divergent history.
+  const c1 = await engNoId.run({
+    op: "commit",
+    args: {
+      message: "c1",
+      name: "T",
+      email: "t@t",
+      when_unix: 1_700_000_010,
+    },
+  });
+  if (!c1.ok) throw new Error(`c1: ${JSON.stringify(c1)}`);
+  const head1 = (await engNoId.run({ op: "rev-parse", args: { rev: "HEAD" } }))
+    .stdout!.trim()
+    .split(/\s+/)[0];
+  await engNoId.run({
+    op: "write",
+    args: { path: "a.txt", content: "a\n" },
+  });
+  await engNoId.run({ op: "add", args: { path: "a.txt" } });
+  await engNoId.run({
+    op: "commit",
+    args: {
+      message: "c2",
+      name: "T",
+      email: "t@t",
+      when_unix: 1_700_000_011,
+    },
+  });
+  const head2 = (await engNoId.run({ op: "rev-parse", args: { rev: "HEAD" } }))
+    .stdout!.trim()
+    .split(/\s+/)[0];
+  // Reset to c1 then diverge
+  let rr = await engNoId.run({
+    op: "reset",
+    args: { rev: head1, mode: "hard" },
+  });
+  if (!rr.ok) throw new Error(`reset hard: ${JSON.stringify(rr)}`);
+  await engNoId.run({
+    op: "write",
+    args: { path: "b.txt", content: "b\n" },
+  });
+  await engNoId.run({ op: "add", args: { path: "b.txt" } });
+  await engNoId.run({
+    op: "commit",
+    args: {
+      message: "c3",
+      name: "T",
+      email: "t@t",
+      when_unix: 1_700_000_012,
+    },
+  });
+  rr = await engNoId.run({
+    op: "reset",
+    args: { rev: head2, mode: "ff-only" },
+  });
+  if (rr.ok || !String(rr.stderr || "").includes("not fast-forward")) {
+    throw new Error(`ff-only on diverge must fail: ${JSON.stringify(rr)}`);
+  }
+  // FF to self / ancestor tip should succeed (reset back to c3's parent path: use HEAD)
+  const head3 = (await engNoId.run({ op: "rev-parse", args: { rev: "HEAD" } }))
+    .stdout!.trim()
+    .split(/\s+/)[0];
+  rr = await engNoId.run({
+    op: "reset",
+    args: { rev: head3, mode: "ff-only" },
+  });
+  if (!rr.ok) throw new Error(`ff-only same tip: ${JSON.stringify(rr)}`);
+  await engId.close();
+  await engNoId.close();
+
   const dial = await eng.run({
     op: "clone",
     args: { url: "https://example.com/r.git" },

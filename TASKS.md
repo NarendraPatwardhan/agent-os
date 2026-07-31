@@ -44,14 +44,14 @@ Designed **phase A** surface (GIT.md §3.2 / §11). Engine has more ops than the
 | R16 | **Thin CLI: `remote` (list/add/remove URL)** | Phase A config until remotes | Engine `remote` exists; CLI does not |
 | R17 | **Thin CLI: `switch`** | Phase A alias of checkout | Engine maps `switch`; CLI only documents `checkout` |
 | R18 | **Thin CLI: `add -A` / pathspecs** | Real agent workflows | CLI `add <path>` only; engine has `all:true` walk |
-| R19 | **Full patch `diff`** | Agents need real patches, not status-style only | `op_diff` is growable but still reduced / not full unified patch product |
-| R20 | **Status porcelain-v1 completeness** | Machine-parseable agent tools | Simplified XY / short format; not full porcelain-v1 |
+| R19 | **Full patch `diff`** | Agents need real patches, not status-style only | **Closed (engine):** `git_diff` + `GIT_DIFF_FORMAT_PATCH`; optional `args.path` filter; large stdout via R25 |
+| R20 | **Status porcelain-v1 completeness** | Machine-parseable agent tools | Simplified XY / short format; not full porcelain-v1 (**partial** residual) |
 | R21 | **`log` / `show` bounds + formatting** | Usable history without OOM | Bounded; polish truncation/format still product debt |
 | R22 | **Branch delete via thin CLI** | Phase A branch ops | Engine `branch` delete path; CLI create/list only |
 | R23 | **Synthetic `.git` coherence** | HEAD/refs/generation stay truthful after checkout/branch | gitfs synthesizes HEAD/refs/ctl; edge cases after remote apply |
-| R24 | **JSON args 1 MiB product limit** | GIT.md hard product default | Growable content for write; jmin still crude for nested structures |
-| R25 | **`result.truncated` + large stdout path** | GIT.md §5.3: preview + `/.git/mc/out/last` (8 MiB) | Not implemented as product Response contract |
-| R26 | **Streaming / host_call large stdout** | When out/last is insufficient | “Later” in design; still wanted for big logs/diffs |
+| R24 | **JSON args 1 MiB product limit** | GIT.md hard product default | **Closed (engine):** `GE_REQUEST_MAX_BYTES` 1 MiB fail-closed in `ge_run_json`; write content still separate 16 MiB cap |
+| R25 | **`result.truncated` + large stdout path** | GIT.md §5.3: preview + `/.git/mc/out/last` (8 MiB) | **Closed (engine):** `ge_resp_ok_stdout` on status/log/diff/show; never silent truncate |
+| R26 | **Streaming / host_call large stdout** | When out/last is insufficient | “Later” in design; still wanted for big logs/diffs (**open**) |
 
 ---
 
@@ -59,12 +59,12 @@ Designed **phase A** surface (GIT.md §3.2 / §11). Engine has more ops than the
 
 | # | Residual | Why we want it | Current state |
 |---|----------|----------------|---------------|
-| R27 | **Host identity inject (K28 complete)** | Commits use host policy identity, not guest ambient gitconfig | Commit requires name+email args; **no** automatic inject from host/create options / BEAM attach |
-| R28 | **JS create-options identity** | `mc.create({ gitAuthor… })` or policy hook | Not wired |
-| R29 | **Server attach identity** | Port/orch commits from host policy | Not wired |
+| R27 | **Host identity inject (K28 complete)** | Commits use host policy identity, not guest ambient gitconfig | **Closed** — `GitEngine.run` / BEAM `GitEngine` inject when `gitIdentity` / `:identity` configured; never invents Agent@example.com |
+| R28 | **JS create-options identity** | `mc.create({ gitAuthor… })` or policy hook | **Closed** — `CreateOptions.gitIdentity` → engine load + registerGitHostCall |
+| R29 | **Server attach identity** | Port/orch commits from host policy | **Closed** — `attach_git` / `GitEngine.start` `:identity` / `:git_identity` |
 | R30 | **Connection catalog on server remotes (full PR11)** | Same connection-ref + credential splice as JS | Host-owned `allowed_origins` / `:auth` on attach; **not** full VM connection catalog → orch splice like tools |
 | R31 | **Push approval hook (server)** | PR11 `require_approval` for push | JS has `onPushApproval`; server push rejected entirely |
-| R32 | **Bare-URL remotes policy (JS)** | Unbound URL + empty allowOrigins still dials if CAP_NET | Connection-bound is fail-closed; bare URL path still weaker than connection-only product policy |
+| R32 | **Bare-URL remotes policy (JS)** | Unbound URL + empty allowOrigins still dials if CAP_NET | **Closed** — bare URL + empty `allowOrigins` fails closed; connection-bound uses `connection.origins`; fixtures pass explicit allowOrigins |
 | R33 | **Redacted orch metrics/logs** | No tokens in logs; origin/status/bytes | Design §observability; not productized counters |
 
 ---
@@ -73,10 +73,10 @@ Designed **phase A** surface (GIT.md §3.2 / §11). Engine has more ops than the
 
 | # | Residual | Why we want it | Current state |
 |---|----------|----------------|---------------|
-| R34 | **`pull` = fetch + local FF only** | GIT.md: FF fail → `git: not fast-forward` | Pull aliases fetch; **no** local FF merge/checkout step |
-| R35 | **Shallow clone defaults productized** | Agents shouldn’t pull full history by accident | `depth` supported in smart-HTTP; product default depth policy unclear / not forced |
+| R34 | **`pull` = fetch + local FF only** | GIT.md: FF fail → `git: not fast-forward` | **Closed** — pull = fetch + `reset` mode `ff-only`; non-FF → `git: not fast-forward` (JS + BEAM) |
+| R35 | **Shallow clone defaults productized** | Agents shouldn’t pull full history by accident | **Closed** — product default `depth=1`; `depth<=0` means full history |
 | R36 | **Partial clone (filter)** | M7 / large monorepos | Not implemented |
-| R37 | **Multi-want fetch / multi-ref import** | Real remotes advertise many refs | `refs.import` single name+hash; comment says full array later |
+| R37 | **Multi-want fetch / multi-ref import** | Real remotes advertise many refs | **Closed** — multi-want of all `refs/heads/*` + loop `refs.import` (engine still single-ref) |
 | R38 | **Tracking-branch config on clone** | Usable `fetch`/`pull` after clone | Remote-tracking updates exist in fetch.apply; branch.* config completeness thin |
 | R39 | **Orch golden: fetch / pull / deny-depth** | Dual-host algorithm proof beyond clone | Goldens: clone success/empty/origin_denied only; `fetch_algorithm.json` / `clone_algorithm.json` may be prose-ish |
 | R40 | **BEAM DiskPackCache (or shared CA cache)** | Server-side pack dedup across VMs | JS Memory/Disk + process default; BEAM no shared pack cache |
@@ -90,13 +90,13 @@ Designed **phase A** surface (GIT.md §3.2 / §11). Engine has more ops than the
 
 | # | Residual | Why we want it | Current state |
 |---|----------|----------------|---------------|
-| R44 | **Server (BEAM) push** | Same remote write path as JS for remote VMs | Stable reject: `git: push not supported on server (fetch/clone only)` |
-| R45 | **BEAM packbuilder** | Build pack for receive-pack without Node | Missing; JS uses `ge_pack_build` |
-| R46 | **BEAM receive-pack smart-HTTP** | Actual push to remotes | Missing |
-| R47 | **`push.complete` remote-tracking polish** | After successful push | Engine op exists; server never reaches it |
+| R44 | **Server (BEAM) push** | Same remote write path as JS for remote VMs | **Done** — orch push path (prepare → lease → pack → receive-pack → complete); `read_only` still rejects |
+| R45 | **BEAM packbuilder** | Build pack for receive-pack without Node | **Done** — `GitEngine.pack_build/2` via Port `pack.build` + `.git/agentos/push.pack` |
+| R46 | **BEAM receive-pack smart-HTTP** | Actual push to remotes | **Done** — `SmartHttp.push_packs/4` + report-status parse; fixture records args |
+| R47 | **`push.complete` remote-tracking polish** | After successful push | **Done** — orch calls `push.complete` after receive-pack |
 | R48 | **JS thin-pack / have negotiation** | Smaller pushes | Full reachable history from tips via packbuilder |
 | R49 | **JS push against live receive-pack e2e** | Prove non-fixture push | Fixture + engine packbuilder tests |
-| R50 | **Lease rejection paths** | Non-FF remote rejected cleanly | Partial via list-refs lease; more status mapping wanted |
+| R50 | **Lease rejection paths** | Non-FF remote rejected cleanly | **Done** (server) — list-refs lease + report-status `ng`/`unpack` mapping; live GitHub not required |
 | R51 | **Delete-ref push** | Zero newHash commands | Empty pack allowed for delete-only; live e2e residual |
 
 ---
@@ -202,10 +202,10 @@ Designed **phase A** surface (GIT.md §3.2 / §11). Engine has more ops than the
 
 | # | Residual | Why we want it | Current state |
 |---|----------|----------------|---------------|
-| R93 | **Replace residual jmin crude JSON** | Nested args, arrays, robust decode | Improved alloc paths; still “spike” min parser |
-| R94 | **`refs.import` multi-ref array** | One apply for full advertisement | Single name+hash |
+| R93 | **Replace residual jmin crude JSON** | Nested args, arrays, robust decode | **Partial closed:** array walk + object-scoped string get + 1 MiB request cap; full JSON library still out of scope |
+| R94 | **`refs.import` multi-ref array** | One apply for full advertisement | **Closed:** `args.refs` `[{name,hash},…]` all-or-nothing validate-then-create; single name+hash kept |
 | R95 | **Packbuilder tip cap / multi-ref push sets** | >256 tips | Cap fails closed |
-| R96 | **`add all` deletions / index sync** | Removed files staged correctly | Worktree-positive walk only |
+| R96 | **`add all` deletions / index sync** | Removed files staged correctly | **Closed:** `all:true` stages index removals for missing worktree paths |
 | R97 | **Symlink / special file policy** | Safe worktrees | Mostly skipped/ignored |
 | R98 | **Port mount path safety parity tests** | Same segment rules as engine | `ge_safe_relpath` used; more e2e |
 | R99 | **Concurrent JS remotes single-flight** | Match BEAM one-remote queue | Bridge serializes engine; orch HTTP may still overlap — product policy residual |

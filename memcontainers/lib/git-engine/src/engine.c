@@ -18,6 +18,15 @@
 
 #define GE_VERSION "agentos-git-engine/0.1.0+libgit2-1.9.2"
 
+/* Test-only override for stdout embed limit; 0 = product default. */
+static size_t g_stdout_max_override = 0;
+
+void ge_test_set_stdout_max_bytes(size_t n) { g_stdout_max_override = n; }
+
+size_t ge_stdout_max_bytes(void) {
+  return g_stdout_max_override ? g_stdout_max_override : (size_t)GE_STDOUT_MAX_BYTES;
+}
+
 void ge_set_err(ge_engine *e, const char *msg) {
   if (!e)
     return;
@@ -122,6 +131,95 @@ static char *resp_usage(const char *msg) {
   return resp_err(2, msg);
 }
 
+/* OOM fallback for ge_run_json — never free this pointer (P0.7). */
+static char ge_static_oom[] =
+    "{\"ok\":false,\"code\":1,\"stdout\":\"\",\"stderr\":\"out of memory\"}";
+
+/* Write full stdout body under worktree /.git/mc/out/last (cap 8 MiB). */
+static int write_out_last(ge_engine *e, const char *body, size_t n) {
+  if (!e || !body)
+    return -1;
+  char p[4096];
+  snprintf(p, sizeof(p), "%s/.git", e->root);
+  mkdir(p, 0755);
+  snprintf(p, sizeof(p), "%s/.git/mc", e->root);
+  mkdir(p, 0755);
+  snprintf(p, sizeof(p), "%s/.git/mc/out", e->root);
+  mkdir(p, 0755);
+  snprintf(p, sizeof(p), "%s/.git/mc/out/last", e->root);
+  size_t wr = n;
+  if (wr > GE_OUT_LAST_MAX_BYTES)
+    wr = GE_OUT_LAST_MAX_BYTES;
+  FILE *f = fopen(p, "wb");
+  if (!f)
+    return -1;
+  size_t wrote = wr ? fwrite(body, 1, wr, f) : 0;
+  int rc = fclose(f);
+  return (rc == 0 && wrote == wr) ? 0 : -1;
+}
+
+/* Ok response with large-stdout handling. Never silently truncates without
+ * result.truncated=true (GIT.md §5.3 / residual R25). */
+char *ge_resp_ok_stdout(ge_engine *e, char *stdout_owned, int free_stdout,
+                        const char *extra_result_json) {
+  const char *body = stdout_owned ? stdout_owned : "";
+  size_t n = strlen(body);
+  size_t limit = ge_stdout_max_bytes();
+  char *r = NULL;
+
+  if (n <= limit) {
+    r = resp_ok(body, extra_result_json);
+    if (free_stdout)
+      free(stdout_owned);
+    return r ? r : ge_static_oom;
+  }
+
+  /* Overflow: preview in stdout, full body on out/last, always set truncated. */
+  if (e && write_out_last(e, body, n) != 0) {
+    /* Still return truncated response; host can retry. Prefer not fail closed
+     * solely on out/last I/O after successful op. */
+  }
+
+  char *preview = (char *)malloc(limit + 1);
+  if (!preview) {
+    if (free_stdout)
+      free(stdout_owned);
+    return ge_static_oom;
+  }
+  if (limit > 0)
+    memcpy(preview, body, limit);
+  preview[limit] = '\0';
+
+  /* result always includes truncated:true; merge extra if present. */
+  char result_buf[512];
+  const char *result_json;
+  if (extra_result_json && extra_result_json[0] == '{') {
+    /* Shallow merge: {"truncated":true,<rest without braces>} */
+    size_t elen = strlen(extra_result_json);
+    if (elen >= 2 && extra_result_json[elen - 1] == '}') {
+      int m = snprintf(result_buf, sizeof(result_buf), "{\"truncated\":true,%s",
+                       extra_result_json + 1);
+      if (m < 0 || (size_t)m >= sizeof(result_buf)) {
+        free(preview);
+        if (free_stdout)
+          free(stdout_owned);
+        return ge_static_oom;
+      }
+      result_json = result_buf;
+    } else {
+      result_json = "{\"truncated\":true}";
+    }
+  } else {
+    result_json = "{\"truncated\":true}";
+  }
+
+  r = resp_ok(preview, result_json);
+  free(preview);
+  if (free_stdout)
+    free(stdout_owned);
+  return r ? r : ge_static_oom;
+}
+
 const char *ge_version(void) { return GE_VERSION; }
 
 const char *ge_worktree_root(const ge_engine *e) {
@@ -131,10 +229,6 @@ const char *ge_worktree_root(const ge_engine *e) {
 const char *ge_last_error(const ge_engine *e) {
   return e ? e->err : "null engine";
 }
-
-/* OOM fallback for ge_run_json — never free this pointer (P0.7). */
-static char ge_static_oom[] =
-    "{\"ok\":false,\"code\":1,\"stdout\":\"\",\"stderr\":\"out of memory\"}";
 
 int ge_response_is_static(const void *p) {
   return p == (const void *)ge_static_oom;
@@ -197,7 +291,7 @@ int ge_ensure_repo(ge_engine *e) {
 
 /* From engine_ops_extra.c */
 int op_rm(ge_engine *e, const char *args);
-int op_diff(ge_engine *e, char **out_owned);
+int op_diff(ge_engine *e, const char *args, char **out_owned);
 int op_show(ge_engine *e, const char *args, char **out_owned);
 int op_reset(ge_engine *e, const char *args);
 int op_tag(ge_engine *e, const char *args);
@@ -400,6 +494,27 @@ static int walk_add(ge_engine *e, git_index *index, const char *rel) {
   return rc;
 }
 
+/* Stage removals for index entries whose worktree path is missing (git add -A). */
+static int stage_deletions(ge_engine *e, git_index *index) {
+  size_t n = git_index_entrycount(index);
+  /* Remove by descending index so indices stay valid. */
+  for (size_t i = n; i > 0; i--) {
+    const git_index_entry *ent = git_index_get_byindex(index, i - 1);
+    if (!ent || !ent->path)
+      continue;
+    char full[4096];
+    join_path(full, sizeof(full), e->root, ent->path);
+    struct stat st;
+    if (lstat(full, &st) != 0) {
+      if (git_index_remove_bypath(index, ent->path) != 0) {
+        set_err_git(e, "add: stage deletion");
+        return -1;
+      }
+    }
+  }
+  return 0;
+}
+
 static int op_add(ge_engine *e, const char *args) {
   if (ensure_repo(e) != 0)
     return -1;
@@ -414,6 +529,8 @@ static int op_add(ge_engine *e, const char *args) {
   int rc = 0;
   if (all) {
     rc = walk_add(e, index, "");
+    if (rc == 0)
+      rc = stage_deletions(e, index);
   } else if (jmin_get_string(args, "path", path, sizeof(path)) == 0) {
     rc = index_add_file(e, index, path);
   } else {
@@ -1147,15 +1264,9 @@ static int op_pack_build(ge_engine *e, const char *args, char *result_json, size
   return 0;
 }
 
-static int op_refs_import(ge_engine *e, const char *args) {
-  if (ensure_repo(e) != 0)
-    return -1;
-  /* Minimal: { "name": "refs/heads/main", "hash": "..." } single ref.
-   * Full array support can be added when fixtures need it. */
-  char name[256];
-  char hash[64];
-  if (jmin_get_string(args, "name", name, sizeof(name)) != 0 ||
-      jmin_get_string(args, "hash", hash, sizeof(hash)) != 0) {
+/* Import one ref; name+hash validated. */
+static int refs_import_one(ge_engine *e, const char *name, const char *hash) {
+  if (!name || !name[0] || !hash || !hash[0]) {
     set_err(e, "refs.import: need name and hash");
     return -1;
   }
@@ -1172,6 +1283,71 @@ static int op_refs_import(ge_engine *e, const char *args) {
   }
   git_reference_free(ref);
   return 0;
+}
+
+/* Single {name,hash} or args.refs array of {name,hash}. All-or-nothing:
+ * validate every entry first, then create; any bad entry fails closed. */
+static int op_refs_import(ge_engine *e, const char *args) {
+  if (ensure_repo(e) != 0)
+    return -1;
+
+  const char *arr = jmin_get_array(args, "refs");
+  if (arr) {
+    /* Pass 1: validate all objects have name + parseable hash. */
+    const char *cur = arr;
+    const char *obj = NULL;
+    int count = 0;
+    while (jmin_array_next_object(&cur, &obj) == 0) {
+      char name[256];
+      char hash[64];
+      if (jmin_obj_get_string(obj, "name", name, sizeof(name)) != 0 || !name[0] ||
+          jmin_obj_get_string(obj, "hash", hash, sizeof(hash)) != 0 || !hash[0]) {
+        set_err(e, "refs.import: need name and hash on each refs[] entry");
+        return -1;
+      }
+      git_oid oid;
+      if (git_oid_fromstr(&oid, hash) != 0) {
+        set_err(e, "refs.import: bad hash");
+        return -1;
+      }
+      count++;
+    }
+    /* Trailing junk after objects (e.g. bare string) → fail closed. */
+    {
+      const char *p = cur;
+      while (p && *p && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ','))
+        p++;
+      if (p && *p && *p != ']') {
+        set_err(e, "refs.import: refs[] entries must be objects");
+        return -1;
+      }
+    }
+    if (count == 0) {
+      set_err(e, "refs.import: refs[] empty");
+      return -1;
+    }
+    /* Pass 2: create all (validated). */
+    cur = arr;
+    while (jmin_array_next_object(&cur, &obj) == 0) {
+      char name[256];
+      char hash[64];
+      (void)jmin_obj_get_string(obj, "name", name, sizeof(name));
+      (void)jmin_obj_get_string(obj, "hash", hash, sizeof(hash));
+      if (refs_import_one(e, name, hash) != 0)
+        return -1;
+    }
+    return 0;
+  }
+
+  /* Single-ref form. */
+  char name[256];
+  char hash[64];
+  if (jmin_get_string(args, "name", name, sizeof(name)) != 0 ||
+      jmin_get_string(args, "hash", hash, sizeof(hash)) != 0) {
+    set_err(e, "refs.import: need name and hash (or refs array)");
+    return -1;
+  }
+  return refs_import_one(e, name, hash);
 }
 
 static int op_clone_apply(ge_engine *e, const char *args) {
@@ -1283,6 +1459,13 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
   if (!request_json)
     return resp_usage("null request");
 
+  /* Product request size cap (GIT.md / R93): fail closed, never partial parse. */
+  {
+    size_t rlen = strlen(request_json);
+    if (rlen > GE_REQUEST_MAX_BYTES)
+      return resp_err(2, "request exceeds 1 MiB cap");
+  }
+
   char op[64];
   if (jmin_get_string(request_json, "op", op, sizeof(op)) != 0 || !op[0])
     return resp_usage("missing op");
@@ -1347,9 +1530,7 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
       free(buf);
       return resp_err(1, e->err);
     }
-    char *r = resp_ok(buf ? buf : "", NULL);
-    free(buf);
-    return r ? r : ge_static_oom;
+    return ge_resp_ok_stdout(e, buf, 1, NULL);
   }
 
   if (strcmp(op, "log") == 0) {
@@ -1358,9 +1539,7 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
       free(buf);
       return resp_err(1, e->err);
     }
-    char *r = resp_ok(buf ? buf : "", NULL);
-    free(buf);
-    return r ? r : ge_static_oom;
+    return ge_resp_ok_stdout(e, buf, 1, NULL);
   }
 
   if (strcmp(op, "rev-parse") == 0) {
@@ -1411,13 +1590,11 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
   }
   if (strcmp(op, "diff") == 0) {
     char *buf = NULL;
-    if (op_diff(e, &buf) != 0) {
+    if (op_diff(e, args, &buf) != 0) {
       free(buf);
       return resp_err(1, e->err);
     }
-    char *r = resp_ok(buf ? buf : "", NULL);
-    free(buf);
-    return r ? r : ge_static_oom;
+    return ge_resp_ok_stdout(e, buf, 1, NULL);
   }
   if (strcmp(op, "show") == 0) {
     char *buf = NULL;
@@ -1425,9 +1602,7 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
       free(buf);
       return resp_err(1, e->err);
     }
-    char *r = resp_ok(buf ? buf : "", NULL);
-    free(buf);
-    return r ? r : ge_static_oom;
+    return ge_resp_ok_stdout(e, buf, 1, NULL);
   }
   if (strcmp(op, "reset") == 0) {
     if (op_reset(e, args) != 0)

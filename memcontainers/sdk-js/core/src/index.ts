@@ -88,6 +88,7 @@ export {
 export type {
   GitRequest,
   GitResponse,
+  GitIdentity,
   GitEngineLoadOptions,
   GitEngineCreateOptions,
   OrchestratorOptions,

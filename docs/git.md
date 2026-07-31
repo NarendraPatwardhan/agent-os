@@ -16,7 +16,7 @@ the engine never dials the network. Remotes are host-mediated.
 | gitfs | `asMountDriver()` → MountFs; local ctl at `/.git/mc/ctl` |
 | Thin CLI | `//memcontainers/programs/git` — reduced surface only (see below) |
 | Server engine | BEAM-owned C `git-engine` **Port** — local Run, pack apply, type-4 mount only |
-| Server remotes | **BEAM HTTPS + Elixir orch** → Port apply (**no Node**, **no C TLS**); **fetch/clone only** until packbuilder |
+| Server remotes | **BEAM HTTPS + Elixir orch** → Port apply / pack.build (**no Node**, **no C TLS**); **fetch/clone/push** when not read-only |
 | LLB (Node) | Host emcc engine first (`MC_GIT_ENGINE_DIR`); **not** ambient system git |
 
 ## Agent-facing constraints (product)
@@ -30,22 +30,22 @@ These are hard product rules for agents and tools that use host git — not opti
 | **Unflushed ctl: close write before status** | Ctl Request is written to `/.git/mc/ctl`; Response is read from the out path. Close (or Drop) the write FD **before** reading status / next Response — unflushed guest buffers are invisible to the engine (same class as `hostDir`). |
 | **Remotes need CAP_NET + host_call `git`** | Mount/ctl alone cannot dial. Guest remotes go through `mc_sys_host_call` name `"git"` gated by kernel **CAP_NET**. Ctl remote ops refuse. |
 | **Experimental flag + identity on commit** | Opt-in via `experimentalGitEngine` (JS). Commits need author identity (`name` / `email` args or engine defaults) — no ambient global gitconfig from the host user. |
-| **Server push is not available** | See [Server remotes](#server-remotes-k16--push-honesty) — fetch/clone only on BEAM until packbuilder. |
+| **Server push (not read-only)** | See [Server remotes](#server-remotes-k16--push-honesty) — packbuilder + receive-pack on BEAM when mount is not read-only. |
 
 ## Thin CLI surface (honest)
 
 `//memcontainers/programs/git` is a **reduced** pure-mc adapter — **not** full git-core. Unknown
-commands fail closed.
+commands fail closed. Phase A maps argv → ctl Request JSON only (engine implements the ops).
 
 | Class | Commands | Path |
 |-------|----------|------|
-| Local porcelain | `init`, `status`, `add <path>`, `commit -m …`, `log`, `rev-parse [rev]`, `branch` / `branch <name>`, `checkout <name>` | Discover `/.git/mc/ctl` under cwd parents; write Request JSON, re-open/read Response |
-| Remotes | `clone <url>`, `fetch [url]`, `pull [url]`, `push [url]` | `host_call` name `"git"` (**CAP_NET**); clone works outside a repo |
+| Local porcelain | `init`, `status`, `add <path…>` / `add -A`/`--all`, `rm <path…>`, `commit -m …`, `log`, `diff`, `show [rev]`, `rev-parse [rev]`, `branch` / `branch <name>` / `branch -d <name>`, `checkout`/`switch <name>`, `reset [--soft\|--mixed\|--hard] [rev]`, `tag [-d] <name>`, `config --list` or `config <key> [value]`, `remote` list/add/remove | Discover `/.git/mc/ctl` under cwd parents; write Request JSON, re-open/read Response (multi-path `add`/`rm` = one round-trip per path) |
+| Remotes | `clone <url>`, `fetch [url]`, `pull [url]`, `push [url]` | `host_call` name `"git"` (**CAP_NET**); clone works outside a repo (no root discovery) |
 | Meta | `version` / `--version`, `help` / `--help` | stdout/stderr only |
 
-Not supported on the thin CLI (examples): `rm`, `diff`, `show`, `reset`, `tag`, `config`, `remote`,
-`switch`, sparse, rebase, submodules, LFS, receive-pack. Use SDK / ctl ops where implemented, or
-expect `unknown or unsupported command`.
+Not supported on the thin CLI (examples): sparse, rebase, submodules, LFS, receive-pack, full
+git-config surface, annotated tags, path-limited diff, `reset` modes beyond soft/mixed/hard. Use
+SDK / ctl ops where implemented, or expect `unknown or unsupported command`.
 
 ## Server remotes (K16) + push honesty
 
@@ -56,28 +56,38 @@ guest host_call "git"
   → kernel CAP_NET
   → BEAM AgentOS.Git.Orchestrator
        ├─ smart-HTTP (OTP :httpc / ssl) + connection credential splice
-       └─ Port frames → git-engine (import_pack, refs.import, clone.apply, …)
+       │    ListRefs / FetchPacks / PushPacks (receive-pack)
+       └─ Port frames → git-engine
+            import_pack, refs.import, clone.apply / fetch.apply,
+            pack.build, push.prepare, push.complete
   → Response JSON
 ```
 
 | Responsibility | Owner |
 |----------------|--------|
-| TLS, ListRefs, FetchPacks | **BEAM** (`AgentOS.Git.SmartHttp`) |
+| TLS, ListRefs, FetchPacks, PushPacks | **BEAM** (`AgentOS.Git.SmartHttp`) |
 | Origin / connection policy | **BEAM** (connections catalog) |
-| Pack import + apply + local porcelain | **C Port** (`AgentOS.GitEngine`) |
+| Pack import + apply + packbuilder + local porcelain | **C Port** (`AgentOS.GitEngine`) |
 | JS browser/Node remotes | **TS** orch + emcc |
-| **Push (server)** | **Not configured** — stable error until BEAM packbuilder ships |
+| **Push (server)** | **Supported** when not `read_only` — pack.build + receive-pack + push.complete |
 
-**Server remotes are fetch/clone only** until a packbuilder is available on the BEAM path.
-`AgentOS.Git.Orchestrator` rejects `op: "push"` with a **stable** stderr (do not paraphrase in
-callers that match it):
+**Server remotes support push** on the BEAM path when the git mount is not read-only:
+
+1. `push.prepare` (local tips as commands)
+2. ListRefs lease (remote `oldHash`)
+3. `GitEngine.pack_build/2` → `.git/agentos/push.pack` (non-delete must be non-empty `PACK…`)
+4. Smart-HTTP `git-receive-pack` + report-status
+5. `push.complete` (remote-tracking when remote accepted)
+
+Read-only mounts reject push with a **stable** stderr (do not paraphrase in callers that match it):
 
 ```text
-git: push not supported on server (fetch/clone only)
+git: push rejected (read-only mount)
 ```
 
-JS may inject `buildPushPack` for fixture/product push experiments; **claiming server push works is
-incorrect**. Read-only mounts also reject push on both hosts.
+Empty pack on a non-delete push fails closed (`git: empty pack refused for non-delete push`).
+Origin allowlist, max pack size, and no-URL-credentials policy apply to push URLs the same as
+fetch/clone. Secrets only in BEAM request headers.
 
 C `smart_http` / C orchestrator (Port type-5) are **test/fixture only** — not the product server
 remote path. Dual-host product orch is **TS (JS) ↔ BEAM (server)** sharing apply-op + algorithm

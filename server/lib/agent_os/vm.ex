@@ -438,6 +438,9 @@ defmodule AgentOS.Vm do
     Defaults to `[]` (fail closed). `:any` is rejected outside `Mix.env() == :test`.
   * `:auth` — `%{kind: :none | :bearer | :header, ...}` kept in BEAM only
   * `:transport` — injectable SmartHttp transport (tests / fixture double only)
+  * `:identity` / `:git_identity` — `%{name: binary, email: binary}` host policy
+    identity injected into Port `commit` when args omit name/email (K28). Never
+    invents a default identity when unset.
 
   Replaces any prior attachment. Stops the previous Port and cancels inflight
   remote host_calls first.
@@ -1120,11 +1123,14 @@ defmodule AgentOS.Vm do
     auth = Keyword.get(opts, :auth)
     transport = Keyword.get(opts, :transport)
 
+    identity = Keyword.get(opts, :identity) || Keyword.get(opts, :git_identity)
+
     # Unlinked start + monitor so engine crash does not kill the VM actor.
     case AgentOS.GitEngine.start(
            executable: Keyword.get(opts, :executable),
            root: Keyword.get(opts, :root),
-           mount_path: mount_path
+           mount_path: mount_path,
+           identity: identity
          ) do
       {:ok, pid} ->
         ref = Process.monitor(pid)

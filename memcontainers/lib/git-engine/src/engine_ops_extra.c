@@ -37,14 +37,26 @@ int op_rm(ge_engine *e, const char *args) {
   return 0;
 }
 
-/* *out_owned is malloc'd on success; caller frees. Never truncates. */
-int op_diff(ge_engine *e, char **out_owned) {
+/* *out_owned is malloc'd on success; caller frees. Full unified patch via
+ * libgit2 (GIT_DIFF_FORMAT_PATCH). Optional args.path filters to one path. */
+int op_diff(ge_engine *e, const char *args, char **out_owned) {
   if (out_owned)
     *out_owned = NULL;
   if (ge_ensure_repo(e) != 0)
     return -1;
   git_diff *diff = NULL;
   git_diff_options opts = GIT_DIFF_OPTIONS_INIT;
+  char path[1024] = "";
+  char *pathspec_strs[1];
+  if (args && jmin_get_string(args, "path", path, sizeof(path)) == 0 && path[0]) {
+    if (!ge_safe_relpath(path)) {
+      ge_set_err(e, "diff: bad path");
+      return -1;
+    }
+    pathspec_strs[0] = path;
+    opts.pathspec.strings = pathspec_strs;
+    opts.pathspec.count = 1;
+  }
   if (git_diff_index_to_workdir(&diff, e->repo, NULL, &opts) != 0) {
     ge_set_err_git(e, "diff");
     return -1;
@@ -130,10 +142,32 @@ int op_reset(ge_engine *e, const char *args) {
     return -1;
   }
   git_reset_t t = GIT_RESET_MIXED;
+  int ff_only = 0;
   if (strcmp(mode, "soft") == 0)
     t = GIT_RESET_SOFT;
   else if (strcmp(mode, "hard") == 0)
     t = GIT_RESET_HARD;
+  else if (strcmp(mode, "ff-only") == 0 || strcmp(mode, "ff_only") == 0) {
+    /* Pull v1: hard reset only when target is a fast-forward of HEAD. */
+    t = GIT_RESET_HARD;
+    ff_only = 1;
+  }
+  if (ff_only) {
+    git_oid head_oid;
+    const git_oid *target_oid = git_object_id(target);
+    if (git_reference_name_to_id(&head_oid, e->repo, "HEAD") == 0) {
+      if (!git_oid_equal(&head_oid, target_oid)) {
+        /* FF iff target is a descendant of HEAD (HEAD is ancestor of target). */
+        int desc = git_graph_descendant_of(e->repo, target_oid, &head_oid);
+        if (desc != 1) {
+          git_object_free(target);
+          ge_set_err(e, "git: not fast-forward");
+          return -1;
+        }
+      }
+    }
+    /* unborn HEAD: allow hard reset to target */
+  }
   int rc = git_reset(e->repo, target, t, NULL);
   git_object_free(target);
   if (rc != 0) {

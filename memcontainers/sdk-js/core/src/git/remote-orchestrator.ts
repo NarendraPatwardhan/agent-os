@@ -28,7 +28,12 @@ import {
 
 export interface OrchestratorOptions extends ResolveRemoteOptions {
   http?: SmartHttpTransport;
-  /** Legacy global origin allowlist (in addition to connection.origins). */
+  /**
+   * Global origin allowlist for **bare URL** remotes (no connection binding).
+   * Empty + no connection → fail closed (R32). Connection-bound remotes use
+   * `connection.origins` (also fail closed when empty). Fixture tests must pass
+   * explicit allowOrigins for bare URLs.
+   */
   allowOrigins?: string[];
   /** Read-only mount: reject push. */
   readOnly?: boolean;
@@ -64,6 +69,19 @@ export interface OrchestratorOptions extends ResolveRemoteOptions {
    * projection when the embedder mounts with the same list.
    */
   sparseCone?: string[];
+  /**
+   * Host commit identity (K28). Passed through for create-options symmetry;
+   * inject lives on {@link GitEngine.run}.
+   */
+  gitIdentity?: { name: string; email: string };
+}
+
+/** Product default: shallow depth=1 unless args override; depth<=0 means full. */
+function depthOf(args: Record<string, unknown>): number | undefined {
+  if (typeof args.depth === "number" && Number.isFinite(args.depth)) {
+    return args.depth > 0 ? Math.floor(args.depth) : undefined;
+  }
+  return 1;
 }
 
 export class GitRemoteOrchestrator {
@@ -198,7 +216,8 @@ export class GitRemoteOrchestrator {
   async handle(req: GitRequest): Promise<GitResponse> {
     const op = String(req.op || "").toLowerCase();
     if (op === "clone") return this.clone(req);
-    if (op === "fetch" || op === "pull") return this.fetch(req);
+    if (op === "fetch") return this.fetch(req, { pull: false });
+    if (op === "pull") return this.fetch(req, { pull: true });
     if (op === "push") return this.push(req);
     return {
       ok: false,
@@ -217,10 +236,39 @@ export class GitRemoteOrchestrator {
     });
   }
 
-  private checkLegacyAllowlist(url: string): GitResponse | null {
-    // Empty list = no legacy allowlist (connection-bound policy still applies).
-    if (this.allowOrigins.length === 0) return null;
-    // Same primitive as @mc/host / resolveGitRemote (canonical origin equality).
+  /**
+   * R32: bare URL (no connection) requires non-empty allowOrigins and a match.
+   * Connection-bound remotes already fail closed on empty connection.origins in
+   * resolveGitRemote; optional allowOrigins further intersects when set.
+   */
+  private checkOriginPolicy(binding: {
+    url: string;
+    connectionRef?: string;
+  }): GitResponse | null {
+    const url = binding.url;
+    if (binding.connectionRef) {
+      if (
+        this.allowOrigins.length > 0 &&
+        !originAllowed(this.allowOrigins, url)
+      ) {
+        return {
+          ok: false,
+          code: 1,
+          stdout: "",
+          stderr: `git: origin not allowlisted: ${url}\n`,
+        };
+      }
+      return null;
+    }
+    // Bare URL: empty allowOrigins fails closed (product FetchSmartHttp path).
+    if (this.allowOrigins.length === 0) {
+      return {
+        ok: false,
+        code: 1,
+        stdout: "",
+        stderr: `git: origin not allowlisted: ${url}\n`,
+      };
+    }
     if (!originAllowed(this.allowOrigins, url)) {
       return {
         ok: false,
@@ -232,13 +280,117 @@ export class GitRemoteOrchestrator {
     return null;
   }
 
+  /** R37: all advertised heads (+ primary tip if not a head). Engine is single-ref → loop. */
+  private async importAllHeads(
+    refs: RefAdvertisement[],
+    primaryName: string,
+    primaryHash: string,
+  ): Promise<GitResponse | null> {
+    const toImport = new Map<string, string>();
+    for (const r of refs) {
+      if (
+        r.name.startsWith("refs/heads/") &&
+        typeof r.hash === "string" &&
+        /^[0-9a-f]{40}$/i.test(r.hash)
+      ) {
+        toImport.set(r.name, r.hash);
+      }
+    }
+    if (primaryName.startsWith("refs/") && /^[0-9a-f]{40}$/i.test(primaryHash)) {
+      toImport.set(primaryName, primaryHash);
+    }
+    if (!toImport.size && primaryName && primaryHash) {
+      toImport.set(primaryName, primaryHash);
+    }
+    for (const [name, hash] of toImport) {
+      const imp = await this.engine.run({
+        op: "refs.import",
+        args: { name, hash },
+      });
+      if (!imp.ok) {
+        // Primary tip must succeed; other heads best-effort (objects may be absent).
+        if (name === primaryName) return imp;
+      }
+    }
+    return null;
+  }
+
+  /** Unique want OIDs: primary tip + all heads (multi-want fetch). */
+  private wantOids(refs: RefAdvertisement[], tipHash: string): string[] {
+    const wants = new Set<string>();
+    if (/^[0-9a-f]{40}$/i.test(tipHash)) wants.add(tipHash.toLowerCase());
+    for (const r of refs) {
+      if (
+        r.name.startsWith("refs/heads/") &&
+        typeof r.hash === "string" &&
+        /^[0-9a-f]{40}$/i.test(r.hash)
+      ) {
+        wants.add(r.hash.toLowerCase());
+      }
+    }
+    return [...wants];
+  }
+
+  /** R34: after fetch.apply, FF current branch to remote tip (pull only). */
+  private async fastForwardPull(
+    tip: RefAdvertisement,
+    tipHash: string,
+  ): Promise<GitResponse> {
+    const head = await this.engine.run({
+      op: "rev-parse",
+      args: { rev: "HEAD" },
+    });
+    if (head.ok && head.stdout) {
+      const h = head.stdout.trim().split(/\s+/)[0]?.toLowerCase();
+      if (h && h === tipHash.toLowerCase()) {
+        return {
+          ok: true,
+          code: 0,
+          stdout: "Already up to date.\n",
+          stderr: "",
+        };
+      }
+    }
+    const ff = await this.engine.run({
+      op: "reset",
+      args: { rev: tipHash, mode: "ff-only" },
+    });
+    if (!ff.ok) {
+      const err = String(ff.stderr || ff.stdout || "");
+      if (err.includes("not fast-forward")) {
+        return {
+          ok: false,
+          code: 1,
+          stdout: "",
+          stderr: "git: not fast-forward\n",
+        };
+      }
+      return {
+        ok: false,
+        code: 1,
+        stdout: "",
+        stderr: err.includes("git:")
+          ? err.endsWith("\n")
+            ? err
+            : `${err}\n`
+          : `git: not fast-forward\n`,
+      };
+    }
+    return {
+      ok: true,
+      code: 0,
+      stdout: `Fast-forward to ${tip.name}\n`,
+      stderr: "",
+    };
+  }
+
   private async clone(req: GitRequest): Promise<GitResponse> {
     const resolved = this.resolve(req);
     if (!resolved.ok) {
       return { ok: false, code: resolved.code, stdout: "", stderr: resolved.stderr };
     }
     const { binding } = resolved;
-    const denied = this.checkLegacyAllowlist(binding.url);
+    const denied = this.checkOriginPolicy(binding);
     if (denied) return denied;
 
     let refs: RefAdvertisement[];
@@ -272,11 +424,12 @@ export class GitRemoteOrchestrator {
       };
     }
 
-    const depth = typeof args.depth === "number" ? args.depth : undefined;
+    const depth = depthOf(args);
+    const wants = this.wantOids(refs, head.hash);
 
     const resolvedPack = await this.resolvePack(
       binding.url,
-      [head.hash],
+      wants,
       [],
       depth,
       binding.auth,
@@ -321,11 +474,8 @@ export class GitRemoteOrchestrator {
             ?.name ?? "refs/heads/master"
         : head.name;
 
-    const imp = await this.engine.run({
-      op: "refs.import",
-      args: { name: refName, hash: head.hash },
-    });
-    if (!imp.ok) return imp;
+    const impErr = await this.importAllHeads(refs, refName, head.hash);
+    if (impErr) return impErr;
 
     const apply = await this.engine.run({
       op: "clone.apply",
@@ -344,14 +494,19 @@ export class GitRemoteOrchestrator {
     };
   }
 
-  private async fetch(req: GitRequest): Promise<GitResponse> {
+  private async fetch(
+    req: GitRequest,
+    opts: { pull?: boolean } = {},
+  ): Promise<GitResponse> {
     // Incremental path: no re-init (PR11 critique). Import packs then fetch.apply.
+    // Pull = fetch + local FF only (R34).
+    const pull = !!opts.pull;
     const resolved = this.resolve(req);
     if (!resolved.ok) {
       return { ok: false, code: resolved.code, stdout: "", stderr: resolved.stderr };
     }
     const { binding } = resolved;
-    const denied = this.checkLegacyAllowlist(binding.url);
+    const denied = this.checkOriginPolicy(binding);
     if (denied) return denied;
 
     let refs: RefAdvertisement[];
@@ -385,7 +540,7 @@ export class GitRemoteOrchestrator {
       };
     }
 
-    const depth = typeof args.depth === "number" ? args.depth : undefined;
+    const depth = depthOf(args);
     // Local haves: tips op when available, else HEAD
     const have: string[] = [];
     const tipsResp = await this.engine.run({ op: "tips" });
@@ -415,9 +570,10 @@ export class GitRemoteOrchestrator {
       }
     }
 
+    const wants = this.wantOids(refs, tip.hash);
     const resolvedPack = await this.resolvePack(
       binding.url,
-      [tip.hash],
+      wants,
       have,
       depth,
       binding.auth,
@@ -442,22 +598,29 @@ export class GitRemoteOrchestrator {
       };
     }
 
-    const imp = await this.engine.run({
-      op: "refs.import",
-      args: { name: tip.name, hash: tip.hash },
-    });
-    if (!imp.ok) return imp;
+    const refName =
+      tip.name === "HEAD"
+        ? refs.find((r) => r.hash === tip.hash && r.name.startsWith("refs/"))
+            ?.name ?? tip.name
+        : tip.name;
+
+    const impErr = await this.importAllHeads(refs, refName, tip.hash);
+    if (impErr) return impErr;
 
     // P0.4: engine requires name+hash (no silent no-op success).
     const fa = await this.engine.run({
       op: "fetch.apply",
       args: {
-        name: tip.name,
+        name: refName,
         hash: tip.hash,
         remote: typeof args.remote === "string" ? args.remote : "origin",
       },
     });
     if (!fa.ok) return fa;
+
+    if (pull) {
+      return this.fastForwardPull(tip, tip.hash);
+    }
     return { ok: true, code: 0, stdout: "fetched\n", stderr: "" };
   }
 
@@ -477,7 +640,7 @@ export class GitRemoteOrchestrator {
       return { ok: false, code: resolved.code, stdout: "", stderr: resolved.stderr };
     }
     const { binding } = resolved;
-    const denied = this.checkLegacyAllowlist(binding.url);
+    const denied = this.checkOriginPolicy(binding);
     if (denied) return denied;
 
     if (binding.pushAction === "block") {

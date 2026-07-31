@@ -66,6 +66,7 @@ export type {
 export type {
   GitRequest,
   GitResponse,
+  GitIdentity,
   GitEngineLoadOptions,
   GitEngineCreateOptions,
 } from "./types.js";

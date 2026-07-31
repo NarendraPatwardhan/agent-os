@@ -835,12 +835,15 @@ async function makeEmbedded(
     const eng = await GitEngine.load({
       baseUrl: base,
       sparseCone: opts.gitSparseCone,
+      gitIdentity: opts.gitIdentity,
     });
     // packCache defaults on inside gitHostCallHandler (process MemoryPackCache).
+    // Bare URL remotes fail closed unless connections bind origins (R32).
     registerGitHostCall(tools, eng, {
       connections: opts.connections,
       policies: opts.policies,
       sparseCone: opts.gitSparseCone,
+      gitIdentity: opts.gitIdentity,
     });
     gitEngine = eng;
   }

@@ -126,12 +126,12 @@ async function main() {
   }
 
   // Empty origins → fail closed (no credential to attacker URL)
-  const bare: ConnectionDefinition[] = [
+  const emptyOrigins: ConnectionDefinition[] = [
     { ref: "github.user.work", auth: { kind: "bearer", token: "sekret-token" } },
   ];
   const open = resolveGitRemote(
     { url: "https://evil.example/r.git", connection: "github.user.work" },
-    { connections: bare },
+    { connections: emptyOrigins },
   );
   if (open.ok) throw new Error("empty origins must fail closed");
 
@@ -158,6 +158,40 @@ async function main() {
     { connections: pathy },
   );
   if (!org.ok) throw new Error(`canonical origin should allow: ${org.stderr}`);
+
+  // R32: bare URL (no connection) + empty allowOrigins fails closed at orch.
+  const bareHttp = new FixtureSmartHttp();
+  bareHttp.add(
+    "https://example.com/r.git",
+    [{ name: "refs/heads/main", hash: "cccccccccccccccccccccccccccccccccccccccc" }],
+    new Uint8Array(0),
+  );
+  const bareOrch = new GitRemoteOrchestrator(eng, { http: bareHttp });
+  const bareResp = await bareOrch.handle({
+    op: "clone",
+    args: { url: "https://example.com/r.git" },
+  });
+  if (bareResp.ok || !String(bareResp.stderr || "").includes("not allowlisted")) {
+    throw new Error(`R32 bare URL must fail closed: ${JSON.stringify(bareResp)}`);
+  }
+  if (bareHttp.listRefsCalls !== 0) {
+    throw new Error("R32 bare deny must not dial");
+  }
+  // Explicit allowOrigins permits bare URL through the gate (fixture path).
+  const bareOkOrch = new GitRemoteOrchestrator(eng, {
+    http: bareHttp,
+    allowOrigins: ["https://example.com"],
+  });
+  const bareOk = await bareOkOrch.handle({
+    op: "clone",
+    args: { url: "https://example.com/r.git" },
+  });
+  if (String(bareOk.stderr || "").includes("not allowlisted")) {
+    throw new Error(`allowOrigins should permit bare fixture URL: ${JSON.stringify(bareOk)}`);
+  }
+  if (bareHttp.listRefsCalls < 1) {
+    throw new Error("expected listRefs after allowOrigins gate");
+  }
 
   await eng.close();
   console.log("git_connections.test SUCCESS");

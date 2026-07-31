@@ -13,6 +13,14 @@
 /* Product caps (GIT.md). */
 #define GE_PACK_MAX_BYTES (64u * 1024u * 1024u)
 #define GE_WRITE_MAX_BYTES (16u * 1024u * 1024u)
+/* Max stdout embedded in one Response; overflow → preview + result.truncated. */
+#ifndef GE_STDOUT_MAX_BYTES
+#define GE_STDOUT_MAX_BYTES (1u * 1024u * 1024u)
+#endif
+/* Full body on worktree /.git/mc/out/last when stdout is truncated. */
+#define GE_OUT_LAST_MAX_BYTES (8u * 1024u * 1024u)
+/* Max request JSON size for ge_run_json (fail closed). */
+#define GE_REQUEST_MAX_BYTES (1u * 1024u * 1024u)
 
 struct ge_engine {
   char root[4096];
@@ -31,5 +39,14 @@ void ge_set_err_git(ge_engine *e, const char *prefix);
 int ge_ensure_repo(ge_engine *e);
 int ge_safe_relpath(const char *path);
 void ge_join_path(char *out, size_t cap, const char *root, const char *rel);
+
+/* Effective stdout embed limit (honors ge_test_set_stdout_max_bytes). */
+size_t ge_stdout_max_bytes(void);
+
+/* Ok response with large-stdout handling (GIT.md §5.3). If free_stdout!=0,
+ * stdout_owned is freed before return. Never silently truncates without
+ * result.truncated=true. */
+char *ge_resp_ok_stdout(ge_engine *e, char *stdout_owned, int free_stdout,
+                        const char *extra_result_json);
 
 #endif /* GE_ENGINE_PRIV_H_ */

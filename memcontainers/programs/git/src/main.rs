@@ -44,8 +44,13 @@ fn main() -> i32 {
         return 0;
     }
     if cmd == b"help" || cmd == b"--help" {
-        eprint(b"usage: git <init|status|add|commit|log|rev-parse|branch|checkout|version|clone|fetch|pull|push>\n");
-        eprint(b"local porcelain via /.git/mc/ctl (needs repo); remotes via host_call git (CAP_NET; clone works outside a repo)\n");
+        eprint(
+            b"usage: git <init|status|add|rm|commit|log|diff|show|rev-parse|branch|checkout|switch|reset|tag|config|remote|version|clone|fetch|pull|push>\n",
+        );
+        eprint(
+            b"local porcelain via /.git/mc/ctl (needs repo); remotes via host_call git (CAP_NET; clone works outside a repo)\n",
+        );
+        eprint(b"phase A: add -A/--all; branch -d; tag -d; reset --soft|--mixed|--hard; config get/set; remote list/add/remove\n");
         return 0;
     }
 
@@ -64,12 +69,6 @@ fn main() -> i32 {
         }
     };
 
-    let mut req = [0u8; MAX_BODY];
-    let req_len = match build_request(cmd, &args[..argc], &mut req) {
-        Ok(n) => n,
-        Err(code) => return code,
-    };
-
     let mut ctl_path = [0u8; MAX_PATH];
     let ctl_len = match join_path(&root[..root_len], b".git/mc/ctl", &mut ctl_path) {
         Ok(n) => n,
@@ -86,6 +85,24 @@ fn main() -> i32 {
         }
     };
 
+    // Multi-path local ops: one ctl round-trip per path (engine takes a single path).
+    if cmd == b"rm" {
+        return run_rm(ctl, &args[..argc]);
+    }
+    if cmd == b"add" {
+        return run_add(ctl, &args[..argc]);
+    }
+
+    let mut req = [0u8; MAX_BODY];
+    let req_len = match build_request(cmd, &args[..argc], &mut req) {
+        Ok(n) => n,
+        Err(code) => return code,
+    };
+    ctl_roundtrip(ctl, &req[..req_len])
+}
+
+/// Write Request JSON to ctl, re-open, read Response, emit stdout/stderr/code.
+fn ctl_roundtrip(ctl: &str, req: &[u8]) -> i32 {
     let flags = rt::O_WRITE | rt::O_CREATE | rt::O_TRUNC;
     let fd = match rt::open(ctl, flags) {
         Ok(f) => f,
@@ -94,7 +111,7 @@ fn main() -> i32 {
             return 1;
         }
     };
-    if rt::write_all(fd, &req[..req_len]).is_err() {
+    if rt::write_all(fd, req).is_err() {
         rt::close(fd);
         eprint(b"git: ctl write failed\n");
         return 1;
@@ -229,6 +246,83 @@ fn fmt_op_url(op: &[u8], url: &[u8], out: &mut [u8]) -> Result<usize, i32> {
     Ok(i)
 }
 
+/// `git rm <path…>` → one `{"op":"rm","args":{"path":"…"}}` per path.
+fn run_rm(ctl: &str, args: &[&[u8]]) -> i32 {
+    let argc = args.len();
+    if argc < 3 {
+        eprint(b"usage: git rm <path...>\n");
+        return 2;
+    }
+    let mut last = 0i32;
+    for i in 2..argc {
+        let p = args[i];
+        if p.first() == Some(&b'-') {
+            eprint(b"git: rm: flags not supported (path only)\n");
+            return 2;
+        }
+        let mut req = [0u8; MAX_BODY];
+        let n = match fmt_op_path(b"rm", p, &mut req) {
+            Ok(n) => n,
+            Err(code) => return code,
+        };
+        last = ctl_roundtrip(ctl, &req[..n]);
+        if last != 0 {
+            return last;
+        }
+    }
+    last
+}
+
+/// `git add -A|--all` or `git add <path…>`.
+fn run_add(ctl: &str, args: &[&[u8]]) -> i32 {
+    let argc = args.len();
+    if argc < 3 {
+        eprint(b"usage: git add (-A|--all|<path...>)\n");
+        return 2;
+    }
+    // Single all=true when any arg is -A / --all (phase A: no mix with paths).
+    let mut all = false;
+    let mut path_count = 0usize;
+    for i in 2..argc {
+        if args[i] == b"-A" || args[i] == b"--all" {
+            all = true;
+        } else if args[i].first() == Some(&b'-') {
+            eprint(b"git: add: unsupported flag\n");
+            return 2;
+        } else {
+            path_count += 1;
+        }
+    }
+    if all {
+        if path_count > 0 {
+            eprint(b"usage: git add (-A|--all)  OR  git add <path...>\n");
+            return 2;
+        }
+        return ctl_roundtrip(ctl, b"{\"op\":\"add\",\"args\":{\"all\":true}}");
+    }
+    if path_count == 0 {
+        eprint(b"usage: git add (-A|--all|<path...>)\n");
+        return 2;
+    }
+    let mut last = 0i32;
+    for i in 2..argc {
+        let p = args[i];
+        if p == b"-A" || p == b"--all" {
+            continue;
+        }
+        let mut req = [0u8; MAX_BODY];
+        let n = match fmt_op_path(b"add", p, &mut req) {
+            Ok(n) => n,
+            Err(code) => return code,
+        };
+        last = ctl_roundtrip(ctl, &req[..n]);
+        if last != 0 {
+            return last;
+        }
+    }
+    last
+}
+
 fn build_request(cmd: &[u8], args: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
     let argc = args.len();
     if cmd == b"init" {
@@ -240,14 +334,31 @@ fn build_request(cmd: &[u8], args: &[&[u8]], out: &mut [u8]) -> Result<usize, i3
     if cmd == b"log" {
         return copy_bytes(b"{\"op\":\"log\",\"args\":{\"max_count\":32}}", out);
     }
-    if cmd == b"branch" && argc == 2 {
-        return copy_bytes(b"{\"op\":\"branch\"}", out);
+    if cmd == b"diff" {
+        return copy_bytes(b"{\"op\":\"diff\",\"args\":{}}", out);
     }
-    if cmd == b"branch" && argc >= 3 {
-        return fmt_op_name(b"branch", args[2], out);
+    if cmd == b"show" {
+        let rev = if argc >= 3 { args[2] } else { b"HEAD" };
+        if argc >= 3 && args[2].first() == Some(&b'-') {
+            eprint(b"usage: git show [rev]\n");
+            return Err(2);
+        }
+        return fmt_op_rev(b"show", rev, out);
     }
-    if cmd == b"add" && argc >= 3 {
-        return fmt_op_path(b"add", args[2], out);
+    if cmd == b"reset" {
+        return build_reset(args, out);
+    }
+    if cmd == b"tag" {
+        return build_tag(args, out);
+    }
+    if cmd == b"config" {
+        return build_config(args, out);
+    }
+    if cmd == b"remote" {
+        return build_remote_cfg(args, out);
+    }
+    if cmd == b"branch" {
+        return build_branch(args, out);
     }
     if cmd == b"commit" {
         if argc < 4 || args[2] != b"-m" {
@@ -256,16 +367,180 @@ fn build_request(cmd: &[u8], args: &[&[u8]], out: &mut [u8]) -> Result<usize, i3
         }
         return fmt_commit(args[3], out);
     }
-    if cmd == b"checkout" && argc >= 3 {
-        return fmt_op_name(b"checkout", args[2], out);
+    if cmd == b"checkout" || cmd == b"switch" {
+        if argc < 3 {
+            eprint(b"usage: git checkout|switch <name>\n");
+            return Err(2);
+        }
+        if args[2].first() == Some(&b'-') {
+            eprint(b"usage: git checkout|switch <name>\n");
+            return Err(2);
+        }
+        // Engine accepts both op names; emit the verb the user typed.
+        return fmt_op_name(cmd, args[2], out);
     }
     if cmd == b"rev-parse" {
         let rev = if argc >= 3 { args[2] } else { b"HEAD" };
         return fmt_rev_parse(rev, out);
     }
     // Remotes are handled in main before find_git_root / build_request.
+    // add/rm are handled in main (multi-path loops).
     eprint(b"git: unknown or unsupported command\n");
     Err(2)
+}
+
+fn build_reset(args: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
+    let argc = args.len();
+    let mut mode: &[u8] = b"mixed";
+    let mut rev: &[u8] = b"HEAD";
+    let mut i = 2usize;
+    while i < argc {
+        let a = args[i];
+        if a == b"--soft" {
+            mode = b"soft";
+        } else if a == b"--mixed" {
+            mode = b"mixed";
+        } else if a == b"--hard" {
+            mode = b"hard";
+        } else if a.first() == Some(&b'-') {
+            eprint(b"usage: git reset [--soft|--mixed|--hard] [rev]\n");
+            return Err(2);
+        } else {
+            rev = a;
+            if i + 1 < argc {
+                eprint(b"usage: git reset [--soft|--mixed|--hard] [rev]\n");
+                return Err(2);
+            }
+            break;
+        }
+        i += 1;
+    }
+    fmt_reset(mode, rev, out)
+}
+
+fn build_tag(args: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
+    let argc = args.len();
+    if argc < 3 {
+        eprint(b"usage: git tag [-d] <name>\n");
+        return Err(2);
+    }
+    let mut del = false;
+    let mut name: Option<&[u8]> = None;
+    for i in 2..argc {
+        let a = args[i];
+        if a == b"-d" || a == b"--delete" {
+            del = true;
+        } else if a.first() == Some(&b'-') {
+            eprint(b"usage: git tag [-d] <name>\n");
+            return Err(2);
+        } else if name.is_none() {
+            name = Some(a);
+        } else {
+            eprint(b"usage: git tag [-d] <name>\n");
+            return Err(2);
+        }
+    }
+    let name = match name {
+        Some(n) => n,
+        None => {
+            eprint(b"usage: git tag [-d] <name>\n");
+            return Err(2);
+        }
+    };
+    if del {
+        fmt_tag_delete(name, out)
+    } else {
+        fmt_op_name(b"tag", name, out)
+    }
+}
+
+fn build_config(args: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
+    let argc = args.len();
+    if argc < 3 {
+        eprint(b"usage: git config (--list|-l|<key> [value])\n");
+        return Err(2);
+    }
+    if args[2] == b"--list" || args[2] == b"-l" {
+        if argc > 3 {
+            eprint(b"usage: git config --list\n");
+            return Err(2);
+        }
+        return copy_bytes(b"{\"op\":\"config\",\"args\":{\"action\":\"list\"}}", out);
+    }
+    if args[2].first() == Some(&b'-') {
+        eprint(b"usage: git config (--list|-l|<key> [value])\n");
+        return Err(2);
+    }
+    let key = args[2];
+    if argc == 3 {
+        return fmt_config_get(key, out);
+    }
+    if argc == 4 {
+        return fmt_config_set(key, args[3], out);
+    }
+    eprint(b"usage: git config (--list|-l|<key> [value])\n");
+    Err(2)
+}
+
+/// Local remote *config* ops (list/add/remove URL) — not network remotes.
+fn build_remote_cfg(args: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
+    let argc = args.len();
+    if argc == 2 {
+        return copy_bytes(b"{\"op\":\"remote\",\"args\":{\"action\":\"list\"}}", out);
+    }
+    let sub = args[2];
+    if sub == b"add" {
+        if argc < 5 {
+            eprint(b"usage: git remote add <name> <url>\n");
+            return Err(2);
+        }
+        return fmt_remote_add(args[3], args[4], out);
+    }
+    if sub == b"remove" || sub == b"rm" {
+        if argc < 4 {
+            eprint(b"usage: git remote remove <name>\n");
+            return Err(2);
+        }
+        return fmt_remote_remove(args[3], out);
+    }
+    if sub == b"-v" || sub == b"--verbose" {
+        // Phase A: list is already name\turl; treat -v as list.
+        return copy_bytes(b"{\"op\":\"remote\",\"args\":{\"action\":\"list\"}}", out);
+    }
+    eprint(b"usage: git remote [add <name> <url>|remove <name>]\n");
+    Err(2)
+}
+
+fn build_branch(args: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
+    let argc = args.len();
+    if argc == 2 {
+        return copy_bytes(b"{\"op\":\"branch\"}", out);
+    }
+    let mut del = false;
+    let mut name: Option<&[u8]> = None;
+    for i in 2..argc {
+        let a = args[i];
+        if a == b"-d" || a == b"-D" || a == b"--delete" {
+            del = true;
+        } else if a.first() == Some(&b'-') {
+            eprint(b"usage: git branch [-d] [<name>]\n");
+            return Err(2);
+        } else if name.is_none() {
+            name = Some(a);
+        } else {
+            eprint(b"usage: git branch [-d] [<name>]\n");
+            return Err(2);
+        }
+    }
+    match (del, name) {
+        (true, Some(n)) => fmt_branch_delete(n, out),
+        (true, None) => {
+            eprint(b"usage: git branch -d <name>\n");
+            Err(2)
+        }
+        (false, Some(n)) => fmt_op_name(b"branch", n, out),
+        (false, None) => copy_bytes(b"{\"op\":\"branch\"}", out),
+    }
 }
 
 fn fmt_op_path(op: &[u8], path: &[u8], out: &mut [u8]) -> Result<usize, i32> {
@@ -283,6 +558,90 @@ fn fmt_op_name(op: &[u8], name: &[u8], out: &mut [u8]) -> Result<usize, i32> {
     i = push(out, i, b"{\"op\":\"")?;
     i = push(out, i, op)?;
     i = push(out, i, b"\",\"args\":{\"name\":\"")?;
+    i = push_escaped(out, i, name)?;
+    i = push(out, i, b"\"}}")?;
+    Ok(i)
+}
+
+fn fmt_op_rev(op: &[u8], rev: &[u8], out: &mut [u8]) -> Result<usize, i32> {
+    let mut i = 0usize;
+    i = push(out, i, b"{\"op\":\"")?;
+    i = push(out, i, op)?;
+    i = push(out, i, b"\",\"args\":{\"rev\":\"")?;
+    i = push_escaped(out, i, rev)?;
+    i = push(out, i, b"\"}}")?;
+    Ok(i)
+}
+
+fn fmt_reset(mode: &[u8], rev: &[u8], out: &mut [u8]) -> Result<usize, i32> {
+    let mut i = 0usize;
+    i = push(out, i, b"{\"op\":\"reset\",\"args\":{\"mode\":\"")?;
+    i = push_escaped(out, i, mode)?;
+    i = push(out, i, b"\",\"rev\":\"")?;
+    i = push_escaped(out, i, rev)?;
+    i = push(out, i, b"\"}}")?;
+    Ok(i)
+}
+
+fn fmt_tag_delete(name: &[u8], out: &mut [u8]) -> Result<usize, i32> {
+    let mut i = 0usize;
+    i = push(out, i, b"{\"op\":\"tag\",\"args\":{\"name\":\"")?;
+    i = push_escaped(out, i, name)?;
+    i = push(out, i, b"\",\"delete\":true}}")?;
+    Ok(i)
+}
+
+fn fmt_branch_delete(name: &[u8], out: &mut [u8]) -> Result<usize, i32> {
+    let mut i = 0usize;
+    i = push(out, i, b"{\"op\":\"branch\",\"args\":{\"name\":\"")?;
+    i = push_escaped(out, i, name)?;
+    i = push(out, i, b"\",\"delete\":true}}")?;
+    Ok(i)
+}
+
+fn fmt_config_get(key: &[u8], out: &mut [u8]) -> Result<usize, i32> {
+    let mut i = 0usize;
+    i = push(out, i, b"{\"op\":\"config\",\"args\":{\"action\":\"get\",\"key\":\"")?;
+    i = push_escaped(out, i, key)?;
+    i = push(out, i, b"\"}}")?;
+    Ok(i)
+}
+
+fn fmt_config_set(key: &[u8], value: &[u8], out: &mut [u8]) -> Result<usize, i32> {
+    let mut i = 0usize;
+    i = push(
+        out,
+        i,
+        b"{\"op\":\"config\",\"args\":{\"action\":\"set\",\"key\":\"",
+    )?;
+    i = push_escaped(out, i, key)?;
+    i = push(out, i, b"\",\"value\":\"")?;
+    i = push_escaped(out, i, value)?;
+    i = push(out, i, b"\"}}")?;
+    Ok(i)
+}
+
+fn fmt_remote_add(name: &[u8], url: &[u8], out: &mut [u8]) -> Result<usize, i32> {
+    let mut i = 0usize;
+    i = push(
+        out,
+        i,
+        b"{\"op\":\"remote\",\"args\":{\"action\":\"add\",\"name\":\"",
+    )?;
+    i = push_escaped(out, i, name)?;
+    i = push(out, i, b"\",\"url\":\"")?;
+    i = push_escaped(out, i, url)?;
+    i = push(out, i, b"\"}}")?;
+    Ok(i)
+}
+
+fn fmt_remote_remove(name: &[u8], out: &mut [u8]) -> Result<usize, i32> {
+    let mut i = 0usize;
+    i = push(
+        out,
+        i,
+        b"{\"op\":\"remote\",\"args\":{\"action\":\"remove\",\"name\":\"",
+    )?;
     i = push_escaped(out, i, name)?;
     i = push(out, i, b"\"}}")?;
     Ok(i)

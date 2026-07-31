@@ -15,6 +15,12 @@ export interface GitResponse {
   result?: unknown;
 }
 
+/** Host commit identity (K28). Never invent Agent/agent@example.com defaults. */
+export interface GitIdentity {
+  name: string;
+  email: string;
+}
+
 export interface GitEngineLoadOptions {
   /**
    * Directory URL or filesystem path containing `git_engine.js` + `git_engine.wasm`
@@ -39,6 +45,11 @@ export interface GitEngineLoadOptions {
    * caller-supplied (or last-known) opaque bytes; it does not dump MEMFS.
    */
   durable?: DurableBackend;
+  /**
+   * Host policy identity injected into `commit` when args omit name/email (K28).
+   * Never synthesizes a default identity when unset.
+   */
+  gitIdentity?: GitIdentity;
 }
 
 export interface GitEngineCreateOptions {
@@ -52,4 +63,9 @@ export interface GitEngineCreateOptions {
    * `gitSparseCone` on the product memcontainer path.
    */
   sparseCone?: string[];
+  /**
+   * Host commit identity for experimental git engine (K28 inject).
+   * Prefer CreateOptions `gitIdentity` on the product memcontainer path.
+   */
+  gitIdentity?: GitIdentity;
 }

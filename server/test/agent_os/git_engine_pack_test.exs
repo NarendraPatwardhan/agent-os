@@ -225,4 +225,57 @@ defmodule AgentOS.GitEnginePackTest do
 
     :ok = GitEngine.stop(pid)
   end
+
+  @tag timeout: 60_000
+  test "pack_build from committed tip yields non-empty PACK magic" do
+    path = engine_path()
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "pack-build-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.mkdir_p!(root)
+    assert {:ok, pid} = GitEngine.start(executable: path, root: root)
+    assert {:ok, _} = GitEngine.run(pid, %{"op" => "init"})
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "write",
+               "args" => %{"path" => "a.txt", "content" => "packme\n"}
+             })
+
+    assert {:ok, _} = GitEngine.run(pid, %{"op" => "add", "args" => %{"path" => "a.txt"}})
+
+    assert {:ok, c} =
+             GitEngine.run(pid, %{
+               "op" => "commit",
+               "args" => %{
+                 "message" => "m",
+                 "name" => "T",
+                 "email" => "t@t",
+                 "when_unix" => 1_700_000_200
+               }
+             })
+
+    assert c["ok"] == true or (is_binary(Map.get(c, "raw")) and c["raw"] =~ "\"ok\":true"),
+           "commit failed: #{inspect(c)}"
+
+    assert {:ok, rev} = GitEngine.run(pid, %{"op" => "rev-parse", "args" => %{"rev" => "HEAD"}})
+    stdout = rev["stdout"] || ""
+    tip = stdout |> String.trim() |> String.split(~r/\s+/) |> hd()
+    assert Regex.match?(~r/^[0-9a-fA-F]{40}$/, tip), "bad HEAD: #{inspect(rev)}"
+
+    assert {:ok, pack} = GitEngine.pack_build(pid, [tip])
+    assert byte_size(pack) > 0
+    assert match?(<<"PACK", _::binary>>, pack)
+
+    # Empty oids fail closed.
+    assert {:error, :no_oids} = GitEngine.pack_build(pid, [])
+
+    # Export file exists under agentos path.
+    assert File.regular?(Path.join(root, ".git/agentos/push.pack"))
+
+    :ok = GitEngine.stop(pid)
+  end
 end

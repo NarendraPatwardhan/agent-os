@@ -21,6 +21,8 @@ defmodule AgentOS.Git.SmartHttp do
   """
 
   @type ref :: %{name: String.t(), hash: String.t()}
+  @type push_command :: %{old_hash: String.t(), new_hash: String.t(), name: String.t()}
+  @type receive_status :: %{ok: boolean(), message: String.t() | nil}
   @type auth ::
           %{kind: :none}
           | %{kind: :bearer, token: String.t()}
@@ -198,6 +200,30 @@ defmodule AgentOS.Git.SmartHttp do
     end
   end
 
+  @doc """
+  Push ref updates via smart-HTTP `git-receive-pack` (PR12 / R46).
+
+  Posts pkt-line commands + pack body. Auth is spliced only into request headers
+  (never into the URL). Origin allowlist and `:max_pack_bytes` apply.
+
+  Returns `{:ok, %{ok: true|false, message: ...}}` from report-status, or
+  `{:error, reason}` for transport/policy failures.
+  """
+  @spec push_packs(String.t(), [push_command()], binary(), keyword()) ::
+          {:ok, receive_status()} | {:error, term()}
+  def push_packs(url, commands, pack, opts \\ [])
+      when is_binary(url) and is_list(commands) and is_binary(pack) do
+    case Keyword.get(opts, :transport) do
+      fun when is_function(fun, 2) ->
+        fun.(:push_packs, {url, commands, pack, opts})
+
+      _ ->
+        with {:ok, _origin} <- ensure_url_allowed(url, opts) do
+          http_push_packs(url, commands, pack, opts)
+        end
+    end
+  end
+
   # ── Real HTTPS (:httpc) ────────────────────────────────────────────────────
 
   defp http_list_refs(url, opts) do
@@ -244,6 +270,32 @@ defmodule AgentOS.Git.SmartHttp do
 
       {:error, reason} ->
         {:error, {:upload_pack_failed, reason}}
+    end
+  end
+
+  defp http_push_packs(url, commands, pack, opts) do
+    ensure_http_apps!()
+    max = max_bytes(opts)
+
+    if byte_size(pack) > max do
+      {:error, {:receive_pack_failed, :body_too_large}}
+    else
+      base = String.trim_trailing(url, "/")
+      body = build_receive_pack_body(commands, pack)
+
+      headers =
+        [
+          {"content-type", "application/x-git-receive-pack-request"},
+          {"accept", "application/x-git-receive-pack-result"}
+        ] ++ auth_headers(Keyword.get(opts, :auth, %{kind: :none}))
+
+      case request(:post, base <> "/git-receive-pack", headers, body, max) do
+        {:ok, resp} when is_binary(resp) ->
+          {:ok, parse_receive_status(resp)}
+
+        {:error, reason} ->
+          {:error, {:receive_pack_failed, reason}}
+      end
     end
   end
 
@@ -374,11 +426,100 @@ defmodule AgentOS.Git.SmartHttp do
     IO.iodata_to_binary(want_lines ++ deepen ++ ["0000"] ++ have_lines ++ [pkt("done")])
   end
 
+  defp build_receive_pack_body(commands, pack) when is_list(commands) and is_binary(pack) do
+    cmd_lines =
+      Enum.map(commands, fn c ->
+        old_h = command_field(c, :old_hash) || command_field(c, "old_hash") || command_field(c, "oldHash")
+        new_h = command_field(c, :new_hash) || command_field(c, "new_hash") || command_field(c, "newHash")
+        name = command_field(c, :name) || command_field(c, "name") || ""
+        pkt("#{old_h} #{new_h} #{name}")
+      end)
+
+    head = IO.iodata_to_binary(cmd_lines ++ ["0000"])
+    head <> pack
+  end
+
+  defp command_field(map, key) when is_map(map) do
+    case Map.get(map, key) do
+      v when is_binary(v) -> v
+      _ -> nil
+    end
+  end
+
+  defp command_field(_, _), do: nil
+
   defp pkt(s) do
     body = s <> "\n"
     len = byte_size(body) + 4
     :io_lib.format("~4.16.0b", [len]) |> IO.iodata_to_binary() |> Kernel.<>(body)
   end
+
+  @doc """
+  Parse smart receive-pack report-status body (pkt-line or plain).
+
+  Mirrors TS `parseReceiveStatus`: unpack failure / `ng ` lines fail closed;
+  missing report-status is treated as ok.
+  """
+  @spec parse_receive_status(binary()) :: receive_status()
+  def parse_receive_status(text) when is_binary(text) do
+    lines = decode_pkt_or_plain_lines(text)
+    unpack = Enum.find(lines, &String.starts_with?(&1, "unpack "))
+    ng = Enum.find(lines, &String.starts_with?(&1, "ng "))
+
+    cond do
+      is_binary(unpack) and unpack != "unpack ok" ->
+        %{ok: false, message: String.slice(unpack, 0, 200)}
+
+      is_binary(ng) ->
+        %{ok: false, message: String.slice(ng, 0, 200)}
+
+      true ->
+        %{ok: true, message: "ok"}
+    end
+  end
+
+  def parse_receive_status(_), do: %{ok: false, message: "empty report-status"}
+
+  defp decode_pkt_or_plain_lines(text) when is_binary(text) do
+    {lines, _i} = decode_pkt_lines(text, 0, [])
+
+    if lines == [] do
+      text
+      |> String.split("\n")
+      |> Enum.map(&String.trim/1)
+      |> Enum.reject(&(&1 == ""))
+    else
+      Enum.reverse(lines)
+    end
+  end
+
+  defp decode_pkt_lines(text, i, acc) when i + 4 <= byte_size(text) do
+    hex = binary_part(text, i, 4)
+
+    if Regex.match?(~r/^[0-9a-fA-F]{4}$/, hex) do
+      n = String.to_integer(hex, 16)
+
+      cond do
+        n == 0 ->
+          decode_pkt_lines(text, i + 4, acc)
+
+        n < 4 or i + n > byte_size(text) ->
+          {acc, i}
+
+        true ->
+          body =
+            binary_part(text, i + 4, n - 4)
+            |> String.trim_trailing("\n")
+
+          acc2 = if body != "", do: [body | acc], else: acc
+          decode_pkt_lines(text, i + n, acc2)
+      end
+    else
+      {acc, i}
+    end
+  end
+
+  defp decode_pkt_lines(_text, i, acc), do: {acc, i}
 
   @doc """
   Slice a smart-HTTP response down to the pack payload starting at `PACK`.

@@ -70,16 +70,40 @@ async function main() {
   }
   await engDurable.close();
 
+  // R32: bare URL + empty allowOrigins fails closed before transport dial.
+  const bareDenied = new FixtureSmartHttp();
+  bareDenied.add(
+    "https://example.com/bare.git",
+    [{ name: "refs/heads/main", hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
+    new Uint8Array(0),
+  );
+  const orchBare = new GitRemoteOrchestrator(eng, { http: bareDenied });
+  const bareR = await orchBare.handle({
+    op: "clone",
+    args: { url: "https://example.com/bare.git" },
+  });
+  if (bareR.ok || !String(bareR.stderr || "").includes("not allowlisted")) {
+    throw new Error(`bare URL empty allowOrigins must fail closed: ${JSON.stringify(bareR)}`);
+  }
+  if (bareDenied.listRefsCalls !== 0) {
+    throw new Error("bare URL deny must not dial listRefs");
+  }
+
   // Empty pack orchestrator path with fixture: list-refs must work; clone must fail closed
   // (no real objects) — do not soft-accept success. Direct orch: no default packCache.
+  // R32: fixture bare URLs need explicit allowOrigins.
   const http = new FixtureSmartHttp();
   const hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const fixtureOrigin = "https://example.com";
   http.add(
     "https://example.com/demo.git",
     [{ name: "refs/heads/main", hash }],
     new Uint8Array(0),
   );
-  const orch = new GitRemoteOrchestrator(eng, { http });
+  const orch = new GitRemoteOrchestrator(eng, {
+    http,
+    allowOrigins: [fixtureOrigin],
+  });
   const r = await orch.handle({
     op: "clone",
     args: { url: "https://example.com/demo.git" },
@@ -100,6 +124,7 @@ async function main() {
   // P2.5: second clone with packCache must skip fetchPacks (download-key hit).
   // Non-empty pack body so empty-pack short-circuit is not the only path; import
   // may still fail closed — we only assert transport call counts + key shape.
+  // R35: product default depth=1 is part of the cache key.
   const packBody = new Uint8Array([0x50, 0x41, 0x43, 0x4b, 0, 0, 0, 2, 1, 2, 3, 4]);
   const http2 = new FixtureSmartHttp();
   const url2 = "https://example.com/cached.git";
@@ -109,6 +134,7 @@ async function main() {
   const orchCached = new GitRemoteOrchestrator(eng2, {
     http: http2,
     packCache: cache,
+    allowOrigins: [fixtureOrigin],
   });
   const c1 = await orchCached.handle({ op: "clone", args: { url: url2 } });
   if (c1.ok === undefined) throw new Error("no c1");
@@ -119,6 +145,7 @@ async function main() {
     url: url2,
     wants: [hash],
     haves: [],
+    depth: 1,
   });
   const dig = await cache.getByKey!(packKey);
   if (!dig) {
@@ -134,6 +161,7 @@ async function main() {
   const orch2 = new GitRemoteOrchestrator(eng3, {
     http: http2,
     packCache: cache,
+    allowOrigins: [fixtureOrigin],
   });
   const c2 = await orch2.handle({ op: "clone", args: { url: url2 } });
   if (c2.ok === undefined) throw new Error("no c2");
@@ -153,7 +181,11 @@ async function main() {
   // Product handler defaults process cache on; packCache:null disables.
   const http3 = new FixtureSmartHttp();
   http3.add(url2, [{ name: "refs/heads/main", hash }], packBody);
-  const hNull = gitHostCallHandler(eng, { http: http3, packCache: null });
+  const hNull = gitHostCallHandler(eng, {
+    http: http3,
+    packCache: null,
+    allowOrigins: [fixtureOrigin],
+  });
   await hNull(JSON.stringify({ op: "clone", args: { url: url2 } }));
   await hNull(JSON.stringify({ op: "clone", args: { url: url2 } }));
   if (http3.fetchPacksCalls !== 2) {
@@ -163,7 +195,10 @@ async function main() {
   }
 
   // MapHostCall-shaped handler
-  const handler = gitHostCallHandler(eng, { http });
+  const handler = gitHostCallHandler(eng, {
+    http,
+    allowOrigins: [fixtureOrigin],
+  });
   const raw = await handler(
     JSON.stringify({ op: "fetch", args: { url: "https://example.com/demo.git" } }),
   );
@@ -177,7 +212,7 @@ async function main() {
       this.map.set(name, h);
     },
   };
-  registerGitHostCall(tools, eng, { http });
+  registerGitHostCall(tools, eng, { http, allowOrigins: [fixtureOrigin] });
   if (!tools.map.has("git")) throw new Error("registerGitHostCall missing git");
 
   // Ctl still refuses remotes

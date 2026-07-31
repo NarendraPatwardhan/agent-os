@@ -71,6 +71,10 @@ GE_API const char *ge_version(void);
 /* Absolute worktree root bound at ge_open (valid until ge_close). */
 GE_API const char *ge_worktree_root(const ge_engine *e);
 
+/* Test helper: override stdout embed limit for truncation tests.
+ * Pass 0 to restore the product default (1 MiB). */
+GE_API void ge_test_set_stdout_max_bytes(size_t n);
+
 #ifdef __cplusplus
 }
 #endif

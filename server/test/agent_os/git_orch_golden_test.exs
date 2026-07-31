@@ -19,7 +19,7 @@ defmodule AgentOS.Git.OrchGoldenTest do
     "origin_denied.json"
   ]
 
-  @push_error "git: push not supported on server (fetch/clone only)"
+  @push_read_only "git: push rejected (read-only mount)"
 
   defp engine_path do
     System.get_env("AGENTOS_GIT_ENGINE") ||
@@ -133,6 +133,7 @@ defmodule AgentOS.Git.OrchGoldenTest do
     fn
       :list_refs, {_url, _opts} -> {:ok, refs}
       :fetch_packs, {_url, _want, _have, _opts} -> {:ok, pack}
+      :push_packs, {_url, _commands, _pack, _opts} -> {:ok, %{ok: true, message: "ok"}}
     end
   end
 
@@ -217,21 +218,22 @@ defmodule AgentOS.Git.OrchGoldenTest do
     end
   end
 
-  # P2.1 — stable push refusal (server RO until packbuilder ships on BEAM)
+  # Read-only mount still rejects push (stable message).
   @tag timeout: 30_000
-  test "push returns stable packbuilder-not-configured error" do
+  test "push returns stable read-only error when read_only" do
     assert {:ok, pid} = GitEngine.start(executable: engine_path())
 
     assert {:ok, json} =
              Orchestrator.run(
                pid,
                ~s({"op":"push","args":{"url":"https://example.com/demo.git"}}),
-               transport: fn _, _ -> flunk("push must not dial transport") end,
-               allowed_origins: ["https://example.com"]
+               transport: fn _, _ -> flunk("push must not dial transport when read_only") end,
+               allowed_origins: ["https://example.com"],
+               read_only: true
              )
 
     assert json =~ "\"ok\":false" or json =~ ~s("ok":false)
-    assert json =~ @push_error
+    assert json =~ @push_read_only
     :ok = GitEngine.stop(pid)
   end
 end

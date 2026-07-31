@@ -31,13 +31,14 @@ async function main() {
   const dir = engineDir();
   const baseUrl = pathToFileURL(dir.endsWith("/") ? dir : dir + "/").href;
 
-  // Read-only reject
+  // Read-only reject (checked before origin policy)
   {
     const eng = await GitEngine.load({ baseUrl, readOnly: true });
     const http = new FixtureSmartHttp();
     const orch = new GitRemoteOrchestrator(eng, {
       http,
       readOnly: true,
+      allowOrigins: ["https://example.com"],
     });
     const r = await orch.handle({
       op: "push",
@@ -143,6 +144,7 @@ async function main() {
     // Force commands by wrapping handle after stubbing engine is hard; policy block is enough
     const orch = new GitRemoteOrchestrator(eng, {
       http,
+      allowOrigins: ["https://example.com"],
       policies: [{ owner: "org", pattern: "*", action: "block" }],
     });
     const r = await orch.handle({

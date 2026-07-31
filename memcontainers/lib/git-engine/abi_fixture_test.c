@@ -298,6 +298,177 @@ static int test_path_safety(ge_engine *e) {
   return 0;
 }
 
+/* R19: diff emits unified patch headers (diff --git) after worktree modify. */
+static int test_diff_patch(ge_engine *e) {
+  if (expect_ok(e, "{\"op\":\"write\",\"args\":{\"path\":\"hello.txt\","
+                   "\"content\":\"hello patched\\n\"}}"))
+    return 1;
+  char *resp = ge_run_json(e, "{\"op\":\"diff\"}");
+  if (!resp || strstr(resp, "\"ok\":true") == NULL) {
+    fprintf(stderr, "diff failed\n%s\n", resp ? resp : "(null)");
+    ge_free(resp);
+    return 1;
+  }
+  /* Unified patch from git_diff_to_buf GIT_DIFF_FORMAT_PATCH (JSON-escaped). */
+  if (strstr(resp, "diff --git") == NULL) {
+    fprintf(stderr, "diff missing patch headers:\n%s\n", resp);
+    ge_free(resp);
+    return 1;
+  }
+  if (strstr(resp, "hello.txt") == NULL) {
+    fprintf(stderr, "diff missing path hello.txt:\n%s\n", resp);
+    ge_free(resp);
+    return 1;
+  }
+  ge_free(resp);
+  return 0;
+}
+
+/* R96: add all=true stages deletion of tracked file removed from worktree. */
+static int test_add_all_deletion(ge_engine *e) {
+  if (expect_ok(e, "{\"op\":\"write\",\"args\":{\"path\":\"doomed.txt\",\"content\":\"bye\\n\"}}"))
+    return 1;
+  if (expect_ok(e, "{\"op\":\"add\",\"args\":{\"path\":\"doomed.txt\"}}"))
+    return 1;
+  if (expect_ok(e, "{\"op\":\"commit\",\"args\":{"
+                   "\"message\":\"add doomed\","
+                   "\"name\":\"Fixture\","
+                   "\"email\":\"fixture@test\","
+                   "\"when_unix\":1700000001}}"))
+    return 1;
+
+  char path[4096];
+  snprintf(path, sizeof(path), "%s/doomed.txt", ge_worktree_root(e));
+  if (unlink(path) != 0) {
+    perror("unlink doomed.txt");
+    return 1;
+  }
+  if (expect_ok(e, "{\"op\":\"add\",\"args\":{\"all\":true}}"))
+    return 1;
+
+  char *resp = ge_run_json(e, "{\"op\":\"status\",\"args\":{\"short\":true}}");
+  if (!resp || strstr(resp, "\"ok\":true") == NULL) {
+    fprintf(stderr, "status after add-all deletion failed\n%s\n", resp ? resp : "(null)");
+    ge_free(resp);
+    return 1;
+  }
+  /* Staged deletion: short status index column D. */
+  if (strstr(resp, "doomed.txt") == NULL || strstr(resp, "D ") == NULL) {
+    fprintf(stderr, "add all did not stage deletion:\n%s\n", resp);
+    ge_free(resp);
+    return 1;
+  }
+  ge_free(resp);
+  return 0;
+}
+
+/* R94: refs.import accepts refs[] array of two {name,hash}. */
+static int test_refs_import_array(ge_engine *e) {
+  char *rev = ge_run_json(e, "{\"op\":\"rev-parse\",\"args\":{\"rev\":\"HEAD\"}}");
+  if (!rev || strstr(rev, "\"ok\":true") == NULL) {
+    fprintf(stderr, "rev-parse for refs.import failed\n%s\n", rev ? rev : "(null)");
+    ge_free(rev);
+    return 1;
+  }
+  char hex[41] = {0};
+  const char *p = strstr(rev, "\"stdout\":\"");
+  if (p) {
+    p += strlen("\"stdout\":\"");
+    size_t i = 0;
+    while (*p && *p != '"' && *p != '\\' && i < 40)
+      hex[i++] = *p++;
+    hex[i] = '\0';
+  }
+  ge_free(rev);
+  if (strlen(hex) != 40) {
+    fprintf(stderr, "could not parse HEAD for refs.import\n");
+    return 1;
+  }
+
+  char req[512];
+  snprintf(req, sizeof(req),
+           "{\"op\":\"refs.import\",\"args\":{\"refs\":["
+           "{\"name\":\"refs/heads/import-a\",\"hash\":\"%s\"},"
+           "{\"name\":\"refs/heads/import-b\",\"hash\":\"%s\"}"
+           "]}}",
+           hex, hex);
+  if (expect_ok(e, req)) {
+    fprintf(stderr, "refs.import array failed\n");
+    return 1;
+  }
+
+  /* Bad entry in array fails closed. */
+  if (expect_fail(e,
+                  "{\"op\":\"refs.import\",\"args\":{\"refs\":["
+                  "{\"name\":\"refs/heads/ok\",\"hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"},"
+                  "{\"name\":\"refs/heads/bad\",\"hash\":\"not-a-hash\"}"
+                  "]}}",
+                  "refs.import")) {
+    fprintf(stderr, "refs.import should fail closed on bad hash\n");
+    return 1;
+  }
+  return 0;
+}
+
+/* R25: large stdout sets result.truncated=true and writes /.git/mc/out/last. */
+static int test_truncated_stdout(ge_engine *e) {
+  /* Tracked file + worktree modify so index_to_workdir produces a real patch. */
+  if (expect_ok(e, "{\"op\":\"write\",\"args\":{\"path\":\"trunc.txt\","
+                   "\"content\":\"base\\n\"}}"))
+    return 1;
+  if (expect_ok(e, "{\"op\":\"add\",\"args\":{\"path\":\"trunc.txt\"}}"))
+    return 1;
+  if (expect_ok(e, "{\"op\":\"commit\",\"args\":{"
+                   "\"message\":\"trunc base\","
+                   "\"name\":\"Fixture\","
+                   "\"email\":\"fixture@test\","
+                   "\"when_unix\":1700000002}}"))
+    return 1;
+  if (expect_ok(e, "{\"op\":\"write\",\"args\":{\"path\":\"trunc.txt\","
+                   "\"content\":\"line one of trunc test\\nline two longer content here\\n"
+                   "line three still more\\nline four\\n\"}}"))
+    return 1;
+
+  /* Force a low threshold so we need not build a multi-MiB patch. */
+  ge_test_set_stdout_max_bytes(64);
+  char *resp = ge_run_json(e, "{\"op\":\"diff\",\"args\":{\"path\":\"trunc.txt\"}}");
+  ge_test_set_stdout_max_bytes(0);
+
+  if (!resp || strstr(resp, "\"ok\":true") == NULL) {
+    fprintf(stderr, "diff for truncation failed\n%s\n", resp ? resp : "(null)");
+    ge_free(resp);
+    return 1;
+  }
+  if (strstr(resp, "\"truncated\":true") == NULL) {
+    fprintf(stderr, "expected result.truncated=true:\n%s\n", resp);
+    ge_free(resp);
+    return 1;
+  }
+  if (strstr(resp, "\"result\"") == NULL) {
+    fprintf(stderr, "truncated response missing result object:\n%s\n", resp);
+    ge_free(resp);
+    return 1;
+  }
+  ge_free(resp);
+
+  char last[4096];
+  snprintf(last, sizeof(last), "%s/.git/mc/out/last", ge_worktree_root(e));
+  FILE *f = fopen(last, "rb");
+  if (!f) {
+    fprintf(stderr, "missing out/last after truncation: %s\n", last);
+    return 1;
+  }
+  char buf[256];
+  size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+  fclose(f);
+  buf[n] = '\0';
+  if (n == 0 || (strstr(buf, "diff") == NULL && strstr(buf, "trunc") == NULL)) {
+    fprintf(stderr, "out/last empty or unexpected:\n%s\n", buf);
+    return 1;
+  }
+  return 0;
+}
+
 int main(void) {
   printf("%s\n", ge_version());
 
@@ -382,6 +553,22 @@ int main(void) {
 
   /* P2.1 push packbuilder */
   if (test_pack_build(e))
+    goto fail;
+
+  /* R19 full patch diff */
+  if (test_diff_patch(e))
+    goto fail;
+
+  /* R96 add all stages deletions */
+  if (test_add_all_deletion(e))
+    goto fail;
+
+  /* R94 refs.import multi-ref array */
+  if (test_refs_import_array(e))
+    goto fail;
+
+  /* R25 truncated stdout + out/last */
+  if (test_truncated_stdout(e))
     goto fail;
 
   ge_close(e);

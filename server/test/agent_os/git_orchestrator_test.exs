@@ -34,18 +34,31 @@ defmodule AgentOS.Git.OrchestratorTest do
 
   # Fixture transport: no real network (K16 BEAM orch + Port apply).
   # Prefer explicit allowed_origins matching the fixture URL (not :any).
-  defp fixture_transport(pack \\ <<>>) do
+  # Agent records last push for assertions (R44–R46).
+  defp fixture_transport(pack \\ <<>>, push_agent \\ nil) do
     refs = [%{name: "refs/heads/main", hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]
 
     fn
-      :list_refs, {_url, _opts} -> {:ok, refs}
-      :fetch_packs, {_url, _want, _have, _opts} -> {:ok, pack}
+      :list_refs, {_url, _opts} ->
+        {:ok, refs}
+
+      :fetch_packs, {_url, _want, _have, _opts} ->
+        {:ok, pack}
+
+      :push_packs, {url, commands, pack_bin, _opts} ->
+        if is_pid(push_agent) do
+          Agent.update(push_agent, fn _ ->
+            %{url: url, commands: commands, pack: pack_bin, pack_len: byte_size(pack_bin)}
+          end)
+        end
+
+        {:ok, %{ok: true, message: "ok"}}
     end
   end
 
-  defp orch_opts(pack \\ <<>>) do
+  defp orch_opts(pack \\ <<>>, push_agent \\ nil) do
     [
-      transport: fixture_transport(pack),
+      transport: fixture_transport(pack, push_agent),
       allowed_origins: [@fixture_origin]
     ]
   end
@@ -258,10 +271,75 @@ defmodule AgentOS.Git.OrchestratorTest do
     :ok = GitEngine.stop(pid)
   end
 
-  # ── P2.1 push fail-closed on server ────────────────────────────────────────
+  # ── R34 pull = fetch + local FF ────────────────────────────────────────────
+
+  @tag timeout: 60_000
+  test "pull after successful clone of minimal.pack is already up to date" do
+    path = engine_path()
+    pack_path = Path.expand("../fixtures/git/minimal.pack", __DIR__)
+    tip_path = Path.expand("../fixtures/git/minimal.tip", __DIR__)
+
+    if not (File.regular?(pack_path) and File.regular?(tip_path)) do
+      IO.puts(:stderr, "skipping pull FF test: minimal.pack fixture missing")
+    else
+      pack = File.read!(pack_path)
+      tip = File.read!(tip_path) |> String.trim()
+      root = Path.join(System.tmp_dir!(), "orch-pull-" <> Integer.to_string(System.unique_integer([:positive])))
+      File.mkdir_p!(root)
+
+      try do
+        assert {:ok, pid} = GitEngine.start(executable: path, root: root)
+
+        refs = [%{name: "refs/heads/main", hash: tip}]
+
+        transport = fn
+          :list_refs, {_url, _opts} -> {:ok, refs}
+          :fetch_packs, {_url, _want, _have, _opts} -> {:ok, pack}
+        end
+
+        opts = [transport: transport, allowed_origins: [@fixture_origin]]
+
+        assert {:ok, clone_json} =
+                 Orchestrator.run(
+                   pid,
+                   ~s({"op":"clone","args":{"url":"#{@fixture_url}"}}),
+                   opts
+                 )
+
+        assert clone_json =~ "\"ok\":true" or clone_json =~ ~s("ok":true)
+        assert clone_json =~ "cloned"
+
+        assert {:ok, pull_json} =
+                 Orchestrator.run(
+                   pid,
+                   ~s({"op":"pull","args":{"url":"#{@fixture_url}"}}),
+                   opts
+                 )
+
+        assert pull_json =~ "\"ok\":true" or pull_json =~ ~s("ok":true)
+        assert pull_json =~ "Already up to date" or pull_json =~ "Fast-forward"
+        refute pull_json =~ "not fast-forward"
+
+        # Plain fetch still reports fetched (no FF step)
+        assert {:ok, fetch_json} =
+                 Orchestrator.run(
+                   pid,
+                   ~s({"op":"fetch","args":{"url":"#{@fixture_url}"}}),
+                   opts
+                 )
+
+        assert fetch_json =~ "fetched"
+        :ok = GitEngine.stop(pid)
+      after
+        File.rm_rf(root)
+      end
+    end
+  end
+
+  # ── R44–R47 server push (pack.build + receive-pack fixture) ────────────────
 
   @tag timeout: 30_000
-  test "push always fails closed on server (fetch/clone only)" do
+  test "push read_only: true still rejects" do
     path = engine_path()
     assert {:ok, pid} = GitEngine.start(executable: path)
 
@@ -269,29 +347,157 @@ defmodule AgentOS.Git.OrchestratorTest do
              Orchestrator.run(
                pid,
                ~s({"op":"push","args":{"url":"#{@fixture_url}"}}),
-               orch_opts()
+               orch_opts() ++ [read_only: true]
              )
 
     assert is_binary(json)
     assert json =~ "\"ok\":false" or json =~ ~s("ok":false)
     refute json =~ "\"ok\":true"
-    assert json =~ "push not supported" or json =~ "fetch/clone only"
+    assert json =~ "read-only"
     assert json =~ "\"code\":1" or json =~ ~s("code":1)
 
-    # host_call demux path also fails closed
+    # host_call demux path also fails closed when RO
     assert {:ok, json2} =
              GitEngine.handle_host_call(
                pid,
                "git",
                ~s({"op":"push","args":{"url":"#{@fixture_url}"}}),
-               orch_opts()
+               orch_opts() ++ [read_only: true]
              )
 
     assert json2 =~ "\"ok\":false" or json2 =~ ~s("ok":false)
     refute json2 =~ "\"ok\":true"
-    assert json2 =~ "push not supported" or json2 =~ "fetch/clone only"
+    assert json2 =~ "read-only"
 
     :ok = GitEngine.stop(pid)
+  end
+
+  @tag timeout: 60_000
+  test "push with local commit builds PACK and posts via fixture transport" do
+    path = engine_path()
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orch-push-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.mkdir_p!(root)
+    assert {:ok, pid} = GitEngine.start(executable: path, root: root)
+
+    assert {:ok, init} = GitEngine.run(pid, %{"op" => "init"})
+    assert init["ok"] == true or (is_binary(Map.get(init, "raw")) and init["raw"] =~ "\"ok\":true")
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "write",
+               "args" => %{"path" => "p.txt", "content" => "pushme\n"}
+             })
+
+    assert {:ok, _} = GitEngine.run(pid, %{"op" => "add", "args" => %{"path" => "p.txt"}})
+
+    assert {:ok, commit} =
+             GitEngine.run(pid, %{
+               "op" => "commit",
+               "args" => %{
+                 "message" => "c",
+                 "name" => "P",
+                 "email" => "p@p",
+                 "when_unix" => 1_700_000_100
+               }
+             })
+
+    assert commit["ok"] == true or
+             (is_binary(Map.get(commit, "raw")) and commit["raw"] =~ "\"ok\":true"),
+           "commit failed: #{inspect(commit)}"
+
+    {:ok, push_agent} = Agent.start_link(fn -> nil end)
+
+    # Lease: remote has no tip yet (create).
+    zero = "0000000000000000000000000000000000000000"
+
+    transport = fn
+      :list_refs, {_url, _opts} ->
+        {:ok, [%{name: "refs/heads/master", hash: zero}]}
+
+      :fetch_packs, _ ->
+        flunk("push must not call fetch_packs")
+
+      :push_packs, {url, commands, pack_bin, _opts} ->
+        Agent.update(push_agent, fn _ ->
+          %{url: url, commands: commands, pack: pack_bin, pack_len: byte_size(pack_bin)}
+        end)
+
+        {:ok, %{ok: true, message: "ok"}}
+    end
+
+    assert {:ok, json} =
+             Orchestrator.run(
+               pid,
+               ~s({"op":"push","args":{"url":"#{@fixture_url}"}}),
+               transport: transport,
+               allowed_origins: [@fixture_origin]
+             )
+
+    assert json =~ "\"ok\":true" or json =~ ~s("ok":true), "push failed: #{json}"
+    assert json =~ "pushed"
+    refute json =~ "not supported"
+
+    recorded = Agent.get(push_agent, & &1)
+    assert is_map(recorded), "push_packs not invoked"
+    assert recorded.url == @fixture_url
+    assert recorded.pack_len > 0
+    assert match?(<<"PACK", _::binary>>, recorded.pack)
+    assert is_list(recorded.commands) and recorded.commands != []
+
+    # push.complete should have written remote-tracking.
+    assert {:ok, rev} =
+             GitEngine.run(pid, %{
+               "op" => "rev-parse",
+               "args" => %{"rev" => "refs/remotes/origin/master"}
+             })
+
+    stdout = rev["stdout"] || Map.get(rev, "raw") || ""
+    assert is_binary(stdout) and stdout != ""
+
+    Agent.stop(push_agent)
+    :ok = GitEngine.stop(pid)
+  end
+
+  @tag timeout: 30_000
+  test "push origin not allowlisted fails before dial" do
+    path = engine_path()
+    assert {:ok, pid} = GitEngine.start(executable: path)
+    dialed = :atomics.new(1, signed: false)
+
+    transport = fn
+      :list_refs, _ ->
+        :atomics.put(dialed, 1, 1)
+        {:ok, []}
+
+      :push_packs, _ ->
+        :atomics.put(dialed, 1, 1)
+        {:ok, %{ok: true, message: "ok"}}
+    end
+
+    assert {:ok, json} =
+             Orchestrator.run(
+               pid,
+               ~s({"op":"push","args":{"url":"#{@fixture_url}"}}),
+               transport: transport,
+               allowed_origins: ["https://other.example"]
+             )
+
+    assert json =~ "not allowlisted"
+    assert :atomics.get(dialed, 1) == 0
+    :ok = GitEngine.stop(pid)
+  end
+
+  test "parse_receive_status maps unpack/ng failures" do
+    assert %{ok: true} = SmartHttp.parse_receive_status("000eunpack ok\n0017ok refs/heads/main\n0000")
+    assert %{ok: false, message: msg} = SmartHttp.parse_receive_status("unpack error bad\n")
+    assert msg =~ "unpack"
+    assert %{ok: false, message: ng} = SmartHttp.parse_receive_status("ng refs/heads/main non-fast-forward\n")
+    assert ng =~ "ng "
   end
 
   # ── P1.7 foundation: async git host_call via Vm ────────────────────────────

@@ -73,6 +73,154 @@ defmodule AgentOS.GitEngineTest do
   end
 
   @tag timeout: 60_000
+  test "R27/R29 identity inject on commit when start opts set" do
+    path = engine_path()
+
+    assert {:ok, pid} =
+             GitEngine.start(
+               executable: path,
+               identity: %{name: "Host Policy", email: "host@policy.test"}
+             )
+
+    assert {:ok, _} = GitEngine.run(pid, %{"op" => "init"})
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "write",
+               "args" => %{"path" => "i.txt", "content" => "i\n"}
+             })
+
+    assert {:ok, _} = GitEngine.run(pid, %{"op" => "add", "args" => %{"path" => "i.txt"}})
+
+    # No name/email in args — host identity inject must fill them (K28).
+    assert {:ok, resp} =
+             GitEngine.run(pid, %{
+               "op" => "commit",
+               "args" => %{"message" => "injected", "when_unix" => 1_700_000_050}
+             })
+
+    assert resp["ok"] == true or Map.get(resp, "raw", "") =~ "\"ok\":true"
+
+    :ok = GitEngine.stop(pid)
+
+    # Without identity, missing name/email fails closed (never invent Agent@example.com).
+    assert {:ok, pid2} = GitEngine.start(executable: path)
+    assert {:ok, _} = GitEngine.run(pid2, %{"op" => "init"})
+
+    assert {:ok, _} =
+             GitEngine.run(pid2, %{
+               "op" => "write",
+               "args" => %{"path" => "n.txt", "content" => "n\n"}
+             })
+
+    assert {:ok, _} = GitEngine.run(pid2, %{"op" => "add", "args" => %{"path" => "n.txt"}})
+
+    assert {:ok, bad} =
+             GitEngine.run(pid2, %{
+               "op" => "commit",
+               "args" => %{"message" => "no-id"}
+             })
+
+    raw = Map.get(bad, "raw") || inspect(bad)
+    stderr = Map.get(bad, "stderr") || ""
+    assert bad["ok"] == false or raw =~ "\"ok\":false"
+    assert stderr =~ "name and email" or raw =~ "name and email"
+    refute raw =~ "agent@example.com"
+    refute raw =~ "Agent@example.com"
+    :ok = GitEngine.stop(pid2)
+  end
+
+  @tag timeout: 60_000
+  test "R34 reset ff-only fails on divergent history" do
+    path = engine_path()
+    assert {:ok, pid} = GitEngine.start(executable: path)
+    assert {:ok, _} = GitEngine.run(pid, %{"op" => "init"})
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "write",
+               "args" => %{"path" => "a.txt", "content" => "a\n"}
+             })
+
+    assert {:ok, _} = GitEngine.run(pid, %{"op" => "add", "args" => %{"path" => "a.txt"}})
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "commit",
+               "args" => %{
+                 "message" => "c1",
+                 "name" => "T",
+                 "email" => "t@t",
+                 "when_unix" => 1_700_000_060
+               }
+             })
+
+    assert {:ok, h1} = GitEngine.run(pid, %{"op" => "rev-parse", "args" => %{"rev" => "HEAD"}})
+    head1 = h1["stdout"] || Map.get(h1, "raw", "")
+    head1 = head1 |> to_string() |> String.trim() |> String.split(~r/\s+/) |> List.first()
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "write",
+               "args" => %{"path" => "b.txt", "content" => "b\n"}
+             })
+
+    assert {:ok, _} = GitEngine.run(pid, %{"op" => "add", "args" => %{"path" => "b.txt"}})
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "commit",
+               "args" => %{
+                 "message" => "c2",
+                 "name" => "T",
+                 "email" => "t@t",
+                 "when_unix" => 1_700_000_061
+               }
+             })
+
+    assert {:ok, h2} = GitEngine.run(pid, %{"op" => "rev-parse", "args" => %{"rev" => "HEAD"}})
+    head2 = h2["stdout"] || ""
+    head2 = head2 |> to_string() |> String.trim() |> String.split(~r/\s+/) |> List.first()
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "reset",
+               "args" => %{"rev" => head1, "mode" => "hard"}
+             })
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "write",
+               "args" => %{"path" => "c.txt", "content" => "c\n"}
+             })
+
+    assert {:ok, _} = GitEngine.run(pid, %{"op" => "add", "args" => %{"path" => "c.txt"}})
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "commit",
+               "args" => %{
+                 "message" => "c3",
+                 "name" => "T",
+                 "email" => "t@t",
+                 "when_unix" => 1_700_000_062
+               }
+             })
+
+    assert {:ok, ff} =
+             GitEngine.run(pid, %{
+               "op" => "reset",
+               "args" => %{"rev" => head2, "mode" => "ff-only"}
+             })
+
+    raw = Map.get(ff, "raw") || inspect(ff)
+    stderr = Map.get(ff, "stderr") || ""
+    assert ff["ok"] == false or raw =~ "\"ok\":false"
+    assert stderr =~ "not fast-forward" or raw =~ "not fast-forward"
+    :ok = GitEngine.stop(pid)
+  end
+
+  @tag timeout: 60_000
   test "temp agentos-git-* root under tmp is removed on stop" do
     path = engine_path()
     assert {:ok, pid} = GitEngine.start(executable: path)
