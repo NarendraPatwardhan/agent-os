@@ -11,6 +11,11 @@ const REMOTE_OPS = new Set(["clone", "fetch", "pull", "push"]);
 
 export interface GitFsDriverOptions {
   readOnly?: boolean;
+  /**
+   * PR14 sparse cone: only project relative paths under these prefixes
+   * (e.g. `["src/", "docs/"]`). Empty = full tree. Synthetic `.git` always visible.
+   */
+  sparseCone?: string[];
 }
 
 /** Build a {@link Driver} for `mc.create({ mounts: [{ path, driver }] })`. */
@@ -19,6 +24,9 @@ export function createGitFsDriver(
   opts: GitFsDriverOptions = {},
 ): Driver {
   const readOnly = !!opts.readOnly;
+  const cone = (opts.sparseCone ?? [])
+    .map((p) => p.replace(/^\/+/, "").replace(/\/?$/, "/"))
+    .filter(Boolean);
   let lastResponse = JSON.stringify({
     ok: true,
     code: 0,
@@ -48,6 +56,13 @@ export function createGitFsDriver(
   function isGitMeta(path: string): boolean {
     const p = normalizeRel(path);
     return p === ".git" || p.startsWith(".git/");
+  }
+
+  function inCone(path: string): boolean {
+    if (!cone.length) return true;
+    const p = normalizeRel(path);
+    if (!p || isGitMeta(p)) return true;
+    return cone.some((c) => p === c.slice(0, -1) || p.startsWith(c));
   }
 
   function exists(abs: string): boolean {
@@ -83,6 +98,7 @@ export function createGitFsDriver(
     async open(path: string): Promise<Uint8Array> {
       return serial(async () => {
         const p = normalizeRel(path);
+        if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
         if (p === ".git/mc/ctl" || p === ".git/mc/out/last") {
           return new TextEncoder().encode(lastResponse);
         }
@@ -153,15 +169,25 @@ export function createGitFsDriver(
         const names = FS()
           .readdir(bridge.workRoot)
           .filter((n) => n !== "." && n !== "..");
-        const out: DriverEntry[] = names.map((name) => {
-          const st = FS().stat(bridge.abs(name));
-          return { name, kind: FS().isDir(st.mode) ? "dir" : "file" };
-        });
+        const out: DriverEntry[] = names
+          .filter((name) => inCone(name) || name === ".git")
+          .map((name) => {
+            const st = FS().stat(bridge.abs(name));
+            return { name, kind: FS().isDir(st.mode) ? "dir" : "file" };
+          });
         if (!out.some((e) => e.name === ".git")) {
           out.push({ name: ".git", kind: "dir" });
         }
+        // Cone top-level dirs that may not exist yet on MEMFS
+        for (const c of cone) {
+          const top = c.split("/").filter(Boolean)[0];
+          if (top && !out.some((e) => e.name === top)) {
+            out.push({ name: top, kind: "dir" });
+          }
+        }
         return out;
       }
+      if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
       if (p === ".git") {
         return [
           { name: "HEAD", kind: "file" },

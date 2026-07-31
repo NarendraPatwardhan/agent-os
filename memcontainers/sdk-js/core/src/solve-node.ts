@@ -194,8 +194,55 @@ async function cacheMounts(mounts: readonly BuildState[]): Promise<MountSpec[]> 
   return specs;
 }
 
+/**
+ * Default Node platform: system `git` for llb.git (transitional).
+ * Prefer {@link nodeSolvePlatformWithEngine} when MC_GIT_ENGINE_DIR is set (PR15).
+ */
 export const nodeSolvePlatform: SolvePlatform = {
   localSource: scanLocalSource,
   gitSource: archiveGitSource,
   cacheMounts,
 };
+
+/**
+ * Node solve platform with llb.git on the shared GitRemoteOrchestrator stack (PR15).
+ * `baseUrl` points at emcc git_engine.mjs/wasm (same as GitEngine.load).
+ */
+export async function nodeSolvePlatformWithEngine(opts: {
+  baseUrl: string;
+  connections?: import("./types.js").ConnectionDefinition[];
+  packCacheDir?: string;
+}): Promise<SolvePlatform> {
+  const { GitEngine } = await import("./git/engine.js");
+  const { createEngineGitSource } = await import("./git/llb-git.js");
+  const { DiskPackCache } = await import("./git/pack-cache.js");
+  const packCache = opts.packCacheDir
+    ? new DiskPackCache(opts.packCacheDir)
+    : undefined;
+  const gitSource = createEngineGitSource(
+    () => GitEngine.load({ baseUrl: opts.baseUrl }),
+    {
+      connections: opts.connections,
+      packCache,
+    },
+  );
+  return {
+    localSource: scanLocalSource,
+    gitSource,
+    cacheMounts,
+  };
+}
+
+/** Auto-select engine platform when MC_GIT_ENGINE_DIR is set, else system git. */
+export async function defaultNodeSolvePlatform(): Promise<SolvePlatform> {
+  const dir = process.env.MC_GIT_ENGINE_DIR;
+  if (dir) {
+    const { pathToFileURL } = await import("node:url");
+    const base = dir.endsWith("/") ? dir : dir + "/";
+    return nodeSolvePlatformWithEngine({
+      baseUrl: pathToFileURL(base).href,
+      packCacheDir: process.env.MC_GIT_PACK_CACHE,
+    });
+  }
+  return nodeSolvePlatform;
+}

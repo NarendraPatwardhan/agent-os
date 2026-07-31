@@ -35,11 +35,31 @@ export {
   resolveGitRemote,
   evaluatePushPolicy,
   matchConnectionPattern,
+  originAllowed,
+  requestOrigin,
+  publicRemoteUrl,
   spliceCredentialHeaders,
   spliceCredentialUrl,
   redactRemoteForLog,
 } from "./connections.js";
 export type { GitRemoteBinding, ResolveRemoteOptions } from "./connections.js";
+export {
+  MemoryPackCache,
+  DiskPackCache,
+  importPackCached,
+  DEFAULT_MAX_PACK_BYTES,
+} from "./pack-cache.js";
+export type { PackCache, ImportPackOptions } from "./pack-cache.js";
+export {
+  materializeLlbGit,
+  worktreeToTar,
+  createEngineGitSource,
+} from "./llb-git.js";
+export type {
+  LlbGitMaterializeOptions,
+  LlbGitMaterializeResult,
+  EngineGitSourceOptions,
+} from "./llb-git.js";
 export type {
   GitRequest,
   GitResponse,

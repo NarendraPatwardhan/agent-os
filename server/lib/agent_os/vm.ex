@@ -61,6 +61,7 @@ defmodule AgentOS.Vm do
     :snapshot_base,
     # Optional BEAM-owned native git-engine Port (GIT.md PR7+ / PR10c demux).
     :git_engine,
+    :git_engine_mon,
     git_mount_path: nil,
     shell_log: "",
     shell_base: 0
@@ -1073,20 +1074,28 @@ defmodule AgentOS.Vm do
     state = do_detach_git(state)
     mount_path = Keyword.get(opts, :mount_path, "/workspace/repo")
 
-    case AgentOS.GitEngine.start_link(
+    # Unlinked start + monitor so engine crash does not kill the VM actor.
+    case AgentOS.GitEngine.start(
            executable: Keyword.get(opts, :executable),
            root: Keyword.get(opts, :root),
            mount_path: mount_path
          ) do
       {:ok, pid} ->
-        # Mount the kernel MountFs slot that will host_call this path; BEAM answers via Port type 4.
+        ref = Process.monitor(pid)
         read_only = Keyword.get(opts, :read_only, false)
 
         case Nif.mount(state.nif, mount_path, read_only) do
           :ok ->
-            {:ok, %{state | git_engine: pid, git_mount_path: mount_path}}
+            {:ok,
+             %{
+               state
+               | git_engine: pid,
+                 git_mount_path: mount_path,
+                 git_engine_mon: ref
+             }}
 
           {:error, reason} ->
+            Process.demonitor(ref, [:flush])
             _ = AgentOS.GitEngine.stop(pid)
             {:error, reason}
         end
@@ -1096,38 +1105,64 @@ defmodule AgentOS.Vm do
     end
   end
 
+  defp do_detach_git(%{git_engine: pid, git_mount_path: path, git_engine_mon: mon} = state)
+       when is_pid(pid) do
+    if is_reference(mon), do: Process.demonitor(mon, [:flush])
+    if is_binary(path), do: _ = Nif.unmount(state.nif, path)
+    if Process.alive?(pid), do: _ = AgentOS.GitEngine.stop(pid)
+    %{state | git_engine: nil, git_mount_path: nil, git_engine_mon: nil}
+  end
+
   defp do_detach_git(%{git_engine: pid, git_mount_path: path} = state) when is_pid(pid) do
     if is_binary(path), do: _ = Nif.unmount(state.nif, path)
     if Process.alive?(pid), do: _ = AgentOS.GitEngine.stop(pid)
-    %{state | git_engine: nil, git_mount_path: nil}
+    %{state | git_engine: nil, git_mount_path: nil, git_engine_mon: nil}
   end
 
-  defp do_detach_git(state), do: %{state | git_engine: nil, git_mount_path: nil}
+  defp do_detach_git(state),
+    do: %{state | git_engine: nil, git_mount_path: nil, git_engine_mon: nil}
 
-  defp answer_git_event(%{git_engine: pid} = state, %{kind: :host_call, handle: handle, name: name, body: body})
+  defp answer_git_event(
+         %{git_engine: pid} = state,
+         %{kind: :host_call, handle: handle, name: name, body: body}
+       )
        when is_pid(pid) and is_integer(handle) and is_binary(name) and is_binary(body) do
-    if not Process.alive?(pid) do
-      _ = Nif.relay_host_call_fail(state.nif, handle)
-      {:answered, %{state | git_engine: nil}}
-    else
-      case AgentOS.GitEngine.handle_host_call(pid, name, body) do
-        {:ok, result} when is_binary(result) ->
-          case Nif.relay_host_call_respond(state.nif, handle, result) do
-            :ok -> {:answered, state}
-            {:error, reason} -> {:error, reason}
-          end
+    cond do
+      not Process.alive?(pid) ->
+        _ = Nif.relay_host_call_fail(state.nif, handle)
+        {:answered, do_detach_git(state)}
 
-        {:error, :not_git} ->
-          :unclaimed
+      true ->
+        case AgentOS.GitEngine.handle_host_call(pid, name, body) do
+          {:ok, result} when is_binary(result) ->
+            case Nif.relay_host_call_respond(state.nif, handle, result) do
+              :ok -> {:answered, state}
+              {:error, reason} -> {:error, reason}
+            end
 
-        {:error, _reason} ->
-          _ = Nif.relay_host_call_fail(state.nif, handle)
-          {:answered, state}
-      end
+          {:error, :not_git} ->
+            :unclaimed
+
+          {:error, :eio} ->
+            _ = Nif.relay_host_call_fail(state.nif, handle)
+            {:answered, do_detach_git(state)}
+
+          {:error, _reason} ->
+            _ = Nif.relay_host_call_fail(state.nif, handle)
+            {:answered, state}
+        end
     end
   end
 
   defp answer_git_event(_state, _event), do: :unclaimed
+
+  @impl true
+  def handle_info({:DOWN, mon, :process, pid, _reason}, %{git_engine: pid, git_engine_mon: mon} = state) do
+    # Port owner died — unmount and clear so host_calls do not hang unclaimed.
+    {:noreply, do_detach_git(state)}
+  end
+
+  def handle_info(_msg, state), do: {:noreply, state}
 
   @impl true
   def terminate(_reason, state) do

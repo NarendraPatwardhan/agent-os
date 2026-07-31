@@ -125,6 +125,40 @@ async function main() {
     throw new Error(`expected unknown connection: ${JSON.stringify(unk)}`);
   }
 
+  // Empty origins → fail closed (no credential to attacker URL)
+  const bare: ConnectionDefinition[] = [
+    { ref: "github.user.work", auth: { kind: "bearer", token: "sekret-token" } },
+  ];
+  const open = resolveGitRemote(
+    { url: "https://evil.example/r.git", connection: "github.user.work" },
+    { connections: bare },
+  );
+  if (open.ok) throw new Error("empty origins must fail closed");
+
+  // Embedded credentials in URL rejected
+  const userinfo = resolveGitRemote(
+    { url: "https://user:token@github.com/org/repo.git" },
+    {},
+  );
+  if (userinfo.ok) throw new Error("userinfo URL must be rejected");
+
+  // Canonical origin match (not path prefix confusion)
+  const pathy: ConnectionDefinition[] = [
+    {
+      ref: "github.user.work",
+      auth: { kind: "bearer", token: "sekret-token" },
+      origins: ["https://github.com"],
+    },
+  ];
+  const org = resolveGitRemote(
+    {
+      url: "https://github.com/organization/repo.git",
+      connection: "github.user.work",
+    },
+    { connections: pathy },
+  );
+  if (!org.ok) throw new Error(`canonical origin should allow: ${org.stderr}`);
+
   await eng.close();
   console.log("git_connections.test SUCCESS");
 }

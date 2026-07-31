@@ -150,6 +150,8 @@ int op_branch_delete(ge_engine *e, const char *name);
 int op_tips(ge_engine *e, char *result_json, size_t cap);
 int op_push_prepare(ge_engine *e, char *result_json, size_t cap);
 int op_push_complete(ge_engine *e, const char *args);
+int op_sparse_set(ge_engine *e, const char *args);
+int op_sparse_disable(ge_engine *e, const char *args);
 
 static int op_init(ge_engine *e) {
   if (e->repo) {
@@ -864,6 +866,18 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
   }
   if (strcmp(op, "push.complete") == 0) {
     if (op_push_complete(e, args) != 0)
+      return resp_err(1, e->err);
+    return resp_ok("", NULL);
+  }
+
+
+  if (strcmp(op, "sparse-set") == 0 || strcmp(op, "sparse.set") == 0) {
+    if (op_sparse_set(e, args) != 0)
+      return resp_err(1, e->err);
+    return resp_ok("", NULL);
+  }
+  if (strcmp(op, "sparse-disable") == 0 || strcmp(op, "sparse.disable") == 0) {
+    if (op_sparse_disable(e, args) != 0)
       return resp_err(1, e->err);
     return resp_ok("", NULL);
   }

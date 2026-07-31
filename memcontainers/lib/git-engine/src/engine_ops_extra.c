@@ -366,3 +366,75 @@ int op_push_complete(ge_engine *e, const char *args) {
   }
   return 0;
 }
+
+/* PR14: sparse-checkout cone projection (patterns, one path per call or newline list). */
+int op_sparse_set(ge_engine *e, const char *args) {
+  if (ge_ensure_repo(e) != 0)
+    return -1;
+  char patterns[4096] = "";
+  if (jmin_get_string(args, "patterns", patterns, sizeof(patterns)) != 0 &&
+      jmin_get_string(args, "path", patterns, sizeof(patterns)) != 0) {
+    ge_set_err(e, "sparse-set: need patterns or path");
+    return -1;
+  }
+  char info[4096], sc[4096];
+  snprintf(info, sizeof(info), "%s/.git/info", e->root);
+  mkdir(info, 0755);
+  snprintf(sc, sizeof(sc), "%s/sparse-checkout", info);
+  FILE *f = fopen(sc, "wb");
+  if (!f) {
+    ge_set_err(e, "sparse-set: cannot write sparse-checkout");
+    return -1;
+  }
+  /* Cone: always include root dirs for matching paths */
+  fprintf(f, "/*\n!/*/\n");
+  /* patterns may be newline-separated */
+  for (char *p = patterns, *n; p && *p; p = n) {
+    n = strchr(p, '\n');
+    if (n) *n++ = 0;
+    while (*p == ' ' || *p == '/') p++;
+    if (!*p) continue;
+    fprintf(f, "/%s/\n/%s/**\n", p, p);
+  }
+  fclose(f);
+
+  git_config *cfg = NULL;
+  if (git_repository_config(&cfg, e->repo) != 0) {
+    ge_set_err_git(e, "sparse-set: config");
+    return -1;
+  }
+  git_config_set_bool(cfg, "core.sparseCheckout", 1);
+  git_config_free(cfg);
+
+  /* Re-checkout HEAD into cone */
+  git_object *treeish = NULL;
+  if (git_revparse_single(&treeish, e->repo, "HEAD") == 0) {
+    git_checkout_options opts = GIT_CHECKOUT_OPTIONS_INIT;
+    opts.checkout_strategy = GIT_CHECKOUT_FORCE;
+    git_checkout_tree(e->repo, treeish, &opts);
+    git_object_free(treeish);
+  }
+  return 0;
+}
+
+int op_sparse_disable(ge_engine *e, const char *args) {
+  (void)args;
+  if (ge_ensure_repo(e) != 0)
+    return -1;
+  git_config *cfg = NULL;
+  if (git_repository_config(&cfg, e->repo) == 0) {
+    git_config_set_bool(cfg, "core.sparseCheckout", 0);
+    git_config_free(cfg);
+  }
+  char sc[4096];
+  snprintf(sc, sizeof(sc), "%s/.git/info/sparse-checkout", e->root);
+  unlink(sc);
+  git_object *treeish = NULL;
+  if (git_revparse_single(&treeish, e->repo, "HEAD") == 0) {
+    git_checkout_options opts = GIT_CHECKOUT_OPTIONS_INIT;
+    opts.checkout_strategy = GIT_CHECKOUT_FORCE;
+    git_checkout_tree(e->repo, treeish, &opts);
+    git_object_free(treeish);
+  }
+  return 0;
+}

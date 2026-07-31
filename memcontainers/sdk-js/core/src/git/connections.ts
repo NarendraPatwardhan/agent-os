@@ -1,12 +1,11 @@
 /**
  * Connection-bound git remotes (GIT.md PR11 / §7.6).
  *
- * Guest never sees secrets. CLI/ctl may pass:
- *   - public `url`, or
- *   - `connection` / `agentos` ref (e.g. github.user.work) resolved on the host.
+ * Guest never sees secrets. CLI may pass public `url` and/or `connection` /
+ * `agentos` ref. Credential splice is host-only (smart-HTTP headers).
  *
- * Credential splice happens only in the smart-HTTP transport Authorization (or
- * custom header) — never in Run args or engine config.
+ * Origin authorization mirrors `@mc/host` `originAllowed` (canonical http(s)
+ * origin equality; empty origins = fail closed).
  */
 
 import type {
@@ -17,33 +16,75 @@ import type {
 } from "../types.js";
 
 export interface GitRemoteBinding {
-  /** Public locator (no secrets). */
+  /** Public locator without userinfo (no secrets). */
   url: string;
-  /** Optional connection ref used for credential splice. */
   connectionRef?: string;
-  /** Origins allowed for this splice (from connection.origins). */
   origins: string[];
-  /** Host-only credential material (never serialized to guest). */
   auth: ConnectionAuth;
-  /** Policy action for destructive ops (push). */
   pushAction: ConnectionPolicyAction;
 }
 
 export interface ResolveRemoteOptions {
   connections?: ConnectionDefinition[];
   policies?: ConnectionPolicyRule[];
-  /**
-   * Map remote name → public URL (from engine `remote` config or request).
-   * Example: { origin: "https://github.com/org/repo.git" }
-   */
   remoteUrls?: Record<string, string>;
-  /**
-   * Map remote name → connection ref (from `remote.<name>.agentos` convention).
-   */
   remoteConnections?: Record<string, string>;
 }
 
-/** Resolve Request args to a host-side remote binding. */
+function fail(
+  code: number,
+  stderr: string,
+): { ok: false; code: number; stderr: string } {
+  return { ok: false, code, stderr };
+}
+
+/** Normalize http(s) URL to origin; reject userinfo / non-http(s). */
+export function requestOrigin(value: string): string | null {
+  try {
+    const url = new URL(value);
+    if (
+      (url.protocol !== "http:" && url.protocol !== "https:") ||
+      url.username ||
+      url.password
+    ) {
+      return null;
+    }
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Same semantics as `@mc/host` originAllowed: canonical origin equality only.
+ * Empty allowlist → deny (fail closed).
+ */
+export function originAllowed(
+  allowedOrigins: readonly string[],
+  url: string,
+): boolean {
+  if (!allowedOrigins.length) return false;
+  const target = requestOrigin(url);
+  if (target === null) return false;
+  return allowedOrigins.some((origin) => requestOrigin(origin) === target);
+}
+
+/** Public git locator: http(s) only, no userinfo. Keeps path for repo URLs. */
+export function publicRemoteUrl(url: string): string | null {
+  try {
+    const u = new URL(url);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    if (u.username || u.password) return null;
+    u.hash = "";
+    // Prefer href without trailing slash on bare origin; keep repo path as-is.
+    return u.pathname === "/" || u.pathname === ""
+      ? u.origin
+      : `${u.origin}${u.pathname}${u.search}`;
+  } catch {
+    return null;
+  }
+}
+
 export function resolveGitRemote(
   args: Record<string, unknown> | undefined,
   opts: ResolveRemoteOptions = {},
@@ -60,84 +101,74 @@ export function resolveGitRemote(
         ? a.agentos
         : undefined;
 
-  // Named remote without URL: look up public URL / connection from maps.
   const remoteName = typeof a.remote === "string" ? a.remote : undefined;
   if (!url && remoteName) {
     url = opts.remoteUrls?.[remoteName] ?? "";
     if (!connectionRef) connectionRef = opts.remoteConnections?.[remoteName];
   }
 
-  // connection-only: require a connection that carries origin metadata in spec.baseUrl
-  // or first origins entry as public locator fallback.
   let conn: ConnectionDefinition | undefined;
   if (connectionRef) {
     conn = connections.find((c) => c.ref === connectionRef);
     if (!conn) {
-      return {
-        ok: false,
-        code: 1,
-        stderr: `git: unknown connection ref ${connectionRef}\n`,
-      };
+      return fail(1, `git: unknown connection ref ${connectionRef}\n`);
     }
     if (!url) {
       const fromSpec =
         conn.spec && "url" in conn.spec && typeof conn.spec.url === "string"
           ? conn.spec.url
-          : conn.spec && "baseUrl" in conn.spec && typeof conn.spec.baseUrl === "string"
+          : conn.spec &&
+              "baseUrl" in conn.spec &&
+              typeof conn.spec.baseUrl === "string"
             ? conn.spec.baseUrl
             : undefined;
-      url = fromSpec ?? conn.origins?.[0] ?? "";
+      url = fromSpec ?? "";
     }
   }
 
   if (!url) {
-    return {
-      ok: false,
-      code: 2,
-      stderr: "clone/fetch/push need args.url or args.connection\n",
-    };
+    return fail(2, "clone/fetch/push need args.url or args.connection\n");
   }
 
-  let origin: string;
-  try {
-    origin = new URL(url).origin;
-  } catch {
-    return { ok: false, code: 1, stderr: "git: bad remote url\n" };
+  // Reject embedded credentials in the public locator.
+  if (requestOrigin(url) === null) {
+    return fail(
+      1,
+      "git: remote url must be http(s) without embedded credentials\n",
+    );
   }
 
-  const origins = conn?.origins?.length
-    ? conn.origins
-    : connectionRef
-      ? []
-      : [origin];
+  const publicUrl = publicRemoteUrl(url);
+  if (!publicUrl) {
+    return fail(1, "git: bad remote url\n");
+  }
 
-  // Exact origin allowlist when connection is bound.
-  if (conn?.origins?.length) {
-    const allowed = conn.origins.some((o) => o === url || o === origin || url.startsWith(o + "/"));
-    if (!allowed) {
-      return {
-        ok: false,
-        code: 1,
-        stderr: `git: origin not allowlisted for connection ${conn.ref}: ${url}\n`,
-      };
+  // Connection-bound: empty origins = fail closed; must match allowlist before auth.
+  if (connectionRef && conn) {
+    const allowed = conn.origins ?? [];
+    if (!allowed.length || !originAllowed(allowed, publicUrl)) {
+      return fail(
+        1,
+        `git: origin not allowlisted for connection ${conn.ref}\n`,
+      );
     }
   }
 
-  const pushAction = evaluatePushPolicy(connectionRef ?? "*", policies);
+  const origin = requestOrigin(publicUrl)!;
+  const origins = conn?.origins?.length ? [...conn.origins] : [origin];
 
   return {
     ok: true,
     binding: {
-      url,
+      url: publicUrl,
       connectionRef,
-      origins: origins.length ? origins : [origin],
+      origins,
       auth: conn?.auth ?? { kind: "none" },
-      pushAction,
+      pushAction: evaluatePushPolicy(connectionRef ?? "*", policies),
     },
   };
 }
 
-/** Most restrictive matching policy for push (block > require_approval > approve). */
 export function evaluatePushPolicy(
   connectionRef: string,
   policies: ConnectionPolicyRule[],
@@ -159,7 +190,6 @@ function moreRestrictive(
   return rank[b] > rank[a] ? b : a;
 }
 
-/** Glob-ish match: `*`, `integration.*`, `integration.owner.*`, exact. */
 export function matchConnectionPattern(pattern: string, ref: string): boolean {
   if (pattern === "*" || pattern === ref) return true;
   if (pattern.endsWith(".*")) {
@@ -169,7 +199,6 @@ export function matchConnectionPattern(pattern: string, ref: string): boolean {
   return false;
 }
 
-/** Apply host credential to outbound headers (never logged with secret values). */
 export function spliceCredentialHeaders(
   auth: ConnectionAuth,
   headers: Record<string, string> = {},
@@ -185,7 +214,7 @@ export function spliceCredentialHeaders(
       out[auth.name] = auth.value;
       return out;
     case "query":
-      // Query splice is applied in URL by transport; marker only.
+      // Prefer not to put secrets in URLs; mark for transport that opts in.
       out["X-MC-Git-Query-Auth"] = auth.name;
       return out;
     default:
@@ -200,9 +229,16 @@ export function spliceCredentialUrl(url: string, auth: ConnectionAuth): string {
   return u.toString();
 }
 
-/** Redact secrets for stderr / logs. */
 export function redactRemoteForLog(binding: GitRemoteBinding): string {
   const cred = binding.auth.kind === "none" ? "anon" : binding.auth.kind;
   const ref = binding.connectionRef ? ` connection=${binding.connectionRef}` : "";
-  return `${binding.url}${ref} auth=${cred}`;
+  // Never log full URL with query secrets; origin + path only.
+  let loc = binding.url;
+  try {
+    const u = new URL(binding.url);
+    loc = `${u.origin}${u.pathname}`;
+  } catch {
+    /* */
+  }
+  return `${loc}${ref} auth=${cred}`;
 }

@@ -65,6 +65,11 @@ export type { RemoteBackendOptions } from "./remote.js";
 export { remoteBuild } from "./remote-build.js";
 export type { RemoteBuildOptions, RemoteBuildResult } from "./remote-build.js";
 export type { WarmDirective } from "./solve.js";
+export {
+  nodeSolvePlatform,
+  nodeSolvePlatformWithEngine,
+  defaultNodeSolvePlatform,
+} from "./solve-node.js";
 export type {
   GitSource,
   LocalEntry,
@@ -94,6 +99,12 @@ export {
   spliceCredentialHeaders,
   spliceCredentialUrl,
   redactRemoteForLog,
+  originAllowed,
+  MemoryPackCache,
+  DiskPackCache,
+  importPackCached,
+  materializeLlbGit,
+  createEngineGitSource,
   DEFAULT_WORK_ROOT,
   normalizeRel,
 } from "./git/index.js";
@@ -110,6 +121,7 @@ export type {
   DurableBackend,
   GitRemoteBinding,
   ResolveRemoteOptions,
+  PackCache,
 } from "./git/index.js";
 export {
   defaultTemplateFill,

@@ -35,6 +35,12 @@ defmodule AgentOS.GitEngine do
     GenServer.start_link(__MODULE__, opts)
   end
 
+  @doc "Start unlinked (preferred from AgentOS.Vm so engine crash does not take down the VM)."
+  @spec start(keyword()) :: GenServer.on_start()
+  def start(opts \\ []) do
+    GenServer.start(__MODULE__, opts)
+  end
+
   @doc "JSON Run (`ge_run_json`). Local ops only; remotes use `remote/2`."
   @spec run(pid(), String.t() | map()) :: {:ok, map()} | {:error, term()}
   def run(pid, request) when is_pid(pid) do
@@ -76,16 +82,25 @@ defmodule AgentOS.GitEngine do
 
   * `name == "git"` → remote orch (type 5)
   * `name` equals `mount_path` → binary MOUNT_OP (type 4)
+
+  Connection-bound remotes (`args.connection` / credential splice) are the JS
+  orchestrator path (PR11). The C Port path accepts public URL remotes only and
+  refuses connection refs so secrets are never expected here.
   """
   @spec handle_host_call(pid(), String.t(), binary()) :: {:ok, binary()} | {:error, term()}
   def handle_host_call(pid, "git", body) when is_pid(pid) and is_binary(body) do
-    case remote(pid, body) do
-      {:ok, map} when is_map(map) ->
-        raw = Map.get(map, "raw")
-        if is_binary(raw), do: {:ok, raw}, else: {:ok, encode_request(map)}
+    if connection_bound_request?(body) do
+      {:ok,
+       ~s({"ok":false,"code":1,"stdout":"","stderr":"git: connection-bound remotes require JS orchestrator (PR11); use public url on server Port"})}
+    else
+      case remote(pid, body) do
+        {:ok, map} when is_map(map) ->
+          raw = Map.get(map, "raw")
+          if is_binary(raw), do: {:ok, raw}, else: {:ok, encode_request(map)}
 
-      {:error, _} = err ->
-        err
+        {:error, _} = err ->
+          err
+      end
     end
   end
 
@@ -218,6 +233,10 @@ defmodule AgentOS.GitEngine do
   end
 
   defp encode_request(map) when is_map(map), do: AgentOS.GitEngine.Jason_like.encode!(map)
+
+  defp connection_bound_request?(body) when is_binary(body) do
+    String.contains?(body, "\"connection\"") or String.contains?(body, "\"agentos\"")
+  end
 
   defp reply_frame(state, type, payload, decode) do
     case request_response(state, type, payload) do

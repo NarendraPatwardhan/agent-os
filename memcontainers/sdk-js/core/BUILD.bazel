@@ -295,3 +295,30 @@ js_test(
         "MC_BASE_IMAGE": "$(rlocationpath //memcontainers/images:base)",
     },
 )
+
+# PR12: push path (policy block / approval / read-only).
+mc_ts_project(
+    name = "git_push_test_lib",
+    srcs = ["test/git_push.test.ts"],
+    deps = [
+        ":lib",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+js_test(
+    name = "git_push_test",
+    data = [
+        "package.json",
+        ":git_push_test_lib",
+        "//memcontainers/lib/git-engine:git_engine_emcc_js",
+        "//memcontainers/lib/git-engine:git_engine_mjs",
+        "//memcontainers/lib/git-engine:git_engine_wasm_file",
+    ],
+    entry_point = "test/git_push.test.js",
+    env = {
+        "MC_GIT_ENGINE_JS": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_mjs)",
+    },
+    timeout = "moderate",
+)
+
