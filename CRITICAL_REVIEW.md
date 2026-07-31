@@ -751,25 +751,45 @@ These did **not** offset C1–C2 / H5–H7 for multi-tenant control plane at rev
 
 Primary sources: workspace/worktree `GIT.md`, `docs/git.md`, code comments (TODO/future/deferred).
 
-### A. Explicitly deferred / out of surface (still correct non-goals)
+### A. Scope taxonomy (do **not** couple non-goals with designed unfinished work)
+
+Earlier one-liners that lumped “full git-core parity” with multi-mount / OPFS / submodules / objects façade were **wrong coupling**. Split:
+
+#### A1. Non-goals (never wanted)
 
 | Item | Status |
 |------|--------|
-| Full git-core parity | Non-goal |
+| Full git-core / every-porcelain parity | Non-goal (honest reduced CLI) |
 | wasmi multi‑MiB VCS | Rejected |
 | gojs / Go NIF / go-git product | Rejected |
 | Ambient `~/.git-credentials` | Non-goal |
-| **`.git/objects` façade v1** | Synthetic HEAD/refs/ctl only — matches |
 | Freestanding zig/wasmtime engine | Rejected K25 |
-| Composite Rust intercept for `/repo` and `git` | Deferred |
-| Submodules | Phase C later |
-| Rebase, bisect, LFS, worktrees-as-feature, `git gui`, guest receive-pack | Out of surface |
-| Multi-mount multi-Port demux | post-v1; v1 one mount K21 |
-| Cap bits on mount for remotes | Explicitly not required (ctl remotes refuse) |
-| Browser OPFS/IndexedDB full ODB | Later PR language |
-| c-shared in-process | Deferred in alts table; **K15 says immediately after MVP** — artifact exists, not operationalized |
-| Full patch `diff` | status-style first; full later |
-| Catalog tool `git run` (optional Face B) | Optional / unclear shipped |
+
+#### A2. v1 intentional limits (constraint now; not “discarded forever”)
+
+| Item | Status |
+|------|--------|
+| **No `.git/objects` façade in v1** | K17 — synthetic HEAD/refs/ctl only; host-side ODB |
+| One gitfs mount per VM in v1 | K21 single-writer; multi-mount is **post-v1 wanted** |
+| Cap bits on mount for remotes | Not required (CAP_NET on host_call) |
+| Rebase, bisect, LFS, `git gui`, guest receive-pack | Out of **v1** surface (not the same as “never”) |
+
+#### A3. Designed / wanted — unfinished (open product work; see TASKS.md W*)
+
+| Item | Status at review / still open |
+|------|-------------------------------|
+| Browser OPFS/IndexedDB pack ODB + durability rebind | PR8 / M7 — **wanted** |
+| Multi-mount multi-Port demux | post-v1 — **wanted** |
+| Submodules (host-mediated network) | Phase C later — **wanted** |
+| Server push packbuilder / receive-pack | PR12 server — **wanted** |
+| c-shared in-process load | K15 / PR7d — decide or keep Port |
+| Full patch `diff` | after status-style — **wanted** |
+| Thin CLI phase-A porcelain | PR1.1 — **wanted** |
+| Streaming large stdout / `result.truncated` | §5.3 — **wanted** |
+| Metrics / flag graduation | PR16 — **wanted** |
+| Composite Rust intercept | Low-priority design alternative |
+| Catalog tool `git run` (Face B) | Optional |
+| Full guest CAP_NET e2e | production acceptance — **wanted** |
 
 ### B. Documented as done / shipped shape — incomplete or wrong at review
 
