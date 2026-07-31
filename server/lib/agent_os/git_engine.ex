@@ -71,13 +71,15 @@ defmodule AgentOS.GitEngine do
   @doc """
   Build a push pack from tip OIDs via engine `pack.build` (libgit2 packbuilder).
 
-  Runs `{"op":"pack.build","args":{"oids":[...]}}` then reads
+  Runs `{"op":"pack.build","args":{"oids":[...],"haves":[...]}}` then reads
   `.git/agentos/push.pack` from the Port worktree root. Empty `oids` fail closed.
-  Result always starts with `PACK` magic (or error).
+  Optional `opts[:haves]` are remote tip OIDs already held (lease old hashes) so
+  the pack omits objects the remote already has (R48). Result always starts with
+  `PACK` magic (or error).
   """
-  @spec pack_build(pid(), [String.t()]) :: {:ok, binary()} | {:error, term()}
-  def pack_build(pid, oids) when is_pid(pid) and is_list(oids) do
-    GenServer.call(pid, {:pack_build, oids}, 120_000)
+  @spec pack_build(pid(), [String.t()], keyword()) :: {:ok, binary()} | {:error, term()}
+  def pack_build(pid, oids, opts \\ []) when is_pid(pid) and is_list(oids) and is_list(opts) do
+    GenServer.call(pid, {:pack_build, oids, opts}, 120_000)
   end
 
   @doc "Binary MOUNT_OP body (peer of dispatchMount). Returns response bytes."
@@ -232,8 +234,16 @@ defmodule AgentOS.GitEngine do
     end
   end
 
+  def handle_call({:pack_build, oids, opts}, _from, state) do
+    case do_pack_build(state, oids, opts) do
+      {:ok, pack, state2} -> {:reply, {:ok, pack}, state2}
+      {:error, reason, state2} -> {:reply, {:error, reason}, state2}
+    end
+  end
+
+  # Back-compat if any caller still uses 2-tuple without opts.
   def handle_call({:pack_build, oids}, _from, state) do
-    case do_pack_build(state, oids) do
+    case do_pack_build(state, oids, []) do
       {:ok, pack, state2} -> {:reply, {:ok, pack}, state2}
       {:error, reason, state2} -> {:reply, {:error, reason}, state2}
     end
@@ -284,9 +294,15 @@ defmodule AgentOS.GitEngine do
 
   # pack.build → export file under worktree `.git/agentos/push.pack` → read bytes.
   # Caller (`handle_call`) already fails closed when `port` is nil.
-  defp do_pack_build(state, oids) when is_list(oids) do
+  defp do_pack_build(state, oids, opts) when is_list(oids) and is_list(opts) do
     hex_oids =
       for o <- oids,
+          is_binary(o),
+          Regex.match?(~r/^[0-9a-fA-F]{40}$/, o),
+          do: String.downcase(o)
+
+    hex_haves =
+      for o <- Keyword.get(opts, :haves, []),
           is_binary(o),
           Regex.match?(~r/^[0-9a-fA-F]{40}$/, o),
           do: String.downcase(o)
@@ -294,7 +310,14 @@ defmodule AgentOS.GitEngine do
     if hex_oids == [] do
       {:error, :no_oids, state}
     else
-      json = encode_request(%{"op" => "pack.build", "args" => %{"oids" => hex_oids}})
+      args =
+        if hex_haves == [] do
+          %{"oids" => hex_oids}
+        else
+          %{"oids" => hex_oids, "haves" => Enum.uniq(hex_haves)}
+        end
+
+      json = encode_request(%{"op" => "pack.build", "args" => args})
 
       case request_response(state, @frame_run, json) do
         {:ok, payload, state2} ->

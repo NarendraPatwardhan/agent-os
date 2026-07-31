@@ -213,7 +213,7 @@ async function main() {
 
   // PR4/PR5: gitfs worktree + synthetic .git + ctl drain
   const driver = eng.asMountDriver();
-  // R66: brand for K21 second-mount fail-closed
+  // R66/R63: brand for K21 one-engine-per-path (multi-path allowed)
   const { isGitFsDriver } = await import("../src/git/gitfs.js");
   if (!isGitFsDriver(driver)) {
     throw new Error("asMountDriver must brand gitfs driver (K21)");

@@ -33,6 +33,8 @@ export interface SmartHttpTransport {
     have: string[],
     depth?: number,
     auth?: ConnectionAuth,
+    /** Partial clone filter (e.g. `blob:none`); optional. */
+    filter?: string,
   ): Promise<Uint8Array>;
   pushPacks?(
     url: string,
@@ -50,7 +52,17 @@ export class FixtureSmartHttp implements SmartHttpTransport {
   >();
   lastAuth: ConnectionAuth | undefined;
   lastPush:
-    | { url: string; commands: PushCommand[]; packLen: number }
+    | { url: string; commands: PushCommand[]; packLen: number; pack: Uint8Array }
+    | undefined;
+  /** Last fetchPacks args (filter ignored for body; recorded for R36). */
+  lastFetch:
+    | {
+        url: string;
+        want: string[];
+        have: string[];
+        depth?: number;
+        filter?: string;
+      }
     | undefined;
   pushResult: ReceiveStatus = { ok: true };
   /** Transport call counters (pack-cache hit assertions). */
@@ -65,6 +77,7 @@ export class FixtureSmartHttp implements SmartHttpTransport {
     this.fixtures.clear();
     this.lastAuth = undefined;
     this.lastPush = undefined;
+    this.lastFetch = undefined;
     this.listRefsCalls = 0;
     this.fetchPacksCalls = 0;
   }
@@ -79,13 +92,16 @@ export class FixtureSmartHttp implements SmartHttpTransport {
 
   async fetchPacks(
     url: string,
-    _want: string[],
-    _have: string[],
-    _depth?: number,
+    want: string[],
+    have: string[],
+    depth?: number,
     auth?: ConnectionAuth,
+    filter?: string,
   ): Promise<Uint8Array> {
     this.fetchPacksCalls += 1;
     this.lastAuth = auth;
+    // Fixture ignores filter (no partial materialization) but does not break.
+    this.lastFetch = { url, want: [...want], have: [...have], depth, filter };
     const f = this.fixtures.get(url);
     if (!f) throw new Error(`git: upload-pack failed: no fixture for ${url}`);
     return f.pack.slice();
@@ -98,7 +114,12 @@ export class FixtureSmartHttp implements SmartHttpTransport {
     auth?: ConnectionAuth,
   ): Promise<ReceiveStatus> {
     this.lastAuth = auth;
-    this.lastPush = { url, commands, packLen: pack.byteLength };
+    this.lastPush = {
+      url,
+      commands: commands.map((c) => ({ ...c })),
+      packLen: pack.byteLength,
+      pack: pack.slice(),
+    };
     return this.pushResult;
   }
 }
@@ -139,9 +160,10 @@ export class FetchSmartHttp implements SmartHttpTransport {
     have: string[],
     depth?: number,
     auth?: ConnectionAuth,
+    filter?: string,
   ): Promise<Uint8Array> {
     const base = this.url(url, auth).replace(/\/$/, "");
-    const body = buildUploadPackBody(want, have, depth);
+    const body = buildUploadPackBody(want, have, depth, filter);
     const res = await fetch(`${base}/git-upload-pack`, {
       method: "POST",
       headers: {
@@ -243,14 +265,26 @@ function pkt(s: string): string {
   return len + body;
 }
 
-function buildUploadPackBody(
+/**
+ * Build git-upload-pack request body (protocol v0/v1 style).
+ * Optional `filter` (R36 partial clone) is sent after wants when set;
+ * first want advertises the `filter` capability. Servers that ignore
+ * filter still return a usable full pack (fixture path).
+ */
+export function buildUploadPackBody(
   want: string[],
   have: string[],
   depth?: number,
+  filter?: string,
 ): Uint8Array {
   let s = "";
-  for (const w of want) s += pkt(`want ${w}`);
+  for (let i = 0; i < want.length; i++) {
+    const w = want[i]!;
+    if (i === 0 && filter) s += pkt(`want ${w} filter`);
+    else s += pkt(`want ${w}`);
+  }
   if (depth && depth > 0) s += pkt(`deepen ${depth}`);
+  if (filter) s += pkt(`filter ${filter}`);
   s += "0000";
   for (const h of have) s += pkt(`have ${h}`);
   s += pkt("done");

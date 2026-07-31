@@ -187,18 +187,28 @@ When `experimentalGitEngine` is `true`:
 
 - `gitEngineBaseUrl` is **required** — a directory URL whose contents include `git_engine.mjs` and
   `git_engine.wasm` (from `//memcontainers/lib/git-engine:git_engine_wasm`);
-- the host loads the engine, registers MapHostCall name `"git"` for CAP_NET remotes (process-scoped
+- the host loads the engine(s), registers MapHostCall name `"git"` for CAP_NET remotes (process-scoped
   pack cache on by default), and mounts gitfs at `/workspace/repo` unless that path is already
-  present in `mounts`;
-- optional `gitSparseCone` applies **cone-mode** sparse prefixes to that mount and to post-clone
+  present in `mounts` or overridden by `gitMounts`;
+- optional `gitSparseCone` applies **cone-mode** sparse prefixes to the default mount and to post-clone
   engine `sparse-set`. Engine also accepts multi-pattern strings/arrays and basic `!path`
-  negation lines written into `sparse-checkout` — **not** full git sparse-checkout pattern language.
+  negation lines written into `sparse-checkout` — **not** full git sparse-checkout pattern language;
+- optional `gitMounts: [{ path, sparseCone? }]` enables multi-repo (R63–R65): one engine per distinct
+  path, demux via `args.mount` / `mount` on host_call `"git"`. Duplicate paths fail closed;
+- optional **`gitHttp`** / **`gitAllowOrigins`** inject a hermetic smart-HTTP transport and bare-URL
+  allowlist into the product orch path (fixture e2e only; product default is `FetchSmartHttp` +
+  connection origins / empty bare-URL deny — R32).
 
 ```js
 const vm = await mc.create({
   experimentalGitEngine: true,
   gitEngineBaseUrl: new URL("./git-engine/", import.meta.url).href,
   gitSparseCone: ["src", "docs"],
+  // multi-repo:
+  // gitMounts: [
+  //   { path: "/workspace/app" },
+  //   { path: "/workspace/lib", sparseCone: ["src"] },
+  // ],
   connections: [
     {
       ref: "github.user.work",

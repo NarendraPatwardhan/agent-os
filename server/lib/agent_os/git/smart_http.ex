@@ -266,7 +266,15 @@ defmodule AgentOS.Git.SmartHttp do
   defp http_fetch_packs(url, want, have, opts) do
     ensure_http_apps!()
     base = String.trim_trailing(url, "/")
-    body = build_upload_pack_body(want, have, Keyword.get(opts, :depth))
+
+    body =
+      build_upload_pack_body(
+        want,
+        have,
+        Keyword.get(opts, :depth),
+        Keyword.get(opts, :filter)
+      )
+
     headers =
       [
         {"content-type", "application/x-git-upload-pack-request"},
@@ -485,11 +493,39 @@ defmodule AgentOS.Git.SmartHttp do
 
   defp strip_pkt_prefix(line), do: line
 
-  defp build_upload_pack_body(want, have, depth) do
-    want_lines = Enum.map(want, fn w -> pkt("want #{w}") end)
+  # R36: optional filter after wants (partial clone). First want advertises
+  # capability `filter` when set. Fixtures/servers that ignore filter stay ok.
+  defp build_upload_pack_body(want, have, depth, filter \\ nil) do
+    filter_s =
+      case filter do
+        f when is_binary(f) ->
+          f = String.trim(f)
+          if f != "" and byte_size(f) <= 128 and not String.contains?(f, ["\n", "\r", <<0>>]),
+            do: f,
+            else: nil
+
+        _ ->
+          nil
+      end
+
+    want_lines =
+      want
+      |> Enum.with_index()
+      |> Enum.map(fn {w, i} ->
+        if i == 0 and is_binary(filter_s) do
+          pkt("want #{w} filter")
+        else
+          pkt("want #{w}")
+        end
+      end)
+
     deepen = if is_integer(depth) and depth > 0, do: [pkt("deepen #{depth}")], else: []
+    filter_line = if is_binary(filter_s), do: [pkt("filter #{filter_s}")], else: []
     have_lines = Enum.map(have, fn h -> pkt("have #{h}") end)
-    IO.iodata_to_binary(want_lines ++ deepen ++ ["0000"] ++ have_lines ++ [pkt("done")])
+
+    IO.iodata_to_binary(
+      want_lines ++ deepen ++ filter_line ++ ["0000"] ++ have_lines ++ [pkt("done")]
+    )
   end
 
   defp build_receive_pack_body(commands, pack) when is_list(commands) and is_binary(pack) do

@@ -123,14 +123,20 @@ defmodule AgentOS.Git.PackCache do
   end
 
   @doc """
-  Stable download-key for upload-pack cache (`url` + wants + haves + depth).
+  Stable download-key for upload-pack cache (`url` + wants + haves + depth + filter).
 
   **Never** include credentials, Authorization headers, or userinfo. Auth is
-  only applied at transport time (SmartHttp headers).
+  only applied at transport time (SmartHttp headers). Optional `filter` (R36
+  partial clone) is part of the key so filtered packs never collide with full.
   """
-  @spec upload_pack_cache_key(String.t(), [String.t()], [String.t()], non_neg_integer() | nil) ::
-          download_key()
-  def upload_pack_cache_key(url, wants, haves \\ [], depth \\ nil)
+  @spec upload_pack_cache_key(
+          String.t(),
+          [String.t()],
+          [String.t()],
+          non_neg_integer() | nil,
+          String.t() | nil
+        ) :: download_key()
+  def upload_pack_cache_key(url, wants, haves \\ [], depth \\ nil, filter \\ nil)
       when is_binary(url) and is_list(wants) and is_list(haves) do
     wants_s =
       wants
@@ -152,7 +158,13 @@ defmodule AgentOS.Git.PackCache do
         _ -> ""
       end
 
-    "upload-pack:v1:#{url}:#{wants_s}:#{haves_s}:d#{depth_s}"
+    filter_s =
+      case filter do
+        f when is_binary(f) -> String.trim(f)
+        _ -> ""
+      end
+
+    "upload-pack:v1:#{url}:#{wants_s}:#{haves_s}:d#{depth_s}:f#{filter_s}"
   end
 
   @doc "SHA-256 digest of pack bytes as `sha256:` + lowercase hex."

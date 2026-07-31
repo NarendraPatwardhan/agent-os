@@ -244,11 +244,18 @@ defmodule AgentOS.ControlPlane do
 
   Passes `opts` through to `AgentOS.Vm.attach_git/2` unchanged — does **not**
   inject `:any` origins. Empty/missing `allowed_origins` fails closed for remotes.
+
+  Multi-mount (R63–R65): call again with a **different** `:mount_path` to attach
+  another engine. Same path while live → `{:error, :git_already_attached}`.
   """
   @spec attach_git(Vm.id(), keyword()) :: :ok | {:error, term()}
   def attach_git(id, opts \\ []), do: with_vm(id, &Vm.attach_git(&1, opts))
 
-  @doc "Detach git-engine Port from a VM."
+  @doc """
+  Detach git-engine Port(s) from a VM.
+
+  Options: `:mount_path` to detach one mount; omit to detach all.
+  """
   @spec detach_git(Vm.id(), keyword()) :: :ok | {:error, term()}
   def detach_git(id, opts \\ []), do: with_vm(id, &Vm.detach_git(&1, opts))
 

@@ -46,7 +46,7 @@ defmodule AgentOS.Git.Orchestrator do
   * `:max_pack_bytes` — response/pack size cap (default 64 MiB)
   * `:read_only` — when `true`, push is rejected with a stable read-only error
   * `:pack_cache` — `AgentOS.Git.PackCache` pid (or `:default` for process
-    singleton). Download-key is url+wants+haves+depth only — **never** auth.
+    singleton). Download-key is url+wants+haves+depth+filter only — **never** auth.
     Omit / `nil` / `false` disables cache.
   * `:require_approval` — when `true`, push must be approved (R31)
   * `:on_push_approval` — fun `(ctx :: map()) -> boolean` or `/0`; called when
@@ -105,7 +105,8 @@ defmodule AgentOS.Git.Orchestrator do
          {:ok, tip} <- pick_tip(refs, ref_of(req)),
          wants <- want_oids(refs, tip.hash),
          depth <- depth_of(req),
-         {:ok, pack} <- resolve_pack(url, wants, [], depth, opts),
+         filter <- filter_of(req),
+         {:ok, pack} <- resolve_pack(url, wants, [], depth, filter, opts),
          :ok <- require_non_empty_pack(pack),
          :ok <- apply_init(engine_pid),
          :ok <- apply_pack(engine_pid, pack),
@@ -125,7 +126,8 @@ defmodule AgentOS.Git.Orchestrator do
          have <- local_haves(engine_pid),
          wants <- want_oids(refs, tip.hash),
          depth <- depth_of(req),
-         {:ok, pack} <- resolve_pack(url, wants, have, depth, opts),
+         filter <- filter_of(req),
+         {:ok, pack} <- resolve_pack(url, wants, have, depth, filter, opts),
          :ok <- require_non_empty_pack(pack),
          :ok <- apply_pack(engine_pid, pack),
          :ok <- apply_refs_and_checkout(engine_pid, tip, refs, :fetch),
@@ -147,22 +149,30 @@ defmodule AgentOS.Git.Orchestrator do
     end
   end
 
-  # R40: download-key hit skips transport. Key = url+wants+haves+depth only (no auth).
-  defp resolve_pack(url, wants, haves, depth, opts) do
+  # R40: download-key hit skips transport. Key = url+wants+haves+depth+filter (no auth).
+  defp resolve_pack(url, wants, haves, depth, filter, opts) do
     cache = pack_cache_of(opts)
-    pack_key = PackCache.upload_pack_cache_key(url, wants, haves, depth)
+    pack_key = PackCache.upload_pack_cache_key(url, wants, haves, depth, filter)
 
-    with {:ok, pack} <- pack_from_cache_or_transport(cache, pack_key, url, wants, haves, depth, opts) do
+    with {:ok, pack} <-
+           pack_from_cache_or_transport(cache, pack_key, url, wants, haves, depth, filter, opts) do
       maybe_store_pack(cache, pack_key, pack)
       {:ok, pack}
     end
   end
 
-  defp pack_from_cache_or_transport(nil, _key, url, wants, haves, depth, opts) do
-    SmartHttp.fetch_packs(url, wants, haves, Keyword.put(opts, :depth, depth))
+  defp pack_from_cache_or_transport(nil, _key, url, wants, haves, depth, filter, opts) do
+    SmartHttp.fetch_packs(
+      url,
+      wants,
+      haves,
+      opts |> Keyword.put(:depth, depth) |> Keyword.put(:filter, filter)
+    )
   end
 
-  defp pack_from_cache_or_transport(cache, pack_key, url, wants, haves, depth, opts) do
+  defp pack_from_cache_or_transport(cache, pack_key, url, wants, haves, depth, filter, opts) do
+    fetch_opts = opts |> Keyword.put(:depth, depth) |> Keyword.put(:filter, filter)
+
     case PackCache.get_by_key(cache, pack_key) do
       dig when is_binary(dig) ->
         case PackCache.get(cache, dig) do
@@ -170,11 +180,11 @@ defmodule AgentOS.Git.Orchestrator do
             {:ok, pack}
 
           _ ->
-            SmartHttp.fetch_packs(url, wants, haves, Keyword.put(opts, :depth, depth))
+            SmartHttp.fetch_packs(url, wants, haves, fetch_opts)
         end
 
       _ ->
-        SmartHttp.fetch_packs(url, wants, haves, Keyword.put(opts, :depth, depth))
+        SmartHttp.fetch_packs(url, wants, haves, fetch_opts)
     end
   end
 
@@ -212,7 +222,7 @@ defmodule AgentOS.Git.Orchestrator do
          {:ok, _origin} <- SmartHttp.ensure_url_allowed(url, opts),
          {:ok, prep} <- run_push_prepare(engine_pid),
          {:ok, remote_refs} <- SmartHttp.list_refs(url, opts),
-         {:ok, commands} <- build_push_commands(prep, remote_refs),
+         {:ok, commands} <- build_push_commands(prep, remote_refs, req),
          :ok <- maybe_require_push_approval(url, commands, opts),
          {:ok, pack, delete_only?} <- build_push_pack(engine_pid, commands),
          :ok <- require_push_pack(pack, delete_only?),
@@ -390,7 +400,7 @@ defmodule AgentOS.Git.Orchestrator do
     end
   end
 
-  defp build_push_commands(prep, remote_refs) when is_list(remote_refs) do
+  defp build_push_commands(prep, remote_refs, req \\ %{}) when is_list(remote_refs) do
     remote_by_name =
       Map.new(remote_refs, fn
         %{name: n, hash: h} when is_binary(n) and is_binary(h) -> {n, String.downcase(h)}
@@ -413,10 +423,61 @@ defmodule AgentOS.Git.Orchestrator do
         }
       end
 
+    commands = maybe_delete_commands(commands, remote_by_name, req)
+
     if commands == [] do
       {:error, :no_push_commands}
     else
       {:ok, commands}
+    end
+  end
+
+  # R51: args.delete → zero newHash commands (empty pack allowed).
+  defp maybe_delete_commands(commands, remote_by_name, req) do
+    args = Map.get(req, "args") || Map.get(req, :args) || %{}
+    args = if is_map(args), do: stringify_keys(args), else: %{}
+    del = Map.get(args, "delete")
+
+    names =
+      cond do
+        del == true or del == "true" ->
+          Enum.map(commands, & &1.name)
+
+        is_binary(del) and del != "" ->
+          [normalize_ref_name(del)]
+
+        is_list(del) ->
+          del
+          |> Enum.filter(&(is_binary(&1) and &1 != ""))
+          |> Enum.map(&normalize_ref_name/1)
+
+        true ->
+          nil
+      end
+
+    case names do
+      nil ->
+        commands
+
+      [] ->
+        commands
+
+      ns ->
+        for name <- ns do
+          %{
+            old_hash: Map.get(remote_by_name, name, @zero_oid),
+            new_hash: @zero_oid,
+            name: name
+          }
+        end
+    end
+  end
+
+  defp normalize_ref_name(name) when is_binary(name) do
+    cond do
+      String.starts_with?(name, "refs/") -> name
+      String.starts_with?(name, "heads/") -> "refs/" <> name
+      true -> "refs/heads/" <> name
     end
   end
 
@@ -473,10 +534,19 @@ defmodule AgentOS.Git.Orchestrator do
         end)
         |> Enum.uniq()
 
+      # R48: lease old_hash tips as haves so pack omits objects remote already has.
+      haves =
+        commands
+        |> Enum.map(& &1.old_hash)
+        |> Enum.filter(fn h ->
+          is_binary(h) and Regex.match?(~r/^[0-9a-fA-F]{40}$/, h) and h != @zero_oid
+        end)
+        |> Enum.uniq()
+
       if oids == [] do
         {:error, :no_push_oids}
       else
-        case GitEngine.pack_build(pid, oids) do
+        case GitEngine.pack_build(pid, oids, haves: haves) do
           {:ok, pack} -> {:ok, pack, false}
           {:error, reason} -> {:error, normalize_pack_build_error(reason)}
         end
@@ -807,6 +877,26 @@ defmodule AgentOS.Git.Orchestrator do
       d when is_integer(d) and d > 0 -> d
       d when is_integer(d) -> nil
       _ -> 1
+    end
+  end
+
+  # R36: optional partial-clone filter (`blob:none`, `tree:0`, …).
+  defp filter_of(req) do
+    args = Map.get(req, "args") || %{}
+    args = if is_map(args), do: stringify_keys(args), else: %{}
+
+    case Map.get(args, "filter") do
+      f when is_binary(f) ->
+        f = String.trim(f)
+
+        if f != "" and byte_size(f) <= 128 and not String.contains?(f, ["\n", "\r", <<0>>]) do
+          f
+        else
+          nil
+        end
+
+      _ ->
+        nil
     end
   end
 

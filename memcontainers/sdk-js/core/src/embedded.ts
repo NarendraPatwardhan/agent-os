@@ -124,8 +124,12 @@ export class EmbeddedBackend implements Backend {
   private running = true;
   private readonly resolvers = new Map<number, (r: RawExecResult) => void>();
   private readonly rejecters = new Map<number, (e: Error) => void>();
-  /** K21: at most one gitfs mount path per VM (R66 fail-closed). */
-  private gitFsMountPath: string | null = null;
+  /**
+   * K21: gitfs mount paths attached on this VM (R63 multi-mount).
+   * Same path may not be remounted while live; distinct paths are allowed.
+   * Single-writer remains per engine (each path has its own GitEngine).
+   */
+  private readonly gitFsMountPaths = new Set<string>();
   /** PERF-013 traces for in-flight exec jobs (A3 parity with driveExec). */
   private readonly jobPerf = new Map<number, JobPerfTrace>();
   /** Running agent sessions tailed by the pump (job → tail state). */
@@ -527,15 +531,16 @@ export class EmbeddedBackend implements Backend {
 
   /** Install a host-backed driver at `path`: register the driver as a binary-safe
    *  host-call handler keyed by the mount path, then mount a `MountFs` there.
-   *  K21/R66: a second gitfs driver mount fails closed with a clear error. */
+   *  K21/R63: one gitfs driver **per path**; distinct paths may each carry gitfs.
+   *  Remounting gitfs at an already-live path fails closed. */
   async mount(path: string, driver: Driver, readOnly: boolean): Promise<void> {
     if (isGitFsDriver(driver)) {
-      if (this.gitFsMountPath != null && this.gitFsMountPath !== path) {
+      if (this.gitFsMountPaths.has(path)) {
         throw new Error(
-          `gitfs already mounted at ${this.gitFsMountPath}; v1 allows at most one gitfs mount per VM (K21)`,
+          `gitfs already mounted at ${path}; one gitfs engine per mount path (K21)`,
         );
       }
-      this.gitFsMountPath = path;
+      this.gitFsMountPaths.add(path);
     }
     this.tools.registerRaw(path, (body) => dispatchMount(driver, body));
     this.host.mount(path, readOnly || !!driver.readOnly);
@@ -543,7 +548,7 @@ export class EmbeddedBackend implements Backend {
   async unmount(path: string): Promise<void> {
     this.host.unmount(path);
     this.tools.unregister(path);
-    if (this.gitFsMountPath === path) this.gitFsMountPath = null;
+    this.gitFsMountPaths.delete(path);
   }
   async snapshot(opts: SnapshotOptions = {}): Promise<Uint8Array> {
     if ((opts.mode ?? "full") === "full") return this.host.snapshot();

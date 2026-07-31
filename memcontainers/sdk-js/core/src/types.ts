@@ -95,8 +95,9 @@ export interface CreateOptions {
   templateFill?: "on_demand" | "prepopulated" | "off";
   /**
    * Enable host git engine (GIT.md). When true with `gitEngineBaseUrl`:
-   * loads emcc engine, registers MapHostCall `"git"`, and mounts gitfs at
-   * `/workspace/repo` unless that path is already in `mounts`. Default false.
+   * loads emcc engine(s), registers MapHostCall `"git"`, and mounts gitfs.
+   * Default path is `/workspace/repo` unless {@link gitMounts} is set or that
+   * path is already in `mounts`. Default false.
    */
   experimentalGitEngine?: boolean;
   /**
@@ -108,15 +109,59 @@ export interface CreateOptions {
   /**
    * Cone-mode sparse-checkout prefixes for the default gitfs mount and post-clone
    * engine `sparse-set` (e.g. `["src", "docs"]`). **Cone-only** — not full
-   * sparse-checkout pattern parity. Only applied when `experimentalGitEngine` is on.
+   * sparse-checkout pattern parity. Only applied when `experimentalGitEngine` is on
+   * and a mount does not supply its own `sparseCone`.
    */
   gitSparseCone?: string[];
+  /**
+   * Multi-repo mounts (R63–R65). When set with `experimentalGitEngine`, loads one
+   * GitEngine per entry (distinct paths), registers a demuxing host_call `"git"`
+   * (`args.mount` / `mount` routes remotes), and mounts each gitfs.
+   * Omitting this keeps the single default engine at `/workspace/repo`.
+   * Same path twice fails closed; each engine is single-writer (not shared).
+   */
+  gitMounts?: Array<{ path: string; sparseCone?: string[] }>;
   /**
    * Host commit identity for the experimental git engine (K28).
    * When set, `GitEngine.run` injects name/email into `commit` if args omit them.
    * Never invents a default identity when unset (no Agent/agent@example.com).
    */
   gitIdentity?: { name: string; email: string };
+  /**
+   * Hermetic smart-HTTP transport for experimental git remotes (fixture e2e).
+   * When set with `experimentalGitEngine`, injected into `registerGitHostCall`
+   * instead of product `FetchSmartHttp`. Structural match of
+   * `SmartHttpTransport` — do not use for production egress.
+   */
+  gitHttp?: {
+    listRefs: (
+      url: string,
+      auth?: ConnectionAuth,
+    ) => Promise<Array<{ name: string; hash: string; peeled?: string }>>;
+    fetchPacks: (
+      url: string,
+      want: string[],
+      have: string[],
+      depth?: number,
+      auth?: ConnectionAuth,
+    ) => Promise<Uint8Array>;
+    pushPacks?: (
+      url: string,
+      commands: Array<{
+        oldHash: string;
+        newHash: string;
+        name: string;
+      }>,
+      pack: Uint8Array,
+      auth?: ConnectionAuth,
+    ) => Promise<{ ok: boolean; message?: string }>;
+  };
+  /**
+   * Bare-URL origin allowlist for experimental git remotes (R32).
+   * Empty + bare URL fails closed. Connection-bound remotes use
+   * `connection.origins`. Fixture e2e must pass explicit origins for bare URLs.
+   */
+  gitAllowOrigins?: string[];
 }
 
 export type ConnectionAuth =

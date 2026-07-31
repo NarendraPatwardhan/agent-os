@@ -85,6 +85,44 @@ function depthOf(args: Record<string, unknown>): number | undefined {
   return 1;
 }
 
+/**
+ * Optional partial-clone filter (R36): `blob:none`, `tree:0`, etc.
+ * Sent on upload-pack when present. Engine still needs blobs later for
+ * materialization — filter only shrinks the initial pack transfer.
+ */
+function filterOf(args: Record<string, unknown>): string | undefined {
+  if (typeof args.filter === "string") {
+    const f = args.filter.trim();
+    if (f.length > 0 && f.length <= 128 && !/[\r\n\0]/.test(f)) return f;
+  }
+  return undefined;
+}
+
+const ZERO_OID = "0000000000000000000000000000000000000000";
+
+/** Normalize delete target names to full refs (refs/heads/…). */
+function deleteRefNames(
+  args: Record<string, unknown>,
+  prepared: PushCommand[],
+): string[] | null {
+  const del = args.delete;
+  if (del === undefined || del === false || del === null) return null;
+  const toFull = (n: string) =>
+    n.startsWith("refs/") ? n : `refs/heads/${n.replace(/^heads\//, "")}`;
+  if (del === true || del === "true") {
+    const names = prepared.map((c) => c.name).filter(Boolean);
+    return names.length ? names.map(toFull) : null;
+  }
+  if (typeof del === "string" && del.trim()) return [toFull(del.trim())];
+  if (Array.isArray(del)) {
+    const names = del
+      .filter((n): n is string => typeof n === "string" && n.trim().length > 0)
+      .map((n) => toFull(n.trim()));
+    return names.length ? names : null;
+  }
+  return null;
+}
+
 export class GitRemoteOrchestrator {
   private readonly http: SmartHttpTransport;
   private readonly allowOrigins: string[];
@@ -133,7 +171,7 @@ export class GitRemoteOrchestrator {
   }
 
   /**
-   * Resolve pack via download-key index (url+wants+haves+depth), else transport.
+   * Resolve pack via download-key index (url+wants+haves+depth[+filter]), else transport.
    * Credentials never enter the key — only public binding.url.
    */
   private async resolvePack(
@@ -142,8 +180,9 @@ export class GitRemoteOrchestrator {
     haves: string[],
     depth: number | undefined,
     auth: import("../types.js").ConnectionAuth | undefined,
+    filter?: string,
   ): Promise<{ pack: Uint8Array; fromTransport: boolean } | { error: string }> {
-    const packKey = uploadPackCacheKey({ url, wants, haves, depth });
+    const packKey = uploadPackCacheKey({ url, wants, haves, depth, filter });
     if (this.packCache?.getByKey) {
       const dig = await this.packCache.getByKey(packKey);
       if (dig) {
@@ -152,7 +191,7 @@ export class GitRemoteOrchestrator {
       }
     }
     try {
-      const pack = await this.http.fetchPacks(url, wants, haves, depth, auth);
+      const pack = await this.http.fetchPacks(url, wants, haves, depth, auth, filter);
       if (!pack || pack.byteLength === 0) {
         return { error: "git: empty pack from remote\n" };
       }
@@ -447,6 +486,7 @@ export class GitRemoteOrchestrator {
     }
 
     const depth = depthOf(args);
+    const filter = filterOf(args);
     const wants = this.wantOids(refs, head.hash);
 
     const resolvedPack = await this.resolvePack(
@@ -455,6 +495,7 @@ export class GitRemoteOrchestrator {
       [],
       depth,
       binding.auth,
+      filter,
     );
     if ("error" in resolvedPack) {
       return {
@@ -563,6 +604,7 @@ export class GitRemoteOrchestrator {
     }
 
     const depth = depthOf(args);
+    const filter = filterOf(args);
     // Local haves: tips op when available, else HEAD
     const have: string[] = [];
     const tipsResp = await this.engine.run({ op: "tips" });
@@ -599,6 +641,7 @@ export class GitRemoteOrchestrator {
       have,
       depth,
       binding.auth,
+      filter,
     );
     if ("error" in resolvedPack) {
       return {
@@ -723,6 +766,15 @@ export class GitRemoteOrchestrator {
     }
 
     const args = (req.args ?? {}) as Record<string, unknown>;
+    // R51: args.delete → zero newHash commands + empty pack.
+    const delNames = deleteRefNames(args, commands);
+    if (delNames) {
+      commands = delNames.map((name) => ({
+        oldHash: remoteByName.get(name) ?? ZERO_OID,
+        newHash: ZERO_OID,
+        name,
+      }));
+    }
     if (!commands.length) {
       return {
         ok: false,
@@ -759,7 +811,7 @@ export class GitRemoteOrchestrator {
       };
     }
 
-    const zeroOid = "0000000000000000000000000000000000000000";
+    const zeroOid = ZERO_OID;
     const isDeleteOnly = commands.every((c) => c.newHash === zeroOid);
     let pack: Uint8Array;
     if (this.buildPushPack) {
@@ -774,6 +826,14 @@ export class GitRemoteOrchestrator {
             .filter((h) => typeof h === "string" && /^[0-9a-f]{40}$/i.test(h) && h !== zeroOid),
         ),
       ];
+      // R48: remote lease oldHash tips as haves for thin pack.
+      const haves = [
+        ...new Set(
+          commands
+            .map((c) => c.oldHash)
+            .filter((h) => typeof h === "string" && /^[0-9a-f]{40}$/i.test(h) && h !== zeroOid),
+        ),
+      ];
       if (!oids.length) {
         return {
           ok: false,
@@ -783,7 +843,7 @@ export class GitRemoteOrchestrator {
         };
       }
       try {
-        pack = await this.engine.buildPushPack(oids);
+        pack = await this.engine.buildPushPack(oids, haves);
       } catch (e) {
         return {
           ok: false,
@@ -858,25 +918,136 @@ export class GitRemoteOrchestrator {
 }
 
 /**
+ * Multi-engine map for host_call `"git"` demux (R63–R65).
+ * Each mount path owns a distinct {@link GitEngine} (single-writer per engine).
+ */
+export interface GitEngineMountMap {
+  /** Engines keyed by absolute mount path (e.g. `/workspace/repo`). */
+  engines: Map<string, GitEngine> | Record<string, GitEngine>;
+  /**
+   * Used when the request omits `args.mount` / top-level `mount`.
+   * Required when more than one engine is registered.
+   */
+  defaultMount?: string;
+}
+
+/** Single engine or multi-mount map for {@link gitHostCallHandler}. */
+export type GitHostCallEngines = GitEngine | GitEngineMountMap;
+
+function isGitEngineMountMap(v: GitHostCallEngines): v is GitEngineMountMap {
+  return (
+    !!v &&
+    typeof v === "object" &&
+    "engines" in v &&
+    (v as GitEngineMountMap).engines != null
+  );
+}
+
+/** Normalize engines input into a Map + optional default mount. */
+export function normalizeGitEngineMap(input: GitHostCallEngines): {
+  engines: Map<string, GitEngine>;
+  defaultMount: string | undefined;
+} {
+  if (!isGitEngineMountMap(input)) {
+    // Single-engine path: empty key marks "default only" (mount optional).
+    const engines = new Map<string, GitEngine>();
+    engines.set("", input);
+    return { engines, defaultMount: "" };
+  }
+  const raw = input.engines;
+  const engines =
+    raw instanceof Map
+      ? new Map(raw)
+      : new Map(Object.entries(raw as Record<string, GitEngine>));
+  let defaultMount = input.defaultMount;
+  if (defaultMount === undefined && engines.size === 1) {
+    defaultMount = engines.keys().next().value as string;
+  }
+  return { engines, defaultMount };
+}
+
+/**
+ * Extract mount path from a remote Request body.
+ * Accepts `args.mount` or top-level `mount` (string).
+ */
+export function mountFromGitRequest(req: GitRequest & { mount?: unknown }): string | undefined {
+  const top = req.mount;
+  if (typeof top === "string" && top.trim()) return top.trim();
+  const args = req.args;
+  if (args && typeof args === "object" && !Array.isArray(args)) {
+    const m = (args as Record<string, unknown>).mount;
+    if (typeof m === "string" && m.trim()) return m.trim();
+  }
+  return undefined;
+}
+
+/**
+ * Resolve which engine handles a remote request (R65 demux).
+ * Never shares one engine across mounts without going through this lookup.
+ */
+export function resolveGitEngineForMount(
+  req: GitRequest & { mount?: unknown },
+  engines: Map<string, GitEngine>,
+  defaultMount?: string,
+): { engine: GitEngine; mount: string } | { error: string } {
+  const requested = mountFromGitRequest(req);
+
+  // Single-engine sentinel (key "") — mount optional; mismatch only if default set.
+  if (engines.size === 1 && engines.has("")) {
+    const engine = engines.get("")!;
+    return { engine, mount: requested ?? defaultMount ?? "" };
+  }
+
+  const mount = requested ?? defaultMount;
+  if (!mount) {
+    const paths = [...engines.keys()].filter(Boolean).join(", ");
+    return {
+      error: `git: mount required (registered: ${paths || "(none)"})\n`,
+    };
+  }
+  const engine = engines.get(mount);
+  if (!engine) {
+    const paths = [...engines.keys()].filter(Boolean).join(", ");
+    return {
+      error: `git: unknown mount ${JSON.stringify(mount)} (registered: ${paths || "(none)"})\n`,
+    };
+  }
+  return { engine, mount };
+}
+
+/**
  * MapHostCall handler factory: body is Request JSON bytes.
  * Product default: process-scoped pack cache unless `opts.packCache` is set
  * (`null` disables). Direct {@link GitRemoteOrchestrator} does not auto-enable.
+ *
+ * Multi-mount (R63–R65): pass {@link GitEngineMountMap}; body may include
+ * `args.mount` or top-level `mount` to demux to the matching engine.
+ * Each engine gets its own orchestrator instance (single-writer per mount).
  */
 export function gitHostCallHandler(
-  engine: GitEngine,
+  engineOrMap: GitHostCallEngines,
   opts?: OrchestratorOptions,
 ): (args: string) => Promise<string> {
   const raw = opts?.packCache;
   const packCache =
     raw === null ? undefined : (raw ?? defaultProcessPackCache());
-  const orch = new GitRemoteOrchestrator(engine, {
-    ...opts,
-    packCache,
-  });
+  const { engines, defaultMount } = normalizeGitEngineMap(engineOrMap);
+
+  // One orchestrator per engine — never share mutable orch state across mounts.
+  const orchByEngine = new Map<GitEngine, GitRemoteOrchestrator>();
+  const orchFor = (engine: GitEngine): GitRemoteOrchestrator => {
+    let orch = orchByEngine.get(engine);
+    if (!orch) {
+      orch = new GitRemoteOrchestrator(engine, { ...opts, packCache });
+      orchByEngine.set(engine, orch);
+    }
+    return orch;
+  };
+
   return async (args: string) => {
-    let req: GitRequest;
+    let req: GitRequest & { mount?: unknown };
     try {
-      req = JSON.parse(args || "{}") as GitRequest;
+      req = JSON.parse(args || "{}") as GitRequest & { mount?: unknown };
     } catch {
       return JSON.stringify({
         ok: false,
@@ -885,7 +1056,16 @@ export function gitHostCallHandler(
         stderr: "invalid JSON",
       });
     }
-    const resp = await orch.handle(req);
+    const resolved = resolveGitEngineForMount(req, engines, defaultMount);
+    if ("error" in resolved) {
+      return JSON.stringify({
+        ok: false,
+        code: 1,
+        stdout: "",
+        stderr: resolved.error,
+      });
+    }
+    const resp = await orchFor(resolved.engine).handle(req);
     return JSON.stringify(resp);
   };
 }

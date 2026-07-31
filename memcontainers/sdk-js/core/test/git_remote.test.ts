@@ -14,7 +14,9 @@ import {
   MemoryDurable,
   MemoryPackCache,
   gitHostCallHandler,
+  mountFromGitRequest,
   registerGitHostCall,
+  resolveGitEngineForMount,
   uploadPackCacheKey,
 } from "../src/git/index.js";
 
@@ -259,6 +261,101 @@ async function main() {
     }
   }
 
+  // R63–R65: multi-engine demux via args.mount / mount
+  const engA = await GitEngine.load({ baseUrl: base });
+  const engB = await GitEngine.load({ baseUrl: base });
+  const engineMap = new Map([
+    ["/workspace/a", engA],
+    ["/workspace/b", engB],
+  ]);
+  if (mountFromGitRequest({ op: "clone", args: { mount: "/workspace/a" } }) !== "/workspace/a") {
+    throw new Error("mountFromGitRequest args.mount failed");
+  }
+  if (mountFromGitRequest({ op: "clone", mount: "/workspace/b", args: {} }) !== "/workspace/b") {
+    throw new Error("mountFromGitRequest top-level mount failed");
+  }
+  const hitA = resolveGitEngineForMount(
+    { op: "fetch", args: { mount: "/workspace/a" } },
+    engineMap,
+    "/workspace/a",
+  );
+  if ("error" in hitA || hitA.engine !== engA) {
+    throw new Error(`demux A failed: ${JSON.stringify(hitA)}`);
+  }
+  const hitB = resolveGitEngineForMount(
+    { op: "fetch", mount: "/workspace/b" },
+    engineMap,
+    "/workspace/a",
+  );
+  if ("error" in hitB || hitB.engine !== engB) {
+    throw new Error(`demux B failed: ${JSON.stringify(hitB)}`);
+  }
+  const hitBad = resolveGitEngineForMount(
+    { op: "fetch", args: { mount: "/workspace/missing" } },
+    engineMap,
+    "/workspace/a",
+  );
+  if (!("error" in hitBad) || !String(hitBad.error).includes("unknown mount")) {
+    throw new Error(`unknown mount must fail: ${JSON.stringify(hitBad)}`);
+  }
+
+  // Two independent engines: init+write only on A; B stays empty.
+  await engA.run({ op: "init" });
+  await engA.run({
+    op: "write",
+    args: { path: "only-a.txt", content: "a\n" },
+  });
+  const stA = await engA.run({ op: "status" });
+  const stB = await engB.run({ op: "status" });
+  if (!stA.ok) throw new Error(`engA status: ${JSON.stringify(stA)}`);
+  // engB never inited — status may fail or show empty; must not see only-a.
+  if (String(stB.stdout || "").includes("only-a")) {
+    throw new Error("engines must not share worktree state");
+  }
+
+  const multiHandler = gitHostCallHandler(
+    { engines: engineMap, defaultMount: "/workspace/a" },
+    { http, allowOrigins: [fixtureOrigin], packCache: null },
+  );
+  const demuxRaw = await multiHandler(
+    JSON.stringify({
+      op: "clone",
+      args: { url: "https://example.com/demo.git", mount: "/workspace/b" },
+    }),
+  );
+  const demuxParsed = JSON.parse(demuxRaw);
+  if (demuxParsed.ok === undefined) {
+    throw new Error(`multi demux handler: ${demuxRaw}`);
+  }
+  // Unknown mount returns code 1 without dialing.
+  const unknownRaw = await multiHandler(
+    JSON.stringify({
+      op: "clone",
+      args: { url: "https://example.com/demo.git", mount: "/nope" },
+    }),
+  );
+  const unknownParsed = JSON.parse(unknownRaw);
+  if (unknownParsed.ok || !String(unknownParsed.stderr || "").includes("unknown mount")) {
+    throw new Error(`unknown mount host_call: ${unknownRaw}`);
+  }
+
+  const toolsMulti = {
+    map: new Map<string, (a: string) => Promise<string> | string>(),
+    register(name: string, h: (a: string) => Promise<string> | string) {
+      this.map.set(name, h);
+    },
+  };
+  registerGitHostCall(
+    toolsMulti,
+    { engines: engineMap, defaultMount: "/workspace/a" },
+    { http, allowOrigins: [fixtureOrigin], packCache: null },
+  );
+  if (!toolsMulti.map.has("git")) {
+    throw new Error("registerGitHostCall multi missing git");
+  }
+
+  await engA.close();
+  await engB.close();
   await eng.close();
   console.log("git_remote.test SUCCESS");
 }

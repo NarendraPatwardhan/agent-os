@@ -303,6 +303,7 @@ int op_push_prepare(ge_engine *e, char *result_json, size_t cap);
 int op_push_complete(ge_engine *e, const char *args);
 int op_sparse_set(ge_engine *e, const char *args);
 int op_sparse_disable(ge_engine *e, const char *args);
+int op_submodule_list(ge_engine *e, char **out_owned);
 
 static int op_init(ge_engine *e) {
   if (e->repo) {
@@ -1170,7 +1171,22 @@ static int pack_collect_tips(ge_engine *e, const char *oids_json, git_oid *tips,
   return 0;
 }
 
-/* Core packbuilder → malloc'd buffer. *out_count optional object count. */
+/* Optional "haves" array from object-form oids_json (remote tips already held). */
+static int pack_collect_haves(ge_engine *e, const char *oids_json, git_oid *haves, size_t max,
+                              size_t *n) {
+  *n = 0;
+  const char *json = pack_skip_ws(oids_json);
+  if (!json || *json != '{')
+    return 0;
+  const char *haves_v = pack_find_key(json, "haves");
+  if (!haves_v || *haves_v != '[')
+    return 0;
+  return pack_scan_oid_array(haves_v, haves, max, n, e);
+}
+
+/* Core packbuilder → malloc'd buffer. *out_count optional object count.
+ * When haves are present, walk tips with revwalk hide so objects reachable only
+ * from remote tips are omitted (R48 thin-pack / have negotiation). */
 static int pack_build_core(ge_engine *e, const char *oids_json, uint8_t **out, size_t *out_len,
                            size_t *out_count) {
   if (out)
@@ -1192,6 +1208,11 @@ static int pack_build_core(ge_engine *e, const char *oids_json, uint8_t **out, s
   if (pack_collect_tips(e, oids_json, tips, GE_PACK_TIPS_MAX, &n_tips) != 0)
     return -1;
 
+  git_oid haves[GE_PACK_TIPS_MAX];
+  size_t n_haves = 0;
+  if (pack_collect_haves(e, oids_json, haves, GE_PACK_TIPS_MAX, &n_haves) != 0)
+    return -1;
+
   git_packbuilder *pb = NULL;
   if (git_packbuilder_new(&pb, e->repo) != 0) {
     set_err_git(e, "pack.build: packbuilder");
@@ -1199,12 +1220,42 @@ static int pack_build_core(ge_engine *e, const char *oids_json, uint8_t **out, s
   }
   (void)git_packbuilder_set_threads(pb, 1);
 
-  for (size_t i = 0; i < n_tips; i++) {
-    /* insert_recur: commit + tree + blobs (and nested) for full push packs. */
-    if (git_packbuilder_insert_recur(pb, &tips[i], NULL) != 0) {
-      set_err_git(e, "pack.build: insert");
+  if (n_haves > 0) {
+    /* R48: push tips as interesting, hide remote haves → omit shared history. */
+    git_revwalk *walk = NULL;
+    if (git_revwalk_new(&walk, e->repo) != 0) {
+      set_err_git(e, "pack.build: revwalk");
       git_packbuilder_free(pb);
       return -1;
+    }
+    git_revwalk_sorting(walk, GIT_SORT_TIME);
+    for (size_t i = 0; i < n_tips; i++) {
+      if (git_revwalk_push(walk, &tips[i]) != 0) {
+        set_err_git(e, "pack.build: revwalk push");
+        git_revwalk_free(walk);
+        git_packbuilder_free(pb);
+        return -1;
+      }
+    }
+    for (size_t i = 0; i < n_haves; i++) {
+      /* Hide is best-effort: remote may advertise OIDs not in the local ODB. */
+      (void)git_revwalk_hide(walk, &haves[i]);
+    }
+    if (git_packbuilder_insert_walk(pb, walk) != 0) {
+      set_err_git(e, "pack.build: insert_walk");
+      git_revwalk_free(walk);
+      git_packbuilder_free(pb);
+      return -1;
+    }
+    git_revwalk_free(walk);
+  } else {
+    for (size_t i = 0; i < n_tips; i++) {
+      /* insert_recur: commit + tree + blobs (and nested) for full push packs. */
+      if (git_packbuilder_insert_recur(pb, &tips[i], NULL) != 0) {
+        set_err_git(e, "pack.build: insert");
+        git_packbuilder_free(pb);
+        return -1;
+      }
     }
   }
 
@@ -1727,6 +1778,46 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     if (op_sparse_disable(e, args) != 0)
       return resp_err(1, e->err);
     return resp_ok("", NULL);
+  }
+
+  /* R68–R69: list-only from .gitmodules; network/update/init/add fail closed.
+   * Submodule clone is planned as host_call "git" with recursive flag later —
+   * engine never dials and does not project submodule worktrees yet. */
+  if (strcmp(op, "submodule") == 0) {
+    char action[64] = "list";
+    (void)jmin_get_string(args, "action", action, sizeof(action));
+    if (!action[0])
+      snprintf(action, sizeof(action), "list");
+    for (char *p = action; *p; p++) {
+      if (*p >= 'A' && *p <= 'Z')
+        *p = (char)(*p - 'A' + 'a');
+    }
+    if (strcmp(action, "list") == 0 || strcmp(action, "status") == 0) {
+      char *list = NULL;
+      if (op_submodule_list(e, &list) != 0) {
+        free(list);
+        return resp_err(1, e->err);
+      }
+      /* result is JSON array; stdout is one-line summary. */
+      char *result = NULL;
+      if (list) {
+        size_t n = strlen(list);
+        result = (char *)malloc(n + 16);
+        if (result)
+          snprintf(result, n + 16, "{\"submodules\":%s}", list);
+      }
+      free(list);
+      if (!result)
+        return ge_static_oom;
+      char *r = resp_ok("", result);
+      free(result);
+      return r ? r : ge_static_oom;
+    }
+    return resp_err(
+        1,
+        "git: submodule network ops not implemented (host-mediated design: "
+        "list-only from .gitmodules; clone/update/init/add via future host_call "
+        "git recursive — engine does not dial or project submodule worktrees)");
   }
 
   return resp_usage("unknown op (fail closed)");

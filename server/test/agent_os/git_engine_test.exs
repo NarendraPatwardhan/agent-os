@@ -54,11 +54,38 @@ defmodule AgentOS.GitEngineTest do
                }
              })
 
-    # Type-4 mount: write ctl status
+    # Type-4 mount: write ctl status, then open/read Response (R6 mount_op e2e).
     body = mount_write_body(".git/mc/ctl", ~s({"op":"status"}))
     assert {:ok, mount_resp} = GitEngine.mount_op(pid, body)
     assert is_binary(mount_resp)
     assert byte_size(mount_resp) >= 4
+    # status i32 LE == 0
+    <<st::little-signed-32, _::binary>> = mount_resp
+    assert st == 0
+
+    assert {:ok, open_resp} = GitEngine.mount_op(pid, mount_open_body(".git/mc/ctl"))
+    assert is_binary(open_resp)
+    assert byte_size(open_resp) >= 4
+    <<ost::little-signed-32, payload::binary>> = open_resp
+    assert ost == 0
+    assert payload =~ "\"ok\""
+    # status after commit should not be empty JSON only
+    assert payload =~ "ok" or payload =~ "\"ok\":true"
+
+    # R68–R69: submodule list-only (empty without .gitmodules).
+    assert {:ok, sub} = GitEngine.run(pid, %{"op" => "submodule", "args" => %{"action" => "list"}})
+    raw_sub = Map.get(sub, "raw") || inspect(sub)
+    assert sub["ok"] == true or raw_sub =~ "\"ok\":true"
+    assert raw_sub =~ "[]" or is_map(sub["result"])
+
+    assert {:ok, sub_bad} =
+             GitEngine.run(pid, %{"op" => "submodule", "args" => %{"action" => "update"}})
+
+    raw_bad = Map.get(sub_bad, "raw") || inspect(sub_bad)
+    stderr_bad = Map.get(sub_bad, "stderr") || ""
+    assert sub_bad["ok"] == false or raw_bad =~ "\"ok\":false"
+    assert stderr_bad =~ "host-mediated" or raw_bad =~ "host-mediated" or
+             stderr_bad =~ "not implemented" or raw_bad =~ "not implemented"
 
     :ok = GitEngine.stop(pid)
     # Subsequent ops fail closed (process down or :eio)
@@ -294,5 +321,11 @@ defmodule AgentOS.GitEngineTest do
     data_bin = data
     <<op::little-32, byte_size(path_bin)::little-32, path_bin::binary, 0::little-32,
       data_bin::binary>>
+  end
+
+  # MOUNT_OP_OPEN = 0
+  defp mount_open_body(path) do
+    path_bin = path
+    <<0::little-32, byte_size(path_bin)::little-32, path_bin::binary, 0::little-32>>
   end
 end

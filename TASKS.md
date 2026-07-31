@@ -17,15 +17,15 @@ Legend: **gap** = missing or stub · **thin** = exists but incomplete · **e2e**
 
 | # | Residual | Why we want it | Current state |
 |---|----------|----------------|---------------|
-| R1 | **Guest CAP_NET e2e (JS)** | Prove thin `/bin/git` → kernel CAP_NET → `host_call "git"` → TS orch → worktree | Unit orch + CLI build only; no booted-guest remotes e2e |
-| R2 | **Guest CAP_NET e2e (server)** | Same path on BEAM: guest → CAP_NET → Vm demux → BEAM orch → Port apply | Async Vm demux unit + fixture transport; no full guest image path |
-| R3 | **CAP_NET deny e2e** | Guest without CAP_NET gets EPERM on remotes | Design requirement; not automated e2e |
+| R1 | **Guest CAP_NET e2e (JS)** | Prove thin `/bin/git` → kernel CAP_NET → `host_call "git"` → TS orch → worktree | **Partial closed** — `//memcontainers/sdk-js/core:git_guest_e2e_test`: booted loom + `/bin/git clone` → CAP_NET → MapHostCall `"git"` → FixtureSmartHttp + `minimal.pack` → worktree on `/workspace/repo`. Hermetic fixture only (not live HTTPS; see R4). Server twin remains R2 |
+| R2 | **Guest CAP_NET e2e (server)** | Same path on BEAM: guest → CAP_NET → Vm demux → BEAM orch → Port apply | **Partial closed** — async Vm demux + fixture transport + worktree README assert after clone under known Port root; full guest-image CAP_NET path still open |
+| R3 | **CAP_NET deny e2e** | Guest without CAP_NET gets EPERM on remotes | **Closed (JS)** — same target: boot `tier: "read-write"` (no CAP_NET) + direct `vm.run("git", ["clone", …])` → stable `host_call git failed (need CAP_NET…)`; spawn `read-only` child must not dial FixtureSmartHttp. Server deny e2e still open |
 | R4 | **Live public HTTPS e2e** (JS + BEAM) | Fixture packs ≠ real smart-HTTP | Fixture `minimal.pack` / FixtureSmartHttp only |
 | R5 | **Kill Port → guest EIO e2e** | PR7a acceptance: engine crash fails handles closed | **Partial closed** — Port.close → `:eio` on Run; engine `Process.exit` → Vm detach. Full guest-image EIO e2e still open |
-| R6 | **gitfs mount + ctl e2e (server)** | Port type-4 mount write → ctl Response on booted VM | Port smoke + attach_git; full guest mount/ctl drain e2e thin |
+| R6 | **gitfs mount + ctl e2e (server)** | Port type-4 mount write → ctl Response on booted VM | **Partial closed** — Port type-4 write ctl + open/read Response asserted in `GitEngineTest`; attach_git path green; full booted-guest mount/ctl drain e2e still thin |
 | R7 | **Ctl drain / `client_token` race e2e** | Close-then-status invariant under MountFs drain | Documented; thin CLI issues open/read; no race acceptance test with tokens |
-| R8 | **JS close-then-status mount e2e** | Coherence under real `mc.create` + gitfs | Driver unit tests; full mc e2e sparse |
-| R9 | **Remotes GA / graduate `experimentalGitEngine`** | Product flag exit criteria in `docs/git.md` | Criteria checklist status notes updated; **still experimental** — CAP_NET guest e2e (R1) blocks graduation; remotes not GA |
+| R8 | **JS close-then-status mount e2e** | Coherence under real `mc.create` + gitfs | **Closed** — `git_guest_e2e_test` R8: `mc.create({ experimentalGitEngine })` + guest `/bin/git` init/add/commit/status (ctl close-then-reopen inside thin CLI) + host `vm.fs` ctl write→read Response; remotes still refuse on ctl |
+| R9 | **Remotes GA / graduate `experimentalGitEngine`** | Product flag exit criteria in `docs/git.md` | Criteria checklist status notes updated; **still experimental** — JS CAP_NET fixture e2e landed (R1 partial); live HTTPS (R4) + server guest CAP_NET (R2) + metrics still block graduation; remotes not GA |
 
 ---
 
@@ -75,7 +75,7 @@ Designed **phase A** surface (GIT.md §3.2 / §11). Engine has more ops than the
 |---|----------|----------------|---------------|
 | R34 | **`pull` = fetch + local FF only** | GIT.md: FF fail → `git: not fast-forward` | **Closed** — pull = fetch + `reset` mode `ff-only`; non-FF → `git: not fast-forward` (JS + BEAM) |
 | R35 | **Shallow clone defaults productized** | Agents shouldn’t pull full history by accident | **Closed** — product default `depth=1`; `depth<=0` means full history |
-| R36 | **Partial clone (filter)** | M7 / large monorepos | Not implemented |
+| R36 | **Partial clone (filter)** | M7 / large monorepos | **Closed (wire):** `args.filter` on clone/fetch → upload-pack `filter` capability + pkt-line (JS + BEAM); cache key includes filter; fixtures ignore filter without break. **Limit:** no promisor/on-demand blob fetch — engine materializes pack contents only |
 | R37 | **Multi-want fetch / multi-ref import** | Real remotes advertise many refs | **Closed** — multi-want of all `refs/heads/*` + single `refs.import` `args.refs` array (R94) with per-ref loop fallback (JS + BEAM) |
 | R38 | **Tracking-branch config on clone** | Usable `fetch`/`pull` after clone | Remote-tracking updates exist in fetch.apply; branch.* config completeness thin |
 | R39 | **Orch golden: fetch / pull / deny-depth** | Dual-host algorithm proof beyond clone | **Partial closed** — executable `fetch_success_steps`, `pull_ff_steps`, `push_readonly` (+ existing clone/empty/origin); deny-depth still open |
@@ -94,10 +94,10 @@ Designed **phase A** surface (GIT.md §3.2 / §11). Engine has more ops than the
 | R45 | **BEAM packbuilder** | Build pack for receive-pack without Node | **Done** — `GitEngine.pack_build/2` via Port `pack.build` + `.git/agentos/push.pack` |
 | R46 | **BEAM receive-pack smart-HTTP** | Actual push to remotes | **Done** — `SmartHttp.push_packs/4` + report-status parse; fixture records args |
 | R47 | **`push.complete` remote-tracking polish** | After successful push | **Done** — orch calls `push.complete` after receive-pack |
-| R48 | **JS thin-pack / have negotiation** | Smaller pushes | Full reachable history from tips via packbuilder |
+| R48 | **JS thin-pack / have negotiation** | Smaller pushes | **Closed** — `pack.build` / `ge_pack_build` optional `haves` via revwalk hide + insert_walk; JS orch + BEAM pass lease `oldHash`/`old_hash`; abi + dual-host tests assert smaller pack |
 | R49 | **JS push against live receive-pack e2e** | Prove non-fixture push | Fixture + engine packbuilder tests |
 | R50 | **Lease rejection paths** | Non-FF remote rejected cleanly | **Done** (server) — list-refs lease + report-status `ng`/`unpack` mapping; live GitHub not required |
-| R51 | **Delete-ref push** | Zero newHash commands | Empty pack allowed for delete-only; live e2e residual |
+| R51 | **Delete-ref push** | Zero newHash commands | **Closed (fixture e2e):** `args.delete` → zero `newHash`, empty pack, receive-status ok (JS + BEAM); non-delete empty pack still fails closed; live public receive-pack residual with R49 |
 
 ---
 
@@ -130,10 +130,10 @@ Designed **phase A** surface (GIT.md §3.2 / §11). Engine has more ops than the
 
 | # | Residual | Why we want it | Current state |
 |---|----------|----------------|---------------|
-| R63 | **Multiple gitfs mounts per VM** | Agents with several checkouts | Designed single-mount; multi-mount wanted for scale |
-| R64 | **Multi-Port / multi-engine demux** | One Port per mount or shared demux | Single engine per Vm attach |
-| R65 | **`args.mount` on remote host_calls** | Route remotes to the right repo | Not implemented |
-| R66 | **Hard fail on second gitfs mount** | Enforce until multi-mount ships (or after policy) | **Closed** — JS `isGitFsDriver` brand + EmbeddedBackend second mount error; BEAM `attach_git` → `{:error, :git_already_attached}` (no second Port) |
+| R63 | **Multiple gitfs mounts per VM** | Agents with several checkouts | **Closed (foundation)** — JS `gitMounts` + multi `GitEngine`; BEAM `git_engines` map + multi `attach_git` distinct paths |
+| R64 | **Multi-Port / multi-engine demux** | One Port per mount or shared demux | **Closed (foundation)** — one Port/engine per path; host_call demux; per-mount remote queue (no shared mutable engine) |
+| R65 | **`args.mount` on remote host_calls** | Route remotes to the right repo | **Closed (foundation)** — JS + BEAM accept `args.mount` / top-level `mount`; unknown mount fail-closed |
+| R66 | **Hard fail on second gitfs at same path** | Same path must not open a second engine | **Closed** — JS same-path remount error; BEAM same-path `{:error, :git_already_attached}`; distinct paths allowed |
 | R67 | **Single-writer queue depth metrics / alerts** | N=32 warning in design | Queue exists on BEAM remotes; metrics/alerts not productized |
 
 ---
@@ -142,8 +142,8 @@ Designed **phase A** surface (GIT.md §3.2 / §11). Engine has more ops than the
 
 | # | Residual | Why we want it | Current state |
 |---|----------|----------------|---------------|
-| R68 | **`submodule` host-mediated network** | Real multi-repo agent workflows | Explicit later in GIT.md phase C; **not built** |
-| R69 | **Submodule apply / worktree projection** | Guest sees submodule paths without dialing | Not built |
+| R68 | **`submodule` host-mediated network** | Real multi-repo agent workflows | **Partial closed (honest):** engine op `submodule` list-only from `.gitmodules` (no network); `update`/`init`/`add`/`clone` **fail closed** with host-mediated message. Network clone via host_call recursive **not built** — do not claim it works |
+| R69 | **Submodule apply / worktree projection** | Guest sees submodule paths without dialing | **Not built** — list-only surface only; no gitlink checkout / nested worktree projection |
 
 ---
 
@@ -151,9 +151,9 @@ Designed **phase A** surface (GIT.md §3.2 / §11). Engine has more ops than the
 
 | # | Residual | Why we want it | Current state |
 |---|----------|----------------|---------------|
-| R70 | **LLB always shares interactive object access** | One substrate, not two stacks | Engine-first materialize; deeper cache identity convergence residual |
-| R71 | **CI requires engine for git LLB (no silent system)** | Keep `MC_GIT_USE_SYSTEM` emergency-only | Fail-closed unit test; broader CI matrix residual |
-| R72 | **Remove or tightly gate system-git escape in product CI** | Avoid drift | Escape still exists by design; product CI policy residual |
+| R70 | **LLB always shares interactive object access** | One substrate, not two stacks | **Partial closed** — `materializeLlbGit` / `nodeSolvePlatformWithEngine` default process pack cache (disk via `MC_GIT_PACK_CACHE`); deeper ODB identity residual |
+| R71 | **CI requires engine for git LLB (no silent system)** | Keep `MC_GIT_USE_SYSTEM` emergency-only | **Partial closed** — fail-closed unit extended: only exact `=1` enables system git; non-`1` values fail closed without spawn leak |
+| R72 | **Remove or tightly gate system-git escape in product CI** | Avoid drift | Escape remains by design (`MC_GIT_USE_SYSTEM=1` only); product CI should leave unset — policy residual |
 | R73 | **LLB pack cache on disk in CI/solve workers** | Dedup across builds | `MC_GIT_PACK_CACHE` / process memory defaults |
 | R74 | **Recorded solve / remote build git path e2e** | Recording + remote builder | Not fully proven for engine git |
 
@@ -163,7 +163,7 @@ Designed **phase A** surface (GIT.md §3.2 / §11). Engine has more ops than the
 
 | # | Residual | Why we want it | Current state |
 |---|----------|----------------|---------------|
-| R75 | **c-shared in-process load (PR7d) decision + ship** | Lower latency than Port if wanted | `.so` artifact may exist; **product load is Port only** |
+| R75 | **c-shared in-process load (PR7d) decision + ship** | Lower latency than Port if wanted | **Closed — decided Port.** Product load is BEAM Port (`git-engine`); `:libgit_engine` packaging-only. PR7d not reopened unless explicit future decision |
 | R76 | **L4: NOTICE adjacent to every ship artifact** | License checklist | L5 analysis gate on filegroup; release tarball placement residual |
 | R77 | **Corresponding-source packaging in releases** | Linking exception | Target exists; release pipeline residual |
 | R78 | **Default guest image includes `/bin/git` layer** | Agents get CLI without custom image | **Closed for loom+:** `git_layer` on loom (and atlas/paper/svc-test descendants); not on bare base/minimal/posix |
@@ -187,14 +187,14 @@ Designed **phase A** surface (GIT.md §3.2 / §11). Engine has more ops than the
 
 | # | Residual | Why we want it | Current state |
 |---|----------|----------------|---------------|
-| R85 | **Engine metrics** | op, duration, code, sizes (no packs/tokens) | **Basic closed** — in-process counters (clone/fetch/push ok/error); no duration/sizes yet |
-| R86 | **Orch metrics** | origin, status, bytes, depth; redacted | **Basic closed** — `AgentOS.Git.Metrics` + JS `snapshotGitCounters`; origin/bytes residual |
+| R85 | **Engine metrics** | op, duration, code, sizes (no packs/tokens) | **Basic closed** — in-process counters (clone/fetch/push ok/error); no duration/sizes yet; wired in `docs/git.md` Metrics |
+| R86 | **Orch metrics** | origin, status, bytes, depth; redacted | **Basic closed** — `AgentOS.Git.Metrics` + JS `snapshotGitCounters`; origin/bytes residual; docs snapshot section |
 | R87 | **Mount queue depth / latency metrics** | Single-writer bottlenecks | Not productized |
 | R88 | **Port restart / RPC error counters** | Ops | **Basic closed** — `port_eio` + `rpc_error` counters on BEAM |
-| R89 | **Server alerts** | allowlist denials, OOM, pack timeout, queue depth | Design only |
-| R90 | **Graduate experimental flag** | After R1–R9 + policy criteria | Criteria doc only |
-| R91 | **Single design-of-record sync** | Workspace-root `GIT.md` vs worktree | Worktree updated; root may lag |
-| R92 | **Skills / agent docs beyond `docs/git.md`** | AgentOS agent skill pack if product wants | Product page exists; skills residual |
+| R89 | **Server alerts** | allowlist denials, OOM, pack timeout, queue depth | **Open** — design only; counters exist but no alert sinks |
+| R90 | **Graduate experimental flag** | After R1–R9 + policy criteria | **Blocked on R1** — criteria in `docs/git.md`; do **not** graduate without guest CAP_NET e2e |
+| R91 | **Single design-of-record sync** | Workspace-root `GIT.md` vs worktree | **Partial closed** — worktree `GIT.md` + `docs/git.md` updated this wave (R75 Port, submodules, metrics); monorepo-root sibling may lag |
+| R92 | **Skills / agent docs beyond `docs/git.md`** | AgentOS agent skill pack if product wants | Product page + metrics/submodule honesty in `docs/git.md`; dedicated skills pack residual |
 
 ---
 
@@ -278,6 +278,8 @@ Full git-core porcelain parity · wasmi guest VCS · gojs/Go NIF · ambient `~/.
 
 | Date | Change |
 |------|--------|
+| 2026-07-31 | R1/R3/R8 JS guest e2e: `//memcontainers/sdk-js/core:git_guest_e2e_test` (loom `/bin/git` + CAP_NET + FixtureSmartHttp; deny without CAP_NET; mc.create gitfs ctl close-then-status); create opts `gitHttp`/`gitAllowOrigins` for hermetic orch inject |
+| 2026-07-31 | R2/R6 partial deepen (async clone worktree assert + type-4 ctl write/open); R68 list-only `.gitmodules` + network fail-closed; R70 pack-cache default on `materializeLlbGit`; R71–R72 fail-closed extended; **R75 decided Port**; R85–R92 metrics docs + no experimental graduation; PR16 note: basic metrics only |
 | 2026-07-31 | R40 BEAM PackCache + orch wire; R37/R94 orch multi-ref array; R43 basic/bearer/header unit; R41 push_packs buffer note |
 | 2026-07-31 | Residuals R1–R105 promoted to top of TASKS.md; RESIDUALS.md removed |
 | 2026-07-31 | Waves 1–3 land P0–P3 scaffold; residual backlog remains |

@@ -89,11 +89,14 @@ mix_test(
         "//memcontainers/images:posix",
         "//memcontainers/kernel/rust:kernel",
         "//memcontainers/lib/git-engine:git-engine",
-    ],
+        # Git fixture packs/tips + orch goldens (R63–R65 attach/demux + pack tests).
+    ] + glob(["test/fixtures/git/**"]),
     env = {
         "ERL_COMPILER_OPTIONS": "deterministic",
         "ELIXIR_ERL_OPTIONS": "+fnu",
-        "AGENTOS_GIT_ENGINE": "$(rootpath //memcontainers/lib/git-engine:git-engine)",
+        # elixir_test wrapper does not expand $(rootpath)/$(rlocationpath). Path is relative
+        # to the mix project root after `cd $TEST_SRCDIR/$TEST_WORKSPACE/server`.
+        "AGENTOS_GIT_ENGINE": "../memcontainers/lib/git-engine/git-engine",
     },
     lib = ":lib_test",
     tags = ["manual"],

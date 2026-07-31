@@ -48,10 +48,13 @@ GE_API int ge_import_pack(ge_engine *e, const uint8_t *chunk, size_t len,
 
 /* Build a pack of objects reachable from tip OIDs (push packbuilder).
  * oids_json: JSON array of 40-hex OIDs, or object with "oids" and/or
- * "commands" (uses non-zero newHash/hash). NULL → local branch tips.
- * On success: *out is malloc'd pack bytes (caller free()s with ge_free),
- * *out_len is set. Cap GE_PACK_MAX_BYTES (64 MiB). Fail closed on empty
- * tips, empty pack, oversize, or packbuilder errors. Returns 0 / <0. */
+ * "commands" (uses non-zero newHash/hash). Optional "haves" array of 40-hex
+ * OIDs (remote tips already known) — excluded via revwalk hide so the pack
+ * omits objects the remote already has (thin-pack / have negotiation).
+ * NULL / empty object → local branch tips. On success: *out is malloc'd pack
+ * bytes (caller free()s with ge_free), *out_len is set. Cap GE_PACK_MAX_BYTES
+ * (64 MiB). Fail closed on empty tips, empty pack, oversize, or packbuilder
+ * errors. Returns 0 / <0. */
 GE_API int ge_pack_build(ge_engine *e, const char *oids_json, uint8_t **out,
                          size_t *out_len);
 

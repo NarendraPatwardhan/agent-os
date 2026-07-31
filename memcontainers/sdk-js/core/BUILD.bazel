@@ -454,3 +454,38 @@ js_test(
     timeout = "short",
 )
 
+# Residuals R1 / R3 / R8 — guest CAP_NET + gitfs ctl e2e (fixture pack only; no network).
+# Boots loom (has /bin/git) + kernel + emcc engine; injects FixtureSmartHttp via gitHttp.
+mc_ts_project(
+    name = "git_guest_e2e_test_lib",
+    srcs = ["test/git_guest_e2e.test.ts"],
+    deps = [
+        ":lib",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+js_test(
+    name = "git_guest_e2e_test",
+    data = [
+        "package.json",
+        ":git_guest_e2e_test_lib",
+        ":orch_golden_minimal_pack",
+        ":orch_golden_minimal_tip",
+        "//memcontainers/images:loom",
+        "//memcontainers/kernel/rust:kernel",
+        "//memcontainers/lib/git-engine:git_engine_emcc_js",
+        "//memcontainers/lib/git-engine:git_engine_mjs",
+        "//memcontainers/lib/git-engine:git_engine_wasm_file",
+    ],
+    entry_point = "test/git_guest_e2e.test.js",
+    env = {
+        "MC_KERNEL_WASM": "$(rlocationpath //memcontainers/kernel/rust:kernel)",
+        "MC_LOOM_IMAGE": "$(rlocationpath //memcontainers/images:loom)",
+        "MC_GIT_ENGINE_JS": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_mjs)",
+        "MC_GIT_MINIMAL_PACK": "$(rlocationpath :orch_golden_minimal_pack)",
+        "MC_GIT_MINIMAL_TIP": "$(rlocationpath :orch_golden_minimal_tip)",
+    },
+    timeout = "long",
+)
+

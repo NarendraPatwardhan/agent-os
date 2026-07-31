@@ -25,7 +25,7 @@ These are hard product rules for agents and tools that use host git — not opti
 
 | Constraint | Meaning |
 |------------|---------|
-| **One gitfs mount per VM (K21)** | v1 allows at most one gitfs driver mount per VM. A second `vm.mount` of gitfs fails closed on the host. |
+| **One gitfs engine per mount path (K21)** | Multi-mount is allowed with **distinct** paths (R63). Each path owns its own engine (single-writer). Remounting gitfs at an already-live path fails closed. |
 | **No `.git/objects` façade (v1)** | Guests do **not** get a synthetic `.git/objects` tree. Object DB stays host-side; worktree + ctl only. |
 | **Unflushed ctl: close write before status** | Ctl Request is written to `/.git/mc/ctl`; Response is read from the out path. Close (or Drop) the write FD **before** reading status / next Response — unflushed guest buffers are invisible to the engine (same class as `hostDir`). |
 | **Remotes need CAP_NET + host_call `git`** | Mount/ctl alone cannot dial. Guest remotes go through `mc_sys_host_call` name `"git"` gated by kernel **CAP_NET**. Ctl remote ops refuse. |
@@ -75,9 +75,10 @@ guest host_call "git"
 
 1. `push.prepare` (local tips as commands)
 2. ListRefs lease (remote `oldHash`)
-3. `GitEngine.pack_build/2` → `.git/agentos/push.pack` (non-delete must be non-empty `PACK…`)
+3. `GitEngine.pack_build/2` (optional `haves:` from lease `old_hash`) → `.git/agentos/push.pack`
+   (non-delete must be non-empty `PACK…`; delete-only may be empty)
 4. Smart-HTTP `git-receive-pack` + report-status
-5. `push.complete` (remote-tracking when remote accepted)
+5. `push.complete` (remote-tracking when remote accepted; skipped for all-zero delete hash)
 
 Read-only mounts reject push with a **stable** stderr (do not paraphrase in callers that match it):
 
@@ -86,8 +87,19 @@ git: push rejected (read-only mount)
 ```
 
 Empty pack on a non-delete push fails closed (`git: empty pack refused for non-delete push`).
+**Delete-ref push** (`args.delete: true | ref | [refs…]`): `newHash` all-zero, empty pack allowed.
+**Thin-pack / haves (R48):** packbuilder hides lease old tips so shared history is omitted.
 Origin allowlist, max pack size, and no-URL-credentials policy apply to push URLs the same as
 fetch/clone. Secrets only in BEAM request headers.
+
+### Partial clone filter (R36)
+
+Clone/fetch accept optional `args.filter` (e.g. `blob:none`, `tree:0`). The host smart-HTTP
+upload-pack request advertises the `filter` capability and sends a `filter <spec>` pkt-line.
+**Limits:** the engine still materializes what the pack contains — there is no on-demand blob
+promisor/fetch for missing objects yet. Servers or fixtures that ignore filter return a full pack
+and continue to work. Prefer shallow `depth` + cone sparse for monorepo workflows until full
+partial materialization lands.
 
 C `smart_http` / C orchestrator (Port type-5) are **test/fixture only** — not the product server
 remote path. Dual-host product orch is **TS (JS) ↔ BEAM (server)** sharing apply-op + algorithm
@@ -122,9 +134,21 @@ mc.create({
   gitEngineBaseUrl: new URL("./git-engine/", import.meta.url).href,
   // registers host_call "git" (process pack cache default), mounts gitfs at /workspace/repo
   // optional cone sparse (multi-pattern; not full sparse language): gitSparseCone: ["src", "docs"],
+  // multi-repo (R63–R65): gitMounts: [{ path: "/workspace/a" }, { path: "/workspace/b", sparseCone: ["src"] }],
+  // remotes demux with args.mount / mount on host_call "git"
   connections: [{ ref: "github.user.work", auth: { kind: "bearer", token }, origins: ["https://github.com"] }],
 });
 ```
+
+### Multi-mount / `args.mount` (R63–R65)
+
+- **JS:** `gitMounts: [{ path, sparseCone? }]` loads one `GitEngine` per path, registers a demuxing
+  `registerGitHostCall` handler, and mounts each gitfs. Remote bodies may set `args.mount` or
+  top-level `mount` to select the engine; omit → `defaultMount` (first entry).
+- **BEAM:** `attach_git(mount_path: …)` may be called multiple times with **distinct** paths.
+  Same path → `{:error, :git_already_attached}`. Host_call `"git"` demuxes the same way.
+- **Never** share one mutable engine across mounts without going through demux (single-writer per
+  engine / Port).
 
 ## `experimentalGitEngine` graduation criteria (P3.2)
 
@@ -137,43 +161,76 @@ on partial progress):
 | 1 | **Origin / connection policy** — empty origins fail closed; credential splice host-only; no secrets in guest/ctl/engine args | **Met in unit/fixture** — bare-URL + empty `allowOrigins` fail closed (JS); dual-host policy tests green; must stay green |
 | 2 | **Pack e2e** — pack import → refs → clone/fetch apply on **both** JS wasm and BEAM Port (`minimal.pack` + golden orch vectors) | **Met (fixture class)** — abi/pack fixtures + `clone_success_steps` / empty-pack / origin_denied goldens on TS + BEAM; live public HTTPS still residual (R4) |
 | 3 | **Push or explicit RO** — packbuilder path on each product host **or** documented RO with stable reject | **Met** — JS + BEAM pack.build + receive-pack push when not read-only; RO mounts reject with stable `git: push rejected (read-only mount)` |
-| 4 | **Single-writer** — one engine queue per gitfs mount; K21 one-mount | **Partial** — bridge/Port serialise engine ops; multi-mount hard-fail enforcement still thin (R66) |
-| 5 | **CAP_NET e2e** — guest without CAP_NET → EPERM; with CAP_NET + allowlist → shallow clone/fetch on JS **and** server attach | **Open (R1–R3)** — unit demux + fixture transport only; **no** booted-guest CAP_NET e2e on either host |
-| 6 | **Metrics / observability** — engine/orch failure counters (PR16), not silent false-green | **Open (R85–R89)** — design only |
+| 4 | **Single-writer** — one engine queue per gitfs mount; K21 one engine per path | **Met (foundation)** — bridge/Port serialise per engine; multi-mount demux + same-path fail-closed (R63–R66) |
+| 5 | **CAP_NET e2e** — guest without CAP_NET → EPERM; with CAP_NET + allowlist → shallow clone/fetch on JS **and** server attach | **Partial** — **JS closed (fixture):** `//memcontainers/sdk-js/core:git_guest_e2e_test` boots loom + `/bin/git` through CAP_NET → MapHostCall `"git"` → FixtureSmartHttp/`minimal.pack` (R1) and CAP_NET deny (R3). **Server full guest-image path still open (R2)**; live HTTPS still R4 |
+| 6 | **Metrics / observability** — engine/orch failure counters (PR16), not silent false-green | **Partial (R85–R88 basic)** — in-process counters exist (see [Metrics](#metrics-pr16)); R89 alerts still open |
 
-**Blocker for graduation:** criterion **5** (guest CAP_NET e2e). Identity inject (K28), shallow
-default `depth=1`, and push server path are **not** substitutes for guest remotes e2e.
+**Blocker for graduation:** criterion **5** still needs **server** guest CAP_NET e2e (R2) in addition to
+the JS fixture path. Identity inject (K28), shallow default `depth=1`, push server path, and basic
+metrics are **not** substitutes. Live public HTTPS (R4) remains optional product proof, not a
+fixture substitute. **Do not graduate** `experimentalGitEngine` while R2/R4/R9 criteria remain open.
 
-Until **all** rows are met (especially R1): flag stays experimental; docs and api-surface must
-**not** claim GA remotes.
+Until **all** rows are met: flag stays experimental; docs and api-surface must **not** claim GA remotes.
 
 ## Residual: full guest CAP_NET e2e (P1.7)
 
-Unit demux for host_call name `"git"` is covered (async claim + fixture transport under `Vm` /
-`attach_git`). **Full guest CAP_NET e2e** (thin `/bin/git` inside a booted guest image through
-kernel CAP_NET to orch) remains **residual** — not a substitute for the unit path above.
+- **JS (fixture class):** closed under `//memcontainers/sdk-js/core:git_guest_e2e_test` — thin
+  `/bin/git` on loom → kernel CAP_NET → host_call `"git"` → TS orch + FixtureSmartHttp +
+  `minimal.pack` → `/workspace/repo` worktree; CAP_NET deny (R3) + gitfs ctl close-then-status (R8).
+  Inject transport via create options `gitHttp` / `gitAllowOrigins` (hermetic; not product egress).
+- **Server:** unit demux + fixture transport under `Vm` / `attach_git` remain; **full guest-image**
+  CAP_NET path is still residual (R2).
+
+## Submodules (R68–R69) — honest surface
+
+**Network submodule ops are not implemented.** The engine never dials; submodule clone/update/init/add
+will be host-mediated later (planned: `host_call` name `"git"` with a recursive flag + apply into
+worktree projection). Until then:
+
+| Op | Behaviour |
+|----|-----------|
+| `{"op":"submodule"}` or `action: "list"` / `"status"` | **List-only** — parse worktree `.gitmodules` (no network); returns `result.submodules` JSON array of `{name,path,url}`. Missing file → empty list. |
+| `action: "update"` / `"init"` / `"add"` / `"clone"` / other | **Fail closed** with stderr stating host-mediated design; **does not** clone or project submodule trees |
+
+Thin CLI does **not** expose `submodule`. Do **not** claim multi-repo submodule network workflows work.
+
+## Metrics (PR16)
+
+Basic in-process counters only (not Prometheus). Never store packs, tokens, or credential material.
+
+| Host | API | Counters |
+|------|-----|----------|
+| **BEAM** | `AgentOS.Git.Metrics.snapshot/0` · `reset/0` · `inc/1` | `clone_ok` / `clone_error`, `fetch_ok` / `fetch_error` (includes pull), `push_ok` / `push_error`, `port_eio`, `rpc_error` |
+| **JS** | `snapshotGitCounters()` · `resetGitCounters()` · `incGitCounter` | `clone_ok` / `clone_error`, `fetch_ok` / `fetch_error`, `push_ok` / `push_error` |
+
+Orch records ok/error after each remote op. Port death ticks `port_eio` on BEAM. **Not yet productized:**
+duration/size histograms, origin/bytes labels, mount-queue depth, server alerts (R89).
 
 ## Env (Node solve / LLB)
 
 Default is **engine-first**. `llb.git` / `materializeLlbGit` require the host emcc engine unless the
-emergency escape hatch is set.
+emergency escape hatch is set. **Only** `MC_GIT_USE_SYSTEM=1` (exact) enables ambient system `git`;
+values like `true` / `0` / empty do **not**.
 
 | Variable | Meaning |
 |----------|---------|
 | `MC_GIT_ENGINE_DIR` | Dir with `git_engine.mjs` + `git_engine.wasm` (**required** for `llb.git` by default) |
 | `MC_GIT_ENGINE_BASE_URL` | Alternate URL form of the same dir |
-| `MC_GIT_PACK_CACHE` | Optional on-disk pack cache dir |
+| `MC_GIT_PACK_CACHE` | Optional on-disk pack cache dir (overrides process memory cache) |
 | `MC_GIT_USE_SYSTEM` | **Emergency only** (`=1`): shell out to ambient system `git` |
 
 Without `MC_GIT_ENGINE_DIR` / `MC_GIT_ENGINE_BASE_URL` and without `MC_GIT_USE_SYSTEM=1`, solve
-**fails closed** (throws; does not silently use system git).
+**fails closed** (throws; does not silently use system git). Product `materializeLlbGit` /
+`nodeSolvePlatformWithEngine` always plumb a **pack cache** by default (process `MemoryPackCache`,
+or disk when `MC_GIT_PACK_CACHE` is set) so interactive remotes and LLB share the same CA pack path.
 
-## c-shared / in-process load (K15)
+## c-shared / in-process load (K15 / R75) — **decided Port**
 
-`//memcontainers/lib/git-engine:libgit_engine` may produce a `.so` packaging artifact. The **product**
-server load path remains the BEAM-owned **Port** binary (`git-engine`) for engine Run/apply/mount,
-plus emcc wasm on JS hosts. In-process c-shared host load is **not** operationalized (PR7d open) —
-not an “immediately after MVP” product path until that lands.
+**Decision (closed residual R75):** product server load remains the BEAM-owned **Port** binary
+(`git-engine`). `//memcontainers/lib/git-engine:libgit_engine` (`.so`) is **packaging-only** (license
+ship set, optional consumers) — **not** an in-process product load path. PR7d is **not** reopened
+for product latency work unless a future explicit decision overturns this. JS hosts continue to use
+emcc wasm.
 
 ## Security rules
 

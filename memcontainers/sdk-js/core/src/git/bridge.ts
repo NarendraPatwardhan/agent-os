@@ -151,13 +151,20 @@ export class GitBridge {
 
   /**
    * Sync WASM ge_pack_build — reachable objects for tip OIDs as a packfile.
+   * Optional `haves` (remote tips already held) shrinks the pack via revwalk hide.
    * Callers that may race must wrap with {@link serial}.
    */
-  packBuild(oids: string[]): Uint8Array {
+  packBuild(oids: string[], haves?: string[]): Uint8Array {
     if (!Array.isArray(oids)) {
       throw new Error("packBuild: oids must be an array of 40-hex strings");
     }
-    const oidsJson = JSON.stringify(oids);
+    const haveList = Array.isArray(haves)
+      ? haves.filter((h) => typeof h === "string" && /^[0-9a-f]{40}$/i.test(h))
+      : [];
+    const oidsJson =
+      haveList.length > 0
+        ? JSON.stringify({ oids, haves: haveList })
+        : JSON.stringify(oids);
     const jsonPtr = cstr(this.mod, oidsJson);
     // wasm32: pointer + size_t are 4 bytes each (out / out_len slots).
     const outPtrSlot = this.mod._malloc(4);

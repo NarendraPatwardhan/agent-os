@@ -82,6 +82,9 @@ export {
   GitRemoteOrchestrator,
   gitHostCallHandler,
   registerGitHostCall,
+  normalizeGitEngineMap,
+  mountFromGitRequest,
+  resolveGitEngineForMount,
   materializeLlbGit,
   createEngineGitSource,
 } from "./git/index.js";
@@ -92,6 +95,8 @@ export type {
   GitEngineLoadOptions,
   GitEngineCreateOptions,
   OrchestratorOptions,
+  GitEngineMountMap,
+  GitHostCallEngines,
   DurableBackend,
 } from "./git/index.js";
 export {

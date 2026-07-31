@@ -94,7 +94,8 @@ cc_binary(
     visibility = ["//visibility:public"],
 )
 
-# PR7d — c-shared packaging (Port remains primary; .so for host load path later).
+# PR7d / R75 — c-shared packaging only. Product load is Port (decided); do not
+# treat :libgit_engine as an in-process server runner.
 cc_shared_library(
     name = "libgit_engine",
     shared_lib_name = "libgit_engine.so",

@@ -436,7 +436,8 @@ int op_push_complete(ge_engine *e, const char *args) {
     char ref[320];
     snprintf(ref, sizeof(ref), "refs/remotes/%s/%s", remote, branch);
     git_oid oid;
-    if (git_oid_fromstr(&oid, hash) == 0) {
+    /* Skip all-zero (delete-ref push): no remote-tracking update to null. */
+    if (git_oid_fromstr(&oid, hash) == 0 && !git_oid_is_zero(&oid)) {
       git_reference *r = NULL;
       git_reference_create(&r, e->repo, ref, &oid, 1, "push.complete");
       if (r)
@@ -569,5 +570,198 @@ int op_sparse_disable(ge_engine *e, const char *args) {
     git_checkout_tree(e->repo, treeish, &opts);
     git_object_free(treeish);
   }
+  return 0;
+}
+
+/* Minimal JSON string escape for submodule list (no control chars; skip them). */
+static void ge_json_escape_str(const char *in, char *out, size_t cap) {
+  size_t o = 0;
+  if (!in)
+    in = "";
+  for (const unsigned char *p = (const unsigned char *)in; *p; p++) {
+    if (o + 2 >= cap)
+      break;
+    if (*p == '"' || *p == '\\') {
+      if (o + 3 >= cap)
+        break;
+      out[o++] = '\\';
+      out[o++] = (char)*p;
+    } else if (*p < 0x20) {
+      continue;
+    } else {
+      out[o++] = (char)*p;
+    }
+  }
+  if (o >= cap)
+    o = cap - 1;
+  out[o] = '\0';
+}
+
+static int ge_submodule_append_entry(char **outp, size_t *usedp, size_t *capp, int *firstp,
+                                     const char *name, const char *path, const char *url) {
+  char esc_name[512], esc_path[1024], esc_url[2048];
+  ge_json_escape_str(name, esc_name, sizeof(esc_name));
+  ge_json_escape_str(path ? path : "", esc_path, sizeof(esc_path));
+  ge_json_escape_str(url ? url : "", esc_url, sizeof(esc_url));
+  char item[4096];
+  int w = snprintf(item, sizeof(item), "%s{\"name\":\"%s\",\"path\":\"%s\",\"url\":\"%s\"}",
+                   *firstp ? "" : ",", esc_name, esc_path, esc_url);
+  if (w < 0 || (size_t)w >= sizeof(item))
+    return -1;
+  if (*usedp + (size_t)w + 2 >= *capp) {
+    size_t ncap = *capp * 2;
+    while (*usedp + (size_t)w + 2 >= ncap)
+      ncap *= 2;
+    char *p = (char *)realloc(*outp, ncap);
+    if (!p)
+      return -1;
+    *outp = p;
+    *capp = ncap;
+  }
+  memcpy(*outp + *usedp, item, (size_t)w);
+  *usedp += (size_t)w;
+  (*outp)[*usedp] = '\0';
+  *firstp = 0;
+  return 0;
+}
+
+/* R68–R69: list-only parse of worktree `.gitmodules` (no network, no checkout).
+ * Network submodule ops stay host-mediated and are refused at the dispatcher. */
+int op_submodule_list(ge_engine *e, char **out_owned) {
+  if (out_owned)
+    *out_owned = NULL;
+  if (ge_ensure_repo(e) != 0)
+    return -1;
+
+  char path[4096];
+  snprintf(path, sizeof(path), "%s/.gitmodules", e->root);
+  FILE *f = fopen(path, "rb");
+  if (!f) {
+    /* No file → empty list (ok), not an error. */
+    char *empty = (char *)malloc(3);
+    if (!empty) {
+      ge_set_err(e, "submodule: out of memory");
+      return -1;
+    }
+    empty[0] = '[';
+    empty[1] = ']';
+    empty[2] = '\0';
+    if (out_owned)
+      *out_owned = empty;
+    else
+      free(empty);
+    return 0;
+  }
+
+  /* Bound parse — product repos should not ship multi-MiB .gitmodules. */
+  char raw[65536];
+  size_t n = fread(raw, 1, sizeof(raw) - 1, f);
+  fclose(f);
+  if (n >= sizeof(raw) - 1) {
+    ge_set_err(e, "submodule: .gitmodules too large");
+    return -1;
+  }
+  raw[n] = '\0';
+
+  size_t cap = 8192;
+  char *out = (char *)malloc(cap);
+  if (!out) {
+    ge_set_err(e, "submodule: out of memory");
+    return -1;
+  }
+  size_t used = 0;
+  out[used++] = '[';
+  out[used] = '\0';
+  int first = 1;
+
+  char cur_name[256] = "";
+  char cur_path[512] = "";
+  char cur_url[1024] = "";
+  int in_sub = 0;
+
+  char *line = raw;
+  while (line && *line) {
+    char *nl = strchr(line, '\n');
+    if (nl)
+      *nl = '\0';
+    size_t llen = strlen(line);
+    if (llen > 0 && line[llen - 1] == '\r')
+      line[--llen] = '\0';
+
+    while (*line == ' ' || *line == '\t')
+      line++;
+
+    if (line[0] == '#' || line[0] == ';' || line[0] == '\0') {
+      /* comment / blank */
+    } else if (line[0] == '[') {
+      if (in_sub && cur_name[0]) {
+        if (ge_submodule_append_entry(&out, &used, &cap, &first, cur_name, cur_path, cur_url) !=
+            0) {
+          free(out);
+          ge_set_err(e, "submodule: out of memory");
+          return -1;
+        }
+      }
+      cur_name[0] = cur_path[0] = cur_url[0] = '\0';
+      in_sub = 0;
+      if (strncmp(line, "[submodule ", 11) == 0) {
+        const char *q1 = strchr(line, '"');
+        if (q1) {
+          q1++;
+          const char *q2 = strchr(q1, '"');
+          if (q2 && (size_t)(q2 - q1) < sizeof(cur_name)) {
+            memcpy(cur_name, q1, (size_t)(q2 - q1));
+            cur_name[q2 - q1] = '\0';
+            in_sub = 1;
+          }
+        }
+      }
+    } else if (in_sub) {
+      char *eq = strchr(line, '=');
+      if (eq) {
+        *eq = '\0';
+        char *key = line;
+        char *val = eq + 1;
+        size_t kl = strlen(key);
+        while (kl > 0 && (key[kl - 1] == ' ' || key[kl - 1] == '\t'))
+          key[--kl] = '\0';
+        while (*val == ' ' || *val == '\t')
+          val++;
+        if (strcmp(key, "path") == 0)
+          snprintf(cur_path, sizeof(cur_path), "%s", val);
+        else if (strcmp(key, "url") == 0)
+          snprintf(cur_url, sizeof(cur_url), "%s", val);
+      }
+    }
+
+    if (!nl)
+      break;
+    line = nl + 1;
+  }
+
+  if (in_sub && cur_name[0]) {
+    if (ge_submodule_append_entry(&out, &used, &cap, &first, cur_name, cur_path, cur_url) != 0) {
+      free(out);
+      ge_set_err(e, "submodule: out of memory");
+      return -1;
+    }
+  }
+
+  if (used + 2 >= cap) {
+    char *p = (char *)realloc(out, used + 4);
+    if (!p) {
+      free(out);
+      ge_set_err(e, "submodule: out of memory");
+      return -1;
+    }
+    out = p;
+  }
+  out[used++] = ']';
+  out[used] = '\0';
+
+  if (out_owned)
+    *out_owned = out;
+  else
+    free(out);
   return 0;
 }

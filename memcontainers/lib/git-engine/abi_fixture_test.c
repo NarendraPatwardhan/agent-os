@@ -224,6 +224,86 @@ static int test_pack_build(ge_engine *e) {
     }
   }
 
+  /* R48: second commit + pack with haves=[parent] must be smaller than full tip pack. */
+  {
+    char *w = ge_run_json(e, "{\"op\":\"write\",\"args\":{\"path\":\"next.txt\","
+                             "\"content\":\"second-layer-payload-for-thin-pack\\n\"}}");
+    if (!w || strstr(w, "\"ok\":true") == NULL) {
+      fprintf(stderr, "write for thin-pack failed\n%s\n", w ? w : "(null)");
+      ge_free(w);
+      return 1;
+    }
+    ge_free(w);
+    char *a = ge_run_json(e, "{\"op\":\"add\",\"args\":{\"path\":\"next.txt\"}}");
+    if (!a || strstr(a, "\"ok\":true") == NULL) {
+      fprintf(stderr, "add for thin-pack failed\n%s\n", a ? a : "(null)");
+      ge_free(a);
+      return 1;
+    }
+    ge_free(a);
+    char *c = ge_run_json(e, "{\"op\":\"commit\",\"args\":{\"message\":\"c2\","
+                             "\"name\":\"T\",\"email\":\"t@t\",\"when_unix\":1700000101}}");
+    if (!c || strstr(c, "\"ok\":true") == NULL) {
+      fprintf(stderr, "commit for thin-pack failed\n%s\n", c ? c : "(null)");
+      ge_free(c);
+      return 1;
+    }
+    ge_free(c);
+
+    char hex2[41] = {0};
+    char *rev2 = ge_run_json(e, "{\"op\":\"rev-parse\",\"args\":{\"rev\":\"HEAD\"}}");
+    if (rev2) {
+      const char *p2 = strstr(rev2, "\"stdout\":\"");
+      if (p2) {
+        p2 += strlen("\"stdout\":\"");
+        size_t i = 0;
+        while (*p2 && *p2 != '"' && *p2 != '\\' && i < 40)
+          hex2[i++] = *p2++;
+        hex2[i] = '\0';
+      }
+      ge_free(rev2);
+    }
+    if (strlen(hex2) != 40 || strcmp(hex2, hex) == 0) {
+      fprintf(stderr, "thin-pack: expected new HEAD oid (got '%s' parent '%s')\n", hex2, hex);
+      return 1;
+    }
+
+    char full_json[96];
+    snprintf(full_json, sizeof(full_json), "[\"%s\"]", hex2);
+    uint8_t *full = NULL;
+    size_t full_len = 0;
+    if (ge_pack_build(e, full_json, &full, &full_len) != 0) {
+      fprintf(stderr, "full pack.build failed: %s\n", ge_last_error(e));
+      return 1;
+    }
+
+    char thin_json[160];
+    snprintf(thin_json, sizeof(thin_json),
+             "{\"oids\":[\"%s\"],\"haves\":[\"%s\"]}", hex2, hex);
+    uint8_t *thin = NULL;
+    size_t thin_len = 0;
+    if (ge_pack_build(e, thin_json, &thin, &thin_len) != 0) {
+      fprintf(stderr, "thin pack.build with haves failed: %s\n", ge_last_error(e));
+      ge_free(full);
+      return 1;
+    }
+    if (!thin || thin_len < 4 || memcmp(thin, "PACK", 4) != 0) {
+      fprintf(stderr, "thin pack missing PACK magic (len=%zu)\n", thin_len);
+      ge_free(full);
+      ge_free(thin);
+      return 1;
+    }
+    if (thin_len >= full_len) {
+      fprintf(stderr, "R48: pack with haves should be smaller (thin=%zu full=%zu)\n", thin_len,
+              full_len);
+      ge_free(full);
+      ge_free(thin);
+      return 1;
+    }
+    ge_free(full);
+    ge_free(thin);
+  }
+
   return 0;
 }
 
@@ -509,6 +589,62 @@ static int test_status_porcelain(ge_engine *e) {
   return 0;
 }
 
+/* R68–R69: list-only .gitmodules parse; network/update fail closed (no dial). */
+static int test_submodule_list_only(ge_engine *e) {
+  /* Empty / missing .gitmodules → ok with empty array. */
+  char *resp = ge_run_json(e, "{\"op\":\"submodule\",\"args\":{\"action\":\"list\"}}");
+  if (!resp || strstr(resp, "\"ok\":true") == NULL) {
+    fprintf(stderr, "submodule list empty fail:\n%s\n", resp ? resp : "(null)");
+    ge_free(resp);
+    return 1;
+  }
+  if (strstr(resp, "[]") == NULL && strstr(resp, "\"submodules\":[]") == NULL) {
+    fprintf(stderr, "submodule list empty missing []:\n%s\n", resp);
+    ge_free(resp);
+    return 1;
+  }
+  ge_free(resp);
+
+  /* Write a classic .gitmodules (worktree file; not committed). */
+  if (expect_ok(e, "{\"op\":\"write\",\"args\":{\"path\":\".gitmodules\","
+                   "\"content\":\"[submodule \\\"lib/foo\\\"]\\n"
+                   "\\tpath = lib/foo\\n"
+                   "\\turl = https://example.com/foo.git\\n"
+                   "[submodule \\\"vendor/bar\\\"]\\n"
+                   "path = vendor/bar\\n"
+                   "url = https://example.com/bar.git\\n\"}}"))
+    return 1;
+
+  resp = ge_run_json(e, "{\"op\":\"submodule\"}");
+  if (!resp || strstr(resp, "\"ok\":true") == NULL) {
+    fprintf(stderr, "submodule default list fail:\n%s\n", resp ? resp : "(null)");
+    ge_free(resp);
+    return 1;
+  }
+  if (strstr(resp, "lib/foo") == NULL || strstr(resp, "vendor/bar") == NULL ||
+      strstr(resp, "example.com/foo") == NULL) {
+    fprintf(stderr, "submodule list missing entries:\n%s\n", resp);
+    ge_free(resp);
+    return 1;
+  }
+  ge_free(resp);
+
+  /* Network / apply actions fail closed with host-mediated message. */
+  if (expect_fail(e, "{\"op\":\"submodule\",\"args\":{\"action\":\"update\"}}",
+                  "host-mediated"))
+    return 1;
+  if (expect_fail(e, "{\"op\":\"submodule\",\"args\":{\"action\":\"init\"}}",
+                  "not implemented"))
+    return 1;
+  if (expect_fail(e, "{\"op\":\"submodule\",\"args\":{\"action\":\"add\"}}",
+                  "host-mediated"))
+    return 1;
+  if (expect_fail(e, "{\"op\":\"submodule\",\"args\":{\"action\":\"clone\"}}",
+                  "host-mediated"))
+    return 1;
+  return 0;
+}
+
 /* R59: multi-pattern string/array + basic !negation written to sparse-checkout. */
 static int test_sparse_set_patterns(ge_engine *e) {
   if (expect_ok(e, "{\"op\":\"sparse-set\",\"args\":{\"patterns\":[\"src\",\"docs\",\"!vendor\"]}}"))
@@ -656,6 +792,10 @@ int main(void) {
 
   /* R59 multi-pattern + negation sparse-set */
   if (test_sparse_set_patterns(e))
+    goto fail;
+
+  /* R68–R69 submodule list-only + network fail-closed */
+  if (test_submodule_list_only(e))
     goto fail;
 
   ge_close(e);

@@ -70,7 +70,7 @@ export function defaultProcessPackCache(): MemoryPackCache {
 }
 
 /**
- * Stable download-key for upload-pack cache (url + wants + haves + depth).
+ * Stable download-key for upload-pack cache (url + wants + haves + depth + filter).
  * Callers must pass a **public** locator (no userinfo / tokens). Auth is never
  * part of the key — credentials are only used at transport time.
  */
@@ -79,6 +79,8 @@ export function uploadPackCacheKey(opts: {
   wants: string[];
   haves?: string[];
   depth?: number;
+  /** Partial clone filter (R36); different filters must not share a cache entry. */
+  filter?: string;
 }): string {
   const wants = opts.wants
     .map((h) => h.toLowerCase())
@@ -90,7 +92,8 @@ export function uploadPackCacheKey(opts: {
     .filter(Boolean)
     .sort()
     .join(",");
-  return `upload-pack:v1:${opts.url}:${wants}:${haves}:d${opts.depth ?? ""}`;
+  const filter = (opts.filter ?? "").trim();
+  return `upload-pack:v1:${opts.url}:${wants}:${haves}:d${opts.depth ?? ""}:f${filter}`;
 }
 
 /** Node disk pack cache under `{dir}/{digest without prefix}`. */

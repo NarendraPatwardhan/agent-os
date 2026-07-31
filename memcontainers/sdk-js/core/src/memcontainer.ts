@@ -812,18 +812,20 @@ async function makeEmbedded(
     sidecars.handleGuestCall(body, context.signal),
   );
 
-  // Host git engine (GIT.md): opt-in loads emcc module, registers MapHostCall "git",
-  // and optionally mounts gitfs at /workspace/repo (K27 default).
+  // Host git engine (GIT.md): opt-in loads emcc module(s), registers MapHostCall "git",
+  // and mounts gitfs (K27 default `/workspace/repo`, or multi via gitMounts — R63–R65).
   // Product orch path: process-scoped pack cache on by default (registerGitHostCall
   // → gitHostCallHandler); cone sparse via gitSparseCone (not full sparse parity).
-  let gitEngine:
-    | {
-        close(): Promise<void>;
-        asMountDriver: (opts?: {
-          sparseCone?: string[];
-        }) => import("./types.js").Driver;
-      }
-    | undefined;
+  // Each mount path owns a distinct GitEngine (single-writer per engine; no shared mutable).
+  type LoadedGitEngine = {
+    path: string;
+    close(): Promise<void>;
+    asMountDriver: (opts?: {
+      sparseCone?: string[];
+    }) => import("./types.js").Driver;
+    sparseCone?: string[];
+  };
+  let gitEngines: LoadedGitEngine[] = [];
   if (opts.experimentalGitEngine) {
     const base = opts.gitEngineBaseUrl;
     if (!base) {
@@ -832,31 +834,74 @@ async function makeEmbedded(
       );
     }
     const { GitEngine, registerGitHostCall } = await import("./git/index.js");
-    const eng = await GitEngine.load({
-      baseUrl: base,
-      sparseCone: opts.gitSparseCone,
-      gitIdentity: opts.gitIdentity,
-    });
+    const mountSpecs =
+      opts.gitMounts && opts.gitMounts.length > 0
+        ? opts.gitMounts
+        : [{ path: "/workspace/repo", sparseCone: opts.gitSparseCone }];
+
+    const seen = new Set<string>();
+    for (const spec of mountSpecs) {
+      const path = String(spec.path || "").trim();
+      if (!path.startsWith("/")) {
+        throw new Error(`gitMounts path must be absolute, got ${JSON.stringify(spec.path)}`);
+      }
+      if (seen.has(path)) {
+        throw new Error(`gitMounts duplicate path ${path} (one engine per mount path)`);
+      }
+      seen.add(path);
+    }
+
+    const engineMap = new Map<
+      string,
+      Awaited<ReturnType<typeof GitEngine.load>>
+    >();
+    for (const spec of mountSpecs) {
+      const path = String(spec.path).trim();
+      const sparse = spec.sparseCone ?? opts.gitSparseCone;
+      const eng = await GitEngine.load({
+        baseUrl: base,
+        sparseCone: sparse,
+        gitIdentity: opts.gitIdentity,
+      });
+      engineMap.set(path, eng);
+      gitEngines.push({
+        path,
+        close: () => eng.close(),
+        asMountDriver: (o) => eng.asMountDriver(o),
+        sparseCone: sparse,
+      });
+    }
+
+    const defaultMount = mountSpecs[0]!.path.trim();
     // packCache defaults on inside gitHostCallHandler (process MemoryPackCache).
     // Bare URL remotes fail closed unless connections bind origins (R32).
-    registerGitHostCall(tools, eng, {
-      connections: opts.connections,
-      policies: opts.policies,
-      sparseCone: opts.gitSparseCone,
-      gitIdentity: opts.gitIdentity,
-    });
-    gitEngine = eng;
+    // Demux: args.mount / mount → engine map (R65).
+    // gitHttp / gitAllowOrigins: hermetic fixture injection for guest CAP_NET e2e.
+    registerGitHostCall(
+      tools,
+      { engines: engineMap, defaultMount },
+      {
+        connections: opts.connections,
+        policies: opts.policies,
+        sparseCone: opts.gitSparseCone,
+        gitIdentity: opts.gitIdentity,
+        ...(opts.gitHttp ? { http: opts.gitHttp } : {}),
+        ...(opts.gitAllowOrigins ? { allowOrigins: opts.gitAllowOrigins } : {}),
+      },
+    );
   }
 
   const backend = new EmbeddedBackend(host, stdout, tools, sidecars, activeBase, store);
-  if (gitEngine) {
-    const eng = gitEngine;
+  if (gitEngines.length > 0) {
+    const loaded = gitEngines;
     const origClose = backend.close.bind(backend);
     backend.close = async () => {
-      try {
-        await eng.close();
-      } catch {
-        /* best-effort */
+      for (const eng of loaded) {
+        try {
+          await eng.close();
+        } catch {
+          /* best-effort */
+        }
       }
       return origClose();
     };
@@ -881,14 +926,13 @@ async function makeEmbedded(
     for (const m of opts.mounts ?? []) {
       await backend.mount(m.path, m.driver, m.readOnly ?? m.driver.readOnly ?? false);
     }
-    // Default gitfs mount when engine is enabled and embedder did not declare one.
-    if (gitEngine) {
-      const gitPath = "/workspace/repo";
-      const declared = (opts.mounts ?? []).some((m) => m.path === gitPath);
+    // Default gitfs mount(s) when engine is enabled and embedder did not declare the path.
+    for (const eng of gitEngines) {
+      const declared = (opts.mounts ?? []).some((m) => m.path === eng.path);
       if (!declared) {
         await backend.mount(
-          gitPath,
-          gitEngine.asMountDriver({ sparseCone: opts.gitSparseCone }),
+          eng.path,
+          eng.asMountDriver({ sparseCone: eng.sparseCone }),
           false,
         );
       }

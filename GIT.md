@@ -318,7 +318,7 @@ flowchart LR
 | Option | Status |
 |--------|--------|
 | **A1 — Native C subprocess Port** | **Server engine MVP (chosen)** — isolation, crash containment |
-| **A2 — Native C c-shared in-process** (`dlopen` / link into host) | **Artifact may exist** (`:libgit_engine`); **product load path not operationalized** (PR7d open). Port remains primary (K15 demoted from “immediately after MVP”) |
+| **A2 — Native C c-shared in-process** (`dlopen` / link into host) | **Packaging-only** (`:libgit_engine` may ship). **Product load is Port** — R75 **decided Port**; PR7d not product-required / not reopened by default |
 | **B — Freestanding ge_* under wasmtime** | **Rejected** — not a product path |
 | **B′ — wasmi guest libgit2/go-git** | **Rejected** |
 | **C — Go NIF / go-git product** | **Rejected** |
@@ -472,10 +472,10 @@ await vm.mount("/workspace/my-app", engine.asMountDriver(), { readOnly: false })
 
 | Rule | Detail |
 |------|--------|
-| **At most one gitfs mount per VM** | v1 product constraint. Second `vm.mount` of a gitfs driver fails closed on the host. |
-| Guest remote host_call | Request is still `{ "op", "args" }`. **`args.mount` optional in v1** and ignored if present unless it equals the sole mount path; mismatch → code 1. |
+| **One gitfs engine per mount path (K21)** | Multi-mount allowed with **distinct** paths. Same path remount/re-attach fails closed. Single-writer **per engine**. |
+| Guest remote host_call | Request is still `{ "op", "args" }`. **`args.mount` or top-level `mount`** demuxes to the engine for that path (R65). Empty mount → default/sole engine. Unknown mount → code 1. |
 | Thin CLI discovery | Walk parents for `/.git/mc/ctl` |
-| Multi-repo (post-v1) | Require `args.mount` on every guest remote host_call |
+| Multi-repo | One Port/process (or JS engine) per mount; demux on host_call `"git"` — never share mutable engine across mounts without lock/demux |
 
 **Local flow:**
 
@@ -780,7 +780,7 @@ Sparse-checkout and partial trees for large repos without loading full history i
 | Command | Notes |
 |---------|--------|
 | `clone` / `fetch` / `pull` / `push` | Host smart-HTTP + engine apply only |
-| `submodule` | Network parts host-mediated; later |
+| `submodule` | **List-only** from `.gitmodules` (no network). `update`/`init`/`add`/`clone` fail closed — host-mediated recursive clone later |
 
 #### Explicitly out of surface
 
@@ -1080,7 +1080,7 @@ libgit2 is **GPL-2.0 with linking exception** (upstream). git-bazel today ships 
 | **K2** | One `Run` ABI (JSON) + binary `ImportPack` / `ge_import_pack` | Faces share semantics; packs stay binary-safe | PR1 |
 | **K3** | **libgit2 1.9.x + thin C `ge_*` facade** (not go-git) | Measured ~0.6 MiB wasm; no gojs; hermetic C | PR0–PR1 |
 | **K4** | **JS → emcc MODULARIZE `createGitEngineModule`** (`git_engine.js`+`.wasm`) | Browser/Node; no gojs / no wasm_exec | PR2 |
-| **K5** | **Server MVP = native hermetic C** subprocess Port; **c-shared is packaging only until load path lands** (PR7d open — not product-required) | Isolation first; in-process is optional latency work | PR7a; PR7d optional |
+| **K5** | **Server MVP = native hermetic C** subprocess Port; **c-shared is packaging only** (R75 decided Port; PR7d not product load) | Isolation first; in-process is optional latency work only if reopened | PR7a; PR7d packaging |
 | **K6** | gitfs via MountFs / Driver / registerRaw | No kernel git ABI | PR4 |
 | **K7** | Thin pure-mc **`/bin/git` standalone** package (`memcontainers/programs/git`), ≤256 KiB | Not multicall; image flavor | PR6 |
 | **K8** | Host-mediated remotes; apply only in engine | Purity + credentials | PR10 |
@@ -1090,13 +1090,13 @@ libgit2 is **GPL-2.0 with linking exception** (upstream). git-bazel today ships 
 | **K12** | Reduced fail-closed CLI | Honest surface | PR6 |
 | **K13** | Reject guest multi‑MiB VCS under wasmi as primary | Architecture | — |
 | **K14** | **Ctl-only for local verbs forever**; remotes **only** host_call `git` + CAP_NET — **never** mount CAP bits for remotes | MountFs write+Drop; capability model | PR5 / PR10 |
-| **K15** | **Server runner = native C Port subprocess** (PR7a). **c-shared** may ship as artifact; **product load path remains Port** until PR7d operationalizes in-process (not scheduled as “immediately after MVP”) | Isolation first; honest packaging vs load path | PR7a; PR7d open |
+| **K15** | **Server runner = native C Port subprocess** (PR7a). **c-shared** may ship as artifact; **product load path is Port** (R75 closed — decided Port; PR7d not reopened by default) | Isolation first; honest packaging vs load path | PR7a; PR7d packaging-only |
 | **K16** | **Product remotes:** **TS orch + smart-HTTP on JS** (browser/Node); **BEAM `:httpc`/`:ssl` orch on server** → dial-free Port apply. **No Node on server, no C TLS, no C product orch.** Shared **algorithm** + golden traces (TS ↔ BEAM) | Matches kernel egress ownership; no second HTTP stack in Port | PR9–PR10c |
 | **K17** | **Synthetic `.git` HEAD/refs/ctl only** — no objects façade in v1 | Enough for CLI/agents | PR5 |
 | **K18** | **Request = `{op,args}` only** — no top-level cwd/author | One root per engine | PR1 |
 | **K19** | **Binary pack path from first remote PR** | Avoid JSON pack bombs | PR10a |
 | **K20** | **One orchestrator algorithm** (spec + golden traces); **TS impl on JS**, **BEAM impl on server** — both hosts share **apply ops** + policy semantics. Network orch language is TS vs BEAM, **not** “C on server” (C smart_http/orch = test/fixture only) | Dual-host without silent drift | PR9–PR10c |
-| **K21** | **v1: at most one gitfs mount per VM** | Avoid demux | PR4 / PR7b |
+| **K21** | **One gitfs engine per mount path** (multi-mount OK with distinct paths; demux via `args.mount`) | Isolation + multi-repo | PR4 / R63–R65 |
 | **K22** | **Control plane: BEAM owns host_call answers + engine Port**; NIF = `BeamHostCall` relay only | Matches `egress_host_call_*` | PR7a–PR7b |
 | **K23** | **No product Go for git** — no rules_go for engine; go-git historical only | Substrate pivot | PR0 |
 | **K24** | **Emcc exports only `ge_*`** (not full `git_*` ABI as product) | Size + stable face | PR2 |
@@ -1264,14 +1264,14 @@ Concrete ordered PRs for the **AgentOS monorepo**. PR0 does **not** assume rules
 | **Depends on** | PR2, PR7a |
 | **Description** | High-risk drift mitigation. |
 
-### PR7d — c-shared server packaging (post-subprocess MVP)
+### PR7d — c-shared server packaging (post-subprocess MVP) — **closed as packaging-only**
 
 | | |
 |--|--|
 | **Title** | `git: c-shared libgit_engine packaging after Port MVP` |
 | **Files** | `cc_shared_library` / host load path; BEAM or NIF-adjacent lifecycle; docs |
 | **Depends on** | PR7a (MVP green) |
-| **Description** | **K15 (honest):** package `libgit_engine.so` if useful; **do not claim product load** until BEAM/host in-process path is wired. Port remains the product server runner. |
+| **Description** | **K15 / R75 (decided Port):** package `libgit_engine.so` if useful for ship/license sets; **do not claim product load**. Port remains the product server runner. In-process c-shared host load is **not** scheduled; reopen only with an explicit product decision. |
 
 ### PR8a — Durability OPFS (browser)
 

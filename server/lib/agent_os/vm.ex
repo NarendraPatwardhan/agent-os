@@ -59,11 +59,11 @@ defmodule AgentOS.Vm do
     :booted_at,
     :last_active_ms,
     :snapshot_base,
-    # Optional BEAM-owned native git-engine Port (GIT.md PR7+ / PR10c demux).
-    :git_engine,
-    :git_engine_mon,
-    git_mount_path: nil,
+    # Multi-mount git (R63–R65 / K21 per path): mount_path => %{pid, mon}.
+    # One Port engine per mount path; single-writer per engine (not shared).
+    git_engines: %{},
     # Host-owned remote policy (never from guest body). See attach_git/2.
+    # Shared across mounts on this VM (policy is host-owned, not per-repo).
     git_allowed_origins: [],
     git_auth: nil,
     # Test-only injectable SmartHttp transport (fixture double).
@@ -72,12 +72,13 @@ defmodule AgentOS.Vm do
     git_require_approval: false,
     git_on_push_approval: nil,
     git_push_approval: false,
-    # Inflight async remote host_calls: handle => Task.t(), ref => handle.
-    # At most one Task runs at a time; further remotes wait in git_remote_queue
-    # so clone/fetch import+apply steps cannot interleave on the shared Port.
+    # Inflight async remote host_calls: handle => %{task, mount}.
+    # Per-mount single-writer: remotes for the same mount serialize; different
+    # mounts may run in parallel (each engine has its own Port).
     git_tasks: %{},
     git_task_refs: %{},
-    git_remote_queue: [],
+    # mount_path => [{handle, body}]
+    git_remote_queue: %{},
     shell_log: "",
     shell_base: 0
   ]
@@ -448,29 +449,38 @@ defmodule AgentOS.Vm do
   * `:on_push_approval` / `:push_approval` / `:require_approval` — push approval
     opts forwarded to `AgentOS.Git.Orchestrator` via host_call demux (R31).
 
-  **K21 / R66:** at most one git engine per VM. If a live engine is already
-  attached, returns `{:error, :git_already_attached}` without opening a second
-  Port. Call `detach_git/2` first to replace.
+  **K21 / R63–R66:** one engine **per mount path**. A second attach with a
+  **different** `mount_path` succeeds (multi-repo). Same path while live returns
+  `{:error, :git_already_attached}` without opening another Port. Call
+  `detach_git/2` with `:mount_path` to replace one mount, or without to detach all.
   """
   @spec attach_git(server(), keyword()) :: :ok | {:error, term()}
   def attach_git(server, opts \\ []) when is_list(opts),
     do: GenServer.call(server, {:attach_git, opts}, timeout(opts))
 
-  @doc "Detach and stop the git-engine Port for this VM; fail inflight remote handles."
+  @doc """
+  Detach and stop git-engine Port(s) for this VM; fail inflight remote handles.
+
+  Options:
+  * `:mount_path` — detach only that mount; omit to detach **all** engines.
+  """
   @spec detach_git(server(), keyword()) :: :ok
-  def detach_git(server, opts \\ []),
-    do: GenServer.call(server, :detach_git, timeout(opts))
+  def detach_git(server, opts \\ []) when is_list(opts),
+    do: GenServer.call(server, {:detach_git, opts}, timeout(opts))
 
   @doc """
-  If `event` is a host_call (or host_call_close) for name `\"git\"` or this VM's
-  gitfs mount path, claim it and return `:answered`.
+  If `event` is a host_call (or host_call_close) for name `\"git\"` or a gitfs
+  mount path on this VM, claim it and return `:answered`.
 
   * `name == \"git\"` (remote orch / HTTPS) is **async**: spawn under
     `AgentOS.SidecarTaskSupervisor`, return immediately, then answer via
     `egress_host_call_respond/3` or fail the handle. Host opts come from
     `attach_git/2` (origins/auth/transport) — never from the guest body.
-    **At most one remote Task runs per VM** — further remotes enqueue so
-    Orchestrator import+apply cannot interleave on the shared git-engine Port.
+    Body may include `args.mount` / top-level `mount` to demux to the engine
+    for that path (R65); empty mount uses the sole engine or the first attached.
+    **At most one remote Task runs per mount** — further remotes for the same
+    mount enqueue so import+apply cannot interleave on that Port. Distinct mounts
+    may run in parallel (separate engines).
   * Mount-path host_calls (gitfs type-4) stay **synchronous** so single-writer
     Port ordering is preserved.
   * `host_call_close` for name `\"git\"` cancels the inflight Task (or drops a
@@ -660,14 +670,13 @@ defmodule AgentOS.Vm do
                   booted_at: now,
                   last_active_ms: now,
                   snapshot_base: base,
-                  git_engine: nil,
-                  git_mount_path: nil,
+                  git_engines: %{},
                   git_allowed_origins: [],
                   git_auth: nil,
                   git_transport: nil,
                   git_tasks: %{},
                   git_task_refs: %{},
-                  git_remote_queue: []
+                  git_remote_queue: %{}
                 }
 
                 case maybe_attach_git_on_boot(state0, opts) do
@@ -890,8 +899,8 @@ defmodule AgentOS.Vm do
     end
   end
 
-  def handle_call(:detach_git, _from, state) do
-    {:reply, :ok, touch(do_detach_git(state))}
+  def handle_call({:detach_git, opts}, _from, state) do
+    {:reply, :ok, touch(do_detach_git(state, opts))}
   end
 
   def handle_call({:try_answer_git_host_call, event}, _from, state) do
@@ -904,19 +913,25 @@ defmodule AgentOS.Vm do
 
   def handle_call(:info, _from, state) do
     tasks = state.git_tasks || %{}
-    queue = state.git_remote_queue || []
+    queue_map = state.git_remote_queue || %{}
+    queued = queue_map |> Map.values() |> Enum.map(&length/1) |> Enum.sum()
+    mounts = git_mount_paths(state)
+    primary = List.first(mounts)
 
     {:reply,
      %{
        id: state.id,
        booted_at: state.booted_at,
        idle_ms: now_ms() - state.last_active_ms,
-       git_attached: is_pid(state.git_engine) and Process.alive?(state.git_engine),
-       git_mount_path: state.git_mount_path,
-       # Running Task + queued remotes (single-writer honesty).
-       git_inflight: map_size(tasks) + length(queue),
+       git_attached: mounts != [],
+       # Compat: primary/first mount path (multi-mount: see git_mounts).
+       git_mount_path: primary,
+       git_mounts: mounts,
+       git_engine_count: length(mounts),
+       # Running Task + queued remotes (per-mount single-writer honesty).
+       git_inflight: map_size(tasks) + queued,
        git_remote_running: map_size(tasks),
-       git_remote_queued: length(queue),
+       git_remote_queued: queued,
        git_allowed_origins: state.git_allowed_origins || []
      }, state}
   end
@@ -1126,60 +1141,72 @@ defmodule AgentOS.Vm do
   end
 
   defp do_attach_git(state, opts) do
-    # K21 / R66: fail closed while a live engine is attached — do not open a
-    # second Port (would leak). Caller must detach_git first.
-    if is_pid(state.git_engine) and Process.alive?(state.git_engine) do
-      {:error, :git_already_attached}
-    else
-      # Clear half-dead refs (crashed engine) without claiming a second Port first.
-      state = do_detach_git(state)
-      mount_path = Keyword.get(opts, :mount_path, "/workspace/repo")
-      allowed = git_allowed_origins_from_opts(opts)
-      auth = Keyword.get(opts, :auth)
-      transport = Keyword.get(opts, :transport)
+    mount_path = Keyword.get(opts, :mount_path, "/workspace/repo")
+    engines = state.git_engines || %{}
 
-      identity = Keyword.get(opts, :identity) || Keyword.get(opts, :git_identity)
+    # K21: one engine per mount path. Same path while live fails closed (R66).
+    # Distinct paths are allowed (R63 multi-mount).
+    case Map.get(engines, mount_path) do
+      %{pid: pid} when is_pid(pid) ->
+        if Process.alive?(pid) do
+          {:error, :git_already_attached}
+        else
+          # Half-dead entry for this path — clear then attach.
+          state = do_detach_git(state, mount_path: mount_path)
+          do_attach_git_new(state, opts, mount_path)
+        end
 
-      require_approval = Keyword.get(opts, :require_approval, false) == true
-      on_push_approval = Keyword.get(opts, :on_push_approval)
-      push_approval = Keyword.get(opts, :push_approval, false) == true
+      _ ->
+        do_attach_git_new(state, opts, mount_path)
+    end
+  end
 
-      # Unlinked start + monitor so engine crash does not kill the VM actor.
-      case AgentOS.GitEngine.start(
-             executable: Keyword.get(opts, :executable),
-             root: Keyword.get(opts, :root),
-             mount_path: mount_path,
-             identity: identity
-           ) do
-        {:ok, pid} ->
-          ref = Process.monitor(pid)
-          read_only = Keyword.get(opts, :read_only, false)
+  defp do_attach_git_new(state, opts, mount_path) do
+    allowed = git_allowed_origins_from_opts(opts)
+    auth = Keyword.get(opts, :auth)
+    transport = Keyword.get(opts, :transport)
+    identity = Keyword.get(opts, :identity) || Keyword.get(opts, :git_identity)
+    require_approval = Keyword.get(opts, :require_approval, false) == true
+    on_push_approval = Keyword.get(opts, :on_push_approval)
+    push_approval = Keyword.get(opts, :push_approval, false) == true
 
-          case Nif.mount(state.nif, mount_path, read_only) do
-            :ok ->
-              {:ok,
-               %{
-                 state
-                 | git_engine: pid,
-                   git_mount_path: mount_path,
-                   git_engine_mon: ref,
-                   git_allowed_origins: allowed,
-                   git_auth: auth,
-                   git_transport: transport,
-                   git_require_approval: require_approval,
-                   git_on_push_approval: on_push_approval,
-                   git_push_approval: push_approval
-               }}
+    # Unlinked start + monitor so engine crash does not kill the VM actor.
+    case AgentOS.GitEngine.start(
+           executable: Keyword.get(opts, :executable),
+           root: Keyword.get(opts, :root),
+           mount_path: mount_path,
+           identity: identity
+         ) do
+      {:ok, pid} ->
+        ref = Process.monitor(pid)
+        read_only = Keyword.get(opts, :read_only, false)
 
-            {:error, reason} ->
-              Process.demonitor(ref, [:flush])
-              _ = AgentOS.GitEngine.stop(pid)
-              {:error, reason}
-          end
+        case Nif.mount(state.nif, mount_path, read_only) do
+          :ok ->
+            engines =
+              Map.put(state.git_engines || %{}, mount_path, %{pid: pid, mon: ref})
 
-        {:error, reason} ->
-          {:error, reason}
-      end
+            # Latest attach refreshes shared host policy (origins/auth/transport).
+            {:ok,
+             %{
+               state
+               | git_engines: engines,
+                 git_allowed_origins: allowed,
+                 git_auth: auth,
+                 git_transport: transport,
+                 git_require_approval: require_approval,
+                 git_on_push_approval: on_push_approval,
+                 git_push_approval: push_approval
+             }}
+
+          {:error, reason} ->
+            Process.demonitor(ref, [:flush])
+            _ = AgentOS.GitEngine.stop(pid)
+            {:error, reason}
+        end
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -1202,67 +1229,274 @@ defmodule AgentOS.Vm do
     end
   end
 
-  defp do_detach_git(state) do
-    state = cancel_git_tasks(state)
-    mon = Map.get(state, :git_engine_mon)
-    pid = Map.get(state, :git_engine)
-    path = Map.get(state, :git_mount_path)
+  defp do_detach_git(state, opts) when is_list(opts) do
+    case Keyword.get(opts, :mount_path) do
+      path when is_binary(path) ->
+        do_detach_git_one(state, path)
 
-    if is_reference(mon), do: Process.demonitor(mon, [:flush])
-    if is_binary(path), do: _ = Nif.unmount(state.nif, path)
-    if is_pid(pid) and Process.alive?(pid), do: _ = AgentOS.GitEngine.stop(pid)
+      _ ->
+        # Detach all mounts (including half-dead map entries).
+        paths = Map.keys(state.git_engines || %{})
 
-    %{
-      state
-      | git_engine: nil,
-        git_mount_path: nil,
-        git_engine_mon: nil,
-        git_allowed_origins: [],
-        git_auth: nil,
-        git_transport: nil,
-        git_require_approval: false,
-        git_on_push_approval: nil,
-        git_push_approval: false,
-        git_remote_queue: []
-    }
+        state =
+          Enum.reduce(paths, state, fn path, acc ->
+            do_detach_git_one(acc, path)
+          end)
+
+        state = cancel_git_tasks_all(state)
+
+        %{
+          state
+          | git_engines: %{},
+            git_allowed_origins: [],
+            git_auth: nil,
+            git_transport: nil,
+            git_require_approval: false,
+            git_on_push_approval: nil,
+            git_push_approval: false,
+            git_remote_queue: %{}
+        }
+    end
+  end
+
+  defp do_detach_git_one(state, path) when is_binary(path) do
+    engines = state.git_engines || %{}
+
+    case Map.pop(engines, path) do
+      {nil, _} ->
+        state
+
+      {%{pid: pid, mon: mon}, rest} ->
+        state = cancel_git_tasks_for_mount(state, path)
+        if is_reference(mon), do: Process.demonitor(mon, [:flush])
+        _ = Nif.unmount(state.nif, path)
+        if is_pid(pid) and Process.alive?(pid), do: _ = AgentOS.GitEngine.stop(pid)
+
+        queue = Map.delete(state.git_remote_queue || %{}, path)
+        %{state | git_engines: rest, git_remote_queue: queue}
+    end
+  end
+
+  defp git_mount_paths(state) do
+    (state.git_engines || %{})
+    |> Enum.filter(fn {_path, meta} ->
+      pid = Map.get(meta, :pid)
+      is_pid(pid) and Process.alive?(pid)
+    end)
+    |> Enum.map(fn {path, _} -> path end)
+    |> Enum.sort()
+  end
+
+  defp git_engine_pid(state, path) when is_binary(path) do
+    case Map.get(state.git_engines || %{}, path) do
+      %{pid: pid} when is_pid(pid) ->
+        if Process.alive?(pid), do: {:ok, pid}, else: :error
+
+      _ ->
+        :error
+    end
+  end
+
+  defp git_default_mount(state) do
+    case git_mount_paths(state) do
+      [only] -> only
+      [first | _] -> first
+      [] -> nil
+    end
+  end
+
+  defp git_engine_for_mount_name(state, name) when is_binary(name) do
+    case git_engine_pid(state, name) do
+      {:ok, pid} -> {:ok, pid, name}
+      :error -> :error
+    end
+  end
+
+  # R65: extract mount from body JSON (`args.mount` or top-level `mount`).
+  defp mount_from_git_body(body) when is_binary(body) do
+    case safe_json_decode_mount(body) do
+      mount when is_binary(mount) and mount != "" -> {:ok, mount}
+      _ -> :default
+    end
+  end
+
+  defp safe_json_decode_mount(bin) do
+    # Prefer OTP :json when present; fall back to a small regex for mount only
+    # so demux works on OTP 26 (where :json may be unavailable).
+    mount =
+      try do
+        term = :json.decode(bin)
+        map = json_keys_to_string(term)
+
+        if is_map(map) do
+          top = Map.get(map, "mount")
+          args = Map.get(map, "args")
+
+          cond do
+            is_binary(top) and String.trim(top) != "" ->
+              String.trim(top)
+
+            is_map(args) ->
+              m = Map.get(args, "mount")
+              if is_binary(m) and String.trim(m) != "", do: String.trim(m), else: nil
+
+            true ->
+              nil
+          end
+        else
+          nil
+        end
+      rescue
+        _ -> nil
+      end
+
+    mount || regex_mount_from_body(bin)
+  end
+
+  # Best-effort: "mount":"/path" at top-level or under args (OTP 26 without :json).
+  defp regex_mount_from_body(bin) when is_binary(bin) do
+    # Prefer args.mount (more specific) then top-level mount.
+    patterns = [
+      ~r/"args"\s*:\s*\{[^}]*"mount"\s*:\s*"([^"]+)"/s,
+      ~r/"mount"\s*:\s*"([^"]+)"/
+    ]
+
+    Enum.find_value(patterns, fn re ->
+      case Regex.run(re, bin) do
+        [_, m] when is_binary(m) and m != "" -> m
+        _ -> nil
+      end
+    end)
+  end
+
+  defp json_keys_to_string(map) when is_map(map) do
+    Map.new(map, fn
+      {k, v} when is_atom(k) -> {Atom.to_string(k), json_keys_to_string(v)}
+      {k, v} when is_binary(k) -> {k, json_keys_to_string(v)}
+      {k, v} -> {k, json_keys_to_string(v)}
+    end)
+  end
+
+  defp json_keys_to_string(list) when is_list(list), do: Enum.map(list, &json_keys_to_string/1)
+  defp json_keys_to_string(other), do: other
+
+  # Resolve engine for a remote host_call body.
+  defp resolve_git_remote_engine(state, body) do
+    mounts = git_mount_paths(state)
+
+    case mounts do
+      [] ->
+        {:error, :no_engine}
+
+      _ ->
+        case mount_from_git_body(body) do
+          {:ok, mount} ->
+            case git_engine_pid(state, mount) do
+              {:ok, pid} ->
+                {:ok, pid, mount}
+
+              :error ->
+                {:error, {:unknown_mount, mount}}
+            end
+
+          :default ->
+            case git_default_mount(state) do
+              nil ->
+                {:error, :no_engine}
+
+              mount ->
+                case git_engine_pid(state, mount) do
+                  {:ok, pid} -> {:ok, pid, mount}
+                  :error -> {:error, :no_engine}
+                end
+            end
+        end
+    end
   end
 
   # Fail outstanding remote handles and kill tasks so they cannot double-respond.
-  # Also fails any queued (not-yet-started) remote handles.
-  defp cancel_git_tasks(state) do
+  defp cancel_git_tasks_all(state) do
     tasks = state.git_tasks || %{}
-    queue = state.git_remote_queue || []
+    queue_map = state.git_remote_queue || %{}
 
-    Enum.each(tasks, fn {handle, task} ->
+    Enum.each(tasks, fn {handle, meta} ->
+      task = task_of_meta(meta)
       if is_reference(task.ref), do: Process.demonitor(task.ref, [:flush])
       Task.shutdown(task, :brutal_kill)
       _ = Nif.relay_host_call_fail(state.nif, handle)
     end)
 
+    Enum.each(queue_map, fn {_mount, queue} ->
+      Enum.each(queue, fn {handle, _body} ->
+        _ = Nif.relay_host_call_fail(state.nif, handle)
+      end)
+    end)
+
+    %{state | git_tasks: %{}, git_task_refs: %{}, git_remote_queue: %{}}
+  end
+
+  defp cancel_git_tasks_for_mount(state, mount) when is_binary(mount) do
+    tasks = state.git_tasks || %{}
+    queue_map = state.git_remote_queue || %{}
+
+    {keep, drop} =
+      Enum.split_with(tasks, fn {_handle, meta} -> mount_of_meta(meta) != mount end)
+
+    Enum.each(drop, fn {handle, meta} ->
+      task = task_of_meta(meta)
+      if is_reference(task.ref), do: Process.demonitor(task.ref, [:flush])
+      Task.shutdown(task, :brutal_kill)
+      _ = Nif.relay_host_call_fail(state.nif, handle)
+    end)
+
+    refs =
+      Enum.reduce(drop, state.git_task_refs || %{}, fn {_handle, meta}, acc ->
+        Map.delete(acc, task_of_meta(meta).ref)
+      end)
+
+    queue = Map.get(queue_map, mount, [])
+
     Enum.each(queue, fn {handle, _body} ->
       _ = Nif.relay_host_call_fail(state.nif, handle)
     end)
 
-    %{state | git_tasks: %{}, git_task_refs: %{}, git_remote_queue: []}
+    %{
+      state
+      | git_tasks: Map.new(keep),
+        git_task_refs: refs,
+        git_remote_queue: Map.delete(queue_map, mount)
+    }
   end
+
+  defp task_of_meta(%{task: task}), do: task
+  defp task_of_meta(task), do: task
+
+  defp mount_of_meta(%{mount: mount}), do: mount
+  defp mount_of_meta(_), do: nil
 
   # R100: cancel one inflight/queued remote by handle (host_call_close).
   # Mirrors sidecar: kill Task, drop queue entry; do not double-respond.
   defp cancel_git_handle(state, handle) when is_integer(handle) do
     tasks = state.git_tasks || %{}
-    queue = state.git_remote_queue || []
+    queue_map = state.git_remote_queue || %{}
 
     case Map.pop(tasks, handle) do
       {nil, _tasks} ->
-        new_queue = Enum.reject(queue, fn {h, _body} -> h == handle end)
+        new_queue =
+          Map.new(queue_map, fn {mount, queue} ->
+            {mount, Enum.reject(queue, fn {h, _body} -> h == handle end)}
+          end)
+
         %{state | git_remote_queue: new_queue}
 
-      {task, rest} ->
+      {meta, rest} ->
+        task = task_of_meta(meta)
+        mount = mount_of_meta(meta)
         if is_reference(task.ref), do: Process.demonitor(task.ref, [:flush])
         Task.shutdown(task, :brutal_kill)
         refs = Map.delete(state.git_task_refs || %{}, task.ref)
         state = %{state | git_tasks: rest, git_task_refs: refs}
-        maybe_start_next_git_remote(state)
+        maybe_start_next_git_remote(state, mount)
     end
   end
 
@@ -1307,13 +1541,11 @@ defmodule AgentOS.Vm do
          %{kind: :host_call_close, handle: handle, name: name}
        )
        when is_integer(handle) and is_binary(name) do
-    mount = state.git_mount_path
-
     cond do
       name == "git" ->
         {:answered, cancel_git_handle(state, handle)}
 
-      is_binary(mount) and name == mount ->
+      match?({:ok, _, _}, git_engine_for_mount_name(state, name)) ->
         # Mount ops are sync; nothing to cancel, but claim the close.
         {:answered, state}
 
@@ -1325,48 +1557,74 @@ defmodule AgentOS.Vm do
   # Remote orch (`name == "git"`) is async so HTTPS cannot freeze the VM actor.
   # Mount-path host_calls stay sync (single-writer Port ordering).
   defp answer_git_event(
-         %{git_engine: pid} = state,
+         state,
          %{kind: :host_call, handle: handle, name: name, body: body}
        )
-       when is_pid(pid) and is_integer(handle) and is_binary(name) and is_binary(body) do
+       when is_integer(handle) and is_binary(name) and is_binary(body) do
+    engines = state.git_engines || %{}
+
     cond do
-      not Process.alive?(pid) ->
-        _ = Nif.relay_host_call_fail(state.nif, handle)
-        {:answered, do_detach_git(state)}
+      engines == %{} ->
+        :unclaimed
 
       name == "git" ->
-        answer_git_remote_async(state, pid, handle, body)
+        answer_git_remote_async(state, handle, body)
 
       true ->
-        answer_git_mount_sync(state, pid, handle, name, body)
+        case git_engine_for_mount_name(state, name) do
+          {:ok, pid, mount} ->
+            answer_git_mount_sync(state, pid, handle, name, body, mount)
+
+          :error ->
+            :unclaimed
+        end
     end
   end
 
   defp answer_git_event(_state, _event), do: :unclaimed
 
-  # Single-writer remote queue: only one Orchestrator.run/3 Task per VM at a time.
-  # Additional remotes enqueue so import_pack + refs/clone.apply cannot interleave.
-  defp answer_git_remote_async(state, pid, handle, body) do
+  # Per-mount single-writer remote queue (R63/R64).
+  defp answer_git_remote_async(state, handle, body) do
     tasks = state.git_tasks || %{}
-    queue = state.git_remote_queue || []
+    queue_map = state.git_remote_queue || %{}
 
     already? =
-      Map.has_key?(tasks, handle) or Enum.any?(queue, fn {h, _b} -> h == handle end)
+      Map.has_key?(tasks, handle) or
+        Enum.any?(queue_map, fn {_m, q} -> Enum.any?(q, fn {h, _} -> h == handle end) end)
 
-    cond do
-      already? ->
-        # Already claimed — do not double-queue or double-respond.
-        {:answered, state}
+    if already? do
+      {:answered, state}
+    else
+      case resolve_git_remote_engine(state, body) do
+        {:ok, pid, mount} ->
+          running_for_mount? =
+            Enum.any?(tasks, fn {_h, meta} -> mount_of_meta(meta) == mount end)
 
-      map_size(tasks) == 0 ->
-        {:answered, start_git_remote_task(state, pid, handle, body)}
+          if running_for_mount? do
+            queue = Map.get(queue_map, mount, [])
 
-      true ->
-        {:answered, %{state | git_remote_queue: queue ++ [{handle, body}]}}
+            {:answered,
+             %{state | git_remote_queue: Map.put(queue_map, mount, queue ++ [{handle, body}])}}
+          else
+            {:answered, start_git_remote_task(state, pid, handle, body, mount)}
+          end
+
+        {:error, :no_engine} ->
+          _ = Nif.relay_host_call_fail(state.nif, handle)
+          {:answered, state}
+
+        {:error, {:unknown_mount, _mount}} ->
+          # Fail closed with a stable JSON response (not a raw NIF fail).
+          json =
+            ~s({"ok":false,"code":1,"stdout":"","stderr":"git: unknown mount\\n"})
+
+          _ = Nif.relay_host_call_respond(state.nif, handle, json)
+          {:answered, state}
+      end
     end
   end
 
-  defp start_git_remote_task(state, pid, handle, body) do
+  defp start_git_remote_task(state, pid, handle, body, mount) do
     orch_opts = git_host_opts(state)
 
     # async_nolink → owner receives {ref, result} then DOWN; NIF answer stays on Vm.
@@ -1376,42 +1634,55 @@ defmodule AgentOS.Vm do
         {handle, result}
       end)
 
+    meta = %{task: task, mount: mount}
+
     %{
       state
-      | git_tasks: Map.put(state.git_tasks || %{}, handle, task),
+      | git_tasks: Map.put(state.git_tasks || %{}, handle, meta),
         git_task_refs: Map.put(state.git_task_refs || %{}, task.ref, handle)
     }
   end
 
-  # After the running remote Task finishes (or crashes), start the next queued one.
-  defp maybe_start_next_git_remote(state) do
+  # After a remote Task for `mount` finishes, start the next queued for that mount.
+  defp maybe_start_next_git_remote(state, nil) do
+    # Drain all mounts that have idle engines with queued work.
+    (state.git_remote_queue || %{})
+    |> Map.keys()
+    |> Enum.reduce(state, fn m, acc -> maybe_start_next_git_remote(acc, m) end)
+  end
+
+  defp maybe_start_next_git_remote(state, mount) when is_binary(mount) do
     tasks = state.git_tasks || %{}
-    queue = state.git_remote_queue || []
-    pid = state.git_engine
+    queue_map = state.git_remote_queue || %{}
+    queue = Map.get(queue_map, mount, [])
+
+    running? = Enum.any?(tasks, fn {_h, meta} -> mount_of_meta(meta) == mount end)
 
     cond do
-      map_size(tasks) > 0 ->
+      running? ->
         state
 
       queue == [] ->
         state
 
-      is_nil(pid) or not Process.alive?(pid) ->
-        # Engine gone — fail remaining queue closed.
-        Enum.each(queue, fn {handle, _body} ->
-          _ = Nif.relay_host_call_fail(state.nif, handle)
-        end)
-
-        %{state | git_remote_queue: []}
-
       true ->
-        [{handle, body} | rest] = queue
-        state = %{state | git_remote_queue: rest}
-        start_git_remote_task(state, pid, handle, body)
+        case git_engine_pid(state, mount) do
+          {:ok, pid} ->
+            [{handle, body} | rest] = queue
+            state = %{state | git_remote_queue: Map.put(queue_map, mount, rest)}
+            start_git_remote_task(state, pid, handle, body, mount)
+
+          :error ->
+            Enum.each(queue, fn {handle, _body} ->
+              _ = Nif.relay_host_call_fail(state.nif, handle)
+            end)
+
+            %{state | git_remote_queue: Map.delete(queue_map, mount)}
+        end
     end
   end
 
-  defp answer_git_mount_sync(state, pid, handle, name, body) do
+  defp answer_git_mount_sync(state, pid, handle, name, body, mount) do
     case AgentOS.GitEngine.handle_host_call(pid, name, body, []) do
       {:ok, result} when is_binary(result) ->
         case Nif.relay_host_call_respond(state.nif, handle, result) do
@@ -1424,7 +1695,7 @@ defmodule AgentOS.Vm do
 
       {:error, :eio} ->
         _ = Nif.relay_host_call_fail(state.nif, handle)
-        {:answered, do_detach_git(state)}
+        {:answered, do_detach_git(state, mount_path: mount)}
 
       {:error, _reason} ->
         _ = Nif.relay_host_call_fail(state.nif, handle)
@@ -1433,13 +1704,19 @@ defmodule AgentOS.Vm do
   end
 
   defp finish_git_task(state, ref, handle, result) do
-    tasks = Map.delete(state.git_tasks || %{}, handle)
+    tasks = state.git_tasks || %{}
+    meta = Map.get(tasks, handle)
+    mount = mount_of_meta(meta)
+    tasks = Map.delete(tasks, handle)
     refs = Map.delete(state.git_task_refs || %{}, ref)
     state = %{state | git_tasks: tasks, git_task_refs: refs}
 
+    engine_live? =
+      is_binary(mount) and match?({:ok, _}, git_engine_pid(state, mount))
+
     # Drop result if engine was detached while the task ran (handle already failed).
     state =
-      if is_nil(state.git_engine) do
+      if not engine_live? do
         state
       else
         case result do
@@ -1449,7 +1726,7 @@ defmodule AgentOS.Vm do
 
           {:error, :eio} ->
             _ = Nif.relay_host_call_fail(state.nif, handle)
-            do_detach_git(state)
+            do_detach_git(state, mount_path: mount)
 
           {:error, _reason} ->
             _ = Nif.relay_host_call_fail(state.nif, handle)
@@ -1461,7 +1738,7 @@ defmodule AgentOS.Vm do
         end
       end
 
-    maybe_start_next_git_remote(state)
+    maybe_start_next_git_remote(state, mount)
   end
 
   @impl true
@@ -1475,38 +1752,47 @@ defmodule AgentOS.Vm do
     end
   end
 
-  def handle_info(
-        {:DOWN, mon, :process, pid, _reason},
-        %{git_engine: pid, git_engine_mon: mon} = state
-      ) do
-    # Port owner died — unmount, cancel inflight remotes, clear state.
-    {:noreply, do_detach_git(state)}
-  end
+  def handle_info({:DOWN, mon, :process, pid, _reason}, state)
+      when is_reference(mon) and is_pid(pid) do
+    # Match git-engine Port death by monitor ref.
+    case Enum.find(state.git_engines || %{}, fn {_path, meta} ->
+           Map.get(meta, :mon) == mon and Map.get(meta, :pid) == pid
+         end) do
+      {path, _} ->
+        {:noreply, touch(do_detach_git(state, mount_path: path))}
 
-  def handle_info({:DOWN, ref, :process, _pid, _reason}, %{git_task_refs: refs} = state)
-      when is_reference(ref) and is_map(refs) do
-    case Map.pop(refs, ref) do
-      {nil, _refs} ->
-        {:noreply, state}
-
-      {handle, next_refs} ->
-        # Task crashed before returning a result — fail the handle closed.
-        tasks = Map.delete(state.git_tasks || %{}, handle)
-
-        if not is_nil(state.git_engine) do
-          _ = Nif.relay_host_call_fail(state.nif, handle)
-        end
-
-        state = %{state | git_tasks: tasks, git_task_refs: next_refs}
-        {:noreply, touch(maybe_start_next_git_remote(state))}
+      nil ->
+        handle_git_task_down(state, mon)
     end
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
 
+  defp handle_git_task_down(%{git_task_refs: refs} = state, ref)
+       when is_reference(ref) and is_map(refs) do
+    case Map.pop(refs, ref) do
+      {nil, _refs} ->
+        {:noreply, state}
+
+      {handle, next_refs} ->
+        meta = Map.get(state.git_tasks || %{}, handle)
+        mount = mount_of_meta(meta)
+        tasks = Map.delete(state.git_tasks || %{}, handle)
+
+        if is_binary(mount) and match?({:ok, _}, git_engine_pid(state, mount)) do
+          _ = Nif.relay_host_call_fail(state.nif, handle)
+        end
+
+        state = %{state | git_tasks: tasks, git_task_refs: next_refs}
+        {:noreply, touch(maybe_start_next_git_remote(state, mount))}
+    end
+  end
+
+  defp handle_git_task_down(state, _ref), do: {:noreply, state}
+
   @impl true
   def terminate(_reason, state) do
-    _ = do_detach_git(state)
+    _ = do_detach_git(state, [])
     :ok
   end
 

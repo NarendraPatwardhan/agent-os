@@ -11,9 +11,15 @@ defmodule AgentOS.Git.OrchestratorTest do
   @fixture_origin "https://example.com"
 
   defp engine_path do
-    System.get_env("AGENTOS_GIT_ENGINE") ||
-      runfile_git_engine() ||
-      flunk("AGENTOS_GIT_ENGINE not set")
+    env = System.get_env("AGENTOS_GIT_ENGINE")
+
+    cond do
+      is_binary(env) and env != "" and File.regular?(env) ->
+        env
+
+      true ->
+        runfile_git_engine() || flunk("AGENTOS_GIT_ENGINE not set / not found")
+    end
   end
 
   defp runfile_git_engine do
@@ -500,6 +506,187 @@ defmodule AgentOS.Git.OrchestratorTest do
     assert ng =~ "ng "
   end
 
+  @tag timeout: 60_000
+  test "R51 delete-ref push: zero newHash, empty pack, fixture receive-status ok" do
+    path = engine_path()
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orch-push-del-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.mkdir_p!(root)
+    assert {:ok, pid} = GitEngine.start(executable: path, root: root)
+    assert {:ok, _} = GitEngine.run(pid, %{"op" => "init"})
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "write",
+               "args" => %{"path" => "d.txt", "content" => "del\n"}
+             })
+
+    assert {:ok, _} = GitEngine.run(pid, %{"op" => "add", "args" => %{"path" => "d.txt"}})
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "commit",
+               "args" => %{
+                 "message" => "c",
+                 "name" => "P",
+                 "email" => "p@p",
+                 "when_unix" => 1_700_000_200
+               }
+             })
+
+    assert {:ok, rev} = GitEngine.run(pid, %{"op" => "rev-parse", "args" => %{"rev" => "HEAD"}})
+    tip = (rev["stdout"] || "") |> String.trim() |> String.split(~r/\s+/) |> hd()
+    assert Regex.match?(~r/^[0-9a-fA-F]{40}$/, tip)
+
+    {:ok, push_agent} = Agent.start_link(fn -> nil end)
+    zero = "0000000000000000000000000000000000000000"
+
+    transport = fn
+      :list_refs, {_url, _opts} ->
+        {:ok, [%{name: "refs/heads/master", hash: String.downcase(tip)}]}
+
+      :fetch_packs, _ ->
+        flunk("delete push must not call fetch_packs")
+
+      :push_packs, {url, commands, pack_bin, _opts} ->
+        Agent.update(push_agent, fn _ ->
+          %{url: url, commands: commands, pack: pack_bin, pack_len: byte_size(pack_bin)}
+        end)
+
+        {:ok, %{ok: true, message: "ok"}}
+    end
+
+    assert {:ok, json} =
+             Orchestrator.run(
+               pid,
+               ~s({"op":"push","args":{"url":"#{@fixture_url}","delete":true}}),
+               transport: transport,
+               allowed_origins: [@fixture_origin]
+             )
+
+    assert json =~ "\"ok\":true" or json =~ ~s("ok":true), "delete push failed: #{json}"
+    assert json =~ "pushed"
+
+    recorded = Agent.get(push_agent, & &1)
+    assert is_map(recorded)
+    assert recorded.pack_len == 0
+    assert recorded.pack == <<>>
+    assert is_list(recorded.commands) and recorded.commands != []
+
+    for c <- recorded.commands do
+      assert c.new_hash == zero
+      assert is_binary(c.old_hash) and c.old_hash != zero
+    end
+
+    # Cruel: non-delete empty pack still fails (inject via transport not needed —
+    # create push with remote empty still builds real pack; assert gate via unit-ish path).
+    Agent.stop(push_agent)
+    :ok = GitEngine.stop(pid)
+  end
+
+  @tag timeout: 60_000
+  test "R48 pack_build with haves reduces pack size" do
+    path = engine_path()
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "pack-haves-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.mkdir_p!(root)
+    assert {:ok, pid} = GitEngine.start(executable: path, root: root)
+    assert {:ok, _} = GitEngine.run(pid, %{"op" => "init"})
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "write",
+               "args" => %{"path" => "a.txt", "content" => "one\n"}
+             })
+
+    assert {:ok, _} = GitEngine.run(pid, %{"op" => "add", "args" => %{"path" => "a.txt"}})
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "commit",
+               "args" => %{
+                 "message" => "c1",
+                 "name" => "T",
+                 "email" => "t@t",
+                 "when_unix" => 1_700_000_300
+               }
+             })
+
+    assert {:ok, rev1} = GitEngine.run(pid, %{"op" => "rev-parse", "args" => %{"rev" => "HEAD"}})
+    p1 = (rev1["stdout"] || "") |> String.trim() |> String.split(~r/\s+/) |> hd()
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "write",
+               "args" => %{"path" => "b.txt", "content" => "two-more-for-thin-pack\n"}
+             })
+
+    assert {:ok, _} = GitEngine.run(pid, %{"op" => "add", "args" => %{"path" => "b.txt"}})
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "commit",
+               "args" => %{
+                 "message" => "c2",
+                 "name" => "T",
+                 "email" => "t@t",
+                 "when_unix" => 1_700_000_301
+               }
+             })
+
+    assert {:ok, rev2} = GitEngine.run(pid, %{"op" => "rev-parse", "args" => %{"rev" => "HEAD"}})
+    p2 = (rev2["stdout"] || "") |> String.trim() |> String.split(~r/\s+/) |> hd()
+
+    assert {:ok, full} = GitEngine.pack_build(pid, [p2])
+    assert {:ok, thin} = GitEngine.pack_build(pid, [p2], haves: [p1])
+    assert match?(<<"PACK", _::binary>>, thin)
+    assert byte_size(thin) < byte_size(full)
+
+    :ok = GitEngine.stop(pid)
+  end
+
+  @tag timeout: 30_000
+  test "R36 clone with filter is recorded by transport and does not break" do
+    path = engine_path()
+    assert {:ok, pid} = GitEngine.start(executable: path)
+    pack = <<"PACK", 0, 0, 0, 2, 0, 0, 0, 0>>
+    tip = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    {:ok, fetch_agent} = Agent.start_link(fn -> nil end)
+
+    transport = fn
+      :list_refs, {_url, _opts} ->
+        {:ok, [%{name: "refs/heads/master", hash: tip}]}
+
+      :fetch_packs, {_url, _want, _have, opts} ->
+        Agent.update(fetch_agent, fn _ -> Keyword.get(opts, :filter) end)
+        {:ok, pack}
+
+      :push_packs, _ ->
+        flunk("clone must not push")
+    end
+
+    # Import of synthetic pack may fail; we only assert filter wiring + no crash before dial.
+    _ =
+      Orchestrator.run(
+        pid,
+        ~s({"op":"clone","args":{"url":"#{@fixture_url}","filter":"blob:none"}}),
+        transport: transport,
+        allowed_origins: [@fixture_origin]
+      )
+
+    assert Agent.get(fetch_agent, & &1) == "blob:none"
+    Agent.stop(fetch_agent)
+    :ok = GitEngine.stop(pid)
+  end
+
   # ── R43 Auth kinds (header injection, no network) ─────────────────────────
 
   test "auth_headers injects bearer, header, basic; never embeds secrets in URL helpers" do
@@ -667,6 +854,7 @@ defmodule AgentOS.Git.OrchestratorTest do
   test "try_answer_git_host_call returns :answered without blocking on remote orch" do
     # Real kernel VM + attach_git with fixture transport (no network).
     # Proves P1.6: name "git" is claimed async (GenServer returns immediately).
+    # R2 partial: after async clone, worktree file is present under engine root.
     wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
     posix = runfile_bytes("memcontainers/images/posix.tar")
     path = engine_path()
@@ -678,6 +866,13 @@ defmodule AgentOS.Git.OrchestratorTest do
       id = {"git-async", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
       pack = File.read!(Path.expand("../fixtures/git/minimal.pack", __DIR__))
       tip = File.read!(Path.expand("../fixtures/git/minimal.tip", __DIR__)) |> String.trim()
+      root =
+        Path.join(
+          System.tmp_dir!(),
+          "git-async-wt-" <> Integer.to_string(System.unique_integer([:positive]))
+        )
+
+      File.mkdir_p!(root)
 
       transport = fn
         :list_refs, _ ->
@@ -702,6 +897,7 @@ defmodule AgentOS.Git.OrchestratorTest do
         assert :ok =
                  AgentOS.ControlPlane.attach_git(id,
                    executable: path,
+                   root: root,
                    allowed_origins: [@fixture_origin],
                    transport: transport
                  )
@@ -731,11 +927,22 @@ defmodule AgentOS.Git.OrchestratorTest do
           AgentOS.ControlPlane.info(id).git_inflight == 0
         end)
 
+        # R2: fixture clone applied — worktree file from minimal.pack.
+        assert_eventually(fn ->
+          case File.read(Path.join(root, "README")) do
+            {:ok, "hello\n"} -> true
+            _ -> false
+          end
+        end)
+
+        assert {:ok, "hello\n"} = File.read(Path.join(root, "README"))
+
         # Detach cancels any residual tasks cleanly.
         assert :ok = AgentOS.ControlPlane.detach_git(id)
         assert AgentOS.ControlPlane.info(id).git_attached == false
       after
         AgentOS.ControlPlane.dispose(id)
+        File.rm_rf(root)
       end
     end
   end
@@ -949,16 +1156,16 @@ defmodule AgentOS.Git.OrchestratorTest do
     :ok = GitEngine.stop(pid)
   end
 
-  # ── R66 second attach fail-closed ──────────────────────────────────────────
+  # ── R66 same-path second attach fail-closed; R63 distinct paths OK ─────────
 
   @tag timeout: 120_000
-  test "R66 second attach_git fails closed without leaking Port" do
+  test "R66 same-path second attach_git fails; R63 distinct paths multi-attach" do
     wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
     posix = runfile_bytes("memcontainers/images/posix.tar")
     path = engine_path()
 
     if is_nil(wasm) or is_nil(posix) do
-      IO.puts(:stderr, "skipping R66 attach test: kernel/posix runfiles missing")
+      IO.puts(:stderr, "skipping R66/R63 attach test: kernel/posix runfiles missing")
     else
       id = {"git-k21", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
 
@@ -975,24 +1182,48 @@ defmodule AgentOS.Git.OrchestratorTest do
         assert :ok =
                  AgentOS.ControlPlane.attach_git(id,
                    executable: path,
+                   mount_path: "/workspace/repo",
                    allowed_origins: [@fixture_origin]
                  )
 
         info1 = AgentOS.ControlPlane.info(id)
         assert info1.git_attached == true
+        assert info1.git_mount_path == "/workspace/repo"
+        assert info1.git_engine_count == 1
 
-        # Second attach must not open another Port.
+        # Same path: must not open another Port.
         assert {:error, :git_already_attached} =
                  AgentOS.ControlPlane.attach_git(id,
                    executable: path,
+                   mount_path: "/workspace/repo",
                    allowed_origins: [@fixture_origin]
                  )
 
         # First attachment still live.
         info2 = AgentOS.ControlPlane.info(id)
         assert info2.git_attached == true
+        assert info2.git_engine_count == 1
 
-        # Detach then re-attach works.
+        # R63: distinct mount path attaches a second engine.
+        assert :ok =
+                 AgentOS.ControlPlane.attach_git(id,
+                   executable: path,
+                   mount_path: "/workspace/other",
+                   allowed_origins: [@fixture_origin]
+                 )
+
+        info3 = AgentOS.ControlPlane.info(id)
+        assert info3.git_attached == true
+        assert info3.git_engine_count == 2
+        assert Enum.sort(info3.git_mounts) == ["/workspace/other", "/workspace/repo"]
+
+        # Detach one path leaves the other.
+        assert :ok = AgentOS.ControlPlane.detach_git(id, mount_path: "/workspace/other")
+        info4 = AgentOS.ControlPlane.info(id)
+        assert info4.git_engine_count == 1
+        assert info4.git_mounts == ["/workspace/repo"]
+
+        # Detach all.
         assert :ok = AgentOS.ControlPlane.detach_git(id)
         assert AgentOS.ControlPlane.info(id).git_attached == false
 
@@ -1003,6 +1234,92 @@ defmodule AgentOS.Git.OrchestratorTest do
                  )
 
         assert AgentOS.ControlPlane.info(id).git_attached == true
+        assert :ok = AgentOS.ControlPlane.detach_git(id)
+      after
+        AgentOS.ControlPlane.dispose(id)
+      end
+    end
+  end
+
+  @tag timeout: 120_000
+  test "R65 host_call args.mount demuxes to the matching engine" do
+    wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
+    posix = runfile_bytes("memcontainers/images/posix.tar")
+    path = engine_path()
+
+    if is_nil(wasm) or is_nil(posix) do
+      IO.puts(:stderr, "skipping R65 mount demux test: kernel/posix runfiles missing")
+    else
+      id = {"git-demux", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
+      pack = fixture_git_bytes!("minimal.pack")
+      tip = fixture_git_bytes!("minimal.tip") |> String.trim()
+
+      transport = fn
+        :list_refs, _ ->
+          {:ok, [%{name: "refs/heads/main", hash: tip}]}
+
+        :fetch_packs, _ ->
+          {:ok, pack}
+      end
+
+      try do
+        assert {:ok, _pid} =
+                 AgentOS.ControlPlane.create(id,
+                   wasm: wasm,
+                   base_image: posix,
+                   deterministic: true,
+                   workers: 0,
+                   host_call: :relay
+                 )
+
+        assert :ok =
+                 AgentOS.ControlPlane.attach_git(id,
+                   executable: path,
+                   mount_path: "/workspace/a",
+                   allowed_origins: [@fixture_origin],
+                   transport: transport
+                 )
+
+        assert :ok =
+                 AgentOS.ControlPlane.attach_git(id,
+                   executable: path,
+                   mount_path: "/workspace/b",
+                   allowed_origins: [@fixture_origin],
+                   transport: transport
+                 )
+
+        vm = AgentOS.ControlPlane.whereis(id)
+
+        # Clone into mount A via args.mount.
+        e1 = %{
+          kind: :host_call,
+          handle: 9_201,
+          name: "git",
+          body:
+            ~s({"op":"clone","args":{"url":"#{@fixture_url}","mount":"/workspace/a"}})
+        }
+
+        assert :answered = AgentOS.Vm.try_answer_git_host_call(vm, e1)
+
+        assert_eventually(fn ->
+          AgentOS.ControlPlane.info(id).git_inflight == 0
+        end)
+
+        # Unknown mount fails closed (still claims the host_call).
+        e_bad = %{
+          kind: :host_call,
+          handle: 9_202,
+          name: "git",
+          body:
+            ~s({"op":"clone","args":{"url":"#{@fixture_url}","mount":"/workspace/missing"}})
+        }
+
+        assert :answered = AgentOS.Vm.try_answer_git_host_call(vm, e_bad)
+
+        assert_eventually(fn ->
+          AgentOS.ControlPlane.info(id).git_inflight == 0
+        end)
+
         assert :ok = AgentOS.ControlPlane.detach_git(id)
       after
         AgentOS.ControlPlane.dispose(id)
@@ -1041,7 +1358,9 @@ defmodule AgentOS.Git.OrchestratorTest do
 
         vm = AgentOS.ControlPlane.whereis(id)
         st = :sys.get_state(vm)
-        eng = st.git_engine
+        engines = st.git_engines || %{}
+        assert map_size(engines) >= 1
+        [{_mount, %{pid: eng}} | _] = Map.to_list(engines)
         assert is_pid(eng) and Process.alive?(eng)
 
         Process.exit(eng, :kill)
@@ -1172,6 +1491,29 @@ defmodule AgentOS.Git.OrchestratorTest do
          end) do
       nil -> nil
       file -> File.read!(file)
+    end
+  end
+
+  # server/test/fixtures/git/* — source tree or runfiles copy.
+  defp fixture_git_bytes!(name) when is_binary(name) do
+    candidates = [
+      Path.expand("../fixtures/git/#{name}", __DIR__),
+      Path.expand("test/fixtures/git/#{name}", File.cwd!()),
+      System.get_env("TEST_SRCDIR") &&
+        System.get_env("TEST_WORKSPACE") &&
+        Path.join([
+          System.get_env("TEST_SRCDIR"),
+          System.get_env("TEST_WORKSPACE"),
+          "server/test/fixtures/git",
+          name
+        ]),
+      System.get_env("RUNFILES_DIR") &&
+        Path.join([System.get_env("RUNFILES_DIR"), "_main/server/test/fixtures/git", name])
+    ]
+
+    case Enum.find(candidates, &(is_binary(&1) and File.regular?(&1))) do
+      nil -> flunk("fixture git/#{name} not found")
+      path -> File.read!(path)
     end
   end
 

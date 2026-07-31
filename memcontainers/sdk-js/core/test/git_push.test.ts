@@ -157,6 +157,182 @@ async function main() {
     await eng.close();
   }
 
+  // R51: delete-ref push — newHash all-zero, empty pack, fixture receive-status ok
+  {
+    const eng = await GitEngine.load({ baseUrl });
+    await eng.run({ op: "init" });
+    await eng.run({
+      op: "write",
+      args: { path: "d.txt", content: "del\n" },
+    });
+    await eng.run({ op: "add", args: { path: "d.txt" } });
+    await eng.run({
+      op: "commit",
+      args: {
+        message: "c",
+        name: "P",
+        email: "p@p",
+        when_unix: 1_700_000_200,
+      },
+    });
+    const tip = await eng.run({ op: "rev-parse", args: { rev: "HEAD" } });
+    const tipHex = String(tip.stdout || "").trim().split(/\s+/)[0];
+    if (!/^[0-9a-f]{40}$/i.test(tipHex)) {
+      throw new Error(`bad HEAD for delete push: ${tipHex}`);
+    }
+
+    const http = new FixtureSmartHttp();
+    http.add(
+      "https://example.com/r.git",
+      [{ name: "refs/heads/master", hash: tipHex }],
+      new Uint8Array(0),
+    );
+    http.pushResult = { ok: true, message: "ok" };
+    const orch = new GitRemoteOrchestrator(eng, {
+      http,
+      allowOrigins: ["https://example.com"],
+    });
+    const r = await orch.handle({
+      op: "push",
+      args: {
+        url: "https://example.com/r.git",
+        delete: true,
+      },
+    });
+    if (!r.ok) throw new Error(`expected delete push ok: ${JSON.stringify(r)}`);
+    if (!http.lastPush) throw new Error("delete push not recorded");
+    if (http.lastPush.packLen !== 0) {
+      throw new Error(`delete-only must send empty pack, got ${http.lastPush.packLen}`);
+    }
+    const cmds = http.lastPush.commands;
+    if (!cmds?.length) throw new Error("delete push missing commands");
+    const zero = "0000000000000000000000000000000000000000";
+    for (const c of cmds) {
+      if (c.newHash !== zero) {
+        throw new Error(`delete newHash must be zero: ${JSON.stringify(c)}`);
+      }
+      if (c.oldHash !== tipHex.toLowerCase() && c.oldHash !== tipHex) {
+        // oldHash should be remote tip (lease)
+        if (!/^[0-9a-f]{40}$/i.test(c.oldHash) || c.oldHash === zero) {
+          throw new Error(`delete oldHash should be remote tip: ${JSON.stringify(c)}`);
+        }
+      }
+    }
+    // Cruel: non-delete empty pack still fails
+    const http2 = new FixtureSmartHttp();
+    http2.add(
+      "https://example.com/r.git",
+      [{ name: "refs/heads/master", hash: zero }],
+      new Uint8Array(0),
+    );
+    const orchEmpty = new GitRemoteOrchestrator(eng, {
+      http: http2,
+      allowOrigins: ["https://example.com"],
+      buildPushPack: async () => new Uint8Array(0),
+    });
+    const bad = await orchEmpty.handle({
+      op: "push",
+      args: { url: "https://example.com/r.git" },
+    });
+    if (bad.ok || !String(bad.stderr || "").includes("empty pack")) {
+      throw new Error(
+        `non-delete empty pack must fail closed: ${JSON.stringify(bad)}`,
+      );
+    }
+    await eng.close();
+  }
+
+  // R48: pack with haves (parent) smaller than full tip pack
+  {
+    const eng = await GitEngine.load({ baseUrl });
+    await eng.run({ op: "init" });
+    await eng.run({
+      op: "write",
+      args: { path: "a.txt", content: "one\n" },
+    });
+    await eng.run({ op: "add", args: { path: "a.txt" } });
+    await eng.run({
+      op: "commit",
+      args: {
+        message: "c1",
+        name: "P",
+        email: "p@p",
+        when_unix: 1_700_000_300,
+      },
+    });
+    const p1 = String(
+      (await eng.run({ op: "rev-parse", args: { rev: "HEAD" } })).stdout || "",
+    )
+      .trim()
+      .split(/\s+/)[0]!;
+    await eng.run({
+      op: "write",
+      args: { path: "b.txt", content: "two-more-bytes-for-thin\n" },
+    });
+    await eng.run({ op: "add", args: { path: "b.txt" } });
+    await eng.run({
+      op: "commit",
+      args: {
+        message: "c2",
+        name: "P",
+        email: "p@p",
+        when_unix: 1_700_000_301,
+      },
+    });
+    const p2 = String(
+      (await eng.run({ op: "rev-parse", args: { rev: "HEAD" } })).stdout || "",
+    )
+      .trim()
+      .split(/\s+/)[0]!;
+    const full = await eng.buildPushPack([p2]);
+    const thin = await eng.buildPushPack([p2], [p1]);
+    if (thin.byteLength >= full.byteLength) {
+      throw new Error(
+        `R48 haves pack should be smaller: thin=${thin.byteLength} full=${full.byteLength}`,
+      );
+    }
+    if (
+      thin[0] !== 0x50 ||
+      thin[1] !== 0x41 ||
+      thin[2] !== 0x43 ||
+      thin[3] !== 0x4b
+    ) {
+      throw new Error("thin pack missing PACK magic");
+    }
+    await eng.close();
+  }
+
+  // R36: args.filter reaches transport; fixture ignores it and still returns pack
+  {
+    const eng = await GitEngine.load({ baseUrl });
+    const pack = new Uint8Array([0x50, 0x41, 0x43, 0x4b, 0, 0, 0, 2, 0, 0, 0, 0]);
+    // minimal invalid-but-nonempty PACK magic header so empty-pack gate passes;
+    // import may fail — we only assert filter is recorded and fetch is invoked.
+    const http = new FixtureSmartHttp();
+    const tip = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    http.add(
+      "https://example.com/r.git",
+      [{ name: "refs/heads/master", hash: tip }],
+      pack,
+    );
+    const orch = new GitRemoteOrchestrator(eng, {
+      http,
+      allowOrigins: ["https://example.com"],
+    });
+    await orch.handle({
+      op: "clone",
+      args: {
+        url: "https://example.com/r.git",
+        filter: "blob:none",
+      },
+    });
+    if (!http.lastFetch) throw new Error("clone did not call fetchPacks");
+    if (http.lastFetch.filter !== "blob:none") {
+      throw new Error(`expected filter blob:none, got ${http.lastFetch.filter}`);
+    }
+    await eng.close();
+  }
+
   console.log("git_push.test SUCCESS");
 }
 

@@ -67,8 +67,9 @@ commit becomes part of the cache key.
 
 On Node/Bun the default solve path is **host git engine first** (`MC_GIT_ENGINE_DIR` must point at
 `git_engine.mjs` + `git_engine.wasm`). Ambient system `git` is **not** used unless the emergency
-escape hatch `MC_GIT_USE_SYSTEM=1` is set. Without engine env and without that hatch, solve fails
-closed. See [Git](./git.md).
+escape hatch `MC_GIT_USE_SYSTEM=1` is set (**exact** `"1"` only). Without engine env and without that
+hatch, solve fails closed — never silently shells out. Product materialize always shares the process
+pack cache (or `MC_GIT_PACK_CACHE` disk) with interactive remotes. See [Git](./git.md).
 
 ## Filesystem nodes
 

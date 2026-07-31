@@ -10,8 +10,9 @@ import { normalizeRel } from "./bridge.js";
 const REMOTE_OPS = new Set(["clone", "fetch", "pull", "push"]);
 
 /**
- * Brand symbol for gitfs drivers (K21 / R66). Hosts use this to enforce at most
- * one gitfs mount per VM without coupling to constructor identity.
+ * Brand symbol for gitfs drivers (K21 / R66). Hosts use this to enforce
+ * **one gitfs driver per mount path** (multi-mount allowed with distinct paths;
+ * same path still fails closed). Single-writer remains **per engine**.
  */
 export const GITFS_DRIVER_KIND = Symbol.for("agentos.gitfs");
 
@@ -365,7 +366,7 @@ export function createGitFsDriver(
     },
   };
 
-  // K21 brand so hosts can fail closed on a second gitfs mount (R66).
+  // K21 brand: one gitfs per mount path (multi-path OK; same path fail-closed).
   Object.defineProperty(driver, GITFS_DRIVER_KIND, {
     value: true,
     enumerable: false,

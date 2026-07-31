@@ -6,7 +6,7 @@
 import type { GitEngine } from "./engine.js";
 import type { GitBridge } from "./bridge.js";
 import { GitRemoteOrchestrator, type OrchestratorOptions } from "./remote-orchestrator.js";
-import type { PackCache } from "./pack-cache.js";
+import { defaultProcessPackCache, type PackCache } from "./pack-cache.js";
 
 export interface LlbGitMaterializeOptions extends OrchestratorOptions {
   engine: GitEngine;
@@ -14,7 +14,11 @@ export interface LlbGitMaterializeOptions extends OrchestratorOptions {
   ref?: string;
   dest?: string;
   connection?: string;
-  /** Pack cache for repeated solves; callers (solve-node) default process MemoryPackCache. */
+  /**
+   * Pack cache for repeated solves (R70/R73). Product default is process
+   * MemoryPackCache; pass `null` to disable. Callers (solve-node) may override
+   * with DiskPackCache via MC_GIT_PACK_CACHE.
+   */
   packCache?: PackCache | null;
 }
 
@@ -31,9 +35,13 @@ export async function materializeLlbGit(
   opts: LlbGitMaterializeOptions,
 ): Promise<LlbGitMaterializeResult> {
   const { engine, url, ref, dest, connection, packCache, ...orchOpts } = opts;
+  // Product LLB path (R70): share interactive object/pack cache by default.
+  // `null` disables; undefined → process MemoryPackCache (same as host_call).
+  const resolvedCache =
+    packCache === null ? undefined : (packCache ?? defaultProcessPackCache());
   const orch = new GitRemoteOrchestrator(engine, {
     ...orchOpts,
-    packCache,
+    packCache: resolvedCache,
   });
 
   const args: Record<string, unknown> = { url, depth: 1 };

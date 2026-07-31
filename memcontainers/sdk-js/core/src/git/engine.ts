@@ -154,10 +154,12 @@ export class GitEngine {
 
   /**
    * Build a push pack (objects reachable from tip OIDs) via engine packbuilder.
+   * Optional `haves` are remote tip OIDs already present (lease oldHash) — objects
+   * reachable only from them are omitted (R48 thin-pack / have negotiation).
    * Empty oids fail closed. Result always starts with PACK magic.
    */
-  async buildPushPack(oids: string[]): Promise<Uint8Array> {
-    return this.bridge.serial(() => this.bridge.packBuild(oids));
+  async buildPushPack(oids: string[], haves?: string[]): Promise<Uint8Array> {
+    return this.bridge.serial(() => this.bridge.packBuild(oids, haves));
   }
 
   /**
