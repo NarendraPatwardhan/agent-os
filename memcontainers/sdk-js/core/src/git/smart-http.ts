@@ -53,6 +53,9 @@ export class FixtureSmartHttp implements SmartHttpTransport {
     | { url: string; commands: PushCommand[]; packLen: number }
     | undefined;
   pushResult: ReceiveStatus = { ok: true };
+  /** Transport call counters (pack-cache hit assertions). */
+  listRefsCalls = 0;
+  fetchPacksCalls = 0;
 
   add(url: string, refs: RefAdvertisement[], pack: Uint8Array): void {
     this.fixtures.set(url, { refs, pack });
@@ -62,9 +65,12 @@ export class FixtureSmartHttp implements SmartHttpTransport {
     this.fixtures.clear();
     this.lastAuth = undefined;
     this.lastPush = undefined;
+    this.listRefsCalls = 0;
+    this.fetchPacksCalls = 0;
   }
 
   async listRefs(url: string, auth?: ConnectionAuth): Promise<RefAdvertisement[]> {
+    this.listRefsCalls += 1;
     this.lastAuth = auth;
     const f = this.fixtures.get(url);
     if (!f) throw new Error(`git: list-refs failed: no fixture for ${url}`);
@@ -78,6 +84,7 @@ export class FixtureSmartHttp implements SmartHttpTransport {
     _depth?: number,
     auth?: ConnectionAuth,
   ): Promise<Uint8Array> {
+    this.fetchPacksCalls += 1;
     this.lastAuth = auth;
     const f = this.fixtures.get(url);
     if (!f) throw new Error(`git: upload-pack failed: no fixture for ${url}`);

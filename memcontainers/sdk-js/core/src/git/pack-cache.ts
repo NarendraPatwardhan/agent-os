@@ -22,7 +22,7 @@ async function sha256hex(data: Uint8Array): Promise<string> {
   return s;
 }
 
-/** In-memory pack cache (tests / small sessions). */
+/** In-memory pack cache (tests / small sessions / process default). */
 export class MemoryPackCache implements PackCache {
   private readonly map = new Map<string, Uint8Array>();
   private readonly keys = new Map<string, string>();
@@ -54,6 +54,43 @@ export class MemoryPackCache implements PackCache {
   async putKey(key: string, digest: string): Promise<void> {
     this.keys.set(key, digest);
   }
+}
+
+/** Process-scoped default pack cache (product orch / repeated in-process LLB solves). */
+let processPackCache: MemoryPackCache | undefined;
+
+/**
+ * Shared in-process {@link MemoryPackCache}. Used by product registration
+ * (`gitHostCallHandler` / memcontainer / Node LLB) when the caller does not
+ * override `packCache`. Content-addressed packs only — never credentials.
+ */
+export function defaultProcessPackCache(): MemoryPackCache {
+  if (!processPackCache) processPackCache = new MemoryPackCache();
+  return processPackCache;
+}
+
+/**
+ * Stable download-key for upload-pack cache (url + wants + haves + depth).
+ * Callers must pass a **public** locator (no userinfo / tokens). Auth is never
+ * part of the key — credentials are only used at transport time.
+ */
+export function uploadPackCacheKey(opts: {
+  url: string;
+  wants: string[];
+  haves?: string[];
+  depth?: number;
+}): string {
+  const wants = opts.wants
+    .map((h) => h.toLowerCase())
+    .filter(Boolean)
+    .sort()
+    .join(",");
+  const haves = (opts.haves ?? [])
+    .map((h) => h.toLowerCase())
+    .filter(Boolean)
+    .sort()
+    .join(",");
+  return `upload-pack:v1:${opts.url}:${wants}:${haves}:d${opts.depth ?? ""}`;
 }
 
 /** Node disk pack cache under `{dir}/{digest without prefix}`. */

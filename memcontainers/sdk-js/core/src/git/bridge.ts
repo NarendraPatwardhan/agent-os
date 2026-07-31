@@ -13,12 +13,20 @@ export type EmscriptenGitModule = {
   lengthBytesUTF8(s: string): number;
   _malloc(n: number): number;
   _free(ptr: number): void;
+  getValue(ptr: number, type: string): number;
+  setValue(ptr: number, value: number, type: string): void;
   HEAPU8: Uint8Array;
   FS: EmscriptenFS;
   _ge_open(rootPtr: number): number;
   _ge_close(eng: number): void;
   _ge_run_json(eng: number, reqPtr: number): number;
   _ge_import_pack(eng: number, ptr: number, len: number, final: number): number;
+  _ge_pack_build(
+    eng: number,
+    oidsJsonPtr: number,
+    outPtrPtr: number,
+    outLenPtr: number,
+  ): number;
   _ge_free(ptr: number): void;
   _ge_version(): number;
   _ge_last_error(eng: number): number;
@@ -139,6 +147,50 @@ export class GitBridge {
     if (rc !== 0) {
       throw new Error(this.lastError() || `ge_import_pack failed (${rc})`);
     }
+  }
+
+  /**
+   * Sync WASM ge_pack_build — reachable objects for tip OIDs as a packfile.
+   * Callers that may race must wrap with {@link serial}.
+   */
+  packBuild(oids: string[]): Uint8Array {
+    if (!Array.isArray(oids)) {
+      throw new Error("packBuild: oids must be an array of 40-hex strings");
+    }
+    const oidsJson = JSON.stringify(oids);
+    const jsonPtr = cstr(this.mod, oidsJson);
+    // wasm32: pointer + size_t are 4 bytes each (out / out_len slots).
+    const outPtrSlot = this.mod._malloc(4);
+    const outLenSlot = this.mod._malloc(4);
+    this.mod.setValue(outPtrSlot, 0, "i32");
+    this.mod.setValue(outLenSlot, 0, "i32");
+    const rc = this.mod._ge_pack_build(this.eng, jsonPtr, outPtrSlot, outLenSlot);
+    this.mod._free(jsonPtr);
+    if (rc !== 0) {
+      this.mod._free(outPtrSlot);
+      this.mod._free(outLenSlot);
+      throw new Error(this.lastError() || `ge_pack_build failed (${rc})`);
+    }
+    const dataPtr = this.mod.getValue(outPtrSlot, "i32");
+    const dataLen = this.mod.getValue(outLenSlot, "i32") >>> 0;
+    this.mod._free(outPtrSlot);
+    this.mod._free(outLenSlot);
+    if (!dataPtr || dataLen === 0) {
+      if (dataPtr) this.mod._ge_free(dataPtr);
+      throw new Error(this.lastError() || "ge_pack_build returned empty pack");
+    }
+    const bytes = this.mod.HEAPU8.slice(dataPtr, dataPtr + dataLen);
+    this.mod._ge_free(dataPtr);
+    if (
+      bytes.byteLength < 4 ||
+      bytes[0] !== 0x50 ||
+      bytes[1] !== 0x41 ||
+      bytes[2] !== 0x43 ||
+      bytes[3] !== 0x4b
+    ) {
+      throw new Error("ge_pack_build: pack missing PACK magic");
+    }
+    return bytes;
   }
 
   abs(rel: string): string {

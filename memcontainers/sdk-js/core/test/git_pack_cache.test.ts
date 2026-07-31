@@ -1,9 +1,11 @@
-/** PR13: pack cache digests + size gate + chunked import shape. */
+/** PR13: pack cache digests + size gate + chunked import + download-key shape. */
 
 import {
   DEFAULT_MAX_PACK_BYTES,
   MemoryPackCache,
+  defaultProcessPackCache,
   importPackCached,
+  uploadPackCacheKey,
 } from "../src/git/pack-cache.js";
 
 async function main() {
@@ -43,6 +45,42 @@ async function main() {
   if ((await cache.getByKey!("upload-pack:v1:test")) !== d1) {
     throw new Error("getByKey mismatch");
   }
+
+  // Download-key: public url + wants + haves + depth — never credentials/token.
+  const secret = "super-secret-token-xyz";
+  const key = uploadPackCacheKey({
+    url: "https://github.com/org/repo.git",
+    wants: ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+    haves: ["cccccccccccccccccccccccccccccccccccccccc"],
+    depth: 1,
+  });
+  if (key.includes(secret)) throw new Error("key must not include credentials");
+  if (key.includes("token") || key.includes("Authorization")) {
+    throw new Error(`key must not include auth-ish substrings: ${key}`);
+  }
+  if (!key.startsWith("upload-pack:v1:https://github.com/org/repo.git:")) {
+    throw new Error(`key prefix: ${key}`);
+  }
+  // wants sorted lowercase
+  if (!key.includes("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")) {
+    throw new Error(`wants order: ${key}`);
+  }
+  // Same wants different order → same key
+  const key2 = uploadPackCacheKey({
+    url: "https://github.com/org/repo.git",
+    wants: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+    haves: ["cccccccccccccccccccccccccccccccccccccccc"],
+    depth: 1,
+  });
+  if (key !== key2) throw new Error(`key must be order-stable: ${key} vs ${key2}`);
+
+  // Process-scoped singleton is a MemoryPackCache
+  const proc = defaultProcessPackCache();
+  if (proc !== defaultProcessPackCache()) {
+    throw new Error("defaultProcessPackCache must be process-scoped singleton");
+  }
+  const dig = await proc.put(new Uint8Array([9, 9, 9]));
+  if (!(await proc.has(dig))) throw new Error("process cache put/has");
 
   console.log("git_pack_cache.test SUCCESS");
 }

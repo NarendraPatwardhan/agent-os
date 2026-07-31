@@ -19,7 +19,9 @@ import {
   type SmartHttpTransport,
 } from "./smart-http.js";
 import {
+  defaultProcessPackCache,
   importPackCached,
+  uploadPackCacheKey,
   type ImportPackOptions,
   type PackCache,
 } from "./pack-cache.js";
@@ -39,12 +41,29 @@ export interface OrchestratorOptions extends ResolveRemoteOptions {
     connectionRef?: string;
     commands: PushCommand[];
   }) => boolean | Promise<boolean>;
-  /** Optional pack builder for push (host-side). Default empty pack. */
+  /**
+   * Optional pack builder for push. When omitted, non-delete pushes use
+   * engine.buildPushPack(newHashes) (libgit2 packbuilder). Delete-only still
+   * sends an empty pack.
+   */
   buildPushPack?: (engine: GitEngine, commands: PushCommand[]) => Promise<Uint8Array>;
-  /** PR13 content-addressed pack cache (shared LLB + interactive). */
-  packCache?: PackCache;
+  /**
+   * PR13 content-addressed pack cache (shared LLB + interactive).
+   * Product handlers (`gitHostCallHandler`) default a process-scoped
+   * {@link defaultProcessPackCache}; pass `null` to disable. Direct
+   * {@link GitRemoteOrchestrator} construction leaves cache off unless set.
+   * Keys are public url + wants/haves/depth only — never credentials.
+   */
+  packCache?: PackCache | null;
   /** PR13 import limits / chunking. */
   importPack?: ImportPackOptions;
+  /**
+   * Cone-mode sparse-checkout prefixes applied after clone (engine `sparse-set`).
+   * **Cone-only** — not full sparse-checkout pattern parity (no negation beyond
+   * the engine's cone template, no non-cone patterns). Also used by gitfs
+   * projection when the embedder mounts with the same list.
+   */
+  sparseCone?: string[];
 }
 
 export class GitRemoteOrchestrator {
@@ -59,6 +78,7 @@ export class GitRemoteOrchestrator {
   private readonly buildPushPack?: OrchestratorOptions["buildPushPack"];
   private readonly packCache?: PackCache;
   private readonly importPackOpts: ImportPackOptions;
+  private readonly sparseCone: string[];
 
   constructor(
     private readonly engine: GitEngine,
@@ -73,9 +93,13 @@ export class GitRemoteOrchestrator {
     this.readOnly = !!opts.readOnly;
     this.onPushApproval = opts.onPushApproval;
     this.buildPushPack = opts.buildPushPack;
-    this.packCache = opts.packCache;
+    // null = explicitly off; undefined = no cache on direct construction.
+    this.packCache = opts.packCache === null ? undefined : (opts.packCache ?? undefined);
+    this.sparseCone = (opts.sparseCone ?? [])
+      .map((p) => p.replace(/^\/+/, "").replace(/\/+$/, ""))
+      .filter(Boolean);
     this.importPackOpts = {
-      cache: opts.packCache ?? opts.importPack?.cache,
+      cache: this.packCache ?? opts.importPack?.cache,
       maxPackBytes: opts.importPack?.maxPackBytes,
       chunkBytes: opts.importPack?.chunkBytes,
     };
@@ -87,6 +111,66 @@ export class GitRemoteOrchestrator {
       ...this.importPackOpts,
       cache: this.packCache ?? this.importPackOpts.cache,
     });
+  }
+
+  /**
+   * Resolve pack via download-key index (url+wants+haves+depth), else transport.
+   * Credentials never enter the key — only public binding.url.
+   */
+  private async resolvePack(
+    url: string,
+    wants: string[],
+    haves: string[],
+    depth: number | undefined,
+    auth: import("../types.js").ConnectionAuth | undefined,
+  ): Promise<{ pack: Uint8Array; fromTransport: boolean } | { error: string }> {
+    const packKey = uploadPackCacheKey({ url, wants, haves, depth });
+    if (this.packCache?.getByKey) {
+      const dig = await this.packCache.getByKey(packKey);
+      if (dig) {
+        const hit = await this.packCache.get(dig);
+        if (hit) return { pack: hit, fromTransport: false };
+      }
+    }
+    try {
+      const pack = await this.http.fetchPacks(url, wants, haves, depth, auth);
+      if (!pack || pack.byteLength === 0) {
+        return { error: "git: empty pack from remote\n" };
+      }
+      if (this.packCache) {
+        const dig = await this.packCache.put(pack);
+        await this.packCache.putKey?.(packKey, dig);
+      }
+      return { pack, fromTransport: true };
+    } catch (e) {
+      return { error: `git: upload-pack failed: ${String(e)}\n` };
+    }
+  }
+
+  /** After clone.apply: cone sparse-set + checkout (cone-only, not full sparse parity). */
+  private async applySparseCone(refName: string): Promise<GitResponse | null> {
+    if (!this.sparseCone.length) return null;
+    const patterns = this.sparseCone.join("\n");
+    const ss = await this.engine.run({
+      op: "sparse-set",
+      args: { patterns },
+    });
+    if (!ss.ok) return ss;
+    // sparse-set already force-checkouts HEAD into the cone; re-checkout the
+    // cloned tip so branch name / worktree stay aligned with clone.apply.
+    const co = await this.engine.run({
+      op: "checkout",
+      args: { name: refName },
+    });
+    if (!co.ok) {
+      // Detached / unborn tip: sparse-set already materialised HEAD; non-fatal.
+      const rp = await this.engine.run({
+        op: "rev-parse",
+        args: { rev: "HEAD" },
+      });
+      if (!rp.ok) return co;
+    }
+    return null;
   }
 
   private pickTip(
@@ -190,33 +274,31 @@ export class GitRemoteOrchestrator {
 
     const depth = typeof args.depth === "number" ? args.depth : undefined;
 
-    const packKey = `upload-pack:v1:${binding.url}:${head.hash}::d${depth ?? ""}`;
-    let pack: Uint8Array | null = null;
-    if (this.packCache?.getByKey) {
-      const dig = await this.packCache.getByKey(packKey);
-      if (dig) pack = await this.packCache.get(dig);
+    const resolvedPack = await this.resolvePack(
+      binding.url,
+      [head.hash],
+      [],
+      depth,
+      binding.auth,
+    );
+    if ("error" in resolvedPack) {
+      return {
+        ok: false,
+        code: 1,
+        stdout: "",
+        stderr: resolvedPack.error,
+      };
     }
-    if (!pack) {
-      try {
-        pack = await this.http.fetchPacks(
-          binding.url,
-          [head.hash],
-          [],
-          depth,
-          binding.auth,
-        );
-      } catch (e) {
-        return {
-          ok: false,
-          code: 1,
-          stdout: "",
-          stderr: `git: upload-pack failed: ${String(e)}\n`,
-        };
-      }
-      if (this.packCache) {
-        const dig = await this.packCache.put(pack);
-        await this.packCache.putKey?.(packKey, dig);
-      }
+    const pack = resolvedPack.pack;
+
+    // Empty pack never short-circuits to ok:true (dual-host with BEAM orch).
+    if (pack.byteLength === 0) {
+      return {
+        ok: false,
+        code: 1,
+        stdout: "",
+        stderr: "git: empty pack from remote\n",
+      };
     }
 
     const init = await this.engine.run({ op: "init" });
@@ -250,6 +332,9 @@ export class GitRemoteOrchestrator {
       args: { head: refName },
     });
     if (!apply.ok) return apply;
+
+    const sparseErr = await this.applySparseCone(refName);
+    if (sparseErr) return sparseErr;
 
     return {
       ok: true,
@@ -330,26 +415,24 @@ export class GitRemoteOrchestrator {
       }
     }
 
-    let pack: Uint8Array;
-    try {
-      pack = await this.http.fetchPacks(
-        binding.url,
-        [tip.hash],
-        have,
-        depth,
-        binding.auth,
-      );
-    } catch (e) {
+    const resolvedPack = await this.resolvePack(
+      binding.url,
+      [tip.hash],
+      have,
+      depth,
+      binding.auth,
+    );
+    if ("error" in resolvedPack) {
       return {
         ok: false,
         code: 1,
         stdout: "",
-        stderr: `git: upload-pack failed: ${String(e)}\n`,
+        stderr: resolvedPack.error,
       };
     }
 
     try {
-      await this.importBinary(pack);
+      await this.importBinary(resolvedPack.pack);
     } catch (e) {
       return {
         ok: false,
@@ -491,23 +574,61 @@ export class GitRemoteOrchestrator {
       };
     }
 
-    const isDeleteOnly = commands.every(
-      (c) => c.newHash === "0000000000000000000000000000000000000000",
-    );
+    const zeroOid = "0000000000000000000000000000000000000000";
+    const isDeleteOnly = commands.every((c) => c.newHash === zeroOid);
     let pack: Uint8Array;
     if (this.buildPushPack) {
       pack = await this.buildPushPack(this.engine, commands);
     } else if (isDeleteOnly) {
       pack = new Uint8Array(0);
-    } else if (this.http instanceof Object && "pushResult" in this.http) {
-      // FixtureSmartHttp test double may accept empty pack; product hosts must inject builder.
-      pack = new Uint8Array(0);
     } else {
+      const oids = [
+        ...new Set(
+          commands
+            .map((c) => c.newHash)
+            .filter((h) => typeof h === "string" && /^[0-9a-f]{40}$/i.test(h) && h !== zeroOid),
+        ),
+      ];
+      if (!oids.length) {
+        return {
+          ok: false,
+          code: 1,
+          stdout: "",
+          stderr: "git: push has no new tip oids for pack build\n",
+        };
+      }
+      try {
+        pack = await this.engine.buildPushPack(oids);
+      } catch (e) {
+        return {
+          ok: false,
+          code: 1,
+          stdout: "",
+          stderr: `git: pack.build failed: ${String(e)}\n`,
+        };
+      }
+    }
+    if (!isDeleteOnly && pack.byteLength === 0) {
       return {
         ok: false,
         code: 1,
         stdout: "",
-        stderr: "git: push pack builder not configured (buildPushPack)\n",
+        stderr: "git: empty pack refused for non-delete push\n",
+      };
+    }
+    if (
+      !isDeleteOnly &&
+      (pack.byteLength < 4 ||
+        pack[0] !== 0x50 ||
+        pack[1] !== 0x41 ||
+        pack[2] !== 0x43 ||
+        pack[3] !== 0x4b)
+    ) {
+      return {
+        ok: false,
+        code: 1,
+        stdout: "",
+        stderr: "git: push pack missing PACK magic\n",
       };
     }
 
@@ -551,12 +672,22 @@ export class GitRemoteOrchestrator {
   }
 }
 
-/** MapHostCall handler factory: body is Request JSON bytes. */
+/**
+ * MapHostCall handler factory: body is Request JSON bytes.
+ * Product default: process-scoped pack cache unless `opts.packCache` is set
+ * (`null` disables). Direct {@link GitRemoteOrchestrator} does not auto-enable.
+ */
 export function gitHostCallHandler(
   engine: GitEngine,
   opts?: OrchestratorOptions,
 ): (args: string) => Promise<string> {
-  const orch = new GitRemoteOrchestrator(engine, opts);
+  const raw = opts?.packCache;
+  const packCache =
+    raw === null ? undefined : (raw ?? defaultProcessPackCache());
+  const orch = new GitRemoteOrchestrator(engine, {
+    ...opts,
+    packCache,
+  });
   return async (args: string) => {
     let req: GitRequest;
     try {

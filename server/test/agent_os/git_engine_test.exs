@@ -72,6 +72,39 @@ defmodule AgentOS.GitEngineTest do
     assert match?({:error, _}, result)
   end
 
+  @tag timeout: 60_000
+  test "temp agentos-git-* root under tmp is removed on stop" do
+    path = engine_path()
+    assert {:ok, pid} = GitEngine.start(executable: path)
+
+    state = :sys.get_state(pid)
+    root = Map.fetch!(state, :root)
+    assert Map.get(state, :temp_root?) == true
+    assert File.dir?(root)
+    assert String.starts_with?(Path.basename(root), "agentos-git-")
+    assert String.starts_with?(Path.expand(root), Path.expand(System.tmp_dir!()) <> "/")
+
+    :ok = GitEngine.stop(pid)
+    refute File.exists?(root)
+  end
+
+  @tag timeout: 60_000
+  test "explicit :root is not deleted on stop" do
+    path = engine_path()
+    root = Path.join(System.tmp_dir!(), "agentos-git-keep-" <> Integer.to_string(System.unique_integer([:positive])))
+    File.mkdir_p!(root)
+
+    try do
+      assert {:ok, pid} = GitEngine.start(executable: path, root: root)
+      state = :sys.get_state(pid)
+      assert Map.get(state, :temp_root?) == false
+      :ok = GitEngine.stop(pid)
+      assert File.dir?(root)
+    after
+      File.rm_rf(root)
+    end
+  end
+
   defp mount_write_body(path, data) do
     op = 6
     path_bin = path

@@ -46,10 +46,20 @@ GE_API char *ge_run_json(ge_engine *e, const char *request_json);
 GE_API int ge_import_pack(ge_engine *e, const uint8_t *chunk, size_t len,
                           int final);
 
+/* Build a pack of objects reachable from tip OIDs (push packbuilder).
+ * oids_json: JSON array of 40-hex OIDs, or object with "oids" and/or
+ * "commands" (uses non-zero newHash/hash). NULL → local branch tips.
+ * On success: *out is malloc'd pack bytes (caller free()s with ge_free),
+ * *out_len is set. Cap GE_PACK_MAX_BYTES (64 MiB). Fail closed on empty
+ * tips, empty pack, oversize, or packbuilder errors. Returns 0 / <0. */
+GE_API int ge_pack_build(ge_engine *e, const char *oids_json, uint8_t **out,
+                         size_t *out_len);
+
 /* Last engine error string (valid until next ge_* call). */
 GE_API const char *ge_last_error(const ge_engine *e);
 
-/* Free a string returned by ge_run_json (or no-op for static fallbacks). */
+/* Free a string returned by ge_run_json or buffer from ge_pack_build
+ * (or no-op for static fallbacks). */
 GE_API void ge_free(void *p);
 
 /* Non-zero if p is a static ge_run_json fallback (must not free() directly). */

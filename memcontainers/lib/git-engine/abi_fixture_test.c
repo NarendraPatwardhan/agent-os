@@ -130,6 +130,103 @@ static int test_add_all(ge_engine *e) {
   return bad ? 1 : 0;
 }
 
+/* P2.1: pack.build of tip OID → non-empty pack with PACK magic; empty oids fail. */
+static int test_pack_build(ge_engine *e) {
+  char *rev = ge_run_json(e, "{\"op\":\"rev-parse\",\"args\":{\"rev\":\"HEAD\"}}");
+  if (!rev || strstr(rev, "\"ok\":true") == NULL) {
+    fprintf(stderr, "rev-parse HEAD for pack.build failed\n%s\n", rev ? rev : "(null)");
+    ge_free(rev);
+    return 1;
+  }
+  /* stdout is "hex\\n" escaped in JSON; result may also hold hex. */
+  char hex[41] = {0};
+  const char *p = strstr(rev, "\"stdout\":\"");
+  if (p) {
+    p += strlen("\"stdout\":\"");
+    size_t i = 0;
+    while (*p && *p != '"' && *p != '\\' && i < 40)
+      hex[i++] = *p++;
+    hex[i] = '\0';
+  }
+  ge_free(rev);
+  if (strlen(hex) != 40) {
+    fprintf(stderr, "could not parse HEAD oid for pack.build (got '%s')\n", hex);
+    return 1;
+  }
+
+  /* Empty oids array — fail closed (do not silently export whole repo here:
+   * explicit [] means no tips). */
+  {
+    uint8_t *out = NULL;
+    size_t out_len = 0;
+    if (ge_pack_build(e, "[]", &out, &out_len) == 0) {
+      fprintf(stderr, "expected empty oids fail\n");
+      ge_free(out);
+      return 1;
+    }
+    const char *err = ge_last_error(e);
+    if (!err || strstr(err, "no oids") == NULL) {
+      fprintf(stderr, "expected no oids error, got: %s\n", err ? err : "(null)");
+      return 1;
+    }
+  }
+
+  /* Binary API: pack of tip. */
+  {
+    char oids_json[96];
+    snprintf(oids_json, sizeof(oids_json), "[\"%s\"]", hex);
+    uint8_t *out = NULL;
+    size_t out_len = 0;
+    if (ge_pack_build(e, oids_json, &out, &out_len) != 0) {
+      fprintf(stderr, "ge_pack_build failed: %s\n", ge_last_error(e));
+      return 1;
+    }
+    if (!out || out_len < 4 || memcmp(out, "PACK", 4) != 0) {
+      fprintf(stderr, "pack missing PACK magic (len=%zu)\n", out_len);
+      ge_free(out);
+      return 1;
+    }
+    ge_free(out);
+  }
+
+  /* Run op: writes file + meta. */
+  {
+    char req[160];
+    snprintf(req, sizeof(req),
+             "{\"op\":\"pack.build\",\"args\":{\"oids\":[\"%s\"]}}", hex);
+    char *resp = ge_run_json(e, req);
+    if (!resp || strstr(resp, "\"ok\":true") == NULL) {
+      fprintf(stderr, "pack.build Run failed\n%s\n", resp ? resp : "(null)");
+      ge_free(resp);
+      return 1;
+    }
+    if (strstr(resp, "\"path\"") == NULL || strstr(resp, "push.pack") == NULL ||
+        strstr(resp, "\"bytes\"") == NULL || strstr(resp, "\"count\"") == NULL) {
+      fprintf(stderr, "pack.build result missing path/bytes/count:\n%s\n", resp);
+      ge_free(resp);
+      return 1;
+    }
+    ge_free(resp);
+
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/.git/agentos/push.pack", ge_worktree_root(e));
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+      fprintf(stderr, "export pack file missing: %s\n", path);
+      return 1;
+    }
+    char magic[4];
+    size_t n = fread(magic, 1, 4, f);
+    fclose(f);
+    if (n != 4 || memcmp(magic, "PACK", 4) != 0) {
+      fprintf(stderr, "export pack missing PACK magic\n");
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
 /* H3: pack import total size cap 64 MiB — fail closed (size gate, no valid pack). */
 static int test_pack_cap(ge_engine *e) {
   const size_t cap = 64u * 1024u * 1024u;
@@ -281,6 +378,10 @@ int main(void) {
 
   /* H3 pack size cap */
   if (test_pack_cap(e))
+    goto fail;
+
+  /* P2.1 push packbuilder */
+  if (test_pack_build(e))
     goto fail;
 
   ge_close(e);

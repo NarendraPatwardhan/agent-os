@@ -15,20 +15,29 @@ export class GitEngine {
   private readonly durable: DurableBackend | undefined;
   /** Last opaque durable bytes (not a MEMFS worktree image). */
   private _durableSnapshot: Uint8Array | null = null;
+  /** Default cone prefixes for asMountDriver (cone-only, not full sparse parity). */
+  private readonly sparseCone: string[] | undefined;
 
   constructor(
     readonly bridge: GitBridge,
     readonly readOnly = false,
     durable?: DurableBackend,
+    sparseCone?: string[],
   ) {
     this.durable = durable;
+    this.sparseCone = sparseCone?.length ? sparseCone : undefined;
   }
 
   static async load(opts: GitEngineLoadOptions): Promise<GitEngine> {
     const bridge = await GitBridge.create(opts.baseUrl, {
       workRoot: opts.workRoot,
     });
-    const engine = new GitEngine(bridge, !!opts.readOnly, opts.durable);
+    const engine = new GitEngine(
+      bridge,
+      !!opts.readOnly,
+      opts.durable,
+      opts.sparseCone,
+    );
     // deferred: durability not rebinding MEMFS yet — engine-level snapshot only
     if (opts.durable) {
       const snap = await opts.durable.load();
@@ -85,11 +94,23 @@ export class GitEngine {
     });
   }
 
-  /** MountFs driver (worktree + ctl). Coherence: close write then status via open. */
+  /**
+   * Build a push pack (objects reachable from tip OIDs) via engine packbuilder.
+   * Empty oids fail closed. Result always starts with PACK magic.
+   */
+  async buildPushPack(oids: string[]): Promise<Uint8Array> {
+    return this.bridge.serial(() => this.bridge.packBuild(oids));
+  }
+
+  /**
+   * MountFs driver (worktree + ctl). Coherence: close write then status via open.
+   * `sparseCone` overrides load-time default; cone-only projection (not full
+   * sparse-checkout parity).
+   */
   asMountDriver(opts?: { sparseCone?: string[] }): Driver {
     return createGitFsDriver(this.bridge, {
       readOnly: this.readOnly,
-      sparseCone: opts?.sparseCone,
+      sparseCone: opts?.sparseCone ?? this.sparseCone,
     });
   }
 

@@ -258,6 +258,42 @@ defmodule AgentOS.Git.OrchestratorTest do
     :ok = GitEngine.stop(pid)
   end
 
+  # ── P2.1 push fail-closed on server ────────────────────────────────────────
+
+  @tag timeout: 30_000
+  test "push always fails closed on server (fetch/clone only)" do
+    path = engine_path()
+    assert {:ok, pid} = GitEngine.start(executable: path)
+
+    assert {:ok, json} =
+             Orchestrator.run(
+               pid,
+               ~s({"op":"push","args":{"url":"#{@fixture_url}"}}),
+               orch_opts()
+             )
+
+    assert is_binary(json)
+    assert json =~ "\"ok\":false" or json =~ ~s("ok":false)
+    refute json =~ "\"ok\":true"
+    assert json =~ "push not supported" or json =~ "fetch/clone only"
+    assert json =~ "\"code\":1" or json =~ ~s("code":1)
+
+    # host_call demux path also fails closed
+    assert {:ok, json2} =
+             GitEngine.handle_host_call(
+               pid,
+               "git",
+               ~s({"op":"push","args":{"url":"#{@fixture_url}"}}),
+               orch_opts()
+             )
+
+    assert json2 =~ "\"ok\":false" or json2 =~ ~s("ok":false)
+    refute json2 =~ "\"ok\":true"
+    assert json2 =~ "push not supported" or json2 =~ "fetch/clone only"
+
+    :ok = GitEngine.stop(pid)
+  end
+
   # ── P1.7 foundation: async git host_call via Vm ────────────────────────────
 
   @tag timeout: 120_000
@@ -337,7 +373,105 @@ defmodule AgentOS.Git.OrchestratorTest do
     end
   end
 
+  @tag timeout: 120_000
+  test "concurrent remotes serialize: at most one running Task, second queues" do
+    # Two overlapping name=="git" host_calls must not run Orchestrator concurrently
+    # on the same VM (import+apply interleave risk). Queue holds the second until
+    # the first Task completes.
+    wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
+    posix = runfile_bytes("memcontainers/images/posix.tar")
+    path = engine_path()
+
+    if is_nil(wasm) or is_nil(posix) do
+      IO.puts(:stderr, "skipping concurrent remote serialize test: kernel/posix runfiles missing")
+    else
+      id = {"git-serial", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
+      pack = File.read!(Path.expand("../fixtures/git/minimal.pack", __DIR__))
+      tip = File.read!(Path.expand("../fixtures/git/minimal.tip", __DIR__)) |> String.trim()
+      gate = :atomics.new(1, signed: false)
+      max_concurrent = :atomics.new(1, signed: false)
+      in_flight = :atomics.new(1, signed: false)
+
+      transport = fn
+        :list_refs, _ ->
+          cur = :atomics.add_get(in_flight, 1, 1)
+          # Track peak concurrent transport entry (proxy for concurrent orch).
+          peak = :atomics.get(max_concurrent, 1)
+          if cur > peak, do: :atomics.put(max_concurrent, 1, cur)
+          # Hold first remote in transport so second can enqueue.
+          if :atomics.get(gate, 1) == 0 do
+            Process.sleep(150)
+          end
+
+          :atomics.sub(in_flight, 1, 1)
+          {:ok, [%{name: "refs/heads/main", hash: tip}]}
+
+        :fetch_packs, _ ->
+          {:ok, pack}
+      end
+
+      try do
+        assert {:ok, _pid} =
+                 AgentOS.ControlPlane.create(id,
+                   wasm: wasm,
+                   base_image: posix,
+                   deterministic: true,
+                   workers: 0,
+                   host_call: :relay
+                 )
+
+        assert :ok =
+                 AgentOS.ControlPlane.attach_git(id,
+                   executable: path,
+                   allowed_origins: [@fixture_origin],
+                   transport: transport
+                 )
+
+        vm = AgentOS.ControlPlane.whereis(id)
+
+        e1 = %{
+          kind: :host_call,
+          handle: 9_101,
+          name: "git",
+          body: ~s({"op":"clone","args":{"url":"#{@fixture_url}"}})
+        }
+
+        e2 = %{
+          kind: :host_call,
+          handle: 9_102,
+          name: "git",
+          body: ~s({"op":"fetch","args":{"url":"#{@fixture_url}"}})
+        }
+
+        assert :answered = AgentOS.Vm.try_answer_git_host_call(vm, e1)
+        # Second should enqueue while first Task is still running (or about to).
+        Process.sleep(20)
+        assert :answered = AgentOS.Vm.try_answer_git_host_call(vm, e2)
+
+        info_mid = AgentOS.ControlPlane.info(id)
+        # At most one remote Task running; second is queued or already finished.
+        assert info_mid.git_remote_running <= 1
+        assert info_mid.git_inflight >= 1
+
+        # Release any hold and wait for both to drain.
+        :atomics.put(gate, 1, 1)
+
+        assert_eventually(fn ->
+          AgentOS.ControlPlane.info(id).git_inflight == 0
+        end)
+
+        # Transport never overlapped (queue serialized orch entry).
+        assert :atomics.get(max_concurrent, 1) <= 1
+
+        assert :ok = AgentOS.ControlPlane.detach_git(id)
+      after
+        AgentOS.ControlPlane.dispose(id)
+      end
+    end
+  end
+
   defp runfile_bytes(rel) do
+    # __DIR__ is server/test/agent_os → repo root is ../../.. ; mix cwd is often server/.
     roots =
       [
         System.get_env("RUNFILES_DIR") && Path.join(System.get_env("RUNFILES_DIR"), "_main"),
@@ -345,8 +479,11 @@ defmodule AgentOS.Git.OrchestratorTest do
         System.get_env("TEST_SRCDIR") && System.get_env("TEST_WORKSPACE") &&
           Path.join([System.get_env("TEST_SRCDIR"), System.get_env("TEST_WORKSPACE")]),
         System.get_env("TEST_SRCDIR") && Path.join(System.get_env("TEST_SRCDIR"), "_main"),
+        Path.expand("../../../bazel-bin", __DIR__),
         Path.expand("../../bazel-bin", __DIR__),
-        Path.expand("..", File.cwd!())
+        Path.expand("..", File.cwd!()),
+        Path.expand("../bazel-bin", File.cwd!()),
+        Path.expand("bazel-bin", File.cwd!())
       ]
       |> Enum.reject(&is_nil/1)
 

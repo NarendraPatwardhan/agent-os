@@ -48,6 +48,8 @@ export {
   MemoryPackCache,
   DiskPackCache,
   importPackCached,
+  defaultProcessPackCache,
+  uploadPackCacheKey,
   DEFAULT_MAX_PACK_BYTES,
 } from "./pack-cache.js";
 export type { PackCache, ImportPackOptions } from "./pack-cache.js";

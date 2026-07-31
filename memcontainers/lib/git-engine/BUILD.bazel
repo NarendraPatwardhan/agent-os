@@ -146,6 +146,12 @@ exports_files([
     "testdata/abi/dial_forbidden.json",
     "testdata/orch/clone_algorithm.json",
     "testdata/orch/fetch_algorithm.json",
+    "testdata/orch/clone_success_steps.json",
+    "testdata/orch/clone_empty_pack_fail.json",
+    "testdata/orch/origin_denied.json",
+    "testdata/pack/minimal.pack",
+    "testdata/pack/minimal.tip",
+    "testdata/pack/minimal.ref",
 ])
 
 filegroup(
@@ -153,9 +159,16 @@ filegroup(
     srcs = ["//third_party/libgit2:license_files"],
 )
 
+# Executable K20 dual-host orch vectors (TS + BEAM load the same JSON).
 filegroup(
     name = "orch_algorithm_traces",
     srcs = glob(["testdata/orch/**"]),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "orch_pack_fixtures",
+    srcs = glob(["testdata/pack/**"]),
     visibility = ["//visibility:public"],
 )
 

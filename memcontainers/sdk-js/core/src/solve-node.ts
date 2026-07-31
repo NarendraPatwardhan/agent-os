@@ -244,14 +244,25 @@ export const nodeSolvePlatform: SolvePlatform = {
 export async function nodeSolvePlatformWithEngine(opts: {
   baseUrl: string;
   connections?: import("./types.js").ConnectionDefinition[];
+  /** On-disk pack cache dir (MC_GIT_PACK_CACHE). Overrides process MemoryPackCache. */
   packCacheDir?: string;
+  /** Explicit pack cache; default is process-scoped MemoryPackCache for repeated solves. */
+  packCache?: import("./git/pack-cache.js").PackCache | null;
 }): Promise<SolvePlatform> {
   const { GitEngine } = await import("./git/engine.js");
   const { createEngineGitSource } = await import("./git/llb-git.js");
-  const { DiskPackCache } = await import("./git/pack-cache.js");
-  const packCache = opts.packCacheDir
-    ? new DiskPackCache(opts.packCacheDir)
-    : undefined;
+  const {
+    DiskPackCache,
+    defaultProcessPackCache,
+  } = await import("./git/pack-cache.js");
+  // Product LLB path: always plumb a pack cache for repeated in-process solves
+  // unless the caller passes packCache: null. Disk dir wins over memory default.
+  const packCache =
+    opts.packCache === null
+      ? undefined
+      : opts.packCacheDir
+        ? new DiskPackCache(opts.packCacheDir)
+        : (opts.packCache ?? defaultProcessPackCache());
   const gitSource = createEngineGitSource(
     () => GitEngine.load({ baseUrl: opts.baseUrl }),
     {

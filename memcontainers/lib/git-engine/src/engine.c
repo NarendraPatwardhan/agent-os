@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 #define GE_VERSION "agentos-git-engine/0.1.0+libgit2-1.9.2"
 
@@ -813,6 +814,339 @@ int ge_import_pack(ge_engine *e, const uint8_t *chunk, size_t len, int final) {
   return 0;
 }
 
+/* --- push packbuilder (export) --- */
+
+#define GE_PACK_TIPS_MAX 256
+
+static const char *pack_skip_ws(const char *p) {
+  while (p && *p && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r'))
+    p++;
+  return p;
+}
+
+/* Find "key": value-start (shallow object; same crude rules as json_min). */
+static const char *pack_find_key(const char *json, const char *key) {
+  if (!json || !key)
+    return NULL;
+  char pat[128];
+  size_t klen = strlen(key);
+  if (klen + 3 >= sizeof(pat))
+    return NULL;
+  pat[0] = '"';
+  memcpy(pat + 1, key, klen);
+  pat[1 + klen] = '"';
+  pat[2 + klen] = '\0';
+  const char *p = json;
+  while ((p = strstr(p, pat)) != NULL) {
+    p = pack_skip_ws(p + strlen(pat));
+    if (*p != ':') {
+      p++;
+      continue;
+    }
+    return pack_skip_ws(p + 1);
+  }
+  return NULL;
+}
+
+static int pack_oid_add(git_oid *tips, size_t *n, size_t max, const git_oid *oid) {
+  if (!oid || git_oid_is_zero(oid))
+    return 0;
+  for (size_t i = 0; i < *n; i++) {
+    if (git_oid_equal(&tips[i], oid))
+      return 0;
+  }
+  if (*n >= max) {
+    return -1;
+  }
+  tips[(*n)++] = *oid;
+  return 0;
+}
+
+/* Parse a JSON array of 40-hex OID strings starting at '['. */
+static int pack_scan_oid_array(const char *arr, git_oid *tips, size_t max, size_t *n,
+                               ge_engine *e) {
+  const char *p = pack_skip_ws(arr);
+  if (!p || *p != '[') {
+    set_err(e, "pack.build: oids must be a JSON array");
+    return -1;
+  }
+  p++;
+  for (;;) {
+    p = pack_skip_ws(p);
+    if (!*p) {
+      set_err(e, "pack.build: unclosed oids array");
+      return -1;
+    }
+    if (*p == ']')
+      return 0;
+    if (*p == ',') {
+      p++;
+      continue;
+    }
+    if (*p != '"') {
+      set_err(e, "pack.build: oids entries must be hex strings");
+      return -1;
+    }
+    p++;
+    char hex[GIT_OID_HEXSZ + 1];
+    size_t i = 0;
+    while (*p && *p != '"' && i < GIT_OID_HEXSZ)
+      hex[i++] = *p++;
+    if (*p != '"' || i != GIT_OID_HEXSZ) {
+      set_err(e, "pack.build: oid must be 40 hex chars");
+      return -1;
+    }
+    p++;
+    hex[GIT_OID_HEXSZ] = '\0';
+    git_oid oid;
+    if (git_oid_fromstr(&oid, hex) != 0) {
+      set_err(e, "pack.build: bad oid");
+      return -1;
+    }
+    if (pack_oid_add(tips, n, max, &oid) != 0) {
+      set_err(e, "pack.build: too many oids");
+      return -1;
+    }
+  }
+}
+
+/* Extract non-zero newHash/hash string fields from a commands-style JSON region. */
+static int pack_scan_command_hashes(const char *region, git_oid *tips, size_t max,
+                                    size_t *n, ge_engine *e) {
+  if (!region)
+    return 0;
+  /* Prefer newHash (push commands); also accept hash (tips-style). */
+  static const char *keys[] = {"newHash", "hash"};
+  for (size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
+    const char *p = region;
+    char pat[32];
+    snprintf(pat, sizeof(pat), "\"%s\"", keys[k]);
+    while ((p = strstr(p, pat)) != NULL) {
+      const char *v = pack_skip_ws(p + strlen(pat));
+      if (*v != ':') {
+        p++;
+        continue;
+      }
+      v = pack_skip_ws(v + 1);
+      if (*v != '"') {
+        p++;
+        continue;
+      }
+      v++;
+      char hex[GIT_OID_HEXSZ + 1];
+      size_t i = 0;
+      while (*v && *v != '"' && i < GIT_OID_HEXSZ)
+        hex[i++] = *v++;
+      if (*v == '"' && i == GIT_OID_HEXSZ) {
+        hex[GIT_OID_HEXSZ] = '\0';
+        git_oid oid;
+        if (git_oid_fromstr(&oid, hex) == 0) {
+          if (pack_oid_add(tips, n, max, &oid) != 0) {
+            set_err(e, "pack.build: too many oids");
+            return -1;
+          }
+        }
+      }
+      p = v;
+    }
+  }
+  return 0;
+}
+
+static int pack_collect_local_tips(ge_engine *e, git_oid *tips, size_t max, size_t *n) {
+  git_reference_iterator *it = NULL;
+  if (git_reference_iterator_new(&it, e->repo) != 0) {
+    set_err_git(e, "pack.build: tips");
+    return -1;
+  }
+  git_reference *ref = NULL;
+  while (git_reference_next(&ref, it) == 0) {
+    if (git_reference_type(ref) == GIT_REFERENCE_DIRECT) {
+      const char *name = git_reference_name(ref);
+      /* Branch tips only for default export (not tags/remotes). */
+      if (name && strncmp(name, "refs/heads/", 11) == 0) {
+        const git_oid *oid = git_reference_target(ref);
+        if (oid && pack_oid_add(tips, n, max, oid) != 0) {
+          git_reference_free(ref);
+          git_reference_iterator_free(it);
+          set_err(e, "pack.build: too many oids");
+          return -1;
+        }
+      }
+    }
+    git_reference_free(ref);
+  }
+  git_reference_iterator_free(it);
+  return 0;
+}
+
+/* Fill tips from oids_json (array or object). Explicit empty oids/commands fail
+ * closed; only when no oids source is provided do we derive local branch tips. */
+static int pack_collect_tips(ge_engine *e, const char *oids_json, git_oid *tips, size_t max,
+                             size_t *n) {
+  *n = 0;
+  int explicit = 0;
+  const char *json = pack_skip_ws(oids_json);
+  if (json && *json) {
+    if (*json == '[') {
+      explicit = 1;
+      if (pack_scan_oid_array(json, tips, max, n, e) != 0)
+        return -1;
+    } else if (*json == '{') {
+      const char *oids_v = pack_find_key(json, "oids");
+      if (oids_v && *oids_v == '[') {
+        explicit = 1;
+        if (pack_scan_oid_array(oids_v, tips, max, n, e) != 0)
+          return -1;
+      }
+      const char *cmds = pack_find_key(json, "commands");
+      if (cmds) {
+        explicit = 1;
+        if (pack_scan_command_hashes(cmds, tips, max, n, e) != 0)
+          return -1;
+      }
+    } else {
+      set_err(e, "pack.build: oids_json must be array or object");
+      return -1;
+    }
+  }
+  if (*n == 0 && !explicit) {
+    if (pack_collect_local_tips(e, tips, max, n) != 0)
+      return -1;
+  }
+  if (*n == 0) {
+    set_err(e, "pack.build: no oids");
+    return -1;
+  }
+  return 0;
+}
+
+/* Core packbuilder → malloc'd buffer. *out_count optional object count. */
+static int pack_build_core(ge_engine *e, const char *oids_json, uint8_t **out, size_t *out_len,
+                           size_t *out_count) {
+  if (out)
+    *out = NULL;
+  if (out_len)
+    *out_len = 0;
+  if (out_count)
+    *out_count = 0;
+  if (!e || !out || !out_len) {
+    if (e)
+      set_err(e, "pack.build: bad args");
+    return -1;
+  }
+  if (ensure_repo(e) != 0)
+    return -1;
+
+  git_oid tips[GE_PACK_TIPS_MAX];
+  size_t n_tips = 0;
+  if (pack_collect_tips(e, oids_json, tips, GE_PACK_TIPS_MAX, &n_tips) != 0)
+    return -1;
+
+  git_packbuilder *pb = NULL;
+  if (git_packbuilder_new(&pb, e->repo) != 0) {
+    set_err_git(e, "pack.build: packbuilder");
+    return -1;
+  }
+  (void)git_packbuilder_set_threads(pb, 1);
+
+  for (size_t i = 0; i < n_tips; i++) {
+    /* insert_recur: commit + tree + blobs (and nested) for full push packs. */
+    if (git_packbuilder_insert_recur(pb, &tips[i], NULL) != 0) {
+      set_err_git(e, "pack.build: insert");
+      git_packbuilder_free(pb);
+      return -1;
+    }
+  }
+
+  size_t count = git_packbuilder_object_count(pb);
+  if (count == 0) {
+    set_err(e, "pack.build: empty pack");
+    git_packbuilder_free(pb);
+    return -1;
+  }
+
+  git_buf buf = GIT_BUF_INIT;
+  if (git_packbuilder_write_buf(&buf, pb) != 0) {
+    set_err_git(e, "pack.build: write");
+    git_packbuilder_free(pb);
+    git_buf_dispose(&buf);
+    return -1;
+  }
+  git_packbuilder_free(pb);
+
+  if (!buf.ptr || buf.size < 4 || memcmp(buf.ptr, "PACK", 4) != 0) {
+    set_err(e, "pack.build: invalid pack (missing PACK magic)");
+    git_buf_dispose(&buf);
+    return -1;
+  }
+  if (buf.size > GE_PACK_MAX_BYTES) {
+    set_err(e, "pack.build: exceeds 64 MiB cap");
+    git_buf_dispose(&buf);
+    return -1;
+  }
+
+  uint8_t *copy = (uint8_t *)malloc(buf.size);
+  if (!copy) {
+    set_err(e, "pack.build: out of memory");
+    git_buf_dispose(&buf);
+    return -1;
+  }
+  memcpy(copy, buf.ptr, buf.size);
+  *out = copy;
+  *out_len = buf.size;
+  if (out_count)
+    *out_count = count;
+  git_buf_dispose(&buf);
+  return 0;
+}
+
+int ge_pack_build(ge_engine *e, const char *oids_json, uint8_t **out, size_t *out_len) {
+  return pack_build_core(e, oids_json, out, out_len, NULL);
+}
+
+/* Run op pack.build: write pack under worktree + JSON meta {path,bytes,count}. */
+static int op_pack_build(ge_engine *e, const char *args, char *result_json, size_t result_cap) {
+  uint8_t *pack = NULL;
+  size_t pack_len = 0;
+  size_t count = 0;
+  if (pack_build_core(e, args, &pack, &pack_len, &count) != 0)
+    return -1;
+
+  /* Export path outside ODB pack/ so libgit2 does not try to index it. */
+  char gitdir[4096], adir[4096], full[4096];
+  snprintf(gitdir, sizeof(gitdir), "%s/.git", e->root);
+  mkdir(gitdir, 0755);
+  snprintf(adir, sizeof(adir), "%s/.git/agentos", e->root);
+  mkdir(adir, 0755);
+  snprintf(full, sizeof(full), "%s/.git/agentos/push.pack", e->root);
+
+  FILE *f = fopen(full, "wb");
+  if (!f) {
+    free(pack);
+    set_err(e, "pack.build: cannot write export path");
+    return -1;
+  }
+  size_t wrote = fwrite(pack, 1, pack_len, f);
+  if (fclose(f) != 0 || wrote != pack_len) {
+    free(pack);
+    unlink(full);
+    set_err(e, "pack.build: short write (fail closed, no truncate)");
+    return -1;
+  }
+  free(pack);
+
+  /* path is worktree-relative. */
+  int n = snprintf(result_json, result_cap,
+                   "{\"path\":\".git/agentos/push.pack\",\"bytes\":%zu,\"count\":%zu}", pack_len,
+                   count);
+  if (n < 0 || (size_t)n >= result_cap) {
+    set_err(e, "pack.build: result overflow");
+    return -1;
+  }
+  return 0;
+}
+
 static int op_refs_import(ge_engine *e, const char *args) {
   if (ensure_repo(e) != 0)
     return -1;
@@ -1141,6 +1475,14 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
         return resp_err(1, e->err);
     }
     return resp_ok("", NULL);
+  }
+
+  if (strcmp(op, "pack.build") == 0 || strcmp(op, "pack.export") == 0) {
+    char result[512];
+    if (op_pack_build(e, args, result, sizeof(result)) != 0)
+      return resp_err(1, e->err);
+    char *r = resp_ok("", result);
+    return r ? r : ge_static_oom;
   }
 
   if (strcmp(op, "clone.apply") == 0) {

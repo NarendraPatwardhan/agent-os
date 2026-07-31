@@ -1,0 +1,63 @@
+{
+  "name": "clone_success",
+  "version": 1,
+  "description": "Shallow clone algorithm with real minimal.pack → worktree apply (K20 dual-host).",
+  "fixture": {
+    "url": "https://example.com/demo.git",
+    "allowed_origins": ["https://example.com"],
+    "refs": [
+      {
+        "name": "refs/heads/main",
+        "hash_from": "../pack/minimal.tip"
+      }
+    ],
+    "pack_from": "../pack/minimal.pack"
+  },
+  "steps": [
+    {
+      "id": "resolve_remote_url",
+      "ok": true
+    },
+    {
+      "id": "origin_allowlist",
+      "ok": true
+    },
+    {
+      "id": "list_refs",
+      "ok": true
+    },
+    {
+      "id": "select_head_tip",
+      "ok": true
+    },
+    {
+      "id": "fetch_packs",
+      "ok": true
+    },
+    {
+      "id": "import_pack",
+      "ok": true
+    },
+    {
+      "id": "refs_import",
+      "ok": true
+    },
+    {
+      "id": "clone_apply",
+      "ok": true
+    },
+    {
+      "id": "orchestrator_response",
+      "op": "clone",
+      "args": {
+        "url": "https://example.com/demo.git"
+      },
+      "expect": {
+        "ok": true,
+        "code": 0,
+        "stdout_contains": ["cloned"],
+        "stderr_not_contains": ["empty pack", "not allowlisted"]
+      }
+    }
+  ]
+}

@@ -154,6 +154,75 @@ js_test(
     timeout = "moderate",
 )
 
+# P2.8 — shared executable orch goldens (TS ↔ BEAM).
+# rules_js requires cross-package sources to be copied into this package.
+genrule(
+    name = "orch_golden_clone_success",
+    srcs = ["//memcontainers/lib/git-engine:testdata/orch/clone_success_steps.json"],
+    outs = ["testdata/orch/clone_success_steps.json"],
+    cmd = "cp $< $@",
+)
+
+genrule(
+    name = "orch_golden_empty_pack",
+    srcs = ["//memcontainers/lib/git-engine:testdata/orch/clone_empty_pack_fail.json"],
+    outs = ["testdata/orch/clone_empty_pack_fail.json"],
+    cmd = "cp $< $@",
+)
+
+genrule(
+    name = "orch_golden_origin_denied",
+    srcs = ["//memcontainers/lib/git-engine:testdata/orch/origin_denied.json"],
+    outs = ["testdata/orch/origin_denied.json"],
+    cmd = "cp $< $@",
+)
+
+genrule(
+    name = "orch_golden_minimal_pack",
+    srcs = ["//memcontainers/lib/git-engine:testdata/pack/minimal.pack"],
+    outs = ["testdata/pack/minimal.pack"],
+    cmd = "cp $< $@",
+)
+
+genrule(
+    name = "orch_golden_minimal_tip",
+    srcs = ["//memcontainers/lib/git-engine:testdata/pack/minimal.tip"],
+    outs = ["testdata/pack/minimal.tip"],
+    cmd = "cp $< $@",
+)
+
+mc_ts_project(
+    name = "git_orch_golden_test_lib",
+    srcs = ["test/git_orch_golden.test.ts"],
+    deps = [
+        ":lib",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+js_test(
+    name = "git_orch_golden_test",
+    data = [
+        "package.json",
+        ":git_orch_golden_test_lib",
+        ":orch_golden_clone_success",
+        ":orch_golden_empty_pack",
+        ":orch_golden_origin_denied",
+        ":orch_golden_minimal_pack",
+        ":orch_golden_minimal_tip",
+        "//memcontainers/lib/git-engine:git_engine_emcc_js",
+        "//memcontainers/lib/git-engine:git_engine_mjs",
+        "//memcontainers/lib/git-engine:git_engine_wasm_file",
+    ],
+    entry_point = "test/git_orch_golden.test.js",
+    env = {
+        "MC_GIT_ENGINE_JS": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_mjs)",
+        # Relative to runfiles package root for this target.
+        "MC_GIT_ORCH_GOLDEN_DIR": "memcontainers/sdk-js/core/testdata/orch",
+    },
+    timeout = "moderate",
+)
+
 # PR11: connection-ref remotes + credential splice (no secret leak).
 mc_ts_project(
     name = "git_connections_test_lib",

@@ -21,6 +21,8 @@ defmodule AgentOS.GitEngine do
           optional(:root) => String.t(),
           optional(:mount_path) => String.t(),
           optional(:executable) => String.t(),
+          # true when `root` was created under System.tmp_dir! as agentos-git-*
+          optional(:temp_root?) => boolean(),
           buffer: binary()
         }
 
@@ -127,9 +129,20 @@ defmodule AgentOS.GitEngine do
         System.get_env("AGENTOS_GIT_ENGINE") ||
         default_executable()
 
-    root =
-      Keyword.get(opts, :root) ||
-        Path.join(System.tmp_dir!(), "agentos-git-" <> Integer.to_string(System.unique_integer([:positive])))
+    {root, temp_root?} =
+      case Keyword.get(opts, :root) do
+        nil ->
+          path =
+            Path.join(
+              System.tmp_dir!(),
+              "agentos-git-" <> Integer.to_string(System.unique_integer([:positive]))
+            )
+
+          {path, true}
+
+        given when is_binary(given) ->
+          {given, false}
+      end
 
     File.mkdir_p!(root)
 
@@ -139,12 +152,14 @@ defmodule AgentOS.GitEngine do
          %{
            port: port,
            root: root,
+           temp_root?: temp_root?,
            mount_path: Keyword.get(opts, :mount_path, "/workspace/repo"),
            executable: executable,
            buffer: <<>>
          }}
 
       {:error, reason} ->
+        maybe_rm_temp_root(root, temp_root?)
         {:stop, reason}
     end
   end
@@ -206,12 +221,31 @@ defmodule AgentOS.GitEngine do
   def handle_info(_msg, state), do: {:noreply, state}
 
   @impl true
-  def terminate(_reason, %{port: port}) when is_port(port) do
-    Port.close(port)
+  def terminate(_reason, state) do
+    case Map.get(state, :port) do
+      port when is_port(port) -> Port.close(port)
+      _ -> :ok
+    end
+
+    maybe_rm_temp_root(Map.get(state, :root), Map.get(state, :temp_root?, false))
     :ok
   end
 
-  def terminate(_reason, _state), do: :ok
+  # Only delete engine-owned temp roots under System.tmp_dir! named agentos-git-*.
+  # Never touch caller-supplied `:root` paths.
+  defp maybe_rm_temp_root(root, true) when is_binary(root) do
+    tmp = System.tmp_dir!() |> Path.expand()
+    root_exp = Path.expand(root)
+    base = Path.basename(root_exp)
+
+    if String.starts_with?(root_exp, tmp <> "/") and String.starts_with?(base, "agentos-git-") do
+      _ = File.rm_rf(root_exp)
+    end
+
+    :ok
+  end
+
+  defp maybe_rm_temp_root(_root, _temp?), do: :ok
 
   # ── framing ─────────────────────────────────────────────────────────────────
 

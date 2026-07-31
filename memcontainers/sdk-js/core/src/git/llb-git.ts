@@ -14,7 +14,8 @@ export interface LlbGitMaterializeOptions extends OrchestratorOptions {
   ref?: string;
   dest?: string;
   connection?: string;
-  packCache?: PackCache;
+  /** Pack cache for repeated solves; callers (solve-node) default process MemoryPackCache. */
+  packCache?: PackCache | null;
 }
 
 export interface LlbGitMaterializeResult {
@@ -194,12 +195,15 @@ async function sha256hex(data: Uint8Array): Promise<string> {
 export interface EngineGitSourceOptions extends OrchestratorOptions {
   /** Directory URL of git_engine.mjs/wasm. */
   baseUrl: string;
-  packCache?: PackCache;
+  /** Pack cache for repeated in-process solves (plumb MemoryPackCache when set). */
+  packCache?: PackCache | null;
 }
 
 /**
  * SolvePlatform.gitSource implementation using host engine + orchestrator.
  * Falls back is the caller's responsibility (see solve-node).
+ * Pass `orchOpts.packCache` (e.g. process MemoryPackCache) so repeated solves
+ * dedup upload-pack by public url+wants — credentials never enter the key.
  */
 export function createEngineGitSource(
   loadEngine: () => Promise<GitEngine>,

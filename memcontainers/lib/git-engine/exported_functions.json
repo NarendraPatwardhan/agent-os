@@ -5,6 +5,7 @@
   "_ge_close",
   "_ge_run_json",
   "_ge_import_pack",
+  "_ge_pack_build",
   "_ge_last_error",
   "_ge_free",
   "_ge_response_is_static",

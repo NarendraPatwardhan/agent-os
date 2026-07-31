@@ -70,7 +70,7 @@ async function main() {
 
     const http = new FixtureSmartHttp();
     let approved = false;
-    // Fixture advertises remote so lease path runs; inject pack builder.
+    // Fixture advertises remote so lease path runs; default engine packbuilder (no inject).
     http.add(
       "https://example.com/r.git",
       [{ name: "refs/heads/master", hash: "0000000000000000000000000000000000000000" }],
@@ -92,7 +92,6 @@ async function main() {
         approved = true;
         return true;
       },
-      buildPushPack: async () => new Uint8Array([0x50, 0x41, 0x43, 0x4b]),
     });
     const r = await orchWithPack.handle({
       op: "push",
@@ -108,6 +107,30 @@ async function main() {
     }
     if (http.lastPush.packLen === 0) {
       throw new Error("expected non-empty pack for create/update");
+    }
+    // Real packbuilder bytes must start with PACK magic.
+    const tip = await eng.run({ op: "rev-parse", args: { rev: "HEAD" } });
+    const tipHex = String(tip.stdout || "").trim().split(/\s+/)[0];
+    if (!/^[0-9a-f]{40}$/i.test(tipHex)) {
+      throw new Error(`bad HEAD for pack check: ${tipHex}`);
+    }
+    const pack = await eng.buildPushPack([tipHex]);
+    if (
+      pack.byteLength < 4 ||
+      pack[0] !== 0x50 ||
+      pack[1] !== 0x41 ||
+      pack[2] !== 0x43 ||
+      pack[3] !== 0x4b
+    ) {
+      throw new Error("buildPushPack missing PACK magic");
+    }
+    try {
+      await eng.buildPushPack([]);
+      throw new Error("empty oids should fail closed");
+    } catch (e) {
+      if (!String(e).includes("no oids") && !String(e).includes("ge_pack_build")) {
+        throw e;
+      }
     }
     await eng.close();
   }

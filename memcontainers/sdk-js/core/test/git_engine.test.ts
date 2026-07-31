@@ -166,6 +166,36 @@ async function main() {
     throw new Error(`generation should advance: ${genBefore} → ${genAfter}`);
   }
 
+  // P2.5: cone-only sparse projection via asMountDriver (not full sparse parity).
+  await eng.run({
+    op: "write",
+    args: { path: "keep/a.txt", content: "keep\n" },
+  });
+  await eng.run({
+    op: "write",
+    args: { path: "drop/b.txt", content: "drop\n" },
+  });
+  const coneDriver = eng.asMountDriver({ sparseCone: ["keep"] });
+  const coneRoot = await coneDriver.readdir("/");
+  if (!coneRoot.some((e) => e.name === "keep")) {
+    throw new Error(`cone readdir missing keep: ${JSON.stringify(coneRoot)}`);
+  }
+  if (coneRoot.some((e) => e.name === "drop")) {
+    throw new Error(`cone readdir must hide drop: ${JSON.stringify(coneRoot)}`);
+  }
+  const keep = await coneDriver.open("/keep/a.txt");
+  if (new TextDecoder().decode(keep) !== "keep\n") {
+    throw new Error("in-cone open failed");
+  }
+  // Engine sparse-set (cone-only config write + checkout when HEAD exists).
+  const ss = await eng.run({
+    op: "sparse-set",
+    args: { patterns: "keep" },
+  });
+  if (!ss.ok) {
+    throw new Error(`sparse-set: ${JSON.stringify(ss)}`);
+  }
+
   await eng.close();
   console.log("git_engine.test SUCCESS");
 }

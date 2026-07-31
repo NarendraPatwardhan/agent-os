@@ -105,6 +105,12 @@ export interface CreateOptions {
    * `experimentalGitEngine` is true.
    */
   gitEngineBaseUrl?: string;
+  /**
+   * Cone-mode sparse-checkout prefixes for the default gitfs mount and post-clone
+   * engine `sparse-set` (e.g. `["src", "docs"]`). **Cone-only** — not full
+   * sparse-checkout pattern parity. Only applied when `experimentalGitEngine` is on.
+   */
+  gitSparseCone?: string[];
 }
 
 export type ConnectionAuth =

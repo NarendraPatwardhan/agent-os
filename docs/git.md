@@ -2,6 +2,8 @@
 
 **Experimental** product surface for interactive and LLB git. Design of record: workspace-root
 `GIT.md`. Tracker / gaps: `TASKS.md`, `CRITICAL_REVIEW.md`. Remotes are **not** GA.
+`experimentalGitEngine` stays at **api-surface level experimental** until graduation criteria below
+are met — do **not** treat it as stable.
 
 ## Thesis
 
@@ -14,8 +16,21 @@ the engine never dials the network. Remotes are host-mediated.
 | gitfs | `asMountDriver()` → MountFs; local ctl at `/.git/mc/ctl` |
 | Thin CLI | `//memcontainers/programs/git` — reduced surface only (see below) |
 | Server engine | BEAM-owned C `git-engine` **Port** — local Run, pack apply, type-4 mount only |
-| Server remotes | **BEAM HTTPS + Elixir orch** → Port apply (**no Node**, **no C TLS**) |
+| Server remotes | **BEAM HTTPS + Elixir orch** → Port apply (**no Node**, **no C TLS**); **fetch/clone only** until packbuilder |
 | LLB (Node) | Host emcc engine first (`MC_GIT_ENGINE_DIR`); **not** ambient system git |
+
+## Agent-facing constraints (product)
+
+These are hard product rules for agents and tools that use host git — not optional polish.
+
+| Constraint | Meaning |
+|------------|---------|
+| **One gitfs mount per VM (K21)** | v1 allows at most one gitfs driver mount per VM. A second `vm.mount` of gitfs fails closed on the host. |
+| **No `.git/objects` façade (v1)** | Guests do **not** get a synthetic `.git/objects` tree. Object DB stays host-side; worktree + ctl only. |
+| **Unflushed ctl: close write before status** | Ctl Request is written to `/.git/mc/ctl`; Response is read from the out path. Close (or Drop) the write FD **before** reading status / next Response — unflushed guest buffers are invisible to the engine (same class as `hostDir`). |
+| **Remotes need CAP_NET + host_call `git`** | Mount/ctl alone cannot dial. Guest remotes go through `mc_sys_host_call` name `"git"` gated by kernel **CAP_NET**. Ctl remote ops refuse. |
+| **Experimental flag + identity on commit** | Opt-in via `experimentalGitEngine` (JS). Commits need author identity (`name` / `email` args or engine defaults) — no ambient global gitconfig from the host user. |
+| **Server push is not available** | See [Server remotes](#server-remotes-k16--push-honesty) — fetch/clone only on BEAM until packbuilder. |
 
 ## Thin CLI surface (honest)
 
@@ -32,7 +47,7 @@ Not supported on the thin CLI (examples): `rm`, `diff`, `show`, `reset`, `tag`, 
 `switch`, sparse, rebase, submodules, LFS, receive-pack. Use SDK / ctl ops where implemented, or
 expect `unknown or unsupported command`.
 
-## Server remotes (K16)
+## Server remotes (K16) + push honesty
 
 Same ownership cut as kernel HTTP egress: **BEAM dials HTTPS**; the guest and the Port child do not.
 
@@ -47,14 +62,45 @@ guest host_call "git"
 
 | Responsibility | Owner |
 |----------------|--------|
-| TLS, ListRefs, FetchPacks, PushPacks | **BEAM** (`AgentOS.Git.SmartHttp`) |
+| TLS, ListRefs, FetchPacks | **BEAM** (`AgentOS.Git.SmartHttp`) |
 | Origin / connection policy | **BEAM** (connections catalog) |
 | Pack import + apply + local porcelain | **C Port** (`AgentOS.GitEngine`) |
 | JS browser/Node remotes | **TS** orch + emcc |
+| **Push (server)** | **Not configured** — stable error until BEAM packbuilder ships |
+
+**Server remotes are fetch/clone only** until a packbuilder is available on the BEAM path.
+`AgentOS.Git.Orchestrator` rejects `op: "push"` with a **stable** stderr (do not paraphrase in
+callers that match it):
+
+```text
+git: push not supported on server (fetch/clone only)
+```
+
+JS may inject `buildPushPack` for fixture/product push experiments; **claiming server push works is
+incorrect**. Read-only mounts also reject push on both hosts.
 
 C `smart_http` / C orchestrator (Port type-5) are **test/fixture only** — not the product server
 remote path. Dual-host product orch is **TS (JS) ↔ BEAM (server)** sharing apply-op + algorithm
 semantics (K20), not “C orch on server”.
+
+### Executable golden orch vectors (K20 / P2.8)
+
+Shared JSON under `memcontainers/lib/git-engine/testdata/orch/` (fixture copies:
+`server/test/fixtures/git/orch/`):
+
+| File | Asserts |
+|------|---------|
+| `clone_success_steps.json` | fixture pack + tip → `ok:true`, stdout contains `cloned` |
+| `clone_empty_pack_fail.json` | empty pack → `ok:false`, stderr contains `empty pack` |
+| `origin_denied.json` | wrong allowlist → `ok:false`, stderr contains `not allowlisted` |
+
+Each vector lists logical algorithm steps plus an executable `orchestrator_response` step with
+expected `ok` / substring checks. **Both** hosts run them:
+
+- TS: `//memcontainers/sdk-js/core:git_orch_golden_test` (FixtureSmartHttp + wasm engine)
+- BEAM: `AgentOS.Git.OrchGoldenTest` (fixture transport + Port)
+
+Prose-only algorithm name lists without assertions are not sufficient.
 
 ## Create options (JS)
 
@@ -64,10 +110,37 @@ Opt-in only; documented in [Create options](./create-options.md).
 mc.create({
   experimentalGitEngine: true,
   gitEngineBaseUrl: new URL("./git-engine/", import.meta.url).href,
-  // registers host_call "git", mounts gitfs at /workspace/repo
+  // registers host_call "git" (process pack cache default), mounts gitfs at /workspace/repo
+  // optional cone-only sparse: gitSparseCone: ["src", "docs"],
   connections: [{ ref: "github.user.work", auth: { kind: "bearer", token }, origins: ["https://github.com"] }],
 });
 ```
+
+## `experimentalGitEngine` graduation criteria (P3.2)
+
+**Do not graduate to stable yet.** Remotes are not GA. Keep `docs/api-surface.json` level
+`experimental` until **all** of the following hold:
+
+1. **Origin / connection policy** — empty origins fail closed; credential splice host-only; no
+   secrets in guest/ctl/engine args (already required; must remain green in dual-host tests).
+2. **Pack e2e** — real pack import → refs → clone/fetch apply on **both** JS wasm and BEAM Port
+   (minimal.pack class fixtures + golden orch vectors).
+3. **Push or explicit RO** — either a real packbuilder path on each product host, **or** documented
+   read-only remotes with stable reject messages (server is RO for push today).
+4. **Single-writer** — one engine queue per gitfs mount; no concurrent writers; K21 one-mount rule
+   enforced in product attach paths.
+5. **CAP_NET e2e** — guest without CAP_NET gets EPERM on remotes; with CAP_NET + allowlisted origin,
+   shallow clone/fetch works on JS and server attach paths.
+6. **Metrics / observability** — basic engine/orch failure counters or equivalent product hooks
+   (PR16 polish), not silent false-green.
+
+Until then: flag stays experimental; docs and api-surface must not claim GA remotes.
+
+## Residual: full guest CAP_NET e2e (P1.7)
+
+Unit demux for host_call name `"git"` is covered (async claim + fixture transport under `Vm` /
+`attach_git`). **Full guest CAP_NET e2e** (thin `/bin/git` inside a booted guest image through
+kernel CAP_NET to orch) remains **residual** — not a substitute for the unit path above.
 
 ## Env (Node solve / LLB)
 
@@ -98,6 +171,7 @@ not an “immediately after MVP” product path until that lands.
 - Ctl remotes refuse; remotes require `CAP_NET` + host_call name `"git"`.
 - No Node/Bun process on the Elixir control plane for git.
 - Do not treat remotes or the experimental flag as multi-tenant GA.
+- Server push is rejected with a stable message (see above).
 
 ## Bazel / server targets
 
@@ -105,5 +179,7 @@ not an “immediately after MVP” product path until that lands.
 - `//memcontainers/lib/git-engine:git_engine_wasm_size_limit` — ≤2 MiB on optimized `git_engine.wasm`
 - `//memcontainers/lib/git-engine:git_engine_wasm_l5_notices` — fail-closed NOTICE/COPYING in ship set
 - `//memcontainers/lib/git-engine:git-engine` — native Port binary (dial-free)
+- `//memcontainers/lib/git-engine:orch_algorithm_traces` — executable K20 golden JSON
 - `//memcontainers/programs/git:git` — thin guest CLI
+- `//memcontainers/sdk-js/core:git_orch_golden_test` — TS golden runner
 - Elixir: `AgentOS.GitEngine`, `AgentOS.Git.SmartHttp`, `AgentOS.Git.Orchestrator`

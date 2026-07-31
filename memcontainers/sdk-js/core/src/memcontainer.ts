@@ -111,6 +111,7 @@ function ownCreateOptions(opts: CreateOptions): CreateOptions {
     mounts: opts.mounts?.map((mount) => ({ ...mount })),
     sidecarHosts: opts.sidecarHosts ? { ...opts.sidecarHosts } : undefined,
     sidecars: ownSidecarDescriptors(opts.sidecars),
+    gitSparseCone: opts.gitSparseCone ? [...opts.gitSparseCone] : undefined,
   };
 }
 
@@ -813,7 +814,16 @@ async function makeEmbedded(
 
   // Host git engine (GIT.md): opt-in loads emcc module, registers MapHostCall "git",
   // and optionally mounts gitfs at /workspace/repo (K27 default).
-  let gitEngine: { close(): Promise<void>; asMountDriver: () => import("./types.js").Driver } | undefined;
+  // Product orch path: process-scoped pack cache on by default (registerGitHostCall
+  // → gitHostCallHandler); cone sparse via gitSparseCone (not full sparse parity).
+  let gitEngine:
+    | {
+        close(): Promise<void>;
+        asMountDriver: (opts?: {
+          sparseCone?: string[];
+        }) => import("./types.js").Driver;
+      }
+    | undefined;
   if (opts.experimentalGitEngine) {
     const base = opts.gitEngineBaseUrl;
     if (!base) {
@@ -822,10 +832,15 @@ async function makeEmbedded(
       );
     }
     const { GitEngine, registerGitHostCall } = await import("./git/index.js");
-    const eng = await GitEngine.load({ baseUrl: base });
+    const eng = await GitEngine.load({
+      baseUrl: base,
+      sparseCone: opts.gitSparseCone,
+    });
+    // packCache defaults on inside gitHostCallHandler (process MemoryPackCache).
     registerGitHostCall(tools, eng, {
       connections: opts.connections,
       policies: opts.policies,
+      sparseCone: opts.gitSparseCone,
     });
     gitEngine = eng;
   }
@@ -868,7 +883,11 @@ async function makeEmbedded(
       const gitPath = "/workspace/repo";
       const declared = (opts.mounts ?? []).some((m) => m.path === gitPath);
       if (!declared) {
-        await backend.mount(gitPath, gitEngine.asMountDriver(), false);
+        await backend.mount(
+          gitPath,
+          gitEngine.asMountDriver({ sparseCone: opts.gitSparseCone }),
+          false,
+        );
       }
     }
     return { backend, opts, catalog };

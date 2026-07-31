@@ -239,7 +239,12 @@ defmodule AgentOS.ControlPlane do
   def egress_http_fail(id, handle, opts \\ []),
     do: with_vm(id, &Vm.egress_http_fail(&1, handle, opts))
 
-  @doc "Attach BEAM-owned git-engine Port to a VM (gitfs + remotes). See `AgentOS.Vm.attach_git/2`."
+  @doc """
+  Attach BEAM-owned git-engine Port to a VM (gitfs + remotes).
+
+  Passes `opts` through to `AgentOS.Vm.attach_git/2` unchanged — does **not**
+  inject `:any` origins. Empty/missing `allowed_origins` fails closed for remotes.
+  """
   @spec attach_git(Vm.id(), keyword()) :: :ok | {:error, term()}
   def attach_git(id, opts \\ []), do: with_vm(id, &Vm.attach_git(&1, opts))
 

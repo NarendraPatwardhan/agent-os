@@ -29,6 +29,7 @@ fields—`mc.use()`. Applicability and defaults vary by runtime.
 | `deterministic`      | boolean                                  | `false`                         | Repeatable guest clock and random source             |
 | `experimentalGitEngine` | boolean                               | `false`                         | Opt-in host git engine (libgit2 emcc); **experimental** |
 | `gitEngineBaseUrl`   | directory URL string                     | none                            | Dir URL of `git_engine.mjs` + `git_engine.wasm`; required when engine is on |
+| `gitSparseCone`      | `string[]`                               | none                            | Cone-only sparse prefixes for default gitfs + post-clone `sparse-set` |
 
 ## `runtime`
 
@@ -178,20 +179,25 @@ build steps. It does not cache or sanitize external network responses.
 
 ## `experimentalGitEngine` and `gitEngineBaseUrl`
 
-**Experimental.** Opt-in host source-plane git (libgit2 + emcc wasm). Not graduated product GA;
-remotes, durability, and full porcelain remain incomplete. See [Git](./git.md).
+**Experimental** (api-surface level; **not** graduated). Opt-in host source-plane git (libgit2 +
+emcc wasm). Remotes are not GA; graduation criteria live in [Git](./git.md)
+(`experimentalGitEngine` graduation). Do not treat this flag as stable multi-tenant product.
 
 When `experimentalGitEngine` is `true`:
 
 - `gitEngineBaseUrl` is **required** — a directory URL whose contents include `git_engine.mjs` and
   `git_engine.wasm` (from `//memcontainers/lib/git-engine:git_engine_wasm`);
-- the host loads the engine, registers MapHostCall name `"git"` for CAP_NET remotes, and mounts
-  gitfs at `/workspace/repo` unless that path is already present in `mounts`.
+- the host loads the engine, registers MapHostCall name `"git"` for CAP_NET remotes (process-scoped
+  pack cache on by default), and mounts gitfs at `/workspace/repo` unless that path is already
+  present in `mounts`;
+- optional `gitSparseCone` applies **cone-only** sparse prefixes to that mount and to post-clone
+  engine `sparse-set` (not full sparse-checkout pattern parity).
 
 ```js
 const vm = await mc.create({
   experimentalGitEngine: true,
   gitEngineBaseUrl: new URL("./git-engine/", import.meta.url).href,
+  gitSparseCone: ["src", "docs"],
   connections: [
     {
       ref: "github.user.work",

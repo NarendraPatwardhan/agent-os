@@ -25,6 +25,12 @@ export interface GitEngineLoadOptions {
   workRoot?: string;
   readOnly?: boolean;
   /**
+   * Default cone prefixes for {@link GitEngine.asMountDriver} when the caller
+   * does not pass `sparseCone`. **Cone-only** (prefix projection) — not full
+   * sparse-checkout pattern parity.
+   */
+  sparseCone?: string[];
+  /**
    * Optional opaque durable store attached to the engine.
    *
    * deferred: durability not rebinding MEMFS yet — a stored snapshot is loaded
@@ -40,4 +46,10 @@ export interface GitEngineCreateOptions {
   experimentalGitEngine?: boolean;
   /** Where to load git_engine.js/wasm from when experimentalGitEngine is set. */
   gitEngineBaseUrl?: string;
+  /**
+   * Cone-mode sparse prefixes for default gitfs mount / post-clone sparse-set.
+   * **Cone-only** — not full sparse-checkout parity. Prefer CreateOptions
+   * `gitSparseCone` on the product memcontainer path.
+   */
+  sparseCone?: string[];
 }

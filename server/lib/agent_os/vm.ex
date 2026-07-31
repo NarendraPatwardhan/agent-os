@@ -69,8 +69,11 @@ defmodule AgentOS.Vm do
     # Test-only injectable SmartHttp transport (fixture double).
     git_transport: nil,
     # Inflight async remote host_calls: handle => Task.t(), ref => handle.
+    # At most one Task runs at a time; further remotes wait in git_remote_queue
+    # so clone/fetch import+apply steps cannot interleave on the shared Port.
     git_tasks: %{},
     git_task_refs: %{},
+    git_remote_queue: [],
     shell_log: "",
     shell_base: 0
   ]
@@ -431,7 +434,8 @@ defmodule AgentOS.Vm do
   Options:
   * `:executable`, `:root`, `:mount_path` (default `"/workspace/repo"`)
   * `:allowed_origins` / `:allow_origins` — host-owned origin allowlist for product
-    remotes (empty/missing fails closed; guest body cannot smuggle origins)
+    remotes (empty/missing fails closed; guest body cannot smuggle origins).
+    Defaults to `[]` (fail closed). `:any` is rejected outside `Mix.env() == :test`.
   * `:auth` — `%{kind: :none | :bearer | :header, ...}` kept in BEAM only
   * `:transport` — injectable SmartHttp transport (tests / fixture double only)
 
@@ -455,6 +459,8 @@ defmodule AgentOS.Vm do
     `AgentOS.SidecarTaskSupervisor`, return immediately, then answer via
     `egress_host_call_respond/3` or fail the handle. Host opts come from
     `attach_git/2` (origins/auth/transport) — never from the guest body.
+    **At most one remote Task runs per VM** — further remotes enqueue so
+    Orchestrator import+apply cannot interleave on the shared git-engine Port.
   * Mount-path host_calls (gitfs type-4) stay **synchronous** so single-writer
     Port ordering is preserved.
   """
@@ -648,7 +654,8 @@ defmodule AgentOS.Vm do
                   git_auth: nil,
                   git_transport: nil,
                   git_tasks: %{},
-                  git_task_refs: %{}
+                  git_task_refs: %{},
+                  git_remote_queue: []
                 }
 
                 case maybe_attach_git_on_boot(state0, opts) do
@@ -884,6 +891,9 @@ defmodule AgentOS.Vm do
   end
 
   def handle_call(:info, _from, state) do
+    tasks = state.git_tasks || %{}
+    queue = state.git_remote_queue || []
+
     {:reply,
      %{
        id: state.id,
@@ -891,7 +901,10 @@ defmodule AgentOS.Vm do
        idle_ms: now_ms() - state.last_active_ms,
        git_attached: is_pid(state.git_engine) and Process.alive?(state.git_engine),
        git_mount_path: state.git_mount_path,
-       git_inflight: map_size(state.git_tasks || %{}),
+       # Running Task + queued remotes (single-writer honesty).
+       git_inflight: map_size(tasks) + length(queue),
+       git_remote_running: map_size(tasks),
+       git_remote_queued: length(queue),
        git_allowed_origins: state.git_allowed_origins || []
      }, state}
   end
@@ -1143,9 +1156,20 @@ defmodule AgentOS.Vm do
 
   defp git_allowed_origins_from_opts(opts) do
     case Keyword.get(opts, :allowed_origins, Keyword.get(opts, :allow_origins, [])) do
-      list when is_list(list) -> list
-      :any -> :any
-      _ -> []
+      list when is_list(list) ->
+        list
+
+      :any ->
+        # Test-only escape hatch (SmartHttp still requires injected transport).
+        # Mix is unavailable in releases — treat missing Mix as non-test.
+        if Code.ensure_loaded?(Mix) and function_exported?(Mix, :env, 0) and Mix.env() == :test do
+          :any
+        else
+          []
+        end
+
+      _ ->
+        []
     end
   end
 
@@ -1166,13 +1190,16 @@ defmodule AgentOS.Vm do
         git_engine_mon: nil,
         git_allowed_origins: [],
         git_auth: nil,
-        git_transport: nil
+        git_transport: nil,
+        git_remote_queue: []
     }
   end
 
   # Fail outstanding remote handles and kill tasks so they cannot double-respond.
+  # Also fails any queued (not-yet-started) remote handles.
   defp cancel_git_tasks(state) do
     tasks = state.git_tasks || %{}
+    queue = state.git_remote_queue || []
 
     Enum.each(tasks, fn {handle, task} ->
       if is_reference(task.ref), do: Process.demonitor(task.ref, [:flush])
@@ -1180,7 +1207,11 @@ defmodule AgentOS.Vm do
       _ = Nif.relay_host_call_fail(state.nif, handle)
     end)
 
-    %{state | git_tasks: %{}, git_task_refs: %{}}
+    Enum.each(queue, fn {handle, _body} ->
+      _ = Nif.relay_host_call_fail(state.nif, handle)
+    end)
+
+    %{state | git_tasks: %{}, git_task_refs: %{}, git_remote_queue: []}
   end
 
   defp git_host_opts(state) do
@@ -1220,29 +1251,70 @@ defmodule AgentOS.Vm do
 
   defp answer_git_event(_state, _event), do: :unclaimed
 
+  # Single-writer remote queue: only one Orchestrator.run/3 Task per VM at a time.
+  # Additional remotes enqueue so import_pack + refs/clone.apply cannot interleave.
   defp answer_git_remote_async(state, pid, handle, body) do
     tasks = state.git_tasks || %{}
+    queue = state.git_remote_queue || []
 
-    if Map.has_key?(tasks, handle) do
-      # Already claimed — do not spawn a second task (double-respond risk).
-      {:answered, state}
-    else
-      orch_opts = git_host_opts(state)
+    already? =
+      Map.has_key?(tasks, handle) or Enum.any?(queue, fn {h, _b} -> h == handle end)
 
-      # async_nolink → owner receives {ref, result} then DOWN; NIF answer stays on Vm.
-      task =
-        Task.Supervisor.async_nolink(AgentOS.SidecarTaskSupervisor, fn ->
-          result = AgentOS.GitEngine.handle_host_call(pid, "git", body, orch_opts)
-          {handle, result}
+    cond do
+      already? ->
+        # Already claimed — do not double-queue or double-respond.
+        {:answered, state}
+
+      map_size(tasks) == 0 ->
+        {:answered, start_git_remote_task(state, pid, handle, body)}
+
+      true ->
+        {:answered, %{state | git_remote_queue: queue ++ [{handle, body}]}}
+    end
+  end
+
+  defp start_git_remote_task(state, pid, handle, body) do
+    orch_opts = git_host_opts(state)
+
+    # async_nolink → owner receives {ref, result} then DOWN; NIF answer stays on Vm.
+    task =
+      Task.Supervisor.async_nolink(AgentOS.SidecarTaskSupervisor, fn ->
+        result = AgentOS.GitEngine.handle_host_call(pid, "git", body, orch_opts)
+        {handle, result}
+      end)
+
+    %{
+      state
+      | git_tasks: Map.put(state.git_tasks || %{}, handle, task),
+        git_task_refs: Map.put(state.git_task_refs || %{}, task.ref, handle)
+    }
+  end
+
+  # After the running remote Task finishes (or crashes), start the next queued one.
+  defp maybe_start_next_git_remote(state) do
+    tasks = state.git_tasks || %{}
+    queue = state.git_remote_queue || []
+    pid = state.git_engine
+
+    cond do
+      map_size(tasks) > 0 ->
+        state
+
+      queue == [] ->
+        state
+
+      is_nil(pid) or not Process.alive?(pid) ->
+        # Engine gone — fail remaining queue closed.
+        Enum.each(queue, fn {handle, _body} ->
+          _ = Nif.relay_host_call_fail(state.nif, handle)
         end)
 
-      state = %{
-        state
-        | git_tasks: Map.put(tasks, handle, task),
-          git_task_refs: Map.put(state.git_task_refs || %{}, task.ref, handle)
-      }
+        %{state | git_remote_queue: []}
 
-      {:answered, state}
+      true ->
+        [{handle, body} | rest] = queue
+        state = %{state | git_remote_queue: rest}
+        start_git_remote_task(state, pid, handle, body)
     end
   end
 
@@ -1273,27 +1345,30 @@ defmodule AgentOS.Vm do
     state = %{state | git_tasks: tasks, git_task_refs: refs}
 
     # Drop result if engine was detached while the task ran (handle already failed).
-    if is_nil(state.git_engine) do
-      state
-    else
-      case result do
-        {:ok, bin} when is_binary(bin) ->
-          _ = Nif.relay_host_call_respond(state.nif, handle, bin)
-          state
+    state =
+      if is_nil(state.git_engine) do
+        state
+      else
+        case result do
+          {:ok, bin} when is_binary(bin) ->
+            _ = Nif.relay_host_call_respond(state.nif, handle, bin)
+            state
 
-        {:error, :eio} ->
-          _ = Nif.relay_host_call_fail(state.nif, handle)
-          do_detach_git(state)
+          {:error, :eio} ->
+            _ = Nif.relay_host_call_fail(state.nif, handle)
+            do_detach_git(state)
 
-        {:error, _reason} ->
-          _ = Nif.relay_host_call_fail(state.nif, handle)
-          state
+          {:error, _reason} ->
+            _ = Nif.relay_host_call_fail(state.nif, handle)
+            state
 
-        _other ->
-          _ = Nif.relay_host_call_fail(state.nif, handle)
-          state
+          _other ->
+            _ = Nif.relay_host_call_fail(state.nif, handle)
+            state
+        end
       end
-    end
+
+    maybe_start_next_git_remote(state)
   end
 
   @impl true
@@ -1329,7 +1404,8 @@ defmodule AgentOS.Vm do
           _ = Nif.relay_host_call_fail(state.nif, handle)
         end
 
-        {:noreply, touch(%{state | git_tasks: tasks, git_task_refs: next_refs})}
+        state = %{state | git_tasks: tasks, git_task_refs: next_refs}
+        {:noreply, touch(maybe_start_next_git_remote(state))}
     end
   end
 

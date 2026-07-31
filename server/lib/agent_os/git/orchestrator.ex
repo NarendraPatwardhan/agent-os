@@ -8,16 +8,26 @@ defmodule AgentOS.Git.Orchestrator do
   **HTTPS is BEAM** (`AgentOS.Git.SmartHttp`). **Apply is C Port** (`AgentOS.GitEngine`).
   No Node. Engine never dials.
 
-  Security / honesty (P0.1 / P0.2):
+  Security / honesty (P0.1 / P0.2 / P2.1):
   * URL scheme/userinfo/host + origin allowlist are checked **before** any HTTP
   * Empty packs never short-circuit to `ok:true` — apply requires non-empty pack
     and a successful import
+  * **Push is not supported on the server** — always `ok:false` with the stable
+    message `@push_unsupported` (fetch/clone only; no packbuilder / receive-pack
+    on BEAM yet). Do not claim server push works.
+
+  Shared executable golden vectors (K20 / P2.8):
+  `memcontainers/lib/git-engine/testdata/orch/{clone_success_steps,clone_empty_pack_fail,origin_denied}.json`
+  (also under `server/test/fixtures/git/orch/`).
   """
 
   alias AgentOS.Git.SmartHttp
   alias AgentOS.GitEngine
 
   @type request :: map() | String.t()
+
+  # Server is fetch/clone only (P2.1). Push always fails closed — no silent ok:true.
+  @push_unsupported "git: push not supported on server (fetch/clone only)"
 
   @doc """
   Handle a guest/SDK remote Request JSON against a live git-engine Port pid.
@@ -31,7 +41,12 @@ defmodule AgentOS.Git.Orchestrator do
   * `:require_origin_allowlist` — default `true`; set `false` only with
     injected fixture transport
   * `:max_pack_bytes` — response/pack size cap (default 64 MiB)
-  * `:read_only` — reject push when true
+  * `:read_only` — unused for push (push is always rejected on server); reserved
+    for future mount-level RO checks
+
+  **Push** always returns `ok:false` / code 1 with
+  `"git: push not supported on server (fetch/clone only)"` — server remotes are
+  fetch/clone only (P2.1).
   """
   @spec run(pid(), request(), keyword()) :: {:ok, binary()} | {:error, term()}
   def run(engine_pid, request, opts \\ []) when is_pid(engine_pid) do
@@ -42,12 +57,8 @@ defmodule AgentOS.Git.Orchestrator do
         "clone" -> clone(engine_pid, req, opts)
         "fetch" -> fetch(engine_pid, req, opts)
         "pull" -> fetch(engine_pid, req, opts)
-        "push" ->
-          {:ok,
-           response(false, 1, "", "git: push via BEAM packbuilder not yet configured on server")}
-
-        _ ->
-          {:ok, response(false, 2, "", "unknown remote op: #{op}")}
+        "push" -> {:ok, response(false, 1, "", @push_unsupported)}
+        _ -> {:ok, response(false, 2, "", "unknown remote op: #{op}")}
       end
     end
   end
