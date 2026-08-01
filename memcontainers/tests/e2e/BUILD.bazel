@@ -30,7 +30,7 @@ rust_e2e_test(
     srcs = _E2E_SRCS,
     crate_root = "src/lib.rs",
     data = [
-        "//memcontainers/images:base",  # rootfs + sh/pkgfsd/tools (the boot + kernel/control-channel tests)
+        "//memcontainers/images:base",  # rootfs + sh/pkgfsd/git/tools (the boot + kernel/control-channel tests)
         "//memcontainers/images:loom",  # posix + /bin/luau — the Luau domain-tool boot e2e
         "//memcontainers/images:minimal",  # base + the curated minimal coreutils set (the flavor test)
         "//memcontainers/images:posix",  # base + the full coreutils set (the shell / coreutils / system tests)

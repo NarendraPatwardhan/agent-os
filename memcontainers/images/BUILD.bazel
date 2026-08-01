@@ -9,7 +9,7 @@ load("//bazel:mc_program.bzl", "mc_service_layer")
 #
 # Three stacked layers, each inheriting the one below via pkg_tar `deps`:
 #   rootfs  — just /etc/profile (internal).
-#   base    — rootfs + /bin/{sh,pkgfsd,tools} + /svc/tools + /tools + /etc/services.d: the shared substrate.
+#   base    — rootfs + /bin/{sh,pkgfsd,git,tools} + /svc/tools + /tools + /etc/services.d: the shared substrate.
 #   minimal — base + the four MINIMAL coreutils boxes (the curated ~15) + their /bin symlinks.
 #   posix   — base + the four FULL coreutils boxes (everything) + their /bin symlinks.
 
@@ -53,8 +53,9 @@ pkg_tar(
 
 # base — rootfs + the SYSTEM binaries/service faces: /bin/sh (the guest shell, boots as pid 1),
 # /bin/tools plus /svc/tools and /tools (catalog/search/call broker), /bin/adapters plus
-# /svc/adapters (shared parser/invoker service for adapter-backed tools), and /bin/pkgfsd (the /pkg
-# daemon). Base owns the service/tool directories; service layers add only binaries and fragments.
+# /svc/adapters (shared parser/invoker service for adapter-backed tools), /bin/pkgfsd (the /pkg
+# daemon), and /bin/git (thin pure-mc ctl porcelain + CAP_NET remotes). Base owns the service/tool
+# directories; service layers add only binaries and fragments.
 # A real but command-less shell, the substrate BOTH flavors build on (SYSTEMS.md) — NOT a shipped flavor
 # on its own (no coreutils — "make your own harness"); minimal/posix add a command set by layering on top.
 pkg_tar(
@@ -69,6 +70,7 @@ pkg_tar(
         ":base_dirs",
         ":base_tools_layer",
         ":rootfs",
+        "//memcontainers/programs/git:git_layer",
     ],
 )
 
@@ -162,7 +164,7 @@ mc_service_layer(
 # json/hash/time/string batteries embedded), luau-analyze type checker (256 MiB · 400B · 40k), and
 # the lazy Lua/Luau syntax service with its generated client and skill. Parser and semantic tables
 # are compiled into the service; host-side manifests remain build outputs rather than guest files.
-# R78: also carries thin pure-mc /bin/git (ctl porcelain + CAP_NET remotes) via git_layer.
+# Thin /bin/git is on base (inherited via posix); remotes still need CAP_NET at runtime.
 pkg_tar(
     name = "loom",
     create_parents = False,
@@ -189,7 +191,6 @@ pkg_tar(
     deps = [
         ":posix",
         ":syntax_layer",
-        "//memcontainers/programs/git:git_layer",
     ],
 )
 

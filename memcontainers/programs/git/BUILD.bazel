@@ -33,8 +33,8 @@ size_limit(
 )
 
 # Image layer: /bin/git for local ctl porcelain + CAP_NET remotes (GIT.md PR6).
-# Wired into loom (and descendants atlas/paper/svc-test) via images/BUILD.bazel deps.
-# Not on bare base/minimal/posix — those stay command-set only.
+# Wired into base (and every flavor that stacks on it) via images/BUILD.bazel deps —
+# same substrate model as /bin/pkgfsd.
 pkg_tar(
     name = "git_layer",
     create_parents = False,

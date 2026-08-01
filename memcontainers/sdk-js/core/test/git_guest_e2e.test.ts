@@ -6,7 +6,8 @@
  * R1: guest with CAP_NET + /bin/git clone → MapHostCall "git" → FixtureSmartHttp → worktree.
  *
  * No external network: FixtureSmartHttp + minimal.pack only.
- * Full guest /bin/git is on loom (git_layer). Remotes use host_call + CAP_NET.
+ * Full guest /bin/git is on base (git_layer; e2e boots loom which inherits it).
+ * Remotes use host_call + CAP_NET.
  */
 
 import { existsSync, readFileSync } from "node:fs";

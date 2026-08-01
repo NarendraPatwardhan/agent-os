@@ -1092,7 +1092,7 @@ and mount queue depth > 32. Not Prometheus — in-process snapshot only.
 | **K4** | **JS → emcc MODULARIZE `createGitEngineModule`** (`git_engine.js`+`.wasm`) | Browser/Node; no gojs / no wasm_exec | PR2 |
 | **K5** | **Server MVP = native hermetic C** subprocess Port; **c-shared is packaging only** (R75 decided Port; PR7d not product load) | Isolation first; in-process is optional latency work only if reopened | PR7a; PR7d packaging |
 | **K6** | gitfs via MountFs / Driver / registerRaw | No kernel git ABI | PR4 |
-| **K7** | Thin pure-mc **`/bin/git` standalone** package (`memcontainers/programs/git`), ≤256 KiB | Not multicall; image flavor | PR6 |
+| **K7** | Thin pure-mc **`/bin/git` standalone** package (`memcontainers/programs/git`), ≤256 KiB | Not multicall; on **base** (all flavors) | PR6 |
 | **K8** | Host-mediated remotes; apply only in engine | Purity + credentials | PR10 |
 | **K9** | One engine per mount, single-writer; **multi-repo ⇒ one Port/process per mount** (no demux) | Isolation; no args.mount demux | PR4 / multi-repo |
 | **K10** | Snapshots rebind durable backends | A8 — ODB not in MCSN | PR8 |
@@ -1243,7 +1243,7 @@ Concrete ordered PRs for the **AgentOS monorepo**. PR0 does **not** assume rules
 | | |
 |--|--|
 | **Title** | `git: pure-mc /bin/git (local porcelain)` |
-| **Files** | `memcontainers/programs/git/`; size ≤256 KiB via monorepo `size_limit`; image flavor |
+| **Files** | `memcontainers/programs/git/`; size ≤256 KiB via monorepo `size_limit`; on base image |
 | **Depends on** | PR5 |
 | **Description** | Argv → ctl only; always follows write with open/read (never close-only). |
 
@@ -1469,7 +1469,7 @@ For tests: inject author/committer timestamps (`when_unix`) and fixed identity. 
 | **VFS / namespaces** | gitfs is one mount among memfs, procfs, toolsfs, persistfs |
 | **MountFs / host_call** | Transport for path ops and `git` host_call |
 | **LLB** | `llb.git` uses the **same host remote stack** as interactive clone |
-| **Images** | Thin `/bin/git` in flavor; `git_engine.wasm` is a **host artifact** |
+| **Images** | Thin `/bin/git` on **base** (all flavors); `git_engine.wasm` is a **host artifact** |
 | **SDK** | `GitEngine` + `vm.mount`; remote methods run host smart-HTTP then `*.apply` |
 | **Snapshots** | Attachment rebind; document durable backend for “repo survives refresh” |
 | **Net** | Remotes **only** via host mediation; no engine/guest TLS stack |

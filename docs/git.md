@@ -391,7 +391,7 @@ host_call / LLB git helpers is **advanced** (`docs/api-surface.json`). Not multi
 ## Full guest CAP_NET e2e (D25/D26)
 
 - **JS (fixture):** **Met** under `//memcontainers/sdk-js/core:git_guest_e2e_test` — thin
-  `/bin/git` on loom → kernel CAP_NET → host_call `"git"` → TS orch + FixtureSmartHttp +
+  `/bin/git` on base (inherited by loom+) → kernel CAP_NET → host_call `"git"` → TS orch + FixtureSmartHttp +
   `minimal.pack` → `/workspace/repo` worktree; CAP_NET deny; gitfs ctl close-then-status.
   Inject transport via create options `git.http` / `git.allowOrigins` (hermetic; not product egress).
 - **Server:** **Met** — `server/test/agent_os/git_guest_acceptance_test.exs` D25 (full CAP_NET
