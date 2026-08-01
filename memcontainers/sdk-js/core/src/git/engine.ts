@@ -1,6 +1,9 @@
 /**
- * SDK GitEngine — single-writer via GitBridge.serial + optional gitfs driver.
- * Local Run only; remotes go through host_call `"git"` + GitRemoteOrchestrator.
+ * GitEngine — host-facing facade over the WASM bridge.
+ *
+ * Single-writer via {@link GitBridge.serial}. Local Run only; remotes are
+ * host-mediated (`host_call "git"` → {@link GitRemoteOrchestrator}). Optional
+ * durable backends and gitfs mount drivers attach here.
  */
 
 import type { Driver } from "../types.js";
@@ -25,6 +28,8 @@ import type {
 const REMOTE_OPS = new Set(["clone", "fetch", "pull", "push"]);
 const OID_RE = /^[0-9a-f]{40}$/i;
 
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
 function normalizeIdentity(
   id: GitIdentity | undefined,
 ): GitIdentity | undefined {
@@ -39,11 +44,13 @@ function resolveDurable(
   opts: GitEngineLoadOptions,
 ): DurableBackend | undefined {
   if (opts.durableDir) {
-    // durableDir wins — primary D16 product path (re-openable libgit2 root).
+    // durableDir wins — primary product path (re-openable libgit2 root).
     return new HostDirDurable(opts.durableDir, opts.durableDir);
   }
   return opts.durable;
 }
+
+// ── GitEngine ───────────────────────────────────────────────────────────────
 
 export class GitEngine {
   private readonly durable: DurableBackend | undefined;
@@ -89,7 +96,7 @@ export class GitEngine {
         if (decoded) {
           await engine.rebindFromEnvelope(decoded);
         }
-        // Non-AGIT legacy opaque: attach engine-level only (no MEMFS rebind).
+        // Non-AGIT opaque: attach engine-level only (no MEMFS rebind).
       }
     }
     return engine;
@@ -124,11 +131,13 @@ export class GitEngine {
     return this._sparseCone ? [...this._sparseCone] : undefined;
   }
 
+  // ── Durability ────────────────────────────────────────────────────────────
+
   /**
    * Persist durable state.
    *
    * * **Directory backends** — dump MEMFS worktree+`.git` into the host/OPFS
-   *   directory and fsync (primary D16 path). Explicit `snapshot` is ignored.
+   *   directory and fsync. Explicit `snapshot` is ignored.
    * * **Blob backends** — with no `snapshot` arg, serialize live repo as AGIT
    *   (optional transfer format). Explicit `snapshot` is saved as-is.
    */
@@ -163,7 +172,9 @@ export class GitEngine {
     this._durableSnapshot = copy;
   }
 
-  /** Function face: Run({op,args}) → Response. */
+  // ── Local Run ─────────────────────────────────────────────────────────────
+
+  /** Function face: Run({op,args}) → Response. Remotes fail closed here. */
   async run(req: GitRequest): Promise<GitResponse> {
     return this.bridge.serial(() => {
       const op = String(req.op || "").toLowerCase();
@@ -181,10 +192,10 @@ export class GitEngine {
   }
 
   /**
-   * D15: read full stdout body after a truncated Response.
+   * Read full stdout body after a truncated Response.
    *
    * When `result.truncated` and `result.stream_path` are set, returns the body
-   * written under the engine worktree (default `/.git/mc/out/last`, ≤8 MiB).
+   * written under the engine worktree (default `.git/mc/out/last`, ≤8 MiB).
    * Also works after gitfs open of the same path. Returns `null` when the
    * response was not truncated or the stream file is missing.
    */
@@ -239,6 +250,8 @@ export class GitEngine {
     return { ...req, args: { ...base, name, email } };
   }
 
+  // ── Pack I/O ──────────────────────────────────────────────────────────────
+
   async importPack(
     chunk: Uint8Array,
     meta: { final?: boolean } = {},
@@ -251,12 +264,14 @@ export class GitEngine {
   /**
    * Build a push pack (objects reachable from tip OIDs) via engine packbuilder.
    * Optional `haves` are remote tip OIDs already present (lease oldHash) — objects
-   * reachable only from them are omitted (R48 thin-pack / have negotiation).
+   * reachable only from them are omitted (thin-pack / have negotiation).
    * Empty oids fail closed. Result always starts with PACK magic.
    */
   async buildPushPack(oids: string[], haves?: string[]): Promise<Uint8Array> {
     return this.bridge.serial(() => this.bridge.packBuild(oids, haves));
   }
+
+  // ── Mount / lifecycle ─────────────────────────────────────────────────────
 
   /**
    * MountFs driver (worktree + ctl). Coherence: close write then status via open.
@@ -301,6 +316,8 @@ export class GitEngine {
     }
     this.bridge.close();
   }
+
+  // ── AGIT export / rebind (blob durability) ────────────────────────────────
 
   /**
    * Serialize live repo as AGIT envelope: all tip OIDs in a pack + refs + HEAD.

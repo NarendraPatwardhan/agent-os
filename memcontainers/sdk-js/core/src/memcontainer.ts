@@ -67,6 +67,7 @@ import type {
   Driver,
   ExecOptions,
   ExecResult,
+  GitCreateOptions,
   ImageConfig,
   ImageManifest,
   MountSpec,
@@ -115,9 +116,11 @@ function ownCreateOptions(opts: CreateOptions): CreateOptions {
   };
 }
 
-function ownGitCreateOptions(
-  git: CreateOptions["git"],
-): CreateOptions["git"] {
+/**
+ * Own create-time `git` so each VM has private mount/sparse/identity arrays.
+ * Opaque resources (`http` transport) are retained by reference.
+ */
+function ownGitCreateOptions(git: CreateOptions["git"]): CreateOptions["git"] {
   if (git == null) return undefined;
   if (typeof git === "string") return git;
   return {
@@ -138,10 +141,14 @@ function ownGitCreateOptions(
   };
 }
 
-/** Normalize `git: string | GitCreateOptions` → config with baseUrl, or undefined (git off). */
-function normalizeCreateGit(
-  git: CreateOptions["git"],
-): import("./types.js").GitCreateOptions | undefined {
+/**
+ * Normalize `CreateOptions.git` → {@link GitCreateOptions}, or `undefined` (host git off).
+ *
+ * - omit / null / blank string → off
+ * - non-empty string → `{ baseUrl }` (enables host git with defaults)
+ * - object → requires non-empty `baseUrl` (throws if missing)
+ */
+function normalizeCreateGit(git: CreateOptions["git"]): GitCreateOptions | undefined {
   if (git == null) return undefined;
   if (typeof git === "string") {
     const baseUrl = git.trim();
@@ -155,6 +162,184 @@ function normalizeCreateGit(
     );
   }
   return { ...git, baseUrl };
+}
+
+/** One create-time mount: guest path + optional cone sparse for that engine. */
+type GitMountSpec = { path: string; sparse?: string[] };
+
+/**
+ * Resolve the mount list for host git: explicit `git.mounts`, or a single
+ * default at `/workspace/repo` (with top-level `git.sparse` if set).
+ */
+function gitMountSpecsFromCreate(git: GitCreateOptions): GitMountSpec[] {
+  if (git.mounts && git.mounts.length > 0) {
+    return git.mounts.map((m) => ({ path: m.path, sparse: m.sparse }));
+  }
+  return [{ path: "/workspace/repo", sparse: git.sparse }];
+}
+
+/**
+ * Fail closed on non-absolute or duplicate mount paths.
+ * One host git engine per path (single-writer).
+ */
+function assertUniqueAbsoluteGitMounts(mounts: GitMountSpec[]): void {
+  const seen = new Set<string>();
+  for (const m of mounts) {
+    const path = String(m.path || "").trim();
+    if (!path.startsWith("/")) {
+      throw new Error(`git.mounts path must be absolute, got ${JSON.stringify(m.path)}`);
+    }
+    if (seen.has(path)) {
+      throw new Error(`git.mounts duplicate path ${path} (one engine per mount path)`);
+    }
+    seen.add(path);
+  }
+}
+
+/**
+ * A host git engine loaded at create: path, optional durable rebind ids,
+ * and hooks used for default gitfs mounts + snapshot checkpoint.
+ */
+type LoadedGitEngine = {
+  path: string;
+  durableId?: string;
+  durablePath?: string;
+  checkpoint(): Promise<void>;
+  close(): Promise<void>;
+  asMountDriver: (opts?: { sparseCone?: string[] }) => Driver;
+  sparseCone?: string[];
+};
+
+/**
+ * Load host git when `opts.git` is present (string asset URL or full config).
+ * Registers the `"git"` MapHostCall; returns engines for default mounts and
+ * durable snapshot bind. Empty array when git is omitted.
+ */
+async function bootstrapHostGit(
+  tools: MapHostCall,
+  opts: CreateOptions,
+): Promise<LoadedGitEngine[]> {
+  const gitCfg = normalizeCreateGit(opts.git);
+  if (!gitCfg) return [];
+
+  const {
+    GitEngine,
+    registerGitHostCall,
+    openDurable,
+    durableIdForMount,
+  } = await import("./git/index.js");
+
+  const mountSpecs = gitMountSpecsFromCreate(gitCfg);
+  assertUniqueAbsoluteGitMounts(mountSpecs);
+
+  // Durable is opt-in only (A8: no silent ODB). Per-mount ids via durableIdForMount.
+  const useDurable = gitCfg.durable !== undefined;
+  const durableBaseId = gitCfg.durable?.id?.trim() || "default";
+  const durableDiskRoot = gitCfg.durable?.diskDir;
+
+  const engineMap = new Map<string, Awaited<ReturnType<typeof GitEngine.load>>>();
+  const loaded: LoadedGitEngine[] = [];
+
+  for (const spec of mountSpecs) {
+    const path = String(spec.path).trim();
+    const sparse = spec.sparse ?? gitCfg.sparse;
+    let durable: Awaited<ReturnType<typeof openDurable>> | undefined;
+    let durableId: string | undefined;
+    let durablePath: string | undefined;
+    if (useDurable) {
+      durableId = durableIdForMount(durableBaseId, path);
+      durable = await openDurable({ id: durableId, diskDir: durableDiskRoot });
+      if (durable.kind === "directory" && durable.hostPath) {
+        durablePath = durable.hostPath;
+      } else if (durableDiskRoot) {
+        const baseDir = durableDiskRoot.replace(/\/$/, "");
+        const safe = durableId.replace(/[^A-Za-z0-9._:@+-]+/g, "_");
+        durablePath = `${baseDir}/${safe}`;
+      }
+    }
+    const eng = await GitEngine.load({
+      baseUrl: gitCfg.baseUrl,
+      sparseCone: sparse,
+      identity: gitCfg.identity,
+      ...(durable?.kind === "directory" && durable.hostPath
+        ? { durableDir: durable.hostPath }
+        : durable
+          ? { durable }
+          : {}),
+    });
+    engineMap.set(path, eng);
+    loaded.push({
+      path,
+      durableId,
+      durablePath: eng.durableDir ?? durablePath,
+      checkpoint: () => eng.checkpoint(),
+      close: () => eng.close(),
+      asMountDriver: (o) => eng.asMountDriver(o),
+      sparseCone: sparse,
+    });
+  }
+
+  registerGitHostCall(
+    tools,
+    { engines: engineMap, defaultMount: mountSpecs[0]!.path.trim() },
+    {
+      connections: opts.connections,
+      policies: opts.policies,
+      sparseCone: gitCfg.sparse,
+      identity: gitCfg.identity,
+      ...(gitCfg.http ? { http: gitCfg.http } : {}),
+      ...(gitCfg.allowOrigins ? { allowOrigins: gitCfg.allowOrigins } : {}),
+    },
+  );
+  return loaded;
+}
+
+/**
+ * Wire durable engines into snapshot/pinBase checkpoint (D17) and close them
+ * with the backend. Engines without a durable id are closed on teardown only.
+ */
+function attachLoadedGitEngines(
+  backend: EmbeddedBackend,
+  engines: LoadedGitEngine[],
+): void {
+  if (engines.length === 0) return;
+  // D17: snapshot/pinBase checkpoint only engines with durable bindings.
+  backend.bindGitEngines(
+    engines
+      .filter((e) => e.durableId)
+      .map((e) => ({
+        path: e.path,
+        durableId: e.durableId!,
+        durablePath: e.durablePath,
+        checkpoint: () => e.checkpoint(),
+        close: () => e.close(),
+      })),
+  );
+  const origClose = backend.close.bind(backend);
+  backend.close = async () => {
+    for (const eng of engines) {
+      try {
+        await eng.close();
+      } catch {
+        /* best-effort */
+      }
+    }
+    return origClose();
+  };
+}
+
+/** Mount default gitfs for each loaded engine when the path was not declared in opts.mounts. */
+async function mountDefaultGitFs(
+  backend: Backend,
+  engines: LoadedGitEngine[],
+  declaredMounts: MountSpec[] | undefined,
+): Promise<void> {
+  for (const eng of engines) {
+    const declared = (declaredMounts ?? []).some((m) => m.path === eng.path);
+    if (!declared) {
+      await backend.mount(eng.path, eng.asMountDriver({ sparseCone: eng.sparseCone }), false);
+    }
+  }
 }
 
 function ownToolDefinition(def: ToolDefinition): ToolDefinition {
@@ -854,146 +1039,12 @@ async function makeEmbedded(
     sidecars.handleGuestCall(body, context.signal),
   );
 
-  // Host git (GIT.md): `opts.git` presence enables the engine — string form is the
-  // asset-dir URL; object form is { baseUrl, mounts?, sparse?, identity?, durable?, … }.
-  // Loads emcc module(s), registers MapHostCall "git", mounts gitfs (default
-  // `/workspace/repo`, or multi via git.mounts — R63–R65). Product orch path:
-  // process pack cache on by default; cone sparse is not full sparse-checkout language.
-  // Each mount path owns one GitEngine (single-writer). Optional git.durable opens a
-  // per-mount DurableBackend; snapshot checkpoints; restore/fork rebinds (not in MCSN).
-  type LoadedGitEngine = {
-    path: string;
-    durableId?: string;
-    durablePath?: string;
-    checkpoint(): Promise<void>;
-    close(): Promise<void>;
-    asMountDriver: (opts?: {
-      sparseCone?: string[];
-    }) => import("./types.js").Driver;
-    sparseCone?: string[];
-  };
-  let gitEngines: LoadedGitEngine[] = [];
-  const gitCfg = normalizeCreateGit(opts.git);
-  if (gitCfg) {
-    const {
-      GitEngine,
-      registerGitHostCall,
-      openDurable,
-      durableIdForMount,
-    } = await import("./git/index.js");
-    const mountSpecs =
-      gitCfg.mounts && gitCfg.mounts.length > 0
-        ? gitCfg.mounts.map((m) => ({
-            path: m.path,
-            sparse: m.sparse,
-          }))
-        : [{ path: "/workspace/repo", sparse: gitCfg.sparse }];
-
-    const seen = new Set<string>();
-    for (const spec of mountSpecs) {
-      const path = String(spec.path || "").trim();
-      if (!path.startsWith("/")) {
-        throw new Error(`git.mounts path must be absolute, got ${JSON.stringify(spec.path)}`);
-      }
-      if (seen.has(path)) {
-        throw new Error(`git.mounts duplicate path ${path} (one engine per mount path)`);
-      }
-      seen.add(path);
-    }
-
-    const durableBaseId = gitCfg.durable?.id?.trim() || "default";
-    const durableDiskRoot = gitCfg.durable?.diskDir;
-    // Only open durable stores when the embedder opts in (A8: no silent ODB).
-    const useDurable = gitCfg.durable !== undefined;
-
-    const engineMap = new Map<
-      string,
-      Awaited<ReturnType<typeof GitEngine.load>>
-    >();
-    for (const spec of mountSpecs) {
-      const path = String(spec.path).trim();
-      const sparse = spec.sparse ?? gitCfg.sparse;
-      let durable: Awaited<ReturnType<typeof openDurable>> | undefined;
-      let durableId: string | undefined;
-      let durablePath: string | undefined;
-      if (useDurable) {
-        durableId = durableIdForMount(durableBaseId, path);
-        durable = await openDurable({
-          id: durableId,
-          diskDir: durableDiskRoot,
-        });
-        if (durable.kind === "directory" && durable.hostPath) {
-          durablePath = durable.hostPath;
-        } else if (durableDiskRoot) {
-          const baseDir = durableDiskRoot.replace(/\/$/, "");
-          const safe = durableId.replace(/[^A-Za-z0-9._:@+-]+/g, "_");
-          durablePath = `${baseDir}/${safe}`;
-        }
-      }
-      const eng = await GitEngine.load({
-        baseUrl: gitCfg.baseUrl,
-        sparseCone: sparse,
-        identity: gitCfg.identity,
-        ...(durable?.kind === "directory" && durable.hostPath
-          ? { durableDir: durable.hostPath }
-          : durable
-            ? { durable }
-            : {}),
-      });
-      engineMap.set(path, eng);
-      gitEngines.push({
-        path,
-        durableId,
-        durablePath: eng.durableDir ?? durablePath,
-        checkpoint: () => eng.checkpoint(),
-        close: () => eng.close(),
-        asMountDriver: (o) => eng.asMountDriver(o),
-        sparseCone: sparse,
-      });
-    }
-
-    const defaultMount = mountSpecs[0]!.path.trim();
-    registerGitHostCall(
-      tools,
-      { engines: engineMap, defaultMount },
-      {
-        connections: opts.connections,
-        policies: opts.policies,
-        sparseCone: gitCfg.sparse,
-        identity: gitCfg.identity,
-        ...(gitCfg.http ? { http: gitCfg.http } : {}),
-        ...(gitCfg.allowOrigins ? { allowOrigins: gitCfg.allowOrigins } : {}),
-      },
-    );
-  }
+  // Host git: presence of opts.git enables the engine (string = asset baseUrl;
+  // object = full GitCreateOptions). No separate boolean. See bootstrapHostGit.
+  const gitEngines = await bootstrapHostGit(tools, opts);
 
   const backend = new EmbeddedBackend(host, stdout, tools, sidecars, activeBase, store);
-  if (gitEngines.length > 0) {
-    const loaded = gitEngines;
-    // D17: snapshot/pinBase checkpoint engines with durable bindings.
-    backend.bindGitEngines(
-      loaded
-        .filter((e) => e.durableId)
-        .map((e) => ({
-          path: e.path,
-          durableId: e.durableId!,
-          durablePath: e.durablePath,
-          checkpoint: () => e.checkpoint(),
-          close: () => e.close(),
-        })),
-    );
-    const origClose = backend.close.bind(backend);
-    backend.close = async () => {
-      for (const eng of loaded) {
-        try {
-          await eng.close();
-        } catch {
-          /* best-effort */
-        }
-      }
-      return origClose();
-    };
-  }
+  attachLoadedGitEngines(backend, gitEngines);
   try {
     // Re-register the host-call HANDLERS (the JS closures) on both paths — they can never live in a
     // snapshot, so a restored VM must be handed them again to route its host-tool catalog entries.
@@ -1014,17 +1065,8 @@ async function makeEmbedded(
     for (const m of opts.mounts ?? []) {
       await backend.mount(m.path, m.driver, m.readOnly ?? m.driver.readOnly ?? false);
     }
-    // Default gitfs mount(s) when engine is enabled and embedder did not declare the path.
-    for (const eng of gitEngines) {
-      const declared = (opts.mounts ?? []).some((m) => m.path === eng.path);
-      if (!declared) {
-        await backend.mount(
-          eng.path,
-          eng.asMountDriver({ sparseCone: eng.sparseCone }),
-          false,
-        );
-      }
-    }
+    // Default gitfs mounts for engines whose paths were not declared in opts.mounts.
+    await mountDefaultGitFs(backend, gitEngines, opts.mounts);
     return { backend, opts, catalog };
   } catch (e) {
     await closeBackendQuietly(backend);

@@ -1,4 +1,6 @@
-/* Host git engine: Run ABI over libgit2 (AgentOS spike substrate). */
+/* Host git engine: Run ABI over libgit2 (AgentOS host source plane).
+ * Reduced surface — not full git-core. Network dial is forbidden; remotes are
+ * host-mediated apply / pack ops only. */
 
 #include "git_engine.h"
 #include "ge_engine_priv.h"
@@ -422,7 +424,7 @@ int ge_ensure_repo(ge_engine *e) {
 
 #define ensure_repo ge_ensure_repo
 
-/* From engine_ops_extra.c */
+/* Ops implemented in engine_ops_extra.c (declared here for ge_run_json). */
 int op_rm(ge_engine *e, const char *args);
 int op_diff(ge_engine *e, const char *args, char **out_owned);
 int op_show(ge_engine *e, const char *args, char **out_owned);
@@ -1765,7 +1767,7 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
   if (jmin_get_string(request_json, "op", op, sizeof(op)) != 0 || !op[0])
     return resp_usage("missing op");
 
-  /* Lowercase op */
+  /* Normalize op to lowercase. */
   for (char *p = op; *p; p++) {
     if (*p >= 'A' && *p <= 'Z')
       *p = (char)(*p - 'A' + 'a');
@@ -1774,21 +1776,23 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
   const char *args = jmin_args_object(request_json);
   if (!args)
     args = "{}";
-  /* D31: capture before any op so every Response path can echo the token. */
+  /* Capture client_token before any op so every Response path can echo it. */
   set_client_token_from_args(args);
 
-  /* Forbidden product network dials (GIT.md §6 / GIT_DESIGN §3.2). */
+  /* ── Fail closed: product network dials (engine never dials) ──────────── */
   if (strcmp(op, "clone") == 0 || strcmp(op, "fetch") == 0 || strcmp(op, "pull") == 0 ||
       strcmp(op, "push") == 0) {
     return resp_err(1, "git: use host-mediated remotes (pack.import / *.apply); "
                        "engine must not dial");
   }
 
+  /* ── Meta ─────────────────────────────────────────────────────────────── */
   if (strcmp(op, "version") == 0 || strcmp(op, "help") == 0) {
     char *r = resp_ok(GE_VERSION "\n", NULL);
     return r ? r : ge_static_oom;
   }
 
+  /* ── Local porcelain ──────────────────────────────────────────────────── */
   if (strcmp(op, "init") == 0) {
     if (op_init(e) != 0)
       return resp_err(1, e->err);
@@ -1838,7 +1842,7 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
       free(buf);
       return resp_err(1, e->err);
     }
-    /* D39: always attach count/bounded result; D15 stream if stdout huge. */
+    /* Always attach count/bounded result; stream path if stdout exceeds embed limit. */
     const char *extra = log_result[0] ? log_result : NULL;
     return ge_resp_ok_stdout(e, buf, 1, extra);
   }
@@ -1929,6 +1933,7 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     char *r = resp_ok(buf, NULL);
     return r ? r : ge_static_oom;
   }
+  /* ── Host-mediated remotes / pack (no dial) ───────────────────────────── */
   if (strcmp(op, "tips") == 0) {
     char tips[16384];
     if (op_tips(e, tips, sizeof(tips)) != 0)
@@ -1986,7 +1991,7 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     return resp_ok("", NULL);
   }
 
-
+  /* ── Sparse cone ──────────────────────────────────────────────────────── */
   if (strcmp(op, "sparse-set") == 0 || strcmp(op, "sparse.set") == 0) {
     if (op_sparse_set(e, args) != 0)
       return resp_err(1, e->err);
@@ -1998,9 +2003,7 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     return resp_ok("", NULL);
   }
 
-  /* R68–R69 / D23–D24: list/status from .gitmodules (+ optional gitlink hash).
-   * Network update/init/add/clone: engine never dials — host_call "git" with
-   * op "submodule" (orch clones into nested path; gitfs projects files). */
+  /* ── Submodules (list/status only; network ops via host orch) ─────────── */
   if (strcmp(op, "submodule") == 0) {
     char action[64] = "list";
     (void)jmin_get_string(args, "action", action, sizeof(action));

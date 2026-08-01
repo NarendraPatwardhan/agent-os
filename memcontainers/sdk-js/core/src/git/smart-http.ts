@@ -1,16 +1,17 @@
 /**
- * Host smart-HTTP (browser/JS) — ListRefs + FetchPacks + PushPacks (GIT.md PR9/PR12).
- * Server twin is BEAM `AgentOS.Git.SmartHttp` (OTP `:httpc`). Credentials spliced
- * only via request headers (PR11) — never into the URL for product remotes.
+ * Host smart-HTTP transport — ListRefs + FetchPacks + PushPacks.
  *
- * ## Security / D3 redirect policy (fail-closed)
+ * Browser/JS face of the remotes half of the source plane. Server twin is BEAM
+ * `AgentOS.Git.SmartHttp` (OTP `:httpc`). Credentials are spliced only via
+ * request headers — never into the URL for product remotes.
+ *
+ * ## Redirect policy (fail-closed)
  *
  * Product smart-HTTP **never follows redirects**. Every `fetch` uses
  * `redirect: "manual"`, and any 3xx / `opaqueredirect` response is rejected as
  * `redirect not allowed` without reading `Location` or issuing a second request.
  * Open redirect to a non-allowlisted origin is therefore impossible: there is
- * no hop, so no allowlist re-check is required. (An alternate design would
- * re-validate origin on each hop; product remotes prefer reject-all.)
+ * no hop, so no allowlist re-check is required.
  *
  * Dual-host: BEAM sets `:httpc` `autoredirect: false` and classifies 3xx as
  * `:redirect_not_allowed` — same policy surface.
@@ -19,6 +20,8 @@
 import type { ConnectionAuth } from "../types.js";
 import { spliceCredentialHeaders, spliceCredentialUrl } from "./connections.js";
 import { DEFAULT_MAX_PACK_BYTES } from "./pack-cache.js";
+
+// ── Types ───────────────────────────────────────────────────────────────────
 
 export interface RefAdvertisement {
   name: string;
@@ -40,7 +43,7 @@ export interface PushCommand {
 }
 
 /**
- * Options for product {@link FetchSmartHttp.fetchPacks} (D11 stream path).
+ * Options for product {@link FetchSmartHttp.fetchPacks} (streamed body path).
  * Fixture transport ignores these; size gate still applies at import.
  */
 export interface FetchPacksOptions {
@@ -78,6 +81,8 @@ export interface SmartHttpTransport {
   ): Promise<ReceiveStatus>;
 }
 
+// ── Fixture transport (tests) ───────────────────────────────────────────────
+
 /** In-memory test double (shared algorithm with C fixtures). */
 export class FixtureSmartHttp implements SmartHttpTransport {
   private readonly fixtures = new Map<
@@ -88,7 +93,7 @@ export class FixtureSmartHttp implements SmartHttpTransport {
   lastPush:
     | { url: string; commands: PushCommand[]; packLen: number; pack: Uint8Array }
     | undefined;
-  /** Last fetchPacks args (filter ignored for body; recorded for R36). */
+  /** Last fetchPacks args (filter ignored for body; recorded for partial-clone tests). */
   lastFetch:
     | {
         url: string;
@@ -170,6 +175,8 @@ export class FixtureSmartHttp implements SmartHttpTransport {
   }
 }
 
+// ── Fetch transport (product) ───────────────────────────────────────────────
+
 /** Optional `fetch` inject for tests (redirect mock / offline). */
 export type FetchImpl = (
   input: string | URL | Request,
@@ -179,7 +186,7 @@ export type FetchImpl = (
 /**
  * Public HTTPS smart-HTTP using fetch (browser/Node) with optional credential splice.
  *
- * D3: always `redirect: "manual"`; 3xx / opaqueredirect → hard fail (never follow).
+ * Always `redirect: "manual"`; 3xx / opaqueredirect → hard fail (never follow).
  */
 export class FetchSmartHttp implements SmartHttpTransport {
   private readonly fetchImpl: FetchImpl;
@@ -229,7 +236,7 @@ export class FetchSmartHttp implements SmartHttpTransport {
     // Prefer classic v0/v1 advertise (matches BEAM SmartHttp). Optional v2
     // probe is only used when the classic body parses empty — real git-http-backend
     // returns a 200 v2 capability dump when `Git-Protocol: version=2` is set, which
-    // is not a ref list (D27).
+    // is not a ref list.
     let res = await this.smartFetch(infoUrl, { headers: hdrs });
     if (!res.ok) {
       throw new Error(`git: list-refs failed: HTTP ${res.status}`);
@@ -273,7 +280,7 @@ export class FetchSmartHttp implements SmartHttpTransport {
     }
     const max =
       opts?.maxBytes === undefined ? DEFAULT_MAX_PACK_BYTES : opts.maxBytes;
-    // D11: stream body when available; size-cap during read; optional pack sink.
+    // Stream body when available; size-cap during read; optional pack sink.
     return readPackFromResponse(res, max, opts?.onPackChunk);
   }
 
@@ -310,6 +317,8 @@ export class FetchSmartHttp implements SmartHttpTransport {
   }
 }
 
+// ── Redirect helpers ────────────────────────────────────────────────────────
+
 /**
  * True when a Response is a redirect hop that product smart-HTTP must not follow.
  * Covers 3xx statuses and browser `opaqueredirect` (status 0) under `redirect: "manual"`.
@@ -325,6 +334,8 @@ export function isRedirectResponse(res: {
 function isRedirectError(e: unknown): boolean {
   return e instanceof Error && e.message.includes("redirect not allowed");
 }
+
+// ── Protocol parse / build ──────────────────────────────────────────────────
 
 /** Parse smart receive-pack report-status body (pkt-line or plain). */
 export function parseReceiveStatus(text: string): ReceiveStatus {
@@ -389,7 +400,7 @@ function pkt(s: string): string {
 
 /**
  * Build git-upload-pack request body (protocol v0/v1 style).
- * Optional `filter` (R36 partial clone) is sent after wants when set;
+ * Optional `filter` (partial clone) is sent after wants when set;
  * first want advertises the `filter` capability. Servers that ignore
  * filter still return a usable full pack (fixture path).
  */
@@ -414,7 +425,7 @@ export function buildUploadPackBody(
 }
 
 function buildReceivePackBody(commands: PushCommand[], pack: Uint8Array): Uint8Array {
-  // First command advertises report-status so real git-receive-pack (D28)
+  // First command advertises report-status so real git-receive-pack
   // returns unpack/ok pkt-lines; subsequent commands are bare.
   let s = "";
   for (let i = 0; i < commands.length; i++) {
@@ -432,6 +443,8 @@ function buildReceivePackBody(commands: PushCommand[], pack: Uint8Array): Uint8A
   out.set(pack, head.length);
   return out;
 }
+
+// ── Pack body extraction ────────────────────────────────────────────────────
 
 /** Locate first `PACK` magic offset, or -1. */
 export function indexOfPackMagic(buf: Uint8Array, from = 0): number {
@@ -470,7 +483,7 @@ function copyBytes(src: Uint8Array): Uint8Array {
 }
 
 /**
- * Fail-closed body + pack read for upload-pack responses (D11).
+ * Fail-closed body + pack read for upload-pack responses.
  *
  * - Prefers `response.body` stream when present (no single giant arrayBuffer).
  * - Caps **pack** size (bytes from `PACK` magic) at `maxBytes` (`0` = unlimited).

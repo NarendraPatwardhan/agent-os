@@ -2,7 +2,7 @@
 
 Product surface for interactive and LLB git (host source plane). Design of record: worktree
 `GIT.md`. Create option: `git` (string base URL or object with `baseUrl` — **presence enables**; no
-boolean). API surface: **advanced** (opt-in; not multi-tenant default-on). Tracker: `TASKS.md`.
+boolean). API surface: **advanced** (opt-in; not multi-tenant default-on).
 
 ## Thesis
 
@@ -29,7 +29,7 @@ These are hard product rules for agents and tools that use host git — not opti
 | **Unflushed ctl: close write before status** | Ctl Request is written to `/.git/mc/ctl`; Response is read from the out path. Close (or Drop) the write FD **before** reading status / next Response — unflushed guest buffers are invisible to the engine (same class as `hostDir`). |
 | **Remotes need CAP_NET + host_call `git`** | Mount/ctl alone cannot dial. Guest remotes go through `mc_sys_host_call` name `"git"` gated by kernel **CAP_NET**. Ctl remote ops refuse. |
 | **Opt-in + identity on commit** | Opt-in via `git` create option (JS; advanced surface). Commits need author identity (`name` / `email` args or `git.identity`) — no ambient global gitconfig from the host user. |
-| **Server push (not read-only)** | See [Server remotes](#server-remotes-k16--push-honesty) — packbuilder + receive-pack on BEAM when mount is not read-only. |
+| **Server push (not read-only)** | See [Server remotes](#server-remotes-k16--push) — packbuilder + receive-pack on BEAM when mount is not read-only. |
 
 ## Thin CLI surface
 
@@ -92,7 +92,7 @@ out of surface for v1. Guests that need link content should copy to a regular fi
 | `log` | Default `max_count=10`; hard cap **1000** | `result.count`, `result.max_count`, `result.bounded`, optional `result.more`; stable stdout footer `# log: bounded max_count=N count=C more=true` when more commits exist (or request was clamped) |
 | `show` | Full commit message (no silent fixed-buffer cut) | Oversized body uses **D15** truncated + `stream_path` |
 
-## Server remotes (K16) + push honesty
+## Server remotes (K16) + push
 
 Same ownership cut as kernel HTTP egress: **BEAM dials HTTPS**; the guest and the Port child do not.
 
@@ -382,7 +382,7 @@ host_call / LLB git helpers is **advanced** (`docs/api-surface.json`). Not multi
 ## Durability / dir reopen (PR8 / D16–D18)
 
 **D16** (directory reopen), **D17** (JS snapshot/fork rebind), and **D18** (named durable
-roots via `durable_id` + `AGENTOS_GIT_DURABLE_ROOT`) are **DONE**.
+roots via `durable_id` + `AGENTOS_GIT_DURABLE_ROOT`) are product-supported.
 
 ### JS — directory reopen (primary) + AGIT blob (transfer)
 
@@ -413,7 +413,7 @@ same path sees the same HEAD + worktree files. **AGIT** (pack+refs envelope) rem
 | AGIT blob (`DiskDurable` / `OpfsDurable`) | Yes — `snapshot.bin` | Yes |
 | `MemoryDurable` | Yes within one JS process (instance registry) | **No** |
 
-### JS — MCSN snapshot / restore / fork rebind (D17 / K10) — **DONE**
+### JS — MCSN snapshot / restore / fork rebind (D17 / K10)
 
 | Piece | Path | Behaviour |
 |-------|------|-----------|
@@ -454,11 +454,11 @@ re-`attach_git` / second `GitEngine.start` with the **same durable root**.
 **Dir reopen (BEAM):** pass the **same absolute `root:` / `durable_dir:`** (or the same
 `durable_id` under a configured base) on a new `GitEngine.start` / `attach_git` after stop.
 
-### Snapshot honesty (A8)
+### Snapshot durability (A8)
 
 Kernel MCSN does **not** include the host git ODB. Repo survival requires explicit
 `git.durable` / `durableDir` (JS) or a preserved Port root (BEAM). Snapshot refused while any
-git remote host_call is inflight (D19 **DONE**). JS MCSN rebind (D17 **DONE**).
+git remote host_call is inflight. JS MCSN rebind uses the durable backend path.
 
 ## Submodules (D23–D24) — host-mediated update
 

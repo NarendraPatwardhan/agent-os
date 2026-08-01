@@ -18,3 +18,6 @@ node_modules/
 .DS_Store
 
 # NB: MODULE.bazel.lock IS committed (hermetic, reproducible resolution — B4).
+
+# Elixir/Mix local build (Bazel uses hermetic mix under bazel-*; never commit Mix output).
+server/_build/

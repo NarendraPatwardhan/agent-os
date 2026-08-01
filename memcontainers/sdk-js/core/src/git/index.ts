@@ -1,4 +1,20 @@
-/** Host git engine SDK (GIT.md host source plane). */
+/**
+ * Host git source plane — public SDK surface.
+ *
+ * Layers (import what you need; remotes never dial from the engine):
+ *
+ * | Role            | Modules                                              |
+ * |-----------------|------------------------------------------------------|
+ * | Engine          | `engine`, `bridge`, `types`                          |
+ * | Worktree (gitfs)| `gitfs`                                              |
+ * | Durability      | `durable`                                            |
+ * | Remotes         | `remote-orchestrator`, `smart-http`, `connections`   |
+ * | Pack / metrics  | `pack-cache`, `metrics`                              |
+ * | LLB materialize | `llb-git`                                            |
+ *
+ * Guest local porcelain goes through gitfs ctl → engine Run.
+ * Guest remotes go through host_call `"git"` → orchestrator (CAP_NET).
+ */
 
 import {
   gitHostCallHandler,
@@ -6,13 +22,28 @@ import {
   type OrchestratorOptions,
 } from "./remote-orchestrator.js";
 
+// ── Engine + WASM bridge ────────────────────────────────────────────────────
+
 export { GitBridge, DEFAULT_WORK_ROOT, normalizeRel } from "./bridge.js";
 export { GitEngine } from "./engine.js";
+export type {
+  GitRequest,
+  GitResponse,
+  GitResultMeta,
+  GitIdentity,
+  GitEngineLoadOptions,
+} from "./types.js";
+
+// ── Worktree projection (gitfs) ─────────────────────────────────────────────
+
 export {
   createGitFsDriver,
   isGitFsDriver,
   GITFS_DRIVER_KIND,
 } from "./gitfs.js";
+
+// ── Remotes (orchestrator + smart-HTTP + connections) ───────────────────────
+
 export {
   GitRemoteOrchestrator,
   gitHostCallHandler,
@@ -43,6 +74,22 @@ export type {
   FetchPacksOptions,
 } from "./smart-http.js";
 export {
+  resolveGitRemote,
+  evaluatePushPolicy,
+  matchConnectionPattern,
+  originAllowed,
+  requestOrigin,
+  publicRemoteUrl,
+  spliceCredentialHeaders,
+  spliceCredentialUrl,
+  redactRemoteForLog,
+  guestArgsCarrySecrets,
+} from "./connections.js";
+export type { GitRemoteBinding, ResolveRemoteOptions } from "./connections.js";
+
+// ── Durability ──────────────────────────────────────────────────────────────
+
+export {
   MemoryDurable,
   OpfsDurable,
   OpfsDirDurable,
@@ -66,19 +113,9 @@ export type {
   DecodedDurableBlob,
   MemfsLike,
 } from "./durable.js";
-export {
-  resolveGitRemote,
-  evaluatePushPolicy,
-  matchConnectionPattern,
-  originAllowed,
-  requestOrigin,
-  publicRemoteUrl,
-  spliceCredentialHeaders,
-  spliceCredentialUrl,
-  redactRemoteForLog,
-  guestArgsCarrySecrets,
-} from "./connections.js";
-export type { GitRemoteBinding, ResolveRemoteOptions } from "./connections.js";
+
+// ── Pack cache + process metrics ────────────────────────────────────────────
+
 export {
   MemoryPackCache,
   DiskPackCache,
@@ -97,23 +134,6 @@ export type {
   ImportPackEngine,
 } from "./pack-cache.js";
 export {
-  materializeLlbGit,
-  worktreeToTar,
-  createEngineGitSource,
-} from "./llb-git.js";
-export type {
-  LlbGitMaterializeOptions,
-  LlbGitMaterializeResult,
-  EngineGitSourceOptions,
-} from "./llb-git.js";
-export type {
-  GitRequest,
-  GitResponse,
-  GitResultMeta,
-  GitIdentity,
-  GitEngineLoadOptions,
-} from "./types.js";
-export {
   snapshotGitCounters,
   resetGitCounters,
   recordRemoteResult,
@@ -126,11 +146,24 @@ export type {
   RemoteResultMeta,
 } from "./metrics.js";
 
+// ── LLB git source materialization ──────────────────────────────────────────
+
+export {
+  materializeLlbGit,
+  worktreeToTar,
+  createEngineGitSource,
+} from "./llb-git.js";
+export type {
+  LlbGitMaterializeOptions,
+  LlbGitMaterializeResult,
+  EngineGitSourceOptions,
+} from "./llb-git.js";
+
 /**
- * Register MapHostCall name `"git"` → TS orchestrator (PR10a; CAP_NET on guest).
+ * Register MapHostCall name `"git"` → TS remote orchestrator (CAP_NET on guest).
  *
- * Multi-mount (R63–R65): pass a {@link GitHostCallEngines} map so remote bodies
- * with `args.mount` / `mount` demux to the matching engine. Single
+ * Multi-mount: pass a {@link GitHostCallEngines} map so remote bodies with
+ * `args.mount` / `mount` demux to the matching engine. A single
  * {@link GitEngine} remains the common path (default mount).
  */
 export function registerGitHostCall(

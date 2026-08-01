@@ -14,17 +14,18 @@ export interface Permissions {
 }
 
 /**
- * Host git (libgit2) configuration for {@link mc.create}.
+ * Full host-git configuration for {@link CreateOptions.git} (object form).
  *
- * Presence of {@link GitCreateOptions.baseUrl} (or a string shorthand for `git`)
- * enables the host git engine — no separate boolean.
+ * **Presence of `git` enables host git** — there is no separate boolean.
+ * Prefer the string form of `git` when you only need the asset directory;
+ * use this object for mounts, identity, sparse, durable store, or remotes.
  *
  * @example
  * ```ts
- * // Minimal
+ * // String form: asset dir only (enables host git with defaults)
  * mc.create({ git: new URL("./git-engine/", import.meta.url).href })
  *
- * // Full
+ * // Object form: full config (baseUrl required)
  * mc.create({
  *   git: {
  *     baseUrl: new URL("./git-engine/", import.meta.url).href,
@@ -40,17 +41,19 @@ export interface Permissions {
 export interface GitCreateOptions {
   /**
    * Directory URL of `git_engine.mjs` + `git_engine.wasm`
-   * (`//memcontainers/lib/git-engine:git_engine_wasm`). Required.
+   * (`//memcontainers/lib/git-engine:git_engine_wasm`).
+   * Required on the object form; the string form of {@link CreateOptions.git}
+   * supplies this alone.
    */
   baseUrl: string;
   /**
-   * Multi-repo mounts. Default: `[{ path: "/workspace/repo" }]`.
+   * Multi-repo mounts. Default when omitted: `[{ path: "/workspace/repo" }]`.
    * Each path owns one engine (single-writer). Duplicate paths fail closed.
    */
   mounts?: Array<{ path: string; sparse?: string[] }>;
   /**
    * Cone sparse prefixes for the default mount when {@link mounts} is omitted
-   * (e.g. `["src", "docs"]`). Cone-only — not full git sparse language.
+   * (e.g. `["src", "docs"]`). Cone-only — not full git sparse-checkout language.
    */
   sparse?: string[];
   /** Host commit identity (K28). Injected when commit args omit name/email. */
@@ -58,11 +61,12 @@ export interface GitCreateOptions {
   /**
    * Durable store for snapshot/restore rebind (K10). MCSN never carries the ODB.
    * With `diskDir`: re-openable worktree under `{diskDir}/{id}/`.
+   * Opt-in only — omit for ephemeral engines.
    */
   durable?: { id?: string; diskDir?: string };
   /**
    * Bare-URL origin allowlist (connection-bound remotes use `connection.origins`).
-   * Empty + bare URL fails closed.
+   * Empty allowlist + bare URL fails closed.
    */
   allowOrigins?: string[];
   /**
@@ -175,9 +179,11 @@ export interface CreateOptions {
    */
   templateFill?: "on_demand" | "prepopulated" | "off";
   /**
-   * Host git (libgit2). String form is a dir URL of `git_engine.mjs` + `.wasm`
-   * and enables the engine by itself. Object form requires {@link GitCreateOptions.baseUrl}.
-   * Omit = no host git.
+   * Host git (libgit2 via the git engine wasm).
+   *
+   * **Presence enables host git**; omit for no host git. No separate boolean.
+   * - **string** — directory URL of `git_engine.mjs` + `.wasm` (enables with defaults)
+   * - **object** — full {@link GitCreateOptions} (requires `baseUrl`)
    */
   git?: string | GitCreateOptions;
 }

@@ -1,6 +1,50 @@
 /**
- * GitRemoteOrchestrator (TS) — GIT.md §7 / PR10a–PR12.
- * Algorithm twin of C orch.c. Engine never dials: ImportPack + apply only.
+ * GitRemoteOrchestrator — host-mediated git remotes (GIT.md §7).
+ *
+ * ## Role
+ *
+ * This module is the **JS product twin** of the BEAM / C remote orchestrator.
+ * Guests never dial the network. The libgit2 engine stays pure: it only runs
+ * local ops, imports pack bytes the host already fetched, and applies ref tips.
+ * All smart-HTTP (list-refs, upload-pack, receive-pack) runs here on the host,
+ * then packs and tips are handed back into the engine.
+ *
+ * ## Entry path (CAP_NET + host_call)
+ *
+ * Product remotes enter via `mc_sys_host_call` name `"git"`, gated by kernel
+ * **CAP_NET**. {@link gitHostCallHandler} is the MapHostCall factory: decode
+ * Request JSON → demux engine → {@link GitRemoteOrchestrator.handle} → Response
+ * JSON. Mount/ctl alone cannot dial; ctl remote ops refuse. Dialing outside
+ * host_call also breaks snapshot quiescence (inflight_egress).
+ *
+ * ## Engine never dials
+ *
+ * Flow for clone/fetch/pull: resolve public locator + host credentials → origin
+ * policy → transport list-refs / fetch packs → content-addressed pack cache →
+ * `importPack` / `importPackCached` → engine `refs.import` + `clone.apply` /
+ * `fetch.apply`. Push: `push.prepare` → lease list-refs → build pack →
+ * transport push → `push.complete`. Credentials splice only in smart-HTTP
+ * headers (see {@link resolveGitRemote}); guest body secrets are rejected.
+ *
+ * ## Multi-mount demux (K21 / R63–R65)
+ *
+ * One engine per mount path (single-writer). Multi-mount hosts pass a
+ * {@link GitEngineMountMap}; each engine gets its own orchestrator instance
+ * (its own remote queue). Request `args.mount` / top-level `mount` selects
+ * the engine; remounting gitfs at a live path fails closed elsewhere.
+ *
+ * ## Ops
+ *
+ * | Op | Host path |
+ * |----|-----------|
+ * | `clone` | list-refs → pack → init → import → clone.apply → tracking + sparse |
+ * | `fetch` | list-refs → pack (stream) → import → fetch.apply |
+ * | `pull` | fetch + local FF-only to remote tip |
+ * | `push` | prepare → lease → pack → receive-pack → complete |
+ * | `submodule` | host-mediated nested clone under super worktree |
+ *
+ * Dual-host: BEAM orch owns server remotes; this file is the browser/Node
+ * reference algorithm — keep semantic tables in `connections.ts` aligned.
  */
 
 import type { ConnectionDefinition, ConnectionPolicyRule } from "../types.js";
@@ -32,6 +76,10 @@ import {
   type RemoteResultMeta,
 } from "./metrics.js";
 
+// ---------------------------------------------------------------------------
+// Options & module-level helpers
+// ---------------------------------------------------------------------------
+
 export interface OrchestratorOptions extends ResolveRemoteOptions {
   http?: SmartHttpTransport;
   /**
@@ -59,7 +107,7 @@ export interface OrchestratorOptions extends ResolveRemoteOptions {
    */
   buildPushPack?: (engine: GitEngine, commands: PushCommand[]) => Promise<Uint8Array>;
   /**
-   * PR13/D12 content-addressed pack cache (shared LLB + interactive).
+   * Content-addressed pack cache (shared LLB + interactive).
    * Product handlers (`gitHostCallHandler`) default a process-scoped
    * {@link defaultProcessPackCache} (Memory, or Disk when `MC_GIT_PACK_CACHE`
    * is set on Node); pass `null` to disable. Direct
@@ -67,7 +115,7 @@ export interface OrchestratorOptions extends ResolveRemoteOptions {
    * Keys are public url + wants/haves/depth only — never credentials.
    */
   packCache?: PackCache | null;
-  /** PR13 import limits / chunking. */
+  /** Import size limits / chunking for {@link importPackCached}. */
   importPack?: ImportPackOptions;
   /**
    * Cone-mode sparse-checkout prefixes applied after clone (engine `sparse-set`).
@@ -104,6 +152,7 @@ function filterOf(args: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
+/** All-zero OID: create/delete lease sentinel on receive-pack commands. */
 const ZERO_OID = "0000000000000000000000000000000000000000";
 
 /** Normalize delete target names to full refs (refs/heads/…). */
@@ -129,6 +178,10 @@ function deleteRefNames(
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// GitRemoteOrchestrator — one instance per engine / mount
+// ---------------------------------------------------------------------------
+
 export class GitRemoteOrchestrator {
   private readonly http: SmartHttpTransport;
   private readonly allowOrigins: string[];
@@ -149,7 +202,7 @@ export class GitRemoteOrchestrator {
    * GitBridge; remotes need their own chain so listRefs/fetchPacks cannot race.
    */
   private remoteQueue: Promise<unknown> = Promise.resolve();
-  /** D35: last pack size / origin for metrics (cleared at start of each remote op). */
+  /** Last pack size / origin for in-process metrics (reset each remote op). */
   private metricsPackBytes = 0;
   private metricsOriginRedacted = "";
   private metricsAllowlistDeny = false;
@@ -169,7 +222,7 @@ export class GitRemoteOrchestrator {
     this.buildPushPack = opts.buildPushPack;
     // null = explicitly off; undefined = no cache on direct construction.
     this.packCache = opts.packCache === null ? undefined : (opts.packCache ?? undefined);
-    // Prefer explicit orch opts; else inherit engine load-time cone (D13 / multi-mount).
+    // Prefer explicit orch opts; else inherit engine load-time cone (multi-mount).
     const coneSrc =
       opts.sparseCone !== undefined ? opts.sparseCone : (engine.sparseCone ?? []);
     this.sparseCone = coneSrc
@@ -182,6 +235,8 @@ export class GitRemoteOrchestrator {
     };
   }
 
+  // --- Pack import & cache -------------------------------------------------
+
   private maxPackBytes(): number {
     return this.importPackOpts.maxPackBytes === undefined
       ? DEFAULT_MAX_PACK_BYTES
@@ -189,7 +244,7 @@ export class GitRemoteOrchestrator {
   }
 
   /**
-   * Chunked import into the engine (D11 / GIT.md §3.3): 64 MiB soft gate +
+   * Chunked import into the engine (GIT.md §3.3): 64 MiB soft gate +
    * `chunkBytes` slices via {@link importPackCached} — never one giant frame only.
    */
   private async importBinary(pack: Uint8Array): Promise<void> {
@@ -203,7 +258,7 @@ export class GitRemoteOrchestrator {
    * Resolve pack via download-key index (url+wants+haves+depth[+filter]), else transport.
    * Credentials never enter the key — only public binding.url.
    *
-   * D11: transport path uses streamed body reads with maxPackBytes fail-closed
+   * Transport path uses streamed body reads with maxPackBytes fail-closed
    * (default 64 MiB). When `streamIntoEngine` is true (fetch/pull — repo already
    * open), pack-aligned slices are piped to `engine.importPack` via
    * `onPackChunk` as the body arrives. Clone keeps `streamIntoEngine` false so
@@ -265,6 +320,8 @@ export class GitRemoteOrchestrator {
     }
   }
 
+  // --- Sparse cone (post-clone) --------------------------------------------
+
   /** After clone.apply: cone sparse-set + checkout (cone-only, not full sparse parity). */
   private async applySparseCone(refName: string): Promise<GitResponse | null> {
     if (!this.sparseCone.length) return null;
@@ -291,6 +348,7 @@ export class GitRemoteOrchestrator {
     return null;
   }
 
+  /** Pick advertised tip: exact ref/hash, else HEAD → main/master → first head. */
   private pickTip(
     refs: RefAdvertisement[],
     wantRef?: string,
@@ -312,8 +370,10 @@ export class GitRemoteOrchestrator {
     );
   }
 
+  // --- Queue / single-writer entry -----------------------------------------
+
   /**
-   * Host_call name "git" body: Request JSON → Response JSON.
+   * Host_call name `"git"` body: Request JSON → Response JSON.
    * Serialized per orchestrator: parallel callers queue FIFO; only one remote
    * (HTTP + apply) runs at a time on this engine/mount.
    */
@@ -331,7 +391,7 @@ export class GitRemoteOrchestrator {
 
   private async handleUnlocked(req: GitRequest): Promise<GitResponse> {
     const op = String(req.op || "").toLowerCase();
-    // D35: per-op labels (never secrets).
+    // Per-op metric labels only (never secrets / tokens).
     this.metricsPackBytes = 0;
     this.metricsOriginRedacted = "";
     this.metricsAllowlistDeny = false;
@@ -350,7 +410,7 @@ export class GitRemoteOrchestrator {
         stderr: `unknown remote op: ${op}\n`,
       };
     }
-    // R85–R88 / D35: in-process counters + duration/bytes/redacted origin.
+    // In-process counters: duration, pack bytes, redacted origin, allowlist denials.
     if (op === "clone" || op === "fetch" || op === "pull" || op === "push") {
       const meta: RemoteResultMeta = {
         duration_ms: Math.max(0, Date.now() - t0),
@@ -380,12 +440,14 @@ export class GitRemoteOrchestrator {
     if (n > 0) this.metricsPackBytes = n;
   }
 
+  // --- Remote binding resolution & origin policy ---------------------------
+
   /**
    * Resolve public locator + host credential + pushAction from policies.
-   * Guest body secrets (token/auth/…) are rejected in resolveGitRemote (D7).
+   * Guest body secrets (token/auth/…) are rejected in {@link resolveGitRemote}.
    * Dual-host: BEAM must use host-owned auth/opts only — see connections.ts table.
    *
-   * D9: when only `remote` (or bare fetch/pull/push after clone) is given, fill
+   * When only `remote` (or bare fetch/pull/push after clone) is given, fill
    * `url` / `connection` from engine config (`remote.<name>.url` / `.agentos`)
    * written by {@link configureCloneRemote}.
    */
@@ -415,7 +477,7 @@ export class GitRemoteOrchestrator {
   }
 
   /**
-   * D9: after clone, fill empty locator from `remote.<name>.url` (+ optional
+   * After clone, fill empty locator from `remote.<name>.url` (+ optional
    * `remote.<name>.agentos`). For fetch/pull/push with no url/remote/connection,
    * default to `origin` so `git pull` works without re-passing the URL.
    */
@@ -458,7 +520,7 @@ export class GitRemoteOrchestrator {
   }
 
   /**
-   * D9: after successful clone.apply — set remote.origin.url (public), optional
+   * After successful clone.apply — set remote.origin.url (public), optional
    * remote.origin.agentos, branch.<name>.remote + .merge, and remote-tracking
    * ref so subsequent fetch/pull can use tracking without manual setup.
    */
@@ -538,9 +600,10 @@ export class GitRemoteOrchestrator {
   }
 
   /**
-   * R32: bare URL (no connection) requires non-empty allowOrigins and a match.
-   * Connection-bound remotes already fail closed on empty connection.origins in
-   * resolveGitRemote; optional allowOrigins further intersects when set.
+   * Origin allowlist (R32): bare URL (no connection) requires non-empty
+   * `allowOrigins` and a match. Connection-bound remotes already fail closed on
+   * empty `connection.origins` in resolveGitRemote; optional allowOrigins
+   * further intersects when set.
    */
   private checkOriginPolicy(binding: {
     url: string;
@@ -585,8 +648,10 @@ export class GitRemoteOrchestrator {
     return null;
   }
 
+  // --- Ref import helpers (clone / fetch) ----------------------------------
+
   /**
-   * R37/R94: all advertised heads (+ primary tip if not a head).
+   * Import all advertised heads (+ primary tip if not a head).
    * Prefer one `refs.import` with `args.refs` array; fall back to per-ref loop
    * if the array form fails (older engine / partial multi-want objects).
    */
@@ -649,7 +714,10 @@ export class GitRemoteOrchestrator {
     return [...wants];
   }
 
-  /** R34: after fetch.apply, FF current branch to remote tip (pull only). */
+  /**
+   * After fetch.apply: fast-forward current branch to remote tip (pull only).
+   * Diverged histories fail closed with `not fast-forward` (R34).
+   */
   private async fastForwardPull(
     tip: RefAdvertisement,
     tipHash: string,
@@ -702,13 +770,14 @@ export class GitRemoteOrchestrator {
     };
   }
 
+  // --- Submodule (host-mediated nested clone) ------------------------------
+
   /**
-   * D23–D24: host-mediated submodule update.
-   * 1. Parse .gitmodules via engine list (no dial)
+   * Host-mediated submodule update (engine purity: no dial from `engine.run`).
+   * 1. Parse .gitmodules via engine list
    * 2. For each entry: same connection policy on URL → list-refs + fetch pack
    * 3. Nested ge_open at submodule path under super worktree → init/import/apply
    * 4. Nested files appear in super gitfs (same MEMFS)
-   * Engine.run(submodule update) still fails closed (purity).
    */
   private async submodule(req: GitRequest): Promise<GitResponse> {
     const args = (req.args ?? {}) as Record<string, unknown>;
@@ -1030,6 +1099,12 @@ export class GitRemoteOrchestrator {
     });
   }
 
+  // --- Clone ---------------------------------------------------------------
+
+  /**
+   * Fresh repo: list-refs → pack (buffered) → init → import → clone.apply →
+   * tracking config + optional sparse cone. No re-use of an existing object DB.
+   */
   private async clone(req: GitRequest): Promise<GitResponse> {
     const resolved = await this.resolve(req);
     if (!resolved.ok) {
@@ -1132,7 +1207,7 @@ export class GitRemoteOrchestrator {
     });
     if (!apply.ok) return apply;
 
-    // D9: remote + branch tracking so pull works without re-passing URL.
+    // Remote + branch tracking so pull works without re-passing URL.
     const trackErr = await this.configureCloneRemote(
       binding,
       refName,
@@ -1151,12 +1226,16 @@ export class GitRemoteOrchestrator {
     };
   }
 
+  // --- Fetch / pull --------------------------------------------------------
+
+  /**
+   * Incremental path: no re-init. Import packs then `fetch.apply`.
+   * Pull = fetch + local FF-only to remote tip (R34).
+   */
   private async fetch(
     req: GitRequest,
     opts: { pull?: boolean } = {},
   ): Promise<GitResponse> {
-    // Incremental path: no re-init (PR11 critique). Import packs then fetch.apply.
-    // Pull = fetch + local FF only (R34).
     const pull = !!opts.pull;
     const resolved = await this.resolve(req);
     if (!resolved.ok) {
@@ -1229,7 +1308,7 @@ export class GitRemoteOrchestrator {
     }
 
     const wants = this.wantOids(refs, tip.hash);
-    // D11: stream pack into engine while downloading (repo already exists).
+    // Stream pack into engine while downloading (repo already exists).
     const resolvedPack = await this.resolvePack(
       binding.url,
       wants,
@@ -1271,7 +1350,7 @@ export class GitRemoteOrchestrator {
     const impErr = await this.importAllHeads(refs, refName, tip.hash);
     if (impErr) return impErr;
 
-    // P0.4: engine requires name+hash (no silent no-op success).
+    // Engine requires name+hash on fetch.apply (no silent no-op success).
     const fa = await this.engine.run({
       op: "fetch.apply",
       args: {
@@ -1288,7 +1367,13 @@ export class GitRemoteOrchestrator {
     return { ok: true, code: 0, stdout: "fetched\n", stderr: "" };
   }
 
-  /** PR12: push.prepare → PushPacks → push.complete. */
+  // --- Push ----------------------------------------------------------------
+
+  /**
+   * Push path: `push.prepare` → list-refs lease → build pack → receive-pack →
+   * `push.complete`. Honors read-only mounts, policy `block` / `require_approval`,
+   * and delete-only empty packs.
+   */
   private async push(req: GitRequest): Promise<GitResponse> {
     if (this.readOnly || this.engine.readOnly) {
       return {
@@ -1307,7 +1392,7 @@ export class GitRemoteOrchestrator {
     const denied = this.checkOriginPolicy(binding);
     if (denied) return denied;
 
-    // D10: pushAction from ConnectionPolicyRule set (most restrictive wins).
+    // pushAction from ConnectionPolicyRule set (most restrictive wins).
     // block → fail before dial; require_approval gated after prepare has commands.
     if (binding.pushAction === "block") {
       return {
@@ -1367,7 +1452,7 @@ export class GitRemoteOrchestrator {
     }
 
     const args = (req.args ?? {}) as Record<string, unknown>;
-    // R51: args.delete → zero newHash commands + empty pack.
+    // args.delete → zero newHash commands + empty pack (delete-only receive-pack).
     const delNames = deleteRefNames(args, commands);
     if (delNames) {
       commands = delNames.map((name) => ({
@@ -1427,7 +1512,7 @@ export class GitRemoteOrchestrator {
             .filter((h) => typeof h === "string" && /^[0-9a-f]{40}$/i.test(h) && h !== zeroOid),
         ),
       ];
-      // R48: remote lease oldHash tips as haves for thin pack.
+      // Remote lease oldHash tips as haves for thin pack.
       const haves = [
         ...new Set(
           commands
@@ -1518,8 +1603,12 @@ export class GitRemoteOrchestrator {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Multi-mount demux & host_call factory
+// ---------------------------------------------------------------------------
+
 /**
- * Multi-engine map for host_call `"git"` demux (R63–R65).
+ * Multi-engine map for host_call `"git"` demux (K21 / R63–R65).
  * Each mount path owns a distinct {@link GitEngine} (single-writer per engine).
  */
 export interface GitEngineMountMap {
@@ -1617,15 +1706,15 @@ export function resolveGitEngineForMount(
 }
 
 /**
- * MapHostCall handler factory: body is Request JSON bytes.
+ * MapHostCall handler factory: body is Request JSON → Response JSON string.
  * Product default: process-scoped pack cache unless `opts.packCache` is set
  * (`null` disables). Direct {@link GitRemoteOrchestrator} does not auto-enable.
  *
- * Multi-mount (R63–R65): pass {@link GitEngineMountMap}; body may include
+ * Multi-mount (K21 / R63–R65): pass {@link GitEngineMountMap}; body may include
  * `args.mount` or top-level `mount` to demux to the matching engine.
  * Each engine gets its own orchestrator instance (single-writer per mount).
  *
- * ## Snapshot quiescence (D19 / monorepo host_call pattern)
+ * ## Snapshot quiescence
  *
  * Remotes run **inside** an open `mc_sys_host_call` slot (`MapHostCall`). The
  * kernel increments `inflight_egress` for the live host handle, so
@@ -1686,6 +1775,10 @@ export function gitHostCallHandler(
     return JSON.stringify(resp);
   };
 }
+
+// ---------------------------------------------------------------------------
+// Path helpers
+// ---------------------------------------------------------------------------
 
 /**
  * Worktree-relative submodule path: no absolute, no `..`, no empty.

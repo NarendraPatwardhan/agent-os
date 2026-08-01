@@ -1,6 +1,10 @@
 /**
- * GitFsDriver — MountFs Driver projecting engine MEMFS worktree + synthetic .git/ctl.
- * GIT.md §5–6: local porcelain via ctl; remotes fail closed (host_call git only).
+ * GitFsDriver — worktree projection into the guest VFS.
+ *
+ * MountFs Driver that maps engine MEMFS worktree paths plus a synthetic
+ * `.git/mc/ctl` control plane for local porcelain. Remotes fail closed here
+ * (guest must use host_call `"git"`). Single-writer via bridge.serial; brand
+ * symbol enforces one gitfs driver per mount path.
  */
 
 import type { Driver, DriverEntry, DriverError, DriverMeta } from "../types.js";
@@ -10,16 +14,16 @@ import { normalizeRel } from "./bridge.js";
 const REMOTE_OPS = new Set(["clone", "fetch", "pull", "push"]);
 
 /**
- * Brand symbol for gitfs drivers (K21 / R66). Hosts use this to enforce
- * **one gitfs driver per mount path** (multi-mount allowed with distinct paths;
- * same path still fails closed). Single-writer remains **per engine**.
+ * Brand symbol for gitfs drivers (K21). Hosts use this to enforce **one gitfs
+ * driver per mount path** (multi-mount allowed with distinct paths; same path
+ * still fails closed). Single-writer remains **per engine**.
  */
 export const GITFS_DRIVER_KIND = Symbol.for("agentos.gitfs");
 
 export interface GitFsDriverOptions {
   readOnly?: boolean;
   /**
-   * PR14 sparse cone: only project relative paths under these prefixes
+   * Sparse cone: only project relative paths under these prefixes
    * (e.g. `["src/", "docs/"]`). Empty = full tree. Synthetic `.git` always visible.
    */
   sparseCone?: string[];
@@ -82,8 +86,8 @@ export function createGitFsDriver(
   }
 
   /**
-   * K17: no guest `.git/objects` façade. Host ODB stays host-side; open/stat/readdir
-   * of objects (and any child) fail with ENOENT so the path is not projected.
+   * No guest `.git/objects` façade (K17). Host ODB stays host-side; open/stat/
+   * readdir of objects (and any child) fail with ENOENT so the path is not projected.
    */
   function isObjectsPath(path: string): boolean {
     const p = normalizeRel(path);
@@ -107,7 +111,7 @@ export function createGitFsDriver(
   }
 
   /**
-   * R23: synthetic `.git/HEAD` from engine branch / rev-parse — not hard-coded master
+   * Synthetic `.git/HEAD` from engine branch / rev-parse — not hard-coded master
    * after checkout/clone. Detached → raw OID; unborn only falls back to master.
    * Must run inside bridge.serial (uses sync bridge.run).
    */
@@ -138,6 +142,8 @@ export function createGitFsDriver(
     return "ref: refs/heads/master\n";
   }
 
+  // ── Driver face ───────────────────────────────────────────────────────────
+
   const driver: Driver = {
     readOnly,
 
@@ -145,13 +151,13 @@ export function createGitFsDriver(
       return serial(() => {
         const p = normalizeRel(path);
         if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
-        // K17: no objects façade — do not fall through to host ODB MEMFS.
+        // No objects façade — do not fall through to host ODB MEMFS.
         if (isObjectsPath(p)) throw fsErr("ENOENT", ".git/objects");
         // Ctl always returns last Response JSON (drain protocol).
         if (p === ".git/mc/ctl") {
           return new TextEncoder().encode(lastResponse);
         }
-        // D15: out/last (and out/stream alias) serve full stdout body when the
+        // out/last (and out/stream alias) serve full stdout body when the
         // engine wrote a stream file after result.truncated; else Response JSON.
         if (p === ".git/mc/out/last" || p === ".git/mc/out/stream") {
           const streamRel =
@@ -204,7 +210,7 @@ export function createGitFsDriver(
           return { kind: "dir" as const, size: 0 };
         }
         if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
-        // K17: not listed under .git; not a projected path (ENOENT, not empty dir).
+        // Not listed under .git; not a projected path (ENOENT, not empty dir).
         if (isObjectsPath(p)) throw fsErr("ENOENT", ".git/objects");
         if (
           p === ".git" ||
@@ -284,10 +290,10 @@ export function createGitFsDriver(
           return out;
         }
         if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
-        // K17: objects is not a guest dir (ENOENT even if host ODB exists).
+        // objects is not a guest dir (ENOENT even if host ODB exists).
         if (isObjectsPath(p)) throw fsErr("ENOENT", ".git/objects");
         if (p === ".git") {
-          // Synthetic only: HEAD + mc (ctl) + refs — never objects (K17).
+          // Synthetic only: HEAD + mc (ctl) + refs — never objects.
           return [
             { name: "HEAD", kind: "file" as const },
             { name: "mc", kind: "dir" as const },
@@ -333,14 +339,15 @@ export function createGitFsDriver(
         if (readOnly) throw fsErr("EACCES", "read-only mount");
         const p = normalizeRel(path);
         if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
-        // K17: refuse writes into host ODB projection (not present to guest).
+        // Refuse writes into host ODB projection (not present to guest).
         if (isObjectsPath(p)) throw fsErr("ENOENT", ".git/objects");
         const bytes =
           data instanceof Uint8Array
             ? data
             : new TextEncoder().encode(String(data));
 
-        // Ctl: write Request → Run; Response observed on subsequent open/read (MountFs drain).
+        // Ctl: write Request → Run; Response observed on subsequent open/read
+        // (MountFs drain protocol).
         if (p === ".git/mc/ctl") {
           let req: { op?: string; args?: unknown };
           try {
@@ -359,7 +366,7 @@ export function createGitFsDriver(
             return;
           }
           const op = String(req.op || "").toLowerCase();
-          // D31: optional args.client_token echoed in result.client_token (race detect).
+          // Optional args.client_token echoed in result.client_token (race detect).
           const clientToken = (() => {
             if (
               req.args &&
@@ -483,7 +490,7 @@ export function createGitFsDriver(
     },
   };
 
-  // K21 brand: one gitfs per mount path (multi-path OK; same path fail-closed).
+  // Brand: one gitfs per mount path (multi-path OK; same path fail-closed).
   Object.defineProperty(driver, GITFS_DRIVER_KIND, {
     value: true,
     enumerable: false,
@@ -492,6 +499,8 @@ export function createGitFsDriver(
   });
   return driver;
 }
+
+// ── Internals ───────────────────────────────────────────────────────────────
 
 function ensureParent(
   FS: GitBridge["FS"],

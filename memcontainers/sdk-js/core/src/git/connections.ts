@@ -1,5 +1,5 @@
 /**
- * Connection-bound git remotes (GIT.md PR11 / §7.6).
+ * Connection-bound git remotes — credential and origin policy.
  *
  * Guest never sees secrets. CLI may pass public `url` and/or `connection` /
  * `agentos` ref. Credential splice is host-only (smart-HTTP headers).
@@ -7,15 +7,14 @@
  * Origin authorization uses `@mc/host` `originAllowed` (canonical http(s)
  * origin equality; empty origins = fail closed via `.some` on empty list).
  *
- * Dual-host semantic table (JS connection-bound remotes = reference; BEAM
- * host opts must stay equivalent — K16/K20):
+ * Dual-host semantic table (JS = reference; BEAM host opts must stay equivalent):
  *
  * | Concern                 | JS (this module + orch)                         | BEAM (`AgentOS.Git.Connections` + orch)         |
  * |-------------------------|-------------------------------------------------|-------------------------------------------------|
  * | Credential source       | `ConnectionDefinition.auth` only                | connection catalog `:auth` (or bare host `:auth`)|
  * | Guest body secrets      | Reject (`token`/`auth`/… keys) — never splice   | Reject same keys (`:guest_secrets_forbidden`)   |
  * | Connection origins      | `connection.origins` (empty = fail closed)      | same on attach_git `connections:`               |
- * | Bare URL origins        | `allowOrigins` on orch                          | `:allowed_origins` (legacy when connections empty)|
+ * | Bare URL origins        | `allowOrigins` on orch                          | `:allowed_origins` (when connections empty)     |
  * | Push `approve`          | `policies` → `pushAction: "approve"`            | `policies` → `:approve`                         |
  * | Push `require_approval` | `policies` → `"require_approval"` + callback    | `policies` + `:on_push_approval`                |
  * | Push `block`            | `policies` → `"block"` (most restrictive wins)  | same (`git: push blocked by policy`)            |
@@ -36,6 +35,8 @@ import type {
 /** Re-export host primitive so git call sites share one definition with catalog/splice. */
 export { originAllowed };
 
+// ── Types ───────────────────────────────────────────────────────────────────
+
 export interface GitRemoteBinding {
   /** Public locator without userinfo (no secrets). */
   url: string;
@@ -51,6 +52,8 @@ export interface ResolveRemoteOptions {
   remoteUrls?: Record<string, string>;
   remoteConnections?: Record<string, string>;
 }
+
+// ── Guest secret keys (fail closed) ─────────────────────────────────────────
 
 /**
  * Guest host_call / ctl args must never carry credential material. Host
@@ -99,6 +102,8 @@ export function guestArgsCarrySecrets(
   return false;
 }
 
+// ── URL / origin helpers ────────────────────────────────────────────────────
+
 /**
  * Git-specific public URL origin: http(s) only, no userinfo.
  * Host does not export its private `requestOrigin`; keep this thin wrapper for
@@ -136,6 +141,8 @@ export function publicRemoteUrl(url: string): string | null {
   }
 }
 
+// ── Resolve binding ─────────────────────────────────────────────────────────
+
 export function resolveGitRemote(
   args: Record<string, unknown> | undefined,
   opts: ResolveRemoteOptions = {},
@@ -144,7 +151,7 @@ export function resolveGitRemote(
   const connections = opts.connections ?? [];
   const policies = opts.policies ?? [];
 
-  // D7: guest body cannot carry auth secrets — reject, never splice from args.
+  // Guest body cannot carry auth secrets — reject, never splice from args.
   if (guestArgsCarrySecrets(a)) {
     return fail(
       1,
@@ -228,6 +235,8 @@ export function resolveGitRemote(
   };
 }
 
+// ── Push policy ─────────────────────────────────────────────────────────────
+
 export function evaluatePushPolicy(
   connectionRef: string,
   policies: ConnectionPolicyRule[],
@@ -258,6 +267,8 @@ export function matchConnectionPattern(pattern: string, ref: string): boolean {
   return false;
 }
 
+// ── Credential splice (host-only) ───────────────────────────────────────────
+
 export function spliceCredentialHeaders(
   auth: ConnectionAuth,
   headers: Record<string, string> = {},
@@ -287,6 +298,8 @@ export function spliceCredentialUrl(url: string, auth: ConnectionAuth): string {
   u.searchParams.set(auth.name, auth.value);
   return u.toString();
 }
+
+// ── Logging ─────────────────────────────────────────────────────────────────
 
 export function redactRemoteForLog(binding: GitRemoteBinding): string {
   const cred = binding.auth.kind === "none" ? "anon" : binding.auth.kind;

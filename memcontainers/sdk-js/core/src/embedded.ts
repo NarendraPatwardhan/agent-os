@@ -122,14 +122,15 @@ type JobPerfTrace = {
 
 /**
  * Host git engines bound for D17 snapshot/fork durable rebind.
- * MCSN never carries the ODB — engines checkpoint AGIT into a durable id/path.
+ * MCSN never carries the ODB — engines checkpoint AGIT into a durable id/path
+ * from create-time nested `git.durable`.
  */
 export type EmbeddedGitEngineBinding = {
   /** Guest gitfs mount path. */
   path: string;
   /** Durable backend id (e.g. `default:/workspace/repo`). */
   durableId: string;
-  /** Optional DiskDurable directory when using disk. */
+  /** Optional disk durable directory when using `git.durable.diskDir`. */
   durablePath?: string;
   /** Persist live repo as AGIT (best-effort when unborn / empty). */
   checkpoint(): Promise<void>;
@@ -147,9 +148,9 @@ export class EmbeddedBackend implements Backend {
    */
   private readonly gitFsMountPaths = new Set<string>();
   /**
-   * D17: host git engines with durable bindings.
+   * D17: host git engines with durable bindings (from create `git.durable`).
    * Snapshot / pinBase checkpoint these before MCSN capture; restore reopens
-   * the same durable id/path via CreateOptions.git.durable.
+   * the same durable id/path via nested `git.durable`.
    */
   private gitEngineBindings: EmbeddedGitEngineBinding[] = [];
   /** PERF-013 traces for in-flight exec jobs (A3 parity with driveExec). */
@@ -181,13 +182,14 @@ export class EmbeddedBackend implements Backend {
 
   /**
    * Bind host git engines for snapshot-time durable checkpoint (D17 / K10).
-   * Called once from makeEmbedded after engines load; replaces any prior list.
+   * Called once from create after engines load when `git.durable` is set;
+   * replaces any prior list. Empty when host git is off or ephemeral.
    */
   bindGitEngines(bindings: EmbeddedGitEngineBinding[]): void {
     this.gitEngineBindings = [...bindings];
   }
 
-  /** Recorded durable git id/path bindings (empty when git engine is off). */
+  /** Durable git id/path bindings recorded for rebind (empty when off/ephemeral). */
   gitDurableBindings(): ReadonlyArray<{
     path: string;
     durableId: string;
@@ -200,7 +202,7 @@ export class EmbeddedBackend implements Backend {
     }));
   }
 
-  /** Checkpoint all bound git engines (best-effort; unborn repos skip export). */
+  /** Checkpoint all bound durable engines (best-effort; unborn repos skip export). */
   private async checkpointGitEngines(): Promise<void> {
     for (const eng of this.gitEngineBindings) {
       try {
@@ -607,8 +609,8 @@ export class EmbeddedBackend implements Backend {
     this.gitFsMountPaths.delete(path);
   }
   async snapshot(opts: SnapshotOptions = {}): Promise<Uint8Array> {
-    // D17 / K10: record durable git id/path content (AGIT) before MCSN.
-    // Restored VMs re-open the same CreateOptions.git.durable id/path and rebind.
+    // D17 / K10: checkpoint durable git (AGIT) before MCSN. Restored VMs re-open
+    // the same nested git.durable id/path and rebind (ODB is never in MCSN).
     await this.checkpointGitEngines();
     if ((opts.mode ?? "full") === "full") return this.host.snapshot();
     if (!this.snapshotStore?.putSnapshotObject || !this.snapshotStore.snapshotObject) {

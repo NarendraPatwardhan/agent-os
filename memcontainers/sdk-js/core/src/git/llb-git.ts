@@ -1,12 +1,17 @@
 /**
- * llb.git materialization via GitRemoteOrchestrator (GIT.md PR15).
- * Produces the same GitSource shape as system-git archive without shelling out.
+ * llb.git materialization — build-time source via the host remote stack.
+ *
+ * Clones through {@link GitRemoteOrchestrator} (same smart-HTTP + pack cache
+ * as interactive remotes) and walks the engine worktree into a deterministic
+ * ustar archive. No system git, no shell-out.
  */
 
 import type { GitEngine } from "./engine.js";
 import type { GitBridge } from "./bridge.js";
 import { GitRemoteOrchestrator, type OrchestratorOptions } from "./remote-orchestrator.js";
 import { defaultProcessPackCache, type PackCache } from "./pack-cache.js";
+
+// ── Materialize ─────────────────────────────────────────────────────────────
 
 export interface LlbGitMaterializeOptions extends OrchestratorOptions {
   engine: GitEngine;
@@ -15,7 +20,7 @@ export interface LlbGitMaterializeOptions extends OrchestratorOptions {
   dest?: string;
   connection?: string;
   /**
-   * Pack cache for repeated solves (R70/R73). Product default is process
+   * Pack cache for repeated solves. Product default is process
    * {@link defaultProcessPackCache} (Memory, or Disk when `MC_GIT_PACK_CACHE`
    * is set on Node). Pass `null` to disable.
    */
@@ -35,7 +40,7 @@ export async function materializeLlbGit(
   opts: LlbGitMaterializeOptions,
 ): Promise<LlbGitMaterializeResult> {
   const { engine, url, ref, dest, connection, packCache, ...orchOpts } = opts;
-  // Product LLB path (R70): share interactive CA pack cache by default.
+  // Share interactive CA pack cache by default.
   // `null` disables; undefined → process default (Memory, or Disk via MC_GIT_PACK_CACHE).
   const resolvedCache =
     packCache === null ? undefined : (packCache ?? defaultProcessPackCache());
@@ -79,6 +84,8 @@ export async function materializeLlbGit(
     commit: commit && /^[0-9a-f]{40}$/i.test(commit) ? commit : undefined,
   };
 }
+
+// ── Worktree → tar ──────────────────────────────────────────────────────────
 
 /** Walk engine MEMFS worktree into a deterministic ustar archive. */
 export function worktreeToTar(
@@ -200,6 +207,8 @@ async function sha256hex(data: Uint8Array): Promise<string> {
   return s;
 }
 
+// ── SolvePlatform.gitSource ─────────────────────────────────────────────────
+
 export interface EngineGitSourceOptions extends OrchestratorOptions {
   /** Directory URL of git_engine.mjs/wasm. */
   baseUrl: string;
@@ -212,7 +221,7 @@ export interface EngineGitSourceOptions extends OrchestratorOptions {
 
 /**
  * SolvePlatform.gitSource implementation using host engine + orchestrator.
- * Falls back is the caller's responsibility (see solve-node).
+ * Fallback is the caller's responsibility (see solve-node).
  * Pass `orchOpts.packCache` (or rely on process default) so repeated solves
  * dedup upload-pack by public url+wants — credentials never enter the key.
  */

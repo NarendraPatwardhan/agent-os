@@ -1,8 +1,12 @@
 /**
- * In-process git remote counters + last-op labels (R85–R88 / D35).
- * Not Prometheus — simple process-local counters with reset for tests.
+ * Process-local git remote counters + last-op labels.
+ *
+ * Not Prometheus — simple in-process tallies with reset for tests. Records
+ * outcome counts, duration/pack-byte sums, and a redacted origin label.
  * Never stores packs, tokens, or credential material.
  */
+
+// ── Types ───────────────────────────────────────────────────────────────────
 
 export type GitCounterKey =
   | "clone_ok"
@@ -27,6 +31,17 @@ export type GitMetricsSnapshot = Record<GitCounterKey, number> & {
   duration_ms_sum: number;
   pack_bytes_sum: number;
 };
+
+/** Meta for a single remote op. Never pass tokens or raw Authorization. */
+export type RemoteResultMeta = {
+  duration_ms?: number;
+  pack_bytes?: number;
+  /** scheme://host[:port] only */
+  origin_redacted?: string;
+  allowlist_deny?: boolean;
+};
+
+// ── State ───────────────────────────────────────────────────────────────────
 
 const COUNTER_KEYS: GitCounterKey[] = [
   "clone_ok",
@@ -54,6 +69,8 @@ let lastOriginRedacted = "";
 let durationMsSum = 0;
 let packBytesSum = 0;
 
+// ── API ─────────────────────────────────────────────────────────────────────
+
 export function incGitCounter(key: GitCounterKey, n = 1): void {
   if (key in counters) counters[key] += n;
 }
@@ -77,15 +94,6 @@ export function resetGitCounters(): void {
   durationMsSum = 0;
   packBytesSum = 0;
 }
-
-/** Meta for a single remote op (D35). Never pass tokens or raw Authorization. */
-export type RemoteResultMeta = {
-  duration_ms?: number;
-  pack_bytes?: number;
-  /** scheme://host[:port] only */
-  origin_redacted?: string;
-  allowlist_deny?: boolean;
-};
 
 export function recordRemoteResult(
   op: string,

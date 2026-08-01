@@ -1,15 +1,17 @@
-/* git_engine.h — host-side Run ABI (AgentOS GIT.md function face).
+/* git_engine.h — host-side Run ABI (AgentOS git function face).
  *
  * One engine instance ≈ one gitfs mount. worktree_root for ge_open must be an
  * absolute path to an existing directory. Paths in args are worktree-relative
- * (no absolute paths, no ".."). Network dial is forbidden: remotes are
- * host-mediated apply ops only (pack.import / refs.import / clone.apply).
+ * (no absolute paths, no "..").
  *
- * JSON envelopes (K18):
- *   Request:  { "op": "...", "args": { ... } }
- *   Response: { "ok": bool, "code": 0|1|2, "stdout"?, "stderr"?, "result"? }
- *
- * code: 0 ok, 1 operational error, 2 usage / unknown op / bad JSON.
+ * Contract:
+ *   - Reduced surface — not full git-core.
+ *   - Network dial is forbidden: remotes are host-mediated apply ops only
+ *     (pack.import / refs.import / clone.apply / fetch.apply / pack.build).
+ *   - JSON envelopes:
+ *       Request:  { "op": "...", "args": { ... } }
+ *       Response: { "ok": bool, "code": 0|1|2, "stdout"?, "stderr"?, "result"? }
+ *   - code: 0 ok, 1 operational error, 2 usage / unknown op / bad JSON.
  */
 
 #ifndef GIT_ENGINE_H_
@@ -41,8 +43,8 @@ GE_API void ge_close(ge_engine *e);
  * safe (no-op for static fallbacks); ge_response_is_static reports which. */
 GE_API char *ge_run_json(ge_engine *e, const char *request_json);
 
-/* Binary pack import (GIT_DESIGN §3.3). Chunks may be streamed; final!=0
- * finalizes the indexer into the ODB. Returns 0 on success, <0 on error. */
+/* Binary pack import. Chunks may be streamed; final!=0 finalizes the indexer
+ * into the ODB. Returns 0 on success, <0 on error. */
 GE_API int ge_import_pack(ge_engine *e, const uint8_t *chunk, size_t len,
                           int final);
 
@@ -68,7 +70,7 @@ GE_API void ge_free(void *p);
 /* Non-zero if p is a static ge_run_json fallback (must not free() directly). */
 GE_API int ge_response_is_static(const void *p);
 
-/* Identity of this spike build (for op "version"). */
+/* Engine identity string (for op "version"). */
 GE_API const char *ge_version(void);
 
 /* Absolute worktree root bound at ge_open (valid until ge_close). */

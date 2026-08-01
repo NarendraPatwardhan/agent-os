@@ -1,14 +1,19 @@
 /**
- * Content-addressed pack cache (GIT.md PR13 / K29).
- * Credentials are never cached — only pack bytes keyed by sha256.
+ * Content-addressed pack cache for remotes and LLB solves.
+ *
+ * Credentials are never cached — only pack bytes keyed by sha256 digest.
+ * Optional download-key index maps public url+wants+haves → pack digest for
+ * dedup across clone/fetch/materialize in the same process (or on disk).
  */
+
+// ── PackCache face ──────────────────────────────────────────────────────────
 
 export interface PackCache {
   get(digest: string): Promise<Uint8Array | null>;
   put(pack: Uint8Array): Promise<string>;
   has(digest: string): Promise<boolean>;
   clear(): Promise<void>;
-  /** Optional download-key index (url+want+have+depth → pack digest) for K29 dedup. */
+  /** Optional download-key index (url+want+have+depth → pack digest). */
   getByKey?(key: string): Promise<string | null>;
   putKey?(key: string, digest: string): Promise<void>;
 }
@@ -21,6 +26,8 @@ async function sha256hex(data: Uint8Array): Promise<string> {
   for (const b of h) s += b.toString(16).padStart(2, "0");
   return s;
 }
+
+// ── Memory backend ──────────────────────────────────────────────────────────
 
 /** In-memory pack cache (tests / small sessions / process default). */
 export class MemoryPackCache implements PackCache {
@@ -55,6 +62,8 @@ export class MemoryPackCache implements PackCache {
     this.keys.set(key, digest);
   }
 }
+
+// ── Process-scoped default ──────────────────────────────────────────────────
 
 /** Process-scoped default pack cache (product orch / repeated in-process LLB solves). */
 let processPackCache: PackCache | undefined;
@@ -111,7 +120,7 @@ export function uploadPackCacheKey(opts: {
   wants: string[];
   haves?: string[];
   depth?: number;
-  /** Partial clone filter (R36); different filters must not share a cache entry. */
+  /** Partial clone filter; different filters must not share a cache entry. */
   filter?: string;
 }): string {
   const wants = opts.wants
@@ -127,6 +136,8 @@ export function uploadPackCacheKey(opts: {
   const filter = (opts.filter ?? "").trim();
   return `upload-pack:v1:${opts.url}:${wants}:${haves}:d${opts.depth ?? ""}:f${filter}`;
 }
+
+// ── Disk backend ────────────────────────────────────────────────────────────
 
 /** Node disk pack cache under `{dir}/{digest without prefix}`. */
 export class DiskPackCache implements PackCache {
@@ -210,6 +221,8 @@ function simpleHash(s: string): string {
   }
   return (h >>> 0).toString(16).padStart(8, "0");
 }
+
+// ── Import helpers ──────────────────────────────────────────────────────────
 
 /** Soft default: refuse packs larger than 64 MiB unless opt-in. */
 export const DEFAULT_MAX_PACK_BYTES = 64 * 1024 * 1024;
@@ -295,7 +308,7 @@ export async function importPackCached(
 }
 
 /**
- * Stream pack slices into the engine (D11). Each chunk is appended with
+ * Stream pack slices into the engine. Each chunk is appended with
  * `final:false`; an empty final chunk commits. Enforces maxPackBytes on the
  * running total. When `cache` is set, concatenates for content-addressed put
  * after a successful stream (caller must not re-import).

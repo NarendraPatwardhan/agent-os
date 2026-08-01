@@ -1,16 +1,19 @@
 /**
- * Durable backends for host git engine (GIT.md PR8a OPFS / PR8b server disk).
+ * Durable backends — persist engine worktree/ODB across reload.
  *
- * **Primary durable form is a re-openable libgit2 worktree+ODB directory** on
- * host disk (Node/server) or OPFS (browser, when available). Checkpoint
- * flushes that directory; a second process `ge_open`s / hydrates the same
- * path and sees the same HEAD + worktree files.
+ * **Primary form:** a re-openable libgit2 worktree+ODB **directory** on host
+ * disk (Node/server) or OPFS (browser). Checkpoint flushes that directory; a
+ * second process `ge_open`s / hydrates the same path and sees the same HEAD +
+ * worktree files. Prefer {@link HostDirDurable} / `{ durableDir }` when a real
+ * directory is available.
  *
- * **AGIT** (pack+refs envelope) remains an optional **transfer** format for
- * blob backends (`MemoryDurable` / legacy `DiskDurable` / `OpfsDurable`
- * snapshot.bin). Prefer {@link HostDirDurable} / {@link GitEngine.load}
- * `{ durableDir }` when a real directory is available.
+ * **Transfer form:** AGIT (pack+refs envelope) for **blob** backends
+ * (`MemoryDurable` / `DiskDurable` / `OpfsDurable` snapshot.bin). Used when
+ * only opaque bytes can travel (tests, cross-process handoff without a shared
+ * path).
  */
+
+// ── Face ────────────────────────────────────────────────────────────────────
 
 /** Blob (AGIT/opaque) vs directory (real worktree root) durability. */
 export type DurableKind = "blob" | "directory";
@@ -24,7 +27,7 @@ export type DurableKind = "blob" | "directory";
  */
 export interface DurableBackend {
   readonly id: string;
-  /** Default `"blob"` for legacy implementations that omit `kind`. */
+  /** Default `"blob"` for implementations that omit `kind`. */
   readonly kind?: DurableKind;
   /** Persist durable snapshot bytes (AGIT / opaque). Directory backends: no-op. */
   save(snapshot: Uint8Array): Promise<void>;
@@ -86,8 +89,10 @@ export function isBlobDurable(b: DurableBackend | undefined | null): boolean {
   return !!b && b.kind !== "directory";
 }
 
+// ── Ids + process registry ──────────────────────────────────────────────────
+
 /**
- * Process-scoped MemoryDurable instances (D17).
+ * Process-scoped MemoryDurable instances.
  * Same `id` via {@link openDurable} reuses one store so snapshot → restore /
  * fork in the same JS process rebinds AGIT without OPFS/disk.
  */
@@ -118,6 +123,8 @@ export function safeDurablePathSegment(id: string): string {
   return String(id || "default").replace(/[^A-Za-z0-9._:@+-]+/g, "_") || "default";
 }
 
+// ── Blob backends ───────────────────────────────────────────────────────────
+
 /** In-memory durability (tests / default when OPFS unavailable). AGIT blob. */
 export class MemoryDurable implements DurableBackend {
   readonly kind = "blob" as const;
@@ -135,7 +142,7 @@ export class MemoryDurable implements DurableBackend {
 }
 
 /**
- * Browser OPFS **blob** store (legacy AGIT). Keyed under
+ * Browser OPFS **blob** store (AGIT transfer). Keyed under
  * `agentos-git/{id}/snapshot.bin`. Prefer {@link OpfsDirDurable} for a
  * re-openable worktree tree under OPFS.
  */
@@ -188,6 +195,8 @@ export class OpfsDurable implements DurableBackend {
     }
   }
 }
+
+// ── Directory backends ──────────────────────────────────────────────────────
 
 /**
  * Browser OPFS **directory** durable store — worktree tree under
@@ -251,7 +260,7 @@ export class OpfsDirDurable implements DurableBackend {
 }
 
 /**
- * Server / Node disk **blob** store (legacy AGIT). Writes `{dir}/snapshot.bin`.
+ * Server / Node disk **blob** store (AGIT transfer). Writes `{dir}/snapshot.bin`.
  * Prefer {@link HostDirDurable} for a re-openable worktree directory.
  */
 export class DiskDurable implements DurableBackend {
@@ -293,7 +302,7 @@ export class DiskDurable implements DurableBackend {
 /**
  * Host disk **directory** durable store — the worktree+`.git` **is** the store.
  *
- * Product path for D16/PR8b:
+ * Product path:
  * * `GitEngine.load({ durableDir: path })` → {@link HostDirDurable}
  * * Checkpoint dumps MEMFS → this directory (or fsync when NODEFS write-through)
  * * Second process loads the same path and sees the same HEAD + files
@@ -369,6 +378,8 @@ export class HostDirDurable implements DurableBackend {
   }
 }
 
+// ── Factory ─────────────────────────────────────────────────────────────────
+
 /**
  * Prefer host **directory** when `diskDir`/`durableDir` given; else OPFS
  * directory (browser); else OPFS blob; else process-scoped memory blob.
@@ -388,8 +399,8 @@ export async function openDurable(opts: {
   /** Prefer directory OPFS over blob snapshot.bin when true (default true). */
   preferDirectory?: boolean;
   /**
-   * When true with `diskDir`, use legacy AGIT `snapshot.bin` under
-   * `{diskDir}/{id}/` instead of a re-openable worktree directory.
+   * When true with `diskDir`, use AGIT `snapshot.bin` under `{diskDir}/{id}/`
+   * instead of a re-openable worktree directory.
    */
   blobOnDisk?: boolean;
 }): Promise<DurableBackend> {
@@ -422,7 +433,7 @@ export async function openDurable(opts: {
   return mem;
 }
 
-// --- MEMFS ↔ host / OPFS tree helpers --------------------------------------
+// ── MEMFS ↔ host / OPFS tree helpers ────────────────────────────────────────
 
 function ensureMemfsDir(FS: MemfsLike, path: string): void {
   if (typeof FS.mkdirTree === "function") {
@@ -526,7 +537,7 @@ async function hostTreeToMemfs(
           /* skip unreadable */
         }
       }
-      /* D22: skip symlinks/specials on hydrate (same as add all=true).
+      /* Skip symlinks/specials on hydrate (same as add all=true).
        * Explicit engine add/write of a symlink path fails closed. */
     }
   }
@@ -697,7 +708,8 @@ async function memfsTreeToOpfs(
   }
 }
 
-// --- AGIT envelope: magic + u32 LE json_len + json(refs+head) + pack bytes ---
+// ── AGIT envelope ───────────────────────────────────────────────────────────
+// Layout: magic `AGIT` | u32 LE json_len | json(refs+head) | pack bytes
 
 /** Magic bytes `AGIT` for durable rebind blobs (optional transfer format). */
 export const AGIT_MAGIC = new Uint8Array([0x41, 0x47, 0x49, 0x54]);
@@ -735,7 +747,7 @@ export function encodeDurableBlob(
 }
 
 /**
- * Parse an AGIT envelope. Returns null for legacy/opaque non-AGIT blobs
+ * Parse an AGIT envelope. Returns null for opaque non-AGIT blobs
  * (no rebind — caller may keep bytes at engine level only).
  */
 export function decodeDurableBlob(data: Uint8Array): DecodedDurableBlob | null {

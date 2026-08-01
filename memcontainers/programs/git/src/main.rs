@@ -1,9 +1,21 @@
-//! Thin pure-mc `/bin/git` (GIT.md PR6) — local porcelain via ctl; remotes via host_call.
+//! Thin pure-mc `/bin/git` — reduced guest surface over the host git engine.
 //!
-//! Local cmds discover gitfs root by walking parents for `.git/mc/ctl`, then:
-//!   write Request JSON → open/read Response (never close-only).
-//! Remote cmds (`clone`/`fetch`/`pull`/`push`) skip root discovery and use
-//! `host_call` name `git` (CAP_NET; PR10b) — clone works outside a repo.
+//! # Two paths
+//!
+//! | Class | Transport | When |
+//! |-------|-----------|------|
+//! | **Local porcelain** | gitfs ctl at `/.git/mc/ctl` | Repo present: discover root by walking parents for `.git/mc/ctl` |
+//! | **Remotes** | `host_call` name `"git"` (**CAP_NET**) | `clone` / `fetch` / `pull` / `push` — no root discovery (clone works outside a repo) |
+//!
+//! Local flow: write Request JSON → close write FD → open/read Response (never close-only).
+//! Multi-path `add` / `rm` issue one ctl round-trip per path; `diff` packs path/paths in one request.
+//!
+//! # Surface (not full git-core)
+//!
+//! Local: `init`, `status`, `add`, `rm`, `commit`, `log`, `diff`, `show`, `rev-parse`,
+//! `branch`, `checkout`/`switch`, `reset`, `tag`, `config`, `remote` (config only).
+//! Remotes: `clone [--depth N] [--filter SPEC]`, `fetch`/`pull`/`push` [url].
+//! Meta: `version`, `help`. Unknown commands fail closed.
 
 #![no_std]
 #![no_main]
@@ -56,8 +68,7 @@ fn main() -> i32 {
         return 0;
     }
 
-    // Remotes must not require an existing gitfs root (clone has none yet;
-    // fetch/pull/push may be invoked before discovery and use host_call).
+    // Remotes skip gitfs root discovery (clone has none yet; others use host_call).
     if cmd == b"clone" || cmd == b"fetch" || cmd == b"pull" || cmd == b"push" {
         return remote_host_call(cmd, &args[..argc]);
     }
@@ -87,7 +98,7 @@ fn main() -> i32 {
         }
     };
 
-    // Multi-path local ops: one ctl round-trip per path (engine takes a single path).
+    // Multi-path / flag-heavy local ops: dedicated builders (engine takes one path per add/rm).
     if cmd == b"rm" {
         return run_rm(ctl, &args[..argc]);
     }
@@ -105,6 +116,8 @@ fn main() -> i32 {
     };
     ctl_roundtrip(ctl, &req[..req_len])
 }
+
+// ── Ctl / host_call I/O ──────────────────────────────────────────────────────
 
 /// Write Request JSON to ctl, re-open, read Response, emit stdout/stderr/code.
 fn ctl_roundtrip(ctl: &str, req: &[u8]) -> i32 {
@@ -153,14 +166,14 @@ fn ctl_roundtrip(ctl: &str, req: &[u8]) -> i32 {
     emit_response(&resp[..total])
 }
 
-/// PR10b: remote argv → `mc_sys_host_call` name `git` + Request JSON (CAP_NET).
+/// Remote argv → `mc_sys_host_call` name `git` + Request JSON body (needs CAP_NET).
 fn remote_host_call(cmd: &[u8], args: &[&[u8]]) -> i32 {
     let mut body = [0u8; MAX_BODY];
     let body_len = match build_remote_request(cmd, args, &mut body) {
         Ok(n) => n,
         Err(code) => return code,
     };
-    // req = "git\0" + JSON
+    // Wire: "git\0" + JSON Request
     let mut req = [0u8; MAX_BODY + 8];
     req[0] = b'g';
     req[1] = b'i';
@@ -216,6 +229,8 @@ fn emit_response(body: &[u8]) -> i32 {
         1
     }
 }
+
+// ── Remote request builders (host_call) ──────────────────────────────────────
 
 fn build_remote_request(cmd: &[u8], args: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
     let argc = args.len();
@@ -329,7 +344,9 @@ fn fmt_clone(
     Ok(i)
 }
 
-/// `git diff [--cached|--staged] [path…]` → one ctl Request (paths as path or paths[]).
+// ── Local multi-path / flag commands (ctl) ───────────────────────────────────
+
+/// `git diff [--cached|--staged] [path…]` → one ctl Request (`path` or `paths[]`).
 fn run_diff(ctl: &str, args: &[&[u8]]) -> i32 {
     let mut req = [0u8; MAX_BODY];
     let n = match build_diff(args, &mut req) {
@@ -428,14 +445,14 @@ fn run_rm(ctl: &str, args: &[&[u8]]) -> i32 {
     last
 }
 
-/// `git add -A|--all` or `git add <path…>`.
+/// `git add -A|--all` or `git add <path…>` (not both in one invocation).
 fn run_add(ctl: &str, args: &[&[u8]]) -> i32 {
     let argc = args.len();
     if argc < 3 {
         eprint(b"usage: git add (-A|--all|<path...>)\n");
         return 2;
     }
-    // Single all=true when any arg is -A / --all (phase A: no mix with paths).
+    // Single all=true when any arg is -A / --all; paths and --all are mutually exclusive.
     let mut all = false;
     let mut path_count = 0usize;
     for i in 2..argc {
@@ -477,6 +494,8 @@ fn run_add(ctl: &str, args: &[&[u8]]) -> i32 {
     }
     last
 }
+
+// ── Local single-request builders (ctl) ──────────────────────────────────────
 
 fn build_request(cmd: &[u8], args: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
     let argc = args.len();
@@ -536,8 +555,7 @@ fn build_request(cmd: &[u8], args: &[&[u8]], out: &mut [u8]) -> Result<usize, i3
         let rev = if argc >= 3 { args[2] } else { b"HEAD" };
         return fmt_rev_parse(rev, out);
     }
-    // Remotes are handled in main before find_git_root / build_request.
-    // add/rm are handled in main (multi-path loops).
+    // Remotes and multi-path add/rm are handled in main before build_request.
     eprint(b"git: unknown or unsupported command\n");
     Err(2)
 }
@@ -657,7 +675,7 @@ fn build_remote_cfg(args: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
         return fmt_remote_remove(args[3], out);
     }
     if sub == b"-v" || sub == b"--verbose" {
-        // Phase A: list is already name\turl; treat -v as list.
+        // List is already name\turl; -v maps to the same list action.
         return copy_bytes(b"{\"op\":\"remote\",\"args\":{\"action\":\"list\"}}", out);
     }
     eprint(b"usage: git remote [add <name> <url>|remove <name>]\n");
@@ -695,6 +713,8 @@ fn build_branch(args: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
         (false, None) => copy_bytes(b"{\"op\":\"branch\"}", out),
     }
 }
+
+// ── Format helpers (JSON Request fragments) ──────────────────────────────────
 
 fn fmt_op_path(op: &[u8], path: &[u8], out: &mut [u8]) -> Result<usize, i32> {
     let mut i = 0usize;
@@ -816,6 +836,8 @@ fn fmt_rev_parse(rev: &[u8], out: &mut [u8]) -> Result<usize, i32> {
     Ok(i)
 }
 
+// ── Path discovery ───────────────────────────────────────────────────────────
+
 fn find_git_root(out: &mut [u8]) -> Result<usize, i32> {
     let mut cwd = [0u8; MAX_PATH];
     let mut n = rt::getcwd(&mut cwd).map_err(|_| 1i32)?;
@@ -863,6 +885,8 @@ fn join_path(root: &[u8], rel: &[u8], out: &mut [u8]) -> Result<usize, i32> {
     out[i..i + rel.len()].copy_from_slice(rel);
     Ok(i + rel.len())
 }
+
+// ── Byte / JSON helpers + Response parse ─────────────────────────────────────
 
 fn copy_bytes(src: &[u8], out: &mut [u8]) -> Result<usize, i32> {
     if src.len() > out.len() {

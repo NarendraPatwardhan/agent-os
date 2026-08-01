@@ -1,7 +1,10 @@
 /**
- * Emscripten createGitEngineModule bridge over ge_* (GIT.md PR2/PR3).
- * Worktree lives in module MEMFS (optionally hydrated from a host durable
- * directory); gitfs projects it into the guest VFS.
+ * Emscripten bridge over `ge_*` — the engine half of the host source plane.
+ *
+ * Loads `git_engine.{mjs,js}` + `git_engine.wasm`, opens a libgit2 repo under
+ * module MEMFS (optionally hydrated or NODEFS-mounted from a host durable
+ * directory). gitfs projects that worktree into the guest VFS; all concurrent
+ * access serializes through {@link GitBridge.serial}.
  */
 
 import type { DurableBackend } from "./durable.js";
@@ -9,6 +12,8 @@ import { isDirectoryDurable } from "./durable.js";
 import type { GitRequest, GitResponse } from "./types.js";
 
 export const DEFAULT_WORK_ROOT = "/work";
+
+// ── Emscripten surface ──────────────────────────────────────────────────────
 
 export type EmscriptenGitModule = {
   UTF8ToString(ptr: number): string;
@@ -33,7 +38,7 @@ export type EmscriptenGitModule = {
   _ge_free(ptr: number): void;
   _ge_version(): number;
   _ge_last_error(eng: number): number;
-  /** Test helper: override stdout embed limit (0 = product default). D15. */
+  /** Test helper: override stdout embed limit (0 = product default). */
   _ge_test_set_stdout_max_bytes?(n: number): void;
 };
 
@@ -68,6 +73,8 @@ export type GitBridgeCreateOptions = {
    */
   durable?: DurableBackend;
 };
+
+// ── GitBridge ───────────────────────────────────────────────────────────────
 
 export class GitBridge {
   /** Single-writer promise queue for libgit2 + MEMFS worktree access. */
@@ -173,7 +180,7 @@ export class GitBridge {
   }
 
   /**
-   * Test-only: override stdout embed limit for D15 truncation tests.
+   * Test-only: override stdout embed limit for truncation tests.
    * Pass 0 to restore the product default (1 MiB).
    */
   testSetStdoutMaxBytes(n: number): void {
@@ -183,6 +190,8 @@ export class GitBridge {
     }
     fn(n >>> 0);
   }
+
+  // ── Sync ge_* (callers that may race must wrap with serial) ───────────────
 
   /** Sync WASM ge_run_json. Callers that may race must wrap with {@link serial}. */
   run(req: GitRequest): GitResponse {
@@ -277,11 +286,12 @@ export class GitBridge {
     return this.mod.FS;
   }
 
+  // ── Nested engines (submodule paths under the same module FS) ─────────────
+
   /**
    * Open a nested libgit2 engine under an absolute MEMFS path (same module FS).
-   * D23–D24: host orch clones submodules into nested paths so superproject
-   * gitfs projects nested worktree files. Call only inside {@link serial}.
-   * Pair with {@link closeAt}.
+   * Host orch clones submodules into nested paths so superproject gitfs projects
+   * nested worktree files. Call only inside {@link serial}. Pair with {@link closeAt}.
    */
   openAt(absRoot: string): number {
     ensureDir(this.mod.FS, absRoot);
@@ -342,9 +352,11 @@ export class GitBridge {
   }
 }
 
+// ── Path helpers ────────────────────────────────────────────────────────────
+
 /**
  * Canonical relative path for gitfs/engine MEMFS.
- * Collapses empty segments and `.`; rejects `..` segments (K17 + path safety).
+ * Collapses empty segments and `.`; rejects `..` segments (path safety / K17).
  * So `/.git/./objects` and `/.git//objects` normalize to `.git/objects`.
  */
 export function normalizeRel(path: string): string {
@@ -363,6 +375,8 @@ export function normalizeRel(path: string): string {
   }
   return parts.join("/");
 }
+
+// ── Module load internals ───────────────────────────────────────────────────
 
 function ensureDir(FS: EmscriptenFS, path: string): void {
   if (typeof FS.mkdirTree === "function") {

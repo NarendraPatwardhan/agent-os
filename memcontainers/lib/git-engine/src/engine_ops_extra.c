@@ -1,4 +1,5 @@
-/* Additional Run ops for GIT_DESIGN phase A + apply helpers. */
+/* Extra Run ops shared by ge_run_json (local porcelain, host apply helpers,
+ * sparse cone, submodule list). Engine never dials the network. */
 #include "git_engine.h"
 #include "ge_engine_priv.h"
 #include "json_min.h"
@@ -13,12 +14,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/* ── Cone worktree prune (M7 / D13) ─────────────────────────────────────────
- * libgit2 does not fully apply sparse-checkout file rules on checkout_tree
- * (out-of-cone paths remain on disk). After writing sparse-checkout + force
- * checkout, prune the worktree so only cone prefixes (+ root-level files) stay.
- * Cone-only (prefix list + basic !negation handled at write time); not full
- * sparse language. */
+/* ── Local porcelain ──────────────────────────────────────────────────────── */
 
 int op_rm(ge_engine *e, const char *args) {
   if (ge_ensure_repo(e) != 0)
@@ -46,14 +42,18 @@ int op_rm(ge_engine *e, const char *args) {
   return 0;
 }
 
-/* *out_owned is malloc'd on success; caller frees.
- * Product surface: full unified patch (GIT_DIFF_FORMAT_PATCH), not name-status.
+/* op_diff — product surface: full unified patch (GIT_DIFF_FORMAT_PATCH).
+ *
+ * stdout is the complete patch text (*out_owned malloc'd; caller frees).
+ * Not name-status / --stat.
  *
  * Args:
- *   path   — single pathspec (relpath)
- *   paths  — JSON string array of pathspecs (max 16)
- *   cached | staged — bool; when true: HEAD tree → index (git --cached), else
- *                     index → workdir (default unstaged)
+ *   path          — single worktree-relative pathspec
+ *   paths         — JSON string array of pathspecs (max 16); wins over path
+ *   cached|staged — bool; true → HEAD tree vs index (git diff --cached);
+ *                   false/omit → index vs workdir (default unstaged)
+ *
+ * Unborn HEAD + cached: empty patch (NULL tree). Bad pathspecs fail closed.
  */
 int op_diff(ge_engine *e, const char *args, char **out_owned) {
   if (out_owned)
@@ -173,7 +173,7 @@ int op_diff(ge_engine *e, const char *args, char **out_owned) {
   return 0;
 }
 
-/* *out_owned is malloc'd on success; caller frees. Never truncates. */
+/* *out_owned is malloc'd on success; caller frees. Full commit message (no fixed-buffer cut). */
 int op_show(ge_engine *e, const char *args, char **out_owned) {
   if (out_owned)
     *out_owned = NULL;
@@ -450,6 +450,8 @@ int op_branch_delete(ge_engine *e, const char *name) {
   return 0;
 }
 
+/* ── Host-mediated remotes (tips / push helpers; no network dial) ─────────── */
+
 /* Escape a string into JSON string content (no surrounding quotes). */
 static size_t json_escape_into(char *dst, size_t cap, const char *src) {
   size_t o = 0;
@@ -546,6 +548,15 @@ int op_push_complete(ge_engine *e, const char *args) {
   }
   return 0;
 }
+
+/* ── Sparse cone: worktree prune + sparse-set / sparse-disable ──────────────
+ *
+ * libgit2 does not fully apply sparse-checkout rules on checkout_tree
+ * (out-of-cone paths can remain on disk). After writing sparse-checkout and a
+ * force checkout, prune so only cone prefixes (+ root-level files) stay.
+ * Cone-only: prefix list + basic !negation at write time — not full git sparse
+ * language.
+ */
 
 /* Return 1 if relative worktree path should remain under cone prefixes.
  * Root-level files always kept (/*). Intermediate dirs for nested cones kept. */
@@ -644,11 +655,16 @@ static void cone_prune_walk(const char *root, const char *rel, char cones[][256]
   closedir(d);
 }
 
-/* PR14 / R59 / D13: sparse-checkout cone projection + worktree materialization.
- * patterns: string (newline-separated), JSON string array, or single path key.
- * Basic negation lines: `!path` → written as !/path/ (still not full git sparse language).
- * Unsafe paths fail closed.
- * After config+checkout, prunes out-of-cone worktree paths (libgit2 does not). */
+/* sparse-set: write cone patterns, enable core.sparseCheckout, re-checkout HEAD,
+ * then prune out-of-cone worktree paths.
+ *
+ * Args:
+ *   patterns — newline-separated string, or JSON string array
+ *   path     — single include prefix (fallback if patterns omitted)
+ *
+ * Basic negation: `!path` → `!/path/` lines. Unsafe relpaths fail closed.
+ * Not full git sparse language.
+ */
 int op_sparse_set(ge_engine *e, const char *args) {
   if (ge_ensure_repo(e) != 0)
     return -1;
@@ -766,7 +782,7 @@ int op_sparse_set(ge_engine *e, const char *args) {
     git_object_free(treeish);
   }
 
-  /* D13: materialize cone on disk — prune out-of-cone worktree paths. */
+  /* Materialize cone on disk — prune out-of-cone worktree paths. */
   if (ncones > 0)
     cone_prune_walk(e->root, "", cones, ncones);
   return 0;
@@ -793,6 +809,10 @@ int op_sparse_disable(ge_engine *e, const char *args) {
   }
   return 0;
 }
+
+/* ── Submodules: list (.gitmodules) + local gitlink stage ───────────────────
+ * List/status only on the engine. Network update/clone is host_call + orch.
+ */
 
 /* Minimal JSON string escape for submodule list (no control chars; skip them). */
 static void ge_json_escape_str(const char *in, char *out, size_t cap) {
@@ -871,9 +891,8 @@ static int ge_submodule_append_entry(char **outp, size_t *usedp, size_t *capp, i
   return 0;
 }
 
-/* R68–R69 / D23–D24: parse worktree `.gitmodules` (no network).
- * Includes gitlink hash from the superproject index when present (mode 160000).
- * Network clone/update stays host-mediated via orch host_call (engine never dials). */
+/* Parse worktree `.gitmodules` (no network). Includes gitlink hash from the
+ * superproject index when present (mode 160000). */
 int op_submodule_list(ge_engine *e, char **out_owned) {
   if (out_owned)
     *out_owned = NULL;
