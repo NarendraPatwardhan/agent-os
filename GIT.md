@@ -780,7 +780,7 @@ Sparse-checkout and partial trees for large repos without loading full history i
 | Command | Notes |
 |---------|--------|
 | `clone` / `fetch` / `pull` / `push` | Host smart-HTTP + engine apply only |
-| `submodule` | **List-only** from `.gitmodules` (no network). `update`/`init`/`add`/`clone` fail closed — host-mediated recursive clone later |
+| `submodule` | **List/status** local from `.gitmodules` (+ gitlink hash). **Update** via host orch `host_call git` `{op:submodule,action:update}` — nested clone under path; engine never dials |
 
 #### Explicitly out of surface
 
