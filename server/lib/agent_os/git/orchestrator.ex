@@ -594,7 +594,7 @@ defmodule AgentOS.Git.Orchestrator do
       pid when is_pid(pid) ->
         pid
 
-      # Product default: fresh Memory unless SHARED=1 or disk env (multi-tenant safer).
+      # Product default: fresh Memory unless SHARED=1 (multi-tenant safer; JS parity).
       :default ->
         PackCache.product_default_cache()
 

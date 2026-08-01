@@ -106,7 +106,7 @@ defmodule AgentOS.Git.PackCache do
 
   **Not** the multi-tenant product default — use `product_default_cache/0`
   (or orchestrator `pack_cache: :default`). Call this explicitly, or set
-  `AGENTOS_GIT_PACK_CACHE_SHARED=1` / disk env so `product_default_cache/0`
+  `AGENTOS_GIT_PACK_CACHE_SHARED=1` so `product_default_cache/0`
   delegates here.
   """
   @spec default_process_cache() :: t()
