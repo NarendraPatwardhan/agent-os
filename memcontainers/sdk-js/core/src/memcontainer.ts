@@ -247,63 +247,72 @@ async function bootstrapHostGit(
   const engineMap = new Map<string, Awaited<ReturnType<typeof GitEngine.load>>>();
   const loaded: LoadedGitEngine[] = [];
 
-  for (const spec of mountSpecs) {
-    const path = String(spec.path).trim();
-    const sparse = spec.sparse ?? gitCfg.sparse;
-    let durable: Awaited<ReturnType<typeof openDurable>> | undefined;
-    let durableId: string | undefined;
-    let durablePath: string | undefined;
-    if (useDurable) {
-      durableId = durableIdForMount(durableBaseId, path);
-      durable = await openDurable({ id: durableId, diskDir: durableDiskRoot });
-      if (durable.kind === "directory" && durable.hostPath) {
-        durablePath = durable.hostPath;
-      } else if (durableDiskRoot) {
-        const baseDir = durableDiskRoot.replace(/\/$/, "");
-        const safe = durableId.replace(/[^A-Za-z0-9._:@+-]+/g, "_");
-        durablePath = `${baseDir}/${safe}`;
+  try {
+    for (const spec of mountSpecs) {
+      const path = String(spec.path).trim();
+      const sparse = spec.sparse ?? gitCfg.sparse;
+      let durable: Awaited<ReturnType<typeof openDurable>> | undefined;
+      let durableId: string | undefined;
+      let durablePath: string | undefined;
+      if (useDurable) {
+        durableId = durableIdForMount(durableBaseId, path);
+        durable = await openDurable({ id: durableId, diskDir: durableDiskRoot });
+        if (durable.kind === "directory" && durable.hostPath) {
+          durablePath = durable.hostPath;
+        } else if (durableDiskRoot) {
+          const baseDir = durableDiskRoot.replace(/\/$/, "");
+          const safe = durableId.replace(/[^A-Za-z0-9._:@+-]+/g, "_");
+          durablePath = `${baseDir}/${safe}`;
+        }
       }
+      const readOnly = !!spec.readOnly;
+      const eng = await GitEngine.load({
+        baseUrl: gitCfg.baseUrl,
+        sparseCone: sparse,
+        identity: gitCfg.identity,
+        readOnly,
+        ...(durable?.kind === "directory" && durable.hostPath
+          ? { durableDir: durable.hostPath }
+          : durable
+            ? { durable }
+            : {}),
+      });
+      engineMap.set(path, eng);
+      loaded.push({
+        path,
+        durableId,
+        durablePath: eng.durableDir ?? durablePath,
+        readOnly,
+        checkpoint: () => eng.checkpoint(),
+        close: () => eng.close(),
+        asMountDriver: (o) => eng.asMountDriver(o),
+        sparseCone: sparse,
+      });
     }
-    const readOnly = !!spec.readOnly;
-    const eng = await GitEngine.load({
-      baseUrl: gitCfg.baseUrl,
-      sparseCone: sparse,
-      identity: gitCfg.identity,
-      readOnly,
-      ...(durable?.kind === "directory" && durable.hostPath
-        ? { durableDir: durable.hostPath }
-        : durable
-          ? { durable }
-          : {}),
-    });
-    engineMap.set(path, eng);
-    loaded.push({
-      path,
-      durableId,
-      durablePath: eng.durableDir ?? durablePath,
-      readOnly,
-      checkpoint: () => eng.checkpoint(),
-      close: () => eng.close(),
-      asMountDriver: (o) => eng.asMountDriver(o),
-      sparseCone: sparse,
-    });
-  }
 
-  // Per-engine readOnly lives on GitEngine.load; orch uses engine.readOnly
-  // (see gitHostCallHandler) so multi-mount mixed RO/RW stays correct.
-  registerGitHostCall(
-    tools,
-    { engines: engineMap, defaultMount: mountSpecs[0]!.path.trim() },
-    {
-      connections: opts.connections,
-      policies: opts.policies,
-      sparseCone: gitCfg.sparse,
-      identity: gitCfg.identity,
-      ...(gitCfg.http ? { http: gitCfg.http } : {}),
-      ...(gitCfg.allowOrigins ? { allowOrigins: gitCfg.allowOrigins } : {}),
-    },
-  );
-  return loaded;
+    // Per-engine readOnly lives on GitEngine.load; orch uses engine.readOnly
+    // (see gitHostCallHandler) so multi-mount mixed RO/RW stays correct.
+    registerGitHostCall(
+      tools,
+      { engines: engineMap, defaultMount: mountSpecs[0]!.path.trim() },
+      {
+        connections: opts.connections,
+        policies: opts.policies,
+        sparseCone: gitCfg.sparse,
+        identity: gitCfg.identity,
+        ...(gitCfg.http ? { http: gitCfg.http } : {}),
+        ...(gitCfg.allowOrigins ? { allowOrigins: gitCfg.allowOrigins } : {}),
+      },
+    );
+    return loaded;
+  } catch (err) {
+    // Multi-mount: if any load (or register) fails after engines are already up,
+    // best-effort close so wasm/durable handles do not leak.
+    if (loaded.length > 0) {
+      await Promise.allSettled(loaded.map((e) => e.close()));
+    }
+    throw err;
+  }
 }
 
 /**

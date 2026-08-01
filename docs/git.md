@@ -282,7 +282,7 @@ Opt-in by presence of `git`; documented in [Create options](./create-options.md)
 // Minimal — asset-dir URL enables host git (not a repo remote)
 mc.create({
   git: new URL("./git-engine/", import.meta.url).href,
-  // registers host_call "git" (process pack cache default), mounts gitfs at /workspace/repo
+  // registers host_call "git" (product pack cache: fresh Memory unless SHARED), mounts gitfs at /workspace/repo
   connections: [{ ref: "github.user.work", auth: { kind: "bearer", token }, origins: ["https://github.com"] }],
 });
 
@@ -549,23 +549,64 @@ BEAM Port binary resolution (`AgentOS.GitEngine.discover_executable/0`), first r
 
 Release packages stage the binary + libgit2 NOTICE under `priv/` (D37 L4).
 
-## Env (Node solve / LLB)
+## Pack cache (interactive remotes + LLB)
+
+Content-addressed pack bytes only (keyed by sha256 of the pack). Download-key index is
+public `url + wants + haves + depth + filter` — **never** credentials / userinfo / auth
+headers. Same layout dual-host: Memory maps or Disk `{dir}/{sha256hex}.pack` +
+`{dir}/keys/{sha256hex(key)}.key`.
+
+### Product default (multi-tenant safer)
+
+Product host_call handlers enable a pack cache by default, but **do not** use a
+process-global shared cache unless opted in:
+
+| Host | Product entry | Default (no env) | Shared opt-in |
+|------|---------------|------------------|---------------|
+| **JS** | `gitHostCallHandler` / `mc.create({ git })` | Fresh per-handler `MemoryPackCache` (`productDefaultPackCache`) | `MC_GIT_PACK_CACHE_SHARED=1` → process singleton (`defaultProcessPackCache`); Disk when `MC_GIT_PACK_CACHE` is also set |
+| **BEAM** | VM `attach_git` host_call path (`pack_cache: :default`) | Fresh per-remote-Task Memory Agent (`product_default_cache/0`) | `AGENTOS_GIT_PACK_CACHE_SHARED=1` → process singleton (Disk when `AGENTOS_GIT_PACK_CACHE` is also set). Disk env alone does **not** enable product share (JS parity). |
+
+Direct orchestrator construction (JS `new GitRemoteOrchestrator` / BEAM `Orchestrator.run`
+without `:pack_cache`) leaves cache **off** unless the caller passes one. Pass `null` /
+`false` / omit on product paths only when intentionally disabling.
+
+**Multi-tenant:** must **not** set `*_PACK_CACHE_SHARED` or point `*_PACK_CACHE` at a
+directory shared across tenants — pack digests are content-addressed public objects, but
+download-key hits and cache residency must not cross tenant boundaries. Prefer the product
+default (fresh Memory per handler / remote Task).
+
+**Single-tenant / dedicated worker:** may set:
+
+| Goal | JS | BEAM |
+|------|----|------|
+| Share Memory across remotes in one process | `MC_GIT_PACK_CACHE_SHARED=1` | `AGENTOS_GIT_PACK_CACHE_SHARED=1` |
+| Durable on-disk CA cache | `MC_GIT_PACK_CACHE=/var/cache/…` **and** `MC_GIT_PACK_CACHE_SHARED=1` (product path) | `AGENTOS_GIT_PACK_CACHE=/var/cache/…` (alone is enough on BEAM product default; SHARED also ok) |
+| Explicit process singleton in code | `packCache: defaultProcessPackCache()` | `pack_cache: :process` / `:shared` or `PackCache.default_process_cache()` |
+| Explicit dir | `new DiskPackCache(dir)` / `packCacheDir` | `pack_cache: {:disk, dir}` |
+
+LLB / Node solve (`materializeLlbGit`, `nodeSolvePlatformWithEngine`) still use the process
+singleton by default (`defaultProcessPackCache` — Memory, or Disk via `MC_GIT_PACK_CACHE`)
+so repeated in-process solves share packs with interactive remotes when SHARED/disk is
+configured for the product handler as well.
+
+## Env (Node solve / LLB + dual-host pack cache)
 
 Default is **engine-first**. `llb.git` / `materializeLlbGit` require the host emcc engine unless the
 emergency escape hatch is set. **Only** `MC_GIT_USE_SYSTEM=1` (exact) enables ambient system `git`;
 values like `true` / `0` / empty do **not**.
 
-| Variable | Meaning |
-|----------|---------|
-| `MC_GIT_ENGINE_DIR` | Dir with `git_engine.mjs` + `git_engine.wasm` (**required** for `llb.git` by default) |
-| `MC_GIT_ENGINE_BASE_URL` | Alternate URL form of the same dir |
-| `MC_GIT_PACK_CACHE` | Optional on-disk pack cache dir (overrides process memory cache) |
-| `MC_GIT_USE_SYSTEM` | **Emergency only** (`=1`): shell out to ambient system `git` |
+| Variable | Host | Meaning |
+|----------|------|---------|
+| `MC_GIT_ENGINE_DIR` | JS | Dir with `git_engine.mjs` + `git_engine.wasm` (**required** for `llb.git` by default) |
+| `MC_GIT_ENGINE_BASE_URL` | JS | Alternate URL form of the same dir |
+| `MC_GIT_PACK_CACHE` | JS | Optional on-disk pack cache dir (used by process singleton / LLB; with product handlers only when SHARED) |
+| `MC_GIT_PACK_CACHE_SHARED` | JS | `=1` / `true`: product handlers use process-scoped pack cache (Memory or Disk) |
+| `MC_GIT_USE_SYSTEM` | JS | **Emergency only** (`=1`): shell out to ambient system `git` |
+| `AGENTOS_GIT_PACK_CACHE` | BEAM | Optional on-disk pack cache dir (mirrors `MC_GIT_PACK_CACHE`; single-tenant dedicated dir) |
+| `AGENTOS_GIT_PACK_CACHE_SHARED` | BEAM | `=1` / `true`: product default uses process-scoped pack cache (mirrors `MC_GIT_PACK_CACHE_SHARED`) |
 
 Without `MC_GIT_ENGINE_DIR` / `MC_GIT_ENGINE_BASE_URL` and without `MC_GIT_USE_SYSTEM=1`, solve
-**fails closed** (throws; does not silently use system git). Product `materializeLlbGit` /
-`nodeSolvePlatformWithEngine` always plumb a **pack cache** by default (process `MemoryPackCache`,
-or disk when `MC_GIT_PACK_CACHE` is set) so interactive remotes and LLB share the same CA pack path.
+**fails closed** (throws; does not silently use system git).
 
 ## c-shared / in-process load (K15 / R75) — **decided Port**
 

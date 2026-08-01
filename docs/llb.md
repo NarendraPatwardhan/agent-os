@@ -68,8 +68,10 @@ commit becomes part of the cache key.
 On Node/Bun the default solve path is **host git engine first** (`MC_GIT_ENGINE_DIR` must point at
 `git_engine.mjs` + `git_engine.wasm`). Ambient system `git` is **not** used unless the emergency
 escape hatch `MC_GIT_USE_SYSTEM=1` is set (**exact** `"1"` only). Without engine env and without that
-hatch, solve fails closed — never silently shells out. Product materialize always shares the process
-pack cache (or `MC_GIT_PACK_CACHE` disk) with interactive remotes. See [Git](./git.md).
+hatch, solve fails closed — never silently shells out. LLB materialize uses the process pack
+cache by default (`defaultProcessPackCache`, or `MC_GIT_PACK_CACHE` disk). Interactive product
+handlers use a **fresh** Memory cache unless `MC_GIT_PACK_CACHE_SHARED=1` (then they share that
+same process path). See [Git — Pack cache](./git.md#pack-cache-interactive-remotes--llb).
 
 ## Filesystem nodes
 

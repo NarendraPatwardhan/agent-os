@@ -873,6 +873,81 @@ static int test_sparse_set_patterns(ge_engine *e) {
   return 0;
 }
 
+/* M3: client_token is engine-local; inject only into object results, never arrays. */
+static int test_client_token(ge_engine *e) {
+  /* Success without a result object → engine adds result.client_token. */
+  {
+    char *resp = ge_run_json(
+        e, "{\"op\":\"version\",\"args\":{\"client_token\":\"tok-no-result\"}}");
+    if (!resp) {
+      fprintf(stderr, "client_token version: null response\n");
+      return 1;
+    }
+    int bad = (strstr(resp, "\"ok\":true") == NULL) ||
+              (strstr(resp, "\"client_token\":\"tok-no-result\"") == NULL) ||
+              (strstr(resp, "\"result\":") == NULL);
+    if (bad)
+      fprintf(stderr, "client_token on success without result unexpected:\n%s\n", resp);
+    ge_free(resp);
+    if (bad)
+      return 1;
+  }
+
+  /* Object result keeps token as a field inside result. */
+  {
+    char *resp = ge_run_json(
+        e, "{\"op\":\"rev-parse\",\"args\":{\"rev\":\"HEAD\","
+           "\"client_token\":\"tok-object\"}}");
+    if (!resp) {
+      fprintf(stderr, "client_token rev-parse: null response\n");
+      return 1;
+    }
+    int bad = (strstr(resp, "\"ok\":true") == NULL);
+    const char *rk = strstr(resp, "\"result\":");
+    if (!rk || strstr(rk, "\"client_token\":\"tok-object\"") == NULL)
+      bad = 1;
+    if (bad)
+      fprintf(stderr, "client_token on object result unexpected:\n%s\n", resp);
+    ge_free(resp);
+    if (bad)
+      return 1;
+  }
+
+  /* Array result (tips): must remain an array; never inject into elements. */
+  {
+    char *resp = ge_run_json(
+        e, "{\"op\":\"tips\",\"args\":{\"client_token\":\"tok-array\"}}");
+    if (!resp) {
+      fprintf(stderr, "client_token tips: null response\n");
+      return 1;
+    }
+    int bad = (strstr(resp, "\"ok\":true") == NULL);
+    const char *rk = strstr(resp, "\"result\":");
+    if (!rk) {
+      bad = 1;
+    } else {
+      const char *val = rk + strlen("\"result\":");
+      while (*val == ' ' || *val == '\t')
+        val++;
+      /* tips returns a JSON array — must stay an array. */
+      if (*val != '[')
+        bad = 1;
+      /* Old bug: strchr-for-{ injected into first element as client_token. */
+      if (strncmp(val, "[{\"client_token\":", 17) == 0)
+        bad = 1;
+      if (strstr(val, "\"client_token\"") != NULL)
+        bad = 1;
+    }
+    if (bad)
+      fprintf(stderr, "client_token array result unexpected:\n%s\n", resp);
+    ge_free(resp);
+    if (bad)
+      return 1;
+  }
+
+  return 0;
+}
+
 int main(void) {
   printf("%s\n", ge_version());
 
@@ -993,6 +1068,10 @@ int main(void) {
 
   /* R68–R69 submodule list-only + network fail-closed */
   if (test_submodule_list_only(e))
+    goto fail;
+
+  /* M3: client_token engine-local + safe object-only inject */
+  if (test_client_token(e))
     goto fail;
 
   ge_close(e);

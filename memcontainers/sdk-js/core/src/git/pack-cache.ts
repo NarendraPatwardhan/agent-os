@@ -70,12 +70,21 @@ export class MemoryPackCache implements PackCache {
 
 // ── Process-scoped default ──────────────────────────────────────────────────
 
-/** Process-scoped default pack cache (product orch / repeated in-process LLB solves). */
+/**
+ * Process-scoped pack cache singleton (opt-in share for single-tenant / LLB).
+ * Product host_call handlers do **not** use this by default — see
+ * {@link productDefaultPackCache} / `MC_GIT_PACK_CACHE_SHARED`.
+ */
 let processPackCache: PackCache | undefined;
 
 /**
  * Read `MC_GIT_PACK_CACHE` when available (Node/Bun). Safe in browsers: missing
  * `process` / env → undefined (Memory default). Never throws.
+ *
+ * Disk path is honored by {@link createDefaultProcessPackCache} /
+ * {@link defaultProcessPackCache} (shared opt-in). Multi-tenant product
+ * handlers only reach Disk when `MC_GIT_PACK_CACHE_SHARED=1` or the caller
+ * passes an explicit `packCache`.
  */
 export function processPackCacheDirFromEnv(): string | undefined {
   try {
@@ -92,11 +101,31 @@ export function processPackCacheDirFromEnv(): string | undefined {
 }
 
 /**
- * Build the product default pack cache for this process:
+ * Whether product handlers may share a process-scoped pack cache.
+ * Opt-in via `MC_GIT_PACK_CACHE_SHARED=1` (multi-tenant safer default is off).
+ * Safe in browsers: missing `process` / env → false. Never throws.
+ */
+export function processPackCacheSharedFromEnv(): boolean {
+  try {
+    const env =
+      typeof process !== "undefined" && process?.env
+        ? process.env.MC_GIT_PACK_CACHE_SHARED
+        : undefined;
+    if (typeof env !== "string") return false;
+    const v = env.trim();
+    return v === "1" || v.toLowerCase() === "true";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build a new pack cache instance for process-default / shared use:
  * - {@link DiskPackCache} when `MC_GIT_PACK_CACHE` is a non-empty dir path (Node)
  * - {@link MemoryPackCache} otherwise (browser / unset env)
  *
- * Content-addressed packs only — never credentials.
+ * Content-addressed packs only — never credentials. Does **not** return the
+ * process singleton — use {@link defaultProcessPackCache} for that.
  */
 export function createDefaultProcessPackCache(): PackCache {
   const dir = processPackCacheDirFromEnv();
@@ -105,14 +134,36 @@ export function createDefaultProcessPackCache(): PackCache {
 }
 
 /**
- * Shared process-scoped pack cache. Used by product registration
- * (`gitHostCallHandler` / memcontainer / Node LLB `materializeLlbGit`) when the
- * caller does not override `packCache`. First call pins Memory or Disk based on
- * `MC_GIT_PACK_CACHE` at that moment; later calls reuse the same instance.
+ * Shared process-scoped pack cache singleton. First call pins Memory or Disk
+ * based on `MC_GIT_PACK_CACHE` at that moment; later calls reuse the same
+ * instance.
+ *
+ * **Opt-in for multi-tenant product paths** (`gitHostCallHandler` /
+ * memcontainer): either set `MC_GIT_PACK_CACHE_SHARED=1`, or pass
+ * `packCache: defaultProcessPackCache()` explicitly. Disk via
+ * `MC_GIT_PACK_CACHE` remains valid here for single-tenant / shared opt-in.
+ *
+ * LLB / Node solve (`materializeLlbGit`, `nodeSolvePlatformWithEngine`) still
+ * use this by default for repeated in-process solves.
  */
 export function defaultProcessPackCache(): PackCache {
   if (!processPackCache) processPackCache = createDefaultProcessPackCache();
   return processPackCache;
+}
+
+/**
+ * Default pack cache for product host_call handlers (`gitHostCallHandler`):
+ * - When `MC_GIT_PACK_CACHE_SHARED=1`: {@link defaultProcessPackCache} (Memory,
+ *   or Disk when `MC_GIT_PACK_CACHE` is set — single-tenant / opt-in share).
+ * - Otherwise: fresh {@link MemoryPackCache} (no cross-handler / multi-tenant
+ *   pack-byte sharing).
+ *
+ * Pass `packCache: null` to disable; pass an explicit {@link PackCache} (e.g.
+ * {@link defaultProcessPackCache}) to override.
+ */
+export function productDefaultPackCache(): PackCache {
+  if (processPackCacheSharedFromEnv()) return defaultProcessPackCache();
+  return new MemoryPackCache();
 }
 
 /**
@@ -144,7 +195,13 @@ export function uploadPackCacheKey(opts: {
 
 // ── Disk backend ────────────────────────────────────────────────────────────
 
-/** Node disk pack cache under `{dir}/{digest without prefix}`. */
+/**
+ * Node disk pack cache under `{dir}/`.
+ * - Packs: content-addressed `{dir}/{sha256hex}.pack` (digest without `sha256:` prefix).
+ * - Download-key index: `{dir}/keys/{sha256hex(key)}.key` — SHA-256 hex of the full
+ *   download-key string (safe filename; dual-host parity with BEAM DiskPackCache).
+ *   Old FNV-1a 32-bit key filenames are not migrated (miss is OK).
+ */
 export class DiskPackCache implements PackCache {
   constructor(private readonly dir: string) {}
 
@@ -153,9 +210,11 @@ export class DiskPackCache implements PackCache {
     return `${this.dir.replace(/\/$/, "")}/${id}.pack`;
   }
 
-  private keyPath(key: string): string {
-    // Content-hash the key so it is a safe filename.
-    return `${this.dir.replace(/\/$/, "")}/keys/${simpleHash(key)}.key`;
+  /** Safe filename path for a download key: SHA-256 hex of the full key string. */
+  private async keyPath(key: string): Promise<string> {
+    const digest = await sha256hex(new TextEncoder().encode(key));
+    const hex = digest.replace(/^sha256:/, "");
+    return `${this.dir.replace(/\/$/, "")}/keys/${hex}.key`;
   }
 
   async get(digest: string): Promise<Uint8Array | null> {
@@ -202,7 +261,7 @@ export class DiskPackCache implements PackCache {
   async getByKey(key: string): Promise<string | null> {
     try {
       const { readFile } = await import("node:fs/promises");
-      const dig = (await readFile(this.keyPath(key), "utf8")).trim();
+      const dig = (await readFile(await this.keyPath(key), "utf8")).trim();
       return dig || null;
     } catch {
       return null;
@@ -213,18 +272,8 @@ export class DiskPackCache implements PackCache {
     const { mkdir, writeFile } = await import("node:fs/promises");
     const dir = `${this.dir.replace(/\/$/, "")}/keys`;
     await mkdir(dir, { recursive: true });
-    await writeFile(this.keyPath(key), digest, "utf8");
+    await writeFile(await this.keyPath(key), digest, "utf8");
   }
-}
-
-function simpleHash(s: string): string {
-  // FNV-1a 32-bit → hex (enough for cache key filenames).
-  let h = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return (h >>> 0).toString(16).padStart(8, "0");
 }
 
 // ── Import helpers ──────────────────────────────────────────────────────────

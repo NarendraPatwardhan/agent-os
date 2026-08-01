@@ -70,8 +70,8 @@ import {
 } from "./smart-http.js";
 import {
   DEFAULT_MAX_PACK_BYTES,
-  defaultProcessPackCache,
   importPackCached,
+  productDefaultPackCache,
   uploadPackCacheKey,
   type ImportPackOptions,
   type PackCache,
@@ -114,10 +114,12 @@ export interface OrchestratorOptions extends ResolveRemoteOptions {
   buildPushPack?: (engine: GitEngine, commands: PushCommand[]) => Promise<Uint8Array>;
   /**
    * Content-addressed pack cache (shared LLB + interactive).
-   * Product handlers (`gitHostCallHandler`) default a process-scoped
-   * {@link defaultProcessPackCache} (Memory, or Disk when `MC_GIT_PACK_CACHE`
-   * is set on Node); pass `null` to disable. Direct
-   * {@link GitRemoteOrchestrator} construction leaves cache off unless set.
+   * Product handlers (`gitHostCallHandler`) default a **fresh** per-handler
+   * Memory cache (multi-tenant safer). Opt into process-shared cache via
+   * `MC_GIT_PACK_CACHE_SHARED=1` (then Memory, or Disk when `MC_GIT_PACK_CACHE`
+   * is set) or pass `packCache: defaultProcessPackCache()` explicitly.
+   * Pass `null` to disable. Direct {@link GitRemoteOrchestrator} construction
+   * leaves cache off unless set.
    * Keys are public url + wants/haves/depth only — never credentials.
    */
   packCache?: PackCache | null;
@@ -334,7 +336,7 @@ export class GitRemoteOrchestrator {
         },
       );
       if (!pack || pack.byteLength === 0) {
-        return { error: "git: empty pack from remote\n" };
+        return { error: stderrLine("empty_pack", "from remote") };
       }
       if (streamed) {
         await this.engine.importPack(new Uint8Array(0), { final: true });
@@ -785,7 +787,7 @@ export class GitRemoteOrchestrator {
           ok: false,
           code: 1,
           stdout: "",
-          stderr: "git: not fast-forward\n",
+          stderr: stderrLine("not_fast_forward"),
         };
       }
       return {
@@ -796,7 +798,7 @@ export class GitRemoteOrchestrator {
           ? err.endsWith("\n")
             ? err
             : `${err}\n`
-          : `git: not fast-forward\n`,
+          : stderrLine("not_fast_forward"),
       };
     }
     return {
@@ -997,7 +999,8 @@ export class GitRemoteOrchestrator {
           ok: false,
           code: 1,
           stdout: "",
-          stderr: `git: submodule ${path}: empty pack from remote\n`,
+          // Compound message; still anchored on contract empty_pack prefix.
+          stderr: stderrLine("empty_pack", `from remote (submodule ${path})`),
         };
       }
 
@@ -1053,7 +1056,7 @@ export class GitRemoteOrchestrator {
             ok: false,
             code: 1,
             stdout: "",
-            stderr: "empty pack\n",
+            stderr: stderrLine("empty_pack"),
           };
         }
         for (let off = 0; off < pack.byteLength; off += chunkSize) {
@@ -1211,7 +1214,7 @@ export class GitRemoteOrchestrator {
         ok: false,
         code: 1,
         stdout: "",
-        stderr: "git: empty pack from remote\n",
+        stderr: stderrLine("empty_pack", "from remote"),
       };
     }
 
@@ -1581,7 +1584,7 @@ export class GitRemoteOrchestrator {
         ok: false,
         code: 1,
         stdout: "",
-        stderr: "git: empty pack refused for non-delete push\n",
+        stderr: stderrLine("empty_pack", "refused for non-delete push"),
       };
     }
     if (
@@ -1744,8 +1747,10 @@ export function resolveGitEngineForMount(
 
 /**
  * MapHostCall handler factory: body is Request JSON → Response JSON string.
- * Product default: process-scoped pack cache unless `opts.packCache` is set
- * (`null` disables). Direct {@link GitRemoteOrchestrator} does not auto-enable.
+ * Product default: **fresh** per-handler Memory pack cache (multi-tenant safer).
+ * Opt into process-shared cache with `MC_GIT_PACK_CACHE_SHARED=1` or explicit
+ * `packCache: defaultProcessPackCache()` (`null` disables). Direct
+ * {@link GitRemoteOrchestrator} does not auto-enable.
  *
  * Multi-mount (K21 / R63–R65): pass {@link GitEngineMountMap}; body may include
  * `args.mount` or top-level `mount` to demux to the matching engine.
@@ -1765,8 +1770,10 @@ export function gitHostCallHandler(
   opts?: OrchestratorOptions,
 ): (args: string) => Promise<string> {
   const raw = opts?.packCache;
+  // undefined → productDefaultPackCache (fresh Memory unless SHARED=1);
+  // null → disabled; explicit PackCache → caller owns lifecycle.
   const packCache =
-    raw === null ? undefined : (raw ?? defaultProcessPackCache());
+    raw === null ? undefined : (raw ?? productDefaultPackCache());
   const { engines, defaultMount } = normalizeGitEngineMap(engineOrMap);
 
   // One orchestrator per engine — never share mutable orch state across mounts.

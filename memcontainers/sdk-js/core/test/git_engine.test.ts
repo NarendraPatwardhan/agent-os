@@ -340,6 +340,88 @@ async function main() {
     throw new Error(`generation should advance: ${genBefore} → ${genAfter}`);
   }
 
+  // Port parity (M1): guest writes under `.git/` fail closed with EACCES except
+  // synthetic ctl (handled above). Non-ctl meta must not writeFiles into host .git.
+  // K17 objects remain ENOENT for mutating ops too.
+  const enc = new TextEncoder();
+  for (const metaPath of [
+    "/.git/config",
+    "/.git/HEAD",
+    "/.git/refs/heads/evil",
+    "/.git/mc/generation",
+    "/.git/mc/out/last",
+    "/.git/description",
+  ]) {
+    try {
+      await driver.write!(metaPath, enc.encode("guest-must-not-write\n"));
+      throw new Error(`write ${metaPath} must EACCES (Port fail-closed)`);
+    } catch (e) {
+      if ((e as { code?: string }).code !== "EACCES") {
+        throw new Error(
+          `write ${metaPath} expected EACCES, got ${String((e as { code?: string }).code ?? e)}`,
+        );
+      }
+    }
+  }
+  for (const objectsWrite of ["/.git/objects", "/.git/objects/pack/x.pack"]) {
+    try {
+      await driver.write!(objectsWrite, enc.encode("x"));
+      throw new Error(`write ${objectsWrite} must ENOENT (K17)`);
+    } catch (e) {
+      if ((e as { code?: string }).code !== "ENOENT") {
+        throw new Error(
+          `write ${objectsWrite} expected ENOENT, got ${String((e as { code?: string }).code ?? e)}`,
+        );
+      }
+    }
+  }
+  for (const mkdirPath of ["/.git/refs/heads", "/.git/objects/pack", "/.git/info"]) {
+    try {
+      await driver.mkdir!(mkdirPath);
+      throw new Error(
+        `mkdir ${mkdirPath} must ${mkdirPath.includes("objects") ? "ENOENT" : "EACCES"}`,
+      );
+    } catch (e) {
+      const want = mkdirPath.includes("objects") ? "ENOENT" : "EACCES";
+      if ((e as { code?: string }).code !== want) {
+        throw new Error(
+          `mkdir ${mkdirPath} expected ${want}, got ${String((e as { code?: string }).code ?? e)}`,
+        );
+      }
+    }
+  }
+  for (const unlinkPath of [
+    "/.git/HEAD",
+    "/.git/config",
+    "/.git/mc/ctl",
+    "/.git/objects/pack",
+  ]) {
+    try {
+      await driver.unlink!(unlinkPath);
+      throw new Error(
+        `unlink ${unlinkPath} must ${unlinkPath.includes("objects") ? "ENOENT" : "EACCES"}`,
+      );
+    } catch (e) {
+      const want = unlinkPath.includes("objects") ? "ENOENT" : "EACCES";
+      if ((e as { code?: string }).code !== want) {
+        throw new Error(
+          `unlink ${unlinkPath} expected ${want}, got ${String((e as { code?: string }).code ?? e)}`,
+        );
+      }
+    }
+  }
+  // Ctl remains the only guest write under .git (sanity after fail-closed checks).
+  await driver.write!(
+    "/.git/mc/ctl",
+    enc.encode(JSON.stringify({ op: "status", args: { short: true } })),
+  );
+  const ctlStill = JSON.parse(
+    new TextDecoder().decode(await driver.open("/.git/mc/ctl")),
+  );
+  if (!ctlStill.ok) {
+    throw new Error(`ctl still writable after meta EACCES: ${JSON.stringify(ctlStill)}`);
+  }
+
   // P2.5: cone-only sparse projection via asMountDriver (not full sparse parity).
   await eng.run({
     op: "write",

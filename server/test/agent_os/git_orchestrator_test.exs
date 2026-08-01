@@ -1166,6 +1166,57 @@ defmodule AgentOS.Git.OrchestratorTest do
     refute k1 =~ "Bearer"
   end
 
+  test "product_default_cache is fresh Memory unless SHARED" do
+    alias AgentOS.Git.PackCache
+
+    prev_shared = System.get_env("AGENTOS_GIT_PACK_CACHE_SHARED")
+    prev_disk = System.get_env("AGENTOS_GIT_PACK_CACHE")
+
+    try do
+      System.delete_env("AGENTOS_GIT_PACK_CACHE_SHARED")
+      System.delete_env("AGENTOS_GIT_PACK_CACHE")
+
+      refute PackCache.shared_from_env?()
+      assert PackCache.disk_dir_from_env() == nil
+
+      # Clear any leftover ephemeral pointer from other tests in this process.
+      Process.delete(:agent_os_git_pack_cache_ephemeral)
+
+      a = PackCache.product_default_cache()
+      b = PackCache.product_default_cache()
+      # Same caller process reuses the ephemeral Agent (per-Task scope).
+      assert is_pid(a)
+      assert a == b
+      assert Process.alive?(a)
+
+      # Different process → different Memory Agent (not process-global).
+      other =
+        Task.async(fn ->
+          Process.delete(:agent_os_git_pack_cache_ephemeral)
+          PackCache.product_default_cache()
+        end)
+        |> Task.await()
+
+      assert is_pid(other)
+      assert other != a
+
+      System.put_env("AGENTOS_GIT_PACK_CACHE_SHARED", "1")
+      assert PackCache.shared_from_env?()
+      shared_a = PackCache.product_default_cache()
+      shared_b = PackCache.product_default_cache()
+      assert shared_a == shared_b
+      assert shared_a == PackCache.default_process_cache()
+    after
+      if prev_shared,
+        do: System.put_env("AGENTOS_GIT_PACK_CACHE_SHARED", prev_shared),
+        else: System.delete_env("AGENTOS_GIT_PACK_CACHE_SHARED")
+
+      if prev_disk,
+        do: System.put_env("AGENTOS_GIT_PACK_CACHE", prev_disk),
+        else: System.delete_env("AGENTOS_GIT_PACK_CACHE")
+    end
+  end
+
   @tag timeout: 60_000
   test "second clone with pack_cache does not call fetch_packs twice" do
     alias AgentOS.Git.PackCache

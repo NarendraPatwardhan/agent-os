@@ -1847,6 +1847,8 @@ defmodule AgentOS.Vm do
   # Product (PR11): connections + policies. Legacy flat allowlist/auth only
   # when connections empty so fixtures keep working during orch migration.
   # Per-mount `:sparse_cone` is added by `git_host_opts_for_mount/2` (D20).
+  # Pack cache: product default (`:default` → fresh Memory unless SHARED/disk
+  # env); mirrors JS `gitHostCallHandler` + `productDefaultPackCache`.
   defp git_host_opts(state) do
     connections = state.git_connections || []
     policies = state.git_policies || []
@@ -1873,6 +1875,10 @@ defmodule AgentOS.Vm do
           if policies != [], do: Keyword.put(o, :policies, policies), else: o
         end)
       end
+
+    # Product remotes: CA pack cache on by default (per-remote Memory unless
+    # AGENTOS_GIT_PACK_CACHE_SHARED=1 or AGENTOS_GIT_PACK_CACHE disk dir).
+    opts = Keyword.put(opts, :pack_cache, :default)
 
     opts =
       case state.git_transport do

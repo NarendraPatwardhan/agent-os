@@ -124,7 +124,9 @@ export {
   feedPackChunks,
   defaultProcessPackCache,
   createDefaultProcessPackCache,
+  productDefaultPackCache,
   processPackCacheDirFromEnv,
+  processPackCacheSharedFromEnv,
   uploadPackCacheKey,
   DEFAULT_MAX_PACK_BYTES,
 } from "./pack-cache.js";

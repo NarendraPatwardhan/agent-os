@@ -444,7 +444,8 @@ MountFs only supports whole-file `open`/`write` (driver `write(path, data)` afte
 
 ```ts
 // memcontainers/sdk-js/core/src/git/
-const engine = await GitEngine.load(…);
+// Product attach is usually mc.create({ git: { baseUrl, … } }); advanced:
+const engine = await GitEngine.load({ baseUrl: "…/git-engine/", /* durableDir? durable? */ });
 await vm.mount("/workspace/my-app", engine.asMountDriver(), { readOnly: false });
 // registerRaw("/workspace/my-app", …) + host.mount — same as hostDir/s3
 // Default convention: /workspace/{name} (K27); configurable per session.
@@ -868,7 +869,10 @@ export interface GitEngine {
 
 // Load path: createGitEngineModule from git_engine.js (emcc), not gojs.
 // Ensures absolute worktree dir exists (MEMFS or durable), then ge_open(absPath).
-static load(baseUrlOrModule: string | EmscriptenFactory, opts?: GitLoadOptions): Promise<GitEngine>;
+// Single options object (GitEngineLoadOptions) — no dual-arg overload.
+static load(opts: GitEngineLoadOptions): Promise<GitEngine>;
+// opts: { baseUrl, workRoot?, readOnly?, sparseCone?, durable?, durableDir?, identity? }
+// Product path: mc.create({ git: baseUrl | { baseUrl, mounts?, durable?, … } })
 ```
 
 **Face B registration (product):**
@@ -1436,9 +1440,12 @@ flowchart TD
 ### Attach
 
 ```text
-embedder:
-  engine = await GitEngine.load(gitEngineBase, { durable: … })
+embedder (advanced direct load):
+  engine = await GitEngine.load({ baseUrl, durable: … })  // or durableDir
   await vm.mount("/repo", engine.asMountDriver(), { readOnly: false })
+
+product path:
+  vm = await mc.create({ git: { baseUrl, mounts: [{ path: "/repo" }], durable: … } })
 ```
 
 Boot config may declare gitfs mounts the same way other host mounts are declared today.

@@ -424,8 +424,11 @@ export function createGitFsDriver(
           return;
         }
 
-        if (isGitMeta(path) && p !== ".git/HEAD") {
-          if (p.startsWith(".git/mc")) throw fsErr("EACCES", "synthetic path");
+        // Port parity: only `.git/mc/ctl` is a guest write surface under `.git/`.
+        // All other git meta (HEAD, refs, config, out/*, generation, …) → EACCES.
+        // K17 objects already returned ENOENT above.
+        if (isGitMeta(p)) {
+          throw fsErr("EACCES", "synthetic .git");
         }
 
         const abs = bridge.abs(p);
@@ -440,9 +443,8 @@ export function createGitFsDriver(
         const p = normalizeRel(path);
         if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
         if (isObjectsPath(p)) throw fsErr("ENOENT", ".git/objects");
-        if (isGitMeta(path) && p !== ".git") {
-          if (p.startsWith(".git")) throw fsErr("EACCES", "synthetic .git");
-        }
+        // Port parity: no guest mkdir under synthetic `.git` (incl. `.git` itself).
+        if (isGitMeta(p)) throw fsErr("EACCES", "synthetic .git");
         const abs = bridge.abs(p);
         ensureParent(FS(), abs);
         try {
@@ -458,7 +460,9 @@ export function createGitFsDriver(
         if (readOnly) throw fsErr("EACCES", "read-only mount");
         const p = normalizeRel(path);
         if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
-        if (isGitMeta(path)) throw fsErr("EACCES", "synthetic .git");
+        // K17 before meta EACCES so objects stay ENOENT for all ops.
+        if (isObjectsPath(p)) throw fsErr("ENOENT", ".git/objects");
+        if (isGitMeta(p)) throw fsErr("EACCES", "synthetic .git");
         const abs = bridge.abs(p);
         if (!exists(abs)) throw fsErr("ENOENT", p);
         const st = FS().stat(abs);

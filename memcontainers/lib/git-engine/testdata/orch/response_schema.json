@@ -1,7 +1,7 @@
 {
   "name": "git_response_schema",
   "version": 1,
-  "description": "D33 dual-host catalog: stable GitResponse keys and stderr prefixes for orch error paths. Hosts must emit these prefixes (substring-stable); do not paraphrase in product code or matchers.",
+  "description": "D33 dual-host catalog: stable GitResponse keys and stderr prefixes for orch error paths. Hosts must emit these prefixes (substring-stable); do not paraphrase in product code or matchers. stderr_prefixes MUST match contracts/git.kdl stderr-prefix (gen/git.gen.ts STDERR_PREFIX) — ids and prefix strings are the dual-host catalog of record.",
   "required_response_keys": ["ok", "code", "stdout", "stderr"],
   "response_key_types": {
     "ok": "boolean",
@@ -14,37 +14,55 @@
       "id": "unknown_connection",
       "prefix": "git: unknown connection ref",
       "sample_op": "clone",
-      "notes": "connection-bound remote with unknown catalog ref"
+      "notes": "connection-bound remote with unknown catalog ref; must match git.kdl"
     },
     {
       "id": "empty_pack",
       "prefix": "git: empty pack",
       "sample_op": "clone",
-      "notes": "list-refs ok but upload-pack body empty"
+      "notes": "list-refs ok but upload-pack body empty; must match git.kdl"
     },
     {
       "id": "origin_not_allowlisted",
       "prefix": "git: origin not allowlisted",
       "sample_op": "clone",
-      "notes": "bare URL or connection origin policy deny"
+      "notes": "bare URL or connection origin policy deny; must match git.kdl"
     },
     {
       "id": "not_fast_forward",
       "prefix": "git: not fast-forward",
       "sample_op": "pull",
-      "notes": "pull FF-only cannot advance HEAD to remote tip"
+      "notes": "pull FF-only cannot advance HEAD to remote tip; must match git.kdl"
     },
     {
       "id": "guest_auth_secrets",
       "prefix": "git: guest body must not include auth secrets",
       "sample_op": "clone",
-      "notes": "guest body token/auth/password keys rejected"
+      "notes": "guest body token/auth/password keys rejected; must match git.kdl"
     },
     {
       "id": "push_read_only",
       "prefix": "git: push rejected (read-only mount)",
       "sample_op": "push",
-      "notes": "read-only mount rejects push before dial"
+      "notes": "read-only mount rejects push before dial; must match git.kdl"
+    },
+    {
+      "id": "redirect_not_allowed",
+      "prefix": "git: redirect not allowed",
+      "sample_op": "clone",
+      "notes": "smart-HTTP 3xx rejected (no Location follow); must match git.kdl"
+    },
+    {
+      "id": "empty_origins",
+      "prefix": "git: empty connection origins",
+      "sample_op": "clone",
+      "notes": "connection definition has empty origins list; must match git.kdl"
+    },
+    {
+      "id": "query_auth_unsupported",
+      "prefix": "git: query auth not supported for remotes",
+      "sample_op": "clone",
+      "notes": "connection auth kind query rejected for remotes; must match git.kdl"
     }
   ],
   "samples": [

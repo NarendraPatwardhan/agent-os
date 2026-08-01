@@ -196,9 +196,11 @@ defmodule AgentOS.Git.OrchGoldenTest do
     assert {:ok, json} = Orchestrator.run(pid, req, orch_opts)
 
     resp = decode_json!(json)
-    ok? = Map.get(resp, "ok") == true or Map.get(resp, "ok") == "true"
+    # ok must be JSON boolean true/false only (not string "true"/"false")
+    ok = Map.get(resp, "ok")
+    assert is_boolean(ok), "#{Map.get(step, "id")}: ok must be boolean, got #{inspect(ok)}: #{json}"
     expected_ok = Map.fetch!(expect, "ok")
-    assert ok? == expected_ok, "#{Map.get(step, "id")}: ok expected #{expected_ok}, body=#{json}"
+    assert ok == expected_ok, "#{Map.get(step, "id")}: ok expected #{expected_ok}, body=#{json}"
 
     if Map.has_key?(expect, "code") do
       assert Map.get(resp, "code") == Map.get(expect, "code"),
@@ -347,8 +349,10 @@ defmodule AgentOS.Git.OrchGoldenTest do
           assert Map.has_key?(resp, k), "schema/#{id}: missing key #{k}: #{json}"
         end
 
-        ok? = Map.get(resp, "ok") == true or Map.get(resp, "ok") == "true"
-        refute ok?, "schema/#{id}: expected ok:false: #{json}"
+        # ok must be JSON boolean true/false only (not string "true"/"false")
+        ok = Map.get(resp, "ok")
+        assert is_boolean(ok), "schema/#{id}: ok must be boolean, got #{inspect(ok)}: #{json}"
+        refute ok, "schema/#{id}: expected ok:false: #{json}"
 
         stderr = to_string(Map.get(resp, "stderr") || "")
         assert String.contains?(stderr, want),

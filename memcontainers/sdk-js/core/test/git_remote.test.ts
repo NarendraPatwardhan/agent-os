@@ -320,7 +320,7 @@ async function main() {
   await eng3.close();
 
   // Default path without packCache still works (direct orch above).
-  // Product handler defaults process cache on; packCache:null disables.
+  // Product handler defaults a fresh Memory cache; packCache:null disables.
   const http3 = new FixtureSmartHttp();
   http3.add(url2, [{ name: "refs/heads/main", hash }], packBody);
   const hNull = gitHostCallHandler(eng, {

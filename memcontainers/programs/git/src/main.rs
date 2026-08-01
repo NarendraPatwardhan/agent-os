@@ -215,11 +215,19 @@ fn remote_host_call(cmd: &[u8], args: &[&[u8]]) -> i32 {
 
 fn emit_response(body: &[u8]) -> i32 {
     let code = parse_code(body).unwrap_or(1);
+    // Unescaped output is always ≤ escaped length (\uXXXX shrinks); reuse MAX_RESP.
+    let mut buf = [0u8; MAX_RESP];
     if let Some(s) = parse_string_field(body, b"stdout") {
-        print(s);
+        match json_unescape(s, &mut buf) {
+            Ok(n) => print(&buf[..n]),
+            Err(_) => print(s),
+        }
     }
     if let Some(s) = parse_string_field(body, b"stderr") {
-        eprint(s);
+        match json_unescape(s, &mut buf) {
+            Ok(n) => eprint(&buf[..n]),
+            Err(_) => eprint(s),
+        }
     }
     if code == 0 {
         0
@@ -920,6 +928,111 @@ fn push_escaped(out: &mut [u8], mut i: usize, s: &[u8]) -> Result<usize, i32> {
         i += 1;
     }
     Ok(i)
+}
+
+/// Unescape a JSON string body (content between quotes) into `dst`.
+/// Supports `\n` `\r` `\t` `\"` `\\` `\/` and `\uXXXX` (BMP → UTF-8).
+fn json_unescape(src: &[u8], dst: &mut [u8]) -> Result<usize, ()> {
+    let mut i = 0usize;
+    let mut j = 0usize;
+    while i < src.len() {
+        if src[i] != b'\\' {
+            if j >= dst.len() {
+                return Err(());
+            }
+            dst[j] = src[i];
+            j += 1;
+            i += 1;
+            continue;
+        }
+        i += 1;
+        if i >= src.len() {
+            return Err(());
+        }
+        let esc = src[i];
+        i += 1;
+        match esc {
+            b'n' => {
+                if j >= dst.len() {
+                    return Err(());
+                }
+                dst[j] = b'\n';
+                j += 1;
+            }
+            b'r' => {
+                if j >= dst.len() {
+                    return Err(());
+                }
+                dst[j] = b'\r';
+                j += 1;
+            }
+            b't' => {
+                if j >= dst.len() {
+                    return Err(());
+                }
+                dst[j] = b'\t';
+                j += 1;
+            }
+            b'"' | b'\\' | b'/' => {
+                if j >= dst.len() {
+                    return Err(());
+                }
+                dst[j] = esc;
+                j += 1;
+            }
+            b'u' => {
+                if i + 4 > src.len() {
+                    return Err(());
+                }
+                let mut cp: u32 = 0;
+                for &h in &src[i..i + 4] {
+                    cp <<= 4;
+                    cp |= match h {
+                        b'0'..=b'9' => (h - b'0') as u32,
+                        b'a'..=b'f' => (h - b'a' + 10) as u32,
+                        b'A'..=b'F' => (h - b'A' + 10) as u32,
+                        _ => return Err(()),
+                    };
+                }
+                i += 4;
+                j = utf8_encode(dst, j, cp)?;
+            }
+            _ => return Err(()),
+        }
+    }
+    Ok(j)
+}
+
+/// Encode a Unicode scalar (BMP) as UTF-8 into `dst` at `j`. Returns new index.
+fn utf8_encode(dst: &mut [u8], j: usize, cp: u32) -> Result<usize, ()> {
+    if cp < 0x80 {
+        if j >= dst.len() {
+            return Err(());
+        }
+        dst[j] = cp as u8;
+        Ok(j + 1)
+    } else if cp < 0x800 {
+        if j + 2 > dst.len() {
+            return Err(());
+        }
+        dst[j] = 0xC0 | ((cp >> 6) as u8);
+        dst[j + 1] = 0x80 | ((cp & 0x3F) as u8);
+        Ok(j + 2)
+    } else if cp < 0x10000 {
+        // Reject lone surrogates; treat rest of BMP as 3-byte UTF-8.
+        if (0xD800..=0xDFFF).contains(&cp) {
+            return Err(());
+        }
+        if j + 3 > dst.len() {
+            return Err(());
+        }
+        dst[j] = 0xE0 | ((cp >> 12) as u8);
+        dst[j + 1] = 0x80 | (((cp >> 6) & 0x3F) as u8);
+        dst[j + 2] = 0x80 | ((cp & 0x3F) as u8);
+        Ok(j + 3)
+    } else {
+        Err(())
+    }
 }
 
 fn parse_code(body: &[u8]) -> Option<i32> {

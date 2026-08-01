@@ -10,12 +10,22 @@ defmodule AgentOS.Git.PackCache do
   (no userinfo). Auth lives only in SmartHttp request headers at dial time.
 
   Backends:
-  * **Memory** (default) — Agent process holding two maps (`packs` and `keys`).
-    Process-scoped product default via `default_process_cache/0`.
+  * **Memory** — Agent process holding two maps (`packs` and `keys`).
   * **Disk** — files under a directory (same layout as JS `DiskPackCache`):
-    `{dir}/{sha256hex}.pack` and optional `{dir}/keys/{fnv1a}.key`.
+    `{dir}/{sha256hex}.pack` and optional `{dir}/keys/{sha256hex}.key`
+    (filename = SHA-256 hex of the full download-key string).
     Enable with `start_disk/1`, `pack_cache: :disk` / `{:disk, dir}`, or env
     `AGENTOS_GIT_PACK_CACHE` (mirrors JS `MC_GIT_PACK_CACHE`).
+
+  **Product default (multi-tenant safer):** `product_default_cache/0` returns a
+  **fresh per-caller Memory** Agent unless shared opt-in is set. Process-global
+  / shared cache is **opt-in only**:
+  * `AGENTOS_GIT_PACK_CACHE_SHARED=1` (mirrors JS `MC_GIT_PACK_CACHE_SHARED`) →
+    `default_process_cache/0` (Memory, or Disk when `AGENTOS_GIT_PACK_CACHE` set)
+  * `AGENTOS_GIT_PACK_CACHE=<dir>` alone → single-tenant dedicated disk dir
+    (also treated as shared opt-in for product default)
+
+  Multi-tenant hosts must **not** set SHARED or a shared disk dir across tenants.
   """
 
   use Agent
@@ -25,6 +35,9 @@ defmodule AgentOS.Git.PackCache do
   @type t :: pid()
 
   @env_disk_dir "AGENTOS_GIT_PACK_CACHE"
+  @env_shared "AGENTOS_GIT_PACK_CACHE_SHARED"
+  # Process dictionary key for ephemeral (non-shared) Memory cache on the caller.
+  @ephemeral_pdict_key :agent_os_git_pack_cache_ephemeral
 
   # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -79,23 +92,69 @@ defmodule AgentOS.Git.PackCache do
   @spec stop(t()) :: :ok
   def stop(cache) when is_pid(cache), do: Agent.stop(cache)
 
-  # Process-scoped product default (mirrors JS `defaultProcessPackCache`).
+  # Process-scoped shared caches (opt-in; mirrors JS `defaultProcessPackCache`).
   @process_name __MODULE__.ProcessDefault
   @disk_process_name __MODULE__.DiskDefault
 
   @doc """
-  Shared process-scoped `PackCache` for repeated in-process remotes/solves.
+  Shared process-scoped `PackCache` singleton (opt-in).
 
   Content-addressed packs only — never credentials.
   When `AGENTOS_GIT_PACK_CACHE` is set to a non-empty directory path, returns
-  the process-scoped **disk** cache for that dir (product default parity with
-  JS `MC_GIT_PACK_CACHE`); otherwise the in-memory process singleton.
+  the process-scoped **disk** cache for that dir (parity with JS
+  `MC_GIT_PACK_CACHE`); otherwise the in-memory process singleton.
+
+  **Not** the multi-tenant product default — use `product_default_cache/0`
+  (or orchestrator `pack_cache: :default`). Call this explicitly, or set
+  `AGENTOS_GIT_PACK_CACHE_SHARED=1` / disk env so `product_default_cache/0`
+  delegates here.
   """
   @spec default_process_cache() :: t()
   def default_process_cache do
     case disk_dir_from_env() do
       dir when is_binary(dir) -> env_disk_cache!(dir)
       nil -> memory_process_cache()
+    end
+  end
+
+  @doc """
+  Whether product paths may share a process-scoped pack cache.
+
+  Opt-in via `AGENTOS_GIT_PACK_CACHE_SHARED=1` or `true` (mirrors JS
+  `MC_GIT_PACK_CACHE_SHARED`). Multi-tenant safer default is off.
+  """
+  @spec shared_from_env?() :: boolean()
+  def shared_from_env? do
+    case System.get_env(@env_shared) do
+      v when is_binary(v) ->
+        t = String.trim(v)
+        t == "1" or String.downcase(t) == "true"
+
+      _ ->
+        false
+    end
+  end
+
+  @doc """
+  Product pack-cache default (parity with JS `productDefaultPackCache`):
+
+  * When `AGENTOS_GIT_PACK_CACHE_SHARED=1` (or `true`) → `default_process_cache/0`
+    (process Memory, or Disk when `AGENTOS_GIT_PACK_CACHE` is set). **JS parity:**
+    product path never treats disk env alone as shared.
+  * Otherwise → **fresh** Memory Agent scoped to the calling process
+    (process dictionary + linked Agent; dies with the caller Task/process).
+    No cross-VM / multi-tenant pack-byte sharing.
+
+  Credentials are never cached. Multi-tenant must not set SHARED or a shared
+  disk dir across tenants. Single-tenant disk: set SHARED + `AGENTOS_GIT_PACK_CACHE`.
+  """
+  @spec product_default_cache() :: t()
+  def product_default_cache do
+    # Shared only when SHARED is set (match JS productDefaultPackCache).
+    if shared_from_env?() do
+      default_process_cache()
+    else
+      ephemeral_memory_cache()
     end
   end
 
@@ -137,6 +196,35 @@ defmodule AgentOS.Git.PackCache do
 
       _ ->
         nil
+    end
+  end
+
+  # Fresh Memory for one caller process (Task / remote host_call). Linked to
+  # caller so it dies with the remote Task; reused via process dictionary so
+  # multiple resolve_pack steps in one op share the same Agent.
+  defp ephemeral_memory_cache do
+    case Process.get(@ephemeral_pdict_key) do
+      pid when is_pid(pid) ->
+        if Process.alive?(pid) do
+          pid
+        else
+          start_ephemeral_memory_cache()
+        end
+
+      _ ->
+        start_ephemeral_memory_cache()
+    end
+  end
+
+  defp start_ephemeral_memory_cache do
+    case start_link() do
+      {:ok, pid} ->
+        Process.put(@ephemeral_pdict_key, pid)
+        pid
+
+      {:error, {:already_started, pid}} ->
+        Process.put(@ephemeral_pdict_key, pid)
+        pid
     end
   end
 
@@ -345,7 +433,8 @@ defmodule AgentOS.Git.PackCache do
   end
 
   defp key_path(dir, key) do
-    Path.join([dir, "keys", fnv1a_hex(key) <> ".key"])
+    # Layout parity with JS DiskPackCache: keys/{sha256hex(download-key)}.key
+    Path.join([dir, "keys", download_key_filename(key) <> ".key"])
   end
 
   defp disk_get_pack(dir, digest) do
@@ -404,18 +493,9 @@ defmodule AgentOS.Git.PackCache do
     :ok
   end
 
-  # FNV-1a 32-bit → hex (parity with JS DiskPackCache simpleHash).
-  defp fnv1a_hex(s) when is_binary(s) do
-    h =
-      for <<b <- s>>, reduce: 0x811C9DC5 do
-        acc ->
-          acc = Bitwise.bxor(acc, b)
-          Bitwise.band(acc * 0x01000193, 0xFFFFFFFF)
-      end
-
-    h
-    |> Integer.to_string(16)
-    |> String.downcase()
-    |> String.pad_leading(8, "0")
+  # SHA-256 hex of the full download-key string (parity with JS DiskPackCache).
+  # Old FNV-1a 32-bit filenames are not migrated; they simply miss.
+  defp download_key_filename(key) when is_binary(key) do
+    Base.encode16(:crypto.hash(:sha256, key), case: :lower)
   end
 end

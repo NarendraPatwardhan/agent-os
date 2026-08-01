@@ -1,17 +1,19 @@
 /** PR13 / D11–D12: pack cache digests + size gate + stream import + disk round-trip. */
 
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import {
   DEFAULT_MAX_PACK_BYTES,
   DiskPackCache,
   MemoryPackCache,
   createDefaultProcessPackCache,
   defaultProcessPackCache,
+  productDefaultPackCache,
   importPackCached,
   importPackStream,
   processPackCacheDirFromEnv,
+  processPackCacheSharedFromEnv,
   uploadPackCacheKey,
 } from "../src/git/pack-cache.js";
 import {
@@ -116,6 +118,51 @@ async function assertDiskRoundTrip(): Promise<void> {
     await a.putKey(dlKey, digest);
     if ((await a.getByKey!(dlKey)) !== digest) {
       throw new Error("disk getByKey mismatch");
+    }
+
+    // Download-key filenames are SHA-256 hex of the full key string (not FNV-1a).
+    const keyFiles = await readdir(join(dir, "keys"));
+    if (keyFiles.length !== 1) {
+      throw new Error(`expected one key file, got ${JSON.stringify(keyFiles)}`);
+    }
+    const keyName = keyFiles[0]!;
+    if (!/^[0-9a-f]{64}\.key$/.test(keyName)) {
+      throw new Error(`key filename must be 64-hex SHA-256: ${keyName}`);
+    }
+    // Stable path: same key → same filename (putKey again must not create a second file).
+    await a.putKey(dlKey, digest);
+    const keyFiles2 = await readdir(join(dir, "keys"));
+    if (keyFiles2.length !== 1 || keyFiles2[0] !== keyName) {
+      throw new Error(`key path must be stable: ${JSON.stringify(keyFiles2)} vs ${keyName}`);
+    }
+    // Independent compute of expected hex (parity with crypto.subtle SHA-256 of key UTF-8).
+    const expectedHex = Array.from(
+      new Uint8Array(
+        await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(dlKey) as Uint8Array<ArrayBuffer>,
+        ),
+      ),
+      (b) => b.toString(16).padStart(2, "0"),
+    ).join("");
+    if (basename(keyName, ".key") !== expectedHex) {
+      throw new Error(`key path hex mismatch: ${keyName} want ${expectedHex}.key`);
+    }
+    // Different key → different path (and miss until put).
+    const otherKey = uploadPackCacheKey({
+      url: "https://example.com/other.git",
+      wants: ["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+    });
+    if ((await a.getByKey!(otherKey)) !== null) {
+      throw new Error("different key must miss before putKey");
+    }
+    await a.putKey(otherKey, digest);
+    const keyFiles3 = await readdir(join(dir, "keys"));
+    if (keyFiles3.length !== 2) {
+      throw new Error(`two keys must produce two files: ${JSON.stringify(keyFiles3)}`);
+    }
+    if ((await a.getByKey!(otherKey)) !== digest) {
+      throw new Error("otherKey putKey/getByKey roundtrip");
     }
 
     // Fresh instance same dir → durable hit (not process-local memory).
@@ -297,10 +344,55 @@ async function assertStreamPackPath(): Promise<void> {
   if (!streamImportThrew) throw new Error("importPackStream size gate");
 }
 
+/**
+ * Product host_call default: fresh Memory unless MC_GIT_PACK_CACHE_SHARED=1
+ * (then process singleton). Disk via MC_GIT_PACK_CACHE only on shared path.
+ */
+async function assertProductDefaultPackCache(): Promise<void> {
+  const savedShared = process.env.MC_GIT_PACK_CACHE_SHARED;
+  try {
+    delete process.env.MC_GIT_PACK_CACHE_SHARED;
+    if (processPackCacheSharedFromEnv()) {
+      throw new Error("processPackCacheSharedFromEnv must be false when unset");
+    }
+    const a = productDefaultPackCache();
+    const b = productDefaultPackCache();
+    if (!(a instanceof MemoryPackCache) || !(b instanceof MemoryPackCache)) {
+      throw new Error("productDefaultPackCache without SHARED must be MemoryPackCache");
+    }
+    if (a === b) {
+      throw new Error(
+        "productDefaultPackCache without SHARED must return a fresh instance each call",
+      );
+    }
+
+    process.env.MC_GIT_PACK_CACHE_SHARED = "1";
+    if (!processPackCacheSharedFromEnv()) {
+      throw new Error("processPackCacheSharedFromEnv must be true when SHARED=1");
+    }
+    const sharedA = productDefaultPackCache();
+    const sharedB = productDefaultPackCache();
+    if (sharedA !== sharedB) {
+      throw new Error(
+        "productDefaultPackCache with SHARED=1 must use process singleton",
+      );
+    }
+    if (sharedA !== defaultProcessPackCache()) {
+      throw new Error(
+        "productDefaultPackCache with SHARED=1 must be defaultProcessPackCache()",
+      );
+    }
+  } finally {
+    if (savedShared === undefined) delete process.env.MC_GIT_PACK_CACHE_SHARED;
+    else process.env.MC_GIT_PACK_CACHE_SHARED = savedShared;
+  }
+}
+
 async function main() {
   await assertMemoryBasics();
 
   // Process-scoped singleton (Memory when MC_GIT_PACK_CACHE unset at first call).
+  // Explicit callers / LLB / SHARED=1 product path.
   const proc = defaultProcessPackCache();
   if (proc !== defaultProcessPackCache()) {
     throw new Error("defaultProcessPackCache must be process-scoped singleton");
@@ -308,6 +400,7 @@ async function main() {
   const dig = await proc.put(new Uint8Array([9, 9, 9]));
   if (!(await proc.has(dig))) throw new Error("process cache put/has");
 
+  await assertProductDefaultPackCache();
   await assertDiskRoundTrip();
   await assertEnvFactory();
   await assertStreamPackPath();

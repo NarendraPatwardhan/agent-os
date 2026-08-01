@@ -38,6 +38,8 @@ struct ge_engine {
   git_indexer_progress progress;
   /* Accumulated import_pack chunk bytes (cleared on final/reset). */
   size_t pack_bytes;
+  /* GIT.md D31: request-local args.client_token (not process-global). */
+  char client_token[128];
 };
 
 void ge_set_err(ge_engine *e, const char *msg);

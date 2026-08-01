@@ -126,24 +126,28 @@ static char ge_static_oom[] =
     "{\"ok\":false,\"code\":1,\"stdout\":\"\",\"stderr\":\"out of memory\"}";
 
 /* GIT.md D31: optional args.client_token echoed in result.client_token so
- * writers can detect ctl response races against /.git/mc/generation. Set at
- * the start of ge_run_json; cleared on exit. */
-static char g_client_token[128];
+ * writers can detect ctl response races against /.git/mc/generation.
+ * Stored on ge_engine (request-local per engine), not process-global. */
 
-static void clear_client_token(void) { g_client_token[0] = '\0'; }
-
-static void set_client_token_from_args(const char *args) {
-  clear_client_token();
-  if (args)
-    (void)jmin_get_string(args, "client_token", g_client_token, sizeof(g_client_token));
+static void clear_client_token(ge_engine *e) {
+  if (e)
+    e->client_token[0] = '\0';
 }
 
-/* Inject result.client_token into a Response JSON heap string (or leave as-is). */
-static char *attach_client_token(char *resp) {
-  if (!resp || resp == ge_static_oom || !g_client_token[0])
+static void set_client_token_from_args(ge_engine *e, const char *args) {
+  clear_client_token(e);
+  if (e && args)
+    (void)jmin_get_string(args, "client_token", e->client_token, sizeof(e->client_token));
+}
+
+/* Inject result.client_token into a Response JSON heap string (or leave as-is).
+ * Only injects when "result" value is a JSON object `{...}`. Never injects into
+ * arrays (e.g. tips) — strchr-for-`{` would corrupt the first array element. */
+static char *attach_client_token(ge_engine *e, char *resp) {
+  if (!resp || resp == ge_static_oom || !e || !e->client_token[0])
     return resp;
 
-  char *esc = jmin_escape(g_client_token);
+  char *esc = jmin_escape(e->client_token);
   if (!esc)
     return resp;
 
@@ -153,15 +157,18 @@ static char *attach_client_token(char *resp) {
   const char *result_key = strstr(resp, "\"result\":");
 
   if (result_key) {
-    const char *brace = strchr(result_key + 9, '{');
-    if (brace) {
-      size_t prefix = (size_t)(brace - resp) + 1;
+    const char *val = result_key + 9; /* after "result": */
+    while (*val == ' ' || *val == '\t' || *val == '\n' || *val == '\r')
+      val++;
+    /* Object only — never inject into array `[` or primitives. */
+    if (*val == '{') {
+      size_t prefix = (size_t)(val - resp) + 1;
       size_t need = rlen + elen + 32;
       out = (char *)malloc(need);
       if (out) {
         /* Insert "client_token":"…", immediately inside the result object. */
         int n = snprintf(out, need, "%.*s\"client_token\":\"%s\",%s", (int)prefix, resp, esc,
-                         brace + 1);
+                         val + 1);
         if (n < 0 || (size_t)n >= need) {
           free(out);
           out = NULL;
@@ -189,22 +196,22 @@ static char *attach_client_token(char *resp) {
   return resp;
 }
 
-static char *resp_ok(const char *stdout_s, const char *result_json) {
+static char *resp_ok(ge_engine *e, const char *stdout_s, const char *result_json) {
   char *r = jmin_response(1, 0, stdout_s, "", result_json);
   if (!r)
     return ge_static_oom;
-  return attach_client_token(r);
+  return attach_client_token(e, r);
 }
 
-static char *resp_err(int code, const char *stderr_s) {
+static char *resp_err(ge_engine *e, int code, const char *stderr_s) {
   char *r = jmin_response(0, code, "", stderr_s, NULL);
   if (!r)
     return ge_static_oom;
-  return attach_client_token(r);
+  return attach_client_token(e, r);
 }
 
-static char *resp_usage(const char *msg) {
-  return resp_err(2, msg);
+static char *resp_usage(ge_engine *e, const char *msg) {
+  return resp_err(e, 2, msg);
 }
 
 /* Ensure worktree /.git/mc/out/ exists. */
@@ -269,7 +276,7 @@ char *ge_resp_ok_stdout(ge_engine *e, char *stdout_owned, int free_stdout,
   if (n <= limit) {
     /* Non-truncated: remove prior stream file so gitfs does not serve stale body. */
     clear_out_stream(e);
-    r = resp_ok(body, extra_result_json);
+    r = resp_ok(e, body, extra_result_json);
     if (free_stdout)
       free(stdout_owned);
     return r ? r : ge_static_oom;
@@ -344,7 +351,7 @@ char *ge_resp_ok_stdout(ge_engine *e, char *stdout_owned, int free_stdout,
     result_json = result_buf;
   }
 
-  r = resp_ok(preview, result_json);
+  r = resp_ok(e, preview, result_json);
   free(preview);
   if (free_stdout)
     free(stdout_owned);
@@ -1750,22 +1757,22 @@ static int op_fetch_apply(ge_engine *e, const char *args) {
 }
 
 char *ge_run_json(ge_engine *e, const char *request_json) {
-  clear_client_token();
+  clear_client_token(e);
   if (!e)
-    return resp_usage("null engine");
+    return resp_usage(e, "null engine");
   if (!request_json)
-    return resp_usage("null request");
+    return resp_usage(e, "null request");
 
   /* Product request size cap (GIT.md / R93): fail closed, never partial parse. */
   {
     size_t rlen = strlen(request_json);
     if (rlen > GE_REQUEST_MAX_BYTES)
-      return resp_err(2, "request exceeds 1 MiB cap");
+      return resp_err(e, 2, "request exceeds 1 MiB cap");
   }
 
   char op[64];
   if (jmin_get_string(request_json, "op", op, sizeof(op)) != 0 || !op[0])
-    return resp_usage("missing op");
+    return resp_usage(e, "missing op");
 
   /* Normalize op to lowercase. */
   for (char *p = op; *p; p++) {
@@ -1777,49 +1784,49 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
   if (!args)
     args = "{}";
   /* Capture client_token before any op so every Response path can echo it. */
-  set_client_token_from_args(args);
+  set_client_token_from_args(e, args);
 
   /* ── Fail closed: product network dials (engine never dials) ──────────── */
   if (strcmp(op, "clone") == 0 || strcmp(op, "fetch") == 0 || strcmp(op, "pull") == 0 ||
       strcmp(op, "push") == 0) {
-    return resp_err(1, "git: use host-mediated remotes (pack.import / *.apply); "
+    return resp_err(e, 1, "git: use host-mediated remotes (pack.import / *.apply); "
                        "engine must not dial");
   }
 
   /* ── Meta ─────────────────────────────────────────────────────────────── */
   if (strcmp(op, "version") == 0 || strcmp(op, "help") == 0) {
-    char *r = resp_ok(GE_VERSION "\n", NULL);
+    char *r = resp_ok(e, GE_VERSION "\n", NULL);
     return r ? r : ge_static_oom;
   }
 
   /* ── Local porcelain ──────────────────────────────────────────────────── */
   if (strcmp(op, "init") == 0) {
     if (op_init(e) != 0)
-      return resp_err(1, e->err);
-    return resp_ok("Initialized empty Git repository\n", NULL);
+      return resp_err(e, 1, e->err);
+    return resp_ok(e, "Initialized empty Git repository\n", NULL);
   }
 
   if (strcmp(op, "write") == 0) {
     if (op_write(e, args) != 0)
-      return resp_err(1, e->err);
-    return resp_ok("", NULL);
+      return resp_err(e, 1, e->err);
+    return resp_ok(e, "", NULL);
   }
 
   if (strcmp(op, "add") == 0) {
     if (op_add(e, args) != 0)
-      return resp_err(1, e->err);
-    return resp_ok("", NULL);
+      return resp_err(e, 1, e->err);
+    return resp_ok(e, "", NULL);
   }
 
   if (strcmp(op, "commit") == 0) {
     char hash[GIT_OID_HEXSZ + 1];
     if (op_commit(e, args, hash, sizeof(hash)) != 0)
-      return resp_err(1, e->err);
+      return resp_err(e, 1, e->err);
     char result[128];
     snprintf(result, sizeof(result), "{\"hash\":\"%s\"}", hash);
     char stdout_s[160];
     snprintf(stdout_s, sizeof(stdout_s), "[%.7s] commit\n%s\n", hash, hash);
-    char *r = resp_ok(stdout_s, result);
+    char *r = resp_ok(e, stdout_s, result);
     return r ? r : ge_static_oom;
   }
 
@@ -1829,7 +1836,7 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     char *buf = NULL;
     if (op_status(e, short_fmt, &buf) != 0) {
       free(buf);
-      return resp_err(1, e->err);
+      return resp_err(e, 1, e->err);
     }
     return ge_resp_ok_stdout(e, buf, 1, NULL);
   }
@@ -1840,7 +1847,7 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     log_result[0] = '\0';
     if (op_log(e, args, &buf, log_result, sizeof(log_result)) != 0) {
       free(buf);
-      return resp_err(1, e->err);
+      return resp_err(e, 1, e->err);
     }
     /* Always attach count/bounded result; stream path if stdout exceeds embed limit. */
     const char *extra = log_result[0] ? log_result : NULL;
@@ -1850,10 +1857,10 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
   if (strcmp(op, "rev-parse") == 0) {
     char hex[GIT_OID_HEXSZ + 1];
     if (op_rev_parse(e, args, hex, sizeof(hex)) != 0)
-      return resp_err(1, e->err);
+      return resp_err(e, 1, e->err);
     char result[80];
     snprintf(result, sizeof(result), "{\"hash\":\"%s\"}", hex);
-    char *r = resp_ok(hex, result);
+    char *r = resp_ok(e, hex, result);
     return r ? r : ge_static_oom;
   }
 
@@ -1864,40 +1871,40 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     (void)jmin_get_bool(args, "delete", &del);
     if (del) {
       if (op_branch_delete(e, name) != 0)
-        return resp_err(1, e->err);
-      return resp_ok("", NULL);
+        return resp_err(e, 1, e->err);
+      return resp_ok(e, "", NULL);
     }
     if (name[0]) {
       if (op_branch_create(e, name) != 0)
-        return resp_err(1, e->err);
-      return resp_ok("", NULL);
+        return resp_err(e, 1, e->err);
+      return resp_ok(e, "", NULL);
     }
     char buf[4096];
     if (op_branch_list(e, buf, sizeof(buf)) != 0)
-      return resp_err(1, e->err);
-    char *r = resp_ok(buf, NULL);
+      return resp_err(e, 1, e->err);
+    char *r = resp_ok(e, buf, NULL);
     return r ? r : ge_static_oom;
   }
 
   if (strcmp(op, "checkout") == 0 || strcmp(op, "switch") == 0) {
     char name[256];
     if (jmin_get_string(args, "name", name, sizeof(name)) != 0)
-      return resp_usage("checkout: name required");
+      return resp_usage(e, "checkout: name required");
     if (op_checkout(e, name) != 0)
-      return resp_err(1, e->err);
-    return resp_ok("", NULL);
+      return resp_err(e, 1, e->err);
+    return resp_ok(e, "", NULL);
   }
 
   if (strcmp(op, "rm") == 0) {
     if (op_rm(e, args) != 0)
-      return resp_err(1, e->err);
-    return resp_ok("", NULL);
+      return resp_err(e, 1, e->err);
+    return resp_ok(e, "", NULL);
   }
   if (strcmp(op, "diff") == 0) {
     char *buf = NULL;
     if (op_diff(e, args, &buf) != 0) {
       free(buf);
-      return resp_err(1, e->err);
+      return resp_err(e, 1, e->err);
     }
     return ge_resp_ok_stdout(e, buf, 1, NULL);
   }
@@ -1905,47 +1912,47 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     char *buf = NULL;
     if (op_show(e, args, &buf) != 0) {
       free(buf);
-      return resp_err(1, e->err);
+      return resp_err(e, 1, e->err);
     }
     return ge_resp_ok_stdout(e, buf, 1, NULL);
   }
   if (strcmp(op, "reset") == 0) {
     if (op_reset(e, args) != 0)
-      return resp_err(1, e->err);
-    return resp_ok("", NULL);
+      return resp_err(e, 1, e->err);
+    return resp_ok(e, "", NULL);
   }
   if (strcmp(op, "tag") == 0) {
     if (op_tag(e, args) != 0)
-      return resp_err(1, e->err);
-    return resp_ok("", NULL);
+      return resp_err(e, 1, e->err);
+    return resp_ok(e, "", NULL);
   }
   if (strcmp(op, "config") == 0) {
     char buf[4096] = "";
     if (op_config(e, args, buf, sizeof(buf)) != 0)
-      return resp_err(1, e->err);
-    char *r = resp_ok(buf, NULL);
+      return resp_err(e, 1, e->err);
+    char *r = resp_ok(e, buf, NULL);
     return r ? r : ge_static_oom;
   }
   if (strcmp(op, "remote") == 0) {
     char buf[8192] = "";
     if (op_remote(e, args, buf, sizeof(buf)) != 0)
-      return resp_err(1, e->err);
-    char *r = resp_ok(buf, NULL);
+      return resp_err(e, 1, e->err);
+    char *r = resp_ok(e, buf, NULL);
     return r ? r : ge_static_oom;
   }
   /* ── Host-mediated remotes / pack (no dial) ───────────────────────────── */
   if (strcmp(op, "tips") == 0) {
     char tips[16384];
     if (op_tips(e, tips, sizeof(tips)) != 0)
-      return resp_err(1, e->err);
-    char *r = resp_ok("", tips);
+      return resp_err(e, 1, e->err);
+    char *r = resp_ok(e, "", tips);
     return r ? r : ge_static_oom;
   }
 
   if (strcmp(op, "refs.import") == 0) {
     if (op_refs_import(e, args) != 0)
-      return resp_err(1, e->err);
-    return resp_ok("", NULL);
+      return resp_err(e, 1, e->err);
+    return resp_ok(e, "", NULL);
   }
 
   if (strcmp(op, "pack.import") == 0) {
@@ -1953,54 +1960,54 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     (void)jmin_get_bool(args, "final", &final);
     if (final) {
       if (ge_import_pack(e, NULL, 0, 1) != 0)
-        return resp_err(1, e->err);
+        return resp_err(e, 1, e->err);
     }
-    return resp_ok("", NULL);
+    return resp_ok(e, "", NULL);
   }
 
   if (strcmp(op, "pack.build") == 0 || strcmp(op, "pack.export") == 0) {
     char result[512];
     if (op_pack_build(e, args, result, sizeof(result)) != 0)
-      return resp_err(1, e->err);
-    char *r = resp_ok("", result);
+      return resp_err(e, 1, e->err);
+    char *r = resp_ok(e, "", result);
     return r ? r : ge_static_oom;
   }
 
   if (strcmp(op, "clone.apply") == 0) {
     if (op_clone_apply(e, args) != 0)
-      return resp_err(1, e->err);
-    return resp_ok("", NULL);
+      return resp_err(e, 1, e->err);
+    return resp_ok(e, "", NULL);
   }
 
   if (strcmp(op, "fetch.apply") == 0) {
     if (op_fetch_apply(e, args) != 0)
-      return resp_err(1, e->err);
-    return resp_ok("", NULL);
+      return resp_err(e, 1, e->err);
+    return resp_ok(e, "", NULL);
   }
 
   if (strcmp(op, "push.prepare") == 0) {
     char result[16384];
     if (op_push_prepare(e, result, sizeof(result)) != 0)
-      return resp_err(1, e->err);
-    char *r = resp_ok("", result);
+      return resp_err(e, 1, e->err);
+    char *r = resp_ok(e, "", result);
     return r ? r : ge_static_oom;
   }
   if (strcmp(op, "push.complete") == 0) {
     if (op_push_complete(e, args) != 0)
-      return resp_err(1, e->err);
-    return resp_ok("", NULL);
+      return resp_err(e, 1, e->err);
+    return resp_ok(e, "", NULL);
   }
 
   /* ── Sparse cone ──────────────────────────────────────────────────────── */
   if (strcmp(op, "sparse-set") == 0 || strcmp(op, "sparse.set") == 0) {
     if (op_sparse_set(e, args) != 0)
-      return resp_err(1, e->err);
-    return resp_ok("", NULL);
+      return resp_err(e, 1, e->err);
+    return resp_ok(e, "", NULL);
   }
   if (strcmp(op, "sparse-disable") == 0 || strcmp(op, "sparse.disable") == 0) {
     if (op_sparse_disable(e, args) != 0)
-      return resp_err(1, e->err);
-    return resp_ok("", NULL);
+      return resp_err(e, 1, e->err);
+    return resp_ok(e, "", NULL);
   }
 
   /* ── Submodules (list/status only; network ops via host orch) ─────────── */
@@ -2017,7 +2024,7 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
       char *list = NULL;
       if (op_submodule_list(e, &list) != 0) {
         free(list);
-        return resp_err(1, e->err);
+        return resp_err(e, 1, e->err);
       }
       /* result is JSON array; stdout is one-line summary. */
       char *result = NULL;
@@ -2030,11 +2037,11 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
       free(list);
       if (!result)
         return ge_static_oom;
-      char *r = resp_ok("", result);
+      char *r = resp_ok(e, "", result);
       free(result);
       return r ? r : ge_static_oom;
     }
-    return resp_err(
+    return resp_err(e, 
         1,
         "git: submodule network ops require host_call git + orchestrator "
         "(host-mediated: list-only on engine; update/init/clone via orch — "
@@ -2044,9 +2051,9 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
   /* Local-only stage gitlink (mode 160000). No network. */
   if (strcmp(op, "gitlink") == 0) {
     if (op_gitlink(e, args) != 0)
-      return resp_err(1, e->err);
-    return resp_ok("", NULL);
+      return resp_err(e, 1, e->err);
+    return resp_ok(e, "", NULL);
   }
 
-  return resp_usage("unknown op (fail closed)");
+  return resp_usage(e, "unknown op (fail closed)");
 }

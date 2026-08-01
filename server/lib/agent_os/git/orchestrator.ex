@@ -56,11 +56,17 @@ defmodule AgentOS.Git.Orchestrator do
   * `:read_only` — when `true`, push is rejected with a stable read-only error
   * `:pack_cache` — pack cache selection (credentials never in keys):
     - pid — explicit `AgentOS.Git.PackCache` Agent
-    - `:default` / `true` — process singleton; **disk** when env
-      `AGENTOS_GIT_PACK_CACHE` is set, else in-memory
+    - `:default` / `true` — **product default** (`product_default_cache/0`):
+      fresh per-caller Memory unless shared opt-in
+      (`AGENTOS_GIT_PACK_CACHE_SHARED=1` → process Memory/Disk, or
+      `AGENTOS_GIT_PACK_CACHE` dir alone for single-tenant disk). Multi-tenant
+      must not set SHARED or a shared disk dir across tenants.
+    - `:process` / `:shared` — process-scoped singleton
+      (`default_process_cache/0`); **disk** when `AGENTOS_GIT_PACK_CACHE` set
     - `:disk` — disk cache at `AGENTOS_GIT_PACK_CACHE`
     - `{:disk, dir}` / bare dir string — disk cache at `dir`
-    - Omit / `nil` / `false` — disabled
+    - Omit / `nil` / `false` — disabled (direct orch; product host path
+      typically passes `:default`)
     Download-key is url+wants+haves+depth+filter only — **never** auth.
   * `:require_approval` — when `true`, push must be approved (R31); also set
     when a matching policy action is `require_approval`
@@ -491,7 +497,7 @@ defmodule AgentOS.Git.Orchestrator do
 
     case result do
       {:error, :not_fast_forward} ->
-        {:ok, response(false, 1, "", "git: not fast-forward\n")}
+        {:ok, response(false, 1, "", AgentOS.Contracts.Git.stderr_line(:not_fast_forward))}
 
       other ->
         map_remote_error_if_needed(other, :fetch)
@@ -588,10 +594,18 @@ defmodule AgentOS.Git.Orchestrator do
       pid when is_pid(pid) ->
         pid
 
+      # Product default: fresh Memory unless SHARED=1 or disk env (multi-tenant safer).
       :default ->
-        PackCache.default_process_cache()
+        PackCache.product_default_cache()
 
       true ->
+        PackCache.product_default_cache()
+
+      # Explicit process-global share (LLB / single-tenant; or pass pid from caller).
+      :process ->
+        PackCache.default_process_cache()
+
+      :shared ->
         PackCache.default_process_cache()
 
       :disk ->
@@ -812,10 +826,25 @@ defmodule AgentOS.Git.Orchestrator do
         {:ok, response(false, 1, "", @push_blocked <> "\n")}
 
       {:error, :empty_pack} ->
-        {:ok, response(false, 1, "", "git: empty pack from remote\n")}
+        {:ok,
+         response(
+           false,
+           1,
+           "",
+           AgentOS.Contracts.Git.stderr_line(:empty_pack, "from remote")
+         )}
 
       {:error, :empty_push_pack} ->
-        {:ok, response(false, 1, "", "git: empty pack refused for non-delete push\n")}
+        {:ok,
+         response(
+           false,
+           1,
+           "",
+           AgentOS.Contracts.Git.stderr_line(
+             :empty_pack,
+             "refused for non-delete push"
+           )
+         )}
 
       {:error, :push_pack_magic} ->
         {:ok, response(false, 1, "", "git: push pack missing PACK magic\n")}
