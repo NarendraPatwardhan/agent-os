@@ -89,16 +89,16 @@ const vm = await mc.create({
 The catalog compiler is not guest code and is not part of an image. It is pure host-side WebAssembly
 used to project API descriptions and tool definitions into the guest catalog.
 
-Host git is opt-in. Pass a directory URL of the extracted engine (contains `git_engine.mjs`,
-`git_engine.wasm`, and libgit2 NOTICE texts):
+Host git is opt-in. After install, `source agent-os/env.sh` (or set `AGENTOS_DIR` /
+`MC_GIT_ENGINE_TAR`) and pass `git: true` or a config object:
 
 ```js
-import { pathToFileURL } from "node:url";
+import { defaultImage, defaultKernel, mc } from "@mc/core";
 
 const vm = await mc.create({
   kernel: await defaultKernel(),
-  image: await defaultImage(),
-  git: pathToFileURL("./agent-os/git-engine/").href,
+  image: await defaultImage(), // or image: "loom" when AGENTOS_DIR has loom.tar
+  git: true,
 });
 ```
 

@@ -146,7 +146,7 @@ AgentOS is a WebAssembly computer you drive from the host through the `mc` API e
 `mc-core.mjs` (the `@mc/core` bundle). It is the agent's own working machine, not a generic
 command runner. Use the release artifacts installed alongside this file — `mc-core.mjs`,
 `kernel.wasm`, one image `.tar`, `catalog-compiler.wasm` (when a VM uses connections), and
-`git-engine/` (host git for `mc.create({ git })`) — and rebuild from source only when
+`git-engine.tar` (host git for `mc.create({ git: true })`) — and rebuild from source only when
 changing AgentOS itself.
 
 ## Images
@@ -214,9 +214,8 @@ Nothing ambient exists — no network, secrets, mounts, or host tools — until 
   catalog-compiler.wasm — pass its bytes as
   `catalogCompiler: new Uint8Array(readFileSync("./agent-os/catalog-compiler.wasm"))`. A plain VM
   (exec/luau/fs) never needs it.
-- Host git (opt-in): `mc.create({ git: pathToFileURL("./agent-os/git-engine/").href, … })` —
-  the installer extracts `git-engine.tar` to `git-engine/` (mjs + wasm + NOTICE). Omit `git` when
-  unused. Remotes need CAP_NET + connections; see docs/git.md.
+- Host git (opt-in): `mc.create({ git: true, … })` after `source env.sh` (or set `MC_GIT_ENGINE_TAR`).
+  Installer ships `git-engine.tar`. Remotes need CAP_NET + connections; see docs/git.md.
 - Network / mounts: `mc.create({ net: true, permissions: { network: "allow" }, mounts: [...] })`.
 
 ## Live agent sessions
@@ -281,10 +280,11 @@ Quickstart (Bun / Node 22+):
   import { mc } from "${d}/mc-core.mjs";
   import { readFileSync } from "node:fs";
   import { pathToFileURL } from "node:url";
+  // Prefer: source ${d}/env.sh  then omit kernel/image paths.
   const vm = await mc.create({
     kernel: new Uint8Array(readFileSync("${d}/kernel.wasm")),
     image:  new Uint8Array(readFileSync("${d}/${image_asset}")),
-    // optional host git: git: pathToFileURL("${d}/git-engine/").href,
+    // optional: git: true,
     deterministic: true,
   });
   try { console.log((await vm.exec("echo hello from AgentOS")).stdout); }
@@ -345,7 +345,7 @@ download_asset "$BASE_URL" "catalog-compiler.wasm" "${ABS_DIR}/catalog-compiler.
 download_asset "$BASE_URL" "$IMAGE_ASSET" "${ABS_DIR}/${IMAGE_ASSET}"
 download_asset "$BASE_URL" "git-engine.tar" "${ABS_DIR}/git-engine.tar"
 
-# Flat release tar → git-engine/ for mc.create({ git: …/git-engine/ })
+# Optional extract for inspection; product resolve uses the tar bytes.
 rm -rf "${ABS_DIR}/git-engine"
 mkdir -p "${ABS_DIR}/git-engine"
 if ! tar -xf "${ABS_DIR}/git-engine.tar" -C "${ABS_DIR}/git-engine"; then
@@ -354,6 +354,35 @@ fi
 if [ ! -f "${ABS_DIR}/git-engine/git_engine.mjs" ] || [ ! -f "${ABS_DIR}/git-engine/git_engine.wasm" ]; then
   die "git-engine.tar missing git_engine.mjs or git_engine.wasm after extract"
 fi
+
+# Seed local artifact cache + env for clean mc.create (no path laundry).
+CACHE_DIR="${ABS_DIR}/.artifact-cache"
+mkdir -p "${CACHE_DIR}/blobs" "${CACHE_DIR}/keys"
+cat >"${ABS_DIR}/env.sh" <<ENV
+# Source before running AgentOS:  . ${ABS_DIR}/env.sh
+export AGENTOS_DIR="${ABS_DIR}"
+export MC_ARTIFACT_HOME="${ABS_DIR}"
+export MC_KERNEL_WASM="${ABS_DIR}/kernel.wasm"
+export MC_BASE_IMAGE="${ABS_DIR}/${IMAGE_ASSET}"
+export MC_CATALOG_COMPILER_WASM="${ABS_DIR}/catalog-compiler.wasm"
+export MC_GIT_ENGINE_TAR="${ABS_DIR}/git-engine.tar"
+export MC_ARTIFACT_CACHE="${CACHE_DIR}"
+# Fetch stays off unless you set MC_ARTIFACT_FETCH=1
+ENV
+
+cat >"${ABS_DIR}/manifest.json" <<MAN
+{
+  "version": "${VERSION:-latest}",
+  "dir": "${ABS_DIR}",
+  "assets": {
+    "mc-core": "mc-core.mjs",
+    "kernel": "kernel.wasm",
+    "catalog-compiler": "catalog-compiler.wasm",
+    "git-engine": "git-engine.tar",
+    "image": "${IMAGE_ASSET}"
+  }
+}
+MAN
 
 if [ "$MODE" = "agentic" ]; then
   write_agent_skill "$ABS_DIR" >/dev/null

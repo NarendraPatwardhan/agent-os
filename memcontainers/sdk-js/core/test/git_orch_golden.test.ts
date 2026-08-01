@@ -5,7 +5,6 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
 import {
   FixtureSmartHttp,
   GitEngine,
@@ -82,20 +81,19 @@ const RESPONSE_SCHEMA_NAME = "response_schema.json";
 
 const REQUIRED_RESPONSE_KEYS = ["ok", "code", "stdout", "stderr"] as const;
 
-function engineDir(): string {
-  const jsRel = process.env.MC_GIT_ENGINE_JS || "";
+function engineTar(): Uint8Array {
+  const rel = process.env.MC_GIT_ENGINE_TAR || "";
+  if (!rel) throw new Error("MC_GIT_ENGINE_TAR is not set (run under bazel test)");
   const rf = process.env.RUNFILES_DIR;
   const candidates = [
-    jsRel && rf ? join(rf, jsRel) : "",
-    jsRel && rf ? join(rf, "_main", jsRel) : "",
-    jsRel,
-    join(process.cwd(), "bazel-bin/memcontainers/lib/git-engine/git_engine.mjs"),
-  ];
+    rel && rf ? join(rf, rel) : "",
+    rel && rf ? join(rf, "_main", rel) : "",
+    rel,
+  ].filter(Boolean);
   for (const c of candidates) {
-    if (c && existsSync(c)) return dirname(c);
-    if (c && existsSync(join(c, "git_engine.mjs"))) return c;
+    if (c && existsSync(c)) return new Uint8Array(readFileSync(c));
   }
-  throw new Error(`engine dir not found (MC_GIT_ENGINE_JS=${jsRel})`);
+  throw new Error(`git-engine.tar not found (MC_GIT_ENGINE_TAR=${rel})`);
 }
 
 function orchDir(): string {
@@ -183,7 +181,7 @@ function assertNotContains(hay: string, needles: string[] | undefined, label: st
   }
 }
 
-async function runGolden(dir: string, engBase: string, name: string): Promise<void> {
+async function runGolden(dir: string, name: string): Promise<void> {
   const goldenPath = join(dir, name);
   if (!existsSync(goldenPath)) throw new Error(`missing golden ${goldenPath}`);
   const golden = JSON.parse(readText(goldenPath)) as Golden;
@@ -191,7 +189,7 @@ async function runGolden(dir: string, engBase: string, name: string): Promise<vo
   const pack = loadFixturePack(goldenPath, fixture);
   const refs = loadRefs(goldenPath, fixture);
 
-  const eng = await GitEngine.load({ baseUrl: engBase });
+  const eng = await GitEngine.load({ engine: engineTar() });
   const http = new FixtureSmartHttp();
   http.add(fixture.url, refs, pack);
 
@@ -286,7 +284,7 @@ function assertResponseShape(resp: {
 }
 
 /** D33 — catalog stderr prefixes for unknown connection / empty pack / origin deny. */
-async function runResponseSchema(dir: string, engBase: string): Promise<void> {
+async function runResponseSchema(dir: string): Promise<void> {
   const schemaPath = join(dir, RESPONSE_SCHEMA_NAME);
   if (!existsSync(schemaPath)) {
     throw new Error(`missing ${RESPONSE_SCHEMA_NAME} at ${schemaPath}`);
@@ -320,7 +318,7 @@ async function runResponseSchema(dir: string, engBase: string): Promise<void> {
   );
 
   for (const sample of schema.samples) {
-    const eng = await GitEngine.load({ baseUrl: engBase });
+    const eng = await GitEngine.load({ engine: engineTar() });
     const http = new FixtureSmartHttp();
     const fix = sample.fixture;
     if (fix) {
@@ -364,15 +362,13 @@ async function runResponseSchema(dir: string, engBase: string): Promise<void> {
 
 async function main() {
   const dir = orchDir();
-  const engDir = engineDir();
-  const baseUrl = pathToFileURL(engDir.endsWith("/") ? engDir : engDir + "/").href;
   console.log(`git_orch_golden: orch=${dir}`);
 
   for (const name of GOLDEN_NAMES) {
-    await runGolden(dir, baseUrl, name);
+    await runGolden(dir, name);
   }
 
-  await runResponseSchema(dir, baseUrl);
+  await runResponseSchema(dir);
 
   console.log("git_orch_golden.test SUCCESS");
 }

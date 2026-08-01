@@ -1,28 +1,397 @@
-// Default kernel + base-image loading for the local embedded backend, read via env vars so it works
-// under both Node and Bun (no `Bun.file`) and against the Bazel-built artifacts (which have no single
-// fixed source path). A browser caller passes `opts.kernel` + `opts.image` bytes directly (no
-// filesystem). Point these at the built artifacts via MC_KERNEL_WASM / MC_BASE_IMAGE, or pass
-// `opts.kernel` / `opts.image` to `mc.create`. The Node filesystem import is lazy so browser imports of
-// `@mc/core` stay valid when artifacts are provided by the caller.
+/**
+ * Runtime artifacts: resolve kernel / flavor tars / catalog-compiler / git-engine.tar.
+ *
+ * Order: explicit bytes → env path → $AGENTOS_DIR → cache → optional fetch → fail closed.
+ * Git product form is tar bytes; emcc materialize to a cache dir is private.
+ */
 
-async function readEnvArtifact(envVar: string, what: string, optsKey: string): Promise<Uint8Array> {
-  const path = typeof process === "undefined" ? undefined : process.env[envVar];
-  if (!path) {
+import { createHash } from "node:crypto";
+import {
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+
+// ── kinds ───────────────────────────────────────────────────────────────────
+
+export type ArtifactKind =
+  | "kernel"
+  | "catalog-compiler"
+  | "git-engine"
+  | `image:${string}`;
+
+const FLAVOR_RE = /^(minimal|posix|loom|atlas|paper)$/;
+
+export function imageKind(flavor: string): ArtifactKind {
+  const f = flavor.replace(/\.tar$/, "");
+  if (!FLAVOR_RE.test(f)) {
     throw new Error(
-      `${what} not available: set ${envVar} to the built artifact path, or pass it as ` +
-        `mc.create({ ${optsKey}: <Uint8Array> }).`,
+      `unknown image flavor ${JSON.stringify(flavor)} (expected minimal|posix|loom|atlas|paper)`,
     );
   }
-  const { readFileSync } = await import("node:fs");
+  return `image:${f}`;
+}
+
+function assetFileName(kind: ArtifactKind): string {
+  if (kind === "kernel") return "kernel.wasm";
+  if (kind === "catalog-compiler") return "catalog-compiler.wasm";
+  if (kind === "git-engine") return "git-engine.tar";
+  if (kind.startsWith("image:")) return `${kind.slice("image:".length)}.tar`;
+  throw new Error(`unknown artifact kind ${kind}`);
+}
+
+function envPathFor(kind: ArtifactKind): string | undefined {
+  if (kind === "kernel") return env("MC_KERNEL_WASM");
+  if (kind === "catalog-compiler") return env("MC_CATALOG_COMPILER_WASM");
+  if (kind === "git-engine") return env("MC_GIT_ENGINE_TAR");
+  if (kind.startsWith("image:")) {
+    const flavor = kind.slice("image:".length);
+    const base = env("MC_BASE_IMAGE");
+    if (base && (base.endsWith(`${flavor}.tar`) || base.endsWith(`/${flavor}.tar`))) return base;
+    if (base && flavor === defaultFlavorFromEnv(base)) return base;
+    return undefined;
+  }
+  return undefined;
+}
+
+function defaultFlavorFromEnv(basePath: string): string | undefined {
+  const m = basePath.match(/(minimal|posix|loom|atlas|paper)\.tar$/);
+  return m?.[1];
+}
+
+function env(name: string): string | undefined {
+  if (typeof process === "undefined") return undefined;
+  const v = process.env[name];
+  return v && v.trim() ? v.trim() : undefined;
+}
+
+function fetchEnabled(): boolean {
+  const v = env("MC_ARTIFACT_FETCH");
+  return v === "1" || v === "true";
+}
+
+export function artifactCacheRoot(): string {
+  const explicit = env("MC_ARTIFACT_CACHE");
+  if (explicit) return explicit;
+  // Bazel/hermetic tests
+  const testTmp = env("TEST_TMPDIR");
+  if (testTmp) return join(testTmp, "agentos-artifacts");
+  const xdg = env("XDG_CACHE_HOME");
+  if (xdg) return join(xdg, "agentos", "artifacts");
+  return join(homedir(), ".cache", "agentos", "artifacts");
+}
+
+function installRoots(): string[] {
+  const roots: string[] = [];
+  const a = env("AGENTOS_DIR") || env("MC_ARTIFACT_HOME");
+  if (a) roots.push(a);
+  return roots;
+}
+
+export function sha256Hex(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function readFileBytes(path: string): Uint8Array {
   return new Uint8Array(readFileSync(path));
 }
 
-/** The kernel.wasm bytes (from $MC_KERNEL_WASM). */
-export async function defaultKernel(): Promise<Uint8Array> {
-  return readEnvArtifact("MC_KERNEL_WASM", "kernel.wasm", "kernel");
+function ensureDir(path: string): void {
+  mkdirSync(path, { recursive: true });
 }
 
-/** The default base image / base.tar (from $MC_BASE_IMAGE). */
+const inflight = new Map<string, Promise<Uint8Array>>();
+
+export type ResolveOptions = {
+  bytes?: Uint8Array;
+};
+
+/** Resolve a single-file runtime artifact to bytes. */
+export async function resolveArtifact(
+  kind: ArtifactKind,
+  opts: ResolveOptions = {},
+): Promise<Uint8Array> {
+  if (opts.bytes) return opts.bytes.slice();
+
+  const key = `resolve:${kind}`;
+  const hit = inflight.get(key);
+  if (hit) return (await hit).slice();
+
+  const p = doResolve(kind).finally(() => inflight.delete(key));
+  inflight.set(key, p);
+  return (await p).slice();
+}
+
+async function doResolve(kind: ArtifactKind): Promise<Uint8Array> {
+  const tried: string[] = [];
+  const name = assetFileName(kind);
+
+  const ep = envPathFor(kind);
+  if (ep) {
+    tried.push(`env ${envNameFor(kind)}=${ep}`);
+    if (existsSync(ep)) return readFileBytes(ep);
+    tried.push(`(missing file)`);
+  } else {
+    tried.push(`env ${envNameFor(kind)} unset`);
+  }
+
+  for (const root of installRoots()) {
+    const path = join(root, name);
+    tried.push(`install ${path}`);
+    if (existsSync(path)) return readFileBytes(path);
+  }
+  if (installRoots().length === 0) tried.push("AGENTOS_DIR / MC_ARTIFACT_HOME unset");
+
+  const cacheRoot = artifactCacheRoot();
+  const version = env("MC_ARTIFACT_VERSION") || "local";
+  const keyFile = join(cacheRoot, "keys", `${kind.replace(":", "_")}-${version}`);
+  tried.push(`cache key ${keyFile}`);
+  if (existsSync(keyFile)) {
+    const digest = readFileSync(keyFile, "utf8").trim();
+    const blob = join(cacheRoot, "blobs", digest);
+    if (existsSync(blob)) return readFileBytes(blob);
+  }
+
+  if (fetchEnabled()) {
+    tried.push("fetch enabled");
+    const bytes = await fetchArtifact(name);
+    await publishBlob(kind, bytes, version);
+    return bytes;
+  }
+  tried.push("fetch off (set MC_ARTIFACT_FETCH=1 to allow network)");
+
+  throw new Error(
+    `${name} not available (${kind}).\n` +
+      `Looked at:\n  - ${tried.join("\n  - ")}\n` +
+      `Fix: pass explicit bytes, set ${envNameFor(kind)}, set AGENTOS_DIR, ` +
+      `or MC_ARTIFACT_FETCH=1 with MC_ARTIFACT_VERSION / MC_ARTIFACT_SOURCE.`,
+  );
+}
+
+function envNameFor(kind: ArtifactKind): string {
+  if (kind === "kernel") return "MC_KERNEL_WASM";
+  if (kind === "catalog-compiler") return "MC_CATALOG_COMPILER_WASM";
+  if (kind === "git-engine") return "MC_GIT_ENGINE_TAR";
+  if (kind.startsWith("image:")) return "MC_BASE_IMAGE (or AGENTOS_DIR/<flavor>.tar)";
+  return "MC_ARTIFACT";
+}
+
+async function publishBlob(kind: ArtifactKind, bytes: Uint8Array, version: string): Promise<string> {
+  const digest = sha256Hex(bytes);
+  const cacheRoot = artifactCacheRoot();
+  const blobDir = join(cacheRoot, "blobs");
+  const keyDir = join(cacheRoot, "keys");
+  ensureDir(blobDir);
+  ensureDir(keyDir);
+  const blobPath = join(blobDir, digest);
+  if (!existsSync(blobPath)) {
+    const tmp = join(blobDir, `.${digest}.${process.pid}.tmp`);
+    writeFileSync(tmp, bytes);
+    try {
+      renameSync(tmp, blobPath);
+    } catch (e) {
+      const err = e as NodeJS.ErrnoException;
+      if (err?.code !== "EXDEV") throw e;
+      writeFileSync(blobPath, bytes);
+      try {
+        rmSync(tmp, { force: true });
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+  writeFileSync(join(keyDir, `${kind.replace(":", "_")}-${version}`), `${digest}\n`);
+  return digest;
+}
+
+async function fetchArtifact(name: string): Promise<Uint8Array> {
+  const version = env("MC_ARTIFACT_VERSION");
+  const source = env("MC_ARTIFACT_SOURCE");
+  let base: string;
+  if (source) {
+    base = source.endsWith("/") ? source : source + "/";
+  } else if (version) {
+    base = `https://github.com/NarendraPatwardhan/agent-os/releases/download/${version}/`;
+  } else {
+    base = `https://github.com/NarendraPatwardhan/agent-os/releases/latest/download/`;
+  }
+  const url = new URL(name, base).href;
+  const res = await fetch(url);
+  if (!res.ok) {
+    throw new Error(`fetch ${url} failed: HTTP ${res.status} ${res.statusText}`);
+  }
+  const bytes = new Uint8Array(await res.arrayBuffer());
+
+  try {
+    const sumsUrl = new URL("SHA256SUMS", base).href;
+    const sumsRes = await fetch(sumsUrl);
+    if (sumsRes.ok) {
+      const text = await sumsRes.text();
+      const expect = parseSha256Sums(text).get(name);
+      if (expect) {
+        const got = sha256Hex(bytes);
+        if (got !== expect) {
+          throw new Error(
+            `SHA256 mismatch for ${name}: got ${got}, expected ${expect} (from ${sumsUrl})`,
+          );
+        }
+      }
+    }
+  } catch (e) {
+    if (e instanceof Error && e.message.includes("SHA256 mismatch")) throw e;
+  }
+  return bytes;
+}
+
+function parseSha256Sums(text: string): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const line of text.split("\n")) {
+    const t = line.trim();
+    if (!t || t.startsWith("#")) continue;
+    const match = t.match(/^([0-9a-fA-F]{64})\s+\*?(\S+)\s*$/);
+    if (match) m.set(match[2]!, match[1]!.toLowerCase());
+  }
+  return m;
+}
+
+export async function resolveKernel(bytes?: Uint8Array): Promise<Uint8Array> {
+  return resolveArtifact("kernel", { bytes });
+}
+
+export async function resolveCatalogCompiler(bytes?: Uint8Array): Promise<Uint8Array> {
+  return resolveArtifact("catalog-compiler", { bytes });
+}
+
+export async function resolveImageTar(flavor: string, bytes?: Uint8Array): Promise<Uint8Array> {
+  return resolveArtifact(imageKind(flavor), { bytes });
+}
+
+export async function resolveGitEngineTar(bytes?: Uint8Array): Promise<Uint8Array> {
+  return resolveArtifact("git-engine", { bytes });
+}
+
+const materializeInflight = new Map<string, Promise<string>>();
+
+/** Extract git-engine.tar under the artifact cache; return absolute dir path. */
+export async function materializeGitEngineDir(tarBytes: Uint8Array): Promise<string> {
+  const digest = sha256Hex(tarBytes);
+  const hit = materializeInflight.get(digest);
+  if (hit) return hit;
+
+  const p = doMaterialize(tarBytes, digest).finally(() => materializeInflight.delete(digest));
+  materializeInflight.set(digest, p);
+  return p;
+}
+
+async function doMaterialize(tarBytes: Uint8Array, digest: string): Promise<string> {
+  const dest = join(artifactCacheRoot(), "dirs", "git-engine", digest);
+  if (existsSync(join(dest, "git_engine.mjs")) && existsSync(join(dest, "git_engine.wasm"))) {
+    return dest;
+  }
+
+  ensureDir(join(artifactCacheRoot(), "dirs", "git-engine"));
+  const tmpParent = mkdtempSync(join(tmpdir(), "agentos-git-engine-"));
+  const tmpDir = join(tmpParent, "out");
+  ensureDir(tmpDir);
+  const tarPath = join(tmpParent, "git-engine.tar");
+  try {
+    writeFileSync(tarPath, tarBytes);
+    await extractTar(tarPath, tmpDir);
+    if (!existsSync(join(tmpDir, "git_engine.mjs")) || !existsSync(join(tmpDir, "git_engine.wasm"))) {
+      throw new Error("git-engine.tar missing git_engine.mjs or git_engine.wasm after extract");
+    }
+    if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
+    try {
+      renameSync(tmpDir, dest);
+    } catch (e) {
+      const err = e as NodeJS.ErrnoException;
+      if (err?.code !== "EXDEV") throw e;
+      cpSync(tmpDir, dest, { recursive: true });
+    }
+  } finally {
+    rmSync(tmpParent, { recursive: true, force: true });
+  }
+  return dest;
+}
+
+async function extractTar(tarPath: string, destDir: string): Promise<void> {
+  const { spawn } = await import("node:child_process");
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn("tar", ["-xf", tarPath, "-C", destDir], {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let err = "";
+    child.stderr?.on("data", (c: Buffer) => {
+      err += c.toString();
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`tar -xf failed (${code}): ${err}`));
+    });
+  });
+}
+
+/** Resolve git-engine.tar, materialize, return file URL for GitBridge (internal). */
+export async function resolveGitEngineBaseUrl(engineTar?: Uint8Array): Promise<string> {
+  const tar = await resolveGitEngineTar(engineTar);
+  const dir = await materializeGitEngineDir(tar);
+  return pathToFileURL(dir.endsWith("/") ? dir : dir + "/").href;
+}
+
+export async function seedArtifactCacheFromDir(
+  installDir: string,
+  version = "local",
+): Promise<void> {
+  const names = [
+    "kernel.wasm",
+    "catalog-compiler.wasm",
+    "git-engine.tar",
+    "minimal.tar",
+    "posix.tar",
+    "loom.tar",
+    "atlas.tar",
+    "paper.tar",
+  ] as const;
+  for (const name of names) {
+    const path = join(installDir, name);
+    if (!existsSync(path)) continue;
+    const bytes = readFileBytes(path);
+    let kind: ArtifactKind;
+    if (name === "kernel.wasm") kind = "kernel";
+    else if (name === "catalog-compiler.wasm") kind = "catalog-compiler";
+    else if (name === "git-engine.tar") kind = "git-engine";
+    else kind = imageKind(name.replace(/\.tar$/, ""));
+    await publishBlob(kind, bytes, version);
+  }
+}
+
+/** Kernel.wasm (env → AGENTOS_DIR → cache → optional fetch). */
+export async function defaultKernel(): Promise<Uint8Array> {
+  return resolveKernel();
+}
+
+/** Default image tar: MC_BASE_IMAGE flavor, else posix under install/cache. */
 export async function defaultImage(): Promise<Uint8Array> {
-  return readEnvArtifact("MC_BASE_IMAGE", "base image", "image");
+  const path = typeof process !== "undefined" ? process.env.MC_BASE_IMAGE?.trim() : undefined;
+  if (path) {
+    const m = path.match(/(minimal|posix|loom|atlas|paper)\.tar$/);
+    if (m) return resolveImageTar(m[1]!);
+    if (existsSync(path)) return readFileBytes(path);
+    throw new Error(`MC_BASE_IMAGE path not found: ${path}`);
+  }
+  return resolveImageTar("posix");
+}
+
+/** Catalog-compiler.wasm via resolver. */
+export async function defaultCatalogCompilerBytes(): Promise<Uint8Array> {
+  return resolveCatalogCompiler();
 }

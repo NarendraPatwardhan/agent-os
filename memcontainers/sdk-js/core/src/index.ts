@@ -72,7 +72,19 @@ export type {
   SolvePlatform,
   SolveProgressEvent,
 } from "./solve.js";
-export { defaultKernel, defaultImage } from "./artifacts.js";
+export {
+  defaultKernel,
+  defaultImage,
+  defaultCatalogCompilerBytes,
+  resolveArtifact,
+  resolveKernel,
+  resolveImageTar,
+  resolveCatalogCompiler,
+  resolveGitEngineTar,
+  artifactCacheRoot,
+  seedArtifactCacheFromDir,
+} from "./artifacts.js";
+export type { ArtifactKind } from "./artifacts.js";
 export { FsContentStore, MemoryContentStore, OpfsContentStore, defaultStore } from "./store.js";
 // Host git engine (GIT.md) — product-facing surface only. Internals (GitBridge,
 // FixtureSmartHttp, durable classes, pack caches, connection helpers) stay on

@@ -14,21 +14,19 @@ export interface Permissions {
 }
 
 /**
- * Full host-git configuration for {@link CreateOptions.git} (object form).
+ * Host-git configuration for {@link CreateOptions.git} (object form).
  *
- * **Presence of `git` enables host git** — there is no separate boolean.
- * Prefer the string form of `git` when you only need the asset directory;
- * use this object for mounts, identity, sparse, durable store, or remotes.
+ * **Presence enables host git** — use `git: true` for defaults, or this object
+ * for mounts / identity / durable / remotes. The engine asset (`git-engine.tar`)
+ * is resolved via the host-artifact cache unless {@link engine} is passed.
  *
  * @example
  * ```ts
- * // String form: asset dir only (enables host git with defaults)
- * mc.create({ git: new URL("./git-engine/", import.meta.url).href })
+ * mc.create({ image: "loom", git: true })
  *
- * // Object form: full config (baseUrl required)
  * mc.create({
+ *   image: "loom",
  *   git: {
- *     baseUrl: new URL("./git-engine/", import.meta.url).href,
  *     identity: { name: "Agent", email: "agent@example.com" },
  *     sparse: ["src", "docs"],
  *     mounts: [{ path: "/workspace/a" }, { path: "/workspace/b", sparse: ["src"] }],
@@ -40,12 +38,11 @@ export interface Permissions {
  */
 export interface GitCreateOptions {
   /**
-   * Directory URL of `git_engine.mjs` + `git_engine.wasm`
-   * (`//memcontainers/lib/git-engine:git_engine_wasm`).
-   * Required on the object form; the string form of {@link CreateOptions.git}
-   * supplies this alone.
+   * Optional override: bytes of release `git-engine.tar` (mjs + wasm + notices).
+   * Parallel to `kernel` / `catalogCompiler`. When omitted, the host-artifact
+   * resolver uses MC_GIT_ENGINE_TAR, AGENTOS_DIR, cache, or optional fetch.
    */
-  baseUrl: string;
+  engine?: Uint8Array;
   /**
    * Multi-repo mounts. Default when omitted: `[{ path: "/workspace/repo" }]`.
    * Each path owns one engine (single-writer). Duplicate paths fail closed.
@@ -184,13 +181,13 @@ export interface CreateOptions {
    */
   templateFill?: "on_demand" | "prepopulated" | "off";
   /**
-   * Host git (libgit2 via the git engine wasm).
+   * Host git (libgit2 via emcc engine tar).
    *
-   * **Presence enables host git**; omit for no host git. No separate boolean.
-   * - **string** — directory URL of `git_engine.mjs` + `.wasm` (enables with defaults)
-   * - **object** — full {@link GitCreateOptions} (requires `baseUrl`)
+   * **Presence enables host git**; omit for no host git.
+   * - **`true`** — enable with resolved `git-engine.tar` and defaults
+   * - **object** — {@link GitCreateOptions} (optional `engine` tar bytes + config)
    */
-  git?: string | GitCreateOptions;
+  git?: true | GitCreateOptions;
 }
 
 export type ConnectionAuth =

@@ -1,8 +1,7 @@
 # AgentOS Git — Host Source Plane
 
 Product surface for interactive and LLB git (host source plane). Design of record: worktree
-`GIT.md`. Create option: `git` (string base URL or object with `baseUrl` — **presence enables**; no
-boolean). API surface: **advanced** (opt-in; not multi-tenant default-on).
+`GIT.md`. Create option: `git: true` or `git: { … }` — **presence enables**; no boolean. Engine tar is resolved (or pass `engine` bytes). API surface: **advanced** (opt-in; not multi-tenant default-on).
 
 ## Thesis
 
@@ -282,18 +281,16 @@ Opt-in by presence of `git`; documented in [Create options](./create-options.md)
 ```ts
 // Minimal — asset-dir URL enables host git (not a repo remote)
 mc.create({
-  git: new URL("./git-engine/", import.meta.url).href,
-  // registers host_call "git" (product pack cache: fresh Memory unless SHARED), mounts gitfs at /workspace/repo
+  git: true, // or { identity, mounts, engine?: tarBytes, … }
   connections: [{ ref: "github.user.work", auth: { kind: "bearer", token }, origins: ["https://github.com"] }],
 });
 
 // Full object form
 mc.create({
   git: {
-    baseUrl: new URL("./git-engine/", import.meta.url).href,
-    // optional cone sparse (multi-pattern; not full sparse language): sparse: ["src", "docs"],
-    // multi-repo: mounts: [{ path: "/workspace/a" }, { path: "/workspace/b", sparse: ["src"] }],
-    // remotes demux with args.mount / mount on host_call "git"
+    // engine tar resolved automatically; optional engine: Uint8Array override
+    sparse: ["src", "docs"],
+    mounts: [{ path: "/workspace/a" }, { path: "/workspace/b", sparse: ["src"] }],
   },
   connections: [{ ref: "github.user.work", auth: { kind: "bearer", token }, origins: ["https://github.com"] }],
 });
@@ -309,7 +306,7 @@ may run remotes concurrently; two remotes on the **same** mount serialize.
 
 | Host | How to attach two engines | Default when `mount` omitted |
 |------|---------------------------|------------------------------|
-| **JS** | `mc.create({ git: { baseUrl, mounts: [{ path: "/workspace/a" }, { path: "/workspace/b", sparse: ["src"] }] } })` | First `git.mounts` entry |
+| **JS** | `mc.create({ git: { mounts: [{ path: "/workspace/a" }, { path: "/workspace/b", sparse: ["src"] }] } })` | First `git.mounts` entry |
 | **BEAM** | `ControlPlane.attach_git(id, mount_path: "/workspace/a", …)` then again with a **distinct** `mount_path: "/workspace/b"` | Sole engine if only one attached; otherwise first attached (prefer explicit `args.mount`) |
 
 Same path while live fails closed: JS throws on duplicate `git.mounts` path; BEAM returns
@@ -320,7 +317,6 @@ JS closes the VM (all engines).
 // JS product create — two mounts, remotes demux by args.mount
 const vm = await mc.create({
   git: {
-    baseUrl: new URL("./git-engine/", import.meta.url).href,
     mounts: [
       { path: "/workspace/app" },
       { path: "/workspace/lib", sparse: ["src"] },
@@ -411,7 +407,6 @@ same path sees the same HEAD + worktree files. **AGIT** (pack+refs envelope) rem
 ```ts
 const vm = await mc.create({
   git: {
-    baseUrl: new URL("./git-engine/", import.meta.url).href,
     // Primary: re-openable host worktree dirs under diskDir.
     durable: { id: "agent-session-1", diskDir: "/var/lib/agentos/git-durable" },
   },
@@ -587,12 +582,12 @@ in-process product load path. JS hosts continue to use emcc wasm.
 - Ctl remotes refuse; remotes require `CAP_NET` + host_call name `"git"`.
 - No Node/Bun process on the Elixir control plane for git.
 - Surface is **advanced** (opt-in). Not multi-tenant default-on.
-- Enable with `git: <baseUrl>` (omit = off).
+- Enable with `git: true` (omit = off).
 - Stable stderr prefixes are catalogued in `fixtures/orch/response_schema.json`.
 
 ## Acceptance coverage
 
-Enable with `git: <baseUrl>` or `git: { baseUrl, … }` (omit = off). API surface for `GitEngine` /
+Enable with `git: true` or `git: { … }` (omit = off). API surface for `GitEngine` /
 host_call / LLB git helpers is **advanced** (`docs/api-surface.json`). Not multi-tenant default-on.
 
 Coverage spans connection/origin policy (empty origins fail closed; credential splice host-only),

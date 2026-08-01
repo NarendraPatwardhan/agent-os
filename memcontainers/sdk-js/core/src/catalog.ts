@@ -1,4 +1,5 @@
 import { defaultCatalogCompiler, originAllowed } from "@mc/host";
+import { defaultCatalogCompilerBytes } from "./artifacts.js";
 import type { CatalogCompiler, RegistryEntry, RegistryGroup } from "@mc/host";
 import { graphqlDiscover, mcpDiscover } from "./discovery.js";
 import { mergeToolCatalogBundles } from "./tools.js";
@@ -64,7 +65,9 @@ export async function connectionToolCatalogBundle(
 ): Promise<ToolCatalogBundle | null> {
   const connections = opts.connections ?? [];
   if (connections.length === 0) return null;
-  const compiler = await defaultCatalogCompiler(opts.catalogCompiler);
+  const compiler = await defaultCatalogCompiler(
+    opts.catalogCompiler ?? (await defaultCatalogCompilerBytes()),
+  );
   const selectors = catalogToolSelectors(opts.tools);
   const bundles: ToolCatalogBundle[] = [];
   for (const connection of connections) {
@@ -95,7 +98,9 @@ export async function deriveConnectionOrigins(
   const connections = opts.connections ?? [];
   const needs = connections.some((c) => !(c.origins && c.origins.length) && !c.spec);
   if (!needs) return connections;
-  const compiler = await defaultCatalogCompiler(opts.catalogCompiler);
+  const compiler = await defaultCatalogCompiler(
+    opts.catalogCompiler ?? (await defaultCatalogCompilerBytes()),
+  );
   return Promise.all(
     connections.map(async (c) => {
       if ((c.origins && c.origins.length) || c.spec) return c;
@@ -143,7 +148,9 @@ export async function resolvePolicyByConnection(
   const rules = opts.policies ?? [];
   const connections = opts.connections ?? [];
   if (rules.length === 0 || connections.length === 0) return map;
-  const compiler = await defaultCatalogCompiler(opts.catalogCompiler);
+  const compiler = await defaultCatalogCompiler(
+    opts.catalogCompiler ?? (await defaultCatalogCompilerBytes()),
+  );
   const rulesJson = JSON.stringify(rules);
   await compiler.validatePolicy(rulesJson);
   for (const connection of connections) {

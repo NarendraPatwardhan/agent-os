@@ -116,14 +116,12 @@ js_test(
         "package.json",
         ":git_engine_test_lib",
         # Engine artifacts only (not :git_engine_wasm — that pulls NOTICE across packages).
-        "//memcontainers/lib/git-engine:git_engine_emcc_js",
-        "//memcontainers/lib/git-engine:git_engine_mjs",
-        "//memcontainers/lib/git-engine:git_engine_wasm_file",
+        "//memcontainers/lib/git-engine:git_engine_release",
     ],
     entry_point = "test/git_engine.test.js",
     env = {
-        # Path of git_engine.mjs under runfiles; test derives the sibling wasm dir.
-        "MC_GIT_ENGINE_JS": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_mjs)",
+        # Path of git-engine.tar under runfiles.
+        "MC_GIT_ENGINE_TAR": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_release)",
     },
     timeout = "moderate",
 )
@@ -145,13 +143,11 @@ js_test(
         ":git_remote_test_lib",
         ":orch_golden_minimal_pack",
         ":orch_golden_minimal_tip",
-        "//memcontainers/lib/git-engine:git_engine_emcc_js",
-        "//memcontainers/lib/git-engine:git_engine_mjs",
-        "//memcontainers/lib/git-engine:git_engine_wasm_file",
+        "//memcontainers/lib/git-engine:git_engine_release",
     ],
     entry_point = "test/git_remote.test.js",
     env = {
-        "MC_GIT_ENGINE_JS": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_mjs)",
+        "MC_GIT_ENGINE_TAR": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_release)",
         "MC_GIT_MINIMAL_PACK": "$(rlocationpath :orch_golden_minimal_pack)",
         "MC_GIT_MINIMAL_TIP": "$(rlocationpath :orch_golden_minimal_tip)",
     },
@@ -302,13 +298,11 @@ js_test(
         ":orch_response_schema",
         ":orch_golden_minimal_pack",
         ":orch_golden_minimal_tip",
-        "//memcontainers/lib/git-engine:git_engine_emcc_js",
-        "//memcontainers/lib/git-engine:git_engine_mjs",
-        "//memcontainers/lib/git-engine:git_engine_wasm_file",
+        "//memcontainers/lib/git-engine:git_engine_release",
     ],
     entry_point = "test/git_orch_golden.test.js",
     env = {
-        "MC_GIT_ENGINE_JS": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_mjs)",
+        "MC_GIT_ENGINE_TAR": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_release)",
         # Relative to runfiles package root for this target.
         "MC_GIT_ORCH_GOLDEN_DIR": "memcontainers/sdk-js/core/fixtures/orch",
     },
@@ -330,13 +324,11 @@ js_test(
     data = [
         "package.json",
         ":git_real_http_test_lib",
-        "//memcontainers/lib/git-engine:git_engine_emcc_js",
-        "//memcontainers/lib/git-engine:git_engine_mjs",
-        "//memcontainers/lib/git-engine:git_engine_wasm_file",
+        "//memcontainers/lib/git-engine:git_engine_release",
     ],
     entry_point = "test/git_real_http.test.js",
     env = {
-        "MC_GIT_ENGINE_JS": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_mjs)",
+        "MC_GIT_ENGINE_TAR": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_release)",
     },
     # Needs host git + git-http-backend + localhost (sandbox blocks both).
     # Tag "manual" keeps analysis-key conflicts away from sibling js_tests that
@@ -365,13 +357,11 @@ js_test(
     data = [
         "package.json",
         ":git_connections_test_lib",
-        "//memcontainers/lib/git-engine:git_engine_emcc_js",
-        "//memcontainers/lib/git-engine:git_engine_mjs",
-        "//memcontainers/lib/git-engine:git_engine_wasm_file",
+        "//memcontainers/lib/git-engine:git_engine_release",
     ],
     entry_point = "test/git_connections.test.js",
     env = {
-        "MC_GIT_ENGINE_JS": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_mjs)",
+        "MC_GIT_ENGINE_TAR": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_release)",
     },
     timeout = "moderate",
 )
@@ -507,13 +497,11 @@ js_test(
     data = [
         "package.json",
         ":git_push_test_lib",
-        "//memcontainers/lib/git-engine:git_engine_emcc_js",
-        "//memcontainers/lib/git-engine:git_engine_mjs",
-        "//memcontainers/lib/git-engine:git_engine_wasm_file",
+        "//memcontainers/lib/git-engine:git_engine_release",
     ],
     entry_point = "test/git_push.test.js",
     env = {
-        "MC_GIT_ENGINE_JS": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_mjs)",
+        "MC_GIT_ENGINE_TAR": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_release)",
     },
     timeout = "moderate",
 )
@@ -577,15 +565,13 @@ js_test(
         ":orch_golden_minimal_tip",
         "//memcontainers/images:loom",
         "//memcontainers/kernel/rust:kernel",
-        "//memcontainers/lib/git-engine:git_engine_emcc_js",
-        "//memcontainers/lib/git-engine:git_engine_mjs",
-        "//memcontainers/lib/git-engine:git_engine_wasm_file",
+        "//memcontainers/lib/git-engine:git_engine_release",
     ],
     entry_point = "test/git_guest_e2e.test.js",
     env = {
         "MC_KERNEL_WASM": "$(rlocationpath //memcontainers/kernel/rust:kernel)",
         "MC_LOOM_IMAGE": "$(rlocationpath //memcontainers/images:loom)",
-        "MC_GIT_ENGINE_JS": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_mjs)",
+        "MC_GIT_ENGINE_TAR": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_release)",
         "MC_GIT_MINIMAL_PACK": "$(rlocationpath :orch_golden_minimal_pack)",
         "MC_GIT_MINIMAL_TIP": "$(rlocationpath :orch_golden_minimal_tip)",
     },

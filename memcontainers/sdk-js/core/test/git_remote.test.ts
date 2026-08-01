@@ -7,7 +7,6 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
 import {
   FetchSmartHttp,
   FixtureSmartHttp,
@@ -23,20 +22,19 @@ import {
   uploadPackCacheKey,
 } from "../src/git/index.js";
 
-function engineDir(): string {
-  const jsRel = process.env.MC_GIT_ENGINE_JS || "";
+function engineTar(): Uint8Array {
+  const rel = process.env.MC_GIT_ENGINE_TAR || "";
+  if (!rel) throw new Error("MC_GIT_ENGINE_TAR is not set (run under bazel test)");
   const rf = process.env.RUNFILES_DIR;
   const candidates = [
-    jsRel && rf ? join(rf, jsRel) : "",
-    jsRel && rf ? join(rf, "_main", jsRel) : "",
-    jsRel,
-    join(process.cwd(), "bazel-bin/memcontainers/lib/git-engine/git_engine.mjs"),
-  ];
+    rel && rf ? join(rf, rel) : "",
+    rel && rf ? join(rf, "_main", rel) : "",
+    rel,
+  ].filter(Boolean);
   for (const c of candidates) {
-    if (c && existsSync(c)) return dirname(c);
-    if (c && existsSync(join(c, "git_engine.mjs"))) return c;
+    if (c && existsSync(c)) return new Uint8Array(readFileSync(c));
   }
-  throw new Error(`engine dir not found (MC_GIT_ENGINE_JS=${jsRel})`);
+  throw new Error(`git-engine.tar not found (MC_GIT_ENGINE_TAR=${rel})`);
 }
 
 /** Real minimal.pack + tip for successful clone e2e (D21 dual-mount). */
@@ -90,9 +88,7 @@ function minimalPackFixture(): { pack: Uint8Array; tip: string } {
 }
 
 async function main() {
-  const dir = engineDir();
-  const base = pathToFileURL(dir.endsWith("/") ? dir : dir + "/").href;
-  const eng = await GitEngine.load({ baseUrl: base });
+  const eng = await GitEngine.load({ engine: engineTar() });
 
   // Engine purity: run(clone) never dials
   const dial = await eng.run({
@@ -111,8 +107,7 @@ async function main() {
   if (!loaded || new TextDecoder().decode(loaded) !== "snap") {
     throw new Error("MemoryDurable failed");
   }
-  const engDurable = await GitEngine.load({
-    baseUrl: base,
+  const engDurable = await GitEngine.load({ engine: engineTar(),
     durable: dur,
   });
   const engSnap = engDurable.durableSnapshot;
@@ -272,7 +267,7 @@ async function main() {
   const url2 = "https://example.com/cached.git";
   http2.add(url2, [{ name: "refs/heads/main", hash }], packBody);
   const cache = new MemoryPackCache();
-  const eng2 = await GitEngine.load({ baseUrl: base });
+  const eng2 = await GitEngine.load({ engine: engineTar() });
   const orchCached = new GitRemoteOrchestrator(eng2, {
     http: http2,
     packCache: cache,
@@ -299,7 +294,7 @@ async function main() {
     throw new Error("cache key/digest must not include credentials");
   }
 
-  const eng3 = await GitEngine.load({ baseUrl: base });
+  const eng3 = await GitEngine.load({ engine: engineTar() });
   const orch2 = new GitRemoteOrchestrator(eng3, {
     http: http2,
     packCache: cache,
@@ -400,7 +395,7 @@ async function main() {
   // / M7 v1: multi-path monorepo pack → shallow depth=1 clone + cone sparse
   // → worktree + gitfs hide out-of-cone (not filter-only theater).
   {
-    const engSrc = await GitEngine.load({ baseUrl: base });
+    const engSrc = await GitEngine.load({ engine: engineTar() });
     let wr = await engSrc.run({ op: "init" });
     if (!wr.ok) throw new Error(`D13 src init: ${JSON.stringify(wr)}`);
     wr = await engSrc.run({
@@ -470,8 +465,7 @@ async function main() {
     };
 
     // Engine load sparseCone → orch post-clone sparse-set + gitfs projection.
-    const engDst = await GitEngine.load({
-      baseUrl: base,
+    const engDst = await GitEngine.load({ engine: engineTar(),
       sparseCone: ["src"],
     });
     if (!engDst.sparseCone?.includes("src")) {
@@ -549,8 +543,8 @@ async function main() {
   }
 
   // –R65 / D21: multi-engine demux via args.mount / mount
-  const engA = await GitEngine.load({ baseUrl: base });
-  const engB = await GitEngine.load({ baseUrl: base });
+  const engA = await GitEngine.load({ engine: engineTar() });
+  const engB = await GitEngine.load({ engine: engineTar() });
   const engineMap = new Map([
     ["/workspace/a", engA],
     ["/workspace/b", engB],
@@ -644,8 +638,8 @@ async function main() {
   // with real minimal.pack → worktree isolation (README hello).
   {
     const { pack: realPack, tip: realTip } = minimalPackFixture();
-    const dualA = await GitEngine.load({ baseUrl: base });
-    const dualB = await GitEngine.load({ baseUrl: base });
+    const dualA = await GitEngine.load({ engine: engineTar() });
+    const dualB = await GitEngine.load({ engine: engineTar() });
     const dualMap = new Map([
       ["/workspace/a", dualA],
       ["/workspace/b", dualB],
@@ -740,8 +734,8 @@ async function main() {
   // (per-engine single-writer only; multi-mount remotes are independent).
   {
     const { pack: realPack, tip: realTip } = minimalPackFixture();
-    const concA = await GitEngine.load({ baseUrl: base });
-    const concB = await GitEngine.load({ baseUrl: base });
+    const concA = await GitEngine.load({ engine: engineTar() });
+    const concB = await GitEngine.load({ engine: engineTar() });
     const concMap = new Map([
       ["/workspace/a", concA],
       ["/workspace/b", concB],
@@ -828,7 +822,7 @@ async function main() {
   // orchestrator must not overlap fetchPacks (HTTP + apply). Delayed fixture
   // so both callers enter handle() before either finishes transport.
   {
-    const engSerial = await GitEngine.load({ baseUrl: base });
+    const engSerial = await GitEngine.load({ engine: engineTar() });
     const baseHttp = new FixtureSmartHttp();
     const serialUrl = "https://example.com/serial.git";
     baseHttp.add(
@@ -933,7 +927,7 @@ async function main() {
     const d9Url = "https://example.com/d9-tracking.git";
     const d9Http = new FixtureSmartHttp();
     d9Http.add(d9Url, [{ name: "refs/heads/main", hash: tip }], pack);
-    const engD9 = await GitEngine.load({ baseUrl: base });
+    const engD9 = await GitEngine.load({ engine: engineTar() });
     const orchD9 = new GitRemoteOrchestrator(engD9, {
       http: d9Http,
       allowOrigins: [fixtureOrigin],
@@ -1017,7 +1011,7 @@ async function main() {
     const subHttp = new FixtureSmartHttp();
     subHttp.add(subUrl, [{ name: "refs/heads/main", hash: tip }], pack);
 
-    const engSuper = await GitEngine.load({ baseUrl: base });
+    const engSuper = await GitEngine.load({ engine: engineTar() });
     const initS = await engSuper.run({ op: "init" });
     if (!initS.ok) throw new Error(`D23 super init: ${JSON.stringify(initS)}`);
 

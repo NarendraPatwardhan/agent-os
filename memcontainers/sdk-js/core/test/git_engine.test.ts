@@ -1,77 +1,34 @@
 /**
- * PR3–PR5: GitEngine.run + gitfs ctl drain + dial refuse (no full VM).
- * Requires MC_GIT_ENGINE_JS → runfiles path of git_engine.js (sibling of .wasm).
+ * GitEngine.run + gitfs ctl drain + dial refuse (no full VM).
+ * Requires MC_GIT_ENGINE_TAR → runfiles path of git-engine.tar.
  */
 
-import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   decodeDurableBlob,
   GitEngine,
   MemoryDurable,
 } from "../src/git/index.js";
 
-function runfile(rel: string | undefined, envVar: string): string {
-  if (!rel) {
-    throw new Error(`${envVar} is not set (this test must run under \`bazel test\`)`);
-  }
+function engineTar(): Uint8Array {
+  const rel = process.env.MC_GIT_ENGINE_TAR || "";
+  if (!rel) throw new Error("MC_GIT_ENGINE_TAR is not set (run under bazel test)");
   const rf = process.env.RUNFILES_DIR;
-  if (!rf) throw new Error("RUNFILES_DIR is not set (this test must run under bazel)");
-  return join(rf, rel);
-}
-
-function engineDir(): string {
-  const jsRel = process.env.MC_GIT_ENGINE_JS || process.env.MC_GIT_ENGINE_DIR || "";
-  const candidates: string[] = [];
-  if (jsRel) {
-    try {
-      candidates.push(runfile(jsRel, "MC_GIT_ENGINE_JS"));
-    } catch {
-      /* fall through to local candidates */
-    }
-    candidates.push(jsRel);
-    if (process.env.RUNFILES_DIR) {
-      candidates.push(join(process.env.RUNFILES_DIR, "_main", jsRel));
-    }
-  }
-  candidates.push(
-    join(process.cwd(), "bazel-bin/memcontainers/lib/git-engine/git_engine.js"),
-  );
-  if (process.env.RUNFILES_DIR) {
-    candidates.push(
-      join(
-        process.env.RUNFILES_DIR,
-        "_main/memcontainers/lib/git-engine/git_engine.js",
-      ),
-    );
-  }
-
+  const candidates = [
+    rel && rf ? join(rf, rel) : "",
+    rel && rf ? join(rf, "_main", rel) : "",
+    rel,
+    join(process.cwd(), "bazel-bin/memcontainers/lib/git-engine/git_engine_release.tar"),
+  ].filter(Boolean);
   for (const c of candidates) {
-    if (!c) continue;
-    // Accept engine module path (.mjs/.js) or a directory containing it.
-    if ((c.endsWith(".mjs") || c.endsWith(".js")) && existsSync(c)) {
-      return dirname(c);
-    }
-    if (
-      existsSync(join(c, "git_engine.mjs")) ||
-      existsSync(join(c, "git_engine.js"))
-    ) {
-      return c;
-    }
+    if (c && existsSync(c)) return new Uint8Array(readFileSync(c));
   }
-  throw new Error(
-    `MC_GIT_ENGINE_JS must resolve to git_engine.mjs/js (got ${JSON.stringify(jsRel)})`,
-  );
-}
-
-function baseUrl(dir: string): string {
-  return pathToFileURL(dir.endsWith("/") ? dir : dir + "/").href;
+  throw new Error(`git-engine.tar not found (MC_GIT_ENGINE_TAR=${rel})`);
 }
 
 async function main() {
-  const dir = engineDir();
-  const eng = await GitEngine.load({ baseUrl: baseUrl(dir) });
+  const eng = await GitEngine.load({ engine: engineTar() });
 
   let r = await eng.run({ op: "init" });
   if (!r.ok) throw new Error(`init: ${JSON.stringify(r)}`);
@@ -98,8 +55,7 @@ async function main() {
 
   // host identity inject — commit without name/email succeeds when configured.
   // Never invents Agent@example.com when identity is unset (covered by engine K28).
-  const engId = await GitEngine.load({
-    baseUrl: baseUrl(dir),
+  const engId = await GitEngine.load({ engine: engineTar(),
     identity: { name: "Host Policy", email: "host@policy.test" },
   });
   let ir = await engId.run({ op: "init" });
@@ -119,7 +75,7 @@ async function main() {
     throw new Error(`identity inject commit failed: ${JSON.stringify(ir)}`);
   }
   // Without identity, missing name/email still fails closed (no invented author).
-  const engNoId = await GitEngine.load({ baseUrl: baseUrl(dir) });
+  const engNoId = await GitEngine.load({ engine: engineTar() });
   await engNoId.run({ op: "init" });
   await engNoId.run({
     op: "write",
@@ -462,8 +418,7 @@ async function main() {
 
   // –R55: durable rebind — pack+refs AGIT envelope restores objects + worktree.
   const dur = new MemoryDurable("rebind");
-  const engDur = await GitEngine.load({
-    baseUrl: baseUrl(dir),
+  const engDur = await GitEngine.load({ engine: engineTar(),
     durable: dur,
   });
   let dr = await engDur.run({ op: "init" });
@@ -498,8 +453,7 @@ async function main() {
   }
   await engDur.close();
 
-  const engRestored = await GitEngine.load({
-    baseUrl: baseUrl(dir),
+  const engRestored = await GitEngine.load({ engine: engineTar(),
     durable: dur,
   });
   const headAfter = (
@@ -537,8 +491,7 @@ async function main() {
   const { join: pathJoin } = await import("node:path");
   const durableHost = await mkdtemp(pathJoin(tmpdir(), "agentos-git-dur-"));
   try {
-    const engA = await GitEngine.load({
-      baseUrl: baseUrl(dir),
+    const engA = await GitEngine.load({ engine: engineTar(),
       durableDir: durableHost,
     });
     if (engA.durableDir !== durableHost && !engA.durableDir?.endsWith(durableHost.replace(/\/$/, ""))) {
@@ -579,8 +532,7 @@ async function main() {
     await engA.close();
 
     // Second engine load = second process open of the same host directory.
-    const engB = await GitEngine.load({
-      baseUrl: baseUrl(dir),
+    const engB = await GitEngine.load({ engine: engineTar(),
       durableDir: durableHost,
     });
     const headB = (
@@ -616,7 +568,7 @@ async function main() {
 
   // truncated stdout → stream_path + readStdoutStream / gitfs out/last
   {
-    const engT = await GitEngine.load({ baseUrl: baseUrl(dir) });
+    const engT = await GitEngine.load({ engine: engineTar() });
     let tr = await engT.run({ op: "init" });
     if (!tr.ok) throw new Error(`D15 init: ${JSON.stringify(tr)}`);
     tr = await engT.run({
@@ -675,7 +627,7 @@ async function main() {
 
   // explicit add of a symlink fails closed (MEMFS symlink when available)
   {
-    const engS = await GitEngine.load({ baseUrl: baseUrl(dir) });
+    const engS = await GitEngine.load({ engine: engineTar() });
     let sr = await engS.run({ op: "init" });
     if (!sr.ok) throw new Error(`D22 init: ${JSON.stringify(sr)}`);
     sr = await engS.run({
@@ -703,7 +655,7 @@ async function main() {
 
   // log bounds — result.bounded + stable footer
   {
-    const engL = await GitEngine.load({ baseUrl: baseUrl(dir) });
+    const engL = await GitEngine.load({ engine: engineTar() });
     let lr = await engL.run({ op: "init" });
     if (!lr.ok) throw new Error(`D39 init: ${JSON.stringify(lr)}`);
     for (let i = 0; i < 3; i++) {

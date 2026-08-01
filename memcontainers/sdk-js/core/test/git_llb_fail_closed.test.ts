@@ -21,12 +21,14 @@ async function assertFailClosed(label: string): Promise<void> {
   }
   if (!threw) {
     throw new Error(
-      `${label}: llb.git must fail closed without MC_GIT_ENGINE_DIR and without MC_GIT_USE_SYSTEM=1`,
+      `${label}: llb.git must fail closed without MC_GIT_ENGINE_TAR and without MC_GIT_USE_SYSTEM=1`,
     );
   }
   if (
     !message.includes("llb.git requires") &&
-    !message.includes("MC_GIT_ENGINE_DIR") &&
+    !message.includes("MC_GIT_ENGINE_TAR") &&
+    !message.includes("git-engine.tar") &&
+    !message.includes("not available") &&
     !message.includes("MC_GIT_USE_SYSTEM")
   ) {
     throw new Error(`${label}: unexpected fail-closed message: ${JSON.stringify(message)}`);
@@ -43,8 +45,10 @@ async function assertFailClosed(label: string): Promise<void> {
 
 async function main() {
   const keys = [
-    "MC_GIT_ENGINE_DIR",
-    "MC_GIT_ENGINE_BASE_URL",
+    "MC_GIT_ENGINE_TAR",
+    "AGENTOS_DIR",
+    "MC_ARTIFACT_HOME",
+    "MC_ARTIFACT_FETCH",
     "MC_GIT_USE_SYSTEM",
   ] as const;
   const saved: Record<string, string | undefined> = {};
@@ -66,8 +70,10 @@ async function main() {
     // 2) MC_GIT_USE_SYSTEM empty / 0 / true (not exactly "1") must NOT enable system path.
     for (const bad of ["", "0", "true", "yes", "TRUE"]) {
       process.env.MC_GIT_USE_SYSTEM = bad;
-      delete process.env.MC_GIT_ENGINE_DIR;
-      delete process.env.MC_GIT_ENGINE_BASE_URL;
+      delete process.env.MC_GIT_ENGINE_TAR;
+      delete process.env.AGENTOS_DIR;
+      delete process.env.MC_ARTIFACT_HOME;
+      delete process.env.MC_ARTIFACT_FETCH;
       await assertFailClosed(`MC_GIT_USE_SYSTEM=${JSON.stringify(bad)}`);
       delete process.env.MC_GIT_USE_SYSTEM;
     }

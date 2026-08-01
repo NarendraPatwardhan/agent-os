@@ -26,7 +26,11 @@ import {
 import { parseSnapshot } from "@mc/contracts/snapshot";
 import { SIDECAR_HOST_BINDING } from "@mc/contracts/sidecar";
 import { EmbeddedBackend, FanoutSink } from "./embedded.js";
-import { defaultImage, defaultKernel } from "./artifacts.js";
+import {
+  defaultCatalogCompilerBytes,
+  defaultImage,
+  defaultKernel,
+} from "./artifacts.js";
 import { embeddedGuestLayers } from "./guest-layers.js";
 import { defaultStore } from "./store.js";
 import {
@@ -122,9 +126,9 @@ function ownCreateOptions(opts: CreateOptions): CreateOptions {
  */
 function ownGitCreateOptions(git: CreateOptions["git"]): CreateOptions["git"] {
   if (git == null) return undefined;
-  if (typeof git === "string") return git;
+  if (git === true) return true;
   return {
-    baseUrl: git.baseUrl,
+    engine: git.engine,
     sparse: git.sparse ? [...git.sparse] : undefined,
     readOnly: git.readOnly,
     mounts: git.mounts?.map((m) => ({
@@ -146,24 +150,14 @@ function ownGitCreateOptions(git: CreateOptions["git"]): CreateOptions["git"] {
 /**
  * Normalize `CreateOptions.git` → {@link GitCreateOptions}, or `undefined` (host git off).
  *
- * - omit / null / blank string → off
- * - non-empty string → `{ baseUrl }` (enables host git with defaults)
- * - object → requires non-empty `baseUrl` (throws if missing)
+ * - omit / null → off
+ * - `true` → `{}` (enable with resolved engine tar)
+ * - object → config; optional `engine` tar bytes
  */
 function normalizeCreateGit(git: CreateOptions["git"]): GitCreateOptions | undefined {
   if (git == null) return undefined;
-  if (typeof git === "string") {
-    const baseUrl = git.trim();
-    if (!baseUrl) return undefined;
-    return { baseUrl };
-  }
-  const baseUrl = String(git.baseUrl ?? "").trim();
-  if (!baseUrl) {
-    throw new Error(
-      "git.baseUrl is required (directory URL of git_engine.mjs + git_engine.wasm)",
-    );
-  }
-  return { ...git, baseUrl };
+  if (git === true) return {};
+  return { ...git };
 }
 
 /** One create-time mount: guest path + optional cone sparse for that engine. */
@@ -218,7 +212,8 @@ type LoadedGitEngine = {
 };
 
 /**
- * Load host git when `opts.git` is present (string asset URL or full config).
+ * Load host git when `opts.git` is present (`true` or config object).
+ * Engine tar is resolved via artifacts (or `git.engine` bytes).
  * Registers the `"git"` MapHostCall; returns engines for default mounts and
  * durable snapshot bind. Empty array when git is omitted.
  */
@@ -267,7 +262,7 @@ async function bootstrapHostGit(
       }
       const readOnly = !!spec.readOnly;
       const eng = await GitEngine.load({
-        baseUrl: gitCfg.baseUrl,
+        engine: gitCfg.engine,
         sparseCone: sparse,
         identity: gitCfg.identity,
         readOnly,
@@ -792,9 +787,21 @@ export async function resolveImage(
   if (image instanceof Uint8Array) return [image];
   if (image === undefined || image === "base:latest") return [await defaultImage()];
   if (typeof image === "string") {
-    const s = requireStore(store, image);
-    if (image.startsWith("sha256:")) return [await defaultImage(), await s.layer(image)];
-    return resolveManifest(await s.manifest(image), s); // a flavor name
+    if (image.startsWith("sha256:")) {
+      const s = requireStore(store, image);
+      return [await defaultImage(), await s.layer(image)];
+    }
+    // Named flavor: prefer content-store manifest when present; else host-artifact tar.
+    if (store) {
+      try {
+        return resolveManifest(await store.manifest(image), store);
+      } catch {
+        // fall through to artifact resolve
+      }
+    }
+    const { resolveImageTar } = await import("./artifacts.js");
+    const flavor = image.replace(/\.tar$/, "");
+    return [await resolveImageTar(flavor)];
   }
   const s = requireStore(store, "manifest");
   return resolveManifest(image, s); // a built ImageManifest
@@ -1064,8 +1071,7 @@ async function makeEmbedded(
     sidecars.handleGuestCall(body, context.signal),
   );
 
-  // Host git: presence of opts.git enables the engine (string = asset baseUrl;
-  // object = full GitCreateOptions). No separate boolean. See bootstrapHostGit.
+  // Host git: presence of opts.git enables the engine (`true` or GitCreateOptions).
   const gitEngines = await bootstrapHostGit(tools, opts);
 
   const backend = new EmbeddedBackend(host, stdout, tools, sidecars, activeBase, store);
@@ -1211,7 +1217,9 @@ async function expectedHostCallCatalog(
   generation: number,
 ): Promise<Map<string, { description: string; sha: string; bytes: Uint8Array }>> {
   if (defs.length === 0) return new Map();
-  const compiler = await defaultCatalogCompiler(opts.catalogCompiler);
+  const compiler = await defaultCatalogCompiler(
+    opts.catalogCompiler ?? (await defaultCatalogCompilerBytes()),
+  );
   const bundle = await toolCatalogBundle(defs, compiler, generation);
   const records = new Map(bundle.records.map((record) => [record.sha, record.bytes]));
   const expected = new Map<string, { description: string; sha: string; bytes: Uint8Array }>();
@@ -1389,7 +1397,9 @@ async function mergedCatalogBundle(
   // Only touch the compiler when there are host tools to validate — a bare VM (no host tools, no
   // connections) must not require catalog-compiler.wasm.
   if (defs.length > 0) {
-    const compiler = await defaultCatalogCompiler(opts.catalogCompiler);
+    const compiler = await defaultCatalogCompiler(
+      opts.catalogCompiler ?? (await defaultCatalogCompilerBytes()),
+    );
     bundles.push(await toolCatalogBundle(defs, compiler, generation));
   }
   const connectionBundle =

@@ -210,8 +210,6 @@ async function sha256hex(data: Uint8Array): Promise<string> {
 // ── SolvePlatform.gitSource ─────────────────────────────────────────────────
 
 export interface EngineGitSourceOptions extends OrchestratorOptions {
-  /** Directory URL of git_engine.mjs/wasm. */
-  baseUrl: string;
   /**
    * Pack cache for repeated in-process solves. Product default is
    * {@link defaultProcessPackCache} (Memory or Disk via `MC_GIT_PACK_CACHE`).

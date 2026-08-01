@@ -3,7 +3,6 @@ import { lstat, mkdtemp, readFile, readdir, readlink, rm } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
-import { pathToFileURL } from "node:url";
 import { hostDir } from "./drivers.js";
 import type { BuildState } from "./llb.js";
 import type { GitSource, LocalEntry, LocalSource, SolvePlatform } from "./solve.js";
@@ -129,24 +128,7 @@ function gitBytes(args: string[]): Promise<Uint8Array> {
   });
 }
 
-function resolveEngineBaseUrl(): string {
-  const dir =
-    process.env.MC_GIT_ENGINE_DIR ||
-    process.env.MC_GIT_ENGINE_BASE_URL ||
-    "";
-  if (!dir) {
-    throw new Error(
-      "llb.git requires the host git engine (set MC_GIT_ENGINE_DIR to the directory " +
-        "containing git_engine.mjs/wasm). System git is not used. " +
-        "Emergency only: MC_GIT_USE_SYSTEM=1",
-    );
-  }
-  if (dir.startsWith("file:") || dir.startsWith("http:") || dir.startsWith("https:")) {
-    return dir.endsWith("/") ? dir : dir + "/";
-  }
-  const base = dir.endsWith("/") ? dir : dir + "/";
-  return pathToFileURL(base).href;
-}
+
 
 async function scanLocalSource(root: string): Promise<LocalSource> {
   const stat = await lstat(root);
@@ -229,7 +211,6 @@ export const nodeSolvePlatform: SolvePlatform = {
       return archiveGitSourceSystem(repo, ref, dest);
     }
     const platform = await nodeSolvePlatformWithEngine({
-      baseUrl: resolveEngineBaseUrl(),
       // Same env as defaultProcessPackCache; explicit dir still wins if set.
       packCacheDir: process.env.MC_GIT_PACK_CACHE?.trim() || undefined,
     });
@@ -240,10 +221,11 @@ export const nodeSolvePlatform: SolvePlatform = {
 
 /**
  * Node solve platform with llb.git on the shared GitRemoteOrchestrator stack.
- * `baseUrl` points at emcc git_engine.mjs/wasm (same as GitEngine.load).
+ * Engine tar is resolved via artifacts (`MC_GIT_ENGINE_TAR` / AGENTOS_DIR / cache).
  */
 export async function nodeSolvePlatformWithEngine(opts: {
-  baseUrl: string;
+  /** Optional git-engine.tar bytes; otherwise resolved via artifacts. */
+  engine?: Uint8Array;
   connections?: import("./types.js").ConnectionDefinition[];
   /**
    * On-disk pack cache dir (same as `MC_GIT_PACK_CACHE`). When set, uses
@@ -273,7 +255,7 @@ export async function nodeSolvePlatformWithEngine(opts: {
         ? new DiskPackCache(opts.packCacheDir)
         : (opts.packCache ?? defaultProcessPackCache());
   const gitSource = createEngineGitSource(
-    () => GitEngine.load({ baseUrl: opts.baseUrl }),
+    () => GitEngine.load({ engine: opts.engine }),
     {
       connections: opts.connections,
       packCache,

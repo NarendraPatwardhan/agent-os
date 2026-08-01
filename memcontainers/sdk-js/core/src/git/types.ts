@@ -62,10 +62,11 @@ export interface GitIdentity {
 
 export interface GitEngineLoadOptions {
   /**
-   * Directory URL or filesystem path containing `git_engine.js` + `git_engine.wasm`
-   * (Bazel `//memcontainers/lib/git-engine:git_engine_wasm` outputs).
+   * Bytes of release `git-engine.tar` (contains `git_engine.mjs` + `git_engine.wasm`
+   * + notices). When omitted, resolved via the host-artifact cache
+   * (`MC_GIT_ENGINE_TAR` / `AGENTOS_DIR` / optional fetch).
    */
-  baseUrl: string;
+  engine?: Uint8Array;
   /** Override MEMFS worktree root inside the module (default `/work`). */
   workRoot?: string;
   readOnly?: boolean;

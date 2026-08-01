@@ -2,38 +2,35 @@
  * PR12: push.prepare → PushPacks → push.complete; read-only reject; approval policy.
  */
 
-import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   FixtureSmartHttp,
   GitEngine,
   GitRemoteOrchestrator,
 } from "../src/git/index.js";
 
-function engineDir(): string {
-  const jsRel = process.env.MC_GIT_ENGINE_JS || "";
+
+function engineTar(): Uint8Array {
+  const rel = process.env.MC_GIT_ENGINE_TAR || "";
+  if (!rel) throw new Error("MC_GIT_ENGINE_TAR is not set (run under bazel test)");
   const rf = process.env.RUNFILES_DIR;
   const candidates = [
-    jsRel && rf ? join(rf, jsRel) : "",
-    jsRel && rf ? join(rf, "_main", jsRel) : "",
-    jsRel,
-    join(process.cwd(), "bazel-bin/memcontainers/lib/git-engine/git_engine.mjs"),
-  ];
+    rel && rf ? join(rf, rel) : "",
+    rel && rf ? join(rf, "_main", rel) : "",
+    rel,
+  ].filter(Boolean) as string[];
   for (const c of candidates) {
-    if (c && existsSync(c)) return dirname(c);
-    if (c && existsSync(join(c, "git_engine.mjs"))) return c;
+    if (c && existsSync(c)) return new Uint8Array(readFileSync(c));
   }
-  throw new Error("engine dir not found");
+  throw new Error(`git-engine.tar not found (MC_GIT_ENGINE_TAR=${rel})`);
 }
 
-async function main() {
-  const dir = engineDir();
-  const baseUrl = pathToFileURL(dir.endsWith("/") ? dir : dir + "/").href;
 
+async function main() {
   // Read-only reject (checked before origin policy)
   {
-    const eng = await GitEngine.load({ baseUrl, readOnly: true });
+    const eng = await GitEngine.load({ engine: engineTar(), readOnly: true });
     const http = new FixtureSmartHttp();
     const orch = new GitRemoteOrchestrator(eng, {
       http,
@@ -52,7 +49,7 @@ async function main() {
 
   // Happy path with fixture push
   {
-    const eng = await GitEngine.load({ baseUrl });
+    const eng = await GitEngine.load({ engine: engineTar() });
     await eng.run({ op: "init" });
     await eng.run({
       op: "write",
@@ -138,7 +135,7 @@ async function main() {
 
   // Policy block (most restrictive) — short-circuit before prepare/dial
   {
-    const eng = await GitEngine.load({ baseUrl });
+    const eng = await GitEngine.load({ engine: engineTar() });
     await eng.run({ op: "init" });
     const http = new FixtureSmartHttp();
     const orch = new GitRemoteOrchestrator(eng, {
@@ -158,7 +155,7 @@ async function main() {
 
   // require_approval without onPushApproval fails closed after prepare
   {
-    const eng = await GitEngine.load({ baseUrl });
+    const eng = await GitEngine.load({ engine: engineTar() });
     await eng.run({ op: "init" });
     await eng.run({
       op: "write",
@@ -252,7 +249,7 @@ async function main() {
 
   // delete-ref push — newHash all-zero, empty pack, fixture receive-status ok
   {
-    const eng = await GitEngine.load({ baseUrl });
+    const eng = await GitEngine.load({ engine: engineTar() });
     await eng.run({ op: "init" });
     await eng.run({
       op: "write",
@@ -337,7 +334,7 @@ async function main() {
 
   // pack with haves (parent) smaller than full tip pack
   {
-    const eng = await GitEngine.load({ baseUrl });
+    const eng = await GitEngine.load({ engine: engineTar() });
     await eng.run({ op: "init" });
     await eng.run({
       op: "write",
@@ -397,7 +394,7 @@ async function main() {
 
   // args.filter reaches transport; fixture ignores it and still returns pack
   {
-    const eng = await GitEngine.load({ baseUrl });
+    const eng = await GitEngine.load({ engine: engineTar() });
     const pack = new Uint8Array([0x50, 0x41, 0x43, 0x4b, 0, 0, 0, 2, 0, 0, 0, 0]);
     // minimal invalid-but-nonempty PACK magic header so empty-pack gate passes;
     // import may fail — we only assert filter is recorded and fetch is invoked.

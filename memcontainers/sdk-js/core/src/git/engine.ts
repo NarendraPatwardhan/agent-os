@@ -75,7 +75,9 @@ export class GitEngine {
 
   static async load(opts: GitEngineLoadOptions): Promise<GitEngine> {
     const durable = resolveDurable(opts);
-    const bridge = await GitBridge.create(opts.baseUrl, {
+    const { resolveGitEngineBaseUrl } = await import("../artifacts.js");
+    const baseUrl = await resolveGitEngineBaseUrl(opts.engine);
+    const bridge = await GitBridge.create(baseUrl, {
       workRoot: opts.workRoot,
       durable,
     });

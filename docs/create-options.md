@@ -27,7 +27,7 @@ fields—`mc.use()`. Applicability and defaults vary by runtime.
 | `sidecarHosts`       | host-alias map                           | `{}`                            | Embedded-only private sidecar authority routes       |
 | `sidecars`           | grant-descriptor map                     | `{}`                            | Portable sidecar grants attached at boot             |
 | `deterministic`      | boolean                                  | `false`                         | Repeatable guest clock and random source             |
-| `git`                | string \| object (`GitCreateOptions`)    | omit (off)                      | Host git (libgit2 emcc wasm). **Presence enables** — no boolean. String = dir URL of `git_engine.mjs` + `git_engine.wasm`. Object requires `baseUrl` (same dir URL) plus optional mounts / sparse / identity / durable / allowOrigins / http. See [Git](./git.md) |
+| `git`                | `true` \| object (`GitCreateOptions`) | omit (off) | Host git. **Presence enables**. `true` resolves `git-engine.tar`; object for mounts/identity/durable/optional `engine` tar bytes. See [Git](./git.md) | Host git (libgit2 emcc wasm). **Presence enables** — no boolean. `true` enables with resolved `git-engine.tar`; object form for mounts/identity/durable. Object: optional `engine` tar bytes plus mounts / sparse / identity / durable / allowOrigins / http. See [Git](./git.md) |
 
 ## `runtime`
 
@@ -182,8 +182,8 @@ There is no separate boolean. See [Git](./git.md).
 
 | Form | Meaning |
 |------|---------|
-| `string` | Directory URL of `git_engine.mjs` + `git_engine.wasm` (from `//memcontainers/lib/git-engine:git_engine_wasm`). Enables the engine with defaults. |
-| object | Full `GitCreateOptions`. **`baseUrl` required** (same directory URL). |
+| `true` | Enable host git; resolve `git-engine.tar` via env / install dir / cache / optional fetch. |
+| object | Full `GitCreateOptions` (optional `engine` tar bytes; otherwise resolved). |
 
 This is **not** a repository remote URL. Remotes use `connections` + guest `clone`/`fetch`/`push` URLs.
 
@@ -213,13 +213,12 @@ When `git` is set:
 ```js
 // Minimal — base URL enables host git
 const vm = await mc.create({
-  git: new URL("./git-engine/", import.meta.url).href,
+  git: true,
 });
 
 // Full
 const vm = await mc.create({
   git: {
-    baseUrl: new URL("./git-engine/", import.meta.url).href,
     sparse: ["src", "docs"],
     identity: { name: "Agent", email: "agent@example.com" },
     // durable dir reopen across snapshot/restore (omit = no ODB rebind):

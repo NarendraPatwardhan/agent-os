@@ -9,7 +9,6 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { FixtureSmartHttp } from "../src/git/index.js";
 import type { SmartHttpTransport } from "../src/git/smart-http.js";
 import { mc } from "../src/memcontainer.js";
@@ -23,20 +22,19 @@ function runfile(rel: string | undefined, envVar: string): string {
   return join(rf, rel);
 }
 
-function engineDir(): string {
-  const jsRel = process.env.MC_GIT_ENGINE_JS || "";
+function engineTar(): Uint8Array {
+  const rel = process.env.MC_GIT_ENGINE_TAR || "";
+  if (!rel) throw new Error("MC_GIT_ENGINE_TAR is not set (run under bazel test)");
   const rf = process.env.RUNFILES_DIR;
   const candidates = [
-    jsRel && rf ? join(rf, jsRel) : "",
-    jsRel && rf ? join(rf, "_main", jsRel) : "",
-    jsRel,
-    join(process.cwd(), "bazel-bin/memcontainers/lib/git-engine/git_engine.mjs"),
-  ];
+    rel && rf ? join(rf, rel) : "",
+    rel && rf ? join(rf, "_main", rel) : "",
+    rel,
+  ].filter(Boolean);
   for (const c of candidates) {
-    if (c && existsSync(c)) return dirname(c);
-    if (c && existsSync(join(c, "git_engine.mjs"))) return c;
+    if (c && existsSync(c)) return new Uint8Array(readFileSync(c));
   }
-  throw new Error(`engine dir not found (MC_GIT_ENGINE_JS=${jsRel})`);
+  throw new Error(`git-engine.tar not found (MC_GIT_ENGINE_TAR=${rel})`);
 }
 
 function packFixture(): { pack: Uint8Array; tip: string; url: string; origin: string } {
@@ -99,11 +97,6 @@ function packFixture(): { pack: Uint8Array; tip: string; url: string; origin: st
   };
 }
 
-function gitBaseUrl(): string {
-  const dir = engineDir();
-  return pathToFileURL(dir.endsWith("/") ? dir : dir + "/").href;
-}
-
 async function main(): Promise<void> {
   const kernel = new Uint8Array(
     readFileSync(runfile(process.env.MC_KERNEL_WASM, "MC_KERNEL_WASM")),
@@ -111,7 +104,6 @@ async function main(): Promise<void> {
   const loom = new Uint8Array(
     readFileSync(runfile(process.env.MC_LOOM_IMAGE, "MC_LOOM_IMAGE")),
   );
-  const baseUrl = gitBaseUrl();
   const fixture = packFixture();
 
   // ── : mc.create + git + gitfs ctl close-then-status ──
@@ -122,7 +114,7 @@ async function main(): Promise<void> {
       image: loom,
       deterministic: true,
       git: {
-        baseUrl,
+        engine: engineTar(),
         identity: { name: "Guest E2E", email: "e2e@example.com" },
       },
     } satisfies CreateOptions);
@@ -211,7 +203,7 @@ async function main(): Promise<void> {
       store,
       deterministic: true,
       git: {
-        baseUrl,
+        engine: engineTar(),
         http,
         allowOrigins: [fixture.origin],
       },
@@ -263,7 +255,7 @@ async function main(): Promise<void> {
       image: loom,
       deterministic: true,
       git: {
-        baseUrl,
+        engine: engineTar(),
         http,
         allowOrigins: [fixture.origin],
       },
@@ -314,7 +306,7 @@ async function main(): Promise<void> {
       deterministic: true,
       net: true,
       git: {
-        baseUrl,
+        engine: engineTar(),
         http,
         allowOrigins: [fixture.origin],
         identity: { name: "Guest E2E", email: "e2e@example.com" },
@@ -380,7 +372,7 @@ print(raw)
       image: loom,
       deterministic: true,
       git: {
-        baseUrl,
+        engine: engineTar(),
         identity: { name: "D17", email: "d17@example.com" },
         // No diskDir → openDurable MemoryDurable process registry (same id reopens).
         durable: { id: durableId },
@@ -531,7 +523,7 @@ print(raw)
       deterministic: true,
       net: true,
       git: {
-        baseUrl,
+        engine: engineTar(),
         http: slowHttp,
         allowOrigins: [fixture.origin],
         identity: { name: "Guest E2E", email: "e2e@example.com" },

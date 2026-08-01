@@ -14,13 +14,29 @@ import {
 } from "node:http";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { join } from "node:path";
 import {
   FetchSmartHttp,
   GitEngine,
   GitRemoteOrchestrator,
 } from "../src/git/index.js";
+
+
+function engineTar(): Uint8Array {
+  const rel = process.env.MC_GIT_ENGINE_TAR || "";
+  if (!rel) throw new Error("MC_GIT_ENGINE_TAR is not set (run under bazel test)");
+  const rf = process.env.RUNFILES_DIR;
+  const candidates = [
+    rel && rf ? join(rf, rel) : "",
+    rel && rf ? join(rf, "_main", rel) : "",
+    rel,
+  ].filter(Boolean) as string[];
+  for (const c of candidates) {
+    if (c && existsSync(c)) return new Uint8Array(readFileSync(c));
+  }
+  throw new Error(`git-engine.tar not found (MC_GIT_ENGINE_TAR=${rel})`);
+}
+
 
 const BACKEND_CANDIDATES = [
   "/usr/lib/git-core/git-http-backend",
@@ -37,22 +53,6 @@ function whichGit(): string | null {
 
 function backendPath(): string | null {
   return BACKEND_CANDIDATES.find((p) => existsSync(p)) ?? null;
-}
-
-function engineDir(): string {
-  const jsRel = process.env.MC_GIT_ENGINE_JS || "";
-  const rf = process.env.RUNFILES_DIR;
-  const candidates = [
-    jsRel && rf ? join(rf, jsRel) : "",
-    jsRel && rf ? join(rf, "_main", jsRel) : "",
-    jsRel,
-    join(process.cwd(), "bazel-bin/memcontainers/lib/git-engine/git_engine.mjs"),
-  ];
-  for (const c of candidates) {
-    if (c && existsSync(c)) return dirname(c);
-    if (c && existsSync(join(c, "git_engine.mjs"))) return c;
-  }
-  throw new Error("engine dir not found");
 }
 
 function git(args: string[], opts: { cwd?: string; input?: string } = {}): string {
@@ -248,9 +248,6 @@ async function main() {
     throw new Error("D27/D28 require system git + git-http-backend");
   }
 
-  const dir = engineDir();
-  const baseUrl = pathToFileURL(dir.endsWith("/") ? dir : dir + "/").href;
-
   // ── : real HTTP clone + fetch ───────────────────────────────────────
   {
     const srv = await startGitHttpBackend({
@@ -269,7 +266,7 @@ async function main() {
         throw new Error(`fetchPacks missing PACK magic (len=${pack.byteLength})`);
       }
 
-      const eng = await GitEngine.load({ baseUrl });
+      const eng = await GitEngine.load({ engine: engineTar() });
       const orch = new GitRemoteOrchestrator(eng, {
         http,
         allowOrigins: [srv.origin],
@@ -320,7 +317,7 @@ async function main() {
     });
     try {
       const http = new FetchSmartHttp();
-      const eng = await GitEngine.load({ baseUrl });
+      const eng = await GitEngine.load({ engine: engineTar() });
       const orch = new GitRemoteOrchestrator(eng, {
         http,
         allowOrigins: [srv.origin],
@@ -356,7 +353,7 @@ async function main() {
       }
 
       // Verify second clone sees pushed file
-      const eng2 = await GitEngine.load({ baseUrl });
+      const eng2 = await GitEngine.load({ engine: engineTar() });
       const orch2 = new GitRemoteOrchestrator(eng2, {
         http: new FetchSmartHttp(),
         allowOrigins: [srv.origin],
