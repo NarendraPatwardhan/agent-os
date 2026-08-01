@@ -3,15 +3,12 @@
  * Wire: u32le length | u8 type | payload
  *   length = 1 + payload_len  (covers type byte + payload)
  *
- * Types (product Port — apply only; remotes never run here):
+ * Types (apply path; remotes are host-mediated TS/BEAM orch → Port):
  *   1  JSON Run request → JSON Response (payload UTF-8). Always ge_run_json;
  *      clone/fetch/pull/push dial-refuse at the engine face.
  *   2  pack chunk (raw bytes) → response type 2, payload i32le status (0 ok)
  *   3  pack meta (u8 final flag, 1 = finalize) → type 3, i32le status
  *   4  binary MOUNT_OP body (peer of dispatchMount) → [i32 status][payload]
- *
- * There is no type-5 and no C remote orchestrator. Product remotes are
- * host-mediated: TS orch (JS) or BEAM HTTPS orch (server) → Port apply only.
  */
 
 #ifndef GE_PORT_H_

@@ -6,7 +6,7 @@ Product surface: `docs/git.md`. Design of record: worktree `GIT.md`.
 | Target | Role |
 |--------|------|
 | `:git_engine_lib` | Native static library (`ge_open` / `ge_run_json` / `ge_import_pack`) |
-| `:git_engine_port_lib` | Port frames + binary MOUNT_OP only (no C remote orch) |
+| `:git_engine_port_lib` | Port frames + binary MOUNT_OP |
 | `:git-engine` | BEAM-owned Port binary (stdin/stdout length-prefixed frames) |
 | `:libgit_engine` | `.so` packaging artifact only — product load path is Port + emcc |
 | `:port_frame_test` | Run + mount ctl frames + kill-closed |

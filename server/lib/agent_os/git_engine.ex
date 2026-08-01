@@ -7,8 +7,7 @@ defmodule AgentOS.GitEngine do
       <<length::little-32, type::8, payload::binary-size(length-1)>>
 
   Types: 1 Run, 2 pack chunk, 3 pack meta, 4 binary MOUNT_OP.
-  No type-5 and no C remote orch — remotes are BEAM HTTPS orch
-  (`AgentOS.Git.Orchestrator`) then Port apply only.
+  Remotes: `AgentOS.Git.Orchestrator` (BEAM HTTPS) then Port apply.
 
   Lifecycle: start when a gitfs mount attaches (or explicitly); stop with the VM.
   Port exit fails subsequent ops closed (`:eio`). Engine never dials the network.

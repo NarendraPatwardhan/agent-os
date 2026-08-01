@@ -35,7 +35,7 @@ cc_library(
     linkstatic = True,
 )
 
-# Port RPC + mount only. Remotes are host-mediated (TS/BEAM orch); no C orch.
+# Port RPC + mount. Remotes are host-mediated (TS/BEAM orch) outside this lib.
 # Not linked into emcc wasm.
 cc_library(
     name = "git_engine_port_lib",
