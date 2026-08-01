@@ -136,12 +136,11 @@ async function main() {
     await eng.close();
   }
 
-  // Approval denied when prepare has commands (seed via host buildPushPack path)
+  // Policy block (most restrictive) — short-circuit before prepare/dial
   {
     const eng = await GitEngine.load({ baseUrl });
     await eng.run({ op: "init" });
     const http = new FixtureSmartHttp();
-    // Force commands by wrapping handle after stubbing engine is hard; policy block is enough
     const orch = new GitRemoteOrchestrator(eng, {
       http,
       allowOrigins: ["https://example.com"],
@@ -153,6 +152,100 @@ async function main() {
     });
     if (r.ok || !String(r.stderr || "").includes("blocked")) {
       throw new Error(`expected policy block: ${JSON.stringify(r)}`);
+    }
+    await eng.close();
+  }
+
+  // D10: require_approval without onPushApproval fails closed after prepare
+  {
+    const eng = await GitEngine.load({ baseUrl });
+    await eng.run({ op: "init" });
+    await eng.run({
+      op: "write",
+      args: { path: "a.txt", content: "need-approval\n" },
+    });
+    await eng.run({ op: "add", args: { path: "a.txt" } });
+    await eng.run({
+      op: "commit",
+      args: {
+        message: "c",
+        name: "P",
+        email: "p@p",
+        when_unix: 1_700_000_150,
+      },
+    });
+    const http = new FixtureSmartHttp();
+    http.add(
+      "https://example.com/r.git",
+      [{ name: "refs/heads/master", hash: "0000000000000000000000000000000000000000" }],
+      new Uint8Array(0),
+    );
+    const orch = new GitRemoteOrchestrator(eng, {
+      http,
+      connections: [
+        {
+          ref: "git.user.demo",
+          auth: { kind: "none" },
+          origins: ["https://example.com"],
+        },
+      ],
+      policies: [
+        { owner: "user", pattern: "git.user.*", action: "require_approval" },
+      ],
+      // no onPushApproval → fail closed
+    });
+    const r = await orch.handle({
+      op: "push",
+      args: {
+        url: "https://example.com/r.git",
+        connection: "git.user.demo",
+      },
+    });
+    if (r.ok || !String(r.stderr || "").includes("requires approval")) {
+      throw new Error(`require_approval fail-closed: ${JSON.stringify(r)}`);
+    }
+    if (http.lastPush) {
+      throw new Error("denied approval must not pushPacks");
+    }
+
+    // Explicit deny callback
+    let asked = false;
+    const http2 = new FixtureSmartHttp();
+    http2.add(
+      "https://example.com/r.git",
+      [{ name: "refs/heads/master", hash: "0000000000000000000000000000000000000000" }],
+      new Uint8Array(0),
+    );
+    const orchDeny = new GitRemoteOrchestrator(eng, {
+      http: http2,
+      connections: [
+        {
+          ref: "git.user.demo",
+          auth: { kind: "none" },
+          origins: ["https://example.com"],
+        },
+      ],
+      policies: [
+        { owner: "user", pattern: "git.user.*", action: "require_approval" },
+      ],
+      onPushApproval: async () => {
+        asked = true;
+        return false;
+      },
+    });
+    const denied = await orchDeny.handle({
+      op: "push",
+      args: {
+        url: "https://example.com/r.git",
+        connection: "git.user.demo",
+      },
+    });
+    if (!asked) throw new Error("onPushApproval not invoked");
+    if (denied.ok || !String(denied.stderr || "").includes("requires approval")) {
+      throw new Error(`require_approval deny: ${JSON.stringify(denied)}`);
+    }
+    if (http2.lastPush) {
+      throw new Error("denied callback must not pushPacks");
     }
     await eng.close();
   }

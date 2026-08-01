@@ -6,6 +6,23 @@
  *
  * Origin authorization uses `@mc/host` `originAllowed` (canonical http(s)
  * origin equality; empty origins = fail closed via `.some` on empty list).
+ *
+ * Dual-host semantic table (JS connection-bound remotes = reference; BEAM
+ * host opts must stay equivalent — K16/K20):
+ *
+ * | Concern                 | JS (this module + orch)                         | BEAM (`AgentOS.Git.Connections` + orch)         |
+ * |-------------------------|-------------------------------------------------|-------------------------------------------------|
+ * | Credential source       | `ConnectionDefinition.auth` only                | connection catalog `:auth` (or bare host `:auth`)|
+ * | Guest body secrets      | Reject (`token`/`auth`/… keys) — never splice   | Reject same keys (`:guest_secrets_forbidden`)   |
+ * | Connection origins      | `connection.origins` (empty = fail closed)      | same on attach_git `connections:`               |
+ * | Bare URL origins        | `allowOrigins` on orch                          | `:allowed_origins` (legacy when connections empty)|
+ * | Push `approve`          | `policies` → `pushAction: "approve"`            | `policies` → `:approve`                         |
+ * | Push `require_approval` | `policies` → `"require_approval"` + callback    | `policies` + `:on_push_approval`                |
+ * | Push `block`            | `policies` → `"block"` (most restrictive wins)  | same (`git: push blocked by policy`)            |
+ * | Auth splice             | `spliceCredentialHeaders` / `Url` host-only     | `SmartHttp.auth_headers` host-only              |
+ * | Auth kinds (catalog)    | none \| bearer \| header \| query               | none \| bearer \| header \| basic (query passthrough) |
+ * | Userinfo in URL         | Reject                                          | Reject                                          |
+ * | Secrets in logs/resp    | `redactRemoteForLog` (kind only)                | `redact_url` / info refs only / no tokens       |
  */
 
 import { originAllowed } from "@mc/host";
@@ -35,11 +52,51 @@ export interface ResolveRemoteOptions {
   remoteConnections?: Record<string, string>;
 }
 
+/**
+ * Guest host_call / ctl args must never carry credential material. Host
+ * connections catalog + orch opts own secrets; anything listed here in the
+ * guest body is rejected (fail closed), not ignored silently.
+ */
+const GUEST_SECRET_ARG_KEYS = new Set([
+  "token",
+  "auth",
+  "password",
+  "pass",
+  "secret",
+  "secrets",
+  "bearer",
+  "authorization",
+  "credentials",
+  "credential",
+  "apikey",
+  "api_key",
+  "accesstoken",
+  "access_token",
+  "privatekey",
+  "private_key",
+  "client_secret",
+  "clientsecret",
+]);
+
 function fail(
   code: number,
   stderr: string,
 ): { ok: false; code: number; stderr: string } {
   return { ok: false, code, stderr };
+}
+
+/**
+ * True when guest args include a secret-bearing key (case-insensitive).
+ * Used by resolve + tests — dual-host: BEAM must not splice from guest body either.
+ */
+export function guestArgsCarrySecrets(
+  args: Record<string, unknown> | undefined,
+): boolean {
+  if (!args || typeof args !== "object") return false;
+  for (const key of Object.keys(args)) {
+    if (GUEST_SECRET_ARG_KEYS.has(key.toLowerCase())) return true;
+  }
+  return false;
 }
 
 /**
@@ -86,6 +143,14 @@ export function resolveGitRemote(
   const a = args ?? {};
   const connections = opts.connections ?? [];
   const policies = opts.policies ?? [];
+
+  // D7: guest body cannot carry auth secrets — reject, never splice from args.
+  if (guestArgsCarrySecrets(a)) {
+    return fail(
+      1,
+      "git: guest body must not include auth secrets (use connection ref)\n",
+    );
+  }
 
   let url = String(a.url ?? "");
   let connectionRef =

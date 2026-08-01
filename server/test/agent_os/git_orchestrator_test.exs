@@ -1,6 +1,7 @@
 defmodule AgentOS.Git.OrchestratorTest do
   use ExUnit.Case, async: false
 
+  alias AgentOS.Git.Connections
   alias AgentOS.Git.Orchestrator
   alias AgentOS.Git.SmartHttp
   alias AgentOS.GitEngine
@@ -905,6 +906,10 @@ defmodule AgentOS.Git.OrchestratorTest do
         info0 = AgentOS.ControlPlane.info(id)
         assert info0.git_attached == true
         assert info0.git_allowed_origins == [@fixture_origin]
+        # Legacy attach (no :connections): connection catalog empty.
+        assert info0.git_connection_count == 0
+        assert info0.git_connection_refs == []
+        assert info0.git_policy_count == 0
 
         event = %{
           kind: :host_call,
@@ -1242,6 +1247,233 @@ defmodule AgentOS.Git.OrchestratorTest do
   end
 
   @tag timeout: 120_000
+  test "PR11 attach_git stores connections + policies (product path, no flat allowlist)" do
+    # VM stores host connections/policies and surfaces refs via info (no secrets).
+    # Full clone compose is covered by "connections-only → host_call clone" below.
+    wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
+    posix = runfile_bytes("memcontainers/images/posix.tar")
+    path = engine_path()
+
+    if is_nil(wasm) or is_nil(posix) do
+      IO.puts(:stderr, "skipping PR11 connections attach test: kernel/posix runfiles missing")
+    else
+      id = {"git-conn", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
+
+      connections = [
+        %{
+          ref: "github.user.work",
+          auth: %{kind: :bearer, token: "secret-token-must-not-leak"},
+          origins: [@fixture_origin],
+          spec: %{url: @fixture_url}
+        },
+        %{
+          "ref" => "gitlab.org.main",
+          "auth" => %{"kind" => "none"},
+          "origins" => ["https://gitlab.com"]
+        }
+      ]
+
+      policies = [
+        %{pattern: "github.user.work.*", action: :require_approval, owner: :org},
+        %{"pattern" => "gitlab.org.*", "action" => "block"}
+      ]
+
+      try do
+        assert {:ok, _pid} =
+                 AgentOS.ControlPlane.create(id,
+                   wasm: wasm,
+                   base_image: posix,
+                   deterministic: true,
+                   workers: 0,
+                   host_call: :relay
+                 )
+
+        # Product path: connections only — no separate allowed_origins/auth.
+        assert :ok =
+                 AgentOS.ControlPlane.attach_git(id,
+                   executable: path,
+                   connections: connections,
+                   policies: policies
+                 )
+
+        info = AgentOS.ControlPlane.info(id)
+        assert info.git_attached == true
+        assert info.git_connection_count == 2
+        assert Enum.sort(info.git_connection_refs) ==
+                 Enum.sort(["github.user.work", "gitlab.org.main"])
+        assert info.git_policy_count == 2
+        # Flat allowlist not required / not stored when connections present.
+        assert info.git_allowed_origins == []
+        # Secrets never appear in info (only refs).
+        refute inspect(info) =~ "secret-token"
+
+        assert :ok = AgentOS.ControlPlane.detach_git(id)
+        info2 = AgentOS.ControlPlane.info(id)
+        assert info2.git_attached == false
+        assert info2.git_connection_count == 0
+        assert info2.git_connection_refs == []
+        assert info2.git_policy_count == 0
+      after
+        AgentOS.ControlPlane.dispose(id)
+      end
+    end
+  end
+
+  @tag timeout: 120_000
+  test "PR11 product path: attach_git connections-only → host_call clone via fixture" do
+    # Cruel acceptance: no allowed_origins / flat auth — only connections catalog.
+    # attach_git → try_answer_git_host_call "git" clone with args.connection →
+    # fixture transport receives spliced host auth; worktree materializes.
+    wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
+    posix = runfile_bytes("memcontainers/images/posix.tar")
+    path = engine_path()
+
+    if is_nil(wasm) or is_nil(posix) do
+      IO.puts(:stderr, "skipping PR11 connections clone e2e: kernel/posix runfiles missing")
+    else
+      id = {"git-conn-clone", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
+      pack = fixture_git_bytes!("minimal.pack")
+      tip = fixture_git_bytes!("minimal.tip") |> String.trim()
+
+      root =
+        Path.join(
+          System.tmp_dir!(),
+          "git-conn-clone-" <> Integer.to_string(System.unique_integer([:positive]))
+        )
+
+      File.mkdir_p!(root)
+      {:ok, auth_agent} = Agent.start_link(fn -> nil end)
+
+      secret = "conn-only-secret-must-not-leak"
+
+      transport = fn
+        :list_refs, {_url, opts} ->
+          Agent.update(auth_agent, fn _ -> Keyword.get(opts, :auth) end)
+          {:ok, [%{name: "refs/heads/main", hash: tip}]}
+
+        :fetch_packs, {_url, _want, _have, opts} ->
+          Agent.update(auth_agent, fn _ -> Keyword.get(opts, :auth) end)
+          {:ok, pack}
+
+        :push_packs, _ ->
+          flunk("clone must not push")
+      end
+
+      connections = [
+        %{
+          ref: "github.user.work",
+          auth: %{kind: :bearer, token: secret},
+          origins: [@fixture_origin]
+        }
+      ]
+
+      try do
+        assert {:ok, _pid} =
+                 AgentOS.ControlPlane.create(id,
+                   wasm: wasm,
+                   base_image: posix,
+                   deterministic: true,
+                   workers: 0,
+                   host_call: :relay
+                 )
+
+        # Product path: connections only — no allowed_origins, no flat auth.
+        assert :ok =
+                 AgentOS.ControlPlane.attach_git(id,
+                   executable: path,
+                   root: root,
+                   connections: connections,
+                   transport: transport
+                 )
+
+        info0 = AgentOS.ControlPlane.info(id)
+        assert info0.git_attached == true
+        assert info0.git_connection_refs == ["github.user.work"]
+        assert info0.git_allowed_origins == []
+        refute inspect(info0) =~ secret
+
+        event = %{
+          kind: :host_call,
+          handle: 9_501,
+          name: "git",
+          body:
+            ~s({"op":"clone","args":{"url":"#{@fixture_url}","connection":"github.user.work"}})
+        }
+
+        assert :answered =
+                 AgentOS.Vm.try_answer_git_host_call(AgentOS.ControlPlane.whereis(id), event)
+
+        assert_eventually(fn ->
+          AgentOS.ControlPlane.info(id).git_inflight == 0
+        end)
+
+        assert_eventually(fn ->
+          case File.read(Path.join(root, "README")) do
+            {:ok, "hello\n"} -> true
+            _ -> false
+          end
+        end)
+
+        assert {:ok, "hello\n"} = File.read(Path.join(root, "README"))
+
+        seen = Agent.get(auth_agent, & &1)
+        assert is_map(seen)
+        assert (Map.get(seen, :kind) || Map.get(seen, "kind")) in [:bearer, "bearer"]
+        assert (Map.get(seen, :token) || Map.get(seen, "token")) == secret
+
+        # Bare URL without connection fails closed when only connections are set
+        # (no flat allowed_origins).
+        dialed = :atomics.new(1, signed: false)
+
+        bare_transport = fn
+          :list_refs, _ ->
+            :atomics.put(dialed, 1, 1)
+            {:ok, []}
+
+          :fetch_packs, _ ->
+            :atomics.put(dialed, 1, 1)
+            {:ok, <<>>}
+        end
+
+        # Re-attach to swap transport for bare-URL deny proof.
+        assert :ok = AgentOS.ControlPlane.detach_git(id)
+
+        assert :ok =
+                 AgentOS.ControlPlane.attach_git(id,
+                   executable: path,
+                   connections: connections,
+                   transport: bare_transport
+                 )
+
+        bare_event = %{
+          kind: :host_call,
+          handle: 9_502,
+          name: "git",
+          body: ~s({"op":"clone","args":{"url":"#{@fixture_url}"}})
+        }
+
+        assert :answered =
+                 AgentOS.Vm.try_answer_git_host_call(
+                   AgentOS.ControlPlane.whereis(id),
+                   bare_event
+                 )
+
+        assert_eventually(fn ->
+          AgentOS.ControlPlane.info(id).git_inflight == 0
+        end)
+
+        assert :atomics.get(dialed, 1) == 0, "bare URL must not dial without connection"
+
+        assert :ok = AgentOS.ControlPlane.detach_git(id)
+      after
+        Agent.stop(auth_agent)
+        File.rm_rf(root)
+        AgentOS.ControlPlane.dispose(id)
+      end
+    end
+  end
+
+  @tag timeout: 120_000
   test "R65 host_call args.mount demuxes to the matching engine" do
     wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
     posix = runfile_bytes("memcontainers/images/posix.tar")
@@ -1465,6 +1697,346 @@ defmodule AgentOS.Git.OrchestratorTest do
 
     snap = AgentOS.Git.Metrics.snapshot()
     assert snap.clone_error >= 1
+    :ok = GitEngine.stop(pid)
+  end
+
+  # ── PR11 / D1: connection-bound remotes + credential splice ────────────────
+
+  test "resolve_remote: connection auth + origins; unknown / empty fail closed" do
+    conns = [
+      %{
+        ref: "github.user.work",
+        auth: %{kind: :bearer, token: "host-secret"},
+        origins: ["https://github.com"]
+      }
+    ]
+
+    assert {:ok, binding} =
+             Connections.resolve_remote(
+               %{"url" => "https://github.com/org/repo.git", "connection" => "github.user.work"},
+               connections: conns
+             )
+
+    assert binding.url =~ "github.com"
+    assert binding.connection_ref == "github.user.work"
+    assert binding.auth.kind == :bearer
+    assert binding.auth.token == "host-secret"
+    assert binding.push_action == :approve
+
+    assert {:error, {:unknown_connection, "no.such"}} =
+             Connections.resolve_remote(
+               %{"url" => "https://github.com/r.git", "connection" => "no.such"},
+               connections: conns
+             )
+
+    empty = [%{ref: "github.user.work", auth: %{kind: :bearer, token: "t"}, origins: []}]
+
+    assert {:error, {:origin_not_allowlisted_for_connection, "github.user.work"}} =
+             Connections.resolve_remote(
+               %{"url" => "https://evil.example/r.git", "connection" => "github.user.work"},
+               connections: empty
+             )
+
+    # Guest body token/auth rejected (D7) — never spliced.
+    assert {:error, :guest_secrets_forbidden} =
+             Connections.resolve_remote(
+               %{
+                 "url" => "https://example.com/r.git",
+                 "auth" => %{"kind" => "bearer", "token" => "guest-stolen"},
+                 "token" => "guest-stolen"
+               },
+               allowed_origins: ["https://example.com"],
+               auth: %{kind: :none}
+             )
+
+    # Clean bare URL still resolves with host auth only.
+    assert {:ok, bare} =
+             Connections.resolve_remote(
+               %{"url" => "https://example.com/r.git"},
+               allowed_origins: ["https://example.com"],
+               auth: %{kind: :none}
+             )
+
+    assert bare.auth.kind == :none
+
+    assert Connections.evaluate_push_policy("github.user.work", [
+             %{pattern: "github.*", action: :require_approval},
+             %{pattern: "github.user.work", action: :block}
+           ]) == :block
+
+    assert Connections.match_connection_pattern?("github.user.*", "github.user.work")
+    refute Connections.match_connection_pattern?("github.org.*", "github.user.work")
+  end
+
+  @tag timeout: 60_000
+  test "clone with connection ref + origins + fixture transport succeeds" do
+    path = engine_path()
+    pack_path = Path.expand("../fixtures/git/minimal.pack", __DIR__)
+    tip_path = Path.expand("../fixtures/git/minimal.tip", __DIR__)
+
+    if not (File.regular?(pack_path) and File.regular?(tip_path)) do
+      IO.puts(:stderr, "skipping connection clone: minimal.pack fixture missing")
+    else
+      pack = File.read!(pack_path)
+      tip = File.read!(tip_path) |> String.trim()
+      root =
+        Path.join(
+          System.tmp_dir!(),
+          "orch-conn-" <> Integer.to_string(System.unique_integer([:positive]))
+        )
+
+      File.mkdir_p!(root)
+      {:ok, auth_agent} = Agent.start_link(fn -> nil end)
+
+      transport = fn
+        :list_refs, {_url, opts} ->
+          Agent.update(auth_agent, fn _ -> Keyword.get(opts, :auth) end)
+          {:ok, [%{name: "refs/heads/main", hash: tip}]}
+
+        :fetch_packs, {_url, _want, _have, opts} ->
+          Agent.update(auth_agent, fn _ -> Keyword.get(opts, :auth) end)
+          {:ok, pack}
+
+        :push_packs, _ ->
+          flunk("clone must not push")
+      end
+
+      conns = [
+        %{
+          ref: "github.user.work",
+          auth: %{kind: :bearer, token: "host-secret-tok"},
+          origins: [@fixture_origin]
+        }
+      ]
+
+      try do
+        assert {:ok, pid} = GitEngine.start(executable: path, root: root)
+
+        # No legacy allowed_origins — connection origins alone authorize the dial.
+        assert {:ok, json} =
+                 Orchestrator.run(
+                   pid,
+                   ~s({"op":"clone","args":{"url":"#{@fixture_url}","connection":"github.user.work"}}),
+                   transport: transport,
+                   connections: conns
+                 )
+
+        assert json =~ "\"ok\":true" or json =~ ~s("ok":true), "clone failed: #{json}"
+        assert json =~ "cloned"
+        refute json =~ "host-secret-tok"
+
+        seen = Agent.get(auth_agent, & &1)
+        assert is_map(seen)
+        assert (Map.get(seen, :kind) || Map.get(seen, "kind")) in [:bearer, "bearer"]
+        assert (Map.get(seen, :token) || Map.get(seen, "token")) == "host-secret-tok"
+
+        :ok = GitEngine.stop(pid)
+      after
+        Agent.stop(auth_agent)
+        File.rm_rf(root)
+      end
+    end
+  end
+
+  @tag timeout: 30_000
+  test "unknown connection fails" do
+    path = engine_path()
+    assert {:ok, pid} = GitEngine.start(executable: path)
+    dialed = :atomics.new(1, signed: false)
+
+    transport = fn
+      :list_refs, _ ->
+        :atomics.put(dialed, 1, 1)
+        {:ok, []}
+
+      :fetch_packs, _ ->
+        :atomics.put(dialed, 1, 1)
+        {:ok, <<>>}
+    end
+
+    assert {:ok, json} =
+             Orchestrator.run(
+               pid,
+               ~s({"op":"clone","args":{"url":"#{@fixture_url}","connection":"no.such.conn"}}),
+               transport: transport,
+               connections: [
+                 %{
+                   ref: "github.user.work",
+                   auth: %{kind: :bearer, token: "t"},
+                   origins: [@fixture_origin]
+                 }
+               ]
+             )
+
+    assert json =~ "\"ok\":false" or json =~ ~s("ok":false)
+    assert json =~ "unknown connection"
+    assert :atomics.get(dialed, 1) == 0
+    :ok = GitEngine.stop(pid)
+  end
+
+  @tag timeout: 30_000
+  test "empty origins on connection fails closed" do
+    path = engine_path()
+    assert {:ok, pid} = GitEngine.start(executable: path)
+    dialed = :atomics.new(1, signed: false)
+
+    transport = fn
+      :list_refs, _ ->
+        :atomics.put(dialed, 1, 1)
+        {:ok, []}
+
+      :fetch_packs, _ ->
+        :atomics.put(dialed, 1, 1)
+        {:ok, <<>>}
+    end
+
+    assert {:ok, json} =
+             Orchestrator.run(
+               pid,
+               ~s({"op":"clone","args":{"url":"#{@fixture_url}","connection":"github.user.work"}}),
+               transport: transport,
+               connections: [
+                 %{
+                   ref: "github.user.work",
+                   auth: %{kind: :bearer, token: "t"},
+                   origins: []
+                 }
+               ]
+             )
+
+    assert json =~ "\"ok\":false" or json =~ ~s("ok":false)
+    assert json =~ "not allowlisted for connection"
+    assert :atomics.get(dialed, 1) == 0
+    :ok = GitEngine.stop(pid)
+  end
+
+  @tag timeout: 30_000
+  test "guest body with fake token field rejected before dial (D7)" do
+    path = engine_path()
+    assert {:ok, pid} = GitEngine.start(executable: path)
+    dialed = :atomics.new(1, signed: false)
+
+    transport = fn
+      :list_refs, _ ->
+        :atomics.put(dialed, 1, 1)
+        {:ok, [%{name: "refs/heads/main", hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}
+
+      :fetch_packs, _ ->
+        :atomics.put(dialed, 1, 1)
+        {:ok, <<>>}
+    end
+
+    body =
+      ~s({"op":"clone","args":{"url":"#{@fixture_url}","token":"guest-stolen","auth":{"kind":"bearer","token":"guest-stolen"}}})
+
+    assert {:ok, json} =
+             Orchestrator.run(
+               pid,
+               body,
+               transport: transport,
+               allowed_origins: [@fixture_origin],
+               auth: %{kind: :none}
+             )
+
+    assert json =~ "\"ok\":false" or json =~ ~s("ok":false)
+    assert json =~ "must not include auth secrets"
+    refute json =~ "guest-stolen"
+    assert :atomics.get(dialed, 1) == 0
+
+    :ok = GitEngine.stop(pid)
+  end
+
+  @tag timeout: 30_000
+  test "push policy block fails before dial" do
+    path = engine_path()
+    assert {:ok, pid} = GitEngine.start(executable: path)
+    dialed = :atomics.new(1, signed: false)
+
+    transport = fn
+      :list_refs, _ ->
+        :atomics.put(dialed, 1, 1)
+        {:ok, []}
+
+      :push_packs, _ ->
+        :atomics.put(dialed, 1, 1)
+        {:ok, %{ok: true, message: "ok"}}
+    end
+
+    assert {:ok, json} =
+             Orchestrator.run(
+               pid,
+               ~s({"op":"push","args":{"url":"#{@fixture_url}","connection":"github.user.work"}}),
+               transport: transport,
+               connections: [
+                 %{
+                   ref: "github.user.work",
+                   auth: %{kind: :bearer, token: "t"},
+                   origins: [@fixture_origin]
+                 }
+               ],
+               policies: [%{pattern: "github.user.work", action: :block}]
+             )
+
+    assert json =~ "blocked by policy"
+    assert json =~ "\"ok\":false" or json =~ ~s("ok":false)
+    assert :atomics.get(dialed, 1) == 0
+    :ok = GitEngine.stop(pid)
+  end
+
+  @tag timeout: 30_000
+  test "push policy require_approval fails closed without fun" do
+    path = engine_path()
+    assert {:ok, pid} = GitEngine.start(executable: path)
+    assert {:ok, _} = GitEngine.run(pid, %{"op" => "init"})
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "write",
+               "args" => %{"path" => "p.txt", "content" => "p\n"}
+             })
+
+    assert {:ok, _} = GitEngine.run(pid, %{"op" => "add", "args" => %{"path" => "p.txt"}})
+
+    assert {:ok, _} =
+             GitEngine.run(pid, %{
+               "op" => "commit",
+               "args" => %{
+                 "message" => "c",
+                 "name" => "P",
+                 "email" => "p@p",
+                 "when_unix" => 1_700_000_250
+               }
+             })
+
+    dialed_push = :atomics.new(1, signed: false)
+
+    transport = fn
+      :list_refs, _ ->
+        {:ok, [%{name: "refs/heads/master", hash: "0000000000000000000000000000000000000000"}]}
+
+      :push_packs, _ ->
+        :atomics.put(dialed_push, 1, 1)
+        {:ok, %{ok: true, message: "ok"}}
+    end
+
+    assert {:ok, json} =
+             Orchestrator.run(
+               pid,
+               ~s({"op":"push","args":{"url":"#{@fixture_url}","connection":"github.user.work"}}),
+               transport: transport,
+               connections: [
+                 %{
+                   ref: "github.user.work",
+                   auth: %{kind: :none},
+                   origins: [@fixture_origin]
+                 }
+               ],
+               policies: [%{pattern: "*", action: "require_approval"}]
+             )
+
+    assert json =~ "requires approval"
+    refute json =~ "pushed"
+    assert :atomics.get(dialed_push, 1) == 0
     :ok = GitEngine.stop(pid)
   end
 

@@ -55,7 +55,8 @@ Same ownership cut as kernel HTTP egress: **BEAM dials HTTPS**; the guest and th
 guest host_call "git"
   → kernel CAP_NET
   → BEAM AgentOS.Git.Orchestrator
-       ├─ smart-HTTP (OTP :httpc / ssl) + connection credential splice
+       ├─ connection catalog resolve (PR11) + credential splice
+       ├─ smart-HTTP (OTP :httpc / ssl)
        │    ListRefs / FetchPacks / PushPacks (receive-pack)
        └─ Port frames → git-engine
             import_pack, refs.import, clone.apply / fetch.apply,
@@ -66,19 +67,77 @@ guest host_call "git"
 | Responsibility | Owner |
 |----------------|--------|
 | TLS, ListRefs, FetchPacks, PushPacks | **BEAM** (`AgentOS.Git.SmartHttp`) |
-| Origin / connection policy | **BEAM** (connections catalog) |
+| Origin / connection policy + credential splice | **BEAM** (`AgentOS.Git.Connections` catalog on `attach_git`) |
 | Pack import + apply + packbuilder + local porcelain | **C Port** (`AgentOS.GitEngine`) |
 | JS browser/Node remotes | **TS** orch + emcc |
 | **Push (server)** | **Supported** when not `read_only` — pack.build + receive-pack + push.complete |
 
+### Product path: connection catalog (PR11)
+
+**Prefer connections over a flat origin allowlist.** Host attaches git with a connection
+catalog (same shape as [connections](./connections.md) / JS `ConnectionDefinition`). Origins
+and auth live **on the matching connection** — a separate `allowed_origins` is **not** required.
+
+```elixir
+# BEAM / ControlPlane product attach (secrets stay host-side)
+AgentOS.ControlPlane.attach_git(vm_id,
+  connections: [
+    %{
+      ref: "github.user.work",
+      auth: %{kind: :bearer, token: System.fetch_env!("GITHUB_TOKEN")},
+      origins: ["https://github.com"]
+    }
+  ],
+  policies: [
+    %{pattern: "github.user.*", action: :require_approval}
+  ]
+)
+```
+
+```ts
+// JS create options — same catalog cut
+mc.create({
+  experimentalGitEngine: true,
+  connections: [
+    { ref: "github.user.work", auth: { kind: "bearer", token }, origins: ["https://github.com"] },
+  ],
+});
+```
+
+Guest / thin CLI remotes name a **public** locator + optional connection ref only:
+
+```json
+{"op":"clone","args":{"url":"https://github.com/org/repo.git","connection":"github.user.work"}}
+```
+
+| Rule | Behaviour |
+|------|-----------|
+| **Host catalog** | `attach_git(connections: …)` / JS `connections` — never guest body |
+| **Guest may pass** | Public `url`, `connection` / `agentos` ref, `remote` name, mount |
+| **Guest must not pass** | Tokens, auth maps, origins, policies — **rejected** (`git: guest body must not include auth secrets`) |
+| **Empty `connection.origins`** | Fail closed — no dial, no credential splice to attacker URLs |
+| **Unknown connection ref** | Fail closed (`git: unknown connection ref …`) |
+| **Bare URL (no connection)** | Requires non-empty host `allowed_origins` match (legacy / fixture). Product attaches with connections only → bare URL fails closed |
+| **Push policy** | `policies: [%{pattern, action}]` with `approve` \| `require_approval` \| `block` (most restrictive wins). Stable stderr: `git: push blocked by policy`, `git: push requires approval` |
+| **Secrets in responses / info** | Never — `Vm.info` surfaces connection **refs** only |
+
+**Legacy flat allowlist** (`allowed_origins` + optional flat `auth`) still works when
+`connections` is empty (fixtures / migration). When `connections` is non-empty, the catalog
+wins for remote policy.
+
+Aligns with [connections](./connections.md): credential splice after origin checks; CAP_NET
+still required for guest remotes via host_call name `"git"`.
+
 **Server remotes support push** on the BEAM path when the git mount is not read-only:
 
-1. `push.prepare` (local tips as commands)
-2. ListRefs lease (remote `oldHash`)
-3. `GitEngine.pack_build/2` (optional `haves:` from lease `old_hash`) → `.git/agentos/push.pack`
+1. Connection / origin policy + push policy (`block` fails before dial)
+2. `push.prepare` (local tips as commands)
+3. ListRefs lease (remote `oldHash`)
+4. `require_approval` / host approval callback when policy demands it
+5. `GitEngine.pack_build/2` (optional `haves:` from lease `old_hash`) → `.git/agentos/push.pack`
    (non-delete must be non-empty `PACK…`; delete-only may be empty)
-4. Smart-HTTP `git-receive-pack` + report-status
-5. `push.complete` (remote-tracking when remote accepted; skipped for all-zero delete hash)
+6. Smart-HTTP `git-receive-pack` + report-status
+7. `push.complete` (remote-tracking when remote accepted; skipped for all-zero delete hash)
 
 Read-only mounts reject push with a **stable** stderr (do not paraphrase in callers that match it):
 
@@ -89,8 +148,8 @@ git: push rejected (read-only mount)
 Empty pack on a non-delete push fails closed (`git: empty pack refused for non-delete push`).
 **Delete-ref push** (`args.delete: true | ref | [refs…]`): `newHash` all-zero, empty pack allowed.
 **Thin-pack / haves (R48):** packbuilder hides lease old tips so shared history is omitted.
-Origin allowlist, max pack size, and no-URL-credentials policy apply to push URLs the same as
-fetch/clone. Secrets only in BEAM request headers.
+Connection origin policy, max pack size, and no-URL-credentials policy apply to push URLs the
+same as fetch/clone. Secrets only in BEAM request headers.
 
 ### Partial clone filter (R36)
 
@@ -158,7 +217,7 @@ on partial progress):
 
 | # | Criterion | Status |
 |---|-----------|--------|
-| 1 | **Origin / connection policy** — empty origins fail closed; credential splice host-only; no secrets in guest/ctl/engine args | **Met in unit/fixture** — bare-URL + empty `allowOrigins` fail closed (JS); dual-host policy tests green; must stay green |
+| 1 | **Origin / connection policy** — empty origins fail closed; credential splice host-only; no secrets in guest/ctl/engine args | **Met in unit/fixture** — connection catalog product path (JS + BEAM `attach_git connections:`); bare-URL / empty origins fail closed; guest secret keys rejected both hosts; dual-host policy tests green |
 | 2 | **Pack e2e** — pack import → refs → clone/fetch apply on **both** JS wasm and BEAM Port (`minimal.pack` + golden orch vectors) | **Met (fixture class)** — abi/pack fixtures + `clone_success_steps` / empty-pack / origin_denied goldens on TS + BEAM; live public HTTPS still residual (R4) |
 | 3 | **Push or explicit RO** — packbuilder path on each product host **or** documented RO with stable reject | **Met** — JS + BEAM pack.build + receive-pack push when not read-only; RO mounts reject with stable `git: push rejected (read-only mount)` |
 | 4 | **Single-writer** — one engine queue per gitfs mount; K21 one engine per path | **Met (foundation)** — bridge/Port serialise per engine; multi-mount demux + same-path fail-closed (R63–R66) |

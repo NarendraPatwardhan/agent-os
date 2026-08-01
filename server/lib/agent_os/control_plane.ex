@@ -243,7 +243,16 @@ defmodule AgentOS.ControlPlane do
   Attach BEAM-owned git-engine Port to a VM (gitfs + remotes).
 
   Passes `opts` through to `AgentOS.Vm.attach_git/2` unchanged — does **not**
-  inject `:any` origins. Empty/missing `allowed_origins` fails closed for remotes.
+  inject `:any` origins or invent connections.
+
+  **Product (PR11):** prefer `:connections` (JS `ConnectionDefinition` maps:
+  `%{ref, auth, origins, spec?}`) and optional `:policies`
+  (`[%{pattern, action}]`, actions `:approve | :require_approval | :block`).
+  When connections are non-empty, origins/auth come from the matching
+  connection — a separate `:allowed_origins` is not required.
+
+  **Legacy:** when `:connections` is empty, `:allowed_origins` / `:auth` still
+  gate remotes (empty/missing origins fail closed).
 
   Multi-mount (R63–R65): call again with a **different** `:mount_path` to attach
   another engine. Same path while live → `{:error, :git_already_attached}`.

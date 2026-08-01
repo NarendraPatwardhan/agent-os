@@ -275,6 +275,11 @@ export class GitRemoteOrchestrator {
     return resp;
   }
 
+  /**
+   * Resolve public locator + host credential + pushAction from policies.
+   * Guest body secrets (token/auth/…) are rejected in resolveGitRemote (D7).
+   * Dual-host: BEAM must use host-owned auth/opts only — see connections.ts table.
+   */
   private resolve(req: GitRequest) {
     return resolveGitRemote((req.args ?? {}) as Record<string, unknown>, {
       connections: this.connections,
@@ -708,6 +713,8 @@ export class GitRemoteOrchestrator {
     const denied = this.checkOriginPolicy(binding);
     if (denied) return denied;
 
+    // D10: pushAction from ConnectionPolicyRule set (most restrictive wins).
+    // block → fail before dial; require_approval gated after prepare has commands.
     if (binding.pushAction === "block") {
       return {
         ok: false,

@@ -21,6 +21,7 @@ defmodule AgentOS.Git.Orchestrator do
   (also under `server/test/fixtures/git/orch/`).
   """
 
+  alias AgentOS.Git.Connections
   alias AgentOS.Git.Metrics
   alias AgentOS.Git.PackCache
   alias AgentOS.Git.SmartHttp
@@ -31,15 +32,20 @@ defmodule AgentOS.Git.Orchestrator do
   @zero_oid "0000000000000000000000000000000000000000"
   @push_read_only "git: push rejected (read-only mount)"
   @push_requires_approval "git: push requires approval"
+  @push_blocked "git: push blocked by policy"
 
   @doc """
   Handle a guest/SDK remote Request JSON against a live git-engine Port pid.
 
   Options:
   * `:transport` — injectable SmartHttp transport (tests)
-  * `:auth` — `%{kind: :none | :bearer | :header | :basic, ...}`
+  * `:auth` — host-owned `%{kind: :none | :bearer | :header | :basic, ...}`
+    (guest body auth/token fields are ignored)
+  * `:connections` — host connection catalog (`ref` / `origins` / `auth` / `spec`);
+    guest may pass `args.connection` / `args.agentos` to bind one
+  * `:policies` — connection push-policy rules (`pattern` / `action`)
   * `:allowed_origins` — list of canonical `http(s)://host[:port]` origins
-    (required for product dials; empty/missing fails closed). Prefer explicit
+    (required for bare-URL dials; empty/missing fails closed). Prefer explicit
     lists in tests. `:any` is fixture-transport only (see SmartHttp).
   * `:require_origin_allowlist` — default `true`; set `false` only with
     injected fixture transport
@@ -48,7 +54,8 @@ defmodule AgentOS.Git.Orchestrator do
   * `:pack_cache` — `AgentOS.Git.PackCache` pid (or `:default` for process
     singleton). Download-key is url+wants+haves+depth+filter only — **never** auth.
     Omit / `nil` / `false` disables cache.
-  * `:require_approval` — when `true`, push must be approved (R31)
+  * `:require_approval` — when `true`, push must be approved (R31); also set
+    when a matching policy action is `require_approval`
   * `:on_push_approval` — fun `(ctx :: map()) -> boolean` or `/0`; called when
     `require_approval` is set. Default when missing: reject (fail closed).
   * `:push_approval` — boolean shorthand when `require_approval` is set and no
@@ -56,7 +63,7 @@ defmodule AgentOS.Git.Orchestrator do
 
   **Push** (when not read-only): `push.prepare` → list-refs lease → pack.build
   from new tip OIDs → smart-HTTP receive-pack → `push.complete`. Empty pack on
-  non-delete push fails closed.
+  non-delete push fails closed. Policy `block` fails before dial.
   """
   @spec run(pid(), request(), keyword()) :: {:ok, binary()} | {:error, term()}
   def run(engine_pid, request, opts \\ []) when is_pid(engine_pid) do
@@ -99,8 +106,9 @@ defmodule AgentOS.Git.Orchestrator do
   end
 
   defp clone(engine_pid, req, opts) do
-    with {:ok, url} <- url_of(req),
-         {:ok, _origin} <- SmartHttp.ensure_url_allowed(url, opts),
+    with {:ok, binding} <- resolve_binding(req, opts),
+         opts <- apply_binding(opts, binding),
+         url <- binding.url,
          {:ok, refs} <- SmartHttp.list_refs(url, opts),
          {:ok, tip} <- pick_tip(refs, ref_of(req)),
          wants <- want_oids(refs, tip.hash),
@@ -119,8 +127,9 @@ defmodule AgentOS.Git.Orchestrator do
 
   # pull? = true → R34 fetch + local FF only
   defp fetch(engine_pid, req, opts, pull?) do
-    with {:ok, url} <- url_of(req),
-         {:ok, _origin} <- SmartHttp.ensure_url_allowed(url, opts),
+    with {:ok, binding} <- resolve_binding(req, opts),
+         opts <- apply_binding(opts, binding),
+         url <- binding.url,
          {:ok, refs} <- SmartHttp.list_refs(url, opts),
          {:ok, tip} <- pick_tip(refs, ref_of(req)),
          have <- local_haves(engine_pid),
@@ -218,12 +227,15 @@ defmodule AgentOS.Git.Orchestrator do
   end
 
   defp do_push(engine_pid, req, opts) do
-    with {:ok, url} <- url_of(req),
-         {:ok, _origin} <- SmartHttp.ensure_url_allowed(url, opts),
+    with {:ok, binding} <- resolve_binding(req, opts),
+         :ok <- gate_push_policy(binding),
+         opts <- apply_binding(opts, binding),
+         opts <- maybe_force_require_approval(opts, binding),
+         url <- binding.url,
          {:ok, prep} <- run_push_prepare(engine_pid),
          {:ok, remote_refs} <- SmartHttp.list_refs(url, opts),
          {:ok, commands} <- build_push_commands(prep, remote_refs, req),
-         :ok <- maybe_require_push_approval(url, commands, opts),
+         :ok <- maybe_require_push_approval(url, binding, commands, opts),
          {:ok, pack, delete_only?} <- build_push_pack(engine_pid, commands),
          :ok <- require_push_pack(pack, delete_only?),
          {:ok, status} <- SmartHttp.push_packs(url, commands, pack, opts),
@@ -237,6 +249,9 @@ defmodule AgentOS.Git.Orchestrator do
          response(false, 1, "", "git: remote rejected push: #{msg}\n")}
       end
     else
+      {:error, :push_blocked} ->
+        {:ok, response(false, 1, "", @push_blocked <> "\n")}
+
       {:error, :push_requires_approval} ->
         {:ok, response(false, 1, "", @push_requires_approval <> "\n")}
 
@@ -245,11 +260,25 @@ defmodule AgentOS.Git.Orchestrator do
     end
   end
 
-  # R31: when require_approval is true, call on_push_approval or use push_approval bool.
-  # Default without fun / without true push_approval → reject (fail closed).
-  defp maybe_require_push_approval(url, commands, opts) do
+  defp gate_push_policy(%{push_action: :block}), do: {:error, :push_blocked}
+  defp gate_push_policy(_), do: :ok
+
+  defp maybe_force_require_approval(opts, %{push_action: :require_approval}) do
+    Keyword.put(opts, :require_approval, true)
+  end
+
+  defp maybe_force_require_approval(opts, _), do: opts
+
+  # R31: when require_approval is true (opts or policy), call on_push_approval
+  # or use push_approval bool. Default without fun / without true push_approval
+  # → reject (fail closed).
+  defp maybe_require_push_approval(url, binding, commands, opts) do
     if Keyword.get(opts, :require_approval, false) == true do
-      ctx = %{url: url, commands: commands}
+      ctx = %{
+        url: url,
+        connection_ref: Map.get(binding, :connection_ref),
+        commands: commands
+      }
 
       allowed =
         case Keyword.get(opts, :on_push_approval) do
@@ -322,8 +351,7 @@ defmodule AgentOS.Git.Orchestrator do
         {:ok, response(false, 1, "", "git: ref not found\n")}
 
       {:error, :bad_url} ->
-        op = if mode == :push, do: "push", else: "clone/fetch"
-        {:ok, response(false, 2, "", "#{op} need args.url\n")}
+        {:ok, response(false, 2, "", "clone/fetch/push need args.url or args.connection\n")}
 
       {:error, :bad_remote_url} ->
         {:ok,
@@ -334,8 +362,27 @@ defmodule AgentOS.Git.Orchestrator do
            "git: remote url must be http(s) without embedded credentials\n"
          )}
 
+      {:error, {:unknown_connection, ref}} ->
+        {:ok, response(false, 1, "", "git: unknown connection ref #{ref}\n")}
+
+      {:error, {:origin_not_allowlisted_for_connection, ref}} ->
+        {:ok,
+         response(false, 1, "", "git: origin not allowlisted for connection #{ref}\n")}
+
+      {:error, :guest_secrets_forbidden} ->
+        {:ok,
+         response(
+           false,
+           1,
+           "",
+           "git: guest body must not include auth secrets (use connection ref)\n"
+         )}
+
       {:error, :origin_not_allowed} ->
         {:ok, response(false, 1, "", "git: origin not allowlisted\n")}
+
+      {:error, :push_blocked} ->
+        {:ok, response(false, 1, "", @push_blocked <> "\n")}
 
       {:error, :empty_pack} ->
         {:ok, response(false, 1, "", "git: empty pack from remote\n")}
@@ -835,7 +882,7 @@ defmodule AgentOS.Git.Orchestrator do
     end
   end
 
-  # ── request parsing ────────────────────────────────────────────────────────
+  # ── request parsing / remote resolve ───────────────────────────────────────
 
   defp decode_request(bin) when is_binary(bin) do
     case safe_json_decode(bin) do
@@ -846,16 +893,19 @@ defmodule AgentOS.Git.Orchestrator do
 
   defp decode_request(map) when is_map(map), do: {:ok, stringify_keys(map)}
 
-  defp url_of(req) do
+  # PR11: resolve connection-bound or bare URL; guest auth/token fields ignored.
+  defp resolve_binding(req, opts) do
     args = Map.get(req, "args") || %{}
-    args = if is_map(args), do: stringify_keys(args), else: %{}
-    url = Map.get(args, "url") || Map.get(args, "remote") || ""
+    args = if is_map(args), do: args, else: %{}
+    Connections.resolve_remote(args, opts)
+  end
 
-    if is_binary(url) and url != "" do
-      {:ok, url}
-    else
-      {:error, :bad_url}
-    end
+  # Splice host/connection auth + binding origins into SmartHttp opts.
+  # Credentials only from resolve (host catalog / host opts) — never guest body.
+  defp apply_binding(opts, binding) when is_list(opts) and is_map(binding) do
+    opts
+    |> Keyword.put(:auth, Map.get(binding, :auth) || %{kind: :none})
+    |> Keyword.put(:allowed_origins, Map.get(binding, :origins) || [])
   end
 
   defp ref_of(req) do

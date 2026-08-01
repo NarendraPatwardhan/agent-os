@@ -64,6 +64,14 @@ defmodule AgentOS.Vm do
     git_engines: %{},
     # Host-owned remote policy (never from guest body). See attach_git/2.
     # Shared across mounts on this VM (policy is host-owned, not per-repo).
+    #
+    # Product path (PR11): `git_connections` mirrors JS ConnectionDefinition
+    # `%{ref, auth, origins, spec?}`; origins + auth live on the matching
+    # connection. `git_policies` are push policy rules `%{pattern, action}`.
+    # Legacy flat `git_allowed_origins` / `git_auth` apply only when
+    # connections are empty (fixture / migration).
+    git_connections: [],
+    git_policies: [],
     git_allowed_origins: [],
     git_auth: nil,
     # Test-only injectable SmartHttp transport (fixture double).
@@ -434,25 +442,66 @@ defmodule AgentOS.Vm do
   def unmount(_server, _path, _opts), do: {:error, "unmount expects a binary path"}
 
   @doc """
-  Attach a BEAM-owned native `git-engine` Port for this VM (GIT.md K15/K22 / K21).
+  Attach a BEAM-owned native `git-engine` Port for this VM (GIT.md K15/K22 / K21 / PR11).
 
-  Options:
+  Host-owned remote policy is stored on the VM actor and forwarded into
+  `GitEngine.handle_host_call/4` / orch via `git_host_opts/1`. The guest body
+  never supplies secrets, origins, or push policy.
+
+  ## Product path — connections catalog (PR11)
+
+  Prefer `:connections` (mirrors JS `ConnectionDefinition`). When non-empty,
+  **origins and auth come from the matching connection** — a separate
+  `:allowed_origins` / `:auth` is **not** required.
+
+  * `:connections` — list of maps:
+      `%{ref: binary, auth: map, origins: [binary], spec: map | nil}`
+    - `ref` — connection id (`integration.owner.name`)
+    - `auth` — `%{kind: :none | :bearer | :header | :basic | :query, ...}`
+      (host-only; never guest-visible)
+    - `origins` — absolute `http(s)` origins allowed to receive this credential
+      (empty list = fail closed for that connection)
+    - `spec` — optional `%{url: binary}` and/or `%{baseUrl: binary}` used when
+      the guest names a connection without a public URL
+    String keys (`"ref"`, `"auth"`, …) are also accepted and normalized.
+
+  * `:policies` / `:connection_policies` — optional push policy rules
+    `[%{pattern: binary, action: action}]` where `action` is
+    `:approve | :require_approval | :block` (atoms or strings).
+    Optional `:owner` (`:org | :user` or `"org"` / `"user"`) is preserved when
+    present. Pattern matches a **connection** prefix (not a tool).
+
+  ## Legacy flat allowlist (connections empty only)
+
+  When `:connections` is empty/missing, the parallel legacy surface still works
+  for fixtures and migration:
+
+  * `:allowed_origins` / `:allow_origins` — host-owned origin allowlist
+    (empty/missing fails closed; guest cannot smuggle origins).
+    Defaults to `[]`. `:any` is rejected outside `Mix.env() == :test`.
+  * `:auth` — flat `%{kind: :none | :bearer | :header, ...}` kept in BEAM only
+
+  When `:connections` is non-empty these legacy keys are ignored for remote
+  policy (connections win).
+
+  ## Other options
+
   * `:executable`, `:root`, `:mount_path` (default `"/workspace/repo"`)
-  * `:allowed_origins` / `:allow_origins` — host-owned origin allowlist for product
-    remotes (empty/missing fails closed; guest body cannot smuggle origins).
-    Defaults to `[]` (fail closed). `:any` is rejected outside `Mix.env() == :test`.
-  * `:auth` — `%{kind: :none | :bearer | :header, ...}` kept in BEAM only
   * `:transport` — injectable SmartHttp transport (tests / fixture double only)
   * `:identity` / `:git_identity` — `%{name: binary, email: binary}` host policy
     identity injected into Port `commit` when args omit name/email (K28). Never
     invents a default identity when unset.
   * `:on_push_approval` / `:push_approval` / `:require_approval` — push approval
     opts forwarded to `AgentOS.Git.Orchestrator` via host_call demux (R31).
+    Prefer connection `:policies` for product push gating when available.
 
   **K21 / R63–R66:** one engine **per mount path**. A second attach with a
   **different** `mount_path` succeeds (multi-repo). Same path while live returns
   `{:error, :git_already_attached}` without opening another Port. Call
   `detach_git/2` with `:mount_path` to replace one mount, or without to detach all.
+
+  Latest attach **refreshes** shared host policy (connections / policies /
+  origins / auth / transport) for all mounts on this VM.
   """
   @spec attach_git(server(), keyword()) :: :ok | {:error, term()}
   def attach_git(server, opts \\ []) when is_list(opts),
@@ -475,7 +524,8 @@ defmodule AgentOS.Vm do
   * `name == \"git\"` (remote orch / HTTPS) is **async**: spawn under
     `AgentOS.SidecarTaskSupervisor`, return immediately, then answer via
     `egress_host_call_respond/3` or fail the handle. Host opts come from
-    `attach_git/2` (origins/auth/transport) — never from the guest body.
+    `attach_git/2` (`connections`/`policies`, or legacy origins/auth, plus
+    transport) — never from the guest body.
     Body may include `args.mount` / top-level `mount` to demux to the engine
     for that path (R65); empty mount uses the sole engine or the first attached.
     **At most one remote Task runs per mount** — further remotes for the same
@@ -671,6 +721,8 @@ defmodule AgentOS.Vm do
                   last_active_ms: now,
                   snapshot_base: base,
                   git_engines: %{},
+                  git_connections: [],
+                  git_policies: [],
                   git_allowed_origins: [],
                   git_auth: nil,
                   git_transport: nil,
@@ -918,6 +970,16 @@ defmodule AgentOS.Vm do
     mounts = git_mount_paths(state)
     primary = List.first(mounts)
 
+    connections = state.git_connections || []
+    # Refs only — never surface auth / tokens via info.
+    connection_refs =
+      Enum.map(connections, fn
+        %{ref: ref} when is_binary(ref) -> ref
+        %{"ref" => ref} when is_binary(ref) -> ref
+        _ -> nil
+      end)
+      |> Enum.reject(&is_nil/1)
+
     {:reply,
      %{
        id: state.id,
@@ -932,6 +994,10 @@ defmodule AgentOS.Vm do
        git_inflight: map_size(tasks) + queued,
        git_remote_running: map_size(tasks),
        git_remote_queued: queued,
+       # PR11 connections (refs only) + legacy flat allowlist.
+       git_connection_refs: connection_refs,
+       git_connection_count: length(connections),
+       git_policy_count: length(state.git_policies || []),
        git_allowed_origins: state.git_allowed_origins || []
      }, state}
   end
@@ -1162,8 +1228,16 @@ defmodule AgentOS.Vm do
   end
 
   defp do_attach_git_new(state, opts, mount_path) do
-    allowed = git_allowed_origins_from_opts(opts)
-    auth = Keyword.get(opts, :auth)
+    connections = git_connections_from_opts(opts)
+    policies = git_policies_from_opts(opts)
+    # Legacy flat allowlist/auth only when connections empty (product uses connections).
+    {allowed, auth} =
+      if connections == [] do
+        {git_allowed_origins_from_opts(opts), Keyword.get(opts, :auth)}
+      else
+        {[], nil}
+      end
+
     transport = Keyword.get(opts, :transport)
     identity = Keyword.get(opts, :identity) || Keyword.get(opts, :git_identity)
     require_approval = Keyword.get(opts, :require_approval, false) == true
@@ -1186,11 +1260,13 @@ defmodule AgentOS.Vm do
             engines =
               Map.put(state.git_engines || %{}, mount_path, %{pid: pid, mon: ref})
 
-            # Latest attach refreshes shared host policy (origins/auth/transport).
+            # Latest attach refreshes shared host policy (connections/policies/legacy/transport).
             {:ok,
              %{
                state
                | git_engines: engines,
+                 git_connections: connections,
+                 git_policies: policies,
                  git_allowed_origins: allowed,
                  git_auth: auth,
                  git_transport: transport,
@@ -1209,6 +1285,163 @@ defmodule AgentOS.Vm do
         {:error, reason}
     end
   end
+
+  # PR11: normalize ConnectionDefinition-shaped maps (atom or string keys).
+  # Invalid entries are dropped (fail closed for that ref; never invent secrets).
+  defp git_connections_from_opts(opts) do
+    case Keyword.get(opts, :connections, []) do
+      list when is_list(list) ->
+        list
+        |> Enum.map(&normalize_git_connection/1)
+        |> Enum.reject(&is_nil/1)
+
+      _ ->
+        []
+    end
+  end
+
+  defp normalize_git_connection(%{} = entry) do
+    ref = Map.get(entry, :ref) || Map.get(entry, "ref")
+    auth = Map.get(entry, :auth) || Map.get(entry, "auth")
+    origins = Map.get(entry, :origins) || Map.get(entry, "origins") || []
+    spec = Map.get(entry, :spec) || Map.get(entry, "spec")
+
+    if is_binary(ref) and ref != "" and is_map(auth) and is_list(origins) and
+         Enum.all?(origins, &is_binary/1) do
+      conn = %{
+        ref: ref,
+        auth: normalize_git_auth(auth),
+        origins: origins
+      }
+
+      case normalize_git_connection_spec(spec) do
+        nil -> conn
+        normalized -> Map.put(conn, :spec, normalized)
+      end
+    else
+      nil
+    end
+  end
+
+  defp normalize_git_connection(_), do: nil
+
+  # Known auth field names only — never String.to_atom on untrusted input.
+  @git_auth_string_keys %{
+    "kind" => :kind,
+    "token" => :token,
+    "name" => :name,
+    "value" => :value,
+    "username" => :username,
+    "password" => :password,
+    "header" => :header
+  }
+
+  @git_auth_kinds %{
+    "none" => :none,
+    "bearer" => :bearer,
+    "header" => :header,
+    "basic" => :basic,
+    "query" => :query,
+    none: :none,
+    bearer: :bearer,
+    header: :header,
+    basic: :basic,
+    query: :query
+  }
+
+  defp normalize_git_auth(%{} = auth) do
+    auth
+    |> Enum.reduce(%{}, fn
+      {k, v}, acc when is_atom(k) ->
+        Map.put(acc, k, v)
+
+      {k, v}, acc when is_binary(k) ->
+        case Map.get(@git_auth_string_keys, k) do
+          nil -> acc
+          atom_key -> Map.put(acc, atom_key, v)
+        end
+
+      {_k, _v}, acc ->
+        acc
+    end)
+    |> then(fn m ->
+      case Map.get(m, :kind) do
+        nil -> m
+        kind -> Map.put(m, :kind, Map.get(@git_auth_kinds, kind, kind))
+      end
+    end)
+  end
+
+  defp normalize_git_connection_spec(nil), do: nil
+
+  defp normalize_git_connection_spec(%{} = spec) do
+    url = Map.get(spec, :url) || Map.get(spec, "url")
+    base = Map.get(spec, :baseUrl) || Map.get(spec, "baseUrl") || Map.get(spec, :base_url)
+
+    out = %{}
+    out = if is_binary(url) and url != "", do: Map.put(out, :url, url), else: out
+    out = if is_binary(base) and base != "", do: Map.put(out, :baseUrl, base), else: out
+    if out == %{}, do: nil, else: out
+  end
+
+  defp normalize_git_connection_spec(_), do: nil
+
+  # Push policy rules: [%{pattern:, action:}] (+ optional owner).
+  defp git_policies_from_opts(opts) do
+    rules =
+      Keyword.get(opts, :policies, Keyword.get(opts, :connection_policies, []))
+
+    case rules do
+      list when is_list(list) ->
+        list
+        |> Enum.map(&normalize_git_policy/1)
+        |> Enum.reject(&is_nil/1)
+
+      _ ->
+        []
+    end
+  end
+
+  defp normalize_git_policy(%{} = rule) do
+    pattern = Map.get(rule, :pattern) || Map.get(rule, "pattern")
+    action = Map.get(rule, :action) || Map.get(rule, "action")
+    owner = Map.get(rule, :owner) || Map.get(rule, "owner")
+
+    with true <- is_binary(pattern) and pattern != "",
+         {:ok, action_atom} <- normalize_policy_action(action) do
+      base = %{pattern: pattern, action: action_atom}
+
+      case normalize_policy_owner(owner) do
+        nil -> base
+        o -> Map.put(base, :owner, o)
+      end
+    else
+      _ -> nil
+    end
+  end
+
+  defp normalize_git_policy({pattern, action}) when is_binary(pattern),
+    do: normalize_git_policy(%{pattern: pattern, action: action})
+
+  defp normalize_git_policy({owner, pattern, action}) when is_binary(pattern),
+    do: normalize_git_policy(%{owner: owner, pattern: pattern, action: action})
+
+  defp normalize_git_policy(_), do: nil
+
+  defp normalize_policy_action(action) when action in [:approve, :require_approval, :block],
+    do: {:ok, action}
+
+  defp normalize_policy_action("approve"), do: {:ok, :approve}
+  defp normalize_policy_action("require_approval"), do: {:ok, :require_approval}
+  defp normalize_policy_action("block"), do: {:ok, :block}
+  defp normalize_policy_action(_), do: :error
+
+  defp normalize_policy_owner(nil), do: nil
+  defp normalize_policy_owner(:org), do: :org
+  defp normalize_policy_owner(:user), do: :user
+  defp normalize_policy_owner("org"), do: :org
+  defp normalize_policy_owner("user"), do: :user
+  defp normalize_policy_owner(_), do: nil
 
   defp git_allowed_origins_from_opts(opts) do
     case Keyword.get(opts, :allowed_origins, Keyword.get(opts, :allow_origins, [])) do
@@ -1248,6 +1481,8 @@ defmodule AgentOS.Vm do
         %{
           state
           | git_engines: %{},
+            git_connections: [],
+            git_policies: [],
             git_allowed_origins: [],
             git_auth: nil,
             git_transport: nil,
@@ -1500,13 +1735,34 @@ defmodule AgentOS.Vm do
     end
   end
 
+  # Host-owned opts for GitEngine.handle_host_call / Orchestrator.
+  # Product (PR11): connections + policies. Legacy flat allowlist/auth only
+  # when connections empty so fixtures keep working during orch migration.
   defp git_host_opts(state) do
-    opts = [allowed_origins: state.git_allowed_origins || []]
+    connections = state.git_connections || []
+    policies = state.git_policies || []
 
     opts =
-      case state.git_auth do
-        nil -> opts
-        auth -> Keyword.put(opts, :auth, auth)
+      if connections != [] do
+        # Product path: origins/auth live on matching connection — do not require
+        # a separate allowed_origins. Pass connections (and policies when set).
+        [connections: connections]
+        |> then(fn o ->
+          if policies != [], do: Keyword.put(o, :policies, policies), else: o
+        end)
+      else
+        # Legacy: flat allowlist + optional flat auth.
+        [allowed_origins: state.git_allowed_origins || []]
+        |> then(fn o ->
+          case state.git_auth do
+            nil -> o
+            auth -> Keyword.put(o, :auth, auth)
+          end
+        end)
+        |> then(fn o ->
+          # Policies still useful for push gating even on legacy origin path.
+          if policies != [], do: Keyword.put(o, :policies, policies), else: o
+        end)
       end
 
     opts =

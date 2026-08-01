@@ -62,6 +62,7 @@ export {
   spliceCredentialHeaders,
   spliceCredentialUrl,
   redactRemoteForLog,
+  guestArgsCarrySecrets,
 } from "./connections.js";
 export type { GitRemoteBinding, ResolveRemoteOptions } from "./connections.js";
 export {

@@ -16,8 +16,8 @@ Tests prove implementation; green tests alone are not DONE.
 
 | Chunk | Focus | Status |
 |-------|--------|--------|
-| 0 | Tracker truth | **OPEN** (await V0 PASS) |
-| 1 | PR11 server connections | **OPEN** |
+| 0 | Tracker truth | **DONE** (`c580f7e`, VERIFY_CHUNK_0.md) |
+| 1 | PR11 server connections | **DONE** (VERIFY_CHUNK_1.md) |
 | 2 | Single-writer + SSRF + K17 | **OPEN** |
 | 3 | Streaming packs + disk cache | **OPEN** |
 | 4 | Partial clone + sparse parity + tracking | **OPEN** |
@@ -37,7 +37,7 @@ Verifier artifacts: `VERIFY_CHUNK_N.md` (PASS required before next chunk).
 
 | ID | Requirement | Status | Evidence / missing |
 |----|-------------|--------|-------------------|
-| D1 | Server remotes use connections catalog + splice (PR11) | **OPEN** | attach_git uses parallel `allowed_origins`/`auth` only |
+| D1 | Server remotes use connections catalog + splice (PR11) | **DONE** | `server/lib/agent_os/git/connections.ex` resolve+splice; `Vm.attach_git(connections:)` product path (no flat allowlist); orch `resolve_binding`/`apply_binding`; compose e2e `PR11 product path: attach_git connections-only → host_call clone via fixture` in `git_orchestrator_test.exs`; JS `git_connections.test.ts` |
 | D2 | Single-writer FIFO per mount includes remote orch (JS) | **OPEN** | Engine serial; remote HTTP can overlap |
 | D3 | Redirect policy cannot bypass origin allowlist | **OPEN** | Scheme/size/status gates exist; redirect re-check incomplete |
 | D4 | K17: no guest `.git/objects` façade | **OPEN** | gitfs may list/expose objects path misleadingly |
@@ -47,11 +47,11 @@ Verifier artifacts: `VERIFY_CHUNK_N.md` (PASS required before next chunk).
 
 | ID | Requirement | Status | Evidence / missing |
 |----|-------------|--------|-------------------|
-| D6 | Connection-ref remotes on server | **OPEN** | No catalog ref → origins/auth resolve on BEAM remotes |
-| D7 | Guest body cannot carry secrets | **OPEN** | Needs audit + fail tests product path |
-| D8 | Auth kinds parity catalog e2e | **OPEN** | `auth_headers` exists; catalog-shaped e2e missing |
+| D6 | Connection-ref remotes on server | **DONE** | Guest `args.connection`/`agentos` → `Connections.resolve_remote/2`; unknown ref / empty origins fail closed; orch clone with connection-only (no `allowed_origins`); `Vm.git_host_opts` forwards `connections`+`policies` |
+| D7 | Guest body cannot carry secrets | **DONE** | JS `guestArgsCarrySecrets` reject; BEAM `guest_args_carry_secrets?` → `:guest_secrets_forbidden`; fail tests both hosts (JS `git_connections.test.ts`, BEAM `guest body with fake token field rejected before dial`) — never splice from guest JSON |
+| D8 | Auth kinds parity catalog e2e | **DONE** | BEAM `SmartHttp.auth_headers` none/bearer/header/basic (+ string keys); connection catalog bearer e2e orch+Vm; JS `spliceCredentialHeaders` none/bearer/header/query; catalog connection auth kinds unit + orch fixture path |
 | D9 | clone.apply sets remote + tracking for usable pull | **OPEN** | fetch.apply updates remote-tracking; `branch.*` / `remote.*` config after clone incomplete |
-| D10 | Push approval from connection policy both hosts | **OPEN** | Ad-hoc opts exist; policy map incomplete |
+| D10 | Push approval from connection policy both hosts | **DONE** | JS `evaluatePushPolicy` + orch block/require_approval; BEAM `Connections.evaluate_push_policy` + `policies` on attach_git; tests `push policy block fails before dial`, `require_approval fails closed`, JS `git_push.test.ts` / `git_connections.test.ts` |
 
 ### P2 — PR13 packs
 
@@ -136,4 +136,5 @@ These product paths exist (do not re-open unless verifier finds regression). Evi
 
 | Date | Change |
 |------|--------|
+| 2026-08-01 | Chunk 1: PR11 server connections catalog — D1/D6/D7/D8/D10 **DONE** (path evidence); product path `connections:` only |
 | 2026-07-31 | Chunk 0: replace residual R* soft statuses with D1–D41 OPEN/DONE inventory |
