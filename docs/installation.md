@@ -8,7 +8,8 @@ the same `@mc/core` root API.
 The installer is served by the AgentOS site. In the commands below, `{domain}` means the origin of
 the documentation you are reading; the web reference fills it in automatically.
 
-It downloads `mc-core.mjs`, `kernel.wasm`, `catalog-compiler.wasm`, and one flavor tar:
+It downloads `mc-core.mjs`, `kernel.wasm`, `catalog-compiler.wasm`, `git-engine.tar`
+(extracted to `git-engine/`), and one flavor tar:
 
 ```sh
 curl -fsSL {domain}/install.sh | bash
@@ -82,10 +83,27 @@ const vm = await mc.create({
 | `kernel.wasm`           | Running `local` or `browser` without an environment default     |
 | Flavor tar              | Booting an embedded VM from raw bytes                           |
 | `catalog-compiler.wasm` | Compiling connection catalogs or adding host tools in a browser |
+| `git-engine/`           | Host git (`mc.create({ git })`); installer extracts `git-engine.tar` |
 | `mc-core.mjs`           | Using the standalone release SDK                                |
 
 The catalog compiler is not guest code and is not part of an image. It is pure host-side WebAssembly
 used to project API descriptions and tool definitions into the guest catalog.
+
+Host git is opt-in. Pass a directory URL of the extracted engine (contains `git_engine.mjs`,
+`git_engine.wasm`, and libgit2 NOTICE texts):
+
+```js
+import { pathToFileURL } from "node:url";
+
+const vm = await mc.create({
+  kernel: await defaultKernel(),
+  image: await defaultImage(),
+  git: pathToFileURL("./agent-os/git-engine/").href,
+});
+```
+
+See [Git](./git.md). The server-native Port binary is not a client release asset; build
+`//server:agent_os_package` for control-plane hosts.
 
 ## Default artifact loaders
 

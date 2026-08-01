@@ -3,12 +3,11 @@ load(":defs.bzl", "gh_release")
 # tools/gh-release — `bazel run` an AgentOS GitHub release straight from the graph, over the REST
 # API (no `gh` CLI). The mechanism is in defs.bzl; this is the one concrete release target.
 #
-# First cut ships everything to run AgentOS client-side: the one kernel.wasm, the five SHIPPED flavor
-# tars (minimal, posix, loom, atlas, paper), the self-contained @mc/core ESM bundle (mc-core.mjs —
-# @mc/host/@mc/contracts/zod inlined, imports with no npm install), and catalog-compiler.wasm (the
-# connection-catalog compiler the SDK loads when a VM declares OpenAPI/GraphQL connections). The tool
-# also generates and uploads a SHA256SUMS over those bytes. Deliberately excluded: base/rootfs (the substrate, not a flavor),
-# svc_test (a test image), and — as follow-ons — the `mc` host binary, the Elixir package, and a
+# Client-side release assets: kernel.wasm, the five SHIPPED flavor tars (minimal, posix, loom, atlas,
+# paper), the self-contained @mc/core ESM bundle (mc-core.mjs), catalog-compiler.wasm, browser-ctl,
+# and git-engine.tar (emcc host git: mjs + wasm + libgit2 NOTICE). The tool also generates and
+# uploads a SHA256SUMS over those bytes. Deliberately excluded: base/rootfs (substrate, not a
+# flavor), svc_test, the `mc` host binary, the Elixir/server package (incl. native Port), and a
 # manifest.json index. Adding an asset is one line in `assets`.
 #
 # Release notes are MANDATORY (--notes / --notes-file); GitHub auto-generated notes are never used.
@@ -30,6 +29,7 @@ gh_release(
         "//memcontainers/sdk-js/core:bundle": "mc-core.mjs",
         "//memcontainers/programs/browser:browser_ctl_layer": "browser-ctl.tar",
         "//memcontainers/lib/catalog-compiler:wasm": "catalog-compiler.wasm",
+        "//memcontainers/lib/git-engine:git_engine_release": "git-engine.tar",
     },
     repo = "NarendraPatwardhan/agent-os",
     visibility = ["//visibility:public"],

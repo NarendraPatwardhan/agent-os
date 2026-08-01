@@ -1,6 +1,7 @@
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@emsdk//emscripten_toolchain:wasm_rules.bzl", "wasm_cc_binary")
 load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_shared_library", "cc_test")
+load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
 load("//bazel:force_opt.bzl", "force_opt")
 load("//bazel:pick_file.bzl", "pick_file")
 load("//bazel:wasm_opt.bzl", "wasm_opt")
@@ -282,6 +283,37 @@ filegroup(
     ],
 )
 
+# Client release members (flat). Extracted as git-engine/ for
+#   mc.create({ git: new URL("./git-engine/", import.meta.url).href })
+# Tar is the GitHub/install.sh asset; L5 asserts on this filegroup (not the tar basename).
+filegroup(
+    name = "git_engine_release_files",
+    srcs = [
+        ":git_engine_mjs",
+        ":git_engine.wasm",
+        ":git_engine_wasm_bin.wasm",
+        "//third_party/libgit2:NOTICE",
+        "//third_party/libgit2:upstream/COPYING",
+        "//third_party/libgit2:upstream/AUTHORS",
+    ],
+)
+
+# Uploaded as git-engine.tar by //bazel/tools/gh-release:publish; install.sh extracts it.
+pkg_tar(
+    name = "git_engine_release",
+    files = {
+        ":git_engine_mjs": "git_engine.mjs",
+        ":git_engine.wasm": "git_engine.wasm",
+        # emcc MODULARIZE locateFile("git_engine_wasm_bin.wasm") sibling name
+        ":git_engine_wasm_bin.wasm": "git_engine_wasm_bin.wasm",
+        "//third_party/libgit2:NOTICE": "NOTICE",
+        "//third_party/libgit2:upstream/COPYING": "COPYING",
+        "//third_party/libgit2:upstream/AUTHORS": "AUTHORS",
+    },
+    owner = "0.0",
+    visibility = ["//visibility:public"],
+)
+
 # Soft gate ≤2 MiB on the optimized product wasm (genrule out of :git_engine_wasm_file).
 # Label form — same pattern as //memcontainers/programs/git:git_size_limit (file = ":git").
 # `bazel test //memcontainers/lib/git-engine:git_engine_wasm_size_limit` builds the wasm chain.
@@ -306,4 +338,22 @@ assert_ship_files(
 build_test(
     name = "git_engine_wasm_l5_notices",
     targets = [":git_engine_wasm_l5_notices_check"],
+)
+
+# L5: client release members keep NOTICE + COPYING + AUTHORS + engine glue.
+assert_ship_files(
+    name = "git_engine_release_l5_notices_check",
+    ship = ":git_engine_release_files",
+    required = [
+        "NOTICE",
+        "COPYING",
+        "AUTHORS",
+        "git_engine.mjs",
+        "git_engine.wasm",
+    ],
+)
+
+build_test(
+    name = "git_engine_release_l5_notices",
+    targets = [":git_engine_release_l5_notices_check"],
 )

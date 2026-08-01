@@ -122,7 +122,8 @@ Boot and command costs are wall-clock milliseconds. Full snapshot and restore ar
 
 ## Quickstart
 
-Install the runtime, kernel, catalog compiler, and an image from the AgentOS site:
+Install the runtime, kernel, catalog compiler, host git engine (`git-engine/`), and an image
+from the AgentOS site:
 
 ```sh
 curl -fsSL https://agentos.opyt.cloud/install.sh | bash
