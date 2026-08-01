@@ -231,10 +231,27 @@ C `smart_http` / C orchestrator (Port type-5) are **test/fixture only** — not 
 remote path. Dual-host product orch is **TS (JS) ↔ BEAM (server)** sharing apply-op + algorithm
 semantics (K20), not “C orch on server”.
 
-### Executable golden orch vectors (K20 / P2.8 / D32)
+### Dual-host remote contract (K16 / K20)
 
-Shared JSON under `memcontainers/lib/git-engine/testdata/orch/` (fixture copies:
-`server/test/fixtures/git/orch/`; pack paths adjusted to `../minimal.pack` on the server side):
+TS and BEAM each implement remote orch (K16: no Node on server). **Decisions** are single-sourced:
+
+| Layer | Location |
+|-------|----------|
+| Contract | `memcontainers/contracts/git.kdl` → `gen/git.gen.ts` / `AgentOS.Contracts.Git` |
+| Executable goldens | **Only** `memcontainers/lib/git-engine/testdata/orch/*.json` (no second copy) |
+
+| Decision | Contract default |
+|----------|------------------|
+| Redirect | never follow (`redirect_never`) |
+| Empty origins | deny |
+| Guest secret keys | reject before dial |
+| Clone depth when omitted | `1` |
+| Fetch/pull depth when omitted | full (`0`) |
+| `maxPackBytes: 0` | means **default 64 MiB**, not unlimited |
+| PACK magic | required |
+| Origin deny stderr | prefix `git: origin not allowlisted` (no URL suffix) |
+
+### Executable golden orch vectors
 
 | File | Asserts |
 |------|---------|
@@ -245,13 +262,12 @@ Shared JSON under `memcontainers/lib/git-engine/testdata/orch/` (fixture copies:
 | `fetch_success_steps.json` / `pull_ff_steps.json` | fetch/pull success paths |
 | `pull_not_ff_steps.json` | diverged local tip (setup init+commit) → pull fails `git: not fast-forward` |
 | `push_readonly.json` / `push_success_steps.json` | RO reject + fixture push success |
-| `response_schema.json` | D33 catalog: required Response keys + stable stderr prefixes |
+| `response_schema.json` | required Response keys + stable stderr prefixes (aligned with `git.kdl`) |
 
-Each vector lists logical algorithm steps plus an executable `orchestrator_response` step with
-expected `ok` / substring checks. **Both** hosts run them:
+**Both** hosts run the same tree:
 
-- TS: `//memcontainers/sdk-js/core:git_orch_golden_test` (FixtureSmartHttp + wasm engine)
-- BEAM: `AgentOS.Git.OrchGoldenTest` (fixture transport + Port)
+- TS: `//memcontainers/sdk-js/core:git_orch_golden_test`
+- BEAM: `AgentOS.Git.OrchGoldenTest` (data → `//memcontainers/lib/git-engine:orch_algorithm_traces`)
 
 Prose-only algorithm name lists without assertions are not sufficient.
 

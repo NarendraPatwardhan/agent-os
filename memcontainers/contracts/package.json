@@ -36,6 +36,10 @@
     "./wire": {
       "types": "./gen/wire.gen.d.ts",
       "default": "./gen/wire.gen.js"
+    },
+    "./git": {
+      "types": "./gen/git.gen.d.ts",
+      "default": "./gen/git.gen.js"
     }
   }
 }

@@ -1,0 +1,94 @@
+// contracts/git.kdl — host source-plane remote orch contract (K16/K20).
+//
+// Single source of truth for dual-host **decisions and envelopes**, not the HTTP
+// stack itself. TS GitRemoteOrchestrator and BEAM AgentOS.Git.Orchestrator both
+// consume projections (gen/git.gen.ts / gen/git.gen.ex). Executable behavior is
+// locked by shared goldens under memcontainers/lib/git-engine/testdata/orch/.
+//
+// Terse name matches llb.kdl / shell.kdl / wire.kdl.
+
+// ---------------------------------------------------------------------------
+// Dual-host defaults (product policy)
+// ---------------------------------------------------------------------------
+// max_pack_zero_means_default=1 → args maxPackBytes 0 uses default_max_pack_bytes
+// (never "unlimited"). pack_magic_required=1 → reject non-PACK bodies.
+// redirect_never=1 → never follow 3xx Location.
+// default_fetch_depth=0 → full history when depth omitted on fetch/pull
+// (clone still uses default_clone_depth).
+default {
+    default_clone_depth 1
+    default_fetch_depth 0
+    default_max_pack_bytes 67108864
+    max_pack_zero_means_default 1
+    pack_magic_required 1
+    redirect_never 1
+}
+
+// Guest host_call body must not carry these keys (fail closed before dial).
+guest-secret-keys {
+    token
+    auth
+    authorization
+    password
+    bearer
+    secret
+    api_key
+    access_token
+    private_key
+    client_secret
+}
+
+// Stable stderr prefixes — substring-stable dual-host catalog.
+// Product code must emit these prefixes; do not paraphrase.
+stderr-prefix {
+    unknown_connection "git: unknown connection ref"
+    empty_pack "git: empty pack"
+    origin_not_allowlisted "git: origin not allowlisted"
+    not_fast_forward "git: not fast-forward"
+    guest_auth_secrets "git: guest body must not include auth secrets"
+    push_read_only "git: push rejected (read-only mount)"
+    redirect_not_allowed "git: redirect not allowed"
+    empty_origins "git: empty connection origins"
+}
+
+// Algorithm step IDs (shared golden / optional trace). Data only — hosts implement.
+algorithm clone {
+    step resolve_remote_url
+    step origin_allowlist
+    step list_refs
+    step select_head_tip
+    step fetch_packs
+    step import_pack
+    step refs_import
+    step clone_apply
+}
+
+algorithm fetch {
+    step resolve_remote_url
+    step origin_allowlist
+    step list_local_have
+    step list_refs
+    step fetch_packs
+    step import_pack
+    step refs_import
+    step fetch_apply
+}
+
+algorithm push {
+    step resolve_remote_url
+    step origin_allowlist
+    step push_policy
+    step push_prepare
+    step list_refs_lease
+    step pack_build
+    step receive_pack
+    step push_complete
+}
+
+// GitResponse required keys (wire envelope).
+response-keys {
+    ok
+    code
+    stdout
+    stderr
+}

@@ -53,19 +53,25 @@ defmodule AgentOS.Git.OrchGoldenTest do
     Enum.find(candidates, &File.regular?/1)
   end
 
+  # Single source of truth: memcontainers/lib/git-engine/testdata/orch only.
+  # Do not maintain a second copy under server/test/fixtures/git/orch.
   defp orch_dirs do
     rf = System.get_env("RUNFILES_DIR") || System.get_env("TEST_SRCDIR")
+    env = System.get_env("AGENTOS_GIT_ORCH_GOLDEN_DIR")
 
     [
-      # Fixture copy (always present for mix test)
-      Path.expand("../fixtures/git/orch", __DIR__),
-      # SSoT under worktree (dev / when cwd is monorepo root)
+      env,
+      # Runfiles (Bazel mix_test data → git-engine orch_algorithm_traces)
+      rf && Path.join(rf, "memcontainers/lib/git-engine/testdata/orch"),
+      rf && Path.join(rf, "_main/memcontainers/lib/git-engine/testdata/orch"),
+      # Worktree relative to this test (server/test/agent_os → ../../../memcontainers/...)
       Path.expand("../../../memcontainers/lib/git-engine/testdata/orch", __DIR__),
       Path.expand("memcontainers/lib/git-engine/testdata/orch", File.cwd!()),
-      rf && Path.join(rf, "memcontainers/lib/git-engine/testdata/orch"),
-      rf && Path.join(rf, "_main/memcontainers/lib/git-engine/testdata/orch")
+      # Cwd is often server/ under mix
+      Path.expand("../memcontainers/lib/git-engine/testdata/orch", File.cwd!())
     ]
     |> Enum.reject(&is_nil/1)
+    |> Enum.reject(&(&1 == ""))
     |> Enum.filter(&File.dir?/1)
   end
 

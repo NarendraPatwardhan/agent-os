@@ -779,7 +779,7 @@ defmodule AgentOS.Git.Orchestrator do
 
       {:error, :origin_not_allowed} ->
         Process.put(:agent_os_git_allowlist_deny, true)
-        {:ok, response(false, 1, "", "git: origin not allowlisted\n")}
+        {:ok, response(false, 1, "", AgentOS.Contracts.Git.stderr_line(:origin_not_allowlisted))}
 
       {:error, :push_blocked} ->
         {:ok, response(false, 1, "", @push_blocked <> "\n")}

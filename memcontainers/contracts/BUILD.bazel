@@ -41,6 +41,7 @@ exports_files([
     "sidecar.kdl",
     "browser.kdl",
     "runner.kdl",
+    "git.kdl",
     # The generated Zig `mc` module IS the guest sysroot's `mc` (//memcontainers/sysroot/zig:mc
     # compiles it under import_name "mc"): a guest `@import("mc")` gets the whole generated
     # boundary — every syscall extern + the `addr` helper — with nothing hand-kept (Zig 0.16
@@ -182,6 +183,17 @@ abi_library(
     ],
 )
 
+# Host source-plane remote orch decisions (K16/K20) — dual-host tables, not full orch codegen.
+abi_library(
+    name = "git",
+    contract = "git.kdl",
+    langs = [
+        "ts",
+        "elixir",
+        "md",
+    ],
+)
+
 mc_ts_project(
     name = "ts",
     srcs = [
@@ -189,6 +201,7 @@ mc_ts_project(
         "gen/constants.gen.ts",
         "gen/ctl.gen.ts",
         "gen/env.gen.ts",
+        "gen/git.gen.ts",
         "gen/llb.gen.ts",
         "gen/runner.gen.ts",
         "gen/sidecar.gen.ts",

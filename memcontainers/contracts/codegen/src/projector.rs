@@ -3489,6 +3489,245 @@ fn emit_wire(lang: &str, nodes: &[Node], contract: &str, contract_path: &str) ->
 }
 
 // ===========================================================================
+// git — host source-plane remote orch contract (K16/K20)
+// ===========================================================================
+// Emits dual-host decision tables (defaults, stderr prefixes, secret keys,
+// algorithm step orders). Does **not** emit orch control flow.
+
+fn emit_git(lang: &str, nodes: &[Node], contract: &str) -> String {
+    let mut o = banner(lang, contract);
+    let comment = |o: &mut String, text: &str| match lang {
+        "elixir" => o.push_str(&format!("\n  # {text}\n")),
+        "md" => o.push_str(&format!("\n### {text}\n\n")),
+        _ => o.push_str(&format!("\n// {text}\n")),
+    };
+
+    if lang == "elixir" {
+        o.push_str("defmodule AgentOS.Contracts.Git do\n");
+    } else if lang == "md" {
+        o.push_str("# Git remote orch contract\n\n");
+        o.push_str("Projected from `contracts/git.kdl`. Hosts consume TS/Elixir projections.\n");
+    }
+
+    // --- defaults (int) ---
+    if let Some(def) = nodes.iter().find(|n| n.name == "default") {
+        comment(&mut o, "dual-host defaults");
+        for c in &def.children {
+            let v = c.args.first().map(Val::as_int).unwrap_or(0);
+            let name = c.name.replace('-', "_");
+            match lang {
+                "ts" => o.push_str(&format!("export const {name} = {v};\n")),
+                "elixir" => {
+                    let fun = name.to_ascii_lowercase();
+                    o.push_str(&format!("  def {fun}, do: {v}\n"));
+                }
+                "md" => o.push_str(&format!("- `{name}` = `{v}`\n")),
+                "rust" => o.push_str(&format!("pub const {}: i64 = {v};\n", name.to_ascii_uppercase())),
+                _ => {}
+            }
+        }
+        // camelCase aliases for TS orch (bool flags as true/false literals — as const ints
+        // make `!== 0` a TS2367 against literal types).
+        if lang == "ts" {
+            let mut zero_means = false;
+            let mut pack_magic = false;
+            let mut redirect = false;
+            for c in &def.children {
+                let v = c.args.first().map(Val::as_int).unwrap_or(0);
+                match c.name.replace('-', "_").as_str() {
+                    "max_pack_zero_means_default" => zero_means = v != 0,
+                    "pack_magic_required" => pack_magic = v != 0,
+                    "redirect_never" => redirect = v != 0,
+                    _ => {}
+                }
+            }
+            o.push_str(
+                "export const DEFAULT_CLONE_DEPTH = default_clone_depth;\n\
+export const DEFAULT_FETCH_DEPTH = default_fetch_depth;\n\
+export const DEFAULT_MAX_PACK_BYTES = default_max_pack_bytes;\n",
+            );
+            o.push_str(&format!(
+                "export const MAX_PACK_ZERO_MEANS_DEFAULT = {zero_means};\n\
+export const PACK_MAGIC_REQUIRED = {pack_magic};\n\
+export const REDIRECT_NEVER = {redirect};\n"
+            ));
+        }
+    }
+
+    // --- guest secret keys ---
+    if let Some(g) = nodes.iter().find(|n| n.name == "guest-secret-keys") {
+        comment(&mut o, "guest body secret keys (fail closed)");
+        let keys: Vec<&str> = g.children.iter().map(|c| c.name.as_str()).collect();
+        match lang {
+            "ts" => {
+                o.push_str("export const GUEST_SECRET_ARG_KEYS = [\n");
+                for k in &keys {
+                    o.push_str(&format!("  \"{k}\",\n"));
+                }
+                o.push_str("] as const;\n");
+            }
+            "elixir" => {
+                o.push_str("  def guest_secret_arg_keys do\n    [\n");
+                for k in &keys {
+                    o.push_str(&format!("      \"{k}\",\n"));
+                }
+                o.push_str("    ]\n  end\n");
+            }
+            "md" => {
+                o.push_str("| key |\n|-----|\n");
+                for k in &keys {
+                    o.push_str(&format!("| `{k}` |\n"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // --- stderr prefixes ---
+    if let Some(sp) = nodes.iter().find(|n| n.name == "stderr-prefix") {
+        comment(&mut o, "stable stderr prefixes (substring-stable)");
+        match lang {
+            "ts" => {
+                o.push_str("export const STDERR_PREFIX = {\n");
+                for c in &sp.children {
+                    let id = c.name.replace('-', "_");
+                    let prefix = c.arg_str(0);
+                    o.push_str(&format!("  {id}: \"{prefix}\",\n"));
+                }
+                o.push_str("} as const;\n");
+                o.push_str(
+                    "export type StderrPrefixId = keyof typeof STDERR_PREFIX;\n\
+export function stderrLine(id: StderrPrefixId, detail?: string): string {\n\
+  const p = STDERR_PREFIX[id];\n\
+  if (detail && detail.length > 0) return `${p} ${detail}\\n`;\n\
+  return `${p}\\n`;\n\
+}\n",
+                );
+                // (indent already in template above)
+            }
+            "elixir" => {
+                o.push_str("  def stderr_prefix do\n    %{\n");
+                for c in &sp.children {
+                    let id = c.name.replace('-', "_");
+                    let prefix = c.arg_str(0);
+                    o.push_str(&format!("      {id}: \"{prefix}\",\n"));
+                }
+                o.push_str("    }\n  end\n");
+                o.push_str(
+                    "  def stderr_line(id, detail \\\\ nil) do\n\
+    p = Map.fetch!(stderr_prefix(), id)\n\
+    if is_binary(detail) and detail != \"\" do\n\
+      p <> \" \" <> detail <> \"\\n\"\n\
+    else\n\
+      p <> \"\\n\"\n\
+    end\n\
+  end\n",
+                );
+            }
+            "md" => {
+                o.push_str("| id | prefix |\n|----|--------|\n");
+                for c in &sp.children {
+                    o.push_str(&format!("| `{}` | `{}` |\n", c.name, c.arg_str(0)));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // --- algorithms ---
+    let algos: Vec<&Node> = nodes.iter().filter(|n| n.name == "algorithm").collect();
+    if !algos.is_empty() {
+        comment(&mut o, "algorithm step orders");
+        match lang {
+            "ts" => {
+                o.push_str("export const ALGORITHM_STEPS = {\n");
+                for a in &algos {
+                    let name = a.arg_str(0);
+                    if name.is_empty() {
+                        continue;
+                    }
+                    let steps: Vec<String> = a
+                        .children
+                        .iter()
+                        .filter(|c| c.name == "step")
+                        .map(|c| c.arg_str(0).to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    o.push_str(&format!("  {name}: [\n"));
+                    for s in steps {
+                        o.push_str(&format!("    \"{s}\",\n"));
+                    }
+                    o.push_str("  ],\n");
+                }
+                o.push_str("} as const;\n");
+            }
+            "elixir" => {
+                o.push_str("  def algorithm_steps do\n    %{\n");
+                for a in &algos {
+                    let name = a.arg_str(0);
+                    if name.is_empty() {
+                        continue;
+                    }
+                    o.push_str(&format!("      {name}: [\n"));
+                    for c in a.children.iter().filter(|c| c.name == "step") {
+                        let s = c.arg_str(0);
+                        if !s.is_empty() {
+                            o.push_str(&format!("        \"{s}\",\n"));
+                        }
+                    }
+                    o.push_str("      ],\n");
+                }
+                o.push_str("    }\n  end\n");
+            }
+            "md" => {
+                for a in &algos {
+                    let name = a.arg_str(0);
+                    o.push_str(&format!("#### `{name}`\n\n"));
+                    for c in a.children.iter().filter(|c| c.name == "step") {
+                        o.push_str(&format!("1. `{}`\n", c.arg_str(0)));
+                    }
+                    o.push('\n');
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // --- response keys ---
+    if let Some(rk) = nodes.iter().find(|n| n.name == "response-keys") {
+        comment(&mut o, "GitResponse required keys");
+        let keys: Vec<&str> = rk.children.iter().map(|c| c.name.as_str()).collect();
+        match lang {
+            "ts" => {
+                o.push_str("export const RESPONSE_KEYS = [\n");
+                for k in &keys {
+                    o.push_str(&format!("  \"{k}\",\n"));
+                }
+                o.push_str("] as const;\n");
+            }
+            "elixir" => {
+                o.push_str("  def response_keys do\n    [\n");
+                for k in &keys {
+                    o.push_str(&format!("      \"{k}\",\n"));
+                }
+                o.push_str("    ]\n  end\n");
+            }
+            "md" => {
+                for k in &keys {
+                    o.push_str(&format!("- `{k}`\n"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if lang == "elixir" {
+        o.push_str("end\n");
+    }
+    o
+}
+
+// ===========================================================================
 // main
 // ===========================================================================
 
@@ -3507,7 +3746,7 @@ fn main() -> ExitCode {
     }
     let (Some(lang), Some(module), Some(contract)) = (lang, module, contract) else {
         eprintln!(
-            "usage: projector --module <constants|mc|env|ctl|wire|llb|syntax|sidecar|browser|runner|snapshot|shell> --lang <rust|zig|ts|elixir|luau|md|asyncapi|openapi> --contract <path.kdl>"
+            "usage: projector --module <constants|mc|env|ctl|wire|llb|syntax|sidecar|browser|runner|snapshot|shell|git> --lang <rust|zig|ts|elixir|luau|md|asyncapi|openapi> --contract <path.kdl>"
         );
         return ExitCode::FAILURE;
     };
@@ -3560,6 +3799,7 @@ fn main() -> ExitCode {
         }
         "snapshot" => emit_snapshot(&lang, &nodes, &file),
         "shell" => emit_shell_module(&lang, &nodes, &file),
+        "git" => emit_git(&lang, &nodes, &file),
         other => {
             eprintln!("projector: unknown module {other}");
             return ExitCode::FAILURE;

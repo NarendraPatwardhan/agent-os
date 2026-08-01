@@ -6,6 +6,11 @@
  * dedup across clone/fetch/materialize in the same process (or on disk).
  */
 
+import {
+  DEFAULT_MAX_PACK_BYTES as CONTRACT_DEFAULT_MAX_PACK_BYTES,
+  MAX_PACK_ZERO_MEANS_DEFAULT,
+} from "@mc/contracts/git";
+
 // ── PackCache face ──────────────────────────────────────────────────────────
 
 export interface PackCache {
@@ -224,12 +229,15 @@ function simpleHash(s: string): string {
 
 // ── Import helpers ──────────────────────────────────────────────────────────
 
-/** Soft default: refuse packs larger than 64 MiB unless opt-in. */
-export const DEFAULT_MAX_PACK_BYTES = 64 * 1024 * 1024;
+/** Soft default: refuse packs larger than 64 MiB unless opt-in. From contracts/git.kdl. */
+export const DEFAULT_MAX_PACK_BYTES = CONTRACT_DEFAULT_MAX_PACK_BYTES;
 
 export interface ImportPackOptions {
   cache?: PackCache;
-  /** Max pack size; 0 = unlimited. Default 64 MiB. */
+  /**
+   * Max pack size. Default 64 MiB (contracts/git.kdl).
+   * `0` means default (not unlimited) when MAX_PACK_ZERO_MEANS_DEFAULT.
+   */
   maxPackBytes?: number;
   /** Chunk size for streaming ImportPack (default 1 MiB). */
   chunkBytes?: number;
@@ -243,9 +251,11 @@ export type ImportPackEngine = {
 };
 
 function resolveMaxPackBytes(opts: ImportPackOptions): number {
-  return opts.maxPackBytes === undefined
-    ? DEFAULT_MAX_PACK_BYTES
-    : opts.maxPackBytes;
+  if (opts.maxPackBytes === undefined) return DEFAULT_MAX_PACK_BYTES;
+  if (opts.maxPackBytes === 0 && MAX_PACK_ZERO_MEANS_DEFAULT) {
+    return DEFAULT_MAX_PACK_BYTES;
+  }
+  return opts.maxPackBytes;
 }
 
 /**

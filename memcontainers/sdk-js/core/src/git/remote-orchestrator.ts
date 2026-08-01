@@ -47,6 +47,11 @@
  * reference algorithm — keep semantic tables in `connections.ts` aligned.
  */
 
+import {
+  DEFAULT_CLONE_DEPTH,
+  DEFAULT_FETCH_DEPTH,
+  stderrLine,
+} from "@mc/contracts/git";
 import type { ConnectionDefinition, ConnectionPolicyRule } from "../types.js";
 import type { GitEngine } from "./engine.js";
 import type { GitRequest, GitResponse } from "./types.js";
@@ -131,12 +136,23 @@ export interface OrchestratorOptions extends ResolveRemoteOptions {
   identity?: { name: string; email: string };
 }
 
-/** Product default: shallow depth=1 unless args override; depth<=0 means full. */
-function depthOf(args: Record<string, unknown>): number | undefined {
+/**
+ * Depth from args. Explicit depth<=0 means full history.
+ * When omitted: clone defaults to DEFAULT_CLONE_DEPTH (1); fetch/pull full
+ * (DEFAULT_FETCH_DEPTH 0) — contracts/git.kdl dual-host defaults.
+ */
+function depthOf(
+  args: Record<string, unknown>,
+  op: "clone" | "fetch" | "pull" = "clone",
+): number | undefined {
   if (typeof args.depth === "number" && Number.isFinite(args.depth)) {
     return args.depth > 0 ? Math.floor(args.depth) : undefined;
   }
-  return 1;
+  if (op === "clone") {
+    return DEFAULT_CLONE_DEPTH > 0 ? DEFAULT_CLONE_DEPTH : undefined;
+  }
+  // fetch/pull: default full history (DEFAULT_FETCH_DEPTH 0)
+  return DEFAULT_FETCH_DEPTH > 0 ? DEFAULT_FETCH_DEPTH : undefined;
 }
 
 /**
@@ -621,7 +637,8 @@ export class GitRemoteOrchestrator {
           ok: false,
           code: 1,
           stdout: "",
-          stderr: `git: origin not allowlisted: ${url}\n`,
+          // Catalog prefix only (contracts/git.kdl) — no URL suffix (dual-host parity).
+          stderr: stderrLine("origin_not_allowlisted"),
         };
       }
       return null;
@@ -633,7 +650,7 @@ export class GitRemoteOrchestrator {
         ok: false,
         code: 1,
         stdout: "",
-        stderr: `git: origin not allowlisted: ${url}\n`,
+        stderr: stderrLine("origin_not_allowlisted"),
       };
     }
     if (!originAllowed(this.allowOrigins, url)) {
@@ -642,7 +659,7 @@ export class GitRemoteOrchestrator {
         ok: false,
         code: 1,
         stdout: "",
-        stderr: `git: origin not allowlisted: ${url}\n`,
+        stderr: stderrLine("origin_not_allowlisted"),
       };
     }
     return null;
@@ -1145,7 +1162,7 @@ export class GitRemoteOrchestrator {
       };
     }
 
-    const depth = depthOf(args);
+    const depth = depthOf(args, "clone");
     const filter = filterOf(args);
     const wants = this.wantOids(refs, head.hash);
 
@@ -1276,7 +1293,7 @@ export class GitRemoteOrchestrator {
       };
     }
 
-    const depth = depthOf(args);
+    const depth = depthOf(args, "fetch");
     const filter = filterOf(args);
     // Local haves: tips op when available, else HEAD
     const have: string[] = [];

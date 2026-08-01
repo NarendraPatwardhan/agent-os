@@ -14,6 +14,7 @@ contract is — so they cannot drift.
 | `snapshot.kdl`  | snapshot value | host ↔ host/store    | MCSN v2                          |
 | `llb.kdl`       | build graph    | client ↔ solver      | LLB                              |
 | `syntax.kdl`    | syntax service | Luau ↔ `/svc/syntax` | framed messages                  |
+| `git.kdl`       | host git remotes | dual-host orch decisions | stderr / depth / pack defaults |
 
 The syscall values originate in the frozen `mc` ABI. **Do not renumber them.** New AgentOS-native
 boundaries such as MCSN, LLB, and syntax are owned here directly and change through their declared

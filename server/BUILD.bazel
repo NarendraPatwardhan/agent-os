@@ -44,6 +44,7 @@ write_source_files(
         "lib/agent_os/contracts/sidecar.ex": "//memcontainers/contracts:sidecar_elixir_gen",
         "lib/agent_os/contracts/snapshot.ex": "//memcontainers/contracts:snapshot_elixir_gen",
         "lib/agent_os/contracts/wire.ex": "//memcontainers/contracts:wire_elixir_gen",
+        "lib/agent_os/contracts/git.ex": "//memcontainers/contracts:git_elixir_gen",
     },
     visibility = ["//visibility:public"],
 )
@@ -94,7 +95,10 @@ mix_test(
         "//memcontainers/images:posix",
         "//memcontainers/kernel/rust:kernel",
         "//memcontainers/lib/git-engine:git-engine",
-        # Git fixture packs/tips + orch goldens (R63–R65 attach/demux + pack tests).
+        # K20 dual-host orch goldens — single SSoT (not server/test/fixtures/git/orch copies).
+        "//memcontainers/lib/git-engine:orch_algorithm_traces",
+        "//memcontainers/lib/git-engine:orch_pack_fixtures",
+        # Pack/tip + real-http fixtures only under test/fixtures/git (no orch JSON).
     ] + glob(["test/fixtures/git/**"]),
     env = {
         "ERL_COMPILER_OPTIONS": "deterministic",
@@ -102,6 +106,7 @@ mix_test(
         # elixir_test wrapper does not expand $(rootpath)/$(rlocationpath). Path is relative
         # to the mix project root after `cd $TEST_SRCDIR/$TEST_WORKSPACE/server`.
         "AGENTOS_GIT_ENGINE": "../memcontainers/lib/git-engine/git-engine",
+        "AGENTOS_GIT_ORCH_GOLDEN_DIR": "../memcontainers/lib/git-engine/testdata/orch",
     },
     lib = ":lib_test",
     tags = ["manual"],
@@ -242,6 +247,7 @@ pkg_tar(
         "//memcontainers/contracts:sidecar_elixir_gen": "lib/agent_os/contracts/sidecar.ex",
         "//memcontainers/contracts:snapshot_elixir_gen": "lib/agent_os/contracts/snapshot.ex",
         "//memcontainers/contracts:wire_elixir_gen": "lib/agent_os/contracts/wire.ex",
+        "//memcontainers/contracts:git_elixir_gen": "lib/agent_os/contracts/git.ex",
     },
     mode = "0644",
     modes = {
