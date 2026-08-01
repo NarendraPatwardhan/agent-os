@@ -31,20 +31,21 @@ These are hard product rules for agents and tools that use host git — not opti
 | **Opt-in + identity on commit** | Opt-in via `git` create option (JS; advanced surface). Commits need author identity (`name` / `email` args or `git.identity`) — no ambient global gitconfig from the host user. |
 | **Server push (not read-only)** | See [Server remotes](#server-remotes-k16--push-honesty) — packbuilder + receive-pack on BEAM when mount is not read-only. |
 
-## Thin CLI surface (honest)
+## Thin CLI surface
 
-`//memcontainers/programs/git` is a **reduced** pure-mc adapter — **not** full git-core. Unknown
-commands fail closed. Phase A maps argv → ctl Request JSON only (engine implements the ops).
+`//memcontainers/programs/git` is a pure-mc adapter over the host engine surface — **not** full
+git-core. Unknown commands fail closed. Local argv maps to ctl Request JSON; remotes use
+`host_call` name `"git"`.
 
 | Class | Commands | Path |
 |-------|----------|------|
-| Local porcelain | `init`, `status`, `add <path…>` / `add -A`/`--all`, `rm <path…>`, `commit -m …`, `log`, `diff`, `show [rev]`, `rev-parse [rev]`, `branch` / `branch <name>` / `branch -d <name>`, `checkout`/`switch <name>`, `reset [--soft\|--mixed\|--hard] [rev]`, `tag [-d] <name>`, `config --list` or `config <key> [value]`, `remote` list/add/remove | Discover `/.git/mc/ctl` under cwd parents; write Request JSON, re-open/read Response (multi-path `add`/`rm` = one round-trip per path) |
-| Remotes | `clone <url>`, `fetch [url]`, `pull [url]`, `push [url]` | `host_call` name `"git"` (**CAP_NET**); clone works outside a repo (no root discovery) |
+| Local porcelain | `init`, `status`, `add <path…>` / `add -A`/`--all`, `rm <path…>`, `commit -m …`, `log`, `diff [--cached\|--staged] [path…]` (full unified patch), `show [rev]`, `rev-parse [rev]`, `branch` / `branch <name>` / `branch -d <name>`, `checkout`/`switch <name>`, `reset [--soft\|--mixed\|--hard] [rev]`, `tag [-d] <name>`, `config --list` or `config <key> [value]`, `remote` list/add/remove | Discover `/.git/mc/ctl` under cwd parents; write Request JSON, re-open/read Response (multi-path `add`/`rm` = one round-trip per path; `diff` sends `path` or `paths[]` in one request) |
+| Remotes | `clone [--depth N] [--filter SPEC] <url>`, `fetch [url]`, `pull [url]`, `push [url]` | `host_call` name `"git"` (**CAP_NET**); clone works outside a repo (no root discovery) |
 | Meta | `version` / `--version`, `help` / `--help` | stdout/stderr only |
 
-Not supported on the thin CLI (examples): sparse, rebase, submodules, LFS, receive-pack, full
-git-config surface, annotated tags, path-limited diff, `reset` modes beyond soft/mixed/hard. Use
-SDK / ctl ops where implemented, or expect `unknown or unsupported command`.
+Out of surface (examples): interactive rebase, bisect, LFS, submodules on the thin CLI, full
+git-config, annotated tags. Sparse cone is create/`attach_git` configuration, not a thin-CLI
+flag. Unknown commands → `unknown or unsupported command`.
 
 ## Large stdout / stream path (D15)
 
@@ -195,40 +196,36 @@ Empty pack on a non-delete push fails closed (`git: empty pack refused for non-d
 Connection origin policy, max pack size, and no-URL-credentials policy apply to push URLs the
 same as fetch/clone. Secrets only in BEAM request headers.
 
-### Monorepo materialization (M7 v1 / D13)
+### Monorepo materialization (M7 / D13)
 
-**Product path for large trees:** shallow clone + cone sparse — **not** partial-clone filter alone.
+**Product stack for large trees** (all three compose; configure what you need):
 
-| Step | Behaviour |
-|------|-----------|
-| **Shallow default** | Product clone/fetch uses `depth=1` unless `args.depth` overrides (`depth<=0` = full history) |
-| **Cone sparse** | JS `git.sparse` / `git.mounts[].sparse` / BEAM `attach_git(sparse_cone: …)` → orch after `clone.apply` runs engine `sparse-set` then `checkout` so the worktree only materializes cone prefixes |
-| **gitfs / Port mount** | Guest sees the post-sparse worktree. JS gitfs also projects only cone prefixes (defense in depth). BEAM Port mounts the Port worktree root after sparse-set |
+| Layer | Role |
+|-------|------|
+| **Shallow history** | Product clone/fetch default `depth=1` (`args.depth` / thin CLI `--depth N`; `depth<=0` = full history) — bounds commit graph size |
+| **Cone sparse worktree** | JS `git.sparse` / `git.mounts[].sparse` / BEAM `attach_git(sparse_cone: …)` → after `clone.apply`, engine `sparse-set` + checkout so only cone prefixes land on disk; gitfs projects the same cone |
+| **Optional pack filter** | `args.filter` / thin CLI `--filter SPEC` (e.g. `blob:none`) on upload-pack (R36) — shrinks the **initial** pack when the server supports filter |
 
 ```text
-clone (depth=1) → import_pack → refs.import → clone.apply
+clone (depth=1, optional filter) → import_pack → refs.import → clone.apply
   → sparse-set(patterns) → checkout(HEAD)   # when cone configured
   → guest/gitfs sees cone paths only
 ```
 
-**Out of this chunk (not the M7 v1 story):** full promisor remotes, on-demand lazy blob fetch,
-missing-object re-fetch after `blob:none` / `tree:0`, and “filter wire only” without worktree
-usability. Advertising `filter` on upload-pack is optional wire support — it does **not** replace
-shallow + cone sparse for monorepo usability. Servers/fixtures that ignore filter still return a
-full pack; the engine still materializes whatever objects arrived.
+Cone patterns are multi-prefix lists with basic `!path` negation written into `sparse-checkout`
+(cone mode). Prefer listing the directories agents need (`["src", "docs"]`).
 
-**Honest limits (cone-only):** multi-pattern prefixes + basic `!path` negation written into
-`sparse-checkout` — **not** full git sparse-checkout pattern language. Prefer listing the
-directories agents need (`["src", "docs"]`) rather than relying on filter or promisor.
+**Out of surface for monorepo agents:** full git sparse-checkout pattern language, promisor
+remotes, and on-demand lazy re-fetch of missing objects after a filtered pack. Filter alone does
+not project a usable monorepo worktree — pair it with cone sparse when agents need paths. Servers
+or fixtures that ignore `filter` return a full pack; the engine materializes whatever arrived.
 
-### Partial clone filter (R36)
+### Pack filter (R36)
 
-Clone/fetch accept optional `args.filter` (e.g. `blob:none`, `tree:0`). The host smart-HTTP
-upload-pack request advertises the `filter` capability and sends a `filter <spec>` pkt-line.
-**Limits:** the engine still materializes what the pack contains — there is no on-demand blob
-promisor/fetch for missing objects yet. Servers or fixtures that ignore filter return a full pack
-and continue to work. **Do not treat filter as monorepo materialization** — use
-[shallow + cone sparse](#monorepo-materialization-m7-v1--d13) above.
+Clone/fetch accept optional `args.filter` (e.g. `blob:none`, `tree:0`). Host smart-HTTP advertises
+the `filter` capability and sends a `filter <spec>` pkt-line. Thin CLI:
+`git clone --filter=blob:none <url>` (compose with `--depth`). Part of the monorepo stack above —
+not a separate incomplete feature.
 
 C `smart_http` / C orchestrator (Port type-5) are **test/fixture only** — not the product server
 remote path. Dual-host product orch is **TS (JS) ↔ BEAM (server)** sharing apply-op + algorithm

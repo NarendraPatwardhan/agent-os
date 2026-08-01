@@ -50,7 +50,9 @@ fn main() -> i32 {
         eprint(
             b"local porcelain via /.git/mc/ctl (needs repo); remotes via host_call git (CAP_NET; clone works outside a repo)\n",
         );
-        eprint(b"phase A: add -A/--all; branch -d; tag -d; reset --soft|--mixed|--hard; config get/set; remote list/add/remove\n");
+        eprint(
+            b"diff [--cached|--staged] [path...]; clone [--depth N] [--filter SPEC] <url>; add -A/--all; branch -d; tag -d; reset --soft|--mixed|--hard\n",
+        );
         return 0;
     }
 
@@ -91,6 +93,9 @@ fn main() -> i32 {
     }
     if cmd == b"add" {
         return run_add(ctl, &args[..argc]);
+    }
+    if cmd == b"diff" {
+        return run_diff(ctl, &args[..argc]);
     }
 
     let mut req = [0u8; MAX_BODY];
@@ -227,13 +232,57 @@ fn build_remote_request(cmd: &[u8], args: &[&[u8]], out: &mut [u8]) -> Result<us
         return copy_bytes(b"{\"op\":\"push\",\"args\":{}}", out);
     }
     if cmd == b"clone" {
-        if argc < 3 {
-            eprint(b"usage: git clone <url>\n");
-            return Err(2);
-        }
-        return fmt_op_url(b"clone", args[2], out);
+        return build_clone(args, out);
     }
     Err(2)
+}
+
+/// `git clone [--depth N] [--filter SPEC] <url>`
+fn build_clone(args: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
+    let argc = args.len();
+    let mut depth: Option<&[u8]> = None;
+    let mut filter: Option<&[u8]> = None;
+    let mut url: Option<&[u8]> = None;
+    let mut i = 2usize;
+    while i < argc {
+        let a = args[i];
+        if a == b"--depth" {
+            if i + 1 >= argc {
+                eprint(b"usage: git clone [--depth N] [--filter SPEC] <url>\n");
+                return Err(2);
+            }
+            depth = Some(args[i + 1]);
+            i += 2;
+            continue;
+        }
+        if a == b"--filter" {
+            if i + 1 >= argc {
+                eprint(b"usage: git clone [--depth N] [--filter SPEC] <url>\n");
+                return Err(2);
+            }
+            filter = Some(args[i + 1]);
+            i += 2;
+            continue;
+        }
+        if a.first() == Some(&b'-') {
+            eprint(b"usage: git clone [--depth N] [--filter SPEC] <url>\n");
+            return Err(2);
+        }
+        if url.is_some() {
+            eprint(b"usage: git clone [--depth N] [--filter SPEC] <url>\n");
+            return Err(2);
+        }
+        url = Some(a);
+        i += 1;
+    }
+    let url = match url {
+        Some(u) if !u.is_empty() => u,
+        _ => {
+            eprint(b"usage: git clone [--depth N] [--filter SPEC] <url>\n");
+            return Err(2);
+        }
+    };
+    fmt_clone(url, depth, filter, out)
 }
 
 fn fmt_op_url(op: &[u8], url: &[u8], out: &mut [u8]) -> Result<usize, i32> {
@@ -243,6 +292,112 @@ fn fmt_op_url(op: &[u8], url: &[u8], out: &mut [u8]) -> Result<usize, i32> {
     i = push(out, i, b"\",\"args\":{\"url\":\"")?;
     i = push_escaped(out, i, url)?;
     i = push(out, i, b"\"}}")?;
+    Ok(i)
+}
+
+fn fmt_clone(
+    url: &[u8],
+    depth: Option<&[u8]>,
+    filter: Option<&[u8]>,
+    out: &mut [u8],
+) -> Result<usize, i32> {
+    let mut i = 0usize;
+    i = push(out, i, b"{\"op\":\"clone\",\"args\":{\"url\":\"")?;
+    i = push_escaped(out, i, url)?;
+    i = push(out, i, b"\"")?;
+    if let Some(d) = depth {
+        // depth is a JSON number (digits only).
+        for &b in d {
+            if !(b'0'..=b'9').contains(&b) {
+                eprint(b"git: clone --depth must be a non-negative integer\n");
+                return Err(2);
+            }
+        }
+        if d.is_empty() {
+            eprint(b"git: clone --depth must be a non-negative integer\n");
+            return Err(2);
+        }
+        i = push(out, i, b",\"depth\":")?;
+        i = push(out, i, d)?;
+    }
+    if let Some(f) = filter {
+        i = push(out, i, b",\"filter\":\"")?;
+        i = push_escaped(out, i, f)?;
+        i = push(out, i, b"\"")?;
+    }
+    i = push(out, i, b"}}")?;
+    Ok(i)
+}
+
+/// `git diff [--cached|--staged] [path…]` → one ctl Request (paths as path or paths[]).
+fn run_diff(ctl: &str, args: &[&[u8]]) -> i32 {
+    let mut req = [0u8; MAX_BODY];
+    let n = match build_diff(args, &mut req) {
+        Ok(n) => n,
+        Err(code) => return code,
+    };
+    ctl_roundtrip(ctl, &req[..n])
+}
+
+fn build_diff(args: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
+    let argc = args.len();
+    let mut cached = false;
+    let mut paths: [&[u8]; MAX_ARGS] = [&[]; MAX_ARGS];
+    let mut npaths = 0usize;
+    let mut i = 2usize;
+    while i < argc {
+        let a = args[i];
+        if a == b"--cached" || a == b"--staged" {
+            cached = true;
+            i += 1;
+            continue;
+        }
+        if a.first() == Some(&b'-') {
+            eprint(b"usage: git diff [--cached|--staged] [path...]\n");
+            return Err(2);
+        }
+        if npaths >= MAX_ARGS {
+            eprint(b"git: too many paths\n");
+            return Err(2);
+        }
+        paths[npaths] = a;
+        npaths += 1;
+        i += 1;
+    }
+    fmt_diff(cached, &paths[..npaths], out)
+}
+
+fn fmt_diff(cached: bool, paths: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
+    let mut i = 0usize;
+    i = push(out, i, b"{\"op\":\"diff\",\"args\":{")?;
+    let mut need_comma = false;
+    if cached {
+        i = push(out, i, b"\"cached\":true")?;
+        need_comma = true;
+    }
+    if paths.len() == 1 {
+        if need_comma {
+            i = push(out, i, b",")?;
+        }
+        i = push(out, i, b"\"path\":\"")?;
+        i = push_escaped(out, i, paths[0])?;
+        i = push(out, i, b"\"")?;
+    } else if paths.len() > 1 {
+        if need_comma {
+            i = push(out, i, b",")?;
+        }
+        i = push(out, i, b"\"paths\":[")?;
+        for (pi, p) in paths.iter().enumerate() {
+            if pi > 0 {
+                i = push(out, i, b",")?;
+            }
+            i = push(out, i, b"\"")?;
+            i = push_escaped(out, i, p)?;
+            i = push(out, i, b"\"")?;
+        }
+        i = push(out, i, b"]")?;
+    }
+    i = push(out, i, b"}}")?;
     Ok(i)
 }
 
@@ -334,9 +489,7 @@ fn build_request(cmd: &[u8], args: &[&[u8]], out: &mut [u8]) -> Result<usize, i3
     if cmd == b"log" {
         return copy_bytes(b"{\"op\":\"log\",\"args\":{\"max_count\":32}}", out);
     }
-    if cmd == b"diff" {
-        return copy_bytes(b"{\"op\":\"diff\",\"args\":{}}", out);
-    }
+    // diff is handled in main (path / --cached flags).
     if cmd == b"show" {
         let rev = if argc >= 3 { args[2] } else { b"HEAD" };
         if argc >= 3 && args[2].first() == Some(&b'-') {

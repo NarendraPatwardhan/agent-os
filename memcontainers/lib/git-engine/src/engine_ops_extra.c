@@ -46,30 +46,110 @@ int op_rm(ge_engine *e, const char *args) {
   return 0;
 }
 
-/* *out_owned is malloc'd on success; caller frees. Full unified patch via
- * libgit2 (GIT_DIFF_FORMAT_PATCH). Optional args.path filters to one path. */
+/* *out_owned is malloc'd on success; caller frees.
+ * Product surface: full unified patch (GIT_DIFF_FORMAT_PATCH), not name-status.
+ *
+ * Args:
+ *   path   — single pathspec (relpath)
+ *   paths  — JSON string array of pathspecs (max 16)
+ *   cached | staged — bool; when true: HEAD tree → index (git --cached), else
+ *                     index → workdir (default unstaged)
+ */
 int op_diff(ge_engine *e, const char *args, char **out_owned) {
   if (out_owned)
     *out_owned = NULL;
   if (ge_ensure_repo(e) != 0)
     return -1;
-  git_diff *diff = NULL;
+
+  enum { DIFF_PATHSPEC_MAX = 16 };
+  char path_store[DIFF_PATHSPEC_MAX][1024];
+  char *pathspec_strs[DIFF_PATHSPEC_MAX];
+  size_t nspec = 0;
+
+  if (args) {
+    const char *parr = jmin_get_array(args, "paths");
+    if (parr) {
+      const char *cur = parr;
+      char item[1024];
+      while (jmin_array_next_string(&cur, item, sizeof(item)) == 0) {
+        if (!item[0])
+          continue;
+        if (!ge_safe_relpath(item)) {
+          ge_set_err(e, "diff: bad path");
+          return -1;
+        }
+        if (nspec >= DIFF_PATHSPEC_MAX) {
+          ge_set_err(e, "diff: too many paths");
+          return -1;
+        }
+        size_t il = strlen(item);
+        if (il >= sizeof(path_store[0])) {
+          ge_set_err(e, "diff: path too long");
+          return -1;
+        }
+        memcpy(path_store[nspec], item, il + 1);
+        pathspec_strs[nspec] = path_store[nspec];
+        nspec++;
+      }
+    } else {
+      char path[1024] = "";
+      if (jmin_get_string(args, "path", path, sizeof(path)) == 0 && path[0]) {
+        if (!ge_safe_relpath(path)) {
+          ge_set_err(e, "diff: bad path");
+          return -1;
+        }
+        memcpy(path_store[0], path, strlen(path) + 1);
+        pathspec_strs[0] = path_store[0];
+        nspec = 1;
+      }
+    }
+  }
+
   git_diff_options opts = GIT_DIFF_OPTIONS_INIT;
-  char path[1024] = "";
-  char *pathspec_strs[1];
-  if (args && jmin_get_string(args, "path", path, sizeof(path)) == 0 && path[0]) {
-    if (!ge_safe_relpath(path)) {
-      ge_set_err(e, "diff: bad path");
+  if (nspec > 0) {
+    opts.pathspec.strings = pathspec_strs;
+    opts.pathspec.count = (size_t)nspec;
+  }
+
+  int cached = 0;
+  if (args) {
+    int v = 0;
+    if (jmin_get_bool(args, "cached", &v) == 0 && v)
+      cached = 1;
+    if (jmin_get_bool(args, "staged", &v) == 0 && v)
+      cached = 1;
+  }
+
+  git_diff *diff = NULL;
+  if (cached) {
+    /* HEAD tree → index (staged). Unborn HEAD → empty patch (NULL tree). */
+    git_object *obj = NULL;
+    git_tree *tree = NULL;
+    if (git_revparse_single(&obj, e->repo, "HEAD") == 0) {
+      git_object *peeled = NULL;
+      if (git_object_peel(&peeled, obj, GIT_OBJECT_TREE) != 0) {
+        git_object_free(obj);
+        ge_set_err_git(e, "diff: peel HEAD");
+        return -1;
+      }
+      git_object_free(obj);
+      tree = (git_tree *)peeled;
+    }
+    if (git_diff_tree_to_index(&diff, e->repo, tree, NULL, &opts) != 0) {
+      if (tree)
+        git_tree_free(tree);
+      ge_set_err_git(e, "diff");
       return -1;
     }
-    pathspec_strs[0] = path;
-    opts.pathspec.strings = pathspec_strs;
-    opts.pathspec.count = 1;
+    if (tree)
+      git_tree_free(tree);
+  } else {
+    if (git_diff_index_to_workdir(&diff, e->repo, NULL, &opts) != 0) {
+      ge_set_err_git(e, "diff");
+      return -1;
+    }
   }
-  if (git_diff_index_to_workdir(&diff, e->repo, NULL, &opts) != 0) {
-    ge_set_err_git(e, "diff");
-    return -1;
-  }
+
   git_buf buf = {0};
   if (git_diff_to_buf(&buf, diff, GIT_DIFF_FORMAT_PATCH) != 0) {
     git_diff_free(diff);

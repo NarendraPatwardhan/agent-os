@@ -378,10 +378,26 @@ static int test_path_safety(ge_engine *e) {
   return 0;
 }
 
-/* R19: diff emits unified patch headers (diff --git) after worktree modify. */
+/* R19: diff emits full unified patch (diff --git), pathspec, and --cached. */
 static int test_diff_patch(ge_engine *e) {
+  /* Track second file so both appear in index↔workdir diffs. */
+  if (expect_ok(e, "{\"op\":\"write\",\"args\":{\"path\":\"other.txt\","
+                   "\"content\":\"other base\\n\"}}"))
+    return 1;
+  if (expect_ok(e, "{\"op\":\"add\",\"args\":{\"path\":\"other.txt\"}}"))
+    return 1;
+  if (expect_ok(e, "{\"op\":\"commit\",\"args\":{"
+                   "\"message\":\"add other\","
+                   "\"name\":\"Fixture\","
+                   "\"email\":\"fixture@test\","
+                   "\"when_unix\":1700000002}}"))
+    return 1;
+
   if (expect_ok(e, "{\"op\":\"write\",\"args\":{\"path\":\"hello.txt\","
                    "\"content\":\"hello patched\\n\"}}"))
+    return 1;
+  if (expect_ok(e, "{\"op\":\"write\",\"args\":{\"path\":\"other.txt\","
+                   "\"content\":\"other changed\\n\"}}"))
     return 1;
   char *resp = ge_run_json(e, "{\"op\":\"diff\"}");
   if (!resp || strstr(resp, "\"ok\":true") == NULL) {
@@ -397,6 +413,56 @@ static int test_diff_patch(ge_engine *e) {
   }
   if (strstr(resp, "hello.txt") == NULL) {
     fprintf(stderr, "diff missing path hello.txt:\n%s\n", resp);
+    ge_free(resp);
+    return 1;
+  }
+  ge_free(resp);
+
+  /* Path-limited: only hello.txt in the patch. */
+  resp = ge_run_json(e, "{\"op\":\"diff\",\"args\":{\"path\":\"hello.txt\"}}");
+  if (!resp || strstr(resp, "\"ok\":true") == NULL) {
+    fprintf(stderr, "diff path failed\n%s\n", resp ? resp : "(null)");
+    ge_free(resp);
+    return 1;
+  }
+  if (strstr(resp, "hello.txt") == NULL || strstr(resp, "other.txt") != NULL) {
+    fprintf(stderr, "diff path filter wrong:\n%s\n", resp);
+    ge_free(resp);
+    return 1;
+  }
+  ge_free(resp);
+
+  /* paths[] multi-pathspec. */
+  resp = ge_run_json(e, "{\"op\":\"diff\",\"args\":{\"paths\":[\"hello.txt\",\"other.txt\"]}}");
+  if (!resp || strstr(resp, "\"ok\":true") == NULL ||
+      strstr(resp, "hello.txt") == NULL || strstr(resp, "other.txt") == NULL) {
+    fprintf(stderr, "diff paths[] failed\n%s\n", resp ? resp : "(null)");
+    ge_free(resp);
+    return 1;
+  }
+  ge_free(resp);
+
+  /* --cached / staged: stage hello only; worktree still dirty; cached patch has hello. */
+  if (expect_ok(e, "{\"op\":\"add\",\"args\":{\"path\":\"hello.txt\"}}"))
+    return 1;
+  /* Further dirty worktree after stage. */
+  if (expect_ok(e, "{\"op\":\"write\",\"args\":{\"path\":\"hello.txt\","
+                   "\"content\":\"hello staged then dirtied\\n\"}}"))
+    return 1;
+  resp = ge_run_json(e, "{\"op\":\"diff\",\"args\":{\"cached\":true,\"path\":\"hello.txt\"}}");
+  if (!resp || strstr(resp, "\"ok\":true") == NULL) {
+    fprintf(stderr, "diff cached failed\n%s\n", resp ? resp : "(null)");
+    ge_free(resp);
+    return 1;
+  }
+  if (strstr(resp, "diff --git") == NULL || strstr(resp, "hello.txt") == NULL) {
+    fprintf(stderr, "diff cached missing patch:\n%s\n", resp);
+    ge_free(resp);
+    return 1;
+  }
+  /* Staged content is "hello patched", not the further dirty worktree body. */
+  if (strstr(resp, "hello staged then dirtied") != NULL) {
+    fprintf(stderr, "diff cached leaked worktree-only change:\n%s\n", resp);
     ge_free(resp);
     return 1;
   }

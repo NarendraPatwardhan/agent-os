@@ -258,7 +258,7 @@ Unknown `op` → `code: 2`, fail closed.
 | Gate | Ops / requirements |
 |------|---------------------|
 | **PR1 required (exit)** | `init`, `write`, `add`, `commit`, `status`, `log`, `rev-parse`, `branch` (list/create), `checkout`/`switch`; dial refuse for `clone`/`fetch`/`pull`/`push`; **product-grade JSON/args buffers** (no spike jmin fixed caps — hard gate); golden fixtures for init→commit→log; `ge_import_pack` may be stub returning success/error only |
-| **PR1.1 / before remotes GA** | `rm`, `diff` (status-style ok; full patch later), `show`, `reset` (soft/mixed/hard), `tag`, limited `config`, `remote` config list/add/remove; complete `ge_import_pack` + `refs.import` / `clone.apply` / `fetch.apply` |
+| **PR1.1 / before remotes GA** | `rm`, `diff` (full unified patch; path / paths / cached), `show`, `reset` (soft/mixed/hard), `tag`, limited `config`, `remote` config list/add/remove; complete `ge_import_pack` + `refs.import` / `clone.apply` / `fetch.apply` |
 | **PR5-adjacent** | Synthetic HEAD/refs coherence with above ops (driver side) |
 | **Do not ship** | Spike `write` 64 KiB content caps or fixed small stdout buffers as product defaults |
 
@@ -759,7 +759,7 @@ Honest reduced CLI — **not** git-core parity. Unknown commands fail closed.
 | `version` / `help` | meta | Identity / surface list |
 | `init` | `init` | Empty repo at mount |
 | `status` | `status` | Short or porcelain-v1 subset |
-| `diff` | `diff` | Path-list / status-style first; full patch later |
+| `diff` | `diff` | Full unified patch; path / paths[] / cached\|staged |
 | `add` / `rm` | `add` / `rm` | Paths relative to worktree |
 | `commit` | `commit` | `-m` required in thin CLI |
 | `log` / `show` | `log` / `show` | Bounded |
@@ -773,7 +773,8 @@ Honest reduced CLI — **not** git-core parity. Unknown commands fail closed.
 
 #### Phase B — monorepo materialization
 
-Sparse-checkout and partial trees for large repos without loading full history into the engine heap. Still host-side; guest only sees the projected worktree.
+Product stack: shallow history (`depth`) + cone sparse worktree + optional pack `filter` for
+smaller initial transfer. Host-side; guest only sees the projected worktree.
 
 #### Phase C — remotes (host-mediated)
 
@@ -1073,7 +1074,7 @@ and mount queue depth > 32. Not Prometheus — in-process snapshot only.
 | **M4** | PR11 | Connection-ref remotes + credential splice + push approval |
 | **M5** | PR12 | `push.prepare` + receive-pack + `push.complete` |
 | **M6** | PR15 | LLB `llb.git` on the same stack |
-| **M7** | PR13 | Chunked packs, pack cache (OPFS/disk by hash), partial clone |
+| **M7** | PR13 | Chunked packs, pack cache (OPFS/disk by hash), monorepo materialization (shallow + cone sparse + optional pack filter) |
 
 ---
 
@@ -1195,7 +1196,7 @@ Concrete ordered PRs for the **AgentOS monorepo**. PR0 does **not** assume rules
 | **Title** | `git: complete phase A local ops (rm/diff/show/reset/tag/config/remote)` |
 | **Files** | engine ops; fixtures |
 | **Depends on** | PR1 |
-| **Description** | Fill §3.2 deferred list; status-style `diff` acceptable. Required before remotes GA if CLI needs them. |
+| **Description** | Fill §3.2 deferred list; full unified-patch `diff` (pathspecs + cached). Required before remotes GA if CLI needs them. |
 
 ### PR2 — Emcc `git_engine.wasm` + size gate
 
@@ -1366,7 +1367,7 @@ Concrete ordered PRs for the **AgentOS monorepo**. PR0 does **not** assume rules
 | **Title** | `git: sparse-checkout projection` |
 | **Files** | engine sparse; gitfs cone |
 | **Depends on** | PR4; PR10a recommended |
-| **Description** | Monorepo materialization. |
+| **Description** | Cone sparse worktree projection (compose with shallow depth + optional pack filter). |
 
 ### PR15 — LLB on shared stack
 
