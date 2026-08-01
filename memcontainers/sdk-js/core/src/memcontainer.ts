@@ -112,6 +112,12 @@ function ownCreateOptions(opts: CreateOptions): CreateOptions {
     sidecarHosts: opts.sidecarHosts ? { ...opts.sidecarHosts } : undefined,
     sidecars: ownSidecarDescriptors(opts.sidecars),
     gitSparseCone: opts.gitSparseCone ? [...opts.gitSparseCone] : undefined,
+    gitDurable: opts.gitDurable
+      ? {
+          id: opts.gitDurable.id,
+          diskDir: opts.gitDurable.diskDir,
+        }
+      : undefined,
   };
 }
 
@@ -817,8 +823,13 @@ async function makeEmbedded(
   // Product orch path: process-scoped pack cache on by default (registerGitHostCall
   // → gitHostCallHandler); cone sparse via gitSparseCone (not full sparse parity).
   // Each mount path owns a distinct GitEngine (single-writer per engine; no shared mutable).
+  // D17 / K10: optional gitDurable opens per-mount DurableBackend; snapshot checkpoints
+  // AGIT; restore/fork reopens the same id/path and rebinds ODB+worktree (not in MCSN).
   type LoadedGitEngine = {
     path: string;
+    durableId?: string;
+    durablePath?: string;
+    checkpoint(): Promise<void>;
     close(): Promise<void>;
     asMountDriver: (opts?: {
       sparseCone?: string[];
@@ -833,7 +844,12 @@ async function makeEmbedded(
         "experimentalGitEngine requires gitEngineBaseUrl (dir URL of git_engine.mjs/wasm)",
       );
     }
-    const { GitEngine, registerGitHostCall } = await import("./git/index.js");
+    const {
+      GitEngine,
+      registerGitHostCall,
+      openDurable,
+      durableIdForMount,
+    } = await import("./git/index.js");
     const mountSpecs =
       opts.gitMounts && opts.gitMounts.length > 0
         ? opts.gitMounts
@@ -851,6 +867,11 @@ async function makeEmbedded(
       seen.add(path);
     }
 
+    const durableBaseId = opts.gitDurable?.id?.trim() || "default";
+    const durableDiskRoot = opts.gitDurable?.diskDir;
+    // Only open durable stores when the embedder opts in (A8 honesty: no silent ODB).
+    const useDurable = opts.gitDurable !== undefined;
+
     const engineMap = new Map<
       string,
       Awaited<ReturnType<typeof GitEngine.load>>
@@ -858,14 +879,42 @@ async function makeEmbedded(
     for (const spec of mountSpecs) {
       const path = String(spec.path).trim();
       const sparse = spec.sparseCone ?? opts.gitSparseCone;
+      let durable: Awaited<ReturnType<typeof openDurable>> | undefined;
+      let durableId: string | undefined;
+      let durablePath: string | undefined;
+      if (useDurable) {
+        durableId = durableIdForMount(durableBaseId, path);
+        // D16: openDurable(diskDir) → HostDirDurable under {diskDir}/{safeId}/
+        // (re-openable libgit2 worktree). Memory/OPFS fallbacks when no diskDir.
+        durable = await openDurable({
+          id: durableId,
+          diskDir: durableDiskRoot,
+        });
+        if (durable.kind === "directory" && durable.hostPath) {
+          durablePath = durable.hostPath;
+        } else if (durableDiskRoot) {
+          const baseDir = durableDiskRoot.replace(/\/$/, "");
+          const safe = durableId.replace(/[^A-Za-z0-9._:@+-]+/g, "_");
+          durablePath = `${baseDir}/${safe}`;
+        }
+      }
       const eng = await GitEngine.load({
         baseUrl: base,
         sparseCone: sparse,
         gitIdentity: opts.gitIdentity,
+        // Prefer durableDir so load hydrates/ge_opens the real host root.
+        ...(durable?.kind === "directory" && durable.hostPath
+          ? { durableDir: durable.hostPath }
+          : durable
+            ? { durable }
+            : {}),
       });
       engineMap.set(path, eng);
       gitEngines.push({
         path,
+        durableId,
+        durablePath: eng.durableDir ?? durablePath,
+        checkpoint: () => eng.checkpoint(),
         close: () => eng.close(),
         asMountDriver: (o) => eng.asMountDriver(o),
         sparseCone: sparse,
@@ -895,6 +944,18 @@ async function makeEmbedded(
   const backend = new EmbeddedBackend(host, stdout, tools, sidecars, activeBase, store);
   if (gitEngines.length > 0) {
     const loaded = gitEngines;
+    // D17: snapshot/pinBase checkpoint engines with durable bindings.
+    backend.bindGitEngines(
+      loaded
+        .filter((e) => e.durableId)
+        .map((e) => ({
+          path: e.path,
+          durableId: e.durableId!,
+          durablePath: e.durablePath,
+          checkpoint: () => e.checkpoint(),
+          close: () => e.close(),
+        })),
+    );
     const origClose = backend.close.bind(backend);
     backend.close = async () => {
       for (const eng of loaded) {

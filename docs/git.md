@@ -302,59 +302,169 @@ Accept either form:
 
 ## `experimentalGitEngine` graduation criteria (P3.2)
 
-**Do not graduate to stable yet.** Remotes are **not** GA. Keep `docs/api-surface.json` level
-`experimental` until **all** of the following hold. Status notes (honest; do not flip the flag
-on partial progress):
+**Do not graduate to stable.** Remotes are **not** GA. Keep `docs/api-surface.json` level
+`experimental` until **all** criteria below are **Met**. Status column is only **Met** or **Open**
+(with path evidence). Do not flip the flag while any row is **Open**.
 
 | # | Criterion | Status |
 |---|-----------|--------|
-| 1 | **Origin / connection policy** — empty origins fail closed; credential splice host-only; no secrets in guest/ctl/engine args | **Met in unit/fixture** — connection catalog product path (JS + BEAM `attach_git connections:`); bare-URL / empty origins fail closed; guest secret keys rejected both hosts; dual-host policy tests green |
-| 2 | **Pack e2e** — pack import → refs → clone/fetch apply on **both** JS wasm and BEAM Port (`minimal.pack` + golden orch vectors) | **Met (fixture class)** — abi/pack fixtures + `clone_success_steps` / empty-pack / origin_denied goldens on TS + BEAM; live public HTTPS still residual (R4) |
+| 1 | **Origin / connection policy** — empty origins fail closed; credential splice host-only; no secrets in guest/ctl/engine args | **Met** — connection catalog product path (JS + BEAM `attach_git connections:`); bare-URL / empty origins fail closed; guest secret keys rejected both hosts; dual-host policy tests green |
+| 2 | **Pack e2e** — pack import → refs → clone/fetch apply on **both** JS wasm and BEAM Port (`minimal.pack` + golden orch vectors) | **Met** — abi/pack fixtures + `clone_success_steps` / empty-pack / origin_denied goldens on TS + BEAM. Live public HTTPS is **Open** (D27) and is not a substitute for fixture pack e2e |
 | 3 | **Push or explicit RO** — packbuilder path on each product host **or** documented RO with stable reject | **Met** — JS + BEAM pack.build + receive-pack push when not read-only; RO mounts reject with stable `git: push rejected (read-only mount)` |
-| 4 | **Single-writer** — one engine queue per gitfs mount; K21 one engine per path | **Met (foundation)** — bridge/Port serialise per engine; multi-mount demux + same-path fail-closed (R63–R66) |
-| 5 | **CAP_NET e2e** — guest without CAP_NET → EPERM; with CAP_NET + allowlist → shallow clone/fetch on JS **and** server attach | **Partial** — **JS closed (fixture):** `//memcontainers/sdk-js/core:git_guest_e2e_test` boots loom + `/bin/git` through CAP_NET → MapHostCall `"git"` → FixtureSmartHttp/`minimal.pack` (R1) and CAP_NET deny (R3). **Server full guest-image path still open (R2)**; live HTTPS still R4 |
-| 6 | **Metrics / observability** — engine/orch failure counters (PR16), not silent false-green | **Partial (R85–R88 basic)** — in-process counters exist (see [Metrics](#metrics-pr16)); R89 alerts still open |
+| 4 | **Single-writer** — one engine queue per gitfs mount; K21 one engine per path | **Met** — bridge/Port serialise per engine; multi-mount demux + same-path fail-closed (D2/D21) |
+| 5 | **CAP_NET e2e** — guest without CAP_NET → EPERM; with CAP_NET + allowlist → shallow clone/fetch on JS **and** server attach | **Open** — **JS fixture Met:** `//memcontainers/sdk-js/core:git_guest_e2e_test` (CAP_NET allow + deny). **Server full guest-image path Open** (D25/D26). Live HTTPS Open (D27) |
+| 6 | **Metrics / observability** — engine/orch failure counters (PR16), not silent false-green | **Open** — in-process counters exist (see [Metrics](#metrics-pr16)); duration/bytes/redacted origin and server alerts Open (D35/D36) |
 
-**Blocker for graduation:** criterion **5** still needs **server** guest CAP_NET e2e (R2) in addition to
-the JS fixture path. Identity inject (K28), shallow default `depth=1`, push server path, and basic
-metrics are **not** substitutes. Live public HTTPS (R4) remains optional product proof, not a
-fixture substitute. **Do not graduate** `experimentalGitEngine` while R2/R4/R9 criteria remain open.
+**Blocker for graduation:** criterion **5** needs server guest CAP_NET e2e (D25) in addition to the
+JS fixture path. Identity inject (K28), shallow default `depth=1`, push server path, and basic
+counters are **not** substitutes. Live public HTTPS (D27) is optional product proof, not a
+fixture substitute. **Do not graduate** `experimentalGitEngine` while any criterion is **Open**.
 
-Until **all** rows are met: flag stays experimental; docs and api-surface must **not** claim GA remotes.
+Until **all** rows are **Met**: flag stays experimental; docs and api-surface must **not** claim GA remotes.
 
-## Residual: full guest CAP_NET e2e (P1.7)
+## Full guest CAP_NET e2e (D25/D26)
 
-- **JS (fixture class):** closed under `//memcontainers/sdk-js/core:git_guest_e2e_test` — thin
+- **JS (fixture):** **Met** under `//memcontainers/sdk-js/core:git_guest_e2e_test` — thin
   `/bin/git` on loom → kernel CAP_NET → host_call `"git"` → TS orch + FixtureSmartHttp +
-  `minimal.pack` → `/workspace/repo` worktree; CAP_NET deny (R3) + gitfs ctl close-then-status (R8).
+  `minimal.pack` → `/workspace/repo` worktree; CAP_NET deny; gitfs ctl close-then-status.
   Inject transport via create options `gitHttp` / `gitAllowOrigins` (hermetic; not product egress).
-- **Server:** unit demux + fixture transport under `Vm` / `attach_git` remain; **full guest-image**
-  CAP_NET path is still residual (R2).
+- **Server:** host demux + fixture transport under `Vm` / `attach_git` exist; **full guest-image**
+  CAP_NET allow + deny paths are **Open** (D25/D26).
 
-## Submodules (R68–R69) — honest surface
+## Durability / dir reopen (PR8 / D16–D18)
 
-**Network submodule ops are not implemented.** The engine never dials; submodule clone/update/init/add
-will be host-mediated later (planned: `host_call` name `"git"` with a recursive flag + apply into
-worktree projection). Until then:
+**D16** (directory reopen), **D17** (JS snapshot/fork rebind), and **D18** (named durable
+roots via `durable_id` + `AGENTOS_GIT_DURABLE_ROOT`) are **DONE**. Chunk 5 campaign VERIFY
+still gates full GA when other open rows close.
 
-| Op | Behaviour |
-|----|-----------|
-| `{"op":"submodule"}` or `action: "list"` / `"status"` | **List-only** — parse worktree `.gitmodules` (no network); returns `result.submodules` JSON array of `{name,path,url}`. Missing file → empty list. |
-| `action: "update"` / `"init"` / `"add"` / `"clone"` / other | **Fail closed** with stderr stating host-mediated design; **does not** clone or project submodule trees |
+### JS — directory reopen (primary) + AGIT blob (transfer)
 
-Thin CLI does **not** expose `submodule`. Do **not** claim multi-repo submodule network workflows work.
+**Primary durable form** is a re-openable libgit2 worktree+ODB **directory**
+(`HostDirDurable` / `OpfsDirDurable`). Checkpoint flushes that directory; a second open of the
+same path sees the same HEAD + worktree files. **AGIT** (pack+refs envelope) remains the
+**blob** transfer format for `MemoryDurable` / legacy `DiskDurable` / `OpfsDurable`.
 
+| Piece | Path | Behaviour |
+|-------|------|-----------|
+| `DurableKind` `directory` \| `blob` | `memcontainers/sdk-js/core/src/git/durable.ts` | Directory: `hostPath` / hydrate-dump; blob: AGIT save/load |
+| `HostDirDurable` | same | Node host dir is the store; `hydrateToMemfs` / `dumpFromMemfs` + fsync |
+| `OpfsDirDurable` | same | OPFS `agentos-git/{id}/work/` tree |
+| `MemoryDurable` / `DiskDurable` / `OpfsDurable` | same | AGIT blob; process registry by id for Memory |
+| `openDurable({ id, diskDir?, durableDir? })` | same | Prefer `HostDirDurable` when disk path set; else OPFS dir; else OPFS blob; else Memory |
+| `durableIdForMount` / `safeDurablePathSegment` | same | Per-mount keys under a VM disk root |
+| `GitEngine.load({ durableDir \| durable })` | `engine.ts` | Directory: bridge hydrates then `ge_open`; blob: AGIT rebind |
+| Proof (blob) | `git_engine.test.ts` R52–R55 | MemoryDurable HEAD + worktree |
+| Proof (dir reopen) | `git_engine.test.ts` D16 | `durableDir` → `.git` on host → second load same HEAD+files |
+| Proof (snapshot rebind) | `git_guest_e2e.test.ts` phase D17 | snapshot → restore + fork |
+
+**Dir reopen (JS):**
+
+| Store | Same id / path reopens | Survives process restart |
+|-------|------------------------|--------------------------|
+| `HostDirDurable` via `gitDurable.diskDir` or `durableDir` | Yes — `{diskDir}/{safeId}/` worktree | Yes |
+| `OpfsDirDurable` | Yes — OPFS work tree | Yes (browser OPFS) |
+| AGIT blob (`DiskDurable` / `OpfsDurable`) | Yes — `snapshot.bin` | Yes |
+| `MemoryDurable` | Yes within one JS process (instance registry) | **No** |
+
+### JS — MCSN snapshot / restore / fork rebind (D17 / K10) — **DONE**
+
+| Piece | Path | Behaviour |
+|-------|------|-----------|
+| `CreateOptions.gitDurable` | `types.ts` | Opt-in `{ id?, diskDir? }`. Per-mount key = `durableIdForMount(id, path)` |
+| `makeEmbedded` | `memcontainer.ts` | Opens durable per mount; `GitEngine.load({ durableDir \| durable })`; `backend.bindGitEngines(...)` |
+| `EmbeddedBackend.snapshot` / `pinBase` | `embedded.ts` | `checkpointGitEngines()` before MCSN (empty/unborn skip export) |
+| Restore / fork | `mc.restore` / `Vm.fork` | Same `gitDurable` → reopen id/path → directory hydrate or AGIT rebind |
+| Proof | `git_guest_e2e.test.ts` phase D17 | commit → snapshot → restore HEAD+worktree; fork rebind |
+
+```ts
+const vm = await mc.create({
+  experimentalGitEngine: true,
+  gitEngineBaseUrl: new URL("./git-engine/", import.meta.url).href,
+  // Primary: re-openable host worktree dirs under diskDir (D16 path).
+  gitDurable: { id: "agent-session-1", diskDir: "/var/lib/agentos/git-durable" },
+});
+// vm.snapshot() / pinBase → checkpoint durable store (not MCSN ODB)
+// mc.restore / fork with the same gitDurable → reopen + rebind
+```
+
+Omit `gitDurable` for empty engines on restore (MCSN never carries ODB — A8).
+
+### BEAM — Port worktree root (caller dir survives stop)
+
+BEAM durability is the **on-disk Port root** (same class as `HostDirDurable`). Rebind is
+re-`attach_git` / second `GitEngine.start` with the **same durable root**.
+
+| Piece | Path | Behaviour |
+|-------|------|-----------|
+| Default root | `server/lib/agent_os/git_engine.ex` `init/1` | `System.tmp_dir!/agentos-git-<n>` with `temp_root?=true` → **deleted** on stop |
+| Caller `:root` / `:durable_dir` | same + `AgentOS.Git.Durable` | Absolute dir, durable → **never** deleted by the engine |
+| `:durable_id` + `AGENTOS_GIT_DURABLE_ROOT` | `server/lib/agent_os/git/durable.ex` | `{base}/{safe_id}/{mount_slug}/` (D18) |
+| `GitEngine.root/1` / `checkpoint/1` | `git_engine.ex` | Inspect path; fsync face (writes already on disk) |
+| `attach_git(..., root: \| durable_dir: \| durable_id:)` | `server/lib/agent_os/vm.ex` | Forwards into `GitEngine.start` |
+| Proof | `server/test/agent_os/git_engine_test.exs` D16 | second Port same root → same HEAD+file; named durable_id under env |
+
+**Dir reopen (BEAM):** pass the **same absolute `root:` / `durable_dir:`** (or the same
+`durable_id` under a configured base) on a new `GitEngine.start` / `attach_git` after stop.
+
+### Snapshot honesty (A8)
+
+Kernel MCSN does **not** include the host git ODB. Repo survival requires explicit
+`gitDurable` / `durableDir` (JS) or a preserved Port root (BEAM). Snapshot refused while any
+git remote host_call is inflight (D19 **DONE**). JS MCSN rebind (D17 **DONE**).
+
+## Submodules (D23–D24) — host-mediated update
+
+**DONE (fixture class).** Network submodule update is **host orch only** — the engine never dials.
+List-only on engine is **not** sufficient for D23/D24; orch must fetch packs and materialize nested
+worktrees. Thin CLI does **not** expose `submodule`.
+
+### Engine surface (dial-free)
+
+| Op | Behaviour | Evidence |
+|----|-----------|----------|
+| `list` / `status` / default | Parse `.gitmodules`; include gitlink hash when index has mode 160000 | `engine_ops_extra.c` `op_submodule_list` |
+| `update` / `init` / `add` / `clone` via **engine.run** | **Fail closed** — requires host_call + orch | `engine.c` |
+| `gitlink` | Local-only stage mode 160000 (fixture/super setup; no network) | `op_gitlink` |
+
+### Host orch path (JS + BEAM)
+
+```text
+host_call "git" { op: "submodule", args: { action: "update" } }
+  → orch: engine list .gitmodules (+ gitlink hash)
+  → for each entry: same connection/origin policy on URL
+  → ListRefs + FetchPacks (host HTTP only)
+  → nested engine at super_root/<path> → init + import_pack + clone.apply
+  → guest sees nested files via superproject gitfs (FS under super worktree)
+```
+
+| Host | Orch | Nested apply | Proof |
+|------|------|--------------|-------|
+| **JS** | `remote-orchestrator.ts` `submodule()` | `bridge.openAt` same MEMFS | `git_remote.test.ts` D23–D24 |
+| **BEAM** | `AgentOS.Git.Orchestrator` `submodule` | nested Port `root: super/path` | `git_orchestrator_test.exs` D23/D24 |
+
+Optional `args.path` updates a single submodule. Origin deny on the submodule URL fails closed
+before dial (same policy as bare clone). Fixture: superproject `.gitmodules` + `gitlink` +
+`minimal.pack` as submodule pack → nested `deps/lib/README` = `hello\n`.
+
+### Multi-repo alternative (DONE — D21)
+
+Sibling multi-mount clone remains valid for independent repos (no nested gitlink):
+
+```text
+attach /workspace/app  + host_call clone mount=/workspace/app
+attach /workspace/lib  + host_call clone mount=/workspace/lib
+```
 ## Metrics (PR16)
 
-Basic in-process counters only (not Prometheus). Never store packs, tokens, or credential material.
+In-process counters only (not Prometheus). Never store packs, tokens, or credential material.
 
 | Host | API | Counters |
 |------|-----|----------|
 | **BEAM** | `AgentOS.Git.Metrics.snapshot/0` · `reset/0` · `inc/1` | `clone_ok` / `clone_error`, `fetch_ok` / `fetch_error` (includes pull), `push_ok` / `push_error`, `port_eio`, `rpc_error` |
 | **JS** | `snapshotGitCounters()` · `resetGitCounters()` · `incGitCounter` | `clone_ok` / `clone_error`, `fetch_ok` / `fetch_error`, `push_ok` / `push_error` |
 
-Orch records ok/error after each remote op. Port death ticks `port_eio` on BEAM. **Not yet productized:**
-duration/size histograms, origin/bytes labels, mount-queue depth, server alerts (R89).
+Orch records ok/error after each remote op. Port death ticks `port_eio` on BEAM.
+**Open (D35/D36):** duration/size histograms, origin/bytes labels, mount-queue depth, server alerts.
 
 ## Env (Node solve / LLB)
 
@@ -376,11 +486,10 @@ or disk when `MC_GIT_PACK_CACHE` is set) so interactive remotes and LLB share th
 
 ## c-shared / in-process load (K15 / R75) — **decided Port**
 
-**Decision (closed residual R75):** product server load remains the BEAM-owned **Port** binary
-(`git-engine`). `//memcontainers/lib/git-engine:libgit_engine` (`.so`) is **packaging-only** (license
-ship set, optional consumers) — **not** an in-process product load path. PR7d is **not** reopened
-for product latency work unless a future explicit decision overturns this. JS hosts continue to use
-emcc wasm.
+**Decision (closed):** product server load remains the BEAM-owned **Port** binary (`git-engine`).
+`//memcontainers/lib/git-engine:libgit_engine` (`.so`) is **packaging-only** (license ship set,
+optional consumers) — **not** an in-process product load path. PR7d is not a product load path
+unless an explicit decision overturns Port. JS hosts continue to use emcc wasm.
 
 ## Security rules
 

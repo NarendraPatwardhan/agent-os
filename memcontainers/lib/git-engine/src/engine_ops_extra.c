@@ -738,15 +738,40 @@ static void ge_json_escape_str(const char *in, char *out, size_t cap) {
   out[o] = '\0';
 }
 
+/* Resolve gitlink (mode 160000) OID from the superproject index, if present. */
+static void ge_submodule_gitlink_hash(ge_engine *e, const char *path, char *hash_out,
+                                      size_t hash_cap) {
+  if (hash_out && hash_cap)
+    hash_out[0] = '\0';
+  if (!e || !e->repo || !path || !path[0] || !hash_out || hash_cap < 41)
+    return;
+  git_index *index = NULL;
+  if (git_repository_index(&index, e->repo) != 0)
+    return;
+  const git_index_entry *ent = git_index_get_bypath(index, path, 0);
+  if (ent && (ent->mode == GIT_FILEMODE_COMMIT || ent->mode == 0160000)) {
+    git_oid_tostr(hash_out, hash_cap, &ent->id);
+  }
+  git_index_free(index);
+}
+
 static int ge_submodule_append_entry(char **outp, size_t *usedp, size_t *capp, int *firstp,
-                                     const char *name, const char *path, const char *url) {
+                                     const char *name, const char *path, const char *url,
+                                     const char *hash) {
   char esc_name[512], esc_path[1024], esc_url[2048];
   ge_json_escape_str(name, esc_name, sizeof(esc_name));
   ge_json_escape_str(path ? path : "", esc_path, sizeof(esc_path));
   ge_json_escape_str(url ? url : "", esc_url, sizeof(esc_url));
-  char item[4096];
-  int w = snprintf(item, sizeof(item), "%s{\"name\":\"%s\",\"path\":\"%s\",\"url\":\"%s\"}",
-                   *firstp ? "" : ",", esc_name, esc_path, esc_url);
+  char item[4200];
+  int w;
+  if (hash && hash[0] && strlen(hash) == 40) {
+    w = snprintf(item, sizeof(item),
+                 "%s{\"name\":\"%s\",\"path\":\"%s\",\"url\":\"%s\",\"hash\":\"%s\"}",
+                 *firstp ? "" : ",", esc_name, esc_path, esc_url, hash);
+  } else {
+    w = snprintf(item, sizeof(item), "%s{\"name\":\"%s\",\"path\":\"%s\",\"url\":\"%s\"}",
+                 *firstp ? "" : ",", esc_name, esc_path, esc_url);
+  }
   if (w < 0 || (size_t)w >= sizeof(item))
     return -1;
   if (*usedp + (size_t)w + 2 >= *capp) {
@@ -766,8 +791,9 @@ static int ge_submodule_append_entry(char **outp, size_t *usedp, size_t *capp, i
   return 0;
 }
 
-/* R68–R69: list-only parse of worktree `.gitmodules` (no network, no checkout).
- * Network submodule ops stay host-mediated and are refused at the dispatcher. */
+/* R68–R69 / D23–D24: parse worktree `.gitmodules` (no network).
+ * Includes gitlink hash from the superproject index when present (mode 160000).
+ * Network clone/update stays host-mediated via orch host_call (engine never dials). */
 int op_submodule_list(ge_engine *e, char **out_owned) {
   if (out_owned)
     *out_owned = NULL;
@@ -836,8 +862,11 @@ int op_submodule_list(ge_engine *e, char **out_owned) {
       /* comment / blank */
     } else if (line[0] == '[') {
       if (in_sub && cur_name[0]) {
-        if (ge_submodule_append_entry(&out, &used, &cap, &first, cur_name, cur_path, cur_url) !=
-            0) {
+        char gl[48] = "";
+        if (cur_path[0])
+          ge_submodule_gitlink_hash(e, cur_path, gl, sizeof(gl));
+        if (ge_submodule_append_entry(&out, &used, &cap, &first, cur_name, cur_path, cur_url,
+                                      gl[0] ? gl : NULL) != 0) {
           free(out);
           ge_set_err(e, "submodule: out of memory");
           return -1;
@@ -881,7 +910,11 @@ int op_submodule_list(ge_engine *e, char **out_owned) {
   }
 
   if (in_sub && cur_name[0]) {
-    if (ge_submodule_append_entry(&out, &used, &cap, &first, cur_name, cur_path, cur_url) != 0) {
+    char gl[48] = "";
+    if (cur_path[0])
+      ge_submodule_gitlink_hash(e, cur_path, gl, sizeof(gl));
+    if (ge_submodule_append_entry(&out, &used, &cap, &first, cur_name, cur_path, cur_url,
+                                  gl[0] ? gl : NULL) != 0) {
       free(out);
       ge_set_err(e, "submodule: out of memory");
       return -1;
@@ -904,5 +937,57 @@ int op_submodule_list(ge_engine *e, char **out_owned) {
     *out_owned = out;
   else
     free(out);
+  return 0;
+}
+
+/* Local-only: stage a gitlink (mode 160000) at path → hash. No network.
+ * Used by fixtures / superproject setup; does not clone submodule content. */
+int op_gitlink(ge_engine *e, const char *args) {
+  if (ge_ensure_repo(e) != 0)
+    return -1;
+  char path[1024] = "";
+  char hash[64] = "";
+  if (jmin_get_string(args, "path", path, sizeof(path)) != 0 || !ge_safe_relpath(path)) {
+    ge_set_err(e, "gitlink: bad path");
+    return -1;
+  }
+  if (jmin_get_string(args, "hash", hash, sizeof(hash)) != 0 || strlen(hash) != 40) {
+    ge_set_err(e, "gitlink: need 40-hex hash");
+    return -1;
+  }
+  for (char *p = hash; *p; p++) {
+    if (*p >= 'A' && *p <= 'F')
+      *p = (char)(*p - 'A' + 'a');
+    else if (!((*p >= '0' && *p <= '9') || (*p >= 'a' && *p <= 'f'))) {
+      ge_set_err(e, "gitlink: bad hash");
+      return -1;
+    }
+  }
+  git_oid oid;
+  if (git_oid_fromstr(&oid, hash) != 0) {
+    ge_set_err(e, "gitlink: bad hash");
+    return -1;
+  }
+  git_index *index = NULL;
+  if (git_repository_index(&index, e->repo) != 0) {
+    ge_set_err_git(e, "gitlink: index");
+    return -1;
+  }
+  git_index_entry entry;
+  memset(&entry, 0, sizeof(entry));
+  entry.path = path;
+  entry.mode = GIT_FILEMODE_COMMIT;
+  git_oid_cpy(&entry.id, &oid);
+  if (git_index_add(index, &entry) != 0) {
+    git_index_free(index);
+    ge_set_err_git(e, "gitlink: index_add");
+    return -1;
+  }
+  if (git_index_write(index) != 0) {
+    git_index_free(index);
+    ge_set_err_git(e, "gitlink: index_write");
+    return -1;
+  }
+  git_index_free(index);
   return 0;
 }

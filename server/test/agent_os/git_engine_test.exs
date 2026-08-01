@@ -158,6 +158,122 @@ defmodule AgentOS.GitEngineTest do
   end
 
   @tag timeout: 60_000
+  test "D16 directory durable: second Port reopens same HEAD + worktree" do
+    path = engine_path()
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "agentos-git-durable-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.mkdir_p!(root)
+
+    try do
+      assert {:ok, pid1} = GitEngine.start(executable: path, root: root)
+      root1 = GitEngine.root(pid1)
+      assert is_binary(root1)
+      assert Path.expand(root1) == Path.expand(root)
+
+      assert {:ok, _} = GitEngine.run(pid1, %{"op" => "init"})
+
+      assert {:ok, _} =
+               GitEngine.run(pid1, %{
+                 "op" => "write",
+                 "args" => %{"path" => "persist.txt", "content" => "beam-dir-roundtrip\n"}
+               })
+
+      assert {:ok, _} = GitEngine.run(pid1, %{"op" => "add", "args" => %{"path" => "persist.txt"}})
+
+      assert {:ok, _} =
+               GitEngine.run(pid1, %{
+                 "op" => "commit",
+                 "args" => %{
+                   "message" => "durable",
+                   "name" => "Dur",
+                   "email" => "dur@test",
+                   "when_unix" => 1_700_000_300
+                 }
+               })
+
+      assert {:ok, h1} = GitEngine.run(pid1, %{"op" => "rev-parse", "args" => %{"rev" => "HEAD"}})
+      head1 =
+        (h1["stdout"] || Map.get(h1, "raw", ""))
+        |> to_string()
+        |> String.trim()
+        |> String.split(~r/\s+/)
+        |> List.first()
+
+      assert is_binary(head1) and byte_size(head1) == 40
+
+      assert :ok = GitEngine.checkpoint(pid1)
+      assert File.dir?(Path.join(root, ".git"))
+      assert File.exists?(Path.join(root, "persist.txt"))
+      assert File.read!(Path.join(root, "persist.txt")) =~ "beam-dir-roundtrip"
+
+      # Stop process A — durable root must survive (not temp cleanup).
+      :ok = GitEngine.stop(pid1)
+      assert File.dir?(Path.join(root, ".git"))
+      assert File.exists?(Path.join(root, "persist.txt"))
+
+      # Process B: ge_open same directory — same HEAD + file content.
+      assert {:ok, pid2} = GitEngine.start(executable: path, root: root)
+      assert {:ok, h2} = GitEngine.run(pid2, %{"op" => "rev-parse", "args" => %{"rev" => "HEAD"}})
+
+      head2 =
+        (h2["stdout"] || Map.get(h2, "raw", ""))
+        |> to_string()
+        |> String.trim()
+        |> String.split(~r/\s+/)
+        |> List.first()
+
+      assert head2 == head1
+
+      # Worktree on disk (primary durable form) + engine still sees HEAD.
+      assert File.read!(Path.join(root, "persist.txt")) =~ "beam-dir-roundtrip"
+      :ok = GitEngine.stop(pid2)
+
+      # D18: durable_id under AGENTOS_GIT_DURABLE_ROOT
+      base =
+        Path.join(
+          System.tmp_dir!(),
+          "agentos-git-d18-" <> Integer.to_string(System.unique_integer([:positive]))
+        )
+
+      File.mkdir_p!(base)
+      prev = System.get_env("AGENTOS_GIT_DURABLE_ROOT")
+      System.put_env("AGENTOS_GIT_DURABLE_ROOT", base)
+
+      try do
+        assert {:ok, pid3} =
+                 GitEngine.start(
+                   executable: path,
+                   durable_id: "vm-alice",
+                   mount_path: "/workspace/repo"
+                 )
+
+        root3 = GitEngine.root(pid3)
+        assert is_binary(root3)
+        assert root3 =~ "vm-alice"
+        assert root3 =~ "workspace@repo"
+        assert String.starts_with?(Path.expand(root3), Path.expand(base))
+
+        assert {:ok, _} = GitEngine.run(pid3, %{"op" => "init"})
+        :ok = GitEngine.stop(pid3)
+        # Named durable root survives stop.
+        assert File.dir?(root3)
+      after
+        if prev,
+          do: System.put_env("AGENTOS_GIT_DURABLE_ROOT", prev),
+          else: System.delete_env("AGENTOS_GIT_DURABLE_ROOT")
+
+        File.rm_rf(base)
+      end
+    after
+      File.rm_rf(root)
+    end
+  end
+
+  @tag timeout: 60_000
   test "R34 reset ff-only fails on divergent history" do
     path = engine_path()
     assert {:ok, pid} = GitEngine.start(executable: path)

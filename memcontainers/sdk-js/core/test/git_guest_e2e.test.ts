@@ -376,6 +376,138 @@ print(raw)
     }
   }
 
+  // ── D17: snapshot/restore rebinds git durable (K10) ──
+  // MCSN does not carry ODB. gitDurable id is recorded; snapshot checkpoints
+  // process MemoryDurable (openDurable registry by id); restore reopens + rebinds AGIT.
+  // HostDir diskDir path is D16 primary; process-memory proves D17 lifecycle wiring.
+  console.log("phase: D17 snapshot/restore rebinds git durable");
+  {
+    const durableId = `d17-guest-${Date.now()}`;
+    const createOpts = {
+      kernel,
+      image: loom,
+      deterministic: true,
+      experimentalGitEngine: true,
+      gitEngineBaseUrl: baseUrl,
+      gitIdentity: { name: "D17", email: "d17@example.com" },
+      // No diskDir → openDurable MemoryDurable process registry (same id reopens).
+      gitDurable: { id: durableId },
+    } satisfies CreateOptions;
+
+    const headOid = async (vm: Awaited<ReturnType<typeof mc.create>>): Promise<string> => {
+      // Prefer ctl result (engine JSON); fall back to thin CLI stdout.
+      await vm.fs.write(
+        "/workspace/repo/.git/mc/ctl",
+        JSON.stringify({ op: "rev-parse", args: { rev: "HEAD" } }),
+      );
+      const raw = await vm.fs.readText("/workspace/repo/.git/mc/ctl");
+      let oid = "";
+      try {
+        const resp = JSON.parse(raw) as {
+          ok?: boolean;
+          stdout?: string;
+          result?: unknown;
+        };
+        if (resp.ok) {
+          const fromOut = String(resp.stdout || "")
+            .trim()
+            .split(/\s+/)[0];
+          if (fromOut && /^[0-9a-f]{40}$/i.test(fromOut)) oid = fromOut;
+          if (!oid && typeof resp.result === "string" && /^[0-9a-f]{40}$/i.test(resp.result)) {
+            oid = resp.result;
+          }
+        }
+      } catch {
+        /* fall through */
+      }
+      if (!oid) {
+        const rev = await vm.exec("cd /workspace/repo && git rev-parse HEAD");
+        oid = rev.stdout.trim().split(/\s+/)[0] ?? "";
+        if (!/^[0-9a-f]{40}$/i.test(oid)) {
+          throw new Error(
+            `D17 rev-parse failed: ctl=${raw} cli=${JSON.stringify(rev)}`,
+          );
+        }
+      }
+      return oid.toLowerCase();
+    };
+
+    const vm = await mc.create(createOpts);
+    let headBefore = "";
+    let snap: Uint8Array;
+    try {
+      // Local porcelain via ctl with explicit K28 identity (gitfs does not inject).
+      const init = await vm.exec("cd /workspace/repo && git init");
+      if (init.exitCode !== 0) {
+        throw new Error(`D17 init: ${JSON.stringify(init)}`);
+      }
+      await vm.fs.write("/workspace/repo/d17.txt", "durable-snapshot-rebind\n");
+      const add = await vm.exec("cd /workspace/repo && git add d17.txt");
+      if (add.exitCode !== 0) {
+        throw new Error(`D17 add: ${JSON.stringify(add)}`);
+      }
+      await vm.fs.write(
+        "/workspace/repo/.git/mc/ctl",
+        JSON.stringify({
+          op: "commit",
+          args: {
+            message: "d17-checkpoint",
+            name: "D17",
+            email: "d17@example.com",
+            when_unix: 1_700_000_100,
+          },
+        }),
+      );
+      const commitRaw = await vm.fs.readText("/workspace/repo/.git/mc/ctl");
+      const commitResp = JSON.parse(commitRaw) as { ok?: boolean; stderr?: string };
+      if (!commitResp.ok) {
+        throw new Error(`D17 commit ctl: ${commitRaw}`);
+      }
+      headBefore = await headOid(vm);
+
+      // Snapshot checkpoints AGIT into process MemoryDurable(id:mount).
+      snap = await vm.snapshot();
+      if (!snap || snap.byteLength < 16) {
+        throw new Error("D17 MCSN snapshot empty");
+      }
+    } finally {
+      await vm.close();
+    }
+
+    // Fresh VM from MCSN + same gitDurable id → AGIT rebind.
+    const restored = await mc.restore(snap!, createOpts);
+    try {
+      const headAfter = await headOid(restored);
+      if (headAfter !== headBefore) {
+        throw new Error(
+          `D17 FAIL: HEAD after restore ${headAfter} !== before ${headBefore}`,
+        );
+      }
+      const body = await restored.fs.readText("/workspace/repo/d17.txt");
+      if (!body.includes("durable-snapshot-rebind")) {
+        throw new Error(`D17 FAIL: worktree missing after rebind: ${JSON.stringify(body)}`);
+      }
+
+      // Fork also rebinds via same durable id (fork = snapshot + restore).
+      const child = await restored.fork();
+      try {
+        const headFork = await headOid(child);
+        if (headFork !== headBefore) {
+          throw new Error(`D17 FAIL: fork HEAD ${headFork} !== ${headBefore}`);
+        }
+        const bodyFork = await child.fs.readText("/workspace/repo/d17.txt");
+        if (!bodyFork.includes("durable-snapshot-rebind")) {
+          throw new Error(`D17 FAIL: fork worktree missing: ${JSON.stringify(bodyFork)}`);
+        }
+      } finally {
+        await child.close();
+      }
+      console.log("phase: D17 OK (snapshot+restore+fork rebind git durable)");
+    } finally {
+      await restored.close();
+    }
+  }
+
   // ── D19: snapshot refused while guest git host_call remote is inflight ──
   // Slow fixture listRefs keeps MapHostCall "git" slot open → kernel inflight_egress
   // > 0 → vm.snapshot() throws. Silent mid-clone snapshot is FAIL.

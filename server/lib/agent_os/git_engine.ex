@@ -25,6 +25,8 @@ defmodule AgentOS.GitEngine do
           optional(:executable) => String.t(),
           # true when `root` was created under System.tmp_dir! as agentos-git-*
           optional(:temp_root?) => boolean(),
+          # true when root is a durable (re-openable) directory — never rm_rf
+          optional(:durable?) => boolean(),
           # Host policy identity for commit inject (K28); never invents defaults.
           optional(:identity) => identity() | nil,
           buffer: binary()
@@ -109,6 +111,43 @@ defmodule AgentOS.GitEngine do
   end
 
   @doc """
+  Absolute worktree root bound at Port open (`ge_open` path).
+
+  Durable roots (opts `:root` / `:durable_dir` / `:durable_id`) survive `stop/1`;
+  temp roots under `System.tmp_dir!/agentos-git-*` are removed on terminate.
+  Used by D16 reopen and D23 nested submodule clone.
+  """
+  @spec root(pid()) :: String.t() | nil
+  def root(pid) when is_pid(pid) do
+    GenServer.call(pid, :root, 5_000)
+  rescue
+    _ -> nil
+  end
+
+  @doc "Path to the git-engine executable used by this Port."
+  @spec executable(pid()) :: String.t() | nil
+  def executable(pid) when is_pid(pid) do
+    GenServer.call(pid, :executable, 5_000)
+  rescue
+    _ -> nil
+  end
+
+  @doc """
+  Checkpoint durable state for this engine.
+
+  Native Port writes already land on the host filesystem; this is the product
+  face for “flush durable store” (directory fsync marker). Returns `:ok` when
+  the root exists. No AGIT export on the BEAM path — the directory **is** the
+  store (D16).
+  """
+  @spec checkpoint(pid()) :: :ok | {:error, term()}
+  def checkpoint(pid) when is_pid(pid) do
+    GenServer.call(pid, :checkpoint, 30_000)
+  rescue
+    _ -> {:error, :eio}
+  end
+
+  @doc """
   Route a relayed host_call (PR7b / PR10c demux helper).
 
   * `name == "git"` → **BEAM** `AgentOS.Git.Orchestrator` (HTTPS) + Port apply
@@ -156,41 +195,39 @@ defmodule AgentOS.GitEngine do
         System.get_env("AGENTOS_GIT_ENGINE") ||
         default_executable()
 
-    {root, temp_root?} =
-      case Keyword.get(opts, :root) do
-        nil ->
-          path =
-            Path.join(
-              System.tmp_dir!(),
-              "agentos-git-" <> Integer.to_string(System.unique_integer([:positive]))
-            )
-
-          {path, true}
-
-        given when is_binary(given) ->
-          {given, false}
-      end
-
-    File.mkdir_p!(root)
-
-    identity = normalize_identity(Keyword.get(opts, :identity) || Keyword.get(opts, :git_identity))
-
-    case open_port(executable, root) do
-      {:ok, port} ->
-        {:ok,
-         %{
-           port: port,
-           root: root,
-           temp_root?: temp_root?,
-           mount_path: Keyword.get(opts, :mount_path, "/workspace/repo"),
-           executable: executable,
-           identity: identity,
-           buffer: <<>>
-         }}
-
+    # D16/D18: prefer durable root resolution (root / durable_dir / durable_id).
+    # Fall back to legacy `:root` or temp when Durable module opts are absent.
+    case AgentOS.Git.Durable.resolve_root(opts) do
       {:error, reason} ->
-        maybe_rm_temp_root(root, temp_root?)
+        # Fail closed when durable_id is set without AGENTOS_GIT_DURABLE_ROOT.
         {:stop, reason}
+
+      {:ok, root, kind} ->
+        temp_root? = kind == :temp
+        durable? = kind == :durable
+        File.mkdir_p!(root)
+
+        identity =
+          normalize_identity(Keyword.get(opts, :identity) || Keyword.get(opts, :git_identity))
+
+        case open_port(executable, root) do
+          {:ok, port} ->
+            {:ok,
+             %{
+               port: port,
+               root: root,
+               temp_root?: temp_root?,
+               durable?: durable?,
+               mount_path: Keyword.get(opts, :mount_path, "/workspace/repo"),
+               executable: executable,
+               identity: identity,
+               buffer: <<>>
+             }}
+
+          {:error, reason} ->
+            maybe_rm_temp_root(root, temp_root?)
+            {:stop, reason}
+        end
     end
   end
 
@@ -201,8 +238,26 @@ defmodule AgentOS.GitEngine do
 
   def handle_call(:alive?, _from, state), do: {:reply, {:error, :eio}, state}
 
+  def handle_call(:root, _from, state) do
+    {:reply, Map.get(state, :root), state}
+  end
+
+  def handle_call(:checkpoint, _from, state) do
+    case Map.get(state, :root) do
+      root when is_binary(root) ->
+        {:reply, AgentOS.Git.Durable.sync_root(root), state}
+
+      _ ->
+        {:reply, {:error, :no_root}, state}
+    end
+  end
+
   def handle_call(:mount_path, _from, state) do
     {:reply, Map.get(state, :mount_path), state}
+  end
+
+  def handle_call(:executable, _from, state) do
+    {:reply, Map.get(state, :executable), state}
   end
 
   def handle_call(_msg, _from, %{port: nil} = state) do

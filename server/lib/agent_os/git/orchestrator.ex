@@ -88,6 +88,7 @@ defmodule AgentOS.Git.Orchestrator do
           "fetch" -> fetch(engine_pid, req, opts, false)
           "pull" -> fetch(engine_pid, req, opts, true)
           "push" -> push(engine_pid, req, opts)
+          "submodule" -> submodule(engine_pid, req, opts)
           _ -> {:ok, response(false, 2, "", "unknown remote op: #{op}")}
         end
 
@@ -141,6 +142,309 @@ defmodule AgentOS.Git.Orchestrator do
 
     map_remote_error_if_needed(result, :clone)
   end
+
+  # D23–D24: host-mediated submodule update.
+  # Parse .gitmodules via Port list → for each entry apply connection policy on
+  # URL → ListRefs/FetchPacks → nested Port at super_root/path → clone.apply.
+  # Nested worktree files sit under the super root so gitfs projects them.
+  defp submodule(engine_pid, req, opts) do
+    args = args_of(req)
+    action =
+      case Map.get(args, "action") || Map.get(args, :action) do
+        a when is_binary(a) and a != "" -> String.downcase(a)
+        _ -> "update"
+      end
+
+    cond do
+      action in ["list", "status"] ->
+        case GitEngine.run(engine_pid, %{"op" => "submodule", "args" => %{"action" => action}}) do
+          {:ok, m} -> {:ok, encode_response_map(m)}
+          err -> err
+        end
+
+      action in ["update", "init", "clone"] ->
+        submodule_update(engine_pid, req, opts)
+
+      true ->
+        {:ok,
+         response(false, 2, "", "git: submodule action not supported via orch: #{action}\n")}
+    end
+  end
+
+  defp submodule_update(engine_pid, req, opts) do
+    with {:ok, subs} <- list_submodules(engine_pid),
+         {:ok, targets} <- filter_submodules(subs, args_of(req)),
+         {:ok, updated} <- update_submodules(engine_pid, targets, opts) do
+      {:ok,
+       response(
+         true,
+         0,
+         "updated #{length(updated)} submodule(s)\n",
+         "",
+         %{"updated" => updated}
+       )}
+    else
+      {:error, {:submodule, path, reason}} when is_binary(path) ->
+        msg =
+          case reason do
+            bin when is_binary(bin) -> bin
+            other -> inspect(other)
+          end
+
+        {:ok, response(false, 1, "", "git: submodule #{path}: #{String.trim_trailing(msg)}\n")}
+
+      {:error, :invalid_sub_path} ->
+        {:ok, response(false, 2, "", "git: submodule path invalid\n")}
+
+      {:error, :no_super_root} ->
+        {:ok, response(false, 1, "", "git: superproject engine root unavailable\n")}
+
+      {:error, m} when is_map(m) ->
+        stderr = Map.get(m, "stderr") || Map.get(m, :stderr) || inspect(m)
+        {:ok, response(false, 1, "", to_string(stderr))}
+
+      {:ok, resp} when is_binary(resp) ->
+        {:ok, resp}
+
+      other ->
+        map_remote_error_if_needed(other, :clone)
+    end
+  end
+
+  defp list_submodules(engine_pid) do
+    case GitEngine.run(engine_pid, %{"op" => "submodule", "args" => %{"action" => "list"}}) do
+      {:ok, m} ->
+        if ok?(m) do
+          result = Map.get(m, "result") || Map.get(m, :result) || %{}
+          subs = Map.get(result, "submodules") || Map.get(result, :submodules) || []
+          {:ok, if(is_list(subs), do: subs, else: [])}
+        else
+          {:error, m}
+        end
+
+      err ->
+        err
+    end
+  end
+
+  defp filter_submodules(subs, args) do
+    only =
+      case Map.get(args, "path") || Map.get(args, :path) do
+        p when is_binary(p) and p != "" -> normalize_sub_path(p)
+        _ -> nil
+      end
+
+    case only do
+      :error ->
+        {:error, :invalid_sub_path}
+
+      nil ->
+        {:ok, subs}
+
+      path ->
+        {:ok,
+         Enum.filter(subs, fn s ->
+           normalize_sub_path(Map.get(s, "path") || Map.get(s, :path) || "") == path
+         end)}
+    end
+  end
+
+  defp update_submodules(_engine_pid, [], _opts), do: {:ok, []}
+
+  defp update_submodules(engine_pid, targets, opts) do
+    super_root = GitEngine.root(engine_pid)
+
+    if not is_binary(super_root) or super_root == "" do
+      {:error, :no_super_root}
+    else
+      executable = GitEngine.executable(engine_pid) || System.get_env("AGENTOS_GIT_ENGINE")
+
+      Enum.reduce_while(targets, {:ok, []}, fn sub, {:ok, acc} ->
+        case update_one_submodule(engine_pid, super_root, executable, sub, opts) do
+          {:ok, path} -> {:cont, {:ok, acc ++ [path]}}
+          {:error, _} = err -> {:halt, err}
+        end
+      end)
+    end
+  end
+
+  defp update_one_submodule(_super_pid, super_root, executable, sub, opts) do
+    path_raw = Map.get(sub, "path") || Map.get(sub, :path) || ""
+    url = Map.get(sub, "url") || Map.get(sub, :url) || ""
+    hash = Map.get(sub, "hash") || Map.get(sub, :hash)
+
+    path =
+      case normalize_sub_path(path_raw) do
+        :error -> nil
+        "" -> nil
+        p -> p
+      end
+
+    cond do
+      path == nil ->
+        {:error, {:submodule, to_string(path_raw), "missing path"}}
+
+      not is_binary(url) or String.trim(url) == "" ->
+        {:error, {:submodule, path, "missing url in .gitmodules"}}
+
+      true ->
+        nested_root = Path.join(super_root, path)
+        # Fresh nested worktree each update (v1): avoid "repository already open"
+        # on re-init; files re-materialize under super_root for gitfs.
+        _ = File.rm_rf(nested_root)
+        File.mkdir_p!(nested_root)
+
+        # Nested Port clone: same connection policy via resolve_binding on a
+        # synthetic clone request; files land under super_root for gitfs.
+        start_opts =
+          [root: nested_root, mount_path: "/__submodule__/" <> path]
+          |> then(fn o ->
+            if is_binary(executable) and executable != "",
+              do: Keyword.put(o, :executable, executable),
+              else: o
+          end)
+
+        case GitEngine.start(start_opts) do
+          {:ok, nested_pid} ->
+            try do
+              clone_req = %{
+                "op" => "clone",
+                "args" =>
+                  maybe_put_ref(%{"url" => String.trim(url)}, hash)
+              }
+
+              case clone(nested_pid, clone_req, opts) do
+                {:ok, json} when is_binary(json) ->
+                  if String.contains?(json, "\"ok\":true") or
+                       String.contains?(json, ~s("ok":true)) do
+                    # Prefer exact gitlink checkout when hash provided.
+                    _ = maybe_checkout_gitlink(nested_pid, hash)
+                    {:ok, path}
+                  else
+                    stderr = extract_stderr(json)
+                    {:error, {:submodule, path, stderr}}
+                  end
+
+                {:error, reason} ->
+                  {:error, {:submodule, path, inspect(reason)}}
+
+                other ->
+                  {:error, {:submodule, path, inspect(other)}}
+              end
+            after
+              _ = GitEngine.stop(nested_pid)
+            end
+
+          {:error, reason} ->
+            {:error, {:submodule, path, "nested engine start failed: #{inspect(reason)}"}}
+        end
+    end
+  end
+
+  defp maybe_put_ref(args, hash) when is_binary(hash) do
+    if Regex.match?(~r/^[0-9a-fA-F]{40}$/, hash) do
+      # Prefer advertised tip; gitlink enforced post-clone via reset.
+      args
+    else
+      args
+    end
+  end
+
+  defp maybe_put_ref(args, _), do: args
+
+  defp maybe_checkout_gitlink(pid, hash) when is_binary(hash) do
+    if Regex.match?(~r/^[0-9a-fA-F]{40}$/, hash) do
+      h = String.downcase(hash)
+
+      case GitEngine.run(pid, %{"op" => "rev-parse", "args" => %{"rev" => "HEAD"}}) do
+        {:ok, m} ->
+          cur =
+            (Map.get(m, "stdout") || "")
+            |> to_string()
+            |> String.trim()
+            |> String.split(~r/\s+/)
+            |> List.first()
+            |> case do
+              c when is_binary(c) -> String.downcase(c)
+              _ -> ""
+            end
+
+          if cur != h do
+            _ =
+              GitEngine.run(pid, %{
+                "op" => "reset",
+                "args" => %{"rev" => h, "mode" => "hard"}
+              })
+          end
+
+          :ok
+
+        _ ->
+          :ok
+      end
+    else
+      :ok
+    end
+  end
+
+  defp maybe_checkout_gitlink(_pid, _), do: :ok
+
+  defp normalize_sub_path(path) when is_binary(path) do
+    p =
+      path
+      |> String.replace("\\", "/")
+      |> String.trim()
+      |> String.trim_leading("/")
+      |> String.trim_trailing("/")
+
+    parts =
+      p
+      |> String.split("/", trim: true)
+      |> Enum.reject(&(&1 == "."))
+
+    cond do
+      parts == [] ->
+        ""
+
+      Enum.any?(parts, &(&1 == ".." or &1 == ".git")) ->
+        :error
+
+      true ->
+        Enum.join(parts, "/")
+    end
+  end
+
+  defp normalize_sub_path(_), do: :error
+
+  defp extract_stderr(json) when is_binary(json) do
+    case Regex.run(~r/"stderr"\s*:\s*"((?:\\.|[^"\\])*)"/, json) do
+      [_, s] ->
+        s
+        |> String.replace("\\n", "\n")
+        |> String.replace("\\\"", "\"")
+        |> String.replace("\\\\", "\\")
+
+      _ ->
+        json
+    end
+  end
+
+  # Encode a Port Run map as a guest Response JSON binary.
+  defp encode_response_map(m) when is_map(m) do
+    ok? = ok?(m)
+    code = Map.get(m, "code") || Map.get(m, :code) || if(ok?, do: 0, else: 1)
+    stdout = Map.get(m, "stdout") || Map.get(m, :stdout) || ""
+    stderr = Map.get(m, "stderr") || Map.get(m, :stderr) || ""
+    result = Map.get(m, "result") || Map.get(m, :result)
+
+    if is_map(result) do
+      response(ok?, code, stdout, stderr, result)
+    else
+      response(ok?, code, stdout, stderr)
+    end
+  end
+
+  defp encode_response_map(_), do: response(false, 1, "", "git: bad submodule list response\n")
 
   # pull? = true → R34 fetch + local FF only
   defp fetch(engine_pid, req, opts, pull?) do
@@ -1443,6 +1747,40 @@ defmodule AgentOS.Git.Orchestrator do
   defp response(ok, code, stdout, stderr) do
     ~s({"ok":#{ok},"code":#{code},"stdout":#{json_str(stdout)},"stderr":#{json_str(stderr)}})
   end
+
+  defp response(ok, code, stdout, stderr, result) when is_map(result) do
+    ~s({"ok":#{ok},"code":#{code},"stdout":#{json_str(stdout)},"stderr":#{json_str(stderr)},"result":#{json_encode_value(result)}})
+  end
+
+  defp args_of(req) when is_map(req) do
+    case Map.get(req, "args") || Map.get(req, :args) do
+      m when is_map(m) -> m
+      _ -> %{}
+    end
+  end
+
+  defp args_of(_), do: %{}
+
+  defp json_encode_value(v) when is_map(v) do
+    parts =
+      Enum.map(v, fn {k, val} ->
+        key = if is_atom(k), do: Atom.to_string(k), else: to_string(k)
+        "#{json_str(key)}:#{json_encode_value(val)}"
+      end)
+
+    "{" <> Enum.join(parts, ",") <> "}"
+  end
+
+  defp json_encode_value(list) when is_list(list) do
+    "[" <> Enum.map_join(list, ",", &json_encode_value/1) <> "]"
+  end
+
+  defp json_encode_value(s) when is_binary(s), do: json_str(s)
+  defp json_encode_value(true), do: "true"
+  defp json_encode_value(false), do: "false"
+  defp json_encode_value(n) when is_integer(n) or is_float(n), do: to_string(n)
+  defp json_encode_value(nil), do: "null"
+  defp json_encode_value(other), do: json_str(inspect(other))
 
   defp json_str(s) when is_binary(s) do
     escaped =

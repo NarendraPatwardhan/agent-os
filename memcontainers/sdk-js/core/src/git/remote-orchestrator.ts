@@ -328,6 +328,7 @@ export class GitRemoteOrchestrator {
     else if (op === "fetch") resp = await this.fetch(req, { pull: false });
     else if (op === "pull") resp = await this.fetch(req, { pull: true });
     else if (op === "push") resp = await this.push(req);
+    else if (op === "submodule") resp = await this.submodule(req);
     else {
       resp = {
         ok: false,
@@ -659,6 +660,334 @@ export class GitRemoteOrchestrator {
       stdout: `Fast-forward to ${tip.name}\n`,
       stderr: "",
     };
+  }
+
+  /**
+   * D23–D24: host-mediated submodule update.
+   * 1. Parse .gitmodules via engine list (no dial)
+   * 2. For each entry: same connection policy on URL → list-refs + fetch pack
+   * 3. Nested ge_open at submodule path under super worktree → init/import/apply
+   * 4. Nested files appear in super gitfs (same MEMFS)
+   * Engine.run(submodule update) still fails closed (purity).
+   */
+  private async submodule(req: GitRequest): Promise<GitResponse> {
+    const args = (req.args ?? {}) as Record<string, unknown>;
+    let action =
+      typeof args.action === "string" && args.action.trim()
+        ? args.action.trim().toLowerCase()
+        : "update";
+    if (action === "list" || action === "status") {
+      // Convenience: orch may relay list; engine does the parse.
+      return this.engine.run({ op: "submodule", args: { action } });
+    }
+    if (action !== "update" && action !== "init" && action !== "clone") {
+      return {
+        ok: false,
+        code: 2,
+        stdout: "",
+        stderr: `git: submodule action not supported via orch: ${action}\n`,
+      };
+    }
+
+    const list = await this.engine.run({
+      op: "submodule",
+      args: { action: "list" },
+    });
+    if (!list.ok) {
+      return {
+        ok: false,
+        code: list.code || 1,
+        stdout: "",
+        stderr: String(list.stderr || "git: submodule list failed\n"),
+      };
+    }
+    const result = list.result as { submodules?: unknown } | undefined;
+    const rawSubs = Array.isArray(result?.submodules) ? result!.submodules! : [];
+    type SubEntry = { name?: string; path?: string; url?: string; hash?: string };
+    const subs: SubEntry[] = rawSubs.filter(
+      (s): s is SubEntry => !!s && typeof s === "object",
+    ) as SubEntry[];
+
+    const onlyPath =
+      typeof args.path === "string" && args.path.trim()
+        ? normalizeSubPath(args.path.trim())
+        : undefined;
+    if (onlyPath === null) {
+      return {
+        ok: false,
+        code: 2,
+        stdout: "",
+        stderr: "git: submodule path invalid\n",
+      };
+    }
+
+    const targets = onlyPath
+      ? subs.filter((s) => normalizeSubPath(String(s.path || "")) === onlyPath)
+      : subs;
+
+    if (targets.length === 0) {
+      return {
+        ok: true,
+        code: 0,
+        stdout: "no submodules to update\n",
+        stderr: "",
+        result: { updated: [] },
+      };
+    }
+
+    const updated: string[] = [];
+    for (const sub of targets) {
+      const path = normalizeSubPath(String(sub.path || ""));
+      if (!path) {
+        return {
+          ok: false,
+          code: 1,
+          stdout: "",
+          stderr: `git: submodule ${JSON.stringify(sub.name || "?")} missing path\n`,
+        };
+      }
+      const url = typeof sub.url === "string" ? sub.url.trim() : "";
+      if (!url) {
+        return {
+          ok: false,
+          code: 1,
+          stdout: "",
+          stderr: `git: submodule ${path} missing url in .gitmodules\n`,
+        };
+      }
+
+      // Same connection policy as bare clone (origin allowlist / connections).
+      const resolved = await this.resolve({
+        op: "clone",
+        args: { url },
+      });
+      if (!resolved.ok) {
+        return {
+          ok: false,
+          code: resolved.code,
+          stdout: "",
+          stderr: `git: submodule ${path}: ${resolved.stderr}`,
+        };
+      }
+      const { binding } = resolved;
+      const denied = this.checkOriginPolicy(binding);
+      if (denied) {
+        return {
+          ok: false,
+          code: denied.code,
+          stdout: "",
+          stderr: `git: submodule ${path}: ${denied.stderr}`,
+        };
+      }
+
+      let refs: RefAdvertisement[];
+      try {
+        refs = await this.http.listRefs(binding.url, binding.auth);
+      } catch (e) {
+        return {
+          ok: false,
+          code: 1,
+          stdout: "",
+          stderr: `git: submodule ${path}: list-refs failed: ${String(e)}\n`,
+        };
+      }
+      if (!refs.length) {
+        return {
+          ok: false,
+          code: 1,
+          stdout: "",
+          stderr: `git: submodule ${path}: no refs in advertisement\n`,
+        };
+      }
+
+      // Prefer gitlink hash when advertised; else default tip.
+      const wantHash =
+        typeof sub.hash === "string" && /^[0-9a-f]{40}$/i.test(sub.hash)
+          ? sub.hash.toLowerCase()
+          : undefined;
+      let head = this.pickTip(refs, undefined);
+      if (wantHash) {
+        const byHash = refs.find((r) => r.hash.toLowerCase() === wantHash);
+        if (byHash) head = byHash;
+        else {
+          // Pack may still contain the gitlink commit even if not advertised as tip.
+          head = {
+            name: "HEAD",
+            hash: wantHash,
+          };
+        }
+      }
+      if (!head) {
+        return {
+          ok: false,
+          code: 1,
+          stdout: "",
+          stderr: `git: submodule ${path}: no tip to clone\n`,
+        };
+      }
+
+      const wants = this.wantOids(refs, head.hash);
+      // When cloning a non-advertised gitlink, ensure want includes it.
+      if (wantHash && !wants.includes(wantHash)) wants.unshift(wantHash);
+
+      const resolvedPack = await this.resolvePack(
+        binding.url,
+        wants,
+        [],
+        1,
+        binding.auth,
+      );
+      if ("error" in resolvedPack) {
+        return {
+          ok: false,
+          code: 1,
+          stdout: "",
+          stderr: `git: submodule ${path}: ${resolvedPack.error}`,
+        };
+      }
+      const pack = resolvedPack.pack;
+      if (pack.byteLength === 0) {
+        return {
+          ok: false,
+          code: 1,
+          stdout: "",
+          stderr: `git: submodule ${path}: empty pack from remote\n`,
+        };
+      }
+
+      const applyErr = await this.applyNestedClone(path, pack, refs, head, wantHash);
+      if (applyErr) {
+        return {
+          ok: false,
+          code: applyErr.code || 1,
+          stdout: "",
+          stderr: `git: submodule ${path}: ${applyErr.stderr || "apply failed\n"}`,
+        };
+      }
+      updated.push(path);
+    }
+
+    return {
+      ok: true,
+      code: 0,
+      stdout: `updated ${updated.length} submodule(s)\n`,
+      stderr: "",
+      result: { updated },
+    };
+  }
+
+  /**
+   * Nested engine under super worktree path: init (if needed) + import + checkout.
+   * Holds serial only for apply (network already done). Files land in super MEMFS.
+   */
+  private async applyNestedClone(
+    relPath: string,
+    pack: Uint8Array,
+    refs: RefAdvertisement[],
+    head: RefAdvertisement,
+    wantHash?: string,
+  ): Promise<GitResponse | null> {
+    const bridge = this.engine.bridge;
+    const abs = bridge.abs(relPath);
+    return bridge.serial(() => {
+      let eng = 0;
+      try {
+        eng = bridge.openAt(abs);
+        // ge_open opens existing repo if present; only init when empty.
+        const st = bridge.runAt(eng, { op: "status" });
+        if (!st.ok) {
+          const init = bridge.runAt(eng, { op: "init" });
+          if (!init.ok) return init;
+        }
+
+        // Chunked import (same 64 MiB gate path as importBinary, but nested eng).
+        const chunkSize = 1024 * 1024;
+        if (pack.byteLength === 0) {
+          return {
+            ok: false,
+            code: 1,
+            stdout: "",
+            stderr: "empty pack\n",
+          };
+        }
+        for (let off = 0; off < pack.byteLength; off += chunkSize) {
+          const slice = pack.subarray(off, Math.min(off + chunkSize, pack.byteLength));
+          const final = off + slice.byteLength >= pack.byteLength;
+          bridge.importPackAt(eng, slice, final);
+        }
+
+        const refName =
+          head.name === "HEAD"
+            ? refs.find((r) => r.hash === head.hash && r.name.startsWith("refs/"))
+                ?.name ?? "refs/heads/master"
+            : head.name;
+
+        const imp = bridge.runAt(eng, {
+          op: "refs.import",
+          args: { name: refName, hash: head.hash },
+        });
+        if (!imp.ok) return imp;
+
+        // Import other heads (best-effort) for richer nested repo.
+        for (const r of refs) {
+          if (!r.name.startsWith("refs/heads/") || r.name === refName) continue;
+          bridge.runAt(eng, {
+            op: "refs.import",
+            args: { name: r.name, hash: r.hash },
+          });
+        }
+
+        const apply = bridge.runAt(eng, {
+          op: "clone.apply",
+          args: { head: refName },
+        });
+        if (!apply.ok) return apply;
+
+        // Detach to exact gitlink when provided and differs from branch tip name.
+        if (wantHash && wantHash !== head.hash.toLowerCase()) {
+          const co = bridge.runAt(eng, {
+            op: "checkout",
+            args: { name: wantHash },
+          });
+          if (!co.ok) {
+            // Try reset hard to OID.
+            const rst = bridge.runAt(eng, {
+              op: "reset",
+              args: { rev: wantHash, mode: "hard" },
+            });
+            if (!rst.ok) return rst;
+          }
+        } else if (wantHash) {
+          // Ensure worktree matches gitlink even when hash was used as tip.
+          const rev = bridge.runAt(eng, {
+            op: "rev-parse",
+            args: { rev: "HEAD" },
+          });
+          const cur = String(rev.stdout || "")
+            .trim()
+            .split(/\s+/)[0]
+            ?.toLowerCase();
+          if (cur && cur !== wantHash) {
+            const rst = bridge.runAt(eng, {
+              op: "reset",
+              args: { rev: wantHash, mode: "hard" },
+            });
+            if (!rst.ok) return rst;
+          }
+        }
+
+        return null;
+      } catch (e) {
+        return {
+          ok: false,
+          code: 1,
+          stdout: "",
+          stderr: `${String(e)}\n`,
+        };
+      } finally {
+        if (eng) bridge.closeAt(eng);
+      }
+    });
   }
 
   private async clone(req: GitRequest): Promise<GitResponse> {
@@ -1314,4 +1643,20 @@ export function gitHostCallHandler(
     const resp = await orchFor(resolved.engine).handle(req);
     return JSON.stringify(resp);
   };
+}
+
+/**
+ * Worktree-relative submodule path: no absolute, no `..`, no empty.
+ * Returns null when invalid; empty string only for missing input.
+ */
+function normalizeSubPath(path: string): string | null {
+  const p = String(path || "")
+    .replace(/\\/g, "/")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "");
+  if (!p) return "";
+  const parts = p.split("/").filter((s) => s.length > 0 && s !== ".");
+  if (parts.some((s) => s === ".." || s === ".git")) return null;
+  if (parts.length === 0) return "";
+  return parts.join("/");
 }

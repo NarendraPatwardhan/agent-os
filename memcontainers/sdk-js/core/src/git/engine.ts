@@ -8,6 +8,8 @@ import { GitBridge } from "./bridge.js";
 import {
   decodeDurableBlob,
   encodeDurableBlob,
+  HostDirDurable,
+  isDirectoryDurable,
   type DecodedDurableBlob,
   type DurableBackend,
   type DurableRefTip,
@@ -33,6 +35,16 @@ function normalizeIdentity(
   return { name, email };
 }
 
+function resolveDurable(
+  opts: GitEngineLoadOptions,
+): DurableBackend | undefined {
+  if (opts.durableDir) {
+    // durableDir wins — primary D16 product path (re-openable libgit2 root).
+    return new HostDirDurable(opts.durableDir, opts.durableDir);
+  }
+  return opts.durable;
+}
+
 export class GitEngine {
   private readonly durable: DurableBackend | undefined;
   /** Last durable snapshot bytes (AGIT envelope when produced by checkpoint). */
@@ -55,18 +67,22 @@ export class GitEngine {
   }
 
   static async load(opts: GitEngineLoadOptions): Promise<GitEngine> {
+    const durable = resolveDurable(opts);
     const bridge = await GitBridge.create(opts.baseUrl, {
       workRoot: opts.workRoot,
+      durable,
     });
     const engine = new GitEngine(
       bridge,
       !!opts.readOnly,
-      opts.durable,
+      durable,
       opts.sparseCone,
       opts.gitIdentity,
     );
-    if (opts.durable) {
-      const snap = await opts.durable.load();
+    // Directory backends hydrate in GitBridge.create; ge_open already sees
+    // the restored worktree+odb (or empty dir for first open).
+    if (durable && !isDirectoryDurable(durable)) {
+      const snap = await durable.load();
       if (snap && snap.byteLength > 0) {
         engine._durableSnapshot = snap.slice();
         const decoded = decodeDurableBlob(snap);
@@ -81,10 +97,22 @@ export class GitEngine {
 
   /**
    * Last durable snapshot bytes (AGIT envelope when produced by
-   * {@link checkpoint} / {@link close}). Copy returned.
+   * {@link checkpoint} / {@link close} on **blob** backends). Directory
+   * backends return null — the host path is the store.
    */
   get durableSnapshot(): Uint8Array | null {
     return this._durableSnapshot ? this._durableSnapshot.slice() : null;
+  }
+
+  /**
+   * Host directory path for directory durable backends (`durableDir` /
+   * {@link HostDirDurable}); `undefined` for blob/memory backends.
+   */
+  get durableDir(): string | undefined {
+    if (isDirectoryDurable(this.durable) && this.durable.hostPath) {
+      return this.durable.hostPath;
+    }
+    return undefined;
   }
 
   /**
@@ -97,12 +125,35 @@ export class GitEngine {
   }
 
   /**
-   * Persist durable state. With no `snapshot` arg, serializes the live repo
-   * (pack of local tips + refs + HEAD) as an AGIT envelope. Explicit `snapshot`
-   * overrides (advanced/tests) and is saved as-is without re-export.
+   * Persist durable state.
+   *
+   * * **Directory backends** — dump MEMFS worktree+`.git` into the host/OPFS
+   *   directory and fsync (primary D16 path). Explicit `snapshot` is ignored.
+   * * **Blob backends** — with no `snapshot` arg, serialize live repo as AGIT
+   *   (optional transfer format). Explicit `snapshot` is saved as-is.
    */
   async checkpoint(snapshot?: Uint8Array): Promise<void> {
     if (!this.durable) return;
+    if (isDirectoryDurable(this.durable)) {
+      await this.bridge.serial(async () => {
+        // NODEFS write-through already keeps host dir live — fsync only.
+        if (this.bridge.nodefsMounted) {
+          if (typeof this.durable!.sync === "function") {
+            await this.durable!.sync!();
+          }
+          return;
+        }
+        if (typeof this.durable!.dumpFromMemfs === "function") {
+          await this.durable!.dumpFromMemfs!(
+            this.bridge.FS,
+            this.bridge.workRoot,
+          );
+        } else if (typeof this.durable!.sync === "function") {
+          await this.durable!.sync!();
+        }
+      });
+      return;
+    }
     const data =
       snapshot !== undefined
         ? snapshot
@@ -180,6 +231,7 @@ export class GitEngine {
     return createGitFsDriver(this.bridge, {
       readOnly: this.readOnly,
       sparseCone: opts?.sparseCone ?? this._sparseCone,
+      identity: this.identity,
     });
   }
 
@@ -188,17 +240,26 @@ export class GitEngine {
   }
 
   async close(): Promise<void> {
-    // Export real pack+refs when durable is attached (same path as checkpoint).
     if (this.durable) {
-      try {
-        const snap = await this.exportDurableSnapshot();
-        await this.durable.save(snap);
-        this._durableSnapshot = snap;
-      } catch {
-        // Fall back to last known good snapshot if live export fails
-        // (e.g. unborn HEAD / no commits yet).
-        if (this._durableSnapshot) {
-          await this.durable.save(this._durableSnapshot);
+      if (isDirectoryDurable(this.durable)) {
+        // Flush worktree+odb directory (ignore empty/unborn failures).
+        try {
+          await this.checkpoint();
+        } catch {
+          /* unborn / empty — leave previous durable tree */
+        }
+      } else {
+        // Blob: export AGIT pack+refs when durable is attached.
+        try {
+          const snap = await this.exportDurableSnapshot();
+          await this.durable.save(snap);
+          this._durableSnapshot = snap;
+        } catch {
+          // Fall back to last known good snapshot if live export fails
+          // (e.g. unborn HEAD / no commits yet).
+          if (this._durableSnapshot) {
+            await this.durable.save(this._durableSnapshot);
+          }
         }
       }
     }

@@ -261,8 +261,12 @@ ge_engine *ge_open(const char *worktree_root) {
     e->root[--n] = '\0';
   }
   git_libgit2_init();
-  /* Open existing repo if present. */
-  if (git_repository_open_ext(&e->repo, e->root, 0, NULL) != 0)
+  /* Open existing repo if present at this path only.
+   * NO_SEARCH: do not walk parents — required for nested submodule engines
+   * under a superproject worktree (D23), otherwise ge_open(subpath) binds the
+   * parent .git while e->root stays at the nested path (import_pack ENOENT). */
+  if (git_repository_open_ext(&e->repo, e->root, GIT_REPOSITORY_OPEN_NO_SEARCH,
+                              NULL) != 0)
     e->repo = NULL;
   return e;
 }
@@ -304,6 +308,7 @@ int op_push_complete(ge_engine *e, const char *args);
 int op_sparse_set(ge_engine *e, const char *args);
 int op_sparse_disable(ge_engine *e, const char *args);
 int op_submodule_list(ge_engine *e, char **out_owned);
+int op_gitlink(ge_engine *e, const char *args);
 
 static int op_init(ge_engine *e) {
   if (e->repo) {
@@ -933,7 +938,10 @@ int ge_import_pack(ge_engine *e, const uint8_t *chunk, size_t len, int final) {
      * .git/objects — writing into objects/ leaves pack-*.{pack,idx} where the
      * ODB never discovers them (refs.import / clone.apply then fail closed). */
     char packdir[4096];
+    char objects[4096];
+    snprintf(objects, sizeof(objects), "%s/.git/objects", e->root);
     snprintf(packdir, sizeof(packdir), "%s/.git/objects/pack", e->root);
+    mkdir(objects, 0755);
     mkdir(packdir, 0755);
     git_indexer_options iopts = GIT_INDEXER_OPTIONS_INIT;
     if (git_indexer_new(&e->indexer, packdir, 0, e->odb, &iopts) != 0) {
@@ -1780,9 +1788,9 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     return resp_ok("", NULL);
   }
 
-  /* R68–R69: list-only from .gitmodules; network/update/init/add fail closed.
-   * Submodule clone is planned as host_call "git" with recursive flag later —
-   * engine never dials and does not project submodule worktrees yet. */
+  /* R68–R69 / D23–D24: list/status from .gitmodules (+ optional gitlink hash).
+   * Network update/init/add/clone: engine never dials — host_call "git" with
+   * op "submodule" (orch clones into nested path; gitfs projects files). */
   if (strcmp(op, "submodule") == 0) {
     char action[64] = "list";
     (void)jmin_get_string(args, "action", action, sizeof(action));
@@ -1815,9 +1823,16 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     }
     return resp_err(
         1,
-        "git: submodule network ops not implemented (host-mediated design: "
-        "list-only from .gitmodules; clone/update/init/add via future host_call "
-        "git recursive — engine does not dial or project submodule worktrees)");
+        "git: submodule network ops require host_call git + orchestrator "
+        "(host-mediated: list-only on engine; update/init/clone via orch — "
+        "engine does not dial)");
+  }
+
+  /* Local-only stage gitlink (mode 160000). No network. */
+  if (strcmp(op, "gitlink") == 0) {
+    if (op_gitlink(e, args) != 0)
+      return resp_err(1, e->err);
+    return resp_ok("", NULL);
   }
 
   return resp_usage("unknown op (fail closed)");

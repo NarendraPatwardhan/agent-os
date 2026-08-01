@@ -45,17 +45,26 @@ export type {
 export {
   MemoryDurable,
   OpfsDurable,
+  OpfsDirDurable,
   DiskDurable,
+  HostDirDurable,
   openDurable,
+  durableIdForMount,
+  clearMemoryDurableRegistry,
+  safeDurablePathSegment,
+  isDirectoryDurable,
+  isBlobDurable,
   encodeDurableBlob,
   decodeDurableBlob,
   AGIT_MAGIC,
 } from "./durable.js";
 export type {
   DurableBackend,
+  DurableKind,
   DurableEnvelopeMeta,
   DurableRefTip,
   DecodedDurableBlob,
+  MemfsLike,
 } from "./durable.js";
 export {
   resolveGitRemote,

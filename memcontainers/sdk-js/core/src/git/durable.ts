@@ -1,24 +1,126 @@
 /**
  * Durable backends for host git engine (GIT.md PR8a OPFS / PR8b server disk).
  *
- * Backends store an opaque byte blob. {@link GitEngine} serializes real repo
- * state as a versioned **AGIT** envelope (refs JSON + packfile) — not a MEMFS
- * filesystem dump. Load rebinds via `importPack` + `refs.import` + `clone.apply`.
+ * **Primary durable form is a re-openable libgit2 worktree+ODB directory** on
+ * host disk (Node/server) or OPFS (browser, when available). Checkpoint
+ * flushes that directory; a second process `ge_open`s / hydrates the same
+ * path and sees the same HEAD + worktree files.
+ *
+ * **AGIT** (pack+refs envelope) remains an optional **transfer** format for
+ * blob backends (`MemoryDurable` / legacy `DiskDurable` / `OpfsDurable`
+ * snapshot.bin). Prefer {@link HostDirDurable} / {@link GitEngine.load}
+ * `{ durableDir }` when a real directory is available.
  */
 
+/** Blob (AGIT/opaque) vs directory (real worktree root) durability. */
+export type DurableKind = "blob" | "directory";
+
+/**
+ * Common durable store face.
+ *
+ * * **blob** — `save`/`load` opaque or AGIT bytes (transfer format).
+ * * **directory** — real worktree+`.git` on disk/OPFS; `hostPath` is the root
+ *   that a native engine `ge_open`s. Blob save/load are no-ops (null).
+ */
 export interface DurableBackend {
-  /** Absolute or logical key for the worktree store. */
   readonly id: string;
-  /** Persist durable snapshot bytes (AGIT envelope or legacy opaque). */
+  /** Default `"blob"` for legacy implementations that omit `kind`. */
+  readonly kind?: DurableKind;
+  /** Persist durable snapshot bytes (AGIT / opaque). Directory backends: no-op. */
   save(snapshot: Uint8Array): Promise<void>;
-  /** Load last snapshot; null if none. */
+  /** Load last blob snapshot; null if none or directory-backed. */
   load(): Promise<Uint8Array | null>;
   /** Drop durable state. */
   clear(): Promise<void>;
+  /**
+   * Directory backends only: absolute host path of the worktree root
+   * (Node/server). Browser OPFS directory backends may omit this.
+   */
+  readonly hostPath?: string;
+  /** Ensure directory exists; return absolute host path when applicable. */
+  ensure?(): Promise<string | void>;
+  /**
+   * Flush engine state into the durable directory.
+   * Node: fsync after MEMFS dump (or write-through NODEFS).
+   * OPFS: write tree under the OPFS handle.
+   */
+  sync?(): Promise<void>;
+  /**
+   * Copy durable tree → Emscripten MEMFS at `workRoot` (when NODEFS is not
+   * mounting the host path). No-op for pure blob backends.
+   */
+  hydrateToMemfs?(
+    FS: MemfsLike,
+    workRoot: string,
+  ): Promise<void>;
+  /**
+   * Copy MEMFS worktree → durable tree (checkpoint path without NODEFS).
+   */
+  dumpFromMemfs?(
+    FS: MemfsLike,
+    workRoot: string,
+  ): Promise<void>;
 }
 
-/** In-memory durability (tests / default when OPFS unavailable). */
+/** Minimal Emscripten FS surface used by directory hydrate/dump. */
+export type MemfsLike = {
+  mkdir(path: string): void;
+  mkdirTree?(path: string): void;
+  readdir(path: string): string[];
+  stat(path: string): { mode: number; size?: number };
+  isDir(mode: number): boolean;
+  readFile(path: string, opts?: { encoding?: string }): Uint8Array | string;
+  writeFile(path: string, data: Uint8Array | string): void;
+  unlink(path: string): void;
+  rmdir(path: string): void;
+  analyzePath?(path: string): { exists: boolean };
+};
+
+export function isDirectoryDurable(
+  b: DurableBackend | undefined | null,
+): b is DurableBackend & { kind: "directory" } {
+  return !!b && b.kind === "directory";
+}
+
+export function isBlobDurable(b: DurableBackend | undefined | null): boolean {
+  return !!b && b.kind !== "directory";
+}
+
+/**
+ * Process-scoped MemoryDurable instances (D17).
+ * Same `id` via {@link openDurable} reuses one store so snapshot → restore /
+ * fork in the same JS process rebinds AGIT without OPFS/disk.
+ */
+const memoryDurableRegistry = new Map<string, MemoryDurable>();
+
+/**
+ * Stable durable id for a gitfs mount under a VM/session base id.
+ * Example: `durableIdForMount("agent", "/workspace/repo")` → `agent:@workspace@repo`.
+ */
+export function durableIdForMount(baseId: string, mountPath: string): string {
+  const base = (baseId || "default").trim() || "default";
+  const mount = String(mountPath || "")
+    .trim()
+    .replace(/\\/g, "/");
+  const safeMount = mount
+    .replace(/[^A-Za-z0-9._:@+/-]+/g, "_")
+    .replace(/\/+/g, "@");
+  return `${base}:${safeMount || "@"}`;
+}
+
+/** Drop process-local MemoryDurable instances (tests). */
+export function clearMemoryDurableRegistry(): void {
+  memoryDurableRegistry.clear();
+}
+
+/** Sanitize an id for use as a single path segment under a disk root. */
+export function safeDurablePathSegment(id: string): string {
+  return String(id || "default").replace(/[^A-Za-z0-9._:@+-]+/g, "_") || "default";
+}
+
+/** In-memory durability (tests / default when OPFS unavailable). AGIT blob. */
 export class MemoryDurable implements DurableBackend {
+  readonly kind = "blob" as const;
   private data: Uint8Array | null = null;
   constructor(readonly id = "memory") {}
   async save(snapshot: Uint8Array): Promise<void> {
@@ -33,10 +135,12 @@ export class MemoryDurable implements DurableBackend {
 }
 
 /**
- * Browser OPFS durable store (PR8a). Keyed under `agentos-git/{id}/snapshot.bin`.
- * No-op constructor throw if OPFS missing — callers fall back to MemoryDurable.
+ * Browser OPFS **blob** store (legacy AGIT). Keyed under
+ * `agentos-git/{id}/snapshot.bin`. Prefer {@link OpfsDirDurable} for a
+ * re-openable worktree tree under OPFS.
  */
 export class OpfsDurable implements DurableBackend {
+  readonly kind = "blob" as const;
   private constructor(
     readonly id: string,
     private readonly root: FileSystemDirectoryHandle,
@@ -86,9 +190,72 @@ export class OpfsDurable implements DurableBackend {
 }
 
 /**
- * Server / Node disk durable store (PR8b). Writes `{dir}/snapshot.bin`.
+ * Browser OPFS **directory** durable store — worktree tree under
+ * `agentos-git/{id}/work/`. Hydrate/dump MEMFS on load/checkpoint so a page
+ * refresh reopens the same HEAD + files (where OPFS is available).
+ */
+export class OpfsDirDurable implements DurableBackend {
+  readonly kind = "directory" as const;
+  private constructor(
+    readonly id: string,
+    private readonly work: FileSystemDirectoryHandle,
+  ) {}
+
+  static async open(id = "default"): Promise<OpfsDirDurable | null> {
+    try {
+      const nav = globalThis.navigator as
+        | (Navigator & {
+            storage?: { getDirectory?: () => Promise<FileSystemDirectoryHandle> };
+          })
+        | undefined;
+      if (!nav?.storage?.getDirectory) return null;
+      const opfs = await nav.storage.getDirectory();
+      const agent = await opfs.getDirectoryHandle("agentos-git", { create: true });
+      const root = await agent.getDirectoryHandle(id, { create: true });
+      const work = await root.getDirectoryHandle("work", { create: true });
+      return new OpfsDirDurable(id, work);
+    } catch {
+      return null;
+    }
+  }
+
+  async save(_snapshot: Uint8Array): Promise<void> {
+    /* directory is the store */
+  }
+
+  async load(): Promise<Uint8Array | null> {
+    return null;
+  }
+
+  async ensure(): Promise<void> {
+    /* handle already created in open() */
+  }
+
+  async sync(): Promise<void> {
+    /* OPFS writes in dumpFromMemfs are durable on close of writable */
+  }
+
+  async clear(): Promise<void> {
+    await clearOpfsDir(this.work);
+  }
+
+  async hydrateToMemfs(FS: MemfsLike, workRoot: string): Promise<void> {
+    ensureMemfsDir(FS, workRoot);
+    await opfsTreeToMemfs(this.work, FS, workRoot);
+  }
+
+  async dumpFromMemfs(FS: MemfsLike, workRoot: string): Promise<void> {
+    await clearOpfsDir(this.work);
+    await memfsTreeToOpfs(FS, workRoot, this.work);
+  }
+}
+
+/**
+ * Server / Node disk **blob** store (legacy AGIT). Writes `{dir}/snapshot.bin`.
+ * Prefer {@link HostDirDurable} for a re-openable worktree directory.
  */
 export class DiskDurable implements DurableBackend {
+  readonly kind = "blob" as const;
   constructor(
     readonly id: string,
     private readonly dir: string,
@@ -123,20 +290,415 @@ export class DiskDurable implements DurableBackend {
   }
 }
 
-/** Prefer OPFS in browser, disk when `dir` given, else memory. */
+/**
+ * Host disk **directory** durable store — the worktree+`.git` **is** the store.
+ *
+ * Product path for D16/PR8b:
+ * * `GitEngine.load({ durableDir: path })` → {@link HostDirDurable}
+ * * Checkpoint dumps MEMFS → this directory (or fsync when NODEFS write-through)
+ * * Second process loads the same path and sees the same HEAD + files
+ * * Native BEAM `ge_open(path)` reopens the same libgit2 root without AGIT
+ */
+export class HostDirDurable implements DurableBackend {
+  readonly kind = "directory" as const;
+  readonly hostPath: string;
+
+  constructor(
+    readonly id: string,
+    hostPath: string,
+  ) {
+    this.hostPath = hostPath.replace(/\/$/, "") || hostPath;
+  }
+
+  /** Absolute normalized path (ensure() resolves). */
+  private absPath: string | null = null;
+
+  async ensure(): Promise<string> {
+    const { mkdir } = await import("node:fs/promises");
+    const { resolve } = await import("node:path");
+    const abs = resolve(this.hostPath);
+    await mkdir(abs, { recursive: true });
+    this.absPath = abs;
+    return abs;
+  }
+
+  async save(_snapshot: Uint8Array): Promise<void> {
+    /* directory is the store — use dumpFromMemfs / sync */
+  }
+
+  async load(): Promise<Uint8Array | null> {
+    return null;
+  }
+
+  async sync(): Promise<void> {
+    const abs = this.absPath ?? this.hostPath;
+    try {
+      const { open, constants } = await import("node:fs/promises");
+      // Best-effort directory fsync (Linux); ignore unsupported platforms.
+      const fh = await open(abs, constants.O_RDONLY);
+      try {
+        await fh.sync();
+      } catch {
+        /* O_DIRECTORY / fsync not supported */
+      } finally {
+        await fh.close();
+      }
+    } catch {
+      /* */
+    }
+  }
+
+  async clear(): Promise<void> {
+    const { rm } = await import("node:fs/promises");
+    const abs = await this.ensure();
+    await rm(abs, { recursive: true, force: true });
+    const { mkdir } = await import("node:fs/promises");
+    await mkdir(abs, { recursive: true });
+  }
+
+  async hydrateToMemfs(FS: MemfsLike, workRoot: string): Promise<void> {
+    const abs = await this.ensure();
+    ensureMemfsDir(FS, workRoot);
+    await hostTreeToMemfs(abs, FS, workRoot);
+  }
+
+  async dumpFromMemfs(FS: MemfsLike, workRoot: string): Promise<void> {
+    const abs = await this.ensure();
+    await memfsTreeToHost(FS, workRoot, abs);
+    await this.sync();
+  }
+}
+
+/**
+ * Prefer host **directory** when `diskDir`/`durableDir` given; else OPFS
+ * directory (browser); else OPFS blob; else process-scoped memory blob.
+ *
+ * When `diskDir` is set, the worktree root is `{diskDir}/{safeId}/` so multiple
+ * mounts under one VM share a disk root without clobbering (matches
+ * memcontainer `gitDurable.diskDir` layout).
+ */
 export async function openDurable(opts: {
   id?: string;
   diskDir?: string;
+  /**
+   * Exact host worktree directory (no id suffix). Prefer this for a single
+   * engine `GitEngine.load({ durableDir })` path.
+   */
+  durableDir?: string;
+  /** Prefer directory OPFS over blob snapshot.bin when true (default true). */
+  preferDirectory?: boolean;
+  /**
+   * When true with `diskDir`, use legacy AGIT `snapshot.bin` under
+   * `{diskDir}/{id}/` instead of a re-openable worktree directory.
+   */
+  blobOnDisk?: boolean;
 }): Promise<DurableBackend> {
-  if (opts.diskDir) return new DiskDurable(opts.id ?? "default", opts.diskDir);
-  const opfs = await OpfsDurable.open(opts.id ?? "default");
+  const id = opts.id ?? "default";
+  if (opts.durableDir) {
+    return new HostDirDurable(id, opts.durableDir);
+  }
+  if (opts.diskDir) {
+    const baseDir = opts.diskDir.replace(/\/$/, "");
+    const dir = `${baseDir}/${safeDurablePathSegment(id)}`;
+    if (opts.blobOnDisk) {
+      return new DiskDurable(id, dir);
+    }
+    return new HostDirDurable(id, dir);
+  }
+  const preferDir = opts.preferDirectory !== false;
+  if (preferDir) {
+    const opfsDir = await OpfsDirDurable.open(id);
+    if (opfsDir) return opfsDir;
+  }
+  const opfs = await OpfsDurable.open(id);
   if (opfs) return opfs;
-  return new MemoryDurable(opts.id ?? "default");
+  // Process registry: second openDurable({ id }) reuses the same MemoryDurable
+  // so AGIT rebind after "restore" in the same process sees prior checkpoint.
+  let mem = memoryDurableRegistry.get(id);
+  if (!mem) {
+    mem = new MemoryDurable(id);
+    memoryDurableRegistry.set(id, mem);
+  }
+  return mem;
+}
+
+// --- MEMFS ↔ host / OPFS tree helpers --------------------------------------
+
+function ensureMemfsDir(FS: MemfsLike, path: string): void {
+  if (typeof FS.mkdirTree === "function") {
+    try {
+      FS.mkdirTree(path);
+      return;
+    } catch {
+      /* fall through */
+    }
+  }
+  const parts = path.split("/").filter(Boolean);
+  let cur = "";
+  for (const part of parts) {
+    cur += "/" + part;
+    try {
+      FS.mkdir(cur);
+    } catch {
+      /* exists */
+    }
+  }
+}
+
+function memfsExists(FS: MemfsLike, path: string): boolean {
+  if (typeof FS.analyzePath === "function") {
+    try {
+      return !!FS.analyzePath(path).exists;
+    } catch {
+      /* */
+    }
+  }
+  try {
+    FS.stat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearMemfsDir(FS: MemfsLike, path: string): void {
+  if (!memfsExists(FS, path)) return;
+  let names: string[];
+  try {
+    names = FS.readdir(path);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (name === "." || name === "..") continue;
+    const child = `${path}/${name}`;
+    try {
+      const st = FS.stat(child);
+      if (FS.isDir(st.mode)) {
+        clearMemfsDir(FS, child);
+        try {
+          FS.rmdir(child);
+        } catch {
+          /* */
+        }
+      } else {
+        try {
+          FS.unlink(child);
+        } catch {
+          /* */
+        }
+      }
+    } catch {
+      /* */
+    }
+  }
+}
+
+async function hostTreeToMemfs(
+  hostRoot: string,
+  FS: MemfsLike,
+  memRoot: string,
+): Promise<void> {
+  const { readdir, readFile, stat } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+
+  async function walk(hostDir: string, memDir: string): Promise<void> {
+    let entries;
+    try {
+      entries = await readdir(hostDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    ensureMemfsDir(FS, memDir);
+    for (const ent of entries) {
+      const h = join(hostDir, ent.name);
+      const m = `${memDir}/${ent.name}`;
+      if (ent.isDirectory()) {
+        await walk(h, m);
+      } else if (ent.isFile()) {
+        try {
+          const st = await stat(h);
+          if (!st.isFile()) continue;
+          const data = new Uint8Array(await readFile(h));
+          ensureMemfsDir(FS, memDir);
+          FS.writeFile(m, data);
+        } catch {
+          /* skip unreadable */
+        }
+      }
+      /* skip symlinks / specials (D22) */
+    }
+  }
+
+  // Replace MEMFS worktree contents with host tree.
+  if (memfsExists(FS, memRoot)) {
+    clearMemfsDir(FS, memRoot);
+  }
+  ensureMemfsDir(FS, memRoot);
+  await walk(hostRoot, memRoot);
+}
+
+async function memfsTreeToHost(
+  FS: MemfsLike,
+  memRoot: string,
+  hostRoot: string,
+): Promise<void> {
+  const { mkdir, rm, readdir } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+
+  // Clear host root contents (keep root dir) then dump MEMFS tree.
+  try {
+    const existing = await readdir(hostRoot, { withFileTypes: true });
+    for (const ent of existing) {
+      await rm(join(hostRoot, ent.name), { recursive: true, force: true });
+    }
+  } catch {
+    await mkdir(hostRoot, { recursive: true });
+  }
+
+  await mkdir(hostRoot, { recursive: true });
+  await dumpMemfsSequential(FS, memRoot, hostRoot);
+}
+
+async function dumpMemfsSequential(
+  FS: MemfsLike,
+  memDir: string,
+  hostDir: string,
+): Promise<void> {
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  const { join } = await import("node:path");
+  await mkdir(hostDir, { recursive: true });
+  let names: string[];
+  try {
+    names = FS.readdir(memDir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (name === "." || name === "..") continue;
+    const m = `${memDir}/${name}`;
+    const h = join(hostDir, name);
+    try {
+      const st = FS.stat(m);
+      if (FS.isDir(st.mode)) {
+        await dumpMemfsSequential(FS, m, h);
+      } else {
+        const raw = FS.readFile(m);
+        const data =
+          typeof raw === "string"
+            ? new TextEncoder().encode(raw)
+            : raw instanceof Uint8Array
+              ? raw
+              : new Uint8Array(raw as ArrayBuffer);
+        await writeFile(h, data);
+      }
+    } catch {
+      /* */
+    }
+  }
+}
+
+async function clearOpfsDir(dir: FileSystemDirectoryHandle): Promise<void> {
+  // FileSystemDirectoryHandle async iterator
+  const toRemove: { name: string; kind: string }[] = [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const anyDir = dir as any;
+  if (typeof anyDir.values === "function") {
+    for await (const entry of anyDir.values()) {
+      toRemove.push({ name: entry.name, kind: entry.kind });
+    }
+  } else if (typeof anyDir.entries === "function") {
+    for await (const [name, entry] of anyDir.entries()) {
+      toRemove.push({ name, kind: entry.kind });
+    }
+  }
+  for (const e of toRemove) {
+    try {
+      await dir.removeEntry(e.name, { recursive: true });
+    } catch {
+      try {
+        await dir.removeEntry(e.name);
+      } catch {
+        /* */
+      }
+    }
+  }
+}
+
+async function opfsTreeToMemfs(
+  dir: FileSystemDirectoryHandle,
+  FS: MemfsLike,
+  memDir: string,
+): Promise<void> {
+  ensureMemfsDir(FS, memDir);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const anyDir = dir as any;
+  const entries: { name: string; handle: FileSystemHandle }[] = [];
+  if (typeof anyDir.values === "function") {
+    for await (const entry of anyDir.values()) {
+      entries.push({ name: entry.name, handle: entry });
+    }
+  } else if (typeof anyDir.entries === "function") {
+    for await (const [name, handle] of anyDir.entries()) {
+      entries.push({ name, handle });
+    }
+  }
+  for (const { name, handle } of entries) {
+    const m = `${memDir}/${name}`;
+    if (handle.kind === "directory") {
+      const sub = await dir.getDirectoryHandle(name);
+      await opfsTreeToMemfs(sub, FS, m);
+    } else if (handle.kind === "file") {
+      const fh = await dir.getFileHandle(name);
+      const file = await fh.getFile();
+      const data = new Uint8Array(await file.arrayBuffer());
+      ensureMemfsDir(FS, memDir);
+      FS.writeFile(m, data);
+    }
+  }
+}
+
+async function memfsTreeToOpfs(
+  FS: MemfsLike,
+  memDir: string,
+  dir: FileSystemDirectoryHandle,
+): Promise<void> {
+  let names: string[];
+  try {
+    names = FS.readdir(memDir);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (name === "." || name === "..") continue;
+    const m = `${memDir}/${name}`;
+    try {
+      const st = FS.stat(m);
+      if (FS.isDir(st.mode)) {
+        const sub = await dir.getDirectoryHandle(name, { create: true });
+        await memfsTreeToOpfs(FS, m, sub);
+      } else {
+        const raw = FS.readFile(m);
+        const data =
+          typeof raw === "string"
+            ? new TextEncoder().encode(raw)
+            : raw instanceof Uint8Array
+              ? raw
+              : new Uint8Array(raw as ArrayBuffer);
+        const fh = await dir.getFileHandle(name, { create: true });
+        const w = await fh.createWritable();
+        await w.write(data);
+        await w.close();
+      }
+    } catch {
+      /* */
+    }
+  }
 }
 
 // --- AGIT envelope: magic + u32 LE json_len + json(refs+head) + pack bytes ---
 
-/** Magic bytes `AGIT` for durable rebind blobs. */
+/** Magic bytes `AGIT` for durable rebind blobs (optional transfer format). */
 export const AGIT_MAGIC = new Uint8Array([0x41, 0x47, 0x49, 0x54]);
 
 export type DurableRefTip = { name: string; hash: string };

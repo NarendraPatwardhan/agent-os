@@ -23,6 +23,11 @@ export interface GitFsDriverOptions {
    * (e.g. `["src/", "docs/"]`). Empty = full tree. Synthetic `.git` always visible.
    */
   sparseCone?: string[];
+  /**
+   * Host commit identity (K28). Injected into ctl `commit` when args omit name/email.
+   * Same policy as {@link GitEngine.run} inject — never invents defaults when unset.
+   */
+  identity?: { name: string; email: string };
 }
 
 /** True when `driver` was produced by {@link createGitFsDriver}. */
@@ -43,6 +48,14 @@ export function createGitFsDriver(
   const cone = (opts.sparseCone ?? [])
     .map((p) => p.replace(/^\/+/, "").replace(/\/?$/, "/"))
     .filter(Boolean);
+  const identity =
+    opts.identity &&
+    typeof opts.identity.name === "string" &&
+    opts.identity.name.trim() &&
+    typeof opts.identity.email === "string" &&
+    opts.identity.email.trim()
+      ? { name: opts.identity.name.trim(), email: opts.identity.email.trim() }
+      : undefined;
   let lastResponse = JSON.stringify({
     ok: true,
     code: 0,
@@ -315,7 +328,27 @@ export function createGitFsDriver(
             generation += 1;
             return;
           }
-          const resp = bridge.run({ op: req.op || "", args: req.args });
+          // K28: inject host identity into commit when ctl args omit name/email.
+          let runReq: { op: string; args?: unknown } = {
+            op: req.op || "",
+            args: req.args,
+          };
+          if (identity && op === "commit") {
+            const base =
+              req.args && typeof req.args === "object" && !Array.isArray(req.args)
+                ? { ...(req.args as Record<string, unknown>) }
+                : {};
+            const name =
+              typeof base.name === "string" && base.name.trim()
+                ? base.name
+                : identity.name;
+            const email =
+              typeof base.email === "string" && base.email.trim()
+                ? base.email
+                : identity.email;
+            runReq = { op: req.op || "commit", args: { ...base, name, email } };
+          }
+          const resp = bridge.run(runReq);
           lastResponse = JSON.stringify(resp);
           generation += 1;
           return;

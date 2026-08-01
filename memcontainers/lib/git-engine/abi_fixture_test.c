@@ -629,19 +629,37 @@ static int test_submodule_list_only(ge_engine *e) {
   }
   ge_free(resp);
 
-  /* Network / apply actions fail closed with host-mediated message. */
+  /* Network / apply actions fail closed on engine (orch host_call only). */
   if (expect_fail(e, "{\"op\":\"submodule\",\"args\":{\"action\":\"update\"}}",
-                  "host-mediated"))
+                  "host_call"))
     return 1;
   if (expect_fail(e, "{\"op\":\"submodule\",\"args\":{\"action\":\"init\"}}",
-                  "not implemented"))
+                  "orchestrator"))
     return 1;
   if (expect_fail(e, "{\"op\":\"submodule\",\"args\":{\"action\":\"add\"}}",
-                  "host-mediated"))
+                  "host_call"))
     return 1;
   if (expect_fail(e, "{\"op\":\"submodule\",\"args\":{\"action\":\"clone\"}}",
-                  "host-mediated"))
+                  "orchestrator"))
     return 1;
+
+  /* Local gitlink stage + list includes hash (D23 fixture path). */
+  if (expect_ok(e, "{\"op\":\"gitlink\",\"args\":{"
+                   "\"path\":\"lib/foo\","
+                   "\"hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}}"))
+    return 1;
+  resp = ge_run_json(e, "{\"op\":\"submodule\",\"args\":{\"action\":\"list\"}}");
+  if (!resp || strstr(resp, "\"ok\":true") == NULL) {
+    fprintf(stderr, "submodule list after gitlink fail:\n%s\n", resp ? resp : "(null)");
+    ge_free(resp);
+    return 1;
+  }
+  if (strstr(resp, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") == NULL) {
+    fprintf(stderr, "submodule list missing gitlink hash:\n%s\n", resp);
+    ge_free(resp);
+    return 1;
+  }
+  ge_free(resp);
   return 0;
 }
 

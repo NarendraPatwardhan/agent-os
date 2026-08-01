@@ -447,6 +447,91 @@ async function main() {
   }
   await engRestored.close();
 
+  // D16: directory durable — re-openable host worktree (not AGIT-only).
+  // Process A: init/commit/checkpoint → host dir has real .git + files.
+  // Process B: load same durableDir → same HEAD + worktree content.
+  const { mkdtemp, rm, access } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join: pathJoin } = await import("node:path");
+  const durableHost = await mkdtemp(pathJoin(tmpdir(), "agentos-git-dur-"));
+  try {
+    const engA = await GitEngine.load({
+      baseUrl: baseUrl(dir),
+      durableDir: durableHost,
+    });
+    if (engA.durableDir !== durableHost && !engA.durableDir?.endsWith(durableHost.replace(/\/$/, ""))) {
+      // hostPath is absolute-resolved
+      if (!engA.durableDir) {
+        throw new Error("durableDir load must surface HostDirDurable path");
+      }
+    }
+    let r = await engA.run({ op: "init" });
+    if (!r.ok) throw new Error(`D16 init: ${JSON.stringify(r)}`);
+    r = await engA.run({
+      op: "write",
+      args: { path: "dir-persist.txt", content: "host-dir-roundtrip\n" },
+    });
+    if (!r.ok) throw new Error(`D16 write: ${JSON.stringify(r)}`);
+    r = await engA.run({ op: "add", args: { path: "dir-persist.txt" } });
+    if (!r.ok) throw new Error(`D16 add: ${JSON.stringify(r)}`);
+    r = await engA.run({
+      op: "commit",
+      args: {
+        message: "dir durable",
+        name: "Dir",
+        email: "dir@test",
+        when_unix: 1_700_000_200,
+      },
+    });
+    if (!r.ok) throw new Error(`D16 commit: ${JSON.stringify(r)}`);
+    const headA = (
+      await engA.run({ op: "rev-parse", args: { rev: "HEAD" } })
+    ).stdout!.trim().split(/\s+/)[0];
+    if (!headA || headA.length !== 40) {
+      throw new Error(`D16 HEAD A: ${headA}`);
+    }
+    await engA.checkpoint();
+    // Host dir must contain a real .git after checkpoint (not AGIT-only).
+    await access(pathJoin(durableHost, ".git"));
+    await access(pathJoin(durableHost, "dir-persist.txt"));
+    await engA.close();
+
+    // Second engine load = second process open of the same host directory.
+    const engB = await GitEngine.load({
+      baseUrl: baseUrl(dir),
+      durableDir: durableHost,
+    });
+    const headB = (
+      await engB.run({ op: "rev-parse", args: { rev: "HEAD" } })
+    ).stdout!.trim().split(/\s+/)[0];
+    if (headB !== headA) {
+      throw new Error(`D16 directory reopen HEAD mismatch: ${headA} → ${headB}`);
+    }
+    const driverB = engB.asMountDriver();
+    let bodyB = "";
+    try {
+      bodyB = new TextDecoder().decode(await driverB.open("/dir-persist.txt"));
+    } catch {
+      const showB = await engB.run({
+        op: "show",
+        args: { rev: "HEAD:dir-persist.txt" },
+      });
+      bodyB = String(showB.stdout || "");
+    }
+    if (!bodyB.includes("host-dir-roundtrip")) {
+      throw new Error(
+        `D16 directory reopen missing worktree content: ${JSON.stringify(bodyB)}`,
+      );
+    }
+    // Directory backends do not produce AGIT durableSnapshot.
+    if (engB.durableSnapshot !== null) {
+      throw new Error("D16 directory durable must not force AGIT durableSnapshot");
+    }
+    await engB.close();
+  } finally {
+    await rm(durableHost, { recursive: true, force: true });
+  }
+
   // R85–R88: metrics counters are inspectable / resettable
   const {
     resetGitCounters,

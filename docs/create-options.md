@@ -30,6 +30,7 @@ fields—`mc.use()`. Applicability and defaults vary by runtime.
 | `experimentalGitEngine` | boolean                               | `false`                         | Opt-in host git engine (libgit2 emcc); **experimental** |
 | `gitEngineBaseUrl`   | directory URL string                     | none                            | Dir URL of `git_engine.mjs` + `git_engine.wasm`; required when engine is on |
 | `gitSparseCone`      | `string[]`                               | none                            | Cone-mode sparse prefixes for default gitfs + post-clone `sparse-set` (multi-pattern; engine also accepts basic `!path` negation — not full sparse language) |
+| `gitDurable`         | `{ id?: string, diskDir?: string }`      | none (off)                      | Opt-in durable **directory** store per gitfs mount (re-openable worktree under `diskDir`; snapshot/restore rebind). See [Git durability](./git.md#durability--dir-reopen-pr8--d16d18) |
 
 ## `runtime`
 
@@ -197,13 +198,22 @@ When `experimentalGitEngine` is `true`:
   path, demux via `args.mount` / `mount` on host_call `"git"`. Duplicate paths fail closed;
 - optional **`gitHttp`** / **`gitAllowOrigins`** inject a hermetic smart-HTTP transport and bare-URL
   allowlist into the product orch path (fixture e2e only; product default is `FetchSmartHttp` +
-  connection origins / empty bare-URL deny — R32).
+  connection origins / empty bare-URL deny — R32);
+- optional **`gitDurable: { id?, diskDir? }`** opens a per-mount durable store (D16/D17). MCSN
+  never carries the ODB. When set: each mount uses `durableIdForMount(id, path)`; `vm.snapshot` /
+  `pinBase` checkpoint into that store; restore/fork with the **same** `gitDurable` reopens and
+  rebinds. Omit for empty engines on restore (A8). With `diskDir`: re-openable
+  `HostDirDurable` worktree at `{diskDir}/{safeId}/` (primary). Without: OPFS directory/blob when
+  available, else process-memory AGIT by `id` (same process only). Details:
+  [Git durability / dir reopen](./git.md#durability--dir-reopen-pr8--d16d18).
 
 ```js
 const vm = await mc.create({
   experimentalGitEngine: true,
   gitEngineBaseUrl: new URL("./git-engine/", import.meta.url).href,
   gitSparseCone: ["src", "docs"],
+  // durable dir reopen across snapshot/restore (omit = no ODB rebind):
+  // gitDurable: { id: "session-1", diskDir: "/var/lib/agentos/git-durable" },
   // multi-repo:
   // gitMounts: [
   //   { path: "/workspace/app" },
@@ -219,6 +229,6 @@ const vm = await mc.create({
 });
 ```
 
-Omit both fields (or leave the flag false) for VMs that do not need host git. Remote runtime
+Omit git engine fields (or leave the flag false) for VMs that do not need host git. Remote runtime
 placement and server Port wiring are covered on [Git](./git.md); design of record is workspace-root
 `GIT.md`.

@@ -1009,6 +1009,140 @@ async function main() {
     await engD9.close();
   }
 
+  // D23–D24: host-mediated submodule update → nested worktree under super gitfs.
+  // Superproject: .gitmodules + gitlink; submodule pack = minimal.pack (README).
+  {
+    const { pack, tip } = minimalPackFixture();
+    const subUrl = "https://example.com/submodule-lib.git";
+    const subHttp = new FixtureSmartHttp();
+    subHttp.add(subUrl, [{ name: "refs/heads/main", hash: tip }], pack);
+
+    const engSuper = await GitEngine.load({ baseUrl: base });
+    const initS = await engSuper.run({ op: "init" });
+    if (!initS.ok) throw new Error(`D23 super init: ${JSON.stringify(initS)}`);
+
+    const gm = `[submodule "deps/lib"]
+	path = deps/lib
+	url = ${subUrl}
+`;
+    const w = await engSuper.run({
+      op: "write",
+      args: { path: ".gitmodules", content: gm },
+    });
+    if (!w.ok) throw new Error(`D23 write .gitmodules: ${JSON.stringify(w)}`);
+    const addGm = await engSuper.run({
+      op: "add",
+      args: { path: ".gitmodules" },
+    });
+    if (!addGm.ok) throw new Error(`D23 add .gitmodules: ${JSON.stringify(addGm)}`);
+
+    // Stage gitlink at deps/lib → tip (mode 160000); commit super tree.
+    const gl = await engSuper.run({
+      op: "gitlink",
+      args: { path: "deps/lib", hash: tip },
+    });
+    if (!gl.ok) throw new Error(`D23 gitlink: ${JSON.stringify(gl)}`);
+    const commitS = await engSuper.run({
+      op: "commit",
+      args: {
+        message: "super with submodule",
+        name: "Test",
+        email: "t@example.com",
+      },
+    });
+    if (!commitS.ok) {
+      throw new Error(`D23 super commit: ${JSON.stringify(commitS)}`);
+    }
+
+    // Engine purity: update still fails closed (no dial).
+    const engUpd = await engSuper.run({
+      op: "submodule",
+      args: { action: "update" },
+    });
+    if (engUpd.ok || !String(engUpd.stderr || "").includes("host_call")) {
+      throw new Error(
+        `D23 engine submodule update must fail closed: ${JSON.stringify(engUpd)}`,
+      );
+    }
+
+    // List includes gitlink hash.
+    const listed = await engSuper.run({
+      op: "submodule",
+      args: { action: "list" },
+    });
+    if (!listed.ok) throw new Error(`D23 list: ${JSON.stringify(listed)}`);
+    const subs = (listed.result as { submodules?: Array<{ hash?: string; path?: string }> })
+      ?.submodules;
+    if (!Array.isArray(subs) || !subs.some((s) => s.path === "deps/lib" && s.hash === tip)) {
+      throw new Error(`D23 list missing gitlink: ${JSON.stringify(listed)}`);
+    }
+
+    // Origin deny on submodule URL.
+    const orchDeny = new GitRemoteOrchestrator(engSuper, {
+      http: subHttp,
+      allowOrigins: ["https://other.example"],
+      packCache: null,
+    });
+    const denied = await orchDeny.handle({
+      op: "submodule",
+      args: { action: "update" },
+    });
+    if (denied.ok || !String(denied.stderr || "").toLowerCase().includes("allowlist")) {
+      throw new Error(`D23 origin deny expected: ${JSON.stringify(denied)}`);
+    }
+
+    // Host orch update: network via fixture, nested clone into deps/lib.
+    const orchSub = new GitRemoteOrchestrator(engSuper, {
+      http: subHttp,
+      allowOrigins: [fixtureOrigin],
+      packCache: null,
+    });
+    const upd = await orchSub.handle({
+      op: "submodule",
+      args: { action: "update" },
+    });
+    if (!upd.ok) {
+      throw new Error(`D23 submodule update failed: ${JSON.stringify(upd)}`);
+    }
+    if (!String(upd.stdout || "").includes("updated 1")) {
+      throw new Error(`D23 update stdout: ${JSON.stringify(upd)}`);
+    }
+
+    // D24: nested worktree files project via super MEMFS / gitfs.
+    const readmePath = engSuper.bridge.abs("deps/lib/README");
+    let readme = "";
+    try {
+      const raw = engSuper.bridge.FS.readFile(readmePath, { encoding: "utf8" });
+      readme = typeof raw === "string" ? raw : new TextDecoder().decode(raw);
+    } catch (e) {
+      throw new Error(`D24 deps/lib/README missing after update: ${String(e)}`);
+    }
+    if (readme !== "hello\n") {
+      throw new Error(`D24 README want hello\\n got ${JSON.stringify(readme)}`);
+    }
+
+    // gitfs driver also sees nested path.
+    const driver = engSuper.asMountDriver();
+    const entries = await driver.readdir!("deps/lib");
+    if (!entries.some((e) => e.name === "README")) {
+      throw new Error(`D24 gitfs readdir deps/lib: ${JSON.stringify(entries)}`);
+    }
+    const openReadme = await driver.open!("deps/lib/README");
+    const openText = new TextDecoder().decode(openReadme);
+    if (openText !== "hello\n") {
+      throw new Error(`D24 gitfs open README: ${JSON.stringify(openText)}`);
+    }
+
+    // list-only is not DONE: assert we did real clone (transport dialed).
+    if (subHttp.listRefsCalls < 1 || subHttp.fetchPacksCalls < 1) {
+      throw new Error(
+        `D23 must dial submodule: listRefs=${subHttp.listRefsCalls} fetchPacks=${subHttp.fetchPacksCalls}`,
+      );
+    }
+
+    await engSuper.close();
+  }
+
   await engA.close();
   await engB.close();
   await eng.close();

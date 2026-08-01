@@ -39,13 +39,22 @@ export interface GitEngineLoadOptions {
   /**
    * Optional durable store attached to the engine.
    *
-   * When the blob is an **AGIT** pack+refs envelope, {@link GitEngine.load}
-   * rebinds objects/refs/worktree via `importPack` + `refs.import` +
-   * `clone.apply`. {@link GitEngine.checkpoint} (no arg) exports the live
-   * repo as AGIT — not a MEMFS filesystem dump. Legacy non-AGIT opaque bytes
-   * attach engine-level only (no rebind).
+   * * **Directory backends** (`HostDirDurable` / `OpfsDirDurable`, `kind:
+   *   "directory"`) — primary product path (D16). Worktree+`.git` is flushed
+   *   on checkpoint; load hydrates MEMFS (or mounts host dir) so a second
+   *   process reopens the same HEAD + files. Native BEAM `ge_open`s the same
+   *   host path without AGIT.
+   * * **Blob backends** (AGIT pack+refs) — optional **transfer** format.
+   *   Load rebinds via `importPack` + `refs.import` + `clone.apply`.
+   *   Legacy non-AGIT opaque bytes attach engine-level only (no rebind).
    */
   durable?: DurableBackend;
+  /**
+   * Host absolute path for a **directory** durable store (D16 primary).
+   * Equivalent to `durable: new HostDirDurable(path, path)`. Preferred over
+   * AGIT blob backends when a real worktree directory is available.
+   */
+  durableDir?: string;
   /**
    * Host policy identity injected into `commit` when args omit name/email (K28).
    * Never synthesizes a default identity when unset.

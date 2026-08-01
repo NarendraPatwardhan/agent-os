@@ -498,6 +498,10 @@ defmodule AgentOS.Vm do
   ## Other options
 
   * `:executable`, `:root`, `:mount_path` (default `"/workspace/repo"`)
+  * `:durable_dir` — re-openable libgit2 worktree directory (D16); same as `:root`
+    for durability (never deleted on detach). Preferred over temp roots.
+  * `:durable_id` — named durable root under `AGENTOS_GIT_DURABLE_ROOT` /
+    `:git_durable_root` as `{base}/{id}/{mount_slug}` (D18 partial).
   * `:transport` — injectable SmartHttp transport (tests / fixture double only)
   * `:identity` / `:git_identity` — `%{name: binary, email: binary}` host policy
     identity injected into Port `commit` when args omit name/email (K28). Never
@@ -1279,12 +1283,20 @@ defmodule AgentOS.Vm do
     sparse_cone = git_sparse_cone_from_opts(opts)
 
     # Unlinked start + monitor so engine crash does not kill the VM actor.
-    case AgentOS.GitEngine.start(
-           executable: Keyword.get(opts, :executable),
-           root: Keyword.get(opts, :root),
-           mount_path: mount_path,
-           identity: identity
-         ) do
+    # D16/D18: durable_dir / durable_id / root → re-openable worktree; temp otherwise.
+    engine_opts =
+      [
+        executable: Keyword.get(opts, :executable),
+        root: Keyword.get(opts, :root),
+        durable_dir: Keyword.get(opts, :durable_dir),
+        durable_id: Keyword.get(opts, :durable_id),
+        durable: Keyword.get(opts, :durable),
+        mount_path: mount_path,
+        identity: identity
+      ]
+      |> Enum.reject(fn {_k, v} -> is_nil(v) end)
+
+    case AgentOS.GitEngine.start(engine_opts) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
         read_only = Keyword.get(opts, :read_only, false)

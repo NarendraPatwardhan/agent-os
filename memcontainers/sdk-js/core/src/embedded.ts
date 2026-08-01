@@ -120,6 +120,22 @@ type JobPerfTrace = {
   hostWaiting: number;
 };
 
+/**
+ * Host git engines bound for D17 snapshot/fork durable rebind.
+ * MCSN never carries the ODB — engines checkpoint AGIT into a durable id/path.
+ */
+export type EmbeddedGitEngineBinding = {
+  /** Guest gitfs mount path. */
+  path: string;
+  /** Durable backend id (e.g. `default:/workspace/repo`). */
+  durableId: string;
+  /** Optional DiskDurable directory when using disk. */
+  durablePath?: string;
+  /** Persist live repo as AGIT (best-effort when unborn / empty). */
+  checkpoint(): Promise<void>;
+  close(): Promise<void>;
+};
+
 export class EmbeddedBackend implements Backend {
   private running = true;
   private readonly resolvers = new Map<number, (r: RawExecResult) => void>();
@@ -130,6 +146,12 @@ export class EmbeddedBackend implements Backend {
    * Single-writer remains per engine (each path has its own GitEngine).
    */
   private readonly gitFsMountPaths = new Set<string>();
+  /**
+   * D17: experimental git engines with durable bindings.
+   * Snapshot / pinBase checkpoint these before MCSN capture; restore reopens
+   * the same durable id/path via CreateOptions.gitDurable.
+   */
+  private gitEngineBindings: EmbeddedGitEngineBinding[] = [];
   /** PERF-013 traces for in-flight exec jobs (A3 parity with driveExec). */
   private readonly jobPerf = new Map<number, JobPerfTrace>();
   /** Running agent sessions tailed by the pump (job → tail state). */
@@ -158,6 +180,38 @@ export class EmbeddedBackend implements Backend {
   }
 
   /**
+   * Bind host git engines for snapshot-time durable checkpoint (D17 / K10).
+   * Called once from makeEmbedded after engines load; replaces any prior list.
+   */
+  bindGitEngines(bindings: EmbeddedGitEngineBinding[]): void {
+    this.gitEngineBindings = [...bindings];
+  }
+
+  /** Recorded durable git id/path bindings (empty when experimental git is off). */
+  gitDurableBindings(): ReadonlyArray<{
+    path: string;
+    durableId: string;
+    durablePath?: string;
+  }> {
+    return this.gitEngineBindings.map((b) => ({
+      path: b.path,
+      durableId: b.durableId,
+      durablePath: b.durablePath,
+    }));
+  }
+
+  /** Checkpoint all bound git engines (best-effort; unborn repos skip export). */
+  private async checkpointGitEngines(): Promise<void> {
+    for (const eng of this.gitEngineBindings) {
+      try {
+        await eng.checkpoint();
+      } catch {
+        // Empty / unborn: keep last good AGIT if any; never block MCSN.
+      }
+    }
+  }
+
+  /**
    * Explicit epoch pin (PERF-011): capture a full MCSN of the **current** live machine,
    * store it as a content-addressed object, and bind it as `active_base` for later
    * incrementals. Does not update the template index.
@@ -167,6 +221,8 @@ export class EmbeddedBackend implements Backend {
     if (!this.snapshotStore?.putSnapshotObject) {
       throw new Error("pinBase requires a content store with putSnapshotObject");
     }
+    // D17: durable git ODB is host-side — checkpoint before MCSN baseline pin.
+    await this.checkpointGitEngines();
     const full = await this.host.snapshot(true);
     const digest = await this.snapshotStore.putSnapshotObject(full);
     this.activeBase = { digest };
@@ -551,6 +607,9 @@ export class EmbeddedBackend implements Backend {
     this.gitFsMountPaths.delete(path);
   }
   async snapshot(opts: SnapshotOptions = {}): Promise<Uint8Array> {
+    // D17 / K10: record durable git id/path content (AGIT) before MCSN.
+    // Restored VMs re-open the same CreateOptions.gitDurable id/path and rebind.
+    await this.checkpointGitEngines();
     if ((opts.mode ?? "full") === "full") return this.host.snapshot();
     if (!this.snapshotStore?.putSnapshotObject || !this.snapshotStore.snapshotObject) {
       throw new Error("incremental snapshots require a content store with snapshot-object support");

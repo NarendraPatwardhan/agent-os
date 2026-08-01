@@ -20,9 +20,9 @@ Tests prove implementation; green tests alone are not DONE.
 | 1 | PR11 server connections | **DONE** (VERIFY_CHUNK_1.md) |
 | 2 | Single-writer + SSRF + K17 | **DONE** (VERIFY_CHUNK_2.md) |
 | 3 | Streaming packs + disk cache | **DONE** (VERIFY_CHUNK_3.md) |
-| 4 | Partial clone + sparse parity + tracking | **OPEN** |
-| 5 | Durability + snapshot rebind | **OPEN** |
-| 6 | Submodules host-mediated | **OPEN** |
+| 4 | Partial clone + sparse parity + tracking | **DONE** (`662dadd`, VERIFY_CHUNK_4.md) |
+| 5 | Durability + snapshot rebind | **OPEN** (D16–D19 inventory DONE; VERIFY_CHUNK_5 pending) |
+| 6 | Submodules host-mediated | **DONE** (VERIFY_CHUNK_6.md) |
 | 7 | Streaming stdout + engine polish | **OPEN** |
 | 8 | Acceptance e2e matrix | **OPEN** |
 | 9 | Metrics + packaging + GA | **OPEN** |
@@ -67,9 +67,9 @@ Verifier artifacts: `VERIFY_CHUNK_N.md` (PASS required before next chunk).
 
 | ID | Requirement | Status | Evidence / missing |
 |----|-------------|--------|-------------------|
-| D16 | OPFS/disk reattachable engine store | **OPEN** | AGIT checkpoint rebind only |
-| D17 | Snapshot/fork rebinds git durable | **OPEN** | Not wired to snapshot lifecycle |
-| D18 | Server durable engine root for named VMs | **OPEN** | Temp roots + cleanup |
+| D16 | OPFS/disk reattachable engine store | **DONE** | **Primary = re-openable libgit2 directory** (not AGIT-only). JS: `HostDirDurable`/`OpfsDirDurable` + hydrate→`ge_open`/`checkpoint` dump (`durable.ts`, `bridge.ts`, `engine.ts`); `GitEngine.load({ durableDir })`; AGIT blob optional transfer (`MemoryDurable`/`DiskDurable`/`OpfsDurable`). BEAM: Port `root:`/`durable_dir`/`durable_id` + `GitEngine.root/1` + `checkpoint/1` (`git_engine.ex`, `git/durable.ex`); second Port same root reopens HEAD+files. Proof: JS `git_engine.test` D16 host-dir roundtrip (`.git` on disk); BEAM `git_engine_test` D16 directory durable second Port; D17 e2e HostDir. Docs: `docs/git.md` Durability / dir reopen. OPFS dir class lands; browser refresh product e2e optional polish. |
+| D17 | Snapshot/fork rebinds git durable | **DONE** | JS: `CreateOptions.gitDurable` (`types.ts`); `makeEmbedded` per-mount `openDurable` + `bindGitEngines` (`memcontainer.ts`); `EmbeddedBackend.snapshot`/`pinBase` → `checkpointGitEngines` before MCSN (`embedded.ts`); `durableIdForMount` + process MemoryDurable registry (`durable.ts`). gitfs K28 identity inject for ctl commits (`gitfs.ts`). MCSN does not carry ODB. Proof: `git_guest_e2e` phase D17 — commit → snapshot → restore HEAD+worktree; fork rebind (process-memory AGIT by id). Docs: `docs/git.md` D17. BEAM: re-`attach_git` with durable non-temp `:root` (ODB on disk; named-VM default = D18). |
+| D18 | Server durable engine root for named VMs | **DONE** (partial product: attach path) | `AgentOS.Git.Durable` — `AGENTOS_GIT_DURABLE_ROOT` / app `:git_durable_root`; layout `{base}/{safe_vm_id}/{mount_slug}/`; `resolve_root/1` for `:root`/`:durable_dir`/`:durable_id`. `GitEngine.start` + `Vm.attach_git(durable_id: \| durable_dir:)` never rm_rf durable roots. Proof: `git_engine_test` D16 block asserts named root under env + survives stop. **Not required for DONE here:** auto wire every named ControlPlane VM without attach opts (follow-up if product demands default). Docs: `docs/git.md` Durability. |
 | D19 | Snapshot blocked while git host_call inflight | **DONE** | Monorepo host_call pattern: kernel `HostCall::start` → `egress_inc` (`host_call.rs`); JS `MapHostCall` holds slot while orch HTTP+apply (`host_call.ts` + `gitHostCallHandler`); host `ensureSnapshotReady` / `mc_inflight_egress` refuse (`host.ts`, wasmtime `ensure_snapshot_ready`). BEAM second gate: `Vm.ensure_git_remote_quiescent/1` blocks `snapshot`+`commit_layer` while `git_tasks`/`git_remote_queue` non-empty (`server/lib/agent_os/vm.ex`). Tests: JS `git_guest_e2e` phase D19 (slow listRefs → snapshot throws mid-clone); BEAM `D19 snapshot refused while git remote host_call Task is inflight` in `git_orchestrator_test.exs` |
 
 ### P4 — Sparse / multi-repo
@@ -78,14 +78,14 @@ Verifier artifacts: `VERIFY_CHUNK_N.md` (PASS required before next chunk).
 |----|-------------|--------|-------------------|
 | D20 | Sparse cone on BEAM attach = JS | **DONE** | BEAM `attach_git(:sparse_cone/:git_sparse_cone)` stores prefixes per mount; `git_host_opts_for_mount` → orch; post-`clone.apply` Port `sparse-set` (+ checkout) in `orchestrator.ex` (JS `applySparseCone` parity). Gitfs = post-sparse worktree projection. Tests: `git_engine_pack_test` sparse-checkout content; `git_orchestrator_test` `D20 attach_git sparse_cone → host_call clone applies Port sparse-set` |
 | D21 | Multi-mount e2e two clones + docs | **DONE** | Product demux + dual clone: JS `git_remote_test` two engines via `gitHostCallHandler`/`args.mount` + real `minimal.pack` worktree isolation + concurrent two-mount clones; BEAM `R65/D21 host_call args.mount two clones into two engines` + `D21 concurrent remotes on two mounts may overlap` (attach_git ×2, separate roots, README hello each, unknown mount no dial). Docs: `docs/git.md` multi-mount section (setup, demux table, concurrency, proof). OTP26 JSON fallback for Bazel orch decode. |
-| D22 | Symlink/special file policy | **OPEN** | Mostly skipped |
+| D22 | Symlink/special file policy | **OPEN** | Engine/tests skip most symlink/special-file cases; no dual-host policy suite |
 
 ### P5 — Submodules
 
 | ID | Requirement | Status | Evidence / missing |
 |----|-------------|--------|-------------------|
-| D23 | Host-mediated submodule network clone/update | **OPEN** | List-only + fail-closed |
-| D24 | Submodule worktree projection | **OPEN** | Not built |
+| D23 | Host-mediated submodule network clone/update | **DONE** | Orch `op:submodule` update (JS+BEAM): `.gitmodules` list → origin policy on URL → list-refs/fetch pack → nested engine clone at path. Engine `run(update)` still fail-closed (no dial). Fixture super + gitlink + `minimal.pack`. Tests: `git_remote.test.ts` D23–D24; `git_orchestrator_test.exs` D23/D24. List-only is **not** DONE. |
+| D24 | Submodule worktree projection | **DONE** | Nested worktree under super root: JS same-MEMFS `bridge.openAt` + gitfs open/readdir `deps/lib/README`; BEAM nested Port → files on super FS (`deps/lib/README` = `hello\n`). |
 
 ### P6 — Acceptance / GA
 
@@ -127,7 +127,8 @@ These product paths exist (do not re-open unless verifier finds regression). Evi
 | Host identity; bare-URL fail-closed; pull FF; depth=1 | `sdk-js/core/src/git/engine.ts`, `remote-orchestrator.ts`, `server/.../git_engine.ex`, orch |
 | Server push + haves + delete-ref fixture | `server/.../orchestrator.ex`, `smart_http.ex`, `GitEngine.pack_build` |
 | AGIT rebind; multi-mount demux; JS guest CAP_NET fixture e2e | `durable.ts`, `vm.ex` git_engines, `git_guest_e2e.test.ts` |
-| Submodule list-only; Port product load; LLB engine-first | `engine_ops_extra.c` submodule; docs/git.md; `llb-git.ts` |
+| D17 snapshot/fork git durable rebind (JS) | `CreateOptions.gitDurable`, `memcontainer.ts` makeEmbedded, `embedded.ts` checkpoint, `git_guest_e2e` D17 |
+| Submodule host-mediated update + projection (D23/D24); Port product load; LLB engine-first | orch submodule JS+BEAM; `op_gitlink`; docs/git.md; `llb-git.ts` |
 | P0 remotes gates | `smart_http.ex` origin/size/status; type-1 dial refuse in `port_handle.c` |
 
 ---
@@ -136,5 +137,9 @@ These product paths exist (do not re-open unless verifier finds regression). Evi
 
 | Date | Change |
 |------|--------|
+| 2026-08-01 | Chunk 6: D23/D24 host-mediated submodule update + nested worktree projection (JS+BEAM orch; list-only is not DONE) |
+| 2026-08-01 | Chunk 5 D16/D18: directory reopen primary — JS `durableDir`+HostDirDurable hydrate/dump; BEAM `Git.Durable` + `durable_id`/`durable_dir` attach; dual-host second-process tests; D16/D18 **DONE** (D17 already); AGIT remains transfer |
+| 2026-08-01 | Chunk 4: monorepo sparse + tracking + multi-mount — D9/D13/D20/D21 **DONE** (`662dadd`, VERIFY_CHUNK_4.md PASS) |
+| 2026-08-01 | Docs/coord after Chunk 5/6 agents: durable dir reopen (`HostDirDurable`/`OpfsDirDurable` + AGIT) + submodule host path (JS orch nested apply) in `docs/git.md` + `create-options.md`; D17 **DONE**; D16/D18/D23/D24 **OPEN** with path evidence; Chunk 5/6 rows **OPEN** (no VERIFY); soft status scrubbed; fixed `durable.ts` duplicate registry merge |
 | 2026-08-01 | Chunk 1: PR11 server connections catalog — D1/D6/D7/D8/D10 **DONE** (path evidence); product path `connections:` only |
 | 2026-07-31 | Chunk 0: replace residual R* soft statuses with D1–D41 OPEN/DONE inventory |

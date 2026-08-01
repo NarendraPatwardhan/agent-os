@@ -3117,4 +3117,140 @@ defmodule AgentOS.Git.OrchestratorTest do
         assert_eventually(fun, attempts - 1)
     end
   end
+
+  # ── D23–D24 host-mediated submodule update ────────────────────────────────
+
+  @tag timeout: 120_000
+  test "D23/D24 host-mediated submodule update projects nested worktree" do
+    path = engine_path()
+    pack = fixture_git_bytes!("minimal.pack")
+    tip = fixture_git_bytes!("minimal.tip") |> String.trim()
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "git-d23-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.mkdir_p!(root)
+    sub_url = "https://example.com/submodule-lib.git"
+    dialed = :atomics.new(1, signed: false)
+
+    transport = fn
+      :list_refs, {url, _opts} ->
+        assert url == sub_url
+        :atomics.add(dialed, 1, 1)
+        {:ok, [%{name: "refs/heads/main", hash: tip}]}
+
+      :fetch_packs, {url, _want, _have, _opts} ->
+        assert url == sub_url
+        :atomics.add(dialed, 1, 1)
+        {:ok, pack}
+    end
+
+    assert {:ok, pid} = GitEngine.start(executable: path, root: root)
+
+    try do
+      assert {:ok, init} = GitEngine.run(pid, %{"op" => "init"})
+      assert ok_map?(init)
+
+      gm = """
+      [submodule "deps/lib"]
+      \tpath = deps/lib
+      \turl = #{sub_url}
+      """
+
+      assert {:ok, w} =
+               GitEngine.run(pid, %{
+                 "op" => "write",
+                 "args" => %{"path" => ".gitmodules", "content" => gm}
+               })
+
+      assert ok_map?(w)
+
+      assert {:ok, add} =
+               GitEngine.run(pid, %{"op" => "add", "args" => %{"path" => ".gitmodules"}})
+
+      assert ok_map?(add)
+
+      assert {:ok, gl} =
+               GitEngine.run(pid, %{
+                 "op" => "gitlink",
+                 "args" => %{"path" => "deps/lib", "hash" => tip}
+               })
+
+      assert ok_map?(gl), "gitlink stage: #{inspect(gl)}"
+
+      assert {:ok, c} =
+               GitEngine.run(pid, %{
+                 "op" => "commit",
+                 "args" => %{
+                   "message" => "super with submodule",
+                   "name" => "Test",
+                   "email" => "t@example.com"
+                 }
+               })
+
+      assert ok_map?(c), "super commit: #{inspect(c)}"
+
+      # Engine purity: update fails closed (host orch only).
+      assert {:ok, eng_fail} =
+               GitEngine.run(pid, %{"op" => "submodule", "args" => %{"action" => "update"}})
+
+      refute ok_map?(eng_fail)
+      stderr = eng_fail["stderr"] || ""
+      assert stderr =~ "host_call" or stderr =~ "orchestrator"
+
+      # List includes gitlink hash.
+      assert {:ok, listed} =
+               GitEngine.run(pid, %{"op" => "submodule", "args" => %{"action" => "list"}})
+
+      assert ok_map?(listed)
+      result = listed["result"] || %{}
+      subs = result["submodules"] || []
+      assert Enum.any?(subs, fn s -> s["path"] == "deps/lib" and s["hash"] == tip end),
+             "list missing gitlink: #{inspect(listed)}"
+
+      # Origin deny on submodule URL.
+      assert {:ok, deny_json} =
+               Orchestrator.run(
+                 pid,
+                 ~s({"op":"submodule","args":{"action":"update"}}),
+                 transport: transport,
+                 allowed_origins: ["https://other.example"]
+               )
+
+      refute deny_json =~ ~s("ok":true)
+      assert deny_json =~ "allowlist" or deny_json =~ "origin"
+
+      # Host orch update: dials submodule URL, nests clone under deps/lib.
+      assert {:ok, upd_json} =
+               Orchestrator.run(
+                 pid,
+                 ~s({"op":"submodule","args":{"action":"update"}}),
+                 transport: transport,
+                 allowed_origins: [@fixture_origin]
+               )
+
+      assert upd_json =~ ~s("ok":true), "update failed: #{upd_json}"
+      assert upd_json =~ "updated 1"
+      assert :atomics.get(dialed, 1) >= 2, "must dial list-refs + fetch-packs"
+
+      # D24: nested worktree files on disk under super root (gitfs projects FS).
+      readme = Path.join(root, "deps/lib/README")
+      assert File.exists?(readme), "missing nested README at #{readme}"
+      assert File.read!(readme) == "hello\n"
+
+      # Nested .git exists (real nested repo, not list-only theater).
+      assert File.dir?(Path.join(root, "deps/lib/.git"))
+    after
+      _ = GitEngine.stop(pid)
+      File.rm_rf(root)
+    end
+  end
+
+  defp ok_map?(m) when is_map(m) do
+    m["ok"] == true or (is_binary(Map.get(m, "raw")) and m["raw"] =~ "\"ok\":true")
+  end
+
+  defp ok_map?(_), do: false
 end

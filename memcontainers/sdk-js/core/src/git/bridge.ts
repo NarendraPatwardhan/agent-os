@@ -1,8 +1,11 @@
 /**
  * Emscripten createGitEngineModule bridge over ge_* (GIT.md PR2/PR3).
- * Worktree lives in module MEMFS; gitfs projects it into the guest VFS.
+ * Worktree lives in module MEMFS (optionally hydrated from a host durable
+ * directory); gitfs projects it into the guest VFS.
  */
 
+import type { DurableBackend } from "./durable.js";
+import { isDirectoryDurable } from "./durable.js";
 import type { GitRequest, GitResponse } from "./types.js";
 
 export const DEFAULT_WORK_ROOT = "/work";
@@ -44,21 +47,44 @@ export type EmscriptenFS = {
   rmdir(path: string): void;
   rename(from: string, to: string): void;
   analyzePath?(path: string): { exists: boolean };
+  /** Present when emcc was linked with NODEFS (`-lnodefs.js`). */
+  mount?(
+    type: unknown,
+    opts: { root?: string },
+    mountpoint: string,
+  ): unknown;
+  filesystems?: { NODEFS?: unknown; [k: string]: unknown };
+};
+
+export type GitBridgeCreateOptions = {
+  workRoot?: string;
+  /**
+   * When a directory durable backend is attached, hydrate MEMFS from that
+   * store **before** `ge_open` so libgit2 sees an existing repo on load.
+   * If NODEFS is available and `hostPath` is set, prefer mounting the host
+   * directory (write-through) instead of hydrate.
+   */
+  durable?: DurableBackend;
 };
 
 export class GitBridge {
   /** Single-writer promise queue for libgit2 + MEMFS worktree access. */
   private queue: Promise<unknown> = Promise.resolve();
+  /** True when workRoot is a NODEFS mount of a host durable directory. */
+  readonly nodefsMounted: boolean;
 
   constructor(
     readonly mod: EmscriptenGitModule,
     public eng: number,
     readonly workRoot: string = DEFAULT_WORK_ROOT,
-  ) {}
+    nodefsMounted = false,
+  ) {
+    this.nodefsMounted = nodefsMounted;
+  }
 
   static async create(
     baseUrl: string,
-    opts: { workRoot?: string } = {},
+    opts: GitBridgeCreateOptions = {},
   ): Promise<GitBridge> {
     const root = baseUrl.endsWith("/") ? baseUrl : baseUrl + "/";
     const workRoot = opts.workRoot ?? DEFAULT_WORK_ROOT;
@@ -82,13 +108,41 @@ export class GitBridge {
 
     ensureDir(mod.FS, workRoot);
 
+    let nodefsMounted = false;
+    const durable = opts.durable;
+    if (isDirectoryDurable(durable)) {
+      if (typeof durable.ensure === "function") {
+        await durable.ensure();
+      }
+      // Prefer NODEFS write-through when linked + host path available.
+      const hostPath = durable.hostPath;
+      const nodefs = mod.FS.filesystems?.NODEFS;
+      if (
+        hostPath &&
+        nodefs &&
+        typeof mod.FS.mount === "function" &&
+        typeof process !== "undefined" &&
+        process.versions?.node
+      ) {
+        try {
+          mod.FS.mount(nodefs, { root: hostPath }, workRoot);
+          nodefsMounted = true;
+        } catch {
+          nodefsMounted = false;
+        }
+      }
+      if (!nodefsMounted && typeof durable.hydrateToMemfs === "function") {
+        await durable.hydrateToMemfs(mod.FS, workRoot);
+      }
+    }
+
     const rootPtr = cstr(mod, workRoot);
     const eng = mod._ge_open(rootPtr);
     mod._free(rootPtr);
     if (!eng) {
       throw new Error("ge_open failed (need absolute existing MEMFS dir)");
     }
-    return new GitBridge(mod, eng, workRoot);
+    return new GitBridge(mod, eng, workRoot, nodefsMounted);
   }
 
   /**
@@ -207,6 +261,63 @@ export class GitBridge {
 
   get FS(): EmscriptenFS {
     return this.mod.FS;
+  }
+
+  /**
+   * Open a nested libgit2 engine under an absolute MEMFS path (same module FS).
+   * D23–D24: host orch clones submodules into nested paths so superproject
+   * gitfs projects nested worktree files. Call only inside {@link serial}.
+   * Pair with {@link closeAt}.
+   */
+  openAt(absRoot: string): number {
+    ensureDir(this.mod.FS, absRoot);
+    const rootPtr = cstr(this.mod, absRoot);
+    const eng = this.mod._ge_open(rootPtr);
+    this.mod._free(rootPtr);
+    if (!eng) {
+      throw new Error(
+        `ge_open nested failed for ${absRoot} (need absolute existing MEMFS dir)`,
+      );
+    }
+    return eng;
+  }
+
+  /** Sync ge_run_json against an engine handle (not necessarily this.eng). */
+  runAt(eng: number, req: GitRequest): GitResponse {
+    const json = JSON.stringify({
+      op: req.op,
+      ...(req.args !== undefined ? { args: req.args } : {}),
+    });
+    const reqPtr = cstr(this.mod, json);
+    const outPtr = this.mod._ge_run_json(eng, reqPtr);
+    this.mod._free(reqPtr);
+    const text = this.mod.UTF8ToString(outPtr);
+    this.mod._ge_free(outPtr);
+    try {
+      return JSON.parse(text) as GitResponse;
+    } catch {
+      throw new Error(`invalid engine JSON: ${text.slice(0, 200)}`);
+    }
+  }
+
+  /** Sync ge_import_pack against an engine handle. */
+  importPackAt(eng: number, chunk: Uint8Array, final = false): void {
+    const len = chunk?.byteLength ?? 0;
+    let ptr = 0;
+    if (len > 0) {
+      ptr = this.mod._malloc(len);
+      this.mod.HEAPU8.set(chunk, ptr);
+    }
+    const rc = this.mod._ge_import_pack(eng, ptr, len, final ? 1 : 0);
+    if (ptr) this.mod._free(ptr);
+    if (rc !== 0) {
+      const err = this.mod.UTF8ToString(this.mod._ge_last_error(eng)) || "";
+      throw new Error(err || `ge_import_pack failed (${rc})`);
+    }
+  }
+
+  closeAt(eng: number): void {
+    if (eng) this.mod._ge_close(eng);
   }
 
   close(): void {

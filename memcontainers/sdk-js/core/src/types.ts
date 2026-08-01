@@ -162,6 +162,29 @@ export interface CreateOptions {
    * `connection.origins`. Fixture e2e must pass explicit origins for bare URLs.
    */
   gitAllowOrigins?: string[];
+  /**
+   * Durable git engine store for snapshot / restore / fork rebind (K10 / D16–D17).
+   *
+   * MCSN does **not** carry the host ODB. When set with `experimentalGitEngine`:
+   * - each gitfs mount opens a directory durable store under `diskDir` (primary —
+   *   re-openable libgit2 worktree) or OPFS/memory blob fallback;
+   * - `vm.snapshot()` / `pinBase()` checkpoint that store (directory flush or AGIT);
+   * - `mc.restore` / `vm.fork` reopen the same id/path and rebind objects + worktree.
+   *
+   * Omit for empty engines on restore (product-honest A8: no silent ODB in MCSN).
+   * Process-memory when neither OPFS nor `diskDir` is available (same `id` reopens
+   * the store within one JS process).
+   */
+  gitDurable?: {
+    /** Logical durable base id (per-mount key is `id:mountPath`). Default `"default"`. */
+    id?: string;
+    /**
+     * Node disk root; each mount is a re-openable libgit2 worktree under
+     * `{diskDir}/{safeId}/` (D16 primary). Checkpoint flushes that directory;
+     * a second process loads the same path and sees the same HEAD + files.
+     */
+    diskDir?: string;
+  };
 }
 
 export type ConnectionAuth =
