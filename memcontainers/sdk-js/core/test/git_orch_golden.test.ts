@@ -26,6 +26,12 @@ interface GoldenFixture {
   pack_from?: string;
   /** When true, orchestrator rejects push (R81). */
   read_only?: boolean;
+  /** Optional connection catalog entry for connection-bound remotes. */
+  connection?: {
+    ref: string;
+    auth: { kind: string; name?: string; value?: string; token?: string };
+    origins: string[];
+  };
   /** Local engine ops before orch steps (D32 push_success). */
   setup?: { op: string; args?: Record<string, unknown> }[];
 }
@@ -60,6 +66,7 @@ const GOLDEN_NAMES = [
   "clone_success_steps.json",
   "clone_empty_pack_fail.json",
   "origin_denied.json",
+  "origin_deny_prefix.json",
   "fetch_success_steps.json",
   "pull_ff_steps.json",
   "push_readonly.json",
@@ -67,6 +74,8 @@ const GOLDEN_NAMES = [
   "shallow_clone_steps.json",
   "auth_deny_steps.json",
   "pull_not_ff_steps.json",
+  "guest_secret_reject.json",
+  "query_auth_reject.json",
 ] as const;
 
 const RESPONSE_SCHEMA_NAME = "response_schema.json";
@@ -196,10 +205,21 @@ async function runGolden(dir: string, engBase: string, name: string): Promise<vo
     }
   }
 
+  const connections = fixture.connection
+    ? [
+        {
+          ref: fixture.connection.ref,
+          auth: fixture.connection.auth as import("../src/types.js").ConnectionAuth,
+          origins: fixture.connection.origins,
+        },
+      ]
+    : undefined;
+
   const orch = new GitRemoteOrchestrator(eng, {
     http,
     allowOrigins: fixture.allowed_origins,
     readOnly: !!fixture.read_only,
+    ...(connections ? { connections } : {}),
   });
 
   const execSteps = golden.steps.filter((s) => s.op && s.expect);

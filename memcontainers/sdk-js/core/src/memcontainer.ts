@@ -126,9 +126,11 @@ function ownGitCreateOptions(git: CreateOptions["git"]): CreateOptions["git"] {
   return {
     baseUrl: git.baseUrl,
     sparse: git.sparse ? [...git.sparse] : undefined,
+    readOnly: git.readOnly,
     mounts: git.mounts?.map((m) => ({
       path: m.path,
       sparse: m.sparse ? [...m.sparse] : undefined,
+      readOnly: m.readOnly,
     })),
     identity: git.identity
       ? { name: git.identity.name, email: git.identity.email }
@@ -165,7 +167,7 @@ function normalizeCreateGit(git: CreateOptions["git"]): GitCreateOptions | undef
 }
 
 /** One create-time mount: guest path + optional cone sparse for that engine. */
-type GitMountSpec = { path: string; sparse?: string[] };
+type GitMountSpec = { path: string; sparse?: string[]; readOnly?: boolean };
 
 /**
  * Resolve the mount list for host git: explicit `git.mounts`, or a single
@@ -173,9 +175,13 @@ type GitMountSpec = { path: string; sparse?: string[] };
  */
 function gitMountSpecsFromCreate(git: GitCreateOptions): GitMountSpec[] {
   if (git.mounts && git.mounts.length > 0) {
-    return git.mounts.map((m) => ({ path: m.path, sparse: m.sparse }));
+    return git.mounts.map((m) => ({
+      path: m.path,
+      sparse: m.sparse,
+      readOnly: m.readOnly ?? git.readOnly,
+    }));
   }
-  return [{ path: "/workspace/repo", sparse: git.sparse }];
+  return [{ path: "/workspace/repo", sparse: git.sparse, readOnly: git.readOnly }];
 }
 
 /**
@@ -204,6 +210,7 @@ type LoadedGitEngine = {
   path: string;
   durableId?: string;
   durablePath?: string;
+  readOnly?: boolean;
   checkpoint(): Promise<void>;
   close(): Promise<void>;
   asMountDriver: (opts?: { sparseCone?: string[] }) => Driver;
@@ -257,10 +264,12 @@ async function bootstrapHostGit(
         durablePath = `${baseDir}/${safe}`;
       }
     }
+    const readOnly = !!spec.readOnly;
     const eng = await GitEngine.load({
       baseUrl: gitCfg.baseUrl,
       sparseCone: sparse,
       identity: gitCfg.identity,
+      readOnly,
       ...(durable?.kind === "directory" && durable.hostPath
         ? { durableDir: durable.hostPath }
         : durable
@@ -272,6 +281,7 @@ async function bootstrapHostGit(
       path,
       durableId,
       durablePath: eng.durableDir ?? durablePath,
+      readOnly,
       checkpoint: () => eng.checkpoint(),
       close: () => eng.close(),
       asMountDriver: (o) => eng.asMountDriver(o),
@@ -279,6 +289,8 @@ async function bootstrapHostGit(
     });
   }
 
+  // Per-engine readOnly lives on GitEngine.load; orch uses engine.readOnly
+  // (see gitHostCallHandler) so multi-mount mixed RO/RW stays correct.
   registerGitHostCall(
     tools,
     { engines: engineMap, defaultMount: mountSpecs[0]!.path.trim() },
@@ -337,7 +349,11 @@ async function mountDefaultGitFs(
   for (const eng of engines) {
     const declared = (declaredMounts ?? []).some((m) => m.path === eng.path);
     if (!declared) {
-      await backend.mount(eng.path, eng.asMountDriver({ sparseCone: eng.sparseCone }), false);
+      await backend.mount(
+        eng.path,
+        eng.asMountDriver({ sparseCone: eng.sparseCone }),
+        !!eng.readOnly,
+      );
     }
   }
 }

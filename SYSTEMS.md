@@ -1184,6 +1184,24 @@ the content-addressed layer model extended to on-demand tools.
 
 ---
 
+## 11b. Host source plane — git (optional advanced attachment)
+
+Git is **not** a wasmi guest VCS. Like credentials, mounts, and sidecars, it is a **host attachment**:
+
+- **Engine:** libgit2 behind a dial-free `ge_*` face (emcc wasm on JS; BEAM-owned Port on server).
+- **Tree:** gitfs projects the worktree through MountFs; guests use paths + thin `/bin/git`.
+- **Remotes:** host-mediated only — CAP_NET + host_call name `"git"`; the engine never dials TLS.
+- **Dual-host orch (K16/K20):** TypeScript orch on browser/Node, Elixir orch on the control plane.
+  **Decisions** (stderr prefixes, depth/pack defaults, guest secret keys, algorithm step IDs) are
+  single-sourced in `memcontainers/contracts/git.kdl` and projected to TS/Elixir; **executable**
+  parity is locked by shared goldens under `memcontainers/lib/git-engine/testdata/orch/`. This is the
+  same *discipline* as dual host faces over one kernel ABI — not a second wasmi stack.
+- **A8:** the object DB is outside MCSN; durable rebind is opt-in on create / `attach_git`.
+
+Product docs: `docs/git.md`. Design of record: `GIT.md`. Create opt-in: `CreateOptions.git`.
+
+---
+
 ## 12. System 19 — The host (wasmtime)
 
 The host is the only _kernel driver_ in the core (`memcontainers/hosts/wasmtime/`, ~2,800 LoC). Its job is

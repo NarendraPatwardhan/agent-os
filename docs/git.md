@@ -202,7 +202,7 @@ same as fetch/clone. Secrets only in BEAM request headers.
 
 | Layer | Role |
 |-------|------|
-| **Shallow history** | Product clone/fetch default `depth=1` (`args.depth` / thin CLI `--depth N`; `depth<=0` = full history) — bounds commit graph size |
+| **Shallow history** | Product **clone** default `depth=1` (`args.depth` / thin CLI `--depth N`; `depth<=0` = full). **Fetch/pull** default full history when depth omitted (`contracts/git.kdl`) |
 | **Cone sparse worktree** | JS `git.sparse` / `git.mounts[].sparse` / BEAM `attach_git(sparse_cone: …)` → after `clone.apply`, engine `sparse-set` + checkout so only cone prefixes land on disk; gitfs projects the same cone |
 | **Optional pack filter** | `args.filter` / thin CLI `--filter SPEC` (e.g. `blob:none`) on upload-pack (R36) — shrinks the **initial** pack when the server supports filter |
 
@@ -262,7 +262,10 @@ TS and BEAM each implement remote orch (K16: no Node on server). **Decisions** a
 | `fetch_success_steps.json` / `pull_ff_steps.json` | fetch/pull success paths |
 | `pull_not_ff_steps.json` | diverged local tip (setup init+commit) → pull fails `git: not fast-forward` |
 | `push_readonly.json` / `push_success_steps.json` | RO reject + fixture push success |
-| `response_schema.json` | required Response keys + stable stderr prefixes (aligned with `git.kdl`) |
+| `origin_deny_prefix.json` | origin deny catalog prefix only (no URL in stderr) |
+| `guest_secret_reject.json` | guest `token` in body fails before dial |
+| `query_auth_reject.json` | connection auth kind `query` rejected dual-host |
+| `response_schema.json` | required Response keys + stable stderr prefixes (subset of `git.kdl`) |
 
 **Both** hosts run the same tree:
 

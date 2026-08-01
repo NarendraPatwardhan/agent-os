@@ -30,7 +30,8 @@ defmodule AgentOS.Git.Orchestrator do
   @type request :: map() | String.t()
 
   @zero_oid "0000000000000000000000000000000000000000"
-  @push_read_only "git: push rejected (read-only mount)"
+  # Prefer contracts/git.kdl via AgentOS.Contracts.Git; keep atom for golden matchers.
+  @push_read_only_prefix "git: push rejected (read-only mount)"
   @push_requires_approval "git: push requires approval"
   @push_blocked "git: push blocked by policy"
 
@@ -139,7 +140,7 @@ defmodule AgentOS.Git.Orchestrator do
            {:ok, refs} <- SmartHttp.list_refs(url, opts),
            {:ok, tip} <- pick_tip(refs, ref_of(req)),
            wants <- want_oids(refs, tip.hash),
-           depth <- depth_of(req),
+           depth <- depth_of(req, :clone),
            filter <- filter_of(req) do
         with_pack_source(url, wants, [], depth, filter, opts, fn pack ->
           with :ok <- require_non_empty_pack(pack),
@@ -469,7 +470,7 @@ defmodule AgentOS.Git.Orchestrator do
            {:ok, tip} <- pick_tip(refs, ref_of(req)),
            have <- local_haves(engine_pid),
            wants <- want_oids(refs, tip.hash),
-           depth <- depth_of(req),
+           depth <- depth_of(req, if(pull?, do: :pull, else: :fetch)),
            filter <- filter_of(req) do
         with_pack_source(url, wants, have, depth, filter, opts, fn pack ->
           with :ok <- require_non_empty_pack(pack),
@@ -611,7 +612,13 @@ defmodule AgentOS.Git.Orchestrator do
   # R31: optional require_approval / on_push_approval / push_approval gate.
   defp push(engine_pid, req, opts) do
     if Keyword.get(opts, :read_only, false) do
-      {:ok, response(false, 1, "", @push_read_only <> "\n")}
+      {:ok,
+       response(
+         false,
+         1,
+         "",
+         AgentOS.Contracts.Git.stderr_line(:push_read_only)
+       )}
     else
       do_push(engine_pid, req, opts)
     end
@@ -766,7 +773,15 @@ defmodule AgentOS.Git.Orchestrator do
         Process.put(:agent_os_git_allowlist_deny, true)
 
         {:ok,
-         response(false, 1, "", "git: origin not allowlisted for connection #{ref}\n")}
+         response(
+           false,
+           1,
+           "",
+           AgentOS.Contracts.Git.stderr_line(
+             :origin_not_allowlisted,
+             "for connection #{ref}"
+           )
+         )}
 
       {:error, :guest_secrets_forbidden} ->
         {:ok,
@@ -774,7 +789,19 @@ defmodule AgentOS.Git.Orchestrator do
            false,
            1,
            "",
-           "git: guest body must not include auth secrets (use connection ref)\n"
+           AgentOS.Contracts.Git.stderr_line(
+             :guest_auth_secrets,
+             "(use connection ref)"
+           )
+         )}
+
+      {:error, :query_auth_unsupported} ->
+        {:ok,
+         response(
+           false,
+           1,
+           "",
+           AgentOS.Contracts.Git.stderr_line(:query_auth_unsupported)
          )}
 
       {:error, :origin_not_allowed} ->
@@ -1713,14 +1740,28 @@ defmodule AgentOS.Git.Orchestrator do
   end
 
   # R35: product default shallow depth=1; depth<=0 means full history.
-  defp depth_of(req) do
+  # contracts/git.kdl: clone default shallow; fetch/pull default full when depth omitted.
+  defp depth_of(req, op \\ :clone) do
     args = Map.get(req, "args") || %{}
     args = if is_map(args), do: stringify_keys(args), else: %{}
 
     case Map.get(args, "depth") do
-      d when is_integer(d) and d > 0 -> d
-      d when is_integer(d) -> nil
-      _ -> 1
+      d when is_integer(d) and d > 0 ->
+        d
+
+      d when is_integer(d) ->
+        nil
+
+      _ ->
+        case op do
+          :clone ->
+            d = AgentOS.Contracts.Git.default_clone_depth()
+            if is_integer(d) and d > 0, do: d, else: nil
+
+          _ ->
+            d = AgentOS.Contracts.Git.default_fetch_depth()
+            if is_integer(d) and d > 0, do: d, else: nil
+        end
     end
   end
 

@@ -1101,7 +1101,7 @@ and mount queue depth > 32. Not Prometheus — in-process snapshot only.
 | **K17** | **Synthetic `.git` HEAD/refs/ctl only** — no objects façade in v1 | Enough for CLI/agents | PR5 |
 | **K18** | **Request = `{op,args}` only** — no top-level cwd/author | One root per engine | PR1 |
 | **K19** | **Binary pack path from first remote PR** | Avoid JSON pack bombs | PR10a |
-| **K20** | **One orchestrator algorithm** (spec + golden traces); **TS impl on JS**, **BEAM impl on server** — both hosts share **apply ops** + policy semantics. Network orch language is TS vs BEAM, **not** “C on server” (C smart_http/orch = test/fixture only) | Dual-host without silent drift | PR9–PR10c |
+| **K20** | **One decision contract** (`contracts/git.kdl` → projected catalogs) + **shared executable goldens** (`lib/git-engine/testdata/orch`); **TS impl on JS**, **BEAM impl on server** — same apply ops + policy semantics. Network orch language is TS vs BEAM, **not** “C on server” (C smart_http/orch = fixture only). Drift fails CI via goldens + gen `diff_test`, not a single orch binary | Dual-host without silent drift | PR9–PR10c |
 | **K21** | **One gitfs engine per mount path** (multi-mount OK with distinct paths; demux via `args.mount`) | Isolation + multi-repo | PR4 / R63–R65 |
 | **K22** | **Control plane: BEAM owns host_call answers + engine Port**; NIF = `BeamHostCall` relay only | Matches `egress_host_call_*` | PR7a–PR7b |
 | **K23** | **No product Go for git** — no rules_go for engine; go-git historical only | Substrate pivot | PR0 |

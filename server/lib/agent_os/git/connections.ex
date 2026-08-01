@@ -11,13 +11,9 @@ defmodule AgentOS.Git.Connections do
 
   alias AgentOS.Git.SmartHttp
 
-  # Guest host_call args must never carry credential material (D7 / dual-host).
-  # Rejected (fail closed), not ignored — matches JS `guestArgsCarrySecrets`.
-  @guest_secret_arg_keys ~w(
-    token auth password pass secret secrets bearer authorization
-    credentials credential apikey api_key accesstoken access_token
-    privatekey private_key client_secret clientsecret
-  )
+  # Guest secret keys — prefer contracts/git.kdl via AgentOS.Contracts.Git.
+  # Module attribute used at compile time; runtime MapSet from contract when available.
+  @guest_secret_arg_keys AgentOS.Contracts.Git.guest_secret_arg_keys()
 
   @type auth :: map()
   @type connection :: map()
@@ -216,15 +212,23 @@ defmodule AgentOS.Git.Connections do
 
   defp ok_binding(url, connection_ref, origins, auth, policies) do
     ref_for_policy = connection_ref || "*"
+    na = normalize_auth(auth)
 
-    {:ok,
-     %{
-       url: url,
-       connection_ref: connection_ref,
-       origins: origins || [],
-       auth: normalize_auth(auth),
-       push_action: evaluate_push_policy(ref_for_policy, policies)
-     }}
+    # Dual-host (contracts/git.kdl): query auth not supported for remotes.
+    case na do
+      %{kind: :query} ->
+        {:error, :query_auth_unsupported}
+
+      _ ->
+        {:ok,
+         %{
+           url: url,
+           connection_ref: connection_ref,
+           origins: origins || [],
+           auth: na,
+           push_action: evaluate_push_policy(ref_for_policy, policies)
+         }}
+    end
   end
 
   defp connection_ref_of(a) do

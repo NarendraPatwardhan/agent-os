@@ -44,8 +44,8 @@ defmodule AgentOS.Git.SmartHttp do
 
   @type transport :: (atom(), term() -> {:ok, term()} | {:error, term()})
 
-  # Match TS DEFAULT_MAX_PACK_BYTES / product pack-cache default.
-  @default_max_pack_bytes 64 * 1024 * 1024
+  # contracts/git.kdl default_max_pack_bytes (dual-host with TS pack-cache).
+  @default_max_pack_bytes AgentOS.Contracts.Git.default_max_pack_bytes()
 
   @doc "Default max response/pack body size in bytes (64 MiB)."
   def default_max_pack_bytes, do: @default_max_pack_bytes

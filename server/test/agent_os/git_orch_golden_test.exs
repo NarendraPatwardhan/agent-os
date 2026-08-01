@@ -17,13 +17,16 @@ defmodule AgentOS.Git.OrchGoldenTest do
     "clone_success_steps.json",
     "clone_empty_pack_fail.json",
     "origin_denied.json",
+    "origin_deny_prefix.json",
     "fetch_success_steps.json",
     "pull_ff_steps.json",
     "push_readonly.json",
     "push_success_steps.json",
     "shallow_clone_steps.json",
     "auth_deny_steps.json",
-    "pull_not_ff_steps.json"
+    "pull_not_ff_steps.json",
+    "guest_secret_reject.json",
+    "query_auth_reject.json"
   ]
 
   @response_schema "response_schema.json"
@@ -166,12 +169,31 @@ defmodule AgentOS.Git.OrchGoldenTest do
       "args" => Map.get(step, "args") || %{}
     }
 
-    assert {:ok, json} =
-             Orchestrator.run(pid, req,
-               transport: fixture_transport(refs, pack),
-               allowed_origins: origins,
-               read_only: read_only
-             )
+    orch_opts = [
+      transport: fixture_transport(refs, pack),
+      allowed_origins: origins,
+      read_only: read_only
+    ]
+
+    orch_opts =
+      case Map.get(fixture, "connection") do
+        %{"ref" => ref} = conn when is_binary(ref) ->
+          auth = Map.get(conn, "auth") || %{}
+          origins_c = Map.get(conn, "origins") || []
+
+          Keyword.put(orch_opts, :connections, [
+            %{
+              ref: ref,
+              auth: auth,
+              origins: origins_c
+            }
+          ])
+
+        _ ->
+          orch_opts
+      end
+
+    assert {:ok, json} = Orchestrator.run(pid, req, orch_opts)
 
     resp = decode_json!(json)
     ok? = Map.get(resp, "ok") == true or Map.get(resp, "ok") == "true"

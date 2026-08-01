@@ -20,12 +20,20 @@ export const GUEST_SECRET_ARG_KEYS = [
   "auth",
   "authorization",
   "password",
+  "pass",
   "bearer",
   "secret",
+  "secrets",
+  "credentials",
+  "credential",
+  "apikey",
   "api_key",
+  "accesstoken",
   "access_token",
+  "privatekey",
   "private_key",
   "client_secret",
+  "clientsecret",
 ] as const;
 
 // stable stderr prefixes (substring-stable)
@@ -38,6 +46,7 @@ export const STDERR_PREFIX = {
   push_read_only: "git: push rejected (read-only mount)",
   redirect_not_allowed: "git: redirect not allowed",
   empty_origins: "git: empty connection origins",
+  query_auth_unsupported: "git: query auth not supported for remotes",
 } as const;
 export type StderrPrefixId = keyof typeof STDERR_PREFIX;
 export function stderrLine(id: StderrPrefixId, detail?: string): string {

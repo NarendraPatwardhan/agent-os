@@ -19,7 +19,19 @@
 
 import type { ConnectionAuth } from "../types.js";
 import { spliceCredentialHeaders, spliceCredentialUrl } from "./connections.js";
+import {
+  MAX_PACK_ZERO_MEANS_DEFAULT,
+  PACK_MAGIC_REQUIRED,
+  stderrLine,
+} from "@mc/contracts/git";
 import { DEFAULT_MAX_PACK_BYTES } from "./pack-cache.js";
+
+/** Resolve max pack bytes: 0 → default when contract says so (dual-host with BEAM). */
+function resolveHttpMaxBytes(maxBytes: number | undefined): number {
+  if (maxBytes === undefined) return DEFAULT_MAX_PACK_BYTES;
+  if (maxBytes === 0 && MAX_PACK_ZERO_MEANS_DEFAULT) return DEFAULT_MAX_PACK_BYTES;
+  return maxBytes;
+}
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -49,7 +61,7 @@ export interface PushCommand {
 export interface FetchPacksOptions {
   /**
    * Max pack bytes after PACK magic (and total body while scanning).
-   * Default {@link DEFAULT_MAX_PACK_BYTES} (64 MiB). `0` = unlimited.
+   * Default {@link DEFAULT_MAX_PACK_BYTES} (64 MiB). `0` means default (contracts/git.kdl).
    */
   maxBytes?: number;
   /**
@@ -145,8 +157,7 @@ export class FixtureSmartHttp implements SmartHttpTransport {
     const f = this.fixtures.get(url);
     if (!f) throw new Error(`git: upload-pack failed: no fixture for ${url}`);
     const pack = f.pack.slice();
-    const max =
-      opts?.maxBytes === undefined ? DEFAULT_MAX_PACK_BYTES : opts.maxBytes;
+    const max = resolveHttpMaxBytes(opts?.maxBytes);
     if (max > 0 && pack.byteLength > max) {
       throw new Error(
         `git: pack ${pack.byteLength} bytes exceeds maxPackBytes ${max} (opt-in higher limit)`,
@@ -223,7 +234,7 @@ export class FetchSmartHttp implements SmartHttpTransport {
     });
     if (isRedirectResponse(res)) {
       throw new Error(
-        `git: redirect not allowed (HTTP ${res.status || "opaque"}; open redirect blocked)`,
+        `${stderrLine("redirect_not_allowed").trim()} (HTTP ${res.status || "opaque"}; open redirect blocked)`,
       );
     }
     return res;
@@ -278,8 +289,7 @@ export class FetchSmartHttp implements SmartHttpTransport {
     if (!res.ok) {
       throw new Error(`git: upload-pack failed: HTTP ${res.status}`);
     }
-    const max =
-      opts?.maxBytes === undefined ? DEFAULT_MAX_PACK_BYTES : opts.maxBytes;
+    const max = resolveHttpMaxBytes(opts?.maxBytes);
     // Stream body when available; size-cap during read; optional pack sink.
     return readPackFromResponse(res, max, opts?.onPackChunk);
   }
@@ -461,9 +471,17 @@ export function indexOfPackMagic(buf: Uint8Array, from = 0): number {
   return -1;
 }
 
+/**
+ * Slice at PACK magic. When PACK_MAGIC_REQUIRED (contracts/git.kdl), missing magic fails.
+ * Dual-host: BEAM locate_pack_offset → :no_pack_magic.
+ */
 function extractPack(buf: Uint8Array): Uint8Array {
   const i = indexOfPackMagic(buf);
-  return i >= 0 ? buf.subarray(i) : buf;
+  if (i >= 0) return buf.subarray(i);
+  if (PACK_MAGIC_REQUIRED) {
+    throw new Error("git: no PACK magic in upload-pack body");
+  }
+  return buf;
 }
 
 function concatBytes(parts: Uint8Array[], total: number): Uint8Array {
@@ -601,7 +619,10 @@ export async function readPackFromResponse(
   }
 
   if (!inPack) {
-    // No PACK magic — treat entire body as pack (same as extractPack fallback).
+    // Dual-host with BEAM :no_pack_magic — never soft-accept non-PACK bodies.
+    if (PACK_MAGIC_REQUIRED) {
+      throw new Error("git: no PACK magic in upload-pack body");
+    }
     if (pending.byteLength) {
       await pushPack(pending);
     }

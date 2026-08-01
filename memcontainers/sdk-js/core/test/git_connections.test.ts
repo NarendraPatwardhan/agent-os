@@ -124,14 +124,33 @@ async function main() {
   if (headerHdrs["X-GitHub-Token"] !== "hdr-sekret") {
     throw new Error(`header splice failed: ${JSON.stringify(headerHdrs)}`);
   }
+  // Dual-host (git.kdl): query auth is rejected for remotes (no secrets in URLs).
   const queryAuth = { kind: "query" as const, name: "access_token", value: "q-sekret" };
   const queryHdrs = spliceCredentialHeaders(queryAuth);
-  if (queryHdrs["X-MC-Git-Query-Auth"] !== "access_token") {
-    throw new Error(`query marker splice failed: ${JSON.stringify(queryHdrs)}`);
+  if (Object.keys(queryHdrs).length !== 0) {
+    throw new Error(`query auth must not add headers: ${JSON.stringify(queryHdrs)}`);
   }
   const qUrl = spliceCredentialUrl("https://github.com/org/repo.git", queryAuth);
-  if (!qUrl.includes("access_token=q-sekret")) {
-    throw new Error(`query url splice failed: ${qUrl}`);
+  if (qUrl.includes("access_token") || qUrl.includes("q-sekret")) {
+    throw new Error(`query url splice must be a no-op: ${qUrl}`);
+  }
+  const queryResolve = resolveGitRemote(
+    { url: "https://github.com/org/repo.git", connection: "github.user.work" },
+    {
+      connections: [
+        {
+          ref: "github.user.work",
+          auth: queryAuth,
+          origins: ["https://github.com"],
+        },
+      ],
+    },
+  );
+  if (
+    queryResolve.ok ||
+    !String(queryResolve.stderr).includes("query auth not supported")
+  ) {
+    throw new Error(`query auth resolve must fail: ${JSON.stringify(queryResolve)}`);
   }
   // none is a no-op
   if (Object.keys(spliceCredentialHeaders({ kind: "none" })).length !== 0) {

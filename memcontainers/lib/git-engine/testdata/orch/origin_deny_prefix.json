@@ -1,0 +1,24 @@
+{
+  "name": "origin_deny_prefix",
+  "version": 1,
+  "description": "Origin deny uses catalog prefix only (no requirement for URL in stderr).",
+  "fixture": {
+    "url": "https://evil.example/x.git",
+    "allowed_origins": ["https://example.com"],
+    "refs": [],
+    "pack": ""
+  },
+  "steps": [
+    {
+      "id": "orchestrator_response",
+      "op": "clone",
+      "args": {"url": "https://evil.example/x.git"},
+      "expect": {
+        "ok": false,
+        "code": 1,
+        "stderr_contains": ["git: origin not allowlisted"],
+        "stderr_not_contains": ["evil.example"]
+      }
+    }
+  ]
+}

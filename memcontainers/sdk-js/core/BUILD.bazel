@@ -231,6 +231,27 @@ genrule(
 )
 
 genrule(
+    name = "orch_golden_origin_deny_prefix",
+    srcs = ["//memcontainers/lib/git-engine:testdata/orch/origin_deny_prefix.json"],
+    outs = ["testdata/orch/origin_deny_prefix.json"],
+    cmd = "cp $< $@",
+)
+
+genrule(
+    name = "orch_golden_guest_secret_reject",
+    srcs = ["//memcontainers/lib/git-engine:testdata/orch/guest_secret_reject.json"],
+    outs = ["testdata/orch/guest_secret_reject.json"],
+    cmd = "cp $< $@",
+)
+
+genrule(
+    name = "orch_golden_query_auth_reject",
+    srcs = ["//memcontainers/lib/git-engine:testdata/orch/query_auth_reject.json"],
+    outs = ["testdata/orch/query_auth_reject.json"],
+    cmd = "cp $< $@",
+)
+
+genrule(
     name = "orch_response_schema",
     srcs = ["//memcontainers/lib/git-engine:testdata/orch/response_schema.json"],
     outs = ["testdata/orch/response_schema.json"],
@@ -275,6 +296,9 @@ js_test(
         ":orch_golden_shallow_clone",
         ":orch_golden_auth_deny",
         ":orch_golden_pull_not_ff",
+        ":orch_golden_origin_deny_prefix",
+        ":orch_golden_guest_secret_reject",
+        ":orch_golden_query_auth_reject",
         ":orch_response_schema",
         ":orch_golden_minimal_pack",
         ":orch_golden_minimal_tip",

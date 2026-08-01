@@ -16,12 +16,20 @@ defmodule AgentOS.Contracts.Git do
       "auth",
       "authorization",
       "password",
+      "pass",
       "bearer",
       "secret",
+      "secrets",
+      "credentials",
+      "credential",
+      "apikey",
       "api_key",
+      "accesstoken",
       "access_token",
+      "privatekey",
       "private_key",
       "client_secret",
+      "clientsecret",
     ]
   end
 
@@ -36,6 +44,7 @@ defmodule AgentOS.Contracts.Git do
       push_read_only: "git: push rejected (read-only mount)",
       redirect_not_allowed: "git: redirect not allowed",
       empty_origins: "git: empty connection origins",
+      query_auth_unsupported: "git: query auth not supported for remotes",
     }
   end
   def stderr_line(id, detail \\ nil) do

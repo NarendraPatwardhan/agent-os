@@ -1323,7 +1323,9 @@ defmodule AgentOS.Vm do
               Map.put(state.git_engines || %{}, mount_path, %{
                 pid: pid,
                 mon: ref,
-                sparse_cone: sparse_cone
+                sparse_cone: sparse_cone,
+                # Forwarded to orch so push fail-closes before dial (dual-host with JS readOnly).
+                read_only: read_only == true
               })
 
             # Latest attach refreshes shared host policy (connections/policies/legacy/transport).
@@ -1898,13 +1900,26 @@ defmodule AgentOS.Vm do
     end
   end
 
-  # Shared policy opts + per-mount sparse cone for remote orch (D20).
+  # Shared policy opts + per-mount sparse cone / read_only for remote orch (D20 / K20).
   defp git_host_opts_for_mount(state, mount) when is_binary(mount) do
     opts = git_host_opts(state)
 
     case Map.get(state.git_engines || %{}, mount) do
+      %{sparse_cone: cone, read_only: ro} = _meta ->
+        opts =
+          if is_list(cone) and cone != [] do
+            Keyword.put(opts, :sparse_cone, cone)
+          else
+            opts
+          end
+
+        if ro == true, do: Keyword.put(opts, :read_only, true), else: opts
+
       %{sparse_cone: cone} when is_list(cone) and cone != [] ->
         Keyword.put(opts, :sparse_cone, cone)
+
+      %{read_only: true} ->
+        Keyword.put(opts, :read_only, true)
 
       _ ->
         opts

@@ -19,11 +19,15 @@
  * | Push `require_approval` | `policies` → `"require_approval"` + callback    | `policies` + `:on_push_approval`                |
  * | Push `block`            | `policies` → `"block"` (most restrictive wins)  | same (`git: push blocked by policy`)            |
  * | Auth splice             | `spliceCredentialHeaders` / `Url` host-only     | `SmartHttp.auth_headers` host-only              |
- * | Auth kinds (catalog)    | none \| bearer \| header \| query               | none \| bearer \| header \| basic (query passthrough) |
+ * | Auth kinds (catalog)    | none \| bearer \| header \| basic               | none \| bearer \| header \| basic (query rejected)    |
  * | Userinfo in URL         | Reject                                          | Reject                                          |
  * | Secrets in logs/resp    | `redactRemoteForLog` (kind only)                | `redact_url` / info refs only / no tokens       |
  */
 
+import {
+  GUEST_SECRET_ARG_KEYS as CONTRACT_GUEST_SECRET_KEYS,
+  stderrLine,
+} from "@mc/contracts/git";
 import { originAllowed } from "@mc/host";
 import type {
   ConnectionAuth,
@@ -53,33 +57,16 @@ export interface ResolveRemoteOptions {
   remoteConnections?: Record<string, string>;
 }
 
-// ── Guest secret keys (fail closed) ─────────────────────────────────────────
+// ── Guest secret keys (fail closed) — contracts/git.kdl ─────────────────────
 
 /**
  * Guest host_call / ctl args must never carry credential material. Host
- * connections catalog + orch opts own secrets; anything listed here in the
- * guest body is rejected (fail closed), not ignored silently.
+ * connections catalog + orch opts own secrets; keys come from contracts/git.kdl
+ * (dual-host with BEAM AgentOS.Contracts.Git).
  */
-const GUEST_SECRET_ARG_KEYS = new Set([
-  "token",
-  "auth",
-  "password",
-  "pass",
-  "secret",
-  "secrets",
-  "bearer",
-  "authorization",
-  "credentials",
-  "credential",
-  "apikey",
-  "api_key",
-  "accesstoken",
-  "access_token",
-  "privatekey",
-  "private_key",
-  "client_secret",
-  "clientsecret",
-]);
+const GUEST_SECRET_ARG_KEYS = new Set(
+  CONTRACT_GUEST_SECRET_KEYS.map((k) => k.toLowerCase()),
+);
 
 function fail(
   code: number,
@@ -153,10 +140,7 @@ export function resolveGitRemote(
 
   // Guest body cannot carry auth secrets — reject, never splice from args.
   if (guestArgsCarrySecrets(a)) {
-    return fail(
-      1,
-      "git: guest body must not include auth secrets (use connection ref)\n",
-    );
+    return fail(1, stderrLine("guest_auth_secrets", "(use connection ref)"));
   }
 
   let url = String(a.url ?? "");
@@ -177,7 +161,7 @@ export function resolveGitRemote(
   if (connectionRef) {
     conn = connections.find((c) => c.ref === connectionRef);
     if (!conn) {
-      return fail(1, `git: unknown connection ref ${connectionRef}\n`);
+      return fail(1, stderrLine("unknown_connection", connectionRef));
     }
     if (!url) {
       const fromSpec =
@@ -213,11 +197,15 @@ export function resolveGitRemote(
   if (connectionRef && conn) {
     const allowed = conn.origins ?? [];
     if (!allowed.length || !originAllowed(allowed, publicUrl)) {
-      return fail(
-        1,
-        `git: origin not allowlisted for connection ${conn.ref}\n`,
-      );
+      // Prefix from git.kdl; optional detail after prefix is dual-host OK for connection ref.
+      return fail(1, stderrLine("origin_not_allowlisted", `for connection ${conn.ref}`));
     }
+  }
+
+  const auth: ConnectionAuth = conn?.auth ?? { kind: "none" };
+  // Dual-host (git.kdl): query auth puts secrets in URLs — reject for remotes.
+  if (auth.kind === "query") {
+    return fail(1, stderrLine("query_auth_unsupported"));
   }
 
   const origin = requestOrigin(publicUrl)!;
@@ -229,7 +217,7 @@ export function resolveGitRemote(
       url: publicUrl,
       connectionRef,
       origins,
-      auth: conn?.auth ?? { kind: "none" },
+      auth,
       pushAction: evaluatePushPolicy(connectionRef ?? "*", policies),
     },
   };
@@ -284,19 +272,20 @@ export function spliceCredentialHeaders(
       out[auth.name] = auth.value;
       return out;
     case "query":
-      // Prefer not to put secrets in URLs; mark for transport that opts in.
-      out["X-MC-Git-Query-Auth"] = auth.name;
+      // Rejected for product remotes (contracts/git.kdl dual-host) — secrets must
+      // not live in URLs. resolveGitRemote fails closed before dial.
       return out;
     default:
       return out;
   }
 }
 
-export function spliceCredentialUrl(url: string, auth: ConnectionAuth): string {
-  if (auth.kind !== "query") return url;
-  const u = new URL(url);
-  u.searchParams.set(auth.name, auth.value);
-  return u.toString();
+/**
+ * Product remotes do not splice secrets into URLs (dual-host with BEAM).
+ * Returns `url` unchanged; query auth is rejected at resolve time.
+ */
+export function spliceCredentialUrl(url: string, _auth: ConnectionAuth): string {
+  return url;
 }
 
 // ── Logging ─────────────────────────────────────────────────────────────────

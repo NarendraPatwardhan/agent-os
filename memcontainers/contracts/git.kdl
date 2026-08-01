@@ -25,17 +25,26 @@ default {
 }
 
 // Guest host_call body must not carry these keys (fail closed before dial).
+// Dual-host: JS connections.ts + BEAM Connections use this list (case-insensitive).
 guest-secret-keys {
     token
     auth
     authorization
     password
+    pass
     bearer
     secret
+    secrets
+    credentials
+    credential
+    apikey
     api_key
+    accesstoken
     access_token
+    privatekey
     private_key
     client_secret
+    clientsecret
 }
 
 // Stable stderr prefixes — substring-stable dual-host catalog.
@@ -49,6 +58,7 @@ stderr-prefix {
     push_read_only "git: push rejected (read-only mount)"
     redirect_not_allowed "git: redirect not allowed"
     empty_origins "git: empty connection origins"
+    query_auth_unsupported "git: query auth not supported for remotes"
 }
 
 // Algorithm step IDs (shared golden / optional trace). Data only — hosts implement.

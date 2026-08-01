@@ -50,12 +50,17 @@ export interface GitCreateOptions {
    * Multi-repo mounts. Default when omitted: `[{ path: "/workspace/repo" }]`.
    * Each path owns one engine (single-writer). Duplicate paths fail closed.
    */
-  mounts?: Array<{ path: string; sparse?: string[] }>;
+  mounts?: Array<{ path: string; sparse?: string[]; readOnly?: boolean }>;
   /**
    * Cone sparse prefixes for the default mount when {@link mounts} is omitted
    * (e.g. `["src", "docs"]`). Cone-only — not full git sparse-checkout language.
    */
   sparse?: string[];
+  /**
+   * When true, default mounts (and engines) reject push (dual-host with BEAM
+   * `attach_git(read_only: true)`). Overridable per {@link mounts} entry.
+   */
+  readOnly?: boolean;
   /** Host commit identity (K28). Injected when commit args omit name/email. */
   identity?: { name: string; email: string };
   /**

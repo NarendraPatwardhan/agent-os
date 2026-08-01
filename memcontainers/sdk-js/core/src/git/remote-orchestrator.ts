@@ -48,6 +48,7 @@
  */
 
 import {
+  ALGORITHM_STEPS,
   DEFAULT_CLONE_DEPTH,
   DEFAULT_FETCH_DEPTH,
   stderrLine,
@@ -134,6 +135,11 @@ export interface OrchestratorOptions extends ResolveRemoteOptions {
    * inject lives on {@link GitEngine.run}.
    */
   identity?: { name: string; email: string };
+  /**
+   * When true (or env `MC_GIT_ORCH_TRACE=1`), record algorithm step ids from
+   * contracts/git.kdl on the last handle() for dual-host golden comparison.
+   */
+  traceSteps?: boolean;
 }
 
 /**
@@ -222,6 +228,9 @@ export class GitRemoteOrchestrator {
   private metricsPackBytes = 0;
   private metricsOriginRedacted = "";
   private metricsAllowlistDeny = false;
+  private readonly traceEnabled: boolean;
+  /** Last remote op step ids when {@link OrchestratorOptions.traceSteps} is on. */
+  lastTrace: string[] = [];
 
   constructor(
     private readonly engine: GitEngine,
@@ -234,6 +243,10 @@ export class GitRemoteOrchestrator {
     this.remoteUrls = opts.remoteUrls ?? {};
     this.remoteConnections = opts.remoteConnections ?? {};
     this.readOnly = !!opts.readOnly;
+    this.traceEnabled =
+      !!opts.traceSteps ||
+      (typeof process !== "undefined" &&
+        process.env?.MC_GIT_ORCH_TRACE === "1");
     this.onPushApproval = opts.onPushApproval;
     this.buildPushPack = opts.buildPushPack;
     // null = explicitly off; undefined = no cache on direct construction.
@@ -411,6 +424,7 @@ export class GitRemoteOrchestrator {
     this.metricsPackBytes = 0;
     this.metricsOriginRedacted = "";
     this.metricsAllowlistDeny = false;
+    this.lastTrace = [];
     const t0 = Date.now();
     let resp: GitResponse;
     if (op === "clone") resp = await this.clone(req);
@@ -425,6 +439,12 @@ export class GitRemoteOrchestrator {
         stdout: "",
         stderr: `unknown remote op: ${op}\n`,
       };
+    }
+    // Catalog step order from contracts/git.kdl when tracing (success path).
+    if (this.traceEnabled && resp.ok) {
+      const key = op === "pull" ? "fetch" : op;
+      const steps = (ALGORITHM_STEPS as Record<string, readonly string[]>)[key];
+      if (steps) this.lastTrace = [...steps];
     }
     // In-process counters: duration, pack bytes, redacted origin, allowlist denials.
     if (op === "clone" || op === "fetch" || op === "pull" || op === "push") {
@@ -1397,7 +1417,7 @@ export class GitRemoteOrchestrator {
         ok: false,
         code: 1,
         stdout: "",
-        stderr: "git: push rejected (read-only mount)\n",
+        stderr: stderrLine("push_read_only"),
       };
     }
 
@@ -1761,6 +1781,8 @@ export function gitHostCallHandler(
         ...opts,
         packCache,
         sparseCone: engineCone ?? opts?.sparseCone,
+        // Per-engine RO (not shared anyRo) — multi-mount mixed RO/RW parity with BEAM.
+        readOnly: !!engine.readOnly || !!opts?.readOnly,
       });
       orchByEngine.set(engine, orch);
     }
