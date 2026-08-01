@@ -873,7 +873,8 @@ async function makeEmbedded(
     }
 
     const defaultMount = mountSpecs[0]!.path.trim();
-    // packCache defaults on inside gitHostCallHandler (process MemoryPackCache).
+    // packCache defaults on inside gitHostCallHandler (process Memory, or Disk
+    // when MC_GIT_PACK_CACHE is set on Node — never credentials).
     // Bare URL remotes fail closed unless connections bind origins (R32).
     // Demux: args.mount / mount → engine map (R65).
     // gitHttp / gitAllowOrigins: hermetic fixture injection for guest CAP_NET e2e.

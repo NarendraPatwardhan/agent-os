@@ -230,7 +230,8 @@ export const nodeSolvePlatform: SolvePlatform = {
     }
     const platform = await nodeSolvePlatformWithEngine({
       baseUrl: resolveEngineBaseUrl(),
-      packCacheDir: process.env.MC_GIT_PACK_CACHE,
+      // Same env as defaultProcessPackCache; explicit dir still wins if set.
+      packCacheDir: process.env.MC_GIT_PACK_CACHE?.trim() || undefined,
     });
     return platform.gitSource(repo, ref, dest);
   },
@@ -244,9 +245,16 @@ export const nodeSolvePlatform: SolvePlatform = {
 export async function nodeSolvePlatformWithEngine(opts: {
   baseUrl: string;
   connections?: import("./types.js").ConnectionDefinition[];
-  /** On-disk pack cache dir (MC_GIT_PACK_CACHE). Overrides process MemoryPackCache. */
+  /**
+   * On-disk pack cache dir (same as `MC_GIT_PACK_CACHE`). When set, uses
+   * {@link DiskPackCache} for this platform; otherwise falls through to
+   * process default (Memory, or Disk if env already set).
+   */
   packCacheDir?: string;
-  /** Explicit pack cache; default is process-scoped MemoryPackCache for repeated solves. */
+  /**
+   * Explicit pack cache. Default is {@link defaultProcessPackCache} (Memory on
+   * browser / unset env; Disk when `MC_GIT_PACK_CACHE` is set). Pass `null` to disable.
+   */
   packCache?: import("./git/pack-cache.js").PackCache | null;
 }): Promise<SolvePlatform> {
   const { GitEngine } = await import("./git/engine.js");
@@ -256,7 +264,8 @@ export async function nodeSolvePlatformWithEngine(opts: {
     defaultProcessPackCache,
   } = await import("./git/pack-cache.js");
   // Product LLB path: always plumb a pack cache for repeated in-process solves
-  // unless the caller passes packCache: null. Disk dir wins over memory default.
+  // unless the caller passes packCache: null. Explicit packCacheDir wins;
+  // otherwise process default honors MC_GIT_PACK_CACHE for Disk.
   const packCache =
     opts.packCache === null
       ? undefined

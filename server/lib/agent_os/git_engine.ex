@@ -118,7 +118,8 @@ defmodule AgentOS.GitEngine do
   * `:transport` — injectable SmartHttp transport (tests)
   * `:auth` — `%{kind: :none | :bearer | :header | :basic, ...}`
   * `:allowed_origins` / allowlist — fail-closed product remotes
-  * `:pack_cache` — optional `AgentOS.Git.PackCache` pid / `:default`
+  * `:pack_cache` — optional cache: pid / `:default` / `:disk` / `{:disk, dir}`
+    (see `AgentOS.Git.Orchestrator`; env `AGENTOS_GIT_PACK_CACHE`)
   """
   @spec handle_host_call(pid(), String.t(), binary(), keyword()) ::
           {:ok, binary()} | {:error, term()}
