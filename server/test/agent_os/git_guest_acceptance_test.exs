@@ -135,7 +135,7 @@ defmodule AgentOS.GitGuestAcceptanceTest do
                  transport: transport
                )
 
-      # Direct argv inherits boot-tier caps (no CAP_NET) — same as JS git_guest_e2e R3.
+      # Direct argv inherits boot-tier caps (no CAP_NET) — same as JS guest e2e.
       assert {:ok, denied} =
                ControlPlane.run(id, "git", ["clone", @fixture_url], timeout: 60_000)
 
@@ -165,7 +165,7 @@ defmodule AgentOS.GitGuestAcceptanceTest do
     path = engine_path()
 
     if is_nil(wasm) or is_nil(loom) do
-      flunk("D29 requires kernel.wasm + loom.tar under bazel //server:mix_test runfiles")
+      flunk("requires kernel.wasm + loom.tar under bazel //server:mix_test runfiles")
     end
 
     id = unique_id("git-eio")
@@ -185,7 +185,7 @@ defmodule AgentOS.GitGuestAcceptanceTest do
                ControlPlane.attach_git(id,
                  executable: path,
                  root: root,
-                 identity: %{name: "D29", email: "d29@example.com"}
+                 identity: %{name: "guest", email: "guest@example.com"}
                )
 
       # Guest local porcelain works before kill (proves mount + Port live).
@@ -223,7 +223,7 @@ defmodule AgentOS.GitGuestAcceptanceTest do
           msg =~ "I/O"
 
       assert failed?,
-             "D29 expected guest-visible failure after Port kill, got: #{inspect(after_kill)}"
+             "expected guest-visible failure after Port kill, got: #{inspect(after_kill)}"
 
       # Engine Run path also reports :eio (unit surface still holds).
       result =
@@ -248,7 +248,7 @@ defmodule AgentOS.GitGuestAcceptanceTest do
     path = engine_path()
 
     if is_nil(wasm) or is_nil(loom) do
-      flunk("D30 requires kernel.wasm + loom.tar under bazel //server:mix_test runfiles")
+      flunk("requires kernel.wasm + loom.tar under bazel //server:mix_test runfiles")
     end
 
     id = unique_id("git-gitfs")
@@ -268,7 +268,7 @@ defmodule AgentOS.GitGuestAcceptanceTest do
                ControlPlane.attach_git(id,
                  executable: path,
                  root: root,
-                 identity: %{name: "D30", email: "d30@example.com"}
+                 identity: %{name: "guest", email: "guest@example.com"}
                )
 
       assert {:ok, ver} = ControlPlane.run(id, "git", ["version"], timeout: 30_000)
@@ -309,7 +309,7 @@ defmodule AgentOS.GitGuestAcceptanceTest do
                  "op" => "commit",
                  "args" => %{
                    "message" => "d30-e2e",
-                   "name" => "D30",
+                   "name" => "guest",
                    "email" => "d30@example.com"
                  }
                })

@@ -39,9 +39,9 @@ defmodule AgentOS.Git.OrchestratorTest do
     Enum.find(candidates, &File.regular?/1)
   end
 
-  # Fixture transport: no real network (K16 BEAM orch + Port apply).
+  # Fixture transport: no real network.
   # Prefer explicit allowed_origins matching the fixture URL (not :any).
-  # Agent records last push for assertions (R44–R46).
+  # Agent records last push for assertions.
   defp fixture_transport(pack \\ <<>>, push_agent \\ nil) do
     refs = [%{name: "refs/heads/main", hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]
 
@@ -105,7 +105,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     assert {:error, :no_pack_magic} = SmartHttp.extract_pack(<<>>)
   end
 
-  # D11: locate PACK offset on disk without loading whole body as pack.
+  # locate PACK offset on disk without loading whole body as pack.
   test "locate_pack_offset finds PACK and pack_byte_size uses offset" do
     path =
       Path.join(
@@ -139,7 +139,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     File.rm(path)
   end
 
-  # D11: product upload-pack streams to temp file; size cap fails mid-stream.
+  # product upload-pack streams to temp file; size cap fails mid-stream.
   test "product stream fetch_packs fails closed when body exceeds max_pack_bytes" do
     # Local server returns 200 + body larger than max (no Content-Length so the
     # cap is enforced while streaming chunks — not only via header pre-check).
@@ -301,7 +301,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     refute File.regular?(path)
   end
 
-  # D3: redirect policy — never follow; open redirect cannot leave allowlist.
+  # redirect policy — never follow; open redirect cannot leave allowlist.
   test "classify_http_response rejects 3xx as redirect_not_allowed" do
     assert {:error, :redirect_not_allowed} =
              SmartHttp.classify_http_response(301, "moved", 64 * 1024 * 1024)
@@ -605,7 +605,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     tip_path = Path.expand("../fixtures/git/minimal.tip", __DIR__)
 
     if not (File.regular?(pack_path) and File.regular?(tip_path)) do
-      IO.puts(:stderr, "skipping pull FF test: minimal.pack fixture missing")
+      flunk("requires minimal.pack fixture under test runfiles")
     else
       pack = File.read!(pack_path)
       tip = File.read!(tip_path) |> String.trim()
@@ -661,7 +661,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     end
   end
 
-  # D9: clone.apply post-step sets remote.origin.url + branch tracking;
+  # clone.apply post-step sets remote.origin.url + branch tracking;
   # pull via remote name (no url) uses that config.
   @tag timeout: 60_000
   test "clone sets remote.origin.url and branch tracking; pull uses remote name" do
@@ -670,7 +670,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     tip_path = Path.expand("../fixtures/git/minimal.tip", __DIR__)
 
     if not (File.regular?(pack_path) and File.regular?(tip_path)) do
-      flunk("D9 requires minimal.pack fixture")
+      flunk("requires minimal.pack fixture under test runfiles")
     end
 
     pack = File.read!(pack_path)
@@ -733,7 +733,7 @@ defmodule AgentOS.Git.OrchestratorTest do
       merge_out = br_merge["stdout"] || Map.get(br_merge, :stdout) || ""
       assert to_string(merge_out) =~ "refs/heads/main"
 
-      # Pull with remote name only — URL comes from remote.origin.url (D9).
+      # Pull with remote name only — URL comes from remote.origin.url.
       assert {:ok, pull_json} =
                Orchestrator.run(
                  pid,
@@ -742,7 +742,7 @@ defmodule AgentOS.Git.OrchestratorTest do
                )
 
       assert pull_json =~ "\"ok\":true" or pull_json =~ ~s("ok":true),
-             "D9 pull remote=origin failed: #{pull_json}"
+             "pull remote=origin failed: #{pull_json}"
 
       assert pull_json =~ "Already up to date" or pull_json =~ "Fast-forward" or
                pull_json =~ "fetched"
@@ -752,7 +752,7 @@ defmodule AgentOS.Git.OrchestratorTest do
                Orchestrator.run(pid, ~s({"op":"pull","args":{}}), opts)
 
       assert pull_empty =~ "\"ok\":true" or pull_empty =~ ~s("ok":true),
-             "D9 pull {} failed: #{pull_empty}"
+             "pull {} failed: #{pull_empty}"
 
       :ok = GitEngine.stop(pid)
     after
@@ -760,7 +760,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     end
   end
 
-  # ── R44–R47 server push (pack.build + receive-pack fixture) ────────────────
+  # ── server push (pack.build + receive-pack fixture) ────────────────
 
   @tag timeout: 30_000
   test "push read_only: true still rejects" do
@@ -1534,14 +1534,13 @@ defmodule AgentOS.Git.OrchestratorTest do
   test "try_answer_git_host_call returns :answered without blocking on remote orch" do
     # Real kernel VM + attach_git with fixture transport (no network).
     # Proves P1.6: name "git" is claimed async (GenServer returns immediately).
-    # R2 partial: after async clone, worktree file is present under engine root.
+    # partial: after async clone, worktree file is present under engine root.
     wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
     posix = runfile_bytes("memcontainers/images/posix.tar")
     path = engine_path()
 
     if is_nil(wasm) or is_nil(posix) do
-      # full guest CAP_NET e2e needs kernel/images + host_nif runfiles.
-      IO.puts(:stderr, "skipping Vm async git test: kernel/posix runfiles missing")
+      flunk("requires kernel.wasm + posix.tar under bazel //server:mix_test runfiles")
     else
       id = {"git-async", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
       pack = File.read!(Path.expand("../fixtures/git/minimal.pack", __DIR__))
@@ -1611,7 +1610,7 @@ defmodule AgentOS.Git.OrchestratorTest do
           AgentOS.ControlPlane.info(id).git_inflight == 0
         end)
 
-        # R2: fixture clone applied — worktree file from minimal.pack.
+        # fixture clone applied — worktree file from minimal.pack.
         assert_eventually(fn ->
           case File.read(Path.join(root, "README")) do
             {:ok, "hello\n"} -> true
@@ -1642,7 +1641,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     path = engine_path()
 
     if is_nil(wasm) or is_nil(posix) do
-      IO.puts(:stderr, "skipping D19 snapshot/git inflight test: kernel/posix runfiles missing")
+      flunk("requires kernel.wasm + posix.tar under bazel //server:mix_test runfiles")
     else
       id = {"git-snap-block", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
       pack = File.read!(Path.expand("../fixtures/git/minimal.pack", __DIR__))
@@ -1741,7 +1740,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     path = engine_path()
 
     if is_nil(wasm) or is_nil(posix) do
-      IO.puts(:stderr, "skipping concurrent remote serialize test: kernel/posix runfiles missing")
+      flunk("requires kernel.wasm + posix.tar under bazel //server:mix_test runfiles")
     else
       id = {"git-serial", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
       pack = File.read!(Path.expand("../fixtures/git/minimal.pack", __DIR__))
@@ -1940,16 +1939,16 @@ defmodule AgentOS.Git.OrchestratorTest do
     :ok = GitEngine.stop(pid)
   end
 
-  # ── same-path second attach fail-closed; R63 distinct paths OK ─────────
+  # ── same-path second attach fail-closed; distinct paths OK ─────────
 
   @tag timeout: 120_000
-  test "same-path second attach_git fails; R63 distinct paths multi-attach" do
+  test "same-path second attach_git fails; distinct paths multi-attach" do
     wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
     posix = runfile_bytes("memcontainers/images/posix.tar")
     path = engine_path()
 
     if is_nil(wasm) or is_nil(posix) do
-      IO.puts(:stderr, "skipping R66/R63 attach test: kernel/posix runfiles missing")
+      flunk("requires kernel.wasm + posix.tar under bazel //server:mix_test runfiles")
     else
       id = {"git-k21", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
 
@@ -1988,7 +1987,7 @@ defmodule AgentOS.Git.OrchestratorTest do
         assert info2.git_attached == true
         assert info2.git_engine_count == 1
 
-        # R63: distinct mount path attaches a second engine.
+        # distinct mount path attaches a second engine.
         assert :ok =
                  AgentOS.ControlPlane.attach_git(id,
                    executable: path,
@@ -2034,7 +2033,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     path = engine_path()
 
     if is_nil(wasm) or is_nil(posix) do
-      IO.puts(:stderr, "skipping PR11 connections attach test: kernel/posix runfiles missing")
+      flunk("requires kernel.wasm + posix.tar under bazel //server:mix_test runfiles")
     else
       id = {"git-conn", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
 
@@ -2107,7 +2106,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     path = engine_path()
 
     if is_nil(wasm) or is_nil(posix) do
-      IO.puts(:stderr, "skipping D20 sparse_cone attach e2e: kernel/posix runfiles missing")
+      flunk("requires kernel.wasm + posix.tar under bazel //server:mix_test runfiles")
     else
       id = {"git-sparse-cone", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
       pack = File.read!(Path.expand("../fixtures/git/minimal.pack", __DIR__))
@@ -2203,7 +2202,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     path = engine_path()
 
     if is_nil(wasm) or is_nil(posix) do
-      IO.puts(:stderr, "skipping PR11 connections clone e2e: kernel/posix runfiles missing")
+      flunk("requires kernel.wasm + posix.tar under bazel //server:mix_test runfiles")
     else
       id = {"git-conn-clone", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
       pack = fixture_git_bytes!("minimal.pack")
@@ -2356,7 +2355,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     path = engine_path()
 
     if is_nil(wasm) or is_nil(posix) do
-      IO.puts(:stderr, "skipping R65/D21 multi-mount clone test: kernel/posix runfiles missing")
+      flunk("requires kernel.wasm + posix.tar under bazel //server:mix_test runfiles")
     else
       id = {"git-demux", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
       pack = fixture_git_bytes!("minimal.pack")
@@ -2504,7 +2503,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     path = engine_path()
 
     if is_nil(wasm) or is_nil(posix) do
-      IO.puts(:stderr, "skipping D21 concurrent multi-mount test: kernel/posix runfiles missing")
+      flunk("requires kernel.wasm + posix.tar under bazel //server:mix_test runfiles")
     else
       id = {"git-d21-conc", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
       pack = fixture_git_bytes!("minimal.pack")
@@ -2634,7 +2633,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     path = engine_path()
 
     if is_nil(wasm) or is_nil(posix) do
-      IO.puts(:stderr, "skipping R5 attach detach test: kernel/posix runfiles missing")
+      flunk("requires kernel.wasm + posix.tar under bazel //server:mix_test runfiles")
     else
       id = {"git-eio", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
 
@@ -2681,7 +2680,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     path = engine_path()
 
     if is_nil(wasm) or is_nil(posix) do
-      IO.puts(:stderr, "skipping R100 close test: kernel/posix runfiles missing")
+      flunk("requires kernel.wasm + posix.tar under bazel //server:mix_test runfiles")
     else
       id = {"git-close", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
       pack = File.read!(Path.expand("../fixtures/git/minimal.pack", __DIR__))
@@ -2745,7 +2744,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     end
   end
 
-  # ── / D35–D36 metrics ──────────────────────────────────────────────────
+  # ── / –metrics ──────────────────────────────────────────────────
 
   @tag timeout: 30_000
   test "metrics counters tick on orch clone deny" do
@@ -2763,7 +2762,7 @@ defmodule AgentOS.Git.OrchestratorTest do
 
     snap = AgentOS.Git.Metrics.snapshot()
     assert snap.clone_error >= 1
-    # D35/D36: allowlist deny + redacted origin + duration label.
+    # allowlist deny + redacted origin + duration label.
     assert snap.allowlist_deny >= 1
     assert is_integer(snap.last_duration_ms) and snap.last_duration_ms >= 0
     assert snap.last_origin_redacted == "https://example.com"
@@ -2779,7 +2778,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     pack_path = Path.expand("../fixtures/git/minimal.pack", __DIR__)
 
     unless File.regular?(pack_path) do
-      flunk("D35 requires minimal.pack fixture")
+      flunk("requires minimal.pack fixture under test runfiles")
     end
 
     pack = File.read!(pack_path)
@@ -2863,7 +2862,7 @@ defmodule AgentOS.Git.OrchestratorTest do
                connections: empty
              )
 
-    # Guest body token/auth rejected (D7) — never spliced.
+    # Guest body token/auth rejected — never spliced.
     assert {:error, :guest_secrets_forbidden} =
              Connections.resolve_remote(
                %{
@@ -2901,7 +2900,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     tip_path = Path.expand("../fixtures/git/minimal.tip", __DIR__)
 
     if not (File.regular?(pack_path) and File.regular?(tip_path)) do
-      IO.puts(:stderr, "skipping connection clone: minimal.pack fixture missing")
+      flunk("requires minimal.pack fixture under test runfiles")
     else
       pack = File.read!(pack_path)
       tip = File.read!(tip_path) |> String.trim()
@@ -3037,7 +3036,7 @@ defmodule AgentOS.Git.OrchestratorTest do
   end
 
   @tag timeout: 30_000
-  test "guest body with fake token field rejected before dial (D7)" do
+  test "guest body with fake token field rejected before dial" do
     path = engine_path()
     assert {:ok, pid} = GitEngine.start(executable: path)
     dialed = :atomics.new(1, signed: false)
@@ -3229,7 +3228,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     end
   end
 
-  # ── D23–D24 host-mediated submodule update ────────────────────────────────
+  # ── host-mediated submodule update ────────────────────────────────
 
   @tag timeout: 120_000
   test "host-mediated submodule update projects nested worktree" do
@@ -3346,7 +3345,7 @@ defmodule AgentOS.Git.OrchestratorTest do
       assert upd_json =~ "updated 1"
       assert :atomics.get(dialed, 1) >= 2, "must dial list-refs + fetch-packs"
 
-      # D24: nested worktree files on disk under super root (gitfs projects FS).
+      # nested worktree files on disk under super root (gitfs projects FS).
       readme = Path.join(root, "deps/lib/README")
       assert File.exists?(readme), "missing nested README at #{readme}"
       assert File.read!(readme) == "hello\n"

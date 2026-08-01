@@ -287,7 +287,7 @@ defmodule AgentOS.Git.OrchGoldenTest do
     :ok = GitEngine.stop(pid)
   end
 
-  # D33 — Response schema catalog: required keys + stable stderr prefixes.
+  # — Response schema catalog: required keys + stable stderr prefixes.
   @tag timeout: 60_000
   test "response_schema catalog prefixes (unknown connection, empty pack, origin deny)" do
     path = find_golden!(@response_schema)

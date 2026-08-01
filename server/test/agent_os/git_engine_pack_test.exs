@@ -145,7 +145,7 @@ defmodule AgentOS.GitEnginePackTest do
     :ok = GitEngine.stop(pid)
   end
 
-  # D20: orch sparse_cone → Port sparse-set after clone.apply (JS sparseCone parity).
+  # orch sparse_cone → Port sparse-set after clone.apply (JS sparseCone parity).
   @tag timeout: 60_000
   test "BEAM orch clone with sparse_cone writes sparse-checkout and keeps root README" do
     path = engine_path()
@@ -198,7 +198,7 @@ defmodule AgentOS.GitEnginePackTest do
     :ok
   end
 
-  # D13 / M7 v1: multi-path tree + depth=1 + sparse_cone → out-of-cone not on worktree.
+  # / M7 v1: multi-path tree + depth=1 + sparse_cone → out-of-cone not on worktree.
   @tag timeout: 60_000
   test "monorepo multi-path clone+sparse keeps cone paths only on worktree" do
     path = engine_path()
@@ -246,11 +246,11 @@ defmodule AgentOS.GitEnginePackTest do
              })
 
     assert c["ok"] == true or (is_binary(Map.get(c, "raw")) and c["raw"] =~ "\"ok\":true"),
-           "D13 commit failed: #{inspect(c)}"
+           "commit failed: #{inspect(c)}"
 
     assert {:ok, rev} = GitEngine.run(src, %{"op" => "rev-parse", "args" => %{"rev" => "HEAD"}})
     tip = (rev["stdout"] || "") |> String.trim() |> String.split(~r/\s+/) |> hd()
-    assert Regex.match?(~r/^[0-9a-fA-F]{40}$/, tip), "D13 bad tip: #{inspect(rev)}"
+    assert Regex.match?(~r/^[0-9a-fA-F]{40}$/, tip), "bad tip: #{inspect(rev)}"
 
     assert {:ok, pack} = GitEngine.pack_build(src, [tip])
     assert match?(<<"PACK", _::binary>>, pack)
@@ -278,20 +278,20 @@ defmodule AgentOS.GitEnginePackTest do
                sparse_cone: ["src"]
              )
 
-    assert json =~ "\"ok\":true" or json =~ ~s("ok":true), "D13 sparse clone failed: #{json}"
+    assert json =~ "\"ok\":true" or json =~ ~s("ok":true), "sparse clone failed: #{json}"
 
-    # Product default depth=1 (R35 / M7).
+    # Product default depth=1.
     assert Agent.get(depth_agent, & &1) == 1
 
     # In-cone present; out-of-cone removed from worktree by sparse-set checkout.
     assert {:ok, "in-cone\n"} = File.read(Path.join(dst_root, "src/in.txt"))
     refute File.exists?(Path.join(dst_root, "other/out.txt")),
-           "D13 out-of-cone other/out.txt must not remain on worktree"
+           "out-of-cone other/out.txt must not remain on worktree"
     refute File.dir?(Path.join(dst_root, "other")),
-           "D13 out-of-cone other/ dir must not remain on worktree"
+           "out-of-cone other/ dir must not remain on worktree"
 
     sc = Path.join(dst_root, ".git/info/sparse-checkout")
-    assert File.regular?(sc), "D13 sparse-set must write sparse-checkout"
+    assert File.regular?(sc), "sparse-set must write sparse-checkout"
     body = File.read!(sc)
     assert body =~ "/src/"
     assert body =~ "/src/**"
@@ -300,7 +300,7 @@ defmodule AgentOS.GitEnginePackTest do
     :ok = GitEngine.stop(dst)
   end
 
-  # D11: multi-chunk import_pack (chunk size < pack size) must still checkout.
+  # multi-chunk import_pack (chunk size < pack size) must still checkout.
   @tag timeout: 60_000
   test "multi-chunk import_pack of minimal.pack yields worktree README" do
     path = engine_path()
@@ -351,7 +351,7 @@ defmodule AgentOS.GitEnginePackTest do
     :ok = GitEngine.stop(pid)
   end
 
-  # D11: orch apply_pack streams fixture pack in small chunks (import_chunk_bytes).
+  # orch apply_pack streams fixture pack in small chunks (import_chunk_bytes).
   @tag timeout: 60_000
   test "BEAM orch clone multi-chunk import via import_chunk_bytes" do
     path = engine_path()
@@ -391,7 +391,7 @@ defmodule AgentOS.GitEnginePackTest do
     :ok = GitEngine.stop(pid)
   end
 
-  # D11: file pack_source path (stream-to-temp shape) imports in chunks.
+  # file pack_source path (stream-to-temp shape) imports in chunks.
   @tag timeout: 60_000
   test "BEAM orch clone from file pack_source with multi-chunk import" do
     path = engine_path()

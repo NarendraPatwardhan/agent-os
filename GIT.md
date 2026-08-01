@@ -24,7 +24,7 @@ AgentOS needs git for agents and humans: natural worktree paths under the Plan-9
 | **JS (browser / Node)** | Emscripten `git_engine.js` + `git_engine.wasm` via `createGitEngineModule` (MODULARIZE, EXPORT_ES6 — **no gojs / no `wasm_exec.js`**) |
 | **Server** | Native hermetic C **`git-engine` Port** (c-shared may package; **product load is Port**) — **not** freestanding wasm under wasmtime |
 
-BEAM owns Port lifecycle and **server remote HTTPS orch** (K16). **No Go NIF, no product Go for git.**
+BEAM owns Port lifecycle and **server remote HTTPS orch**. **No Go NIF, no product Go for git.**
 
 ```mermaid
 flowchart TB
@@ -256,7 +256,7 @@ JSON `Run` **must not** carry multi‑MB pack payloads as base64/string fields.
 | Option | Status |
 |--------|--------|
 | **Native C subprocess Port** | **Server product load (chosen)** — isolation, crash containment |
-| **Native C c-shared in-process** | **Packaging only** (`:libgit_engine` may ship). Product load is Port (R75 / K15) |
+| **Native C c-shared in-process** | **Packaging only** (`:libgit_engine` may ship). Product load is Port |
 | Freestanding ge_* under wasmtime | **Rejected** |
 | wasmi guest libgit2/go-git | **Rejected** |
 | Go NIF / go-git product | **Rejected** |
@@ -312,7 +312,7 @@ const Module = await createGitEngineModule({ locateFile: … });
 | Max interactive pack import | **64 MiB** |
 | Max JSON Run args | **1 MiB** |
 
-`git_engine.{js,wasm}` is a **host** artifact (like catalog-compiler), not required inside every guest image tar. **libgit2 pin:** **1.9.2** (BCR + `emscripten_integer.patch`).
+`git_engine.{js,wasm}` is a **host** artifact (like catalog-compiler), not required inside every guest image tar. **libgit2 pin:1.9.2** (BCR + `emscripten_integer.patch`).
 
 ### 5. gitfs / MountFs integration
 
@@ -326,7 +326,7 @@ const Module = await createGitEngineModule({ locateFile: … });
 #### 5.2 Projection layout (v1)
 
 ```text
-/workspace/{name}/                    worktree (default convention; path configurable — K27)
+/workspace/{name}/                    worktree (default convention; path configurable)
 /workspace/{name}/.git/HEAD           synthetic text
 /workspace/{name}/.git/refs/…         synthetic ref tips (optional read)
 /workspace/{name}/.git/mc/ctl         ctl request/response
@@ -391,7 +391,7 @@ MountFs only supports whole-file `open`/`write` (driver `write(path, data)` afte
 // Product attach is usually mc.create({ git: { baseUrl, … } }); advanced:
 const engine = await GitEngine.load({ baseUrl: "…/git-engine/", /* durableDir? durable? */ });
 await vm.mount("/workspace/my-app", engine.asMountDriver(), { readOnly: false });
-// Default convention: /workspace/{name} (K27); configurable per session.
+// Default convention: /workspace/{name}; configurable per session.
 ```
 
 | Concern | Behavior |
@@ -416,7 +416,7 @@ await vm.mount("/workspace/my-app", engine.asMountDriver(), { readOnly: false })
 
 | Rule | Detail |
 |------|--------|
-| **One gitfs engine per mount path (K21)** | Multi-mount allowed with **distinct** paths. Same path remount/re-attach fails closed. Single-writer **per engine**. |
+| **One gitfs engine per mount path** | Multi-mount allowed with **distinct** paths. Same path remount/re-attach fails closed. Single-writer **per engine**. |
 | Guest remote host_call | Request is still `{ "op", "args" }`. **`args.mount` or top-level `mount`** demuxes to the engine for that path. Empty mount → default/sole engine. Unknown mount → code 1. |
 | Thin CLI discovery | Walk parents for `/.git/mc/ctl` |
 | Multi-repo | One Port/process (or JS engine) per mount; demux on host_call `"git"` — never share mutable engine across mounts without lock/demux |
@@ -463,7 +463,7 @@ Remotes are a **host service** that turns `(URL or connection ref, policy, crede
 | **JS (browser/Node)** | TypeScript in `sdk-js/core/src/git/{remote-orchestrator,smart-http}.ts` | In-process emcc `ge_run_json` / `ge_import_pack` |
 | **Server (Elixir control plane)** | **BEAM HTTPS + Elixir orchestrator** (OTP `:httpc`/ssl — same host egress family as kernel HTTP; **no Node, no C TLS**) | Native C `git-engine` Port: apply only |
 
-**K16:** **TS only on the JS host family**. **Server remotes: BEAM owns smart-HTTP + orchestrator**. C `git-engine` stays dial-free. Dual-host drift is mitigated by a **shared algorithm spec + golden traces** (TS orch ↔ Elixir orch), not by putting TLS in the Port child.
+**:TS only on the JS host family**. **Server remotes: BEAM owns smart-HTTP + orchestrator**. C `git-engine` stays dial-free. Dual-host drift is mitigated by a **shared algorithm spec + golden traces** (TS orch ↔ Elixir orch), not by putting TLS in the Port child.
 
 ```text
 AgentOS.Vm (BEAM)
@@ -604,8 +604,8 @@ AgentOS.Vm (BEAM process)                    ← one owner per VM
 | Item | Spec |
 |------|------|
 | Engine binary | `git-engine` — Run / ImportPack / mount codec only (dial-free) |
-| Remote orch | **BEAM HTTPS + Elixir orch** (K16); browser/Node uses TS |
-| Protocol (engine Port) | Length-prefixed frames: `u32le length \| u8 type \| payload` — type **1** = JSON Run; type **2** = pack chunk; type **3** = pack meta; type **4** = **binary MOUNT_OP** (K30). Type 5 optional/test-only. |
+| Remote orch | **BEAM HTTPS + Elixir orch**; browser/Node uses TS |
+| Protocol (engine Port) | Length-prefixed frames: `u32le length \| u8 type \| payload` — type **1** = JSON Run; type **2** = pack chunk; type **3** = pack meta; type **4** = **binary MOUNT_OP**. |
 | Protocol (remote) | BEAM routes host_call `"git"` → BEAM smart-HTTP → Port apply; **no Node orch** |
 | Who starts/stops children | **BEAM `AgentOS.Vm`** via `AgentOS.GitEngine` when first gitfs mount attaches (or at boot if declared); **stop on VM stop/crash/terminate** |
 | Who holds child stdio | **BEAM** (Port). Not the Rust NIF. |
@@ -809,7 +809,7 @@ libgit2 is **GPL-2.0 with linking exception** (upstream).
 | **L5** | CI gate | Build/test fails if release package for git engine **omits** `NOTICE` + upstream COPYING*. |
 | **L6** | HTTPS/SSH off assert | Product engine targets: copts / `select()` ensuring HTTPS/SSH remain **off**. Enabling OpenSSL backends is a separate design+license review. |
 
-**K26** freezes L1–L6 on the product ship path.
+License packaging freezes L1–L6 on the product ship path.
 
 ---
 
@@ -829,42 +829,39 @@ BEAM `AgentOS.Git.Metrics` + JS `metrics.ts` record `duration_ms` / `pack_bytes`
 
 ---
 
-## Key Decisions (normative)
+## Normative invariants
 
-| # | Decision | Rationale |
-|---|----------|-----------|
-| **K1** | Host source plane, not wasmi guest | Cost, 2 GiB, scheduler, LLB |
-| **K2** | One `Run` ABI (JSON) + binary `ImportPack` / `ge_import_pack` | Faces share semantics; packs stay binary-safe |
-| **K3** | **libgit2 1.9.x + thin C `ge_*` facade** (not go-git) | ~0.6 MiB wasm; no gojs; hermetic C |
-| **K4** | **JS → emcc MODULARIZE `createGitEngineModule`** | Browser/Node; no gojs / no wasm_exec |
-| **K5** / **K15** | **Server product load = native C Port**; c-shared is packaging only (R75) | Isolation first |
-| **K6** | gitfs via MountFs / Driver / registerRaw | No kernel git ABI |
-| **K7** | Thin pure-mc **`/bin/git` standalone** (`programs/git`), ≤256 KiB, on base | Not multicall |
-| **K8** | Host-mediated remotes; apply only in engine | Purity + credentials |
-| **K9** | One engine per mount, single-writer; multi-repo ⇒ one process/Port per mount | Isolation |
-| **K10** | Snapshots rebind durable backends | A8 — ODB not in MCSN |
-| **K11** | LLB and sessions share orchestrator **algorithm** | No dual stack |
-| **K12** | Reduced fail-closed CLI | Honest surface |
-| **K13** | Reject guest multi‑MiB VCS under wasmi as primary | Architecture |
-| **K14** | **Ctl-only for local verbs**; remotes **only** host_call `git` + CAP_NET | MountFs write+Drop; A9 |
-| **K16** | **TS orch on JS; BEAM `:httpc`/`:ssl` orch on server** → dial-free Port apply. No Node on server, no C TLS. Shared algorithm + golden traces | Kernel egress ownership |
-| **K17** | **Synthetic `.git` HEAD/refs/ctl only** — no objects façade in v1 | Enough for CLI/agents |
-| **K18** | **Request = `{op,args}` only** — no top-level cwd/author | One root per engine |
-| **K19** | **Binary pack path** for remotes | Avoid JSON pack bombs |
-| **K20** | One decision contract + shared executable goldens; TS on JS, BEAM on server | Dual-host without silent drift |
-| **K21** | **One gitfs engine per mount path** (multi-mount OK; demux via `args.mount`) | Isolation + multi-repo |
-| **K22** | **BEAM owns host_call answers + engine Port**; NIF = `BeamHostCall` relay only | Matches `egress_host_call_*` |
-| **K23** | **No product Go for git** | Substrate is C/libgit2 |
-| **K24** | **Emcc exports only `ge_*`** | Size + stable face |
-| **K25** | **No freestanding zig/wasmtime engine path** | Product decision |
-| **K26** | **libgit2 linking-exception compliance** — L1–L6 | Legal |
-| **K27** | **Default mount path: configurable, default `/workspace/{name}`** | Product convention |
-| **K28** | **Commit identity: host policy inject** when request omits name/email | Never invent guest-side identity |
-| **K29** | **Shared content-addressed pack cache** for LLB + interactive (credentials never cached) | Dedup downloads |
-| **K30** | **Port type-4 = binary MOUNT_OP frames** (peer of `dispatchMount`) | Not JSON for mount |
-| **K31** | **gitoxide: permanent reject for v1** | Stick to libgit2/emcc |
+Design rules this document freezes.
 
----
+| Invariant | Detail |
+|-----------|--------|
+| **Host source plane** | Git mechanics live on the host, not as a multi‑MiB wasmi guest |
+| **One Run ABI** | JSON `Run` / `ge_run_json` plus binary `ge_import_pack` for all faces |
+| **libgit2 + `ge_*`** | libgit2 1.9.x behind a thin C facade (not go-git) |
+| **JS engine = emcc** | `createGitEngineModule` (`git_engine.js` + `.wasm`); no gojs / wasm_exec |
+| **Server load = Port** | Native hermetic C `git-engine` subprocess; c-shared may package; product load is Port |
+| **gitfs via MountFs** | Existing Driver / registerRaw — no kernel git ABI |
+| **Thin `/bin/git` on base** | Pure-mc standalone, ≤256 KiB, reduced fail-closed surface |
+| **Host-mediated remotes** | Engine never dials; host orch fetches; engine only pack/ref apply |
+| **One engine per mount path** | Multi-mount OK with distinct paths; single-writer per engine; demux via `args.mount` |
+| **Snapshots rebind durable** | ODB outside MCSN; reattach host durable backends (A8) |
+| **Shared orch algorithm** | LLB and sessions use the same remote/apply stack |
+| **Ctl local; host_call remotes** | Local verbs via ctl only; remotes only host_call name `"git"` + CAP_NET (A9) |
+| **Dual-host orch** | TS orch on JS; BEAM `:httpc`/`:ssl` orch on server → dial-free Port apply; shared goldens |
+| **Synthetic `.git` meta only** | HEAD/refs/ctl in v1 — no objects façade |
+| **Request shape** | `{op, args}` only — no top-level cwd/author |
+| **Binary packs** | Remote packs stay binary; no JSON pack bodies |
+| **One decision contract** | `contracts/git.kdl` + executable dual-host goldens |
+| **BEAM owns Port + answers** | NIF is `BeamHostCall` relay only; BEAM answers mount and `"git"` |
+| **No product Go for git** | Substrate is C/libgit2 |
+| **Emcc exports `ge_*` only** | Size and stable face |
+| **No freestanding engine path** | No zig/wasmtime freestanding product engine |
+| **License L1–L6** | libgit2 linking-exception packaging on ship path |
+| **Default mount path** | Configurable; default `/workspace/{name}` |
+| **Host commit identity** | Inject name/email from host policy when request omits them |
+| **Content-addressed pack cache** | Shared for LLB + interactive; credentials never cached |
+| **Port mount = type 4 binary** | MOUNT_OP frames peer of `dispatchMount` |
+| **gitoxide rejected (v1)** | Stay on libgit2/emcc |
 
 ## Verification
 
@@ -938,7 +935,7 @@ For tests: inject author/committer timestamps (`when_unix`) and fixed identity. 
 | Go-as-Erlang-NIF | **Rejected** |
 | System `git` as long-term product | **Rejected** (transitional LLB emergency only) |
 | Pure custom ODB v1 | **Rejected** |
-| gitoxide host library (v1) | **Rejected** (K31) |
+| gitoxide host library (v1) | **Rejected** |
 | Engine/guest dials smart-HTTP with secrets | **Rejected** |
 | Freestanding wasm as JS MVP or server product | **Rejected** |
 | Dual primary go-git + libgit2 | **Rejected** — single substrate: libgit2 |
@@ -994,7 +991,7 @@ For tests: inject author/committer timestamps (`when_unix`) and fixed identity. 
 
 ## Historical rollout
 
-Landed as **PR0–PR16** on `feature/cgit` (hermetic packaging → engine ABI → emcc/JS SDK → gitfs/ctl/thin CLI → BEAM Port + mount frames → durability → host-mediated remotes → connections/push → LLB/docs polish). Product docs are [`docs/git.md`](docs/git.md). This file is not a live PR board.
+Landed on `feature/cgit` (hermetic packaging → engine ABI → emcc/JS SDK → gitfs/ctl/thin CLI → BEAM Port + mount frames → durability → host-mediated remotes → connections/push → LLB/docs polish). Product docs are [`docs/git.md`](docs/git.md). This file is not a live PR board.
 
 ---
 
@@ -1003,7 +1000,7 @@ Landed as **PR0–PR16** on `feature/cgit` (hermetic packaging → engine ABI �
 Git in AgentOS is a **host source service with a Plan-9 face**, not a fat guest.
 
 - **Engine** on the host (**libgit2** + `ge_*`) — local object DB + porcelain; **one `Run` ABI** + binary **`ge_import_pack`**.
-- **Runtimes:** emcc `git_engine.{js,wasm}` on JS hosts (**~613 KiB measured**, no gojs); **native hermetic C Port on server** (c-shared packaging ≠ product load) — **no freestanding/wasmtime engine**, **no Node on server**; BEAM owns engine Port + **HTTPS remotes** (K16).
+- **Runtimes:** emcc `git_engine.{js,wasm}` on JS hosts (**~613 KiB measured**, no gojs); **native hermetic C Port on server** (c-shared packaging ≠ product load) — **no freestanding/wasmtime engine**, **no Node on server**; BEAM owns engine Port + **HTTPS remotes**.
 - **Tree** in the namespace (`gitfs` / `MountFs`); ctl respects MountFs drain (open-after-write).
 - **CLI** as a thin pure-mc **reduced** adapter; remotes via raw **host_call name `"git"`** (CAP_NET).
 - **Remotes** host-mediated only: **TS** smart-HTTP + orch on JS; **BEAM** smart-HTTP + orch on server → pack/ref apply on dial-free engine.

@@ -54,7 +54,7 @@ defmodule AgentOS.GitEngineTest do
                }
              })
 
-    # Type-4 mount: write ctl status, then open/read Response (R6 mount_op e2e).
+    # Type-4 mount: write ctl status, then open/read Response.
     body = mount_write_body(".git/mc/ctl", ~s({"op":"status"}))
     assert {:ok, mount_resp} = GitEngine.mount_op(pid, body)
     assert is_binary(mount_resp)
@@ -72,7 +72,7 @@ defmodule AgentOS.GitEngineTest do
     # status after commit should not be empty JSON only
     assert payload =~ "ok" or payload =~ "\"ok\":true"
 
-    # R68–R69: submodule list-only (empty without .gitmodules).
+    # submodule list-only (empty without .gitmodules).
     assert {:ok, sub} = GitEngine.run(pid, %{"op" => "submodule", "args" => %{"action" => "list"}})
     raw_sub = Map.get(sub, "raw") || inspect(sub)
     assert sub["ok"] == true or raw_sub =~ "\"ok\":true"
@@ -232,7 +232,7 @@ defmodule AgentOS.GitEngineTest do
       assert File.read!(Path.join(root, "persist.txt")) =~ "beam-dir-roundtrip"
       :ok = GitEngine.stop(pid2)
 
-      # D18: durable_id under AGENTOS_GIT_DURABLE_ROOT
+      # durable_id under AGENTOS_GIT_DURABLE_ROOT
       base =
         Path.join(
           System.tmp_dir!(),
@@ -396,7 +396,7 @@ defmodule AgentOS.GitEngineTest do
     end
   end
 
-  # R5: kill Port → subsequent Run returns :eio (fail closed).
+  # kill Port → subsequent Run returns :eio (fail closed).
   @tag timeout: 60_000
   test "kill Port → subsequent run returns eio" do
     path = engine_path()

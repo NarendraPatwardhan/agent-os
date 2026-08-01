@@ -1,6 +1,6 @@
 defmodule AgentOS.Git.RealHttpTest do
   @moduledoc """
-  D27/D28 — real smart-HTTP e2e against system `git-http-backend`.
+  real smart-HTTP e2e against system `git-http-backend`.
 
   Product path only: BEAM `AgentOS.Git.SmartHttp` + `Orchestrator` (no
   `:transport` fixture). Server infrastructure may use system git.
@@ -20,7 +20,7 @@ defmodule AgentOS.Git.RealHttpTest do
 
   setup do
     unless AgentOS.GitHttpBackend.available?() do
-      flunk("D27/D28 require system git + git-http-backend on PATH/standard paths")
+      flunk("require system git + git-http-backend on PATH/standard paths")
     end
 
     engine =
@@ -72,7 +72,7 @@ defmodule AgentOS.Git.RealHttpTest do
     root
   end
 
-  # ── D27: real HTTP clone/fetch ────────────────────────────────────────────
+  # ── : real HTTP clone/fetch ────────────────────────────────────────────
 
   @tag timeout: 120_000
   test "real HTTP clone via product SmartHttp + git-http-backend", %{
@@ -145,7 +145,7 @@ defmodule AgentOS.Git.RealHttpTest do
     end
   end
 
-  # ── D28: real HTTP push ───────────────────────────────────────────────────
+  # ── : real HTTP push ───────────────────────────────────────────────────
 
   @tag timeout: 120_000
   test "real HTTP push via product receive-pack + git-http-backend", %{
