@@ -69,6 +69,11 @@ const GROUPS: ReadonlyArray<Readonly<{ title: string; pages: ReadonlyArray<PageD
         "The driver contract plus hostDir, S3, and vector stores.",
       ],
       [
+        "git",
+        "Git",
+        "Host source-plane git, git-engine.tar resolve, gitfs, thin CLI, and remotes.",
+      ],
+      [
         "sidecars",
         "Sidecars",
         "Leased external resources, grants, lifecycle, fork behavior, and host connectors.",

@@ -16,13 +16,17 @@ uses them rather than as TypeScript-only interfaces.
 | `EmbeddedBackend`        | advanced | [Advanced API](./advanced-api.md#embeddedbackend)                             |
 | `FanoutSink`             | advanced | [Advanced API](./advanced-api.md#fanoutsink)                                  |
 | `FsContentStore`         | stable   | [Images and stores](./images-stores.md#fscontentstore)                        |
+| `GitEngine`              | advanced | [Git](./git.md)                                                               |
+| `gitHostCallHandler`     | advanced | [Git](./git.md)                                                               |
 | `kit`                    | stable   | [Host tools](./tools.md#kit-spec)                                             |
 | `llb`                    | stable   | [LLB](./llb.md)                                                               |
+| `materializeLlbGit`      | advanced | [Git](./git.md) / [LLB](./llb.md#llb-git-repo-options)                         |
 | `mc`                     | stable   | [`mc`](./mc.md)                                                               |
 | `MemoryContentStore`     | stable   | [Images and stores](./images-stores.md#memorycontentstore)                    |
 | `OpfsContentStore`       | stable   | [Images and stores](./images-stores.md#opfscontentstore)                      |
 | `parseSchedule`          | advanced | [Cron](./cron.md#parseschedule-schedule-utc)                                  |
 | `record`                 | stable   | [Recording](./recording-remote-build.md#record-options-and-mc-record-options) |
+| `registerGitHostCall`    | advanced | [Git](./git.md)                                                               |
 | `RemoteBackend`          | advanced | [Advanced API](./advanced-api.md#remotebackend)                               |
 | `remoteSidecars`         | advanced | [Sidecars](./sidecars.md#remotesidecars-options)                              |
 | `remoteBuild`            | stable   | [Remote build](./recording-remote-build.md#remotebuild-input-options)         |

@@ -10,12 +10,12 @@ the engine never dials the network. Remotes are host-mediated.
 
 | Face | Path |
 |------|------|
-| SDK (JS) | `GitEngine.load` / `mc.create({ git })` + `registerGitHostCall("git")` |
+| SDK (JS) | `GitEngine.load` / `mc.create({ git })` + `registerGitHostCall("git")` / `gitHostCallHandler`; demux helpers `normalizeGitEngineMap`, `mountFromGitRequest`, `resolveGitEngineForMount`; LLB `materializeLlbGit` / `createEngineGitSource`; tar resolve `resolveGitEngineTar` |
 | gitfs | `asMountDriver()` → MountFs; local ctl at `/.git/mc/ctl` |
 | Thin CLI | Thin guest `/bin/git` — reduced surface only (see below) |
 | Server engine | BEAM-owned C `git-engine` **Port** — local Run, pack apply, type-4 mount only |
 | Server remotes | **BEAM HTTPS + Elixir orch** → Port apply / pack.build (**no Node**, **no C TLS**); **fetch/clone/push** when not read-only |
-| LLB (Node) | Host emcc engine first (`MC_GIT_ENGINE_DIR`); **not** ambient system git |
+| LLB (Node) | Host emcc engine first (resolved `git-engine.tar`); **not** ambient system git |
 
 ## Agent-facing constraints (product)
 
@@ -141,7 +141,7 @@ AgentOS.ControlPlane.attach_git(vm_id,
 ```ts
 // JS create options — same catalog cut
 mc.create({
-  git: new URL("./git-engine/", import.meta.url).href,
+  git: true, // or { identity, mounts, engine?: tarBytes, … }
   connections: [
     { ref: "github.user.work", auth: { kind: "bearer", token }, origins: ["https://github.com"] },
   ],
@@ -277,18 +277,20 @@ Prose-only algorithm name lists without assertions are not sufficient.
 ## Create options (JS)
 
 Opt-in by presence of `git`; documented in [Create options](./create-options.md).
+There is no public `baseUrl` — the host resolves **`git-engine.tar`** bytes (or you pass
+`engine` bytes explicitly). Materializing the emcc `git_engine.mjs` / `.wasm` pair is private.
 
 ```ts
-// Minimal — asset-dir URL enables host git (not a repo remote)
+// Minimal — resolves git-engine.tar (env / install dir / cache / optional fetch)
 mc.create({
-  git: true, // or { identity, mounts, engine?: tarBytes, … }
+  git: true,
   connections: [{ ref: "github.user.work", auth: { kind: "bearer", token }, origins: ["https://github.com"] }],
 });
 
 // Full object form
 mc.create({
   git: {
-    // engine tar resolved automatically; optional engine: Uint8Array override
+    // optional engine: Uint8Array — override bytes of git-engine.tar
     sparse: ["src", "docs"],
     mounts: [{ path: "/workspace/a" }, { path: "/workspace/b", sparse: ["src"] }],
   },
@@ -384,7 +386,7 @@ same path sees the same HEAD + worktree files. **AGIT** (pack+refs envelope) rem
 | `MemoryDurable` / `DiskDurable` / `OpfsDurable` | AGIT blob; process registry by id for Memory |
 | `openDurable({ id, diskDir?, durableDir? })` | Prefer `HostDirDurable` when disk path set; else OPFS dir; else OPFS blob; else Memory |
 | `durableIdForMount` / `safeDurablePathSegment` | Per-mount keys under a VM disk root |
-| `GitEngine.load({ durableDir \| durable })` | Directory: bridge hydrates then `ge_open`; blob: AGIT rebind |
+| `GitEngine.load({ engine?, durableDir \| durable })` | Tar resolved if `engine` omitted; directory: bridge hydrates then `ge_open`; blob: AGIT rebind |
 
 **Dir reopen (JS):**
 
@@ -400,7 +402,7 @@ same path sees the same HEAD + worktree files. **AGIT** (pack+refs envelope) rem
 | Piece | Behaviour |
 |-------|-----------|
 | `CreateOptions.git.durable` | Opt-in `{ id?, diskDir? }`. Per-mount key = `durableIdForMount(id, path)` |
-| `makeEmbedded` | Opens durable per mount; `GitEngine.load({ durableDir \| durable })`; `backend.bindGitEngines(...)` |
+| `makeEmbedded` | Opens durable per mount; `GitEngine.load({ engine?, durableDir \| durable })`; `backend.bindGitEngines(...)` |
 | `EmbeddedBackend.snapshot` / `pinBase` | `checkpointGitEngines()` before MCSN (empty/unborn skip export) |
 | Restore / fork | `mc.restore` / `Vm.fork` — same `git.durable` → reopen id/path → directory hydrate or AGIT rebind |
 
@@ -550,24 +552,50 @@ singleton by default (`defaultProcessPackCache` — Memory, or Disk via `MC_GIT_
 so repeated in-process solves share packs with interactive remotes when SHARED/disk is
 configured for the product handler as well.
 
-## Env (Node solve / LLB + dual-host pack cache)
+## Host git-engine.tar resolve (JS)
 
-Default is **engine-first**. `llb.git` / `materializeLlbGit` require the host emcc engine unless the
-emergency escape hatch is set. **Only** `MC_GIT_USE_SYSTEM=1` (exact) enables ambient system `git`;
-values like `true` / `0` / empty do **not**.
+Product form is release **`git-engine.tar`** bytes (contains `git_engine.mjs` + `git_engine.wasm` +
+notices). Parallel to `kernel` / `catalogCompiler`. Resolve order for
+`mc.create({ git })` / `GitEngine.load` / `llb.git`:
+
+1. Explicit `engine` bytes (create option or `GitEngine.load({ engine })`)
+2. `MC_GIT_ENGINE_TAR` path
+3. `$AGENTOS_DIR/git-engine.tar` or `$MC_ARTIFACT_HOME/git-engine.tar`
+4. Host artifact cache (`MC_ARTIFACT_CACHE`, else XDG / `~/.cache/agentos/artifacts`)
+5. Optional network fetch when `MC_ARTIFACT_FETCH=1` (versioned via `MC_ARTIFACT_VERSION` /
+   `MC_ARTIFACT_SOURCE`)
+6. Else **fail closed**
+
+Materialize of the tar into a cache dir for emcc is **private** — there is no public `baseUrl`
+create option. After `install.sh`, `source agent-os/env.sh` sets `AGENTOS_DIR` and
+`MC_GIT_ENGINE_TAR`.
 
 | Variable | Host | Meaning |
 |----------|------|---------|
-| `MC_GIT_ENGINE_DIR` | JS | Dir with `git_engine.mjs` + `git_engine.wasm` (**required** for `llb.git` by default) |
-| `MC_GIT_ENGINE_BASE_URL` | JS | Alternate URL form of the same dir |
+| `MC_GIT_ENGINE_TAR` | JS | Path to `git-engine.tar` |
+| `AGENTOS_DIR` / `MC_ARTIFACT_HOME` | JS | Install root containing `git-engine.tar` (and other artifacts) |
+| `MC_ARTIFACT_CACHE` | JS | Host artifact cache root (tar blobs + materialized engine dirs) |
+| `MC_ARTIFACT_FETCH` | JS | `=1` / `true`: allow network fetch when local resolve misses |
+| `MC_ARTIFACT_VERSION` | JS | Cache / fetch key version (default `local`) |
+| `MC_ARTIFACT_SOURCE` | JS | Optional fetch base URL override |
+
+## Env (Node solve / LLB + dual-host pack cache)
+
+Default is **engine-first**. `llb.git` / `materializeLlbGit` require a resolved host emcc engine
+unless the emergency escape hatch is set. **Only** `MC_GIT_USE_SYSTEM=1` (exact) enables ambient
+system `git`; values like `true` / `0` / empty do **not**.
+
+| Variable | Host | Meaning |
+|----------|------|---------|
+| `MC_GIT_ENGINE_TAR` | JS | Path to `git-engine.tar` (**required** for `llb.git` by default, or resolve via `AGENTOS_DIR` / cache / fetch) |
 | `MC_GIT_PACK_CACHE` | JS | Optional on-disk pack cache dir (used by process singleton / LLB; with product handlers only when SHARED) |
 | `MC_GIT_PACK_CACHE_SHARED` | JS | `=1` / `true`: product handlers use process-scoped pack cache (Memory or Disk) |
 | `MC_GIT_USE_SYSTEM` | JS | **Emergency only** (`=1`): shell out to ambient system `git` |
 | `AGENTOS_GIT_PACK_CACHE` | BEAM | Optional on-disk pack cache dir (mirrors `MC_GIT_PACK_CACHE`; single-tenant dedicated dir) |
 | `AGENTOS_GIT_PACK_CACHE_SHARED` | BEAM | `=1` / `true`: product default uses process-scoped pack cache (mirrors `MC_GIT_PACK_CACHE_SHARED`) |
 
-Without `MC_GIT_ENGINE_DIR` / `MC_GIT_ENGINE_BASE_URL` and without `MC_GIT_USE_SYSTEM=1`, solve
-**fails closed** (throws; does not silently use system git).
+Without a resolved `git-engine.tar` and without `MC_GIT_USE_SYSTEM=1`, solve **fails closed**
+(throws; does not silently use system git).
 
 ## Server load path
 

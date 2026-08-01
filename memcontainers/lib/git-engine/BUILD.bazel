@@ -283,8 +283,8 @@ filegroup(
     ],
 )
 
-# Client release members (flat). Extracted as git-engine/ for
-#   mc.create({ git: new URL("./git-engine/", import.meta.url).href })
+# Client release members (flat). Shipped as git-engine.tar for
+#   mc.create({ git: true }) / mc.create({ git: { engine: tarBytes } })
 # Tar is the GitHub/install.sh asset; L5 asserts on this filegroup (not the tar basename).
 filegroup(
     name = "git_engine_release_files",

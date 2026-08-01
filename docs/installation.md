@@ -83,14 +83,17 @@ const vm = await mc.create({
 | `kernel.wasm`           | Running `local` or `browser` without an environment default     |
 | Flavor tar              | Booting an embedded VM from raw bytes                           |
 | `catalog-compiler.wasm` | Compiling connection catalogs or adding host tools in a browser |
-| `git-engine/`           | Host git (`mc.create({ git })`); installer extracts `git-engine.tar` |
+| `git-engine.tar`        | Host git (`mc.create({ git: true })`); installer also extracts `git-engine/` for inspection |
 | `mc-core.mjs`           | Using the standalone release SDK                                |
 
 The catalog compiler is not guest code and is not part of an image. It is pure host-side WebAssembly
 used to project API descriptions and tool definitions into the guest catalog.
 
-Host git is opt-in. After install, `source agent-os/env.sh` (or set `AGENTOS_DIR` /
-`MC_GIT_ENGINE_TAR`) and pass `git: true` or a config object:
+### Host git (opt-in)
+
+Product form is **`git-engine.tar`** bytes (not a public directory URL). After install,
+`source agent-os/env.sh` (or set `AGENTOS_DIR` / `MC_GIT_ENGINE_TAR`) and pass `git: true` or a
+config object. Resolve order and cache details: [Git](./git.md#host-git-engine-tar-resolve-js).
 
 ```js
 import { defaultImage, defaultKernel, mc } from "@mc/core";
@@ -102,13 +105,30 @@ const vm = await mc.create({
 });
 ```
 
+Optional override — pass tar bytes the same way as `kernel` / `catalogCompiler`:
+
+```js
+import { readFileSync } from "node:fs";
+import { mc } from "@mc/core";
+
+const engine = new Uint8Array(readFileSync("./agent-os/git-engine.tar"));
+const vm = await mc.create({
+  git: { engine, identity: { name: "Agent", email: "agent@example.com" } },
+});
+```
+
 See [Git](./git.md). The server-native Port binary is not a client release asset; build
 `//server:agent_os_package` for control-plane hosts.
 
 ## Default artifact loaders
 
 `defaultKernel()` reads the path in `MC_KERNEL_WASM` and returns `Uint8Array`.
-`defaultImage()` reads `MC_BASE_IMAGE`. They are used by local defaults and can be called directly:
+`defaultImage()` reads `MC_BASE_IMAGE`. They are used by local defaults and can be called directly.
+When `AGENTOS_DIR` (or `MC_ARTIFACT_HOME`) points at an install root, kernel / image / catalog /
+`git-engine.tar` also resolve from that directory (and the host artifact cache). Advanced helpers
+include `resolveArtifact`, `resolveKernel`, `resolveImageTar`, `resolveCatalogCompiler`,
+`artifactCacheRoot`, and `seedArtifactCacheFromDir` (installers may seed the cache from the
+install dir).
 
 ```js
 import { defaultImage, defaultKernel, mc } from "@mc/core";
@@ -116,6 +136,7 @@ import { defaultImage, defaultKernel, mc } from "@mc/core";
 const vm = await mc.create({
   kernel: await defaultKernel(),
   image: await defaultImage(),
+  git: true, // needs git-engine.tar on the resolve path
 });
 ```
 
@@ -129,10 +150,17 @@ registry.
 | `MC_KERNEL_WASM`           | `defaultKernel()`     | Local path to `kernel.wasm`                     |
 | `MC_BASE_IMAGE`            | `defaultImage()`      | Local path to the default image tar             |
 | `MC_CATALOG_COMPILER_WASM` | Catalog compilation   | Local path to `catalog-compiler.wasm`           |
+| `MC_GIT_ENGINE_TAR`        | Host git / LLB        | Local path to `git-engine.tar`                  |
+| `AGENTOS_DIR`              | Artifact resolve      | Install root (`kernel.wasm`, `git-engine.tar`, flavor tars, …) |
+| `MC_ARTIFACT_HOME`         | Artifact resolve      | Alias for install root (same role as `AGENTOS_DIR`) |
+| `MC_ARTIFACT_CACHE`        | Artifact resolve      | Host cache root (blobs + materialized engine dirs) |
+| `MC_ARTIFACT_FETCH`        | Artifact resolve      | `=1` / `true`: allow network fetch on cache miss |
+| `MC_ARTIFACT_VERSION`      | Artifact resolve      | Cache / fetch version key (default `local`)     |
 | `MC_STORE`                 | `defaultStore()`      | Root directory for the filesystem content store |
 | `MC_BUILD_CACHE`           | Node/Bun LLB platform | Root for persistent build cache mounts          |
 
-Explicit options take precedence over environment-backed defaults.
+Explicit options take precedence over environment-backed defaults. After `install.sh`, prefer
+`source agent-os/env.sh` rather than setting each path by hand.
 
 ## Always close what you create
 

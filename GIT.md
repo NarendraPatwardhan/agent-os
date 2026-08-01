@@ -9,7 +9,7 @@
 | **Baseline systems** | `SYSTEMS.md` (Plan-9 VFS, MountFs, host-call, LLB, A1/A8/A9) |
 | **Prior substrate** | go-git / gojs era designs superseded; product engine is **libgit2 + `ge_*`** |
 
-Opt-in: `mc.create({ git: baseUrl })` or `mc.create({ git: { baseUrl, … } })` — presence enables; no boolean. Advanced surface (not multi-tenant default-on).
+Opt-in: `mc.create({ git: true })` or `mc.create({ git: { engine?, mounts?, … } })` — presence enables; no public `baseUrl`. Engine is release `git-engine.tar` (resolved or explicit bytes). Advanced surface (not multi-tenant default-on).
 
 ---
 
@@ -388,8 +388,8 @@ MountFs only supports whole-file `open`/`write` (driver `write(path, data)` afte
 #### 5.5 Attach
 
 ```ts
-// Product attach is usually mc.create({ git: { baseUrl, … } }); advanced:
-const engine = await GitEngine.load({ baseUrl: "…/git-engine/", /* durableDir? durable? */ });
+// Product attach is usually mc.create({ git: true | { engine?, mounts?, … } }); advanced:
+const engine = await GitEngine.load({ engine /* optional Uint8Array of git-engine.tar */, /* durableDir? durable? */ });
 await vm.mount("/workspace/my-app", engine.asMountDriver(), { readOnly: false });
 // Default convention: /workspace/{name}; configurable per session.
 ```
@@ -723,10 +723,10 @@ export interface GitEngine {
   close(): Promise<void>;
 }
 
-// Load: createGitEngineModule from git_engine.js (emcc); ensure absolute worktree; ge_open(absPath).
+// Load: resolve git-engine.tar → materialize → createGitEngineModule (emcc); ensure absolute worktree; ge_open(absPath).
 // static load(opts: GitEngineLoadOptions): Promise<GitEngine>;
-// opts: { baseUrl, workRoot?, readOnly?, sparseCone?, durable?, durableDir?, identity? }
-// Product path: mc.create({ git: baseUrl | { baseUrl, mounts?, durable?, … } })
+// opts: { engine?, workRoot?, readOnly?, sparseCone?, durable?, durableDir?, identity? }
+// Product path: mc.create({ git: true | { engine?, mounts?, durable?, … } })
 ```
 
 | Face | Registration | Consumer | Cap |
@@ -889,11 +889,12 @@ Product tests live under monorepo Bazel/test targets; engine-dial `Clone` is not
 
 ```text
 embedder (advanced direct load):
-  engine = await GitEngine.load({ baseUrl, durable: … })
+  engine = await GitEngine.load({ engine /* optional tar bytes */, durable: … })
   await vm.mount("/repo", engine.asMountDriver(), { readOnly: false })
 
 product path:
-  vm = await mc.create({ git: { baseUrl, mounts: [{ path: "/repo" }], durable: … } })
+  vm = await mc.create({ git: true })
+  // or: git: { engine?, mounts: [{ path: "/repo" }], durable: … }
 ```
 
 Boot config may declare gitfs mounts the same way other host mounts are declared.

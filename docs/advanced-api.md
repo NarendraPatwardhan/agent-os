@@ -72,6 +72,15 @@ embedded backend.
 [Installation and imports](./installation.md#default-artifact-loaders). They read the artifact path on
 each call and return bytes.
 
+Host git uses the same resolve family for release `git-engine.tar` (`MC_GIT_ENGINE_TAR`,
+`AGENTOS_DIR`, cache, optional fetch). Product path is `mc.create({ git: true })` or
+`git: { engine: Uint8Array, … }`. Advanced direct load: `GitEngine.load({ engine? })`. See
+[Git](./git.md#host-git-engine-tar-resolve-js).
+
+Helpers on the same path: `resolveArtifact`, `resolveKernel`, `resolveImageTar`,
+`resolveCatalogCompiler`, `resolveGitEngineTar`, `artifactCacheRoot`, and
+`seedArtifactCacheFromDir`. Prefer create options and `defaultKernel` / `defaultImage` in apps.
+
 ## Catalog registry
 
 `defaultCatalogCompiler()` is the stable registry/compiler loader. Its registry use is documented in

@@ -54,6 +54,8 @@ Templates (PERF-011 / SYSTEMS.md §8):
 - **Browser:** default `templateFill: "on_demand"` — first ready boot of a class fills the cache.
 - **Local:** on_demand only when `store` is **explicitly** passed; otherwise off (no surprise capture).
 - **Server prewarm:** `templateFill: "prepopulated"` only binds; use `publishTemplate` to seed.
+- Advanced template helpers: `defaultTemplateFill`, `ensureTemplate`, `templateClassKey`,
+  `layerContentDigests`, `lookupTemplate`, and `publishTemplate`.
 - Class index keys (`mc-template.<hash>`) store a **UTF-8 content digest** only; the full MCSN body is
   solely in `putSnapshotObject` / `snapshotObject` (legacy full-MCSN index values are migrated on read).
 - Create binds the template **after** `bootToPrompt` and **before** catalog/mounts so tools/mounts

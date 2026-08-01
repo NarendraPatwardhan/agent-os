@@ -127,6 +127,8 @@ specifications.
 ## Catalog compiler
 
 `defaultCatalogCompiler(wasmBytes?)` returns a memoized compiler instance.
+`defaultCatalogCompilerBytes()` resolves the compiler wasm the same way as other host artifacts
+(env / install dir / cache / optional fetch).
 
 ```js
 const compiler = await defaultCatalogCompiler(catalogCompilerBytes);

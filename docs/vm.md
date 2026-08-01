@@ -35,6 +35,7 @@ fork policy rather than being serialized into a snapshot. See [Sidecars](./sidec
 | `mount(path, driver, options?)`    | `Promise<void>`               | Attach a host filesystem                         |
 | `unmount(path)`                    | `Promise<void>`               | Detach a host filesystem                         |
 | `snapshot(options?)`               | `Promise<Uint8Array>`         | Capture full or incremental VM state             |
+| `pinBase()`                        | `Promise<string>`             | Embedded only: pin a full MCSN baseline epoch    |
 | `fork()`                           | `Promise<Vm>`                 | Create an independent branch                     |
 | `commit()`                         | selector object               | Export a layer or snapshot                       |
 | `status()`                         | `Promise<VmStatus>`           | Read running/memory/egress status                |
@@ -88,6 +89,12 @@ const delta = await vm.snapshot({ mode: "incremental" });
 
 Full is the default. Incremental requires content-addressed baseline storage. Snapshotting rejects
 while host egress or a service call is in flight. See [Snapshots, restore, and fork](./snapshots.md).
+
+## `vm.pinBase()`
+
+Embedded only. Captures and pins a full MCSN baseline for later incremental snapshots (image-class
+templates and restore parents also supply baselines). Remote backends throw. See
+[Snapshots, restore, and fork](./snapshots.md).
 
 ## `vm.fork()`
 
