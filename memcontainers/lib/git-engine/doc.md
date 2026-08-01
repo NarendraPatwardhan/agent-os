@@ -29,7 +29,7 @@ Product surface: `docs/git.md`. Design of record: worktree `GIT.md`.
 
 **Load (JS):** prefer `git_engine.mjs` (ESM). Elixir: `AgentOS.GitEngine` Port owner; demuxes name `"git"` and gitfs mount path.
 
-No gojs. No freestanding product path. No C remote orch. Remotes are host-mediated only: **TS orch (JS)** and **BEAM HTTPS orch (server)** → Port apply (types 1–4).
+Remotes are host-mediated: **TS orch (JS)** and **BEAM HTTPS orch (server)** → Port apply (types 1–4).
 
 ### Large stdout
 
