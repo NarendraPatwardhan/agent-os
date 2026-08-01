@@ -59,7 +59,7 @@ defmodule AgentOS.Git.Orchestrator do
     - `:default` / `true` — **product default** (`product_default_cache/0`):
       fresh per-caller Memory unless shared opt-in
       (`AGENTOS_GIT_PACK_CACHE_SHARED=1` → process Memory/Disk, or
-      `AGENTOS_GIT_PACK_CACHE` dir alone for single-tenant disk). Multi-tenant
+      SHARED + optional disk dir). Multi-tenant
       must not set SHARED or a shared disk dir across tenants.
     - `:process` / `:shared` — process-scoped singleton
       (`default_process_cache/0`); **disk** when `AGENTOS_GIT_PACK_CACHE` set

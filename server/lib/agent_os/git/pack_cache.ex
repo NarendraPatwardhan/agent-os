@@ -22,7 +22,7 @@ defmodule AgentOS.Git.PackCache do
   / shared cache is **opt-in only**:
   * `AGENTOS_GIT_PACK_CACHE_SHARED=1` (mirrors JS `MC_GIT_PACK_CACHE_SHARED`) →
     `default_process_cache/0` (Memory, or Disk when `AGENTOS_GIT_PACK_CACHE` set)
-  * `AGENTOS_GIT_PACK_CACHE=<dir>` alone → single-tenant dedicated disk dir
+  * `AGENTOS_GIT_PACK_CACHE=<dir>` + SHARED → single-tenant process Disk cache
     (also treated as shared opt-in for product default)
 
   Multi-tenant hosts must **not** set SHARED or a shared disk dir across tenants.
