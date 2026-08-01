@@ -239,7 +239,7 @@ TS and BEAM each implement remote orch. **Decisions** are single-sourced:
 | Layer | Location |
 |-------|----------|
 | Contract | `memcontainers/contracts/git.kdl` → `gen/git.gen.ts` / `AgentOS.Contracts.Git` |
-| Executable goldens | **Only** `memcontainers/lib/git-engine/testdata/orch/*.json` (no second copy) |
+| Executable goldens | **Only** `memcontainers/lib/git-engine/fixtures/orch/*.json` (no second copy) |
 
 | Decision | Contract default |
 |----------|------------------|
@@ -588,7 +588,7 @@ in-process product load path. JS hosts continue to use emcc wasm.
 - No Node/Bun process on the Elixir control plane for git.
 - Surface is **advanced** (opt-in). Not multi-tenant default-on.
 - Enable with `git: <baseUrl>` (omit = off).
-- Stable stderr prefixes are catalogued in `testdata/orch/response_schema.json`.
+- Stable stderr prefixes are catalogued in `fixtures/orch/response_schema.json`.
 
 ## Acceptance coverage
 

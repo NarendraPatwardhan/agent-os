@@ -48,9 +48,9 @@ function minimalPackFixture(): { pack: Uint8Array; tip: string } {
     packRel && rf ? join(rf, packRel) : "",
     packRel && rf ? join(rf, "_main", packRel) : "",
     packRel,
-    rf ? join(rf, "memcontainers/sdk-js/core/testdata/pack/minimal.pack") : "",
-    rf ? join(rf, "_main/memcontainers/sdk-js/core/testdata/pack/minimal.pack") : "",
-    join(process.cwd(), "memcontainers/lib/git-engine/testdata/pack/minimal.pack"),
+    rf ? join(rf, "memcontainers/sdk-js/core/fixtures/pack/minimal.pack") : "",
+    rf ? join(rf, "_main/memcontainers/sdk-js/core/fixtures/pack/minimal.pack") : "",
+    join(process.cwd(), "memcontainers/lib/git-engine/fixtures/pack/minimal.pack"),
   ].filter(Boolean);
   let packPath = "";
   for (const c of packCandidates) {
@@ -68,7 +68,7 @@ function minimalPackFixture(): { pack: Uint8Array; tip: string } {
     tipRel && rf ? join(rf, "_main", tipRel) : "",
     tipRel,
     packPath ? join(dirname(packPath), "minimal.tip") : "",
-    join(process.cwd(), "memcontainers/lib/git-engine/testdata/pack/minimal.tip"),
+    join(process.cwd(), "memcontainers/lib/git-engine/fixtures/pack/minimal.tip"),
   ].filter(Boolean);
   let tipPath = "";
   for (const c of tipCandidates) {
@@ -894,9 +894,9 @@ async function main() {
       packRel && rf ? join(rf, packRel) : "",
       packRel && rf ? join(rf, "_main", packRel) : "",
       packRel,
-      rf ? join(rf, "memcontainers/sdk-js/core/testdata/pack/minimal.pack") : "",
+      rf ? join(rf, "memcontainers/sdk-js/core/fixtures/pack/minimal.pack") : "",
       rf
-        ? join(rf, "_main/memcontainers/sdk-js/core/testdata/pack/minimal.pack")
+        ? join(rf, "_main/memcontainers/sdk-js/core/fixtures/pack/minimal.pack")
         : "",
     ].filter(Boolean);
     let packPath = "";

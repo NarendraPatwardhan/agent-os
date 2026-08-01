@@ -106,7 +106,7 @@ mix_test(
         # elixir_test wrapper does not expand $(rootpath)/$(rlocationpath). Path is relative
         # to the mix project root after `cd $TEST_SRCDIR/$TEST_WORKSPACE/server`.
         "AGENTOS_GIT_ENGINE": "../memcontainers/lib/git-engine/git-engine",
-        "AGENTOS_GIT_ORCH_GOLDEN_DIR": "../memcontainers/lib/git-engine/testdata/orch",
+        "AGENTOS_GIT_ORCH_GOLDEN_DIR": "../memcontainers/lib/git-engine/fixtures/orch",
     },
     lib = ":lib_test",
     tags = ["manual"],

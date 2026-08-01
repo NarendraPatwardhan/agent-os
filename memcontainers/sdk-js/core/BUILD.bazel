@@ -162,113 +162,113 @@ js_test(
 # rules_js requires cross-package sources to be copied into this package.
 genrule(
     name = "orch_golden_clone_success",
-    srcs = ["//memcontainers/lib/git-engine:testdata/orch/clone_success_steps.json"],
-    outs = ["testdata/orch/clone_success_steps.json"],
+    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/clone_success_steps.json"],
+    outs = ["fixtures/orch/clone_success_steps.json"],
     cmd = "cp $< $@",
 )
 
 genrule(
     name = "orch_golden_empty_pack",
-    srcs = ["//memcontainers/lib/git-engine:testdata/orch/clone_empty_pack_fail.json"],
-    outs = ["testdata/orch/clone_empty_pack_fail.json"],
+    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/clone_empty_pack_fail.json"],
+    outs = ["fixtures/orch/clone_empty_pack_fail.json"],
     cmd = "cp $< $@",
 )
 
 genrule(
     name = "orch_golden_origin_denied",
-    srcs = ["//memcontainers/lib/git-engine:testdata/orch/origin_denied.json"],
-    outs = ["testdata/orch/origin_denied.json"],
+    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/origin_denied.json"],
+    outs = ["fixtures/orch/origin_denied.json"],
     cmd = "cp $< $@",
 )
 
 genrule(
     name = "orch_golden_fetch_success",
-    srcs = ["//memcontainers/lib/git-engine:testdata/orch/fetch_success_steps.json"],
-    outs = ["testdata/orch/fetch_success_steps.json"],
+    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/fetch_success_steps.json"],
+    outs = ["fixtures/orch/fetch_success_steps.json"],
     cmd = "cp $< $@",
 )
 
 genrule(
     name = "orch_golden_pull_ff",
-    srcs = ["//memcontainers/lib/git-engine:testdata/orch/pull_ff_steps.json"],
-    outs = ["testdata/orch/pull_ff_steps.json"],
+    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/pull_ff_steps.json"],
+    outs = ["fixtures/orch/pull_ff_steps.json"],
     cmd = "cp $< $@",
 )
 
 genrule(
     name = "orch_golden_push_readonly",
-    srcs = ["//memcontainers/lib/git-engine:testdata/orch/push_readonly.json"],
-    outs = ["testdata/orch/push_readonly.json"],
+    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/push_readonly.json"],
+    outs = ["fixtures/orch/push_readonly.json"],
     cmd = "cp $< $@",
 )
 
 genrule(
     name = "orch_golden_push_success",
-    srcs = ["//memcontainers/lib/git-engine:testdata/orch/push_success_steps.json"],
-    outs = ["testdata/orch/push_success_steps.json"],
+    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/push_success_steps.json"],
+    outs = ["fixtures/orch/push_success_steps.json"],
     cmd = "cp $< $@",
 )
 
 genrule(
     name = "orch_golden_shallow_clone",
-    srcs = ["//memcontainers/lib/git-engine:testdata/orch/shallow_clone_steps.json"],
-    outs = ["testdata/orch/shallow_clone_steps.json"],
+    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/shallow_clone_steps.json"],
+    outs = ["fixtures/orch/shallow_clone_steps.json"],
     cmd = "cp $< $@",
 )
 
 genrule(
     name = "orch_golden_auth_deny",
-    srcs = ["//memcontainers/lib/git-engine:testdata/orch/auth_deny_steps.json"],
-    outs = ["testdata/orch/auth_deny_steps.json"],
+    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/auth_deny_steps.json"],
+    outs = ["fixtures/orch/auth_deny_steps.json"],
     cmd = "cp $< $@",
 )
 
 genrule(
     name = "orch_golden_pull_not_ff",
-    srcs = ["//memcontainers/lib/git-engine:testdata/orch/pull_not_ff_steps.json"],
-    outs = ["testdata/orch/pull_not_ff_steps.json"],
+    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/pull_not_ff_steps.json"],
+    outs = ["fixtures/orch/pull_not_ff_steps.json"],
     cmd = "cp $< $@",
 )
 
 genrule(
     name = "orch_golden_origin_deny_prefix",
-    srcs = ["//memcontainers/lib/git-engine:testdata/orch/origin_deny_prefix.json"],
-    outs = ["testdata/orch/origin_deny_prefix.json"],
+    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/origin_deny_prefix.json"],
+    outs = ["fixtures/orch/origin_deny_prefix.json"],
     cmd = "cp $< $@",
 )
 
 genrule(
     name = "orch_golden_guest_secret_reject",
-    srcs = ["//memcontainers/lib/git-engine:testdata/orch/guest_secret_reject.json"],
-    outs = ["testdata/orch/guest_secret_reject.json"],
+    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/guest_secret_reject.json"],
+    outs = ["fixtures/orch/guest_secret_reject.json"],
     cmd = "cp $< $@",
 )
 
 genrule(
     name = "orch_golden_query_auth_reject",
-    srcs = ["//memcontainers/lib/git-engine:testdata/orch/query_auth_reject.json"],
-    outs = ["testdata/orch/query_auth_reject.json"],
+    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/query_auth_reject.json"],
+    outs = ["fixtures/orch/query_auth_reject.json"],
     cmd = "cp $< $@",
 )
 
 genrule(
     name = "orch_response_schema",
-    srcs = ["//memcontainers/lib/git-engine:testdata/orch/response_schema.json"],
-    outs = ["testdata/orch/response_schema.json"],
+    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/response_schema.json"],
+    outs = ["fixtures/orch/response_schema.json"],
     cmd = "cp $< $@",
 )
 
 genrule(
     name = "orch_golden_minimal_pack",
-    srcs = ["//memcontainers/lib/git-engine:testdata/pack/minimal.pack"],
-    outs = ["testdata/pack/minimal.pack"],
+    srcs = ["//memcontainers/lib/git-engine:fixtures/pack/minimal.pack"],
+    outs = ["fixtures/pack/minimal.pack"],
     cmd = "cp $< $@",
 )
 
 genrule(
     name = "orch_golden_minimal_tip",
-    srcs = ["//memcontainers/lib/git-engine:testdata/pack/minimal.tip"],
-    outs = ["testdata/pack/minimal.tip"],
+    srcs = ["//memcontainers/lib/git-engine:fixtures/pack/minimal.tip"],
+    outs = ["fixtures/pack/minimal.tip"],
     cmd = "cp $< $@",
 )
 
@@ -310,7 +310,7 @@ js_test(
     env = {
         "MC_GIT_ENGINE_JS": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_mjs)",
         # Relative to runfiles package root for this target.
-        "MC_GIT_ORCH_GOLDEN_DIR": "memcontainers/sdk-js/core/testdata/orch",
+        "MC_GIT_ORCH_GOLDEN_DIR": "memcontainers/sdk-js/core/fixtures/orch",
     },
     timeout = "moderate",
 )

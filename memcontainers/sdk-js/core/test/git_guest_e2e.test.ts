@@ -49,8 +49,8 @@ function packFixture(): { pack: Uint8Array; tip: string; url: string; origin: st
       rel && rf ? join(rf, "_main", rel) : "",
       rel || "",
       // genrule outs under this package
-      rf ? join(rf, "memcontainers/sdk-js/core/testdata/pack/minimal.pack") : "",
-      rf ? join(rf, "_main/memcontainers/sdk-js/core/testdata/pack/minimal.pack") : "",
+      rf ? join(rf, "memcontainers/sdk-js/core/fixtures/pack/minimal.pack") : "",
+      rf ? join(rf, "_main/memcontainers/sdk-js/core/fixtures/pack/minimal.pack") : "",
     ].filter(Boolean);
 
   let packPath = "";
@@ -70,8 +70,8 @@ function packFixture(): { pack: Uint8Array; tip: string; url: string; origin: st
     tipRel && rf ? join(rf, "_main", tipRel) : "",
     tipRel || "",
     packPath ? join(dirname(packPath), "minimal.tip") : "",
-    rf ? join(rf, "memcontainers/sdk-js/core/testdata/pack/minimal.tip") : "",
-    rf ? join(rf, "_main/memcontainers/sdk-js/core/testdata/pack/minimal.tip") : "",
+    rf ? join(rf, "memcontainers/sdk-js/core/fixtures/pack/minimal.tip") : "",
+    rf ? join(rf, "_main/memcontainers/sdk-js/core/fixtures/pack/minimal.tip") : "",
   ].filter(Boolean);
 
   let tipPath = "";

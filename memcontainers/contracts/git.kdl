@@ -3,7 +3,7 @@
 // Single source of truth for dual-host **decisions and envelopes**, not the HTTP
 // stack itself. TS GitRemoteOrchestrator and BEAM AgentOS.Git.Orchestrator both
 // consume projections (gen/git.gen.ts / gen/git.gen.ex). Executable behavior is
-// locked by shared goldens under memcontainers/lib/git-engine/testdata/orch/.
+// locked by shared goldens under memcontainers/lib/git-engine/fixtures/orch/.
 //
 // Terse name matches llb.kdl / shell.kdl / wire.kdl.
 

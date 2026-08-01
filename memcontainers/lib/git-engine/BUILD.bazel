@@ -114,7 +114,7 @@ cc_test(
     name = "abi_fixture_test",
     srcs = ["abi_fixture_test.c"],
     deps = [":git_engine_lib"],
-    data = glob(["testdata/abi/**"]),
+    data = glob(["fixtures/abi/**"]),
     size = "small",
     linkstatic = True,
 )
@@ -133,32 +133,32 @@ cc_test(
     name = "abi_dual_test",
     srcs = ["abi_dual_test.c"],
     deps = [":git_engine_lib"],
-    data = glob(["testdata/abi/**", "testdata/orch/**"]),
+    data = glob(["fixtures/abi/**", "fixtures/orch/**"]),
     size = "small",
     linkstatic = True,
 )
 
 exports_files([
     "exported_functions.json",
-    "testdata/abi/local_init_commit.json",
-    "testdata/abi/dial_forbidden.json",
-    "testdata/orch/clone_success_steps.json",
-    "testdata/orch/clone_empty_pack_fail.json",
-    "testdata/orch/origin_denied.json",
-    "testdata/orch/fetch_success_steps.json",
-    "testdata/orch/pull_ff_steps.json",
-    "testdata/orch/push_readonly.json",
-    "testdata/orch/push_success_steps.json",
-    "testdata/orch/shallow_clone_steps.json",
-    "testdata/orch/auth_deny_steps.json",
-    "testdata/orch/pull_not_ff_steps.json",
-    "testdata/orch/origin_deny_prefix.json",
-    "testdata/orch/guest_secret_reject.json",
-    "testdata/orch/query_auth_reject.json",
-    "testdata/orch/response_schema.json",
-    "testdata/pack/minimal.pack",
-    "testdata/pack/minimal.tip",
-    "testdata/pack/minimal.ref",
+    "fixtures/abi/local_init_commit.json",
+    "fixtures/abi/dial_forbidden.json",
+    "fixtures/orch/clone_success_steps.json",
+    "fixtures/orch/clone_empty_pack_fail.json",
+    "fixtures/orch/origin_denied.json",
+    "fixtures/orch/fetch_success_steps.json",
+    "fixtures/orch/pull_ff_steps.json",
+    "fixtures/orch/push_readonly.json",
+    "fixtures/orch/push_success_steps.json",
+    "fixtures/orch/shallow_clone_steps.json",
+    "fixtures/orch/auth_deny_steps.json",
+    "fixtures/orch/pull_not_ff_steps.json",
+    "fixtures/orch/origin_deny_prefix.json",
+    "fixtures/orch/guest_secret_reject.json",
+    "fixtures/orch/query_auth_reject.json",
+    "fixtures/orch/response_schema.json",
+    "fixtures/pack/minimal.pack",
+    "fixtures/pack/minimal.tip",
+    "fixtures/pack/minimal.ref",
 ])
 
 filegroup(
@@ -169,13 +169,13 @@ filegroup(
 # Dual-host orch vectors (TS + BEAM load the same JSON).
 filegroup(
     name = "orch_algorithm_traces",
-    srcs = glob(["testdata/orch/**"]),
+    srcs = glob(["fixtures/orch/**"]),
     visibility = ["//visibility:public"],
 )
 
 filegroup(
     name = "orch_pack_fixtures",
-    srcs = glob(["testdata/pack/**"]),
+    srcs = glob(["fixtures/pack/**"]),
     visibility = ["//visibility:public"],
 )
 

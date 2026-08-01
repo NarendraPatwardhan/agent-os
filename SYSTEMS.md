@@ -1194,7 +1194,7 @@ Git is **not** a wasmi guest VCS. Like credentials, mounts, and sidecars, it is 
 - **Dual-host orch (K16/K20):** TypeScript orch on browser/Node, Elixir orch on the control plane.
   **Decisions** (stderr prefixes, depth/pack defaults, guest secret keys, algorithm step IDs) are
   single-sourced in `memcontainers/contracts/git.kdl` and projected to TS/Elixir; **executable**
-  parity is locked by shared goldens under `memcontainers/lib/git-engine/testdata/orch/`. This is the
+  parity is locked by shared goldens under `memcontainers/lib/git-engine/fixtures/orch/`. This is the
   same *discipline* as dual host faces over one kernel ABI — not a second wasmi stack.
 - **A8:** the object DB is outside MCSN; durable rebind is opt-in on create / `attach_git`.
 

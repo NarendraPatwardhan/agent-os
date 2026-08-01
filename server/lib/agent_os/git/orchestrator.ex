@@ -17,7 +17,7 @@ defmodule AgentOS.Git.Orchestrator do
   * Secrets only in BEAM request headers (never URL userinfo)
 
   Shared executable golden vectors (K20 / P2.8 / R81):
-  `memcontainers/lib/git-engine/testdata/orch/{clone_success_steps,clone_empty_pack_fail,origin_denied,fetch_success_steps,pull_ff_steps,push_readonly}.json`
+  `memcontainers/lib/git-engine/fixtures/orch/{clone_success_steps,clone_empty_pack_fail,origin_denied,fetch_success_steps,pull_ff_steps,push_readonly}.json`
   (also under `server/test/fixtures/git/orch/`).
   """
 

@@ -164,7 +164,7 @@ flowchart LR
 | Server engine Port | Native C `git-engine` binary; BEAM-owned Port (ad-hoc `Port.open`, not full sidecar lifecycle) | Length-prefixed RPC frames type 1–4 |
 | Server remotes | BEAM HTTPS + Elixir orch (same algorithm as TS; golden traces) | No Node on server; no C TLS |
 | Elixir Port owner | `server/lib/agent_os/git_engine.ex` + hooks in `vm.ex` / `control_plane.ex` | Start/stop Port with VM; `egress_host_call_respond` |
-| ABI fixtures | `memcontainers/lib/git-engine/testdata/abi/` | Golden JSON for dual-runner conformance |
+| ABI fixtures | `memcontainers/lib/git-engine/fixtures/abi/` | Golden JSON for dual-runner conformance |
 | License notices | `third_party/libgit2/NOTICE`, upstream COPYING*, `//third_party/libgit2:corresponding_source` | Linking-exception compliance |
 
 ### 3. Engine ABI (normative)

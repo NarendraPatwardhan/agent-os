@@ -3,7 +3,7 @@ defmodule AgentOS.Git.OrchGoldenTest do
   executable dual-host orch goldens shared with TS.
 
   Loads the same logical vectors as
-  `memcontainers/lib/git-engine/testdata/orch/*.json`
+  `memcontainers/lib/git-engine/fixtures/orch/*.json`
   (fixture copies under `test/fixtures/git/orch/` for mix).
   """
   use ExUnit.Case, async: false
@@ -56,7 +56,7 @@ defmodule AgentOS.Git.OrchGoldenTest do
     Enum.find(candidates, &File.regular?/1)
   end
 
-  # Single source of truth: memcontainers/lib/git-engine/testdata/orch only.
+  # Single source of truth: memcontainers/lib/git-engine/fixtures/orch only.
   # Do not maintain a second copy under server/test/fixtures/git/orch.
   defp orch_dirs do
     rf = System.get_env("RUNFILES_DIR") || System.get_env("TEST_SRCDIR")
@@ -65,13 +65,13 @@ defmodule AgentOS.Git.OrchGoldenTest do
     [
       env,
       # Runfiles (Bazel mix_test data → git-engine orch_algorithm_traces)
-      rf && Path.join(rf, "memcontainers/lib/git-engine/testdata/orch"),
-      rf && Path.join(rf, "_main/memcontainers/lib/git-engine/testdata/orch"),
+      rf && Path.join(rf, "memcontainers/lib/git-engine/fixtures/orch"),
+      rf && Path.join(rf, "_main/memcontainers/lib/git-engine/fixtures/orch"),
       # Worktree relative to this test (server/test/agent_os → ../../../memcontainers/...)
-      Path.expand("../../../memcontainers/lib/git-engine/testdata/orch", __DIR__),
-      Path.expand("memcontainers/lib/git-engine/testdata/orch", File.cwd!()),
+      Path.expand("../../../memcontainers/lib/git-engine/fixtures/orch", __DIR__),
+      Path.expand("memcontainers/lib/git-engine/fixtures/orch", File.cwd!()),
       # Cwd is often server/ under mix
-      Path.expand("../memcontainers/lib/git-engine/testdata/orch", File.cwd!())
+      Path.expand("../memcontainers/lib/git-engine/fixtures/orch", File.cwd!())
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.reject(&(&1 == ""))

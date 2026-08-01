@@ -1,6 +1,6 @@
 /**
  * executable dual-host orch goldens (shared JSON with BEAM).
- * Loads testdata/orch/*.json and drives FixtureSmartHttp + GitRemoteOrchestrator.
+ * Loads fixtures/orch/*.json and drives FixtureSmartHttp + GitRemoteOrchestrator.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -106,16 +106,16 @@ function orchDir(): string {
     env && rf ? join(rf, env) : "",
     env && rf ? join(rf, "_main", env) : "",
     // genrule outs under this package (rules_js bin layout)
-    rf ? join(rf, "memcontainers/sdk-js/core/testdata/orch") : "",
-    rf ? join(rf, "_main/memcontainers/sdk-js/core/testdata/orch") : "",
+    rf ? join(rf, "memcontainers/sdk-js/core/fixtures/orch") : "",
+    rf ? join(rf, "_main/memcontainers/sdk-js/core/fixtures/orch") : "",
     // SSoT under git-engine (dev / non-runfiles)
-    rf ? join(rf, "memcontainers/lib/git-engine/testdata/orch") : "",
-    rf ? join(rf, "_main/memcontainers/lib/git-engine/testdata/orch") : "",
-    join(process.cwd(), "memcontainers/lib/git-engine/testdata/orch"),
-    join(process.cwd(), "memcontainers/sdk-js/core/testdata/orch"),
+    rf ? join(rf, "memcontainers/lib/git-engine/fixtures/orch") : "",
+    rf ? join(rf, "_main/memcontainers/lib/git-engine/fixtures/orch") : "",
+    join(process.cwd(), "memcontainers/lib/git-engine/fixtures/orch"),
+    join(process.cwd(), "memcontainers/sdk-js/core/fixtures/orch"),
     resolve(
       dirname(new URL(import.meta.url).pathname),
-      "../../../lib/git-engine/testdata/orch",
+      "../../../lib/git-engine/fixtures/orch",
     ),
   ];
   for (const c of candidates) {
