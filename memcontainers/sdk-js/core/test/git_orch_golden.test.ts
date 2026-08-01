@@ -64,7 +64,14 @@ const GOLDEN_NAMES = [
   "pull_ff_steps.json",
   "push_readonly.json",
   "push_success_steps.json",
+  "shallow_clone_steps.json",
+  "auth_deny_steps.json",
+  "pull_not_ff_steps.json",
 ] as const;
+
+const RESPONSE_SCHEMA_NAME = "response_schema.json";
+
+const REQUIRED_RESPONSE_KEYS = ["ok", "code", "stdout", "stderr"] as const;
 
 function engineDir(): string {
   const jsRel = process.env.MC_GIT_ENGINE_JS || "";
@@ -233,6 +240,108 @@ async function runGolden(dir: string, engBase: string, name: string): Promise<vo
   console.log(`  ${name}: OK (${golden.steps.length} steps)`);
 }
 
+function assertResponseShape(resp: {
+  ok?: unknown;
+  code?: unknown;
+  stdout?: unknown;
+  stderr?: unknown;
+}, label: string): void {
+  for (const k of REQUIRED_RESPONSE_KEYS) {
+    if (!(k in resp)) {
+      throw new Error(`${label}: missing Response key ${k}: ${JSON.stringify(resp)}`);
+    }
+  }
+  if (typeof resp.ok !== "boolean") {
+    throw new Error(`${label}: ok must be boolean`);
+  }
+  if (typeof resp.code !== "number") {
+    throw new Error(`${label}: code must be number`);
+  }
+  if (typeof resp.stdout !== "string") {
+    throw new Error(`${label}: stdout must be string`);
+  }
+  if (typeof resp.stderr !== "string") {
+    throw new Error(`${label}: stderr must be string`);
+  }
+}
+
+/** D33 — catalog stderr prefixes for unknown connection / empty pack / origin deny. */
+async function runResponseSchema(dir: string, engBase: string): Promise<void> {
+  const schemaPath = join(dir, RESPONSE_SCHEMA_NAME);
+  if (!existsSync(schemaPath)) {
+    throw new Error(`missing ${RESPONSE_SCHEMA_NAME} at ${schemaPath}`);
+  }
+  const schema = JSON.parse(readText(schemaPath)) as {
+    required_response_keys: string[];
+    stderr_prefixes: { id: string; prefix: string }[];
+    samples: {
+      id: string;
+      op: string;
+      args: Record<string, unknown>;
+      allowed_origins?: string[];
+      connections?: unknown[];
+      fixture?: {
+        url: string;
+        refs: { name: string; hash: string }[];
+        pack?: string;
+      };
+      expect_prefix_id: string;
+    }[];
+  };
+
+  for (const k of schema.required_response_keys) {
+    if (!REQUIRED_RESPONSE_KEYS.includes(k as (typeof REQUIRED_RESPONSE_KEYS)[number])) {
+      throw new Error(`schema required key unexpected: ${k}`);
+    }
+  }
+
+  const prefixById = new Map(
+    schema.stderr_prefixes.map((p) => [p.id, p.prefix] as const),
+  );
+
+  for (const sample of schema.samples) {
+    const eng = await GitEngine.load({ baseUrl: engBase });
+    const http = new FixtureSmartHttp();
+    const fix = sample.fixture;
+    if (fix) {
+      http.add(
+        fix.url,
+        fix.refs ?? [],
+        typeof fix.pack === "string"
+          ? new TextEncoder().encode(fix.pack)
+          : new Uint8Array(0),
+      );
+    }
+    const orch = new GitRemoteOrchestrator(eng, {
+      http,
+      allowOrigins: sample.allowed_origins ?? [],
+      connections: (sample.connections ?? []) as never,
+    });
+    const resp = await orch.handle({
+      op: sample.op,
+      args: sample.args ?? {},
+    });
+    assertResponseShape(resp, `schema/${sample.id}`);
+    if (resp.ok !== false) {
+      throw new Error(
+        `schema/${sample.id}: expected ok:false, got ${JSON.stringify(resp)}`,
+      );
+    }
+    const wantPrefix = prefixById.get(sample.expect_prefix_id);
+    if (!wantPrefix) {
+      throw new Error(`schema/${sample.id}: unknown prefix id ${sample.expect_prefix_id}`);
+    }
+    const stderr = String(resp.stderr ?? "");
+    if (!stderr.startsWith(wantPrefix) && !stderr.includes(wantPrefix)) {
+      throw new Error(
+        `schema/${sample.id}: stderr missing prefix ${JSON.stringify(wantPrefix)}: ${JSON.stringify(stderr)}`,
+      );
+    }
+    await eng.close();
+    console.log(`  response_schema/${sample.id}: OK (prefix ${JSON.stringify(wantPrefix)})`);
+  }
+}
+
 async function main() {
   const dir = orchDir();
   const engDir = engineDir();
@@ -242,6 +351,8 @@ async function main() {
   for (const name of GOLDEN_NAMES) {
     await runGolden(dir, baseUrl, name);
   }
+
+  await runResponseSchema(dir, baseUrl);
 
   console.log("git_orch_golden.test SUCCESS");
 }

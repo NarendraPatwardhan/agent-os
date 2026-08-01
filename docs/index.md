@@ -41,8 +41,8 @@ contributor documentation, see [AgentOS on DeepWiki](https://deepwiki.com/Narend
   precedence.
 - [Mounts and drivers](./mounts-drivers.md): the custom driver contract plus `hostDir()`, `s3()`, and
   `vectorStore()`.
-- [Git (experimental)](./git.md): host source-plane engine (`experimentalGitEngine`), gitfs mount,
-  thin guest CLI, and CAP_NET remotes — not a full git-core surface.
+- [Git (advanced)](./git.md): host source-plane engine (`experimentalGitEngine` opt-in), gitfs mount,
+  thin guest CLI, and CAP_NET remotes — not a full git-core surface; graduated experimental → advanced.
 - [Sidecars](./sidecars.md): grants, host attachments, external-resource lifecycle, and fork behavior.
 - [Browser sidecars](./browser-sidecars.md): typed Chromium sessions, pages, input, screenshots,
   cleanup, and the hosted or self-hosted infrastructure they require.

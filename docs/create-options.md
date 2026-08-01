@@ -27,7 +27,7 @@ fields—`mc.use()`. Applicability and defaults vary by runtime.
 | `sidecarHosts`       | host-alias map                           | `{}`                            | Embedded-only private sidecar authority routes       |
 | `sidecars`           | grant-descriptor map                     | `{}`                            | Portable sidecar grants attached at boot             |
 | `deterministic`      | boolean                                  | `false`                         | Repeatable guest clock and random source             |
-| `experimentalGitEngine` | boolean                               | `false`                         | Opt-in host git engine (libgit2 emcc); **experimental** |
+| `experimentalGitEngine` | boolean                               | `false`                         | Opt-in host git engine (libgit2 emcc); **advanced** (graduated experimental; flag name kept) |
 | `gitEngineBaseUrl`   | directory URL string                     | none                            | Dir URL of `git_engine.mjs` + `git_engine.wasm`; required when engine is on |
 | `gitSparseCone`      | `string[]`                               | none                            | Cone-mode sparse prefixes for default gitfs + post-clone `sparse-set` (multi-pattern; engine also accepts basic `!path` negation — not full sparse language) |
 | `gitDurable`         | `{ id?: string, diskDir?: string }`      | none (off)                      | Opt-in durable **directory** store per gitfs mount (re-openable worktree under `diskDir`; snapshot/restore rebind). See [Git durability](./git.md#durability--dir-reopen-pr8--d16d18) |
@@ -180,9 +180,9 @@ build steps. It does not cache or sanitize external network responses.
 
 ## `experimentalGitEngine` and `gitEngineBaseUrl`
 
-**Experimental** (api-surface level; **not** graduated). Opt-in host source-plane git (libgit2 +
-emcc wasm). Remotes are not GA; graduation criteria live in [Git](./git.md)
-(`experimentalGitEngine` graduation). Do not treat this flag as stable multi-tenant product.
+**Advanced** (api-surface graduated from experimental; create-option name unchanged). Opt-in host
+source-plane git (libgit2 + emcc wasm). Graduation criteria in [Git](./git.md) are **Met**; surface
+is **not** multi-tenant stable/GA — still opt-in (`false` default).
 
 When `experimentalGitEngine` is `true`:
 

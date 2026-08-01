@@ -210,6 +210,34 @@ genrule(
 )
 
 genrule(
+    name = "orch_golden_shallow_clone",
+    srcs = ["//memcontainers/lib/git-engine:testdata/orch/shallow_clone_steps.json"],
+    outs = ["testdata/orch/shallow_clone_steps.json"],
+    cmd = "cp $< $@",
+)
+
+genrule(
+    name = "orch_golden_auth_deny",
+    srcs = ["//memcontainers/lib/git-engine:testdata/orch/auth_deny_steps.json"],
+    outs = ["testdata/orch/auth_deny_steps.json"],
+    cmd = "cp $< $@",
+)
+
+genrule(
+    name = "orch_golden_pull_not_ff",
+    srcs = ["//memcontainers/lib/git-engine:testdata/orch/pull_not_ff_steps.json"],
+    outs = ["testdata/orch/pull_not_ff_steps.json"],
+    cmd = "cp $< $@",
+)
+
+genrule(
+    name = "orch_response_schema",
+    srcs = ["//memcontainers/lib/git-engine:testdata/orch/response_schema.json"],
+    outs = ["testdata/orch/response_schema.json"],
+    cmd = "cp $< $@",
+)
+
+genrule(
     name = "orch_golden_minimal_pack",
     srcs = ["//memcontainers/lib/git-engine:testdata/pack/minimal.pack"],
     outs = ["testdata/pack/minimal.pack"],
@@ -244,6 +272,10 @@ js_test(
         ":orch_golden_pull_ff",
         ":orch_golden_push_readonly",
         ":orch_golden_push_success",
+        ":orch_golden_shallow_clone",
+        ":orch_golden_auth_deny",
+        ":orch_golden_pull_not_ff",
+        ":orch_response_schema",
         ":orch_golden_minimal_pack",
         ":orch_golden_minimal_tip",
         "//memcontainers/lib/git-engine:git_engine_emcc_js",

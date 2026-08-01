@@ -21,11 +21,12 @@ Tests prove implementation; green tests alone are not DONE.
 | 2 | Single-writer + SSRF + K17 | **DONE** (VERIFY_CHUNK_2.md) |
 | 3 | Streaming packs + disk cache | **DONE** (VERIFY_CHUNK_3.md) |
 | 4 | Partial clone + sparse parity + tracking | **DONE** (`662dadd`, VERIFY_CHUNK_4.md) |
-| 5 | Durability + snapshot rebind | **OPEN** (D16–D19 inventory DONE; VERIFY_CHUNK_5 pending) |
+| 5 | Durability + snapshot rebind | **DONE** (VERIFY_CHUNK_5.md) |
 | 6 | Submodules host-mediated | **DONE** (VERIFY_CHUNK_6.md) |
 | 7 | Streaming stdout + engine polish | **DONE** (VERIFY_CHUNK_7.md) |
-| 8 | Acceptance e2e matrix | **OPEN** (D25–D31 DONE; D32–D33 still OPEN; VERIFY_CHUNK_8 pending) |
-| 9 | Metrics + packaging + GA | **DONE** (D34–D38, D40–D41; experimental stays — D32/D33 residual) |
+| 8 | Acceptance e2e matrix | **DONE** (D25–D33; VERIFY_CHUNK_8 + Chunk 10 goldens) |
+| 9 | Metrics + packaging + GA | **DONE** (D34–D38, D40–D41; D34 advanced graduation in Chunk 10) |
+| 10 | Full golden set + schema catalog + graduate | **DONE** (D32–D34; VERIFY_CHUNK_10.md) |
 
 Verifier artifacts: `VERIFY_CHUNK_N.md` (PASS required before next chunk).
 
@@ -67,9 +68,9 @@ Verifier artifacts: `VERIFY_CHUNK_N.md` (PASS required before next chunk).
 
 | ID | Requirement | Status | Evidence / missing |
 |----|-------------|--------|-------------------|
-| D16 | OPFS/disk reattachable engine store | **DONE** | **Primary = re-openable libgit2 directory** (not AGIT-only). JS: `HostDirDurable`/`OpfsDirDurable` + hydrate→`ge_open`/`checkpoint` dump (`durable.ts`, `bridge.ts`, `engine.ts`); `GitEngine.load({ durableDir })`; AGIT blob optional transfer (`MemoryDurable`/`DiskDurable`/`OpfsDurable`). BEAM: Port `root:`/`durable_dir`/`durable_id` + `GitEngine.root/1` + `checkpoint/1` (`git_engine.ex`, `git/durable.ex`); second Port same root reopens HEAD+files. Proof: JS `git_engine.test` D16 host-dir roundtrip (`.git` on disk); BEAM `git_engine_test` D16 directory durable second Port; D17 e2e HostDir. Docs: `docs/git.md` Durability / dir reopen. OPFS dir class lands; browser refresh product e2e optional polish. |
+| D16 | OPFS/disk reattachable engine store | **DONE** | Primary = re-openable libgit2 directory. JS: `HostDirDurable`/`OpfsDirDurable` + hydrate→`ge_open`/`checkpoint` (`durable.ts`, `bridge.ts`, `engine.ts`); `GitEngine.load({ durableDir })`; AGIT transfer optional. BEAM: Port `root:`/`durable_dir`/`durable_id` + `GitEngine.root/1` + `checkpoint/1`. Proof: JS `git_engine.test` D16; BEAM `git_engine_test` D16; D17 e2e HostDir. Docs: `docs/git.md` Durability. |
 | D17 | Snapshot/fork rebinds git durable | **DONE** | JS: `CreateOptions.gitDurable` (`types.ts`); `makeEmbedded` per-mount `openDurable` + `bindGitEngines` (`memcontainer.ts`); `EmbeddedBackend.snapshot`/`pinBase` → `checkpointGitEngines` before MCSN (`embedded.ts`); `durableIdForMount` + process MemoryDurable registry (`durable.ts`). gitfs K28 identity inject for ctl commits (`gitfs.ts`). MCSN does not carry ODB. Proof: `git_guest_e2e` phase D17 — commit → snapshot → restore HEAD+worktree; fork rebind (process-memory AGIT by id). Docs: `docs/git.md` D17. BEAM: re-`attach_git` with durable non-temp `:root` (ODB on disk; named-VM default = D18). |
-| D18 | Server durable engine root for named VMs | **DONE** (partial product: attach path) | `AgentOS.Git.Durable` — `AGENTOS_GIT_DURABLE_ROOT` / app `:git_durable_root`; layout `{base}/{safe_vm_id}/{mount_slug}/`; `resolve_root/1` for `:root`/`:durable_dir`/`:durable_id`. `GitEngine.start` + `Vm.attach_git(durable_id: \| durable_dir:)` never rm_rf durable roots. Proof: `git_engine_test` D16 block asserts named root under env + survives stop. **Not required for DONE here:** auto wire every named ControlPlane VM without attach opts (follow-up if product demands default). Docs: `docs/git.md` Durability. |
+| D18 | Server durable engine root for named VMs | **DONE** | `AgentOS.Git.Durable` — `AGENTOS_GIT_DURABLE_ROOT` / app `:git_durable_root`; layout `{base}/{safe_vm_id}/{mount_slug}/`; `resolve_root/1` for `:root`/`:durable_dir`/`:durable_id`. `GitEngine.start` + `Vm.attach_git(durable_id: \| durable_dir:)` never rm_rf durable roots. Proof: `git_engine_test` named root under env survives stop. Docs: `docs/git.md` Durability. |
 | D19 | Snapshot blocked while git host_call inflight | **DONE** | Monorepo host_call pattern: kernel `HostCall::start` → `egress_inc` (`host_call.rs`); JS `MapHostCall` holds slot while orch HTTP+apply (`host_call.ts` + `gitHostCallHandler`); host `ensureSnapshotReady` / `mc_inflight_egress` refuse (`host.ts`, wasmtime `ensure_snapshot_ready`). BEAM second gate: `Vm.ensure_git_remote_quiescent/1` blocks `snapshot`+`commit_layer` while `git_tasks`/`git_remote_queue` non-empty (`server/lib/agent_os/vm.ex`). Tests: JS `git_guest_e2e` phase D19 (slow listRefs → snapshot throws mid-clone); BEAM `D19 snapshot refused while git remote host_call Task is inflight` in `git_orchestrator_test.exs` |
 
 ### P4 — Sparse / multi-repo
@@ -98,9 +99,9 @@ Verifier artifacts: `VERIFY_CHUNK_N.md` (PASS required before next chunk).
 | D29 | Port kill → guest EIO booted guest | **DONE** | guest Port kill EIO acceptance |
 | D30 | Server gitfs mount+ctl booted guest | **DONE** | guest type-4 ctl acceptance |
 | D31 | client_token + generation race acceptance | **DONE** | client_token echo generation |
-| D32 | Full golden set dual-host | **OPEN** | 7 goldens incl push_success; missing shallow/auth deny/non-FF pull goldens |
-| D33 | Dual-host Response schema + stderr catalog tests | **OPEN** | no dual-host Response schema catalog tests yet |
-| D34 | Graduate experimentalGitEngine | **OPEN** | experimental kept; graduate after D32/D33 |
+| D32 | Full golden set dual-host | **DONE** | `shallow_clone_steps` / `auth_deny_steps` / `pull_not_ff_steps` + prior; JS `git_orch_golden_test` + BEAM `OrchGoldenTest` |
+| D33 | Dual-host Response schema + stderr catalog tests | **DONE** | `response_schema.json` + dual-host catalog samples (unknown connection, empty pack, origin deny) |
+| D34 | Graduate experimentalGitEngine | **DONE** | api-surface → **advanced**; docs/git.md criteria all Met; flag name kept opt-in |
 
 ### P7 — Ops / polish
 
@@ -140,7 +141,8 @@ These product paths exist (do not re-open unless verifier finds regression). Evi
 |------|--------|
 | 2026-08-01 | Chunk 8 acceptance: D25/D26/D29/D30/D31 server guest CAP_NET allow/deny, Port kill→EIO, gitfs mount+ctl, client_token+generation; Vm tick git auto-drain; port_mount root fix; init idempotent; `//server:mix_test` green |
 | 2026-08-01 | Chunk 8: D27/D28 real HTTP smart-HTTP e2e (`git-http-backend` CGI) dual-host; D32 `push_success_steps` golden; product `report-status` on receive-pack |
-| 2026-08-01 | Chunk 9: D35–D38 metrics/alerts/NOTICE/discovery; D40 docs sync; D41 strike catalog `git run`; D34 checklist Met/Open — **kept experimental** (D25/D26 CAP_NET server Open) |
+| 2026-08-01 | Chunk 10: D32 full golden set (shallow/auth_deny/pull_not_ff); D33 response_schema catalog dual-host; D34 graduate experimental→**advanced** (CAP_NET D25/D26 Met; flag name kept) |
+| 2026-08-01 | Chunk 9: D35–D38 metrics/alerts/NOTICE/discovery; D40 docs sync; D41 strike catalog `git run`; D34 deferred until D32/D33 (Chunk 10) |
 | 2026-08-01 | Chunk 6: D23/D24 host-mediated submodule update + nested worktree projection (JS+BEAM orch; list-only is not DONE) |
 | 2026-08-01 | Chunk 5 D16/D18: directory reopen primary — JS `durableDir`+HostDirDurable hydrate/dump; BEAM `Git.Durable` + `durable_id`/`durable_dir` attach; dual-host second-process tests; D16/D18 **DONE** (D17 already); AGIT remains transfer |
 | 2026-08-01 | Chunk 4: monorepo sparse + tracking + multi-mount — D9/D13/D20/D21 **DONE** (`662dadd`, VERIFY_CHUNK_4.md PASS) |

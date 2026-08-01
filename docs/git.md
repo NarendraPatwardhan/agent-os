@@ -1,9 +1,10 @@
 # AgentOS Git — Host Source Plane
 
-**Experimental** product surface for interactive and LLB git. Design of record: workspace-root
-`GIT.md`. Tracker / gaps: `TASKS.md`, `CRITICAL_REVIEW.md`. Remotes are **not** GA.
-`experimentalGitEngine` stays at **api-surface level experimental** until graduation criteria below
-are met — do **not** treat it as stable.
+**Advanced** (graduated from experimental) product surface for interactive and LLB git. Design of
+record: workspace-root `GIT.md`. Tracker / gaps: `TASKS.md`, `CRITICAL_REVIEW.md`.
+Create-option flag name remains `experimentalGitEngine` (opt-in; default `false`); api-surface
+level is **advanced** — **not** multi-tenant stable / GA. Prefer careful language: shipped
+experimental graduate to advanced.
 
 ## Thesis
 
@@ -29,7 +30,7 @@ These are hard product rules for agents and tools that use host git — not opti
 | **No `.git/objects` façade (v1)** | Guests do **not** get a synthetic `.git/objects` tree. Object DB stays host-side; worktree + ctl only. |
 | **Unflushed ctl: close write before status** | Ctl Request is written to `/.git/mc/ctl`; Response is read from the out path. Close (or Drop) the write FD **before** reading status / next Response — unflushed guest buffers are invisible to the engine (same class as `hostDir`). |
 | **Remotes need CAP_NET + host_call `git`** | Mount/ctl alone cannot dial. Guest remotes go through `mc_sys_host_call` name `"git"` gated by kernel **CAP_NET**. Ctl remote ops refuse. |
-| **Experimental flag + identity on commit** | Opt-in via `experimentalGitEngine` (JS). Commits need author identity (`name` / `email` args or engine defaults) — no ambient global gitconfig from the host user. |
+| **Opt-in flag + identity on commit** | Opt-in via `experimentalGitEngine` (JS; advanced surface). Commits need author identity (`name` / `email` args or engine defaults) — no ambient global gitconfig from the host user. |
 | **Server push (not read-only)** | See [Server remotes](#server-remotes-k16--push-honesty) — packbuilder + receive-pack on BEAM when mount is not read-only. |
 
 ## Thin CLI surface (honest)
@@ -235,16 +236,21 @@ C `smart_http` / C orchestrator (Port type-5) are **test/fixture only** — not 
 remote path. Dual-host product orch is **TS (JS) ↔ BEAM (server)** sharing apply-op + algorithm
 semantics (K20), not “C orch on server”.
 
-### Executable golden orch vectors (K20 / P2.8)
+### Executable golden orch vectors (K20 / P2.8 / D32)
 
 Shared JSON under `memcontainers/lib/git-engine/testdata/orch/` (fixture copies:
-`server/test/fixtures/git/orch/`):
+`server/test/fixtures/git/orch/`; pack paths adjusted to `../minimal.pack` on the server side):
 
 | File | Asserts |
 |------|---------|
 | `clone_success_steps.json` | fixture pack + tip → `ok:true`, stdout contains `cloned` |
+| `shallow_clone_steps.json` | explicit `depth: 1` clone → `ok:true`, stdout contains `cloned` |
 | `clone_empty_pack_fail.json` | empty pack → `ok:false`, stderr contains `empty pack` |
-| `origin_denied.json` | wrong allowlist → `ok:false`, stderr contains `not allowlisted` |
+| `origin_denied.json` / `auth_deny_steps.json` | wrong allowlist → `ok:false`, stderr contains `not allowlisted` |
+| `fetch_success_steps.json` / `pull_ff_steps.json` | fetch/pull success paths |
+| `pull_not_ff_steps.json` | diverged local tip (setup init+commit) → pull fails `git: not fast-forward` |
+| `push_readonly.json` / `push_success_steps.json` | RO reject + fixture push success |
+| `response_schema.json` | D33 catalog: required Response keys + stable stderr prefixes |
 
 Each vector lists logical algorithm steps plus an executable `orchestrator_response` step with
 expected `ok` / substring checks. **Both** hosts run them:
@@ -347,29 +353,23 @@ Accept either form:
 
 ## `experimentalGitEngine` graduation criteria (P3.2)
 
-**Do not graduate to stable.** Remotes are **not** GA. Keep `docs/api-surface.json` level
-`experimental` until **all** criteria below are **Met**. Status column is only **Met** or **Open**
-(with path evidence). Do not flip the flag while any row is **Open**.
+**Graduated to advanced (Chunk 10 / D34).** Do **not** claim multi-tenant **stable**/GA remotes.
+Create-option remains `experimentalGitEngine: true` (opt-in name preserved). `docs/api-surface.json`
+levels for `GitEngine` / host_call / LLB git helpers are **advanced**. Status column is only
+**Met** or **Open** (with path evidence).
 
 | # | Criterion | Status |
 |---|-----------|--------|
 | 1 | **Origin / connection policy** — empty origins fail closed; credential splice host-only; no secrets in guest/ctl/engine args | **Met** — connection catalog product path (JS + BEAM `attach_git connections:`); bare-URL / empty origins fail closed; guest secret keys rejected both hosts; dual-host policy tests green |
-| 2 | **Pack e2e** — pack import → refs → clone/fetch apply on **both** JS wasm and BEAM Port (`minimal.pack` + golden orch vectors) | **Met** — abi/pack fixtures + `clone_success_steps` / empty-pack / origin_denied goldens on TS + BEAM. Live public HTTPS is **Open** (D27) and is not a substitute for fixture pack e2e |
+| 2 | **Pack e2e** — pack import → refs → clone/fetch apply on **both** JS wasm and BEAM Port (`minimal.pack` + golden orch vectors) | **Met** — abi/pack fixtures + full D32 golden set (`shallow_clone` / `auth_deny` / `pull_not_ff` + prior vectors) on TS + BEAM |
 | 3 | **Push or explicit RO** — packbuilder path on each product host **or** documented RO with stable reject | **Met** — JS + BEAM pack.build + receive-pack push when not read-only; RO mounts reject with stable `git: push rejected (read-only mount)` |
 | 4 | **Single-writer** — one engine queue per gitfs mount; K21 one engine per path | **Met** — bridge/Port serialise per engine; multi-mount demux + same-path fail-closed (D2/D21) |
-| 5 | **CAP_NET e2e** — guest without CAP_NET → EPERM; with CAP_NET + allowlist → shallow clone/fetch on JS **and** server attach | **Open** — **JS fixture Met:** `//memcontainers/sdk-js/core:git_guest_e2e_test` (CAP_NET allow + deny). **Server full guest-image path Open** (D25/D26). Live HTTPS Open (D27) |
+| 5 | **CAP_NET e2e** — guest without CAP_NET → EPERM; with CAP_NET + allowlist → shallow clone/fetch on JS **and** server attach | **Met** — JS: `//memcontainers/sdk-js/core:git_guest_e2e_test`. Server: `git_guest_acceptance_test.exs` D25/D26 (loom + host_call relay + `attach_git` fixture; CAP_NET deny dials == 0). Real smart-HTTP dual-host: D27/D28 |
 | 6 | **Metrics / observability** — engine/orch failure counters (PR16), not silent false-green | **Met** — dual-host counters + `duration_ms` / `pack_bytes` / redacted origin labels; BEAM server alerts for allowlist deny + queue depth > 32 (D35/D36). See [Metrics](#metrics-pr16) |
 
-**Blocker for graduation:** criterion **5** needs server guest CAP_NET e2e (D25/D26) in addition to the
-JS fixture path. Identity inject (K28), shallow default `depth=1`, push server path, and metrics are
-**not** substitutes. Live public HTTPS (D27) is optional product proof, not a fixture substitute.
-**Do not graduate** `experimentalGitEngine` while any criterion is **Open**.
-
-**Remaining OPEN IDs blocking GA (D1–D33 inventory):** D15, D22, D25, D26, D27, D28, D29, D30,
-D31, D32, D33 (plus D5 tracker hygiene). Chunk 9 does **not** flip the flag: `docs/api-surface.json`
-keeps level `experimental`.
-
-Until **all** rows are **Met**: flag stays experimental; docs and api-surface must **not** claim GA remotes.
+**Graduation (D34):** all six criteria **Met** with D25–D33 closed (VERIFY_CHUNK_8–10). Surface is
+**advanced**, not **stable**. Residual product polish (log/show D39 already DONE) does not block
+advanced graduation. Do not re-label as multi-tenant GA without a separate stable campaign.
 
 ## Full guest CAP_NET e2e (D25/D26)
 
@@ -377,8 +377,9 @@ Until **all** rows are **Met**: flag stays experimental; docs and api-surface mu
   `/bin/git` on loom → kernel CAP_NET → host_call `"git"` → TS orch + FixtureSmartHttp +
   `minimal.pack` → `/workspace/repo` worktree; CAP_NET deny; gitfs ctl close-then-status.
   Inject transport via create options `gitHttp` / `gitAllowOrigins` (hermetic; not product egress).
-- **Server:** host demux + fixture transport under `Vm` / `attach_git` exist; **full guest-image**
-  CAP_NET allow + deny paths are **Open** (D25/D26).
+- **Server:** **Met** — `server/test/agent_os/git_guest_acceptance_test.exs` D25 (full CAP_NET
+  clone via `attach_git` + fixture dials ≥2 + worktree README) and D26 (no CAP_NET → deny, dials
+  == 0).
 
 ## Durability / dir reopen (PR8 / D16–D18)
 
@@ -562,8 +563,9 @@ unless an explicit decision overturns Port. JS hosts continue to use emcc wasm.
 - Empty connection `origins` → fail closed.
 - Ctl remotes refuse; remotes require `CAP_NET` + host_call name `"git"`.
 - No Node/Bun process on the Elixir control plane for git.
-- Do not treat remotes or the experimental flag as multi-tenant GA.
-- Server push is rejected with a stable message (see above).
+- Surface is **advanced** (graduated experimental); do not treat as multi-tenant **stable**/GA.
+- Opt-in flag name remains `experimentalGitEngine` (default false).
+- Stable stderr prefixes are catalogued in `testdata/orch/response_schema.json` (D33).
 
 ## Bazel / server targets
 

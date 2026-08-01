@@ -1,0 +1,95 @@
+{
+  "name": "git_response_schema",
+  "version": 1,
+  "description": "D33 dual-host catalog: stable GitResponse keys and stderr prefixes for orch error paths. Hosts must emit these prefixes (substring-stable); do not paraphrase in product code or matchers.",
+  "required_response_keys": ["ok", "code", "stdout", "stderr"],
+  "response_key_types": {
+    "ok": "boolean",
+    "code": "number",
+    "stdout": "string",
+    "stderr": "string"
+  },
+  "stderr_prefixes": [
+    {
+      "id": "unknown_connection",
+      "prefix": "git: unknown connection ref",
+      "sample_op": "clone",
+      "notes": "connection-bound remote with unknown catalog ref"
+    },
+    {
+      "id": "empty_pack",
+      "prefix": "git: empty pack",
+      "sample_op": "clone",
+      "notes": "list-refs ok but upload-pack body empty"
+    },
+    {
+      "id": "origin_not_allowlisted",
+      "prefix": "git: origin not allowlisted",
+      "sample_op": "clone",
+      "notes": "bare URL or connection origin policy deny"
+    },
+    {
+      "id": "not_fast_forward",
+      "prefix": "git: not fast-forward",
+      "sample_op": "pull",
+      "notes": "pull FF-only cannot advance HEAD to remote tip"
+    },
+    {
+      "id": "guest_auth_secrets",
+      "prefix": "git: guest body must not include auth secrets",
+      "sample_op": "clone",
+      "notes": "guest body token/auth/password keys rejected"
+    },
+    {
+      "id": "push_read_only",
+      "prefix": "git: push rejected (read-only mount)",
+      "sample_op": "push",
+      "notes": "read-only mount rejects push before dial"
+    }
+  ],
+  "samples": [
+    {
+      "id": "unknown_connection",
+      "op": "clone",
+      "args": {
+        "connection": "does-not-exist-in-catalog"
+      },
+      "connections": [],
+      "allowed_origins": ["https://example.com"],
+      "expect_prefix_id": "unknown_connection"
+    },
+    {
+      "id": "empty_pack",
+      "op": "clone",
+      "args": {
+        "url": "https://example.com/demo.git"
+      },
+      "allowed_origins": ["https://example.com"],
+      "fixture": {
+        "url": "https://example.com/demo.git",
+        "refs": [
+          {
+            "name": "refs/heads/main",
+            "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          }
+        ],
+        "pack": ""
+      },
+      "expect_prefix_id": "empty_pack"
+    },
+    {
+      "id": "origin_not_allowlisted",
+      "op": "clone",
+      "args": {
+        "url": "https://evil.example/x.git"
+      },
+      "allowed_origins": ["https://example.com"],
+      "fixture": {
+        "url": "https://evil.example/x.git",
+        "refs": [],
+        "pack": ""
+      },
+      "expect_prefix_id": "origin_not_allowlisted"
+    }
+  ]
+}

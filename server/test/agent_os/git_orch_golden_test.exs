@@ -20,8 +20,14 @@ defmodule AgentOS.Git.OrchGoldenTest do
     "fetch_success_steps.json",
     "pull_ff_steps.json",
     "push_readonly.json",
-    "push_success_steps.json"
+    "push_success_steps.json",
+    "shallow_clone_steps.json",
+    "auth_deny_steps.json",
+    "pull_not_ff_steps.json"
   ]
+
+  @response_schema "response_schema.json"
+  @required_response_keys ["ok", "code", "stdout", "stderr"]
 
   @push_read_only "git: push rejected (read-only mount)"
 
@@ -249,5 +255,79 @@ defmodule AgentOS.Git.OrchGoldenTest do
     assert json =~ "\"ok\":false" or json =~ ~s("ok":false)
     assert json =~ @push_read_only
     :ok = GitEngine.stop(pid)
+  end
+
+  # D33 — Response schema catalog: required keys + stable stderr prefixes.
+  @tag timeout: 60_000
+  test "D33 response_schema catalog prefixes (unknown connection, empty pack, origin deny)" do
+    path = find_golden!(@response_schema)
+    schema = path |> File.read!() |> decode_json!()
+    keys = Map.get(schema, "required_response_keys") || []
+    assert Enum.sort(keys) == Enum.sort(@required_response_keys)
+
+    prefixes =
+      for p <- Map.get(schema, "stderr_prefixes") || [], into: %{} do
+        {Map.fetch!(p, "id"), Map.fetch!(p, "prefix")}
+      end
+
+    samples = Map.get(schema, "samples") || []
+    assert length(samples) >= 3
+
+    assert {:ok, pid} = GitEngine.start(executable: engine_path())
+
+    try do
+      for sample <- samples do
+        id = Map.fetch!(sample, "id")
+        op = Map.fetch!(sample, "op")
+        args = Map.get(sample, "args") || %{}
+        origins = Map.get(sample, "allowed_origins") || []
+        prefix_id = Map.fetch!(sample, "expect_prefix_id")
+        want = Map.fetch!(prefixes, prefix_id)
+
+        fixture = Map.get(sample, "fixture") || %{}
+        refs =
+          for r <- Map.get(fixture, "refs") || [] do
+            %{name: Map.fetch!(r, "name"), hash: Map.fetch!(r, "hash")}
+          end
+
+        pack =
+          case Map.get(fixture, "pack") do
+            p when is_binary(p) -> p
+            _ -> <<>>
+          end
+
+        connections =
+          case Map.get(sample, "connections") do
+            list when is_list(list) -> list
+            _ -> []
+          end
+
+        transport = fixture_transport(refs, pack)
+
+        assert {:ok, json} =
+                 Orchestrator.run(
+                   pid,
+                   %{"op" => op, "args" => args},
+                   transport: transport,
+                   allowed_origins: origins,
+                   connections: connections
+                 )
+
+        resp = decode_json!(json)
+
+        for k <- @required_response_keys do
+          assert Map.has_key?(resp, k), "schema/#{id}: missing key #{k}: #{json}"
+        end
+
+        ok? = Map.get(resp, "ok") == true or Map.get(resp, "ok") == "true"
+        refute ok?, "schema/#{id}: expected ok:false: #{json}"
+
+        stderr = to_string(Map.get(resp, "stderr") || "")
+        assert String.contains?(stderr, want),
+               "schema/#{id}: stderr missing prefix #{inspect(want)}: #{inspect(stderr)}"
+      end
+    after
+      GitEngine.stop(pid)
+    end
   end
 end
