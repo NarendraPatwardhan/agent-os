@@ -67,6 +67,11 @@ defmodule AgentOS.Git.Orchestrator do
     `require_approval` is set. Default when missing: reject (fail closed).
   * `:push_approval` — boolean shorthand when `require_approval` is set and no
     fun is provided (`true` allows, `false` rejects)
+  * `:sparse_cone` / `:git_sparse_cone` — list of cone-mode prefix strings
+    (e.g. `["src", "docs"]`) applied **after** `clone.apply` via Port
+    `sparse-set` (D20 / JS `sparseCone` parity). **Cone-only** — not full
+    sparse-checkout language. Empty/missing skips sparse-set. Gitfs sees the
+    resulting worktree projection (no separate mount-side filter).
 
   **Push** (when not read-only): `push.prepare` → list-refs lease → pack.build
   from new tip OIDs → smart-HTTP receive-pack → `push.complete`. Empty pack on
@@ -114,7 +119,7 @@ defmodule AgentOS.Git.Orchestrator do
 
   defp clone(engine_pid, req, opts) do
     result =
-      with {:ok, binding} <- resolve_binding(req, opts),
+      with {:ok, binding} <- resolve_binding(engine_pid, req, opts),
            opts <- apply_binding(opts, binding),
            url <- binding.url,
            {:ok, refs} <- SmartHttp.list_refs(url, opts),
@@ -126,7 +131,9 @@ defmodule AgentOS.Git.Orchestrator do
           with :ok <- require_non_empty_pack(pack),
                :ok <- apply_init(engine_pid),
                :ok <- apply_pack(engine_pid, pack, opts),
-               :ok <- apply_refs_and_checkout(engine_pid, tip, refs, :clone) do
+               :ok <- apply_refs_and_checkout(engine_pid, tip, refs, :clone),
+               :ok <- configure_clone_remote(engine_pid, binding, tip, refs),
+               :ok <- apply_sparse_cone(engine_pid, tip, refs, opts) do
             {:ok, response(true, 0, "cloned #{redact_url(url)}\n", "")}
           end
         end)
@@ -138,7 +145,7 @@ defmodule AgentOS.Git.Orchestrator do
   # pull? = true → R34 fetch + local FF only
   defp fetch(engine_pid, req, opts, pull?) do
     result =
-      with {:ok, binding} <- resolve_binding(req, opts),
+      with {:ok, binding} <- resolve_binding(engine_pid, req, opts),
            opts <- apply_binding(opts, binding),
            url <- binding.url,
            {:ok, refs} <- SmartHttp.list_refs(url, opts),
@@ -282,7 +289,7 @@ defmodule AgentOS.Git.Orchestrator do
   end
 
   defp do_push(engine_pid, req, opts) do
-    with {:ok, binding} <- resolve_binding(req, opts),
+    with {:ok, binding} <- resolve_binding(engine_pid, req, opts),
          :ok <- gate_push_policy(binding),
          opts <- apply_binding(opts, binding),
          opts <- maybe_force_require_approval(opts, binding),
@@ -890,6 +897,195 @@ defmodule AgentOS.Git.Orchestrator do
     end
   end
 
+  # D9: after clone.apply set remote.origin.url + branch tracking for usable pull.
+  defp configure_clone_remote(pid, binding, tip, refs) when is_map(binding) do
+    url = Map.get(binding, :url) || Map.get(binding, "url") || ""
+    connection_ref = Map.get(binding, :connection_ref) || Map.get(binding, "connection_ref")
+    name = ref_name_of(tip, refs)
+    hash = Map.get(tip, :hash) || Map.get(tip, "hash") || ""
+    remote = "origin"
+
+    {short, merge} =
+      cond do
+        is_binary(name) and String.starts_with?(name, "refs/heads/") ->
+          {String.replace_prefix(name, "refs/heads/", ""), name}
+
+        is_binary(name) and String.starts_with?(name, "refs/") ->
+          short = name |> String.split("/") |> List.last()
+          {short, name}
+
+        is_binary(name) and name != "" ->
+          {name, "refs/heads/#{name}"}
+
+        true ->
+          {"main", "refs/heads/main"}
+      end
+
+    with :ok <- remote_add_or_set_url(pid, remote, url),
+         :ok <- maybe_set_agentos(pid, remote, connection_ref),
+         :ok <- config_set(pid, "branch.#{short}.remote", remote),
+         :ok <- config_set(pid, "branch.#{short}.merge", merge),
+         :ok <- import_remote_tracking(pid, remote, short, hash) do
+      :ok
+    end
+  end
+
+  defp remote_add_or_set_url(pid, remote, url) when is_binary(url) and url != "" do
+    case GitEngine.run(pid, %{
+           "op" => "remote",
+           "args" => %{"action" => "add", "name" => remote, "url" => url}
+         }) do
+      {:ok, m} ->
+        if ok?(m) do
+          :ok
+        else
+          config_set(pid, "remote.#{remote}.url", url)
+        end
+
+      _err ->
+        config_set(pid, "remote.#{remote}.url", url)
+    end
+  end
+
+  defp remote_add_or_set_url(_pid, _remote, _url), do: {:error, :bad_url}
+
+  defp maybe_set_agentos(_pid, _remote, ref) when ref in [nil, ""], do: :ok
+
+  defp maybe_set_agentos(pid, remote, ref) when is_binary(ref) do
+    config_set(pid, "remote.#{remote}.agentos", ref)
+  end
+
+  defp config_set(pid, key, value) do
+    case GitEngine.run(pid, %{
+           "op" => "config",
+           "args" => %{"action" => "set", "key" => key, "value" => value}
+         }) do
+      {:ok, m} -> if ok?(m), do: :ok, else: {:error, m}
+      err -> err
+    end
+  end
+
+  defp config_get(pid, key) do
+    case GitEngine.run(pid, %{
+           "op" => "config",
+           "args" => %{"action" => "get", "key" => key}
+         }) do
+      {:ok, m} when is_map(m) ->
+        stdout = Map.get(m, "stdout") || Map.get(m, :stdout) || ""
+        raw = Map.get(m, "raw") || Map.get(m, :raw) || ""
+
+        v =
+          cond do
+            is_binary(stdout) and String.trim(to_string(stdout)) != "" ->
+              String.trim(to_string(stdout))
+
+            is_binary(raw) and raw != "" ->
+              case Regex.run(~r/"stdout"\s*:\s*"((?:\\.|[^"\\])*)"/, raw) do
+                [_, s] ->
+                  s
+                  |> String.replace("\\n", "\n")
+                  |> String.replace("\\\"", "\"")
+                  |> String.replace("\\\\", "\\")
+                  |> String.trim()
+
+                _ ->
+                  ""
+              end
+
+            true ->
+              ""
+          end
+
+        if v != "", do: {:ok, v}, else: :error
+
+      _ ->
+        :error
+    end
+  end
+
+  defp import_remote_tracking(_pid, _remote, _short, hash)
+       when not is_binary(hash) or hash == "",
+       do: :ok
+
+  defp import_remote_tracking(pid, remote, short, hash)
+       when is_binary(short) and short != "" do
+    case GitEngine.run(pid, %{
+           "op" => "refs.import",
+           "args" => %{
+             "name" => "refs/remotes/#{remote}/#{short}",
+             "hash" => hash
+           }
+         }) do
+      {:ok, m} -> if ok?(m), do: :ok, else: {:error, m}
+      err -> err
+    end
+  end
+
+  defp import_remote_tracking(_pid, _remote, _short, _hash), do: :ok
+
+  # D20 / JS applySparseCone: cone-only sparse-set after clone.apply.
+  # Patterns join as newline string; engine also accepts JSON arrays.
+  defp apply_sparse_cone(pid, tip, refs, opts) do
+    case sparse_cone_of(opts) do
+      [] ->
+        :ok
+
+      cone ->
+        patterns = Enum.join(cone, "\n")
+        ref_name = ref_name_of(tip, refs)
+
+        case GitEngine.run(pid, %{"op" => "sparse-set", "args" => %{"patterns" => patterns}}) do
+          {:ok, m} ->
+            if ok?(m) do
+              # sparse-set force-checkouts HEAD into the cone; re-checkout the
+              # cloned tip so branch name / worktree stay aligned with clone.apply.
+              case GitEngine.run(pid, %{"op" => "checkout", "args" => %{"name" => ref_name}}) do
+                {:ok, co} ->
+                  if ok?(co) do
+                    :ok
+                  else
+                    # Detached / unborn tip: sparse-set already materialised HEAD.
+                    case GitEngine.run(pid, %{"op" => "rev-parse", "args" => %{"rev" => "HEAD"}}) do
+                      {:ok, rp} -> if ok?(rp), do: :ok, else: {:error, co}
+                      err -> err
+                    end
+                  end
+
+                err ->
+                  err
+              end
+            else
+              {:error, m}
+            end
+
+          err ->
+            err
+        end
+    end
+  end
+
+  defp sparse_cone_of(opts) when is_list(opts) do
+    raw = Keyword.get(opts, :sparse_cone, Keyword.get(opts, :git_sparse_cone, []))
+    normalize_sparse_cone(raw)
+  end
+
+  defp sparse_cone_of(_), do: []
+
+  # Strip leading/trailing slashes; drop empties / non-binaries (JS parity).
+  defp normalize_sparse_cone(list) when is_list(list) do
+    list
+    |> Enum.filter(&is_binary/1)
+    |> Enum.map(fn p ->
+      p
+      |> String.trim()
+      |> String.trim_leading("/")
+      |> String.trim_trailing("/")
+    end)
+    |> Enum.reject(&(&1 == ""))
+  end
+
+  defp normalize_sparse_cone(_), do: []
+
   # P0.4: engine fetch.apply requires name+hash (no silent no-op success).
   defp apply_fetch(pid, tip) do
     name = Map.get(tip, :name) || Map.get(tip, "name")
@@ -1021,11 +1217,139 @@ defmodule AgentOS.Git.Orchestrator do
   defp decode_request(map) when is_map(map), do: {:ok, stringify_keys(map)}
 
   # PR11: resolve connection-bound or bare URL; guest auth/token fields ignored.
-  defp resolve_binding(req, opts) do
+  # D9: fill url/connection from engine remote.* config when only remote name
+  # (or bare fetch/pull/push after clone) is provided.
+  defp resolve_binding(engine_pid, req, opts) do
     args = Map.get(req, "args") || %{}
-    args = if is_map(args), do: args, else: %{}
+    args = if is_map(args), do: stringify_keys(args), else: %{}
+    op = Map.get(req, "op") || Map.get(req, :op) || ""
+    op = op |> to_string() |> String.downcase()
+    args = fill_remote_args_from_config(engine_pid, op, args, opts)
     Connections.resolve_remote(args, opts)
   end
+
+  defp fill_remote_args_from_config(pid, op, args, opts) when is_map(args) do
+    url = string_or_empty(Map.get(args, "url"))
+
+    if url != "" do
+      args
+    else
+      remote = string_or_empty(Map.get(args, "remote"))
+
+      remote =
+        if remote == "" and op in ["fetch", "pull", "push"] and
+             string_or_empty(Map.get(args, "connection")) == "" and
+             string_or_empty(Map.get(args, "agentos")) == "" do
+          "origin"
+        else
+          remote
+        end
+
+      args =
+        if remote != "" and string_or_empty(Map.get(args, "remote")) == "" do
+          Map.put(args, "remote", remote)
+        else
+          args
+        end
+
+      if remote == "" do
+        args
+      else
+        remote_urls = keyword_map(opts, :remote_urls)
+        remote_connections = keyword_map(opts, :remote_connections)
+
+        # Prefer host remote_urls; else engine config / remote list (D9).
+        args =
+          if map_get_string(remote_urls, remote) != "" do
+            args
+          else
+            case config_get(pid, "remote.#{remote}.url") do
+              {:ok, u} -> Map.put(args, "url", u)
+              _ -> try_remote_list_url(pid, remote, args)
+            end
+          end
+
+        if string_or_empty(Map.get(args, "connection")) == "" and
+             string_or_empty(Map.get(args, "agentos")) == "" and
+             map_get_string(remote_connections, remote) == "" do
+          case config_get(pid, "remote.#{remote}.agentos") do
+            {:ok, cref} -> Map.put(args, "connection", cref)
+            _ -> args
+          end
+        else
+          args
+        end
+      end
+    end
+  end
+
+  defp keyword_map(opts, key) when is_list(opts) and is_atom(key) do
+    if Keyword.keyword?(opts) do
+      case Keyword.get(opts, key) do
+        m when is_map(m) -> m
+        _ -> %{}
+      end
+    else
+      %{}
+    end
+  end
+
+  defp keyword_map(_, _), do: %{}
+
+  # Fallback: `remote` list action prints "name\\turl" lines.
+  defp try_remote_list_url(pid, remote, args) do
+    case GitEngine.run(pid, %{"op" => "remote", "args" => %{"action" => "list"}}) do
+      {:ok, m} ->
+        stdout = Map.get(m, "stdout") || Map.get(m, :stdout) || Map.get(m, "raw") || ""
+
+        line =
+          stdout
+          |> to_string()
+          |> String.split("\n")
+          |> Enum.find(fn l -> String.starts_with?(l, remote <> "\t") end)
+
+        case line do
+          nil ->
+            args
+
+          l ->
+            case String.split(l, "\t", parts: 2) do
+              [name, u] when name == remote and is_binary(u) and u != "" ->
+                Map.put(args, "url", String.trim(u))
+
+              _ ->
+                args
+            end
+        end
+
+      _ ->
+        args
+    end
+  end
+
+  defp string_or_empty(v) when is_binary(v), do: v
+  # nil is an atom — must not become "nil".
+  defp string_or_empty(nil), do: ""
+  defp string_or_empty(v) when is_atom(v), do: Atom.to_string(v)
+  defp string_or_empty(_), do: ""
+
+  defp map_get_string(map, key) when is_map(map) do
+    v = Map.get(map, key) || Map.get(map, safe_atom_key(key))
+    if is_binary(v), do: v, else: ""
+  end
+
+  defp map_get_string(_, _), do: ""
+
+  defp safe_atom_key(k) when is_binary(k) do
+    try do
+      String.to_existing_atom(k)
+    rescue
+      ArgumentError -> nil
+    end
+  end
+
+  defp safe_atom_key(k) when is_atom(k), do: k
+  defp safe_atom_key(_), do: nil
 
   # Splice host/connection auth + binding origins into SmartHttp opts.
   # Credentials only from resolve (host catalog / host opts) — never guest body.
@@ -1151,25 +1475,12 @@ defmodule AgentOS.Git.Orchestrator do
   defp stringify_keys(list) when is_list(list), do: Enum.map(list, &stringify_keys/1)
   defp stringify_keys(other), do: other
 
-  defp safe_json_decode(bin) do
-    try do
-      # OTP 27+: :json.decode/1 returns the term (raises on error).
-      term = :json.decode(bin)
-      {:ok, term}
-    rescue
-      _ ->
-        # Some builds return {:ok, term}
-        try do
-          case :json.decode(bin) do
-            {:ok, term} -> {:ok, term}
-            other when is_map(other) or is_list(other) -> {:ok, other}
-            _ -> {:error, :invalid_json}
-          end
-        rescue
-          _ -> {:error, :invalid_json}
-        end
-    end
+  # OTP 27+ :json; OTP 26 (Bazel) falls back to Jason_like parser.
+  defp safe_json_decode(bin) when is_binary(bin) do
+    AgentOS.GitEngine.Jason_like.decode(bin)
   end
+
+  defp safe_json_decode(_), do: {:error, :invalid_json}
 
   defp decode_json_list(bin) when is_binary(bin) do
     case safe_json_decode(bin) do

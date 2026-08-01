@@ -120,6 +120,7 @@ defmodule AgentOS.GitEngine do
   * `:allowed_origins` / allowlist — fail-closed product remotes
   * `:pack_cache` — optional cache: pid / `:default` / `:disk` / `{:disk, dir}`
     (see `AgentOS.Git.Orchestrator`; env `AGENTOS_GIT_PACK_CACHE`)
+  * `:sparse_cone` / `:git_sparse_cone` — cone prefixes after clone (D20)
   """
   @spec handle_host_call(pid(), String.t(), binary(), keyword()) ::
           {:ok, binary()} | {:error, term()}
@@ -540,11 +541,15 @@ defmodule AgentOS.GitEngine do
   end
 
   defp safe_json_decode(bin) do
-    # OTP 27+ `:json.decode/1` returns the term directly (raises on error).
-    try do
-      term = :json.decode(bin)
-      {:ok, json_keys_to_string(term)}
-    rescue
+    # OTP 27+ uses `:json`; OTP 26 (Bazel) uses Jason_like.parse so tests and
+    # orch get real maps (stdout/stderr/ok) instead of opaque %{"raw" => …}.
+    case AgentOS.GitEngine.Jason_like.decode(bin) do
+      {:ok, map} when is_map(map) ->
+        {:ok, json_keys_to_string(map)}
+
+      {:ok, other} ->
+        {:ok, other}
+
       _ ->
         {:ok, %{"raw" => bin, "ok" => String.contains?(bin, "\"ok\":true")}}
     end
@@ -579,6 +584,8 @@ end
 defmodule AgentOS.GitEngine.Jason_like do
   @moduledoc false
 
+  # Tiny JSON codec for OTP without `:json` (Bazel OTP 26). OTP 27+ uses `:json`.
+
   def encode!(map) when is_map(map) do
     # Prefer OTP :json when present; it may return iodata (charlist chunks).
     if function_exported?(:json, :encode, 1) do
@@ -587,15 +594,156 @@ defmodule AgentOS.GitEngine.Jason_like do
       |> :json.encode()
       |> IO.iodata_to_binary()
     else
-      # Tiny encoder for %{op, args} maps used by tests.
-      op = Map.get(map, :op) || Map.get(map, "op") || ""
-      args = Map.get(map, :args) || Map.get(map, "args")
+      encode_value(atom_keys_to_string(map))
+    end
+  end
 
-      if args do
-        ~s({"op":"#{escape(op)}","args":#{encode_value(args)}})
-      else
-        ~s({"op":"#{escape(op)}"})
+  @doc """
+  Decode a JSON binary. Prefers OTP `:json` (27+); falls back to a small parser
+  so BEAM orch works under Bazel OTP 26 without Jason.
+  """
+  def decode(bin) when is_binary(bin) do
+    if function_exported?(:json, :decode, 1) do
+      try do
+        {:ok, :json.decode(bin)}
+      rescue
+        _ ->
+          try do
+            case :json.decode(bin) do
+              {:ok, term} -> {:ok, term}
+              other when is_map(other) or is_list(other) -> {:ok, other}
+              _ -> parse_json(bin)
+            end
+          rescue
+            _ -> parse_json(bin)
+          end
       end
+    else
+      parse_json(bin)
+    end
+  end
+
+  def decode(_), do: {:error, :invalid_json}
+
+  defp parse_json(bin) do
+    case parse_value(String.trim(bin)) do
+      {:ok, term, rest} ->
+        if String.trim(rest) == "", do: {:ok, term}, else: {:error, :invalid_json}
+
+      _ ->
+        {:error, :invalid_json}
+    end
+  end
+
+  defp parse_value(<<"true", rest::binary>>), do: {:ok, true, rest}
+  defp parse_value(<<"false", rest::binary>>), do: {:ok, false, rest}
+  defp parse_value(<<"null", rest::binary>>), do: {:ok, nil, rest}
+
+  defp parse_value(<<"\"", rest::binary>>), do: parse_string(rest, [])
+
+  defp parse_value(<<"{", rest::binary>>), do: parse_object(String.trim_leading(rest), %{})
+
+  defp parse_value(<<"[", rest::binary>>), do: parse_array(String.trim_leading(rest), [])
+
+  defp parse_value(<<c, _::binary>> = bin) when c in ?0..?9 or c == ?- do
+    parse_number(bin)
+  end
+
+  defp parse_value(_), do: :error
+
+  defp parse_string(<<"\"", rest::binary>>, acc) do
+    {:ok, acc |> Enum.reverse() |> List.to_string(), rest}
+  end
+
+  defp parse_string(<<"\\", e, rest::binary>>, acc) do
+    ch =
+      case e do
+        ?" -> ?"
+        ?\\ -> ?\\
+        ?/ -> ?/
+        ?b -> ?\b
+        ?f -> ?\f
+        ?n -> ?\n
+        ?r -> ?\r
+        ?t -> ?\t
+        ?u -> ?u
+        other -> other
+      end
+
+    # Skip full \uXXXX sequences.
+    rest2 =
+      if e == ?u and byte_size(rest) >= 4 do
+        binary_part(rest, 4, byte_size(rest) - 4)
+      else
+        rest
+      end
+
+    parse_string(rest2, [ch | acc])
+  end
+
+  defp parse_string(<<c, rest::binary>>, acc), do: parse_string(rest, [c | acc])
+  defp parse_string(<<>>, _acc), do: :error
+
+  defp parse_object(<<"}", rest::binary>>, acc), do: {:ok, acc, rest}
+
+  defp parse_object(bin, acc) do
+    bin = String.trim_leading(bin)
+
+    with {:ok, key, rest} <- parse_value(bin),
+         true <- is_binary(key),
+         rest = String.trim_leading(rest),
+         <<":", rest::binary>> <- rest,
+         rest = String.trim_leading(rest),
+         {:ok, val, rest} <- parse_value(rest) do
+      acc = Map.put(acc, key, val)
+      rest = String.trim_leading(rest)
+
+      case rest do
+        <<",", rest::binary>> -> parse_object(String.trim_leading(rest), acc)
+        <<"}", rest::binary>> -> {:ok, acc, rest}
+        _ -> :error
+      end
+    else
+      _ -> :error
+    end
+  end
+
+  defp parse_array(<<"]", rest::binary>>, acc), do: {:ok, Enum.reverse(acc), rest}
+
+  defp parse_array(bin, acc) do
+    with {:ok, val, rest} <- parse_value(bin) do
+      acc = [val | acc]
+      rest = String.trim_leading(rest)
+
+      case rest do
+        <<",", rest::binary>> -> parse_array(String.trim_leading(rest), acc)
+        <<"]", rest::binary>> -> {:ok, Enum.reverse(acc), rest}
+        _ -> :error
+      end
+    end
+  end
+
+  defp parse_number(bin) do
+    case Regex.run(~r/^(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/, bin) do
+      [raw | _] ->
+        rest = binary_part(bin, byte_size(raw), byte_size(bin) - byte_size(raw))
+
+        cond do
+          String.contains?(raw, ".") or String.contains?(raw, "e") or String.contains?(raw, "E") ->
+            case Float.parse(raw) do
+              {n, ""} -> {:ok, n, rest}
+              _ -> :error
+            end
+
+          true ->
+            case Integer.parse(raw) do
+              {n, ""} -> {:ok, n, rest}
+              _ -> :error
+            end
+        end
+
+      _ ->
+        :error
     end
   end
 
@@ -625,6 +773,7 @@ defmodule AgentOS.GitEngine.Jason_like do
 
   defp encode_value(s) when is_binary(s), do: ~s("#{escape(s)}")
   defp encode_value(n) when is_integer(n), do: Integer.to_string(n)
+  defp encode_value(n) when is_float(n), do: :erlang.float_to_binary(n, [:short])
   defp encode_value(true), do: "true"
   defp encode_value(false), do: "false"
   defp encode_value(nil), do: "null"

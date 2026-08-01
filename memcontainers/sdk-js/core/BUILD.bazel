@@ -143,6 +143,8 @@ js_test(
     data = [
         "package.json",
         ":git_remote_test_lib",
+        ":orch_golden_minimal_pack",
+        ":orch_golden_minimal_tip",
         "//memcontainers/lib/git-engine:git_engine_emcc_js",
         "//memcontainers/lib/git-engine:git_engine_mjs",
         "//memcontainers/lib/git-engine:git_engine_wasm_file",
@@ -150,6 +152,8 @@ js_test(
     entry_point = "test/git_remote.test.js",
     env = {
         "MC_GIT_ENGINE_JS": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_mjs)",
+        "MC_GIT_MINIMAL_PACK": "$(rlocationpath :orch_golden_minimal_pack)",
+        "MC_GIT_MINIMAL_TIP": "$(rlocationpath :orch_golden_minimal_tip)",
     },
     timeout = "moderate",
 )

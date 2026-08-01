@@ -161,7 +161,10 @@ export class GitRemoteOrchestrator {
     this.buildPushPack = opts.buildPushPack;
     // null = explicitly off; undefined = no cache on direct construction.
     this.packCache = opts.packCache === null ? undefined : (opts.packCache ?? undefined);
-    this.sparseCone = (opts.sparseCone ?? [])
+    // Prefer explicit orch opts; else inherit engine load-time cone (D13 / multi-mount).
+    const coneSrc =
+      opts.sparseCone !== undefined ? opts.sparseCone : (engine.sparseCone ?? []);
+    this.sparseCone = coneSrc
       .map((p) => p.replace(/^\/+/, "").replace(/\/+$/, ""))
       .filter(Boolean);
     this.importPackOpts = {
@@ -344,14 +347,157 @@ export class GitRemoteOrchestrator {
    * Resolve public locator + host credential + pushAction from policies.
    * Guest body secrets (token/auth/…) are rejected in resolveGitRemote (D7).
    * Dual-host: BEAM must use host-owned auth/opts only — see connections.ts table.
+   *
+   * D9: when only `remote` (or bare fetch/pull/push after clone) is given, fill
+   * `url` / `connection` from engine config (`remote.<name>.url` / `.agentos`)
+   * written by {@link configureCloneRemote}.
    */
-  private resolve(req: GitRequest) {
-    return resolveGitRemote((req.args ?? {}) as Record<string, unknown>, {
+  private async resolve(req: GitRequest) {
+    const op = String(req.op ?? "").toLowerCase();
+    const args: Record<string, unknown> = {
+      ...((req.args ?? {}) as Record<string, unknown>),
+    };
+    await this.fillRemoteArgsFromConfig(op, args);
+    return resolveGitRemote(args, {
       connections: this.connections,
       policies: this.policies,
       remoteUrls: this.remoteUrls,
       remoteConnections: this.remoteConnections,
     });
+  }
+
+  /** config get → trimmed stdout or null. */
+  private async configGet(key: string): Promise<string | null> {
+    const r = await this.engine.run({
+      op: "config",
+      args: { action: "get", key },
+    });
+    if (!r.ok) return null;
+    const v = String(r.stdout ?? "").trim();
+    return v.length > 0 ? v : null;
+  }
+
+  /**
+   * D9: after clone, fill empty locator from `remote.<name>.url` (+ optional
+   * `remote.<name>.agentos`). For fetch/pull/push with no url/remote/connection,
+   * default to `origin` so `git pull` works without re-passing the URL.
+   */
+  private async fillRemoteArgsFromConfig(
+    op: string,
+    args: Record<string, unknown>,
+  ): Promise<void> {
+    const hasUrl = typeof args.url === "string" && args.url.trim().length > 0;
+    if (hasUrl) return;
+
+    let remoteName =
+      typeof args.remote === "string" && args.remote.trim()
+        ? args.remote.trim()
+        : undefined;
+
+    if (
+      !remoteName &&
+      !args.connection &&
+      !args.agentos &&
+      (op === "fetch" || op === "pull" || op === "push")
+    ) {
+      remoteName = "origin";
+      args.remote = remoteName;
+    }
+    if (!remoteName) return;
+
+    // Host-provided remoteUrls win; only consult engine config when missing.
+    if (!this.remoteUrls[remoteName]) {
+      const url = await this.configGet(`remote.${remoteName}.url`);
+      if (url) args.url = url;
+    }
+    if (
+      !args.connection &&
+      !args.agentos &&
+      !this.remoteConnections[remoteName]
+    ) {
+      const agentos = await this.configGet(`remote.${remoteName}.agentos`);
+      if (agentos) args.connection = agentos;
+    }
+  }
+
+  /**
+   * D9: after successful clone.apply — set remote.origin.url (public), optional
+   * remote.origin.agentos, branch.<name>.remote + .merge, and remote-tracking
+   * ref so subsequent fetch/pull can use tracking without manual setup.
+   */
+  private async configureCloneRemote(
+    binding: { url: string; connectionRef?: string },
+    refName: string,
+    tipHash: string,
+  ): Promise<GitResponse | null> {
+    const remoteName = "origin";
+
+    const add = await this.engine.run({
+      op: "remote",
+      args: { action: "add", name: remoteName, url: binding.url },
+    });
+    if (!add.ok) {
+      // Re-clone / pre-existing remote: force public URL via config.
+      const setUrl = await this.engine.run({
+        op: "config",
+        args: {
+          action: "set",
+          key: `remote.${remoteName}.url`,
+          value: binding.url,
+        },
+      });
+      if (!setUrl.ok) return setUrl;
+    }
+
+    if (binding.connectionRef) {
+      const agentos = await this.engine.run({
+        op: "config",
+        args: {
+          action: "set",
+          key: `remote.${remoteName}.agentos`,
+          value: binding.connectionRef,
+        },
+      });
+      if (!agentos.ok) return agentos;
+    }
+
+    let short = "main";
+    let merge = refName;
+    if (refName.startsWith("refs/heads/")) {
+      short = refName.slice("refs/heads/".length);
+      merge = refName;
+    } else if (refName.startsWith("refs/")) {
+      const slash = refName.lastIndexOf("/");
+      short = slash >= 0 ? refName.slice(slash + 1) : refName;
+      merge = refName;
+    } else {
+      short = refName || "main";
+      merge = `refs/heads/${short}`;
+    }
+
+    for (const [key, value] of [
+      [`branch.${short}.remote`, remoteName],
+      [`branch.${short}.merge`, merge],
+    ] as const) {
+      const cfg = await this.engine.run({
+        op: "config",
+        args: { action: "set", key, value },
+      });
+      if (!cfg.ok) return cfg;
+    }
+
+    // Remote-tracking tip (parity with fetch.apply) so pull/status see origin/*.
+    if (tipHash && /^[0-9a-f]{40}$/i.test(tipHash) && short) {
+      const tr = await this.engine.run({
+        op: "refs.import",
+        args: {
+          name: `refs/remotes/${remoteName}/${short}`,
+          hash: tipHash,
+        },
+      });
+      if (!tr.ok) return tr;
+    }
+    return null;
   }
 
   /**
@@ -516,7 +662,7 @@ export class GitRemoteOrchestrator {
   }
 
   private async clone(req: GitRequest): Promise<GitResponse> {
-    const resolved = this.resolve(req);
+    const resolved = await this.resolve(req);
     if (!resolved.ok) {
       return { ok: false, code: resolved.code, stdout: "", stderr: resolved.stderr };
     }
@@ -616,6 +762,14 @@ export class GitRemoteOrchestrator {
     });
     if (!apply.ok) return apply;
 
+    // D9: remote + branch tracking so pull works without re-passing URL.
+    const trackErr = await this.configureCloneRemote(
+      binding,
+      refName,
+      head.hash,
+    );
+    if (trackErr) return trackErr;
+
     const sparseErr = await this.applySparseCone(refName);
     if (sparseErr) return sparseErr;
 
@@ -634,7 +788,7 @@ export class GitRemoteOrchestrator {
     // Incremental path: no re-init (PR11 critique). Import packs then fetch.apply.
     // Pull = fetch + local FF only (R34).
     const pull = !!opts.pull;
-    const resolved = this.resolve(req);
+    const resolved = await this.resolve(req);
     if (!resolved.ok) {
       return { ok: false, code: resolved.code, stdout: "", stderr: resolved.stderr };
     }
@@ -774,7 +928,7 @@ export class GitRemoteOrchestrator {
       };
     }
 
-    const resolved = this.resolve(req);
+    const resolved = await this.resolve(req);
     if (!resolved.ok) {
       return { ok: false, code: resolved.code, stdout: "", stderr: resolved.stderr };
     }
@@ -1119,11 +1273,18 @@ export function gitHostCallHandler(
   const { engines, defaultMount } = normalizeGitEngineMap(engineOrMap);
 
   // One orchestrator per engine — never share mutable orch state across mounts.
+  // Per-engine sparseCone (from GitEngine.load) wins over handler-level default
+  // so multi-mount `gitMounts: [{ path, sparseCone }]` is not filter-only theater.
   const orchByEngine = new Map<GitEngine, GitRemoteOrchestrator>();
   const orchFor = (engine: GitEngine): GitRemoteOrchestrator => {
     let orch = orchByEngine.get(engine);
     if (!orch) {
-      orch = new GitRemoteOrchestrator(engine, { ...opts, packCache });
+      const engineCone = engine.sparseCone;
+      orch = new GitRemoteOrchestrator(engine, {
+        ...opts,
+        packCache,
+        sparseCone: engineCone ?? opts?.sparseCone,
+      });
       orchByEngine.set(engine, orch);
     }
     return orch;

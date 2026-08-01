@@ -151,14 +151,40 @@ Empty pack on a non-delete push fails closed (`git: empty pack refused for non-d
 Connection origin policy, max pack size, and no-URL-credentials policy apply to push URLs the
 same as fetch/clone. Secrets only in BEAM request headers.
 
+### Monorepo materialization (M7 v1 / D13)
+
+**Product path for large trees:** shallow clone + cone sparse — **not** partial-clone filter alone.
+
+| Step | Behaviour |
+|------|-----------|
+| **Shallow default** | Product clone/fetch uses `depth=1` unless `args.depth` overrides (`depth<=0` = full history) |
+| **Cone sparse** | JS `gitSparseCone` / `gitMounts[].sparseCone` / BEAM `attach_git(sparse_cone: …)` → orch after `clone.apply` runs engine `sparse-set` then `checkout` so the worktree only materializes cone prefixes |
+| **gitfs / Port mount** | Guest sees the post-sparse worktree. JS gitfs also projects only cone prefixes (defense in depth). BEAM Port mounts the Port worktree root after sparse-set |
+
+```text
+clone (depth=1) → import_pack → refs.import → clone.apply
+  → sparse-set(patterns) → checkout(HEAD)   # when cone configured
+  → guest/gitfs sees cone paths only
+```
+
+**Out of this chunk (not the M7 v1 story):** full promisor remotes, on-demand lazy blob fetch,
+missing-object re-fetch after `blob:none` / `tree:0`, and “filter wire only” without worktree
+usability. Advertising `filter` on upload-pack is optional wire support — it does **not** replace
+shallow + cone sparse for monorepo usability. Servers/fixtures that ignore filter still return a
+full pack; the engine still materializes whatever objects arrived.
+
+**Honest limits (cone-only):** multi-pattern prefixes + basic `!path` negation written into
+`sparse-checkout` — **not** full git sparse-checkout pattern language. Prefer listing the
+directories agents need (`["src", "docs"]`) rather than relying on filter or promisor.
+
 ### Partial clone filter (R36)
 
 Clone/fetch accept optional `args.filter` (e.g. `blob:none`, `tree:0`). The host smart-HTTP
 upload-pack request advertises the `filter` capability and sends a `filter <spec>` pkt-line.
 **Limits:** the engine still materializes what the pack contains — there is no on-demand blob
 promisor/fetch for missing objects yet. Servers or fixtures that ignore filter return a full pack
-and continue to work. Prefer shallow `depth` + cone sparse for monorepo workflows until full
-partial materialization lands.
+and continue to work. **Do not treat filter as monorepo materialization** — use
+[shallow + cone sparse](#monorepo-materialization-m7-v1--d13) above.
 
 C `smart_http` / C orchestrator (Port type-5) are **test/fixture only** — not the product server
 remote path. Dual-host product orch is **TS (JS) ↔ BEAM (server)** sharing apply-op + algorithm
@@ -199,15 +225,80 @@ mc.create({
 });
 ```
 
-### Multi-mount / `args.mount` (R63–R65)
+### Multi-mount / `args.mount` (R63–R65 / D21)
 
-- **JS:** `gitMounts: [{ path, sparseCone? }]` loads one `GitEngine` per path, registers a demuxing
-  `registerGitHostCall` handler, and mounts each gitfs. Remote bodies may set `args.mount` or
-  top-level `mount` to select the engine; omit → `defaultMount` (first entry).
-- **BEAM:** `attach_git(mount_path: …)` may be called multiple times with **distinct** paths.
-  Same path → `{:error, :git_already_attached}`. Host_call `"git"` demuxes the same way.
-- **Never** share one mutable engine across mounts without going through demux (single-writer per
-  engine / Port).
+Multi-repo is supported when each mount path owns its own engine (K21). Remotes on host_call
+`"git"` demux to the engine for that path. Single-writer is **per mount**, not global: two mounts
+may run remotes concurrently; two remotes on the **same** mount serialize.
+
+#### Product setup
+
+| Host | How to attach two engines | Default when `mount` omitted |
+|------|---------------------------|------------------------------|
+| **JS** | `mc.create({ experimentalGitEngine: true, gitMounts: [{ path: "/workspace/a" }, { path: "/workspace/b", sparseCone: ["src"] }], … })` | First `gitMounts` entry |
+| **BEAM** | `ControlPlane.attach_git(id, mount_path: "/workspace/a", …)` then again with a **distinct** `mount_path: "/workspace/b"` | Sole engine if only one attached; otherwise first attached (prefer explicit `args.mount`) |
+
+Same path while live fails closed: JS throws on duplicate `gitMounts` path; BEAM returns
+`{:error, :git_already_attached}`. Detach one path with BEAM `detach_git(id, mount_path: …)`;
+JS closes the VM (all engines).
+
+```ts
+// JS product create — two mounts, remotes demux by args.mount
+const vm = await mc.create({
+  experimentalGitEngine: true,
+  gitEngineBaseUrl: new URL("./git-engine/", import.meta.url).href,
+  gitMounts: [
+    { path: "/workspace/app" },
+    { path: "/workspace/lib", sparseCone: ["src"] },
+  ],
+  connections: [{ ref: "github.user.work", auth: { kind: "bearer", token }, origins: ["https://github.com"] }],
+});
+// Guest (CAP_NET): host_call "git" body includes mount to select engine
+// {"op":"clone","args":{"url":"https://github.com/org/app.git","mount":"/workspace/app"}}
+// {"op":"clone","args":{"url":"https://github.com/org/lib.git","mount":"/workspace/lib"}}
+```
+
+```elixir
+# BEAM — two Ports, two worktree roots
+:ok = AgentOS.ControlPlane.attach_git(id, executable: path, mount_path: "/workspace/a", root: root_a, connections: conns)
+:ok = AgentOS.ControlPlane.attach_git(id, executable: path, mount_path: "/workspace/b", root: root_b, connections: conns)
+# host_call "git" body: {"op":"clone","args":{"url":"…","mount":"/workspace/a"}}
+```
+
+#### Demux rules (`args.mount` / top-level `mount`)
+
+| Request | Behaviour |
+|---------|-----------|
+| `args.mount` or top-level `mount` = registered path | Route to that engine / Port |
+| Mount omitted, one engine only | That engine (JS single-engine path; BEAM sole attach) |
+| Mount omitted, multi-engine | JS uses `defaultMount` (first `gitMounts` entry); BEAM prefers sole/first — **set mount explicitly** |
+| Unknown mount path | Fail closed: `ok:false`, code 1, stderr `git: unknown mount …` — **no network dial** |
+| Duplicate path attach | Fail closed (see above) |
+
+Accept either form:
+
+```json
+{"op":"clone","args":{"url":"https://example.com/r.git","mount":"/workspace/a"}}
+{"op":"clone","mount":"/workspace/b","args":{"url":"https://example.com/r.git"}}
+```
+
+#### Concurrency
+
+| Scope | Rule |
+|-------|------|
+| Same mount | Remote orch FIFO / single-flight (D2) — peak concurrent transport ≤ 1 |
+| Distinct mounts | Independent queues — remotes may overlap (D21) |
+| Snapshot | Still blocked while **any** git remote host_call is inflight (D19) |
+
+**Never** share one mutable engine or Port across mounts without demux. One engine map / one
+`git_engines` table owns the path → engine lookup.
+
+#### Tests / proof
+
+- **JS:** `//memcontainers/sdk-js/core:git_remote_test` — dual clone via `gitHostCallHandler` +
+  `args.mount` with `minimal.pack` worktree isolation; concurrent two-engine clones.
+- **BEAM:** `AgentOS.Git.OrchestratorTest` — `R65/D21 host_call args.mount two clones into two
+  engines` (worktree README per root) + `D21 concurrent remotes on two mounts may overlap`.
 
 ## `experimentalGitEngine` graduation criteria (P3.2)
 

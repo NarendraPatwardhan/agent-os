@@ -59,8 +59,10 @@ defmodule AgentOS.Vm do
     :booted_at,
     :last_active_ms,
     :snapshot_base,
-    # Multi-mount git (R63–R65 / K21 per path): mount_path => %{pid, mon}.
+    # Multi-mount git (R63–R65 / K21 per path):
+    # mount_path => %{pid, mon, sparse_cone: [prefix, ...]}.
     # One Port engine per mount path; single-writer per engine (not shared).
+    # sparse_cone is per-mount (D20 / JS gitSparseCone | gitMounts[].sparseCone).
     git_engines: %{},
     # Host-owned remote policy (never from guest body). See attach_git/2.
     # Shared across mounts on this VM (policy is host-owned, not per-repo).
@@ -454,7 +456,7 @@ defmodule AgentOS.Vm do
   Attach a BEAM-owned native `git-engine` Port for this VM (GIT.md K15/K22 / K21 / PR11).
 
   Host-owned remote policy is stored on the VM actor and forwarded into
-  `GitEngine.handle_host_call/4` / orch via `git_host_opts/1`. The guest body
+  `GitEngine.handle_host_call/4` / orch via `git_host_opts_for_mount/2`. The guest body
   never supplies secrets, origins, or push policy.
 
   ## Product path — connections catalog (PR11)
@@ -503,6 +505,11 @@ defmodule AgentOS.Vm do
   * `:on_push_approval` / `:push_approval` / `:require_approval` — push approval
     opts forwarded to `AgentOS.Git.Orchestrator` via host_call demux (R31).
     Prefer connection `:policies` for product push gating when available.
+  * `:sparse_cone` / `:git_sparse_cone` — list of cone-mode path prefixes
+    (e.g. `["src", "docs"]`) stored **on this mount** and applied after
+    clone via Port `sparse-set` (D20 / JS `gitSparseCone` / `sparseCone`).
+    **Cone-only** — not full sparse-checkout pattern language. Gitfs projects
+    the post-sparse worktree (no separate mount-side cone filter on BEAM).
 
   **K21 / R63–R66:** one engine **per mount path**. A second attach with a
   **different** `mount_path` succeeds (multi-repo). Same path while live returns
@@ -510,7 +517,8 @@ defmodule AgentOS.Vm do
   `detach_git/2` with `:mount_path` to replace one mount, or without to detach all.
 
   Latest attach **refreshes** shared host policy (connections / policies /
-  origins / auth / transport) for all mounts on this VM.
+  origins / auth / transport) for all mounts on this VM. Sparse cone is
+  **per-mount** and only applies to the attach that set it.
   """
   @spec attach_git(server(), keyword()) :: :ok | {:error, term()}
   def attach_git(server, opts \\ []) when is_list(opts),
@@ -1267,6 +1275,8 @@ defmodule AgentOS.Vm do
     require_approval = Keyword.get(opts, :require_approval, false) == true
     on_push_approval = Keyword.get(opts, :on_push_approval)
     push_approval = Keyword.get(opts, :push_approval, false) == true
+    # D20: per-mount cone prefixes (JS gitSparseCone / sparseCone).
+    sparse_cone = git_sparse_cone_from_opts(opts)
 
     # Unlinked start + monitor so engine crash does not kill the VM actor.
     case AgentOS.GitEngine.start(
@@ -1282,7 +1292,11 @@ defmodule AgentOS.Vm do
         case Nif.mount(state.nif, mount_path, read_only) do
           :ok ->
             engines =
-              Map.put(state.git_engines || %{}, mount_path, %{pid: pid, mon: ref})
+              Map.put(state.git_engines || %{}, mount_path, %{
+                pid: pid,
+                mon: ref,
+                sparse_cone: sparse_cone
+              })
 
             # Latest attach refreshes shared host policy (connections/policies/legacy/transport).
             {:ok,
@@ -1307,6 +1321,27 @@ defmodule AgentOS.Vm do
 
       {:error, reason} ->
         {:error, reason}
+    end
+  end
+
+  # D20: normalize cone prefixes — strip slashes, drop empties (JS parity).
+  defp git_sparse_cone_from_opts(opts) do
+    raw = Keyword.get(opts, :sparse_cone, Keyword.get(opts, :git_sparse_cone, []))
+
+    case raw do
+      list when is_list(list) ->
+        list
+        |> Enum.filter(&is_binary/1)
+        |> Enum.map(fn p ->
+          p
+          |> String.trim()
+          |> String.trim_leading("/")
+          |> String.trim_trailing("/")
+        end)
+        |> Enum.reject(&(&1 == ""))
+
+      _ ->
+        []
     end
   end
 
@@ -1781,6 +1816,7 @@ defmodule AgentOS.Vm do
   # Host-owned opts for GitEngine.handle_host_call / Orchestrator.
   # Product (PR11): connections + policies. Legacy flat allowlist/auth only
   # when connections empty so fixtures keep working during orch migration.
+  # Per-mount `:sparse_cone` is added by `git_host_opts_for_mount/2` (D20).
   defp git_host_opts(state) do
     connections = state.git_connections || []
     policies = state.git_policies || []
@@ -1833,6 +1869,21 @@ defmodule AgentOS.Vm do
       opts
     end
   end
+
+  # Shared policy opts + per-mount sparse cone for remote orch (D20).
+  defp git_host_opts_for_mount(state, mount) when is_binary(mount) do
+    opts = git_host_opts(state)
+
+    case Map.get(state.git_engines || %{}, mount) do
+      %{sparse_cone: cone} when is_list(cone) and cone != [] ->
+        Keyword.put(opts, :sparse_cone, cone)
+
+      _ ->
+        opts
+    end
+  end
+
+  defp git_host_opts_for_mount(state, _mount), do: git_host_opts(state)
 
   # R100: guest closed the host_call handle — cancel Task / drop queue.
   defp answer_git_event(
@@ -1924,7 +1975,7 @@ defmodule AgentOS.Vm do
   end
 
   defp start_git_remote_task(state, pid, handle, body, mount) do
-    orch_opts = git_host_opts(state)
+    orch_opts = git_host_opts_for_mount(state, mount)
 
     # async_nolink → owner receives {ref, result} then DOWN; NIF answer stays on Vm.
     task =

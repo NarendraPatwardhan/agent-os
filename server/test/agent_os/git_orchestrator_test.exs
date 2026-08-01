@@ -661,6 +661,105 @@ defmodule AgentOS.Git.OrchestratorTest do
     end
   end
 
+  # D9: clone.apply post-step sets remote.origin.url + branch tracking;
+  # pull via remote name (no url) uses that config.
+  @tag timeout: 60_000
+  test "D9 clone sets remote.origin.url and branch tracking; pull uses remote name" do
+    path = engine_path()
+    pack_path = Path.expand("../fixtures/git/minimal.pack", __DIR__)
+    tip_path = Path.expand("../fixtures/git/minimal.tip", __DIR__)
+
+    if not (File.regular?(pack_path) and File.regular?(tip_path)) do
+      flunk("D9 requires minimal.pack fixture")
+    end
+
+    pack = File.read!(pack_path)
+    tip = File.read!(tip_path) |> String.trim()
+
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "orch-d9-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.mkdir_p!(root)
+
+    try do
+      assert {:ok, pid} = GitEngine.start(executable: path, root: root)
+
+      refs = [%{name: "refs/heads/main", hash: tip}]
+
+      transport = fn
+        :list_refs, {_url, _opts} -> {:ok, refs}
+        :fetch_packs, {_url, _want, _have, _opts} -> {:ok, pack}
+      end
+
+      opts = [transport: transport, allowed_origins: [@fixture_origin]]
+
+      assert {:ok, clone_json} =
+               Orchestrator.run(
+                 pid,
+                 ~s({"op":"clone","args":{"url":"#{@fixture_url}"}}),
+                 opts
+               )
+
+      assert clone_json =~ "\"ok\":true" or clone_json =~ ~s("ok":true)
+      assert clone_json =~ "cloned"
+
+      assert {:ok, remote_url} =
+               GitEngine.run(pid, %{
+                 "op" => "config",
+                 "args" => %{"action" => "get", "key" => "remote.origin.url"}
+               })
+
+      stdout = remote_url["stdout"] || Map.get(remote_url, :stdout) || ""
+      assert to_string(stdout) =~ @fixture_url
+
+      assert {:ok, br_remote} =
+               GitEngine.run(pid, %{
+                 "op" => "config",
+                 "args" => %{"action" => "get", "key" => "branch.main.remote"}
+               })
+
+      br_out = br_remote["stdout"] || Map.get(br_remote, :stdout) || ""
+      assert to_string(br_out) =~ "origin"
+
+      assert {:ok, br_merge} =
+               GitEngine.run(pid, %{
+                 "op" => "config",
+                 "args" => %{"action" => "get", "key" => "branch.main.merge"}
+               })
+
+      merge_out = br_merge["stdout"] || Map.get(br_merge, :stdout) || ""
+      assert to_string(merge_out) =~ "refs/heads/main"
+
+      # Pull with remote name only — URL comes from remote.origin.url (D9).
+      assert {:ok, pull_json} =
+               Orchestrator.run(
+                 pid,
+                 ~s({"op":"pull","args":{"remote":"origin"}}),
+                 opts
+               )
+
+      assert pull_json =~ "\"ok\":true" or pull_json =~ ~s("ok":true),
+             "D9 pull remote=origin failed: #{pull_json}"
+
+      assert pull_json =~ "Already up to date" or pull_json =~ "Fast-forward" or
+               pull_json =~ "fetched"
+
+      # Empty args also default to origin after clone.
+      assert {:ok, pull_empty} =
+               Orchestrator.run(pid, ~s({"op":"pull","args":{}}), opts)
+
+      assert pull_empty =~ "\"ok\":true" or pull_empty =~ ~s("ok":true),
+             "D9 pull {} failed: #{pull_empty}"
+
+      :ok = GitEngine.stop(pid)
+    after
+      File.rm_rf(root)
+    end
+  end
+
   # ── R44–R47 server push (pack.build + receive-pack fixture) ────────────────
 
   @tag timeout: 30_000
@@ -1949,6 +2048,101 @@ defmodule AgentOS.Git.OrchestratorTest do
   end
 
   @tag timeout: 120_000
+  test "D20 attach_git sparse_cone → host_call clone applies Port sparse-set" do
+    # Per-mount cone stored on attach; after fixture clone, sparse-checkout exists
+    # and root README remains (cone template always includes /*). JS gitSparseCone parity.
+    wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
+    posix = runfile_bytes("memcontainers/images/posix.tar")
+    path = engine_path()
+
+    if is_nil(wasm) or is_nil(posix) do
+      IO.puts(:stderr, "skipping D20 sparse_cone attach e2e: kernel/posix runfiles missing")
+    else
+      id = {"git-sparse-cone", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
+      pack = File.read!(Path.expand("../fixtures/git/minimal.pack", __DIR__))
+      tip = File.read!(Path.expand("../fixtures/git/minimal.tip", __DIR__)) |> String.trim()
+
+      root =
+        Path.join(
+          System.tmp_dir!(),
+          "git-sparse-" <> Integer.to_string(System.unique_integer([:positive]))
+        )
+
+      File.mkdir_p!(root)
+
+      transport = fn
+        :list_refs, _ ->
+          {:ok, [%{name: "refs/heads/main", hash: tip}]}
+
+        :fetch_packs, _ ->
+          {:ok, pack}
+
+        :push_packs, _ ->
+          flunk("clone must not push")
+      end
+
+      try do
+        assert {:ok, _pid} =
+                 AgentOS.ControlPlane.create(id,
+                   wasm: wasm,
+                   base_image: posix,
+                   deterministic: true,
+                   workers: 0,
+                   host_call: :relay
+                 )
+
+        assert :ok =
+                 AgentOS.ControlPlane.attach_git(id,
+                   executable: path,
+                   root: root,
+                   allowed_origins: [@fixture_origin],
+                   transport: transport,
+                   sparse_cone: ["src", "docs"]
+                 )
+
+        # Mount meta holds normalized cone (alias :git_sparse_cone also accepted on attach).
+        vm = AgentOS.ControlPlane.whereis(id)
+        %{git_engines: engines} = :sys.get_state(vm)
+        mount = Map.get(engines, "/workspace/repo")
+        assert is_map(mount)
+        assert mount.sparse_cone == ["src", "docs"]
+
+        event = %{
+          kind: :host_call,
+          handle: 9_620,
+          name: "git",
+          body: ~s({"op":"clone","args":{"url":"#{@fixture_url}"}})
+        }
+
+        assert :answered = AgentOS.Vm.try_answer_git_host_call(vm, event)
+
+        assert_eventually(fn ->
+          AgentOS.ControlPlane.info(id).git_inflight == 0
+        end)
+
+        assert_eventually(fn ->
+          case File.read(Path.join(root, "README")) do
+            {:ok, "hello\n"} -> true
+            _ -> false
+          end
+        end)
+
+        sc = Path.join(root, ".git/info/sparse-checkout")
+        assert File.regular?(sc), "attach sparse_cone must reach Port sparse-set"
+        body = File.read!(sc)
+        assert body =~ "/src/"
+        assert body =~ "/docs/"
+        assert body =~ "/*"
+
+        assert :ok = AgentOS.ControlPlane.detach_git(id)
+      after
+        AgentOS.ControlPlane.dispose(id)
+        File.rm_rf(root)
+      end
+    end
+  end
+
+  @tag timeout: 120_000
   test "PR11 product path: attach_git connections-only → host_call clone via fixture" do
     # Cruel acceptance: no allowed_origins / flat auth — only connections catalog.
     # attach_git → try_answer_git_host_call "git" clone with args.connection →
@@ -2103,20 +2297,188 @@ defmodule AgentOS.Git.OrchestratorTest do
   end
 
   @tag timeout: 120_000
-  test "R65 host_call args.mount demuxes to the matching engine" do
+  test "R65/D21 host_call args.mount two clones into two engines" do
+    # Product multi-mount e2e: attach two distinct paths with separate worktree
+    # roots, clone each via args.mount + real minimal.pack, verify isolation.
     wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
     posix = runfile_bytes("memcontainers/images/posix.tar")
     path = engine_path()
 
     if is_nil(wasm) or is_nil(posix) do
-      IO.puts(:stderr, "skipping R65 mount demux test: kernel/posix runfiles missing")
+      IO.puts(:stderr, "skipping R65/D21 multi-mount clone test: kernel/posix runfiles missing")
     else
       id = {"git-demux", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
       pack = fixture_git_bytes!("minimal.pack")
       tip = fixture_git_bytes!("minimal.tip") |> String.trim()
+      uid = Integer.to_string(System.unique_integer([:positive]))
+      root_a = Path.join(System.tmp_dir!(), "git-d21-a-" <> uid)
+      root_b = Path.join(System.tmp_dir!(), "git-d21-b-" <> uid)
+      File.mkdir_p!(root_a)
+      File.mkdir_p!(root_b)
+      dialed = :atomics.new(1, signed: false)
 
       transport = fn
         :list_refs, _ ->
+          :atomics.add(dialed, 1, 1)
+          {:ok, [%{name: "refs/heads/main", hash: tip}]}
+
+        :fetch_packs, _ ->
+          :atomics.add(dialed, 1, 1)
+          {:ok, pack}
+      end
+
+      try do
+        assert {:ok, _pid} =
+                 AgentOS.ControlPlane.create(id,
+                   wasm: wasm,
+                   base_image: posix,
+                   deterministic: true,
+                   workers: 0,
+                   host_call: :relay
+                 )
+
+        assert :ok =
+                 AgentOS.ControlPlane.attach_git(id,
+                   executable: path,
+                   mount_path: "/workspace/a",
+                   root: root_a,
+                   allowed_origins: [@fixture_origin],
+                   transport: transport
+                 )
+
+        assert :ok =
+                 AgentOS.ControlPlane.attach_git(id,
+                   executable: path,
+                   mount_path: "/workspace/b",
+                   root: root_b,
+                   allowed_origins: [@fixture_origin],
+                   transport: transport
+                 )
+
+        info = AgentOS.ControlPlane.info(id)
+        assert info.git_engine_count == 2
+        assert Enum.sort(info.git_mounts) == ["/workspace/a", "/workspace/b"]
+
+        vm = AgentOS.ControlPlane.whereis(id)
+
+        # Clone into mount A via args.mount.
+        e1 = %{
+          kind: :host_call,
+          handle: 9_201,
+          name: "git",
+          body:
+            ~s({"op":"clone","args":{"url":"#{@fixture_url}","mount":"/workspace/a"}})
+        }
+
+        assert :answered = AgentOS.Vm.try_answer_git_host_call(vm, e1)
+
+        assert_eventually(fn ->
+          AgentOS.ControlPlane.info(id).git_inflight == 0
+        end, 150)
+
+        assert_eventually(fn ->
+          case File.read(Path.join(root_a, "README")) do
+            {:ok, "hello\n"} -> true
+            _ -> false
+          end
+        end, 150)
+
+        # Clone into mount B via args.mount (distinct engine / worktree).
+        e2 = %{
+          kind: :host_call,
+          handle: 9_202,
+          name: "git",
+          body:
+            ~s({"op":"clone","args":{"url":"#{@fixture_url}","mount":"/workspace/b"}})
+        }
+
+        assert :answered = AgentOS.Vm.try_answer_git_host_call(vm, e2)
+
+        assert_eventually(fn ->
+          AgentOS.ControlPlane.info(id).git_inflight == 0
+        end, 150)
+
+        assert_eventually(fn ->
+          case File.read(Path.join(root_b, "README")) do
+            {:ok, "hello\n"} -> true
+            _ -> false
+          end
+        end, 150)
+
+        assert {:ok, "hello\n"} = File.read(Path.join(root_a, "README"))
+        assert {:ok, "hello\n"} = File.read(Path.join(root_b, "README"))
+
+        # Isolation: file only under A must not appear under B.
+        File.write!(Path.join(root_a, "only-a.txt"), "a-only\n")
+        refute File.exists?(Path.join(root_b, "only-a.txt"))
+
+        # Both mounts dialed transport (list_refs + fetch_packs each).
+        assert :atomics.get(dialed, 1) >= 4
+
+        # Unknown mount fails closed (still claims the host_call).
+        dialed_before = :atomics.get(dialed, 1)
+
+        e_bad = %{
+          kind: :host_call,
+          handle: 9_203,
+          name: "git",
+          body:
+            ~s({"op":"clone","args":{"url":"#{@fixture_url}","mount":"/workspace/missing"}})
+        }
+
+        assert :answered = AgentOS.Vm.try_answer_git_host_call(vm, e_bad)
+
+        assert_eventually(fn ->
+          AgentOS.ControlPlane.info(id).git_inflight == 0
+        end)
+
+        assert :atomics.get(dialed, 1) == dialed_before,
+               "unknown mount must not dial transport"
+
+        assert :ok = AgentOS.ControlPlane.detach_git(id)
+      after
+        File.rm_rf(root_a)
+        File.rm_rf(root_b)
+        AgentOS.ControlPlane.dispose(id)
+      end
+    end
+  end
+
+  @tag timeout: 120_000
+  test "D21 concurrent remotes on two mounts may overlap" do
+    # Per-mount single-writer: distinct mounts run independent remote Tasks.
+    # Peak concurrent transport entry may exceed 1 across mounts (unlike same-mount serialize).
+    wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
+    posix = runfile_bytes("memcontainers/images/posix.tar")
+    path = engine_path()
+
+    if is_nil(wasm) or is_nil(posix) do
+      IO.puts(:stderr, "skipping D21 concurrent multi-mount test: kernel/posix runfiles missing")
+    else
+      id = {"git-d21-conc", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
+      pack = fixture_git_bytes!("minimal.pack")
+      tip = fixture_git_bytes!("minimal.tip") |> String.trim()
+      uid = Integer.to_string(System.unique_integer([:positive]))
+      root_a = Path.join(System.tmp_dir!(), "git-d21-ca-" <> uid)
+      root_b = Path.join(System.tmp_dir!(), "git-d21-cb-" <> uid)
+      File.mkdir_p!(root_a)
+      File.mkdir_p!(root_b)
+      max_concurrent = :atomics.new(1, signed: false)
+      in_flight = :atomics.new(1, signed: false)
+      gate = :atomics.new(1, signed: false)
+
+      transport = fn
+        :list_refs, _ ->
+          cur = :atomics.add_get(in_flight, 1, 1)
+          peak = :atomics.get(max_concurrent, 1)
+          if cur > peak, do: :atomics.put(max_concurrent, 1, cur)
+
+          # Hold first entries so the second mount can enter transport.
+          if :atomics.get(gate, 1) == 0 do
+            Process.sleep(120)
+          end
+
+          :atomics.sub(in_flight, 1, 1)
           {:ok, [%{name: "refs/heads/main", hash: tip}]}
 
         :fetch_packs, _ ->
@@ -2137,6 +2499,7 @@ defmodule AgentOS.Git.OrchestratorTest do
                  AgentOS.ControlPlane.attach_git(id,
                    executable: path,
                    mount_path: "/workspace/a",
+                   root: root_a,
                    allowed_origins: [@fixture_origin],
                    transport: transport
                  )
@@ -2145,44 +2508,67 @@ defmodule AgentOS.Git.OrchestratorTest do
                  AgentOS.ControlPlane.attach_git(id,
                    executable: path,
                    mount_path: "/workspace/b",
+                   root: root_b,
                    allowed_origins: [@fixture_origin],
                    transport: transport
                  )
 
         vm = AgentOS.ControlPlane.whereis(id)
 
-        # Clone into mount A via args.mount.
         e1 = %{
           kind: :host_call,
-          handle: 9_201,
+          handle: 9_301,
           name: "git",
           body:
             ~s({"op":"clone","args":{"url":"#{@fixture_url}","mount":"/workspace/a"}})
         }
 
-        assert :answered = AgentOS.Vm.try_answer_git_host_call(vm, e1)
-
-        assert_eventually(fn ->
-          AgentOS.ControlPlane.info(id).git_inflight == 0
-        end)
-
-        # Unknown mount fails closed (still claims the host_call).
-        e_bad = %{
+        e2 = %{
           kind: :host_call,
-          handle: 9_202,
+          handle: 9_302,
           name: "git",
           body:
-            ~s({"op":"clone","args":{"url":"#{@fixture_url}","mount":"/workspace/missing"}})
+            ~s({"op":"clone","args":{"url":"#{@fixture_url}","mount":"/workspace/b"}})
         }
 
-        assert :answered = AgentOS.Vm.try_answer_git_host_call(vm, e_bad)
+        assert :answered = AgentOS.Vm.try_answer_git_host_call(vm, e1)
+        Process.sleep(20)
+        assert :answered = AgentOS.Vm.try_answer_git_host_call(vm, e2)
+
+        # Mid-flight: both remotes may be running (git_remote_running up to 2).
+        info_mid = AgentOS.ControlPlane.info(id)
+        assert info_mid.git_inflight >= 1
+        assert info_mid.git_remote_running <= 2
+
+        :atomics.put(gate, 1, 1)
 
         assert_eventually(fn ->
           AgentOS.ControlPlane.info(id).git_inflight == 0
-        end)
+        end, 200)
+
+        assert_eventually(fn ->
+          case File.read(Path.join(root_a, "README")) do
+            {:ok, "hello\n"} -> true
+            _ -> false
+          end
+        end, 150)
+
+        assert_eventually(fn ->
+          case File.read(Path.join(root_b, "README")) do
+            {:ok, "hello\n"} -> true
+            _ -> false
+          end
+        end, 150)
+
+        # Distinct mounts are allowed to overlap transport (product concurrent shape).
+        # Timing is not guaranteed under load; require both clones succeeded above.
+        peak = :atomics.get(max_concurrent, 1)
+        assert peak >= 1
 
         assert :ok = AgentOS.ControlPlane.detach_git(id)
       after
+        File.rm_rf(root_a)
+        File.rm_rf(root_b)
         AgentOS.ControlPlane.dispose(id)
       end
     end

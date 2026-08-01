@@ -256,6 +256,10 @@ defmodule AgentOS.ControlPlane do
 
   Multi-mount (R63–R65): call again with a **different** `:mount_path` to attach
   another engine. Same path while live → `{:error, :git_already_attached}`.
+
+  Sparse cone (D20): `:sparse_cone` / `:git_sparse_cone` list of prefixes is
+  stored per mount and applied after clone (`sparse-set`), matching JS
+  `gitSparseCone` / `gitMounts[].sparseCone`.
   """
   @spec attach_git(Vm.id(), keyword()) :: :ok | {:error, term()}
   def attach_git(id, opts \\ []), do: with_vm(id, &Vm.attach_git(&1, opts))

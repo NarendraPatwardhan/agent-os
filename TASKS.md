@@ -50,7 +50,7 @@ Verifier artifacts: `VERIFY_CHUNK_N.md` (PASS required before next chunk).
 | D6 | Connection-ref remotes on server | **DONE** | Guest `args.connection`/`agentos` → `Connections.resolve_remote/2`; unknown ref / empty origins fail closed; orch clone with connection-only (no `allowed_origins`); `Vm.git_host_opts` forwards `connections`+`policies` |
 | D7 | Guest body cannot carry secrets | **DONE** | JS `guestArgsCarrySecrets` reject; BEAM `guest_args_carry_secrets?` → `:guest_secrets_forbidden`; fail tests both hosts (JS `git_connections.test.ts`, BEAM `guest body with fake token field rejected before dial`) — never splice from guest JSON |
 | D8 | Auth kinds parity catalog e2e | **DONE** | BEAM `SmartHttp.auth_headers` none/bearer/header/basic (+ string keys); connection catalog bearer e2e orch+Vm; JS `spliceCredentialHeaders` none/bearer/header/query; catalog connection auth kinds unit + orch fixture path |
-| D9 | clone.apply sets remote + tracking for usable pull | **OPEN** | fetch.apply updates remote-tracking; `branch.*` / `remote.*` config after clone incomplete |
+| D9 | clone.apply sets remote + tracking for usable pull | **DONE** | Orch post-clone: `remote add origin` + `branch.<name>.remote`/`.merge` + `refs/remotes/origin/*`; resolve fills `url` from `remote.<name>.url` (or remote list) so pull/fetch with `remote:origin` or empty args works. Engine `config get` uses `get_string_buf` (live config). JS `git_remote.test` D9; BEAM `D9 clone sets remote…` in `git_orchestrator_test.exs` |
 | D10 | Push approval from connection policy both hosts | **DONE** | JS `evaluatePushPolicy` + orch block/require_approval; BEAM `Connections.evaluate_push_policy` + `policies` on attach_git; tests `push policy block fails before dial`, `require_approval fails closed`, JS `git_push.test.ts` / `git_connections.test.ts` |
 
 ### P2 — PR13 packs
@@ -59,7 +59,7 @@ Verifier artifacts: `VERIFY_CHUNK_N.md` (PASS required before next chunk).
 |----|-------------|--------|-------------------|
 | D11 | Stream download → chunked import_pack | **DONE** | BEAM stream→file+chunked import_pack (smart_http.ex, orchestrator.ex); JS stream fetchPacks+importPackStream (smart-http.ts, pack-cache.ts); 64MiB fail-closed tests |
 | D12 | Disk CA pack cache JS + BEAM | **DONE** | BEAM PackCache disk {:disk,dir}/AGENTOS_GIT_PACK_CACHE; JS DiskPackCache via MC_GIT_PACK_CACHE in defaultProcessPackCache; credential-free keys; second-clone tests |
-| D13 | Usable monorepo materialization (not filter-only) | **OPEN** | Filter wire only; no complete M7 story |
+| D13 | Usable monorepo materialization (not filter-only) | **DONE** | M7 v1 = shallow `depth=1` + cone sparse (not filter/promisor). JS: `gitSparseCone`/`GitEngine.sparseCone` → orch `applySparseCone` post-`clone.apply` (`sparse-set`+checkout); gitfs cone + engine worktree prune. BEAM: orch `:sparse_cone` post-clone; `attach_git(sparse_cone:)` per-mount → `git_host_opts_for_mount` (D20). Engine `op_sparse_set` prunes out-of-cone worktree (libgit2 checkout alone leaves paths). Docs: `docs/git.md` Monorepo materialization (M7 v1 / D13). Tests: JS `git_remote.test` D13 multi-path pack→clone+sparse (depth=1, MEMFS+gitfs hide `other/`); BEAM `git_engine_pack_test` D13 monorepo multi-path clone+sparse; D20 sparse-checkout + attach e2e |
 | D14 | Push haves dual-host production-ready | **DONE** | C `pack.build`/`ge_pack_build` haves (`engine.c`); JS `bridge.packBuild`+orch lease oldHash; BEAM `GitEngine.pack_build/3` haves; tests `abi_fixture_test`, `git_push_test`, orch R48 |
 | D15 | Stream stdout beyond out/last | **OPEN** | truncated + out/last only |
 
@@ -76,8 +76,8 @@ Verifier artifacts: `VERIFY_CHUNK_N.md` (PASS required before next chunk).
 
 | ID | Requirement | Status | Evidence / missing |
 |----|-------------|--------|-------------------|
-| D20 | Sparse cone on BEAM attach = JS | **OPEN** | JS `gitSparseCone`; BEAM not equivalent |
-| D21 | Multi-mount e2e two clones + docs | **OPEN** | Demux code landed; product e2e/docs incomplete |
+| D20 | Sparse cone on BEAM attach = JS | **DONE** | BEAM `attach_git(:sparse_cone/:git_sparse_cone)` stores prefixes per mount; `git_host_opts_for_mount` → orch; post-`clone.apply` Port `sparse-set` (+ checkout) in `orchestrator.ex` (JS `applySparseCone` parity). Gitfs = post-sparse worktree projection. Tests: `git_engine_pack_test` sparse-checkout content; `git_orchestrator_test` `D20 attach_git sparse_cone → host_call clone applies Port sparse-set` |
+| D21 | Multi-mount e2e two clones + docs | **DONE** | Product demux + dual clone: JS `git_remote_test` two engines via `gitHostCallHandler`/`args.mount` + real `minimal.pack` worktree isolation + concurrent two-mount clones; BEAM `R65/D21 host_call args.mount two clones into two engines` + `D21 concurrent remotes on two mounts may overlap` (attach_git ×2, separate roots, README hello each, unknown mount no dial). Docs: `docs/git.md` multi-mount section (setup, demux table, concurrency, proof). OTP26 JSON fallback for Bazel orch decode. |
 | D22 | Symlink/special file policy | **OPEN** | Mostly skipped |
 
 ### P5 — Submodules

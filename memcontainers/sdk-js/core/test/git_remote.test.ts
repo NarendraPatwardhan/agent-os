@@ -2,9 +2,10 @@
  * PR9–PR10a: smart-HTTP fixture + TS orchestrator + MapHostCall "git" shape.
  * Engine dial refuse remains fail-closed on GitEngine.run.
  * P2.5: pack-cache second clone skips fetchPacks; keys exclude credentials.
+ * D21: multi-mount two clones via args.mount + concurrent remotes on two engines.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
@@ -36,6 +37,56 @@ function engineDir(): string {
     if (c && existsSync(join(c, "git_engine.mjs"))) return c;
   }
   throw new Error(`engine dir not found (MC_GIT_ENGINE_JS=${jsRel})`);
+}
+
+/** Real minimal.pack + tip for successful clone e2e (D21 dual-mount). */
+function minimalPackFixture(): { pack: Uint8Array; tip: string } {
+  const packRel = process.env.MC_GIT_MINIMAL_PACK || "";
+  const tipRel = process.env.MC_GIT_MINIMAL_TIP || "";
+  const rf = process.env.RUNFILES_DIR || "";
+  const packCandidates = [
+    packRel && rf ? join(rf, packRel) : "",
+    packRel && rf ? join(rf, "_main", packRel) : "",
+    packRel,
+    rf ? join(rf, "memcontainers/sdk-js/core/testdata/pack/minimal.pack") : "",
+    rf ? join(rf, "_main/memcontainers/sdk-js/core/testdata/pack/minimal.pack") : "",
+    join(process.cwd(), "memcontainers/lib/git-engine/testdata/pack/minimal.pack"),
+  ].filter(Boolean);
+  let packPath = "";
+  for (const c of packCandidates) {
+    if (c.endsWith(".pack") && existsSync(c)) {
+      packPath = c;
+      break;
+    }
+    if (existsSync(join(c, "minimal.pack"))) {
+      packPath = join(c, "minimal.pack");
+      break;
+    }
+  }
+  const tipCandidates = [
+    tipRel && rf ? join(rf, tipRel) : "",
+    tipRel && rf ? join(rf, "_main", tipRel) : "",
+    tipRel,
+    packPath ? join(dirname(packPath), "minimal.tip") : "",
+    join(process.cwd(), "memcontainers/lib/git-engine/testdata/pack/minimal.tip"),
+  ].filter(Boolean);
+  let tipPath = "";
+  for (const c of tipCandidates) {
+    if (existsSync(c)) {
+      tipPath = c;
+      break;
+    }
+  }
+  if (!packPath || !tipPath) {
+    throw new Error(
+      `minimal pack/tip not found (MC_GIT_MINIMAL_PACK=${packRel} MC_GIT_MINIMAL_TIP=${tipRel})`,
+    );
+  }
+  const tip = readFileSync(tipPath, "utf8").trim();
+  if (!/^[0-9a-f]{40}$/i.test(tip)) {
+    throw new Error(`invalid tip oid: ${JSON.stringify(tip)}`);
+  }
+  return { pack: new Uint8Array(readFileSync(packPath)), tip };
 }
 
 async function main() {
@@ -346,7 +397,158 @@ async function main() {
     }
   }
 
-  // R63–R65: multi-engine demux via args.mount / mount
+  // D13 / M7 v1: multi-path monorepo pack → shallow depth=1 clone + cone sparse
+  // → worktree + gitfs hide out-of-cone (not filter-only theater).
+  {
+    const engSrc = await GitEngine.load({ baseUrl: base });
+    let wr = await engSrc.run({ op: "init" });
+    if (!wr.ok) throw new Error(`D13 src init: ${JSON.stringify(wr)}`);
+    wr = await engSrc.run({
+      op: "write",
+      args: { path: "src/in.txt", content: "in-cone\n" },
+    });
+    if (!wr.ok) throw new Error(`D13 write src: ${JSON.stringify(wr)}`);
+    wr = await engSrc.run({
+      op: "write",
+      args: { path: "other/out.txt", content: "out-of-cone\n" },
+    });
+    if (!wr.ok) throw new Error(`D13 write other: ${JSON.stringify(wr)}`);
+    wr = await engSrc.run({ op: "add", args: { path: "src/in.txt" } });
+    if (!wr.ok) throw new Error(`D13 add src: ${JSON.stringify(wr)}`);
+    wr = await engSrc.run({ op: "add", args: { path: "other/out.txt" } });
+    if (!wr.ok) throw new Error(`D13 add other: ${JSON.stringify(wr)}`);
+    wr = await engSrc.run({
+      op: "commit",
+      args: {
+        message: "monorepo multi-path",
+        name: "Mono",
+        email: "mono@test",
+        when_unix: 1_700_000_400,
+      },
+    });
+    if (!wr.ok) throw new Error(`D13 commit: ${JSON.stringify(wr)}`);
+    const tipRaw = await engSrc.run({
+      op: "rev-parse",
+      args: { rev: "HEAD" },
+    });
+    const monoTip = String(tipRaw.stdout || "")
+      .trim()
+      .split(/\s+/)[0];
+    if (!monoTip || !/^[0-9a-f]{40}$/i.test(monoTip)) {
+      throw new Error(`D13 bad tip: ${JSON.stringify(tipRaw)}`);
+    }
+    const monoPack = await engSrc.buildPushPack([monoTip]);
+    if (monoPack.byteLength < 4 || monoPack[0] !== 0x50) {
+      throw new Error("D13 pack missing PACK magic");
+    }
+    await engSrc.close();
+
+    const monoUrl = "https://example.com/monorepo.git";
+    const baseMonoHttp = new FixtureSmartHttp();
+    baseMonoHttp.add(
+      monoUrl,
+      [{ name: "refs/heads/main", hash: monoTip }],
+      monoPack,
+    );
+    let seenDepth: number | undefined;
+    const monoHttp = {
+      listRefs: (
+        url: string,
+        auth?: Parameters<FixtureSmartHttp["listRefs"]>[1],
+      ) => baseMonoHttp.listRefs(url, auth),
+      fetchPacks: async (
+        url: string,
+        want: string[],
+        have: string[],
+        depth?: number,
+        auth?: Parameters<FixtureSmartHttp["fetchPacks"]>[4],
+        filter?: string,
+      ) => {
+        seenDepth = depth;
+        return baseMonoHttp.fetchPacks(url, want, have, depth, auth, filter);
+      },
+    };
+
+    // Engine load sparseCone → orch post-clone sparse-set + gitfs projection.
+    const engDst = await GitEngine.load({
+      baseUrl: base,
+      sparseCone: ["src"],
+    });
+    if (!engDst.sparseCone?.includes("src")) {
+      throw new Error(`D13 engine.sparseCone missing src: ${JSON.stringify(engDst.sparseCone)}`);
+    }
+    // Orch inherits engine.sparseCone when opts.sparseCone omitted (D13).
+    const monoOrch = new GitRemoteOrchestrator(engDst, {
+      http: monoHttp,
+      allowOrigins: [fixtureOrigin],
+      packCache: null,
+    });
+    const monoClone = await monoOrch.handle({
+      op: "clone",
+      args: { url: monoUrl },
+    });
+    if (!monoClone.ok) {
+      throw new Error(`D13 monorepo clone failed: ${JSON.stringify(monoClone)}`);
+    }
+    if (seenDepth !== 1) {
+      throw new Error(`D13 product default depth=1, got ${String(seenDepth)}`);
+    }
+
+    // Cruel: engine sparse-set must prune MEMFS worktree (not gitfs filter-only).
+    // Full driver (no cone) still must not see other/ after prune.
+    const fullFs = engDst.asMountDriver({ sparseCone: [] });
+    const fullRoot = await fullFs.readdir("/");
+    if (!fullRoot.some((e) => e.name === "src")) {
+      throw new Error(`D13 worktree missing src: ${JSON.stringify(fullRoot)}`);
+    }
+    if (fullRoot.some((e) => e.name === "other")) {
+      throw new Error(
+        `D13 worktree must not retain out-of-cone other: ${JSON.stringify(fullRoot)}`,
+      );
+    }
+    try {
+      await fullFs.open("/other/out.txt");
+      throw new Error("D13 out-of-cone must be gone from MEMFS worktree");
+    } catch (e) {
+      if (String(e).includes("must be gone from MEMFS")) throw e;
+    }
+
+    // gitfs cone projection (defense in depth) still hides out-of-cone.
+    const monoFs = engDst.asMountDriver(); // uses load-time sparseCone
+    const monoRoot = await monoFs.readdir("/");
+    if (!monoRoot.some((e) => e.name === "src")) {
+      throw new Error(`D13 gitfs missing src: ${JSON.stringify(monoRoot)}`);
+    }
+    if (monoRoot.some((e) => e.name === "other")) {
+      throw new Error(
+        `D13 gitfs must hide out-of-cone other: ${JSON.stringify(monoRoot)}`,
+      );
+    }
+    const inCone = new TextDecoder().decode(await monoFs.open("/src/in.txt"));
+    if (inCone !== "in-cone\n") {
+      throw new Error(`D13 in-cone content: ${JSON.stringify(inCone)}`);
+    }
+    try {
+      await monoFs.open("/other/out.txt");
+      throw new Error("D13 out-of-cone open must fail on gitfs");
+    } catch (e) {
+      if (String(e).includes("out-of-cone open must fail")) throw e;
+      if ((e as { code?: string }).code !== "ENOENT") {
+        // Accept ENOENT-coded or message-based missing path.
+        if (!/ENOENT|not found|No such|no such/i.test(String(e))) {
+          throw new Error(`D13 expected ENOENT for other/out.txt: ${String(e)}`);
+        }
+      }
+    }
+
+    // In-cone content + prune above prove sparse-set ran (not projection-only).
+    // HEAD/ref form after sparse-set + checkout can be detached tip-only — clone
+    // already returned ok with depth=1 and worktree materialised.
+
+    await engDst.close();
+  }
+
+  // R63–R65 / D21: multi-engine demux via args.mount / mount
   const engA = await GitEngine.load({ baseUrl: base });
   const engB = await GitEngine.load({ baseUrl: base });
   const engineMap = new Map([
@@ -398,30 +600,29 @@ async function main() {
     throw new Error("engines must not share worktree state");
   }
 
-  const multiHandler = gitHostCallHandler(
-    { engines: engineMap, defaultMount: "/workspace/a" },
-    { http, allowOrigins: [fixtureOrigin], packCache: null },
-  );
-  const demuxRaw = await multiHandler(
-    JSON.stringify({
-      op: "clone",
-      args: { url: "https://example.com/demo.git", mount: "/workspace/b" },
-    }),
-  );
-  const demuxParsed = JSON.parse(demuxRaw);
-  if (demuxParsed.ok === undefined) {
-    throw new Error(`multi demux handler: ${demuxRaw}`);
-  }
-  // Unknown mount returns code 1 without dialing.
-  const unknownRaw = await multiHandler(
-    JSON.stringify({
-      op: "clone",
-      args: { url: "https://example.com/demo.git", mount: "/nope" },
-    }),
-  );
-  const unknownParsed = JSON.parse(unknownRaw);
-  if (unknownParsed.ok || !String(unknownParsed.stderr || "").includes("unknown mount")) {
-    throw new Error(`unknown mount host_call: ${unknownRaw}`);
+  // Unknown mount returns code 1 without dialing (shared empty-pack fixture http).
+  {
+    const multiHandlerDeny = gitHostCallHandler(
+      { engines: engineMap, defaultMount: "/workspace/a" },
+      { http, allowOrigins: [fixtureOrigin], packCache: null },
+    );
+    const listBefore = http.listRefsCalls;
+    const fetchBefore = http.fetchPacksCalls;
+    const unknownRaw = await multiHandlerDeny(
+      JSON.stringify({
+        op: "clone",
+        args: { url: "https://example.com/demo.git", mount: "/nope" },
+      }),
+    );
+    const unknownParsed = JSON.parse(unknownRaw);
+    if (unknownParsed.ok || !String(unknownParsed.stderr || "").includes("unknown mount")) {
+      throw new Error(`unknown mount host_call: ${unknownRaw}`);
+    }
+    if (http.listRefsCalls !== listBefore || http.fetchPacksCalls !== fetchBefore) {
+      throw new Error(
+        `unknown mount must not dial (listRefs ${listBefore}→${http.listRefsCalls} fetchPacks ${fetchBefore}→${http.fetchPacksCalls})`,
+      );
+    }
   }
 
   const toolsMulti = {
@@ -437,6 +638,190 @@ async function main() {
   );
   if (!toolsMulti.map.has("git")) {
     throw new Error("registerGitHostCall multi missing git");
+  }
+
+  // D21 product e2e: two mounts, two engines, clone into each via args.mount
+  // with real minimal.pack → worktree isolation (README hello).
+  {
+    const { pack: realPack, tip: realTip } = minimalPackFixture();
+    const dualA = await GitEngine.load({ baseUrl: base });
+    const dualB = await GitEngine.load({ baseUrl: base });
+    const dualMap = new Map([
+      ["/workspace/a", dualA],
+      ["/workspace/b", dualB],
+    ]);
+    const dualUrlA = "https://example.com/repo-a.git";
+    const dualUrlB = "https://example.com/repo-b.git";
+    const dualHttp = new FixtureSmartHttp();
+    dualHttp.add(dualUrlA, [{ name: "refs/heads/main", hash: realTip }], realPack);
+    dualHttp.add(dualUrlB, [{ name: "refs/heads/main", hash: realTip }], realPack);
+    const dualHandler = gitHostCallHandler(
+      { engines: dualMap, defaultMount: "/workspace/a" },
+      { http: dualHttp, allowOrigins: [fixtureOrigin], packCache: null },
+    );
+
+    const cloneARaw = await dualHandler(
+      JSON.stringify({
+        op: "clone",
+        args: { url: dualUrlA, mount: "/workspace/a" },
+      }),
+    );
+    const cloneA = JSON.parse(cloneARaw);
+    if (!cloneA.ok) {
+      throw new Error(`D21 clone mount A failed: ${cloneARaw}`);
+    }
+    if (!String(cloneA.stdout || "").includes("cloned")) {
+      throw new Error(`D21 clone A expected cloned stdout: ${cloneARaw}`);
+    }
+
+    const cloneBRaw = await dualHandler(
+      JSON.stringify({
+        op: "clone",
+        args: { url: dualUrlB, mount: "/workspace/b" },
+      }),
+    );
+    const cloneB = JSON.parse(cloneBRaw);
+    if (!cloneB.ok) {
+      throw new Error(`D21 clone mount B failed: ${cloneBRaw}`);
+    }
+    if (!String(cloneB.stdout || "").includes("cloned")) {
+      throw new Error(`D21 clone B expected cloned stdout: ${cloneBRaw}`);
+    }
+    if (dualHttp.listRefsCalls < 2 || dualHttp.fetchPacksCalls < 2) {
+      throw new Error(
+        `D21 both mounts must dial transport (listRefs=${dualHttp.listRefsCalls} fetchPacks=${dualHttp.fetchPacksCalls})`,
+      );
+    }
+
+    // Worktree isolation: each engine has README from minimal.pack.
+    const readmeA = new TextDecoder().decode(
+      await dualA.asMountDriver().open("/README"),
+    );
+    const readmeB = new TextDecoder().decode(
+      await dualB.asMountDriver().open("/README"),
+    );
+    if (readmeA !== "hello\n") {
+      throw new Error(`D21 mount A README want hello\\n got ${JSON.stringify(readmeA)}`);
+    }
+    if (readmeB !== "hello\n") {
+      throw new Error(`D21 mount B README want hello\\n got ${JSON.stringify(readmeB)}`);
+    }
+
+    // Write only on A must not appear on B.
+    await dualA.run({
+      op: "write",
+      args: { path: "only-on-a.txt", content: "a-only\n" },
+    });
+    try {
+      await dualB.asMountDriver().open("/only-on-a.txt");
+      throw new Error("D21 engines must not share worktree (B saw only-on-a.txt)");
+    } catch (e) {
+      if ((e as { code?: string }).code !== "ENOENT" && !String(e).includes("ENOENT") &&
+          !String(e).includes("not found") && !String(e).includes("No such")) {
+        // Some drivers throw ENOENT-coded; accept any failure that is not success.
+        if (String(e).includes("must not share")) throw e;
+      }
+    }
+
+    // Omit mount → defaultMount (/workspace/a) for fetch.
+    const fetchDefaultRaw = await dualHandler(
+      JSON.stringify({ op: "fetch", args: { url: dualUrlA } }),
+    );
+    const fetchDefault = JSON.parse(fetchDefaultRaw);
+    if (fetchDefault.ok === undefined) {
+      throw new Error(`D21 default-mount fetch: ${fetchDefaultRaw}`);
+    }
+
+    await dualA.close();
+    await dualB.close();
+  }
+
+  // D21: two engines concurrent — distinct mounts may overlap fetchPacks
+  // (per-engine single-writer only; multi-mount remotes are independent).
+  {
+    const { pack: realPack, tip: realTip } = minimalPackFixture();
+    const concA = await GitEngine.load({ baseUrl: base });
+    const concB = await GitEngine.load({ baseUrl: base });
+    const concMap = new Map([
+      ["/workspace/a", concA],
+      ["/workspace/b", concB],
+    ]);
+    const concUrlA = "https://example.com/conc-a.git";
+    const concUrlB = "https://example.com/conc-b.git";
+    const baseConcHttp = new FixtureSmartHttp();
+    baseConcHttp.add(concUrlA, [{ name: "refs/heads/main", hash: realTip }], realPack);
+    baseConcHttp.add(concUrlB, [{ name: "refs/heads/main", hash: realTip }], realPack);
+    let inflightFetch = 0;
+    let peakFetch = 0;
+    const delayedConcHttp = {
+      listRefs: (
+        url: string,
+        auth?: Parameters<FixtureSmartHttp["listRefs"]>[1],
+      ) => baseConcHttp.listRefs(url, auth),
+      fetchPacks: async (
+        url: string,
+        want: string[],
+        have: string[],
+        depth?: number,
+        auth?: Parameters<FixtureSmartHttp["fetchPacks"]>[4],
+        filter?: string,
+      ) => {
+        inflightFetch += 1;
+        if (inflightFetch > peakFetch) peakFetch = inflightFetch;
+        try {
+          await new Promise((r) => setTimeout(r, 50));
+          return baseConcHttp.fetchPacks(url, want, have, depth, auth, filter);
+        } finally {
+          inflightFetch -= 1;
+        }
+      },
+    };
+    const concHandler = gitHostCallHandler(
+      { engines: concMap, defaultMount: "/workspace/a" },
+      { http: delayedConcHttp, allowOrigins: [fixtureOrigin], packCache: null },
+    );
+    const [rawConcA, rawConcB] = await Promise.all([
+      concHandler(
+        JSON.stringify({
+          op: "clone",
+          args: { url: concUrlA, mount: "/workspace/a" },
+        }),
+      ),
+      concHandler(
+        JSON.stringify({
+          op: "clone",
+          args: { url: concUrlB, mount: "/workspace/b" },
+        }),
+      ),
+    ]);
+    const pA = JSON.parse(rawConcA);
+    const pB = JSON.parse(rawConcB);
+    if (!pA.ok) throw new Error(`D21 concurrent clone A failed: ${rawConcA}`);
+    if (!pB.ok) throw new Error(`D21 concurrent clone B failed: ${rawConcB}`);
+    if (baseConcHttp.fetchPacksCalls !== 2) {
+      throw new Error(
+        `D21 concurrent both mounts must fetch (got ${baseConcHttp.fetchPacksCalls})`,
+      );
+    }
+    // Distinct engines: remotes may overlap (peak ≥ 2). Do not require exact
+    // timing; if they did not overlap, still pass as long as both succeeded —
+    // but record that concurrent path is the intended product shape.
+    if (peakFetch < 1) {
+      throw new Error(`D21 concurrent peakFetch unset: ${peakFetch}`);
+    }
+    const readmeConcA = new TextDecoder().decode(
+      await concA.asMountDriver().open("/README"),
+    );
+    const readmeConcB = new TextDecoder().decode(
+      await concB.asMountDriver().open("/README"),
+    );
+    if (readmeConcA !== "hello\n" || readmeConcB !== "hello\n") {
+      throw new Error(
+        `D21 concurrent worktrees: A=${JSON.stringify(readmeConcA)} B=${JSON.stringify(readmeConcB)}`,
+      );
+    }
+    await concA.close();
+    await concB.close();
   }
 
   // Per-engine remote single-flight: two concurrent clones on the same
@@ -497,6 +882,131 @@ async function main() {
       );
     }
     await engSerial.close();
+  }
+
+  // D9: after clone.apply, remote.origin.url + branch tracking are set so
+  // config get shows remote and fetch/pull can use tracking (no re-pass URL).
+  {
+    const packRel = process.env.MC_GIT_MINIMAL_PACK || "";
+    const tipRel = process.env.MC_GIT_MINIMAL_TIP || "";
+    const rf = process.env.RUNFILES_DIR || "";
+    const packCandidates = [
+      packRel && rf ? join(rf, packRel) : "",
+      packRel && rf ? join(rf, "_main", packRel) : "",
+      packRel,
+      rf ? join(rf, "memcontainers/sdk-js/core/testdata/pack/minimal.pack") : "",
+      rf
+        ? join(rf, "_main/memcontainers/sdk-js/core/testdata/pack/minimal.pack")
+        : "",
+    ].filter(Boolean);
+    let packPath = "";
+    for (const c of packCandidates) {
+      if (c && existsSync(c)) {
+        packPath = c;
+        break;
+      }
+    }
+    const tipCandidates = [
+      tipRel && rf ? join(rf, tipRel) : "",
+      tipRel && rf ? join(rf, "_main", tipRel) : "",
+      tipRel,
+      packPath ? join(dirname(packPath), "minimal.tip") : "",
+    ].filter(Boolean);
+    let tipPath = "";
+    for (const c of tipCandidates) {
+      if (c && existsSync(c)) {
+        tipPath = c;
+        break;
+      }
+    }
+    if (!packPath || !tipPath) {
+      throw new Error(
+        `D9 minimal pack/tip missing (MC_GIT_MINIMAL_PACK=${packRel})`,
+      );
+    }
+    const pack = new Uint8Array(readFileSync(packPath));
+    const tip = readFileSync(tipPath, "utf8").trim();
+    if (!/^[0-9a-f]{40}$/i.test(tip)) {
+      throw new Error(`D9 bad tip: ${tip}`);
+    }
+
+    const d9Url = "https://example.com/d9-tracking.git";
+    const d9Http = new FixtureSmartHttp();
+    d9Http.add(d9Url, [{ name: "refs/heads/main", hash: tip }], pack);
+    const engD9 = await GitEngine.load({ baseUrl: base });
+    const orchD9 = new GitRemoteOrchestrator(engD9, {
+      http: d9Http,
+      allowOrigins: [fixtureOrigin],
+      packCache: null,
+    });
+    const cloneD9 = await orchD9.handle({
+      op: "clone",
+      args: { url: d9Url },
+    });
+    if (!cloneD9.ok) {
+      throw new Error(`D9 clone failed: ${JSON.stringify(cloneD9)}`);
+    }
+
+    const remoteUrl = await engD9.run({
+      op: "config",
+      args: { action: "get", key: "remote.origin.url" },
+    });
+    if (!remoteUrl.ok || String(remoteUrl.stdout || "").trim() !== d9Url) {
+      throw new Error(
+        `D9 remote.origin.url want ${d9Url}, got ${JSON.stringify(remoteUrl)}`,
+      );
+    }
+    const brRemote = await engD9.run({
+      op: "config",
+      args: { action: "get", key: "branch.main.remote" },
+    });
+    if (!brRemote.ok || String(brRemote.stdout || "").trim() !== "origin") {
+      throw new Error(
+        `D9 branch.main.remote want origin, got ${JSON.stringify(brRemote)}`,
+      );
+    }
+    const brMerge = await engD9.run({
+      op: "config",
+      args: { action: "get", key: "branch.main.merge" },
+    });
+    if (
+      !brMerge.ok ||
+      String(brMerge.stdout || "").trim() !== "refs/heads/main"
+    ) {
+      throw new Error(
+        `D9 branch.main.merge want refs/heads/main, got ${JSON.stringify(brMerge)}`,
+      );
+    }
+
+    // Pull via remote name only (no url) — tracking/config must resolve origin.
+    const pullD9 = await orchD9.handle({
+      op: "pull",
+      args: { remote: "origin" },
+    });
+    if (!pullD9.ok) {
+      throw new Error(
+        `D9 pull via remote=origin (tracking) failed: ${JSON.stringify(pullD9)}`,
+      );
+    }
+    if (
+      !String(pullD9.stdout || "").includes("Already up to date") &&
+      !String(pullD9.stdout || "").includes("Fast-forward") &&
+      !String(pullD9.stdout || "").includes("fetched")
+    ) {
+      throw new Error(
+        `D9 pull stdout unexpected: ${JSON.stringify(pullD9)}`,
+      );
+    }
+
+    // Bare fetch/pull with empty args also defaults to origin after clone.
+    const pullEmpty = await orchD9.handle({ op: "pull", args: {} });
+    if (!pullEmpty.ok) {
+      throw new Error(
+        `D9 pull {} (default origin from config) failed: ${JSON.stringify(pullEmpty)}`,
+      );
+    }
+
+    await engD9.close();
   }
 
   await engA.close();

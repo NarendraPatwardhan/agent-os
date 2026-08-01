@@ -5,11 +5,20 @@
 
 #include "git2.h"
 
+#include <dirent.h>
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+/* ── Cone worktree prune (M7 / D13) ─────────────────────────────────────────
+ * libgit2 does not fully apply sparse-checkout file rules on checkout_tree
+ * (out-of-cone paths remain on disk). After writing sparse-checkout + force
+ * checkout, prune the worktree so only cone prefixes (+ root-level files) stay.
+ * Cone-only (prefix list + basic !negation handled at write time); not full
+ * sparse language. */
 
 int op_rm(ge_engine *e, const char *args) {
   if (ge_ensure_repo(e) != 0)
@@ -243,25 +252,36 @@ int op_config(ge_engine *e, const char *args, char *out, size_t out_cap) {
       rc = -1;
     }
   } else if (strcmp(action, "get") == 0) {
-    const char *v = NULL;
+    /* Live config requires get_string_buf (get_string is snapshot-only). */
+    git_buf buf = GIT_BUF_INIT;
     if (!key[0]) {
       ge_set_err(e, "config get: key required");
       rc = -1;
-    } else if (git_config_get_string(&v, cfg, key) != 0) {
+    } else if (git_config_get_string_buf(&buf, cfg, key) != 0) {
       ge_set_err_git(e, "config get");
       rc = -1;
     } else {
-      snprintf(out, out_cap, "%s\n", v ? v : "");
+      snprintf(out, out_cap, "%s\n", buf.ptr ? buf.ptr : "");
     }
+    git_buf_dispose(&buf);
   } else if (strcmp(action, "list") == 0) {
     /* Minimal: not iterating full config — report common keys if set. */
     out[0] = '\0';
-    const char *keys[] = {"user.name", "user.email", "core.bare", NULL};
+    const char *keys[] = {
+        "user.name",
+        "user.email",
+        "core.bare",
+        "remote.origin.url",
+        "branch.main.remote",
+        "branch.main.merge",
+        NULL,
+    };
     size_t used = 0;
     for (int i = 0; keys[i]; i++) {
-      const char *v = NULL;
-      if (git_config_get_string(&v, cfg, keys[i]) == 0 && v)
-        used += (size_t)snprintf(out + used, out_cap - used, "%s=%s\n", keys[i], v);
+      git_buf buf = GIT_BUF_INIT;
+      if (git_config_get_string_buf(&buf, cfg, keys[i]) == 0 && buf.ptr)
+        used += (size_t)snprintf(out + used, out_cap - used, "%s=%s\n", keys[i], buf.ptr);
+      git_buf_dispose(&buf);
     }
   } else {
     ge_set_err(e, "config: action get|set|list");
@@ -447,10 +467,108 @@ int op_push_complete(ge_engine *e, const char *args) {
   return 0;
 }
 
-/* PR14 / R59: sparse-checkout cone projection.
+/* Return 1 if relative worktree path should remain under cone prefixes.
+ * Root-level files always kept (/*). Intermediate dirs for nested cones kept. */
+static int cone_path_kept(const char *rel, int is_dir, char cones[][256], size_t ncones) {
+  if (!rel || !*rel)
+    return 1;
+  /* Root-level files only (not directories): cone template /*. */
+  if (!is_dir && strchr(rel, '/') == NULL)
+    return 1;
+  for (size_t i = 0; i < ncones; i++) {
+    const char *c = cones[i];
+    size_t cl = strlen(c);
+    size_t rl = strlen(rel);
+    if (cl == 0)
+      continue;
+    if (strcmp(rel, c) == 0)
+      return 1;
+    /* path under cone: cone/… */
+    if (rl > cl && rel[cl] == '/' && strncmp(rel, c, cl) == 0)
+      return 1;
+    /* intermediate directory for nested cone: packages when cone is packages/app */
+    if (is_dir && cl > rl && c[rl] == '/' && strncmp(c, rel, rl) == 0)
+      return 1;
+  }
+  return 0;
+}
+
+/* Recursive rm -rf for a path under the worktree (best-effort).
+ * Use stat (not lstat) for emscripten MEMFS portability. */
+static void cone_rm_rf(const char *abs) {
+  struct stat st;
+  if (stat(abs, &st) != 0)
+    return;
+  if (S_ISDIR(st.st_mode)) {
+    DIR *d = opendir(abs);
+    if (d) {
+      struct dirent *de;
+      while ((de = readdir(d)) != NULL) {
+        if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+          continue;
+        char child[4096];
+        size_t n = (size_t)snprintf(child, sizeof(child), "%s/%s", abs, de->d_name);
+        if (n >= sizeof(child))
+          continue;
+        cone_rm_rf(child);
+      }
+      closedir(d);
+    }
+    rmdir(abs);
+  } else {
+    unlink(abs);
+  }
+}
+
+/* Depth-first prune: remove worktree paths not kept by cone. Never enters .git.
+ * Portable across host FS and emscripten MEMFS (stat + dirent). */
+static void cone_prune_walk(const char *root, const char *rel, char cones[][256], size_t ncones) {
+  char abs[4096];
+  if (rel && *rel)
+    ge_join_path(abs, sizeof(abs), root, rel);
+  else {
+    size_t n = (size_t)snprintf(abs, sizeof(abs), "%s", root);
+    if (n >= sizeof(abs))
+      return;
+  }
+  DIR *d = opendir(abs);
+  if (!d)
+    return;
+  struct dirent *de;
+  while ((de = readdir(d)) != NULL) {
+    if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+      continue;
+    /* Never touch .git (or anything under it). */
+    if ((!rel || !*rel) && strcmp(de->d_name, ".git") == 0)
+      continue;
+    char child_rel[1024];
+    if (rel && *rel)
+      snprintf(child_rel, sizeof(child_rel), "%s/%s", rel, de->d_name);
+    else
+      snprintf(child_rel, sizeof(child_rel), "%s", de->d_name);
+    if (!ge_safe_relpath(child_rel))
+      continue;
+    char child_abs[4096];
+    ge_join_path(child_abs, sizeof(child_abs), root, child_rel);
+    struct stat st;
+    if (stat(child_abs, &st) != 0)
+      continue;
+    int is_dir = S_ISDIR(st.st_mode);
+    if (cone_path_kept(child_rel, is_dir, cones, ncones)) {
+      if (is_dir)
+        cone_prune_walk(root, child_rel, cones, ncones);
+    } else {
+      cone_rm_rf(child_abs);
+    }
+  }
+  closedir(d);
+}
+
+/* PR14 / R59 / D13: sparse-checkout cone projection + worktree materialization.
  * patterns: string (newline-separated), JSON string array, or single path key.
  * Basic negation lines: `!path` → written as !/path/ (still not full git sparse language).
- * Unsafe paths fail closed. */
+ * Unsafe paths fail closed.
+ * After config+checkout, prunes out-of-cone worktree paths (libgit2 does not). */
 int op_sparse_set(ge_engine *e, const char *args) {
   if (ge_ensure_repo(e) != 0)
     return -1;
@@ -496,6 +614,9 @@ int op_sparse_set(ge_engine *e, const char *args) {
   }
   /* Cone header: include root files, exclude other top-level dirs by default. */
   fprintf(f, "/*\n!/*/\n");
+  /* Collect include prefixes for worktree prune; write sparse-checkout lines. */
+  char cones[64][256];
+  size_t ncones = 0;
   /* patterns: newline-separated; optional leading '!' for negation; safe relpath only. */
   for (char *p = patterns, *n; p && *p; p = n) {
     n = strchr(p, '\n');
@@ -525,10 +646,24 @@ int op_sparse_set(ge_engine *e, const char *args) {
       ge_set_err(e, "sparse-set: unsafe pattern");
       return -1;
     }
-    if (negate)
+    if (negate) {
       fprintf(f, "!/%s/\n!/%s/**\n", p, p);
-    else
+      /* Drop matching include if present (basic !negation after include). */
+      for (size_t i = 0; i < ncones; i++) {
+        if (strcmp(cones[i], p) == 0) {
+          if (i + 1 < ncones)
+            memmove(cones[i], cones[i + 1], (ncones - i - 1) * sizeof(cones[0]));
+          ncones--;
+          break;
+        }
+      }
+    } else {
       fprintf(f, "/%s/\n/%s/**\n", p, p);
+      if (ncones < 64 && plen < sizeof(cones[0])) {
+        memcpy(cones[ncones], p, plen + 1);
+        ncones++;
+      }
+    }
   }
   fclose(f);
 
@@ -538,9 +673,11 @@ int op_sparse_set(ge_engine *e, const char *args) {
     return -1;
   }
   git_config_set_bool(cfg, "core.sparseCheckout", 1);
+  /* Best-effort cone flag for future git CLI interop (libgit2 may ignore). */
+  git_config_set_bool(cfg, "core.sparseCheckoutCone", 1);
   git_config_free(cfg);
 
-  /* Re-checkout HEAD into cone */
+  /* Re-checkout HEAD (restores in-cone; does not remove out-of-cone on libgit2). */
   git_object *treeish = NULL;
   if (git_revparse_single(&treeish, e->repo, "HEAD") == 0) {
     git_checkout_options opts = GIT_CHECKOUT_OPTIONS_INIT;
@@ -548,6 +685,10 @@ int op_sparse_set(ge_engine *e, const char *args) {
     git_checkout_tree(e->repo, treeish, &opts);
     git_object_free(treeish);
   }
+
+  /* D13: materialize cone on disk — prune out-of-cone worktree paths. */
+  if (ncones > 0)
+    cone_prune_walk(e->root, "", cones, ncones);
   return 0;
 }
 

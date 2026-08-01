@@ -145,6 +145,161 @@ defmodule AgentOS.GitEnginePackTest do
     :ok = GitEngine.stop(pid)
   end
 
+  # D20: orch sparse_cone → Port sparse-set after clone.apply (JS sparseCone parity).
+  @tag timeout: 60_000
+  test "D20 BEAM orch clone with sparse_cone writes sparse-checkout and keeps root README" do
+    path = engine_path()
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "pack-sparse-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.mkdir_p!(root)
+    pack = read_pack!()
+    tip = tip_hash!()
+
+    transport = fn
+      :list_refs, {_url, _opts} ->
+        {:ok, [%{name: @ref_name, hash: tip}]}
+
+      :fetch_packs, {_url, _want, _have, _opts} ->
+        {:ok, pack}
+    end
+
+    assert {:ok, pid} = GitEngine.start(executable: path, root: root)
+
+    assert {:ok, json} =
+             Orchestrator.run(
+               pid,
+               ~s({"op":"clone","args":{"url":"#{@fixture_url}"}}),
+               transport: transport,
+               allowed_origins: [@fixture_origin],
+               sparse_cone: ["src", "/docs/"]
+             )
+
+    assert json =~ "\"ok\":true" or json =~ ~s("ok":true), "sparse clone failed: #{json}"
+    # Root files always in cone template (/*); fixture only has README.
+    assert {:ok, "hello\n"} = File.read(Path.join(root, "README"))
+
+    sc = Path.join(root, ".git/info/sparse-checkout")
+    assert File.regular?(sc), "sparse-set must write sparse-checkout"
+    body = File.read!(sc)
+    assert body =~ "/*"
+    assert body =~ "!/*/"
+    assert body =~ "/src/"
+    assert body =~ "/src/**"
+    assert body =~ "/docs/"
+    assert body =~ "/docs/**"
+
+    # Alias key git_sparse_cone also accepted (normalize slashes).
+    :ok = GitEngine.stop(pid)
+  after
+    :ok
+  end
+
+  # D13 / M7 v1: multi-path tree + depth=1 + sparse_cone → out-of-cone not on worktree.
+  @tag timeout: 60_000
+  test "D13 monorepo multi-path clone+sparse keeps cone paths only on worktree" do
+    path = engine_path()
+    src_root =
+      Path.join(
+        System.tmp_dir!(),
+        "mono-src-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+    dst_root =
+      Path.join(
+        System.tmp_dir!(),
+        "mono-dst-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.mkdir_p!(src_root)
+    File.mkdir_p!(dst_root)
+
+    assert {:ok, src} = GitEngine.start(executable: path, root: src_root)
+    assert {:ok, _} = GitEngine.run(src, %{"op" => "init"})
+
+    assert {:ok, _} =
+             GitEngine.run(src, %{
+               "op" => "write",
+               "args" => %{"path" => "src/in.txt", "content" => "in-cone\n"}
+             })
+
+    assert {:ok, _} =
+             GitEngine.run(src, %{
+               "op" => "write",
+               "args" => %{"path" => "other/out.txt", "content" => "out-of-cone\n"}
+             })
+
+    assert {:ok, _} = GitEngine.run(src, %{"op" => "add", "args" => %{"path" => "src/in.txt"}})
+    assert {:ok, _} = GitEngine.run(src, %{"op" => "add", "args" => %{"path" => "other/out.txt"}})
+
+    assert {:ok, c} =
+             GitEngine.run(src, %{
+               "op" => "commit",
+               "args" => %{
+                 "message" => "monorepo multi-path",
+                 "name" => "Mono",
+                 "email" => "mono@test",
+                 "when_unix" => 1_700_000_400
+               }
+             })
+
+    assert c["ok"] == true or (is_binary(Map.get(c, "raw")) and c["raw"] =~ "\"ok\":true"),
+           "D13 commit failed: #{inspect(c)}"
+
+    assert {:ok, rev} = GitEngine.run(src, %{"op" => "rev-parse", "args" => %{"rev" => "HEAD"}})
+    tip = (rev["stdout"] || "") |> String.trim() |> String.split(~r/\s+/) |> hd()
+    assert Regex.match?(~r/^[0-9a-fA-F]{40}$/, tip), "D13 bad tip: #{inspect(rev)}"
+
+    assert {:ok, pack} = GitEngine.pack_build(src, [tip])
+    assert match?(<<"PACK", _::binary>>, pack)
+    :ok = GitEngine.stop(src)
+
+    {:ok, depth_agent} = Agent.start_link(fn -> nil end)
+
+    transport = fn
+      :list_refs, {_url, _opts} ->
+        {:ok, [%{name: "refs/heads/main", hash: tip}]}
+
+      :fetch_packs, {_url, _want, _have, opts} ->
+        Agent.update(depth_agent, fn _ -> Keyword.get(opts, :depth) end)
+        {:ok, pack}
+    end
+
+    assert {:ok, dst} = GitEngine.start(executable: path, root: dst_root)
+
+    assert {:ok, json} =
+             Orchestrator.run(
+               dst,
+               ~s({"op":"clone","args":{"url":"#{@fixture_url}"}}),
+               transport: transport,
+               allowed_origins: [@fixture_origin],
+               sparse_cone: ["src"]
+             )
+
+    assert json =~ "\"ok\":true" or json =~ ~s("ok":true), "D13 sparse clone failed: #{json}"
+
+    # Product default depth=1 (R35 / M7).
+    assert Agent.get(depth_agent, & &1) == 1
+
+    # In-cone present; out-of-cone removed from worktree by sparse-set checkout.
+    assert {:ok, "in-cone\n"} = File.read(Path.join(dst_root, "src/in.txt"))
+    refute File.exists?(Path.join(dst_root, "other/out.txt")),
+           "D13 out-of-cone other/out.txt must not remain on worktree"
+    refute File.dir?(Path.join(dst_root, "other")),
+           "D13 out-of-cone other/ dir must not remain on worktree"
+
+    sc = Path.join(dst_root, ".git/info/sparse-checkout")
+    assert File.regular?(sc), "D13 sparse-set must write sparse-checkout"
+    body = File.read!(sc)
+    assert body =~ "/src/"
+    assert body =~ "/src/**"
+
+    Agent.stop(depth_agent)
+    :ok = GitEngine.stop(dst)
+  end
+
   # D11: multi-chunk import_pack (chunk size < pack size) must still checkout.
   @tag timeout: 60_000
   test "multi-chunk import_pack of minimal.pack yields worktree README" do

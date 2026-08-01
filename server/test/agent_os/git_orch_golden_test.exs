@@ -80,19 +80,9 @@ defmodule AgentOS.Git.OrchGoldenTest do
   end
 
   defp safe_json(bin) do
-    try do
-      {:ok, :json.decode(bin)}
-    rescue
-      _ ->
-        try do
-          case :json.decode(bin) do
-            {:ok, term} -> {:ok, term}
-            other when is_map(other) or is_list(other) -> {:ok, other}
-            _ -> :error
-          end
-        rescue
-          _ -> :error
-        end
+    case AgentOS.GitEngine.Jason_like.decode(bin) do
+      {:ok, term} -> {:ok, term}
+      _ -> :error
     end
   end
 

@@ -38,7 +38,7 @@ export class GitEngine {
   /** Last durable snapshot bytes (AGIT envelope when produced by checkpoint). */
   private _durableSnapshot: Uint8Array | null = null;
   /** Default cone prefixes for asMountDriver (cone-only, not full sparse parity). */
-  private readonly sparseCone: string[] | undefined;
+  private readonly _sparseCone: string[] | undefined;
   /** Host policy identity for commit inject (K28). */
   private readonly identity: GitIdentity | undefined;
 
@@ -50,7 +50,7 @@ export class GitEngine {
     identity?: GitIdentity,
   ) {
     this.durable = durable;
-    this.sparseCone = sparseCone?.length ? sparseCone : undefined;
+    this._sparseCone = sparseCone?.length ? sparseCone : undefined;
     this.identity = normalizeIdentity(identity);
   }
 
@@ -85,6 +85,15 @@ export class GitEngine {
    */
   get durableSnapshot(): Uint8Array | null {
     return this._durableSnapshot ? this._durableSnapshot.slice() : null;
+  }
+
+  /**
+   * Cone-mode sparse prefixes configured at load (post-clone `sparse-set` +
+   * default gitfs projection). **Cone-only** — not full sparse-checkout parity.
+   * Copy returned; `undefined` when no cone was set.
+   */
+  get sparseCone(): string[] | undefined {
+    return this._sparseCone ? [...this._sparseCone] : undefined;
   }
 
   /**
@@ -170,7 +179,7 @@ export class GitEngine {
   asMountDriver(opts?: { sparseCone?: string[] }): Driver {
     return createGitFsDriver(this.bridge, {
       readOnly: this.readOnly,
-      sparseCone: opts?.sparseCone ?? this.sparseCone,
+      sparseCone: opts?.sparseCone ?? this._sparseCone,
     });
   }
 
