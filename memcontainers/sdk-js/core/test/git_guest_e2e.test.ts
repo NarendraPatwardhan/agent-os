@@ -1,7 +1,7 @@
 /**
  * Residuals R1 / R3 / R8 — strongest hermetic JS guest git e2e.
  *
- * R8: mc.create + gitEngine + gitfs ctl close-then-status (commit via /bin/git).
+ * R8: mc.create + git + gitfs ctl close-then-status (commit via /bin/git).
  * R3: guest without CAP_NET → host_call "git" fails closed (EPERM / clear error).
  * R1: guest with CAP_NET + /bin/git clone → MapHostCall "git" → FixtureSmartHttp → worktree.
  *
@@ -101,7 +101,7 @@ function packFixture(): { pack: Uint8Array; tip: string; url: string; origin: st
   };
 }
 
-function gitEngineBaseUrl(): string {
+function gitBaseUrl(): string {
   const dir = engineDir();
   return pathToFileURL(dir.endsWith("/") ? dir : dir + "/").href;
 }
@@ -113,10 +113,10 @@ async function main(): Promise<void> {
   const loom = new Uint8Array(
     readFileSync(runfile(process.env.MC_LOOM_IMAGE, "MC_LOOM_IMAGE")),
   );
-  const baseUrl = gitEngineBaseUrl();
+  const baseUrl = gitBaseUrl();
   const fixture = packFixture();
 
-  // ── R8: mc.create + gitEngine + gitfs ctl close-then-status ──
+  // ── R8: mc.create + git + gitfs ctl close-then-status ──
   // Thin /bin/git writes Request, closes fd, re-opens ctl for Response (never close-only).
   console.log("phase: R8 gitfs ctl close-then-status via /bin/git");
   {
@@ -124,9 +124,10 @@ async function main(): Promise<void> {
       kernel,
       image: loom,
       deterministic: true,
-      gitEngine: true,
-      gitEngineBaseUrl: baseUrl,
-      gitIdentity: { name: "Guest E2E", email: "e2e@example.com" },
+      git: {
+        baseUrl,
+        identity: { name: "Guest E2E", email: "e2e@example.com" },
+      },
     } satisfies CreateOptions);
     try {
       // Default mount present
@@ -215,10 +216,11 @@ async function main(): Promise<void> {
       image: noNetImage,
       store,
       deterministic: true,
-      gitEngine: true,
-      gitEngineBaseUrl: baseUrl,
-      gitHttp: http,
-      gitAllowOrigins: [fixture.origin],
+      git: {
+        baseUrl,
+        http,
+        allowOrigins: [fixture.origin],
+      },
     } satisfies CreateOptions);
     try {
       await vm.fs.stat("/bin/git");
@@ -267,10 +269,11 @@ async function main(): Promise<void> {
       kernel,
       image: loom,
       deterministic: true,
-      gitEngine: true,
-      gitEngineBaseUrl: baseUrl,
-      gitHttp: http,
-      gitAllowOrigins: [fixture.origin],
+      git: {
+        baseUrl,
+        http,
+        allowOrigins: [fixture.origin],
+      },
     } satisfies CreateOptions);
     try {
       const child = [
@@ -319,11 +322,12 @@ async function main(): Promise<void> {
       image: loom,
       deterministic: true,
       net: true,
-      gitEngine: true,
-      gitEngineBaseUrl: baseUrl,
-      gitHttp: http,
-      gitAllowOrigins: [fixture.origin],
-      gitIdentity: { name: "Guest E2E", email: "e2e@example.com" },
+      git: {
+        baseUrl,
+        http,
+        allowOrigins: [fixture.origin],
+        identity: { name: "Guest E2E", email: "e2e@example.com" },
+      },
     } satisfies CreateOptions);
     try {
       await vm.fs.stat("/bin/git");
@@ -377,7 +381,7 @@ print(raw)
   }
 
   // ── D17: snapshot/restore rebinds git durable (K10) ──
-  // MCSN does not carry ODB. gitDurable id is recorded; snapshot checkpoints
+  // MCSN does not carry ODB. git.durable id is recorded; snapshot checkpoints
   // process MemoryDurable (openDurable registry by id); restore reopens + rebinds AGIT.
   // HostDir diskDir path is D16 primary; process-memory proves D17 lifecycle wiring.
   console.log("phase: D17 snapshot/restore rebinds git durable");
@@ -387,11 +391,12 @@ print(raw)
       kernel,
       image: loom,
       deterministic: true,
-      gitEngine: true,
-      gitEngineBaseUrl: baseUrl,
-      gitIdentity: { name: "D17", email: "d17@example.com" },
-      // No diskDir → openDurable MemoryDurable process registry (same id reopens).
-      gitDurable: { id: durableId },
+      git: {
+        baseUrl,
+        identity: { name: "D17", email: "d17@example.com" },
+        // No diskDir → openDurable MemoryDurable process registry (same id reopens).
+        durable: { id: durableId },
+      },
     } satisfies CreateOptions;
 
     const headOid = async (vm: Awaited<ReturnType<typeof mc.create>>): Promise<string> => {
@@ -474,7 +479,7 @@ print(raw)
       await vm.close();
     }
 
-    // Fresh VM from MCSN + same gitDurable id → AGIT rebind.
+    // Fresh VM from MCSN + same git.durable id → AGIT rebind.
     const restored = await mc.restore(snap!, createOpts);
     try {
       const headAfter = await headOid(restored);
@@ -539,11 +544,12 @@ print(raw)
       image: loom,
       deterministic: true,
       net: true,
-      gitEngine: true,
-      gitEngineBaseUrl: baseUrl,
-      gitHttp: slowHttp,
-      gitAllowOrigins: [fixture.origin],
-      gitIdentity: { name: "Guest E2E", email: "e2e@example.com" },
+      git: {
+        baseUrl,
+        http: slowHttp,
+        allowOrigins: [fixture.origin],
+        identity: { name: "Guest E2E", email: "e2e@example.com" },
+      },
     } satisfies CreateOptions);
     try {
       // Quiescent baseline

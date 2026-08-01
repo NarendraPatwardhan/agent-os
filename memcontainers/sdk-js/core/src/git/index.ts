@@ -112,7 +112,6 @@ export type {
   GitResultMeta,
   GitIdentity,
   GitEngineLoadOptions,
-  GitEngineCreateOptions,
 } from "./types.js";
 export {
   snapshotGitCounters,

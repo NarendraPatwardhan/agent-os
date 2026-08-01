@@ -80,7 +80,7 @@ export interface OrchestratorOptions extends ResolveRemoteOptions {
    * Host commit identity (K28). Passed through for create-options symmetry;
    * inject lives on {@link GitEngine.run}.
    */
-  gitIdentity?: { name: string; email: string };
+  identity?: { name: string; email: string };
 }
 
 /** Product default: shallow depth=1 unless args override; depth<=0 means full. */
@@ -1645,7 +1645,7 @@ export function gitHostCallHandler(
 
   // One orchestrator per engine — never share mutable orch state across mounts.
   // Per-engine sparseCone (from GitEngine.load) wins over handler-level default
-  // so multi-mount `gitMounts: [{ path, sparseCone }]` is not filter-only theater.
+  // so multi-mount `git.mounts: [{ path, sparse }]` is not filter-only theater.
   const orchByEngine = new Map<GitEngine, GitRemoteOrchestrator>();
   const orchFor = (engine: GitEngine): GitRemoteOrchestrator => {
     let orch = orchByEngine.get(engine);

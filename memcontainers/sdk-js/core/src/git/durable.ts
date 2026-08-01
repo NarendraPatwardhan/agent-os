@@ -375,7 +375,7 @@ export class HostDirDurable implements DurableBackend {
  *
  * When `diskDir` is set, the worktree root is `{diskDir}/{safeId}/` so multiple
  * mounts under one VM share a disk root without clobbering (matches
- * memcontainer `gitDurable.diskDir` layout).
+ * memcontainer `git.durable.diskDir` layout).
  */
 export async function openDurable(opts: {
   id?: string;

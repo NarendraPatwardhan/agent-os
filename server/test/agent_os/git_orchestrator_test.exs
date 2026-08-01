@@ -2050,7 +2050,7 @@ defmodule AgentOS.Git.OrchestratorTest do
   @tag timeout: 120_000
   test "D20 attach_git sparse_cone → host_call clone applies Port sparse-set" do
     # Per-mount cone stored on attach; after fixture clone, sparse-checkout exists
-    # and root README remains (cone template always includes /*). JS gitSparseCone parity.
+    # and root README remains (cone template always includes /*). JS git.sparse parity.
     wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
     posix = runfile_bytes("memcontainers/images/posix.tar")
     path = engine_path()

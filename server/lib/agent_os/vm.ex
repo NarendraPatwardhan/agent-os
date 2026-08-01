@@ -62,7 +62,7 @@ defmodule AgentOS.Vm do
     # Multi-mount git (R63–R65 / K21 per path):
     # mount_path => %{pid, mon, sparse_cone: [prefix, ...]}.
     # One Port engine per mount path; single-writer per engine (not shared).
-    # sparse_cone is per-mount (D20 / JS gitSparseCone | gitMounts[].sparseCone).
+    # sparse_cone is per-mount (D20 / JS git.sparse | git.mounts[].sparse).
     git_engines: %{},
     # Host-owned remote policy (never from guest body). See attach_git/2.
     # Shared across mounts on this VM (policy is host-owned, not per-repo).
@@ -515,7 +515,7 @@ defmodule AgentOS.Vm do
     Prefer connection `:policies` for product push gating when available.
   * `:sparse_cone` / `:git_sparse_cone` — list of cone-mode path prefixes
     (e.g. `["src", "docs"]`) stored **on this mount** and applied after
-    clone via Port `sparse-set` (D20 / JS `gitSparseCone` / `sparseCone`).
+    clone via Port `sparse-set` (D20 / JS `git.sparse` / engine `sparseCone`).
     **Cone-only** — not full sparse-checkout pattern language. Gitfs projects
     the post-sparse worktree (no separate mount-side cone filter on BEAM).
 
@@ -1295,7 +1295,7 @@ defmodule AgentOS.Vm do
     require_approval = Keyword.get(opts, :require_approval, false) == true
     on_push_approval = Keyword.get(opts, :on_push_approval)
     push_approval = Keyword.get(opts, :push_approval, false) == true
-    # D20: per-mount cone prefixes (JS gitSparseCone / sparseCone).
+    # D20: per-mount cone prefixes (JS git.sparse / engine sparseCone).
     sparse_cone = git_sparse_cone_from_opts(opts)
 
     # Unlinked start + monitor so engine crash does not kill the VM actor.

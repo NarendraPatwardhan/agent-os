@@ -534,7 +534,7 @@ js_test(
 )
 
 # Residuals R1 / R3 / R8 — guest CAP_NET + gitfs ctl e2e (fixture pack only; no network).
-# Boots loom (has /bin/git) + kernel + emcc engine; injects FixtureSmartHttp via gitHttp.
+# Boots loom (has /bin/git) + kernel + emcc engine; injects FixtureSmartHttp via git.http.
 mc_ts_project(
     name = "git_guest_e2e_test_lib",
     srcs = ["test/git_guest_e2e.test.ts"],

@@ -111,14 +111,50 @@ function ownCreateOptions(opts: CreateOptions): CreateOptions {
     mounts: opts.mounts?.map((mount) => ({ ...mount })),
     sidecarHosts: opts.sidecarHosts ? { ...opts.sidecarHosts } : undefined,
     sidecars: ownSidecarDescriptors(opts.sidecars),
-    gitSparseCone: opts.gitSparseCone ? [...opts.gitSparseCone] : undefined,
-    gitDurable: opts.gitDurable
-      ? {
-          id: opts.gitDurable.id,
-          diskDir: opts.gitDurable.diskDir,
-        }
-      : undefined,
+    git: ownGitCreateOptions(opts.git),
   };
+}
+
+function ownGitCreateOptions(
+  git: CreateOptions["git"],
+): CreateOptions["git"] {
+  if (git == null) return undefined;
+  if (typeof git === "string") return git;
+  return {
+    baseUrl: git.baseUrl,
+    sparse: git.sparse ? [...git.sparse] : undefined,
+    mounts: git.mounts?.map((m) => ({
+      path: m.path,
+      sparse: m.sparse ? [...m.sparse] : undefined,
+    })),
+    identity: git.identity
+      ? { name: git.identity.name, email: git.identity.email }
+      : undefined,
+    durable: git.durable
+      ? { id: git.durable.id, diskDir: git.durable.diskDir }
+      : undefined,
+    allowOrigins: git.allowOrigins ? [...git.allowOrigins] : undefined,
+    http: git.http,
+  };
+}
+
+/** Normalize `git: string | GitCreateOptions` → config with baseUrl, or undefined (git off). */
+function normalizeCreateGit(
+  git: CreateOptions["git"],
+): import("./types.js").GitCreateOptions | undefined {
+  if (git == null) return undefined;
+  if (typeof git === "string") {
+    const baseUrl = git.trim();
+    if (!baseUrl) return undefined;
+    return { baseUrl };
+  }
+  const baseUrl = String(git.baseUrl ?? "").trim();
+  if (!baseUrl) {
+    throw new Error(
+      "git.baseUrl is required (directory URL of git_engine.mjs + git_engine.wasm)",
+    );
+  }
+  return { ...git, baseUrl };
 }
 
 function ownToolDefinition(def: ToolDefinition): ToolDefinition {
@@ -818,13 +854,13 @@ async function makeEmbedded(
     sidecars.handleGuestCall(body, context.signal),
   );
 
-  // Host git engine (GIT.md): opt-in loads emcc module(s), registers MapHostCall "git",
-  // and mounts gitfs (K27 default `/workspace/repo`, or multi via gitMounts — R63–R65).
-  // Product orch path: process-scoped pack cache on by default (registerGitHostCall
-  // → gitHostCallHandler); cone sparse via gitSparseCone (not full sparse parity).
-  // Each mount path owns a distinct GitEngine (single-writer per engine; no shared mutable).
-  // D17 / K10: optional gitDurable opens per-mount DurableBackend; snapshot checkpoints
-  // AGIT; restore/fork reopens the same id/path and rebinds ODB+worktree (not in MCSN).
+  // Host git (GIT.md): `opts.git` presence enables the engine — string form is the
+  // asset-dir URL; object form is { baseUrl, mounts?, sparse?, identity?, durable?, … }.
+  // Loads emcc module(s), registers MapHostCall "git", mounts gitfs (default
+  // `/workspace/repo`, or multi via git.mounts — R63–R65). Product orch path:
+  // process pack cache on by default; cone sparse is not full sparse-checkout language.
+  // Each mount path owns one GitEngine (single-writer). Optional git.durable opens a
+  // per-mount DurableBackend; snapshot checkpoints; restore/fork rebinds (not in MCSN).
   type LoadedGitEngine = {
     path: string;
     durableId?: string;
@@ -837,13 +873,8 @@ async function makeEmbedded(
     sparseCone?: string[];
   };
   let gitEngines: LoadedGitEngine[] = [];
-  if (opts.gitEngine) {
-    const base = opts.gitEngineBaseUrl;
-    if (!base) {
-      throw new Error(
-        "gitEngine requires gitEngineBaseUrl (dir URL of git_engine.mjs/wasm)",
-      );
-    }
+  const gitCfg = normalizeCreateGit(opts.git);
+  if (gitCfg) {
     const {
       GitEngine,
       registerGitHostCall,
@@ -851,26 +882,29 @@ async function makeEmbedded(
       durableIdForMount,
     } = await import("./git/index.js");
     const mountSpecs =
-      opts.gitMounts && opts.gitMounts.length > 0
-        ? opts.gitMounts
-        : [{ path: "/workspace/repo", sparseCone: opts.gitSparseCone }];
+      gitCfg.mounts && gitCfg.mounts.length > 0
+        ? gitCfg.mounts.map((m) => ({
+            path: m.path,
+            sparse: m.sparse,
+          }))
+        : [{ path: "/workspace/repo", sparse: gitCfg.sparse }];
 
     const seen = new Set<string>();
     for (const spec of mountSpecs) {
       const path = String(spec.path || "").trim();
       if (!path.startsWith("/")) {
-        throw new Error(`gitMounts path must be absolute, got ${JSON.stringify(spec.path)}`);
+        throw new Error(`git.mounts path must be absolute, got ${JSON.stringify(spec.path)}`);
       }
       if (seen.has(path)) {
-        throw new Error(`gitMounts duplicate path ${path} (one engine per mount path)`);
+        throw new Error(`git.mounts duplicate path ${path} (one engine per mount path)`);
       }
       seen.add(path);
     }
 
-    const durableBaseId = opts.gitDurable?.id?.trim() || "default";
-    const durableDiskRoot = opts.gitDurable?.diskDir;
-    // Only open durable stores when the embedder opts in (A8 honesty: no silent ODB).
-    const useDurable = opts.gitDurable !== undefined;
+    const durableBaseId = gitCfg.durable?.id?.trim() || "default";
+    const durableDiskRoot = gitCfg.durable?.diskDir;
+    // Only open durable stores when the embedder opts in (A8: no silent ODB).
+    const useDurable = gitCfg.durable !== undefined;
 
     const engineMap = new Map<
       string,
@@ -878,14 +912,12 @@ async function makeEmbedded(
     >();
     for (const spec of mountSpecs) {
       const path = String(spec.path).trim();
-      const sparse = spec.sparseCone ?? opts.gitSparseCone;
+      const sparse = spec.sparse ?? gitCfg.sparse;
       let durable: Awaited<ReturnType<typeof openDurable>> | undefined;
       let durableId: string | undefined;
       let durablePath: string | undefined;
       if (useDurable) {
         durableId = durableIdForMount(durableBaseId, path);
-        // D16: openDurable(diskDir) → HostDirDurable under {diskDir}/{safeId}/
-        // (re-openable libgit2 worktree). Memory/OPFS fallbacks when no diskDir.
         durable = await openDurable({
           id: durableId,
           diskDir: durableDiskRoot,
@@ -899,10 +931,9 @@ async function makeEmbedded(
         }
       }
       const eng = await GitEngine.load({
-        baseUrl: base,
+        baseUrl: gitCfg.baseUrl,
         sparseCone: sparse,
-        gitIdentity: opts.gitIdentity,
-        // Prefer durableDir so load hydrates/ge_opens the real host root.
+        identity: gitCfg.identity,
         ...(durable?.kind === "directory" && durable.hostPath
           ? { durableDir: durable.hostPath }
           : durable
@@ -922,21 +953,16 @@ async function makeEmbedded(
     }
 
     const defaultMount = mountSpecs[0]!.path.trim();
-    // packCache defaults on inside gitHostCallHandler (process Memory, or Disk
-    // when MC_GIT_PACK_CACHE is set on Node — never credentials).
-    // Bare URL remotes fail closed unless connections bind origins (R32).
-    // Demux: args.mount / mount → engine map (R65).
-    // gitHttp / gitAllowOrigins: hermetic fixture injection for guest CAP_NET e2e.
     registerGitHostCall(
       tools,
       { engines: engineMap, defaultMount },
       {
         connections: opts.connections,
         policies: opts.policies,
-        sparseCone: opts.gitSparseCone,
-        gitIdentity: opts.gitIdentity,
-        ...(opts.gitHttp ? { http: opts.gitHttp } : {}),
-        ...(opts.gitAllowOrigins ? { allowOrigins: opts.gitAllowOrigins } : {}),
+        sparseCone: gitCfg.sparse,
+        identity: gitCfg.identity,
+        ...(gitCfg.http ? { http: gitCfg.http } : {}),
+        ...(gitCfg.allowOrigins ? { allowOrigins: gitCfg.allowOrigins } : {}),
       },
     );
   }

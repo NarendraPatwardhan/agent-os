@@ -1,8 +1,8 @@
 # AgentOS Git — Host Source Plane
 
 Product surface for interactive and LLB git (host source plane). Design of record: worktree
-`GIT.md`. Create options: `gitEngine` (default `false`) + `gitEngineBaseUrl`. API surface:
-**advanced** (opt-in; not multi-tenant default-on). Tracker: `TASKS.md`.
+`GIT.md`. Create option: `git` (string base URL or object with `baseUrl` — **presence enables**; no
+boolean). API surface: **advanced** (opt-in; not multi-tenant default-on). Tracker: `TASKS.md`.
 
 ## Thesis
 
@@ -11,7 +11,7 @@ the engine never dials the network. Remotes are host-mediated.
 
 | Face | Path |
 |------|------|
-| SDK (JS) | `GitEngine.load` / `gitEngine` + `registerGitHostCall("git")` |
+| SDK (JS) | `GitEngine.load` / `mc.create({ git })` + `registerGitHostCall("git")` |
 | gitfs | `asMountDriver()` → MountFs; local ctl at `/.git/mc/ctl` |
 | Thin CLI | `//memcontainers/programs/git` — reduced surface only (see below) |
 | Server engine | BEAM-owned C `git-engine` **Port** — local Run, pack apply, type-4 mount only |
@@ -28,7 +28,7 @@ These are hard product rules for agents and tools that use host git — not opti
 | **No `.git/objects` façade (v1)** | Guests do **not** get a synthetic `.git/objects` tree. Object DB stays host-side; worktree + ctl only. |
 | **Unflushed ctl: close write before status** | Ctl Request is written to `/.git/mc/ctl`; Response is read from the out path. Close (or Drop) the write FD **before** reading status / next Response — unflushed guest buffers are invisible to the engine (same class as `hostDir`). |
 | **Remotes need CAP_NET + host_call `git`** | Mount/ctl alone cannot dial. Guest remotes go through `mc_sys_host_call` name `"git"` gated by kernel **CAP_NET**. Ctl remote ops refuse. |
-| **Opt-in flag + identity on commit** | Opt-in via `gitEngine` (JS; advanced surface). Commits need author identity (`name` / `email` args or engine defaults) — no ambient global gitconfig from the host user. |
+| **Opt-in + identity on commit** | Opt-in via `git` create option (JS; advanced surface). Commits need author identity (`name` / `email` args or `git.identity`) — no ambient global gitconfig from the host user. |
 | **Server push (not read-only)** | See [Server remotes](#server-remotes-k16--push-honesty) — packbuilder + receive-pack on BEAM when mount is not read-only. |
 
 ## Thin CLI surface (honest)
@@ -141,7 +141,7 @@ AgentOS.ControlPlane.attach_git(vm_id,
 ```ts
 // JS create options — same catalog cut
 mc.create({
-  gitEngine: true,
+  git: new URL("./git-engine/", import.meta.url).href,
   connections: [
     { ref: "github.user.work", auth: { kind: "bearer", token }, origins: ["https://github.com"] },
   ],
@@ -202,7 +202,7 @@ same as fetch/clone. Secrets only in BEAM request headers.
 | Step | Behaviour |
 |------|-----------|
 | **Shallow default** | Product clone/fetch uses `depth=1` unless `args.depth` overrides (`depth<=0` = full history) |
-| **Cone sparse** | JS `gitSparseCone` / `gitMounts[].sparseCone` / BEAM `attach_git(sparse_cone: …)` → orch after `clone.apply` runs engine `sparse-set` then `checkout` so the worktree only materializes cone prefixes |
+| **Cone sparse** | JS `git.sparse` / `git.mounts[].sparse` / BEAM `attach_git(sparse_cone: …)` → orch after `clone.apply` runs engine `sparse-set` then `checkout` so the worktree only materializes cone prefixes |
 | **gitfs / Port mount** | Guest sees the post-sparse worktree. JS gitfs also projects only cone prefixes (defense in depth). BEAM Port mounts the Port worktree root after sparse-set |
 
 ```text
@@ -260,16 +260,24 @@ Prose-only algorithm name lists without assertions are not sufficient.
 
 ## Create options (JS)
 
-Opt-in only; documented in [Create options](./create-options.md).
+Opt-in by presence of `git`; documented in [Create options](./create-options.md).
 
 ```ts
+// Minimal — asset-dir URL enables host git (not a repo remote)
 mc.create({
-  gitEngine: true,
-  gitEngineBaseUrl: new URL("./git-engine/", import.meta.url).href,
+  git: new URL("./git-engine/", import.meta.url).href,
   // registers host_call "git" (process pack cache default), mounts gitfs at /workspace/repo
-  // optional cone sparse (multi-pattern; not full sparse language): gitSparseCone: ["src", "docs"],
-  // multi-repo (R63–R65): gitMounts: [{ path: "/workspace/a" }, { path: "/workspace/b", sparseCone: ["src"] }],
-  // remotes demux with args.mount / mount on host_call "git"
+  connections: [{ ref: "github.user.work", auth: { kind: "bearer", token }, origins: ["https://github.com"] }],
+});
+
+// Full object form
+mc.create({
+  git: {
+    baseUrl: new URL("./git-engine/", import.meta.url).href,
+    // optional cone sparse (multi-pattern; not full sparse language): sparse: ["src", "docs"],
+    // multi-repo (R63–R65): mounts: [{ path: "/workspace/a" }, { path: "/workspace/b", sparse: ["src"] }],
+    // remotes demux with args.mount / mount on host_call "git"
+  },
   connections: [{ ref: "github.user.work", auth: { kind: "bearer", token }, origins: ["https://github.com"] }],
 });
 ```
@@ -284,22 +292,23 @@ may run remotes concurrently; two remotes on the **same** mount serialize.
 
 | Host | How to attach two engines | Default when `mount` omitted |
 |------|---------------------------|------------------------------|
-| **JS** | `mc.create({ gitEngine: true, gitMounts: [{ path: "/workspace/a" }, { path: "/workspace/b", sparseCone: ["src"] }], … })` | First `gitMounts` entry |
+| **JS** | `mc.create({ git: { baseUrl, mounts: [{ path: "/workspace/a" }, { path: "/workspace/b", sparse: ["src"] }] } })` | First `git.mounts` entry |
 | **BEAM** | `ControlPlane.attach_git(id, mount_path: "/workspace/a", …)` then again with a **distinct** `mount_path: "/workspace/b"` | Sole engine if only one attached; otherwise first attached (prefer explicit `args.mount`) |
 
-Same path while live fails closed: JS throws on duplicate `gitMounts` path; BEAM returns
+Same path while live fails closed: JS throws on duplicate `git.mounts` path; BEAM returns
 `{:error, :git_already_attached}`. Detach one path with BEAM `detach_git(id, mount_path: …)`;
 JS closes the VM (all engines).
 
 ```ts
 // JS product create — two mounts, remotes demux by args.mount
 const vm = await mc.create({
-  gitEngine: true,
-  gitEngineBaseUrl: new URL("./git-engine/", import.meta.url).href,
-  gitMounts: [
-    { path: "/workspace/app" },
-    { path: "/workspace/lib", sparseCone: ["src"] },
-  ],
+  git: {
+    baseUrl: new URL("./git-engine/", import.meta.url).href,
+    mounts: [
+      { path: "/workspace/app" },
+      { path: "/workspace/lib", sparse: ["src"] },
+    ],
+  },
   connections: [{ ref: "github.user.work", auth: { kind: "bearer", token }, origins: ["https://github.com"] }],
 });
 // Guest (CAP_NET): host_call "git" body includes mount to select engine
@@ -320,7 +329,7 @@ const vm = await mc.create({
 |---------|-----------|
 | `args.mount` or top-level `mount` = registered path | Route to that engine / Port |
 | Mount omitted, one engine only | That engine (JS single-engine path; BEAM sole attach) |
-| Mount omitted, multi-engine | JS uses `defaultMount` (first `gitMounts` entry); BEAM prefers sole/first — **set mount explicitly** |
+| Mount omitted, multi-engine | JS uses `defaultMount` (first `git.mounts` entry); BEAM prefers sole/first — **set mount explicitly** |
 | Unknown mount path | Fail closed: `ok:false`, code 1, stderr `git: unknown mount …` — **no network dial** |
 | Duplicate path attach | Fail closed (see above) |
 
@@ -351,7 +360,7 @@ Accept either form:
 
 ## Product readiness (shipped)
 
-Enable with `gitEngine: true` + `gitEngineBaseUrl` (default off). API surface for `GitEngine` /
+Enable with `git: <baseUrl>` or `git: { baseUrl, … }` (omit = off). API surface for `GitEngine` /
 host_call / LLB git helpers is **advanced** (`docs/api-surface.json`). Not multi-tenant default-on.
 
 | # | Criterion | Status |
@@ -368,7 +377,7 @@ host_call / LLB git helpers is **advanced** (`docs/api-surface.json`). Not multi
 - **JS (fixture):** **Met** under `//memcontainers/sdk-js/core:git_guest_e2e_test` — thin
   `/bin/git` on loom → kernel CAP_NET → host_call `"git"` → TS orch + FixtureSmartHttp +
   `minimal.pack` → `/workspace/repo` worktree; CAP_NET deny; gitfs ctl close-then-status.
-  Inject transport via create options `gitHttp` / `gitAllowOrigins` (hermetic; not product egress).
+  Inject transport via create options `git.http` / `git.allowOrigins` (hermetic; not product egress).
 - **Server:** **Met** — `server/test/agent_os/git_guest_acceptance_test.exs` D25 (full CAP_NET
   clone via `attach_git` + fixture dials ≥2 + worktree README) and D26 (no CAP_NET → deny, dials
   == 0).
@@ -402,7 +411,7 @@ same path sees the same HEAD + worktree files. **AGIT** (pack+refs envelope) rem
 
 | Store | Same id / path reopens | Survives process restart |
 |-------|------------------------|--------------------------|
-| `HostDirDurable` via `gitDurable.diskDir` or `durableDir` | Yes — `{diskDir}/{safeId}/` worktree | Yes |
+| `HostDirDurable` via `git.durable.diskDir` or `durableDir` | Yes — `{diskDir}/{safeId}/` worktree | Yes |
 | `OpfsDirDurable` | Yes — OPFS work tree | Yes (browser OPFS) |
 | AGIT blob (`DiskDurable` / `OpfsDurable`) | Yes — `snapshot.bin` | Yes |
 | `MemoryDurable` | Yes within one JS process (instance registry) | **No** |
@@ -411,24 +420,25 @@ same path sees the same HEAD + worktree files. **AGIT** (pack+refs envelope) rem
 
 | Piece | Path | Behaviour |
 |-------|------|-----------|
-| `CreateOptions.gitDurable` | `types.ts` | Opt-in `{ id?, diskDir? }`. Per-mount key = `durableIdForMount(id, path)` |
+| `CreateOptions.git.durable` | `types.ts` | Opt-in `{ id?, diskDir? }`. Per-mount key = `durableIdForMount(id, path)` |
 | `makeEmbedded` | `memcontainer.ts` | Opens durable per mount; `GitEngine.load({ durableDir \| durable })`; `backend.bindGitEngines(...)` |
 | `EmbeddedBackend.snapshot` / `pinBase` | `embedded.ts` | `checkpointGitEngines()` before MCSN (empty/unborn skip export) |
-| Restore / fork | `mc.restore` / `Vm.fork` | Same `gitDurable` → reopen id/path → directory hydrate or AGIT rebind |
+| Restore / fork | `mc.restore` / `Vm.fork` | Same `git.durable` → reopen id/path → directory hydrate or AGIT rebind |
 | Proof | `git_guest_e2e.test.ts` phase D17 | commit → snapshot → restore HEAD+worktree; fork rebind |
 
 ```ts
 const vm = await mc.create({
-  gitEngine: true,
-  gitEngineBaseUrl: new URL("./git-engine/", import.meta.url).href,
-  // Primary: re-openable host worktree dirs under diskDir (D16 path).
-  gitDurable: { id: "agent-session-1", diskDir: "/var/lib/agentos/git-durable" },
+  git: {
+    baseUrl: new URL("./git-engine/", import.meta.url).href,
+    // Primary: re-openable host worktree dirs under diskDir (D16 path).
+    durable: { id: "agent-session-1", diskDir: "/var/lib/agentos/git-durable" },
+  },
 });
 // vm.snapshot() / pinBase → checkpoint durable store (not MCSN ODB)
-// mc.restore / fork with the same gitDurable → reopen + rebind
+// mc.restore / fork with the same git.durable → reopen + rebind
 ```
 
-Omit `gitDurable` for empty engines on restore (MCSN never carries ODB — A8).
+Omit `git.durable` for empty engines on restore (MCSN never carries ODB — A8).
 
 ### BEAM — Port worktree root (caller dir survives stop)
 
@@ -450,7 +460,7 @@ re-`attach_git` / second `GitEngine.start` with the **same durable root**.
 ### Snapshot honesty (A8)
 
 Kernel MCSN does **not** include the host git ODB. Repo survival requires explicit
-`gitDurable` / `durableDir` (JS) or a preserved Port root (BEAM). Snapshot refused while any
+`git.durable` / `durableDir` (JS) or a preserved Port root (BEAM). Snapshot refused while any
 git remote host_call is inflight (D19 **DONE**). JS MCSN rebind (D17 **DONE**).
 
 ## Submodules (D23–D24) — host-mediated update
@@ -555,7 +565,7 @@ unless an explicit decision overturns Port. JS hosts continue to use emcc wasm.
 - Ctl remotes refuse; remotes require `CAP_NET` + host_call name `"git"`.
 - No Node/Bun process on the Elixir control plane for git.
 - Surface is **advanced** (opt-in). Not multi-tenant default-on.
-- Enable with `gitEngine: true` (default false).
+- Enable with `git: <baseUrl>` (omit = off).
 - Stable stderr prefixes are catalogued in `testdata/orch/response_schema.json` (D33).
 
 ## Bazel / server targets

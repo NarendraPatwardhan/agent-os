@@ -149,7 +149,7 @@ export class EmbeddedBackend implements Backend {
   /**
    * D17: host git engines with durable bindings.
    * Snapshot / pinBase checkpoint these before MCSN capture; restore reopens
-   * the same durable id/path via CreateOptions.gitDurable.
+   * the same durable id/path via CreateOptions.git.durable.
    */
   private gitEngineBindings: EmbeddedGitEngineBinding[] = [];
   /** PERF-013 traces for in-flight exec jobs (A3 parity with driveExec). */
@@ -608,7 +608,7 @@ export class EmbeddedBackend implements Backend {
   }
   async snapshot(opts: SnapshotOptions = {}): Promise<Uint8Array> {
     // D17 / K10: record durable git id/path content (AGIT) before MCSN.
-    // Restored VMs re-open the same CreateOptions.gitDurable id/path and rebind.
+    // Restored VMs re-open the same CreateOptions.git.durable id/path and rebind.
     await this.checkpointGitEngines();
     if ((opts.mode ?? "full") === "full") return this.host.snapshot();
     if (!this.snapshotStore?.putSnapshotObject || !this.snapshotStore.snapshotObject) {

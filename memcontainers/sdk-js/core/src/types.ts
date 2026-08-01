@@ -13,6 +13,87 @@ export interface Permissions {
   network?: "allow" | "deny" | { allow?: string[] };
 }
 
+/**
+ * Host git (libgit2) configuration for {@link mc.create}.
+ *
+ * Presence of {@link GitCreateOptions.baseUrl} (or a string shorthand for `git`)
+ * enables the host git engine — no separate boolean.
+ *
+ * @example
+ * ```ts
+ * // Minimal
+ * mc.create({ git: new URL("./git-engine/", import.meta.url).href })
+ *
+ * // Full
+ * mc.create({
+ *   git: {
+ *     baseUrl: new URL("./git-engine/", import.meta.url).href,
+ *     identity: { name: "Agent", email: "agent@example.com" },
+ *     sparse: ["src", "docs"],
+ *     mounts: [{ path: "/workspace/a" }, { path: "/workspace/b", sparse: ["src"] }],
+ *     durable: { id: "session-1", diskDir: "/var/lib/agentos/git" },
+ *   },
+ *   connections: [...],
+ * })
+ * ```
+ */
+export interface GitCreateOptions {
+  /**
+   * Directory URL of `git_engine.mjs` + `git_engine.wasm`
+   * (`//memcontainers/lib/git-engine:git_engine_wasm`). Required.
+   */
+  baseUrl: string;
+  /**
+   * Multi-repo mounts. Default: `[{ path: "/workspace/repo" }]`.
+   * Each path owns one engine (single-writer). Duplicate paths fail closed.
+   */
+  mounts?: Array<{ path: string; sparse?: string[] }>;
+  /**
+   * Cone sparse prefixes for the default mount when {@link mounts} is omitted
+   * (e.g. `["src", "docs"]`). Cone-only — not full git sparse language.
+   */
+  sparse?: string[];
+  /** Host commit identity (K28). Injected when commit args omit name/email. */
+  identity?: { name: string; email: string };
+  /**
+   * Durable store for snapshot/restore rebind (K10). MCSN never carries the ODB.
+   * With `diskDir`: re-openable worktree under `{diskDir}/{id}/`.
+   */
+  durable?: { id?: string; diskDir?: string };
+  /**
+   * Bare-URL origin allowlist (connection-bound remotes use `connection.origins`).
+   * Empty + bare URL fails closed.
+   */
+  allowOrigins?: string[];
+  /**
+   * Hermetic smart-HTTP transport for tests only (not product egress).
+   * Product default is real FetchSmartHttp + connections.
+   */
+  http?: {
+    listRefs: (
+      url: string,
+      auth?: ConnectionAuth,
+    ) => Promise<Array<{ name: string; hash: string; peeled?: string }>>;
+    fetchPacks: (
+      url: string,
+      want: string[],
+      have: string[],
+      depth?: number,
+      auth?: ConnectionAuth,
+    ) => Promise<Uint8Array>;
+    pushPacks?: (
+      url: string,
+      commands: Array<{
+        oldHash: string;
+        newHash: string;
+        name: string;
+      }>,
+      pack: Uint8Array,
+      auth?: ConnectionAuth,
+    ) => Promise<{ ok: boolean; message?: string }>;
+  };
+}
+
 /** Options for {@link mc.create}. */
 export interface CreateOptions {
   /** Backend. Default `"local"`. */
@@ -94,97 +175,11 @@ export interface CreateOptions {
    */
   templateFill?: "on_demand" | "prepopulated" | "off";
   /**
-   * Enable host git engine (GIT.md). When true with `gitEngineBaseUrl`:
-   * loads emcc engine(s), registers MapHostCall `"git"`, and mounts gitfs.
-   * Default path is `/workspace/repo` unless {@link gitMounts} is set or that
-   * path is already in `mounts`. Default false.
+   * Host git (libgit2). String form is a dir URL of `git_engine.mjs` + `.wasm`
+   * and enables the engine by itself. Object form requires {@link GitCreateOptions.baseUrl}.
+   * Omit = no host git.
    */
-  gitEngine?: boolean;
-  /**
-   * Directory URL of `git_engine.mjs` + `git_engine.wasm`
-   * (`//memcontainers/lib/git-engine:git_engine_wasm`). Required when
-   * `gitEngine` is true.
-   */
-  gitEngineBaseUrl?: string;
-  /**
-   * Cone-mode sparse-checkout prefixes for the default gitfs mount and post-clone
-   * engine `sparse-set` (e.g. `["src", "docs"]`). **Cone-only** — not full
-   * sparse-checkout pattern parity. Only applied when `gitEngine` is on
-   * and a mount does not supply its own `sparseCone`.
-   */
-  gitSparseCone?: string[];
-  /**
-   * Multi-repo mounts (R63–R65). When set with `gitEngine`, loads one
-   * GitEngine per entry (distinct paths), registers a demuxing host_call `"git"`
-   * (`args.mount` / `mount` routes remotes), and mounts each gitfs.
-   * Omitting this keeps the single default engine at `/workspace/repo`.
-   * Same path twice fails closed; each engine is single-writer (not shared).
-   */
-  gitMounts?: Array<{ path: string; sparseCone?: string[] }>;
-  /**
-   * Host commit identity for the host git engine (K28).
-   * When set, `GitEngine.run` injects name/email into `commit` if args omit them.
-   * Never invents a default identity when unset (no Agent/agent@example.com).
-   */
-  gitIdentity?: { name: string; email: string };
-  /**
-   * Hermetic smart-HTTP transport for host git remotes (fixture e2e).
-   * When set with `gitEngine`, injected into `registerGitHostCall`
-   * instead of product `FetchSmartHttp`. Structural match of
-   * `SmartHttpTransport` — do not use for production egress.
-   */
-  gitHttp?: {
-    listRefs: (
-      url: string,
-      auth?: ConnectionAuth,
-    ) => Promise<Array<{ name: string; hash: string; peeled?: string }>>;
-    fetchPacks: (
-      url: string,
-      want: string[],
-      have: string[],
-      depth?: number,
-      auth?: ConnectionAuth,
-    ) => Promise<Uint8Array>;
-    pushPacks?: (
-      url: string,
-      commands: Array<{
-        oldHash: string;
-        newHash: string;
-        name: string;
-      }>,
-      pack: Uint8Array,
-      auth?: ConnectionAuth,
-    ) => Promise<{ ok: boolean; message?: string }>;
-  };
-  /**
-   * Bare-URL origin allowlist for host git remotes (R32).
-   * Empty + bare URL fails closed. Connection-bound remotes use
-   * `connection.origins`. Fixture e2e must pass explicit origins for bare URLs.
-   */
-  gitAllowOrigins?: string[];
-  /**
-   * Durable git engine store for snapshot / restore / fork rebind (K10 / D16–D17).
-   *
-   * MCSN does **not** carry the host ODB. When set with `gitEngine`:
-   * - each gitfs mount opens a directory durable store under `diskDir` (primary —
-   *   re-openable libgit2 worktree) or OPFS/memory blob fallback;
-   * - `vm.snapshot()` / `pinBase()` checkpoint that store (directory flush or AGIT);
-   * - `mc.restore` / `vm.fork` reopen the same id/path and rebind objects + worktree.
-   *
-   * Omit for empty engines on restore (product-honest A8: no silent ODB in MCSN).
-   * Process-memory when neither OPFS nor `diskDir` is available (same `id` reopens
-   * the store within one JS process).
-   */
-  gitDurable?: {
-    /** Logical durable base id (per-mount key is `id:mountPath`). Default `"default"`. */
-    id?: string;
-    /**
-     * Node disk root; each mount is a re-openable libgit2 worktree under
-     * `{diskDir}/{safeId}/` (D16 primary). Checkpoint flushes that directory;
-     * a second process loads the same path and sees the same HEAD + files.
-     */
-    diskDir?: string;
-  };
+  git?: string | GitCreateOptions;
 }
 
 export type ConnectionAuth =

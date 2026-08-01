@@ -100,7 +100,7 @@ async function main() {
   // Never invents Agent@example.com when identity is unset (covered by engine K28).
   const engId = await GitEngine.load({
     baseUrl: baseUrl(dir),
-    gitIdentity: { name: "Host Policy", email: "host@policy.test" },
+    identity: { name: "Host Policy", email: "host@policy.test" },
   });
   let ir = await engId.run({ op: "init" });
   if (!ir.ok) throw new Error(`id init: ${JSON.stringify(ir)}`);

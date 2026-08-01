@@ -5,7 +5,7 @@
 | **Title** | AgentOS Git — Host Source Plane (libgit2) |
 | **Author** | Design loop (AgentOS) |
 | **Date** | 2026-07-30 (updated 2026-08-01) |
-| **Status** | **Shipped** on `feature/cgit` — host source plane complete (PR0–PR16 surface). Opt-in via `mc.create({ gitEngine: true, gitEngineBaseUrl })`. Product docs: `docs/git.md`. Tracker: `TASKS.md` (D1–D41 DONE). `CRITICAL_REVIEW.md` is archival pre-fix only. |
+| **Status** | **Shipped** on `feature/cgit` — host source plane complete (PR0–PR16 surface). Opt-in via `mc.create({ git: baseUrl })` or `mc.create({ git: { baseUrl, … } })` (presence enables; no boolean). Product docs: `docs/git.md`. Tracker: `TASKS.md` (D1–D41 DONE). `CRITICAL_REVIEW.md` is archival pre-fix only. |
 | **Replaces** | Workspace-root `GIT.md` + `GIT_DESIGN.md` (go-git / gojs era) — **single** design of record after approval |
 | **Baseline systems** | `SYSTEMS.md` (Plan-9 VFS, MountFs, host-call, LLB, A1/A8/A9) |
 | **Spike substrate** | `/mnt/workspace/git-bazel` — libgit2 1.9.2 + `ge_*` Run ABI, hermetic zig cc + emsdk |
@@ -1545,12 +1545,12 @@ Git in AgentOS is a **host source service with a Plan-9 face**, not a fat guest.
 - **Runtimes:** emcc `git_engine.{js,wasm}` on JS hosts (**~613 KiB measured**, no gojs); **native hermetic C Port on server** (PR7a/b; c-shared packaging ≠ product load) — **no freestanding/wasmtime engine**, **no Node on server**; BEAM owns engine Port + **HTTPS remotes** (K16).
 - **Tree** in the namespace (`gitfs` / `MountFs`); ctl respects MountFs drain (open-after-write).
 - **CLI** as a thin pure-mc **reduced** adapter; remotes via raw **`MapHostCall` name `"git"`** (CAP_NET), not catalog alone.
-- **Remotes** host-mediated only: **TS** smart-HTTP + orch on JS; **BEAM** smart-HTTP + orch on server → pack/ref apply on dial-free engine. **Not remotes GA** until tracker P0/P1 close.
+- **Remotes** host-mediated only: **TS** smart-HTTP + orch on JS; **BEAM** smart-HTTP + orch on server → pack/ref apply on dial-free engine. Dual-host remotes surface is **shipped** (tracker D1–D41 DONE; product readiness criteria in `docs/git.md` all Met).
 - **LLB and sessions** share that algorithm; Node solve is **engine-first** (`MC_GIT_USE_SYSTEM=1` emergency only).
 - **Snapshots** rebind attachments; durability is explicit.
 - **License** packaging checklist L1–L6 from PR0; L5 CI gate on ship filegroup.
 - **go-git** is historical/rejected for product; prior dual docs are replaced by this document.
 
-**Progress honesty:** code scaffold spans PR0–PR15 shapes in-tree; many gaps remain (see `TASKS.md` / `CRITICAL_REVIEW.md`). Do not read this design as “100% done.”
+**Status:** host source plane (PR0–PR16 surface) is **shipped** on `feature/cgit` — opt-in via `mc.create({ git })` (advanced surface; not multi-tenant default-on). Tracker: `TASKS.md` (D1–D41 DONE). `CRITICAL_REVIEW.md` is archival pre-fix only. Non-goals and out-of-surface items (§Non-Goals, §11) remain excluded by design; they are not open implementation work.
 
-Implementation: PR plan above (PR7a/b/c, PR10a/b/c splits), landing in `memcontainers/lib/git-engine`, `sdk-js/core/src/git/`, `server/lib/agent_os/git_engine.ex`.
+Implementation: PR plan above (PR7a/b/c, PR10a/b/c splits); code in `memcontainers/lib/git-engine`, `sdk-js/core/src/git/`, `server/lib/agent_os/git_engine.ex` (and related BEAM orch/connections modules).

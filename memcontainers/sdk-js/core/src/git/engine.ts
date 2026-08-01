@@ -77,7 +77,7 @@ export class GitEngine {
       !!opts.readOnly,
       durable,
       opts.sparseCone,
-      opts.gitIdentity,
+      opts.identity,
     );
     // Directory backends hydrate in GitBridge.create; ge_open already sees
     // the restored worktree+odb (or empty dir for first open).

@@ -259,7 +259,7 @@ defmodule AgentOS.ControlPlane do
 
   Sparse cone (D20): `:sparse_cone` / `:git_sparse_cone` list of prefixes is
   stored per mount and applied after clone (`sparse-set`), matching JS
-  `gitSparseCone` / `gitMounts[].sparseCone`.
+  JS `git.sparse` / `git.mounts[].sparse`.
   """
   @spec attach_git(Vm.id(), keyword()) :: :ok | {:error, term()}
   def attach_git(id, opts \\ []), do: with_vm(id, &Vm.attach_git(&1, opts))

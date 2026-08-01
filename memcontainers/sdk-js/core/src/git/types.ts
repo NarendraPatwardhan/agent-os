@@ -83,23 +83,5 @@ export interface GitEngineLoadOptions {
    * Host policy identity injected into `commit` when args omit name/email (K28).
    * Never synthesizes a default identity when unset.
    */
-  gitIdentity?: GitIdentity;
-}
-
-export interface GitEngineCreateOptions {
-  /** When true, enable host git engine packaging (PR3+). Default false. */
-  gitEngine?: boolean;
-  /** Where to load git_engine.js/wasm from when gitEngine is set. */
-  gitEngineBaseUrl?: string;
-  /**
-   * Cone-mode sparse prefixes for default gitfs mount / post-clone sparse-set.
-   * **Cone-only** — not full sparse-checkout parity. Prefer CreateOptions
-   * `gitSparseCone` on the product memcontainer path.
-   */
-  sparseCone?: string[];
-  /**
-   * Host commit identity for host git engine (K28 inject).
-   * Prefer CreateOptions `gitIdentity` on the product memcontainer path.
-   */
-  gitIdentity?: GitIdentity;
+  identity?: GitIdentity;
 }

@@ -27,10 +27,7 @@ fields—`mc.use()`. Applicability and defaults vary by runtime.
 | `sidecarHosts`       | host-alias map                           | `{}`                            | Embedded-only private sidecar authority routes       |
 | `sidecars`           | grant-descriptor map                     | `{}`                            | Portable sidecar grants attached at boot             |
 | `deterministic`      | boolean                                  | `false`                         | Repeatable guest clock and random source             |
-| `gitEngine`             | boolean                               | `false`                         | Enable host git engine (libgit2 emcc wasm); requires `gitEngineBaseUrl` |
-| `gitEngineBaseUrl`   | directory URL string                     | none                            | Dir URL of `git_engine.mjs` + `git_engine.wasm`; required when engine is on |
-| `gitSparseCone`      | `string[]`                               | none                            | Cone-mode sparse prefixes for default gitfs + post-clone `sparse-set` (multi-pattern; engine also accepts basic `!path` negation — not full sparse language) |
-| `gitDurable`         | `{ id?: string, diskDir?: string }`      | none (off)                      | Opt-in durable **directory** store per gitfs mount (re-openable worktree under `diskDir`; snapshot/restore rebind). See [Git durability](./git.md#durability--dir-reopen-pr8--d16d18) |
+| `git`                | string \| object (`GitCreateOptions`)    | omit (off)                      | Host git (libgit2 emcc wasm). **Presence enables** — no boolean. String = dir URL of `git_engine.mjs` + `git_engine.wasm`. Object requires `baseUrl` (same dir URL) plus optional mounts / sparse / identity / durable / allowOrigins / http. See [Git](./git.md) |
 
 ## `runtime`
 
@@ -178,45 +175,61 @@ not reapply layers because the snapshot already contains the selected filesystem
 Pins guest-visible time and randomness to repeatable sources. It is intended for testing and pure
 build steps. It does not cache or sanitize external network responses.
 
-## `gitEngine` and `gitEngineBaseUrl`
+## `git`
 
-Host source-plane git (libgit2 + emcc wasm). Opt-in; default `false`. See [Git](./git.md).
+Host source-plane git (libgit2 + emcc wasm). **Opt-in by presence** — omit the field for no host git.
+There is no separate boolean. See [Git](./git.md).
 
-When `gitEngine` is `true`:
+| Form | Meaning |
+|------|---------|
+| `string` | Directory URL of `git_engine.mjs` + `git_engine.wasm` (from `//memcontainers/lib/git-engine:git_engine_wasm`). Enables the engine with defaults. |
+| object | Full `GitCreateOptions`. **`baseUrl` required** (same directory URL). |
 
-- `gitEngineBaseUrl` is **required** — a directory URL whose contents include `git_engine.mjs` and
-  `git_engine.wasm` (from `//memcontainers/lib/git-engine:git_engine_wasm`);
+This is **not** a repository remote URL. Remotes use `connections` + guest `clone`/`fetch`/`push` URLs.
+
+When `git` is set:
+
 - the host loads the engine(s), registers MapHostCall name `"git"` for CAP_NET remotes (process-scoped
   pack cache on by default), and mounts gitfs at `/workspace/repo` unless that path is already
-  present in `mounts` or overridden by `gitMounts`;
-- optional `gitSparseCone` applies **cone-mode** sparse prefixes to the default mount and to post-clone
-  engine `sparse-set`. Engine also accepts multi-pattern strings/arrays and basic `!path`
-  negation lines written into `sparse-checkout` — **not** full git sparse-checkout pattern language;
-- optional `gitMounts: [{ path, sparseCone? }]` enables multi-repo (R63–R65): one engine per distinct
+  present in `mounts` or overridden by `git.mounts`;
+- optional **`sparse`** applies **cone-mode** prefixes to the default mount and to post-clone
+  engine `sparse-set`. Multi-pattern strings/arrays and basic `!path` negation are accepted —
+  **not** full git sparse-checkout pattern language;
+- optional **`mounts: [{ path, sparse? }]`** enables multi-repo (R63–R65): one engine per distinct
   path, demux via `args.mount` / `mount` on host_call `"git"`. Duplicate paths fail closed;
-- optional **`gitHttp`** / **`gitAllowOrigins`** inject a hermetic smart-HTTP transport and bare-URL
-  allowlist into the product orch path (fixture e2e only; product default is `FetchSmartHttp` +
-  connection origins / empty bare-URL deny — R32);
-- optional **`gitDurable: { id?, diskDir? }`** opens a per-mount durable store (D16/D17). MCSN
-  never carries the ODB. When set: each mount uses `durableIdForMount(id, path)`; `vm.snapshot` /
-  `pinBase` checkpoint into that store; restore/fork with the **same** `gitDurable` reopens and
+- optional **`identity: { name, email }`** is the host commit identity (K28) when commit args omit
+  name/email — never invents ambient defaults;
+- optional **`allowOrigins`** / **`http`** inject a bare-URL allowlist and hermetic smart-HTTP
+  transport (fixture e2e only; product default is `FetchSmartHttp` + connection origins / empty
+  bare-URL deny — R32);
+- optional **`durable: { id?, diskDir? }`** opens a per-mount durable store (D16/D17). MCSN never
+  carries the ODB. When set: each mount uses `durableIdForMount(id, path)`; `vm.snapshot` /
+  `pinBase` checkpoint into that store; restore/fork with the **same** `git.durable` reopens and
   rebinds. Omit for empty engines on restore (A8). With `diskDir`: re-openable
   `HostDirDurable` worktree at `{diskDir}/{safeId}/` (primary). Without: OPFS directory/blob when
   available, else process-memory AGIT by `id` (same process only). Details:
   [Git durability / dir reopen](./git.md#durability--dir-reopen-pr8--d16d18).
 
 ```js
+// Minimal — base URL enables host git
 const vm = await mc.create({
-  gitEngine: true,
-  gitEngineBaseUrl: new URL("./git-engine/", import.meta.url).href,
-  gitSparseCone: ["src", "docs"],
-  // durable dir reopen across snapshot/restore (omit = no ODB rebind):
-  // gitDurable: { id: "session-1", diskDir: "/var/lib/agentos/git-durable" },
-  // multi-repo:
-  // gitMounts: [
-  //   { path: "/workspace/app" },
-  //   { path: "/workspace/lib", sparseCone: ["src"] },
-  // ],
+  git: new URL("./git-engine/", import.meta.url).href,
+});
+
+// Full
+const vm = await mc.create({
+  git: {
+    baseUrl: new URL("./git-engine/", import.meta.url).href,
+    sparse: ["src", "docs"],
+    identity: { name: "Agent", email: "agent@example.com" },
+    // durable dir reopen across snapshot/restore (omit = no ODB rebind):
+    // durable: { id: "session-1", diskDir: "/var/lib/agentos/git-durable" },
+    // multi-repo:
+    // mounts: [
+    //   { path: "/workspace/app" },
+    //   { path: "/workspace/lib", sparse: ["src"] },
+    // ],
+  },
   connections: [
     {
       ref: "github.user.work",
@@ -227,6 +240,5 @@ const vm = await mc.create({
 });
 ```
 
-Omit git engine fields (or leave the flag false) for VMs that do not need host git. Remote runtime
-placement and server Port wiring are covered on [Git](./git.md); design of record is workspace-root
-`GIT.md`.
+Omit `git` for VMs that do not need host git. Remote runtime placement and server Port wiring are
+covered on [Git](./git.md); design of record is workspace-root `GIT.md`.
