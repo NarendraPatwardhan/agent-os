@@ -31,6 +31,8 @@ export {
   parseReceiveStatus,
   buildUploadPackBody,
   isRedirectResponse,
+  readPackFromResponse,
+  indexOfPackMagic,
 } from "./smart-http.js";
 export type {
   RefAdvertisement,
@@ -38,6 +40,7 @@ export type {
   PushCommand,
   ReceiveStatus,
   FetchImpl,
+  FetchPacksOptions,
 } from "./smart-http.js";
 export {
   MemoryDurable,
@@ -71,11 +74,19 @@ export {
   MemoryPackCache,
   DiskPackCache,
   importPackCached,
+  importPackStream,
+  feedPackChunks,
   defaultProcessPackCache,
+  createDefaultProcessPackCache,
+  processPackCacheDirFromEnv,
   uploadPackCacheKey,
   DEFAULT_MAX_PACK_BYTES,
 } from "./pack-cache.js";
-export type { PackCache, ImportPackOptions } from "./pack-cache.js";
+export type {
+  PackCache,
+  ImportPackOptions,
+  ImportPackEngine,
+} from "./pack-cache.js";
 export {
   materializeLlbGit,
   worktreeToTar,

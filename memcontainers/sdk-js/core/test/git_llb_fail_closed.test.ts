@@ -72,7 +72,8 @@ async function main() {
       delete process.env.MC_GIT_USE_SYSTEM;
     }
 
-    // 3) R70: materializeLlbGit defaults pack cache (process MemoryPackCache).
+    // 3) R70/D12: materializeLlbGit / host_call default process pack cache
+    //    (Memory when MC_GIT_PACK_CACHE unset; Disk when set — see pack-cache tests).
     //    We only check the default resolver identity — no network/engine needed.
     const cacheA = defaultProcessPackCache();
     const cacheB = defaultProcessPackCache();

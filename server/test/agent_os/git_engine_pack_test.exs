@@ -145,6 +145,149 @@ defmodule AgentOS.GitEnginePackTest do
     :ok = GitEngine.stop(pid)
   end
 
+  # D11: multi-chunk import_pack (chunk size < pack size) must still checkout.
+  @tag timeout: 60_000
+  test "multi-chunk import_pack of minimal.pack yields worktree README" do
+    path = engine_path()
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "pack-multi-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.mkdir_p!(root)
+    pack = read_pack!()
+    tip = tip_hash!()
+    # 191-byte pack with 64-byte chunks → ≥3 import_pack frames + final.
+    chunk = 64
+    assert byte_size(pack) > chunk
+
+    assert {:ok, pid} = GitEngine.start(executable: path, root: root)
+    assert {:ok, init} = GitEngine.run(pid, %{"op" => "init"})
+    assert init["ok"] == true or (is_binary(Map.get(init, "raw")) and init["raw"] =~ "\"ok\":true")
+
+    size = byte_size(pack)
+    chunks =
+      for off <- 0..(size - 1)//chunk do
+        take = min(chunk, size - off)
+        {binary_part(pack, off, take), off + take >= size}
+      end
+
+    assert length(chunks) >= 3
+
+    Enum.each(chunks, fn {part, final?} ->
+      assert :ok = GitEngine.import_pack(pid, part, final: final?)
+    end)
+
+    assert {:ok, refs} =
+             GitEngine.run(pid, %{
+               "op" => "refs.import",
+               "args" => %{"name" => @ref_name, "hash" => tip}
+             })
+
+    assert refs["ok"] == true or (is_binary(Map.get(refs, "raw")) and refs["raw"] =~ "\"ok\":true")
+
+    assert {:ok, clone} =
+             GitEngine.run(pid, %{"op" => "clone.apply", "args" => %{"head" => @ref_name}})
+
+    assert clone["ok"] == true or (is_binary(Map.get(clone, "raw")) and clone["raw"] =~ "\"ok\":true")
+    assert {:ok, "hello\n"} = File.read(Path.join(root, "README"))
+
+    :ok = GitEngine.stop(pid)
+  end
+
+  # D11: orch apply_pack streams fixture pack in small chunks (import_chunk_bytes).
+  @tag timeout: 60_000
+  test "BEAM orch clone multi-chunk import via import_chunk_bytes" do
+    path = engine_path()
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "pack-orch-multi-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.mkdir_p!(root)
+    pack = read_pack!()
+    tip = tip_hash!()
+    assert byte_size(pack) > 64
+
+    transport = fn
+      :list_refs, {_url, _opts} ->
+        {:ok, [%{name: @ref_name, hash: tip}]}
+
+      :fetch_packs, {_url, _want, _have, _opts} ->
+        {:ok, pack}
+    end
+
+    assert {:ok, pid} = GitEngine.start(executable: path, root: root)
+
+    assert {:ok, json} =
+             Orchestrator.run(
+               pid,
+               ~s({"op":"clone","args":{"url":"#{@fixture_url}"}}),
+               transport: transport,
+               allowed_origins: [@fixture_origin],
+               import_chunk_bytes: 64
+             )
+
+    assert json =~ "\"ok\":true" or json =~ ~s("ok":true), "multi-chunk orch clone failed: #{json}"
+    assert {:ok, "hello\n"} = File.read(Path.join(root, "README"))
+
+    :ok = GitEngine.stop(pid)
+  end
+
+  # D11: file pack_source path (stream-to-temp shape) imports in chunks.
+  @tag timeout: 60_000
+  test "BEAM orch clone from file pack_source with multi-chunk import" do
+    path = engine_path()
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "pack-file-src-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.mkdir_p!(root)
+    pack = read_pack!()
+    tip = tip_hash!()
+
+    # Simulate product stream: preamble + pack on disk.
+    pack_path =
+      Path.join(
+        System.tmp_dir!(),
+        "stream-pack-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    preamble = "0008NAK\n"
+    File.write!(pack_path, preamble <> pack)
+    offset = byte_size(preamble)
+
+    transport = fn
+      :list_refs, {_url, _opts} ->
+        {:ok, [%{name: @ref_name, hash: tip}]}
+
+      :fetch_packs, {_url, _want, _have, _opts} ->
+        {:ok, {:file, pack_path, offset}}
+    end
+
+    assert {:ok, pid} = GitEngine.start(executable: path, root: root)
+
+    assert {:ok, json} =
+             Orchestrator.run(
+               pid,
+               ~s({"op":"clone","args":{"url":"#{@fixture_url}"}}),
+               transport: transport,
+               allowed_origins: [@fixture_origin],
+               import_chunk_bytes: 64
+             )
+
+    assert json =~ "\"ok\":true" or json =~ ~s("ok":true), "file pack_source clone failed: #{json}"
+    assert {:ok, "hello\n"} = File.read(Path.join(root, "README"))
+    # Orchestrator cleanup_pack_source must remove the temp file.
+    refute File.regular?(pack_path)
+
+    :ok = GitEngine.stop(pid)
+  end
+
   @tag timeout: 60_000
   test "empty pack and non-PACK body still fail closed (never ok:true)" do
     path = engine_path()

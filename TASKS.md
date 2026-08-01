@@ -19,7 +19,7 @@ Tests prove implementation; green tests alone are not DONE.
 | 0 | Tracker truth | **DONE** (`c580f7e`, VERIFY_CHUNK_0.md) |
 | 1 | PR11 server connections | **DONE** (VERIFY_CHUNK_1.md) |
 | 2 | Single-writer + SSRF + K17 | **DONE** (VERIFY_CHUNK_2.md) |
-| 3 | Streaming packs + disk cache | **OPEN** |
+| 3 | Streaming packs + disk cache | **DONE** (VERIFY_CHUNK_3.md) |
 | 4 | Partial clone + sparse parity + tracking | **OPEN** |
 | 5 | Durability + snapshot rebind | **OPEN** |
 | 6 | Submodules host-mediated | **OPEN** |
@@ -57,8 +57,8 @@ Verifier artifacts: `VERIFY_CHUNK_N.md` (PASS required before next chunk).
 
 | ID | Requirement | Status | Evidence / missing |
 |----|-------------|--------|-------------------|
-| D11 | Stream download → chunked import_pack | **OPEN** | Whole-body buffer in orch |
-| D12 | Disk CA pack cache JS + BEAM | **OPEN** | Process/memory cache; BEAM disk incomplete |
+| D11 | Stream download → chunked import_pack | **DONE** | BEAM stream→file+chunked import_pack (smart_http.ex, orchestrator.ex); JS stream fetchPacks+importPackStream (smart-http.ts, pack-cache.ts); 64MiB fail-closed tests |
+| D12 | Disk CA pack cache JS + BEAM | **DONE** | BEAM PackCache disk {:disk,dir}/AGENTOS_GIT_PACK_CACHE; JS DiskPackCache via MC_GIT_PACK_CACHE in defaultProcessPackCache; credential-free keys; second-clone tests |
 | D13 | Usable monorepo materialization (not filter-only) | **OPEN** | Filter wire only; no complete M7 story |
 | D14 | Push haves dual-host production-ready | **DONE** | C `pack.build`/`ge_pack_build` haves (`engine.c`); JS `bridge.packBuild`+orch lease oldHash; BEAM `GitEngine.pack_build/3` haves; tests `abi_fixture_test`, `git_push_test`, orch R48 |
 | D15 | Stream stdout beyond out/last | **OPEN** | truncated + out/last only |

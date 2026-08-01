@@ -105,6 +105,202 @@ defmodule AgentOS.Git.OrchestratorTest do
     assert {:error, :no_pack_magic} = SmartHttp.extract_pack(<<>>)
   end
 
+  # D11: locate PACK offset on disk without loading whole body as pack.
+  test "locate_pack_offset finds PACK and pack_byte_size uses offset" do
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "pack-off-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    # Prefix + PACK payload (simulates smart-HTTP pkt-line preamble).
+    prefix = "0008NAK\n"
+    pack = "PACKdeadbeef"
+    File.write!(path, prefix <> pack)
+
+    assert {:ok, offset} = SmartHttp.locate_pack_offset(path)
+    assert offset == byte_size(prefix)
+    assert SmartHttp.pack_byte_size({:file, path, offset}) == byte_size(pack)
+
+    assert {:ok, ^pack} = SmartHttp.read_pack_source({:file, path, offset})
+    assert :ok = SmartHttp.cleanup_pack_source({:file, path, offset})
+    refute File.regular?(path)
+  end
+
+  test "locate_pack_offset fails closed without PACK magic" do
+    path =
+      Path.join(
+        System.tmp_dir!(),
+        "pack-nop-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.write!(path, "no pack here at all")
+    assert {:error, :no_pack_magic} = SmartHttp.locate_pack_offset(path)
+    File.rm(path)
+  end
+
+  # D11: product upload-pack streams to temp file; size cap fails mid-stream.
+  test "product stream fetch_packs fails closed when body exceeds max_pack_bytes" do
+    # Local server returns 200 + body larger than max (no Content-Length so the
+    # cap is enforced while streaming chunks — not only via header pre-check).
+    max = 64
+    body = "0008NAK\nPACK" <> String.duplicate("x", max + 8)
+
+    {:ok, listen} =
+      :gen_tcp.listen(0, [
+        :binary,
+        packet: :raw,
+        active: false,
+        reuseaddr: true,
+        ip: {127, 0, 0, 1}
+      ])
+
+    {:ok, port} = :inet.port(listen)
+
+    server =
+      spawn(fn ->
+        case :gen_tcp.accept(listen, 5_000) do
+          {:ok, sock} ->
+            {:ok, _req} = :gen_tcp.recv(sock, 0, 5_000)
+
+            # No Content-Length: body delimited by connection close.
+            resp =
+              "HTTP/1.1 200 OK\r\n" <>
+                "Content-Type: application/x-git-upload-pack-result\r\n" <>
+                "Connection: close\r\n" <>
+                "\r\n" <>
+                body
+
+            :gen_tcp.send(sock, resp)
+            :gen_tcp.close(sock)
+
+          {:error, _} ->
+            :ok
+        end
+
+        :gen_tcp.close(listen)
+      end)
+
+    origin = "http://127.0.0.1:#{port}"
+
+    assert {:error, {:upload_pack_failed, :body_too_large}} =
+             SmartHttp.fetch_packs(
+               origin <> "/demo.git",
+               ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+               [],
+               allowed_origins: [origin],
+               max_pack_bytes: max
+             )
+
+    # Content-Length alone (over max) fails closed before body drain.
+    {:ok, listen2} =
+      :gen_tcp.listen(0, [
+        :binary,
+        packet: :raw,
+        active: false,
+        reuseaddr: true,
+        ip: {127, 0, 0, 1}
+      ])
+
+    {:ok, port2} = :inet.port(listen2)
+
+    _server2 =
+      spawn(fn ->
+        case :gen_tcp.accept(listen2, 5_000) do
+          {:ok, sock} ->
+            {:ok, _req} = :gen_tcp.recv(sock, 0, 5_000)
+
+            resp =
+              "HTTP/1.1 200 OK\r\n" <>
+                "Content-Type: application/x-git-upload-pack-result\r\n" <>
+                "Content-Length: #{max + 1}\r\n" <>
+                "Connection: close\r\n" <>
+                "\r\n" <>
+                String.duplicate("y", max + 1)
+
+            :gen_tcp.send(sock, resp)
+            :gen_tcp.close(sock)
+
+          {:error, _} ->
+            :ok
+        end
+
+        :gen_tcp.close(listen2)
+      end)
+
+    origin2 = "http://127.0.0.1:#{port2}"
+
+    assert {:error, {:upload_pack_failed, :body_too_large}} =
+             SmartHttp.fetch_packs(
+               origin2 <> "/demo.git",
+               ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+               [],
+               allowed_origins: [origin2],
+               max_pack_bytes: max
+             )
+
+    ref = Process.monitor(server)
+    assert_receive {:DOWN, ^ref, :process, ^server, _}, 2_000
+  end
+
+  test "product stream fetch_packs returns file pack_source with PACK offset" do
+    pack = "PACK" <> <<0, 0, 0, 2>> <> String.duplicate(<<1>>, 32)
+    # Pkt-line style preamble before PACK (smart-HTTP upload-pack shape).
+    body = "0008NAK\n" <> pack
+
+    {:ok, listen} =
+      :gen_tcp.listen(0, [
+        :binary,
+        packet: :raw,
+        active: false,
+        reuseaddr: true,
+        ip: {127, 0, 0, 1}
+      ])
+
+    {:ok, port} = :inet.port(listen)
+
+    spawn(fn ->
+      case :gen_tcp.accept(listen, 5_000) do
+        {:ok, sock} ->
+          {:ok, _req} = :gen_tcp.recv(sock, 0, 5_000)
+
+          resp =
+            "HTTP/1.1 200 OK\r\n" <>
+              "Content-Type: application/x-git-upload-pack-result\r\n" <>
+              "Content-Length: #{byte_size(body)}\r\n" <>
+              "Connection: close\r\n" <>
+              "\r\n" <>
+              body
+
+          :gen_tcp.send(sock, resp)
+          :gen_tcp.close(sock)
+
+        {:error, _} ->
+          :ok
+      end
+
+      :gen_tcp.close(listen)
+    end)
+
+    origin = "http://127.0.0.1:#{port}"
+
+    assert {:ok, {:file, path, offset}} =
+             SmartHttp.fetch_packs(
+               origin <> "/demo.git",
+               ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"],
+               [],
+               allowed_origins: [origin],
+               max_pack_bytes: 1024
+             )
+
+    assert File.regular?(path)
+    assert offset == byte_size("0008NAK\n")
+    assert SmartHttp.pack_byte_size({:file, path, offset}) == byte_size(pack)
+    assert {:ok, ^pack} = SmartHttp.read_pack_source({:file, path, offset})
+    assert :ok = SmartHttp.cleanup_pack_source({:file, path, offset})
+    refute File.regular?(path)
+  end
+
   # D3: redirect policy — never follow; open redirect cannot leave allowlist.
   test "classify_http_response rejects 3xx as redirect_not_allowed" do
     assert {:error, :redirect_not_allowed} =
@@ -966,6 +1162,217 @@ defmodule AgentOS.Git.OrchestratorTest do
       :ok = GitEngine.stop(pid2)
     after
       PackCache.stop(cache)
+      File.rm_rf(root1)
+      File.rm_rf(root2)
+    end
+  end
+
+  @tag timeout: 60_000
+  test "second clone with disk pack_cache does not call fetch_packs twice" do
+    alias AgentOS.Git.PackCache
+
+    path = engine_path()
+    pack = minimal_pack_bytes()
+    assert byte_size(pack) > 0
+
+    cache_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "orch-disk-cache-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.mkdir_p!(cache_dir)
+    {:ok, cache} = PackCache.start_disk(cache_dir)
+    fetch_count = :atomics.new(1, signed: false)
+
+    tip = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+    transport = fn
+      :list_refs, {_url, _opts} ->
+        {:ok, [%{name: "refs/heads/main", hash: tip}]}
+
+      :fetch_packs, {_url, _want, _have, _opts} ->
+        :atomics.add(fetch_count, 1, 1)
+        {:ok, pack}
+
+      :push_packs, _ ->
+        flunk("clone must not push")
+    end
+
+    secret = "s3cr3t-bearer-token"
+
+    # {:disk, dir} path — same as pack_cache: :disk + AGENTOS_GIT_PACK_CACHE.
+    opts = [
+      transport: transport,
+      allowed_origins: [@fixture_origin],
+      pack_cache: {:disk, cache_dir},
+      auth: %{kind: :bearer, token: secret}
+    ]
+
+    root1 =
+      Path.join(
+        System.tmp_dir!(),
+        "orch-dcache1-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    root2 =
+      Path.join(
+        System.tmp_dir!(),
+        "orch-dcache2-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.mkdir_p!(root1)
+    File.mkdir_p!(root2)
+
+    try do
+      assert {:ok, pid1} = GitEngine.start(executable: path, root: root1)
+
+      assert {:ok, json1} =
+               Orchestrator.run(
+                 pid1,
+                 ~s({"op":"clone","args":{"url":"#{@fixture_url}"}}),
+                 opts
+               )
+
+      assert is_binary(json1)
+      assert :atomics.get(fetch_count, 1) == 1
+
+      pack_key =
+        PackCache.upload_pack_cache_key(
+          @fixture_url,
+          [tip],
+          [],
+          1
+        )
+
+      dig = PackCache.get_by_key(cache, pack_key)
+      assert is_binary(dig), "disk pack cache key miss after first clone: #{pack_key}"
+      refute pack_key =~ secret
+      refute dig =~ secret
+      assert PackCache.get(cache, dig) == pack
+
+      # Content-addressed file on disk (layout matches JS DiskPackCache).
+      hex = String.replace_prefix(dig, "sha256:", "")
+      assert File.regular?(Path.join(cache_dir, hex <> ".pack"))
+      assert File.read!(Path.join(cache_dir, hex <> ".pack")) == pack
+
+      # Fresh Agent pointing at same dir still sees the pack (true disk hit).
+      PackCache.stop(cache)
+      {:ok, cache2} = PackCache.start_disk(cache_dir)
+      assert PackCache.get_by_key(cache2, pack_key) == dig
+      assert PackCache.get(cache2, dig) == pack
+
+      assert {:ok, pid2} = GitEngine.start(executable: path, root: root2)
+
+      assert {:ok, json2} =
+               Orchestrator.run(
+                 pid2,
+                 ~s({"op":"clone","args":{"url":"#{@fixture_url}"}}),
+                 opts
+               )
+
+      assert is_binary(json2)
+      assert :atomics.get(fetch_count, 1) == 1,
+             "second clone must hit disk pack cache (fetch_packs stays 1)"
+
+      :ok = GitEngine.stop(pid1)
+      :ok = GitEngine.stop(pid2)
+      PackCache.stop(cache2)
+    after
+      File.rm_rf(cache_dir)
+      File.rm_rf(root1)
+      File.rm_rf(root2)
+    end
+  end
+
+  @tag timeout: 60_000
+  test "pack_cache :disk uses AGENTOS_GIT_PACK_CACHE dir across clones" do
+    alias AgentOS.Git.PackCache
+
+    path = engine_path()
+    pack = minimal_pack_bytes()
+    assert byte_size(pack) > 0
+
+    cache_dir =
+      Path.join(
+        System.tmp_dir!(),
+        "orch-env-disk-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.mkdir_p!(cache_dir)
+    prev = System.get_env("AGENTOS_GIT_PACK_CACHE")
+    System.put_env("AGENTOS_GIT_PACK_CACHE", cache_dir)
+
+    fetch_count = :atomics.new(1, signed: false)
+    tip = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+    transport = fn
+      :list_refs, {_url, _opts} ->
+        {:ok, [%{name: "refs/heads/main", hash: tip}]}
+
+      :fetch_packs, {_url, _want, _have, _opts} ->
+        :atomics.add(fetch_count, 1, 1)
+        {:ok, pack}
+
+      :push_packs, _ ->
+        flunk("clone must not push")
+    end
+
+    opts = [
+      transport: transport,
+      allowed_origins: [@fixture_origin],
+      pack_cache: :disk
+    ]
+
+    root1 =
+      Path.join(
+        System.tmp_dir!(),
+        "orch-envd1-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    root2 =
+      Path.join(
+        System.tmp_dir!(),
+        "orch-envd2-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.mkdir_p!(root1)
+    File.mkdir_p!(root2)
+
+    try do
+      assert {:ok, pid1} = GitEngine.start(executable: path, root: root1)
+
+      assert {:ok, _} =
+               Orchestrator.run(
+                 pid1,
+                 ~s({"op":"clone","args":{"url":"#{@fixture_url}"}}),
+                 opts
+               )
+
+      assert :atomics.get(fetch_count, 1) == 1
+
+      assert {:ok, pid2} = GitEngine.start(executable: path, root: root2)
+
+      assert {:ok, _} =
+               Orchestrator.run(
+                 pid2,
+                 ~s({"op":"clone","args":{"url":"#{@fixture_url}"}}),
+                 opts
+               )
+
+      assert :atomics.get(fetch_count, 1) == 1,
+             "second clone via :disk env cache must not re-fetch"
+
+      # CA pack file present under env dir
+      dig = PackCache.digest_of(pack)
+      hex = String.replace_prefix(dig, "sha256:", "")
+      assert File.regular?(Path.join(cache_dir, hex <> ".pack"))
+
+      :ok = GitEngine.stop(pid1)
+      :ok = GitEngine.stop(pid2)
+    after
+      if prev, do: System.put_env("AGENTOS_GIT_PACK_CACHE", prev), else: System.delete_env("AGENTOS_GIT_PACK_CACHE")
+      File.rm_rf(cache_dir)
       File.rm_rf(root1)
       File.rm_rf(root2)
     end

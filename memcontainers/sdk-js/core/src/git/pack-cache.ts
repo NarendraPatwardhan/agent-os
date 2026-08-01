@@ -57,15 +57,47 @@ export class MemoryPackCache implements PackCache {
 }
 
 /** Process-scoped default pack cache (product orch / repeated in-process LLB solves). */
-let processPackCache: MemoryPackCache | undefined;
+let processPackCache: PackCache | undefined;
 
 /**
- * Shared in-process {@link MemoryPackCache}. Used by product registration
- * (`gitHostCallHandler` / memcontainer / Node LLB) when the caller does not
- * override `packCache`. Content-addressed packs only — never credentials.
+ * Read `MC_GIT_PACK_CACHE` when available (Node/Bun). Safe in browsers: missing
+ * `process` / env → undefined (Memory default). Never throws.
  */
-export function defaultProcessPackCache(): MemoryPackCache {
-  if (!processPackCache) processPackCache = new MemoryPackCache();
+export function processPackCacheDirFromEnv(): string | undefined {
+  try {
+    const env =
+      typeof process !== "undefined" && process?.env
+        ? process.env.MC_GIT_PACK_CACHE
+        : undefined;
+    if (typeof env !== "string") return undefined;
+    const dir = env.trim();
+    return dir || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Build the product default pack cache for this process:
+ * - {@link DiskPackCache} when `MC_GIT_PACK_CACHE` is a non-empty dir path (Node)
+ * - {@link MemoryPackCache} otherwise (browser / unset env)
+ *
+ * Content-addressed packs only — never credentials.
+ */
+export function createDefaultProcessPackCache(): PackCache {
+  const dir = processPackCacheDirFromEnv();
+  if (dir) return new DiskPackCache(dir);
+  return new MemoryPackCache();
+}
+
+/**
+ * Shared process-scoped pack cache. Used by product registration
+ * (`gitHostCallHandler` / memcontainer / Node LLB `materializeLlbGit`) when the
+ * caller does not override `packCache`. First call pins Memory or Disk based on
+ * `MC_GIT_PACK_CACHE` at that moment; later calls reuse the same instance.
+ */
+export function defaultProcessPackCache(): PackCache {
+  if (!processPackCache) processPackCache = createDefaultProcessPackCache();
   return processPackCache;
 }
 
@@ -190,24 +222,50 @@ export interface ImportPackOptions {
   chunkBytes?: number;
 }
 
+export type ImportPackEngine = {
+  importPack: (
+    chunk: Uint8Array,
+    meta?: { final?: boolean },
+  ) => Promise<void>;
+};
+
+function resolveMaxPackBytes(opts: ImportPackOptions): number {
+  return opts.maxPackBytes === undefined
+    ? DEFAULT_MAX_PACK_BYTES
+    : opts.maxPackBytes;
+}
+
+/**
+ * Feed a full pack buffer into the engine in `chunkBytes` slices (final on last).
+ * Does not enforce size gate or cache — callers use {@link importPackCached}.
+ */
+export async function feedPackChunks(
+  engine: ImportPackEngine,
+  bytes: Uint8Array,
+  chunkBytes = 1024 * 1024,
+): Promise<void> {
+  if (bytes.byteLength === 0) {
+    await engine.importPack(new Uint8Array(0), { final: true });
+    return;
+  }
+  const chunk = chunkBytes > 0 ? chunkBytes : bytes.byteLength;
+  for (let off = 0; off < bytes.byteLength; off += chunk) {
+    const slice = bytes.subarray(off, Math.min(off + chunk, bytes.byteLength));
+    const final = off + slice.byteLength >= bytes.byteLength;
+    await engine.importPack(slice, { final });
+  }
+}
+
 /**
  * Import pack with optional cache hit and chunked ge_import_pack streaming.
  * Throws if pack exceeds maxPackBytes (unless maxPackBytes === 0).
  */
 export async function importPackCached(
-  engine: {
-    importPack: (
-      chunk: Uint8Array,
-      meta?: { final?: boolean },
-    ) => Promise<void>;
-  },
+  engine: ImportPackEngine,
   pack: Uint8Array,
   opts: ImportPackOptions = {},
 ): Promise<{ digest: string; fromCache: boolean }> {
-  const max =
-    opts.maxPackBytes === undefined
-      ? DEFAULT_MAX_PACK_BYTES
-      : opts.maxPackBytes;
+  const max = resolveMaxPackBytes(opts);
   if (max > 0 && pack.byteLength > max) {
     throw new Error(
       `git: pack ${pack.byteLength} bytes exceeds maxPackBytes ${max} (opt-in higher limit)`,
@@ -232,15 +290,71 @@ export async function importPackCached(
     digest = await sha256hex(pack);
   }
 
-  const chunk = opts.chunkBytes ?? 1024 * 1024;
-  if (bytes.byteLength === 0) {
-    await engine.importPack(new Uint8Array(0), { final: true });
-    return { digest, fromCache };
-  }
-  for (let off = 0; off < bytes.byteLength; off += chunk) {
-    const slice = bytes.subarray(off, Math.min(off + chunk, bytes.byteLength));
-    const final = off + slice.byteLength >= bytes.byteLength;
-    await engine.importPack(slice, { final });
-  }
+  await feedPackChunks(engine, bytes, opts.chunkBytes ?? 1024 * 1024);
   return { digest, fromCache };
+}
+
+/**
+ * Stream pack slices into the engine (D11). Each chunk is appended with
+ * `final:false`; an empty final chunk commits. Enforces maxPackBytes on the
+ * running total. When `cache` is set, concatenates for content-addressed put
+ * after a successful stream (caller must not re-import).
+ *
+ * Use when download already pipes pack-aligned slices (e.g. FetchSmartHttp
+ * `onPackChunk`) so the engine never waits on one giant buffer alone.
+ */
+export async function importPackStream(
+  engine: ImportPackEngine,
+  chunks: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
+  opts: ImportPackOptions = {},
+): Promise<{ digest: string; fromCache: boolean; pack: Uint8Array }> {
+  const max = resolveMaxPackBytes(opts);
+  const parts: Uint8Array[] = [];
+  let total = 0;
+
+  for await (const chunk of chunks as AsyncIterable<Uint8Array>) {
+    if (!chunk || chunk.byteLength === 0) continue;
+    if (max > 0 && total > max - chunk.byteLength) {
+      throw new Error(
+        `git: pack ${total + chunk.byteLength} bytes exceeds maxPackBytes ${max} (opt-in higher limit)`,
+      );
+    }
+    total += chunk.byteLength;
+    // Own the bytes — stream buffers may be reused.
+    const owned = new Uint8Array(chunk.byteLength);
+    owned.set(chunk);
+    parts.push(owned);
+    await engine.importPack(owned, { final: false });
+  }
+
+  await engine.importPack(new Uint8Array(0), { final: true });
+
+  const pack =
+    total === 0
+      ? new Uint8Array(0)
+      : (() => {
+          const out = new Uint8Array(total);
+          let off = 0;
+          for (const p of parts) {
+            out.set(p, off);
+            off += p.byteLength;
+          }
+          return out;
+        })();
+
+  const cache = opts.cache;
+  let digest = "";
+  let fromCache = false;
+  if (cache && pack.byteLength > 0) {
+    digest = await sha256hex(pack);
+    const hit = await cache.get(digest);
+    if (hit) {
+      fromCache = true;
+    } else {
+      digest = await cache.put(pack);
+    }
+  } else {
+    digest = await sha256hex(pack);
+  }
+  return { digest, fromCache, pack };
 }

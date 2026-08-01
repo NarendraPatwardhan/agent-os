@@ -49,11 +49,18 @@ defmodule AgentOS.Git.Orchestrator do
     lists in tests. `:any` is fixture-transport only (see SmartHttp).
   * `:require_origin_allowlist` — default `true`; set `false` only with
     injected fixture transport
-  * `:max_pack_bytes` — response/pack size cap (default 64 MiB)
+  * `:max_pack_bytes` — response/pack size cap (default 64 MiB); enforced while
+    streaming upload-pack (D11 — fail closed at cap+1, no unbounded BEAM buffer)
+  * `:import_chunk_bytes` — `GitEngine.import_pack` chunk size (default 1 MiB)
   * `:read_only` — when `true`, push is rejected with a stable read-only error
-  * `:pack_cache` — `AgentOS.Git.PackCache` pid (or `:default` for process
-    singleton). Download-key is url+wants+haves+depth+filter only — **never** auth.
-    Omit / `nil` / `false` disables cache.
+  * `:pack_cache` — pack cache selection (credentials never in keys):
+    - pid — explicit `AgentOS.Git.PackCache` Agent
+    - `:default` / `true` — process singleton; **disk** when env
+      `AGENTOS_GIT_PACK_CACHE` is set, else in-memory
+    - `:disk` — disk cache at `AGENTOS_GIT_PACK_CACHE`
+    - `{:disk, dir}` / bare dir string — disk cache at `dir`
+    - Omit / `nil` / `false` — disabled
+    Download-key is url+wants+haves+depth+filter only — **never** auth.
   * `:require_approval` — when `true`, push must be approved (R31); also set
     when a matching policy action is `require_approval`
   * `:on_push_approval` — fun `(ctx :: map()) -> boolean` or `/0`; called when
@@ -106,59 +113,87 @@ defmodule AgentOS.Git.Orchestrator do
   end
 
   defp clone(engine_pid, req, opts) do
-    with {:ok, binding} <- resolve_binding(req, opts),
-         opts <- apply_binding(opts, binding),
-         url <- binding.url,
-         {:ok, refs} <- SmartHttp.list_refs(url, opts),
-         {:ok, tip} <- pick_tip(refs, ref_of(req)),
-         wants <- want_oids(refs, tip.hash),
-         depth <- depth_of(req),
-         filter <- filter_of(req),
-         {:ok, pack} <- resolve_pack(url, wants, [], depth, filter, opts),
-         :ok <- require_non_empty_pack(pack),
-         :ok <- apply_init(engine_pid),
-         :ok <- apply_pack(engine_pid, pack),
-         :ok <- apply_refs_and_checkout(engine_pid, tip, refs, :clone) do
-      {:ok, response(true, 0, "cloned #{redact_url(url)}\n", "")}
-    else
-      err -> map_remote_error(err, :clone)
-    end
+    result =
+      with {:ok, binding} <- resolve_binding(req, opts),
+           opts <- apply_binding(opts, binding),
+           url <- binding.url,
+           {:ok, refs} <- SmartHttp.list_refs(url, opts),
+           {:ok, tip} <- pick_tip(refs, ref_of(req)),
+           wants <- want_oids(refs, tip.hash),
+           depth <- depth_of(req),
+           filter <- filter_of(req) do
+        with_pack_source(url, wants, [], depth, filter, opts, fn pack ->
+          with :ok <- require_non_empty_pack(pack),
+               :ok <- apply_init(engine_pid),
+               :ok <- apply_pack(engine_pid, pack, opts),
+               :ok <- apply_refs_and_checkout(engine_pid, tip, refs, :clone) do
+            {:ok, response(true, 0, "cloned #{redact_url(url)}\n", "")}
+          end
+        end)
+      end
+
+    map_remote_error_if_needed(result, :clone)
   end
 
   # pull? = true → R34 fetch + local FF only
   defp fetch(engine_pid, req, opts, pull?) do
-    with {:ok, binding} <- resolve_binding(req, opts),
-         opts <- apply_binding(opts, binding),
-         url <- binding.url,
-         {:ok, refs} <- SmartHttp.list_refs(url, opts),
-         {:ok, tip} <- pick_tip(refs, ref_of(req)),
-         have <- local_haves(engine_pid),
-         wants <- want_oids(refs, tip.hash),
-         depth <- depth_of(req),
-         filter <- filter_of(req),
-         {:ok, pack} <- resolve_pack(url, wants, have, depth, filter, opts),
-         :ok <- require_non_empty_pack(pack),
-         :ok <- apply_pack(engine_pid, pack),
-         :ok <- apply_refs_and_checkout(engine_pid, tip, refs, :fetch),
-         {:ok, kind} <- maybe_fast_forward_pull(engine_pid, tip, pull?) do
-      msg =
-        case kind do
-          :fetched -> "fetched\n"
-          :up_to_date -> "Already up to date.\n"
-          :fast_forwarded -> "Fast-forward to #{ref_name_of(tip, refs)}\n"
-        end
+    result =
+      with {:ok, binding} <- resolve_binding(req, opts),
+           opts <- apply_binding(opts, binding),
+           url <- binding.url,
+           {:ok, refs} <- SmartHttp.list_refs(url, opts),
+           {:ok, tip} <- pick_tip(refs, ref_of(req)),
+           have <- local_haves(engine_pid),
+           wants <- want_oids(refs, tip.hash),
+           depth <- depth_of(req),
+           filter <- filter_of(req) do
+        with_pack_source(url, wants, have, depth, filter, opts, fn pack ->
+          with :ok <- require_non_empty_pack(pack),
+               :ok <- apply_pack(engine_pid, pack, opts),
+               :ok <- apply_refs_and_checkout(engine_pid, tip, refs, :fetch),
+               {:ok, kind} <- maybe_fast_forward_pull(engine_pid, tip, pull?) do
+            msg =
+              case kind do
+                :fetched -> "fetched\n"
+                :up_to_date -> "Already up to date.\n"
+                :fast_forwarded -> "Fast-forward to #{ref_name_of(tip, refs)}\n"
+              end
 
-      {:ok, response(true, 0, msg, "")}
-    else
+            {:ok, response(true, 0, msg, "")}
+          end
+        end)
+      end
+
+    case result do
       {:error, :not_fast_forward} ->
         {:ok, response(false, 1, "", "git: not fast-forward\n")}
 
-      err ->
-        map_remote_error(err, :fetch)
+      other ->
+        map_remote_error_if_needed(other, :fetch)
     end
   end
 
+  # Resolve pack (cache or stream transport), run `fun`, always cleanup file sources.
+  defp with_pack_source(url, wants, haves, depth, filter, opts, fun)
+       when is_function(fun, 1) do
+    case resolve_pack(url, wants, haves, depth, filter, opts) do
+      {:ok, pack} ->
+        try do
+          fun.(pack)
+        after
+          SmartHttp.cleanup_pack_source(pack)
+        end
+
+      err ->
+        err
+    end
+  end
+
+  defp map_remote_error_if_needed({:ok, _} = ok, _mode), do: ok
+  defp map_remote_error_if_needed(err, mode), do: map_remote_error(err, mode)
+
   # R40: download-key hit skips transport. Key = url+wants+haves+depth+filter (no auth).
+  # Product transport returns a file pack source (D11 stream); fixtures return binary.
   defp resolve_pack(url, wants, haves, depth, filter, opts) do
     cache = pack_cache_of(opts)
     pack_key = PackCache.upload_pack_cache_key(url, wants, haves, depth, filter)
@@ -199,20 +234,40 @@ defmodule AgentOS.Git.Orchestrator do
 
   defp maybe_store_pack(nil, _key, _pack), do: :ok
 
-  defp maybe_store_pack(cache, pack_key, pack) when is_binary(pack) and pack != <<>> do
-    dig = PackCache.put(cache, pack)
-    PackCache.put_key(cache, pack_key, dig)
-    :ok
-  end
+  defp maybe_store_pack(cache, pack_key, pack) do
+    case SmartHttp.read_pack_source(pack) do
+      {:ok, bin} when is_binary(bin) and bin != <<>> ->
+        dig = PackCache.put(cache, bin)
+        PackCache.put_key(cache, pack_key, dig)
+        :ok
 
-  defp maybe_store_pack(_cache, _key, _pack), do: :ok
+      _ ->
+        :ok
+    end
+  end
 
   defp pack_cache_of(opts) do
     case Keyword.get(opts, :pack_cache) do
-      pid when is_pid(pid) -> pid
-      :default -> PackCache.default_process_cache()
-      true -> PackCache.default_process_cache()
-      _ -> nil
+      pid when is_pid(pid) ->
+        pid
+
+      :default ->
+        PackCache.default_process_cache()
+
+      true ->
+        PackCache.default_process_cache()
+
+      :disk ->
+        PackCache.disk_cache(:env)
+
+      {:disk, dir} when is_binary(dir) and dir != "" ->
+        PackCache.disk_cache(dir)
+
+      dir when is_binary(dir) and dir != "" ->
+        PackCache.disk_cache(dir)
+
+      _ ->
+        nil
     end
   end
 
@@ -307,6 +362,11 @@ defmodule AgentOS.Git.Orchestrator do
   end
 
   defp require_non_empty_pack(pack) when is_binary(pack) and pack != <<>>, do: :ok
+
+  defp require_non_empty_pack({:file, _path, _offset} = src) do
+    if SmartHttp.pack_byte_size(src) > 0, do: :ok, else: {:error, :empty_pack}
+  end
+
   defp require_non_empty_pack(_), do: {:error, :empty_pack}
 
   defp require_push_pack(_pack, true = _delete_only?), do: :ok
@@ -651,13 +711,80 @@ defmodule AgentOS.Git.Orchestrator do
   end
 
   # Empty pack must never succeed — product honesty (P0.2).
-  defp apply_pack(_pid, pack) when pack == <<>>, do: {:error, :empty_pack}
+  # D11: stream file or binary pack sources into chunked import_pack (default 1 MiB).
+  defp apply_pack(pid, pack, opts \\ [])
 
-  defp apply_pack(pid, pack) when is_binary(pack) do
-    # Stream in 1 MiB chunks for large packs.
-    chunk = 1024 * 1024
+  defp apply_pack(_pid, pack, _opts) when pack == <<>>, do: {:error, :empty_pack}
+
+  defp apply_pack(pid, pack, opts) when is_binary(pack) do
+    chunk = import_chunk_bytes(opts)
     size = byte_size(pack)
     do_import_chunks(pid, pack, 0, size, chunk)
+  end
+
+  defp apply_pack(pid, {:file, path, offset}, opts)
+       when is_binary(path) and is_integer(offset) and offset >= 0 do
+    chunk = import_chunk_bytes(opts)
+    size = SmartHttp.pack_byte_size({:file, path, offset})
+
+    if size == 0 do
+      {:error, :empty_pack}
+    else
+      case File.open(path, [:read, :raw, :binary]) do
+        {:ok, device} ->
+          try do
+            case :file.position(device, offset) do
+              {:ok, _} -> import_from_device(pid, device, size, chunk)
+              {:error, reason} -> {:error, reason}
+            end
+          after
+            File.close(device)
+          end
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+  end
+
+  defp apply_pack(_pid, _pack, _opts), do: {:error, :empty_pack}
+
+  defp import_chunk_bytes(opts) when is_list(opts) do
+    case Keyword.get(opts, :import_chunk_bytes, 1024 * 1024) do
+      n when is_integer(n) and n > 0 -> n
+      _ -> 1024 * 1024
+    end
+  end
+
+  defp import_from_device(pid, _device, remaining, _chunk) when remaining <= 0 do
+    GitEngine.import_pack(pid, <<>>, final: true)
+  end
+
+  defp import_from_device(pid, device, remaining, chunk) do
+    take = min(chunk, remaining)
+
+    case :file.read(device, take) do
+      {:ok, data} when is_binary(data) and byte_size(data) > 0 ->
+        got = byte_size(data)
+        final? = remaining - got <= 0
+
+        case GitEngine.import_pack(pid, data, final: final?) do
+          :ok ->
+            if final?, do: :ok, else: import_from_device(pid, device, remaining - got, chunk)
+
+          err ->
+            err
+        end
+
+      :eof ->
+        GitEngine.import_pack(pid, <<>>, final: true)
+
+      {:ok, <<>>} ->
+        GitEngine.import_pack(pid, <<>>, final: true)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   defp do_import_chunks(pid, _pack, off, size, _chunk) when off >= size do

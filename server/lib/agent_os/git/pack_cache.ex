@@ -1,6 +1,6 @@
 defmodule AgentOS.Git.PackCache do
   @moduledoc """
-  Content-addressed pack cache for BEAM remotes (GIT.md PR13 / K29 / R40).
+  Content-addressed pack cache for BEAM remotes (GIT.md PR13 / K29 / R40 / D12).
 
   Packs are keyed by `sha256:` hex digest of pack bytes. An optional
   **download-key index** maps `url + wants + haves + depth` → pack digest so
@@ -9,8 +9,13 @@ defmodule AgentOS.Git.PackCache do
   **Credentials are never part of any key.** Callers must pass a public URL
   (no userinfo). Auth lives only in SmartHttp request headers at dial time.
 
-  Implementation: Agent process holding two maps (`digests` and `keys`).
-  Suitable as a process-scoped default or per-test cache.
+  Backends:
+  * **Memory** (default) — Agent process holding two maps (`packs` and `keys`).
+    Process-scoped product default via `default_process_cache/0`.
+  * **Disk** — files under a directory (same layout as JS `DiskPackCache`):
+    `{dir}/{sha256hex}.pack` and optional `{dir}/keys/{fnv1a}.key`.
+    Enable with `start_disk/1`, `pack_cache: :disk` / `{:disk, dir}`, or env
+    `AGENTOS_GIT_PACK_CACHE` (mirrors JS `MC_GIT_PACK_CACHE`).
   """
 
   use Agent
@@ -18,6 +23,8 @@ defmodule AgentOS.Git.PackCache do
   @type digest :: String.t()
   @type download_key :: String.t()
   @type t :: pid()
+
+  @env_disk_dir "AGENTOS_GIT_PACK_CACHE"
 
   # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -27,8 +34,43 @@ defmodule AgentOS.Git.PackCache do
     name = Keyword.get(opts, :name)
     start_opts = if name, do: [name: name], else: []
 
+    case Keyword.get(opts, :dir) do
+      dir when is_binary(dir) and dir != "" ->
+        start_disk_agent(dir, start_opts)
+
+      _ ->
+        Agent.start_link(
+          fn -> %{backend: :memory, packs: %{}, keys: %{}} end,
+          start_opts
+        )
+    end
+  end
+
+  @doc """
+  Start (or return existing process-scoped) disk pack cache for `dir`.
+
+  Creates `dir` if missing. Same on-disk layout as JS `DiskPackCache`.
+  """
+  @spec start_disk(Path.t(), keyword()) :: Agent.on_start() | {:ok, t()}
+  def start_disk(dir, opts \\ []) when is_binary(dir) and dir != "" do
+    abs = Path.expand(dir)
+    name = Keyword.get(opts, :name)
+    start_opts = if name, do: [name: name], else: []
+
+    case name && Process.whereis(name) do
+      pid when is_pid(pid) ->
+        {:ok, pid}
+
+      _ ->
+        start_disk_agent(abs, start_opts)
+    end
+  end
+
+  defp start_disk_agent(dir, start_opts) do
+    File.mkdir_p!(dir)
+
     Agent.start_link(
-      fn -> %{packs: %{}, keys: %{}} end,
+      fn -> %{backend: :disk, dir: dir} end,
       start_opts
     )
   end
@@ -39,14 +81,66 @@ defmodule AgentOS.Git.PackCache do
 
   # Process-scoped product default (mirrors JS `defaultProcessPackCache`).
   @process_name __MODULE__.ProcessDefault
+  @disk_process_name __MODULE__.DiskDefault
 
   @doc """
   Shared process-scoped `PackCache` for repeated in-process remotes/solves.
 
   Content-addressed packs only — never credentials.
+  When `AGENTOS_GIT_PACK_CACHE` is set to a non-empty directory path, returns
+  the process-scoped **disk** cache for that dir (product default parity with
+  JS `MC_GIT_PACK_CACHE`); otherwise the in-memory process singleton.
   """
   @spec default_process_cache() :: t()
   def default_process_cache do
+    case disk_dir_from_env() do
+      dir when is_binary(dir) -> env_disk_cache!(dir)
+      nil -> memory_process_cache()
+    end
+  end
+
+  @doc """
+  Disk pack cache Agent for `dir`, or for `AGENTOS_GIT_PACK_CACHE` when
+  `dir` is omitted / `:env`.
+
+  Explicit dirs start an unnamed Agent (safe for concurrent tests). The env
+  product path uses a process-scoped named singleton.
+  """
+  @spec disk_cache(Path.t() | :env | nil) :: t() | no_return()
+  def disk_cache(dir \\ :env)
+
+  def disk_cache(:env) do
+    case disk_dir_from_env() do
+      dir when is_binary(dir) -> env_disk_cache!(dir)
+      nil -> raise_missing_disk_env()
+    end
+  end
+
+  def disk_cache(nil), do: disk_cache(:env)
+
+  def disk_cache(dir) when is_binary(dir) and dir != "" do
+    abs = Path.expand(dir)
+
+    case start_disk(abs) do
+      {:ok, pid} -> pid
+      {:error, {:already_started, pid}} -> pid
+    end
+  end
+
+  @doc "Directory path from `AGENTOS_GIT_PACK_CACHE`, or `nil`."
+  @spec disk_dir_from_env() :: String.t() | nil
+  def disk_dir_from_env do
+    case System.get_env(@env_disk_dir) do
+      dir when is_binary(dir) ->
+        trimmed = String.trim(dir)
+        if trimmed != "", do: trimmed, else: nil
+
+      _ ->
+        nil
+    end
+  end
+
+  defp memory_process_cache do
     case Process.whereis(@process_name) do
       pid when is_pid(pid) ->
         pid
@@ -59,16 +153,50 @@ defmodule AgentOS.Git.PackCache do
     end
   end
 
+  defp env_disk_cache!(dir) when is_binary(dir) do
+    abs = Path.expand(dir)
+
+    case Process.whereis(@disk_process_name) do
+      pid when is_pid(pid) ->
+        case Agent.get(pid, fn st -> Map.get(st, :dir) end) do
+          ^abs ->
+            pid
+
+          _other ->
+            # Env dir changed in-process — fall back to unnamed Agent for abs.
+            case start_disk(abs) do
+              {:ok, p} -> p
+              {:error, {:already_started, p}} -> p
+            end
+        end
+
+      nil ->
+        case start_disk(abs, name: @disk_process_name) do
+          {:ok, pid} -> pid
+          {:error, {:already_started, pid}} -> pid
+        end
+    end
+  end
+
+  defp raise_missing_disk_env do
+    raise ArgumentError,
+          "pack_cache: :disk requires #{@env_disk_dir} or pack_cache: {:disk, dir}"
+  end
+
   # ── Pack store ─────────────────────────────────────────────────────────────
 
   @doc "Return a copy of pack bytes for `digest`, or `nil`."
   @spec get(t(), digest()) :: binary() | nil
   def get(cache, digest) when is_pid(cache) and is_binary(digest) do
-    Agent.get(cache, fn st ->
-      case Map.get(st.packs, digest) do
-        bin when is_binary(bin) -> bin
-        _ -> nil
-      end
+    Agent.get(cache, fn
+      %{backend: :memory, packs: packs} ->
+        case Map.get(packs, digest) do
+          bin when is_binary(bin) -> bin
+          _ -> nil
+        end
+
+      %{backend: :disk, dir: dir} ->
+        disk_get_pack(dir, digest)
     end)
   end
 
@@ -77,15 +205,20 @@ defmodule AgentOS.Git.PackCache do
   def put(cache, pack) when is_pid(cache) and is_binary(pack) do
     digest = digest_of(pack)
 
-    Agent.update(cache, fn st ->
-      packs =
-        if Map.has_key?(st.packs, digest) do
-          st.packs
-        else
-          Map.put(st.packs, digest, pack)
-        end
+    Agent.update(cache, fn
+      %{backend: :memory, packs: packs} = st ->
+        packs =
+          if Map.has_key?(packs, digest) do
+            packs
+          else
+            Map.put(packs, digest, pack)
+          end
 
-      %{st | packs: packs}
+        %{st | packs: packs}
+
+      %{backend: :disk, dir: dir} = st ->
+        disk_put_pack(dir, digest, pack)
+        st
     end)
 
     digest
@@ -94,13 +227,33 @@ defmodule AgentOS.Git.PackCache do
   @doc "Whether the digest is present."
   @spec has?(t(), digest()) :: boolean()
   def has?(cache, digest) when is_pid(cache) and is_binary(digest) do
-    Agent.get(cache, fn st -> Map.has_key?(st.packs, digest) end)
+    Agent.get(cache, fn
+      %{backend: :memory, packs: packs} ->
+        Map.has_key?(packs, digest)
+
+      %{backend: :disk, dir: dir} ->
+        File.regular?(pack_path(dir, digest))
+    end)
   end
 
-  @doc "Drop all packs and download-key index entries."
+  @doc "Drop all packs and download-key index entries (memory or disk dir)."
   @spec clear(t()) :: :ok
   def clear(cache) when is_pid(cache) do
-    Agent.update(cache, fn _ -> %{packs: %{}, keys: %{}} end)
+    Agent.update(cache, fn
+      %{backend: :memory} ->
+        %{backend: :memory, packs: %{}, keys: %{}}
+
+      %{backend: :disk, dir: dir} = st ->
+        # Remove pack files and keys/ under dir; keep dir itself.
+        for path <- Path.wildcard(Path.join(dir, "*.pack")) do
+          File.rm(path)
+        end
+
+        File.rm_rf(Path.join(dir, "keys"))
+        st
+    end)
+
+    :ok
   end
 
   # ── Download-key index (url+want+have+depth → digest) ───────────────────────
@@ -108,15 +261,26 @@ defmodule AgentOS.Git.PackCache do
   @doc "Lookup pack digest for a download key, or `nil`."
   @spec get_by_key(t(), download_key()) :: digest() | nil
   def get_by_key(cache, key) when is_pid(cache) and is_binary(key) do
-    Agent.get(cache, fn st -> Map.get(st.keys, key) end)
+    Agent.get(cache, fn
+      %{backend: :memory, keys: keys} ->
+        Map.get(keys, key)
+
+      %{backend: :disk, dir: dir} ->
+        disk_get_key(dir, key)
+    end)
   end
 
   @doc "Index download key → pack digest."
   @spec put_key(t(), download_key(), digest()) :: :ok
   def put_key(cache, key, digest)
       when is_pid(cache) and is_binary(key) and is_binary(digest) do
-    Agent.update(cache, fn st ->
-      %{st | keys: Map.put(st.keys, key, digest)}
+    Agent.update(cache, fn
+      %{backend: :memory, keys: keys} = st ->
+        %{st | keys: Map.put(keys, key, digest)}
+
+      %{backend: :disk, dir: dir} = st ->
+        disk_put_key(dir, key, digest)
+        st
     end)
 
     :ok
@@ -171,5 +335,87 @@ defmodule AgentOS.Git.PackCache do
   @spec digest_of(binary()) :: digest()
   def digest_of(pack) when is_binary(pack) do
     "sha256:" <> Base.encode16(:crypto.hash(:sha256, pack), case: :lower)
+  end
+
+  # ── Disk helpers (layout matches JS DiskPackCache) ─────────────────────────
+
+  defp pack_path(dir, digest) do
+    id = String.replace_prefix(digest, "sha256:", "")
+    Path.join(dir, id <> ".pack")
+  end
+
+  defp key_path(dir, key) do
+    Path.join([dir, "keys", fnv1a_hex(key) <> ".key"])
+  end
+
+  defp disk_get_pack(dir, digest) do
+    path = pack_path(dir, digest)
+
+    case File.read(path) do
+      {:ok, bin} -> bin
+      {:error, _} -> nil
+    end
+  end
+
+  defp disk_put_pack(dir, digest, pack) do
+    File.mkdir_p!(dir)
+    path = pack_path(dir, digest)
+
+    # Idempotent: skip rewrite if present (content-addressed).
+    unless File.regular?(path) do
+      tmp =
+        Path.join(
+          dir,
+          ".tmp-" <> Integer.to_string(System.unique_integer([:positive])) <> ".pack"
+        )
+
+      File.write!(tmp, pack)
+      # Atomic-ish replace; if target appears, keep existing.
+      case File.rename(tmp, path) do
+        :ok ->
+          :ok
+
+        {:error, _} ->
+          _ = File.rm(tmp)
+          :ok
+      end
+    end
+
+    :ok
+  end
+
+  defp disk_get_key(dir, key) do
+    path = key_path(dir, key)
+
+    case File.read(path) do
+      {:ok, body} ->
+        dig = String.trim(body)
+        if dig != "", do: dig, else: nil
+
+      {:error, _} ->
+        nil
+    end
+  end
+
+  defp disk_put_key(dir, key, digest) do
+    keys_dir = Path.join(dir, "keys")
+    File.mkdir_p!(keys_dir)
+    File.write!(key_path(dir, key), digest)
+    :ok
+  end
+
+  # FNV-1a 32-bit → hex (parity with JS DiskPackCache simpleHash).
+  defp fnv1a_hex(s) when is_binary(s) do
+    h =
+      for <<b <- s>>, reduce: 0x811C9DC5 do
+        acc ->
+          acc = Bitwise.bxor(acc, b)
+          Bitwise.band(acc * 0x01000193, 0xFFFFFFFF)
+      end
+
+    h
+    |> Integer.to_string(16)
+    |> String.downcase()
+    |> String.pad_leading(8, "0")
   end
 end

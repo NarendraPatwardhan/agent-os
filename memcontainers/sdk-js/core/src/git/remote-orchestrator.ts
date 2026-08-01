@@ -19,6 +19,7 @@ import {
   type SmartHttpTransport,
 } from "./smart-http.js";
 import {
+  DEFAULT_MAX_PACK_BYTES,
   defaultProcessPackCache,
   importPackCached,
   uploadPackCacheKey,
@@ -54,9 +55,10 @@ export interface OrchestratorOptions extends ResolveRemoteOptions {
    */
   buildPushPack?: (engine: GitEngine, commands: PushCommand[]) => Promise<Uint8Array>;
   /**
-   * PR13 content-addressed pack cache (shared LLB + interactive).
+   * PR13/D12 content-addressed pack cache (shared LLB + interactive).
    * Product handlers (`gitHostCallHandler`) default a process-scoped
-   * {@link defaultProcessPackCache}; pass `null` to disable. Direct
+   * {@link defaultProcessPackCache} (Memory, or Disk when `MC_GIT_PACK_CACHE`
+   * is set on Node); pass `null` to disable. Direct
    * {@link GitRemoteOrchestrator} construction leaves cache off unless set.
    * Keys are public url + wants/haves/depth only — never credentials.
    */
@@ -169,8 +171,17 @@ export class GitRemoteOrchestrator {
     };
   }
 
+  private maxPackBytes(): number {
+    return this.importPackOpts.maxPackBytes === undefined
+      ? DEFAULT_MAX_PACK_BYTES
+      : this.importPackOpts.maxPackBytes;
+  }
+
+  /**
+   * Chunked import into the engine (D11 / GIT.md §3.3): 64 MiB soft gate +
+   * `chunkBytes` slices via {@link importPackCached} — never one giant frame only.
+   */
   private async importBinary(pack: Uint8Array): Promise<void> {
-    // Always enforce 64 MiB soft gate + optional chunking/cache (GIT.md §3.3).
     await importPackCached(this.engine, pack, {
       ...this.importPackOpts,
       cache: this.packCache ?? this.importPackOpts.cache,
@@ -180,6 +191,12 @@ export class GitRemoteOrchestrator {
   /**
    * Resolve pack via download-key index (url+wants+haves+depth[+filter]), else transport.
    * Credentials never enter the key — only public binding.url.
+   *
+   * D11: transport path uses streamed body reads with maxPackBytes fail-closed
+   * (default 64 MiB). When `streamIntoEngine` is true (fetch/pull — repo already
+   * open), pack-aligned slices are piped to `engine.importPack` via
+   * `onPackChunk` as the body arrives. Clone keeps `streamIntoEngine` false so
+   * download can finish before `init`, then {@link importBinary} chunks in.
    */
   private async resolvePack(
     url: string,
@@ -188,25 +205,50 @@ export class GitRemoteOrchestrator {
     depth: number | undefined,
     auth: import("../types.js").ConnectionAuth | undefined,
     filter?: string,
-  ): Promise<{ pack: Uint8Array; fromTransport: boolean } | { error: string }> {
+    streamIntoEngine = false,
+  ): Promise<
+    | { pack: Uint8Array; fromTransport: boolean; imported: boolean }
+    | { error: string }
+  > {
     const packKey = uploadPackCacheKey({ url, wants, haves, depth, filter });
     if (this.packCache?.getByKey) {
       const dig = await this.packCache.getByKey(packKey);
       if (dig) {
         const hit = await this.packCache.get(dig);
-        if (hit) return { pack: hit, fromTransport: false };
+        if (hit) return { pack: hit, fromTransport: false, imported: false };
       }
     }
+    const max = this.maxPackBytes();
     try {
-      const pack = await this.http.fetchPacks(url, wants, haves, depth, auth, filter);
+      let streamed = false;
+      const pack = await this.http.fetchPacks(
+        url,
+        wants,
+        haves,
+        depth,
+        auth,
+        filter,
+        {
+          maxBytes: max,
+          onPackChunk: streamIntoEngine
+            ? async (chunk) => {
+                streamed = true;
+                await this.engine.importPack(chunk, { final: false });
+              }
+            : undefined,
+        },
+      );
       if (!pack || pack.byteLength === 0) {
         return { error: "git: empty pack from remote\n" };
+      }
+      if (streamed) {
+        await this.engine.importPack(new Uint8Array(0), { final: true });
       }
       if (this.packCache) {
         const dig = await this.packCache.put(pack);
         await this.packCache.putKey?.(packKey, dig);
       }
-      return { pack, fromTransport: true };
+      return { pack, fromTransport: true, imported: streamed };
     } catch (e) {
       return { error: `git: upload-pack failed: ${String(e)}\n` };
     }
@@ -663,6 +705,7 @@ export class GitRemoteOrchestrator {
     }
 
     const wants = this.wantOids(refs, tip.hash);
+    // D11: stream pack into engine while downloading (repo already exists).
     const resolvedPack = await this.resolvePack(
       binding.url,
       wants,
@@ -670,6 +713,7 @@ export class GitRemoteOrchestrator {
       depth,
       binding.auth,
       filter,
+      true,
     );
     if ("error" in resolvedPack) {
       return {
@@ -680,15 +724,17 @@ export class GitRemoteOrchestrator {
       };
     }
 
-    try {
-      await this.importBinary(resolvedPack.pack);
-    } catch (e) {
-      return {
-        ok: false,
-        code: 1,
-        stdout: "",
-        stderr: `import_pack: ${String(e)}\n`,
-      };
+    if (!resolvedPack.imported) {
+      try {
+        await this.importBinary(resolvedPack.pack);
+      } catch (e) {
+        return {
+          ok: false,
+          code: 1,
+          stdout: "",
+          stderr: `import_pack: ${String(e)}\n`,
+        };
+      }
     }
 
     const refName =

@@ -16,8 +16,8 @@ export interface LlbGitMaterializeOptions extends OrchestratorOptions {
   connection?: string;
   /**
    * Pack cache for repeated solves (R70/R73). Product default is process
-   * MemoryPackCache; pass `null` to disable. Callers (solve-node) may override
-   * with DiskPackCache via MC_GIT_PACK_CACHE.
+   * {@link defaultProcessPackCache} (Memory, or Disk when `MC_GIT_PACK_CACHE`
+   * is set on Node). Pass `null` to disable.
    */
   packCache?: PackCache | null;
 }
@@ -35,8 +35,8 @@ export async function materializeLlbGit(
   opts: LlbGitMaterializeOptions,
 ): Promise<LlbGitMaterializeResult> {
   const { engine, url, ref, dest, connection, packCache, ...orchOpts } = opts;
-  // Product LLB path (R70): share interactive object/pack cache by default.
-  // `null` disables; undefined → process MemoryPackCache (same as host_call).
+  // Product LLB path (R70): share interactive CA pack cache by default.
+  // `null` disables; undefined → process default (Memory, or Disk via MC_GIT_PACK_CACHE).
   const resolvedCache =
     packCache === null ? undefined : (packCache ?? defaultProcessPackCache());
   const orch = new GitRemoteOrchestrator(engine, {
@@ -203,14 +203,17 @@ async function sha256hex(data: Uint8Array): Promise<string> {
 export interface EngineGitSourceOptions extends OrchestratorOptions {
   /** Directory URL of git_engine.mjs/wasm. */
   baseUrl: string;
-  /** Pack cache for repeated in-process solves (plumb MemoryPackCache when set). */
+  /**
+   * Pack cache for repeated in-process solves. Product default is
+   * {@link defaultProcessPackCache} (Memory or Disk via `MC_GIT_PACK_CACHE`).
+   */
   packCache?: PackCache | null;
 }
 
 /**
  * SolvePlatform.gitSource implementation using host engine + orchestrator.
  * Falls back is the caller's responsibility (see solve-node).
- * Pass `orchOpts.packCache` (e.g. process MemoryPackCache) so repeated solves
+ * Pass `orchOpts.packCache` (or rely on process default) so repeated solves
  * dedup upload-pack by public url+wants — credentials never enter the key.
  */
 export function createEngineGitSource(

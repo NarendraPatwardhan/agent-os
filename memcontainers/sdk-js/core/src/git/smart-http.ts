@@ -18,6 +18,7 @@
 
 import type { ConnectionAuth } from "../types.js";
 import { spliceCredentialHeaders, spliceCredentialUrl } from "./connections.js";
+import { DEFAULT_MAX_PACK_BYTES } from "./pack-cache.js";
 
 export interface RefAdvertisement {
   name: string;
@@ -38,6 +39,24 @@ export interface PushCommand {
   name: string;
 }
 
+/**
+ * Options for product {@link FetchSmartHttp.fetchPacks} (D11 stream path).
+ * Fixture transport ignores these; size gate still applies at import.
+ */
+export interface FetchPacksOptions {
+  /**
+   * Max pack bytes after PACK magic (and total body while scanning).
+   * Default {@link DEFAULT_MAX_PACK_BYTES} (64 MiB). `0` = unlimited.
+   */
+  maxBytes?: number;
+  /**
+   * Progressive pack sink: each slice is pack-aligned bytes (from `PACK` magic).
+   * Used by the orchestrator to feed `engine.importPack` without waiting for the
+   * full buffer when the response body is a ReadableStream.
+   */
+  onPackChunk?: (chunk: Uint8Array) => void | Promise<void>;
+}
+
 export interface SmartHttpTransport {
   listRefs(url: string, auth?: ConnectionAuth): Promise<RefAdvertisement[]>;
   fetchPacks(
@@ -48,6 +67,8 @@ export interface SmartHttpTransport {
     auth?: ConnectionAuth,
     /** Partial clone filter (e.g. `blob:none`); optional. */
     filter?: string,
+    /** Product stream / size-cap options (ignored by fixtures). */
+    opts?: FetchPacksOptions,
   ): Promise<Uint8Array>;
   pushPacks?(
     url: string,
@@ -110,6 +131,7 @@ export class FixtureSmartHttp implements SmartHttpTransport {
     depth?: number,
     auth?: ConnectionAuth,
     filter?: string,
+    opts?: FetchPacksOptions,
   ): Promise<Uint8Array> {
     this.fetchPacksCalls += 1;
     this.lastAuth = auth;
@@ -117,7 +139,18 @@ export class FixtureSmartHttp implements SmartHttpTransport {
     this.lastFetch = { url, want: [...want], have: [...have], depth, filter };
     const f = this.fixtures.get(url);
     if (!f) throw new Error(`git: upload-pack failed: no fixture for ${url}`);
-    return f.pack.slice();
+    const pack = f.pack.slice();
+    const max =
+      opts?.maxBytes === undefined ? DEFAULT_MAX_PACK_BYTES : opts.maxBytes;
+    if (max > 0 && pack.byteLength > max) {
+      throw new Error(
+        `git: pack ${pack.byteLength} bytes exceeds maxPackBytes ${max} (opt-in higher limit)`,
+      );
+    }
+    if (opts?.onPackChunk && pack.byteLength > 0) {
+      await opts.onPackChunk(pack);
+    }
+    return pack;
   }
 
   async pushPacks(
@@ -215,6 +248,7 @@ export class FetchSmartHttp implements SmartHttpTransport {
     depth?: number,
     auth?: ConnectionAuth,
     filter?: string,
+    opts?: FetchPacksOptions,
   ): Promise<Uint8Array> {
     const base = this.url(url, auth).replace(/\/$/, "");
     const body = buildUploadPackBody(want, have, depth, filter);
@@ -230,7 +264,10 @@ export class FetchSmartHttp implements SmartHttpTransport {
     if (!res.ok) {
       throw new Error(`git: upload-pack failed: HTTP ${res.status}`);
     }
-    return extractPack(new Uint8Array(await res.arrayBuffer()));
+    const max =
+      opts?.maxBytes === undefined ? DEFAULT_MAX_PACK_BYTES : opts.maxBytes;
+    // D11: stream body when available; size-cap during read; optional pack sink.
+    return readPackFromResponse(res, max, opts?.onPackChunk);
   }
 
   async pushPacks(
@@ -382,16 +419,167 @@ function buildReceivePackBody(commands: PushCommand[], pack: Uint8Array): Uint8A
   return out;
 }
 
-function extractPack(buf: Uint8Array): Uint8Array {
-  for (let i = 0; i + 4 <= buf.length; i++) {
+/** Locate first `PACK` magic offset, or -1. */
+export function indexOfPackMagic(buf: Uint8Array, from = 0): number {
+  for (let i = from; i + 4 <= buf.length; i++) {
     if (
       buf[i] === 0x50 &&
       buf[i + 1] === 0x41 &&
       buf[i + 2] === 0x43 &&
       buf[i + 3] === 0x4b
     ) {
-      return buf.subarray(i);
+      return i;
     }
   }
-  return buf;
+  return -1;
+}
+
+function extractPack(buf: Uint8Array): Uint8Array {
+  const i = indexOfPackMagic(buf);
+  return i >= 0 ? buf.subarray(i) : buf;
+}
+
+function concatBytes(parts: Uint8Array[], total: number): Uint8Array {
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) {
+    out.set(p, off);
+    off += p.byteLength;
+  }
+  return out;
+}
+
+function copyBytes(src: Uint8Array): Uint8Array {
+  const out = new Uint8Array(src.byteLength);
+  out.set(src);
+  return out as Uint8Array;
+}
+
+/**
+ * Fail-closed body + pack read for upload-pack responses (D11).
+ *
+ * - Prefers `response.body` stream when present (no single giant arrayBuffer).
+ * - Caps **pack** size (bytes from `PACK` magic) at `maxBytes` (`0` = unlimited).
+ * - Also caps pre-PACK prefix so a non-pack flood cannot grow unbounded.
+ * - When `onPackChunk` is set, emits pack-aligned slices as they arrive so the
+ *   orchestrator can call `engine.importPack` incrementally.
+ */
+export async function readPackFromResponse(
+  res: {
+    body?: ReadableStream<Uint8Array> | null;
+    arrayBuffer: () => Promise<ArrayBuffer>;
+    headers?: { get(name: string): string | null };
+  },
+  maxBytes: number,
+  onPackChunk?: (chunk: Uint8Array) => void | Promise<void>,
+): Promise<Uint8Array> {
+  const declared = res.headers?.get?.("content-length");
+  if (declared != null && maxBytes > 0) {
+    const n = Number(declared);
+    if (Number.isFinite(n) && n > maxBytes) {
+      throw new Error(
+        `git: pack ${n} bytes exceeds maxPackBytes ${maxBytes} (opt-in higher limit)`,
+      );
+    }
+  }
+
+  const reader = res.body?.getReader?.();
+  if (!reader) {
+    // No stream (or polyfill without body): bounded one-shot buffer.
+    const raw = new Uint8Array(await res.arrayBuffer());
+    if (maxBytes > 0 && raw.byteLength > maxBytes) {
+      throw new Error(
+        `git: pack ${raw.byteLength} bytes exceeds maxPackBytes ${maxBytes} (opt-in higher limit)`,
+      );
+    }
+    const pack = extractPack(raw);
+    if (maxBytes > 0 && pack.byteLength > maxBytes) {
+      throw new Error(
+        `git: pack ${pack.byteLength} bytes exceeds maxPackBytes ${maxBytes} (opt-in higher limit)`,
+      );
+    }
+    if (onPackChunk && pack.byteLength > 0) {
+      await onPackChunk(pack);
+    }
+    return pack.byteLength === raw.byteLength && pack.byteOffset === 0
+      ? pack
+      : copyBytes(pack);
+  }
+
+  const packParts: Uint8Array[] = [];
+  let packTotal = 0;
+  // Explicit ArrayBufferLike so stream chunk types assign cleanly (TS 5.7+).
+  let pending: Uint8Array = new Uint8Array(0);
+  let inPack = false;
+  /** All response body bytes observed (prefix + pack); fail-closed flood guard. */
+  let bodyTotal = 0;
+
+  const exceed = (n: number): Error =>
+    new Error(
+      `git: pack ${n} bytes exceeds maxPackBytes ${maxBytes} (opt-in higher limit)`,
+    );
+
+  const pushPack = async (slice: Uint8Array): Promise<void> => {
+    if (!slice.byteLength) return;
+    if (maxBytes > 0 && packTotal > maxBytes - slice.byteLength) {
+      await reader.cancel().catch(() => undefined);
+      throw exceed(packTotal + slice.byteLength);
+    }
+    const owned = copyBytes(slice);
+    packParts.push(owned);
+    packTotal += owned.byteLength;
+    if (onPackChunk) await onPackChunk(owned);
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+
+      bodyTotal += value.byteLength;
+      // Cap total body as well as pack: non-pack flood cannot grow unbounded.
+      if (maxBytes > 0 && bodyTotal > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw exceed(bodyTotal);
+      }
+
+      if (!inPack) {
+        const joined =
+          pending.byteLength === 0
+            ? value
+            : concatBytes(
+                [pending, value],
+                pending.byteLength + value.byteLength,
+              );
+        const idx = indexOfPackMagic(joined);
+        if (idx < 0) {
+          // Keep last 3 bytes for PACK magic spanning chunk boundaries.
+          pending =
+            joined.byteLength > 3
+              ? copyBytes(joined.subarray(joined.byteLength - 3))
+              : copyBytes(joined);
+          continue;
+        }
+        inPack = true;
+        pending = new Uint8Array(0);
+        await pushPack(joined.subarray(idx));
+      } else {
+        await pushPack(value);
+      }
+    }
+  } catch (e) {
+    await reader.cancel().catch(() => undefined);
+    throw e;
+  }
+
+  if (!inPack) {
+    // No PACK magic — treat entire body as pack (same as extractPack fallback).
+    if (pending.byteLength) {
+      await pushPack(pending);
+    }
+  }
+
+  if (packTotal === 0) return new Uint8Array(0);
+  return concatBytes(packParts, packTotal);
 }
