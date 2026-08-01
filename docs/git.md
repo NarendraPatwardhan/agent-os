@@ -580,7 +580,7 @@ default (fresh Memory per handler / remote Task).
 | Goal | JS | BEAM |
 |------|----|------|
 | Share Memory across remotes in one process | `MC_GIT_PACK_CACHE_SHARED=1` | `AGENTOS_GIT_PACK_CACHE_SHARED=1` |
-| Durable on-disk CA cache | `MC_GIT_PACK_CACHE=/var/cache/…` **and** `MC_GIT_PACK_CACHE_SHARED=1` (product path) | `AGENTOS_GIT_PACK_CACHE=/var/cache/…` (alone is enough on BEAM product default; SHARED also ok) |
+| Durable on-disk CA cache (product path) | `MC_GIT_PACK_CACHE=/var/cache/…` **and** `MC_GIT_PACK_CACHE_SHARED=1` | `AGENTOS_GIT_PACK_CACHE=/var/cache/…` **and** `AGENTOS_GIT_PACK_CACHE_SHARED=1` |
 | Explicit process singleton in code | `packCache: defaultProcessPackCache()` | `pack_cache: :process` / `:shared` or `PackCache.default_process_cache()` |
 | Explicit dir | `new DiskPackCache(dir)` / `packCacheDir` | `pack_cache: {:disk, dir}` |
 
