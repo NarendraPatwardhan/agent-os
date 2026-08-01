@@ -147,7 +147,7 @@ export class EmbeddedBackend implements Backend {
    */
   private readonly gitFsMountPaths = new Set<string>();
   /**
-   * D17: experimental git engines with durable bindings.
+   * D17: host git engines with durable bindings.
    * Snapshot / pinBase checkpoint these before MCSN capture; restore reopens
    * the same durable id/path via CreateOptions.gitDurable.
    */
@@ -187,7 +187,7 @@ export class EmbeddedBackend implements Backend {
     this.gitEngineBindings = [...bindings];
   }
 
-  /** Recorded durable git id/path bindings (empty when experimental git is off). */
+  /** Recorded durable git id/path bindings (empty when git engine is off). */
   gitDurableBindings(): ReadonlyArray<{
     path: string;
     durableId: string;

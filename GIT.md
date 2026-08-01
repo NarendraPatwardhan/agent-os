@@ -4,8 +4,8 @@
 |-------|--------|
 | **Title** | AgentOS Git — Host Source Plane (libgit2) |
 | **Author** | Design loop (AgentOS) |
-| **Date** | 2026-07-30 (honesty pass 2026-07-31) |
-| **Status** | Implementing — scaffold PR0–PR15 present; **not** remotes GA. Gaps: `TASKS.md`, `CRITICAL_REVIEW.md` |
+| **Date** | 2026-07-30 (updated 2026-08-01) |
+| **Status** | **Shipped** on `feature/cgit` — host source plane complete (PR0–PR16 surface). Opt-in via `mc.create({ gitEngine: true, gitEngineBaseUrl })`. Product docs: `docs/git.md`. Tracker: `TASKS.md` (D1–D41 DONE). `CRITICAL_REVIEW.md` is archival pre-fix only. |
 | **Replaces** | Workspace-root `GIT.md` + `GIT_DESIGN.md` (go-git / gojs era) — **single** design of record after approval |
 | **Baseline systems** | `SYSTEMS.md` (Plan-9 VFS, MountFs, host-call, LLB, A1/A8/A9) |
 | **Spike substrate** | `/mnt/workspace/git-bazel` — libgit2 1.9.2 + `ge_*` Run ABI, hermetic zig cc + emsdk |
@@ -1049,8 +1049,8 @@ and mount queue depth > 32. Not Prometheus — in-process snapshot only.
 | Phase | Deliverable | Exit criteria | Flag |
 |-------|-------------|---------------|------|
 | **0** | Hermetic C/emsdk + libgit2 + **license packaging L1–L3/L6** | trivial link smoke; NOTICE present | — |
-| **1** | Engine lib + emcc wasm + size gate | PR1 ops + load without gojs; ≤2 MiB | `experimentalGitEngine` |
-| **2** | SDK GitEngine + experimental flag | function face; no mount yet | flag |
+| **1** | Engine lib + emcc wasm + size gate | PR1 ops + load without gojs; ≤2 MiB | `gitEngine` |
+| **2** | SDK GitEngine + create opt-in | function face; no mount yet | `gitEngine` |
 | **3** | GitFsDriver + coherence | close-then-status e2e | mount |
 | **4** | Ctl + thin CLI local | commit via ctl; drain invariant | image |
 | **5** | Server: **PR7a** Port Run smoke → **PR7b** mount/ctl e2e | kill engine → EIO; mount write + ctl | server |
@@ -1206,11 +1206,11 @@ Concrete ordered PRs for the **AgentOS monorepo**. PR0 does **not** assume rules
 | **Depends on** | PR1 |
 | **Description** | `createGitEngineModule`; EXPORTED_FUNCTIONS = `ge_*` only. Node smoke: load + init/commit. **No gojs.** |
 
-### PR3 — SDK GitEngine (memory) + experimental flag
+### PR3 — SDK GitEngine (memory) + create opt-in
 
 | | |
 |--|--|
-| **Title** | `git: SDK GitEngine.run + experimentalGitEngine flag` |
+| **Title** | `git: SDK GitEngine.run + gitEngine create option` |
 | **Files** | `memcontainers/sdk-js/core/src/git/*` (bridge, engine load with absolute worktree ensure); create-options flag plumbing |
 | **Depends on** | PR2 |
 | **Description** | Function face; no mount yet. Promote `git-bridge.js` / `git-engine-sdk.js` patterns into TypeScript. |

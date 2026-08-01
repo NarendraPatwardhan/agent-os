@@ -101,7 +101,7 @@ Verifier artifacts: `VERIFY_CHUNK_N.md` (PASS required before next chunk).
 | D31 | client_token + generation race acceptance | **DONE** | client_token echo generation |
 | D32 | Full golden set dual-host | **DONE** | `shallow_clone_steps` / `auth_deny_steps` / `pull_not_ff_steps` + prior; JS `git_orch_golden_test` + BEAM `OrchGoldenTest` |
 | D33 | Dual-host Response schema + stderr catalog tests | **DONE** | `response_schema.json` + dual-host catalog samples (unknown connection, empty pack, origin deny) |
-| D34 | Graduate experimentalGitEngine | **DONE** | api-surface → **advanced**; docs/git.md criteria all Met; flag name kept opt-in |
+| D34 | Graduate gitEngine | **DONE** | api-surface → **advanced**; docs/git.md criteria all Met; flag name kept opt-in |
 
 ### P7 — Ops / polish
 

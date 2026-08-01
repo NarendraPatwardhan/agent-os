@@ -1,10 +1,8 @@
 # AgentOS Git — Host Source Plane
 
-**Advanced** (graduated from experimental) product surface for interactive and LLB git. Design of
-record: workspace-root `GIT.md`. Tracker / gaps: `TASKS.md`, `CRITICAL_REVIEW.md`.
-Create-option flag name remains `experimentalGitEngine` (opt-in; default `false`); api-surface
-level is **advanced** — **not** multi-tenant stable / GA. Prefer careful language: shipped
-experimental graduate to advanced.
+Product surface for interactive and LLB git (host source plane). Design of record: worktree
+`GIT.md`. Create options: `gitEngine` (default `false`) + `gitEngineBaseUrl`. API surface:
+**advanced** (opt-in; not multi-tenant default-on). Tracker: `TASKS.md`.
 
 ## Thesis
 
@@ -13,7 +11,7 @@ the engine never dials the network. Remotes are host-mediated.
 
 | Face | Path |
 |------|------|
-| SDK (JS) | `GitEngine.load` / `experimentalGitEngine` + `registerGitHostCall("git")` |
+| SDK (JS) | `GitEngine.load` / `gitEngine` + `registerGitHostCall("git")` |
 | gitfs | `asMountDriver()` → MountFs; local ctl at `/.git/mc/ctl` |
 | Thin CLI | `//memcontainers/programs/git` — reduced surface only (see below) |
 | Server engine | BEAM-owned C `git-engine` **Port** — local Run, pack apply, type-4 mount only |
@@ -30,7 +28,7 @@ These are hard product rules for agents and tools that use host git — not opti
 | **No `.git/objects` façade (v1)** | Guests do **not** get a synthetic `.git/objects` tree. Object DB stays host-side; worktree + ctl only. |
 | **Unflushed ctl: close write before status** | Ctl Request is written to `/.git/mc/ctl`; Response is read from the out path. Close (or Drop) the write FD **before** reading status / next Response — unflushed guest buffers are invisible to the engine (same class as `hostDir`). |
 | **Remotes need CAP_NET + host_call `git`** | Mount/ctl alone cannot dial. Guest remotes go through `mc_sys_host_call` name `"git"` gated by kernel **CAP_NET**. Ctl remote ops refuse. |
-| **Opt-in flag + identity on commit** | Opt-in via `experimentalGitEngine` (JS; advanced surface). Commits need author identity (`name` / `email` args or engine defaults) — no ambient global gitconfig from the host user. |
+| **Opt-in flag + identity on commit** | Opt-in via `gitEngine` (JS; advanced surface). Commits need author identity (`name` / `email` args or engine defaults) — no ambient global gitconfig from the host user. |
 | **Server push (not read-only)** | See [Server remotes](#server-remotes-k16--push-honesty) — packbuilder + receive-pack on BEAM when mount is not read-only. |
 
 ## Thin CLI surface (honest)
@@ -143,7 +141,7 @@ AgentOS.ControlPlane.attach_git(vm_id,
 ```ts
 // JS create options — same catalog cut
 mc.create({
-  experimentalGitEngine: true,
+  gitEngine: true,
   connections: [
     { ref: "github.user.work", auth: { kind: "bearer", token }, origins: ["https://github.com"] },
   ],
@@ -266,7 +264,7 @@ Opt-in only; documented in [Create options](./create-options.md).
 
 ```ts
 mc.create({
-  experimentalGitEngine: true,
+  gitEngine: true,
   gitEngineBaseUrl: new URL("./git-engine/", import.meta.url).href,
   // registers host_call "git" (process pack cache default), mounts gitfs at /workspace/repo
   // optional cone sparse (multi-pattern; not full sparse language): gitSparseCone: ["src", "docs"],
@@ -286,7 +284,7 @@ may run remotes concurrently; two remotes on the **same** mount serialize.
 
 | Host | How to attach two engines | Default when `mount` omitted |
 |------|---------------------------|------------------------------|
-| **JS** | `mc.create({ experimentalGitEngine: true, gitMounts: [{ path: "/workspace/a" }, { path: "/workspace/b", sparseCone: ["src"] }], … })` | First `gitMounts` entry |
+| **JS** | `mc.create({ gitEngine: true, gitMounts: [{ path: "/workspace/a" }, { path: "/workspace/b", sparseCone: ["src"] }], … })` | First `gitMounts` entry |
 | **BEAM** | `ControlPlane.attach_git(id, mount_path: "/workspace/a", …)` then again with a **distinct** `mount_path: "/workspace/b"` | Sole engine if only one attached; otherwise first attached (prefer explicit `args.mount`) |
 
 Same path while live fails closed: JS throws on duplicate `gitMounts` path; BEAM returns
@@ -296,7 +294,7 @@ JS closes the VM (all engines).
 ```ts
 // JS product create — two mounts, remotes demux by args.mount
 const vm = await mc.create({
-  experimentalGitEngine: true,
+  gitEngine: true,
   gitEngineBaseUrl: new URL("./git-engine/", import.meta.url).href,
   gitMounts: [
     { path: "/workspace/app" },
@@ -351,25 +349,19 @@ Accept either form:
 - **BEAM:** `AgentOS.Git.OrchestratorTest` — `R65/D21 host_call args.mount two clones into two
   engines` (worktree README per root) + `D21 concurrent remotes on two mounts may overlap`.
 
-## `experimentalGitEngine` graduation criteria (P3.2)
+## Product readiness (shipped)
 
-**Graduated to advanced (Chunk 10 / D34).** Do **not** claim multi-tenant **stable**/GA remotes.
-Create-option remains `experimentalGitEngine: true` (opt-in name preserved). `docs/api-surface.json`
-levels for `GitEngine` / host_call / LLB git helpers are **advanced**. Status column is only
-**Met** or **Open** (with path evidence).
+Enable with `gitEngine: true` + `gitEngineBaseUrl` (default off). API surface for `GitEngine` /
+host_call / LLB git helpers is **advanced** (`docs/api-surface.json`). Not multi-tenant default-on.
 
 | # | Criterion | Status |
 |---|-----------|--------|
-| 1 | **Origin / connection policy** — empty origins fail closed; credential splice host-only; no secrets in guest/ctl/engine args | **Met** — connection catalog product path (JS + BEAM `attach_git connections:`); bare-URL / empty origins fail closed; guest secret keys rejected both hosts; dual-host policy tests green |
-| 2 | **Pack e2e** — pack import → refs → clone/fetch apply on **both** JS wasm and BEAM Port (`minimal.pack` + golden orch vectors) | **Met** — abi/pack fixtures + full D32 golden set (`shallow_clone` / `auth_deny` / `pull_not_ff` + prior vectors) on TS + BEAM |
-| 3 | **Push or explicit RO** — packbuilder path on each product host **or** documented RO with stable reject | **Met** — JS + BEAM pack.build + receive-pack push when not read-only; RO mounts reject with stable `git: push rejected (read-only mount)` |
-| 4 | **Single-writer** — one engine queue per gitfs mount; K21 one engine per path | **Met** — bridge/Port serialise per engine; multi-mount demux + same-path fail-closed (D2/D21) |
-| 5 | **CAP_NET e2e** — guest without CAP_NET → EPERM; with CAP_NET + allowlist → shallow clone/fetch on JS **and** server attach | **Met** — JS: `//memcontainers/sdk-js/core:git_guest_e2e_test`. Server: `git_guest_acceptance_test.exs` D25/D26 (loom + host_call relay + `attach_git` fixture; CAP_NET deny dials == 0). Real smart-HTTP dual-host: D27/D28 |
-| 6 | **Metrics / observability** — engine/orch failure counters (PR16), not silent false-green | **Met** — dual-host counters + `duration_ms` / `pack_bytes` / redacted origin labels; BEAM server alerts for allowlist deny + queue depth > 32 (D35/D36). See [Metrics](#metrics-pr16) |
-
-**Graduation (D34):** all six criteria **Met** with D25–D33 closed (VERIFY_CHUNK_8–10). Surface is
-**advanced**, not **stable**. Residual product polish (log/show D39 already DONE) does not block
-advanced graduation. Do not re-label as multi-tenant GA without a separate stable campaign.
+| 1 | Origin / connection policy — empty origins fail closed; credential splice host-only | **Met** |
+| 2 | Pack e2e both hosts (`minimal.pack` + dual-host goldens) | **Met** |
+| 3 | Push packbuilder both hosts; RO rejects with stable message | **Met** |
+| 4 | Single-writer per engine; one engine per mount path | **Met** |
+| 5 | CAP_NET allow + deny e2e (JS + server guest) | **Met** |
+| 6 | Orch/engine counters + allowlist/queue log alerts | **Met** |
 
 ## Full guest CAP_NET e2e (D25/D26)
 
@@ -384,8 +376,7 @@ advanced graduation. Do not re-label as multi-tenant GA without a separate stabl
 ## Durability / dir reopen (PR8 / D16–D18)
 
 **D16** (directory reopen), **D17** (JS snapshot/fork rebind), and **D18** (named durable
-roots via `durable_id` + `AGENTOS_GIT_DURABLE_ROOT`) are **DONE**. Chunk 5 campaign VERIFY
-still gates full GA when other open rows close.
+roots via `durable_id` + `AGENTOS_GIT_DURABLE_ROOT`) are **DONE**.
 
 ### JS — directory reopen (primary) + AGIT blob (transfer)
 
@@ -428,7 +419,7 @@ same path sees the same HEAD + worktree files. **AGIT** (pack+refs envelope) rem
 
 ```ts
 const vm = await mc.create({
-  experimentalGitEngine: true,
+  gitEngine: true,
   gitEngineBaseUrl: new URL("./git-engine/", import.meta.url).href,
   // Primary: re-openable host worktree dirs under diskDir (D16 path).
   gitDurable: { id: "agent-session-1", diskDir: "/var/lib/agentos/git-durable" },
@@ -563,8 +554,8 @@ unless an explicit decision overturns Port. JS hosts continue to use emcc wasm.
 - Empty connection `origins` → fail closed.
 - Ctl remotes refuse; remotes require `CAP_NET` + host_call name `"git"`.
 - No Node/Bun process on the Elixir control plane for git.
-- Surface is **advanced** (graduated experimental); do not treat as multi-tenant **stable**/GA.
-- Opt-in flag name remains `experimentalGitEngine` (default false).
+- Surface is **advanced** (opt-in). Not multi-tenant default-on.
+- Enable with `gitEngine: true` (default false).
 - Stable stderr prefixes are catalogued in `testdata/orch/response_schema.json` (D33).
 
 ## Bazel / server targets

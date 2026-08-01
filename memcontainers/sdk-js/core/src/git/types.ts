@@ -88,8 +88,8 @@ export interface GitEngineLoadOptions {
 
 export interface GitEngineCreateOptions {
   /** When true, enable host git engine packaging (PR3+). Default false. */
-  experimentalGitEngine?: boolean;
-  /** Where to load git_engine.js/wasm from when experimentalGitEngine is set. */
+  gitEngine?: boolean;
+  /** Where to load git_engine.js/wasm from when gitEngine is set. */
   gitEngineBaseUrl?: string;
   /**
    * Cone-mode sparse prefixes for default gitfs mount / post-clone sparse-set.
@@ -98,7 +98,7 @@ export interface GitEngineCreateOptions {
    */
   sparseCone?: string[];
   /**
-   * Host commit identity for experimental git engine (K28 inject).
+   * Host commit identity for host git engine (K28 inject).
    * Prefer CreateOptions `gitIdentity` on the product memcontainer path.
    */
   gitIdentity?: GitIdentity;

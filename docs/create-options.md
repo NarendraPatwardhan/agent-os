@@ -27,7 +27,7 @@ fields—`mc.use()`. Applicability and defaults vary by runtime.
 | `sidecarHosts`       | host-alias map                           | `{}`                            | Embedded-only private sidecar authority routes       |
 | `sidecars`           | grant-descriptor map                     | `{}`                            | Portable sidecar grants attached at boot             |
 | `deterministic`      | boolean                                  | `false`                         | Repeatable guest clock and random source             |
-| `experimentalGitEngine` | boolean                               | `false`                         | Opt-in host git engine (libgit2 emcc); **advanced** (graduated experimental; flag name kept) |
+| `gitEngine`             | boolean                               | `false`                         | Enable host git engine (libgit2 emcc wasm); requires `gitEngineBaseUrl` |
 | `gitEngineBaseUrl`   | directory URL string                     | none                            | Dir URL of `git_engine.mjs` + `git_engine.wasm`; required when engine is on |
 | `gitSparseCone`      | `string[]`                               | none                            | Cone-mode sparse prefixes for default gitfs + post-clone `sparse-set` (multi-pattern; engine also accepts basic `!path` negation — not full sparse language) |
 | `gitDurable`         | `{ id?: string, diskDir?: string }`      | none (off)                      | Opt-in durable **directory** store per gitfs mount (re-openable worktree under `diskDir`; snapshot/restore rebind). See [Git durability](./git.md#durability--dir-reopen-pr8--d16d18) |
@@ -178,13 +178,11 @@ not reapply layers because the snapshot already contains the selected filesystem
 Pins guest-visible time and randomness to repeatable sources. It is intended for testing and pure
 build steps. It does not cache or sanitize external network responses.
 
-## `experimentalGitEngine` and `gitEngineBaseUrl`
+## `gitEngine` and `gitEngineBaseUrl`
 
-**Advanced** (api-surface graduated from experimental; create-option name unchanged). Opt-in host
-source-plane git (libgit2 + emcc wasm). Graduation criteria in [Git](./git.md) are **Met**; surface
-is **not** multi-tenant stable/GA — still opt-in (`false` default).
+Host source-plane git (libgit2 + emcc wasm). Opt-in; default `false`. See [Git](./git.md).
 
-When `experimentalGitEngine` is `true`:
+When `gitEngine` is `true`:
 
 - `gitEngineBaseUrl` is **required** — a directory URL whose contents include `git_engine.mjs` and
   `git_engine.wasm` (from `//memcontainers/lib/git-engine:git_engine_wasm`);
@@ -209,7 +207,7 @@ When `experimentalGitEngine` is `true`:
 
 ```js
 const vm = await mc.create({
-  experimentalGitEngine: true,
+  gitEngine: true,
   gitEngineBaseUrl: new URL("./git-engine/", import.meta.url).href,
   gitSparseCone: ["src", "docs"],
   // durable dir reopen across snapshot/restore (omit = no ODB rebind):

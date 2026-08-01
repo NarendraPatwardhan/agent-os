@@ -837,11 +837,11 @@ async function makeEmbedded(
     sparseCone?: string[];
   };
   let gitEngines: LoadedGitEngine[] = [];
-  if (opts.experimentalGitEngine) {
+  if (opts.gitEngine) {
     const base = opts.gitEngineBaseUrl;
     if (!base) {
       throw new Error(
-        "experimentalGitEngine requires gitEngineBaseUrl (dir URL of git_engine.mjs/wasm)",
+        "gitEngine requires gitEngineBaseUrl (dir URL of git_engine.mjs/wasm)",
       );
     }
     const {

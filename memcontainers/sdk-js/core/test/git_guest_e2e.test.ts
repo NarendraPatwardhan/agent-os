@@ -1,12 +1,12 @@
 /**
  * Residuals R1 / R3 / R8 — strongest hermetic JS guest git e2e.
  *
- * R8: mc.create + experimentalGitEngine + gitfs ctl close-then-status (commit via /bin/git).
+ * R8: mc.create + gitEngine + gitfs ctl close-then-status (commit via /bin/git).
  * R3: guest without CAP_NET → host_call "git" fails closed (EPERM / clear error).
  * R1: guest with CAP_NET + /bin/git clone → MapHostCall "git" → FixtureSmartHttp → worktree.
  *
  * No external network: FixtureSmartHttp + minimal.pack only.
- * Full guest /bin/git is on loom (git_layer). Remotes remain experimental.
+ * Full guest /bin/git is on loom (git_layer). Remotes use host_call + CAP_NET.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -116,7 +116,7 @@ async function main(): Promise<void> {
   const baseUrl = gitEngineBaseUrl();
   const fixture = packFixture();
 
-  // ── R8: mc.create + experimentalGitEngine + gitfs ctl close-then-status ──
+  // ── R8: mc.create + gitEngine + gitfs ctl close-then-status ──
   // Thin /bin/git writes Request, closes fd, re-opens ctl for Response (never close-only).
   console.log("phase: R8 gitfs ctl close-then-status via /bin/git");
   {
@@ -124,7 +124,7 @@ async function main(): Promise<void> {
       kernel,
       image: loom,
       deterministic: true,
-      experimentalGitEngine: true,
+      gitEngine: true,
       gitEngineBaseUrl: baseUrl,
       gitIdentity: { name: "Guest E2E", email: "e2e@example.com" },
     } satisfies CreateOptions);
@@ -215,7 +215,7 @@ async function main(): Promise<void> {
       image: noNetImage,
       store,
       deterministic: true,
-      experimentalGitEngine: true,
+      gitEngine: true,
       gitEngineBaseUrl: baseUrl,
       gitHttp: http,
       gitAllowOrigins: [fixture.origin],
@@ -267,7 +267,7 @@ async function main(): Promise<void> {
       kernel,
       image: loom,
       deterministic: true,
-      experimentalGitEngine: true,
+      gitEngine: true,
       gitEngineBaseUrl: baseUrl,
       gitHttp: http,
       gitAllowOrigins: [fixture.origin],
@@ -319,7 +319,7 @@ async function main(): Promise<void> {
       image: loom,
       deterministic: true,
       net: true,
-      experimentalGitEngine: true,
+      gitEngine: true,
       gitEngineBaseUrl: baseUrl,
       gitHttp: http,
       gitAllowOrigins: [fixture.origin],
@@ -387,7 +387,7 @@ print(raw)
       kernel,
       image: loom,
       deterministic: true,
-      experimentalGitEngine: true,
+      gitEngine: true,
       gitEngineBaseUrl: baseUrl,
       gitIdentity: { name: "D17", email: "d17@example.com" },
       // No diskDir → openDurable MemoryDurable process registry (same id reopens).
@@ -539,7 +539,7 @@ print(raw)
       image: loom,
       deterministic: true,
       net: true,
-      experimentalGitEngine: true,
+      gitEngine: true,
       gitEngineBaseUrl: baseUrl,
       gitHttp: slowHttp,
       gitAllowOrigins: [fixture.origin],
