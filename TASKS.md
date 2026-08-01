@@ -18,7 +18,7 @@ Tests prove implementation; green tests alone are not DONE.
 |-------|--------|--------|
 | 0 | Tracker truth | **DONE** (`c580f7e`, VERIFY_CHUNK_0.md) |
 | 1 | PR11 server connections | **DONE** (VERIFY_CHUNK_1.md) |
-| 2 | Single-writer + SSRF + K17 | **OPEN** |
+| 2 | Single-writer + SSRF + K17 | **DONE** (VERIFY_CHUNK_2.md) |
 | 3 | Streaming packs + disk cache | **OPEN** |
 | 4 | Partial clone + sparse parity + tracking | **OPEN** |
 | 5 | Durability + snapshot rebind | **OPEN** |
@@ -38,9 +38,9 @@ Verifier artifacts: `VERIFY_CHUNK_N.md` (PASS required before next chunk).
 | ID | Requirement | Status | Evidence / missing |
 |----|-------------|--------|-------------------|
 | D1 | Server remotes use connections catalog + splice (PR11) | **DONE** | `server/lib/agent_os/git/connections.ex` resolve+splice; `Vm.attach_git(connections:)` product path (no flat allowlist); orch `resolve_binding`/`apply_binding`; compose e2e `PR11 product path: attach_git connections-only → host_call clone via fixture` in `git_orchestrator_test.exs`; JS `git_connections.test.ts` |
-| D2 | Single-writer FIFO per mount includes remote orch (JS) | **OPEN** | Engine serial; remote HTTP can overlap |
-| D3 | Redirect policy cannot bypass origin allowlist | **OPEN** | Scheme/size/status gates exist; redirect re-check incomplete |
-| D4 | K17: no guest `.git/objects` façade | **OPEN** | gitfs may list/expose objects path misleadingly |
+| D2 | Single-writer FIFO per mount includes remote orch (JS) | **DONE** | Per-engine `remoteQueue` promise mutex in `remote-orchestrator.ts` `handle()`; test peak concurrent `fetchPacks` ≤ 1 in `git_remote.test.ts`; BEAM per-mount `git_remote_queue` in `vm.ex` |
+| D3 | Redirect policy cannot bypass origin allowlist | **DONE** | Dual-host fail-closed reject-all redirects: BEAM `autoredirect: false` + `classify_http_response` → `:redirect_not_allowed` (3xx unit + local `:gen_tcp` 302 open-redirect never followed); JS `FetchSmartHttp` `redirect:"manual"` + `isRedirectResponse` (mock 302 → evil.example fails list/fetch/push, never dials Location). Docs in both module headers. |
+| D4 | K17: no guest `.git/objects` façade | **DONE** | `gitfs.ts` `isObjectsPath` + ENOENT; `normalizeRel` collapses `.`/empty segments so `/.git/./objects` and `/.git//objects` cannot hit host ODB (`bridge.ts`); Port `port_mount.c` early ENOENT; tests `git_engine.test.ts` + `port_smoke_test.c` |
 | D5 | Tracker matches code | **OPEN** | This rewrite is Chunk 0; V0 must confirm |
 
 ### P1 — PR11 / policy
@@ -70,7 +70,7 @@ Verifier artifacts: `VERIFY_CHUNK_N.md` (PASS required before next chunk).
 | D16 | OPFS/disk reattachable engine store | **OPEN** | AGIT checkpoint rebind only |
 | D17 | Snapshot/fork rebinds git durable | **OPEN** | Not wired to snapshot lifecycle |
 | D18 | Server durable engine root for named VMs | **OPEN** | Temp roots + cleanup |
-| D19 | Snapshot blocked while git host_call inflight | **OPEN** | Not verified for git remotes |
+| D19 | Snapshot blocked while git host_call inflight | **DONE** | Monorepo host_call pattern: kernel `HostCall::start` → `egress_inc` (`host_call.rs`); JS `MapHostCall` holds slot while orch HTTP+apply (`host_call.ts` + `gitHostCallHandler`); host `ensureSnapshotReady` / `mc_inflight_egress` refuse (`host.ts`, wasmtime `ensure_snapshot_ready`). BEAM second gate: `Vm.ensure_git_remote_quiescent/1` blocks `snapshot`+`commit_layer` while `git_tasks`/`git_remote_queue` non-empty (`server/lib/agent_os/vm.ex`). Tests: JS `git_guest_e2e` phase D19 (slow listRefs → snapshot throws mid-clone); BEAM `D19 snapshot refused while git remote host_call Task is inflight` in `git_orchestrator_test.exs` |
 
 ### P4 — Sparse / multi-repo
 

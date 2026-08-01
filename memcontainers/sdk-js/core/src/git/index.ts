@@ -30,12 +30,14 @@ export {
   FetchSmartHttp,
   parseReceiveStatus,
   buildUploadPackBody,
+  isRedirectResponse,
 } from "./smart-http.js";
 export type {
   RefAdvertisement,
   SmartHttpTransport,
   PushCommand,
   ReceiveStatus,
+  FetchImpl,
 } from "./smart-http.js";
 export {
   MemoryDurable,

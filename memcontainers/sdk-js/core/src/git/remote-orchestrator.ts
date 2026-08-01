@@ -136,6 +136,13 @@ export class GitRemoteOrchestrator {
   private readonly packCache?: PackCache;
   private readonly importPackOpts: ImportPackOptions;
   private readonly sparseCone: string[];
+  /**
+   * Per-orchestrator (per-engine / per-mount) remote single-flight queue.
+   * Concurrent host_call remotes must not overlap HTTP + apply — matches BEAM
+   * one-inflight-remote-per-engine. Local engine.run is already serial via
+   * GitBridge; remotes need their own chain so listRefs/fetchPacks cannot race.
+   */
+  private remoteQueue: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly engine: GitEngine,
@@ -252,8 +259,24 @@ export class GitRemoteOrchestrator {
     );
   }
 
-  /** Host_call name "git" body: Request JSON → Response JSON. */
+  /**
+   * Host_call name "git" body: Request JSON → Response JSON.
+   * Serialized per orchestrator: parallel callers queue FIFO; only one remote
+   * (HTTP + apply) runs at a time on this engine/mount.
+   */
   async handle(req: GitRequest): Promise<GitResponse> {
+    const run = this.remoteQueue.then(
+      () => this.handleUnlocked(req),
+      () => this.handleUnlocked(req),
+    ) as Promise<GitResponse>;
+    this.remoteQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  private async handleUnlocked(req: GitRequest): Promise<GitResponse> {
     const op = String(req.op || "").toLowerCase();
     let resp: GitResponse;
     if (op === "clone") resp = await this.clone(req);
@@ -1030,6 +1053,15 @@ export function resolveGitEngineForMount(
  * Multi-mount (R63–R65): pass {@link GitEngineMountMap}; body may include
  * `args.mount` or top-level `mount` to demux to the matching engine.
  * Each engine gets its own orchestrator instance (single-writer per mount).
+ *
+ * ## Snapshot quiescence (D19 / monorepo host_call pattern)
+ *
+ * Remotes run **inside** an open `mc_sys_host_call` slot (`MapHostCall`). The
+ * kernel increments `inflight_egress` for the live host handle, so
+ * `vm.snapshot()` / `commitLayer()` refuse while clone/fetch/push HTTP+apply
+ * is mid-flight — same gate as netfs/mountfs host_calls. Do **not** dial
+ * remotes outside host_call (ctl refuses; engine must not dial): a silent
+ * snapshot during clone would capture an inconsistent engine/worktree.
  */
 export function gitHostCallHandler(
   engineOrMap: GitHostCallEngines,

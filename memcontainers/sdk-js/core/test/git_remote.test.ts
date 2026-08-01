@@ -8,12 +8,14 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  FetchSmartHttp,
   FixtureSmartHttp,
   GitEngine,
   GitRemoteOrchestrator,
   MemoryDurable,
   MemoryPackCache,
   gitHostCallHandler,
+  isRedirectResponse,
   mountFromGitRequest,
   registerGitHostCall,
   resolveGitEngineForMount,
@@ -75,6 +77,89 @@ async function main() {
     throw new Error("checkpoint(explicit) must persist caller bytes");
   }
   await engDurable.close();
+
+  // D3: redirect policy — never follow; open redirect cannot leave allowlist.
+  if (!isRedirectResponse({ status: 301 })) {
+    throw new Error("isRedirectResponse must treat 301 as redirect");
+  }
+  if (!isRedirectResponse({ status: 302 })) {
+    throw new Error("isRedirectResponse must treat 302 as redirect");
+  }
+  if (!isRedirectResponse({ status: 307 })) {
+    throw new Error("isRedirectResponse must treat 307 as redirect");
+  }
+  if (!isRedirectResponse({ status: 0, type: "opaqueredirect" })) {
+    throw new Error("isRedirectResponse must treat opaqueredirect as redirect");
+  }
+  if (isRedirectResponse({ status: 200 }) || isRedirectResponse({ status: 404 })) {
+    throw new Error("isRedirectResponse must not flag non-redirect statuses");
+  }
+
+  const fetchCalls: { url: string; redirect?: RequestRedirect }[] = [];
+  const redirectFetch = async (
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const url = String(input);
+    fetchCalls.push({ url, redirect: init?.redirect });
+    // Simulate a 302 open redirect to a non-allowlisted origin. Product must
+    // use redirect:"manual" so this Response is returned (not auto-followed).
+    return new Response(null, {
+      status: 302,
+      headers: { Location: "https://evil.example/stolen-pack" },
+    });
+  };
+  const redirectHttp = new FetchSmartHttp(undefined, redirectFetch);
+  const redirectUrl = "https://example.com/demo.git";
+
+  let listThrew = false;
+  try {
+    await redirectHttp.listRefs(redirectUrl);
+  } catch (e) {
+    listThrew = true;
+    if (!String(e).includes("redirect not allowed")) {
+      throw new Error(`listRefs redirect must say not allowed: ${String(e)}`);
+    }
+  }
+  if (!listThrew) throw new Error("listRefs must reject 302 open redirect");
+
+  let fetchThrew = false;
+  try {
+    await redirectHttp.fetchPacks(redirectUrl, ["a".repeat(40)], []);
+  } catch (e) {
+    fetchThrew = true;
+    if (!String(e).includes("redirect not allowed")) {
+      throw new Error(`fetchPacks redirect must say not allowed: ${String(e)}`);
+    }
+  }
+  if (!fetchThrew) throw new Error("fetchPacks must reject 302 open redirect");
+
+  const pushSt = await redirectHttp.pushPacks(
+    redirectUrl,
+    [
+      {
+        oldHash: "0".repeat(40),
+        newHash: "a".repeat(40),
+        name: "refs/heads/main",
+      },
+    ],
+    new Uint8Array([0x50, 0x41, 0x43, 0x4b]),
+  );
+  if (pushSt.ok || !String(pushSt.message || "").includes("redirect not allowed")) {
+    throw new Error(`pushPacks redirect must fail closed: ${JSON.stringify(pushSt)}`);
+  }
+
+  if (fetchCalls.length < 3) {
+    throw new Error(`expected ≥3 dials for list/fetch/push, got ${fetchCalls.length}`);
+  }
+  for (const c of fetchCalls) {
+    if (c.redirect !== "manual") {
+      throw new Error(`FetchSmartHttp must set redirect:manual, got ${c.redirect} for ${c.url}`);
+    }
+    if (c.url.includes("evil.example")) {
+      throw new Error(`open redirect followed to evil origin: ${c.url}`);
+    }
+  }
 
   // R32: bare URL + empty allowOrigins fails closed before transport dial.
   const bareDenied = new FixtureSmartHttp();
@@ -352,6 +437,66 @@ async function main() {
   );
   if (!toolsMulti.map.has("git")) {
     throw new Error("registerGitHostCall multi missing git");
+  }
+
+  // Per-engine remote single-flight: two concurrent clones on the same
+  // orchestrator must not overlap fetchPacks (HTTP + apply). Delayed fixture
+  // so both callers enter handle() before either finishes transport.
+  {
+    const engSerial = await GitEngine.load({ baseUrl: base });
+    const baseHttp = new FixtureSmartHttp();
+    const serialUrl = "https://example.com/serial.git";
+    baseHttp.add(
+      serialUrl,
+      [{ name: "refs/heads/main", hash }],
+      packBody,
+    );
+    let inflightFetch = 0;
+    let peakFetch = 0;
+    const delayedHttp = {
+      listRefs: (url: string, auth?: Parameters<FixtureSmartHttp["listRefs"]>[1]) =>
+        baseHttp.listRefs(url, auth),
+      fetchPacks: async (
+        url: string,
+        want: string[],
+        have: string[],
+        depth?: number,
+        auth?: Parameters<FixtureSmartHttp["fetchPacks"]>[4],
+        filter?: string,
+      ) => {
+        inflightFetch += 1;
+        if (inflightFetch > peakFetch) peakFetch = inflightFetch;
+        try {
+          await new Promise((r) => setTimeout(r, 40));
+          return baseHttp.fetchPacks(url, want, have, depth, auth, filter);
+        } finally {
+          inflightFetch -= 1;
+        }
+      },
+    };
+    const orchSerial = new GitRemoteOrchestrator(engSerial, {
+      http: delayedHttp,
+      allowOrigins: [fixtureOrigin],
+      packCache: null,
+    });
+    const [s1, s2] = await Promise.all([
+      orchSerial.handle({ op: "clone", args: { url: serialUrl } }),
+      orchSerial.handle({ op: "clone", args: { url: serialUrl } }),
+    ]);
+    if (s1.ok === undefined || s2.ok === undefined) {
+      throw new Error(`serial clone missing response: ${JSON.stringify({ s1, s2 })}`);
+    }
+    if (peakFetch > 1) {
+      throw new Error(
+        `remote single-flight violated: peak concurrent fetchPacks=${peakFetch} (want ≤ 1)`,
+      );
+    }
+    if (baseHttp.fetchPacksCalls !== 2) {
+      throw new Error(
+        `both clones should reach fetchPacks serially, got ${baseHttp.fetchPacksCalls}`,
+      );
+    }
+    await engSerial.close();
   }
 
   await engA.close();

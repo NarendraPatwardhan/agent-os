@@ -5,13 +5,19 @@ defmodule AgentOS.Git.SmartHttp do
   Product path uses OTP `:httpc` + `:ssl` — the same host family as control-plane
   HTTPS egress for the kernel. **No Node. No C TLS.**
 
-  Security (P0.1):
+  Security (P0.1 / D3):
   * Only `http`/`https` schemes; reject userinfo; require host
   * Origin allowlist (`:allowed_origins`) fail-closed by default
   * Non-2xx HTTP status → error
   * Response/pack size capped (default 64 MiB)
   * `extract_pack/1` errors when no `PACK` magic (never returns the whole body)
-  * Autoredirect disabled on `:httpc`
+  * **Redirect policy (fail-closed):** product smart-HTTP **never follows**
+    redirects. `:httpc` is dialed with `autoredirect: false`, and any 3xx
+    response is rejected as `:redirect_not_allowed` without reading `Location`
+    or issuing a second request. Open redirect to a non-allowlisted origin is
+    therefore impossible: there is no hop, so no allowlist re-check is needed.
+    (An alternate design would re-validate origin on each hop; we prefer the
+    simpler reject-all policy for product remotes.)
 
   Injectable `transport` callback for tests (fixture double). The
   `allowed_origins: :any` / `require_origin_allowlist: false` escape hatches are
@@ -346,7 +352,8 @@ defmodule AgentOS.Git.SmartHttp do
     url_char = String.to_charlist(url)
     hdrs = Enum.map(headers, fn {k, v} -> {as_charlist(k), as_charlist(v)} end)
 
-    # Fail closed on redirects (no silent host pivot). Peer verify via system CAs.
+    # D3: never follow redirects (no silent host/credential pivot). Peer verify
+    # via system CAs. 3xx is classified below as :redirect_not_allowed.
     http_opts = [
       timeout: 60_000,
       connect_timeout: 30_000,
@@ -373,19 +380,7 @@ defmodule AgentOS.Git.SmartHttp do
 
     case result do
       {:ok, {{_v, status, _reason}, _resp_headers, resp_body}} ->
-        cond do
-          status < 200 or status >= 300 ->
-            {:error, {:http_status, status}}
-
-          not is_binary(resp_body) ->
-            {:error, :bad_body}
-
-          byte_size(resp_body) > max_bytes ->
-            {:error, :body_too_large}
-
-          true ->
-            {:ok, resp_body}
-        end
+        classify_http_response(status, resp_body, max_bytes)
 
       {:error, reason} ->
         {:error, reason}
@@ -393,6 +388,31 @@ defmodule AgentOS.Git.SmartHttp do
   rescue
     e -> {:error, e}
   end
+
+  # Pure response gate (unit-tested via local 3xx fixture). Redirects are never
+  # followed — open redirect cannot bypass the origin allowlist.
+  @doc false
+  def classify_http_response(status, resp_body, max_bytes)
+      when is_integer(status) and is_integer(max_bytes) do
+    cond do
+      status >= 300 and status < 400 ->
+        {:error, :redirect_not_allowed}
+
+      status < 200 or status >= 300 ->
+        {:error, {:http_status, status}}
+
+      not is_binary(resp_body) ->
+        {:error, :bad_body}
+
+      byte_size(resp_body) > max_bytes ->
+        {:error, :body_too_large}
+
+      true ->
+        {:ok, resp_body}
+    end
+  end
+
+  def classify_http_response(_, _, _), do: {:error, :bad_body}
 
   defp as_charlist(s) when is_binary(s), do: String.to_charlist(s)
   defp as_charlist(s) when is_list(s), do: s

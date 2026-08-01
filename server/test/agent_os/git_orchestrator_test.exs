@@ -105,6 +105,128 @@ defmodule AgentOS.Git.OrchestratorTest do
     assert {:error, :no_pack_magic} = SmartHttp.extract_pack(<<>>)
   end
 
+  # D3: redirect policy — never follow; open redirect cannot leave allowlist.
+  test "classify_http_response rejects 3xx as redirect_not_allowed" do
+    assert {:error, :redirect_not_allowed} =
+             SmartHttp.classify_http_response(301, "moved", 64 * 1024 * 1024)
+
+    assert {:error, :redirect_not_allowed} =
+             SmartHttp.classify_http_response(302, "", 64 * 1024 * 1024)
+
+    assert {:error, :redirect_not_allowed} =
+             SmartHttp.classify_http_response(307, "tmp", 1024)
+
+    assert {:error, :redirect_not_allowed} =
+             SmartHttp.classify_http_response(308, <<>>, 1024)
+
+    assert {:error, {:http_status, 404}} =
+             SmartHttp.classify_http_response(404, "nope", 1024)
+
+    assert {:error, {:http_status, 500}} =
+             SmartHttp.classify_http_response(500, "err", 1024)
+
+    assert {:ok, "ok-body"} =
+             SmartHttp.classify_http_response(200, "ok-body", 1024)
+
+    assert {:error, :body_too_large} =
+             SmartHttp.classify_http_response(200, String.duplicate("x", 10), 5)
+  end
+
+  test "product :httpc path rejects 302 open redirect without following Location" do
+    # Local fixture server: each request → 302 to evil origin. SmartHttp must
+    # fail closed and never issue a follow-up hop (autoredirect: false + classify).
+    # Serves three product verbs (list / upload-pack / receive-pack).
+    {:ok, listen} =
+      :gen_tcp.listen(0, [
+        :binary,
+        packet: :raw,
+        active: false,
+        reuseaddr: true,
+        ip: {127, 0, 0, 1}
+      ])
+
+    {:ok, port} = :inet.port(listen)
+    parent = self()
+    expected_dials = 3
+
+    server =
+      spawn(fn ->
+        for _ <- 1..expected_dials do
+          case :gen_tcp.accept(listen, 5_000) do
+            {:ok, sock} ->
+              {:ok, req} = :gen_tcp.recv(sock, 0, 5_000)
+              send(parent, {:got_request, req})
+
+              resp =
+                "HTTP/1.1 302 Found\r\n" <>
+                  "Location: https://evil.example/stolen-pack\r\n" <>
+                  "Content-Length: 0\r\n" <>
+                  "Connection: close\r\n" <>
+                  "\r\n"
+
+              :gen_tcp.send(sock, resp)
+              :gen_tcp.close(sock)
+
+            {:error, reason} ->
+              send(parent, {:accept_failed, reason})
+          end
+        end
+
+        # Extra accept would mean a redirect follow — report it.
+        case :gen_tcp.accept(listen, 200) do
+          {:ok, sock2} ->
+            send(parent, :extra_hop)
+            :gen_tcp.close(sock2)
+
+          {:error, _} ->
+            :ok
+        end
+
+        :gen_tcp.close(listen)
+      end)
+
+    origin = "http://127.0.0.1:#{port}"
+    url = origin <> "/demo.git"
+
+    assert {:error, {:list_refs_failed, :redirect_not_allowed}} =
+             SmartHttp.list_refs(url, allowed_origins: [origin])
+
+    assert {:error, {:upload_pack_failed, :redirect_not_allowed}} =
+             SmartHttp.fetch_packs(url, ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"], [],
+               allowed_origins: [origin]
+             )
+
+    assert {:error, {:receive_pack_failed, :redirect_not_allowed}} =
+             SmartHttp.push_packs(
+               url,
+               [
+                 %{
+                   old_hash: "0000000000000000000000000000000000000000",
+                   new_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                   name: "refs/heads/main"
+                 }
+               ],
+               "PACK",
+               allowed_origins: [origin]
+             )
+
+    requests =
+      for _ <- 1..expected_dials do
+        assert_receive {:got_request, req}, 2_000
+        assert is_binary(req)
+        # Each dial targeted the allowlisted fixture, never evil.example.
+        refute req =~ "evil.example"
+        req
+      end
+
+    assert length(requests) == expected_dials
+    refute_receive :extra_hop, 300
+    refute_receive {:accept_failed, _}, 50
+
+    ref = Process.monitor(server)
+    assert_receive {:DOWN, ^ref, :process, ^server, _}, 2_000
+  end
+
   # ── Orchestrator security gates ────────────────────────────────────────────
 
   @tag timeout: 30_000
@@ -945,6 +1067,106 @@ defmodule AgentOS.Git.OrchestratorTest do
         # Detach cancels any residual tasks cleanly.
         assert :ok = AgentOS.ControlPlane.detach_git(id)
         assert AgentOS.ControlPlane.info(id).git_attached == false
+      after
+        AgentOS.ControlPlane.dispose(id)
+        File.rm_rf(root)
+      end
+    end
+  end
+
+  @tag timeout: 120_000
+  test "D19 snapshot refused while git remote host_call Task is inflight" do
+    # Slow fixture list_refs holds git_tasks non-empty; snapshot/commit_layer must
+    # fail closed (BEAM git bookkeeping gate). Synthetic host handle proves the
+    # gate is independent of kernel inflight_egress (monorepo host_call path still
+    # elevates egress for real guest handles). Silent mid-clone snapshot is FAIL.
+    wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
+    posix = runfile_bytes("memcontainers/images/posix.tar")
+    path = engine_path()
+
+    if is_nil(wasm) or is_nil(posix) do
+      IO.puts(:stderr, "skipping D19 snapshot/git inflight test: kernel/posix runfiles missing")
+    else
+      id = {"git-snap-block", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
+      pack = File.read!(Path.expand("../fixtures/git/minimal.pack", __DIR__))
+      tip = File.read!(Path.expand("../fixtures/git/minimal.tip", __DIR__)) |> String.trim()
+      root =
+        Path.join(
+          System.tmp_dir!(),
+          "git-snap-block-" <> Integer.to_string(System.unique_integer([:positive]))
+        )
+
+      File.mkdir_p!(root)
+      # Hold the remote long enough for a concurrent snapshot call to observe inflight.
+      hold_ms = 800
+
+      transport = fn
+        :list_refs, _ ->
+          Process.sleep(hold_ms)
+          {:ok, [%{name: "refs/heads/main", hash: tip}]}
+
+        :fetch_packs, _ ->
+          {:ok, pack}
+      end
+
+      try do
+        assert {:ok, _pid} =
+                 AgentOS.ControlPlane.create(id,
+                   wasm: wasm,
+                   base_image: posix,
+                   deterministic: true,
+                   workers: 0,
+                   host_call: :relay
+                 )
+
+        assert :ok =
+                 AgentOS.ControlPlane.attach_git(id,
+                   executable: path,
+                   root: root,
+                   allowed_origins: [@fixture_origin],
+                   transport: transport
+                 )
+
+        # Quiescent baseline: snapshot succeeds before any remote.
+        assert {:ok, _base_snap} = AgentOS.ControlPlane.snapshot(id)
+
+        event = %{
+          kind: :host_call,
+          handle: 9_019,
+          name: "git",
+          body: ~s({"op":"clone","args":{"url":"#{@fixture_url}"}})
+        }
+
+        assert :answered =
+                 AgentOS.Vm.try_answer_git_host_call(AgentOS.ControlPlane.whereis(id), event)
+
+        # Task is running (or briefly queued) — must not capture mid-clone state.
+        assert_eventually(fn -> AgentOS.ControlPlane.info(id).git_inflight >= 1 end, 50)
+
+        snap_err = AgentOS.ControlPlane.snapshot(id)
+
+        assert match?({:error, msg} when is_binary(msg), snap_err),
+               "expected snapshot error while git remote inflight, got: #{inspect(snap_err)}"
+
+        {:error, snap_msg} = snap_err
+
+        assert snap_msg =~ "git remote" or snap_msg =~ "host-egress" or snap_msg =~ "in flight",
+               "unexpected snapshot refuse message: #{snap_msg}"
+
+        commit_err = AgentOS.ControlPlane.commit_layer(id)
+
+        assert match?({:error, cmsg} when is_binary(cmsg), commit_err),
+               "expected commit_layer error while git remote inflight, got: #{inspect(commit_err)}"
+
+        {:error, commit_msg} = commit_err
+
+        assert commit_msg =~ "git remote" or commit_msg =~ "host-egress" or
+                 commit_msg =~ "in flight",
+               "unexpected commit refuse message: #{commit_msg}"
+
+        # After remote drains, snapshot is allowed again.
+        assert_eventually(fn -> AgentOS.ControlPlane.info(id).git_inflight == 0 end, 100)
+        assert {:ok, _after} = AgentOS.ControlPlane.snapshot(id)
       after
         AgentOS.ControlPlane.dispose(id)
         File.rm_rf(root)

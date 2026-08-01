@@ -1,6 +1,19 @@
 /**
  * Host smart-HTTP (browser/JS) — ListRefs + FetchPacks + PushPacks (GIT.md PR9/PR12).
- * Server twin is C ge_http_*. Credentials spliced only via request headers (PR11).
+ * Server twin is BEAM `AgentOS.Git.SmartHttp` (OTP `:httpc`). Credentials spliced
+ * only via request headers (PR11) — never into the URL for product remotes.
+ *
+ * ## Security / D3 redirect policy (fail-closed)
+ *
+ * Product smart-HTTP **never follows redirects**. Every `fetch` uses
+ * `redirect: "manual"`, and any 3xx / `opaqueredirect` response is rejected as
+ * `redirect not allowed` without reading `Location` or issuing a second request.
+ * Open redirect to a non-allowlisted origin is therefore impossible: there is
+ * no hop, so no allowlist re-check is required. (An alternate design would
+ * re-validate origin on each hop; product remotes prefer reject-all.)
+ *
+ * Dual-host: BEAM sets `:httpc` `autoredirect: false` and classifies 3xx as
+ * `:redirect_not_allowed` — same policy surface.
  */
 
 import type { ConnectionAuth } from "../types.js";
@@ -124,11 +137,28 @@ export class FixtureSmartHttp implements SmartHttpTransport {
   }
 }
 
+/** Optional `fetch` inject for tests (redirect mock / offline). */
+export type FetchImpl = (
+  input: string | URL | Request,
+  init?: RequestInit,
+) => Promise<Response>;
+
 /**
  * Public HTTPS smart-HTTP using fetch (browser/Node) with optional credential splice.
+ *
+ * D3: always `redirect: "manual"`; 3xx / opaqueredirect → hard fail (never follow).
  */
 export class FetchSmartHttp implements SmartHttpTransport {
-  constructor(private readonly defaultAuth?: ConnectionAuth) {}
+  private readonly fetchImpl: FetchImpl;
+
+  constructor(
+    private readonly defaultAuth?: ConnectionAuth,
+    fetchImpl?: FetchImpl,
+  ) {
+    this.fetchImpl =
+      fetchImpl ??
+      ((input, init) => globalThis.fetch(input as RequestInfo, init));
+  }
 
   private headers(auth?: ConnectionAuth): Record<string, string> {
     return spliceCredentialHeaders(auth ?? this.defaultAuth ?? { kind: "none" });
@@ -138,15 +168,39 @@ export class FetchSmartHttp implements SmartHttpTransport {
     return spliceCredentialUrl(url, auth ?? this.defaultAuth ?? { kind: "none" });
   }
 
+  /**
+   * Product dial: never auto-follow redirects. Reject 3xx / opaqueredirect.
+   * Injected `fetchImpl` must honor `redirect: "manual"` (or simulate it).
+   */
+  private async smartFetch(
+    input: string,
+    init: RequestInit = {},
+  ): Promise<Response> {
+    const res = await this.fetchImpl(input, {
+      ...init,
+      // Fail-closed: caller inspects status; browser never follows Location.
+      redirect: "manual",
+    });
+    if (isRedirectResponse(res)) {
+      throw new Error(
+        `git: redirect not allowed (HTTP ${res.status || "opaque"}; open redirect blocked)`,
+      );
+    }
+    return res;
+  }
+
   async listRefs(url: string, auth?: ConnectionAuth): Promise<RefAdvertisement[]> {
     const base = this.url(url, auth).replace(/\/$/, "");
     const hdrs = this.headers(auth);
     const infoUrl = `${base}/info/refs?service=git-upload-pack`;
-    let res = await fetch(infoUrl, {
+    let res = await this.smartFetch(infoUrl, {
       headers: { ...hdrs, "git-protocol": "version=2" },
     });
     if (!res.ok) {
-      res = await fetch(`${base}/info/refs?service=git-upload-pack`, { headers: hdrs });
+      // Retry without git-protocol header (v0/v1 servers) — still no redirects.
+      res = await this.smartFetch(`${base}/info/refs?service=git-upload-pack`, {
+        headers: hdrs,
+      });
       if (!res.ok) {
         throw new Error(`git: list-refs failed: HTTP ${res.status}`);
       }
@@ -164,7 +218,7 @@ export class FetchSmartHttp implements SmartHttpTransport {
   ): Promise<Uint8Array> {
     const base = this.url(url, auth).replace(/\/$/, "");
     const body = buildUploadPackBody(want, have, depth, filter);
-    const res = await fetch(`${base}/git-upload-pack`, {
+    const res = await this.smartFetch(`${base}/git-upload-pack`, {
       method: "POST",
       headers: {
         ...this.headers(auth),
@@ -187,21 +241,45 @@ export class FetchSmartHttp implements SmartHttpTransport {
   ): Promise<ReceiveStatus> {
     const base = this.url(url, auth).replace(/\/$/, "");
     const body = buildReceivePackBody(commands, pack);
-    const res = await fetch(`${base}/git-receive-pack`, {
-      method: "POST",
-      headers: {
-        ...this.headers(auth),
-        "content-type": "application/x-git-receive-pack-request",
-        accept: "application/x-git-receive-pack-result",
-      },
-      body,
-    });
+    let res: Response;
+    try {
+      res = await this.smartFetch(`${base}/git-receive-pack`, {
+        method: "POST",
+        headers: {
+          ...this.headers(auth),
+          "content-type": "application/x-git-receive-pack-request",
+          accept: "application/x-git-receive-pack-result",
+        },
+        body,
+      });
+    } catch (e) {
+      if (isRedirectError(e)) {
+        return { ok: false, message: String((e as Error).message) };
+      }
+      throw e;
+    }
     if (!res.ok) {
       return { ok: false, message: `HTTP ${res.status}` };
     }
     const text = await res.text();
     return parseReceiveStatus(text);
   }
+}
+
+/**
+ * True when a Response is a redirect hop that product smart-HTTP must not follow.
+ * Covers 3xx statuses and browser `opaqueredirect` (status 0) under `redirect: "manual"`.
+ */
+export function isRedirectResponse(res: {
+  status: number;
+  type?: string;
+}): boolean {
+  if (res.type === "opaqueredirect") return true;
+  return res.status >= 300 && res.status < 400;
+}
+
+function isRedirectError(e: unknown): boolean {
+  return e instanceof Error && e.message.includes("redirect not allowed");
 }
 
 /** Parse smart receive-pack report-status body (pkt-line or plain). */

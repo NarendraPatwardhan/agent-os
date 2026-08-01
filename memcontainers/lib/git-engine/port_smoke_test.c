@@ -72,6 +72,52 @@ static uint8_t *enc_open(const char *path, size_t *out_len) {
   return b;
 }
 
+/* MOUNT_OP_STAT = 5 */
+static uint8_t *enc_stat(const char *path, size_t *out_len) {
+  size_t plen = strlen(path);
+  size_t n = 8 + plen + 4;
+  uint8_t *b = (uint8_t *)malloc(n);
+  if (!b)
+    return NULL;
+  b[0] = 5;
+  b[1] = b[2] = b[3] = 0;
+  b[4] = (uint8_t)(plen & 0xff);
+  b[5] = (uint8_t)((plen >> 8) & 0xff);
+  b[6] = b[7] = 0;
+  memcpy(b + 8, path, plen);
+  size_t arg_off = 8 + plen;
+  b[arg_off] = b[arg_off + 1] = b[arg_off + 2] = b[arg_off + 3] = 0;
+  *out_len = n;
+  return b;
+}
+
+/* MOUNT_OP_READDIR = 1 */
+static uint8_t *enc_readdir(const char *path, size_t *out_len) {
+  size_t plen = strlen(path);
+  size_t n = 8 + plen + 4;
+  uint8_t *b = (uint8_t *)malloc(n);
+  if (!b)
+    return NULL;
+  b[0] = 1;
+  b[1] = b[2] = b[3] = 0;
+  b[4] = (uint8_t)(plen & 0xff);
+  b[5] = (uint8_t)((plen >> 8) & 0xff);
+  b[6] = b[7] = 0;
+  memcpy(b + 8, path, plen);
+  size_t arg_off = 8 + plen;
+  b[arg_off] = b[arg_off + 1] = b[arg_off + 2] = b[arg_off + 3] = 0;
+  *out_len = n;
+  return b;
+}
+
+static int32_t rd_i32(const uint8_t *p) {
+  return (int32_t)((uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+                   ((uint32_t)p[3] << 24));
+}
+
+/* AgentOS contract ENOENT (constants.kdl → gen). */
+enum { GE_TEST_ENOENT = 44 };
+
 int main(void) {
   char tmpl[] = "/tmp/ge-port-XXXXXX";
   char *root = mkdtemp(tmpl);
@@ -158,6 +204,92 @@ int main(void) {
     if (!strstr((char *)mout + 4, "\"ok\"")) {
       fprintf(stderr, "ctl response missing ok: %.*s\n", (int)(mlen - 4), (char *)mout + 4);
       return 1;
+    }
+    free(mout);
+  }
+
+  /* K17: no `.git/objects` façade — open/stat ENOENT; readdir .git omits objects. */
+  {
+    size_t blen = 0;
+    uint8_t *body = NULL;
+    uint8_t *mout = NULL;
+    size_t mlen = 0;
+
+    body = enc_stat(".git/objects", &blen);
+    if (!body)
+      return 1;
+    if (ge_mount_dispatch(e, body, blen, &mout, &mlen) != 0 || !mout || mlen < 4) {
+      fprintf(stderr, "mount stat .git/objects failed\n");
+      return 1;
+    }
+    free(body);
+    if (rd_i32(mout) != GE_TEST_ENOENT) {
+      fprintf(stderr, "K17: stat .git/objects expected ENOENT(%d), got %d\n", GE_TEST_ENOENT,
+              (int)rd_i32(mout));
+      free(mout);
+      return 1;
+    }
+    free(mout);
+
+    blen = 0;
+    body = enc_open(".git/objects", &blen);
+    if (!body)
+      return 1;
+    if (ge_mount_dispatch(e, body, blen, &mout, &mlen) != 0 || !mout || mlen < 4) {
+      fprintf(stderr, "mount open .git/objects failed\n");
+      return 1;
+    }
+    free(body);
+    if (rd_i32(mout) != GE_TEST_ENOENT) {
+      fprintf(stderr, "K17: open .git/objects expected ENOENT(%d), got %d\n", GE_TEST_ENOENT,
+              (int)rd_i32(mout));
+      free(mout);
+      return 1;
+    }
+    free(mout);
+
+    blen = 0;
+    body = enc_open(".git/objects/pack", &blen);
+    if (!body)
+      return 1;
+    if (ge_mount_dispatch(e, body, blen, &mout, &mlen) != 0 || !mout || mlen < 4) {
+      fprintf(stderr, "mount open .git/objects/pack failed\n");
+      return 1;
+    }
+    free(body);
+    if (rd_i32(mout) != GE_TEST_ENOENT) {
+      fprintf(stderr, "K17: open .git/objects/pack expected ENOENT(%d), got %d\n",
+              GE_TEST_ENOENT, (int)rd_i32(mout));
+      free(mout);
+      return 1;
+    }
+    free(mout);
+
+    blen = 0;
+    body = enc_readdir(".git", &blen);
+    if (!body)
+      return 1;
+    if (ge_mount_dispatch(e, body, blen, &mout, &mlen) != 0 || !mout || mlen < 4) {
+      fprintf(stderr, "mount readdir .git failed\n");
+      return 1;
+    }
+    free(body);
+    if (rd_i32(mout) != 0) {
+      fprintf(stderr, "K17: readdir .git status non-zero: %d\n", (int)rd_i32(mout));
+      free(mout);
+      return 1;
+    }
+    /* Payload is dirent stream; names must not include "objects". */
+    if (mlen > 4) {
+      /* crude scan for the name "objects" as a path component token */
+      for (size_t i = 4; i + 7 <= mlen; i++) {
+        if (mout[i] == 'o' && i + 7 <= mlen && memcmp(mout + i, "objects", 7) == 0) {
+          /* require word boundary-ish: preceded by len field likely, but reject any hit */
+          fprintf(stderr, "K17: readdir .git must not list objects\n");
+          free(mout);
+          return 1;
+        }
+      }
     }
     free(mout);
   }

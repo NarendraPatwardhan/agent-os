@@ -13,6 +13,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { FixtureSmartHttp } from "../src/git/index.js";
+import type { SmartHttpTransport } from "../src/git/smart-http.js";
 import { mc } from "../src/memcontainer.js";
 import type { CreateOptions, ImageManifest } from "../src/types.js";
 import { MemoryContentStore } from "../src/store.js";
@@ -371,6 +372,111 @@ print(raw)
 
       console.log("phase: R1 OK");
     } finally {
+      await vm.close();
+    }
+  }
+
+  // ── D19: snapshot refused while guest git host_call remote is inflight ──
+  // Slow fixture listRefs keeps MapHostCall "git" slot open → kernel inflight_egress
+  // > 0 → vm.snapshot() throws. Silent mid-clone snapshot is FAIL.
+  console.log("phase: D19 snapshot blocked during slow host_call clone");
+  {
+    const baseHttp = new FixtureSmartHttp();
+    baseHttp.add(fixture.url, [{ name: "refs/heads/main", hash: fixture.tip }], fixture.pack);
+    const holdMs = 800;
+    // Gate: listRefs blocks until we release after observing inflight + refused snapshot.
+    let releaseListRefs!: () => void;
+    const listRefsHold = new Promise<void>((resolve) => {
+      releaseListRefs = resolve;
+    });
+    // Failsafe so a stuck test cannot hang forever.
+    const failsafe = setTimeout(() => releaseListRefs(), holdMs + 5_000);
+    const slowHttp: SmartHttpTransport = {
+      async listRefs(url, auth) {
+        await listRefsHold;
+        return baseHttp.listRefs(url, auth);
+      },
+      fetchPacks: (url, want, have, depth, auth, filter) =>
+        baseHttp.fetchPacks(url, want, have, depth, auth, filter),
+      pushPacks: (url, commands, pack, auth) =>
+        baseHttp.pushPacks(url, commands, pack, auth),
+    };
+
+    const vm = await mc.create({
+      kernel,
+      image: loom,
+      deterministic: true,
+      net: true,
+      experimentalGitEngine: true,
+      gitEngineBaseUrl: baseUrl,
+      gitHttp: slowHttp,
+      gitAllowOrigins: [fixture.origin],
+      gitIdentity: { name: "Guest E2E", email: "e2e@example.com" },
+    } satisfies CreateOptions);
+    try {
+      // Quiescent baseline
+      await vm.snapshot();
+      if ((await vm.inflightEgress()) !== 0) {
+        throw new Error("D19: expected zero inflight before clone");
+      }
+
+      // Race: start clone without await; host_call stays open until listRefs releases.
+      const clonePromise = vm.exec(`git clone ${fixture.url}`);
+
+      // Wait until the guest has opened host_call (kernel egress elevated).
+      let sawInflight = false;
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        if ((await vm.inflightEgress()) > 0) {
+          sawInflight = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 10));
+      }
+      if (!sawInflight) {
+        releaseListRefs();
+        clearTimeout(failsafe);
+        const clone = await clonePromise;
+        throw new Error(
+          `D19 FAIL: never saw inflight egress during clone (exit=${clone.exitCode} stderr=${clone.stderr})`,
+        );
+      }
+
+      let snapErr: unknown;
+      try {
+        await vm.snapshot();
+      } catch (e) {
+        snapErr = e;
+      }
+      if (!snapErr) {
+        releaseListRefs();
+        clearTimeout(failsafe);
+        throw new Error("D19 FAIL: silent snapshot during inflight git host_call");
+      }
+      const msg = String(snapErr);
+      if (!msg.includes("host-egress") && !msg.includes("in flight") && !msg.includes("quiesce")) {
+        releaseListRefs();
+        clearTimeout(failsafe);
+        throw new Error(`D19 unexpected snapshot error: ${msg}`);
+      }
+
+      // Release remote; clone should finish; snapshot works again.
+      releaseListRefs();
+      clearTimeout(failsafe);
+      const clone = await clonePromise;
+      if (clone.exitCode !== 0) {
+        throw new Error(
+          `D19 clone failed after release: exit=${clone.exitCode} stdout=${clone.stdout} stderr=${clone.stderr}`,
+        );
+      }
+      if ((await vm.inflightEgress()) !== 0) {
+        throw new Error("D19: inflight must drain after clone completes");
+      }
+      await vm.snapshot();
+      console.log("phase: D19 OK (snapshot refused mid-clone host_call)");
+    } finally {
+      releaseListRefs();
+      clearTimeout(failsafe);
       await vm.close();
     }
   }

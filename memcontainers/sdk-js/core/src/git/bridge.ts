@@ -217,16 +217,26 @@ export class GitBridge {
   }
 }
 
+/**
+ * Canonical relative path for gitfs/engine MEMFS.
+ * Collapses empty segments and `.`; rejects `..` segments (K17 + path safety).
+ * So `/.git/./objects` and `/.git//objects` normalize to `.git/objects`.
+ */
 export function normalizeRel(path: string): string {
   let p = String(path || "").replace(/\\/g, "/");
   while (p.startsWith("/")) p = p.slice(1);
   if (p === "." || p === "") return "";
-  if (p.includes("..")) {
-    const err = new Error("path escapes worktree") as Error & { code?: string };
-    err.code = "EACCES";
-    throw err;
+  const parts: string[] = [];
+  for (const seg of p.split("/")) {
+    if (seg === "" || seg === ".") continue;
+    if (seg === "..") {
+      const err = new Error("path escapes worktree") as Error & { code?: string };
+      err.code = "EACCES";
+      throw err;
+    }
+    parts.push(seg);
   }
-  return p;
+  return parts.join("/");
 }
 
 function ensureDir(FS: EmscriptenFS, path: string): void {

@@ -83,6 +83,13 @@ static int is_git_meta(const char *rel) {
   return strcmp(rel, ".git") == 0 || strncmp(rel, ".git/", 5) == 0;
 }
 
+/* K17: no guest `.git/objects` façade — host ODB is not projected. */
+static int is_objects_path(const char *rel) {
+  /* ".git/objects/" is 13 chars (not 14). */
+  return strcmp(rel, ".git/objects") == 0 ||
+         strncmp(rel, ".git/objects/", 13) == 0;
+}
+
 static void join_root(char *out, size_t cap, const char *root, const char *rel) {
   if (!rel || !rel[0] || strcmp(rel, ".") == 0 || strcmp(rel, "/") == 0)
     snprintf(out, cap, "%s", root);
@@ -205,6 +212,10 @@ int ge_mount_dispatch(ge_engine *e, const uint8_t *body, size_t body_len, uint8_
   if (!wt)
     return (*out = fail_status(GE_EIO, out_len)) ? 0 : -1;
 
+  /* K17: objects path is not projected (ENOENT for all ops; no host ODB leak). */
+  if (is_objects_path(rel))
+    return (*out = fail_status(GE_ENOENT, out_len)) ? 0 : -1;
+
   /* Synthetic .git paths */
   if (strcmp(rel, ".git/mc/ctl") == 0 || strcmp(rel, ".git/mc/out/last") == 0) {
     if (op == MOUNT_OP_OPEN || op == MOUNT_OP_STAT) {
@@ -258,12 +269,13 @@ int ge_mount_dispatch(ge_engine *e, const uint8_t *body, size_t body_len, uint8_
       return (*out = encode_stat(0, strlen(head), out_len)) ? 0 : -1;
     return (*out = fail_status(GE_EACCES, out_len)) ? 0 : -1;
   }
+  /* Synthetic dirs: HEAD/refs/ctl only — never objects (K17). */
   if (strcmp(rel, ".git") == 0 || strcmp(rel, ".git/mc") == 0 || strcmp(rel, ".git/mc/out") == 0 ||
-      strcmp(rel, ".git/refs") == 0 || strcmp(rel, ".git/objects") == 0) {
+      strcmp(rel, ".git/refs") == 0) {
     if (op == MOUNT_OP_STAT)
       return (*out = encode_stat(1, 0, out_len)) ? 0 : -1;
     if (op == MOUNT_OP_READDIR) {
-      /* Minimal synthetic listings */
+      /* Minimal synthetic listings (HEAD + mc + refs under .git). */
       uint8_t buf[256];
       size_t o = 0;
       const char *names[4];
@@ -290,6 +302,7 @@ int ge_mount_dispatch(ge_engine *e, const uint8_t *body, size_t body_len, uint8_
         kinds[0] = SERVE_DIRENT_FILE;
         n = 1;
       }
+      /* .git/refs → empty listing (synthetic tips optional later) */
       for (int i = 0; i < n; i++) {
         size_t nl = strlen(names[i]);
         if (o + 8 + nl > sizeof(buf))

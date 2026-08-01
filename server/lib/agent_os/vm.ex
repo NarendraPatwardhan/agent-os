@@ -314,7 +314,16 @@ defmodule AgentOS.Vm do
 
   def shell_since(_server, _cursor), do: {:error, "shell_since expects a non-negative cursor"}
 
-  @doc "Snapshot the whole VM into a portable blob (refuses while egress is in flight)."
+  @doc """
+  Snapshot the whole VM into a portable blob.
+
+  Refuses while host egress is in flight (kernel `mc_inflight_egress`, including
+  open `host_call` handles) **or** while a BEAM-owned git remote Task/queue is
+  inflight (`git_tasks` / `git_remote_queue`). Guest remotes use `host_call` name
+  `"git"`; the kernel host handle already pins egress for the monorepo pattern,
+  and the BEAM git bookkeeping is a second gate so async orch cannot silently
+  snapshot mid-clone when the handle is synthetic or already answered.
+  """
   @spec snapshot(server(), keyword()) :: {:ok, binary()} | {:error, Nif.reason()}
   def snapshot(server, opts \\ []) do
     mode = Keyword.get(opts, :mode, :full)
@@ -866,19 +875,28 @@ defmodule AgentOS.Vm do
   end
 
   def handle_call({:snapshot, :full}, _from, state) do
-    {:reply, Nif.snapshot(state.nif), state}
+    case ensure_git_remote_quiescent(state) do
+      :ok -> {:reply, Nif.snapshot(state.nif), state}
+      {:error, _} = err -> {:reply, err, state}
+    end
   end
 
   def handle_call({:snapshot, :incremental}, _from, state) do
-    case state.snapshot_base do
-      nil ->
-        case Nif.snapshot(state.nif) do
-          {:ok, base} = reply -> {:reply, reply, %{state | snapshot_base: base}}
-          {:error, _reason} = reply -> {:reply, reply, state}
-        end
+    case ensure_git_remote_quiescent(state) do
+      {:error, _} = err ->
+        {:reply, err, state}
 
-      base ->
-        {:reply, Nif.snapshot_incremental(state.nif, base), state}
+      :ok ->
+        case state.snapshot_base do
+          nil ->
+            case Nif.snapshot(state.nif) do
+              {:ok, base} = reply -> {:reply, reply, %{state | snapshot_base: base}}
+              {:error, _reason} = reply -> {:reply, reply, state}
+            end
+
+          base ->
+            {:reply, Nif.snapshot_incremental(state.nif, base), state}
+        end
     end
   end
 
@@ -892,9 +910,15 @@ defmodule AgentOS.Vm do
 
   def handle_call(:commit_layer, _from, state) do
     reply =
-      case Nif.commit_layer(state.nif) do
-        {:ok, {tar, digest}} -> {:ok, %{tar: tar, digest: digest}}
-        {:error, _reason} = err -> err
+      case ensure_git_remote_quiescent(state) do
+        {:error, _} = err ->
+          err
+
+        :ok ->
+          case Nif.commit_layer(state.nif) do
+            {:ok, {tar, digest}} -> {:ok, %{tar: tar, digest: digest}}
+            {:error, _reason} = err -> err
+          end
       end
 
     {:reply, reply, touch(state)}
@@ -1646,6 +1670,25 @@ defmodule AgentOS.Vm do
                 end
             end
         end
+    end
+  end
+
+  # D19: BEAM-owned git remote inflight (running Task + per-mount queue) must
+  # block snapshot/commit just like kernel host_call egress. Guest remotes already
+  # pin `mc_inflight_egress` via the open host handle; this second gate covers the
+  # async orch bookkeeping so a silent mid-clone snapshot is impossible even when
+  # the handle is synthetic (tests / early answer) or the NIF path is bypassed.
+  defp ensure_git_remote_quiescent(state) do
+    tasks = state.git_tasks || %{}
+    queue_map = state.git_remote_queue || %{}
+    queued = queue_map |> Map.values() |> Enum.map(&length/1) |> Enum.sum()
+    n = map_size(tasks) + queued
+
+    if n > 0 do
+      {:error,
+       "cannot snapshot: #{n} git remote host_call operation(s) in flight; quiesce first"}
+    else
+      :ok
     end
   end
 

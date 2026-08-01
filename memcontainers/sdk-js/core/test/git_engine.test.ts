@@ -233,6 +233,53 @@ async function main() {
       throw new Error(`readdir /.git missing ${need}: ${JSON.stringify(gitEntries)}`);
     }
   }
+  // K17: no `.git/objects` façade — not listed; open/stat → ENOENT (host ODB not projected).
+  if (gitEntries.some((e) => e.name === "objects")) {
+    throw new Error(
+      `readdir /.git must not list objects (K17): ${JSON.stringify(gitEntries)}`,
+    );
+  }
+  for (const objectsPath of [
+    "/.git/objects",
+    "/.git/objects/pack",
+    // Path aliases must not bypass K17 (V2: . and empty segments).
+    "/.git/./objects",
+    "/.git//objects",
+    "/.git/./objects/pack",
+  ]) {
+    try {
+      await driver.stat(objectsPath);
+      throw new Error(`stat ${objectsPath} must ENOENT (K17)`);
+    } catch (e) {
+      if ((e as { code?: string }).code !== "ENOENT") {
+        throw new Error(
+          `stat ${objectsPath} expected ENOENT, got ${String((e as { code?: string }).code ?? e)}`,
+        );
+      }
+    }
+    try {
+      await driver.open(objectsPath);
+      throw new Error(`open ${objectsPath} must ENOENT (K17)`);
+    } catch (e) {
+      if ((e as { code?: string }).code !== "ENOENT") {
+        throw new Error(
+          `open ${objectsPath} expected ENOENT, got ${String((e as { code?: string }).code ?? e)}`,
+        );
+      }
+    }
+  }
+  for (const objectsDir of ["/.git/objects", "/.git/./objects", "/.git//objects"]) {
+    try {
+      await driver.readdir(objectsDir);
+      throw new Error(`readdir ${objectsDir} must ENOENT (K17)`);
+    } catch (e) {
+      if ((e as { code?: string }).code !== "ENOENT") {
+        throw new Error(
+          `readdir ${objectsDir} expected ENOENT, got ${String((e as { code?: string }).code ?? e)}`,
+        );
+      }
+    }
+  }
   const head = new TextDecoder().decode(await driver.open("/.git/HEAD"));
   if (!head.startsWith("ref: refs/heads/")) {
     throw new Error(`synthetic HEAD: ${JSON.stringify(head)}`);

@@ -68,6 +68,15 @@ export function createGitFsDriver(
     return p === ".git" || p.startsWith(".git/");
   }
 
+  /**
+   * K17: no guest `.git/objects` façade. Host ODB stays host-side; open/stat/readdir
+   * of objects (and any child) fail with ENOENT so the path is not projected.
+   */
+  function isObjectsPath(path: string): boolean {
+    const p = normalizeRel(path);
+    return p === ".git/objects" || p.startsWith(".git/objects/");
+  }
+
   function inCone(path: string): boolean {
     if (!cone.length) return true;
     const p = normalizeRel(path);
@@ -123,6 +132,8 @@ export function createGitFsDriver(
       return serial(() => {
         const p = normalizeRel(path);
         if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
+        // K17: no objects façade — do not fall through to host ODB MEMFS.
+        if (isObjectsPath(p)) throw fsErr("ENOENT", ".git/objects");
         if (p === ".git/mc/ctl" || p === ".git/mc/out/last") {
           return new TextEncoder().encode(lastResponse);
         }
@@ -158,12 +169,13 @@ export function createGitFsDriver(
           return { kind: "dir" as const, size: 0 };
         }
         if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
+        // K17: not listed under .git; not a projected path (ENOENT, not empty dir).
+        if (isObjectsPath(p)) throw fsErr("ENOENT", ".git/objects");
         if (
           p === ".git" ||
           p === ".git/mc" ||
           p === ".git/mc/out" ||
-          p === ".git/refs" ||
-          p === ".git/objects"
+          p === ".git/refs"
         ) {
           return { kind: "dir" as const, size: 0 };
         }
@@ -218,7 +230,10 @@ export function createGitFsDriver(
           return out;
         }
         if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
+        // K17: objects is not a guest dir (ENOENT even if host ODB exists).
+        if (isObjectsPath(p)) throw fsErr("ENOENT", ".git/objects");
         if (p === ".git") {
+          // Synthetic only: HEAD + mc (ctl) + refs — never objects (K17).
           return [
             { name: "HEAD", kind: "file" as const },
             { name: "mc", kind: "dir" as const },
@@ -264,6 +279,8 @@ export function createGitFsDriver(
         if (readOnly) throw fsErr("EACCES", "read-only mount");
         const p = normalizeRel(path);
         if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
+        // K17: refuse writes into host ODB projection (not present to guest).
+        if (isObjectsPath(p)) throw fsErr("ENOENT", ".git/objects");
         const bytes =
           data instanceof Uint8Array
             ? data
@@ -319,6 +336,7 @@ export function createGitFsDriver(
         if (readOnly) throw fsErr("EACCES", "read-only mount");
         const p = normalizeRel(path);
         if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
+        if (isObjectsPath(p)) throw fsErr("ENOENT", ".git/objects");
         if (isGitMeta(path) && p !== ".git") {
           if (p.startsWith(".git")) throw fsErr("EACCES", "synthetic .git");
         }
@@ -353,6 +371,9 @@ export function createGitFsDriver(
         const tp = normalizeRel(to);
         if ((!inCone(fp) && !isGitMeta(fp)) || (!inCone(tp) && !isGitMeta(tp))) {
           throw fsErr("ENOENT", from);
+        }
+        if (isObjectsPath(fp) || isObjectsPath(tp)) {
+          throw fsErr("ENOENT", ".git/objects");
         }
         if (isGitMeta(from) || isGitMeta(to)) {
           throw fsErr("EACCES", "synthetic .git");
