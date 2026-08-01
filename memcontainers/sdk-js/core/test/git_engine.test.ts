@@ -96,7 +96,7 @@ async function main() {
   });
   if (!r.ok) throw new Error(`commit: ${JSON.stringify(r)}`);
 
-  // R27: host identity inject — commit without name/email succeeds when configured.
+  // host identity inject — commit without name/email succeeds when configured.
   // Never invents Agent@example.com when identity is unset (covered by engine K28).
   const engId = await GitEngine.load({
     baseUrl: baseUrl(dir),
@@ -133,7 +133,7 @@ async function main() {
   if (noId.ok || !String(noId.stderr || "").includes("name and email")) {
     throw new Error(`commit without identity must fail K28: ${JSON.stringify(noId)}`);
   }
-  // R34 helper: reset mode ff-only fails on divergent history.
+  // helper: reset mode ff-only fails on divergent history.
   const c1 = await engNoId.run({
     op: "commit",
     args: {
@@ -213,7 +213,7 @@ async function main() {
 
   // PR4/PR5: gitfs worktree + synthetic .git + ctl drain
   const driver = eng.asMountDriver();
-  // R66/R63: brand for K21 one-engine-per-path (multi-path allowed)
+  // brand for K21 one-engine-per-path (multi-path allowed)
   const { isGitFsDriver } = await import("../src/git/gitfs.js");
   if (!isGitFsDriver(driver)) {
     throw new Error("asMountDriver must brand gitfs driver (K21)");
@@ -284,7 +284,7 @@ async function main() {
   if (!head.startsWith("ref: refs/heads/")) {
     throw new Error(`synthetic HEAD: ${JSON.stringify(head)}`);
   }
-  // R23: after checkout, synthetic HEAD tracks the branch (not hard-coded master).
+  // after checkout, synthetic HEAD tracks the branch (not hard-coded master).
   await eng.run({ op: "branch", args: { name: "feature-head" } });
   await eng.run({ op: "checkout", args: { name: "feature-head" } });
   const headFeature = new TextDecoder().decode(await driver.open("/.git/HEAD"));
@@ -460,7 +460,7 @@ async function main() {
     throw new Error("status default must be porcelain-v1, not human On branch");
   }
 
-  // R52–R55: durable rebind — pack+refs AGIT envelope restores objects + worktree.
+  // –R55: durable rebind — pack+refs AGIT envelope restores objects + worktree.
   const dur = new MemoryDurable("rebind");
   const engDur = await GitEngine.load({
     baseUrl: baseUrl(dir),
@@ -529,7 +529,7 @@ async function main() {
   }
   await engRestored.close();
 
-  // D16: directory durable — re-openable host worktree (not AGIT-only).
+  // directory durable — re-openable host worktree (not AGIT-only).
   // Process A: init/commit/checkpoint → host dir has real .git + files.
   // Process B: load same durableDir → same HEAD + worktree content.
   const { mkdtemp, rm, access } = await import("node:fs/promises");
@@ -614,7 +614,7 @@ async function main() {
     await rm(durableHost, { recursive: true, force: true });
   }
 
-  // D15: truncated stdout → stream_path + readStdoutStream / gitfs out/last
+  // truncated stdout → stream_path + readStdoutStream / gitfs out/last
   {
     const engT = await GitEngine.load({ baseUrl: baseUrl(dir) });
     let tr = await engT.run({ op: "init" });
@@ -673,7 +673,7 @@ async function main() {
     await engT.close();
   }
 
-  // D22: explicit add of a symlink fails closed (MEMFS symlink when available)
+  // explicit add of a symlink fails closed (MEMFS symlink when available)
   {
     const engS = await GitEngine.load({ baseUrl: baseUrl(dir) });
     let sr = await engS.run({ op: "init" });
@@ -701,7 +701,7 @@ async function main() {
     await engS.close();
   }
 
-  // D39: log bounds — result.bounded + stable footer
+  // log bounds — result.bounded + stable footer
   {
     const engL = await GitEngine.load({ baseUrl: baseUrl(dir) });
     let lr = await engL.run({ op: "init" });
@@ -737,7 +737,7 @@ async function main() {
     await engL.close();
   }
 
-  // R85–R88 / D35: metrics counters + duration/bytes/redacted origin
+  // –R88 / D35: metrics counters + duration/bytes/redacted origin
   const {
     resetGitCounters,
     snapshotGitCounters,

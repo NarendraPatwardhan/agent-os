@@ -7,32 +7,11 @@ load("//bazel:wasm_opt.bzl", "wasm_opt")
 load("//bazel/tools/size:defs.bzl", "size_limit")
 load(":ship_gate.bzl", "assert_ship_files")
 
-# Host-side git engine (GIT.md PR0–PR2): libgit2 + ge_* Run ABI.
+# Host-side git engine: libgit2 + ge_* Run ABI (see docs/git.md; design: GIT.md).
 package(default_visibility = ["//visibility:public"])
 
 # ---------------------------------------------------------------------------
-# PR0 — packaging smoke (still useful after PR1)
-# ---------------------------------------------------------------------------
-
-cc_binary(
-    name = "smoke",
-    srcs = ["smoke.c"],
-    deps = ["@libgit2//:libgit2"],
-    data = ["//third_party/libgit2:notices"],
-    linkstatic = True,
-)
-
-cc_test(
-    name = "smoke_test",
-    srcs = ["smoke.c"],
-    deps = ["@libgit2//:libgit2"],
-    data = ["//third_party/libgit2:notices"],
-    size = "small",
-    linkstatic = True,
-)
-
-# ---------------------------------------------------------------------------
-# PR1 — Run ABI library + fixtures
+# Run ABI library + fixtures
 # ---------------------------------------------------------------------------
 
 cc_library(
@@ -56,7 +35,7 @@ cc_library(
     linkstatic = True,
 )
 
-# Port RPC + mount + smart-HTTP/orch (PR7–PR10c). Not linked into emcc wasm.
+# Port RPC + mount + fixture smart-HTTP/orch. Not linked into emcc wasm.
 cc_library(
     name = "git_engine_port_lib",
     srcs = [
@@ -85,7 +64,7 @@ alias(
     actual = ":git_engine_lib",
 )
 
-# PR7a — BEAM-owned Port binary (length-prefixed frames on stdin/stdout).
+# BEAM-owned Port binary (length-prefixed frames on stdin/stdout).
 cc_binary(
     name = "git-engine",
     srcs = ["src/port_main.c"],
@@ -94,8 +73,8 @@ cc_binary(
     visibility = ["//visibility:public"],
 )
 
-# PR7d / R75 — c-shared packaging only. Product load is Port (decided); do not
-# treat :libgit_engine as an in-process server runner.
+# c-shared packaging only. Product load is the Port binary; do not treat
+# :libgit_engine as an in-process server runner.
 cc_shared_library(
     name = "libgit_engine",
     shared_lib_name = "libgit_engine.so",
@@ -132,7 +111,7 @@ build_test(
     targets = [":git_engine_server_l5_notices_check"],
 )
 
-# Native ABI fixture: init→commit→log + dial refuse (GIT.md PR1 exit ops).
+# Native ABI fixture: init→commit→log + dial refuse.
 cc_test(
     name = "abi_fixture_test",
     srcs = ["abi_fixture_test.c"],
@@ -142,16 +121,16 @@ cc_test(
     linkstatic = True,
 )
 
-# PR7a/b — Port Run + binary MOUNT_OP ctl smoke.
+# Port frames: Run + binary MOUNT_OP ctl + kill-closed semantics.
 cc_test(
-    name = "port_smoke_test",
-    srcs = ["port_smoke_test.c"],
+    name = "port_frame_test",
+    srcs = ["port_frame_test.c"],
     deps = [":git_engine_port_lib"],
     size = "small",
     linkstatic = True,
 )
 
-# PR7c — dual-runner native golden (emcc side: //sdk-js/core:git_engine_test).
+# Dual-runner native golden (emcc side: //sdk-js/core:git_engine_test).
 cc_test(
     name = "abi_dual_test",
     srcs = ["abi_dual_test.c"],
@@ -165,8 +144,6 @@ exports_files([
     "exported_functions.json",
     "testdata/abi/local_init_commit.json",
     "testdata/abi/dial_forbidden.json",
-    "testdata/orch/clone_algorithm.json",
-    "testdata/orch/fetch_algorithm.json",
     "testdata/orch/clone_success_steps.json",
     "testdata/orch/clone_empty_pack_fail.json",
     "testdata/orch/origin_denied.json",
@@ -191,7 +168,7 @@ filegroup(
     srcs = ["//third_party/libgit2:license_files"],
 )
 
-# Executable K20 dual-host orch vectors (TS + BEAM load the same JSON).
+# Dual-host orch vectors (TS + BEAM load the same JSON).
 filegroup(
     name = "orch_algorithm_traces",
     srcs = glob(["testdata/orch/**"]),
@@ -205,7 +182,7 @@ filegroup(
 )
 
 # ---------------------------------------------------------------------------
-# PR2 — Emscripten host wasm (createGitEngineModule) + monorepo wasm_opt + size gate
+# Emscripten host wasm (createGitEngineModule) + monorepo wasm_opt + size gate
 # ---------------------------------------------------------------------------
 
 _WASM_SIZE_COPTS = [

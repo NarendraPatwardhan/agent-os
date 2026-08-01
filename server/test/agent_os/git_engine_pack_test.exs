@@ -147,7 +147,7 @@ defmodule AgentOS.GitEnginePackTest do
 
   # D20: orch sparse_cone → Port sparse-set after clone.apply (JS sparseCone parity).
   @tag timeout: 60_000
-  test "D20 BEAM orch clone with sparse_cone writes sparse-checkout and keeps root README" do
+  test "BEAM orch clone with sparse_cone writes sparse-checkout and keeps root README" do
     path = engine_path()
     root =
       Path.join(
@@ -200,7 +200,7 @@ defmodule AgentOS.GitEnginePackTest do
 
   # D13 / M7 v1: multi-path tree + depth=1 + sparse_cone → out-of-cone not on worktree.
   @tag timeout: 60_000
-  test "D13 monorepo multi-path clone+sparse keeps cone paths only on worktree" do
+  test "monorepo multi-path clone+sparse keeps cone paths only on worktree" do
     path = engine_path()
     src_root =
       Path.join(

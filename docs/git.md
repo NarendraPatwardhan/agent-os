@@ -13,7 +13,7 @@ the engine never dials the network. Remotes are host-mediated.
 |------|------|
 | SDK (JS) | `GitEngine.load` / `mc.create({ git })` + `registerGitHostCall("git")` |
 | gitfs | `asMountDriver()` → MountFs; local ctl at `/.git/mc/ctl` |
-| Thin CLI | `//memcontainers/programs/git` — reduced surface only (see below) |
+| Thin CLI | Thin guest `/bin/git` — reduced surface only (see below) |
 | Server engine | BEAM-owned C `git-engine` **Port** — local Run, pack apply, type-4 mount only |
 | Server remotes | **BEAM HTTPS + Elixir orch** → Port apply / pack.build (**no Node**, **no C TLS**); **fetch/clone/push** when not read-only |
 | LLB (Node) | Host emcc engine first (`MC_GIT_ENGINE_DIR`); **not** ambient system git |
@@ -24,16 +24,16 @@ These are hard product rules for agents and tools that use host git — not opti
 
 | Constraint | Meaning |
 |------------|---------|
-| **One gitfs engine per mount path (K21)** | Multi-mount is allowed with **distinct** paths (R63). Each path owns its own engine (single-writer). Remounting gitfs at an already-live path fails closed. |
+| **One gitfs engine per mount path** | Multi-mount is allowed with **distinct** paths. Each path owns its own engine (single-writer). Remounting gitfs at an already-live path fails closed. |
 | **No `.git/objects` façade (v1)** | Guests do **not** get a synthetic `.git/objects` tree. Object DB stays host-side; worktree + ctl only. |
 | **Unflushed ctl: close write before status** | Ctl Request is written to `/.git/mc/ctl`; Response is read from the out path. Close (or Drop) the write FD **before** reading status / next Response — unflushed guest buffers are invisible to the engine (same class as `hostDir`). |
 | **Remotes need CAP_NET + host_call `git`** | Mount/ctl alone cannot dial. Guest remotes go through `mc_sys_host_call` name `"git"` gated by kernel **CAP_NET**. Ctl remote ops refuse. |
 | **Opt-in + identity on commit** | Opt-in via `git` create option (JS; advanced surface). Commits need author identity (`name` / `email` args or `git.identity`) — no ambient global gitconfig from the host user. |
-| **Server push (not read-only)** | See [Server remotes](#server-remotes-k16--push) — packbuilder + receive-pack on BEAM when mount is not read-only. |
+| **Server push (not read-only)** | See [Server remotes](#server-remotes) — packbuilder + receive-pack on BEAM when mount is not read-only. |
 
 ## Thin CLI surface
 
-`//memcontainers/programs/git` is a pure-mc adapter over the host engine surface — **not** full
+The guest thin CLI is a pure-mc adapter over the host engine surface — **not** full
 git-core. Unknown commands fail closed. Local argv maps to ctl Request JSON; remotes use
 `host_call` name `"git"`.
 
@@ -47,7 +47,7 @@ Out of surface (examples): interactive rebase, bisect, LFS, submodules on the th
 git-config, annotated tags. Sparse cone is create/`attach_git` configuration, not a thin-CLI
 flag. Unknown commands → `unknown or unsupported command`.
 
-## Large stdout / stream path (D15)
+## Large stdout / stream path
 
 When a local op produces more than **1 MiB** of stdout (product embed limit), the engine never
 silently drops data:
@@ -70,7 +70,7 @@ silently drops data:
 `/.git/mc/ctl` always returns the last **Response JSON** (drain protocol). When a stream file is
 present, `out/last` serves that **raw stdout body** instead of the Response alias.
 
-## Symlink / special-file policy (D22)
+## Symlink / special-file policy
 
 **Choice: fail closed** for explicit paths — never follow or materialize symlink targets.
 
@@ -85,14 +85,14 @@ present, `out/last` serves that **raw stdout body** instead of the Response alia
 Rationale: following a worktree symlink can escape the engine root; materializing remote targets is
 out of surface for v1. Guests that need link content should copy to a regular file first.
 
-## log / show bounds (D39)
+## log / show bounds
 
 | Op | Bounds | Signals |
 |----|--------|---------|
 | `log` | Default `max_count=10`; hard cap **1000** | `result.count`, `result.max_count`, `result.bounded`, optional `result.more`; stable stdout footer `# log: bounded max_count=N count=C more=true` when more commits exist (or request was clamped) |
-| `show` | Full commit message (no silent fixed-buffer cut) | Oversized body uses **D15** truncated + `stream_path` |
+| `show` | Full commit message (no silent fixed-buffer cut) | Oversized body uses the large-stdout path: truncated embed + `stream_path` |
 
-## Server remotes (K16) + push
+## Server remotes
 
 Same ownership cut as kernel HTTP egress: **BEAM dials HTTPS**; the guest and the Port child do not.
 
@@ -100,7 +100,7 @@ Same ownership cut as kernel HTTP egress: **BEAM dials HTTPS**; the guest and th
 guest host_call "git"
   → kernel CAP_NET
   → BEAM AgentOS.Git.Orchestrator
-       ├─ connection catalog resolve (PR11) + credential splice
+       ├─ connection catalog resolve + credential splice
        ├─ smart-HTTP (OTP :httpc / ssl)
        │    ListRefs / FetchPacks / PushPacks (receive-pack)
        └─ Port frames → git-engine
@@ -117,7 +117,7 @@ guest host_call "git"
 | JS browser/Node remotes | **TS** orch + emcc |
 | **Push (server)** | **Supported** when not `read_only` — pack.build + receive-pack + push.complete |
 
-### Product path: connection catalog (PR11)
+### Product path: connection catalog
 
 **Prefer connections over a flat origin allowlist.** Host attaches git with a connection
 catalog (same shape as [connections](./connections.md) / JS `ConnectionDefinition`). Origins
@@ -173,6 +173,8 @@ wins for remote policy.
 Aligns with [connections](./connections.md): credential splice after origin checks; CAP_NET
 still required for guest remotes via host_call name `"git"`.
 
+### Push
+
 **Server remotes support push** on the BEAM path when the git mount is not read-only:
 
 1. Connection / origin policy + push policy (`block` fails before dial)
@@ -192,11 +194,11 @@ git: push rejected (read-only mount)
 
 Empty pack on a non-delete push fails closed (`git: empty pack refused for non-delete push`).
 **Delete-ref push** (`args.delete: true | ref | [refs…]`): `newHash` all-zero, empty pack allowed.
-**Thin-pack / haves (R48):** packbuilder hides lease old tips so shared history is omitted.
+**Thin-pack / haves:** packbuilder hides lease old tips so shared history is omitted.
 Connection origin policy, max pack size, and no-URL-credentials policy apply to push URLs the
 same as fetch/clone. Secrets only in BEAM request headers.
 
-### Monorepo materialization (M7 / D13)
+### Monorepo materialization
 
 **Product stack for large trees** (all three compose; configure what you need):
 
@@ -204,7 +206,7 @@ same as fetch/clone. Secrets only in BEAM request headers.
 |-------|------|
 | **Shallow history** | Product **clone** default `depth=1` (`args.depth` / thin CLI `--depth N`; `depth<=0` = full). **Fetch/pull** default full history when depth omitted (`contracts/git.kdl`) |
 | **Cone sparse worktree** | JS `git.sparse` / `git.mounts[].sparse` / BEAM `attach_git(sparse_cone: …)` → after `clone.apply`, engine `sparse-set` + checkout so only cone prefixes land on disk; gitfs projects the same cone |
-| **Optional pack filter** | `args.filter` / thin CLI `--filter SPEC` (e.g. `blob:none`) on upload-pack (R36) — shrinks the **initial** pack when the server supports filter |
+| **Optional pack filter** | `args.filter` / thin CLI `--filter SPEC` (e.g. `blob:none`) on upload-pack — shrinks the **initial** pack when the server supports filter |
 
 ```text
 clone (depth=1, optional filter) → import_pack → refs.import → clone.apply
@@ -220,7 +222,7 @@ remotes, and on-demand lazy re-fetch of missing objects after a filtered pack. F
 not project a usable monorepo worktree — pair it with cone sparse when agents need paths. Servers
 or fixtures that ignore `filter` return a full pack; the engine materializes whatever arrived.
 
-### Pack filter (R36)
+### Pack filter
 
 Clone/fetch accept optional `args.filter` (e.g. `blob:none`, `tree:0`). Host smart-HTTP advertises
 the `filter` capability and sends a `filter <spec>` pkt-line. Thin CLI:
@@ -229,11 +231,11 @@ not a separate incomplete feature.
 
 C `smart_http` / C orchestrator (Port type-5) are **test/fixture only** — not the product server
 remote path. Dual-host product orch is **TS (JS) ↔ BEAM (server)** sharing apply-op + algorithm
-semantics (K20), not “C orch on server”.
+semantics, not “C orch on server”.
 
-### Dual-host remote contract (K16 / K20)
+### Dual-host remote contract
 
-TS and BEAM each implement remote orch (K16: no Node on server). **Decisions** are single-sourced:
+TS and BEAM each implement remote orch (no Node on server). **Decisions** are single-sourced:
 
 | Layer | Location |
 |-------|----------|
@@ -251,7 +253,7 @@ TS and BEAM each implement remote orch (K16: no Node on server). **Decisions** a
 | PACK magic | required |
 | Origin deny stderr | prefix `git: origin not allowlisted` (no URL suffix) |
 
-### Executable golden orch vectors
+### Dual-host executable goldens
 
 | File | Asserts |
 |------|---------|
@@ -291,16 +293,16 @@ mc.create({
   git: {
     baseUrl: new URL("./git-engine/", import.meta.url).href,
     // optional cone sparse (multi-pattern; not full sparse language): sparse: ["src", "docs"],
-    // multi-repo (R63–R65): mounts: [{ path: "/workspace/a" }, { path: "/workspace/b", sparse: ["src"] }],
+    // multi-repo: mounts: [{ path: "/workspace/a" }, { path: "/workspace/b", sparse: ["src"] }],
     // remotes demux with args.mount / mount on host_call "git"
   },
   connections: [{ ref: "github.user.work", auth: { kind: "bearer", token }, origins: ["https://github.com"] }],
 });
 ```
 
-### Multi-mount / `args.mount` (R63–R65 / D21)
+### Multi-mount / `args.mount`
 
-Multi-repo is supported when each mount path owns its own engine (K21). Remotes on host_call
+Multi-repo is supported when each mount path owns its own engine. Remotes on host_call
 `"git"` demux to the engine for that path. Single-writer is **per mount**, not global: two mounts
 may run remotes concurrently; two remotes on the **same** mount serialize.
 
@@ -360,48 +362,17 @@ Accept either form:
 
 | Scope | Rule |
 |-------|------|
-| Same mount | Remote orch FIFO / single-flight (D2) — peak concurrent transport ≤ 1 |
-| Distinct mounts | Independent queues — remotes may overlap (D21) |
-| Snapshot | Still blocked while **any** git remote host_call is inflight (D19) |
+| Same mount | Remote orch FIFO / single-flight — peak concurrent transport ≤ 1 |
+| Distinct mounts | Independent queues — remotes may overlap |
+| Snapshot | Still blocked while **any** git remote host_call is inflight |
 
 **Never** share one mutable engine or Port across mounts without demux. One engine map / one
 `git_engines` table owns the path → engine lookup.
 
-#### Tests / proof
+## Durability / dir reopen
 
-- **JS:** `//memcontainers/sdk-js/core:git_remote_test` — dual clone via `gitHostCallHandler` +
-  `args.mount` with `minimal.pack` worktree isolation; concurrent two-engine clones.
-- **BEAM:** `AgentOS.Git.OrchestratorTest` — `R65/D21 host_call args.mount two clones into two
-  engines` (worktree README per root) + `D21 concurrent remotes on two mounts may overlap`.
-
-## Product readiness (shipped)
-
-Enable with `git: <baseUrl>` or `git: { baseUrl, … }` (omit = off). API surface for `GitEngine` /
-host_call / LLB git helpers is **advanced** (`docs/api-surface.json`). Not multi-tenant default-on.
-
-| # | Criterion | Status |
-|---|-----------|--------|
-| 1 | Origin / connection policy — empty origins fail closed; credential splice host-only | **Met** |
-| 2 | Pack e2e both hosts (`minimal.pack` + dual-host goldens) | **Met** |
-| 3 | Push packbuilder both hosts; RO rejects with stable message | **Met** |
-| 4 | Single-writer per engine; one engine per mount path | **Met** |
-| 5 | CAP_NET allow + deny e2e (JS + server guest) | **Met** |
-| 6 | Orch/engine counters + allowlist/queue log alerts | **Met** |
-
-## Full guest CAP_NET e2e (D25/D26)
-
-- **JS (fixture):** **Met** under `//memcontainers/sdk-js/core:git_guest_e2e_test` — thin
-  `/bin/git` on base (inherited by loom+) → kernel CAP_NET → host_call `"git"` → TS orch + FixtureSmartHttp +
-  `minimal.pack` → `/workspace/repo` worktree; CAP_NET deny; gitfs ctl close-then-status.
-  Inject transport via create options `git.http` / `git.allowOrigins` (hermetic; not product egress).
-- **Server:** **Met** — `server/test/agent_os/git_guest_acceptance_test.exs` D25 (full CAP_NET
-  clone via `attach_git` + fixture dials ≥2 + worktree README) and D26 (no CAP_NET → deny, dials
-  == 0).
-
-## Durability / dir reopen (PR8 / D16–D18)
-
-**D16** (directory reopen), **D17** (JS snapshot/fork rebind), and **D18** (named durable
-roots via `durable_id` + `AGENTOS_GIT_DURABLE_ROOT`) are product-supported.
+Directory reopen, JS snapshot/fork rebind, and named durable roots via `durable_id` +
+`AGENTOS_GIT_DURABLE_ROOT` are product-supported.
 
 ### JS — directory reopen (primary) + AGIT blob (transfer)
 
@@ -410,18 +381,15 @@ roots via `durable_id` + `AGENTOS_GIT_DURABLE_ROOT`) are product-supported.
 same path sees the same HEAD + worktree files. **AGIT** (pack+refs envelope) remains the
 **blob** transfer format for `MemoryDurable` / legacy `DiskDurable` / `OpfsDurable`.
 
-| Piece | Path | Behaviour |
-|-------|------|-----------|
-| `DurableKind` `directory` \| `blob` | `memcontainers/sdk-js/core/src/git/durable.ts` | Directory: `hostPath` / hydrate-dump; blob: AGIT save/load |
-| `HostDirDurable` | same | Node host dir is the store; `hydrateToMemfs` / `dumpFromMemfs` + fsync |
-| `OpfsDirDurable` | same | OPFS `agentos-git/{id}/work/` tree |
-| `MemoryDurable` / `DiskDurable` / `OpfsDurable` | same | AGIT blob; process registry by id for Memory |
-| `openDurable({ id, diskDir?, durableDir? })` | same | Prefer `HostDirDurable` when disk path set; else OPFS dir; else OPFS blob; else Memory |
-| `durableIdForMount` / `safeDurablePathSegment` | same | Per-mount keys under a VM disk root |
-| `GitEngine.load({ durableDir \| durable })` | `engine.ts` | Directory: bridge hydrates then `ge_open`; blob: AGIT rebind |
-| Proof (blob) | `git_engine.test.ts` R52–R55 | MemoryDurable HEAD + worktree |
-| Proof (dir reopen) | `git_engine.test.ts` D16 | `durableDir` → `.git` on host → second load same HEAD+files |
-| Proof (snapshot rebind) | `git_guest_e2e.test.ts` phase D17 | snapshot → restore + fork |
+| Piece | Behaviour |
+|-------|-----------|
+| `DurableKind` `directory` \| `blob` | Directory: `hostPath` / hydrate-dump; blob: AGIT save/load |
+| `HostDirDurable` | Node host dir is the store; `hydrateToMemfs` / `dumpFromMemfs` + fsync |
+| `OpfsDirDurable` | OPFS `agentos-git/{id}/work/` tree |
+| `MemoryDurable` / `DiskDurable` / `OpfsDurable` | AGIT blob; process registry by id for Memory |
+| `openDurable({ id, diskDir?, durableDir? })` | Prefer `HostDirDurable` when disk path set; else OPFS dir; else OPFS blob; else Memory |
+| `durableIdForMount` / `safeDurablePathSegment` | Per-mount keys under a VM disk root |
+| `GitEngine.load({ durableDir \| durable })` | Directory: bridge hydrates then `ge_open`; blob: AGIT rebind |
 
 **Dir reopen (JS):**
 
@@ -432,21 +400,20 @@ same path sees the same HEAD + worktree files. **AGIT** (pack+refs envelope) rem
 | AGIT blob (`DiskDurable` / `OpfsDurable`) | Yes — `snapshot.bin` | Yes |
 | `MemoryDurable` | Yes within one JS process (instance registry) | **No** |
 
-### JS — MCSN snapshot / restore / fork rebind (D17 / K10)
+### JS — MCSN snapshot / restore / fork rebind
 
-| Piece | Path | Behaviour |
-|-------|------|-----------|
-| `CreateOptions.git.durable` | `types.ts` | Opt-in `{ id?, diskDir? }`. Per-mount key = `durableIdForMount(id, path)` |
-| `makeEmbedded` | `memcontainer.ts` | Opens durable per mount; `GitEngine.load({ durableDir \| durable })`; `backend.bindGitEngines(...)` |
-| `EmbeddedBackend.snapshot` / `pinBase` | `embedded.ts` | `checkpointGitEngines()` before MCSN (empty/unborn skip export) |
-| Restore / fork | `mc.restore` / `Vm.fork` | Same `git.durable` → reopen id/path → directory hydrate or AGIT rebind |
-| Proof | `git_guest_e2e.test.ts` phase D17 | commit → snapshot → restore HEAD+worktree; fork rebind |
+| Piece | Behaviour |
+|-------|-----------|
+| `CreateOptions.git.durable` | Opt-in `{ id?, diskDir? }`. Per-mount key = `durableIdForMount(id, path)` |
+| `makeEmbedded` | Opens durable per mount; `GitEngine.load({ durableDir \| durable })`; `backend.bindGitEngines(...)` |
+| `EmbeddedBackend.snapshot` / `pinBase` | `checkpointGitEngines()` before MCSN (empty/unborn skip export) |
+| Restore / fork | `mc.restore` / `Vm.fork` — same `git.durable` → reopen id/path → directory hydrate or AGIT rebind |
 
 ```ts
 const vm = await mc.create({
   git: {
     baseUrl: new URL("./git-engine/", import.meta.url).href,
-    // Primary: re-openable host worktree dirs under diskDir (D16 path).
+    // Primary: re-openable host worktree dirs under diskDir.
     durable: { id: "agent-session-1", diskDir: "/var/lib/agentos/git-durable" },
   },
 });
@@ -454,44 +421,43 @@ const vm = await mc.create({
 // mc.restore / fork with the same git.durable → reopen + rebind
 ```
 
-Omit `git.durable` for empty engines on restore (MCSN never carries ODB — A8).
+Omit `git.durable` for empty engines on restore (MCSN never carries ODB).
 
 ### BEAM — Port worktree root (caller dir survives stop)
 
 BEAM durability is the **on-disk Port root** (same class as `HostDirDurable`). Rebind is
 re-`attach_git` / second `GitEngine.start` with the **same durable root**.
 
-| Piece | Path | Behaviour |
-|-------|------|-----------|
-| Default root | `server/lib/agent_os/git_engine.ex` `init/1` | `System.tmp_dir!/agentos-git-<n>` with `temp_root?=true` → **deleted** on stop |
-| Caller `:root` / `:durable_dir` | same + `AgentOS.Git.Durable` | Absolute dir, durable → **never** deleted by the engine |
-| `:durable_id` + `AGENTOS_GIT_DURABLE_ROOT` | `server/lib/agent_os/git/durable.ex` | `{base}/{safe_id}/{mount_slug}/` (D18) |
-| `GitEngine.root/1` / `checkpoint/1` | `git_engine.ex` | Inspect path; fsync face (writes already on disk) |
-| `attach_git(..., root: \| durable_dir: \| durable_id:)` | `server/lib/agent_os/vm.ex` | Forwards into `GitEngine.start` |
-| Proof | `server/test/agent_os/git_engine_test.exs` D16 | second Port same root → same HEAD+file; named durable_id under env |
+| Piece | Behaviour |
+|-------|-----------|
+| Default root | `System.tmp_dir!/agentos-git-<n>` with `temp_root?=true` → **deleted** on stop |
+| Caller `:root` / `:durable_dir` | Absolute dir, durable → **never** deleted by the engine |
+| `:durable_id` + `AGENTOS_GIT_DURABLE_ROOT` | `{base}/{safe_id}/{mount_slug}/` |
+| `GitEngine.root/1` / `checkpoint/1` | Inspect path; fsync face (writes already on disk) |
+| `attach_git(..., root: \| durable_dir: \| durable_id:)` | Forwards into `GitEngine.start` |
 
 **Dir reopen (BEAM):** pass the **same absolute `root:` / `durable_dir:`** (or the same
 `durable_id` under a configured base) on a new `GitEngine.start` / `attach_git` after stop.
 
-### Snapshot durability (A8)
+### Snapshot durability
 
 Kernel MCSN does **not** include the host git ODB. Repo survival requires explicit
 `git.durable` / `durableDir` (JS) or a preserved Port root (BEAM). Snapshot refused while any
 git remote host_call is inflight. JS MCSN rebind uses the durable backend path.
 
-## Submodules (D23–D24) — host-mediated update
+## Submodules — host-mediated update
 
-**DONE (fixture class).** Network submodule update is **host orch only** — the engine never dials.
-List-only on engine is **not** sufficient for D23/D24; orch must fetch packs and materialize nested
-worktrees. Thin CLI does **not** expose `submodule`.
+Network submodule update is **host orch only** — the engine never dials. List-only on the engine
+is **not** sufficient for update; orch must fetch packs and materialize nested worktrees. Thin
+CLI does **not** expose `submodule`.
 
 ### Engine surface (dial-free)
 
-| Op | Behaviour | Evidence |
-|----|-----------|----------|
-| `list` / `status` / default | Parse `.gitmodules`; include gitlink hash when index has mode 160000 | `engine_ops_extra.c` `op_submodule_list` |
-| `update` / `init` / `add` / `clone` via **engine.run** | **Fail closed** — requires host_call + orch | `engine.c` |
-| `gitlink` | Local-only stage mode 160000 (fixture/super setup; no network) | `op_gitlink` |
+| Op | Behaviour |
+|----|-----------|
+| `list` / `status` / default | Parse `.gitmodules`; include gitlink hash when index has mode 160000 |
+| `update` / `init` / `add` / `clone` via **engine.run** | **Fail closed** — requires host_call + orch |
+| `gitlink` | Local-only stage mode 160000 (fixture/super setup; no network) |
 
 ### Host orch path (JS + BEAM)
 
@@ -504,16 +470,16 @@ host_call "git" { op: "submodule", args: { action: "update" } }
   → guest sees nested files via superproject gitfs (FS under super worktree)
 ```
 
-| Host | Orch | Nested apply | Proof |
-|------|------|--------------|-------|
-| **JS** | `remote-orchestrator.ts` `submodule()` | `bridge.openAt` same MEMFS | `git_remote.test.ts` D23–D24 |
-| **BEAM** | `AgentOS.Git.Orchestrator` `submodule` | nested Port `root: super/path` | `git_orchestrator_test.exs` D23/D24 |
+| Host | Orch | Nested apply |
+|------|------|--------------|
+| **JS** | `remote-orchestrator.ts` `submodule()` | `bridge.openAt` same MEMFS |
+| **BEAM** | `AgentOS.Git.Orchestrator` `submodule` | nested Port `root: super/path` |
 
 Optional `args.path` updates a single submodule. Origin deny on the submodule URL fails closed
 before dial (same policy as bare clone). Fixture: superproject `.gitmodules` + `gitlink` +
 `minimal.pack` as submodule pack → nested `deps/lib/README` = `hello\n`.
 
-### Multi-repo alternative (DONE — D21)
+### Multi-repo alternative
 
 Sibling multi-mount clone remains valid for independent repos (no nested gitlink):
 
@@ -521,7 +487,8 @@ Sibling multi-mount clone remains valid for independent repos (no nested gitlink
 attach /workspace/app  + host_call clone mount=/workspace/app
 attach /workspace/lib  + host_call clone mount=/workspace/lib
 ```
-## Metrics (PR16 / D35–D36)
+
+## Metrics
 
 In-process counters + last-op labels only (not Prometheus). Never store packs, tokens, or
 credential material. Origins are **redacted** to `scheme://host[:port]` (no path, query, userinfo).
@@ -533,11 +500,11 @@ credential material. Origins are **redacted** to `scheme://host[:port]` (no path
 
 Orch records ok/error + duration/bytes/origin after each remote op. Port death ticks `port_eio` on BEAM.
 
-**Server alerts (D36, `Logger.warning`):**
+**Server alerts (`Logger.warning`):**
 * origin allowlist deny → `git: allowlist deny origin=…` (+ `allowlist_deny` counter)
 * per-mount remote queue depth > **32** → `git: mount queue depth N > 32 mount=…` (+ `queue_depth_warn`)
 
-## Prod git-engine discovery (D38)
+## Prod git-engine discovery
 
 BEAM Port binary resolution (`AgentOS.GitEngine.discover_executable/0`), first regular file wins:
 
@@ -547,7 +514,7 @@ BEAM Port binary resolution (`AgentOS.GitEngine.discover_executable/0`), first r
 4. `$RELEASE_ROOT/priv/git-engine` and `$RELEASE_ROOT/lib/agent_os-*/priv/git-engine`
 5. CWD `priv/git-engine` (path-dep / dev package layout)
 
-Release packages stage the binary + libgit2 NOTICE under `priv/` (D37 L4).
+Release packages stage the binary + libgit2 NOTICE under `priv/`.
 
 ## Pack cache (interactive remotes + LLB)
 
@@ -608,12 +575,11 @@ values like `true` / `0` / empty do **not**.
 Without `MC_GIT_ENGINE_DIR` / `MC_GIT_ENGINE_BASE_URL` and without `MC_GIT_USE_SYSTEM=1`, solve
 **fails closed** (throws; does not silently use system git).
 
-## c-shared / in-process load (K15 / R75) — **decided Port**
+## Server load path
 
-**Decision (closed):** product server load remains the BEAM-owned **Port** binary (`git-engine`).
-`//memcontainers/lib/git-engine:libgit_engine` (`.so`) is **packaging-only** (license ship set,
-optional consumers) — **not** an in-process product load path. PR7d is not a product load path
-unless an explicit decision overturns Port. JS hosts continue to use emcc wasm.
+**Product server load is the BEAM-owned Port binary (`git-engine`).** The shared library
+(`libgit_engine` `.so`) is packaging-only (license ship set, optional consumers) — **not** an
+in-process product load path. JS hosts continue to use emcc wasm.
 
 ## Security rules
 
@@ -623,18 +589,53 @@ unless an explicit decision overturns Port. JS hosts continue to use emcc wasm.
 - No Node/Bun process on the Elixir control plane for git.
 - Surface is **advanced** (opt-in). Not multi-tenant default-on.
 - Enable with `git: <baseUrl>` (omit = off).
-- Stable stderr prefixes are catalogued in `testdata/orch/response_schema.json` (D33).
+- Stable stderr prefixes are catalogued in `testdata/orch/response_schema.json`.
 
-## Bazel / server targets
+## Acceptance coverage
+
+Enable with `git: <baseUrl>` or `git: { baseUrl, … }` (omit = off). API surface for `GitEngine` /
+host_call / LLB git helpers is **advanced** (`docs/api-surface.json`). Not multi-tenant default-on.
+
+Coverage spans connection/origin policy (empty origins fail closed; credential splice host-only),
+dual-host pack e2e and push (including read-only reject with stable message), single-writer per
+mount path, CAP_NET allow/deny, orch counters, and multi-mount remote demux.
+
+| Area | Packages / tests |
+|------|------------------|
+| Dual-host orch goldens | `//memcontainers/sdk-js/core:git_orch_golden_test`; `AgentOS.Git.OrchGoldenTest` |
+| Guest remotes + CAP_NET | `//memcontainers/sdk-js/core:git_guest_e2e_test`; `server/test/agent_os/git_guest_acceptance_test.exs` |
+| Multi-mount demux | `//memcontainers/sdk-js/core:git_remote_test`; `AgentOS.Git.OrchestratorTest` |
+| Engine durability | `git_engine.test.ts` (dir reopen, MemoryDurable); BEAM `git_engine_test.exs` |
+| Submodule orch | `git_remote.test.ts`; `git_orchestrator_test.exs` |
+
+## Implementation map
+
+Internal module paths and Bazel targets for maintainers. Prefer the product sections above for
+behaviour; this map is for navigation only.
+
+### Key modules
+
+| Area | Location |
+|------|----------|
+| JS durable stores | `memcontainers/sdk-js/core/src/git/durable.ts` |
+| JS engine load | `memcontainers/sdk-js/core/src/git/engine.ts` |
+| JS create / MCSN rebind | `types.ts`, `memcontainer.ts`, `embedded.ts` |
+| BEAM Port | `server/lib/agent_os/git_engine.ex` |
+| BEAM durable roots | `server/lib/agent_os/git/durable.ex` |
+| BEAM attach | `server/lib/agent_os/vm.ex` |
+| JS submodule orch | `remote-orchestrator.ts` |
+| BEAM submodule orch | `AgentOS.Git.Orchestrator` |
+
+### Bazel / server targets
 
 - `//memcontainers/lib/git-engine:git_engine_wasm` — emcc module + NOTICE (ship filegroup)
 - `//memcontainers/lib/git-engine:git_engine_wasm_size_limit` — ≤2 MiB on optimized `git_engine.wasm`
 - `//memcontainers/lib/git-engine:git_engine_wasm_l5_notices` — fail-closed NOTICE/COPYING in wasm ship set
 - `//memcontainers/lib/git-engine:git_engine_server_artifacts` — Port binary + `.so` + NOTICE/COPYING
 - `//memcontainers/lib/git-engine:git_engine_server_l5_notices` — L5 gate on server ship set
-- `//server:agent_os_git_engine_l5_notices` — L5 gate for package priv ship set (D37)
+- `//server:agent_os_git_engine_l5_notices` — L5 gate for package priv ship set
 - `//memcontainers/lib/git-engine:git-engine` — native Port binary (dial-free)
-- `//memcontainers/lib/git-engine:orch_algorithm_traces` — executable K20 golden JSON
+- `//memcontainers/lib/git-engine:orch_algorithm_traces` — dual-host executable golden JSON
 - `//memcontainers/programs/git:git` — thin guest CLI
 - `//memcontainers/sdk-js/core:git_orch_golden_test` — TS golden runner
 - Elixir: `AgentOS.GitEngine`, `AgentOS.Git.SmartHttp`, `AgentOS.Git.Orchestrator`

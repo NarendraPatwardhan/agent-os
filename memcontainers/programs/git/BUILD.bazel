@@ -3,7 +3,7 @@ load("@rules_rust//rust:defs.bzl", "rust_binary")
 load("//bazel:mc_program.bzl", "mc_rust_program")
 load("//bazel/tools/size:defs.bzl", "size_limit")
 
-# programs/git — thin pure-mc /bin/git (GIT.md PR6). Local porcelain via ctl only.
+# programs/git — thin pure-mc /bin/git . Local porcelain via ctl only.
 # Imports ONLY `mc` (no WASI). Size soft gate ≤256 KiB.
 
 rust_binary(
@@ -32,7 +32,7 @@ size_limit(
     max_bytes = 256 * 1024,
 )
 
-# Image layer: /bin/git for local ctl porcelain + CAP_NET remotes (GIT.md PR6).
+# Image layer: /bin/git for local ctl porcelain + CAP_NET remotes .
 # Wired into base (and every flavor that stacks on it) via images/BUILD.bazel deps —
 # same substrate model as /bin/pkgfsd.
 pkg_tar(

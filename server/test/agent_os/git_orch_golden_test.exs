@@ -1,6 +1,6 @@
 defmodule AgentOS.Git.OrchGoldenTest do
   @moduledoc """
-  P2.8 — executable K20 orch goldens shared with TS.
+  executable dual-host orch goldens shared with TS.
 
   Loads the same logical vectors as
   `memcontainers/lib/git-engine/testdata/orch/*.json`
@@ -289,7 +289,7 @@ defmodule AgentOS.Git.OrchGoldenTest do
 
   # D33 — Response schema catalog: required keys + stable stderr prefixes.
   @tag timeout: 60_000
-  test "D33 response_schema catalog prefixes (unknown connection, empty pack, origin deny)" do
+  test "response_schema catalog prefixes (unknown connection, empty pack, origin deny)" do
     path = find_golden!(@response_schema)
     schema = path |> File.read!() |> decode_json!()
     keys = Map.get(schema, "required_response_keys") || []

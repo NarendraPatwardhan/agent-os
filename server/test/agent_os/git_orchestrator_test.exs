@@ -596,7 +596,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     :ok = GitEngine.stop(pid)
   end
 
-  # ── R34 pull = fetch + local FF ────────────────────────────────────────────
+  # ── pull = fetch + local FF ────────────────────────────────────────────
 
   @tag timeout: 60_000
   test "pull after successful clone of minimal.pack is already up to date" do
@@ -664,7 +664,7 @@ defmodule AgentOS.Git.OrchestratorTest do
   # D9: clone.apply post-step sets remote.origin.url + branch tracking;
   # pull via remote name (no url) uses that config.
   @tag timeout: 60_000
-  test "D9 clone sets remote.origin.url and branch tracking; pull uses remote name" do
+  test "clone sets remote.origin.url and branch tracking; pull uses remote name" do
     path = engine_path()
     pack_path = Path.expand("../fixtures/git/minimal.pack", __DIR__)
     tip_path = Path.expand("../fixtures/git/minimal.tip", __DIR__)
@@ -925,7 +925,7 @@ defmodule AgentOS.Git.OrchestratorTest do
   end
 
   @tag timeout: 60_000
-  test "R51 delete-ref push: zero newHash, empty pack, fixture receive-status ok" do
+  test "delete-ref push: zero newHash, empty pack, fixture receive-status ok" do
     path = engine_path()
     root =
       Path.join(
@@ -1007,7 +1007,7 @@ defmodule AgentOS.Git.OrchestratorTest do
   end
 
   @tag timeout: 60_000
-  test "R48 pack_build with haves reduces pack size" do
+  test "pack_build with haves reduces pack size" do
     path = engine_path()
     root =
       Path.join(
@@ -1072,7 +1072,7 @@ defmodule AgentOS.Git.OrchestratorTest do
   end
 
   @tag timeout: 30_000
-  test "R36 clone with filter is recorded by transport and does not break" do
+  test "clone with filter is recorded by transport and does not break" do
     path = engine_path()
     assert {:ok, pid} = GitEngine.start(executable: path)
     pack = <<"PACK", 0, 0, 0, 2, 0, 0, 0, 0>>
@@ -1105,7 +1105,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     :ok = GitEngine.stop(pid)
   end
 
-  # ── R43 Auth kinds (header injection, no network) ─────────────────────────
+  # ── Auth kinds (header injection, no network) ─────────────────────────
 
   test "auth_headers injects bearer, header, basic; never embeds secrets in URL helpers" do
     assert [] = SmartHttp.auth_headers(%{kind: :none})
@@ -1134,7 +1134,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     assert [] = SmartHttp.auth_headers(%{kind: :query, name: "t", value: "v"})
   end
 
-  # ── R40 BEAM pack cache (download-key; credentials never in key) ───────────
+  # ── BEAM pack cache (download-key; credentials never in key) ───────────
 
   test "upload_pack_cache_key is stable and excludes credentials" do
     alias AgentOS.Git.PackCache
@@ -1540,7 +1540,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     path = engine_path()
 
     if is_nil(wasm) or is_nil(posix) do
-      # Residual: full guest CAP_NET e2e needs kernel/images + host_nif runfiles.
+      # full guest CAP_NET e2e needs kernel/images + host_nif runfiles.
       IO.puts(:stderr, "skipping Vm async git test: kernel/posix runfiles missing")
     else
       id = {"git-async", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
@@ -1621,7 +1621,7 @@ defmodule AgentOS.Git.OrchestratorTest do
 
         assert {:ok, "hello\n"} = File.read(Path.join(root, "README"))
 
-        # Detach cancels any residual tasks cleanly.
+        # Detach cancels any remaining cases cleanly.
         assert :ok = AgentOS.ControlPlane.detach_git(id)
         assert AgentOS.ControlPlane.info(id).git_attached == false
       after
@@ -1632,7 +1632,7 @@ defmodule AgentOS.Git.OrchestratorTest do
   end
 
   @tag timeout: 120_000
-  test "D19 snapshot refused while git remote host_call Task is inflight" do
+  test "snapshot refused while git remote host_call Task is inflight" do
     # Slow fixture list_refs holds git_tasks non-empty; snapshot/commit_layer must
     # fail closed (BEAM git bookkeeping gate). Synthetic host handle proves the
     # gate is independent of kernel inflight_egress (monorepo host_call path still
@@ -1828,10 +1828,10 @@ defmodule AgentOS.Git.OrchestratorTest do
     end
   end
 
-  # ── R31 push approval ──────────────────────────────────────────────────────
+  # ── push approval ──────────────────────────────────────────────────────
 
   @tag timeout: 30_000
-  test "R31 require_approval without fun rejects push (fail closed)" do
+  test "require_approval without fun rejects push (fail closed)" do
     path = engine_path()
     assert {:ok, pid} = GitEngine.start(executable: path)
 
@@ -1885,7 +1885,7 @@ defmodule AgentOS.Git.OrchestratorTest do
   end
 
   @tag timeout: 60_000
-  test "R31 on_push_approval true allows push" do
+  test "on_push_approval true allows push" do
     path = engine_path()
     assert {:ok, pid} = GitEngine.start(executable: path)
     assert {:ok, _} = GitEngine.run(pid, %{"op" => "init"})
@@ -1940,10 +1940,10 @@ defmodule AgentOS.Git.OrchestratorTest do
     :ok = GitEngine.stop(pid)
   end
 
-  # ── R66 same-path second attach fail-closed; R63 distinct paths OK ─────────
+  # ── same-path second attach fail-closed; R63 distinct paths OK ─────────
 
   @tag timeout: 120_000
-  test "R66 same-path second attach_git fails; R63 distinct paths multi-attach" do
+  test "same-path second attach_git fails; R63 distinct paths multi-attach" do
     wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
     posix = runfile_bytes("memcontainers/images/posix.tar")
     path = engine_path()
@@ -2026,7 +2026,7 @@ defmodule AgentOS.Git.OrchestratorTest do
   end
 
   @tag timeout: 120_000
-  test "PR11 attach_git stores connections + policies (product path, no flat allowlist)" do
+  test "attach_git stores connections + policies (product path, no flat allowlist)" do
     # VM stores host connections/policies and surfaces refs via info (no secrets).
     # Full clone compose is covered by "connections-only → host_call clone" below.
     wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
@@ -2099,7 +2099,7 @@ defmodule AgentOS.Git.OrchestratorTest do
   end
 
   @tag timeout: 120_000
-  test "D20 attach_git sparse_cone → host_call clone applies Port sparse-set" do
+  test "attach_git sparse_cone → host_call clone applies Port sparse-set" do
     # Per-mount cone stored on attach; after fixture clone, sparse-checkout exists
     # and root README remains (cone template always includes /*). JS git.sparse parity.
     wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
@@ -2194,7 +2194,7 @@ defmodule AgentOS.Git.OrchestratorTest do
   end
 
   @tag timeout: 120_000
-  test "PR11 product path: attach_git connections-only → host_call clone via fixture" do
+  test "product path: attach_git connections-only → host_call clone via fixture" do
     # Cruel acceptance: no allowed_origins / flat auth — only connections catalog.
     # attach_git → try_answer_git_host_call "git" clone with args.connection →
     # fixture transport receives spliced host auth; worktree materializes.
@@ -2348,7 +2348,7 @@ defmodule AgentOS.Git.OrchestratorTest do
   end
 
   @tag timeout: 120_000
-  test "R65/D21 host_call args.mount two clones into two engines" do
+  test "host_call args.mount two clones into two engines" do
     # Product multi-mount e2e: attach two distinct paths with separate worktree
     # roots, clone each via args.mount + real minimal.pack, verify isolation.
     wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
@@ -2496,7 +2496,7 @@ defmodule AgentOS.Git.OrchestratorTest do
   end
 
   @tag timeout: 120_000
-  test "D21 concurrent remotes on two mounts may overlap" do
+  test "concurrent remotes on two mounts may overlap" do
     # Per-mount single-writer: distinct mounts run independent remote Tasks.
     # Peak concurrent transport entry may exceed 1 across mounts (unlike same-mount serialize).
     wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
@@ -2625,10 +2625,10 @@ defmodule AgentOS.Git.OrchestratorTest do
     end
   end
 
-  # ── R5 attach path detaches on engine death ────────────────────────────────
+  # ── attach path detaches on engine death ────────────────────────────────
 
   @tag timeout: 120_000
-  test "R5 Process.exit engine → attach path detaches" do
+  test "Process.exit engine → attach path detaches" do
     wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
     posix = runfile_bytes("memcontainers/images/posix.tar")
     path = engine_path()
@@ -2672,10 +2672,10 @@ defmodule AgentOS.Git.OrchestratorTest do
     end
   end
 
-  # ── R100 host_call_close cancels inflight remote ───────────────────────────
+  # ── host_call_close cancels inflight remote ───────────────────────────
 
   @tag timeout: 120_000
-  test "R100 host_call_close cancels queued/inflight git remote" do
+  test "host_call_close cancels queued/inflight git remote" do
     wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
     posix = runfile_bytes("memcontainers/images/posix.tar")
     path = engine_path()
@@ -2745,10 +2745,10 @@ defmodule AgentOS.Git.OrchestratorTest do
     end
   end
 
-  # ── R85 / D35–D36 metrics ──────────────────────────────────────────────────
+  # ── / D35–D36 metrics ──────────────────────────────────────────────────
 
   @tag timeout: 30_000
-  test "R85 metrics counters tick on orch clone deny" do
+  test "metrics counters tick on orch clone deny" do
     AgentOS.Git.Metrics.reset()
     path = engine_path()
     assert {:ok, pid} = GitEngine.start(executable: path)
@@ -2771,7 +2771,7 @@ defmodule AgentOS.Git.OrchestratorTest do
   end
 
   @tag timeout: 60_000
-  test "D35 metrics record pack_bytes and duration on fixture clone" do
+  test "metrics record pack_bytes and duration on fixture clone" do
     AgentOS.Git.Metrics.reset()
     path = engine_path()
     assert {:ok, pid} = GitEngine.start(executable: path)
@@ -2805,7 +2805,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     :ok = GitEngine.stop(pid)
   end
 
-  test "D36 queue depth observe alerts above 32" do
+  test "queue depth observe alerts above 32" do
     AgentOS.Git.Metrics.reset()
     # High-water + warn counter without needing 33 real Tasks.
     assert :ok = AgentOS.Git.Metrics.observe_queue_depth("/workspace/repo", 33)
@@ -2817,7 +2817,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     assert AgentOS.Git.Metrics.snapshot().queue_depth == 33
   end
 
-  test "D38 discover_executable prefers AGENTOS_GIT_ENGINE" do
+  test "discover_executable prefers AGENTOS_GIT_ENGINE" do
     path = engine_path()
     assert File.regular?(path)
     # With env set (test helper always sets it for real runs), discovery finds it.
@@ -2826,7 +2826,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     assert File.regular?(found)
   end
 
-  # ── PR11 / D1: connection-bound remotes + credential splice ────────────────
+  # ── connection-bound remotes + credential splice ────────────────
 
   test "resolve_remote: connection auth + origins; unknown / empty fail closed" do
     conns = [
@@ -3232,7 +3232,7 @@ defmodule AgentOS.Git.OrchestratorTest do
   # ── D23–D24 host-mediated submodule update ────────────────────────────────
 
   @tag timeout: 120_000
-  test "D23/D24 host-mediated submodule update projects nested worktree" do
+  test "host-mediated submodule update projects nested worktree" do
     path = engine_path()
     pack = fixture_git_bytes!("minimal.pack")
     tip = fixture_git_bytes!("minimal.tip") |> String.trim()

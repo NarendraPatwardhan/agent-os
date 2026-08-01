@@ -61,10 +61,10 @@ export interface GitCreateOptions {
    * `attach_git(read_only: true)`). Overridable per {@link mounts} entry.
    */
   readOnly?: boolean;
-  /** Host commit identity (K28). Injected when commit args omit name/email. */
+  /** Host commit identity. Injected when commit args omit name/email. */
   identity?: { name: string; email: string };
   /**
-   * Durable store for snapshot/restore rebind (K10). MCSN never carries the ODB.
+   * Durable store for snapshot/restore rebind. MCSN never carries the ODB.
    * With `diskDir`: re-openable worktree under `{diskDir}/{id}/`.
    * Opt-in only — omit for ephemeral engines.
    */

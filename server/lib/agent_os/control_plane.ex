@@ -245,7 +245,7 @@ defmodule AgentOS.ControlPlane do
   Passes `opts` through to `AgentOS.Vm.attach_git/2` unchanged — does **not**
   inject `:any` origins or invent connections.
 
-  **Product (PR11):** prefer `:connections` (JS `ConnectionDefinition` maps:
+  **Product:** prefer `:connections` (JS `ConnectionDefinition` maps:
   `%{ref, auth, origins, spec?}`) and optional `:policies`
   (`[%{pattern, action}]`, actions `:approve | :require_approval | :block`).
   When connections are non-empty, origins/auth come from the matching
@@ -257,7 +257,7 @@ defmodule AgentOS.ControlPlane do
   Multi-mount (R63–R65): call again with a **different** `:mount_path` to attach
   another engine. Same path while live → `{:error, :git_already_attached}`.
 
-  Sparse cone (D20): `:sparse_cone` / `:git_sparse_cone` list of prefixes is
+  Sparse cone: `:sparse_cone` / `:git_sparse_cone` list of prefixes is
   stored per mount and applied after clone (`sparse-set`), matching JS
   JS `git.sparse` / `git.mounts[].sparse`.
   """

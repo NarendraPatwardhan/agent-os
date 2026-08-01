@@ -263,7 +263,7 @@ static void clear_out_stream(ge_engine *e) {
 }
 
 /* Ok response with large-stdout handling. Never silently truncates without
- * result.truncated=true (GIT.md §5.3 / residual R25 / D15).
+ * result.truncated=true (large-stdout stream path; docs/git.md).
  * When body exceeds embed limit: preview in stdout, full body (≤8 MiB) at
  * /.git/mc/out/last, result.stream_path set for host/gitfs open. */
 char *ge_resp_ok_stdout(ge_engine *e, char *stdout_owned, int free_stdout,

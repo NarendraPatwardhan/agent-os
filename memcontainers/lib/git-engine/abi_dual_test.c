@@ -1,6 +1,6 @@
-/* PR7c — dual-runner ABI: native ge_run_json executes the same golden local ops
- * as abi_fixture_test / emcc smoke. Wasm side is covered by git_engine_test (JS).
- * This target keeps native fixtures wired for CI drift detection.
+/* Dual-runner ABI: native ge_run_json executes the same golden local ops
+ * as abi_fixture_test. Wasm side is covered by git_engine_test (JS).
+ * Keeps native fixtures wired for CI drift detection.
  */
 
 #include "git_engine.h"

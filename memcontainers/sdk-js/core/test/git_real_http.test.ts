@@ -251,7 +251,7 @@ async function main() {
   const dir = engineDir();
   const baseUrl = pathToFileURL(dir.endsWith("/") ? dir : dir + "/").href;
 
-  // ── D27: real HTTP clone + fetch ───────────────────────────────────────
+  // ── : real HTTP clone + fetch ───────────────────────────────────────
   {
     const srv = await startGitHttpBackend({
       content: "hello from git-http-backend clone\n",
@@ -311,7 +311,7 @@ async function main() {
     }
   }
 
-  // ── D28: real HTTP push ────────────────────────────────────────────────
+  // ── : real HTTP push ────────────────────────────────────────────────
   {
     const srv = await startGitHttpBackend({
       content: "seed for push\n",
@@ -377,7 +377,7 @@ async function main() {
     }
   }
 
-  // ── D28 transport create-ref ───────────────────────────────────────────
+  // ── transport create-ref ───────────────────────────────────────────
   {
     const srv = await startGitHttpBackend({ branch: "main" });
     try {

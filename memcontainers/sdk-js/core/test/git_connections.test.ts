@@ -51,7 +51,7 @@ async function main() {
   if (evaluatePushPolicy("github.user.work", policies) !== "block") {
     throw new Error("most restrictive should be block");
   }
-  // D10: require_approval alone (no block rule) maps correctly
+  // require_approval alone (no block rule) maps correctly
   if (
     evaluatePushPolicy("github.user.other", [
       { owner: "org", pattern: "github.*", action: "require_approval" },
@@ -118,7 +118,7 @@ async function main() {
     throw new Error("bearer splice failed");
   }
 
-  // D8: catalog auth kinds — header + query splice (bearer covered above)
+  // catalog auth kinds — header + query splice (bearer covered above)
   const headerAuth = { kind: "header" as const, name: "X-GitHub-Token", value: "hdr-sekret" };
   const headerHdrs = spliceCredentialHeaders(headerAuth);
   if (headerHdrs["X-GitHub-Token"] !== "hdr-sekret") {
@@ -157,7 +157,7 @@ async function main() {
     throw new Error("none auth should not add headers");
   }
 
-  // D7: guest body cannot pass auth secrets — reject, never splice from args
+  // guest body cannot pass auth secrets — reject, never splice from args
   if (!guestArgsCarrySecrets({ url: "https://github.com/r.git", token: "evil" })) {
     throw new Error("guestArgsCarrySecrets should detect token");
   }
@@ -276,7 +276,7 @@ async function main() {
   );
   if (!org.ok) throw new Error(`canonical origin should allow: ${org.stderr}`);
 
-  // R32: bare URL (no connection) + empty allowOrigins fails closed at orch.
+  // bare URL (no connection) + empty allowOrigins fails closed at orch.
   const bareHttp = new FixtureSmartHttp();
   bareHttp.add(
     "https://example.com/r.git",
@@ -310,7 +310,7 @@ async function main() {
     throw new Error("expected listRefs after allowOrigins gate");
   }
 
-  // D8: catalog-shaped header auth reaches transport (fixture records lastAuth)
+  // catalog-shaped header auth reaches transport (fixture records lastAuth)
   const headerConns: ConnectionDefinition[] = [
     {
       ref: "git.user.hdr",
@@ -348,7 +348,7 @@ async function main() {
     throw new Error("header secret leaked into response");
   }
 
-  // D7 via orch: guest-smuggled token never dials
+  // via orch: guest-smuggled token never dials
   const smuggleHttp = new FixtureSmartHttp();
   smuggleHttp.add(
     "https://github.com/org/repo.git",
@@ -374,7 +374,7 @@ async function main() {
     throw new Error("guest secret reject must not dial");
   }
 
-  // D10: push block from policies short-circuits before dial
+  // push block from policies short-circuits before dial
   const blockHttp = new FixtureSmartHttp();
   blockHttp.add(
     "https://github.com/org/repo.git",

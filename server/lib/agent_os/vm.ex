@@ -67,7 +67,7 @@ defmodule AgentOS.Vm do
     # Host-owned remote policy (never from guest body). See attach_git/2.
     # Shared across mounts on this VM (policy is host-owned, not per-repo).
     #
-    # Product path (PR11): `git_connections` mirrors JS ConnectionDefinition
+    # Product path: `git_connections` mirrors JS ConnectionDefinition
     # `%{ref, auth, origins, spec?}`; origins + auth live on the matching
     # connection. `git_policies` are push policy rules `%{pattern, action}`.
     # Legacy flat `git_allowed_origins` / `git_auth` apply only when
@@ -78,7 +78,7 @@ defmodule AgentOS.Vm do
     git_auth: nil,
     # Test-only injectable SmartHttp transport (fixture double).
     git_transport: nil,
-    # Push approval (R31) — host-owned; never from guest body.
+    # Push approval — host-owned; never from guest body.
     git_require_approval: false,
     git_on_push_approval: nil,
     git_push_approval: false,
@@ -463,7 +463,7 @@ defmodule AgentOS.Vm do
   `GitEngine.handle_host_call/4` / orch via `git_host_opts_for_mount/2`. The guest body
   never supplies secrets, origins, or push policy.
 
-  ## Product path — connections catalog (PR11)
+  ## Product path — connections catalog
 
   Prefer `:connections` (mirrors JS `ConnectionDefinition`). When non-empty,
   **origins and auth come from the matching connection** — a separate
@@ -502,16 +502,16 @@ defmodule AgentOS.Vm do
   ## Other options
 
   * `:executable`, `:root`, `:mount_path` (default `"/workspace/repo"`)
-  * `:durable_dir` — re-openable libgit2 worktree directory (D16); same as `:root`
+  * `:durable_dir` — re-openable libgit2 worktree directory; same as `:root`
     for durability (never deleted on detach). Preferred over temp roots.
   * `:durable_id` — named durable root under `AGENTOS_GIT_DURABLE_ROOT` /
     `:git_durable_root` as `{base}/{id}/{mount_slug}` (D18 partial).
   * `:transport` — injectable SmartHttp transport (tests / fixture double only)
   * `:identity` / `:git_identity` — `%{name: binary, email: binary}` host policy
-    identity injected into Port `commit` when args omit name/email (K28). Never
+    identity injected into Port `commit` when args omit name/email. Never
     invents a default identity when unset.
   * `:on_push_approval` / `:push_approval` / `:require_approval` — push approval
-    opts forwarded to `AgentOS.Git.Orchestrator` via host_call demux (R31).
+    opts forwarded to `AgentOS.Git.Orchestrator` via host_call demux.
     Prefer connection `:policies` for product push gating when available.
   * `:sparse_cone` / `:git_sparse_cone` — list of cone-mode path prefixes
     (e.g. `["src", "docs"]`) stored **on this mount** and applied after
@@ -552,14 +552,14 @@ defmodule AgentOS.Vm do
     `attach_git/2` (`connections`/`policies`, or legacy origins/auth, plus
     transport) — never from the guest body.
     Body may include `args.mount` / top-level `mount` to demux to the engine
-    for that path (R65); empty mount uses the sole engine or the first attached.
+    for that path; empty mount uses the sole engine or the first attached.
     **At most one remote Task runs per mount** — further remotes for the same
     mount enqueue so import+apply cannot interleave on that Port. Distinct mounts
     may run in parallel (separate engines).
   * Mount-path host_calls (gitfs type-4) stay **synchronous** so single-writer
     Port ordering is preserved.
   * `host_call_close` for name `\"git\"` cancels the inflight Task (or drops a
-    queued remote) without double-responding — mirrors sidecar cancel (R100).
+    queued remote) without double-responding — mirrors sidecar cancel.
   """
   @spec try_answer_git_host_call(server(), map(), keyword()) ::
           :answered | :unclaimed | {:error, term()}
@@ -1262,7 +1262,7 @@ defmodule AgentOS.Vm do
     mount_path = Keyword.get(opts, :mount_path, "/workspace/repo")
     engines = state.git_engines || %{}
 
-    # K21: one engine per mount path. Same path while live fails closed (R66).
+    # K21: one engine per mount path. Same path while live fails closed.
     # Distinct paths are allowed (R63 multi-mount).
     case Map.get(engines, mount_path) do
       %{pid: pid} when is_pid(pid) ->
@@ -1844,9 +1844,9 @@ defmodule AgentOS.Vm do
   end
 
   # Host-owned opts for GitEngine.handle_host_call / Orchestrator.
-  # Product (PR11): connections + policies. Legacy flat allowlist/auth only
+  # Product: connections + policies. Legacy flat allowlist/auth only
   # when connections empty so fixtures keep working during orch migration.
-  # Per-mount `:sparse_cone` is added by `git_host_opts_for_mount/2` (D20).
+  # Per-mount `:sparse_cone` is added by `git_host_opts_for_mount/2`.
   # Pack cache: product default (`:default` → fresh Memory unless SHARED/disk
   # env); mirrors JS `gitHostCallHandler` + `productDefaultPackCache`.
   defp git_host_opts(state) do
@@ -2020,7 +2020,7 @@ defmodule AgentOS.Vm do
 
   defp drain_git_relay(state, _), do: state
 
-  # Per-mount single-writer remote queue (R63/R64).
+  # Per-mount single-writer remote queue.
   defp answer_git_remote_async(state, handle, body) do
     tasks = state.git_tasks || %{}
     queue_map = state.git_remote_queue || %{}

@@ -129,7 +129,7 @@ async function main() {
   }
   await engDurable.close();
 
-  // D3: redirect policy — never follow; open redirect cannot leave allowlist.
+  // redirect policy — never follow; open redirect cannot leave allowlist.
   if (!isRedirectResponse({ status: 301 })) {
     throw new Error("isRedirectResponse must treat 301 as redirect");
   }
@@ -212,7 +212,7 @@ async function main() {
     }
   }
 
-  // R32: bare URL + empty allowOrigins fails closed before transport dial.
+  // bare URL + empty allowOrigins fails closed before transport dial.
   const bareDenied = new FixtureSmartHttp();
   bareDenied.add(
     "https://example.com/bare.git",
@@ -233,7 +233,7 @@ async function main() {
 
   // Empty pack orchestrator path with fixture: list-refs must work; clone must fail closed
   // (no real objects) — do not soft-accept success. Direct orch: no default packCache.
-  // R32: fixture bare URLs need explicit allowOrigins.
+  // fixture bare URLs need explicit allowOrigins.
   const http = new FixtureSmartHttp();
   const hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const fixtureOrigin = "https://example.com";
@@ -266,7 +266,7 @@ async function main() {
   // P2.5: second clone with packCache must skip fetchPacks (download-key hit).
   // Non-empty pack body so empty-pack short-circuit is not the only path; import
   // may still fail closed — we only assert transport call counts + key shape.
-  // R35: product default depth=1 is part of the cache key.
+  // product default depth=1 is part of the cache key.
   const packBody = new Uint8Array([0x50, 0x41, 0x43, 0x4b, 0, 0, 0, 2, 1, 2, 3, 4]);
   const http2 = new FixtureSmartHttp();
   const url2 = "https://example.com/cached.git";
@@ -397,7 +397,7 @@ async function main() {
     }
   }
 
-  // D13 / M7 v1: multi-path monorepo pack → shallow depth=1 clone + cone sparse
+  // / M7 v1: multi-path monorepo pack → shallow depth=1 clone + cone sparse
   // → worktree + gitfs hide out-of-cone (not filter-only theater).
   {
     const engSrc = await GitEngine.load({ baseUrl: base });
@@ -548,7 +548,7 @@ async function main() {
     await engDst.close();
   }
 
-  // R63–R65 / D21: multi-engine demux via args.mount / mount
+  // –R65 / D21: multi-engine demux via args.mount / mount
   const engA = await GitEngine.load({ baseUrl: base });
   const engB = await GitEngine.load({ baseUrl: base });
   const engineMap = new Map([
@@ -640,7 +640,7 @@ async function main() {
     throw new Error("registerGitHostCall multi missing git");
   }
 
-  // D21 product e2e: two mounts, two engines, clone into each via args.mount
+  // product e2e: two mounts, two engines, clone into each via args.mount
   // with real minimal.pack → worktree isolation (README hello).
   {
     const { pack: realPack, tip: realTip } = minimalPackFixture();
@@ -736,7 +736,7 @@ async function main() {
     await dualB.close();
   }
 
-  // D21: two engines concurrent — distinct mounts may overlap fetchPacks
+  // two engines concurrent — distinct mounts may overlap fetchPacks
   // (per-engine single-writer only; multi-mount remotes are independent).
   {
     const { pack: realPack, tip: realTip } = minimalPackFixture();
@@ -884,7 +884,7 @@ async function main() {
     await engSerial.close();
   }
 
-  // D9: after clone.apply, remote.origin.url + branch tracking are set so
+  // after clone.apply, remote.origin.url + branch tracking are set so
   // config get shows remote and fetch/pull can use tracking (no re-pass URL).
   {
     const packRel = process.env.MC_GIT_MINIMAL_PACK || "";
@@ -1009,7 +1009,7 @@ async function main() {
     await engD9.close();
   }
 
-  // D23–D24: host-mediated submodule update → nested worktree under super gitfs.
+  // –D24: host-mediated submodule update → nested worktree under super gitfs.
   // Superproject: .gitmodules + gitlink; submodule pack = minimal.pack (README).
   {
     const { pack, tip } = minimalPackFixture();
@@ -1108,7 +1108,7 @@ async function main() {
       throw new Error(`D23 update stdout: ${JSON.stringify(upd)}`);
     }
 
-    // D24: nested worktree files project via super MEMFS / gitfs.
+    // nested worktree files project via super MEMFS / gitfs.
     const readmePath = engSuper.bridge.abs("deps/lib/README");
     let readme = "";
     try {

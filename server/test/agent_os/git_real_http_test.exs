@@ -75,7 +75,7 @@ defmodule AgentOS.Git.RealHttpTest do
   # ── D27: real HTTP clone/fetch ────────────────────────────────────────────
 
   @tag timeout: 120_000
-  test "D27 real HTTP clone via product SmartHttp + git-http-backend", %{
+  test "real HTTP clone via product SmartHttp + git-http-backend", %{
     engine_path: engine_path
   } do
     srv =
@@ -148,7 +148,7 @@ defmodule AgentOS.Git.RealHttpTest do
   # ── D28: real HTTP push ───────────────────────────────────────────────────
 
   @tag timeout: 120_000
-  test "D28 real HTTP push via product receive-pack + git-http-backend", %{
+  test "real HTTP push via product receive-pack + git-http-backend", %{
     engine_path: engine_path
   } do
     srv =
@@ -238,7 +238,7 @@ defmodule AgentOS.Git.RealHttpTest do
   end
 
   @tag timeout: 60_000
-  test "D28 product SmartHttp.push_packs create branch on real receive-pack" do
+  test "product SmartHttp.push_packs create branch on real receive-pack" do
     srv = AgentOS.GitHttpBackend.start!(branch: "main")
 
     try do

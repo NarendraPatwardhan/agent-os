@@ -72,7 +72,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  /* Ready banner on stderr for BEAM smoke (optional). */
+  /* Ready banner on stderr for the Port owner (ops / diagnostics). */
   fprintf(stderr, "git-engine ready root=%s version=%s\n", root, ge_version());
   fflush(stderr);
 

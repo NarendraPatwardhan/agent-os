@@ -1,68 +1,68 @@
 {
-  "name": "push_success",
-  "version": 1,
-  "description": "Push create/update via fixture receive-pack succeeds after local commit (K20 dual-host; D32).",
-  "fixture": {
-    "url": "https://example.com/demo.git",
-    "allowed_origins": ["https://example.com"],
-    "refs": [
-      {
-        "name": "refs/heads/master",
-        "hash": "0000000000000000000000000000000000000000"
-      }
-    ],
-    "pack": "",
-    "setup": [
-      { "op": "init" },
-      {
-        "op": "write",
-        "args": { "path": "p.txt", "content": "push-success\n" }
-      },
-      { "op": "add", "args": { "path": "p.txt" } },
-      {
-        "op": "commit",
-        "args": {
-          "message": "c",
-          "name": "P",
-          "email": "p@p",
-          "when_unix": 1700000200
-        }
-      }
-    ]
-  },
-  "steps": [
-    {
-      "id": "push_prepare",
-      "ok": true
-    },
-    {
-      "id": "list_refs_lease",
-      "ok": true
-    },
-    {
-      "id": "pack_build",
-      "ok": true
-    },
-    {
-      "id": "receive_pack",
-      "ok": true
-    },
-    {
-      "id": "push_complete",
-      "ok": true
-    },
-    {
-      "id": "orchestrator_response",
-      "op": "push",
-      "args": {
-        "url": "https://example.com/demo.git"
-      },
-      "expect": {
-        "ok": true,
-        "code": 0,
-        "stdout_contains": ["pushed"],
-        "stderr_not_contains": ["read-only", "blocked", "empty pack"]
-      }
-    }
-  ]
+ "name": "push_success",
+ "version": 1,
+ "description": "Push create/update via fixture receive-pack succeeds after local commit.",
+ "fixture": {
+ "url": "https://example.com/demo.git",
+ "allowed_origins": ["https://example.com"],
+ "refs": [
+ {
+ "name": "refs/heads/master",
+ "hash": "0000000000000000000000000000000000000000"
+ }
+ ],
+ "pack": "",
+ "setup": [
+ { "op": "init" },
+ {
+ "op": "write",
+ "args": { "path": "p.txt", "content": "push-success\n" }
+ },
+ { "op": "add", "args": { "path": "p.txt" } },
+ {
+ "op": "commit",
+ "args": {
+ "message": "c",
+ "name": "P",
+ "email": "p@p",
+ "when_unix": 1700000200
+ }
+ }
+ ]
+ },
+ "steps": [
+ {
+ "id": "push_prepare",
+ "ok": true
+ },
+ {
+ "id": "list_refs_lease",
+ "ok": true
+ },
+ {
+ "id": "pack_build",
+ "ok": true
+ },
+ {
+ "id": "receive_pack",
+ "ok": true
+ },
+ {
+ "id": "push_complete",
+ "ok": true
+ },
+ {
+ "id": "orchestrator_response",
+ "op": "push",
+ "args": {
+ "url": "https://example.com/demo.git"
+ },
+ "expect": {
+ "ok": true,
+ "code": 0,
+ "stdout_contains": ["pushed"],
+ "stderr_not_contains": ["read-only", "blocked", "empty pack"]
+ }
+ }
+ ]
 }

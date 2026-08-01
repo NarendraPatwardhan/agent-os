@@ -224,7 +224,7 @@ static int test_pack_build(ge_engine *e) {
     }
   }
 
-  /* R48: second commit + pack with haves=[parent] must be smaller than full tip pack. */
+  /* second commit + pack with haves=[parent] must be smaller than full tip pack. */
   {
     char *w = ge_run_json(e, "{\"op\":\"write\",\"args\":{\"path\":\"next.txt\","
                              "\"content\":\"second-layer-payload-for-thin-pack\\n\"}}");
@@ -294,7 +294,7 @@ static int test_pack_build(ge_engine *e) {
       return 1;
     }
     if (thin_len >= full_len) {
-      fprintf(stderr, "R48: pack with haves should be smaller (thin=%zu full=%zu)\n", thin_len,
+      fprintf(stderr, "pack with haves should be smaller (thin=%zu full=%zu)\n", thin_len,
               full_len);
       ge_free(full);
       ge_free(thin);
@@ -378,7 +378,7 @@ static int test_path_safety(ge_engine *e) {
   return 0;
 }
 
-/* R19: diff emits full unified patch (diff --git), pathspec, and --cached. */
+/* diff emits full unified patch (diff --git), pathspec, and --cached. */
 static int test_diff_patch(ge_engine *e) {
   /* Track second file so both appear in index↔workdir diffs. */
   if (expect_ok(e, "{\"op\":\"write\",\"args\":{\"path\":\"other.txt\","
@@ -470,7 +470,7 @@ static int test_diff_patch(ge_engine *e) {
   return 0;
 }
 
-/* R96: add all=true stages deletion of tracked file removed from worktree. */
+/* add all=true stages deletion of tracked file removed from worktree. */
 static int test_add_all_deletion(ge_engine *e) {
   if (expect_ok(e, "{\"op\":\"write\",\"args\":{\"path\":\"doomed.txt\",\"content\":\"bye\\n\"}}"))
     return 1;
@@ -508,7 +508,7 @@ static int test_add_all_deletion(ge_engine *e) {
   return 0;
 }
 
-/* R94: refs.import accepts refs[] array of two {name,hash}. */
+/* refs.import accepts refs[] array of two {name,hash}. */
 static int test_refs_import_array(ge_engine *e) {
   char *rev = ge_run_json(e, "{\"op\":\"rev-parse\",\"args\":{\"rev\":\"HEAD\"}}");
   if (!rev || strstr(rev, "\"ok\":true") == NULL) {
@@ -556,7 +556,7 @@ static int test_refs_import_array(ge_engine *e) {
   return 0;
 }
 
-/* R25/D15: large stdout sets result.truncated=true, stream_path, writes out/last. */
+/* large stdout sets result.truncated=true, stream_path, writes out/last. */
 static int test_truncated_stdout(ge_engine *e) {
   /* Tracked file + worktree modify so index_to_workdir produces a real patch. */
   if (expect_ok(e, "{\"op\":\"write\",\"args\":{\"path\":\"trunc.txt\","
@@ -625,7 +625,7 @@ static int test_truncated_stdout(ge_engine *e) {
   return 0;
 }
 
-/* D22: explicit add/write of a symlink fails closed with a clear error. */
+/* explicit add/write of a symlink fails closed with a clear error. */
 static int test_symlink_fail_closed(ge_engine *e) {
   char linkpath[4096];
   char targetpath[4096];
@@ -633,14 +633,14 @@ static int test_symlink_fail_closed(ge_engine *e) {
   snprintf(linkpath, sizeof(linkpath), "%s/symlink_link.txt", ge_worktree_root(e));
   FILE *tf = fopen(targetpath, "wb");
   if (!tf) {
-    fprintf(stderr, "D22: cannot create target\n");
+    fprintf(stderr, "cannot create target\n");
     return 1;
   }
   fputs("target\n", tf);
   fclose(tf);
   unlink(linkpath);
   if (symlink("symlink_target.txt", linkpath) != 0) {
-    fprintf(stderr, "D22: symlink() failed (skip if FS unsupported)\n");
+    fprintf(stderr, "symlink() failed (skip if FS unsupported)\n");
     return 1;
   }
   if (expect_fail(e, "{\"op\":\"add\",\"args\":{\"path\":\"symlink_link.txt\"}}",
@@ -657,7 +657,7 @@ static int test_symlink_fail_closed(ge_engine *e) {
   return 0;
 }
 
-/* D39: log bounds — max_count, result.bounded + stable footer when more commits. */
+/* log bounds — max_count, result.bounded + stable footer when more commits. */
 static int test_log_bounds(ge_engine *e) {
   /* Create enough commits so max_count=2 hits the bound. */
   for (int i = 0; i < 3; i++) {
@@ -720,7 +720,7 @@ static int test_log_bounds(ge_engine *e) {
   return 0;
 }
 
-/* R20: default status is porcelain-v1 XY lines; untracked is ??; short keeps XY shape. */
+/* default status is porcelain-v1 XY lines; untracked is ??; short keeps XY shape. */
 static int test_status_porcelain(ge_engine *e) {
   if (expect_ok(e, "{\"op\":\"write\",\"args\":{\"path\":\"porc_new.txt\",\"content\":\"n\\n\"}}"))
     return 1;
@@ -760,7 +760,7 @@ static int test_status_porcelain(ge_engine *e) {
   return 0;
 }
 
-/* R68–R69: list-only .gitmodules parse; network/update fail closed (no dial). */
+/* –R69: list-only .gitmodules parse; network/update fail closed (no dial). */
 static int test_submodule_list_only(ge_engine *e) {
   /* Empty / missing .gitmodules → ok with empty array. */
   char *resp = ge_run_json(e, "{\"op\":\"submodule\",\"args\":{\"action\":\"list\"}}");
@@ -834,7 +834,7 @@ static int test_submodule_list_only(ge_engine *e) {
   return 0;
 }
 
-/* R59: multi-pattern string/array + basic !negation written to sparse-checkout. */
+/* multi-pattern string/array + basic !negation written to sparse-checkout. */
 static int test_sparse_set_patterns(ge_engine *e) {
   if (expect_ok(e, "{\"op\":\"sparse-set\",\"args\":{\"patterns\":[\"src\",\"docs\",\"!vendor\"]}}"))
     return 1;
@@ -1034,39 +1034,39 @@ int main(void) {
   if (test_pack_build(e))
     goto fail;
 
-  /* R19 full patch diff */
+  /* full patch diff */
   if (test_diff_patch(e))
     goto fail;
 
-  /* R96 add all stages deletions */
+  /* add all stages deletions */
   if (test_add_all_deletion(e))
     goto fail;
 
-  /* R94 refs.import multi-ref array */
+  /* refs.import multi-ref array */
   if (test_refs_import_array(e))
     goto fail;
 
-  /* R25/D15 truncated stdout + stream_path + out/last */
+  /* truncated stdout + stream_path + out/last */
   if (test_truncated_stdout(e))
     goto fail;
 
-  /* D22 symlink fail-closed on add/write */
+  /* symlink fail-closed on add/write */
   if (test_symlink_fail_closed(e))
     goto fail;
 
-  /* D39 log bounds + show polish */
+  /* log bounds + show polish */
   if (test_log_bounds(e))
     goto fail;
 
-  /* R20 porcelain-v1 status */
+  /* porcelain-v1 status */
   if (test_status_porcelain(e))
     goto fail;
 
-  /* R59 multi-pattern + negation sparse-set */
+  /* multi-pattern + negation sparse-set */
   if (test_sparse_set_patterns(e))
     goto fail;
 
-  /* R68–R69 submodule list-only + network fail-closed */
+  /* –R69 submodule list-only + network fail-closed */
   if (test_submodule_list_only(e))
     goto fail;
 

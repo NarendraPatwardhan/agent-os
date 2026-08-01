@@ -156,7 +156,7 @@ async function main() {
     await eng.close();
   }
 
-  // D10: require_approval without onPushApproval fails closed after prepare
+  // require_approval without onPushApproval fails closed after prepare
   {
     const eng = await GitEngine.load({ baseUrl });
     await eng.run({ op: "init" });
@@ -250,7 +250,7 @@ async function main() {
     await eng.close();
   }
 
-  // R51: delete-ref push — newHash all-zero, empty pack, fixture receive-status ok
+  // delete-ref push — newHash all-zero, empty pack, fixture receive-status ok
   {
     const eng = await GitEngine.load({ baseUrl });
     await eng.run({ op: "init" });
@@ -335,7 +335,7 @@ async function main() {
     await eng.close();
   }
 
-  // R48: pack with haves (parent) smaller than full tip pack
+  // pack with haves (parent) smaller than full tip pack
   {
     const eng = await GitEngine.load({ baseUrl });
     await eng.run({ op: "init" });
@@ -395,7 +395,7 @@ async function main() {
     await eng.close();
   }
 
-  // R36: args.filter reaches transport; fixture ignores it and still returns pack
+  // args.filter reaches transport; fixture ignores it and still returns pack
   {
     const eng = await GitEngine.load({ baseUrl });
     const pack = new Uint8Array([0x50, 0x41, 0x43, 0x4b, 0, 0, 0, 2, 0, 0, 0, 0]);

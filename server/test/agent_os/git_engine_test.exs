@@ -100,7 +100,7 @@ defmodule AgentOS.GitEngineTest do
   end
 
   @tag timeout: 60_000
-  test "R27/R29 identity inject on commit when start opts set" do
+  test "identity inject on commit when start opts set" do
     path = engine_path()
 
     assert {:ok, pid} =
@@ -158,7 +158,7 @@ defmodule AgentOS.GitEngineTest do
   end
 
   @tag timeout: 60_000
-  test "D16 directory durable: second Port reopens same HEAD + worktree" do
+  test "directory durable: second Port reopens same HEAD + worktree" do
     path = engine_path()
     root =
       Path.join(
@@ -274,7 +274,7 @@ defmodule AgentOS.GitEngineTest do
   end
 
   @tag timeout: 60_000
-  test "R34 reset ff-only fails on divergent history" do
+  test "reset ff-only fails on divergent history" do
     path = engine_path()
     assert {:ok, pid} = GitEngine.start(executable: path)
     assert {:ok, _} = GitEngine.run(pid, %{"op" => "init"})
@@ -398,7 +398,7 @@ defmodule AgentOS.GitEngineTest do
 
   # R5: kill Port → subsequent Run returns :eio (fail closed).
   @tag timeout: 60_000
-  test "R5 kill Port → subsequent run returns eio" do
+  test "kill Port → subsequent run returns eio" do
     path = engine_path()
     assert {:ok, pid} = GitEngine.start(executable: path)
     assert {:ok, _} = GitEngine.run(pid, %{"op" => "init"})

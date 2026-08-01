@@ -1,5 +1,5 @@
 /**
- * P2.8 — executable K20 orch goldens (shared JSON with BEAM).
+ * executable dual-host orch goldens (shared JSON with BEAM).
  * Loads testdata/orch/*.json and drives FixtureSmartHttp + GitRemoteOrchestrator.
  */
 

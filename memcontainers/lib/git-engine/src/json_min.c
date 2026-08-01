@@ -1,6 +1,5 @@
 /* Minimal JSON helpers for the Run ABI (no third-party dependency).
- * Only supports what the spike needs: extract string/bool/int fields from
- * shallow objects, and build small response objects. */
+ * Extract string/bool/int fields from shallow objects and build small responses. */
 
 #include "json_min.h"
 
@@ -30,7 +29,7 @@ static const char *find_key(const char *json, const char *key) {
 
   const char *p = json;
   while ((p = strstr(p, pat)) != NULL) {
-    /* crude: skip if escaped quote before (ignore for spike) */
+    /* crude: skip if escaped quote before (ignore escaped-quote edge cases) */
     p = skip_ws(p + strlen(pat));
     if (*p != ':') {
       p++;

@@ -1,4 +1,4 @@
-/* Port frame smoke: Run init→commit + mount ctl + kill-closed semantics (GIT.md PR7a/b). */
+/* Port frame acceptance: Run init→commit + mount ctl + kill-closed (product Port path). */
 
 #define _POSIX_C_SOURCE 200809L
 
@@ -308,6 +308,6 @@ int main(void) {
 
   fclose(pipe_ab);
   fclose(pipe_ba);
-  fprintf(stdout, "port_smoke_test SUCCESS\n");
+  fprintf(stdout, "port_frame_test SUCCESS\n");
   return 0;
 }

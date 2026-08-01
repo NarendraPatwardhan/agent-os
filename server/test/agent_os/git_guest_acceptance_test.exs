@@ -1,17 +1,8 @@
 defmodule AgentOS.GitGuestAcceptanceTest do
   @moduledoc """
-  Chunk 8 / D25–D26 / D29–D31 — strongest server-side git acceptance.
+  Server-side guest git acceptance: CAP_NET remotes, deny path, Port kill-closed, gitfs ctl.
 
-  * **D25** full guest CAP_NET path: loom + host_call relay + attach_git +
-    `/bin/git clone` → BEAM orch fixture → worktree (no external network).
-  * **D26** CAP_NET deny: boot contract read-write (no CAP_NET) → git clone
-    fails closed and never dials the fixture transport.
-  * **D29** Port kill → next guest op fails closed (EIO / detached).
-  * **D30** gitfs type-4 mount + ctl on a booted guest via `/bin/git`.
-  * **D31** `args.client_token` echoed + `/.git/mc/generation` advances
-    (Port mount_op / gitfs surface).
-
-  Requires `//server:mix_test` runfiles: kernel, loom, git-engine, fixtures.
+  Boots loom + kernel via attach_git; fixture smart-HTTP only (no external network).
   """
   use ExUnit.Case, async: false
 
@@ -24,21 +15,21 @@ defmodule AgentOS.GitGuestAcceptanceTest do
   @fixture_url "https://example.com/demo.git"
   @fixture_origin "https://example.com"
 
-  # ── D25: full guest CAP_NET clone path ─────────────────────────────────────
+  # CAP_NET clone path
 
-  test "D25 guest CAP_NET + /bin/git clone via attach_git fixture (full path)" do
+  test "guest CAP_NET + /bin/git clone via attach_git fixture" do
     wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
     loom = runfile_bytes("memcontainers/images/loom.tar")
     path = engine_path()
 
     if is_nil(wasm) or is_nil(loom) do
-      flunk("D25 requires kernel.wasm + loom.tar under bazel //server:mix_test runfiles")
+      flunk("requires kernel.wasm + loom.tar under bazel //server:mix_test runfiles")
     end
 
-    id = unique_id("d25-capnet")
+    id = unique_id("capnet-clone")
     pack = fixture_git_bytes!("minimal.pack")
     tip = fixture_git_bytes!("minimal.tip") |> String.trim()
-    root = tmp_root("d25")
+    root = tmp_root("capnet")
     dials = :atomics.new(1, signed: false)
 
     transport = fn
@@ -67,7 +58,7 @@ defmodule AgentOS.GitGuestAcceptanceTest do
                  root: root,
                  allowed_origins: [@fixture_origin],
                  transport: transport,
-                 identity: %{name: "D25", email: "d25@example.com"}
+                 identity: %{name: "guest", email: "guest@example.com"}
                )
 
       # Full-tier guest: direct argv so CAP_NET host_call is exercised (not shell SPAWN only).
@@ -75,11 +66,11 @@ defmodule AgentOS.GitGuestAcceptanceTest do
                ControlPlane.run(id, "git", ["clone", @fixture_url], timeout: 120_000)
 
       out = "#{result.stdout}\n#{result.stderr}"
-      assert result.exit_code == 0, "D25 git clone failed: #{inspect(result)}"
+      assert result.exit_code == 0, "git clone failed: #{inspect(result)}"
       assert out =~ "cloned" or out =~ "ok" or out =~ "\"ok\":true" or result.exit_code == 0
 
       assert :atomics.get(dials, 1) >= 2,
-             "D25 fixture transport must dial list-refs + fetch-packs (got #{:atomics.get(dials, 1)})"
+             "fixture transport must dial list-refs + fetch-packs (got #{:atomics.get(dials, 1)})"
 
       assert_eventually(fn ->
         case File.read(Path.join(root, "README")) do
@@ -95,21 +86,21 @@ defmodule AgentOS.GitGuestAcceptanceTest do
     end
   end
 
-  # ── D26: CAP_NET deny ──────────────────────────────────────────────────────
+  # CAP_NET deny
 
-  test "D26 guest without CAP_NET: git clone fails closed and never dials" do
+  test "guest without CAP_NET: git clone fails closed and never dials" do
     wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
     loom = runfile_bytes("memcontainers/images/loom.tar")
     path = engine_path()
 
     if is_nil(wasm) or is_nil(loom) do
-      flunk("D26 requires kernel.wasm + loom.tar under bazel //server:mix_test runfiles")
+      flunk("requires kernel.wasm + loom.tar under bazel //server:mix_test runfiles")
     end
 
-    id = unique_id("d26-deny")
+    id = unique_id("capnet-deny")
     pack = fixture_git_bytes!("minimal.pack")
     tip = fixture_git_bytes!("minimal.tip") |> String.trim()
-    root = tmp_root("d26")
+    root = tmp_root("capnet-deny")
     dials = :atomics.new(1, signed: false)
 
     transport = fn
@@ -153,22 +144,22 @@ defmodule AgentOS.GitGuestAcceptanceTest do
         msg =~ "CAP_NET" or msg =~ "host_call" or msg =~ "EPERM" or msg =~ "Permission"
 
       assert deny_marker,
-             "D26 expected CAP_NET/host_call/EPERM marker, got: #{inspect(denied)}"
+             "expected CAP_NET/host_call/EPERM marker, got: #{inspect(denied)}"
 
       assert denied.exit_code != 0 or msg =~ "host_call git failed",
-             "D26 git clone without CAP_NET must fail: #{inspect(denied)}"
+             "git clone without CAP_NET must fail: #{inspect(denied)}"
 
       assert :atomics.get(dials, 1) == 0,
-             "D26 must not reach fixture transport (dials=#{:atomics.get(dials, 1)})"
+             "must not reach fixture transport (dials=#{:atomics.get(dials, 1)})"
     after
       ControlPlane.dispose(id)
       File.rm_rf(root)
     end
   end
 
-  # ── D29: Port kill → guest-visible EIO ─────────────────────────────────────
+  # ──: Port kill → guest-visible EIO ─────────────────────────────────────
 
-  test "D29 Port kill → next guest git op fails closed (EIO)" do
+  test "Port kill → next guest git op fails closed (EIO)" do
     wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
     loom = runfile_bytes("memcontainers/images/loom.tar")
     path = engine_path()
@@ -177,8 +168,8 @@ defmodule AgentOS.GitGuestAcceptanceTest do
       flunk("D29 requires kernel.wasm + loom.tar under bazel //server:mix_test runfiles")
     end
 
-    id = unique_id("d29-eio")
-    root = tmp_root("d29")
+    id = unique_id("git-eio")
+    root = tmp_root("git")
 
     try do
       assert {:ok, _pid} =
@@ -249,9 +240,9 @@ defmodule AgentOS.GitGuestAcceptanceTest do
     end
   end
 
-  # ── D30: gitfs mount + ctl on booted guest ─────────────────────────────────
+  # ──: gitfs mount + ctl on booted guest ─────────────────────────────────
 
-  test "D30 booted guest gitfs mount + ctl via /bin/git (type-4)" do
+  test "booted guest gitfs mount + ctl via /bin/git (type-4)" do
     wasm = runfile_bytes("memcontainers/kernel/rust/kernel.wasm")
     loom = runfile_bytes("memcontainers/images/loom.tar")
     path = engine_path()
@@ -260,8 +251,8 @@ defmodule AgentOS.GitGuestAcceptanceTest do
       flunk("D30 requires kernel.wasm + loom.tar under bazel //server:mix_test runfiles")
     end
 
-    id = unique_id("d30-gitfs")
-    root = tmp_root("d30")
+    id = unique_id("git-gitfs")
+    root = tmp_root("git")
 
     try do
       assert {:ok, _pid} =
@@ -345,9 +336,9 @@ defmodule AgentOS.GitGuestAcceptanceTest do
     end
   end
 
-  # ── D31: client_token + generation race acceptance ─────────────────────────
+  # ──: client_token + generation race acceptance ─────────────────────────
 
-  test "D31 client_token echoed and generation advances (gitfs mount_op)" do
+  test "client_token echoed and generation advances (gitfs mount_op)" do
     path = engine_path()
     assert {:ok, pid} = GitEngine.start(executable: path)
 

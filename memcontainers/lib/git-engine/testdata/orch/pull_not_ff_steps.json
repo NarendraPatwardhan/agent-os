@@ -1,73 +1,73 @@
 {
-  "name": "pull_not_ff_diverged",
-  "version": 1,
-  "description": "Local tip diverged from remote (setup init+commit unrelated to fixture tip); pull FF-only fails with git: not fast-forward (D32 dual-host).",
-  "fixture": {
-    "url": "https://example.com/demo.git",
-    "allowed_origins": ["https://example.com"],
-    "refs": [
-      {
-        "name": "refs/heads/main",
-        "hash_from": "../pack/minimal.tip"
-      }
-    ],
-    "pack_from": "../pack/minimal.pack",
-    "setup": [
-      { "op": "init" },
-      {
-        "op": "write",
-        "args": { "path": "local.txt", "content": "diverged-local\n" }
-      },
-      { "op": "add", "args": { "path": "local.txt" } },
-      {
-        "op": "commit",
-        "args": {
-          "message": "local-ahead-unrelated",
-          "name": "L",
-          "email": "l@l",
-          "when_unix": 1700000300
-        }
-      }
-    ]
-  },
-  "steps": [
-    {
-      "id": "local_diverged_setup",
-      "ok": true,
-      "notes": "fixture.setup creates local tip not ancestor of remote minimal.tip"
-    },
-    {
-      "id": "list_refs",
-      "ok": true
-    },
-    {
-      "id": "fetch_packs",
-      "ok": true
-    },
-    {
-      "id": "import_pack",
-      "ok": true
-    },
-    {
-      "id": "fetch_apply",
-      "ok": true
-    },
-    {
-      "id": "ff_only_reset",
-      "ok": false,
-      "error_contains": ["not fast-forward"]
-    },
-    {
-      "id": "orchestrator_response",
-      "op": "pull",
-      "args": {
-        "url": "https://example.com/demo.git"
-      },
-      "expect": {
-        "ok": false,
-        "stderr_contains": ["not fast-forward"],
-        "stdout_not_contains": ["Fast-forward", "Already up to date"]
-      }
-    }
-  ]
+ "name": "pull_not_ff_diverged",
+ "version": 1,
+ "description": "Local tip diverged from remote (setup init+commit unrelated to fixture tip); pull FF-only fails with git: not fast-forward.",
+ "fixture": {
+ "url": "https://example.com/demo.git",
+ "allowed_origins": ["https://example.com"],
+ "refs": [
+ {
+ "name": "refs/heads/main",
+ "hash_from": "../pack/minimal.tip"
+ }
+ ],
+ "pack_from": "../pack/minimal.pack",
+ "setup": [
+ { "op": "init" },
+ {
+ "op": "write",
+ "args": { "path": "local.txt", "content": "diverged-local\n" }
+ },
+ { "op": "add", "args": { "path": "local.txt" } },
+ {
+ "op": "commit",
+ "args": {
+ "message": "local-ahead-unrelated",
+ "name": "L",
+ "email": "l@l",
+ "when_unix": 1700000300
+ }
+ }
+ ]
+ },
+ "steps": [
+ {
+ "id": "local_diverged_setup",
+ "ok": true,
+ "notes": "fixture.setup creates local tip not ancestor of remote minimal.tip"
+ },
+ {
+ "id": "list_refs",
+ "ok": true
+ },
+ {
+ "id": "fetch_packs",
+ "ok": true
+ },
+ {
+ "id": "import_pack",
+ "ok": true
+ },
+ {
+ "id": "fetch_apply",
+ "ok": true
+ },
+ {
+ "id": "ff_only_reset",
+ "ok": false,
+ "error_contains": ["not fast-forward"]
+ },
+ {
+ "id": "orchestrator_response",
+ "op": "pull",
+ "args": {
+ "url": "https://example.com/demo.git"
+ },
+ "expect": {
+ "ok": false,
+ "stderr_contains": ["not fast-forward"],
+ "stdout_not_contains": ["Fast-forward", "Already up to date"]
+ }
+ }
+ ]
 }

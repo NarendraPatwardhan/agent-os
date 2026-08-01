@@ -1,56 +1,56 @@
 {
-  "name": "clone_empty_pack_fail",
-  "version": 1,
-  "description": "List-refs succeeds but empty upload-pack body must fail closed (never ok:true).",
-  "fixture": {
-    "url": "https://example.com/demo.git",
-    "allowed_origins": ["https://example.com"],
-    "refs": [
-      {
-        "name": "refs/heads/main",
-        "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      }
-    ],
-    "pack": ""
-  },
-  "steps": [
-    {
-      "id": "resolve_remote_url",
-      "ok": true
-    },
-    {
-      "id": "origin_allowlist",
-      "ok": true
-    },
-    {
-      "id": "list_refs",
-      "ok": true
-    },
-    {
-      "id": "select_head_tip",
-      "ok": true
-    },
-    {
-      "id": "fetch_packs",
-      "ok": true,
-      "notes": "Transport returns empty body; product orch must not short-circuit to cloned"
-    },
-    {
-      "id": "require_non_empty_pack",
-      "ok": false,
-      "error_contains": ["empty pack"]
-    },
-    {
-      "id": "orchestrator_response",
-      "op": "clone",
-      "args": {
-        "url": "https://example.com/demo.git"
-      },
-      "expect": {
-        "ok": false,
-        "stderr_contains": ["empty pack"],
-        "stdout_not_contains": ["cloned"]
-      }
-    }
-  ]
+ "name": "clone_empty_pack_fail",
+ "version": 1,
+ "description": "List-refs succeeds but empty upload-pack body must fail closed (never ok:true).",
+ "fixture": {
+ "url": "https://example.com/demo.git",
+ "allowed_origins": ["https://example.com"],
+ "refs": [
+ {
+ "name": "refs/heads/main",
+ "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+ }
+ ],
+ "pack": ""
+ },
+ "steps": [
+ {
+ "id": "resolve_remote_url",
+ "ok": true
+ },
+ {
+ "id": "origin_allowlist",
+ "ok": true
+ },
+ {
+ "id": "list_refs",
+ "ok": true
+ },
+ {
+ "id": "select_head_tip",
+ "ok": true
+ },
+ {
+ "id": "fetch_packs",
+ "ok": true,
+ "notes": "Transport returns empty body; product orch must not short-circuit to cloned"
+ },
+ {
+ "id": "require_non_empty_pack",
+ "ok": false,
+ "error_contains": ["empty pack"]
+ },
+ {
+ "id": "orchestrator_response",
+ "op": "clone",
+ "args": {
+ "url": "https://example.com/demo.git"
+ },
+ "expect": {
+ "ok": false,
+ "stderr_contains": ["empty pack"],
+ "stdout_not_contains": ["cloned"]
+ }
+ }
+ ]
 }

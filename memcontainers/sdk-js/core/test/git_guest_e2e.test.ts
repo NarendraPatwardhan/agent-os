@@ -1,13 +1,10 @@
 /**
- * Residuals R1 / R3 / R8 — strongest hermetic JS guest git e2e.
+ * Guest git acceptance: thin /bin/git, CAP_NET remotes, gitfs ctl, snapshot rebind.
  *
- * R8: mc.create + git + gitfs ctl close-then-status (commit via /bin/git).
- * R3: guest without CAP_NET → host_call "git" fails closed (EPERM / clear error).
- * R1: guest with CAP_NET + /bin/git clone → MapHostCall "git" → FixtureSmartHttp → worktree.
- *
- * No external network: FixtureSmartHttp + minimal.pack only.
- * Full guest /bin/git is on base (git_layer; e2e boots loom which inherits it).
- * Remotes use host_call + CAP_NET.
+ * Covers local ctl porcelain, CAP_NET deny, fixture clone with CAP_NET,
+ * durable snapshot/restore rebind, and snapshot blocked during inflight remote.
+ * Hermetic only (FixtureSmartHttp + minimal.pack).
+ * /bin/git is on base (e2e boots loom which inherits it). Remotes use host_call + CAP_NET.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -117,9 +114,8 @@ async function main(): Promise<void> {
   const baseUrl = gitBaseUrl();
   const fixture = packFixture();
 
-  // ── R8: mc.create + git + gitfs ctl close-then-status ──
+  // ── : mc.create + git + gitfs ctl close-then-status ──
   // Thin /bin/git writes Request, closes fd, re-opens ctl for Response (never close-only).
-  console.log("phase: R8 gitfs ctl close-then-status via /bin/git");
   {
     const vm = await mc.create({
       kernel,
@@ -191,16 +187,13 @@ async function main(): Promise<void> {
       if (refuse.ok || !String(refuse.stderr || "").includes("host_call")) {
         throw new Error(`ctl fetch must refuse remotes: ${refuseRaw}`);
       }
-
-      console.log("phase: R8 OK");
     } finally {
       await vm.close();
     }
   }
 
-  // ── R3: without CAP_NET, remote host_call fails closed ──
-  // Boot image at read-write tier (no CAP_NET). /bin/git clone → EPERM path.
-  console.log("phase: R3 CAP_NET deny (boot tier read-write)");
+  // ── : without CAP_NET, remote host_call fails closed ──
+  // Boot image at read-write tier (no CAP_NET). /bin/git clone must fail closed.
   {
     const store = new MemoryContentStore();
     const dig = await store.put(loom);
@@ -259,10 +252,9 @@ async function main(): Promise<void> {
     }
   }
 
-  // R3b: full-tier parent spawns read-only child; sys.host.call("git") must not dial.
+  // full-tier parent spawns read-only child; sys.host.call("git") must not dial.
   // Hard gate: FixtureSmartHttp call counters stay at 0. Boot-tier test above covers
   // the guest-visible error string from /bin/git.
-  console.log("phase: R3 CAP_NET deny (spawn read-only child)");
   {
     const http = new FixtureSmartHttp();
     http.add(fixture.url, [{ name: "refs/heads/main", hash: fixture.tip }], fixture.pack);
@@ -306,14 +298,12 @@ async function main(): Promise<void> {
           `R3b: read-only child must not reach FixtureSmartHttp (listRefs=${http.listRefsCalls} fetchPacks=${http.fetchPacksCalls})`,
         );
       }
-      console.log("phase: R3 spawn-child deny OK (no transport dial)");
     } finally {
       await vm.close();
     }
   }
 
-  // ── R1: full guest CAP_NET + /bin/git clone via fixture smart-HTTP ──
-  console.log("phase: R1 guest CAP_NET + /bin/git clone (fixture pack)");
+  // CAP_NET + /bin/git clone via fixture smart-HTTP
   {
     const http = new FixtureSmartHttp();
     http.add(fixture.url, [{ name: "refs/heads/main", hash: fixture.tip }], fixture.pack);
@@ -338,23 +328,23 @@ async function main(): Promise<void> {
       const clone = await vm.exec(`git clone ${fixture.url}`);
       if (clone.exitCode !== 0) {
         throw new Error(
-          `R1 git clone failed: exit=${clone.exitCode} stdout=${JSON.stringify(clone.stdout)} stderr=${JSON.stringify(clone.stderr)}`,
+          `git clone failed: exit=${clone.exitCode} stdout=${JSON.stringify(clone.stdout)} stderr=${JSON.stringify(clone.stderr)}`,
         );
       }
       if (!clone.stdout.includes("cloned") && !String(clone.stdout + clone.stderr).includes("cloned")) {
         // orch returns stdout "cloned …"; thin CLI prints Response stdout
-        throw new Error(`R1 expected cloned in output: ${JSON.stringify(clone)}`);
+        throw new Error(`expected cloned in output: ${JSON.stringify(clone)}`);
       }
       if (http.listRefsCalls < 1 || http.fetchPacksCalls < 1) {
         throw new Error(
-          `R1 fixture transport not used: listRefs=${http.listRefsCalls} fetchPacks=${http.fetchPacksCalls}`,
+          `fixture transport not used: listRefs=${http.listRefsCalls} fetchPacks=${http.fetchPacksCalls}`,
         );
       }
 
       // Worktree materialised on default gitfs mount after clone.apply
       const entries = await vm.fs.ls("/workspace/repo");
       if (!entries.some((e) => e.name === ".git")) {
-        throw new Error(`R1 worktree missing .git after clone: ${JSON.stringify(entries)}`);
+        throw new Error(`worktree missing .git after clone: ${JSON.stringify(entries)}`);
       }
 
       // Full-tier luau host_call "git" (same MapHostCall path as thin CLI remotes)
@@ -368,24 +358,21 @@ print(raw)
       );
       if (luauFetch.exitCode !== 0) {
         throw new Error(
-          `R1 luau host_call fetch: exit=${luauFetch.exitCode} stdout=${luauFetch.stdout} stderr=${luauFetch.stderr}`,
+          `luau host_call fetch: exit=${luauFetch.exitCode} stdout=${luauFetch.stdout} stderr=${luauFetch.stderr}`,
         );
       }
       if (!luauFetch.stdout.includes('"ok"')) {
-        throw new Error(`R1 luau host_call expected Response JSON: ${luauFetch.stdout}`);
+        throw new Error(`luau host_call expected Response JSON: ${luauFetch.stdout}`);
       }
-
-      console.log("phase: R1 OK");
     } finally {
       await vm.close();
     }
   }
 
-  // ── D17: snapshot/restore rebinds git durable (K10) ──
+  // ── : snapshot/restore rebinds git durable (K10) ──
   // MCSN does not carry ODB. git.durable id is recorded; snapshot checkpoints
   // process MemoryDurable (openDurable registry by id); restore reopens + rebinds AGIT.
   // HostDir diskDir path is D16 primary; process-memory proves D17 lifecycle wiring.
-  console.log("phase: D17 snapshot/restore rebinds git durable");
   {
     const durableId = `d17-guest-${Date.now()}`;
     const createOpts = {
@@ -508,16 +495,14 @@ print(raw)
       } finally {
         await child.close();
       }
-      console.log("phase: D17 OK (snapshot+restore+fork rebind git durable)");
     } finally {
       await restored.close();
     }
   }
 
-  // ── D19: snapshot refused while guest git host_call remote is inflight ──
+  // ── : snapshot refused while guest git host_call remote is inflight ──
   // Slow fixture listRefs keeps MapHostCall "git" slot open → kernel inflight_egress
   // > 0 → vm.snapshot() throws. Silent mid-clone snapshot is FAIL.
-  console.log("phase: D19 snapshot blocked during slow host_call clone");
   {
     const baseHttp = new FixtureSmartHttp();
     baseHttp.add(fixture.url, [{ name: "refs/heads/main", hash: fixture.tip }], fixture.pack);
@@ -612,7 +597,6 @@ print(raw)
         throw new Error("D19: inflight must drain after clone completes");
       }
       await vm.snapshot();
-      console.log("phase: D19 OK (snapshot refused mid-clone host_call)");
     } finally {
       releaseListRefs();
       clearTimeout(failsafe);
