@@ -17,8 +17,14 @@
 #ifndef GE_STDOUT_MAX_BYTES
 #define GE_STDOUT_MAX_BYTES (1u * 1024u * 1024u)
 #endif
-/* Full body on worktree /.git/mc/out/last when stdout is truncated. */
+/* Full body on worktree /.git/mc/out/last when stdout is truncated (D15). */
 #define GE_OUT_LAST_MAX_BYTES (8u * 1024u * 1024u)
+/* Worktree-relative path written when stdout exceeds embed limit (D15). */
+#define GE_OUT_STREAM_PATH ".git/mc/out/last"
+/* Hard cap for log max_count (D39); higher requests clamp + result.bounded. */
+#define GE_LOG_MAX_COUNT 1000
+/* Default log max_count when args omit it. */
+#define GE_LOG_DEFAULT_COUNT 10
 /* Max request JSON size for ge_run_json (fail closed). */
 #define GE_REQUEST_MAX_BYTES (1u * 1024u * 1024u)
 

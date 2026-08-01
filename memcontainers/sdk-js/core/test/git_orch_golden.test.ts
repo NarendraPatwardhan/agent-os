@@ -26,6 +26,8 @@ interface GoldenFixture {
   pack_from?: string;
   /** When true, orchestrator rejects push (R81). */
   read_only?: boolean;
+  /** Local engine ops before orch steps (D32 push_success). */
+  setup?: { op: string; args?: Record<string, unknown> }[];
 }
 
 interface StepExpect {
@@ -61,6 +63,7 @@ const GOLDEN_NAMES = [
   "fetch_success_steps.json",
   "pull_ff_steps.json",
   "push_readonly.json",
+  "push_success_steps.json",
 ] as const;
 
 function engineDir(): string {
@@ -175,6 +178,16 @@ async function runGolden(dir: string, engBase: string, name: string): Promise<vo
   const eng = await GitEngine.load({ baseUrl: engBase });
   const http = new FixtureSmartHttp();
   http.add(fixture.url, refs, pack);
+
+  // Optional local setup (init/commit) before remote orch steps.
+  for (const step of fixture.setup ?? []) {
+    const r = await eng.run({ op: step.op, args: step.args ?? {} });
+    if (r.ok === false) {
+      throw new Error(
+        `${name}: setup op ${step.op} failed: ${JSON.stringify(r)}`,
+      );
+    }
+  }
 
   const orch = new GitRemoteOrchestrator(eng, {
     http,

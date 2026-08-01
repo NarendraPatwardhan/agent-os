@@ -47,6 +47,51 @@ Not supported on the thin CLI (examples): sparse, rebase, submodules, LFS, recei
 git-config surface, annotated tags, path-limited diff, `reset` modes beyond soft/mixed/hard. Use
 SDK / ctl ops where implemented, or expect `unknown or unsupported command`.
 
+## Large stdout / stream path (D15)
+
+When a local op produces more than **1 MiB** of stdout (product embed limit), the engine never
+silently drops data:
+
+| Field | Meaning |
+|-------|---------|
+| `stdout` | Preview only (first 1 MiB) |
+| `result.truncated` | `true` |
+| `result.stream_path` | `".git/mc/out/last"` (worktree-relative) |
+| `result.stdout_bytes` | Full body length before embed cut |
+| `result.stream_bytes` | Bytes written to the stream file (≤ **8 MiB**) |
+| `result.stream_partial` | `true` if full body > 8 MiB (prefix only on disk) |
+
+**How to read the full body:**
+
+1. **gitfs / guest:** open `/.git/mc/out/last` (or `/.git/mc/out/stream` alias) after the Response.
+2. **JS host API:** `await engine.readStdoutStream(resp)` — reads the stream file via the bridge FS.
+3. **Native / abi:** file at `{worktree}/.git/mc/out/last`.
+
+`/.git/mc/ctl` always returns the last **Response JSON** (drain protocol). When a stream file is
+present, `out/last` serves that **raw stdout body** instead of the Response alias.
+
+## Symlink / special-file policy (D22)
+
+**Choice: fail closed** for explicit paths — never follow or materialize symlink targets.
+
+| Op | Symlink / special | Behaviour |
+|----|-------------------|-----------|
+| `write` path is a symlink | Fail | `write: path is a symlink (not supported; fail closed)` |
+| `add` path is a symlink | Fail | `add: path is a symlink (not supported; fail closed)` |
+| `add` path is non-regular special | Fail | clear error; no stage |
+| `add` with `all=true` | Skip | Symlinks and specials are **skipped** (walk continues) so monorepo bulk stage still works |
+| Durable hydrate / dump | Skip | Same skip class as `add all` |
+
+Rationale: following a worktree symlink can escape the engine root; materializing remote targets is
+out of surface for v1. Guests that need link content should copy to a regular file first.
+
+## log / show bounds (D39)
+
+| Op | Bounds | Signals |
+|----|--------|---------|
+| `log` | Default `max_count=10`; hard cap **1000** | `result.count`, `result.max_count`, `result.bounded`, optional `result.more`; stable stdout footer `# log: bounded max_count=N count=C more=true` when more commits exist (or request was clamped) |
+| `show` | Full commit message (no silent fixed-buffer cut) | Oversized body uses **D15** truncated + `stream_path` |
+
 ## Server remotes (K16) + push honesty
 
 Same ownership cut as kernel HTTP egress: **BEAM dials HTTPS**; the guest and the Port child do not.
@@ -313,12 +358,16 @@ Accept either form:
 | 3 | **Push or explicit RO** — packbuilder path on each product host **or** documented RO with stable reject | **Met** — JS + BEAM pack.build + receive-pack push when not read-only; RO mounts reject with stable `git: push rejected (read-only mount)` |
 | 4 | **Single-writer** — one engine queue per gitfs mount; K21 one engine per path | **Met** — bridge/Port serialise per engine; multi-mount demux + same-path fail-closed (D2/D21) |
 | 5 | **CAP_NET e2e** — guest without CAP_NET → EPERM; with CAP_NET + allowlist → shallow clone/fetch on JS **and** server attach | **Open** — **JS fixture Met:** `//memcontainers/sdk-js/core:git_guest_e2e_test` (CAP_NET allow + deny). **Server full guest-image path Open** (D25/D26). Live HTTPS Open (D27) |
-| 6 | **Metrics / observability** — engine/orch failure counters (PR16), not silent false-green | **Open** — in-process counters exist (see [Metrics](#metrics-pr16)); duration/bytes/redacted origin and server alerts Open (D35/D36) |
+| 6 | **Metrics / observability** — engine/orch failure counters (PR16), not silent false-green | **Met** — dual-host counters + `duration_ms` / `pack_bytes` / redacted origin labels; BEAM server alerts for allowlist deny + queue depth > 32 (D35/D36). See [Metrics](#metrics-pr16) |
 
-**Blocker for graduation:** criterion **5** needs server guest CAP_NET e2e (D25) in addition to the
-JS fixture path. Identity inject (K28), shallow default `depth=1`, push server path, and basic
-counters are **not** substitutes. Live public HTTPS (D27) is optional product proof, not a
-fixture substitute. **Do not graduate** `experimentalGitEngine` while any criterion is **Open**.
+**Blocker for graduation:** criterion **5** needs server guest CAP_NET e2e (D25/D26) in addition to the
+JS fixture path. Identity inject (K28), shallow default `depth=1`, push server path, and metrics are
+**not** substitutes. Live public HTTPS (D27) is optional product proof, not a fixture substitute.
+**Do not graduate** `experimentalGitEngine` while any criterion is **Open**.
+
+**Remaining OPEN IDs blocking GA (D1–D33 inventory):** D15, D22, D25, D26, D27, D28, D29, D30,
+D31, D32, D33 (plus D5 tracker hygiene). Chunk 9 does **not** flip the flag: `docs/api-surface.json`
+keeps level `experimental`.
 
 Until **all** rows are **Met**: flag stays experimental; docs and api-surface must **not** claim GA remotes.
 
@@ -454,17 +503,33 @@ Sibling multi-mount clone remains valid for independent repos (no nested gitlink
 attach /workspace/app  + host_call clone mount=/workspace/app
 attach /workspace/lib  + host_call clone mount=/workspace/lib
 ```
-## Metrics (PR16)
+## Metrics (PR16 / D35–D36)
 
-In-process counters only (not Prometheus). Never store packs, tokens, or credential material.
+In-process counters + last-op labels only (not Prometheus). Never store packs, tokens, or
+credential material. Origins are **redacted** to `scheme://host[:port]` (no path, query, userinfo).
 
-| Host | API | Counters |
-|------|-----|----------|
-| **BEAM** | `AgentOS.Git.Metrics.snapshot/0` · `reset/0` · `inc/1` | `clone_ok` / `clone_error`, `fetch_ok` / `fetch_error` (includes pull), `push_ok` / `push_error`, `port_eio`, `rpc_error` |
-| **JS** | `snapshotGitCounters()` · `resetGitCounters()` · `incGitCounter` | `clone_ok` / `clone_error`, `fetch_ok` / `fetch_error`, `push_ok` / `push_error` |
+| Host | API | Counters / labels |
+|------|-----|-------------------|
+| **BEAM** | `AgentOS.Git.Metrics.snapshot/0` · `reset/0` · `inc/1` · `record_remote_result/3` · `observe_queue_depth/2` | `clone_*` / `fetch_*` / `push_*`, `port_eio`, `rpc_error`, `allowlist_deny`, `queue_depth_warn`; labels: `last_duration_ms`, `last_pack_bytes`, `last_origin_redacted`, `duration_ms_sum`, `pack_bytes_sum`, `queue_depth` (high-water) |
+| **JS** | `snapshotGitCounters()` · `resetGitCounters()` · `recordRemoteResult(op, ok, meta?)` · `redactOrigin` | same ok/error counters + `allowlist_deny`; labels: `last_duration_ms`, `last_pack_bytes`, `last_origin_redacted`, sums |
 
-Orch records ok/error after each remote op. Port death ticks `port_eio` on BEAM.
-**Open (D35/D36):** duration/size histograms, origin/bytes labels, mount-queue depth, server alerts.
+Orch records ok/error + duration/bytes/origin after each remote op. Port death ticks `port_eio` on BEAM.
+
+**Server alerts (D36, `Logger.warning`):**
+* origin allowlist deny → `git: allowlist deny origin=…` (+ `allowlist_deny` counter)
+* per-mount remote queue depth > **32** → `git: mount queue depth N > 32 mount=…` (+ `queue_depth_warn`)
+
+## Prod git-engine discovery (D38)
+
+BEAM Port binary resolution (`AgentOS.GitEngine.discover_executable/0`), first regular file wins:
+
+1. `AGENTOS_GIT_ENGINE` (tests / explicit override)
+2. `Application.app_dir(:agent_os, "priv/git-engine")` (Mix + `mix release` priv)
+3. `:code.priv_dir(:agent_os)/git-engine`
+4. `$RELEASE_ROOT/priv/git-engine` and `$RELEASE_ROOT/lib/agent_os-*/priv/git-engine`
+5. CWD `priv/git-engine` (path-dep / dev package layout)
+
+Release packages stage the binary + libgit2 NOTICE under `priv/` (D37 L4).
 
 ## Env (Node solve / LLB)
 
@@ -504,7 +569,10 @@ unless an explicit decision overturns Port. JS hosts continue to use emcc wasm.
 
 - `//memcontainers/lib/git-engine:git_engine_wasm` — emcc module + NOTICE (ship filegroup)
 - `//memcontainers/lib/git-engine:git_engine_wasm_size_limit` — ≤2 MiB on optimized `git_engine.wasm`
-- `//memcontainers/lib/git-engine:git_engine_wasm_l5_notices` — fail-closed NOTICE/COPYING in ship set
+- `//memcontainers/lib/git-engine:git_engine_wasm_l5_notices` — fail-closed NOTICE/COPYING in wasm ship set
+- `//memcontainers/lib/git-engine:git_engine_server_artifacts` — Port binary + `.so` + NOTICE/COPYING
+- `//memcontainers/lib/git-engine:git_engine_server_l5_notices` — L5 gate on server ship set
+- `//server:agent_os_git_engine_l5_notices` — L5 gate for package priv ship set (D37)
 - `//memcontainers/lib/git-engine:git-engine` — native Port binary (dial-free)
 - `//memcontainers/lib/git-engine:orch_algorithm_traces` — executable K20 golden JSON
 - `//memcontainers/programs/git:git` — thin guest CLI

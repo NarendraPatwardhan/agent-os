@@ -100,10 +100,16 @@ static void join_root(char *out, size_t cap, const char *root, const char *rel) 
 }
 
 static int normalize_rel(const char *path, char *out, size_t cap) {
-  if (!path)
+  if (!path || cap == 0)
     return -1;
   while (*path == '/')
     path++;
+  /* Mount root: guest path "/" (or "") after strip — must not hit ge_safe_relpath
+   * (empty is rejected there). STAT/OPEN/READDIR of the mount point use this. */
+  if (!*path) {
+    out[0] = '\0';
+    return 0;
+  }
   /* Segment-based: allow "foo..bar", reject ".." / "../x" / "a/../b". */
   if (!ge_safe_relpath(path))
     return -1;
@@ -217,17 +223,58 @@ int ge_mount_dispatch(ge_engine *e, const uint8_t *body, size_t body_len, uint8_
     return (*out = fail_status(GE_ENOENT, out_len)) ? 0 : -1;
 
   /* Synthetic .git paths */
-  if (strcmp(rel, ".git/mc/ctl") == 0 || strcmp(rel, ".git/mc/out/last") == 0) {
+  if (strcmp(rel, ".git/mc/ctl") == 0) {
     if (op == MOUNT_OP_OPEN || op == MOUNT_OP_STAT) {
       size_t n = strlen(g_last_response);
       if (op == MOUNT_OP_STAT)
         return (*out = encode_stat(0, (uint64_t)n, out_len)) ? 0 : -1;
       return (*out = ok_payload((const uint8_t *)g_last_response, n, out_len)) ? 0 : -1;
     }
-    if (op == MOUNT_OP_WRITE && strcmp(rel, ".git/mc/ctl") == 0) {
+    if (op == MOUNT_OP_WRITE) {
       if (handle_ctl_write(e, data, data_len) != 0)
         return (*out = fail_status(GE_EIO, out_len)) ? 0 : -1;
       return (*out = ok_payload(NULL, 0, out_len)) ? 0 : -1;
+    }
+    return (*out = fail_status(GE_EACCES, out_len)) ? 0 : -1;
+  }
+  /* D15: out/last holds full stdout body (≤8 MiB) when result.truncated;
+   * otherwise alias last Response JSON (ctl drain). Prefer on-disk stream. */
+  if (strcmp(rel, ".git/mc/out/last") == 0 ||
+      strcmp(rel, ".git/mc/out/stream") == 0) {
+    if (op == MOUNT_OP_OPEN || op == MOUNT_OP_STAT) {
+      char disk[4096];
+      join_root(disk, sizeof(disk), wt, rel);
+      /* Prefer GE_OUT_STREAM_PATH body file when present (engine write). */
+      if (strcmp(rel, ".git/mc/out/stream") == 0) {
+        join_root(disk, sizeof(disk), wt, ".git/mc/out/last");
+      }
+      struct stat st;
+      if (stat(disk, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0) {
+        if (op == MOUNT_OP_STAT)
+          return (*out = encode_stat(0, (uint64_t)st.st_size, out_len)) ? 0 : -1;
+        FILE *f = fopen(disk, "rb");
+        if (!f)
+          return (*out = fail_status(GE_EIO, out_len)) ? 0 : -1;
+        size_t n = (size_t)st.st_size;
+        if (n > GE_OUT_LAST_MAX_BYTES)
+          n = GE_OUT_LAST_MAX_BYTES;
+        uint8_t *buf = (uint8_t *)malloc(n);
+        if (!buf) {
+          fclose(f);
+          return (*out = fail_status(GE_EIO, out_len)) ? 0 : -1;
+        }
+        size_t got = n ? fread(buf, 1, n, f) : 0;
+        fclose(f);
+        uint8_t *payload = ok_payload(buf, got, out_len);
+        free(buf);
+        return (*out = payload) ? 0 : -1;
+      }
+      /* No stream body: Response JSON alias (same as ctl open). */
+      size_t n = strlen(g_last_response);
+      if (op == MOUNT_OP_STAT)
+        return (*out = encode_stat(0, (uint64_t)n, out_len)) ? 0 : -1;
+      return (*out = ok_payload((const uint8_t *)g_last_response, n, out_len)) ? 0
+                                                                               : -1;
     }
     return (*out = fail_status(GE_EACCES, out_len)) ? 0 : -1;
   }

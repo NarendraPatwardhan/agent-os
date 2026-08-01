@@ -19,7 +19,8 @@ defmodule AgentOS.Git.OrchGoldenTest do
     "origin_denied.json",
     "fetch_success_steps.json",
     "pull_ff_steps.json",
-    "push_readonly.json"
+    "push_readonly.json",
+    "push_success_steps.json"
   ]
 
   @push_read_only "git: push rejected (read-only mount)"
@@ -130,6 +131,16 @@ defmodule AgentOS.Git.OrchGoldenTest do
     end
   end
 
+  defp run_setup(pid, fixture) do
+    for step <- Map.get(fixture, "setup") || [] do
+      op = Map.fetch!(step, "op")
+      args = Map.get(step, "args") || %{}
+      assert {:ok, _} = GitEngine.run(pid, %{"op" => op, "args" => args})
+    end
+
+    :ok
+  end
+
   defp run_response_step(pid, golden_path, golden, step) do
     fixture = Map.fetch!(golden, "fixture")
     pack = load_pack(golden_path, fixture)
@@ -199,16 +210,24 @@ defmodule AgentOS.Git.OrchGoldenTest do
       root =
         Path.join(
           System.tmp_dir!(),
-          "orch-golden-" <> Integer.to_string(System.unique_integer([:positive]))
+          "orch-golden-" <>
+            Integer.to_string(System.unique_integer([:positive])) <>
+            "-" <>
+            Integer.to_string(System.system_time(:nanosecond))
         )
 
+      # Durable root when :root is set — wipe leftovers so init/clone is clean.
+      File.rm_rf!(root)
       File.mkdir_p!(root)
       assert {:ok, pid} = GitEngine.start(executable: engine_path(), root: root)
 
       try do
+        fixture = Map.fetch!(golden, "fixture")
+        :ok = run_setup(pid, fixture)
         Enum.each(exec, fn step -> run_response_step(pid, path, golden, step) end)
       after
         GitEngine.stop(pid)
+        File.rm_rf(root)
       end
     end
   end

@@ -33,6 +33,8 @@ export type EmscriptenGitModule = {
   _ge_free(ptr: number): void;
   _ge_version(): number;
   _ge_last_error(eng: number): number;
+  /** Test helper: override stdout embed limit (0 = product default). D15. */
+  _ge_test_set_stdout_max_bytes?(n: number): void;
 };
 
 export type EmscriptenFS = {
@@ -168,6 +170,18 @@ export class GitBridge {
 
   lastError(): string {
     return this.mod.UTF8ToString(this.mod._ge_last_error(this.eng)) || "";
+  }
+
+  /**
+   * Test-only: override stdout embed limit for D15 truncation tests.
+   * Pass 0 to restore the product default (1 MiB).
+   */
+  testSetStdoutMaxBytes(n: number): void {
+    const fn = this.mod._ge_test_set_stdout_max_bytes;
+    if (typeof fn !== "function") {
+      throw new Error("ge_test_set_stdout_max_bytes not exported in this module");
+    }
+    fn(n >>> 0);
   }
 
   /** Sync WASM ge_run_json. Callers that may race must wrap with {@link serial}. */

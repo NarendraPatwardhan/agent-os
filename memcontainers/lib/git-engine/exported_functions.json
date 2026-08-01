@@ -9,5 +9,6 @@
   "_ge_last_error",
   "_ge_free",
   "_ge_response_is_static",
-  "_ge_version"
+  "_ge_version",
+  "_ge_test_set_stdout_max_bytes"
 ]

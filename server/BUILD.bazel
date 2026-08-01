@@ -1,7 +1,9 @@
 load("@aspect_bazel_lib//lib:copy_file.bzl", "copy_file")
 load("@aspect_bazel_lib//lib:write_source_files.bzl", "write_source_files")
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@rules_elixir//:defs.bzl", "mix_library", "mix_test")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+load("//memcontainers/lib/git-engine:ship_gate.bzl", "assert_ship_files")
 
 # server — the AgentOS control-plane library (Elixir/OTP): the supervisor over wasm VMs
 # described in SYSTEMS.md §13.1. It drives VMs through host_nif and deliberately stops below
@@ -55,7 +57,9 @@ mix_library(
     priv = [
         ":browser_ctl_artifact",
         "//memcontainers/hosts/wasmtime/nif:host_nif_release",
+        # D37/D38: Port binary + L4 NOTICE set under priv/ for app_dir discovery.
         "//memcontainers/lib/git-engine:git-engine",
+        "//third_party/libgit2:notices",
     ],
     tags = ["manual"],
     target_compatible_with = ELIXIR_ONLY,
@@ -73,6 +77,7 @@ mix_library(
         ":browser_ctl_artifact",
         "//memcontainers/hosts/wasmtime/nif:host_nif_release",
         "//memcontainers/lib/git-engine:git-engine",
+        "//third_party/libgit2:notices",
     ],
     tags = ["manual"],
     target_compatible_with = ELIXIR_ONLY,
@@ -264,17 +269,51 @@ pkg_tar(
         "//memcontainers/images:posix": "priv/images/posix.tar",
         ":browser_ctl_artifact": "priv/browser-ctl.tar",
         "//memcontainers/kernel/rust:kernel": "priv/kernel/kernel.wasm",
+        # D37 L4: git-engine Port + libgit2 NOTICE adjacent in priv/.
+        "//memcontainers/lib/git-engine:git-engine": "priv/git-engine",
+        "//third_party/libgit2:NOTICE": "priv/third_party/libgit2/NOTICE",
+        "//third_party/libgit2:upstream/COPYING": "priv/third_party/libgit2/COPYING",
+        "//third_party/libgit2:upstream/AUTHORS": "priv/third_party/libgit2/AUTHORS",
     },
     mode = "0644",
     modes = {
         "priv": "0755",
         "priv/images": "0755",
         "priv/kernel": "0755",
+        "priv/third_party": "0755",
+        "priv/third_party/libgit2": "0755",
+        "priv/git-engine": "0755",
     },
     owner = "0.0",
     package_dir = "agent_os",
     tags = ["manual"],
     target_compatible_with = ELIXIR_ONLY,
+)
+
+# D37 L5: product ship filegroup for git-engine + NOTICE (analysis fails if dropped).
+filegroup(
+    name = "agent_os_git_engine_ship",
+    srcs = [
+        "//memcontainers/lib/git-engine:git-engine",
+        "//third_party/libgit2:notices",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+assert_ship_files(
+    name = "agent_os_git_engine_l5_notices_check",
+    ship = ":agent_os_git_engine_ship",
+    required = [
+        "NOTICE",
+        "COPYING",
+        "AUTHORS",
+        "git-engine",
+    ],
+)
+
+build_test(
+    name = "agent_os_git_engine_l5_notices",
+    targets = [":agent_os_git_engine_l5_notices_check"],
 )
 
 # A complete path-dependency-shaped runtime package for external Mix/Phoenix consumers:

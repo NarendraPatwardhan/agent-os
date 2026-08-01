@@ -81,6 +81,11 @@ defmodule AgentOS.Git.Orchestrator do
   def run(engine_pid, request, opts \\ []) when is_pid(engine_pid) do
     with {:ok, req} <- decode_request(request) do
       op = req |> Map.get("op", Map.get(req, :op, "")) |> to_string() |> String.downcase()
+      # D35: clear per-op process labels (pack size / origin) before remote work.
+      _ = Process.delete(:agent_os_git_pack_bytes)
+      _ = Process.delete(:agent_os_git_origin_redacted)
+      _ = Process.delete(:agent_os_git_allowlist_deny)
+      t0 = System.monotonic_time(:millisecond)
 
       result =
         case op do
@@ -92,26 +97,34 @@ defmodule AgentOS.Git.Orchestrator do
           _ -> {:ok, response(false, 2, "", "unknown remote op: #{op}")}
         end
 
-      record_metrics(op, result)
+      duration = max(0, System.monotonic_time(:millisecond) - t0)
+      record_metrics(op, result, duration)
       result
     end
   end
 
-  defp record_metrics(op, result) do
+  defp record_metrics(op, result, duration_ms) do
+    meta = %{
+      duration_ms: duration_ms,
+      pack_bytes: Process.delete(:agent_os_git_pack_bytes) || 0,
+      origin_redacted: Process.delete(:agent_os_git_origin_redacted) || "",
+      allowlist_deny?: Process.delete(:agent_os_git_allowlist_deny) == true
+    }
+
     case result do
       {:ok, json} when is_binary(json) ->
         ok? =
           String.contains?(json, "\"ok\":true") or String.contains?(json, ~s("ok":true))
 
-        Metrics.record_remote_result(op, ok?)
+        Metrics.record_remote_result(op, ok?, meta)
 
       {:error, :eio} ->
         Metrics.inc(:port_eio)
-        Metrics.record_remote_result(op, false)
+        Metrics.record_remote_result(op, false, meta)
 
       {:error, _} ->
         Metrics.inc(:rpc_error)
-        Metrics.record_remote_result(op, false)
+        Metrics.record_remote_result(op, false, meta)
 
       _ ->
         :ok
@@ -487,8 +500,13 @@ defmodule AgentOS.Git.Orchestrator do
   # Resolve pack (cache or stream transport), run `fun`, always cleanup file sources.
   defp with_pack_source(url, wants, haves, depth, filter, opts, fun)
        when is_function(fun, 1) do
+    note_origin(url)
+
     case resolve_pack(url, wants, haves, depth, filter, opts) do
       {:ok, pack} ->
+        # D35: pack payload size for metrics (file or binary sources).
+        Process.put(:agent_os_git_pack_bytes, SmartHttp.pack_byte_size(pack))
+
         try do
           fun.(pack)
         after
@@ -499,6 +517,13 @@ defmodule AgentOS.Git.Orchestrator do
         err
     end
   end
+
+  defp note_origin(url) when is_binary(url) do
+    Process.put(:agent_os_git_origin_redacted, Metrics.redact_origin(url))
+    :ok
+  end
+
+  defp note_origin(_), do: :ok
 
   defp map_remote_error_if_needed({:ok, _} = ok, _mode), do: ok
   defp map_remote_error_if_needed(err, mode), do: map_remote_error(err, mode)
@@ -737,6 +762,9 @@ defmodule AgentOS.Git.Orchestrator do
         {:ok, response(false, 1, "", "git: unknown connection ref #{ref}\n")}
 
       {:error, {:origin_not_allowlisted_for_connection, ref}} ->
+        # D36: allowlist deny alert (origin already noted when known).
+        Process.put(:agent_os_git_allowlist_deny, true)
+
         {:ok,
          response(false, 1, "", "git: origin not allowlisted for connection #{ref}\n")}
 
@@ -750,6 +778,7 @@ defmodule AgentOS.Git.Orchestrator do
          )}
 
       {:error, :origin_not_allowed} ->
+        Process.put(:agent_os_git_allowlist_deny, true)
         {:ok, response(false, 1, "", "git: origin not allowlisted\n")}
 
       {:error, :push_blocked} ->
@@ -1529,7 +1558,17 @@ defmodule AgentOS.Git.Orchestrator do
     op = Map.get(req, "op") || Map.get(req, :op) || ""
     op = op |> to_string() |> String.downcase()
     args = fill_remote_args_from_config(engine_pid, op, args, opts)
-    Connections.resolve_remote(args, opts)
+    # D35: best-effort redacted origin from guest/host URL before dial/deny.
+    note_origin(string_or_empty(Map.get(args, "url")))
+
+    case Connections.resolve_remote(args, opts) do
+      {:ok, binding} = ok ->
+        note_origin(binding.url)
+        ok
+
+      other ->
+        other
+    end
   end
 
   defp fill_remote_args_from_config(pid, op, args, opts) when is_map(args) do

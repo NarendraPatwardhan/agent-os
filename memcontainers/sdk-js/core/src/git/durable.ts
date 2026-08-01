@@ -526,7 +526,8 @@ async function hostTreeToMemfs(
           /* skip unreadable */
         }
       }
-      /* skip symlinks / specials (D22) */
+      /* D22: skip symlinks/specials on hydrate (same as add all=true).
+       * Explicit engine add/write of a symlink path fails closed. */
     }
   }
 

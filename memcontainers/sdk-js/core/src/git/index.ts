@@ -109,6 +109,7 @@ export type {
 export type {
   GitRequest,
   GitResponse,
+  GitResultMeta,
   GitIdentity,
   GitEngineLoadOptions,
   GitEngineCreateOptions,
@@ -118,8 +119,13 @@ export {
   resetGitCounters,
   recordRemoteResult,
   incGitCounter,
+  redactOrigin,
 } from "./metrics.js";
-export type { GitCounterKey } from "./metrics.js";
+export type {
+  GitCounterKey,
+  GitMetricsSnapshot,
+  RemoteResultMeta,
+} from "./metrics.js";
 
 /**
  * Register MapHostCall name `"git"` → TS orchestrator (PR10a; CAP_NET on guest).

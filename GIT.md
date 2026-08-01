@@ -422,7 +422,7 @@ MountFs only supports whole-file `open`/`write` (driver `write(path, data)` afte
 
 **Single-writer queue:** all `ge_run_json`, worktree mutating FS ops, and ctl writes share one FIFO per mount. Optional `args.client_token` echoed in `result.client_token`; `generation` detects response races.
 
-**Large stdout:** if Response would exceed 1 MiB, set `stdout` to a preview, `result.truncated=true`, and keep full body on `/.git/mc/out/last` (raise limit for out/last to 8 MiB or stream via host_call later).
+**Large stdout (D15):** if embedded `stdout` would exceed **1 MiB**, set `stdout` to a preview, `result.truncated=true`, `result.stream_path=".git/mc/out/last"`, and write the full body (cap **8 MiB**) to worktree `/.git/mc/out/last`. Hosts read that path via gitfs open or `GitEngine.readStdoutStream(resp)`. When body exceeds 8 MiB, `stream_partial=true` and `stream_bytes` reflect the written prefix. `/.git/mc/ctl` always returns Response JSON; `out/last` is the stream body when present, else a Response alias.
 
 | Case | Behavior |
 |------|----------|
@@ -545,7 +545,7 @@ Used by:
 | SDK `GitEngine.clone/fetch/push` (JS) | Direct call into TS orchestrator |
 | Guest remote via host_call `git` (JS embedded) | **`MapHostCall.register("git", …)`** (raw host_call name) → TS orchestrator — **not** catalog-only |
 | Guest remote via host_call `git` (Elixir) | `BeamHostCall` → BEAM → **BEAM HTTPS orch** → Port apply frames |
-| Optional agent tool | Catalog tool **`git run`** (Face B) for local Run — distinct from CAP_NET name `"git"` |
+| ~~Optional agent tool~~ | ~~Catalog tool `git run` (Face B)~~ — **struck (D41):** never productized; remotes use host_call `"git"` only |
 | Ctl / GitFsDriver | **Does not** run remotes (fail closed) |
 | LLB | Same algorithm (end state); host language per solve platform |
 
@@ -870,26 +870,27 @@ export interface GitEngine {
 static load(baseUrlOrModule: string | EmscriptenFactory, opts?: GitLoadOptions): Promise<GitEngine>;
 ```
 
-**Two Face B registrations (do not conflate):**
+**Face B registration (product):**
 
 | Face | Registration | Consumer | Cap |
 |------|--------------|----------|-----|
 | **Raw host_call name `"git"`** | `MapHostCall.register("git", handler)` on embedded backend (`hosts/js/src/host_call.ts`; see also `embedded.ts` mount `registerRaw` pattern) | Thin `/bin/git` remote subcommands via `mc_sys_host_call` | **CAP_NET** (kernel `fulfill_host_call`) |
-| **Catalog tool `git run` (optional)** | Tools catalog / `tool({ name: "git run" })` seeding `/etc/tools/catalog` | Agents / Luau batteries for local `Run` without ctl | FS / tool policy — **not** a network authority |
+
+~~**Catalog tool `git run` (optional Face B)**~~ — **struck (D41 / never productized).** Agents use host_call
+`"git"` (remotes) or gitfs ctl / SDK `GitEngine.run` (local). Do not seed `/etc/tools/catalog` with
+`git run` as a product path; do not treat catalog-only wiring as remotes.
 
 ```ts
-// Normative remote path (JS embedded) — raw host_call name, not catalog alone:
+// Normative remote path (JS embedded) — raw host_call name only:
 backend.tools.register("git", (argsJson) =>
   orchestrator.handleGuestRequest(JSON.parse(argsJson)),
 );
 // Guest: mc_sys_host_call requires CAP_NET (kernel)
-// v1: at most one gitfs mount; args.mount optional
-
-// Optional agent Face B (local porcelain helper; spike git-host.js):
-// tool({ name: "git run" }) → GitEngine.run — does NOT replace host_call "git"
+// v1: multi-mount via args.mount when registered as a map
 ```
 
-**Implementer trap:** wiring only the tools catalog without `MapHostCall.register("git")` leaves thin CLI remotes broken. Both may ship; **host_call `"git"` is required** for phase C.
+**Implementer trap:** host_call name `"git"` is **required** for thin CLI remotes. Catalog tools are
+not a substitute and the optional `git run` catalog Face B was never productized (D41 struck).
 
 Elixir control plane: no TS `MapHostCall` — BEAM handles name `"git"` and gitfs mount path via **BEAM HTTPS orch** + Port apply (PR10c). C orch is test/fixture only.
 
@@ -907,7 +908,7 @@ Elixir control plane: no TS `MapHostCall` — BEAM handles name `"git"` and gitf
 
 - Emcc modularize glue only; no gojs package.
 - `git_engine.wasm` load path analogous to catalog-compiler env/artifact pattern.
-- **`MapHostCall.register("git")`** for guest remotes; optional catalog `git run` for agents; `remote.ts` client Drivers for remote SDK (unchanged pattern).
+- **`MapHostCall.register("git")`** for guest remotes (required). Catalog `git run` **struck** (D41). `remote.ts` client Drivers for remote SDK (unchanged pattern).
 
 ### Host wasmtime / NIF / Elixir
 
@@ -1036,6 +1037,10 @@ libgit2 is **GPL-2.0 with linking exception** (upstream). git-bazel today ships 
 | Size | CI soft gates (wasm ≤2 MiB; guest CLI ≤256 KiB) |
 
 **Alert (server):** push failures, allowlist denials, engine OOM/crash, pack timeout, queue depth > N (suggest N=32 warning).
+
+**Implemented (D35–D36):** BEAM `AgentOS.Git.Metrics` + JS `metrics.ts` record
+`duration_ms` / `pack_bytes` / redacted origin per remote op; `Logger.warning` on allowlist deny
+and mount queue depth > 32. Not Prometheus — in-process snapshot only.
 
 ---
 
@@ -1307,7 +1312,7 @@ Concrete ordered PRs for the **AgentOS monorepo**. PR0 does **not** assume rules
 | **Title** | `git: ImportPack, apply ops, TS orchestrator, MapHostCall git (JS)` |
 | **Files** | complete `ge_import_pack` + `refs.import` / `clone.apply` / `fetch.apply`; `remote-orchestrator.ts`; golden algorithm traces; **`MapHostCall.register("git")`** (not catalog-only); JS CAP_NET e2e; ctl remote refuse unit on driver |
 | **Depends on** | PR1 (import polish), PR5, PR9 |
-| **Description** | K19/K20; **no** JSON pack bodies; engine never dials. **JS host only.** Optional catalog `git run` may land here or PR3. |
+| **Description** | K19/K20; **no** JSON pack bodies; engine never dials. **JS host only.** Catalog `git run` Face B **struck** (D41 — never productized). |
 
 ### PR10b — Thin CLI remote + ctl refuse e2e
 

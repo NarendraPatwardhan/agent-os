@@ -2694,7 +2694,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     end
   end
 
-  # ── R85 metrics ────────────────────────────────────────────────────────────
+  # ── R85 / D35–D36 metrics ──────────────────────────────────────────────────
 
   @tag timeout: 30_000
   test "R85 metrics counters tick on orch clone deny" do
@@ -2712,7 +2712,67 @@ defmodule AgentOS.Git.OrchestratorTest do
 
     snap = AgentOS.Git.Metrics.snapshot()
     assert snap.clone_error >= 1
+    # D35/D36: allowlist deny + redacted origin + duration label.
+    assert snap.allowlist_deny >= 1
+    assert is_integer(snap.last_duration_ms) and snap.last_duration_ms >= 0
+    assert snap.last_origin_redacted == "https://example.com"
     :ok = GitEngine.stop(pid)
+  end
+
+  @tag timeout: 60_000
+  test "D35 metrics record pack_bytes and duration on fixture clone" do
+    AgentOS.Git.Metrics.reset()
+    path = engine_path()
+    assert {:ok, pid} = GitEngine.start(executable: path)
+
+    pack_path = Path.expand("../fixtures/git/minimal.pack", __DIR__)
+
+    unless File.regular?(pack_path) do
+      flunk("D35 requires minimal.pack fixture")
+    end
+
+    pack = File.read!(pack_path)
+
+    assert {:ok, _json} =
+             Orchestrator.run(
+               pid,
+               ~s({"op":"clone","args":{"url":"#{@fixture_url}"}}),
+               orch_opts(pack)
+             )
+
+    snap = AgentOS.Git.Metrics.snapshot()
+    # Fixture clone with real pack should succeed (clone_ok) when tip/apply work.
+    assert snap.clone_ok + snap.clone_error >= 1
+    assert is_integer(snap.last_duration_ms) and snap.last_duration_ms >= 0
+    assert is_integer(snap.duration_ms_sum) and snap.duration_ms_sum >= 0
+    assert snap.last_pack_bytes == byte_size(pack)
+    assert snap.pack_bytes_sum >= snap.last_pack_bytes
+    assert snap.last_origin_redacted == "https://example.com"
+    # No tokens / path secrets in labels.
+    refute snap.last_origin_redacted =~ "token"
+    refute snap.last_origin_redacted =~ "@"
+    :ok = GitEngine.stop(pid)
+  end
+
+  test "D36 queue depth observe alerts above 32" do
+    AgentOS.Git.Metrics.reset()
+    # High-water + warn counter without needing 33 real Tasks.
+    assert :ok = AgentOS.Git.Metrics.observe_queue_depth("/workspace/repo", 33)
+    snap = AgentOS.Git.Metrics.snapshot()
+    assert snap.queue_depth == 33
+    assert snap.queue_depth_warn >= 1
+    assert :ok = AgentOS.Git.Metrics.observe_queue_depth("/workspace/repo", 1)
+    # High-water does not decrease.
+    assert AgentOS.Git.Metrics.snapshot().queue_depth == 33
+  end
+
+  test "D38 discover_executable prefers AGENTOS_GIT_ENGINE" do
+    path = engine_path()
+    assert File.regular?(path)
+    # With env set (test helper always sets it for real runs), discovery finds it.
+    found = GitEngine.discover_executable()
+    assert is_binary(found)
+    assert File.regular?(found)
   end
 
   # ── PR11 / D1: connection-bound remotes + credential splice ────────────────

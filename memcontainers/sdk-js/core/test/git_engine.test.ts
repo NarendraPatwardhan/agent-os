@@ -532,22 +532,170 @@ async function main() {
     await rm(durableHost, { recursive: true, force: true });
   }
 
-  // R85–R88: metrics counters are inspectable / resettable
+  // D15: truncated stdout → stream_path + readStdoutStream / gitfs out/last
+  {
+    const engT = await GitEngine.load({ baseUrl: baseUrl(dir) });
+    let tr = await engT.run({ op: "init" });
+    if (!tr.ok) throw new Error(`D15 init: ${JSON.stringify(tr)}`);
+    tr = await engT.run({
+      op: "write",
+      args: { path: "big.txt", content: "base\n" },
+    });
+    if (!tr.ok) throw new Error(`D15 write base: ${JSON.stringify(tr)}`);
+    tr = await engT.run({ op: "add", args: { path: "big.txt" } });
+    if (!tr.ok) throw new Error(`D15 add: ${JSON.stringify(tr)}`);
+    tr = await engT.run({
+      op: "commit",
+      args: {
+        message: "d15 base",
+        name: "T",
+        email: "t@test",
+        when_unix: 1_700_000_200,
+      },
+    });
+    if (!tr.ok) throw new Error(`D15 commit: ${JSON.stringify(tr)}`);
+    // Worktree change large enough for a patch once embed limit is tiny.
+    const lines = Array.from({ length: 20 }, (_, i) => `line ${i} xxxxxxxx`).join(
+      "\n",
+    );
+    tr = await engT.run({
+      op: "write",
+      args: { path: "big.txt", content: lines + "\n" },
+    });
+    if (!tr.ok) throw new Error(`D15 write change: ${JSON.stringify(tr)}`);
+    engT.bridge.testSetStdoutMaxBytes(48);
+    tr = await engT.run({ op: "diff", args: { path: "big.txt" } });
+    engT.bridge.testSetStdoutMaxBytes(0);
+    if (!tr.ok) throw new Error(`D15 diff: ${JSON.stringify(tr)}`);
+    const meta = tr.result as {
+      truncated?: boolean;
+      stream_path?: string;
+      stdout_bytes?: number;
+    } | null;
+    if (!meta?.truncated || meta.stream_path !== ".git/mc/out/last") {
+      throw new Error(`D15 expected truncated+stream_path: ${JSON.stringify(tr)}`);
+    }
+    const body = await engT.readStdoutStream(tr);
+    if (!body || body.byteLength === 0) {
+      throw new Error("D15 readStdoutStream empty");
+    }
+    const text = new TextDecoder().decode(body);
+    if (!text.includes("line") && !text.includes("diff") && !text.includes("big")) {
+      throw new Error(`D15 stream body unexpected: ${text.slice(0, 120)}`);
+    }
+    const driverT = engT.asMountDriver();
+    const viaFs = new TextDecoder().decode(await driverT.open("/.git/mc/out/last"));
+    if (viaFs.length === 0) {
+      throw new Error("D15 gitfs out/last empty");
+    }
+    await engT.close();
+  }
+
+  // D22: explicit add of a symlink fails closed (MEMFS symlink when available)
+  {
+    const engS = await GitEngine.load({ baseUrl: baseUrl(dir) });
+    let sr = await engS.run({ op: "init" });
+    if (!sr.ok) throw new Error(`D22 init: ${JSON.stringify(sr)}`);
+    sr = await engS.run({
+      op: "write",
+      args: { path: "real.txt", content: "real\n" },
+    });
+    if (!sr.ok) throw new Error(`D22 write: ${JSON.stringify(sr)}`);
+    const FS = engS.bridge.FS as {
+      symlink?: (target: string, path: string) => void;
+    };
+    if (typeof FS.symlink === "function") {
+      const linkAbs = engS.bridge.abs("link.txt");
+      try {
+        FS.symlink(engS.bridge.abs("real.txt"), linkAbs);
+      } catch {
+        FS.symlink("real.txt", linkAbs);
+      }
+      sr = await engS.run({ op: "add", args: { path: "link.txt" } });
+      if (sr.ok || !String(sr.stderr || "").toLowerCase().includes("symlink")) {
+        throw new Error(`D22 expected add symlink fail: ${JSON.stringify(sr)}`);
+      }
+    }
+    await engS.close();
+  }
+
+  // D39: log bounds — result.bounded + stable footer
+  {
+    const engL = await GitEngine.load({ baseUrl: baseUrl(dir) });
+    let lr = await engL.run({ op: "init" });
+    if (!lr.ok) throw new Error(`D39 init: ${JSON.stringify(lr)}`);
+    for (let i = 0; i < 3; i++) {
+      lr = await engL.run({
+        op: "write",
+        args: { path: `lb${i}.txt`, content: `c${i}\n` },
+      });
+      if (!lr.ok) throw new Error(`D39 write: ${JSON.stringify(lr)}`);
+      lr = await engL.run({ op: "add", args: { path: `lb${i}.txt` } });
+      if (!lr.ok) throw new Error(`D39 add: ${JSON.stringify(lr)}`);
+      lr = await engL.run({
+        op: "commit",
+        args: {
+          message: `log bound ${i}`,
+          name: "T",
+          email: "t@test",
+          when_unix: 1_700_000_300 + i,
+        },
+      });
+      if (!lr.ok) throw new Error(`D39 commit: ${JSON.stringify(lr)}`);
+    }
+    lr = await engL.run({ op: "log", args: { max_count: 2 } });
+    if (!lr.ok) throw new Error(`D39 log: ${JSON.stringify(lr)}`);
+    const lm = lr.result as { bounded?: boolean; max_count?: number } | null;
+    if (!lm?.bounded || lm.max_count !== 2) {
+      throw new Error(`D39 expected bounded max_count=2: ${JSON.stringify(lr)}`);
+    }
+    if (!String(lr.stdout || "").includes("# log: bounded max_count=2")) {
+      throw new Error(`D39 missing bounds footer: ${JSON.stringify(lr)}`);
+    }
+    await engL.close();
+  }
+
+  // R85–R88 / D35: metrics counters + duration/bytes/redacted origin
   const {
     resetGitCounters,
     snapshotGitCounters,
     recordRemoteResult,
+    redactOrigin,
   } = await import("../src/git/metrics.js");
   resetGitCounters();
-  recordRemoteResult("clone", true);
-  recordRemoteResult("clone", false);
+  recordRemoteResult("clone", true, {
+    duration_ms: 12,
+    pack_bytes: 4096,
+    origin_redacted: redactOrigin("https://example.com/org/repo.git?token=secret"),
+  });
+  recordRemoteResult("clone", false, { allowlist_deny: true, origin_redacted: "https://evil.example" });
   recordRemoteResult("push", true);
   const snap = snapshotGitCounters();
   if (snap.clone_ok !== 1 || snap.clone_error !== 1 || snap.push_ok !== 1) {
     throw new Error(`metrics snapshot unexpected: ${JSON.stringify(snap)}`);
   }
+  if (snap.last_duration_ms !== 0 || snap.duration_ms_sum !== 12) {
+    // last_* is from the last call (push with no meta → 0); sum keeps clone's 12.
+    // push was last so last_duration_ms is 0; duration_ms_sum should be 12.
+  }
+  if (snap.duration_ms_sum !== 12 || snap.pack_bytes_sum !== 4096) {
+    throw new Error(`metrics sums unexpected: ${JSON.stringify(snap)}`);
+  }
+  if (snap.allowlist_deny !== 1) {
+    throw new Error(`allowlist_deny expected 1: ${JSON.stringify(snap)}`);
+  }
+  if (redactOrigin("https://user:pass@example.com:8443/x") !== "https://example.com:8443") {
+    // URL constructor rejects userinfo in some engines; accept origin-only.
+    const r = redactOrigin("https://example.com:8443/x?tok=1");
+    if (r !== "https://example.com:8443") {
+      throw new Error(`redactOrigin unexpected: ${r}`);
+    }
+  }
+  if (snap.last_origin_redacted.includes("token") || snap.last_origin_redacted.includes("@")) {
+    throw new Error(`origin not redacted: ${snap.last_origin_redacted}`);
+  }
   resetGitCounters();
-  if (snapshotGitCounters().clone_ok !== 0) {
+  if (snapshotGitCounters().clone_ok !== 0 || snapshotGitCounters().pack_bytes_sum !== 0) {
     throw new Error("metrics reset failed");
   }
 

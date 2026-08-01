@@ -226,19 +226,26 @@ export class FetchSmartHttp implements SmartHttpTransport {
     const base = this.url(url, auth).replace(/\/$/, "");
     const hdrs = this.headers(auth);
     const infoUrl = `${base}/info/refs?service=git-upload-pack`;
-    let res = await this.smartFetch(infoUrl, {
-      headers: { ...hdrs, "git-protocol": "version=2" },
-    });
+    // Prefer classic v0/v1 advertise (matches BEAM SmartHttp). Optional v2
+    // probe is only used when the classic body parses empty — real git-http-backend
+    // returns a 200 v2 capability dump when `Git-Protocol: version=2` is set, which
+    // is not a ref list (D27).
+    let res = await this.smartFetch(infoUrl, { headers: hdrs });
     if (!res.ok) {
-      // Retry without git-protocol header (v0/v1 servers) — still no redirects.
-      res = await this.smartFetch(`${base}/info/refs?service=git-upload-pack`, {
-        headers: hdrs,
+      throw new Error(`git: list-refs failed: HTTP ${res.status}`);
+    }
+    let refs = parseInfoRefs(await res.text());
+    if (refs.length === 0) {
+      // Some hosts only speak v2 on info/refs; try once, still no redirects.
+      res = await this.smartFetch(infoUrl, {
+        headers: { ...hdrs, "git-protocol": "version=2" },
       });
-      if (!res.ok) {
-        throw new Error(`git: list-refs failed: HTTP ${res.status}`);
+      if (res.ok) {
+        const v2 = parseInfoRefs(await res.text());
+        if (v2.length > 0) refs = v2;
       }
     }
-    return parseInfoRefs(await res.text());
+    return refs;
   }
 
   async fetchPacks(
@@ -407,9 +414,16 @@ export function buildUploadPackBody(
 }
 
 function buildReceivePackBody(commands: PushCommand[], pack: Uint8Array): Uint8Array {
+  // First command advertises report-status so real git-receive-pack (D28)
+  // returns unpack/ok pkt-lines; subsequent commands are bare.
   let s = "";
-  for (const c of commands) {
-    s += pkt(`${c.oldHash} ${c.newHash} ${c.name}`);
+  for (let i = 0; i < commands.length; i++) {
+    const c = commands[i]!;
+    if (i === 0) {
+      s += pkt(`${c.oldHash} ${c.newHash} ${c.name}\0report-status`);
+    } else {
+      s += pkt(`${c.oldHash} ${c.newHash} ${c.name}`);
+    }
   }
   s += "0000";
   const head = new TextEncoder().encode(s);

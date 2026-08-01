@@ -181,6 +181,42 @@ export class GitEngine {
   }
 
   /**
+   * D15: read full stdout body after a truncated Response.
+   *
+   * When `result.truncated` and `result.stream_path` are set, returns the body
+   * written under the engine worktree (default `/.git/mc/out/last`, ≤8 MiB).
+   * Also works after gitfs open of the same path. Returns `null` when the
+   * response was not truncated or the stream file is missing.
+   */
+  async readStdoutStream(
+    resp?: GitResponse,
+  ): Promise<Uint8Array | null> {
+    return this.bridge.serial(() => {
+      const r = resp;
+      const meta =
+        r?.result && typeof r.result === "object" && !Array.isArray(r.result)
+          ? (r.result as Record<string, unknown>)
+          : null;
+      const pathFromResult =
+        meta && typeof meta.stream_path === "string"
+          ? meta.stream_path.replace(/^\/+/, "")
+          : null;
+      const rel = pathFromResult || ".git/mc/out/last";
+      const abs = this.bridge.abs(rel);
+      try {
+        const st = this.bridge.FS.stat(abs);
+        if (this.bridge.FS.isDir(st.mode)) return null;
+        const data = this.bridge.FS.readFile(abs);
+        return data instanceof Uint8Array
+          ? data
+          : new TextEncoder().encode(String(data));
+      } catch {
+        return null;
+      }
+    });
+  }
+
+  /**
    * K28: when host identity is configured and commit args omit name/email,
    * inject them. Never invents a default identity when unset.
    */

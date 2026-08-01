@@ -12,7 +12,31 @@ export interface GitResponse {
   code: number;
   stdout?: string;
   stderr?: string;
-  result?: unknown;
+  /**
+   * Structured op result. Large-stdout path (D15):
+   * `{ truncated: true, stream_path: ".git/mc/out/last", stdout_bytes, … }`.
+   * Log bounds (D39): `{ count, max_count, bounded?, more? }`.
+   */
+  result?: GitResultMeta | unknown;
+}
+
+/** Known `result` fields from local porcelain (D15 / D39). */
+export interface GitResultMeta {
+  truncated?: boolean;
+  /** Worktree-relative path to full stdout body (open via gitfs / readStdoutStream). */
+  stream_path?: string;
+  stdout_bytes?: number;
+  stdout_embed_bytes?: number;
+  stream_bytes?: number;
+  stream_partial?: boolean;
+  /** log: entries returned */
+  count?: number;
+  /** log: effective max_count (clamped to engine hard cap) */
+  max_count?: number;
+  /** log: hit max_count with more commits, or request was clamped */
+  bounded?: boolean;
+  more?: boolean;
+  [key: string]: unknown;
 }
 
 /** Host commit identity (K28). Never invent Agent/agent@example.com defaults. */

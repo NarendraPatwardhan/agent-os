@@ -8,6 +8,8 @@ exports_files([
     "emscripten_integer.patch",
     "NOTICE",
     "SOURCE_PIN.md",
+    "upstream/AUTHORS",
+    "upstream/COPYING",
 ])
 
 filegroup(

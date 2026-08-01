@@ -621,18 +621,92 @@ defmodule AgentOS.GitEngine do
   defp json_keys_to_string(list) when is_list(list), do: Enum.map(list, &json_keys_to_string/1)
   defp json_keys_to_string(other), do: other
 
-  defp default_executable do
-    # Bazel runfiles or release priv layout.
-    candidates = [
-      System.get_env("AGENTOS_GIT_ENGINE"),
-      Path.join(Application.app_dir(:agent_os, "priv"), "git-engine"),
-      "memcontainers/lib/git-engine/git-engine"
-    ]
+  @doc """
+  Discover the product `git-engine` Port binary (D38).
 
-    Enum.find(candidates, "git-engine", fn
-      nil -> false
-      path -> File.regular?(path)
+  Search order (first regular file wins):
+  1. `AGENTOS_GIT_ENGINE` env (explicit override; tests/Bazel)
+  2. `Application.app_dir(:agent_os, "priv/git-engine")` — Mix/`mix release` priv
+  3. `:code.priv_dir(:agent_os)/git-engine` when the app is loaded
+  4. `$RELEASE_ROOT/priv/git-engine` and `$RELEASE_ROOT/lib/*/priv/git-engine`
+  5. CWD-relative `priv/git-engine` (dev / path-dep package layout)
+  6. Workspace-relative Bazel/runfiles fallbacks
+
+  Returns the path string even if missing (Port open fails closed later).
+  """
+  @spec discover_executable() :: String.t()
+  def discover_executable, do: default_executable()
+
+  defp default_executable do
+    candidates =
+      [
+        System.get_env("AGENTOS_GIT_ENGINE"),
+        app_priv_git_engine(),
+        code_priv_git_engine(),
+        release_root_git_engine(),
+        Path.join(File.cwd!(), "priv/git-engine"),
+        Path.join(File.cwd!(), "server/priv/git-engine"),
+        "memcontainers/lib/git-engine/git-engine",
+        Path.join(File.cwd!(), "memcontainers/lib/git-engine/git-engine")
+      ]
+      |> List.flatten()
+      |> Enum.reject(&is_nil/1)
+      |> Enum.uniq()
+
+    Enum.find(candidates, "git-engine", fn path ->
+      is_binary(path) and path != "" and File.regular?(path)
     end)
+  end
+
+  defp app_priv_git_engine do
+    try do
+      Path.join(Application.app_dir(:agent_os, "priv"), "git-engine")
+    rescue
+      _ -> nil
+    end
+  end
+
+  defp code_priv_git_engine do
+    case :code.priv_dir(:agent_os) do
+      dir when is_list(dir) or is_binary(dir) ->
+        Path.join(to_string(dir), "git-engine")
+
+      _ ->
+        nil
+    end
+  rescue
+    _ -> nil
+  end
+
+  defp release_root_git_engine do
+    root =
+      case System.get_env("RELEASE_ROOT") do
+        r when is_binary(r) and r != "" ->
+          r
+
+        _ ->
+          case System.get_env("RELEASE_SYS_CONFIG") do
+            cfg when is_binary(cfg) and cfg != "" ->
+              # releases/<v>/sys.config → release root is three dirs up
+              cfg |> Path.dirname() |> Path.dirname() |> Path.dirname()
+
+            _ ->
+              nil
+          end
+      end
+
+    if is_binary(root) and root != "" do
+      [
+        Path.join(root, "priv/git-engine"),
+        Path.join(root, "lib/agent_os/priv/git-engine")
+      ] ++
+        case Path.wildcard(Path.join(root, "lib/agent_os-*/priv/git-engine")) do
+          paths when is_list(paths) -> paths
+          _ -> []
+        end
+    else
+      []
+    end
   end
 end
 

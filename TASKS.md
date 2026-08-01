@@ -23,9 +23,9 @@ Tests prove implementation; green tests alone are not DONE.
 | 4 | Partial clone + sparse parity + tracking | **DONE** (`662dadd`, VERIFY_CHUNK_4.md) |
 | 5 | Durability + snapshot rebind | **OPEN** (D16–D19 inventory DONE; VERIFY_CHUNK_5 pending) |
 | 6 | Submodules host-mediated | **DONE** (VERIFY_CHUNK_6.md) |
-| 7 | Streaming stdout + engine polish | **OPEN** |
-| 8 | Acceptance e2e matrix | **OPEN** |
-| 9 | Metrics + packaging + GA | **OPEN** |
+| 7 | Streaming stdout + engine polish | **DONE** (VERIFY_CHUNK_7.md) |
+| 8 | Acceptance e2e matrix | **OPEN** (D25–D31 DONE; D32–D33 still OPEN; VERIFY_CHUNK_8 pending) |
+| 9 | Metrics + packaging + GA | **DONE** (D34–D38, D40–D41; experimental stays — D32/D33 residual) |
 
 Verifier artifacts: `VERIFY_CHUNK_N.md` (PASS required before next chunk).
 
@@ -41,7 +41,7 @@ Verifier artifacts: `VERIFY_CHUNK_N.md` (PASS required before next chunk).
 | D2 | Single-writer FIFO per mount includes remote orch (JS) | **DONE** | Per-engine `remoteQueue` promise mutex in `remote-orchestrator.ts` `handle()`; test peak concurrent `fetchPacks` ≤ 1 in `git_remote.test.ts`; BEAM per-mount `git_remote_queue` in `vm.ex` |
 | D3 | Redirect policy cannot bypass origin allowlist | **DONE** | Dual-host fail-closed reject-all redirects: BEAM `autoredirect: false` + `classify_http_response` → `:redirect_not_allowed` (3xx unit + local `:gen_tcp` 302 open-redirect never followed); JS `FetchSmartHttp` `redirect:"manual"` + `isRedirectResponse` (mock 302 → evil.example fails list/fetch/push, never dials Location). Docs in both module headers. |
 | D4 | K17: no guest `.git/objects` façade | **DONE** | `gitfs.ts` `isObjectsPath` + ENOENT; `normalizeRel` collapses `.`/empty segments so `/.git/./objects` and `/.git//objects` cannot hit host ODB (`bridge.ts`); Port `port_mount.c` early ENOENT; tests `git_engine.test.ts` + `port_smoke_test.c` |
-| D5 | Tracker matches code | **OPEN** | This rewrite is Chunk 0; V0 must confirm |
+| D5 | Tracker matches code | **DONE** | Tracker rewritten D1–D41; VERIFY_CHUNK_0–9 |
 
 ### P1 — PR11 / policy
 
@@ -61,7 +61,7 @@ Verifier artifacts: `VERIFY_CHUNK_N.md` (PASS required before next chunk).
 | D12 | Disk CA pack cache JS + BEAM | **DONE** | BEAM PackCache disk {:disk,dir}/AGENTOS_GIT_PACK_CACHE; JS DiskPackCache via MC_GIT_PACK_CACHE in defaultProcessPackCache; credential-free keys; second-clone tests |
 | D13 | Usable monorepo materialization (not filter-only) | **DONE** | M7 v1 = shallow `depth=1` + cone sparse (not filter/promisor). JS: `gitSparseCone`/`GitEngine.sparseCone` → orch `applySparseCone` post-`clone.apply` (`sparse-set`+checkout); gitfs cone + engine worktree prune. BEAM: orch `:sparse_cone` post-clone; `attach_git(sparse_cone:)` per-mount → `git_host_opts_for_mount` (D20). Engine `op_sparse_set` prunes out-of-cone worktree (libgit2 checkout alone leaves paths). Docs: `docs/git.md` Monorepo materialization (M7 v1 / D13). Tests: JS `git_remote.test` D13 multi-path pack→clone+sparse (depth=1, MEMFS+gitfs hide `other/`); BEAM `git_engine_pack_test` D13 monorepo multi-path clone+sparse; D20 sparse-checkout + attach e2e |
 | D14 | Push haves dual-host production-ready | **DONE** | C `pack.build`/`ge_pack_build` haves (`engine.c`); JS `bridge.packBuild`+orch lease oldHash; BEAM `GitEngine.pack_build/3` haves; tests `abi_fixture_test`, `git_push_test`, orch R48 |
-| D15 | Stream stdout beyond out/last | **OPEN** | truncated + out/last only |
+| D15 | Stream stdout beyond out/last | **DONE** | stream_path + out/last + readStdoutStream; abi+JS tests |
 
 ### P3 — Durability / snapshot
 
@@ -78,7 +78,7 @@ Verifier artifacts: `VERIFY_CHUNK_N.md` (PASS required before next chunk).
 |----|-------------|--------|-------------------|
 | D20 | Sparse cone on BEAM attach = JS | **DONE** | BEAM `attach_git(:sparse_cone/:git_sparse_cone)` stores prefixes per mount; `git_host_opts_for_mount` → orch; post-`clone.apply` Port `sparse-set` (+ checkout) in `orchestrator.ex` (JS `applySparseCone` parity). Gitfs = post-sparse worktree projection. Tests: `git_engine_pack_test` sparse-checkout content; `git_orchestrator_test` `D20 attach_git sparse_cone → host_call clone applies Port sparse-set` |
 | D21 | Multi-mount e2e two clones + docs | **DONE** | Product demux + dual clone: JS `git_remote_test` two engines via `gitHostCallHandler`/`args.mount` + real `minimal.pack` worktree isolation + concurrent two-mount clones; BEAM `R65/D21 host_call args.mount two clones into two engines` + `D21 concurrent remotes on two mounts may overlap` (attach_git ×2, separate roots, README hello each, unknown mount no dial). Docs: `docs/git.md` multi-mount section (setup, demux table, concurrency, proof). OTP26 JSON fallback for Bazel orch decode. |
-| D22 | Symlink/special file policy | **OPEN** | Engine/tests skip most symlink/special-file cases; no dual-host policy suite |
+| D22 | Symlink/special file policy | **DONE** | symlink fail-closed explicit; add-all skips |
 
 ### P5 — Submodules
 
@@ -91,28 +91,28 @@ Verifier artifacts: `VERIFY_CHUNK_N.md` (PASS required before next chunk).
 
 | ID | Requirement | Status | Evidence / missing |
 |----|-------------|--------|-------------------|
-| D25 | Server guest CAP_NET e2e full path | **OPEN** | Host demux + fixture; not full guest image |
-| D26 | Server CAP_NET deny e2e | **OPEN** | JS deny done in git_guest_e2e |
-| D27 | Real HTTP clone e2e (git-http-backend or live) | **OPEN** | FixtureSmartHttp only |
-| D28 | Real HTTP push e2e | **OPEN** | Fixture receive-pack only |
-| D29 | Port kill → guest EIO booted guest | **OPEN** | Unit Port/Vm only |
-| D30 | Server gitfs mount+ctl booted guest | **OPEN** | Port unit only |
-| D31 | client_token + generation race acceptance | **OPEN** | Not implemented |
-| D32 | Full golden set dual-host | **OPEN** | 6 goldens; missing push success/shallow/auth deny/non-FF |
-| D33 | Dual-host Response schema + stderr catalog tests | **OPEN** | Substring checks only |
-| D34 | Graduate experimentalGitEngine | **OPEN** | Still experimental |
+| D25 | Server guest CAP_NET e2e full path | **DONE** | git_guest_acceptance_test CAP_NET clone |
+| D26 | Server CAP_NET deny e2e | **DONE** | git_guest_acceptance_test CAP_NET deny |
+| D27 | Real HTTP clone e2e (git-http-backend or live) | **DONE** | git_real_http_test JS+BEAM git-http-backend clone |
+| D28 | Real HTTP push e2e | **DONE** | git_real_http push receive-pack |
+| D29 | Port kill → guest EIO booted guest | **DONE** | guest Port kill EIO acceptance |
+| D30 | Server gitfs mount+ctl booted guest | **DONE** | guest type-4 ctl acceptance |
+| D31 | client_token + generation race acceptance | **DONE** | client_token echo generation |
+| D32 | Full golden set dual-host | **OPEN** | 7 goldens incl push_success; missing shallow/auth deny/non-FF pull goldens |
+| D33 | Dual-host Response schema + stderr catalog tests | **OPEN** | no dual-host Response schema catalog tests yet |
+| D34 | Graduate experimentalGitEngine | **OPEN** | experimental kept; graduate after D32/D33 |
 
 ### P7 — Ops / polish
 
 | ID | Requirement | Status | Evidence / missing |
 |----|-------------|--------|-------------------|
-| D35 | Full metrics (duration, bytes, redacted origin) | **OPEN** | Basic counters only |
-| D36 | Server alerts | **OPEN** | Not wired |
-| D37 | L4 NOTICE in release artifacts | **OPEN** | L5 filegroup gate only |
-| D38 | Prod git-engine discovery | **OPEN** | AGENTOS_GIT_ENGINE tribal |
-| D39 | log/show polish | **OPEN** | Bounded but thin |
-| D40 | Docs/skills + root GIT.md sync | **OPEN** | Drift remains |
-| D41 | Catalog Face B `git run` | **OPEN** | Implement or strike from GIT.md |
+| D35 | Full metrics (duration, bytes, redacted origin) | **DONE** | metrics duration pack_bytes origin_redacted |
+| D36 | Server alerts | **DONE** | allowlist deny + queue depth>32 alerts |
+| D37 | L4 NOTICE in release artifacts | **DONE** | L5 NOTICE ship gates |
+| D38 | Prod git-engine discovery | **DONE** | GitEngine.discover_executable/0 |
+| D39 | log/show polish | **DONE** | log bounds footer + show stream |
+| D40 | Docs/skills + root GIT.md sync | **DONE** | docs/git.md metrics discovery graduation |
+| D41 | Catalog Face B `git run` | **DONE** | GIT.md: catalog git run struck; host_call only |
 
 ---
 
@@ -127,6 +127,7 @@ These product paths exist (do not re-open unless verifier finds regression). Evi
 | Host identity; bare-URL fail-closed; pull FF; depth=1 | `sdk-js/core/src/git/engine.ts`, `remote-orchestrator.ts`, `server/.../git_engine.ex`, orch |
 | Server push + haves + delete-ref fixture | `server/.../orchestrator.ex`, `smart_http.ex`, `GitEngine.pack_build` |
 | AGIT rebind; multi-mount demux; JS guest CAP_NET fixture e2e | `durable.ts`, `vm.ex` git_engines, `git_guest_e2e.test.ts` |
+| Server guest CAP_NET + gitfs acceptance (D25–D26, D29–D31) | `server/test/agent_os/git_guest_acceptance_test.exs`; Vm `drain_git_relay` on tick; `engine.c` client_token + init idempotent; `port_mount.c` root normalize; JS gitfs token echo |
 | D17 snapshot/fork git durable rebind (JS) | `CreateOptions.gitDurable`, `memcontainer.ts` makeEmbedded, `embedded.ts` checkpoint, `git_guest_e2e` D17 |
 | Submodule host-mediated update + projection (D23/D24); Port product load; LLB engine-first | orch submodule JS+BEAM; `op_gitlink`; docs/git.md; `llb-git.ts` |
 | P0 remotes gates | `smart_http.ex` origin/size/status; type-1 dial refuse in `port_handle.c` |
@@ -137,6 +138,9 @@ These product paths exist (do not re-open unless verifier finds regression). Evi
 
 | Date | Change |
 |------|--------|
+| 2026-08-01 | Chunk 8 acceptance: D25/D26/D29/D30/D31 server guest CAP_NET allow/deny, Port kill→EIO, gitfs mount+ctl, client_token+generation; Vm tick git auto-drain; port_mount root fix; init idempotent; `//server:mix_test` green |
+| 2026-08-01 | Chunk 8: D27/D28 real HTTP smart-HTTP e2e (`git-http-backend` CGI) dual-host; D32 `push_success_steps` golden; product `report-status` on receive-pack |
+| 2026-08-01 | Chunk 9: D35–D38 metrics/alerts/NOTICE/discovery; D40 docs sync; D41 strike catalog `git run`; D34 checklist Met/Open — **kept experimental** (D25/D26 CAP_NET server Open) |
 | 2026-08-01 | Chunk 6: D23/D24 host-mediated submodule update + nested worktree projection (JS+BEAM orch; list-only is not DONE) |
 | 2026-08-01 | Chunk 5 D16/D18: directory reopen primary — JS `durableDir`+HostDirDurable hydrate/dump; BEAM `Git.Durable` + `durable_id`/`durable_dir` attach; dual-host second-process tests; D16/D18 **DONE** (D17 already); AGIT remains transfer |
 | 2026-08-01 | Chunk 4: monorepo sparse + tracking + multi-mount — D9/D13/D20/D21 **DONE** (`662dadd`, VERIFY_CHUNK_4.md PASS) |

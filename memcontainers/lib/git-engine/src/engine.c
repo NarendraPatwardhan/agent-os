@@ -119,25 +119,95 @@ static void import_pack_reset(ge_engine *e);
 #define safe_relpath ge_safe_relpath
 #define join_path ge_join_path
 
+/* OOM fallback for ge_run_json — never free this pointer (P0.7). */
+static char ge_static_oom[] =
+    "{\"ok\":false,\"code\":1,\"stdout\":\"\",\"stderr\":\"out of memory\"}";
+
+/* GIT.md D31: optional args.client_token echoed in result.client_token so
+ * writers can detect ctl response races against /.git/mc/generation. Set at
+ * the start of ge_run_json; cleared on exit. */
+static char g_client_token[128];
+
+static void clear_client_token(void) { g_client_token[0] = '\0'; }
+
+static void set_client_token_from_args(const char *args) {
+  clear_client_token();
+  if (args)
+    (void)jmin_get_string(args, "client_token", g_client_token, sizeof(g_client_token));
+}
+
+/* Inject result.client_token into a Response JSON heap string (or leave as-is). */
+static char *attach_client_token(char *resp) {
+  if (!resp || resp == ge_static_oom || !g_client_token[0])
+    return resp;
+
+  char *esc = jmin_escape(g_client_token);
+  if (!esc)
+    return resp;
+
+  size_t rlen = strlen(resp);
+  size_t elen = strlen(esc);
+  char *out = NULL;
+  const char *result_key = strstr(resp, "\"result\":");
+
+  if (result_key) {
+    const char *brace = strchr(result_key + 9, '{');
+    if (brace) {
+      size_t prefix = (size_t)(brace - resp) + 1;
+      size_t need = rlen + elen + 32;
+      out = (char *)malloc(need);
+      if (out) {
+        /* Insert "client_token":"…", immediately inside the result object. */
+        int n = snprintf(out, need, "%.*s\"client_token\":\"%s\",%s", (int)prefix, resp, esc,
+                         brace + 1);
+        if (n < 0 || (size_t)n >= need) {
+          free(out);
+          out = NULL;
+        }
+      }
+    }
+  } else if (rlen > 0 && resp[rlen - 1] == '}') {
+    size_t need = rlen + elen + 48;
+    out = (char *)malloc(need);
+    if (out) {
+      int n = snprintf(out, need, "%.*s,\"result\":{\"client_token\":\"%s\"}}", (int)(rlen - 1),
+                       resp, esc);
+      if (n < 0 || (size_t)n >= need) {
+        free(out);
+        out = NULL;
+      }
+    }
+  }
+
+  free(esc);
+  if (out) {
+    free(resp);
+    return out;
+  }
+  return resp;
+}
+
 static char *resp_ok(const char *stdout_s, const char *result_json) {
-  return jmin_response(1, 0, stdout_s, "", result_json);
+  char *r = jmin_response(1, 0, stdout_s, "", result_json);
+  if (!r)
+    return ge_static_oom;
+  return attach_client_token(r);
 }
 
 static char *resp_err(int code, const char *stderr_s) {
-  return jmin_response(0, code, "", stderr_s, NULL);
+  char *r = jmin_response(0, code, "", stderr_s, NULL);
+  if (!r)
+    return ge_static_oom;
+  return attach_client_token(r);
 }
 
 static char *resp_usage(const char *msg) {
   return resp_err(2, msg);
 }
 
-/* OOM fallback for ge_run_json — never free this pointer (P0.7). */
-static char ge_static_oom[] =
-    "{\"ok\":false,\"code\":1,\"stdout\":\"\",\"stderr\":\"out of memory\"}";
-
-/* Write full stdout body under worktree /.git/mc/out/last (cap 8 MiB). */
-static int write_out_last(ge_engine *e, const char *body, size_t n) {
-  if (!e || !body)
+/* Ensure worktree /.git/mc/out/ exists. */
+static int ensure_out_dir(ge_engine *e) {
+  if (!e)
     return -1;
   char p[4096];
   snprintf(p, sizeof(p), "%s/.git", e->root);
@@ -146,7 +216,21 @@ static int write_out_last(ge_engine *e, const char *body, size_t n) {
   mkdir(p, 0755);
   snprintf(p, sizeof(p), "%s/.git/mc/out", e->root);
   mkdir(p, 0755);
-  snprintf(p, sizeof(p), "%s/.git/mc/out/last", e->root);
+  return 0;
+}
+
+/* Write full stdout body under worktree GE_OUT_STREAM_PATH (cap 8 MiB).
+ * Returns 0 on success; *out_wrote is bytes written (≤ min(n, 8MiB)). */
+static int write_out_stream(ge_engine *e, const char *body, size_t n,
+                            size_t *out_wrote) {
+  if (out_wrote)
+    *out_wrote = 0;
+  if (!e || !body)
+    return -1;
+  if (ensure_out_dir(e) != 0)
+    return -1;
+  char p[4096];
+  snprintf(p, sizeof(p), "%s/%s", e->root, GE_OUT_STREAM_PATH);
   size_t wr = n;
   if (wr > GE_OUT_LAST_MAX_BYTES)
     wr = GE_OUT_LAST_MAX_BYTES;
@@ -155,11 +239,24 @@ static int write_out_last(ge_engine *e, const char *body, size_t n) {
     return -1;
   size_t wrote = wr ? fwrite(body, 1, wr, f) : 0;
   int rc = fclose(f);
+  if (out_wrote)
+    *out_wrote = wrote;
   return (rc == 0 && wrote == wr) ? 0 : -1;
 }
 
+/* Drop stale stream body so out/last is not a leftover large payload (D15). */
+static void clear_out_stream(ge_engine *e) {
+  if (!e)
+    return;
+  char p[4096];
+  snprintf(p, sizeof(p), "%s/%s", e->root, GE_OUT_STREAM_PATH);
+  unlink(p);
+}
+
 /* Ok response with large-stdout handling. Never silently truncates without
- * result.truncated=true (GIT.md §5.3 / residual R25). */
+ * result.truncated=true (GIT.md §5.3 / residual R25 / D15).
+ * When body exceeds embed limit: preview in stdout, full body (≤8 MiB) at
+ * /.git/mc/out/last, result.stream_path set for host/gitfs open. */
 char *ge_resp_ok_stdout(ge_engine *e, char *stdout_owned, int free_stdout,
                         const char *extra_result_json) {
   const char *body = stdout_owned ? stdout_owned : "";
@@ -168,6 +265,8 @@ char *ge_resp_ok_stdout(ge_engine *e, char *stdout_owned, int free_stdout,
   char *r = NULL;
 
   if (n <= limit) {
+    /* Non-truncated: remove prior stream file so gitfs does not serve stale body. */
+    clear_out_stream(e);
     r = resp_ok(body, extra_result_json);
     if (free_stdout)
       free(stdout_owned);
@@ -175,10 +274,11 @@ char *ge_resp_ok_stdout(ge_engine *e, char *stdout_owned, int free_stdout,
   }
 
   /* Overflow: preview in stdout, full body on out/last, always set truncated. */
-  if (e && write_out_last(e, body, n) != 0) {
-    /* Still return truncated response; host can retry. Prefer not fail closed
-     * solely on out/last I/O after successful op. */
-  }
+  size_t stream_bytes = 0;
+  int stream_ok = 0;
+  if (e && write_out_stream(e, body, n, &stream_bytes) == 0)
+    stream_ok = 1;
+  /* Still return truncated response if stream I/O fails after successful op. */
 
   char *preview = (char *)malloc(limit + 1);
   if (!preview) {
@@ -190,14 +290,29 @@ char *ge_resp_ok_stdout(ge_engine *e, char *stdout_owned, int free_stdout,
     memcpy(preview, body, limit);
   preview[limit] = '\0';
 
-  /* result always includes truncated:true; merge extra if present. */
-  char result_buf[512];
+  /* result: truncated + stream_path + sizes; merge extra if present. */
+  char result_buf[768];
   const char *result_json;
+  int stream_partial = stream_ok && stream_bytes < n;
+  char base[384];
+  int blen = snprintf(
+      base, sizeof(base),
+      "\"truncated\":true,\"stream_path\":\"%s\",\"stdout_bytes\":%zu,"
+      "\"stdout_embed_bytes\":%zu,\"stream_bytes\":%zu%s",
+      GE_OUT_STREAM_PATH, n, limit, stream_bytes,
+      stream_partial ? ",\"stream_partial\":true" : "");
+  if (blen < 0 || (size_t)blen >= sizeof(base)) {
+    free(preview);
+    if (free_stdout)
+      free(stdout_owned);
+    return ge_static_oom;
+  }
+
   if (extra_result_json && extra_result_json[0] == '{') {
-    /* Shallow merge: {"truncated":true,<rest without braces>} */
     size_t elen = strlen(extra_result_json);
     if (elen >= 2 && extra_result_json[elen - 1] == '}') {
-      int m = snprintf(result_buf, sizeof(result_buf), "{\"truncated\":true,%s",
+      /* Shallow merge: { base, <rest without braces> } */
+      int m = snprintf(result_buf, sizeof(result_buf), "{%s,%s", base,
                        extra_result_json + 1);
       if (m < 0 || (size_t)m >= sizeof(result_buf)) {
         free(preview);
@@ -207,10 +322,24 @@ char *ge_resp_ok_stdout(ge_engine *e, char *stdout_owned, int free_stdout,
       }
       result_json = result_buf;
     } else {
-      result_json = "{\"truncated\":true}";
+      int m = snprintf(result_buf, sizeof(result_buf), "{%s}", base);
+      if (m < 0 || (size_t)m >= sizeof(result_buf)) {
+        free(preview);
+        if (free_stdout)
+          free(stdout_owned);
+        return ge_static_oom;
+      }
+      result_json = result_buf;
     }
   } else {
-    result_json = "{\"truncated\":true}";
+    int m = snprintf(result_buf, sizeof(result_buf), "{%s}", base);
+    if (m < 0 || (size_t)m >= sizeof(result_buf)) {
+      free(preview);
+      if (free_stdout)
+        free(stdout_owned);
+      return ge_static_oom;
+    }
+    result_json = result_buf;
   }
 
   r = resp_ok(preview, result_json);
@@ -311,10 +440,11 @@ int op_submodule_list(ge_engine *e, char **out_owned);
 int op_gitlink(ge_engine *e, const char *args);
 
 static int op_init(ge_engine *e) {
-  if (e->repo) {
-    set_err(e, "repository already open");
-    return -1;
-  }
+  /* Idempotent: ge_open may already have bound an on-disk .git (durable reopen,
+   * re-attach, orch clone after partial setup). Plain `git init` on an existing
+   * repo is also success — do not fail closed with "already open". */
+  if (e->repo)
+    return 0;
   if (git_repository_init(&e->repo, e->root, 0) != 0) {
     set_err_git(e, "init");
     return -1;
@@ -345,6 +475,27 @@ static int op_write(ge_engine *e, const char *args) {
   }
   char full[4096];
   join_path(full, sizeof(full), e->root, path);
+  /* D22: fail closed if path is a symlink (never follow / overwrite via link). */
+  {
+    struct stat st;
+    if (lstat(full, &st) == 0) {
+      if (S_ISLNK(st.st_mode)) {
+        free(content);
+        set_err(e, "write: path is a symlink (not supported; fail closed)");
+        return -1;
+      }
+      if (!S_ISREG(st.st_mode) && !S_ISDIR(st.st_mode)) {
+        free(content);
+        set_err(e, "write: path is a special file (not supported; fail closed)");
+        return -1;
+      }
+      if (S_ISDIR(st.st_mode)) {
+        free(content);
+        set_err(e, "write: path is a directory");
+        return -1;
+      }
+    }
+  }
   /* mkdir -p parent (multi-level). */
   char *slash = strrchr(full, '/');
   if (slash && slash != full) {
@@ -379,7 +530,8 @@ static int op_write(ge_engine *e, const char *args) {
 }
 
 /* Stage one worktree file without git_index_add_bypath (avoids ignore/PCRE
- * paths that crash under some Wasm builds). */
+ * paths that crash under some Wasm builds).
+ * D22: fail closed on symlink / special — never follow links outside worktree. */
 static int index_add_file(ge_engine *e, git_index *index, const char *rel) {
   if (!safe_relpath(rel)) {
     set_err(e, "add: bad path");
@@ -387,6 +539,19 @@ static int index_add_file(ge_engine *e, git_index *index, const char *rel) {
   }
   char full[4096];
   join_path(full, sizeof(full), e->root, rel);
+  struct stat st;
+  if (lstat(full, &st) != 0) {
+    set_err(e, "add: cannot open file");
+    return -1;
+  }
+  if (S_ISLNK(st.st_mode)) {
+    set_err(e, "add: path is a symlink (not supported; fail closed)");
+    return -1;
+  }
+  if (!S_ISREG(st.st_mode)) {
+    set_err(e, "add: not a regular file (special files not supported; fail closed)");
+    return -1;
+  }
   FILE *f = fopen(full, "rb");
   if (!f) {
     set_err(e, "add: cannot open file");
@@ -494,7 +659,8 @@ static int walk_add(ge_engine *e, git_index *index, const char *rel) {
         break;
       }
     }
-    /* Skip symlinks and special files. */
+    /* D22: add all=true skips symlinks and specials (not fail whole walk).
+     * Explicit add of a symlink path fails closed in index_add_file. */
   }
   closedir(d);
   return rc;
@@ -739,16 +905,28 @@ static int op_status(ge_engine *e, int short_fmt, char **out_owned) {
   return 0;
 }
 
-/* *out_owned is malloc'd on success; caller frees. */
-static int op_log(ge_engine *e, const char *args, char **out_owned) {
+/* *out_owned is malloc'd on success; caller frees.
+ * result_buf (optional): JSON object for bounds / count (D39).
+ * Stable: max_count default 10, hard cap GE_LOG_MAX_COUNT; when more commits
+ * remain after the bound, result.bounded=true and a stable footer line is
+ * appended so agents see a clear limit (full body still via D15 stream when huge). */
+static int op_log(ge_engine *e, const char *args, char **out_owned,
+                  char *result_buf, size_t result_cap) {
   if (out_owned)
     *out_owned = NULL;
+  if (result_buf && result_cap)
+    result_buf[0] = '\0';
   if (ensure_repo(e) != 0)
     return -1;
-  int64_t max_count = 10;
+  int64_t max_count = GE_LOG_DEFAULT_COUNT;
   (void)jmin_get_int64(args, "max_count", &max_count);
   if (max_count <= 0)
-    max_count = 10;
+    max_count = GE_LOG_DEFAULT_COUNT;
+  int clamped = 0;
+  if (max_count > (int64_t)GE_LOG_MAX_COUNT) {
+    max_count = (int64_t)GE_LOG_MAX_COUNT;
+    clamped = 1;
+  }
 
   git_revwalk *walk = NULL;
   if (git_revwalk_new(&walk, e->repo) != 0) {
@@ -778,6 +956,13 @@ static int op_log(ge_engine *e, const char *args, char **out_owned) {
     git_commit_free(c);
     count++;
   }
+  /* Peek one more commit to know if the bound was hit (D39). */
+  int more = 0;
+  if (!fail && count >= max_count) {
+    git_oid peek;
+    if (git_revwalk_next(&peek, walk) == 0)
+      more = 1;
+  }
   git_revwalk_free(walk);
   if (fail) {
     free(buf);
@@ -790,6 +975,24 @@ static int op_log(ge_engine *e, const char *args, char **out_owned) {
       set_err(e, "log: out of memory");
       return -1;
     }
+  }
+  int bounded = more || clamped;
+  if (bounded) {
+    /* Stable footer — agents can detect without parsing result. */
+    if (sb_printf(&buf, &len, &cap, "# log: bounded max_count=%lld count=%lld%s\n",
+                  (long long)max_count, (long long)count,
+                  more ? " more=true" : " clamped=true") != 0) {
+      free(buf);
+      set_err(e, "log: out of memory");
+      return -1;
+    }
+  }
+  if (result_buf && result_cap > 0) {
+    snprintf(result_buf, result_cap,
+             "{\"count\":%lld,\"max_count\":%lld,\"bounded\":%s%s}",
+             (long long)count, (long long)max_count,
+             bounded ? "true" : "false",
+             more ? ",\"more\":true" : "");
   }
   *out_owned = buf;
   return 0;
@@ -1545,6 +1748,7 @@ static int op_fetch_apply(ge_engine *e, const char *args) {
 }
 
 char *ge_run_json(ge_engine *e, const char *request_json) {
+  clear_client_token();
   if (!e)
     return resp_usage("null engine");
   if (!request_json)
@@ -1570,6 +1774,8 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
   const char *args = jmin_args_object(request_json);
   if (!args)
     args = "{}";
+  /* D31: capture before any op so every Response path can echo the token. */
+  set_client_token_from_args(args);
 
   /* Forbidden product network dials (GIT.md §6 / GIT_DESIGN §3.2). */
   if (strcmp(op, "clone") == 0 || strcmp(op, "fetch") == 0 || strcmp(op, "pull") == 0 ||
@@ -1626,11 +1832,15 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
 
   if (strcmp(op, "log") == 0) {
     char *buf = NULL;
-    if (op_log(e, args, &buf) != 0) {
+    char log_result[192];
+    log_result[0] = '\0';
+    if (op_log(e, args, &buf, log_result, sizeof(log_result)) != 0) {
       free(buf);
       return resp_err(1, e->err);
     }
-    return ge_resp_ok_stdout(e, buf, 1, NULL);
+    /* D39: always attach count/bounded result; D15 stream if stdout huge. */
+    const char *extra = log_result[0] ? log_result : NULL;
+    return ge_resp_ok_stdout(e, buf, 1, extra);
   }
 
   if (strcmp(op, "rev-parse") == 0) {

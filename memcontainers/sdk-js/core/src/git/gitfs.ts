@@ -147,7 +147,29 @@ export function createGitFsDriver(
         if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
         // K17: no objects façade — do not fall through to host ODB MEMFS.
         if (isObjectsPath(p)) throw fsErr("ENOENT", ".git/objects");
-        if (p === ".git/mc/ctl" || p === ".git/mc/out/last") {
+        // Ctl always returns last Response JSON (drain protocol).
+        if (p === ".git/mc/ctl") {
+          return new TextEncoder().encode(lastResponse);
+        }
+        // D15: out/last (and out/stream alias) serve full stdout body when the
+        // engine wrote a stream file after result.truncated; else Response JSON.
+        if (p === ".git/mc/out/last" || p === ".git/mc/out/stream") {
+          const streamRel =
+            p === ".git/mc/out/stream" ? ".git/mc/out/last" : p;
+          const streamAbs = bridge.abs(streamRel);
+          if (exists(streamAbs)) {
+            try {
+              const st = FS().stat(streamAbs);
+              if (!FS().isDir(st.mode)) {
+                const data = FS().readFile(streamAbs);
+                return data instanceof Uint8Array
+                  ? data
+                  : new TextEncoder().encode(String(data));
+              }
+            } catch {
+              /* fall through to Response alias */
+            }
+          }
           return new TextEncoder().encode(lastResponse);
         }
         if (p === ".git/mc/generation") {
@@ -192,7 +214,26 @@ export function createGitFsDriver(
         ) {
           return { kind: "dir" as const, size: 0 };
         }
-        if (p === ".git/mc/ctl" || p === ".git/mc/out/last") {
+        if (p === ".git/mc/ctl") {
+          return {
+            kind: "file" as const,
+            size: new TextEncoder().encode(lastResponse).length,
+          };
+        }
+        if (p === ".git/mc/out/last" || p === ".git/mc/out/stream") {
+          const streamRel =
+            p === ".git/mc/out/stream" ? ".git/mc/out/last" : p;
+          const streamAbs = bridge.abs(streamRel);
+          if (exists(streamAbs)) {
+            try {
+              const st = FS().stat(streamAbs);
+              if (!FS().isDir(st.mode)) {
+                return { kind: "file" as const, size: st.size ?? 0 };
+              }
+            } catch {
+              /* fall through */
+            }
+          }
           return {
             kind: "file" as const,
             size: new TextEncoder().encode(lastResponse).length,
@@ -318,13 +359,35 @@ export function createGitFsDriver(
             return;
           }
           const op = String(req.op || "").toLowerCase();
+          // D31: optional args.client_token echoed in result.client_token (race detect).
+          const clientToken = (() => {
+            if (
+              req.args &&
+              typeof req.args === "object" &&
+              !Array.isArray(req.args) &&
+              typeof (req.args as { client_token?: unknown }).client_token === "string"
+            ) {
+              return String((req.args as { client_token: string }).client_token);
+            }
+            return "";
+          })();
+          const withToken = (resp: Record<string, unknown>): Record<string, unknown> => {
+            if (!clientToken) return resp;
+            const result =
+              resp.result && typeof resp.result === "object" && !Array.isArray(resp.result)
+                ? { ...(resp.result as Record<string, unknown>), client_token: clientToken }
+                : { client_token: clientToken };
+            return { ...resp, result };
+          };
           if (REMOTE_OPS.has(op)) {
-            lastResponse = JSON.stringify({
-              ok: false,
-              code: 1,
-              stdout: "",
-              stderr: "use host_call git for remotes",
-            });
+            lastResponse = JSON.stringify(
+              withToken({
+                ok: false,
+                code: 1,
+                stdout: "",
+                stderr: "use host_call git for remotes",
+              }),
+            );
             generation += 1;
             return;
           }
@@ -348,8 +411,8 @@ export function createGitFsDriver(
                 : identity.email;
             runReq = { op: req.op || "commit", args: { ...base, name, email } };
           }
-          const resp = bridge.run(runReq);
-          lastResponse = JSON.stringify(resp);
+          const resp = bridge.run(runReq) as unknown as Record<string, unknown>;
+          lastResponse = JSON.stringify(withToken(resp));
           generation += 1;
           return;
         }

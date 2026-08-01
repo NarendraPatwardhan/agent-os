@@ -928,12 +928,21 @@ defmodule AgentOS.Git.SmartHttp do
   end
 
   defp build_receive_pack_body(commands, pack) when is_list(commands) and is_binary(pack) do
+    # First command advertises report-status so real git-receive-pack (D28)
+    # returns unpack/ok pkt-lines; subsequent commands are bare.
     cmd_lines =
-      Enum.map(commands, fn c ->
+      commands
+      |> Enum.with_index()
+      |> Enum.map(fn {c, i} ->
         old_h = command_field(c, :old_hash) || command_field(c, "old_hash") || command_field(c, "oldHash")
         new_h = command_field(c, :new_hash) || command_field(c, "new_hash") || command_field(c, "newHash")
         name = command_field(c, :name) || command_field(c, "name") || ""
-        pkt("#{old_h} #{new_h} #{name}")
+
+        if i == 0 do
+          pkt("#{old_h} #{new_h} #{name}\0report-status")
+        else
+          pkt("#{old_h} #{new_h} #{name}")
+        end
       end)
 
     head = IO.iodata_to_binary(cmd_lines ++ ["0000"])

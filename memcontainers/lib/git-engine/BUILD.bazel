@@ -102,14 +102,34 @@ cc_shared_library(
     deps = [":git_engine_lib"],
 )
 
+# L4 product ship set for the BEAM Port binary + optional c-shared packaging.
+# NOTICE + upstream COPYING/AUTHORS must ship adjacent to every engine artifact.
 filegroup(
     name = "git_engine_server_artifacts",
     srcs = [
         ":git-engine",
         ":libgit_engine",
         "//third_party/libgit2:notices",
+        "//third_party/libgit2:corresponding_source",
     ],
     visibility = ["//visibility:public"],
+)
+
+# L5 fail-closed: native Port ship set must keep NOTICE + upstream COPYING/AUTHORS.
+assert_ship_files(
+    name = "git_engine_server_l5_notices_check",
+    ship = ":git_engine_server_artifacts",
+    required = [
+        "NOTICE",
+        "COPYING",
+        "AUTHORS",
+        "git-engine",
+    ],
+)
+
+build_test(
+    name = "git_engine_server_l5_notices",
+    targets = [":git_engine_server_l5_notices_check"],
 )
 
 # Native ABI fixture: init→commit→log + dial refuse (GIT.md PR1 exit ops).
@@ -153,6 +173,7 @@ exports_files([
     "testdata/orch/fetch_success_steps.json",
     "testdata/orch/pull_ff_steps.json",
     "testdata/orch/push_readonly.json",
+    "testdata/orch/push_success_steps.json",
     "testdata/pack/minimal.pack",
     "testdata/pack/minimal.tip",
     "testdata/pack/minimal.ref",

@@ -490,7 +490,7 @@ static int test_refs_import_array(ge_engine *e) {
   return 0;
 }
 
-/* R25: large stdout sets result.truncated=true and writes /.git/mc/out/last. */
+/* R25/D15: large stdout sets result.truncated=true, stream_path, writes out/last. */
 static int test_truncated_stdout(ge_engine *e) {
   /* Tracked file + worktree modify so index_to_workdir produces a real patch. */
   if (expect_ok(e, "{\"op\":\"write\",\"args\":{\"path\":\"trunc.txt\","
@@ -524,6 +524,16 @@ static int test_truncated_stdout(ge_engine *e) {
     ge_free(resp);
     return 1;
   }
+  if (strstr(resp, "\"stream_path\":\".git/mc/out/last\"") == NULL) {
+    fprintf(stderr, "expected result.stream_path=.git/mc/out/last:\n%s\n", resp);
+    ge_free(resp);
+    return 1;
+  }
+  if (strstr(resp, "\"stdout_bytes\"") == NULL) {
+    fprintf(stderr, "expected result.stdout_bytes:\n%s\n", resp);
+    ge_free(resp);
+    return 1;
+  }
   if (strstr(resp, "\"result\"") == NULL) {
     fprintf(stderr, "truncated response missing result object:\n%s\n", resp);
     ge_free(resp);
@@ -546,6 +556,101 @@ static int test_truncated_stdout(ge_engine *e) {
     fprintf(stderr, "out/last empty or unexpected:\n%s\n", buf);
     return 1;
   }
+  return 0;
+}
+
+/* D22: explicit add/write of a symlink fails closed with a clear error. */
+static int test_symlink_fail_closed(ge_engine *e) {
+  char linkpath[4096];
+  char targetpath[4096];
+  snprintf(targetpath, sizeof(targetpath), "%s/symlink_target.txt", ge_worktree_root(e));
+  snprintf(linkpath, sizeof(linkpath), "%s/symlink_link.txt", ge_worktree_root(e));
+  FILE *tf = fopen(targetpath, "wb");
+  if (!tf) {
+    fprintf(stderr, "D22: cannot create target\n");
+    return 1;
+  }
+  fputs("target\n", tf);
+  fclose(tf);
+  unlink(linkpath);
+  if (symlink("symlink_target.txt", linkpath) != 0) {
+    fprintf(stderr, "D22: symlink() failed (skip if FS unsupported)\n");
+    return 1;
+  }
+  if (expect_fail(e, "{\"op\":\"add\",\"args\":{\"path\":\"symlink_link.txt\"}}",
+                  "symlink"))
+    return 1;
+  if (expect_fail(e,
+                  "{\"op\":\"write\",\"args\":{\"path\":\"symlink_link.txt\","
+                  "\"content\":\"overwrite\\n\"}}",
+                  "symlink"))
+    return 1;
+  /* add all=true must not fail the whole walk solely due to a symlink. */
+  if (expect_ok(e, "{\"op\":\"add\",\"args\":{\"all\":true}}"))
+    return 1;
+  return 0;
+}
+
+/* D39: log bounds — max_count, result.bounded + stable footer when more commits. */
+static int test_log_bounds(ge_engine *e) {
+  /* Create enough commits so max_count=2 hits the bound. */
+  for (int i = 0; i < 3; i++) {
+    char req[512];
+    snprintf(req, sizeof(req),
+             "{\"op\":\"write\",\"args\":{\"path\":\"logb%d.txt\","
+             "\"content\":\"c%d\\n\"}}",
+             i, i);
+    if (expect_ok(e, req))
+      return 1;
+    snprintf(req, sizeof(req),
+             "{\"op\":\"add\",\"args\":{\"path\":\"logb%d.txt\"}}", i);
+    if (expect_ok(e, req))
+      return 1;
+    snprintf(req, sizeof(req),
+             "{\"op\":\"commit\",\"args\":{"
+             "\"message\":\"log bound %d\","
+             "\"name\":\"Fixture\","
+             "\"email\":\"fixture@test\","
+             "\"when_unix\":%d}}",
+             i, 1700000100 + i);
+    if (expect_ok(e, req))
+      return 1;
+  }
+  char *resp = ge_run_json(e, "{\"op\":\"log\",\"args\":{\"max_count\":2}}");
+  if (!resp || strstr(resp, "\"ok\":true") == NULL) {
+    fprintf(stderr, "D39 log failed:\n%s\n", resp ? resp : "(null)");
+    ge_free(resp);
+    return 1;
+  }
+  if (strstr(resp, "\"bounded\":true") == NULL) {
+    fprintf(stderr, "D39 expected result.bounded=true:\n%s\n", resp);
+    ge_free(resp);
+    return 1;
+  }
+  if (strstr(resp, "\"max_count\":2") == NULL) {
+    fprintf(stderr, "D39 expected max_count=2:\n%s\n", resp);
+    ge_free(resp);
+    return 1;
+  }
+  if (strstr(resp, "# log: bounded max_count=2") == NULL) {
+    fprintf(stderr, "D39 expected stable bounds footer:\n%s\n", resp);
+    ge_free(resp);
+    return 1;
+  }
+  /* show still returns ok; large show uses truncated path when over embed limit. */
+  ge_free(resp);
+  resp = ge_run_json(e, "{\"op\":\"show\",\"args\":{\"rev\":\"HEAD\"}}");
+  if (!resp || strstr(resp, "\"ok\":true") == NULL) {
+    fprintf(stderr, "D39 show failed:\n%s\n", resp ? resp : "(null)");
+    ge_free(resp);
+    return 1;
+  }
+  if (strstr(resp, "commit ") == NULL && strstr(resp, "Author:") == NULL) {
+    fprintf(stderr, "D39 show missing commit header:\n%s\n", resp);
+    ge_free(resp);
+    return 1;
+  }
+  ge_free(resp);
   return 0;
 }
 
@@ -800,8 +905,16 @@ int main(void) {
   if (test_refs_import_array(e))
     goto fail;
 
-  /* R25 truncated stdout + out/last */
+  /* R25/D15 truncated stdout + stream_path + out/last */
   if (test_truncated_stdout(e))
+    goto fail;
+
+  /* D22 symlink fail-closed on add/write */
+  if (test_symlink_fail_closed(e))
+    goto fail;
+
+  /* D39 log bounds + show polish */
+  if (test_log_bounds(e))
     goto fail;
 
   /* R20 porcelain-v1 status */

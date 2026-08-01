@@ -26,7 +26,11 @@ import {
   type ImportPackOptions,
   type PackCache,
 } from "./pack-cache.js";
-import { recordRemoteResult } from "./metrics.js";
+import {
+  recordRemoteResult,
+  redactOrigin,
+  type RemoteResultMeta,
+} from "./metrics.js";
 
 export interface OrchestratorOptions extends ResolveRemoteOptions {
   http?: SmartHttpTransport;
@@ -145,6 +149,10 @@ export class GitRemoteOrchestrator {
    * GitBridge; remotes need their own chain so listRefs/fetchPacks cannot race.
    */
   private remoteQueue: Promise<unknown> = Promise.resolve();
+  /** D35: last pack size / origin for metrics (cleared at start of each remote op). */
+  private metricsPackBytes = 0;
+  private metricsOriginRedacted = "";
+  private metricsAllowlistDeny = false;
 
   constructor(
     private readonly engine: GitEngine,
@@ -323,6 +331,11 @@ export class GitRemoteOrchestrator {
 
   private async handleUnlocked(req: GitRequest): Promise<GitResponse> {
     const op = String(req.op || "").toLowerCase();
+    // D35: per-op labels (never secrets).
+    this.metricsPackBytes = 0;
+    this.metricsOriginRedacted = "";
+    this.metricsAllowlistDeny = false;
+    const t0 = Date.now();
     let resp: GitResponse;
     if (op === "clone") resp = await this.clone(req);
     else if (op === "fetch") resp = await this.fetch(req, { pull: false });
@@ -337,11 +350,34 @@ export class GitRemoteOrchestrator {
         stderr: `unknown remote op: ${op}\n`,
       };
     }
-    // R85–R88: optional in-process counters (redacted; no packs/tokens).
+    // R85–R88 / D35: in-process counters + duration/bytes/redacted origin.
     if (op === "clone" || op === "fetch" || op === "pull" || op === "push") {
-      recordRemoteResult(op, !!resp.ok);
+      const meta: RemoteResultMeta = {
+        duration_ms: Math.max(0, Date.now() - t0),
+        pack_bytes: this.metricsPackBytes,
+        origin_redacted: this.metricsOriginRedacted,
+        allowlist_deny: this.metricsAllowlistDeny,
+      };
+      recordRemoteResult(op, !!resp.ok, meta);
     }
     return resp;
+  }
+
+  private noteMetricsOrigin(url: string): void {
+    if (typeof url === "string" && url) {
+      this.metricsOriginRedacted = redactOrigin(url);
+    }
+  }
+
+  private noteMetricsPack(pack: Uint8Array | ArrayBuffer | null | undefined): void {
+    if (!pack) return;
+    const n =
+      pack instanceof Uint8Array
+        ? pack.byteLength
+        : pack instanceof ArrayBuffer
+          ? pack.byteLength
+          : 0;
+    if (n > 0) this.metricsPackBytes = n;
   }
 
   /**
@@ -511,11 +547,13 @@ export class GitRemoteOrchestrator {
     connectionRef?: string;
   }): GitResponse | null {
     const url = binding.url;
+    this.noteMetricsOrigin(url);
     if (binding.connectionRef) {
       if (
         this.allowOrigins.length > 0 &&
         !originAllowed(this.allowOrigins, url)
       ) {
+        this.metricsAllowlistDeny = true;
         return {
           ok: false,
           code: 1,
@@ -527,6 +565,7 @@ export class GitRemoteOrchestrator {
     }
     // Bare URL: empty allowOrigins fails closed (product FetchSmartHttp path).
     if (this.allowOrigins.length === 0) {
+      this.metricsAllowlistDeny = true;
       return {
         ok: false,
         code: 1,
@@ -535,6 +574,7 @@ export class GitRemoteOrchestrator {
       };
     }
     if (!originAllowed(this.allowOrigins, url)) {
+      this.metricsAllowlistDeny = true;
       return {
         ok: false,
         code: 1,
@@ -1051,6 +1091,7 @@ export class GitRemoteOrchestrator {
       };
     }
     const pack = resolvedPack.pack;
+    this.noteMetricsPack(pack);
 
     // Empty pack never short-circuits to ok:true (dual-host with BEAM orch).
     if (pack.byteLength === 0) {
@@ -1208,6 +1249,7 @@ export class GitRemoteOrchestrator {
     }
 
     if (!resolvedPack.imported) {
+      this.noteMetricsPack(resolvedPack.pack);
       try {
         await this.importBinary(resolvedPack.pack);
       } catch (e) {

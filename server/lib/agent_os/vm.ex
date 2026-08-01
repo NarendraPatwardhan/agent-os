@@ -89,6 +89,10 @@ defmodule AgentOS.Vm do
     git_task_refs: %{},
     # mount_path => [{handle, body}]
     git_remote_queue: %{},
+    # Unclaimed relay events popped while auto-answering git during tick
+    # (D25/D30 product path). Served first by egress_next so non-git owners
+    # still see them in order.
+    egress_pending: [],
     shell_log: "",
     shell_base: 0
   ]
@@ -870,7 +874,13 @@ defmodule AgentOS.Vm do
   end
 
   def handle_call({:tick, n}, _from, state) do
-    {:reply, tick_n(state.nif, n), touch(state)}
+    # D25/D30: when git is attached, answer pending mount/"git" host_calls so
+    # guest exec can progress without a separate ControlPlane.egress_next pump.
+    # Non-git events are stashed on egress_pending (see drain_git_relay/2).
+    state = drain_git_relay(state, 64)
+    reply = tick_n(state.nif, n)
+    state = drain_git_relay(state, 64)
+    {:reply, reply, touch(state)}
   end
 
   def handle_call(:take_output, _from, state) do
@@ -1043,7 +1053,13 @@ defmodule AgentOS.Vm do
   end
 
   def handle_call(:egress_next, _from, state) do
-    {:reply, Nif.relay_next(state.nif), state}
+    case state.egress_pending do
+      [event | rest] ->
+        {:reply, {:ok, event}, %{state | egress_pending: rest}}
+
+      [] ->
+        {:reply, Nif.relay_next(state.nif), state}
+    end
   end
 
   def handle_call(:egress_next_sidecar, _from, state) do
@@ -1945,6 +1961,44 @@ defmodule AgentOS.Vm do
 
   defp answer_git_event(_state, _event), do: :unclaimed
 
+  # Auto-answer git host_calls queued on the NIF relay (guest mount ops + remotes).
+  # Called from tick so ControlPlane.exec/run product paths drain without a
+  # separate egress pump. Unclaimed events (HTTP, tool_approval, …) are stashed
+  # on `egress_pending` so egress_next still delivers them.
+  defp drain_git_relay(state, 0), do: state
+
+  defp drain_git_relay(state, limit) when is_integer(limit) and limit > 0 do
+    engines = state.git_engines || %{}
+
+    if engines == %{} and (state.git_tasks || %{}) == %{} do
+      state
+    else
+      case Nif.relay_next(state.nif) do
+        {:ok, nil} ->
+          state
+
+        {:ok, event} when is_map(event) ->
+          case answer_git_event(state, event) do
+            {:answered, state2} ->
+              drain_git_relay(state2, limit - 1)
+
+            :unclaimed ->
+              pending = (state.egress_pending || []) ++ [event]
+              %{state | egress_pending: pending}
+
+            {:error, _reason} ->
+              # Fail closed on this event; leave the rest for the next tick.
+              state
+          end
+
+        {:error, _reason} ->
+          state
+      end
+    end
+  end
+
+  defp drain_git_relay(state, _), do: state
+
   # Per-mount single-writer remote queue (R63/R64).
   defp answer_git_remote_async(state, handle, body) do
     tasks = state.git_tasks || %{}
@@ -1964,9 +2018,12 @@ defmodule AgentOS.Vm do
 
           if running_for_mount? do
             queue = Map.get(queue_map, mount, [])
+            new_queue = queue ++ [{handle, body}]
+            # D36: alert when per-mount remote queue exceeds 32.
+            _ = AgentOS.Git.Metrics.observe_queue_depth(mount, length(new_queue))
 
             {:answered,
-             %{state | git_remote_queue: Map.put(queue_map, mount, queue ++ [{handle, body}])}}
+             %{state | git_remote_queue: Map.put(queue_map, mount, new_queue)}}
           else
             {:answered, start_git_remote_task(state, pid, handle, body, mount)}
           end

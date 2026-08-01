@@ -203,6 +203,13 @@ genrule(
 )
 
 genrule(
+    name = "orch_golden_push_success",
+    srcs = ["//memcontainers/lib/git-engine:testdata/orch/push_success_steps.json"],
+    outs = ["testdata/orch/push_success_steps.json"],
+    cmd = "cp $< $@",
+)
+
+genrule(
     name = "orch_golden_minimal_pack",
     srcs = ["//memcontainers/lib/git-engine:testdata/pack/minimal.pack"],
     outs = ["testdata/pack/minimal.pack"],
@@ -236,6 +243,7 @@ js_test(
         ":orch_golden_fetch_success",
         ":orch_golden_pull_ff",
         ":orch_golden_push_readonly",
+        ":orch_golden_push_success",
         ":orch_golden_minimal_pack",
         ":orch_golden_minimal_tip",
         "//memcontainers/lib/git-engine:git_engine_emcc_js",
@@ -248,6 +256,41 @@ js_test(
         # Relative to runfiles package root for this target.
         "MC_GIT_ORCH_GOLDEN_DIR": "memcontainers/sdk-js/core/testdata/orch",
     },
+    timeout = "moderate",
+)
+
+# D27/D28 — real smart-HTTP e2e (system git-http-backend; product FetchSmartHttp).
+mc_ts_project(
+    name = "git_real_http_test_lib",
+    srcs = ["test/git_real_http.test.ts"],
+    deps = [
+        ":lib",
+        "//:node_modules/@types/bun",
+    ],
+)
+
+js_test(
+    name = "git_real_http_test",
+    data = [
+        "package.json",
+        ":git_real_http_test_lib",
+        "//memcontainers/lib/git-engine:git_engine_emcc_js",
+        "//memcontainers/lib/git-engine:git_engine_mjs",
+        "//memcontainers/lib/git-engine:git_engine_wasm_file",
+    ],
+    entry_point = "test/git_real_http.test.js",
+    env = {
+        "MC_GIT_ENGINE_JS": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_mjs)",
+    },
+    # Needs host git + git-http-backend + localhost (sandbox blocks both).
+    # Tag "manual" keeps analysis-key conflicts away from sibling js_tests that
+    # also copy package.json; run explicitly:
+    #   bazel test //memcontainers/sdk-js/core:git_real_http_test
+    tags = [
+        "manual",
+        "no-sandbox",
+        "requires-network",
+    ],
     timeout = "moderate",
 )
 
