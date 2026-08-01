@@ -7,8 +7,8 @@ defmodule AgentOS.GitEngine do
       <<length::little-32, type::8, payload::binary-size(length-1)>>
 
   Types: 1 Run, 2 pack chunk, 3 pack meta, 4 binary MOUNT_OP.
-  Type 5 is legacy/test-only; product remotes use BEAM HTTPS orch (see
-  `AgentOS.Git.Orchestrator`) then Port apply frames.
+  No type-5 and no C remote orch — remotes are BEAM HTTPS orch
+  (`AgentOS.Git.Orchestrator`) then Port apply only.
 
   Lifecycle: start when a gitfs mount attaches (or explicitly); stop with the VM.
   Port exit fails subsequent ops closed (`:eio`). Engine never dials the network.
@@ -36,7 +36,6 @@ defmodule AgentOS.GitEngine do
   @frame_pack 2
   @frame_pack_meta 3
   @frame_mount 4
-  @frame_remote 5
 
   # ── public API ──────────────────────────────────────────────────────────────
 
@@ -88,16 +87,6 @@ defmodule AgentOS.GitEngine do
   @spec mount_op(pid(), binary()) :: {:ok, binary()} | {:error, term()}
   def mount_op(pid, body) when is_pid(pid) and is_binary(body) do
     GenServer.call(pid, {:mount_op, body}, 60_000)
-  end
-
-  @doc """
-  Legacy type-5 frame to C fixture orch. Product remotes use
-  `AgentOS.Git.Orchestrator.run/3` (BEAM HTTPS) instead.
-  """
-  @spec remote(pid(), String.t() | map()) :: {:ok, map()} | {:error, term()}
-  def remote(pid, request) when is_pid(pid) do
-    json = if is_binary(request), do: request, else: encode_request(request)
-    GenServer.call(pid, {:remote, json}, 120_000)
   end
 
   @spec stop(pid()) :: :ok
@@ -270,10 +259,6 @@ defmodule AgentOS.GitEngine do
   def handle_call({:run, json}, _from, state) do
     json2 = maybe_inject_commit_identity(json, Map.get(state, :identity))
     reply_frame(state, @frame_run, json2, &decode_json_response/1)
-  end
-
-  def handle_call({:remote, json}, _from, state) do
-    reply_frame(state, @frame_remote, json, &decode_json_response/1)
   end
 
   def handle_call({:import_pack, chunk, final}, _from, state) do

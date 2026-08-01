@@ -3,7 +3,7 @@
  *
  * ## Role
  *
- * This module is the **JS product twin** of the BEAM / C remote orchestrator.
+ * This module is the **JS product twin** of the BEAM remote orchestrator.
  * Guests never dial the network. The libgit2 engine stays pure: it only runs
  * local ops, imports pack bytes the host already fetched, and applies ref tips.
  * All smart-HTTP (list-refs, upload-pack, receive-pack) runs here on the host,

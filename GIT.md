@@ -742,7 +742,7 @@ backend.tools.register("git", (argsJson) =>
 
 **Implementer trap:** host_call name `"git"` is **required** for thin CLI remotes. Catalog tools are not a substitute.
 
-Elixir control plane: no TS `MapHostCall` — BEAM handles name `"git"` and gitfs mount path via **BEAM HTTPS orch** + Port apply. C orch is test/fixture only.
+Elixir control plane: no TS `MapHostCall` — BEAM handles name `"git"` and gitfs mount path via **BEAM HTTPS orch** + Port apply. No C remote orch.
 
 ### Guest / Kernel / Host
 

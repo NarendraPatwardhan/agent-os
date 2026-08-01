@@ -46,7 +46,7 @@ int main(void) {
   if (expect_ok(e, "{\"op\":\"log\",\"args\":{\"max_count\":5}}") != 0)
     return 1;
 
-  /* Dial refuse must stay fail-closed at Run face (type-1); C orch is type-5 only. */
+  /* Dial refuse must stay fail-closed at Run face (type-1); remotes are host orch only. */
   char *dial = ge_run_json(e, "{\"op\":\"clone\",\"args\":{\"url\":\"https://example.com/r.git\"}}");
   if (!dial) {
     fprintf(stderr, "null dial\n");

@@ -35,18 +35,16 @@ cc_library(
     linkstatic = True,
 )
 
-# Port RPC + mount + fixture smart-HTTP/orch. Not linked into emcc wasm.
+# Port RPC + mount only. Remotes are host-mediated (TS/BEAM orch); no C orch.
+# Not linked into emcc wasm.
 cc_library(
     name = "git_engine_port_lib",
     srcs = [
-        "src/orch.c",
         "src/port_frame.c",
         "src/port_handle.c",
         "src/port_mount.c",
-        "src/smart_http.c",
     ],
     hdrs = [
-        "include/ge_http.h",
         "include/ge_port.h",
         "include/git_engine.h",
     ],

@@ -6,7 +6,7 @@ Product surface: `docs/git.md`. Design of record: worktree `GIT.md`.
 | Target | Role |
 |--------|------|
 | `:git_engine_lib` | Native static library (`ge_open` / `ge_run_json` / `ge_import_pack`) |
-| `:git_engine_port_lib` | Port frames, binary MOUNT_OP, fixture smart-HTTP/orch |
+| `:git_engine_port_lib` | Port frames + binary MOUNT_OP only (no C remote orch) |
 | `:git-engine` | BEAM-owned Port binary (stdin/stdout length-prefixed frames) |
 | `:libgit_engine` | `.so` packaging artifact only — product load path is Port + emcc |
 | `:port_frame_test` | Run + mount ctl frames + kill-closed |
@@ -26,11 +26,10 @@ Product surface: `docs/git.md`. Design of record: worktree `GIT.md`.
 | 2 | pack chunk → i32 status |
 | 3 | pack meta (u8 final) → i32 status |
 | 4 | binary MOUNT_OP body → `[i32 status][payload]` |
-| 5 | remote orch Request JSON → Response JSON (**fixture only**) |
 
 **Load (JS):** prefer `git_engine.mjs` (ESM). Elixir: `AgentOS.GitEngine` Port owner; demuxes name `"git"` and gitfs mount path.
 
-No gojs. No freestanding product path. Remotes are host-mediated (**TS orch on JS**, **BEAM orch on server**); C smart_http/orch is test/fixture only (Port type-5).
+No gojs. No freestanding product path. No C remote orch. Remotes are host-mediated only: **TS orch (JS)** and **BEAM HTTPS orch (server)** → Port apply (types 1–4).
 
 ### Large stdout
 

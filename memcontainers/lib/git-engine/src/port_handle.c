@@ -1,4 +1,5 @@
-/* Port request handler — routes frames to Run / pack / mount / orch. */
+/* Port request handler — routes frames to Run / pack / mount only.
+ * Remotes are host-mediated (TS/BEAM orch); the Port never dials or orchs. */
 
 #include "ge_port.h"
 #include "json_min.h"
@@ -15,8 +16,7 @@ static void wr_i32_le(uint8_t *p, int32_t v) {
 }
 
 int ge_port_handle(ge_engine *e, uint8_t type, const uint8_t *payload, size_t len, FILE *out) {
-  /* Type-1 RUN: always ge_run_json — remotes dial-refuse at the engine face.
-   * C orch is type-5 only (test / fixture path), not product type-1. */
+  /* Type-1 RUN: always ge_run_json — remotes dial-refuse at the engine face. */
   if (type == GE_FRAME_RUN) {
     char *req = (char *)malloc(len + 1);
     if (!req)
@@ -62,24 +62,6 @@ int ge_port_handle(ge_engine *e, uint8_t type, const uint8_t *payload, size_t le
     }
     int rc = ge_frame_write(out, GE_FRAME_MOUNT, mout, mlen);
     free(mout);
-    return rc;
-  }
-
-  /* Type-5 REMOTE: test-only C orchestrator (fixtures). Product remotes use
-   * host/BEAM orch + type-1 apply ops; do not route product clone/fetch here. */
-  if (type == GE_FRAME_REMOTE) {
-    char *req = (char *)malloc(len + 1);
-    if (!req)
-      return -1;
-    if (len)
-      memcpy(req, payload, len);
-    req[len] = 0;
-    char *resp = NULL;
-    if (ge_remote_orchestrate(e, req, &resp) != 0 || !resp)
-      resp = jmin_response(0, 1, "", "remote orchestrate failed", NULL);
-    free(req);
-    int rc = ge_frame_write(out, GE_FRAME_REMOTE, resp, strlen(resp));
-    ge_free(resp);
     return rc;
   }
 

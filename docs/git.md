@@ -229,13 +229,12 @@ the `filter` capability and sends a `filter <spec>` pkt-line. Thin CLI:
 `git clone --filter=blob:none <url>` (compose with `--depth`). Part of the monorepo stack above —
 not a separate incomplete feature.
 
-C `smart_http` / C orchestrator (Port type-5) are **test/fixture only** — not the product server
-remote path. Dual-host product orch is **TS (JS) ↔ BEAM (server)** sharing apply-op + algorithm
-semantics, not “C orch on server”.
+There is **no C remote orchestrator**. Dual-host product orch is **TS (JS) ↔ BEAM (server)** only;
+the Port child applies packs/refs and never dials.
 
 ### Dual-host remote contract
 
-TS and BEAM each implement remote orch (no Node on server). **Decisions** are single-sourced:
+TS and BEAM each implement remote orch (no Node on server; no C orch). **Decisions** are single-sourced:
 
 | Layer | Location |
 |-------|----------|
