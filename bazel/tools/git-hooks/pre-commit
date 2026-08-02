@@ -13,7 +13,7 @@ cd "$repo_root"
 bazel_cache="$(cd "$repo_root/../bazel-cache" && pwd)"
 
 bazel --output_user_root="$bazel_cache" run \
-  --ui_event_filters=-info,-stdout,-stderr \
+  --ui_event_filters=-info,-stdout,-stderr,-warning \
   --noshow_progress \
   //docs:update-readme-badges
 if ! git diff --quiet -- README.md; then
