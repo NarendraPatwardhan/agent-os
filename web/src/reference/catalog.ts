@@ -71,7 +71,7 @@ const GROUPS: ReadonlyArray<Readonly<{ title: string; pages: ReadonlyArray<PageD
       [
         "git",
         "Git",
-        "Host source-plane git, git-engine.tar resolve, gitfs, thin CLI, and remotes.",
+        "Optional host git: create option, worktree, thin CLI, and CAP_NET remotes.",
       ],
       [
         "sidecars",

@@ -220,7 +220,7 @@ When `git` is set:
   Omit for empty engines on restore. With `diskDir`: re-openable `HostDirDurable` worktree at
   `{diskDir}/{safeId}/` (primary). Without: OPFS directory/blob when available, else
   process-memory AGIT by `id` (same process only). Details:
-  [Git durability / dir reopen](./git.md#durability-dir-reopen).
+  [Git — Durability](./git.md#durability-dir-reopen).
 
 ```js
 // Minimal — resolves git-engine.tar (source env.sh after install, or pass engine bytes)
