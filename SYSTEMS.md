@@ -1186,19 +1186,140 @@ the content-addressed layer model extended to on-demand tools.
 
 ## 11b. Host source plane — git (optional advanced attachment)
 
-Git is **not** a wasmi guest VCS. Like credentials, mounts, and sidecars, it is a **host attachment**:
+Git for agents needs natural worktree paths under the Plan-9 VFS, a reduced CLI with shell muscle
+memory, durable history across reload, and remotes that obey the same capability/credential model as
+tools and netfs. A multi‑MiB VCS as a **wasmi guest** fails cost (interpretation), concurrency (no
+second scheduler / asyncify), and memory (linear ceiling for monorepos). So git is a **host source
+plane**, same attachment class as credentials, mounts, and sidecars — not a guest VCS and not kernel
+knowledge of git.
 
-- **Engine:** libgit2 behind a dial-free `ge_*` face (emcc wasm on JS; BEAM-owned Port on server).
-- **Tree:** gitfs projects the worktree through MountFs; guests use paths + thin `/bin/git`.
-- **Remotes:** host-mediated only — CAP_NET + host_call name `"git"`; the engine never dials TLS.
-- **Dual-host orch (K16/K20):** TypeScript orch on browser/Node, Elixir orch on the control plane.
-  **Decisions** (stderr prefixes, depth/pack defaults, guest secret keys, algorithm step IDs) are
-  single-sourced in `memcontainers/contracts/git.kdl` and projected to TS/Elixir; **executable**
-  parity is locked by shared goldens under `memcontainers/lib/git-engine/fixtures/orch/`. This is the
-  same *discipline* as dual host faces over one kernel ABI — not a second wasmi stack.
-- **A8:** the object DB is outside MCSN; durable rebind is opt-in on create / `attach_git`.
+**Thesis:** paths and shell stay Plan-9-native inside the VM; object store, pack apply, and smart-HTTP
+live on the host next to LLB sources, catalog-compiler, and TLS — one engine ABI, host-appropriate
+runners, **libgit2** substrate.
 
-Product docs: `docs/git.md`. Design of record: `GIT.md`. Create opt-in: `CreateOptions.git`.
+### 11b.1 Planes and faces
+
+| Plane | Responsibility |
+|-------|----------------|
+| **Source (host)** | Engine (libgit2 + `ge_*`), durable packs, `GitRemoteOrchestrator`, smart-HTTP, LLB source ops, SDK `GitEngine` |
+| **Namespace (kernel)** | `MountFs` slot, `CAP_FS_*` / `CAP_NET`, cooperative WouldBlock, snapshot gating on inflight host_call |
+| **Exec (guest)** | Shell, editors, thin `/bin/git` |
+
+Three faces over **one** local engine core; remotes add orchestration **outside** the engine:
+
+| Face | Path |
+|------|------|
+| Paths | `GitFsDriver` → MountFs (worktree + synthetic `.git` meta: HEAD/refs/ctl; **no** `.git/objects` façade in v1) |
+| Verbs | ctl for **local** porcelain; host_call name `"git"` for remotes; SDK `GitEngine` |
+| CLI | Thin pure-mc `/bin/git` — argv adapter only, not the internal ABI |
+
+**Rule:** commands are a shell adapter. Catalog tool `git run` is not productized; guest remotes use
+host_call `"git"` only.
+
+### 11b.2 Engine and packaging
+
+| Host family | Product runner | Artifact |
+|-------------|----------------|----------|
+| **JS (browser / Node)** | Emscripten `createGitEngineModule` (MODULARIZE, EXPORT_ES6) | `git_engine.mjs` + `git_engine.wasm` in release `git-engine.tar` |
+| **Server (Elixir control plane)** | Native hermetic C **`git-engine` Port** (zig cc; scoped transitions only) | BEAM-owned subprocess; c-shared may package, **product load is Port** |
+
+Rejected product paths: wasmi-guest VCS, go-git / gojs / `wasm_exec.js`, freestanding engine under
+wasmtime, Go NIF, ambient `~/.git-credentials` into the engine.
+
+**ABI (dial-free):** `ge_open` / `ge_close` / `ge_run_json` / `ge_import_pack` / `ge_last_error` /
+`ge_free` / `ge_version`. Worktree root is absolute and pre-existing; one `ge_engine` ≈ one gitfs
+mount. Request shape `{ "op", "args" }` only (no top-level cwd/author). JSON carries metadata and small
+results; **packs stay binary** (`ge_import_pack` chunks — never multi‑MB base64 in JSON). Caps:
+interactive pack **64 MiB**, JSON Run args **1 MiB**, Response `stdout` embed **1 MiB** (overflow →
+stream path). Emcc exports **`ge_*` only** (plus allocator); after wasm-opt the soft gate is **≤2 MiB**
+(measured ~613 KiB). Thin guest CLI soft gate **≤256 KiB**. libgit2 pin **1.9.2**; HTTPS/SSH backends
+**compile-time off**.
+
+| Component | Location |
+|-----------|----------|
+| Engine + fixtures | `memcontainers/lib/git-engine/` |
+| libgit2 pin / NOTICE / patches | `third_party/libgit2/` |
+| JS SDK (engine, orch, gitfs, durable) | `memcontainers/sdk-js/core/src/git/` |
+| Thin `/bin/git` | `memcontainers/programs/git/` (on **base** image) |
+| Decision contract | `memcontainers/contracts/git.kdl` → TS/Elixir projections |
+| Dual-host orch goldens | `memcontainers/lib/git-engine/fixtures/orch/` |
+| BEAM Port + orch | `server/lib/agent_os/git_engine.ex`, `git/*`, hooks in `vm.ex` / `control_plane.ex` |
+
+**License (linking exception):** ship NOTICE + upstream COPYING with every engine artifact set (L4);
+fail-closed CI membership gates (L5); corresponding source = pin + monorepo patches (L1–L3);
+network backends stay off without a separate license review (L6).
+
+### 11b.3 Remotes — host-mediated only
+
+The engine is a pure object DB (apply packs/refs). Remotes are a **host service**: policy, TLS,
+credential splice, ListRefs / FetchPacks / PushPacks → bytes into the engine.
+
+| Host | Orchestrator + smart-HTTP | Apply |
+|------|---------------------------|--------|
+| **JS** | TypeScript (`remote-orchestrator.ts`, `smart-http.ts`) | In-process emcc |
+| **Server** | **BEAM** OTP `:httpc`/ssl — **no Node, no C TLS** | Port import/apply only |
+
+Guest remotes require kernel **`CAP_NET`** on `mc_sys_host_call` name `"git"`. Mount/ctl are
+`CAP_FS_*` only — ctl **must not** start smart-HTTP (A9). Secrets never in guest, ctl body, or engine
+args; origins + tokens live on host **connections**. Empty connection `origins` fail closed. Read-only
+mounts reject push. Dual-host **decision** strings live in `git.kdl`; **executable** step parity is
+locked by shared orch goldens (same discipline as dual host faces over one kernel ABI — not a second
+wasmi stack).
+
+**LLB:** `llb.git` uses the same remote/apply algorithm as interactive clone (`OP_GIT = 15` grammar
+unchanged). Node solve is engine-first (`git-engine.tar` resolve); ambient system `git` only if
+`MC_GIT_USE_SYSTEM=1` (exact).
+
+### 11b.4 Server ownership
+
+For control-plane VMs, **BEAM owns** host_call answers and the engine child. Rust NIF / `BeamHostCall`
+**relays** only — it does not open the C subprocess or answer mount/`git` itself. No new git-specific
+NIF exports.
+
+Port protocol: length-prefixed frames `u32le length | u8 type | payload` — type **1** JSON Run, **2**
+pack chunk, **3** pack meta, **4** binary MOUNT_OP. Port starts with first gitfs attach (or boot if
+declared); stops with the VM. Port crash → fail in-flight handles; subsequent git ops surface guest EIO.
+
+### 11b.5 Snapshots, durability, create path
+
+| State | In MCSN? |
+|-------|----------|
+| Mount table gitfs slot | yes |
+| Object DB, packs, dirty worktree | **no** — rebind (A8) |
+| Thin `/bin/git` in image | yes |
+| In-flight host_call | snapshot blocked |
+
+Snapshotting a coding agent does **not** silently carry a full ODB unless the embedder persists and
+rebinds a durable backend (`git.durable` / host dir / OPFS / BEAM Port root). Product create is opt-in
+by **presence**: `CreateOptions.git` as `true` or `{ engine?, mounts?, identity?, durable?, … }` — no
+public `baseUrl`; engine is release **`git-engine.tar`** bytes (env / install dir / cache / optional
+fetch, or explicit `engine`). Advanced surface; not multi-tenant default-on. Default mount when
+unspecified: `/workspace/repo`. Multi-mount allowed with **distinct** paths (one engine / single-writer
+per path; demux via `args.mount`).
+
+### 11b.6 Normative invariants
+
+| Invariant | Detail |
+|-----------|--------|
+| Host source plane | Git mechanics on the host, not multi‑MiB wasmi guests |
+| One Run ABI | `ge_run_json` + binary `ge_import_pack` for all faces |
+| libgit2 + `ge_*` | Pin 1.9.x; dial-free facade |
+| JS = emcc; server = Port | No gojs; c-shared packaging-only on server |
+| gitfs via MountFs | Existing Driver / registerRaw — no kernel git ABI |
+| Thin `/bin/git` on base | Pure-mc, reduced fail-closed surface |
+| Host-mediated remotes | Engine never dials; CAP_NET + host_call `"git"` for guests |
+| One engine per mount path | Multi-mount OK; no multi-writer on one mount |
+| ODB outside MCSN | Durable rebind opt-in (A8) |
+| Dual-host orch + goldens | TS on JS; BEAM on server; shared algorithm |
+| Synthetic `.git` meta only | No objects façade in v1 |
+| Binary packs | No JSON pack bodies |
+| BEAM owns Port + answers | NIF is relay only |
+| License L1–L6 | NOTICE/COPYING/source gates on ship path |
+| Host commit identity | Inject name/email from host policy when request omits them |
+| Content-addressed pack cache | Shared for LLB + interactive; credentials never in cache keys |
+
+Product surface (commands, create options, agent constraints, env): **`docs/git.md`**. This section is
+the architecture contract; if product docs and this section disagree, fix both in the same change.
 
 ---
 
@@ -1562,6 +1683,7 @@ agent-os/                      ← the repository root: a Bazel/deps/docs shell
 │                              #   http_archive(luau, sqlite, …) WITH patches (B3); the crate universes
 ├── BUILD.bazel                # shared TS workspace config + generated README badge target
 ├── SYSTEMS.md  README.md      # this document; the quickstart
+│                              #   product API docs under docs/ (including docs/git.md)
 │
 ├── bazel/                     # ★ the build machinery
 │   ├── BUILD.bazel            #   makes bazel/ a package so the rules load as //bazel:<rule>.bzl
@@ -1585,7 +1707,8 @@ agent-os/                      ← the repository root: a Bazel/deps/docs shell
 ├── third_party/               # ★ vendor LESS — only the dep fetch + patches live here (B3)
 │   ├── binaryen/               #   build definition for the host-only post-link optimizer
 │   ├── luau/  sqlite/          #   build definitions and patches for fetched upstream source
-│   │                          #   The SERVICE GLUE for these tools lives under memcontainers/programs/.
+│   ├── libgit2/               #   pin + NOTICE + patches for host git engine (§11b)
+│   │                          #   The SERVICE GLUE for domain tools lives under memcontainers/programs/.
 │
 ├── server/                    # Elixir/OTP VM control-plane library over the wasmtime NIF
 ├── web/                       # browser workbench; live VMs and executable SDK examples
@@ -1599,9 +1722,10 @@ agent-os/                      ← the repository root: a Bazel/deps/docs shell
     ├── wasi-adapter/          #   WASI(preview1) → mc link-injected shim
     ├── shcore/                #   the OS-agnostic Zig shell engine
     ├── pkgcore/               #   pure logic for pkgfsd (sha256, catalog, path/url)
-    ├── lib/                   #   shared support libs (catalog compiler, json, parse)
+    ├── lib/                   #   shared support libs (catalog compiler, json, parse, git-engine §11b)
     ├── programs/              #   the guest userland AND the service glue
     │   ├── coreutils/         #     the per-tier multicall /bin
+    │   ├── git/               #     thin pure-mc /bin/git (host source plane; on base)
     │   ├── sh/  pkgfsd/  tools/  examples/    #     the rest of /bin + the example services
     │   ├── luau/              #     the Luau glue (Zig), batteries (.luau), skills
     │   ├── sqlite/            #     the SQLite service glue (Zig), require() lib, skill
@@ -1610,7 +1734,7 @@ agent-os/                      ← the repository root: a Bazel/deps/docs shell
     ├── hosts/                 #   the two embedding LIBRARIES
     │   ├── wasmtime/          #     the Rust host (lib + CLI)
     │   └── js/                #     TS host for local Node.js/Bun and browser runtimes
-    ├── sdk-js/                #   the @mc/{core,elements} TypeScript libraries
+    ├── sdk-js/                #   the @mc/{core,elements} TypeScript libraries (+ core/src/git)
     ├── images/                #   base + flavor images via pkg_tar (no staging)
     ├── conformance/           #   the ABI coverage gate
     └── tests/                 #   real-artifact e2e suites (:core + :extended)
@@ -1731,6 +1855,7 @@ while the contract is still soft.
 | Wire contract + TypeScript remote client                                                            | Built; requires a conforming served host                               |
 | Generic sidecar contracts, typed browser surfaces, OTP lifecycle, and Firecracker reference runners | Built; served adapter and production runner deployment remain external |
 | JS host family, `@mc/{core,elements}` SDK, web app                                                  | Built and tested with real browser artifacts                           |
+| Host source plane git (libgit2 engine, gitfs, thin CLI, dual-host orch, BEAM Port)                  | Built; product docs `docs/git.md`; architecture §11b                   |
 | Zig-kernel experiment                                                                               | Archived on `feature/zig`; not present in `develop` (§14.3)            |
 
 The one-line summary: **the OS core, both embedding host families, the SDK/browser workbench, the
@@ -1789,3 +1914,5 @@ real-artifact conformance tests.
   guest fuel and corrupts the host on a dry-fuel resume.
 - **mc** — the system's identity, frozen into the ABI: the `mc` syscall module, `mc_sys_*`, `mc_ctl_*`, the
   `env` bridge and the `@mc/*` scope. (`agent-os` is the repository and distribution slug.)
+- **host source plane (git)** — optional advanced host attachment: libgit2 + `ge_*` on the host, gitfs via
+  MountFs, thin guest `/bin/git`, remotes only via CAP_NET host_call `"git"`; ODB outside MCSN (§11b).

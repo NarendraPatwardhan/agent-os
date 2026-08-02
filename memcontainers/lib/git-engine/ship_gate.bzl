@@ -1,4 +1,4 @@
-"""Analysis-time gates for ship filegroups (GIT.md L5 NOTICE membership).
+"""Analysis-time gates for ship filegroups (SYSTEMS.md §11b L5 NOTICE membership).
 
 Validates required basenames appear in a label's DefaultInfo files without
 building expensive generated members (e.g. emcc wasm). Dropping NOTICE from

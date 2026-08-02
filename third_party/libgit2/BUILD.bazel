@@ -1,4 +1,4 @@
-# libgit2 packaging for the host git engine (GIT.md PR0 / K26).
+# libgit2 packaging for the host git engine (SYSTEMS.md §11b).
 # The compiled library comes from BCR @libgit2; this package holds license
 # materials, patches, and a corresponding-source filegroup for releases.
 

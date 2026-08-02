@@ -14,5 +14,5 @@ Patches applied in this monorepo (see MODULE.bazel `single_version_override`):
 
 Full upstream license: `upstream/COPYING`. Authors: `upstream/AUTHORS`.
 
-Product consumers must ship NOTICE + COPYING with engine artifacts (GIT.md L4–L5,
+Product consumers must ship NOTICE + COPYING with engine artifacts (SYSTEMS.md §11b L4–L5,
 PR0b/PR2).

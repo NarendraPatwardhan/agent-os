@@ -1,4 +1,4 @@
-/* Binary MOUNT_OP dispatch for gitfs (GIT.md K30 / PR7b).
+/* Binary MOUNT_OP dispatch for gitfs (SYSTEMS.md §11b type-4 frames).
  * Request body (after host_call name\0 split): same as dispatchMount /
  * kernel MountFs encode_request:
  *   [u32 op][u32 path_len][path][u32 arg_len][arg][data…]

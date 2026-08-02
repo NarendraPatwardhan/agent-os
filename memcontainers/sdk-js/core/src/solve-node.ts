@@ -201,7 +201,7 @@ async function cacheMounts(mounts: readonly BuildState[]): Promise<MountSpec[]> 
 }
 
 /**
- * Default Node platform: **host git engine** for `llb.git` (GIT.md PR15).
+ * Default Node platform: **host git engine** for `llb.git` (SYSTEMS.md §11b).
  * Never shells out to ambient system `git` unless `MC_GIT_USE_SYSTEM=1`.
  */
 export const nodeSolvePlatform: SolvePlatform = {

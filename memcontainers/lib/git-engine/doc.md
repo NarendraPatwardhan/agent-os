@@ -1,7 +1,7 @@
 # Host git engine
 
 libgit2 + thin C `ge_*` Run ABI for the AgentOS host source plane.
-Product surface: `docs/git.md`. Design of record: worktree `GIT.md`.
+Product surface: `docs/git.md`. Architecture: `SYSTEMS.md` §11b.
 
 | Target | Role |
 |--------|------|

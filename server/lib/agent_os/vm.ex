@@ -457,7 +457,7 @@ defmodule AgentOS.Vm do
   def unmount(_server, _path, _opts), do: {:error, "unmount expects a binary path"}
 
   @doc """
-  Attach a BEAM-owned native `git-engine` Port for this VM (GIT.md K15/K22 / K21 / PR11).
+  Attach a BEAM-owned native `git-engine` Port for this VM (SYSTEMS.md §11b).
 
   Host-owned remote policy is stored on the VM actor and forwarded into
   `GitEngine.handle_host_call/4` / orch via `git_host_opts_for_mount/2`. The guest body

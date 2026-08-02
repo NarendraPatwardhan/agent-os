@@ -1,6 +1,6 @@
 defmodule AgentOS.Git.SmartHttp do
   @moduledoc """
-  Server smart-HTTP transport for git remotes (GIT.md K16 revised).
+  Server smart-HTTP transport for git remotes (SYSTEMS.md §11b).
 
   Product path uses OTP `:httpc` + `:ssl` — the same host family as control-plane
   HTTPS egress for the kernel. **No Node. No C TLS.**

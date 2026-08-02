@@ -1,4 +1,4 @@
-/* PR1: native ABI fixture — init→write→add→commit→log + dial refuse (GIT.md). */
+/* Native ABI fixture — init→write→add→commit→log + dial refuse (SYSTEMS.md §11b). */
 #include "git_engine.h"
 
 #include <stdint.h>

@@ -1,5 +1,5 @@
 /**
- * GitRemoteOrchestrator — host-mediated git remotes (GIT.md §7).
+ * GitRemoteOrchestrator — host-mediated git remotes (SYSTEMS.md §11b).
  *
  * ## Role
  *
@@ -275,7 +275,7 @@ export class GitRemoteOrchestrator {
   }
 
   /**
-   * Chunked import into the engine (GIT.md §3.3): 64 MiB soft gate +
+   * Chunked import into the engine (SYSTEMS.md §11b): 64 MiB soft gate +
    * `chunkBytes` slices via {@link importPackCached} — never one giant frame only.
    */
   private async importBinary(pack: Uint8Array): Promise<void> {
@@ -1446,7 +1446,7 @@ export class GitRemoteOrchestrator {
     const prep = await this.engine.run({ op: "push.prepare" });
     if (!prep.ok) return prep;
 
-    // Lease: ListRefs before commands (GIT.md §7.3).
+    // Lease: ListRefs before commands (SYSTEMS.md §11b).
     let remoteRefs: RefAdvertisement[] = [];
     try {
       remoteRefs = await this.http.listRefs(binding.url, binding.auth);

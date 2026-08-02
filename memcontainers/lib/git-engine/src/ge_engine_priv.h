@@ -10,7 +10,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Product caps (GIT.md). */
+/* Product caps (SYSTEMS.md §11b). */
 #define GE_PACK_MAX_BYTES (64u * 1024u * 1024u)
 #define GE_WRITE_MAX_BYTES (16u * 1024u * 1024u)
 /* Max stdout embedded in one Response; overflow → preview + result.truncated. */
@@ -38,7 +38,7 @@ struct ge_engine {
   git_indexer_progress progress;
   /* Accumulated import_pack chunk bytes (cleared on final/reset). */
   size_t pack_bytes;
-  /* GIT.md D31: request-local args.client_token (not process-global). */
+  /* Request-local args.client_token (not process-global). */
   char client_token[128];
 };
 
@@ -51,7 +51,7 @@ void ge_join_path(char *out, size_t cap, const char *root, const char *rel);
 /* Effective stdout embed limit (honors ge_test_set_stdout_max_bytes). */
 size_t ge_stdout_max_bytes(void);
 
-/* Ok response with large-stdout handling (GIT.md §5.3). If free_stdout!=0,
+/* Ok response with large-stdout handling (docs/git.md). If free_stdout!=0,
  * stdout_owned is freed before return. Never silently truncates without
  * result.truncated=true. */
 char *ge_resp_ok_stdout(ge_engine *e, char *stdout_owned, int free_stdout,

@@ -255,4 +255,4 @@ const full = await mc.create({
 ```
 
 Omit `git` for VMs that do not need host git. Remote runtime placement and server Port wiring are
-covered on [Git](./git.md); design of record is workspace-root `GIT.md`.
+covered on [Git](./git.md); architecture is `SYSTEMS.md` §11b.

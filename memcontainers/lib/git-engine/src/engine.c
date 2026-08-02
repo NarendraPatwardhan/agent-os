@@ -125,7 +125,7 @@ static void import_pack_reset(ge_engine *e);
 static char ge_static_oom[] =
     "{\"ok\":false,\"code\":1,\"stdout\":\"\",\"stderr\":\"out of memory\"}";
 
-/* GIT.md D31: optional args.client_token echoed in result.client_token so
+/* Optional args.client_token echoed in result.client_token so
  * writers can detect ctl response races against /.git/mc/generation.
  * Stored on ge_engine (request-local per engine), not process-global. */
 
@@ -381,7 +381,7 @@ void ge_free(void *p) {
 ge_engine *ge_open(const char *worktree_root) {
   if (!worktree_root || !*worktree_root)
     return NULL;
-  /* Product contract (GIT.md): absolute path to an existing directory. */
+  /* Product contract (SYSTEMS.md §11b): absolute path to an existing directory. */
   if (worktree_root[0] != '/')
     return NULL;
   {
@@ -1763,7 +1763,7 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
   if (!request_json)
     return resp_usage(e, "null request");
 
-  /* Product request size cap (GIT.md / R93): fail closed, never partial parse. */
+  /* Product request size cap (SYSTEMS.md §11b): fail closed, never partial parse. */
   {
     size_t rlen = strlen(request_json);
     if (rlen > GE_REQUEST_MAX_BYTES)

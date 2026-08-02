@@ -86,7 +86,7 @@ export {
 } from "./artifacts.js";
 export type { ArtifactKind } from "./artifacts.js";
 export { FsContentStore, MemoryContentStore, OpfsContentStore, defaultStore } from "./store.js";
-// Host git engine (GIT.md) — product-facing surface only. Internals (GitBridge,
+// Host git engine (SYSTEMS.md §11b / docs/git.md) — product-facing surface only. Internals (GitBridge,
 // FixtureSmartHttp, durable classes, pack caches, connection helpers) stay on
 // `./git/*` for tests/advanced embeds; do not treat them as stable @mc/core API.
 export {

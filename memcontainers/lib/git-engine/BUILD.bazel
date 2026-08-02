@@ -8,7 +8,7 @@ load("//bazel:wasm_opt.bzl", "wasm_opt")
 load("//bazel/tools/size:defs.bzl", "size_limit")
 load(":ship_gate.bzl", "assert_ship_files")
 
-# Host-side git engine: libgit2 + ge_* Run ABI (see docs/git.md; design: GIT.md).
+# Host-side git engine: libgit2 + ge_* Run ABI (see docs/git.md; SYSTEMS.md §11b).
 package(default_visibility = ["//visibility:public"])
 
 # ---------------------------------------------------------------------------

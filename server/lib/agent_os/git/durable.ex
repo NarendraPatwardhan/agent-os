@@ -1,6 +1,6 @@
 defmodule AgentOS.Git.Durable do
   @moduledoc """
-  Server durable engine roots (D16 / D18 / GIT.md PR8b).
+  Server durable engine roots (SYSTEMS.md §11b A8 rebind).
 
   Primary durable form is a **re-openable libgit2 worktree directory** on disk.
   The Port child `ge_open`s that absolute path; a second process that starts

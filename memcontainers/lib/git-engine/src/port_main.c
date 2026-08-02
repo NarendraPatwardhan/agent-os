@@ -1,4 +1,4 @@
-/* git-engine — BEAM-owned Port process (GIT.md PR7a+).
+/* git-engine — BEAM-owned Port process (SYSTEMS.md §11b).
  *
  * stdin/stdout: length-prefixed frames (see ge_port.h).
  * argv: git-engine [--root DIR]

@@ -1,6 +1,6 @@
 defmodule AgentOS.Git.Connections do
   @moduledoc """
-  Connection-bound git remotes (GIT.md PR11 / docs/connections.md).
+  Connection-bound git remotes (SYSTEMS.md §11b / docs/connections.md).
 
   Host-owned catalog: guest may pass public `url` and/or `connection` /
   `agentos` ref only. Credential splice is host-only (SmartHttp headers).

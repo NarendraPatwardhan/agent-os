@@ -99,7 +99,7 @@ genrule(
 # Core-level runtime test: a real mc.create() boots the kernel through @mc/host and @mc/contracts package
 # deps (the host parity test only covers @mc/host itself). Same load-bearing data edge as the Rust e2e:
 # the kernel + image it boots are the ones its sources produce.
-# Host git engine (GIT.md PR3–PR5): Run + gitfs ctl without full VM boot.
+# Host git engine (SYSTEMS.md §11b): Run + gitfs ctl without full VM boot.
 mc_ts_project(
     name = "git_engine_test_lib",
     srcs = ["test/git_engine.test.ts"],

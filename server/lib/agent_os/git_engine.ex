@@ -1,6 +1,6 @@
 defmodule AgentOS.GitEngine do
   @moduledoc """
-  BEAM-owned Port to the native C `git-engine` process (GIT.md PR7+).
+  BEAM-owned Port to the native C `git-engine` process (SYSTEMS.md §11b).
 
   Length-prefixed frames on the child's stdin/stdout:
 

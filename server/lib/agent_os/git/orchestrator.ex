@@ -1,6 +1,6 @@
 defmodule AgentOS.Git.Orchestrator do
   @moduledoc """
-  Server GitRemoteOrchestrator (GIT.md §7 / K16 revised).
+  Server GitRemoteOrchestrator (SYSTEMS.md §11b dual-host orch).
 
   Runs the same algorithm as TS `remote-orchestrator.ts`:
   ListRefs → FetchPacks → Port `import_pack` → `refs.import` / `clone.apply` | `fetch.apply`;

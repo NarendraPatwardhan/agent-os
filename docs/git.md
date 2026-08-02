@@ -1,7 +1,9 @@
 # AgentOS Git — Host Source Plane
 
-Product surface for interactive and LLB git (host source plane). Design of record: worktree
-`GIT.md`. Create option: `git: true` or `git: { … }` — **presence enables**; no boolean. Engine tar is resolved (or pass `engine` bytes). API surface: **advanced** (opt-in; not multi-tenant default-on).
+Product surface for interactive and LLB git (host source plane). Architecture contract:
+`SYSTEMS.md` §11b. Create option: `git: true` or `git: { … }` — **presence enables**; no boolean.
+Engine tar is resolved (or pass `engine` bytes). API surface: **advanced** (opt-in; not multi-tenant
+default-on).
 
 ## Thesis
 

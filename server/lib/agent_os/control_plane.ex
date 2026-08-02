@@ -381,7 +381,7 @@ defmodule AgentOS.ControlPlane do
               egress_next_unclaimed(id, opts, remaining - 1)
 
             :unclaimed ->
-              # GIT.md PR7b/PR10c: BEAM answers gitfs mount + host_call "git" via Port.
+              # SYSTEMS.md §11b: BEAM answers gitfs mount + host_call "git" via Port.
               case Vm.try_answer_git_host_call(pid, event, opts) do
                 :answered -> egress_next_unclaimed(id, opts, remaining - 1)
                 :unclaimed -> {:ok, event}

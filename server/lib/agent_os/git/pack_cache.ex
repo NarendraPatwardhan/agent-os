@@ -1,6 +1,6 @@
 defmodule AgentOS.Git.PackCache do
   @moduledoc """
-  Content-addressed pack cache for BEAM remotes (GIT.md PR13 / K29 / R40 / D12).
+  Content-addressed pack cache for BEAM remotes (SYSTEMS.md §11b / docs/git.md).
 
   Packs are keyed by `sha256:` hex digest of pack bytes. An optional
   **download-key index** maps `url + wants + haves + depth` → pack digest so

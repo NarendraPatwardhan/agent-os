@@ -24,7 +24,7 @@ defmodule AgentOS.Git.Metrics do
 
   @table :agent_os_git_metrics
 
-  # Queue depth that triggers a server alert (GIT.md observability).
+  # Queue depth that triggers a server alert (SYSTEMS.md §11b / docs/git.md).
   @queue_depth_alert 32
 
   @counter_keys [

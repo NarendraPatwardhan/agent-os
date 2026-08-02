@@ -43,7 +43,7 @@ register_toolchains("//platforms:wasm32_freestanding_zig_toolchain")
 register_toolchains("//platforms:wasm32_wasi_zig_toolchain")
 
 # ---------------------------------------------------------------------------
-# Host git engine (GIT.md PR0) — libgit2 via hermetic zig cc + emsdk for JS wasm later.
+# Host git engine (SYSTEMS.md §11b) — libgit2 via hermetic zig cc + emsdk for JS wasm.
 # Guest wasm zig toolchains above stay authoritative for kernels/guests. hermetic_cc
 # provides host-native zig-based C for //memcontainers/lib/git-engine and @libgit2 only
 # in practice (do not use freestanding wasm as a product git runner — K25).
@@ -62,7 +62,7 @@ register_toolchains(
 # Pin matches git-bazel measured path; retest on upgrade.
 bazel_dep(name = "emsdk", version = "6.0.3")
 
-# libgit2 1.9.2 (BCR). HTTPS/SSH backends stay off by default (GIT.md L6 / host-mediated remotes).
+# libgit2 1.9.2 (BCR). HTTPS/SSH backends stay off by default (SYSTEMS.md §11b L6 / host-mediated remotes).
 bazel_dep(name = "libgit2", version = "1.9.2.bcr.1")
 bazel_dep(name = "zlib", version = "1.3.2")  # pin with libgit2 to avoid resolution skew
 
