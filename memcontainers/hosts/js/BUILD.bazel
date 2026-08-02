@@ -49,6 +49,7 @@ mc_ts_project(
 js_test(
     name = "parity_test",
     data = [
+        "package.json",
         ":parity_lib",
         "//memcontainers/images:base",
         "//memcontainers/kernel/rust:kernel",
@@ -75,7 +76,10 @@ mc_ts_project(
 
 js_test(
     name = "persist_test",
-    data = [":persist_lib"],
+    data = [
+        "package.json",
+        ":persist_lib",
+    ],
     entry_point = "test/persist.test.js",
 )
 
@@ -91,6 +95,7 @@ mc_ts_project(
 js_test(
     name = "snapshot_test",
     data = [
+        "package.json",
         ":snapshot_test_lib",
         "//memcontainers/conformance:snapshot_vectors_json",
         "//memcontainers/images:base",
@@ -119,6 +124,7 @@ mc_ts_project(
 js_test(
     name = "cross_host_test",
     data = [
+        "package.json",
         ":cross_host_lib",
         "//memcontainers/hosts/wasmtime:cross_host_incremental_snapshot",
         "//memcontainers/hosts/wasmtime:cross_host_snapshot",

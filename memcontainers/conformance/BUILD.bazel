@@ -77,8 +77,12 @@ mc_ts_project(
 js_test(
     name = "control_vectors_ts_test",
     data = [
+        "package.json",
         ":control_vectors.json",
         ":control_vectors_ts_lib",
+        # Node resolves named ESM exports from contracts/gen/*.js only when that
+        # package's package.json ("type":"module") is in the runfiles tree.
+        "//memcontainers/contracts:package_json",
     ],
     entry_point = "test/control_vectors.test.js",
     env = {

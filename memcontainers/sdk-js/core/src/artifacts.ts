@@ -3,22 +3,77 @@
  *
  * Order: explicit bytes → env path → $AGENTOS_DIR → cache → optional fetch → fail closed.
  * Git product form is tar bytes; emcc materialize to a cache dir is private.
+ *
+ * Node-only I/O is required lazily so this module can load in the browser (product
+ * index re-exports it). Browser callers always pass explicit bytes; resolve* throws
+ * if host filesystem resolution is attempted without Node.
  */
 
-import { createHash } from "node:crypto";
-import {
-  cpSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+function isNode(): boolean {
+  return typeof process !== "undefined" && typeof process.versions?.node === "string";
+}
+
+/** Node built-ins without static `node:` imports (keeps this module browser-loadable). */
+function nodeBuiltin<T = unknown>(id: string): T {
+  if (!isNode()) {
+    throw new Error(`${id} is only available on Node (artifact resolve needs host FS)`);
+  }
+  const get = (process as NodeJS.Process & {
+    getBuiltinModule?: (id: string) => unknown;
+  }).getBuiltinModule;
+  if (typeof get !== "function") {
+    throw new Error(`process.getBuiltinModule missing; need Node 20.16+ for ${id}`);
+  }
+  // Accept both "fs" and "node:fs"
+  const bare = id.startsWith("node:") ? id.slice("node:".length) : id;
+  const mod = get(bare) ?? get(id);
+  if (!mod) throw new Error(`builtin ${id} not available`);
+  return mod as T;
+}
+
+function createHash(algo: string): import("node:crypto").Hash {
+  return nodeBuiltin<typeof import("node:crypto")>("crypto").createHash(algo);
+}
+
+function existsSync(path: string): boolean {
+  return nodeBuiltin<typeof import("node:fs")>("fs").existsSync(path);
+}
+function mkdirSync(path: string, opts?: { recursive?: boolean }): void {
+  nodeBuiltin<typeof import("node:fs")>("fs").mkdirSync(path, opts);
+}
+function mkdtempSync(prefix: string): string {
+  return nodeBuiltin<typeof import("node:fs")>("fs").mkdtempSync(prefix);
+}
+function readFileSync(path: string): Buffer;
+function readFileSync(path: string, enc: BufferEncoding): string;
+function readFileSync(path: string, enc?: BufferEncoding): string | Buffer {
+  const fs = nodeBuiltin<typeof import("node:fs")>("fs");
+  return enc === undefined ? fs.readFileSync(path) : fs.readFileSync(path, enc);
+}
+function writeFileSync(path: string, data: string | Uint8Array): void {
+  nodeBuiltin<typeof import("node:fs")>("fs").writeFileSync(path, data);
+}
+function renameSync(from: string, to: string): void {
+  nodeBuiltin<typeof import("node:fs")>("fs").renameSync(from, to);
+}
+function rmSync(path: string, opts?: { recursive?: boolean; force?: boolean }): void {
+  nodeBuiltin<typeof import("node:fs")>("fs").rmSync(path, opts);
+}
+function cpSync(from: string, to: string, opts?: { recursive?: boolean }): void {
+  nodeBuiltin<typeof import("node:fs")>("fs").cpSync(from, to, opts);
+}
+function join(...parts: string[]): string {
+  return nodeBuiltin<typeof import("node:path")>("path").join(...parts);
+}
+function homedir(): string {
+  return nodeBuiltin<typeof import("node:os")>("os").homedir();
+}
+function tmpdir(): string {
+  return nodeBuiltin<typeof import("node:os")>("os").tmpdir();
+}
+function pathToFileURL(path: string): URL {
+  return nodeBuiltin<typeof import("node:url")>("url").pathToFileURL(path);
+}
 
 // ── kinds ───────────────────────────────────────────────────────────────────
 

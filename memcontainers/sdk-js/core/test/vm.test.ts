@@ -546,6 +546,16 @@ async function main(): Promise<void> {
   const imagePath = runfile(process.env.MC_BASE_IMAGE, "MC_BASE_IMAGE");
   process.env.MC_KERNEL_WASM = kernelPath;
   process.env.MC_BASE_IMAGE = imagePath;
+  // Product resolvers take absolute host paths; Bazel supplies rlocationpath relatives.
+  if (process.env.MC_GIT_ENGINE_TAR) {
+    process.env.MC_GIT_ENGINE_TAR = runfile(process.env.MC_GIT_ENGINE_TAR, "MC_GIT_ENGINE_TAR");
+  }
+  if (process.env.MC_CATALOG_COMPILER_WASM) {
+    process.env.MC_CATALOG_COMPILER_WASM = runfile(
+      process.env.MC_CATALOG_COMPILER_WASM,
+      "MC_CATALOG_COMPILER_WASM",
+    );
+  }
   const kernel = new Uint8Array(readFileSync(kernelPath));
   const image = new Uint8Array(readFileSync(imagePath));
   const atlasImage = new Uint8Array(

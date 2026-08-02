@@ -116,6 +116,7 @@ mc_ts_project(
 js_test(
     name = "host_test",
     data = [
+        "package.json",
         ":host_test_lib",
         "//memcontainers/images:base",
         "//memcontainers/kernel/rust:kernel",

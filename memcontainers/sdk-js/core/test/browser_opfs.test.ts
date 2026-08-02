@@ -109,6 +109,7 @@ function browserHtml(): Uint8Array {
       "@mc/contracts/sidecar": "/core/node_modules/@mc/contracts/gen/sidecar.gen.js",
       "@mc/contracts/snapshot": "/core/node_modules/@mc/contracts/gen/snapshot.gen.js",
       "@mc/contracts/wire": "/core/node_modules/@mc/contracts/gen/wire.gen.js",
+      "@mc/contracts/git": "/core/node_modules/@mc/contracts/gen/git.gen.js",
       zod: "/core/node_modules/zod/index.js",
     },
   };

@@ -69,13 +69,19 @@ mc_ts_project(
 
 js_test(
     name = "stats_tests",
-    data = [":test_lib"],
+    data = [
+        "package.json",
+        ":test_lib",
+    ],
     entry_point = "test/result.test.js",
 )
 
 js_test(
     name = "validate_tests",
-    data = [":test_lib"],
+    data = [
+        "package.json",
+        ":test_lib",
+    ],
     entry_point = "test/validate.test.js",
 )
 

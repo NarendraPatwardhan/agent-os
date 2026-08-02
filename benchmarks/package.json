@@ -1,0 +1,7 @@
+{
+  "name": "@mc/benchmarks",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AgentOS benchmark runners and stats tests (Bazel js_test ESM boundary)."
+}

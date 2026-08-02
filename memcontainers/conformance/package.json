@@ -1,0 +1,7 @@
+{
+  "name": "@mc/conformance",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AgentOS conformance vectors and dual-host tests (Bazel js_test ESM boundary)."
+}

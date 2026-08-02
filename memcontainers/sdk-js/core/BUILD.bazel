@@ -379,6 +379,7 @@ mc_ts_project(
 js_test(
     name = "vm_test",
     data = [
+        "package.json",
         ":github_issues_fixture",
         ":graphql_introspection_fixture",
         ":vm_test_lib",
@@ -387,6 +388,7 @@ js_test(
         "//memcontainers/images:loom",
         "//memcontainers/kernel/rust:kernel",
         "//memcontainers/lib/catalog-compiler:wasm",
+        "//memcontainers/lib/git-engine:git_engine_release",
     ],
     entry_point = "test/vm.test.js",
     env = {
@@ -397,6 +399,7 @@ js_test(
         "MC_CATALOG_COMPILER_WASM": "$(rlocationpath //memcontainers/lib/catalog-compiler:wasm)",
         "MC_GITHUB_FIXTURE": "$(rlocationpath :github_issues_fixture)",
         "MC_GRAPHQL_FIXTURE": "$(rlocationpath :graphql_introspection_fixture)",
+        "MC_GIT_ENGINE_TAR": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_release)",
     },
 )
 
@@ -411,7 +414,10 @@ mc_ts_project(
 
 js_test(
     name = "sidecars_test",
-    data = [":sidecars_test_lib"],
+    data = [
+        "package.json",
+        ":sidecars_test_lib",
+    ],
     entry_point = "test/sidecars.test.js",
 )
 
@@ -427,7 +433,10 @@ mc_ts_project(
 
 js_test(
     name = "browsers_test",
-    data = [":browsers_test_lib"],
+    data = [
+        "package.json",
+        ":browsers_test_lib",
+    ],
     entry_point = "test/browsers.test.js",
 )
 
@@ -444,6 +453,7 @@ mc_ts_project(
 js_test(
     name = "guest_layers_test",
     data = [
+        "package.json",
         ":guest_layers_test_lib",
         "//memcontainers/images:loom",
         "//memcontainers/kernel/rust:kernel",
@@ -471,11 +481,13 @@ mc_ts_project(
 js_test(
     name = "browser_opfs_test",
     data = [
+        "package.json",
         ":browser_opfs_test_lib",
         "//memcontainers/images:base",
         "//memcontainers/kernel/rust:kernel",
     ],
     entry_point = "test/browser_opfs.test.js",
+    node_options = ["--experimental-websocket"],
     env = {
         "MC_KERNEL_WASM": "$(rlocationpath //memcontainers/kernel/rust:kernel)",
         "MC_BASE_IMAGE": "$(rlocationpath //memcontainers/images:base)",

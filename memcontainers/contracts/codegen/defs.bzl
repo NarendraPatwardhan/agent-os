@@ -30,7 +30,7 @@ _EXT = {
 
 def abi_library(name, contract, langs):
     """Project `contract` into each of `langs`. `name` is the module id (mc/env/ctl/wire/constants)."""
-    sync_files = {}
+    sync_targets = []
     for lang in langs:
         ext = _EXT[lang]
         gen = "%s_%s_gen" % (name, lang)
@@ -54,7 +54,6 @@ def abi_library(name, contract, langs):
                 c = contract,
             ),
         )
-        sync_files["gen/%s" % out] = ":%s" % gen
 
         # Compile-validate the code projections (the generator's output must be real
         # source). Text projections (ts/md/asyncapi) are gated by diff only until their
@@ -84,9 +83,24 @@ def abi_library(name, contract, langs):
                 visibility = ["//visibility:public"],
             )
 
-    # B2 drift gate. Update the committed copies with `bazel run //memcontainers/contracts:<name>_sync`.
+        # B2 drift gate per language — tests name as `<module>_<lang>_sync_test`
+        # (e.g. `git_md_sync_test`), not opaque `<module>_sync_N_test` indices.
+        sync_name = "%s_%s_sync" % (name, lang)
+        write_source_files(
+            name = sync_name,
+            files = {
+                "gen/%s" % out: ":%s" % gen,
+            },
+            suggested_update_target = "//memcontainers/contracts:%s_sync" % name,
+            visibility = ["//visibility:public"],
+        )
+        sync_targets.append(":%s" % sync_name)
+
+    # Umbrella update: `bazel run //memcontainers/contracts:<name>_sync` rewrites every lang.
     write_source_files(
         name = "%s_sync" % name,
-        files = sync_files,
+        additional_update_targets = sync_targets,
         visibility = ["//visibility:public"],
     )
+
+

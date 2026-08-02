@@ -1,4 +1,4 @@
-load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("@aspect_rules_js//js:defs.bzl", "js_library", "js_test")
 
 # @mc/contracts — the generated descriptors as a linkable workspace package, so @mc/host and @mc/core
 # import the contract (BRIDGE_IMPORTS / CONTROL_EXPORTS / errnos / tier ordinals) BY NAME with no deep
@@ -29,6 +29,7 @@ package(default_visibility = ["//visibility:public"])
 # Let consumers data-depend on a raw contract (e.g. the conformance import oracle
 # reads syscalls.kdl) and on the whole set.
 exports_files([
+    "package.json",
     "syscalls.kdl",
     "bridge.kdl",
     "control.kdl",
@@ -218,7 +219,10 @@ mc_ts_project(
 
 js_test(
     name = "codec_test",
-    data = [":codec_test_lib"],
+    data = [
+        "package.json",
+        ":codec_test_lib",
+    ],
     entry_point = "test/codec.test.js",
 )
 
@@ -245,6 +249,12 @@ rust_test(
     ],
     edition = "2021",
     deps = ["@rules_rust//rust/runfiles"],
+)
+
+js_library(
+    name = "package_json",
+    srcs = ["package.json"],
+    visibility = ["//visibility:public"],
 )
 
 npm_package(
