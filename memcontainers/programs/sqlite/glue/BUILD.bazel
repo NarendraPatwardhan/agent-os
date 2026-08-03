@@ -43,7 +43,18 @@ zig_binary(
     ],
     # -lc reaches the global zig build args (wasi-libc for sqlite3.c's <string.h>/<stdlib.h>/… and the
     # WASI fd I/O the adapter rewrites). No -lc++ (sqlite is C).
-    linkopts = ["-lc"],
+    #
+    # Stack size: Zig's wasm32-wasi default is 16 MiB (`i32.const 16777216` for global[0] /
+    # __stack_pointer), which forces ~260 pages of *initial* linear memory even though only ~100 KB
+    # of static data is real. That is reserved zero stack, not SQLite page cache / FTS / VANN.
+    # Rust guests default to 1 MiB; match them so load cost and MCSN snapshots are not inflated by
+    # empty stack pages. (Wasm has no guard page — if a workload ever overflows, raise this, don't
+    # re-default to 16 MiB.)
+    linkopts = [
+        "-lc",
+        "--stack",
+        "1048576",  # 1 MiB — same order as Rust wasm guests
+    ],
     main = "entry.zig",
     tags = ["manual"],
     deps = [
