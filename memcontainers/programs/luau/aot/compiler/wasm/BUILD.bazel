@@ -1,0 +1,89 @@
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_library", "zig_test")
+
+zig_library(
+    name = "object",
+    import_name = "luau_aot_wasm_object",
+    main = "object.zig",
+    visibility = ["//visibility:public"],
+)
+
+zig_test(
+    name = "object_test",
+    main = "object.zig",
+)
+
+zig_test(
+    name = "scalar_fixture_test",
+    main = "scalar_fixture.zig",
+    srcs = ["object.zig"],
+)
+
+zig_binary(
+    name = "scalar_fixture_emitter",
+    main = "scalar_fixture_main.zig",
+    srcs = [
+        "object.zig",
+        "scalar_fixture.zig",
+    ],
+)
+
+genrule(
+    name = "scalar_fixture_object",
+    srcs = [],
+    outs = ["scalar_fixture.o"],
+    cmd = "$(execpath :scalar_fixture_emitter) > $@",
+    tools = [":scalar_fixture_emitter"],
+    visibility = ["//visibility:public"],
+)
+
+build_test(
+    name = "scalar_fixture_object_build_test",
+    targets = [":scalar_fixture_object"],
+)
+
+genrule(
+    name = "scalar_fixture_wasm_ld_oracle",
+    srcs = [":scalar_fixture_object"],
+    outs = ["scalar_fixture_wasm_ld_oracle.wasm"],
+    cmd = "$(execpath @@emsdk++emscripten_deps+emscripten_bin_linux//:bin/wasm-ld) --no-entry --allow-undefined --export-memory --export=mc_luau_aot_v1_generated_scalar_fixture $(location :scalar_fixture_object) -o $@",
+    tags = ["manual"],
+    tools = ["@@emsdk++emscripten_deps+emscripten_bin_linux//:bin/wasm-ld"],
+)
+
+build_test(
+    name = "scalar_fixture_wasm_ld_oracle_build_test",
+    targets = [":scalar_fixture_wasm_ld_oracle"],
+)
+
+js_test(
+    name = "scalar_fixture_wasm_ld_oracle_test",
+    data = [
+        ":scalar_fixture.test.mjs",
+        ":scalar_fixture_wasm_ld_oracle",
+    ],
+    entry_point = "scalar_fixture.test.mjs",
+    env = {
+        "LUAU_AOT_SCALAR_FIXTURE_WASM": "$(rlocationpath :scalar_fixture_wasm_ld_oracle)",
+    },
+)
+
+# Consume the configured wasm32 archive as a declared action input. Never inspect the convenience
+# bazel-bin symlink: it can point at the host configuration after another target builds.
+genrule(
+    name = "scalar_fixture_runtime_link_oracle",
+    srcs = [
+        ":scalar_fixture_object",
+        "//memcontainers/programs/luau/aot/runtime:luau_aot_runtime_wasm32",
+    ],
+    outs = ["scalar_fixture_runtime_link_oracle.wasm"],
+    cmd = "$(execpath @@emsdk++emscripten_deps+emscripten_bin_linux//:bin/wasm-ld) --no-entry --allow-undefined --export=mc_luau_aot_v1_generated_scalar_fixture $(location :scalar_fixture_object) --whole-archive $(location //memcontainers/programs/luau/aot/runtime:luau_aot_runtime_wasm32) --no-whole-archive -o $@",
+    tags = ["manual"],
+    tools = ["@@emsdk++emscripten_deps+emscripten_bin_linux//:bin/wasm-ld"],
+)
+
+build_test(
+    name = "scalar_fixture_runtime_link_oracle_build_test",
+    targets = [":scalar_fixture_runtime_link_oracle"],
+)

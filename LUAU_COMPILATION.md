@@ -108,6 +108,13 @@ following foundations are real and checked; none is yet presented as a runnable 
 - syntax errors return an owned structured diagnostic. Loader compound constants that have not yet
   been decoded into `VM_CONSTANT_ITEMS`, including import paths and table/class shapes, fail closed with
   `MC_LUAU_SNAPSHOT_V1_UNSUPPORTED_FRONTEND_VALUE`; they are not silently flattened or evaluated.
+- the Zig backend now emits a standard linking-v2 relocatable Wasm object with canonical types,
+  imports, functions, code, symbols, padded call sites, and `reloc.CODE` entries. Hermetic Emscripten
+  `wasm-ld` accepts it both alone and with the configured 36-object runtime archive;
+- one linked scalar/control oracle reads the checked `lua_State::base` and `TValue` offsets, executes
+  a dynamic number guard plus loop, and produces `1`, `10`, and `28` from the same artifact for inputs
+  `1`, `4`, and `7`. Its state is still a layout-correct synthetic test allocation and its body is not
+  yet selected from upstream IR, so this evidence does not close WP2 or WP3.
 
 The next product slice begins at the Zig side of this boundary. It must materialize compiler-owned
 normalized IR, emit the mandatory dynamic scalar/control Wasm object, define the first real
