@@ -74,7 +74,7 @@ const actual = {
   luau_pin: {
     version: "0.725",
     archive_sha256: "e51ead5f541633693d548057e0431927f3036c13b185fdb37fbc3f5a261e6676",
-    patch_count: 4,
+    patch_count: 5,
   },
   target: "wasm32-wasi",
   toolchain: {

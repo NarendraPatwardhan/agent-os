@@ -1,0 +1,69 @@
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@rules_zig//zig:defs.bzl", "zig_configure", "zig_static_library")
+
+# The target runtime is a relocatable wasm32 archive, not a runnable guest. Generated functions,
+# AOT metadata, the runner, and the linker are deliberately separate layers. This target compiles
+# only the explicit retained VM set plus our pin-sized frame adapter; the source policy in @luau
+# excludes Compiler/Ast/Bytecode/CodeGen and the bytecode loader/executor.
+zig_static_library(
+    name = "luau_aot_runtime_raw",
+    main = "runtime_archive_root.zig",
+    csrcs = [
+        "@luau//:aot_runtime_srcs",
+        "src/call_frame.cpp",
+    ],
+    copts = [
+        "-DLUAU_AOT_RUNTIME=1",
+        "-include",
+        "memcontainers/programs/luau/glue/force_extern_c.h",
+        "-fno-exceptions",
+        "-fno-rtti",
+    ],
+    extra_srcs = [
+        "@luau//:interp_all_hdrs",
+        "//memcontainers/programs/luau/glue:aot_runtime_patch_headers",
+    ],
+    # rules_zig intentionally ignores linkopts for static libraries. These root-module options
+    # activate Zig's wasm32-WASI libc and libc++ headers while compiling the C++ translation units.
+    zigopts = [
+        "-lc",
+        "-lc++",
+    ],
+    deps = [
+        "@luau//:interp_incs",
+        "//memcontainers/programs/luau/glue:glue_incs",
+    ],
+)
+
+zig_configure(
+    name = "luau_aot_runtime_wasm32",
+    actual = ":luau_aot_runtime_raw",
+    mode = "release_small",
+    target = "//platforms:wasm32_wasi",
+    threaded = "single",
+    visibility = ["//visibility:public"],
+)
+
+build_test(
+    name = "runtime_archive_build_test",
+    targets = [":luau_aot_runtime_wasm32"],
+)
+
+# Upstream linker oracle for the exact relocatable archive. This is intentionally not the final
+# AgentOS guest: libc/libc++ and the four runtime-owned hooks remain unresolved imports. Its job is
+# to prove that standard wasm-ld can consume every retained member and relocation before we narrow
+# a production linker to the observed object corpus.
+genrule(
+    name = "runtime_wasm_ld_oracle",
+    srcs = [":luau_aot_runtime_wasm32"],
+    outs = ["luau_aot_runtime_wasm_ld_oracle.wasm"],
+    cmd = "$(execpath @@emsdk++emscripten_deps+emscripten_bin_linux//:bin/wasm-ld) --no-entry --allow-undefined --export-all --whole-archive $(location :luau_aot_runtime_wasm32) --no-whole-archive -o $@",
+    tags = ["manual"],
+    tools = ["@@emsdk++emscripten_deps+emscripten_bin_linux//:bin/wasm-ld"],
+    visibility = ["//visibility:public"],
+)
+
+build_test(
+    name = "runtime_wasm_ld_oracle_build_test",
+    targets = [":runtime_wasm_ld_oracle"],
+)

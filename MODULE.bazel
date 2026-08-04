@@ -275,6 +275,7 @@ http_archive(
         "//third_party/luau:patches/0002-mc-analysis.patch",  # Analysis throw → mc_analysis_abort
         "//third_party/luau:patches/0003-mc-analysis-named-catch.patch",  # dead named-catch bodies: drop e.what()
         "//third_party/luau:patches/0004-mc-frontend-nothread.patch",  # Frontend std::mutex + locks → mc_nothread (.h decl + .cpp uses; B3)
+        "//third_party/luau:patches/0005-mc-aot-runtime-dispatch.patch",  # strict AOT frame dispatch + null-PC debug safety
     ],
     sha256 = "e51ead5f541633693d548057e0431927f3036c13b185fdb37fbc3f5a261e6676",
     strip_prefix = "luau-0.725",

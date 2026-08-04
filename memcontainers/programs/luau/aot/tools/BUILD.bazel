@@ -56,3 +56,33 @@ js_test(
         "LUAU_AOT_LAYOUT_WASM": "$(rlocationpath :layout_probe_wasm)",
     },
 )
+
+js_test(
+    name = "runtime_archive_test",
+    data = [
+        "//memcontainers/programs/luau/aot/maps:luau_aot_runtime_objects_json",
+        "//memcontainers/programs/luau/aot/maps:luau_aot_runtime_sources_json",
+        "//memcontainers/programs/luau/aot/runtime:luau_aot_runtime_wasm32",
+        "runtime_archive.test.mjs",
+    ],
+    entry_point = "runtime_archive.test.mjs",
+    env = {
+        "LUAU_AOT_RUNTIME_ARCHIVE": "$(rlocationpath //memcontainers/programs/luau/aot/runtime:luau_aot_runtime_wasm32)",
+        "LUAU_AOT_RUNTIME_OBJECT_MANIFEST": "$(rlocationpath //memcontainers/programs/luau/aot/maps:luau_aot_runtime_objects_json)",
+        "LUAU_AOT_RUNTIME_SOURCE_MANIFEST": "$(rlocationpath //memcontainers/programs/luau/aot/maps:luau_aot_runtime_sources_json)",
+    },
+)
+
+js_test(
+    name = "runtime_link_oracle_test",
+    data = [
+        "//memcontainers/programs/luau/aot/maps:luau_aot_runtime_link_oracle_json",
+        "//memcontainers/programs/luau/aot/runtime:runtime_wasm_ld_oracle",
+        "runtime_link_oracle.test.mjs",
+    ],
+    entry_point = "runtime_link_oracle.test.mjs",
+    env = {
+        "LUAU_AOT_RUNTIME_ORACLE": "$(rlocationpath //memcontainers/programs/luau/aot/runtime:runtime_wasm_ld_oracle)",
+        "LUAU_AOT_RUNTIME_ORACLE_MANIFEST": "$(rlocationpath //memcontainers/programs/luau/aot/maps:luau_aot_runtime_link_oracle_json)",
+    },
+)

@@ -1,0 +1,116 @@
+diff --git a/VM/src/ldo.cpp b/VM/src/ldo.cpp
+--- a/VM/src/ldo.cpp
++++ b/VM/src/ldo.cpp
+@@ -153,6 +153,33 @@ void luaD_checkCstack(lua_State* L)
+         luaD_throw(L, LUA_ERRERR); // error while handling stack error
+ }
+ 
++#if defined(LUAU_AOT_RUNTIME)
++extern "C" void mc_luau_aot_v1_enter(lua_State* L);
++extern "C" void mc_luau_aot_v1_finish_yielded_op(lua_State* L);
++#endif
++
++// mc PATCH: the strict AOT runtime deliberately omits lvmexecute.cpp. Keep all generic
++// call/pcall/coroutine machinery in ldo.cpp, but route entry into a Luau frame and
++// completion of a yielded non-call operation through the versioned AOT runtime hooks.
++// Normal /bin/luau builds do not define LUAU_AOT_RUNTIME and retain the bytecode VM.
++static void executeLuaFrame(lua_State* L)
++{
++#if defined(LUAU_AOT_RUNTIME)
++    mc_luau_aot_v1_enter(L);
++#else
++    luau_execute(L);
++#endif
++}
++
++static void finishYieldedLuaOp(lua_State* L)
++{
++#if defined(LUAU_AOT_RUNTIME)
++    mc_luau_aot_v1_finish_yielded_op(L);
++#else
++    luau_finishop(L);
++#endif
++}
++
+ static void performcall(lua_State* L, StkId func, int nresults, bool preparereentry)
+ {
+     if (luau_precall(L, func, nresults) == PCRLUA)
+@@ -167,7 +194,7 @@ static void performcall(lua_State* L, StkId func, int nresults, bool preparereen
+         if (preparereentry)
+             L->status = SCHEDULED_REENTRY;
+         else
+-            luau_execute(L);
++            executeLuaFrame(L);
+ 
+         if (!oldactive)
+             L->isactive = false;
+@@ -337,10 +364,10 @@ static void resume_continue(lua_State* L)
+         else
+         {
+             if (FFlag::LuauYieldIter2 && L->ci->flags & LUA_CALLINFO_OPYIELD)
+-                luau_finishop(L);
++                finishYieldedLuaOp(L);
+ 
+             // Luau continuation; it terminates at the end of the stack or at another C continuation
+-            luau_execute(L);
++            executeLuaFrame(L);
+         }
+     }
+ }
+diff --git a/VM/src/ldebug.cpp b/VM/src/ldebug.cpp
+--- a/VM/src/ldebug.cpp
++++ b/VM/src/ldebug.cpp
+@@ -16,12 +16,18 @@
+ 
+ static int currentpc(lua_State* L, CallInfo* ci)
+ {
++#if defined(LUAU_AOT_RUNTIME)
++    if ((ci->flags & LUA_CALLINFO_NATIVE) && ci->savedpc == nullptr)
++        return -1;
++#endif
++
+     return pcRel(ci->savedpc, ci_func(ci)->l.p);
+ }
+ 
+ static int currentline(lua_State* L, CallInfo* ci)
+ {
+-    return luaG_getline(ci_func(ci)->l.p, currentpc(L, ci));
++    int pc = currentpc(L, ci);
++    return pc < 0 ? -1 : luaG_getline(ci_func(ci)->l.p, pc);
+ }
+ 
+ static Proto* getluaproto(CallInfo* ci)
+@@ -410,6 +416,11 @@
+     if (!isLua(L->ci))
+         return false;
+ 
++#if defined(LUAU_AOT_RUNTIME)
++    if ((L->ci->flags & LUA_CALLINFO_NATIVE) && L->ci->savedpc == nullptr)
++        return false;
++#endif
++
+     return LUAU_INSN_OP(*L->ci->savedpc) == LOP_BREAK;
+ }
+ 
+diff --git a/VM/src/lgcdebug.cpp b/VM/src/lgcdebug.cpp
+--- a/VM/src/lgcdebug.cpp
++++ b/VM/src/lgcdebug.cpp
+@@ -507,9 +507,15 @@
+             }
+             else if (isLua(ci))
+             {
+-                Proto* p = ci_func(ci)->l.p;
+-                int pc = pcRel(ci->savedpc, p);
+-                const LocVar* var = luaF_findlocal(p, int(v - ci->base), pc);
++                const LocVar* var = nullptr;
++#if defined(LUAU_AOT_RUNTIME)
++                if (!((ci->flags & LUA_CALLINFO_NATIVE) && ci->savedpc == nullptr))
++#endif
++                {
++                    Proto* p = ci_func(ci)->l.p;
++                    int pc = pcRel(ci->savedpc, p);
++                    var = luaF_findlocal(p, int(v - ci->base), pc);
++                }
+ 
+                 if (var && var->varname)
+                     fprintf(f, "\"%s\"", getstr(var->varname));

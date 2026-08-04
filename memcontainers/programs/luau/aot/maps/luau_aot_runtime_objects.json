@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "generator_version": "luau-aot-runtime-object-inventory-v1",
+  "status": "relocatable_archive_verified",
+  "target": "wasm32-wasi",
+  "object_format": "WebAssembly relocatable object version 1",
+  "toolchain": {
+    "zig_version": "0.16.0",
+    "mode": "release_small",
+    "threaded": "single",
+    "cxx_flags": [
+      "-DLUAU_AOT_RUNTIME=1",
+      "-fno-exceptions",
+      "-fno-rtti"
+    ],
+    "sysroot_selection": [
+      "-lc",
+      "-lc++"
+    ]
+  },
+  "archive": {
+    "bazel_target": "//memcontainers/programs/luau/aot/runtime:luau_aot_runtime_wasm32",
+    "member_count": 36,
+    "upstream_member_count": 34,
+    "project_adapter_member_count": 1,
+    "zig_root_member_count": 1,
+    "member_name_policy": "inventory and digest by basename; rules_zig archive headers contain non-contract Zig cache paths",
+    "canonical_member_set_sha256": "1d1c66aea4e509158da4c56799a226741d2d13ce5ac9b1eeb69d55db90b4e61c"
+  },
+  "members": [
+    {"name": "call_frame.o", "sha256": "60cc4f09d8433b139319f2b6a038aa88bd5f954a23fb63d81aae5cc5ca2f37e8", "owner": "agentos"},
+    {"name": "lapi.o", "sha256": "2b9e9b828e3cb29a555bc3f07ea9368c4f90b996ac2380287a373285caf66325", "owner": "luau"},
+    {"name": "laux.o", "sha256": "354493b7558157bfdabe7c811487c5225b4b89e8fccdeae817ad052b3dd119b0", "owner": "luau"},
+    {"name": "lbaselib.o", "sha256": "7ab015e8d6df0962be500f2eedaa99630465f34faf418256faa3dbd58aa4f5df", "owner": "luau"},
+    {"name": "lbitlib.o", "sha256": "f64ea2fed4a3c020173dafd20b1e2abd7e385cabbab7d74359364eb7bb5fc6af", "owner": "luau"},
+    {"name": "lbuffer.o", "sha256": "e76cce07ddf85e96f598b77ea5e649db961f279b6c5dd67d21c5c3187efd3a7c", "owner": "luau"},
+    {"name": "lbuflib.o", "sha256": "74cd5395d15e27502c5d62f14058dd38d9fc22705b29d3a1d6220862e7f02c6f", "owner": "luau"},
+    {"name": "lbuiltins.o", "sha256": "4fee7e74860597855b00793e0483ad8836eed6cda3f596e9ac08bdaf1f4ce83f", "owner": "luau"},
+    {"name": "lclass.o", "sha256": "01dae31bbb6ed223c6c3cc0f22fe48ae118dcbdfc9c8c1e25c2c05b0457f038d", "owner": "luau"},
+    {"name": "lclasslib.o", "sha256": "2253374fa46bc43546d7c1e87ceb216b3fda81d8ba12093c4b0d48347895a5f0", "owner": "luau"},
+    {"name": "lcorolib.o", "sha256": "909c6d3675329214df98d10206c2d978b3661777fb0d5b53d1e917d475b0c375", "owner": "luau"},
+    {"name": "ldblib.o", "sha256": "e68bf421c2b893ca8781cca26924f7eab3fb7d8a785593869fd77318763eaed7", "owner": "luau"},
+    {"name": "ldebug.o", "sha256": "b0b105db287eeb92918f6420abf76a642a571727455ff645a2e8cca543f762f7", "owner": "luau"},
+    {"name": "ldo.o", "sha256": "d7567453c331906e48c5023c501cc619f42964d2c33d2d0b100d149fc50674e0", "owner": "luau"},
+    {"name": "lfunc.o", "sha256": "e5eb118c65cc15a5fa08a26b1180f3bf7931e8a817dcd5e538cfcb9fd76ec8b7", "owner": "luau"},
+    {"name": "lgc.o", "sha256": "8918a9be32952674018bd44d374bf0a2eb140d5fdedae97891d7017efe3f431e", "owner": "luau"},
+    {"name": "lgcdebug.o", "sha256": "4c814d7f2ed3a32bc1a980a674cd4bee30b6830a7af6a278014c3c9d1f1bd1ec", "owner": "luau"},
+    {"name": "libluau_aot_runtime_raw_zcu.o", "sha256": "ae5be5f026cf95a541bc00ee01d1b9b8644778fc733b272e783aa775f442c863", "owner": "rules_zig"},
+    {"name": "linit.o", "sha256": "638e3c357065e72d9b86fbfd2116e30bf5de0f0a8009540281bd563e31907086", "owner": "luau"},
+    {"name": "lintlib.o", "sha256": "968c8208efa253155f59cf932c9edb434cae72fc7fda21ca1428333ce0633b9e", "owner": "luau"},
+    {"name": "lmathlib.o", "sha256": "3124aa18d8ad3efec3ab03cd554f0f788c6b7252a365c8d352976ed0f4b48766", "owner": "luau"},
+    {"name": "lmem.o", "sha256": "862eef89ef36e380acf2db3ce261c7fce0d3f12b8ee6656a9084811ed05edd44", "owner": "luau"},
+    {"name": "lnumprint.o", "sha256": "5d9cee637a958ba7bb6bdc9a6b986b567b9fdd4cea1b3b8b37310e4774cfb957", "owner": "luau"},
+    {"name": "lobject.o", "sha256": "ada25586aaaf2e1a5f470bec6fb43b0a2b44f4f65c231ebea2f6d6872d013823", "owner": "luau"},
+    {"name": "loslib.o", "sha256": "f15022755c9f0c1150eb3efd25808cc223ed12030f45803e8f29eee22500efc7", "owner": "luau"},
+    {"name": "lperf.o", "sha256": "ff4e8643137ac03437fccb2e713903e12801f7d371518292fcd47afaff90376d", "owner": "luau"},
+    {"name": "lstate.o", "sha256": "8f15693d4e3e5b887aa1540a0c4c7d1813a4edbd82cf4526c94edc3380f5c8f5", "owner": "luau"},
+    {"name": "lstring.o", "sha256": "e8b78c64925b3007d4fc0b30f8d887714fb8d41ca5d199c1138a6eed8fb50a3c", "owner": "luau"},
+    {"name": "lstrlib.o", "sha256": "42e6ee953083fe7a2969b810300a440ad212525e891a900ae626755e0e4ee9db", "owner": "luau"},
+    {"name": "ltable.o", "sha256": "2eade8858190c642daa81b2a2715a19eab15c098c8b1bfeab04b736dd0ee8a22", "owner": "luau"},
+    {"name": "ltablib.o", "sha256": "70740259ac5fd7abf6fbe5b8c715bb85721bda50613ea798092b5558688f47a6", "owner": "luau"},
+    {"name": "ltm.o", "sha256": "5726893201bf63d3b7ae480209bc3982a971a3a7da43b5cdf43f671e9dfd0a9e", "owner": "luau"},
+    {"name": "ludata.o", "sha256": "e4b2923f43c8bb91ea1d62bbee4c20ef5324fab5a014eb2f410bfe16298ee5c7", "owner": "luau"},
+    {"name": "lutf8lib.o", "sha256": "bae91b3f60e33d2259e45c89f385093cc7c5c9ee8ebca78d13b37da9f4ffff09", "owner": "luau"},
+    {"name": "lveclib.o", "sha256": "e2105c5e4f4aa6f0c43442acae5e041013d723c742a598aec49335b7699be779", "owner": "luau"},
+    {"name": "lvmutils.o", "sha256": "62b8fb701eaef32434d756ba4d29dc65f278967bc6c0161274f876ba326eac17", "owner": "luau"}
+  ],
+  "relocation_sections": {
+    "linking": 36,
+    "reloc.CODE": 35,
+    "reloc.DATA": 18
+  },
+  "relocation_count": 4933,
+  "relocation_kinds": {
+    "R_WASM_FUNCTION_INDEX_LEB": 2626,
+    "R_WASM_GLOBAL_INDEX_LEB": 465,
+    "R_WASM_MEMORY_ADDR_I32": 302,
+    "R_WASM_MEMORY_ADDR_LEB": 208,
+    "R_WASM_MEMORY_ADDR_SLEB": 663,
+    "R_WASM_TABLE_INDEX_I32": 451,
+    "R_WASM_TABLE_INDEX_SLEB": 50,
+    "R_WASM_TABLE_NUMBER_LEB": 84,
+    "R_WASM_TYPE_INDEX_LEB": 84
+  },
+  "forbidden_members": [
+    "lvmexecute.o",
+    "lvmload.o",
+    "any Ast, Bytecode, Compiler, CodeGen, Analysis, or Config object"
+  ],
+  "notes": [
+    "Per-member digests are the reproducibility contract; the raw ar container digest is not, because rules_zig stores cache-qualified member names in archive headers.",
+    "The hermetic Emscripten wasm-ld oracle consumes this archive with --whole-archive and --allow-undefined before the AgentOS production linker is implemented."
+  ]
+}

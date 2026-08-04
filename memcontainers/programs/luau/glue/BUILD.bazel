@@ -82,6 +82,19 @@ cc_headers(
     visibility = ["//visibility:public"],
 )
 
+# Pin-patch headers needed while compiling the strict AOT runtime in its own package. Keep this
+# narrow: the AOT archive does not consume the source-loading entrypoint or standard-library Zig
+# bindings, only the trap declarations injected into retained upstream VM translation units.
+filegroup(
+    name = "aot_runtime_patch_headers",
+    srcs = [
+        "error_channel.h",
+        "force_extern_c.h",
+        "trap.h",
+    ],
+    visibility = ["//memcontainers/programs/luau/aot/runtime:__pkg__"],
+)
+
 # /bin/luau — `zig c++` compiles the patched upstream Luau (VM/Compiler/Ast/Bytecode/Common from
 # @luau) + the Zig glue + entry.zig into a wasm32-wasi guest. -fno-exceptions/-fno-rtti: the EH is
 # kernel-mediated via the trap glue. (The wasi-adapter conversion to mc + the budget/tier/service

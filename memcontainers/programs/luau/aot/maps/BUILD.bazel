@@ -3,11 +3,31 @@ load("@aspect_rules_js//js:defs.bzl", "js_library")
 exports_files([
     "luau_aot_ir_coverage.json",
     "luau_aot_layout.json",
+    "luau_aot_runtime_link_oracle.json",
+    "luau_aot_runtime_objects.json",
     "luau_aot_runtime_sources.json",
 ])
 
 js_library(
     name = "luau_aot_layout_json",
     srcs = ["luau_aot_layout.json"],
+    visibility = ["//memcontainers/programs/luau/aot/tools:__pkg__"],
+)
+
+js_library(
+    name = "luau_aot_runtime_link_oracle_json",
+    srcs = ["luau_aot_runtime_link_oracle.json"],
+    visibility = ["//memcontainers/programs/luau/aot/tools:__pkg__"],
+)
+
+js_library(
+    name = "luau_aot_runtime_objects_json",
+    srcs = ["luau_aot_runtime_objects.json"],
+    visibility = ["//memcontainers/programs/luau/aot/tools:__pkg__"],
+)
+
+js_library(
+    name = "luau_aot_runtime_sources_json",
+    srcs = ["luau_aot_runtime_sources.json"],
     visibility = ["//memcontainers/programs/luau/aot/tools:__pkg__"],
 )
