@@ -1,0 +1,110 @@
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
+load("//bazel:mc_program.bzl", "cc_headers")
+
+cc_headers(
+    name = "frontend_incs",
+    hdrs = [],
+    includes = ["."],
+)
+
+filegroup(
+    name = "frontend_contract_inputs",
+    srcs = [
+        "BUILD.bazel",
+        "compiler_error_channel.h",
+        "error_channel.h",
+        "frontend_adapter.cpp",
+        "frontend_fastflags.cpp",
+        "frontend_host.zig",
+        "host_wasi_stubs.c",
+        "trap.h",
+    ],
+)
+
+# This is an optional host capability, not a target guest. It may contain the source compiler,
+# temporary bytecode loader, and bytecode executor needed to materialize a Proto; none of those TUs
+# are in //memcontainers/programs/luau/aot/runtime. The only product boundary exported from C++ is
+# one owned FrontendSnapshotV1 byte buffer.
+zig_binary(
+    name = "frontend_raw",
+    srcs = ["frontend_host.zig"],
+    copts = [
+        "-DMC_LUAU_COMPILER_HOST=1",
+        "-fno-exceptions",
+        "-fno-math-errno",
+        "-fno-rtti",
+    ],
+    csrcs = [
+        "@luau//:interp_srcs",
+        "@luau//:aot_frontend_codegen_ir_srcs",
+        "frontend_adapter.cpp",
+        "frontend_fastflags.cpp",
+        "host_wasi_stubs.c",
+    ],
+    extra_srcs = [
+        "@luau//:interp_all_hdrs",
+        "@luau//:aot_frontend_codegen_ir_headers",
+        "//memcontainers/programs/luau/aot/schema:frontend_snapshot_v1.h",
+        "compiler_error_channel.h",
+        "error_channel.h",
+        "frontend_identity_v1.h",
+        "trap.h",
+    ],
+    linkopts = [
+        "-lc",
+        "-lc++",
+        "-fno-entry",
+        "--initial-memory=67108864",
+        "--max-memory=536870912",
+        "--export=mc_luau_frontend_v1_init",
+        "--export=mc_luau_frontend_v1_alloc",
+        "--export=mc_luau_frontend_v1_dealloc",
+        "--export=mc_luau_frontend_v1_validate_snapshot",
+        "--export=mc_luau_frontend_snapshot_v1_compile",
+        "--export=mc_luau_frontend_snapshot_v1_free",
+        "--export=mc_luau_frontend_snapshot_v1_last_raise_message",
+        "--export=mc_luau_frontend_snapshot_v1_last_raise_message_size",
+    ],
+    main = "frontend_host.zig",
+    tags = ["manual"],
+    deps = [
+        ":frontend_incs",
+        "@luau//:aot_frontend_codegen_ir_incs",
+        "@luau//:interp_incs",
+        "//memcontainers/programs/luau/aot/compiler/ir:frontend_snapshot_v1",
+    ],
+)
+
+zig_configure_binary(
+    name = "frontend_wasm",
+    actual = ":frontend_raw",
+    mode = "release_small",
+    tags = ["manual"],
+    target = "//platforms:wasm32_wasi",
+    threaded = "single",
+    visibility = ["//visibility:public"],
+)
+
+build_test(
+    name = "frontend_build_test",
+    targets = [":frontend_wasm"],
+)
+
+js_test(
+    name = "frontend_snapshot_test",
+    data = [
+        ":frontend_snapshot.test.mjs",
+        ":frontend_contract_inputs",
+        ":frontend_wasm",
+        "//memcontainers/programs/luau/aot/compiler/ir:frontend_contract_inputs",
+        "//memcontainers/programs/luau/aot/maps:frontend_identity_inputs",
+        "//memcontainers/programs/luau/aot/schema:frontend_contract_inputs",
+        "//third_party/luau:frontend_contract_inputs",
+    ],
+    entry_point = "frontend_snapshot.test.mjs",
+    env = {
+        "LUAU_AOT_FRONTEND_WASM": "$(rlocationpath :frontend_wasm)",
+    },
+)

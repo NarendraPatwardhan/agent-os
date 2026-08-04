@@ -80,6 +80,41 @@ coverage claims based on constant fixtures must be removed or isolated as non-pr
 Salvage is performed by deliberately porting reviewed pieces into a fresh worktree from `develop`, not
 by continuing implementation on the audited branch.
 
+### 0.2 Active clean-worktree implementation state (2026-08-04)
+
+The replacement implementation lives on `feature/luau-aot-compiler` in the separate
+`agent-os-luau-aot` worktree. The audited `agent-os-luau-compiler` worktree remains untouched. The
+following foundations are real and checked; none is yet presented as a runnable AOT product:
+
+- the exact 0.725 IR enum ledger and wasm32 layout probe fail on pin drift;
+- the strict target-runtime source boundary builds a 36-member wasm32 archive with Compiler, Ast,
+  Bytecode, CodeGen, `lvmload.cpp`, and `lvmexecute.cpp` excluded;
+- the archive and its complete relocation corpus link through the hermetic Emscripten
+  `@@emsdk++emscripten_deps+emscripten_bin_linux//:bin/wasm-ld` oracle;
+- `FrontendSnapshotV1` is a canonical 21-section, little-endian byte protocol. It carries the pin,
+  patchset, frontend contract, IR-enum, and target-layout identities; the closed Proto graph;
+  bytecode and immutable Proto metadata; VM constants; source/debug data; optimized upstream IR;
+  and the original compiler bytecode as non-executable evidence;
+- the pin adapter invokes the target-neutral prefix of upstream `lowerFunction` in its required
+  order: `killUnusedBlocks`, `computeCfgInfo`, `constPropInBlockChains`, `createLinearBlocks`,
+  `computeCfgBlockEdges`, and `updateUseCounts`. It snapshots before dead-store marking because DSE
+  creates lowering-side restore/exit tables that the Zig normalizer must either own or represent
+  explicitly. There are no fixture-dependent optimizer switches;
+- the host frontend Wasm has zero imports. A real smoke compiles root plus nested function, closes
+  the temporary VM, validates every serialized reference in Zig, observes actual `CALL`, `ADD_NUM`,
+  and `RETURN` IR, and proves byte-identical output across two fresh states;
+- a checked semantic-corpus digest binds the schema, adapter, Zig validator, build recipe, private
+  source exposure, and five applied patches to the frontend identity carried in every snapshot;
+- syntax errors return an owned structured diagnostic. Loader compound constants that have not yet
+  been decoded into `VM_CONSTANT_ITEMS`, including import paths and table/class shapes, fail closed with
+  `MC_LUAU_SNAPSHOT_V1_UNSUPPORTED_FRONTEND_VALUE`; they are not silently flattened or evaluated.
+
+The next product slice begins at the Zig side of this boundary. It must materialize compiler-owned
+normalized IR, emit the mandatory dynamic scalar/control Wasm object, define the first real
+`AotProto`/generated-function runtime contract, and link it to the strict runtime archive with the
+same hermetic `wasm-ld`. Until one linked artifact branches or loops on three runtime inputs and
+matches `/bin/luau`, WP2 and WP3 remain open.
+
 ---
 
 ## 1. Product aim

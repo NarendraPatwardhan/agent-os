@@ -211,6 +211,18 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
+# Private include paths are propagated only to the pin adapter. The target runtime cannot depend on
+# this CcInfo target and therefore cannot accidentally include private CodeGen representation.
+cc_headers(
+    name = "aot_frontend_codegen_ir_incs",
+    hdrs = [],
+    includes = [
+        "CodeGen/include",
+        "CodeGen/src",
+    ],
+    visibility = ["//visibility:public"],
+)
+
 # The interpreter's translation units: VM (bytecode exec) + Compiler + Ast + Bytecode + Common.
 filegroup(
     name = "interp_srcs",

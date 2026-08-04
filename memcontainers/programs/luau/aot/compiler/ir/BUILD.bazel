@@ -1,0 +1,25 @@
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+zig_library(
+    name = "frontend_snapshot_v1",
+    import_name = "frontend_snapshot_v1",
+    main = "frontend_snapshot_v1.zig",
+    srcs = ["frontend_identity_v1.zig"],
+    visibility = ["//visibility:public"],
+)
+
+zig_test(
+    name = "frontend_snapshot_v1_test",
+    main = "frontend_snapshot_v1.zig",
+    srcs = ["frontend_identity_v1.zig"],
+)
+
+js_library(
+    name = "frontend_contract_inputs",
+    srcs = [
+        "BUILD.bazel",
+        "frontend_snapshot_v1.zig",
+    ],
+    visibility = ["//visibility:public"],
+)

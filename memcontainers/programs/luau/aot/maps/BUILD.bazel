@@ -15,6 +15,15 @@ js_library(
 )
 
 js_library(
+    name = "frontend_identity_inputs",
+    srcs = [
+        "luau_aot_ir_coverage.json",
+        "luau_aot_layout.json",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+js_library(
     name = "luau_aot_runtime_link_oracle_json",
     srcs = ["luau_aot_runtime_link_oracle.json"],
     visibility = ["//memcontainers/programs/luau/aot/tools:__pkg__"],

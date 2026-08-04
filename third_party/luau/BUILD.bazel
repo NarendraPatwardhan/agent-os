@@ -11,6 +11,8 @@
 # luau needs the kernel-mediated non-local exit because wasmi has no exception proposal — Lua
 # `error`/`pcall` and C++ EH unwind through the kernel's trap boundary (SYSTEMS.md).
 
+load("@aspect_rules_js//js:defs.bzl", "js_library")
+
 # The patch files + the build_file are referenced as labels by the http_archive (resolved in the
 # @luau repo context), so they must be exported from this package.
 exports_files([
@@ -21,3 +23,17 @@ exports_files([
     "patches/0004-mc-frontend-nothread.patch",
     "patches/0005-mc-aot-runtime-dispatch.patch",
 ])
+
+js_library(
+    name = "frontend_contract_inputs",
+    srcs = [
+        "BUILD.bazel",
+        "BUILD.luau.bazel",
+        "patches/0001-mc-vm.patch",
+        "patches/0002-mc-analysis.patch",
+        "patches/0003-mc-analysis-named-catch.patch",
+        "patches/0004-mc-frontend-nothread.patch",
+        "patches/0005-mc-aot-runtime-dispatch.patch",
+    ],
+    visibility = ["//visibility:public"],
+)
