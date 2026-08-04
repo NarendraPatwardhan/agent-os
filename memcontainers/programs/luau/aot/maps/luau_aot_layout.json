@@ -1,0 +1,794 @@
+{
+  "schema_version": 1,
+  "generator_version": "luau-aot-layout-probe-v1",
+  "luau_pin": {
+    "version": "0.725",
+    "archive_sha256": "e51ead5f541633693d548057e0431927f3036c13b185fdb37fbc3f5a261e6676",
+    "patch_count": 4
+  },
+  "target": "wasm32-wasi",
+  "toolchain": {
+    "zig_version": "0.16.0",
+    "mode": "release_small",
+    "threaded": "single",
+    "cxx_flags": [
+      "-fno-exceptions",
+      "-fno-rtti"
+    ]
+  },
+  "probe_wasm_sha256": "4d349ae2b61e34c9cbb629369afeae5d09b4f8e719a53680f061cbc657eab3e7",
+  "field_schema_sha256": "ac6bf00c8025ba20feff40ff713838656cd014ffabac7e9cd8b9b7efa3a91fcc",
+  "imports": [
+    "wasi_snapshot_preview1.args_get:function",
+    "wasi_snapshot_preview1.args_sizes_get:function",
+    "wasi_snapshot_preview1.proc_exit:function"
+  ],
+  "field_count": 191,
+  "fields_sha256": "425d38d75ef9f4e26693a690e0857f902aa76f1c1856196ac30dc6236ea4c496",
+  "fields": [
+    {
+      "name": "ABI_POINTER_SIZE",
+      "value": 4
+    },
+    {
+      "name": "ABI_SIZE_T_SIZE",
+      "value": 4
+    },
+    {
+      "name": "ABI_INSTRUCTION_SIZE",
+      "value": 4
+    },
+    {
+      "name": "ABI_LUA_EXTRA_SIZE",
+      "value": 1
+    },
+    {
+      "name": "ABI_LUA_VECTOR_SIZE",
+      "value": 3
+    },
+    {
+      "name": "SIZE_VALUE",
+      "value": 8
+    },
+    {
+      "name": "ALIGN_VALUE",
+      "value": 8
+    },
+    {
+      "name": "SIZE_TVALUE",
+      "value": 16
+    },
+    {
+      "name": "ALIGN_TVALUE",
+      "value": 8
+    },
+    {
+      "name": "OFF_TVALUE_VALUE",
+      "value": 0
+    },
+    {
+      "name": "OFF_TVALUE_EXTRA",
+      "value": 8
+    },
+    {
+      "name": "OFF_TVALUE_TAG",
+      "value": 12
+    },
+    {
+      "name": "SIZE_GC_HEADER",
+      "value": 3
+    },
+    {
+      "name": "ALIGN_GC_HEADER",
+      "value": 1
+    },
+    {
+      "name": "OFF_GC_HEADER_TAG",
+      "value": 0
+    },
+    {
+      "name": "OFF_GC_HEADER_MARKED",
+      "value": 1
+    },
+    {
+      "name": "OFF_GC_HEADER_MEMCAT",
+      "value": 2
+    },
+    {
+      "name": "SIZE_TSTRING",
+      "value": 24
+    },
+    {
+      "name": "ALIGN_TSTRING",
+      "value": 4
+    },
+    {
+      "name": "OFF_TSTRING_TAG",
+      "value": 0
+    },
+    {
+      "name": "OFF_TSTRING_MARKED",
+      "value": 1
+    },
+    {
+      "name": "OFF_TSTRING_MEMCAT",
+      "value": 2
+    },
+    {
+      "name": "OFF_TSTRING_ATOM",
+      "value": 4
+    },
+    {
+      "name": "OFF_TSTRING_NEXT",
+      "value": 8
+    },
+    {
+      "name": "OFF_TSTRING_HASH",
+      "value": 12
+    },
+    {
+      "name": "OFF_TSTRING_LEN",
+      "value": 16
+    },
+    {
+      "name": "OFF_TSTRING_DATA",
+      "value": 20
+    },
+    {
+      "name": "SIZE_UDATA",
+      "value": 24
+    },
+    {
+      "name": "ALIGN_UDATA",
+      "value": 8
+    },
+    {
+      "name": "OFF_UDATA_TAG",
+      "value": 0
+    },
+    {
+      "name": "OFF_UDATA_UTAG",
+      "value": 3
+    },
+    {
+      "name": "OFF_UDATA_LEN",
+      "value": 4
+    },
+    {
+      "name": "OFF_UDATA_METATABLE",
+      "value": 8
+    },
+    {
+      "name": "OFF_UDATA_DATA",
+      "value": 16
+    },
+    {
+      "name": "SIZE_BUFFER",
+      "value": 16
+    },
+    {
+      "name": "ALIGN_BUFFER",
+      "value": 8
+    },
+    {
+      "name": "OFF_BUFFER_TAG",
+      "value": 0
+    },
+    {
+      "name": "OFF_BUFFER_LEN",
+      "value": 4
+    },
+    {
+      "name": "OFF_BUFFER_DATA",
+      "value": 8
+    },
+    {
+      "name": "SIZE_PROTO",
+      "value": 124
+    },
+    {
+      "name": "ALIGN_PROTO",
+      "value": 4
+    },
+    {
+      "name": "OFF_PROTO_TAG",
+      "value": 0
+    },
+    {
+      "name": "OFF_PROTO_NUPS",
+      "value": 3
+    },
+    {
+      "name": "OFF_PROTO_NUMPARAMS",
+      "value": 4
+    },
+    {
+      "name": "OFF_PROTO_IS_VARARG",
+      "value": 5
+    },
+    {
+      "name": "OFF_PROTO_MAXSTACKSIZE",
+      "value": 6
+    },
+    {
+      "name": "OFF_PROTO_FLAGS",
+      "value": 7
+    },
+    {
+      "name": "OFF_PROTO_CONSTANTS",
+      "value": 8
+    },
+    {
+      "name": "OFF_PROTO_CODE",
+      "value": 12
+    },
+    {
+      "name": "OFF_PROTO_CHILDREN",
+      "value": 16
+    },
+    {
+      "name": "OFF_PROTO_CODEENTRY",
+      "value": 20
+    },
+    {
+      "name": "OFF_PROTO_EXECDATA",
+      "value": 24
+    },
+    {
+      "name": "OFF_PROTO_EXECTARGET",
+      "value": 28
+    },
+    {
+      "name": "OFF_PROTO_SOURCE",
+      "value": 48
+    },
+    {
+      "name": "OFF_PROTO_DEBUGNAME",
+      "value": 52
+    },
+    {
+      "name": "OFF_PROTO_GCLIST",
+      "value": 68
+    },
+    {
+      "name": "OFF_PROTO_SIZECODE",
+      "value": 72
+    },
+    {
+      "name": "OFF_PROTO_SIZEP",
+      "value": 76
+    },
+    {
+      "name": "OFF_PROTO_SIZEUPVALUES",
+      "value": 84
+    },
+    {
+      "name": "OFF_PROTO_SIZEK",
+      "value": 88
+    },
+    {
+      "name": "OFF_PROTO_LINEDEFINED",
+      "value": 100
+    },
+    {
+      "name": "OFF_PROTO_BYTECODEID",
+      "value": 104
+    },
+    {
+      "name": "OFF_PROTO_FEEDBACKVEC",
+      "value": 112
+    },
+    {
+      "name": "OFF_PROTO_FEEDBACKVECSIZE",
+      "value": 116
+    },
+    {
+      "name": "OFF_PROTO_FUNID",
+      "value": 120
+    },
+    {
+      "name": "SIZE_UPVAL",
+      "value": 24
+    },
+    {
+      "name": "ALIGN_UPVAL",
+      "value": 8
+    },
+    {
+      "name": "OFF_UPVAL_TAG",
+      "value": 0
+    },
+    {
+      "name": "OFF_UPVAL_MARKED_OPEN",
+      "value": 3
+    },
+    {
+      "name": "OFF_UPVAL_VALUE_POINTER",
+      "value": 4
+    },
+    {
+      "name": "OFF_UPVAL_STORAGE",
+      "value": 8
+    },
+    {
+      "name": "SIZE_CLOSURE",
+      "value": 56
+    },
+    {
+      "name": "ALIGN_CLOSURE",
+      "value": 8
+    },
+    {
+      "name": "OFF_CLOSURE_TAG",
+      "value": 0
+    },
+    {
+      "name": "OFF_CLOSURE_IS_C",
+      "value": 3
+    },
+    {
+      "name": "OFF_CLOSURE_NUPVALUES",
+      "value": 4
+    },
+    {
+      "name": "OFF_CLOSURE_STACKSIZE",
+      "value": 5
+    },
+    {
+      "name": "OFF_CLOSURE_PRELOAD",
+      "value": 6
+    },
+    {
+      "name": "OFF_CLOSURE_USAGE",
+      "value": 8
+    },
+    {
+      "name": "OFF_CLOSURE_GCLIST",
+      "value": 16
+    },
+    {
+      "name": "OFF_CLOSURE_ENV",
+      "value": 20
+    },
+    {
+      "name": "OFF_CLOSURE_C",
+      "value": 24
+    },
+    {
+      "name": "OFF_CLOSURE_L",
+      "value": 24
+    },
+    {
+      "name": "OFF_CLOSURE_C_FUNCTION",
+      "value": 24
+    },
+    {
+      "name": "OFF_CLOSURE_C_CONTINUATION",
+      "value": 28
+    },
+    {
+      "name": "OFF_CLOSURE_C_UPVALS",
+      "value": 40
+    },
+    {
+      "name": "OFF_CLOSURE_L_PROTO",
+      "value": 24
+    },
+    {
+      "name": "OFF_CLOSURE_L_UPREFS",
+      "value": 32
+    },
+    {
+      "name": "SIZE_TABLE_KEY",
+      "value": 16
+    },
+    {
+      "name": "ALIGN_TABLE_KEY",
+      "value": 8
+    },
+    {
+      "name": "OFF_TABLE_KEY_VALUE",
+      "value": 0
+    },
+    {
+      "name": "OFF_TABLE_KEY_EXTRA",
+      "value": 8
+    },
+    {
+      "name": "OFF_TABLE_KEY_BITS",
+      "value": 12
+    },
+    {
+      "name": "TABLE_KEY_TAG_BITS",
+      "value": 4
+    },
+    {
+      "name": "TABLE_KEY_NEXT_BITS",
+      "value": 28
+    },
+    {
+      "name": "SIZE_TABLE_NODE",
+      "value": 32
+    },
+    {
+      "name": "ALIGN_TABLE_NODE",
+      "value": 8
+    },
+    {
+      "name": "OFF_TABLE_NODE_VALUE",
+      "value": 0
+    },
+    {
+      "name": "OFF_TABLE_NODE_KEY",
+      "value": 16
+    },
+    {
+      "name": "SIZE_TABLE",
+      "value": 32
+    },
+    {
+      "name": "ALIGN_TABLE",
+      "value": 4
+    },
+    {
+      "name": "OFF_TABLE_TAG",
+      "value": 0
+    },
+    {
+      "name": "OFF_TABLE_TMCACHE",
+      "value": 3
+    },
+    {
+      "name": "OFF_TABLE_READONLY",
+      "value": 4
+    },
+    {
+      "name": "OFF_TABLE_SAFEENV",
+      "value": 5
+    },
+    {
+      "name": "OFF_TABLE_LSIZENODE",
+      "value": 6
+    },
+    {
+      "name": "OFF_TABLE_NODEMASK8",
+      "value": 7
+    },
+    {
+      "name": "OFF_TABLE_SIZEARRAY",
+      "value": 8
+    },
+    {
+      "name": "OFF_TABLE_LASTFREE",
+      "value": 12
+    },
+    {
+      "name": "OFF_TABLE_ABOUNDARY",
+      "value": 12
+    },
+    {
+      "name": "OFF_TABLE_METATABLE",
+      "value": 16
+    },
+    {
+      "name": "OFF_TABLE_ARRAY",
+      "value": 20
+    },
+    {
+      "name": "OFF_TABLE_NODE",
+      "value": 24
+    },
+    {
+      "name": "OFF_TABLE_GCLIST",
+      "value": 28
+    },
+    {
+      "name": "SIZE_CALLINFO",
+      "value": 24
+    },
+    {
+      "name": "ALIGN_CALLINFO",
+      "value": 4
+    },
+    {
+      "name": "OFF_CALLINFO_BASE",
+      "value": 0
+    },
+    {
+      "name": "OFF_CALLINFO_FUNC",
+      "value": 4
+    },
+    {
+      "name": "OFF_CALLINFO_TOP",
+      "value": 8
+    },
+    {
+      "name": "OFF_CALLINFO_SAVEDPC",
+      "value": 12
+    },
+    {
+      "name": "OFF_CALLINFO_ERRFUNC",
+      "value": 12
+    },
+    {
+      "name": "OFF_CALLINFO_NRESULTS",
+      "value": 16
+    },
+    {
+      "name": "OFF_CALLINFO_FLAGS",
+      "value": 20
+    },
+    {
+      "name": "SIZE_LUA_STATE",
+      "value": 76
+    },
+    {
+      "name": "ALIGN_LUA_STATE",
+      "value": 4
+    },
+    {
+      "name": "OFF_LUA_STATE_STATUS",
+      "value": 3
+    },
+    {
+      "name": "OFF_LUA_STATE_ACTIVE_MEMCAT",
+      "value": 4
+    },
+    {
+      "name": "OFF_LUA_STATE_IS_ACTIVE",
+      "value": 5
+    },
+    {
+      "name": "OFF_LUA_STATE_SINGLESTEP",
+      "value": 6
+    },
+    {
+      "name": "OFF_LUA_STATE_TOP",
+      "value": 8
+    },
+    {
+      "name": "OFF_LUA_STATE_BASE",
+      "value": 12
+    },
+    {
+      "name": "OFF_LUA_STATE_GLOBAL",
+      "value": 16
+    },
+    {
+      "name": "OFF_LUA_STATE_CI",
+      "value": 20
+    },
+    {
+      "name": "OFF_LUA_STATE_STACK_LAST",
+      "value": 24
+    },
+    {
+      "name": "OFF_LUA_STATE_STACK",
+      "value": 28
+    },
+    {
+      "name": "OFF_LUA_STATE_END_CI",
+      "value": 32
+    },
+    {
+      "name": "OFF_LUA_STATE_BASE_CI",
+      "value": 36
+    },
+    {
+      "name": "OFF_LUA_STATE_STACKSIZE",
+      "value": 40
+    },
+    {
+      "name": "OFF_LUA_STATE_SIZE_CI",
+      "value": 44
+    },
+    {
+      "name": "OFF_LUA_STATE_NCCALLS",
+      "value": 48
+    },
+    {
+      "name": "OFF_LUA_STATE_BASECCALLS",
+      "value": 50
+    },
+    {
+      "name": "OFF_LUA_STATE_CACHEDSLOT",
+      "value": 52
+    },
+    {
+      "name": "OFF_LUA_STATE_GT",
+      "value": 56
+    },
+    {
+      "name": "OFF_LUA_STATE_OPENUPVAL",
+      "value": 60
+    },
+    {
+      "name": "OFF_LUA_STATE_GCLIST",
+      "value": 64
+    },
+    {
+      "name": "OFF_LUA_STATE_NAMECALL",
+      "value": 68
+    },
+    {
+      "name": "OFF_LUA_STATE_USERDATA",
+      "value": 72
+    },
+    {
+      "name": "SIZE_GLOBAL_STATE",
+      "value": 12880
+    },
+    {
+      "name": "ALIGN_GLOBAL_STATE",
+      "value": 16
+    },
+    {
+      "name": "OFF_GLOBAL_STATE_STRING_TABLE",
+      "value": 0
+    },
+    {
+      "name": "OFF_GLOBAL_STATE_ALLOCATOR",
+      "value": 12
+    },
+    {
+      "name": "OFF_GLOBAL_STATE_ALLOCATOR_UD",
+      "value": 16
+    },
+    {
+      "name": "OFF_GLOBAL_STATE_CURRENT_WHITE",
+      "value": 20
+    },
+    {
+      "name": "OFF_GLOBAL_STATE_GC_STATE",
+      "value": 21
+    },
+    {
+      "name": "OFF_GLOBAL_STATE_GC_THRESHOLD",
+      "value": 36
+    },
+    {
+      "name": "OFF_GLOBAL_STATE_TOTAL_BYTES",
+      "value": 40
+    },
+    {
+      "name": "OFF_GLOBAL_STATE_MAIN_THREAD",
+      "value": 388
+    },
+    {
+      "name": "OFF_GLOBAL_STATE_OPEN_UPVAL_HEAD",
+      "value": 392
+    },
+    {
+      "name": "OFF_GLOBAL_STATE_PSEUDOTEMP",
+      "value": 616
+    },
+    {
+      "name": "OFF_GLOBAL_STATE_REGISTRY",
+      "value": 632
+    },
+    {
+      "name": "OFF_GLOBAL_STATE_ERROR_JUMP",
+      "value": 652
+    },
+    {
+      "name": "OFF_GLOBAL_STATE_EXEC_CALLBACKS",
+      "value": 736
+    },
+    {
+      "name": "OFF_GLOBAL_STATE_EXEC_CALLBACK_DATA",
+      "value": 784
+    },
+    {
+      "name": "OFF_GLOBAL_STATE_MEMCAT_BYTES",
+      "value": 9616
+    },
+    {
+      "name": "OFF_GLOBAL_STATE_LAST_PROTO_ID",
+      "value": 12872
+    },
+    {
+      "name": "TAG_NIL",
+      "value": 0
+    },
+    {
+      "name": "TAG_BOOLEAN",
+      "value": 1
+    },
+    {
+      "name": "TAG_LIGHTUSERDATA",
+      "value": 2
+    },
+    {
+      "name": "TAG_NUMBER",
+      "value": 3
+    },
+    {
+      "name": "TAG_INTEGER",
+      "value": 4
+    },
+    {
+      "name": "TAG_VECTOR",
+      "value": 5
+    },
+    {
+      "name": "TAG_STRING",
+      "value": 6
+    },
+    {
+      "name": "TAG_TABLE",
+      "value": 7
+    },
+    {
+      "name": "TAG_FUNCTION",
+      "value": 8
+    },
+    {
+      "name": "TAG_USERDATA",
+      "value": 9
+    },
+    {
+      "name": "TAG_THREAD",
+      "value": 10
+    },
+    {
+      "name": "TAG_BUFFER",
+      "value": 11
+    },
+    {
+      "name": "TAG_CLASS",
+      "value": 12
+    },
+    {
+      "name": "TAG_OBJECT",
+      "value": 13
+    },
+    {
+      "name": "TAG_DEADKEY",
+      "value": 14
+    },
+    {
+      "name": "TAG_PROTO",
+      "value": 15
+    },
+    {
+      "name": "TAG_UPVAL",
+      "value": 16
+    },
+    {
+      "name": "CALLINFO_RETURN",
+      "value": 1
+    },
+    {
+      "name": "CALLINFO_HANDLE",
+      "value": 2
+    },
+    {
+      "name": "CALLINFO_NATIVE",
+      "value": 4
+    },
+    {
+      "name": "CALLINFO_OPYIELD",
+      "value": 8
+    },
+    {
+      "name": "STATUS_OK",
+      "value": 0
+    },
+    {
+      "name": "STATUS_YIELD",
+      "value": 1
+    },
+    {
+      "name": "STATUS_ERROR_RUNTIME",
+      "value": 2
+    },
+    {
+      "name": "STATUS_ERROR_MEMORY",
+      "value": 4
+    },
+    {
+      "name": "STATUS_BREAK",
+      "value": 6
+    }
+  ]
+}

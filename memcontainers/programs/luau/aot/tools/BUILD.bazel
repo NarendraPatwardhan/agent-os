@@ -1,0 +1,58 @@
+load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
+
+zig_binary(
+    name = "layout_probe_raw",
+    copts = [
+        "-fno-exceptions",
+        "-fno-rtti",
+    ],
+    csrcs = ["layout_probe.cpp"],
+    extra_srcs = [
+        "@luau//:interp_all_hdrs",
+        "layout_fields.def",
+    ],
+    linkopts = [
+        # Supplying libc selects the wasm32-wasi sysroot for C/C++ compilation;
+        # the probe calls no libc function and its import test remains the proof.
+        "-lc",
+        "-fno-entry",
+        "--export=lc_layout_schema_version",
+        "--export=lc_layout_value_count",
+        "--export=lc_layout_value",
+    ],
+    main = "layout_probe_root.zig",
+    tags = ["manual"],
+    deps = ["@luau//:interp_incs"],
+)
+
+zig_configure_binary(
+    name = "layout_probe_wasm",
+    actual = ":layout_probe_raw",
+    mode = "release_small",
+    tags = ["manual"],
+    target = "//platforms:wasm32_wasi",
+    threaded = "single",
+)
+
+build_test(
+    name = "layout_probe_build_test",
+    targets = [":layout_probe_wasm"],
+)
+
+js_test(
+    name = "layout_manifest_test",
+    data = [
+        "//memcontainers/programs/luau/aot/maps:luau_aot_layout_json",
+        ":layout_probe_wasm",
+        "layout_fields.def",
+        "layout_probe.test.mjs",
+    ],
+    entry_point = "layout_probe.test.mjs",
+    env = {
+        "LUAU_AOT_LAYOUT_FIELDS": "$(rlocationpath layout_fields.def)",
+        "LUAU_AOT_LAYOUT_MANIFEST": "$(rlocationpath //memcontainers/programs/luau/aot/maps:luau_aot_layout_json)",
+        "LUAU_AOT_LAYOUT_WASM": "$(rlocationpath :layout_probe_wasm)",
+    },
+)

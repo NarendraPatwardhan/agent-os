@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "generator_version": "luau-aot-runtime-sources-v1",
+  "luau_pin": {
+    "version": "0.725",
+    "archive_sha256": "e51ead5f541633693d548057e0431927f3036c13b185fdb37fbc3f5a261e6676"
+  },
+  "status": "boundary_declared_not_linkable",
+  "retained_count": 34,
+  "retained_runtime_sources": [
+    "VM/src/lapi.cpp",
+    "VM/src/laux.cpp",
+    "VM/src/lbaselib.cpp",
+    "VM/src/lbitlib.cpp",
+    "VM/src/lbuffer.cpp",
+    "VM/src/lbuflib.cpp",
+    "VM/src/lbuiltins.cpp",
+    "VM/src/lclass.cpp",
+    "VM/src/lclasslib.cpp",
+    "VM/src/lcorolib.cpp",
+    "VM/src/ldblib.cpp",
+    "VM/src/ldebug.cpp",
+    "VM/src/ldo.cpp",
+    "VM/src/lfunc.cpp",
+    "VM/src/lgc.cpp",
+    "VM/src/lgcdebug.cpp",
+    "VM/src/linit.cpp",
+    "VM/src/lintlib.cpp",
+    "VM/src/lmathlib.cpp",
+    "VM/src/lmem.cpp",
+    "VM/src/lnumprint.cpp",
+    "VM/src/lobject.cpp",
+    "VM/src/loslib.cpp",
+    "VM/src/lperf.cpp",
+    "VM/src/lstate.cpp",
+    "VM/src/lstring.cpp",
+    "VM/src/lstrlib.cpp",
+    "VM/src/ltable.cpp",
+    "VM/src/ltablib.cpp",
+    "VM/src/ltm.cpp",
+    "VM/src/ludata.cpp",
+    "VM/src/lutf8lib.cpp",
+    "VM/src/lveclib.cpp",
+    "VM/src/lvmutils.cpp"
+  ],
+  "forbidden_family_count": 7,
+  "forbidden_runtime_families": [
+    "Ast/src/*.cpp",
+    "Bytecode/src/*.cpp",
+    "Common/src/*.cpp",
+    "Compiler/src/*.cpp",
+    "CodeGen/src/*.cpp",
+    "Analysis/src/*.cpp",
+    "Config/src/*.cpp"
+  ],
+  "forbidden_file_count": 2,
+  "forbidden_runtime_files": [
+    "VM/src/lvmexecute.cpp",
+    "VM/src/lvmload.cpp"
+  ],
+  "unresolved_executor_symbol_count": 4,
+  "unresolved_excluded_executor_symbols": [
+    {
+      "symbol": "luau_execute",
+      "defined_at": "VM/src/lvmexecute.cpp:3718",
+      "retained_callers": [
+        "VM/src/ldo.cpp:170",
+        "VM/src/ldo.cpp:343"
+      ]
+    },
+    {
+      "symbol": "luau_finishop",
+      "defined_at": "VM/src/lvmexecute.cpp:3726",
+      "retained_callers": [
+        "VM/src/ldo.cpp:340"
+      ]
+    },
+    {
+      "symbol": "luau_precall",
+      "defined_at": "VM/src/lvmexecute.cpp:3759",
+      "retained_callers": [
+        "VM/src/ldo.cpp:159",
+        "VM/src/ldo.cpp:359"
+      ]
+    },
+    {
+      "symbol": "luau_poscall",
+      "defined_at": "VM/src/lvmexecute.cpp:3845",
+      "retained_callers": [
+        "VM/src/ldo.cpp:335",
+        "VM/src/ldo.cpp:393",
+        "VM/src/ldo.cpp:527",
+        "VM/src/ldo.cpp:550"
+      ]
+    }
+  ],
+  "notes": [
+    "This map declares the initial pin-specific source boundary; it is not evidence that a runtime target links.",
+    "lvmutils.cpp remains because it owns reusable value, table, comparison, arithmetic, concatenation, length, loop, and metamethod helpers.",
+    "luaV_getimport is currently trapped in forbidden VM/src/lvmload.cpp and requires a named runtime extraction if the generated-code ABI uses it."
+  ],
+  "canonical_hash": "5dfc3c1fa2166962c538b20d18e3b3fc0f135145b3c4941d15554ecc6f6acd10"
+}

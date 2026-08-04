@@ -1,0 +1,38 @@
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_library", "rust_test")
+
+rust_library(
+    name = "lib",
+    srcs = ["src/lib.rs"],
+    crate_name = "luau_aot_ledger",
+    edition = "2021",
+    deps = [
+        "@host_crates//:serde",
+        "@host_crates//:serde_json",
+        "@host_crates//:sha2",
+    ],
+)
+
+rust_binary(
+    name = "luau-aot-ledger",
+    srcs = ["src/main.rs"],
+    crate_name = "luau_aot_ledger_cli",
+    edition = "2021",
+    visibility = ["//visibility:public"],
+    deps = [":lib"],
+)
+
+rust_test(
+    name = "test",
+    srcs = ["test/ledger_test.rs"],
+    crate_name = "luau_aot_ledger_test",
+    data = [
+        "//memcontainers/programs/luau/aot/maps:luau_aot_ir_coverage.json",
+        "@luau//:aot_frontend_codegen_ir_headers",
+    ],
+    edition = "2021",
+    deps = [
+        ":lib",
+        "@host_crates//:serde_json",
+        "@rules_rust//rust/runfiles",
+    ],
+)
