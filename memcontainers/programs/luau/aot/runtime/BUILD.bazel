@@ -80,8 +80,8 @@ build_test(
 )
 
 cc_object(
-    name = "scalar_fixture_object_link",
-    obj = "//memcontainers/programs/luau/aot/compiler/wasm:scalar_fixture_object",
+    name = "ir_function_object_link",
+    obj = "//memcontainers/programs/luau/aot/compiler/backend:numeric_loop_object",
 )
 
 # Executable oracle for the first generated-function ABI. Unlike the structural wasm-ld oracle,
@@ -89,7 +89,7 @@ cc_object(
 # AOT dispatch hook. It remains an oracle-only target; production entry/package materialization is
 # a later layer.
 zig_binary(
-    name = "scalar_runtime_oracle_raw",
+    name = "ir_runtime_oracle_raw",
     srcs = ["oracle/oracle_root.zig"],
     linkopts = [
         "-lc",
@@ -108,14 +108,58 @@ zig_binary(
     tags = ["manual"],
     deps = [
         ":luau_aot_runtime_raw",
-        ":scalar_fixture_object_link",
+        ":ir_function_object_link",
         "//memcontainers/programs/luau/glue:trap",
     ],
 )
 
 zig_configure_binary(
-    name = "scalar_runtime_oracle_wasm",
-    actual = ":scalar_runtime_oracle_raw",
+    name = "ir_runtime_oracle_wasm",
+    actual = ":ir_runtime_oracle_raw",
+    mode = "release_small",
+    tags = ["manual"],
+    target = "//platforms:wasm32_wasi",
+    threaded = "single",
+)
+
+# Separate test-only oracle from the exact pinned interpreter/compiler family. It provides the
+# semantic side of the differential check and is forbidden from every strict-runtime dependency.
+zig_binary(
+    name = "interpreter_oracle_raw",
+    srcs = ["oracle/interpreter_oracle_root.zig"],
+    copts = [
+        "-include",
+        "memcontainers/programs/luau/glue/force_extern_c.h",
+        "-fno-exceptions",
+        "-fno-rtti",
+    ],
+    csrcs = ["@luau//:interp_srcs"],
+    extra_srcs = [
+        "@luau//:interp_all_hdrs",
+        "//memcontainers/programs/luau/glue:aot_runtime_patch_headers",
+    ],
+    linkopts = [
+        "-lc",
+        "-lc++",
+        "-fno-entry",
+        "--export=__mc_pcall_run",
+        "--export=__stack_pointer",
+        "--export=mc_luau_interpreter_oracle_init",
+        "--export=mc_luau_interpreter_oracle_run_i32",
+        "--export=mc_luau_interpreter_oracle_source_buffer",
+    ],
+    main = "oracle/interpreter_oracle_root.zig",
+    tags = ["manual"],
+    deps = [
+        "//memcontainers/programs/luau/glue:glue_incs",
+        "//memcontainers/programs/luau/glue:trap",
+        "@luau//:interp_incs",
+    ],
+)
+
+zig_configure_binary(
+    name = "interpreter_oracle_wasm",
+    actual = ":interpreter_oracle_raw",
     mode = "release_small",
     tags = ["manual"],
     target = "//platforms:wasm32_wasi",
@@ -123,18 +167,35 @@ zig_configure_binary(
 )
 
 build_test(
-    name = "scalar_runtime_oracle_build_test",
-    targets = [":scalar_runtime_oracle_wasm"],
+    name = "ir_runtime_oracle_build_test",
+    targets = [
+        ":interpreter_oracle_wasm",
+        ":ir_runtime_oracle_wasm",
+    ],
+)
+
+# rules_js requires non-JavaScript data outside this package to enter through the output tree. This
+# preserves the source byte-for-byte while making the differential oracle consume the very same file
+# as the frontend/backend object build.
+genrule(
+    name = "ir_runtime_oracle_source",
+    srcs = ["//memcontainers/programs/luau/aot/compiler/backend:numeric_loop.luau"],
+    outs = ["ir_runtime_oracle_source.luau"],
+    cmd = "cp $(location //memcontainers/programs/luau/aot/compiler/backend:numeric_loop.luau) $@",
 )
 
 js_test(
-    name = "scalar_runtime_oracle_test",
+    name = "ir_runtime_oracle_test",
     data = [
-        ":scalar_runtime_oracle_wasm",
+        ":interpreter_oracle_wasm",
+        ":ir_runtime_oracle_source",
+        ":ir_runtime_oracle_wasm",
         "oracle/oracle.test.mjs",
     ],
     entry_point = "oracle/oracle.test.mjs",
     env = {
-        "LUAU_AOT_RUNTIME_ORACLE_WASM": "$(rlocationpath :scalar_runtime_oracle_wasm)",
+        "LUAU_INTERPRETER_ORACLE_WASM": "$(rlocationpath :interpreter_oracle_wasm)",
+        "LUAU_AOT_RUNTIME_ORACLE_WASM": "$(rlocationpath :ir_runtime_oracle_wasm)",
+        "LUAU_AOT_RUNTIME_ORACLE_SOURCE": "$(rlocationpath :ir_runtime_oracle_source)",
     },
 )

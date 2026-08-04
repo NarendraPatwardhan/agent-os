@@ -80,7 +80,7 @@ coverage claims based on constant fixtures must be removed or isolated as non-pr
 Salvage is performed by deliberately porting reviewed pieces into a fresh worktree from `develop`, not
 by continuing implementation on the audited branch.
 
-### 0.2 Active clean-worktree implementation state (2026-08-04)
+### 0.2 Active clean-worktree implementation state (2026-08-05)
 
 The replacement implementation lives on `feature/luau-aot-compiler` in the separate
 `agent-os-luau-aot` worktree. The audited `agent-os-luau-compiler` worktree remains untouched. The
@@ -114,9 +114,8 @@ following foundations are real and checked; none is yet presented as a runnable 
 - the strict runtime now owns the versioned `(lua_State*, AotProto*) -> status` ABI, immutable
   linker-owned Proto metadata, real closure materialization, GC-safe stack publication, generated
   entry dispatch, numeric result commit, teardown, and protected failure crossing. A linked generated
-  object executes through ordinary `lua_call` against real `lua_State` instances for three dynamic
-  inputs and survives full-GC publication checks. That older generated body is deliberately retained
-  only as a runtime-ABI oracle; it is not evidence of upstream-IR lowering;
+  object executes through ordinary `lua_call` against real `lua_State` instances, rejects a non-number
+  through the protected Luau error boundary, and survives full-GC publication checks;
 - the frontend and backend are separately instantiable zero-import Wasm capabilities. The backend
   parses and validates `FrontendSnapshotV1`, constructs typed compiler-owned views, allocates upstream
   SSA results to Wasm locals, preserves 16-byte `TValue` copies, and lowers supported bytecode/internal
@@ -126,16 +125,23 @@ following foundations are real and checked; none is yet presented as a runnable 
   links them, and the linked functions execute inputs `1`, `4`, and `7` as `3/9/15` and `1/10/28`.
   Both reject a non-number `TValue`, and observed interrupt counts prove upstream safepoints were not
   erased. The command ledger marks the eleven complete rows and the three deliberately partial rows;
+- the numeric-loop source is now a declared Bazel input to the actual zero-import frontend and backend.
+  Their deterministic output object is the exact object linked into the 36-object strict runtime; no
+  handwritten function body or copied test artifact intervenes. That artifact runs through ordinary
+  `lua_call` on real states and matches a separately linked, exact-pinned Luau compiler/interpreter
+  oracle for inputs `-3`, `0`, `1`, `4`, `7`, and `12`. The interpreter is test-only and is absent from
+  every strict-runtime dependency;
 - `INTERRUPT` calls a versioned runtime helper instead of becoming a no-op. The helper preserves a
   null callback fast path, invokes an installed callback, reports yielded status, and requires
   generated code to reload `L->base` after a successful callback. Yield continuation/source-pc
   semantics remain explicitly open.
 
-The next product slice connects the exact upstream-IR-generated scalar/loop object to the real Luau
-runtime oracle, then moves that same linked artifact into the AgentOS kernel with differential
-`/bin/luau` results. WP2 remains open until the kernel/import/stamp/attest gates pass. WP3 remains open
-for arithmetic slow-block rejoin and the remaining scalar/conversion command coverage; its central
-"upstream IR, not a hand-authored body" gate is now proven.
+The next product slice gives that same source-built artifact a production guest `_start`, argv/input
+plumbing, and the established AgentOS adapter/package path, then runs it under the real kernel and
+closes the import, feature, `mc-stamp`, and `mc-attest` gates. WP2 remains open only on that production
+guest/kernel boundary. WP3's central upstream-IR/object/runtime/differential gate is proven, while the
+work package remains open for arithmetic slow-block rejoin and the remaining scalar/conversion command
+coverage.
 
 ---
 
@@ -1327,10 +1333,11 @@ Gate:
 **Goal:** execute one nonconstant compiled function against the real Luau runtime, linked by `wasm-ld`.
 
 **Current state:** the runtime ABI, real-state execution, GC publication, protected failure path, and
-standard-linker archive integration are proven. The executable body in that real-state oracle is still
-the retained ABI fixture; the exact object emitted from upstream IR is proven separately and must now
-replace it. `_start`, argv, AgentOS kernel execution, differential output, stamping, and attestation are
-still gate-open.
+standard-linker archive integration are proven. A declared Luau source file now passes through the
+zero-import frontend and backend, and the exact emitted relocatable object is linked into the strict
+runtime. It executes through `lua_call` on real states and matches a separate exact-pinned interpreter
+artifact for six dynamic inputs. `_start`, argv, AgentOS kernel execution, same-artifact output through
+the guest ABI, stamping, and attestation remain gate-open.
 
 Tasks:
 
@@ -1360,7 +1367,8 @@ implemented. A generic CFG dispatcher lowers real scalar branches and loops; com
 `LOAD_TAG`, `LOAD_DOUBLE`, `LOAD_TVALUE`, `STORE_TAG`, `STORE_DOUBLE`, `STORE_TVALUE`, `ADD_NUM`,
 `JUMP`, `JUMP_CMP_NUM`, and `MARK_USED`. `CHECK_TAG`, `INTERRUPT`, and `RETURN` are deliberately partial
 and named as such in the ledger. Slow-block rejoin, additional scalar operations/conversions, and the
-real-runtime/differential gate remain.
+remaining command-level differential matrix remain. The exact upstream-IR-generated loop object already
+passes the real-runtime/pinned-interpreter differential gate.
 
 Tasks:
 

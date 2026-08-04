@@ -38,7 +38,7 @@ extern fn mc_luau_aot_v1_push_root(
     num_params: u8,
     max_stack_size: u8,
 ) u32;
-extern fn mc_luau_aot_v1_generated_scalar_fixture(state: ?*State, proto: *const AotProtoV1) callconv(.c) u32;
+extern fn mc_luau_aot_v1_generated_ir_function(state: ?*State, proto: *const AotProtoV1) callconv(.c) u32;
 
 const layout_sha256 = [_]u8{
     0x42, 0x5d, 0x38, 0xd7, 0x5e, 0xf9, 0xf4, 0xe2, 0x66, 0x93, 0xa6, 0x90, 0xe0, 0x85, 0x7f, 0x90,
@@ -49,12 +49,12 @@ const metadata = AotProtoV1{
     .abi_version = 1,
     .struct_size = 52,
     .layout_sha256 = layout_sha256,
-    .entry = &mc_luau_aot_v1_generated_scalar_fixture,
-    .function_id = 0,
+    .entry = &mc_luau_aot_v1_generated_ir_function,
+    .function_id = 1,
     .flags = 1,
 };
 
-const source = "=aot-scalar-oracle";
+const source = "=aot-upstream-ir-loop-oracle";
 
 var initialized = false;
 
@@ -69,7 +69,7 @@ export fn mc_luau_aot_v1_oracle_run_i32(input: i32) i32 {
     const state = luaL_newstate() orelse return std.math.minInt(i32);
     defer lua_close(state);
 
-    if (mc_luau_aot_v1_push_root(state, &metadata, source.ptr, source.len, 1, 2) != 0)
+    if (mc_luau_aot_v1_push_root(state, &metadata, source.ptr, source.len, 1, 5) != 0)
         return std.math.minInt(i32);
     lua_pushnumber(state, @floatFromInt(input));
     lua_call(state, 1, 1);
@@ -86,7 +86,7 @@ export fn mc_luau_aot_v1_oracle_reject_non_number() i32 {
     const state = luaL_newstate() orelse return -1;
     defer lua_close(state);
 
-    if (mc_luau_aot_v1_push_root(state, &metadata, source.ptr, source.len, 1, 2) != 0)
+    if (mc_luau_aot_v1_push_root(state, &metadata, source.ptr, source.len, 1, 5) != 0)
         return -2;
     lua_pushnil(state);
     const status = lua_pcall(state, 1, 1, 0);
@@ -98,7 +98,7 @@ export fn mc_luau_aot_v1_oracle_gc_publication() i32 {
     defer lua_close(state);
 
     _ = lua_gc(state, 2, 0); // LUA_GCCOLLECT: paint the inactive thread before publication.
-    if (mc_luau_aot_v1_push_root(state, &metadata, source.ptr, source.len, 1, 2) != 0)
+    if (mc_luau_aot_v1_push_root(state, &metadata, source.ptr, source.len, 1, 5) != 0)
         return -2;
     _ = lua_gc(state, 2, 0); // The published Closure/Proto/source graph must remain reachable.
 
@@ -118,7 +118,7 @@ export fn mc_luau_aot_v1_oracle_probe(stage: u32) i32 {
     if (stage == 0)
         return 0;
 
-    if (mc_luau_aot_v1_push_root(state, &metadata, source.ptr, source.len, 1, 2) != 0)
+    if (mc_luau_aot_v1_push_root(state, &metadata, source.ptr, source.len, 1, 5) != 0)
         return -2;
     if (stage == 1)
         return 0;

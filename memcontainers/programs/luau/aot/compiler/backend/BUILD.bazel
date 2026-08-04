@@ -1,6 +1,11 @@
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
-load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_test")
 load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary", "zig_library")
+
+exports_files(
+    ["numeric_loop.luau"],
+    visibility = ["//memcontainers/programs/luau/aot/runtime:__pkg__"],
+)
 
 zig_library(
     name = "backend",
@@ -46,6 +51,31 @@ zig_configure_binary(
 build_test(
     name = "backend_build_test",
     targets = [":backend_wasm"],
+)
+
+js_binary(
+    name = "object_emitter",
+    entry_point = "object_emitter.mjs",
+)
+
+# This is the first build-graph object produced from source through the actual two-capability
+# compiler. Downstream runtime/link tests consume this declared output, never a test-only copy.
+genrule(
+    name = "numeric_loop_object",
+    srcs = [
+        ":backend_wasm",
+        "numeric_loop.luau",
+        "//memcontainers/programs/luau/aot/frontend:frontend_wasm",
+    ],
+    outs = ["numeric_loop.o"],
+    cmd = "BAZEL_BINDIR=. $(execpath :object_emitter) $(location //memcontainers/programs/luau/aot/frontend:frontend_wasm) $(location :backend_wasm) $(location numeric_loop.luau) $@ 1",
+    tools = [":object_emitter"],
+    visibility = ["//visibility:public"],
+)
+
+build_test(
+    name = "numeric_loop_object_build_test",
+    targets = [":numeric_loop_object"],
 )
 
 js_test(
