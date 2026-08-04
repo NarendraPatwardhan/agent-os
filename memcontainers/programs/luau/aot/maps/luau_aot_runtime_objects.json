@@ -25,10 +25,10 @@
     "project_adapter_member_count": 1,
     "zig_root_member_count": 1,
     "member_name_policy": "inventory and digest by basename; rules_zig archive headers contain non-contract Zig cache paths",
-    "canonical_member_set_sha256": "1d1c66aea4e509158da4c56799a226741d2d13ce5ac9b1eeb69d55db90b4e61c"
+    "canonical_member_set_sha256": "bfc30ec6ed45b0e60c282487630e23432c00933d2448a83c6192ef81ae3c6350"
   },
   "members": [
-    {"name": "call_frame.o", "sha256": "60cc4f09d8433b139319f2b6a038aa88bd5f954a23fb63d81aae5cc5ca2f37e8", "owner": "agentos"},
+    {"name": "call_frame.o", "sha256": "bb5b395dd2949304def49cf1609849e6cb2444635a5b6cc16a383cafdf94a32a", "owner": "agentos"},
     {"name": "lapi.o", "sha256": "2b9e9b828e3cb29a555bc3f07ea9368c4f90b996ac2380287a373285caf66325", "owner": "luau"},
     {"name": "laux.o", "sha256": "354493b7558157bfdabe7c811487c5225b4b89e8fccdeae817ad052b3dd119b0", "owner": "luau"},
     {"name": "lbaselib.o", "sha256": "7ab015e8d6df0962be500f2eedaa99630465f34faf418256faa3dbd58aa4f5df", "owner": "luau"},

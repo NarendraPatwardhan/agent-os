@@ -61,11 +61,15 @@
   "project_adapter": {
     "source": "src/call_frame.cpp",
     "upstream_pin": "0.725",
-    "purpose": "extract generic call-frame and hook mechanics from the forbidden bytecode executor",
+    "purpose": "extract generic call-frame and hook mechanics from the forbidden bytecode executor and own the strict AOT metadata/frame ABI",
     "defines": [
       "luau_callhook",
       "luau_precall",
-      "luau_poscall"
+      "luau_poscall",
+      "mc_luau_aot_v1_commit_number",
+      "mc_luau_aot_v1_enter",
+      "mc_luau_aot_v1_finish_yielded_op",
+      "mc_luau_aot_v1_push_root"
     ],
     "bytecode_boundary": {
       "requires_code_null": true,
@@ -112,18 +116,17 @@
       "resolution": "project adapter preserves paused-thread hook mechanics and reports no fabricated bytecode source line"
     }
   ],
-  "required_final_link_symbol_count": 4,
+  "required_final_link_symbol_count": 2,
   "required_final_link_symbols": [
-    "mc_luau_aot_v1_enter",
-    "mc_luau_aot_v1_finish_yielded_op",
     "mc_protected_call",
     "mc_raise"
   ],
   "notes": [
     "The declared set compiles into a 36-member wasm32 relocatable archive: 34 retained upstream translation units, one project call-frame adapter, and the required empty Zig root object.",
-    "archive_built_unlinked means standard relocatable objects exist; generated functions, runtime hook implementations, libc, the AgentOS adapter, and the runner are separate final-link inputs.",
+    "archive_built_unlinked means standard relocatable objects exist; generated functions, kernel-backed protected-call hooks, libc, the AgentOS adapter, and the runner are separate final-link inputs.",
+    "The project adapter owns the versioned strict-AOT metadata, frame-entry, scalar-result, closure-materialization, and Proto teardown ABI.",
     "lvmutils.cpp remains because it owns reusable value, table, comparison, arithmetic, concatenation, length, loop, and metamethod helpers.",
     "luaV_getimport is currently trapped in forbidden VM/src/lvmload.cpp and requires a named runtime extraction if the generated-code ABI uses it."
   ],
-  "canonical_hash": "cbef09d02c1d1abe4efff91fe1feda99983ebdc63a98687ac084757c1c47f856"
+  "canonical_hash": "045a98c7aa87d0c0c0a518e51ab4a9d598f46c1ef45ca0828227dd1759928bec"
 }

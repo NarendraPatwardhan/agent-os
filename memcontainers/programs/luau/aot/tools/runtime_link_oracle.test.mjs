@@ -47,6 +47,14 @@ for (const name of manifest.required_exports) {
   }
 }
 
+for (const name of manifest.required_global_exports) {
+  const match = exports.find((entry) => entry.name === name);
+  if (!match) throw new Error(`export surface is missing required global ${name}`);
+  if (match.kind !== "global") {
+    throw new Error(`export ${name} has kind ${match.kind}, expected global`);
+  }
+}
+
 const forbidden = manifest.forbidden_symbol_fragments;
 for (const entry of [...imports, ...exports]) {
   if (forbidden.some((symbol) => entry.name.includes(symbol))) {

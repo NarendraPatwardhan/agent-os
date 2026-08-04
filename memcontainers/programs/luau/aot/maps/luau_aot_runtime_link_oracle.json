@@ -18,13 +18,11 @@
     "<runtime-archive>",
     "--no-whole-archive"
   ],
-  "output_sha256": "b65f925be8b2ae7f651cbfa07b07aa5c225b57a9dd35ce4098391ab6f48bb948",
+  "output_sha256": "97a20784d012e521d958a0aa106ae76a7ade2c6936e133c23308b05dff9c20bb",
   "import_module": "env",
-  "import_count": 63,
-  "export_count": 383,
+  "import_count": 61,
+  "export_count": 389,
   "runtime_contract_imports": [
-    "mc_luau_aot_v1_enter",
-    "mc_luau_aot_v1_finish_yielded_op",
     "mc_protected_call",
     "mc_raise"
   ],
@@ -93,7 +91,14 @@
   "required_exports": [
     "_Z12luau_precallP9lua_StateP10lua_TValuei",
     "_Z12luau_poscallP9lua_StateP10lua_TValue",
-    "_Z13luau_callhookP9lua_StatePFvS0_P9lua_DebugEPv"
+    "_Z13luau_callhookP9lua_StatePFvS0_P9lua_DebugEPv",
+    "mc_luau_aot_v1_commit_number",
+    "mc_luau_aot_v1_enter",
+    "mc_luau_aot_v1_finish_yielded_op",
+    "mc_luau_aot_v1_push_root"
+  ],
+  "required_global_exports": [
+    "mc_luau_aot_v1_layout_sha256"
   ],
   "forbidden_symbol_fragments": [
     "luau_compile",
@@ -108,6 +113,7 @@
   ],
   "notes": [
     "This artifact proves standard wasm-ld accepts the complete relocatable runtime corpus and consumes its linking and relocation custom sections.",
+    "The strict runtime archive now owns the versioned AOT frame, result, metadata, and teardown hooks; only the two kernel-backed protected-call hooks remain as runtime-contract imports.",
     "The 59 C/WASI toolchain symbols are intentionally unresolved in this raw oracle. The final guest must link the pinned Zig WASI libc/libc++ and AgentOS WASI adapter; it must not expose this env surface."
   ]
 }

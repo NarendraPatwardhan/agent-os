@@ -1,5 +1,14 @@
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
-load("@rules_zig//zig:defs.bzl", "zig_configure", "zig_static_library")
+load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure", "zig_configure_binary", "zig_static_library")
+load("//bazel:mc_program.bzl", "cc_headers", "cc_object")
+
+cc_headers(
+    name = "aot_runtime_incs",
+    hdrs = ["include/aot_runtime_v1.h"],
+    includes = ["include"],
+    visibility = ["//visibility:public"],
+)
 
 # The target runtime is a relocatable wasm32 archive, not a runnable guest. Generated functions,
 # AOT metadata, the runner, and the linker are deliberately separate layers. This target compiles
@@ -22,6 +31,7 @@ zig_static_library(
     extra_srcs = [
         "@luau//:interp_all_hdrs",
         "//memcontainers/programs/luau/glue:aot_runtime_patch_headers",
+        "include/aot_runtime_v1.h",
     ],
     # rules_zig intentionally ignores linkopts for static libraries. These root-module options
     # activate Zig's wasm32-WASI libc and libc++ headers while compiling the C++ translation units.
@@ -30,6 +40,7 @@ zig_static_library(
         "-lc++",
     ],
     deps = [
+        ":aot_runtime_incs",
         "@luau//:interp_incs",
         "//memcontainers/programs/luau/glue:glue_incs",
     ],
@@ -66,4 +77,64 @@ genrule(
 build_test(
     name = "runtime_wasm_ld_oracle_build_test",
     targets = [":runtime_wasm_ld_oracle"],
+)
+
+cc_object(
+    name = "scalar_fixture_object_link",
+    obj = "//memcontainers/programs/luau/aot/compiler/wasm:scalar_fixture_object",
+)
+
+# Executable oracle for the first generated-function ABI. Unlike the structural wasm-ld oracle,
+# this constructs a real Luau state/Proto/Closure and reaches generated code through ldo's strict
+# AOT dispatch hook. It remains an oracle-only target; production entry/package materialization is
+# a later layer.
+zig_binary(
+    name = "scalar_runtime_oracle_raw",
+    srcs = ["oracle/oracle_root.zig"],
+    linkopts = [
+        "-lc",
+        "-lc++",
+        "-fno-entry",
+        "--export-memory",
+        "--export=__mc_pcall_run",
+        "--export=__stack_pointer",
+        "--export=mc_luau_aot_v1_oracle_init",
+        "--export=mc_luau_aot_v1_oracle_gc_publication",
+        "--export=mc_luau_aot_v1_oracle_probe",
+        "--export=mc_luau_aot_v1_oracle_reject_non_number",
+        "--export=mc_luau_aot_v1_oracle_run_i32",
+    ],
+    main = "oracle/oracle_root.zig",
+    tags = ["manual"],
+    deps = [
+        ":luau_aot_runtime_raw",
+        ":scalar_fixture_object_link",
+        "//memcontainers/programs/luau/glue:trap",
+    ],
+)
+
+zig_configure_binary(
+    name = "scalar_runtime_oracle_wasm",
+    actual = ":scalar_runtime_oracle_raw",
+    mode = "release_small",
+    tags = ["manual"],
+    target = "//platforms:wasm32_wasi",
+    threaded = "single",
+)
+
+build_test(
+    name = "scalar_runtime_oracle_build_test",
+    targets = [":scalar_runtime_oracle_wasm"],
+)
+
+js_test(
+    name = "scalar_runtime_oracle_test",
+    data = [
+        ":scalar_runtime_oracle_wasm",
+        "oracle/oracle.test.mjs",
+    ],
+    entry_point = "oracle/oracle.test.mjs",
+    env = {
+        "LUAU_AOT_RUNTIME_ORACLE_WASM": "$(rlocationpath :scalar_runtime_oracle_wasm)",
+    },
 )

@@ -2,6 +2,8 @@
 // bytecode dispatch loop in lvmexecute.cpp. Keep this file pin-sized and mechanically comparable
 // with upstream 0.725; generated execution and continuations belong to the Zig runtime/backend.
 
+#include "aot_runtime_v1.h"
+
 #include "lvm.h"
 
 #include "ldebug.h"
@@ -9,25 +11,27 @@
 #include "lfunc.h"
 #include "lgc.h"
 #include "lstate.h"
+#include "lstring.h"
+
+#include <string.h>
 
 // These flag definitions live in lvmexecute.cpp upstream even though retained runtime sources use
 // them. The strict archive excludes that translation unit, so the pin adapter owns the definitions.
 LUAU_FASTFLAGVARIABLE(LuauDirectFieldGet)
 LUAU_FLAGVERSION(LuauDirectFieldGet, 2)
 LUAU_FASTFLAGVARIABLE(LuauClosureUsageCounter)
+LUAU_FASTFLAGVARIABLE(LuauUdataDirectAccess6)
 LUAU_FASTFLAGVARIABLE(DebugLuauUserDefinedClassesRuntime)
 LUAU_FASTFLAGVARIABLE(LuauYieldIter2)
 
-LUAU_NOINLINE void luau_callhook(lua_State* L, lua_Hook hook, void* userdata)
-{
+LUAU_NOINLINE void luau_callhook(lua_State *L, lua_Hook hook, void *userdata) {
     ptrdiff_t base = savestack(L, L->base);
     ptrdiff_t top = savestack(L, L->top);
     ptrdiff_t ci_top = savestack(L, L->ci->top);
     int status = L->status;
 
     // A hook invoked externally on a paused thread must be able to make ordinary Luau calls.
-    if (status == LUA_YIELD || status == LUA_BREAK)
-    {
+    if (status == LUA_YIELD || status == LUA_BREAK) {
         L->status = 0;
         L->base = L->ci->base;
     }
@@ -49,35 +53,29 @@ LUAU_NOINLINE void luau_callhook(lua_State* L, lua_Hook hook, void* userdata)
     L->top = restorestack(L, top);
 
     // Restore a pre-existing paused state only when the hook did not establish the same state.
-    if (status == LUA_YIELD && L->status != LUA_YIELD)
-    {
+    if (status == LUA_YIELD && L->status != LUA_YIELD) {
         L->status = LUA_YIELD;
         L->base = restorestack(L, base);
-    }
-    else if (status == LUA_BREAK)
-    {
+    } else if (status == LUA_BREAK) {
         LUAU_ASSERT(L->status != LUA_BREAK);
         L->status = LUA_BREAK;
         L->base = restorestack(L, base);
     }
 }
 
-int luau_precall(lua_State* L, StkId func, int nresults)
-{
-    if (!ttisfunction(func))
-    {
+int luau_precall(lua_State *L, StkId func, int nresults) {
+    if (!ttisfunction(func)) {
         luaV_tryfuncTM(L, func);
         // L->top is incremented by tryfuncTM.
     }
 
-    Closure* ccl = clvalue(func);
+    Closure *ccl = clvalue(func);
 
     // The first oracle uses a layout-compatible Proto as immutable AOT metadata. Reject both
     // bytecode-bearing closures and missing AOT metadata before installing a Lua CallInfo: the
     // ordinary Luau error formatter may inspect the active caller's savedpc while raising.
-    if (!ccl->isC)
-    {
-        Proto* p = ccl->l.p;
+    if (!ccl->isC) {
+        Proto *p = ccl->l.p;
 
         if (p->code != nullptr || p->codeentry != nullptr || p->sizecode != 0)
             luaG_runerror(L, "strict AOT runtime rejected a bytecode-bearing Luau closure");
@@ -89,7 +87,7 @@ int luau_precall(lua_State* L, StkId func, int nresults)
             luaG_runerror(L, "strict AOT runtime has no source metadata for Luau closure");
     }
 
-    CallInfo* ci = incr_ci(L);
+    CallInfo *ci = incr_ci(L);
     ci->func = func;
     ci->base = func + 1;
     ci->top = L->top + ccl->stacksize;
@@ -105,9 +103,8 @@ int luau_precall(lua_State* L, StkId func, int nresults)
     luaD_checkstackfornewci(L, ccl->stacksize);
     LUAU_ASSERT(ci->top <= L->stack_last);
 
-    if (!ccl->isC)
-    {
-        Proto* p = ccl->l.p;
+    if (!ccl->isC) {
+        Proto *p = ccl->l.p;
 
         // Fill unused parameters with nil exactly as the interpreter does. Proto is retained only
         // for non-executable frame metadata at this stage (parameters, varargs, stack size, etc.).
@@ -123,9 +120,7 @@ int luau_precall(lua_State* L, StkId func, int nresults)
         ci->flags = LUA_CALLINFO_NATIVE;
 
         return PCRLUA;
-    }
-    else
-    {
+    } else {
         lua_CFunction cfunc = ccl->c.f;
         int n = cfunc(L);
 
@@ -134,11 +129,10 @@ int luau_precall(lua_State* L, StkId func, int nresults)
             return PCRYIELD;
 
         // ci is our callinfo, cip is our parent.
-        CallInfo* ci = L->ci;
-        CallInfo* cip = ci - 1;
+        CallInfo *ci = L->ci;
+        CallInfo *cip = ci - 1;
 
-        if (FFlag::LuauClosureUsageCounter)
-        {
+        if (FFlag::LuauClosureUsageCounter) {
             LUAU_ASSERT(ccl->usage > 0);
             ccl->usage--;
         }
@@ -163,15 +157,13 @@ int luau_precall(lua_State* L, StkId func, int nresults)
     }
 }
 
-void luau_poscall(lua_State* L, StkId first)
-{
+void luau_poscall(lua_State *L, StkId first) {
     // Finish a compiled Luau call. This body is the generic result/frame portion of upstream
     // luau_poscall; it contains no instruction decode or interpreter re-entry.
-    CallInfo* ci = L->ci;
-    CallInfo* cip = ci - 1;
+    CallInfo *ci = L->ci;
+    CallInfo *cip = ci - 1;
 
-    if (FFlag::LuauClosureUsageCounter)
-    {
+    if (FFlag::LuauClosureUsageCounter) {
         LUAU_ASSERT(clvalue(ci->func)->usage > 0);
         clvalue(ci->func)->usage--;
     }
@@ -189,4 +181,89 @@ void luau_poscall(lua_State* L, StkId first)
     L->ci = cip;
     L->base = cip->base;
     L->top = (ci->nresults == LUA_MULTRET) ? res : cip->top;
+}
+
+extern "C" const uint8_t mc_luau_aot_v1_layout_sha256[32] = {
+    0x42, 0x5d, 0x38, 0xd7, 0x5e, 0xf9, 0xf4, 0xe2, 0x66, 0x93, 0xa6, 0x90, 0xe0, 0x85, 0x7f, 0x90,
+    0x2a, 0xa7, 0x6f, 0x1c, 0x18, 0x56, 0x19, 0x6a, 0xc3, 0x0d, 0xc6, 0x23, 0x6e, 0xa4, 0xc4, 0x96,
+};
+
+extern "C" void mc_luau_aot_v1_commit_number(lua_State *L, double value) {
+    setnvalue(L->base, value);
+    L->top = L->base + 1;
+}
+
+static void destroyAotProto(lua_State *, Proto *proto) {
+    // AOT metadata is immutable linker-owned data, not a heap allocation owned by Proto.
+    proto->execdata = nullptr;
+}
+
+extern "C" uint32_t mc_luau_aot_v1_push_root(lua_State *L, const McLuauAotProtoV1 *metadata,
+                                             const char *source, size_t sourceSize,
+                                             uint8_t numParams, uint8_t maxStackSize) {
+    if (!L || !metadata || !source || sourceSize == 0 || maxStackSize < numParams ||
+        metadata->abi_version != MC_LUAU_AOT_ABI_V1 ||
+        metadata->struct_size != MC_LUAU_AOT_PROTO_V1_SIZE || !metadata->entry ||
+        memcmp(metadata->layout_sha256, mc_luau_aot_v1_layout_sha256,
+               sizeof(metadata->layout_sha256)) != 0)
+        return MC_LUAU_AOT_V1_INTERNAL_ERROR;
+
+    if (L->global->ecb.destroy && L->global->ecb.destroy != destroyAotProto)
+        return MC_LUAU_AOT_V1_INTERNAL_ERROR;
+    L->global->ecb.destroy = destroyAotProto;
+
+    // Match the public API publication contract for newly-created collectables: reserve the stack
+    // slot, advance incremental GC, then gray a black inactive thread before installing a white
+    // Closure into its stack. GC does not run inside the allocations below.
+    if (!lua_checkstack(L, 1))
+        return MC_LUAU_AOT_V1_INTERNAL_ERROR;
+    luaC_checkGC(L);
+    luaC_threadbarrier(L);
+
+    TString *sourceName = luaS_newlstr(L, source, sourceSize);
+    Proto *proto = luaF_newproto(L);
+    proto->source = sourceName;
+    proto->debugname = sourceName;
+    proto->maxstacksize = maxStackSize;
+    proto->numparams = numParams;
+    proto->nups = 0;
+    proto->is_vararg = 0;
+    proto->execdata = const_cast<McLuauAotProtoV1 *>(metadata);
+
+    Closure *closure = luaF_newLclosure(L, 0, L->gt, proto);
+    setclvalue(L, L->top, closure);
+    LUAU_ASSERT(L->top < L->ci->top);
+    L->top++;
+    return MC_LUAU_AOT_V1_OK;
+}
+
+extern "C" void mc_luau_aot_v1_enter(lua_State *L) {
+    if (!L || !L->ci || !isLua(L->ci))
+        luaG_runerror(L, "strict AOT entered without an active Luau frame");
+
+    Closure *closure = clvalue(L->ci->func);
+    Proto *proto = closure->l.p;
+    const McLuauAotProtoV1 *metadata = static_cast<const McLuauAotProtoV1 *>(proto->execdata);
+    if (!metadata || metadata->abi_version != MC_LUAU_AOT_ABI_V1 ||
+        metadata->struct_size != MC_LUAU_AOT_PROTO_V1_SIZE || !metadata->entry ||
+        memcmp(metadata->layout_sha256, mc_luau_aot_v1_layout_sha256,
+               sizeof(metadata->layout_sha256)) != 0)
+        luaG_runerror(L, "strict AOT metadata ABI/layout mismatch");
+
+    uint32_t status = metadata->entry(L, metadata);
+    switch (status) {
+    case MC_LUAU_AOT_V1_OK:
+        luau_poscall(L, L->base);
+        return;
+    case MC_LUAU_AOT_V1_UNSUPPORTED_TYPE:
+        luaG_runerror(L, "strict AOT numeric tier received an unsupported value type");
+    case MC_LUAU_AOT_V1_YIELDED:
+        luaG_runerror(L, "strict AOT yielded without a continuation contract");
+    default:
+        luaG_runerror(L, "strict AOT generated function returned invalid status %u", status);
+    }
+}
+
+extern "C" void mc_luau_aot_v1_finish_yielded_op(lua_State *L) {
+    luaG_runerror(L, "strict AOT yielded operation resumption is not implemented");
 }

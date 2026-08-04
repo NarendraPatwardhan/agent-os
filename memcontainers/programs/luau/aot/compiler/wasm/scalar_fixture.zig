@@ -74,7 +74,7 @@ pub fn build(allocator: std.mem.Allocator) ![]u8 {
     try body.i32Const(allocator, 0); // MC_LUAU_AOT_V1_OK
     try body.finish(allocator);
 
-    _ = try object.defineFunction(generated_symbol, generated_type, wasm.symbol.exported, body);
+    _ = try object.defineFunction(generated_symbol, generated_type, wasm.symbol.visibility_hidden, body);
     return object.emit();
 }
 
