@@ -104,6 +104,10 @@ pub const Body = struct {
         try self.opU32(allocator, 0x21, index);
     }
 
+    pub fn localTee(self: *Body, allocator: std.mem.Allocator, index: u32) !void {
+        try self.opU32(allocator, 0x22, index);
+    }
+
     pub fn i32Load(self: *Body, allocator: std.mem.Allocator, alignment_log2: u32, offset: u32) !void {
         try self.bytes.append(allocator, 0x28);
         try appendUleb(&self.bytes, allocator, alignment_log2);
@@ -114,6 +118,22 @@ pub const Body = struct {
         try self.bytes.append(allocator, 0x2b);
         try appendUleb(&self.bytes, allocator, alignment_log2);
         try appendUleb(&self.bytes, allocator, offset);
+    }
+
+    pub fn i64Load(self: *Body, allocator: std.mem.Allocator, alignment_log2: u32, offset: u32) !void {
+        try self.memoryOp(allocator, 0x29, alignment_log2, offset);
+    }
+
+    pub fn i32Store(self: *Body, allocator: std.mem.Allocator, alignment_log2: u32, offset: u32) !void {
+        try self.memoryOp(allocator, 0x36, alignment_log2, offset);
+    }
+
+    pub fn i64Store(self: *Body, allocator: std.mem.Allocator, alignment_log2: u32, offset: u32) !void {
+        try self.memoryOp(allocator, 0x37, alignment_log2, offset);
+    }
+
+    pub fn f64Store(self: *Body, allocator: std.mem.Allocator, alignment_log2: u32, offset: u32) !void {
+        try self.memoryOp(allocator, 0x39, alignment_log2, offset);
     }
 
     pub fn i32Const(self: *Body, allocator: std.mem.Allocator, value: i32) !void {
@@ -139,6 +159,54 @@ pub const Body = struct {
 
     pub fn ifVoid(self: *Body, allocator: std.mem.Allocator) !void {
         try self.blockOp(allocator, 0x04);
+    }
+
+    pub fn else_(self: *Body, allocator: std.mem.Allocator) !void {
+        try self.bytes.append(allocator, 0x05);
+    }
+
+    pub fn select(self: *Body, allocator: std.mem.Allocator) !void {
+        try self.bytes.append(allocator, 0x1b);
+    }
+
+    pub fn i32Eqz(self: *Body, allocator: std.mem.Allocator) !void {
+        try self.bytes.append(allocator, 0x45);
+    }
+
+    pub fn i32Eq(self: *Body, allocator: std.mem.Allocator) !void {
+        try self.bytes.append(allocator, 0x46);
+    }
+
+    pub fn i32Ne(self: *Body, allocator: std.mem.Allocator) !void {
+        try self.bytes.append(allocator, 0x47);
+    }
+
+    pub fn f64Eq(self: *Body, allocator: std.mem.Allocator) !void {
+        try self.bytes.append(allocator, 0x61);
+    }
+
+    pub fn f64Ne(self: *Body, allocator: std.mem.Allocator) !void {
+        try self.bytes.append(allocator, 0x62);
+    }
+
+    pub fn f64Lt(self: *Body, allocator: std.mem.Allocator) !void {
+        try self.bytes.append(allocator, 0x63);
+    }
+
+    pub fn f64Gt(self: *Body, allocator: std.mem.Allocator) !void {
+        try self.bytes.append(allocator, 0x64);
+    }
+
+    pub fn f64Le(self: *Body, allocator: std.mem.Allocator) !void {
+        try self.bytes.append(allocator, 0x65);
+    }
+
+    pub fn f64Ge(self: *Body, allocator: std.mem.Allocator) !void {
+        try self.bytes.append(allocator, 0x66);
+    }
+
+    pub fn f64Add(self: *Body, allocator: std.mem.Allocator) !void {
+        try self.bytes.append(allocator, 0xa0);
     }
 
     pub fn branch(self: *Body, allocator: std.mem.Allocator, depth: u32) !void {
@@ -175,6 +243,12 @@ pub const Body = struct {
     fn blockOp(self: *Body, allocator: std.mem.Allocator, opcode_byte: u8) !void {
         try self.bytes.append(allocator, opcode_byte);
         try self.bytes.append(allocator, 0x40);
+    }
+
+    fn memoryOp(self: *Body, allocator: std.mem.Allocator, opcode_byte: u8, alignment_log2: u32, offset: u32) !void {
+        try self.bytes.append(allocator, opcode_byte);
+        try appendUleb(&self.bytes, allocator, alignment_log2);
+        try appendUleb(&self.bytes, allocator, offset);
     }
 
     fn opU32(self: *Body, allocator: std.mem.Allocator, opcode_byte: u8, value: u32) !void {

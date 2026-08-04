@@ -16,8 +16,8 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3743; CodeGen/src/IrLoweringA64.cpp:3119",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
+      "status": "implemented"
     },
     {
       "command": "LOAD_TAG",
@@ -31,8 +31,8 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:58; CodeGen/src/IrLoweringA64.cpp:316",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
+      "status": "implemented"
     },
     {
       "command": "LOAD_POINTER",
@@ -61,8 +61,8 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:86; CodeGen/src/IrLoweringA64.cpp:330",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
+      "status": "implemented"
     },
     {
       "command": "LOAD_INT",
@@ -121,8 +121,8 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:121; CodeGen/src/IrLoweringA64.cpp:359",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
+      "status": "implemented"
     },
     {
       "command": "LOAD_ENV",
@@ -211,8 +211,8 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:214; CodeGen/src/IrLoweringA64.cpp:456",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
+      "status": "implemented"
     },
     {
       "command": "STORE_EXTRA",
@@ -256,8 +256,8 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:260; CodeGen/src/IrLoweringA64.cpp:500",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
+      "status": "implemented"
     },
     {
       "command": "STORE_INT",
@@ -316,8 +316,8 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:321; CodeGen/src/IrLoweringA64.cpp:563",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
+      "status": "implemented"
     },
     {
       "command": "STORE_SPLIT_TVALUE",
@@ -556,8 +556,8 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:593; CodeGen/src/IrLoweringA64.cpp:783",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
+      "status": "implemented"
     },
     {
       "command": "SUB_NUM",
@@ -1338,8 +1338,8 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1705; CodeGen/src/IrLoweringA64.cpp:1569",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
+      "status": "implemented"
     },
     {
       "command": "JUMP_IF_TRUTHY",
@@ -1428,8 +1428,8 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1774; CodeGen/src/IrLoweringA64.cpp:1704",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
+      "status": "implemented"
     },
     {
       "command": "JUMP_CMP_FLOAT",
@@ -2013,8 +2013,8 @@
       "safepoint": false,
       "rejoins": true,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2266; CodeGen/src/IrLoweringA64.cpp:2310",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
+      "status": "partial_fail_closed_numeric_tier"
     },
     {
       "command": "CHECK_TRUTHY",
@@ -2219,14 +2219,14 @@
       "runtime_symbols": [
         "mc_luau_aot_v1_interrupt"
       ],
-      "may_allocate": null,
-      "may_raise": null,
-      "may_call_luau": null,
-      "safepoint": null,
+      "may_allocate": true,
+      "may_raise": true,
+      "may_call_luau": true,
+      "safepoint": true,
       "rejoins": true,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2615; CodeGen/src/IrLoweringA64.cpp:2688",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
+      "status": "partial_no_yield_continuation"
     },
     {
       "command": "CHECK_GC",
@@ -2383,7 +2383,7 @@
       "class": "call_protocol",
       "wasm_features": [],
       "runtime_symbols": [
-        "mc_luau_aot_v1_return"
+        "mc_luau_aot_v1_commit_number"
       ],
       "may_allocate": null,
       "may_raise": null,
@@ -2391,8 +2391,8 @@
       "safepoint": true,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2732; CodeGen/src/IrLoweringA64.cpp:2857",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
+      "status": "partial_single_number_result"
     },
     {
       "command": "FORGLOOP",
@@ -2659,8 +2659,8 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3745; CodeGen/src/IrLoweringA64.cpp:3121",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
+      "status": "implemented"
     },
     {
       "command": "MARK_DEAD",

@@ -46,6 +46,7 @@ extern const uint8_t mc_luau_aot_v1_layout_sha256[32];
 void mc_luau_aot_v1_enter(lua_State *state);
 void mc_luau_aot_v1_finish_yielded_op(lua_State *state);
 void mc_luau_aot_v1_commit_number(lua_State *state, double value);
+uint32_t mc_luau_aot_v1_interrupt(lua_State *state, uint32_t pc);
 uint32_t mc_luau_aot_v1_push_root(lua_State *state, const McLuauAotProtoV1 *metadata,
                                   const char *source, size_t source_size, uint8_t num_params,
                                   uint8_t max_stack_size);

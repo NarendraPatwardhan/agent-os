@@ -45,6 +45,7 @@ pub const Error = error{
     InvalidIrOperand,
     InvalidIrConstant,
     InvalidBytecodeMapping,
+    IndexOutOfBounds,
 };
 
 pub const ExpectedIdentity = struct {
@@ -148,6 +149,164 @@ pub const Section = struct {
     }
 };
 
+// These are compiler-owned views of the byte protocol. They intentionally contain values rather
+// than pointers into Luau C++ objects, and all instruction/block/constant IDs remain local to an
+// IrFunction. Keep the enum values pinned to the identities carried by FrontendSnapshotV1.
+pub const IrCommand = enum(u8) {
+    nop = 0,
+    load_tag = 1,
+    load_double = 3,
+    load_tvalue = 7,
+    store_tag = 13,
+    store_double = 16,
+    store_tvalue = 20,
+    add_num = 36,
+    jump = 88,
+    jump_cmp_num = 94,
+    do_arith = 123,
+    check_tag = 131,
+    interrupt = 145,
+    set_savedpc = 150,
+    return_ = 155,
+    mark_used = 171,
+    _,
+};
+
+pub const IrOperandKind = enum(u8) {
+    none = 0,
+    undef = 1,
+    constant = 2,
+    condition = 3,
+    instruction = 4,
+    block = 5,
+    vm_reg = 6,
+    vm_const = 7,
+    vm_upvalue = 8,
+    vm_exit = 9,
+};
+
+pub const IrConstantKind = enum(u8) {
+    int = 0,
+    int64 = 1,
+    uint = 2,
+    double = 3,
+    tag = 4,
+    import = 5,
+};
+
+pub const IrBlockKind = enum(u8) {
+    bytecode = 0,
+    fallback = 1,
+    internal = 2,
+    linearized = 3,
+    exit_sync = 4,
+    dead = 5,
+
+    pub fn isCompilable(self: IrBlockKind) bool {
+        return switch (self) {
+            .bytecode, .internal, .linearized => true,
+            .fallback, .exit_sync, .dead => false,
+        };
+    }
+};
+
+pub const IrCondition = enum(u8) {
+    equal = 0,
+    not_equal = 1,
+    less = 2,
+    not_less = 3,
+    less_equal = 4,
+    not_less_equal = 5,
+    greater = 6,
+    not_greater = 7,
+    greater_equal = 8,
+    not_greater_equal = 9,
+    unsigned_less = 10,
+    unsigned_less_equal = 11,
+    unsigned_greater = 12,
+    unsigned_greater_equal = 13,
+};
+
+pub const Proto = struct {
+    id: u32,
+    parent_id: u32,
+    num_params: u8,
+    is_vararg: bool,
+    max_stack_size: u8,
+    code_count: u32,
+    vm_constant_count: u32,
+};
+
+pub const IrFunction = struct {
+    id: u32,
+    proto_id: u32,
+    entry_block: u32,
+    variadic: bool,
+    block_start: u32,
+    block_count: u32,
+    instruction_start: u32,
+    instruction_count: u32,
+    operand_start: u32,
+    operand_count: u32,
+    constant_start: u32,
+    constant_count: u32,
+};
+
+pub const IrBlock = struct {
+    kind: IrBlockKind,
+    flags: u8,
+    use_count: u16,
+    start: u32,
+    finish: u32,
+    expected_next_block: u32,
+    start_pc: u32,
+
+    pub fn isEmpty(self: IrBlock) bool {
+        return self.start == no_id;
+    }
+};
+
+pub const IrInstruction = struct {
+    command: IrCommand,
+    use_count: u16,
+    operand_start: u32,
+    operand_count: u32,
+};
+
+pub const IrOperand = struct {
+    kind: IrOperandKind,
+    value: u32,
+};
+
+pub const IrConstant = struct {
+    kind: IrConstantKind,
+    bits: u64,
+
+    pub fn intValue(self: IrConstant) ?i32 {
+        if (self.kind != .int)
+            return null;
+        return @bitCast(@as(u32, @truncate(self.bits)));
+    }
+
+    pub fn uintValue(self: IrConstant) ?u32 {
+        if (self.kind != .uint)
+            return null;
+        return @truncate(self.bits);
+    }
+
+    pub fn doubleValue(self: IrConstant) ?f64 {
+        if (self.kind != .double)
+            return null;
+        return @bitCast(self.bits);
+    }
+
+    pub fn tagValue(self: IrConstant) ?u8 {
+        if (self.kind != .tag)
+            return null;
+        return @truncate(self.bits);
+    }
+};
+
 pub const Snapshot = struct {
     bytes: []const u8,
     header: Header,
@@ -164,6 +323,88 @@ pub const Snapshot = struct {
 
     pub fn requireSection(self: Snapshot, wanted: SectionKind) Error!Section {
         return self.section(wanted) orelse Error.MissingSection;
+    }
+
+    pub fn proto(self: Snapshot, id: u32) Error!Proto {
+        const records = try self.requireSection(.protos);
+        if (id >= records.count)
+            return Error.IndexOutOfBounds;
+        const item = recordBytes(self, records, id);
+        return .{
+            .id = readU32(item, 0),
+            .parent_id = readU32(item, 4),
+            .num_params = item[30],
+            .is_vararg = item[31] != 0,
+            .max_stack_size = item[32],
+            .code_count = readU32(item, 40),
+            .vm_constant_count = readU32(item, 48),
+        };
+    }
+
+    pub fn irFunction(self: Snapshot, id: u32) Error!IrFunction {
+        const records = try self.requireSection(.ir_functions);
+        if (id >= records.count)
+            return Error.IndexOutOfBounds;
+        const item = recordBytes(self, records, id);
+        return .{
+            .id = readU32(item, 0),
+            .proto_id = readU32(item, 4),
+            .entry_block = readU32(item, 8),
+            .variadic = item[12] != 0,
+            .block_start = readU32(item, 16),
+            .block_count = readU32(item, 20),
+            .instruction_start = readU32(item, 24),
+            .instruction_count = readU32(item, 28),
+            .operand_start = readU32(item, 32),
+            .operand_count = readU32(item, 36),
+            .constant_start = readU32(item, 40),
+            .constant_count = readU32(item, 44),
+        };
+    }
+
+    pub fn irBlock(self: Snapshot, function: IrFunction, id: u32) Error!IrBlock {
+        if (id >= function.block_count)
+            return Error.IndexOutOfBounds;
+        const records = try self.requireSection(.ir_blocks);
+        const item = recordBytes(self, records, function.block_start + id);
+        return .{
+            .kind = @enumFromInt(item[0]),
+            .flags = item[1],
+            .use_count = readU16(item, 2),
+            .start = readU32(item, 4),
+            .finish = readU32(item, 8),
+            .expected_next_block = readU32(item, 20),
+            .start_pc = readU32(item, 24),
+        };
+    }
+
+    pub fn irInstruction(self: Snapshot, function: IrFunction, id: u32) Error!IrInstruction {
+        if (id >= function.instruction_count)
+            return Error.IndexOutOfBounds;
+        const records = try self.requireSection(.ir_instructions);
+        const item = recordBytes(self, records, function.instruction_start + id);
+        return .{
+            .command = @enumFromInt(item[0]),
+            .use_count = readU16(item, 2),
+            .operand_start = readU32(item, 8),
+            .operand_count = readU32(item, 12),
+        };
+    }
+
+    pub fn irOperand(self: Snapshot, instruction: IrInstruction, id: u32) Error!IrOperand {
+        if (id >= instruction.operand_count)
+            return Error.IndexOutOfBounds;
+        const records = try self.requireSection(.ir_operands);
+        const item = recordBytes(self, records, instruction.operand_start + id);
+        return .{ .kind = @enumFromInt(item[0]), .value = readU32(item, 4) };
+    }
+
+    pub fn irConstant(self: Snapshot, function: IrFunction, id: u32) Error!IrConstant {
+        if (id >= function.constant_count)
+            return Error.IndexOutOfBounds;
+        const records = try self.requireSection(.ir_constants);
+        const item = recordBytes(self, records, function.constant_start + id);
+        return .{ .kind = @enumFromInt(item[0]), .bits = readU64(item, 8) };
     }
 };
 

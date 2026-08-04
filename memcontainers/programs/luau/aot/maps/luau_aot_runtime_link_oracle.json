@@ -18,10 +18,10 @@
     "<runtime-archive>",
     "--no-whole-archive"
   ],
-  "output_sha256": "97a20784d012e521d958a0aa106ae76a7ade2c6936e133c23308b05dff9c20bb",
+  "output_sha256": "6c263d68cade00870283a665b00eb9fafb9c683a053ab18047c5d995ff93a43c",
   "import_module": "env",
   "import_count": 61,
-  "export_count": 389,
+  "export_count": 390,
   "runtime_contract_imports": [
     "mc_protected_call",
     "mc_raise"
@@ -95,6 +95,7 @@
     "mc_luau_aot_v1_commit_number",
     "mc_luau_aot_v1_enter",
     "mc_luau_aot_v1_finish_yielded_op",
+    "mc_luau_aot_v1_interrupt",
     "mc_luau_aot_v1_push_root"
   ],
   "required_global_exports": [

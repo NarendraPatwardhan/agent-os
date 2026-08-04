@@ -193,6 +193,24 @@ extern "C" void mc_luau_aot_v1_commit_number(lua_State *L, double value) {
     L->top = L->base + 1;
 }
 
+extern "C" uint32_t mc_luau_aot_v1_interrupt(lua_State *L, uint32_t pc) {
+    // FrontendSnapshotV1 carries the bytecode pc for source-map/continuation work, but strict AOT
+    // Protos deliberately carry no bytecode array from which savedpc could be constructed. Keep the
+    // value in the ABI now without fabricating a pointer; native-frame debug handling already treats
+    // this frame as opaque. The callback can reallocate the stack, so generated code reloads L->base
+    // after every successful return from this helper.
+    (void)pc;
+    if (!L || !L->ci || !isLua(L->ci))
+        return MC_LUAU_AOT_V1_INTERNAL_ERROR;
+
+    void (*interrupt)(lua_State *, int) = L->global->cb.interrupt;
+    if (!interrupt)
+        return MC_LUAU_AOT_V1_OK;
+
+    interrupt(L, -1);
+    return L->status == 0 ? MC_LUAU_AOT_V1_OK : MC_LUAU_AOT_V1_YIELDED;
+}
+
 static void destroyAotProto(lua_State *, Proto *proto) {
     // AOT metadata is immutable linker-owned data, not a heap allocation owned by Proto.
     proto->execdata = nullptr;

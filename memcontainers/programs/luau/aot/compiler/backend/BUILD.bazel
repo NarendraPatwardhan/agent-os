@@ -1,0 +1,66 @@
+load("@bazel_skylib//rules:build_test.bzl", "build_test")
+load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary", "zig_library")
+
+zig_library(
+    name = "backend",
+    main = "lower.zig",
+    import_name = "luau_aot_backend",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//memcontainers/programs/luau/aot/compiler/ir:frontend_snapshot_v1",
+        "//memcontainers/programs/luau/aot/compiler/wasm:object",
+    ],
+)
+
+# A zero-import host capability that converts the validated frontend snapshot into a relocatable
+# wasm32 object. The C++ Luau pin adapter and the Zig backend remain independently instantiable and
+# communicate only through FrontendSnapshotV1 bytes.
+zig_binary(
+    name = "backend_raw",
+    srcs = ["backend_host.zig"],
+    linkopts = [
+        "-fno-entry",
+        "--initial-memory=33554432",
+        "--max-memory=268435456",
+        "--export=mc_luau_backend_v1_alloc",
+        "--export=mc_luau_backend_v1_compile",
+        "--export=mc_luau_backend_v1_dealloc",
+        "--export=mc_luau_backend_v1_free",
+    ],
+    main = "backend_host.zig",
+    tags = ["manual"],
+    deps = [":backend"],
+)
+
+zig_configure_binary(
+    name = "backend_wasm",
+    actual = ":backend_raw",
+    mode = "release_small",
+    tags = ["manual"],
+    target = "//platforms:wasm32_wasi",
+    threaded = "single",
+    visibility = ["//visibility:public"],
+)
+
+build_test(
+    name = "backend_build_test",
+    targets = [":backend_wasm"],
+)
+
+js_test(
+    name = "frontend_to_wasm_test",
+    data = [
+        ":backend_wasm",
+        ":frontend_to_wasm.test.mjs",
+        "//memcontainers/programs/luau/aot/frontend:frontend_wasm",
+        "@@emsdk++emscripten_deps+emscripten_bin_linux//:bin/wasm-ld",
+    ],
+    entry_point = "frontend_to_wasm.test.mjs",
+    env = {
+        "LUAU_AOT_BACKEND_WASM": "$(rlocationpath :backend_wasm)",
+        "LUAU_AOT_FRONTEND_WASM": "$(rlocationpath //memcontainers/programs/luau/aot/frontend:frontend_wasm)",
+        "LUAU_AOT_WASM_LD": "$(rlocationpath @@emsdk++emscripten_deps+emscripten_bin_linux//:bin/wasm-ld)",
+    },
+    no_copy_to_bin = ["@@emsdk++emscripten_deps+emscripten_bin_linux//:bin/wasm-ld"],
+)

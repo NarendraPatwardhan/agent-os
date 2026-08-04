@@ -111,16 +111,31 @@ following foundations are real and checked; none is yet presented as a runnable 
 - the Zig backend now emits a standard linking-v2 relocatable Wasm object with canonical types,
   imports, functions, code, symbols, padded call sites, and `reloc.CODE` entries. Hermetic Emscripten
   `wasm-ld` accepts it both alone and with the configured 36-object runtime archive;
-- one linked scalar/control oracle reads the checked `lua_State::base` and `TValue` offsets, executes
-  a dynamic number guard plus loop, and produces `1`, `10`, and `28` from the same artifact for inputs
-  `1`, `4`, and `7`. Its state is still a layout-correct synthetic test allocation and its body is not
-  yet selected from upstream IR, so this evidence does not close WP2 or WP3.
+- the strict runtime now owns the versioned `(lua_State*, AotProto*) -> status` ABI, immutable
+  linker-owned Proto metadata, real closure materialization, GC-safe stack publication, generated
+  entry dispatch, numeric result commit, teardown, and protected failure crossing. A linked generated
+  object executes through ordinary `lua_call` against real `lua_State` instances for three dynamic
+  inputs and survives full-GC publication checks. That older generated body is deliberately retained
+  only as a runtime-ABI oracle; it is not evidence of upstream-IR lowering;
+- the frontend and backend are separately instantiable zero-import Wasm capabilities. The backend
+  parses and validates `FrontendSnapshotV1`, constructs typed compiler-owned views, allocates upstream
+  SSA results to Wasm locals, preserves 16-byte `TValue` copies, and lowers supported bytecode/internal
+  blocks through one generic block-ID dispatcher. It does not parse source or execute Luau code;
+- the upstream-IR oracle compiles two unrelated source functions: a guarded scalar expression and a
+  numeric `for` loop. The backend emits 411-byte and 606-byte relocatable objects, hermetic `wasm-ld`
+  links them, and the linked functions execute inputs `1`, `4`, and `7` as `3/9/15` and `1/10/28`.
+  Both reject a non-number `TValue`, and observed interrupt counts prove upstream safepoints were not
+  erased. The command ledger marks the eleven complete rows and the three deliberately partial rows;
+- `INTERRUPT` calls a versioned runtime helper instead of becoming a no-op. The helper preserves a
+  null callback fast path, invokes an installed callback, reports yielded status, and requires
+  generated code to reload `L->base` after a successful callback. Yield continuation/source-pc
+  semantics remain explicitly open.
 
-The next product slice begins at the Zig side of this boundary. It must materialize compiler-owned
-normalized IR, emit the mandatory dynamic scalar/control Wasm object, define the first real
-`AotProto`/generated-function runtime contract, and link it to the strict runtime archive with the
-same hermetic `wasm-ld`. Until one linked artifact branches or loops on three runtime inputs and
-matches `/bin/luau`, WP2 and WP3 remain open.
+The next product slice connects the exact upstream-IR-generated scalar/loop object to the real Luau
+runtime oracle, then moves that same linked artifact into the AgentOS kernel with differential
+`/bin/luau` results. WP2 remains open until the kernel/import/stamp/attest gates pass. WP3 remains open
+for arithmetic slow-block rejoin and the remaining scalar/conversion command coverage; its central
+"upstream IR, not a hand-authored body" gate is now proven.
 
 ---
 
@@ -1311,6 +1326,12 @@ Gate:
 
 **Goal:** execute one nonconstant compiled function against the real Luau runtime, linked by `wasm-ld`.
 
+**Current state:** the runtime ABI, real-state execution, GC publication, protected failure path, and
+standard-linker archive integration are proven. The executable body in that real-state oracle is still
+the retained ABI fixture; the exact object emitted from upstream IR is proven separately and must now
+replace it. `_start`, argv, AgentOS kernel execution, differential output, stamping, and attestation are
+still gate-open.
+
 Tasks:
 
 - create runtime-only state/init/stdlib/glue target without bytecode executor;
@@ -1333,6 +1354,13 @@ Gate:
 ### WP3 — Canonical Wasm object builder and scalar CFG lowering
 
 **Goal:** replace manual fixture emission with the one production code-generation model.
+
+**Current state:** the production object builder and upstream-snapshot-driven numeric fast tier are
+implemented. A generic CFG dispatcher lowers real scalar branches and loops; complete rows are `NOP`,
+`LOAD_TAG`, `LOAD_DOUBLE`, `LOAD_TVALUE`, `STORE_TAG`, `STORE_DOUBLE`, `STORE_TVALUE`, `ADD_NUM`,
+`JUMP`, `JUMP_CMP_NUM`, and `MARK_USED`. `CHECK_TAG`, `INTERRUPT`, and `RETURN` are deliberately partial
+and named as such in the ledger. Slow-block rejoin, additional scalar operations/conversions, and the
+real-runtime/differential gate remain.
 
 Tasks:
 
