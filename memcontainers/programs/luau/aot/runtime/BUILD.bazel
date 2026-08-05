@@ -53,6 +53,14 @@ zig_library(
     deps = [":aot_runtime_abi"],
 )
 
+zig_library(
+    name = "reference_capture_program",
+    import_name = "luau_aot_reference_capture_program",
+    main = "reference_capture_program_v1.zig",
+    visibility = ["//memcontainers/programs/luau/aot/runtime:__pkg__"],
+    deps = [":aot_runtime_abi"],
+)
+
 filegroup(
     name = "compiled_call_source",
     srcs = ["//memcontainers/programs/luau/aot/compiler/backend:compiled_call.luau"],
@@ -166,6 +174,11 @@ cc_object(
     obj = "//memcontainers/programs/luau/aot/compiler/backend:multi_result_call_package_object",
 )
 
+cc_object(
+    name = "reference_capture_package_object_link",
+    obj = "//memcontainers/programs/luau/aot/compiler/backend:reference_capture_package_object",
+)
+
 # Executable oracle for the first generated-function ABI. Unlike the structural wasm-ld oracle,
 # this constructs a real Luau state/Proto/Closure and reaches generated code through ldo's strict
 # AOT dispatch hook. It remains an oracle-only target; production entry/package materialization is
@@ -230,6 +243,7 @@ zig_binary(
         "--export=mc_luau_interpreter_oracle_init",
         "--export=mc_luau_interpreter_oracle_run_add_strings",
         "--export=mc_luau_interpreter_oracle_run_i32",
+        "--export=mc_luau_interpreter_oracle_run_reference_capture_strings",
         "--export=mc_luau_interpreter_oracle_source_buffer",
     ],
     main = "oracle/interpreter_oracle_root.zig",
@@ -409,6 +423,44 @@ build_test(
     targets = [":multi_result_call_runtime_oracle_wasm"],
 )
 
+zig_binary(
+    name = "reference_capture_runtime_oracle_raw",
+    srcs = ["oracle/reference_capture_oracle_root.zig"],
+    linkopts = [
+        "-lc",
+        "-lc++",
+        "-fno-entry",
+        "--export-memory",
+        "--export=__mc_pcall_run",
+        "--export=__stack_pointer",
+        "--export=mc_luau_aot_v1_reference_capture_oracle_init",
+        "--export=mc_luau_aot_v1_reference_capture_oracle_run",
+    ],
+    main = "oracle/reference_capture_oracle_root.zig",
+    tags = ["manual"],
+    deps = [
+        ":aot_runtime_abi",
+        ":luau_aot_runtime_raw",
+        ":reference_capture_package_object_link",
+        ":reference_capture_program",
+        "//memcontainers/programs/luau/glue:trap",
+    ],
+)
+
+zig_configure_binary(
+    name = "reference_capture_runtime_oracle_wasm",
+    actual = ":reference_capture_runtime_oracle_raw",
+    mode = "release_small",
+    tags = ["manual"],
+    target = "//platforms:wasm32_wasi",
+    threaded = "single",
+)
+
+build_test(
+    name = "reference_capture_runtime_oracle_build_test",
+    targets = [":reference_capture_runtime_oracle_wasm"],
+)
+
 # rules_js requires non-JavaScript data outside this package to enter through the output tree. This
 # preserves the source byte-for-byte while making the differential oracle consume the very same file
 # as the frontend/backend object build.
@@ -523,6 +575,29 @@ js_test(
     env = {
         "LUAU_AOT_MULTI_RESULT_CALL_ORACLE_SOURCE": "$(rlocationpath :multi_result_call_runtime_oracle_source)",
         "LUAU_AOT_MULTI_RESULT_CALL_ORACLE_WASM": "$(rlocationpath :multi_result_call_runtime_oracle_wasm)",
+        "LUAU_INTERPRETER_ORACLE_WASM": "$(rlocationpath :interpreter_oracle_wasm)",
+    },
+)
+
+genrule(
+    name = "reference_capture_runtime_oracle_source",
+    srcs = ["//memcontainers/programs/luau/aot/compiler/backend:reference_capture.luau"],
+    outs = ["reference_capture_runtime_oracle_source.luau"],
+    cmd = "cp $(location //memcontainers/programs/luau/aot/compiler/backend:reference_capture.luau) $@",
+)
+
+js_test(
+    name = "reference_capture_runtime_oracle_test",
+    data = [
+        ":interpreter_oracle_wasm",
+        ":reference_capture_runtime_oracle_source",
+        ":reference_capture_runtime_oracle_wasm",
+        "oracle/reference_capture_oracle.test.mjs",
+    ],
+    entry_point = "oracle/reference_capture_oracle.test.mjs",
+    env = {
+        "LUAU_AOT_REFERENCE_CAPTURE_ORACLE_SOURCE": "$(rlocationpath :reference_capture_runtime_oracle_source)",
+        "LUAU_AOT_REFERENCE_CAPTURE_ORACLE_WASM": "$(rlocationpath :reference_capture_runtime_oracle_wasm)",
         "LUAU_INTERPRETER_ORACLE_WASM": "$(rlocationpath :interpreter_oracle_wasm)",
     },
 )

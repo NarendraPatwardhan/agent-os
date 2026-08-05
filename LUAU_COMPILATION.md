@@ -125,7 +125,7 @@ guest path, but is not presented as a general-purpose AOT product:
   numeric `for` loop. The backend emits deterministic relocatable objects, hermetic `wasm-ld` links
   them, and the linked functions execute inputs `1`, `4`, and `7` as `3/9/15` and `1/10/28`.
   Both reject a non-number `TValue`, and observed interrupt counts prove upstream safepoints were not
-  erased. The command ledger marks the eleven complete rows and six deliberately partial rows;
+  erased. The command ledger marks the eleven complete rows and nineteen deliberately partial rows;
 - a third exact source function contains upstream's real two-guard arithmetic fallback stream. Numeric
   inputs remain on compiled `ADD_NUM`; decimal-string inputs enter validated
   `SET_SAVEDPC`/`DO_ARITH`/`JUMP`, call the versioned strict-runtime helper backed by
@@ -189,9 +189,8 @@ guest path, but is not presented as a general-purpose AOT product:
   Binaryen optimization, mc stamping and attestation, install beside the exact source in `loom_aot`,
   and pass the real-kernel gate for those five pairs. `/bin/luau` requires that byte-identical source
   and invokes its returned closure with the same raw strings; both sides print the same result and exit
-  zero. Reference captures, open/closed `UpVal` lifetime, mutation, forwarded captures, multiple
-  captures, and call/result shapes beyond the bounded fixed protocol remain compile-time or runtime
-  rejection;
+  zero. Forwarded captures, multiple captures, and call/result shapes beyond the bounded fixed
+  protocol remain compile-time or runtime rejection;
 - a third exact three-Proto package proves that fixed results are a real contiguous `TValue` range,
   not a second one-result special case. Its compiled child computes `x + y`, returns that number and
   the original `x` through `RETURN R2 count 2`, and its compiled caller requests `CALL 2 -> 2`, consumes
@@ -204,6 +203,21 @@ guest path, but is not presented as a general-purpose AOT product:
   release-small linking, Binaryen optimization, mc stamping and attestation, installs beside its exact
   source in `loom_aot`, and passes the real-kernel five-case differential. Zero-result calls,
   `LUA_MULTRET`, vararg result ranges, and fixed counts above two remain fail-closed;
+- a fourth exact three-Proto package proves mutable reference capture and the open-to-closed `UpVal`
+  transition. Its factory copies the runtime `initial` argument into a local, creates one child with
+  `LCT_REF`, closes that local before returning, and the child reads, adds to, and writes U0 on every
+  invocation. The backend accepts only the complete pinned `FINDUPVAL`/publication/tag/`CAPTURE`/
+  `CLOSE_UPVALS` cluster and the exact adjacent `LOAD_TVALUE`/`SET_UPVALUE` writeback shape; immutable
+  and reference patterns are mutually exclusive before lowering. The strict runtime interns the live
+  stack cell with `luaF_findupval`, publishes the tagged `UpVal`, closes it with `luaF_close`, reads
+  through `UpVal::v`, writes through the same cell with the collector barrier, and defensively closes
+  any surviving frame cells on return. The linked-object gate relocates the factory frame, proves
+  cumulative mutation across repeated calls, and proves separately created accumulators do not share
+  cells. The real-runtime gate forces full GC after the factory frame is gone, invokes the same
+  accumulator twice with decimal strings so both additions take `DO_ARITH`, and matches the exact
+  separately linked pinned interpreter for five signed triples. Forwarded `LCT_UPVAL`, multiple
+  captures, aliasing between multiple closures over the same local, and production/kernel integration
+  remain open;
 
 WP2 is complete. WP3's central arithmetic/type slow-block rejoin passes the exact-source,
 relocatable-object, strict-runtime, pinned-interpreter, production optimization/stamp/attestation, and
@@ -212,8 +226,11 @@ GC, differential, product-pipeline, and real-kernel gates. WP4's immutable value
 passes those same exact-snapshot, deterministic-object, base-relocation, strict-runtime GC,
 pinned-interpreter, production-pipeline, and real-kernel gates. WP4's first fixed multi-result vertical
 now passes the same object, base-relocation, strict-runtime, exact-source differential,
-production-pipeline, and real-kernel gates. The next large semantic slice is reference-capture mutation
-and open/closed `UpVal` lifetime, followed by broader arities/varargs and static modules. The
+production-pipeline, and real-kernel gates. WP4's mutable reference-capture vertical now passes the
+exact-snapshot, deterministic-object, base-relocation, open/closed-cell, full-GC, repeated-mutation,
+closure-independence, and pinned-interpreter gates. Its next boundary is the production optimization,
+stamp, attestation, image, and real-kernel gate; after that come broader arities/varargs and static
+modules. The
 immutable descriptor is shared by oracle and product today but remains compiler-generated-data work,
 not a hand-authored product format.
 
@@ -1495,9 +1512,9 @@ and five exact-source interpreter differentials pass. The same object and shared
 release-small guest, pass Binaryen optimization, mc stamping and attestation, install with the exact
 source in `loom_aot`, and pass the real-kernel differential for all five raw-string pairs. Oracle and
 guest descriptors remain shared link-time definitions; compiler-emitted descriptor data/relocations
-remain product work. Reference captures, mutable/open/closed `UpVal` lifetime, forwarded or multiple
-captures, broader arities/results beyond two, callable metamethods, recursion, tail calls, yields, varargs
-consumption, modules, and source-location publication are still unsupported.
+remain product work. Forwarded or multiple captures, broader arities/results beyond two, callable
+metamethods, recursion, tail calls, yields, varargs consumption, modules, and source-location
+publication are still unsupported.
 
 The exact `multi_result_call.luau` snapshot generalizes the call/return protocol without introducing a
 pair-specific helper. Its inner child returns `[x + y, x]` from contiguous registers and the caller
@@ -1509,6 +1526,21 @@ child and caller both take checked arithmetic slow blocks, performs full collect
 materialization, and matches the pinned interpreter for five signed pairs. The same object and shared
 descriptor link into a release-small guest, pass Binaryen optimization, mc stamping and attestation,
 install with the exact source in `loom_aot`, and pass the same five-case real-kernel differential.
+
+The exact `reference_capture.luau` snapshot adds the first mutable lexical cell. Its factory captures
+one local with `LCT_REF`, executes `CLOSE_UPVALS` before returning the child, and the child performs
+`GET_UPVALUE` plus checked addition plus `SET_UPVALUE` against U0. The backend recognizes the complete
+single-block reference-capture cluster before any pointer-level lowering, calls one runtime helper that
+publishes a real one-upvalue closure and interns the open cell, lowers explicit close/read/write helpers,
+and keeps direct-value and reference-capture recognizers mutually exclusive. The runtime preserves
+Luau's open-cell identity and sorted open-upvalue ownership through `luaF_findupval`, closes the cell
+through `luaF_close`, dereferences `UpVal::v` for reads, and applies `luaC_barrier` on mutation. The
+linked-object gate relocates the factory base, closes into independent storage, proves four cumulative
+mutations, and proves two factory results are independent. The strict-runtime differential forces full
+collection after the factory returns and calls the same accumulator twice with raw decimal strings;
+five signed triples match the separately linked exact-source interpreter. Production guest and kernel
+gates are the next boundary. Forwarded `LCT_UPVAL`, multiple captures, and multiple closures sharing
+one still-open cell remain fail-closed.
 
 Tasks:
 

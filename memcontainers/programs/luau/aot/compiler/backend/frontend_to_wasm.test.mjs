@@ -154,13 +154,51 @@ function capturedSnapshotOffsets(snapshot) {
   };
 }
 
+function referenceSnapshotOffsets(snapshot) {
+  const protos = snapshotSection(snapshot, 3);
+  const functions = snapshotSection(snapshot, 15);
+  const blocks = snapshotSection(snapshot, 16);
+  const instructions = snapshotSection(snapshot, 17);
+  const operands = snapshotSection(snapshot, 18);
+  const constants = snapshotSection(snapshot, 19);
+  const functionOffset = (functionId) => functions.offset + functionId * functions.recordSize;
+  return {
+    proto(protoId) {
+      return protos.offset + protoId * protos.recordSize;
+    },
+    block(functionId, relativeId) {
+      const at = functionOffset(functionId);
+      return blocks.offset + (snapshot.readUInt32LE(at + 16) + relativeId) * blocks.recordSize;
+    },
+    instruction(functionId, relativeId) {
+      const at = functionOffset(functionId);
+      return instructions.offset + (snapshot.readUInt32LE(at + 24) + relativeId) * instructions.recordSize;
+    },
+    operand(functionId, instructionId, operandId) {
+      const instructionOffset = this.instruction(functionId, instructionId);
+      return operands.offset +
+        (snapshot.readUInt32LE(instructionOffset + 8) + operandId) * operands.recordSize;
+    },
+    findConstant(functionId, kind, bits) {
+      const at = functionOffset(functionId);
+      const start = snapshot.readUInt32LE(at + 40);
+      const count = snapshot.readUInt32LE(at + 44);
+      for (let id = 0; id < count; id++) {
+        const offset = constants.offset + (start + id) * constants.recordSize;
+        if (snapshot[offset] === kind && snapshot.readBigUInt64LE(offset + 8) === bits) return id;
+      }
+      throw new Error(`reference snapshot function ${functionId} is missing constant ${kind}/${bits}`);
+    },
+  };
+}
+
 function expectPackageRejection(snapshot, label) {
   try {
     backendPackage(snapshot);
   } catch {
     return;
   }
-  throw new Error(`captured-call mutation was accepted: ${label}`);
+  throw new Error(`package mutation was accepted: ${label}`);
 }
 
 function linkObject(object, name) {
@@ -582,7 +620,7 @@ async function executeCapturedCallPackage() {
     ["env", "mc_luau_aot_v1_do_arith", "function"],
     ["env", "mc_luau_aot_v1_dupclosure", "function"],
     ["env", "mc_luau_aot_v1_newclosure_value", "function"],
-    ["env", "mc_luau_aot_v1_get_value_upvalue", "function"],
+    ["env", "mc_luau_aot_v1_get_upvalue", "function"],
     ["env", "mc_luau_aot_v1_call_fixed", "function"],
   ];
   if (JSON.stringify(moduleImports) !== JSON.stringify(expectedImports))
@@ -653,7 +691,7 @@ async function executeCapturedCallPackage() {
         closureChildren.push(childProtoId);
         captureCount++;
       },
-      mc_luau_aot_v1_get_value_upvalue(upvalueState, destinationRegister, upvalueIndex) {
+      mc_luau_aot_v1_get_upvalue(upvalueState, destinationRegister, upvalueIndex) {
         if (upvalueState !== state || destinationRegister !== 2 || upvalueIndex !== 0 || capturedValue === null)
           throw new Error(`${name}: invalid value upvalue ABI`);
         const view = new DataView(instance.exports.memory.buffer);
@@ -716,6 +754,278 @@ async function executeCapturedCallPackage() {
   if (nestedCalls !== 3 || captureCount !== 3 || closureChildren.join(",") !== "1,2,2,2" || interrupts < 7)
     throw new Error(`${name}: execution evidence incomplete: calls=${nestedCalls}, captures=${captureCount}, closures=${closureChildren}, interrupts=${interrupts}`);
   return { objectSize: first.length, nestedCalls, captureCount, interrupts };
+}
+
+async function executeReferenceCapturePackage() {
+  const name = "reference-capture-package";
+  const source = readFileSync(
+    runfile(process.env.LUAU_AOT_REFERENCE_CAPTURE_SOURCE, "LUAU_AOT_REFERENCE_CAPTURE_SOURCE"),
+    "utf8",
+  );
+  const snapshot = frontendSnapshot(source, "@aot/reference_capture.luau");
+  const first = backendPackage(snapshot);
+  const second = backendPackage(snapshot);
+  if (!first.equals(second)) throw new Error(`${name}: package backend is nondeterministic`);
+
+  {
+    const mutated = Buffer.from(snapshot);
+    const offsets = referenceSnapshotOffsets(mutated);
+    mutated.writeUInt32LE(12, offsets.block(1, 0) + 4);
+    expectPackageRejection(mutated, "reference closure cluster is truncated at its block boundary");
+  }
+  {
+    const mutated = Buffer.from(snapshot);
+    const offsets = referenceSnapshotOffsets(mutated);
+    mutated.writeUInt32LE(offsets.findConstant(1, 2, 0n), offsets.operand(1, 12, 1) + 4);
+    expectPackageRejection(mutated, "LCT_VAL replaces the required LCT_REF capture");
+  }
+  {
+    const mutated = Buffer.from(snapshot);
+    const offsets = referenceSnapshotOffsets(mutated);
+    mutated.writeUInt32LE(0, offsets.operand(1, 7, 0) + 4);
+    expectPackageRejection(mutated, "FINDUPVAL uses a different register from CAPTURE/CLOSE_UPVALS");
+  }
+  {
+    const mutated = Buffer.from(snapshot);
+    const offsets = referenceSnapshotOffsets(mutated);
+    mutated.writeUInt32LE(1, offsets.operand(1, 8, 1) + 4);
+    expectPackageRejection(mutated, "reference capture targets child upvalue U1");
+  }
+  {
+    const mutated = Buffer.from(snapshot);
+    const offsets = referenceSnapshotOffsets(mutated);
+    mutated.writeUInt32LE(offsets.findConstant(1, 4, 8n), offsets.operand(1, 10, 1) + 4);
+    expectPackageRejection(mutated, "reference upvalue publication uses a closure tag instead of LUA_TUPVAL");
+  }
+  {
+    const mutated = Buffer.from(snapshot);
+    const offsets = referenceSnapshotOffsets(mutated);
+    mutated[offsets.instruction(1, 11)] = 152;
+    mutated[offsets.instruction(1, 12)] = 146;
+    expectPackageRejection(mutated, "CHECK_GC occurs after the reference CAPTURE marker");
+  }
+  {
+    const mutated = Buffer.from(snapshot);
+    const offsets = referenceSnapshotOffsets(mutated);
+    mutated[offsets.proto(2) + 29] = 2;
+    expectPackageRejection(mutated, "reference child declares more than one upvalue");
+  }
+  {
+    const mutated = Buffer.from(snapshot);
+    const offsets = referenceSnapshotOffsets(mutated);
+    mutated.writeUInt32LE(1, offsets.operand(2, 15, 0) + 4);
+    expectPackageRejection(mutated, "SET_UPVALUE targets U1");
+  }
+  {
+    const mutated = Buffer.from(snapshot);
+    const offsets = referenceSnapshotOffsets(mutated);
+    mutated.writeUInt32LE(1, offsets.operand(2, 15, 2) + 4);
+    expectPackageRejection(mutated, "SET_UPVALUE carries a non-undef tag operand");
+  }
+  {
+    const mutated = Buffer.from(snapshot);
+    const offsets = referenceSnapshotOffsets(mutated);
+    mutated.writeUInt32LE(0, offsets.operand(2, 15, 1) + 4);
+    expectPackageRejection(mutated, "SET_UPVALUE no longer consumes its adjacent LOAD_TVALUE");
+  }
+  {
+    const mutated = Buffer.from(snapshot);
+    const offsets = referenceSnapshotOffsets(mutated);
+    mutated.writeUInt32LE(15, offsets.block(2, 2));
+    expectPackageRejection(mutated, "LOAD_TVALUE and SET_UPVALUE cross a block boundary");
+  }
+
+  const module = await WebAssembly.compile(linkPackage(first));
+  const moduleImports = WebAssembly.Module.imports(module).map(
+    ({ module: importModule, name: importName, kind }) => [importModule, importName, kind],
+  );
+  const expectedImports = [
+    ["env", "mc_luau_aot_v1_return_fixed", "function"],
+    ["env", "mc_luau_aot_v1_interrupt", "function"],
+    ["env", "mc_luau_aot_v1_do_arith", "function"],
+    ["env", "mc_luau_aot_v1_dupclosure", "function"],
+    ["env", "mc_luau_aot_v1_newclosure_ref", "function"],
+    ["env", "mc_luau_aot_v1_get_upvalue", "function"],
+    ["env", "mc_luau_aot_v1_set_upvalue", "function"],
+    ["env", "mc_luau_aot_v1_close_upvalues", "function"],
+  ];
+  if (JSON.stringify(moduleImports) !== JSON.stringify(expectedImports))
+    throw new Error(`${name}: unexpected generated imports ${JSON.stringify(moduleImports)}`);
+
+  let instance;
+  let returned = null;
+  let activeClosureId = null;
+  let nextClosureId = 1;
+  let nextCellAddress = 16384;
+  let interrupts = 0;
+  let referenceClosures = 0;
+  let closes = 0;
+  let upvalueReads = 0;
+  let upvalueWrites = 0;
+  const closures = new Map();
+  const cells = new Map();
+  const state = 1024;
+  const initialBase = 2048;
+  const relocatedFactoryBase = 4096;
+  const childBase = 8192;
+  const tvalueSize = 16;
+  const writeNumber = (view, base, register, value) => {
+    view.setFloat64(base + register * tvalueSize, value, true);
+    view.setUint32(base + register * tvalueSize + 12, 3, true);
+  };
+  const readValue = (view, base, register) => {
+    const address = base + register * tvalueSize;
+    const tag = view.getUint32(address + 12, true);
+    return { tag, value: tag === 3 ? view.getFloat64(address, true) : view.getUint32(address, true) };
+  };
+  const publishClosure = (view, base, register, protoId, cellAddress = null) => {
+    const closureId = nextClosureId++;
+    closures.set(closureId, { protoId, cellAddress });
+    view.setUint32(base + register * tvalueSize, closureId, true);
+    view.setUint32(base + register * tvalueSize + 12, 6, true);
+    return closureId;
+  };
+
+  instance = await WebAssembly.instantiate(module, {
+    env: {
+      mc_luau_aot_v1_return_fixed(returnState, sourceRegister, resultCount) {
+        if (returnState !== state || resultCount !== 1)
+          throw new Error(`${name}: invalid fixed return ${returnState}/${sourceRegister}/${resultCount}`);
+        const view = new DataView(instance.exports.memory.buffer);
+        returned = readValue(view, view.getUint32(state + 12, true), sourceRegister);
+      },
+      mc_luau_aot_v1_interrupt(interruptState, pc) {
+        if (interruptState !== state || pc < 0) throw new Error(`${name}: invalid interrupt`);
+        interrupts++;
+        return 0;
+      },
+      mc_luau_aot_v1_do_arith() {
+        throw new Error(`${name}: numeric mutation unexpectedly entered arithmetic fallback`);
+      },
+      mc_luau_aot_v1_dupclosure(closureState, destinationRegister, childProtoId) {
+        if (closureState !== state || childProtoId !== 1)
+          throw new Error(`${name}: invalid root closure ${closureState}/${childProtoId}`);
+        const view = new DataView(instance.exports.memory.buffer);
+        publishClosure(view, view.getUint32(state + 12, true), destinationRegister, childProtoId);
+      },
+      mc_luau_aot_v1_newclosure_ref(closureState, destinationRegister, childProtoId, captureRegister) {
+        if (closureState !== state || destinationRegister !== 2 || childProtoId !== 2 || captureRegister !== 1)
+          throw new Error(`${name}: invalid reference closure ABI`);
+        const memory = new Uint8Array(instance.exports.memory.buffer);
+        const view = new DataView(memory.buffer);
+        const callerBase = view.getUint32(state + 12, true);
+        const captured = readValue(view, callerBase, captureRegister);
+        if (captured.tag !== 3) throw new Error(`${name}: reference capture is not numeric`);
+
+        memory.set(memory.subarray(callerBase, callerBase + 3 * tvalueSize), relocatedFactoryBase);
+        const cellAddress = nextCellAddress;
+        nextCellAddress += tvalueSize;
+        cells.set(cellAddress, {
+          open: true,
+          stackAddress: relocatedFactoryBase + captureRegister * tvalueSize,
+        });
+        publishClosure(view, relocatedFactoryBase, destinationRegister, childProtoId, cellAddress);
+        view.setUint32(state + 12, relocatedFactoryBase, true);
+        referenceClosures++;
+      },
+      mc_luau_aot_v1_get_upvalue(upvalueState, destinationRegister, upvalueIndex) {
+        if (upvalueState !== state || destinationRegister !== 1 || upvalueIndex !== 0)
+          throw new Error(`${name}: invalid upvalue read ABI`);
+        const closure = closures.get(activeClosureId);
+        const cell = closure && cells.get(closure.cellAddress);
+        if (!cell || cell.open) throw new Error(`${name}: read did not use a closed UpVal cell`);
+        const memory = new Uint8Array(instance.exports.memory.buffer);
+        const view = new DataView(memory.buffer);
+        const base = view.getUint32(state + 12, true);
+        memory.set(memory.subarray(closure.cellAddress, closure.cellAddress + tvalueSize), base + destinationRegister * tvalueSize);
+        upvalueReads++;
+      },
+      mc_luau_aot_v1_set_upvalue(upvalueState, upvalueIndex, sourceRegister) {
+        if (upvalueState !== state || upvalueIndex !== 0 || sourceRegister !== 1)
+          throw new Error(`${name}: invalid upvalue write ABI`);
+        const closure = closures.get(activeClosureId);
+        const cell = closure && cells.get(closure.cellAddress);
+        if (!cell || cell.open) throw new Error(`${name}: write did not use a closed UpVal cell`);
+        const memory = new Uint8Array(instance.exports.memory.buffer);
+        const view = new DataView(memory.buffer);
+        const base = view.getUint32(state + 12, true);
+        memory.set(memory.subarray(base + sourceRegister * tvalueSize, base + (sourceRegister + 1) * tvalueSize), closure.cellAddress);
+        upvalueWrites++;
+      },
+      mc_luau_aot_v1_close_upvalues(closeState, firstRegister) {
+        if (closeState !== state || firstRegister !== 1)
+          throw new Error(`${name}: invalid close ABI ${closeState}/${firstRegister}`);
+        const memory = new Uint8Array(instance.exports.memory.buffer);
+        const view = new DataView(memory.buffer);
+        const stackAddress = view.getUint32(state + 12, true) + firstRegister * tvalueSize;
+        const entry = [...cells.entries()].find(([, cell]) => cell.open && cell.stackAddress === stackAddress);
+        if (!entry) throw new Error(`${name}: close did not find its open UpVal`);
+        const [cellAddress, cell] = entry;
+        memory.set(memory.subarray(stackAddress, stackAddress + tvalueSize), cellAddress);
+        cell.open = false;
+        cell.stackAddress = null;
+        closes++;
+      },
+    },
+  });
+
+  for (const symbol of packageSymbols) {
+    if (typeof instance.exports[symbol] !== "function")
+      throw new Error(`${name}: missing generated symbol ${symbol}`);
+  }
+
+  const memory = new Uint8Array(instance.exports.memory.buffer);
+  const view = new DataView(memory.buffer);
+  const runRoot = () => {
+    memory.fill(0, initialBase, initialBase + tvalueSize);
+    view.setUint32(state + 12, initialBase, true);
+    returned = null;
+    if (instance.exports[packageSymbols[0]](state, 0) !== 0 || returned?.tag !== 6)
+      throw new Error(`${name}: root did not return its factory: ${JSON.stringify(returned)}`);
+    const closure = closures.get(returned.value);
+    if (closure?.protoId !== 1 || closure.cellAddress !== null)
+      throw new Error(`${name}: root returned an invalid factory closure`);
+    return returned.value;
+  };
+  const runFactory = (factoryId, initial) => {
+    memory.fill(0, initialBase, initialBase + 3 * tvalueSize);
+    view.setUint32(state + 12, initialBase, true);
+    writeNumber(view, initialBase, 0, initial);
+    activeClosureId = factoryId;
+    returned = null;
+    if (instance.exports[packageSymbols[1]](state, factoryId) !== 0 || returned?.tag !== 6)
+      throw new Error(`${name}: factory(${initial}) failed: ${JSON.stringify(returned)}`);
+    const closure = closures.get(returned.value);
+    const cell = closure && cells.get(closure.cellAddress);
+    if (closure?.protoId !== 2 || !cell || cell.open)
+      throw new Error(`${name}: factory returned a closure without a closed reference cell`);
+    return returned.value;
+  };
+  const runAccumulator = (closureId, delta, expected) => {
+    memory.fill(0, childBase, childBase + 2 * tvalueSize);
+    view.setUint32(state + 12, childBase, true);
+    writeNumber(view, childBase, 0, delta);
+    activeClosureId = closureId;
+    returned = null;
+    const status = instance.exports[packageSymbols[2]](state, closureId);
+    if (status !== 0 || returned?.tag !== 3 || returned.value !== expected)
+      throw new Error(`${name}: accumulator(${delta}) failed with ${status}/${JSON.stringify(returned)}, expected ${expected}`);
+  };
+
+  const factory = runRoot();
+  const firstAccumulator = runFactory(factory, 10);
+  runAccumulator(firstAccumulator, 5, 15);
+  runAccumulator(firstAccumulator, -2, 13);
+  const secondAccumulator = runFactory(factory, -3);
+  runAccumulator(secondAccumulator, 8, 5);
+  runAccumulator(firstAccumulator, 4, 17);
+
+  if (referenceClosures !== 2 || closes !== 2 || upvalueReads !== 4 || upvalueWrites !== 4 || interrupts < 7)
+    throw new Error(
+      `${name}: evidence incomplete: closures=${referenceClosures}, closes=${closes}, ` +
+      `reads=${upvalueReads}, writes=${upvalueWrites}, interrupts=${interrupts}`,
+    );
+  return { objectSize: first.length, referenceClosures, closes, upvalueWrites, interrupts };
 }
 
 async function executeMultiResultCallPackage() {
@@ -868,6 +1178,7 @@ const silent = await executeSilentRoot();
 const slowAdd = await executeSlowAdd();
 const compiledCall = await executeCompiledCallPackage();
 const capturedCall = await executeCapturedCallPackage();
+const referenceCapture = await executeReferenceCapturePackage();
 const multiResultCall = await executeMultiResultCallPackage();
 
 console.log(
@@ -875,6 +1186,7 @@ console.log(
     `silent root ${silent.objectSize} bytes, slow add ${slowAdd.objectSize} bytes; ` +
     `compiled call package ${compiledCall.objectSize} bytes/${compiledCall.nestedCalls} nested calls; ` +
     `captured call package ${capturedCall.objectSize} bytes/${capturedCall.captureCount} captures; ` +
+    `reference capture package ${referenceCapture.objectSize} bytes/${referenceCapture.closes} closes; ` +
     `multi-result package ${multiResultCall.objectSize} bytes/${multiResultCall.pairReturns} pair returns; ` +
     `interrupt calls ${scalar.interrupts}/${loop.interrupts}/${silent.interrupts}/${slowAdd.interrupts}; ` +
     `slow helpers ${slowAdd.helperCalls}`,

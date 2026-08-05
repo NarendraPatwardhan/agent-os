@@ -67,16 +67,19 @@
       "luau_precall",
       "luau_poscall",
       "mc_luau_aot_v1_call_fixed",
+      "mc_luau_aot_v1_close_upvalues",
       "mc_luau_aot_v1_do_arith",
       "mc_luau_aot_v1_dupclosure",
       "mc_luau_aot_v1_enter",
       "mc_luau_aot_v1_finish_yielded_op",
-      "mc_luau_aot_v1_get_value_upvalue",
+      "mc_luau_aot_v1_get_upvalue",
       "mc_luau_aot_v1_interrupt",
+      "mc_luau_aot_v1_newclosure_ref",
       "mc_luau_aot_v1_newclosure_value",
       "mc_luau_aot_v1_push_program",
       "mc_luau_aot_v1_push_root",
-      "mc_luau_aot_v1_return_fixed"
+      "mc_luau_aot_v1_return_fixed",
+      "mc_luau_aot_v1_set_upvalue"
     ],
     "bytecode_boundary": {
       "requires_code_null": true,
@@ -131,9 +134,9 @@
   "notes": [
     "The declared set compiles into a 36-member wasm32 relocatable archive: 34 retained upstream translation units, one project call-frame adapter, and the required empty Zig root object.",
     "archive_built_unlinked means standard relocatable objects exist; generated functions, kernel-backed protected-call hooks, libc, the AgentOS adapter, and the runner are separate final-link inputs.",
-    "The project adapter owns the versioned strict-AOT program metadata, frame entry, bounded fixed-result return, zero-upvalue and one-direct-value-upvalue closure materialization, fixed compiled call, and Proto teardown ABI.",
+    "The project adapter owns the versioned strict-AOT program metadata, frame entry, bounded fixed-result return, zero-upvalue, one-direct-value-upvalue, and one-reference-upvalue closure materialization, open/closed UpVal access and mutation, fixed compiled call, and Proto teardown ABI.",
     "lvmutils.cpp remains because it owns reusable value, table, comparison, arithmetic, concatenation, length, loop, and metamethod helpers.",
     "luaV_getimport is currently trapped in forbidden VM/src/lvmload.cpp and requires a named runtime extraction if the generated-code ABI uses it."
   ],
-  "canonical_hash": "8bcd23d505b76380ed775ea751a2f4e738253920df5903a9ea40ffca1e41f201"
+  "canonical_hash": "1c1da2851c8d8aad17ff9a47dd690827a0a8eb47c8f061123a267345bcd8812b"
 }

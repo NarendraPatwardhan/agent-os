@@ -139,9 +139,10 @@
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
         "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test",
+        "//memcontainers/programs/luau/aot/runtime:reference_capture_runtime_oracle_test",
         "//memcontainers/tests/e2e:core#luau_aot_captured_proto_graph_calls_rejoin"
       ],
-      "status": "partial_exact_one_value_capture_newclosure_cluster"
+      "status": "partial_exact_one_value_or_reference_capture_newclosure_cluster"
     },
     {
       "command": "GET_ARR_ADDR",
@@ -203,9 +204,10 @@
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
         "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test",
+        "//memcontainers/programs/luau/aot/runtime:reference_capture_runtime_oracle_test",
         "//memcontainers/tests/e2e:core#luau_aot_captured_proto_graph_calls_rejoin"
       ],
-      "status": "partial_exact_one_value_capture_newclosure_cluster"
+      "status": "partial_exact_one_value_or_reference_capture_newclosure_cluster"
     },
     {
       "command": "STORE_TAG",
@@ -1994,7 +1996,7 @@
       "class": "runtime_helper",
       "wasm_features": [],
       "runtime_symbols": [
-        "mc_luau_aot_v1_get_value_upvalue"
+        "mc_luau_aot_v1_get_upvalue"
       ],
       "may_allocate": false,
       "may_raise": true,
@@ -2005,9 +2007,10 @@
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
         "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test",
+        "//memcontainers/programs/luau/aot/runtime:reference_capture_runtime_oracle_test",
         "//memcontainers/tests/e2e:core#luau_aot_captured_proto_graph_calls_rejoin"
       ],
-      "status": "partial_direct_value_upvalue_zero_only"
+      "status": "partial_upvalue_zero_direct_value_or_reference_cell"
     },
     {
       "command": "SET_UPVALUE",
@@ -2018,13 +2021,16 @@
         "mc_luau_aot_v1_set_upvalue"
       ],
       "may_allocate": false,
-      "may_raise": false,
+      "may_raise": true,
       "may_call_luau": false,
       "safepoint": false,
       "rejoins": true,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2245; CodeGen/src/IrLoweringA64.cpp:2277",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
+        "//memcontainers/programs/luau/aot/runtime:reference_capture_runtime_oracle_test"
+      ],
+      "status": "partial_reference_upvalue_zero_from_register"
     },
     {
       "command": "CHECK_TAG",
@@ -2356,16 +2362,19 @@
       "class": "runtime_helper",
       "wasm_features": [],
       "runtime_symbols": [
-        "mc_luau_aot_v1_close_upvals"
+        "mc_luau_aot_v1_close_upvalues"
       ],
       "may_allocate": false,
-      "may_raise": false,
+      "may_raise": true,
       "may_call_luau": false,
       "safepoint": false,
       "rejoins": true,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2680; CodeGen/src/IrLoweringA64.cpp:2803; luaF_close",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
+        "//memcontainers/programs/luau/aot/runtime:reference_capture_runtime_oracle_test"
+      ],
+      "status": "partial_exact_reference_capture_close"
     },
     {
       "command": "CAPTURE",
@@ -2382,9 +2391,10 @@
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
         "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test",
+        "//memcontainers/programs/luau/aot/runtime:reference_capture_runtime_oracle_test",
         "//memcontainers/tests/e2e:core#luau_aot_captured_proto_graph_calls_rejoin"
       ],
-      "status": "partial_single_lct_val_register_capture_only"
+      "status": "partial_single_register_lct_val_or_lct_ref_capture_only"
     },
     {
       "command": "SETLIST",
@@ -2647,7 +2657,8 @@
       "class": "gc_protocol",
       "wasm_features": [],
       "runtime_symbols": [
-        "mc_luau_aot_v1_newclosure_value"
+        "mc_luau_aot_v1_newclosure_value",
+        "mc_luau_aot_v1_newclosure_ref"
       ],
       "may_allocate": true,
       "may_raise": true,
@@ -2658,9 +2669,10 @@
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
         "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test",
+        "//memcontainers/programs/luau/aot/runtime:reference_capture_runtime_oracle_test",
         "//memcontainers/tests/e2e:core#luau_aot_captured_proto_graph_calls_rejoin"
       ],
-      "status": "partial_one_direct_value_capture_only"
+      "status": "partial_one_direct_value_or_reference_capture_only"
     },
     {
       "command": "FALLBACK_DUPCLOSURE",
@@ -3160,7 +3172,7 @@
       "class": "gc_protocol",
       "wasm_features": [],
       "runtime_symbols": [
-        "mc_luau_aot_v1_findupval"
+        "mc_luau_aot_v1_newclosure_ref"
       ],
       "may_allocate": true,
       "may_raise": true,
@@ -3168,8 +3180,11 @@
       "safepoint": true,
       "rejoins": true,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3170; CodeGen/src/IrLoweringA64.cpp:3518; luaF_findupval",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
+        "//memcontainers/programs/luau/aot/runtime:reference_capture_runtime_oracle_test"
+      ],
+      "status": "partial_exact_single_register_reference_capture_cluster"
     },
     {
       "command": "BUFFER_READI8",

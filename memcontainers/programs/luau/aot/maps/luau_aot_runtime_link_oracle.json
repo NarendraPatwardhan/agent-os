@@ -18,10 +18,10 @@
     "<runtime-archive>",
     "--no-whole-archive"
   ],
-  "output_sha256": "8bb9513bc2237708cfe55beecb821ba5da756c62bbd7be8cf0e0a0a3a17eb957",
+  "output_sha256": "0d56de1dbfadbeab30e07737a51e3ed66a0bc01ca47bcd29f01a51b96f668169",
   "import_module": "env",
   "import_count": 61,
-  "export_count": 396,
+  "export_count": 399,
   "runtime_contract_imports": [
     "mc_protected_call",
     "mc_raise"
@@ -93,16 +93,19 @@
     "_Z12luau_poscallP9lua_StateP10lua_TValue",
     "_Z13luau_callhookP9lua_StatePFvS0_P9lua_DebugEPv",
     "mc_luau_aot_v1_call_fixed",
+    "mc_luau_aot_v1_close_upvalues",
     "mc_luau_aot_v1_do_arith",
     "mc_luau_aot_v1_dupclosure",
     "mc_luau_aot_v1_enter",
     "mc_luau_aot_v1_finish_yielded_op",
-    "mc_luau_aot_v1_get_value_upvalue",
+    "mc_luau_aot_v1_get_upvalue",
     "mc_luau_aot_v1_interrupt",
+    "mc_luau_aot_v1_newclosure_ref",
     "mc_luau_aot_v1_newclosure_value",
     "mc_luau_aot_v1_push_program",
     "mc_luau_aot_v1_push_root",
-    "mc_luau_aot_v1_return_fixed"
+    "mc_luau_aot_v1_return_fixed",
+    "mc_luau_aot_v1_set_upvalue"
   ],
   "required_global_exports": [
     "mc_luau_aot_v1_layout_sha256"

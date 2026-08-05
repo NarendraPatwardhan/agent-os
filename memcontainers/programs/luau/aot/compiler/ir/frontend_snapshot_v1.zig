@@ -169,10 +169,12 @@ pub const IrCommand = enum(u8) {
     jump_cmp_num = 94,
     do_arith = 123,
     get_upvalue = 129,
+    set_upvalue = 130,
     check_tag = 131,
     interrupt = 145,
     check_gc = 146,
     set_savedpc = 150,
+    close_upvals = 151,
     capture = 152,
     call = 154,
     return_ = 155,
@@ -180,6 +182,7 @@ pub const IrCommand = enum(u8) {
     newclosure = 167,
     fallback_dupclosure = 168,
     mark_used = 171,
+    findupval = 200,
     _,
 };
 

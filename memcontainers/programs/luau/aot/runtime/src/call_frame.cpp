@@ -203,6 +203,11 @@ extern "C" void mc_luau_aot_v1_return_fixed(lua_State *L, uint32_t sourceRegiste
         resultCount > uint32_t(proto->maxstacksize) - sourceRegister)
         luaG_runerror(L, "strict AOT fixed return exceeds the compiled frame");
 
+    // A compiled return must never leave UpVal::v pointing into the frame that poscall will pop.
+    // Exact CLOSE_UPVALS commands still lower independently for lexical scopes that end earlier.
+    if (L->openupval && L->openupval->v >= L->base)
+        luaF_close(L, L->base);
+
     // Poscall consumes results from frame base. Copy low-to-high: the destination never starts
     // above the source, so this also has correct memmove semantics for overlapping register ranges.
     for (uint32_t index = 0; index < resultCount; ++index)
@@ -319,9 +324,37 @@ extern "C" void mc_luau_aot_v1_newclosure_value(lua_State *L, uint32_t destinati
     luaC_checkGC(L);
 }
 
-extern "C" void mc_luau_aot_v1_get_value_upvalue(lua_State *L,
-                                                   uint32_t destinationRegister,
-                                                   uint32_t upvalueIndex) {
+extern "C" void mc_luau_aot_v1_newclosure_ref(lua_State *L, uint32_t destinationRegister,
+                                                uint32_t childProtoId,
+                                                uint32_t captureRegister) {
+    if (!L || !L->ci || !isLua(L->ci))
+        luaG_runerror(L, "strict AOT reference-closure helper entered without an active Luau frame");
+
+    Closure *parentClosure = clvalue(L->ci->func);
+    Proto *parent = parentClosure->l.p;
+    if (destinationRegister >= parent->maxstacksize || captureRegister >= parent->maxstacksize ||
+        destinationRegister == captureRegister)
+        luaG_runerror(L, "strict AOT reference-closure register is outside the compiled frame");
+
+    Proto *child = findDirectAotChild(parent, childProtoId);
+    if (!child)
+        luaG_runerror(L, "strict AOT reference-closure helper rejected non-child Proto %u", childProtoId);
+    if (child->nups != 1)
+        luaG_runerror(L, "strict AOT reference-closure helper requires exactly one child upvalue");
+
+    // Match upstream NEWCLOSURE/LCT_REF order: publish the closure first, intern the open UpVal for
+    // the live stack cell, initialize the tagged upref, then honor the trailing GC safepoint.
+    luaC_threadbarrier(L);
+    Closure *closure = luaF_newLclosure(L, 1, parentClosure->env, child);
+    setclvalue(L, L->base + destinationRegister, closure);
+    if (L->top <= L->base + destinationRegister)
+        L->top = L->base + destinationRegister + 1;
+    setupvalue(L, &closure->l.uprefs[0], luaF_findupval(L, L->base + captureRegister));
+    luaC_checkGC(L);
+}
+
+extern "C" void mc_luau_aot_v1_get_upvalue(lua_State *L, uint32_t destinationRegister,
+                                             uint32_t upvalueIndex) {
     if (!L || !L->ci || !isLua(L->ci))
         luaG_runerror(L, "strict AOT upvalue helper entered without an active Luau frame");
 
@@ -330,11 +363,45 @@ extern "C" void mc_luau_aot_v1_get_value_upvalue(lua_State *L,
     if (destinationRegister >= proto->maxstacksize || upvalueIndex >= proto->nups ||
         upvalueIndex >= closure->nupvalues)
         luaG_runerror(L, "strict AOT upvalue access is outside the compiled closure");
-    TValue *upvalue = &closure->l.uprefs[upvalueIndex];
-    if (ttype(upvalue) == LUA_TUPVAL)
-        luaG_runerror(L, "strict AOT value-upvalue helper rejected reference capture");
+    TValue *upvalueRef = &closure->l.uprefs[upvalueIndex];
+    const TValue *value = upvalueRef;
+    if (ttype(upvalueRef) == LUA_TUPVAL)
+        value = upvalue(upvalueRef)->v;
 
-    setobj2s(L, L->base + destinationRegister, upvalue);
+    setobj2s(L, L->base + destinationRegister, value);
+}
+
+extern "C" void mc_luau_aot_v1_set_upvalue(lua_State *L, uint32_t upvalueIndex,
+                                             uint32_t sourceRegister) {
+    if (!L || !L->ci || !isLua(L->ci))
+        luaG_runerror(L, "strict AOT upvalue mutation entered without an active Luau frame");
+
+    Closure *closure = clvalue(L->ci->func);
+    Proto *proto = closure->l.p;
+    if (sourceRegister >= proto->maxstacksize || upvalueIndex >= proto->nups ||
+        upvalueIndex >= closure->nupvalues)
+        luaG_runerror(L, "strict AOT upvalue mutation is outside the compiled closure");
+    TValue *upvalueRef = &closure->l.uprefs[upvalueIndex];
+    if (ttype(upvalueRef) != LUA_TUPVAL)
+        luaG_runerror(L, "strict AOT upvalue mutation requires a reference capture");
+
+    UpVal *cell = upvalue(upvalueRef);
+    setobj(L, cell->v, L->base + sourceRegister);
+    luaC_barrier(L, cell, L->base + sourceRegister);
+}
+
+extern "C" void mc_luau_aot_v1_close_upvalues(lua_State *L, uint32_t firstRegister) {
+    if (!L || !L->ci || !isLua(L->ci))
+        luaG_runerror(L, "strict AOT upvalue close entered without an active Luau frame");
+
+    Closure *closure = clvalue(L->ci->func);
+    Proto *proto = closure->l.p;
+    if (firstRegister >= proto->maxstacksize)
+        luaG_runerror(L, "strict AOT upvalue close is outside the compiled frame");
+
+    StkId first = L->base + firstRegister;
+    if (L->openupval && L->openupval->v >= first)
+        luaF_close(L, first);
 }
 
 extern "C" uint32_t mc_luau_aot_v1_call_fixed(lua_State *L, uint32_t functionRegister,
