@@ -749,9 +749,6 @@ pub fn validateModel(snapshot: Snapshot) Error!void {
             return Error.InvalidProtoGraph;
         try validateOptionalId(readU32(proto, 8), strings.count, Error.InvalidProto);
         try validateOptionalId(readU32(proto, 12), strings.count, Error.InvalidProto);
-        if (proto[32] == 0)
-            return Error.InvalidProto;
-
         try validateSpan(proto, 36, code.count, Error.InvalidProto);
         try validateSpan(proto, 44, vm_constants.count, Error.InvalidProto);
         try validateSpan(proto, 52, children.count, Error.InvalidProto);
@@ -954,7 +951,17 @@ pub fn validateModel(snapshot: Snapshot) Error!void {
                     3 => if (operand_value >= 14) return Error.InvalidIrOperand,
                     4 => if (operand_value >= instruction_index) return Error.InvalidIrOperand,
                     5 => if (operand_value >= block_count) return Error.InvalidIrOperand,
-                    6 => if (operand_value >= proto[32]) return Error.InvalidIrOperand,
+                    6 => {
+                        // Luau represents `return` with zero results as RETURN R0, 0 even when the
+                        // Proto has maxstacksize=0. R0 is a non-dereferenced placeholder in that
+                        // exact position; lowering still rejects every result-bearing out-of-frame
+                        // source.
+                        const zero_result_return_source = proto[32] == 0 and
+                            instruction[0] == @intFromEnum(IrCommand.return_) and
+                            operand_index == 0 and operand_value == 0;
+                        if (!zero_result_return_source and operand_value >= proto[32])
+                            return Error.InvalidIrOperand;
+                    },
                     7 => if (operand_value >= readU32(proto, 48)) return Error.InvalidIrOperand,
                     8 => {
                         // GET_CLOSURE_UPVAL_ADDR addresses the newly allocated child closure, so

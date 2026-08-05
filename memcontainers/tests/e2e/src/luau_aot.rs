@@ -211,6 +211,38 @@ fn luau_aot_multi_result_proto_graph_calls_rejoin() {
     }
 }
 
+/// The exact source-built four-Proto package exercises widened fixed calls at both boundaries. Its
+/// caller invokes a zero-parameter/zero-result child and a four-parameter/three-result child, then
+/// consumes all three returned values. The pinned interpreter requires the same installed source.
+#[test]
+fn luau_aot_general_fixed_call_shapes_match_interpreter() {
+    let mut session = boot_loom_aot();
+
+    for (a, b, c, d) in [
+        (-50, 8, 3, -7),
+        (0, 0, 0, 0),
+        (20, 22, -5, 9),
+        (7, -3, 11, -4),
+        (1234, 5678, -4321, -1000),
+    ] {
+        let expected = format!("{}\r\nstatus=0\r\n", 2 * (a + b + c + d));
+        let aot = session.run_for_output(&format!(
+            "luau-aot-general-call {a} {b} {c} {d}; echo status=$?"
+        ));
+        let interpreted = session.run_for_output(&format!(
+            "luau -e 'local run = require(\"aot_general_call\"); print(run(...))' {a} {b} {c} {d}; echo status=$?"
+        ));
+        assert_eq!(
+            aot, expected,
+            "strict AOT general fixed call failed for {a}/{b}/{c}/{d}"
+        );
+        assert_eq!(
+            aot, interpreted,
+            "strict AOT general fixed call mismatch for {a}/{b}/{c}/{d}"
+        );
+    }
+}
+
 /// The exact source-built factory closes a mutable local into one accumulator. Its factory frame is
 /// gone and a full collection runs before the same accumulator is called twice, proving that the
 /// open UpVal was closed into owned storage and that both compiled calls mutate that same cell. The

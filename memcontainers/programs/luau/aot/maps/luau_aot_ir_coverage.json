@@ -2504,11 +2504,13 @@
         "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test",
         "//memcontainers/programs/luau/aot/runtime:compiled_call_runtime_oracle_test",
         "//memcontainers/programs/luau/aot/runtime:multi_result_call_runtime_oracle_test",
+        "//memcontainers/programs/luau/aot/compiler/backend:general_call_package_object_build_test",
         "//memcontainers/tests/e2e:core#luau_aot_captured_proto_graph_calls_rejoin",
         "//memcontainers/tests/e2e:core#luau_aot_compiled_proto_graph_calls_rejoin",
-        "//memcontainers/tests/e2e:core#luau_aot_multi_result_proto_graph_calls_rejoin"
+        "//memcontainers/tests/e2e:core#luau_aot_multi_result_proto_graph_calls_rejoin",
+        "//memcontainers/tests/e2e:core#luau_aot_general_fixed_call_shapes_match_interpreter"
       ],
-      "status": "partial_fixed_one_or_two_arguments_one_or_two_results_compiled_luau"
+      "status": "partial_all_fixed_counts_compiled_luau_no_multret_vararg_c_metamethod_yield"
     },
     {
       "command": "RETURN",
@@ -2531,9 +2533,11 @@
         "//memcontainers/tests/e2e:core#luau_aot_compiled_proto_graph_calls_rejoin",
         "//memcontainers/tests/e2e:core#luau_aot_multi_result_proto_graph_calls_rejoin",
         "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test",
-        "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter"
+        "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter",
+        "//memcontainers/programs/luau/aot/compiler/backend:general_call_package_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_general_fixed_call_shapes_match_interpreter"
       ],
-      "status": "partial_fixed_one_or_two_contiguous_tvalue_results"
+      "status": "partial_all_fixed_contiguous_tvalue_results_no_multret"
     },
     {
       "command": "FORGLOOP",
@@ -3588,5 +3592,5 @@
       "status": "unimplemented"
     }
   ],
-  "canonical_hash": "b5dce732b496219aad0c7be077bc78c0885e80d158b70834ca06a66ddf166047"
+  "canonical_hash": "09e59f82417f5b997b9c76d7216b1de28c898cc36b2ab36a70fdc2438d7469e7"
 }

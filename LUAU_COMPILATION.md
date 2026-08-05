@@ -262,6 +262,14 @@ guest path, but is not presented as a general-purpose AOT product:
   rows. Direct integer/bitwise, float, vector, select, and safe-conversion rows with no source/runtime
   vertical retain empty evidence arrays rather than inheriting the scalar fixtures. Remaining partial
   layout and guard rows name their exact GC-constant or VM-exit boundary;
+- fixed compiled-Luau `CALL` and `RETURN` now accept every nonnegative count that fits the caller or
+  callee frame, including zero arguments/zero results and four arguments/three results. The runtime
+  uses pinned `luau_precall` behavior to supply nil for missing fixed parameters and ignore extra
+  arguments to non-vararg callees. A new exact four-Proto source graph exercises both zero-to-zero and
+  four-to-three calls, consumes all three returned values, and makes all four runtime inputs affect
+  the result. Its source-generated object links into the release-small stamped guest, and five signed
+  tuples match the separately linked pinned interpreter in the real kernel. `LUA_MULTRET`, vararg
+  callees and `GETVARARGS`, C/metamethod calls, yield/continuation, and stack growth remain fail-closed;
 
 WP2 is complete. WP3's central arithmetic/type slow-block rejoin passes the exact-source,
 relocatable-object, strict-runtime, pinned-interpreter, production optimization/stamp/attestation, and
@@ -273,10 +281,11 @@ now passes the same object, base-relocation, strict-runtime, exact-source differ
 production-pipeline, and real-kernel gates. WP4's mutable reference-capture vertical now passes the
 exact-snapshot, deterministic-object, base-relocation, open/closed-cell, full-GC, repeated-mutation,
 closure-independence, pinned-interpreter, production optimization, stamp, attestation, image, and
-real-kernel gates. The active line of work is WP3 command breadth; no additional WP4 boundary is taken
-while the remaining direct/layout/control/guard surface is still the larger capability gap. The
-immutable descriptor is shared by oracle and product today but remains compiler-generated-data work,
-not a hand-authored product format.
+real-kernel gates. The first broader WP4 call boundary now passes fixed zero and arbitrary bounded
+argument/result shapes through the same source-to-object-to-runtime-to-image path. The active line of
+work is WP4 vararg/multi-return protocol followed by static imports. The immutable descriptor is shared
+by the runtime fixtures and product today but remains compiler-generated-data work, not a hand-authored
+product format.
 
 ---
 
@@ -1544,10 +1553,11 @@ Gate:
 **Current state:** the production backend emits all three reachable functions from the exact
 `compiled_call.luau` snapshot into one deterministic object. Stable symbols are derived from dense
 canonical Proto IDs. The strict runtime validates an immutable whole-program descriptor, constructs
-and connects every GC-owned `Proto`, publishes only the root, returns bounded contiguous ranges of one
-or two `TValue`s, materializes zero-upvalue child closures, and executes fixed
-one-or-two-argument/one-or-two-result compiled Luau call shapes after a validated `SET_SAVEDPC`. The
-caller reloads `L->base` after the call. Full-GC
+and connects every GC-owned `Proto`, publishes only the root, returns bounded contiguous fixed ranges
+of `TValue`s, materializes zero-upvalue child closures, and executes every frame-bounded nonnegative
+fixed argument/result shape for compiled non-vararg Luau callees after a validated `SET_SAVEDPC`.
+Pinned `luau_precall` semantics supply nil for missing fixed parameters and ignore extra arguments.
+The caller reloads `L->base` after the call. Full-GC
 publication and five pinned-interpreter string-add differentials pass. The closed package is linked
 into a release-small guest, optimized, stamped, attested, installed into `loom_aot`, and executed by
 the real kernel; five raw-string pairs equal `/bin/luau` running the exact installed source and exit
@@ -1565,16 +1575,16 @@ and five exact-source interpreter differentials pass. The same object and shared
 release-small guest, pass Binaryen optimization, mc stamping and attestation, install with the exact
 source in `loom_aot`, and pass the real-kernel differential for all five raw-string pairs. Oracle and
 guest descriptors remain shared link-time definitions; compiler-emitted descriptor data/relocations
-remain product work. Forwarded or multiple captures, broader arities/results beyond two, callable
-metamethods, recursion, tail calls, yields, varargs consumption, modules, and source-location
+remain product work. Forwarded or multiple captures, dynamic multi-results, callable metamethods,
+recursion, tail calls, yields, varargs consumption, modules, and source-location
 publication are still unsupported.
 
 The exact `multi_result_call.luau` snapshot generalizes the call/return protocol without introducing a
 pair-specific helper. Its inner child returns `[x + y, x]` from contiguous registers and the caller
-requests two fixed results, consumes both, and returns `2 * x + y`. The backend and runtime accept only
-fixed counts one or two and validate both source and destination frame ranges; zero results,
-`LUA_MULTRET`, and larger counts remain rejected. A fake linked-object gate proves two distinct values
-across child and caller base relocation. The strict-runtime differential supplies raw strings so the
+requests two fixed results, consumes both, and returns `2 * x + y`. The backend and runtime validate
+both source and destination frame ranges; the original vertical exercises the two-result case. A
+linked-object gate proves two distinct values across child and caller base relocation. The
+strict-runtime differential supplies raw strings so the
 child and caller both take checked arithmetic slow blocks, performs full collection around root
 materialization, and matches the pinned interpreter for five signed pairs. The same object and shared
 descriptor link into a release-small guest, pass Binaryen optimization, mc stamping and attestation,
@@ -1597,6 +1607,17 @@ attestation, install with the exact source in `loom_aot`, and pass the same five
 under the real AgentOS kernel; the AOT entry tears down the factory and forces full GC before invoking
 the accumulator. Forwarded `LCT_UPVAL`, multiple captures, and multiple closures sharing one still-open
 cell remain fail-closed.
+
+The exact `general_call.luau` snapshot widens the fixed-count protocol across a closed four-Proto
+graph. One child has zero stack slots and is called with zero parameters and zero results; its
+`RETURN R0, 0` source operand is accepted only as a non-dereferenced placeholder. A second child is
+called with four parameters and returns three contiguous results, all consumed by its caller. The
+backend rejects negative dynamic-count sentinels and bounds every positive source, argument, and
+result window; the runtime remains compiled-Luau-only and rejects vararg callees, C functions,
+callable metamethods, and yields. The exact generated object links into a release-small stamped guest,
+installs with the exact source, and five signed four-input tuples produce `2 * (a + b + c + d)` and
+match the pinned interpreter through the real AgentOS kernel. `CALL` and `RETURN` remain partial until
+the dynamic `LUA_MULTRET` and vararg protocols are implemented.
 
 Tasks:
 

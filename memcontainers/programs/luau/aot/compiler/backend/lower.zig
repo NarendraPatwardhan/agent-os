@@ -2340,12 +2340,20 @@ const Context = struct {
         if (return_count_operand.kind != .constant)
             return Error.InvalidReturnCount;
         const return_count = (try self.constant(return_count_operand.value)).intValue() orelse return Error.InvalidReturnCount;
-        if (return_count != 1 and return_count != 2)
+        // A negative count is LUA_MULTRET/dynamic-return state. This helper contract is fixed-count
+        // only; accept every concrete count, including zero, that remains inside the compiled frame.
+        if (return_count < 0)
             return Error.InvalidReturnCount;
 
-        const source_register = try self.vmRegisterIndex(source);
-        if (@as(u32, @intCast(return_count)) > @as(u32, self.proto.max_stack_size) - source_register)
-            return Error.InvalidReturnCount;
+        const return_count_u32: u32 = @intCast(return_count);
+        const source_register: u32 = if (return_count_u32 == 0)
+            0
+        else blk: {
+            const register = try self.vmRegisterIndex(source);
+            if (return_count_u32 > @as(u32, self.proto.max_stack_size) - register)
+                return Error.InvalidReturnCount;
+            break :blk register;
+        };
 
         try self.body.localGet(self.allocator, 0);
         try self.body.i32Const(self.allocator, @intCast(source_register));
@@ -2390,8 +2398,10 @@ const Context = struct {
             return Error.InvalidOperandType;
         const parameter_count = (try self.constant(parameter_operand.value)).intValue() orelse return Error.InvalidOperandType;
         const result_count = (try self.constant(result_operand.value)).intValue() orelse return Error.InvalidOperandType;
-        if ((parameter_count != 1 and parameter_count != 2) or
-            (result_count != 1 and result_count != 2))
+        // Negative counts are the upstream dynamic/LUA_MULTRET sentinels. The strict helper ABI for
+        // this command supports concrete fixed shapes only; zero and larger fixed arities are valid
+        // when the function, arguments, and result window all fit in the compiled caller frame.
+        if (parameter_count < 0 or result_count < 0)
             return Error.UnsupportedControlFlow;
         const parameter_count_u32: u32 = @intCast(parameter_count);
         const result_count_u32: u32 = @intCast(result_count);

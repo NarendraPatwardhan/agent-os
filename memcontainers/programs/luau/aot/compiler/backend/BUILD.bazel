@@ -7,6 +7,7 @@ exports_files(
         "numeric_loop.luau",
         "captured_call.luau",
         "compiled_call.luau",
+        "general_call.luau",
         "multi_result_call.luau",
         "reference_capture.luau",
         "scalar_breadth.luau",
@@ -229,6 +230,27 @@ genrule(
 build_test(
     name = "multi_result_call_package_object_build_test",
     targets = [":multi_result_call_package_object"],
+)
+
+# A closed four-Proto package exercises both ends of widened fixed calls: one compiled child is
+# invoked with zero parameters and zero results, while another consumes four parameters and returns
+# three contiguous results that the caller combines into one runtime-input-dependent number.
+genrule(
+    name = "general_call_package_object",
+    srcs = [
+        ":backend_wasm",
+        "general_call.luau",
+        "//memcontainers/programs/luau/aot/frontend:frontend_wasm",
+    ],
+    outs = ["general_call_package.o"],
+    cmd = "BAZEL_BINDIR=. $(execpath :object_emitter) $(location //memcontainers/programs/luau/aot/frontend:frontend_wasm) $(location :backend_wasm) $(location general_call.luau) $@ package",
+    tools = [":object_emitter"],
+    visibility = ["//visibility:public"],
+)
+
+build_test(
+    name = "general_call_package_object_build_test",
+    targets = [":general_call_package_object"],
 )
 
 # A factory returns a closure over one mutable local. The package preserves an open UpVal through

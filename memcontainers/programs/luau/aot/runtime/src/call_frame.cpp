@@ -199,8 +199,9 @@ extern "C" void mc_luau_aot_v1_return_fixed(lua_State *L, uint32_t sourceRegiste
 
     Closure *closure = clvalue(L->ci->func);
     Proto *proto = closure->l.p;
-    if ((resultCount != 1 && resultCount != 2) || sourceRegister >= proto->maxstacksize ||
-        resultCount > uint32_t(proto->maxstacksize) - sourceRegister)
+    if (resultCount != 0 &&
+        (sourceRegister >= proto->maxstacksize ||
+         resultCount > uint32_t(proto->maxstacksize) - sourceRegister))
         luaG_runerror(L, "strict AOT fixed return exceeds the compiled frame");
 
     // A compiled return must never leave UpVal::v pointing into the frame that poscall will pop.
@@ -462,11 +463,6 @@ extern "C" uint32_t mc_luau_aot_v1_call_fixed(lua_State *L, uint32_t functionReg
                                                uint32_t resultCount) {
     if (!L || !L->ci || !isLua(L->ci))
         luaG_runerror(L, "strict AOT call helper entered without an active Luau frame");
-    if ((parameterCount != 1 && parameterCount != 2) ||
-        (resultCount != 1 && resultCount != 2))
-        luaG_runerror(L, "strict AOT fixed call rejected %u parameters and %u results",
-                      parameterCount, resultCount);
-
     Closure *caller = clvalue(L->ci->func);
     Proto *callerProto = caller->l.p;
     if (functionRegister >= callerProto->maxstacksize ||
@@ -483,12 +479,12 @@ extern "C" uint32_t mc_luau_aot_v1_call_fixed(lua_State *L, uint32_t functionReg
                                            : nullptr;
     if (!validAotProto(metadata))
         luaG_runerror(L, "strict AOT fixed call rejected missing callee metadata");
-    if (metadata->num_params != parameterCount || metadata->is_vararg != 0 ||
-        callee->nupvalues != metadata->nups)
+    if (metadata->is_vararg != 0 || callee->nupvalues != metadata->nups)
         luaG_runerror(L, "strict AOT fixed call rejected callee parameter shape");
 
-    // luau_precall derives the argument count from L->top. Materialize exactly the function plus
-    // the validated fixed parameters; unused caller registers must not become accidental arguments.
+    // luau_precall derives the argument count from L->top, fills missing declared parameters with
+    // nil, and leaves extra arguments outside a non-vararg callee's addressable frame. Materialize
+    // exactly the supplied fixed arguments; unused caller registers must not become accidental ones.
     L->top = function + parameterCount + 1;
     if (luau_precall(L, function, int(resultCount)) != PCRLUA)
         luaG_runerror(L, "strict AOT fixed call rejected non-Luau callee dispatch");
