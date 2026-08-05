@@ -245,6 +245,18 @@ extern "C" void mc_luau_aot_v1_do_arith(lua_State *L, uint32_t destinationRegist
     }
 }
 
+static Proto *findDirectAotChild(Proto *parent, uint32_t childProtoId) {
+    for (int index = 0; index < parent->sizep; ++index) {
+        Proto *candidate = parent->p[index];
+        const McLuauAotProtoV1 *metadata = candidate
+                                               ? static_cast<const McLuauAotProtoV1 *>(candidate->execdata)
+                                               : nullptr;
+        if (metadata && metadata->function_id == childProtoId)
+            return candidate;
+    }
+    return nullptr;
+}
+
 extern "C" void mc_luau_aot_v1_dupclosure(lua_State *L, uint32_t destinationRegister,
                                             uint32_t childProtoId) {
     if (!L || !L->ci || !isLua(L->ci))
@@ -255,17 +267,7 @@ extern "C" void mc_luau_aot_v1_dupclosure(lua_State *L, uint32_t destinationRegi
     if (destinationRegister >= parent->maxstacksize)
         luaG_runerror(L, "strict AOT closure destination is outside the compiled frame");
 
-    Proto *child = nullptr;
-    for (int index = 0; index < parent->sizep; ++index) {
-        Proto *candidate = parent->p[index];
-        const McLuauAotProtoV1 *metadata = candidate
-                                               ? static_cast<const McLuauAotProtoV1 *>(candidate->execdata)
-                                               : nullptr;
-        if (metadata && metadata->function_id == childProtoId) {
-            child = candidate;
-            break;
-        }
-    }
+    Proto *child = findDirectAotChild(parent, childProtoId);
     if (!child)
         luaG_runerror(L, "strict AOT closure helper rejected non-child Proto %u", childProtoId);
     if (child->nups != 0)
@@ -281,12 +283,61 @@ extern "C" void mc_luau_aot_v1_dupclosure(lua_State *L, uint32_t destinationRegi
         L->top = L->base + destinationRegister + 1;
 }
 
+extern "C" void mc_luau_aot_v1_newclosure_value(lua_State *L, uint32_t destinationRegister,
+                                                  uint32_t childProtoId,
+                                                  uint32_t captureRegister) {
+    if (!L || !L->ci || !isLua(L->ci))
+        luaG_runerror(L, "strict AOT value-closure helper entered without an active Luau frame");
+
+    Closure *parentClosure = clvalue(L->ci->func);
+    Proto *parent = parentClosure->l.p;
+    if (destinationRegister >= parent->maxstacksize || captureRegister >= parent->maxstacksize)
+        luaG_runerror(L, "strict AOT value-closure register is outside the compiled frame");
+
+    Proto *child = findDirectAotChild(parent, childProtoId);
+    if (!child)
+        luaG_runerror(L, "strict AOT value-closure helper rejected non-child Proto %u", childProtoId);
+    if (child->nups != 1)
+        luaG_runerror(L, "strict AOT value-closure helper requires exactly one child upvalue");
+
+    // luaF_newLclosure does not step GC. Preserve the captured value before publishing into a
+    // possibly identical register, gray a black thread, root the new closure, initialize its sole
+    // direct-value upref, and only then honor upstream NEWCLOSURE's trailing CHECK_GC safepoint.
+    TValue captured;
+    setobj(L, &captured, L->base + captureRegister);
+    luaC_threadbarrier(L);
+    Closure *closure = luaF_newLclosure(L, 1, parentClosure->env, child);
+    setclvalue(L, L->base + destinationRegister, closure);
+    if (L->top <= L->base + destinationRegister)
+        L->top = L->base + destinationRegister + 1;
+    setobj(L, &closure->l.uprefs[0], &captured);
+    luaC_checkGC(L);
+}
+
+extern "C" void mc_luau_aot_v1_get_value_upvalue(lua_State *L,
+                                                   uint32_t destinationRegister,
+                                                   uint32_t upvalueIndex) {
+    if (!L || !L->ci || !isLua(L->ci))
+        luaG_runerror(L, "strict AOT upvalue helper entered without an active Luau frame");
+
+    Closure *closure = clvalue(L->ci->func);
+    Proto *proto = closure->l.p;
+    if (destinationRegister >= proto->maxstacksize || upvalueIndex >= proto->nups ||
+        upvalueIndex >= closure->nupvalues)
+        luaG_runerror(L, "strict AOT upvalue access is outside the compiled closure");
+    TValue *upvalue = &closure->l.uprefs[upvalueIndex];
+    if (ttype(upvalue) == LUA_TUPVAL)
+        luaG_runerror(L, "strict AOT value-upvalue helper rejected reference capture");
+
+    setobj2s(L, L->base + destinationRegister, upvalue);
+}
+
 extern "C" uint32_t mc_luau_aot_v1_call_fixed(lua_State *L, uint32_t functionRegister,
                                                uint32_t parameterCount,
                                                uint32_t resultCount) {
     if (!L || !L->ci || !isLua(L->ci))
         luaG_runerror(L, "strict AOT call helper entered without an active Luau frame");
-    if (parameterCount != 2 || resultCount != 1)
+    if ((parameterCount != 1 && parameterCount != 2) || resultCount != 1)
         luaG_runerror(L, "strict AOT fixed call rejected %u parameters and %u results",
                       parameterCount, resultCount);
 
@@ -305,11 +356,12 @@ extern "C" uint32_t mc_luau_aot_v1_call_fixed(lua_State *L, uint32_t functionReg
                                            : nullptr;
     if (!validAotProto(metadata))
         luaG_runerror(L, "strict AOT fixed call rejected missing callee metadata");
-    if (metadata->num_params != parameterCount || metadata->is_vararg != 0)
+    if (metadata->num_params != parameterCount || metadata->is_vararg != 0 ||
+        callee->nupvalues != metadata->nups)
         luaG_runerror(L, "strict AOT fixed call rejected callee parameter shape");
 
-    // luau_precall derives the argument count from L->top. Materialize exactly function + two
-    // parameters; unused caller registers must not become accidental arguments.
+    // luau_precall derives the argument count from L->top. Materialize exactly the function plus
+    // the validated fixed parameters; unused caller registers must not become accidental arguments.
     L->top = function + parameterCount + 1;
     if (luau_precall(L, function, int(resultCount)) != PCRLUA)
         luaG_runerror(L, "strict AOT fixed call rejected non-Luau callee dispatch");
@@ -336,7 +388,7 @@ static void destroyAotProto(lua_State *, Proto *proto) {
 static bool validAotProto(const McLuauAotProtoV1 *metadata) {
     return metadata && metadata->abi_version == MC_LUAU_AOT_ABI_V1 &&
            metadata->struct_size == MC_LUAU_AOT_PROTO_V1_SIZE && metadata->entry &&
-           metadata->max_stack_size >= metadata->num_params && metadata->nups == 0 &&
+           metadata->max_stack_size >= metadata->num_params && metadata->nups <= 1 &&
            metadata->is_vararg <= 1 && metadata->reserved == 0 &&
            memcmp(metadata->layout_sha256, mc_luau_aot_v1_layout_sha256,
                   sizeof(metadata->layout_sha256)) == 0;
@@ -365,7 +417,7 @@ extern "C" uint32_t mc_luau_aot_v1_push_root(lua_State *L, const McLuauAotProtoV
                                              const char *source, size_t sourceSize) {
     if (!L || !source || sourceSize == 0 || !validAotProto(metadata) ||
         metadata->parent_id != MC_LUAU_AOT_V1_NO_ID ||
-        metadata->flags != MC_LUAU_AOT_PROTO_V1_ROOT)
+        metadata->flags != MC_LUAU_AOT_PROTO_V1_ROOT || metadata->nups != 0)
         return MC_LUAU_AOT_V1_INTERNAL_ERROR;
 
     if (L->global->ecb.destroy && L->global->ecb.destroy != destroyAotProto)
@@ -404,6 +456,7 @@ extern "C" uint32_t mc_luau_aot_v1_push_program(lua_State *L,
         const bool isRoot = id == program->root_proto_id;
         if (!validAotProto(metadata) || metadata->function_id != id ||
             metadata->flags != (isRoot ? MC_LUAU_AOT_PROTO_V1_ROOT : 0) ||
+            (isRoot && metadata->nups != 0) ||
             (isRoot ? metadata->parent_id != MC_LUAU_AOT_V1_NO_ID
                     : metadata->parent_id >= id))
             return MC_LUAU_AOT_V1_INTERNAL_ERROR;

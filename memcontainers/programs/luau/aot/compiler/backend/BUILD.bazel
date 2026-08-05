@@ -5,6 +5,7 @@ load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary", "zig_libr
 exports_files(
     [
         "numeric_loop.luau",
+        "captured_call.luau",
         "compiled_call.luau",
         "silent_return.luau",
         "slow_add.luau",
@@ -144,11 +145,32 @@ build_test(
     targets = [":compiled_call_package_object"],
 )
 
+# The next package vertical keeps the same three-Proto shape while replacing the inner closed child
+# with one immutable value capture, one upvalue read, and a fixed one-argument compiled call.
+genrule(
+    name = "captured_call_package_object",
+    srcs = [
+        ":backend_wasm",
+        "captured_call.luau",
+        "//memcontainers/programs/luau/aot/frontend:frontend_wasm",
+    ],
+    outs = ["captured_call_package.o"],
+    cmd = "BAZEL_BINDIR=. $(execpath :object_emitter) $(location //memcontainers/programs/luau/aot/frontend:frontend_wasm) $(location :backend_wasm) $(location captured_call.luau) $@ package",
+    tools = [":object_emitter"],
+    visibility = ["//visibility:public"],
+)
+
+build_test(
+    name = "captured_call_package_object_build_test",
+    targets = [":captured_call_package_object"],
+)
+
 js_test(
     name = "frontend_to_wasm_test",
     data = [
         ":backend_wasm",
         ":frontend_to_wasm.test.mjs",
+        "captured_call.luau",
         "compiled_call.luau",
         "silent_return.luau",
         "slow_add.luau",
@@ -158,6 +180,7 @@ js_test(
     entry_point = "frontend_to_wasm.test.mjs",
     env = {
         "LUAU_AOT_BACKEND_WASM": "$(rlocationpath :backend_wasm)",
+        "LUAU_AOT_CAPTURED_CALL_SOURCE": "$(rlocationpath captured_call.luau)",
         "LUAU_AOT_FRONTEND_WASM": "$(rlocationpath //memcontainers/programs/luau/aot/frontend:frontend_wasm)",
         "LUAU_AOT_COMPILED_CALL_SOURCE": "$(rlocationpath compiled_call.luau)",
         "LUAU_AOT_SILENT_SOURCE": "$(rlocationpath silent_return.luau)",

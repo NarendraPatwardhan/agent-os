@@ -83,6 +83,10 @@ void mc_luau_aot_v1_do_arith(lua_State *state, uint32_t destination_register,
                              uint32_t operation);
 void mc_luau_aot_v1_dupclosure(lua_State *state, uint32_t destination_register,
                                uint32_t child_proto_id);
+void mc_luau_aot_v1_newclosure_value(lua_State *state, uint32_t destination_register,
+                                     uint32_t child_proto_id, uint32_t capture_register);
+void mc_luau_aot_v1_get_value_upvalue(lua_State *state, uint32_t destination_register,
+                                      uint32_t upvalue_index);
 uint32_t mc_luau_aot_v1_call_fixed(lua_State *state, uint32_t function_register,
                                    uint32_t parameter_count, uint32_t result_count);
 uint32_t mc_luau_aot_v1_push_root(lua_State *state, const McLuauAotProtoV1 *metadata,

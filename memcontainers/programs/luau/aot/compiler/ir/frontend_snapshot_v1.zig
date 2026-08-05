@@ -154,6 +154,10 @@ pub const Section = struct {
 // IrFunction. Keep the enum values pinned to the identities carried by FrontendSnapshotV1.
 pub const IrCommand = enum(u8) {
     nop = 0,
+    load_env = 8,
+    get_closure_upval_addr = 12,
+    store_pointer = 15,
+    store_split_tvalue = 21,
     load_tag = 1,
     load_double = 3,
     load_tvalue = 7,
@@ -164,12 +168,16 @@ pub const IrCommand = enum(u8) {
     jump = 88,
     jump_cmp_num = 94,
     do_arith = 123,
+    get_upvalue = 129,
     check_tag = 131,
     interrupt = 145,
+    check_gc = 146,
     set_savedpc = 150,
+    capture = 152,
     call = 154,
     return_ = 155,
     fallback_prepvarargs = 165,
+    newclosure = 167,
     fallback_dupclosure = 168,
     mark_used = 171,
     _,
@@ -253,6 +261,8 @@ pub const Proto = struct {
     code_count: u32,
     vm_constant_start: u32,
     vm_constant_count: u32,
+    child_start: u32,
+    child_count: u32,
 };
 
 pub const VmConstant = struct {
@@ -373,7 +383,16 @@ pub const Snapshot = struct {
             .code_count = readU32(item, 40),
             .vm_constant_start = readU32(item, 44),
             .vm_constant_count = readU32(item, 48),
+            .child_start = readU32(item, 52),
+            .child_count = readU32(item, 56),
         };
+    }
+
+    pub fn protoChild(self: Snapshot, proto_value: Proto, id: u32) Error!u32 {
+        if (id >= proto_value.child_count)
+            return Error.IndexOutOfBounds;
+        const records = try self.requireSection(.proto_children);
+        return readU32(recordBytes(self, records, proto_value.child_start + id), 0);
     }
 
     pub fn vmConstant(self: Snapshot, proto_value: Proto, id: u32) Error!VmConstant {
@@ -806,7 +825,16 @@ pub fn validateModel(snapshot: Snapshot) Error!void {
                     5 => if (operand_value >= block_count) return Error.InvalidIrOperand,
                     6 => if (operand_value >= proto[32]) return Error.InvalidIrOperand,
                     7 => if (operand_value >= readU32(proto, 48)) return Error.InvalidIrOperand,
-                    8 => if (operand_value >= proto[29]) return Error.InvalidIrOperand,
+                    8 => {
+                        // GET_CLOSURE_UPVAL_ADDR addresses the newly allocated child closure, so
+                        // its slot is bounded by that child's metadata during lowering rather than
+                        // by the current Proto's own upvalue count. Every other VM_UPVALUE operand
+                        // remains a reference into the current closure and is validated here.
+                        const child_closure_slot = instruction[0] == @intFromEnum(IrCommand.get_closure_upval_addr) and
+                            operand_index == 1;
+                        if (!child_closure_slot and operand_value >= proto[29])
+                            return Error.InvalidIrOperand;
+                    },
                     9 => if (operand_value != 0x0fff_ffff and operand_value >= readU32(proto, 40)) return Error.InvalidIrOperand,
                     else => return Error.InvalidIrOperand,
                 }

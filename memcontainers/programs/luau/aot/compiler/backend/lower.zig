@@ -7,6 +7,8 @@ pub const return_one_symbol = "mc_luau_aot_v1_return_one";
 pub const interrupt_symbol = "mc_luau_aot_v1_interrupt";
 pub const do_arith_symbol = "mc_luau_aot_v1_do_arith";
 pub const dupclosure_symbol = "mc_luau_aot_v1_dupclosure";
+pub const newclosure_value_symbol = "mc_luau_aot_v1_newclosure_value";
+pub const get_value_upvalue_symbol = "mc_luau_aot_v1_get_value_upvalue";
 pub const call_fixed_symbol = "mc_luau_aot_v1_call_fixed";
 
 const status_ok: i32 = 0;
@@ -48,6 +50,13 @@ const ValueSlot = struct {
     second: u32 = snapshot_v1.no_id,
 };
 
+const ValueClosurePattern = struct {
+    primary_destination: u32,
+    copy_destination: u32,
+    child_proto_id: u32,
+    capture_register: u32,
+};
+
 const Context = struct {
     allocator: std.mem.Allocator,
     snapshot: snapshot_v1.Snapshot,
@@ -59,6 +68,8 @@ const Context = struct {
     interrupt: wasm.FunctionRef,
     do_arith: ?wasm.FunctionRef,
     dupclosure: ?wasm.FunctionRef,
+    newclosure_value: ?wasm.FunctionRef,
+    get_value_upvalue: ?wasm.FunctionRef,
     call_fixed: ?wasm.FunctionRef,
     base_local: u32,
     dispatch_local: u32,
@@ -95,6 +106,145 @@ const Context = struct {
         try self.body.localGet(self.allocator, 0);
         try self.body.i32Load(self.allocator, 2, lua_state_base_offset);
         try self.body.localSet(self.allocator, self.base_local);
+    }
+
+    fn requireSingleBytecodeBlockRange(self: Context, start: u32, finish: u32) Error!void {
+        var owner: ?u32 = null;
+        var block_id: u32 = 0;
+        while (block_id < self.function.block_count) : (block_id += 1) {
+            const block = try self.snapshot.irBlock(self.function, block_id);
+            if (block.isEmpty() or block.finish < start or block.start > finish)
+                continue;
+            if (owner != null or block.kind != .bytecode or block.start > start or block.finish < finish)
+                return Error.UnsupportedControlFlow;
+            owner = block_id;
+        }
+        if (owner == null)
+            return Error.UnsupportedControlFlow;
+    }
+
+    fn valueClosurePattern(self: Context, newclosure_id: u32) Error!ValueClosurePattern {
+        if (newclosure_id < 2)
+            return Error.UnsupportedControlFlow;
+        const sequence_end = std.math.add(u32, newclosure_id, 9) catch return Error.ResourceLimit;
+        if (sequence_end >= self.function.instruction_count)
+            return Error.UnsupportedControlFlow;
+        try self.requireSingleBytecodeBlockRange(newclosure_id - 2, sequence_end);
+
+        const marker = try self.instruction(newclosure_id - 2);
+        const load_env = try self.instruction(newclosure_id - 1);
+        const newclosure = try self.instruction(newclosure_id);
+        const store_pointer = try self.instruction(newclosure_id + 1);
+        const store_tag = try self.instruction(newclosure_id + 2);
+        const capture_load = try self.instruction(newclosure_id + 3);
+        const upvalue_address = try self.instruction(newclosure_id + 4);
+        const capture_store = try self.instruction(newclosure_id + 5);
+        const check_gc = try self.instruction(newclosure_id + 6);
+        const capture = try self.instruction(newclosure_id + 7);
+        const nop = try self.instruction(newclosure_id + 8);
+        const store_copy = try self.instruction(newclosure_id + 9);
+
+        if (marker.command != .set_savedpc or load_env.command != .load_env or
+            newclosure.command != .newclosure or store_pointer.command != .store_pointer or
+            store_tag.command != .store_tag or capture_load.command != .load_tvalue or
+            upvalue_address.command != .get_closure_upval_addr or
+            capture_store.command != .store_tvalue or check_gc.command != .check_gc or
+            capture.command != .capture or nop.command != .nop or
+            store_copy.command != .store_split_tvalue)
+            return Error.UnsupportedControlFlow;
+        _ = try self.savedPc(marker);
+        try self.requireOperandCount(load_env, 0);
+        try self.requireOperandCount(newclosure, 3);
+        try self.requireOperandCount(store_pointer, 2);
+        try self.requireOperandCount(store_tag, 2);
+        try self.requireOperandCount(capture_load, 1);
+        try self.requireOperandCount(upvalue_address, 2);
+        try self.requireOperandCount(capture_store, 2);
+        try self.requireOperandCount(check_gc, 0);
+        try self.requireOperandCount(capture, 2);
+        try self.requireOperandCount(nop, 0);
+        try self.requireOperandCount(store_copy, 3);
+
+        const nups_operand = try self.operand(newclosure, 0);
+        const env_operand = try self.operand(newclosure, 1);
+        const child_index_operand = try self.operand(newclosure, 2);
+        if (nups_operand.kind != .constant or env_operand.kind != .instruction or
+            env_operand.value != newclosure_id - 1 or child_index_operand.kind != .constant or
+            (try self.constant(nups_operand.value)).uintValue() != 1)
+            return Error.InvalidOperandType;
+        const child_index = (try self.constant(child_index_operand.value)).uintValue() orelse
+            return Error.InvalidOperandType;
+        const child_proto_id = try self.snapshot.protoChild(self.proto, child_index);
+        const child = try self.snapshot.proto(child_proto_id);
+        if (child.parent_id != self.proto.id or child.nups != 1)
+            return Error.UnsupportedControlFlow;
+
+        const pointer_destination = try self.operand(store_pointer, 0);
+        const pointer_source = try self.operand(store_pointer, 1);
+        const tag_destination = try self.operand(store_tag, 0);
+        const tag_source = try self.operand(store_tag, 1);
+        if (pointer_source.kind != .instruction or pointer_source.value != newclosure_id or
+            tag_destination.kind != .vm_reg or tag_destination.value != pointer_destination.value or
+            tag_source.kind != .constant or (try self.constant(tag_source.value)).tagValue() != 8)
+            return Error.InvalidOperandType;
+        const primary_destination = try self.vmRegisterIndex(pointer_destination);
+
+        const captured_source = try self.operand(capture_load, 0);
+        const capture_register = try self.vmRegisterIndex(captured_source);
+        const address_closure = try self.operand(upvalue_address, 0);
+        const address_slot = try self.operand(upvalue_address, 1);
+        if (address_closure.kind != .instruction or address_closure.value != newclosure_id or
+            address_slot.kind != .vm_upvalue or address_slot.value != 0)
+            return Error.InvalidOperandType;
+        const capture_store_destination = try self.operand(capture_store, 0);
+        const capture_store_source = try self.operand(capture_store, 1);
+        if (capture_store_destination.kind != .instruction or
+            capture_store_destination.value != newclosure_id + 4 or
+            capture_store_source.kind != .instruction or
+            capture_store_source.value != newclosure_id + 3)
+            return Error.InvalidOperandType;
+
+        const capture_marker_source = try self.operand(capture, 0);
+        const capture_kind = try self.operand(capture, 1);
+        if (capture_marker_source.kind != .vm_reg or capture_marker_source.value != capture_register or
+            capture_kind.kind != .constant or (try self.constant(capture_kind.value)).uintValue() != 0)
+            return Error.InvalidOperandType;
+
+        const copy_destination = try self.vmRegisterIndex(try self.operand(store_copy, 0));
+        const copy_tag = try self.operand(store_copy, 1);
+        const copy_source = try self.operand(store_copy, 2);
+        if (copy_tag.kind != .constant or (try self.constant(copy_tag.value)).tagValue() != 8 or
+            copy_source.kind != .instruction or copy_source.value != newclosure_id)
+            return Error.InvalidOperandType;
+
+        return .{
+            .primary_destination = primary_destination,
+            .copy_destination = copy_destination,
+            .child_proto_id = child_proto_id,
+            .capture_register = capture_register,
+        };
+    }
+
+    fn valueClosurePatternAt(self: Context, instruction_id: u32, relative_to_newclosure: u32) Error!?ValueClosurePattern {
+        if (instruction_id < relative_to_newclosure)
+            return null;
+        const newclosure_id = instruction_id - relative_to_newclosure;
+        if ((try self.instruction(newclosure_id)).command != .newclosure)
+            return null;
+        return try self.valueClosurePattern(newclosure_id);
+    }
+
+    fn emitCopyTValueRegisters(self: Context, destination: u32, source: u32) Error!void {
+        const destination_offset = destination * tvalue_size;
+        const source_offset = source * tvalue_size;
+        try self.body.localGet(self.allocator, self.base_local);
+        try self.body.localGet(self.allocator, self.base_local);
+        try self.body.i64Load(self.allocator, 3, source_offset);
+        try self.body.i64Store(self.allocator, 3, destination_offset);
+        try self.body.localGet(self.allocator, self.base_local);
+        try self.body.localGet(self.allocator, self.base_local);
+        try self.body.i64Load(self.allocator, 3, source_offset + 8);
+        try self.body.i64Store(self.allocator, 3, destination_offset + 8);
     }
 
     fn emitI32Value(self: Context, operand_value: snapshot_v1.IrOperand) Error!void {
@@ -176,6 +326,8 @@ const Context = struct {
     }
 
     fn emitLoadTValue(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        if (try self.valueClosurePatternAt(instruction_id, 3) != null)
+            return;
         try self.requireOperandCount(instruction_value, 1);
         if (instruction_id >= self.slots.len or self.slots[instruction_id].shape != .tvalue)
             return Error.InvalidInstructionResult;
@@ -189,7 +341,9 @@ const Context = struct {
         try self.body.localSet(self.allocator, self.slots[instruction_id].second);
     }
 
-    fn emitStoreTag(self: Context, instruction_value: snapshot_v1.IrInstruction) Error!void {
+    fn emitStoreTag(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        if (try self.valueClosurePatternAt(instruction_id, 2) != null)
+            return;
         try self.requireOperandCount(instruction_value, 2);
         const destination = try self.operand(instruction_value, 0);
         try self.body.localGet(self.allocator, self.base_local);
@@ -205,10 +359,29 @@ const Context = struct {
         try self.body.f64Store(self.allocator, 3, try self.vmRegisterOffset(destination, 0));
     }
 
-    fn emitStoreTValue(self: Context, instruction_value: snapshot_v1.IrInstruction) Error!void {
+    fn emitStoreTValue(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        if (try self.valueClosurePatternAt(instruction_id, 5) != null)
+            return;
         try self.requireOperandCount(instruction_value, 2);
         const destination = try self.operand(instruction_value, 0);
         const source = try self.operand(instruction_value, 1);
+        if (source.kind == .instruction) {
+            const source_instruction = try self.instruction(source.value);
+            if (source_instruction.command == .get_upvalue) {
+                if (source.value + 1 != instruction_id)
+                    return Error.UnsupportedControlFlow;
+                try self.requireOperandCount(source_instruction, 1);
+                const upvalue = try self.operand(source_instruction, 0);
+                if (upvalue.kind != .vm_upvalue or upvalue.value != 0)
+                    return Error.InvalidOperandType;
+
+                try self.body.localGet(self.allocator, 0);
+                try self.body.i32Const(self.allocator, @intCast(try self.vmRegisterIndex(destination)));
+                try self.body.i32Const(self.allocator, @intCast(upvalue.value));
+                try self.body.call(self.allocator, self.get_value_upvalue orelse return Error.UnsupportedCommand);
+                return;
+            }
+        }
         if (source.kind != .instruction or source.value >= self.slots.len or self.slots[source.value].shape != .tvalue)
             return Error.InvalidOperandType;
         const destination_offset = try self.vmRegisterOffset(destination, 0);
@@ -218,6 +391,31 @@ const Context = struct {
         try self.body.localGet(self.allocator, self.base_local);
         try self.body.localGet(self.allocator, self.slots[source.value].second);
         try self.body.i64Store(self.allocator, 3, destination_offset + 8);
+    }
+
+    fn emitGetValueUpvalue(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 1);
+        const upvalue = try self.operand(instruction_value, 0);
+        if (upvalue.kind != .vm_upvalue or upvalue.value != 0 or
+            instruction_id + 1 >= self.function.instruction_count)
+            return Error.InvalidOperandType;
+        const store = try self.instruction(instruction_id + 1);
+        if (store.command != .store_tvalue or store.operand_count != 2)
+            return Error.UnsupportedControlFlow;
+        const store_source = try self.operand(store, 1);
+        if (store_source.kind != .instruction or store_source.value != instruction_id)
+            return Error.UnsupportedControlFlow;
+    }
+
+    fn emitNewClosureValue(self: Context, instruction_id: u32) Error!void {
+        const pattern = try self.valueClosurePattern(instruction_id);
+        try self.body.localGet(self.allocator, 0);
+        try self.body.i32Const(self.allocator, @intCast(pattern.primary_destination));
+        try self.body.i32Const(self.allocator, @intCast(pattern.child_proto_id));
+        try self.body.i32Const(self.allocator, @intCast(pattern.capture_register));
+        try self.body.call(self.allocator, self.newclosure_value orelse return Error.UnsupportedCommand);
+        try self.emitReloadBase();
+        try self.emitCopyTValueRegisters(pattern.copy_destination, pattern.primary_destination);
     }
 
     fn emitAddNumber(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
@@ -460,8 +658,10 @@ const Context = struct {
             return Error.InvalidOperandType;
         const parameter_count = (try self.constant(parameter_operand.value)).intValue() orelse return Error.InvalidOperandType;
         const result_count = (try self.constant(result_operand.value)).intValue() orelse return Error.InvalidOperandType;
-        if (parameter_count != 2 or result_count != 1 or self.proto.max_stack_size < 3 or
-            function_register > self.proto.max_stack_size - 3)
+        if ((parameter_count != 1 and parameter_count != 2) or result_count != 1)
+            return Error.UnsupportedControlFlow;
+        const parameter_count_u32: u32 = @intCast(parameter_count);
+        if (parameter_count_u32 >= @as(u32, self.proto.max_stack_size) - function_register)
             return Error.UnsupportedControlFlow;
 
         try self.body.localGet(self.allocator, 0);
@@ -503,21 +703,53 @@ const Context = struct {
         const instruction_value = try self.instruction(instruction_id);
         switch (instruction_value.command) {
             .nop, .mark_used => return false,
+            .load_env => {
+                if (instruction_id + 1 >= self.function.instruction_count or
+                    (try self.instruction(instruction_id + 1)).command != .newclosure)
+                    return Error.UnsupportedControlFlow;
+                _ = try self.valueClosurePattern(instruction_id + 1);
+            },
+            .get_closure_upval_addr => {
+                if (try self.valueClosurePatternAt(instruction_id, 4) == null)
+                    return Error.UnsupportedControlFlow;
+            },
             .load_tag => try self.emitLoadTag(instruction_id, instruction_value),
             .load_double => try self.emitLoadDouble(instruction_id, instruction_value),
             .load_tvalue => try self.emitLoadTValue(instruction_id, instruction_value),
-            .store_tag => try self.emitStoreTag(instruction_value),
+            .store_pointer => {
+                if (try self.valueClosurePatternAt(instruction_id, 1) == null)
+                    return Error.UnsupportedControlFlow;
+            },
+            .store_tag => try self.emitStoreTag(instruction_id, instruction_value),
+            .store_split_tvalue => {
+                if (try self.valueClosurePatternAt(instruction_id, 9) == null)
+                    return Error.UnsupportedControlFlow;
+            },
             .store_double => try self.emitStoreDouble(instruction_value),
-            .store_tvalue => try self.emitStoreTValue(instruction_value),
+            .store_tvalue => try self.emitStoreTValue(instruction_id, instruction_value),
             .add_num => try self.emitAddNumber(instruction_id, instruction_value),
+            .get_upvalue => try self.emitGetValueUpvalue(instruction_id, instruction_value),
             .check_tag => try self.emitCheckTag(instruction_value),
+            .check_gc => {
+                if (try self.valueClosurePatternAt(instruction_id, 6) == null)
+                    return Error.UnsupportedControlFlow;
+            },
             .set_savedpc => {
                 _ = try self.savedPc(instruction_value);
                 if (block_kind != .fallback) {
-                    if (!block_kind.isCompilable() or instruction_id + 1 >= self.function.instruction_count or
+                    if (!block_kind.isCompilable())
+                        return Error.UnsupportedControlFlow;
+                    if (instruction_id + 2 < self.function.instruction_count and
+                        (try self.instruction(instruction_id + 2)).command == .newclosure)
+                        _ = try self.valueClosurePattern(instruction_id + 2)
+                    else if (instruction_id + 1 >= self.function.instruction_count or
                         (try self.instruction(instruction_id + 1)).command != .call)
                         return Error.UnsupportedControlFlow;
                 }
+            },
+            .capture => {
+                if (try self.valueClosurePatternAt(instruction_id, 7) == null)
+                    return Error.UnsupportedControlFlow;
             },
             .do_arith => {
                 if (block_kind != .fallback)
@@ -539,6 +771,7 @@ const Context = struct {
             },
             .call => try self.emitCallFixed(instruction_id, instruction_value),
             .fallback_prepvarargs => try self.emitPrepVarargsNoop(instruction_value),
+            .newclosure => try self.emitNewClosureValue(instruction_id),
             .fallback_dupclosure => try self.emitDupClosure(instruction_value),
             else => return Error.UnsupportedCommand,
         }
@@ -579,6 +812,8 @@ fn resultShape(command: snapshot_v1.IrCommand) ValueShape {
 const ImportNeeds = struct {
     do_arith: bool = false,
     dupclosure: bool = false,
+    newclosure_value: bool = false,
+    get_value_upvalue: bool = false,
     call_fixed: bool = false,
 };
 
@@ -587,6 +822,8 @@ const RuntimeImports = struct {
     interrupt: wasm.FunctionRef,
     do_arith: ?wasm.FunctionRef,
     dupclosure: ?wasm.FunctionRef,
+    newclosure_value: ?wasm.FunctionRef,
+    get_value_upvalue: ?wasm.FunctionRef,
     call_fixed: ?wasm.FunctionRef,
     generated_type: u32,
 };
@@ -598,6 +835,8 @@ fn scanImportNeeds(snapshot: snapshot_v1.Snapshot, function_id: u32, needs: *Imp
         switch ((try snapshot.irInstruction(function, instruction_id)).command) {
             .do_arith => needs.do_arith = true,
             .fallback_dupclosure => needs.dupclosure = true,
+            .newclosure => needs.newclosure_value = true,
+            .get_upvalue => needs.get_value_upvalue = true,
             .call => needs.call_fixed = true,
             else => {},
         }
@@ -609,6 +848,8 @@ fn addRuntimeImports(object: *wasm.Object, needs: ImportNeeds) Error!RuntimeImpo
     const interrupt_params = [_]wasm.ValueType{ .i32, .i32 };
     const do_arith_params = [_]wasm.ValueType{ .i32, .i32, .i32, .i32, .i32 };
     const dupclosure_params = [_]wasm.ValueType{ .i32, .i32, .i32 };
+    const newclosure_value_params = [_]wasm.ValueType{ .i32, .i32, .i32, .i32 };
+    const get_value_upvalue_params = [_]wasm.ValueType{ .i32, .i32, .i32 };
     const call_fixed_params = [_]wasm.ValueType{ .i32, .i32, .i32, .i32 };
     const generated_params = [_]wasm.ValueType{ .i32, .i32 };
     const no_results = [_]wasm.ValueType{};
@@ -627,6 +868,14 @@ fn addRuntimeImports(object: *wasm.Object, needs: ImportNeeds) Error!RuntimeImpo
         const helper_type = try object.addType(.{ .params = &dupclosure_params, .results = &no_results });
         break :blk try object.importFunction("env", dupclosure_symbol, helper_type);
     } else null;
+    const newclosure_value = if (needs.newclosure_value) blk: {
+        const helper_type = try object.addType(.{ .params = &newclosure_value_params, .results = &no_results });
+        break :blk try object.importFunction("env", newclosure_value_symbol, helper_type);
+    } else null;
+    const get_value_upvalue = if (needs.get_value_upvalue) blk: {
+        const helper_type = try object.addType(.{ .params = &get_value_upvalue_params, .results = &no_results });
+        break :blk try object.importFunction("env", get_value_upvalue_symbol, helper_type);
+    } else null;
     const call_fixed = if (needs.call_fixed) blk: {
         const helper_type = try object.addType(.{ .params = &call_fixed_params, .results = &status_result });
         break :blk try object.importFunction("env", call_fixed_symbol, helper_type);
@@ -637,6 +886,8 @@ fn addRuntimeImports(object: *wasm.Object, needs: ImportNeeds) Error!RuntimeImpo
         .interrupt = interrupt,
         .do_arith = do_arith,
         .dupclosure = dupclosure,
+        .newclosure_value = newclosure_value,
+        .get_value_upvalue = get_value_upvalue,
         .call_fixed = call_fixed,
         .generated_type = generated_type,
     };
@@ -712,6 +963,8 @@ fn lowerFunction(
         .interrupt = imports.interrupt,
         .do_arith = imports.do_arith,
         .dupclosure = imports.dupclosure,
+        .newclosure_value = imports.newclosure_value,
+        .get_value_upvalue = imports.get_value_upvalue,
         .call_fixed = imports.call_fixed,
         .base_local = 2,
         .dispatch_local = 3,

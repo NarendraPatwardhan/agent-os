@@ -31,6 +31,14 @@ zig_library(
     deps = [":aot_runtime_abi"],
 )
 
+zig_library(
+    name = "captured_call_program",
+    import_name = "luau_aot_captured_call_program",
+    main = "captured_call_program_v1.zig",
+    visibility = ["//memcontainers/programs/luau/aot/runtime:__pkg__"],
+    deps = [":aot_runtime_abi"],
+)
+
 filegroup(
     name = "compiled_call_source",
     srcs = ["//memcontainers/programs/luau/aot/compiler/backend:compiled_call.luau"],
@@ -120,6 +128,11 @@ cc_object(
 cc_object(
     name = "compiled_call_package_object_link",
     obj = "//memcontainers/programs/luau/aot/compiler/backend:compiled_call_package_object",
+)
+
+cc_object(
+    name = "captured_call_package_object_link",
+    obj = "//memcontainers/programs/luau/aot/compiler/backend:captured_call_package_object",
 )
 
 # Executable oracle for the first generated-function ABI. Unlike the structural wasm-ld oracle,
@@ -289,6 +302,44 @@ build_test(
     targets = [":compiled_call_runtime_oracle_wasm"],
 )
 
+zig_binary(
+    name = "captured_call_runtime_oracle_raw",
+    srcs = ["oracle/captured_call_oracle_root.zig"],
+    linkopts = [
+        "-lc",
+        "-lc++",
+        "-fno-entry",
+        "--export-memory",
+        "--export=__mc_pcall_run",
+        "--export=__stack_pointer",
+        "--export=mc_luau_aot_v1_captured_call_oracle_init",
+        "--export=mc_luau_aot_v1_captured_call_oracle_run",
+    ],
+    main = "oracle/captured_call_oracle_root.zig",
+    tags = ["manual"],
+    deps = [
+        ":aot_runtime_abi",
+        ":captured_call_package_object_link",
+        ":captured_call_program",
+        ":luau_aot_runtime_raw",
+        "//memcontainers/programs/luau/glue:trap",
+    ],
+)
+
+zig_configure_binary(
+    name = "captured_call_runtime_oracle_wasm",
+    actual = ":captured_call_runtime_oracle_raw",
+    mode = "release_small",
+    tags = ["manual"],
+    target = "//platforms:wasm32_wasi",
+    threaded = "single",
+)
+
+build_test(
+    name = "captured_call_runtime_oracle_build_test",
+    targets = [":captured_call_runtime_oracle_wasm"],
+)
+
 # rules_js requires non-JavaScript data outside this package to enter through the output tree. This
 # preserves the source byte-for-byte while making the differential oracle consume the very same file
 # as the frontend/backend object build.
@@ -357,6 +408,29 @@ js_test(
     env = {
         "LUAU_AOT_COMPILED_CALL_ORACLE_SOURCE": "$(rlocationpath :compiled_call_runtime_oracle_source)",
         "LUAU_AOT_COMPILED_CALL_ORACLE_WASM": "$(rlocationpath :compiled_call_runtime_oracle_wasm)",
+        "LUAU_INTERPRETER_ORACLE_WASM": "$(rlocationpath :interpreter_oracle_wasm)",
+    },
+)
+
+genrule(
+    name = "captured_call_runtime_oracle_source",
+    srcs = ["//memcontainers/programs/luau/aot/compiler/backend:captured_call.luau"],
+    outs = ["captured_call_runtime_oracle_source.luau"],
+    cmd = "cp $(location //memcontainers/programs/luau/aot/compiler/backend:captured_call.luau) $@",
+)
+
+js_test(
+    name = "captured_call_runtime_oracle_test",
+    data = [
+        ":captured_call_runtime_oracle_source",
+        ":captured_call_runtime_oracle_wasm",
+        ":interpreter_oracle_wasm",
+        "oracle/captured_call_oracle.test.mjs",
+    ],
+    entry_point = "oracle/captured_call_oracle.test.mjs",
+    env = {
+        "LUAU_AOT_CAPTURED_CALL_ORACLE_SOURCE": "$(rlocationpath :captured_call_runtime_oracle_source)",
+        "LUAU_AOT_CAPTURED_CALL_ORACLE_WASM": "$(rlocationpath :captured_call_runtime_oracle_wasm)",
         "LUAU_INTERPRETER_ORACLE_WASM": "$(rlocationpath :interpreter_oracle_wasm)",
     },
 )

@@ -108,6 +108,61 @@ function backendPackage(snapshot) {
   return object;
 }
 
+function snapshotSection(snapshot, wantedKind) {
+  const sectionCount = snapshot.readUInt32LE(204);
+  for (let index = 0; index < sectionCount; index++) {
+    const descriptor = 224 + index * 32;
+    if (snapshot.readUInt16LE(descriptor) !== wantedKind) continue;
+    return {
+      recordSize: snapshot.readUInt32LE(descriptor + 4),
+      offset: Number(snapshot.readBigUInt64LE(descriptor + 8)),
+      count: snapshot.readUInt32LE(descriptor + 24),
+    };
+  }
+  throw new Error(`snapshot is missing section ${wantedKind}`);
+}
+
+function capturedSnapshotOffsets(snapshot) {
+  const protos = snapshotSection(snapshot, 3);
+  const functions = snapshotSection(snapshot, 15);
+  const blocks = snapshotSection(snapshot, 16);
+  const instructions = snapshotSection(snapshot, 17);
+  const operands = snapshotSection(snapshot, 18);
+  const constants = snapshotSection(snapshot, 19);
+  const functionOffset = functions.offset + functions.recordSize;
+  return {
+    proto2: protos.offset + 2 * protos.recordSize,
+    block0: blocks.offset + snapshot.readUInt32LE(functionOffset + 16) * blocks.recordSize,
+    instruction(relativeId) {
+      return instructions.offset +
+        (snapshot.readUInt32LE(functionOffset + 24) + relativeId) * instructions.recordSize;
+    },
+    operand(instructionId, operandId) {
+      const instructionOffset = this.instruction(instructionId);
+      return operands.offset +
+        (snapshot.readUInt32LE(instructionOffset + 8) + operandId) * operands.recordSize;
+    },
+    findConstant(kind, bits) {
+      const start = snapshot.readUInt32LE(functionOffset + 40);
+      const count = snapshot.readUInt32LE(functionOffset + 44);
+      for (let id = 0; id < count; id++) {
+        const offset = constants.offset + (start + id) * constants.recordSize;
+        if (snapshot[offset] === kind && snapshot.readBigUInt64LE(offset + 8) === bits) return id;
+      }
+      throw new Error(`captured snapshot is missing constant ${kind}/${bits}`);
+    },
+  };
+}
+
+function expectPackageRejection(snapshot, label) {
+  try {
+    backendPackage(snapshot);
+  } catch {
+    return;
+  }
+  throw new Error(`captured-call mutation was accepted: ${label}`);
+}
+
 function linkObject(object, name) {
   const directory = mkdtempSync(join(process.env.TEST_TMPDIR || tmpdir(), `luau-aot-${name}-`));
   const objectPath = join(directory, `${name}.o`);
@@ -360,6 +415,7 @@ async function executeCompiledCallPackage() {
   const first = backendPackage(snapshot);
   const second = backendPackage(snapshot);
   if (!first.equals(second)) throw new Error(`${name}: package backend is nondeterministic`);
+
   const module = await WebAssembly.compile(linkPackage(first));
   const moduleImports = WebAssembly.Module.imports(module).map(({ module: importModule, name: importName, kind }) => [importModule, importName, kind]);
   const expectedImports = [
@@ -474,6 +530,192 @@ async function executeCompiledCallPackage() {
   return { objectSize: first.length, nestedCalls, interrupts };
 }
 
+async function executeCapturedCallPackage() {
+  const name = "captured-call-package";
+  const source = readFileSync(
+    runfile(process.env.LUAU_AOT_CAPTURED_CALL_SOURCE, "LUAU_AOT_CAPTURED_CALL_SOURCE"),
+    "utf8",
+  );
+  const snapshot = frontendSnapshot(source, "@aot/captured_call.luau");
+  const first = backendPackage(snapshot);
+  const second = backendPackage(snapshot);
+  if (!first.equals(second)) throw new Error(`${name}: package backend is nondeterministic`);
+
+  {
+    const mutated = Buffer.from(snapshot);
+    const offsets = capturedSnapshotOffsets(mutated);
+    mutated.writeUInt32LE(1, offsets.block0 + 4);
+    expectPackageRejection(mutated, "closure cluster crosses its bytecode-block boundary");
+  }
+  {
+    const mutated = Buffer.from(snapshot);
+    const offsets = capturedSnapshotOffsets(mutated);
+    mutated.writeUInt32LE(offsets.findConstant(2, 1n), offsets.operand(9, 1) + 4);
+    expectPackageRejection(mutated, "LCT_REF replaces the sole LCT_VAL capture");
+  }
+  {
+    const mutated = Buffer.from(snapshot);
+    const offsets = capturedSnapshotOffsets(mutated);
+    mutated.writeUInt32LE(1, offsets.operand(6, 1) + 4);
+    expectPackageRejection(mutated, "child upvalue slot is not U0");
+  }
+  {
+    const mutated = Buffer.from(snapshot);
+    const offsets = capturedSnapshotOffsets(mutated);
+    mutated[offsets.instruction(8)] = 152;
+    mutated[offsets.instruction(9)] = 146;
+    expectPackageRejection(mutated, "CHECK_GC occurs after the CAPTURE marker");
+  }
+  {
+    const mutated = Buffer.from(snapshot);
+    const offsets = capturedSnapshotOffsets(mutated);
+    mutated[offsets.proto2 + 29] = 2;
+    expectPackageRejection(mutated, "child declares more than one upvalue");
+  }
+
+  const module = await WebAssembly.compile(linkPackage(first));
+  const moduleImports = WebAssembly.Module.imports(module).map(({ module: importModule, name: importName, kind }) => [importModule, importName, kind]);
+  const expectedImports = [
+    ["env", "mc_luau_aot_v1_return_one", "function"],
+    ["env", "mc_luau_aot_v1_interrupt", "function"],
+    ["env", "mc_luau_aot_v1_do_arith", "function"],
+    ["env", "mc_luau_aot_v1_dupclosure", "function"],
+    ["env", "mc_luau_aot_v1_newclosure_value", "function"],
+    ["env", "mc_luau_aot_v1_get_value_upvalue", "function"],
+    ["env", "mc_luau_aot_v1_call_fixed", "function"],
+  ];
+  if (JSON.stringify(moduleImports) !== JSON.stringify(expectedImports))
+    throw new Error(`${name}: unexpected generated imports ${JSON.stringify(moduleImports)}`);
+
+  let instance;
+  let returned = null;
+  let capturedValue = null;
+  let interrupts = 0;
+  let nestedCalls = 0;
+  let captureCount = 0;
+  const closureChildren = [];
+  const state = 1024;
+  const initialBase = 2048;
+  const relocatedCallerBase = 4096;
+  const childBase = 8192;
+  const finalCallerBase = 12288;
+  const tvalueSize = 16;
+  const writeNumber = (view, base, register, value) => {
+    view.setFloat64(base + register * tvalueSize, value, true);
+    view.setUint32(base + register * tvalueSize + 12, 3, true);
+  };
+  const writeClosure = (view, base, register, childProtoId) => {
+    view.setUint32(base + register * tvalueSize, childProtoId, true);
+    view.setUint32(base + register * tvalueSize + 12, 6, true);
+  };
+
+  instance = await WebAssembly.instantiate(module, {
+    env: {
+      mc_luau_aot_v1_return_one(returnState, sourceRegister) {
+        if (returnState !== state) throw new Error(`${name}: wrong return state ${returnState}`);
+        const view = new DataView(instance.exports.memory.buffer);
+        const base = view.getUint32(state + 12, true);
+        const source = base + sourceRegister * tvalueSize;
+        const tag = view.getUint32(source + 12, true);
+        returned = tag === 3
+          ? { tag, value: view.getFloat64(source, true) }
+          : { tag, value: view.getUint32(source, true) };
+      },
+      mc_luau_aot_v1_interrupt(interruptState, pc) {
+        if (interruptState !== state || pc < 0) throw new Error(`${name}: invalid interrupt`);
+        interrupts++;
+        return 0;
+      },
+      mc_luau_aot_v1_do_arith() {
+        throw new Error(`${name}: numeric capture unexpectedly entered arithmetic fallback`);
+      },
+      mc_luau_aot_v1_dupclosure(closureState, destinationRegister, childProtoId) {
+        if (closureState !== state || childProtoId !== 1)
+          throw new Error(`${name}: invalid closed child ${closureState}/${childProtoId}`);
+        closureChildren.push(childProtoId);
+        const view = new DataView(instance.exports.memory.buffer);
+        writeClosure(view, view.getUint32(state + 12, true), destinationRegister, childProtoId);
+      },
+      mc_luau_aot_v1_newclosure_value(closureState, destinationRegister, childProtoId, captureRegister) {
+        if (closureState !== state || destinationRegister !== 2 || childProtoId !== 2 || captureRegister !== 0)
+          throw new Error(`${name}: invalid value closure ABI`);
+        const memory = new Uint8Array(instance.exports.memory.buffer);
+        const view = new DataView(memory.buffer);
+        const callerBase = view.getUint32(state + 12, true);
+        if (view.getUint32(callerBase + captureRegister * tvalueSize + 12, true) !== 3)
+          throw new Error(`${name}: value closure did not capture a number`);
+        capturedValue = view.getFloat64(callerBase + captureRegister * tvalueSize, true);
+        memory.set(memory.subarray(callerBase, callerBase + 5 * tvalueSize), relocatedCallerBase);
+        writeClosure(view, relocatedCallerBase, destinationRegister, childProtoId);
+        view.setUint32(state + 12, relocatedCallerBase, true);
+        closureChildren.push(childProtoId);
+        captureCount++;
+      },
+      mc_luau_aot_v1_get_value_upvalue(upvalueState, destinationRegister, upvalueIndex) {
+        if (upvalueState !== state || destinationRegister !== 2 || upvalueIndex !== 0 || capturedValue === null)
+          throw new Error(`${name}: invalid value upvalue ABI`);
+        const view = new DataView(instance.exports.memory.buffer);
+        writeNumber(view, view.getUint32(state + 12, true), destinationRegister, capturedValue);
+      },
+      mc_luau_aot_v1_call_fixed(callState, functionRegister, parameterCount, resultCount) {
+        if (callState !== state || functionRegister !== 3 || parameterCount !== 1 || resultCount !== 1)
+          throw new Error(`${name}: invalid fixed call ABI`);
+        const memory = new Uint8Array(instance.exports.memory.buffer);
+        const view = new DataView(memory.buffer);
+        const callerBase = view.getUint32(state + 12, true);
+        if (callerBase !== relocatedCallerBase || view.getUint32(callerBase + functionRegister * tvalueSize + 12, true) !== 6 ||
+            view.getUint32(callerBase + functionRegister * tvalueSize, true) !== 2)
+          throw new Error(`${name}: generated code did not reload/copy the captured closure`);
+
+        memory.set(memory.subarray(callerBase, callerBase + 5 * tvalueSize), finalCallerBase);
+        memory.fill(0, childBase, childBase + 3 * tvalueSize);
+        memory.set(
+          memory.subarray(finalCallerBase + 4 * tvalueSize, finalCallerBase + 5 * tvalueSize),
+          childBase,
+        );
+        view.setUint32(state + 12, childBase, true);
+        returned = null;
+        const childStatus = instance.exports[packageSymbols[2]](state, 0);
+        if (childStatus !== 0 || returned?.tag !== 3)
+          throw new Error(`${name}: captured child failed with ${childStatus}/${JSON.stringify(returned)}`);
+
+        const childResult = returned.value;
+        view.setUint32(state + 12, finalCallerBase, true);
+        writeNumber(view, finalCallerBase, functionRegister, childResult);
+        nestedCalls++;
+        return 0;
+      },
+    },
+  });
+
+  for (const symbol of packageSymbols) {
+    if (typeof instance.exports[symbol] !== "function")
+      throw new Error(`${name}: missing generated symbol ${symbol}`);
+  }
+
+  const memory = new Uint8Array(instance.exports.memory.buffer);
+  const view = new DataView(memory.buffer);
+  view.setUint32(state + 12, initialBase, true);
+  memory.fill(0, initialBase, initialBase + tvalueSize);
+  if (instance.exports[packageSymbols[0]](state, 0) !== 0 || returned?.tag !== 6 || returned.value !== 1)
+    throw new Error(`${name}: root did not return child Proto 1 closure: ${JSON.stringify(returned)}`);
+
+  for (const [lhs, rhs, expected] of [[20, 22, 42], [-50, 8, -42], [1234, 5678, 6912]]) {
+    memory.fill(0, initialBase, finalCallerBase + 5 * tvalueSize);
+    view.setUint32(state + 12, initialBase, true);
+    writeNumber(view, initialBase, 0, lhs);
+    writeNumber(view, initialBase, 1, rhs);
+    capturedValue = null;
+    returned = null;
+    const status = instance.exports[packageSymbols[1]](state, 0);
+    if (status !== 0 || returned?.tag !== 3 || returned.value !== expected)
+      throw new Error(`${name}: caller ${lhs}/${rhs} failed with ${status}/${JSON.stringify(returned)}`);
+  }
+  if (nestedCalls !== 3 || captureCount !== 3 || closureChildren.join(",") !== "1,2,2,2" || interrupts < 7)
+    throw new Error(`${name}: execution evidence incomplete: calls=${nestedCalls}, captures=${captureCount}, closures=${closureChildren}, interrupts=${interrupts}`);
+  return { objectSize: first.length, nestedCalls, captureCount, interrupts };
+}
+
 const scalar = await executeCase(
   "scalar",
   "return function(n) return n * 2 + 1 end",
@@ -495,11 +737,13 @@ const loop = await executeCase(
 const silent = await executeSilentRoot();
 const slowAdd = await executeSlowAdd();
 const compiledCall = await executeCompiledCallPackage();
+const capturedCall = await executeCapturedCallPackage();
 
 console.log(
   `frontend -> IR -> relocatable wasm: scalar ${scalar.objectSize} bytes, loop ${loop.objectSize} bytes; ` +
     `silent root ${silent.objectSize} bytes, slow add ${slowAdd.objectSize} bytes; ` +
     `compiled call package ${compiledCall.objectSize} bytes/${compiledCall.nestedCalls} nested calls; ` +
+    `captured call package ${capturedCall.objectSize} bytes/${capturedCall.captureCount} captures; ` +
     `interrupt calls ${scalar.interrupts}/${loop.interrupts}/${silent.interrupts}/${slowAdd.interrupts}; ` +
     `slow helpers ${slowAdd.helperCalls}`,
 );
