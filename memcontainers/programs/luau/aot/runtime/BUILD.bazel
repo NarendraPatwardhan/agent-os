@@ -20,6 +20,23 @@ zig_library(
     ],
 )
 
+zig_library(
+    name = "compiled_call_program",
+    import_name = "luau_aot_compiled_call_program",
+    main = "compiled_call_program_v1.zig",
+    visibility = [
+        "//memcontainers/programs/luau/aot/runtime/glue:__pkg__",
+        "//memcontainers/programs/luau/aot/runtime:__pkg__",
+    ],
+    deps = [":aot_runtime_abi"],
+)
+
+filegroup(
+    name = "compiled_call_source",
+    srcs = ["//memcontainers/programs/luau/aot/compiler/backend:compiled_call.luau"],
+    visibility = ["//memcontainers/images:__pkg__"],
+)
+
 # The target runtime is a relocatable wasm32 archive, not a runnable guest. Generated functions,
 # AOT metadata, the runner, and the linker are deliberately separate layers. This target compiles
 # only the explicit retained VM set plus our pin-sized frame adapter; the source policy in @luau
@@ -251,6 +268,7 @@ zig_binary(
     tags = ["manual"],
     deps = [
         ":aot_runtime_abi",
+        ":compiled_call_program",
         ":compiled_call_package_object_link",
         ":luau_aot_runtime_raw",
         "//memcontainers/programs/luau/glue:trap",

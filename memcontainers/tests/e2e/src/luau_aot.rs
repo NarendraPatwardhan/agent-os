@@ -70,3 +70,30 @@ fn luau_aot_arithmetic_slow_path_rejoins_compiled_code() {
         );
     }
 }
+
+/// The exact source-built package publishes all three Protos, survives full collection, returns a
+/// real caller closure, materializes its child closure, and rejoins after compiled Luau-to-Luau
+/// CALL. The pinned interpreter requires the same installed source as a module and invokes the
+/// returned closure; no rewritten source stands in for the compiler input.
+#[test]
+fn luau_aot_compiled_proto_graph_calls_rejoin() {
+    let mut session = boot_loom_aot();
+
+    for (lhs, rhs) in [(-50, 8), (0, 0), (20, 22), (7, -3), (1234, 5678)] {
+        let expected = format!("{}\r\nstatus=0\r\n", lhs + rhs);
+        let aot = session.run_for_output(&format!(
+            "luau-aot-compiled-call {lhs} {rhs}; echo status=$?"
+        ));
+        let interpreted = session.run_for_output(&format!(
+            "luau -e 'local run = require(\"aot_compiled_call\"); print(run(...))' {lhs} {rhs}; echo status=$?"
+        ));
+        assert_eq!(
+            aot, expected,
+            "strict AOT compiled call failed for {lhs}/{rhs}"
+        );
+        assert_eq!(
+            aot, interpreted,
+            "strict AOT compiled call mismatch for {lhs}/{rhs}"
+        );
+    }
+}

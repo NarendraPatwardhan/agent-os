@@ -169,12 +169,19 @@ guest path, but is not presented as a general-purpose AOT product:
   five decimal-string cases traverse nested compiled CALL/RETURN plus the arithmetic slow path and
   match the separately linked pinned interpreter. Captures, general arities/results, C/callable
   values, tail calls, recursion, and yield continuations remain fail-closed;
+- the same three-Proto package now links with the strict runtime and canonical WASI adapter as a
+  release-small AgentOS guest, then passes Binaryen optimization, mc stamping, mc attestation, image
+  installation, and the real-kernel gate. The production entry performs two protected calls with full
+  collection between publication/call stages. Five raw-string pairs match `/bin/luau`, which loads the
+  exact compiler input from the image and invokes its returned closure; both sides print the same
+  result and exit zero;
 
-WP2 is complete. WP3's central arithmetic/type slow-block rejoin now passes the exact-source,
+WP2 is complete. WP3's central arithmetic/type slow-block rejoin passes the exact-source,
 relocatable-object, strict-runtime, pinned-interpreter, production optimization/stamp/attestation, and
-real-kernel gates. WP4's first closed-graph/fixed-call vertical now passes the object, strict-runtime,
-GC-publication, and pinned-interpreter gates; its immediate completion slice is the same immutable
-three-Proto artifact through production optimization/stamp/attestation and the real kernel.
+real-kernel gates. WP4's first closed-graph/fixed-call vertical now passes those same object, runtime,
+GC, differential, product-pipeline, and real-kernel gates. The next large semantic slice is captured
+closures/upvalues plus the corresponding call/result expansion; the immutable descriptor is shared by
+oracle and product today but remains compiler-generated-data work, not a hand-authored product format.
 
 ---
 
@@ -1436,9 +1443,13 @@ canonical Proto IDs. The strict runtime validates an immutable whole-program des
 and connects every GC-owned `Proto`, publishes only the root, returns arbitrary single `TValue`s,
 materializes zero-upvalue child closures, and executes the exact fixed two-argument/one-result compiled
 Luau call shape after a validated `SET_SAVEDPC`. The caller reloads `L->base` after the call. Full-GC
-publication and five pinned-interpreter string-add differentials pass; the production kernel gate is
-next. General closure captures, arities/results, callable metamethods, recursion, tail calls, yields,
-varargs consumption, modules, and source-location publication are still unsupported.
+publication and five pinned-interpreter string-add differentials pass. The same package is linked into
+a release-small guest, optimized, stamped, attested, installed into `loom_aot`, and executed by the real
+kernel; five raw-string pairs equal `/bin/luau` running the exact installed source and exit zero. Oracle
+and guest share one link-time descriptor, while emission of descriptor data/relocations from the
+validated snapshot remains compiler product work. General closure captures, arities/results, callable
+metamethods, recursion, tail calls, yields, varargs consumption, modules, and source-location
+publication are still unsupported.
 
 Tasks:
 
