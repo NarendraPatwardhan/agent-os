@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 static int expect_ok(ge_engine *e, const char *req) {
@@ -654,6 +655,101 @@ static int test_symlink_fail_closed(ge_engine *e) {
   /* add all=true must not fail the whole walk solely due to a symlink. */
   if (expect_ok(e, "{\"op\":\"add\",\"args\":{\"all\":true}}"))
     return 1;
+
+  /* Parent-component links must fail too: final-only lstat is not containment. */
+  char outside_tmpl[] = "/tmp/ge-abi-outside-XXXXXX";
+  char *outside = mkdtemp(outside_tmpl);
+  if (!outside)
+    return 1;
+  char secret[4096], dirlink[4096], escaped[4096];
+  snprintf(secret, sizeof(secret), "%s/secret.txt", outside);
+  snprintf(dirlink, sizeof(dirlink), "%s/symlink_dir", ge_worktree_root(e));
+  snprintf(escaped, sizeof(escaped), "%s/escaped.txt", outside);
+  tf = fopen(secret, "wb");
+  if (!tf)
+    return 1;
+  fputs("outside\n", tf);
+  fclose(tf);
+  if (symlink(outside, dirlink) != 0)
+    return 1;
+  if (expect_fail(e,
+                  "{\"op\":\"write\",\"args\":{\"path\":\"symlink_dir/escaped.txt\","
+                  "\"content\":\"bad\"}}",
+                  "symlink") ||
+      expect_fail(e, "{\"op\":\"add\",\"args\":{\"path\":\"symlink_dir/secret.txt\"}}",
+                  "symlink") ||
+      expect_fail(e, "{\"op\":\"rm\",\"args\":{\"path\":\"symlink_dir/secret.txt\"}}",
+                  "symlink"))
+    return 1;
+  if (access(secret, F_OK) != 0 || access(escaped, F_OK) == 0) {
+    fprintf(stderr, "engine path operation escaped through parent symlink\n");
+    return 1;
+  }
+  unlink(dirlink);
+  unlink(secret);
+  rmdir(outside);
+  return 0;
+}
+
+/* GIT-003: outputs larger than the former fixed buffers remain complete JSON. */
+static int test_large_ref_outputs(ge_engine *e) {
+  char req[2048];
+  char last_branch[256] = "";
+  for (int i = 0; i < 180; i++) {
+    snprintf(last_branch, sizeof(last_branch),
+             "output-%03d-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz", i);
+    snprintf(req, sizeof(req), "{\"op\":\"branch\",\"args\":{\"name\":\"%s\"}}",
+             last_branch);
+    if (expect_ok(e, req))
+      return 1;
+  }
+
+  char *resp = ge_run_json(e, "{\"op\":\"branch\"}");
+  if (!resp || strstr(resp, "\"ok\":true") == NULL || strlen(resp) <= 4096 ||
+      strstr(resp, last_branch) == NULL) {
+    fprintf(stderr, "large branch output incomplete\n%s\n", resp ? resp : "(null)");
+    ge_free(resp);
+    return 1;
+  }
+  ge_free(resp);
+
+  resp = ge_run_json(e, "{\"op\":\"tips\"}");
+  if (!resp || strstr(resp, "\"ok\":true") == NULL || strlen(resp) <= 16384 ||
+      strstr(resp, last_branch) == NULL) {
+    fprintf(stderr, "large tips output incomplete\n%s\n", resp ? resp : "(null)");
+    ge_free(resp);
+    return 1;
+  }
+  ge_free(resp);
+
+  resp = ge_run_json(e, "{\"op\":\"push.prepare\"}");
+  if (!resp || strstr(resp, "\"ok\":true") == NULL || strstr(resp, last_branch) == NULL) {
+    fprintf(stderr, "large push.prepare output incomplete\n%s\n", resp ? resp : "(null)");
+    ge_free(resp);
+    return 1;
+  }
+  ge_free(resp);
+
+  char last_remote[128] = "";
+  for (int i = 0; i < 120; i++) {
+    snprintf(last_remote, sizeof(last_remote),
+             "remote-%03d-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz", i);
+    snprintf(req, sizeof(req),
+             "{\"op\":\"remote\",\"args\":{\"action\":\"add\",\"name\":\"%s\","
+             "\"url\":\"https://example.invalid/repositories/%03d/"
+             "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz.git\"}}",
+             last_remote, i);
+    if (expect_ok(e, req))
+      return 1;
+  }
+  resp = ge_run_json(e, "{\"op\":\"remote\",\"args\":{\"action\":\"list\"}}");
+  if (!resp || strstr(resp, "\"ok\":true") == NULL || strlen(resp) <= 8192 ||
+      strstr(resp, last_remote) == NULL) {
+    fprintf(stderr, "large remote output incomplete\n%s\n", resp ? resp : "(null)");
+    ge_free(resp);
+    return 1;
+  }
+  ge_free(resp);
   return 0;
 }
 
@@ -854,9 +950,33 @@ static int test_sparse_set_patterns(ge_engine *e) {
     fprintf(stderr, "sparse-checkout content unexpected:\n%s\n", buf);
     return 1;
   }
+
+  /* GIT-001: pruning an out-of-cone symlink must unlink the link itself and
+   * leave the directory it points at completely untouched. */
+  char outside_tmpl[] = "/tmp/ge-sparse-outside-XXXXXX";
+  char *outside = mkdtemp(outside_tmpl);
+  if (!outside)
+    return 1;
+  char drop[4096], link_path[4096], sentinel[4096];
+  snprintf(drop, sizeof(drop), "%s/drop", ge_worktree_root(e));
+  snprintf(link_path, sizeof(link_path), "%s/outside", drop);
+  snprintf(sentinel, sizeof(sentinel), "%s/sentinel.txt", outside);
+  if (mkdir(drop, 0755) != 0)
+    return 1;
+  FILE *sf = fopen(sentinel, "wb");
+  if (!sf || fwrite("safe\n", 1, 5, sf) != 5 || fclose(sf) != 0)
+    return 1;
+  if (symlink(outside, link_path) != 0)
+    return 1;
   /* Newline-separated multi + negation */
   if (expect_ok(e, "{\"op\":\"sparse-set\",\"args\":{\"patterns\":\"keep\\n!drop\"}}"))
     return 1;
+  if (access(sentinel, F_OK) != 0) {
+    fprintf(stderr, "sparse prune followed an out-of-cone symlink\n");
+    return 1;
+  }
+  unlink(sentinel);
+  rmdir(outside);
   f = fopen(sc, "rb");
   if (!f)
     return 1;
@@ -1072,6 +1192,10 @@ int main(void) {
 
   /* M3: client_token engine-local + safe object-only inject */
   if (test_client_token(e))
+    goto fail;
+
+  /* GIT-003: grow beyond every former fixed ref/remote output buffer. */
+  if (test_large_ref_outputs(e))
     goto fail;
 
   ge_close(e);

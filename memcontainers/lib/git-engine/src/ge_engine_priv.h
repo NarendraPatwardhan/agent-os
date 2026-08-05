@@ -48,6 +48,21 @@ int ge_ensure_repo(ge_engine *e);
 int ge_safe_relpath(const char *path);
 void ge_join_path(char *out, size_t cap, const char *root, const char *rel);
 
+/* Resolve a worktree-relative path without following symlinks in any component.
+ * When allow_missing is true, the first missing component and its descendants are
+ * accepted (for create operations); existing components must still be real dirs.
+ * The resolved lexical path is written to out on success. */
+int ge_worktree_path(ge_engine *e, const char *rel, int allow_missing, char *out,
+                     size_t out_cap);
+
+/* mkdir -p for only the parent components of rel. Existing components must be
+ * directories and must not be symlinks. */
+int ge_worktree_mkdir_parents(ge_engine *e, const char *rel);
+
+/* Shared growable builder. The buffer is always NUL-terminated on success and
+ * owned by the caller. */
+int ge_sb_printf(char **buf, size_t *len, size_t *cap, const char *fmt, ...);
+
 /* Effective stdout embed limit (honors ge_test_set_stdout_max_bytes). */
 size_t ge_stdout_max_bytes(void);
 

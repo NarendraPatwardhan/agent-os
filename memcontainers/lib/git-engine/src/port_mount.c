@@ -12,6 +12,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -177,6 +178,406 @@ static int handle_ctl_write(ge_engine *e, const uint8_t *data, size_t data_len) 
   ge_free(resp);
   g_generation += 1;
   return 0;
+}
+
+static int mount_errno(void) {
+  switch (errno) {
+  case ENOENT:
+    return GE_ENOENT;
+  case ENOTDIR:
+    return GE_ENOTDIR;
+  case EISDIR:
+    return GE_EISDIR;
+  case EEXIST:
+    return GE_EEXIST;
+  case ENOTEMPTY:
+    return GE_ENOTEMPTY;
+  case EACCES:
+  case EPERM:
+  case ELOOP:
+    return GE_EACCES;
+  default:
+    return GE_EIO;
+  }
+}
+
+/* Resolve rel's parent one component at a time beneath root_fd. O_NOFOLLOW on
+ * every open makes a repository symlink an access error rather than a new path
+ * root. When create_parents is true, only missing real directories are added. */
+static int open_parent_nofollow(int root_fd, const char *rel, int create_parents,
+                                char *leaf, size_t leaf_cap) {
+  if (!rel || !rel[0] || !leaf || leaf_cap == 0) {
+    errno = EACCES;
+    return -1;
+  }
+  char path[4096];
+  if (strlen(rel) >= sizeof(path)) {
+    errno = ENAMETOOLONG;
+    return -1;
+  }
+  memcpy(path, rel, strlen(rel) + 1);
+
+  char *last = strrchr(path, '/');
+  char *parent_path = NULL;
+  const char *leaf_src = path;
+  if (last) {
+    *last = '\0';
+    parent_path = path;
+    leaf_src = last + 1;
+  }
+  if (!leaf_src[0] || strlen(leaf_src) >= leaf_cap) {
+    errno = ENAMETOOLONG;
+    return -1;
+  }
+  memcpy(leaf, leaf_src, strlen(leaf_src) + 1);
+
+  int fd = dup(root_fd);
+  if (fd < 0)
+    return -1;
+  if (!parent_path || !parent_path[0])
+    return fd;
+
+  char *save = NULL;
+  for (char *segment = strtok_r(parent_path, "/", &save); segment;
+       segment = strtok_r(NULL, "/", &save)) {
+    int next = openat(fd, segment, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    if (next < 0 && create_parents && errno == ENOENT) {
+      if (mkdirat(fd, segment, 0755) != 0 && errno != EEXIST) {
+        close(fd);
+        return -1;
+      }
+      next = openat(fd, segment, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    }
+    if (next < 0) {
+      int saved = errno;
+      struct stat st;
+      if (fstatat(fd, segment, &st, AT_SYMLINK_NOFOLLOW) == 0 && S_ISLNK(st.st_mode))
+        saved = ELOOP;
+      close(fd);
+      errno = saved;
+      return -1;
+    }
+    close(fd);
+    fd = next;
+  }
+  return fd;
+}
+
+static int open_rel_nofollow(int root_fd, const char *rel, int flags, mode_t mode) {
+  if (!rel || !rel[0])
+    return dup(root_fd);
+  char leaf[4096];
+  int parent = open_parent_nofollow(root_fd, rel, 0, leaf, sizeof(leaf));
+  if (parent < 0)
+    return -1;
+  int fd = openat(parent, leaf, flags | O_NOFOLLOW | O_CLOEXEC, mode);
+  int saved = errno;
+  if (fd < 0) {
+    struct stat st;
+    if (fstatat(parent, leaf, &st, AT_SYMLINK_NOFOLLOW) == 0 && S_ISLNK(st.st_mode))
+      saved = ELOOP;
+  }
+  close(parent);
+  errno = saved;
+  return fd;
+}
+
+static int stat_rel_nofollow(int root_fd, const char *rel, struct stat *st) {
+  if (!rel || !rel[0])
+    return fstat(root_fd, st);
+  char leaf[4096];
+  int parent = open_parent_nofollow(root_fd, rel, 0, leaf, sizeof(leaf));
+  if (parent < 0)
+    return -1;
+  int rc = fstatat(parent, leaf, st, AT_SYMLINK_NOFOLLOW);
+  int saved = errno;
+  close(parent);
+  if (rc == 0 && S_ISLNK(st->st_mode)) {
+    errno = ELOOP;
+    return -1;
+  }
+  errno = saved;
+  return rc;
+}
+
+static uint8_t *dispatch_real_mount(const char *wt, uint32_t op, const char *rel,
+                                    const char *dest_rel, const uint8_t *data, size_t data_len,
+                                    size_t *out_len) {
+  int root_fd = open(wt, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (root_fd < 0)
+    return fail_status(mount_errno(), out_len);
+
+  uint8_t *result = NULL;
+  if (op == MOUNT_OP_OPEN) {
+    int fd = open_rel_nofollow(root_fd, rel, O_RDONLY, 0);
+    if (fd < 0) {
+      result = fail_status(mount_errno(), out_len);
+      goto done;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+      result = fail_status(GE_EIO, out_len);
+      close(fd);
+      goto done;
+    }
+    if (!S_ISREG(st.st_mode)) {
+      result = fail_status(S_ISDIR(st.st_mode) ? GE_EISDIR : GE_EACCES, out_len);
+      close(fd);
+      goto done;
+    }
+    if (st.st_size < 0 || (uint64_t)st.st_size > (uint64_t)SIZE_MAX) {
+      result = fail_status(GE_EIO, out_len);
+      close(fd);
+      goto done;
+    }
+    size_t n = (size_t)st.st_size;
+    uint8_t *buf = n ? (uint8_t *)malloc(n) : NULL;
+    if (n && !buf) {
+      result = fail_status(GE_EIO, out_len);
+      close(fd);
+      goto done;
+    }
+    size_t got = 0;
+    while (got < n) {
+      ssize_t nr = read(fd, buf + got, n - got);
+      if (nr < 0 && errno == EINTR)
+        continue;
+      if (nr <= 0) {
+        free(buf);
+        result = fail_status(GE_EIO, out_len);
+        close(fd);
+        goto done;
+      }
+      got += (size_t)nr;
+    }
+    close(fd);
+    result = ok_payload(buf, n, out_len);
+    free(buf);
+    goto done;
+  }
+
+  if (op == MOUNT_OP_STAT) {
+    struct stat st;
+    if (stat_rel_nofollow(root_fd, rel, &st) != 0)
+      result = fail_status(mount_errno(), out_len);
+    else
+      result = encode_stat(S_ISDIR(st.st_mode), (uint64_t)st.st_size, out_len);
+    goto done;
+  }
+
+  if (op == MOUNT_OP_READDIR) {
+    int fd = open_rel_nofollow(root_fd, rel, O_RDONLY | O_DIRECTORY, 0);
+    if (fd < 0) {
+      result = fail_status(mount_errno(), out_len);
+      goto done;
+    }
+    DIR *d = fdopendir(fd);
+    if (!d) {
+      close(fd);
+      result = fail_status(GE_EIO, out_len);
+      goto done;
+    }
+    size_t cap = 4096, used = 0;
+    uint8_t *buf = (uint8_t *)malloc(cap);
+    if (!buf) {
+      closedir(d);
+      result = fail_status(GE_EIO, out_len);
+      goto done;
+    }
+    int saw_git = 0;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+      if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+        continue;
+      struct stat st;
+      if (fstatat(dirfd(d), de->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0 ||
+          S_ISLNK(st.st_mode))
+        continue; /* symlinks are not projected into gitfs */
+      if (strcmp(de->d_name, ".git") == 0)
+        saw_git = 1;
+      size_t nl = strlen(de->d_name);
+      while (used + 8 + nl > cap) {
+        if (cap > SIZE_MAX / 2) {
+          free(buf);
+          closedir(d);
+          result = fail_status(GE_EIO, out_len);
+          goto done;
+        }
+        cap *= 2;
+        uint8_t *grown = (uint8_t *)realloc(buf, cap);
+        if (!grown) {
+          free(buf);
+          closedir(d);
+          result = fail_status(GE_EIO, out_len);
+          goto done;
+        }
+        buf = grown;
+      }
+      wr_u32(buf + used, S_ISDIR(st.st_mode) ? SERVE_DIRENT_DIR : SERVE_DIRENT_FILE);
+      wr_u32(buf + used + 4, (uint32_t)nl);
+      memcpy(buf + used + 8, de->d_name, nl);
+      used += 8 + nl;
+    }
+    closedir(d);
+    if ((!rel[0] || strcmp(rel, ".") == 0) && !saw_git) {
+      const char *name = ".git";
+      size_t nl = strlen(name);
+      if (used + 8 + nl <= cap) {
+        wr_u32(buf + used, SERVE_DIRENT_DIR);
+        wr_u32(buf + used + 4, (uint32_t)nl);
+        memcpy(buf + used + 8, name, nl);
+        used += 8 + nl;
+      }
+    }
+    result = ok_payload(buf, used, out_len);
+    free(buf);
+    goto done;
+  }
+
+  if (!rel[0]) {
+    result = fail_status(GE_EACCES, out_len);
+    goto done;
+  }
+
+  if (op == MOUNT_OP_WRITE) {
+    char leaf[4096];
+    int parent = open_parent_nofollow(root_fd, rel, 1, leaf, sizeof(leaf));
+    if (parent < 0) {
+      result = fail_status(mount_errno(), out_len);
+      goto done;
+    }
+    int fd = openat(parent, leaf,
+                    O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0644);
+    int saved = errno;
+    close(parent);
+    errno = saved;
+    if (fd < 0) {
+      result = fail_status(mount_errno(), out_len);
+      goto done;
+    }
+    size_t wrote = 0;
+    while (wrote < data_len) {
+      ssize_t nw = write(fd, data + wrote, data_len - wrote);
+      if (nw < 0 && errno == EINTR)
+        continue;
+      if (nw <= 0) {
+        close(fd);
+        result = fail_status(GE_EIO, out_len);
+        goto done;
+      }
+      wrote += (size_t)nw;
+    }
+    if (close(fd) != 0)
+      result = fail_status(GE_EIO, out_len);
+    else
+      result = ok_payload(NULL, 0, out_len);
+    goto done;
+  }
+
+  if (op == MOUNT_OP_MKDIR) {
+    char leaf[4096];
+    int parent = open_parent_nofollow(root_fd, rel, 0, leaf, sizeof(leaf));
+    if (parent < 0) {
+      result = fail_status(mount_errno(), out_len);
+      goto done;
+    }
+    if (mkdirat(parent, leaf, 0755) != 0) {
+      int saved = errno;
+      if (saved != EEXIST) {
+        errno = saved;
+        result = fail_status(mount_errno(), out_len);
+        close(parent);
+        goto done;
+      }
+      struct stat st;
+      if (fstatat(parent, leaf, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+        result = fail_status(mount_errno(), out_len);
+        close(parent);
+        goto done;
+      }
+      if (S_ISLNK(st.st_mode) || !S_ISDIR(st.st_mode)) {
+        result = fail_status(S_ISLNK(st.st_mode) ? GE_EACCES : GE_EEXIST, out_len);
+        close(parent);
+        goto done;
+      }
+    }
+    close(parent);
+    result = ok_payload(NULL, 0, out_len);
+    goto done;
+  }
+
+  if (op == MOUNT_OP_UNLINK) {
+    char leaf[4096];
+    int parent = open_parent_nofollow(root_fd, rel, 0, leaf, sizeof(leaf));
+    if (parent < 0) {
+      result = fail_status(mount_errno(), out_len);
+      goto done;
+    }
+    struct stat st;
+    if (fstatat(parent, leaf, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+      result = fail_status(mount_errno(), out_len);
+      close(parent);
+      goto done;
+    }
+    if (S_ISLNK(st.st_mode)) {
+      result = fail_status(GE_EACCES, out_len);
+      close(parent);
+      goto done;
+    }
+    if (unlinkat(parent, leaf, S_ISDIR(st.st_mode) ? AT_REMOVEDIR : 0) != 0)
+      result = fail_status(mount_errno(), out_len);
+    else
+      result = ok_payload(NULL, 0, out_len);
+    close(parent);
+    goto done;
+  }
+
+  if (op == MOUNT_OP_RENAME) {
+    char src_leaf[4096], dst_leaf[4096];
+    int src_parent = open_parent_nofollow(root_fd, rel, 0, src_leaf, sizeof(src_leaf));
+    if (src_parent < 0) {
+      result = fail_status(mount_errno(), out_len);
+      goto done;
+    }
+    struct stat st;
+    if (fstatat(src_parent, src_leaf, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+      result = fail_status(mount_errno(), out_len);
+      close(src_parent);
+      goto done;
+    }
+    if (S_ISLNK(st.st_mode)) {
+      result = fail_status(GE_EACCES, out_len);
+      close(src_parent);
+      goto done;
+    }
+    int dst_parent = open_parent_nofollow(root_fd, dest_rel, 0, dst_leaf, sizeof(dst_leaf));
+    if (dst_parent < 0) {
+      result = fail_status(mount_errno(), out_len);
+      close(src_parent);
+      goto done;
+    }
+    struct stat dst_st;
+    if (fstatat(dst_parent, dst_leaf, &dst_st, AT_SYMLINK_NOFOLLOW) == 0 &&
+        S_ISLNK(dst_st.st_mode)) {
+      result = fail_status(GE_EACCES, out_len);
+      close(dst_parent);
+      close(src_parent);
+      goto done;
+    }
+    if (renameat(src_parent, src_leaf, dst_parent, dst_leaf) != 0)
+      result = fail_status(mount_errno(), out_len);
+    else
+      result = ok_payload(NULL, 0, out_len);
+    close(dst_parent);
+    close(src_parent);
+    goto done;
+  }
+
+  result = fail_status(GE_EINVAL, out_len);
+
+done:
+  close(root_fd);
+  return result;
 }
 
 int ge_mount_dispatch(ge_engine *e, const uint8_t *body, size_t body_len, uint8_t **out,
@@ -366,159 +767,17 @@ int ge_mount_dispatch(ge_engine *e, const uint8_t *body, size_t body_len, uint8_
     return (*out = fail_status(GE_EACCES, out_len)) ? 0 : -1;
   }
 
-  char abs[4096];
-  join_root(abs, sizeof(abs), wt, rel);
+  if ((op == MOUNT_OP_WRITE || op == MOUNT_OP_MKDIR || op == MOUNT_OP_UNLINK) &&
+      is_git_meta(rel))
+    return (*out = fail_status(GE_EACCES, out_len)) ? 0 : -1;
 
-  if (op == MOUNT_OP_OPEN) {
-    FILE *f = fopen(abs, "rb");
-    if (!f)
-      return (*out = fail_status(GE_ENOENT, out_len)) ? 0 : -1;
-    if (fseek(f, 0, SEEK_END) != 0) {
-      fclose(f);
-      return (*out = fail_status(GE_EIO, out_len)) ? 0 : -1;
-    }
-    long sz = ftell(f);
-    if (sz < 0) {
-      fclose(f);
-      return (*out = fail_status(GE_EIO, out_len)) ? 0 : -1;
-    }
-    rewind(f);
-    uint8_t *buf = (uint8_t *)malloc((size_t)sz);
-    if (!buf) {
-      fclose(f);
-      return (*out = fail_status(GE_EIO, out_len)) ? 0 : -1;
-    }
-    if (sz > 0 && fread(buf, 1, (size_t)sz, f) != (size_t)sz) {
-      free(buf);
-      fclose(f);
-      return (*out = fail_status(GE_EIO, out_len)) ? 0 : -1;
-    }
-    fclose(f);
-    uint8_t *resp = ok_payload(buf, (size_t)sz, out_len);
-    free(buf);
-    *out = resp;
-    return resp ? 0 : -1;
-  }
-
-  if (op == MOUNT_OP_STAT) {
-    struct stat st;
-    if (stat(abs, &st) != 0)
-      return (*out = fail_status(GE_ENOENT, out_len)) ? 0 : -1;
-    return (*out = encode_stat(S_ISDIR(st.st_mode), (uint64_t)st.st_size, out_len)) ? 0 : -1;
-  }
-
-  if (op == MOUNT_OP_READDIR) {
-    DIR *d = opendir(abs);
-    if (!d)
-      return (*out = fail_status(GE_ENOENT, out_len)) ? 0 : -1;
-    size_t cap = 4096, o = 0;
-    uint8_t *buf = (uint8_t *)malloc(cap);
-    if (!buf) {
-      closedir(d);
-      return -1;
-    }
-    struct dirent *de;
-    int saw_git = 0;
-    while ((de = readdir(d)) != NULL) {
-      if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
-        continue;
-      if (strcmp(de->d_name, ".git") == 0)
-        saw_git = 1;
-      size_t nl = strlen(de->d_name);
-      if (o + 8 + nl > cap) {
-        cap *= 2;
-        uint8_t *nb = (uint8_t *)realloc(buf, cap);
-        if (!nb) {
-          free(buf);
-          closedir(d);
-          return -1;
-        }
-        buf = nb;
-      }
-      char child[4096];
-      snprintf(child, sizeof(child), "%s/%s", abs, de->d_name);
-      struct stat st;
-      int is_dir = (stat(child, &st) == 0 && S_ISDIR(st.st_mode));
-      wr_u32(buf + o, is_dir ? SERVE_DIRENT_DIR : SERVE_DIRENT_FILE);
-      wr_u32(buf + o + 4, (uint32_t)nl);
-      memcpy(buf + o + 8, de->d_name, nl);
-      o += 8 + nl;
-    }
-    closedir(d);
-    if ((!rel[0] || strcmp(rel, ".") == 0) && !saw_git) {
-      const char *name = ".git";
-      size_t nl = 4;
-      if (o + 8 + nl <= cap) {
-        wr_u32(buf + o, SERVE_DIRENT_DIR);
-        wr_u32(buf + o + 4, (uint32_t)nl);
-        memcpy(buf + o + 8, name, nl);
-        o += 8 + nl;
-      }
-    }
-    uint8_t *resp = ok_payload(buf, o, out_len);
-    free(buf);
-    *out = resp;
-    return resp ? 0 : -1;
-  }
-
-  if (op == MOUNT_OP_WRITE) {
-    if (is_git_meta(rel) && strcmp(rel, ".git/HEAD") != 0)
-      return (*out = fail_status(GE_EACCES, out_len)) ? 0 : -1;
-    /* ensure parent */
-    char tmp[4096];
-    snprintf(tmp, sizeof(tmp), "%s", abs);
-    for (char *p = tmp + strlen(wt) + 1; *p; p++) {
-      if (*p == '/') {
-        *p = 0;
-        mkdir(tmp, 0755);
-        *p = '/';
-      }
-    }
-    FILE *f = fopen(abs, "wb");
-    if (!f)
-      return (*out = fail_status(GE_EIO, out_len)) ? 0 : -1;
-    if (data_len && fwrite(data, 1, data_len, f) != data_len) {
-      fclose(f);
-      return (*out = fail_status(GE_EIO, out_len)) ? 0 : -1;
-    }
-    fclose(f);
-    return (*out = ok_payload(NULL, 0, out_len)) ? 0 : -1;
-  }
-
-  if (op == MOUNT_OP_MKDIR) {
-    if (is_git_meta(rel))
-      return (*out = fail_status(GE_EACCES, out_len)) ? 0 : -1;
-    if (mkdir(abs, 0755) != 0 && errno != EEXIST)
-      return (*out = fail_status(GE_EIO, out_len)) ? 0 : -1;
-    return (*out = ok_payload(NULL, 0, out_len)) ? 0 : -1;
-  }
-
-  if (op == MOUNT_OP_UNLINK) {
-    if (is_git_meta(rel))
-      return (*out = fail_status(GE_EACCES, out_len)) ? 0 : -1;
-    struct stat st;
-    if (stat(abs, &st) != 0)
-      return (*out = fail_status(GE_ENOENT, out_len)) ? 0 : -1;
-    if (S_ISDIR(st.st_mode)) {
-      if (rmdir(abs) != 0)
-        return (*out = fail_status(GE_ENOTEMPTY, out_len)) ? 0 : -1;
-    } else if (unlink(abs) != 0) {
-      return (*out = fail_status(GE_EIO, out_len)) ? 0 : -1;
-    }
-    return (*out = ok_payload(NULL, 0, out_len)) ? 0 : -1;
-  }
-
+  char dest_rel[4096] = "";
   if (op == MOUNT_OP_RENAME) {
-    if (is_git_meta(rel) || (arg[0] && is_git_meta(arg)))
+    if (normalize_rel(arg, dest_rel, sizeof(dest_rel)) != 0 || !dest_rel[0] ||
+        is_git_meta(rel) || is_git_meta(dest_rel))
       return (*out = fail_status(GE_EACCES, out_len)) ? 0 : -1;
-    char dest[4096], drel[4096];
-    if (normalize_rel(arg, drel, sizeof(drel)) != 0)
-      return (*out = fail_status(GE_EACCES, out_len)) ? 0 : -1;
-    join_root(dest, sizeof(dest), wt, drel);
-    if (rename(abs, dest) != 0)
-      return (*out = fail_status(GE_EIO, out_len)) ? 0 : -1;
-    return (*out = ok_payload(NULL, 0, out_len)) ? 0 : -1;
   }
 
-  return (*out = fail_status(GE_EINVAL, out_len)) ? 0 : -1;
+  *out = dispatch_real_mount(wt, op, rel, dest_rel, data, data_len, out_len);
+  return *out ? 0 : -1;
 }

@@ -29,12 +29,7 @@ export type EmscriptenGitModule = {
   _ge_close(eng: number): void;
   _ge_run_json(eng: number, reqPtr: number): number;
   _ge_import_pack(eng: number, ptr: number, len: number, final: number): number;
-  _ge_pack_build(
-    eng: number,
-    oidsJsonPtr: number,
-    outPtrPtr: number,
-    outLenPtr: number,
-  ): number;
+  _ge_pack_build(eng: number, oidsJsonPtr: number, outPtrPtr: number, outLenPtr: number): number;
   _ge_free(ptr: number): void;
   _ge_version(): number;
   _ge_last_error(eng: number): number;
@@ -47,19 +42,18 @@ export type EmscriptenFS = {
   mkdirTree?(path: string): void;
   readdir(path: string): string[];
   stat(path: string): { mode: number; size?: number };
+  lstat(path: string): { mode: number; size?: number };
   isDir(mode: number): boolean;
+  isLink(mode: number): boolean;
   readFile(path: string, opts?: { encoding?: string }): Uint8Array | string;
   writeFile(path: string, data: Uint8Array | string): void;
   unlink(path: string): void;
   rmdir(path: string): void;
   rename(from: string, to: string): void;
+  symlink?(target: string, link: string): void;
   analyzePath?(path: string): { exists: boolean };
   /** Present when emcc was linked with NODEFS (`-lnodefs.js`). */
-  mount?(
-    type: unknown,
-    opts: { root?: string },
-    mountpoint: string,
-  ): unknown;
+  mount?(type: unknown, opts: { root?: string }, mountpoint: string): unknown;
   filesystems?: { NODEFS?: unknown; [k: string]: unknown };
 };
 
@@ -91,10 +85,7 @@ export class GitBridge {
     this.nodefsMounted = nodefsMounted;
   }
 
-  static async create(
-    baseUrl: string,
-    opts: GitBridgeCreateOptions = {},
-  ): Promise<GitBridge> {
+  static async create(baseUrl: string, opts: GitBridgeCreateOptions = {}): Promise<GitBridge> {
     const root = baseUrl.endsWith("/") ? baseUrl : baseUrl + "/";
     const workRoot = opts.workRoot ?? DEFAULT_WORK_ROOT;
     // Prefer .mjs (always ESM). Fall back to .js when package.json type=module is present.
@@ -104,11 +95,7 @@ export class GitBridge {
       locateFile: (p: string) => {
         const name = String(p).endsWith(".wasm") ? "git_engine.wasm" : p;
         const url = new URL(name, root).href;
-        if (
-          typeof process !== "undefined" &&
-          process.versions?.node &&
-          url.startsWith("file:")
-        ) {
+        if (typeof process !== "undefined" && process.versions?.node && url.startsWith("file:")) {
           return new URL(url).pathname;
         }
         return url;
@@ -239,9 +226,7 @@ export class GitBridge {
       ? haves.filter((h) => typeof h === "string" && /^[0-9a-f]{40}$/i.test(h))
       : [];
     const oidsJson =
-      haveList.length > 0
-        ? JSON.stringify({ oids, haves: haveList })
-        : JSON.stringify(oids);
+      haveList.length > 0 ? JSON.stringify({ oids, haves: haveList }) : JSON.stringify(oids);
     const jsonPtr = cstr(this.mod, oidsJson);
     // wasm32: pointer + size_t are 4 bytes each (out / out_len slots).
     const outPtrSlot = this.mod._malloc(4);
@@ -299,9 +284,7 @@ export class GitBridge {
     const eng = this.mod._ge_open(rootPtr);
     this.mod._free(rootPtr);
     if (!eng) {
-      throw new Error(
-        `ge_open nested failed for ${absRoot} (need absolute existing MEMFS dir)`,
-      );
+      throw new Error(`ge_open nested failed for ${absRoot} (need absolute existing MEMFS dir)`);
     }
     return eng;
   }

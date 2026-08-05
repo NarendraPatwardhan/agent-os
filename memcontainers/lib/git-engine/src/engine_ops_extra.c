@@ -8,6 +8,9 @@
 
 #include <dirent.h>
 #include <errno.h>
+#ifndef __EMSCRIPTEN__
+#include <fcntl.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +27,9 @@ int op_rm(ge_engine *e, const char *args) {
     ge_set_err(e, "rm: bad path");
     return -1;
   }
+  char full[4096];
+  if (ge_worktree_path(e, path, 1, full, sizeof(full)) != 0)
+    return -1;
   git_index *index = NULL;
   if (git_repository_index(&index, e->repo) != 0) {
     ge_set_err_git(e, "rm: index");
@@ -36,8 +42,6 @@ int op_rm(ge_engine *e, const char *args) {
   }
   git_index_write(index);
   git_index_free(index);
-  char full[4096];
-  ge_join_path(full, sizeof(full), e->root, path);
   unlink(full); /* ignore missing worktree file */
   return 0;
 }
@@ -308,7 +312,9 @@ int op_tag(ge_engine *e, const char *args) {
   return 0;
 }
 
-int op_config(ge_engine *e, const char *args, char *out, size_t out_cap) {
+int op_config(ge_engine *e, const char *args, char **out_owned) {
+  if (out_owned)
+    *out_owned = NULL;
   if (ge_ensure_repo(e) != 0)
     return -1;
   char action[32] = "get";
@@ -323,6 +329,8 @@ int op_config(ge_engine *e, const char *args, char *out, size_t out_cap) {
     return -1;
   }
   int rc = 0;
+  char *out = NULL;
+  size_t used = 0, cap = 0;
   if (strcmp(action, "set") == 0) {
     if (!key[0]) {
       ge_set_err(e, "config set: key required");
@@ -340,13 +348,13 @@ int op_config(ge_engine *e, const char *args, char *out, size_t out_cap) {
     } else if (git_config_get_string_buf(&buf, cfg, key) != 0) {
       ge_set_err_git(e, "config get");
       rc = -1;
-    } else {
-      snprintf(out, out_cap, "%s\n", buf.ptr ? buf.ptr : "");
+    } else if (ge_sb_printf(&out, &used, &cap, "%s\n", buf.ptr ? buf.ptr : "") != 0) {
+      ge_set_err(e, "config: out of memory");
+      rc = -1;
     }
     git_buf_dispose(&buf);
   } else if (strcmp(action, "list") == 0) {
     /* Minimal: not iterating full config — report common keys if set. */
-    out[0] = '\0';
     const char *keys[] = {
         "user.name",
         "user.email",
@@ -356,22 +364,36 @@ int op_config(ge_engine *e, const char *args, char *out, size_t out_cap) {
         "branch.main.merge",
         NULL,
     };
-    size_t used = 0;
     for (int i = 0; keys[i]; i++) {
       git_buf buf = GIT_BUF_INIT;
-      if (git_config_get_string_buf(&buf, cfg, keys[i]) == 0 && buf.ptr)
-        used += (size_t)snprintf(out + used, out_cap - used, "%s=%s\n", keys[i], buf.ptr);
+      if (git_config_get_string_buf(&buf, cfg, keys[i]) == 0 && buf.ptr &&
+          ge_sb_printf(&out, &used, &cap, "%s=%s\n", keys[i], buf.ptr) != 0) {
+        ge_set_err(e, "config: out of memory");
+        rc = -1;
+      }
       git_buf_dispose(&buf);
+      if (rc != 0)
+        break;
     }
   } else {
     ge_set_err(e, "config: action get|set|list");
     rc = -1;
   }
   git_config_free(cfg);
+  if (rc == 0 && !out && ge_sb_printf(&out, &used, &cap, "%s", "") != 0) {
+    ge_set_err(e, "config: out of memory");
+    rc = -1;
+  }
+  if (rc == 0 && out_owned)
+    *out_owned = out;
+  else
+    free(out);
   return rc;
 }
 
-int op_remote(ge_engine *e, const char *args, char *out, size_t out_cap) {
+int op_remote(ge_engine *e, const char *args, char **out_owned) {
+  if (out_owned)
+    *out_owned = NULL;
   if (ge_ensure_repo(e) != 0)
     return -1;
   char action[32] = "list";
@@ -382,23 +404,36 @@ int op_remote(ge_engine *e, const char *args, char *out, size_t out_cap) {
   (void)jmin_get_string(args, "url", url, sizeof(url));
 
   if (strcmp(action, "list") == 0 || !action[0]) {
+    char *out = NULL;
+    size_t used = 0, cap = 0;
     git_strarray list = {0};
     if (git_remote_list(&list, e->repo) != 0) {
       ge_set_err_git(e, "remote list");
       return -1;
     }
-    out[0] = '\0';
-    size_t used = 0;
     for (size_t i = 0; i < list.count; i++) {
       git_remote *r = NULL;
       if (git_remote_lookup(&r, e->repo, list.strings[i]) == 0) {
         const char *u = git_remote_url(r);
-        used += (size_t)snprintf(out + used, out_cap - used, "%s\t%s\n", list.strings[i],
-                                 u ? u : "");
+        if (ge_sb_printf(&out, &used, &cap, "%s\t%s\n", list.strings[i], u ? u : "") != 0) {
+          git_remote_free(r);
+          git_strarray_dispose(&list);
+          free(out);
+          ge_set_err(e, "remote list: out of memory");
+          return -1;
+        }
         git_remote_free(r);
       }
     }
     git_strarray_dispose(&list);
+    if (!out && ge_sb_printf(&out, &used, &cap, "%s", "") != 0) {
+      ge_set_err(e, "remote list: out of memory");
+      return -1;
+    }
+    if (out_owned)
+      *out_owned = out;
+    else
+      free(out);
     return 0;
   }
   if (strcmp(action, "add") == 0) {
@@ -452,31 +487,27 @@ int op_branch_delete(ge_engine *e, const char *name) {
 
 /* ── Host-mediated remotes (tips / push helpers; no network dial) ─────────── */
 
-/* Escape a string into JSON string content (no surrounding quotes). */
-static size_t json_escape_into(char *dst, size_t cap, const char *src) {
-  size_t o = 0;
+/* Append JSON string content (no surrounding quotes) to a growable buffer. */
+static int json_escape_append(char **dst, size_t *len, size_t *cap, const char *src) {
   if (!src)
     src = "";
-  for (const unsigned char *p = (const unsigned char *)src; *p && o + 2 < cap; p++) {
+  for (const unsigned char *p = (const unsigned char *)src; *p; p++) {
     if (*p == '"' || *p == '\\') {
-      if (o + 3 >= cap)
-        break;
-      dst[o++] = '\\';
-      dst[o++] = (char)*p;
+      if (ge_sb_printf(dst, len, cap, "\\%c", (char)*p) != 0)
+        return -1;
     } else if (*p < 0x20) {
       /* skip control chars in ref names */
       continue;
-    } else {
-      dst[o++] = (char)*p;
-    }
+    } else if (ge_sb_printf(dst, len, cap, "%c", (char)*p) != 0)
+      return -1;
   }
-  if (o < cap)
-    dst[o] = 0;
-  return o;
+  return 0;
 }
 
 /* List local tips for fetch have[]: result JSON array of {name,hash}. */
-int op_tips(ge_engine *e, char *result_json, size_t cap) {
+int op_tips(ge_engine *e, char **result_owned) {
+  if (result_owned)
+    *result_owned = NULL;
   if (ge_ensure_repo(e) != 0)
     return -1;
   git_reference_iterator *it = NULL;
@@ -484,37 +515,68 @@ int op_tips(ge_engine *e, char *result_json, size_t cap) {
     ge_set_err_git(e, "tips");
     return -1;
   }
-  size_t used = 0;
-  used += (size_t)snprintf(result_json + used, cap - used, "[");
+  char *result = NULL;
+  size_t used = 0, cap = 0;
+  if (ge_sb_printf(&result, &used, &cap, "[") != 0) {
+    git_reference_iterator_free(it);
+    ge_set_err(e, "tips: out of memory");
+    return -1;
+  }
   int first = 1;
   git_reference *ref = NULL;
   while (git_reference_next(&ref, it) == 0) {
     if (git_reference_type(ref) == GIT_REFERENCE_DIRECT) {
       char hex[GIT_OID_HEXSZ + 1];
-      char ename[512];
       git_oid_tostr(hex, sizeof(hex), git_reference_target(ref));
       const char *name = git_reference_name(ref);
-      json_escape_into(ename, sizeof(ename), name ? name : "");
-      used += (size_t)snprintf(result_json + used, cap > used ? cap - used : 0,
-                               "%s{\"name\":\"%s\",\"hash\":\"%s\"}", first ? "" : ",",
-                               ename, hex);
+      if (ge_sb_printf(&result, &used, &cap, "%s{\"name\":\"", first ? "" : ",") != 0 ||
+          json_escape_append(&result, &used, &cap, name ? name : "") != 0 ||
+          ge_sb_printf(&result, &used, &cap, "\",\"hash\":\"%s\"}", hex) != 0) {
+        git_reference_free(ref);
+        git_reference_iterator_free(it);
+        free(result);
+        ge_set_err(e, "tips: out of memory");
+        return -1;
+      }
       first = 0;
     }
     git_reference_free(ref);
   }
   git_reference_iterator_free(it);
-  snprintf(result_json + used, cap > used ? cap - used : 0, "]");
+  if (ge_sb_printf(&result, &used, &cap, "]") != 0) {
+    free(result);
+    ge_set_err(e, "tips: out of memory");
+    return -1;
+  }
+  if (result_owned)
+    *result_owned = result;
+  else
+    free(result);
   return 0;
 }
 
-int op_push_prepare(ge_engine *e, char *result_json, size_t cap) {
+int op_push_prepare(ge_engine *e, char **result_owned) {
+  if (result_owned)
+    *result_owned = NULL;
   if (ge_ensure_repo(e) != 0)
     return -1;
-  char tips[8192];
-  if (op_tips(e, tips, sizeof(tips)) != 0)
+  char *tips = NULL;
+  if (op_tips(e, &tips) != 0)
     return -1;
-  snprintf(result_json, cap,
-           "{\"commands\":%s,\"note\":\"host builds pack from missing objects\"}", tips);
+  char *result = NULL;
+  size_t used = 0, cap = 0;
+  if (ge_sb_printf(&result, &used, &cap,
+                   "{\"commands\":%s,\"note\":\"host builds pack from missing objects\"}",
+                   tips) != 0) {
+    free(tips);
+    ge_set_err(e, "push.prepare: out of memory");
+    return -1;
+  }
+  free(tips);
+  if (result_owned)
+    *result_owned = result;
+  else
+    free(result);
   return 0;
 }
 
@@ -584,11 +646,12 @@ static int cone_path_kept(const char *rel, int is_dir, char cones[][256], size_t
   return 0;
 }
 
-/* Recursive rm -rf for a path under the worktree (best-effort).
- * Use stat (not lstat) for emscripten MEMFS portability. */
-static void cone_rm_rf(const char *abs) {
+#ifdef __EMSCRIPTEN__
+/* Emscripten fallback: bridge.serial prevents concurrent guest mutation, and
+ * libc lstat maps to FS.lstat for both MEMFS and NODEFS. */
+static void cone_rm_rf_path(const char *abs) {
   struct stat st;
-  if (stat(abs, &st) != 0)
+  if (lstat(abs, &st) != 0)
     return;
   if (S_ISDIR(st.st_mode)) {
     DIR *d = opendir(abs);
@@ -601,7 +664,7 @@ static void cone_rm_rf(const char *abs) {
         size_t n = (size_t)snprintf(child, sizeof(child), "%s/%s", abs, de->d_name);
         if (n >= sizeof(child))
           continue;
-        cone_rm_rf(child);
+        cone_rm_rf_path(child);
       }
       closedir(d);
     }
@@ -611,9 +674,8 @@ static void cone_rm_rf(const char *abs) {
   }
 }
 
-/* Depth-first prune: remove worktree paths not kept by cone. Never enters .git.
- * Portable across host FS and emscripten MEMFS (stat + dirent). */
-static void cone_prune_walk(const char *root, const char *rel, char cones[][256], size_t ncones) {
+static void cone_prune_walk_path(const char *root, const char *rel, char cones[][256],
+                                 size_t ncones) {
   char abs[4096];
   if (rel && *rel)
     ge_join_path(abs, sizeof(abs), root, rel);
@@ -642,18 +704,106 @@ static void cone_prune_walk(const char *root, const char *rel, char cones[][256]
     char child_abs[4096];
     ge_join_path(child_abs, sizeof(child_abs), root, child_rel);
     struct stat st;
-    if (stat(child_abs, &st) != 0)
+    if (lstat(child_abs, &st) != 0)
       continue;
     int is_dir = S_ISDIR(st.st_mode);
     if (cone_path_kept(child_rel, is_dir, cones, ncones)) {
       if (is_dir)
-        cone_prune_walk(root, child_rel, cones, ncones);
+        cone_prune_walk_path(root, child_rel, cones, ncones);
     } else {
-      cone_rm_rf(child_abs);
+      cone_rm_rf_path(child_abs);
     }
   }
   closedir(d);
 }
+
+static void cone_prune_walk(const char *root, const char *rel, char cones[][256],
+                            size_t ncones) {
+  cone_prune_walk_path(root, rel, cones, ncones);
+}
+#else
+/* Native pruning is directory-descriptor relative. Every component is opened
+ * with O_NOFOLLOW, and deletion uses unlinkat on the entry itself. A concurrent
+ * path replacement can make an operation fail, but can never redirect it. */
+static void cone_rm_rf_at(int parent_fd, const char *name) {
+  struct stat st;
+  if (fstatat(parent_fd, name, &st, AT_SYMLINK_NOFOLLOW) != 0)
+    return;
+  if (!S_ISDIR(st.st_mode)) {
+    unlinkat(parent_fd, name, 0);
+    return;
+  }
+
+  int child_fd = openat(parent_fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (child_fd < 0)
+    return;
+  DIR *d = fdopendir(child_fd);
+  if (!d) {
+    close(child_fd);
+    return;
+  }
+  struct dirent *de;
+  while ((de = readdir(d)) != NULL) {
+    if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+      continue;
+    cone_rm_rf_at(dirfd(d), de->d_name);
+  }
+  closedir(d); /* closes child_fd */
+  unlinkat(parent_fd, name, AT_REMOVEDIR);
+}
+
+static void cone_prune_walk_at(int dir_fd, const char *rel, char cones[][256],
+                               size_t ncones) {
+  int scan_fd = dup(dir_fd);
+  if (scan_fd < 0)
+    return;
+  DIR *d = fdopendir(scan_fd);
+  if (!d) {
+    close(scan_fd);
+    return;
+  }
+  struct dirent *de;
+  while ((de = readdir(d)) != NULL) {
+    if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+      continue;
+    if ((!rel || !*rel) && strcmp(de->d_name, ".git") == 0)
+      continue;
+
+    char child_rel[1024];
+    int n = rel && *rel ? snprintf(child_rel, sizeof(child_rel), "%s/%s", rel, de->d_name)
+                        : snprintf(child_rel, sizeof(child_rel), "%s", de->d_name);
+    if (n < 0 || (size_t)n >= sizeof(child_rel) || !ge_safe_relpath(child_rel))
+      continue;
+
+    struct stat st;
+    if (fstatat(dirfd(d), de->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0)
+      continue;
+    int is_dir = S_ISDIR(st.st_mode);
+    if (cone_path_kept(child_rel, is_dir, cones, ncones)) {
+      if (is_dir) {
+        int child_fd =
+            openat(dirfd(d), de->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (child_fd >= 0) {
+          cone_prune_walk_at(child_fd, child_rel, cones, ncones);
+          close(child_fd);
+        }
+      }
+    } else {
+      cone_rm_rf_at(dirfd(d), de->d_name);
+    }
+  }
+  closedir(d);
+}
+
+static void cone_prune_walk(const char *root, const char *rel, char cones[][256],
+                            size_t ncones) {
+  int root_fd = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+  if (root_fd < 0)
+    return;
+  cone_prune_walk_at(root_fd, rel, cones, ncones);
+  close(root_fd);
+}
+#endif
 
 /* sparse-set: write cone patterns, enable core.sparseCheckout, re-checkout HEAD,
  * then prune out-of-cone worktree paths.

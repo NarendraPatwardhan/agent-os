@@ -44,10 +44,7 @@ export function isGitFsDriver(driver: unknown): boolean {
 }
 
 /** Build a {@link Driver} for `mc.create({ mounts: [{ path, driver }] })`. */
-export function createGitFsDriver(
-  bridge: GitBridge,
-  opts: GitFsDriverOptions = {},
-): Driver {
+export function createGitFsDriver(bridge: GitBridge, opts: GitFsDriverOptions = {}): Driver {
   const readOnly = !!opts.readOnly;
   const cone = (opts.sparseCone ?? [])
     .map((p) => p.replace(/^\/+/, "").replace(/\/?$/, "/"))
@@ -69,8 +66,7 @@ export function createGitFsDriver(
   let generation = 0;
 
   // Shared with GitEngine.run / importPack via bridge.serial (single-writer).
-  const serial = <T>(fn: () => T | Promise<T>): Promise<T> =>
-    bridge.serial(fn);
+  const serial = <T>(fn: () => T | Promise<T>): Promise<T> => bridge.serial(fn);
 
   const FS = () => bridge.FS;
 
@@ -108,6 +104,87 @@ export function createGitFsDriver(
     } catch {
       return false;
     }
+  }
+
+  /** Resolve an existing worktree path while rejecting symlinks in every
+   * component. Emscripten maps lstat/isLink to MEMFS and NODEFS alike. */
+  function safeExisting(path: string): string {
+    const p = normalizeRel(path);
+    let cur = bridge.workRoot;
+    const parts = p.split("/").filter(Boolean);
+    for (let i = 0; i < parts.length; i++) {
+      cur += `/${parts[i]}`;
+      let st: { mode: number; size?: number };
+      try {
+        st = FS().lstat(cur);
+      } catch {
+        throw fsErr("ENOENT", p);
+      }
+      if (FS().isLink(st.mode)) {
+        throw fsErr("EACCES", `symlink path component: ${p}`);
+      }
+      if (i + 1 < parts.length && !FS().isDir(st.mode)) {
+        throw fsErr("ENOTDIR", p);
+      }
+    }
+    return cur;
+  }
+
+  /** Resolve a create target. Missing parent directories are created beneath
+   * workRoot; every component that already exists must be a non-link. */
+  function safeCreateTarget(path: string): string {
+    const p = normalizeRel(path);
+    const parts = p.split("/").filter(Boolean);
+    if (!parts.length) throw fsErr("EACCES", "mount root is not a create target");
+    let cur = bridge.workRoot;
+    for (let i = 0; i < parts.length; i++) {
+      cur += `/${parts[i]}`;
+      let st: { mode: number; size?: number } | undefined;
+      try {
+        st = FS().lstat(cur);
+      } catch {
+        st = undefined;
+      }
+      if (!st) {
+        if (i + 1 < parts.length) {
+          try {
+            FS().mkdir(cur);
+          } catch {
+            throw fsErr("EACCES", `cannot create safe parent: ${p}`);
+          }
+        }
+        continue;
+      }
+      if (FS().isLink(st.mode)) {
+        throw fsErr("EACCES", `symlink path component: ${p}`);
+      }
+      if (i + 1 < parts.length && !FS().isDir(st.mode)) {
+        throw fsErr("ENOTDIR", p);
+      }
+    }
+    return cur;
+  }
+
+  function safeDirEntries(path: string): DriverEntry[] {
+    const abs = path ? safeExisting(path) : bridge.workRoot;
+    const entries: DriverEntry[] = [];
+    for (const name of FS().readdir(abs)) {
+      if (name === "." || name === "..") continue;
+      const child = path ? `${path}/${name}` : name;
+      if (!inCone(child) || isGitMeta(child)) continue;
+      try {
+        const childAbs = safeExisting(child);
+        const st = FS().lstat(childAbs);
+        entries.push({
+          name,
+          kind: (FS().isDir(st.mode) ? "dir" : "file") as "dir" | "file",
+        });
+      } catch (e) {
+        if ((e as DriverError).code !== "EACCES") throw e;
+        // Symlinks are intentionally not projected into the guest namespace.
+      }
+    }
+    return entries;
   }
 
   /**
@@ -160,17 +237,14 @@ export function createGitFsDriver(
         // out/last (and out/stream alias) serve full stdout body when the
         // engine wrote a stream file after result.truncated; else Response JSON.
         if (p === ".git/mc/out/last" || p === ".git/mc/out/stream") {
-          const streamRel =
-            p === ".git/mc/out/stream" ? ".git/mc/out/last" : p;
+          const streamRel = p === ".git/mc/out/stream" ? ".git/mc/out/last" : p;
           const streamAbs = bridge.abs(streamRel);
           if (exists(streamAbs)) {
             try {
               const st = FS().stat(streamAbs);
               if (!FS().isDir(st.mode)) {
                 const data = FS().readFile(streamAbs);
-                return data instanceof Uint8Array
-                  ? data
-                  : new TextEncoder().encode(String(data));
+                return data instanceof Uint8Array ? data : new TextEncoder().encode(String(data));
               }
             } catch {
               /* fall through to Response alias */
@@ -184,22 +258,14 @@ export function createGitFsDriver(
         if (p === ".git/HEAD") {
           return new TextEncoder().encode(syntheticHeadContent());
         }
-        if (
-          p === ".git" ||
-          p === ".git/mc" ||
-          p === ".git/mc/out" ||
-          p === ".git/refs"
-        ) {
+        if (p === ".git" || p === ".git/mc" || p === ".git/mc/out" || p === ".git/refs") {
           throw fsErr("EISDIR", "is a directory");
         }
-        const abs = bridge.abs(p);
-        if (!exists(abs)) throw fsErr("ENOENT", p);
-        const st = FS().stat(abs);
+        const abs = safeExisting(p);
+        const st = FS().lstat(abs);
         if (FS().isDir(st.mode)) throw fsErr("EISDIR", p);
         const data = FS().readFile(abs);
-        return data instanceof Uint8Array
-          ? data
-          : new TextEncoder().encode(String(data));
+        return data instanceof Uint8Array ? data : new TextEncoder().encode(String(data));
       });
     },
 
@@ -212,12 +278,7 @@ export function createGitFsDriver(
         if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
         // Not listed under .git; not a projected path (ENOENT, not empty dir).
         if (isObjectsPath(p)) throw fsErr("ENOENT", ".git/objects");
-        if (
-          p === ".git" ||
-          p === ".git/mc" ||
-          p === ".git/mc/out" ||
-          p === ".git/refs"
-        ) {
+        if (p === ".git" || p === ".git/mc" || p === ".git/mc/out" || p === ".git/refs") {
           return { kind: "dir" as const, size: 0 };
         }
         if (p === ".git/mc/ctl") {
@@ -227,8 +288,7 @@ export function createGitFsDriver(
           };
         }
         if (p === ".git/mc/out/last" || p === ".git/mc/out/stream") {
-          const streamRel =
-            p === ".git/mc/out/stream" ? ".git/mc/out/last" : p;
+          const streamRel = p === ".git/mc/out/stream" ? ".git/mc/out/last" : p;
           const streamAbs = bridge.abs(streamRel);
           if (exists(streamAbs)) {
             try {
@@ -251,9 +311,8 @@ export function createGitFsDriver(
         if (p === ".git/HEAD") {
           return { kind: "file" as const, size: 32 };
         }
-        const abs = bridge.abs(p);
-        if (!exists(abs)) throw fsErr("ENOENT", p);
-        const st = FS().stat(abs);
+        const abs = safeExisting(p);
+        const st = FS().lstat(abs);
         return {
           kind: (FS().isDir(st.mode) ? "dir" : "file") as "dir" | "file",
           size: st.size ?? 0,
@@ -265,18 +324,7 @@ export function createGitFsDriver(
       return serial(() => {
         const p = normalizeRel(path);
         if (p === "" || p === ".") {
-          const names = FS()
-            .readdir(bridge.workRoot)
-            .filter((n) => n !== "." && n !== "..");
-          const out: DriverEntry[] = names
-            .filter((name) => inCone(name) || name === ".git")
-            .map((name) => {
-              const st = FS().stat(bridge.abs(name));
-              return {
-                name,
-                kind: (FS().isDir(st.mode) ? "dir" : "file") as "dir" | "file",
-              };
-            });
+          const out = safeDirEntries("");
           if (!out.some((e) => e.name === ".git")) {
             out.push({ name: ".git", kind: "dir" });
           }
@@ -313,24 +361,10 @@ export function createGitFsDriver(
         if (p === ".git/refs") {
           return [];
         }
-        const abs = bridge.abs(p);
-        if (!exists(abs)) throw fsErr("ENOENT", p);
-        const st = FS().stat(abs);
+        const abs = safeExisting(p);
+        const st = FS().lstat(abs);
         if (!FS().isDir(st.mode)) throw fsErr("ENOTDIR", p);
-        return FS()
-          .readdir(abs)
-          .filter((n) => n !== "." && n !== "..")
-          .filter((name) => {
-            const child = p ? `${p}/${name}` : name;
-            return inCone(child) || isGitMeta(child);
-          })
-          .map((name) => {
-            const s = FS().stat(`${abs}/${name}`);
-            return {
-              name,
-              kind: (FS().isDir(s.mode) ? "dir" : "file") as "dir" | "file",
-            };
-          });
+        return safeDirEntries(p);
       });
     },
 
@@ -341,10 +375,7 @@ export function createGitFsDriver(
         if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
         // Refuse writes into host ODB projection (not present to guest).
         if (isObjectsPath(p)) throw fsErr("ENOENT", ".git/objects");
-        const bytes =
-          data instanceof Uint8Array
-            ? data
-            : new TextEncoder().encode(String(data));
+        const bytes = data instanceof Uint8Array ? data : new TextEncoder().encode(String(data));
 
         // Ctl: write Request → Run; Response observed on subsequent open/read
         // (MountFs drain protocol).
@@ -409,13 +440,9 @@ export function createGitFsDriver(
                 ? { ...(req.args as Record<string, unknown>) }
                 : {};
             const name =
-              typeof base.name === "string" && base.name.trim()
-                ? base.name
-                : identity.name;
+              typeof base.name === "string" && base.name.trim() ? base.name : identity.name;
             const email =
-              typeof base.email === "string" && base.email.trim()
-                ? base.email
-                : identity.email;
+              typeof base.email === "string" && base.email.trim() ? base.email : identity.email;
             runReq = { op: req.op || "commit", args: { ...base, name, email } };
           }
           const resp = bridge.run(runReq) as unknown as Record<string, unknown>;
@@ -431,8 +458,7 @@ export function createGitFsDriver(
           throw fsErr("EACCES", "synthetic .git");
         }
 
-        const abs = bridge.abs(p);
-        ensureParent(FS(), abs);
+        const abs = safeCreateTarget(p);
         FS().writeFile(abs, bytes);
       });
     },
@@ -445,12 +471,14 @@ export function createGitFsDriver(
         if (isObjectsPath(p)) throw fsErr("ENOENT", ".git/objects");
         // Port parity: no guest mkdir under synthetic `.git` (incl. `.git` itself).
         if (isGitMeta(p)) throw fsErr("EACCES", "synthetic .git");
-        const abs = bridge.abs(p);
-        ensureParent(FS(), abs);
+        const abs = safeCreateTarget(p);
         try {
           FS().mkdir(abs);
         } catch {
-          /* EEXIST ok */
+          const st = FS().lstat(abs);
+          if (!FS().isDir(st.mode) || FS().isLink(st.mode)) {
+            throw fsErr("EEXIST", p);
+          }
         }
       });
     },
@@ -463,9 +491,8 @@ export function createGitFsDriver(
         // K17 before meta EACCES so objects stay ENOENT for all ops.
         if (isObjectsPath(p)) throw fsErr("ENOENT", ".git/objects");
         if (isGitMeta(p)) throw fsErr("EACCES", "synthetic .git");
-        const abs = bridge.abs(p);
-        if (!exists(abs)) throw fsErr("ENOENT", p);
-        const st = FS().stat(abs);
+        const abs = safeExisting(p);
+        const st = FS().lstat(abs);
         if (FS().isDir(st.mode)) FS().rmdir(abs);
         else FS().unlink(abs);
       });
@@ -485,10 +512,8 @@ export function createGitFsDriver(
         if (isGitMeta(from) || isGitMeta(to)) {
           throw fsErr("EACCES", "synthetic .git");
         }
-        const a = bridge.abs(from);
-        const b = bridge.abs(to);
-        if (!exists(a)) throw fsErr("ENOENT", from);
-        ensureParent(FS(), b);
+        const a = safeExisting(fp);
+        const b = safeCreateTarget(tp);
         FS().rename(a, b);
       });
     },
@@ -502,22 +527,4 @@ export function createGitFsDriver(
     writable: false,
   });
   return driver;
-}
-
-// ── Internals ───────────────────────────────────────────────────────────────
-
-function ensureParent(
-  FS: GitBridge["FS"],
-  abs: string,
-): void {
-  const parts = abs.split("/").filter(Boolean);
-  let cur = "";
-  for (let i = 0; i < parts.length - 1; i++) {
-    cur += "/" + parts[i];
-    try {
-      FS.mkdir(cur);
-    } catch {
-      /* exists */
-    }
-  }
 }

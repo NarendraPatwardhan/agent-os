@@ -9,6 +9,7 @@
 #include "git2.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -92,7 +93,7 @@ static int sb_ensure(char **buf, size_t *cap, size_t need) {
   return 0;
 }
 
-static int sb_printf(char **buf, size_t *len, size_t *cap, const char *fmt, ...) {
+int ge_sb_printf(char **buf, size_t *len, size_t *cap, const char *fmt, ...) {
   for (;;) {
     size_t avail = (*cap > *len) ? (*cap - *len) : 0;
     va_list ap;
@@ -112,6 +113,121 @@ static int sb_printf(char **buf, size_t *len, size_t *cap, const char *fmt, ...)
 
 void ge_join_path(char *out, size_t cap, const char *root, const char *rel) {
   snprintf(out, cap, "%s/%s", root, rel);
+}
+
+int ge_worktree_path(ge_engine *e, const char *rel, int allow_missing, char *out,
+                     size_t out_cap) {
+  if (!e || !rel || !ge_safe_relpath(rel) || !out || out_cap == 0) {
+    ge_set_err(e, "path: invalid worktree-relative path");
+    return -1;
+  }
+  int n = snprintf(out, out_cap, "%s/%s", e->root, rel);
+  if (n < 0 || (size_t)n >= out_cap) {
+    ge_set_err(e, "path: worktree path too long");
+    return -1;
+  }
+
+  char rel_copy[4096];
+  if (strlen(rel) >= sizeof(rel_copy)) {
+    ge_set_err(e, "path: worktree path too long");
+    return -1;
+  }
+  memcpy(rel_copy, rel, strlen(rel) + 1);
+
+  char cur[4096];
+  n = snprintf(cur, sizeof(cur), "%s", e->root);
+  if (n < 0 || (size_t)n >= sizeof(cur)) {
+    ge_set_err(e, "path: worktree root too long");
+    return -1;
+  }
+
+  char *save = NULL;
+  char *segment = strtok_r(rel_copy, "/", &save);
+  while (segment) {
+    size_t used = strlen(cur);
+    n = snprintf(cur + used, sizeof(cur) - used, "/%s", segment);
+    if (n < 0 || (size_t)n >= sizeof(cur) - used) {
+      ge_set_err(e, "path: worktree path too long");
+      return -1;
+    }
+
+    char *next = strtok_r(NULL, "/", &save);
+    struct stat st;
+    if (lstat(cur, &st) != 0) {
+      if (errno == ENOENT && allow_missing)
+        return 0;
+      ge_set_err(e, "path: worktree component does not exist");
+      return -1;
+    }
+    if (S_ISLNK(st.st_mode)) {
+      ge_set_err(e, "path: symlink components are not allowed");
+      return -1;
+    }
+    if (next && !S_ISDIR(st.st_mode)) {
+      ge_set_err(e, "path: parent component is not a directory");
+      return -1;
+    }
+    segment = next;
+  }
+  return 0;
+}
+
+int ge_worktree_mkdir_parents(ge_engine *e, const char *rel) {
+  if (!e || !rel || !ge_safe_relpath(rel)) {
+    ge_set_err(e, "path: invalid worktree-relative path");
+    return -1;
+  }
+
+  char rel_copy[4096];
+  if (strlen(rel) >= sizeof(rel_copy)) {
+    ge_set_err(e, "path: worktree path too long");
+    return -1;
+  }
+  memcpy(rel_copy, rel, strlen(rel) + 1);
+
+  char cur[4096];
+  int n = snprintf(cur, sizeof(cur), "%s", e->root);
+  if (n < 0 || (size_t)n >= sizeof(cur)) {
+    ge_set_err(e, "path: worktree root too long");
+    return -1;
+  }
+
+  char *save = NULL;
+  char *segment = strtok_r(rel_copy, "/", &save);
+  while (segment) {
+    char *next = strtok_r(NULL, "/", &save);
+    if (!next)
+      break; /* leaf is created by the caller */
+
+    size_t used = strlen(cur);
+    n = snprintf(cur + used, sizeof(cur) - used, "/%s", segment);
+    if (n < 0 || (size_t)n >= sizeof(cur) - used) {
+      ge_set_err(e, "path: worktree path too long");
+      return -1;
+    }
+
+    struct stat st;
+    if (lstat(cur, &st) != 0) {
+      if (errno != ENOENT || mkdir(cur, 0755) != 0) {
+        ge_set_err(e, "path: cannot create parent directory");
+        return -1;
+      }
+      if (lstat(cur, &st) != 0) {
+        ge_set_err(e, "path: cannot inspect parent directory");
+        return -1;
+      }
+    }
+    if (S_ISLNK(st.st_mode)) {
+      ge_set_err(e, "path: symlink components are not allowed");
+      return -1;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+      ge_set_err(e, "path: parent component is not a directory");
+      return -1;
+    }
+    segment = next;
+  }
+  return 0;
 }
 
 static void import_pack_reset(ge_engine *e);
@@ -437,11 +553,11 @@ int op_diff(ge_engine *e, const char *args, char **out_owned);
 int op_show(ge_engine *e, const char *args, char **out_owned);
 int op_reset(ge_engine *e, const char *args);
 int op_tag(ge_engine *e, const char *args);
-int op_config(ge_engine *e, const char *args, char *out, size_t out_cap);
-int op_remote(ge_engine *e, const char *args, char *out, size_t out_cap);
+int op_config(ge_engine *e, const char *args, char **out_owned);
+int op_remote(ge_engine *e, const char *args, char **out_owned);
 int op_branch_delete(ge_engine *e, const char *name);
-int op_tips(ge_engine *e, char *result_json, size_t cap);
-int op_push_prepare(ge_engine *e, char *result_json, size_t cap);
+int op_tips(ge_engine *e, char **result_owned);
+int op_push_prepare(ge_engine *e, char **result_owned);
 int op_push_complete(ge_engine *e, const char *args);
 int op_sparse_set(ge_engine *e, const char *args);
 int op_sparse_disable(ge_engine *e, const char *args);
@@ -483,8 +599,17 @@ static int op_write(ge_engine *e, const char *args) {
     return -1;
   }
   char full[4096];
-  join_path(full, sizeof(full), e->root, path);
-  /* D22: fail closed if path is a symlink (never follow / overwrite via link). */
+  if (ge_worktree_path(e, path, 1, full, sizeof(full)) != 0) {
+    free(content);
+    return -1;
+  }
+  if (ge_worktree_mkdir_parents(e, path) != 0 ||
+      ge_worktree_path(e, path, 1, full, sizeof(full)) != 0) {
+    free(content);
+    return -1;
+  }
+  /* D22: fail closed on a symlink or special final path. Parent components
+   * were checked above before and after mkdir-p. */
   {
     struct stat st;
     if (lstat(full, &st) == 0) {
@@ -504,22 +629,6 @@ static int op_write(ge_engine *e, const char *args) {
         return -1;
       }
     }
-  }
-  /* mkdir -p parent (multi-level). */
-  char *slash = strrchr(full, '/');
-  if (slash && slash != full) {
-    *slash = '\0';
-    char tmp[4096];
-    snprintf(tmp, sizeof(tmp), "%s", full);
-    for (char *p = tmp + 1; *p; p++) {
-      if (*p == '/') {
-        *p = '\0';
-        mkdir(tmp, 0755);
-        *p = '/';
-      }
-    }
-    mkdir(tmp, 0755);
-    *slash = '/';
   }
   FILE *f = fopen(full, "wb");
   if (!f) {
@@ -547,7 +656,8 @@ static int index_add_file(ge_engine *e, git_index *index, const char *rel) {
     return -1;
   }
   char full[4096];
-  join_path(full, sizeof(full), e->root, rel);
+  if (ge_worktree_path(e, rel, 0, full, sizeof(full)) != 0)
+    return -1;
   struct stat st;
   if (lstat(full, &st) != 0) {
     set_err(e, "add: cannot open file");
@@ -890,10 +1000,10 @@ static int op_status(ge_engine *e, int short_fmt, char **out_owned) {
       path = "?";
 
     if (old_path && old_path[0] && path && strcmp(old_path, path) != 0) {
-      if (sb_printf(&buf, &len, &cap, "%c%c %s -> %s\n", xy[0], xy[1], old_path, path) != 0)
+      if (ge_sb_printf(&buf, &len, &cap, "%c%c %s -> %s\n", xy[0], xy[1], old_path, path) != 0)
         fail = 1;
     } else {
-      if (sb_printf(&buf, &len, &cap, "%c%c %s\n", xy[0], xy[1], path) != 0)
+      if (ge_sb_printf(&buf, &len, &cap, "%c%c %s\n", xy[0], xy[1], path) != 0)
         fail = 1;
     }
   }
@@ -960,7 +1070,7 @@ static int op_log(ge_engine *e, const char *args, char **out_owned,
     char hex[GIT_OID_HEXSZ + 1];
     git_oid_tostr(hex, sizeof(hex), &oid);
     const char *msg = git_commit_summary(c);
-    if (sb_printf(&buf, &len, &cap, "%s %s\n", hex, msg ? msg : "") != 0)
+    if (ge_sb_printf(&buf, &len, &cap, "%s %s\n", hex, msg ? msg : "") != 0)
       fail = 1;
     git_commit_free(c);
     count++;
@@ -988,9 +1098,9 @@ static int op_log(ge_engine *e, const char *args, char **out_owned,
   int bounded = more || clamped;
   if (bounded) {
     /* Stable footer — agents can detect without parsing result. */
-    if (sb_printf(&buf, &len, &cap, "# log: bounded max_count=%lld count=%lld%s\n",
-                  (long long)max_count, (long long)count,
-                  more ? " more=true" : " clamped=true") != 0) {
+    if (ge_sb_printf(&buf, &len, &cap, "# log: bounded max_count=%lld count=%lld%s\n",
+                     (long long)max_count, (long long)count,
+                     more ? " more=true" : " clamped=true") != 0) {
       free(buf);
       set_err(e, "log: out of memory");
       return -1;
@@ -1022,7 +1132,9 @@ static int op_rev_parse(ge_engine *e, const char *args, char *out, size_t out_ca
   return 0;
 }
 
-static int op_branch_list(ge_engine *e, char *out, size_t out_cap) {
+static int op_branch_list(ge_engine *e, char **out_owned) {
+  if (out_owned)
+    *out_owned = NULL;
   if (ensure_repo(e) != 0)
     return -1;
   git_branch_iterator *it = NULL;
@@ -1030,19 +1142,33 @@ static int op_branch_list(ge_engine *e, char *out, size_t out_cap) {
     set_err_git(e, "branch");
     return -1;
   }
-  out[0] = '\0';
-  size_t used = 0;
+  char *out = NULL;
+  size_t used = 0, cap = 0;
   git_reference *ref = NULL;
   git_branch_t t;
   while (git_branch_next(&ref, &t, it) == 0) {
     const char *name = NULL;
     git_branch_name(&name, ref);
     int is_head = git_branch_is_head(ref);
-    used += (size_t)snprintf(out + used, out_cap - used, "%s %s\n", is_head ? "*" : " ",
-                             name ? name : "?");
+    if (ge_sb_printf(&out, &used, &cap, "%s %s\n", is_head ? "*" : " ",
+                     name ? name : "?") != 0) {
+      git_reference_free(ref);
+      git_branch_iterator_free(it);
+      free(out);
+      set_err(e, "branch: out of memory");
+      return -1;
+    }
     git_reference_free(ref);
   }
   git_branch_iterator_free(it);
+  if (!out && ge_sb_printf(&out, &used, &cap, "%s", "") != 0) {
+    set_err(e, "branch: out of memory");
+    return -1;
+  }
+  if (out_owned)
+    *out_owned = out;
+  else
+    free(out);
   return 0;
 }
 
@@ -1879,11 +2005,12 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
         return resp_err(e, 1, e->err);
       return resp_ok(e, "", NULL);
     }
-    char buf[4096];
-    if (op_branch_list(e, buf, sizeof(buf)) != 0)
+    char *buf = NULL;
+    if (op_branch_list(e, &buf) != 0) {
+      free(buf);
       return resp_err(e, 1, e->err);
-    char *r = resp_ok(e, buf, NULL);
-    return r ? r : ge_static_oom;
+    }
+    return ge_resp_ok_stdout(e, buf, 1, NULL);
   }
 
   if (strcmp(op, "checkout") == 0 || strcmp(op, "switch") == 0) {
@@ -1927,25 +2054,30 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     return resp_ok(e, "", NULL);
   }
   if (strcmp(op, "config") == 0) {
-    char buf[4096] = "";
-    if (op_config(e, args, buf, sizeof(buf)) != 0)
+    char *buf = NULL;
+    if (op_config(e, args, &buf) != 0) {
+      free(buf);
       return resp_err(e, 1, e->err);
-    char *r = resp_ok(e, buf, NULL);
-    return r ? r : ge_static_oom;
+    }
+    return ge_resp_ok_stdout(e, buf, 1, NULL);
   }
   if (strcmp(op, "remote") == 0) {
-    char buf[8192] = "";
-    if (op_remote(e, args, buf, sizeof(buf)) != 0)
+    char *buf = NULL;
+    if (op_remote(e, args, &buf) != 0) {
+      free(buf);
       return resp_err(e, 1, e->err);
-    char *r = resp_ok(e, buf, NULL);
-    return r ? r : ge_static_oom;
+    }
+    return ge_resp_ok_stdout(e, buf, 1, NULL);
   }
   /* ── Host-mediated remotes / pack (no dial) ───────────────────────────── */
   if (strcmp(op, "tips") == 0) {
-    char tips[16384];
-    if (op_tips(e, tips, sizeof(tips)) != 0)
+    char *tips = NULL;
+    if (op_tips(e, &tips) != 0) {
+      free(tips);
       return resp_err(e, 1, e->err);
+    }
     char *r = resp_ok(e, "", tips);
+    free(tips);
     return r ? r : ge_static_oom;
   }
 
@@ -1986,10 +2118,13 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
   }
 
   if (strcmp(op, "push.prepare") == 0) {
-    char result[16384];
-    if (op_push_prepare(e, result, sizeof(result)) != 0)
+    char *result = NULL;
+    if (op_push_prepare(e, &result) != 0) {
+      free(result);
       return resp_err(e, 1, e->err);
+    }
     char *r = resp_ok(e, "", result);
+    free(result);
     return r ? r : ge_static_oom;
   }
   if (strcmp(op, "push.complete") == 0) {

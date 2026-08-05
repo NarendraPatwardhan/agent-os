@@ -5,11 +5,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-  decodeDurableBlob,
-  GitEngine,
-  MemoryDurable,
-} from "../src/git/index.js";
+import { decodeDurableBlob, GitEngine, MemoryDurable } from "../src/git/index.js";
 
 function engineTar(): Uint8Array {
   const rel = process.env.MC_GIT_ENGINE_TAR || "";
@@ -55,7 +51,8 @@ async function main() {
 
   // host identity inject — commit without name/email succeeds when configured.
   // Never invents Agent@example.com when identity is unset (covered by engine K28).
-  const engId = await GitEngine.load({ engine: engineTar(),
+  const engId = await GitEngine.load({
+    engine: engineTar(),
     identity: { name: "Host Policy", email: "host@policy.test" },
   });
   let ir = await engId.run({ op: "init" });
@@ -191,9 +188,7 @@ async function main() {
   }
   // K17: no `.git/objects` façade — not listed; open/stat → ENOENT (host ODB not projected).
   if (gitEntries.some((e) => e.name === "objects")) {
-    throw new Error(
-      `readdir /.git must not list objects (K17): ${JSON.stringify(gitEntries)}`,
-    );
+    throw new Error(`readdir /.git must not list objects (K17): ${JSON.stringify(gitEntries)}`);
   }
   for (const objectsPath of [
     "/.git/objects",
@@ -262,14 +257,9 @@ async function main() {
   const resp = JSON.parse(new TextDecoder().decode(respBytes));
   if (!resp.ok) throw new Error(`ctl status: ${JSON.stringify(resp)}`);
 
-  const genBefore = new TextDecoder().decode(
-    await driver.open("/.git/mc/generation"),
-  );
+  const genBefore = new TextDecoder().decode(await driver.open("/.git/mc/generation"));
   // Coherence: worktree write via driver then status via Run (single-writer)
-  await driver.write!(
-    "/note.txt",
-    new TextEncoder().encode("note\n"),
-  );
+  await driver.write!("/note.txt", new TextEncoder().encode("note\n"));
   await eng.run({ op: "add", args: { path: "note.txt" } });
   const st = await eng.run({ op: "status", args: { short: true } });
   if (!st.ok) throw new Error(`status: ${JSON.stringify(st)}`);
@@ -278,20 +268,77 @@ async function main() {
     throw new Error("worktree open/read coherence failed");
   }
 
+  // GIT-002: MEMFS/NODEFS gitfs and direct engine ops reject a symlink in any
+  // path component. The outside sentinel is never reachable through the mount.
+  const fs = eng.bridge.FS;
+  if (typeof fs.symlink !== "function") {
+    throw new Error("Emscripten FS.symlink is required for containment regression");
+  }
+  fs.mkdir("/outside-gitfs");
+  fs.writeFile("/outside-gitfs/sentinel.txt", "safe\n");
+  fs.symlink!("/outside-gitfs", `${eng.bridge.workRoot}/escape`);
+  const expectDriverError = async (label: string, fn: () => Promise<unknown>): Promise<void> => {
+    try {
+      await fn();
+      throw new Error(`${label} unexpectedly succeeded`);
+    } catch (e) {
+      if ((e as { code?: string }).code !== "EACCES") {
+        throw new Error(
+          `${label} expected EACCES, got ${String((e as { code?: string }).code ?? e)}`,
+        );
+      }
+    }
+  };
+  await expectDriverError("symlink open", () => driver.open("/escape/sentinel.txt"));
+  await expectDriverError("symlink stat", () => driver.stat("/escape/sentinel.txt"));
+  await expectDriverError("symlink readdir", () => driver.readdir("/escape"));
+  await expectDriverError("symlink write", () =>
+    driver.write!("/escape/pwn.txt", new TextEncoder().encode("bad")),
+  );
+  await expectDriverError("symlink mkdir", () => driver.mkdir!("/escape/newdir"));
+  await expectDriverError("symlink unlink", () => driver.unlink!("/escape/sentinel.txt"));
+  await expectDriverError("symlink rename destination", () =>
+    driver.rename!("/note.txt", "/escape/moved.txt"),
+  );
+  await expectDriverError("symlink rename source", () =>
+    driver.rename!("/escape/sentinel.txt", "/moved.txt"),
+  );
+  const rootAfterSymlink = await driver.readdir("/");
+  if (rootAfterSymlink.some((entry) => entry.name === "escape")) {
+    throw new Error("gitfs root readdir projected a symlink");
+  }
+  for (const [op, args] of [
+    ["write", { path: "escape/pwn.txt", content: "bad" }],
+    ["add", { path: "escape/sentinel.txt" }],
+    ["rm", { path: "escape/sentinel.txt" }],
+  ] as const) {
+    const blocked = await eng.run({ op, args });
+    if (blocked.ok || !String(blocked.stderr || "").includes("symlink")) {
+      throw new Error(`engine ${op} parent symlink must fail: ${JSON.stringify(blocked)}`);
+    }
+  }
+  if (
+    new TextDecoder().decode(fs.readFile("/outside-gitfs/sentinel.txt") as Uint8Array) !== "safe\n"
+  ) {
+    throw new Error("gitfs containment changed outside sentinel");
+  }
+  let escapedWriteExists = false;
+  try {
+    fs.stat("/outside-gitfs/pwn.txt");
+    escapedWriteExists = true;
+  } catch {
+    // Missing is the expected result.
+  }
+  if (escapedWriteExists) throw new Error("gitfs write escaped through symlink");
+  fs.unlink(`${eng.bridge.workRoot}/escape`);
+
   // Remote op via ctl fails closed
-  await driver.write!(
-    "/.git/mc/ctl",
-    new TextEncoder().encode(JSON.stringify({ op: "fetch" })),
-  );
-  const refuse = JSON.parse(
-    new TextDecoder().decode(await driver.open("/.git/mc/out/last")),
-  );
+  await driver.write!("/.git/mc/ctl", new TextEncoder().encode(JSON.stringify({ op: "fetch" })));
+  const refuse = JSON.parse(new TextDecoder().decode(await driver.open("/.git/mc/out/last")));
   if (refuse.ok || !String(refuse.stderr || "").includes("host_call")) {
     throw new Error(`ctl fetch refuse: ${JSON.stringify(refuse)}`);
   }
-  const genAfter = new TextDecoder().decode(
-    await driver.open("/.git/mc/generation"),
-  );
+  const genAfter = new TextDecoder().decode(await driver.open("/.git/mc/generation"));
   if (Number(genAfter) <= Number(genBefore)) {
     throw new Error(`generation should advance: ${genBefore} → ${genAfter}`);
   }
@@ -346,12 +393,7 @@ async function main() {
       }
     }
   }
-  for (const unlinkPath of [
-    "/.git/HEAD",
-    "/.git/config",
-    "/.git/mc/ctl",
-    "/.git/objects/pack",
-  ]) {
+  for (const unlinkPath of ["/.git/HEAD", "/.git/config", "/.git/mc/ctl", "/.git/objects/pack"]) {
     try {
       await driver.unlink!(unlinkPath);
       throw new Error(
@@ -371,9 +413,7 @@ async function main() {
     "/.git/mc/ctl",
     enc.encode(JSON.stringify({ op: "status", args: { short: true } })),
   );
-  const ctlStill = JSON.parse(
-    new TextDecoder().decode(await driver.open("/.git/mc/ctl")),
-  );
+  const ctlStill = JSON.parse(new TextDecoder().decode(await driver.open("/.git/mc/ctl")));
   if (!ctlStill.ok) {
     throw new Error(`ctl still writable after meta EACCES: ${JSON.stringify(ctlStill)}`);
   }
@@ -399,6 +439,9 @@ async function main() {
   if (new TextDecoder().decode(keep) !== "keep\n") {
     throw new Error("in-cone open failed");
   }
+  fs.mkdir("/outside-sparse");
+  fs.writeFile("/outside-sparse/sentinel.txt", "safe\n");
+  fs.symlink!("/outside-sparse", `${eng.bridge.workRoot}/drop/outside`);
   // Engine sparse-set: multi-pattern + basic negation (not full sparse language).
   const ss = await eng.run({
     op: "sparse-set",
@@ -406,6 +449,14 @@ async function main() {
   });
   if (!ss.ok) {
     throw new Error(`sparse-set: ${JSON.stringify(ss)}`);
+  }
+  const sparseSentinel = fs.readFile("/outside-sparse/sentinel.txt");
+  const sparseText =
+    sparseSentinel instanceof Uint8Array
+      ? new TextDecoder().decode(sparseSentinel)
+      : String(sparseSentinel);
+  if (sparseText !== "safe\n") {
+    throw new Error("sparse prune followed an out-of-cone symlink");
   }
   // Porcelain-v1 status (default): untracked as ?? when present; staged XY form.
   const stPorcelain = await eng.run({ op: "status" });
@@ -418,9 +469,7 @@ async function main() {
 
   // –R55: durable rebind — pack+refs AGIT envelope restores objects + worktree.
   const dur = new MemoryDurable("rebind");
-  const engDur = await GitEngine.load({ engine: engineTar(),
-    durable: dur,
-  });
+  const engDur = await GitEngine.load({ engine: engineTar(), durable: dur });
   let dr = await engDur.run({ op: "init" });
   if (!dr.ok) throw new Error(`durable init: ${JSON.stringify(dr)}`);
   dr = await engDur.run({
@@ -440,9 +489,9 @@ async function main() {
     },
   });
   if (!dr.ok) throw new Error(`durable commit: ${JSON.stringify(dr)}`);
-  const headBefore = (
-    await engDur.run({ op: "rev-parse", args: { rev: "HEAD" } })
-  ).stdout!.trim().split(/\s+/)[0];
+  const headBefore = (await engDur.run({ op: "rev-parse", args: { rev: "HEAD" } }))
+    .stdout!.trim()
+    .split(/\s+/)[0];
   if (!headBefore || headBefore.length !== 40) {
     throw new Error(`durable HEAD before: ${headBefore}`);
   }
@@ -453,16 +502,12 @@ async function main() {
   }
   await engDur.close();
 
-  const engRestored = await GitEngine.load({ engine: engineTar(),
-    durable: dur,
-  });
-  const headAfter = (
-    await engRestored.run({ op: "rev-parse", args: { rev: "HEAD" } })
-  ).stdout!.trim().split(/\s+/)[0];
+  const engRestored = await GitEngine.load({ engine: engineTar(), durable: dur });
+  const headAfter = (await engRestored.run({ op: "rev-parse", args: { rev: "HEAD" } }))
+    .stdout!.trim()
+    .split(/\s+/)[0];
   if (headAfter !== headBefore) {
-    throw new Error(
-      `durable rebind HEAD mismatch: ${headBefore} → ${headAfter}`,
-    );
+    throw new Error(`durable rebind HEAD mismatch: ${headBefore} → ${headAfter}`);
   }
   const fileR = await engRestored.run({
     op: "show",
@@ -491,10 +536,11 @@ async function main() {
   const { join: pathJoin } = await import("node:path");
   const durableHost = await mkdtemp(pathJoin(tmpdir(), "agentos-git-dur-"));
   try {
-    const engA = await GitEngine.load({ engine: engineTar(),
-      durableDir: durableHost,
-    });
-    if (engA.durableDir !== durableHost && !engA.durableDir?.endsWith(durableHost.replace(/\/$/, ""))) {
+    const engA = await GitEngine.load({ engine: engineTar(), durableDir: durableHost });
+    if (
+      engA.durableDir !== durableHost &&
+      !engA.durableDir?.endsWith(durableHost.replace(/\/$/, ""))
+    ) {
       // hostPath is absolute-resolved
       if (!engA.durableDir) {
         throw new Error("durableDir load must surface HostDirDurable path");
@@ -519,9 +565,9 @@ async function main() {
       },
     });
     if (!r.ok) throw new Error(`D16 commit: ${JSON.stringify(r)}`);
-    const headA = (
-      await engA.run({ op: "rev-parse", args: { rev: "HEAD" } })
-    ).stdout!.trim().split(/\s+/)[0];
+    const headA = (await engA.run({ op: "rev-parse", args: { rev: "HEAD" } }))
+      .stdout!.trim()
+      .split(/\s+/)[0];
     if (!headA || headA.length !== 40) {
       throw new Error(`D16 HEAD A: ${headA}`);
     }
@@ -532,12 +578,10 @@ async function main() {
     await engA.close();
 
     // Second engine load = second process open of the same host directory.
-    const engB = await GitEngine.load({ engine: engineTar(),
-      durableDir: durableHost,
-    });
-    const headB = (
-      await engB.run({ op: "rev-parse", args: { rev: "HEAD" } })
-    ).stdout!.trim().split(/\s+/)[0];
+    const engB = await GitEngine.load({ engine: engineTar(), durableDir: durableHost });
+    const headB = (await engB.run({ op: "rev-parse", args: { rev: "HEAD" } }))
+      .stdout!.trim()
+      .split(/\s+/)[0];
     if (headB !== headA) {
       throw new Error(`D16 directory reopen HEAD mismatch: ${headA} → ${headB}`);
     }
@@ -553,9 +597,7 @@ async function main() {
       bodyB = String(showB.stdout || "");
     }
     if (!bodyB.includes("host-dir-roundtrip")) {
-      throw new Error(
-        `D16 directory reopen missing worktree content: ${JSON.stringify(bodyB)}`,
-      );
+      throw new Error(`D16 directory reopen missing worktree content: ${JSON.stringify(bodyB)}`);
     }
     // Directory backends do not produce AGIT durableSnapshot.
     if (engB.durableSnapshot !== null) {
@@ -589,9 +631,7 @@ async function main() {
     });
     if (!tr.ok) throw new Error(`D15 commit: ${JSON.stringify(tr)}`);
     // Worktree change large enough for a patch once embed limit is tiny.
-    const lines = Array.from({ length: 20 }, (_, i) => `line ${i} xxxxxxxx`).join(
-      "\n",
-    );
+    const lines = Array.from({ length: 20 }, (_, i) => `line ${i} xxxxxxxx`).join("\n");
     tr = await engT.run({
       op: "write",
       args: { path: "big.txt", content: lines + "\n" },
@@ -646,7 +686,12 @@ async function main() {
         FS.symlink("real.txt", linkAbs);
       }
       sr = await engS.run({ op: "add", args: { path: "link.txt" } });
-      if (sr.ok || !String(sr.stderr || "").toLowerCase().includes("symlink")) {
+      if (
+        sr.ok ||
+        !String(sr.stderr || "")
+          .toLowerCase()
+          .includes("symlink")
+      ) {
         throw new Error(`D22 expected add symlink fail: ${JSON.stringify(sr)}`);
       }
     }
@@ -690,19 +735,18 @@ async function main() {
   }
 
   // –R88 / D35: metrics counters + duration/bytes/redacted origin
-  const {
-    resetGitCounters,
-    snapshotGitCounters,
-    recordRemoteResult,
-    redactOrigin,
-  } = await import("../src/git/metrics.js");
+  const { resetGitCounters, snapshotGitCounters, recordRemoteResult, redactOrigin } =
+    await import("../src/git/metrics.js");
   resetGitCounters();
   recordRemoteResult("clone", true, {
     duration_ms: 12,
     pack_bytes: 4096,
     origin_redacted: redactOrigin("https://example.com/org/repo.git?token=secret"),
   });
-  recordRemoteResult("clone", false, { allowlist_deny: true, origin_redacted: "https://evil.example" });
+  recordRemoteResult("clone", false, {
+    allowlist_deny: true,
+    origin_redacted: "https://evil.example",
+  });
   recordRemoteResult("push", true);
   const snap = snapshotGitCounters();
   if (snap.clone_ok !== 1 || snap.clone_error !== 1 || snap.push_ok !== 1) {

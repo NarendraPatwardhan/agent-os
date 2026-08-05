@@ -110,13 +110,65 @@ static uint8_t *enc_readdir(const char *path, size_t *out_len) {
   return b;
 }
 
+static void put_u32(uint8_t *p, uint32_t v) {
+  p[0] = (uint8_t)(v & 0xff);
+  p[1] = (uint8_t)((v >> 8) & 0xff);
+  p[2] = (uint8_t)((v >> 16) & 0xff);
+  p[3] = (uint8_t)((v >> 24) & 0xff);
+}
+
+static uint8_t *enc_mount(uint32_t op, const char *path, const char *arg,
+                          const uint8_t *data, size_t data_len, size_t *out_len) {
+  size_t plen = strlen(path);
+  size_t alen = arg ? strlen(arg) : 0;
+  size_t n = 8 + plen + 4 + alen + data_len;
+  uint8_t *b = (uint8_t *)malloc(n);
+  if (!b)
+    return NULL;
+  put_u32(b, op);
+  put_u32(b + 4, (uint32_t)plen);
+  memcpy(b + 8, path, plen);
+  size_t arg_off = 8 + plen;
+  put_u32(b + arg_off, (uint32_t)alen);
+  if (alen)
+    memcpy(b + arg_off + 4, arg, alen);
+  if (data_len)
+    memcpy(b + arg_off + 4 + alen, data, data_len);
+  *out_len = n;
+  return b;
+}
+
 static int32_t rd_i32(const uint8_t *p) {
   return (int32_t)((uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
                    ((uint32_t)p[3] << 24));
 }
 
-/* AgentOS contract ENOENT (constants.kdl → gen). */
-enum { GE_TEST_ENOENT = 44 };
+/* AgentOS contract errno values (constants.kdl → gen). */
+enum { GE_TEST_EACCES = 2, GE_TEST_ENOENT = 44 };
+
+static int expect_mount_status(ge_engine *e, uint8_t *body, size_t body_len,
+                               int32_t want, const char *label) {
+  if (!body) {
+    fprintf(stderr, "%s: request allocation failed\n", label);
+    return 1;
+  }
+  uint8_t *out = NULL;
+  size_t out_len = 0;
+  int rc = ge_mount_dispatch(e, body, body_len, &out, &out_len);
+  free(body);
+  if (rc != 0 || !out || out_len < 4) {
+    fprintf(stderr, "%s: dispatch failed\n", label);
+    free(out);
+    return 1;
+  }
+  int32_t got = rd_i32(out);
+  free(out);
+  if (got != want) {
+    fprintf(stderr, "%s: status %d, want %d\n", label, (int)got, (int)want);
+    return 1;
+  }
+  return 0;
+}
 
 int main(void) {
   char tmpl[] = "/tmp/ge-port-XXXXXX";
@@ -292,6 +344,70 @@ int main(void) {
       }
     }
     free(mout);
+  }
+
+  /* GIT-002: every real worktree operation fails closed when any path
+   * component is a symlink. The outside sentinel must remain untouched. */
+  {
+    char outside_tmpl[] = "/tmp/ge-port-outside-XXXXXX";
+    char *outside = mkdtemp(outside_tmpl);
+    if (!outside) {
+      perror("mkdtemp outside");
+      return 1;
+    }
+    char sentinel[4096], link_path[4096], escaped[4096];
+    snprintf(sentinel, sizeof(sentinel), "%s/sentinel.txt", outside);
+    snprintf(link_path, sizeof(link_path), "%s/escape", root);
+    snprintf(escaped, sizeof(escaped), "%s/pwn.txt", outside);
+    FILE *sf = fopen(sentinel, "wb");
+    if (!sf || fwrite("safe\n", 1, 5, sf) != 5 || fclose(sf) != 0) {
+      fprintf(stderr, "cannot create outside sentinel\n");
+      return 1;
+    }
+    if (symlink(outside, link_path) != 0) {
+      perror("symlink outside");
+      return 1;
+    }
+
+    size_t blen = 0;
+#define EXPECT_EACCES(request_expr, label)                                      \
+  do {                                                                          \
+    blen = 0;                                                                   \
+    uint8_t *request_body = (request_expr);                                     \
+    if (expect_mount_status(e, request_body, blen, GE_TEST_EACCES, (label)))    \
+      return 1;                                                                 \
+  } while (0)
+
+    EXPECT_EACCES(enc_open("escape/sentinel.txt", &blen), "symlink open");
+    EXPECT_EACCES(enc_stat("escape/sentinel.txt", &blen), "symlink stat");
+    EXPECT_EACCES(enc_readdir("escape", &blen), "symlink readdir");
+    EXPECT_EACCES(
+        enc_mount(6, "escape/pwn.txt", "", (const uint8_t *)"owned", 5, &blen),
+        "symlink write");
+    EXPECT_EACCES(enc_mount(2, "escape/newdir", "", NULL, 0, &blen),
+                  "symlink mkdir");
+    EXPECT_EACCES(enc_mount(3, "escape/sentinel.txt", "", NULL, 0, &blen),
+                  "symlink unlink");
+    EXPECT_EACCES(enc_mount(4, "a.txt", "escape/moved", NULL, 0, &blen),
+                  "symlink rename destination");
+    EXPECT_EACCES(enc_mount(4, "escape/sentinel.txt", "moved", NULL, 0, &blen),
+                  "symlink rename source");
+#undef EXPECT_EACCES
+
+    if (access(sentinel, F_OK) != 0 || access(escaped, F_OK) == 0) {
+      fprintf(stderr, "symlink containment changed outside files\n");
+      return 1;
+    }
+    char outside_dir[4096];
+    snprintf(outside_dir, sizeof(outside_dir), "%s/newdir", outside);
+    if (access(outside_dir, F_OK) == 0) {
+      fprintf(stderr, "symlink mkdir escaped worktree\n");
+      return 1;
+    }
+
+    unlink(link_path);
+    unlink(sentinel);
+    rmdir(outside);
   }
 
   ge_close(e);
