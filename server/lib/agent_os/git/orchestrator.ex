@@ -247,9 +247,6 @@ defmodule AgentOS.Git.Orchestrator do
         stderr = Map.get(m, "stderr") || Map.get(m, :stderr) || inspect(m)
         {:ok, response(false, 1, "", to_string(stderr))}
 
-      {:ok, resp} when is_binary(resp) ->
-        {:ok, resp}
-
       other ->
         map_remote_error_if_needed(other, :clone)
     end
@@ -356,23 +353,16 @@ defmodule AgentOS.Git.Orchestrator do
                 "args" => maybe_put_ref(%{"url" => String.trim(url)}, hash)
               }
 
-              case clone(nested_pid, clone_req, opts) do
-                {:ok, json} when is_binary(json) ->
-                  if String.contains?(json, "\"ok\":true") or
-                       String.contains?(json, ~s("ok":true)) do
-                    # Prefer exact gitlink checkout when hash provided.
-                    _ = maybe_checkout_gitlink(nested_pid, hash)
-                    {:ok, path}
-                  else
-                    stderr = extract_stderr(json)
-                    {:error, {:submodule, path, stderr}}
-                  end
+              {:ok, json} = clone(nested_pid, clone_req, opts)
 
-                {:error, reason} ->
-                  {:error, {:submodule, path, inspect(reason)}}
-
-                other ->
-                  {:error, {:submodule, path, inspect(other)}}
+              if String.contains?(json, "\"ok\":true") or
+                   String.contains?(json, ~s("ok":true)) do
+                # Prefer exact gitlink checkout when hash provided.
+                _ = maybe_checkout_gitlink(nested_pid, hash)
+                {:ok, path}
+              else
+                stderr = extract_stderr(json)
+                {:error, {:submodule, path, stderr}}
               end
             after
               _ = GitEngine.stop(nested_pid)
@@ -1739,8 +1729,6 @@ defmodule AgentOS.Git.Orchestrator do
     if is_binary(v), do: v, else: ""
   end
 
-  defp map_get_string(_, _), do: ""
-
   defp safe_atom_key(k) when is_binary(k) do
     try do
       String.to_existing_atom(k)
@@ -1787,11 +1775,11 @@ defmodule AgentOS.Git.Orchestrator do
         case op do
           :clone ->
             d = AgentOS.Contracts.Git.default_clone_depth()
-            if is_integer(d) and d > 0, do: d, else: nil
+            if d > 0, do: d, else: nil
 
           _ ->
             d = AgentOS.Contracts.Git.default_fetch_depth()
-            if is_integer(d) and d > 0, do: d, else: nil
+            if d > 0, do: d, else: nil
         end
     end
   end
@@ -1918,8 +1906,6 @@ defmodule AgentOS.Git.Orchestrator do
   defp safe_json_decode(bin) when is_binary(bin) do
     AgentOS.GitEngine.Jason_like.decode(bin)
   end
-
-  defp safe_json_decode(_), do: {:error, :invalid_json}
 
   defp decode_json_list(bin) when is_binary(bin) do
     case safe_json_decode(bin) do

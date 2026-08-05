@@ -510,8 +510,6 @@ defmodule AgentOS.Git.Connections do
     end)
   end
 
-  defp exact_keys?(:invalid, _expected), do: false
-
   defp exact_keys?(map, expected) when is_map(map),
     do: MapSet.new(Map.keys(map)) == MapSet.new(expected)
 

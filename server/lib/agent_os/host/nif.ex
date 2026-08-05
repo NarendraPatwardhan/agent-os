@@ -550,7 +550,6 @@ defmodule AgentOS.Host.Nif do
 
   defp trunc_count(v) when is_float(v), do: trunc(v)
   defp trunc_count(v) when is_integer(v), do: v
-  defp trunc_count(v), do: trunc(v)
 
   @doc "Capture the whole VM (linear memory + header) into a portable blob (A8)."
   @spec snapshot(vm()) :: {:ok, binary()} | {:error, reason()}

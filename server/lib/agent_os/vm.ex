@@ -1601,7 +1601,7 @@ defmodule AgentOS.Vm do
         _ = Nif.unmount(state.nif, path)
         if is_pid(pid) and Process.alive?(pid), do: _ = AgentOS.GitEngine.stop(pid)
 
-        queue = Map.delete(state.git_remote_queue || %{}, path)
+        queue = Map.delete(state.git_remote_queue, path)
 
         %{
           state

@@ -21,6 +21,23 @@ defmodule AgentOS.Contracts.Snapshot do
   def snapshot_max_memory_len, do: @snapshot_max_memory_len
   def snapshot_digest_len, do: @snapshot_digest_len
 
+  def full_baseline_id(%{
+        kind: :full,
+        kernel_digest: kernel_digest,
+        memory_root: memory_root,
+        memory_len: memory_len
+      })
+      when byte_size(kernel_digest) == @snapshot_digest_len and
+             byte_size(memory_root) == @snapshot_digest_len and
+             is_integer(memory_len) and memory_len > 0 do
+    :crypto.hash(:sha256, [
+      "MCSN4-BASE\0",
+      kernel_digest,
+      memory_root,
+      <<memory_len::little-unsigned-32>>
+    ])
+  end
+
   def snapshot_bitmap_len(memory_len) when is_integer(memory_len) and memory_len >= 0 do
     memory_len
     |> div(@snapshot_page_size)

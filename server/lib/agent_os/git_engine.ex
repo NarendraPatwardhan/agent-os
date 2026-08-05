@@ -517,9 +517,9 @@ defmodule AgentOS.GitEngine do
        )
        when path_len <= byte_size(rest) do
     case rest do
-      <<path::binary-size(path_len), arg_len::little-32, tail::binary>>
+      <<path::binary-size(^path_len), arg_len::little-32, tail::binary>>
       when arg_len <= byte_size(tail) ->
-        <<arg::binary-size(arg_len), data::binary>> = tail
+        <<arg::binary-size(^arg_len), data::binary>> = tail
 
         if String.trim_leading(path, "/") == ".git/mc/ctl" do
           rewritten = maybe_inject_commit_identity(data, identity)

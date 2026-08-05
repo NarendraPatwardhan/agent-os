@@ -675,7 +675,7 @@ defmodule AgentOS.Git.SmartHttp do
           _ = File.rm(path)
           {:error, :body_too_large}
         else
-          case IO.binwrite(device, chunk) do
+          case :file.write(device, chunk) do
             :ok ->
               if is_pid(handler), do: _ = :httpc.stream_next(handler)
               stream_body_loop(req_id, handler, device, path, max_bytes, new_size)
