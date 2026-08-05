@@ -57,7 +57,10 @@ zig_library(
     name = "reference_capture_program",
     import_name = "luau_aot_reference_capture_program",
     main = "reference_capture_program_v1.zig",
-    visibility = ["//memcontainers/programs/luau/aot/runtime:__pkg__"],
+    visibility = [
+        "//memcontainers/programs/luau/aot/runtime/glue:__pkg__",
+        "//memcontainers/programs/luau/aot/runtime:__pkg__",
+    ],
     deps = [":aot_runtime_abi"],
 )
 
@@ -76,6 +79,12 @@ filegroup(
 filegroup(
     name = "multi_result_call_source",
     srcs = ["//memcontainers/programs/luau/aot/compiler/backend:multi_result_call.luau"],
+    visibility = ["//memcontainers/images:__pkg__"],
+)
+
+filegroup(
+    name = "reference_capture_source",
+    srcs = ["//memcontainers/programs/luau/aot/compiler/backend:reference_capture.luau"],
     visibility = ["//memcontainers/images:__pkg__"],
 )
 

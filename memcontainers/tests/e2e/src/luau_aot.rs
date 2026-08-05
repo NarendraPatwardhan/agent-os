@@ -149,3 +149,36 @@ fn luau_aot_multi_result_proto_graph_calls_rejoin() {
         );
     }
 }
+
+/// The exact source-built factory closes a mutable local into one accumulator. Its factory frame is
+/// gone and a full collection runs before the same accumulator is called twice, proving that the
+/// open UpVal was closed into owned storage and that both compiled calls mutate that same cell. The
+/// pinned interpreter requires the exact installed source and receives the same three raw strings.
+#[test]
+fn luau_aot_reference_capture_survives_close_gc_and_mutation() {
+    let mut session = boot_loom_aot();
+
+    for (initial, delta1, delta2) in [
+        (10, 5, -2),
+        (-3, 8, 4),
+        (0, 0, 0),
+        (-50, -8, 7),
+        (1234, 5678, -4321),
+    ] {
+        let expected = format!("{}\r\nstatus=0\r\n", initial + delta1 + delta2);
+        let aot = session.run_for_output(&format!(
+            "luau-aot-reference-capture {initial} {delta1} {delta2}; echo status=$?"
+        ));
+        let interpreted = session.run_for_output(&format!(
+            "luau -e 'local initial, delta1, delta2 = ...; local factory = require(\"aot_reference_capture\"); local accumulator = factory(initial); accumulator(delta1); print(accumulator(delta2))' {initial} {delta1} {delta2}; echo status=$?"
+        ));
+        assert_eq!(
+            aot, expected,
+            "strict AOT reference capture failed for {initial}/{delta1}/{delta2}"
+        );
+        assert_eq!(
+            aot, interpreted,
+            "strict AOT reference capture mismatch for {initial}/{delta1}/{delta2}"
+        );
+    }
+}

@@ -215,9 +215,12 @@ guest path, but is not presented as a general-purpose AOT product:
   cumulative mutation across repeated calls, and proves separately created accumulators do not share
   cells. The real-runtime gate forces full GC after the factory frame is gone, invokes the same
   accumulator twice with decimal strings so both additions take `DO_ARITH`, and matches the exact
-  separately linked pinned interpreter for five signed triples. Forwarded `LCT_UPVAL`, multiple
-  captures, aliasing between multiple closures over the same local, and production/kernel integration
-  remain open;
+  separately linked pinned interpreter for five signed triples. The same object and descriptor now
+  link into `/bin/luau-aot-reference-capture`, pass release-small linking, Binaryen optimization, mc
+  stamping and attestation, install beside the exact source in `loom_aot`, and pass the real-kernel
+  five-triple differential; the AOT entry tears down the factory and forces full GC before invoking
+  the accumulator. Forwarded `LCT_UPVAL`, multiple captures, and aliasing between multiple closures
+  over the same local remain open;
 
 WP2 is complete. WP3's central arithmetic/type slow-block rejoin passes the exact-source,
 relocatable-object, strict-runtime, pinned-interpreter, production optimization/stamp/attestation, and
@@ -228,9 +231,8 @@ pinned-interpreter, production-pipeline, and real-kernel gates. WP4's first fixe
 now passes the same object, base-relocation, strict-runtime, exact-source differential,
 production-pipeline, and real-kernel gates. WP4's mutable reference-capture vertical now passes the
 exact-snapshot, deterministic-object, base-relocation, open/closed-cell, full-GC, repeated-mutation,
-closure-independence, and pinned-interpreter gates. Its next boundary is the production optimization,
-stamp, attestation, image, and real-kernel gate; after that come broader arities/varargs and static
-modules. The
+closure-independence, pinned-interpreter, production optimization, stamp, attestation, image, and
+real-kernel gates. The next WP4 boundaries are broader arities/varargs and static modules. The
 immutable descriptor is shared by oracle and product today but remains compiler-generated-data work,
 not a hand-authored product format.
 
@@ -1538,9 +1540,12 @@ through `luaF_close`, dereferences `UpVal::v` for reads, and applies `luaC_barri
 linked-object gate relocates the factory base, closes into independent storage, proves four cumulative
 mutations, and proves two factory results are independent. The strict-runtime differential forces full
 collection after the factory returns and calls the same accumulator twice with raw decimal strings;
-five signed triples match the separately linked exact-source interpreter. Production guest and kernel
-gates are the next boundary. Forwarded `LCT_UPVAL`, multiple captures, and multiple closures sharing
-one still-open cell remain fail-closed.
+five signed triples match the separately linked exact-source interpreter. The exact object and shared
+descriptor also link into a release-small guest, pass Binaryen optimization, mc stamping and
+attestation, install with the exact source in `loom_aot`, and pass the same five-triple differential
+under the real AgentOS kernel; the AOT entry tears down the factory and forces full GC before invoking
+the accumulator. Forwarded `LCT_UPVAL`, multiple captures, and multiple closures sharing one still-open
+cell remain fail-closed.
 
 Tasks:
 

@@ -32,6 +32,11 @@ cc_object(
     obj = "//memcontainers/programs/luau/aot/compiler/backend:multi_result_call_package_object",
 )
 
+cc_object(
+    name = "reference_capture_package_object_link",
+    obj = "//memcontainers/programs/luau/aot/compiler/backend:reference_capture_package_object",
+)
+
 # C++ and wasi-libc are implementation details of the reused Luau runtime. The canonical adapter
 # resolves their preview1 surface to the AgentOS mc ABI before the artifact can be stamped.
 cc_object(
@@ -281,4 +286,45 @@ mc_program(
     tier = "full",
     visibility = ["//memcontainers/images:__pkg__"],
     wasm = ":luau_aot_multi_result_call_wasm",
+)
+
+zig_binary(
+    name = "luau_aot_reference_capture_raw",
+    linkopts = [
+        "-lc",
+        "-lc++",
+        "--export=__mc_pcall_run",
+        "--export=__stack_pointer",
+    ],
+    main = "reference_capture_entry.zig",
+    tags = ["manual"],
+    deps = [
+        ":reference_capture_package_object_link",
+        ":wasi_adapter_link",
+        "//memcontainers/programs/luau/aot/runtime:aot_runtime_abi",
+        "//memcontainers/programs/luau/aot/runtime:luau_aot_runtime_raw",
+        "//memcontainers/programs/luau/aot/runtime:reference_capture_program",
+        "//memcontainers/programs/luau/glue:trap",
+        "//memcontainers/programs/luau/glue:wasi_shim",
+        "//memcontainers/sysroot/zig:mc",
+    ],
+)
+
+zig_configure_binary(
+    name = "luau_aot_reference_capture_wasm",
+    actual = ":luau_aot_reference_capture_raw",
+    mode = "release_small",
+    tags = ["manual"],
+    target = "//platforms:wasm32_wasi",
+    threaded = "single",
+)
+
+mc_program(
+    name = "luau-aot-reference-capture",
+    fuel = 10000000000,
+    mem = 64 * 1024 * 1024,
+    table = 10000,
+    tier = "full",
+    visibility = ["//memcontainers/images:__pkg__"],
+    wasm = ":luau_aot_reference_capture_wasm",
 )
