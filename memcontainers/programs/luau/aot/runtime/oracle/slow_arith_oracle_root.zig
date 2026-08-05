@@ -20,7 +20,13 @@ const metadata = abi.AotProto{
     .layout_sha256 = abi.layout_sha256,
     .entry = &mc_luau_aot_v1_generated_ir_function,
     .function_id = 1,
+    .parent_id = abi.no_id,
     .flags = abi.flag_root,
+    .num_params = 2,
+    .nups = 0,
+    .is_vararg = 0,
+    .max_stack_size = 3,
+    .reserved = 0,
 };
 
 const source = "=aot-upstream-ir-slow-add-oracle";
@@ -39,7 +45,7 @@ export fn mc_luau_aot_v1_slow_arith_oracle_run(lhs: i32, rhs: i32) i32 {
     const state = luaL_newstate() orelse return std.math.minInt(i32);
     defer lua_close(state);
 
-    if (abi.mc_luau_aot_v1_push_root(state, &metadata, source.ptr, source.len, 2, 3) != 0)
+    if (abi.mc_luau_aot_v1_push_root(state, &metadata, source.ptr, source.len) != 0)
         return std.math.minInt(i32);
 
     var lhs_buffer: [32]u8 = undefined;

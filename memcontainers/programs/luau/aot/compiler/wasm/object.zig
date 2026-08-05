@@ -268,6 +268,19 @@ pub const Object = struct {
     }
 
     pub fn deinit(self: *Object) void {
+        for (self.types.items) |function_type| {
+            self.allocator.free(function_type.params);
+            self.allocator.free(function_type.results);
+        }
+        for (self.imports.items) |function_import| {
+            self.allocator.free(function_import.module);
+            self.allocator.free(function_import.name);
+        }
+        for (self.functions.items) |function| {
+            self.allocator.free(function.name);
+            self.allocator.free(function.body);
+            self.allocator.free(function.relocations);
+        }
         self.types.deinit(self.allocator);
         self.imports.deinit(self.allocator);
         self.functions.deinit(self.allocator);
@@ -282,7 +295,11 @@ pub const Object = struct {
         }
         if (self.types.items.len == std.math.maxInt(u32))
             return Error.TooManyTypes;
-        try self.types.append(self.allocator, function_type);
+        const owned_params = try self.allocator.dupe(ValueType, function_type.params);
+        errdefer self.allocator.free(owned_params);
+        const owned_results = try self.allocator.dupe(ValueType, function_type.results);
+        errdefer self.allocator.free(owned_results);
+        try self.types.append(self.allocator, .{ .params = owned_params, .results = owned_results });
         return @intCast(self.types.items.len - 1);
     }
 
@@ -293,9 +310,13 @@ pub const Object = struct {
             return Error.EmptyFunctionName;
         if (self.imports.items.len == std.math.maxInt(u32))
             return Error.TooManyFunctions;
+        const owned_module = try self.allocator.dupe(u8, module);
+        errdefer self.allocator.free(owned_module);
+        const owned_name = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned_name);
         try self.imports.append(self.allocator, .{
-            .module = module,
-            .name = name,
+            .module = owned_module,
+            .name = owned_name,
             .type_index = type_index,
         });
         const index: u32 = @intCast(self.imports.items.len - 1);
@@ -315,12 +336,20 @@ pub const Object = struct {
             if (@as(usize, item.body_offset) + 5 > body.bytes.items.len)
                 return Error.InvalidRelocationOffset;
         }
+
+        const owned_name = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(owned_name);
+        const owned_body = try self.allocator.dupe(u8, body.bytes.items);
+        errdefer self.allocator.free(owned_body);
+        const owned_relocations = try self.allocator.dupe(Body.Relocation, body.relocations.items);
+        errdefer self.allocator.free(owned_relocations);
+
         try self.functions.append(self.allocator, .{
-            .name = name,
+            .name = owned_name,
             .type_index = type_index,
             .symbol_flags = symbol_flags,
-            .body = body.bytes.items,
-            .relocations = body.relocations.items,
+            .body = owned_body,
+            .relocations = owned_relocations,
         });
         const function_index: u32 = @intCast(self.imports.items.len + self.functions.items.len - 1);
         const symbol_index: u32 = function_index;
@@ -508,4 +537,37 @@ test "emits deterministic linking-v2 object with a relocated external call" {
     try std.testing.expectEqualSlices(u8, &.{ 0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00 }, first[0..8]);
     try std.testing.expect(std.mem.indexOf(u8, first, "linking") != null);
     try std.testing.expect(std.mem.indexOf(u8, first, "reloc.CODE") != null);
+}
+
+test "defined functions own their names bodies and relocations" {
+    const allocator = std.testing.allocator;
+    const no_values = [_]ValueType{};
+
+    var object = Object.init(allocator);
+    defer object.deinit();
+    const function_type = try object.addType(.{ .params = &no_values, .results = &no_values });
+    const external = try object.importFunction("env", "callee", function_type);
+
+    {
+        const dynamic_name = try std.fmt.allocPrint(allocator, "dynamic_{d}", .{17});
+        defer allocator.free(dynamic_name);
+        var body = try Body.init(allocator, &.{});
+        defer body.deinit(allocator);
+        try body.call(allocator, external);
+        try body.finish(allocator);
+        _ = try object.defineFunction(dynamic_name, function_type, symbol.exported, body);
+
+        try std.testing.expect(object.functions.items[0].name.ptr != dynamic_name.ptr);
+        try std.testing.expect(object.functions.items[0].body.ptr != body.bytes.items.ptr);
+        try std.testing.expect(object.functions.items[0].relocations.ptr != body.relocations.items.ptr);
+
+        dynamic_name[0] = 'X';
+        body.bytes.items[0] = 0xff;
+        body.relocations.items[0].body_offset = 0;
+    }
+
+    const emitted = try object.emit();
+    defer allocator.free(emitted);
+    try std.testing.expect(std.mem.indexOf(u8, emitted, "dynamic_17") != null);
+    try std.testing.expect(std.mem.indexOf(u8, emitted, "reloc.CODE") != null);
 }

@@ -5,6 +5,7 @@ load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary", "zig_libr
 exports_files(
     [
         "numeric_loop.luau",
+        "compiled_call.luau",
         "silent_return.luau",
         "slow_add.luau",
     ],
@@ -34,6 +35,7 @@ zig_binary(
         "--max-memory=268435456",
         "--export=mc_luau_backend_v1_alloc",
         "--export=mc_luau_backend_v1_compile",
+        "--export=mc_luau_backend_v1_compile_package",
         "--export=mc_luau_backend_v1_dealloc",
         "--export=mc_luau_backend_v1_free",
     ],
@@ -122,11 +124,32 @@ build_test(
     targets = [":slow_add_object"],
 )
 
+# The first closed-package object contains all three canonical Proto/IR functions under unique
+# symbols. It is the production backend boundary for closure publication and compiled calls.
+genrule(
+    name = "compiled_call_package_object",
+    srcs = [
+        ":backend_wasm",
+        "compiled_call.luau",
+        "//memcontainers/programs/luau/aot/frontend:frontend_wasm",
+    ],
+    outs = ["compiled_call_package.o"],
+    cmd = "BAZEL_BINDIR=. $(execpath :object_emitter) $(location //memcontainers/programs/luau/aot/frontend:frontend_wasm) $(location :backend_wasm) $(location compiled_call.luau) $@ package",
+    tools = [":object_emitter"],
+    visibility = ["//visibility:public"],
+)
+
+build_test(
+    name = "compiled_call_package_object_build_test",
+    targets = [":compiled_call_package_object"],
+)
+
 js_test(
     name = "frontend_to_wasm_test",
     data = [
         ":backend_wasm",
         ":frontend_to_wasm.test.mjs",
+        "compiled_call.luau",
         "silent_return.luau",
         "slow_add.luau",
         "//memcontainers/programs/luau/aot/frontend:frontend_wasm",
@@ -136,6 +159,7 @@ js_test(
     env = {
         "LUAU_AOT_BACKEND_WASM": "$(rlocationpath :backend_wasm)",
         "LUAU_AOT_FRONTEND_WASM": "$(rlocationpath //memcontainers/programs/luau/aot/frontend:frontend_wasm)",
+        "LUAU_AOT_COMPILED_CALL_SOURCE": "$(rlocationpath compiled_call.luau)",
         "LUAU_AOT_SILENT_SOURCE": "$(rlocationpath silent_return.luau)",
         "LUAU_AOT_SLOW_ADD_SOURCE": "$(rlocationpath slow_add.luau)",
         "LUAU_AOT_WASM_LD": "$(rlocationpath @@emsdk++emscripten_deps+emscripten_bin_linux//:bin/wasm-ld)",

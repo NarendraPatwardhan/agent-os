@@ -3,9 +3,11 @@ const snapshot_v1 = @import("frontend_snapshot_v1");
 const wasm = @import("luau_aot_wasm_object");
 
 pub const generated_symbol = "mc_luau_aot_v1_generated_ir_function";
-pub const commit_number_symbol = "mc_luau_aot_v1_commit_number";
+pub const return_one_symbol = "mc_luau_aot_v1_return_one";
 pub const interrupt_symbol = "mc_luau_aot_v1_interrupt";
 pub const do_arith_symbol = "mc_luau_aot_v1_do_arith";
+pub const dupclosure_symbol = "mc_luau_aot_v1_dupclosure";
+pub const call_fixed_symbol = "mc_luau_aot_v1_call_fixed";
 
 const status_ok: i32 = 0;
 const status_unsupported_type: i32 = 1;
@@ -14,7 +16,6 @@ const status_internal_error: i32 = 2;
 const lua_state_base_offset: u32 = 12;
 const tvalue_size: u32 = 16;
 const tvalue_tag_offset: u32 = 12;
-const lua_tnumber: i32 = 3;
 const upstream_tm_add: i32 = 8;
 const aot_arith_add: i32 = 0;
 const max_lowered_locals: u32 = 262_144;
@@ -54,9 +55,11 @@ const Context = struct {
     function: snapshot_v1.IrFunction,
     slots: []const ValueSlot,
     body: *wasm.Body,
-    commit_number: wasm.FunctionRef,
+    return_one: wasm.FunctionRef,
     interrupt: wasm.FunctionRef,
     do_arith: ?wasm.FunctionRef,
+    dupclosure: ?wasm.FunctionRef,
+    call_fixed: ?wasm.FunctionRef,
     base_local: u32,
     dispatch_local: u32,
     status_local: u32,
@@ -415,20 +418,65 @@ const Context = struct {
         if (return_count != 1)
             return Error.InvalidReturnCount;
 
-        const tag_offset = try self.vmRegisterOffset(source, tvalue_tag_offset);
-        try self.body.localGet(self.allocator, self.base_local);
-        try self.body.i32Load(self.allocator, 2, tag_offset);
-        try self.body.i32Const(self.allocator, lua_tnumber);
-        try self.body.i32Ne(self.allocator);
-        try self.body.ifVoid(self.allocator);
-        try self.emitStatusReturn(status_unsupported_type);
-        try self.body.end(self.allocator);
+        try self.body.localGet(self.allocator, 0);
+        try self.body.i32Const(self.allocator, @intCast(try self.vmRegisterIndex(source)));
+        try self.body.call(self.allocator, self.return_one);
+        try self.emitStatusReturn(status_ok);
+    }
+
+    fn emitDupClosure(self: Context, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 3);
+        const pc_operand = try self.operand(instruction_value, 0);
+        const destination = try self.operand(instruction_value, 1);
+        const constant_operand = try self.operand(instruction_value, 2);
+        if (pc_operand.kind != .constant or constant_operand.kind != .vm_const)
+            return Error.InvalidOperandType;
+        _ = (try self.constant(pc_operand.value)).uintValue() orelse return Error.InvalidOperandType;
+        const destination_register = try self.vmRegisterIndex(destination);
+        const child_id = (try self.snapshot.vmConstant(self.proto, constant_operand.value)).closureProtoId() orelse
+            return Error.InvalidOperandType;
+        const child = try self.snapshot.proto(child_id);
+        if (child.parent_id != self.proto.id or child.nups != 0)
+            return Error.UnsupportedControlFlow;
 
         try self.body.localGet(self.allocator, 0);
-        try self.body.localGet(self.allocator, self.base_local);
-        try self.body.f64Load(self.allocator, 3, try self.vmRegisterOffset(source, 0));
-        try self.body.call(self.allocator, self.commit_number);
-        try self.emitStatusReturn(status_ok);
+        try self.body.i32Const(self.allocator, @intCast(destination_register));
+        try self.body.i32Const(self.allocator, @intCast(child_id));
+        try self.body.call(self.allocator, self.dupclosure orelse return Error.UnsupportedCommand);
+        // Closure allocation runs GC and can relocate the active stack.
+        try self.emitReloadBase();
+    }
+
+    fn emitCallFixed(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 3);
+        if (instruction_id == 0 or (try self.instruction(instruction_id - 1)).command != .set_savedpc)
+            return Error.UnsupportedControlFlow;
+        _ = try self.savedPc(try self.instruction(instruction_id - 1));
+
+        const function_register = try self.vmRegisterIndex(try self.operand(instruction_value, 0));
+        const parameter_operand = try self.operand(instruction_value, 1);
+        const result_operand = try self.operand(instruction_value, 2);
+        if (parameter_operand.kind != .constant or result_operand.kind != .constant)
+            return Error.InvalidOperandType;
+        const parameter_count = (try self.constant(parameter_operand.value)).intValue() orelse return Error.InvalidOperandType;
+        const result_count = (try self.constant(result_operand.value)).intValue() orelse return Error.InvalidOperandType;
+        if (parameter_count != 2 or result_count != 1 or self.proto.max_stack_size < 3 or
+            function_register > self.proto.max_stack_size - 3)
+            return Error.UnsupportedControlFlow;
+
+        try self.body.localGet(self.allocator, 0);
+        try self.body.i32Const(self.allocator, @intCast(function_register));
+        try self.body.i32Const(self.allocator, parameter_count);
+        try self.body.i32Const(self.allocator, result_count);
+        try self.body.call(self.allocator, self.call_fixed orelse return Error.UnsupportedCommand);
+        try self.body.localTee(self.allocator, self.status_local);
+        try self.body.i32Eqz(self.allocator);
+        try self.body.ifVoid(self.allocator);
+        try self.emitReloadBase();
+        try self.body.else_(self.allocator);
+        try self.body.localGet(self.allocator, self.status_local);
+        try self.body.return_(self.allocator);
+        try self.body.end(self.allocator);
     }
 
     fn emitPrepVarargsNoop(self: Context, instruction_value: snapshot_v1.IrInstruction) Error!void {
@@ -464,9 +512,12 @@ const Context = struct {
             .add_num => try self.emitAddNumber(instruction_id, instruction_value),
             .check_tag => try self.emitCheckTag(instruction_value),
             .set_savedpc => {
-                if (block_kind != .fallback)
-                    return Error.UnsupportedControlFlow;
                 _ = try self.savedPc(instruction_value);
+                if (block_kind != .fallback) {
+                    if (!block_kind.isCompilable() or instruction_id + 1 >= self.function.instruction_count or
+                        (try self.instruction(instruction_id + 1)).command != .call)
+                        return Error.UnsupportedControlFlow;
+                }
             },
             .do_arith => {
                 if (block_kind != .fallback)
@@ -486,7 +537,9 @@ const Context = struct {
                 try self.emitReturn(instruction_value);
                 return true;
             },
+            .call => try self.emitCallFixed(instruction_id, instruction_value),
             .fallback_prepvarargs => try self.emitPrepVarargsNoop(instruction_value),
+            .fallback_dupclosure => try self.emitDupClosure(instruction_value),
             else => return Error.UnsupportedCommand,
         }
         return false;
@@ -523,12 +576,80 @@ fn resultShape(command: snapshot_v1.IrCommand) ValueShape {
     };
 }
 
-pub fn build(allocator: std.mem.Allocator, snapshot_bytes: []const u8, function_id: u32) Error![]u8 {
-    const snapshot = try snapshot_v1.parse(snapshot_bytes, snapshot_v1.production_identity);
-    try snapshot_v1.validateModel(snapshot);
-    if (function_id >= snapshot.header.ir_function_count)
-        return Error.FunctionOutOfBounds;
+const ImportNeeds = struct {
+    do_arith: bool = false,
+    dupclosure: bool = false,
+    call_fixed: bool = false,
+};
 
+const RuntimeImports = struct {
+    return_one: wasm.FunctionRef,
+    interrupt: wasm.FunctionRef,
+    do_arith: ?wasm.FunctionRef,
+    dupclosure: ?wasm.FunctionRef,
+    call_fixed: ?wasm.FunctionRef,
+    generated_type: u32,
+};
+
+fn scanImportNeeds(snapshot: snapshot_v1.Snapshot, function_id: u32, needs: *ImportNeeds) Error!void {
+    const function = try snapshot.irFunction(function_id);
+    var instruction_id: u32 = 0;
+    while (instruction_id < function.instruction_count) : (instruction_id += 1) {
+        switch ((try snapshot.irInstruction(function, instruction_id)).command) {
+            .do_arith => needs.do_arith = true,
+            .fallback_dupclosure => needs.dupclosure = true,
+            .call => needs.call_fixed = true,
+            else => {},
+        }
+    }
+}
+
+fn addRuntimeImports(object: *wasm.Object, needs: ImportNeeds) Error!RuntimeImports {
+    const return_one_params = [_]wasm.ValueType{ .i32, .i32 };
+    const interrupt_params = [_]wasm.ValueType{ .i32, .i32 };
+    const do_arith_params = [_]wasm.ValueType{ .i32, .i32, .i32, .i32, .i32 };
+    const dupclosure_params = [_]wasm.ValueType{ .i32, .i32, .i32 };
+    const call_fixed_params = [_]wasm.ValueType{ .i32, .i32, .i32, .i32 };
+    const generated_params = [_]wasm.ValueType{ .i32, .i32 };
+    const no_results = [_]wasm.ValueType{};
+    const status_result = [_]wasm.ValueType{.i32};
+
+    const return_one_type = try object.addType(.{ .params = &return_one_params, .results = &no_results });
+    const interrupt_type = try object.addType(.{ .params = &interrupt_params, .results = &status_result });
+    const generated_type = try object.addType(.{ .params = &generated_params, .results = &status_result });
+    const return_one = try object.importFunction("env", return_one_symbol, return_one_type);
+    const interrupt = try object.importFunction("env", interrupt_symbol, interrupt_type);
+    const do_arith = if (needs.do_arith) blk: {
+        const helper_type = try object.addType(.{ .params = &do_arith_params, .results = &no_results });
+        break :blk try object.importFunction("env", do_arith_symbol, helper_type);
+    } else null;
+    const dupclosure = if (needs.dupclosure) blk: {
+        const helper_type = try object.addType(.{ .params = &dupclosure_params, .results = &no_results });
+        break :blk try object.importFunction("env", dupclosure_symbol, helper_type);
+    } else null;
+    const call_fixed = if (needs.call_fixed) blk: {
+        const helper_type = try object.addType(.{ .params = &call_fixed_params, .results = &status_result });
+        break :blk try object.importFunction("env", call_fixed_symbol, helper_type);
+    } else null;
+
+    return .{
+        .return_one = return_one,
+        .interrupt = interrupt,
+        .do_arith = do_arith,
+        .dupclosure = dupclosure,
+        .call_fixed = call_fixed,
+        .generated_type = generated_type,
+    };
+}
+
+fn lowerFunction(
+    allocator: std.mem.Allocator,
+    snapshot: snapshot_v1.Snapshot,
+    function_id: u32,
+    object: *wasm.Object,
+    imports: RuntimeImports,
+    symbol_name: []const u8,
+) Error!void {
     const function = try snapshot.irFunction(function_id);
     const proto = try snapshot.proto(function.proto_id);
     if (function.variadic != proto.is_vararg or (function.variadic and proto.num_params != 0))
@@ -578,20 +699,6 @@ pub fn build(allocator: std.mem.Allocator, snapshot_bytes: []const u8, function_
         }
     }
 
-    const commit_params = [_]wasm.ValueType{ .i32, .f64 };
-    const interrupt_params = [_]wasm.ValueType{ .i32, .i32 };
-    const generated_params = [_]wasm.ValueType{ .i32, .i32 };
-    const no_results = [_]wasm.ValueType{};
-    const status_result = [_]wasm.ValueType{.i32};
-
-    var object = wasm.Object.init(allocator);
-    defer object.deinit();
-    const commit_type = try object.addType(.{ .params = &commit_params, .results = &no_results });
-    const interrupt_type = try object.addType(.{ .params = &interrupt_params, .results = &status_result });
-    const generated_type = try object.addType(.{ .params = &generated_params, .results = &status_result });
-    const commit_number = try object.importFunction("env", commit_number_symbol, commit_type);
-    const interrupt = try object.importFunction("env", interrupt_symbol, interrupt_type);
-
     var body = try wasm.Body.init(allocator, locals.items);
     defer body.deinit(allocator);
     var context = Context{
@@ -601,9 +708,11 @@ pub fn build(allocator: std.mem.Allocator, snapshot_bytes: []const u8, function_
         .function = function,
         .slots = slots,
         .body = &body,
-        .commit_number = commit_number,
-        .interrupt = interrupt,
-        .do_arith = null,
+        .return_one = imports.return_one,
+        .interrupt = imports.interrupt,
+        .do_arith = imports.do_arith,
+        .dupclosure = imports.dupclosure,
+        .call_fixed = imports.call_fixed,
         .base_local = 2,
         .dispatch_local = 3,
         .status_local = 4,
@@ -613,9 +722,8 @@ pub fn build(allocator: std.mem.Allocator, snapshot_bytes: []const u8, function_
     while (block_id < function.block_count) : (block_id += 1) {
         const block = try snapshot.irBlock(function, block_id);
         if (block.kind == .fallback and try context.supportsArithmeticFallback(block)) {
-            const do_arith_params = [_]wasm.ValueType{ .i32, .i32, .i32, .i32, .i32 };
-            const do_arith_type = try object.addType(.{ .params = &do_arith_params, .results = &no_results });
-            context.do_arith = try object.importFunction("env", do_arith_symbol, do_arith_type);
+            if (context.do_arith == null)
+                return Error.UnsupportedCommand;
             break;
         }
     }
@@ -640,6 +748,42 @@ pub fn build(allocator: std.mem.Allocator, snapshot_bytes: []const u8, function_
     try body.i32Const(allocator, status_internal_error);
     try body.finish(allocator);
 
-    _ = try object.defineFunction(generated_symbol, generated_type, wasm.symbol.visibility_hidden, body);
+    _ = try object.defineFunction(symbol_name, imports.generated_type, wasm.symbol.visibility_hidden, body);
+}
+
+pub fn build(allocator: std.mem.Allocator, snapshot_bytes: []const u8, function_id: u32) Error![]u8 {
+    const snapshot = try snapshot_v1.parse(snapshot_bytes, snapshot_v1.production_identity);
+    try snapshot_v1.validateModel(snapshot);
+    if (function_id >= snapshot.header.ir_function_count)
+        return Error.FunctionOutOfBounds;
+
+    var needs = ImportNeeds{};
+    try scanImportNeeds(snapshot, function_id, &needs);
+    var object = wasm.Object.init(allocator);
+    defer object.deinit();
+    const imports = try addRuntimeImports(&object, needs);
+    try lowerFunction(allocator, snapshot, function_id, &object, imports, generated_symbol);
+    return object.emit();
+}
+
+pub fn buildPackage(allocator: std.mem.Allocator, snapshot_bytes: []const u8) Error![]u8 {
+    const snapshot = try snapshot_v1.parse(snapshot_bytes, snapshot_v1.production_identity);
+    try snapshot_v1.validateModel(snapshot);
+
+    var needs = ImportNeeds{};
+    var function_id: u32 = 0;
+    while (function_id < snapshot.header.ir_function_count) : (function_id += 1)
+        try scanImportNeeds(snapshot, function_id, &needs);
+
+    var object = wasm.Object.init(allocator);
+    defer object.deinit();
+    const imports = try addRuntimeImports(&object, needs);
+
+    function_id = 0;
+    while (function_id < snapshot.header.ir_function_count) : (function_id += 1) {
+        const symbol_name = try std.fmt.allocPrint(allocator, "mc_luau_aot_v1_function_{d:0>8}", .{function_id});
+        defer allocator.free(symbol_name);
+        try lowerFunction(allocator, snapshot, function_id, &object, imports, symbol_name);
+    }
     return object.emit();
 }

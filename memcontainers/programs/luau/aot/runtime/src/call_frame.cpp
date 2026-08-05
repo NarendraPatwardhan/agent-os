@@ -10,9 +10,11 @@
 #include "ldo.h"
 #include "lfunc.h"
 #include "lgc.h"
+#include "lmem.h"
 #include "lstate.h"
 #include "lstring.h"
 
+#include <limits.h>
 #include <string.h>
 
 // These flag definitions live in lvmexecute.cpp upstream even though retained runtime sources use
@@ -188,8 +190,18 @@ extern "C" const uint8_t mc_luau_aot_v1_layout_sha256[32] = {
     0x2a, 0xa7, 0x6f, 0x1c, 0x18, 0x56, 0x19, 0x6a, 0xc3, 0x0d, 0xc6, 0x23, 0x6e, 0xa4, 0xc4, 0x96,
 };
 
-extern "C" void mc_luau_aot_v1_commit_number(lua_State *L, double value) {
-    setnvalue(L->base, value);
+static bool validAotProto(const McLuauAotProtoV1 *metadata);
+
+extern "C" void mc_luau_aot_v1_return_one(lua_State *L, uint32_t sourceRegister) {
+    if (!L || !L->ci || !isLua(L->ci))
+        luaG_runerror(L, "strict AOT return helper entered without an active Luau frame");
+
+    Closure *closure = clvalue(L->ci->func);
+    Proto *proto = closure->l.p;
+    if (sourceRegister >= proto->maxstacksize)
+        luaG_runerror(L, "strict AOT return register is outside the compiled frame");
+
+    setobj2s(L, L->base, L->base + sourceRegister);
     L->top = L->base + 1;
 }
 
@@ -233,19 +245,127 @@ extern "C" void mc_luau_aot_v1_do_arith(lua_State *L, uint32_t destinationRegist
     }
 }
 
+extern "C" void mc_luau_aot_v1_dupclosure(lua_State *L, uint32_t destinationRegister,
+                                            uint32_t childProtoId) {
+    if (!L || !L->ci || !isLua(L->ci))
+        luaG_runerror(L, "strict AOT closure helper entered without an active Luau frame");
+
+    Closure *parentClosure = clvalue(L->ci->func);
+    Proto *parent = parentClosure->l.p;
+    if (destinationRegister >= parent->maxstacksize)
+        luaG_runerror(L, "strict AOT closure destination is outside the compiled frame");
+
+    Proto *child = nullptr;
+    for (int index = 0; index < parent->sizep; ++index) {
+        Proto *candidate = parent->p[index];
+        const McLuauAotProtoV1 *metadata = candidate
+                                               ? static_cast<const McLuauAotProtoV1 *>(candidate->execdata)
+                                               : nullptr;
+        if (metadata && metadata->function_id == childProtoId) {
+            child = candidate;
+            break;
+        }
+    }
+    if (!child)
+        luaG_runerror(L, "strict AOT closure helper rejected non-child Proto %u", childProtoId);
+    if (child->nups != 0)
+        luaG_runerror(L, "strict AOT DUPCLOSURE does not support captured upvalues");
+
+    // The active parent closure roots the published Proto graph. Run incremental GC before the
+    // allocation, gray a black thread, then make the new white Closure visible in its VM register.
+    luaC_checkGC(L);
+    luaC_threadbarrier(L);
+    Closure *closure = luaF_newLclosure(L, 0, parentClosure->env, child);
+    setclvalue(L, L->base + destinationRegister, closure);
+    if (L->top <= L->base + destinationRegister)
+        L->top = L->base + destinationRegister + 1;
+}
+
+extern "C" uint32_t mc_luau_aot_v1_call_fixed(lua_State *L, uint32_t functionRegister,
+                                               uint32_t parameterCount,
+                                               uint32_t resultCount) {
+    if (!L || !L->ci || !isLua(L->ci))
+        luaG_runerror(L, "strict AOT call helper entered without an active Luau frame");
+    if (parameterCount != 2 || resultCount != 1)
+        luaG_runerror(L, "strict AOT fixed call rejected %u parameters and %u results",
+                      parameterCount, resultCount);
+
+    Closure *caller = clvalue(L->ci->func);
+    Proto *callerProto = caller->l.p;
+    if (functionRegister >= callerProto->maxstacksize ||
+        parameterCount >= uint32_t(callerProto->maxstacksize) - functionRegister)
+        luaG_runerror(L, "strict AOT fixed call exceeds the compiled caller frame");
+
+    StkId function = L->base + functionRegister;
+    if (!ttisfunction(function) || clvalue(function)->isC)
+        luaG_runerror(L, "strict AOT fixed call requires a compiled Luau closure");
+    Closure *callee = clvalue(function);
+    const McLuauAotProtoV1 *metadata = callee->l.p
+                                           ? static_cast<const McLuauAotProtoV1 *>(callee->l.p->execdata)
+                                           : nullptr;
+    if (!validAotProto(metadata))
+        luaG_runerror(L, "strict AOT fixed call rejected missing callee metadata");
+    if (metadata->num_params != parameterCount || metadata->is_vararg != 0)
+        luaG_runerror(L, "strict AOT fixed call rejected callee parameter shape");
+
+    // luau_precall derives the argument count from L->top. Materialize exactly function + two
+    // parameters; unused caller registers must not become accidental arguments.
+    L->top = function + parameterCount + 1;
+    if (luau_precall(L, function, int(resultCount)) != PCRLUA)
+        luaG_runerror(L, "strict AOT fixed call rejected non-Luau callee dispatch");
+
+    const uint32_t status = metadata->entry(L, metadata);
+    switch (status) {
+    case MC_LUAU_AOT_V1_OK:
+        luau_poscall(L, L->base);
+        return MC_LUAU_AOT_V1_OK;
+    case MC_LUAU_AOT_V1_UNSUPPORTED_TYPE:
+        luaG_runerror(L, "strict AOT nested numeric tier received an unsupported value type");
+    case MC_LUAU_AOT_V1_YIELDED:
+        luaG_runerror(L, "strict AOT nested call yielded without a continuation contract");
+    default:
+        luaG_runerror(L, "strict AOT nested function returned invalid status %u", status);
+    }
+}
+
 static void destroyAotProto(lua_State *, Proto *proto) {
     // AOT metadata is immutable linker-owned data, not a heap allocation owned by Proto.
     proto->execdata = nullptr;
 }
 
+static bool validAotProto(const McLuauAotProtoV1 *metadata) {
+    return metadata && metadata->abi_version == MC_LUAU_AOT_ABI_V1 &&
+           metadata->struct_size == MC_LUAU_AOT_PROTO_V1_SIZE && metadata->entry &&
+           metadata->max_stack_size >= metadata->num_params && metadata->nups == 0 &&
+           metadata->is_vararg <= 1 && metadata->reserved == 0 &&
+           memcmp(metadata->layout_sha256, mc_luau_aot_v1_layout_sha256,
+                  sizeof(metadata->layout_sha256)) == 0;
+}
+
+static void initializeAotProto(Proto *proto, const McLuauAotProtoV1 *metadata,
+                               TString *sourceName) {
+    proto->source = sourceName;
+    proto->debugname = sourceName;
+    proto->maxstacksize = metadata->max_stack_size;
+    proto->numparams = metadata->num_params;
+    proto->nups = metadata->nups;
+    proto->is_vararg = metadata->is_vararg;
+    proto->funid = metadata->function_id;
+    proto->execdata = const_cast<McLuauAotProtoV1 *>(metadata);
+}
+
+static void publishRootClosure(lua_State *L, Proto *proto) {
+    Closure *closure = luaF_newLclosure(L, 0, L->gt, proto);
+    setclvalue(L, L->top, closure);
+    LUAU_ASSERT(L->top < L->ci->top);
+    L->top++;
+}
+
 extern "C" uint32_t mc_luau_aot_v1_push_root(lua_State *L, const McLuauAotProtoV1 *metadata,
-                                             const char *source, size_t sourceSize,
-                                             uint8_t numParams, uint8_t maxStackSize) {
-    if (!L || !metadata || !source || sourceSize == 0 || maxStackSize < numParams ||
-        metadata->abi_version != MC_LUAU_AOT_ABI_V1 ||
-        metadata->struct_size != MC_LUAU_AOT_PROTO_V1_SIZE || !metadata->entry ||
-        memcmp(metadata->layout_sha256, mc_luau_aot_v1_layout_sha256,
-               sizeof(metadata->layout_sha256)) != 0)
+                                             const char *source, size_t sourceSize) {
+    if (!L || !source || sourceSize == 0 || !validAotProto(metadata) ||
+        metadata->parent_id != MC_LUAU_AOT_V1_NO_ID ||
+        metadata->flags != MC_LUAU_AOT_PROTO_V1_ROOT)
         return MC_LUAU_AOT_V1_INTERNAL_ERROR;
 
     if (L->global->ecb.destroy && L->global->ecb.destroy != destroyAotProto)
@@ -262,18 +382,76 @@ extern "C" uint32_t mc_luau_aot_v1_push_root(lua_State *L, const McLuauAotProtoV
 
     TString *sourceName = luaS_newlstr(L, source, sourceSize);
     Proto *proto = luaF_newproto(L);
-    proto->source = sourceName;
-    proto->debugname = sourceName;
-    proto->maxstacksize = maxStackSize;
-    proto->numparams = numParams;
-    proto->nups = 0;
-    proto->is_vararg = 0;
-    proto->execdata = const_cast<McLuauAotProtoV1 *>(metadata);
+    initializeAotProto(proto, metadata, sourceName);
+    publishRootClosure(L, proto);
+    return MC_LUAU_AOT_V1_OK;
+}
 
-    Closure *closure = luaF_newLclosure(L, 0, L->gt, proto);
-    setclvalue(L, L->top, closure);
-    LUAU_ASSERT(L->top < L->ci->top);
-    L->top++;
+extern "C" uint32_t mc_luau_aot_v1_push_program(lua_State *L,
+                                                 const McLuauAotProgramV1 *program,
+                                                 const char *source, size_t sourceSize) {
+    if (!L || !program || !source || sourceSize == 0 || !program->protos ||
+        program->abi_version != MC_LUAU_AOT_ABI_V1 ||
+        program->struct_size != MC_LUAU_AOT_PROGRAM_V1_SIZE || program->proto_count == 0 ||
+        program->proto_count > INT_MAX || program->root_proto_id >= program->proto_count ||
+        program->flags != 0 ||
+        memcmp(program->layout_sha256, mc_luau_aot_v1_layout_sha256,
+               sizeof(program->layout_sha256)) != 0)
+        return MC_LUAU_AOT_V1_INTERNAL_ERROR;
+
+    for (uint32_t id = 0; id < program->proto_count; ++id) {
+        const McLuauAotProtoV1 *metadata = &program->protos[id];
+        const bool isRoot = id == program->root_proto_id;
+        if (!validAotProto(metadata) || metadata->function_id != id ||
+            metadata->flags != (isRoot ? MC_LUAU_AOT_PROTO_V1_ROOT : 0) ||
+            (isRoot ? metadata->parent_id != MC_LUAU_AOT_V1_NO_ID
+                    : metadata->parent_id >= id))
+            return MC_LUAU_AOT_V1_INTERNAL_ERROR;
+    }
+
+    if (L->global->ecb.destroy && L->global->ecb.destroy != destroyAotProto)
+        return MC_LUAU_AOT_V1_INTERNAL_ERROR;
+    L->global->ecb.destroy = destroyAotProto;
+
+    if (!lua_checkstack(L, 1))
+        return MC_LUAU_AOT_V1_INTERNAL_ERROR;
+    luaC_checkGC(L);
+    luaC_threadbarrier(L);
+
+    const int protoCount = int(program->proto_count);
+    const uint8_t memoryCategory = L->activememcat;
+    Proto **protos = luaM_newarray(L, protoCount, Proto *, memoryCategory);
+    uint32_t *childCounts = luaM_newarray(L, protoCount, uint32_t, memoryCategory);
+    memset(childCounts, 0, sizeof(uint32_t) * protoCount);
+
+    TString *sourceName = luaS_newlstr(L, source, sourceSize);
+    for (int id = 0; id < protoCount; ++id) {
+        protos[id] = luaF_newproto(L);
+        initializeAotProto(protos[id], &program->protos[id], sourceName);
+        if (uint32_t(id) != program->root_proto_id)
+            childCounts[program->protos[id].parent_id]++;
+    }
+
+    for (int id = 0; id < protoCount; ++id) {
+        const uint32_t count = childCounts[id];
+        if (count > INT_MAX)
+            luaG_runerror(L, "strict AOT Proto child count exceeds runtime limit");
+        if (count != 0) {
+            protos[id]->p = luaM_newarray(L, int(count), Proto *, protos[id]->memcat);
+            protos[id]->sizep = int(count);
+        }
+        childCounts[id] = 0;
+    }
+    for (int id = 0; id < protoCount; ++id) {
+        if (uint32_t(id) == program->root_proto_id)
+            continue;
+        const uint32_t parent = program->protos[id].parent_id;
+        protos[parent]->p[childCounts[parent]++] = protos[id];
+    }
+
+    publishRootClosure(L, protos[program->root_proto_id]);
+    luaM_freearray(L, childCounts, protoCount, uint32_t, memoryCategory);
+    luaM_freearray(L, protos, protoCount, Proto *, memoryCategory);
     return MC_LUAU_AOT_V1_OK;
 }
 
@@ -284,10 +462,7 @@ extern "C" void mc_luau_aot_v1_enter(lua_State *L) {
     Closure *closure = clvalue(L->ci->func);
     Proto *proto = closure->l.p;
     const McLuauAotProtoV1 *metadata = static_cast<const McLuauAotProtoV1 *>(proto->execdata);
-    if (!metadata || metadata->abi_version != MC_LUAU_AOT_ABI_V1 ||
-        metadata->struct_size != MC_LUAU_AOT_PROTO_V1_SIZE || !metadata->entry ||
-        memcmp(metadata->layout_sha256, mc_luau_aot_v1_layout_sha256,
-               sizeof(metadata->layout_sha256)) != 0)
+    if (!validAotProto(metadata))
         luaG_runerror(L, "strict AOT metadata ABI/layout mismatch");
 
     uint32_t status = metadata->entry(L, metadata);

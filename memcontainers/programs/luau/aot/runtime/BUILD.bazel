@@ -100,6 +100,11 @@ cc_object(
     obj = "//memcontainers/programs/luau/aot/compiler/backend:slow_add_object",
 )
 
+cc_object(
+    name = "compiled_call_package_object_link",
+    obj = "//memcontainers/programs/luau/aot/compiler/backend:compiled_call_package_object",
+)
+
 # Executable oracle for the first generated-function ABI. Unlike the structural wasm-ld oracle,
 # this constructs a real Luau state/Proto/Closure and reaches generated code through ldo's strict
 # AOT dispatch hook. It remains an oracle-only target; production entry/package materialization is
@@ -229,6 +234,43 @@ build_test(
     targets = [":slow_arith_runtime_oracle_wasm"],
 )
 
+zig_binary(
+    name = "compiled_call_runtime_oracle_raw",
+    srcs = ["oracle/compiled_call_oracle_root.zig"],
+    linkopts = [
+        "-lc",
+        "-lc++",
+        "-fno-entry",
+        "--export-memory",
+        "--export=__mc_pcall_run",
+        "--export=__stack_pointer",
+        "--export=mc_luau_aot_v1_compiled_call_oracle_init",
+        "--export=mc_luau_aot_v1_compiled_call_oracle_run",
+    ],
+    main = "oracle/compiled_call_oracle_root.zig",
+    tags = ["manual"],
+    deps = [
+        ":aot_runtime_abi",
+        ":compiled_call_package_object_link",
+        ":luau_aot_runtime_raw",
+        "//memcontainers/programs/luau/glue:trap",
+    ],
+)
+
+zig_configure_binary(
+    name = "compiled_call_runtime_oracle_wasm",
+    actual = ":compiled_call_runtime_oracle_raw",
+    mode = "release_small",
+    tags = ["manual"],
+    target = "//platforms:wasm32_wasi",
+    threaded = "single",
+)
+
+build_test(
+    name = "compiled_call_runtime_oracle_build_test",
+    targets = [":compiled_call_runtime_oracle_wasm"],
+)
+
 # rules_js requires non-JavaScript data outside this package to enter through the output tree. This
 # preserves the source byte-for-byte while making the differential oracle consume the very same file
 # as the frontend/backend object build.
@@ -274,6 +316,29 @@ js_test(
     env = {
         "LUAU_AOT_SLOW_ARITH_ORACLE_SOURCE": "$(rlocationpath :slow_arith_runtime_oracle_source)",
         "LUAU_AOT_SLOW_ARITH_ORACLE_WASM": "$(rlocationpath :slow_arith_runtime_oracle_wasm)",
+        "LUAU_INTERPRETER_ORACLE_WASM": "$(rlocationpath :interpreter_oracle_wasm)",
+    },
+)
+
+genrule(
+    name = "compiled_call_runtime_oracle_source",
+    srcs = ["//memcontainers/programs/luau/aot/compiler/backend:compiled_call.luau"],
+    outs = ["compiled_call_runtime_oracle_source.luau"],
+    cmd = "cp $(location //memcontainers/programs/luau/aot/compiler/backend:compiled_call.luau) $@",
+)
+
+js_test(
+    name = "compiled_call_runtime_oracle_test",
+    data = [
+        ":compiled_call_runtime_oracle_source",
+        ":compiled_call_runtime_oracle_wasm",
+        ":interpreter_oracle_wasm",
+        "oracle/compiled_call_oracle.test.mjs",
+    ],
+    entry_point = "oracle/compiled_call_oracle.test.mjs",
+    env = {
+        "LUAU_AOT_COMPILED_CALL_ORACLE_SOURCE": "$(rlocationpath :compiled_call_runtime_oracle_source)",
+        "LUAU_AOT_COMPILED_CALL_ORACLE_WASM": "$(rlocationpath :compiled_call_runtime_oracle_wasm)",
         "LUAU_INTERPRETER_ORACLE_WASM": "$(rlocationpath :interpreter_oracle_wasm)",
     },
 )

@@ -27,7 +27,13 @@ const metadata = abi.AotProto{
     .layout_sha256 = abi.layout_sha256,
     .entry = &mc_luau_aot_v1_generated_ir_function,
     .function_id = 1,
+    .parent_id = abi.no_id,
     .flags = abi.flag_root,
+    .num_params = 2,
+    .nups = 0,
+    .is_vararg = 0,
+    .max_stack_size = 3,
+    .reserved = 0,
 };
 
 const source_name = "=aot/slow_add.luau";
@@ -54,7 +60,7 @@ pub export fn __main_argc_argv(argc: c_int, argv_pointer: [*][*:0]u8) c_int {
 
     const state = luaL_newstate() orelse return fail("luau-aot-slow-add: state allocation failed\n", 1);
     defer lua_close(state);
-    if (abi.mc_luau_aot_v1_push_root(state, &metadata, source_name.ptr, source_name.len, 2, 3) != 0)
+    if (abi.mc_luau_aot_v1_push_root(state, &metadata, source_name.ptr, source_name.len) != 0)
         return fail("luau-aot-slow-add: root publication failed\n", 1);
 
     const lhs = std.mem.span(argv_pointer[1]);

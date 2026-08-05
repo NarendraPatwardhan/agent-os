@@ -66,10 +66,15 @@
       "luau_callhook",
       "luau_precall",
       "luau_poscall",
-      "mc_luau_aot_v1_commit_number",
+      "mc_luau_aot_v1_call_fixed",
+      "mc_luau_aot_v1_do_arith",
+      "mc_luau_aot_v1_dupclosure",
       "mc_luau_aot_v1_enter",
       "mc_luau_aot_v1_finish_yielded_op",
-      "mc_luau_aot_v1_push_root"
+      "mc_luau_aot_v1_interrupt",
+      "mc_luau_aot_v1_push_program",
+      "mc_luau_aot_v1_push_root",
+      "mc_luau_aot_v1_return_one"
     ],
     "bytecode_boundary": {
       "requires_code_null": true,
@@ -124,9 +129,9 @@
   "notes": [
     "The declared set compiles into a 36-member wasm32 relocatable archive: 34 retained upstream translation units, one project call-frame adapter, and the required empty Zig root object.",
     "archive_built_unlinked means standard relocatable objects exist; generated functions, kernel-backed protected-call hooks, libc, the AgentOS adapter, and the runner are separate final-link inputs.",
-    "The project adapter owns the versioned strict-AOT metadata, frame-entry, scalar-result, closure-materialization, and Proto teardown ABI.",
+    "The project adapter owns the versioned strict-AOT program metadata, frame entry, one-TValue return, zero-upvalue closure materialization, fixed compiled call, and Proto teardown ABI.",
     "lvmutils.cpp remains because it owns reusable value, table, comparison, arithmetic, concatenation, length, loop, and metamethod helpers.",
     "luaV_getimport is currently trapped in forbidden VM/src/lvmload.cpp and requires a named runtime extraction if the generated-code ABI uses it."
   ],
-  "canonical_hash": "045a98c7aa87d0c0c0a518e51ab4a9d598f46c1ef45ca0828227dd1759928bec"
+  "canonical_hash": "f6f2b37715403b39f89210f51ca9f163d9d536a8c798e0798797a6d759f348ea"
 }

@@ -18,10 +18,10 @@
     "<runtime-archive>",
     "--no-whole-archive"
   ],
-  "output_sha256": "37ceea20fe9e634ff5c990209e7130b6c67ee241a331e16e8734230dad341198",
+  "output_sha256": "789c4f3fa47ad524182885e9654fb180f5983eb7e9ba84bb75c015513adfff64",
   "import_module": "env",
   "import_count": 61,
-  "export_count": 391,
+  "export_count": 394,
   "runtime_contract_imports": [
     "mc_protected_call",
     "mc_raise"
@@ -92,12 +92,15 @@
     "_Z12luau_precallP9lua_StateP10lua_TValuei",
     "_Z12luau_poscallP9lua_StateP10lua_TValue",
     "_Z13luau_callhookP9lua_StatePFvS0_P9lua_DebugEPv",
-    "mc_luau_aot_v1_commit_number",
+    "mc_luau_aot_v1_call_fixed",
     "mc_luau_aot_v1_do_arith",
+    "mc_luau_aot_v1_dupclosure",
     "mc_luau_aot_v1_enter",
     "mc_luau_aot_v1_finish_yielded_op",
     "mc_luau_aot_v1_interrupt",
-    "mc_luau_aot_v1_push_root"
+    "mc_luau_aot_v1_push_program",
+    "mc_luau_aot_v1_push_root",
+    "mc_luau_aot_v1_return_one"
   ],
   "required_global_exports": [
     "mc_luau_aot_v1_layout_sha256"

@@ -23,7 +23,13 @@ const metadata = abi.AotProto{
     .layout_sha256 = abi.layout_sha256,
     .entry = &mc_luau_aot_v1_generated_ir_function,
     .function_id = 0,
+    .parent_id = abi.no_id,
     .flags = abi.flag_root,
+    .num_params = 0,
+    .nups = 0,
+    .is_vararg = 0,
+    .max_stack_size = 1,
+    .reserved = 0,
 };
 
 const source_name = "=aot/silent_return.luau";
@@ -34,7 +40,7 @@ pub export fn __main_argc_argv(argc: c_int, _: [*][*:0]u8) c_int {
 
     const state = luaL_newstate() orelse return 1;
     defer lua_close(state);
-    if (abi.mc_luau_aot_v1_push_root(state, &metadata, source_name.ptr, source_name.len, 0, 1) != 0)
+    if (abi.mc_luau_aot_v1_push_root(state, &metadata, source_name.ptr, source_name.len) != 0)
         return 1;
 
     return if (lua_pcall(state, 0, 0, 0) == 0) 0 else 1;

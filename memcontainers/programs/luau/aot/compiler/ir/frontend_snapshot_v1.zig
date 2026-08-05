@@ -167,8 +167,10 @@ pub const IrCommand = enum(u8) {
     check_tag = 131,
     interrupt = 145,
     set_savedpc = 150,
+    call = 154,
     return_ = 155,
     fallback_prepvarargs = 165,
+    fallback_dupclosure = 168,
     mark_used = 171,
     _,
 };
@@ -211,6 +213,19 @@ pub const IrBlockKind = enum(u8) {
     }
 };
 
+pub const VmConstantKind = enum(u8) {
+    nil = 0,
+    boolean = 1,
+    number = 2,
+    vector = 3,
+    string = 4,
+    integer = 5,
+    import = 6,
+    table = 7,
+    closure = 8,
+    class_shape = 9,
+};
+
 pub const IrCondition = enum(u8) {
     equal = 0,
     not_equal = 1,
@@ -231,11 +246,28 @@ pub const IrCondition = enum(u8) {
 pub const Proto = struct {
     id: u32,
     parent_id: u32,
+    nups: u8,
     num_params: u8,
     is_vararg: bool,
     max_stack_size: u8,
     code_count: u32,
+    vm_constant_start: u32,
     vm_constant_count: u32,
+};
+
+pub const VmConstant = struct {
+    kind: VmConstantKind,
+    payload0: u32,
+    payload1: u32,
+    payload2: u32,
+    payload3: u32,
+    bits0: u64,
+
+    pub fn closureProtoId(self: VmConstant) ?u32 {
+        if (self.kind != .closure)
+            return null;
+        return self.payload0;
+    }
 };
 
 pub const IrFunction = struct {
@@ -334,11 +366,28 @@ pub const Snapshot = struct {
         return .{
             .id = readU32(item, 0),
             .parent_id = readU32(item, 4),
+            .nups = item[29],
             .num_params = item[30],
             .is_vararg = item[31] != 0,
             .max_stack_size = item[32],
             .code_count = readU32(item, 40),
+            .vm_constant_start = readU32(item, 44),
             .vm_constant_count = readU32(item, 48),
+        };
+    }
+
+    pub fn vmConstant(self: Snapshot, proto_value: Proto, id: u32) Error!VmConstant {
+        if (id >= proto_value.vm_constant_count)
+            return Error.IndexOutOfBounds;
+        const records = try self.requireSection(.vm_constants);
+        const item = recordBytes(self, records, proto_value.vm_constant_start + id);
+        return .{
+            .kind = @enumFromInt(item[0]),
+            .payload0 = readU32(item, 4),
+            .payload1 = readU32(item, 8),
+            .payload2 = readU32(item, 12),
+            .payload3 = readU32(item, 16),
+            .bits0 = readU64(item, 24),
         };
     }
 

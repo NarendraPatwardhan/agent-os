@@ -9,10 +9,10 @@ async function instantiate(path, label) {
 }
 
 const [frontendPath, backendPath, sourcePath, outputPath, functionText] = process.argv.slice(2);
-if (!frontendPath || !backendPath || !sourcePath || !outputPath || !/^[0-9]+$/.test(functionText || ""))
-  throw new Error("usage: object_emitter <frontend.wasm> <backend.wasm> <source.luau> <output.o> <function-id>");
-const functionId = Number(functionText);
-if (!Number.isSafeInteger(functionId) || functionId > 0xffffffff)
+if (!frontendPath || !backendPath || !sourcePath || !outputPath || (functionText !== "package" && !/^[0-9]+$/.test(functionText || "")))
+  throw new Error("usage: object_emitter <frontend.wasm> <backend.wasm> <source.luau> <output.o> <function-id|package>");
+const functionId = functionText === "package" ? null : Number(functionText);
+if (functionId !== null && (!Number.isSafeInteger(functionId) || functionId > 0xffffffff))
   throw new Error(`invalid function id ${functionText}`);
 
 const frontend = await instantiate(frontendPath, "frontend");
@@ -63,7 +63,9 @@ function compileBackend(snapshot) {
   if (!snapshotPointer || !resultPointer) throw new Error("backend allocation failed");
   new Uint8Array(api.memory.buffer, snapshotPointer, snapshot.length).set(snapshot);
   new Uint8Array(api.memory.buffer, resultPointer, 16).fill(0);
-  const status = api.mc_luau_backend_v1_compile(snapshotPointer, snapshot.length, functionId, resultPointer);
+  const status = functionId === null
+    ? api.mc_luau_backend_v1_compile_package(snapshotPointer, snapshot.length, resultPointer)
+    : api.mc_luau_backend_v1_compile(snapshotPointer, snapshot.length, functionId, resultPointer);
   const result = new DataView(api.memory.buffer, resultPointer, 16);
   const dataPointer = result.getUint32(0, true);
   const dataSize = result.getUint32(4, true);

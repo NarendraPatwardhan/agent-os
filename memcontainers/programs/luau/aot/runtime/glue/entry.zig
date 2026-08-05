@@ -28,7 +28,13 @@ const metadata = abi.AotProto{
     .layout_sha256 = abi.layout_sha256,
     .entry = &mc_luau_aot_v1_generated_ir_function,
     .function_id = 1,
+    .parent_id = abi.no_id,
     .flags = abi.flag_root,
+    .num_params = 1,
+    .nups = 0,
+    .is_vararg = 0,
+    .max_stack_size = 5,
+    .reserved = 0,
 };
 
 const source_name = "=aot/numeric_loop.luau";
@@ -53,7 +59,7 @@ fn run(input: i32) ?i32 {
     const state = luaL_newstate() orelse return null;
     defer lua_close(state);
 
-    if (abi.mc_luau_aot_v1_push_root(state, &metadata, source_name.ptr, source_name.len, 1, 5) != 0)
+    if (abi.mc_luau_aot_v1_push_root(state, &metadata, source_name.ptr, source_name.len) != 0)
         return null;
     lua_pushnumber(state, @floatFromInt(input));
     if (lua_pcall(state, 1, 1, 0) != 0)

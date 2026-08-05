@@ -157,12 +157,24 @@ guest path, but is not presented as a general-purpose AOT product:
   null callback fast path, invokes an installed callback, reports yielded status, and requires
   generated code to reload `L->base` after a successful callback. Yield continuation/source-pc
   semantics remain explicitly open.
+- the backend now has a package entrypoint that validates one snapshot once and emits every Proto/IR
+  function into one deterministic relocatable object under stable ID-derived symbols. The first
+  three-Proto object is 951 bytes and contains the variadic root, a two-argument caller, and its
+  guarded-add callee; no per-function object stitching or duplicate helper imports intervene;
+- the strict runtime publishes that complete immutable descriptor graph into real GC-owned Luau
+  `Proto` objects before exposing the root closure. Generic one-`TValue` return replaces the old
+  numeric-only commit ABI; validated zero-upvalue `FALLBACK_DUPCLOSURE` materializes real child
+  closures; and a narrow two-argument/one-result `CALL` installs and restores ordinary `CallInfo`
+  frames. Full GC after graph publication and after the root returns its child closure succeeds, and
+  five decimal-string cases traverse nested compiled CALL/RETURN plus the arithmetic slow path and
+  match the separately linked pinned interpreter. Captures, general arities/results, C/callable
+  values, tail calls, recursion, and yield continuations remain fail-closed;
 
 WP2 is complete. WP3's central arithmetic/type slow-block rejoin now passes the exact-source,
 relocatable-object, strict-runtime, pinned-interpreter, production optimization/stamp/attestation, and
-real-kernel gates. WP4 is next: compile the entire closed Proto graph into one deterministic object,
-publish its immutable function table, and prove a narrow fixed-arity compiled Luau-to-Luau call before
-adding operator/constant variants as coherent semantic families.
+real-kernel gates. WP4's first closed-graph/fixed-call vertical now passes the object, strict-runtime,
+GC-publication, and pinned-interpreter gates; its immediate completion slice is the same immutable
+three-Proto artifact through production optimization/stamp/attestation and the real kernel.
 
 ---
 
@@ -1417,6 +1429,16 @@ Gate:
 ### WP4 — Calls, closures, upvalues, varargs, and modules
 
 **Goal:** make the closed Proto graph executable.
+
+**Current state:** the production backend emits all three reachable functions from the exact
+`compiled_call.luau` snapshot into one deterministic object. Stable symbols are derived from dense
+canonical Proto IDs. The strict runtime validates an immutable whole-program descriptor, constructs
+and connects every GC-owned `Proto`, publishes only the root, returns arbitrary single `TValue`s,
+materializes zero-upvalue child closures, and executes the exact fixed two-argument/one-result compiled
+Luau call shape after a validated `SET_SAVEDPC`. The caller reloads `L->base` after the call. Full-GC
+publication and five pinned-interpreter string-add differentials pass; the production kernel gate is
+next. General closure captures, arities/results, callable metamethods, recursion, tail calls, yields,
+varargs consumption, modules, and source-location publication are still unsupported.
 
 Tasks:
 

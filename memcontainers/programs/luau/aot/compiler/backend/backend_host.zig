@@ -29,14 +29,9 @@ export fn mc_luau_backend_v1_dealloc(pointer: u32, size: u32) void {
     allocator.free(bytes[0..size]);
 }
 
-export fn mc_luau_backend_v1_compile(snapshot_pointer: u32, snapshot_size: u32, function_id: u32, result_pointer: u32) u32 {
-    if (snapshot_pointer == 0 or snapshot_size == 0 or result_pointer == 0)
-        return status_invalid_argument;
-
-    const result: *CompileResult = @ptrFromInt(result_pointer);
+fn publishObject(result: *CompileResult, object_result: lower.Error![]u8) u32 {
     result.* = .{ .data = 0, .size = 0, .status = status_compile_failure, .reserved = 0 };
-    const snapshot_bytes: [*]const u8 = @ptrFromInt(snapshot_pointer);
-    const object = lower.build(allocator, snapshot_bytes[0..snapshot_size], function_id) catch |err| {
+    const object = object_result catch |err| {
         const status: u32 = switch (err) {
             error.OutOfMemory, error.ResourceLimit => status_resource_limit,
             else => status_compile_failure,
@@ -54,6 +49,24 @@ export fn mc_luau_backend_v1_compile(snapshot_pointer: u32, snapshot_size: u32, 
     result.size = @intCast(object.len);
     result.status = status_ok;
     return status_ok;
+}
+
+export fn mc_luau_backend_v1_compile(snapshot_pointer: u32, snapshot_size: u32, function_id: u32, result_pointer: u32) u32 {
+    if (snapshot_pointer == 0 or snapshot_size == 0 or result_pointer == 0)
+        return status_invalid_argument;
+
+    const result: *CompileResult = @ptrFromInt(result_pointer);
+    const snapshot_bytes: [*]const u8 = @ptrFromInt(snapshot_pointer);
+    return publishObject(result, lower.build(allocator, snapshot_bytes[0..snapshot_size], function_id));
+}
+
+export fn mc_luau_backend_v1_compile_package(snapshot_pointer: u32, snapshot_size: u32, result_pointer: u32) u32 {
+    if (snapshot_pointer == 0 or snapshot_size == 0 or result_pointer == 0)
+        return status_invalid_argument;
+
+    const result: *CompileResult = @ptrFromInt(result_pointer);
+    const snapshot_bytes: [*]const u8 = @ptrFromInt(snapshot_pointer);
+    return publishObject(result, lower.buildPackage(allocator, snapshot_bytes[0..snapshot_size]));
 }
 
 export fn mc_luau_backend_v1_free(result_pointer: u32) void {

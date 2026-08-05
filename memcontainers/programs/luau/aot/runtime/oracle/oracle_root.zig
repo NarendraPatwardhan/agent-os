@@ -23,7 +23,13 @@ const metadata = abi.AotProto{
     .layout_sha256 = abi.layout_sha256,
     .entry = &mc_luau_aot_v1_generated_ir_function,
     .function_id = 1,
+    .parent_id = abi.no_id,
     .flags = abi.flag_root,
+    .num_params = 1,
+    .nups = 0,
+    .is_vararg = 0,
+    .max_stack_size = 5,
+    .reserved = 0,
 };
 
 const source = "=aot-upstream-ir-loop-oracle";
@@ -41,7 +47,7 @@ export fn mc_luau_aot_v1_oracle_run_i32(input: i32) i32 {
     const state = luaL_newstate() orelse return std.math.minInt(i32);
     defer lua_close(state);
 
-    if (abi.mc_luau_aot_v1_push_root(state, &metadata, source.ptr, source.len, 1, 5) != 0)
+    if (abi.mc_luau_aot_v1_push_root(state, &metadata, source.ptr, source.len) != 0)
         return std.math.minInt(i32);
     lua_pushnumber(state, @floatFromInt(input));
     lua_call(state, 1, 1);
@@ -58,7 +64,7 @@ export fn mc_luau_aot_v1_oracle_reject_non_number() i32 {
     const state = luaL_newstate() orelse return -1;
     defer lua_close(state);
 
-    if (abi.mc_luau_aot_v1_push_root(state, &metadata, source.ptr, source.len, 1, 5) != 0)
+    if (abi.mc_luau_aot_v1_push_root(state, &metadata, source.ptr, source.len) != 0)
         return -2;
     lua_pushnil(state);
     const status = lua_pcall(state, 1, 1, 0);
@@ -70,7 +76,7 @@ export fn mc_luau_aot_v1_oracle_gc_publication() i32 {
     defer lua_close(state);
 
     _ = lua_gc(state, 2, 0); // LUA_GCCOLLECT: paint the inactive thread before publication.
-    if (abi.mc_luau_aot_v1_push_root(state, &metadata, source.ptr, source.len, 1, 5) != 0)
+    if (abi.mc_luau_aot_v1_push_root(state, &metadata, source.ptr, source.len) != 0)
         return -2;
     _ = lua_gc(state, 2, 0); // The published Closure/Proto/source graph must remain reachable.
 
@@ -90,7 +96,7 @@ export fn mc_luau_aot_v1_oracle_probe(stage: u32) i32 {
     if (stage == 0)
         return 0;
 
-    if (abi.mc_luau_aot_v1_push_root(state, &metadata, source.ptr, source.len, 1, 5) != 0)
+    if (abi.mc_luau_aot_v1_push_root(state, &metadata, source.ptr, source.len) != 0)
         return -2;
     if (stage == 1)
         return 0;

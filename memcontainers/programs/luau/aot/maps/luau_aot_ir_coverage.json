@@ -2317,10 +2317,11 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2669; CodeGen/src/IrLoweringA64.cpp:2793",
       "tests": [
+        "//memcontainers/programs/luau/aot/runtime:compiled_call_runtime_oracle_test",
         "//memcontainers/programs/luau/aot/runtime:slow_arith_runtime_oracle_test",
         "//memcontainers/tests/e2e:core#luau_aot_arithmetic_slow_path_rejoins_compiled_code"
       ],
-      "status": "partial_validated_arith_location_marker"
+      "status": "partial_validated_arith_and_call_location_marker"
     },
     {
       "command": "CLOSE_UPVALS",
@@ -2377,16 +2378,19 @@
       "class": "call_protocol",
       "wasm_features": [],
       "runtime_symbols": [
-        "mc_luau_aot_v1_call"
+        "mc_luau_aot_v1_call_fixed"
       ],
-      "may_allocate": null,
-      "may_raise": null,
+      "may_allocate": true,
+      "may_raise": true,
       "may_call_luau": true,
       "safepoint": true,
       "rejoins": true,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2727; CodeGen/src/IrLoweringA64.cpp:2837",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
+        "//memcontainers/programs/luau/aot/runtime:compiled_call_runtime_oracle_test"
+      ],
+      "status": "partial_fixed_two_arguments_one_result_compiled_luau"
     },
     {
       "command": "RETURN",
@@ -2394,7 +2398,7 @@
       "class": "call_protocol",
       "wasm_features": [],
       "runtime_symbols": [
-        "mc_luau_aot_v1_commit_number"
+        "mc_luau_aot_v1_return_one"
       ],
       "may_allocate": null,
       "may_raise": null,
@@ -2402,8 +2406,11 @@
       "safepoint": true,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2732; CodeGen/src/IrLoweringA64.cpp:2857",
-      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
-      "status": "partial_single_number_result"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
+        "//memcontainers/programs/luau/aot/runtime:compiled_call_runtime_oracle_test"
+      ],
+      "status": "partial_single_tvalue_result"
     },
     {
       "command": "FORGLOOP",
@@ -2618,16 +2625,19 @@
       "class": "rewrite_required",
       "wasm_features": [],
       "runtime_symbols": [
-        "mc_luau_aot_v1_fallback_dupclosure"
+        "mc_luau_aot_v1_dupclosure"
       ],
-      "may_allocate": null,
-      "may_raise": null,
-      "may_call_luau": null,
-      "safepoint": null,
+      "may_allocate": true,
+      "may_raise": true,
+      "may_call_luau": false,
+      "safepoint": true,
       "rejoins": true,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2896; CodeGen/src/IrLoweringA64.cpp:3105",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
+        "//memcontainers/programs/luau/aot/runtime:compiled_call_runtime_oracle_test"
+      ],
+      "status": "partial_zero_upvalue_closed_child"
     },
     {
       "command": "FALLBACK_FORGPREP",

@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
 const generatedSymbol = "mc_luau_aot_v1_generated_ir_function";
+const packageSymbols = [0, 1, 2].map((id) => `mc_luau_aot_v1_function_${String(id).padStart(8, "0")}`);
 
 function runfile(relative, variable) {
   if (!relative) throw new Error(`${variable} is not set`);
@@ -86,6 +87,27 @@ function backendObject(snapshot, functionId) {
   return object;
 }
 
+function backendPackage(snapshot) {
+  const api = backend.exports;
+  const snapshotPointer = api.mc_luau_backend_v1_alloc(snapshot.length);
+  const resultPointer = api.mc_luau_backend_v1_alloc(16);
+  if (!snapshotPointer || !resultPointer) throw new Error("backend package allocation failed");
+  new Uint8Array(api.memory.buffer, snapshotPointer, snapshot.length).set(snapshot);
+  new Uint8Array(api.memory.buffer, resultPointer, 16).fill(0);
+  const status = api.mc_luau_backend_v1_compile_package(snapshotPointer, snapshot.length, resultPointer);
+  const result = new DataView(api.memory.buffer, resultPointer, 16);
+  const dataPointer = result.getUint32(0, true);
+  const dataSize = result.getUint32(4, true);
+  const resultStatus = result.getUint32(8, true);
+  if (status !== 0 || resultStatus !== 0 || !dataPointer || !dataSize)
+    throw new Error(`backend package failed with ${status}/${resultStatus}`);
+  const object = Buffer.from(new Uint8Array(api.memory.buffer, dataPointer, dataSize));
+  api.mc_luau_backend_v1_free(resultPointer);
+  api.mc_luau_backend_v1_dealloc(resultPointer, 16);
+  api.mc_luau_backend_v1_dealloc(snapshotPointer, snapshot.length);
+  return object;
+}
+
 function linkObject(object, name) {
   const directory = mkdtempSync(join(process.env.TEST_TMPDIR || tmpdir(), `luau-aot-${name}-`));
   const objectPath = join(directory, `${name}.o`);
@@ -111,6 +133,31 @@ function linkObject(object, name) {
   return bytes;
 }
 
+function linkPackage(object) {
+  const directory = mkdtempSync(join(process.env.TEST_TMPDIR || tmpdir(), "luau-aot-package-"));
+  const objectPath = join(directory, "package.o");
+  const wasmPath = join(directory, "package.wasm");
+  writeFileSync(objectPath, object);
+  const linked = spawnSync(
+    wasmLd,
+    [
+      "--no-entry",
+      "--allow-undefined",
+      "--export-memory",
+      ...packageSymbols.map((symbol) => `--export=${symbol}`),
+      objectPath,
+      "-o",
+      wasmPath,
+    ],
+    { encoding: "utf8" },
+  );
+  if (linked.status !== 0)
+    throw new Error(`package wasm-ld failed (${linked.status}): ${linked.stdout}\n${linked.stderr}`);
+  const bytes = readFileSync(wasmPath);
+  rmSync(directory, { recursive: true, force: true });
+  return bytes;
+}
+
 async function executeCase(name, source, inputs) {
   const snapshot = frontendSnapshot(source, `@aot/${name}.luau`);
   const object = backendObject(snapshot, 1);
@@ -119,7 +166,7 @@ async function executeCase(name, source, inputs) {
   const module = await WebAssembly.compile(linkObject(object, name));
   const moduleImports = WebAssembly.Module.imports(module).map(({ module, name: importName, kind }) => [module, importName, kind]);
   const expectedImports = [
-    ["env", "mc_luau_aot_v1_commit_number", "function"],
+    ["env", "mc_luau_aot_v1_return_one", "function"],
     ["env", "mc_luau_aot_v1_interrupt", "function"],
   ];
   if (name === "loop")
@@ -132,9 +179,14 @@ async function executeCase(name, source, inputs) {
   let interrupts = 0;
   instance = await WebAssembly.instantiate(module, {
     env: {
-      mc_luau_aot_v1_commit_number(state, value) {
+      mc_luau_aot_v1_return_one(state, sourceRegister) {
         if (state !== 1024) throw new Error(`${name}: wrong state ${state}`);
-        committed = value;
+        const view = new DataView(instance.exports.memory.buffer);
+        const base = view.getUint32(state + 12, true);
+        const source = base + sourceRegister * 16;
+        if (view.getUint32(source + 12, true) !== 3)
+          throw new Error(`${name}: return helper received non-number register ${sourceRegister}`);
+        committed = view.getFloat64(source, true);
       },
       mc_luau_aot_v1_interrupt(state, pc) {
         if (state !== 1024 || pc < 0) throw new Error(`${name}: invalid interrupt ${state}/${pc}`);
@@ -185,7 +237,7 @@ async function executeSilentRoot() {
   const module = await WebAssembly.compile(linkObject(object, name));
   const moduleImports = WebAssembly.Module.imports(module).map(({ module, name: importName, kind }) => [module, importName, kind]);
   const expectedImports = [
-    ["env", "mc_luau_aot_v1_commit_number", "function"],
+    ["env", "mc_luau_aot_v1_return_one", "function"],
     ["env", "mc_luau_aot_v1_interrupt", "function"],
   ];
   if (JSON.stringify(moduleImports) !== JSON.stringify(expectedImports))
@@ -193,11 +245,17 @@ async function executeSilentRoot() {
 
   let committed = null;
   let interrupts = 0;
-  const instance = await WebAssembly.instantiate(module, {
+  let instance;
+  instance = await WebAssembly.instantiate(module, {
     env: {
-      mc_luau_aot_v1_commit_number(state, value) {
+      mc_luau_aot_v1_return_one(state, sourceRegister) {
         if (state !== 1024) throw new Error(`${name}: wrong state ${state}`);
-        committed = value;
+        const view = new DataView(instance.exports.memory.buffer);
+        const base = view.getUint32(state + 12, true);
+        const source = base + sourceRegister * 16;
+        if (view.getUint32(source + 12, true) !== 3)
+          throw new Error(`${name}: return helper received non-number register ${sourceRegister}`);
+        committed = view.getFloat64(source, true);
       },
       mc_luau_aot_v1_interrupt(state, pc) {
         if (state !== 1024 || pc < 0) throw new Error(`${name}: invalid interrupt ${state}/${pc}`);
@@ -226,7 +284,7 @@ async function executeSlowAdd() {
   const module = await WebAssembly.compile(linkObject(object, name));
   const moduleImports = WebAssembly.Module.imports(module).map(({ module, name: importName, kind }) => [module, importName, kind]);
   const expectedImports = [
-    ["env", "mc_luau_aot_v1_commit_number", "function"],
+    ["env", "mc_luau_aot_v1_return_one", "function"],
     ["env", "mc_luau_aot_v1_interrupt", "function"],
     ["env", "mc_luau_aot_v1_do_arith", "function"],
   ];
@@ -239,9 +297,14 @@ async function executeSlowAdd() {
   let helperCalls = 0;
   instance = await WebAssembly.instantiate(module, {
     env: {
-      mc_luau_aot_v1_commit_number(state, value) {
+      mc_luau_aot_v1_return_one(state, sourceRegister) {
         if (state !== 1024) throw new Error(`${name}: wrong state ${state}`);
-        committed = value;
+        const view = new DataView(instance.exports.memory.buffer);
+        const base = view.getUint32(state + 12, true);
+        const source = base + sourceRegister * 16;
+        if (view.getUint32(source + 12, true) !== 3)
+          throw new Error(`${name}: return helper received non-number register ${sourceRegister}`);
+        committed = view.getFloat64(source, true);
       },
       mc_luau_aot_v1_interrupt(state, pc) {
         if (state !== 1024 || pc < 0) throw new Error(`${name}: invalid interrupt ${state}/${pc}`);
@@ -287,6 +350,130 @@ async function executeSlowAdd() {
   return { objectSize: object.length, interrupts, helperCalls };
 }
 
+async function executeCompiledCallPackage() {
+  const name = "compiled-call-package";
+  const source = readFileSync(
+    runfile(process.env.LUAU_AOT_COMPILED_CALL_SOURCE, "LUAU_AOT_COMPILED_CALL_SOURCE"),
+    "utf8",
+  );
+  const snapshot = frontendSnapshot(source, "@aot/compiled_call.luau");
+  const first = backendPackage(snapshot);
+  const second = backendPackage(snapshot);
+  if (!first.equals(second)) throw new Error(`${name}: package backend is nondeterministic`);
+  const module = await WebAssembly.compile(linkPackage(first));
+  const moduleImports = WebAssembly.Module.imports(module).map(({ module: importModule, name: importName, kind }) => [importModule, importName, kind]);
+  const expectedImports = [
+    ["env", "mc_luau_aot_v1_return_one", "function"],
+    ["env", "mc_luau_aot_v1_interrupt", "function"],
+    ["env", "mc_luau_aot_v1_do_arith", "function"],
+    ["env", "mc_luau_aot_v1_dupclosure", "function"],
+    ["env", "mc_luau_aot_v1_call_fixed", "function"],
+  ];
+  if (JSON.stringify(moduleImports) !== JSON.stringify(expectedImports))
+    throw new Error(`${name}: unexpected generated imports ${JSON.stringify(moduleImports)}`);
+
+  let instance;
+  let returned = null;
+  let interrupts = 0;
+  let nestedCalls = 0;
+  const closureChildren = [];
+  const state = 1024;
+  const initialBase = 2048;
+  const relocatedCallerBase = 4096;
+  const childBase = 8192;
+  const tvalueSize = 16;
+  const writeNumber = (view, base, register, value) => {
+    view.setFloat64(base + register * tvalueSize, value, true);
+    view.setUint32(base + register * tvalueSize + 12, 3, true);
+  };
+
+  instance = await WebAssembly.instantiate(module, {
+    env: {
+      mc_luau_aot_v1_return_one(returnState, sourceRegister) {
+        if (returnState !== state) throw new Error(`${name}: wrong return state ${returnState}`);
+        const view = new DataView(instance.exports.memory.buffer);
+        const base = view.getUint32(state + 12, true);
+        const source = base + sourceRegister * tvalueSize;
+        const tag = view.getUint32(source + 12, true);
+        returned = tag === 3
+          ? { tag, value: view.getFloat64(source, true) }
+          : { tag, value: view.getUint32(source, true) };
+      },
+      mc_luau_aot_v1_interrupt(interruptState, pc) {
+        if (interruptState !== state || pc < 0) throw new Error(`${name}: invalid interrupt`);
+        interrupts++;
+        return 0;
+      },
+      mc_luau_aot_v1_do_arith() {
+        throw new Error(`${name}: numeric package unexpectedly entered arithmetic fallback`);
+      },
+      mc_luau_aot_v1_dupclosure(closureState, destinationRegister, childProtoId) {
+        if (closureState !== state || (childProtoId !== 1 && childProtoId !== 2))
+          throw new Error(`${name}: invalid child closure ${closureState}/${childProtoId}`);
+        closureChildren.push(childProtoId);
+        const view = new DataView(instance.exports.memory.buffer);
+        const base = view.getUint32(state + 12, true);
+        const destination = base + destinationRegister * tvalueSize;
+        view.setUint32(destination, childProtoId, true);
+        view.setUint32(destination + 12, 6, true);
+      },
+      mc_luau_aot_v1_call_fixed(callState, functionRegister, parameterCount, resultCount) {
+        if (callState !== state || functionRegister !== 3 || parameterCount !== 2 || resultCount !== 1)
+          throw new Error(`${name}: invalid fixed call ABI`);
+        const memory = new Uint8Array(instance.exports.memory.buffer);
+        const view = new DataView(memory.buffer);
+        const callerBase = view.getUint32(state + 12, true);
+        const functionSlot = callerBase + functionRegister * tvalueSize;
+        if (view.getUint32(functionSlot + 12, true) !== 6 || view.getUint32(functionSlot, true) !== 2)
+          throw new Error(`${name}: caller did not materialize child Proto 2`);
+
+        memory.set(memory.subarray(callerBase, callerBase + 6 * tvalueSize), relocatedCallerBase);
+        memory.fill(0, childBase, childBase + 3 * tvalueSize);
+        memory.set(
+          memory.subarray(relocatedCallerBase + 4 * tvalueSize, relocatedCallerBase + 6 * tvalueSize),
+          childBase,
+        );
+        view.setUint32(state + 12, childBase, true);
+        returned = null;
+        const childStatus = instance.exports[packageSymbols[2]](state, 0);
+        if (childStatus !== 0 || returned?.tag !== 3)
+          throw new Error(`${name}: nested child failed with ${childStatus}/${JSON.stringify(returned)}`);
+
+        const childResult = returned.value;
+        view.setUint32(state + 12, relocatedCallerBase, true);
+        writeNumber(view, relocatedCallerBase, functionRegister, childResult);
+        nestedCalls++;
+        return 0;
+      },
+    },
+  });
+
+  for (const symbol of packageSymbols) {
+    if (typeof instance.exports[symbol] !== "function")
+      throw new Error(`${name}: missing generated symbol ${symbol}`);
+  }
+
+  const view = new DataView(instance.exports.memory.buffer);
+  view.setUint32(state + 12, initialBase, true);
+  new Uint8Array(instance.exports.memory.buffer, initialBase, tvalueSize).fill(0);
+  if (instance.exports[packageSymbols[0]](state, 0) !== 0 || returned?.tag !== 6 || returned.value !== 1)
+    throw new Error(`${name}: root did not return child Proto 1 closure: ${JSON.stringify(returned)}`);
+
+  for (const [lhs, rhs, expected] of [[20, 22, 42], [-50, 8, -42], [1234, 5678, 6912]]) {
+    new Uint8Array(instance.exports.memory.buffer, initialBase, 6 * tvalueSize).fill(0);
+    view.setUint32(state + 12, initialBase, true);
+    writeNumber(view, initialBase, 0, lhs);
+    writeNumber(view, initialBase, 1, rhs);
+    returned = null;
+    const status = instance.exports[packageSymbols[1]](state, 0);
+    if (status !== 0 || returned?.tag !== 3 || returned.value !== expected)
+      throw new Error(`${name}: caller ${lhs}/${rhs} failed with ${status}/${JSON.stringify(returned)}`);
+  }
+  if (nestedCalls !== 3 || closureChildren.join(",") !== "1,2,2,2" || interrupts < 7)
+    throw new Error(`${name}: execution evidence incomplete: calls=${nestedCalls}, closures=${closureChildren}, interrupts=${interrupts}`);
+  return { objectSize: first.length, nestedCalls, interrupts };
+}
+
 const scalar = await executeCase(
   "scalar",
   "return function(n) return n * 2 + 1 end",
@@ -307,10 +494,12 @@ const loop = await executeCase(
 );
 const silent = await executeSilentRoot();
 const slowAdd = await executeSlowAdd();
+const compiledCall = await executeCompiledCallPackage();
 
 console.log(
   `frontend -> IR -> relocatable wasm: scalar ${scalar.objectSize} bytes, loop ${loop.objectSize} bytes; ` +
     `silent root ${silent.objectSize} bytes, slow add ${slowAdd.objectSize} bytes; ` +
+    `compiled call package ${compiledCall.objectSize} bytes/${compiledCall.nestedCalls} nested calls; ` +
     `interrupt calls ${scalar.interrupts}/${loop.interrupts}/${silent.interrupts}/${slowAdd.interrupts}; ` +
     `slow helpers ${slowAdd.helperCalls}`,
 );
