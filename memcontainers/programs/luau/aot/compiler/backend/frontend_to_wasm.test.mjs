@@ -169,6 +169,47 @@ async function executeCase(name, source, inputs) {
   return { objectSize: object.length, interrupts };
 }
 
+async function executeSilentRoot() {
+  const name = "silent-root";
+  const source = readFileSync(
+    runfile(process.env.LUAU_AOT_SILENT_SOURCE, "LUAU_AOT_SILENT_SOURCE"),
+    "utf8",
+  );
+  const snapshot = frontendSnapshot(source, "@aot/silent_return.luau");
+  const object = backendObject(snapshot, 0);
+  const module = await WebAssembly.compile(linkObject(object, name));
+  const moduleImports = WebAssembly.Module.imports(module).map(({ module, name: importName, kind }) => [module, importName, kind]);
+  const expectedImports = [
+    ["env", "mc_luau_aot_v1_commit_number", "function"],
+    ["env", "mc_luau_aot_v1_interrupt", "function"],
+  ];
+  if (JSON.stringify(moduleImports) !== JSON.stringify(expectedImports))
+    throw new Error(`${name}: unexpected generated imports ${JSON.stringify(moduleImports)}`);
+
+  let committed = null;
+  let interrupts = 0;
+  const instance = await WebAssembly.instantiate(module, {
+    env: {
+      mc_luau_aot_v1_commit_number(state, value) {
+        if (state !== 1024) throw new Error(`${name}: wrong state ${state}`);
+        committed = value;
+      },
+      mc_luau_aot_v1_interrupt(state, pc) {
+        if (state !== 1024 || pc < 0) throw new Error(`${name}: invalid interrupt ${state}/${pc}`);
+        interrupts++;
+        return 0;
+      },
+    },
+  });
+  const state = 1024;
+  const base = 2048;
+  new DataView(instance.exports.memory.buffer).setUint32(state + 12, base, true);
+  const status = instance.exports[generatedSymbol](state, 0);
+  if (status !== 0 || committed !== 30 || interrupts === 0)
+    throw new Error(`${name}: status=${status}, result=${committed}, interrupts=${interrupts}`);
+  return { objectSize: object.length, interrupts };
+}
+
 const scalar = await executeCase(
   "scalar",
   "return function(n) return n * 2 + 1 end",
@@ -187,8 +228,9 @@ const loop = await executeCase(
     [7, 28],
   ],
 );
+const silent = await executeSilentRoot();
 
 console.log(
   `frontend -> IR -> relocatable wasm: scalar ${scalar.objectSize} bytes, loop ${loop.objectSize} bytes; ` +
-    `interrupt calls ${scalar.interrupts}/${loop.interrupts}`,
+    `silent root ${silent.objectSize} bytes; interrupt calls ${scalar.interrupts}/${loop.interrupts}/${silent.interrupts}`,
 );

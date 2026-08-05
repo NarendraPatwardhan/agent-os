@@ -2561,8 +2561,11 @@
       "safepoint": null,
       "rejoins": true,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2843; CodeGen/src/IrLoweringA64.cpp:3039",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
+        "//memcontainers/tests/e2e:core#luau_aot_top_level_return_is_silent"
+      ],
+      "status": "partial_zero_parameter_no_vararg_use"
     },
     {
       "command": "FALLBACK_GETVARARGS",

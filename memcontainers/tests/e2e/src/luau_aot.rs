@@ -32,3 +32,14 @@ fn luau_aot_object_matches_interpreter_for_dynamic_argv() {
         );
     }
 }
+
+/// A real root chunk returning a value is compiled from upstream IR and run as a stamped guest. The
+/// entry requests zero results, matching ordinary Luau script semantics: return values are not output.
+#[test]
+fn luau_aot_top_level_return_is_silent() {
+    let mut session = boot_loom_aot();
+    assert_eq!(
+        session.run_for_output("luau-aot-silent; echo status=$?"),
+        "status=0\r\n"
+    );
+}

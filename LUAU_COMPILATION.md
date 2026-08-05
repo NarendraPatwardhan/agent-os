@@ -125,7 +125,7 @@ guest path, but is not presented as a general-purpose AOT product:
   numeric `for` loop. The backend emits 411-byte and 606-byte relocatable objects, hermetic `wasm-ld`
   links them, and the linked functions execute inputs `1`, `4`, and `7` as `3/9/15` and `1/10/28`.
   Both reject a non-number `TValue`, and observed interrupt counts prove upstream safepoints were not
-  erased. The command ledger marks the eleven complete rows and the three deliberately partial rows;
+  erased. The command ledger marks the eleven complete rows and four deliberately partial rows;
 - the numeric-loop source is now a declared Bazel input to the actual zero-import frontend and backend.
   Their deterministic output object is the exact object linked into the 36-object strict runtime; no
   handwritten function body or copied test artifact intervenes. That artifact runs through ordinary
@@ -137,17 +137,20 @@ guest path, but is not presented as a general-purpose AOT product:
   `mc-attest` accepts its pure-mc import surface and declared `full` tier. A dedicated `loom_aot`
   image installs that artifact, and the real AgentOS kernel runs six fresh argv-driven processes whose
   stdout matches `/bin/luau` for all six inputs;
+- an independent `return 30` source root now passes through the same frontend/backend as function zero.
+  The backend validates and erases only the zero-fixed-parameter/no-`GETVARARGS` form of
+  `FALLBACK_PREPVARARGS`, emits a 289-byte relocatable object, and links it into a second
+  stamped/attested strict guest. The real kernel observes zero stdout while the root's numeric return
+  is discarded by the ordinary protected-call result contract;
 - `INTERRUPT` calls a versioned runtime helper instead of becoming a no-op. The helper preserves a
   null callback fast path, invokes an installed callback, reports yielded status, and requires
   generated code to reload `L->base` after a successful callback. Yield continuation/source-pc
   semantics remain explicitly open.
 
-The next slice closes WP2's remaining semantic negative control: compile a real `return 30` root from
-upstream IR and prove that the stamped artifact emits no stdout under the kernel. Root chunks currently
-expose `FALLBACK_PREPVARARGS`; the backend must normalize the zero-fixed-parameter/no-vararg-use case,
-not hide it in the entry wrapper. WP3's central upstream-IR/object/runtime/kernel-differential gate is
-proven, while the work package remains open for arithmetic slow-block rejoin and the remaining
-scalar/conversion command coverage.
+WP2 is complete. The next large slice is WP3's real arithmetic/type slow-block rejoin: generated guards
+must enter named strict-runtime helpers and resume the compiled CFG with correct stack/base state. The
+central upstream-IR/object/runtime/kernel-differential gate is proven; additional scalar/conversion
+commands are added only as required by that vertical, not as disconnected coverage work.
 
 ---
 
@@ -1338,14 +1341,16 @@ Gate:
 
 **Goal:** execute one nonconstant compiled function against the real Luau runtime, linked by `wasm-ld`.
 
-**Current state:** the runtime ABI, real-state execution, GC publication, protected failure path, and
+**Current state (gate complete):** the runtime ABI, real-state execution, GC publication, protected failure path, and
 standard-linker archive integration are proven. A declared Luau source file now passes through the
 zero-import frontend and backend, and the exact emitted relocatable object is linked into the strict
 runtime. It executes through `lua_call` on real states and matches a separate exact-pinned interpreter
 artifact for six dynamic inputs. A production-shaped `_start` receives argv through the canonical
 adapter, the optimized/stamped/attested artifact installs in a dedicated image, and the real AgentOS
-kernel observes same-artifact stdout matching `/bin/luau` across those six inputs. The mandatory silent
-top-level `return 30` artifact remains gate-open.
+kernel observes same-artifact stdout matching `/bin/luau` across those six inputs. A separately
+source-built `return 30` root goes through the same backend/runtime/package path and emits no stdout.
+Both final artifacts pass optimization, `mc-stamp`, `mc-attest`, strict source-boundary, and pure-mc
+import gates.
 
 Tasks:
 
@@ -1374,9 +1379,10 @@ Gate:
 implemented. A generic CFG dispatcher lowers real scalar branches and loops; complete rows are `NOP`,
 `LOAD_TAG`, `LOAD_DOUBLE`, `LOAD_TVALUE`, `STORE_TAG`, `STORE_DOUBLE`, `STORE_TVALUE`, `ADD_NUM`,
 `JUMP`, `JUMP_CMP_NUM`, and `MARK_USED`. `CHECK_TAG`, `INTERRUPT`, and `RETURN` are deliberately partial
-and named as such in the ledger. Slow-block rejoin, additional scalar operations/conversions, and the
-remaining command-level differential matrix remain. The exact upstream-IR-generated loop object already
-passes the real-runtime/pinned-interpreter differential gate.
+and named as such in the ledger. `FALLBACK_PREPVARARGS` is partial for the validated zero-fixed-parameter,
+no-vararg-use rewrite only. Slow-block rejoin, additional scalar operations/conversions, and the remaining
+command-level differential matrix remain. The exact upstream-IR-generated loop and silent-root objects
+already pass real-runtime and kernel gates.
 
 Tasks:
 

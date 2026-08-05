@@ -202,6 +202,7 @@ pkg_tar(
     create_parents = False,
     files = {
         "//memcontainers/programs/luau/aot/runtime/glue:luau-aot-oracle": "/bin/luau-aot-oracle",
+        "//memcontainers/programs/luau/aot/runtime/glue:luau-aot-silent": "/bin/luau-aot-silent",
     },
     owner = "0.0",
     visibility = ["//memcontainers/tests/e2e:__pkg__"],

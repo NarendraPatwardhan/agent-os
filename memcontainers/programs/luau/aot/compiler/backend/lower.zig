@@ -333,6 +333,26 @@ const Context = struct {
         try self.emitStatusReturn(status_ok);
     }
 
+    fn emitPrepVarargsNoop(self: Context, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 2);
+        if (!self.function.variadic or !self.proto.is_vararg or self.proto.num_params != 0)
+            return Error.UnsupportedVariadicFunction;
+
+        const pc_operand = try self.operand(instruction_value, 0);
+        const parameter_operand = try self.operand(instruction_value, 1);
+        if (pc_operand.kind != .constant or parameter_operand.kind != .constant)
+            return Error.InvalidOperandType;
+        _ = (try self.constant(pc_operand.value)).uintValue() orelse return Error.InvalidOperandType;
+        const parameter_count = (try self.constant(parameter_operand.value)).intValue() orelse return Error.InvalidOperandType;
+        if (parameter_count != 0)
+            return Error.UnsupportedVariadicFunction;
+
+        // Native PREPVARARGS relocates fixed parameters after the caller's extra arguments. With
+        // zero fixed parameters and no reachable GETVARARGS, the strict non-vararg AOT frame is
+        // observationally equivalent: generated registers begin at base and ignored extra arguments
+        // remain rooted in the frame. Any GETVARARGS command still fails closed below.
+    }
+
     fn emitInstruction(self: Context, instruction_id: u32) Error!bool {
         const instruction_value = try self.instruction(instruction_id);
         switch (instruction_value.command) {
@@ -358,6 +378,7 @@ const Context = struct {
                 try self.emitReturn(instruction_value);
                 return true;
             },
+            .fallback_prepvarargs => try self.emitPrepVarargsNoop(instruction_value),
             else => return Error.UnsupportedCommand,
         }
         return false;
@@ -399,7 +420,7 @@ pub fn build(allocator: std.mem.Allocator, snapshot_bytes: []const u8, function_
 
     const function = try snapshot.irFunction(function_id);
     const proto = try snapshot.proto(function.proto_id);
-    if (function.variadic or proto.is_vararg)
+    if (function.variadic != proto.is_vararg or (function.variadic and proto.num_params != 0))
         return Error.UnsupportedVariadicFunction;
 
     const entry_block = try snapshot.irBlock(function, function.entry_block);

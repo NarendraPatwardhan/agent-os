@@ -3,7 +3,10 @@ load("@aspect_rules_js//js:defs.bzl", "js_binary", "js_test")
 load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary", "zig_library")
 
 exports_files(
-    ["numeric_loop.luau"],
+    [
+        "numeric_loop.luau",
+        "silent_return.luau",
+    ],
     visibility = ["//memcontainers/programs/luau/aot/runtime:__pkg__"],
 )
 
@@ -78,11 +81,32 @@ build_test(
     targets = [":numeric_loop_object"],
 )
 
+# Root chunks are variadic in Luau even when they never consume varargs. This declared artifact
+# exercises the backend's narrow zero-parameter PREPVARARGS normalization and the silent-root gate.
+genrule(
+    name = "silent_return_object",
+    srcs = [
+        ":backend_wasm",
+        "silent_return.luau",
+        "//memcontainers/programs/luau/aot/frontend:frontend_wasm",
+    ],
+    outs = ["silent_return.o"],
+    cmd = "BAZEL_BINDIR=. $(execpath :object_emitter) $(location //memcontainers/programs/luau/aot/frontend:frontend_wasm) $(location :backend_wasm) $(location silent_return.luau) $@ 0",
+    tools = [":object_emitter"],
+    visibility = ["//memcontainers/programs/luau/aot/runtime/glue:__pkg__"],
+)
+
+build_test(
+    name = "silent_return_object_build_test",
+    targets = [":silent_return_object"],
+)
+
 js_test(
     name = "frontend_to_wasm_test",
     data = [
         ":backend_wasm",
         ":frontend_to_wasm.test.mjs",
+        "silent_return.luau",
         "//memcontainers/programs/luau/aot/frontend:frontend_wasm",
         "@@emsdk++emscripten_deps+emscripten_bin_linux//:bin/wasm-ld",
     ],
@@ -90,6 +114,7 @@ js_test(
     env = {
         "LUAU_AOT_BACKEND_WASM": "$(rlocationpath :backend_wasm)",
         "LUAU_AOT_FRONTEND_WASM": "$(rlocationpath //memcontainers/programs/luau/aot/frontend:frontend_wasm)",
+        "LUAU_AOT_SILENT_SOURCE": "$(rlocationpath silent_return.luau)",
         "LUAU_AOT_WASM_LD": "$(rlocationpath @@emsdk++emscripten_deps+emscripten_bin_linux//:bin/wasm-ld)",
     },
     no_copy_to_bin = ["@@emsdk++emscripten_deps+emscripten_bin_linux//:bin/wasm-ld"],

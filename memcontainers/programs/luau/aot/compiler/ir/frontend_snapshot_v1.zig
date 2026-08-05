@@ -168,6 +168,7 @@ pub const IrCommand = enum(u8) {
     interrupt = 145,
     set_savedpc = 150,
     return_ = 155,
+    fallback_prepvarargs = 165,
     mark_used = 171,
     _,
 };
