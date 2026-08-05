@@ -7,7 +7,7 @@
 
 use host::{
     ConnectionCredential, ConnectionPolicyAction, ConnectionPolicyOwner, ConnectionPolicyRule,
-    ConnectionRegistry, MapHostCall, RealNet,
+    ConnectionRegistry, ExecOptions, MapHostCall, RealNet,
 };
 use pkgcore::sha256_hex;
 use std::io::{Read, Write};
@@ -138,11 +138,69 @@ fn luau_reports_version() {
     assert!(s.run_for_output("luau --version").contains("Luau 0.725"));
 }
 
-/// Bare `luau` reads + runs stdin (the non-interactive REPL) — `echo 'code' | luau`.
+/// Help is a real CLI mode, not a script filename accidentally opened by the interpreter.
+#[test]
+fn luau_reports_help() {
+    let mut s = boot_loom();
+    let out = s.run_for_output("luau --help");
+    assert!(out.contains("luau — run Luau scripts"));
+    assert!(out.contains("luau -"));
+}
+
+/// `luau -` is the explicit whole-script stdin mode; bare `luau` is reserved for a TTY REPL.
 #[test]
 fn luau_runs_stdin() {
     let mut s = boot_loom();
-    assert_eq!(s.run_for_output("echo 'print(6*7)' | luau"), "42\r\n");
+    assert_eq!(s.run_for_output("echo 'print(6*7)' | luau -"), "42\r\n");
+}
+
+/// Bare Luau has exactly one meaning: an interactive terminal. Structured execution must select the
+/// explicit `-` batch mode instead of silently changing semantics based on the supplied stdin bytes.
+#[test]
+fn luau_bare_non_tty_is_rejected() {
+    let mut s = boot_loom();
+    let result = s
+        .host
+        .run("luau", &[], 200_000, ExecOptions::default())
+        .expect("direct luau invocation");
+    assert_eq!(result.exit_code, 2);
+    assert_eq!(
+        result.stderr,
+        b"luau: interactive mode requires a terminal; use 'luau -' to execute stdin\n"
+    );
+}
+
+/// The live terminal REPL has its own prompt, evaluates a submission before EOF, retains its Lua
+/// state, uses the compiler's <eof> continuation signal, and returns to the shell on `exit`.
+#[test]
+fn luau_repl_is_incremental_and_visible() {
+    let mut s = boot_loom();
+    let launch = s.mark();
+    s.send_raw(b"luau\n");
+    s.drive_until_suffix(launch, "luau> ");
+
+    let expression = s.mark();
+    s.send_raw(b"1 + 2\n");
+    s.drive_until_suffix(expression, "luau> ");
+    assert!(s.since(expression).contains("3\r\nluau> "));
+
+    let first = s.mark();
+    s.send_raw(b"function answer()\n");
+    s.drive_until_suffix(first, "luau...> ");
+    let second = s.mark();
+    s.send_raw(b"return 42\n");
+    s.drive_until_suffix(second, "luau...> ");
+    let third = s.mark();
+    s.send_raw(b"end\n");
+    s.drive_until_suffix(third, "luau> ");
+    let call = s.mark();
+    s.send_raw(b"answer()\n");
+    s.drive_until_suffix(call, "luau> ");
+    assert!(s.since(call).contains("42\r\nluau> "));
+
+    let exit = s.mark();
+    s.send_raw(b"exit\n");
+    s.drive_until_prompt(exit);
 }
 
 /// The kernel trap-unwind (mc_sys_pcall ⇒ __mc_pcall_run, restoring __stack_pointer) under

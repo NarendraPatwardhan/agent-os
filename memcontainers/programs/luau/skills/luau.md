@@ -14,6 +14,7 @@ From inside a VM, run scripts like ordinary commands:
 ```sh
 /bin/luau script.luau
 /bin/luau --check script.luau
+printf 'print(42)\n' | /bin/luau -
 ```
 
 From the TypeScript host surface, prefer:
@@ -25,6 +26,7 @@ const shell = vm.shell({ language: "luau" });
 ```
 
 Use `vm.luau(src, args)` for batch scripts, `vm.session("luau")` for framed event streams, and the Luau shell for interactive investigation.
+Bare `/bin/luau` is interactive-only; use `/bin/luau -` when stdin contains one complete script.
 
 ## System API
 

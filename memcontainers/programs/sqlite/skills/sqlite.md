@@ -9,6 +9,10 @@ Use the embedded Luau `sqlite` library for database work inside a memcontainer. 
 
 The `/bin/sqlite` command is useful at a shell prompt for quick inspection and one-shot SQL. Prefer `require("sqlite")` in scripts that read, write, validate, compose artifacts, or maintain agent memory.
 
+`sqlite DATABASE` opens the streaming command loop. A terminal displays `sqlite>` and `sqlite...>`
+prompts; piped input uses the same incremental statement parser without prompts. Supplying SQL as the
+second argument executes it once and exits.
+
 ## Workflow
 
 1. Use `local sqlite = require("sqlite")` in Luau scripts.

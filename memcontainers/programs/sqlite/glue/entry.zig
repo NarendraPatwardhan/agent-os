@@ -983,6 +983,27 @@ fn usage() noreturn {
     die("usage: sqlite <db> [SQL]   (no SQL → a stdin REPL; a SQL arg or a .dot-command runs and exits)\n");
 }
 
+const CLI_HELP =
+    \\NAME
+    \\    sqlite — query an AgentOS SQLite database
+    \\
+    \\SYNOPSIS
+    \\    sqlite DATABASE [SQL]
+    \\
+    \\MODES
+    \\    With SQL, execute it once and exit. Without SQL, read SQL and dot
+    \\    commands incrementally from stdin. A terminal displays sqlite> and
+    \\    continuation prompts; a pipe executes the same stream without prompts.
+    \\
+    \\OPTIONS
+    \\    -h, --help    show this help and exit
+    \\
+    \\INTERACTIVE COMMANDS
+    \\    .help  .tables  .schema [TABLE]  .headers on|off
+    \\    .mode list|csv  .import FILE TABLE  .quit
+    \\
+;
+
 fn writeOut(bytes: []const u8) void {
     var n: u32 = 0;
     _ = mc.mc_sys_write(1, mc.addr(bytes.ptr), @intCast(bytes.len), mc.addr(&n));
@@ -1202,11 +1223,11 @@ const DOT_HELP =
     \\
 ;
 
-/// Handle a `.`-prefixed meta-command (sqlite3's shell verbs). Returns false on `.quit`/`.exit`.
+/// Handle a `.`-prefixed meta-command (sqlite3's shell verbs). Returns false on `.quit`.
 fn dotCommand(self: *Cli, line: []const u8) bool {
     var it = std.mem.tokenizeAny(u8, line, " \t");
     const cmd = it.next() orelse return true;
-    if (std.mem.eql(u8, cmd, ".quit") or std.mem.eql(u8, cmd, ".exit")) {
+    if (std.mem.eql(u8, cmd, ".quit")) {
         return false;
     } else if (std.mem.eql(u8, cmd, ".help")) {
         writeOut(DOT_HELP);
@@ -1248,45 +1269,93 @@ fn dotCommand(self: *Cli, line: []const u8) bool {
     return true;
 }
 
-/// The interactive face: read SQL + dot-commands from stdin until EOF or `.quit`. A line starting with
-/// `.` is a meta-command; other lines accumulate into a statement that runs at its terminating `;`
-/// (sqlite3's continue prompt). A trailing un-terminated statement runs at EOF.
-fn repl(self: *Cli) void {
-    var input: std.ArrayList(u8) = .empty;
-    defer input.deinit(alloc);
-    var rbuf: [4096]u8 = undefined;
+fn stdinIsTty() bool {
+    var result: u32 = 0;
+    return mc.mc_sys_isatty(0, mc.addr(&result)) == 0 and result != 0;
+}
+
+/// Read one line while preserving any following lines delivered by the same read (terminal paste and
+/// pipe input use the same byte-stream path). The returned owned line excludes the newline.
+fn readCliLine(pending: *std.ArrayList(u8)) !?[]u8 {
     while (true) {
+        if (std.mem.indexOfScalar(u8, pending.items, '\n')) |newline| {
+            const line = try alloc.dupe(u8, pending.items[0..newline]);
+            const consumed = newline + 1;
+            const remaining = pending.items.len - consumed;
+            std.mem.copyForwards(u8, pending.items[0..remaining], pending.items[consumed..]);
+            pending.items.len = remaining;
+            return line;
+        }
+
+        var rbuf: [4096]u8 = undefined;
         var n: u32 = 0;
-        if (mc.mc_sys_read(0, mc.addr(&rbuf), rbuf.len, mc.addr(&n)) != 0) break;
-        if (n == 0) break;
-        input.appendSlice(alloc, rbuf[0..n]) catch break;
+        if (mc.mc_sys_read(0, mc.addr(&rbuf), rbuf.len, mc.addr(&n)) != 0) return error.ReadFailed;
+        if (n == 0) {
+            if (pending.items.len == 0) return null;
+            const line = try alloc.dupe(u8, pending.items);
+            pending.clearRetainingCapacity();
+            return line;
+        }
+        try pending.appendSlice(alloc, rbuf[0..n]);
     }
+}
+
+/// sqlite3_complete understands strings, comments, triggers, and embedded semicolons; use the engine's
+/// parser boundary instead of guessing from the last byte.
+fn sqlComplete(sql: *std.ArrayList(u8)) bool {
+    sql.append(alloc, 0) catch die("sqlite: out of memory\n");
+    defer sql.items.len -= 1;
+    return c.sqlite3_complete(@ptrCast(sql.items.ptr)) != 0;
+}
+
+/// One streaming command loop for terminals and pipes. TTY changes presentation only: completed SQL
+/// and dot-commands execute at the same boundary in both modes, before EOF.
+fn repl(self: *Cli, interactive: bool) c_int {
+    var pending: std.ArrayList(u8) = .empty;
+    defer pending.deinit(alloc);
     var sql: std.ArrayList(u8) = .empty;
     defer sql.deinit(alloc);
-    var lines = std.mem.splitScalar(u8, input.items, '\n');
-    while (lines.next()) |raw| {
-        var line = raw;
+
+    while (true) {
+        if (interactive) writeOut(if (sql.items.len == 0) "sqlite> " else "sqlite...> ");
+        const owned = readCliLine(&pending) catch {
+            writeErr("sqlite: failed to read stdin\n");
+            return 1;
+        } orelse {
+            if (interactive) writeOut("\n");
+            if (std.mem.trim(u8, sql.items, " \t\r\n").len > 0) runSql(self, sql.items);
+            return 0;
+        };
+        defer alloc.free(owned);
+        var line = owned;
         if (line.len > 0 and line[line.len - 1] == '\r') line = line[0 .. line.len - 1];
         const trimmed = std.mem.trim(u8, line, " \t");
         if (sql.items.len == 0 and trimmed.len > 0 and trimmed[0] == '.') {
-            if (!dotCommand(self, trimmed)) return; // .quit
+            if (!dotCommand(self, trimmed)) return 0; // .quit
             continue;
         }
         if (trimmed.len == 0 and sql.items.len == 0) continue; // blank line between statements
-        sql.appendSlice(alloc, line) catch break;
-        sql.append(alloc, '\n') catch break;
-        if (std.mem.endsWith(u8, std.mem.trim(u8, sql.items, " \t\r\n"), ";")) {
+        sql.appendSlice(alloc, line) catch die("sqlite: out of memory\n");
+        sql.append(alloc, '\n') catch die("sqlite: out of memory\n");
+        if (sqlComplete(&sql)) {
             runSql(self, sql.items);
             sql.clearRetainingCapacity();
         }
     }
-    if (std.mem.trim(u8, sql.items, " \t\r\n").len > 0) runSql(self, sql.items); // trailing, no ;
 }
 
 fn cli(args: []const u8) void {
-    var it = std.mem.splitScalar(u8, args, 0);
+    // mc_sys_args is NUL-separated with one framing NUL at the end. Strip exactly that byte so an
+    // explicit empty SQL argument remains distinguishable from no SQL argument.
+    const argv_blob = if (args.len > 0 and args[args.len - 1] == 0) args[0 .. args.len - 1] else args;
+    var it = std.mem.splitScalar(u8, argv_blob, 0);
     _ = it.next(); // argv[0]
     const db_path = it.next() orelse usage();
+    if (std.mem.eql(u8, db_path, "--help") or std.mem.eql(u8, db_path, "-h")) {
+        writeOut(CLI_HELP);
+        _ = mc.mc_sys_exit(0);
+        return;
+    }
 
     var conn: u32 = 0;
     if (mc.mc_sys_svc_connect(mc.addr(SERVICE_NAME.ptr), SERVICE_NAME.len, mc.addr(&conn)) != 0) {
@@ -1295,10 +1364,14 @@ fn cli(args: []const u8) void {
     var self = Cli{ .conn = @intCast(conn) };
     cliOpen(self.conn, db_path);
 
-    // sqlite3: a SQL (or dot-command) argument runs and exits; with no argument — or an EMPTY one (a
-    // trailing argv NUL splits to ""), which is not the same as a present arg — read a stdin REPL.
-    const sql_arg = it.next() orelse "";
-    if (sql_arg.len > 0) {
+    // A present SQL argument is always one-shot (even an explicit empty string); only true argument
+    // absence enters the streaming command loop.
+    if (it.next()) |sql_arg| {
+        if (it.next() != null) usage();
+        if (sql_arg.len == 0) {
+            _ = mc.mc_sys_exit(0);
+            return;
+        }
         const trimmed = std.mem.trim(u8, sql_arg, " \t");
         if (trimmed.len > 0 and trimmed[0] == '.') {
             _ = dotCommand(&self, trimmed);
@@ -1306,7 +1379,8 @@ fn cli(args: []const u8) void {
             runSql(&self, sql_arg);
         }
     } else {
-        repl(&self);
+        _ = mc.mc_sys_exit(repl(&self, stdinIsTty()));
+        return;
     }
     _ = mc.mc_sys_exit(0);
 }

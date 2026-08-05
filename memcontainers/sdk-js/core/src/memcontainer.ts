@@ -761,7 +761,7 @@ export class Vm {
 
   /** Open an interactive shell view (bytes in, bytes out). With
    *  `{ language: "luau" }` it drops the view into the `/bin/luau` REPL (a nested
-   *  process over the boot `sh`; `exit`/Ctrl-D returns to the shell) — the
+   *  process over the boot `sh`; `exit` returns to the shell) — the
    *  programmatic counterpart to typing `luau` at the prompt. No web/hero-terminal
    *  change; this is the SDK surface (SYSTEMS.md §10.3). */
   shell(opts: { language?: "sh" | "luau" } = {}): Shell {

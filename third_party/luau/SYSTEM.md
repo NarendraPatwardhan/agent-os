@@ -6,6 +6,11 @@
   Common) with the 19 `.luau` batteries embedded.
 - **`/bin/luau-analyze`** — the `--check` type checker (the full ~80 kLOC Analysis engine + Config).
 
+The interpreter has four unambiguous entry modes: bare `luau` is a TTY-only incremental REPL;
+`luau -` executes stdin as one complete script; `luau -e CODE` executes inline source; and
+`luau FILE` executes a file. The REPL exposes `luau>` / `luau...>` prompts and uses the compiler's
+`<eof>` diagnostic as its continuation signal rather than treating pipe chunks as submissions.
+
 Both are CLI **domain tools** (SYSTEMS.md): one `.wasm` each, run from the command line, shipped in
 the `loom` flavor pack — never in `base`/`minimal`/`posix`. They are NOT resident library services
 (no `mc_service`); that mode — using a domain tool *as a library* — is for sqlite/typst, and the

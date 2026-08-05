@@ -685,6 +685,9 @@ db:close()
 #[test]
 fn sqlite_cli_runs_sql_over_the_warm_service() {
     let mut s = boot_atlas();
+    assert!(s
+        .run_for_output("sqlite --help")
+        .contains("sqlite — query an AgentOS SQLite database"));
     // One invocation, three statements: the two non-queries are silent; the SELECT prints | rows.
     assert_eq!(
         s.run_for_output("sqlite /tmp/cli.db \"CREATE TABLE t (n INTEGER, s TEXT); INSERT INTO t VALUES (1,'a'),(2,'b'); SELECT n,s FROM t ORDER BY n\""),
@@ -736,6 +739,33 @@ fn sqlite_cli_repl_and_dot_commands() {
         s.run_for_output("cat /tmp/c.sql | sqlite /tmp/r.db"),
         "x,1\r\ny,2\r\n"
     );
+}
+
+/// The terminal face advertises itself, executes complete SQL before EOF, shows a continuation prompt
+/// for incomplete input, and returns to the shell only when explicitly quit.
+#[test]
+fn sqlite_cli_repl_is_incremental_and_visible() {
+    let mut s = boot_atlas();
+    let launch = s.mark();
+    s.send_raw(b"sqlite /tmp/live.db\n");
+    s.drive_until_suffix(launch, "sqlite> ");
+
+    let query = s.mark();
+    s.send_raw(b"SELECT 73;\n");
+    s.drive_until_suffix(query, "sqlite> ");
+    assert!(s.since(query).contains("73\r\nsqlite> "));
+
+    let first = s.mark();
+    s.send_raw(b"SELECT\n");
+    s.drive_until_suffix(first, "sqlite...> ");
+    let second = s.mark();
+    s.send_raw(b"74;\n");
+    s.drive_until_suffix(second, "sqlite> ");
+    assert!(s.since(second).contains("74\r\nsqlite> "));
+
+    let quit = s.mark();
+    s.send_raw(b".quit\n");
+    s.drive_until_prompt(quit);
 }
 
 /// Handle delegation (#2; SYSTEMS.md) + a real CSV parser (#4): `.import FILE TABLE` opens the CSV

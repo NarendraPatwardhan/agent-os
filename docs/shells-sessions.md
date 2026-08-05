@@ -24,8 +24,12 @@ shell.write(new TextEncoder().encode("ls -la\n"));
 | ---------- | ---------------- | ------- |
 | `language` | `"sh"`, `"luau"` | `"sh"`  |
 
-`language: "luau"` writes `luau\n` into a shell and enters the Luau REPL. Exiting that nested process
-returns to the underlying shell.
+`language: "luau"` writes `luau\n` into a shell and enters the Luau REPL. The `luau>` prompt marks a
+fresh submission and `luau...>` marks structurally incomplete source. Completed submissions execute
+without waiting for EOF. `exit` returns to the underlying shell.
+
+Bare `luau` is intentionally interactive-only and rejects non-terminal stdin. Use `luau -` to execute
+redirected or piped stdin as one complete script.
 
 ### Shell methods
 

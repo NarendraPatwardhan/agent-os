@@ -39,6 +39,31 @@ comptime {
 }
 
 const kVersion = "luau (AgentOS) — Luau 0.725";
+const kHelp =
+    \\NAME
+    \\    luau — run Luau scripts or open the interactive Luau REPL
+    \\
+    \\SYNOPSIS
+    \\    luau
+    \\    luau -
+    \\    luau -e CODE [ARG...]
+    \\    luau FILE [ARG...]
+    \\    luau --check FILE...
+    \\
+    \\MODES
+    \\    With no arguments, luau requires a terminal and opens an interactive
+    \\    REPL. Use exit to return to the calling shell.
+    \\
+    \\    A lone - reads stdin to EOF and executes it as one complete script.
+    \\    This is the explicit mode for pipelines and redirected source.
+    \\
+    \\OPTIONS
+    \\    -e CODE       execute inline source
+    \\    --check       type-check the following files with luau-analyze
+    \\    -h, --help    show this help and exit
+    \\    --version     show the Luau version and exit
+    \\
+;
 
 // Exit codes: 0 ok · 1 runtime error · 2 syntax/usage error.
 const EXIT_OK: c_int = 0;
@@ -131,6 +156,129 @@ fn runSource(L: ?*c.lua_State, chunkname: [*:0]const u8, src: [*]const u8, len: 
     return EXIT_OK;
 }
 
+fn stdinIsTty() bool {
+    var result: u32 = 0;
+    return mc.mc_sys_isatty(0, mc.addr(&result)) == 0 and result != 0;
+}
+
+/// Read one logical terminal line while preserving bytes after the first newline (a paste can deliver
+/// several lines in one syscall). The returned line is owned and excludes the newline.
+fn readLine(pending: *std.ArrayList(u8)) !?[]u8 {
+    while (true) {
+        if (std.mem.indexOfScalar(u8, pending.items, '\n')) |newline| {
+            const line = try std.heap.c_allocator.dupe(u8, pending.items[0..newline]);
+            const consumed = newline + 1;
+            const remaining = pending.items.len - consumed;
+            std.mem.copyForwards(u8, pending.items[0..remaining], pending.items[consumed..]);
+            pending.items.len = remaining;
+            return line;
+        }
+
+        var buf: [4096]u8 = undefined;
+        var n: u32 = 0;
+        if (mc.mc_sys_read(0, mc.addr(&buf), buf.len, mc.addr(&n)) != 0) return error.ReadFailed;
+        if (n == 0) {
+            if (pending.items.len == 0) return null;
+            const line = try std.heap.c_allocator.dupe(u8, pending.items);
+            pending.clearRetainingCapacity();
+            return line;
+        }
+        try pending.appendSlice(std.heap.c_allocator, buf[0..n]);
+    }
+}
+
+fn popLoadError(L: ?*c.lua_State) void {
+    c.lua_settop(L, -2);
+}
+
+fn loadErrorIsIncomplete(L: ?*c.lua_State) bool {
+    const msg = c.lua_tolstring(L, -1, null);
+    return msg != null and std.mem.endsWith(u8, std.mem.span(msg), "<eof>");
+}
+
+/// Run the already-loaded REPL chunk. Expressions request all results and feed them through Luau's
+/// ordinary print function; statements discard results. A runtime error is reported but does not end
+/// the REPL or poison the persistent Lua state.
+fn runLoadedReplChunk(L: ?*c.lua_State, print_results: bool) void {
+    if (callProtected(L, 0, if (print_results) -1 else 0) != 0) {
+        reportError(L);
+        return;
+    }
+    if (!print_results) return;
+
+    const results = c.lua_gettop(L);
+    if (results == 0) return;
+    _ = c.lua_getfield(L, c.LUA_GLOBALSINDEX, "print");
+    c.lua_insert(L, 1);
+    if (callProtected(L, results, 0) != 0) reportError(L);
+}
+
+const ReplStep = enum { complete, incomplete };
+
+/// Match Luau's upstream REPL shape: a fresh single-line submission is first tried as an expression
+/// (`return <line>`) so `1 + 2` prints `3`; otherwise it is compiled as a statement. A parser error
+/// ending in `<eof>` is the compiler's structural continuation signal, never a guessed brace count.
+fn runReplSubmission(L: ?*c.lua_State, source: []const u8, fresh_line: bool) !ReplStep {
+    if (fresh_line) {
+        var expression: std.ArrayList(u8) = .empty;
+        defer expression.deinit(std.heap.c_allocator);
+        try expression.appendSlice(std.heap.c_allocator, "return ");
+        try expression.appendSlice(std.heap.c_allocator, source);
+        if (loadChunk(L, "=repl", expression.items.ptr, expression.items.len) == 0) {
+            runLoadedReplChunk(L, true);
+            return .complete;
+        }
+        popLoadError(L); // not an expression; compile the same input as a statement below
+    }
+
+    if (loadChunk(L, "=repl", source.ptr, source.len) != 0) {
+        if (loadErrorIsIncomplete(L)) {
+            popLoadError(L);
+            return .incomplete;
+        }
+        reportError(L);
+        return .complete;
+    }
+    runLoadedReplChunk(L, false);
+    return .complete;
+}
+
+fn runRepl(L: ?*c.lua_State) c_int {
+    var pending: std.ArrayList(u8) = .empty;
+    defer pending.deinit(std.heap.c_allocator);
+    var source: std.ArrayList(u8) = .empty;
+    defer source.deinit(std.heap.c_allocator);
+
+    while (true) {
+        writeFd(1, if (source.items.len == 0) "luau> " else "luau...> ");
+        const owned = readLine(&pending) catch {
+            eprint("luau: failed to read stdin\n");
+            return EXIT_RUNTIME;
+        } orelse {
+            writeFd(1, "\n");
+            return EXIT_OK;
+        };
+        defer std.heap.c_allocator.free(owned);
+        const line = if (owned.len > 0 and owned[owned.len - 1] == '\r') owned[0 .. owned.len - 1] else owned;
+        const fresh_line = source.items.len == 0;
+        if (fresh_line and std.mem.eql(u8, std.mem.trim(u8, line, " \t"), "exit")) return EXIT_OK;
+
+        if (!fresh_line) source.append(std.heap.c_allocator, '\n') catch {
+            eprint("luau: out of memory\n");
+            return EXIT_RUNTIME;
+        };
+        source.appendSlice(std.heap.c_allocator, line) catch {
+            eprint("luau: out of memory\n");
+            return EXIT_RUNTIME;
+        };
+        const step = runReplSubmission(L, source.items, fresh_line) catch {
+            eprint("luau: out of memory\n");
+            return EXIT_RUNTIME;
+        };
+        if (step == .complete) source.clearRetainingCapacity();
+    }
+}
+
 // Line-buffer stdout so Luau's print() (fwrite, no flush) reaches the capture pipe per line, not only
 // at exit — and so output survives if the script later traps (cf. luau_cli.cpp).
 extern var stdout: ?*anyopaque;
@@ -176,18 +324,36 @@ export fn __main_argc_argv(argc: c_int, c_argv: [*][*:0]u8) c_int {
         writeFd(1, kVersion ++ "\n");
         return EXIT_OK;
     }
+    if (argv.len >= 2 and (std.mem.eql(u8, std.mem.span(argv[1]), "--help") or std.mem.eql(u8, std.mem.span(argv[1]), "-h"))) {
+        writeFd(1, kHelp);
+        return EXIT_OK;
+    }
     if (argv.len >= 2 and std.mem.eql(u8, std.mem.span(argv[1]), "--check")) {
         return runAnalyze(argv[2..]);
+    }
+
+    if (argv.len == 1 and !stdinIsTty()) {
+        eprint("luau: interactive mode requires a terminal; use 'luau -' to execute stdin\n");
+        return EXIT_USAGE;
     }
 
     const L = newState();
     defer c.lua_close(L);
 
-    if (argv.len >= 3 and std.mem.eql(u8, std.mem.span(argv[1]), "-e")) {
+    if (argv.len >= 2 and std.mem.eql(u8, std.mem.span(argv[1]), "-e")) {
+        if (argv.len < 3) {
+            eprint("luau: -e requires CODE\n");
+            return EXIT_USAGE;
+        }
         const code = std.mem.span(argv[2]);
         setArgTable(L, "-e", argv[3..]);
         return runSource(L, "=(command line)", code.ptr, code.len, argv[3..]);
-    } else if (argv.len >= 2 and !std.mem.eql(u8, std.mem.span(argv[1]), "-")) {
+    } else if (argv.len >= 2 and std.mem.eql(u8, std.mem.span(argv[1]), "-")) {
+        const code = readStdin() orelse return EXIT_OK;
+        defer std.heap.c_allocator.free(code);
+        setArgTable(L, "-", argv[2..]);
+        return runSource(L, "=stdin", code.ptr, code.len, argv[2..]);
+    } else if (argv.len >= 2) {
         // Script file: read it, skip a shebang, run it.
         const src = fs.slurp(argv[1], null) orelse {
             eprint("luau: cannot open ");
@@ -203,13 +369,8 @@ export fn __main_argc_argv(argc: c_int, c_argv: [*][*:0]u8) c_int {
         return runSource(L, "=script", src.ptr + off, src.len - off, argv[2..]);
     }
 
-    // Bare `luau` or `luau -`: read the whole of stdin and run it as one chunk (a non-interactive
-    // REPL — the testable, pipe-friendly shape; a line-by-line TTY loop can layer on later).
-    const code = readStdin() orelse return EXIT_OK; // empty stdin → nothing to do
-    defer std.heap.c_allocator.free(code);
-    const operands = if (argv.len >= 2) argv[2..] else argv[1..1];
-    setArgTable(L, "luau", operands);
-    return runSource(L, "=stdin", code.ptr, code.len, operands);
+    setArgTable(L, "luau", argv[1..1]);
+    return runRepl(L);
 }
 
 // Read all of stdin (fd 0) via the mc syscall. Returns null on empty (or read error).

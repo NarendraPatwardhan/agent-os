@@ -251,6 +251,24 @@ impl Session {
         self.host.send_input(bytes).expect("send_input");
     }
 
+    /// Pump until output emitted after `baseline` ends in `suffix`. Interactive nested programs have
+    /// their own prompts, so waiting only for the shell's `$ ` cannot test a live REPL.
+    pub fn drive_until_suffix(&mut self, baseline: usize, suffix: &str) {
+        for _ in 0..MAX_TICKS_PER_OP {
+            if self.host.tick().expect("tick") == TickState::Exited {
+                return;
+            }
+            let buf = self.stdout.lock().unwrap();
+            if buf.len() > baseline && buf.ends_with(suffix.as_bytes()) {
+                return;
+            }
+        }
+        panic!(
+            "timed out waiting for terminal suffix {suffix:?}; transcript:\n{}",
+            self.transcript()
+        );
+    }
+
     /// Pump ticks until stdout has grown since `baseline` and ends in the prompt `"$ "`, or until
     /// the budget is exhausted (a panic with the transcript — a hang is a test failure, not a skip).
     pub fn drive_until_prompt(&mut self, baseline: usize) {
