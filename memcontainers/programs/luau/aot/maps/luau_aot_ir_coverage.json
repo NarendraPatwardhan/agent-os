@@ -2491,7 +2491,7 @@
       "class": "call_protocol",
       "wasm_features": [],
       "runtime_symbols": [
-        "mc_luau_aot_v1_call_fixed"
+        "mc_luau_aot_v1_call"
       ],
       "may_allocate": true,
       "may_raise": true,
@@ -2508,9 +2508,11 @@
         "//memcontainers/tests/e2e:core#luau_aot_captured_proto_graph_calls_rejoin",
         "//memcontainers/tests/e2e:core#luau_aot_compiled_proto_graph_calls_rejoin",
         "//memcontainers/tests/e2e:core#luau_aot_multi_result_proto_graph_calls_rejoin",
-        "//memcontainers/tests/e2e:core#luau_aot_general_fixed_call_shapes_match_interpreter"
+        "//memcontainers/tests/e2e:core#luau_aot_general_fixed_call_shapes_match_interpreter",
+        "//memcontainers/programs/luau/aot/compiler/backend:vararg_forward_package_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_vararg_forwarding_and_result_adjustment_match_interpreter"
       ],
-      "status": "partial_all_fixed_counts_compiled_luau_no_multret_vararg_c_metamethod_yield"
+      "status": "partial_fixed_and_multret_compiled_luau_no_c_metamethod_yield"
     },
     {
       "command": "RETURN",
@@ -2518,12 +2520,12 @@
       "class": "call_protocol",
       "wasm_features": [],
       "runtime_symbols": [
-        "mc_luau_aot_v1_return_fixed"
+        "mc_luau_aot_v1_return"
       ],
-      "may_allocate": null,
-      "may_raise": null,
-      "may_call_luau": true,
-      "safepoint": true,
+      "may_allocate": false,
+      "may_raise": true,
+      "may_call_luau": false,
+      "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2732; CodeGen/src/IrLoweringA64.cpp:2857",
       "tests": [
@@ -2535,9 +2537,11 @@
         "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test",
         "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter",
         "//memcontainers/programs/luau/aot/compiler/backend:general_call_package_object_build_test",
-        "//memcontainers/tests/e2e:core#luau_aot_general_fixed_call_shapes_match_interpreter"
+        "//memcontainers/tests/e2e:core#luau_aot_general_fixed_call_shapes_match_interpreter",
+        "//memcontainers/programs/luau/aot/compiler/backend:vararg_forward_package_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_vararg_forwarding_and_result_adjustment_match_interpreter"
       ],
-      "status": "partial_all_fixed_contiguous_tvalue_results_no_multret"
+      "status": "implemented"
     },
     {
       "command": "FORGLOOP",
@@ -2698,19 +2702,21 @@
       "class": "rewrite_required",
       "wasm_features": [],
       "runtime_symbols": [
-        "mc_luau_aot_v1_fallback_prepvarargs"
+        "mc_luau_aot_v1_prep_varargs"
       ],
-      "may_allocate": null,
-      "may_raise": null,
-      "may_call_luau": null,
-      "safepoint": null,
+      "may_allocate": true,
+      "may_raise": true,
+      "may_call_luau": false,
+      "safepoint": true,
       "rejoins": true,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2843; CodeGen/src/IrLoweringA64.cpp:3039",
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
-        "//memcontainers/tests/e2e:core#luau_aot_top_level_return_is_silent"
+        "//memcontainers/tests/e2e:core#luau_aot_top_level_return_is_silent",
+        "//memcontainers/programs/luau/aot/compiler/backend:vararg_forward_package_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_vararg_forwarding_and_result_adjustment_match_interpreter"
       ],
-      "status": "partial_zero_parameter_no_vararg_use"
+      "status": "implemented"
     },
     {
       "command": "FALLBACK_GETVARARGS",
@@ -2718,16 +2724,20 @@
       "class": "rewrite_required",
       "wasm_features": [],
       "runtime_symbols": [
-        "mc_luau_aot_v1_fallback_getvarargs"
+        "mc_luau_aot_v1_get_varargs_fixed",
+        "mc_luau_aot_v1_get_varargs_multret"
       ],
-      "may_allocate": null,
-      "may_raise": null,
-      "may_call_luau": null,
-      "safepoint": null,
+      "may_allocate": true,
+      "may_raise": true,
+      "may_call_luau": false,
+      "safepoint": true,
       "rejoins": true,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2848; CodeGen/src/IrLoweringA64.cpp:3045",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:vararg_forward_package_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_vararg_forwarding_and_result_adjustment_match_interpreter"
+      ],
+      "status": "implemented"
     },
     {
       "command": "NEWCLOSURE",
@@ -3592,5 +3602,5 @@
       "status": "unimplemented"
     }
   ],
-  "canonical_hash": "09e59f82417f5b997b9c76d7216b1de28c898cc36b2ab36a70fdc2438d7469e7"
+  "canonical_hash": "44b6f9726a35f65556bb8d399706aed9d61e6d043689ca9b8e1d7569e2bad3b5"
 }

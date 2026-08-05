@@ -3,7 +3,7 @@ const snapshot_v1 = @import("frontend_snapshot_v1");
 const wasm = @import("luau_aot_wasm_object");
 
 pub const generated_symbol = "mc_luau_aot_v1_generated_ir_function";
-pub const return_fixed_symbol = "mc_luau_aot_v1_return_fixed";
+pub const return_symbol = "mc_luau_aot_v1_return";
 pub const interrupt_symbol = "mc_luau_aot_v1_interrupt";
 pub const do_arith_symbol = "mc_luau_aot_v1_do_arith";
 pub const compare_any_symbol = "mc_luau_aot_v1_compare_any";
@@ -13,7 +13,10 @@ pub const newclosure_ref_symbol = "mc_luau_aot_v1_newclosure_ref";
 pub const get_upvalue_symbol = "mc_luau_aot_v1_get_upvalue";
 pub const set_upvalue_symbol = "mc_luau_aot_v1_set_upvalue";
 pub const close_upvalues_symbol = "mc_luau_aot_v1_close_upvalues";
-pub const call_fixed_symbol = "mc_luau_aot_v1_call_fixed";
+pub const call_symbol = "mc_luau_aot_v1_call";
+pub const prep_varargs_symbol = "mc_luau_aot_v1_prep_varargs";
+pub const get_varargs_fixed_symbol = "mc_luau_aot_v1_get_varargs_fixed";
+pub const get_varargs_multret_symbol = "mc_luau_aot_v1_get_varargs_multret";
 
 const status_ok: i32 = 0;
 const status_unsupported_type: i32 = 1;
@@ -98,7 +101,7 @@ const Context = struct {
     function: snapshot_v1.IrFunction,
     slots: []const ValueSlot,
     body: *wasm.Body,
-    return_fixed: wasm.FunctionRef,
+    return_: wasm.FunctionRef,
     interrupt: wasm.FunctionRef,
     do_arith: ?wasm.FunctionRef,
     compare_any: ?wasm.FunctionRef,
@@ -108,7 +111,10 @@ const Context = struct {
     get_upvalue: ?wasm.FunctionRef,
     set_upvalue: ?wasm.FunctionRef,
     close_upvalues: ?wasm.FunctionRef,
-    call_fixed: ?wasm.FunctionRef,
+    call: ?wasm.FunctionRef,
+    prep_varargs: ?wasm.FunctionRef,
+    get_varargs_fixed: ?wasm.FunctionRef,
+    get_varargs_multret: ?wasm.FunctionRef,
     base_local: u32,
     dispatch_local: u32,
     status_local: u32,
@@ -2340,25 +2346,26 @@ const Context = struct {
         if (return_count_operand.kind != .constant)
             return Error.InvalidReturnCount;
         const return_count = (try self.constant(return_count_operand.value)).intValue() orelse return Error.InvalidReturnCount;
-        // A negative count is LUA_MULTRET/dynamic-return state. This helper contract is fixed-count
-        // only; accept every concrete count, including zero, that remains inside the compiled frame.
-        if (return_count < 0)
+        // The pinned builder encodes LUA_MULTRET as exactly -1. Other negative values are malformed.
+        if (return_count < -1)
             return Error.InvalidReturnCount;
 
-        const return_count_u32: u32 = @intCast(return_count);
-        const source_register: u32 = if (return_count_u32 == 0)
+        const source_register: u32 = if (return_count == 0)
             0
         else blk: {
             const register = try self.vmRegisterIndex(source);
-            if (return_count_u32 > @as(u32, self.proto.max_stack_size) - register)
-                return Error.InvalidReturnCount;
+            if (return_count > 0) {
+                const return_count_u32: u32 = @intCast(return_count);
+                if (return_count_u32 > @as(u32, self.proto.max_stack_size) - register)
+                    return Error.InvalidReturnCount;
+            }
             break :blk register;
         };
 
         try self.body.localGet(self.allocator, 0);
         try self.body.i32Const(self.allocator, @intCast(source_register));
         try self.body.i32Const(self.allocator, @intCast(return_count));
-        try self.body.call(self.allocator, self.return_fixed);
+        try self.body.call(self.allocator, self.return_);
         try self.emitStatusReturn(status_ok);
     }
 
@@ -2385,7 +2392,7 @@ const Context = struct {
         try self.emitReloadBase();
     }
 
-    fn emitCallFixed(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+    fn emitCall(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
         try self.requireOperandCount(instruction_value, 3);
         if (instruction_id == 0 or (try self.instruction(instruction_id - 1)).command != .set_savedpc)
             return Error.UnsupportedControlFlow;
@@ -2398,22 +2405,25 @@ const Context = struct {
             return Error.InvalidOperandType;
         const parameter_count = (try self.constant(parameter_operand.value)).intValue() orelse return Error.InvalidOperandType;
         const result_count = (try self.constant(result_operand.value)).intValue() orelse return Error.InvalidOperandType;
-        // Negative counts are the upstream dynamic/LUA_MULTRET sentinels. The strict helper ABI for
-        // this command supports concrete fixed shapes only; zero and larger fixed arities are valid
-        // when the function, arguments, and result window all fit in the compiled caller frame.
-        if (parameter_count < 0 or result_count < 0)
+        // The pinned builder encodes dynamic arguments and LUA_MULTRET results as exactly -1.
+        if (parameter_count < -1 or result_count < -1)
             return Error.UnsupportedControlFlow;
-        const parameter_count_u32: u32 = @intCast(parameter_count);
-        const result_count_u32: u32 = @intCast(result_count);
-        if (parameter_count_u32 >= @as(u32, self.proto.max_stack_size) - function_register or
-            result_count_u32 > @as(u32, self.proto.max_stack_size) - function_register)
-            return Error.UnsupportedControlFlow;
+        if (parameter_count >= 0) {
+            const parameter_count_u32: u32 = @intCast(parameter_count);
+            if (parameter_count_u32 >= @as(u32, self.proto.max_stack_size) - function_register)
+                return Error.UnsupportedControlFlow;
+        }
+        if (result_count >= 0) {
+            const result_count_u32: u32 = @intCast(result_count);
+            if (result_count_u32 > @as(u32, self.proto.max_stack_size) - function_register)
+                return Error.UnsupportedControlFlow;
+        }
 
         try self.body.localGet(self.allocator, 0);
         try self.body.i32Const(self.allocator, @intCast(function_register));
         try self.body.i32Const(self.allocator, parameter_count);
         try self.body.i32Const(self.allocator, result_count);
-        try self.body.call(self.allocator, self.call_fixed orelse return Error.UnsupportedCommand);
+        try self.body.call(self.allocator, self.call orelse return Error.UnsupportedCommand);
         try self.body.localTee(self.allocator, self.status_local);
         try self.body.i32Eqz(self.allocator);
         try self.body.ifVoid(self.allocator);
@@ -2424,9 +2434,9 @@ const Context = struct {
         try self.body.end(self.allocator);
     }
 
-    fn emitPrepVarargsNoop(self: Context, instruction_value: snapshot_v1.IrInstruction) Error!void {
+    fn emitPrepVarargs(self: Context, instruction_value: snapshot_v1.IrInstruction) Error!void {
         try self.requireOperandCount(instruction_value, 2);
-        if (!self.function.variadic or !self.proto.is_vararg or self.proto.num_params != 0)
+        if (!self.function.variadic or !self.proto.is_vararg)
             return Error.UnsupportedVariadicFunction;
 
         const pc_operand = try self.operand(instruction_value, 0);
@@ -2435,13 +2445,47 @@ const Context = struct {
             return Error.InvalidOperandType;
         _ = (try self.constant(pc_operand.value)).uintValue() orelse return Error.InvalidOperandType;
         const parameter_count = (try self.constant(parameter_operand.value)).intValue() orelse return Error.InvalidOperandType;
-        if (parameter_count != 0)
+        if (parameter_count < 0 or parameter_count != @as(i32, self.proto.num_params))
             return Error.UnsupportedVariadicFunction;
 
-        // Native PREPVARARGS relocates fixed parameters after the caller's extra arguments. With
-        // zero fixed parameters and no reachable GETVARARGS, the strict non-vararg AOT frame is
-        // observationally equivalent: generated registers begin at base and ignored extra arguments
-        // remain rooted in the frame. Any GETVARARGS command still fails closed below.
+        try self.body.localGet(self.allocator, 0);
+        try self.body.i32Const(self.allocator, parameter_count);
+        try self.body.call(self.allocator, self.prep_varargs orelse return Error.UnsupportedCommand);
+        // PREPVARARGS checks/grows the stack and always rewires the active frame base.
+        try self.emitReloadBase();
+    }
+
+    fn emitGetVarargs(self: Context, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 3);
+        if (!self.function.variadic or !self.proto.is_vararg)
+            return Error.UnsupportedVariadicFunction;
+
+        const pc_operand = try self.operand(instruction_value, 0);
+        if (pc_operand.kind != .constant)
+            return Error.InvalidOperandType;
+        _ = (try self.constant(pc_operand.value)).uintValue() orelse return Error.InvalidOperandType;
+
+        const destination = try self.vmRegisterIndex(try self.operand(instruction_value, 1));
+        const count_operand = try self.operand(instruction_value, 2);
+        if (count_operand.kind != .constant)
+            return Error.InvalidOperandType;
+        const count = (try self.constant(count_operand.value)).intValue() orelse return Error.InvalidOperandType;
+        if (count < -1)
+            return Error.UnsupportedVariadicFunction;
+
+        try self.body.localGet(self.allocator, 0);
+        try self.body.i32Const(self.allocator, @intCast(destination));
+        if (count == -1) {
+            try self.body.call(self.allocator, self.get_varargs_multret orelse return Error.UnsupportedCommand);
+            // The multret helper checks/grows the stack and updates L->top.
+            try self.emitReloadBase();
+        } else {
+            const count_u32: u32 = @intCast(count);
+            if (count_u32 > @as(u32, self.proto.max_stack_size) - destination)
+                return Error.UnsupportedVariadicFunction;
+            try self.body.i32Const(self.allocator, count);
+            try self.body.call(self.allocator, self.get_varargs_fixed orelse return Error.UnsupportedCommand);
+        }
     }
 
     fn emitInstruction(self: Context, instruction_id: u32, block_kind: snapshot_v1.IrBlockKind) Error!bool {
@@ -2675,8 +2719,9 @@ const Context = struct {
                 try self.emitReturn(instruction_value);
                 return true;
             },
-            .call => try self.emitCallFixed(instruction_id, instruction_value),
-            .fallback_prepvarargs => try self.emitPrepVarargsNoop(instruction_value),
+            .call => try self.emitCall(instruction_id, instruction_value),
+            .fallback_prepvarargs => try self.emitPrepVarargs(instruction_value),
+            .fallback_getvarargs => try self.emitGetVarargs(instruction_value),
             .newclosure => {
                 if (instruction_id + 3 < self.function.instruction_count and
                     (try self.instruction(instruction_id + 3)).command == .findupval)
@@ -2845,11 +2890,14 @@ const ImportNeeds = struct {
     get_upvalue: bool = false,
     set_upvalue: bool = false,
     close_upvalues: bool = false,
-    call_fixed: bool = false,
+    call: bool = false,
+    prep_varargs: bool = false,
+    get_varargs_fixed: bool = false,
+    get_varargs_multret: bool = false,
 };
 
 const RuntimeImports = struct {
-    return_fixed: wasm.FunctionRef,
+    return_: wasm.FunctionRef,
     interrupt: wasm.FunctionRef,
     do_arith: ?wasm.FunctionRef,
     compare_any: ?wasm.FunctionRef,
@@ -2859,7 +2907,10 @@ const RuntimeImports = struct {
     get_upvalue: ?wasm.FunctionRef,
     set_upvalue: ?wasm.FunctionRef,
     close_upvalues: ?wasm.FunctionRef,
-    call_fixed: ?wasm.FunctionRef,
+    call: ?wasm.FunctionRef,
+    prep_varargs: ?wasm.FunctionRef,
+    get_varargs_fixed: ?wasm.FunctionRef,
+    get_varargs_multret: ?wasm.FunctionRef,
     generated_type: u32,
 };
 
@@ -2881,14 +2932,19 @@ fn scanImportNeeds(snapshot: snapshot_v1.Snapshot, function_id: u32, needs: *Imp
             .get_upvalue => needs.get_upvalue = true,
             .set_upvalue => needs.set_upvalue = true,
             .close_upvals => needs.close_upvalues = true,
-            .call => needs.call_fixed = true,
+            .call => needs.call = true,
+            .fallback_prepvarargs => needs.prep_varargs = true,
+            .fallback_getvarargs => {
+                needs.get_varargs_fixed = true;
+                needs.get_varargs_multret = true;
+            },
             else => {},
         }
     }
 }
 
 fn addRuntimeImports(object: *wasm.Object, needs: ImportNeeds) Error!RuntimeImports {
-    const return_fixed_params = [_]wasm.ValueType{ .i32, .i32, .i32 };
+    const return_params = [_]wasm.ValueType{ .i32, .i32, .i32 };
     const interrupt_params = [_]wasm.ValueType{ .i32, .i32 };
     const do_arith_params = [_]wasm.ValueType{ .i32, .i32, .i32, .i32, .i32 };
     const compare_any_params = [_]wasm.ValueType{ .i32, .i32, .i32, .i32 };
@@ -2898,15 +2954,18 @@ fn addRuntimeImports(object: *wasm.Object, needs: ImportNeeds) Error!RuntimeImpo
     const get_upvalue_params = [_]wasm.ValueType{ .i32, .i32, .i32 };
     const set_upvalue_params = [_]wasm.ValueType{ .i32, .i32, .i32 };
     const close_upvalues_params = [_]wasm.ValueType{ .i32, .i32 };
-    const call_fixed_params = [_]wasm.ValueType{ .i32, .i32, .i32, .i32 };
+    const call_params = [_]wasm.ValueType{ .i32, .i32, .i32, .i32 };
+    const prep_varargs_params = [_]wasm.ValueType{ .i32, .i32 };
+    const get_varargs_fixed_params = [_]wasm.ValueType{ .i32, .i32, .i32 };
+    const get_varargs_multret_params = [_]wasm.ValueType{ .i32, .i32 };
     const generated_params = [_]wasm.ValueType{ .i32, .i32 };
     const no_results = [_]wasm.ValueType{};
     const status_result = [_]wasm.ValueType{.i32};
 
-    const return_fixed_type = try object.addType(.{ .params = &return_fixed_params, .results = &no_results });
+    const return_type = try object.addType(.{ .params = &return_params, .results = &no_results });
     const interrupt_type = try object.addType(.{ .params = &interrupt_params, .results = &status_result });
     const generated_type = try object.addType(.{ .params = &generated_params, .results = &status_result });
-    const return_fixed = try object.importFunction("env", return_fixed_symbol, return_fixed_type);
+    const return_ = try object.importFunction("env", return_symbol, return_type);
     const interrupt = try object.importFunction("env", interrupt_symbol, interrupt_type);
     const do_arith = if (needs.do_arith) blk: {
         const helper_type = try object.addType(.{ .params = &do_arith_params, .results = &no_results });
@@ -2940,13 +2999,25 @@ fn addRuntimeImports(object: *wasm.Object, needs: ImportNeeds) Error!RuntimeImpo
         const helper_type = try object.addType(.{ .params = &close_upvalues_params, .results = &no_results });
         break :blk try object.importFunction("env", close_upvalues_symbol, helper_type);
     } else null;
-    const call_fixed = if (needs.call_fixed) blk: {
-        const helper_type = try object.addType(.{ .params = &call_fixed_params, .results = &status_result });
-        break :blk try object.importFunction("env", call_fixed_symbol, helper_type);
+    const call = if (needs.call) blk: {
+        const helper_type = try object.addType(.{ .params = &call_params, .results = &status_result });
+        break :blk try object.importFunction("env", call_symbol, helper_type);
+    } else null;
+    const prep_varargs = if (needs.prep_varargs) blk: {
+        const helper_type = try object.addType(.{ .params = &prep_varargs_params, .results = &no_results });
+        break :blk try object.importFunction("env", prep_varargs_symbol, helper_type);
+    } else null;
+    const get_varargs_fixed = if (needs.get_varargs_fixed) blk: {
+        const helper_type = try object.addType(.{ .params = &get_varargs_fixed_params, .results = &no_results });
+        break :blk try object.importFunction("env", get_varargs_fixed_symbol, helper_type);
+    } else null;
+    const get_varargs_multret = if (needs.get_varargs_multret) blk: {
+        const helper_type = try object.addType(.{ .params = &get_varargs_multret_params, .results = &no_results });
+        break :blk try object.importFunction("env", get_varargs_multret_symbol, helper_type);
     } else null;
 
     return .{
-        .return_fixed = return_fixed,
+        .return_ = return_,
         .interrupt = interrupt,
         .do_arith = do_arith,
         .compare_any = compare_any,
@@ -2956,7 +3027,10 @@ fn addRuntimeImports(object: *wasm.Object, needs: ImportNeeds) Error!RuntimeImpo
         .get_upvalue = get_upvalue,
         .set_upvalue = set_upvalue,
         .close_upvalues = close_upvalues,
-        .call_fixed = call_fixed,
+        .call = call,
+        .prep_varargs = prep_varargs,
+        .get_varargs_fixed = get_varargs_fixed,
+        .get_varargs_multret = get_varargs_multret,
         .generated_type = generated_type,
     };
 }
@@ -2971,7 +3045,7 @@ fn lowerFunction(
 ) Error!void {
     const function = try snapshot.irFunction(function_id);
     const proto = try snapshot.proto(function.proto_id);
-    if (function.variadic != proto.is_vararg or (function.variadic and proto.num_params != 0))
+    if (function.variadic != proto.is_vararg)
         return Error.UnsupportedVariadicFunction;
 
     const entry_block = try snapshot.irBlock(function, function.entry_block);
@@ -3048,7 +3122,7 @@ fn lowerFunction(
         .function = function,
         .slots = slots,
         .body = &body,
-        .return_fixed = imports.return_fixed,
+        .return_ = imports.return_,
         .interrupt = imports.interrupt,
         .do_arith = imports.do_arith,
         .compare_any = imports.compare_any,
@@ -3058,7 +3132,10 @@ fn lowerFunction(
         .get_upvalue = imports.get_upvalue,
         .set_upvalue = imports.set_upvalue,
         .close_upvalues = imports.close_upvalues,
-        .call_fixed = imports.call_fixed,
+        .call = imports.call,
+        .prep_varargs = imports.prep_varargs,
+        .get_varargs_fixed = imports.get_varargs_fixed,
+        .get_varargs_multret = imports.get_varargs_multret,
         .base_local = 2,
         .dispatch_local = 3,
         .status_local = 4,

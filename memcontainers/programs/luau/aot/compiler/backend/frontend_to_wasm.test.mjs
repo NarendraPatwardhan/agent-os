@@ -259,7 +259,7 @@ async function executeCase(name, source, inputs) {
   const module = await WebAssembly.compile(linkObject(object, name));
   const moduleImports = WebAssembly.Module.imports(module).map(({ module, name: importName, kind }) => [module, importName, kind]);
   const expectedImports = [
-    ["env", "mc_luau_aot_v1_return_fixed", "function"],
+    ["env", "mc_luau_aot_v1_return", "function"],
     ["env", "mc_luau_aot_v1_interrupt", "function"],
   ];
   if (name === "loop")
@@ -272,7 +272,7 @@ async function executeCase(name, source, inputs) {
   let interrupts = 0;
   instance = await WebAssembly.instantiate(module, {
     env: {
-      mc_luau_aot_v1_return_fixed(state, sourceRegister, resultCount) {
+      mc_luau_aot_v1_return(state, sourceRegister, resultCount) {
         if (state !== 1024 || resultCount !== 1) throw new Error(`${name}: wrong return ABI ${state}/${resultCount}`);
         const view = new DataView(instance.exports.memory.buffer);
         const base = view.getUint32(state + 12, true);
@@ -330,8 +330,9 @@ async function executeSilentRoot() {
   const module = await WebAssembly.compile(linkObject(object, name));
   const moduleImports = WebAssembly.Module.imports(module).map(({ module, name: importName, kind }) => [module, importName, kind]);
   const expectedImports = [
-    ["env", "mc_luau_aot_v1_return_fixed", "function"],
+    ["env", "mc_luau_aot_v1_return", "function"],
     ["env", "mc_luau_aot_v1_interrupt", "function"],
+    ["env", "mc_luau_aot_v1_prep_varargs", "function"],
   ];
   if (JSON.stringify(moduleImports) !== JSON.stringify(expectedImports))
     throw new Error(`${name}: unexpected generated imports ${JSON.stringify(moduleImports)}`);
@@ -341,7 +342,11 @@ async function executeSilentRoot() {
   let instance;
   instance = await WebAssembly.instantiate(module, {
     env: {
-      mc_luau_aot_v1_return_fixed(state, sourceRegister, resultCount) {
+      mc_luau_aot_v1_prep_varargs(state, fixedParameterCount) {
+        if (state !== 1024 || fixedParameterCount !== 0)
+          throw new Error(`${name}: wrong PREPVARARGS ABI ${state}/${fixedParameterCount}`);
+      },
+      mc_luau_aot_v1_return(state, sourceRegister, resultCount) {
         if (state !== 1024 || resultCount !== 1) throw new Error(`${name}: wrong return ABI ${state}/${resultCount}`);
         const view = new DataView(instance.exports.memory.buffer);
         const base = view.getUint32(state + 12, true);
@@ -377,7 +382,7 @@ async function executeSlowAdd() {
   const module = await WebAssembly.compile(linkObject(object, name));
   const moduleImports = WebAssembly.Module.imports(module).map(({ module, name: importName, kind }) => [module, importName, kind]);
   const expectedImports = [
-    ["env", "mc_luau_aot_v1_return_fixed", "function"],
+    ["env", "mc_luau_aot_v1_return", "function"],
     ["env", "mc_luau_aot_v1_interrupt", "function"],
     ["env", "mc_luau_aot_v1_do_arith", "function"],
   ];
@@ -390,7 +395,7 @@ async function executeSlowAdd() {
   let helperCalls = 0;
   instance = await WebAssembly.instantiate(module, {
     env: {
-      mc_luau_aot_v1_return_fixed(state, sourceRegister, resultCount) {
+      mc_luau_aot_v1_return(state, sourceRegister, resultCount) {
         if (state !== 1024 || resultCount !== 1) throw new Error(`${name}: wrong return ABI ${state}/${resultCount}`);
         const view = new DataView(instance.exports.memory.buffer);
         const base = view.getUint32(state + 12, true);
@@ -457,11 +462,12 @@ async function executeCompiledCallPackage() {
   const module = await WebAssembly.compile(linkPackage(first));
   const moduleImports = WebAssembly.Module.imports(module).map(({ module: importModule, name: importName, kind }) => [importModule, importName, kind]);
   const expectedImports = [
-    ["env", "mc_luau_aot_v1_return_fixed", "function"],
+    ["env", "mc_luau_aot_v1_return", "function"],
     ["env", "mc_luau_aot_v1_interrupt", "function"],
     ["env", "mc_luau_aot_v1_do_arith", "function"],
     ["env", "mc_luau_aot_v1_dupclosure", "function"],
-    ["env", "mc_luau_aot_v1_call_fixed", "function"],
+    ["env", "mc_luau_aot_v1_call", "function"],
+    ["env", "mc_luau_aot_v1_prep_varargs", "function"],
   ];
   if (JSON.stringify(moduleImports) !== JSON.stringify(expectedImports))
     throw new Error(`${name}: unexpected generated imports ${JSON.stringify(moduleImports)}`);
@@ -483,7 +489,11 @@ async function executeCompiledCallPackage() {
 
   instance = await WebAssembly.instantiate(module, {
     env: {
-      mc_luau_aot_v1_return_fixed(returnState, sourceRegister, resultCount) {
+      mc_luau_aot_v1_prep_varargs(state, fixedParameterCount) {
+        if (state !== 1024 || fixedParameterCount !== 0)
+          throw new Error(`${name}: wrong PREPVARARGS ABI ${state}/${fixedParameterCount}`);
+      },
+      mc_luau_aot_v1_return(returnState, sourceRegister, resultCount) {
         if (returnState !== state || resultCount !== 1)
           throw new Error(`${name}: wrong return ABI ${returnState}/${resultCount}`);
         const view = new DataView(instance.exports.memory.buffer);
@@ -512,7 +522,7 @@ async function executeCompiledCallPackage() {
         view.setUint32(destination, childProtoId, true);
         view.setUint32(destination + 12, 6, true);
       },
-      mc_luau_aot_v1_call_fixed(callState, functionRegister, parameterCount, resultCount) {
+      mc_luau_aot_v1_call(callState, functionRegister, parameterCount, resultCount) {
         if (callState !== state || functionRegister !== 3 || parameterCount !== 2 || resultCount !== 1)
           throw new Error(`${name}: invalid fixed call ABI`);
         const memory = new Uint8Array(instance.exports.memory.buffer);
@@ -615,13 +625,14 @@ async function executeCapturedCallPackage() {
   const module = await WebAssembly.compile(linkPackage(first));
   const moduleImports = WebAssembly.Module.imports(module).map(({ module: importModule, name: importName, kind }) => [importModule, importName, kind]);
   const expectedImports = [
-    ["env", "mc_luau_aot_v1_return_fixed", "function"],
+    ["env", "mc_luau_aot_v1_return", "function"],
     ["env", "mc_luau_aot_v1_interrupt", "function"],
     ["env", "mc_luau_aot_v1_do_arith", "function"],
     ["env", "mc_luau_aot_v1_dupclosure", "function"],
     ["env", "mc_luau_aot_v1_newclosure_value", "function"],
     ["env", "mc_luau_aot_v1_get_upvalue", "function"],
-    ["env", "mc_luau_aot_v1_call_fixed", "function"],
+    ["env", "mc_luau_aot_v1_call", "function"],
+    ["env", "mc_luau_aot_v1_prep_varargs", "function"],
   ];
   if (JSON.stringify(moduleImports) !== JSON.stringify(expectedImports))
     throw new Error(`${name}: unexpected generated imports ${JSON.stringify(moduleImports)}`);
@@ -650,7 +661,11 @@ async function executeCapturedCallPackage() {
 
   instance = await WebAssembly.instantiate(module, {
     env: {
-      mc_luau_aot_v1_return_fixed(returnState, sourceRegister, resultCount) {
+      mc_luau_aot_v1_prep_varargs(state, fixedParameterCount) {
+        if (state !== 1024 || fixedParameterCount !== 0)
+          throw new Error(`${name}: wrong PREPVARARGS ABI ${state}/${fixedParameterCount}`);
+      },
+      mc_luau_aot_v1_return(returnState, sourceRegister, resultCount) {
         if (returnState !== state || resultCount !== 1)
           throw new Error(`${name}: wrong return ABI ${returnState}/${resultCount}`);
         const view = new DataView(instance.exports.memory.buffer);
@@ -697,7 +712,7 @@ async function executeCapturedCallPackage() {
         const view = new DataView(instance.exports.memory.buffer);
         writeNumber(view, view.getUint32(state + 12, true), destinationRegister, capturedValue);
       },
-      mc_luau_aot_v1_call_fixed(callState, functionRegister, parameterCount, resultCount) {
+      mc_luau_aot_v1_call(callState, functionRegister, parameterCount, resultCount) {
         if (callState !== state || functionRegister !== 3 || parameterCount !== 1 || resultCount !== 1)
           throw new Error(`${name}: invalid fixed call ABI`);
         const memory = new Uint8Array(instance.exports.memory.buffer);
@@ -840,7 +855,7 @@ async function executeReferenceCapturePackage() {
     ({ module: importModule, name: importName, kind }) => [importModule, importName, kind],
   );
   const expectedImports = [
-    ["env", "mc_luau_aot_v1_return_fixed", "function"],
+    ["env", "mc_luau_aot_v1_return", "function"],
     ["env", "mc_luau_aot_v1_interrupt", "function"],
     ["env", "mc_luau_aot_v1_do_arith", "function"],
     ["env", "mc_luau_aot_v1_dupclosure", "function"],
@@ -848,6 +863,7 @@ async function executeReferenceCapturePackage() {
     ["env", "mc_luau_aot_v1_get_upvalue", "function"],
     ["env", "mc_luau_aot_v1_set_upvalue", "function"],
     ["env", "mc_luau_aot_v1_close_upvalues", "function"],
+    ["env", "mc_luau_aot_v1_prep_varargs", "function"],
   ];
   if (JSON.stringify(moduleImports) !== JSON.stringify(expectedImports))
     throw new Error(`${name}: unexpected generated imports ${JSON.stringify(moduleImports)}`);
@@ -888,7 +904,11 @@ async function executeReferenceCapturePackage() {
 
   instance = await WebAssembly.instantiate(module, {
     env: {
-      mc_luau_aot_v1_return_fixed(returnState, sourceRegister, resultCount) {
+      mc_luau_aot_v1_prep_varargs(state, fixedParameterCount) {
+        if (state !== 1024 || fixedParameterCount !== 0)
+          throw new Error(`${name}: wrong PREPVARARGS ABI ${state}/${fixedParameterCount}`);
+      },
+      mc_luau_aot_v1_return(returnState, sourceRegister, resultCount) {
         if (returnState !== state || resultCount !== 1)
           throw new Error(`${name}: invalid fixed return ${returnState}/${sourceRegister}/${resultCount}`);
         const view = new DataView(instance.exports.memory.buffer);
@@ -1042,11 +1062,12 @@ async function executeMultiResultCallPackage() {
   const module = await WebAssembly.compile(linkPackage(first));
   const moduleImports = WebAssembly.Module.imports(module).map(({ module: importModule, name: importName, kind }) => [importModule, importName, kind]);
   const expectedImports = [
-    ["env", "mc_luau_aot_v1_return_fixed", "function"],
+    ["env", "mc_luau_aot_v1_return", "function"],
     ["env", "mc_luau_aot_v1_interrupt", "function"],
     ["env", "mc_luau_aot_v1_do_arith", "function"],
     ["env", "mc_luau_aot_v1_dupclosure", "function"],
-    ["env", "mc_luau_aot_v1_call_fixed", "function"],
+    ["env", "mc_luau_aot_v1_call", "function"],
+    ["env", "mc_luau_aot_v1_prep_varargs", "function"],
   ];
   if (JSON.stringify(moduleImports) !== JSON.stringify(expectedImports))
     throw new Error(`${name}: unexpected generated imports ${JSON.stringify(moduleImports)}`);
@@ -1074,7 +1095,11 @@ async function executeMultiResultCallPackage() {
 
   instance = await WebAssembly.instantiate(module, {
     env: {
-      mc_luau_aot_v1_return_fixed(returnState, sourceRegister, resultCount) {
+      mc_luau_aot_v1_prep_varargs(state, fixedParameterCount) {
+        if (state !== 1024 || fixedParameterCount !== 0)
+          throw new Error(`${name}: wrong PREPVARARGS ABI ${state}/${fixedParameterCount}`);
+      },
+      mc_luau_aot_v1_return(returnState, sourceRegister, resultCount) {
         if (returnState !== state || (resultCount !== 1 && resultCount !== 2))
           throw new Error(`${name}: invalid fixed return ${returnState}/${sourceRegister}/${resultCount}`);
         const memory = new Uint8Array(instance.exports.memory.buffer);
@@ -1102,7 +1127,7 @@ async function executeMultiResultCallPackage() {
         view.setUint32(base + destinationRegister * tvalueSize, childProtoId, true);
         view.setUint32(base + destinationRegister * tvalueSize + 12, 6, true);
       },
-      mc_luau_aot_v1_call_fixed(callState, functionRegister, parameterCount, resultCount) {
+      mc_luau_aot_v1_call(callState, functionRegister, parameterCount, resultCount) {
         if (callState !== state || functionRegister !== 3 || parameterCount !== 2 || resultCount !== 2)
           throw new Error(`${name}: invalid fixed call ABI`);
         const memory = new Uint8Array(instance.exports.memory.buffer);

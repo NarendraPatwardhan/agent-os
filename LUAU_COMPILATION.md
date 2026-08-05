@@ -162,14 +162,14 @@ guest path, but is not presented as a general-purpose AOT product:
   three-Proto object is 951 bytes and contains the variadic root, a two-argument caller, and its
   guarded-add callee; no per-function object stitching or duplicate helper imports intervene;
 - the strict runtime publishes that complete immutable descriptor graph into real GC-owned Luau
-  `Proto` objects before exposing the root closure. A bounded fixed-result return ABI replaces the old
-  numeric-only commit ABI; validated zero-upvalue `FALLBACK_DUPCLOSURE` materializes real child
-  closures; and narrow one-or-two-argument/one-or-two-result `CALL` shapes install and restore
-  ordinary `CallInfo` frames. Full GC after graph publication and after the root returns its child
-  closure succeeds, and
+  `Proto` objects before exposing the root closure. A contiguous fixed/dynamic result ABI replaces the
+  old numeric-only commit ABI; validated zero-upvalue `FALLBACK_DUPCLOSURE` materializes real child
+  closures; and fixed or dynamic compiled-Luau `CALL` shapes install and restore ordinary `CallInfo`
+  frames, including relocated vararg frames. Full GC after graph publication and after the root returns
+  its child closure succeeds, and
   five decimal-string cases traverse nested compiled CALL/RETURN plus the arithmetic slow path and
-  match the separately linked pinned interpreter. General arities/results beyond this bounded shape,
-  C/callable values, tail calls, recursion, and yield continuations remain fail-closed;
+  match the separately linked pinned interpreter. C/callable values and yield continuations remain
+  fail-closed; recursive closure construction and source locations remain open;
 - the same three-Proto package now links with the strict runtime and canonical WASI adapter as a
   release-small AgentOS guest, then passes Binaryen optimization, mc stamping, mc attestation, image
   installation, and the real-kernel gate. The production entry performs two protected calls with full
@@ -195,14 +195,14 @@ guest path, but is not presented as a general-purpose AOT product:
   not a second one-result special case. Its compiled child computes `x + y`, returns that number and
   the original `x` through `RETURN R2 count 2`, and its compiled caller requests `CALL 2 -> 2`, consumes
   both returned registers, then traverses a second checked arithmetic slow path. The runtime's
-  versioned `return_fixed` helper validates the range, copies it overlap-safely to the callee frame
+  versioned `return` helper validates the range, copies it overlap-safely to the callee frame
   base, and lets ordinary `luau_poscall` move exactly the caller-requested results. The object gate
   relocates the caller base and proves both values survive; the strict-runtime gate uses raw decimal
   strings so both additions take real `DO_ARITH` slow blocks, and five signed cases equal the exact
   pinned interpreter source. The same package links into `/bin/luau-aot-multi-result-call`, passes
   release-small linking, Binaryen optimization, mc stamping and attestation, installs beside its exact
-  source in `loom_aot`, and passes the real-kernel five-case differential. Zero-result calls,
-  `LUA_MULTRET`, vararg result ranges, and fixed counts above two remain fail-closed;
+  source in `loom_aot`, and passes the real-kernel five-case differential. Later fixed/general-vararg
+  packages extend the same helpers to zero, larger fixed, and dynamic result ranges;
 - a fourth exact three-Proto package proves mutable reference capture and the open-to-closed `UpVal`
   transition. Its factory copies the runtime `initial` argument into a local, creates one child with
   `LCT_REF`, closes that local before returning, and the child reads, adds to, and writes U0 on every
@@ -258,7 +258,7 @@ guest path, but is not presented as a general-purpose AOT product:
   pinned interpreter in the real kernel. That source does not emit the newly lowered `CHECK_*`, int64
   division, or `JUMP_FORN_LOOP_COND` commands, so those rows retain empty evidence arrays rather than
   borrowing this vertical;
-- the 216-command ledger now records 122 implemented, 27 deliberately partial, and 67 unimplemented
+- the 216-command ledger now records 125 implemented, 25 deliberately partial, and 66 unimplemented
   rows. Direct integer/bitwise, float, vector, select, and safe-conversion rows with no source/runtime
   vertical retain empty evidence arrays rather than inheriting the scalar fixtures. Remaining partial
   layout and guard rows name their exact GC-constant or VM-exit boundary;
@@ -268,8 +268,15 @@ guest path, but is not presented as a general-purpose AOT product:
   arguments to non-vararg callees. A new exact four-Proto source graph exercises both zero-to-zero and
   four-to-three calls, consumes all three returned values, and makes all four runtime inputs affect
   the result. Its source-generated object links into the release-small stamped guest, and five signed
-  tuples match the separately linked pinned interpreter in the real kernel. `LUA_MULTRET`, vararg
-  callees and `GETVARARGS`, C/metamethod calls, yield/continuation, and stack growth remain fail-closed;
+  tuples match the separately linked pinned interpreter in the real kernel;
+- compiled vararg frames now implement pinned `PREPVARARGS`, fixed and dynamic `GETVARARGS`, dynamic
+  call argument/result counts, and dynamic `RETURN`. A second exact four-Proto graph consumes one
+  fixed value from the caller's varargs, forwards the open list through a variadic child with one
+  fixed parameter, adjusts that child's open return into a fixed four-parameter child, and adds the
+  saved value. Five signed four-value tuples produce `2 * a + b + c + d`; a sixth five-value case
+  proves truncation of the extra open tail. All six match the pinned interpreter through the
+  release-small stamped guest in the real kernel. C/metamethod calls and yield/continuation remain
+  fail-closed;
 
 WP2 is complete. WP3's central arithmetic/type slow-block rejoin passes the exact-source,
 relocatable-object, strict-runtime, pinned-interpreter, production optimization/stamp/attestation, and
@@ -281,11 +288,12 @@ now passes the same object, base-relocation, strict-runtime, exact-source differ
 production-pipeline, and real-kernel gates. WP4's mutable reference-capture vertical now passes the
 exact-snapshot, deterministic-object, base-relocation, open/closed-cell, full-GC, repeated-mutation,
 closure-independence, pinned-interpreter, production optimization, stamp, attestation, image, and
-real-kernel gates. The first broader WP4 call boundary now passes fixed zero and arbitrary bounded
-argument/result shapes through the same source-to-object-to-runtime-to-image path. The active line of
-work is WP4 vararg/multi-return protocol followed by static imports. The immutable descriptor is shared
-by the runtime fixtures and product today but remains compiler-generated-data work, not a hand-authored
-product format.
+real-kernel gates. The broader WP4 call boundary now passes fixed zero, arbitrary bounded fixed
+argument/result shapes, fixed/dynamic vararg extraction, one-fixed-parameter vararg relocation, and
+dynamic multi-return through the same source-to-object-to-runtime-to-image path. The active line of
+work is WP4 static imports and module initialization. The immutable descriptor is shared by the runtime
+fixtures and product today but remains compiler-generated-data work, not a hand-authored product
+format.
 
 ---
 
@@ -1511,8 +1519,8 @@ Gate:
 **Goal:** replace manual fixture emission with the one production code-generation model.
 
 **Current state:** the production object builder, generic upstream CFG dispatcher, scalar fast tier,
-and exact fallback rejoin model are implemented. The authoritative ledger has 122 implemented, 27
-partial, and 67 unimplemented command rows. Complete lowering now includes direct number, float,
+and exact fallback rejoin model are implemented. The authoritative ledger has 125 implemented, 25
+partial, and 66 unimplemented command rows. Complete lowering now includes direct number, float,
 vector, select, safe-conversion, comparison, ordinary-branch, integer/bitwise including guarded int64
 division/remainder, compile-only, and the exact scalar layout forms described above. `DO_ARITH` covers
 all eight arithmetic runtime operations for VM-register operands and remains partial; `CMP_ANY` covers
@@ -1575,8 +1583,8 @@ and five exact-source interpreter differentials pass. The same object and shared
 release-small guest, pass Binaryen optimization, mc stamping and attestation, install with the exact
 source in `loom_aot`, and pass the real-kernel differential for all five raw-string pairs. Oracle and
 guest descriptors remain shared link-time definitions; compiler-emitted descriptor data/relocations
-remain product work. Forwarded or multiple captures, dynamic multi-results, callable metamethods,
-recursion, tail calls, yields, varargs consumption, modules, and source-location
+remain product work. Forwarded or multiple captures, callable metamethods, recursion, tail calls,
+yields, modules, and source-location
 publication are still unsupported.
 
 The exact `multi_result_call.luau` snapshot generalizes the call/return protocol without introducing a
@@ -1612,12 +1620,25 @@ The exact `general_call.luau` snapshot widens the fixed-count protocol across a 
 graph. One child has zero stack slots and is called with zero parameters and zero results; its
 `RETURN R0, 0` source operand is accepted only as a non-dereferenced placeholder. A second child is
 called with four parameters and returns three contiguous results, all consumed by its caller. The
-backend rejects negative dynamic-count sentinels and bounds every positive source, argument, and
-result window; the runtime remains compiled-Luau-only and rejects vararg callees, C functions,
-callable metamethods, and yields. The exact generated object links into a release-small stamped guest,
+backend bounds every positive source, argument, and result window. The exact generated object links
+into a release-small stamped guest,
 installs with the exact source, and five signed four-input tuples produce `2 * (a + b + c + d)` and
-match the pinned interpreter through the real AgentOS kernel. `CALL` and `RETURN` remain partial until
-the dynamic `LUA_MULTRET` and vararg protocols are implemented.
+match the pinned interpreter through the real AgentOS kernel.
+
+The exact `vararg_forward.luau` snapshot completes the compiled-Luau dynamic-count protocol across a
+closed four-Proto graph. The returned caller uses fixed `GETVARARGS` to save its first runtime value,
+then dynamic `GETVARARGS` to call a variadic child. That child has one fixed parameter, relocates it
+with `PREPVARARGS`, dynamically consumes the remaining arguments, and dynamically returns the full
+list. The caller passes that open result list into a fixed four-parameter child and adds the saved first
+value. The runtime grows and reloads stack pointers at relocating operations, derives dynamic argument
+and result spans from `L->top`, and preserves fixed nil-fill/result adjustment through pinned
+`luau_precall`/`luau_poscall` behavior. The exact object links into a release-small stamped guest,
+installs with the source, and five signed tuples produce `2 * a + b + c + d` and match the pinned
+interpreter in the real AgentOS kernel. A sixth five-value case produces the same result while the
+fixed four-parameter child truncates the extra open-tail value, also matching the interpreter.
+`RETURN`, `FALLBACK_PREPVARARGS`, and
+`FALLBACK_GETVARARGS` are complete; `CALL` remains partial only at C/metamethod and
+yield/continuation boundaries.
 
 Tasks:
 

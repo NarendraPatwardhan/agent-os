@@ -44,6 +44,7 @@ pub const proto_size: u32 = 64;
 pub const program_size: u32 = 56;
 pub const no_id: u32 = std.math.maxInt(u32);
 pub const flag_root: u32 = 1;
+pub const multret: i32 = -1;
 
 pub const layout_sha256 = [_]u8{
     0x42, 0x5d, 0x38, 0xd7, 0x5e, 0xf9, 0xf4, 0xe2, 0x66, 0x93, 0xa6, 0x90, 0xe0, 0x85, 0x7f, 0x90,

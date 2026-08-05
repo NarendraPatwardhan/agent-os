@@ -243,6 +243,49 @@ fn luau_aot_general_fixed_call_shapes_match_interpreter() {
     }
 }
 
+/// The exact source-built package consumes one fixed value from the returned caller's runtime
+/// varargs, forwards the open list through a one-fixed-parameter variadic child, and adjusts that
+/// child's open return into four fixed parameters. The pinned interpreter requires the same source.
+#[test]
+fn luau_aot_vararg_forwarding_and_result_adjustment_match_interpreter() {
+    let mut session = boot_loom_aot();
+
+    for (a, b, c, d) in [
+        (-50, 8, 3, -7),
+        (0, 0, 0, 0),
+        (20, 22, -5, 9),
+        (7, -3, 11, -4),
+        (1234, 5678, -4321, -1000),
+    ] {
+        let expected = format!("{}\r\nstatus=0\r\n", 2 * a + b + c + d);
+        let aot = session.run_for_output(&format!(
+            "luau-aot-vararg-forward {a} {b} {c} {d}; echo status=$?"
+        ));
+        let interpreted = session.run_for_output(&format!(
+            "luau -e 'local run = require(\"aot_vararg_forward\"); print(run(...))' {a} {b} {c} {d}; echo status=$?"
+        ));
+        assert_eq!(
+            aot, expected,
+            "strict AOT vararg forwarding failed for {a}/{b}/{c}/{d}"
+        );
+        assert_eq!(
+            aot, interpreted,
+            "strict AOT vararg forwarding mismatch for {a}/{b}/{c}/{d}"
+        );
+    }
+
+    let (a, b, c, d, discarded) = (19, -7, 5, 11, 999_999);
+    let expected = format!("{}\r\nstatus=0\r\n", 2 * a + b + c + d);
+    let aot = session.run_for_output(&format!(
+        "luau-aot-vararg-forward {a} {b} {c} {d} {discarded}; echo status=$?"
+    ));
+    let interpreted = session.run_for_output(&format!(
+        "luau -e 'local run = require(\"aot_vararg_forward\"); print(run(...))' {a} {b} {c} {d} {discarded}; echo status=$?"
+    ));
+    assert_eq!(aot, expected, "strict AOT open-tail truncation failed");
+    assert_eq!(aot, interpreted, "strict AOT open-tail truncation mismatch");
+}
+
 /// The exact source-built factory closes a mutable local into one accumulator. Its factory frame is
 /// gone and a full collection runs before the same accumulator is called twice, proving that the
 /// open UpVal was closed into owned storage and that both compiled calls mutate that same cell. The

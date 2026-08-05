@@ -275,6 +275,7 @@ pub const IrCommand = enum(u8) {
     call = 154,
     return_ = 155,
     fallback_prepvarargs = 165,
+    fallback_getvarargs = 166,
     newclosure = 167,
     fallback_dupclosure = 168,
     substitute = 170,

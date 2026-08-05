@@ -14,6 +14,7 @@ exports_files(
         "structural_core.luau",
         "silent_return.luau",
         "slow_add.luau",
+        "vararg_forward.luau",
     ],
     visibility = ["//memcontainers/programs/luau/aot/runtime:__pkg__"],
 )
@@ -91,7 +92,7 @@ build_test(
 )
 
 # Root chunks are variadic in Luau even when they never consume varargs. This declared artifact
-# exercises the backend's narrow zero-parameter PREPVARARGS normalization and the silent-root gate.
+# exercises real zero-parameter PREPVARARGS frame relocation and the silent-root gate.
 genrule(
     name = "silent_return_object",
     srcs = [
@@ -251,6 +252,27 @@ genrule(
 build_test(
     name = "general_call_package_object_build_test",
     targets = [":general_call_package_object"],
+)
+
+# The returned variadic caller consumes one fixed value from its runtime varargs, then forwards the
+# open list through a variadic child with one fixed parameter. That child's open result list becomes
+# the argument list of a fixed four-parameter compiled child before the saved first value is added.
+genrule(
+    name = "vararg_forward_package_object",
+    srcs = [
+        ":backend_wasm",
+        "vararg_forward.luau",
+        "//memcontainers/programs/luau/aot/frontend:frontend_wasm",
+    ],
+    outs = ["vararg_forward_package.o"],
+    cmd = "BAZEL_BINDIR=. $(execpath :object_emitter) $(location //memcontainers/programs/luau/aot/frontend:frontend_wasm) $(location :backend_wasm) $(location vararg_forward.luau) $@ package",
+    tools = [":object_emitter"],
+    visibility = ["//visibility:public"],
+)
+
+build_test(
+    name = "vararg_forward_package_object_build_test",
+    targets = [":vararg_forward_package_object"],
 )
 
 # A factory returns a closure over one mutable local. The package preserves an open UpVal through

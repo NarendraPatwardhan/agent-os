@@ -28,6 +28,10 @@ enum McLuauAotIdsV1 {
     MC_LUAU_AOT_V1_NO_ID = UINT32_MAX,
 };
 
+enum McLuauAotCountV1 {
+    MC_LUAU_AOT_V1_MULTRET = -1,
+};
+
 // Stable AOT helper operations. These values are independent of Luau's internal TMS enum; the
 // compiler frontend pin maps upstream TMS values onto this versioned runtime ABI.
 enum McLuauAotArithOpV1 {
@@ -89,8 +93,8 @@ extern const uint8_t mc_luau_aot_v1_layout_sha256[32];
 // Generated-code/runtime surface. Keep it versioned, unmangled, and narrow.
 void mc_luau_aot_v1_enter(lua_State *state);
 void mc_luau_aot_v1_finish_yielded_op(lua_State *state);
-void mc_luau_aot_v1_return_fixed(lua_State *state, uint32_t source_register,
-                                  uint32_t result_count);
+void mc_luau_aot_v1_return(lua_State *state, uint32_t source_register,
+                           int32_t result_count);
 uint32_t mc_luau_aot_v1_interrupt(lua_State *state, uint32_t pc);
 void mc_luau_aot_v1_do_arith(lua_State *state, uint32_t destination_register,
                              uint32_t lhs_register, uint32_t rhs_register,
@@ -108,8 +112,13 @@ void mc_luau_aot_v1_get_upvalue(lua_State *state, uint32_t destination_register,
 void mc_luau_aot_v1_set_upvalue(lua_State *state, uint32_t upvalue_index,
                                 uint32_t source_register);
 void mc_luau_aot_v1_close_upvalues(lua_State *state, uint32_t first_register);
-uint32_t mc_luau_aot_v1_call_fixed(lua_State *state, uint32_t function_register,
-                                   uint32_t parameter_count, uint32_t result_count);
+uint32_t mc_luau_aot_v1_call(lua_State *state, uint32_t function_register,
+                             int32_t parameter_count, int32_t result_count);
+void mc_luau_aot_v1_prep_varargs(lua_State *state, uint32_t fixed_parameter_count);
+void mc_luau_aot_v1_get_varargs_fixed(lua_State *state, uint32_t destination_register,
+                                      uint32_t result_count);
+void mc_luau_aot_v1_get_varargs_multret(lua_State *state,
+                                        uint32_t destination_register);
 uint32_t mc_luau_aot_v1_push_root(lua_State *state, const McLuauAotProtoV1 *metadata,
                                   const char *source, size_t source_size);
 uint32_t mc_luau_aot_v1_push_program(lua_State *state, const McLuauAotProgramV1 *program,

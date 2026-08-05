@@ -27,7 +27,7 @@ const metadata = abi.AotProto{
     .flags = abi.flag_root,
     .num_params = 0,
     .nups = 0,
-    .is_vararg = 0,
+    .is_vararg = 1,
     .max_stack_size = 1,
     .reserved = 0,
 };

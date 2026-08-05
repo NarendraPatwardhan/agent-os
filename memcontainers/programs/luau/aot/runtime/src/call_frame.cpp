@@ -17,6 +17,8 @@
 #include <limits.h>
 #include <string.h>
 
+static_assert(MC_LUAU_AOT_V1_MULTRET == LUA_MULTRET, "Luau MULTRET sentinel drift");
+
 // These flag definitions live in lvmexecute.cpp upstream even though retained runtime sources use
 // them. The strict archive excludes that translation unit, so the pin adapter owns the definitions.
 LUAU_FASTFLAGVARIABLE(LuauDirectFieldGet)
@@ -192,17 +194,32 @@ extern "C" const uint8_t mc_luau_aot_v1_layout_sha256[32] = {
 
 static bool validAotProto(const McLuauAotProtoV1 *metadata);
 
-extern "C" void mc_luau_aot_v1_return_fixed(lua_State *L, uint32_t sourceRegister,
-                                               uint32_t resultCount) {
+extern "C" void mc_luau_aot_v1_return(lua_State *L, uint32_t sourceRegister,
+                                        int32_t resultCount) {
     if (!L || !L->ci || !isLua(L->ci))
         luaG_runerror(L, "strict AOT return helper entered without an active Luau frame");
+    if (resultCount < MC_LUAU_AOT_V1_MULTRET)
+        luaG_runerror(L, "strict AOT return helper rejected result count %d", resultCount);
 
     Closure *closure = clvalue(L->ci->func);
     Proto *proto = closure->l.p;
-    if (resultCount != 0 &&
-        (sourceRegister >= proto->maxstacksize ||
-         resultCount > uint32_t(proto->maxstacksize) - sourceRegister))
-        luaG_runerror(L, "strict AOT fixed return exceeds the compiled frame");
+    if (sourceRegister > proto->maxstacksize)
+        luaG_runerror(L, "strict AOT return source is outside the compiled frame");
+
+    uint32_t actualResultCount;
+    if (resultCount == MC_LUAU_AOT_V1_MULTRET) {
+        StkId first = L->base + sourceRegister;
+        if (first > L->top)
+            luaG_runerror(L, "strict AOT dynamic return starts above the live stack top");
+        ptrdiff_t count = L->top - first;
+        if (uint64_t(count) > UINT32_MAX)
+            luaG_runerror(L, "strict AOT dynamic return count exceeds the ABI limit");
+        actualResultCount = uint32_t(count);
+    } else {
+        actualResultCount = uint32_t(resultCount);
+        if (actualResultCount > uint32_t(proto->maxstacksize) - sourceRegister)
+            luaG_runerror(L, "strict AOT fixed return exceeds the compiled frame");
+    }
 
     // A compiled return must never leave UpVal::v pointing into the frame that poscall will pop.
     // Exact CLOSE_UPVALS commands still lower independently for lexical scopes that end earlier.
@@ -211,9 +228,9 @@ extern "C" void mc_luau_aot_v1_return_fixed(lua_State *L, uint32_t sourceRegiste
 
     // Poscall consumes results from frame base. Copy low-to-high: the destination never starts
     // above the source, so this also has correct memmove semantics for overlapping register ranges.
-    for (uint32_t index = 0; index < resultCount; ++index)
+    for (uint32_t index = 0; index < actualResultCount; ++index)
         setobj2s(L, L->base + index, L->base + sourceRegister + index);
-    L->top = L->base + resultCount;
+    L->top = L->base + actualResultCount;
 }
 
 extern "C" uint32_t mc_luau_aot_v1_interrupt(lua_State *L, uint32_t pc) {
@@ -458,36 +475,50 @@ extern "C" void mc_luau_aot_v1_close_upvalues(lua_State *L, uint32_t firstRegist
         luaF_close(L, first);
 }
 
-extern "C" uint32_t mc_luau_aot_v1_call_fixed(lua_State *L, uint32_t functionRegister,
-                                               uint32_t parameterCount,
-                                               uint32_t resultCount) {
+extern "C" uint32_t mc_luau_aot_v1_call(lua_State *L, uint32_t functionRegister,
+                                         int32_t parameterCount, int32_t resultCount) {
     if (!L || !L->ci || !isLua(L->ci))
         luaG_runerror(L, "strict AOT call helper entered without an active Luau frame");
+    if (parameterCount < MC_LUAU_AOT_V1_MULTRET ||
+        resultCount < MC_LUAU_AOT_V1_MULTRET)
+        luaG_runerror(L, "strict AOT call rejected %d parameters and %d results", parameterCount,
+                      resultCount);
+
     Closure *caller = clvalue(L->ci->func);
     Proto *callerProto = caller->l.p;
-    if (functionRegister >= callerProto->maxstacksize ||
-        parameterCount >= uint32_t(callerProto->maxstacksize) - functionRegister ||
-        resultCount > uint32_t(callerProto->maxstacksize) - functionRegister)
-        luaG_runerror(L, "strict AOT fixed call exceeds the compiled caller frame");
+    if (functionRegister >= callerProto->maxstacksize)
+        luaG_runerror(L, "strict AOT call target is outside the compiled caller frame");
 
     StkId function = L->base + functionRegister;
+    if (parameterCount == MC_LUAU_AOT_V1_MULTRET) {
+        if (L->top < function + 1)
+            luaG_runerror(L, "strict AOT dynamic call starts above the live stack top");
+    } else if (uint32_t(parameterCount) >=
+               uint32_t(callerProto->maxstacksize) - functionRegister) {
+        luaG_runerror(L, "strict AOT fixed call arguments exceed the compiled caller frame");
+    }
+    if (resultCount != MC_LUAU_AOT_V1_MULTRET &&
+        uint32_t(resultCount) > uint32_t(callerProto->maxstacksize) - functionRegister)
+        luaG_runerror(L, "strict AOT fixed call results exceed the compiled caller frame");
+
     if (!ttisfunction(function) || clvalue(function)->isC)
-        luaG_runerror(L, "strict AOT fixed call requires a compiled Luau closure");
+        luaG_runerror(L, "strict AOT call requires a compiled Luau closure");
     Closure *callee = clvalue(function);
     const McLuauAotProtoV1 *metadata = callee->l.p
                                            ? static_cast<const McLuauAotProtoV1 *>(callee->l.p->execdata)
                                            : nullptr;
     if (!validAotProto(metadata))
-        luaG_runerror(L, "strict AOT fixed call rejected missing callee metadata");
-    if (metadata->is_vararg != 0 || callee->nupvalues != metadata->nups)
-        luaG_runerror(L, "strict AOT fixed call rejected callee parameter shape");
+        luaG_runerror(L, "strict AOT call rejected missing callee metadata");
+    if (callee->nupvalues != metadata->nups)
+        luaG_runerror(L, "strict AOT call rejected callee closure shape");
 
-    // luau_precall derives the argument count from L->top, fills missing declared parameters with
-    // nil, and leaves extra arguments outside a non-vararg callee's addressable frame. Materialize
-    // exactly the supplied fixed arguments; unused caller registers must not become accidental ones.
-    L->top = function + parameterCount + 1;
-    if (luau_precall(L, function, int(resultCount)) != PCRLUA)
-        luaG_runerror(L, "strict AOT fixed call rejected non-Luau callee dispatch");
+    // A dynamic call consumes the exact live range established by a preceding multi-return
+    // operation. Fixed calls cut L->top back to their declared arguments so unrelated registers do
+    // not become accidental arguments. luau_precall fills missing fixed parameters with nil.
+    if (parameterCount != MC_LUAU_AOT_V1_MULTRET)
+        L->top = function + parameterCount + 1;
+    if (luau_precall(L, function, resultCount) != PCRLUA)
+        luaG_runerror(L, "strict AOT call rejected non-Luau callee dispatch");
 
     const uint32_t status = metadata->entry(L, metadata);
     switch (status) {
@@ -501,6 +532,87 @@ extern "C" uint32_t mc_luau_aot_v1_call_fixed(lua_State *L, uint32_t functionReg
     default:
         luaG_runerror(L, "strict AOT nested function returned invalid status %u", status);
     }
+}
+
+extern "C" void mc_luau_aot_v1_prep_varargs(lua_State *L,
+                                              uint32_t fixedParameterCount) {
+    if (!L || !L->ci || !isLua(L->ci))
+        luaG_runerror(L, "strict AOT PREPVARARGS entered without an active Luau frame");
+
+    CallInfo *ci = L->ci;
+    Closure *closure = clvalue(ci->func);
+    Proto *proto = closure->l.p;
+    if (!proto->is_vararg || fixedParameterCount != proto->numparams ||
+        ci->base != ci->func + 1 || L->top < ci->base + fixedParameterCount)
+        luaG_runerror(L, "strict AOT PREPVARARGS rejected the active frame shape");
+
+    // Match LOP_PREPVARARGS: reserve the relocated frame first, then reload every stack pointer
+    // because luaD_checkstack may move the stack. The original argument range remains rooted.
+    luaD_checkstack(L, int(closure->stacksize) + int(fixedParameterCount));
+    ci = L->ci;
+    StkId fixed = ci->base;
+    StkId relocated = L->top;
+    for (uint32_t index = 0; index < fixedParameterCount; ++index) {
+        setobj2s(L, relocated + index, fixed + index);
+        setnilvalue(fixed + index);
+    }
+
+    ci->base = relocated;
+    ci->top = relocated + closure->stacksize;
+    L->base = relocated;
+    L->top = ci->top;
+}
+
+static uint32_t varargCount(lua_State *L, Proto *proto) {
+    ptrdiff_t count = L->base - L->ci->func - proto->numparams - 1;
+    if (count < 0 || uint64_t(count) > UINT32_MAX)
+        luaG_runerror(L, "strict AOT GETVARARGS rejected the active frame shape");
+    return uint32_t(count);
+}
+
+extern "C" void mc_luau_aot_v1_get_varargs_fixed(lua_State *L,
+                                                   uint32_t destinationRegister,
+                                                   uint32_t resultCount) {
+    if (!L || !L->ci || !isLua(L->ci))
+        luaG_runerror(L, "strict AOT GETVARARGS entered without an active Luau frame");
+
+    Closure *closure = clvalue(L->ci->func);
+    Proto *proto = closure->l.p;
+    if (!proto->is_vararg || destinationRegister > proto->maxstacksize ||
+        resultCount > uint32_t(proto->maxstacksize) - destinationRegister)
+        luaG_runerror(L, "strict AOT fixed GETVARARGS exceeds the compiled frame");
+
+    uint32_t count = varargCount(L, proto);
+    uint32_t copied = count < resultCount ? count : resultCount;
+    StkId source = L->base - count;
+    for (uint32_t index = 0; index < copied; ++index)
+        setobj2s(L, L->base + destinationRegister + index, source + index);
+    for (uint32_t index = copied; index < resultCount; ++index)
+        setnilvalue(L->base + destinationRegister + index);
+}
+
+extern "C" void mc_luau_aot_v1_get_varargs_multret(lua_State *L,
+                                                     uint32_t destinationRegister) {
+    if (!L || !L->ci || !isLua(L->ci))
+        luaG_runerror(L, "strict AOT GETVARARGS entered without an active Luau frame");
+
+    Closure *closure = clvalue(L->ci->func);
+    Proto *proto = closure->l.p;
+    if (!proto->is_vararg || destinationRegister > proto->maxstacksize)
+        luaG_runerror(L, "strict AOT dynamic GETVARARGS starts outside the compiled frame");
+
+    uint32_t count = varargCount(L, proto);
+    if (count > INT_MAX)
+        luaG_runerror(L, "strict AOT dynamic GETVARARGS count exceeds the runtime limit");
+
+    // Match LOP_GETVARARGS B=0. Stack growth can relocate both the vararg source and destination,
+    // so compute the count first and reload all pointers afterward.
+    luaD_checkstack(L, int(count));
+    StkId source = L->base - count;
+    StkId destination = L->base + destinationRegister;
+    for (uint32_t index = 0; index < count; ++index)
+        setobj2s(L, destination + index, source + index);
+    L->top = destination + count;
 }
 
 static void destroyAotProto(lua_State *, Proto *proto) {

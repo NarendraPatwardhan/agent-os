@@ -65,6 +65,17 @@ zig_library(
 )
 
 zig_library(
+    name = "vararg_forward_program",
+    import_name = "luau_aot_vararg_forward_program",
+    main = "vararg_forward_program_v1.zig",
+    visibility = [
+        "//memcontainers/programs/luau/aot/runtime/glue:__pkg__",
+        "//memcontainers/programs/luau/aot/runtime:__pkg__",
+    ],
+    deps = [":aot_runtime_abi"],
+)
+
+zig_library(
     name = "reference_capture_program",
     import_name = "luau_aot_reference_capture_program",
     main = "reference_capture_program_v1.zig",
@@ -96,6 +107,12 @@ filegroup(
 filegroup(
     name = "general_call_source",
     srcs = ["//memcontainers/programs/luau/aot/compiler/backend:general_call.luau"],
+    visibility = ["//memcontainers/images:__pkg__"],
+)
+
+filegroup(
+    name = "vararg_forward_source",
+    srcs = ["//memcontainers/programs/luau/aot/compiler/backend:vararg_forward.luau"],
     visibility = ["//memcontainers/images:__pkg__"],
 )
 
