@@ -15,7 +15,7 @@ defmodule AgentOS.Git.Connections do
   # Module attribute used at compile time; runtime MapSet from contract when available.
   @guest_secret_arg_keys AgentOS.Contracts.Git.guest_secret_arg_keys()
 
-  # GIT-024: bounded recursive scan (fail closed when either bound is exceeded).
+  # Bounded recursive scan; fail closed when either bound is exceeded.
   # Keep dual-host with JS `GUEST_SECRET_SCAN_MAX_*` in connections.ts.
   @guest_secret_scan_max_depth 8
   @guest_secret_scan_max_nodes 256
@@ -141,7 +141,7 @@ defmodule AgentOS.Git.Connections do
   True when guest args include a secret-bearing key (case-insensitive),
   recursively through nested maps and lists, with explicit depth and node-count
   bounds. Bound exceedance is fail-closed. Dual-host with JS
-  `guestArgsCarrySecrets` (GIT-024). Does not stringify-and-regex.
+  `guestArgsCarrySecrets`. Does not stringify-and-regex.
   """
   def guest_args_carry_secrets?(args) when is_map(args) do
     {status, _nodes} = scan_guest_value_for_secrets(args, 0, 0)

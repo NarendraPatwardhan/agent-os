@@ -196,12 +196,12 @@ async function main() {
     throw new Error("public locator + connection ref are not secrets");
   }
 
-  // GIT-024: recursive secret-key rejection (maps, arrays, case) with bounds.
+  // Recursive secret-key rejection across maps, arrays and case variants, with bounds.
   if (!guestArgsCarrySecrets({ url: "https://x/r.git", nested: { Token: "evil" } })) {
-    throw new Error("GIT-024: nested map case variant must reject");
+    throw new Error("nested map case variant must reject");
   }
   if (!guestArgsCarrySecrets({ url: "https://x/r.git", items: [{ password: "x" }] })) {
-    throw new Error("GIT-024: nested array secret key must reject");
+    throw new Error("nested array secret key must reject");
   }
   if (
     guestArgsCarrySecrets({
@@ -209,7 +209,7 @@ async function main() {
       meta: { headers: { "x-custom": "ok" }, note: "safe" },
     })
   ) {
-    throw new Error("GIT-024: safe nested body must not reject");
+    throw new Error("safe nested body must not reject");
   }
   // Excessive depth without secret keys → fail closed.
   {
@@ -218,7 +218,7 @@ async function main() {
       deep = { wrap: deep };
     }
     if (!guestArgsCarrySecrets(deep)) {
-      throw new Error("GIT-024: excessive depth must fail closed");
+      throw new Error("excessive depth must fail closed");
     }
   }
   // Excessive node count without secret keys → fail closed.
@@ -228,7 +228,7 @@ async function main() {
       wide[`k${i}`] = i;
     }
     if (!guestArgsCarrySecrets(wide)) {
-      throw new Error("GIT-024: excessive node count must fail closed");
+      throw new Error("excessive node count must fail closed");
     }
   }
   const nestedToken = resolveGitRemote(
@@ -240,7 +240,7 @@ async function main() {
     { connections: conns },
   );
   if (nestedToken.ok || !String(nestedToken.stderr).includes("auth secrets")) {
-    throw new Error(`GIT-024 nested auth must reject: ${JSON.stringify(nestedToken)}`);
+    throw new Error(`nested auth must reject: ${JSON.stringify(nestedToken)}`);
   }
   const guestToken = resolveGitRemote(
     {

@@ -118,7 +118,7 @@ export function createGitFsDriver(bridge: GitBridge, opts: GitFsDriverOptions = 
   }
 
   /**
-   * GIT-016: positive allowlist for synthetic `.git/**` (docs/git.md / SYSTEMS §11b).
+   * Positive allowlist for synthetic `.git/**` (docs/git.md / SYSTEMS §11b).
    * Unrecognized paths must not fall through to the physical engine filesystem.
    * Objects remain a dedicated ENOENT sentinel via {@link isObjectsPath}.
    */
@@ -324,7 +324,7 @@ export function createGitFsDriver(bridge: GitBridge, opts: GitFsDriverOptions = 
         if (isSyntheticGitDir(p)) {
           throw fsErr("EISDIR", "is a directory");
         }
-        // GIT-016: unrecognized `.git/**` never falls through to physical engine FS.
+        // Unrecognized `.git/**` never falls through to the physical engine FS.
         if (isGitMeta(p)) throw fsErr("ENOENT", p);
         const abs = safeExisting(p);
         const st = FS().lstat(abs);
@@ -371,7 +371,7 @@ export function createGitFsDriver(bridge: GitBridge, opts: GitFsDriverOptions = 
         if (p === ".git/HEAD") {
           return { kind: "file" as const, size: 32 };
         }
-        // GIT-016: positive allowlist — no physical `.git/**` projection.
+        // Positive allowlist: no physical `.git/**` projection.
         if (isGitMeta(p)) throw fsErr("ENOENT", p);
         const abs = safeExisting(p);
         const st = FS().lstat(abs);
@@ -427,7 +427,7 @@ export function createGitFsDriver(bridge: GitBridge, opts: GitFsDriverOptions = 
         if (p === ".git/refs") {
           return [];
         }
-        // GIT-016: readdir of non-allowlisted `.git/**` is ENOENT (not physical).
+        // readdir of non-allowlisted `.git/**` is ENOENT rather than physical access.
         if (isGitMeta(p)) throw fsErr("ENOENT", p);
         const abs = safeExisting(p);
         const st = FS().lstat(abs);

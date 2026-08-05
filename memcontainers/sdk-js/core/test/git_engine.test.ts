@@ -246,7 +246,7 @@ async function main() {
       }
     }
   }
-  // GIT-016: positive allowlist — direct open/stat of physical engine paths under
+  // Positive allowlist: direct open/stat of physical engine paths under
   // `.git/**` must fail closed (ENOENT/EACCES), not fall through to host ODB FS.
   // Directory-listing-only checks are insufficient.
   for (const forbidden of [
@@ -268,12 +268,12 @@ async function main() {
       try {
         if (op === "open") await driver.open(forbidden);
         else await driver.stat(forbidden);
-        throw new Error(`GIT-016: ${op} ${forbidden} must fail closed`);
+        throw new Error(`${op} ${forbidden} must fail closed`);
       } catch (e) {
         const code = (e as { code?: string }).code;
         if (code !== "ENOENT" && code !== "EACCES") {
           throw new Error(
-            `GIT-016: ${op} ${forbidden} expected ENOENT|EACCES, got ${String(code ?? e)}`,
+            `${op} ${forbidden} expected ENOENT|EACCES, got ${String(code ?? e)}`,
           );
         }
       }
@@ -372,7 +372,7 @@ async function main() {
     throw new Error("worktree open/read coherence failed");
   }
 
-  // GIT-002: MEMFS gitfs and direct engine ops reject a symlink in any
+  // MEMFS gitfs and direct engine ops reject a symlink in any
   // path component. The outside sentinel is never reachable through the mount.
   if (typeof fs.symlink !== "function") {
     throw new Error("Emscripten FS.symlink is required for containment regression");
@@ -638,7 +638,7 @@ async function main() {
     throw new Error("status default must be porcelain-v1, not human On branch");
   }
 
-  // GIT-009: snapshots restore committed, staged, dirty, and untracked coding state.
+  // Snapshots restore committed, staged, dirty, and untracked coding state.
   const dur = new MemoryDurable("rebind");
   const engDur = await GitEngine.load({ engine: engineTar(), durable: dur });
   let dr = await engDur.run({ op: "init" });

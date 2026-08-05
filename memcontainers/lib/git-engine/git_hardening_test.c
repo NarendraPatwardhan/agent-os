@@ -1,4 +1,4 @@
-/* Focused regressions for GIT-004, GIT-013, GIT-014 and GIT-021. */
+/* Focused regressions for sparse staging, fresh clones, file modes and rollback. */
 #include "git_engine.h"
 
 #include "git2.h"

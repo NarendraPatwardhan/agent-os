@@ -264,7 +264,7 @@ int main(void) {
 
     /* K17: no `.git/objects` façade — open/stat ENOENT; readdir .git omits objects. */
 
-    /* GIT-012: two writers interleave, then each reads its own token slot. */
+    /* Two writers interleave, then each reads its own token slot. */
     {
         const char *req_a = "{\"op\":\"status\",\"args\":{\"client_token\":\"client-a\"}}";
         const char *req_b = "{\"op\":\"status\",\"args\":{\"client_token\":\"client-b\"}}";
@@ -288,7 +288,7 @@ int main(void) {
             uint8_t *mout = NULL;
             if (!body || ge_mount_dispatch(e, body, blen, &mout, &mlen) != 0 || !mout || mlen < 4 ||
                 rd_i32(mout) != 0 || !strstr((char *)mout + 4, tokens[i])) {
-                fprintf(stderr, "GIT-012 token response mismatch for %s\n", tokens[i]);
+                fprintf(stderr, "token response mismatch for %s\n", tokens[i]);
                 free(body);
                 free(mout);
                 return 1;
@@ -313,7 +313,7 @@ int main(void) {
         mout = NULL;
         if (!body || ge_mount_dispatch(e, body, blen, &mout, &mlen) != 0 || !mout || mlen < 4 ||
             rd_i32(mout) != 0 || !strstr((char *)mout + 4, "agentos-git-engine")) {
-            fprintf(stderr, "GIT-012 reused token returned stale response\n");
+            fprintf(stderr, "reused token returned stale response\n");
             free(body);
             free(mout);
             return 1;
@@ -446,7 +446,7 @@ int main(void) {
         free(mout);
     }
 
-    /* GIT-016: positive allowlist — direct open/stat of physical `.git/**` paths
+    /* Positive allowlist: direct open/stat of physical `.git/**` paths
      * (config, index, logs, packed-refs, loose refs) must not fall through. */
     {
         const char *forbidden[] = {
@@ -464,11 +464,11 @@ int main(void) {
         for (int i = 0; forbidden[i]; i++) {
             size_t blen = 0;
             uint8_t *body = enc_open(forbidden[i], &blen);
-            if (expect_mount_status(e, body, blen, GE_TEST_ENOENT, "GIT-016 open"))
+            if (expect_mount_status(e, body, blen, GE_TEST_ENOENT, "synthetic git open"))
                 return 1;
             blen = 0;
             body = enc_stat(forbidden[i], &blen);
-            if (expect_mount_status(e, body, blen, GE_TEST_ENOENT, "GIT-016 stat"))
+            if (expect_mount_status(e, body, blen, GE_TEST_ENOENT, "synthetic git stat"))
                 return 1;
         }
         /* Allowlisted synthetic paths still succeed. */
@@ -479,7 +479,7 @@ int main(void) {
             size_t mlen = 0;
             if (!body || ge_mount_dispatch(e, body, blen, &mout, &mlen) != 0 || !mout || mlen < 4 ||
                 rd_i32(mout) != 0) {
-                fprintf(stderr, "GIT-016: open .git/HEAD must succeed\n");
+                fprintf(stderr, "open .git/HEAD must succeed\n");
                 free(body);
                 free(mout);
                 return 1;
@@ -494,7 +494,7 @@ int main(void) {
             size_t mlen = 0;
             if (!body || ge_mount_dispatch(e, body, blen, &mout, &mlen) != 0 || !mout || mlen < 4 ||
                 rd_i32(mout) != 0) {
-                fprintf(stderr, "GIT-016: stat .git/mc/ctl must succeed\n");
+                fprintf(stderr, "stat .git/mc/ctl must succeed\n");
                 free(body);
                 free(mout);
                 return 1;
@@ -504,7 +504,7 @@ int main(void) {
         }
     }
 
-    /* GIT-002: every real worktree operation fails closed when any path
+    /* Every real worktree operation fails closed when any path
      * component is a symlink. The outside sentinel must remain untouched. */
     {
         char outside_tmpl[] = "/tmp/ge-port-outside-XXXXXX";
@@ -565,7 +565,7 @@ int main(void) {
         rmdir(outside);
     }
 
-    /* GIT-017: a large file open is rejected without poisoning the engine. */
+    /* A large file open is rejected without poisoning the engine. */
     {
         char large[4096];
         snprintf(large, sizeof(large), "%s/large.bin", root);

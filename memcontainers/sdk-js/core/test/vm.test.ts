@@ -677,7 +677,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // GIT-020: a caller-declared generic mount must not collide with a git engine path.
+  // A caller-declared generic mount must not collide with a git engine path.
   // Silent skip of gitfs while retaining the engine is not valid mount policy.
   {
     const dummy: Driver = {
@@ -712,7 +712,7 @@ async function main(): Promise<void> {
       else throw e;
     }
     if (!collided) {
-      throw new Error("GIT-020: create must reject generic mount colliding with git path");
+      throw new Error("create must reject a generic mount colliding with a git path");
     }
 
     // Non-colliding declared mount remains compatible with a git engine mount.
@@ -728,7 +728,7 @@ async function main(): Promise<void> {
     try {
       await okVm.fs.stat("/workspace/repo/.git/mc/ctl");
       await okVm.fs.stat("/mnt/data");
-      console.log("phase: GIT-020 git mount collision reject + non-collision OK");
+      console.log("phase: git mount collision reject + non-collision OK");
     } finally {
       await okVm.close();
     }

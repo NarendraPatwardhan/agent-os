@@ -63,9 +63,9 @@ export interface ResolveRemoteOptions {
  */
 const GUEST_SECRET_ARG_KEYS = new Set(CONTRACT_GUEST_SECRET_KEYS.map((k) => k.toLowerCase()));
 
-/** GIT-024: max nesting depth for secret-key scan (fail closed when exceeded). */
+/** Maximum nesting depth for secret-key scanning; exceeding it fails closed. */
 const GUEST_SECRET_SCAN_MAX_DEPTH = 8;
-/** GIT-024: max object/array nodes visited (fail closed when exceeded). */
+/** Maximum object/array nodes visited; exceeding it fails closed. */
 const GUEST_SECRET_SCAN_MAX_NODES = 256;
 const MAX_CREDENTIAL_BYTES = 16 * 1024;
 const MAX_HEADER_NAME_BYTES = 256;

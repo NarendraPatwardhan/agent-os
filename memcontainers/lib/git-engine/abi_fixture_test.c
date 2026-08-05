@@ -744,7 +744,7 @@ static int response_or_stream_contains(ge_engine *e, const char *resp, const cha
     return found;
 }
 
-/* GIT-003: large outputs remain complete through the bounded stream path. */
+/* Large outputs remain complete through the bounded stream path. */
 static int test_large_ref_outputs(ge_engine *e) {
     char req[2048];
     char last_branch[256] = "";
@@ -1350,11 +1350,11 @@ int main(void) {
     if (test_client_token(e))
         goto fail;
 
-    /* GIT-015: exact schema, scoped members, duplicate/trailing/escape rejection. */
+    /* Exact schema, scoped members, duplicate/trailing/escape rejection. */
     if (test_strict_run_json(e))
         goto fail;
 
-    /* GIT-003: grow beyond every former fixed ref/remote output buffer. */
+    /* Grow beyond every former fixed ref/remote output buffer. */
     if (test_large_ref_outputs(e))
         goto fail;
 

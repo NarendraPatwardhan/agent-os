@@ -3064,7 +3064,7 @@ defmodule AgentOS.Git.OrchestratorTest do
                auth: %{kind: :none}
              )
 
-    # GIT-024: nested map / list / case-variant secret keys fail closed.
+    # Nested map, list and case-variant secret keys fail closed.
     assert Connections.guest_args_carry_secrets?(%{
              "url" => "https://example.com/r.git",
              "nested" => %{"Token" => "evil"}

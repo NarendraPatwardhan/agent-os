@@ -910,7 +910,7 @@ int ge_mount_dispatch(ge_engine *e, const uint8_t *body, size_t body_len, uint8_
         return (*out = fail_status(GE_EACCES, out_len)) ? 0 : -1;
     }
 
-    /* GIT-016: positive allowlist. Unrecognized `.git/**` never falls through to
+    /* Positive allowlist. Unrecognized `.git/**` never falls through to
      * the physical engine filesystem (config, index, logs, packed-refs, loose refs). */
     if (is_git_meta(rel)) {
         if (op == MOUNT_OP_WRITE || op == MOUNT_OP_MKDIR || op == MOUNT_OP_UNLINK ||

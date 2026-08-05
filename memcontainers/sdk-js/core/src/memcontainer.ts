@@ -199,7 +199,7 @@ function assertUniqueAbsoluteGitMounts(mounts: GitMountSpec[]): void {
 }
 
 /**
- * GIT-020: reject a caller-declared generic mount whose path collides with any
+ * Reject a caller-declared generic mount whose path collides with any
  * configured git engine mount. Silent skip of gitfs while retaining the engine
  * is not valid mount policy.
  */
@@ -253,7 +253,7 @@ async function bootstrapHostGit(
 
   const mountSpecs = gitMountSpecsFromCreate(gitCfg);
   assertUniqueAbsoluteGitMounts(mountSpecs);
-  // GIT-020: fail closed before engine load when opts.mounts shadows a git path.
+  // Fail closed before engine load when opts.mounts shadows a git path.
   assertNoDeclaredGitPathCollisions(mountSpecs, opts.mounts);
 
   // Durable is opt-in only (A8: no silent ODB). Per-mount ids via durableIdForMount.
