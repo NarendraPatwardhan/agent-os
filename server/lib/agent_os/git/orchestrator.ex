@@ -139,6 +139,31 @@ defmodule AgentOS.Git.Orchestrator do
   end
 
   defp clone(engine_pid, req, opts) do
+    case clone_begin(engine_pid) do
+      :ok ->
+        try do
+          result = clone_reserved(engine_pid, req, opts)
+
+          case clone_end(engine_pid) do
+            :ok -> result
+            error -> map_remote_error_if_needed(error, :clone)
+          end
+        rescue
+          error ->
+            _ = clone_end(engine_pid)
+            reraise error, __STACKTRACE__
+        catch
+          kind, reason ->
+            _ = clone_end(engine_pid)
+            :erlang.raise(kind, reason, __STACKTRACE__)
+        end
+
+      error ->
+        map_remote_error_if_needed(error, :clone)
+    end
+  end
+
+  defp clone_reserved(engine_pid, req, opts) do
     result =
       with {:ok, binding} <- resolve_binding(engine_pid, req, opts),
            opts <- apply_binding(opts, binding),
@@ -169,6 +194,7 @@ defmodule AgentOS.Git.Orchestrator do
   # Nested worktree files sit under the super root so gitfs projects them.
   defp submodule(engine_pid, req, opts) do
     args = args_of(req)
+
     action =
       case Map.get(args, "action") || Map.get(args, :action) do
         a when is_binary(a) and a != "" -> String.downcase(a)
@@ -186,8 +212,7 @@ defmodule AgentOS.Git.Orchestrator do
         submodule_update(engine_pid, req, opts)
 
       true ->
-        {:ok,
-         response(false, 2, "", "git: submodule action not supported via orch: #{action}\n")}
+        {:ok, response(false, 2, "", "git: submodule action not supported via orch: #{action}\n")}
     end
   end
 
@@ -329,8 +354,7 @@ defmodule AgentOS.Git.Orchestrator do
             try do
               clone_req = %{
                 "op" => "clone",
-                "args" =>
-                  maybe_put_ref(%{"url" => String.trim(url)}, hash)
+                "args" => maybe_put_ref(%{"url" => String.trim(url)}, hash)
               }
 
               case clone(nested_pid, clone_req, opts) do
@@ -657,8 +681,7 @@ defmodule AgentOS.Git.Orchestrator do
       else
         msg = status[:message] || status["message"] || "unknown"
 
-        {:ok,
-         response(false, 1, "", "git: remote rejected push: #{msg}\n")}
+        {:ok, response(false, 1, "", "git: remote rejected push: #{msg}\n")}
       end
     else
       {:error, :push_blocked} ->
@@ -1098,6 +1121,22 @@ defmodule AgentOS.Git.Orchestrator do
   end
 
   # ── apply via Port ─────────────────────────────────────────────────────────
+
+  # Shared engine contract: atomically reserve a genuinely fresh empty root
+  # before list-refs/pack import, then release the control lock on every exit.
+  defp clone_begin(pid) do
+    case GitEngine.run(pid, %{"op" => "clone.begin"}) do
+      {:ok, m} -> if ok?(m), do: :ok, else: {:error, m}
+      err -> err
+    end
+  end
+
+  defp clone_end(pid) do
+    case GitEngine.run(pid, %{"op" => "clone.end"}) do
+      {:ok, m} -> if ok?(m), do: :ok, else: {:error, m}
+      err -> err
+    end
+  end
 
   defp apply_init(pid) do
     case GitEngine.run(pid, %{"op" => "init"}) do

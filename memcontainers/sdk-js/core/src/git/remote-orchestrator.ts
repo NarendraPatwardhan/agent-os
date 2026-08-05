@@ -76,11 +76,7 @@ import {
   type ImportPackOptions,
   type PackCache,
 } from "./pack-cache.js";
-import {
-  recordRemoteResult,
-  redactOrigin,
-  type RemoteResultMeta,
-} from "./metrics.js";
+import { recordRemoteResult, redactOrigin, type RemoteResultMeta } from "./metrics.js";
 
 // ---------------------------------------------------------------------------
 // Options & module-level helpers
@@ -180,10 +176,7 @@ function filterOf(args: Record<string, unknown>): string | undefined {
 const ZERO_OID = "0000000000000000000000000000000000000000";
 
 /** Normalize delete target names to full refs (refs/heads/…). */
-function deleteRefNames(
-  args: Record<string, unknown>,
-  prepared: PushCommand[],
-): string[] | null {
+function deleteRefNames(args: Record<string, unknown>, prepared: PushCommand[]): string[] | null {
   const del = args.delete;
   if (del === undefined || del === false || del === null) return null;
   const toFull = (n: string) =>
@@ -247,18 +240,14 @@ export class GitRemoteOrchestrator {
     this.readOnly = !!opts.readOnly;
     this.traceEnabled =
       !!opts.traceSteps ||
-      (typeof process !== "undefined" &&
-        process.env?.MC_GIT_ORCH_TRACE === "1");
+      (typeof process !== "undefined" && process.env?.MC_GIT_ORCH_TRACE === "1");
     this.onPushApproval = opts.onPushApproval;
     this.buildPushPack = opts.buildPushPack;
     // null = explicitly off; undefined = no cache on direct construction.
     this.packCache = opts.packCache === null ? undefined : (opts.packCache ?? undefined);
     // Prefer explicit orch opts; else inherit engine load-time cone (multi-mount).
-    const coneSrc =
-      opts.sparseCone !== undefined ? opts.sparseCone : (engine.sparseCone ?? []);
-    this.sparseCone = coneSrc
-      .map((p) => p.replace(/^\/+/, "").replace(/\/+$/, ""))
-      .filter(Boolean);
+    const coneSrc = opts.sparseCone !== undefined ? opts.sparseCone : (engine.sparseCone ?? []);
+    this.sparseCone = coneSrc.map((p) => p.replace(/^\/+/, "").replace(/\/+$/, "")).filter(Boolean);
     this.importPackOpts = {
       cache: this.packCache ?? opts.importPack?.cache,
       maxPackBytes: opts.importPack?.maxPackBytes,
@@ -303,10 +292,7 @@ export class GitRemoteOrchestrator {
     auth: import("../types.js").ConnectionAuth | undefined,
     filter?: string,
     streamIntoEngine = false,
-  ): Promise<
-    | { pack: Uint8Array; fromTransport: boolean; imported: boolean }
-    | { error: string }
-  > {
+  ): Promise<{ pack: Uint8Array; fromTransport: boolean; imported: boolean } | { error: string }> {
     const packKey = uploadPackCacheKey({ url, wants, haves, depth, filter });
     if (this.packCache?.getByKey) {
       const dig = await this.packCache.getByKey(packKey);
@@ -318,23 +304,15 @@ export class GitRemoteOrchestrator {
     const max = this.maxPackBytes();
     try {
       let streamed = false;
-      const pack = await this.http.fetchPacks(
-        url,
-        wants,
-        haves,
-        depth,
-        auth,
-        filter,
-        {
-          maxBytes: max,
-          onPackChunk: streamIntoEngine
-            ? async (chunk) => {
-                streamed = true;
-                await this.engine.importPack(chunk, { final: false });
-              }
-            : undefined,
-        },
-      );
+      const pack = await this.http.fetchPacks(url, wants, haves, depth, auth, filter, {
+        maxBytes: max,
+        onPackChunk: streamIntoEngine
+          ? async (chunk) => {
+              streamed = true;
+              await this.engine.importPack(chunk, { final: false });
+            }
+          : undefined,
+      });
       if (!pack || pack.byteLength === 0) {
         return { error: stderrLine("empty_pack", "from remote") };
       }
@@ -380,10 +358,7 @@ export class GitRemoteOrchestrator {
   }
 
   /** Pick advertised tip: exact ref/hash, else HEAD → main/master → first head. */
-  private pickTip(
-    refs: RefAdvertisement[],
-    wantRef?: string,
-  ): RefAdvertisement | null {
+  private pickTip(refs: RefAdvertisement[], wantRef?: string): RefAdvertisement | null {
     if (wantRef) {
       const exact =
         refs.find((r) => r.name === wantRef) ||
@@ -519,17 +494,12 @@ export class GitRemoteOrchestrator {
    * `remote.<name>.agentos`). For fetch/pull/push with no url/remote/connection,
    * default to `origin` so `git pull` works without re-passing the URL.
    */
-  private async fillRemoteArgsFromConfig(
-    op: string,
-    args: Record<string, unknown>,
-  ): Promise<void> {
+  private async fillRemoteArgsFromConfig(op: string, args: Record<string, unknown>): Promise<void> {
     const hasUrl = typeof args.url === "string" && args.url.trim().length > 0;
     if (hasUrl) return;
 
     let remoteName =
-      typeof args.remote === "string" && args.remote.trim()
-        ? args.remote.trim()
-        : undefined;
+      typeof args.remote === "string" && args.remote.trim() ? args.remote.trim() : undefined;
 
     if (
       !remoteName &&
@@ -547,11 +517,7 @@ export class GitRemoteOrchestrator {
       const url = await this.configGet(`remote.${remoteName}.url`);
       if (url) args.url = url;
     }
-    if (
-      !args.connection &&
-      !args.agentos &&
-      !this.remoteConnections[remoteName]
-    ) {
+    if (!args.connection && !args.agentos && !this.remoteConnections[remoteName]) {
       const agentos = await this.configGet(`remote.${remoteName}.agentos`);
       if (agentos) args.connection = agentos;
     }
@@ -643,17 +609,11 @@ export class GitRemoteOrchestrator {
    * empty `connection.origins` in resolveGitRemote; optional allowOrigins
    * further intersects when set.
    */
-  private checkOriginPolicy(binding: {
-    url: string;
-    connectionRef?: string;
-  }): GitResponse | null {
+  private checkOriginPolicy(binding: { url: string; connectionRef?: string }): GitResponse | null {
     const url = binding.url;
     this.noteMetricsOrigin(url);
     if (binding.connectionRef) {
-      if (
-        this.allowOrigins.length > 0 &&
-        !originAllowed(this.allowOrigins, url)
-      ) {
+      if (this.allowOrigins.length > 0 && !originAllowed(this.allowOrigins, url)) {
         this.metricsAllowlistDeny = true;
         return {
           ok: false,
@@ -757,10 +717,7 @@ export class GitRemoteOrchestrator {
    * After fetch.apply: fast-forward current branch to remote tip (pull only).
    * Diverged histories fail closed with `not fast-forward` (R34).
    */
-  private async fastForwardPull(
-    tip: RefAdvertisement,
-    tipHash: string,
-  ): Promise<GitResponse> {
+  private async fastForwardPull(tip: RefAdvertisement, tipHash: string): Promise<GitResponse> {
     const head = await this.engine.run({
       op: "rev-parse",
       args: { rev: "HEAD" },
@@ -978,13 +935,7 @@ export class GitRemoteOrchestrator {
       // When cloning a non-advertised gitlink, ensure want includes it.
       if (wantHash && !wants.includes(wantHash)) wants.unshift(wantHash);
 
-      const resolvedPack = await this.resolvePack(
-        binding.url,
-        wants,
-        [],
-        1,
-        binding.auth,
-      );
+      const resolvedPack = await this.resolvePack(binding.url, wants, [], 1, binding.auth);
       if ("error" in resolvedPack) {
         return {
           ok: false,
@@ -1042,7 +993,8 @@ export class GitRemoteOrchestrator {
       let eng = 0;
       try {
         eng = bridge.openAt(abs);
-        // ge_open opens existing repo if present; only init when empty.
+        // A submodule update may target an already initialized nested repo.
+        // This is not the top-level clone operation's fresh-root contract.
         const st = bridge.runAt(eng, { op: "status" });
         if (!st.ok) {
           const init = bridge.runAt(eng, { op: "init" });
@@ -1067,8 +1019,8 @@ export class GitRemoteOrchestrator {
 
         const refName =
           head.name === "HEAD"
-            ? refs.find((r) => r.hash === head.hash && r.name.startsWith("refs/"))
-                ?.name ?? "refs/heads/master"
+            ? (refs.find((r) => r.hash === head.hash && r.name.startsWith("refs/"))?.name ??
+              "refs/heads/master")
             : head.name;
 
         const imp = bridge.runAt(eng, {
@@ -1142,10 +1094,25 @@ export class GitRemoteOrchestrator {
   // --- Clone ---------------------------------------------------------------
 
   /**
-   * Fresh repo: list-refs → pack (buffered) → init → import → clone.apply →
-   * tracking config + optional sparse cone. No re-use of an existing object DB.
+   * Fresh repo: reserve fresh root → resolve + list-refs → pack (buffered) →
+   * init → import → clone.apply → tracking config + optional sparse cone. No
+   * re-use of an existing object DB.
    */
   private async clone(req: GitRequest): Promise<GitResponse> {
+    const begin = await this.engine.run({ op: "clone.begin" });
+    if (!begin.ok) return begin;
+    let response: GitResponse;
+    try {
+      response = await this.cloneReserved(req);
+    } catch (error) {
+      await this.engine.run({ op: "clone.end" });
+      throw error;
+    }
+    const end = await this.engine.run({ op: "clone.end" });
+    return end.ok ? response : end;
+  }
+
+  private async cloneReserved(req: GitRequest): Promise<GitResponse> {
     const resolved = await this.resolve(req);
     if (!resolved.ok) {
       return { ok: false, code: resolved.code, stdout: "", stderr: resolved.stderr };
@@ -1234,8 +1201,8 @@ export class GitRemoteOrchestrator {
 
     const refName =
       head.name === "HEAD"
-        ? refs.find((r) => r.hash === head.hash && r.name.startsWith("refs/"))
-            ?.name ?? "refs/heads/master"
+        ? (refs.find((r) => r.hash === head.hash && r.name.startsWith("refs/"))?.name ??
+          "refs/heads/master")
         : head.name;
 
     const impErr = await this.importAllHeads(refs, refName, head.hash);
@@ -1248,11 +1215,7 @@ export class GitRemoteOrchestrator {
     if (!apply.ok) return apply;
 
     // Remote + branch tracking so pull works without re-passing URL.
-    const trackErr = await this.configureCloneRemote(
-      binding,
-      refName,
-      head.hash,
-    );
+    const trackErr = await this.configureCloneRemote(binding, refName, head.hash);
     if (trackErr) return trackErr;
 
     const sparseErr = await this.applySparseCone(refName);
@@ -1272,10 +1235,7 @@ export class GitRemoteOrchestrator {
    * Incremental path: no re-init. Import packs then `fetch.apply`.
    * Pull = fetch + local FF-only to remote tip (R34).
    */
-  private async fetch(
-    req: GitRequest,
-    opts: { pull?: boolean } = {},
-  ): Promise<GitResponse> {
+  private async fetch(req: GitRequest, opts: { pull?: boolean } = {}): Promise<GitResponse> {
     const pull = !!opts.pull;
     const resolved = await this.resolve(req);
     if (!resolved.ok) {
@@ -1383,8 +1343,7 @@ export class GitRemoteOrchestrator {
 
     const refName =
       tip.name === "HEAD"
-        ? refs.find((r) => r.hash === tip.hash && r.name.startsWith("refs/"))
-            ?.name ?? tip.name
+        ? (refs.find((r) => r.hash === tip.hash && r.name.startsWith("refs/"))?.name ?? tip.name)
         : tip.name;
 
     const impErr = await this.importAllHeads(refs, refName, tip.hash);
@@ -1480,9 +1439,7 @@ export class GitRemoteOrchestrator {
         const heads = tips.filter((t) => t.name?.startsWith("refs/heads/"));
         const use = heads.length ? heads : tips;
         commands = use.map((t) => ({
-          oldHash:
-            remoteByName.get(t.name) ??
-            "0000000000000000000000000000000000000000",
+          oldHash: remoteByName.get(t.name) ?? "0000000000000000000000000000000000000000",
           newHash: t.hash,
           name: t.name,
         }));
@@ -1665,12 +1622,7 @@ export interface GitEngineMountMap {
 export type GitHostCallEngines = GitEngine | GitEngineMountMap;
 
 function isGitEngineMountMap(v: GitHostCallEngines): v is GitEngineMountMap {
-  return (
-    !!v &&
-    typeof v === "object" &&
-    "engines" in v &&
-    (v as GitEngineMountMap).engines != null
-  );
+  return !!v && typeof v === "object" && "engines" in v && (v as GitEngineMountMap).engines != null;
 }
 
 /** Normalize engines input into a Map + optional default mount. */
@@ -1686,9 +1638,7 @@ export function normalizeGitEngineMap(input: GitHostCallEngines): {
   }
   const raw = input.engines;
   const engines =
-    raw instanceof Map
-      ? new Map(raw)
-      : new Map(Object.entries(raw as Record<string, GitEngine>));
+    raw instanceof Map ? new Map(raw) : new Map(Object.entries(raw as Record<string, GitEngine>));
   let defaultMount = input.defaultMount;
   if (defaultMount === undefined && engines.size === 1) {
     defaultMount = engines.keys().next().value as string;
@@ -1772,8 +1722,7 @@ export function gitHostCallHandler(
   const raw = opts?.packCache;
   // undefined → productDefaultPackCache (fresh Memory unless SHARED=1);
   // null → disabled; explicit PackCache → caller owns lifecycle.
-  const packCache =
-    raw === null ? undefined : (raw ?? productDefaultPackCache());
+  const packCache = raw === null ? undefined : (raw ?? productDefaultPackCache());
   const { engines, defaultMount } = normalizeGitEngineMap(engineOrMap);
 
   // One orchestrator per engine — never share mutable orch state across mounts.

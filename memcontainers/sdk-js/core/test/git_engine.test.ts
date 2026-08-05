@@ -419,15 +419,30 @@ async function main() {
   }
 
   // P2.5: cone-only sparse projection via asMountDriver (not full sparse parity).
-  await eng.run({
-    op: "write",
-    args: { path: "keep/a.txt", content: "keep\n" },
+  // Use a clean, committed engine for the real sparse-set contract.
+  const sparseEng = await GitEngine.load({ engine: engineTar() });
+  let sparseR = await sparseEng.run({ op: "init" });
+  if (!sparseR.ok) throw new Error("sparse init: " + JSON.stringify(sparseR));
+  for (const [path, content] of [
+    ["keep/a.txt", "keep\n"],
+    ["drop/b.txt", "drop\n"],
+  ] as const) {
+    sparseR = await sparseEng.run({ op: "write", args: { path, content } });
+    if (!sparseR.ok) throw new Error("sparse write " + path + ": " + JSON.stringify(sparseR));
+  }
+  sparseR = await sparseEng.run({ op: "add", args: { all: true } });
+  if (!sparseR.ok) throw new Error("sparse add: " + JSON.stringify(sparseR));
+  sparseR = await sparseEng.run({
+    op: "commit",
+    args: {
+      message: "sparse baseline",
+      name: "Sparse",
+      email: "sparse@test",
+      when_unix: 1_700_000_400,
+    },
   });
-  await eng.run({
-    op: "write",
-    args: { path: "drop/b.txt", content: "drop\n" },
-  });
-  const coneDriver = eng.asMountDriver({ sparseCone: ["keep"] });
+  if (!sparseR.ok) throw new Error("sparse commit: " + JSON.stringify(sparseR));
+  const coneDriver = sparseEng.asMountDriver({ sparseCone: ["keep"] });
   const coneRoot = await coneDriver.readdir("/");
   if (!coneRoot.some((e) => e.name === "keep")) {
     throw new Error(`cone readdir missing keep: ${JSON.stringify(coneRoot)}`);
@@ -439,18 +454,48 @@ async function main() {
   if (new TextDecoder().decode(keep) !== "keep\n") {
     throw new Error("in-cone open failed");
   }
-  fs.mkdir("/outside-sparse");
-  fs.writeFile("/outside-sparse/sentinel.txt", "safe\n");
-  fs.symlink!("/outside-sparse", `${eng.bridge.workRoot}/drop/outside`);
+  const sparseFs = sparseEng.bridge.FS;
   // Engine sparse-set: multi-pattern + basic negation (not full sparse language).
-  const ss = await eng.run({
+  const ss = await sparseEng.run({
     op: "sparse-set",
     args: { patterns: ["keep", "!drop"] },
   });
   if (!ss.ok) {
-    throw new Error(`sparse-set: ${JSON.stringify(ss)}`);
+    throw new Error("sparse-set: " + JSON.stringify(ss));
   }
-  const sparseSentinel = fs.readFile("/outside-sparse/sentinel.txt");
+  if (sparseFs.analyzePath!(sparseEng.bridge.abs("drop")).exists) {
+    throw new Error("sparse-set left the out-of-cone directory materialized");
+  }
+  // Retargeting a clean cone restores newly included files before pruning the
+  // previous cone, including in the Emscripten runner.
+  const retarget = await sparseEng.run({
+    op: "sparse-set",
+    args: { patterns: ["drop"] },
+  });
+  if (
+    !retarget.ok ||
+    sparseFs.analyzePath!(sparseEng.bridge.abs("keep")).exists ||
+    !sparseFs.analyzePath!(sparseEng.bridge.abs("drop/b.txt")).exists
+  ) {
+    throw new Error("sparse retarget failed: " + JSON.stringify(retarget));
+  }
+  const retargetBack = await sparseEng.run({
+    op: "sparse-set",
+    args: { patterns: ["keep"] },
+  });
+  if (!retargetBack.ok) {
+    throw new Error("sparse retarget back failed: " + JSON.stringify(retargetBack));
+  }
+  sparseFs.mkdir("/outside-sparse");
+  sparseFs.writeFile("/outside-sparse/sentinel.txt", "safe\n");
+  sparseFs.mkdir(sparseEng.bridge.abs("drop"));
+  sparseFs.symlink!("/outside-sparse", sparseEng.bridge.workRoot + "/drop/outside");
+  // A dirty worktree must be rejected before any checkout/pruning.
+  const dirtySparse = await sparseEng.run({ op: "sparse-disable" });
+  if (dirtySparse.ok || !String(dirtySparse.stderr || "").includes("clean")) {
+    throw new Error("dirty sparse-set must fail closed: " + JSON.stringify(dirtySparse));
+  }
+  const sparseSentinel = sparseFs.readFile("/outside-sparse/sentinel.txt");
   const sparseText =
     sparseSentinel instanceof Uint8Array
       ? new TextDecoder().decode(sparseSentinel)
@@ -458,6 +503,11 @@ async function main() {
   if (sparseText !== "safe\n") {
     throw new Error("sparse prune followed an out-of-cone symlink");
   }
+  sparseFs.unlink(sparseEng.bridge.workRoot + "/drop/outside");
+  sparseFs.rmdir!(sparseEng.bridge.abs("drop"));
+  sparseFs.unlink("/outside-sparse/sentinel.txt");
+  sparseFs.rmdir!("/outside-sparse");
+  await sparseEng.close();
   // Porcelain-v1 status (default): untracked as ?? when present; staged XY form.
   const stPorcelain = await eng.run({ op: "status" });
   if (!stPorcelain.ok) {

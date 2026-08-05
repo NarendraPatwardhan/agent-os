@@ -83,7 +83,9 @@ defmodule AgentOS.Git.OrchestratorTest do
   test "request_origin accepts http(s) and rejects userinfo / bad scheme / no host" do
     assert {:ok, "https://example.com"} = SmartHttp.request_origin("https://example.com/repo.git")
     assert {:ok, "http://example.com"} = SmartHttp.request_origin("http://EXAMPLE.com:80/x")
-    assert {:ok, "https://example.com:8443"} = SmartHttp.request_origin("https://example.com:8443/")
+
+    assert {:ok, "https://example.com:8443"} =
+             SmartHttp.request_origin("https://example.com:8443/")
 
     assert :error = SmartHttp.request_origin("https://user:pass@example.com/repo.git")
     assert :error = SmartHttp.request_origin("git://example.com/repo.git")
@@ -426,6 +428,122 @@ defmodule AgentOS.Git.OrchestratorTest do
   # ── Orchestrator security gates ────────────────────────────────────────────
 
   @tag timeout: 30_000
+  test "clone preflight rejects non-fresh roots before transport and accepts fresh roots" do
+    path = engine_path()
+
+    fresh_root =
+      Path.join(
+        System.tmp_dir!(),
+        "orch-preflight-fresh-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    file_root =
+      Path.join(
+        System.tmp_dir!(),
+        "orch-preflight-file-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    repo_root =
+      Path.join(
+        System.tmp_dir!(),
+        "orch-preflight-repo-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.mkdir_p!(fresh_root)
+    File.mkdir_p!(file_root)
+    File.mkdir_p!(repo_root)
+    File.write!(Path.join(file_root, "marker.txt"), "marker\n")
+
+    try do
+      assert {:ok, repo_pid} = GitEngine.start(executable: path, root: repo_root)
+      assert {:ok, init} = GitEngine.run(repo_pid, %{"op" => "init"})
+
+      assert init["ok"] == true or
+               (is_binary(Map.get(init, "raw")) and init["raw"] =~ "\"ok\":true")
+
+      assert {:ok, _} =
+               GitEngine.run(repo_pid, %{
+                 "op" => "write",
+                 "args" => %{"path" => "tracked.txt", "content" => "tracked\n"}
+               })
+
+      assert {:ok, _} =
+               GitEngine.run(repo_pid, %{"op" => "add", "args" => %{"path" => "tracked.txt"}})
+
+      assert {:ok, _} =
+               GitEngine.run(repo_pid, %{
+                 "op" => "commit",
+                 "args" => %{
+                   "message" => "preflight repo",
+                   "name" => "Hardening",
+                   "email" => "hardening@test",
+                   "when_unix" => 1_700_000_500
+                 }
+               })
+
+      :ok = GitEngine.stop(repo_pid)
+
+      dialed = :atomics.new(1, signed: false)
+
+      transport = fn
+        :list_refs, {_url, _opts} ->
+          :atomics.add(dialed, 1, 1)
+          {:ok, [%{name: "refs/heads/main", hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}
+
+        :fetch_packs, {_url, _want, _have, _opts} ->
+          :atomics.add(dialed, 1, 1)
+          {:ok, <<>>}
+      end
+
+      opts = [transport: transport, allowed_origins: [@fixture_origin]]
+
+      for {root, needle} <- [{file_root, "fresh"}, {repo_root, "fresh"}] do
+        assert {:ok, pid} = GitEngine.start(executable: path, root: root)
+        assert {:ok, preflight} = GitEngine.run(pid, %{"op" => "clone.preflight"})
+        refute preflight["ok"] == true
+
+        assert {:ok, json} =
+                 Orchestrator.run(
+                   pid,
+                   ~s({"op":"clone","args":{"url":"#{@fixture_url}"}}),
+                   opts
+                 )
+
+        assert json =~ "\"ok\":false" or json =~ ~s("ok":false)
+        assert json =~ needle
+        assert :atomics.get(dialed, 1) == 0
+        :ok = GitEngine.stop(pid)
+      end
+
+      assert {:ok, fresh_pid} = GitEngine.start(executable: path, root: fresh_root)
+
+      assert {:ok, fresh_preflight} =
+               GitEngine.run(fresh_pid, %{"op" => "clone.preflight"})
+
+      assert fresh_preflight["ok"] == true or
+               (is_binary(Map.get(fresh_preflight, "raw")) and
+                  fresh_preflight["raw"] =~ "\"ok\":true")
+
+      assert {:ok, fresh_json} =
+               Orchestrator.run(
+                 fresh_pid,
+                 ~s({"op":"clone","args":{"url":"#{@fixture_url}"}}),
+                 opts
+               )
+
+      assert fresh_json =~ "empty pack"
+      assert :atomics.get(dialed, 1) == 2
+      assert {:ok, released} = GitEngine.run(fresh_pid, %{"op" => "clone.preflight"})
+      assert released["ok"] == true
+      :ok = GitEngine.stop(fresh_pid)
+    after
+      File.rm_rf(fresh_root)
+      File.rm_rf(file_root)
+      File.rm_rf(repo_root)
+    end
+  end
+
+  @tag timeout: 30_000
   test "origin not allowlisted fails closed" do
     path = engine_path()
     assert {:ok, pid} = GitEngine.start(executable: path)
@@ -555,7 +673,7 @@ defmodule AgentOS.Git.OrchestratorTest do
 
     pack = minimal_pack_bytes()
     assert byte_size(pack) > 0
-    assert match?(<< "PACK", _::binary >>, pack)
+    assert match?(<<"PACK", _::binary>>, pack)
 
     assert {:ok, json} =
              Orchestrator.run(
@@ -609,7 +727,13 @@ defmodule AgentOS.Git.OrchestratorTest do
     else
       pack = File.read!(pack_path)
       tip = File.read!(tip_path) |> String.trim()
-      root = Path.join(System.tmp_dir!(), "orch-pull-" <> Integer.to_string(System.unique_integer([:positive])))
+
+      root =
+        Path.join(
+          System.tmp_dir!(),
+          "orch-pull-" <> Integer.to_string(System.unique_integer([:positive]))
+        )
+
       File.mkdir_p!(root)
 
       try do
@@ -799,6 +923,7 @@ defmodule AgentOS.Git.OrchestratorTest do
   @tag timeout: 60_000
   test "push with local commit builds PACK and posts via fixture transport" do
     path = engine_path()
+
     root =
       Path.join(
         System.tmp_dir!(),
@@ -809,7 +934,9 @@ defmodule AgentOS.Git.OrchestratorTest do
     assert {:ok, pid} = GitEngine.start(executable: path, root: root)
 
     assert {:ok, init} = GitEngine.run(pid, %{"op" => "init"})
-    assert init["ok"] == true or (is_binary(Map.get(init, "raw")) and init["raw"] =~ "\"ok\":true")
+
+    assert init["ok"] == true or
+             (is_binary(Map.get(init, "raw")) and init["raw"] =~ "\"ok\":true")
 
     assert {:ok, _} =
              GitEngine.run(pid, %{
@@ -917,16 +1044,22 @@ defmodule AgentOS.Git.OrchestratorTest do
   end
 
   test "parse_receive_status maps unpack/ng failures" do
-    assert %{ok: true} = SmartHttp.parse_receive_status("000eunpack ok\n0017ok refs/heads/main\n0000")
+    assert %{ok: true} =
+             SmartHttp.parse_receive_status("000eunpack ok\n0017ok refs/heads/main\n0000")
+
     assert %{ok: false, message: msg} = SmartHttp.parse_receive_status("unpack error bad\n")
     assert msg =~ "unpack"
-    assert %{ok: false, message: ng} = SmartHttp.parse_receive_status("ng refs/heads/main non-fast-forward\n")
+
+    assert %{ok: false, message: ng} =
+             SmartHttp.parse_receive_status("ng refs/heads/main non-fast-forward\n")
+
     assert ng =~ "ng "
   end
 
   @tag timeout: 60_000
   test "delete-ref push: zero newHash, empty pack, fixture receive-status ok" do
     path = engine_path()
+
     root =
       Path.join(
         System.tmp_dir!(),
@@ -1009,6 +1142,7 @@ defmodule AgentOS.Git.OrchestratorTest do
   @tag timeout: 60_000
   test "pack_build with haves reduces pack size" do
     path = engine_path()
+
     root =
       Path.join(
         System.tmp_dir!(),
@@ -1305,6 +1439,7 @@ defmodule AgentOS.Git.OrchestratorTest do
                )
 
       assert is_binary(json2)
+
       assert :atomics.get(fetch_count, 1) == 1,
              "second clone must hit pack cache (fetch_packs stays 1)"
 
@@ -1422,6 +1557,7 @@ defmodule AgentOS.Git.OrchestratorTest do
                )
 
       assert is_binary(json2)
+
       assert :atomics.get(fetch_count, 1) == 1,
              "second clone must hit disk pack cache (fetch_packs stays 1)"
 
@@ -1521,7 +1657,10 @@ defmodule AgentOS.Git.OrchestratorTest do
       :ok = GitEngine.stop(pid1)
       :ok = GitEngine.stop(pid2)
     after
-      if prev, do: System.put_env("AGENTOS_GIT_PACK_CACHE", prev), else: System.delete_env("AGENTOS_GIT_PACK_CACHE")
+      if prev,
+        do: System.put_env("AGENTOS_GIT_PACK_CACHE", prev),
+        else: System.delete_env("AGENTOS_GIT_PACK_CACHE")
+
       File.rm_rf(cache_dir)
       File.rm_rf(root1)
       File.rm_rf(root2)
@@ -1545,6 +1684,7 @@ defmodule AgentOS.Git.OrchestratorTest do
       id = {"git-async", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
       pack = File.read!(Path.expand("../fixtures/git/minimal.pack", __DIR__))
       tip = File.read!(Path.expand("../fixtures/git/minimal.tip", __DIR__)) |> String.trim()
+
       root =
         Path.join(
           System.tmp_dir!(),
@@ -1646,6 +1786,7 @@ defmodule AgentOS.Git.OrchestratorTest do
       id = {"git-snap-block", "vm-" <> Integer.to_string(System.unique_integer([:positive]))}
       pack = File.read!(Path.expand("../fixtures/git/minimal.pack", __DIR__))
       tip = File.read!(Path.expand("../fixtures/git/minimal.tip", __DIR__)) |> String.trim()
+
       root =
         Path.join(
           System.tmp_dir!(),
@@ -2077,8 +2218,10 @@ defmodule AgentOS.Git.OrchestratorTest do
         info = AgentOS.ControlPlane.info(id)
         assert info.git_attached == true
         assert info.git_connection_count == 2
+
         assert Enum.sort(info.git_connection_refs) ==
                  Enum.sort(["github.user.work", "gitlab.org.main"])
+
         assert info.git_policy_count == 2
         # Flat allowlist not required / not stored when connections present.
         assert info.git_allowed_origins == []
@@ -2416,44 +2559,54 @@ defmodule AgentOS.Git.OrchestratorTest do
           kind: :host_call,
           handle: 9_201,
           name: "git",
-          body:
-            ~s({"op":"clone","args":{"url":"#{@fixture_url}","mount":"/workspace/a"}})
+          body: ~s({"op":"clone","args":{"url":"#{@fixture_url}","mount":"/workspace/a"}})
         }
 
         assert :answered = AgentOS.Vm.try_answer_git_host_call(vm, e1)
 
-        assert_eventually(fn ->
-          AgentOS.ControlPlane.info(id).git_inflight == 0
-        end, 150)
+        assert_eventually(
+          fn ->
+            AgentOS.ControlPlane.info(id).git_inflight == 0
+          end,
+          150
+        )
 
-        assert_eventually(fn ->
-          case File.read(Path.join(root_a, "README")) do
-            {:ok, "hello\n"} -> true
-            _ -> false
-          end
-        end, 150)
+        assert_eventually(
+          fn ->
+            case File.read(Path.join(root_a, "README")) do
+              {:ok, "hello\n"} -> true
+              _ -> false
+            end
+          end,
+          150
+        )
 
         # Clone into mount B via args.mount (distinct engine / worktree).
         e2 = %{
           kind: :host_call,
           handle: 9_202,
           name: "git",
-          body:
-            ~s({"op":"clone","args":{"url":"#{@fixture_url}","mount":"/workspace/b"}})
+          body: ~s({"op":"clone","args":{"url":"#{@fixture_url}","mount":"/workspace/b"}})
         }
 
         assert :answered = AgentOS.Vm.try_answer_git_host_call(vm, e2)
 
-        assert_eventually(fn ->
-          AgentOS.ControlPlane.info(id).git_inflight == 0
-        end, 150)
+        assert_eventually(
+          fn ->
+            AgentOS.ControlPlane.info(id).git_inflight == 0
+          end,
+          150
+        )
 
-        assert_eventually(fn ->
-          case File.read(Path.join(root_b, "README")) do
-            {:ok, "hello\n"} -> true
-            _ -> false
-          end
-        end, 150)
+        assert_eventually(
+          fn ->
+            case File.read(Path.join(root_b, "README")) do
+              {:ok, "hello\n"} -> true
+              _ -> false
+            end
+          end,
+          150
+        )
 
         assert {:ok, "hello\n"} = File.read(Path.join(root_a, "README"))
         assert {:ok, "hello\n"} = File.read(Path.join(root_b, "README"))
@@ -2472,8 +2625,7 @@ defmodule AgentOS.Git.OrchestratorTest do
           kind: :host_call,
           handle: 9_203,
           name: "git",
-          body:
-            ~s({"op":"clone","args":{"url":"#{@fixture_url}","mount":"/workspace/missing"}})
+          body: ~s({"op":"clone","args":{"url":"#{@fixture_url}","mount":"/workspace/missing"}})
         }
 
         assert :answered = AgentOS.Vm.try_answer_git_host_call(vm, e_bad)
@@ -2569,16 +2721,14 @@ defmodule AgentOS.Git.OrchestratorTest do
           kind: :host_call,
           handle: 9_301,
           name: "git",
-          body:
-            ~s({"op":"clone","args":{"url":"#{@fixture_url}","mount":"/workspace/a"}})
+          body: ~s({"op":"clone","args":{"url":"#{@fixture_url}","mount":"/workspace/a"}})
         }
 
         e2 = %{
           kind: :host_call,
           handle: 9_302,
           name: "git",
-          body:
-            ~s({"op":"clone","args":{"url":"#{@fixture_url}","mount":"/workspace/b"}})
+          body: ~s({"op":"clone","args":{"url":"#{@fixture_url}","mount":"/workspace/b"}})
         }
 
         assert :answered = AgentOS.Vm.try_answer_git_host_call(vm, e1)
@@ -2592,23 +2742,32 @@ defmodule AgentOS.Git.OrchestratorTest do
 
         :atomics.put(gate, 1, 1)
 
-        assert_eventually(fn ->
-          AgentOS.ControlPlane.info(id).git_inflight == 0
-        end, 200)
+        assert_eventually(
+          fn ->
+            AgentOS.ControlPlane.info(id).git_inflight == 0
+          end,
+          200
+        )
 
-        assert_eventually(fn ->
-          case File.read(Path.join(root_a, "README")) do
-            {:ok, "hello\n"} -> true
-            _ -> false
-          end
-        end, 150)
+        assert_eventually(
+          fn ->
+            case File.read(Path.join(root_a, "README")) do
+              {:ok, "hello\n"} -> true
+              _ -> false
+            end
+          end,
+          150
+        )
 
-        assert_eventually(fn ->
-          case File.read(Path.join(root_b, "README")) do
-            {:ok, "hello\n"} -> true
-            _ -> false
-          end
-        end, 150)
+        assert_eventually(
+          fn ->
+            case File.read(Path.join(root_b, "README")) do
+              {:ok, "hello\n"} -> true
+              _ -> false
+            end
+          end,
+          150
+        )
 
         # Distinct mounts are allowed to overlap transport (product concurrent shape).
         # Timing is not guaranteed under load; require both clones succeeded above.
@@ -2904,6 +3063,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     else
       pack = File.read!(pack_path)
       tip = File.read!(tip_path) |> String.trim()
+
       root =
         Path.join(
           System.tmp_dir!(),
@@ -3235,6 +3395,7 @@ defmodule AgentOS.Git.OrchestratorTest do
     path = engine_path()
     pack = fixture_git_bytes!("minimal.pack")
     tip = fixture_git_bytes!("minimal.tip") |> String.trim()
+
     root =
       Path.join(
         System.tmp_dir!(),
@@ -3317,6 +3478,7 @@ defmodule AgentOS.Git.OrchestratorTest do
       assert ok_map?(listed)
       result = listed["result"] || %{}
       subs = result["submodules"] || []
+
       assert Enum.any?(subs, fn s -> s["path"] == "deps/lib" and s["hash"] == tip end),
              "list missing gitlink: #{inspect(listed)}"
 

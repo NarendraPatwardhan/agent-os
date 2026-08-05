@@ -27,11 +27,16 @@
 #define GE_LOG_DEFAULT_COUNT 10
 /* Max request JSON size for ge_run_json (fail closed). */
 #define GE_REQUEST_MAX_BYTES (1u * 1024u * 1024u)
+/* Root-local control file held only across top-level clone orchestration. */
+#define GE_CLONE_LOCK ".agentos-clone.lock"
 
 struct ge_engine {
   char root[4096];
   git_repository *repo;
   char err[512];
+  /* Engine-local ownership of the exclusive fresh-clone reservation. */
+  int clone_lock_held;
+  int clone_lock_file_active;
   /* Streaming pack indexer (network-free apply path). */
   git_indexer *indexer;
   git_odb *odb;

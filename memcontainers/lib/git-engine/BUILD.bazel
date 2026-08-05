@@ -139,6 +139,15 @@ cc_test(
     linkstatic = True,
 )
 
+# Focused regression fixture for the first Git-hardening category.
+cc_test(
+    name = "git_hardening_test",
+    srcs = ["git_hardening_test.c"],
+    deps = [":git_engine_lib"],
+    size = "small",
+    linkstatic = True,
+)
+
 exports_files([
     "exported_functions.json",
     "fixtures/abi/local_init_commit.json",

@@ -11,6 +11,7 @@
 #ifndef __EMSCRIPTEN__
 #include <fcntl.h>
 #endif
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -646,13 +647,102 @@ static int cone_path_kept(const char *rel, int is_dir, char cones[][256], size_t
   return 0;
 }
 
+/* Sparse operations can remove files from the visible worktree.  Refuse any
+ * index/worktree change, including ignored untracked files, before touching
+ * sparse metadata or checkout state. */
+static int sparse_require_clean(ge_engine *e) {
+  git_status_options opts = GIT_STATUS_OPTIONS_INIT;
+  opts.show = GIT_STATUS_SHOW_INDEX_AND_WORKDIR;
+  opts.flags = GIT_STATUS_OPT_INCLUDE_UNTRACKED |
+               GIT_STATUS_OPT_RECURSE_UNTRACKED_DIRS |
+               GIT_STATUS_OPT_INCLUDE_IGNORED |
+               GIT_STATUS_OPT_RECURSE_IGNORED_DIRS;
+  git_index *index = NULL;
+  if (git_repository_index(&index, e->repo) != 0) {
+    ge_set_err_git(e, "sparse: index preflight");
+    return -1;
+  }
+  git_status_list *status = NULL;
+  if (git_status_list_new(&status, e->repo, &opts) != 0) {
+    git_index_free(index);
+    ge_set_err_git(e, "sparse: status preflight");
+    return -1;
+  }
+  size_t n = git_status_list_entrycount(status);
+  for (size_t i = 0; i < n; i++) {
+    const git_status_entry *entry = git_status_byindex(status, i);
+    int sparse_missing = 0;
+    int owned_control = 0;
+    if (entry && entry->status == GIT_STATUS_WT_NEW && entry->index_to_workdir &&
+        e->clone_lock_held) {
+      const char *path = entry->index_to_workdir->new_file.path
+                             ? entry->index_to_workdir->new_file.path
+                             : entry->index_to_workdir->old_file.path;
+      owned_control = path && strcmp(path, GE_CLONE_LOCK) == 0;
+    }
+    if (entry && entry->status == GIT_STATUS_WT_DELETED && entry->index_to_workdir) {
+      const char *status_path = entry->index_to_workdir->old_file.path
+                                    ? entry->index_to_workdir->old_file.path
+                                    : entry->index_to_workdir->new_file.path;
+      const git_index_entry *indexed =
+          status_path ? git_index_get_bypath(index, status_path, 0) : NULL;
+      sparse_missing = indexed &&
+                       (indexed->flags_extended & GIT_INDEX_ENTRY_SKIP_WORKTREE);
+    }
+    if (entry && entry->status != GIT_STATUS_CURRENT && !sparse_missing && !owned_control) {
+      git_status_list_free(status);
+      git_index_free(index);
+      ge_set_err(e, "sparse: worktree and index must be clean");
+      return -1;
+    }
+  }
+  git_status_list_free(status);
+  git_index_free(index);
+  return 0;
+}
+
+/* Store sparse intent in the index.  libgit2 keeps the on-disk
+ * GIT_INDEX_ENTRY_SKIP_WORKTREE bit in flags_extended, not flags. */
+static int sparse_index_set_cone(ge_engine *e, char cones[][256], size_t ncones,
+                                 int enable) {
+  git_index *index = NULL;
+  if (git_repository_index(&index, e->repo) != 0) {
+    ge_set_err_git(e, "sparse: index");
+    return -1;
+  }
+  size_t n = git_index_entrycount(index);
+  for (size_t i = 0; i < n; i++) {
+    const git_index_entry *ent = git_index_get_byindex(index, i);
+    if (!ent || !ent->path)
+      continue;
+    int keep = !enable || cone_path_kept(ent->path, 0, cones, ncones);
+    git_index_entry copy = *ent;
+    if (keep)
+      copy.flags_extended &= (uint16_t)~GIT_INDEX_ENTRY_SKIP_WORKTREE;
+    else
+      copy.flags_extended |= (uint16_t)GIT_INDEX_ENTRY_SKIP_WORKTREE;
+    if (copy.flags_extended != ent->flags_extended && git_index_add(index, &copy) != 0) {
+      ge_set_err_git(e, "sparse: index update");
+      git_index_free(index);
+      return -1;
+    }
+  }
+  if (git_index_write(index) != 0) {
+    ge_set_err_git(e, "sparse: index write");
+    git_index_free(index);
+    return -1;
+  }
+  git_index_free(index);
+  return 0;
+}
+
 #ifdef __EMSCRIPTEN__
 /* Emscripten fallback: bridge.serial prevents concurrent guest mutation, and
  * libc lstat maps to FS.lstat for both MEMFS and NODEFS. */
-static void cone_rm_rf_path(const char *abs) {
+static int cone_rm_rf_path(const char *abs) {
   struct stat st;
   if (lstat(abs, &st) != 0)
-    return;
+    return errno == ENOENT ? 0 : -1;
   if (S_ISDIR(st.st_mode)) {
     DIR *d = opendir(abs);
     if (d) {
@@ -662,31 +752,40 @@ static void cone_rm_rf_path(const char *abs) {
           continue;
         char child[4096];
         size_t n = (size_t)snprintf(child, sizeof(child), "%s/%s", abs, de->d_name);
-        if (n >= sizeof(child))
-          continue;
-        cone_rm_rf_path(child);
+        if (n >= sizeof(child)) {
+          closedir(d);
+          return -1;
+        }
+        if (cone_rm_rf_path(child) != 0) {
+          closedir(d);
+          return -1;
+        }
       }
       closedir(d);
+    } else {
+      return -1;
     }
-    rmdir(abs);
+    return rmdir(abs) == 0 || errno == ENOENT ? 0 : -1;
   } else {
-    unlink(abs);
+    return unlink(abs) == 0 || errno == ENOENT ? 0 : -1;
   }
 }
 
-static void cone_prune_walk_path(const char *root, const char *rel, char cones[][256],
-                                 size_t ncones) {
+static int cone_prune_walk_path(const char *root, const char *rel, char cones[][256],
+                                size_t ncones) {
   char abs[4096];
-  if (rel && *rel)
+  if (rel && *rel) {
+    if (strlen(root) + 1 + strlen(rel) >= sizeof(abs))
+      return -1;
     ge_join_path(abs, sizeof(abs), root, rel);
-  else {
+  } else {
     size_t n = (size_t)snprintf(abs, sizeof(abs), "%s", root);
     if (n >= sizeof(abs))
-      return;
+      return -1;
   }
   DIR *d = opendir(abs);
   if (!d)
-    return;
+    return errno == ENOENT ? 0 : -1;
   struct dirent *de;
   while ((de = readdir(d)) != NULL) {
     if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
@@ -695,72 +794,88 @@ static void cone_prune_walk_path(const char *root, const char *rel, char cones[]
     if ((!rel || !*rel) && strcmp(de->d_name, ".git") == 0)
       continue;
     char child_rel[1024];
-    if (rel && *rel)
-      snprintf(child_rel, sizeof(child_rel), "%s/%s", rel, de->d_name);
-    else
-      snprintf(child_rel, sizeof(child_rel), "%s", de->d_name);
-    if (!ge_safe_relpath(child_rel))
-      continue;
+    int n = rel && *rel ? snprintf(child_rel, sizeof(child_rel), "%s/%s", rel, de->d_name)
+                        : snprintf(child_rel, sizeof(child_rel), "%s", de->d_name);
+    if (n < 0 || (size_t)n >= sizeof(child_rel) || !ge_safe_relpath(child_rel)) {
+      closedir(d);
+      return -1;
+    }
     char child_abs[4096];
+    if (strlen(root) + 1 + strlen(child_rel) >= sizeof(child_abs)) {
+      closedir(d);
+      return -1;
+    }
     ge_join_path(child_abs, sizeof(child_abs), root, child_rel);
     struct stat st;
-    if (lstat(child_abs, &st) != 0)
-      continue;
+    if (lstat(child_abs, &st) != 0) {
+      if (errno == ENOENT)
+        continue;
+      closedir(d);
+      return -1;
+    }
     int is_dir = S_ISDIR(st.st_mode);
     if (cone_path_kept(child_rel, is_dir, cones, ncones)) {
-      if (is_dir)
-        cone_prune_walk_path(root, child_rel, cones, ncones);
+      if (is_dir && cone_prune_walk_path(root, child_rel, cones, ncones) != 0) {
+        closedir(d);
+        return -1;
+      }
     } else {
-      cone_rm_rf_path(child_abs);
+      if (cone_rm_rf_path(child_abs) != 0) {
+        closedir(d);
+        return -1;
+      }
     }
   }
   closedir(d);
+  return 0;
 }
 
-static void cone_prune_walk(const char *root, const char *rel, char cones[][256],
-                            size_t ncones) {
-  cone_prune_walk_path(root, rel, cones, ncones);
+static int cone_prune_walk(const char *root, const char *rel, char cones[][256],
+                           size_t ncones) {
+  return cone_prune_walk_path(root, rel, cones, ncones);
 }
 #else
 /* Native pruning is directory-descriptor relative. Every component is opened
  * with O_NOFOLLOW, and deletion uses unlinkat on the entry itself. A concurrent
  * path replacement can make an operation fail, but can never redirect it. */
-static void cone_rm_rf_at(int parent_fd, const char *name) {
+static int cone_rm_rf_at(int parent_fd, const char *name) {
   struct stat st;
   if (fstatat(parent_fd, name, &st, AT_SYMLINK_NOFOLLOW) != 0)
-    return;
+    return errno == ENOENT ? 0 : -1;
   if (!S_ISDIR(st.st_mode)) {
-    unlinkat(parent_fd, name, 0);
-    return;
+    return unlinkat(parent_fd, name, 0) == 0 || errno == ENOENT ? 0 : -1;
   }
 
   int child_fd = openat(parent_fd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
   if (child_fd < 0)
-    return;
+    return -1;
   DIR *d = fdopendir(child_fd);
   if (!d) {
     close(child_fd);
-    return;
+    return -1;
   }
   struct dirent *de;
   while ((de = readdir(d)) != NULL) {
     if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
       continue;
-    cone_rm_rf_at(dirfd(d), de->d_name);
+    if (cone_rm_rf_at(dirfd(d), de->d_name) != 0) {
+      closedir(d);
+      return -1;
+    }
   }
   closedir(d); /* closes child_fd */
-  unlinkat(parent_fd, name, AT_REMOVEDIR);
+  return unlinkat(parent_fd, name, AT_REMOVEDIR) == 0 || errno == ENOENT ? 0 : -1;
 }
 
-static void cone_prune_walk_at(int dir_fd, const char *rel, char cones[][256],
-                               size_t ncones) {
+static int cone_prune_walk_at(int dir_fd, const char *rel, char cones[][256],
+                              size_t ncones) {
   int scan_fd = dup(dir_fd);
   if (scan_fd < 0)
-    return;
+    return -1;
   DIR *d = fdopendir(scan_fd);
   if (!d) {
     close(scan_fd);
-    return;
+    return -1;
   }
   struct dirent *de;
   while ((de = readdir(d)) != NULL) {
@@ -772,41 +887,309 @@ static void cone_prune_walk_at(int dir_fd, const char *rel, char cones[][256],
     char child_rel[1024];
     int n = rel && *rel ? snprintf(child_rel, sizeof(child_rel), "%s/%s", rel, de->d_name)
                         : snprintf(child_rel, sizeof(child_rel), "%s", de->d_name);
-    if (n < 0 || (size_t)n >= sizeof(child_rel) || !ge_safe_relpath(child_rel))
-      continue;
+    if (n < 0 || (size_t)n >= sizeof(child_rel) || !ge_safe_relpath(child_rel)) {
+      closedir(d);
+      return -1;
+    }
 
     struct stat st;
-    if (fstatat(dirfd(d), de->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0)
-      continue;
+    if (fstatat(dirfd(d), de->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0) {
+      if (errno == ENOENT)
+        continue;
+      closedir(d);
+      return -1;
+    }
     int is_dir = S_ISDIR(st.st_mode);
     if (cone_path_kept(child_rel, is_dir, cones, ncones)) {
       if (is_dir) {
         int child_fd =
             openat(dirfd(d), de->d_name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-        if (child_fd >= 0) {
-          cone_prune_walk_at(child_fd, child_rel, cones, ncones);
-          close(child_fd);
+        if (child_fd < 0) {
+          closedir(d);
+          return -1;
+        }
+        int rc = cone_prune_walk_at(child_fd, child_rel, cones, ncones);
+        close(child_fd);
+        if (rc != 0) {
+          closedir(d);
+          return -1;
         }
       }
     } else {
-      cone_rm_rf_at(dirfd(d), de->d_name);
+      if (cone_rm_rf_at(dirfd(d), de->d_name) != 0) {
+        closedir(d);
+        return -1;
+      }
     }
   }
   closedir(d);
+  return 0;
 }
 
-static void cone_prune_walk(const char *root, const char *rel, char cones[][256],
-                            size_t ncones) {
+static int cone_prune_walk(const char *root, const char *rel, char cones[][256],
+                           size_t ncones) {
   int root_fd = open(root, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
   if (root_fd < 0)
-    return;
-  cone_prune_walk_at(root_fd, rel, cones, ncones);
+    return -1;
+  int rc = cone_prune_walk_at(root_fd, rel, cones, ncones);
   close(root_fd);
+  return rc;
 }
 #endif
 
-/* sparse-set: write cone patterns, enable core.sparseCheckout, re-checkout HEAD,
- * then prune out-of-cone worktree paths.
+static int sparse_capture_config(ge_engine *e, int *sparse_present, int *sparse_value,
+                                 int *cone_present, int *cone_value) {
+  git_config *cfg = NULL;
+  if (git_repository_config(&cfg, e->repo) != 0) {
+    ge_set_err_git(e, "sparse: config read");
+    return -1;
+  }
+  int rc = git_config_get_bool(sparse_value, cfg, "core.sparseCheckout");
+  if (rc == 0) {
+    *sparse_present = 1;
+  } else if (rc == GIT_ENOTFOUND) {
+    *sparse_present = 0;
+    *sparse_value = 0;
+  } else {
+    git_config_free(cfg);
+    ge_set_err_git(e, "sparse: config read");
+    return -1;
+  }
+  rc = git_config_get_bool(cone_value, cfg, "core.sparseCheckoutCone");
+  if (rc == 0) {
+    *cone_present = 1;
+  } else if (rc == GIT_ENOTFOUND) {
+    *cone_present = 0;
+    *cone_value = 0;
+  } else {
+    git_config_free(cfg);
+    ge_set_err_git(e, "sparse: config read");
+    return -1;
+  }
+  git_config_free(cfg);
+  return 0;
+}
+
+static int sparse_set_config(ge_engine *e, int sparse, int cone) {
+  git_config *cfg = NULL;
+  if (git_repository_config(&cfg, e->repo) != 0) {
+    ge_set_err_git(e, "sparse: config");
+    return -1;
+  }
+  int rc = git_config_set_bool(cfg, "core.sparseCheckout", sparse);
+  if (rc == 0)
+    rc = git_config_set_bool(cfg, "core.sparseCheckoutCone", cone);
+  if (rc != 0)
+    ge_set_err_git(e, "sparse: config");
+  git_config_free(cfg);
+  return rc == 0 ? 0 : -1;
+}
+
+static int sparse_disable_config(ge_engine *e) {
+  git_config *cfg = NULL;
+  if (git_repository_config(&cfg, e->repo) != 0) {
+    ge_set_err_git(e, "sparse-disable: config");
+    return -1;
+  }
+  int rc = git_config_set_bool(cfg, "core.sparseCheckout", 0);
+  if (rc != 0)
+    ge_set_err_git(e, "sparse-disable: config");
+  git_config_free(cfg);
+  return rc == 0 ? 0 : -1;
+}
+
+static int sparse_restore_config(ge_engine *e, int sparse_present, int sparse_value,
+                                 int cone_present, int cone_value) {
+  git_config *cfg = NULL;
+  if (git_repository_config(&cfg, e->repo) != 0)
+    return -1;
+  int rc = 0;
+  if (sparse_present)
+    rc = git_config_set_bool(cfg, "core.sparseCheckout", sparse_value);
+  else {
+    rc = git_config_delete_entry(cfg, "core.sparseCheckout");
+    if (rc == GIT_ENOTFOUND)
+      rc = 0;
+  }
+  if (rc == 0) {
+    if (cone_present)
+      rc = git_config_set_bool(cfg, "core.sparseCheckoutCone", cone_value);
+    else {
+      rc = git_config_delete_entry(cfg, "core.sparseCheckoutCone");
+      if (rc == GIT_ENOTFOUND)
+        rc = 0;
+    }
+  }
+  git_config_free(cfg);
+  return rc == 0 ? 0 : -1;
+}
+
+static int sparse_remove_file(const char *path) {
+  if (unlink(path) == 0 || errno == ENOENT)
+    return 0;
+  return -1;
+}
+
+static int sparse_move_if_present(const char *from, const char *to, int *present) {
+  if (rename(from, to) == 0) {
+    if (present)
+      *present = 1;
+    return 0;
+  }
+  if (errno == ENOENT) {
+    if (present)
+      *present = 0;
+    return 0;
+  }
+  return -1;
+}
+
+static int sparse_write_file(const char *path, const char *data, size_t len) {
+  FILE *f = fopen(path, "wb");
+  if (!f)
+    return -1;
+  int ok = fwrite(data, 1, len, f) == len;
+  if (fclose(f) != 0)
+    ok = 0;
+  return ok ? 0 : -1;
+}
+
+static int sparse_restore_pattern(const char *sc, const char *backup, int had_backup) {
+  if (sparse_remove_file(sc) != 0)
+    return -1;
+  if (had_backup && rename(backup, sc) != 0)
+    return -1;
+  return 0;
+}
+
+static int sparse_appendf(char *out, size_t cap, size_t *used, const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  int n = vsnprintf(out + *used, *used < cap ? cap - *used : 0, fmt, ap);
+  va_end(ap);
+  if (n < 0 || *used > cap || (size_t)n >= cap - *used)
+    return -1;
+  *used += (size_t)n;
+  return 0;
+}
+
+static int sparse_read_file(const char *path, char *out, size_t cap, int *present) {
+  FILE *f = fopen(path, "rb");
+  if (!f) {
+    if (errno == ENOENT) {
+      *present = 0;
+      out[0] = '\0';
+      return 0;
+    }
+    return -1;
+  }
+  *present = 1;
+  size_t n = fread(out, 1, cap - 1, f);
+  int too_long = n == cap - 1 && fgetc(f) != EOF;
+  int failed = ferror(f);
+  if (fclose(f) != 0)
+    failed = 1;
+  if (failed || too_long)
+    return -1;
+  out[n] = '\0';
+  return 0;
+}
+
+/* Parse the cone file emitted below back into its effective include prefixes.
+ * This is used only to restore a prior engine-owned sparse projection. */
+static int sparse_parse_cones(char *contents, char cones[][256], size_t *ncones) {
+  *ncones = 0;
+  for (char *line = contents, *next; line && *line; line = next) {
+    next = strchr(line, '\n');
+    if (next)
+      *next++ = '\0';
+    if (strcmp(line, "/*") == 0 || strcmp(line, "!/*/") == 0)
+      continue;
+    int negate = line[0] == '!';
+    if ((!negate && line[0] != '/') || (negate && line[1] != '/'))
+      return -1;
+    char *path = line + (negate ? 2 : 1);
+    size_t len = strlen(path);
+    if (len >= 3 && strcmp(path + len - 3, "/**") == 0)
+      continue;
+    while (len > 0 && path[len - 1] == '/')
+      path[--len] = '\0';
+    if (!*path || !ge_safe_relpath(path))
+      return -1;
+    if (negate) {
+      for (size_t i = 0; i < *ncones; i++) {
+        if (strcmp(cones[i], path) == 0) {
+          if (i + 1 < *ncones)
+            memmove(cones[i], cones[i + 1], (*ncones - i - 1) * sizeof(cones[0]));
+          (*ncones)--;
+          break;
+        }
+      }
+    } else {
+      if (*ncones >= 64 || len >= sizeof(cones[0]))
+        return -1;
+      memcpy(cones[*ncones], path, len + 1);
+      (*ncones)++;
+    }
+  }
+  return 0;
+}
+
+static int sparse_checkout_head(ge_engine *e) {
+  git_object *treeish = NULL;
+  if (git_revparse_single(&treeish, e->repo, "HEAD") == 0) {
+    git_checkout_options opts = GIT_CHECKOUT_OPTIONS_INIT;
+    opts.checkout_strategy = GIT_CHECKOUT_FORCE;
+    int rc = git_checkout_tree(e->repo, treeish, &opts);
+    git_object_free(treeish);
+    return rc == 0 ? 0 : -1;
+  }
+  return git_repository_head_unborn(e->repo) == 1 ? 0 : -1;
+}
+
+/* Restore the exact previous sparse/full projection after a post-install
+ * failure. The caller preserves the primary error; this helper only reports
+ * whether recovery itself completed. */
+static int sparse_rollback(ge_engine *e, const char *sc, const char *backup,
+                           int had_backup, int sparse_present, int sparse_value,
+                           int cone_present, int cone_value, char old_cones[][256],
+                           size_t old_ncones) {
+  int failed = 0;
+  if (sparse_restore_config(e, sparse_present, sparse_value, cone_present, cone_value) != 0)
+    failed = 1;
+  if (sparse_restore_pattern(sc, backup, had_backup) != 0)
+    failed = 1;
+  if (sparse_index_set_cone(e, old_cones, old_ncones, sparse_value) != 0)
+    failed = 1;
+  if (sparse_checkout_head(e) != 0)
+    failed = 1;
+  if (sparse_value && cone_prune_walk(e->root, "", old_cones, old_ncones) != 0)
+    failed = 1;
+  return failed ? -1 : 0;
+}
+
+static int sparse_fail_after_install(ge_engine *e, const char *reason,
+                                     const char *sc, const char *backup,
+                                     int had_backup, int sparse_present,
+                                     int sparse_value, int cone_present,
+                                     int cone_value, char old_cones[][256],
+                                     size_t old_ncones) {
+  char primary[sizeof(e->err)];
+  snprintf(primary, sizeof(primary), "%s", reason && *reason ? reason : "sparse operation failed");
+  if (sparse_rollback(e, sc, backup, had_backup, sparse_present, sparse_value,
+                      cone_present, cone_value, old_cones, old_ncones) != 0) {
+    char combined[sizeof(e->err)];
+    snprintf(combined, sizeof(combined), "%s; rollback failed", primary);
+    ge_set_err(e, combined);
+  } else {
+    ge_set_err(e, primary);
+  }
+  return -1;
+}
+
+/* sparse-set: validate a clean worktree, stage metadata in a temporary file,
+ * check config/index/checkout/prune results, and roll back to the prior
+ * projection on any post-install failure.
  *
  * Args:
  *   patterns — newline-separated string, or JSON string array
@@ -817,6 +1200,16 @@ static void cone_prune_walk(const char *root, const char *rel, char cones[][256]
  */
 int op_sparse_set(ge_engine *e, const char *args) {
   if (ge_ensure_repo(e) != 0)
+    return -1;
+  if (sparse_require_clean(e) != 0)
+    return -1;
+
+  int old_sparse_present = 0;
+  int old_sparse = 0;
+  int old_cone_present = 0;
+  int old_cone = 0;
+  if (sparse_capture_config(e, &old_sparse_present, &old_sparse, &old_cone_present,
+                             &old_cone) != 0)
     return -1;
   char patterns[4096] = "";
   const char *arr = args ? jmin_get_array(args, "patterns") : NULL;
@@ -849,17 +1242,67 @@ int op_sparse_set(ge_engine *e, const char *args) {
     ge_set_err(e, "sparse-set: need patterns or path");
     return -1;
   }
-  char info[4096], sc[4096];
-  snprintf(info, sizeof(info), "%s/.git/info", e->root);
-  mkdir(info, 0755);
-  snprintf(sc, sizeof(sc), "%s/sparse-checkout", info);
-  FILE *f = fopen(sc, "wb");
-  if (!f) {
-    ge_set_err(e, "sparse-set: cannot write sparse-checkout");
+  char info[4096], sc[4096], tmp[4096], backup[4096];
+  int n = snprintf(info, sizeof(info), "%s/.git/info", e->root);
+  if (n < 0 || (size_t)n >= sizeof(info)) {
+    ge_set_err(e, "sparse-set: metadata path too long");
     return -1;
   }
+  if (mkdir(info, 0755) != 0 && errno != EEXIST) {
+    ge_set_err(e, "sparse-set: cannot create info directory");
+    return -1;
+  }
+  struct stat info_st;
+  if (stat(info, &info_st) != 0 || !S_ISDIR(info_st.st_mode)) {
+    ge_set_err(e, "sparse-set: info path is not a directory");
+    return -1;
+  }
+  n = snprintf(sc, sizeof(sc), "%s/sparse-checkout", info);
+  if (n < 0 || (size_t)n >= sizeof(sc)) {
+    ge_set_err(e, "sparse-set: metadata path too long");
+    return -1;
+  }
+  n = snprintf(tmp, sizeof(tmp), "%s.tmp", sc);
+  if (n < 0 || (size_t)n >= sizeof(tmp)) {
+    ge_set_err(e, "sparse-set: temporary path too long");
+    return -1;
+  }
+  n = snprintf(backup, sizeof(backup), "%s.previous", sc);
+  if (n < 0 || (size_t)n >= sizeof(backup)) {
+    ge_set_err(e, "sparse-set: backup path too long");
+    return -1;
+  }
+  if (sparse_remove_file(tmp) != 0) {
+    ge_set_err(e, "sparse-set: cannot clear temporary metadata");
+    return -1;
+  }
+  if (access(backup, F_OK) == 0) {
+    ge_set_err(e, "sparse-set: prior recovery metadata requires intervention");
+    return -1;
+  }
+  if (errno != ENOENT) {
+    ge_set_err(e, "sparse-set: cannot inspect recovery metadata");
+    return -1;
+  }
+
+  char old_pattern[16384];
+  int old_pattern_present = 0;
+  char old_cones[64][256];
+  size_t old_ncones = 0;
+  if (sparse_read_file(sc, old_pattern, sizeof(old_pattern), &old_pattern_present) != 0 ||
+      (old_sparse && (!old_pattern_present ||
+                      sparse_parse_cones(old_pattern, old_cones, &old_ncones) != 0))) {
+    ge_set_err(e, "sparse-set: cannot capture prior sparse projection");
+    return -1;
+  }
+
+  char sparse_file[16384];
+  size_t sparse_file_len = 0;
   /* Cone header: include root files, exclude other top-level dirs by default. */
-  fprintf(f, "/*\n!/*/\n");
+  if (sparse_appendf(sparse_file, sizeof(sparse_file), &sparse_file_len, "/*\n!/*/\n") != 0) {
+    ge_set_err(e, "sparse-set: patterns too long");
+    return -1;
+  }
   /* Collect include prefixes for worktree prune; write sparse-checkout lines. */
   char cones[64][256];
   size_t ncones = 0;
@@ -887,13 +1330,15 @@ int op_sparse_set(ge_engine *e, const char *args) {
       p[--plen] = '\0';
     }
     if (!*p || !ge_safe_relpath(p)) {
-      fclose(f);
-      unlink(sc);
       ge_set_err(e, "sparse-set: unsafe pattern");
       return -1;
     }
     if (negate) {
-      fprintf(f, "!/%s/\n!/%s/**\n", p, p);
+      if (sparse_appendf(sparse_file, sizeof(sparse_file), &sparse_file_len,
+                         "!/%s/\n!/%s/**\n", p, p) != 0) {
+        ge_set_err(e, "sparse-set: patterns too long");
+        return -1;
+      }
       /* Drop matching include if present (basic !negation after include). */
       for (size_t i = 0; i < ncones; i++) {
         if (strcmp(cones[i], p) == 0) {
@@ -904,37 +1349,70 @@ int op_sparse_set(ge_engine *e, const char *args) {
         }
       }
     } else {
-      fprintf(f, "/%s/\n/%s/**\n", p, p);
-      if (ncones < 64 && plen < sizeof(cones[0])) {
-        memcpy(cones[ncones], p, plen + 1);
-        ncones++;
+      if (sparse_appendf(sparse_file, sizeof(sparse_file), &sparse_file_len,
+                         "/%s/\n/%s/**\n", p, p) != 0) {
+        ge_set_err(e, "sparse-set: patterns too long");
+        return -1;
       }
+      if (ncones >= 64 || plen >= sizeof(cones[0])) {
+        ge_set_err(e, "sparse-set: too many or too-long cone prefixes");
+        return -1;
+      }
+      memcpy(cones[ncones], p, plen + 1);
+      ncones++;
     }
   }
-  fclose(f);
-
-  git_config *cfg = NULL;
-  if (git_repository_config(&cfg, e->repo) != 0) {
-    ge_set_err_git(e, "sparse-set: config");
+  if (sparse_write_file(tmp, sparse_file, sparse_file_len) != 0) {
+    sparse_remove_file(tmp);
+    ge_set_err(e, "sparse-set: cannot write sparse-checkout");
     return -1;
   }
-  git_config_set_bool(cfg, "core.sparseCheckout", 1);
-  /* Best-effort cone flag for future git CLI interop (libgit2 may ignore). */
-  git_config_set_bool(cfg, "core.sparseCheckoutCone", 1);
-  git_config_free(cfg);
 
-  /* Re-checkout HEAD (restores in-cone; does not remove out-of-cone on libgit2). */
-  git_object *treeish = NULL;
-  if (git_revparse_single(&treeish, e->repo, "HEAD") == 0) {
-    git_checkout_options opts = GIT_CHECKOUT_OPTIONS_INIT;
-    opts.checkout_strategy = GIT_CHECKOUT_FORCE;
-    git_checkout_tree(e->repo, treeish, &opts);
-    git_object_free(treeish);
+  int had_backup = 0;
+  if (sparse_move_if_present(sc, backup, &had_backup) != 0 || rename(tmp, sc) != 0) {
+    sparse_remove_file(tmp);
+    int restore_failed = had_backup && rename(backup, sc) != 0;
+    ge_set_err(e, restore_failed ? "sparse-set: cannot install sparse-checkout; rollback failed"
+                                 : "sparse-set: cannot install sparse-checkout");
+    return -1;
+  }
+
+  if (sparse_set_config(e, 1, 1) != 0) {
+    return sparse_fail_after_install(e, "sparse-set: config failed", sc, backup,
+                                     had_backup, old_sparse_present, old_sparse,
+                                     old_cone_present, old_cone, old_cones, old_ncones);
+  }
+
+  /* Update skip bits before checkout so a newly included path from a previous
+   * cone is eligible to be materialized. */
+  if (sparse_index_set_cone(e, cones, ncones, 1) != 0) {
+    char reason[sizeof(e->err)];
+    snprintf(reason, sizeof(reason), "%s", e->err);
+    return sparse_fail_after_install(e, reason, sc, backup, had_backup,
+                                     old_sparse_present, old_sparse,
+                                     old_cone_present, old_cone, old_cones, old_ncones);
+  }
+  if (sparse_checkout_head(e) != 0) {
+    ge_set_err_git(e, "sparse-set: checkout");
+    char reason[sizeof(e->err)];
+    snprintf(reason, sizeof(reason), "%s", e->err);
+    return sparse_fail_after_install(e, reason, sc, backup, had_backup,
+                                     old_sparse_present, old_sparse,
+                                     old_cone_present, old_cone, old_cones, old_ncones);
   }
 
   /* Materialize cone on disk — prune out-of-cone worktree paths. */
-  if (ncones > 0)
-    cone_prune_walk(e->root, "", cones, ncones);
+  if (cone_prune_walk(e->root, "", cones, ncones) != 0) {
+    return sparse_fail_after_install(e, "sparse-set: prune failed", sc, backup,
+                                     had_backup, old_sparse_present, old_sparse,
+                                     old_cone_present, old_cone, old_cones, old_ncones);
+  }
+  if (sparse_remove_file(backup) != 0) {
+    return sparse_fail_after_install(e, "sparse-set: cannot remove metadata backup",
+                                     sc, backup, had_backup, old_sparse_present,
+                                     old_sparse, old_cone_present, old_cone,
+                                     old_cones, old_ncones);
+  }
   return 0;
 }
 
@@ -942,20 +1420,84 @@ int op_sparse_disable(ge_engine *e, const char *args) {
   (void)args;
   if (ge_ensure_repo(e) != 0)
     return -1;
-  git_config *cfg = NULL;
-  if (git_repository_config(&cfg, e->repo) == 0) {
-    git_config_set_bool(cfg, "core.sparseCheckout", 0);
-    git_config_free(cfg);
+  if (sparse_require_clean(e) != 0)
+    return -1;
+
+  int old_sparse_present = 0;
+  int old_sparse = 0;
+  int old_cone_present = 0;
+  int old_cone = 0;
+  if (sparse_capture_config(e, &old_sparse_present, &old_sparse, &old_cone_present,
+                             &old_cone) != 0)
+    return -1;
+
+  char info[4096], sc[4096], backup[4096];
+  int n = snprintf(info, sizeof(info), "%s/.git/info", e->root);
+  if (n < 0 || (size_t)n >= sizeof(info)) {
+    ge_set_err(e, "sparse-disable: metadata path too long");
+    return -1;
   }
-  char sc[4096];
-  snprintf(sc, sizeof(sc), "%s/.git/info/sparse-checkout", e->root);
-  unlink(sc);
-  git_object *treeish = NULL;
-  if (git_revparse_single(&treeish, e->repo, "HEAD") == 0) {
-    git_checkout_options opts = GIT_CHECKOUT_OPTIONS_INIT;
-    opts.checkout_strategy = GIT_CHECKOUT_FORCE;
-    git_checkout_tree(e->repo, treeish, &opts);
-    git_object_free(treeish);
+  n = snprintf(sc, sizeof(sc), "%s/sparse-checkout", info);
+  if (n < 0 || (size_t)n >= sizeof(sc)) {
+    ge_set_err(e, "sparse-disable: metadata path too long");
+    return -1;
+  }
+  n = snprintf(backup, sizeof(backup), "%s.previous", sc);
+  if (n < 0 || (size_t)n >= sizeof(backup)) {
+    ge_set_err(e, "sparse-disable: backup path too long");
+    return -1;
+  }
+  if (access(backup, F_OK) == 0) {
+    ge_set_err(e, "sparse-disable: prior recovery metadata requires intervention");
+    return -1;
+  }
+  if (errno != ENOENT) {
+    ge_set_err(e, "sparse-disable: cannot inspect recovery metadata");
+    return -1;
+  }
+  char old_pattern[16384];
+  int old_pattern_present = 0;
+  char old_cones[64][256];
+  size_t old_ncones = 0;
+  if (sparse_read_file(sc, old_pattern, sizeof(old_pattern), &old_pattern_present) != 0 ||
+      (old_sparse && (!old_pattern_present ||
+                      sparse_parse_cones(old_pattern, old_cones, &old_ncones) != 0))) {
+    ge_set_err(e, "sparse-disable: cannot capture prior sparse projection");
+    return -1;
+  }
+  int had_backup = 0;
+  if (sparse_move_if_present(sc, backup, &had_backup) != 0) {
+    ge_set_err(e, "sparse-disable: cannot stage sparse-checkout removal");
+    return -1;
+  }
+  if (sparse_disable_config(e) != 0) {
+    char reason[sizeof(e->err)];
+    snprintf(reason, sizeof(reason), "%s", e->err);
+    return sparse_fail_after_install(e, reason, sc, backup, had_backup,
+                                     old_sparse_present, old_sparse,
+                                     old_cone_present, old_cone, old_cones, old_ncones);
+  }
+
+  if (sparse_index_set_cone(e, NULL, 0, 0) != 0) {
+    char reason[sizeof(e->err)];
+    snprintf(reason, sizeof(reason), "%s", e->err);
+    return sparse_fail_after_install(e, reason, sc, backup, had_backup,
+                                     old_sparse_present, old_sparse,
+                                     old_cone_present, old_cone, old_cones, old_ncones);
+  }
+  if (sparse_checkout_head(e) != 0) {
+    ge_set_err_git(e, "sparse-disable: checkout");
+    char reason[sizeof(e->err)];
+    snprintf(reason, sizeof(reason), "%s", e->err);
+    return sparse_fail_after_install(e, reason, sc, backup, had_backup,
+                                     old_sparse_present, old_sparse,
+                                     old_cone_present, old_cone, old_cones, old_ncones);
+  }
+  if (sparse_remove_file(backup) != 0) {
+    return sparse_fail_after_install(e, "sparse-disable: cannot remove metadata backup",
+                                     sc, backup, had_backup, old_sparse_present,
+                                     old_sparse, old_cone_present, old_cone,
+                                     old_cones, old_ncones);
   }
   return 0;
 }

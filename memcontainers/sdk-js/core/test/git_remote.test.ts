@@ -107,14 +107,10 @@ async function main() {
   if (!loaded || new TextDecoder().decode(loaded) !== "snap") {
     throw new Error("MemoryDurable failed");
   }
-  const engDurable = await GitEngine.load({ engine: engineTar(),
-    durable: dur,
-  });
+  const engDurable = await GitEngine.load({ engine: engineTar(), durable: dur });
   const engSnap = engDurable.durableSnapshot;
   if (!engSnap || new TextDecoder().decode(engSnap) !== "snap") {
-    throw new Error(
-      "GitEngine.load must surface legacy non-AGIT snapshot engine-level only",
-    );
+    throw new Error("GitEngine.load must surface legacy non-AGIT snapshot engine-level only");
   }
   // Explicit snapshot override still persists caller bytes as-is.
   await engDurable.checkpoint(new TextEncoder().encode("snap2"));
@@ -226,18 +222,71 @@ async function main() {
     throw new Error("bare URL deny must not dial listRefs");
   }
 
+  // Shared clone preflight: an existing repository/index/worktree is rejected
+  // before the JS orchestrator can dial or import anything.
+  {
+    const preflightHttp = new FixtureSmartHttp();
+    const preflightUrl = "https://example.com/preflight.git";
+    preflightHttp.add(
+      preflightUrl,
+      [{ name: "refs/heads/main", hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }],
+      new Uint8Array(0),
+    );
+    const engNonFresh = await GitEngine.load({ engine: engineTar() });
+    let preflightR = await engNonFresh.run({ op: "init" });
+    if (!preflightR.ok) throw new Error("preflight init: " + JSON.stringify(preflightR));
+    preflightR = await engNonFresh.run({
+      op: "write",
+      args: { path: "existing.txt", content: "existing\n" },
+    });
+    if (!preflightR.ok) throw new Error("preflight write: " + JSON.stringify(preflightR));
+    const preflightOrch = new GitRemoteOrchestrator(engNonFresh, {
+      http: preflightHttp,
+      allowOrigins: ["https://example.com"],
+    });
+    const rejected = await preflightOrch.handle({
+      op: "clone",
+      args: { url: preflightUrl },
+    });
+    if (rejected.ok || !String(rejected.stderr || "").includes("fresh")) {
+      throw new Error("existing JS clone target was not rejected: " + JSON.stringify(rejected));
+    }
+    if (preflightHttp.listRefsCalls !== 0 || preflightHttp.fetchPacksCalls !== 0) {
+      throw new Error("existing JS clone target dialed before preflight");
+    }
+    await engNonFresh.close();
+
+    const engFresh = await GitEngine.load({ engine: engineTar() });
+    const freshCheck = await engFresh.run({ op: "clone.preflight" });
+    if (!freshCheck.ok)
+      throw new Error("fresh JS clone preflight failed: " + JSON.stringify(freshCheck));
+    const freshOrch = new GitRemoteOrchestrator(engFresh, {
+      http: preflightHttp,
+      allowOrigins: ["https://example.com"],
+    });
+    const freshClone = await freshOrch.handle({
+      op: "clone",
+      args: { url: preflightUrl },
+    });
+    if (freshClone.ok || Number(preflightHttp.listRefsCalls) !== 1) {
+      throw new Error("fresh JS clone did not pass preflight: " + JSON.stringify(freshClone));
+    }
+    const released = await engFresh.run({ op: "clone.preflight" });
+    if (!released.ok) {
+      throw new Error("failed JS clone leaked its destination reservation");
+    }
+    await engFresh.close();
+  }
+
   // Empty pack orchestrator path with fixture: list-refs must work; clone must fail closed
   // (no real objects) — do not soft-accept success. Direct orch: no default packCache.
   // fixture bare URLs need explicit allowOrigins.
   const http = new FixtureSmartHttp();
   const hash = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const fixtureOrigin = "https://example.com";
-  http.add(
-    "https://example.com/demo.git",
-    [{ name: "refs/heads/main", hash }],
-    new Uint8Array(0),
-  );
-  const orch = new GitRemoteOrchestrator(eng, {
+  http.add("https://example.com/demo.git", [{ name: "refs/heads/main", hash }], new Uint8Array(0));
+  const engEmpty = await GitEngine.load({ engine: engineTar() });
+  const orch = new GitRemoteOrchestrator(engEmpty, {
     http,
     allowOrigins: [fixtureOrigin],
   });
@@ -257,6 +306,7 @@ async function main() {
   if (http.fetchPacksCalls !== 1) {
     throw new Error(`expected 1 fetchPacks without cache, got ${http.fetchPacksCalls}`);
   }
+  await engEmpty.close();
 
   // P2.5: second clone with packCache must skip fetchPacks (download-key hit).
   // Non-empty pack body so empty-pack short-circuit is not the only path; import
@@ -318,17 +368,24 @@ async function main() {
   // Product handler defaults a fresh Memory cache; packCache:null disables.
   const http3 = new FixtureSmartHttp();
   http3.add(url2, [{ name: "refs/heads/main", hash }], packBody);
-  const hNull = gitHostCallHandler(eng, {
+  const engNull1 = await GitEngine.load({ engine: engineTar() });
+  const hNull1 = gitHostCallHandler(engNull1, {
     http: http3,
     packCache: null,
     allowOrigins: [fixtureOrigin],
   });
-  await hNull(JSON.stringify({ op: "clone", args: { url: url2 } }));
-  await hNull(JSON.stringify({ op: "clone", args: { url: url2 } }));
+  await hNull1(JSON.stringify({ op: "clone", args: { url: url2 } }));
+  await engNull1.close();
+  const engNull2 = await GitEngine.load({ engine: engineTar() });
+  const hNull2 = gitHostCallHandler(engNull2, {
+    http: http3,
+    packCache: null,
+    allowOrigins: [fixtureOrigin],
+  });
+  await hNull2(JSON.stringify({ op: "clone", args: { url: url2 } }));
+  await engNull2.close();
   if (http3.fetchPacksCalls !== 2) {
-    throw new Error(
-      `packCache:null must not cache (2 fetchPacks), got ${http3.fetchPacksCalls}`,
-    );
+    throw new Error(`packCache:null must not cache (2 fetchPacks), got ${http3.fetchPacksCalls}`);
   }
 
   // MapHostCall-shaped handler
@@ -354,13 +411,8 @@ async function main() {
 
   // Ctl still refuses remotes
   const driver = eng.asMountDriver();
-  await driver.write!(
-    "/.git/mc/ctl",
-    new TextEncoder().encode(JSON.stringify({ op: "fetch" })),
-  );
-  const refuse = JSON.parse(
-    new TextDecoder().decode(await driver.open("/.git/mc/out/last")),
-  );
+  await driver.write!("/.git/mc/ctl", new TextEncoder().encode(JSON.stringify({ op: "fetch" })));
+  const refuse = JSON.parse(new TextDecoder().decode(await driver.open("/.git/mc/out/last")));
   if (refuse.ok || !String(refuse.stderr || "").includes("host_call")) {
     throw new Error(`ctl fetch must refuse: ${JSON.stringify(refuse)}`);
   }
@@ -440,17 +492,11 @@ async function main() {
 
     const monoUrl = "https://example.com/monorepo.git";
     const baseMonoHttp = new FixtureSmartHttp();
-    baseMonoHttp.add(
-      monoUrl,
-      [{ name: "refs/heads/main", hash: monoTip }],
-      monoPack,
-    );
+    baseMonoHttp.add(monoUrl, [{ name: "refs/heads/main", hash: monoTip }], monoPack);
     let seenDepth: number | undefined;
     const monoHttp = {
-      listRefs: (
-        url: string,
-        auth?: Parameters<FixtureSmartHttp["listRefs"]>[1],
-      ) => baseMonoHttp.listRefs(url, auth),
+      listRefs: (url: string, auth?: Parameters<FixtureSmartHttp["listRefs"]>[1]) =>
+        baseMonoHttp.listRefs(url, auth),
       fetchPacks: async (
         url: string,
         want: string[],
@@ -465,9 +511,7 @@ async function main() {
     };
 
     // Engine load sparseCone → orch post-clone sparse-set + gitfs projection.
-    const engDst = await GitEngine.load({ engine: engineTar(),
-      sparseCone: ["src"],
-    });
+    const engDst = await GitEngine.load({ engine: engineTar(), sparseCone: ["src"] });
     if (!engDst.sparseCone?.includes("src")) {
       throw new Error(`D13 engine.sparseCone missing src: ${JSON.stringify(engDst.sparseCone)}`);
     }
@@ -514,9 +558,7 @@ async function main() {
       throw new Error(`D13 gitfs missing src: ${JSON.stringify(monoRoot)}`);
     }
     if (monoRoot.some((e) => e.name === "other")) {
-      throw new Error(
-        `D13 gitfs must hide out-of-cone other: ${JSON.stringify(monoRoot)}`,
-      );
+      throw new Error(`D13 gitfs must hide out-of-cone other: ${JSON.stringify(monoRoot)}`);
     }
     const inCone = new TextDecoder().decode(await monoFs.open("/src/in.txt"));
     if (inCone !== "in-cone\n") {
@@ -688,12 +730,8 @@ async function main() {
     }
 
     // Worktree isolation: each engine has README from minimal.pack.
-    const readmeA = new TextDecoder().decode(
-      await dualA.asMountDriver().open("/README"),
-    );
-    const readmeB = new TextDecoder().decode(
-      await dualB.asMountDriver().open("/README"),
-    );
+    const readmeA = new TextDecoder().decode(await dualA.asMountDriver().open("/README"));
+    const readmeB = new TextDecoder().decode(await dualB.asMountDriver().open("/README"));
     if (readmeA !== "hello\n") {
       throw new Error(`D21 mount A README want hello\\n got ${JSON.stringify(readmeA)}`);
     }
@@ -710,8 +748,12 @@ async function main() {
       await dualB.asMountDriver().open("/only-on-a.txt");
       throw new Error("D21 engines must not share worktree (B saw only-on-a.txt)");
     } catch (e) {
-      if ((e as { code?: string }).code !== "ENOENT" && !String(e).includes("ENOENT") &&
-          !String(e).includes("not found") && !String(e).includes("No such")) {
+      if (
+        (e as { code?: string }).code !== "ENOENT" &&
+        !String(e).includes("ENOENT") &&
+        !String(e).includes("not found") &&
+        !String(e).includes("No such")
+      ) {
         // Some drivers throw ENOENT-coded; accept any failure that is not success.
         if (String(e).includes("must not share")) throw e;
       }
@@ -748,10 +790,8 @@ async function main() {
     let inflightFetch = 0;
     let peakFetch = 0;
     const delayedConcHttp = {
-      listRefs: (
-        url: string,
-        auth?: Parameters<FixtureSmartHttp["listRefs"]>[1],
-      ) => baseConcHttp.listRefs(url, auth),
+      listRefs: (url: string, auth?: Parameters<FixtureSmartHttp["listRefs"]>[1]) =>
+        baseConcHttp.listRefs(url, auth),
       fetchPacks: async (
         url: string,
         want: string[],
@@ -803,12 +843,8 @@ async function main() {
     if (peakFetch < 1) {
       throw new Error(`D21 concurrent peakFetch unset: ${peakFetch}`);
     }
-    const readmeConcA = new TextDecoder().decode(
-      await concA.asMountDriver().open("/README"),
-    );
-    const readmeConcB = new TextDecoder().decode(
-      await concB.asMountDriver().open("/README"),
-    );
+    const readmeConcA = new TextDecoder().decode(await concA.asMountDriver().open("/README"));
+    const readmeConcB = new TextDecoder().decode(await concB.asMountDriver().open("/README"));
     if (readmeConcA !== "hello\n" || readmeConcB !== "hello\n") {
       throw new Error(
         `D21 concurrent worktrees: A=${JSON.stringify(readmeConcA)} B=${JSON.stringify(readmeConcB)}`,
@@ -825,11 +861,8 @@ async function main() {
     const engSerial = await GitEngine.load({ engine: engineTar() });
     const baseHttp = new FixtureSmartHttp();
     const serialUrl = "https://example.com/serial.git";
-    baseHttp.add(
-      serialUrl,
-      [{ name: "refs/heads/main", hash }],
-      packBody,
-    );
+    const { pack: serialPack, tip: serialTip } = minimalPackFixture();
+    baseHttp.add(serialUrl, [{ name: "refs/heads/main", hash: serialTip }], serialPack);
     let inflightFetch = 0;
     let peakFetch = 0;
     const delayedHttp = {
@@ -865,14 +898,17 @@ async function main() {
     if (s1.ok === undefined || s2.ok === undefined) {
       throw new Error(`serial clone missing response: ${JSON.stringify({ s1, s2 })}`);
     }
+    if (Number(s1.ok) + Number(s2.ok) !== 1) {
+      throw new Error(`exactly one clone may claim a fresh root: ${JSON.stringify({ s1, s2 })}`);
+    }
     if (peakFetch > 1) {
       throw new Error(
         `remote single-flight violated: peak concurrent fetchPacks=${peakFetch} (want ≤ 1)`,
       );
     }
-    if (baseHttp.fetchPacksCalls !== 2) {
+    if (baseHttp.fetchPacksCalls !== 1) {
       throw new Error(
-        `both clones should reach fetchPacks serially, got ${baseHttp.fetchPacksCalls}`,
+        `rejected second clone must not fetch, got ${baseHttp.fetchPacksCalls} fetches`,
       );
     }
     await engSerial.close();
@@ -889,9 +925,7 @@ async function main() {
       packRel && rf ? join(rf, "_main", packRel) : "",
       packRel,
       rf ? join(rf, "memcontainers/sdk-js/core/fixtures/pack/minimal.pack") : "",
-      rf
-        ? join(rf, "_main/memcontainers/sdk-js/core/fixtures/pack/minimal.pack")
-        : "",
+      rf ? join(rf, "_main/memcontainers/sdk-js/core/fixtures/pack/minimal.pack") : "",
     ].filter(Boolean);
     let packPath = "";
     for (const c of packCandidates) {
@@ -914,9 +948,7 @@ async function main() {
       }
     }
     if (!packPath || !tipPath) {
-      throw new Error(
-        `D9 minimal pack/tip missing (MC_GIT_MINIMAL_PACK=${packRel})`,
-      );
+      throw new Error(`D9 minimal pack/tip missing (MC_GIT_MINIMAL_PACK=${packRel})`);
     }
     const pack = new Uint8Array(readFileSync(packPath));
     const tip = readFileSync(tipPath, "utf8").trim();
@@ -946,30 +978,21 @@ async function main() {
       args: { action: "get", key: "remote.origin.url" },
     });
     if (!remoteUrl.ok || String(remoteUrl.stdout || "").trim() !== d9Url) {
-      throw new Error(
-        `D9 remote.origin.url want ${d9Url}, got ${JSON.stringify(remoteUrl)}`,
-      );
+      throw new Error(`D9 remote.origin.url want ${d9Url}, got ${JSON.stringify(remoteUrl)}`);
     }
     const brRemote = await engD9.run({
       op: "config",
       args: { action: "get", key: "branch.main.remote" },
     });
     if (!brRemote.ok || String(brRemote.stdout || "").trim() !== "origin") {
-      throw new Error(
-        `D9 branch.main.remote want origin, got ${JSON.stringify(brRemote)}`,
-      );
+      throw new Error(`D9 branch.main.remote want origin, got ${JSON.stringify(brRemote)}`);
     }
     const brMerge = await engD9.run({
       op: "config",
       args: { action: "get", key: "branch.main.merge" },
     });
-    if (
-      !brMerge.ok ||
-      String(brMerge.stdout || "").trim() !== "refs/heads/main"
-    ) {
-      throw new Error(
-        `D9 branch.main.merge want refs/heads/main, got ${JSON.stringify(brMerge)}`,
-      );
+    if (!brMerge.ok || String(brMerge.stdout || "").trim() !== "refs/heads/main") {
+      throw new Error(`D9 branch.main.merge want refs/heads/main, got ${JSON.stringify(brMerge)}`);
     }
 
     // Pull via remote name only (no url) — tracking/config must resolve origin.
@@ -978,18 +1001,14 @@ async function main() {
       args: { remote: "origin" },
     });
     if (!pullD9.ok) {
-      throw new Error(
-        `D9 pull via remote=origin (tracking) failed: ${JSON.stringify(pullD9)}`,
-      );
+      throw new Error(`D9 pull via remote=origin (tracking) failed: ${JSON.stringify(pullD9)}`);
     }
     if (
       !String(pullD9.stdout || "").includes("Already up to date") &&
       !String(pullD9.stdout || "").includes("Fast-forward") &&
       !String(pullD9.stdout || "").includes("fetched")
     ) {
-      throw new Error(
-        `D9 pull stdout unexpected: ${JSON.stringify(pullD9)}`,
-      );
+      throw new Error(`D9 pull stdout unexpected: ${JSON.stringify(pullD9)}`);
     }
 
     // Bare fetch/pull with empty args also defaults to origin after clone.
@@ -1054,9 +1073,7 @@ async function main() {
       args: { action: "update" },
     });
     if (engUpd.ok || !String(engUpd.stderr || "").includes("host_call")) {
-      throw new Error(
-        `D23 engine submodule update must fail closed: ${JSON.stringify(engUpd)}`,
-      );
+      throw new Error(`D23 engine submodule update must fail closed: ${JSON.stringify(engUpd)}`);
     }
 
     // List includes gitlink hash.
@@ -1081,7 +1098,12 @@ async function main() {
       op: "submodule",
       args: { action: "update" },
     });
-    if (denied.ok || !String(denied.stderr || "").toLowerCase().includes("allowlist")) {
+    if (
+      denied.ok ||
+      !String(denied.stderr || "")
+        .toLowerCase()
+        .includes("allowlist")
+    ) {
       throw new Error(`D23 origin deny expected: ${JSON.stringify(denied)}`);
     }
 

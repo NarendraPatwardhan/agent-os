@@ -10,6 +10,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -20,7 +21,6 @@
 #include <unistd.h>
 
 #define GE_VERSION "agentos-git-engine/0.1.0+libgit2-1.9.2"
-
 /* Test-only override for stdout embed limit; 0 = product default. */
 static size_t g_stdout_max_override = 0;
 
@@ -533,6 +533,14 @@ void ge_close(ge_engine *e) {
     git_repository_free(e->repo);
     e->repo = NULL;
   }
+  if (e->clone_lock_file_active) {
+    char lock_path[4096];
+    int n = snprintf(lock_path, sizeof(lock_path), "%s/%s", e->root, GE_CLONE_LOCK);
+    if (n >= 0 && (size_t)n < sizeof(lock_path))
+      unlink(lock_path);
+  }
+  e->clone_lock_file_active = 0;
+  e->clone_lock_held = 0;
   /* Do not git_libgit2_shutdown here — process-global; multi-session hosts
    * may open/close engines. Process exit tears down. */
   free(e);
@@ -574,6 +582,113 @@ static int op_init(ge_engine *e) {
     set_err_git(e, "init");
     return -1;
   }
+  /* Once .git exists, competing clone.begin calls fail on the repository
+   * itself. Retire the root control file before checkout so a remote may
+   * legitimately contain a path with the same name. Keep logical ownership
+   * until clone.end so the initiating orchestrator still has a balanced API. */
+  if (e->clone_lock_held) {
+    char lock_path[4096];
+    int n = snprintf(lock_path, sizeof(lock_path), "%s/%s", e->root, GE_CLONE_LOCK);
+    if (n < 0 || (size_t)n >= sizeof(lock_path) ||
+        (unlink(lock_path) != 0 && errno != ENOENT)) {
+      set_err(e, "init: cannot retire clone reservation file");
+      return -1;
+    }
+    e->clone_lock_file_active = 0;
+  }
+  return 0;
+}
+
+/* Clone is an attach-to-a-fresh-root operation, not a reinitialize operation.
+ * Keep this check in the engine so every host/orchestrator uses the same
+ * precondition before it can import a pack or create refs. */
+static int clone_root_empty(ge_engine *e, int allow_owned_lock) {
+  if (!e) {
+    return -1;
+  }
+  if (e->repo) {
+    set_err(e, "clone: destination must be a fresh directory (repository exists)");
+    return -1;
+  }
+
+  DIR *d = opendir(e->root);
+  if (!d) {
+    set_err(e, "clone: cannot inspect destination directory");
+    return -1;
+  }
+  struct dirent *de;
+  while ((de = readdir(d)) != NULL) {
+    if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+      continue;
+    if (allow_owned_lock && e->clone_lock_held && strcmp(de->d_name, GE_CLONE_LOCK) == 0)
+      continue;
+    closedir(d);
+    set_err(e, "clone: destination must be a fresh empty directory");
+    return -1;
+  }
+  closedir(d);
+  return 0;
+}
+
+static int op_clone_preflight(ge_engine *e) { return clone_root_empty(e, 0); }
+
+/* Reserve a fresh destination across the host's network/apply gap. O_EXCL is
+ * the cross-engine/process arbitration point; the second directory scan closes
+ * the check/create window for cooperating clone callers. */
+static int op_clone_begin(ge_engine *e) {
+  if (!e)
+    return -1;
+  if (e->clone_lock_held) {
+    set_err(e, "clone: destination is already reserved by this engine");
+    return -1;
+  }
+  char lock_path[4096];
+  int n = snprintf(lock_path, sizeof(lock_path), "%s/%s", e->root, GE_CLONE_LOCK);
+  if (n < 0 || (size_t)n >= sizeof(lock_path)) {
+    set_err(e, "clone: reservation path too long");
+    return -1;
+  }
+  if (access(lock_path, F_OK) == 0) {
+    set_err(e, "clone: destination is already reserved (or has a stale reservation)");
+    return -1;
+  }
+  if (op_clone_preflight(e) != 0)
+    return -1;
+  int fd = open(lock_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (fd < 0) {
+    set_err(e, errno == EEXIST ? "clone: destination is already reserved"
+                               : "clone: cannot reserve destination");
+    return -1;
+  }
+  int close_failed = close(fd) != 0;
+  e->clone_lock_held = 1;
+  e->clone_lock_file_active = 1;
+  if (close_failed || clone_root_empty(e, 1) != 0) {
+    unlink(lock_path);
+    e->clone_lock_held = 0;
+    e->clone_lock_file_active = 0;
+    if (close_failed)
+      set_err(e, "clone: cannot persist destination reservation");
+    return -1;
+  }
+  return 0;
+}
+
+static int op_clone_end(ge_engine *e) {
+  if (!e || !e->clone_lock_held) {
+    if (e)
+      set_err(e, "clone: this engine does not own a destination reservation");
+    return -1;
+  }
+  char lock_path[4096];
+  int n = snprintf(lock_path, sizeof(lock_path), "%s/%s", e->root, GE_CLONE_LOCK);
+  if (n < 0 || (size_t)n >= sizeof(lock_path) ||
+      (e->clone_lock_file_active && unlink(lock_path) != 0 && errno != ENOENT)) {
+    set_err(e, "clone: cannot release destination reservation");
+    return -1;
+  }
+  e->clone_lock_file_active = 0;
+  e->clone_lock_held = 0;
   return 0;
 }
 
@@ -655,6 +770,19 @@ static int index_add_file(ge_engine *e, git_index *index, const char *rel) {
     set_err(e, "add: bad path");
     return -1;
   }
+  const git_index_entry *existing = git_index_get_bypath(index, rel, 0);
+  int ignored = 0;
+  if (git_ignore_path_is_ignored(&ignored, e->repo, rel) != 0) {
+    set_err_git(e, "add: ignore check");
+    return -1;
+  }
+  /* Match Git's normal add behavior: an ignored untracked path is rejected
+   * explicitly; an already tracked path may still be updated.  Bulk add uses
+   * the same helper and skips ignored untracked files instead. */
+  if (ignored && !existing) {
+    set_err(e, "add: path is ignored (force add is not supported)");
+    return -1;
+  }
   char full[4096];
   if (ge_worktree_path(e, rel, 0, full, sizeof(full)) != 0)
     return -1;
@@ -705,7 +833,9 @@ static int index_add_file(ge_engine *e, git_index *index, const char *rel) {
   git_index_entry entry;
   memset(&entry, 0, sizeof(entry));
   entry.path = rel;
-  entry.mode = GIT_FILEMODE_BLOB;
+  entry.mode = (st.st_mode & 0111) ? GIT_FILEMODE_BLOB_EXECUTABLE : GIT_FILEMODE_BLOB;
+  if (existing)
+    entry.flags_extended = existing->flags_extended & ~GIT_INDEX_ENTRY_SKIP_WORKTREE;
   int rc = git_index_add_from_buffer(index, &entry, buf, (size_t)sz);
   free(buf);
   if (rc != 0) {
@@ -767,12 +897,37 @@ static int walk_add(ge_engine *e, git_index *index, const char *rel) {
       rc = -1;
       break;
     }
+    int ignored = 0;
+    if (git_ignore_path_is_ignored(&ignored, e->repo, child_rel) != 0) {
+      set_err_git(e, "add: ignore check");
+      rc = -1;
+      break;
+    }
+    int tracked = git_index_get_bypath(index, child_rel, 0) != NULL;
     if (S_ISDIR(st.st_mode)) {
+      /* Do not descend into an ignored untracked directory.  A tracked file
+       * below an ignored directory still has to be eligible for add -A. */
+      if (ignored && !tracked) {
+        size_t prefix_len = strlen(child_rel);
+        size_t entries = git_index_entrycount(index);
+        for (size_t i = 0; i < entries; i++) {
+          const git_index_entry *ent = git_index_get_byindex(index, i);
+          if (ent && ent->path && strncmp(ent->path, child_rel, prefix_len) == 0 &&
+              ent->path[prefix_len] == '/') {
+            tracked = 1;
+            break;
+          }
+        }
+      }
+      if (ignored && !tracked)
+        continue;
       if (walk_add(e, index, child_rel) != 0) {
         rc = -1;
         break;
       }
     } else if (S_ISREG(st.st_mode)) {
+      if (ignored && !tracked)
+        continue;
       if (index_add_file(e, index, child_rel) != 0) {
         rc = -1;
         break;
@@ -792,6 +947,8 @@ static int stage_deletions(ge_engine *e, git_index *index) {
   for (size_t i = n; i > 0; i--) {
     const git_index_entry *ent = git_index_get_byindex(index, i - 1);
     if (!ent || !ent->path)
+      continue;
+    if (ent->flags_extended & GIT_INDEX_ENTRY_SKIP_WORKTREE)
       continue;
     char full[4096];
     join_path(full, sizeof(full), e->root, ent->path);
@@ -874,28 +1031,37 @@ static int op_commit(ge_engine *e, const char *args, char *hash_out, size_t hash
     return -1;
   }
 
+  git_oid parent_oid;
+  git_commit *parent = NULL;
+  int nparents = 0;
+  const git_commit *parents[1];
+  if (git_reference_name_to_id(&parent_oid, e->repo, "HEAD") == 0 &&
+      git_commit_lookup(&parent, e->repo, &parent_oid) == 0) {
+    if (git_oid_equal(&tree_oid, git_commit_tree_id(parent))) {
+      git_tree_free(tree);
+      git_commit_free(parent);
+      set_err(e, "commit: nothing to commit (tree is unchanged; allow-empty is unsupported)");
+      return -1;
+    }
+    parents[0] = parent;
+    nparents = 1;
+  }
+
   git_signature *sig = NULL;
   if (when_unix > 0) {
     if (git_signature_new(&sig, name, email, (git_time_t)when_unix, 0) != 0) {
       git_tree_free(tree);
+      if (parent)
+        git_commit_free(parent);
       set_err_git(e, "commit: signature");
       return -1;
     }
   } else if (git_signature_now(&sig, name, email) != 0) {
     git_tree_free(tree);
+    if (parent)
+      git_commit_free(parent);
     set_err_git(e, "commit: signature");
     return -1;
-  }
-
-  git_oid parent_oid;
-  git_commit *parent = NULL;
-  int nparents = 0;
-  const git_commit *parents[1];
-  if (git_reference_name_to_id(&parent_oid, e->repo, "HEAD") == 0) {
-    if (git_commit_lookup(&parent, e->repo, &parent_oid) == 0) {
-      parents[0] = parent;
-      nparents = 1;
-    }
   }
 
   git_oid commit_oid;
@@ -1930,6 +2096,24 @@ char *ge_run_json(ge_engine *e, const char *request_json) {
     if (op_init(e) != 0)
       return resp_err(e, 1, e->err);
     return resp_ok(e, "Initialized empty Git repository\n", NULL);
+  }
+
+  if (strcmp(op, "clone.preflight") == 0 || strcmp(op, "clone_preflight") == 0) {
+    if (op_clone_preflight(e) != 0)
+      return resp_err(e, 1, e->err);
+    return resp_ok(e, "", NULL);
+  }
+
+  if (strcmp(op, "clone.begin") == 0 || strcmp(op, "clone_begin") == 0) {
+    if (op_clone_begin(e) != 0)
+      return resp_err(e, 1, e->err);
+    return resp_ok(e, "", NULL);
+  }
+
+  if (strcmp(op, "clone.end") == 0 || strcmp(op, "clone_end") == 0) {
+    if (op_clone_end(e) != 0)
+      return resp_err(e, 1, e->err);
+    return resp_ok(e, "", NULL);
   }
 
   if (strcmp(op, "write") == 0) {

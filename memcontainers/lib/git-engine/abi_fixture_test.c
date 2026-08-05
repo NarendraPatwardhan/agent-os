@@ -932,6 +932,22 @@ static int test_submodule_list_only(ge_engine *e) {
 
 /* multi-pattern string/array + basic !negation written to sparse-checkout. */
 static int test_sparse_set_patterns(ge_engine *e) {
+  /* Sparse projection changes require a clean repository.  The fixture has
+   * accumulated several staged/dirty cases by this point, so establish a
+   * committed baseline before exercising the sparse contract. */
+  char leftover[4096];
+  snprintf(leftover, sizeof(leftover), "%s/symlink_link.txt", ge_worktree_root(e));
+  unlink(leftover);
+  snprintf(leftover, sizeof(leftover), "%s/symlink_target.txt", ge_worktree_root(e));
+  unlink(leftover);
+  if (expect_ok(e, "{\"op\":\"add\",\"args\":{\"all\":true}}"))
+    return 1;
+  if (expect_ok(e, "{\"op\":\"commit\",\"args\":{"
+                   "\"message\":\"sparse baseline\","
+                   "\"name\":\"Fixture\","
+                   "\"email\":\"fixture@test\","
+                   "\"when_unix\":1700000010}}"))
+    return 1;
   if (expect_ok(e, "{\"op\":\"sparse-set\",\"args\":{\"patterns\":[\"src\",\"docs\",\"!vendor\"]}}"))
     return 1;
   char sc[4096];
@@ -951,8 +967,9 @@ static int test_sparse_set_patterns(ge_engine *e) {
     return 1;
   }
 
-  /* GIT-001: pruning an out-of-cone symlink must unlink the link itself and
-   * leave the directory it points at completely untouched. */
+  /* A dirty projection change is rejected before checkout/pruning.  This
+   * keeps the symlink containment fixture useful while also proving the new
+   * no-data-loss precondition. */
   char outside_tmpl[] = "/tmp/ge-sparse-outside-XXXXXX";
   char *outside = mkdtemp(outside_tmpl);
   if (!outside)
@@ -968,15 +985,31 @@ static int test_sparse_set_patterns(ge_engine *e) {
     return 1;
   if (symlink(outside, link_path) != 0)
     return 1;
-  /* Newline-separated multi + negation */
-  if (expect_ok(e, "{\"op\":\"sparse-set\",\"args\":{\"patterns\":\"keep\\n!drop\"}}"))
+  /* Newline-separated multi + negation must not run while dirty. */
+  if (expect_fail(e, "{\"op\":\"sparse-set\",\"args\":{\"patterns\":\"keep\\n!drop\"}}", "clean"))
     return 1;
   if (access(sentinel, F_OK) != 0) {
     fprintf(stderr, "sparse prune followed an out-of-cone symlink\n");
     return 1;
   }
+  unlink(link_path);
   unlink(sentinel);
   rmdir(outside);
+  if (rmdir(drop) != 0)
+    return 1;
+  if (expect_ok(e, "{\"op\":\"sparse-disable\"}"))
+    return 1;
+  f = fopen(sc, "rb");
+  if (f) {
+    fclose(f);
+    fprintf(stderr, "sparse-checkout must be removed by disable\n");
+    return 1;
+  }
+  /* Unsafe negation fails closed */
+  if (expect_fail(e, "{\"op\":\"sparse-set\",\"args\":{\"patterns\":\"!../x\"}}", "unsafe"))
+    return 1;
+  if (expect_ok(e, "{\"op\":\"sparse-set\",\"args\":{\"patterns\":\"keep\n!drop\"}}"))
+    return 1;
   f = fopen(sc, "rb");
   if (!f)
     return 1;
@@ -987,9 +1020,6 @@ static int test_sparse_set_patterns(ge_engine *e) {
     fprintf(stderr, "sparse-checkout newline patterns unexpected:\n%s\n", buf);
     return 1;
   }
-  /* Unsafe negation fails closed */
-  if (expect_fail(e, "{\"op\":\"sparse-set\",\"args\":{\"patterns\":\"!../x\"}}", "unsafe"))
-    return 1;
   return 0;
 }
 

@@ -68,6 +68,11 @@ const vm = await mc.create({
 There is no synthetic `.git/objects` tree. The object database stays on the host. Symlinks are fail-closed
 on explicit paths and skipped on bulk `add -A`.
 
+`clone` has a shared engine reservation: its bound root must be an existing, genuinely empty directory
+with no repository, index, or worktree entries. An exclusive control lock closes concurrent
+check-then-act races across engine instances; the JS and BEAM orchestrators hold it from before network
+I/O through apply and release it on every normal/error exit. A partially mutated clone is not reusable.
+
 ### Thin `/bin/git`
 
 Local commands use ctl. Remote commands use host_call `"git"`.
@@ -197,6 +202,17 @@ resolved engine and without that hatch, solve fails closed. See [LLB](./llb.md#l
 | Remotes need CAP_NET | Mount/ctl alone cannot dial |
 | Identity on commit | Supply `git.identity` or commit args |
 | Large stdout | Bodies over 1 MiB use `result.stream` / `/.git/mc/out/last` |
+
+`add` follows the engine's Git-compatible reduced rule: bulk `add -A` skips ignored untracked files,
+while explicit add of an ignored untracked path fails closed because force-add is not part of the thin
+surface. Tracked ignored paths may still be updated. Regular files retain the executable bit in the
+index/tree, and `commit` rejects an unchanged tree; there is no public or internal allow-empty caller.
+
+Sparse cone changes require a clean index and worktree, including ignored untracked files, before any
+metadata or checkout mutation. The engine checks config, pattern writes, checkout, index updates, and
+pruning failures and never prunes after a failed checkout. A failed transition rolls metadata, index
+skip bits, and worktree projection back to the prior cone; a rollback failure is reported explicitly
+instead of being presented as success.
 
 ## Advanced API
 
