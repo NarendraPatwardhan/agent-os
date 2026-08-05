@@ -223,12 +223,23 @@ guest path, but is not presented as a general-purpose AOT product:
   over the same local remain open;
 - WP3 breadth now lowers the complete pinned direct number and float families; vector arithmetic,
   select, dot, extract, and number/vector bridges; safe integer/float conversions; ordinary truth,
-  tag, integer, pointer, number, and float comparisons/branches; and every nontrapping integer and
-  bitwise command. The vector representation remains a two-`i64` `TValue`; three arithmetic lanes
-  are `f32`, while `SELECT_VEC` preserves all four raw result lanes and compares the non-semantic W
-  lane using upstream's zero normalization rather than tag bits. Trapping `NUM_TO_INT`,
-  `NUM_TO_INT64`, and `NUM_TO_UINT`, and the six int64 division/remainder commands plus
-  `CHECK_DIV_INT64`, remain fail-closed until their Luau error semantics are explicit;
+  tag, integer, pointer, number, and float comparisons/branches; every integer/bitwise command; and
+  all six int64 division/remainder commands. The Wasm div/rem lowerings explicitly guard zero and the
+  signed `INT64_MIN / -1` overflow before reaching trapping instructions, and floor division/modulus
+  preserve the pinned x64 sign adjustment. `CHECK_DIV_INT64` rejoins validated compiled/fallback
+  blocks but remains partial at the VM-exit/error-identity boundary. The vector representation remains
+  a two-`i64` `TValue`; three arithmetic lanes are `f32`, while `SELECT_VEC` preserves all four raw
+  result lanes and compares the non-semantic W lane using upstream's zero normalization rather than
+  tag bits. Trapping `NUM_TO_INT`, `NUM_TO_INT64`, and `NUM_TO_UINT` remain fail-closed: saturating Wasm
+  conversions were reviewed and rejected because they are not the pinned native semantics;
+- the scalar structural core now includes pointer-valued SSA layout operands, scalar VM constants,
+  and the pinned optional `TValue` address offsets. `LOAD_DOUBLE`, `LOAD_INT64`, `LOAD_FLOAT`,
+  `STORE_TAG`, `STORE_EXTRA`, `STORE_POINTER`, `STORE_DOUBLE`, and `STORE_TVALUE` cover their pinned
+  forms. `LOAD_TAG`, `LOAD_POINTER`, and `LOAD_TVALUE` remain partial only where the stable frontend
+  snapshot cannot materialize a dynamic import tag or runtime GC pointer for a GC-backed VM constant.
+  `CHECK_TRUTHY`, `CHECK_CMP_NUM`, `CHECK_CMP_INT`, and `CHECK_CMP_INT64` now rejoin validated compiled
+  or supported fallback blocks and fail closed for VM exits; `JUMP_FORN_LOOP_COND` implements the
+  ordered positive/negative-step condition;
 - runtime fallbacks are broader without becoming generic claims. `DO_ARITH` maps all eight pinned
   arithmetic operations onto versioned runtime values and dispatches the real
   `luaV_doarithimpl<TM_*>` implementation for VM-register operands. `CMP_ANY` admits only the exact
@@ -240,11 +251,17 @@ guest path, but is not presented as a general-purpose AOT product:
   seven positive/negative input pairs matching the pinned interpreter. Those numeric inputs execute
   the direct tier and both branch arms; they do not falsely claim runtime traversal of the new
   non-add arithmetic or comparison fallback blocks;
-- the 216-command ledger now records 107 implemented, 30 deliberately partial, and 79 unimplemented
+- a new real source-generated structural function contains both truthiness arms, a descending while
+  loop, an ascending numeric for loop, direct add/subtract and number comparisons, and exact arithmetic
+  and comparison fallback structure. Its deterministic object links into a release-small stamped
+  guest, and eight positive/zero input cases across both branch choices match the separately linked
+  pinned interpreter in the real kernel. That source does not emit the newly lowered `CHECK_*`, int64
+  division, or `JUMP_FORN_LOOP_COND` commands, so those rows retain empty evidence arrays rather than
+  borrowing this vertical;
+- the 216-command ledger now records 122 implemented, 27 deliberately partial, and 67 unimplemented
   rows. Direct integer/bitwise, float, vector, select, and safe-conversion rows with no source/runtime
-  vertical retain empty evidence arrays rather than inheriting the scalar fixture. Layout rows name
-  their exact VM-register operand limitations, and prior broad layout claims were downgraded where
-  the pinned command also accepts constants or pointer-valued instructions;
+  vertical retain empty evidence arrays rather than inheriting the scalar fixtures. Remaining partial
+  layout and guard rows name their exact GC-constant or VM-exit boundary;
 
 WP2 is complete. WP3's central arithmetic/type slow-block rejoin passes the exact-source,
 relocatable-object, strict-runtime, pinned-interpreter, production optimization/stamp/attestation, and
@@ -1485,24 +1502,25 @@ Gate:
 **Goal:** replace manual fixture emission with the one production code-generation model.
 
 **Current state:** the production object builder, generic upstream CFG dispatcher, scalar fast tier,
-and exact fallback rejoin model are implemented. The authoritative ledger has 107 implemented, 30
-partial, and 79 unimplemented command rows. Complete lowering now includes direct number, float,
-vector, select, safe-conversion, comparison, ordinary-branch, nontrapping integer/bitwise, and
-compile-only families. Layout coverage is stated per operand form: several VM-register forms are real
-but remain partial where the pinned command also accepts VM constants or pointer-valued SSA
-instructions. `DO_ARITH` covers all eight arithmetic runtime operations for VM-register operands and
-remains partial; `CMP_ANY` covers only the exact validated comparison fallback and remains partial.
-Unsafe trapping conversions, int64 division/remainder and its guard, most guards, table/string/buffer
-operations, and broader runtime protocols remain unimplemented and fail closed.
+and exact fallback rejoin model are implemented. The authoritative ledger has 122 implemented, 27
+partial, and 67 unimplemented command rows. Complete lowering now includes direct number, float,
+vector, select, safe-conversion, comparison, ordinary-branch, integer/bitwise including guarded int64
+division/remainder, compile-only, and the exact scalar layout forms described above. `DO_ARITH` covers
+all eight arithmetic runtime operations for VM-register operands and remains partial; `CMP_ANY` covers
+only the exact validated comparison fallback and remains partial. Scalar truth/comparison guards and
+the numeric-for loop condition are lowered, while guard VM exits and division error identity remain
+explicit partial boundaries. Unsafe trapping conversions, table/string/buffer operations, and broader
+runtime protocols remain unimplemented and fail closed.
 
-The exact upstream-IR loop, silent-root, slow-add, and scalar-breadth objects pass their declared
-runtime/product gates. The scalar-breadth source executes seven direct number commands and both numeric
-branch arms across seven input pairs in the real kernel, matching the separately linked pinned
-interpreter. Its object also structurally contains all eight arithmetic fallback operations and an
-exact `CMP_ANY` fallback, but numeric runtime inputs do not traverse those blocks; only the existing
-string-add vertical behaviorally proves `DO_ARITH(TM_ADD)`. Integer/bitwise, float, vector, select,
-safe-conversion, and additional branch rows without a source/runtime vertical do not borrow that
-evidence.
+The exact upstream-IR loop, silent-root, slow-add, scalar-breadth, and structural-core objects pass
+their declared runtime/product gates. The scalar-breadth source executes seven direct number commands
+and both numeric branch arms across seven input pairs in the real kernel. The structural-core source
+executes truthiness, while and numeric-for control, add/subtract, and number-comparison paths for eight
+input/branch combinations. Both match the separately linked pinned interpreter. Their objects also
+contain exact arithmetic/comparison fallback structure, but numeric runtime inputs do not traverse
+those blocks; only the existing string-add vertical behaviorally proves `DO_ARITH(TM_ADD)`.
+Integer/bitwise, float, vector, select, safe-conversion, int64 division, new guard, and additional
+branch rows without a source/runtime vertical do not borrow that evidence.
 
 Tasks:
 

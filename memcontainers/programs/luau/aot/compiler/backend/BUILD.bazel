@@ -10,6 +10,7 @@ exports_files(
         "multi_result_call.luau",
         "reference_capture.luau",
         "scalar_breadth.luau",
+        "structural_core.luau",
         "silent_return.luau",
         "slow_add.luau",
     ],
@@ -147,6 +148,27 @@ genrule(
 build_test(
     name = "scalar_breadth_object_build_test",
     targets = [":scalar_breadth_object"],
+)
+
+# A runtime truthiness branch selects two different loop shapes over the same numeric argument:
+# a descending while-loop that adds and an ascending numeric for-loop that subtracts. The source
+# also retains the exact upstream arithmetic and comparison fallback blocks.
+genrule(
+    name = "structural_core_object",
+    srcs = [
+        ":backend_wasm",
+        "structural_core.luau",
+        "//memcontainers/programs/luau/aot/frontend:frontend_wasm",
+    ],
+    outs = ["structural_core.o"],
+    cmd = "BAZEL_BINDIR=. $(execpath :object_emitter) $(location //memcontainers/programs/luau/aot/frontend:frontend_wasm) $(location :backend_wasm) $(location structural_core.luau) $@ 1",
+    tools = [":object_emitter"],
+    visibility = ["//visibility:public"],
+)
+
+build_test(
+    name = "structural_core_object_build_test",
+    targets = [":structural_core_object"],
 )
 
 # The first closed-package object contains all three canonical Proto/IR functions under unique

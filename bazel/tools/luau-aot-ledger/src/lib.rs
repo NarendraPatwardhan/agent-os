@@ -426,7 +426,10 @@ pub fn validate_policy(extraction: &Extraction, policy_json: &str) -> Result<(),
                 row.command, row.class
             ));
         }
-        if row.status != "unimplemented" && row.status != "implemented" {
+        if row.status != "unimplemented"
+            && row.status != "implemented"
+            && !row.status.starts_with("partial_")
+        {
             return Err(format!("{}: invalid status {}", row.command, row.status));
         }
         if row.oracle.trim().is_empty() {

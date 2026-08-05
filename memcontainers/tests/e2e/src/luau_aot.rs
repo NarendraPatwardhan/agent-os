@@ -97,6 +97,41 @@ fn luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter() {
     }
 }
 
+/// One source-built function selects between a descending while-loop and an ascending numeric
+/// for-loop from a real boolean argument. The two arms add versus subtract, so equal loop bounds
+/// cannot hide an incorrect truthiness branch or accidental common implementation.
+#[test]
+fn luau_aot_structural_truthiness_and_loop_paths_match_interpreter() {
+    let mut session = boot_loom_aot();
+
+    for (n, descending) in [
+        (0, true),
+        (0, false),
+        (1, true),
+        (1, false),
+        (5, true),
+        (5, false),
+        (12, true),
+        (12, false),
+    ] {
+        let flag = if descending { "true" } else { "false" };
+        let aot = session.run_for_output(&format!(
+            "luau-aot-structural {n} {flag}; echo status=$?"
+        ));
+        let interpreted = session.run_for_output(&format!(
+            "luau -e 'local run = require(\"aot_structural_core\"); local n, flag = ...; print(run(assert(tonumber(n)), flag == \"true\"))' {n} {flag}; echo status=$?"
+        ));
+        assert_eq!(
+            aot, interpreted,
+            "strict AOT structural-core mismatch for n={n}, descending={descending}"
+        );
+        assert!(
+            aot.ends_with("status=0\r\n"),
+            "strict AOT structural-core failed for n={n}, descending={descending}: {aot:?}"
+        );
+    }
+}
+
 /// The exact source-built package publishes all three Protos, survives full collection, returns a
 /// real caller closure, materializes its child closure, and rejoins after compiled Luau-to-Luau
 /// CALL. The pinned interpreter requires the same installed source as a module and invokes the

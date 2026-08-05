@@ -94,6 +94,12 @@ filegroup(
     visibility = ["//memcontainers/images:__pkg__"],
 )
 
+filegroup(
+    name = "structural_core_source",
+    srcs = ["//memcontainers/programs/luau/aot/compiler/backend:structural_core.luau"],
+    visibility = ["//memcontainers/images:__pkg__"],
+)
+
 # The target runtime is a relocatable wasm32 archive, not a runnable guest. Generated functions,
 # AOT metadata, the runner, and the linker are deliberately separate layers. This target compiles
 # only the explicit retained VM set plus our pin-sized frame adapter; the source policy in @luau
