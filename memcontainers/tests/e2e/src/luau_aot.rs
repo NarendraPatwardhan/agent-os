@@ -43,3 +43,30 @@ fn luau_aot_top_level_return_is_silent() {
         "status=0\r\n"
     );
 }
+
+/// Raw argv strings force the exact upstream-IR object through CHECK_TAG -> DO_ARITH -> compiled
+/// rejoin. Both the stamped AOT guest and the separately linked interpreter must succeed and agree.
+#[test]
+fn luau_aot_arithmetic_slow_path_rejoins_compiled_code() {
+    let mut session = boot_loom_aot();
+    session
+        .host
+        .write_file(
+            "/demo/aot-slow-add.luau",
+            b"local lhs, rhs = ...\nprint(lhs + rhs)\n",
+        )
+        .expect("seed pinned-interpreter slow arithmetic oracle");
+
+    for (lhs, rhs) in [(-50, 8), (0, 0), (20, 22), (7, -3), (1234, 5678)] {
+        let expected = format!("{}\r\nstatus=0\r\n", lhs + rhs);
+        let aot = session.run_for_output(&format!("luau-aot-slow-add {lhs} {rhs}; echo status=$?"));
+        let interpreted = session.run_for_output(&format!(
+            "luau /demo/aot-slow-add.luau {lhs} {rhs}; echo status=$?"
+        ));
+        assert_eq!(aot, expected, "strict AOT slow add failed for {lhs}/{rhs}");
+        assert_eq!(
+            aot, interpreted,
+            "strict AOT slow add mismatch for {lhs}/{rhs}"
+        );
+    }
+}

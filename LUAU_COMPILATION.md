@@ -133,6 +133,10 @@ guest path, but is not presented as a general-purpose AOT product:
   return block. Five string-add cases match the separately linked pinned interpreter. Constant-operand
   arithmetic fallbacks, other operators, general metamethod calls, and traceback location publication
   remain explicit partial coverage;
+- that same slow-add object now links into a production-shaped guest with a real Luau state and raw
+  argv strings, so every invocation must take the generated slow block rather than the numeric fast
+  tier. `mc_program` optimizes, stamps, and attests it; the `loom_aot` image installs it; and the real
+  AgentOS kernel runs five signed input pairs whose exact output and zero status match `/bin/luau`;
 - the numeric-loop source is now a declared Bazel input to the actual zero-import frontend and backend.
   Their deterministic output object is the exact object linked into the 36-object strict runtime; no
   handwritten function body or copied test artifact intervenes. That artifact runs through ordinary
@@ -155,9 +159,10 @@ guest path, but is not presented as a general-purpose AOT product:
   semantics remain explicitly open.
 
 WP2 is complete. WP3's central arithmetic/type slow-block rejoin now passes the exact-source,
-relocatable-object, strict-runtime, and pinned-interpreter gates. The immediate completion slice is the
-same slow-add artifact through production optimization/stamp/attestation and the real kernel; after that,
-operator/constant variants are added as coherent semantic families, not disconnected coverage work.
+relocatable-object, strict-runtime, pinned-interpreter, production optimization/stamp/attestation, and
+real-kernel gates. WP4 is next: compile the entire closed Proto graph into one deterministic object,
+publish its immutable function table, and prove a narrow fixed-arity compiled Luau-to-Luau call before
+adding operator/constant variants as coherent semantic families.
 
 ---
 
@@ -1390,9 +1395,9 @@ complete rows are `NOP`,
 `DO_ARITH` calls a stable helper for upstream `TM_ADD` with VM-register operands; `SET_SAVEDPC` is a
 validated AOT location marker; and the fallback `JUMP` rejoins the shared compiled block after a mandatory
 base reload. These rows, `INTERRUPT`, `RETURN`, and `FALLBACK_PREPVARARGS` remain deliberately partial and
-named as such in the ledger. The exact upstream-IR-generated loop and silent-root objects pass real-runtime
-and kernel gates; the slow-add object passes real-runtime/pinned-interpreter differential and awaits its
-production kernel gate.
+named as such in the ledger. The exact upstream-IR-generated loop, silent-root, and slow-add objects pass
+real-runtime and production kernel gates; the slow-add artifact also matches the separately linked pinned
+interpreter for five decimal-string input pairs.
 
 Tasks:
 

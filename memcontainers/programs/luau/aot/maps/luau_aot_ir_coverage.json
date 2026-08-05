@@ -1881,7 +1881,8 @@
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2134; CodeGen/src/IrLoweringA64.cpp:2099; luaV_doarithimpl, luaV_callTM",
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
-        "//memcontainers/programs/luau/aot/runtime:slow_arith_runtime_oracle_test"
+        "//memcontainers/programs/luau/aot/runtime:slow_arith_runtime_oracle_test",
+        "//memcontainers/tests/e2e:core#luau_aot_arithmetic_slow_path_rejoins_compiled_code"
       ],
       "status": "partial_add_vm_register_operands"
     },
@@ -2018,7 +2019,8 @@
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2266; CodeGen/src/IrLoweringA64.cpp:2310",
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
-        "//memcontainers/programs/luau/aot/runtime:slow_arith_runtime_oracle_test"
+        "//memcontainers/programs/luau/aot/runtime:slow_arith_runtime_oracle_test",
+        "//memcontainers/tests/e2e:core#luau_aot_arithmetic_slow_path_rejoins_compiled_code"
       ],
       "status": "partial_numeric_fallback_rejoin_and_vm_exit"
     },
@@ -2315,7 +2317,8 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2669; CodeGen/src/IrLoweringA64.cpp:2793",
       "tests": [
-        "//memcontainers/programs/luau/aot/runtime:slow_arith_runtime_oracle_test"
+        "//memcontainers/programs/luau/aot/runtime:slow_arith_runtime_oracle_test",
+        "//memcontainers/tests/e2e:core#luau_aot_arithmetic_slow_path_rejoins_compiled_code"
       ],
       "status": "partial_validated_arith_location_marker"
     },
