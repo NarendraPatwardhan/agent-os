@@ -1,6 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import * as stylex from "@stylexjs/stylex";
-import { setArtifactSources } from "@mc/elements";
 import { motion, text } from "instrument";
 import { MarkerToc } from "./MarkerToc";
 import { Icon } from "./Icon";
@@ -8,23 +7,6 @@ import { chapters } from "./examples/chapters";
 import { styles } from "./examples/styles";
 import { ExampleDriver } from "./examples/drivers";
 import type { Chapter, Example, IconId } from "./examples/types";
-
-// Register the kernel + each shipped flavor tar as a logical image name. Examples pass
-// image="loom" etc.; the browser boot fetches /mc/<flavor>.tar per-instance (cached
-// per-URL), so flavors never leak across terminals. loom aliases the hero's image.tar
-// so the "Boot a VM" tab reuses the hero's already-warm fetch instead of re-downloading.
-// The catalog compiler backs runtime vm.tool (the host-tool examples in chapter 3).
-setArtifactSources({
-  kernel: "/mc/kernel.wasm",
-  images: {
-    minimal: "/mc/minimal.tar",
-    posix: "/mc/posix.tar",
-    loom: "/mc/image.tar",
-    atlas: "/mc/atlas.tar",
-    paper: "/mc/paper.tar",
-  },
-  catalogCompiler: "/mc/catalog-compiler.wasm",
-});
 
 const FALLBACK = chapters[0];
 

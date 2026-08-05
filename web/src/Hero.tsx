@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import * as stylex from "@stylexjs/stylex";
-import { setArtifactSources } from "@mc/elements";
 import type { McTerminal } from "@mc/elements";
 import { layout, text } from "instrument";
 import { color } from "instrument/tokens/color.stylex.js";
@@ -12,11 +11,6 @@ import { media } from "instrument/tokens/media.stylex.js";
 import { duration, easing } from "instrument/tokens/motion.stylex.js";
 import { runAutoDemo, type AutoDemoHandle } from "./heroDemo";
 import { CopyIcon } from "./CopyIcon";
-
-// Point @mc/elements' artifact loader at the Bazel-staged kernel/image that Vite
-// serves from /mc/ (see web/BUILD.bazel `hero_vm_assets`). Module scope: runs once,
-// before any <mc-terminal> boots.
-setArtifactSources({ kernel: "/mc/kernel.wasm", image: "/mc/image.tar" });
 
 const styles = stylex.create({
   page: {

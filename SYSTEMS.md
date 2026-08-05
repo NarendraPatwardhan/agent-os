@@ -1493,7 +1493,9 @@ connection setup; its `<mc-*>` elements resolve a `Vm` from an ancestor sandbox 
 The **web app** embeds live VMs in the browser: the hero is a real shell, and the example workbench
 drives the same API across images, shell/files, Luau, tools/connections, mounts, snapshots/builds,
 permissions, automation, and remote lifecycle. Bazel stages the kernel, every shipped flavor, and the
-catalog compiler under `/mc/`; flavors are fetched lazily. Browser tests boot real artifacts and verify
+catalog compiler under `/mc/`; a generated digest manifest gives each large artifact a content-keyed
+request URL while a cache-busted manifest lookup follows the current deployment through intermediary
+caches. Flavors are fetched lazily. Browser tests boot real artifacts and verify
 the JS host, OPFS persistence, SDK behavior, and the component lifecycle.
 
 ### 13.5 The portable build plane
