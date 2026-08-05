@@ -116,6 +116,14 @@ pub fn boot_loom() -> Session {
     Session { host, stdout }
 }
 
+/// Boot the isolated strict-AOT promotion image. It layers the exact stamped/attested WP2 guest on
+/// loom so one kernel session can compare AOT argv-driven output with the pinned /bin/luau oracle.
+pub fn boot_loom_aot() -> Session {
+    let (b, stdout) = builder("_main/memcontainers/images/loom_aot.tar");
+    let host = b.build().expect("kernel booted (strict Luau AOT image)");
+    Session { host, stdout }
+}
+
 /// Boot the `loom` image with a host-call tool registry installed. This is the Luau `require("tools")`
 /// proof: the language battery talks to the base `/svc/tools` broker, which then egresses through the
 /// opted-in host-call map.

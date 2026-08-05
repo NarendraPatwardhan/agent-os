@@ -194,6 +194,20 @@ pkg_tar(
     ],
 )
 
+# Strict Luau AOT promotion image. Keep the bounded WP2 executable out of the ordinary loom flavor
+# until language coverage is sufficient to replace /bin/luau; the real kernel E2E still consumes the
+# exact stamped/attested production artifact through this load-bearing layer.
+pkg_tar(
+    name = "loom_aot",
+    create_parents = False,
+    files = {
+        "//memcontainers/programs/luau/aot/runtime/glue:luau-aot-oracle": "/bin/luau-aot-oracle",
+    },
+    owner = "0.0",
+    visibility = ["//memcontainers/tests/e2e:__pkg__"],
+    deps = [":loom"],
+)
+
 # svc-test — the resident-service primitive proof image (SYSTEMS.md): loom (the shell + /bin/luau)
 # + the svc example/test services /bin/kv (the warm key-value demo) and /bin/crashloop (a deliberately-
 # broken negative control), plus GENERATED /etc/services.d fragments. On LOOM (not base) so the e2e proves

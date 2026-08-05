@@ -1,0 +1,57 @@
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
+load("//bazel:mc_program.bzl", "cc_object", "mc_program")
+
+# Force-link the exact object built from numeric_loop.luau by the zero-import frontend/backend.
+cc_object(
+    name = "numeric_loop_object_link",
+    obj = "//memcontainers/programs/luau/aot/compiler/backend:numeric_loop_object",
+)
+
+# C++ and wasi-libc are implementation details of the reused Luau runtime. The canonical adapter
+# resolves their preview1 surface to the AgentOS mc ABI before the artifact can be stamped.
+cc_object(
+    name = "wasi_adapter_link",
+    obj = "//memcontainers/wasi-adapter:wasi_adapter_staticlib",
+)
+
+zig_binary(
+    name = "luau_aot_oracle_raw",
+    linkopts = [
+        "-lc",
+        "-lc++",
+        "--export=__mc_pcall_run",
+        "--export=__stack_pointer",
+    ],
+    main = "entry.zig",
+    tags = ["manual"],
+    deps = [
+        ":numeric_loop_object_link",
+        ":wasi_adapter_link",
+        "//memcontainers/programs/luau/aot/runtime:aot_runtime_abi",
+        "//memcontainers/programs/luau/aot/runtime:luau_aot_runtime_raw",
+        "//memcontainers/programs/luau/glue:trap",
+        "//memcontainers/programs/luau/glue:wasi_shim",
+        "//memcontainers/sysroot/zig:mc",
+    ],
+)
+
+zig_configure_binary(
+    name = "luau_aot_oracle_wasm",
+    actual = ":luau_aot_oracle_raw",
+    mode = "release_small",
+    tags = ["manual"],
+    target = "//platforms:wasm32_wasi",
+    threaded = "single",
+)
+
+# This target deliberately uses the real production artifact pipeline: Binaryen optimization,
+# mc_tier/mc_budget stamping, and mc-attest import/feature validation.
+mc_program(
+    name = "luau-aot-oracle",
+    fuel = 10000000000,
+    mem = 64 * 1024 * 1024,
+    table = 10000,
+    tier = "full",
+    visibility = ["//memcontainers/images:__pkg__"],
+    wasm = ":luau_aot_oracle_wasm",
+)

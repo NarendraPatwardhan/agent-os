@@ -1,6 +1,6 @@
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
 load("@aspect_rules_js//js:defs.bzl", "js_test")
-load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure", "zig_configure_binary", "zig_static_library")
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure", "zig_configure_binary", "zig_library", "zig_static_library")
 load("//bazel:mc_program.bzl", "cc_headers", "cc_object")
 
 cc_headers(
@@ -8,6 +8,16 @@ cc_headers(
     hdrs = ["include/aot_runtime_v1.h"],
     includes = ["include"],
     visibility = ["//visibility:public"],
+)
+
+zig_library(
+    name = "aot_runtime_abi",
+    import_name = "luau_aot_runtime_abi",
+    main = "abi_v1.zig",
+    visibility = [
+        "//memcontainers/programs/luau/aot/runtime/glue:__pkg__",
+        "//memcontainers/programs/luau/aot/runtime:__pkg__",
+    ],
 )
 
 # The target runtime is a relocatable wasm32 archive, not a runnable guest. Generated functions,
@@ -44,6 +54,7 @@ zig_static_library(
         "@luau//:interp_incs",
         "//memcontainers/programs/luau/glue:glue_incs",
     ],
+    visibility = ["//memcontainers/programs/luau/aot/runtime/glue:__pkg__"],
 )
 
 zig_configure(
@@ -107,6 +118,7 @@ zig_binary(
     main = "oracle/oracle_root.zig",
     tags = ["manual"],
     deps = [
+        ":aot_runtime_abi",
         ":luau_aot_runtime_raw",
         ":ir_function_object_link",
         "//memcontainers/programs/luau/glue:trap",

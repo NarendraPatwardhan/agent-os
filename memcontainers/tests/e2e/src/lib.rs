@@ -25,6 +25,7 @@ mod coreutils;
 mod flavors;
 mod kernel;
 mod loom;
+mod luau_aot;
 mod process;
 mod shell;
 mod svc;

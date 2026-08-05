@@ -84,7 +84,8 @@ by continuing implementation on the audited branch.
 
 The replacement implementation lives on `feature/luau-aot-compiler` in the separate
 `agent-os-luau-aot` worktree. The audited `agent-os-luau-compiler` worktree remains untouched. The
-following foundations are real and checked; none is yet presented as a runnable AOT product:
+following foundations are real and checked. The bounded numeric oracle is runnable through the full
+guest path, but is not presented as a general-purpose AOT product:
 
 - the exact 0.725 IR enum ledger and wasm32 layout probe fail on pin drift;
 - the strict target-runtime source boundary builds a 36-member wasm32 archive with Compiler, Ast,
@@ -131,17 +132,22 @@ following foundations are real and checked; none is yet presented as a runnable 
   `lua_call` on real states and matches a separately linked, exact-pinned Luau compiler/interpreter
   oracle for inputs `-3`, `0`, `1`, `4`, `7`, and `12`. The interpreter is test-only and is absent from
   every strict-runtime dependency;
+- the same exact generated object now links with a production-shaped Zig entry, the strict runtime,
+  and the canonical WASI-to-mc adapter. `mc_program` optimizes, stamps, and attests the final guest;
+  `mc-attest` accepts its pure-mc import surface and declared `full` tier. A dedicated `loom_aot`
+  image installs that artifact, and the real AgentOS kernel runs six fresh argv-driven processes whose
+  stdout matches `/bin/luau` for all six inputs;
 - `INTERRUPT` calls a versioned runtime helper instead of becoming a no-op. The helper preserves a
   null callback fast path, invokes an installed callback, reports yielded status, and requires
   generated code to reload `L->base` after a successful callback. Yield continuation/source-pc
   semantics remain explicitly open.
 
-The next product slice gives that same source-built artifact a production guest `_start`, argv/input
-plumbing, and the established AgentOS adapter/package path, then runs it under the real kernel and
-closes the import, feature, `mc-stamp`, and `mc-attest` gates. WP2 remains open only on that production
-guest/kernel boundary. WP3's central upstream-IR/object/runtime/differential gate is proven, while the
-work package remains open for arithmetic slow-block rejoin and the remaining scalar/conversion command
-coverage.
+The next slice closes WP2's remaining semantic negative control: compile a real `return 30` root from
+upstream IR and prove that the stamped artifact emits no stdout under the kernel. Root chunks currently
+expose `FALLBACK_PREPVARARGS`; the backend must normalize the zero-fixed-parameter/no-vararg-use case,
+not hide it in the entry wrapper. WP3's central upstream-IR/object/runtime/kernel-differential gate is
+proven, while the work package remains open for arithmetic slow-block rejoin and the remaining
+scalar/conversion command coverage.
 
 ---
 
@@ -1336,8 +1342,10 @@ Gate:
 standard-linker archive integration are proven. A declared Luau source file now passes through the
 zero-import frontend and backend, and the exact emitted relocatable object is linked into the strict
 runtime. It executes through `lua_call` on real states and matches a separate exact-pinned interpreter
-artifact for six dynamic inputs. `_start`, argv, AgentOS kernel execution, same-artifact output through
-the guest ABI, stamping, and attestation remain gate-open.
+artifact for six dynamic inputs. A production-shaped `_start` receives argv through the canonical
+adapter, the optimized/stamped/attested artifact installs in a dedicated image, and the real AgentOS
+kernel observes same-artifact stdout matching `/bin/luau` across those six inputs. The mandatory silent
+top-level `return 30` artifact remains gate-open.
 
 Tasks:
 

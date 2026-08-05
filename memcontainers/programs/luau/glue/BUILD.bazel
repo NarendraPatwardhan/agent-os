@@ -22,6 +22,14 @@ zig_library(
     deps = ["//memcontainers/sysroot/zig:mc"],
 )
 
+# Reusable last-mile WASI symbol forwarder for Zig/C++ Luau executables that force-link the
+# canonical wasi-adapter. Consumers import this module so its exported fd_close trampoline is kept.
+zig_library(
+    name = "wasi_shim",
+    main = "wasi_shim.zig",
+    visibility = ["//memcontainers/programs/luau/aot/runtime/glue:__pkg__"],
+)
+
 build_test(
     name = "trap_build_test",
     targets = [":trap"],
