@@ -11,6 +11,7 @@ extern fn __wasm_call_ctors() void;
 extern fn luaL_newstate() ?*State;
 extern fn lua_close(state: ?*State) void;
 extern fn lua_pushnumber(state: ?*State, value: f64) void;
+extern fn lua_pushlstring(state: ?*State, string: [*]const u8, length: usize) void;
 extern fn lua_call(state: ?*State, argument_count: c_int, result_count: c_int) void;
 extern fn lua_tonumberx(state: ?*State, index: c_int, is_number: *c_int) f64;
 extern fn luau_compile(source: [*]const u8, size: usize, options: ?*anyopaque, out_size: *usize) [*c]u8;
@@ -53,6 +54,41 @@ export fn mc_luau_interpreter_oracle_run_i32(source_size: u32, input: i32) i32 {
     lua_call(state, 0, 1); // Source chunk returns the loop closure.
     lua_pushnumber(state, @floatFromInt(input));
     lua_call(state, 1, 1);
+
+    var is_number: c_int = 0;
+    const result = lua_tonumberx(state, -1, &is_number);
+    if (is_number == 0 or result < @as(f64, @floatFromInt(std.math.minInt(i32))) or
+        result > @as(f64, @floatFromInt(std.math.maxInt(i32))))
+        return std.math.minInt(i32);
+    return @intFromFloat(result);
+}
+
+// Exercise the exact source's generic arithmetic path with string operands. This remains in the
+// separately linked pinned-interpreter oracle and is never a dependency of the strict AOT runtime.
+export fn mc_luau_interpreter_oracle_run_add_strings(source_size: u32, lhs: i32, rhs: i32) i32 {
+    if (source_size == 0 or source_size > source_buffer.len)
+        return std.math.minInt(i32);
+
+    const state = luaL_newstate() orelse return std.math.minInt(i32);
+    defer lua_close(state);
+
+    var bytecode_size: usize = 0;
+    const source = source_buffer[0..source_size];
+    const bytecode = luau_compile(source.ptr, source.len, null, &bytecode_size);
+    if (bytecode == null)
+        return std.math.minInt(i32);
+    defer free(bytecode);
+    if (luau_load(state, "=aot-slow-arithmetic-differential", bytecode, bytecode_size, 0) != 0)
+        return std.math.minInt(i32);
+
+    lua_call(state, 0, 1);
+    var lhs_buffer: [32]u8 = undefined;
+    var rhs_buffer: [32]u8 = undefined;
+    const lhs_string = std.fmt.bufPrint(&lhs_buffer, "{d}", .{lhs}) catch return std.math.minInt(i32);
+    const rhs_string = std.fmt.bufPrint(&rhs_buffer, "{d}", .{rhs}) catch return std.math.minInt(i32);
+    lua_pushlstring(state, lhs_string.ptr, lhs_string.len);
+    lua_pushlstring(state, rhs_string.ptr, rhs_string.len);
+    lua_call(state, 2, 1);
 
     var is_number: c_int = 0;
     const result = lua_tonumberx(state, -1, &is_number);

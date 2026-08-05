@@ -211,6 +211,28 @@ extern "C" uint32_t mc_luau_aot_v1_interrupt(lua_State *L, uint32_t pc) {
     return L->status == 0 ? MC_LUAU_AOT_V1_OK : MC_LUAU_AOT_V1_YIELDED;
 }
 
+extern "C" void mc_luau_aot_v1_do_arith(lua_State *L, uint32_t destinationRegister,
+                                          uint32_t lhsRegister, uint32_t rhsRegister,
+                                          uint32_t operation) {
+    if (!L || !L->ci || !isLua(L->ci))
+        luaG_runerror(L, "strict AOT arithmetic helper entered without an active Luau frame");
+
+    Closure *closure = clvalue(L->ci->func);
+    Proto *proto = closure->l.p;
+    if (destinationRegister >= proto->maxstacksize || lhsRegister >= proto->maxstacksize ||
+        rhsRegister >= proto->maxstacksize)
+        luaG_runerror(L, "strict AOT arithmetic helper register is outside the compiled frame");
+
+    switch (operation) {
+    case MC_LUAU_AOT_ARITH_V1_ADD:
+        luaV_doarithimpl<TM_ADD>(L, L->base + destinationRegister, L->base + lhsRegister,
+                                 L->base + rhsRegister);
+        return;
+    default:
+        luaG_runerror(L, "strict AOT arithmetic helper rejected operation %u", operation);
+    }
+}
+
 static void destroyAotProto(lua_State *, Proto *proto) {
     // AOT metadata is immutable linker-owned data, not a heap allocation owned by Proto.
     proto->execdata = nullptr;

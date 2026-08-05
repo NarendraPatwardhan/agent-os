@@ -23,6 +23,12 @@ enum McLuauAotProtoFlagsV1 {
     MC_LUAU_AOT_PROTO_V1_ROOT = 1u << 0,
 };
 
+// Stable AOT helper operations. These values are independent of Luau's internal TMS enum; the
+// compiler frontend pin maps upstream TMS values onto this versioned runtime ABI.
+enum McLuauAotArithOpV1 {
+    MC_LUAU_AOT_ARITH_V1_ADD = 0,
+};
+
 // Immutable metadata attached to Proto::execdata by the AOT image initializer. The generated
 // function pointer uses the Wasm table index representation selected by the canonical toolchain;
 // generated code itself receives this record as linear-memory data and never dereferences Proto.
@@ -47,6 +53,9 @@ void mc_luau_aot_v1_enter(lua_State *state);
 void mc_luau_aot_v1_finish_yielded_op(lua_State *state);
 void mc_luau_aot_v1_commit_number(lua_State *state, double value);
 uint32_t mc_luau_aot_v1_interrupt(lua_State *state, uint32_t pc);
+void mc_luau_aot_v1_do_arith(lua_State *state, uint32_t destination_register,
+                             uint32_t lhs_register, uint32_t rhs_register,
+                             uint32_t operation);
 uint32_t mc_luau_aot_v1_push_root(lua_State *state, const McLuauAotProtoV1 *metadata,
                                   const char *source, size_t source_size, uint8_t num_params,
                                   uint8_t max_stack_size);

@@ -6,6 +6,7 @@ exports_files(
     [
         "numeric_loop.luau",
         "silent_return.luau",
+        "slow_add.luau",
     ],
     visibility = ["//memcontainers/programs/luau/aot/runtime:__pkg__"],
 )
@@ -101,12 +102,33 @@ build_test(
     targets = [":silent_return_object"],
 )
 
+# Two-argument addition contains the upstream numeric fast path and its real fallback stream:
+# CHECK_TAG -> SET_SAVEDPC/DO_ARITH/JUMP -> shared compiled return block.
+genrule(
+    name = "slow_add_object",
+    srcs = [
+        ":backend_wasm",
+        "slow_add.luau",
+        "//memcontainers/programs/luau/aot/frontend:frontend_wasm",
+    ],
+    outs = ["slow_add.o"],
+    cmd = "BAZEL_BINDIR=. $(execpath :object_emitter) $(location //memcontainers/programs/luau/aot/frontend:frontend_wasm) $(location :backend_wasm) $(location slow_add.luau) $@ 1",
+    tools = [":object_emitter"],
+    visibility = ["//visibility:public"],
+)
+
+build_test(
+    name = "slow_add_object_build_test",
+    targets = [":slow_add_object"],
+)
+
 js_test(
     name = "frontend_to_wasm_test",
     data = [
         ":backend_wasm",
         ":frontend_to_wasm.test.mjs",
         "silent_return.luau",
+        "slow_add.luau",
         "//memcontainers/programs/luau/aot/frontend:frontend_wasm",
         "@@emsdk++emscripten_deps+emscripten_bin_linux//:bin/wasm-ld",
     ],
@@ -115,6 +137,7 @@ js_test(
         "LUAU_AOT_BACKEND_WASM": "$(rlocationpath :backend_wasm)",
         "LUAU_AOT_FRONTEND_WASM": "$(rlocationpath //memcontainers/programs/luau/aot/frontend:frontend_wasm)",
         "LUAU_AOT_SILENT_SOURCE": "$(rlocationpath silent_return.luau)",
+        "LUAU_AOT_SLOW_ADD_SOURCE": "$(rlocationpath slow_add.luau)",
         "LUAU_AOT_WASM_LD": "$(rlocationpath @@emsdk++emscripten_deps+emscripten_bin_linux//:bin/wasm-ld)",
     },
     no_copy_to_bin = ["@@emsdk++emscripten_deps+emscripten_bin_linux//:bin/wasm-ld"],

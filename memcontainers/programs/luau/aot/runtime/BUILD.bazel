@@ -95,6 +95,11 @@ cc_object(
     obj = "//memcontainers/programs/luau/aot/compiler/backend:numeric_loop_object",
 )
 
+cc_object(
+    name = "slow_add_object_link",
+    obj = "//memcontainers/programs/luau/aot/compiler/backend:slow_add_object",
+)
+
 # Executable oracle for the first generated-function ABI. Unlike the structural wasm-ld oracle,
 # this constructs a real Luau state/Proto/Closure and reaches generated code through ldo's strict
 # AOT dispatch hook. It remains an oracle-only target; production entry/package materialization is
@@ -157,6 +162,7 @@ zig_binary(
         "--export=__mc_pcall_run",
         "--export=__stack_pointer",
         "--export=mc_luau_interpreter_oracle_init",
+        "--export=mc_luau_interpreter_oracle_run_add_strings",
         "--export=mc_luau_interpreter_oracle_run_i32",
         "--export=mc_luau_interpreter_oracle_source_buffer",
     ],
@@ -186,6 +192,43 @@ build_test(
     ],
 )
 
+zig_binary(
+    name = "slow_arith_runtime_oracle_raw",
+    srcs = ["oracle/slow_arith_oracle_root.zig"],
+    linkopts = [
+        "-lc",
+        "-lc++",
+        "-fno-entry",
+        "--export-memory",
+        "--export=__mc_pcall_run",
+        "--export=__stack_pointer",
+        "--export=mc_luau_aot_v1_slow_arith_oracle_init",
+        "--export=mc_luau_aot_v1_slow_arith_oracle_run",
+    ],
+    main = "oracle/slow_arith_oracle_root.zig",
+    tags = ["manual"],
+    deps = [
+        ":aot_runtime_abi",
+        ":luau_aot_runtime_raw",
+        ":slow_add_object_link",
+        "//memcontainers/programs/luau/glue:trap",
+    ],
+)
+
+zig_configure_binary(
+    name = "slow_arith_runtime_oracle_wasm",
+    actual = ":slow_arith_runtime_oracle_raw",
+    mode = "release_small",
+    tags = ["manual"],
+    target = "//platforms:wasm32_wasi",
+    threaded = "single",
+)
+
+build_test(
+    name = "slow_arith_runtime_oracle_build_test",
+    targets = [":slow_arith_runtime_oracle_wasm"],
+)
+
 # rules_js requires non-JavaScript data outside this package to enter through the output tree. This
 # preserves the source byte-for-byte while making the differential oracle consume the very same file
 # as the frontend/backend object build.
@@ -209,5 +252,28 @@ js_test(
         "LUAU_INTERPRETER_ORACLE_WASM": "$(rlocationpath :interpreter_oracle_wasm)",
         "LUAU_AOT_RUNTIME_ORACLE_WASM": "$(rlocationpath :ir_runtime_oracle_wasm)",
         "LUAU_AOT_RUNTIME_ORACLE_SOURCE": "$(rlocationpath :ir_runtime_oracle_source)",
+    },
+)
+
+genrule(
+    name = "slow_arith_runtime_oracle_source",
+    srcs = ["//memcontainers/programs/luau/aot/compiler/backend:slow_add.luau"],
+    outs = ["slow_arith_runtime_oracle_source.luau"],
+    cmd = "cp $(location //memcontainers/programs/luau/aot/compiler/backend:slow_add.luau) $@",
+)
+
+js_test(
+    name = "slow_arith_runtime_oracle_test",
+    data = [
+        ":interpreter_oracle_wasm",
+        ":slow_arith_runtime_oracle_source",
+        ":slow_arith_runtime_oracle_wasm",
+        "oracle/slow_arith_oracle.test.mjs",
+    ],
+    entry_point = "oracle/slow_arith_oracle.test.mjs",
+    env = {
+        "LUAU_AOT_SLOW_ARITH_ORACLE_SOURCE": "$(rlocationpath :slow_arith_runtime_oracle_source)",
+        "LUAU_AOT_SLOW_ARITH_ORACLE_WASM": "$(rlocationpath :slow_arith_runtime_oracle_wasm)",
+        "LUAU_INTERPRETER_ORACLE_WASM": "$(rlocationpath :interpreter_oracle_wasm)",
     },
 )

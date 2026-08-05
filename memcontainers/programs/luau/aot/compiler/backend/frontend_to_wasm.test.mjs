@@ -122,6 +122,8 @@ async function executeCase(name, source, inputs) {
     ["env", "mc_luau_aot_v1_commit_number", "function"],
     ["env", "mc_luau_aot_v1_interrupt", "function"],
   ];
+  if (name === "loop")
+    expectedImports.push(["env", "mc_luau_aot_v1_do_arith", "function"]);
   if (JSON.stringify(moduleImports) !== JSON.stringify(expectedImports))
     throw new Error(`${name}: unexpected generated imports ${JSON.stringify(moduleImports)}`);
 
@@ -138,6 +140,9 @@ async function executeCase(name, source, inputs) {
         if (state !== 1024 || pc < 0) throw new Error(`${name}: invalid interrupt ${state}/${pc}`);
         interrupts++;
         return 0;
+      },
+      mc_luau_aot_v1_do_arith() {
+        throw new Error(`${name}: bounded numeric fixture unexpectedly entered its arithmetic slow path`);
       },
     },
   });
@@ -210,6 +215,78 @@ async function executeSilentRoot() {
   return { objectSize: object.length, interrupts };
 }
 
+async function executeSlowAdd() {
+  const name = "slow-add";
+  const source = readFileSync(
+    runfile(process.env.LUAU_AOT_SLOW_ADD_SOURCE, "LUAU_AOT_SLOW_ADD_SOURCE"),
+    "utf8",
+  );
+  const snapshot = frontendSnapshot(source, "@aot/slow_add.luau");
+  const object = backendObject(snapshot, 1);
+  const module = await WebAssembly.compile(linkObject(object, name));
+  const moduleImports = WebAssembly.Module.imports(module).map(({ module, name: importName, kind }) => [module, importName, kind]);
+  const expectedImports = [
+    ["env", "mc_luau_aot_v1_commit_number", "function"],
+    ["env", "mc_luau_aot_v1_interrupt", "function"],
+    ["env", "mc_luau_aot_v1_do_arith", "function"],
+  ];
+  if (JSON.stringify(moduleImports) !== JSON.stringify(expectedImports))
+    throw new Error(`${name}: unexpected generated imports ${JSON.stringify(moduleImports)}`);
+
+  let instance;
+  let committed = null;
+  let interrupts = 0;
+  let helperCalls = 0;
+  instance = await WebAssembly.instantiate(module, {
+    env: {
+      mc_luau_aot_v1_commit_number(state, value) {
+        if (state !== 1024) throw new Error(`${name}: wrong state ${state}`);
+        committed = value;
+      },
+      mc_luau_aot_v1_interrupt(state, pc) {
+        if (state !== 1024 || pc < 0) throw new Error(`${name}: invalid interrupt ${state}/${pc}`);
+        interrupts++;
+        return 0;
+      },
+      mc_luau_aot_v1_do_arith(state, destination, lhs, rhs, operation) {
+        if (state !== 1024 || destination !== 2 || lhs !== 0 || rhs !== 1 || operation !== 0)
+          throw new Error(`${name}: invalid slow helper ABI ${state}/${destination}/${lhs}/${rhs}/${operation}`);
+        helperCalls++;
+        const view = new DataView(instance.exports.memory.buffer);
+        const relocatedBase = 4096;
+        view.setFloat64(relocatedBase + destination * 16, 42, true);
+        view.setInt32(relocatedBase + destination * 16 + 12, 3, true);
+        view.setUint32(state + 12, relocatedBase, true);
+      },
+    },
+  });
+
+  const generated = instance.exports[generatedSymbol];
+  const view = new DataView(instance.exports.memory.buffer);
+  const state = 1024;
+  const base = 2048;
+
+  view.setUint32(state + 12, base, true);
+  view.setFloat64(base, 20, true);
+  view.setInt32(base + 12, 3, true);
+  view.setFloat64(base + 16, 22, true);
+  view.setInt32(base + 28, 3, true);
+  if (generated(state, 0) !== 0 || committed !== 42 || helperCalls !== 0)
+    throw new Error(`${name}: numeric fast path failed: result=${committed}, helpers=${helperCalls}`);
+
+  committed = null;
+  view.setUint32(state + 12, base, true);
+  view.setInt32(base + 12, 5, true);
+  view.setInt32(base + 28, 5, true);
+  view.setFloat64(base + 32, -999, true);
+  view.setInt32(base + 44, 3, true);
+  if (generated(state, 0) !== 0 || committed !== 42 || helperCalls !== 1)
+    throw new Error(`${name}: slow rejoin failed: result=${committed}, helpers=${helperCalls}`);
+  if (interrupts < 2) throw new Error(`${name}: rejoined paths skipped the shared interrupt block`);
+
+  return { objectSize: object.length, interrupts, helperCalls };
+}
+
 const scalar = await executeCase(
   "scalar",
   "return function(n) return n * 2 + 1 end",
@@ -229,8 +306,11 @@ const loop = await executeCase(
   ],
 );
 const silent = await executeSilentRoot();
+const slowAdd = await executeSlowAdd();
 
 console.log(
   `frontend -> IR -> relocatable wasm: scalar ${scalar.objectSize} bytes, loop ${loop.objectSize} bytes; ` +
-    `silent root ${silent.objectSize} bytes; interrupt calls ${scalar.interrupts}/${loop.interrupts}/${silent.interrupts}`,
+    `silent root ${silent.objectSize} bytes, slow add ${slowAdd.objectSize} bytes; ` +
+    `interrupt calls ${scalar.interrupts}/${loop.interrupts}/${silent.interrupts}/${slowAdd.interrupts}; ` +
+    `slow helpers ${slowAdd.helperCalls}`,
 );

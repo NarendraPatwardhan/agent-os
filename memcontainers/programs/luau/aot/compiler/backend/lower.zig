@@ -5,6 +5,7 @@ const wasm = @import("luau_aot_wasm_object");
 pub const generated_symbol = "mc_luau_aot_v1_generated_ir_function";
 pub const commit_number_symbol = "mc_luau_aot_v1_commit_number";
 pub const interrupt_symbol = "mc_luau_aot_v1_interrupt";
+pub const do_arith_symbol = "mc_luau_aot_v1_do_arith";
 
 const status_ok: i32 = 0;
 const status_unsupported_type: i32 = 1;
@@ -14,6 +15,8 @@ const lua_state_base_offset: u32 = 12;
 const tvalue_size: u32 = 16;
 const tvalue_tag_offset: u32 = 12;
 const lua_tnumber: i32 = 3;
+const upstream_tm_add: i32 = 8;
+const aot_arith_add: i32 = 0;
 const max_lowered_locals: u32 = 262_144;
 
 pub const Error = snapshot_v1.Error || wasm.Error || std.mem.Allocator.Error || error{
@@ -53,6 +56,7 @@ const Context = struct {
     body: *wasm.Body,
     commit_number: wasm.FunctionRef,
     interrupt: wasm.FunctionRef,
+    do_arith: ?wasm.FunctionRef,
     base_local: u32,
     dispatch_local: u32,
     status_local: u32,
@@ -75,9 +79,13 @@ const Context = struct {
     }
 
     fn vmRegisterOffset(self: Context, operand_value: snapshot_v1.IrOperand, field_offset: u32) Error!u32 {
+        return (try self.vmRegisterIndex(operand_value)) * tvalue_size + field_offset;
+    }
+
+    fn vmRegisterIndex(self: Context, operand_value: snapshot_v1.IrOperand) Error!u32 {
         if (operand_value.kind != .vm_reg or operand_value.value >= self.proto.max_stack_size)
             return Error.InvalidOperandType;
-        return @as(u32, operand_value.value) * tvalue_size + field_offset;
+        return operand_value.value;
     }
 
     fn emitReloadBase(self: Context) Error!void {
@@ -128,7 +136,7 @@ const Context = struct {
         }
     }
 
-    fn requireTarget(self: Context, operand_value: snapshot_v1.IrOperand) Error!u32 {
+    fn requireCompiledTarget(self: Context, operand_value: snapshot_v1.IrOperand) Error!u32 {
         if (operand_value.kind != .block)
             return Error.InvalidOperandType;
         const target = try self.snapshot.irBlock(self.function, operand_value.value);
@@ -222,12 +230,102 @@ const Context = struct {
         try self.emitI32Value(try self.operand(instruction_value, 0));
         try self.emitI32Value(try self.operand(instruction_value, 1));
         const failure = try self.operand(instruction_value, 2);
-        if (failure.kind != .block and failure.kind != .vm_exit)
-            return Error.InvalidOperandType;
         try self.body.i32Ne(self.allocator);
         try self.body.ifVoid(self.allocator);
-        try self.emitStatusReturn(status_unsupported_type);
+        switch (failure.kind) {
+            .block => {
+                const target_block = try self.snapshot.irBlock(self.function, failure.value);
+                if (target_block.kind == .fallback and !try self.supportsArithmeticFallback(target_block)) {
+                    // Preserve the existing numeric tier for fallback shapes that have not been
+                    // normalized yet. A guard hit fails through the explicit status boundary; the
+                    // unsupported fallback instructions are never emitted or accidentally entered.
+                    try self.emitStatusReturn(status_unsupported_type);
+                } else {
+                    const target = if (target_block.kind == .fallback)
+                        failure.value
+                    else
+                        try self.requireCompiledTarget(failure);
+                    try self.body.i32Const(self.allocator, @intCast(target));
+                    try self.body.localSet(self.allocator, self.dispatch_local);
+                    // CHECK_TAG's conditional is nested inside the selected-block conditional.
+                    try self.body.branch(self.allocator, 2);
+                }
+            },
+            .vm_exit => try self.emitStatusReturn(status_unsupported_type),
+            else => return Error.InvalidOperandType,
+        }
         try self.body.end(self.allocator);
+    }
+
+    fn savedPc(self: Context, instruction_value: snapshot_v1.IrInstruction) Error!u32 {
+        try self.requireOperandCount(instruction_value, 1);
+        const operand_value = try self.operand(instruction_value, 0);
+        if (operand_value.kind != .constant)
+            return Error.InvalidOperandType;
+        return (try self.constant(operand_value.value)).uintValue() orelse Error.InvalidOperandType;
+    }
+
+    fn emitDoArith(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 4);
+        if (instruction_id == 0)
+            return Error.UnsupportedControlFlow;
+
+        // Upstream fallback streams establish the bytecode/source location immediately before the
+        // semantic helper. Strict AOT has no bytecode PC pointer, so this first slice validates the
+        // marker as part of the rewrite instead of fabricating CallInfo::savedpc. WP5 will map the
+        // validated integer to AOT traceback metadata.
+        const location_marker = try self.instruction(instruction_id - 1);
+        if (location_marker.command != .set_savedpc)
+            return Error.UnsupportedControlFlow;
+        _ = try self.savedPc(location_marker);
+
+        const destination = try self.vmRegisterIndex(try self.operand(instruction_value, 0));
+        const lhs = try self.vmRegisterIndex(try self.operand(instruction_value, 1));
+        const rhs = try self.vmRegisterIndex(try self.operand(instruction_value, 2));
+        const operation_operand = try self.operand(instruction_value, 3);
+        if (operation_operand.kind != .constant)
+            return Error.InvalidOperandType;
+        const upstream_operation = (try self.constant(operation_operand.value)).intValue() orelse return Error.InvalidOperandType;
+        if (upstream_operation != upstream_tm_add)
+            return Error.UnsupportedCommand;
+
+        try self.body.localGet(self.allocator, 0);
+        try self.body.i32Const(self.allocator, @intCast(destination));
+        try self.body.i32Const(self.allocator, @intCast(lhs));
+        try self.body.i32Const(self.allocator, @intCast(rhs));
+        try self.body.i32Const(self.allocator, aot_arith_add);
+        try self.body.call(self.allocator, self.do_arith orelse return Error.UnsupportedCommand);
+        // Generic arithmetic may allocate, invoke a metamethod, and relocate the stack.
+        try self.emitReloadBase();
+    }
+
+    fn supportsArithmeticFallback(self: Context, block: snapshot_v1.IrBlock) Error!bool {
+        if (block.kind != .fallback or block.isEmpty() or block.finish - block.start != 2)
+            return false;
+        const marker = try self.instruction(block.start);
+        const arithmetic = try self.instruction(block.start + 1);
+        const jump = try self.instruction(block.start + 2);
+        if (marker.command != .set_savedpc or arithmetic.command != .do_arith or jump.command != .jump or
+            marker.operand_count != 1 or arithmetic.operand_count != 4 or jump.operand_count != 1)
+            return false;
+
+        const marker_operand = try self.operand(marker, 0);
+        const destination = try self.operand(arithmetic, 0);
+        const lhs = try self.operand(arithmetic, 1);
+        const rhs = try self.operand(arithmetic, 2);
+        const operation = try self.operand(arithmetic, 3);
+        const jump_target = try self.operand(jump, 0);
+        if (marker_operand.kind != .constant or destination.kind != .vm_reg or lhs.kind != .vm_reg or rhs.kind != .vm_reg or
+            operation.kind != .constant or jump_target.kind != .block)
+            return false;
+        if ((try self.constant(marker_operand.value)).uintValue() == null or
+            (try self.constant(operation.value)).intValue() != upstream_tm_add)
+            return false;
+        if (destination.value >= self.proto.max_stack_size or lhs.value >= self.proto.max_stack_size or rhs.value >= self.proto.max_stack_size)
+            return false;
+
+        const target = try self.snapshot.irBlock(self.function, jump_target.value);
+        return target.kind.isCompilable() and !target.isEmpty();
     }
 
     fn emitInterrupt(self: Context, instruction_value: snapshot_v1.IrInstruction) Error!void {
@@ -254,7 +352,7 @@ const Context = struct {
 
     fn emitJump(self: Context, instruction_value: snapshot_v1.IrInstruction) Error!void {
         try self.requireOperandCount(instruction_value, 1);
-        const target = try self.requireTarget(try self.operand(instruction_value, 0));
+        const target = try self.requireCompiledTarget(try self.operand(instruction_value, 0));
         try self.body.i32Const(self.allocator, @intCast(target));
         try self.body.localSet(self.allocator, self.dispatch_local);
         try self.body.branch(self.allocator, 1);
@@ -294,8 +392,8 @@ const Context = struct {
         if (condition_operand.kind != .condition)
             return Error.InvalidOperandType;
         const condition: snapshot_v1.IrCondition = @enumFromInt(@as(u8, @intCast(condition_operand.value)));
-        const true_target = try self.requireTarget(try self.operand(instruction_value, 3));
-        const false_target = try self.requireTarget(try self.operand(instruction_value, 4));
+        const true_target = try self.requireCompiledTarget(try self.operand(instruction_value, 3));
+        const false_target = try self.requireCompiledTarget(try self.operand(instruction_value, 4));
 
         try self.body.i32Const(self.allocator, @intCast(true_target));
         try self.body.i32Const(self.allocator, @intCast(false_target));
@@ -353,7 +451,7 @@ const Context = struct {
         // remain rooted in the frame. Any GETVARARGS command still fails closed below.
     }
 
-    fn emitInstruction(self: Context, instruction_id: u32) Error!bool {
+    fn emitInstruction(self: Context, instruction_id: u32, block_kind: snapshot_v1.IrBlockKind) Error!bool {
         const instruction_value = try self.instruction(instruction_id);
         switch (instruction_value.command) {
             .nop, .mark_used => return false,
@@ -365,6 +463,16 @@ const Context = struct {
             .store_tvalue => try self.emitStoreTValue(instruction_value),
             .add_num => try self.emitAddNumber(instruction_id, instruction_value),
             .check_tag => try self.emitCheckTag(instruction_value),
+            .set_savedpc => {
+                if (block_kind != .fallback)
+                    return Error.UnsupportedControlFlow;
+                _ = try self.savedPc(instruction_value);
+            },
+            .do_arith => {
+                if (block_kind != .fallback)
+                    return Error.UnsupportedControlFlow;
+                try self.emitDoArith(instruction_id, instruction_value);
+            },
             .interrupt => try self.emitInterrupt(instruction_value),
             .jump => {
                 try self.emitJump(instruction_value);
@@ -385,6 +493,9 @@ const Context = struct {
     }
 
     fn emitBlock(self: Context, block_id: u32, block: snapshot_v1.IrBlock) Error!void {
+        if (block.kind == .fallback and !try self.supportsArithmeticFallback(block))
+            return Error.UnsupportedControlFlow;
+
         try self.body.localGet(self.allocator, self.dispatch_local);
         try self.body.i32Const(self.allocator, @intCast(block_id));
         try self.body.i32Eq(self.allocator);
@@ -395,7 +506,7 @@ const Context = struct {
         while (instruction_id <= block.finish) : (instruction_id += 1) {
             if (terminated)
                 return Error.InvalidBlockTermination;
-            terminated = try self.emitInstruction(instruction_id);
+            terminated = try self.emitInstruction(instruction_id, block.kind);
         }
         if (!terminated)
             return Error.InvalidBlockTermination;
@@ -483,7 +594,7 @@ pub fn build(allocator: std.mem.Allocator, snapshot_bytes: []const u8, function_
 
     var body = try wasm.Body.init(allocator, locals.items);
     defer body.deinit(allocator);
-    const context = Context{
+    var context = Context{
         .allocator = allocator,
         .snapshot = snapshot,
         .proto = proto,
@@ -492,20 +603,34 @@ pub fn build(allocator: std.mem.Allocator, snapshot_bytes: []const u8, function_
         .body = &body,
         .commit_number = commit_number,
         .interrupt = interrupt,
+        .do_arith = null,
         .base_local = 2,
         .dispatch_local = 3,
         .status_local = 4,
     };
+
+    var block_id: u32 = 0;
+    while (block_id < function.block_count) : (block_id += 1) {
+        const block = try snapshot.irBlock(function, block_id);
+        if (block.kind == .fallback and try context.supportsArithmeticFallback(block)) {
+            const do_arith_params = [_]wasm.ValueType{ .i32, .i32, .i32, .i32, .i32 };
+            const do_arith_type = try object.addType(.{ .params = &do_arith_params, .results = &no_results });
+            context.do_arith = try object.importFunction("env", do_arith_symbol, do_arith_type);
+            break;
+        }
+    }
 
     try context.emitReloadBase();
     try body.i32Const(allocator, @intCast(function.entry_block));
     try body.localSet(allocator, context.dispatch_local);
     try body.loop(allocator);
 
-    var block_id: u32 = 0;
+    block_id = 0;
     while (block_id < function.block_count) : (block_id += 1) {
         const block = try snapshot.irBlock(function, block_id);
         if (block.kind.isCompilable() and !block.isEmpty())
+            try context.emitBlock(block_id, block)
+        else if (block.kind == .fallback and try context.supportsArithmeticFallback(block))
             try context.emitBlock(block_id, block);
     }
 

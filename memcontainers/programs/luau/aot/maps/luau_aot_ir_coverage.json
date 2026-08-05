@@ -1879,8 +1879,11 @@
       "safepoint": true,
       "rejoins": true,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2134; CodeGen/src/IrLoweringA64.cpp:2099; luaV_doarithimpl, luaV_callTM",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
+        "//memcontainers/programs/luau/aot/runtime:slow_arith_runtime_oracle_test"
+      ],
+      "status": "partial_add_vm_register_operands"
     },
     {
       "command": "DO_LEN",
@@ -2013,8 +2016,11 @@
       "safepoint": false,
       "rejoins": true,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2266; CodeGen/src/IrLoweringA64.cpp:2310",
-      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
-      "status": "partial_fail_closed_numeric_tier"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
+        "//memcontainers/programs/luau/aot/runtime:slow_arith_runtime_oracle_test"
+      ],
+      "status": "partial_numeric_fallback_rejoin_and_vm_exit"
     },
     {
       "command": "CHECK_TRUTHY",
@@ -2299,7 +2305,7 @@
     {
       "command": "SET_SAVEDPC",
       "value": 150,
-      "class": "layout",
+      "class": "rewrite_required",
       "wasm_features": [],
       "runtime_symbols": [],
       "may_allocate": false,
@@ -2308,8 +2314,10 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2669; CodeGen/src/IrLoweringA64.cpp:2793",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": [
+        "//memcontainers/programs/luau/aot/runtime:slow_arith_runtime_oracle_test"
+      ],
+      "status": "partial_validated_arith_location_marker"
     },
     {
       "command": "CLOSE_UPVALS",

@@ -122,10 +122,17 @@ guest path, but is not presented as a general-purpose AOT product:
   SSA results to Wasm locals, preserves 16-byte `TValue` copies, and lowers supported bytecode/internal
   blocks through one generic block-ID dispatcher. It does not parse source or execute Luau code;
 - the upstream-IR oracle compiles two unrelated source functions: a guarded scalar expression and a
-  numeric `for` loop. The backend emits 411-byte and 606-byte relocatable objects, hermetic `wasm-ld`
-  links them, and the linked functions execute inputs `1`, `4`, and `7` as `3/9/15` and `1/10/28`.
+  numeric `for` loop. The backend emits deterministic relocatable objects, hermetic `wasm-ld` links
+  them, and the linked functions execute inputs `1`, `4`, and `7` as `3/9/15` and `1/10/28`.
   Both reject a non-number `TValue`, and observed interrupt counts prove upstream safepoints were not
-  erased. The command ledger marks the eleven complete rows and four deliberately partial rows;
+  erased. The command ledger marks the eleven complete rows and six deliberately partial rows;
+- a third exact source function contains upstream's real two-guard arithmetic fallback stream. Numeric
+  inputs remain on compiled `ADD_NUM`; decimal-string inputs enter validated
+  `SET_SAVEDPC`/`DO_ARITH`/`JUMP`, call the versioned strict-runtime helper backed by
+  `luaV_doarithimpl<TM_ADD>`, reload a potentially relocated `L->base`, and rejoin the shared compiled
+  return block. Five string-add cases match the separately linked pinned interpreter. Constant-operand
+  arithmetic fallbacks, other operators, general metamethod calls, and traceback location publication
+  remain explicit partial coverage;
 - the numeric-loop source is now a declared Bazel input to the actual zero-import frontend and backend.
   Their deterministic output object is the exact object linked into the 36-object strict runtime; no
   handwritten function body or copied test artifact intervenes. That artifact runs through ordinary
@@ -147,10 +154,10 @@ guest path, but is not presented as a general-purpose AOT product:
   generated code to reload `L->base` after a successful callback. Yield continuation/source-pc
   semantics remain explicitly open.
 
-WP2 is complete. The next large slice is WP3's real arithmetic/type slow-block rejoin: generated guards
-must enter named strict-runtime helpers and resume the compiled CFG with correct stack/base state. The
-central upstream-IR/object/runtime/kernel-differential gate is proven; additional scalar/conversion
-commands are added only as required by that vertical, not as disconnected coverage work.
+WP2 is complete. WP3's central arithmetic/type slow-block rejoin now passes the exact-source,
+relocatable-object, strict-runtime, and pinned-interpreter gates. The immediate completion slice is the
+same slow-add artifact through production optimization/stamp/attestation and the real kernel; after that,
+operator/constant variants are added as coherent semantic families, not disconnected coverage work.
 
 ---
 
@@ -1375,14 +1382,17 @@ Gate:
 
 **Goal:** replace manual fixture emission with the one production code-generation model.
 
-**Current state:** the production object builder and upstream-snapshot-driven numeric fast tier are
-implemented. A generic CFG dispatcher lowers real scalar branches and loops; complete rows are `NOP`,
+**Current state:** the production object builder, upstream-snapshot-driven numeric fast tier, and first
+real slow-block rejoin are implemented. A generic CFG dispatcher lowers real scalar branches and loops;
+complete rows are `NOP`,
 `LOAD_TAG`, `LOAD_DOUBLE`, `LOAD_TVALUE`, `STORE_TAG`, `STORE_DOUBLE`, `STORE_TVALUE`, `ADD_NUM`,
-`JUMP`, `JUMP_CMP_NUM`, and `MARK_USED`. `CHECK_TAG`, `INTERRUPT`, and `RETURN` are deliberately partial
-and named as such in the ledger. `FALLBACK_PREPVARARGS` is partial for the validated zero-fixed-parameter,
-no-vararg-use rewrite only. Slow-block rejoin, additional scalar operations/conversions, and the remaining
-command-level differential matrix remain. The exact upstream-IR-generated loop and silent-root objects
-already pass real-runtime and kernel gates.
+`JUMP`, `JUMP_CMP_NUM`, and `MARK_USED`. `CHECK_TAG` now dispatches the supported fallback shape;
+`DO_ARITH` calls a stable helper for upstream `TM_ADD` with VM-register operands; `SET_SAVEDPC` is a
+validated AOT location marker; and the fallback `JUMP` rejoins the shared compiled block after a mandatory
+base reload. These rows, `INTERRUPT`, `RETURN`, and `FALLBACK_PREPVARARGS` remain deliberately partial and
+named as such in the ledger. The exact upstream-IR-generated loop and silent-root objects pass real-runtime
+and kernel gates; the slow-add object passes real-runtime/pinned-interpreter differential and awaits its
+production kernel gate.
 
 Tasks:
 
