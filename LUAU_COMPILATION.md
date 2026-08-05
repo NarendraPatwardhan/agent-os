@@ -184,16 +184,22 @@ guest path, but is not presented as a general-purpose AOT product:
   string-add slow path, and returns through a fixed one-argument/one-result compiled call. The object
   gate relocates `L->base` during both closure allocation and nested call; the strict-runtime gate
   performs full collections around root materialization and matches the pinned interpreter for five
-  signed input pairs. Reference captures, open/closed `UpVal` lifetime, mutation, forwarded captures,
-  multiple captures, and general call/result shapes remain compile-time or runtime rejection;
+  signed input pairs. The same object and shared descriptor now link into a release-small guest, pass
+  Binaryen optimization, mc stamping and attestation, install beside the exact source in `loom_aot`,
+  and pass the real-kernel gate for those five pairs. `/bin/luau` requires that byte-identical source
+  and invokes its returned closure with the same raw strings; both sides print the same result and exit
+  zero. Reference captures, open/closed `UpVal` lifetime, mutation, forwarded captures, multiple
+  captures, and general call/result shapes remain compile-time or runtime rejection;
 
 WP2 is complete. WP3's central arithmetic/type slow-block rejoin passes the exact-source,
 relocatable-object, strict-runtime, pinned-interpreter, production optimization/stamp/attestation, and
 real-kernel gates. WP4's first closed-graph/fixed-call vertical now passes those same object, runtime,
 GC, differential, product-pipeline, and real-kernel gates. WP4's immutable value-capture vertical now
-passes exact-snapshot, deterministic-object, base-relocation, strict-runtime GC, and pinned-interpreter
-gates; its production AgentOS guest is the next gate. The immutable descriptor is shared by oracle and
-product today but remains compiler-generated-data work, not a hand-authored product format.
+passes those same exact-snapshot, deterministic-object, base-relocation, strict-runtime GC,
+pinned-interpreter, production-pipeline, and real-kernel gates. The next large semantic slice is broader
+call/result behavior followed by reference-capture mutation and open/closed `UpVal` lifetime. The
+immutable descriptor is shared by oracle and product today but remains compiler-generated-data work,
+not a hand-authored product format.
 
 ---
 
@@ -1468,7 +1474,9 @@ instead of preserving upstream closure pointers as Wasm SSA, and reloads `L->bas
 and nested call. Mutation gates reject a split block boundary, `LCT_REF`, a non-U0 destination,
 misordered `CHECK_GC`, and more than one child upvalue. The runtime roots the fully initialized
 one-upvalue closure before `luaC_checkGC`. Deterministic-object, fake-base-relocation, strict-runtime GC,
-and five exact-source interpreter differentials pass. Its production kernel gate is next. Oracle and
+and five exact-source interpreter differentials pass. The same object and shared descriptor link into a
+release-small guest, pass Binaryen optimization, mc stamping and attestation, install with the exact
+source in `loom_aot`, and pass the real-kernel differential for all five raw-string pairs. Oracle and
 guest descriptors remain shared link-time definitions; compiler-emitted descriptor data/relocations
 remain product work. Reference captures, mutable/open/closed `UpVal` lifetime, forwarded or multiple
 captures, broader arities/results, callable metamethods, recursion, tail calls, yields, varargs

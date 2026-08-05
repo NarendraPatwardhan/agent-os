@@ -35,13 +35,22 @@ zig_library(
     name = "captured_call_program",
     import_name = "luau_aot_captured_call_program",
     main = "captured_call_program_v1.zig",
-    visibility = ["//memcontainers/programs/luau/aot/runtime:__pkg__"],
+    visibility = [
+        "//memcontainers/programs/luau/aot/runtime/glue:__pkg__",
+        "//memcontainers/programs/luau/aot/runtime:__pkg__",
+    ],
     deps = [":aot_runtime_abi"],
 )
 
 filegroup(
     name = "compiled_call_source",
     srcs = ["//memcontainers/programs/luau/aot/compiler/backend:compiled_call.luau"],
+    visibility = ["//memcontainers/images:__pkg__"],
+)
+
+filegroup(
+    name = "captured_call_source",
+    srcs = ["//memcontainers/programs/luau/aot/compiler/backend:captured_call.luau"],
     visibility = ["//memcontainers/images:__pkg__"],
 )
 

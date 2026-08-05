@@ -201,10 +201,12 @@ pkg_tar(
     name = "loom_aot",
     create_parents = False,
     files = {
+        "//memcontainers/programs/luau/aot/runtime/glue:luau-aot-captured-call": "/bin/luau-aot-captured-call",
         "//memcontainers/programs/luau/aot/runtime/glue:luau-aot-compiled-call": "/bin/luau-aot-compiled-call",
         "//memcontainers/programs/luau/aot/runtime/glue:luau-aot-oracle": "/bin/luau-aot-oracle",
         "//memcontainers/programs/luau/aot/runtime/glue:luau-aot-silent": "/bin/luau-aot-silent",
         "//memcontainers/programs/luau/aot/runtime/glue:luau-aot-slow-add": "/bin/luau-aot-slow-add",
+        "//memcontainers/programs/luau/aot/runtime:captured_call_source": "/lib/luau/aot_captured_call.luau",
         "//memcontainers/programs/luau/aot/runtime:compiled_call_source": "/lib/luau/aot_compiled_call.luau",
     },
     owner = "0.0",

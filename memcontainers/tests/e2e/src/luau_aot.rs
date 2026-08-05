@@ -97,3 +97,29 @@ fn luau_aot_compiled_proto_graph_calls_rejoin() {
         );
     }
 }
+
+/// The exact source-built package publishes a three-Proto graph whose inner compiled closure reads
+/// one immutable captured value after full collection. The interpreter requires that same installed
+/// source and invokes its returned closure with the same two raw strings.
+#[test]
+fn luau_aot_captured_proto_graph_calls_rejoin() {
+    let mut session = boot_loom_aot();
+
+    for (lhs, rhs) in [(-50, 8), (0, 0), (20, 22), (7, -3), (1234, 5678)] {
+        let expected = format!("{}\r\nstatus=0\r\n", lhs + rhs);
+        let aot = session.run_for_output(&format!(
+            "luau-aot-captured-call {lhs} {rhs}; echo status=$?"
+        ));
+        let interpreted = session.run_for_output(&format!(
+            "luau -e 'local run = require(\"aot_captured_call\"); print(run(...))' {lhs} {rhs}; echo status=$?"
+        ));
+        assert_eq!(
+            aot, expected,
+            "strict AOT captured call failed for {lhs}/{rhs}"
+        );
+        assert_eq!(
+            aot, interpreted,
+            "strict AOT captured call mismatch for {lhs}/{rhs}"
+        );
+    }
+}

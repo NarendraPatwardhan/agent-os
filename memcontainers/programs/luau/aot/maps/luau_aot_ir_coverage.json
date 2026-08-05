@@ -138,7 +138,8 @@
       "oracle": "CodeGen/src/IrLoweringX64.cpp:137; CodeGen/src/IrLoweringA64.cpp:368",
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
-        "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test"
+        "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test",
+        "//memcontainers/tests/e2e:core#luau_aot_captured_proto_graph_calls_rejoin"
       ],
       "status": "partial_exact_one_value_capture_newclosure_cluster"
     },
@@ -201,7 +202,8 @@
       "oracle": "CodeGen/src/IrLoweringX64.cpp:196; CodeGen/src/IrLoweringA64.cpp:448",
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
-        "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test"
+        "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test",
+        "//memcontainers/tests/e2e:core#luau_aot_captured_proto_graph_calls_rejoin"
       ],
       "status": "partial_exact_one_value_capture_newclosure_cluster"
     },
@@ -249,7 +251,8 @@
       "oracle": "CodeGen/src/IrLoweringX64.cpp:227; CodeGen/src/IrLoweringA64.cpp:471",
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
-        "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test"
+        "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test",
+        "//memcontainers/tests/e2e:core#luau_aot_captured_proto_graph_calls_rejoin"
       ],
       "status": "partial_exact_one_value_capture_newclosure_cluster"
     },
@@ -342,7 +345,8 @@
       "oracle": "CodeGen/src/IrLoweringX64.cpp:333; CodeGen/src/IrLoweringA64.cpp:570",
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
-        "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test"
+        "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test",
+        "//memcontainers/tests/e2e:core#luau_aot_captured_proto_graph_calls_rejoin"
       ],
       "status": "partial_exact_one_value_capture_newclosure_cluster"
     },
@@ -2000,7 +2004,8 @@
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2222; CodeGen/src/IrLoweringA64.cpp:2253",
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
-        "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test"
+        "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test",
+        "//memcontainers/tests/e2e:core#luau_aot_captured_proto_graph_calls_rejoin"
       ],
       "status": "partial_direct_value_upvalue_zero_only"
     },
@@ -2269,7 +2274,8 @@
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2637; CodeGen/src/IrLoweringA64.cpp:2702; luaC_step",
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
-        "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test"
+        "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test",
+        "//memcontainers/tests/e2e:core#luau_aot_captured_proto_graph_calls_rejoin"
       ],
       "status": "partial_post_publish_one_value_newclosure_only"
     },
@@ -2375,7 +2381,8 @@
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2710; CodeGen/src/IrLoweringA64.cpp:2830",
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
-        "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test"
+        "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test",
+        "//memcontainers/tests/e2e:core#luau_aot_captured_proto_graph_calls_rejoin"
       ],
       "status": "partial_single_lct_val_register_capture_only"
     },
@@ -2414,6 +2421,7 @@
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
         "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test",
         "//memcontainers/programs/luau/aot/runtime:compiled_call_runtime_oracle_test",
+        "//memcontainers/tests/e2e:core#luau_aot_captured_proto_graph_calls_rejoin",
         "//memcontainers/tests/e2e:core#luau_aot_compiled_proto_graph_calls_rejoin"
       ],
       "status": "partial_fixed_one_or_two_arguments_one_result_compiled_luau"
@@ -2645,7 +2653,8 @@
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2877; CodeGen/src/IrLoweringA64.cpp:3073; luaF_newLclosure",
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
-        "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test"
+        "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test",
+        "//memcontainers/tests/e2e:core#luau_aot_captured_proto_graph_calls_rejoin"
       ],
       "status": "partial_one_direct_value_capture_only"
     },
