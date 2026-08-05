@@ -250,8 +250,61 @@ extern "C" void mc_luau_aot_v1_do_arith(lua_State *L, uint32_t destinationRegist
         luaV_doarithimpl<TM_ADD>(L, L->base + destinationRegister, L->base + lhsRegister,
                                  L->base + rhsRegister);
         return;
+    case MC_LUAU_AOT_ARITH_V1_SUB:
+        luaV_doarithimpl<TM_SUB>(L, L->base + destinationRegister, L->base + lhsRegister,
+                                 L->base + rhsRegister);
+        return;
+    case MC_LUAU_AOT_ARITH_V1_MUL:
+        luaV_doarithimpl<TM_MUL>(L, L->base + destinationRegister, L->base + lhsRegister,
+                                 L->base + rhsRegister);
+        return;
+    case MC_LUAU_AOT_ARITH_V1_DIV:
+        luaV_doarithimpl<TM_DIV>(L, L->base + destinationRegister, L->base + lhsRegister,
+                                 L->base + rhsRegister);
+        return;
+    case MC_LUAU_AOT_ARITH_V1_IDIV:
+        luaV_doarithimpl<TM_IDIV>(L, L->base + destinationRegister, L->base + lhsRegister,
+                                  L->base + rhsRegister);
+        return;
+    case MC_LUAU_AOT_ARITH_V1_MOD:
+        luaV_doarithimpl<TM_MOD>(L, L->base + destinationRegister, L->base + lhsRegister,
+                                 L->base + rhsRegister);
+        return;
+    case MC_LUAU_AOT_ARITH_V1_POW:
+        luaV_doarithimpl<TM_POW>(L, L->base + destinationRegister, L->base + lhsRegister,
+                                 L->base + rhsRegister);
+        return;
+    case MC_LUAU_AOT_ARITH_V1_UNM:
+        luaV_doarithimpl<TM_UNM>(L, L->base + destinationRegister, L->base + lhsRegister,
+                                 L->base + rhsRegister);
+        return;
     default:
         luaG_runerror(L, "strict AOT arithmetic helper rejected operation %u", operation);
+    }
+}
+
+extern "C" uint32_t mc_luau_aot_v1_compare_any(lua_State *L, uint32_t lhsRegister,
+                                                 uint32_t rhsRegister,
+                                                 uint32_t operation) {
+    if (!L || !L->ci || !isLua(L->ci))
+        luaG_runerror(L, "strict AOT comparison helper entered without an active Luau frame");
+
+    Closure *closure = clvalue(L->ci->func);
+    Proto *proto = closure->l.p;
+    if (lhsRegister >= proto->maxstacksize || rhsRegister >= proto->maxstacksize)
+        luaG_runerror(L, "strict AOT comparison helper register is outside the compiled frame");
+
+    const TValue *lhs = L->base + lhsRegister;
+    const TValue *rhs = L->base + rhsRegister;
+    switch (operation) {
+    case MC_LUAU_AOT_COMPARE_V1_EQUAL:
+        return ttype(lhs) == ttype(rhs) && luaV_equalval(L, lhs, rhs);
+    case MC_LUAU_AOT_COMPARE_V1_LESS:
+        return luaV_lessthan(L, lhs, rhs);
+    case MC_LUAU_AOT_COMPARE_V1_LESS_EQUAL:
+        return luaV_lessequal(L, lhs, rhs);
+    default:
+        luaG_runerror(L, "strict AOT comparison helper rejected operation %u", operation);
     }
 }
 

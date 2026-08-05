@@ -18,10 +18,10 @@
     "<runtime-archive>",
     "--no-whole-archive"
   ],
-  "output_sha256": "0d56de1dbfadbeab30e07737a51e3ed66a0bc01ca47bcd29f01a51b96f668169",
+  "output_sha256": "71e8956312291e89a7b9c65974c52afa814858438d3243cc0f50289c465a5725",
   "import_module": "env",
   "import_count": 61,
-  "export_count": 399,
+  "export_count": 400,
   "runtime_contract_imports": [
     "mc_protected_call",
     "mc_raise"
@@ -94,6 +94,7 @@
     "_Z13luau_callhookP9lua_StatePFvS0_P9lua_DebugEPv",
     "mc_luau_aot_v1_call_fixed",
     "mc_luau_aot_v1_close_upvalues",
+    "mc_luau_aot_v1_compare_any",
     "mc_luau_aot_v1_do_arith",
     "mc_luau_aot_v1_dupclosure",
     "mc_luau_aot_v1_enter",

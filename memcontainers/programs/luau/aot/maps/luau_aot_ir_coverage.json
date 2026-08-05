@@ -31,8 +31,12 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:58; CodeGen/src/IrLoweringA64.cpp:316",
-      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
-      "status": "implemented"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
+        "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter"
+      ],
+      "status": "partial_vmreg_only"
     },
     {
       "command": "LOAD_POINTER",
@@ -47,7 +51,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:72; CodeGen/src/IrLoweringA64.cpp:323",
       "tests": [],
-      "status": "unimplemented"
+      "status": "partial_vmreg_only"
     },
     {
       "command": "LOAD_DOUBLE",
@@ -61,8 +65,12 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:86; CodeGen/src/IrLoweringA64.cpp:330",
-      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
-      "status": "implemented"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
+        "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter"
+      ],
+      "status": "partial_vmreg_only"
     },
     {
       "command": "LOAD_INT",
@@ -77,7 +85,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:96; CodeGen/src/IrLoweringA64.cpp:337",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "LOAD_INT64",
@@ -92,7 +100,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:101; CodeGen/src/IrLoweringA64.cpp:344",
       "tests": [],
-      "status": "unimplemented"
+      "status": "partial_vmreg_only"
     },
     {
       "command": "LOAD_FLOAT",
@@ -107,7 +115,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:111; CodeGen/src/IrLoweringA64.cpp:351",
       "tests": [],
-      "status": "unimplemented"
+      "status": "partial_vmreg_only"
     },
     {
       "command": "LOAD_TVALUE",
@@ -122,7 +130,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:121; CodeGen/src/IrLoweringA64.cpp:359",
       "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
-      "status": "implemented"
+      "status": "partial_vmreg_single_operand_only"
     },
     {
       "command": "LOAD_ENV",
@@ -223,8 +231,12 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:214; CodeGen/src/IrLoweringA64.cpp:456",
-      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
-      "status": "implemented"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
+        "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter"
+      ],
+      "status": "partial_vmreg_destination_only"
     },
     {
       "command": "STORE_EXTRA",
@@ -239,7 +251,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:247; CodeGen/src/IrLoweringA64.cpp:485",
       "tests": [],
-      "status": "unimplemented"
+      "status": "partial_vmreg_destination_only"
     },
     {
       "command": "STORE_POINTER",
@@ -258,7 +270,7 @@
         "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test",
         "//memcontainers/tests/e2e:core#luau_aot_captured_proto_graph_calls_rejoin"
       ],
-      "status": "partial_exact_one_value_capture_newclosure_cluster"
+      "status": "partial_vmreg_destination_or_exact_closure_capture_cluster"
     },
     {
       "command": "STORE_DOUBLE",
@@ -272,8 +284,12 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:260; CodeGen/src/IrLoweringA64.cpp:500",
-      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
-      "status": "implemented"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
+        "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter"
+      ],
+      "status": "partial_vmreg_destination_only"
     },
     {
       "command": "STORE_INT",
@@ -288,7 +304,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:282; CodeGen/src/IrLoweringA64.cpp:514",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "STORE_INT64",
@@ -303,7 +319,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:290; CodeGen/src/IrLoweringA64.cpp:528",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "STORE_VECTOR",
@@ -318,7 +334,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:313; CodeGen/src/IrLoweringA64.cpp:542",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "STORE_TVALUE",
@@ -333,7 +349,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:321; CodeGen/src/IrLoweringA64.cpp:563",
       "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
-      "status": "implemented"
+      "status": "partial_vmreg_destination_two_operand_only"
     },
     {
       "command": "STORE_SPLIT_TVALUE",
@@ -367,7 +383,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:402; CodeGen/src/IrLoweringA64.cpp:612",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "SUB_INT",
@@ -382,7 +398,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:506; CodeGen/src/IrLoweringA64.cpp:625",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "ADD_INT64",
@@ -397,7 +413,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:435; CodeGen/src/IrLoweringA64.cpp:636",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "SUB_INT64",
@@ -412,7 +428,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:537; CodeGen/src/IrLoweringA64.cpp:649",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "MUL_INT64",
@@ -427,7 +443,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:638; CodeGen/src/IrLoweringA64.cpp:660",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "DIV_INT64",
@@ -547,7 +563,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:583; CodeGen/src/IrLoweringA64.cpp:773",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "SEXTI16_INT",
@@ -562,7 +578,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:588; CodeGen/src/IrLoweringA64.cpp:778",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "ADD_NUM",
@@ -576,7 +592,11 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:593; CodeGen/src/IrLoweringA64.cpp:783",
-      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
+        "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter"
+      ],
       "status": "implemented"
     },
     {
@@ -591,8 +611,11 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:608; CodeGen/src/IrLoweringA64.cpp:791",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter"
+      ],
+      "status": "implemented"
     },
     {
       "command": "MUL_NUM",
@@ -606,8 +629,11 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:623; CodeGen/src/IrLoweringA64.cpp:799",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter"
+      ],
+      "status": "implemented"
     },
     {
       "command": "DIV_NUM",
@@ -621,8 +647,11 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:644; CodeGen/src/IrLoweringA64.cpp:807",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter"
+      ],
+      "status": "implemented"
     },
     {
       "command": "IDIV_NUM",
@@ -636,8 +665,11 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:675; CodeGen/src/IrLoweringA64.cpp:815",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter"
+      ],
+      "status": "implemented"
     },
     {
       "command": "MOD_NUM",
@@ -651,8 +683,11 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:847; CodeGen/src/IrLoweringA64.cpp:824",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter"
+      ],
+      "status": "implemented"
     },
     {
       "command": "MULADD_NUM",
@@ -667,7 +702,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:790; CodeGen/src/IrLoweringA64.cpp:835",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "MIN_NUM",
@@ -682,7 +717,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:934; CodeGen/src/IrLoweringA64.cpp:856",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "MAX_NUM",
@@ -697,7 +732,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:949; CodeGen/src/IrLoweringA64.cpp:865",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "UNM_NUM",
@@ -711,8 +746,11 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:964; CodeGen/src/IrLoweringA64.cpp:874",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter"
+      ],
+      "status": "implemented"
     },
     {
       "command": "FLOOR_NUM",
@@ -727,7 +765,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:971; CodeGen/src/IrLoweringA64.cpp:881",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "CEIL_NUM",
@@ -742,7 +780,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:976; CodeGen/src/IrLoweringA64.cpp:888",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "ROUND_NUM",
@@ -757,7 +795,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:981; CodeGen/src/IrLoweringA64.cpp:895",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "SQRT_NUM",
@@ -772,7 +810,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1000; CodeGen/src/IrLoweringA64.cpp:902",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "ABS_NUM",
@@ -787,7 +825,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1005; CodeGen/src/IrLoweringA64.cpp:909",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "SIGN_NUM",
@@ -802,7 +840,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1015; CodeGen/src/IrLoweringA64.cpp:916",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "ADD_FLOAT",
@@ -817,7 +855,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1040; CodeGen/src/IrLoweringA64.cpp:932",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "SUB_FLOAT",
@@ -832,7 +870,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1055; CodeGen/src/IrLoweringA64.cpp:940",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "MUL_FLOAT",
@@ -847,7 +885,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1070; CodeGen/src/IrLoweringA64.cpp:948",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "DIV_FLOAT",
@@ -862,7 +900,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1085; CodeGen/src/IrLoweringA64.cpp:956",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "MIN_FLOAT",
@@ -877,7 +915,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1100; CodeGen/src/IrLoweringA64.cpp:964",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "MAX_FLOAT",
@@ -892,7 +930,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1115; CodeGen/src/IrLoweringA64.cpp:973",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "UNM_FLOAT",
@@ -907,7 +945,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1130; CodeGen/src/IrLoweringA64.cpp:982",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "FLOOR_FLOAT",
@@ -922,7 +960,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1137; CodeGen/src/IrLoweringA64.cpp:989",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "CEIL_FLOAT",
@@ -937,7 +975,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1142; CodeGen/src/IrLoweringA64.cpp:996",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "SQRT_FLOAT",
@@ -952,7 +990,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1147; CodeGen/src/IrLoweringA64.cpp:1003",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "ABS_FLOAT",
@@ -967,7 +1005,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1152; CodeGen/src/IrLoweringA64.cpp:1010",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "SIGN_FLOAT",
@@ -982,7 +1020,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1162; CodeGen/src/IrLoweringA64.cpp:1017",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "SELECT_NUM",
@@ -997,7 +1035,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1187; CodeGen/src/IrLoweringA64.cpp:1033",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "SELECT_INT64",
@@ -1012,7 +1050,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1210; CodeGen/src/IrLoweringA64.cpp:1046",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "SELECT_VEC",
@@ -1027,7 +1065,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1236; CodeGen/src/IrLoweringA64.cpp:1061",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "SELECT_IF_TRUTHY",
@@ -1042,7 +1080,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1250; CodeGen/src/IrLoweringA64.cpp:1081",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "ADD_VEC",
@@ -1057,7 +1095,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1281; CodeGen/src/IrLoweringA64.cpp:1132",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "SUB_VEC",
@@ -1072,7 +1110,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1294; CodeGen/src/IrLoweringA64.cpp:1139",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "MUL_VEC",
@@ -1087,7 +1125,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1307; CodeGen/src/IrLoweringA64.cpp:1146",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "DIV_VEC",
@@ -1102,7 +1140,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1320; CodeGen/src/IrLoweringA64.cpp:1153",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "IDIV_VEC",
@@ -1117,7 +1155,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1333; CodeGen/src/IrLoweringA64.cpp:1160",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "MULADD_VEC",
@@ -1132,7 +1170,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1347; CodeGen/src/IrLoweringA64.cpp:1111",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "UNM_VEC",
@@ -1147,7 +1185,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1373; CodeGen/src/IrLoweringA64.cpp:1168",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "MIN_VEC",
@@ -1162,7 +1200,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1380; CodeGen/src/IrLoweringA64.cpp:1175",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "MAX_VEC",
@@ -1177,7 +1215,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1393; CodeGen/src/IrLoweringA64.cpp:1202",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "FLOOR_VEC",
@@ -1192,7 +1230,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1406; CodeGen/src/IrLoweringA64.cpp:1228",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "CEIL_VEC",
@@ -1207,7 +1245,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1416; CodeGen/src/IrLoweringA64.cpp:1235",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "ABS_VEC",
@@ -1222,7 +1260,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1426; CodeGen/src/IrLoweringA64.cpp:1242",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "DOT_VEC",
@@ -1237,7 +1275,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1436; CodeGen/src/IrLoweringA64.cpp:1248",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "EXTRACT_VEC",
@@ -1252,7 +1290,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1449; CodeGen/src/IrLoweringA64.cpp:1261",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "NOT_ANY",
@@ -1267,7 +1305,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1456; CodeGen/src/IrLoweringA64.cpp:1276",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "CMP_ANY",
@@ -1283,8 +1321,8 @@
       "safepoint": null,
       "rejoins": true,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1525; CodeGen/src/IrLoweringA64.cpp:1370; luaV_equalval, luaV_lessthan, luaV_lessequal",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test"],
+      "status": "partial_exact_set_savedpc_cmp_any_jump_cmp_int_fallback"
     },
     {
       "command": "CMP_INT",
@@ -1299,7 +1337,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1499; CodeGen/src/IrLoweringA64.cpp:1310",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "CMP_INT64",
@@ -1314,7 +1352,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3343; CodeGen/src/IrLoweringA64.cpp:1340",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "CMP_TAG",
@@ -1329,7 +1367,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1579; CodeGen/src/IrLoweringA64.cpp:1434",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "CMP_SPLIT_TVALUE",
@@ -1344,7 +1382,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1600; CodeGen/src/IrLoweringA64.cpp:1490",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "JUMP",
@@ -1358,7 +1396,11 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1705; CodeGen/src/IrLoweringA64.cpp:1569",
-      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
+        "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter"
+      ],
       "status": "implemented"
     },
     {
@@ -1374,7 +1416,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1708; CodeGen/src/IrLoweringA64.cpp:1581",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "JUMP_IF_FALSY",
@@ -1389,7 +1431,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1712; CodeGen/src/IrLoweringA64.cpp:1597",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "JUMP_EQ_TAG",
@@ -1404,7 +1446,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1716; CodeGen/src/IrLoweringA64.cpp:1613",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "JUMP_CMP_INT",
@@ -1418,8 +1460,8 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1738; CodeGen/src/IrLoweringA64.cpp:1678",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test"],
+      "status": "implemented"
     },
     {
       "command": "JUMP_EQ_POINTER",
@@ -1434,7 +1476,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1768; CodeGen/src/IrLoweringA64.cpp:1699",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "JUMP_CMP_NUM",
@@ -1448,7 +1490,11 @@
       "safepoint": false,
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1774; CodeGen/src/IrLoweringA64.cpp:1704",
-      "tests": ["//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test"],
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
+        "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter"
+      ],
       "status": "implemented"
     },
     {
@@ -1464,7 +1510,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1786; CodeGen/src/IrLoweringA64.cpp:1726",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "JUMP_FORN_LOOP_COND",
@@ -1639,7 +1685,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1925; CodeGen/src/IrLoweringA64.cpp:1906",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "INT64_TO_NUM",
@@ -1654,7 +1700,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3369; CodeGen/src/IrLoweringA64.cpp:1899",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "UINT_TO_NUM",
@@ -1669,7 +1715,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1930; CodeGen/src/IrLoweringA64.cpp:1913",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "UINT_TO_FLOAT",
@@ -1684,7 +1730,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1947; CodeGen/src/IrLoweringA64.cpp:1920",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "NUM_TO_INT",
@@ -1744,7 +1790,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1976; CodeGen/src/IrLoweringA64.cpp:1949",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "NUM_TO_FLOAT",
@@ -1759,7 +1805,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1982; CodeGen/src/IrLoweringA64.cpp:1954",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "FLOAT_TO_VEC",
@@ -1774,7 +1820,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:1987; CodeGen/src/IrLoweringA64.cpp:1959",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "TAG_VECTOR",
@@ -1789,7 +1835,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2004; CodeGen/src/IrLoweringA64.cpp:1991",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "TRUNCATE_UINT",
@@ -1804,7 +1850,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2009; CodeGen/src/IrLoweringA64.cpp:2005",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "ADJUST_STACK_TO_REG",
@@ -1903,9 +1949,10 @@
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
         "//memcontainers/programs/luau/aot/runtime:slow_arith_runtime_oracle_test",
         "//memcontainers/tests/e2e:core#luau_aot_arithmetic_slow_path_rejoins_compiled_code",
-        "//memcontainers/tests/e2e:core#luau_aot_compiled_proto_graph_calls_rejoin"
+        "//memcontainers/tests/e2e:core#luau_aot_compiled_proto_graph_calls_rejoin",
+        "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test"
       ],
-      "status": "partial_add_vm_register_operands"
+      "status": "partial_all_arithmetic_ops_vm_register_operands"
     },
     {
       "command": "DO_LEN",
@@ -2052,7 +2099,9 @@
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
         "//memcontainers/programs/luau/aot/runtime:slow_arith_runtime_oracle_test",
         "//memcontainers/tests/e2e:core#luau_aot_arithmetic_slow_path_rejoins_compiled_code",
-        "//memcontainers/tests/e2e:core#luau_aot_compiled_proto_graph_calls_rejoin"
+        "//memcontainers/tests/e2e:core#luau_aot_compiled_proto_graph_calls_rejoin",
+        "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter"
       ],
       "status": "partial_numeric_fallback_rejoin_and_vm_exit"
     },
@@ -2356,9 +2405,10 @@
         "//memcontainers/programs/luau/aot/runtime:compiled_call_runtime_oracle_test",
         "//memcontainers/programs/luau/aot/runtime:slow_arith_runtime_oracle_test",
         "//memcontainers/tests/e2e:core#luau_aot_arithmetic_slow_path_rejoins_compiled_code",
-        "//memcontainers/tests/e2e:core#luau_aot_compiled_proto_graph_calls_rejoin"
+        "//memcontainers/tests/e2e:core#luau_aot_compiled_proto_graph_calls_rejoin",
+        "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test"
       ],
-      "status": "partial_validated_arith_and_call_location_marker"
+      "status": "partial_validated_arith_compare_and_call_location_marker"
     },
     {
       "command": "CLOSE_UPVALS",
@@ -2463,7 +2513,9 @@
         "//memcontainers/programs/luau/aot/runtime:compiled_call_runtime_oracle_test",
         "//memcontainers/programs/luau/aot/runtime:multi_result_call_runtime_oracle_test",
         "//memcontainers/tests/e2e:core#luau_aot_compiled_proto_graph_calls_rejoin",
-        "//memcontainers/tests/e2e:core#luau_aot_multi_result_proto_graph_calls_rejoin"
+        "//memcontainers/tests/e2e:core#luau_aot_multi_result_proto_graph_calls_rejoin",
+        "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter"
       ],
       "status": "partial_fixed_one_or_two_contiguous_tvalue_results"
     },
@@ -2732,7 +2784,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3744; CodeGen/src/IrLoweringA64.cpp:3120",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "MARK_USED",
@@ -2762,7 +2814,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3746; CodeGen/src/IrLoweringA64.cpp:3122",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITAND_INT64",
@@ -2777,7 +2829,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3379; CodeGen/src/IrLoweringA64.cpp:3126",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITXOR_INT64",
@@ -2792,7 +2844,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3387; CodeGen/src/IrLoweringA64.cpp:3134",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITOR_INT64",
@@ -2807,7 +2859,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3395; CodeGen/src/IrLoweringA64.cpp:3142",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITNOT_INT64",
@@ -2822,7 +2874,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3403; CodeGen/src/IrLoweringA64.cpp:3150",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITLSHIFT_INT64",
@@ -2837,7 +2889,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3411; CodeGen/src/IrLoweringA64.cpp:3157",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITRSHIFT_INT64",
@@ -2852,7 +2904,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3480; CodeGen/src/IrLoweringA64.cpp:3191",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITARSHIFT_INT64",
@@ -2867,7 +2919,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3549; CodeGen/src/IrLoweringA64.cpp:3225",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITLROTATE_INT64",
@@ -2882,7 +2934,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3630; CodeGen/src/IrLoweringA64.cpp:3269",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITRROTATE_INT64",
@@ -2897,7 +2949,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3655; CodeGen/src/IrLoweringA64.cpp:3279",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITCOUNTLZ_INT64",
@@ -2912,7 +2964,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3680; CodeGen/src/IrLoweringA64.cpp:3287",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITCOUNTRZ_INT64",
@@ -2927,7 +2979,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3699; CodeGen/src/IrLoweringA64.cpp:3294",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BYTESWAP_INT64",
@@ -2942,7 +2994,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3717; CodeGen/src/IrLoweringA64.cpp:3302",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITAND_UINT",
@@ -2957,7 +3009,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2906; CodeGen/src/IrLoweringA64.cpp:3309",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITXOR_UINT",
@@ -2972,7 +3024,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2914; CodeGen/src/IrLoweringA64.cpp:3323",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITOR_UINT",
@@ -2987,7 +3039,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2922; CodeGen/src/IrLoweringA64.cpp:3337",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITNOT_UINT",
@@ -3002,7 +3054,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2930; CodeGen/src/IrLoweringA64.cpp:3351",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITLSHIFT_UINT",
@@ -3017,7 +3069,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2938; CodeGen/src/IrLoweringA64.cpp:3358",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITRSHIFT_UINT",
@@ -3032,7 +3084,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2966; CodeGen/src/IrLoweringA64.cpp:3371",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITARSHIFT_UINT",
@@ -3047,7 +3099,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2994; CodeGen/src/IrLoweringA64.cpp:3384",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITLROTATE_UINT",
@@ -3062,7 +3114,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3022; CodeGen/src/IrLoweringA64.cpp:3397",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITRROTATE_UINT",
@@ -3077,7 +3129,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3050; CodeGen/src/IrLoweringA64.cpp:3414",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITCOUNTLZ_UINT",
@@ -3092,7 +3144,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3078; CodeGen/src/IrLoweringA64.cpp:3427",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BITCOUNTRZ_UINT",
@@ -3107,7 +3159,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3097; CodeGen/src/IrLoweringA64.cpp:3434",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "BYTESWAP_UINT",
@@ -3122,7 +3174,7 @@
       "rejoins": false,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:3115; CodeGen/src/IrLoweringA64.cpp:3442",
       "tests": [],
-      "status": "unimplemented"
+      "status": "implemented"
     },
     {
       "command": "INVOKE_LIBM",

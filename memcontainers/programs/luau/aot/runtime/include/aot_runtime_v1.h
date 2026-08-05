@@ -32,6 +32,19 @@ enum McLuauAotIdsV1 {
 // compiler frontend pin maps upstream TMS values onto this versioned runtime ABI.
 enum McLuauAotArithOpV1 {
     MC_LUAU_AOT_ARITH_V1_ADD = 0,
+    MC_LUAU_AOT_ARITH_V1_SUB = 1,
+    MC_LUAU_AOT_ARITH_V1_MUL = 2,
+    MC_LUAU_AOT_ARITH_V1_DIV = 3,
+    MC_LUAU_AOT_ARITH_V1_IDIV = 4,
+    MC_LUAU_AOT_ARITH_V1_MOD = 5,
+    MC_LUAU_AOT_ARITH_V1_POW = 6,
+    MC_LUAU_AOT_ARITH_V1_UNM = 7,
+};
+
+enum McLuauAotCompareOpV1 {
+    MC_LUAU_AOT_COMPARE_V1_EQUAL = 0,
+    MC_LUAU_AOT_COMPARE_V1_LESS = 1,
+    MC_LUAU_AOT_COMPARE_V1_LESS_EQUAL = 2,
 };
 
 // Immutable metadata attached to Proto::execdata by the AOT image initializer. The generated
@@ -82,6 +95,8 @@ uint32_t mc_luau_aot_v1_interrupt(lua_State *state, uint32_t pc);
 void mc_luau_aot_v1_do_arith(lua_State *state, uint32_t destination_register,
                              uint32_t lhs_register, uint32_t rhs_register,
                              uint32_t operation);
+uint32_t mc_luau_aot_v1_compare_any(lua_State *state, uint32_t lhs_register,
+                                    uint32_t rhs_register, uint32_t operation);
 void mc_luau_aot_v1_dupclosure(lua_State *state, uint32_t destination_register,
                                uint32_t child_proto_id);
 void mc_luau_aot_v1_newclosure_value(lua_State *state, uint32_t destination_register,

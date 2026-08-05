@@ -6,6 +6,7 @@ pub const generated_symbol = "mc_luau_aot_v1_generated_ir_function";
 pub const return_fixed_symbol = "mc_luau_aot_v1_return_fixed";
 pub const interrupt_symbol = "mc_luau_aot_v1_interrupt";
 pub const do_arith_symbol = "mc_luau_aot_v1_do_arith";
+pub const compare_any_symbol = "mc_luau_aot_v1_compare_any";
 pub const dupclosure_symbol = "mc_luau_aot_v1_dupclosure";
 pub const newclosure_value_symbol = "mc_luau_aot_v1_newclosure_value";
 pub const newclosure_ref_symbol = "mc_luau_aot_v1_newclosure_ref";
@@ -20,10 +21,26 @@ const status_internal_error: i32 = 2;
 
 const lua_state_base_offset: u32 = 12;
 const tvalue_size: u32 = 16;
+const tvalue_extra_offset: u32 = 8;
 const tvalue_tag_offset: u32 = 12;
+const lua_tag_nil: i32 = 0;
+const lua_tag_boolean: i32 = 1;
+const lua_tag_number: u8 = 3;
+const lua_tag_integer: u8 = 4;
+const lua_tag_vector: i64 = 5;
+const lua_tag_string: u8 = 6;
+const vector_lane_count: u32 = 3;
+const tvalue_lane_count: u32 = 4;
+const round_number_bias: f64 = @bitCast(@as(u64, 0x3fdf_ffff_ffff_ffff));
 const upstream_tm_add: i32 = 8;
-const aot_arith_add: i32 = 0;
+const upstream_tm_unm: i32 = 15;
 const max_lowered_locals: u32 = 262_144;
+
+fn aotArithmeticOperation(upstream_operation: i32) ?i32 {
+    if (upstream_operation < upstream_tm_add or upstream_operation > upstream_tm_unm)
+        return null;
+    return upstream_operation - upstream_tm_add;
+}
 
 pub const Error = snapshot_v1.Error || wasm.Error || std.mem.Allocator.Error || error{
     FunctionOutOfBounds,
@@ -43,6 +60,8 @@ pub const Error = snapshot_v1.Error || wasm.Error || std.mem.Allocator.Error || 
 const ValueShape = enum {
     none,
     i32,
+    i64,
+    f32,
     f64,
     tvalue,
 };
@@ -81,6 +100,7 @@ const Context = struct {
     return_fixed: wasm.FunctionRef,
     interrupt: wasm.FunctionRef,
     do_arith: ?wasm.FunctionRef,
+    compare_any: ?wasm.FunctionRef,
     dupclosure: ?wasm.FunctionRef,
     newclosure_value: ?wasm.FunctionRef,
     newclosure_ref: ?wasm.FunctionRef,
@@ -445,6 +465,42 @@ const Context = struct {
         }
     }
 
+    fn emitI64Value(self: Context, operand_value: snapshot_v1.IrOperand) Error!void {
+        switch (operand_value.kind) {
+            .constant => {
+                const value = try self.constant(operand_value.value);
+                try self.body.i64Const(self.allocator, value.int64Value() orelse return Error.InvalidOperandType);
+            },
+            .instruction => {
+                if (operand_value.value >= self.slots.len)
+                    return Error.InvalidInstructionResult;
+                const slot = self.slots[operand_value.value];
+                if (slot.shape != .i64)
+                    return Error.InvalidInstructionResult;
+                try self.body.localGet(self.allocator, slot.first);
+            },
+            else => return Error.UnsupportedOperand,
+        }
+    }
+
+    fn emitF32Value(self: Context, operand_value: snapshot_v1.IrOperand) Error!void {
+        switch (operand_value.kind) {
+            .constant => {
+                const value = try self.constant(operand_value.value);
+                try self.body.f32Const(self.allocator, @floatCast(value.doubleValue() orelse return Error.InvalidOperandType));
+            },
+            .instruction => {
+                if (operand_value.value >= self.slots.len)
+                    return Error.InvalidInstructionResult;
+                const slot = self.slots[operand_value.value];
+                if (slot.shape != .f32)
+                    return Error.InvalidInstructionResult;
+                try self.body.localGet(self.allocator, slot.first);
+            },
+            else => return Error.UnsupportedOperand,
+        }
+    }
+
     fn emitF64Value(self: Context, operand_value: snapshot_v1.IrOperand) Error!void {
         switch (operand_value.kind) {
             .constant => {
@@ -461,6 +517,77 @@ const Context = struct {
             },
             else => return Error.UnsupportedOperand,
         }
+    }
+
+    fn emitTagValue(self: Context, operand_value: snapshot_v1.IrOperand) Error!void {
+        if (operand_value.kind == .vm_reg) {
+            try self.body.localGet(self.allocator, self.base_local);
+            try self.body.i32Load(self.allocator, 2, try self.vmRegisterOffset(operand_value, tvalue_tag_offset));
+        } else {
+            try self.emitI32Value(operand_value);
+        }
+    }
+
+    fn tvalueSlot(self: Context, operand_value: snapshot_v1.IrOperand) Error!ValueSlot {
+        if (operand_value.kind != .instruction or operand_value.value >= self.slots.len)
+            return Error.InvalidOperandType;
+        const slot = self.slots[operand_value.value];
+        if (slot.shape != .tvalue)
+            return Error.InvalidInstructionResult;
+        return slot;
+    }
+
+    fn emitTValuePart(self: Context, operand_value: snapshot_v1.IrOperand, high: bool) Error!void {
+        switch (operand_value.kind) {
+            .vm_reg => {
+                try self.body.localGet(self.allocator, self.base_local);
+                const offset = try self.vmRegisterOffset(operand_value, if (high) 8 else 0);
+                try self.body.i64Load(self.allocator, 3, offset);
+            },
+            .instruction => {
+                const slot = try self.tvalueSlot(operand_value);
+                try self.body.localGet(self.allocator, if (high) slot.second else slot.first);
+            },
+            else => return Error.UnsupportedOperand,
+        }
+    }
+
+    fn emitTValueTag(self: Context, operand_value: snapshot_v1.IrOperand) Error!void {
+        if (operand_value.kind == .vm_reg) {
+            try self.emitTagValue(operand_value);
+            return;
+        }
+
+        try self.emitTValuePart(operand_value, true);
+        try self.body.i64Const(self.allocator, 32);
+        try self.body.opcode(self.allocator, 0x88); // i64.shr_u
+        try self.body.opcode(self.allocator, 0xa7); // i32.wrap_i64
+    }
+
+    fn emitTValuePayloadI32(self: Context, operand_value: snapshot_v1.IrOperand) Error!void {
+        if (operand_value.kind == .vm_reg) {
+            try self.body.localGet(self.allocator, self.base_local);
+            try self.body.i32Load(self.allocator, 2, try self.vmRegisterOffset(operand_value, 0));
+            return;
+        }
+
+        try self.emitTValuePart(operand_value, false);
+        try self.body.opcode(self.allocator, 0xa7); // i32.wrap_i64
+    }
+
+    fn emitTValueTruthy(self: Context, operand_value: snapshot_v1.IrOperand) Error!void {
+        try self.emitTValueTag(operand_value);
+        try self.body.i32Const(self.allocator, lua_tag_nil);
+        try self.body.i32Ne(self.allocator);
+
+        try self.emitTValueTag(operand_value);
+        try self.body.i32Const(self.allocator, lua_tag_boolean);
+        try self.body.i32Ne(self.allocator);
+        try self.emitTValuePayloadI32(operand_value);
+        try self.body.i32Eqz(self.allocator);
+        try self.body.i32Eqz(self.allocator);
+        try self.body.opcode(self.allocator, 0x72); // i32.or
+        try self.body.opcode(self.allocator, 0x71); // i32.and
     }
 
     fn requireCompiledTarget(self: Context, operand_value: snapshot_v1.IrOperand) Error!u32 {
@@ -488,6 +615,36 @@ const Context = struct {
         const source = try self.operand(instruction_value, 0);
         try self.body.localGet(self.allocator, self.base_local);
         try self.body.i32Load(self.allocator, 2, try self.vmRegisterOffset(source, tvalue_tag_offset));
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitLoadI32(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 1);
+        const source = try self.operand(instruction_value, 0);
+        try self.body.localGet(self.allocator, self.base_local);
+        try self.body.i32Load(self.allocator, 2, try self.vmRegisterOffset(source, 0));
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitLoadI64(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 1);
+        const source = try self.operand(instruction_value, 0);
+        try self.body.localGet(self.allocator, self.base_local);
+        try self.body.i64Load(self.allocator, 3, try self.vmRegisterOffset(source, 0));
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitLoadFloat(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 2);
+        const source = try self.operand(instruction_value, 0);
+        const offset_operand = try self.operand(instruction_value, 1);
+        if (offset_operand.kind != .constant)
+            return Error.InvalidOperandType;
+        const offset = (try self.constant(offset_operand.value)).intValue() orelse return Error.InvalidOperandType;
+        if (offset < 0 or offset > 8 or @mod(offset, 4) != 0)
+            return Error.InvalidOperandType;
+        try self.body.localGet(self.allocator, self.base_local);
+        try self.body.f32Load(self.allocator, 2, try self.vmRegisterOffset(source, @intCast(offset)));
         try self.emitInstructionResultSet(instruction_id);
     }
 
@@ -540,6 +697,40 @@ const Context = struct {
         try self.body.localGet(self.allocator, self.base_local);
         try self.emitF64Value(try self.operand(instruction_value, 1));
         try self.body.f64Store(self.allocator, 3, try self.vmRegisterOffset(destination, 0));
+    }
+
+    fn emitStoreI32(self: Context, instruction_value: snapshot_v1.IrInstruction, field_offset: u32) Error!void {
+        try self.requireOperandCount(instruction_value, 2);
+        const destination = try self.operand(instruction_value, 0);
+        try self.body.localGet(self.allocator, self.base_local);
+        try self.emitI32Value(try self.operand(instruction_value, 1));
+        try self.body.i32Store(self.allocator, 2, try self.vmRegisterOffset(destination, field_offset));
+    }
+
+    fn emitStoreI64(self: Context, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 2);
+        const destination = try self.operand(instruction_value, 0);
+        try self.body.localGet(self.allocator, self.base_local);
+        try self.emitI64Value(try self.operand(instruction_value, 1));
+        try self.body.i64Store(self.allocator, 3, try self.vmRegisterOffset(destination, 0));
+    }
+
+    fn emitStoreVector(self: Context, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        if (instruction_value.operand_count != 4 and instruction_value.operand_count != 5)
+            return Error.InvalidOperandCount;
+        const destination = try self.operand(instruction_value, 0);
+        _ = try self.vmRegisterIndex(destination);
+        var lane: u32 = 0;
+        while (lane < vector_lane_count) : (lane += 1) {
+            try self.body.localGet(self.allocator, self.base_local);
+            try self.emitF32Value(try self.operand(instruction_value, lane + 1));
+            try self.body.f32Store(self.allocator, 2, try self.vmRegisterOffset(destination, lane * 4));
+        }
+        if (instruction_value.operand_count == 5) {
+            try self.body.localGet(self.allocator, self.base_local);
+            try self.emitTagValue(try self.operand(instruction_value, 4));
+            try self.body.i32Store(self.allocator, 2, try self.vmRegisterOffset(destination, tvalue_tag_offset));
+        }
     }
 
     fn emitStoreTValue(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
@@ -635,6 +826,731 @@ const Context = struct {
         try self.emitInstructionResultSet(instruction_id);
     }
 
+    fn emitUnaryI32(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction, opcode: u8) Error!void {
+        try self.requireOperandCount(instruction_value, 1);
+        try self.emitI32Value(try self.operand(instruction_value, 0));
+        try self.body.opcode(self.allocator, opcode);
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitUnaryI64(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction, opcode: u8) Error!void {
+        try self.requireOperandCount(instruction_value, 1);
+        try self.emitI64Value(try self.operand(instruction_value, 0));
+        try self.body.opcode(self.allocator, opcode);
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitUnaryF32(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction, opcode: u8) Error!void {
+        try self.requireOperandCount(instruction_value, 1);
+        try self.emitF32Value(try self.operand(instruction_value, 0));
+        try self.body.opcode(self.allocator, opcode);
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitUnaryF64(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction, opcode: u8) Error!void {
+        try self.requireOperandCount(instruction_value, 1);
+        try self.emitF64Value(try self.operand(instruction_value, 0));
+        try self.body.opcode(self.allocator, opcode);
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitBinaryI32(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction, opcode: u8) Error!void {
+        try self.requireOperandCount(instruction_value, 2);
+        try self.emitI32Value(try self.operand(instruction_value, 0));
+        try self.emitI32Value(try self.operand(instruction_value, 1));
+        try self.body.opcode(self.allocator, opcode);
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitBinaryI64(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction, opcode: u8) Error!void {
+        try self.requireOperandCount(instruction_value, 2);
+        try self.emitI64Value(try self.operand(instruction_value, 0));
+        try self.emitI64Value(try self.operand(instruction_value, 1));
+        try self.body.opcode(self.allocator, opcode);
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitNotI32(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 1);
+        try self.emitI32Value(try self.operand(instruction_value, 0));
+        try self.body.i32Const(self.allocator, -1);
+        try self.body.opcode(self.allocator, 0x73); // i32.xor
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitNotI64(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 1);
+        try self.emitI64Value(try self.operand(instruction_value, 0));
+        try self.body.i64Const(self.allocator, -1);
+        try self.body.opcode(self.allocator, 0x85); // i64.xor
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitSignedI64Shift(
+        self: Context,
+        instruction_id: u32,
+        instruction_value: snapshot_v1.IrInstruction,
+        positive_opcode: u8,
+        negative_opcode: u8,
+        saturate_sign: bool,
+    ) Error!void {
+        try self.requireOperandCount(instruction_value, 2);
+        const value = try self.operand(instruction_value, 0);
+        const amount = try self.operand(instruction_value, 1);
+
+        try self.emitI64Value(amount);
+        try self.body.i64Const(self.allocator, -64);
+        try self.body.opcode(self.allocator, 0x57); // i64.le_s
+        try self.body.ifVoid(self.allocator);
+        try self.body.i64Const(self.allocator, 0);
+        try self.emitInstructionResultSet(instruction_id);
+        try self.body.else_(self.allocator);
+
+        try self.emitI64Value(amount);
+        try self.body.i64Const(self.allocator, 64);
+        try self.body.opcode(self.allocator, 0x59); // i64.ge_s
+        try self.body.ifVoid(self.allocator);
+        if (saturate_sign) {
+            try self.emitI64Value(value);
+            try self.body.i64Const(self.allocator, 63);
+            try self.body.opcode(self.allocator, 0x87); // i64.shr_s
+        } else {
+            try self.body.i64Const(self.allocator, 0);
+        }
+        try self.emitInstructionResultSet(instruction_id);
+        try self.body.else_(self.allocator);
+
+        try self.emitI64Value(amount);
+        try self.body.i64Const(self.allocator, 0);
+        try self.body.opcode(self.allocator, 0x53); // i64.lt_s
+        try self.body.ifVoid(self.allocator);
+        try self.emitI64Value(value);
+        try self.body.i64Const(self.allocator, 0);
+        try self.emitI64Value(amount);
+        try self.body.opcode(self.allocator, 0x7d); // i64.sub
+        try self.body.opcode(self.allocator, negative_opcode);
+        try self.emitInstructionResultSet(instruction_id);
+        try self.body.else_(self.allocator);
+        try self.emitI64Value(value);
+        try self.emitI64Value(amount);
+        try self.body.opcode(self.allocator, positive_opcode);
+        try self.emitInstructionResultSet(instruction_id);
+        try self.body.end(self.allocator);
+        try self.body.end(self.allocator);
+        try self.body.end(self.allocator);
+    }
+
+    fn emitByteSwapI32(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 1);
+        const value = try self.operand(instruction_value, 0);
+        try self.emitI32Value(value);
+        try self.body.i32Const(self.allocator, 0x00ff_00ff);
+        try self.body.opcode(self.allocator, 0x71); // i32.and
+        try self.body.i32Const(self.allocator, 8);
+        try self.body.opcode(self.allocator, 0x74); // i32.shl
+        try self.emitI32Value(value);
+        try self.body.i32Const(self.allocator, 8);
+        try self.body.opcode(self.allocator, 0x76); // i32.shr_u
+        try self.body.i32Const(self.allocator, 0x00ff_00ff);
+        try self.body.opcode(self.allocator, 0x71); // i32.and
+        try self.body.opcode(self.allocator, 0x72); // i32.or
+        try self.body.i32Const(self.allocator, 16);
+        try self.body.opcode(self.allocator, 0x77); // i32.rotl
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitAdjacentByteSwapI64(self: Context, value: snapshot_v1.IrOperand) Error!void {
+        try self.emitI64Value(value);
+        try self.body.i64Const(self.allocator, 0x00ff_00ff_00ff_00ff);
+        try self.body.opcode(self.allocator, 0x83); // i64.and
+        try self.body.i64Const(self.allocator, 8);
+        try self.body.opcode(self.allocator, 0x86); // i64.shl
+        try self.emitI64Value(value);
+        try self.body.i64Const(self.allocator, 8);
+        try self.body.opcode(self.allocator, 0x88); // i64.shr_u
+        try self.body.i64Const(self.allocator, 0x00ff_00ff_00ff_00ff);
+        try self.body.opcode(self.allocator, 0x83); // i64.and
+        try self.body.opcode(self.allocator, 0x84); // i64.or
+    }
+
+    fn emitByteSwapI64(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 1);
+        const value = try self.operand(instruction_value, 0);
+        try self.emitAdjacentByteSwapI64(value);
+        try self.body.i64Const(self.allocator, 0x0000_ffff_0000_ffff);
+        try self.body.opcode(self.allocator, 0x83); // i64.and
+        try self.body.i64Const(self.allocator, 16);
+        try self.body.opcode(self.allocator, 0x86); // i64.shl
+        try self.emitAdjacentByteSwapI64(value);
+        try self.body.i64Const(self.allocator, 16);
+        try self.body.opcode(self.allocator, 0x88); // i64.shr_u
+        try self.body.i64Const(self.allocator, 0x0000_ffff_0000_ffff);
+        try self.body.opcode(self.allocator, 0x83); // i64.and
+        try self.body.opcode(self.allocator, 0x84); // i64.or
+        try self.body.i64Const(self.allocator, 32);
+        try self.body.opcode(self.allocator, 0x89); // i64.rotl
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitBinaryF32(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction, opcode: u8) Error!void {
+        try self.requireOperandCount(instruction_value, 2);
+        try self.emitF32Value(try self.operand(instruction_value, 0));
+        try self.emitF32Value(try self.operand(instruction_value, 1));
+        try self.body.opcode(self.allocator, opcode);
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitBinaryF64(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction, opcode: u8) Error!void {
+        try self.requireOperandCount(instruction_value, 2);
+        try self.emitF64Value(try self.operand(instruction_value, 0));
+        try self.emitF64Value(try self.operand(instruction_value, 1));
+        try self.body.opcode(self.allocator, opcode);
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitMulAddNumber(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 3);
+        try self.emitF64Value(try self.operand(instruction_value, 0));
+        try self.emitF64Value(try self.operand(instruction_value, 1));
+        try self.body.opcode(self.allocator, 0xa2); // f64.mul
+        try self.emitF64Value(try self.operand(instruction_value, 2));
+        try self.body.opcode(self.allocator, 0xa0); // f64.add
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitFloorDivisionNumber(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 2);
+        try self.emitF64Value(try self.operand(instruction_value, 0));
+        try self.emitF64Value(try self.operand(instruction_value, 1));
+        try self.body.opcode(self.allocator, 0xa3); // f64.div
+        try self.body.opcode(self.allocator, 0x9c); // f64.floor
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitModNumber(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 2);
+        const lhs = try self.operand(instruction_value, 0);
+        const rhs = try self.operand(instruction_value, 1);
+        try self.emitF64Value(lhs);
+        try self.emitF64Value(lhs);
+        try self.emitF64Value(rhs);
+        try self.body.opcode(self.allocator, 0xa3); // f64.div
+        try self.body.opcode(self.allocator, 0x9c); // f64.floor
+        try self.emitF64Value(rhs);
+        try self.body.opcode(self.allocator, 0xa2); // f64.mul
+        try self.body.opcode(self.allocator, 0xa1); // f64.sub
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitMinMaxNumber(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction, comparison_opcode: u8) Error!void {
+        try self.requireOperandCount(instruction_value, 2);
+        const lhs = try self.operand(instruction_value, 0);
+        const rhs = try self.operand(instruction_value, 1);
+        try self.emitF64Value(lhs);
+        try self.emitF64Value(rhs);
+        try self.emitF64Value(lhs);
+        try self.emitF64Value(rhs);
+        try self.body.opcode(self.allocator, comparison_opcode);
+        try self.body.select(self.allocator);
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitRoundNumber(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 1);
+        const value = try self.operand(instruction_value, 0);
+        try self.emitF64Value(value);
+        try self.body.f64Const(self.allocator, round_number_bias);
+        try self.emitF64Value(value);
+        try self.body.opcode(self.allocator, 0xa6); // f64.copysign
+        try self.body.opcode(self.allocator, 0xa0); // f64.add
+        try self.body.opcode(self.allocator, 0x9d); // f64.trunc
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitSignNumber(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 1);
+        const value = try self.operand(instruction_value, 0);
+        try self.body.f64Const(self.allocator, 1.0);
+        try self.body.f64Const(self.allocator, -1.0);
+        try self.body.f64Const(self.allocator, 0.0);
+        try self.emitF64Value(value);
+        try self.body.f64Const(self.allocator, 0.0);
+        try self.body.opcode(self.allocator, 0x63); // f64.lt
+        try self.body.select(self.allocator);
+        try self.emitF64Value(value);
+        try self.body.f64Const(self.allocator, 0.0);
+        try self.body.opcode(self.allocator, 0x64); // f64.gt
+        try self.body.select(self.allocator);
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitMinMaxFloat(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction, comparison_opcode: u8) Error!void {
+        try self.requireOperandCount(instruction_value, 2);
+        const lhs = try self.operand(instruction_value, 0);
+        const rhs = try self.operand(instruction_value, 1);
+        try self.emitF32Value(lhs);
+        try self.emitF32Value(rhs);
+        try self.emitF32Value(lhs);
+        try self.emitF32Value(rhs);
+        try self.body.opcode(self.allocator, comparison_opcode);
+        try self.body.select(self.allocator);
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitSignFloat(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 1);
+        const value = try self.operand(instruction_value, 0);
+        try self.body.f32Const(self.allocator, 1.0);
+        try self.body.f32Const(self.allocator, -1.0);
+        try self.body.f32Const(self.allocator, 0.0);
+        try self.emitF32Value(value);
+        try self.body.f32Const(self.allocator, 0.0);
+        try self.body.opcode(self.allocator, 0x5d); // f32.lt
+        try self.body.select(self.allocator);
+        try self.emitF32Value(value);
+        try self.body.f32Const(self.allocator, 0.0);
+        try self.body.opcode(self.allocator, 0x5e); // f32.gt
+        try self.body.select(self.allocator);
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn vectorSlot(self: Context, operand_value: snapshot_v1.IrOperand) Error!ValueSlot {
+        if (operand_value.kind != .instruction or operand_value.value >= self.slots.len)
+            return Error.InvalidOperandType;
+        const slot = self.slots[operand_value.value];
+        if (slot.shape != .tvalue)
+            return Error.InvalidInstructionResult;
+        return slot;
+    }
+
+    fn emitVectorLaneBits(self: Context, operand_value: snapshot_v1.IrOperand, lane: u32) Error!void {
+        const slot = try self.vectorSlot(operand_value);
+        switch (lane) {
+            0 => try self.body.localGet(self.allocator, slot.first),
+            1 => {
+                try self.body.localGet(self.allocator, slot.first);
+                try self.body.i64Const(self.allocator, 32);
+                try self.body.opcode(self.allocator, 0x88); // i64.shr_u
+            },
+            2 => try self.body.localGet(self.allocator, slot.second),
+            3 => {
+                try self.body.localGet(self.allocator, slot.second);
+                try self.body.i64Const(self.allocator, 32);
+                try self.body.opcode(self.allocator, 0x88); // i64.shr_u
+            },
+            else => return Error.InvalidOperandType,
+        }
+        try self.body.opcode(self.allocator, 0xa7); // i32.wrap_i64
+    }
+
+    fn emitVectorLane(self: Context, operand_value: snapshot_v1.IrOperand, lane: u32) Error!void {
+        try self.emitVectorLaneBits(operand_value, lane);
+        try self.body.opcode(self.allocator, 0xbe); // f32.reinterpret_i32
+    }
+
+    fn emitVectorPackPrefix(self: Context, instruction_id: u32, lane: u32) Error!void {
+        if (instruction_id >= self.slots.len or self.slots[instruction_id].shape != .tvalue)
+            return Error.InvalidInstructionResult;
+        if (lane == 1)
+            try self.body.localGet(self.allocator, self.slots[instruction_id].first)
+        else if (lane == 3)
+            try self.body.localGet(self.allocator, self.slots[instruction_id].second);
+    }
+
+    fn emitVectorLaneBitsSet(self: Context, instruction_id: u32, lane: u32) Error!void {
+        const slot = self.slots[instruction_id];
+        try self.body.opcode(self.allocator, 0xad); // i64.extend_i32_u
+        switch (lane) {
+            0 => try self.body.localSet(self.allocator, slot.first),
+            1 => {
+                try self.body.i64Const(self.allocator, 32);
+                try self.body.opcode(self.allocator, 0x86); // i64.shl
+                try self.body.opcode(self.allocator, 0x84); // i64.or
+                try self.body.localSet(self.allocator, slot.first);
+            },
+            2 => try self.body.localSet(self.allocator, slot.second),
+            3 => {
+                try self.body.i64Const(self.allocator, 32);
+                try self.body.opcode(self.allocator, 0x86); // i64.shl
+                try self.body.opcode(self.allocator, 0x84); // i64.or
+                try self.body.localSet(self.allocator, slot.second);
+            },
+            else => return Error.InvalidOperandType,
+        }
+    }
+
+    fn emitVectorLaneSet(self: Context, instruction_id: u32, lane: u32) Error!void {
+        try self.body.opcode(self.allocator, 0xbc); // i32.reinterpret_f32
+        try self.emitVectorLaneBitsSet(instruction_id, lane);
+    }
+
+    fn emitVectorUnary(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction, opcode: u8) Error!void {
+        try self.requireOperandCount(instruction_value, 1);
+        const value = try self.operand(instruction_value, 0);
+        var lane: u32 = 0;
+        while (lane < vector_lane_count) : (lane += 1) {
+            try self.emitVectorPackPrefix(instruction_id, lane);
+            try self.emitVectorLane(value, lane);
+            try self.body.opcode(self.allocator, opcode);
+            try self.emitVectorLaneSet(instruction_id, lane);
+        }
+    }
+
+    fn emitVectorBinary(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction, opcode: u8) Error!void {
+        try self.requireOperandCount(instruction_value, 2);
+        const lhs = try self.operand(instruction_value, 0);
+        const rhs = try self.operand(instruction_value, 1);
+        var lane: u32 = 0;
+        while (lane < vector_lane_count) : (lane += 1) {
+            try self.emitVectorPackPrefix(instruction_id, lane);
+            try self.emitVectorLane(lhs, lane);
+            try self.emitVectorLane(rhs, lane);
+            try self.body.opcode(self.allocator, opcode);
+            try self.emitVectorLaneSet(instruction_id, lane);
+        }
+    }
+
+    fn emitFloorDivisionVector(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 2);
+        const lhs = try self.operand(instruction_value, 0);
+        const rhs = try self.operand(instruction_value, 1);
+        var lane: u32 = 0;
+        while (lane < vector_lane_count) : (lane += 1) {
+            try self.emitVectorPackPrefix(instruction_id, lane);
+            try self.emitVectorLane(lhs, lane);
+            try self.emitVectorLane(rhs, lane);
+            try self.body.opcode(self.allocator, 0x95); // f32.div
+            try self.body.opcode(self.allocator, 0x8e); // f32.floor
+            try self.emitVectorLaneSet(instruction_id, lane);
+        }
+    }
+
+    fn emitMulAddVector(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 3);
+        const lhs = try self.operand(instruction_value, 0);
+        const rhs = try self.operand(instruction_value, 1);
+        const addend = try self.operand(instruction_value, 2);
+        var lane: u32 = 0;
+        while (lane < vector_lane_count) : (lane += 1) {
+            try self.emitVectorPackPrefix(instruction_id, lane);
+            try self.emitVectorLane(lhs, lane);
+            try self.emitVectorLane(rhs, lane);
+            try self.body.opcode(self.allocator, 0x94); // f32.mul
+            try self.emitVectorLane(addend, lane);
+            try self.body.opcode(self.allocator, 0x92); // f32.add
+            try self.emitVectorLaneSet(instruction_id, lane);
+        }
+    }
+
+    fn emitMinMaxVector(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction, comparison_opcode: u8) Error!void {
+        try self.requireOperandCount(instruction_value, 2);
+        const lhs = try self.operand(instruction_value, 0);
+        const rhs = try self.operand(instruction_value, 1);
+        var lane: u32 = 0;
+        while (lane < vector_lane_count) : (lane += 1) {
+            try self.emitVectorPackPrefix(instruction_id, lane);
+            try self.emitVectorLaneBits(lhs, lane);
+            try self.emitVectorLaneBits(rhs, lane);
+            try self.emitVectorLane(lhs, lane);
+            try self.emitVectorLane(rhs, lane);
+            try self.body.opcode(self.allocator, comparison_opcode);
+            try self.body.select(self.allocator);
+            try self.emitVectorLaneBitsSet(instruction_id, lane);
+        }
+    }
+
+    fn emitDotVector(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 2);
+        const lhs = try self.operand(instruction_value, 0);
+        const rhs = try self.operand(instruction_value, 1);
+        var lane: u32 = 0;
+        while (lane < vector_lane_count) : (lane += 1) {
+            try self.emitVectorLane(lhs, lane);
+            try self.emitVectorLane(rhs, lane);
+            try self.body.opcode(self.allocator, 0x94); // f32.mul
+            if (lane != 0)
+                try self.body.opcode(self.allocator, 0x92); // f32.add
+        }
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitExtractVector(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 2);
+        const lane_operand = try self.operand(instruction_value, 1);
+        if (lane_operand.kind != .constant)
+            return Error.InvalidOperandType;
+        const lane = (try self.constant(lane_operand.value)).intValue() orelse return Error.InvalidOperandType;
+        if (lane < 0 or lane >= @as(i32, @intCast(vector_lane_count)))
+            return Error.InvalidOperandType;
+        try self.emitVectorLane(try self.operand(instruction_value, 0), @intCast(lane));
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitFloatToVector(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 1);
+        const value = try self.operand(instruction_value, 0);
+        var lane: u32 = 0;
+        while (lane < vector_lane_count) : (lane += 1) {
+            try self.emitVectorPackPrefix(instruction_id, lane);
+            try self.emitF32Value(value);
+            try self.emitVectorLaneSet(instruction_id, lane);
+        }
+    }
+
+    fn emitTagVector(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 1);
+        if (instruction_id >= self.slots.len or self.slots[instruction_id].shape != .tvalue)
+            return Error.InvalidInstructionResult;
+        const source = try self.vectorSlot(try self.operand(instruction_value, 0));
+        const destination = self.slots[instruction_id];
+        try self.body.localGet(self.allocator, source.first);
+        try self.body.localSet(self.allocator, destination.first);
+        try self.body.localGet(self.allocator, source.second);
+        try self.body.i64Const(self.allocator, 0xffff_ffff);
+        try self.body.opcode(self.allocator, 0x83); // i64.and
+        try self.body.i64Const(self.allocator, lua_tag_vector << 32);
+        try self.body.opcode(self.allocator, 0x84); // i64.or
+        try self.body.localSet(self.allocator, destination.second);
+    }
+
+    fn conditionOperand(self: Context, instruction_value: snapshot_v1.IrInstruction, index: u32) Error!snapshot_v1.IrCondition {
+        const operand_value = try self.operand(instruction_value, index);
+        if (operand_value.kind != .condition)
+            return Error.InvalidOperandType;
+        return @enumFromInt(@as(u8, @intCast(operand_value.value)));
+    }
+
+    fn emitIntegerCondition(self: Context, condition: snapshot_v1.IrCondition) Error!void {
+        const opcode: u8 = switch (condition) {
+            .equal => 0x46,
+            .not_equal => 0x47,
+            .less => 0x48,
+            .not_less => 0x4e,
+            .less_equal => 0x4c,
+            .not_less_equal => 0x4a,
+            .greater => 0x4a,
+            .not_greater => 0x4c,
+            .greater_equal => 0x4e,
+            .not_greater_equal => 0x48,
+            .unsigned_less => 0x49,
+            .unsigned_less_equal => 0x4d,
+            .unsigned_greater => 0x4b,
+            .unsigned_greater_equal => 0x4f,
+        };
+        try self.body.opcode(self.allocator, opcode);
+    }
+
+    fn emitInt64Condition(self: Context, condition: snapshot_v1.IrCondition) Error!void {
+        const opcode: u8 = switch (condition) {
+            .equal => 0x51,
+            .not_equal => 0x52,
+            .less => 0x53,
+            .not_less => 0x59,
+            .less_equal => 0x57,
+            .not_less_equal => 0x55,
+            .greater => 0x55,
+            .not_greater => 0x57,
+            .greater_equal => 0x59,
+            .not_greater_equal => 0x53,
+            .unsigned_less => 0x54,
+            .unsigned_less_equal => 0x58,
+            .unsigned_greater => 0x56,
+            .unsigned_greater_equal => 0x5a,
+        };
+        try self.body.opcode(self.allocator, opcode);
+    }
+
+    fn emitFloatCondition(self: Context, condition: snapshot_v1.IrCondition) Error!void {
+        switch (condition) {
+            .equal => try self.body.opcode(self.allocator, 0x5b),
+            .not_equal => try self.body.opcode(self.allocator, 0x5c),
+            .less => try self.body.opcode(self.allocator, 0x5d),
+            .not_less => {
+                try self.body.opcode(self.allocator, 0x5d);
+                try self.body.i32Eqz(self.allocator);
+            },
+            .less_equal => try self.body.opcode(self.allocator, 0x5f),
+            .not_less_equal => {
+                try self.body.opcode(self.allocator, 0x5f);
+                try self.body.i32Eqz(self.allocator);
+            },
+            .greater => try self.body.opcode(self.allocator, 0x5e),
+            .not_greater => {
+                try self.body.opcode(self.allocator, 0x5e);
+                try self.body.i32Eqz(self.allocator);
+            },
+            .greater_equal => try self.body.opcode(self.allocator, 0x60),
+            .not_greater_equal => {
+                try self.body.opcode(self.allocator, 0x60);
+                try self.body.i32Eqz(self.allocator);
+            },
+            .unsigned_less, .unsigned_less_equal, .unsigned_greater, .unsigned_greater_equal => return Error.UnsupportedCondition,
+        }
+    }
+
+    fn emitComparisonI32(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 3);
+        try self.emitI32Value(try self.operand(instruction_value, 0));
+        try self.emitI32Value(try self.operand(instruction_value, 1));
+        try self.emitIntegerCondition(try self.conditionOperand(instruction_value, 2));
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitComparisonI64(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 3);
+        try self.emitI64Value(try self.operand(instruction_value, 0));
+        try self.emitI64Value(try self.operand(instruction_value, 1));
+        try self.emitInt64Condition(try self.conditionOperand(instruction_value, 2));
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitComparisonTag(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 3);
+        const condition = try self.conditionOperand(instruction_value, 2);
+        if (condition != .equal and condition != .not_equal)
+            return Error.UnsupportedCondition;
+        try self.emitTagValue(try self.operand(instruction_value, 0));
+        try self.emitTagValue(try self.operand(instruction_value, 1));
+        try self.emitIntegerCondition(condition);
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitSplitTValueComparison(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 5);
+        const expected_tag_operand = try self.operand(instruction_value, 1);
+        if (expected_tag_operand.kind != .constant)
+            return Error.InvalidOperandType;
+        const expected_tag = (try self.constant(expected_tag_operand.value)).tagValue() orelse return Error.InvalidOperandType;
+        const condition = try self.conditionOperand(instruction_value, 4);
+        if (condition != .equal and condition != .not_equal)
+            return Error.UnsupportedCondition;
+
+        try self.emitTagValue(try self.operand(instruction_value, 0));
+        try self.emitTagValue(expected_tag_operand);
+        try self.emitIntegerCondition(condition);
+
+        const lhs = try self.operand(instruction_value, 2);
+        const rhs = try self.operand(instruction_value, 3);
+        switch (expected_tag) {
+            lua_tag_boolean, lua_tag_string => {
+                try self.emitI32Value(lhs);
+                try self.emitI32Value(rhs);
+                try self.emitIntegerCondition(condition);
+            },
+            lua_tag_number => {
+                try self.emitF64Value(lhs);
+                try self.emitF64Value(rhs);
+                if (condition == .equal)
+                    try self.body.f64Eq(self.allocator)
+                else
+                    try self.body.f64Ne(self.allocator);
+            },
+            lua_tag_integer => {
+                try self.emitI64Value(lhs);
+                try self.emitI64Value(rhs);
+                try self.emitInt64Condition(condition);
+            },
+            else => return Error.UnsupportedOperand,
+        }
+
+        try self.body.opcode(self.allocator, if (condition == .equal) 0x71 else 0x72); // i32.and / i32.or
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitSelectNumber(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 4);
+        try self.emitF64Value(try self.operand(instruction_value, 1));
+        try self.emitF64Value(try self.operand(instruction_value, 0));
+        try self.emitF64Value(try self.operand(instruction_value, 2));
+        try self.emitF64Value(try self.operand(instruction_value, 3));
+        try self.body.f64Eq(self.allocator);
+        try self.body.select(self.allocator);
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitSelectInt64(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 5);
+        try self.emitI64Value(try self.operand(instruction_value, 1));
+        try self.emitI64Value(try self.operand(instruction_value, 0));
+        try self.emitI64Value(try self.operand(instruction_value, 2));
+        try self.emitI64Value(try self.operand(instruction_value, 3));
+        try self.emitInt64Condition(try self.conditionOperand(instruction_value, 4));
+        try self.body.select(self.allocator);
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitSelectVector(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 4);
+        const false_value = try self.operand(instruction_value, 0);
+        const true_value = try self.operand(instruction_value, 1);
+        const lhs = try self.operand(instruction_value, 2);
+        const rhs = try self.operand(instruction_value, 3);
+        var lane: u32 = 0;
+        while (lane < tvalue_lane_count) : (lane += 1) {
+            try self.emitVectorPackPrefix(instruction_id, lane);
+            try self.emitVectorLaneBits(true_value, lane);
+            try self.emitVectorLaneBits(false_value, lane);
+            if (lane < vector_lane_count) {
+                try self.emitVectorLane(lhs, lane);
+                try self.emitVectorLane(rhs, lane);
+            } else {
+                // Upstream vecOp normalizes the non-semantic W lane to zero even when the source
+                // TValue carries a tag in its high word. Preserve the selected raw lane above, but
+                // compare the normalized vector operands here.
+                try self.body.f32Const(self.allocator, 0.0);
+                try self.body.f32Const(self.allocator, 0.0);
+            }
+            try self.body.opcode(self.allocator, 0x5b); // f32.eq
+            try self.body.select(self.allocator);
+            try self.emitVectorLaneBitsSet(instruction_id, lane);
+        }
+    }
+
+    fn emitSelectIfTruthy(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 3);
+        if (instruction_id >= self.slots.len or self.slots[instruction_id].shape != .tvalue)
+            return Error.InvalidInstructionResult;
+        const condition = try self.operand(instruction_value, 0);
+        const true_value = try self.operand(instruction_value, 1);
+        const false_value = try self.operand(instruction_value, 2);
+        const destination = self.slots[instruction_id];
+
+        try self.emitTValuePart(true_value, false);
+        try self.emitTValuePart(false_value, false);
+        try self.emitTValueTruthy(condition);
+        try self.body.select(self.allocator);
+        try self.body.localSet(self.allocator, destination.first);
+
+        try self.emitTValuePart(true_value, true);
+        try self.emitTValuePart(false_value, true);
+        try self.emitTValueTruthy(condition);
+        try self.body.select(self.allocator);
+        try self.body.localSet(self.allocator, destination.second);
+    }
+
+    fn emitCopyI32(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 1);
+        try self.emitI32Value(try self.operand(instruction_value, 0));
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
+    fn emitNotAny(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 2);
+        const tag = try self.operand(instruction_value, 0);
+        const value = try self.operand(instruction_value, 1);
+        try self.emitI32Value(tag);
+        try self.body.i32Const(self.allocator, lua_tag_nil);
+        try self.body.i32Eq(self.allocator);
+        try self.emitI32Value(tag);
+        try self.body.i32Const(self.allocator, lua_tag_boolean);
+        try self.body.i32Eq(self.allocator);
+        try self.emitI32Value(value);
+        try self.body.i32Eqz(self.allocator);
+        try self.body.opcode(self.allocator, 0x71); // i32.and
+        try self.body.opcode(self.allocator, 0x72); // i32.or
+        try self.emitInstructionResultSet(instruction_id);
+    }
+
     fn emitCheckTag(self: Context, instruction_value: snapshot_v1.IrInstruction) Error!void {
         try self.requireOperandCount(instruction_value, 3);
         try self.emitI32Value(try self.operand(instruction_value, 0));
@@ -645,7 +1561,7 @@ const Context = struct {
         switch (failure.kind) {
             .block => {
                 const target_block = try self.snapshot.irBlock(self.function, failure.value);
-                if (target_block.kind == .fallback and !try self.supportsArithmeticFallback(target_block)) {
+                if (target_block.kind == .fallback and !try self.supportsFallback(target_block)) {
                     // Preserve the existing numeric tier for fallback shapes that have not been
                     // normalized yet. A guard hit fails through the explicit status boundary; the
                     // unsupported fallback instructions are never emitted or accidentally entered.
@@ -696,16 +1612,44 @@ const Context = struct {
         if (operation_operand.kind != .constant)
             return Error.InvalidOperandType;
         const upstream_operation = (try self.constant(operation_operand.value)).intValue() orelse return Error.InvalidOperandType;
-        if (upstream_operation != upstream_tm_add)
-            return Error.UnsupportedCommand;
+        const operation = aotArithmeticOperation(upstream_operation) orelse return Error.UnsupportedCommand;
 
         try self.body.localGet(self.allocator, 0);
         try self.body.i32Const(self.allocator, @intCast(destination));
         try self.body.i32Const(self.allocator, @intCast(lhs));
         try self.body.i32Const(self.allocator, @intCast(rhs));
-        try self.body.i32Const(self.allocator, aot_arith_add);
+        try self.body.i32Const(self.allocator, operation);
         try self.body.call(self.allocator, self.do_arith orelse return Error.UnsupportedCommand);
         // Generic arithmetic may allocate, invoke a metamethod, and relocate the stack.
+        try self.emitReloadBase();
+    }
+
+    fn comparisonOperation(condition: snapshot_v1.IrCondition) Error!i32 {
+        return switch (condition) {
+            .equal => 0,
+            .less => 1,
+            .less_equal => 2,
+            else => Error.UnsupportedCondition,
+        };
+    }
+
+    fn emitCompareAny(self: Context, instruction_id: u32, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 3);
+        if (instruction_id == 0 or (try self.instruction(instruction_id - 1)).command != .set_savedpc)
+            return Error.UnsupportedControlFlow;
+        _ = try self.savedPc(try self.instruction(instruction_id - 1));
+
+        const lhs = try self.vmRegisterIndex(try self.operand(instruction_value, 0));
+        const rhs = try self.vmRegisterIndex(try self.operand(instruction_value, 1));
+        const operation = try comparisonOperation(try self.conditionOperand(instruction_value, 2));
+
+        try self.body.localGet(self.allocator, 0);
+        try self.body.i32Const(self.allocator, @intCast(lhs));
+        try self.body.i32Const(self.allocator, @intCast(rhs));
+        try self.body.i32Const(self.allocator, operation);
+        try self.body.call(self.allocator, self.compare_any orelse return Error.UnsupportedCommand);
+        try self.emitInstructionResultSet(instruction_id);
+        // Generic comparison can invoke a metamethod and relocate the active stack.
         try self.emitReloadBase();
     }
 
@@ -728,14 +1672,61 @@ const Context = struct {
         if (marker_operand.kind != .constant or destination.kind != .vm_reg or lhs.kind != .vm_reg or rhs.kind != .vm_reg or
             operation.kind != .constant or jump_target.kind != .block)
             return false;
-        if ((try self.constant(marker_operand.value)).uintValue() == null or
-            (try self.constant(operation.value)).intValue() != upstream_tm_add)
+        if ((try self.constant(marker_operand.value)).uintValue() == null)
+            return false;
+        const upstream_operation = (try self.constant(operation.value)).intValue() orelse return false;
+        if (aotArithmeticOperation(upstream_operation) == null)
             return false;
         if (destination.value >= self.proto.max_stack_size or lhs.value >= self.proto.max_stack_size or rhs.value >= self.proto.max_stack_size)
             return false;
 
         const target = try self.snapshot.irBlock(self.function, jump_target.value);
         return target.kind.isCompilable() and !target.isEmpty();
+    }
+
+    fn supportsComparisonFallback(self: Context, block: snapshot_v1.IrBlock) Error!bool {
+        if (block.kind != .fallback or block.isEmpty() or block.finish - block.start != 2)
+            return false;
+        const marker = try self.instruction(block.start);
+        const comparison = try self.instruction(block.start + 1);
+        const jump = try self.instruction(block.start + 2);
+        if (marker.command != .set_savedpc or comparison.command != .cmp_any or jump.command != .jump_cmp_int or
+            marker.operand_count != 1 or comparison.operand_count != 3 or jump.operand_count != 5)
+            return false;
+
+        const marker_operand = try self.operand(marker, 0);
+        const lhs = try self.operand(comparison, 0);
+        const rhs = try self.operand(comparison, 1);
+        const comparison_condition = try self.operand(comparison, 2);
+        const jump_lhs = try self.operand(jump, 0);
+        const jump_rhs = try self.operand(jump, 1);
+        const jump_condition = try self.operand(jump, 2);
+        const true_target = try self.operand(jump, 3);
+        const false_target = try self.operand(jump, 4);
+        if (marker_operand.kind != .constant or lhs.kind != .vm_reg or rhs.kind != .vm_reg or comparison_condition.kind != .condition or
+            jump_lhs.kind != .instruction or jump_lhs.value != block.start + 1 or jump_rhs.kind != .constant or
+            jump_condition.kind != .condition or true_target.kind != .block or false_target.kind != .block)
+            return false;
+        if ((try self.constant(marker_operand.value)).uintValue() == null or
+            lhs.value >= self.proto.max_stack_size or rhs.value >= self.proto.max_stack_size)
+            return false;
+        const comparison_condition_value: snapshot_v1.IrCondition = @enumFromInt(@as(u8, @intCast(comparison_condition.value)));
+        _ = comparisonOperation(comparison_condition_value) catch return false;
+        const zero = (try self.constant(jump_rhs.value)).intValue() orelse return false;
+        if (zero != 0)
+            return false;
+        const jump_condition_value: snapshot_v1.IrCondition = @enumFromInt(@as(u8, @intCast(jump_condition.value)));
+        if (jump_condition_value != .equal and jump_condition_value != .not_equal)
+            return false;
+
+        const true_block = try self.snapshot.irBlock(self.function, true_target.value);
+        const false_block = try self.snapshot.irBlock(self.function, false_target.value);
+        return true_block.kind.isCompilable() and !true_block.isEmpty() and
+            false_block.kind.isCompilable() and !false_block.isEmpty();
+    }
+
+    fn supportsFallback(self: Context, block: snapshot_v1.IrBlock) Error!bool {
+        return (try self.supportsArithmeticFallback(block)) or (try self.supportsComparisonFallback(block));
     }
 
     fn emitInterrupt(self: Context, instruction_value: snapshot_v1.IrInstruction) Error!void {
@@ -766,6 +1757,69 @@ const Context = struct {
         try self.body.i32Const(self.allocator, @intCast(target));
         try self.body.localSet(self.allocator, self.dispatch_local);
         try self.body.branch(self.allocator, 1);
+    }
+
+    fn emitConditionalDispatch(self: Context, true_target: u32, false_target: u32) Error!void {
+        try self.body.ifVoid(self.allocator);
+        try self.body.i32Const(self.allocator, @intCast(true_target));
+        try self.body.localSet(self.allocator, self.dispatch_local);
+        try self.body.else_(self.allocator);
+        try self.body.i32Const(self.allocator, @intCast(false_target));
+        try self.body.localSet(self.allocator, self.dispatch_local);
+        try self.body.end(self.allocator);
+        try self.body.branch(self.allocator, 1);
+    }
+
+    fn emitJumpIfTruthy(self: Context, instruction_value: snapshot_v1.IrInstruction, invert: bool) Error!void {
+        try self.requireOperandCount(instruction_value, 3);
+        const source = try self.operand(instruction_value, 0);
+        _ = try self.vmRegisterIndex(source);
+        const true_target = try self.requireCompiledTarget(try self.operand(instruction_value, 1));
+        const false_target = try self.requireCompiledTarget(try self.operand(instruction_value, 2));
+        try self.emitTValueTruthy(source);
+        if (invert)
+            try self.body.i32Eqz(self.allocator);
+        try self.emitConditionalDispatch(true_target, false_target);
+    }
+
+    fn emitJumpEqualTag(self: Context, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 4);
+        const true_target = try self.requireCompiledTarget(try self.operand(instruction_value, 2));
+        const false_target = try self.requireCompiledTarget(try self.operand(instruction_value, 3));
+        try self.emitTagValue(try self.operand(instruction_value, 0));
+        try self.emitTagValue(try self.operand(instruction_value, 1));
+        try self.body.i32Eq(self.allocator);
+        try self.emitConditionalDispatch(true_target, false_target);
+    }
+
+    fn emitJumpCompareInteger(self: Context, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 5);
+        const true_target = try self.requireCompiledTarget(try self.operand(instruction_value, 3));
+        const false_target = try self.requireCompiledTarget(try self.operand(instruction_value, 4));
+        try self.emitI32Value(try self.operand(instruction_value, 0));
+        try self.emitI32Value(try self.operand(instruction_value, 1));
+        try self.emitIntegerCondition(try self.conditionOperand(instruction_value, 2));
+        try self.emitConditionalDispatch(true_target, false_target);
+    }
+
+    fn emitJumpEqualPointer(self: Context, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 4);
+        const true_target = try self.requireCompiledTarget(try self.operand(instruction_value, 2));
+        const false_target = try self.requireCompiledTarget(try self.operand(instruction_value, 3));
+        try self.emitI32Value(try self.operand(instruction_value, 0));
+        try self.emitI32Value(try self.operand(instruction_value, 1));
+        try self.body.i32Eq(self.allocator);
+        try self.emitConditionalDispatch(true_target, false_target);
+    }
+
+    fn emitJumpCompareFloat(self: Context, instruction_value: snapshot_v1.IrInstruction) Error!void {
+        try self.requireOperandCount(instruction_value, 5);
+        const true_target = try self.requireCompiledTarget(try self.operand(instruction_value, 3));
+        const false_target = try self.requireCompiledTarget(try self.operand(instruction_value, 4));
+        try self.emitF32Value(try self.operand(instruction_value, 0));
+        try self.emitF32Value(try self.operand(instruction_value, 1));
+        try self.emitFloatCondition(try self.conditionOperand(instruction_value, 2));
+        try self.emitConditionalDispatch(true_target, false_target);
     }
 
     fn emitNumericCondition(self: Context, condition: snapshot_v1.IrCondition) Error!void {
@@ -919,7 +1973,7 @@ const Context = struct {
     fn emitInstruction(self: Context, instruction_id: u32, block_kind: snapshot_v1.IrBlockKind) Error!bool {
         const instruction_value = try self.instruction(instruction_id);
         switch (instruction_value.command) {
-            .nop, .mark_used => return false,
+            .nop, .substitute, .mark_used, .mark_dead => return false,
             .load_env => {
                 if (instruction_id + 1 >= self.function.instruction_count or
                     (try self.instruction(instruction_id + 1)).command != .newclosure)
@@ -936,22 +1990,124 @@ const Context = struct {
                     return Error.UnsupportedControlFlow;
             },
             .load_tag => try self.emitLoadTag(instruction_id, instruction_value),
+            .load_pointer, .load_int => try self.emitLoadI32(instruction_id, instruction_value),
+            .load_int64 => try self.emitLoadI64(instruction_id, instruction_value),
+            .load_float => try self.emitLoadFloat(instruction_id, instruction_value),
             .load_double => try self.emitLoadDouble(instruction_id, instruction_value),
             .load_tvalue => try self.emitLoadTValue(instruction_id, instruction_value),
             .store_pointer => {
                 if (try self.valueClosurePatternAt(instruction_id, 1) == null and
                     try self.referenceClosurePatternAt(instruction_id, 1) == null and
                     try self.referenceClosurePatternAt(instruction_id, 5) == null)
-                    return Error.UnsupportedControlFlow;
+                    try self.emitStoreI32(instruction_value, 0);
             },
             .store_tag => try self.emitStoreTag(instruction_id, instruction_value),
+            .store_extra => try self.emitStoreI32(instruction_value, tvalue_extra_offset),
             .store_split_tvalue => {
                 if (try self.valueClosurePatternAt(instruction_id, 9) == null)
                     return Error.UnsupportedControlFlow;
             },
             .store_double => try self.emitStoreDouble(instruction_value),
+            .store_int => try self.emitStoreI32(instruction_value, 0),
+            .store_int64 => try self.emitStoreI64(instruction_value),
+            .store_vector => try self.emitStoreVector(instruction_value),
             .store_tvalue => try self.emitStoreTValue(instruction_id, instruction_value),
+            .add_int => try self.emitBinaryI32(instruction_id, instruction_value, 0x6a),
+            .sub_int => try self.emitBinaryI32(instruction_id, instruction_value, 0x6b),
+            .add_int64 => try self.emitBinaryI64(instruction_id, instruction_value, 0x7c),
+            .sub_int64 => try self.emitBinaryI64(instruction_id, instruction_value, 0x7d),
+            .mul_int64 => try self.emitBinaryI64(instruction_id, instruction_value, 0x7e),
+            .sexti8_int => try self.emitUnaryI32(instruction_id, instruction_value, 0xc0),
+            .sexti16_int => try self.emitUnaryI32(instruction_id, instruction_value, 0xc1),
             .add_num => try self.emitAddNumber(instruction_id, instruction_value),
+            .sub_num => try self.emitBinaryF64(instruction_id, instruction_value, 0xa1),
+            .mul_num => try self.emitBinaryF64(instruction_id, instruction_value, 0xa2),
+            .div_num => try self.emitBinaryF64(instruction_id, instruction_value, 0xa3),
+            .idiv_num => try self.emitFloorDivisionNumber(instruction_id, instruction_value),
+            .mod_num => try self.emitModNumber(instruction_id, instruction_value),
+            .muladd_num => try self.emitMulAddNumber(instruction_id, instruction_value),
+            .min_num => try self.emitMinMaxNumber(instruction_id, instruction_value, 0x63),
+            .max_num => try self.emitMinMaxNumber(instruction_id, instruction_value, 0x64),
+            .unm_num => try self.emitUnaryF64(instruction_id, instruction_value, 0x9a),
+            .floor_num => try self.emitUnaryF64(instruction_id, instruction_value, 0x9c),
+            .ceil_num => try self.emitUnaryF64(instruction_id, instruction_value, 0x9b),
+            .round_num => try self.emitRoundNumber(instruction_id, instruction_value),
+            .sqrt_num => try self.emitUnaryF64(instruction_id, instruction_value, 0x9f),
+            .abs_num => try self.emitUnaryF64(instruction_id, instruction_value, 0x99),
+            .sign_num => try self.emitSignNumber(instruction_id, instruction_value),
+            .add_float => try self.emitBinaryF32(instruction_id, instruction_value, 0x92),
+            .sub_float => try self.emitBinaryF32(instruction_id, instruction_value, 0x93),
+            .mul_float => try self.emitBinaryF32(instruction_id, instruction_value, 0x94),
+            .div_float => try self.emitBinaryF32(instruction_id, instruction_value, 0x95),
+            .min_float => try self.emitMinMaxFloat(instruction_id, instruction_value, 0x5d),
+            .max_float => try self.emitMinMaxFloat(instruction_id, instruction_value, 0x5e),
+            .unm_float => try self.emitUnaryF32(instruction_id, instruction_value, 0x8c),
+            .floor_float => try self.emitUnaryF32(instruction_id, instruction_value, 0x8e),
+            .ceil_float => try self.emitUnaryF32(instruction_id, instruction_value, 0x8d),
+            .sqrt_float => try self.emitUnaryF32(instruction_id, instruction_value, 0x91),
+            .abs_float => try self.emitUnaryF32(instruction_id, instruction_value, 0x8b),
+            .sign_float => try self.emitSignFloat(instruction_id, instruction_value),
+            .select_num => try self.emitSelectNumber(instruction_id, instruction_value),
+            .select_int64 => try self.emitSelectInt64(instruction_id, instruction_value),
+            .select_vec => try self.emitSelectVector(instruction_id, instruction_value),
+            .select_if_truthy => try self.emitSelectIfTruthy(instruction_id, instruction_value),
+            .add_vec => try self.emitVectorBinary(instruction_id, instruction_value, 0x92),
+            .sub_vec => try self.emitVectorBinary(instruction_id, instruction_value, 0x93),
+            .mul_vec => try self.emitVectorBinary(instruction_id, instruction_value, 0x94),
+            .div_vec => try self.emitVectorBinary(instruction_id, instruction_value, 0x95),
+            .idiv_vec => try self.emitFloorDivisionVector(instruction_id, instruction_value),
+            .muladd_vec => try self.emitMulAddVector(instruction_id, instruction_value),
+            .unm_vec => try self.emitVectorUnary(instruction_id, instruction_value, 0x8c),
+            .min_vec => try self.emitMinMaxVector(instruction_id, instruction_value, 0x5d),
+            .max_vec => try self.emitMinMaxVector(instruction_id, instruction_value, 0x5e),
+            .floor_vec => try self.emitVectorUnary(instruction_id, instruction_value, 0x8e),
+            .ceil_vec => try self.emitVectorUnary(instruction_id, instruction_value, 0x8d),
+            .abs_vec => try self.emitVectorUnary(instruction_id, instruction_value, 0x8b),
+            .dot_vec => try self.emitDotVector(instruction_id, instruction_value),
+            .extract_vec => try self.emitExtractVector(instruction_id, instruction_value),
+            .float_to_vec => try self.emitFloatToVector(instruction_id, instruction_value),
+            .tag_vector => try self.emitTagVector(instruction_id, instruction_value),
+            .not_any => try self.emitNotAny(instruction_id, instruction_value),
+            .cmp_any => {
+                if (block_kind != .fallback)
+                    return Error.UnsupportedControlFlow;
+                try self.emitCompareAny(instruction_id, instruction_value);
+            },
+            .cmp_int => try self.emitComparisonI32(instruction_id, instruction_value),
+            .cmp_int64 => try self.emitComparisonI64(instruction_id, instruction_value),
+            .cmp_tag => try self.emitComparisonTag(instruction_id, instruction_value),
+            .cmp_split_tvalue => try self.emitSplitTValueComparison(instruction_id, instruction_value),
+            .int_to_num => try self.emitUnaryI32(instruction_id, instruction_value, 0xb7), // f64.convert_i32_s
+            .int64_to_num => try self.emitUnaryI64(instruction_id, instruction_value, 0xb9), // f64.convert_i64_s
+            .uint_to_num => try self.emitUnaryI32(instruction_id, instruction_value, 0xb8), // f64.convert_i32_u
+            .uint_to_float => try self.emitUnaryI32(instruction_id, instruction_value, 0xb3), // f32.convert_i32_u
+            .float_to_num => try self.emitUnaryF32(instruction_id, instruction_value, 0xbb), // f64.promote_f32
+            .num_to_float => try self.emitUnaryF64(instruction_id, instruction_value, 0xb6), // f32.demote_f64
+            .truncate_uint => try self.emitCopyI32(instruction_id, instruction_value),
+            .bitand_int64 => try self.emitBinaryI64(instruction_id, instruction_value, 0x83),
+            .bitxor_int64 => try self.emitBinaryI64(instruction_id, instruction_value, 0x85),
+            .bitor_int64 => try self.emitBinaryI64(instruction_id, instruction_value, 0x84),
+            .bitnot_int64 => try self.emitNotI64(instruction_id, instruction_value),
+            .bitlshift_int64 => try self.emitSignedI64Shift(instruction_id, instruction_value, 0x86, 0x88, false),
+            .bitrshift_int64 => try self.emitSignedI64Shift(instruction_id, instruction_value, 0x88, 0x86, false),
+            .bitarshift_int64 => try self.emitSignedI64Shift(instruction_id, instruction_value, 0x87, 0x86, true),
+            .bitlrotate_int64 => try self.emitBinaryI64(instruction_id, instruction_value, 0x89),
+            .bitrrotate_int64 => try self.emitBinaryI64(instruction_id, instruction_value, 0x8a),
+            .bitcountlz_int64 => try self.emitUnaryI64(instruction_id, instruction_value, 0x79),
+            .bitcountrz_int64 => try self.emitUnaryI64(instruction_id, instruction_value, 0x7a),
+            .byteswap_int64 => try self.emitByteSwapI64(instruction_id, instruction_value),
+            .bitand_uint => try self.emitBinaryI32(instruction_id, instruction_value, 0x71),
+            .bitxor_uint => try self.emitBinaryI32(instruction_id, instruction_value, 0x73),
+            .bitor_uint => try self.emitBinaryI32(instruction_id, instruction_value, 0x72),
+            .bitnot_uint => try self.emitNotI32(instruction_id, instruction_value),
+            .bitlshift_uint => try self.emitBinaryI32(instruction_id, instruction_value, 0x74),
+            .bitrshift_uint => try self.emitBinaryI32(instruction_id, instruction_value, 0x76),
+            .bitarshift_uint => try self.emitBinaryI32(instruction_id, instruction_value, 0x75),
+            .bitlrotate_uint => try self.emitBinaryI32(instruction_id, instruction_value, 0x77),
+            .bitrrotate_uint => try self.emitBinaryI32(instruction_id, instruction_value, 0x78),
+            .bitcountlz_uint => try self.emitUnaryI32(instruction_id, instruction_value, 0x67),
+            .bitcountrz_uint => try self.emitUnaryI32(instruction_id, instruction_value, 0x68),
+            .byteswap_uint => try self.emitByteSwapI32(instruction_id, instruction_value),
             .get_upvalue => try self.emitGetUpvalue(instruction_id, instruction_value),
             .set_upvalue => try self.emitSetUpvalue(instruction_id),
             .check_tag => try self.emitCheckTag(instruction_value),
@@ -998,8 +2154,32 @@ const Context = struct {
                 try self.emitJump(instruction_value);
                 return true;
             },
+            .jump_if_truthy => {
+                try self.emitJumpIfTruthy(instruction_value, false);
+                return true;
+            },
+            .jump_if_falsy => {
+                try self.emitJumpIfTruthy(instruction_value, true);
+                return true;
+            },
+            .jump_eq_tag => {
+                try self.emitJumpEqualTag(instruction_value);
+                return true;
+            },
+            .jump_cmp_int => {
+                try self.emitJumpCompareInteger(instruction_value);
+                return true;
+            },
+            .jump_eq_pointer => {
+                try self.emitJumpEqualPointer(instruction_value);
+                return true;
+            },
             .jump_cmp_num => {
                 try self.emitJumpCompareNumber(instruction_value);
+                return true;
+            },
+            .jump_cmp_float => {
+                try self.emitJumpCompareFloat(instruction_value);
                 return true;
             },
             .return_ => {
@@ -1022,7 +2202,7 @@ const Context = struct {
     }
 
     fn emitBlock(self: Context, block_id: u32, block: snapshot_v1.IrBlock) Error!void {
-        if (block.kind == .fallback and !try self.supportsArithmeticFallback(block))
+        if (block.kind == .fallback and !try self.supportsFallback(block))
             return Error.UnsupportedControlFlow;
 
         try self.body.localGet(self.allocator, self.dispatch_local);
@@ -1045,15 +2225,126 @@ const Context = struct {
 
 fn resultShape(command: snapshot_v1.IrCommand) ValueShape {
     return switch (command) {
-        .load_tag => .i32,
-        .load_double, .add_num => .f64,
-        .load_tvalue => .tvalue,
+        .load_tag,
+        .load_pointer,
+        .load_int,
+        .add_int,
+        .sub_int,
+        .sexti8_int,
+        .sexti16_int,
+        .not_any,
+        .cmp_any,
+        .cmp_int,
+        .cmp_int64,
+        .cmp_tag,
+        .cmp_split_tvalue,
+        .num_to_int,
+        .num_to_uint,
+        .truncate_uint,
+        .bitand_uint,
+        .bitxor_uint,
+        .bitor_uint,
+        .bitnot_uint,
+        .bitlshift_uint,
+        .bitrshift_uint,
+        .bitarshift_uint,
+        .bitlrotate_uint,
+        .bitrrotate_uint,
+        .bitcountlz_uint,
+        .bitcountrz_uint,
+        .byteswap_uint,
+        => .i32,
+        .load_int64,
+        .add_int64,
+        .sub_int64,
+        .mul_int64,
+        .div_int64,
+        .idiv_int64,
+        .udiv_int64,
+        .rem_int64,
+        .urem_int64,
+        .mod_int64,
+        .select_int64,
+        .num_to_int64,
+        .bitand_int64,
+        .bitxor_int64,
+        .bitor_int64,
+        .bitnot_int64,
+        .bitlshift_int64,
+        .bitrshift_int64,
+        .bitarshift_int64,
+        .bitlrotate_int64,
+        .bitrrotate_int64,
+        .bitcountlz_int64,
+        .bitcountrz_int64,
+        .byteswap_int64,
+        => .i64,
+        .load_float,
+        .add_float,
+        .sub_float,
+        .mul_float,
+        .div_float,
+        .min_float,
+        .max_float,
+        .unm_float,
+        .floor_float,
+        .ceil_float,
+        .sqrt_float,
+        .abs_float,
+        .sign_float,
+        .dot_vec,
+        .extract_vec,
+        .uint_to_float,
+        .num_to_float,
+        => .f32,
+        .load_double,
+        .add_num,
+        .sub_num,
+        .mul_num,
+        .div_num,
+        .idiv_num,
+        .mod_num,
+        .muladd_num,
+        .min_num,
+        .max_num,
+        .unm_num,
+        .floor_num,
+        .ceil_num,
+        .round_num,
+        .sqrt_num,
+        .abs_num,
+        .sign_num,
+        .select_num,
+        .int_to_num,
+        .int64_to_num,
+        .uint_to_num,
+        .float_to_num,
+        => .f64,
+        .load_tvalue,
+        .select_vec,
+        .select_if_truthy,
+        .add_vec,
+        .sub_vec,
+        .mul_vec,
+        .div_vec,
+        .idiv_vec,
+        .muladd_vec,
+        .unm_vec,
+        .min_vec,
+        .max_vec,
+        .floor_vec,
+        .ceil_vec,
+        .abs_vec,
+        .float_to_vec,
+        .tag_vector,
+        => .tvalue,
         else => .none,
     };
 }
 
 const ImportNeeds = struct {
     do_arith: bool = false,
+    compare_any: bool = false,
     dupclosure: bool = false,
     newclosure_value: bool = false,
     newclosure_ref: bool = false,
@@ -1067,6 +2358,7 @@ const RuntimeImports = struct {
     return_fixed: wasm.FunctionRef,
     interrupt: wasm.FunctionRef,
     do_arith: ?wasm.FunctionRef,
+    compare_any: ?wasm.FunctionRef,
     dupclosure: ?wasm.FunctionRef,
     newclosure_value: ?wasm.FunctionRef,
     newclosure_ref: ?wasm.FunctionRef,
@@ -1083,6 +2375,7 @@ fn scanImportNeeds(snapshot: snapshot_v1.Snapshot, function_id: u32, needs: *Imp
     while (instruction_id < function.instruction_count) : (instruction_id += 1) {
         switch ((try snapshot.irInstruction(function, instruction_id)).command) {
             .do_arith => needs.do_arith = true,
+            .cmp_any => needs.compare_any = true,
             .fallback_dupclosure => needs.dupclosure = true,
             .newclosure => {
                 if (instruction_id + 3 < function.instruction_count and
@@ -1104,6 +2397,7 @@ fn addRuntimeImports(object: *wasm.Object, needs: ImportNeeds) Error!RuntimeImpo
     const return_fixed_params = [_]wasm.ValueType{ .i32, .i32, .i32 };
     const interrupt_params = [_]wasm.ValueType{ .i32, .i32 };
     const do_arith_params = [_]wasm.ValueType{ .i32, .i32, .i32, .i32, .i32 };
+    const compare_any_params = [_]wasm.ValueType{ .i32, .i32, .i32, .i32 };
     const dupclosure_params = [_]wasm.ValueType{ .i32, .i32, .i32 };
     const newclosure_value_params = [_]wasm.ValueType{ .i32, .i32, .i32, .i32 };
     const newclosure_ref_params = [_]wasm.ValueType{ .i32, .i32, .i32, .i32 };
@@ -1123,6 +2417,10 @@ fn addRuntimeImports(object: *wasm.Object, needs: ImportNeeds) Error!RuntimeImpo
     const do_arith = if (needs.do_arith) blk: {
         const helper_type = try object.addType(.{ .params = &do_arith_params, .results = &no_results });
         break :blk try object.importFunction("env", do_arith_symbol, helper_type);
+    } else null;
+    const compare_any = if (needs.compare_any) blk: {
+        const helper_type = try object.addType(.{ .params = &compare_any_params, .results = &status_result });
+        break :blk try object.importFunction("env", compare_any_symbol, helper_type);
     } else null;
     const dupclosure = if (needs.dupclosure) blk: {
         const helper_type = try object.addType(.{ .params = &dupclosure_params, .results = &no_results });
@@ -1157,6 +2455,7 @@ fn addRuntimeImports(object: *wasm.Object, needs: ImportNeeds) Error!RuntimeImpo
         .return_fixed = return_fixed,
         .interrupt = interrupt,
         .do_arith = do_arith,
+        .compare_any = compare_any,
         .dupclosure = dupclosure,
         .newclosure_value = newclosure_value,
         .newclosure_ref = newclosure_ref,
@@ -1207,6 +2506,20 @@ fn lowerFunction(
                 next_local += 1;
                 try locals.append(allocator, .{ .count = 1, .value_type = .i32 });
             },
+            .i64 => {
+                if (next_local >= max_lowered_locals)
+                    return Error.ResourceLimit;
+                slots[instruction_id].first = next_local;
+                next_local += 1;
+                try locals.append(allocator, .{ .count = 1, .value_type = .i64 });
+            },
+            .f32 => {
+                if (next_local >= max_lowered_locals)
+                    return Error.ResourceLimit;
+                slots[instruction_id].first = next_local;
+                next_local += 1;
+                try locals.append(allocator, .{ .count = 1, .value_type = .f32 });
+            },
             .f64 => {
                 if (next_local >= max_lowered_locals)
                     return Error.ResourceLimit;
@@ -1237,6 +2550,7 @@ fn lowerFunction(
         .return_fixed = imports.return_fixed,
         .interrupt = imports.interrupt,
         .do_arith = imports.do_arith,
+        .compare_any = imports.compare_any,
         .dupclosure = imports.dupclosure,
         .newclosure_value = imports.newclosure_value,
         .newclosure_ref = imports.newclosure_ref,
@@ -1255,7 +2569,9 @@ fn lowerFunction(
         if (block.kind == .fallback and try context.supportsArithmeticFallback(block)) {
             if (context.do_arith == null)
                 return Error.UnsupportedCommand;
-            break;
+        } else if (block.kind == .fallback and try context.supportsComparisonFallback(block)) {
+            if (context.compare_any == null)
+                return Error.UnsupportedCommand;
         }
     }
 
@@ -1269,7 +2585,7 @@ fn lowerFunction(
         const block = try snapshot.irBlock(function, block_id);
         if (block.kind.isCompilable() and !block.isEmpty())
             try context.emitBlock(block_id, block)
-        else if (block.kind == .fallback and try context.supportsArithmeticFallback(block))
+        else if (block.kind == .fallback and try context.supportsFallback(block))
             try context.emitBlock(block_id, block);
     }
 

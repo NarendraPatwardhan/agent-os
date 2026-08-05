@@ -71,6 +71,32 @@ fn luau_aot_arithmetic_slow_path_rejoins_compiled_code() {
     }
 }
 
+/// One source-built function exercises the broad scalar fast tier and its exact fallback blocks:
+/// add/subtract/multiply/divide/floor-divide/modulo/negate plus a runtime-selected numeric branch.
+/// The stamped guest and the pinned interpreter load the same installed source and receive the same
+/// numeric values; positive and negative divisors select both branch arms.
+#[test]
+fn luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter() {
+    let mut session = boot_loom_aot();
+
+    for (lhs, rhs) in [(-50, 5), (0, 2), (20, 4), (7, 2), (12, 3), (8, -2), (9, -3)] {
+        let aot = session.run_for_output(&format!(
+            "luau-aot-scalar {lhs} {rhs}; echo status=$?"
+        ));
+        let interpreted = session.run_for_output(&format!(
+            "luau -e 'local run = require(\"aot_scalar_breadth\"); local a, b = ...; print(run(assert(tonumber(a)), assert(tonumber(b))))' {lhs} {rhs}; echo status=$?"
+        ));
+        assert_eq!(
+            aot, interpreted,
+            "strict AOT scalar breadth mismatch for {lhs}/{rhs}"
+        );
+        assert!(
+            aot.ends_with("status=0\r\n"),
+            "strict AOT scalar breadth failed for {lhs}/{rhs}: {aot:?}"
+        );
+    }
+}
+
 /// The exact source-built package publishes all three Protos, survives full collection, returns a
 /// real caller closure, materializes its child closure, and rejoins after compiled Luau-to-Luau
 /// CALL. The pinned interpreter requires the same installed source as a module and invokes the

@@ -80,7 +80,7 @@ coverage claims based on constant fixtures must be removed or isolated as non-pr
 Salvage is performed by deliberately porting reviewed pieces into a fresh worktree from `develop`, not
 by continuing implementation on the audited branch.
 
-### 0.2 Active clean-worktree implementation state (2026-08-05)
+### 0.2 Active clean-worktree implementation state (2026-08-06)
 
 The replacement implementation lives on `feature/luau-aot-compiler` in the separate
 `agent-os-luau-aot` worktree. The audited `agent-os-luau-compiler` worktree remains untouched. The
@@ -221,6 +221,30 @@ guest path, but is not presented as a general-purpose AOT product:
   five-triple differential; the AOT entry tears down the factory and forces full GC before invoking
   the accumulator. Forwarded `LCT_UPVAL`, multiple captures, and aliasing between multiple closures
   over the same local remain open;
+- WP3 breadth now lowers the complete pinned direct number and float families; vector arithmetic,
+  select, dot, extract, and number/vector bridges; safe integer/float conversions; ordinary truth,
+  tag, integer, pointer, number, and float comparisons/branches; and every nontrapping integer and
+  bitwise command. The vector representation remains a two-`i64` `TValue`; three arithmetic lanes
+  are `f32`, while `SELECT_VEC` preserves all four raw result lanes and compares the non-semantic W
+  lane using upstream's zero normalization rather than tag bits. Trapping `NUM_TO_INT`,
+  `NUM_TO_INT64`, and `NUM_TO_UINT`, and the six int64 division/remainder commands plus
+  `CHECK_DIV_INT64`, remain fail-closed until their Luau error semantics are explicit;
+- runtime fallbacks are broader without becoming generic claims. `DO_ARITH` maps all eight pinned
+  arithmetic operations onto versioned runtime values and dispatches the real
+  `luaV_doarithimpl<TM_*>` implementation for VM-register operands. `CMP_ANY` admits only the exact
+  `SET_SAVEDPC`/`CMP_ANY`/`JUMP_CMP_INT` fallback block and calls the real equality/order VM helpers.
+  Both helpers reload `L->base`; other operand and block shapes still reject. A new source-built
+  scalar function contains direct add/subtract/multiply/divide/floor-divide/modulo/negate, both arms
+  of a numeric comparison, ten exact arithmetic fallback blocks, and one exact comparison fallback.
+  Its deterministic object links into a release-small stamped guest and the real kernel observes
+  seven positive/negative input pairs matching the pinned interpreter. Those numeric inputs execute
+  the direct tier and both branch arms; they do not falsely claim runtime traversal of the new
+  non-add arithmetic or comparison fallback blocks;
+- the 216-command ledger now records 107 implemented, 30 deliberately partial, and 79 unimplemented
+  rows. Direct integer/bitwise, float, vector, select, and safe-conversion rows with no source/runtime
+  vertical retain empty evidence arrays rather than inheriting the scalar fixture. Layout rows name
+  their exact VM-register operand limitations, and prior broad layout claims were downgraded where
+  the pinned command also accepts constants or pointer-valued instructions;
 
 WP2 is complete. WP3's central arithmetic/type slow-block rejoin passes the exact-source,
 relocatable-object, strict-runtime, pinned-interpreter, production optimization/stamp/attestation, and
@@ -232,7 +256,8 @@ now passes the same object, base-relocation, strict-runtime, exact-source differ
 production-pipeline, and real-kernel gates. WP4's mutable reference-capture vertical now passes the
 exact-snapshot, deterministic-object, base-relocation, open/closed-cell, full-GC, repeated-mutation,
 closure-independence, pinned-interpreter, production optimization, stamp, attestation, image, and
-real-kernel gates. The next WP4 boundaries are broader arities/varargs and static modules. The
+real-kernel gates. The active line of work is WP3 command breadth; no additional WP4 boundary is taken
+while the remaining direct/layout/control/guard surface is still the larger capability gap. The
 immutable descriptor is shared by oracle and product today but remains compiler-generated-data work,
 not a hand-authored product format.
 
@@ -1459,17 +1484,25 @@ Gate:
 
 **Goal:** replace manual fixture emission with the one production code-generation model.
 
-**Current state:** the production object builder, upstream-snapshot-driven numeric fast tier, and first
-real slow-block rejoin are implemented. A generic CFG dispatcher lowers real scalar branches and loops;
-complete rows are `NOP`,
-`LOAD_TAG`, `LOAD_DOUBLE`, `LOAD_TVALUE`, `STORE_TAG`, `STORE_DOUBLE`, `STORE_TVALUE`, `ADD_NUM`,
-`JUMP`, `JUMP_CMP_NUM`, and `MARK_USED`. `CHECK_TAG` now dispatches the supported fallback shape;
-`DO_ARITH` calls a stable helper for upstream `TM_ADD` with VM-register operands; `SET_SAVEDPC` is a
-validated AOT location marker; and the fallback `JUMP` rejoins the shared compiled block after a mandatory
-base reload. These rows, `INTERRUPT`, `RETURN`, and `FALLBACK_PREPVARARGS` remain deliberately partial and
-named as such in the ledger. The exact upstream-IR-generated loop, silent-root, and slow-add objects pass
-real-runtime and production kernel gates; the slow-add artifact also matches the separately linked pinned
-interpreter for five decimal-string input pairs.
+**Current state:** the production object builder, generic upstream CFG dispatcher, scalar fast tier,
+and exact fallback rejoin model are implemented. The authoritative ledger has 107 implemented, 30
+partial, and 79 unimplemented command rows. Complete lowering now includes direct number, float,
+vector, select, safe-conversion, comparison, ordinary-branch, nontrapping integer/bitwise, and
+compile-only families. Layout coverage is stated per operand form: several VM-register forms are real
+but remain partial where the pinned command also accepts VM constants or pointer-valued SSA
+instructions. `DO_ARITH` covers all eight arithmetic runtime operations for VM-register operands and
+remains partial; `CMP_ANY` covers only the exact validated comparison fallback and remains partial.
+Unsafe trapping conversions, int64 division/remainder and its guard, most guards, table/string/buffer
+operations, and broader runtime protocols remain unimplemented and fail closed.
+
+The exact upstream-IR loop, silent-root, slow-add, and scalar-breadth objects pass their declared
+runtime/product gates. The scalar-breadth source executes seven direct number commands and both numeric
+branch arms across seven input pairs in the real kernel, matching the separately linked pinned
+interpreter. Its object also structurally contains all eight arithmetic fallback operations and an
+exact `CMP_ANY` fallback, but numeric runtime inputs do not traverse those blocks; only the existing
+string-add vertical behaviorally proves `DO_ARITH(TM_ADD)`. Integer/bitwise, float, vector, select,
+safe-conversion, and additional branch rows without a source/runtime vertical do not borrow that
+evidence.
 
 Tasks:
 

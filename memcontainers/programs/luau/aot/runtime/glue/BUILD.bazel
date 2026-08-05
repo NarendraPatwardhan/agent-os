@@ -18,6 +18,11 @@ cc_object(
 )
 
 cc_object(
+    name = "scalar_breadth_object_link",
+    obj = "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object",
+)
+
+cc_object(
     name = "compiled_call_package_object_link",
     obj = "//memcontainers/programs/luau/aot/compiler/backend:compiled_call_package_object",
 )
@@ -163,6 +168,46 @@ mc_program(
     tier = "full",
     visibility = ["//memcontainers/images:__pkg__"],
     wasm = ":luau_aot_slow_add_wasm",
+)
+
+zig_binary(
+    name = "luau_aot_scalar_breadth_raw",
+    linkopts = [
+        "-lc",
+        "-lc++",
+        "--export=__mc_pcall_run",
+        "--export=__stack_pointer",
+    ],
+    main = "scalar_breadth_entry.zig",
+    tags = ["manual"],
+    deps = [
+        ":scalar_breadth_object_link",
+        ":wasi_adapter_link",
+        "//memcontainers/programs/luau/aot/runtime:aot_runtime_abi",
+        "//memcontainers/programs/luau/aot/runtime:luau_aot_runtime_raw",
+        "//memcontainers/programs/luau/glue:trap",
+        "//memcontainers/programs/luau/glue:wasi_shim",
+        "//memcontainers/sysroot/zig:mc",
+    ],
+)
+
+zig_configure_binary(
+    name = "luau_aot_scalar_breadth_wasm",
+    actual = ":luau_aot_scalar_breadth_raw",
+    mode = "release_small",
+    tags = ["manual"],
+    target = "//platforms:wasm32_wasi",
+    threaded = "single",
+)
+
+mc_program(
+    name = "luau-aot-scalar",
+    fuel = 10000000000,
+    mem = 64 * 1024 * 1024,
+    table = 10000,
+    tier = "full",
+    visibility = ["//memcontainers/images:__pkg__"],
+    wasm = ":luau_aot_scalar_breadth_wasm",
 )
 
 zig_binary(

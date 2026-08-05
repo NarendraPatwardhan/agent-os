@@ -120,6 +120,10 @@ pub const Body = struct {
         try appendUleb(&self.bytes, allocator, offset);
     }
 
+    pub fn f32Load(self: *Body, allocator: std.mem.Allocator, alignment_log2: u32, offset: u32) !void {
+        try self.memoryOp(allocator, 0x2a, alignment_log2, offset);
+    }
+
     pub fn i64Load(self: *Body, allocator: std.mem.Allocator, alignment_log2: u32, offset: u32) !void {
         try self.memoryOp(allocator, 0x29, alignment_log2, offset);
     }
@@ -136,9 +140,26 @@ pub const Body = struct {
         try self.memoryOp(allocator, 0x39, alignment_log2, offset);
     }
 
+    pub fn f32Store(self: *Body, allocator: std.mem.Allocator, alignment_log2: u32, offset: u32) !void {
+        try self.memoryOp(allocator, 0x38, alignment_log2, offset);
+    }
+
     pub fn i32Const(self: *Body, allocator: std.mem.Allocator, value: i32) !void {
         try self.bytes.append(allocator, 0x41);
         try appendSleb(&self.bytes, allocator, value);
+    }
+
+    pub fn i64Const(self: *Body, allocator: std.mem.Allocator, value: i64) !void {
+        try self.bytes.append(allocator, 0x42);
+        try appendSleb64(&self.bytes, allocator, value);
+    }
+
+    pub fn f32Const(self: *Body, allocator: std.mem.Allocator, value: f32) !void {
+        try self.bytes.append(allocator, 0x43);
+        const bits: u32 = @bitCast(value);
+        var byte_index: u5 = 0;
+        while (byte_index < 4) : (byte_index += 1)
+            try self.bytes.append(allocator, @truncate(bits >> (byte_index * 8)));
     }
 
     pub fn f64Const(self: *Body, allocator: std.mem.Allocator, value: f64) !void {
@@ -493,6 +514,18 @@ fn appendUleb(output: *std.ArrayList(u8), allocator: std.mem.Allocator, input: a
 
 fn appendSleb(output: *std.ArrayList(u8), allocator: std.mem.Allocator, input: i32) !void {
     var value: i64 = input;
+    while (true) {
+        const byte: u8 = @truncate(@as(u64, @bitCast(value)) & 0x7f);
+        value >>= 7;
+        const done = (value == 0 and byte & 0x40 == 0) or (value == -1 and byte & 0x40 != 0);
+        try output.append(allocator, if (done) byte else byte | 0x80);
+        if (done)
+            return;
+    }
+}
+
+fn appendSleb64(output: *std.ArrayList(u8), allocator: std.mem.Allocator, input: i64) !void {
+    var value = input;
     while (true) {
         const byte: u8 = @truncate(@as(u64, @bitCast(value)) & 0x7f);
         value >>= 7;
