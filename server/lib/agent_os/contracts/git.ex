@@ -45,6 +45,7 @@ defmodule AgentOS.Contracts.Git do
       redirect_not_allowed: "git: redirect not allowed",
       empty_origins: "git: empty connection origins",
       query_auth_unsupported: "git: query auth not supported for remotes",
+      invalid_auth: "git: invalid connection auth",
     }
   end
   def stderr_line(id, detail \\ nil) do

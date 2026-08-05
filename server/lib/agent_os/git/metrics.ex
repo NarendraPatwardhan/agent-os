@@ -203,9 +203,7 @@ defmodule AgentOS.Git.Metrics do
     if depth > @queue_depth_alert do
       inc(:queue_depth_warn)
 
-      Logger.warning(
-        "git: mount queue depth #{depth} > #{@queue_depth_alert} mount=#{mount}"
-      )
+      Logger.warning("git: mount queue depth #{depth} > #{@queue_depth_alert} mount=#{mount}")
     end
 
     :ok

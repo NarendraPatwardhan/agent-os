@@ -194,6 +194,7 @@ export type ConnectionAuth =
   | { kind: "none" }
   | { kind: "bearer"; token: string }
   | { kind: "header"; name: string; value: string }
+  | { kind: "basic"; username: string; password: string }
   | { kind: "query"; name: string; value: string };
 
 export type CatalogFormat =

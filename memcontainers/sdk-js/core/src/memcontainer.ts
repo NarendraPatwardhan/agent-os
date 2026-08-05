@@ -26,11 +26,7 @@ import {
 import { parseSnapshot } from "@mc/contracts/snapshot";
 import { SIDECAR_HOST_BINDING } from "@mc/contracts/sidecar";
 import { EmbeddedBackend, FanoutSink } from "./embedded.js";
-import {
-  defaultCatalogCompilerBytes,
-  defaultImage,
-  defaultKernel,
-} from "./artifacts.js";
+import { defaultCatalogCompilerBytes, defaultImage, defaultKernel } from "./artifacts.js";
 import { embeddedGuestLayers } from "./guest-layers.js";
 import { defaultStore } from "./store.js";
 import {
@@ -136,12 +132,8 @@ function ownGitCreateOptions(git: CreateOptions["git"]): CreateOptions["git"] {
       sparse: m.sparse ? [...m.sparse] : undefined,
       readOnly: m.readOnly,
     })),
-    identity: git.identity
-      ? { name: git.identity.name, email: git.identity.email }
-      : undefined,
-    durable: git.durable
-      ? { id: git.durable.id, diskDir: git.durable.diskDir }
-      : undefined,
+    identity: git.identity ? { name: git.identity.name, email: git.identity.email } : undefined,
+    durable: git.durable ? { id: git.durable.id, diskDir: git.durable.diskDir } : undefined,
     allowOrigins: git.allowOrigins ? [...git.allowOrigins] : undefined,
     http: git.http,
   };
@@ -179,13 +171,23 @@ function gitMountSpecsFromCreate(git: GitCreateOptions): GitMountSpec[] {
 }
 
 /**
+ * Normalize a guest mount path for collision checks: trim and strip trailing
+ * slashes (except root). Does not invent absolute paths.
+ */
+function normalizeGuestMountPath(path: string): string {
+  let p = String(path ?? "").trim();
+  if (p.length > 1) p = p.replace(/\/+$/, "");
+  return p;
+}
+
+/**
  * Fail closed on non-absolute or duplicate mount paths.
  * One host git engine per path (single-writer).
  */
 function assertUniqueAbsoluteGitMounts(mounts: GitMountSpec[]): void {
   const seen = new Set<string>();
   for (const m of mounts) {
-    const path = String(m.path || "").trim();
+    const path = normalizeGuestMountPath(m.path);
     if (!path.startsWith("/")) {
       throw new Error(`git.mounts path must be absolute, got ${JSON.stringify(m.path)}`);
     }
@@ -193,6 +195,28 @@ function assertUniqueAbsoluteGitMounts(mounts: GitMountSpec[]): void {
       throw new Error(`git.mounts duplicate path ${path} (one engine per mount path)`);
     }
     seen.add(path);
+  }
+}
+
+/**
+ * GIT-020: reject a caller-declared generic mount whose path collides with any
+ * configured git engine mount. Silent skip of gitfs while retaining the engine
+ * is not valid mount policy.
+ */
+function assertNoDeclaredGitPathCollisions(
+  gitMounts: GitMountSpec[],
+  declaredMounts: MountSpec[] | undefined,
+): void {
+  if (!declaredMounts?.length) return;
+  const gitPaths = new Set(gitMounts.map((m) => normalizeGuestMountPath(m.path)));
+  for (const m of declaredMounts) {
+    const p = normalizeGuestMountPath(m.path);
+    if (gitPaths.has(p)) {
+      throw new Error(
+        `create mounts path ${p} collides with git engine mount ` +
+          `(cannot bind a generic driver over a git engine path)`,
+      );
+    }
   }
 }
 
@@ -224,15 +248,13 @@ async function bootstrapHostGit(
   const gitCfg = normalizeCreateGit(opts.git);
   if (!gitCfg) return [];
 
-  const {
-    GitEngine,
-    registerGitHostCall,
-    openDurable,
-    durableIdForMount,
-  } = await import("./git/index.js");
+  const { GitEngine, registerGitHostCall, openDurable, durableIdForMount } =
+    await import("./git/index.js");
 
   const mountSpecs = gitMountSpecsFromCreate(gitCfg);
   assertUniqueAbsoluteGitMounts(mountSpecs);
+  // GIT-020: fail closed before engine load when opts.mounts shadows a git path.
+  assertNoDeclaredGitPathCollisions(mountSpecs, opts.mounts);
 
   // Durable is opt-in only (A8: no silent ODB). Per-mount ids via durableIdForMount.
   const useDurable = gitCfg.durable !== undefined;
@@ -314,10 +336,7 @@ async function bootstrapHostGit(
  * Wire durable engines into snapshot/pinBase checkpoint (D17) and close them
  * with the backend. Engines without a durable id are closed on teardown only.
  */
-function attachLoadedGitEngines(
-  backend: EmbeddedBackend,
-  engines: LoadedGitEngine[],
-): void {
+function attachLoadedGitEngines(backend: EmbeddedBackend, engines: LoadedGitEngine[]): void {
   if (engines.length === 0) return;
   // D17: snapshot/pinBase checkpoint only engines with durable bindings.
   backend.bindGitEngines(
@@ -333,32 +352,34 @@ function attachLoadedGitEngines(
   );
   const origClose = backend.close.bind(backend);
   backend.close = async () => {
+    let firstError: unknown;
     for (const eng of engines) {
       try {
         await eng.close();
-      } catch {
-        /* best-effort */
+      } catch (error) {
+        firstError ??= error;
       }
     }
-    return origClose();
+    try {
+      await origClose();
+    } catch (error) {
+      firstError ??= error;
+    }
+    if (firstError !== undefined) throw firstError;
   };
 }
 
-/** Mount default gitfs for each loaded engine when the path was not declared in opts.mounts. */
-async function mountDefaultGitFs(
-  backend: Backend,
-  engines: LoadedGitEngine[],
-  declaredMounts: MountSpec[] | undefined,
-): Promise<void> {
+/**
+ * Mount gitfs for each loaded engine. Cross-list path collisions with
+ * `opts.mounts` are rejected earlier ({@link assertNoDeclaredGitPathCollisions}).
+ */
+async function mountDefaultGitFs(backend: Backend, engines: LoadedGitEngine[]): Promise<void> {
   for (const eng of engines) {
-    const declared = (declaredMounts ?? []).some((m) => m.path === eng.path);
-    if (!declared) {
-      await backend.mount(
-        eng.path,
-        eng.asMountDriver({ sparseCone: eng.sparseCone }),
-        !!eng.readOnly,
-      );
-    }
+    await backend.mount(
+      eng.path,
+      eng.asMountDriver({ sparseCone: eng.sparseCone }),
+      !!eng.readOnly,
+    );
   }
 }
 
@@ -1096,8 +1117,8 @@ async function makeEmbedded(
     for (const m of opts.mounts ?? []) {
       await backend.mount(m.path, m.driver, m.readOnly ?? m.driver.readOnly ?? false);
     }
-    // Default gitfs mounts for engines whose paths were not declared in opts.mounts.
-    await mountDefaultGitFs(backend, gitEngines, opts.mounts);
+    // Default gitfs mounts for each loaded engine (collision-checked at bootstrap).
+    await mountDefaultGitFs(backend, gitEngines);
     return { backend, opts, catalog };
   } catch (e) {
     await closeBackendQuietly(backend);
@@ -1491,6 +1512,8 @@ function remoteConnectionAuth(auth: ConnectionDefinition["auth"]): Record<string
       return { kind: "bearer", token: auth.token };
     case "header":
       return { kind: "header", name: auth.name, value: auth.value };
+    case "basic":
+      return { kind: "basic", username: auth.username, password: auth.password };
     case "query":
       return { kind: "query", name: auth.name, value: auth.value };
   }

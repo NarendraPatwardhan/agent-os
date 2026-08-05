@@ -9,6 +9,7 @@
  *   2  pack chunk (raw bytes) → response type 2, payload i32le status (0 ok)
  *   3  pack meta (u8 final flag, 1 = finalize) → type 3, i32le status
  *   4  binary MOUNT_OP body (peer of dispatchMount) → [i32 status][payload]
+ *   5  abort incomplete pack import → i32le status
  */
 
 #ifndef GE_PORT_H_
@@ -21,10 +22,11 @@
 #include <stdio.h>
 
 enum {
-  GE_FRAME_RUN = 1,
-  GE_FRAME_PACK = 2,
-  GE_FRAME_PACK_META = 3,
-  GE_FRAME_MOUNT = 4,
+    GE_FRAME_RUN = 1,
+    GE_FRAME_PACK = 2,
+    GE_FRAME_PACK_META = 3,
+    GE_FRAME_MOUNT = 4,
+    GE_FRAME_PACK_ABORT = 5,
 };
 
 /* Read one frame from in. On success *type and *payload (*payload_len) are set;
@@ -35,8 +37,7 @@ int ge_frame_read(FILE *in, uint8_t *type, uint8_t **payload, size_t *payload_le
 int ge_frame_write(FILE *out, uint8_t type, const void *payload, size_t payload_len);
 
 /* Serve one request frame; writes a response frame. Returns 0, or -1 on IO error. */
-int ge_port_handle(ge_engine *e, uint8_t type, const uint8_t *payload, size_t len,
-                   FILE *out);
+int ge_port_handle(ge_engine *e, uint8_t type, const uint8_t *payload, size_t len, FILE *out);
 
 /* Synthetic gitfs mount over real FS worktree (server). */
 int ge_mount_dispatch(ge_engine *e, const uint8_t *body, size_t body_len, uint8_t **out,

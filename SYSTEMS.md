@@ -1199,51 +1199,54 @@ runners, **libgit2** substrate.
 
 ### 11b.1 Planes and faces
 
-| Plane | Responsibility |
-|-------|----------------|
-| **Source (host)** | Engine (libgit2 + `ge_*`), durable packs, `GitRemoteOrchestrator`, smart-HTTP, LLB source ops, SDK `GitEngine` |
-| **Namespace (kernel)** | `MountFs` slot, `CAP_FS_*` / `CAP_NET`, cooperative WouldBlock, snapshot gating on inflight host_call |
-| **Exec (guest)** | Shell, editors, thin `/bin/git` |
+| Plane                  | Responsibility                                                                                                 |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------- |
+| **Source (host)**      | Engine (libgit2 + `ge_*`), durable packs, `GitRemoteOrchestrator`, smart-HTTP, LLB source ops, SDK `GitEngine` |
+| **Namespace (kernel)** | `MountFs` slot, `CAP_FS_*` / `CAP_NET`, cooperative WouldBlock, snapshot gating on inflight host_call          |
+| **Exec (guest)**       | Shell, editors, thin `/bin/git`                                                                                |
 
 Three faces over **one** local engine core; remotes add orchestration **outside** the engine:
 
-| Face | Path |
-|------|------|
+| Face  | Path                                                                                                          |
+| ----- | ------------------------------------------------------------------------------------------------------------- |
 | Paths | `GitFsDriver` → MountFs (worktree + synthetic `.git` meta: HEAD/refs/ctl; **no** `.git/objects` façade in v1) |
-| Verbs | ctl for **local** porcelain; host_call name `"git"` for remotes; SDK `GitEngine` |
-| CLI | Thin pure-mc `/bin/git` — argv adapter only, not the internal ABI |
+| Verbs | ctl for **local** porcelain; host_call name `"git"` for remotes; SDK `GitEngine`                              |
+| CLI   | Thin pure-mc `/bin/git` — argv adapter only, not the internal ABI                                             |
 
 **Rule:** commands are a shell adapter. Catalog tool `git run` is not productized; guest remotes use
 host_call `"git"` only.
 
 ### 11b.2 Engine and packaging
 
-| Host family | Product runner | Artifact |
-|-------------|----------------|----------|
-| **JS (browser / Node)** | Emscripten `createGitEngineModule` (MODULARIZE, EXPORT_ES6) | `git_engine.mjs` + `git_engine.wasm` in release `git-engine.tar` |
+| Host family                       | Product runner                                                            | Artifact                                                              |
+| --------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| **JS (browser / Node)**           | Emscripten `createGitEngineModule` (MODULARIZE, EXPORT_ES6)               | `git_engine.mjs` + `git_engine.wasm` in release `git-engine.tar`      |
 | **Server (Elixir control plane)** | Native hermetic C **`git-engine` Port** (zig cc; scoped transitions only) | BEAM-owned subprocess; c-shared may package, **product load is Port** |
 
 Rejected product paths: wasmi-guest VCS, go-git / gojs / `wasm_exec.js`, freestanding engine under
 wasmtime, Go NIF, ambient `~/.git-credentials` into the engine.
 
-**ABI (dial-free):** `ge_open` / `ge_close` / `ge_run_json` / `ge_import_pack` / `ge_last_error` /
+**ABI (dial-free):** `ge_open` / `ge_close` / `ge_run_json` / `ge_validate_request_json` /
+`ge_import_pack` /
+`ge_import_pack_abort` / `ge_last_error` /
 `ge_free` / `ge_version`. Worktree root is absolute and pre-existing; one `ge_engine` ≈ one gitfs
 mount. Request shape `{ "op", "args" }` only (no top-level cwd/author). JSON carries metadata and small
 results; **packs stay binary** (`ge_import_pack` chunks — never multi‑MB base64 in JSON). Caps:
-interactive pack **64 MiB**, JSON Run args **1 MiB**, Response `stdout` embed **1 MiB** (overflow →
-stream path). Emcc exports **`ge_*` only** (plus allocator); after wasm-opt the soft gate is **≤2 MiB**
+interactive pack **64 MiB**, JSON Run args **1 MiB**, Response `stdout` preview **2 KiB**
+(complete overflow body at a token-scoped stream path, capped at **16 MiB**). Emcc exports
+**`ge_*` only** (plus allocator); after wasm-opt the soft gate is **≤2 MiB**
 (measured ~613 KiB). Thin guest CLI soft gate **≤256 KiB**. libgit2 pin **1.9.2**; HTTPS/SSH backends
 **compile-time off**.
 
-| Component | Location |
-|-----------|----------|
-| Engine + fixtures | `memcontainers/lib/git-engine/` |
-| libgit2 pin / NOTICE / patches | `third_party/libgit2/` |
-| JS SDK (engine, orch, gitfs, durable) | `memcontainers/sdk-js/core/src/git/` |
-| Thin `/bin/git` | `memcontainers/programs/git/` (on **base** image) |
-| Decision contract | `memcontainers/contracts/git.kdl` → TS/Elixir projections |
-| Dual-host orch goldens | `memcontainers/lib/git-engine/fixtures/orch/` |
-| BEAM Port + orch | `server/lib/agent_os/git_engine.ex`, `git/*`, hooks in `vm.ex` / `control_plane.ex` |
+| Component                             | Location                                                                            |
+| ------------------------------------- | ----------------------------------------------------------------------------------- |
+| Engine + fixtures                     | `memcontainers/lib/git-engine/`                                                     |
+| libgit2 pin / NOTICE / patches        | `third_party/libgit2/`                                                              |
+| JS SDK (engine, orch, gitfs, durable) | `memcontainers/sdk-js/core/src/git/`                                                |
+| Thin `/bin/git`                       | `memcontainers/programs/git/` (on **base** image)                                   |
+| Decision contract                     | `memcontainers/contracts/git.kdl` → TS/Elixir projections                           |
+| Dual-host orch goldens                | `memcontainers/lib/git-engine/fixtures/orch/`                                       |
+| BEAM Port + orch                      | `server/lib/agent_os/git_engine.ex`, `git/*`, hooks in `vm.ex` / `control_plane.ex` |
 
 **License (linking exception):** ship NOTICE + upstream COPYING with every engine artifact set (L4);
 fail-closed CI membership gates (L5); corresponding source = pin + monorepo patches (L1–L3);
@@ -1254,10 +1257,10 @@ network backends stay off without a separate license review (L6).
 The engine is a pure object DB (apply packs/refs). Remotes are a **host service**: policy, TLS,
 credential splice, ListRefs / FetchPacks / PushPacks → bytes into the engine.
 
-| Host | Orchestrator + smart-HTTP | Apply |
-|------|---------------------------|--------|
-| **JS** | TypeScript (`remote-orchestrator.ts`, `smart-http.ts`) | In-process emcc |
-| **Server** | **BEAM** OTP `:httpc`/ssl — **no Node, no C TLS** | Port import/apply only |
+| Host       | Orchestrator + smart-HTTP                              | Apply                  |
+| ---------- | ------------------------------------------------------ | ---------------------- |
+| **JS**     | TypeScript (`remote-orchestrator.ts`, `smart-http.ts`) | In-process emcc        |
+| **Server** | **BEAM** OTP `:httpc`/ssl — **no Node, no C TLS**      | Port import/apply only |
 
 Guest remotes require kernel **`CAP_NET`** on `mc_sys_host_call` name `"git"`. Mount/ctl are
 `CAP_FS_*` only — ctl **must not** start smart-HTTP (A9). Secrets never in guest, ctl body, or engine
@@ -1277,17 +1280,18 @@ For control-plane VMs, **BEAM owns** host_call answers and the engine child. Rus
 NIF exports.
 
 Port protocol: length-prefixed frames `u32le length | u8 type | payload` — type **1** JSON Run, **2**
-pack chunk, **3** pack meta, **4** binary MOUNT_OP. Port starts with first gitfs attach (or boot if
-declared); stops with the VM. Port crash → fail in-flight handles; subsequent git ops surface guest EIO.
+pack chunk, **3** pack meta, **4** binary MOUNT_OP, **5** pack-import abort. Port starts with first
+gitfs attach (or boot if declared); stops with the VM. Port crash → fail in-flight handles; subsequent
+git ops surface guest EIO.
 
 ### 11b.5 Snapshots, durability, create path
 
-| State | In MCSN? |
-|-------|----------|
-| Mount table gitfs slot | yes |
+| State                            | In MCSN?             |
+| -------------------------------- | -------------------- |
+| Mount table gitfs slot           | yes                  |
 | Object DB, packs, dirty worktree | **no** — rebind (A8) |
-| Thin `/bin/git` in image | yes |
-| In-flight host_call | snapshot blocked |
+| Thin `/bin/git` in image         | yes                  |
+| In-flight host_call              | snapshot blocked     |
 
 Snapshotting a coding agent does **not** silently carry a full ODB unless the embedder persists and
 rebinds a durable backend (`git.durable` / host dir / OPFS / BEAM Port root). Product create is opt-in
@@ -1297,25 +1301,38 @@ fetch, or explicit `engine`). Advanced surface; not multi-tenant default-on. Def
 unspecified: `/workspace/repo`. Multi-mount allowed with **distinct** paths (one engine / single-writer
 per path; demux via `args.mount`).
 
+JS blob durability uses the versioned AgentOS Git Snapshot envelope (magic **`AOGS`**, schema **v1**):
+ODB, refs, HEAD, index, sparse metadata, staged/dirty/untracked files, empty directories, modes, and
+symlink identities (targets are stored without traversal). Runtime ctl streams and one-shot pack
+exports are excluded. Only canonical `AOGS` schema v1 is accepted; unknown or corrupt envelopes fail
+closed. A configured Git checkpoint failure fails the enclosing snapshot/close. JS
+host-directory checkpoints stage a complete generation, fsync it, then atomically rename it into
+place. BEAM Port roots are written directly by libgit2; checkpoint validates that the root remains
+present for later reopen and does not claim a portable directory fsync that Erlang cannot perform.
+
+Guest ctl requests require a bounded `client_token`; the ctl file is write-only, responses are read
+from `.git/mc/responses/<token>`, and large stdout from `.git/mc/out/<token>`. Unscoped response and
+stream aliases do not exist.
+
 ### 11b.6 Normative invariants
 
-| Invariant | Detail |
-|-----------|--------|
-| Host source plane | Git mechanics on the host, not multi‑MiB wasmi guests |
-| One Run ABI | `ge_run_json` + binary `ge_import_pack` for all faces |
-| libgit2 + `ge_*` | Pin 1.9.x; dial-free facade |
-| JS = emcc; server = Port | No gojs; c-shared packaging-only on server |
-| gitfs via MountFs | Existing Driver / registerRaw — no kernel git ABI |
-| Thin `/bin/git` on base | Pure-mc, reduced fail-closed surface |
-| Host-mediated remotes | Engine never dials; CAP_NET + host_call `"git"` for guests |
-| One engine per mount path | Multi-mount OK; no multi-writer on one mount |
-| ODB outside MCSN | Durable rebind opt-in (A8) |
-| Dual-host orch + goldens | TS on JS; BEAM on server; shared algorithm |
-| Synthetic `.git` meta only | No objects façade in v1 |
-| Binary packs | No JSON pack bodies |
-| BEAM owns Port + answers | NIF is relay only |
-| License L1–L6 | NOTICE/COPYING/source gates on ship path |
-| Host commit identity | Inject name/email from host policy when request omits them |
+| Invariant                    | Detail                                                        |
+| ---------------------------- | ------------------------------------------------------------- |
+| Host source plane            | Git mechanics on the host, not multi‑MiB wasmi guests         |
+| One Run ABI                  | `ge_run_json` + binary `ge_import_pack` for all faces         |
+| libgit2 + `ge_*`             | Pin 1.9.x; dial-free facade                                   |
+| JS = emcc; server = Port     | No gojs; c-shared packaging-only on server                    |
+| gitfs via MountFs            | Existing Driver / registerRaw — no kernel git ABI             |
+| Thin `/bin/git` on base      | Pure-mc, reduced fail-closed surface                          |
+| Host-mediated remotes        | Engine never dials; CAP_NET + host_call `"git"` for guests    |
+| One engine per mount path    | Multi-mount OK; no multi-writer on one mount                  |
+| ODB outside MCSN             | Durable rebind opt-in (A8)                                    |
+| Dual-host orch + goldens     | TS on JS; BEAM on server; shared algorithm                    |
+| Synthetic `.git` meta only   | No objects façade in v1                                       |
+| Binary packs                 | No JSON pack bodies                                           |
+| BEAM owns Port + answers     | NIF is relay only                                             |
+| License L1–L6                | NOTICE/COPYING/source gates on ship path                      |
+| Host commit identity         | Inject name/email from host policy when request omits them    |
 | Content-addressed pack cache | Shared for LLB + interactive; credentials never in cache keys |
 
 Product surface (commands, create options, agent constraints, env): **`docs/git.md`**. This section is
@@ -1450,13 +1467,14 @@ as the Rust e2e suite—A3 enforced, not asserted.
 Multi-VM density in the page follows the same A8 split as the server: **immutable** host values may be
 shared; **live** machine state may not. A `WebAssembly.Module` is cached once per kernel digest.
 **Template fulls** are content-addressed MCSN objects keyed by create-time **layer set** (kernel digest
-+ ordered digests of every layer passed to boot — image layers **and** create-time sidecar guest
-layers; host-only grants do not enter the key). In the browser that cache is filled **on demand**
-(first ready boot of a given key snapshots once; later boots reuse it). On a server the same cache is
-**prepopulated**. Each VM keeps private linear memory and only a digest binding to its active base.
-Workers, if used, are for compile/hash/transfer — not a shared tick loop and not `SharedArrayBuffer`.
-See §8 for baseline binding and incremental rules; PERF-011 is the implementation backlog for this
-packing.
+
+- ordered digests of every layer passed to boot — image layers **and** create-time sidecar guest
+  layers; host-only grants do not enter the key). In the browser that cache is filled **on demand**
+  (first ready boot of a given key snapshots once; later boots reuse it). On a server the same cache is
+  **prepopulated**. Each VM keeps private linear memory and only a digest binding to its active base.
+  Workers, if used, are for compile/hash/transfer — not a shared tick loop and not `SharedArrayBuffer`.
+  See §8 for baseline binding and incremental rules; PERF-011 is the implementation backlog for this
+  packing.
 
 ### 13.4 The `@mc/*` SDK and the web app
 

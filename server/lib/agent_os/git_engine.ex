@@ -6,7 +6,7 @@ defmodule AgentOS.GitEngine do
 
       <<length::little-32, type::8, payload::binary-size(length-1)>>
 
-  Types: 1 Run, 2 pack chunk, 3 pack meta, 4 binary MOUNT_OP.
+  Types: 1 Run, 2 pack chunk, 3 pack meta, 4 binary MOUNT_OP, 5 pack abort.
   Remotes: `AgentOS.Git.Orchestrator` (BEAM HTTPS) then Port apply.
 
   Lifecycle: start when a gitfs mount attaches (or explicitly); stop with the VM.
@@ -35,6 +35,8 @@ defmodule AgentOS.GitEngine do
   @frame_pack 2
   @frame_pack_meta 3
   @frame_mount 4
+  @frame_pack_abort 5
+  @frame_max_bytes 17 * 1024 * 1024
 
   # ── public API ──────────────────────────────────────────────────────────────
 
@@ -52,7 +54,7 @@ defmodule AgentOS.GitEngine do
   @doc """
   JSON Run (`ge_run_json`). Local porcelain only (engine dial-free).
 
-  When the engine was started with `:identity` / `:git_identity` `%{name:, email:}`,
+  When the engine was started with `:identity` `%{name:, email:}`,
   `commit` requests missing name/email are rewritten to inject that host identity
   (K28). Never invents Agent/agent@example.com when identity is unset.
   """
@@ -66,6 +68,12 @@ defmodule AgentOS.GitEngine do
   @spec import_pack(pid(), binary(), keyword()) :: :ok | {:error, term()}
   def import_pack(pid, chunk, opts \\ []) when is_pid(pid) and is_binary(chunk) do
     GenServer.call(pid, {:import_pack, chunk, Keyword.get(opts, :final, false)}, 60_000)
+  end
+
+  @doc "Abort and discard an incomplete streamed pack import. Idempotent."
+  @spec abort_import_pack(pid()) :: :ok | {:error, term()}
+  def abort_import_pack(pid) when is_pid(pid) do
+    GenServer.call(pid, :abort_import_pack, 60_000)
   end
 
   @doc """
@@ -123,10 +131,10 @@ defmodule AgentOS.GitEngine do
   @doc """
   Checkpoint durable state for this engine.
 
-  Native Port writes already land on the host filesystem; this is the product
-  face for “flush durable store” (directory fsync marker). Returns `:ok` when
-  the root exists. No AGIT export on the BEAM path — the directory **is** the
-  store (D16).
+  Native Port writes already land on the host filesystem. This validates that
+  the bound root still exists for a later reopen. No blob export or portable
+  directory fsync occurs on the BEAM path — the directory **is** the store
+  (D16).
   """
   @spec checkpoint(pid()) :: :ok | {:error, term()}
   def checkpoint(pid) when is_pid(pid) do
@@ -149,7 +157,7 @@ defmodule AgentOS.GitEngine do
     unless `AGENTOS_GIT_PACK_CACHE_SHARED=1` or disk env) / `:process` /
     `:shared` / `:disk` / `{:disk, dir}` (see `AgentOS.Git.Orchestrator`;
     env `AGENTOS_GIT_PACK_CACHE` / `AGENTOS_GIT_PACK_CACHE_SHARED`)
-  * `:sparse_cone` / `:git_sparse_cone` — cone prefixes after clone (D20)
+  * `:sparse_cone` — cone prefixes after clone (D20)
   """
   @spec handle_host_call(pid(), String.t(), binary(), keyword()) ::
           {:ok, binary()} | {:error, term()}
@@ -185,8 +193,7 @@ defmodule AgentOS.GitEngine do
         System.get_env("AGENTOS_GIT_ENGINE") ||
         default_executable()
 
-    # D16/D18: prefer durable root resolution (root / durable_dir / durable_id).
-    # Fall back to legacy `:root` or temp when Durable module opts are absent.
+    # D16/D18: resolve root / durable_dir / durable_id, or allocate a temp root.
     case AgentOS.Git.Durable.resolve_root(opts) do
       {:error, reason} ->
         # Fail closed when durable_id is set without AGENTOS_GIT_DURABLE_ROOT.
@@ -195,10 +202,9 @@ defmodule AgentOS.GitEngine do
       {:ok, root, kind} ->
         temp_root? = kind == :temp
         durable? = kind == :durable
-        File.mkdir_p!(root)
+        root = AgentOS.Git.Durable.ensure_root!(root)
 
-        identity =
-          normalize_identity(Keyword.get(opts, :identity) || Keyword.get(opts, :git_identity))
+        identity = normalize_identity(Keyword.get(opts, :identity))
 
         case open_port(executable, root) do
           {:ok, port} ->
@@ -277,6 +283,18 @@ defmodule AgentOS.GitEngine do
     end
   end
 
+  def handle_call(:abort_import_pack, _from, state) do
+    with {:ok, state1} <- send_frame(state, @frame_pack_abort, <<>>),
+         {:ok, status, state2} <- recv_status_frame(state1, @frame_pack_abort) do
+      if status == 0,
+        do: {:reply, :ok, state2},
+        else: {:reply, {:error, :import_pack_abort}, state2}
+    else
+      {:error, reason, st} -> {:reply, {:error, reason}, st}
+      {:error, reason} -> {:reply, {:error, reason}, state}
+    end
+  end
+
   def handle_call({:pack_build, oids, opts}, _from, state) do
     case do_pack_build(state, oids, opts) do
       {:ok, pack, state2} -> {:reply, {:ok, pack}, state2}
@@ -284,16 +302,9 @@ defmodule AgentOS.GitEngine do
     end
   end
 
-  # Back-compat if any caller still uses 2-tuple without opts.
-  def handle_call({:pack_build, oids}, _from, state) do
-    case do_pack_build(state, oids, []) do
-      {:ok, pack, state2} -> {:reply, {:ok, pack}, state2}
-      {:error, reason, state2} -> {:reply, {:error, reason}, state2}
-    end
-  end
-
   def handle_call({:mount_op, body}, _from, state) do
-    reply_frame(state, @frame_mount, body, fn payload -> {:ok, payload} end)
+    body2 = maybe_inject_mount_commit_identity(body, Map.get(state, :identity))
+    reply_frame(state, @frame_mount, body2, fn payload -> {:ok, payload} end)
   end
 
   @impl true
@@ -338,78 +349,87 @@ defmodule AgentOS.GitEngine do
   # pack.build → export file under worktree `.git/agentos/push.pack` → read bytes.
   # Caller (`handle_call`) already fails closed when `port` is nil.
   defp do_pack_build(state, oids, opts) when is_list(oids) and is_list(opts) do
-    hex_oids =
-      for o <- oids,
-          is_binary(o),
-          Regex.match?(~r/^[0-9a-fA-F]{40}$/, o),
-          do: String.downcase(o)
+    haves = Keyword.get(opts, :haves, [])
+    valid_oid? = fn oid -> is_binary(oid) and Regex.match?(~r/^[0-9a-fA-F]{40}$/, oid) end
 
-    hex_haves =
-      for o <- Keyword.get(opts, :haves, []),
-          is_binary(o),
-          Regex.match?(~r/^[0-9a-fA-F]{40}$/, o),
-          do: String.downcase(o)
+    cond do
+      oids == [] ->
+        {:error, :no_oids, state}
 
-    if hex_oids == [] do
-      {:error, :no_oids, state}
-    else
-      args =
-        if hex_haves == [] do
-          %{"oids" => hex_oids}
-        else
-          %{"oids" => hex_oids, "haves" => Enum.uniq(hex_haves)}
-        end
+      not Enum.all?(oids, valid_oid?) or not is_list(haves) or not Enum.all?(haves, valid_oid?) ->
+        {:error, :invalid_oid, state}
 
-      json = encode_request(%{"op" => "pack.build", "args" => args})
+      true ->
+        hex_oids = oids |> Enum.map(&String.downcase/1) |> Enum.uniq()
+        hex_haves = haves |> Enum.map(&String.downcase/1) |> Enum.uniq()
 
-      case request_response(state, @frame_run, json) do
-        {:ok, payload, state2} ->
-          {:ok, m} = decode_json_response(payload)
-
-          if response_ok?(m) do
-            root = Map.get(state2, :root)
-
-            path =
-              if is_binary(root) do
-                Path.join(root, ".git/agentos/push.pack")
-              else
-                nil
-              end
-
-            cond do
-              not is_binary(path) ->
-                {:error, :no_root, state2}
-
-              true ->
-                case File.read(path) do
-                  {:ok, <<"PACK", _::binary>> = pack} ->
-                    {:ok, pack, state2}
-
-                  {:ok, _} ->
-                    {:error, :no_pack_magic, state2}
-
-                  {:error, reason} ->
-                    {:error, {:pack_read, reason}, state2}
-                end
-            end
+        args =
+          if hex_haves == [] do
+            %{"oids" => hex_oids}
           else
-            stderr = Map.get(m, "stderr") || Map.get(m, :stderr) || inspect(m)
-            {:error, {:pack_build_failed, stderr}, state2}
+            %{"oids" => hex_oids, "haves" => hex_haves}
           end
 
-        {:error, reason, state2} ->
-          {:error, reason, state2}
-      end
+        json = encode_request(%{"op" => "pack.build", "args" => args})
+
+        case request_response(state, @frame_run, json) do
+          {:ok, payload, state2} ->
+            {:ok, m} = decode_json_response(payload)
+
+            if response_ok?(m) do
+              root = Map.get(state2, :root)
+
+              path =
+                if is_binary(root) do
+                  Path.join(root, ".git/agentos/push.pack")
+                else
+                  nil
+                end
+
+              cond do
+                not is_binary(path) ->
+                  {:error, :no_root, state2}
+
+                true ->
+                  result =
+                    case File.read(path) do
+                      {:ok, <<"PACK", _::binary>> = pack} ->
+                        {:ok, pack, state2}
+
+                      {:ok, _} ->
+                        {:error, :no_pack_magic, state2}
+
+                      {:error, reason} ->
+                        {:error, {:pack_read, reason}, state2}
+                    end
+
+                  case {result, File.rm(path)} do
+                    {value, :ok} -> value
+                    {{:error, _, _} = error, {:error, _}} -> error
+                    {{:ok, _, _}, {:error, reason}} -> {:error, {:pack_cleanup, reason}, state2}
+                  end
+              end
+            else
+              stderr = Map.get(m, "stderr") || Map.get(m, :stderr) || inspect(m)
+              {:error, {:pack_build_failed, stderr}, state2}
+            end
+
+          {:error, reason, state2} ->
+            {:error, reason, state2}
+        end
     end
   end
 
   defp response_ok?(m) when is_map(m) do
     case Map.get(m, "ok", Map.get(m, :ok)) do
-      true -> true
-      "true" -> true
+      true ->
+        true
+
+      "true" ->
+        true
+
       _ ->
-        raw = Map.get(m, "raw")
-        is_binary(raw) and String.contains?(raw, "\"ok\":true")
+        false
     end
   end
 
@@ -459,17 +479,15 @@ defmodule AgentOS.GitEngine do
   defp maybe_inject_commit_identity(json, %{name: name, email: email}) do
     case safe_json_decode(json) do
       {:ok, map} when is_map(map) ->
-        op =
-          map
-          |> Map.get("op", Map.get(map, :op, ""))
-          |> to_string()
-          |> String.downcase()
+        op = map |> Map.get("op", "") |> to_string() |> String.downcase()
+        valid_top? = Map.keys(map) |> MapSet.new() |> MapSet.subset?(MapSet.new(["op", "args"]))
+        args_present? = Map.has_key?(map, "args")
+        args0 = Map.get(map, "args", %{})
 
-        if op == "commit" do
-          args0 = Map.get(map, "args") || Map.get(map, :args) || %{}
-          args = if is_map(args0), do: json_keys_to_string(args0), else: %{}
+        if op == "commit" and valid_top? and (not args_present? or is_map(args0)) do
+          args = json_keys_to_string(args0)
           args2 = inject_identity_args(args, name, email)
-          encode_request(%{"op" => "commit", "args" => args2})
+          map |> Map.put("args", args2) |> encode_request()
         else
           json
         end
@@ -482,14 +500,42 @@ defmodule AgentOS.GitEngine do
   defp inject_identity_args(args, name, email) when is_map(args) do
     args
     |> then(fn a ->
-      n = Map.get(a, "name")
-      if is_binary(n) and String.trim(n) != "", do: a, else: Map.put(a, "name", name)
+      if Map.has_key?(a, "name"), do: a, else: Map.put(a, "name", name)
     end)
     |> then(fn a ->
-      e = Map.get(a, "email")
-      if is_binary(e) and String.trim(e) != "", do: a, else: Map.put(a, "email", email)
+      if Map.has_key?(a, "email"), do: a, else: Map.put(a, "email", email)
     end)
   end
+
+  # MOUNT_OP WRITE (6): u32 op, u32 path_len, path, u32 arg_len, arg, data.
+  # Rewrite only ctl data; every other mount frame remains opaque.
+  defp maybe_inject_mount_commit_identity(body, nil), do: body
+
+  defp maybe_inject_mount_commit_identity(
+         <<6::little-32, path_len::little-32, rest::binary>> = body,
+         identity
+       )
+       when path_len <= byte_size(rest) do
+    case rest do
+      <<path::binary-size(path_len), arg_len::little-32, tail::binary>>
+      when arg_len <= byte_size(tail) ->
+        <<arg::binary-size(arg_len), data::binary>> = tail
+
+        if String.trim_leading(path, "/") == ".git/mc/ctl" do
+          rewritten = maybe_inject_commit_identity(data, identity)
+
+          <<6::little-32, path_len::little-32, path::binary, arg_len::little-32, arg::binary,
+            rewritten::binary>>
+        else
+          body
+        end
+
+      _ ->
+        body
+    end
+  end
+
+  defp maybe_inject_mount_commit_identity(body, _identity), do: body
 
   defp reply_frame(state, type, payload, decode) do
     case request_response(state, type, payload) do
@@ -509,17 +555,25 @@ defmodule AgentOS.GitEngine do
 
   defp request_response(state, type, payload) do
     with {:ok, state1} <- send_frame(state, type, payload),
-         {:ok, _type, resp, state2} <- recv_frame(state1) do
+         {:ok, ^type, resp, state2} <- recv_frame(state1) do
       {:ok, resp, state2}
+    else
+      {:ok, _wrong_type, _resp, state2} -> {:error, :bad_frame, state2}
+      other -> other
     end
   end
 
   defp send_frame(%{port: port} = state, type, payload) when is_port(port) do
     body = IO.iodata_to_binary([<<type::8>>, payload])
     len = byte_size(body)
-    frame = <<len::little-32, body::binary>>
-    true = Port.command(port, frame)
-    {:ok, state}
+
+    if len > @frame_max_bytes do
+      {:error, :frame_too_large, state}
+    else
+      frame = <<len::little-32, body::binary>>
+      true = Port.command(port, frame)
+      {:ok, state}
+    end
   rescue
     _ -> {:error, :eio, %{state | port: nil}}
   end
@@ -547,12 +601,17 @@ defmodule AgentOS.GitEngine do
       {:ok, type, payload, rest} ->
         {:ok, type, payload, %{state | buffer: rest}}
 
+      {:error, reason} ->
+        {:error, reason, %{state | port: nil}}
+
       :incomplete when attempts > 0 ->
+        expected_port = Map.get(state, :port)
+
         receive do
-          {port, {:data, data}} when is_port(port) and is_binary(data) ->
+          {^expected_port, {:data, data}} when is_port(expected_port) and is_binary(data) ->
             recv_frame(%{state | buffer: buf <> data}, attempts - 1)
 
-          {port, {:exit_status, _}} when is_port(port) ->
+          {^expected_port, {:exit_status, _}} when is_port(expected_port) ->
             {:error, :eio, %{state | port: nil}}
         after
           2_000 ->
@@ -564,6 +623,9 @@ defmodule AgentOS.GitEngine do
         {:error, :timeout, state}
     end
   end
+
+  defp take_frame(<<len::little-32, _::binary>>) when len < 1 or len > @frame_max_bytes,
+    do: {:error, :bad_frame}
 
   defp take_frame(<<len::little-32, rest::binary>>) when byte_size(rest) >= len and len >= 1 do
     plen = len - 1
@@ -592,7 +654,7 @@ defmodule AgentOS.GitEngine do
         {:ok, other}
 
       _ ->
-        {:ok, %{"raw" => bin, "ok" => String.contains?(bin, "\"ok\":true")}}
+        {:error, :invalid_json}
     end
   end
 
@@ -699,14 +761,16 @@ end
 defmodule AgentOS.GitEngine.Jason_like do
   @moduledoc false
 
-  # Tiny JSON codec for OTP without `:json` (Bazel OTP 26). OTP 27+ uses `:json`.
+  # Small deterministic JSON codec used on every supported OTP version.
+  @max_json_bytes 1024 * 1024
+  @max_json_depth 64
 
   def encode!(map) when is_map(map) do
     # Prefer OTP :json when present; it may return iodata (charlist chunks).
     if function_exported?(:json, :encode, 1) do
       map
       |> atom_keys_to_string()
-      |> :json.encode()
+      |> then(&apply(:json, :encode, [&1]))
       |> IO.iodata_to_binary()
     else
       encode_value(atom_keys_to_string(map))
@@ -714,36 +778,22 @@ defmodule AgentOS.GitEngine.Jason_like do
   end
 
   @doc """
-  Decode a JSON binary. Prefers OTP `:json` (27+); falls back to a small parser
-  so BEAM orch works under Bazel OTP 26 without Jason.
+  Decode a bounded UTF-8 JSON binary consistently on every supported OTP.
   """
   def decode(bin) when is_binary(bin) do
-    if function_exported?(:json, :decode, 1) do
-      try do
-        {:ok, :json.decode(bin)}
-      rescue
-        _ ->
-          try do
-            case :json.decode(bin) do
-              {:ok, term} -> {:ok, term}
-              other when is_map(other) or is_list(other) -> {:ok, other}
-              _ -> parse_json(bin)
-            end
-          rescue
-            _ -> parse_json(bin)
-          end
-      end
-    else
+    if byte_size(bin) <= @max_json_bytes and String.valid?(bin) and valid_json_nesting?(bin) do
       parse_json(bin)
+    else
+      {:error, :invalid_json}
     end
   end
 
   def decode(_), do: {:error, :invalid_json}
 
   defp parse_json(bin) do
-    case parse_value(String.trim(bin)) do
+    case parse_value(trim_json_ws(bin)) do
       {:ok, term, rest} ->
-        if String.trim(rest) == "", do: {:ok, term}, else: {:error, :invalid_json}
+        if trim_json_ws(rest) == "", do: {:ok, term}, else: {:error, :invalid_json}
 
       _ ->
         {:error, :invalid_json}
@@ -756,9 +806,9 @@ defmodule AgentOS.GitEngine.Jason_like do
 
   defp parse_value(<<"\"", rest::binary>>), do: parse_string(rest, [])
 
-  defp parse_value(<<"{", rest::binary>>), do: parse_object(String.trim_leading(rest), %{})
+  defp parse_value(<<"{", rest::binary>>), do: parse_object(trim_json_ws(rest), %{})
 
-  defp parse_value(<<"[", rest::binary>>), do: parse_array(String.trim_leading(rest), [])
+  defp parse_value(<<"[", rest::binary>>), do: parse_array(trim_json_ws(rest), [])
 
   defp parse_value(<<c, _::binary>> = bin) when c in ?0..?9 or c == ?- do
     parse_number(bin)
@@ -767,54 +817,64 @@ defmodule AgentOS.GitEngine.Jason_like do
   defp parse_value(_), do: :error
 
   defp parse_string(<<"\"", rest::binary>>, acc) do
-    {:ok, acc |> Enum.reverse() |> List.to_string(), rest}
+    {:ok, acc |> Enum.reverse() |> IO.iodata_to_binary(), rest}
   end
 
-  defp parse_string(<<"\\", e, rest::binary>>, acc) do
-    ch =
-      case e do
-        ?" -> ?"
-        ?\\ -> ?\\
-        ?/ -> ?/
-        ?b -> ?\b
-        ?f -> ?\f
-        ?n -> ?\n
-        ?r -> ?\r
-        ?t -> ?\t
-        ?u -> ?u
-        other -> other
-      end
-
-    # Skip full \uXXXX sequences.
-    rest2 =
-      if e == ?u and byte_size(rest) >= 4 do
-        binary_part(rest, 4, byte_size(rest) - 4)
-      else
-        rest
-      end
-
-    parse_string(rest2, [ch | acc])
+  defp parse_string(<<"\\u", hex::binary-size(4), rest::binary>>, acc) do
+    with {codepoint, ""} <- Integer.parse(hex, 16),
+         {:ok, utf8, rest} <- decode_json_codepoint(codepoint, rest) do
+      parse_string(rest, [utf8 | acc])
+    else
+      _ -> :error
+    end
   end
 
-  defp parse_string(<<c, rest::binary>>, acc), do: parse_string(rest, [c | acc])
+  defp parse_string(<<"\\", e, rest::binary>>, acc) when e in [?", ?\\, ?/] do
+    parse_string(rest, [<<e>> | acc])
+  end
+
+  defp parse_string(<<"\\b", rest::binary>>, acc), do: parse_string(rest, [<<8>> | acc])
+  defp parse_string(<<"\\f", rest::binary>>, acc), do: parse_string(rest, [<<12>> | acc])
+  defp parse_string(<<"\\n", rest::binary>>, acc), do: parse_string(rest, ["\n" | acc])
+  defp parse_string(<<"\\r", rest::binary>>, acc), do: parse_string(rest, ["\r" | acc])
+  defp parse_string(<<"\\t", rest::binary>>, acc), do: parse_string(rest, ["\t" | acc])
+  defp parse_string(<<"\\", _e, _rest::binary>>, _acc), do: :error
+  defp parse_string(<<c, _rest::binary>>, _acc) when c < 0x20, do: :error
+  defp parse_string(<<c, rest::binary>>, acc), do: parse_string(rest, [<<c>> | acc])
   defp parse_string(<<>>, _acc), do: :error
+
+  defp decode_json_codepoint(high, <<"\\u", low_hex::binary-size(4), rest::binary>>)
+       when high in 0xD800..0xDBFF do
+    case Integer.parse(low_hex, 16) do
+      {low, ""} when low in 0xDC00..0xDFFF ->
+        codepoint = 0x10000 + (high - 0xD800) * 0x400 + low - 0xDC00
+        {:ok, <<codepoint::utf8>>, rest}
+
+      _ ->
+        :error
+    end
+  end
+
+  defp decode_json_codepoint(high, _rest) when high in 0xD800..0xDFFF, do: :error
+  defp decode_json_codepoint(codepoint, rest), do: {:ok, <<codepoint::utf8>>, rest}
 
   defp parse_object(<<"}", rest::binary>>, acc), do: {:ok, acc, rest}
 
   defp parse_object(bin, acc) do
-    bin = String.trim_leading(bin)
+    bin = trim_json_ws(bin)
 
     with {:ok, key, rest} <- parse_value(bin),
          true <- is_binary(key),
-         rest = String.trim_leading(rest),
+         false <- Map.has_key?(acc, key),
+         rest = trim_json_ws(rest),
          <<":", rest::binary>> <- rest,
-         rest = String.trim_leading(rest),
+         rest = trim_json_ws(rest),
          {:ok, val, rest} <- parse_value(rest) do
       acc = Map.put(acc, key, val)
-      rest = String.trim_leading(rest)
+      rest = trim_json_ws(rest)
 
       case rest do
-        <<",", rest::binary>> -> parse_object(String.trim_leading(rest), acc)
+        <<",", rest::binary>> -> parse_object(trim_json_ws(rest), acc)
         <<"}", rest::binary>> -> {:ok, acc, rest}
         _ -> :error
       end
@@ -828,10 +888,10 @@ defmodule AgentOS.GitEngine.Jason_like do
   defp parse_array(bin, acc) do
     with {:ok, val, rest} <- parse_value(bin) do
       acc = [val | acc]
-      rest = String.trim_leading(rest)
+      rest = trim_json_ws(rest)
 
       case rest do
-        <<",", rest::binary>> -> parse_array(String.trim_leading(rest), acc)
+        <<",", rest::binary>> -> parse_array(trim_json_ws(rest), acc)
         <<"]", rest::binary>> -> {:ok, Enum.reverse(acc), rest}
         _ -> :error
       end
@@ -861,6 +921,43 @@ defmodule AgentOS.GitEngine.Jason_like do
         :error
     end
   end
+
+  defp trim_json_ws(<<c, rest::binary>>) when c in [0x20, 0x09, 0x0A, 0x0D],
+    do: trim_json_ws(rest)
+
+  defp trim_json_ws(bin), do: bin
+
+  defp valid_json_nesting?(bin), do: scan_json_nesting?(bin, false, false, 0)
+
+  defp scan_json_nesting?(<<>>, false, false, 0), do: true
+  defp scan_json_nesting?(<<>>, _quoted, _escaped, _depth), do: false
+
+  defp scan_json_nesting?(<<_c, rest::binary>>, true, true, depth),
+    do: scan_json_nesting?(rest, true, false, depth)
+
+  defp scan_json_nesting?(<<"\\", rest::binary>>, true, false, depth),
+    do: scan_json_nesting?(rest, true, true, depth)
+
+  defp scan_json_nesting?(<<"\"", rest::binary>>, true, false, depth),
+    do: scan_json_nesting?(rest, false, false, depth)
+
+  defp scan_json_nesting?(<<_c, rest::binary>>, true, false, depth),
+    do: scan_json_nesting?(rest, true, false, depth)
+
+  defp scan_json_nesting?(<<"\"", rest::binary>>, false, false, depth),
+    do: scan_json_nesting?(rest, true, false, depth)
+
+  defp scan_json_nesting?(<<c, rest::binary>>, false, false, depth) when c in [?{, ?[] do
+    next = depth + 1
+    next <= @max_json_depth and scan_json_nesting?(rest, false, false, next)
+  end
+
+  defp scan_json_nesting?(<<c, rest::binary>>, false, false, depth) when c in [?}, ?]] do
+    depth > 0 and scan_json_nesting?(rest, false, false, depth - 1)
+  end
+
+  defp scan_json_nesting?(<<_c, rest::binary>>, false, false, depth),
+    do: scan_json_nesting?(rest, false, false, depth)
 
   defp atom_keys_to_string(map) when is_map(map) do
     Map.new(map, fn
@@ -892,13 +989,23 @@ defmodule AgentOS.GitEngine.Jason_like do
   defp encode_value(true), do: "true"
   defp encode_value(false), do: "false"
   defp encode_value(nil), do: "null"
-  defp encode_value(other), do: ~s("#{escape(inspect(other))}")
+  defp encode_value(other), do: raise(ArgumentError, "unsupported JSON value: #{inspect(other)}")
 
-  defp escape(s) when is_binary(s) do
-    s
-    |> String.replace("\\", "\\\\")
-    |> String.replace("\"", "\\\"")
-    |> String.replace("\n", "\\n")
-    |> String.replace("\r", "\\r")
+  defp escape(s) when is_binary(s), do: escape_bytes(s, [])
+
+  defp escape_bytes(<<>>, acc), do: acc |> Enum.reverse() |> IO.iodata_to_binary()
+  defp escape_bytes(<<8, rest::binary>>, acc), do: escape_bytes(rest, ["\\b" | acc])
+  defp escape_bytes(<<9, rest::binary>>, acc), do: escape_bytes(rest, ["\\t" | acc])
+  defp escape_bytes(<<10, rest::binary>>, acc), do: escape_bytes(rest, ["\\n" | acc])
+  defp escape_bytes(<<12, rest::binary>>, acc), do: escape_bytes(rest, ["\\f" | acc])
+  defp escape_bytes(<<13, rest::binary>>, acc), do: escape_bytes(rest, ["\\r" | acc])
+  defp escape_bytes(<<34, rest::binary>>, acc), do: escape_bytes(rest, ["\\\"" | acc])
+  defp escape_bytes(<<92, rest::binary>>, acc), do: escape_bytes(rest, ["\\\\" | acc])
+
+  defp escape_bytes(<<c, rest::binary>>, acc) when c < 0x20 do
+    escaped = "\\u00" <> (c |> Integer.to_string(16) |> String.pad_leading(2, "0"))
+    escape_bytes(rest, [escaped | acc])
   end
+
+  defp escape_bytes(<<c, rest::binary>>, acc), do: escape_bytes(rest, [<<c>> | acc])
 end

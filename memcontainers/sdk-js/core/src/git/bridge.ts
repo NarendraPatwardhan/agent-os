@@ -2,8 +2,8 @@
  * Emscripten bridge over `ge_*` — the engine half of the host source plane.
  *
  * Loads `git_engine.{mjs,js}` + `git_engine.wasm`, opens a libgit2 repo under
- * module MEMFS (optionally hydrated or NODEFS-mounted from a host durable
- * directory). gitfs projects that worktree into the guest VFS; all concurrent
+ * module MEMFS (optionally hydrated from a host durable directory). gitfs
+ * projects that worktree into the guest VFS; all concurrent
  * access serializes through {@link GitBridge.serial}.
  */
 
@@ -28,7 +28,9 @@ export type EmscriptenGitModule = {
   _ge_open(rootPtr: number): number;
   _ge_close(eng: number): void;
   _ge_run_json(eng: number, reqPtr: number): number;
+  _ge_validate_request_json(reqPtr: number): number;
   _ge_import_pack(eng: number, ptr: number, len: number, final: number): number;
+  _ge_import_pack_abort(eng: number): void;
   _ge_pack_build(eng: number, oidsJsonPtr: number, outPtrPtr: number, outLenPtr: number): number;
   _ge_free(ptr: number): void;
   _ge_version(): number;
@@ -47,14 +49,13 @@ export type EmscriptenFS = {
   isLink(mode: number): boolean;
   readFile(path: string, opts?: { encoding?: string }): Uint8Array | string;
   writeFile(path: string, data: Uint8Array | string): void;
+  chmod(path: string, mode: number): void;
   unlink(path: string): void;
   rmdir(path: string): void;
   rename(from: string, to: string): void;
+  readlink?(path: string): string;
   symlink?(target: string, link: string): void;
   analyzePath?(path: string): { exists: boolean };
-  /** Present when emcc was linked with NODEFS (`-lnodefs.js`). */
-  mount?(type: unknown, opts: { root?: string }, mountpoint: string): unknown;
-  filesystems?: { NODEFS?: unknown; [k: string]: unknown };
 };
 
 export type GitBridgeCreateOptions = {
@@ -62,8 +63,8 @@ export type GitBridgeCreateOptions = {
   /**
    * When a directory durable backend is attached, hydrate MEMFS from that
    * store **before** `ge_open` so libgit2 sees an existing repo on load.
-   * If NODEFS is available and `hostPath` is set, prefer mounting the host
-   * directory (write-through) instead of hydrate.
+   * Host directories are copied into MEMFS; checkpoints publish complete
+   * generations atomically.
    */
   durable?: DurableBackend;
 };
@@ -73,17 +74,12 @@ export type GitBridgeCreateOptions = {
 export class GitBridge {
   /** Single-writer promise queue for libgit2 + MEMFS worktree access. */
   private queue: Promise<unknown> = Promise.resolve();
-  /** True when workRoot is a NODEFS mount of a host durable directory. */
-  readonly nodefsMounted: boolean;
 
   constructor(
     readonly mod: EmscriptenGitModule,
     public eng: number,
     readonly workRoot: string = DEFAULT_WORK_ROOT,
-    nodefsMounted = false,
-  ) {
-    this.nodefsMounted = nodefsMounted;
-  }
+  ) {}
 
   static async create(baseUrl: string, opts: GitBridgeCreateOptions = {}): Promise<GitBridge> {
     const root = baseUrl.endsWith("/") ? baseUrl : baseUrl + "/";
@@ -104,30 +100,12 @@ export class GitBridge {
 
     ensureDir(mod.FS, workRoot);
 
-    let nodefsMounted = false;
     const durable = opts.durable;
     if (isDirectoryDurable(durable)) {
       if (typeof durable.ensure === "function") {
         await durable.ensure();
       }
-      // Prefer NODEFS write-through when linked + host path available.
-      const hostPath = durable.hostPath;
-      const nodefs = mod.FS.filesystems?.NODEFS;
-      if (
-        hostPath &&
-        nodefs &&
-        typeof mod.FS.mount === "function" &&
-        typeof process !== "undefined" &&
-        process.versions?.node
-      ) {
-        try {
-          mod.FS.mount(nodefs, { root: hostPath }, workRoot);
-          nodefsMounted = true;
-        } catch {
-          nodefsMounted = false;
-        }
-      }
-      if (!nodefsMounted && typeof durable.hydrateToMemfs === "function") {
+      if (typeof durable.hydrateToMemfs === "function") {
         await durable.hydrateToMemfs(mod.FS, workRoot);
       }
     }
@@ -138,7 +116,7 @@ export class GitBridge {
     if (!eng) {
       throw new Error("ge_open failed (need absolute existing MEMFS dir)");
     }
-    return new GitBridge(mod, eng, workRoot, nodefsMounted);
+    return new GitBridge(mod, eng, workRoot);
   }
 
   /**
@@ -168,7 +146,7 @@ export class GitBridge {
 
   /**
    * Test-only: override stdout embed limit for truncation tests.
-   * Pass 0 to restore the product default (1 MiB).
+   * Pass 0 to restore the product default (2 KiB).
    */
   testSetStdoutMaxBytes(n: number): void {
     const fn = this.mod._ge_test_set_stdout_max_bytes;
@@ -198,6 +176,16 @@ export class GitBridge {
     }
   }
 
+  /** Validate the exact native Run envelope without executing it. */
+  validateRequestJson(requestJson: string): boolean {
+    const reqPtr = cstr(this.mod, requestJson);
+    try {
+      return this.mod._ge_validate_request_json(reqPtr) === 0;
+    } finally {
+      this.mod._free(reqPtr);
+    }
+  }
+
   /** Sync WASM ge_import_pack. Callers that may race must wrap with {@link serial}. */
   importPack(chunk: Uint8Array, final = false): void {
     const len = chunk?.byteLength ?? 0;
@@ -211,6 +199,11 @@ export class GitBridge {
     if (rc !== 0) {
       throw new Error(this.lastError() || `ge_import_pack failed (${rc})`);
     }
+  }
+
+  /** Discard an incomplete streamed import. Safe when no import is active. */
+  abortImportPack(): void {
+    this.mod._ge_import_pack_abort(this.eng);
   }
 
   /**
@@ -323,6 +316,10 @@ export class GitBridge {
     }
   }
 
+  abortImportPackAt(eng: number): void {
+    this.mod._ge_import_pack_abort(eng);
+  }
+
   closeAt(eng: number): void {
     if (eng) this.mod._ge_close(eng);
   }
@@ -332,6 +329,15 @@ export class GitBridge {
       this.mod._ge_close(this.eng);
       this.eng = 0;
     }
+  }
+
+  /** Re-open after a full-tree blob restore performed before the first op. */
+  reopen(): void {
+    if (this.eng) this.mod._ge_close(this.eng);
+    const rootPtr = cstr(this.mod, this.workRoot);
+    this.eng = this.mod._ge_open(rootPtr);
+    this.mod._free(rootPtr);
+    if (!this.eng) throw new Error("ge_open failed after durable tree restore");
   }
 }
 

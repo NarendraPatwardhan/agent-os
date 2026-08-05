@@ -14,15 +14,27 @@ int jmin_get_string_alloc(const char *json, const char *key, char **out, size_t 
                           size_t max_bytes);
 int jmin_get_bool(const char *json, const char *key, int *out);
 int jmin_get_int64(const char *json, const char *key, int64_t *out);
+/* Returns 1 when the top-level object contains key, otherwise 0. */
+int jmin_has_member(const char *json, const char *key);
 const char *jmin_args_object(const char *json);
+const char *jmin_get_object(const char *json, const char *key);
+
+/* Validate the complete Run request and extract its two schema fields.
+ * Accepted shape is exactly {"op": string, "args"?: object}; duplicate or
+ * unknown top-level keys, duplicate keys at any nesting level, invalid escapes,
+ * excessive nesting/members, and trailing input are rejected. args_out points
+ * into json when present, otherwise to a static empty object. */
+int jmin_validate_request(const char *json, char *op, size_t op_cap, const char **args_out);
+int jmin_validate_document(const char *json);
 
 /* Bounded array walk (no full JSON library).
  * jmin_get_array: value start of key if it is '[' , else NULL.
  * jmin_array_next_object: walk objects inside an array; *cursor is in/out
  *   (init to array '[' or first element). Returns 0 and sets *obj to '{' of
- *   next object; -1 when exhausted or non-object element.
+ *   next object; 1 at the closing bracket; -1 for a non-object element.
  * jmin_array_next_string: walk string elements; *cursor in/out (init to '[').
- *   Returns 0 and fills out; -1 when exhausted or non-string element.
+ *   Returns 0 and fills out; 1 at the closing bracket; -1 for a non-string
+ *   element.
  * jmin_obj_get_string: like jmin_get_string but only top-level keys of one
  *   object starting at '{' (does not leak into following siblings). */
 const char *jmin_get_array(const char *json, const char *key);

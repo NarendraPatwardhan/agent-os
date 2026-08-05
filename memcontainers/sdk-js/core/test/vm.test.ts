@@ -677,6 +677,63 @@ async function main(): Promise<void> {
     }
   }
 
+  // GIT-020: a caller-declared generic mount must not collide with a git engine path.
+  // Silent skip of gitfs while retaining the engine is not valid mount policy.
+  {
+    const dummy: Driver = {
+      readOnly: true,
+      async open() {
+        throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      },
+      async stat() {
+        return { kind: "dir", size: 0 };
+      },
+      async readdir() {
+        return [];
+      },
+    };
+    let collided = false;
+    try {
+      const bad = await mc.create({
+        kernel,
+        image,
+        git: {
+          engine: new Uint8Array(readFileSync(process.env.MC_GIT_ENGINE_TAR!)),
+          mounts: [{ path: "/workspace/repo" }],
+        },
+        // The kernel strips trailing slashes from mount-table keys, so this is
+        // the same mount point even though the declaration is not byte-identical.
+        mounts: [{ path: "/workspace/repo/", driver: dummy, readOnly: true }],
+      });
+      await bad.close();
+    } catch (e) {
+      const msg = String((e as Error)?.message ?? e);
+      if (msg.includes("collides with git engine mount")) collided = true;
+      else throw e;
+    }
+    if (!collided) {
+      throw new Error("GIT-020: create must reject generic mount colliding with git path");
+    }
+
+    // Non-colliding declared mount remains compatible with a git engine mount.
+    const okVm = await mc.create({
+      kernel,
+      image,
+      git: {
+        engine: new Uint8Array(readFileSync(process.env.MC_GIT_ENGINE_TAR!)),
+        mounts: [{ path: "/workspace/repo" }],
+      },
+      mounts: [{ path: "/mnt/data", driver: dummy, readOnly: true }],
+    });
+    try {
+      await okVm.fs.stat("/workspace/repo/.git/mc/ctl");
+      await okVm.fs.stat("/mnt/data");
+      console.log("phase: GIT-020 git mount collision reject + non-collision OK");
+    } finally {
+      await okVm.close();
+    }
+  }
+
   // Remote create must preserve the same declarative tool-plane intent as embedded create. The client does
   // not compile catalogs; it sends refs/specs/selectors/policies for the remote host to inject and enforce.
   {
@@ -2639,7 +2696,9 @@ error("timed out waiting for restored warm sqlite child: " .. err)
     });
     await a.close();
     if (sessionTemplateIndexSize() !== 1) {
-      throw new Error(`expected one session template after first create, got ${sessionTemplateIndexSize()}`);
+      throw new Error(
+        `expected one session template after first create, got ${sessionTemplateIndexSize()}`,
+      );
     }
     const b = await mc.create({
       runtime: LOCAL_RUNTIME,
@@ -2701,9 +2760,8 @@ error("timed out waiting for restored warm sqlite child: " .. err)
 
   // Local without explicit store does not pay template capture (create-latency policy).
   {
-    const { clearSessionTemplateIndex, sessionTemplateIndexSize } = await import(
-      "../src/template_cache.js"
-    );
+    const { clearSessionTemplateIndex, sessionTemplateIndexSize } =
+      await import("../src/template_cache.js");
     clearSessionTemplateIndex();
     const vm = await mc.create({
       runtime: LOCAL_RUNTIME,

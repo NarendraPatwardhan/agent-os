@@ -68,8 +68,16 @@ defmodule AgentOS.GitEnginePackTest do
   @tag timeout: 60_000
   test "import minimal.pack then refs.import + clone.apply yields worktree README" do
     path = engine_path()
-    root = Path.join(System.tmp_dir!(), "pack-e2e-" <> Integer.to_string(System.unique_integer([:positive])))
+
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "pack-e2e-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.rm_rf!(root)
     File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf(root) end)
     pack = read_pack!()
     tip = tip_hash!()
 
@@ -77,13 +85,16 @@ defmodule AgentOS.GitEnginePackTest do
     assert engine_root(pid) == root
 
     assert {:ok, init} = GitEngine.run(pid, %{"op" => "init"})
-    assert init["ok"] == true or (is_binary(Map.get(init, "raw")) and init["raw"] =~ "\"ok\":true")
+
+    assert init["ok"] == true
 
     assert :ok = GitEngine.import_pack(pid, pack, final: true)
 
     # Pack must land under objects/pack (not objects/pack-*.pack).
     pack_files = Path.wildcard(Path.join(root, ".git/objects/pack/pack-*.pack"))
-    assert pack_files != [], "expected pack under .git/objects/pack/, got: #{inspect(Path.wildcard(Path.join(root, ".git/objects/**/*")))}"
+
+    assert pack_files != [],
+           "expected pack under .git/objects/pack/, got: #{inspect(Path.wildcard(Path.join(root, ".git/objects/**/*")))}"
 
     assert {:ok, refs} =
              GitEngine.run(pid, %{
@@ -91,20 +102,19 @@ defmodule AgentOS.GitEnginePackTest do
                "args" => %{"name" => @ref_name, "hash" => tip}
              })
 
-    assert refs["ok"] == true or (is_binary(Map.get(refs, "raw")) and refs["raw"] =~ "\"ok\":true"),
-           "refs.import failed: #{inspect(refs)}"
+    assert refs["ok"] == true, "refs.import failed: #{inspect(refs)}"
 
     assert {:ok, clone} =
              GitEngine.run(pid, %{"op" => "clone.apply", "args" => %{"head" => @ref_name}})
 
-    assert clone["ok"] == true or (is_binary(Map.get(clone, "raw")) and clone["raw"] =~ "\"ok\":true"),
-           "clone.apply failed: #{inspect(clone)}"
+    assert clone["ok"] == true, "clone.apply failed: #{inspect(clone)}"
 
     assert {:ok, "hello\n"} = File.read(Path.join(root, "README"))
 
     assert {:ok, rev} = GitEngine.run(pid, %{"op" => "rev-parse", "args" => %{"rev" => "HEAD"}})
     stdout = rev["stdout"] || ""
-    assert stdout =~ tip or (is_binary(Map.get(rev, "raw")) and rev["raw"] =~ String.slice(tip, 0, 8))
+
+    assert stdout =~ tip
 
     :ok = GitEngine.stop(pid)
   after
@@ -115,8 +125,16 @@ defmodule AgentOS.GitEnginePackTest do
   @tag timeout: 60_000
   test "BEAM orch clone with real minimal.pack checks out worktree via fixture transport" do
     path = engine_path()
-    root = Path.join(System.tmp_dir!(), "pack-orch-" <> Integer.to_string(System.unique_integer([:positive])))
+
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "pack-orch-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
+    File.rm_rf!(root)
     File.mkdir_p!(root)
+    on_exit(fn -> File.rm_rf(root) end)
     pack = read_pack!()
     tip = tip_hash!()
 
@@ -149,6 +167,7 @@ defmodule AgentOS.GitEnginePackTest do
   @tag timeout: 60_000
   test "BEAM orch clone with sparse_cone writes sparse-checkout and keeps root README" do
     path = engine_path()
+
     root =
       Path.join(
         System.tmp_dir!(),
@@ -192,7 +211,6 @@ defmodule AgentOS.GitEnginePackTest do
     assert body =~ "/docs/"
     assert body =~ "/docs/**"
 
-    # Alias key git_sparse_cone also accepted (normalize slashes).
     :ok = GitEngine.stop(pid)
   after
     :ok
@@ -202,11 +220,13 @@ defmodule AgentOS.GitEnginePackTest do
   @tag timeout: 60_000
   test "monorepo multi-path clone+sparse keeps cone paths only on worktree" do
     path = engine_path()
+
     src_root =
       Path.join(
         System.tmp_dir!(),
         "mono-src-" <> Integer.to_string(System.unique_integer([:positive]))
       )
+
     dst_root =
       Path.join(
         System.tmp_dir!(),
@@ -245,8 +265,7 @@ defmodule AgentOS.GitEnginePackTest do
                }
              })
 
-    assert c["ok"] == true or (is_binary(Map.get(c, "raw")) and c["raw"] =~ "\"ok\":true"),
-           "commit failed: #{inspect(c)}"
+    assert c["ok"] == true, "commit failed: #{inspect(c)}"
 
     assert {:ok, rev} = GitEngine.run(src, %{"op" => "rev-parse", "args" => %{"rev" => "HEAD"}})
     tip = (rev["stdout"] || "") |> String.trim() |> String.split(~r/\s+/) |> hd()
@@ -285,8 +304,10 @@ defmodule AgentOS.GitEnginePackTest do
 
     # In-cone present; out-of-cone removed from worktree by sparse-set checkout.
     assert {:ok, "in-cone\n"} = File.read(Path.join(dst_root, "src/in.txt"))
+
     refute File.exists?(Path.join(dst_root, "other/out.txt")),
            "out-of-cone other/out.txt must not remain on worktree"
+
     refute File.dir?(Path.join(dst_root, "other")),
            "out-of-cone other/ dir must not remain on worktree"
 
@@ -304,6 +325,7 @@ defmodule AgentOS.GitEnginePackTest do
   @tag timeout: 60_000
   test "multi-chunk import_pack of minimal.pack yields worktree README" do
     path = engine_path()
+
     root =
       Path.join(
         System.tmp_dir!(),
@@ -319,9 +341,11 @@ defmodule AgentOS.GitEnginePackTest do
 
     assert {:ok, pid} = GitEngine.start(executable: path, root: root)
     assert {:ok, init} = GitEngine.run(pid, %{"op" => "init"})
-    assert init["ok"] == true or (is_binary(Map.get(init, "raw")) and init["raw"] =~ "\"ok\":true")
+
+    assert init["ok"] == true
 
     size = byte_size(pack)
+
     chunks =
       for off <- 0..(size - 1)//chunk do
         take = min(chunk, size - off)
@@ -340,12 +364,13 @@ defmodule AgentOS.GitEnginePackTest do
                "args" => %{"name" => @ref_name, "hash" => tip}
              })
 
-    assert refs["ok"] == true or (is_binary(Map.get(refs, "raw")) and refs["raw"] =~ "\"ok\":true")
+    assert refs["ok"] == true
 
     assert {:ok, clone} =
              GitEngine.run(pid, %{"op" => "clone.apply", "args" => %{"head" => @ref_name}})
 
-    assert clone["ok"] == true or (is_binary(Map.get(clone, "raw")) and clone["raw"] =~ "\"ok\":true")
+    assert clone["ok"] == true
+
     assert {:ok, "hello\n"} = File.read(Path.join(root, "README"))
 
     :ok = GitEngine.stop(pid)
@@ -355,6 +380,7 @@ defmodule AgentOS.GitEnginePackTest do
   @tag timeout: 60_000
   test "BEAM orch clone multi-chunk import via import_chunk_bytes" do
     path = engine_path()
+
     root =
       Path.join(
         System.tmp_dir!(),
@@ -385,7 +411,9 @@ defmodule AgentOS.GitEnginePackTest do
                import_chunk_bytes: 64
              )
 
-    assert json =~ "\"ok\":true" or json =~ ~s("ok":true), "multi-chunk orch clone failed: #{json}"
+    assert json =~ "\"ok\":true" or json =~ ~s("ok":true),
+           "multi-chunk orch clone failed: #{json}"
+
     assert {:ok, "hello\n"} = File.read(Path.join(root, "README"))
 
     :ok = GitEngine.stop(pid)
@@ -395,6 +423,7 @@ defmodule AgentOS.GitEnginePackTest do
   @tag timeout: 60_000
   test "BEAM orch clone from file pack_source with multi-chunk import" do
     path = engine_path()
+
     root =
       Path.join(
         System.tmp_dir!(),
@@ -435,7 +464,9 @@ defmodule AgentOS.GitEnginePackTest do
                import_chunk_bytes: 64
              )
 
-    assert json =~ "\"ok\":true" or json =~ ~s("ok":true), "file pack_source clone failed: #{json}"
+    assert json =~ "\"ok\":true" or json =~ ~s("ok":true),
+           "file pack_source clone failed: #{json}"
+
     assert {:ok, "hello\n"} = File.read(Path.join(root, "README"))
     # Orchestrator cleanup_pack_source must remove the temp file.
     refute File.regular?(pack_path)
@@ -491,7 +522,13 @@ defmodule AgentOS.GitEnginePackTest do
   @tag timeout: 60_000
   test "fetch.apply requires name+hash after pack import (no silent no-op)" do
     path = engine_path()
-    root = Path.join(System.tmp_dir!(), "pack-fetch-" <> Integer.to_string(System.unique_integer([:positive])))
+
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "pack-fetch-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
     File.mkdir_p!(root)
     pack = read_pack!()
     tip = tip_hash!()
@@ -506,7 +543,7 @@ defmodule AgentOS.GitEnginePackTest do
                "args" => %{"name" => @ref_name, "hash" => tip}
              })
 
-    assert refs["ok"] == true or (is_binary(Map.get(refs, "raw")) and refs["raw"] =~ "\"ok\":true")
+    assert refs["ok"] == true
 
     # Empty args must fail closed (P0.4).
     assert {:ok, bad} = GitEngine.run(pid, %{"op" => "fetch.apply", "args" => %{}})
@@ -518,8 +555,7 @@ defmodule AgentOS.GitEnginePackTest do
                "args" => %{"name" => @ref_name, "hash" => tip, "remote" => "origin"}
              })
 
-    assert good["ok"] == true or (is_binary(Map.get(good, "raw")) and good["raw"] =~ "\"ok\":true"),
-           "fetch.apply failed: #{inspect(good)}"
+    assert good["ok"] == true, "fetch.apply failed: #{inspect(good)}"
 
     :ok = GitEngine.stop(pid)
   end
@@ -527,6 +563,7 @@ defmodule AgentOS.GitEnginePackTest do
   @tag timeout: 60_000
   test "pack_build from committed tip yields non-empty PACK magic" do
     path = engine_path()
+
     root =
       Path.join(
         System.tmp_dir!(),
@@ -556,8 +593,7 @@ defmodule AgentOS.GitEnginePackTest do
                }
              })
 
-    assert c["ok"] == true or (is_binary(Map.get(c, "raw")) and c["raw"] =~ "\"ok\":true"),
-           "commit failed: #{inspect(c)}"
+    assert c["ok"] == true, "commit failed: #{inspect(c)}"
 
     assert {:ok, rev} = GitEngine.run(pid, %{"op" => "rev-parse", "args" => %{"rev" => "HEAD"}})
     stdout = rev["stdout"] || ""
@@ -571,8 +607,8 @@ defmodule AgentOS.GitEnginePackTest do
     # Empty oids fail closed.
     assert {:error, :no_oids} = GitEngine.pack_build(pid, [])
 
-    # Export file exists under agentos path.
-    assert File.regular?(Path.join(root, ".git/agentos/push.pack"))
+    # Pack export is a one-shot transfer artifact, not durable repository state.
+    refute File.exists?(Path.join(root, ".git/agentos/push.pack"))
 
     :ok = GitEngine.stop(pid)
   end

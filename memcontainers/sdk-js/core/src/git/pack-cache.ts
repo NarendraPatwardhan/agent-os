@@ -24,9 +24,7 @@ export interface PackCache {
 }
 
 async function sha256hex(data: Uint8Array): Promise<string> {
-  const h = new Uint8Array(
-    await crypto.subtle.digest("SHA-256", data as Uint8Array<ArrayBuffer>),
-  );
+  const h = new Uint8Array(await crypto.subtle.digest("SHA-256", data as Uint8Array<ArrayBuffer>));
   let s = "sha256:";
   for (const b of h) s += b.toString(16).padStart(2, "0");
   return s;
@@ -89,9 +87,7 @@ let processPackCache: PackCache | undefined;
 export function processPackCacheDirFromEnv(): string | undefined {
   try {
     const env =
-      typeof process !== "undefined" && process?.env
-        ? process.env.MC_GIT_PACK_CACHE
-        : undefined;
+      typeof process !== "undefined" && process?.env ? process.env.MC_GIT_PACK_CACHE : undefined;
     if (typeof env !== "string") return undefined;
     const dir = env.trim();
     return dir || undefined;
@@ -293,11 +289,18 @@ export interface ImportPackOptions {
 }
 
 export type ImportPackEngine = {
-  importPack: (
-    chunk: Uint8Array,
-    meta?: { final?: boolean },
-  ) => Promise<void>;
+  importPack: (chunk: Uint8Array, meta?: { final?: boolean }) => Promise<void>;
+  abortImportPack: () => Promise<void>;
 };
+
+async function abortAndRethrow(engine: ImportPackEngine, error: unknown): Promise<never> {
+  try {
+    await engine.abortImportPack();
+  } catch {
+    /* Preserve the initiating transport/import error. */
+  }
+  throw error;
+}
 
 function resolveMaxPackBytes(opts: ImportPackOptions): number {
   if (opts.maxPackBytes === undefined) return DEFAULT_MAX_PACK_BYTES;
@@ -316,15 +319,19 @@ export async function feedPackChunks(
   bytes: Uint8Array,
   chunkBytes = 1024 * 1024,
 ): Promise<void> {
-  if (bytes.byteLength === 0) {
-    await engine.importPack(new Uint8Array(0), { final: true });
-    return;
-  }
-  const chunk = chunkBytes > 0 ? chunkBytes : bytes.byteLength;
-  for (let off = 0; off < bytes.byteLength; off += chunk) {
-    const slice = bytes.subarray(off, Math.min(off + chunk, bytes.byteLength));
-    const final = off + slice.byteLength >= bytes.byteLength;
-    await engine.importPack(slice, { final });
+  try {
+    if (bytes.byteLength === 0) {
+      await engine.importPack(new Uint8Array(0), { final: true });
+      return;
+    }
+    const chunk = chunkBytes > 0 ? chunkBytes : bytes.byteLength;
+    for (let off = 0; off < bytes.byteLength; off += chunk) {
+      const slice = bytes.subarray(off, Math.min(off + chunk, bytes.byteLength));
+      const final = off + slice.byteLength >= bytes.byteLength;
+      await engine.importPack(slice, { final });
+    }
+  } catch (error) {
+    await abortAndRethrow(engine, error);
   }
 }
 
@@ -384,22 +391,25 @@ export async function importPackStream(
   const parts: Uint8Array[] = [];
   let total = 0;
 
-  for await (const chunk of chunks as AsyncIterable<Uint8Array>) {
-    if (!chunk || chunk.byteLength === 0) continue;
-    if (max > 0 && total > max - chunk.byteLength) {
-      throw new Error(
-        `git: pack ${total + chunk.byteLength} bytes exceeds maxPackBytes ${max} (opt-in higher limit)`,
-      );
+  try {
+    for await (const chunk of chunks as AsyncIterable<Uint8Array>) {
+      if (!chunk || chunk.byteLength === 0) continue;
+      if (max > 0 && total > max - chunk.byteLength) {
+        throw new Error(
+          `git: pack ${total + chunk.byteLength} bytes exceeds maxPackBytes ${max} (opt-in higher limit)`,
+        );
+      }
+      total += chunk.byteLength;
+      // Own the bytes — stream buffers may be reused.
+      const owned = new Uint8Array(chunk.byteLength);
+      owned.set(chunk);
+      parts.push(owned);
+      await engine.importPack(owned, { final: false });
     }
-    total += chunk.byteLength;
-    // Own the bytes — stream buffers may be reused.
-    const owned = new Uint8Array(chunk.byteLength);
-    owned.set(chunk);
-    parts.push(owned);
-    await engine.importPack(owned, { final: false });
+    await engine.importPack(new Uint8Array(0), { final: true });
+  } catch (error) {
+    await abortAndRethrow(engine, error);
   }
-
-  await engine.importPack(new Uint8Array(0), { final: true });
 
   const pack =
     total === 0

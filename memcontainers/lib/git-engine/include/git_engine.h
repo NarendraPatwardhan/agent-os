@@ -43,10 +43,17 @@ GE_API void ge_close(ge_engine *e);
  * safe (no-op for static fallbacks); ge_response_is_static reports which. */
 GE_API char *ge_run_json(ge_engine *e, const char *request_json);
 
+/* Validate the bounded, exact Run envelope without executing it. Returns 0
+ * only for exactly {op:string,args?:object} with strict JSON semantics. */
+GE_API int ge_validate_request_json(const char *request_json);
+
 /* Binary pack import. Chunks may be streamed; final!=0 finalizes the indexer
  * into the ODB. Returns 0 on success, <0 on error. */
-GE_API int ge_import_pack(ge_engine *e, const uint8_t *chunk, size_t len,
-                          int final);
+GE_API int ge_import_pack(ge_engine *e, const uint8_t *chunk, size_t len, int final);
+
+/* Abort an incomplete streamed pack import and discard its indexer state.
+ * Idempotent; callers must invoke this on every unsuccessful stream. */
+GE_API void ge_import_pack_abort(ge_engine *e);
 
 /* Build a pack of objects reachable from tip OIDs (push packbuilder).
  * oids_json: JSON array of 40-hex OIDs, or object with "oids" and/or
@@ -57,8 +64,7 @@ GE_API int ge_import_pack(ge_engine *e, const uint8_t *chunk, size_t len,
  * bytes (caller free()s with ge_free), *out_len is set. Cap GE_PACK_MAX_BYTES
  * (64 MiB). Fail closed on empty tips, empty pack, oversize, or packbuilder
  * errors. Returns 0 / <0. */
-GE_API int ge_pack_build(ge_engine *e, const char *oids_json, uint8_t **out,
-                         size_t *out_len);
+GE_API int ge_pack_build(ge_engine *e, const char *oids_json, uint8_t **out, size_t *out_len);
 
 /* Last engine error string (valid until next ge_* call). */
 GE_API const char *ge_last_error(const ge_engine *e);
@@ -77,7 +83,7 @@ GE_API const char *ge_version(void);
 GE_API const char *ge_worktree_root(const ge_engine *e);
 
 /* Test helper: override stdout embed limit for truncation tests.
- * Pass 0 to restore the product default (1 MiB). */
+ * Pass 0 to restore the product default (2 KiB). */
 GE_API void ge_test_set_stdout_max_bytes(size_t n);
 
 #ifdef __cplusplus

@@ -57,13 +57,40 @@ export function createGitFsDriver(bridge: GitBridge, opts: GitFsDriverOptions = 
     opts.identity.email.trim()
       ? { name: opts.identity.name.trim(), email: opts.identity.email.trim() }
       : undefined;
-  let lastResponse = JSON.stringify({
-    ok: true,
-    code: 0,
-    stdout: "",
-    stderr: "",
-  });
+  const tokenResponses = new Map<string, string>();
   let generation = 0;
+
+  function validClientToken(value: string): boolean {
+    return /^[A-Za-z0-9_-]{1,127}$/.test(value);
+  }
+
+  function removeTokenStream(token: string): void {
+    if (!validClientToken(token)) return;
+    const path = bridge.abs(`.git/mc/out/${token}`);
+    const analyzed = bridge.FS.analyzePath?.(path);
+    if (analyzed && !analyzed.exists) return;
+    try {
+      const st = bridge.FS.lstat ? bridge.FS.lstat(path) : bridge.FS.stat(path);
+      if (!bridge.FS.isDir(st.mode)) bridge.FS.unlink(path);
+    } catch (error) {
+      const value = error as { code?: unknown; errno?: unknown };
+      // Missing is expected for responses whose stdout fit inline; all other
+      // cleanup failures abort the ctl write rather than leaking artifacts.
+      if (value?.code !== "ENOENT" && value?.errno !== 44) throw error;
+    }
+  }
+
+  function storeResponse(response: string, token: string): void {
+    tokenResponses.delete(token);
+    tokenResponses.set(token, response);
+    while (tokenResponses.size > 32) {
+      const oldest = tokenResponses.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      tokenResponses.delete(oldest);
+      removeTokenStream(oldest);
+    }
+    generation += 1;
+  }
 
   // Shared with GitEngine.run / importPack via bridge.serial (single-writer).
   const serial = <T>(fn: () => T | Promise<T>): Promise<T> => bridge.serial(fn);
@@ -90,6 +117,22 @@ export function createGitFsDriver(bridge: GitBridge, opts: GitFsDriverOptions = 
     return p === ".git/objects" || p.startsWith(".git/objects/");
   }
 
+  /**
+   * GIT-016: positive allowlist for synthetic `.git/**` (docs/git.md / SYSTEMS §11b).
+   * Unrecognized paths must not fall through to the physical engine filesystem.
+   * Objects remain a dedicated ENOENT sentinel via {@link isObjectsPath}.
+   */
+  function isSyntheticGitDir(path: string): boolean {
+    const p = normalizeRel(path);
+    return (
+      p === ".git" ||
+      p === ".git/mc" ||
+      p === ".git/mc/out" ||
+      p === ".git/mc/responses" ||
+      p === ".git/refs"
+    );
+  }
+
   function inCone(path: string): boolean {
     if (!cone.length) return true;
     const p = normalizeRel(path);
@@ -98,16 +141,38 @@ export function createGitFsDriver(bridge: GitBridge, opts: GitFsDriverOptions = 
   }
 
   function exists(abs: string): boolean {
+    const analyzed = FS().analyzePath?.(abs);
+    if (analyzed) return analyzed.exists;
     try {
-      FS().stat(abs);
+      FS().lstat(abs);
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      const value = error as { code?: unknown; errno?: unknown };
+      if (value?.code === "ENOENT" || value?.errno === 44) return false;
+      throw error;
     }
   }
 
-  /** Resolve an existing worktree path while rejecting symlinks in every
-   * component. Emscripten maps lstat/isLink to MEMFS and NODEFS alike. */
+  function responseStreamPath(token: string): string | null {
+    const response = tokenResponses.get(token);
+    if (response === undefined) return null;
+    try {
+      const parsed = JSON.parse(response) as { result?: unknown };
+      const result =
+        parsed.result && typeof parsed.result === "object" && !Array.isArray(parsed.result)
+          ? (parsed.result as Record<string, unknown>)
+          : null;
+      const path =
+        result && typeof result.stream_path === "string" ? normalizeRel(result.stream_path) : "";
+      const expected = `.git/mc/out/${token}`;
+      return path === expected ? expected : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Resolve an existing MEMFS worktree path while rejecting symlinks in every
+   * component. */
   function safeExisting(path: string): string {
     const p = normalizeRel(path);
     let cur = bridge.workRoot;
@@ -230,27 +295,25 @@ export function createGitFsDriver(bridge: GitBridge, opts: GitFsDriverOptions = 
         if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
         // No objects façade — do not fall through to host ODB MEMFS.
         if (isObjectsPath(p)) throw fsErr("ENOENT", ".git/objects");
-        // Ctl always returns last Response JSON (drain protocol).
         if (p === ".git/mc/ctl") {
-          return new TextEncoder().encode(lastResponse);
+          throw fsErr("EACCES", "ctl is write-only");
         }
-        // out/last (and out/stream alias) serve full stdout body when the
-        // engine wrote a stream file after result.truncated; else Response JSON.
-        if (p === ".git/mc/out/last" || p === ".git/mc/out/stream") {
-          const streamRel = p === ".git/mc/out/stream" ? ".git/mc/out/last" : p;
-          const streamAbs = bridge.abs(streamRel);
-          if (exists(streamAbs)) {
-            try {
-              const st = FS().stat(streamAbs);
-              if (!FS().isDir(st.mode)) {
-                const data = FS().readFile(streamAbs);
-                return data instanceof Uint8Array ? data : new TextEncoder().encode(String(data));
-              }
-            } catch {
-              /* fall through to Response alias */
-            }
-          }
-          return new TextEncoder().encode(lastResponse);
+        if (p.startsWith(".git/mc/responses/")) {
+          const token = p.slice(".git/mc/responses/".length);
+          const response = validClientToken(token) ? tokenResponses.get(token) : undefined;
+          if (response === undefined) throw fsErr("ENOENT", p);
+          return new TextEncoder().encode(response);
+        }
+        if (p.startsWith(".git/mc/out/")) {
+          const token = p.slice(".git/mc/out/".length);
+          if (!validClientToken(token) || responseStreamPath(token) !== p) throw fsErr("ENOENT", p);
+          const abs = bridge.abs(p);
+          if (!exists(abs)) throw fsErr("ENOENT", p);
+          const st = FS().lstat(abs);
+          if (FS().isLink(st.mode)) throw fsErr("EACCES", p);
+          if (FS().isDir(st.mode)) throw fsErr("EISDIR", p);
+          const data = FS().readFile(abs);
+          return data instanceof Uint8Array ? data : new TextEncoder().encode(String(data));
         }
         if (p === ".git/mc/generation") {
           return new TextEncoder().encode(String(generation) + "\n");
@@ -258,9 +321,11 @@ export function createGitFsDriver(bridge: GitBridge, opts: GitFsDriverOptions = 
         if (p === ".git/HEAD") {
           return new TextEncoder().encode(syntheticHeadContent());
         }
-        if (p === ".git" || p === ".git/mc" || p === ".git/mc/out" || p === ".git/refs") {
+        if (isSyntheticGitDir(p)) {
           throw fsErr("EISDIR", "is a directory");
         }
+        // GIT-016: unrecognized `.git/**` never falls through to physical engine FS.
+        if (isGitMeta(p)) throw fsErr("ENOENT", p);
         const abs = safeExisting(p);
         const st = FS().lstat(abs);
         if (FS().isDir(st.mode)) throw fsErr("EISDIR", p);
@@ -278,32 +343,27 @@ export function createGitFsDriver(bridge: GitBridge, opts: GitFsDriverOptions = 
         if (!inCone(p) && !isGitMeta(p)) throw fsErr("ENOENT", p);
         // Not listed under .git; not a projected path (ENOENT, not empty dir).
         if (isObjectsPath(p)) throw fsErr("ENOENT", ".git/objects");
-        if (p === ".git" || p === ".git/mc" || p === ".git/mc/out" || p === ".git/refs") {
+        if (isSyntheticGitDir(p)) {
           return { kind: "dir" as const, size: 0 };
         }
         if (p === ".git/mc/ctl") {
-          return {
-            kind: "file" as const,
-            size: new TextEncoder().encode(lastResponse).length,
-          };
+          return { kind: "file" as const, size: 0 };
         }
-        if (p === ".git/mc/out/last" || p === ".git/mc/out/stream") {
-          const streamRel = p === ".git/mc/out/stream" ? ".git/mc/out/last" : p;
-          const streamAbs = bridge.abs(streamRel);
-          if (exists(streamAbs)) {
-            try {
-              const st = FS().stat(streamAbs);
-              if (!FS().isDir(st.mode)) {
-                return { kind: "file" as const, size: st.size ?? 0 };
-              }
-            } catch {
-              /* fall through */
-            }
-          }
-          return {
-            kind: "file" as const,
-            size: new TextEncoder().encode(lastResponse).length,
-          };
+        if (p.startsWith(".git/mc/responses/")) {
+          const token = p.slice(".git/mc/responses/".length);
+          const response = validClientToken(token) ? tokenResponses.get(token) : undefined;
+          if (response === undefined) throw fsErr("ENOENT", p);
+          return { kind: "file" as const, size: new TextEncoder().encode(response).length };
+        }
+        if (p.startsWith(".git/mc/out/")) {
+          const token = p.slice(".git/mc/out/".length);
+          if (!validClientToken(token) || responseStreamPath(token) !== p) throw fsErr("ENOENT", p);
+          const abs = bridge.abs(p);
+          if (!exists(abs)) throw fsErr("ENOENT", p);
+          const st = FS().lstat(abs);
+          if (FS().isLink(st.mode)) throw fsErr("EACCES", p);
+          if (FS().isDir(st.mode)) throw fsErr("EISDIR", p);
+          return { kind: "file" as const, size: st.size ?? 0 };
         }
         if (p === ".git/mc/generation") {
           return { kind: "file" as const, size: String(generation).length + 1 };
@@ -311,6 +371,8 @@ export function createGitFsDriver(bridge: GitBridge, opts: GitFsDriverOptions = 
         if (p === ".git/HEAD") {
           return { kind: "file" as const, size: 32 };
         }
+        // GIT-016: positive allowlist — no physical `.git/**` projection.
+        if (isGitMeta(p)) throw fsErr("ENOENT", p);
         const abs = safeExisting(p);
         const st = FS().lstat(abs);
         return {
@@ -353,14 +415,20 @@ export function createGitFsDriver(bridge: GitBridge, opts: GitFsDriverOptions = 
             { name: "ctl", kind: "file" as const },
             { name: "out", kind: "dir" as const },
             { name: "generation", kind: "file" as const },
+            { name: "responses", kind: "dir" as const },
           ];
         }
         if (p === ".git/mc/out") {
-          return [{ name: "last", kind: "file" as const }];
+          return [];
+        }
+        if (p === ".git/mc/responses") {
+          return [];
         }
         if (p === ".git/refs") {
           return [];
         }
+        // GIT-016: readdir of non-allowlisted `.git/**` is ENOENT (not physical).
+        if (isGitMeta(p)) throw fsErr("ENOENT", p);
         const abs = safeExisting(p);
         const st = FS().lstat(abs);
         if (!FS().isDir(st.mode)) throw fsErr("ENOTDIR", p);
@@ -377,24 +445,19 @@ export function createGitFsDriver(bridge: GitBridge, opts: GitFsDriverOptions = 
         if (isObjectsPath(p)) throw fsErr("ENOENT", ".git/objects");
         const bytes = data instanceof Uint8Array ? data : new TextEncoder().encode(String(data));
 
-        // Ctl: write Request → Run; Response observed on subsequent open/read
-        // (MountFs drain protocol).
+        // Ctl is a write-only request mailbox. Every request needs a token;
+        // its response is read from `.git/mc/responses/<token>`.
         if (p === ".git/mc/ctl") {
           let req: { op?: string; args?: unknown };
           try {
-            req = JSON.parse(new TextDecoder().decode(bytes)) as {
+            const requestJson = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+            if (!bridge.validateRequestJson(requestJson)) throw new Error("invalid request");
+            req = JSON.parse(requestJson) as {
               op?: string;
               args?: unknown;
             };
           } catch {
-            lastResponse = JSON.stringify({
-              ok: false,
-              code: 2,
-              stdout: "",
-              stderr: "invalid JSON",
-            });
-            generation += 1;
-            return;
+            throw fsErr("EINVAL", "invalid ctl JSON");
           }
           const op = String(req.op || "").toLowerCase();
           // Optional args.client_token echoed in result.client_token (race detect).
@@ -409,24 +472,22 @@ export function createGitFsDriver(bridge: GitBridge, opts: GitFsDriverOptions = 
             }
             return "";
           })();
-          const withToken = (resp: Record<string, unknown>): Record<string, unknown> => {
-            if (!clientToken) return resp;
-            const result =
-              resp.result && typeof resp.result === "object" && !Array.isArray(resp.result)
-                ? { ...(resp.result as Record<string, unknown>), client_token: clientToken }
-                : { client_token: clientToken };
-            return { ...resp, result };
-          };
+          if (!validClientToken(clientToken)) {
+            throw fsErr("EINVAL", "ctl requires a valid args.client_token");
+          }
+          // A reused token starts a new request lifetime. Remove any prior
+          // stream before Run can create the replacement at the same path.
+          removeTokenStream(clientToken);
           if (REMOTE_OPS.has(op)) {
-            lastResponse = JSON.stringify(
-              withToken({
+            storeResponse(
+              JSON.stringify({
                 ok: false,
                 code: 1,
                 stdout: "",
                 stderr: "use host_call git for remotes",
               }),
+              clientToken,
             );
-            generation += 1;
             return;
           }
           // K28: inject host identity into commit when ctl args omit name/email.
@@ -435,19 +496,13 @@ export function createGitFsDriver(bridge: GitBridge, opts: GitFsDriverOptions = 
             args: req.args,
           };
           if (identity && op === "commit") {
-            const base =
-              req.args && typeof req.args === "object" && !Array.isArray(req.args)
-                ? { ...(req.args as Record<string, unknown>) }
-                : {};
-            const name =
-              typeof base.name === "string" && base.name.trim() ? base.name : identity.name;
-            const email =
-              typeof base.email === "string" && base.email.trim() ? base.email : identity.email;
-            runReq = { op: req.op || "commit", args: { ...base, name, email } };
+            const args = { ...(req.args as Record<string, unknown>) };
+            if (!Object.prototype.hasOwnProperty.call(args, "name")) args.name = identity.name;
+            if (!Object.prototype.hasOwnProperty.call(args, "email")) args.email = identity.email;
+            runReq = { op: req.op || "commit", args };
           }
           const resp = bridge.run(runReq) as unknown as Record<string, unknown>;
-          lastResponse = JSON.stringify(withToken(resp));
-          generation += 1;
+          storeResponse(JSON.stringify(resp), clientToken);
           return;
         }
 

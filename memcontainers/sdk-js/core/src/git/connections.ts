@@ -24,10 +24,7 @@
  * | Secrets in logs/resp    | `redactRemoteForLog` (kind only)                | `redact_url` / info refs only / no tokens       |
  */
 
-import {
-  GUEST_SECRET_ARG_KEYS as CONTRACT_GUEST_SECRET_KEYS,
-  stderrLine,
-} from "@mc/contracts/git";
+import { GUEST_SECRET_ARG_KEYS as CONTRACT_GUEST_SECRET_KEYS, stderrLine } from "@mc/contracts/git";
 import { originAllowed } from "@mc/host";
 import type {
   ConnectionAuth,
@@ -64,29 +61,62 @@ export interface ResolveRemoteOptions {
  * connections catalog + orch opts own secrets; keys come from contracts/git.kdl
  * (dual-host with BEAM AgentOS.Contracts.Git).
  */
-const GUEST_SECRET_ARG_KEYS = new Set(
-  CONTRACT_GUEST_SECRET_KEYS.map((k) => k.toLowerCase()),
-);
+const GUEST_SECRET_ARG_KEYS = new Set(CONTRACT_GUEST_SECRET_KEYS.map((k) => k.toLowerCase()));
 
-function fail(
-  code: number,
-  stderr: string,
-): { ok: false; code: number; stderr: string } {
+/** GIT-024: max nesting depth for secret-key scan (fail closed when exceeded). */
+const GUEST_SECRET_SCAN_MAX_DEPTH = 8;
+/** GIT-024: max object/array nodes visited (fail closed when exceeded). */
+const GUEST_SECRET_SCAN_MAX_NODES = 256;
+const MAX_CREDENTIAL_BYTES = 16 * 1024;
+const MAX_HEADER_NAME_BYTES = 256;
+
+function fail(code: number, stderr: string): { ok: false; code: number; stderr: string } {
   return { ok: false, code, stderr };
 }
 
 /**
- * True when guest args include a secret-bearing key (case-insensitive).
+ * True when guest args include a secret-bearing key (case-insensitive),
+ * recursively through nested maps/objects and arrays, with explicit depth and
+ * node-count bounds. Bound exceedance is fail-closed (treated as secrets).
  * Used by resolve + tests — dual-host: BEAM must not splice from guest body either.
+ *
+ * Does not stringify-and-regex; only object/array keys are inspected.
  */
-export function guestArgsCarrySecrets(
-  args: Record<string, unknown> | undefined,
-): boolean {
-  if (!args || typeof args !== "object") return false;
-  for (const key of Object.keys(args)) {
-    if (GUEST_SECRET_ARG_KEYS.has(key.toLowerCase())) return true;
+export function guestArgsCarrySecrets(args: Record<string, unknown> | undefined): boolean {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return false;
+  return scanGuestValueForSecrets(args, 0, { nodes: 0 }) !== "clean";
+}
+
+type GuestSecretScan = "clean" | "secret" | "exceeded";
+
+function scanGuestValueForSecrets(
+  value: unknown,
+  depth: number,
+  counter: { nodes: number },
+): GuestSecretScan {
+  if (depth > GUEST_SECRET_SCAN_MAX_DEPTH) return "exceeded";
+  if (value === null || value === undefined) return "clean";
+  if (typeof value !== "object") return "clean";
+
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      counter.nodes += 1;
+      if (counter.nodes > GUEST_SECRET_SCAN_MAX_NODES) return "exceeded";
+      const r = scanGuestValueForSecrets(item, depth + 1, counter);
+      if (r !== "clean") return r;
+    }
+    return "clean";
   }
-  return false;
+
+  // Plain object / map — keys only; never regex body text.
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    counter.nodes += 1;
+    if (counter.nodes > GUEST_SECRET_SCAN_MAX_NODES) return "exceeded";
+    if (GUEST_SECRET_ARG_KEYS.has(key.toLowerCase())) return "secret";
+    const r = scanGuestValueForSecrets(child, depth + 1, counter);
+    if (r !== "clean") return r;
+  }
+  return "clean";
 }
 
 // ── URL / origin helpers ────────────────────────────────────────────────────
@@ -99,11 +129,7 @@ export function guestArgsCarrySecrets(
 export function requestOrigin(value: string): string | null {
   try {
     const url = new URL(value);
-    if (
-      (url.protocol !== "http:" && url.protocol !== "https:") ||
-      url.username ||
-      url.password
-    ) {
+    if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password) {
       return null;
     }
     return url.origin;
@@ -167,9 +193,7 @@ export function resolveGitRemote(
       const fromSpec =
         conn.spec && "url" in conn.spec && typeof conn.spec.url === "string"
           ? conn.spec.url
-          : conn.spec &&
-              "baseUrl" in conn.spec &&
-              typeof conn.spec.baseUrl === "string"
+          : conn.spec && "baseUrl" in conn.spec && typeof conn.spec.baseUrl === "string"
             ? conn.spec.baseUrl
             : undefined;
       url = fromSpec ?? "";
@@ -182,10 +206,7 @@ export function resolveGitRemote(
 
   // Reject embedded credentials in the public locator.
   if (requestOrigin(url) === null) {
-    return fail(
-      1,
-      "git: remote url must be http(s) without embedded credentials\n",
-    );
+    return fail(1, "git: remote url must be http(s) without embedded credentials\n");
   }
 
   const publicUrl = publicRemoteUrl(url);
@@ -202,7 +223,10 @@ export function resolveGitRemote(
     }
   }
 
-  const auth: ConnectionAuth = conn?.auth ?? { kind: "none" };
+  const auth: unknown = conn?.auth ?? { kind: "none" };
+  if (!validConnectionAuth(auth)) {
+    return fail(1, stderrLine("invalid_auth"));
+  }
   // Dual-host (git.kdl): query auth puts secrets in URLs — reject for remotes.
   if (auth.kind === "query") {
     return fail(1, stderrLine("query_auth_unsupported"));
@@ -261,16 +285,27 @@ export function spliceCredentialHeaders(
   auth: ConnectionAuth,
   headers: Record<string, string> = {},
 ): Record<string, string> {
+  if (!validConnectionAuth(auth)) {
+    throw new Error(stderrLine("invalid_auth").trim());
+  }
   const out = { ...headers };
   switch (auth.kind) {
     case "none":
       return out;
     case "bearer":
-      out.Authorization = `Bearer ${auth.token}`;
+      putCredentialHeader(out, "Authorization", `Bearer ${auth.token}`);
       return out;
     case "header":
-      out[auth.name] = auth.value;
+      putCredentialHeader(out, auth.name, auth.value);
       return out;
+    case "basic": {
+      putCredentialHeader(
+        out,
+        "Authorization",
+        `Basic ${base64Utf8(`${auth.username}:${auth.password}`)}`,
+      );
+      return out;
+    }
     case "query":
       // Rejected for product remotes (contracts/git.kdl dual-host) — secrets must
       // not live in URLs. resolveGitRemote fails closed before dial.
@@ -278,6 +313,87 @@ export function spliceCredentialHeaders(
     default:
       return out;
   }
+}
+
+function validConnectionAuth(value: unknown): value is ConnectionAuth {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const auth = value as Record<string, unknown>;
+  switch (auth.kind) {
+    case "none":
+      return hasExactAuthKeys(auth, ["kind"]);
+    case "bearer":
+      return hasExactAuthKeys(auth, ["kind", "token"]) && validSecret(auth.token);
+    case "header":
+      return (
+        hasExactAuthKeys(auth, ["kind", "name", "value"]) &&
+        validHeaderName(auth.name) &&
+        validSecret(auth.value)
+      );
+    case "basic":
+      return (
+        hasExactAuthKeys(auth, ["kind", "username", "password"]) &&
+        validSecret(auth.username) &&
+        validSecret(auth.password) &&
+        !(auth.username as string).includes(":")
+      );
+    case "query":
+      return (
+        hasExactAuthKeys(auth, ["kind", "name", "value"]) &&
+        validHeaderName(auth.name) &&
+        validSecret(auth.value)
+      );
+    default:
+      return false;
+  }
+}
+
+function hasExactAuthKeys(value: Record<string, unknown>, expected: string[]): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.length && expected.every((key) => keys.includes(key));
+}
+
+function validSecret(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    new TextEncoder().encode(value).byteLength <= MAX_CREDENTIAL_BYTES &&
+    !/[\u0000-\u001f\u007f]/u.test(value)
+  );
+}
+
+function validHeaderName(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length <= MAX_HEADER_NAME_BYTES &&
+    /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(value)
+  );
+}
+
+function putCredentialHeader(headers: Record<string, string>, name: string, value: string): void {
+  if (Object.keys(headers).some((existing) => existing.toLowerCase() === name.toLowerCase())) {
+    throw new Error(`git: credential header conflicts with existing ${name} header`);
+  }
+  headers[name] = value;
+}
+
+/** Browser/worker/Node-neutral UTF-8 base64 (no Buffer dependency). */
+function base64Utf8(value: string): string {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const bytes = new TextEncoder().encode(value);
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 3) {
+    const a = bytes[i]!;
+    const hasB = i + 1 < bytes.length;
+    const hasC = i + 2 < bytes.length;
+    const b = hasB ? bytes[i + 1]! : 0;
+    const c = hasC ? bytes[i + 2]! : 0;
+    const n = (a << 16) | (b << 8) | c;
+    out += alphabet[(n >>> 18) & 63];
+    out += alphabet[(n >>> 12) & 63];
+    out += hasB ? alphabet[(n >>> 6) & 63] : "=";
+    out += hasC ? alphabet[n & 63] : "=";
+  }
+  return out;
 }
 
 /**

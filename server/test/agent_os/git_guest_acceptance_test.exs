@@ -140,6 +140,7 @@ defmodule AgentOS.GitGuestAcceptanceTest do
                ControlPlane.run(id, "git", ["clone", @fixture_url], timeout: 60_000)
 
       msg = "#{denied.stderr}\n#{denied.stdout}"
+
       deny_marker =
         msg =~ "CAP_NET" or msg =~ "host_call" or msg =~ "EPERM" or msg =~ "Permission"
 
@@ -214,6 +215,7 @@ defmodule AgentOS.GitGuestAcceptanceTest do
                ControlPlane.exec(id, "cd /workspace/repo && git status", timeout: 60_000)
 
       msg = "#{after_kill.stderr}\n#{after_kill.stdout}"
+
       failed? =
         after_kill.exit_code != 0 or
           msg =~ "EIO" or
@@ -287,9 +289,8 @@ defmodule AgentOS.GitGuestAcceptanceTest do
 
       assert status0.exit_code == 0, "git status after init: #{inspect(status0)}"
 
-      # Worktree on engine root + guest add (ctl). Commit needs name/email —
-      # host identity inject is type-1 Run (K28); guest thin CLI omits them on
-      # type-4, so commit is exercised host-side after guest add.
+      # Worktree on engine root + guest add/commit (ctl). The BEAM owner must
+      # inject configured identity into the type-4 ctl write.
       assert :ok = File.write(Path.join(root, "hello-d30.txt"), "hello-d30\n")
 
       assert {:ok, add} =
@@ -299,24 +300,17 @@ defmodule AgentOS.GitGuestAcceptanceTest do
 
       assert add.exit_code == 0, "git add: #{inspect(add)}"
 
+      assert {:ok, commit} =
+               ControlPlane.exec(id, "cd /workspace/repo && git commit -m d30-e2e",
+                 timeout: 60_000
+               )
+
+      assert commit.exit_code == 0, "guest commit with host identity: #{inspect(commit)}"
+
       vm = ControlPlane.whereis(id)
       st = :sys.get_state(vm)
       [{mount, %{pid: eng}} | _] = Map.to_list(st.git_engines || %{})
       assert is_binary(mount)
-
-      assert {:ok, commit} =
-               GitEngine.run(eng, %{
-                 "op" => "commit",
-                 "args" => %{
-                   "message" => "d30-e2e",
-                   "name" => "guest",
-                   "email" => "d30@example.com"
-                 }
-               })
-
-      raw_c = Map.get(commit, "raw") || inspect(commit)
-      assert commit["ok"] == true or to_string(raw_c) =~ "\"ok\":true",
-             "host commit after guest add: #{inspect(commit)}"
 
       assert {:ok, status} =
                ControlPlane.exec(id, "cd /workspace/repo && git status", timeout: 60_000)
@@ -324,10 +318,21 @@ defmodule AgentOS.GitGuestAcceptanceTest do
       assert status.exit_code == 0, "git status after commit: #{inspect(status)}"
 
       # Remotes via ctl must refuse (host_call only) — exercise type-4 ctl write.
-      body = mount_write_body(".git/mc/ctl", ~s({"op":"fetch"}))
+      token = "guest-fetch"
+
+      body =
+        mount_write_body(
+          ".git/mc/ctl",
+          ~s({"op":"fetch","args":{"client_token":"#{token}"}})
+        )
+
       assert {:ok, _wr} = GitEngine.mount_op(eng, body)
-      assert {:ok, open_resp} = GitEngine.mount_op(eng, mount_open_body(".git/mc/ctl"))
+
+      assert {:ok, open_resp} =
+               GitEngine.mount_op(eng, mount_open_body(".git/mc/responses/#{token}"))
+
       <<_st::little-signed-32, payload::binary>> = open_resp
+
       assert payload =~ "host_call" or payload =~ "remote",
              "ctl fetch must refuse remotes: #{payload}"
     after
@@ -350,11 +355,15 @@ defmodule AgentOS.GitGuestAcceptanceTest do
       assert is_integer(gen0)
 
       token_a = "tok-d31-a-#{System.unique_integer([:positive])}"
+
       req_a =
         ~s({"op":"status","args":{"short":true,"client_token":"#{token_a}"}})
 
       assert {:ok, _} = GitEngine.mount_op(pid, mount_write_body(".git/mc/ctl", req_a))
-      assert {:ok, open_a} = GitEngine.mount_op(pid, mount_open_body(".git/mc/ctl"))
+
+      assert {:ok, open_a} =
+               GitEngine.mount_op(pid, mount_open_body(".git/mc/responses/#{token_a}"))
+
       <<st_a::little-signed-32, payload_a::binary>> = open_a
       assert st_a == 0
       assert payload_a =~ token_a, "Response must echo client_token: #{payload_a}"
@@ -373,11 +382,15 @@ defmodule AgentOS.GitGuestAcceptanceTest do
       assert gen1 == gen0 + 1, "generation must advance by 1 after ctl write (#{gen0}→#{gen1})"
 
       token_b = "tok-d31-b-#{System.unique_integer([:positive])}"
+
       req_b =
         ~s({"op":"status","args":{"client_token":"#{token_b}"}})
 
       assert {:ok, _} = GitEngine.mount_op(pid, mount_write_body(".git/mc/ctl", req_b))
-      assert {:ok, open_b} = GitEngine.mount_op(pid, mount_open_body(".git/mc/ctl"))
+
+      assert {:ok, open_b} =
+               GitEngine.mount_op(pid, mount_open_body(".git/mc/responses/#{token_b}"))
+
       <<_st_b::little-signed-32, payload_b::binary>> = open_b
       assert payload_b =~ token_b
       refute payload_b =~ token_a, "stale token must not win: #{payload_b}"
@@ -392,9 +405,7 @@ defmodule AgentOS.GitGuestAcceptanceTest do
                  "args" => %{"client_token" => "run-token-d31"}
                })
 
-      raw = Map.get(run_resp, "raw") || inspect(run_resp)
-      assert to_string(raw) =~ "run-token-d31" or
-               get_in(run_resp, ["result", "client_token"]) == "run-token-d31"
+      assert get_in(run_resp, ["result", "client_token"]) == "run-token-d31"
     after
       _ = GitEngine.stop(pid)
     end
@@ -527,5 +538,4 @@ defmodule AgentOS.GitGuestAcceptanceTest do
     {n, _} = Integer.parse(text)
     n
   end
-
 end

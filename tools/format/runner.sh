@@ -15,6 +15,13 @@ source "${RUNFILES_DIR:-/dev/null}/$f" 2>/dev/null ||
 unset f
 # --- end runfiles.bash initialization v3 ---
 
+# Bazel may launch this wrapper without exporting RUNFILES_DIR. Preserve this
+# command's runfiles tree for nested tool adapters, whose own output path does
+# not have a sibling runfiles directory.
+if [[ -z "${RUNFILES_DIR:-}" && -d "$0.runfiles" ]]; then
+  export RUNFILES_DIR="$0.runfiles"
+fi
+
 mode="${1:?missing mode}"
 tool="$(rlocation "${2:?missing tool}")"
 language="${3:?missing language}"
@@ -39,13 +46,28 @@ grammar) patterns=('*.grammar') ;;
 esac
 
 mapfile -d '' candidates < <(
-  git ls-files -z --cached --modified --other --exclude-standard -- \
-    "${patterns[@]}" "${patterns[@]/#/*/}"
+  {
+    # `git ls-files --cached --modified` is a union: `--cached` selects every
+    # tracked file. Keep the formatter change-scoped by asking Git for tracked
+    # paths changed from HEAD (staged or unstaged), plus untracked paths.
+    if git rev-parse --verify HEAD >/dev/null 2>&1; then
+      git diff --name-only -z --diff-filter=ACMR HEAD -- \
+        "${patterns[@]}" "${patterns[@]/#/*/}"
+    else
+      git ls-files -z --cached -- \
+        "${patterns[@]}" "${patterns[@]/#/*/}"
+    fi
+    git ls-files -z --other --exclude-standard -- \
+      "${patterns[@]}" "${patterns[@]/#/*/}"
+  }
 )
 
 files=()
+declare -A seen=()
 for file in "${candidates[@]}"; do
   [[ -f "$file" ]] || continue
+  [[ -z "${seen[$file]+x}" ]] || continue
+  seen["$file"]=1
   attrs="$(git check-attr rules-lint-ignored linguist-generated gitlab-generated -- "$file")"
   if grep -Eq ': (set|true)$' <<<"$attrs"; then
     continue

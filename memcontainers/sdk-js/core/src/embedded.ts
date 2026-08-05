@@ -122,7 +122,7 @@ type JobPerfTrace = {
 
 /**
  * Host git engines bound for D17 snapshot/fork durable rebind.
- * MCSN never carries the ODB — engines checkpoint AGIT into a durable id/path
+ * MCSN never carries the ODB — engines checkpoint an AgentOS Git Snapshot into a durable id/path
  * from create-time nested `git.durable`.
  */
 export type EmbeddedGitEngineBinding = {
@@ -132,7 +132,7 @@ export type EmbeddedGitEngineBinding = {
   durableId: string;
   /** Optional disk durable directory when using `git.durable.diskDir`. */
   durablePath?: string;
-  /** Persist live repo as AGIT (best-effort when unborn / empty). */
+  /** Persist the complete live repository snapshot. Failures abort MCSN capture. */
   checkpoint(): Promise<void>;
   close(): Promise<void>;
 };
@@ -202,14 +202,10 @@ export class EmbeddedBackend implements Backend {
     }));
   }
 
-  /** Checkpoint all bound durable engines (best-effort; unborn repos skip export). */
+  /** Checkpoint all bound durable engines. Any failure aborts the VM snapshot. */
   private async checkpointGitEngines(): Promise<void> {
     for (const eng of this.gitEngineBindings) {
-      try {
-        await eng.checkpoint();
-      } catch {
-        // Empty / unborn: keep last good AGIT if any; never block MCSN.
-      }
+      await eng.checkpoint();
     }
   }
 
@@ -594,9 +590,7 @@ export class EmbeddedBackend implements Backend {
   async mount(path: string, driver: Driver, readOnly: boolean): Promise<void> {
     if (isGitFsDriver(driver)) {
       if (this.gitFsMountPaths.has(path)) {
-        throw new Error(
-          `gitfs already mounted at ${path}; one gitfs engine per mount path (K21)`,
-        );
+        throw new Error(`gitfs already mounted at ${path}; one gitfs engine per mount path (K21)`);
       }
       this.gitFsMountPaths.add(path);
     }
@@ -609,7 +603,7 @@ export class EmbeddedBackend implements Backend {
     this.gitFsMountPaths.delete(path);
   }
   async snapshot(opts: SnapshotOptions = {}): Promise<Uint8Array> {
-    // D17 / K10: checkpoint durable git (AGIT) before MCSN. Restored VMs re-open
+    // D17 / K10: checkpoint durable Git before MCSN. Restored VMs re-open
     // the same nested git.durable id/path and rebind (ODB is never in MCSN).
     await this.checkpointGitEngines();
     if ((opts.mode ?? "full") === "full") return this.host.snapshot();

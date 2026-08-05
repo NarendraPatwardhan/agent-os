@@ -27,13 +27,55 @@ defmodule AgentOS.GitEngineTest do
     Enum.find(candidates, &File.regular?/1)
   end
 
+  test "durable root rejects filesystem root and empty paths" do
+    assert {:error, :unsafe_git_root} = AgentOS.Git.Durable.resolve_root(root: "/")
+    assert {:error, :unsafe_git_root} = AgentOS.Git.Durable.resolve_root(root: "")
+  end
+
+  test "JSON codec rejects ambiguous, invalid, and excessively nested documents" do
+    assert {:ok, %{"emoji" => "😀"}} =
+             AgentOS.GitEngine.Jason_like.decode(~s({"emoji":"\\uD83D\\uDE00"}))
+
+    assert {:error, :invalid_json} =
+             AgentOS.GitEngine.Jason_like.decode(~s({"mount":"/a","mount":"/b"}))
+
+    assert {:error, :invalid_json} = AgentOS.GitEngine.Jason_like.decode(~s({"x":"\\q"}))
+
+    assert {:error, :invalid_json} =
+             AgentOS.GitEngine.Jason_like.decode(<<"{\"x\":\"", 0xFF, "\"}">>)
+
+    deep = String.duplicate("[", 65) <> "0" <> String.duplicate("]", 65)
+    assert {:error, :invalid_json} = AgentOS.GitEngine.Jason_like.decode(deep)
+  end
+
+  test "durable root creation refuses symlink components" do
+    base = Path.join(System.tmp_dir!(), "agentos-git-root-#{System.unique_integer([:positive])}")
+    outside = base <> "-outside"
+    File.mkdir_p!(base)
+    File.mkdir_p!(outside)
+
+    try do
+      link = Path.join(base, "link")
+      assert :ok = File.ln_s(outside, link)
+
+      assert_raise File.Error, fn ->
+        AgentOS.Git.Durable.ensure_root!(Path.join(link, "repo"))
+      end
+
+      refute File.exists?(Path.join(outside, "repo"))
+    after
+      File.rm_rf(base)
+      File.rm_rf(outside)
+    end
+  end
+
   @tag timeout: 60_000
   test "Port Run init→commit and fails closed after stop" do
     path = engine_path()
     assert {:ok, pid} = GitEngine.start_link(executable: path)
 
     assert {:ok, resp} = GitEngine.run(pid, %{"op" => "init"})
-    assert resp["ok"] == true or resp["ok"] == true or Map.get(resp, "raw", "") =~ "\"ok\":true"
+    assert resp["ok"] == true
 
     assert {:ok, _} =
              GitEngine.run(pid, %{
@@ -54,8 +96,9 @@ defmodule AgentOS.GitEngineTest do
                }
              })
 
-    # Type-4 mount: write ctl status, then open/read Response.
-    body = mount_write_body(".git/mc/ctl", ~s({"op":"status"}))
+    # Type-4 mount: write a tokenized ctl request, then read its Response.
+    token = "engine-status"
+    body = mount_write_body(".git/mc/ctl", ~s({"op":"status","args":{"client_token":"#{token}"}}))
     assert {:ok, mount_resp} = GitEngine.mount_op(pid, body)
     assert is_binary(mount_resp)
     assert byte_size(mount_resp) >= 4
@@ -63,7 +106,9 @@ defmodule AgentOS.GitEngineTest do
     <<st::little-signed-32, _::binary>> = mount_resp
     assert st == 0
 
-    assert {:ok, open_resp} = GitEngine.mount_op(pid, mount_open_body(".git/mc/ctl"))
+    assert {:ok, open_resp} =
+             GitEngine.mount_op(pid, mount_open_body(".git/mc/responses/#{token}"))
+
     assert is_binary(open_resp)
     assert byte_size(open_resp) >= 4
     <<ost::little-signed-32, payload::binary>> = open_resp
@@ -73,19 +118,18 @@ defmodule AgentOS.GitEngineTest do
     assert payload =~ "ok" or payload =~ "\"ok\":true"
 
     # submodule list-only (empty without .gitmodules).
-    assert {:ok, sub} = GitEngine.run(pid, %{"op" => "submodule", "args" => %{"action" => "list"}})
-    raw_sub = Map.get(sub, "raw") || inspect(sub)
-    assert sub["ok"] == true or raw_sub =~ "\"ok\":true"
-    assert raw_sub =~ "[]" or is_map(sub["result"])
+    assert {:ok, sub} =
+             GitEngine.run(pid, %{"op" => "submodule", "args" => %{"action" => "list"}})
+
+    assert sub["ok"] == true
+    assert sub["result"] == %{"submodules" => []}
 
     assert {:ok, sub_bad} =
              GitEngine.run(pid, %{"op" => "submodule", "args" => %{"action" => "update"}})
 
-    raw_bad = Map.get(sub_bad, "raw") || inspect(sub_bad)
     stderr_bad = Map.get(sub_bad, "stderr") || ""
-    assert sub_bad["ok"] == false or raw_bad =~ "\"ok\":false"
-    assert stderr_bad =~ "host-mediated" or raw_bad =~ "host-mediated" or
-             stderr_bad =~ "not implemented" or raw_bad =~ "not implemented"
+    assert sub_bad["ok"] == false
+    assert stderr_bad =~ "host-mediated" or stderr_bad =~ "not implemented"
 
     :ok = GitEngine.stop(pid)
     # Subsequent ops fail closed (process down or :eio)
@@ -119,6 +163,10 @@ defmodule AgentOS.GitEngineTest do
 
     assert {:ok, _} = GitEngine.run(pid, %{"op" => "add", "args" => %{"path" => "i.txt"}})
 
+    assert {:ok, malformed} = GitEngine.run(pid, ~s({"op":"commit","args":"invalid"}))
+    assert malformed["ok"] == false
+    assert malformed["code"] == 2
+
     # No name/email in args — host identity inject must fill them (K28).
     assert {:ok, resp} =
              GitEngine.run(pid, %{
@@ -126,7 +174,7 @@ defmodule AgentOS.GitEngineTest do
                "args" => %{"message" => "injected", "when_unix" => 1_700_000_050}
              })
 
-    assert resp["ok"] == true or Map.get(resp, "raw", "") =~ "\"ok\":true"
+    assert resp["ok"] == true
 
     :ok = GitEngine.stop(pid)
 
@@ -148,18 +196,18 @@ defmodule AgentOS.GitEngineTest do
                "args" => %{"message" => "no-id"}
              })
 
-    raw = Map.get(bad, "raw") || inspect(bad)
     stderr = Map.get(bad, "stderr") || ""
-    assert bad["ok"] == false or raw =~ "\"ok\":false"
-    assert stderr =~ "name and email" or raw =~ "name and email"
-    refute raw =~ "agent@example.com"
-    refute raw =~ "Agent@example.com"
+    assert bad["ok"] == false
+    assert stderr =~ "name and email"
+    refute stderr =~ "agent@example.com"
+    refute stderr =~ "Agent@example.com"
     :ok = GitEngine.stop(pid2)
   end
 
   @tag timeout: 60_000
   test "directory durable: second Port reopens same HEAD + worktree" do
     path = engine_path()
+
     root =
       Path.join(
         System.tmp_dir!(),
@@ -182,7 +230,8 @@ defmodule AgentOS.GitEngineTest do
                  "args" => %{"path" => "persist.txt", "content" => "beam-dir-roundtrip\n"}
                })
 
-      assert {:ok, _} = GitEngine.run(pid1, %{"op" => "add", "args" => %{"path" => "persist.txt"}})
+      assert {:ok, _} =
+               GitEngine.run(pid1, %{"op" => "add", "args" => %{"path" => "persist.txt"}})
 
       assert {:ok, _} =
                GitEngine.run(pid1, %{
@@ -196,8 +245,9 @@ defmodule AgentOS.GitEngineTest do
                })
 
       assert {:ok, h1} = GitEngine.run(pid1, %{"op" => "rev-parse", "args" => %{"rev" => "HEAD"}})
+
       head1 =
-        (h1["stdout"] || Map.get(h1, "raw", ""))
+        h1["stdout"]
         |> to_string()
         |> String.trim()
         |> String.split(~r/\s+/)
@@ -220,7 +270,7 @@ defmodule AgentOS.GitEngineTest do
       assert {:ok, h2} = GitEngine.run(pid2, %{"op" => "rev-parse", "args" => %{"rev" => "HEAD"}})
 
       head2 =
-        (h2["stdout"] || Map.get(h2, "raw", ""))
+        h2["stdout"]
         |> to_string()
         |> String.trim()
         |> String.split(~r/\s+/)
@@ -244,6 +294,9 @@ defmodule AgentOS.GitEngineTest do
       System.put_env("AGENTOS_GIT_DURABLE_ROOT", base)
 
       try do
+        assert AgentOS.Git.Durable.safe_segment(".") == "default"
+        assert AgentOS.Git.Durable.safe_segment("..") == "default"
+
         assert {:ok, pid3} =
                  GitEngine.start(
                    executable: path,
@@ -299,7 +352,7 @@ defmodule AgentOS.GitEngineTest do
              })
 
     assert {:ok, h1} = GitEngine.run(pid, %{"op" => "rev-parse", "args" => %{"rev" => "HEAD"}})
-    head1 = h1["stdout"] || Map.get(h1, "raw", "")
+    head1 = h1["stdout"]
     head1 = head1 |> to_string() |> String.trim() |> String.split(~r/\s+/) |> List.first()
 
     assert {:ok, _} =
@@ -356,10 +409,9 @@ defmodule AgentOS.GitEngineTest do
                "args" => %{"rev" => head2, "mode" => "ff-only"}
              })
 
-    raw = Map.get(ff, "raw") || inspect(ff)
     stderr = Map.get(ff, "stderr") || ""
-    assert ff["ok"] == false or raw =~ "\"ok\":false"
-    assert stderr =~ "not fast-forward" or raw =~ "not fast-forward"
+    assert ff["ok"] == false
+    assert stderr =~ "not fast-forward"
     :ok = GitEngine.stop(pid)
   end
 
@@ -382,7 +434,13 @@ defmodule AgentOS.GitEngineTest do
   @tag timeout: 60_000
   test "explicit :root is not deleted on stop" do
     path = engine_path()
-    root = Path.join(System.tmp_dir!(), "agentos-git-keep-" <> Integer.to_string(System.unique_integer([:positive])))
+
+    root =
+      Path.join(
+        System.tmp_dir!(),
+        "agentos-git-keep-" <> Integer.to_string(System.unique_integer([:positive]))
+      )
+
     File.mkdir_p!(root)
 
     try do
@@ -435,6 +493,7 @@ defmodule AgentOS.GitEngineTest do
     op = 6
     path_bin = path
     data_bin = data
+
     <<op::little-32, byte_size(path_bin)::little-32, path_bin::binary, 0::little-32,
       data_bin::binary>>
   end

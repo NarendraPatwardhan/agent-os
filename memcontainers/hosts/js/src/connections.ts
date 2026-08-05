@@ -10,7 +10,11 @@ export type ConnectionCredential =
   | { kind: "none" }
   | { kind: "bearer"; token: string }
   | { kind: "header"; name: string; value: string }
+  | { kind: "basic"; username: string; password: string }
   | { kind: "query"; name: string; value: string };
+
+const MAX_CREDENTIAL_BYTES = 16 * 1024;
+const MAX_HEADER_NAME_BYTES = 256;
 
 interface ConnectionEntry {
   credential: ConnectionCredential;
@@ -102,6 +106,17 @@ function injectParsedRequest(
     case "header":
       if (!addHeader(headers, entry.credential.name, entry.credential.value)) return null;
       break;
+    case "basic":
+      if (
+        !addHeader(
+          headers,
+          "Authorization",
+          `Basic ${base64Utf8(`${entry.credential.username}:${entry.credential.password}`)}`,
+        )
+      ) {
+        return null;
+      }
+      break;
     case "query":
       url = appendQuery(url, entry.credential.name, entry.credential.value);
       break;
@@ -183,6 +198,15 @@ function validateCredential(credential: ConnectionCredential): void {
         throw new Error("invalid header credential");
       }
       return;
+    case "basic":
+      if (
+        credential.username.includes(":") ||
+        !validSecret(credential.username) ||
+        !validSecret(credential.password)
+      ) {
+        throw new Error("invalid basic credential");
+      }
+      return;
     case "query":
       if (
         credential.name.length === 0 ||
@@ -192,6 +216,24 @@ function validateCredential(credential: ConnectionCredential): void {
         throw new Error("invalid query credential");
       }
   }
+}
+
+function base64Utf8(value: string): string {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const bytes = new TextEncoder().encode(value);
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 3) {
+    const a = bytes[i]!;
+    const hasB = i + 1 < bytes.length;
+    const hasC = i + 2 < bytes.length;
+    const b = hasB ? bytes[i + 1]! : 0;
+    const c = hasC ? bytes[i + 2]! : 0;
+    out += alphabet[a >> 2]!;
+    out += alphabet[((a & 0x03) << 4) | (b >> 4)]!;
+    out += hasB ? alphabet[((b & 0x0f) << 2) | (c >> 6)]! : "=";
+    out += hasC ? alphabet[c & 0x3f]! : "=";
+  }
+  return out;
 }
 
 function normalizeOrigins(origins: string[]): string[] {
@@ -266,11 +308,18 @@ function safeSegment(value: string): boolean {
 }
 
 function validHeaderName(name: string): boolean {
-  return /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(name);
+  return (
+    new TextEncoder().encode(name).byteLength <= MAX_HEADER_NAME_BYTES &&
+    /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(name)
+  );
 }
 
 function validSecret(value: string): boolean {
-  return value.length > 0 && !hasControl(value);
+  return (
+    value.length > 0 &&
+    new TextEncoder().encode(value).byteLength <= MAX_CREDENTIAL_BYTES &&
+    !hasControl(value)
+  );
 }
 
 function hasControl(value: string): boolean {

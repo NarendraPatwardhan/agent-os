@@ -179,7 +179,8 @@ defmodule AgentOS.Git.RealHttpTest do
                    "args" => %{"path" => "pushed.txt", "content" => "from product push\n"}
                  })
 
-        assert {:ok, _} = GitEngine.run(pid, %{"op" => "add", "args" => %{"path" => "pushed.txt"}})
+        assert {:ok, _} =
+                 GitEngine.run(pid, %{"op" => "add", "args" => %{"path" => "pushed.txt"}})
 
         assert {:ok, _} =
                  GitEngine.run(pid, %{

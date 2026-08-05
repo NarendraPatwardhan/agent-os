@@ -15,6 +15,13 @@ defmodule AgentOS.Git.Connections do
   # Module attribute used at compile time; runtime MapSet from contract when available.
   @guest_secret_arg_keys AgentOS.Contracts.Git.guest_secret_arg_keys()
 
+  # GIT-024: bounded recursive scan (fail closed when either bound is exceeded).
+  # Keep dual-host with JS `GUEST_SECRET_SCAN_MAX_*` in connections.ts.
+  @guest_secret_scan_max_depth 8
+  @guest_secret_scan_max_nodes 256
+  @max_credential_bytes 16 * 1024
+  @max_header_name_bytes 256
+
   @type auth :: map()
   @type connection :: map()
   @type policy_action :: :approve | :require_approval | :block
@@ -33,7 +40,7 @@ defmodule AgentOS.Git.Connections do
 
   Options:
   * `:connections` — host connection list (`ref` / `auth` / `origins` / `spec?`)
-  * `:policies` / `:connection_policies` — push policy rules
+  * `:policies` — push policy rules
   * `:allowed_origins` — global bare-URL allowlist (also optional intersection
     when a connection is bound and the list is non-empty)
   * `:auth` — host fallback auth for **bare** URLs only (never from guest body)
@@ -63,10 +70,7 @@ defmodule AgentOS.Git.Connections do
   defp do_resolve_remote(a, opts) do
     connections = normalize_connections(Keyword.get(opts, :connections, []))
 
-    policies =
-      normalize_policies(
-        Keyword.get(opts, :policies, Keyword.get(opts, :connection_policies, []))
-      )
+    policies = normalize_policies(Keyword.get(opts, :policies, []))
 
     remote_urls = Keyword.get(opts, :remote_urls, %{}) || %{}
     remote_connections = Keyword.get(opts, :remote_connections, %{}) || %{}
@@ -133,21 +137,69 @@ defmodule AgentOS.Git.Connections do
     end
   end
 
-  @doc false
+  @doc """
+  True when guest args include a secret-bearing key (case-insensitive),
+  recursively through nested maps and lists, with explicit depth and node-count
+  bounds. Bound exceedance is fail-closed. Dual-host with JS
+  `guestArgsCarrySecrets` (GIT-024). Does not stringify-and-regex.
+  """
   def guest_args_carry_secrets?(args) when is_map(args) do
-    Enum.any?(Map.keys(args), fn
-      k when is_binary(k) ->
-        String.downcase(k) in @guest_secret_arg_keys
-
-      k when is_atom(k) ->
-        String.downcase(Atom.to_string(k)) in @guest_secret_arg_keys
-
-      _ ->
-        false
-    end)
+    {status, _nodes} = scan_guest_value_for_secrets(args, 0, 0)
+    status != :clean
   end
 
   def guest_args_carry_secrets?(_), do: false
+
+  # Returns {status, nodes} where status is :clean | :secret | :exceeded.
+  defp scan_guest_value_for_secrets(_value, depth, nodes)
+       when depth > @guest_secret_scan_max_depth,
+       do: {:exceeded, nodes}
+
+  defp scan_guest_value_for_secrets(value, depth, nodes) when is_map(value) do
+    Enum.reduce_while(value, {:clean, nodes}, fn {k, child}, {_status, n} ->
+      n = n + 1
+
+      cond do
+        n > @guest_secret_scan_max_nodes ->
+          {:halt, {:exceeded, n}}
+
+        secret_key?(k) ->
+          {:halt, {:secret, n}}
+
+        true ->
+          case scan_guest_value_for_secrets(child, depth + 1, n) do
+            {:clean, n2} -> {:cont, {:clean, n2}}
+            other -> {:halt, other}
+          end
+      end
+    end)
+  end
+
+  defp scan_guest_value_for_secrets(value, depth, nodes) when is_list(value) do
+    Enum.reduce_while(value, {:clean, nodes}, fn item, {_status, n} ->
+      n = n + 1
+
+      cond do
+        n > @guest_secret_scan_max_nodes ->
+          {:halt, {:exceeded, n}}
+
+        true ->
+          case scan_guest_value_for_secrets(item, depth + 1, n) do
+            {:clean, n2} -> {:cont, {:clean, n2}}
+            other -> {:halt, other}
+          end
+      end
+    end)
+  end
+
+  defp scan_guest_value_for_secrets(_value, _depth, nodes), do: {:clean, nodes}
+
+  defp secret_key?(k) when is_binary(k), do: String.downcase(k) in @guest_secret_arg_keys
+
+  defp secret_key?(k) when is_atom(k),
+    do: String.downcase(Atom.to_string(k)) in @guest_secret_arg_keys
+
+  defp secret_key?(_), do: false
 
   defp bind_after_url(public_url, connection_ref, conn, policies, opts)
        when is_binary(connection_ref) and is_map(conn) do
@@ -178,7 +230,7 @@ defmodule AgentOS.Git.Connections do
 
   defp bind_after_url(public_url, _connection_ref, _conn, policies, opts) do
     # Bare URL: R32 — require non-empty global allowed_origins match.
-    # Host `:auth` only; guest auth/token already ignored (never read).
+    # Host `:auth` only; guest auth/token was rejected before resolution.
     case SmartHttp.ensure_url_allowed(public_url, opts) do
       {:ok, _origin} ->
         host_auth = normalize_auth(Keyword.get(opts, :auth))
@@ -216,6 +268,9 @@ defmodule AgentOS.Git.Connections do
 
     # Dual-host (contracts/git.kdl): query auth not supported for remotes.
     case na do
+      :invalid ->
+        {:error, :invalid_auth}
+
       %{kind: :query} ->
         {:error, :query_auth_unsupported}
 
@@ -337,14 +392,6 @@ defmodule AgentOS.Git.Connections do
     })
   end
 
-  defp normalize_connection({ref, auth}) when is_binary(ref) do
-    normalize_connection(%{ref: ref, auth: auth, origins: []})
-  end
-
-  defp normalize_connection({ref, auth, origins}) when is_binary(ref) do
-    normalize_connection(%{ref: ref, auth: auth, origins: origins})
-  end
-
   defp normalize_connection(_), do: nil
 
   defp drop_nil_spec(%{spec: nil} = c), do: Map.delete(c, :spec)
@@ -377,10 +424,6 @@ defmodule AgentOS.Git.Connections do
     normalize_policy(%{pattern: p, action: a, owner: Map.get(r, "owner")})
   end
 
-  defp normalize_policy({owner, pattern, action}) when is_binary(pattern) do
-    normalize_policy(%{owner: owner, pattern: pattern, action: action})
-  end
-
   defp normalize_policy(_), do: nil
 
   defp normalize_action(a) when a in [:approve, :require_approval, :block], do: a
@@ -394,59 +437,83 @@ defmodule AgentOS.Git.Connections do
   defp normalize_origins(_), do: []
 
   defp normalize_auth(nil), do: %{kind: :none}
-  defp normalize_auth({:none}), do: %{kind: :none}
-  defp normalize_auth(:none), do: %{kind: :none}
-  defp normalize_auth({:bearer, token}) when is_binary(token), do: %{kind: :bearer, token: token}
-
-  defp normalize_auth({:header, name, value}) when is_binary(name) and is_binary(value),
-    do: %{kind: :header, name: name, value: value}
-
-  defp normalize_auth({:basic, user, pass}) when is_binary(user) and is_binary(pass),
-    do: %{kind: :basic, username: user, password: pass}
+  defp normalize_auth(:invalid), do: :invalid
 
   defp normalize_auth(auth) when is_map(auth) do
-    kind = Map.get(auth, :kind) || Map.get(auth, "kind") || :none
-
-    case parse_kind(kind) do
-      :none ->
-        %{kind: :none}
-
-      :bearer ->
-        token = Map.get(auth, :token) || Map.get(auth, "token") || ""
-
-        if is_binary(token) and token != "",
-          do: %{kind: :bearer, token: token},
-          else: %{kind: :none}
-
-      :header ->
-        name = Map.get(auth, :name) || Map.get(auth, "name")
-        value = Map.get(auth, :value) || Map.get(auth, "value")
-
-        if is_binary(name) and is_binary(value),
-          do: %{kind: :header, name: name, value: value},
-          else: %{kind: :none}
-
-      :basic ->
-        u = Map.get(auth, :username) || Map.get(auth, "username") || Map.get(auth, "user")
-        p = Map.get(auth, :password) || Map.get(auth, "password") || Map.get(auth, "pass")
-
-        if is_binary(u) and is_binary(p),
-          do: %{kind: :basic, username: u, password: p},
-          else: %{kind: :none}
-
-      :query ->
-        # Prefer header splice path; SmartHttp may ignore query kind.
-        name = Map.get(auth, :name) || Map.get(auth, "name")
-        value = Map.get(auth, :value) || Map.get(auth, "value")
-
-        if is_binary(name) and is_binary(value),
-          do: %{kind: :query, name: name, value: value},
-          else: %{kind: :none}
+    case normalize_map_keys(auth) do
+      :invalid -> :invalid
+      normalized -> normalize_auth_map(normalized)
     end
   end
 
-  defp normalize_auth(auth) when is_list(auth), do: normalize_auth(Map.new(auth))
-  defp normalize_auth(_), do: %{kind: :none}
+  defp normalize_auth(_), do: :invalid
+
+  defp normalize_auth_map(normalized) do
+    kind = parse_kind(Map.get(normalized, "kind"))
+
+    case parse_kind(kind) do
+      :invalid ->
+        :invalid
+
+      :none ->
+        if exact_keys?(normalized, ["kind"]), do: %{kind: :none}, else: :invalid
+
+      :bearer ->
+        token = Map.get(normalized, "token")
+
+        if exact_keys?(normalized, ["kind", "token"]) and valid_secret?(token),
+          do: %{kind: :bearer, token: token},
+          else: :invalid
+
+      :header ->
+        name = Map.get(normalized, "name")
+        value = Map.get(normalized, "value")
+
+        if exact_keys?(normalized, ["kind", "name", "value"]) and valid_header_name?(name) and
+             valid_secret?(value),
+           do: %{kind: :header, name: name, value: value},
+           else: :invalid
+
+      :basic ->
+        u = Map.get(normalized, "username")
+        p = Map.get(normalized, "password")
+
+        if exact_keys?(normalized, ["kind", "username", "password"]) and valid_secret?(u) and
+             valid_secret?(p) and not String.contains?(u, ":"),
+           do: %{kind: :basic, username: u, password: p},
+           else: :invalid
+
+      :query ->
+        name = Map.get(normalized, "name")
+        value = Map.get(normalized, "value")
+
+        if exact_keys?(normalized, ["kind", "name", "value"]) and valid_header_name?(name) and
+             valid_secret?(value),
+           do: %{kind: :query, name: name, value: value},
+           else: :invalid
+    end
+  end
+
+  defp normalize_map_keys(map) do
+    Enum.reduce_while(map, %{}, fn
+      {key, value}, acc when is_atom(key) or is_binary(key) ->
+        normalized = if is_atom(key), do: Atom.to_string(key), else: key
+
+        if Map.has_key?(acc, normalized) do
+          {:halt, :invalid}
+        else
+          {:cont, Map.put(acc, normalized, value)}
+        end
+
+      _, _acc ->
+        {:halt, :invalid}
+    end)
+  end
+
+  defp exact_keys?(:invalid, _expected), do: false
+
+  defp exact_keys?(map, expected) when is_map(map),
+    do: MapSet.new(Map.keys(map)) == MapSet.new(expected)
 
   defp parse_kind(k) when k in [:none, :bearer, :header, :basic, :query], do: k
   defp parse_kind("none"), do: :none
@@ -454,7 +521,21 @@ defmodule AgentOS.Git.Connections do
   defp parse_kind("header"), do: :header
   defp parse_kind("basic"), do: :basic
   defp parse_kind("query"), do: :query
-  defp parse_kind(_), do: :none
+  defp parse_kind(_), do: :invalid
+
+  defp valid_secret?(value) when is_binary(value) do
+    value != "" and byte_size(value) <= @max_credential_bytes and String.valid?(value) and
+      not String.match?(value, ~r/[\x00-\x1f\x7f]/)
+  end
+
+  defp valid_secret?(_), do: false
+
+  defp valid_header_name?(name) when is_binary(name),
+    do:
+      byte_size(name) <= @max_header_name_bytes and
+        String.match?(name, ~r/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/)
+
+  defp valid_header_name?(_), do: false
 
   defp more_restrictive(a, b) do
     rank = %{approve: 0, require_approval: 1, block: 2}

@@ -198,7 +198,10 @@ defmodule AgentOS.Git.OrchGoldenTest do
     resp = decode_json!(json)
     # ok must be JSON boolean true/false only (not string "true"/"false")
     ok = Map.get(resp, "ok")
-    assert is_boolean(ok), "#{Map.get(step, "id")}: ok must be boolean, got #{inspect(ok)}: #{json}"
+
+    assert is_boolean(ok),
+           "#{Map.get(step, "id")}: ok must be boolean, got #{inspect(ok)}: #{json}"
+
     expected_ok = Map.fetch!(expect, "ok")
     assert ok == expected_ok, "#{Map.get(step, "id")}: ok expected #{expected_ok}, body=#{json}"
 
@@ -315,6 +318,7 @@ defmodule AgentOS.Git.OrchGoldenTest do
         want = Map.fetch!(prefixes, prefix_id)
 
         fixture = Map.get(sample, "fixture") || %{}
+
         refs =
           for r <- Map.get(fixture, "refs") || [] do
             %{name: Map.fetch!(r, "name"), hash: Map.fetch!(r, "hash")}
@@ -355,6 +359,7 @@ defmodule AgentOS.Git.OrchGoldenTest do
         refute ok, "schema/#{id}: expected ok:false: #{json}"
 
         stderr = to_string(Map.get(resp, "stderr") || "")
+
         assert String.contains?(stderr, want),
                "schema/#{id}: stderr missing prefix #{inspect(want)}: #{inspect(stderr)}"
       end

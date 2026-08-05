@@ -325,6 +325,13 @@ export class GitRemoteOrchestrator {
       }
       return { pack, fromTransport: true, imported: streamed };
     } catch (e) {
+      if (streamIntoEngine) {
+        try {
+          await this.engine.abortImportPack();
+        } catch {
+          /* Preserve transport failure; abort is best-effort cleanup. */
+        }
+      }
       return { error: `git: upload-pack failed: ${String(e)}\n` };
     }
   }
@@ -651,8 +658,7 @@ export class GitRemoteOrchestrator {
 
   /**
    * Import all advertised heads (+ primary tip if not a head).
-   * Prefer one `refs.import` with `args.refs` array; fall back to per-ref loop
-   * if the array form fails (older engine / partial multi-want objects).
+   * The engine applies the complete ref set atomically.
    */
   private async importAllHeads(
     refs: RefAdvertisement[],
@@ -682,19 +688,7 @@ export class GitRemoteOrchestrator {
       op: "refs.import",
       args: { refs: refsArr },
     });
-    if (bulk.ok) return null;
-
-    // Loop fallback: primary tip must succeed; other heads best-effort.
-    for (const [name, hash] of toImport) {
-      const imp = await this.engine.run({
-        op: "refs.import",
-        args: { name, hash },
-      });
-      if (!imp.ok) {
-        if (name === primaryName) return imp;
-      }
-    }
-    return null;
+    return bulk.ok ? null : bulk;
   }
 
   /** Unique want OIDs: primary tip + all heads (multi-want fetch). */
@@ -1023,20 +1017,19 @@ export class GitRemoteOrchestrator {
               "refs/heads/master")
             : head.name;
 
+        const refsToImport = new Map<string, string>([[refName, head.hash]]);
+        for (const r of refs) {
+          if (r.name.startsWith("refs/heads/") && /^[0-9a-f]{40}$/i.test(r.hash)) {
+            refsToImport.set(r.name, r.hash);
+          }
+        }
         const imp = bridge.runAt(eng, {
           op: "refs.import",
-          args: { name: refName, hash: head.hash },
+          args: {
+            refs: [...refsToImport].map(([name, hash]) => ({ name, hash })),
+          },
         });
         if (!imp.ok) return imp;
-
-        // Import other heads (best-effort) for richer nested repo.
-        for (const r of refs) {
-          if (!r.name.startsWith("refs/heads/") || r.name === refName) continue;
-          bridge.runAt(eng, {
-            op: "refs.import",
-            args: { name: r.name, hash: r.hash },
-          });
-        }
 
         const apply = bridge.runAt(eng, {
           op: "clone.apply",
@@ -1408,7 +1401,7 @@ export class GitRemoteOrchestrator {
     // Lease: ListRefs before commands (SYSTEMS.md §11b).
     let remoteRefs: RefAdvertisement[] = [];
     try {
-      remoteRefs = await this.http.listRefs(binding.url, binding.auth);
+      remoteRefs = await this.http.listRefs(binding.url, binding.auth, "git-receive-pack");
     } catch (e) {
       return {
         ok: false,
@@ -1418,6 +1411,7 @@ export class GitRemoteOrchestrator {
       };
     }
     const remoteByName = new Map(remoteRefs.map((r) => [r.name, r.hash]));
+    const receiveCapabilities = [...new Set(remoteRefs.flatMap((r) => r.capabilities ?? []))];
 
     let commands: PushCommand[] = [];
     try {
@@ -1452,6 +1446,14 @@ export class GitRemoteOrchestrator {
     // args.delete → zero newHash commands + empty pack (delete-only receive-pack).
     const delNames = deleteRefNames(args, commands);
     if (delNames) {
+      if (!receiveCapabilities.includes("delete-refs")) {
+        return {
+          ok: false,
+          code: 1,
+          stdout: "",
+          stderr: "git: receive-pack does not advertise delete-refs\n",
+        };
+      }
       commands = delNames.map((name) => ({
         oldHash: remoteByName.get(name) ?? ZERO_OID,
         newHash: ZERO_OID,
@@ -1562,7 +1564,13 @@ export class GitRemoteOrchestrator {
 
     let status;
     try {
-      status = await this.http.pushPacks(binding.url, commands, pack, binding.auth);
+      status = await this.http.pushPacks(
+        binding.url,
+        commands,
+        pack,
+        binding.auth,
+        receiveCapabilities,
+      );
     } catch (e) {
       return {
         ok: false,

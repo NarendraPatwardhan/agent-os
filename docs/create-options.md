@@ -219,7 +219,7 @@ When `git` is set:
   checkpoint into that store; restore/fork with the **same** `git.durable` reopens and rebinds.
   Omit for empty engines on restore. With `diskDir`: re-openable `HostDirDurable` worktree at
   `{diskDir}/{safeId}/` (primary). Without: OPFS directory/blob when available, else
-  process-memory AGIT by `id` (same process only). Details:
+  process-memory AOGS by `id` (same process only). Details:
   [Git — Durability](./git.md#durability-dir-reopen).
 
 ```js

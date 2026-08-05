@@ -4,8 +4,8 @@ defmodule AgentOS.Git.Durable do
 
   Primary durable form is a **re-openable libgit2 worktree directory** on disk.
   The Port child `ge_open`s that absolute path; a second process that starts
-  with the same root sees the same HEAD + files. AGIT pack envelopes are a
-  JS transfer format and are not required on the BEAM path.
+  with the same root sees the same HEAD + files. The BEAM path does not use a
+  blob envelope because the directory itself is the durable store.
 
   ## Configuration
 
@@ -57,6 +57,8 @@ defmodule AgentOS.Git.Durable do
     |> String.replace(~r/[^A-Za-z0-9._:@+-]+/, "_")
     |> case do
       "" -> "default"
+      "." -> "default"
+      ".." -> "default"
       other -> other
     end
   end
@@ -121,12 +123,10 @@ defmodule AgentOS.Git.Durable do
 
     cond do
       is_binary(Keyword.get(opts, :root)) ->
-        root = Path.expand(Keyword.fetch!(opts, :root))
-        {:ok, root, :durable}
+        explicit_root(Keyword.fetch!(opts, :root))
 
       is_binary(Keyword.get(opts, :durable_dir)) ->
-        root = Path.expand(Keyword.fetch!(opts, :durable_dir))
-        {:ok, root, :durable}
+        explicit_root(Keyword.fetch!(opts, :durable_dir))
 
       is_binary(Keyword.get(opts, :durable_id)) ->
         id = Keyword.fetch!(opts, :durable_id)
@@ -153,38 +153,102 @@ defmodule AgentOS.Git.Durable do
     end
   end
 
+  defp explicit_root(path) do
+    if String.trim(path) == "" do
+      {:error, :unsafe_git_root}
+    else
+      root = Path.expand(path)
+
+      if Path.dirname(root) == root,
+        do: {:error, :unsafe_git_root},
+        else: {:ok, root, :durable}
+    end
+  end
+
   @doc """
   Ensure `root` exists as a directory (mkdir_p). Does not init a git repo.
   """
   @spec ensure_root!(String.t()) :: String.t()
   def ensure_root!(root) when is_binary(root) do
-    File.mkdir_p!(root)
-    root
+    expanded = Path.expand(root)
+
+    case validate_root_components(expanded, true) do
+      :ok ->
+        expanded
+
+      {:error, reason} ->
+        raise File.Error, reason: reason, action: "create Git root", path: expanded
+    end
   end
 
   @doc """
-  Best-effort fsync of a durable directory (checkpoint face for native roots).
+  Validate that a native durable root still exists at checkpoint time.
 
-  Native Port writes are already on the host filesystem; this syncs directory
-  metadata where the OS supports it.
+  Native Port writes already target this host directory. Erlang does not expose
+  a portable directory-fsync primitive, so this function makes no stronger
+  crash-durability claim than successful direct writes and later reopen.
   """
   @spec sync_root(String.t()) :: :ok | {:error, term()}
   def sync_root(root) when is_binary(root) do
-    # Erlang has no portable dir fsync; touch a marker and rely on OS page cache
-    # flush on close. Product path: second ge_open of the same path is enough.
+    # Product acceptance is a later ge_open of the same root, not a fake fsync.
     marker = Path.join(root, ".git")
 
-    cond do
-      File.dir?(marker) or File.exists?(marker) ->
-        :ok
-
-      File.dir?(root) ->
-        :ok
-
-      true ->
-        {:error, :enoent}
+    with :ok <- validate_root_components(Path.expand(root), false) do
+      case File.lstat(marker) do
+        {:ok, %{type: type}} when type in [:directory, :regular] -> :ok
+        {:error, :enoent} -> :ok
+        {:ok, _} -> {:error, :unsafe_git_root}
+        {:error, reason} -> {:error, reason}
+      end
     end
   end
 
   def sync_root(_), do: {:error, :badarg}
+
+  defp validate_root_components(root, create?) do
+    case Path.split(root) do
+      [filesystem_root] ->
+        if Path.dirname(filesystem_root) == filesystem_root,
+          do: {:error, :unsafe_git_root},
+          else: {:error, :badarg}
+
+      [filesystem_root | parts] ->
+        Enum.reduce_while(parts, {:ok, filesystem_root}, fn part, {:ok, parent} ->
+          current = Path.join(parent, part)
+
+          result =
+            case File.lstat(current) do
+              {:ok, %{type: :directory}} ->
+                :ok
+
+              {:ok, _} ->
+                {:error, :unsafe_git_root}
+
+              {:error, :enoent} when create? ->
+                with :ok <- File.mkdir(current),
+                     {:ok, %{type: :directory}} <- File.lstat(current) do
+                  :ok
+                else
+                  {:error, reason} -> {:error, reason}
+                  _ -> {:error, :unsafe_git_root}
+                end
+
+              {:error, reason} ->
+                {:error, reason}
+            end
+
+          case result do
+            :ok -> {:cont, {:ok, current}}
+            {:error, _} = error -> {:halt, error}
+          end
+        end)
+        |> case do
+          {:ok, _} -> :ok
+          error -> error
+        end
+
+      _ ->
+        {:error, :badarg}
+    end
+  end
 end

@@ -101,13 +101,11 @@ async function main(): Promise<void> {
   const kernel = new Uint8Array(
     readFileSync(runfile(process.env.MC_KERNEL_WASM, "MC_KERNEL_WASM")),
   );
-  const loom = new Uint8Array(
-    readFileSync(runfile(process.env.MC_LOOM_IMAGE, "MC_LOOM_IMAGE")),
-  );
+  const loom = new Uint8Array(readFileSync(runfile(process.env.MC_LOOM_IMAGE, "MC_LOOM_IMAGE")));
   const fixture = packFixture();
 
-  // ── : mc.create + git + gitfs ctl close-then-status ──
-  // Thin /bin/git writes Request, closes fd, re-opens ctl for Response (never close-only).
+  // ── : mc.create + git + token-addressed gitfs ctl ──
+  // Thin /bin/git writes a tokenized Request and reads its dedicated Response.
   {
     const vm = await mc.create({
       kernel,
@@ -128,13 +126,15 @@ async function main(): Promise<void> {
         throw new Error(`git version failed: ${JSON.stringify(ver)}`);
       }
 
-      // Local porcelain via ctl (close-then-status inside /bin/git).
+      // Local porcelain via token-addressed ctl inside /bin/git.
       // Note: control-channel ExecRequest.cwd cannot target a host mount path
       // synchronously (WouldBlock/EAGAIN on mount stat). Guest shell `cd` is
       // fine — chdir runs under the tick pump that drains mount ops.
       const init = await vm.exec("cd /workspace/repo && git init");
       if (init.exitCode !== 0) {
-        throw new Error(`git init: exit=${init.exitCode} stderr=${init.stderr} stdout=${init.stdout}`);
+        throw new Error(
+          `git init: exit=${init.exitCode} stderr=${init.stderr} stdout=${init.stdout}`,
+        );
       }
 
       // Worktree write through guest VFS → gitfs driver
@@ -147,7 +147,7 @@ async function main(): Promise<void> {
       const commit = await vm.exec('cd /workspace/repo && git commit -m "r8-e2e"');
       if (commit.exitCode !== 0) {
         throw new Error(
-          `git commit (ctl close-then-status): exit=${commit.exitCode} stderr=${commit.stderr} stdout=${commit.stdout}`,
+          `git commit (token ctl): exit=${commit.exitCode} stderr=${commit.stderr} stdout=${commit.stdout}`,
         );
       }
 
@@ -158,23 +158,28 @@ async function main(): Promise<void> {
         );
       }
 
-      // Host-side ctl round-trip also drains Response after write (MountFs close semantics)
+      // Host-side ctl uses the same token-addressed response contract.
+      const statusToken = "guest-status";
       await vm.fs.write(
         "/workspace/repo/.git/mc/ctl",
-        JSON.stringify({ op: "status", args: { short: true } }),
+        JSON.stringify({
+          op: "status",
+          args: { short: true, client_token: statusToken },
+        }),
       );
-      const ctlRaw = await vm.fs.readText("/workspace/repo/.git/mc/ctl");
+      const ctlRaw = await vm.fs.readText(`/workspace/repo/.git/mc/responses/${statusToken}`);
       const ctlResp = JSON.parse(ctlRaw) as { ok?: boolean; stderr?: string };
       if (!ctlResp.ok) {
         throw new Error(`ctl status after host fs write: ${ctlRaw}`);
       }
 
       // Remotes via ctl fail closed (host_call only)
+      const fetchToken = "guest-fetch";
       await vm.fs.write(
         "/workspace/repo/.git/mc/ctl",
-        JSON.stringify({ op: "fetch" }),
+        JSON.stringify({ op: "fetch", args: { client_token: fetchToken } }),
       );
-      const refuseRaw = await vm.fs.readText("/workspace/repo/.git/mc/out/last");
+      const refuseRaw = await vm.fs.readText(`/workspace/repo/.git/mc/responses/${fetchToken}`);
       const refuse = JSON.parse(refuseRaw) as { ok?: boolean; stderr?: string };
       if (refuse.ok || !String(refuse.stderr || "").includes("host_call")) {
         throw new Error(`ctl fetch must refuse remotes: ${refuseRaw}`);
@@ -227,18 +232,14 @@ async function main(): Promise<void> {
         );
       }
       if (denied.exitCode === 0 && !msg.includes("host_call git failed")) {
-        throw new Error(
-          `R3: git clone without CAP_NET must fail, got: ${JSON.stringify(denied)}`,
-        );
+        throw new Error(`R3: git clone without CAP_NET must fail, got: ${JSON.stringify(denied)}`);
       }
       if (http.listRefsCalls !== 0 || http.fetchPacksCalls !== 0) {
         throw new Error(
           `R3: host_call must not reach FixtureSmartHttp without CAP_NET (listRefs=${http.listRefsCalls} fetchPacks=${http.fetchPacksCalls})`,
         );
       }
-      console.log(
-        `phase: R3 boot-tier deny OK (exit=${denied.exitCode}, stderr marker present)`,
-      );
+      console.log(`phase: R3 boot-tier deny OK (exit=${denied.exitCode}, stderr marker present)`);
     } finally {
       await vm.close();
     }
@@ -323,7 +324,10 @@ async function main(): Promise<void> {
           `git clone failed: exit=${clone.exitCode} stdout=${JSON.stringify(clone.stdout)} stderr=${JSON.stringify(clone.stderr)}`,
         );
       }
-      if (!clone.stdout.includes("cloned") && !String(clone.stdout + clone.stderr).includes("cloned")) {
+      if (
+        !clone.stdout.includes("cloned") &&
+        !String(clone.stdout + clone.stderr).includes("cloned")
+      ) {
         // orch returns stdout "cloned …"; thin CLI prints Response stdout
         throw new Error(`expected cloned in output: ${JSON.stringify(clone)}`);
       }
@@ -363,7 +367,7 @@ print(raw)
 
   // ── : snapshot/restore rebinds git durable (K10) ──
   // MCSN does not carry ODB. git.durable id is recorded; snapshot checkpoints
-  // process MemoryDurable (openDurable registry by id); restore reopens + rebinds AGIT.
+  // process MemoryDurable (openDurable registry by id); restore reopens the Git snapshot.
   // HostDir diskDir path is D16 primary; process-memory proves D17 lifecycle wiring.
   {
     const durableId = `d17-guest-${Date.now()}`;
@@ -380,39 +384,22 @@ print(raw)
     } satisfies CreateOptions;
 
     const headOid = async (vm: Awaited<ReturnType<typeof mc.create>>): Promise<string> => {
-      // Prefer ctl result (engine JSON); fall back to thin CLI stdout.
+      const token = "d17-head";
       await vm.fs.write(
         "/workspace/repo/.git/mc/ctl",
-        JSON.stringify({ op: "rev-parse", args: { rev: "HEAD" } }),
+        JSON.stringify({
+          op: "rev-parse",
+          args: { rev: "HEAD", client_token: token },
+        }),
       );
-      const raw = await vm.fs.readText("/workspace/repo/.git/mc/ctl");
-      let oid = "";
-      try {
-        const resp = JSON.parse(raw) as {
-          ok?: boolean;
-          stdout?: string;
-          result?: unknown;
-        };
-        if (resp.ok) {
-          const fromOut = String(resp.stdout || "")
-            .trim()
-            .split(/\s+/)[0];
-          if (fromOut && /^[0-9a-f]{40}$/i.test(fromOut)) oid = fromOut;
-          if (!oid && typeof resp.result === "string" && /^[0-9a-f]{40}$/i.test(resp.result)) {
-            oid = resp.result;
-          }
-        }
-      } catch {
-        /* fall through */
-      }
-      if (!oid) {
-        const rev = await vm.exec("cd /workspace/repo && git rev-parse HEAD");
-        oid = rev.stdout.trim().split(/\s+/)[0] ?? "";
-        if (!/^[0-9a-f]{40}$/i.test(oid)) {
-          throw new Error(
-            `D17 rev-parse failed: ctl=${raw} cli=${JSON.stringify(rev)}`,
-          );
-        }
+      const raw = await vm.fs.readText(`/workspace/repo/.git/mc/responses/${token}`);
+      const resp = JSON.parse(raw) as { ok?: boolean; stdout?: string; result?: unknown };
+      const oid =
+        String(resp.stdout || "")
+          .trim()
+          .split(/\s+/)[0] ?? "";
+      if (!resp.ok || !/^[0-9a-f]{40}$/i.test(oid)) {
+        throw new Error(`D17 rev-parse failed: ${raw}`);
       }
       return oid.toLowerCase();
     };
@@ -421,7 +408,7 @@ print(raw)
     let headBefore = "";
     let snap: Uint8Array;
     try {
-      // Local porcelain via ctl with explicit K28 identity (gitfs does not inject).
+      // Local porcelain via the token-addressed ctl contract.
       const init = await vm.exec("cd /workspace/repo && git init");
       if (init.exitCode !== 0) {
         throw new Error(`D17 init: ${JSON.stringify(init)}`);
@@ -431,6 +418,7 @@ print(raw)
       if (add.exitCode !== 0) {
         throw new Error(`D17 add: ${JSON.stringify(add)}`);
       }
+      const commitToken = "d17-commit";
       await vm.fs.write(
         "/workspace/repo/.git/mc/ctl",
         JSON.stringify({
@@ -440,17 +428,18 @@ print(raw)
             name: "D17",
             email: "d17@example.com",
             when_unix: 1_700_000_100,
+            client_token: commitToken,
           },
         }),
       );
-      const commitRaw = await vm.fs.readText("/workspace/repo/.git/mc/ctl");
+      const commitRaw = await vm.fs.readText(`/workspace/repo/.git/mc/responses/${commitToken}`);
       const commitResp = JSON.parse(commitRaw) as { ok?: boolean; stderr?: string };
       if (!commitResp.ok) {
         throw new Error(`D17 commit ctl: ${commitRaw}`);
       }
       headBefore = await headOid(vm);
 
-      // Snapshot checkpoints AGIT into process MemoryDurable(id:mount).
+      // Snapshot checkpoints Git state into process MemoryDurable(id:mount).
       snap = await vm.snapshot();
       if (!snap || snap.byteLength < 16) {
         throw new Error("D17 MCSN snapshot empty");
@@ -459,14 +448,12 @@ print(raw)
       await vm.close();
     }
 
-    // Fresh VM from MCSN + same git.durable id → AGIT rebind.
+    // Fresh VM from MCSN + same git.durable id restores the Git snapshot.
     const restored = await mc.restore(snap!, createOpts);
     try {
       const headAfter = await headOid(restored);
       if (headAfter !== headBefore) {
-        throw new Error(
-          `D17 FAIL: HEAD after restore ${headAfter} !== before ${headBefore}`,
-        );
+        throw new Error(`D17 FAIL: HEAD after restore ${headAfter} !== before ${headBefore}`);
       }
       const body = await restored.fs.readText("/workspace/repo/d17.txt");
       if (!body.includes("durable-snapshot-rebind")) {
@@ -513,8 +500,7 @@ print(raw)
       },
       fetchPacks: (url, want, have, depth, auth, filter) =>
         baseHttp.fetchPacks(url, want, have, depth, auth, filter),
-      pushPacks: (url, commands, pack, auth) =>
-        baseHttp.pushPacks(url, commands, pack, auth),
+      pushPacks: (url, commands, pack, auth) => baseHttp.pushPacks(url, commands, pack, auth),
     };
 
     const vm = await mc.create({

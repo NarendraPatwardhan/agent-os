@@ -50,6 +50,14 @@ npm_package(
     visibility = ["//visibility:public"],
 )
 
+# All JS tests execute emitted `.js` files as ESM. Keep the package marker
+# behind one provider so requesting multiple tests does not create competing
+# per-test CopyFile actions for the same output path.
+js_library(
+    name = "test_package_json",
+    srcs = ["package.json"],
+)
+
 # Bundle @mc/core into a SINGLE self-contained ESM with rolldown (the repo's bundler, same engine
 # as //memcontainers/sdk-js/elements:bundle), inlining @mc/host, @mc/contracts, and zod. A consumer
 # imports this ONE file — no npm install, no node_modules. This is the release "js bundle" asset
@@ -111,9 +119,10 @@ mc_ts_project(
 
 js_test(
     name = "git_engine_test",
+    timeout = "moderate",
     data = [
         # core package.json → Node treats test/src .js as ESM.
-        "package.json",
+        ":test_package_json",
         ":git_engine_test_lib",
         # Engine artifacts only (not :git_engine_wasm — that pulls NOTICE across packages).
         "//memcontainers/lib/git-engine:git_engine_release",
@@ -123,7 +132,6 @@ js_test(
         # Path of git-engine.tar under runfiles.
         "MC_GIT_ENGINE_TAR": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_release)",
     },
-    timeout = "moderate",
 )
 
 # PR9–PR10a: smart-HTTP fixture orch + MapHostCall "git" + ctl refuse.
@@ -138,11 +146,12 @@ mc_ts_project(
 
 js_test(
     name = "git_remote_test",
+    timeout = "moderate",
     data = [
-        "package.json",
         ":git_remote_test_lib",
         ":orch_golden_minimal_pack",
         ":orch_golden_minimal_tip",
+        ":test_package_json",
         "//memcontainers/lib/git-engine:git_engine_release",
     ],
     entry_point = "test/git_remote.test.js",
@@ -151,7 +160,6 @@ js_test(
         "MC_GIT_MINIMAL_PACK": "$(rlocationpath :orch_golden_minimal_pack)",
         "MC_GIT_MINIMAL_TIP": "$(rlocationpath :orch_golden_minimal_tip)",
     },
-    timeout = "moderate",
 )
 
 # P2.8 — shared executable orch goldens (TS ↔ BEAM).
@@ -279,25 +287,26 @@ mc_ts_project(
 
 js_test(
     name = "git_orch_golden_test",
+    timeout = "moderate",
     data = [
-        "package.json",
         ":git_orch_golden_test_lib",
+        ":orch_golden_auth_deny",
         ":orch_golden_clone_success",
         ":orch_golden_empty_pack",
-        ":orch_golden_origin_denied",
         ":orch_golden_fetch_success",
-        ":orch_golden_pull_ff",
-        ":orch_golden_push_readonly",
-        ":orch_golden_push_success",
-        ":orch_golden_shallow_clone",
-        ":orch_golden_auth_deny",
-        ":orch_golden_pull_not_ff",
-        ":orch_golden_origin_deny_prefix",
         ":orch_golden_guest_secret_reject",
-        ":orch_golden_query_auth_reject",
-        ":orch_response_schema",
         ":orch_golden_minimal_pack",
         ":orch_golden_minimal_tip",
+        ":orch_golden_origin_denied",
+        ":orch_golden_origin_deny_prefix",
+        ":orch_golden_pull_ff",
+        ":orch_golden_pull_not_ff",
+        ":orch_golden_push_readonly",
+        ":orch_golden_push_success",
+        ":orch_golden_query_auth_reject",
+        ":orch_golden_shallow_clone",
+        ":orch_response_schema",
+        ":test_package_json",
         "//memcontainers/lib/git-engine:git_engine_release",
     ],
     entry_point = "test/git_orch_golden.test.js",
@@ -306,7 +315,6 @@ js_test(
         # Relative to runfiles package root for this target.
         "MC_GIT_ORCH_GOLDEN_DIR": "memcontainers/sdk-js/core/fixtures/orch",
     },
-    timeout = "moderate",
 )
 
 # D27/D28 — real smart-HTTP e2e (system git-http-backend; product FetchSmartHttp).
@@ -321,9 +329,10 @@ mc_ts_project(
 
 js_test(
     name = "git_real_http_test",
+    timeout = "moderate",
     data = [
-        "package.json",
         ":git_real_http_test_lib",
+        ":test_package_json",
         "//memcontainers/lib/git-engine:git_engine_release",
     ],
     entry_point = "test/git_real_http.test.js",
@@ -339,7 +348,6 @@ js_test(
         "no-sandbox",
         "requires-network",
     ],
-    timeout = "moderate",
 )
 
 # PR11: connection-ref remotes + credential splice (no secret leak).
@@ -354,16 +362,16 @@ mc_ts_project(
 
 js_test(
     name = "git_connections_test",
+    timeout = "moderate",
     data = [
-        "package.json",
         ":git_connections_test_lib",
+        ":test_package_json",
         "//memcontainers/lib/git-engine:git_engine_release",
     ],
     entry_point = "test/git_connections.test.js",
     env = {
         "MC_GIT_ENGINE_TAR": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_release)",
     },
-    timeout = "moderate",
 )
 
 mc_ts_project(
@@ -379,9 +387,9 @@ mc_ts_project(
 js_test(
     name = "vm_test",
     data = [
-        "package.json",
         ":github_issues_fixture",
         ":graphql_introspection_fixture",
+        ":test_package_json",
         ":vm_test_lib",
         "//memcontainers/images:atlas",
         "//memcontainers/images:base",
@@ -415,8 +423,8 @@ mc_ts_project(
 js_test(
     name = "sidecars_test",
     data = [
-        "package.json",
         ":sidecars_test_lib",
+        ":test_package_json",
     ],
     entry_point = "test/sidecars.test.js",
 )
@@ -434,8 +442,8 @@ mc_ts_project(
 js_test(
     name = "browsers_test",
     data = [
-        "package.json",
         ":browsers_test_lib",
+        ":test_package_json",
     ],
     entry_point = "test/browsers.test.js",
 )
@@ -453,8 +461,8 @@ mc_ts_project(
 js_test(
     name = "guest_layers_test",
     data = [
-        "package.json",
         ":guest_layers_test_lib",
+        ":test_package_json",
         "//memcontainers/images:loom",
         "//memcontainers/kernel/rust:kernel",
         "//memcontainers/programs/browser:browser_ctl_layer",
@@ -481,17 +489,17 @@ mc_ts_project(
 js_test(
     name = "browser_opfs_test",
     data = [
-        "package.json",
         ":browser_opfs_test_lib",
+        ":test_package_json",
         "//memcontainers/images:base",
         "//memcontainers/kernel/rust:kernel",
     ],
     entry_point = "test/browser_opfs.test.js",
-    node_options = ["--experimental-websocket"],
     env = {
         "MC_KERNEL_WASM": "$(rlocationpath //memcontainers/kernel/rust:kernel)",
         "MC_BASE_IMAGE": "$(rlocationpath //memcontainers/images:base)",
     },
+    node_options = ["--experimental-websocket"],
 )
 
 # PR12: push path (policy block / approval / read-only).
@@ -506,16 +514,16 @@ mc_ts_project(
 
 js_test(
     name = "git_push_test",
+    timeout = "moderate",
     data = [
-        "package.json",
         ":git_push_test_lib",
+        ":test_package_json",
         "//memcontainers/lib/git-engine:git_engine_release",
     ],
     entry_point = "test/git_push.test.js",
     env = {
         "MC_GIT_ENGINE_TAR": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_release)",
     },
-    timeout = "moderate",
 )
 
 mc_ts_project(
@@ -529,12 +537,12 @@ mc_ts_project(
 
 js_test(
     name = "git_pack_cache_test",
+    timeout = "short",
     data = [
-        "package.json",
         ":git_pack_cache_test_lib",
+        ":test_package_json",
     ],
     entry_point = "test/git_pack_cache.test.js",
-    timeout = "short",
 )
 
 # P2.4 — engine-first llb.git; no ambient system git without MC_GIT_USE_SYSTEM=1.
@@ -549,12 +557,12 @@ mc_ts_project(
 
 js_test(
     name = "git_llb_fail_closed_test",
+    timeout = "short",
     data = [
-        "package.json",
         ":git_llb_fail_closed_test_lib",
+        ":test_package_json",
     ],
     entry_point = "test/git_llb_fail_closed.test.js",
-    timeout = "short",
 )
 
 # Guest CAP_NET + gitfs ctl e2e (fixture pack only; no network).
@@ -570,11 +578,12 @@ mc_ts_project(
 
 js_test(
     name = "git_guest_e2e_test",
+    timeout = "long",
     data = [
-        "package.json",
         ":git_guest_e2e_test_lib",
         ":orch_golden_minimal_pack",
         ":orch_golden_minimal_tip",
+        ":test_package_json",
         "//memcontainers/images:loom",
         "//memcontainers/kernel/rust:kernel",
         "//memcontainers/lib/git-engine:git_engine_release",
@@ -587,6 +596,4 @@ js_test(
         "MC_GIT_MINIMAL_PACK": "$(rlocationpath :orch_golden_minimal_pack)",
         "MC_GIT_MINIMAL_TIP": "$(rlocationpath :orch_golden_minimal_tip)",
     },
-    timeout = "long",
 )
-

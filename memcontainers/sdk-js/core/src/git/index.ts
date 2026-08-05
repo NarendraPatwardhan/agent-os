@@ -36,11 +36,7 @@ export type {
 
 // ── Worktree projection (gitfs) ─────────────────────────────────────────────
 
-export {
-  createGitFsDriver,
-  isGitFsDriver,
-  GITFS_DRIVER_KIND,
-} from "./gitfs.js";
+export { createGitFsDriver, isGitFsDriver, GITFS_DRIVER_KIND } from "./gitfs.js";
 
 // ── Remotes (orchestrator + smart-HTTP + connections) ───────────────────────
 
@@ -92,7 +88,6 @@ export type { GitRemoteBinding, ResolveRemoteOptions } from "./connections.js";
 export {
   MemoryDurable,
   OpfsDurable,
-  OpfsDirDurable,
   DiskDurable,
   HostDirDurable,
   openDurable,
@@ -101,18 +96,12 @@ export {
   safeDurablePathSegment,
   isDirectoryDurable,
   isBlobDurable,
-  encodeDurableBlob,
-  decodeDurableBlob,
-  AGIT_MAGIC,
+  encodeDurableTreeBlob,
+  decodeDurableTreeBlob,
+  restoreDurableTreeBlob,
+  GIT_SNAPSHOT_MAGIC,
 } from "./durable.js";
-export type {
-  DurableBackend,
-  DurableKind,
-  DurableEnvelopeMeta,
-  DurableRefTip,
-  DecodedDurableBlob,
-  MemfsLike,
-} from "./durable.js";
+export type { DurableBackend, DurableKind, DecodedDurableTree, MemfsLike } from "./durable.js";
 
 // ── Pack cache + process metrics ────────────────────────────────────────────
 
@@ -130,11 +119,7 @@ export {
   uploadPackCacheKey,
   DEFAULT_MAX_PACK_BYTES,
 } from "./pack-cache.js";
-export type {
-  PackCache,
-  ImportPackOptions,
-  ImportPackEngine,
-} from "./pack-cache.js";
+export type { PackCache, ImportPackOptions, ImportPackEngine } from "./pack-cache.js";
 export {
   snapshotGitCounters,
   resetGitCounters,
@@ -142,19 +127,11 @@ export {
   incGitCounter,
   redactOrigin,
 } from "./metrics.js";
-export type {
-  GitCounterKey,
-  GitMetricsSnapshot,
-  RemoteResultMeta,
-} from "./metrics.js";
+export type { GitCounterKey, GitMetricsSnapshot, RemoteResultMeta } from "./metrics.js";
 
 // ── LLB git source materialization ──────────────────────────────────────────
 
-export {
-  materializeLlbGit,
-  worktreeToTar,
-  createEngineGitSource,
-} from "./llb-git.js";
+export { materializeLlbGit, worktreeToTar, createEngineGitSource } from "./llb-git.js";
 export type {
   LlbGitMaterializeOptions,
   LlbGitMaterializeResult,
@@ -170,10 +147,7 @@ export type {
  */
 export function registerGitHostCall(
   tools: {
-    register: (
-      name: string,
-      handler: (args: string) => Promise<string> | string,
-    ) => void;
+    register: (name: string, handler: (args: string) => Promise<string> | string) => void;
   },
   engineOrMap: GitHostCallEngines,
   opts?: OrchestratorOptions,

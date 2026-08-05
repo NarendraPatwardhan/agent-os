@@ -1,11 +1,17 @@
 /**
- * GitEngine.run + gitfs ctl drain + dial refuse (no full VM).
+ * GitEngine.run + token-addressed gitfs ctl + dial refuse (no full VM).
  * Requires MC_GIT_ENGINE_TAR → runfiles path of git-engine.tar.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { decodeDurableBlob, GitEngine, MemoryDurable } from "../src/git/index.js";
+import {
+  decodeDurableTreeBlob,
+  GitEngine,
+  HostDirDurable,
+  MemoryDurable,
+  safeDurablePathSegment,
+} from "../src/git/index.js";
 
 function engineTar(): Uint8Array {
   const rel = process.env.MC_GIT_ENGINE_TAR || "";
@@ -24,6 +30,15 @@ function engineTar(): Uint8Array {
 }
 
 async function main() {
+  if (safeDurablePathSegment("..") !== "default" || safeDurablePathSegment(".") !== "default") {
+    throw new Error("durable ids must not escape their configured root");
+  }
+  try {
+    await new HostDirDurable("root", "/").ensure();
+    throw new Error("filesystem root must not be accepted as a durable worktree");
+  } catch (error) {
+    if (!String(error).includes("must not be a filesystem root")) throw error;
+  }
   const eng = await GitEngine.load({ engine: engineTar() });
 
   let r = await eng.run({ op: "init" });
@@ -164,7 +179,7 @@ async function main() {
     throw new Error(`dial should fail closed: ${JSON.stringify(dial)}`);
   }
 
-  // PR4/PR5: gitfs worktree + synthetic .git + ctl drain
+  // PR4/PR5: gitfs worktree + synthetic .git + token-addressed ctl
   const driver = eng.asMountDriver();
   // brand for K21 one-engine-per-path (multi-path allowed)
   const { isGitFsDriver } = await import("../src/git/gitfs.js");
@@ -231,6 +246,66 @@ async function main() {
       }
     }
   }
+  // GIT-016: positive allowlist — direct open/stat of physical engine paths under
+  // `.git/**` must fail closed (ENOENT/EACCES), not fall through to host ODB FS.
+  // Directory-listing-only checks are insufficient.
+  for (const forbidden of [
+    "/.git/config",
+    "/.git/index",
+    "/.git/packed-refs",
+    "/.git/logs/HEAD",
+    "/.git/logs/refs/heads/master",
+    "/.git/refs/heads/master",
+    "/.git/refs/heads/feature-head",
+    "/.git/info/exclude",
+    "/.git/description",
+    "/.git/COMMIT_EDITMSG",
+    "/.git/mc/unknown",
+    "/.git/mc/out/other",
+    "/.git/hooks/pre-commit",
+  ]) {
+    for (const op of ["open", "stat"] as const) {
+      try {
+        if (op === "open") await driver.open(forbidden);
+        else await driver.stat(forbidden);
+        throw new Error(`GIT-016: ${op} ${forbidden} must fail closed`);
+      } catch (e) {
+        const code = (e as { code?: string }).code;
+        if (code !== "ENOENT" && code !== "EACCES") {
+          throw new Error(
+            `GIT-016: ${op} ${forbidden} expected ENOENT|EACCES, got ${String(code ?? e)}`,
+          );
+        }
+      }
+    }
+  }
+  // Allowlisted synthetic paths remain usable.
+  await driver.stat("/.git");
+  await driver.stat("/.git/mc");
+  await driver.stat("/.git/mc/out");
+  await driver.stat("/.git/refs");
+  await driver.stat("/.git/mc/ctl");
+  await driver.stat("/.git/mc/generation");
+  await driver.open("/.git/mc/generation");
+  try {
+    await driver.open("/.git/mc/ctl");
+    throw new Error("write-only ctl unexpectedly opened");
+  } catch (e) {
+    if ((e as { code?: string }).code !== "EACCES") throw e;
+  }
+  try {
+    await driver.write!(
+      "/.git/mc/ctl",
+      new TextEncoder().encode(
+        '{"op":"status","args":{"client_token":"duplicate-a","client_token":"duplicate-b"}}',
+      ),
+    );
+    throw new Error("duplicate ctl key was accepted");
+  } catch (error) {
+    if (String(error).includes("was accepted")) throw error;
+    if ((error as { code?: string }).code !== "EINVAL") throw error;
+  }
+
   const head = new TextDecoder().decode(await driver.open("/.git/HEAD"));
   if (!head.startsWith("ref: refs/heads/")) {
     throw new Error(`synthetic HEAD: ${JSON.stringify(head)}`);
@@ -243,21 +318,50 @@ async function main() {
     throw new Error(`synthetic HEAD after checkout: ${JSON.stringify(headFeature)}`);
   }
 
-  // Ctl protocol: write Request → open/read Response (MountFs drain; never close-only)
+  // Ctl protocol: write a tokenized Request, then read its dedicated Response.
+  const statusToken = "sdk-status";
   await driver.write!(
     "/.git/mc/ctl",
     new TextEncoder().encode(
       JSON.stringify({
         op: "status",
-        args: { short: true },
+        args: { short: true, client_token: statusToken },
       }),
     ),
   );
-  const respBytes = await driver.open("/.git/mc/ctl");
+  const respBytes = await driver.open(`/.git/mc/responses/${statusToken}`);
   const resp = JSON.parse(new TextDecoder().decode(respBytes));
   if (!resp.ok) throw new Error(`ctl status: ${JSON.stringify(resp)}`);
 
   const genBefore = new TextDecoder().decode(await driver.open("/.git/mc/generation"));
+  const fs = eng.bridge.FS;
+  if (!fs.mkdirTree) throw new Error("ctl eviction test requires MEMFS mkdirTree");
+  fs.mkdirTree(eng.bridge.abs(".git/mc/out"));
+  fs.writeFile(eng.bridge.abs(`.git/mc/out/${statusToken}`), "stale-stream");
+  try {
+    await driver.open(`/.git/mc/out/${statusToken}`);
+    throw new Error("non-stream ctl response exposed a physical runtime artifact");
+  } catch (error) {
+    if (String(error).includes("exposed a physical")) throw error;
+    if ((error as { code?: string }).code !== "ENOENT") throw error;
+  }
+  for (let i = 0; i < 32; i++) {
+    await driver.write!(
+      "/.git/mc/ctl",
+      new TextEncoder().encode(
+        JSON.stringify({
+          op: "status",
+          args: { client_token: `evict-${i}` },
+        }),
+      ),
+    );
+  }
+  try {
+    fs.stat(eng.bridge.abs(`.git/mc/out/${statusToken}`));
+    throw new Error("evicted ctl response left its physical stdout stream behind");
+  } catch (error) {
+    if (String(error).includes("left its physical")) throw error;
+  }
   // Coherence: worktree write via driver then status via Run (single-writer)
   await driver.write!("/note.txt", new TextEncoder().encode("note\n"));
   await eng.run({ op: "add", args: { path: "note.txt" } });
@@ -268,9 +372,8 @@ async function main() {
     throw new Error("worktree open/read coherence failed");
   }
 
-  // GIT-002: MEMFS/NODEFS gitfs and direct engine ops reject a symlink in any
+  // GIT-002: MEMFS gitfs and direct engine ops reject a symlink in any
   // path component. The outside sentinel is never reachable through the mount.
-  const fs = eng.bridge.FS;
   if (typeof fs.symlink !== "function") {
     throw new Error("Emscripten FS.symlink is required for containment regression");
   }
@@ -333,8 +436,19 @@ async function main() {
   fs.unlink(`${eng.bridge.workRoot}/escape`);
 
   // Remote op via ctl fails closed
-  await driver.write!("/.git/mc/ctl", new TextEncoder().encode(JSON.stringify({ op: "fetch" })));
-  const refuse = JSON.parse(new TextDecoder().decode(await driver.open("/.git/mc/out/last")));
+  const fetchToken = "sdk-fetch";
+  await driver.write!(
+    "/.git/mc/ctl",
+    new TextEncoder().encode(
+      JSON.stringify({
+        op: "fetch",
+        args: { client_token: fetchToken },
+      }),
+    ),
+  );
+  const refuse = JSON.parse(
+    new TextDecoder().decode(await driver.open(`/.git/mc/responses/${fetchToken}`)),
+  );
   if (refuse.ok || !String(refuse.stderr || "").includes("host_call")) {
     throw new Error(`ctl fetch refuse: ${JSON.stringify(refuse)}`);
   }
@@ -411,9 +525,16 @@ async function main() {
   // Ctl remains the only guest write under .git (sanity after fail-closed checks).
   await driver.write!(
     "/.git/mc/ctl",
-    enc.encode(JSON.stringify({ op: "status", args: { short: true } })),
+    enc.encode(
+      JSON.stringify({
+        op: "status",
+        args: { short: true, client_token: "sdk-still" },
+      }),
+    ),
   );
-  const ctlStill = JSON.parse(new TextDecoder().decode(await driver.open("/.git/mc/ctl")));
+  const ctlStill = JSON.parse(
+    new TextDecoder().decode(await driver.open("/.git/mc/responses/sdk-still")),
+  );
   if (!ctlStill.ok) {
     throw new Error(`ctl still writable after meta EACCES: ${JSON.stringify(ctlStill)}`);
   }
@@ -517,7 +638,7 @@ async function main() {
     throw new Error("status default must be porcelain-v1, not human On branch");
   }
 
-  // –R55: durable rebind — pack+refs AGIT envelope restores objects + worktree.
+  // GIT-009: snapshots restore committed, staged, dirty, and untracked coding state.
   const dur = new MemoryDurable("rebind");
   const engDur = await GitEngine.load({ engine: engineTar(), durable: dur });
   let dr = await engDur.run({ op: "init" });
@@ -545,10 +666,71 @@ async function main() {
   if (!headBefore || headBefore.length !== 40) {
     throw new Error(`durable HEAD before: ${headBefore}`);
   }
+  dr = await engDur.run({
+    op: "write",
+    args: { path: "persist.txt", content: "dirty-after-commit\n" },
+  });
+  if (!dr.ok) throw new Error(`durable dirty write: ${JSON.stringify(dr)}`);
+  dr = await engDur.run({
+    op: "write",
+    args: { path: "staged.txt", content: "staged-only\n" },
+  });
+  if (!dr.ok) throw new Error(`durable staged write: ${JSON.stringify(dr)}`);
+  dr = await engDur.run({ op: "add", args: { path: "staged.txt" } });
+  if (!dr.ok) throw new Error(`durable staged add: ${JSON.stringify(dr)}`);
+  dr = await engDur.run({
+    op: "write",
+    args: { path: "untracked.txt", content: "untracked-only\n" },
+  });
+  if (!dr.ok) throw new Error(`durable untracked write: ${JSON.stringify(dr)}`);
+  if (!engDur.bridge.FS.symlink) throw new Error("snapshot test requires MEMFS symlink support");
+  engDur.bridge.FS.symlink("persist.txt", engDur.bridge.abs("persist-link"));
+  engDur.bridge.FS.mkdir(engDur.bridge.abs("empty-mode-dir"));
+  engDur.bridge.FS.chmod(engDur.bridge.abs("empty-mode-dir"), 0o750);
+  if (!engDur.bridge.FS.mkdirTree) throw new Error("snapshot test requires MEMFS mkdirTree");
+  engDur.bridge.FS.mkdirTree(engDur.bridge.abs(".git/mc/out"));
+  engDur.bridge.FS.writeFile(engDur.bridge.abs(".git/mc/out/stale"), "runtime-only");
+  engDur.bridge.FS.mkdirTree(engDur.bridge.abs(".git/agentos"));
+  engDur.bridge.FS.writeFile(engDur.bridge.abs(".git/agentos/push.pack"), "one-shot");
   await engDur.checkpoint();
   const saved = await dur.load();
-  if (!saved || !decodeDurableBlob(saved)) {
-    throw new Error("checkpoint must write AGIT pack+refs envelope");
+  const decodedSaved = saved ? decodeDurableTreeBlob(saved) : null;
+  if (!decodedSaved) {
+    throw new Error("checkpoint must write an AgentOS Git Snapshot");
+  }
+  const savedMetaLength = new DataView(
+    saved!.buffer,
+    saved!.byteOffset,
+    saved!.byteLength,
+  ).getUint32(4, true);
+  const savedMetadata = new TextDecoder().decode(saved!.subarray(8, 8 + savedMetaLength));
+  const duplicateMetadata = savedMetadata.replace('{"v":1', '{"v":1,"v":1');
+  const duplicateBytes = new TextEncoder().encode(duplicateMetadata);
+  const nonCanonicalSnapshot = new Uint8Array(
+    8 + duplicateBytes.byteLength + saved!.byteLength - 8 - savedMetaLength,
+  );
+  nonCanonicalSnapshot.set(saved!.subarray(0, 4));
+  new DataView(nonCanonicalSnapshot.buffer).setUint32(4, duplicateBytes.byteLength, true);
+  nonCanonicalSnapshot.set(duplicateBytes, 8);
+  nonCanonicalSnapshot.set(saved!.subarray(8 + savedMetaLength), 8 + duplicateBytes.byteLength);
+  if (decodeDurableTreeBlob(nonCanonicalSnapshot) !== null) {
+    throw new Error("snapshot decoder accepted duplicate metadata keys");
+  }
+  const durablePaths = [
+    ...decodedSaved.dirs.map((entry) => entry.path),
+    ...decodedSaved.files.map((entry) => entry.path),
+    ...decodedSaved.links.map((entry) => entry.path),
+  ];
+  if (
+    durablePaths.some(
+      (path) =>
+        path === ".git/mc" ||
+        path.startsWith(".git/mc/") ||
+        path === ".git/agentos" ||
+        path.startsWith(".git/agentos/"),
+    )
+  ) {
+    throw new Error("AgentOS Git Snapshot persisted an engine runtime artifact");
   }
   await engDur.close();
 
@@ -571,17 +753,39 @@ async function main() {
   } catch {
     body = String(fileR.stdout || "");
   }
-  if (!body.includes("durable-roundtrip")) {
+  if (!body.includes("dirty-after-commit")) {
     throw new Error(
       `durable rebind worktree missing file content: ${JSON.stringify({ body, fileR })}`,
     );
   }
+  const restoredStatus = await engRestored.run({ op: "status" });
+  const statusText = String(restoredStatus.stdout || "");
+  if (
+    !statusText.includes("M persist.txt") ||
+    !statusText.includes("A  staged.txt") ||
+    !statusText.includes("?? untracked.txt")
+  ) {
+    throw new Error(`snapshot coding state mismatch: ${JSON.stringify(restoredStatus)}`);
+  }
+  const restoredLink = engRestored.bridge.FS.lstat(engRestored.bridge.abs("persist-link"));
+  if (
+    !engRestored.bridge.FS.isLink(restoredLink.mode) ||
+    engRestored.bridge.FS.readlink?.(engRestored.bridge.abs("persist-link")) !== "persist.txt"
+  ) {
+    throw new Error("snapshot did not preserve the worktree symlink itself");
+  }
+  const restoredDir = engRestored.bridge.FS.stat(engRestored.bridge.abs("empty-mode-dir"));
+  if (!engRestored.bridge.FS.isDir(restoredDir.mode) || (restoredDir.mode & 0o777) !== 0o750) {
+    throw new Error(
+      `snapshot did not preserve empty directory mode: ${restoredDir.mode.toString(8)}`,
+    );
+  }
   await engRestored.close();
 
-  // directory durable — re-openable host worktree (not AGIT-only).
+  // Directory durable — re-openable host worktree.
   // Process A: init/commit/checkpoint → host dir has real .git + files.
   // Process B: load same durableDir → same HEAD + worktree content.
-  const { mkdtemp, rm, access } = await import("node:fs/promises");
+  const { mkdtemp, rm, access, lstat, readlink } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
   const { join: pathJoin } = await import("node:path");
   const durableHost = await mkdtemp(pathJoin(tmpdir(), "agentos-git-dur-"));
@@ -621,10 +825,36 @@ async function main() {
     if (!headA || headA.length !== 40) {
       throw new Error(`D16 HEAD A: ${headA}`);
     }
+    if (!engA.bridge.FS.symlink) throw new Error("directory durable requires MEMFS symlinks");
+    engA.bridge.FS.symlink("dir-persist.txt", engA.bridge.abs("dir-link"));
+    engA.bridge.FS.mkdir(engA.bridge.abs("dir-mode"));
+    engA.bridge.FS.chmod(engA.bridge.abs("dir-mode"), 0o750);
+    if (!engA.bridge.FS.mkdirTree) throw new Error("directory durable requires MEMFS mkdirTree");
+    engA.bridge.FS.mkdirTree(engA.bridge.abs(".git/mc/out"));
+    engA.bridge.FS.writeFile(engA.bridge.abs(".git/mc/out/stale"), "runtime-only");
+    engA.bridge.FS.mkdirTree(engA.bridge.abs(".git/agentos"));
+    engA.bridge.FS.writeFile(engA.bridge.abs(".git/agentos/push.pack"), "one-shot");
     await engA.checkpoint();
-    // Host dir must contain a real .git after checkpoint (not AGIT-only).
+    // Host dir must contain a real .git after checkpoint.
     await access(pathJoin(durableHost, ".git"));
     await access(pathJoin(durableHost, "dir-persist.txt"));
+    if (
+      !(await lstat(pathJoin(durableHost, "dir-link"))).isSymbolicLink() ||
+      (await readlink(pathJoin(durableHost, "dir-link"))) !== "dir-persist.txt"
+    ) {
+      throw new Error("D16 checkpoint did not preserve symlink identity");
+    }
+    if (((await lstat(pathJoin(durableHost, "dir-mode"))).mode & 0o777) !== 0o750) {
+      throw new Error("D16 checkpoint did not preserve directory mode");
+    }
+    for (const transient of [".git/mc", ".git/agentos"]) {
+      try {
+        await access(pathJoin(durableHost, transient));
+        throw new Error(`D16 checkpoint persisted runtime path ${transient}`);
+      } catch (error) {
+        if (String(error).includes("persisted runtime path")) throw error;
+      }
+    }
     await engA.close();
 
     // Second engine load = second process open of the same host directory.
@@ -649,16 +879,27 @@ async function main() {
     if (!bodyB.includes("host-dir-roundtrip")) {
       throw new Error(`D16 directory reopen missing worktree content: ${JSON.stringify(bodyB)}`);
     }
-    // Directory backends do not produce AGIT durableSnapshot.
+    const linkB = engB.bridge.FS.lstat(engB.bridge.abs("dir-link"));
+    if (
+      !engB.bridge.FS.isLink(linkB.mode) ||
+      engB.bridge.FS.readlink?.(engB.bridge.abs("dir-link")) !== "dir-persist.txt"
+    ) {
+      throw new Error("D16 hydrate did not preserve symlink identity");
+    }
+    const dirModeB = engB.bridge.FS.stat(engB.bridge.abs("dir-mode"));
+    if (!engB.bridge.FS.isDir(dirModeB.mode) || (dirModeB.mode & 0o777) !== 0o750) {
+      throw new Error("D16 hydrate did not preserve directory mode");
+    }
+    // Directory backends do not produce a blob durableSnapshot.
     if (engB.durableSnapshot !== null) {
-      throw new Error("D16 directory durable must not force AGIT durableSnapshot");
+      throw new Error("D16 directory durable must not produce a blob durableSnapshot");
     }
     await engB.close();
   } finally {
     await rm(durableHost, { recursive: true, force: true });
   }
 
-  // truncated stdout → stream_path + readStdoutStream / gitfs out/last
+  // Truncated stdout → explicit stream_path + readStdoutStream.
   {
     const engT = await GitEngine.load({ engine: engineTar() });
     let tr = await engT.run({ op: "init" });
@@ -695,8 +936,13 @@ async function main() {
       truncated?: boolean;
       stream_path?: string;
       stdout_bytes?: number;
+      client_token?: string;
     } | null;
-    if (!meta?.truncated || meta.stream_path !== ".git/mc/out/last") {
+    if (
+      !meta?.truncated ||
+      !/^sdk-[0-9]+$/.test(meta.client_token ?? "") ||
+      meta.stream_path !== `.git/mc/out/${meta.client_token}`
+    ) {
       throw new Error(`D15 expected truncated+stream_path: ${JSON.stringify(tr)}`);
     }
     const body = await engT.readStdoutStream(tr);
@@ -708,9 +954,11 @@ async function main() {
       throw new Error(`D15 stream body unexpected: ${text.slice(0, 120)}`);
     }
     const driverT = engT.asMountDriver();
-    const viaFs = new TextDecoder().decode(await driverT.open("/.git/mc/out/last"));
-    if (viaFs.length === 0) {
-      throw new Error("D15 gitfs out/last empty");
+    try {
+      await driverT.open("/.git/mc/out/last");
+      throw new Error("D15 unscoped stream path must not be guest-visible");
+    } catch (e) {
+      if ((e as { code?: string }).code !== "ENOENT") throw e;
     }
     await engT.close();
   }

@@ -26,9 +26,9 @@ const vm = await mc.create({
 
 Presence of `git` turns the feature on. There is no separate boolean flag and no public engine URL.
 
-| Form | Meaning |
-|------|---------|
-| `true` | Enable with a resolved `git-engine.tar` (env, install dir, cache, or optional fetch). |
+| Form   | Meaning                                                                                                                            |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `true` | Enable with a resolved `git-engine.tar` (env, install dir, cache, or optional fetch).                                              |
 | object | `GitCreateOptions`: optional `engine` tar bytes, `mounts`, `sparse`, `identity`, `durable`, and test-only `allowOrigins` / `http`. |
 
 Default mount path is `/workspace/repo` unless `git.mounts` overrides it. Commits need author identity
@@ -58,12 +58,14 @@ const vm = await mc.create({
 
 ## What the guest sees
 
-| Surface | Role |
-|---------|------|
-| Worktree paths | Ordinary files under the gitfs mount (default `/workspace/repo`) |
-| `/.git/mc/ctl` | Local porcelain: write Request JSON, close the write, then read Response |
-| `/bin/git` | Thin pure-mc CLI — reduced surface, not full git-core |
-| Remotes | Only via host_call name `"git"` when the guest has **CAP_NET** |
+| Surface                      | Role                                                                     |
+| ---------------------------- | ------------------------------------------------------------------------ |
+| Worktree paths               | Ordinary files under the gitfs mount (default `/workspace/repo`)         |
+| `/.git/mc/ctl`               | Write-only local-porcelain mailbox; Requests require `args.client_token` |
+| `/.git/mc/responses/<token>` | Response for that exact ctl request                                      |
+| `/.git/mc/out/<token>`       | Complete stdout when that Response reports truncation                    |
+| `/bin/git`                   | Thin pure-mc CLI — reduced surface, not full git-core                    |
+| Remotes                      | Only via host_call name `"git"` when the guest has **CAP_NET**           |
 
 There is no synthetic `.git/objects` tree. The object database stays on the host. Symlinks are fail-closed
 on explicit paths and skipped on bulk `add -A`.
@@ -77,11 +79,11 @@ I/O through apply and release it on every normal/error exit. A partially mutated
 
 Local commands use ctl. Remote commands use host_call `"git"`.
 
-| Class | Commands |
-|-------|----------|
-| Local | `init`, `status`, `add`, `rm`, `commit`, `log`, `diff`, `show`, `rev-parse`, `branch`, `checkout` / `switch`, `reset`, `tag`, limited `config`, `remote` list/add/remove |
-| Remote | `clone [--depth N] [--filter SPEC]`, `fetch`, `pull`, `push` |
-| Meta | `version`, `help` |
+| Class  | Commands                                                                                                                                                                 |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Local  | `init`, `status`, `add`, `rm`, `commit`, `log`, `diff`, `show`, `rev-parse`, `branch`, `checkout` / `switch`, `reset`, `tag`, limited `config`, `remote` list/add/remove |
+| Remote | `clone [--depth N] [--filter SPEC]`, `fetch`, `pull`, `push`                                                                                                             |
+| Meta   | `version`, `help`                                                                                                                                                        |
 
 Unknown commands fail closed. Out of surface on the thin CLI: interactive rebase, bisect, LFS,
 submodule commands, annotated tags, and full git-config language. Sparse cones are configure-time
@@ -92,14 +94,14 @@ submodule commands, annotated tags, and full git-config language. Sparse cones a
 Remotes are host-mediated. Prefer [connections](./connections.md) for origins and auth. The guest may
 pass a public URL and an optional connection ref — never tokens.
 
-| Rule | Behaviour |
-|------|-----------|
-| Guest remotes | Require CAP_NET and host_call name `"git"`; ctl remotes refuse |
-| Host catalog | `connections` on create / `attach_git` — secrets stay host-side |
-| Empty `connection.origins` | Fail closed |
+| Rule                        | Behaviour                                                                            |
+| --------------------------- | ------------------------------------------------------------------------------------ |
+| Guest remotes               | Require CAP_NET and host_call name `"git"`; ctl remotes refuse                       |
+| Host catalog                | `connections` on create / `attach_git` — secrets stay host-side                      |
+| Empty `connection.origins`  | Fail closed                                                                          |
 | Bare URL without connection | Needs a non-empty host allowlist (fixtures); product attaches usually deny bare URLs |
-| Read-only mount | Push rejected with `git: push rejected (read-only mount)` |
-| Secrets in responses | Never; only connection refs are visible |
+| Read-only mount             | Push rejected with `git: push rejected (read-only mount)`                            |
+| Secrets in responses        | Never; only connection refs are visible                                              |
 
 On JavaScript hosts the orchestrator runs in-process with the emcc engine. On a served control-plane
 VM, BEAM owns HTTPS and the orchestrator; the dial-free `git-engine` Port only applies packs and
@@ -113,10 +115,7 @@ Each distinct mount path owns one engine (single-writer per path). Remotes demux
 ```js
 const vm = await mc.create({
   git: {
-    mounts: [
-      { path: "/workspace/app" },
-      { path: "/workspace/lib", sparse: ["src"] },
-    ],
+    mounts: [{ path: "/workspace/app" }, { path: "/workspace/lib", sparse: ["src"] }],
   },
   connections: [
     {
@@ -147,14 +146,22 @@ const vm = await mc.create({
 // mc.restore / fork with the same git.durable reopens and rebinds
 ```
 
-| Form | Meaning |
-|------|---------|
-| `durable.diskDir` | Re-openable host worktree under `{diskDir}/{id}/` (primary) |
-| `durable.id` without disk | OPFS directory/blob in the browser, else process-memory by id |
-| Omit `durable` | Ephemeral engines; restore does not rehydrate the ODB |
+| Form                      | Meaning                                                        |
+| ------------------------- | -------------------------------------------------------------- |
+| `durable.diskDir`         | Re-openable host worktree under `{diskDir}/{id}/` (primary)    |
+| `durable.id` without disk | Atomic AgentOS Git Snapshot in OPFS, else process-memory by id |
+| Omit `durable`            | Ephemeral engines; restore does not rehydrate the ODB          |
 
 On a served host, pass a preserved Port worktree root (or durable id under a configured base) when
 reattaching. Advanced direct load: `GitEngine.load({ engine?, durableDir?, durable? })`.
+
+AgentOS Git Snapshots preserve the ODB, refs, HEAD, index, sparse metadata, staged/dirty/untracked files,
+empty directories, modes, and symlink identities without following link targets. Runtime ctl streams
+and one-shot pack exports are not durable state. JS host-directory checkpoints stage and fsync a
+complete generation before atomically replacing the prior one; any copy/checkpoint failure aborts
+snapshot or close instead of publishing partial state. Served BEAM Port roots are direct libgit2
+directories: checkpoint validates that the root remains present for later reopen but does not pretend
+Erlang performed a portable directory fsync.
 
 ## Host git-engine.tar resolve (JS)
 
@@ -171,13 +178,13 @@ The product artifact is release **`git-engine.tar`** (mjs + wasm + notices), par
 After `install.sh`, `source agent-os/env.sh` sets the usual paths. Materializing the tar for emcc is
 private; there is no public `baseUrl` create option.
 
-| Variable | Meaning |
-|----------|---------|
-| `MC_GIT_ENGINE_TAR` | Path to `git-engine.tar` |
-| `AGENTOS_DIR` / `MC_ARTIFACT_HOME` | Install root that contains the tar |
-| `MC_ARTIFACT_CACHE` | Blob + materialize cache root |
-| `MC_ARTIFACT_FETCH` | `=1` / `true` allows network fetch on miss |
-| `MC_ARTIFACT_VERSION` | Cache / fetch key (default `local`) |
+| Variable                           | Meaning                                    |
+| ---------------------------------- | ------------------------------------------ |
+| `MC_GIT_ENGINE_TAR`                | Path to `git-engine.tar`                   |
+| `AGENTOS_DIR` / `MC_ARTIFACT_HOME` | Install root that contains the tar         |
+| `MC_ARTIFACT_CACHE`                | Blob + materialize cache root              |
+| `MC_ARTIFACT_FETCH`                | `=1` / `true` allows network fetch on miss |
+| `MC_ARTIFACT_VERSION`              | Cache / fetch key (default `local`)        |
 
 ## Pack cache (interactive remotes + LLB)
 
@@ -195,13 +202,13 @@ resolved engine and without that hatch, solve fails closed. See [LLB](./llb.md#l
 
 ## Agent constraints
 
-| Constraint | Meaning |
-|------------|---------|
-| One engine per mount path | Distinct paths only; remount of a live path fails closed |
-| Close ctl writes before status | Unflushed guest buffers are invisible to the engine |
-| Remotes need CAP_NET | Mount/ctl alone cannot dial |
-| Identity on commit | Supply `git.identity` or commit args |
-| Large stdout | Bodies over 1 MiB use `result.stream` / `/.git/mc/out/last` |
+| Constraint                     | Meaning                                                                                  |
+| ------------------------------ | ---------------------------------------------------------------------------------------- |
+| One engine per mount path      | Distinct paths only; remount of a live path fails closed                                 |
+| Close ctl writes before status | Unflushed guest buffers are invisible to the engine                                      |
+| Remotes need CAP_NET           | Mount/ctl alone cannot dial                                                              |
+| Identity on commit             | Supply `git.identity` or commit args                                                     |
+| Large stdout                   | Responses preview 2 KiB; `/bin/git` drains the complete token-scoped stream (16 MiB cap) |
 
 `add` follows the engine's Git-compatible reduced rule: bulk `add -A` skips ignored untracked files,
 while explicit add of an ignored untracked path fails closed because force-add is not part of the thin
@@ -216,12 +223,12 @@ instead of being presented as success.
 
 ## Advanced API
 
-| Export | Role |
-|--------|------|
-| `GitEngine` | Direct engine load, `run`, `importPack`, `asMountDriver`, remotes |
-| `registerGitHostCall` / `gitHostCallHandler` | CAP_NET host_call name `"git"` |
-| `resolveGitEngineTar` | Explicit tar resolve helper |
-| `materializeLlbGit` / `createEngineGitSource` | LLB solve helpers |
+| Export                                        | Role                                                              |
+| --------------------------------------------- | ----------------------------------------------------------------- |
+| `GitEngine`                                   | Direct engine load, `run`, `importPack`, `asMountDriver`, remotes |
+| `registerGitHostCall` / `gitHostCallHandler`  | CAP_NET host_call name `"git"`                                    |
+| `resolveGitEngineTar`                         | Explicit tar resolve helper                                       |
+| `materializeLlbGit` / `createEngineGitSource` | LLB solve helpers                                                 |
 
 These are **advanced** (`docs/api-surface.json`). Prefer `mc.create({ git: true })` in applications.
 

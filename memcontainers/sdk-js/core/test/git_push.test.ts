@@ -8,8 +8,8 @@ import {
   FixtureSmartHttp,
   GitEngine,
   GitRemoteOrchestrator,
+  parseReceiveStatus,
 } from "../src/git/index.js";
-
 
 function engineTar(): Uint8Array {
   const rel = process.env.MC_GIT_ENGINE_TAR || "";
@@ -26,8 +26,18 @@ function engineTar(): Uint8Array {
   throw new Error(`git-engine.tar not found (MC_GIT_ENGINE_TAR=${rel})`);
 }
 
-
 async function main() {
+  const reportOk = "000eunpack ok\n0017ok refs/heads/main\n0000";
+  if (!parseReceiveStatus(reportOk, true).ok) {
+    throw new Error("negotiated report-status receipt should succeed");
+  }
+  if (parseReceiveStatus("", true).ok) {
+    throw new Error("negotiated report-status must reject a missing receipt");
+  }
+  if (!parseReceiveStatus("", false).ok) {
+    throw new Error("HTTP success is the receipt when report-status was not negotiated");
+  }
+
   // Read-only reject (checked before origin policy)
   {
     const eng = await GitEngine.load({ engine: engineTar(), readOnly: true });
@@ -83,9 +93,7 @@ async function main() {
           origins: ["https://example.com"],
         },
       ],
-      policies: [
-        { owner: "user", pattern: "git.user.*", action: "require_approval" },
-      ],
+      policies: [{ owner: "user", pattern: "git.user.*", action: "require_approval" }],
       onPushApproval: async () => {
         approved = true;
         return true;
@@ -108,7 +116,9 @@ async function main() {
     }
     // Real packbuilder bytes must start with PACK magic.
     const tip = await eng.run({ op: "rev-parse", args: { rev: "HEAD" } });
-    const tipHex = String(tip.stdout || "").trim().split(/\s+/)[0];
+    const tipHex = String(tip.stdout || "")
+      .trim()
+      .split(/\s+/)[0];
     if (!/^[0-9a-f]{40}$/i.test(tipHex)) {
       throw new Error(`bad HEAD for pack check: ${tipHex}`);
     }
@@ -186,9 +196,7 @@ async function main() {
           origins: ["https://example.com"],
         },
       ],
-      policies: [
-        { owner: "user", pattern: "git.user.*", action: "require_approval" },
-      ],
+      policies: [{ owner: "user", pattern: "git.user.*", action: "require_approval" }],
       // no onPushApproval → fail closed
     });
     const r = await orch.handle({
@@ -222,9 +230,7 @@ async function main() {
           origins: ["https://example.com"],
         },
       ],
-      policies: [
-        { owner: "user", pattern: "git.user.*", action: "require_approval" },
-      ],
+      policies: [{ owner: "user", pattern: "git.user.*", action: "require_approval" }],
       onPushApproval: async () => {
         asked = true;
         return false;
@@ -266,7 +272,9 @@ async function main() {
       },
     });
     const tip = await eng.run({ op: "rev-parse", args: { rev: "HEAD" } });
-    const tipHex = String(tip.stdout || "").trim().split(/\s+/)[0];
+    const tipHex = String(tip.stdout || "")
+      .trim()
+      .split(/\s+/)[0];
     if (!/^[0-9a-f]{40}$/i.test(tipHex)) {
       throw new Error(`bad HEAD for delete push: ${tipHex}`);
     }
@@ -274,7 +282,7 @@ async function main() {
     const http = new FixtureSmartHttp();
     http.add(
       "https://example.com/r.git",
-      [{ name: "refs/heads/master", hash: tipHex }],
+      [{ name: "refs/heads/master", hash: tipHex, capabilities: ["delete-refs"] }],
       new Uint8Array(0),
     );
     http.pushResult = { ok: true, message: "ok" };
@@ -325,9 +333,7 @@ async function main() {
       args: { url: "https://example.com/r.git" },
     });
     if (bad.ok || !String(bad.stderr || "").includes("empty pack")) {
-      throw new Error(
-        `non-delete empty pack must fail closed: ${JSON.stringify(bad)}`,
-      );
+      throw new Error(`non-delete empty pack must fail closed: ${JSON.stringify(bad)}`);
     }
     await eng.close();
   }
@@ -350,9 +356,7 @@ async function main() {
         when_unix: 1_700_000_300,
       },
     });
-    const p1 = String(
-      (await eng.run({ op: "rev-parse", args: { rev: "HEAD" } })).stdout || "",
-    )
+    const p1 = String((await eng.run({ op: "rev-parse", args: { rev: "HEAD" } })).stdout || "")
       .trim()
       .split(/\s+/)[0]!;
     await eng.run({
@@ -369,9 +373,7 @@ async function main() {
         when_unix: 1_700_000_301,
       },
     });
-    const p2 = String(
-      (await eng.run({ op: "rev-parse", args: { rev: "HEAD" } })).stdout || "",
-    )
+    const p2 = String((await eng.run({ op: "rev-parse", args: { rev: "HEAD" } })).stdout || "")
       .trim()
       .split(/\s+/)[0]!;
     const full = await eng.buildPushPack([p2]);
@@ -381,12 +383,7 @@ async function main() {
         `R48 haves pack should be smaller: thin=${thin.byteLength} full=${full.byteLength}`,
       );
     }
-    if (
-      thin[0] !== 0x50 ||
-      thin[1] !== 0x41 ||
-      thin[2] !== 0x43 ||
-      thin[3] !== 0x4b
-    ) {
+    if (thin[0] !== 0x50 || thin[1] !== 0x41 || thin[2] !== 0x43 || thin[3] !== 0x4b) {
       throw new Error("thin pack missing PACK magic");
     }
     await eng.close();
@@ -400,11 +397,7 @@ async function main() {
     // import may fail — we only assert filter is recorded and fetch is invoked.
     const http = new FixtureSmartHttp();
     const tip = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    http.add(
-      "https://example.com/r.git",
-      [{ name: "refs/heads/master", hash: tip }],
-      pack,
-    );
+    http.add("https://example.com/r.git", [{ name: "refs/heads/master", hash: tip }], pack);
     const orch = new GitRemoteOrchestrator(eng, {
       http,
       allowOrigins: ["https://example.com"],

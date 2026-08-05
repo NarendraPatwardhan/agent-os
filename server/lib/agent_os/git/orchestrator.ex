@@ -31,7 +31,6 @@ defmodule AgentOS.Git.Orchestrator do
 
   @zero_oid "0000000000000000000000000000000000000000"
   # Prefer contracts/git.kdl via AgentOS.Contracts.Git; keep atom for golden matchers.
-  @push_read_only_prefix "git: push rejected (read-only mount)"
   @push_requires_approval "git: push requires approval"
   @push_blocked "git: push blocked by policy"
 
@@ -41,7 +40,7 @@ defmodule AgentOS.Git.Orchestrator do
   Options:
   * `:transport` — injectable SmartHttp transport (tests)
   * `:auth` — host-owned `%{kind: :none | :bearer | :header | :basic, ...}`
-    (guest body auth/token fields are ignored)
+    (guest body auth/token fields are rejected)
   * `:connections` — host connection catalog (`ref` / `origins` / `auth` / `spec`);
     guest may pass `args.connection` / `args.agentos` to bind one
   * `:policies` — connection push-policy rules (`pattern` / `action`)
@@ -74,7 +73,7 @@ defmodule AgentOS.Git.Orchestrator do
     `require_approval` is set. Default when missing: reject (fail closed).
   * `:push_approval` — boolean shorthand when `require_approval` is set and no
     fun is provided (`true` allows, `false` rejects)
-  * `:sparse_cone` / `:git_sparse_cone` — list of cone-mode prefix strings
+  * `:sparse_cone` — list of cone-mode prefix strings
     (e.g. `["src", "docs"]`) applied **after** `clone.apply` via Port
     `sparse-set` (D20 / JS `sparseCone` parity). **Cone-only** — not full
     sparse-checkout language. Empty/missing skips sparse-set. Gitfs sees the
@@ -669,12 +668,16 @@ defmodule AgentOS.Git.Orchestrator do
          opts <- maybe_force_require_approval(opts, binding),
          url <- binding.url,
          {:ok, prep} <- run_push_prepare(engine_pid),
-         {:ok, remote_refs} <- SmartHttp.list_refs(url, opts),
+         receive_opts <- Keyword.put(opts, :service, :receive_pack),
+         {:ok, remote_refs} <- SmartHttp.list_refs(url, receive_opts),
          {:ok, commands} <- build_push_commands(prep, remote_refs, req),
+         capabilities <- receive_capabilities(remote_refs),
+         :ok <- require_delete_capability(commands, capabilities),
          :ok <- maybe_require_push_approval(url, binding, commands, opts),
          {:ok, pack, delete_only?} <- build_push_pack(engine_pid, commands),
          :ok <- require_push_pack(pack, delete_only?),
-         {:ok, status} <- SmartHttp.push_packs(url, commands, pack, opts),
+         push_opts <- Keyword.put(opts, :receive_capabilities, capabilities),
+         {:ok, status} <- SmartHttp.push_packs(url, commands, pack, push_opts),
          :ok <- apply_push_complete(engine_pid, req, commands, status) do
       if status.ok do
         {:ok, response(true, 0, "pushed to #{redact_url(url)}\n", "")}
@@ -697,6 +700,25 @@ defmodule AgentOS.Git.Orchestrator do
 
   defp gate_push_policy(%{push_action: :block}), do: {:error, :push_blocked}
   defp gate_push_policy(_), do: :ok
+
+  defp receive_capabilities(refs) when is_list(refs) do
+    refs
+    |> Enum.flat_map(fn ref -> Map.get(ref, :capabilities, Map.get(ref, "capabilities", [])) end)
+    |> Enum.filter(&is_binary/1)
+    |> Enum.uniq()
+  end
+
+  defp require_delete_capability(commands, capabilities) do
+    deleting? =
+      Enum.any?(commands, fn c ->
+        (Map.get(c, :new_hash) || Map.get(c, "new_hash") || Map.get(c, "newHash")) ==
+          @zero_oid
+      end)
+
+    if deleting? and "delete-refs" not in capabilities,
+      do: {:error, :delete_refs_not_advertised},
+      else: :ok
+  end
 
   defp maybe_force_require_approval(opts, %{push_action: :require_approval}) do
     Keyword.put(opts, :require_approval, true)
@@ -841,6 +863,15 @@ defmodule AgentOS.Git.Orchestrator do
            AgentOS.Contracts.Git.stderr_line(:query_auth_unsupported)
          )}
 
+      {:error, :invalid_auth} ->
+        {:ok,
+         response(
+           false,
+           1,
+           "",
+           AgentOS.Contracts.Git.stderr_line(:invalid_auth)
+         )}
+
       {:error, :origin_not_allowed} ->
         Process.put(:agent_os_git_allowlist_deny, true)
         {:ok, response(false, 1, "", AgentOS.Contracts.Git.stderr_line(:origin_not_allowlisted))}
@@ -926,7 +957,7 @@ defmodule AgentOS.Git.Orchestrator do
     end
   end
 
-  defp build_push_commands(prep, remote_refs, req \\ %{}) when is_list(remote_refs) do
+  defp build_push_commands(prep, remote_refs, req) when is_list(remote_refs) do
     remote_by_name =
       Map.new(remote_refs, fn
         %{name: n, hash: h} when is_binary(n) and is_binary(h) -> {n, String.downcase(h)}
@@ -1147,14 +1178,14 @@ defmodule AgentOS.Git.Orchestrator do
 
   # Empty pack must never succeed — product honesty (P0.2).
   # D11: stream file or binary pack sources into chunked import_pack (default 1 MiB).
-  defp apply_pack(pid, pack, opts \\ [])
+  defp apply_pack(pid, pack, opts)
 
   defp apply_pack(_pid, pack, _opts) when pack == <<>>, do: {:error, :empty_pack}
 
   defp apply_pack(pid, pack, opts) when is_binary(pack) do
     chunk = import_chunk_bytes(opts)
     size = byte_size(pack)
-    do_import_chunks(pid, pack, 0, size, chunk)
+    abort_failed_import(pid, do_import_chunks(pid, pack, 0, size, chunk))
   end
 
   defp apply_pack(pid, {:file, path, offset}, opts)
@@ -1169,8 +1200,11 @@ defmodule AgentOS.Git.Orchestrator do
         {:ok, device} ->
           try do
             case :file.position(device, offset) do
-              {:ok, _} -> import_from_device(pid, device, size, chunk)
-              {:error, reason} -> {:error, reason}
+              {:ok, _} ->
+                abort_failed_import(pid, import_from_device(pid, device, size, chunk))
+
+              {:error, reason} ->
+                {:error, reason}
             end
           after
             File.close(device)
@@ -1183,6 +1217,13 @@ defmodule AgentOS.Git.Orchestrator do
   end
 
   defp apply_pack(_pid, _pack, _opts), do: {:error, :empty_pack}
+
+  defp abort_failed_import(_pid, :ok), do: :ok
+
+  defp abort_failed_import(pid, error) do
+    _ = GitEngine.abort_import_pack(pid)
+    error
+  end
 
   defp import_chunk_bytes(opts) when is_list(opts) do
     case Keyword.get(opts, :import_chunk_bytes, 1024 * 1024) do
@@ -1252,7 +1293,8 @@ defmodule AgentOS.Git.Orchestrator do
     with :ok <- apply_all_heads(pid, resolved, refs), do: apply_fetch(pid, resolved)
   end
 
-  # R37/R94: single refs.import with args.refs array; loop fallback if array fails.
+  # One atomic refs.import; never turn an all-or-nothing failure into a partial
+  # set of best-effort secondary heads.
   defp apply_all_heads(pid, tip, refs) when is_list(refs) do
     primary = %{name: tip.name || ref_name_of(tip, refs), hash: tip.hash}
 
@@ -1270,23 +1312,7 @@ defmodule AgentOS.Git.Orchestrator do
       |> Enum.uniq_by(& &1.name)
       |> Enum.filter(&(&1.name != "" and &1.hash != ""))
 
-    case apply_refs_array(pid, to_import) do
-      :ok ->
-        :ok
-
-      _array_err ->
-        # Best-effort per-ref: primary tip must succeed; other heads optional
-        # (objects may be absent for non-tip heads on partial multi-want).
-        Enum.reduce_while(to_import, :ok, fn %{name: name} = entry, :ok ->
-          case apply_refs(pid, entry) do
-            :ok ->
-              {:cont, :ok}
-
-            err ->
-              if name == primary.name, do: {:halt, err}, else: {:cont, :ok}
-          end
-        end)
-    end
+    apply_refs_array(pid, to_import)
   end
 
   defp apply_refs_array(_pid, []), do: :ok
@@ -1300,16 +1326,6 @@ defmodule AgentOS.Git.Orchestrator do
     case GitEngine.run(pid, %{
            "op" => "refs.import",
            "args" => %{"refs" => refs}
-         }) do
-      {:ok, m} -> if ok?(m), do: :ok, else: {:error, m}
-      err -> err
-    end
-  end
-
-  defp apply_refs(pid, %{name: name, hash: hash}) do
-    case GitEngine.run(pid, %{
-           "op" => "refs.import",
-           "args" => %{"name" => name, "hash" => hash}
          }) do
       {:ok, m} -> if ok?(m), do: :ok, else: {:error, m}
       err -> err
@@ -1400,29 +1416,7 @@ defmodule AgentOS.Git.Orchestrator do
          }) do
       {:ok, m} when is_map(m) ->
         stdout = Map.get(m, "stdout") || Map.get(m, :stdout) || ""
-        raw = Map.get(m, "raw") || Map.get(m, :raw) || ""
-
-        v =
-          cond do
-            is_binary(stdout) and String.trim(to_string(stdout)) != "" ->
-              String.trim(to_string(stdout))
-
-            is_binary(raw) and raw != "" ->
-              case Regex.run(~r/"stdout"\s*:\s*"((?:\\.|[^"\\])*)"/, raw) do
-                [_, s] ->
-                  s
-                  |> String.replace("\\n", "\n")
-                  |> String.replace("\\\"", "\"")
-                  |> String.replace("\\\\", "\\")
-                  |> String.trim()
-
-                _ ->
-                  ""
-              end
-
-            true ->
-              ""
-          end
+        v = if is_binary(stdout), do: String.trim(stdout), else: ""
 
         if v != "", do: {:ok, v}, else: :error
 
@@ -1493,7 +1487,7 @@ defmodule AgentOS.Git.Orchestrator do
   end
 
   defp sparse_cone_of(opts) when is_list(opts) do
-    raw = Keyword.get(opts, :sparse_cone, Keyword.get(opts, :git_sparse_cone, []))
+    raw = Keyword.get(opts, :sparse_cone, [])
     normalize_sparse_cone(raw)
   end
 
@@ -1644,7 +1638,7 @@ defmodule AgentOS.Git.Orchestrator do
 
   defp decode_request(map) when is_map(map), do: {:ok, stringify_keys(map)}
 
-  # PR11: resolve connection-bound or bare URL; guest auth/token fields ignored.
+  # Resolve connection-bound or bare URL; guest auth/token fields are rejected.
   # D9: fill url/connection from engine remote.* config when only remote name
   # (or bare fetch/pull/push after clone) is provided.
   defp resolve_binding(engine_pid, req, opts) do
@@ -1696,14 +1690,14 @@ defmodule AgentOS.Git.Orchestrator do
         remote_urls = keyword_map(opts, :remote_urls)
         remote_connections = keyword_map(opts, :remote_connections)
 
-        # Prefer host remote_urls; else engine config / remote list (D9).
+        # Prefer host remote_urls; otherwise use the canonical engine config op.
         args =
           if map_get_string(remote_urls, remote) != "" do
             args
           else
             case config_get(pid, "remote.#{remote}.url") do
               {:ok, u} -> Map.put(args, "url", u)
-              _ -> try_remote_list_url(pid, remote, args)
+              _ -> args
             end
           end
 
@@ -1733,37 +1727,6 @@ defmodule AgentOS.Git.Orchestrator do
   end
 
   defp keyword_map(_, _), do: %{}
-
-  # Fallback: `remote` list action prints "name\\turl" lines.
-  defp try_remote_list_url(pid, remote, args) do
-    case GitEngine.run(pid, %{"op" => "remote", "args" => %{"action" => "list"}}) do
-      {:ok, m} ->
-        stdout = Map.get(m, "stdout") || Map.get(m, :stdout) || Map.get(m, "raw") || ""
-
-        line =
-          stdout
-          |> to_string()
-          |> String.split("\n")
-          |> Enum.find(fn l -> String.starts_with?(l, remote <> "\t") end)
-
-        case line do
-          nil ->
-            args
-
-          l ->
-            case String.split(l, "\t", parts: 2) do
-              [name, u] when name == remote and is_binary(u) and u != "" ->
-                Map.put(args, "url", String.trim(u))
-
-              _ ->
-                args
-            end
-        end
-
-      _ ->
-        args
-    end
-  end
 
   defp string_or_empty(v) when is_binary(v), do: v
   # nil is an atom — must not become "nil".
@@ -1809,7 +1772,7 @@ defmodule AgentOS.Git.Orchestrator do
 
   # R35: product default shallow depth=1; depth<=0 means full history.
   # contracts/git.kdl: clone default shallow; fetch/pull default full when depth omitted.
-  defp depth_of(req, op \\ :clone) do
+  defp depth_of(req, op) do
     args = Map.get(req, "args") || %{}
     args = if is_map(args), do: stringify_keys(args), else: %{}
 
@@ -1877,17 +1840,7 @@ defmodule AgentOS.Git.Orchestrator do
   end
 
   defp ok?(m) when is_map(m) do
-    case Map.get(m, "ok", Map.get(m, :ok)) do
-      true ->
-        true
-
-      "true" ->
-        true
-
-      _ ->
-        raw = Map.get(m, "raw")
-        is_binary(raw) and String.contains?(raw, "\"ok\":true")
-    end
+    Map.get(m, "ok", Map.get(m, :ok)) == true
   end
 
   defp ok?(_), do: false

@@ -99,24 +99,30 @@ async function main() {
     throw new Error(`engine must refuse dial: ${JSON.stringify(dial)}`);
   }
 
-  // Durable: backend byte store + legacy non-AGIT attach (engine-level only).
-  // Real pack+refs rebind is covered in git_engine.test (R52–R55).
+  // Durable: backend byte store remains generic, but engine attach rejects an
+  // unrecognized blob instead of silently starting from an empty repository.
   const dur = new MemoryDurable("t");
   await dur.save(new TextEncoder().encode("snap"));
   const loaded = await dur.load();
   if (!loaded || new TextDecoder().decode(loaded) !== "snap") {
     throw new Error("MemoryDurable failed");
   }
-  const engDurable = await GitEngine.load({ engine: engineTar(), durable: dur });
-  const engSnap = engDurable.durableSnapshot;
-  if (!engSnap || new TextDecoder().decode(engSnap) !== "snap") {
-    throw new Error("GitEngine.load must surface legacy non-AGIT snapshot engine-level only");
+  let corruptRejected = false;
+  try {
+    await GitEngine.load({ engine: engineTar(), durable: dur });
+  } catch (e) {
+    corruptRejected = String(e).includes("unrecognized or corrupt Git snapshot");
   }
-  // Explicit snapshot override still persists caller bytes as-is.
-  await engDurable.checkpoint(new TextEncoder().encode("snap2"));
-  const afterCp = await dur.load();
-  if (!afterCp || new TextDecoder().decode(afterCp) !== "snap2") {
-    throw new Error("checkpoint(explicit) must persist caller bytes");
+  if (!corruptRejected) {
+    throw new Error("GitEngine.load must reject an unrecognized durable snapshot");
+  }
+
+  const validDurable = new MemoryDurable("valid");
+  const engDurable = await GitEngine.load({ engine: engineTar(), durable: validDurable });
+  await engDurable.checkpoint();
+  const afterCp = await validDurable.load();
+  if (!afterCp || new TextDecoder().decode(afterCp.subarray(0, 4)) !== "AOGS") {
+    throw new Error("checkpoint() must persist a complete AgentOS Git Snapshot");
   }
   await engDurable.close();
 
@@ -411,8 +417,19 @@ async function main() {
 
   // Ctl still refuses remotes
   const driver = eng.asMountDriver();
-  await driver.write!("/.git/mc/ctl", new TextEncoder().encode(JSON.stringify({ op: "fetch" })));
-  const refuse = JSON.parse(new TextDecoder().decode(await driver.open("/.git/mc/out/last")));
+  const fetchToken = "remote-fetch";
+  await driver.write!(
+    "/.git/mc/ctl",
+    new TextEncoder().encode(
+      JSON.stringify({
+        op: "fetch",
+        args: { client_token: fetchToken },
+      }),
+    ),
+  );
+  const refuse = JSON.parse(
+    new TextDecoder().decode(await driver.open(`/.git/mc/responses/${fetchToken}`)),
+  );
   if (refuse.ok || !String(refuse.stderr || "").includes("host_call")) {
     throw new Error(`ctl fetch must refuse: ${JSON.stringify(refuse)}`);
   }

@@ -18,7 +18,6 @@ import {
 } from "../src/git/index.js";
 import type { ConnectionDefinition, ConnectionPolicyRule } from "../src/types.js";
 
-
 function engineTar(): Uint8Array {
   const rel = process.env.MC_GIT_ENGINE_TAR || "";
   if (!rel) throw new Error("MC_GIT_ENGINE_TAR is not set (run under bazel test)");
@@ -33,7 +32,6 @@ function engineTar(): Uint8Array {
   }
   throw new Error(`git-engine.tar not found (MC_GIT_ENGINE_TAR=${rel})`);
 }
-
 
 async function main() {
   // Pattern matching
@@ -100,16 +98,12 @@ async function main() {
     },
     {
       connections: conns,
-      policies: [
-        { owner: "org", pattern: "github.*", action: "require_approval" },
-      ],
+      policies: [{ owner: "org", pattern: "github.*", action: "require_approval" }],
     },
   );
   if (!needApproval.ok) throw new Error(needApproval.stderr);
   if (needApproval.binding.pushAction !== "require_approval") {
-    throw new Error(
-      `expected require_approval binding, got ${needApproval.binding.pushAction}`,
-    );
+    throw new Error(`expected require_approval binding, got ${needApproval.binding.pushAction}`);
   }
 
   // Credential splice never embeds token into JSON request path — only headers
@@ -123,6 +117,14 @@ async function main() {
   const headerHdrs = spliceCredentialHeaders(headerAuth);
   if (headerHdrs["X-GitHub-Token"] !== "hdr-sekret") {
     throw new Error(`header splice failed: ${JSON.stringify(headerHdrs)}`);
+  }
+  const basicHdrs = spliceCredentialHeaders({
+    kind: "basic",
+    username: "nåme",
+    password: "päss",
+  });
+  if (basicHdrs.Authorization !== "Basic bsOlbWU6cMOkc3M=") {
+    throw new Error(`UTF-8 basic splice failed: ${JSON.stringify(basicHdrs)}`);
   }
   // Dual-host (git.kdl): query auth is rejected for remotes (no secrets in URLs).
   const queryAuth = { kind: "query" as const, name: "access_token", value: "q-sekret" };
@@ -146,12 +148,38 @@ async function main() {
       ],
     },
   );
-  if (
-    queryResolve.ok ||
-    !String(queryResolve.stderr).includes("query auth not supported")
-  ) {
+  if (queryResolve.ok || !String(queryResolve.stderr).includes("query auth not supported")) {
     throw new Error(`query auth resolve must fail: ${JSON.stringify(queryResolve)}`);
   }
+  const invalidAuthResolve = resolveGitRemote(
+    { url: "https://github.com/org/repo.git", connection: "github.user.invalid" },
+    {
+      connections: [
+        {
+          ref: "github.user.invalid",
+          auth: { kind: "basic", username: "bad:name", password: "secret" },
+          origins: ["https://github.com"],
+        },
+      ],
+    },
+  );
+  if (invalidAuthResolve.ok || !invalidAuthResolve.stderr.includes("invalid connection auth")) {
+    throw new Error(`malformed catalog auth must fail: ${JSON.stringify(invalidAuthResolve)}`);
+  }
+  let invalidHeaderRejected = false;
+  try {
+    spliceCredentialHeaders({ kind: "header", name: "X-Test\nInjected", value: "secret" });
+  } catch {
+    invalidHeaderRejected = true;
+  }
+  if (!invalidHeaderRejected) throw new Error("credential header injection must fail closed");
+  let duplicateAuthRejected = false;
+  try {
+    spliceCredentialHeaders({ kind: "bearer", token: "secret" }, { authorization: "existing" });
+  } catch {
+    duplicateAuthRejected = true;
+  }
+  if (!duplicateAuthRejected) throw new Error("duplicate Authorization header must fail closed");
   // none is a no-op
   if (Object.keys(spliceCredentialHeaders({ kind: "none" })).length !== 0) {
     throw new Error("none auth should not add headers");
@@ -166,6 +194,53 @@ async function main() {
   }
   if (guestArgsCarrySecrets({ url: "https://github.com/r.git", connection: "c" })) {
     throw new Error("public locator + connection ref are not secrets");
+  }
+
+  // GIT-024: recursive secret-key rejection (maps, arrays, case) with bounds.
+  if (!guestArgsCarrySecrets({ url: "https://x/r.git", nested: { Token: "evil" } })) {
+    throw new Error("GIT-024: nested map case variant must reject");
+  }
+  if (!guestArgsCarrySecrets({ url: "https://x/r.git", items: [{ password: "x" }] })) {
+    throw new Error("GIT-024: nested array secret key must reject");
+  }
+  if (
+    guestArgsCarrySecrets({
+      url: "https://x/r.git",
+      meta: { headers: { "x-custom": "ok" }, note: "safe" },
+    })
+  ) {
+    throw new Error("GIT-024: safe nested body must not reject");
+  }
+  // Excessive depth without secret keys → fail closed.
+  {
+    let deep: Record<string, unknown> = { leaf: "ok" };
+    for (let i = 0; i < 12; i++) {
+      deep = { wrap: deep };
+    }
+    if (!guestArgsCarrySecrets(deep)) {
+      throw new Error("GIT-024: excessive depth must fail closed");
+    }
+  }
+  // Excessive node count without secret keys → fail closed.
+  {
+    const wide: Record<string, unknown> = {};
+    for (let i = 0; i < 300; i++) {
+      wide[`k${i}`] = i;
+    }
+    if (!guestArgsCarrySecrets(wide)) {
+      throw new Error("GIT-024: excessive node count must fail closed");
+    }
+  }
+  const nestedToken = resolveGitRemote(
+    {
+      url: "https://github.com/org/repo.git",
+      connection: "github.user.work",
+      options: { auth: { kind: "bearer", token: "nested-smuggle" } },
+    },
+    { connections: conns },
+  );
+  if (nestedToken.ok || !String(nestedToken.stderr).includes("auth secrets")) {
+    throw new Error(`GIT-024 nested auth must reject: ${JSON.stringify(nestedToken)}`);
   }
   const guestToken = resolveGitRemote(
     {
@@ -252,10 +327,7 @@ async function main() {
   if (open.ok) throw new Error("empty origins must fail closed");
 
   // Embedded credentials in URL rejected
-  const userinfo = resolveGitRemote(
-    { url: "https://user:token@github.com/org/repo.git" },
-    {},
-  );
+  const userinfo = resolveGitRemote({ url: "https://user:token@github.com/org/repo.git" }, {});
   if (userinfo.ok) throw new Error("userinfo URL must be rejected");
 
   // Canonical origin match (not path prefix confusion)

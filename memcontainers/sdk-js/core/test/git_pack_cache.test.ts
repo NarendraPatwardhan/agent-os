@@ -16,10 +16,7 @@ import {
   processPackCacheSharedFromEnv,
   uploadPackCacheKey,
 } from "../src/git/pack-cache.js";
-import {
-  indexOfPackMagic,
-  readPackFromResponse,
-} from "../src/git/smart-http.js";
+import { indexOfPackMagic, readPackFromResponse } from "../src/git/smart-http.js";
 
 async function assertMemoryBasics(): Promise<void> {
   const cache = new MemoryPackCache();
@@ -35,6 +32,7 @@ async function assertMemoryBasics(): Promise<void> {
     async importPack(chunk: Uint8Array, meta?: { final?: boolean }) {
       chunks.push({ len: chunk.byteLength, final: !!meta?.final });
     },
+    async abortImportPack() {},
   };
   const r = await importPackCached(fakeEngine, pack, {
     cache,
@@ -75,7 +73,11 @@ async function assertMemoryBasics(): Promise<void> {
     throw new Error(`key prefix: ${key}`);
   }
   // wants sorted lowercase
-  if (!key.includes("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")) {
+  if (
+    !key.includes(
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    )
+  ) {
     throw new Error(`wants order: ${key}`);
   }
   // Same wants different order → same key
@@ -94,9 +96,7 @@ async function assertMemoryBasics(): Promise<void> {
  */
 async function assertDiskRoundTrip(): Promise<void> {
   const root =
-    process.env.TEST_TMPDIR?.trim() ||
-    process.env.TEST_UNDECLARED_OUTPUTS_DIR?.trim() ||
-    tmpdir();
+    process.env.TEST_TMPDIR?.trim() || process.env.TEST_UNDECLARED_OUTPUTS_DIR?.trim() || tmpdir();
   const dir = await mkdtemp(join(root, "mc-pack-cache-"));
   try {
     const pack = new Uint8Array([0x50, 0x41, 0x43, 0x4b, 9, 8, 7, 6, 5]);
@@ -179,6 +179,7 @@ async function assertDiskRoundTrip(): Promise<void> {
       async importPack(_chunk: Uint8Array, _meta?: { final?: boolean }) {
         /* no-op */
       },
+      async abortImportPack() {},
     };
     const r1 = await importPackCached(fakeEngine, pack, { cache: a });
     if (!r1.fromCache) throw new Error("import after disk put should fromCache");
@@ -199,9 +200,7 @@ async function assertDiskRoundTrip(): Promise<void> {
 async function assertEnvFactory(): Promise<void> {
   const saved = process.env.MC_GIT_PACK_CACHE;
   const root =
-    process.env.TEST_TMPDIR?.trim() ||
-    process.env.TEST_UNDECLARED_OUTPUTS_DIR?.trim() ||
-    tmpdir();
+    process.env.TEST_TMPDIR?.trim() || process.env.TEST_UNDECLARED_OUTPUTS_DIR?.trim() || tmpdir();
   const dir = await mkdtemp(join(root, "mc-pack-env-"));
   try {
     delete process.env.MC_GIT_PACK_CACHE;
@@ -303,8 +302,7 @@ async function assertStreamPackPath(): Promise<void> {
       {
         body: null,
         headers: {
-          get: (n: string) =>
-            n.toLowerCase() === "content-length" ? "999999" : null,
+          get: (n: string) => (n.toLowerCase() === "content-length" ? "999999" : null),
         },
         arrayBuffer: async () => new ArrayBuffer(0),
       },
@@ -321,6 +319,7 @@ async function assertStreamPackPath(): Promise<void> {
     async importPack(chunk: Uint8Array, meta?: { final?: boolean }) {
       streamEngChunks.push({ len: chunk.byteLength, final: !!meta?.final });
     },
+    async abortImportPack() {},
   };
   const streamParts = [pack.subarray(0, 3), pack.subarray(3)];
   const sr = await importPackStream(streamEng, streamParts, { maxPackBytes: 64 });
@@ -333,11 +332,9 @@ async function assertStreamPackPath(): Promise<void> {
   }
   let streamImportThrew = false;
   try {
-    await importPackStream(
-      streamEng,
-      [new Uint8Array(10), new Uint8Array(10)],
-      { maxPackBytes: 15 },
-    );
+    await importPackStream(streamEng, [new Uint8Array(10), new Uint8Array(10)], {
+      maxPackBytes: 15,
+    });
   } catch {
     streamImportThrew = true;
   }
@@ -373,14 +370,10 @@ async function assertProductDefaultPackCache(): Promise<void> {
     const sharedA = productDefaultPackCache();
     const sharedB = productDefaultPackCache();
     if (sharedA !== sharedB) {
-      throw new Error(
-        "productDefaultPackCache with SHARED=1 must use process singleton",
-      );
+      throw new Error("productDefaultPackCache with SHARED=1 must use process singleton");
     }
     if (sharedA !== defaultProcessPackCache()) {
-      throw new Error(
-        "productDefaultPackCache with SHARED=1 must be defaultProcessPackCache()",
-      );
+      throw new Error("productDefaultPackCache with SHARED=1 must be defaultProcessPackCache()");
     }
   } finally {
     if (savedShared === undefined) delete process.env.MC_GIT_PACK_CACHE_SHARED;

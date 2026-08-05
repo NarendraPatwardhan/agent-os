@@ -458,8 +458,7 @@ defmodule AgentOS.Git.OrchestratorTest do
       assert {:ok, repo_pid} = GitEngine.start(executable: path, root: repo_root)
       assert {:ok, init} = GitEngine.run(repo_pid, %{"op" => "init"})
 
-      assert init["ok"] == true or
-               (is_binary(Map.get(init, "raw")) and init["raw"] =~ "\"ok\":true")
+      assert init["ok"] == true
 
       assert {:ok, _} =
                GitEngine.run(repo_pid, %{
@@ -520,9 +519,7 @@ defmodule AgentOS.Git.OrchestratorTest do
       assert {:ok, fresh_preflight} =
                GitEngine.run(fresh_pid, %{"op" => "clone.preflight"})
 
-      assert fresh_preflight["ok"] == true or
-               (is_binary(Map.get(fresh_preflight, "raw")) and
-                  fresh_preflight["raw"] =~ "\"ok\":true")
+      assert fresh_preflight["ok"] == true
 
       assert {:ok, fresh_json} =
                Orchestrator.run(
@@ -935,8 +932,7 @@ defmodule AgentOS.Git.OrchestratorTest do
 
     assert {:ok, init} = GitEngine.run(pid, %{"op" => "init"})
 
-    assert init["ok"] == true or
-             (is_binary(Map.get(init, "raw")) and init["raw"] =~ "\"ok\":true")
+    assert init["ok"] == true
 
     assert {:ok, _} =
              GitEngine.run(pid, %{
@@ -957,9 +953,7 @@ defmodule AgentOS.Git.OrchestratorTest do
                }
              })
 
-    assert commit["ok"] == true or
-             (is_binary(Map.get(commit, "raw")) and commit["raw"] =~ "\"ok\":true"),
-           "commit failed: #{inspect(commit)}"
+    assert commit["ok"] == true, "commit failed: #{inspect(commit)}"
 
     {:ok, push_agent} = Agent.start_link(fn -> nil end)
 
@@ -1007,7 +1001,7 @@ defmodule AgentOS.Git.OrchestratorTest do
                "args" => %{"rev" => "refs/remotes/origin/master"}
              })
 
-    stdout = rev["stdout"] || Map.get(rev, "raw") || ""
+    stdout = rev["stdout"] || ""
     assert is_binary(stdout) and stdout != ""
 
     Agent.stop(push_agent)
@@ -1045,15 +1039,25 @@ defmodule AgentOS.Git.OrchestratorTest do
 
   test "parse_receive_status maps unpack/ng failures" do
     assert %{ok: true} =
-             SmartHttp.parse_receive_status("000eunpack ok\n0017ok refs/heads/main\n0000")
+             SmartHttp.parse_receive_status(
+               "000eunpack ok\n0017ok refs/heads/main\n0000",
+               true
+             )
 
-    assert %{ok: false, message: msg} = SmartHttp.parse_receive_status("unpack error bad\n")
+    assert %{ok: false, message: msg} =
+             SmartHttp.parse_receive_status("unpack error bad\n", true)
+
     assert msg =~ "unpack"
 
     assert %{ok: false, message: ng} =
-             SmartHttp.parse_receive_status("ng refs/heads/main non-fast-forward\n")
+             SmartHttp.parse_receive_status("ng refs/heads/main non-fast-forward\n", true)
 
     assert ng =~ "ng "
+
+    assert %{ok: false, message: "missing report-status"} =
+             SmartHttp.parse_receive_status("", true)
+
+    assert %{ok: true} = SmartHttp.parse_receive_status("", false)
   end
 
   @tag timeout: 60_000
@@ -1068,9 +1072,9 @@ defmodule AgentOS.Git.OrchestratorTest do
 
     File.mkdir_p!(root)
     assert {:ok, pid} = GitEngine.start(executable: path, root: root)
-    assert {:ok, _} = GitEngine.run(pid, %{"op" => "init"})
+    assert {:ok, %{"ok" => true}} = GitEngine.run(pid, %{"op" => "init"})
 
-    assert {:ok, _} =
+    assert {:ok, %{"ok" => true}} =
              GitEngine.run(pid, %{
                "op" => "write",
                "args" => %{"path" => "d.txt", "content" => "del\n"}
@@ -1098,7 +1102,14 @@ defmodule AgentOS.Git.OrchestratorTest do
 
     transport = fn
       :list_refs, {_url, _opts} ->
-        {:ok, [%{name: "refs/heads/master", hash: String.downcase(tip)}]}
+        {:ok,
+         [
+           %{
+             name: "refs/heads/master",
+             hash: String.downcase(tip),
+             capabilities: ["delete-refs"]
+           }
+         ]}
 
       :fetch_packs, _ ->
         flunk("delete push must not call fetch_packs")
@@ -1151,17 +1162,18 @@ defmodule AgentOS.Git.OrchestratorTest do
 
     File.mkdir_p!(root)
     assert {:ok, pid} = GitEngine.start(executable: path, root: root)
-    assert {:ok, _} = GitEngine.run(pid, %{"op" => "init"})
+    assert {:ok, %{"ok" => true}} = GitEngine.run(pid, %{"op" => "init"})
 
-    assert {:ok, _} =
+    assert {:ok, %{"ok" => true}} =
              GitEngine.run(pid, %{
                "op" => "write",
                "args" => %{"path" => "a.txt", "content" => "one\n"}
              })
 
-    assert {:ok, _} = GitEngine.run(pid, %{"op" => "add", "args" => %{"path" => "a.txt"}})
+    assert {:ok, %{"ok" => true}} =
+             GitEngine.run(pid, %{"op" => "add", "args" => %{"path" => "a.txt"}})
 
-    assert {:ok, _} =
+    assert {:ok, %{"ok" => true}} =
              GitEngine.run(pid, %{
                "op" => "commit",
                "args" => %{
@@ -1175,15 +1187,16 @@ defmodule AgentOS.Git.OrchestratorTest do
     assert {:ok, rev1} = GitEngine.run(pid, %{"op" => "rev-parse", "args" => %{"rev" => "HEAD"}})
     p1 = (rev1["stdout"] || "") |> String.trim() |> String.split(~r/\s+/) |> hd()
 
-    assert {:ok, _} =
+    assert {:ok, %{"ok" => true}} =
              GitEngine.run(pid, %{
                "op" => "write",
                "args" => %{"path" => "b.txt", "content" => "two-more-for-thin-pack\n"}
              })
 
-    assert {:ok, _} = GitEngine.run(pid, %{"op" => "add", "args" => %{"path" => "b.txt"}})
+    assert {:ok, %{"ok" => true}} =
+             GitEngine.run(pid, %{"op" => "add", "args" => %{"path" => "b.txt"}})
 
-    assert {:ok, _} =
+    assert {:ok, %{"ok" => true}} =
              GitEngine.run(pid, %{
                "op" => "commit",
                "args" => %{
@@ -1196,6 +1209,7 @@ defmodule AgentOS.Git.OrchestratorTest do
 
     assert {:ok, rev2} = GitEngine.run(pid, %{"op" => "rev-parse", "args" => %{"rev" => "HEAD"}})
     p2 = (rev2["stdout"] || "") |> String.trim() |> String.split(~r/\s+/) |> hd()
+    refute p2 == p1
 
     assert {:ok, full} = GitEngine.pack_build(pid, [p2])
     assert {:ok, thin} = GitEngine.pack_build(pid, [p2], haves: [p1])
@@ -1264,8 +1278,25 @@ defmodule AgentOS.Git.OrchestratorTest do
     assert [{"authorization", "Basic " <> _}] =
              SmartHttp.auth_headers(%{"kind" => "basic", "username" => "u", "password" => "p"})
 
-    # Unknown kind → no headers (do not invent)
-    assert [] = SmartHttp.auth_headers(%{kind: :query, name: "t", value: "v"})
+    assert_raise ArgumentError, ~r/invalid connection auth/, fn ->
+      SmartHttp.auth_headers(%{kind: :query, name: "t", value: "v"})
+    end
+
+    assert_raise ArgumentError, ~r/invalid connection auth/, fn ->
+      SmartHttp.auth_headers(%{kind: :basic, username: "bad:name", password: "secret"})
+    end
+
+    assert {:error, :invalid_auth} =
+             Connections.resolve_remote(
+               %{"url" => @fixture_url, "connection" => "git.user.invalid"},
+               connections: [
+                 %{
+                   ref: "git.user.invalid",
+                   auth: %{kind: :header, name: "X-Test\nInjected", value: "secret"},
+                   origins: [@fixture_origin]
+                 }
+               ]
+             )
   end
 
   # ── BEAM pack cache (download-key; credentials never in key) ───────────
@@ -1724,7 +1755,7 @@ defmodule AgentOS.Git.OrchestratorTest do
         info0 = AgentOS.ControlPlane.info(id)
         assert info0.git_attached == true
         assert info0.git_allowed_origins == [@fixture_origin]
-        # Legacy attach (no :connections): connection catalog empty.
+        # Bare-URL fixture mode has no connection catalog.
         assert info0.git_connection_count == 0
         assert info0.git_connection_refs == []
         assert info0.git_policy_count == 0
@@ -2112,7 +2143,7 @@ defmodule AgentOS.Git.OrchestratorTest do
 
         info1 = AgentOS.ControlPlane.info(id)
         assert info1.git_attached == true
-        assert info1.git_mount_path == "/workspace/repo"
+        assert info1.git_mounts == ["/workspace/repo"]
         assert info1.git_engine_count == 1
 
         # Same path: must not open another Port.
@@ -2293,7 +2324,7 @@ defmodule AgentOS.Git.OrchestratorTest do
                    sparse_cone: ["src", "docs"]
                  )
 
-        # Mount meta holds normalized cone (alias :git_sparse_cone also accepted on attach).
+        # Mount metadata holds the normalized cone.
         vm = AgentOS.ControlPlane.whereis(id)
         %{git_engines: engines} = :sys.get_state(vm)
         mount = Map.get(engines, "/workspace/repo")
@@ -3033,6 +3064,48 @@ defmodule AgentOS.Git.OrchestratorTest do
                auth: %{kind: :none}
              )
 
+    # GIT-024: nested map / list / case-variant secret keys fail closed.
+    assert Connections.guest_args_carry_secrets?(%{
+             "url" => "https://example.com/r.git",
+             "nested" => %{"Token" => "evil"}
+           })
+
+    assert Connections.guest_args_carry_secrets?(%{
+             "url" => "https://example.com/r.git",
+             "items" => [%{"password" => "x"}]
+           })
+
+    refute Connections.guest_args_carry_secrets?(%{
+             "url" => "https://example.com/r.git",
+             "meta" => %{"headers" => %{"x-custom" => "ok"}, "note" => "safe"}
+           })
+
+    # Excessive depth without secret keys → fail closed.
+    deep =
+      Enum.reduce(1..12, %{"leaf" => "ok"}, fn _, acc ->
+        %{"wrap" => acc}
+      end)
+
+    assert Connections.guest_args_carry_secrets?(deep)
+
+    # Excessive node count without secret keys → fail closed.
+    wide =
+      1..300
+      |> Enum.map(fn i -> {"k#{i}", i} end)
+      |> Map.new()
+
+    assert Connections.guest_args_carry_secrets?(wide)
+
+    assert {:error, :guest_secrets_forbidden} =
+             Connections.resolve_remote(
+               %{
+                 "url" => "https://example.com/r.git",
+                 "options" => %{"auth" => %{"kind" => "bearer", "token" => "nested"}}
+               },
+               allowed_origins: ["https://example.com"],
+               auth: %{kind: :none}
+             )
+
     # Clean bare URL still resolves with host auth only.
     assert {:ok, bare} =
              Connections.resolve_remote(
@@ -3097,7 +3170,7 @@ defmodule AgentOS.Git.OrchestratorTest do
       try do
         assert {:ok, pid} = GitEngine.start(executable: path, root: root)
 
-        # No legacy allowed_origins — connection origins alone authorize the dial.
+        # Connection origins alone authorize the dial.
         assert {:ok, json} =
                  Orchestrator.run(
                    pid,
@@ -3521,7 +3594,7 @@ defmodule AgentOS.Git.OrchestratorTest do
   end
 
   defp ok_map?(m) when is_map(m) do
-    m["ok"] == true or (is_binary(Map.get(m, "raw")) and m["raw"] =~ "\"ok\":true")
+    m["ok"] == true
   end
 
   defp ok_map?(_), do: false

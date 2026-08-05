@@ -48,6 +48,7 @@ Projected from `contracts/git.kdl`. Hosts consume TS/Elixir projections.
 | `redirect_not_allowed` | `git: redirect not allowed` |
 | `empty_origins` | `git: empty connection origins` |
 | `query_auth_unsupported` | `git: query auth not supported for remotes` |
+| `invalid_auth` | `git: invalid connection auth` |
 
 ### algorithm step orders
 

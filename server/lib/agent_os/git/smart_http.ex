@@ -33,7 +33,11 @@ defmodule AgentOS.Git.SmartHttp do
   `allowed_origins: ["https://example.com"]` matching the fixture URL.
   """
 
-  @type ref :: %{name: String.t(), hash: String.t()}
+  @type ref :: %{
+          required(:name) => String.t(),
+          required(:hash) => String.t(),
+          optional(:capabilities) => [String.t()]
+        }
   @type push_command :: %{old_hash: String.t(), new_hash: String.t(), name: String.t()}
   @type receive_status :: %{ok: boolean(), message: String.t() | nil}
   @type auth ::
@@ -46,6 +50,8 @@ defmodule AgentOS.Git.SmartHttp do
 
   # contracts/git.kdl default_max_pack_bytes (dual-host with TS pack-cache).
   @default_max_pack_bytes AgentOS.Contracts.Git.default_max_pack_bytes()
+  @max_credential_bytes 16 * 1024
+  @max_header_name_bytes 256
 
   @doc "Default max response/pack body size in bytes (64 MiB)."
   def default_max_pack_bytes, do: @default_max_pack_bytes
@@ -59,8 +65,16 @@ defmodule AgentOS.Git.SmartHttp do
 
   **Never** puts credentials into the URL — headers only. Used by list/fetch/push.
   """
-  @spec auth_headers(map() | keyword() | nil) :: [{String.t(), String.t()}]
-  def auth_headers(auth), do: do_auth_headers(normalize_auth(auth))
+  @spec auth_headers(map() | nil) :: [{String.t(), String.t()}]
+  def auth_headers(auth) do
+    case normalize_auth(auth) do
+      :invalid ->
+        raise ArgumentError, AgentOS.Contracts.Git.stderr_line(:invalid_auth) |> String.trim()
+
+      normalized ->
+        do_auth_headers(normalized)
+    end
+  end
 
   # ── Origin / URL policy (mirror TS requestOrigin / originAllowed) ───────────
 
@@ -196,7 +210,7 @@ defmodule AgentOS.Git.SmartHttp do
 
   # ── Public transport API ───────────────────────────────────────────────────
 
-  @doc "List refs via info/refs?service=git-upload-pack."
+  @doc "List refs via upload-pack (default) or receive-pack discovery."
   @spec list_refs(String.t(), keyword()) :: {:ok, [ref()]} | {:error, term()}
   def list_refs(url, opts \\ []) when is_binary(url) do
     case Keyword.get(opts, :transport) do
@@ -355,7 +369,14 @@ defmodule AgentOS.Git.SmartHttp do
   defp http_list_refs(url, opts) do
     ensure_http_apps!()
     base = String.trim_trailing(url, "/")
-    info = base <> "/info/refs?service=git-upload-pack"
+
+    service =
+      case Keyword.get(opts, :service, :upload_pack) do
+        s when s in [:receive_pack, "git-receive-pack"] -> "git-receive-pack"
+        _ -> "git-upload-pack"
+      end
+
+    info = base <> "/info/refs?service=" <> service
     headers = auth_headers(Keyword.get(opts, :auth, %{kind: :none}))
     max = max_bytes(opts)
 
@@ -427,7 +448,15 @@ defmodule AgentOS.Git.SmartHttp do
       {:error, {:receive_pack_failed, :body_too_large}}
     else
       base = String.trim_trailing(url, "/")
-      body = build_receive_pack_body(commands, pack)
+      advertised = Keyword.get(opts, :receive_capabilities, [])
+      requested_status = receive_status_capability(advertised)
+
+      body =
+        build_receive_pack_body(
+          commands,
+          pack,
+          requested_status
+        )
 
       headers =
         [
@@ -437,7 +466,7 @@ defmodule AgentOS.Git.SmartHttp do
 
       case request(:post, base <> "/git-receive-pack", headers, body, max) do
         {:ok, resp} when is_binary(resp) ->
-          {:ok, parse_receive_status(resp)}
+          {:ok, parse_receive_status(resp, is_binary(requested_status))}
 
         {:error, reason} ->
           {:error, {:receive_pack_failed, reason}}
@@ -797,35 +826,90 @@ defmodule AgentOS.Git.SmartHttp do
   defp as_charlist(s) when is_list(s), do: s
 
   defp normalize_auth(nil), do: %{kind: :none}
-  defp normalize_auth(auth) when is_list(auth), do: normalize_auth(Map.new(auth))
 
   defp normalize_auth(auth) when is_map(auth) do
-    kind = parse_auth_kind(Map.get(auth, :kind) || Map.get(auth, "kind"))
-
-    %{kind: kind}
-    |> put_auth_field(auth, :token, ["token"])
-    |> put_auth_field(auth, :name, ["name"])
-    |> put_auth_field(auth, :value, ["value"])
-    |> put_auth_field(auth, :username, ["username", "user"])
-    |> put_auth_field(auth, :password, ["password", "pass"])
+    with normalized when is_map(normalized) <- normalize_auth_keys(auth),
+         kind when kind != :invalid <- parse_auth_kind(Map.get(normalized, "kind")) do
+      normalize_auth_fields(kind, normalized)
+    else
+      _ -> :invalid
+    end
   end
 
-  defp normalize_auth(_), do: %{kind: :none}
+  defp normalize_auth(_), do: :invalid
+
+  defp normalize_auth_fields(:none, auth) do
+    if exact_auth_keys?(auth, ["kind"]), do: %{kind: :none}, else: :invalid
+  end
+
+  defp normalize_auth_fields(:bearer, auth) do
+    token = Map.get(auth, "token")
+
+    if exact_auth_keys?(auth, ["kind", "token"]) and valid_auth_secret?(token),
+      do: %{kind: :bearer, token: token},
+      else: :invalid
+  end
+
+  defp normalize_auth_fields(:header, auth) do
+    name = Map.get(auth, "name")
+    value = Map.get(auth, "value")
+
+    if exact_auth_keys?(auth, ["kind", "name", "value"]) and valid_auth_header?(name) and
+         valid_auth_secret?(value),
+       do: %{kind: :header, name: name, value: value},
+       else: :invalid
+  end
+
+  defp normalize_auth_fields(:basic, auth) do
+    username = Map.get(auth, "username")
+    password = Map.get(auth, "password")
+
+    if exact_auth_keys?(auth, ["kind", "username", "password"]) and
+         valid_auth_secret?(username) and valid_auth_secret?(password) and
+         not String.contains?(username, ":"),
+       do: %{kind: :basic, username: username, password: password},
+       else: :invalid
+  end
+
+  defp normalize_auth_keys(auth) do
+    Enum.reduce_while(auth, %{}, fn
+      {key, value}, acc when is_atom(key) or is_binary(key) ->
+        normalized = if is_atom(key), do: Atom.to_string(key), else: key
+
+        if Map.has_key?(acc, normalized) do
+          {:halt, :invalid}
+        else
+          {:cont, Map.put(acc, normalized, value)}
+        end
+
+      _, _acc ->
+        {:halt, :invalid}
+    end)
+  end
+
+  defp exact_auth_keys?(auth, expected),
+    do: MapSet.new(Map.keys(auth)) == MapSet.new(expected)
+
+  defp valid_auth_secret?(value) when is_binary(value),
+    do:
+      value != "" and byte_size(value) <= @max_credential_bytes and String.valid?(value) and
+        not String.match?(value, ~r/[\x00-\x1f\x7f]/)
+
+  defp valid_auth_secret?(_), do: false
+
+  defp valid_auth_header?(value) when is_binary(value),
+    do:
+      byte_size(value) <= @max_header_name_bytes and
+        String.match?(value, ~r/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/)
+
+  defp valid_auth_header?(_), do: false
 
   defp parse_auth_kind(k) when k in [:none, :bearer, :header, :basic], do: k
   defp parse_auth_kind("none"), do: :none
   defp parse_auth_kind("bearer"), do: :bearer
   defp parse_auth_kind("header"), do: :header
   defp parse_auth_kind("basic"), do: :basic
-  defp parse_auth_kind(_), do: :none
-
-  defp put_auth_field(acc, auth, atom_key, string_keys) do
-    val =
-      Map.get(auth, atom_key) ||
-        Enum.find_value(string_keys, fn k -> Map.get(auth, k) end)
-
-    if is_binary(val), do: Map.put(acc, atom_key, val), else: acc
-  end
+  defp parse_auth_kind(_), do: :invalid
 
   defp do_auth_headers(%{kind: :none}), do: []
 
@@ -851,24 +935,34 @@ defmodule AgentOS.Git.SmartHttp do
   @doc false
   def parse_info_refs(text) when is_binary(text) do
     text
-    |> String.split("\n")
+    |> decode_pkt_or_plain_lines()
     |> Enum.reduce([], fn raw, acc ->
-      line = strip_pkt_prefix(String.trim(raw))
+      line = String.trim(raw)
 
       cond do
         line == "" ->
           acc
 
-        String.contains?(line, "git-upload-pack") ->
+        String.contains?(line, "git-upload-pack") or
+            String.contains?(line, "git-receive-pack") ->
           acc
 
         true ->
-          case Regex.run(~r/^([0-9a-fA-F]{40})\s+(\S+)/, line) do
-            [_, hash, name] ->
-              name = name |> String.split("\0") |> hd()
+          case Regex.run(~r/^([0-9a-fA-F]{40})\s+(.+)$/, line) do
+            [_, hash, raw_name] ->
+              [name | cap_tail] = String.split(raw_name, "\0", parts: 2)
+
+              capabilities =
+                case cap_tail do
+                  [caps] -> String.split(String.trim(caps), ~r/\s+/, trim: true)
+                  _ -> []
+                end
 
               if name == "HEAD" or String.starts_with?(name, "refs/") do
-                [%{name: name, hash: String.downcase(hash)} | acc]
+                [
+                  %{name: name, hash: String.downcase(hash), capabilities: capabilities}
+                  | acc
+                ]
               else
                 acc
               end
@@ -881,24 +975,14 @@ defmodule AgentOS.Git.SmartHttp do
     |> Enum.reverse()
   end
 
-  defp strip_pkt_prefix(<<a, b, c, d, rest::binary>>)
-       when a in ?0..?9 or a in ?a..?f or a in ?A..?F do
-    if Regex.match?(~r/^[0-9a-fA-F]{4}/, <<a, b, c, d>>) do
-      rest
-    else
-      <<a, b, c, d, rest::binary>>
-    end
-  end
-
-  defp strip_pkt_prefix(line), do: line
-
   # R36: optional filter after wants (partial clone). First want advertises
   # capability `filter` when set. Fixtures/servers that ignore filter stay ok.
-  defp build_upload_pack_body(want, have, depth, filter \\ nil) do
+  defp build_upload_pack_body(want, have, depth, filter) do
     filter_s =
       case filter do
         f when is_binary(f) ->
           f = String.trim(f)
+
           if f != "" and byte_size(f) <= 128 and not String.contains?(f, ["\n", "\r", <<0>>]),
             do: f,
             else: nil
@@ -927,19 +1011,35 @@ defmodule AgentOS.Git.SmartHttp do
     )
   end
 
-  defp build_receive_pack_body(commands, pack) when is_list(commands) and is_binary(pack) do
-    # First command advertises report-status so real git-receive-pack (D28)
-    # returns unpack/ok pkt-lines; subsequent commands are bare.
+  defp receive_status_capability(advertised) when is_list(advertised) do
+    cond do
+      "report-status-v2" in advertised -> "report-status-v2"
+      "report-status" in advertised -> "report-status"
+      true -> nil
+    end
+  end
+
+  defp receive_status_capability(_), do: nil
+
+  defp build_receive_pack_body(commands, pack, requested)
+       when is_list(commands) and is_binary(pack) and
+              (is_binary(requested) or is_nil(requested)) do
     cmd_lines =
       commands
       |> Enum.with_index()
       |> Enum.map(fn {c, i} ->
-        old_h = command_field(c, :old_hash) || command_field(c, "old_hash") || command_field(c, "oldHash")
-        new_h = command_field(c, :new_hash) || command_field(c, "new_hash") || command_field(c, "newHash")
+        old_h =
+          command_field(c, :old_hash) || command_field(c, "old_hash") ||
+            command_field(c, "oldHash")
+
+        new_h =
+          command_field(c, :new_hash) || command_field(c, "new_hash") ||
+            command_field(c, "newHash")
+
         name = command_field(c, :name) || command_field(c, "name") || ""
 
-        if i == 0 do
-          pkt("#{old_h} #{new_h} #{name}\0report-status")
+        if i == 0 and is_binary(requested) do
+          pkt("#{old_h} #{new_h} #{name}\0#{requested}")
         else
           pkt("#{old_h} #{new_h} #{name}")
         end
@@ -967,11 +1067,11 @@ defmodule AgentOS.Git.SmartHttp do
   @doc """
   Parse smart receive-pack report-status body (pkt-line or plain).
 
-  Mirrors TS `parseReceiveStatus`: unpack failure / `ng ` lines fail closed;
-  missing report-status is treated as ok.
+  Mirrors TS `parseReceiveStatus`: unpack failure / `ng ` lines fail closed.
+  When report-status was negotiated, a missing `unpack` receipt also fails.
   """
-  @spec parse_receive_status(binary()) :: receive_status()
-  def parse_receive_status(text) when is_binary(text) do
+  @spec parse_receive_status(binary(), boolean()) :: receive_status()
+  def parse_receive_status(text, required) when is_binary(text) and is_boolean(required) do
     lines = decode_pkt_or_plain_lines(text)
     unpack = Enum.find(lines, &String.starts_with?(&1, "unpack "))
     ng = Enum.find(lines, &String.starts_with?(&1, "ng "))
@@ -983,12 +1083,15 @@ defmodule AgentOS.Git.SmartHttp do
       is_binary(ng) ->
         %{ok: false, message: String.slice(ng, 0, 200)}
 
+      required and not is_binary(unpack) ->
+        %{ok: false, message: "missing report-status"}
+
       true ->
         %{ok: true, message: "ok"}
     end
   end
 
-  def parse_receive_status(_), do: %{ok: false, message: "empty report-status"}
+  def parse_receive_status(_, _), do: %{ok: false, message: "invalid report-status"}
 
   defp decode_pkt_or_plain_lines(text) when is_binary(text) do
     {lines, _i} = decode_pkt_lines(text, 0, [])

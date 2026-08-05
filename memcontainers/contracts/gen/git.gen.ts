@@ -47,6 +47,7 @@ export const STDERR_PREFIX = {
   redirect_not_allowed: "git: redirect not allowed",
   empty_origins: "git: empty connection origins",
   query_auth_unsupported: "git: query auth not supported for remotes",
+  invalid_auth: "git: invalid connection auth",
 } as const;
 export type StderrPrefixId = keyof typeof STDERR_PREFIX;
 export function stderrLine(id: StderrPrefixId, detail?: string): string {

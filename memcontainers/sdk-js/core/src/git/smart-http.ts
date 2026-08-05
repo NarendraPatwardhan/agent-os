@@ -19,11 +19,7 @@
 
 import type { ConnectionAuth } from "../types.js";
 import { spliceCredentialHeaders, spliceCredentialUrl } from "./connections.js";
-import {
-  MAX_PACK_ZERO_MEANS_DEFAULT,
-  PACK_MAGIC_REQUIRED,
-  stderrLine,
-} from "@mc/contracts/git";
+import { MAX_PACK_ZERO_MEANS_DEFAULT, PACK_MAGIC_REQUIRED, stderrLine } from "@mc/contracts/git";
 import { DEFAULT_MAX_PACK_BYTES } from "./pack-cache.js";
 
 /** Resolve max pack bytes: 0 → default when contract says so (dual-host with BEAM). */
@@ -39,6 +35,8 @@ export interface RefAdvertisement {
   name: string;
   hash: string;
   peeled?: string;
+  /** Capabilities advertised on the first v0/v1 ref line. */
+  capabilities?: string[];
 }
 
 export interface ReceiveStatus {
@@ -73,7 +71,11 @@ export interface FetchPacksOptions {
 }
 
 export interface SmartHttpTransport {
-  listRefs(url: string, auth?: ConnectionAuth): Promise<RefAdvertisement[]>;
+  listRefs(
+    url: string,
+    auth?: ConnectionAuth,
+    service?: "git-upload-pack" | "git-receive-pack",
+  ): Promise<RefAdvertisement[]>;
   fetchPacks(
     url: string,
     want: string[],
@@ -90,6 +92,7 @@ export interface SmartHttpTransport {
     commands: PushCommand[],
     pack: Uint8Array,
     auth?: ConnectionAuth,
+    capabilities?: string[],
   ): Promise<ReceiveStatus>;
 }
 
@@ -97,14 +100,9 @@ export interface SmartHttpTransport {
 
 /** In-memory test double (shared algorithm with C fixtures). */
 export class FixtureSmartHttp implements SmartHttpTransport {
-  private readonly fixtures = new Map<
-    string,
-    { refs: RefAdvertisement[]; pack: Uint8Array }
-  >();
+  private readonly fixtures = new Map<string, { refs: RefAdvertisement[]; pack: Uint8Array }>();
   lastAuth: ConnectionAuth | undefined;
-  lastPush:
-    | { url: string; commands: PushCommand[]; packLen: number; pack: Uint8Array }
-    | undefined;
+  lastPush: { url: string; commands: PushCommand[]; packLen: number; pack: Uint8Array } | undefined;
   /** Last fetchPacks args (filter ignored for body; recorded for partial-clone tests). */
   lastFetch:
     | {
@@ -133,7 +131,11 @@ export class FixtureSmartHttp implements SmartHttpTransport {
     this.fetchPacksCalls = 0;
   }
 
-  async listRefs(url: string, auth?: ConnectionAuth): Promise<RefAdvertisement[]> {
+  async listRefs(
+    url: string,
+    auth?: ConnectionAuth,
+    _service: "git-upload-pack" | "git-receive-pack" = "git-upload-pack",
+  ): Promise<RefAdvertisement[]> {
     this.listRefsCalls += 1;
     this.lastAuth = auth;
     const f = this.fixtures.get(url);
@@ -174,6 +176,7 @@ export class FixtureSmartHttp implements SmartHttpTransport {
     commands: PushCommand[],
     pack: Uint8Array,
     auth?: ConnectionAuth,
+    _capabilities?: string[],
   ): Promise<ReceiveStatus> {
     this.lastAuth = auth;
     this.lastPush = {
@@ -189,10 +192,7 @@ export class FixtureSmartHttp implements SmartHttpTransport {
 // ── Fetch transport (product) ───────────────────────────────────────────────
 
 /** Optional `fetch` inject for tests (redirect mock / offline). */
-export type FetchImpl = (
-  input: string | URL | Request,
-  init?: RequestInit,
-) => Promise<Response>;
+export type FetchImpl = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 /**
  * Public HTTPS smart-HTTP using fetch (browser/Node) with optional credential splice.
@@ -206,9 +206,7 @@ export class FetchSmartHttp implements SmartHttpTransport {
     private readonly defaultAuth?: ConnectionAuth,
     fetchImpl?: FetchImpl,
   ) {
-    this.fetchImpl =
-      fetchImpl ??
-      ((input, init) => globalThis.fetch(input as RequestInfo, init));
+    this.fetchImpl = fetchImpl ?? ((input, init) => globalThis.fetch(input as RequestInfo, init));
   }
 
   private headers(auth?: ConnectionAuth): Record<string, string> {
@@ -223,10 +221,7 @@ export class FetchSmartHttp implements SmartHttpTransport {
    * Product dial: never auto-follow redirects. Reject 3xx / opaqueredirect.
    * Injected `fetchImpl` must honor `redirect: "manual"` (or simulate it).
    */
-  private async smartFetch(
-    input: string,
-    init: RequestInit = {},
-  ): Promise<Response> {
+  private async smartFetch(input: string, init: RequestInit = {}): Promise<Response> {
     const res = await this.fetchImpl(input, {
       ...init,
       // Fail-closed: caller inspects status; browser never follows Location.
@@ -240,10 +235,14 @@ export class FetchSmartHttp implements SmartHttpTransport {
     return res;
   }
 
-  async listRefs(url: string, auth?: ConnectionAuth): Promise<RefAdvertisement[]> {
+  async listRefs(
+    url: string,
+    auth?: ConnectionAuth,
+    service: "git-upload-pack" | "git-receive-pack" = "git-upload-pack",
+  ): Promise<RefAdvertisement[]> {
     const base = this.url(url, auth).replace(/\/$/, "");
     const hdrs = this.headers(auth);
-    const infoUrl = `${base}/info/refs?service=git-upload-pack`;
+    const infoUrl = `${base}/info/refs?service=${service}`;
     // Prefer classic v0/v1 advertise (matches BEAM SmartHttp). Optional v2
     // probe is only used when the classic body parses empty — real git-http-backend
     // returns a 200 v2 capability dump when `Git-Protocol: version=2` is set, which
@@ -253,7 +252,7 @@ export class FetchSmartHttp implements SmartHttpTransport {
       throw new Error(`git: list-refs failed: HTTP ${res.status}`);
     }
     let refs = parseInfoRefs(await res.text());
-    if (refs.length === 0) {
+    if (refs.length === 0 && service === "git-upload-pack") {
       // Some hosts only speak v2 on info/refs; try once, still no redirects.
       res = await this.smartFetch(infoUrl, {
         headers: { ...hdrs, "git-protocol": "version=2" },
@@ -299,9 +298,11 @@ export class FetchSmartHttp implements SmartHttpTransport {
     commands: PushCommand[],
     pack: Uint8Array,
     auth?: ConnectionAuth,
+    capabilities: string[] = [],
   ): Promise<ReceiveStatus> {
     const base = this.url(url, auth).replace(/\/$/, "");
-    const body = buildReceivePackBody(commands, pack);
+    const requestedStatus = receiveStatusCapability(capabilities);
+    const body = buildReceivePackBody(commands, pack, requestedStatus);
     let res: Response;
     try {
       res = await this.smartFetch(`${base}/git-receive-pack`, {
@@ -323,7 +324,7 @@ export class FetchSmartHttp implements SmartHttpTransport {
       return { ok: false, message: `HTTP ${res.status}` };
     }
     const text = await res.text();
-    return parseReceiveStatus(text);
+    return parseReceiveStatus(text, requestedStatus !== undefined);
   }
 }
 
@@ -333,10 +334,7 @@ export class FetchSmartHttp implements SmartHttpTransport {
  * True when a Response is a redirect hop that product smart-HTTP must not follow.
  * Covers 3xx statuses and browser `opaqueredirect` (status 0) under `redirect: "manual"`.
  */
-export function isRedirectResponse(res: {
-  status: number;
-  type?: string;
-}): boolean {
+export function isRedirectResponse(res: { status: number; type?: string }): boolean {
   if (res.type === "opaqueredirect") return true;
   return res.status >= 300 && res.status < 400;
 }
@@ -348,7 +346,7 @@ function isRedirectError(e: unknown): boolean {
 // ── Protocol parse / build ──────────────────────────────────────────────────
 
 /** Parse smart receive-pack report-status body (pkt-line or plain). */
-export function parseReceiveStatus(text: string): ReceiveStatus {
+export function parseReceiveStatus(text: string, required: boolean): ReceiveStatus {
   const lines = decodePktOrPlainLines(text);
   const unpack = lines.find((l) => l.startsWith("unpack "));
   if (unpack && unpack !== "unpack ok") {
@@ -356,7 +354,10 @@ export function parseReceiveStatus(text: string): ReceiveStatus {
   }
   const ng = lines.find((l) => l.startsWith("ng "));
   if (ng) return { ok: false, message: ng.slice(0, 200) };
-  // No report-status: treat as ok if no explicit failure markers.
+  if (required && !unpack) {
+    return { ok: false, message: "missing report-status" };
+  }
+  // When report-status was not negotiated, HTTP success is the only receipt.
   return { ok: true, message: "ok" };
 }
 
@@ -387,16 +388,23 @@ function decodePktOrPlainLines(text: string): string[] {
 
 function parseInfoRefs(text: string): RefAdvertisement[] {
   const refs: RefAdvertisement[] = [];
-  for (const raw of text.split("\n")) {
-    let line = raw.trim();
+  // Smart HTTP advertisements are pkt-line streams. Splitting the raw body on
+  // newlines leaves the flush packet (`0000`) attached to the first ref and can
+  // silently discard the only advertised branch (and its capabilities).
+  for (const raw of decodePktOrPlainLines(text)) {
+    const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
-    if (/^[0-9a-fA-F]{4}/.test(line) && line.length > 4) line = line.slice(4);
     if (line.includes("git-upload-pack") || line.includes("git-receive-pack")) continue;
-    const m = line.match(/^([0-9a-f]{40})\s+(\S+)/i);
+    const m = line.match(/^([0-9a-f]{40})\s+(.+)$/i);
     if (!m) continue;
-    const name = m[2]!.split("\0")[0]!;
+    const [name = "", capabilityText = ""] = m[2]!.split("\0", 2);
     if (name === "HEAD" || name.startsWith("refs/")) {
-      refs.push({ name, hash: m[1]! });
+      const capabilities = capabilityText.trim().split(/\s+/).filter(Boolean);
+      refs.push({
+        name,
+        hash: m[1]!,
+        ...(capabilities.length ? { capabilities } : {}),
+      });
     }
   }
   return refs;
@@ -434,14 +442,21 @@ export function buildUploadPackBody(
   return new TextEncoder().encode(s);
 }
 
-function buildReceivePackBody(commands: PushCommand[], pack: Uint8Array): Uint8Array {
-  // First command advertises report-status so real git-receive-pack
-  // returns unpack/ok pkt-lines; subsequent commands are bare.
+function receiveStatusCapability(advertised: string[]): string | undefined {
+  const supported = new Set(advertised);
+  return ["report-status-v2", "report-status"].find((capability) => supported.has(capability));
+}
+
+function buildReceivePackBody(
+  commands: PushCommand[],
+  pack: Uint8Array,
+  requested: string | undefined,
+): Uint8Array {
   let s = "";
   for (let i = 0; i < commands.length; i++) {
     const c = commands[i]!;
-    if (i === 0) {
-      s += pkt(`${c.oldHash} ${c.newHash} ${c.name}\0report-status`);
+    if (i === 0 && requested) {
+      s += pkt(`${c.oldHash} ${c.newHash} ${c.name}\0${requested}`);
     } else {
       s += pkt(`${c.oldHash} ${c.newHash} ${c.name}`);
     }
@@ -459,12 +474,7 @@ function buildReceivePackBody(commands: PushCommand[], pack: Uint8Array): Uint8A
 /** Locate first `PACK` magic offset, or -1. */
 export function indexOfPackMagic(buf: Uint8Array, from = 0): number {
   for (let i = from; i + 4 <= buf.length; i++) {
-    if (
-      buf[i] === 0x50 &&
-      buf[i + 1] === 0x41 &&
-      buf[i + 2] === 0x43 &&
-      buf[i + 3] === 0x4b
-    ) {
+    if (buf[i] === 0x50 && buf[i + 1] === 0x41 && buf[i + 2] === 0x43 && buf[i + 3] === 0x4b) {
       return i;
     }
   }
@@ -546,9 +556,7 @@ export async function readPackFromResponse(
     if (onPackChunk && pack.byteLength > 0) {
       await onPackChunk(pack);
     }
-    return pack.byteLength === raw.byteLength && pack.byteOffset === 0
-      ? pack
-      : copyBytes(pack);
+    return pack.byteLength === raw.byteLength && pack.byteOffset === 0 ? pack : copyBytes(pack);
   }
 
   const packParts: Uint8Array[] = [];
@@ -560,9 +568,7 @@ export async function readPackFromResponse(
   let bodyTotal = 0;
 
   const exceed = (n: number): Error =>
-    new Error(
-      `git: pack ${n} bytes exceeds maxPackBytes ${maxBytes} (opt-in higher limit)`,
-    );
+    new Error(`git: pack ${n} bytes exceeds maxPackBytes ${maxBytes} (opt-in higher limit)`);
 
   const pushPack = async (slice: Uint8Array): Promise<void> => {
     if (!slice.byteLength) return;
@@ -593,10 +599,7 @@ export async function readPackFromResponse(
         const joined =
           pending.byteLength === 0
             ? value
-            : concatBytes(
-                [pending, value],
-                pending.byteLength + value.byteLength,
-              );
+            : concatBytes([pending, value], pending.byteLength + value.byteLength);
         const idx = indexOfPackMagic(joined);
         if (idx < 0) {
           // Keep last 3 bytes for PACK magic spanning chunk boundaries.

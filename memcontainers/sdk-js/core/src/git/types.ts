@@ -22,7 +22,7 @@ export interface GitResponse {
   stderr?: string;
   /**
    * Structured op result. Large-stdout truncation embeds:
-   * `{ truncated: true, stream_path: ".git/mc/out/last", stdout_bytes, … }`.
+   * `{ truncated: true, stream_path: ".git/mc/out/<token>", stdout_bytes, … }`.
    * Log bounds: `{ count, max_count, bounded?, more? }`.
    */
   result?: GitResultMeta | unknown;
@@ -79,20 +79,17 @@ export interface GitEngineLoadOptions {
   /**
    * Optional durable store attached to the engine.
    *
-   * * **Directory backends** (`HostDirDurable` / `OpfsDirDurable`, `kind:
-   *   "directory"`) — primary product path. Worktree+`.git` is flushed on
-   *   checkpoint; load hydrates MEMFS (or mounts host dir) so a second
-   *   process reopens the same HEAD + files. Native BEAM `ge_open`s the same
-   *   host path without AGIT.
-   * * **Blob backends** (AGIT pack+refs) — optional **transfer** format.
-   *   Load rebinds via `importPack` + `refs.import` + `clone.apply`.
-   *   Non-AGIT opaque bytes attach engine-level only (no rebind).
+   * * **Directory backends** (`HostDirDurable`, `kind: "directory"`) stage,
+   *   fsync, and atomically swap a complete worktree+`.git` generation.
+   * * **Blob backends** write an AgentOS Git Snapshot preserving ODB,
+   *   refs, index, sparse metadata, staged/dirty/untracked files, and modes.
+   *   Unknown/corrupt blobs fail load rather than silently attaching stale state.
    */
   durable?: DurableBackend;
   /**
    * Host absolute path for a **directory** durable store (primary path).
    * Equivalent to `durable: new HostDirDurable(path, path)`. Preferred over
-   * AGIT blob backends when a real worktree directory is available.
+   * blob backends when a real worktree directory is available.
    */
   durableDir?: string;
   /**
