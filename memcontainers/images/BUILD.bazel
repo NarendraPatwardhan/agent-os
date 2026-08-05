@@ -203,11 +203,13 @@ pkg_tar(
     files = {
         "//memcontainers/programs/luau/aot/runtime/glue:luau-aot-captured-call": "/bin/luau-aot-captured-call",
         "//memcontainers/programs/luau/aot/runtime/glue:luau-aot-compiled-call": "/bin/luau-aot-compiled-call",
+        "//memcontainers/programs/luau/aot/runtime/glue:luau-aot-multi-result-call": "/bin/luau-aot-multi-result-call",
         "//memcontainers/programs/luau/aot/runtime/glue:luau-aot-oracle": "/bin/luau-aot-oracle",
         "//memcontainers/programs/luau/aot/runtime/glue:luau-aot-silent": "/bin/luau-aot-silent",
         "//memcontainers/programs/luau/aot/runtime/glue:luau-aot-slow-add": "/bin/luau-aot-slow-add",
         "//memcontainers/programs/luau/aot/runtime:captured_call_source": "/lib/luau/aot_captured_call.luau",
         "//memcontainers/programs/luau/aot/runtime:compiled_call_source": "/lib/luau/aot_compiled_call.luau",
+        "//memcontainers/programs/luau/aot/runtime:multi_result_call_source": "/lib/luau/aot_multi_result_call.luau",
     },
     owner = "0.0",
     visibility = ["//memcontainers/tests/e2e:__pkg__"],

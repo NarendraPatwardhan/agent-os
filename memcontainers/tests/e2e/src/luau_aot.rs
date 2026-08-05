@@ -123,3 +123,29 @@ fn luau_aot_captured_proto_graph_calls_rejoin() {
         );
     }
 }
+
+/// The exact source-built package publishes a three-Proto graph whose inner compiled call returns
+/// two contiguous values. The caller consumes both before rejoining compiled arithmetic, while the
+/// interpreter requires the same installed source and receives the same two raw strings.
+#[test]
+fn luau_aot_multi_result_proto_graph_calls_rejoin() {
+    let mut session = boot_loom_aot();
+
+    for (lhs, rhs) in [(-50, 8), (0, 0), (20, 22), (7, -3), (1234, 5678)] {
+        let expected = format!("{}\r\nstatus=0\r\n", 2 * lhs + rhs);
+        let aot = session.run_for_output(&format!(
+            "luau-aot-multi-result-call {lhs} {rhs}; echo status=$?"
+        ));
+        let interpreted = session.run_for_output(&format!(
+            "luau -e 'local run = require(\"aot_multi_result_call\"); print(run(...))' {lhs} {rhs}; echo status=$?"
+        ));
+        assert_eq!(
+            aot, expected,
+            "strict AOT multi-result call failed for {lhs}/{rhs}"
+        );
+        assert_eq!(
+            aot, interpreted,
+            "strict AOT multi-result call mismatch for {lhs}/{rhs}"
+        );
+    }
+}

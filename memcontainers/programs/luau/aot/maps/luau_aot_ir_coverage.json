@@ -2423,7 +2423,8 @@
         "//memcontainers/programs/luau/aot/runtime:compiled_call_runtime_oracle_test",
         "//memcontainers/programs/luau/aot/runtime:multi_result_call_runtime_oracle_test",
         "//memcontainers/tests/e2e:core#luau_aot_captured_proto_graph_calls_rejoin",
-        "//memcontainers/tests/e2e:core#luau_aot_compiled_proto_graph_calls_rejoin"
+        "//memcontainers/tests/e2e:core#luau_aot_compiled_proto_graph_calls_rejoin",
+        "//memcontainers/tests/e2e:core#luau_aot_multi_result_proto_graph_calls_rejoin"
       ],
       "status": "partial_fixed_one_or_two_arguments_one_or_two_results_compiled_luau"
     },
@@ -2445,7 +2446,8 @@
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
         "//memcontainers/programs/luau/aot/runtime:compiled_call_runtime_oracle_test",
         "//memcontainers/programs/luau/aot/runtime:multi_result_call_runtime_oracle_test",
-        "//memcontainers/tests/e2e:core#luau_aot_compiled_proto_graph_calls_rejoin"
+        "//memcontainers/tests/e2e:core#luau_aot_compiled_proto_graph_calls_rejoin",
+        "//memcontainers/tests/e2e:core#luau_aot_multi_result_proto_graph_calls_rejoin"
       ],
       "status": "partial_fixed_one_or_two_contiguous_tvalue_results"
     },
