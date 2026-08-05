@@ -7,6 +7,7 @@ exports_files(
         "numeric_loop.luau",
         "captured_call.luau",
         "compiled_call.luau",
+        "multi_result_call.luau",
         "silent_return.luau",
         "slow_add.luau",
     ],
@@ -165,6 +166,26 @@ build_test(
     targets = [":captured_call_package_object"],
 )
 
+# A three-Proto package whose inner function returns two contiguous TValues and whose caller
+# consumes both after CALL 2->2 before rejoining through a second arithmetic slow path.
+genrule(
+    name = "multi_result_call_package_object",
+    srcs = [
+        ":backend_wasm",
+        "multi_result_call.luau",
+        "//memcontainers/programs/luau/aot/frontend:frontend_wasm",
+    ],
+    outs = ["multi_result_call_package.o"],
+    cmd = "BAZEL_BINDIR=. $(execpath :object_emitter) $(location //memcontainers/programs/luau/aot/frontend:frontend_wasm) $(location :backend_wasm) $(location multi_result_call.luau) $@ package",
+    tools = [":object_emitter"],
+    visibility = ["//visibility:public"],
+)
+
+build_test(
+    name = "multi_result_call_package_object_build_test",
+    targets = [":multi_result_call_package_object"],
+)
+
 js_test(
     name = "frontend_to_wasm_test",
     data = [
@@ -172,6 +193,7 @@ js_test(
         ":frontend_to_wasm.test.mjs",
         "captured_call.luau",
         "compiled_call.luau",
+        "multi_result_call.luau",
         "silent_return.luau",
         "slow_add.luau",
         "//memcontainers/programs/luau/aot/frontend:frontend_wasm",
@@ -183,6 +205,7 @@ js_test(
         "LUAU_AOT_CAPTURED_CALL_SOURCE": "$(rlocationpath captured_call.luau)",
         "LUAU_AOT_FRONTEND_WASM": "$(rlocationpath //memcontainers/programs/luau/aot/frontend:frontend_wasm)",
         "LUAU_AOT_COMPILED_CALL_SOURCE": "$(rlocationpath compiled_call.luau)",
+        "LUAU_AOT_MULTI_RESULT_CALL_SOURCE": "$(rlocationpath multi_result_call.luau)",
         "LUAU_AOT_SILENT_SOURCE": "$(rlocationpath silent_return.luau)",
         "LUAU_AOT_SLOW_ADD_SOURCE": "$(rlocationpath slow_add.luau)",
         "LUAU_AOT_WASM_LD": "$(rlocationpath @@emsdk++emscripten_deps+emscripten_bin_linux//:bin/wasm-ld)",

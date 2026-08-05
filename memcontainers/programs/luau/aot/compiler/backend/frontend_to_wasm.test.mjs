@@ -221,7 +221,7 @@ async function executeCase(name, source, inputs) {
   const module = await WebAssembly.compile(linkObject(object, name));
   const moduleImports = WebAssembly.Module.imports(module).map(({ module, name: importName, kind }) => [module, importName, kind]);
   const expectedImports = [
-    ["env", "mc_luau_aot_v1_return_one", "function"],
+    ["env", "mc_luau_aot_v1_return_fixed", "function"],
     ["env", "mc_luau_aot_v1_interrupt", "function"],
   ];
   if (name === "loop")
@@ -234,8 +234,8 @@ async function executeCase(name, source, inputs) {
   let interrupts = 0;
   instance = await WebAssembly.instantiate(module, {
     env: {
-      mc_luau_aot_v1_return_one(state, sourceRegister) {
-        if (state !== 1024) throw new Error(`${name}: wrong state ${state}`);
+      mc_luau_aot_v1_return_fixed(state, sourceRegister, resultCount) {
+        if (state !== 1024 || resultCount !== 1) throw new Error(`${name}: wrong return ABI ${state}/${resultCount}`);
         const view = new DataView(instance.exports.memory.buffer);
         const base = view.getUint32(state + 12, true);
         const source = base + sourceRegister * 16;
@@ -292,7 +292,7 @@ async function executeSilentRoot() {
   const module = await WebAssembly.compile(linkObject(object, name));
   const moduleImports = WebAssembly.Module.imports(module).map(({ module, name: importName, kind }) => [module, importName, kind]);
   const expectedImports = [
-    ["env", "mc_luau_aot_v1_return_one", "function"],
+    ["env", "mc_luau_aot_v1_return_fixed", "function"],
     ["env", "mc_luau_aot_v1_interrupt", "function"],
   ];
   if (JSON.stringify(moduleImports) !== JSON.stringify(expectedImports))
@@ -303,8 +303,8 @@ async function executeSilentRoot() {
   let instance;
   instance = await WebAssembly.instantiate(module, {
     env: {
-      mc_luau_aot_v1_return_one(state, sourceRegister) {
-        if (state !== 1024) throw new Error(`${name}: wrong state ${state}`);
+      mc_luau_aot_v1_return_fixed(state, sourceRegister, resultCount) {
+        if (state !== 1024 || resultCount !== 1) throw new Error(`${name}: wrong return ABI ${state}/${resultCount}`);
         const view = new DataView(instance.exports.memory.buffer);
         const base = view.getUint32(state + 12, true);
         const source = base + sourceRegister * 16;
@@ -339,7 +339,7 @@ async function executeSlowAdd() {
   const module = await WebAssembly.compile(linkObject(object, name));
   const moduleImports = WebAssembly.Module.imports(module).map(({ module, name: importName, kind }) => [module, importName, kind]);
   const expectedImports = [
-    ["env", "mc_luau_aot_v1_return_one", "function"],
+    ["env", "mc_luau_aot_v1_return_fixed", "function"],
     ["env", "mc_luau_aot_v1_interrupt", "function"],
     ["env", "mc_luau_aot_v1_do_arith", "function"],
   ];
@@ -352,8 +352,8 @@ async function executeSlowAdd() {
   let helperCalls = 0;
   instance = await WebAssembly.instantiate(module, {
     env: {
-      mc_luau_aot_v1_return_one(state, sourceRegister) {
-        if (state !== 1024) throw new Error(`${name}: wrong state ${state}`);
+      mc_luau_aot_v1_return_fixed(state, sourceRegister, resultCount) {
+        if (state !== 1024 || resultCount !== 1) throw new Error(`${name}: wrong return ABI ${state}/${resultCount}`);
         const view = new DataView(instance.exports.memory.buffer);
         const base = view.getUint32(state + 12, true);
         const source = base + sourceRegister * 16;
@@ -419,7 +419,7 @@ async function executeCompiledCallPackage() {
   const module = await WebAssembly.compile(linkPackage(first));
   const moduleImports = WebAssembly.Module.imports(module).map(({ module: importModule, name: importName, kind }) => [importModule, importName, kind]);
   const expectedImports = [
-    ["env", "mc_luau_aot_v1_return_one", "function"],
+    ["env", "mc_luau_aot_v1_return_fixed", "function"],
     ["env", "mc_luau_aot_v1_interrupt", "function"],
     ["env", "mc_luau_aot_v1_do_arith", "function"],
     ["env", "mc_luau_aot_v1_dupclosure", "function"],
@@ -445,8 +445,9 @@ async function executeCompiledCallPackage() {
 
   instance = await WebAssembly.instantiate(module, {
     env: {
-      mc_luau_aot_v1_return_one(returnState, sourceRegister) {
-        if (returnState !== state) throw new Error(`${name}: wrong return state ${returnState}`);
+      mc_luau_aot_v1_return_fixed(returnState, sourceRegister, resultCount) {
+        if (returnState !== state || resultCount !== 1)
+          throw new Error(`${name}: wrong return ABI ${returnState}/${resultCount}`);
         const view = new DataView(instance.exports.memory.buffer);
         const base = view.getUint32(state + 12, true);
         const source = base + sourceRegister * tvalueSize;
@@ -576,7 +577,7 @@ async function executeCapturedCallPackage() {
   const module = await WebAssembly.compile(linkPackage(first));
   const moduleImports = WebAssembly.Module.imports(module).map(({ module: importModule, name: importName, kind }) => [importModule, importName, kind]);
   const expectedImports = [
-    ["env", "mc_luau_aot_v1_return_one", "function"],
+    ["env", "mc_luau_aot_v1_return_fixed", "function"],
     ["env", "mc_luau_aot_v1_interrupt", "function"],
     ["env", "mc_luau_aot_v1_do_arith", "function"],
     ["env", "mc_luau_aot_v1_dupclosure", "function"],
@@ -611,8 +612,9 @@ async function executeCapturedCallPackage() {
 
   instance = await WebAssembly.instantiate(module, {
     env: {
-      mc_luau_aot_v1_return_one(returnState, sourceRegister) {
-        if (returnState !== state) throw new Error(`${name}: wrong return state ${returnState}`);
+      mc_luau_aot_v1_return_fixed(returnState, sourceRegister, resultCount) {
+        if (returnState !== state || resultCount !== 1)
+          throw new Error(`${name}: wrong return ABI ${returnState}/${resultCount}`);
         const view = new DataView(instance.exports.memory.buffer);
         const base = view.getUint32(state + 12, true);
         const source = base + sourceRegister * tvalueSize;
@@ -716,6 +718,134 @@ async function executeCapturedCallPackage() {
   return { objectSize: first.length, nestedCalls, captureCount, interrupts };
 }
 
+async function executeMultiResultCallPackage() {
+  const name = "multi-result-call-package";
+  const source = readFileSync(
+    runfile(process.env.LUAU_AOT_MULTI_RESULT_CALL_SOURCE, "LUAU_AOT_MULTI_RESULT_CALL_SOURCE"),
+    "utf8",
+  );
+  const snapshot = frontendSnapshot(source, "@aot/multi_result_call.luau");
+  const first = backendPackage(snapshot);
+  const second = backendPackage(snapshot);
+  if (!first.equals(second)) throw new Error(`${name}: package backend is nondeterministic`);
+
+  const module = await WebAssembly.compile(linkPackage(first));
+  const moduleImports = WebAssembly.Module.imports(module).map(({ module: importModule, name: importName, kind }) => [importModule, importName, kind]);
+  const expectedImports = [
+    ["env", "mc_luau_aot_v1_return_fixed", "function"],
+    ["env", "mc_luau_aot_v1_interrupt", "function"],
+    ["env", "mc_luau_aot_v1_do_arith", "function"],
+    ["env", "mc_luau_aot_v1_dupclosure", "function"],
+    ["env", "mc_luau_aot_v1_call_fixed", "function"],
+  ];
+  if (JSON.stringify(moduleImports) !== JSON.stringify(expectedImports))
+    throw new Error(`${name}: unexpected generated imports ${JSON.stringify(moduleImports)}`);
+
+  let instance;
+  let returned = [];
+  let interrupts = 0;
+  let nestedCalls = 0;
+  let pairReturns = 0;
+  const closureChildren = [];
+  const state = 1024;
+  const initialBase = 2048;
+  const relocatedCallerBase = 4096;
+  const childBase = 8192;
+  const tvalueSize = 16;
+  const readValue = (view, base, register) => {
+    const address = base + register * tvalueSize;
+    const tag = view.getUint32(address + 12, true);
+    return { tag, value: tag === 3 ? view.getFloat64(address, true) : view.getUint32(address, true) };
+  };
+  const writeNumber = (view, base, register, value) => {
+    view.setFloat64(base + register * tvalueSize, value, true);
+    view.setUint32(base + register * tvalueSize + 12, 3, true);
+  };
+
+  instance = await WebAssembly.instantiate(module, {
+    env: {
+      mc_luau_aot_v1_return_fixed(returnState, sourceRegister, resultCount) {
+        if (returnState !== state || (resultCount !== 1 && resultCount !== 2))
+          throw new Error(`${name}: invalid fixed return ${returnState}/${sourceRegister}/${resultCount}`);
+        const memory = new Uint8Array(instance.exports.memory.buffer);
+        const view = new DataView(memory.buffer);
+        const base = view.getUint32(state + 12, true);
+        const sourceAddress = base + sourceRegister * tvalueSize;
+        memory.copyWithin(base, sourceAddress, sourceAddress + resultCount * tvalueSize);
+        returned = Array.from({ length: resultCount }, (_, register) => readValue(view, base, register));
+        if (resultCount === 2) pairReturns++;
+      },
+      mc_luau_aot_v1_interrupt(interruptState, pc) {
+        if (interruptState !== state || pc < 0) throw new Error(`${name}: invalid interrupt`);
+        interrupts++;
+        return 0;
+      },
+      mc_luau_aot_v1_do_arith() {
+        throw new Error(`${name}: numeric package unexpectedly entered arithmetic fallback`);
+      },
+      mc_luau_aot_v1_dupclosure(closureState, destinationRegister, childProtoId) {
+        if (closureState !== state || (childProtoId !== 1 && childProtoId !== 2))
+          throw new Error(`${name}: invalid child closure ${closureState}/${childProtoId}`);
+        closureChildren.push(childProtoId);
+        const view = new DataView(instance.exports.memory.buffer);
+        const base = view.getUint32(state + 12, true);
+        view.setUint32(base + destinationRegister * tvalueSize, childProtoId, true);
+        view.setUint32(base + destinationRegister * tvalueSize + 12, 6, true);
+      },
+      mc_luau_aot_v1_call_fixed(callState, functionRegister, parameterCount, resultCount) {
+        if (callState !== state || functionRegister !== 3 || parameterCount !== 2 || resultCount !== 2)
+          throw new Error(`${name}: invalid fixed call ABI`);
+        const memory = new Uint8Array(instance.exports.memory.buffer);
+        const view = new DataView(memory.buffer);
+        const callerBase = view.getUint32(state + 12, true);
+        const functionValue = readValue(view, callerBase, functionRegister);
+        if (functionValue.tag !== 6 || functionValue.value !== 2)
+          throw new Error(`${name}: caller did not materialize child Proto 2`);
+
+        memory.set(memory.subarray(callerBase, callerBase + 6 * tvalueSize), relocatedCallerBase);
+        memory.fill(0, childBase, childBase + 4 * tvalueSize);
+        memory.set(
+          memory.subarray(relocatedCallerBase + 4 * tvalueSize, relocatedCallerBase + 6 * tvalueSize),
+          childBase,
+        );
+        view.setUint32(state + 12, childBase, true);
+        returned = [];
+        const childStatus = instance.exports[packageSymbols[2]](state, 0);
+        if (childStatus !== 0 || returned.length !== 2 || returned.some((value) => value.tag !== 3))
+          throw new Error(`${name}: nested pair failed with ${childStatus}/${JSON.stringify(returned)}`);
+
+        view.setUint32(state + 12, relocatedCallerBase, true);
+        writeNumber(view, relocatedCallerBase, functionRegister, returned[0].value);
+        writeNumber(view, relocatedCallerBase, functionRegister + 1, returned[1].value);
+        nestedCalls++;
+        return 0;
+      },
+    },
+  });
+
+  const memory = new Uint8Array(instance.exports.memory.buffer);
+  const view = new DataView(memory.buffer);
+  view.setUint32(state + 12, initialBase, true);
+  memory.fill(0, initialBase, initialBase + tvalueSize);
+  if (instance.exports[packageSymbols[0]](state, 0) !== 0 || returned.length !== 1 ||
+      returned[0].tag !== 6 || returned[0].value !== 1)
+    throw new Error(`${name}: root did not return child Proto 1 closure: ${JSON.stringify(returned)}`);
+
+  for (const [lhs, rhs, expected] of [[20, 22, 62], [-50, 8, -92], [1234, 5678, 8146]]) {
+    memory.fill(0, initialBase, relocatedCallerBase + 6 * tvalueSize);
+    view.setUint32(state + 12, initialBase, true);
+    writeNumber(view, initialBase, 0, lhs);
+    writeNumber(view, initialBase, 1, rhs);
+    returned = [];
+    const status = instance.exports[packageSymbols[1]](state, 0);
+    if (status !== 0 || returned.length !== 1 || returned[0].tag !== 3 || returned[0].value !== expected)
+      throw new Error(`${name}: caller ${lhs}/${rhs} failed with ${status}/${JSON.stringify(returned)}`);
+  }
+  if (nestedCalls !== 3 || pairReturns !== 3 || closureChildren.join(",") !== "1,2,2,2" || interrupts < 10)
+    throw new Error(`${name}: evidence incomplete: calls=${nestedCalls}, pairs=${pairReturns}, closures=${closureChildren}, interrupts=${interrupts}`);
+  return { objectSize: first.length, nestedCalls, pairReturns, interrupts };
+}
+
 const scalar = await executeCase(
   "scalar",
   "return function(n) return n * 2 + 1 end",
@@ -738,12 +868,14 @@ const silent = await executeSilentRoot();
 const slowAdd = await executeSlowAdd();
 const compiledCall = await executeCompiledCallPackage();
 const capturedCall = await executeCapturedCallPackage();
+const multiResultCall = await executeMultiResultCallPackage();
 
 console.log(
   `frontend -> IR -> relocatable wasm: scalar ${scalar.objectSize} bytes, loop ${loop.objectSize} bytes; ` +
     `silent root ${silent.objectSize} bytes, slow add ${slowAdd.objectSize} bytes; ` +
     `compiled call package ${compiledCall.objectSize} bytes/${compiledCall.nestedCalls} nested calls; ` +
     `captured call package ${capturedCall.objectSize} bytes/${capturedCall.captureCount} captures; ` +
+    `multi-result package ${multiResultCall.objectSize} bytes/${multiResultCall.pairReturns} pair returns; ` +
     `interrupt calls ${scalar.interrupts}/${loop.interrupts}/${silent.interrupts}/${slowAdd.interrupts}; ` +
     `slow helpers ${slowAdd.helperCalls}`,
 );

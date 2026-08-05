@@ -76,7 +76,8 @@ extern const uint8_t mc_luau_aot_v1_layout_sha256[32];
 // Generated-code/runtime surface. Keep it versioned, unmangled, and narrow.
 void mc_luau_aot_v1_enter(lua_State *state);
 void mc_luau_aot_v1_finish_yielded_op(lua_State *state);
-void mc_luau_aot_v1_return_one(lua_State *state, uint32_t source_register);
+void mc_luau_aot_v1_return_fixed(lua_State *state, uint32_t source_register,
+                                  uint32_t result_count);
 uint32_t mc_luau_aot_v1_interrupt(lua_State *state, uint32_t pc);
 void mc_luau_aot_v1_do_arith(lua_State *state, uint32_t destination_register,
                              uint32_t lhs_register, uint32_t rhs_register,

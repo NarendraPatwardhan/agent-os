@@ -192,17 +192,22 @@ extern "C" const uint8_t mc_luau_aot_v1_layout_sha256[32] = {
 
 static bool validAotProto(const McLuauAotProtoV1 *metadata);
 
-extern "C" void mc_luau_aot_v1_return_one(lua_State *L, uint32_t sourceRegister) {
+extern "C" void mc_luau_aot_v1_return_fixed(lua_State *L, uint32_t sourceRegister,
+                                               uint32_t resultCount) {
     if (!L || !L->ci || !isLua(L->ci))
         luaG_runerror(L, "strict AOT return helper entered without an active Luau frame");
 
     Closure *closure = clvalue(L->ci->func);
     Proto *proto = closure->l.p;
-    if (sourceRegister >= proto->maxstacksize)
-        luaG_runerror(L, "strict AOT return register is outside the compiled frame");
+    if ((resultCount != 1 && resultCount != 2) || sourceRegister >= proto->maxstacksize ||
+        resultCount > uint32_t(proto->maxstacksize) - sourceRegister)
+        luaG_runerror(L, "strict AOT fixed return exceeds the compiled frame");
 
-    setobj2s(L, L->base, L->base + sourceRegister);
-    L->top = L->base + 1;
+    // Poscall consumes results from frame base. Copy low-to-high: the destination never starts
+    // above the source, so this also has correct memmove semantics for overlapping register ranges.
+    for (uint32_t index = 0; index < resultCount; ++index)
+        setobj2s(L, L->base + index, L->base + sourceRegister + index);
+    L->top = L->base + resultCount;
 }
 
 extern "C" uint32_t mc_luau_aot_v1_interrupt(lua_State *L, uint32_t pc) {
@@ -337,14 +342,16 @@ extern "C" uint32_t mc_luau_aot_v1_call_fixed(lua_State *L, uint32_t functionReg
                                                uint32_t resultCount) {
     if (!L || !L->ci || !isLua(L->ci))
         luaG_runerror(L, "strict AOT call helper entered without an active Luau frame");
-    if ((parameterCount != 1 && parameterCount != 2) || resultCount != 1)
+    if ((parameterCount != 1 && parameterCount != 2) ||
+        (resultCount != 1 && resultCount != 2))
         luaG_runerror(L, "strict AOT fixed call rejected %u parameters and %u results",
                       parameterCount, resultCount);
 
     Closure *caller = clvalue(L->ci->func);
     Proto *callerProto = caller->l.p;
     if (functionRegister >= callerProto->maxstacksize ||
-        parameterCount >= uint32_t(callerProto->maxstacksize) - functionRegister)
+        parameterCount >= uint32_t(callerProto->maxstacksize) - functionRegister ||
+        resultCount > uint32_t(callerProto->maxstacksize) - functionRegister)
         luaG_runerror(L, "strict AOT fixed call exceeds the compiled caller frame");
 
     StkId function = L->base + functionRegister;

@@ -2421,10 +2421,11 @@
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
         "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test",
         "//memcontainers/programs/luau/aot/runtime:compiled_call_runtime_oracle_test",
+        "//memcontainers/programs/luau/aot/runtime:multi_result_call_runtime_oracle_test",
         "//memcontainers/tests/e2e:core#luau_aot_captured_proto_graph_calls_rejoin",
         "//memcontainers/tests/e2e:core#luau_aot_compiled_proto_graph_calls_rejoin"
       ],
-      "status": "partial_fixed_one_or_two_arguments_one_result_compiled_luau"
+      "status": "partial_fixed_one_or_two_arguments_one_or_two_results_compiled_luau"
     },
     {
       "command": "RETURN",
@@ -2432,7 +2433,7 @@
       "class": "call_protocol",
       "wasm_features": [],
       "runtime_symbols": [
-        "mc_luau_aot_v1_return_one"
+        "mc_luau_aot_v1_return_fixed"
       ],
       "may_allocate": null,
       "may_raise": null,
@@ -2443,9 +2444,10 @@
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
         "//memcontainers/programs/luau/aot/runtime:compiled_call_runtime_oracle_test",
+        "//memcontainers/programs/luau/aot/runtime:multi_result_call_runtime_oracle_test",
         "//memcontainers/tests/e2e:core#luau_aot_compiled_proto_graph_calls_rejoin"
       ],
-      "status": "partial_single_tvalue_result"
+      "status": "partial_fixed_one_or_two_contiguous_tvalue_results"
     },
     {
       "command": "FORGLOOP",

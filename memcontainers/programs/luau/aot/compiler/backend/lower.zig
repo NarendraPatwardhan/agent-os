@@ -3,7 +3,7 @@ const snapshot_v1 = @import("frontend_snapshot_v1");
 const wasm = @import("luau_aot_wasm_object");
 
 pub const generated_symbol = "mc_luau_aot_v1_generated_ir_function";
-pub const return_one_symbol = "mc_luau_aot_v1_return_one";
+pub const return_fixed_symbol = "mc_luau_aot_v1_return_fixed";
 pub const interrupt_symbol = "mc_luau_aot_v1_interrupt";
 pub const do_arith_symbol = "mc_luau_aot_v1_do_arith";
 pub const dupclosure_symbol = "mc_luau_aot_v1_dupclosure";
@@ -64,7 +64,7 @@ const Context = struct {
     function: snapshot_v1.IrFunction,
     slots: []const ValueSlot,
     body: *wasm.Body,
-    return_one: wasm.FunctionRef,
+    return_fixed: wasm.FunctionRef,
     interrupt: wasm.FunctionRef,
     do_arith: ?wasm.FunctionRef,
     dupclosure: ?wasm.FunctionRef,
@@ -613,12 +613,17 @@ const Context = struct {
         if (return_count_operand.kind != .constant)
             return Error.InvalidReturnCount;
         const return_count = (try self.constant(return_count_operand.value)).intValue() orelse return Error.InvalidReturnCount;
-        if (return_count != 1)
+        if (return_count != 1 and return_count != 2)
+            return Error.InvalidReturnCount;
+
+        const source_register = try self.vmRegisterIndex(source);
+        if (@as(u32, @intCast(return_count)) > @as(u32, self.proto.max_stack_size) - source_register)
             return Error.InvalidReturnCount;
 
         try self.body.localGet(self.allocator, 0);
-        try self.body.i32Const(self.allocator, @intCast(try self.vmRegisterIndex(source)));
-        try self.body.call(self.allocator, self.return_one);
+        try self.body.i32Const(self.allocator, @intCast(source_register));
+        try self.body.i32Const(self.allocator, @intCast(return_count));
+        try self.body.call(self.allocator, self.return_fixed);
         try self.emitStatusReturn(status_ok);
     }
 
@@ -658,10 +663,13 @@ const Context = struct {
             return Error.InvalidOperandType;
         const parameter_count = (try self.constant(parameter_operand.value)).intValue() orelse return Error.InvalidOperandType;
         const result_count = (try self.constant(result_operand.value)).intValue() orelse return Error.InvalidOperandType;
-        if ((parameter_count != 1 and parameter_count != 2) or result_count != 1)
+        if ((parameter_count != 1 and parameter_count != 2) or
+            (result_count != 1 and result_count != 2))
             return Error.UnsupportedControlFlow;
         const parameter_count_u32: u32 = @intCast(parameter_count);
-        if (parameter_count_u32 >= @as(u32, self.proto.max_stack_size) - function_register)
+        const result_count_u32: u32 = @intCast(result_count);
+        if (parameter_count_u32 >= @as(u32, self.proto.max_stack_size) - function_register or
+            result_count_u32 > @as(u32, self.proto.max_stack_size) - function_register)
             return Error.UnsupportedControlFlow;
 
         try self.body.localGet(self.allocator, 0);
@@ -818,7 +826,7 @@ const ImportNeeds = struct {
 };
 
 const RuntimeImports = struct {
-    return_one: wasm.FunctionRef,
+    return_fixed: wasm.FunctionRef,
     interrupt: wasm.FunctionRef,
     do_arith: ?wasm.FunctionRef,
     dupclosure: ?wasm.FunctionRef,
@@ -844,7 +852,7 @@ fn scanImportNeeds(snapshot: snapshot_v1.Snapshot, function_id: u32, needs: *Imp
 }
 
 fn addRuntimeImports(object: *wasm.Object, needs: ImportNeeds) Error!RuntimeImports {
-    const return_one_params = [_]wasm.ValueType{ .i32, .i32 };
+    const return_fixed_params = [_]wasm.ValueType{ .i32, .i32, .i32 };
     const interrupt_params = [_]wasm.ValueType{ .i32, .i32 };
     const do_arith_params = [_]wasm.ValueType{ .i32, .i32, .i32, .i32, .i32 };
     const dupclosure_params = [_]wasm.ValueType{ .i32, .i32, .i32 };
@@ -855,10 +863,10 @@ fn addRuntimeImports(object: *wasm.Object, needs: ImportNeeds) Error!RuntimeImpo
     const no_results = [_]wasm.ValueType{};
     const status_result = [_]wasm.ValueType{.i32};
 
-    const return_one_type = try object.addType(.{ .params = &return_one_params, .results = &no_results });
+    const return_fixed_type = try object.addType(.{ .params = &return_fixed_params, .results = &no_results });
     const interrupt_type = try object.addType(.{ .params = &interrupt_params, .results = &status_result });
     const generated_type = try object.addType(.{ .params = &generated_params, .results = &status_result });
-    const return_one = try object.importFunction("env", return_one_symbol, return_one_type);
+    const return_fixed = try object.importFunction("env", return_fixed_symbol, return_fixed_type);
     const interrupt = try object.importFunction("env", interrupt_symbol, interrupt_type);
     const do_arith = if (needs.do_arith) blk: {
         const helper_type = try object.addType(.{ .params = &do_arith_params, .results = &no_results });
@@ -882,7 +890,7 @@ fn addRuntimeImports(object: *wasm.Object, needs: ImportNeeds) Error!RuntimeImpo
     } else null;
 
     return .{
-        .return_one = return_one,
+        .return_fixed = return_fixed,
         .interrupt = interrupt,
         .do_arith = do_arith,
         .dupclosure = dupclosure,
@@ -959,7 +967,7 @@ fn lowerFunction(
         .function = function,
         .slots = slots,
         .body = &body,
-        .return_one = imports.return_one,
+        .return_fixed = imports.return_fixed,
         .interrupt = imports.interrupt,
         .do_arith = imports.do_arith,
         .dupclosure = imports.dupclosure,
