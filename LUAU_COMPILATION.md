@@ -286,8 +286,19 @@ guest path, but is not presented as a general-purpose AOT product:
   dependency root exactly once on a real sandboxed Luau thread. Both require sites and two calls to
   the entry closure reuse the same cached mutable accumulator across a forced full collection. Five
   signed runtime tuples match the exact installed two-source package under the pinned interpreter in
-  the real kernel. Cycle/error fixtures, general imported globals, and compiler-emitted descriptor
-  data remain unfinished;
+  the real kernel. The package object now owns the immutable Proto, module, and program descriptor
+  data as linking-v2 symbols and relocations; the handwritten product descriptor has been removed;
+- the broader static-module tranche now compiles a five-module, ten-Proto graph with two transitive
+  paths to one mutable export. Root requires after `FALLBACK_PREPVARARGS`, captured
+  `FALLBACK_DUPCLOSURE` module closures, and an unconditional jump into a validated arithmetic
+  fallback are all lowered through bounded pinned shapes. Repeated require sites and two calls around
+  full GC preserve one state identity across five signed eight-input matrices and match the exact
+  installed sources under `/bin/luau`. A separate failed initializer mutates a successfully cached
+  probe before raising through real `DO_ARITH`; two protected attempts around full GC observe counts
+  one and two, proving failed initializers are rerun. An `A -> B -> A` package raises the explicit
+  catchable `static require cycle` error on two independent attempts. AgentOS `/bin/luau` is not used
+  as the cycle oracle because its current loader recursively reloads this closed graph until process
+  stack exhaustion instead of returning a catchable error;
 
 WP2 is complete. WP3's central arithmetic/type slow-block rejoin passes the exact-source,
 relocatable-object, strict-runtime, pinned-interpreter, production optimization/stamp/attestation, and
@@ -302,11 +313,12 @@ closure-independence, pinned-interpreter, production optimization, stamp, attest
 real-kernel gates. The broader WP4 call boundary now passes fixed zero, arbitrary bounded fixed
 argument/result shapes, fixed/dynamic vararg extraction, one-fixed-parameter vararg relocation, and
 dynamic multi-return through the same source-to-object-to-runtime-to-image path. The active line of
-work remains WP4 module breadth: cycle/error behavior and the broader static graph, followed by the
-still-open C/metamethod/yield call boundaries. The first literal static-require vertical now passes the
-source-to-multi-module-object, lazy once-only runtime, full-GC, pinned-interpreter, stamped-image, and
-real-kernel gates. The immutable descriptor is shared by the runtime fixtures and product today but
-remains compiler-generated-data work, not a hand-authored product format.
+work remains WP4: C/metamethod/yield call boundaries, forwarded/multiple capture shapes, and source
+locations across compiled calls. Static modules now pass the source-to-multi-module-object,
+compiler-emitted-metadata, lazy successful-cache, failed-initializer retry, explicit-cycle, full-GC,
+pinned-interpreter where valid, stamped-image, and real-kernel gates. The 216-command totals remain
+125 implemented, 27 partial, and 64 unimplemented; this tranche broadens honest evidence for existing
+partial rows rather than inflating status counts.
 
 ---
 
@@ -1594,11 +1606,11 @@ misordered `CHECK_GC`, and more than one child upvalue. The runtime roots the fu
 one-upvalue closure before `luaC_checkGC`. Deterministic-object, fake-base-relocation, strict-runtime GC,
 and five exact-source interpreter differentials pass. The same object and shared descriptor link into a
 release-small guest, pass Binaryen optimization, mc stamping and attestation, install with the exact
-source in `loom_aot`, and pass the real-kernel differential for all five raw-string pairs. Oracle and
-guest descriptors remain shared link-time definitions; compiler-emitted descriptor data/relocations
-remain product work. Forwarded or multiple captures, callable metamethods, recursion, tail calls,
-yields, modules, and source-location
-publication are still unsupported.
+source in `loom_aot`, and pass the real-kernel differential for all five raw-string pairs. These
+single-snapshot fixtures retain shared link-time descriptor definitions; the closed static-package
+path now emits its Proto/module/program descriptor data and relocations directly from the compiler.
+Forwarded or multiple captures, callable metamethods, recursion, tail calls, yields, and
+source-location publication are still unsupported.
 
 The exact `multi_result_call.luau` snapshot generalizes the call/return protocol without introducing a
 pair-specific helper. Its inner child returns `[x + y, x]` from contiguous registers and the caller
@@ -1663,8 +1675,25 @@ roots their closures and cache records in Luau-owned tables, initializes the dep
 a sandboxed Luau thread, and caches exactly one returned value. The entry closure requires that module
 twice per call and is called twice around full GC, so five signed quadruples prove both require-site and
 cross-call state identity against the pinned interpreter through the release-small stamped guest and
-real AgentOS kernel. Cycles, cached initializer errors, and larger static graphs remain the next module
-tranche.
+real AgentOS kernel.
+
+The five-module `static_graph_*` package extends the same path to ten compiler-emitted Proto records.
+`main -> {left, right}`, `right -> middle`, and `{left, middle} -> state` create two independent paths
+to one mutable closure export. The backend accepts root literal requires after validated vararg setup
+and the pinned adjacent `FALLBACK_DUPCLOSURE` plus one-register `LCT_VAL` capture used by module roots;
+zero-upvalue duplication remains unchanged. The graph runs twice around full GC and matches the exact
+installed sources under `/bin/luau` for five signed input matrices.
+
+The `static_initializer_*` package proves that only successful exports are cached. Its failing module
+increments a separately cached probe and raises through the real arithmetic fallback; two protected
+attempts around full GC observe probe counts one and two in both strict AOT and `/bin/luau`. The
+`static_cycle_*` package proves active-initializer detection: `A -> B -> A` raises an explicit
+catchable cycle error on each independent attempt instead of recursing or publishing a placeholder.
+The guest validates the cycle error identity. AgentOS `/bin/luau` currently exhausts the process call
+stack on that graph, so it is recorded as a product-loader divergence rather than treated as a valid
+differential oracle. All four static package objects carry default-visible
+`mc_luau_aot_v1_program`, hidden Proto/module arrays, per-Proto table relocations, and program-to-array
+memory relocations. The handwritten static-package descriptor is gone.
 
 Tasks:
 
@@ -1673,7 +1702,8 @@ Tasks:
 - C/Zig closure bridge and callable/metamethod path;
 - closure allocation, captures, open/closed upvalues, barriers;
 - fixed and multi-return results, varargs, stack growth;
-- static module registry, lazy once-only initialization, cycles per oracle behavior;
+- static module registry, lazy successful-result caching, failed-initializer retry, and active-cycle
+  rejection;
 - source locations across compiled calls.
 
 Gate:

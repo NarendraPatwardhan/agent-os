@@ -196,6 +196,11 @@ extern "C" const uint8_t mc_luau_aot_v1_layout_sha256[32] = {
 static bool validAotProto(const McLuauAotProtoV1 *metadata);
 static char moduleRegistryKey;
 
+enum ModuleRegistrySlot {
+    MODULE_REGISTRY_COUNT_SLOT = 0,
+    MODULE_REGISTRY_ENTRY_ID_SLOT = -1,
+};
+
 enum ModuleInitializationState {
     MODULE_UNINITIALIZED = 0,
     MODULE_INITIALIZING = 1,
@@ -624,7 +629,7 @@ static bool pushModuleRecord(lua_State *L, uint32_t moduleId) {
         return false;
     }
 
-    lua_rawgeti(L, -1, 0);
+    lua_rawgeti(L, -1, MODULE_REGISTRY_COUNT_SLOT);
     int moduleCount = lua_tointeger(L, -1);
     lua_pop(L, 1);
     if (moduleCount < 0 || moduleId >= uint32_t(moduleCount)) {
@@ -659,6 +664,63 @@ static void setModuleRecordValue(lua_State *L, int recordIndex, int valueIndex) 
     lua_rawseti(L, recordIndex, 3);
 }
 
+static void raiseCachedModuleFailure(lua_State *L, int originalTop, int recordIndex,
+                                     uint32_t moduleId, bool resetForRetry) {
+    lua_rawgeti(L, recordIndex, 3);
+    const char *message = lua_tostring(L, -1);
+    if (resetForRetry)
+        setModuleRecordStatus(L, recordIndex, MODULE_UNINITIALIZED);
+    lua_settop(L, originalTop);
+    luaG_runerror(L, "strict AOT module %u initialization failed: %s", moduleId,
+                  message ? message : "unknown error");
+}
+
+static void cacheAndRaiseModuleFailure(lua_State *L, int originalTop, int recordIndex,
+                                       uint32_t moduleId, int messageIndex,
+                                       bool preserveActiveFailure) {
+    setModuleRecordValue(L, recordIndex, messageIndex);
+    setModuleRecordStatus(L, recordIndex,
+                          preserveActiveFailure ? MODULE_FAILED : MODULE_UNINITIALIZED);
+    raiseCachedModuleFailure(L, originalTop, recordIndex, moduleId, false);
+}
+
+static bool pushEntryModuleRecord(lua_State *L, Proto *entryProto, uint32_t *entryModuleId) {
+    lua_pushlightuserdata(L, &moduleRegistryKey);
+    lua_rawget(L, LUA_REGISTRYINDEX);
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        return false;
+    }
+
+    lua_rawgeti(L, -1, MODULE_REGISTRY_ENTRY_ID_SLOT);
+    int isNumber = 0;
+    int id = lua_tointegerx(L, -1, &isNumber);
+    lua_pop(L, 1);
+    if (!isNumber || id < 0) {
+        lua_pop(L, 1);
+        return false;
+    }
+
+    lua_rawgeti(L, -1, id + 1);
+    lua_remove(L, -2);
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        return false;
+    }
+
+    lua_rawgeti(L, -1, 1);
+    const bool matchesEntry = lua_isfunction(L, -1) && !clvalue(L->top - 1)->isC &&
+                              clvalue(L->top - 1)->l.p == entryProto;
+    lua_pop(L, 1);
+    if (!matchesEntry) {
+        lua_pop(L, 1);
+        return false;
+    }
+
+    *entryModuleId = uint32_t(id);
+    return true;
+}
+
 extern "C" uint32_t mc_luau_aot_v1_require_static(lua_State *L, uint32_t destinationRegister,
                                                   uint32_t targetModuleId) {
     if (!L || !L->ci || !isLua(L->ci))
@@ -684,15 +746,11 @@ extern "C" uint32_t mc_luau_aot_v1_require_static(lua_State *L, uint32_t destina
         return MC_LUAU_AOT_V1_OK;
     }
     if (status == MODULE_FAILED) {
-        lua_rawgeti(L, recordIndex, 3);
-        const char *message = lua_tostring(L, -1);
-        lua_settop(L, originalTop);
-        luaG_runerror(L, "strict AOT module %u initialization failed: %s", targetModuleId,
-                      message ? message : "unknown error");
+        raiseCachedModuleFailure(L, originalTop, recordIndex, targetModuleId, true);
     }
     if (status == MODULE_INITIALIZING) {
-        lua_settop(L, originalTop);
-        luaG_runerror(L, "strict AOT static require cycle reached module %u", targetModuleId);
+        lua_pushliteral(L, "static require cycle");
+        cacheAndRaiseModuleFailure(L, originalTop, recordIndex, targetModuleId, -1, true);
     }
     if (status != MODULE_UNINITIALIZED) {
         lua_settop(L, originalTop);
@@ -712,6 +770,10 @@ extern "C" uint32_t mc_luau_aot_v1_require_static(lua_State *L, uint32_t destina
         luaG_runerror(L, "strict AOT module %u root metadata is invalid", targetModuleId);
     }
 
+    // AgentOS require caches only successful initializers. Discard a stale error from a previous
+    // attempt just before this real initializer begins again.
+    lua_pushnil(L);
+    lua_rawseti(L, recordIndex, 3);
     setModuleRecordStatus(L, recordIndex, MODULE_INITIALIZING);
 
     // Match the pinned module loader's isolation without loading source or bytecode. The thread is
@@ -722,12 +784,8 @@ extern "C" uint32_t mc_luau_aot_v1_require_static(lua_State *L, uint32_t destina
     lua_xmove(globalThread, L, 1);
     luaL_sandboxthread(moduleThread);
     if (!lua_checkstack(moduleThread, 1)) {
-        setModuleRecordStatus(L, recordIndex, MODULE_FAILED);
         lua_pushliteral(L, "could not reserve module thread stack space");
-        setModuleRecordValue(L, recordIndex, -1);
-        lua_settop(L, originalTop);
-        luaG_runerror(L, "strict AOT module %u could not reserve runtime stack space",
-                      targetModuleId);
+        cacheAndRaiseModuleFailure(L, originalTop, recordIndex, targetModuleId, -1, false);
     }
 
     luaC_threadbarrier(moduleThread);
@@ -737,17 +795,25 @@ extern "C" uint32_t mc_luau_aot_v1_require_static(lua_State *L, uint32_t destina
 
     int resumeStatus = lua_resume(moduleThread, L, 0);
     if (resumeStatus != LUA_OK || lua_gettop(moduleThread) != 1) {
+        // A nested cycle may already have atomically failed this record. Preserve that first
+        // failure instead of replacing it while the initializer stack unwinds.
+        if (moduleRecordStatus(L, recordIndex) == MODULE_FAILED)
+            raiseCachedModuleFailure(L, originalTop, recordIndex, targetModuleId, true);
+
         const char *message = resumeStatus == LUA_YIELD
                                   ? "module yielded without a continuation contract"
                               : resumeStatus == LUA_OK ? "module must return a single value"
                                                        : lua_tostring(moduleThread, -1);
         lua_pushstring(L, message ? message : "unknown module error");
-        setModuleRecordValue(L, recordIndex, -1);
-        setModuleRecordStatus(L, recordIndex, MODULE_FAILED);
-        const char *cachedMessage = lua_tostring(L, -1);
+        cacheAndRaiseModuleFailure(L, originalTop, recordIndex, targetModuleId, -1, false);
+    }
+
+    if (moduleRecordStatus(L, recordIndex) == MODULE_FAILED)
+        raiseCachedModuleFailure(L, originalTop, recordIndex, targetModuleId, true);
+    if (moduleRecordStatus(L, recordIndex) != MODULE_INITIALIZING) {
         lua_settop(L, originalTop);
-        luaG_runerror(L, "strict AOT module %u initialization failed: %s", targetModuleId,
-                      cachedMessage ? cachedMessage : "unknown error");
+        luaG_runerror(L, "strict AOT module %u changed initialization state while executing",
+                      targetModuleId);
     }
 
     lua_xmove(moduleThread, L, 1);
@@ -815,7 +881,9 @@ static void publishModuleRegistry(lua_State *L, const McLuauAotProgramV1 *progra
     lua_createtable(L, int(program->module_count), 0);
     const int registryIndex = lua_gettop(L);
     lua_pushinteger(L, int(program->module_count));
-    lua_rawseti(L, registryIndex, 0);
+    lua_rawseti(L, registryIndex, MODULE_REGISTRY_COUNT_SLOT);
+    lua_pushinteger(L, int(program->entry_module_id));
+    lua_rawseti(L, registryIndex, MODULE_REGISTRY_ENTRY_ID_SLOT);
 
     for (uint32_t id = 0; id < program->module_count; ++id) {
         lua_createtable(L, 3, 0);
@@ -824,7 +892,8 @@ static void publishModuleRegistry(lua_State *L, const McLuauAotProgramV1 *progra
         lua_rawseti(L, recordIndex, 1);
         // The entry chunk is executed by the existing push_program caller, not require_static.
         // Mark it active up front so a dependency that reaches back to the entry fails as a cycle
-        // instead of starting a duplicate initializer.
+        // instead of starting a duplicate initializer. mc_luau_aot_v1_enter caches its single
+        // result and completes this same record after successful execution.
         lua_pushinteger(L, id == program->entry_module_id ? MODULE_INITIALIZING
                                                           : MODULE_UNINITIALIZED);
         lua_rawseti(L, recordIndex, 2);
@@ -985,9 +1054,38 @@ extern "C" void mc_luau_aot_v1_enter(lua_State *L) {
 
     uint32_t status = metadata->entry(L, metadata);
     switch (status) {
-    case MC_LUAU_AOT_V1_OK:
+    case MC_LUAU_AOT_V1_OK: {
+        const int resultCount = lua_gettop(L);
+        const int resultIndex = resultCount == 1 ? lua_absindex(L, -1) : 0;
+        const int originalTop = resultCount;
+        uint32_t entryModuleId = 0;
+
+        if (!lua_checkstack(L, 4))
+            luaG_runerror(L, "strict AOT entry completion could not reserve runtime stack space");
+
+        if (pushEntryModuleRecord(L, proto, &entryModuleId)) {
+            const int recordIndex = lua_gettop(L);
+            const int moduleStatus = moduleRecordStatus(L, recordIndex);
+            if (moduleStatus == MODULE_FAILED)
+                raiseCachedModuleFailure(L, originalTop, recordIndex, entryModuleId, true);
+            if (moduleStatus != MODULE_INITIALIZING) {
+                lua_settop(L, originalTop);
+                luaG_runerror(L, "strict AOT entry module %u has invalid completion state",
+                              entryModuleId);
+            }
+            if (resultCount != 1) {
+                lua_pushliteral(L, "module must return a single value");
+                cacheAndRaiseModuleFailure(L, originalTop, recordIndex, entryModuleId, -1, false);
+            }
+
+            setModuleRecordValue(L, recordIndex, resultIndex);
+            setModuleRecordStatus(L, recordIndex, MODULE_INITIALIZED);
+            lua_settop(L, originalTop);
+        }
+
         luau_poscall(L, L->base);
         return;
+    }
     case MC_LUAU_AOT_V1_UNSUPPORTED_TYPE:
         luaG_runerror(L, "strict AOT numeric tier received an unsupported value type");
     case MC_LUAU_AOT_V1_YIELDED:

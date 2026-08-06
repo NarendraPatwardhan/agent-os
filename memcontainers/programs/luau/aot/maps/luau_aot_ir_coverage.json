@@ -611,7 +611,9 @@
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
         "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test",
-        "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter"
+        "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter",
+        "//memcontainers/programs/luau/aot/compiler/backend:static_initializer_package_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_failed_static_initializer_retries_after_gc"
       ],
       "status": "implemented"
     },
@@ -1415,7 +1417,9 @@
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
         "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test",
-        "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter"
+        "//memcontainers/tests/e2e:core#luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter",
+        "//memcontainers/programs/luau/aot/compiler/backend:static_initializer_package_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_failed_static_initializer_retries_after_gc"
       ],
       "status": "implemented"
     },
@@ -1966,7 +1970,9 @@
         "//memcontainers/programs/luau/aot/runtime:slow_arith_runtime_oracle_test",
         "//memcontainers/tests/e2e:core#luau_aot_arithmetic_slow_path_rejoins_compiled_code",
         "//memcontainers/tests/e2e:core#luau_aot_compiled_proto_graph_calls_rejoin",
-        "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test"
+        "//memcontainers/programs/luau/aot/compiler/backend:scalar_breadth_object_build_test",
+        "//memcontainers/programs/luau/aot/compiler/backend:static_initializer_package_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_failed_static_initializer_retries_after_gc"
       ],
       "status": "partial_all_arithmetic_ops_vm_register_operands"
     },
@@ -2037,7 +2043,13 @@
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2176; CodeGen/src/IrLoweringA64.cpp:2203; luaV_getimport",
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:static_import_package_object_build_test",
-        "//memcontainers/tests/e2e:core#luau_aot_static_module_initializes_once_and_preserves_cached_state"
+        "//memcontainers/programs/luau/aot/compiler/backend:static_graph_package_object_build_test",
+        "//memcontainers/programs/luau/aot/compiler/backend:static_cycle_package_object_build_test",
+        "//memcontainers/programs/luau/aot/compiler/backend:static_initializer_package_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_static_module_initializes_once_and_preserves_cached_state",
+        "//memcontainers/tests/e2e:core#luau_aot_transitive_static_graph_shares_state_across_gc",
+        "//memcontainers/tests/e2e:core#luau_aot_static_cycle_fails_closed_and_can_be_retried",
+        "//memcontainers/tests/e2e:core#luau_aot_failed_static_initializer_retries_after_gc"
       ],
       "status": "partial_literal_static_require_cluster_only"
     },
@@ -2183,7 +2195,9 @@
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2312; CodeGen/src/IrLoweringA64.cpp:2384",
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:static_import_package_object_build_test",
-        "//memcontainers/tests/e2e:core#luau_aot_static_module_initializes_once_and_preserves_cached_state"
+        "//memcontainers/programs/luau/aot/compiler/backend:static_graph_package_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_static_module_initializes_once_and_preserves_cached_state",
+        "//memcontainers/tests/e2e:core#luau_aot_transitive_static_graph_shares_state_across_gc"
       ],
       "status": "partial_literal_static_require_cluster_only"
     },
@@ -2470,7 +2484,11 @@
         "//memcontainers/programs/luau/aot/runtime:captured_call_runtime_oracle_test",
         "//memcontainers/programs/luau/aot/runtime:reference_capture_runtime_oracle_test",
         "//memcontainers/tests/e2e:core#luau_aot_captured_proto_graph_calls_rejoin",
-        "//memcontainers/tests/e2e:core#luau_aot_reference_capture_survives_close_gc_and_mutation"
+        "//memcontainers/tests/e2e:core#luau_aot_reference_capture_survives_close_gc_and_mutation",
+        "//memcontainers/programs/luau/aot/compiler/backend:static_graph_package_object_build_test",
+        "//memcontainers/programs/luau/aot/compiler/backend:static_initializer_package_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_transitive_static_graph_shares_state_across_gc",
+        "//memcontainers/tests/e2e:core#luau_aot_failed_static_initializer_retries_after_gc"
       ],
       "status": "partial_single_register_lct_val_or_lct_ref_capture_only"
     },
@@ -2777,7 +2795,8 @@
       "class": "rewrite_required",
       "wasm_features": [],
       "runtime_symbols": [
-        "mc_luau_aot_v1_dupclosure"
+        "mc_luau_aot_v1_dupclosure",
+        "mc_luau_aot_v1_newclosure_value"
       ],
       "may_allocate": true,
       "may_raise": true,
@@ -2788,9 +2807,13 @@
       "tests": [
         "//memcontainers/programs/luau/aot/compiler/backend:frontend_to_wasm_test",
         "//memcontainers/programs/luau/aot/runtime:compiled_call_runtime_oracle_test",
-        "//memcontainers/tests/e2e:core#luau_aot_compiled_proto_graph_calls_rejoin"
+        "//memcontainers/tests/e2e:core#luau_aot_compiled_proto_graph_calls_rejoin",
+        "//memcontainers/programs/luau/aot/compiler/backend:static_graph_package_object_build_test",
+        "//memcontainers/programs/luau/aot/compiler/backend:static_initializer_package_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_transitive_static_graph_shares_state_across_gc",
+        "//memcontainers/tests/e2e:core#luau_aot_failed_static_initializer_retries_after_gc"
       ],
-      "status": "partial_zero_upvalue_closed_child"
+      "status": "partial_zero_upvalue_or_adjacent_single_register_lct_val_child"
     },
     {
       "command": "FALLBACK_FORGPREP",
@@ -3610,5 +3633,5 @@
       "status": "unimplemented"
     }
   ],
-  "canonical_hash": "0358a203d9a5768fe76ed61c2123d5f0f0f537845a97abfb484af27888276cbc"
+  "canonical_hash": "5e4c94d094053aaf7aa4f035e92ee293a0770f96c7c73bb4b1de133bc6fdc7ec"
 }

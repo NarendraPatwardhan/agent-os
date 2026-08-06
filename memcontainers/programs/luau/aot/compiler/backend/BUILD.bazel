@@ -11,8 +11,19 @@ exports_files(
         "multi_result_call.luau",
         "reference_capture.luau",
         "scalar_breadth.luau",
+        "static_cycle_a.luau",
+        "static_cycle_b.luau",
+        "static_cycle_main.luau",
+        "static_graph_left.luau",
+        "static_graph_main.luau",
+        "static_graph_middle.luau",
+        "static_graph_right.luau",
+        "static_graph_state.luau",
         "static_import_counter.luau",
         "static_import_main.luau",
+        "static_initializer_failure.luau",
+        "static_initializer_main.luau",
+        "static_initializer_probe.luau",
         "structural_core.luau",
         "silent_return.luau",
         "slow_add.luau",
@@ -99,6 +110,74 @@ genrule(
 build_test(
     name = "static_import_package_object_build_test",
     targets = [":static_import_package_object"],
+)
+
+# Five modules form two independent transitive paths to one mutable state module. The entry closure
+# repeats both top-level requires and is invoked twice by the product guest around full GC.
+genrule(
+    name = "static_graph_package_object",
+    srcs = [
+        ":backend_wasm",
+        "static_graph_left.luau",
+        "static_graph_main.luau",
+        "static_graph_middle.luau",
+        "static_graph_right.luau",
+        "static_graph_state.luau",
+        "//memcontainers/programs/luau/aot/frontend:frontend_wasm",
+    ],
+    outs = ["static_graph_package.o"],
+    cmd = "BAZEL_BINDIR=. $(execpath :static_package_emitter) $(location //memcontainers/programs/luau/aot/frontend:frontend_wasm) $(location :backend_wasm) $@ aot_static_graph_main aot_static_graph_left=$(location static_graph_left.luau) aot_static_graph_main=$(location static_graph_main.luau) aot_static_graph_middle=$(location static_graph_middle.luau) aot_static_graph_right=$(location static_graph_right.luau) aot_static_graph_state=$(location static_graph_state.luau)",
+    tools = [":static_package_emitter"],
+    visibility = ["//visibility:public"],
+)
+
+build_test(
+    name = "static_graph_package_object_build_test",
+    targets = [":static_graph_package_object"],
+)
+
+# The closed A -> B -> A graph must compile into one package but fail explicitly at runtime instead
+# of recursing through source loading, interpreting bytecode, or manufacturing an export placeholder.
+genrule(
+    name = "static_cycle_package_object",
+    srcs = [
+        ":backend_wasm",
+        "static_cycle_a.luau",
+        "static_cycle_b.luau",
+        "static_cycle_main.luau",
+        "//memcontainers/programs/luau/aot/frontend:frontend_wasm",
+    ],
+    outs = ["static_cycle_package.o"],
+    cmd = "BAZEL_BINDIR=. $(execpath :static_package_emitter) $(location //memcontainers/programs/luau/aot/frontend:frontend_wasm) $(location :backend_wasm) $@ aot_static_cycle_main aot_static_cycle_a=$(location static_cycle_a.luau) aot_static_cycle_b=$(location static_cycle_b.luau) aot_static_cycle_main=$(location static_cycle_main.luau)",
+    tools = [":static_package_emitter"],
+    visibility = ["//visibility:public"],
+)
+
+build_test(
+    name = "static_cycle_package_object_build_test",
+    targets = [":static_cycle_package_object"],
+)
+
+# A successfully cached probe counts attempts made by a separate initializer that always raises via
+# real arithmetic fallback. Retrying the returned closure proves failures are not cached as successes.
+genrule(
+    name = "static_initializer_package_object",
+    srcs = [
+        ":backend_wasm",
+        "static_initializer_failure.luau",
+        "static_initializer_main.luau",
+        "static_initializer_probe.luau",
+        "//memcontainers/programs/luau/aot/frontend:frontend_wasm",
+    ],
+    outs = ["static_initializer_package.o"],
+    cmd = "BAZEL_BINDIR=. $(execpath :static_package_emitter) $(location //memcontainers/programs/luau/aot/frontend:frontend_wasm) $(location :backend_wasm) $@ aot_static_initializer_main aot_static_initializer_failure=$(location static_initializer_failure.luau) aot_static_initializer_main=$(location static_initializer_main.luau) aot_static_initializer_probe=$(location static_initializer_probe.luau)",
+    tools = [":static_package_emitter"],
+    visibility = ["//visibility:public"],
+)
+
+build_test(
+    name = "static_initializer_package_object_build_test",
+    targets = [":static_initializer_package_object"],
 )
 
 # This is the first build-graph object produced from source through the actual two-capability

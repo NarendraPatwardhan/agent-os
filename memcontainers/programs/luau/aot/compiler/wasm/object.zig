@@ -7,6 +7,9 @@ pub const Error = error{
     EmptyFunctionName,
     MissingFunctionEnd,
     InvalidRelocationOffset,
+    InvalidDataRelocationOffset,
+    InvalidObjectOrder,
+    IntegerOverflow,
     OutOfMemory,
 };
 
@@ -33,6 +36,12 @@ pub const FunctionRef = struct {
     type_index: u32,
 };
 
+pub const DataRef = struct {
+    segment_index: u32,
+    symbol_index: u32,
+    memory_offset: u32,
+};
+
 pub const symbol = struct {
     pub const binding_weak: u32 = 0x01;
     pub const binding_local: u32 = 0x02;
@@ -45,6 +54,8 @@ pub const symbol = struct {
 
 pub const relocation = struct {
     pub const function_index_leb: u8 = 0;
+    pub const table_index_i32: u8 = 2;
+    pub const memory_addr_i32: u8 = 5;
 };
 
 const ImportFunction = struct {
@@ -59,6 +70,23 @@ const DefinedFunction = struct {
     symbol_flags: u32,
     body: []const u8,
     relocations: []const Body.Relocation,
+};
+
+const DataRelocation = struct {
+    kind: u8,
+    segment_offset: u32,
+    symbol_index: u32,
+    addend: i32,
+};
+
+const DataSegment = struct {
+    name: []const u8,
+    symbol_name: []const u8,
+    symbol_flags: u32,
+    alignment_log2: u32,
+    memory_offset: u32,
+    bytes: []const u8,
+    relocations: std.ArrayList(DataRelocation),
 };
 
 pub const Body = struct {
@@ -283,6 +311,8 @@ pub const Object = struct {
     types: std.ArrayList(FunctionType) = .empty,
     imports: std.ArrayList(ImportFunction) = .empty,
     functions: std.ArrayList(DefinedFunction) = .empty,
+    data_segments: std.ArrayList(DataSegment) = .empty,
+    data_size: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator) Object {
         return .{ .allocator = allocator };
@@ -302,9 +332,17 @@ pub const Object = struct {
             self.allocator.free(function.body);
             self.allocator.free(function.relocations);
         }
+        for (self.data_segments.items) |segment| {
+            self.allocator.free(segment.name);
+            self.allocator.free(segment.symbol_name);
+            self.allocator.free(segment.bytes);
+            var relocations = segment.relocations;
+            relocations.deinit(self.allocator);
+        }
         self.types.deinit(self.allocator);
         self.imports.deinit(self.allocator);
         self.functions.deinit(self.allocator);
+        self.data_segments.deinit(self.allocator);
         self.* = undefined;
     }
 
@@ -325,6 +363,8 @@ pub const Object = struct {
     }
 
     pub fn importFunction(self: *Object, module: []const u8, name: []const u8, type_index: u32) !FunctionRef {
+        if (self.data_segments.items.len != 0)
+            return Error.InvalidObjectOrder;
         if (type_index >= self.types.items.len)
             return Error.InvalidTypeIndex;
         if (name.len == 0)
@@ -345,6 +385,8 @@ pub const Object = struct {
     }
 
     pub fn defineFunction(self: *Object, name: []const u8, type_index: u32, symbol_flags: u32, body: Body) !FunctionRef {
+        if (self.data_segments.items.len != 0)
+            return Error.InvalidObjectOrder;
         if (type_index >= self.types.items.len)
             return Error.InvalidTypeIndex;
         if (name.len == 0)
@@ -377,6 +419,80 @@ pub const Object = struct {
         return .{ .function_index = function_index, .symbol_index = symbol_index, .type_index = type_index };
     }
 
+    pub fn defineData(
+        self: *Object,
+        segment_name: []const u8,
+        symbol_name: []const u8,
+        symbol_flags: u32,
+        alignment_log2: u32,
+        bytes: []const u8,
+    ) !DataRef {
+        if (segment_name.len == 0 or symbol_name.len == 0)
+            return Error.EmptyFunctionName;
+        if (alignment_log2 >= 32 or bytes.len > std.math.maxInt(u32) or self.data_segments.items.len >= std.math.maxInt(u32))
+            return Error.IntegerOverflow;
+        const alignment = @as(u32, 1) << @intCast(alignment_log2);
+        const padded = std.math.add(u32, self.data_size, alignment - 1) catch return Error.IntegerOverflow;
+        const memory_offset = padded & ~(alignment - 1);
+        const end = std.math.add(u32, memory_offset, @intCast(bytes.len)) catch return Error.IntegerOverflow;
+        const segment_index: u32 = @intCast(self.data_segments.items.len);
+        const symbol_count = std.math.add(usize, self.imports.items.len, self.functions.items.len) catch return Error.IntegerOverflow;
+        if (symbol_count > std.math.maxInt(u32))
+            return Error.IntegerOverflow;
+        const symbol_index = std.math.add(u32, @intCast(symbol_count), segment_index) catch return Error.IntegerOverflow;
+
+        const owned_name = try self.allocator.dupe(u8, segment_name);
+        errdefer self.allocator.free(owned_name);
+        const owned_symbol_name = try self.allocator.dupe(u8, symbol_name);
+        errdefer self.allocator.free(owned_symbol_name);
+        const owned_bytes = try self.allocator.dupe(u8, bytes);
+        errdefer self.allocator.free(owned_bytes);
+        try self.data_segments.append(self.allocator, .{
+            .name = owned_name,
+            .symbol_name = owned_symbol_name,
+            .symbol_flags = symbol_flags,
+            .alignment_log2 = alignment_log2,
+            .memory_offset = memory_offset,
+            .bytes = owned_bytes,
+            .relocations = .empty,
+        });
+        self.data_size = end;
+        return .{ .segment_index = segment_index, .symbol_index = symbol_index, .memory_offset = memory_offset };
+    }
+
+    pub fn relocateDataTableIndex(self: *Object, source: DataRef, offset: u32, target: FunctionRef) !void {
+        if (target.symbol_index >= self.imports.items.len + self.functions.items.len)
+            return Error.InvalidDataRelocationOffset;
+        try self.appendDataRelocation(source, .{
+            .kind = relocation.table_index_i32,
+            .segment_offset = offset,
+            .symbol_index = target.symbol_index,
+            .addend = 0,
+        });
+    }
+
+    pub fn relocateDataMemoryAddress(self: *Object, source: DataRef, offset: u32, target: DataRef, addend: i32) !void {
+        if (target.segment_index >= self.data_segments.items.len)
+            return Error.InvalidDataRelocationOffset;
+        try self.appendDataRelocation(source, .{
+            .kind = relocation.memory_addr_i32,
+            .segment_offset = offset,
+            .symbol_index = target.symbol_index,
+            .addend = addend,
+        });
+    }
+
+    fn appendDataRelocation(self: *Object, source: DataRef, item: DataRelocation) !void {
+        if (source.segment_index >= self.data_segments.items.len)
+            return Error.InvalidDataRelocationOffset;
+        const segment = &self.data_segments.items[source.segment_index];
+        if (@as(usize, item.segment_offset) + 4 > segment.bytes.len)
+            return Error.InvalidDataRelocationOffset;
+        if (segment.relocations.items.len != 0 and segment.relocations.items[segment.relocations.items.len - 1].segment_offset >= item.segment_offset)
+            return Error.InvalidDataRelocationOffset;
+        try segment.relocations.append(self.allocator, item);
+    }
+
     pub fn emit(self: *const Object) ![]u8 {
         var output: std.ArrayList(u8) = .empty;
         errdefer output.deinit(self.allocator);
@@ -395,15 +511,33 @@ pub const Object = struct {
         try appendSection(&output, self.allocator, 1, type_payload.items);
         section_index += 1;
 
-        if (self.imports.items.len != 0) {
+        const has_data = self.data_segments.items.len != 0;
+        const has_table_relocations = self.hasTableRelocations();
+        if (self.imports.items.len != 0 or has_data or has_table_relocations) {
             var import_payload: std.ArrayList(u8) = .empty;
             defer import_payload.deinit(self.allocator);
-            try appendUleb(&import_payload, self.allocator, self.imports.items.len);
+            const infrastructure_imports: usize = @as(usize, @intFromBool(has_data)) + @as(usize, @intFromBool(has_table_relocations));
+            try appendUleb(&import_payload, self.allocator, self.imports.items.len + infrastructure_imports);
+            if (has_data) {
+                try appendName(&import_payload, self.allocator, "env");
+                try appendName(&import_payload, self.allocator, "__linear_memory");
+                try import_payload.append(self.allocator, 0x02);
+                try appendUleb(&import_payload, self.allocator, 0);
+                try appendUleb(&import_payload, self.allocator, 1);
+            }
             for (self.imports.items) |function_import| {
                 try appendName(&import_payload, self.allocator, function_import.module);
                 try appendName(&import_payload, self.allocator, function_import.name);
                 try import_payload.append(self.allocator, 0x00);
                 try appendUleb(&import_payload, self.allocator, function_import.type_index);
+            }
+            if (has_table_relocations) {
+                try appendName(&import_payload, self.allocator, "env");
+                try appendName(&import_payload, self.allocator, "__indirect_function_table");
+                try import_payload.append(self.allocator, 0x01);
+                try import_payload.append(self.allocator, 0x70);
+                try appendUleb(&import_payload, self.allocator, 0);
+                try appendUleb(&import_payload, self.allocator, self.functions.items.len);
             }
             try appendSection(&output, self.allocator, 2, import_payload.items);
             section_index += 1;
@@ -416,6 +550,29 @@ pub const Object = struct {
             try appendUleb(&function_payload, self.allocator, function.type_index);
         try appendSection(&output, self.allocator, 3, function_payload.items);
         section_index += 1;
+
+        if (has_table_relocations) {
+            var element_payload: std.ArrayList(u8) = .empty;
+            defer element_payload.deinit(self.allocator);
+            try appendUleb(&element_payload, self.allocator, 1);
+            try appendUleb(&element_payload, self.allocator, 0);
+            try element_payload.append(self.allocator, 0x41);
+            try appendSleb(&element_payload, self.allocator, 1);
+            try element_payload.append(self.allocator, 0x0b);
+            try appendUleb(&element_payload, self.allocator, self.functions.items.len);
+            for (self.functions.items, 0..) |_, index|
+                try appendUleb(&element_payload, self.allocator, self.imports.items.len + index);
+            try appendSection(&output, self.allocator, 9, element_payload.items);
+            section_index += 1;
+        }
+
+        if (has_data) {
+            var data_count_payload: std.ArrayList(u8) = .empty;
+            defer data_count_payload.deinit(self.allocator);
+            try appendUleb(&data_count_payload, self.allocator, self.data_segments.items.len);
+            try appendSection(&output, self.allocator, 12, data_count_payload.items);
+            section_index += 1;
+        }
 
         const code_section_index = section_index;
         var code_payload: std.ArrayList(u8) = .empty;
@@ -434,13 +591,39 @@ pub const Object = struct {
             }
         }
         try appendSection(&output, self.allocator, 10, code_payload.items);
+        section_index += 1;
+
+        const data_section_index = section_index;
+        var data_relocations: std.ArrayList(DataRelocation) = .empty;
+        defer data_relocations.deinit(self.allocator);
+        if (has_data) {
+            var data_payload: std.ArrayList(u8) = .empty;
+            defer data_payload.deinit(self.allocator);
+            try appendUleb(&data_payload, self.allocator, self.data_segments.items.len);
+            for (self.data_segments.items) |segment| {
+                try appendUleb(&data_payload, self.allocator, 0);
+                try data_payload.append(self.allocator, 0x41);
+                try appendSleb(&data_payload, self.allocator, @bitCast(segment.memory_offset));
+                try data_payload.append(self.allocator, 0x0b);
+                try appendUleb(&data_payload, self.allocator, segment.bytes.len);
+                const bytes_start = data_payload.items.len;
+                try data_payload.appendSlice(self.allocator, segment.bytes);
+                for (segment.relocations.items) |item| {
+                    var relocated = item;
+                    relocated.segment_offset = @intCast(bytes_start + item.segment_offset);
+                    try data_relocations.append(self.allocator, relocated);
+                }
+            }
+            try appendSection(&output, self.allocator, 11, data_payload.items);
+            section_index += 1;
+        }
 
         var linking_payload: std.ArrayList(u8) = .empty;
         defer linking_payload.deinit(self.allocator);
         try appendUleb(&linking_payload, self.allocator, 2);
         var symbols_payload: std.ArrayList(u8) = .empty;
         defer symbols_payload.deinit(self.allocator);
-        try appendUleb(&symbols_payload, self.allocator, self.imports.items.len + self.functions.items.len);
+        try appendUleb(&symbols_payload, self.allocator, self.imports.items.len + self.functions.items.len + self.data_segments.items.len);
         for (self.imports.items, 0..) |_, index| {
             try symbols_payload.append(self.allocator, 0x00);
             try appendUleb(&symbols_payload, self.allocator, symbol.is_undefined);
@@ -452,9 +635,30 @@ pub const Object = struct {
             try appendUleb(&symbols_payload, self.allocator, self.imports.items.len + index);
             try appendName(&symbols_payload, self.allocator, function.name);
         }
+        for (self.data_segments.items, 0..) |segment, index| {
+            try symbols_payload.append(self.allocator, 0x01);
+            try appendUleb(&symbols_payload, self.allocator, segment.symbol_flags);
+            try appendName(&symbols_payload, self.allocator, segment.symbol_name);
+            try appendUleb(&symbols_payload, self.allocator, index);
+            try appendUleb(&symbols_payload, self.allocator, 0);
+            try appendUleb(&symbols_payload, self.allocator, segment.bytes.len);
+        }
         try linking_payload.append(self.allocator, 8);
         try appendUleb(&linking_payload, self.allocator, symbols_payload.items.len);
         try linking_payload.appendSlice(self.allocator, symbols_payload.items);
+        if (has_data) {
+            var segment_info_payload: std.ArrayList(u8) = .empty;
+            defer segment_info_payload.deinit(self.allocator);
+            try appendUleb(&segment_info_payload, self.allocator, self.data_segments.items.len);
+            for (self.data_segments.items) |segment| {
+                try appendName(&segment_info_payload, self.allocator, segment.name);
+                try appendUleb(&segment_info_payload, self.allocator, segment.alignment_log2);
+                try appendUleb(&segment_info_payload, self.allocator, 0);
+            }
+            try linking_payload.append(self.allocator, 5);
+            try appendUleb(&linking_payload, self.allocator, segment_info_payload.items.len);
+            try linking_payload.appendSlice(self.allocator, segment_info_payload.items);
+        }
         try appendCustomSection(&output, self.allocator, "linking", linking_payload.items);
 
         if (code_relocations.items.len != 0) {
@@ -470,7 +674,30 @@ pub const Object = struct {
             try appendCustomSection(&output, self.allocator, "reloc.CODE", reloc_payload.items);
         }
 
+        if (data_relocations.items.len != 0) {
+            var reloc_payload: std.ArrayList(u8) = .empty;
+            defer reloc_payload.deinit(self.allocator);
+            try appendUleb(&reloc_payload, self.allocator, data_section_index);
+            try appendUleb(&reloc_payload, self.allocator, data_relocations.items.len);
+            for (data_relocations.items) |item| {
+                try reloc_payload.append(self.allocator, item.kind);
+                try appendUleb(&reloc_payload, self.allocator, item.segment_offset);
+                try appendUleb(&reloc_payload, self.allocator, item.symbol_index);
+                if (item.kind == relocation.memory_addr_i32)
+                    try appendSleb(&reloc_payload, self.allocator, item.addend);
+            }
+            try appendCustomSection(&output, self.allocator, "reloc.DATA", reloc_payload.items);
+        }
+
         return output.toOwnedSlice(self.allocator);
+    }
+
+    fn hasTableRelocations(self: *const Object) bool {
+        for (self.data_segments.items) |segment|
+            for (segment.relocations.items) |item|
+                if (item.kind == relocation.table_index_i32)
+                    return true;
+        return false;
     }
 };
 
@@ -603,4 +830,39 @@ test "defined functions own their names bodies and relocations" {
     defer allocator.free(emitted);
     try std.testing.expect(std.mem.indexOf(u8, emitted, "dynamic_17") != null);
     try std.testing.expect(std.mem.indexOf(u8, emitted, "reloc.CODE") != null);
+}
+
+test "emits linking-v2 data symbols and table and memory relocations" {
+    const allocator = std.testing.allocator;
+    const params = [_]ValueType{ .i32, .i32 };
+    const status_result = [_]ValueType{.i32};
+
+    var object = Object.init(allocator);
+    defer object.deinit();
+    const function_type = try object.addType(.{ .params = &params, .results = &status_result });
+
+    var body = try Body.init(allocator, &.{});
+    defer body.deinit(allocator);
+    try body.i32Const(allocator, 0);
+    try body.finish(allocator);
+    const function = try object.defineFunction("generated", function_type, symbol.visibility_hidden, body);
+
+    var proto_bytes = [_]u8{0} ** 64;
+    std.mem.writeInt(u32, proto_bytes[40..44], 1, .little);
+    const protos = try object.defineData(".rodata.protos", "protos", symbol.visibility_hidden, 2, &proto_bytes);
+    var program_bytes = [_]u8{0} ** 68;
+    std.mem.writeInt(u32, program_bytes[40..44], protos.memory_offset, .little);
+    const program = try object.defineData(".rodata.program", "program", 0, 2, &program_bytes);
+    try object.relocateDataTableIndex(protos, 40, function);
+    try object.relocateDataMemoryAddress(program, 40, protos, 0);
+
+    const first = try object.emit();
+    defer allocator.free(first);
+    const second = try object.emit();
+    defer allocator.free(second);
+    try std.testing.expectEqualSlices(u8, first, second);
+    try std.testing.expect(std.mem.indexOf(u8, first, "__linear_memory") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first, "__indirect_function_table") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first, "reloc.DATA") != null);
+    try std.testing.expect(std.mem.indexOf(u8, first, ".rodata.protos") != null);
 }

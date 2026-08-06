@@ -19,6 +19,16 @@ pub const prep_varargs_symbol = "mc_luau_aot_v1_prep_varargs";
 pub const get_varargs_fixed_symbol = "mc_luau_aot_v1_get_varargs_fixed";
 pub const get_varargs_multret_symbol = "mc_luau_aot_v1_get_varargs_multret";
 pub const require_static_symbol = "mc_luau_aot_v1_require_static";
+pub const generated_protos_symbol = "mc_luau_aot_v1_protos";
+pub const generated_modules_symbol = "mc_luau_aot_v1_modules";
+pub const generated_program_symbol = "mc_luau_aot_v1_program";
+
+const aot_abi_version: u32 = 1;
+const aot_proto_size: u32 = 64;
+const aot_module_size: u32 = 56;
+const aot_program_size: u32 = 68;
+const aot_proto_root_flag: u32 = 1;
+const aot_layout_sha256 = snapshot_v1.production_identity.layout.?;
 
 const status_ok: i32 = 0;
 const status_unsupported_type: i32 = 1;
@@ -96,6 +106,99 @@ const SetUpvaluePattern = struct {
     source_register: u32,
 };
 
+const DupClosurePattern = union(enum) {
+    closed: struct {
+        destination: u32,
+        child_proto_id: u32,
+    },
+    value: struct {
+        destination: u32,
+        child_proto_id: u32,
+        capture_register: u32,
+    },
+};
+
+fn requireSingleBytecodeBlockRangeFor(
+    snapshot: snapshot_v1.Snapshot,
+    function: snapshot_v1.IrFunction,
+    start: u32,
+    finish: u32,
+) Error!void {
+    var owner: ?u32 = null;
+    var block_id: u32 = 0;
+    while (block_id < function.block_count) : (block_id += 1) {
+        const block = try snapshot.irBlock(function, block_id);
+        if (block.isEmpty() or block.finish < start or block.start > finish)
+            continue;
+        if (owner != null or block.kind != .bytecode or block.start > start or block.finish < finish)
+            return Error.UnsupportedControlFlow;
+        owner = block_id;
+    }
+    if (owner == null)
+        return Error.UnsupportedControlFlow;
+}
+
+fn dupClosurePattern(
+    snapshot: snapshot_v1.Snapshot,
+    function: snapshot_v1.IrFunction,
+    proto: snapshot_v1.Proto,
+    instruction_id: u32,
+) Error!DupClosurePattern {
+    if (instruction_id >= function.instruction_count)
+        return Error.UnsupportedControlFlow;
+    const instruction_value = try snapshot.irInstruction(function, instruction_id);
+    if (instruction_value.command != .fallback_dupclosure)
+        return Error.UnsupportedControlFlow;
+    if (instruction_value.operand_count != 3)
+        return Error.InvalidOperandCount;
+
+    const pc_operand = try snapshot.irOperand(instruction_value, 0);
+    const destination_operand = try snapshot.irOperand(instruction_value, 1);
+    const constant_operand = try snapshot.irOperand(instruction_value, 2);
+    if (pc_operand.kind != .constant or destination_operand.kind != .vm_reg or
+        destination_operand.value >= proto.max_stack_size or constant_operand.kind != .vm_const)
+        return Error.InvalidOperandType;
+    const pc = try snapshot.irConstant(function, pc_operand.value);
+    if (pc.uintValue() == null)
+        return Error.InvalidOperandType;
+    const child_proto_id = (try snapshot.vmConstant(proto, constant_operand.value)).closureProtoId() orelse
+        return Error.InvalidOperandType;
+    const child = try snapshot.proto(child_proto_id);
+    if (child.parent_id != proto.id)
+        return Error.UnsupportedControlFlow;
+
+    if (child.nups == 0)
+        return .{ .closed = .{
+            .destination = destination_operand.value,
+            .child_proto_id = child_proto_id,
+        } };
+    if (child.nups != 1)
+        return Error.UnsupportedControlFlow;
+
+    const capture_id = std.math.add(u32, instruction_id, 1) catch return Error.ResourceLimit;
+    if (capture_id >= function.instruction_count)
+        return Error.UnsupportedControlFlow;
+    try requireSingleBytecodeBlockRangeFor(snapshot, function, instruction_id, capture_id);
+    const capture = try snapshot.irInstruction(function, capture_id);
+    if (capture.command != .capture)
+        return Error.UnsupportedControlFlow;
+    if (capture.operand_count != 2)
+        return Error.InvalidOperandCount;
+    const capture_source = try snapshot.irOperand(capture, 0);
+    const capture_kind = try snapshot.irOperand(capture, 1);
+    if (capture_source.kind != .vm_reg or capture_source.value >= proto.max_stack_size or
+        capture_kind.kind != .constant)
+        return Error.InvalidOperandType;
+    const kind = try snapshot.irConstant(function, capture_kind.value);
+    if (kind.uintValue() != 0)
+        return Error.UnsupportedControlFlow;
+    return .{ .value = .{
+        .destination = destination_operand.value,
+        .child_proto_id = child_proto_id,
+        .capture_register = capture_source.value,
+    } };
+}
+
 const Context = struct {
     allocator: std.mem.Allocator,
     snapshot: snapshot_v1.Snapshot,
@@ -158,18 +261,7 @@ const Context = struct {
     }
 
     fn requireSingleBytecodeBlockRange(self: Context, start: u32, finish: u32) Error!void {
-        var owner: ?u32 = null;
-        var block_id: u32 = 0;
-        while (block_id < self.function.block_count) : (block_id += 1) {
-            const block = try self.snapshot.irBlock(self.function, block_id);
-            if (block.isEmpty() or block.finish < start or block.start > finish)
-                continue;
-            if (owner != null or block.kind != .bytecode or block.start > start or block.finish < finish)
-                return Error.UnsupportedControlFlow;
-            owner = block_id;
-        }
-        if (owner == null)
-            return Error.UnsupportedControlFlow;
+        return requireSingleBytecodeBlockRangeFor(self.snapshot, self.function, start, finish);
     }
 
     fn requireSingleCompilableBlockRange(self: Context, start: u32, finish: u32) Error!void {
@@ -693,6 +785,17 @@ const Context = struct {
             return Error.InvalidOperandType;
         const target = try self.snapshot.irBlock(self.function, operand_value.value);
         if (!target.kind.isCompilable() or target.isEmpty())
+            return Error.UnsupportedControlFlow;
+        return operand_value.value;
+    }
+
+    fn requireDispatchTarget(self: Context, operand_value: snapshot_v1.IrOperand) Error!u32 {
+        if (operand_value.kind != .block)
+            return Error.InvalidOperandType;
+        const target = try self.snapshot.irBlock(self.function, operand_value.value);
+        if (target.isEmpty() or
+            (!target.kind.isCompilable() and
+                (target.kind != .fallback or !try self.supportsFallback(target))))
             return Error.UnsupportedControlFlow;
         return operand_value.value;
     }
@@ -2209,7 +2312,7 @@ const Context = struct {
 
     fn emitJump(self: Context, instruction_value: snapshot_v1.IrInstruction) Error!void {
         try self.requireOperandCount(instruction_value, 1);
-        const target = try self.requireCompiledTarget(try self.operand(instruction_value, 0));
+        const target = try self.requireDispatchTarget(try self.operand(instruction_value, 0));
         try self.body.i32Const(self.allocator, @intCast(target));
         try self.body.localSet(self.allocator, self.dispatch_local);
         try self.body.branch(self.allocator, 1);
@@ -2376,26 +2479,27 @@ const Context = struct {
         try self.emitStatusReturn(status_ok);
     }
 
-    fn emitDupClosure(self: Context, instruction_value: snapshot_v1.IrInstruction) Error!void {
-        try self.requireOperandCount(instruction_value, 3);
-        const pc_operand = try self.operand(instruction_value, 0);
-        const destination = try self.operand(instruction_value, 1);
-        const constant_operand = try self.operand(instruction_value, 2);
-        if (pc_operand.kind != .constant or constant_operand.kind != .vm_const)
-            return Error.InvalidOperandType;
-        _ = (try self.constant(pc_operand.value)).uintValue() orelse return Error.InvalidOperandType;
-        const destination_register = try self.vmRegisterIndex(destination);
-        const child_id = (try self.snapshot.vmConstant(self.proto, constant_operand.value)).closureProtoId() orelse
-            return Error.InvalidOperandType;
-        const child = try self.snapshot.proto(child_id);
-        if (child.parent_id != self.proto.id or child.nups != 0)
-            return Error.UnsupportedControlFlow;
-        const global_child_id = std.math.add(u32, self.function_id_base, child_id) catch return Error.ResourceLimit;
-
-        try self.body.localGet(self.allocator, 0);
-        try self.body.i32Const(self.allocator, @intCast(destination_register));
-        try self.body.i32Const(self.allocator, @intCast(global_child_id));
-        try self.body.call(self.allocator, self.dupclosure orelse return Error.UnsupportedCommand);
+    fn emitDupClosure(self: Context, instruction_id: u32) Error!void {
+        const pattern = try dupClosurePattern(self.snapshot, self.function, self.proto, instruction_id);
+        switch (pattern) {
+            .closed => |closed| {
+                const global_child_id = std.math.add(u32, self.function_id_base, closed.child_proto_id) catch
+                    return Error.ResourceLimit;
+                try self.body.localGet(self.allocator, 0);
+                try self.body.i32Const(self.allocator, @intCast(closed.destination));
+                try self.body.i32Const(self.allocator, @intCast(global_child_id));
+                try self.body.call(self.allocator, self.dupclosure orelse return Error.UnsupportedCommand);
+            },
+            .value => |value| {
+                const global_child_id = std.math.add(u32, self.function_id_base, value.child_proto_id) catch
+                    return Error.ResourceLimit;
+                try self.body.localGet(self.allocator, 0);
+                try self.body.i32Const(self.allocator, @intCast(value.destination));
+                try self.body.i32Const(self.allocator, @intCast(global_child_id));
+                try self.body.i32Const(self.allocator, @intCast(value.capture_register));
+                try self.body.call(self.allocator, self.newclosure_value orelse return Error.UnsupportedCommand);
+            },
+        }
         // Closure allocation runs GC and can relocate the active stack.
         try self.emitReloadBase();
     }
@@ -2539,7 +2643,10 @@ const Context = struct {
             saved_pc.command != .set_savedpc or call.command != .call)
             return null;
         if (marker.command == .nop) {
-            if (start != block.start or (block.flags & (1 << 0)) == 0 or marker.operand_count != 0)
+            const follows_root_prep = start == block.start + 1 and
+                (try self.instruction(start - 1)).command == .fallback_prepvarargs;
+            if ((start != block.start and !follows_root_prep) or
+                (block.flags & (1 << 0)) == 0 or marker.operand_count != 0)
                 return Error.UnsupportedControlFlow;
         } else {
             try self.requireOperandCount(marker, 1);
@@ -2786,7 +2893,15 @@ const Context = struct {
             .capture => {
                 if (try self.valueClosurePatternAt(instruction_id, 7) == null and
                     try self.referenceClosurePatternAt(instruction_id, 8) == null)
-                    return Error.UnsupportedControlFlow;
+                {
+                    if (instruction_id == 0 or
+                        (try self.instruction(instruction_id - 1)).command != .fallback_dupclosure)
+                        return Error.UnsupportedControlFlow;
+                    switch (try dupClosurePattern(self.snapshot, self.function, self.proto, instruction_id - 1)) {
+                        .closed => return Error.UnsupportedControlFlow,
+                        .value => {},
+                    }
+                }
             },
             .findupval => {
                 if (try self.referenceClosurePatternAt(instruction_id, 3) == null)
@@ -2849,7 +2964,7 @@ const Context = struct {
                 else
                     try self.emitNewClosureValue(instruction_id);
             },
-            .fallback_dupclosure => try self.emitDupClosure(instruction_value),
+            .fallback_dupclosure => try self.emitDupClosure(instruction_id),
             else => return Error.UnsupportedCommand,
         }
         return false;
@@ -3043,12 +3158,16 @@ const RuntimeImports = struct {
 
 fn scanImportNeeds(snapshot: snapshot_v1.Snapshot, function_id: u32, needs: *ImportNeeds) Error!void {
     const function = try snapshot.irFunction(function_id);
+    const proto = try snapshot.proto(function.proto_id);
     var instruction_id: u32 = 0;
     while (instruction_id < function.instruction_count) : (instruction_id += 1) {
         switch ((try snapshot.irInstruction(function, instruction_id)).command) {
             .do_arith => needs.do_arith = true,
             .cmp_any => needs.compare_any = true,
-            .fallback_dupclosure => needs.dupclosure = true,
+            .fallback_dupclosure => switch (try dupClosurePattern(snapshot, function, proto, instruction_id)) {
+                .closed => needs.dupclosure = true,
+                .value => needs.newclosure_value = true,
+            },
             .newclosure => {
                 if (instruction_id + 3 < function.instruction_count and
                     (try snapshot.irInstruction(function, instruction_id + 3)).command == .findupval)
@@ -3178,7 +3297,7 @@ fn lowerFunction(
     symbol_name: []const u8,
     static_package: ?static_package_v1.Package,
     function_id_base: u32,
-) Error!void {
+) Error!wasm.FunctionRef {
     const function = try snapshot.irFunction(function_id);
     const proto = try snapshot.proto(function.proto_id);
     if (function.variadic != proto.is_vararg)
@@ -3312,7 +3431,7 @@ fn lowerFunction(
     try body.i32Const(allocator, status_internal_error);
     try body.finish(allocator);
 
-    _ = try object.defineFunction(symbol_name, imports.generated_type, wasm.symbol.visibility_hidden, body);
+    return object.defineFunction(symbol_name, imports.generated_type, wasm.symbol.visibility_hidden, body);
 }
 
 pub fn build(allocator: std.mem.Allocator, snapshot_bytes: []const u8, function_id: u32) Error![]u8 {
@@ -3326,7 +3445,7 @@ pub fn build(allocator: std.mem.Allocator, snapshot_bytes: []const u8, function_
     var object = wasm.Object.init(allocator);
     defer object.deinit();
     const imports = try addRuntimeImports(&object, needs);
-    try lowerFunction(allocator, snapshot, function_id, &object, imports, generated_symbol, null, 0);
+    _ = try lowerFunction(allocator, snapshot, function_id, &object, imports, generated_symbol, null, 0);
     return object.emit();
 }
 
@@ -3347,9 +3466,115 @@ pub fn buildPackage(allocator: std.mem.Allocator, snapshot_bytes: []const u8) Er
     while (function_id < snapshot.header.ir_function_count) : (function_id += 1) {
         const symbol_name = try std.fmt.allocPrint(allocator, "mc_luau_aot_v1_function_{d:0>8}", .{function_id});
         defer allocator.free(symbol_name);
-        try lowerFunction(allocator, snapshot, function_id, &object, imports, symbol_name, null, 0);
+        _ = try lowerFunction(allocator, snapshot, function_id, &object, imports, symbol_name, null, 0);
     }
     return object.emit();
+}
+
+fn writeU32(bytes: []u8, offset: usize, value: u32) void {
+    std.mem.writeInt(u32, bytes[offset..][0..4], value, .little);
+}
+
+fn emitStaticPackageMetadata(
+    allocator: std.mem.Allocator,
+    object: *wasm.Object,
+    package: static_package_v1.Package,
+    function_bases: []const u32,
+    function_refs: []const wasm.FunctionRef,
+) Error!void {
+    const proto_bytes_size = std.math.mul(usize, function_refs.len, aot_proto_size) catch return Error.ResourceLimit;
+    var proto_bytes = try allocator.alloc(u8, proto_bytes_size);
+    defer allocator.free(proto_bytes);
+    @memset(proto_bytes, 0);
+
+    const module_bytes_size = std.math.mul(usize, @as(usize, @intCast(package.module_count)), aot_module_size) catch return Error.ResourceLimit;
+    var module_bytes = try allocator.alloc(u8, module_bytes_size);
+    defer allocator.free(module_bytes);
+    @memset(module_bytes, 0);
+
+    var module_id: u32 = 0;
+    while (module_id < package.module_count) : (module_id += 1) {
+        const module = try package.module(module_id);
+        const snapshot = try snapshot_v1.parse(module.snapshot, snapshot_v1.production_identity);
+        const function_base = function_bases[@intCast(module_id)];
+
+        var local_id: u32 = 0;
+        while (local_id < snapshot.header.proto_count) : (local_id += 1) {
+            const proto = try snapshot.proto(local_id);
+            const global_id = std.math.add(u32, function_base, local_id) catch return Error.ResourceLimit;
+            const record_offset = std.math.mul(usize, @as(usize, @intCast(global_id)), aot_proto_size) catch return Error.ResourceLimit;
+            const record = proto_bytes[record_offset..][0..aot_proto_size];
+            writeU32(record, 0, aot_abi_version);
+            writeU32(record, 4, aot_proto_size);
+            @memcpy(record[8..40], &aot_layout_sha256);
+            writeU32(record, 40, std.math.add(u32, global_id, 1) catch return Error.ResourceLimit);
+            writeU32(record, 44, global_id);
+            writeU32(record, 48, if (proto.parent_id == snapshot_v1.no_id)
+                snapshot_v1.no_id
+            else
+                std.math.add(u32, function_base, proto.parent_id) catch return Error.ResourceLimit);
+            writeU32(record, 52, if (proto.parent_id == snapshot_v1.no_id) aot_proto_root_flag else 0);
+            record[56] = proto.num_params;
+            record[57] = proto.nups;
+            record[58] = @intFromBool(proto.is_vararg);
+            record[59] = proto.max_stack_size;
+        }
+
+        const module_record_offset = std.math.mul(usize, @as(usize, @intCast(module_id)), aot_module_size) catch return Error.ResourceLimit;
+        const module_record = module_bytes[module_record_offset..][0..aot_module_size];
+        writeU32(module_record, 0, aot_abi_version);
+        writeU32(module_record, 4, aot_module_size);
+        @memcpy(module_record[8..40], &aot_layout_sha256);
+        writeU32(module_record, 40, module_id);
+        writeU32(module_record, 44, std.math.add(u32, function_base, snapshot.header.root_proto_id) catch return Error.ResourceLimit);
+    }
+
+    const data_flags = wasm.symbol.visibility_hidden;
+    const protos = try object.defineData(
+        ".rodata.mc_luau_aot_v1_protos",
+        generated_protos_symbol,
+        data_flags,
+        2,
+        proto_bytes,
+    );
+    const modules = try object.defineData(
+        ".rodata.mc_luau_aot_v1_modules",
+        generated_modules_symbol,
+        data_flags,
+        2,
+        module_bytes,
+    );
+
+    var program_bytes = [_]u8{0} ** aot_program_size;
+    writeU32(&program_bytes, 0, aot_abi_version);
+    writeU32(&program_bytes, 4, aot_program_size);
+    @memcpy(program_bytes[8..40], &aot_layout_sha256);
+    writeU32(&program_bytes, 40, protos.memory_offset);
+    writeU32(&program_bytes, 44, @intCast(function_refs.len));
+    const entry_module = try package.module(package.entry_module_id);
+    const entry_snapshot = try snapshot_v1.parse(entry_module.snapshot, snapshot_v1.production_identity);
+    writeU32(
+        &program_bytes,
+        48,
+        std.math.add(u32, function_bases[@intCast(package.entry_module_id)], entry_snapshot.header.root_proto_id) catch return Error.ResourceLimit,
+    );
+    writeU32(&program_bytes, 56, modules.memory_offset);
+    writeU32(&program_bytes, 60, package.module_count);
+    writeU32(&program_bytes, 64, package.entry_module_id);
+    const program = try object.defineData(
+        ".rodata.mc_luau_aot_v1_program",
+        generated_program_symbol,
+        0,
+        2,
+        &program_bytes,
+    );
+
+    for (function_refs, 0..) |function_ref, global_id| {
+        const record_offset = std.math.mul(u32, @intCast(global_id), aot_proto_size) catch return Error.ResourceLimit;
+        try object.relocateDataTableIndex(protos, record_offset + 40, function_ref);
+    }
+    try object.relocateDataMemoryAddress(program, 40, protos, 0);
+    try object.relocateDataMemoryAddress(program, 56, modules, 0);
 }
 
 pub fn buildStaticPackage(allocator: std.mem.Allocator, package_bytes: []const u8) Error![]u8 {
@@ -3377,6 +3602,8 @@ pub fn buildStaticPackage(allocator: std.mem.Allocator, package_bytes: []const u
     var object = wasm.Object.init(allocator);
     defer object.deinit();
     const imports = try addRuntimeImports(&object, needs);
+    const function_refs = try allocator.alloc(wasm.FunctionRef, @intCast(total_functions));
+    defer allocator.free(function_refs);
 
     module_id = 0;
     while (module_id < package.module_count) : (module_id += 1) {
@@ -3388,7 +3615,7 @@ pub fn buildStaticPackage(allocator: std.mem.Allocator, package_bytes: []const u
             const global_function_id = std.math.add(u32, function_base, function_id) catch return Error.ResourceLimit;
             const symbol_name = try std.fmt.allocPrint(allocator, "mc_luau_aot_v1_function_{d:0>8}", .{global_function_id});
             defer allocator.free(symbol_name);
-            try lowerFunction(
+            function_refs[@intCast(global_function_id)] = try lowerFunction(
                 allocator,
                 snapshot,
                 function_id,
@@ -3400,5 +3627,6 @@ pub fn buildStaticPackage(allocator: std.mem.Allocator, package_bytes: []const u
             );
         }
     }
+    try emitStaticPackageMetadata(allocator, &object, package, function_bases, function_refs);
     return object.emit();
 }

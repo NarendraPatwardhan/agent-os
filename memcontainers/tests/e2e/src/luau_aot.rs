@@ -80,9 +80,7 @@ fn luau_aot_scalar_arithmetic_and_branch_breadth_matches_interpreter() {
     let mut session = boot_loom_aot();
 
     for (lhs, rhs) in [(-50, 5), (0, 2), (20, 4), (7, 2), (12, 3), (8, -2), (9, -3)] {
-        let aot = session.run_for_output(&format!(
-            "luau-aot-scalar {lhs} {rhs}; echo status=$?"
-        ));
+        let aot = session.run_for_output(&format!("luau-aot-scalar {lhs} {rhs}; echo status=$?"));
         let interpreted = session.run_for_output(&format!(
             "luau -e 'local run = require(\"aot_scalar_breadth\"); local a, b = ...; print(run(assert(tonumber(a)), assert(tonumber(b))))' {lhs} {rhs}; echo status=$?"
         ));
@@ -115,9 +113,8 @@ fn luau_aot_structural_truthiness_and_loop_paths_match_interpreter() {
         (12, false),
     ] {
         let flag = if descending { "true" } else { "false" };
-        let aot = session.run_for_output(&format!(
-            "luau-aot-structural {n} {flag}; echo status=$?"
-        ));
+        let aot =
+            session.run_for_output(&format!("luau-aot-structural {n} {flag}; echo status=$?"));
         let interpreted = session.run_for_output(&format!(
             "luau -e 'local run = require(\"aot_structural_core\"); local n, flag = ...; print(run(assert(tonumber(n)), flag == \"true\"))' {n} {flag}; echo status=$?"
         ));
@@ -318,6 +315,91 @@ fn luau_aot_static_module_initializes_once_and_preserves_cached_state() {
             "strict AOT static import mismatch for {a}/{b}/{c}/{d}"
         );
     }
+}
+
+/// Five compiled modules form two transitive paths to one mutable state export. The same returned
+/// entry closure runs twice around full GC, exercising repeated require sites, transitive caching,
+/// four-result return ranges, and persistent state in one stamped artifact.
+#[test]
+fn luau_aot_transitive_static_graph_shares_state_across_gc() {
+    let mut session = boot_loom_aot();
+
+    for values in [
+        [-5, 2, 7, -3, 4, 1, -6, 8],
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [1, 2, 3, 4, 5, 6, 7, 8],
+        [20, -8, 11, -4, -3, 9, -2, 6],
+        [123, -57, -31, 100, 14, -9, 22, -45],
+    ] {
+        let mut total = 0i64;
+        let mut expected_values = [0i64; 8];
+        for call in 0..2 {
+            let offset = call * 4;
+            total += i64::from(values[offset]);
+            expected_values[offset] = 10 * total;
+            total += i64::from(values[offset + 1]);
+            expected_values[offset + 1] = 100 * total + 1;
+            total += i64::from(values[offset + 2]);
+            expected_values[offset + 2] = 10 * total;
+            total += i64::from(values[offset + 3]);
+            expected_values[offset + 3] = 100 * total + 1;
+        }
+        let expected = format!(
+            "{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}\r\n{}\r\nstatus=0\r\n",
+            expected_values[0],
+            expected_values[1],
+            expected_values[2],
+            expected_values[3],
+            expected_values[4],
+            expected_values[5],
+            expected_values[6],
+            expected_values[7],
+        );
+        let args = values
+            .iter()
+            .map(i32::to_string)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let aot = session.run_for_output(&format!("luau-aot-static-graph {args}; echo status=$?"));
+        let interpreted = session.run_for_output(&format!(
+            "luau -e 'local run = require(\"aot_static_graph_main\"); local a,b,c,d,e,f,g,h = ...; local r1,r2,r3,r4 = run(a,b,c,d); print(r1); print(r2); print(r3); print(r4); r1,r2,r3,r4 = run(e,f,g,h); print(r1); print(r2); print(r3); print(r4)' {args}; echo status=$?"
+        ));
+        assert_eq!(
+            aot, expected,
+            "strict AOT transitive graph produced wrong state"
+        );
+        assert_eq!(aot, interpreted, "strict AOT transitive graph mismatch");
+    }
+}
+
+/// A -> B -> A is rejected explicitly by the compiled registry on every independent attempt. The
+/// guest checks the stable cycle-error identity before printing each false result. AgentOS
+/// `/bin/luau` is deliberately not a differential here: its current loader recursively reloads this
+/// closed graph until the process exhausts its call stack instead of producing a catchable error.
+#[test]
+fn luau_aot_static_cycle_fails_closed_and_can_be_retried() {
+    let mut session = boot_loom_aot();
+    let expected = "false\r\nfalse\r\nstatus=0\r\n";
+    let aot = session.run_for_output("luau-aot-static-cycle; echo status=$?");
+    assert_eq!(aot, expected, "strict AOT cycle handling was not catchable");
+}
+
+/// AgentOS require caches only successful initializers. A separately cached probe records a failed
+/// initializer's side effect, proving that the second require reruns it instead of replaying an old
+/// error or treating a failed placeholder as a module export.
+#[test]
+fn luau_aot_failed_static_initializer_retries_after_gc() {
+    let mut session = boot_loom_aot();
+    let expected = "false\r\n1\r\nfalse\r\n2\r\nstatus=0\r\n";
+    let aot = session.run_for_output("luau-aot-static-initializer; echo status=$?");
+    let interpreted = session.run_for_output(
+        "luau -e 'local run = require(\"aot_static_initializer_main\"); local first = pcall(run, true); print(first); print(run(false)); local second = pcall(run, true); print(second); print(run(false))' ; echo status=$?",
+    );
+    assert_eq!(
+        aot, expected,
+        "strict AOT failed initializer was not retried exactly once"
+    );
+    assert_eq!(aot, interpreted, "strict AOT initializer retry mismatch");
 }
 
 /// The exact source-built factory closes a mutable local into one accumulator. Its factory frame is

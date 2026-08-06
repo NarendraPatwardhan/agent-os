@@ -5,7 +5,6 @@
 
 const std = @import("std");
 const abi = @import("luau_aot_runtime_abi");
-const static_import = @import("luau_aot_static_import_program");
 const mc = @import("mc");
 const trap = @import("trap");
 const wasi_shim = @import("wasi_shim");
@@ -23,8 +22,10 @@ extern fn lua_pushvalue(state: ?*abi.State, index: c_int) void;
 extern fn lua_settop(state: ?*abi.State, index: c_int) void;
 extern fn lua_pcall(state: ?*abi.State, argument_count: c_int, result_count: c_int, error_function: c_int) c_int;
 extern fn lua_tonumberx(state: ?*abi.State, index: c_int, is_number: *c_int) f64;
+extern const mc_luau_aot_v1_program: abi.AotProgram;
 
 const lua_gc_collect: c_int = 2;
+const source_name = "=aot/static_import_package";
 
 fn writeAll(fd: i32, bytes: []const u8) bool {
     var offset: usize = 0;
@@ -60,9 +61,9 @@ pub export fn __main_argc_argv(argc: c_int, argv_pointer: [*][*:0]u8) c_int {
     defer lua_close(state);
     if (abi.mc_luau_aot_v1_push_program(
         state,
-        &static_import.program,
-        static_import.source_name.ptr,
-        static_import.source_name.len,
+        &mc_luau_aot_v1_program,
+        source_name.ptr,
+        source_name.len,
     ) != 0)
         return fail("luau-aot-static-import: program publication failed\n", 1);
 

@@ -76,17 +76,6 @@ zig_library(
 )
 
 zig_library(
-    name = "static_import_program",
-    import_name = "luau_aot_static_import_program",
-    main = "static_import_program_v1.zig",
-    visibility = [
-        "//memcontainers/programs/luau/aot/runtime/glue:__pkg__",
-        "//memcontainers/programs/luau/aot/runtime:__pkg__",
-    ],
-    deps = [":aot_runtime_abi"],
-)
-
-zig_library(
     name = "reference_capture_program",
     import_name = "luau_aot_reference_capture_program",
     main = "reference_capture_program_v1.zig",
@@ -154,6 +143,72 @@ filegroup(
 filegroup(
     name = "static_import_counter_source",
     srcs = ["//memcontainers/programs/luau/aot/compiler/backend:static_import_counter.luau"],
+    visibility = ["//memcontainers/images:__pkg__"],
+)
+
+filegroup(
+    name = "static_graph_left_source",
+    srcs = ["//memcontainers/programs/luau/aot/compiler/backend:static_graph_left.luau"],
+    visibility = ["//memcontainers/images:__pkg__"],
+)
+
+filegroup(
+    name = "static_graph_main_source",
+    srcs = ["//memcontainers/programs/luau/aot/compiler/backend:static_graph_main.luau"],
+    visibility = ["//memcontainers/images:__pkg__"],
+)
+
+filegroup(
+    name = "static_graph_middle_source",
+    srcs = ["//memcontainers/programs/luau/aot/compiler/backend:static_graph_middle.luau"],
+    visibility = ["//memcontainers/images:__pkg__"],
+)
+
+filegroup(
+    name = "static_graph_right_source",
+    srcs = ["//memcontainers/programs/luau/aot/compiler/backend:static_graph_right.luau"],
+    visibility = ["//memcontainers/images:__pkg__"],
+)
+
+filegroup(
+    name = "static_graph_state_source",
+    srcs = ["//memcontainers/programs/luau/aot/compiler/backend:static_graph_state.luau"],
+    visibility = ["//memcontainers/images:__pkg__"],
+)
+
+filegroup(
+    name = "static_cycle_a_source",
+    srcs = ["//memcontainers/programs/luau/aot/compiler/backend:static_cycle_a.luau"],
+    visibility = ["//memcontainers/images:__pkg__"],
+)
+
+filegroup(
+    name = "static_cycle_b_source",
+    srcs = ["//memcontainers/programs/luau/aot/compiler/backend:static_cycle_b.luau"],
+    visibility = ["//memcontainers/images:__pkg__"],
+)
+
+filegroup(
+    name = "static_cycle_main_source",
+    srcs = ["//memcontainers/programs/luau/aot/compiler/backend:static_cycle_main.luau"],
+    visibility = ["//memcontainers/images:__pkg__"],
+)
+
+filegroup(
+    name = "static_initializer_failure_source",
+    srcs = ["//memcontainers/programs/luau/aot/compiler/backend:static_initializer_failure.luau"],
+    visibility = ["//memcontainers/images:__pkg__"],
+)
+
+filegroup(
+    name = "static_initializer_main_source",
+    srcs = ["//memcontainers/programs/luau/aot/compiler/backend:static_initializer_main.luau"],
+    visibility = ["//memcontainers/images:__pkg__"],
+)
+
+filegroup(
+    name = "static_initializer_probe_source",
+    srcs = ["//memcontainers/programs/luau/aot/compiler/backend:static_initializer_probe.luau"],
     visibility = ["//memcontainers/images:__pkg__"],
 )
 
