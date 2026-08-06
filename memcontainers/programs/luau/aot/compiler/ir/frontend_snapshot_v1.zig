@@ -260,10 +260,12 @@ pub const IrCommand = enum(u8) {
     tag_vector = 116,
     truncate_uint = 117,
     do_arith = 123,
+    get_cached_import = 127,
     get_upvalue = 129,
     set_upvalue = 130,
     check_tag = 131,
     check_truthy = 132,
+    check_safe_env = 135,
     check_cmp_num = 142,
     check_cmp_int = 143,
     check_cmp_int64 = 144,
@@ -406,6 +408,11 @@ pub const VmConstant = struct {
     }
 };
 
+pub const VmConstantItem = struct {
+    key: u32,
+    value: u32,
+};
+
 pub const IrFunction = struct {
     id: u32,
     proto_id: u32,
@@ -480,6 +487,12 @@ pub const IrConstant = struct {
             return null;
         return @truncate(self.bits);
     }
+
+    pub fn importValue(self: IrConstant) ?u32 {
+        if (self.kind != .import)
+            return null;
+        return @truncate(self.bits);
+    }
 };
 
 pub const Snapshot = struct {
@@ -540,6 +553,29 @@ pub const Snapshot = struct {
             .payload3 = readU32(item, 16),
             .bits0 = readU64(item, 24),
         };
+    }
+
+    pub fn vmConstantItem(self: Snapshot, id: u32) Error!VmConstantItem {
+        const records = try self.requireSection(.vm_constant_items);
+        if (id >= records.count)
+            return Error.IndexOutOfBounds;
+        const item = recordBytes(self, records, id);
+        return .{ .key = readU32(item, 0), .value = readU32(item, 4) };
+    }
+
+    pub fn string(self: Snapshot, id: u32) Error![]const u8 {
+        const strings = try self.requireSection(.strings);
+        const bytes = try self.requireSection(.string_bytes);
+        if (id >= strings.count)
+            return Error.IndexOutOfBounds;
+        const item = recordBytes(self, strings, id);
+        const start = readU64(item, 0);
+        const size = readU32(item, 8);
+        if (start > bytes.count or size > bytes.count - start)
+            return Error.InvalidString;
+        const begin = std.math.add(usize, @as(usize, @intCast(bytes.offset)), @as(usize, @intCast(start))) catch return Error.InvalidString;
+        const end = std.math.add(usize, begin, @as(usize, size)) catch return Error.InvalidString;
+        return self.bytes[begin..end];
     }
 
     pub fn irFunction(self: Snapshot, id: u32) Error!IrFunction {

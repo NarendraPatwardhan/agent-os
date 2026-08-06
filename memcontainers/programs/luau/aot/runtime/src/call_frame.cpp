@@ -13,6 +13,7 @@
 #include "lmem.h"
 #include "lstate.h"
 #include "lstring.h"
+#include "lualib.h"
 
 #include <limits.h>
 #include <string.h>
@@ -193,9 +194,16 @@ extern "C" const uint8_t mc_luau_aot_v1_layout_sha256[32] = {
 };
 
 static bool validAotProto(const McLuauAotProtoV1 *metadata);
+static char moduleRegistryKey;
 
-extern "C" void mc_luau_aot_v1_return(lua_State *L, uint32_t sourceRegister,
-                                        int32_t resultCount) {
+enum ModuleInitializationState {
+    MODULE_UNINITIALIZED = 0,
+    MODULE_INITIALIZING = 1,
+    MODULE_INITIALIZED = 2,
+    MODULE_FAILED = 3,
+};
+
+extern "C" void mc_luau_aot_v1_return(lua_State *L, uint32_t sourceRegister, int32_t resultCount) {
     if (!L || !L->ci || !isLua(L->ci))
         luaG_runerror(L, "strict AOT return helper entered without an active Luau frame");
     if (resultCount < MC_LUAU_AOT_V1_MULTRET)
@@ -236,9 +244,9 @@ extern "C" void mc_luau_aot_v1_return(lua_State *L, uint32_t sourceRegister,
 extern "C" uint32_t mc_luau_aot_v1_interrupt(lua_State *L, uint32_t pc) {
     // FrontendSnapshotV1 carries the bytecode pc for source-map/continuation work, but strict AOT
     // Protos deliberately carry no bytecode array from which savedpc could be constructed. Keep the
-    // value in the ABI now without fabricating a pointer; native-frame debug handling already treats
-    // this frame as opaque. The callback can reallocate the stack, so generated code reloads L->base
-    // after every successful return from this helper.
+    // value in the ABI now without fabricating a pointer; native-frame debug handling already
+    // treats this frame as opaque. The callback can reallocate the stack, so generated code reloads
+    // L->base after every successful return from this helper.
     (void)pc;
     if (!L || !L->ci || !isLua(L->ci))
         return MC_LUAU_AOT_V1_INTERNAL_ERROR;
@@ -252,8 +260,8 @@ extern "C" uint32_t mc_luau_aot_v1_interrupt(lua_State *L, uint32_t pc) {
 }
 
 extern "C" void mc_luau_aot_v1_do_arith(lua_State *L, uint32_t destinationRegister,
-                                          uint32_t lhsRegister, uint32_t rhsRegister,
-                                          uint32_t operation) {
+                                        uint32_t lhsRegister, uint32_t rhsRegister,
+                                        uint32_t operation) {
     if (!L || !L->ci || !isLua(L->ci))
         luaG_runerror(L, "strict AOT arithmetic helper entered without an active Luau frame");
 
@@ -302,8 +310,7 @@ extern "C" void mc_luau_aot_v1_do_arith(lua_State *L, uint32_t destinationRegist
 }
 
 extern "C" uint32_t mc_luau_aot_v1_compare_any(lua_State *L, uint32_t lhsRegister,
-                                                 uint32_t rhsRegister,
-                                                 uint32_t operation) {
+                                               uint32_t rhsRegister, uint32_t operation) {
     if (!L || !L->ci || !isLua(L->ci))
         luaG_runerror(L, "strict AOT comparison helper entered without an active Luau frame");
 
@@ -329,9 +336,8 @@ extern "C" uint32_t mc_luau_aot_v1_compare_any(lua_State *L, uint32_t lhsRegiste
 static Proto *findDirectAotChild(Proto *parent, uint32_t childProtoId) {
     for (int index = 0; index < parent->sizep; ++index) {
         Proto *candidate = parent->p[index];
-        const McLuauAotProtoV1 *metadata = candidate
-                                               ? static_cast<const McLuauAotProtoV1 *>(candidate->execdata)
-                                               : nullptr;
+        const McLuauAotProtoV1 *metadata =
+            candidate ? static_cast<const McLuauAotProtoV1 *>(candidate->execdata) : nullptr;
         if (metadata && metadata->function_id == childProtoId)
             return candidate;
     }
@@ -339,7 +345,7 @@ static Proto *findDirectAotChild(Proto *parent, uint32_t childProtoId) {
 }
 
 extern "C" void mc_luau_aot_v1_dupclosure(lua_State *L, uint32_t destinationRegister,
-                                            uint32_t childProtoId) {
+                                          uint32_t childProtoId) {
     if (!L || !L->ci || !isLua(L->ci))
         luaG_runerror(L, "strict AOT closure helper entered without an active Luau frame");
 
@@ -365,8 +371,7 @@ extern "C" void mc_luau_aot_v1_dupclosure(lua_State *L, uint32_t destinationRegi
 }
 
 extern "C" void mc_luau_aot_v1_newclosure_value(lua_State *L, uint32_t destinationRegister,
-                                                  uint32_t childProtoId,
-                                                  uint32_t captureRegister) {
+                                                uint32_t childProtoId, uint32_t captureRegister) {
     if (!L || !L->ci || !isLua(L->ci))
         luaG_runerror(L, "strict AOT value-closure helper entered without an active Luau frame");
 
@@ -377,7 +382,8 @@ extern "C" void mc_luau_aot_v1_newclosure_value(lua_State *L, uint32_t destinati
 
     Proto *child = findDirectAotChild(parent, childProtoId);
     if (!child)
-        luaG_runerror(L, "strict AOT value-closure helper rejected non-child Proto %u", childProtoId);
+        luaG_runerror(L, "strict AOT value-closure helper rejected non-child Proto %u",
+                      childProtoId);
     if (child->nups != 1)
         luaG_runerror(L, "strict AOT value-closure helper requires exactly one child upvalue");
 
@@ -396,10 +402,10 @@ extern "C" void mc_luau_aot_v1_newclosure_value(lua_State *L, uint32_t destinati
 }
 
 extern "C" void mc_luau_aot_v1_newclosure_ref(lua_State *L, uint32_t destinationRegister,
-                                                uint32_t childProtoId,
-                                                uint32_t captureRegister) {
+                                              uint32_t childProtoId, uint32_t captureRegister) {
     if (!L || !L->ci || !isLua(L->ci))
-        luaG_runerror(L, "strict AOT reference-closure helper entered without an active Luau frame");
+        luaG_runerror(L,
+                      "strict AOT reference-closure helper entered without an active Luau frame");
 
     Closure *parentClosure = clvalue(L->ci->func);
     Proto *parent = parentClosure->l.p;
@@ -409,7 +415,8 @@ extern "C" void mc_luau_aot_v1_newclosure_ref(lua_State *L, uint32_t destination
 
     Proto *child = findDirectAotChild(parent, childProtoId);
     if (!child)
-        luaG_runerror(L, "strict AOT reference-closure helper rejected non-child Proto %u", childProtoId);
+        luaG_runerror(L, "strict AOT reference-closure helper rejected non-child Proto %u",
+                      childProtoId);
     if (child->nups != 1)
         luaG_runerror(L, "strict AOT reference-closure helper requires exactly one child upvalue");
 
@@ -425,7 +432,7 @@ extern "C" void mc_luau_aot_v1_newclosure_ref(lua_State *L, uint32_t destination
 }
 
 extern "C" void mc_luau_aot_v1_get_upvalue(lua_State *L, uint32_t destinationRegister,
-                                             uint32_t upvalueIndex) {
+                                           uint32_t upvalueIndex) {
     if (!L || !L->ci || !isLua(L->ci))
         luaG_runerror(L, "strict AOT upvalue helper entered without an active Luau frame");
 
@@ -443,7 +450,7 @@ extern "C" void mc_luau_aot_v1_get_upvalue(lua_State *L, uint32_t destinationReg
 }
 
 extern "C" void mc_luau_aot_v1_set_upvalue(lua_State *L, uint32_t upvalueIndex,
-                                             uint32_t sourceRegister) {
+                                           uint32_t sourceRegister) {
     if (!L || !L->ci || !isLua(L->ci))
         luaG_runerror(L, "strict AOT upvalue mutation entered without an active Luau frame");
 
@@ -476,11 +483,10 @@ extern "C" void mc_luau_aot_v1_close_upvalues(lua_State *L, uint32_t firstRegist
 }
 
 extern "C" uint32_t mc_luau_aot_v1_call(lua_State *L, uint32_t functionRegister,
-                                         int32_t parameterCount, int32_t resultCount) {
+                                        int32_t parameterCount, int32_t resultCount) {
     if (!L || !L->ci || !isLua(L->ci))
         luaG_runerror(L, "strict AOT call helper entered without an active Luau frame");
-    if (parameterCount < MC_LUAU_AOT_V1_MULTRET ||
-        resultCount < MC_LUAU_AOT_V1_MULTRET)
+    if (parameterCount < MC_LUAU_AOT_V1_MULTRET || resultCount < MC_LUAU_AOT_V1_MULTRET)
         luaG_runerror(L, "strict AOT call rejected %d parameters and %d results", parameterCount,
                       resultCount);
 
@@ -493,8 +499,7 @@ extern "C" uint32_t mc_luau_aot_v1_call(lua_State *L, uint32_t functionRegister,
     if (parameterCount == MC_LUAU_AOT_V1_MULTRET) {
         if (L->top < function + 1)
             luaG_runerror(L, "strict AOT dynamic call starts above the live stack top");
-    } else if (uint32_t(parameterCount) >=
-               uint32_t(callerProto->maxstacksize) - functionRegister) {
+    } else if (uint32_t(parameterCount) >= uint32_t(callerProto->maxstacksize) - functionRegister) {
         luaG_runerror(L, "strict AOT fixed call arguments exceed the compiled caller frame");
     }
     if (resultCount != MC_LUAU_AOT_V1_MULTRET &&
@@ -504,9 +509,8 @@ extern "C" uint32_t mc_luau_aot_v1_call(lua_State *L, uint32_t functionRegister,
     if (!ttisfunction(function) || clvalue(function)->isC)
         luaG_runerror(L, "strict AOT call requires a compiled Luau closure");
     Closure *callee = clvalue(function);
-    const McLuauAotProtoV1 *metadata = callee->l.p
-                                           ? static_cast<const McLuauAotProtoV1 *>(callee->l.p->execdata)
-                                           : nullptr;
+    const McLuauAotProtoV1 *metadata =
+        callee->l.p ? static_cast<const McLuauAotProtoV1 *>(callee->l.p->execdata) : nullptr;
     if (!validAotProto(metadata))
         luaG_runerror(L, "strict AOT call rejected missing callee metadata");
     if (callee->nupvalues != metadata->nups)
@@ -534,16 +538,15 @@ extern "C" uint32_t mc_luau_aot_v1_call(lua_State *L, uint32_t functionRegister,
     }
 }
 
-extern "C" void mc_luau_aot_v1_prep_varargs(lua_State *L,
-                                              uint32_t fixedParameterCount) {
+extern "C" void mc_luau_aot_v1_prep_varargs(lua_State *L, uint32_t fixedParameterCount) {
     if (!L || !L->ci || !isLua(L->ci))
         luaG_runerror(L, "strict AOT PREPVARARGS entered without an active Luau frame");
 
     CallInfo *ci = L->ci;
     Closure *closure = clvalue(ci->func);
     Proto *proto = closure->l.p;
-    if (!proto->is_vararg || fixedParameterCount != proto->numparams ||
-        ci->base != ci->func + 1 || L->top < ci->base + fixedParameterCount)
+    if (!proto->is_vararg || fixedParameterCount != proto->numparams || ci->base != ci->func + 1 ||
+        L->top < ci->base + fixedParameterCount)
         luaG_runerror(L, "strict AOT PREPVARARGS rejected the active frame shape");
 
     // Match LOP_PREPVARARGS: reserve the relocated frame first, then reload every stack pointer
@@ -570,9 +573,8 @@ static uint32_t varargCount(lua_State *L, Proto *proto) {
     return uint32_t(count);
 }
 
-extern "C" void mc_luau_aot_v1_get_varargs_fixed(lua_State *L,
-                                                   uint32_t destinationRegister,
-                                                   uint32_t resultCount) {
+extern "C" void mc_luau_aot_v1_get_varargs_fixed(lua_State *L, uint32_t destinationRegister,
+                                                 uint32_t resultCount) {
     if (!L || !L->ci || !isLua(L->ci))
         luaG_runerror(L, "strict AOT GETVARARGS entered without an active Luau frame");
 
@@ -591,8 +593,7 @@ extern "C" void mc_luau_aot_v1_get_varargs_fixed(lua_State *L,
         setnilvalue(L->base + destinationRegister + index);
 }
 
-extern "C" void mc_luau_aot_v1_get_varargs_multret(lua_State *L,
-                                                     uint32_t destinationRegister) {
+extern "C" void mc_luau_aot_v1_get_varargs_multret(lua_State *L, uint32_t destinationRegister) {
     if (!L || !L->ci || !isLua(L->ci))
         luaG_runerror(L, "strict AOT GETVARARGS entered without an active Luau frame");
 
@@ -615,6 +616,148 @@ extern "C" void mc_luau_aot_v1_get_varargs_multret(lua_State *L,
     L->top = destination + count;
 }
 
+static bool pushModuleRecord(lua_State *L, uint32_t moduleId) {
+    lua_pushlightuserdata(L, &moduleRegistryKey);
+    lua_rawget(L, LUA_REGISTRYINDEX);
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        return false;
+    }
+
+    lua_rawgeti(L, -1, 0);
+    int moduleCount = lua_tointeger(L, -1);
+    lua_pop(L, 1);
+    if (moduleCount < 0 || moduleId >= uint32_t(moduleCount)) {
+        lua_pop(L, 1);
+        return false;
+    }
+
+    lua_rawgeti(L, -1, int(moduleId) + 1);
+    lua_remove(L, -2);
+    if (!lua_istable(L, -1)) {
+        lua_pop(L, 1);
+        return false;
+    }
+    return true;
+}
+
+static int moduleRecordStatus(lua_State *L, int recordIndex) {
+    lua_rawgeti(L, recordIndex, 2);
+    int isNumber = 0;
+    int status = lua_tointegerx(L, -1, &isNumber);
+    lua_pop(L, 1);
+    return isNumber ? status : -1;
+}
+
+static void setModuleRecordStatus(lua_State *L, int recordIndex, int status) {
+    lua_pushinteger(L, status);
+    lua_rawseti(L, recordIndex, 2);
+}
+
+static void setModuleRecordValue(lua_State *L, int recordIndex, int valueIndex) {
+    lua_pushvalue(L, valueIndex);
+    lua_rawseti(L, recordIndex, 3);
+}
+
+extern "C" uint32_t mc_luau_aot_v1_require_static(lua_State *L, uint32_t destinationRegister,
+                                                  uint32_t targetModuleId) {
+    if (!L || !L->ci || !isLua(L->ci))
+        luaG_runerror(L, "strict AOT static require entered without an active Luau frame");
+
+    Closure *caller = clvalue(L->ci->func);
+    Proto *callerProto = caller->l.p;
+    if (destinationRegister >= callerProto->maxstacksize)
+        luaG_runerror(L, "strict AOT static require destination is outside the compiled frame");
+    if (!lua_checkstack(L, 8))
+        luaG_runerror(L, "strict AOT static require could not reserve runtime stack space");
+
+    const int originalTop = lua_gettop(L);
+    if (!pushModuleRecord(L, targetModuleId))
+        luaG_runerror(L, "strict AOT static require rejected module %u", targetModuleId);
+    const int recordIndex = lua_gettop(L);
+    int status = moduleRecordStatus(L, recordIndex);
+
+    if (status == MODULE_INITIALIZED) {
+        lua_rawgeti(L, recordIndex, 3);
+        setobj2s(L, L->base + destinationRegister, L->top - 1);
+        lua_settop(L, originalTop);
+        return MC_LUAU_AOT_V1_OK;
+    }
+    if (status == MODULE_FAILED) {
+        lua_rawgeti(L, recordIndex, 3);
+        const char *message = lua_tostring(L, -1);
+        lua_settop(L, originalTop);
+        luaG_runerror(L, "strict AOT module %u initialization failed: %s", targetModuleId,
+                      message ? message : "unknown error");
+    }
+    if (status == MODULE_INITIALIZING) {
+        lua_settop(L, originalTop);
+        luaG_runerror(L, "strict AOT static require cycle reached module %u", targetModuleId);
+    }
+    if (status != MODULE_UNINITIALIZED) {
+        lua_settop(L, originalTop);
+        luaG_runerror(L, "strict AOT module %u has invalid initialization state", targetModuleId);
+    }
+
+    lua_rawgeti(L, recordIndex, 1);
+    if (!lua_isfunction(L, -1) || clvalue(L->top - 1)->isC) {
+        lua_settop(L, originalTop);
+        luaG_runerror(L, "strict AOT module %u has no compiled root closure", targetModuleId);
+    }
+    Proto *moduleProto = clvalue(L->top - 1)->l.p;
+    const McLuauAotProtoV1 *metadata =
+        moduleProto ? static_cast<const McLuauAotProtoV1 *>(moduleProto->execdata) : nullptr;
+    if (!validAotProto(metadata)) {
+        lua_settop(L, originalTop);
+        luaG_runerror(L, "strict AOT module %u root metadata is invalid", targetModuleId);
+    }
+
+    setModuleRecordStatus(L, recordIndex, MODULE_INITIALIZING);
+
+    // Match the pinned module loader's isolation without loading source or bytecode. The thread is
+    // rooted on the requiring state while the module closure executes through ldo's strict AOT
+    // gate.
+    lua_State *globalThread = lua_mainthread(L);
+    lua_State *moduleThread = lua_newthread(globalThread);
+    lua_xmove(globalThread, L, 1);
+    luaL_sandboxthread(moduleThread);
+    if (!lua_checkstack(moduleThread, 1)) {
+        setModuleRecordStatus(L, recordIndex, MODULE_FAILED);
+        lua_pushliteral(L, "could not reserve module thread stack space");
+        setModuleRecordValue(L, recordIndex, -1);
+        lua_settop(L, originalTop);
+        luaG_runerror(L, "strict AOT module %u could not reserve runtime stack space",
+                      targetModuleId);
+    }
+
+    luaC_threadbarrier(moduleThread);
+    Closure *moduleClosure = luaF_newLclosure(moduleThread, 0, moduleThread->gt, moduleProto);
+    setclvalue(moduleThread, moduleThread->top, moduleClosure);
+    moduleThread->top++;
+
+    int resumeStatus = lua_resume(moduleThread, L, 0);
+    if (resumeStatus != LUA_OK || lua_gettop(moduleThread) != 1) {
+        const char *message = resumeStatus == LUA_YIELD
+                                  ? "module yielded without a continuation contract"
+                              : resumeStatus == LUA_OK ? "module must return a single value"
+                                                       : lua_tostring(moduleThread, -1);
+        lua_pushstring(L, message ? message : "unknown module error");
+        setModuleRecordValue(L, recordIndex, -1);
+        setModuleRecordStatus(L, recordIndex, MODULE_FAILED);
+        const char *cachedMessage = lua_tostring(L, -1);
+        lua_settop(L, originalTop);
+        luaG_runerror(L, "strict AOT module %u initialization failed: %s", targetModuleId,
+                      cachedMessage ? cachedMessage : "unknown error");
+    }
+
+    lua_xmove(moduleThread, L, 1);
+    setModuleRecordValue(L, recordIndex, -1);
+    setModuleRecordStatus(L, recordIndex, MODULE_INITIALIZED);
+    setobj2s(L, L->base + destinationRegister, L->top - 1);
+    lua_settop(L, originalTop);
+    return MC_LUAU_AOT_V1_OK;
+}
+
 static void destroyAotProto(lua_State *, Proto *proto) {
     // AOT metadata is immutable linker-owned data, not a heap allocation owned by Proto.
     proto->execdata = nullptr;
@@ -627,6 +770,14 @@ static bool validAotProto(const McLuauAotProtoV1 *metadata) {
            metadata->is_vararg <= 1 && metadata->reserved == 0 &&
            memcmp(metadata->layout_sha256, mc_luau_aot_v1_layout_sha256,
                   sizeof(metadata->layout_sha256)) == 0;
+}
+
+static bool validAotModule(const McLuauAotModuleV1 *module) {
+    return module && module->abi_version == MC_LUAU_AOT_ABI_V1 &&
+           module->struct_size == MC_LUAU_AOT_MODULE_V1_SIZE && module->flags == 0 &&
+           module->reserved == 0 &&
+           memcmp(module->layout_sha256, mc_luau_aot_v1_layout_sha256,
+                  sizeof(module->layout_sha256)) == 0;
 }
 
 static void initializeAotProto(Proto *proto, const McLuauAotProtoV1 *metadata,
@@ -646,6 +797,48 @@ static void publishRootClosure(lua_State *L, Proto *proto) {
     setclvalue(L, L->top, closure);
     LUAU_ASSERT(L->top < L->ci->top);
     L->top++;
+}
+
+static void publishModuleRegistry(lua_State *L, const McLuauAotProgramV1 *program, Proto **protos) {
+    const int originalTop = lua_gettop(L);
+    const int anchorBase = originalTop + 1;
+
+    // Root every independent Proto tree before any table allocation can advance GC.
+    luaC_threadbarrier(L);
+    for (uint32_t id = 0; id < program->module_count; ++id) {
+        Proto *root = protos[program->modules[id].root_proto_id];
+        Closure *anchor = luaF_newLclosure(L, 0, L->gt, root);
+        setclvalue(L, L->top, anchor);
+        L->top++;
+    }
+
+    lua_createtable(L, int(program->module_count), 0);
+    const int registryIndex = lua_gettop(L);
+    lua_pushinteger(L, int(program->module_count));
+    lua_rawseti(L, registryIndex, 0);
+
+    for (uint32_t id = 0; id < program->module_count; ++id) {
+        lua_createtable(L, 3, 0);
+        const int recordIndex = lua_gettop(L);
+        lua_pushvalue(L, anchorBase + int(id));
+        lua_rawseti(L, recordIndex, 1);
+        // The entry chunk is executed by the existing push_program caller, not require_static.
+        // Mark it active up front so a dependency that reaches back to the entry fails as a cycle
+        // instead of starting a duplicate initializer.
+        lua_pushinteger(L, id == program->entry_module_id ? MODULE_INITIALIZING
+                                                          : MODULE_UNINITIALIZED);
+        lua_rawseti(L, recordIndex, 2);
+        lua_rawseti(L, registryIndex, int(id) + 1);
+    }
+
+    lua_pushlightuserdata(L, &moduleRegistryKey);
+    lua_pushvalue(L, registryIndex);
+    lua_rawset(L, LUA_REGISTRYINDEX);
+
+    // Preserve push_program's existing contract: leave exactly the entry root closure on top.
+    lua_pushvalue(L, anchorBase + int(program->entry_module_id));
+    lua_replace(L, anchorBase);
+    lua_settop(L, anchorBase);
 }
 
 extern "C" uint32_t mc_luau_aot_v1_push_root(lua_State *L, const McLuauAotProtoV1 *metadata,
@@ -674,26 +867,52 @@ extern "C" uint32_t mc_luau_aot_v1_push_root(lua_State *L, const McLuauAotProtoV
     return MC_LUAU_AOT_V1_OK;
 }
 
-extern "C" uint32_t mc_luau_aot_v1_push_program(lua_State *L,
-                                                 const McLuauAotProgramV1 *program,
-                                                 const char *source, size_t sourceSize) {
+extern "C" uint32_t mc_luau_aot_v1_push_program(lua_State *L, const McLuauAotProgramV1 *program,
+                                                const char *source, size_t sourceSize) {
+    const bool hasExtendedProgram = program && program->struct_size == MC_LUAU_AOT_PROGRAM_V1_SIZE;
+    const bool hasLegacyProgram =
+        program && program->struct_size == MC_LUAU_AOT_PROGRAM_V1_LEGACY_SIZE;
     if (!L || !program || !source || sourceSize == 0 || !program->protos ||
-        program->abi_version != MC_LUAU_AOT_ABI_V1 ||
-        program->struct_size != MC_LUAU_AOT_PROGRAM_V1_SIZE || program->proto_count == 0 ||
-        program->proto_count > INT_MAX || program->root_proto_id >= program->proto_count ||
-        program->flags != 0 ||
+        program->abi_version != MC_LUAU_AOT_ABI_V1 || (!hasExtendedProgram && !hasLegacyProgram) ||
+        program->proto_count == 0 || program->proto_count > INT_MAX ||
+        program->root_proto_id >= program->proto_count || program->flags != 0 ||
         memcmp(program->layout_sha256, mc_luau_aot_v1_layout_sha256,
                sizeof(program->layout_sha256)) != 0)
         return MC_LUAU_AOT_V1_INTERNAL_ERROR;
 
+    const uint32_t moduleCount = hasExtendedProgram ? program->module_count : 0;
+    if ((moduleCount == 0 && hasExtendedProgram &&
+         (program->modules != nullptr || program->entry_module_id != 0)) ||
+        (moduleCount != 0 && (!program->modules || moduleCount > uint32_t(INT_MAX - 8) ||
+                              program->entry_module_id >= moduleCount)))
+        return MC_LUAU_AOT_V1_INTERNAL_ERROR;
+
+    if (moduleCount != 0) {
+        for (uint32_t id = 0; id < moduleCount; ++id) {
+            const McLuauAotModuleV1 *module = &program->modules[id];
+            if (!validAotModule(module) || module->module_id != id ||
+                module->root_proto_id >= program->proto_count)
+                return MC_LUAU_AOT_V1_INTERNAL_ERROR;
+            for (uint32_t previous = 0; previous < id; ++previous)
+                if (program->modules[previous].root_proto_id == module->root_proto_id)
+                    return MC_LUAU_AOT_V1_INTERNAL_ERROR;
+        }
+        if (program->root_proto_id != program->modules[program->entry_module_id].root_proto_id)
+            return MC_LUAU_AOT_V1_INTERNAL_ERROR;
+    }
+
     for (uint32_t id = 0; id < program->proto_count; ++id) {
         const McLuauAotProtoV1 *metadata = &program->protos[id];
-        const bool isRoot = id == program->root_proto_id;
+        bool isRoot = id == program->root_proto_id;
+        if (moduleCount != 0) {
+            isRoot = false;
+            for (uint32_t moduleId = 0; moduleId < moduleCount; ++moduleId)
+                isRoot = isRoot || program->modules[moduleId].root_proto_id == id;
+        }
         if (!validAotProto(metadata) || metadata->function_id != id ||
             metadata->flags != (isRoot ? MC_LUAU_AOT_PROTO_V1_ROOT : 0) ||
             (isRoot && metadata->nups != 0) ||
-            (isRoot ? metadata->parent_id != MC_LUAU_AOT_V1_NO_ID
-                    : metadata->parent_id >= id))
+            (isRoot ? metadata->parent_id != MC_LUAU_AOT_V1_NO_ID : metadata->parent_id >= id))
             return MC_LUAU_AOT_V1_INTERNAL_ERROR;
     }
 
@@ -701,8 +920,16 @@ extern "C" uint32_t mc_luau_aot_v1_push_program(lua_State *L,
         return MC_LUAU_AOT_V1_INTERNAL_ERROR;
     L->global->ecb.destroy = destroyAotProto;
 
-    if (!lua_checkstack(L, 1))
+    if (!lua_checkstack(L, moduleCount == 0 ? 1 : int(moduleCount) + 8))
         return MC_LUAU_AOT_V1_INTERNAL_ERROR;
+    if (moduleCount != 0) {
+        lua_pushlightuserdata(L, &moduleRegistryKey);
+        lua_rawget(L, LUA_REGISTRYINDEX);
+        const bool alreadyPublished = !lua_isnil(L, -1);
+        lua_pop(L, 1);
+        if (alreadyPublished)
+            return MC_LUAU_AOT_V1_INTERNAL_ERROR;
+    }
     luaC_checkGC(L);
     luaC_threadbarrier(L);
 
@@ -716,7 +943,7 @@ extern "C" uint32_t mc_luau_aot_v1_push_program(lua_State *L,
     for (int id = 0; id < protoCount; ++id) {
         protos[id] = luaF_newproto(L);
         initializeAotProto(protos[id], &program->protos[id], sourceName);
-        if (uint32_t(id) != program->root_proto_id)
+        if (program->protos[id].parent_id != MC_LUAU_AOT_V1_NO_ID)
             childCounts[program->protos[id].parent_id]++;
     }
 
@@ -731,13 +958,16 @@ extern "C" uint32_t mc_luau_aot_v1_push_program(lua_State *L,
         childCounts[id] = 0;
     }
     for (int id = 0; id < protoCount; ++id) {
-        if (uint32_t(id) == program->root_proto_id)
+        if (program->protos[id].parent_id == MC_LUAU_AOT_V1_NO_ID)
             continue;
         const uint32_t parent = program->protos[id].parent_id;
         protos[parent]->p[childCounts[parent]++] = protos[id];
     }
 
-    publishRootClosure(L, protos[program->root_proto_id]);
+    if (moduleCount == 0)
+        publishRootClosure(L, protos[program->root_proto_id]);
+    else
+        publishModuleRegistry(L, program, protos);
     luaM_freearray(L, childCounts, protoCount, uint32_t, memoryCategory);
     luaM_freearray(L, protos, protoCount, Proto *, memoryCategory);
     return MC_LUAU_AOT_V1_OK;

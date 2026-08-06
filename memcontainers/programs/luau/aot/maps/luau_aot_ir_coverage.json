@@ -2024,19 +2024,22 @@
     {
       "command": "GET_CACHED_IMPORT",
       "value": 127,
-      "class": "runtime_helper",
+      "class": "rewrite_required",
       "wasm_features": [],
       "runtime_symbols": [
-        "mc_luau_aot_v1_get_cached_import"
+        "mc_luau_aot_v1_require_static"
       ],
-      "may_allocate": null,
-      "may_raise": null,
-      "may_call_luau": null,
-      "safepoint": null,
+      "may_allocate": true,
+      "may_raise": true,
+      "may_call_luau": true,
+      "safepoint": true,
       "rejoins": true,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2176; CodeGen/src/IrLoweringA64.cpp:2203; luaV_getimport",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:static_import_package_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_static_module_initializes_once_and_preserves_cached_state"
+      ],
+      "status": "partial_literal_static_require_cluster_only"
     },
     {
       "command": "CONCAT",
@@ -2178,8 +2181,11 @@
       "safepoint": false,
       "rejoins": true,
       "oracle": "CodeGen/src/IrLoweringX64.cpp:2312; CodeGen/src/IrLoweringA64.cpp:2384",
-      "tests": [],
-      "status": "unimplemented"
+      "tests": [
+        "//memcontainers/programs/luau/aot/compiler/backend:static_import_package_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_static_module_initializes_once_and_preserves_cached_state"
+      ],
+      "status": "partial_literal_static_require_cluster_only"
     },
     {
       "command": "CHECK_ARRAY_SIZE",
@@ -2510,7 +2516,9 @@
         "//memcontainers/tests/e2e:core#luau_aot_multi_result_proto_graph_calls_rejoin",
         "//memcontainers/tests/e2e:core#luau_aot_general_fixed_call_shapes_match_interpreter",
         "//memcontainers/programs/luau/aot/compiler/backend:vararg_forward_package_object_build_test",
-        "//memcontainers/tests/e2e:core#luau_aot_vararg_forwarding_and_result_adjustment_match_interpreter"
+        "//memcontainers/tests/e2e:core#luau_aot_vararg_forwarding_and_result_adjustment_match_interpreter",
+        "//memcontainers/programs/luau/aot/compiler/backend:static_import_package_object_build_test",
+        "//memcontainers/tests/e2e:core#luau_aot_static_module_initializes_once_and_preserves_cached_state"
       ],
       "status": "partial_fixed_and_multret_compiled_luau_no_c_metamethod_yield"
     },
@@ -3602,5 +3610,5 @@
       "status": "unimplemented"
     }
   ],
-  "canonical_hash": "44b6f9726a35f65556bb8d399706aed9d61e6d043689ca9b8e1d7569e2bad3b5"
+  "canonical_hash": "0358a203d9a5768fe76ed61c2123d5f0f0f537845a97abfb484af27888276cbc"
 }

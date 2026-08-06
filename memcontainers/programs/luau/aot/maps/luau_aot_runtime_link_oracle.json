@@ -18,10 +18,10 @@
     "<runtime-archive>",
     "--no-whole-archive"
   ],
-  "output_sha256": "85bd38f763d06210700908ad0353bc191985270b8737f6b4ede3df43fd6b8243",
+  "output_sha256": "283110e83659d7838738a6cb93ef17926673db17cba199dc04513639642faa54",
   "import_module": "env",
   "import_count": 61,
-  "export_count": 403,
+  "export_count": 404,
   "runtime_contract_imports": [
     "mc_protected_call",
     "mc_raise"
@@ -108,6 +108,7 @@
     "mc_luau_aot_v1_prep_varargs",
     "mc_luau_aot_v1_push_program",
     "mc_luau_aot_v1_push_root",
+    "mc_luau_aot_v1_require_static",
     "mc_luau_aot_v1_return",
     "mc_luau_aot_v1_set_upvalue"
   ],

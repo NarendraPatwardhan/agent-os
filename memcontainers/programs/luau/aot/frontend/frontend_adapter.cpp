@@ -190,17 +190,77 @@ bool collectProtos(Proto *proto, uint32_t parent, std::vector<ProtoRef> &output)
     return true;
 }
 
-bool containsUndecodedImport(const std::vector<ProtoRef> &protos) {
-    for (const ProtoRef &item : protos) {
-        Proto *proto = item.proto;
-        for (int pc = 0; pc < proto->sizecode;) {
-            LuauOpcode opcode = LuauOpcode(LUAU_INSN_OP(proto->code[pc]));
-            if (opcode == LOP_GETIMPORT)
-                return true;
-            pc += Luau::getOpLength(opcode);
+struct ImportDescriptor {
+    bool present = false;
+    uint8_t count = 0;
+    uint32_t stringConstants[3] = {};
+};
+
+bool decodeImportDescriptors(Proto *proto, std::vector<ImportDescriptor> &imports,
+                             std::string &error) {
+    imports.resize(proto->sizek);
+
+    for (int pc = 0; pc < proto->sizecode;) {
+        Instruction instruction = proto->code[pc];
+        LuauOpcode opcode = LuauOpcode(LUAU_INSN_OP(instruction));
+        int opLength = Luau::getOpLength(opcode);
+        if (opLength <= 0 || pc > proto->sizecode - opLength) {
+            error = "invalid bytecode while decoding import constants";
+            return false;
         }
+
+        if (opcode == LOP_GETIMPORT) {
+            if (opLength != 2) {
+                error = "invalid GETIMPORT instruction length";
+                return false;
+            }
+            int cacheConstant = LUAU_INSN_D(instruction);
+            uint32_t descriptor = proto->code[pc + 1];
+            uint32_t count = descriptor >> 30;
+            uint32_t stringConstants[3] = {
+                (descriptor >> 20) & 1023,
+                (descriptor >> 10) & 1023,
+                descriptor & 1023,
+            };
+            uint32_t unusedMask = count == 1 ? 0x000fffff : count == 2 ? 0x000003ff : 0;
+            if (cacheConstant < 0 || cacheConstant >= proto->sizek || count < 1 || count > 3 ||
+                (descriptor & unusedMask) != 0) {
+                error = "invalid GETIMPORT constant descriptor";
+                return false;
+            }
+
+            for (uint32_t index = 0; index < count; ++index) {
+                if (stringConstants[index] >= uint32_t(proto->sizek) ||
+                    !ttisstring(&proto->k[stringConstants[index]])) {
+                    error = "GETIMPORT descriptor references a non-string constant";
+                    return false;
+                }
+            }
+
+            ImportDescriptor &decoded = imports[cacheConstant];
+            if (decoded.present) {
+                if (decoded.count != count) {
+                    error = "conflicting GETIMPORT descriptors share one cache constant";
+                    return false;
+                }
+                for (uint32_t index = 0; index < count; ++index) {
+                    if (decoded.stringConstants[index] != stringConstants[index]) {
+                        error = "conflicting GETIMPORT descriptors share one cache constant";
+                        return false;
+                    }
+                }
+            } else {
+                decoded.present = true;
+                decoded.count = uint8_t(count);
+                for (uint32_t index = 0; index < count; ++index)
+                    decoded.stringConstants[index] = stringConstants[index];
+            }
+        }
+
+        pc += opLength;
     }
-    return false;
+
+    return true;
 }
 
 void setDiagnostic(McLuauFrontendSnapshotV1Result *result, uint32_t status, const char *data,
@@ -262,12 +322,22 @@ SectionData &section(std::vector<SectionData> &sections, uint16_t kind) {
     return sections[kind - 1];
 }
 
-bool serializeVmConstant(const TValue &value, const std::vector<ProtoRef> &protos,
-                         StringTable &strings, SectionData &constants, uint32_t &failureStatus,
-                         std::string &error) {
+bool serializeVmConstant(const TValue &value, const ImportDescriptor *import,
+                         const std::vector<ProtoRef> &protos, StringTable &strings,
+                         SectionData &constants, SectionData &constantItems,
+                         uint32_t &failureStatus, std::string &error) {
     size_t record = appendRecord(constants);
 
-    if (ttisnil(&value)) {
+    if (import) {
+        constants.bytes[record] = MC_LUAU_SNAPSHOT_V1_VM_IMPORT;
+        putU32(constants.bytes, record + 4, recordCount(constantItems));
+        putU32(constants.bytes, record + 8, import->count);
+        for (uint32_t index = 0; index < import->count; ++index) {
+            size_t item = appendRecord(constantItems);
+            putU32(constantItems.bytes, item, import->stringConstants[index]);
+            putU32(constantItems.bytes, item + 4, MC_LUAU_FRONTEND_SNAPSHOT_V1_NO_ID);
+        }
+    } else if (ttisnil(&value)) {
         constants.bytes[record] = MC_LUAU_SNAPSHOT_V1_VM_NIL;
     } else if (ttisboolean(&value)) {
         constants.bytes[record] = MC_LUAU_SNAPSHOT_V1_VM_BOOLEAN;
@@ -323,6 +393,7 @@ bool serializeProtoMetadata(const std::vector<ProtoRef> &protos, std::vector<Sec
     SectionData &children = section(sections, MC_LUAU_SNAPSHOT_V1_PROTO_CHILDREN);
     SectionData &code = section(sections, MC_LUAU_SNAPSHOT_V1_BYTECODE_WORDS);
     SectionData &constants = section(sections, MC_LUAU_SNAPSHOT_V1_VM_CONSTANTS);
+    SectionData &constantItems = section(sections, MC_LUAU_SNAPSHOT_V1_VM_CONSTANT_ITEMS);
     SectionData &locals = section(sections, MC_LUAU_SNAPSHOT_V1_LOCALS);
     SectionData &upvalueNames = section(sections, MC_LUAU_SNAPSHOT_V1_UPVALUE_NAMES);
     SectionData &typeinfo = section(sections, MC_LUAU_SNAPSHOT_V1_TYPEINFO_BYTES);
@@ -333,6 +404,9 @@ bool serializeProtoMetadata(const std::vector<ProtoRef> &protos, std::vector<Sec
 
     for (size_t protoIndex = 0; protoIndex < protos.size(); ++protoIndex) {
         Proto *proto = protos[protoIndex].proto;
+        std::vector<ImportDescriptor> imports;
+        if (!decodeImportDescriptors(proto, imports, error))
+            return false;
         size_t record = appendRecord(protoRecords);
         putU32(protoRecords.bytes, record + MC_LUAU_SNAPSHOT_V1_PROTO_ID, uint32_t(protoIndex));
         putU32(protoRecords.bytes, record + MC_LUAU_SNAPSHOT_V1_PROTO_PARENT_ID,
@@ -366,8 +440,9 @@ bool serializeProtoMetadata(const std::vector<ProtoRef> &protos, std::vector<Sec
         putU32(protoRecords.bytes, record + MC_LUAU_SNAPSHOT_V1_PROTO_CONSTANT_COUNT,
                uint32_t(proto->sizek));
         for (int index = 0; index < proto->sizek; ++index) {
-            if (!serializeVmConstant(proto->k[index], protos, strings, constants, failureStatus,
-                                     error))
+            const ImportDescriptor *import = imports[index].present ? &imports[index] : nullptr;
+            if (!serializeVmConstant(proto->k[index], import, protos, strings, constants,
+                                     constantItems, failureStatus, error))
                 return false;
         }
 
@@ -747,11 +822,7 @@ extern "C" uint32_t mc_luau_frontend_snapshot_v1_compile(const uint8_t *source, 
     };
     std::string error;
     uint32_t failureStatus = MC_LUAU_SNAPSHOT_V1_UNSUPPORTED_FRONTEND_VALUE;
-    bool ok = !containsUndecodedImport(protos);
-    if (!ok)
-        error = "import constant decoding is not implemented in FrontendSnapshotV1";
-    if (ok)
-        ok = serializeProtoMetadata(protos, sections, strings, failureStatus, error);
+    bool ok = serializeProtoMetadata(protos, sections, strings, failureStatus, error);
     if (ok && strings.failed) {
         failureStatus = MC_LUAU_SNAPSHOT_V1_RESOURCE_LIMIT;
         error = "frontend string table resource limit";

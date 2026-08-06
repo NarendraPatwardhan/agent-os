@@ -128,6 +128,46 @@ function functionCommands(bytes, parsed, functionId) {
   return commands;
 }
 
+function importPaths(bytes, parsed) {
+  const strings = parsed.sections.get(1);
+  const stringBytes = parsed.sections.get(2);
+  const protos = parsed.sections.get(3);
+  const constants = parsed.sections.get(6);
+  const constantItems = parsed.sections.get(7);
+  const paths = [];
+
+  for (let protoId = 0; protoId < protos.count; protoId++) {
+    const proto = protos.offset + protoId * protos.recordSize;
+    const constantStart = u32(bytes, proto + 44);
+    const constantCount = u32(bytes, proto + 48);
+    for (let constantId = 0; constantId < constantCount; constantId++) {
+      const constant = constants.offset + (constantStart + constantId) * constants.recordSize;
+      if (bytes[constant] !== 6) continue;
+
+      const itemStart = u32(bytes, constant + 4);
+      const itemCount = u32(bytes, constant + 8);
+      const path = [];
+      for (let itemId = 0; itemId < itemCount; itemId++) {
+        const item = constantItems.offset + (itemStart + itemId) * constantItems.recordSize;
+        const nameConstantId = u32(bytes, item);
+        if (u32(bytes, item + 4) !== 0xffffffff || nameConstantId >= constantCount)
+          throw new Error("invalid import constant item");
+        const nameConstant = constants.offset + (constantStart + nameConstantId) * constants.recordSize;
+        if (bytes[nameConstant] !== 4) throw new Error("import component is not a VM string constant");
+        const stringId = u32(bytes, nameConstant + 4);
+        if (stringId >= strings.count) throw new Error("import component string is out of bounds");
+        const string = strings.offset + stringId * strings.recordSize;
+        const byteOffset = u64(bytes, string);
+        const byteLength = u32(bytes, string + 8);
+        path.push(bytes.subarray(stringBytes.offset + byteOffset, stringBytes.offset + byteOffset + byteLength).toString());
+      }
+      paths.push(path);
+    }
+  }
+
+  return paths;
+}
+
 const wasmBytes = readFileSync(runfile(process.env.LUAU_AOT_FRONTEND_WASM, "LUAU_AOT_FRONTEND_WASM"));
 const module = await WebAssembly.compile(wasmBytes);
 const imports = WebAssembly.Module.imports(module);
@@ -258,8 +298,27 @@ if (compound.status !== 4 || compound.snapshot.length !== 0 || !compound.diagnos
   throw new Error(`unimplemented compound constants did not fail closed: ${JSON.stringify(compound)}`);
 
 const imported = compile("return math.abs(-42)", "@frontend/import-constant.luau");
-if (imported.status !== 4 || imported.snapshot.length !== 0 || !imported.diagnostic.includes("import constant decoding"))
-  throw new Error(`unimplemented imports did not fail closed: ${JSON.stringify(imported)}`);
+if (imported.status !== 0 || imported.validation !== 0)
+  throw new Error(`decoded import frontend failed: ${imported.status}: ${imported.diagnostic}`);
+const importedParsed = parseSnapshot(imported.snapshot);
+if (JSON.stringify(importPaths(imported.snapshot, importedParsed)) !== JSON.stringify([["math", "abs"]]))
+  throw new Error(`decoded import path mismatch: ${JSON.stringify(importPaths(imported.snapshot, importedParsed))}`);
+
+const required = compile('return require("./module")', "@frontend/static-require-import.luau");
+if (required.status !== 0 || required.validation !== 0)
+  throw new Error(`static require import frontend failed: ${required.status}: ${required.diagnostic}`);
+const requiredParsed = parseSnapshot(required.snapshot);
+if (!functionCommands(required.snapshot, requiredParsed, 0).includes(127))
+  throw new Error("decoded require snapshot lacks GET_CACHED_IMPORT");
+if (JSON.stringify(importPaths(required.snapshot, requiredParsed)) !== JSON.stringify([["require"]]))
+  throw new Error(`static require import path mismatch: ${JSON.stringify(importPaths(required.snapshot, requiredParsed))}`);
+
+const threePartImport = compile("return game.workspace.part", "@frontend/three-part-import.luau");
+if (threePartImport.status !== 0 || threePartImport.validation !== 0)
+  throw new Error(`three-part import frontend failed: ${threePartImport.status}: ${threePartImport.diagnostic}`);
+const threePartParsed = parseSnapshot(threePartImport.snapshot);
+if (JSON.stringify(importPaths(threePartImport.snapshot, threePartParsed)) !== JSON.stringify([["game", "workspace", "part"]]))
+  throw new Error(`three-part import path mismatch: ${JSON.stringify(importPaths(threePartImport.snapshot, threePartParsed))}`);
 
 console.log(
   `verified zero-import FrontendSnapshotV1: ${parsed.protoCount} protos, ` +

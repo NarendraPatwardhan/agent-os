@@ -258,7 +258,7 @@ guest path, but is not presented as a general-purpose AOT product:
   pinned interpreter in the real kernel. That source does not emit the newly lowered `CHECK_*`, int64
   division, or `JUMP_FORN_LOOP_COND` commands, so those rows retain empty evidence arrays rather than
   borrowing this vertical;
-- the 216-command ledger now records 125 implemented, 25 deliberately partial, and 66 unimplemented
+- the 216-command ledger now records 125 implemented, 27 deliberately partial, and 64 unimplemented
   rows. Direct integer/bitwise, float, vector, select, and safe-conversion rows with no source/runtime
   vertical retain empty evidence arrays rather than inheriting the scalar fixtures. Remaining partial
   layout and guard rows name their exact GC-constant or VM-exit boundary;
@@ -277,6 +277,17 @@ guest path, but is not presented as a general-purpose AOT product:
   proves truncation of the extra open tail. All six match the pinned interpreter through the
   release-small stamped guest in the real kernel. C/metamethod calls and yield/continuation remain
   fail-closed;
+- the first closed two-module package now compiles two independent frontend snapshots into one
+  deterministic relocatable object. Canonical sorted module order assigns four global function/Proto
+  IDs and rebases every child-closure reference. The backend accepts only the complete pinned
+  safe-environment-proven `GET_CACHED_IMPORT(require)` plus literal-string plus fixed `CALL` cluster;
+  dynamic, aliased, missing, and otherwise malformed requires remain compile-time failures. The
+  runtime publishes both module roots into a private GC-owned registry and lazily executes the
+  dependency root exactly once on a real sandboxed Luau thread. Both require sites and two calls to
+  the entry closure reuse the same cached mutable accumulator across a forced full collection. Five
+  signed runtime tuples match the exact installed two-source package under the pinned interpreter in
+  the real kernel. Cycle/error fixtures, general imported globals, and compiler-emitted descriptor
+  data remain unfinished;
 
 WP2 is complete. WP3's central arithmetic/type slow-block rejoin passes the exact-source,
 relocatable-object, strict-runtime, pinned-interpreter, production optimization/stamp/attestation, and
@@ -291,9 +302,11 @@ closure-independence, pinned-interpreter, production optimization, stamp, attest
 real-kernel gates. The broader WP4 call boundary now passes fixed zero, arbitrary bounded fixed
 argument/result shapes, fixed/dynamic vararg extraction, one-fixed-parameter vararg relocation, and
 dynamic multi-return through the same source-to-object-to-runtime-to-image path. The active line of
-work is WP4 static imports and module initialization. The immutable descriptor is shared by the runtime
-fixtures and product today but remains compiler-generated-data work, not a hand-authored product
-format.
+work remains WP4 module breadth: cycle/error behavior and the broader static graph, followed by the
+still-open C/metamethod/yield call boundaries. The first literal static-require vertical now passes the
+source-to-multi-module-object, lazy once-only runtime, full-GC, pinned-interpreter, stamped-image, and
+real-kernel gates. The immutable descriptor is shared by the runtime fixtures and product today but
+remains compiler-generated-data work, not a hand-authored product format.
 
 ---
 
@@ -1519,8 +1532,8 @@ Gate:
 **Goal:** replace manual fixture emission with the one production code-generation model.
 
 **Current state:** the production object builder, generic upstream CFG dispatcher, scalar fast tier,
-and exact fallback rejoin model are implemented. The authoritative ledger has 125 implemented, 25
-partial, and 66 unimplemented command rows. Complete lowering now includes direct number, float,
+and exact fallback rejoin model are implemented. The authoritative ledger has 125 implemented, 27
+partial, and 64 unimplemented command rows. Complete lowering now includes direct number, float,
 vector, select, safe-conversion, comparison, ordinary-branch, integer/bitwise including guarded int64
 division/remainder, compile-only, and the exact scalar layout forms described above. `DO_ARITH` covers
 all eight arithmetic runtime operations for VM-register operands and remains partial; `CMP_ANY` covers
@@ -1639,6 +1652,19 @@ fixed four-parameter child truncates the extra open-tail value, also matching th
 `RETURN`, `FALLBACK_PREPVARARGS`, and
 `FALLBACK_GETVARARGS` are complete; `CALL` remains partial only at C/metamethod and
 yield/continuation boundaries.
+
+The exact `static_import_main.luau` plus `static_import_counter.luau` package adds the first closed
+static module graph. The frontend decodes pinned one-to-three-component `LOP_GETIMPORT` descriptors
+into pointer-free snapshot constants. The backend parses one canonical sorted package frame, validates
+both snapshots, rebases their four functions into one symbol space, and replaces only the complete
+safe-environment-proven literal `require` clusters with `mc_luau_aot_v1_require_static`; no general
+import lookup or dynamic require is inferred. The runtime validates two independent root Proto trees,
+roots their closures and cache records in Luau-owned tables, initializes the dependency lazily once on
+a sandboxed Luau thread, and caches exactly one returned value. The entry closure requires that module
+twice per call and is called twice around full GC, so five signed quadruples prove both require-site and
+cross-call state identity against the pinned interpreter through the release-small stamped guest and
+real AgentOS kernel. Cycles, cached initializer errors, and larger static graphs remain the next module
+tranche.
 
 Tasks:
 

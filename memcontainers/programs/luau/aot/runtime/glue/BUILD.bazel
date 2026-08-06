@@ -53,6 +53,11 @@ cc_object(
 )
 
 cc_object(
+    name = "static_import_package_object_link",
+    obj = "//memcontainers/programs/luau/aot/compiler/backend:static_import_package_object",
+)
+
+cc_object(
     name = "reference_capture_package_object_link",
     obj = "//memcontainers/programs/luau/aot/compiler/backend:reference_capture_package_object",
 )
@@ -468,6 +473,47 @@ mc_program(
     tier = "full",
     visibility = ["//memcontainers/images:__pkg__"],
     wasm = ":luau_aot_vararg_forward_wasm",
+)
+
+zig_binary(
+    name = "luau_aot_static_import_raw",
+    linkopts = [
+        "-lc",
+        "-lc++",
+        "--export=__mc_pcall_run",
+        "--export=__stack_pointer",
+    ],
+    main = "static_import_entry.zig",
+    tags = ["manual"],
+    deps = [
+        ":static_import_package_object_link",
+        ":wasi_adapter_link",
+        "//memcontainers/programs/luau/aot/runtime:aot_runtime_abi",
+        "//memcontainers/programs/luau/aot/runtime:luau_aot_runtime_raw",
+        "//memcontainers/programs/luau/aot/runtime:static_import_program",
+        "//memcontainers/programs/luau/glue:trap",
+        "//memcontainers/programs/luau/glue:wasi_shim",
+        "//memcontainers/sysroot/zig:mc",
+    ],
+)
+
+zig_configure_binary(
+    name = "luau_aot_static_import_wasm",
+    actual = ":luau_aot_static_import_raw",
+    mode = "release_small",
+    tags = ["manual"],
+    target = "//platforms:wasm32_wasi",
+    threaded = "single",
+)
+
+mc_program(
+    name = "luau-aot-static-import",
+    fuel = 10000000000,
+    mem = 64 * 1024 * 1024,
+    table = 10000,
+    tier = "full",
+    visibility = ["//memcontainers/images:__pkg__"],
+    wasm = ":luau_aot_static_import_wasm",
 )
 
 zig_binary(

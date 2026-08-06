@@ -9,6 +9,7 @@ extern "C" {
 
 typedef struct lua_State lua_State;
 typedef struct McLuauAotProtoV1 McLuauAotProtoV1;
+typedef struct McLuauAotModuleV1 McLuauAotModuleV1;
 typedef struct McLuauAotProgramV1 McLuauAotProgramV1;
 
 typedef uint32_t (*McLuauAotFunctionV1)(lua_State *state, const McLuauAotProtoV1 *proto);
@@ -69,9 +70,21 @@ struct McLuauAotProtoV1 {
     uint32_t reserved;
 };
 
-// One immutable descriptor covers the entire canonical FrontendSnapshotV1 Proto graph. Proto IDs
-// are dense array indices; parents precede children, so scanning equal parent_id values preserves
-// the frontend's declared child order without a second mutable table.
+// Immutable closed-package module metadata. Module IDs are dense table indices; each root Proto has
+// no parent and owns one independently initialized Luau chunk.
+struct McLuauAotModuleV1 {
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint8_t layout_sha256[32];
+    uint32_t module_id;
+    uint32_t root_proto_id;
+    uint32_t flags;
+    uint32_t reserved;
+};
+
+// One immutable descriptor covers the closed package's canonical Proto forest. Proto IDs are dense
+// global array indices; each module root has no parent and all other parents precede their children,
+// so scanning equal parent_id values preserves every snapshot's declared child order.
 struct McLuauAotProgramV1 {
     uint32_t abi_version;
     uint32_t struct_size;
@@ -80,12 +93,17 @@ struct McLuauAotProgramV1 {
     uint32_t proto_count;
     uint32_t root_proto_id;
     uint32_t flags;
+    const McLuauAotModuleV1 *modules;
+    uint32_t module_count;
+    uint32_t entry_module_id;
 };
 
 enum {
     MC_LUAU_AOT_ABI_V1 = 1,
     MC_LUAU_AOT_PROTO_V1_SIZE = 64,
-    MC_LUAU_AOT_PROGRAM_V1_SIZE = 56,
+    MC_LUAU_AOT_MODULE_V1_SIZE = 56,
+    MC_LUAU_AOT_PROGRAM_V1_LEGACY_SIZE = 56,
+    MC_LUAU_AOT_PROGRAM_V1_SIZE = 68,
 };
 
 extern const uint8_t mc_luau_aot_v1_layout_sha256[32];
@@ -93,14 +111,12 @@ extern const uint8_t mc_luau_aot_v1_layout_sha256[32];
 // Generated-code/runtime surface. Keep it versioned, unmangled, and narrow.
 void mc_luau_aot_v1_enter(lua_State *state);
 void mc_luau_aot_v1_finish_yielded_op(lua_State *state);
-void mc_luau_aot_v1_return(lua_State *state, uint32_t source_register,
-                           int32_t result_count);
+void mc_luau_aot_v1_return(lua_State *state, uint32_t source_register, int32_t result_count);
 uint32_t mc_luau_aot_v1_interrupt(lua_State *state, uint32_t pc);
-void mc_luau_aot_v1_do_arith(lua_State *state, uint32_t destination_register,
-                             uint32_t lhs_register, uint32_t rhs_register,
-                             uint32_t operation);
-uint32_t mc_luau_aot_v1_compare_any(lua_State *state, uint32_t lhs_register,
-                                    uint32_t rhs_register, uint32_t operation);
+void mc_luau_aot_v1_do_arith(lua_State *state, uint32_t destination_register, uint32_t lhs_register,
+                             uint32_t rhs_register, uint32_t operation);
+uint32_t mc_luau_aot_v1_compare_any(lua_State *state, uint32_t lhs_register, uint32_t rhs_register,
+                                    uint32_t operation);
 void mc_luau_aot_v1_dupclosure(lua_State *state, uint32_t destination_register,
                                uint32_t child_proto_id);
 void mc_luau_aot_v1_newclosure_value(lua_State *state, uint32_t destination_register,
@@ -109,16 +125,16 @@ void mc_luau_aot_v1_newclosure_ref(lua_State *state, uint32_t destination_regist
                                    uint32_t child_proto_id, uint32_t capture_register);
 void mc_luau_aot_v1_get_upvalue(lua_State *state, uint32_t destination_register,
                                 uint32_t upvalue_index);
-void mc_luau_aot_v1_set_upvalue(lua_State *state, uint32_t upvalue_index,
-                                uint32_t source_register);
+void mc_luau_aot_v1_set_upvalue(lua_State *state, uint32_t upvalue_index, uint32_t source_register);
 void mc_luau_aot_v1_close_upvalues(lua_State *state, uint32_t first_register);
-uint32_t mc_luau_aot_v1_call(lua_State *state, uint32_t function_register,
-                             int32_t parameter_count, int32_t result_count);
+uint32_t mc_luau_aot_v1_call(lua_State *state, uint32_t function_register, int32_t parameter_count,
+                             int32_t result_count);
 void mc_luau_aot_v1_prep_varargs(lua_State *state, uint32_t fixed_parameter_count);
 void mc_luau_aot_v1_get_varargs_fixed(lua_State *state, uint32_t destination_register,
                                       uint32_t result_count);
-void mc_luau_aot_v1_get_varargs_multret(lua_State *state,
-                                        uint32_t destination_register);
+void mc_luau_aot_v1_get_varargs_multret(lua_State *state, uint32_t destination_register);
+uint32_t mc_luau_aot_v1_require_static(lua_State *state, uint32_t destination_register,
+                                       uint32_t target_module_id);
 uint32_t mc_luau_aot_v1_push_root(lua_State *state, const McLuauAotProtoV1 *metadata,
                                   const char *source, size_t source_size);
 uint32_t mc_luau_aot_v1_push_program(lua_State *state, const McLuauAotProgramV1 *program,
@@ -133,9 +149,13 @@ static_assert(sizeof(McLuauAotProtoV1) == MC_LUAU_AOT_PROTO_V1_SIZE,
 static_assert(offsetof(McLuauAotProtoV1, entry) == 40, "McLuauAotProtoV1 entry offset drift");
 static_assert(offsetof(McLuauAotProtoV1, num_params) == 56,
               "McLuauAotProtoV1 parameter offset drift");
+static_assert(sizeof(McLuauAotModuleV1) == MC_LUAU_AOT_MODULE_V1_SIZE,
+              "McLuauAotModuleV1 wasm32 layout drift");
 static_assert(sizeof(McLuauAotProgramV1) == MC_LUAU_AOT_PROGRAM_V1_SIZE,
               "McLuauAotProgramV1 wasm32 layout drift");
 static_assert(offsetof(McLuauAotProgramV1, protos) == 40,
               "McLuauAotProgramV1 Proto pointer offset drift");
+static_assert(offsetof(McLuauAotProgramV1, modules) == 56,
+              "McLuauAotProgramV1 module pointer offset drift");
 #endif
 #endif

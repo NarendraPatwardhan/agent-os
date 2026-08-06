@@ -61,7 +61,7 @@
   "project_adapter": {
     "source": "src/call_frame.cpp",
     "upstream_pin": "0.725",
-    "purpose": "extract generic call-frame and hook mechanics from the forbidden bytecode executor and own the strict AOT metadata/frame ABI",
+    "purpose": "extract generic call-frame and hook mechanics from the forbidden bytecode executor and own the strict AOT metadata, frame, and static-module ABI",
     "defines": [
       "luau_callhook",
       "luau_precall",
@@ -81,6 +81,7 @@
       "mc_luau_aot_v1_prep_varargs",
       "mc_luau_aot_v1_push_program",
       "mc_luau_aot_v1_push_root",
+      "mc_luau_aot_v1_require_static",
       "mc_luau_aot_v1_return",
       "mc_luau_aot_v1_set_upvalue"
     ],
@@ -137,9 +138,9 @@
   "notes": [
     "The declared set compiles into a 36-member wasm32 relocatable archive: 34 retained upstream translation units, one project call-frame adapter, and the required empty Zig root object.",
     "archive_built_unlinked means standard relocatable objects exist; generated functions, kernel-backed protected-call hooks, libc, the AgentOS adapter, and the runner are separate final-link inputs.",
-    "The project adapter owns the versioned strict-AOT program metadata, frame entry, fixed and open-result return, variadic frame preparation and retrieval, zero-upvalue, one-direct-value-upvalue, and one-reference-upvalue closure materialization, open/closed UpVal access and mutation, fixed and open-argument/result compiled calls, and Proto teardown ABI.",
+    "The project adapter owns the versioned strict-AOT program metadata, frame entry, fixed and open-result return, variadic frame preparation and retrieval, zero-upvalue, one-direct-value-upvalue, and one-reference-upvalue closure materialization, open/closed UpVal access and mutation, fixed and open-argument/result compiled calls, GC-rooted lazy once-only static-module initialization, and Proto teardown ABI.",
     "lvmutils.cpp remains because it owns reusable value, table, comparison, arithmetic, concatenation, length, loop, and metamethod helpers.",
-    "luaV_getimport is currently trapped in forbidden VM/src/lvmload.cpp and requires a named runtime extraction if the generated-code ABI uses it."
+    "luaV_getimport remains trapped in forbidden VM/src/lvmload.cpp and general imports remain unsupported; exact safe-environment-proven literal require clusters are instead resolved to closed-package module IDs and call mc_luau_aot_v1_require_static."
   ],
-  "canonical_hash": "2fb00918022b5f10f1dda88fe347c31f919528ae1fb6f5830b6e86cd56adacbf"
+  "canonical_hash": "3c6353e2a4c9d3b63bbb312265adcebb130bb405459ab3719f343e7fc19877e7"
 }

@@ -22,6 +22,16 @@ pub const AotProto = extern struct {
     reserved: u32,
 };
 
+pub const AotModule = extern struct {
+    abi_version: u32,
+    struct_size: u32,
+    layout_sha256: [32]u8,
+    module_id: u32,
+    root_proto_id: u32,
+    flags: u32,
+    reserved: u32,
+};
+
 pub const AotProgram = extern struct {
     abi_version: u32,
     struct_size: u32,
@@ -30,18 +40,25 @@ pub const AotProgram = extern struct {
     proto_count: u32,
     root_proto_id: u32,
     flags: u32,
+    modules: ?[*]const AotModule = null,
+    module_count: u32 = 0,
+    entry_module_id: u32 = 0,
 };
 
 comptime {
     if (@sizeOf(AotProto) != 64 or @offsetOf(AotProto, "entry") != 40 or @offsetOf(AotProto, "num_params") != 56)
         @compileError("McLuauAotProtoV1 Zig layout drift");
-    if (@sizeOf(AotProgram) != 56 or @offsetOf(AotProgram, "protos") != 40)
+    if (@sizeOf(AotModule) != 56)
+        @compileError("McLuauAotModuleV1 Zig layout drift");
+    if (@sizeOf(AotProgram) != 68 or @offsetOf(AotProgram, "protos") != 40 or @offsetOf(AotProgram, "modules") != 56)
         @compileError("McLuauAotProgramV1 Zig layout drift");
 }
 
 pub const abi_version: u32 = 1;
 pub const proto_size: u32 = 64;
-pub const program_size: u32 = 56;
+pub const module_size: u32 = 56;
+pub const legacy_program_size: u32 = 56;
+pub const program_size: u32 = 68;
 pub const no_id: u32 = std.math.maxInt(u32);
 pub const flag_root: u32 = 1;
 pub const multret: i32 = -1;

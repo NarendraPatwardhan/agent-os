@@ -286,6 +286,40 @@ fn luau_aot_vararg_forwarding_and_result_adjustment_match_interpreter() {
     assert_eq!(aot, interpreted, "strict AOT open-tail truncation mismatch");
 }
 
+/// The exact two-module package requires one stateful module twice during each invocation. The
+/// strict-AOT guest calls the returned entry closure twice in one process, so both require sites and
+/// both invocations must observe the same once-initialized, GC-rooted module result.
+#[test]
+fn luau_aot_static_module_initializes_once_and_preserves_cached_state() {
+    let mut session = boot_loom_aot();
+
+    for (a, b, c, d) in [
+        (-50, 8, 3, -7),
+        (0, 0, 0, 0),
+        (20, 22, -5, 9),
+        (7, -3, 11, -4),
+        (1234, -567, -321, 1000),
+    ] {
+        let first = 1001 * a + b;
+        let second = 1001 * (a + b + c) + d;
+        let expected = format!("{first}\r\n{second}\r\nstatus=0\r\n");
+        let aot = session.run_for_output(&format!(
+            "luau-aot-static-import {a} {b} {c} {d}; echo status=$?"
+        ));
+        let interpreted = session.run_for_output(&format!(
+            "luau -e 'local run = require(\"aot_static_import\"); local a, b, c, d = ...; print(run(a, b)); print(run(c, d))' {a} {b} {c} {d}; echo status=$?"
+        ));
+        assert_eq!(
+            aot, expected,
+            "strict AOT static import failed for {a}/{b}/{c}/{d}"
+        );
+        assert_eq!(
+            aot, interpreted,
+            "strict AOT static import mismatch for {a}/{b}/{c}/{d}"
+        );
+    }
+}
+
 /// The exact source-built factory closes a mutable local into one accumulator. Its factory frame is
 /// gone and a full collection runs before the same accumulator is called twice, proving that the
 /// open UpVal was closed into owned storage and that both compiled calls mutate that same cell. The

@@ -1,5 +1,6 @@
 const std = @import("std");
 const snapshot_v1 = @import("frontend_snapshot_v1");
+const static_package_v1 = @import("static_package_v1.zig");
 const wasm = @import("luau_aot_wasm_object");
 
 pub const generated_symbol = "mc_luau_aot_v1_generated_ir_function";
@@ -17,6 +18,7 @@ pub const call_symbol = "mc_luau_aot_v1_call";
 pub const prep_varargs_symbol = "mc_luau_aot_v1_prep_varargs";
 pub const get_varargs_fixed_symbol = "mc_luau_aot_v1_get_varargs_fixed";
 pub const get_varargs_multret_symbol = "mc_luau_aot_v1_get_varargs_multret";
+pub const require_static_symbol = "mc_luau_aot_v1_require_static";
 
 const status_ok: i32 = 0;
 const status_unsupported_type: i32 = 1;
@@ -45,7 +47,7 @@ fn aotArithmeticOperation(upstream_operation: i32) ?i32 {
     return upstream_operation - upstream_tm_add;
 }
 
-pub const Error = snapshot_v1.Error || wasm.Error || std.mem.Allocator.Error || error{
+pub const Error = snapshot_v1.Error || static_package_v1.Error || wasm.Error || std.mem.Allocator.Error || error{
     FunctionOutOfBounds,
     UnsupportedVariadicFunction,
     UnsupportedCommand,
@@ -115,6 +117,9 @@ const Context = struct {
     prep_varargs: ?wasm.FunctionRef,
     get_varargs_fixed: ?wasm.FunctionRef,
     get_varargs_multret: ?wasm.FunctionRef,
+    require_static: ?wasm.FunctionRef,
+    static_package: ?static_package_v1.Package,
+    function_id_base: u32,
     base_local: u32,
     dispatch_local: u32,
     status_local: u32,
@@ -978,9 +983,10 @@ const Context = struct {
 
     fn emitNewClosureValue(self: Context, instruction_id: u32) Error!void {
         const pattern = try self.valueClosurePattern(instruction_id);
+        const child_id = std.math.add(u32, self.function_id_base, pattern.child_proto_id) catch return Error.ResourceLimit;
         try self.body.localGet(self.allocator, 0);
         try self.body.i32Const(self.allocator, @intCast(pattern.primary_destination));
-        try self.body.i32Const(self.allocator, @intCast(pattern.child_proto_id));
+        try self.body.i32Const(self.allocator, @intCast(child_id));
         try self.body.i32Const(self.allocator, @intCast(pattern.capture_register));
         try self.body.call(self.allocator, self.newclosure_value orelse return Error.UnsupportedCommand);
         try self.emitReloadBase();
@@ -989,9 +995,10 @@ const Context = struct {
 
     fn emitNewClosureRef(self: Context, instruction_id: u32) Error!void {
         const pattern = try self.referenceClosurePattern(instruction_id);
+        const child_id = std.math.add(u32, self.function_id_base, pattern.child_proto_id) catch return Error.ResourceLimit;
         try self.body.localGet(self.allocator, 0);
         try self.body.i32Const(self.allocator, @intCast(pattern.destination));
-        try self.body.i32Const(self.allocator, @intCast(pattern.child_proto_id));
+        try self.body.i32Const(self.allocator, @intCast(child_id));
         try self.body.i32Const(self.allocator, @intCast(pattern.capture_register));
         try self.body.call(self.allocator, self.newclosure_ref orelse return Error.UnsupportedCommand);
         try self.emitReloadBase();
@@ -2383,10 +2390,11 @@ const Context = struct {
         const child = try self.snapshot.proto(child_id);
         if (child.parent_id != self.proto.id or child.nups != 0)
             return Error.UnsupportedControlFlow;
+        const global_child_id = std.math.add(u32, self.function_id_base, child_id) catch return Error.ResourceLimit;
 
         try self.body.localGet(self.allocator, 0);
         try self.body.i32Const(self.allocator, @intCast(destination_register));
-        try self.body.i32Const(self.allocator, @intCast(child_id));
+        try self.body.i32Const(self.allocator, @intCast(global_child_id));
         try self.body.call(self.allocator, self.dupclosure orelse return Error.UnsupportedCommand);
         // Closure allocation runs GC and can relocate the active stack.
         try self.emitReloadBase();
@@ -2486,6 +2494,118 @@ const Context = struct {
             try self.body.i32Const(self.allocator, count);
             try self.body.call(self.allocator, self.get_varargs_fixed orelse return Error.UnsupportedCommand);
         }
+    }
+
+    fn vmString(self: Context, operand_value: snapshot_v1.IrOperand) Error![]const u8 {
+        if (operand_value.kind != .vm_const)
+            return Error.InvalidOperandType;
+        const value = try self.snapshot.vmConstant(self.proto, operand_value.value);
+        if (value.kind != .string)
+            return Error.InvalidOperandType;
+        return self.snapshot.string(value.payload0);
+    }
+
+    fn requireImport(self: Context, operand_value: snapshot_v1.IrOperand, descriptor: snapshot_v1.IrOperand) Error!void {
+        if (operand_value.kind != .vm_const or descriptor.kind != .constant)
+            return Error.InvalidOperandType;
+        const value = try self.snapshot.vmConstant(self.proto, operand_value.value);
+        if (value.kind != .import or value.payload1 != 1)
+            return Error.UnsupportedControlFlow;
+        const item = try self.snapshot.vmConstantItem(value.payload0);
+        if (item.value != snapshot_v1.no_id or !std.mem.eql(u8, try self.vmString(.{ .kind = .vm_const, .value = item.key }), "require"))
+            return Error.UnsupportedControlFlow;
+        const encoded = (try self.constant(descriptor.value)).importValue() orelse return Error.InvalidOperandType;
+        const expected = (@as(u32, 1) << 30) | (item.key << 20);
+        if (encoded != expected)
+            return Error.UnsupportedControlFlow;
+    }
+
+    fn staticRequireTarget(self: Context, start: u32, block: snapshot_v1.IrBlock) Error!?struct { end: u32, interrupt_id: u32, destination: u32, module_id: u32 } {
+        const package = self.static_package orelse return null;
+        const end = std.math.add(u32, start, 6) catch return Error.ResourceLimit;
+        if (start < block.start or end > block.finish)
+            return null;
+
+        const marker = try self.instruction(start);
+        const get_import = try self.instruction(start + 1);
+        const load_path = try self.instruction(start + 2);
+        const store_path = try self.instruction(start + 3);
+        const interrupt = try self.instruction(start + 4);
+        const saved_pc = try self.instruction(start + 5);
+        const call = try self.instruction(start + 6);
+        if ((marker.command != .nop and marker.command != .check_safe_env) or
+            get_import.command != .get_cached_import or load_path.command != .load_tvalue or
+            store_path.command != .store_tvalue or interrupt.command != .interrupt or
+            saved_pc.command != .set_savedpc or call.command != .call)
+            return null;
+        if (marker.command == .nop) {
+            if (start != block.start or (block.flags & (1 << 0)) == 0 or marker.operand_count != 0)
+                return Error.UnsupportedControlFlow;
+        } else {
+            try self.requireOperandCount(marker, 1);
+            const failure = try self.operand(marker, 0);
+            if (failure.kind != .vm_exit)
+                return Error.UnsupportedControlFlow;
+        }
+
+        try self.requireOperandCount(get_import, 4);
+        const destination = try self.vmRegisterIndex(try self.operand(get_import, 0));
+        try self.requireImport(try self.operand(get_import, 1), try self.operand(get_import, 2));
+        const import_pc = try self.operand(get_import, 3);
+        if (import_pc.kind != .constant or (try self.constant(import_pc.value)).uintValue() == null)
+            return Error.InvalidOperandType;
+
+        try self.requireOperandCount(load_path, 3);
+        const path_operand = try self.operand(load_path, 0);
+        const path = try self.vmString(path_operand);
+        const load_offset = try self.operand(load_path, 1);
+        const load_tag = try self.operand(load_path, 2);
+        if (load_offset.kind != .constant or (try self.constant(load_offset.value)).intValue() != 0 or
+            load_tag.kind != .constant or (try self.constant(load_tag.value)).tagValue() != lua_tag_string)
+            return Error.UnsupportedControlFlow;
+
+        try self.requireOperandCount(store_path, 2);
+        const argument = try self.vmRegisterIndex(try self.operand(store_path, 0));
+        const stored = try self.operand(store_path, 1);
+        if (argument != destination + 1 or stored.kind != .instruction or stored.value != start + 2)
+            return Error.UnsupportedControlFlow;
+
+        try self.requireOperandCount(interrupt, 1);
+        const interrupt_pc = try self.operand(interrupt, 0);
+        if (interrupt_pc.kind != .constant or (try self.constant(interrupt_pc.value)).uintValue() == null)
+            return Error.InvalidOperandType;
+        _ = try self.savedPc(saved_pc);
+
+        try self.requireOperandCount(call, 3);
+        if (try self.vmRegisterIndex(try self.operand(call, 0)) != destination)
+            return Error.UnsupportedControlFlow;
+        const parameter_count = try self.operand(call, 1);
+        const result_count = try self.operand(call, 2);
+        if (parameter_count.kind != .constant or result_count.kind != .constant or
+            (try self.constant(parameter_count.value)).intValue() != 1 or
+            (try self.constant(result_count.value)).intValue() != 1)
+            return Error.UnsupportedControlFlow;
+
+        const target = package.moduleByName(path) orelse return Error.UnsupportedControlFlow;
+        return .{ .end = end, .interrupt_id = start + 4, .destination = destination, .module_id = target.id };
+    }
+
+    fn emitStaticRequire(self: Context, interrupt_id: u32, destination: u32, module_id: u32) Error!void {
+        // The source CALL cluster carries its ordinary interrupt/fuel safepoint. Static resolution
+        // replaces import lookup and dispatch, not the observable interrupt boundary.
+        try self.emitInterrupt(try self.instruction(interrupt_id));
+        try self.body.localGet(self.allocator, 0);
+        try self.body.i32Const(self.allocator, @intCast(destination));
+        try self.body.i32Const(self.allocator, @intCast(module_id));
+        try self.body.call(self.allocator, self.require_static orelse return Error.UnsupportedCommand);
+        try self.body.localTee(self.allocator, self.status_local);
+        try self.body.i32Eqz(self.allocator);
+        try self.body.ifVoid(self.allocator);
+        try self.emitReloadBase();
+        try self.body.else_(self.allocator);
+        try self.body.localGet(self.allocator, self.status_local);
+        try self.body.return_(self.allocator);
+        try self.body.end(self.allocator);
     }
 
     fn emitInstruction(self: Context, instruction_id: u32, block_kind: snapshot_v1.IrBlockKind) Error!bool {
@@ -2749,6 +2869,11 @@ const Context = struct {
         while (instruction_id <= block.finish) : (instruction_id += 1) {
             if (terminated)
                 return Error.InvalidBlockTermination;
+            if (try self.staticRequireTarget(instruction_id, block)) |require| {
+                try self.emitStaticRequire(require.interrupt_id, require.destination, require.module_id);
+                instruction_id = require.end;
+                continue;
+            }
             terminated = try self.emitInstruction(instruction_id, block.kind);
         }
         if (!terminated)
@@ -2894,6 +3019,7 @@ const ImportNeeds = struct {
     prep_varargs: bool = false,
     get_varargs_fixed: bool = false,
     get_varargs_multret: bool = false,
+    require_static: bool = false,
 };
 
 const RuntimeImports = struct {
@@ -2911,6 +3037,7 @@ const RuntimeImports = struct {
     prep_varargs: ?wasm.FunctionRef,
     get_varargs_fixed: ?wasm.FunctionRef,
     get_varargs_multret: ?wasm.FunctionRef,
+    require_static: ?wasm.FunctionRef,
     generated_type: u32,
 };
 
@@ -2938,6 +3065,7 @@ fn scanImportNeeds(snapshot: snapshot_v1.Snapshot, function_id: u32, needs: *Imp
                 needs.get_varargs_fixed = true;
                 needs.get_varargs_multret = true;
             },
+            .get_cached_import => needs.require_static = true,
             else => {},
         }
     }
@@ -2958,6 +3086,7 @@ fn addRuntimeImports(object: *wasm.Object, needs: ImportNeeds) Error!RuntimeImpo
     const prep_varargs_params = [_]wasm.ValueType{ .i32, .i32 };
     const get_varargs_fixed_params = [_]wasm.ValueType{ .i32, .i32, .i32 };
     const get_varargs_multret_params = [_]wasm.ValueType{ .i32, .i32 };
+    const require_static_params = [_]wasm.ValueType{ .i32, .i32, .i32 };
     const generated_params = [_]wasm.ValueType{ .i32, .i32 };
     const no_results = [_]wasm.ValueType{};
     const status_result = [_]wasm.ValueType{.i32};
@@ -3015,6 +3144,10 @@ fn addRuntimeImports(object: *wasm.Object, needs: ImportNeeds) Error!RuntimeImpo
         const helper_type = try object.addType(.{ .params = &get_varargs_multret_params, .results = &no_results });
         break :blk try object.importFunction("env", get_varargs_multret_symbol, helper_type);
     } else null;
+    const require_static = if (needs.require_static) blk: {
+        const helper_type = try object.addType(.{ .params = &require_static_params, .results = &status_result });
+        break :blk try object.importFunction("env", require_static_symbol, helper_type);
+    } else null;
 
     return .{
         .return_ = return_,
@@ -3031,6 +3164,7 @@ fn addRuntimeImports(object: *wasm.Object, needs: ImportNeeds) Error!RuntimeImpo
         .prep_varargs = prep_varargs,
         .get_varargs_fixed = get_varargs_fixed,
         .get_varargs_multret = get_varargs_multret,
+        .require_static = require_static,
         .generated_type = generated_type,
     };
 }
@@ -3042,6 +3176,8 @@ fn lowerFunction(
     object: *wasm.Object,
     imports: RuntimeImports,
     symbol_name: []const u8,
+    static_package: ?static_package_v1.Package,
+    function_id_base: u32,
 ) Error!void {
     const function = try snapshot.irFunction(function_id);
     const proto = try snapshot.proto(function.proto_id);
@@ -3136,6 +3272,9 @@ fn lowerFunction(
         .prep_varargs = imports.prep_varargs,
         .get_varargs_fixed = imports.get_varargs_fixed,
         .get_varargs_multret = imports.get_varargs_multret,
+        .require_static = imports.require_static,
+        .static_package = static_package,
+        .function_id_base = function_id_base,
         .base_local = 2,
         .dispatch_local = 3,
         .status_local = 4,
@@ -3187,7 +3326,7 @@ pub fn build(allocator: std.mem.Allocator, snapshot_bytes: []const u8, function_
     var object = wasm.Object.init(allocator);
     defer object.deinit();
     const imports = try addRuntimeImports(&object, needs);
-    try lowerFunction(allocator, snapshot, function_id, &object, imports, generated_symbol);
+    try lowerFunction(allocator, snapshot, function_id, &object, imports, generated_symbol, null, 0);
     return object.emit();
 }
 
@@ -3208,7 +3347,58 @@ pub fn buildPackage(allocator: std.mem.Allocator, snapshot_bytes: []const u8) Er
     while (function_id < snapshot.header.ir_function_count) : (function_id += 1) {
         const symbol_name = try std.fmt.allocPrint(allocator, "mc_luau_aot_v1_function_{d:0>8}", .{function_id});
         defer allocator.free(symbol_name);
-        try lowerFunction(allocator, snapshot, function_id, &object, imports, symbol_name);
+        try lowerFunction(allocator, snapshot, function_id, &object, imports, symbol_name, null, 0);
+    }
+    return object.emit();
+}
+
+pub fn buildStaticPackage(allocator: std.mem.Allocator, package_bytes: []const u8) Error![]u8 {
+    const package = try static_package_v1.parse(package_bytes);
+    const function_bases = try allocator.alloc(u32, @intCast(package.module_count));
+    defer allocator.free(function_bases);
+
+    var needs = ImportNeeds{};
+    var total_functions: u32 = 0;
+    var module_id: u32 = 0;
+    while (module_id < package.module_count) : (module_id += 1) {
+        const module = try package.module(module_id);
+        const snapshot = try snapshot_v1.parse(module.snapshot, snapshot_v1.production_identity);
+        try snapshot_v1.validateModel(snapshot);
+        function_bases[@intCast(module_id)] = total_functions;
+        total_functions = std.math.add(u32, total_functions, snapshot.header.ir_function_count) catch return Error.ResourceLimit;
+
+        var function_id: u32 = 0;
+        while (function_id < snapshot.header.ir_function_count) : (function_id += 1)
+            try scanImportNeeds(snapshot, function_id, &needs);
+    }
+    if (total_functions == 0)
+        return Error.UnsupportedControlFlow;
+
+    var object = wasm.Object.init(allocator);
+    defer object.deinit();
+    const imports = try addRuntimeImports(&object, needs);
+
+    module_id = 0;
+    while (module_id < package.module_count) : (module_id += 1) {
+        const module = try package.module(module_id);
+        const snapshot = try snapshot_v1.parse(module.snapshot, snapshot_v1.production_identity);
+        const function_base = function_bases[@intCast(module_id)];
+        var function_id: u32 = 0;
+        while (function_id < snapshot.header.ir_function_count) : (function_id += 1) {
+            const global_function_id = std.math.add(u32, function_base, function_id) catch return Error.ResourceLimit;
+            const symbol_name = try std.fmt.allocPrint(allocator, "mc_luau_aot_v1_function_{d:0>8}", .{global_function_id});
+            defer allocator.free(symbol_name);
+            try lowerFunction(
+                allocator,
+                snapshot,
+                function_id,
+                &object,
+                imports,
+                symbol_name,
+                package,
+                function_base,
+            );
+        }
     }
     return object.emit();
 }

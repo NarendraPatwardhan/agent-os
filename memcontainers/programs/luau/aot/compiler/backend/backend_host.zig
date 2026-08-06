@@ -69,6 +69,15 @@ export fn mc_luau_backend_v1_compile_package(snapshot_pointer: u32, snapshot_siz
     return publishObject(result, lower.buildPackage(allocator, snapshot_bytes[0..snapshot_size]));
 }
 
+export fn mc_luau_backend_v1_compile_static_package(package_pointer: u32, package_size: u32, result_pointer: u32) u32 {
+    if (package_pointer == 0 or package_size == 0 or result_pointer == 0)
+        return status_invalid_argument;
+
+    const result: *CompileResult = @ptrFromInt(result_pointer);
+    const package_bytes: [*]const u8 = @ptrFromInt(package_pointer);
+    return publishObject(result, lower.buildStaticPackage(allocator, package_bytes[0..package_size]));
+}
+
 export fn mc_luau_backend_v1_free(result_pointer: u32) void {
     if (result_pointer == 0)
         return;

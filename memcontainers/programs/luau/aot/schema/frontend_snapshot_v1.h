@@ -101,8 +101,9 @@ enum McLuauFrontendSnapshotV1RecordSize {
 
 // VmConstantV1 uses kind:u8 at byte 0, four u32 payload words at bytes 4..19, and two u64 bit
 // payloads at bytes 24..39. Compound records index VM_CONSTANT_ITEMS with (start,count): imports
-// carry 1..3 ordered name-constant IDs; tables carry ordered (key,value-or-NO_ID) pairs; class
-// shapes carry classname in payload0, item start in payload1, and property/method counts in 2/3.
+// decode the pinned GETIMPORT AUX word into 1..3 ordered Proto-local VM string-constant IDs; tables
+// carry ordered (key,value-or-NO_ID) pairs; class shapes carry classname in payload0, item start in
+// payload1, and property/method counts in 2/3.
 
 enum McLuauFrontendSnapshotV1StringOffset {
     MC_LUAU_SNAPSHOT_V1_STRING_BYTE_OFFSET = 0,
