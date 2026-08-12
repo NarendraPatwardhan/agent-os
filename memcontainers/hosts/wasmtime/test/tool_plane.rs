@@ -282,7 +282,6 @@ fn injects_catalog_and_gates_connection_egress() {
 
     let kernel = read_runfile("_main/memcontainers/kernel/rust/kernel.wasm");
     let image = read_runfile("_main/memcontainers/images/loom.tar");
-    let compiler = read_runfile("_main/memcontainers/lib/catalog-compiler/catalog-compiler.wasm");
     let fixture = String::from_utf8(read_runfile(
         "_main/memcontainers/lib/catalog-compiler/data/github_issues.openapi.json",
     ))
@@ -304,7 +303,6 @@ fn injects_catalog_and_gates_connection_egress() {
 
     let status = host
         .inject_catalog(CatalogInjectOptions {
-            compiler_wasm: compiler,
             generation: 1,
             tools: vec!["github/issues".to_string()],
             host_tools: vec![],
@@ -442,7 +440,6 @@ fn discovers_graphql_catalog_via_authenticated_introspection() {
 
     let kernel = read_runfile("_main/memcontainers/kernel/rust/kernel.wasm");
     let image = read_runfile("_main/memcontainers/images/loom.tar");
-    let compiler = read_runfile("_main/memcontainers/lib/catalog-compiler/catalog-compiler.wasm");
     let endpoint = format!("{}/graphql", server.origin);
 
     let (sink, _stdout) = CaptureSink::new();
@@ -460,7 +457,6 @@ fn discovers_graphql_catalog_via_authenticated_introspection() {
 
     let status = host
         .inject_catalog(CatalogInjectOptions {
-            compiler_wasm: compiler,
             generation: 1,
             tools: vec![],
             host_tools: vec![],
@@ -516,7 +512,6 @@ fn origins_only_public_tool_sends_no_credential() {
 
     let kernel = read_runfile("_main/memcontainers/kernel/rust/kernel.wasm");
     let image = read_runfile("_main/memcontainers/images/loom.tar");
-    let compiler = read_runfile("_main/memcontainers/lib/catalog-compiler/catalog-compiler.wasm");
     let openapi = format!(
         r#"{{"openapi":"3.0.0","info":{{"title":"public","version":"1"}},"servers":[{{"url":"{}"}}],"paths":{{"/ping":{{"get":{{"operationId":"ping","responses":{{"200":{{"description":"ok"}}}}}}}}}}}}"#,
         server.origin
@@ -536,7 +531,6 @@ fn origins_only_public_tool_sends_no_credential() {
         .expect("boot loom");
 
     host.inject_catalog(CatalogInjectOptions {
-        compiler_wasm: compiler,
         generation: 1,
         tools: vec![],
         host_tools: vec![],

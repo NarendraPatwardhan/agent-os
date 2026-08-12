@@ -1,438 +1,240 @@
-/**
- * Emscripten bridge over `ge_*` — the engine half of the host source plane.
- *
- * Loads `git_engine.{mjs,js}` + `git_engine.wasm`, opens a libgit2 repo under
- * module MEMFS (optionally hydrated from a host durable directory). gitfs
- * projects that worktree into the guest VFS; all concurrent
- * access serializes through {@link GitBridge.serial}.
- */
+/** Standard WebAssembly host adapter for the freestanding Gitz engine. */
 
-import type { DurableBackend } from "./durable.js";
-import { isDirectoryDurable } from "./durable.js";
-import type { GitRequest, GitResponse } from "./types.js";
+import {
+  BACKEND_BROWSER,
+  CAPABILITY_CORE,
+  ENVELOPE_HEADER_BYTES,
+  MAX_FRAME_BYTES,
+  MAX_RESULT_BYTES,
+  PROTOCOL_MINOR,
+  PROTOCOL_VERSION,
+  STATUS_ERROR,
+  decodeCommitResult,
+  decodeEngineDescription,
+  decodeEngineError,
+  decodeFileResult,
+  decodeResolveResult,
+  decodeResult,
+  decodeStatusResult,
+  decodeResponseEnvelope,
+  encodeRequestEnvelope,
+  encodeFileRequest,
+  encodePorcelainRequest,
+  encodeSessionConfig,
+  type CommitResult,
+  type EngineDescription,
+  type FileRequest,
+  type FileResult,
+  type PorcelainRequest,
+  type ResolveResult,
+  type Result,
+  type StatusResult,
+  type GitResponseEnvelope,
+} from "@mc/contracts/git";
 
-export const DEFAULT_WORK_ROOT = "/work";
+export const DEFAULT_WORK_ROOT = "";
 
-// ── Emscripten surface ──────────────────────────────────────────────────────
-
-export type EmscriptenGitModule = {
-  UTF8ToString(ptr: number): string;
-  stringToUTF8(s: string, ptr: number, max: number): void;
-  lengthBytesUTF8(s: string): number;
-  _malloc(n: number): number;
-  _free(ptr: number): void;
-  getValue(ptr: number, type: string): number;
-  setValue(ptr: number, value: number, type: string): void;
-  HEAPU8: Uint8Array;
-  FS: EmscriptenFS;
-  _ge_open(rootPtr: number): number;
-  _ge_close(eng: number): void;
-  _ge_run_json(eng: number, reqPtr: number): number;
-  _ge_validate_request_json(reqPtr: number): number;
-  _ge_import_pack(eng: number, ptr: number, len: number, final: number): number;
-  _ge_import_pack_abort(eng: number): void;
-  _ge_pack_build(eng: number, oidsJsonPtr: number, outPtrPtr: number, outLenPtr: number): number;
-  _ge_free(ptr: number): void;
-  _ge_version(): number;
-  _ge_last_error(eng: number): number;
-  /** Test helper: override stdout embed limit (0 = product default). */
-  _ge_test_set_stdout_max_bytes?(n: number): void;
-};
-
-export type EmscriptenFS = {
-  mkdir(path: string): void;
-  mkdirTree?(path: string): void;
-  readdir(path: string): string[];
-  stat(path: string): { mode: number; size?: number };
-  lstat(path: string): { mode: number; size?: number };
-  isDir(mode: number): boolean;
-  isLink(mode: number): boolean;
-  readFile(path: string, opts?: { encoding?: string }): Uint8Array | string;
-  writeFile(path: string, data: Uint8Array | string): void;
-  chmod(path: string, mode: number): void;
-  unlink(path: string): void;
-  rmdir(path: string): void;
-  rename(from: string, to: string): void;
-  readlink?(path: string): string;
-  symlink?(target: string, link: string): void;
-  analyzePath?(path: string): { exists: boolean };
+export type GitWasmExports = {
+  memory: WebAssembly.Memory;
+  ao_git_abi_version(): number;
+  ao_git_capabilities(): bigint;
+  ao_git_buffer_alloc(length: number): number;
+  ao_git_buffer_free(pointer: number, length: number): number;
+  ao_git_session_open(pointer: number, length: number): number;
+  ao_git_session_close(session: number): number;
+  ao_git_execute(session: number, pointer: number, length: number): number;
+  ao_git_result_len(result: number): number;
+  ao_git_result_read(result: number, offset: number, pointer: number, capacity: number): number;
+  ao_git_result_free(result: number): number;
 };
 
 export type GitBridgeCreateOptions = {
   workRoot?: string;
-  /**
-   * When a directory durable backend is attached, hydrate MEMFS from that
-   * store **before** `ge_open` so libgit2 sees an existing repo on load.
-   * Host directories are copied into MEMFS; checkpoints publish complete
-   * generations atomically.
-   */
-  durable?: DurableBackend;
+  readOnly?: boolean;
+  restore?: Uint8Array;
 };
 
-// ── GitBridge ───────────────────────────────────────────────────────────────
-
+/** One freestanding module instance owns its sessions, in-memory repositories, and handles. */
 export class GitBridge {
-  /** Single-writer promise queue for libgit2 + MEMFS worktree access. */
   private queue: Promise<unknown> = Promise.resolve();
+  private requestId = 0;
+  private closed = false;
 
-  constructor(
-    readonly mod: EmscriptenGitModule,
-    public eng: number,
-    readonly workRoot: string = DEFAULT_WORK_ROOT,
+  private constructor(
+    readonly module: WebAssembly.Module,
+    readonly exports: GitWasmExports,
+    public session: number,
+    readonly workRoot: string,
   ) {}
 
-  static async create(baseUrl: string, opts: GitBridgeCreateOptions = {}): Promise<GitBridge> {
-    const root = baseUrl.endsWith("/") ? baseUrl : baseUrl + "/";
-    const workRoot = opts.workRoot ?? DEFAULT_WORK_ROOT;
-    // Prefer .mjs (always ESM). Fall back to .js when package.json type=module is present.
-    const modUrl = await resolveEngineModuleUrl(root);
-    const createGitEngineModule = await loadCreate(modUrl);
-    const mod = (await createGitEngineModule({
-      locateFile: (p: string) => {
-        const name = String(p).endsWith(".wasm") ? "git_engine.wasm" : p;
-        const url = new URL(name, root).href;
-        if (typeof process !== "undefined" && process.versions?.node && url.startsWith("file:")) {
-          return new URL(url).pathname;
-        }
-        return url;
-      },
-    })) as EmscriptenGitModule;
-
-    ensureDir(mod.FS, workRoot);
-
-    const durable = opts.durable;
-    if (isDirectoryDurable(durable)) {
-      if (typeof durable.ensure === "function") {
-        await durable.ensure();
-      }
-      if (typeof durable.hydrateToMemfs === "function") {
-        await durable.hydrateToMemfs(mod.FS, workRoot);
-      }
+  static async create(wasm: Uint8Array, opts: GitBridgeCreateOptions = {}): Promise<GitBridge> {
+    const module = await WebAssembly.compile(wasm);
+    const imports = WebAssembly.Module.imports(module);
+    if (imports.length !== 0) {
+      throw new Error(`git_engine.wasm must be freestanding; found ${imports.length} imports`);
     }
-
-    const rootPtr = cstr(mod, workRoot);
-    const eng = mod._ge_open(rootPtr);
-    mod._free(rootPtr);
-    if (!eng) {
-      throw new Error("ge_open failed (need absolute existing MEMFS dir)");
+    const instance = await WebAssembly.instantiate(module, {});
+    const exports = validateExports(instance.exports);
+    const actualAbi = exports.ao_git_abi_version() >>> 0;
+    const expectedAbi = ((PROTOCOL_VERSION << 16) | PROTOCOL_MINOR) >>> 0;
+    if (actualAbi !== expectedAbi) {
+      throw new Error(`unsupported Git engine ABI 0x${actualAbi.toString(16)}`);
     }
-    return new GitBridge(mod, eng, workRoot);
-  }
-
-  /**
-   * Shared serial mutex: all engine `run` / `importPack` and gitfs MEMFS ops
-   * must go through this so concurrent mount ctl + host_call remotes + eng.run
-   * cannot interleave libgit2.
-   *
-   * Nested `serial` while already inside a `serial` callback deadlocks — call
-   * sync {@link run} / {@link importPack} / FS from within an outer serial body.
-   */
-  serial<T>(fn: () => T | Promise<T>): Promise<T> {
-    const run = this.queue.then(fn, fn) as Promise<T>;
-    this.queue = run.then(
-      () => undefined,
-      () => undefined,
+    if ((exports.ao_git_capabilities() & BigInt(CAPABILITY_CORE)) === 0n) {
+      throw new Error("git_engine.wasm does not provide the core Git capability");
+    }
+    const config = encodeSessionConfig({
+      backend: BACKEND_BROWSER,
+      read_only: !!opts.readOnly,
+      root: opts.workRoot ?? DEFAULT_WORK_ROOT,
+      restore: opts.restore ? owned(opts.restore) : undefined,
+    });
+    const resultHandle = copyInAndCall(exports, config, (ptr, len) =>
+      exports.ao_git_session_open(ptr, len),
     );
-    return run;
+    const opened = takeResult(exports, resultHandle);
+    const envelope = decodeResponseEnvelope(opened);
+    if (envelope.status === STATUS_ERROR) throw engineError(envelope);
+    const result = decodeResult(envelope.payload);
+    if (!result.handle) throw new Error("Git engine session.open returned no session handle");
+    return new GitBridge(module, exports, result.handle, opts.workRoot ?? DEFAULT_WORK_ROOT);
   }
 
-  version(): string {
-    return this.mod.UTF8ToString(this.mod._ge_version()) || "unknown";
+  serial<T>(fn: () => T | Promise<T>): Promise<T> {
+    const next = this.queue.then(fn, fn) as Promise<T>;
+    this.queue = next.then(() => undefined, () => undefined);
+    return next;
   }
 
-  lastError(): string {
-    return this.mod.UTF8ToString(this.mod._ge_last_error(this.eng)) || "";
+  execute(opcode: number, payload = new Uint8Array()): GitResponseEnvelope {
+    if (this.closed || !this.session) throw new Error("Git engine session is closed");
+    const requestId = (this.requestId = (this.requestId + 1) >>> 0 || 1);
+    return this.executeForRequest(opcode, requestId, payload);
   }
 
-  /**
-   * Test-only: override stdout embed limit for truncation tests.
-   * Pass 0 to restore the product default (2 KiB).
-   */
-  testSetStdoutMaxBytes(n: number): void {
-    const fn = this.mod._ge_test_set_stdout_max_bytes;
-    if (typeof fn !== "function") {
-      throw new Error("ge_test_set_stdout_max_bytes not exported in this module");
+  /** Continue an engine-owned effect exchange using its original request identity. */
+  executeForRequest(opcode: number, requestId: number, payload = new Uint8Array()): GitResponseEnvelope {
+    if (this.closed || !this.session) throw new Error("Git engine session is closed");
+    if (!Number.isInteger(requestId) || requestId < 1 || requestId > 0xffff_ffff) {
+      throw new Error("invalid Git engine request identity");
     }
-    fn(n >>> 0);
+    const frame = encodeRequestEnvelope(opcode, 0, requestId, owned(payload));
+    const resultHandle = copyInAndCall(this.exports, frame, (ptr, len) =>
+      this.exports.ao_git_execute(this.session, ptr, len),
+    );
+    const envelope = decodeResponseEnvelope(takeResult(this.exports, resultHandle));
+    if (envelope.requestId !== requestId) {
+      throw new Error("Git engine returned a response for a different request");
+    }
+    if (envelope.status === STATUS_ERROR) throw engineError(envelope);
+    return envelope;
   }
 
-  // ── Sync ge_* (callers that may race must wrap with serial) ───────────────
-
-  /** Sync WASM ge_run_json. Callers that may race must wrap with {@link serial}. */
-  run(req: GitRequest): GitResponse {
-    const json = JSON.stringify({
-      op: req.op,
-      ...(req.args !== undefined ? { args: req.args } : {}),
-    });
-    const reqPtr = cstr(this.mod, json);
-    const outPtr = this.mod._ge_run_json(this.eng, reqPtr);
-    this.mod._free(reqPtr);
-    const text = this.mod.UTF8ToString(outPtr);
-    this.mod._ge_free(outPtr);
-    try {
-      return JSON.parse(text) as GitResponse;
-    } catch {
-      throw new Error(`invalid engine JSON: ${text.slice(0, 200)}`);
-    }
+  describe(opcode: number): EngineDescription {
+    return decodeEngineDescription(this.execute(opcode).payload);
   }
 
-  /** Validate the exact native Run envelope without executing it. */
-  validateRequestJson(requestJson: string): boolean {
-    const reqPtr = cstr(this.mod, requestJson);
-    try {
-      return this.mod._ge_validate_request_json(reqPtr) === 0;
-    } finally {
-      this.mod._free(reqPtr);
-    }
+  result(opcode: number, payload = new Uint8Array()): Result {
+    return decodeResult(this.execute(opcode, payload).payload);
   }
 
-  /** Sync WASM ge_import_pack. Callers that may race must wrap with {@link serial}. */
-  importPack(chunk: Uint8Array, final = false): void {
-    const len = chunk?.byteLength ?? 0;
-    let ptr = 0;
-    if (len > 0) {
-      ptr = this.mod._malloc(len);
-      this.mod.HEAPU8.set(chunk, ptr);
-    }
-    const rc = this.mod._ge_import_pack(this.eng, ptr, len, final ? 1 : 0);
-    if (ptr) this.mod._free(ptr);
-    if (rc !== 0) {
-      throw new Error(this.lastError() || `ge_import_pack failed (${rc})`);
-    }
+  file(opcode: number, request: FileRequest): FileResult {
+    return decodeFileResult(owned(this.execute(opcode, owned(encodeFileRequest(request))).payload));
   }
 
-  /** Discard an incomplete streamed import. Safe when no import is active. */
-  abortImportPack(): void {
-    this.mod._ge_import_pack_abort(this.eng);
+  porcelain(opcode: number, request: PorcelainRequest): Uint8Array {
+    return owned(this.execute(opcode, owned(encodePorcelainRequest(request))).payload);
   }
 
-  /**
-   * Sync WASM ge_pack_build — reachable objects for tip OIDs as a packfile.
-   * Optional `haves` (remote tips already held) shrinks the pack via revwalk hide.
-   * Callers that may race must wrap with {@link serial}.
-   */
-  packBuild(oids: string[], haves?: string[]): Uint8Array {
-    if (!Array.isArray(oids)) {
-      throw new Error("packBuild: oids must be an array of 40-hex strings");
-    }
-    const haveList = Array.isArray(haves)
-      ? haves.filter((h) => typeof h === "string" && /^[0-9a-f]{40}$/i.test(h))
-      : [];
-    const oidsJson =
-      haveList.length > 0 ? JSON.stringify({ oids, haves: haveList }) : JSON.stringify(oids);
-    const jsonPtr = cstr(this.mod, oidsJson);
-    // wasm32: pointer + size_t are 4 bytes each (out / out_len slots).
-    const outPtrSlot = this.mod._malloc(4);
-    const outLenSlot = this.mod._malloc(4);
-    this.mod.setValue(outPtrSlot, 0, "i32");
-    this.mod.setValue(outLenSlot, 0, "i32");
-    const rc = this.mod._ge_pack_build(this.eng, jsonPtr, outPtrSlot, outLenSlot);
-    this.mod._free(jsonPtr);
-    if (rc !== 0) {
-      this.mod._free(outPtrSlot);
-      this.mod._free(outLenSlot);
-      throw new Error(this.lastError() || `ge_pack_build failed (${rc})`);
-    }
-    const dataPtr = this.mod.getValue(outPtrSlot, "i32");
-    const dataLen = this.mod.getValue(outLenSlot, "i32") >>> 0;
-    this.mod._free(outPtrSlot);
-    this.mod._free(outLenSlot);
-    if (!dataPtr || dataLen === 0) {
-      if (dataPtr) this.mod._ge_free(dataPtr);
-      throw new Error(this.lastError() || "ge_pack_build returned empty pack");
-    }
-    const bytes = this.mod.HEAPU8.slice(dataPtr, dataPtr + dataLen);
-    this.mod._ge_free(dataPtr);
-    if (
-      bytes.byteLength < 4 ||
-      bytes[0] !== 0x50 ||
-      bytes[1] !== 0x41 ||
-      bytes[2] !== 0x43 ||
-      bytes[3] !== 0x4b
-    ) {
-      throw new Error("ge_pack_build: pack missing PACK magic");
-    }
-    return bytes;
+  status(opcode: number): StatusResult {
+    return decodeStatusResult(this.execute(opcode).payload);
   }
 
-  abs(rel: string): string {
-    const p = normalizeRel(rel);
-    return p ? `${this.workRoot}/${p}` : this.workRoot;
+  commit(opcode: number, request: PorcelainRequest): CommitResult {
+    return decodeCommitResult(owned(this.execute(opcode, owned(encodePorcelainRequest(request))).payload));
   }
 
-  get FS(): EmscriptenFS {
-    return this.mod.FS;
-  }
-
-  // ── Nested engines (submodule paths under the same module FS) ─────────────
-
-  /**
-   * Open a nested libgit2 engine under an absolute MEMFS path (same module FS).
-   * Host orch clones submodules into nested paths so superproject gitfs projects
-   * nested worktree files. Call only inside {@link serial}. Pair with {@link closeAt}.
-   */
-  openAt(absRoot: string): number {
-    ensureDir(this.mod.FS, absRoot);
-    const rootPtr = cstr(this.mod, absRoot);
-    const eng = this.mod._ge_open(rootPtr);
-    this.mod._free(rootPtr);
-    if (!eng) {
-      throw new Error(`ge_open nested failed for ${absRoot} (need absolute existing MEMFS dir)`);
-    }
-    return eng;
-  }
-
-  /** Sync ge_run_json against an engine handle (not necessarily this.eng). */
-  runAt(eng: number, req: GitRequest): GitResponse {
-    const json = JSON.stringify({
-      op: req.op,
-      ...(req.args !== undefined ? { args: req.args } : {}),
-    });
-    const reqPtr = cstr(this.mod, json);
-    const outPtr = this.mod._ge_run_json(eng, reqPtr);
-    this.mod._free(reqPtr);
-    const text = this.mod.UTF8ToString(outPtr);
-    this.mod._ge_free(outPtr);
-    try {
-      return JSON.parse(text) as GitResponse;
-    } catch {
-      throw new Error(`invalid engine JSON: ${text.slice(0, 200)}`);
-    }
-  }
-
-  /** Sync ge_import_pack against an engine handle. */
-  importPackAt(eng: number, chunk: Uint8Array, final = false): void {
-    const len = chunk?.byteLength ?? 0;
-    let ptr = 0;
-    if (len > 0) {
-      ptr = this.mod._malloc(len);
-      this.mod.HEAPU8.set(chunk, ptr);
-    }
-    const rc = this.mod._ge_import_pack(eng, ptr, len, final ? 1 : 0);
-    if (ptr) this.mod._free(ptr);
-    if (rc !== 0) {
-      const err = this.mod.UTF8ToString(this.mod._ge_last_error(eng)) || "";
-      throw new Error(err || `ge_import_pack failed (${rc})`);
-    }
-  }
-
-  abortImportPackAt(eng: number): void {
-    this.mod._ge_import_pack_abort(eng);
-  }
-
-  closeAt(eng: number): void {
-    if (eng) this.mod._ge_close(eng);
+  resolve(opcode: number, request: PorcelainRequest): ResolveResult {
+    return decodeResolveResult(owned(this.execute(opcode, owned(encodePorcelainRequest(request))).payload));
   }
 
   close(): void {
-    if (this.eng) {
-      this.mod._ge_close(this.eng);
-      this.eng = 0;
+    if (this.closed) return;
+    this.closed = true;
+    const session = this.session;
+    this.session = 0;
+    if (session && this.exports.ao_git_session_close(session) !== 0) {
+      throw new Error("Git engine rejected session.close");
     }
-  }
-
-  /** Re-open after a full-tree blob restore performed before the first op. */
-  reopen(): void {
-    if (this.eng) this.mod._ge_close(this.eng);
-    const rootPtr = cstr(this.mod, this.workRoot);
-    this.eng = this.mod._ge_open(rootPtr);
-    this.mod._free(rootPtr);
-    if (!this.eng) throw new Error("ge_open failed after durable tree restore");
   }
 }
 
-// ── Path helpers ────────────────────────────────────────────────────────────
-
-/**
- * Canonical relative path for gitfs/engine MEMFS.
- * Collapses empty segments and `.`; rejects `..` segments (path safety / K17).
- * So `/.git/./objects` and `/.git//objects` normalize to `.git/objects`.
- */
-export function normalizeRel(path: string): string {
-  let p = String(path || "").replace(/\\/g, "/");
-  while (p.startsWith("/")) p = p.slice(1);
-  if (p === "." || p === "") return "";
-  const parts: string[] = [];
-  for (const seg of p.split("/")) {
-    if (seg === "" || seg === ".") continue;
-    if (seg === "..") {
-      const err = new Error("path escapes worktree") as Error & { code?: string };
-      err.code = "EACCES";
-      throw err;
-    }
-    parts.push(seg);
-  }
-  return parts.join("/");
+function validateExports(raw: WebAssembly.Exports): GitWasmExports {
+  const required = [
+    "memory", "ao_git_abi_version", "ao_git_capabilities", "ao_git_buffer_alloc",
+    "ao_git_buffer_free", "ao_git_session_open", "ao_git_session_close", "ao_git_execute",
+    "ao_git_result_len", "ao_git_result_read", "ao_git_result_free",
+  ] as const;
+  for (const name of required) if (!(name in raw)) throw new Error(`git_engine.wasm missing export ${name}`);
+  return raw as unknown as GitWasmExports;
 }
 
-// ── Module load internals ───────────────────────────────────────────────────
+function copyInAndCall(
+  exports: GitWasmExports,
+  bytes: Uint8Array,
+  call: (pointer: number, length: number) => number,
+): number {
+  if (bytes.byteLength > MAX_FRAME_BYTES) throw new Error("Git engine request exceeds MAX_FRAME_BYTES");
+  const pointer = exports.ao_git_buffer_alloc(bytes.byteLength);
+  if (!pointer && bytes.byteLength) throw new Error("Git engine request allocation failed");
+  try {
+    new Uint8Array(exports.memory.buffer, pointer, bytes.byteLength).set(bytes);
+    const result = call(pointer, bytes.byteLength);
+    if (!result) throw new Error("Git engine returned no result handle");
+    return result;
+  } finally {
+    if (pointer && exports.ao_git_buffer_free(pointer, bytes.byteLength) !== 0) {
+      throw new Error("Git engine request free failed");
+    }
+  }
+}
 
-function ensureDir(FS: EmscriptenFS, path: string): void {
-  if (typeof FS.mkdirTree === "function") {
+function takeResult(exports: GitWasmExports, handle: number): Uint8Array {
+  if (!handle) throw new Error("Git engine returned an invalid result handle");
+  try {
+    const length = exports.ao_git_result_len(handle) >>> 0;
+    if (length < ENVELOPE_HEADER_BYTES || length > MAX_RESULT_BYTES) {
+      throw new Error(`Git engine returned invalid result length ${length}`);
+    }
+    const pointer = exports.ao_git_buffer_alloc(length);
+    if (!pointer) throw new Error("Git engine result allocation failed");
     try {
-      FS.mkdirTree(path);
-      return;
-    } catch {
-      /* fall through */
+      const read = exports.ao_git_result_read(handle, 0, pointer, length) >>> 0;
+      if (read !== length) throw new Error(`Git engine result short read ${read}/${length}`);
+      return new Uint8Array(exports.memory.buffer, pointer, length).slice();
+    } finally {
+      if (exports.ao_git_buffer_free(pointer, length) !== 0) throw new Error("Git engine result buffer free failed");
     }
-  }
-  const parts = path.split("/").filter(Boolean);
-  let cur = "";
-  for (const part of parts) {
-    cur += "/" + part;
-    try {
-      FS.mkdir(cur);
-    } catch {
-      /* exists */
-    }
+  } finally {
+    if (exports.ao_git_result_free(handle) !== 0) throw new Error("Git engine result handle free failed");
   }
 }
 
-function cstr(mod: EmscriptenGitModule, s: string): number {
-  const n = mod.lengthBytesUTF8(s) + 1;
-  const p = mod._malloc(n);
-  mod.stringToUTF8(s, p, n);
-  return p;
-}
+function owned(bytes: Uint8Array): Uint8Array<ArrayBuffer> { return Uint8Array.from(bytes); }
 
-async function resolveEngineModuleUrl(root: string): Promise<string> {
-  const candidates = ["git_engine.mjs", "git_engine.js"];
-  if (typeof process !== "undefined" && process.versions?.node) {
-    const { existsSync } = await import("node:fs");
-    const { fileURLToPath } = await import("node:url");
-    for (const name of candidates) {
-      const href = new URL(name, root).href;
-      try {
-        const p = fileURLToPath(href);
-        if (existsSync(p)) return href;
-      } catch {
-        /* non-file URL */
-      }
-    }
-  }
-  return new URL(candidates[0], root).href;
-}
-
-async function loadCreate(
-  modUrl: string,
-): Promise<(opts?: object) => Promise<EmscriptenGitModule>> {
-  // emcc EXPORT_ES6 emits `export default createGitEngineModule` — always ESM.
-  // Load via .mjs (or .js under type:module) so Node does not treat it as CJS.
-  let href = modUrl;
-  if (
-    !modUrl.startsWith("file:") &&
-    !modUrl.startsWith("http:") &&
-    !modUrl.startsWith("https:") &&
-    !modUrl.startsWith("data:")
-  ) {
-    const { pathToFileURL } = await import("node:url");
-    href = pathToFileURL(modUrl).href;
-  }
-  const m = (await import(/* @vite-ignore */ href)) as {
-    default?: (opts?: object) => Promise<EmscriptenGitModule>;
-    createGitEngineModule?: (opts?: object) => Promise<EmscriptenGitModule>;
-  };
-  const fn = m.default ?? m.createGitEngineModule;
-  if (typeof fn === "function") return fn;
-  throw new Error(`cannot load createGitEngineModule from ${href}`);
+function engineError(envelope: GitResponseEnvelope): Error {
+  let message = `Git engine operation ${envelope.opcode} failed`;
+  let domain: number | undefined;
+  let code: number | undefined;
+  try {
+    const detail = decodeEngineError(envelope.payload);
+    domain = detail.domain;
+    code = detail.code;
+    if (detail.message) message = detail.message;
+  } catch { /* malformed errors still fail closed */ }
+  const error = new Error(message) as Error & { domain?: number; engineCode?: number; opcode?: number };
+  error.domain = domain;
+  error.engineCode = code;
+  error.opcode = envelope.opcode;
+  return error;
 }

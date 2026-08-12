@@ -107,12 +107,13 @@ genrule(
 # Core-level runtime test: a real mc.create() boots the kernel through @mc/host and @mc/contracts package
 # deps (the host parity test only covers @mc/host itself). Same load-bearing data edge as the Rust e2e:
 # the kernel + image it boots are the ones its sources produce.
-# Host git engine (SYSTEMS.md §11b): Run + gitfs ctl without full VM boot.
+# Host Git engine (SYSTEMS.md §11b): emitted-Wasm adapter runtime coverage.
 mc_ts_project(
     name = "git_engine_test_lib",
     srcs = ["test/git_engine.test.ts"],
     deps = [
         ":lib",
+        ":node_modules/@mc/contracts",
         "//:node_modules/@types/bun",
     ],
 )
@@ -134,10 +135,9 @@ js_test(
     },
 )
 
-# PR9–PR10a: smart-HTTP fixture orch + MapHostCall "git" + ctl refuse.
 mc_ts_project(
-    name = "git_remote_test_lib",
-    srcs = ["test/git_remote.test.ts"],
+    name = "git_real_remote_test_lib",
+    srcs = ["test/git_real_remote.test.ts"],
     deps = [
         ":lib",
         "//:node_modules/@types/bun",
@@ -145,233 +145,21 @@ mc_ts_project(
 )
 
 js_test(
-    name = "git_remote_test",
-    timeout = "moderate",
+    name = "git_real_remote_test",
+    timeout = "long",
     data = [
-        ":git_remote_test_lib",
-        ":orch_golden_minimal_pack",
-        ":orch_golden_minimal_tip",
+        ":git_real_remote_test_lib",
         ":test_package_json",
         "//memcontainers/lib/git-engine:git_engine_release",
     ],
-    entry_point = "test/git_remote.test.js",
-    env = {
-        "MC_GIT_ENGINE_TAR": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_release)",
-        "MC_GIT_MINIMAL_PACK": "$(rlocationpath :orch_golden_minimal_pack)",
-        "MC_GIT_MINIMAL_TIP": "$(rlocationpath :orch_golden_minimal_tip)",
-    },
-)
-
-# P2.8 — shared executable orch goldens (TS ↔ BEAM).
-# rules_js requires cross-package sources to be copied into this package.
-genrule(
-    name = "orch_golden_clone_success",
-    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/clone_success_steps.json"],
-    outs = ["fixtures/orch/clone_success_steps.json"],
-    cmd = "cp $< $@",
-)
-
-genrule(
-    name = "orch_golden_empty_pack",
-    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/clone_empty_pack_fail.json"],
-    outs = ["fixtures/orch/clone_empty_pack_fail.json"],
-    cmd = "cp $< $@",
-)
-
-genrule(
-    name = "orch_golden_origin_denied",
-    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/origin_denied.json"],
-    outs = ["fixtures/orch/origin_denied.json"],
-    cmd = "cp $< $@",
-)
-
-genrule(
-    name = "orch_golden_fetch_success",
-    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/fetch_success_steps.json"],
-    outs = ["fixtures/orch/fetch_success_steps.json"],
-    cmd = "cp $< $@",
-)
-
-genrule(
-    name = "orch_golden_pull_ff",
-    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/pull_ff_steps.json"],
-    outs = ["fixtures/orch/pull_ff_steps.json"],
-    cmd = "cp $< $@",
-)
-
-genrule(
-    name = "orch_golden_push_readonly",
-    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/push_readonly.json"],
-    outs = ["fixtures/orch/push_readonly.json"],
-    cmd = "cp $< $@",
-)
-
-genrule(
-    name = "orch_golden_push_success",
-    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/push_success_steps.json"],
-    outs = ["fixtures/orch/push_success_steps.json"],
-    cmd = "cp $< $@",
-)
-
-genrule(
-    name = "orch_golden_shallow_clone",
-    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/shallow_clone_steps.json"],
-    outs = ["fixtures/orch/shallow_clone_steps.json"],
-    cmd = "cp $< $@",
-)
-
-genrule(
-    name = "orch_golden_auth_deny",
-    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/auth_deny_steps.json"],
-    outs = ["fixtures/orch/auth_deny_steps.json"],
-    cmd = "cp $< $@",
-)
-
-genrule(
-    name = "orch_golden_pull_not_ff",
-    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/pull_not_ff_steps.json"],
-    outs = ["fixtures/orch/pull_not_ff_steps.json"],
-    cmd = "cp $< $@",
-)
-
-genrule(
-    name = "orch_golden_origin_deny_prefix",
-    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/origin_deny_prefix.json"],
-    outs = ["fixtures/orch/origin_deny_prefix.json"],
-    cmd = "cp $< $@",
-)
-
-genrule(
-    name = "orch_golden_guest_secret_reject",
-    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/guest_secret_reject.json"],
-    outs = ["fixtures/orch/guest_secret_reject.json"],
-    cmd = "cp $< $@",
-)
-
-genrule(
-    name = "orch_golden_query_auth_reject",
-    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/query_auth_reject.json"],
-    outs = ["fixtures/orch/query_auth_reject.json"],
-    cmd = "cp $< $@",
-)
-
-genrule(
-    name = "orch_response_schema",
-    srcs = ["//memcontainers/lib/git-engine:fixtures/orch/response_schema.json"],
-    outs = ["fixtures/orch/response_schema.json"],
-    cmd = "cp $< $@",
-)
-
-genrule(
-    name = "orch_golden_minimal_pack",
-    srcs = ["//memcontainers/lib/git-engine:fixtures/pack/minimal.pack"],
-    outs = ["fixtures/pack/minimal.pack"],
-    cmd = "cp $< $@",
-)
-
-genrule(
-    name = "orch_golden_minimal_tip",
-    srcs = ["//memcontainers/lib/git-engine:fixtures/pack/minimal.tip"],
-    outs = ["fixtures/pack/minimal.tip"],
-    cmd = "cp $< $@",
-)
-
-mc_ts_project(
-    name = "git_orch_golden_test_lib",
-    srcs = ["test/git_orch_golden.test.ts"],
-    deps = [
-        ":lib",
-        "//:node_modules/@types/bun",
-    ],
-)
-
-js_test(
-    name = "git_orch_golden_test",
-    timeout = "moderate",
-    data = [
-        ":git_orch_golden_test_lib",
-        ":orch_golden_auth_deny",
-        ":orch_golden_clone_success",
-        ":orch_golden_empty_pack",
-        ":orch_golden_fetch_success",
-        ":orch_golden_guest_secret_reject",
-        ":orch_golden_minimal_pack",
-        ":orch_golden_minimal_tip",
-        ":orch_golden_origin_denied",
-        ":orch_golden_origin_deny_prefix",
-        ":orch_golden_pull_ff",
-        ":orch_golden_pull_not_ff",
-        ":orch_golden_push_readonly",
-        ":orch_golden_push_success",
-        ":orch_golden_query_auth_reject",
-        ":orch_golden_shallow_clone",
-        ":orch_response_schema",
-        ":test_package_json",
-        "//memcontainers/lib/git-engine:git_engine_release",
-    ],
-    entry_point = "test/git_orch_golden.test.js",
-    env = {
-        "MC_GIT_ENGINE_TAR": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_release)",
-        # Relative to runfiles package root for this target.
-        "MC_GIT_ORCH_GOLDEN_DIR": "memcontainers/sdk-js/core/fixtures/orch",
-    },
-)
-
-# D27/D28 — real smart-HTTP e2e (system git-http-backend; product FetchSmartHttp).
-mc_ts_project(
-    name = "git_real_http_test_lib",
-    srcs = ["test/git_real_http.test.ts"],
-    deps = [
-        ":lib",
-        "//:node_modules/@types/bun",
-    ],
-)
-
-js_test(
-    name = "git_real_http_test",
-    timeout = "moderate",
-    data = [
-        ":git_real_http_test_lib",
-        ":test_package_json",
-        "//memcontainers/lib/git-engine:git_engine_release",
-    ],
-    entry_point = "test/git_real_http.test.js",
+    entry_point = "test/git_real_remote.test.js",
     env = {
         "MC_GIT_ENGINE_TAR": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_release)",
     },
-    # Needs host git + git-http-backend + localhost (sandbox blocks both).
-    # Tag "manual" keeps analysis-key conflicts away from sibling js_tests that
-    # also copy package.json; run explicitly:
-    #   bazel test //memcontainers/sdk-js/core:git_real_http_test
     tags = [
-        "manual",
         "no-sandbox",
         "requires-network",
     ],
-)
-
-# PR11: connection-ref remotes + credential splice (no secret leak).
-mc_ts_project(
-    name = "git_connections_test_lib",
-    srcs = ["test/git_connections.test.ts"],
-    deps = [
-        ":lib",
-        "//:node_modules/@types/bun",
-    ],
-)
-
-js_test(
-    name = "git_connections_test",
-    timeout = "moderate",
-    data = [
-        ":git_connections_test_lib",
-        ":test_package_json",
-        "//memcontainers/lib/git-engine:git_engine_release",
-    ],
-    entry_point = "test/git_connections.test.js",
-    env = {
-        "MC_GIT_ENGINE_TAR": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_release)",
-    },
 )
 
 mc_ts_project(
@@ -500,100 +288,4 @@ js_test(
         "MC_BASE_IMAGE": "$(rlocationpath //memcontainers/images:base)",
     },
     node_options = ["--experimental-websocket"],
-)
-
-# PR12: push path (policy block / approval / read-only).
-mc_ts_project(
-    name = "git_push_test_lib",
-    srcs = ["test/git_push.test.ts"],
-    deps = [
-        ":lib",
-        "//:node_modules/@types/bun",
-    ],
-)
-
-js_test(
-    name = "git_push_test",
-    timeout = "moderate",
-    data = [
-        ":git_push_test_lib",
-        ":test_package_json",
-        "//memcontainers/lib/git-engine:git_engine_release",
-    ],
-    entry_point = "test/git_push.test.js",
-    env = {
-        "MC_GIT_ENGINE_TAR": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_release)",
-    },
-)
-
-mc_ts_project(
-    name = "git_pack_cache_test_lib",
-    srcs = ["test/git_pack_cache.test.ts"],
-    deps = [
-        ":lib",
-        "//:node_modules/@types/bun",
-    ],
-)
-
-js_test(
-    name = "git_pack_cache_test",
-    timeout = "short",
-    data = [
-        ":git_pack_cache_test_lib",
-        ":test_package_json",
-    ],
-    entry_point = "test/git_pack_cache.test.js",
-)
-
-# P2.4 — engine-first llb.git; no ambient system git without MC_GIT_USE_SYSTEM=1.
-mc_ts_project(
-    name = "git_llb_fail_closed_test_lib",
-    srcs = ["test/git_llb_fail_closed.test.ts"],
-    deps = [
-        ":lib",
-        "//:node_modules/@types/bun",
-    ],
-)
-
-js_test(
-    name = "git_llb_fail_closed_test",
-    timeout = "short",
-    data = [
-        ":git_llb_fail_closed_test_lib",
-        ":test_package_json",
-    ],
-    entry_point = "test/git_llb_fail_closed.test.js",
-)
-
-# Guest CAP_NET + gitfs ctl e2e (fixture pack only; no network).
-# Boots loom (inherits /bin/git from base) + kernel + emcc engine; injects FixtureSmartHttp via git.http.
-mc_ts_project(
-    name = "git_guest_e2e_test_lib",
-    srcs = ["test/git_guest_e2e.test.ts"],
-    deps = [
-        ":lib",
-        "//:node_modules/@types/bun",
-    ],
-)
-
-js_test(
-    name = "git_guest_e2e_test",
-    timeout = "long",
-    data = [
-        ":git_guest_e2e_test_lib",
-        ":orch_golden_minimal_pack",
-        ":orch_golden_minimal_tip",
-        ":test_package_json",
-        "//memcontainers/images:loom",
-        "//memcontainers/kernel/rust:kernel",
-        "//memcontainers/lib/git-engine:git_engine_release",
-    ],
-    entry_point = "test/git_guest_e2e.test.js",
-    env = {
-        "MC_KERNEL_WASM": "$(rlocationpath //memcontainers/kernel/rust:kernel)",
-        "MC_LOOM_IMAGE": "$(rlocationpath //memcontainers/images:loom)",
-        "MC_GIT_ENGINE_TAR": "$(rlocationpath //memcontainers/lib/git-engine:git_engine_release)",
-        "MC_GIT_MINIMAL_PACK": "$(rlocationpath :orch_golden_minimal_pack)",
-        "MC_GIT_MINIMAL_TIP": "$(rlocationpath :orch_golden_minimal_tip)",
-    },
 )

@@ -1,11 +1,10 @@
 import { mkdirSync } from "node:fs";
-import { lstat, mkdtemp, readFile, readdir, readlink, rm } from "node:fs/promises";
+import { lstat, readFile, readdir, readlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawn } from "node:child_process";
 import { hostDir } from "./drivers.js";
 import type { BuildState } from "./llb.js";
-import type { GitSource, LocalEntry, LocalSource, SolvePlatform } from "./solve.js";
+import type { LocalEntry, LocalSource, SolvePlatform } from "./solve.js";
 import type { MountSpec } from "./types.js";
 
 const te = new TextEncoder();
@@ -29,105 +28,6 @@ function cat(...parts: (string | Uint8Array)[]): Uint8Array {
   }
   return out;
 }
-
-function concat(chunks: readonly Uint8Array[]): Uint8Array {
-  const out = new Uint8Array(chunks.reduce((n, chunk) => n + chunk.length, 0));
-  let off = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, off);
-    off += chunk.length;
-  }
-  return out;
-}
-
-function normalizeVmPath(path: string, field: string): string {
-  if (!path.startsWith("/"))
-    throw new Error(`llb.git ${field} must be absolute: ${JSON.stringify(path)}`);
-  if (path.includes("\0")) throw new Error(`llb.git ${field} contains NUL`);
-  const parts: string[] = [];
-  for (const part of path.split("/")) {
-    if (!part || part === ".") continue;
-    if (part === "..")
-      throw new Error(`llb.git ${field} must not contain '..': ${JSON.stringify(path)}`);
-    parts.push(part);
-  }
-  return `/${parts.join("/")}`;
-}
-
-/**
- * @deprecated Escape hatch only (`MC_GIT_USE_SYSTEM=1`). Product path is the host
- * libgit2 engine + GitRemoteOrchestrator — never ambient system git.
- */
-async function archiveGitSourceSystem(repo: string, ref: string, dest: string): Promise<GitSource> {
-  const local = await localGitRepoSystem(repo);
-  try {
-    const commit = (await gitOutput(["-C", local.repo, "rev-parse", `${ref}^{commit}`])).trim();
-    if (!/^[0-9a-f]{40}$/.test(commit)) {
-      throw new Error(`llb.git resolved invalid commit for ${repo} ${ref}: ${commit}`);
-    }
-    const prefix = gitArchivePrefix(dest);
-    const tar = await gitBytes([
-      "-C",
-      local.repo,
-      "archive",
-      "--format=tar",
-      `--prefix=${prefix}`,
-      commit,
-    ]);
-    const archiveDigest = `sha256:${await sha256hex(tar)}`;
-    return { commit, archiveDigest, tar };
-  } finally {
-    if (local.cleanup) await local.cleanup();
-  }
-}
-
-async function localGitRepoSystem(
-  repo: string,
-): Promise<{ repo: string; cleanup?: () => Promise<void> }> {
-  const stat = await lstat(repo).catch(() => null);
-  if (stat?.isDirectory()) return { repo };
-
-  const dir = await mkdtemp(join(tmpdir(), "mc-llb-git-"));
-  const clone = join(dir, "repo");
-  await gitBytes(["clone", "--quiet", "--no-checkout", repo, clone]);
-  return {
-    repo: clone,
-    cleanup: () => rm(dir, { recursive: true, force: true }),
-  };
-}
-
-function gitArchivePrefix(dest: string): string {
-  const normalized = normalizeVmPath(dest, "destination");
-  if (normalized === "/") return "";
-  return `${normalized.slice(1)}/`;
-}
-
-async function gitOutput(args: string[]): Promise<string> {
-  return new TextDecoder().decode(await gitBytes(args));
-}
-
-function gitBytes(args: string[]): Promise<Uint8Array> {
-  return new Promise((resolve, reject) => {
-    const child = spawn("git", args, { stdio: ["ignore", "pipe", "pipe"] });
-    const stdout: Uint8Array[] = [];
-    const stderr: Uint8Array[] = [];
-    child.stdout.on("data", (chunk: Uint8Array) => stdout.push(chunk.slice()));
-    child.stderr.on("data", (chunk: Uint8Array) => stderr.push(chunk.slice()));
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code !== 0) {
-        reject(
-          new Error(
-            `git ${args.join(" ")} failed (${code}): ${new TextDecoder().decode(concat(stderr))}`,
-          ),
-        );
-        return;
-      }
-      resolve(concat(stdout));
-    });
-  });
-}
-
 
 
 async function scanLocalSource(root: string): Promise<LocalSource> {
@@ -202,17 +102,16 @@ async function cacheMounts(mounts: readonly BuildState[]): Promise<MountSpec[]> 
 
 /**
  * Default Node platform: **host git engine** for `llb.git` (SYSTEMS.md §11b).
- * Never shells out to ambient system `git` unless `MC_GIT_USE_SYSTEM=1`.
+ * All Git semantics run through the pinned Gitz engine.
  */
 export const nodeSolvePlatform: SolvePlatform = {
   localSource: scanLocalSource,
   gitSource: async (repo, ref, dest) => {
-    if (process.env.MC_GIT_USE_SYSTEM === "1") {
-      return archiveGitSourceSystem(repo, ref, dest);
-    }
     const platform = await nodeSolvePlatformWithEngine({
-      // Same env as defaultProcessPackCache; explicit dir still wins if set.
-      packCacheDir: process.env.MC_GIT_PACK_CACHE?.trim() || undefined,
+      allowOrigins: (process.env.MC_GIT_ALLOW_ORIGINS ?? "")
+        .split(",")
+        .map((origin) => origin.trim())
+        .filter(Boolean),
     });
     return platform.gitSource(repo, ref, dest);
   },
@@ -220,45 +119,29 @@ export const nodeSolvePlatform: SolvePlatform = {
 };
 
 /**
- * Node solve platform with llb.git on the shared GitRemoteOrchestrator stack.
+ * Node solve platform with engine-owned Git remote semantics.
  * Engine tar is resolved via artifacts (`MC_GIT_ENGINE_TAR` / AGENTOS_DIR / cache).
  */
 export async function nodeSolvePlatformWithEngine(opts: {
   /** Optional git-engine.tar bytes; otherwise resolved via artifacts. */
   engine?: Uint8Array;
   connections?: import("./types.js").ConnectionDefinition[];
-  /**
-   * On-disk pack cache dir (same as `MC_GIT_PACK_CACHE`). When set, uses
-   * {@link DiskPackCache} for this platform; otherwise falls through to
-   * process default (Memory, or Disk if env already set).
-   */
-  packCacheDir?: string;
-  /**
-   * Explicit pack cache. Default is {@link defaultProcessPackCache} (Memory on
-   * browser / unset env; Disk when `MC_GIT_PACK_CACHE` is set). Pass `null` to disable.
-   */
-  packCache?: import("./git/pack-cache.js").PackCache | null;
+  /** Required for bare remote URLs; empty remains fail-closed. */
+  allowOrigins?: string[];
+  /** Optional connection binding applied to every llb.git source. */
+  connection?: string;
+  /** Generic HTTP executor for engine effects. */
+  fetch?: typeof globalThis.fetch;
 }): Promise<SolvePlatform> {
   const { GitEngine } = await import("./git/engine.js");
   const { createEngineGitSource } = await import("./git/llb-git.js");
-  const {
-    DiskPackCache,
-    defaultProcessPackCache,
-  } = await import("./git/pack-cache.js");
-  // Product LLB path: always plumb a pack cache for repeated in-process solves
-  // unless the caller passes packCache: null. Explicit packCacheDir wins;
-  // otherwise process default honors MC_GIT_PACK_CACHE for Disk.
-  const packCache =
-    opts.packCache === null
-      ? undefined
-      : opts.packCacheDir
-        ? new DiskPackCache(opts.packCacheDir)
-        : (opts.packCache ?? defaultProcessPackCache());
   const gitSource = createEngineGitSource(
     () => GitEngine.load({ engine: opts.engine }),
     {
       connections: opts.connections,
-      packCache,
+      allowOrigins: opts.allowOrigins,
+      connection: opts.connection,
+      fetch: opts.fetch,
     },
   );
   return {

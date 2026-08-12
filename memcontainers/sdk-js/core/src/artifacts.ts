@@ -2,7 +2,7 @@
  * Runtime artifacts: resolve kernel / flavor tars / catalog-compiler / git-engine.tar.
  *
  * Order: explicit bytes → env path → $AGENTOS_DIR → cache → optional fetch → fail closed.
- * Git product form is tar bytes; emcc materialize to a cache dir is private.
+ * Git product form is a tar containing the single freestanding Wasm module.
  *
  * Node-only I/O is required lazily so this module can load in the browser (product
  * index re-exports it). Browser callers always pass explicit bytes; resolve* throws
@@ -41,9 +41,6 @@ function existsSync(path: string): boolean {
 function mkdirSync(path: string, opts?: { recursive?: boolean }): void {
   nodeBuiltin<typeof import("node:fs")>("fs").mkdirSync(path, opts);
 }
-function mkdtempSync(prefix: string): string {
-  return nodeBuiltin<typeof import("node:fs")>("fs").mkdtempSync(prefix);
-}
 function readFileSync(path: string): Buffer;
 function readFileSync(path: string, enc: BufferEncoding): string;
 function readFileSync(path: string, enc?: BufferEncoding): string | Buffer {
@@ -59,20 +56,11 @@ function renameSync(from: string, to: string): void {
 function rmSync(path: string, opts?: { recursive?: boolean; force?: boolean }): void {
   nodeBuiltin<typeof import("node:fs")>("fs").rmSync(path, opts);
 }
-function cpSync(from: string, to: string, opts?: { recursive?: boolean }): void {
-  nodeBuiltin<typeof import("node:fs")>("fs").cpSync(from, to, opts);
-}
 function join(...parts: string[]): string {
   return nodeBuiltin<typeof import("node:path")>("path").join(...parts);
 }
 function homedir(): string {
   return nodeBuiltin<typeof import("node:os")>("os").homedir();
-}
-function tmpdir(): string {
-  return nodeBuiltin<typeof import("node:os")>("os").tmpdir();
-}
-function pathToFileURL(path: string): URL {
-  return nodeBuiltin<typeof import("node:url")>("url").pathToFileURL(path);
 }
 
 // ── kinds ───────────────────────────────────────────────────────────────────
@@ -193,6 +181,12 @@ async function doResolve(kind: ArtifactKind): Promise<Uint8Array> {
   if (ep) {
     tried.push(`env ${envNameFor(kind)}=${ep}`);
     if (existsSync(ep)) return readFileBytes(ep);
+    const runfilesRoot = env("RUNFILES_DIR");
+    if (runfilesRoot && !isAbsolute(ep)) {
+      const runfilesPath = join(runfilesRoot, ep);
+      tried.push(`runfiles ${runfilesPath}`);
+      if (existsSync(runfilesPath)) return readFileBytes(runfilesPath);
+    }
     tried.push(`(missing file)`);
   } else {
     tried.push(`env ${envNameFor(kind)} unset`);
@@ -229,6 +223,10 @@ async function doResolve(kind: ArtifactKind): Promise<Uint8Array> {
       `Fix: pass explicit bytes, set ${envNameFor(kind)}, set AGENTOS_DIR, ` +
       `or MC_ARTIFACT_FETCH=1 with MC_ARTIFACT_VERSION / MC_ARTIFACT_SOURCE.`,
   );
+}
+
+function isAbsolute(path: string): boolean {
+  return nodeBuiltin<typeof import("node:path")>("path").isAbsolute(path);
 }
 
 function envNameFor(kind: ArtifactKind): string {
@@ -333,73 +331,28 @@ export async function resolveGitEngineTar(bytes?: Uint8Array): Promise<Uint8Arra
   return resolveArtifact("git-engine", { bytes });
 }
 
-const materializeInflight = new Map<string, Promise<string>>();
-
-/** Extract git-engine.tar under the artifact cache; return absolute dir path. */
-export async function materializeGitEngineDir(tarBytes: Uint8Array): Promise<string> {
-  const digest = sha256Hex(tarBytes);
-  const hit = materializeInflight.get(digest);
-  if (hit) return hit;
-
-  const p = doMaterialize(tarBytes, digest).finally(() => materializeInflight.delete(digest));
-  materializeInflight.set(digest, p);
-  return p;
+/** Resolve and extract the sole browser runtime from git-engine.tar in memory. */
+export async function resolveGitEngineWasm(engineTar?: Uint8Array): Promise<Uint8Array> {
+  return readTarFile(await resolveGitEngineTar(engineTar), "git_engine.wasm");
 }
 
-async function doMaterialize(tarBytes: Uint8Array, digest: string): Promise<string> {
-  const dest = join(artifactCacheRoot(), "dirs", "git-engine", digest);
-  if (existsSync(join(dest, "git_engine.mjs")) && existsSync(join(dest, "git_engine.wasm"))) {
-    return dest;
+function readTarFile(tar: Uint8Array, wanted: string): Uint8Array {
+  const decoder = new TextDecoder();
+  let offset = 0;
+  while (offset + 512 <= tar.byteLength) {
+    const header = tar.subarray(offset, offset + 512);
+    if (header.every((byte) => byte === 0)) break;
+    const name = decoder.decode(header.subarray(0, 100)).replace(/\0.*$/, "");
+    const sizeText = decoder.decode(header.subarray(124, 136)).replace(/\0.*$/, "").trim();
+    if (!/^[0-7]*$/.test(sizeText)) throw new Error("invalid git-engine.tar size field");
+    const size = sizeText ? Number.parseInt(sizeText, 8) : 0;
+    const start = offset + 512;
+    const end = start + size;
+    if (!Number.isSafeInteger(size) || end > tar.byteLength) throw new Error("truncated git-engine.tar");
+    if (name === wanted) return tar.slice(start, end);
+    offset = start + Math.ceil(size / 512) * 512;
   }
-
-  ensureDir(join(artifactCacheRoot(), "dirs", "git-engine"));
-  const tmpParent = mkdtempSync(join(tmpdir(), "agentos-git-engine-"));
-  const tmpDir = join(tmpParent, "out");
-  ensureDir(tmpDir);
-  const tarPath = join(tmpParent, "git-engine.tar");
-  try {
-    writeFileSync(tarPath, tarBytes);
-    await extractTar(tarPath, tmpDir);
-    if (!existsSync(join(tmpDir, "git_engine.mjs")) || !existsSync(join(tmpDir, "git_engine.wasm"))) {
-      throw new Error("git-engine.tar missing git_engine.mjs or git_engine.wasm after extract");
-    }
-    if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
-    try {
-      renameSync(tmpDir, dest);
-    } catch (e) {
-      const err = e as NodeJS.ErrnoException;
-      if (err?.code !== "EXDEV") throw e;
-      cpSync(tmpDir, dest, { recursive: true });
-    }
-  } finally {
-    rmSync(tmpParent, { recursive: true, force: true });
-  }
-  return dest;
-}
-
-async function extractTar(tarPath: string, destDir: string): Promise<void> {
-  const { spawn } = await import("node:child_process");
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn("tar", ["-xf", tarPath, "-C", destDir], {
-      stdio: ["ignore", "ignore", "pipe"],
-    });
-    let err = "";
-    child.stderr?.on("data", (c: Buffer) => {
-      err += c.toString();
-    });
-    child.on("error", reject);
-    child.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`tar -xf failed (${code}): ${err}`));
-    });
-  });
-}
-
-/** Resolve git-engine.tar, materialize, return file URL for GitBridge (internal). */
-export async function resolveGitEngineBaseUrl(engineTar?: Uint8Array): Promise<string> {
-  const tar = await resolveGitEngineTar(engineTar);
-  const dir = await materializeGitEngineDir(tar);
-  return pathToFileURL(dir.endsWith("/") ? dir : dir + "/").href;
+  throw new Error(`git-engine.tar missing ${wanted}`);
 }
 
 export async function seedArtifactCacheFromDir(

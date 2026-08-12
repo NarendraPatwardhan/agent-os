@@ -59,10 +59,8 @@ defmodule AgentOS.Vm do
     :booted_at,
     :last_active_ms,
     :snapshot_base,
-    # Multi-mount git (R63–R65 / K21 per path):
-    # mount_path => %{pid, mon, sparse_cone: [prefix, ...]}.
+    # Multi-mount git: mount_path => %{pid, mon, read_only}.
     # One Port engine per mount path; single-writer per engine (not shared).
-    # sparse_cone is per-mount (D20 / JS git.sparse | git.mounts[].sparse).
     git_engines: %{},
     # Stable attach order. Map enumeration is not a routing contract.
     git_mount_order: [],
@@ -77,12 +75,11 @@ defmodule AgentOS.Vm do
     git_policies: [],
     git_allowed_origins: [],
     git_auth: nil,
-    # Test-only injectable SmartHttp transport (fixture double).
-    git_transport: nil,
-    # Push approval — host-owned; never from guest body.
-    git_require_approval: false,
+    git_identity: nil,
+    # Test-only injectable raw HTTP-effect handler.
+    git_http_effect: nil,
+    # Optional 1-arity push approval callback for `require_approval` policies.
     git_on_push_approval: nil,
-    git_push_approval: false,
     # Inflight async remote host_calls: handle => %{task, mount}.
     # Per-mount single-writer: remotes for the same mount serialize; different
     # mounts may run in parallel (each engine has its own Port).
@@ -461,7 +458,7 @@ defmodule AgentOS.Vm do
   Attach a BEAM-owned native `git-engine` Port for this VM (SYSTEMS.md §11b).
 
   Host-owned remote policy is stored on the VM actor and forwarded into
-  `GitEngine.handle_host_call/4` / orch via `git_host_opts_for_mount/2`. The guest body
+  `AgentOS.Git.Public` via `git_host_opts_for_mount/2`. The guest body
   never supplies secrets, origins, or push policy.
 
   ## Product path — connections catalog
@@ -486,6 +483,8 @@ defmodule AgentOS.Vm do
     `:approve | :require_approval | :block` (atoms or strings).
     Optional `:owner` (`:org | :user` or `"org"` / `"user"`) is preserved when
     present. Pattern matches a **connection** prefix (not a tool).
+  * `:on_push_approval` — optional 1-arity callback invoked when the matching
+    push policy is `:require_approval`. Must return `true` to allow the push.
 
   ## Bare-URL fixture policy (connections empty only)
 
@@ -503,31 +502,20 @@ defmodule AgentOS.Vm do
   ## Other options
 
   * `:executable`, `:root`, `:mount_path` (default `"/workspace/repo"`)
-  * `:durable_dir` — re-openable libgit2 worktree directory; same as `:root`
+  * `:durable_dir` — re-openable native Gitz worktree directory; same as `:root`
     for durability (never deleted on detach). Preferred over temp roots.
   * `:durable_id` — named durable root under `AGENTOS_GIT_DURABLE_ROOT` /
     `:git_durable_root` as `{base}/{id}/{mount_slug}` (D18 partial).
-  * `:transport` — injectable SmartHttp transport (tests / fixture double only)
-  * `:identity` — `%{name: binary, email: binary}` host policy
-    identity injected into Port `commit` when args omit name/email. Never
-    invents a default identity when unset.
-  * `:on_push_approval` / `:push_approval` / `:require_approval` — push approval
-    opts forwarded to `AgentOS.Git.Orchestrator` via host_call demux.
-    Prefer connection `:policies` for product push gating when available.
-  * `:sparse_cone` — list of cone-mode path prefixes
-    (e.g. `["src", "docs"]`) stored **on this mount** and applied after
-    clone via Port `sparse-set` (D20 / JS `git.sparse` / engine `sparseCone`).
-    **Cone-only** — not full sparse-checkout pattern language. Gitfs projects
-    the post-sparse worktree (no separate mount-side cone filter on BEAM).
+  * `:http_effect` — injectable three-argument raw HTTP-effect handler for tests.
+    It receives the generated `HttpEffect`, drained request body, and host opts;
+    it does not implement Git operations.
 
   **K21 / R63–R66:** one engine **per mount path**. A second attach with a
   **different** `mount_path` succeeds (multi-repo). Same path while live returns
   `{:error, :git_already_attached}` without opening another Port. Call
   `detach_git/2` with `:mount_path` to replace one mount, or without to detach all.
 
-  Latest attach **refreshes** shared host policy (connections / policies /
-  origins / auth / transport) for all mounts on this VM. Sparse cone is
-  **per-mount** and only applies to the attach that set it.
+  Latest attach refreshes shared host HTTP policy for all mounts on this VM.
   """
   @spec attach_git(server(), keyword()) :: :ok | {:error, term()}
   def attach_git(server, opts \\ []) when is_list(opts),
@@ -544,21 +532,20 @@ defmodule AgentOS.Vm do
     do: GenServer.call(server, {:detach_git, opts}, timeout(opts))
 
   @doc """
-  If `event` is a host_call (or host_call_close) for name `\"git\"` or a gitfs
-  mount path on this VM, claim it and return `:answered`.
+  If `event` is a host_call (or host_call_close) for public name `\"git\"` or
+  the kernel's mounted-filesystem driver path, claim it and return `:answered`.
 
-  * `name == \"git\"` (remote orch / HTTPS) is **async**: spawn under
+  * `name == \"git\"` (engine remote operation / HTTPS effects) is async: spawn under
     `AgentOS.SidecarTaskSupervisor`, return immediately, then answer via
     `egress_host_call_respond/3` or fail the handle. Host opts come from
     `attach_git/2` (`connections`/`policies`, or fixture origins/auth, plus
-    transport) — never from the guest body.
-    Body may include `args.mount` / top-level `mount` to demux to the engine
-    for that path; empty mount uses the sole engine or the first attached.
+    HTTP effect handler) — never from the guest body.
+    Public JSON may select a mount; when omitted, exactly one engine must exist.
     **At most one remote Task runs per mount** — further remotes for the same
     mount enqueue so import+apply cannot interleave on that Port. Distinct mounts
     may run in parallel (separate engines).
-  * Mount-path host_calls (gitfs type-4) stay **synchronous** so single-writer
-    Port ordering is preserved.
+  * Mount-path calls are exclusively the kernel filesystem ABI and are adapted
+    to typed `OP_MOUNT` synchronously.
   * `host_call_close` for name `\"git\"` cancels the inflight Task (or drops a
     queued remote) without double-responding — mirrors sidecar cancel.
   """
@@ -752,7 +739,9 @@ defmodule AgentOS.Vm do
                   git_policies: [],
                   git_allowed_origins: [],
                   git_auth: nil,
-                  git_transport: nil,
+                  git_identity: nil,
+                  git_http_effect: nil,
+                  git_on_push_approval: nil,
                   git_tasks: %{},
                   git_task_refs: %{},
                   git_remote_queue: %{}
@@ -1293,13 +1282,10 @@ defmodule AgentOS.Vm do
         {[], nil}
       end
 
-    transport = Keyword.get(opts, :transport)
-    identity = Keyword.get(opts, :identity)
-    require_approval = Keyword.get(opts, :require_approval, false) == true
+    http_effect = Keyword.get(opts, :http_effect)
     on_push_approval = Keyword.get(opts, :on_push_approval)
-    push_approval = Keyword.get(opts, :push_approval, false) == true
-    # D20: per-mount cone prefixes (JS git.sparse / engine sparseCone).
-    sparse_cone = git_sparse_cone_from_opts(opts)
+    identity = Keyword.get(opts, :identity)
+    read_only = Keyword.get(opts, :read_only, false) == true
 
     # Unlinked start + monitor so engine crash does not kill the VM actor.
     # D16/D18: durable_dir / durable_id / root → re-openable worktree; temp otherwise.
@@ -1311,24 +1297,25 @@ defmodule AgentOS.Vm do
         durable_id: Keyword.get(opts, :durable_id),
         durable: Keyword.get(opts, :durable),
         mount_path: mount_path,
-        identity: identity
+        read_only: read_only,
+        allowed_origins: allowed,
+        auth: auth,
+        connections: connections,
+        policies: policies,
+        http_effect: http_effect
       ]
       |> Enum.reject(fn {_k, v} -> is_nil(v) end)
 
     case AgentOS.GitEngine.start(engine_opts) do
       {:ok, pid} ->
         ref = Process.monitor(pid)
-        read_only = Keyword.get(opts, :read_only, false)
-
         case Nif.mount(state.nif, mount_path, read_only) do
           :ok ->
             engines =
               Map.put(state.git_engines || %{}, mount_path, %{
                 pid: pid,
                 mon: ref,
-                sparse_cone: sparse_cone,
-                # Forwarded to orch so push fail-closes before dial (dual-host with JS readOnly).
-                read_only: read_only == true
+                read_only: read_only
               })
 
             # Latest attach refreshes shared host policy for every mount.
@@ -1341,10 +1328,9 @@ defmodule AgentOS.Vm do
                  git_policies: policies,
                  git_allowed_origins: allowed,
                  git_auth: auth,
-                 git_transport: transport,
-                 git_require_approval: require_approval,
-                 git_on_push_approval: on_push_approval,
-                 git_push_approval: push_approval
+                 git_identity: identity,
+                 git_http_effect: http_effect,
+                 git_on_push_approval: on_push_approval
              }}
 
           {:error, reason} ->
@@ -1355,27 +1341,6 @@ defmodule AgentOS.Vm do
 
       {:error, reason} ->
         {:error, reason}
-    end
-  end
-
-  # D20: normalize cone prefixes — strip slashes, drop empties (JS parity).
-  defp git_sparse_cone_from_opts(opts) do
-    raw = Keyword.get(opts, :sparse_cone, [])
-
-    case raw do
-      list when is_list(list) ->
-        list
-        |> Enum.filter(&is_binary/1)
-        |> Enum.map(fn p ->
-          p
-          |> String.trim()
-          |> String.trim_leading("/")
-          |> String.trim_trailing("/")
-        end)
-        |> Enum.reject(&(&1 == ""))
-
-      _ ->
-        []
     end
   end
 
@@ -1540,15 +1505,6 @@ defmodule AgentOS.Vm do
       list when is_list(list) ->
         list
 
-      :any ->
-        # Test-only escape hatch (SmartHttp still requires injected transport).
-        # Mix is unavailable in releases — treat missing Mix as non-test.
-        if Code.ensure_loaded?(Mix) and function_exported?(Mix, :env, 0) and Mix.env() == :test do
-          :any
-        else
-          []
-        end
-
       _ ->
         []
     end
@@ -1578,10 +1534,9 @@ defmodule AgentOS.Vm do
             git_policies: [],
             git_allowed_origins: [],
             git_auth: nil,
-            git_transport: nil,
-            git_require_approval: false,
+            git_identity: nil,
+            git_http_effect: nil,
             git_on_push_approval: nil,
-            git_push_approval: false,
             git_remote_queue: %{}
         }
     end
@@ -1635,49 +1590,12 @@ defmodule AgentOS.Vm do
     end
   end
 
-  defp git_default_mount(state) do
-    case git_mount_paths(state) do
-      [only] -> only
-      [first | _] -> first
-      [] -> nil
-    end
-  end
-
   defp git_engine_for_mount_name(state, name) when is_binary(name) do
     path = normalize_git_mount_path(name)
 
     case git_engine_pid(state, path) do
       {:ok, pid} -> {:ok, pid, path}
       :error -> :error
-    end
-  end
-
-  # R65: extract mount from body JSON (`args.mount` or top-level `mount`).
-  defp mount_from_git_body(body) when is_binary(body) do
-    case safe_json_decode_mount(body) do
-      mount when is_binary(mount) and mount != "" -> {:ok, mount}
-      _ -> :default
-    end
-  end
-
-  defp safe_json_decode_mount(bin) do
-    with {:ok, term} <- AgentOS.GitEngine.Jason_like.decode(bin),
-         map when is_map(map) <- json_keys_to_string(term) do
-      top = Map.get(map, "mount")
-      args = Map.get(map, "args")
-
-      mount =
-        cond do
-          is_binary(top) and String.trim(top) != "" -> top
-          is_map(args) and is_binary(Map.get(args, "mount")) -> Map.get(args, "mount")
-          true -> nil
-        end
-
-      if is_binary(mount) and String.trim(mount) != "",
-        do: normalize_git_mount_path(mount),
-        else: nil
-    else
-      _ -> nil
     end
   end
 
@@ -1698,50 +1616,32 @@ defmodule AgentOS.Vm do
 
   defp valid_git_mount_path?(_), do: false
 
-  defp json_keys_to_string(map) when is_map(map) do
-    Map.new(map, fn
-      {k, v} when is_atom(k) -> {Atom.to_string(k), json_keys_to_string(v)}
-      {k, v} when is_binary(k) -> {k, json_keys_to_string(v)}
-      {k, v} -> {k, json_keys_to_string(v)}
-    end)
-  end
-
-  defp json_keys_to_string(list) when is_list(list), do: Enum.map(list, &json_keys_to_string/1)
-  defp json_keys_to_string(other), do: other
-
-  # Resolve engine for a remote host_call body.
   defp resolve_git_remote_engine(state, body) do
     mounts = git_mount_paths(state)
 
-    case mounts do
-      [] ->
-        {:error, :no_engine}
+    with {:ok, selected} <- AgentOS.Git.Public.mount(body) do
+      case {selected, mounts} do
+        {mount, _} when is_binary(mount) ->
+          mount = normalize_git_mount_path(mount)
+          case git_engine_pid(state, mount) do
+            {:ok, pid} -> {:ok, pid, mount}
+            :error -> {:error, :unknown_git_mount}
+          end
 
-      _ ->
-        case mount_from_git_body(body) do
-          {:ok, mount} ->
-            mount = normalize_git_mount_path(mount)
+        {nil, []} ->
+          {:error, :no_engine}
 
-            case git_engine_pid(state, mount) do
-              {:ok, pid} ->
-                {:ok, pid, mount}
+        {nil, [mount]} ->
+          case git_engine_pid(state, mount) do
+            {:ok, pid} -> {:ok, pid, mount}
+            :error -> {:error, :no_engine}
+          end
 
-              :error ->
-                {:error, {:unknown_mount, mount}}
-            end
-
-          :default ->
-            case git_default_mount(state) do
-              nil ->
-                {:error, :no_engine}
-
-              mount ->
-                case git_engine_pid(state, mount) do
-                  {:ok, pid} -> {:ok, pid, mount}
-                  :error -> {:error, :no_engine}
-                end
-            end
-        end
+        {nil, _} ->
+          {:error, :ambiguous_git_mount}
+      end
+    else
+      {:error, _} -> {:error, :invalid_git_request}
     end
   end
 
@@ -1849,87 +1749,42 @@ defmodule AgentOS.Vm do
     end
   end
 
-  # Host-owned opts for GitEngine.handle_host_call / Orchestrator.
-  # Product uses connections + policies. Explicit bare-URL fixture policy is
-  # accepted only when the connection catalog is empty.
-  # Per-mount `:sparse_cone` is added by `git_host_opts_for_mount/2`.
-  # Pack cache: product default (`:default` → fresh Memory unless SHARED/disk
-  # env); mirrors JS `gitHostCallHandler` + `productDefaultPackCache`.
+  # Host-owned policy for HTTP effects. The engine owns Git remote sequencing;
+  # BEAM only supplies credentials, origin policy, and the HTTP implementation.
   defp git_host_opts(state) do
-    connections = state.git_connections || []
-    policies = state.git_policies || []
+    [
+      allowed_origins: state.git_allowed_origins || [],
+      auth: state.git_auth,
+      connections: state.git_connections || [],
+      policies: state.git_policies || []
+    ]
+    |> then(fn opts -> if is_map(state.git_identity), do: Keyword.put(opts, :identity, state.git_identity), else: opts end)
+    |> then(fn opts ->
+      case state.git_http_effect do
+        fun when is_function(fun, 3) ->
+          Keyword.put(opts, :http_effect, fun)
 
-    opts =
-      if connections != [] do
-        # Product path: origins/auth live on matching connection — do not require
-        # a separate allowed_origins. Pass connections (and policies when set).
-        [connections: connections]
-        |> then(fn o ->
-          if policies != [], do: Keyword.put(o, :policies, policies), else: o
-        end)
-      else
-        # Bare-URL fixtures: explicit allowlist + optional host-only auth.
-        [allowed_origins: state.git_allowed_origins || []]
-        |> then(fn o ->
-          case state.git_auth do
-            nil -> o
-            auth -> Keyword.put(o, :auth, auth)
-          end
-        end)
-        |> then(fn o ->
-          # Policies still gate push on the bare-URL fixture path.
-          if policies != [], do: Keyword.put(o, :policies, policies), else: o
-        end)
+        _ ->
+          opts
       end
-
-    # Product remotes: CA pack cache on by default (per-remote Memory unless
-    # AGENTOS_GIT_PACK_CACHE_SHARED=1 or AGENTOS_GIT_PACK_CACHE disk dir).
-    opts = Keyword.put(opts, :pack_cache, :default)
-
-    opts =
-      case state.git_transport do
-        fun when is_function(fun, 2) -> Keyword.put(opts, :transport, fun)
-        _ -> opts
-      end
-
-    opts =
-      if state.git_require_approval == true do
-        Keyword.put(opts, :require_approval, true)
-      else
-        opts
-      end
-
-    opts =
+    end)
+    |> then(fn opts ->
       case state.git_on_push_approval do
-        fun when is_function(fun) -> Keyword.put(opts, :on_push_approval, fun)
-        _ -> opts
-      end
+        fun when is_function(fun, 1) ->
+          Keyword.put(opts, :on_push_approval, fun)
 
-    if state.git_push_approval == true do
-      Keyword.put(opts, :push_approval, true)
-    else
-      opts
-    end
+        _ ->
+          opts
+      end
+    end)
   end
 
-  # Shared policy opts + per-mount sparse cone / read_only for remote orch (D20 / K20).
+  # Read-only is a session property; retaining it here lets a host HTTP policy
+  # inspect the placement without taking ownership of Git semantics.
   defp git_host_opts_for_mount(state, mount) when is_binary(mount) do
     opts = git_host_opts(state)
 
     case Map.get(state.git_engines || %{}, mount) do
-      %{sparse_cone: cone, read_only: ro} = _meta ->
-        opts =
-          if is_list(cone) and cone != [] do
-            Keyword.put(opts, :sparse_cone, cone)
-          else
-            opts
-          end
-
-        if ro == true, do: Keyword.put(opts, :read_only, true), else: opts
-
-      %{sparse_cone: cone} when is_list(cone) and cone != [] ->
-        Keyword.put(opts, :sparse_cone, cone)
-
       %{read_only: true} ->
         Keyword.put(opts, :read_only, true)
 
@@ -2058,24 +1913,24 @@ defmodule AgentOS.Vm do
           _ = Nif.relay_host_call_fail(state.nif, handle)
           {:answered, state}
 
-        {:error, {:unknown_mount, _mount}} ->
-          # Fail closed with a stable JSON response (not a raw NIF fail).
-          json =
-            ~s({"ok":false,"code":1,"stdout":"","stderr":"git: unknown mount\\n"})
+        {:error, :ambiguous_git_mount} ->
+          _ = Nif.relay_host_call_fail(state.nif, handle)
+          {:answered, state}
 
-          _ = Nif.relay_host_call_respond(state.nif, handle, json)
+        {:error, _reason} ->
+          _ = Nif.relay_host_call_fail(state.nif, handle)
           {:answered, state}
       end
     end
   end
 
   defp start_git_remote_task(state, pid, handle, body, mount) do
-    orch_opts = git_host_opts_for_mount(state, mount)
+    host_opts = git_host_opts_for_mount(state, mount)
 
     # async_nolink → owner receives {ref, result} then DOWN; NIF answer stays on Vm.
     task =
       Task.Supervisor.async_nolink(AgentOS.SidecarTaskSupervisor, fn ->
-        result = AgentOS.GitEngine.handle_host_call(pid, "git", body, orch_opts)
+        result = AgentOS.Git.Public.call(pid, body, host_opts)
         {handle, result}
       end)
 
@@ -2127,8 +1982,10 @@ defmodule AgentOS.Vm do
     end
   end
 
-  defp answer_git_mount_sync(state, pid, handle, name, body, mount) do
-    case AgentOS.GitEngine.handle_host_call(pid, name, body, []) do
+  defp answer_git_mount_sync(state, pid, handle, _name, body, mount) do
+    result = AgentOS.Git.MountBridge.call(pid, body)
+
+    case result do
       {:ok, result} when is_binary(result) ->
         case Nif.relay_host_call_respond(state.nif, handle, result) do
           :ok -> {:answered, state}
@@ -2279,59 +2136,10 @@ defmodule AgentOS.Vm do
     if connections == [] and host_tools == [] do
       :ok
     else
-      with {:ok, compiler_wasm} <- compiler_bytes_for(opts, connections),
-           {:ok, _status} <-
-             Nif.inject_catalog(nif, compiler_wasm, connections, tools, host_tools, generation) do
+      with {:ok, _status} <-
+             Nif.inject_catalog(nif, connections, tools, host_tools, generation) do
         :ok
       end
-    end
-  end
-
-  # Connection/spec tools are compiled by catalog-compiler.wasm; host-call tools are sharded
-  # directly and need no compiler. So host-call-only injection passes an empty compiler binary, and
-  # a declared connection without an explicit compiler falls back to MC_CATALOG_COMPILER_WASM — a
-  # declared connection is intent enough; the caller need not thread compiler config (finding F).
-  defp compiler_bytes_for(opts, connections) do
-    case catalog_compiler(opts) do
-      {:ok, nil} when connections == [] -> {:ok, <<>>}
-      {:ok, nil} -> default_compiler_bytes()
-      other -> other
-    end
-  end
-
-  defp default_compiler_bytes do
-    case System.get_env("MC_CATALOG_COMPILER_WASM") do
-      nil ->
-        {:error,
-         "connections require a catalog compiler (set :catalog_compiler_path/:catalog_compiler_wasm or MC_CATALOG_COMPILER_WASM)"}
-
-      path ->
-        File.read(path)
-    end
-  end
-
-  defp catalog_compiler(opts) do
-    cond do
-      Keyword.has_key?(opts, :catalog_compiler_wasm) ->
-        case Keyword.get(opts, :catalog_compiler_wasm) do
-          bytes when is_binary(bytes) -> {:ok, bytes}
-          _other -> {:error, "catalog_compiler_wasm must be a binary"}
-        end
-
-      Keyword.has_key?(opts, :catalog_compiler_path) ->
-        case Keyword.get(opts, :catalog_compiler_path) do
-          path when is_binary(path) -> File.read(path)
-          _other -> {:error, "catalog_compiler_path must be a binary path"}
-        end
-
-      Keyword.has_key?(opts, :catalog_compiler) ->
-        case Keyword.get(opts, :catalog_compiler) do
-          bytes when is_binary(bytes) -> {:ok, bytes}
-          _other -> {:error, "catalog_compiler must be wasm bytes"}
-        end
-
-      true ->
-        {:ok, nil}
     end
   end
 end

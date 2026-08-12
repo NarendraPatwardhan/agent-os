@@ -65,15 +65,10 @@ const source = llb.git("https://github.com/acme/app.git", {
 Pinned commits are cache-sound. Mutable branches are resolved during each solve and their resolved
 commit becomes part of the cache key.
 
-On Node/Bun the default solve path is **host git engine first**. The engine is release
-`git-engine.tar`, resolved like other host artifacts (`MC_GIT_ENGINE_TAR`, `AGENTOS_DIR`, cache, or
-optional `MC_ARTIFACT_FETCH=1` — see [Git — Host git-engine.tar resolve](./git.md#host-git-engine-tar-resolve-js)).
-Ambient system `git` is **not** used unless the emergency escape hatch `MC_GIT_USE_SYSTEM=1` is set
-(**exact** `"1"` only). Without a resolved engine and without that hatch, solve fails closed — never
-silently shells out. LLB materialize uses the process pack cache by default
-(`defaultProcessPackCache`, or `MC_GIT_PACK_CACHE` disk). Interactive product handlers use a
-**fresh** Memory cache unless `MC_GIT_PACK_CACHE_SHARED=1` (then they share that same process path).
-See [Git — Pack cache](./git.md#pack-cache-interactive-remotes-llb).
+Node/Bun resolves release `git-engine.tar` like other host artifacts
+(`MC_GIT_ENGINE_TAR`, `AGENTOS_DIR`, cache, or optional `MC_ARTIFACT_FETCH=1`). `llb.git` uses the
+same engine-owned remote state machine and host HTTP effect pump as interactive Git. It never shells
+out to ambient system Git and fails closed when the engine artifact or remote authorization is absent.
 
 ## Filesystem nodes
 

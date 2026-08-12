@@ -1173,6 +1173,7 @@ fn rust_type(ty: &str) -> String {
         return format!("Vec<{}>", rust_type(inner));
     }
     match ty {
+        "u16" => "u16".to_string(),
         "u32" => "u32".to_string(),
         "i32" => "i32".to_string(),
         "i64" => "i64".to_string(),
@@ -1189,7 +1190,7 @@ fn ts_type(ty: &str) -> String {
         return format!("{}[]", ts_type(inner));
     }
     match ty {
-        "u32" | "i32" | "i64" => "number".to_string(),
+        "u16" | "u32" | "i32" | "i64" => "number".to_string(),
         "bool" => "boolean".to_string(),
         "str" => "string".to_string(),
         "bytes" => "Uint8Array".to_string(),
@@ -1203,6 +1204,7 @@ fn zig_type(ty: &str) -> String {
         return format!("[]const {}", zig_type(inner));
     }
     match ty {
+        "u16" => "u16".to_string(),
         "u32" => "u32".to_string(),
         "i32" => "i32".to_string(),
         "i64" => "i64".to_string(),
@@ -1275,6 +1277,7 @@ fn elixir_encode_expr(ty: &str, expr: &str) -> String {
         );
     }
     match ty {
+        "u16" => format!("put_u16({expr})"),
         "u32" => format!("put_u32({expr})"),
         "i32" => format!("put_i32({expr})"),
         "i64" => format!("put_i64({expr})"),
@@ -1294,6 +1297,7 @@ fn elixir_decode_expr(ty: &str, rest: &str) -> String {
         );
     }
     match ty {
+        "u16" => format!("read_u16({rest})"),
         "u32" => format!("read_u32({rest})"),
         "i32" => format!("read_i32({rest})"),
         "i64" => format!("read_i64({rest})"),
@@ -1323,7 +1327,7 @@ fn messages_use_type(messages: &[Message], needle: &str) -> bool {
 fn is_builtin_elixir_type(ty: &str) -> bool {
     matches!(
         ty,
-        "u32" | "i32" | "i64" | "bool" | "str" | "bytes" | "strmap"
+        "u16" | "u32" | "i32" | "i64" | "bool" | "str" | "bytes" | "strmap"
     )
 }
 
@@ -1600,6 +1604,7 @@ fn emit_rust_codec_field_put(o: &mut String, f: &MessageField, expr: &str) {
         return;
     }
     match f.ty.as_str() {
+        "u16" => o.push_str(&format!("        ctl_put_u16(&mut out, {expr});\n")),
         "u32" => o.push_str(&format!("        ctl_put_u32(&mut out, {expr});\n")),
         "i32" => o.push_str(&format!("        ctl_put_i32(&mut out, {expr});\n")),
         "i64" => o.push_str(&format!("        ctl_put_i64(&mut out, {expr});\n")),
@@ -1615,8 +1620,8 @@ fn emit_rust_codec_field_put(o: &mut String, f: &MessageField, expr: &str) {
 
 fn rust_encode_expr(f: &MessageField, base: &str, by_ref_match: bool) -> String {
     match f.ty.as_str() {
-        "u32" | "i32" | "i64" | "bool" if by_ref_match => format!("*{base}"),
-        "u32" | "i32" | "i64" | "bool" => base.to_string(),
+        "u16" | "u32" | "i32" | "i64" | "bool" if by_ref_match => format!("*{base}"),
+        "u16" | "u32" | "i32" | "i64" | "bool" => base.to_string(),
         _ if by_ref_match => base.to_string(),
         _ => format!("&{base}"),
     }
@@ -1627,6 +1632,7 @@ fn rust_decode_expr(ty: &str) -> String {
         return format!("ctl_read_message_list(bytes, &mut off, {inner}::decode)?");
     }
     match ty {
+        "u16" => "ctl_read_u16(bytes, &mut off)?".to_string(),
         "u32" => "ctl_read_u32(bytes, &mut off)?".to_string(),
         "i32" => "ctl_read_i32(bytes, &mut off)?".to_string(),
         "i64" => "ctl_read_i64(bytes, &mut off)?".to_string(),
@@ -1767,6 +1773,7 @@ fn emit_ts_codec_field_put(o: &mut String, f: &MessageField, expr: &str) {
         return;
     }
     match f.ty.as_str() {
+        "u16" => o.push_str(&format!("  ctlPutU16(out, {expr});\n")),
         "u32" => o.push_str(&format!("  ctlPutU32(out, {expr});\n")),
         "i32" => o.push_str(&format!("  ctlPutI32(out, {expr});\n")),
         "i64" => o.push_str(&format!("  ctlPutI64(out, {expr});\n")),
@@ -1783,6 +1790,7 @@ fn ts_decode_expr(ty: &str) -> String {
         return format!("ctlReadMessageList(wire, decode{inner})");
     }
     match ty {
+        "u16" => "ctlReadU16(wire)".to_string(),
         "u32" => "ctlReadU32(wire)".to_string(),
         "i32" => "ctlReadI32(wire)".to_string(),
         "i64" => "ctlReadI64(wire)".to_string(),
@@ -1881,17 +1889,18 @@ fn emit_ts_messages(messages: &[Message]) -> String {
         o.push_str(&format!("  if (ctlReadU16(wire) !== {const_prefix}_MSG_ID) throw new WireError(\"wrong message id\");\n"));
         o.push_str(&format!("  if (ctlReadU8(wire) !== {const_prefix}_VERSION) throw new WireError(\"unsupported message version\");\n"));
         for f in &m.fields {
+            let local = format!("decoded_{}", f.name);
             if f.optional {
                 o.push_str(&format!(
                     "  let {}: {} | undefined;\n",
-                    f.name,
+                    local,
                     ts_type(&f.ty)
                 ));
-                o.push_str(&format!("  switch (ctlReadU8(wire)) {{\n    case 0: {} = undefined; break;\n    case 1: {} = {}; break;\n    default: throw new WireError(\"invalid optional presence\");\n  }}\n", f.name, f.name, ts_decode_expr(&f.ty)));
+                o.push_str(&format!("  switch (ctlReadU8(wire)) {{\n    case 0: {0} = undefined; break;\n    case 1: {0} = {1}; break;\n    default: throw new WireError(\"invalid optional presence\");\n  }}\n", local, ts_decode_expr(&f.ty)));
             } else {
                 o.push_str(&format!(
                     "  const {} = {};\n",
-                    f.name,
+                    local,
                     ts_decode_expr(&f.ty)
                 ));
             }
@@ -1899,7 +1908,7 @@ fn emit_ts_messages(messages: &[Message]) -> String {
         o.push_str("  if (wire.off !== bytes.length) throw new WireError(\"trailing bytes\");\n");
         o.push_str("  return {\n");
         for f in &m.fields {
-            o.push_str(&format!("    {},\n", f.name));
+            o.push_str(&format!("    {}: decoded_{},\n", f.name, f.name));
         }
         o.push_str("  };\n}\n\n");
     }
@@ -2086,6 +2095,7 @@ fn emit_zig_codec_field_put(o: &mut String, f: &MessageField, expr: &str) {
         return;
     }
     match f.ty.as_str() {
+        "u16" => o.push_str(&format!("        try ctlPutU16(&out, allocator, {expr});\n")),
         "u32" => o.push_str(&format!("        try ctlPutU32(&out, allocator, {expr});\n")),
         "i32" => o.push_str(&format!("        try ctlPutI32(&out, allocator, {expr});\n")),
         "i64" => o.push_str(&format!("        try ctlPutI64(&out, allocator, {expr});\n")),
@@ -2103,6 +2113,7 @@ fn zig_decode_expr(ty: &str) -> String {
         return format!("try ctlReadMessageList({inner}, allocator, bytes, &off)");
     }
     match ty {
+        "u16" => "try ctlReadU16(bytes, &off)".to_string(),
         "u32" => "try ctlReadU32(bytes, &off)".to_string(),
         "i32" => "try ctlReadI32(bytes, &off)".to_string(),
         "i64" => "try ctlReadI64(bytes, &off)".to_string(),
@@ -2120,7 +2131,7 @@ fn emit_zig_messages(messages: &[Message]) -> String {
     }
     let mut o = String::new();
     o.push_str("\nconst std = @import(\"std\");\n");
-    o.push_str("pub const WireError = error{ WrongMessage, UnsupportedVersion, Truncated, InvalidUtf8, NonCanonicalMap, InvalidPresence, TrailingBytes };\n");
+    o.push_str("pub const WireError = error{ WrongMessage, UnsupportedVersion, Truncated, InvalidUtf8, NonCanonicalMap, InvalidPresence, TrailingBytes, LimitExceeded };\n");
     o.push_str("pub const StringPair = struct { key: []const u8, value: []const u8 };\n\n");
     o.push_str("fn ctlPutU8(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: u8) !void { try out.append(allocator, v); }\n");
     o.push_str("fn ctlPutU16(out: *std.ArrayList(u8), allocator: std.mem.Allocator, v: u16) !void { try out.append(allocator, @as(u8, @truncate(v))); try out.append(allocator, @as(u8, @truncate(v >> 8))); }\n");
@@ -2200,7 +2211,7 @@ fn emit_zig_messages(messages: &[Message]) -> String {
                 || f.ty == "strmap"
                 || !matches!(
                     f.ty.as_str(),
-                    "u32" | "i32" | "i64" | "bool" | "str" | "bytes"
+                    "u16" | "u32" | "i32" | "i64" | "bool" | "str" | "bytes"
                 )
         });
         if !decode_uses_allocator {
@@ -2210,7 +2221,9 @@ fn emit_zig_messages(messages: &[Message]) -> String {
         o.push_str(&format!("        if ((try ctlReadU16(bytes, &off)) != {const_prefix}_MSG_ID) return WireError.WrongMessage;\n"));
         o.push_str(&format!("        if ((try ctlReadU8(bytes, &off)) != {const_prefix}_VERSION) return WireError.UnsupportedVersion;\n"));
         for f in &m.fields {
-            let local = zig_local(&f.name);
+            // Prefix decoded locals so fields named `bytes`, `allocator`, or
+            // `off` cannot shadow the decoder's own parameters/state.
+            let local = format!("decoded_{}", zig_local(&f.name));
             if f.optional {
                 o.push_str(&format!("        const {local} = switch (try ctlReadU8(bytes, &off)) {{\n            0 => null,\n            1 => {},\n            else => return WireError.InvalidPresence,\n        }};\n", zig_decode_expr(&f.ty)));
             } else {
@@ -2226,7 +2239,7 @@ fn emit_zig_messages(messages: &[Message]) -> String {
             o.push_str(&format!(
                 "            .{} = {},\n",
                 zig_ident(&f.name),
-                zig_local(&f.name)
+                format!("decoded_{}", zig_local(&f.name))
             ));
         }
         o.push_str("        };\n    }\n};\n\n");
@@ -3505,246 +3518,181 @@ fn emit_wire(lang: &str, nodes: &[Node], contract: &str, contract_path: &str) ->
     o
 }
 
-// ===========================================================================
-// git — host source-plane remote orch contract (K16/K20)
-// ===========================================================================
-// Emits dual-host decision tables (defaults, stderr prefixes, secret keys,
-// algorithm step orders). Does **not** emit orch control flow.
-
+/// Git is a binary engine protocol. Payload messages use the shared bounded
+/// codec generator; this validation prevents numeric and structural drift.
 fn emit_git(lang: &str, nodes: &[Node], contract: &str) -> String {
-    let mut o = banner(lang, contract);
-    let comment = |o: &mut String, text: &str| match lang {
-        "elixir" => o.push_str(&format!("\n  # {text}\n")),
-        "md" => o.push_str(&format!("\n### {text}\n\n")),
-        _ => o.push_str(&format!("\n// {text}\n")),
-    };
+    use std::collections::BTreeSet;
 
-    if lang == "elixir" {
-        o.push_str("defmodule AgentOS.Contracts.Git do\n");
-    } else if lang == "md" {
-        o.push_str("# Git remote orch contract\n\n");
-        o.push_str("Projected from `contracts/git.kdl`. Hosts consume TS/Elixir projections.\n");
-    }
-
-    // --- defaults (int) ---
-    if let Some(def) = nodes.iter().find(|n| n.name == "default") {
-        comment(&mut o, "dual-host defaults");
-        for c in &def.children {
-            let v = c.args.first().map(Val::as_int).unwrap_or(0);
-            let name = c.name.replace('-', "_");
-            match lang {
-                "ts" => o.push_str(&format!("export const {name} = {v};\n")),
-                "elixir" => {
-                    let fun = name.to_ascii_lowercase();
-                    o.push_str(&format!("  def {fun}, do: {v}\n"));
-                }
-                "md" => o.push_str(&format!("- `{name}` = `{v}`\n")),
-                "rust" => o.push_str(&format!(
-                    "pub const {}: i64 = {v};\n",
-                    name.to_ascii_uppercase()
-                )),
-                _ => {}
-            }
-        }
-        // camelCase aliases for TS orch (bool flags as true/false literals — as const ints
-        // make `!== 0` a TS2367 against literal types).
-        if lang == "ts" {
-            let mut zero_means = false;
-            let mut pack_magic = false;
-            let mut redirect = false;
-            for c in &def.children {
-                let v = c.args.first().map(Val::as_int).unwrap_or(0);
-                match c.name.replace('-', "_").as_str() {
-                    "max_pack_zero_means_default" => zero_means = v != 0,
-                    "pack_magic_required" => pack_magic = v != 0,
-                    "redirect_never" => redirect = v != 0,
-                    _ => {}
-                }
-            }
-            o.push_str(
-                "export const DEFAULT_CLONE_DEPTH = default_clone_depth;\n\
-export const DEFAULT_FETCH_DEPTH = default_fetch_depth;\n\
-export const DEFAULT_MAX_PACK_BYTES = default_max_pack_bytes;\n",
+    let messages = collect_codec_messages(nodes);
+    let mut message_ids = BTreeSet::new();
+    for message in &messages {
+        assert!(message.id != 0, "git message IDs must be non-zero");
+        assert!(
+            message_ids.insert(message.id),
+            "duplicate git message ID {}",
+            message.id
+        );
+        let mut fields = BTreeSet::new();
+        for field in &message.fields {
+            assert!(
+                fields.insert(field.name.clone()),
+                "duplicate field {} in {}",
+                field.name,
+                message.name
             );
-            o.push_str(&format!(
-                "export const MAX_PACK_ZERO_MEANS_DEFAULT = {zero_means};\n\
-export const PACK_MAGIC_REQUIRED = {pack_magic};\n\
-export const REDIRECT_NEVER = {redirect};\n"
-            ));
+            let known = matches!(
+                field.ty.as_str(),
+                "u16" | "u32" | "i32" | "i64" | "bool" | "str" | "bytes" | "strmap"
+            ) || list_inner(&field.ty).is_some()
+                || messages.iter().any(|candidate| candidate.name == field.ty);
+            assert!(known, "unsupported git wire type {}", field.ty);
         }
     }
 
-    // --- guest secret keys ---
-    if let Some(g) = nodes.iter().find(|n| n.name == "guest-secret-keys") {
-        comment(&mut o, "guest body secret keys (fail closed)");
-        let keys: Vec<&str> = g.children.iter().map(|c| c.name.as_str()).collect();
-        match lang {
-            "ts" => {
-                o.push_str("export const GUEST_SECRET_ARG_KEYS = [\n");
-                for k in &keys {
-                    o.push_str(&format!("  \"{k}\",\n"));
-                }
-                o.push_str("] as const;\n");
-            }
-            "elixir" => {
-                o.push_str("  def guest_secret_arg_keys do\n    [\n");
-                for k in &keys {
-                    o.push_str(&format!("      \"{k}\",\n"));
-                }
-                o.push_str("    ]\n  end\n");
-            }
-            "md" => {
-                o.push_str("| key |\n|-----|\n");
-                for k in &keys {
-                    o.push_str(&format!("| `{k}` |\n"));
-                }
-            }
-            _ => {}
-        }
+    let mut opcodes = BTreeSet::new();
+    for node in nodes
+        .iter()
+        .filter(|node| node.name == "constant" && node.arg_str(0).starts_with("OP_"))
+    {
+        let value = node.props.get("value").map(Val::as_int).unwrap_or(0);
+        assert!(
+            value > 0 && value <= u16::MAX as i64,
+            "git opcode out of u16 range"
+        );
+        assert!(opcodes.insert(value), "duplicate git opcode {value}");
     }
 
-    // --- stderr prefixes ---
-    if let Some(sp) = nodes.iter().find(|n| n.name == "stderr-prefix") {
-        comment(&mut o, "stable stderr prefixes (substring-stable)");
+    if lang != "md" {
+        let mut out = emit_codec_module(lang, nodes, contract);
         match lang {
-            "ts" => {
-                o.push_str("export const STDERR_PREFIX = {\n");
-                for c in &sp.children {
-                    let id = c.name.replace('-', "_");
-                    let prefix = c.arg_str(0);
-                    o.push_str(&format!("  {id}: \"{prefix}\",\n"));
-                }
-                o.push_str("} as const;\n");
-                o.push_str(
-                    "export type StderrPrefixId = keyof typeof STDERR_PREFIX;\n\
-export function stderrLine(id: StderrPrefixId, detail?: string): string {\n\
-  const p = STDERR_PREFIX[id];\n\
-  if (detail && detail.length > 0) return `${p} ${detail}\\n`;\n\
-  return `${p}\\n`;\n\
+            "zig" => out.push_str(
+                "\npub const RequestEnvelope = struct { opcode: u16, flags: u16, request_id: u32, payload: []const u8 };\n\
+pub const ResponseEnvelope = struct { opcode: u16, status: u16, request_id: u32, payload: []const u8 };\n\
+pub fn decodeRequestEnvelope(bytes: []const u8) !RequestEnvelope {\n\
+    if (bytes.len > MAX_FRAME_BYTES) return WireError.LimitExceeded;\n\
+    if (bytes.len < ENVELOPE_HEADER_BYTES or !std.mem.eql(u8, bytes[0..4], REQUEST_MAGIC)) return WireError.WrongMessage;\n\
+    var off: usize = 4;\n\
+    if ((try ctlReadU16(bytes, &off)) != PROTOCOL_VERSION) return WireError.UnsupportedVersion;\n\
+    if ((try ctlReadU16(bytes, &off)) > PROTOCOL_MINOR) return WireError.UnsupportedVersion;\n\
+    const opcode = try ctlReadU16(bytes, &off);\n\
+    const flags = try ctlReadU16(bytes, &off);\n\
+    const request_id = try ctlReadU32(bytes, &off);\n\
+    const payload_len = try ctlReadU32(bytes, &off);\n\
+    if (payload_len > MAX_FRAME_BYTES - ENVELOPE_HEADER_BYTES) return WireError.LimitExceeded;\n\
+    const payload = try ctlNeed(bytes, &off, @intCast(payload_len));\n\
+    if (off != bytes.len) return WireError.TrailingBytes;\n\
+    return .{ .opcode = opcode, .flags = flags, .request_id = request_id, .payload = payload };\n\
+}\n\
+pub fn encodeResponseEnvelope(allocator: std.mem.Allocator, opcode: u16, status: u16, request_id: u32, payload: []const u8) ![]u8 {\n\
+    if (payload.len > MAX_RESULT_BYTES or payload.len > std.math.maxInt(u32)) return WireError.LimitExceeded;\n\
+    var out: std.ArrayList(u8) = .empty;\n\
+    errdefer out.deinit(allocator);\n\
+    try out.ensureTotalCapacity(allocator, ENVELOPE_HEADER_BYTES + payload.len);\n\
+    try out.appendSlice(allocator, RESPONSE_MAGIC);\n\
+    try ctlPutU16(&out, allocator, PROTOCOL_VERSION);\n\
+    try ctlPutU16(&out, allocator, PROTOCOL_MINOR);\n\
+    try ctlPutU16(&out, allocator, opcode);\n\
+    try ctlPutU16(&out, allocator, status);\n\
+    try ctlPutU32(&out, allocator, request_id);\n\
+    try ctlPutU32(&out, allocator, @intCast(payload.len));\n\
+    try out.appendSlice(allocator, payload);\n\
+    return out.toOwnedSlice(allocator);\n\
+}\n\
+pub fn decodeResponseEnvelope(bytes: []const u8) !ResponseEnvelope {\n\
+    if (bytes.len > MAX_RESULT_BYTES) return WireError.LimitExceeded;\n\
+    if (bytes.len < ENVELOPE_HEADER_BYTES or !std.mem.eql(u8, bytes[0..4], RESPONSE_MAGIC)) return WireError.WrongMessage;\n\
+    var off: usize = 4;\n\
+    if ((try ctlReadU16(bytes, &off)) != PROTOCOL_VERSION) return WireError.UnsupportedVersion;\n\
+    if ((try ctlReadU16(bytes, &off)) > PROTOCOL_MINOR) return WireError.UnsupportedVersion;\n\
+    const opcode = try ctlReadU16(bytes, &off);\n\
+    const status = try ctlReadU16(bytes, &off);\n\
+    const request_id = try ctlReadU32(bytes, &off);\n\
+    const payload_len = try ctlReadU32(bytes, &off);\n\
+    if (payload_len > MAX_RESULT_BYTES - ENVELOPE_HEADER_BYTES) return WireError.LimitExceeded;\n\
+    const payload = try ctlNeed(bytes, &off, @intCast(payload_len));\n\
+    if (off != bytes.len) return WireError.TrailingBytes;\n\
+    return .{ .opcode = opcode, .status = status, .request_id = request_id, .payload = payload };\n\
 }\n",
-                );
-                // (indent already in template above)
-            }
+            ),
+            "ts" => out.push_str(
+                "\nexport type GitRequestEnvelope = { opcode: number; flags: number; requestId: number; payload: Uint8Array };\n\
+export type GitResponseEnvelope = { opcode: number; status: number; requestId: number; payload: Uint8Array };\n\
+function encodeGitEnvelope(magic: string, opcode: number, word: number, requestId: number, payload: Uint8Array): Uint8Array {\n\
+  const out = new Uint8Array(ENVELOPE_HEADER_BYTES + payload.length); const view = new DataView(out.buffer);\n\
+  out.set(CTL_TEXT_ENCODER.encode(magic), 0); view.setUint16(4, PROTOCOL_VERSION, true); view.setUint16(6, PROTOCOL_MINOR, true);\n\
+  view.setUint16(8, opcode, true); view.setUint16(10, word, true); view.setUint32(12, requestId, true); view.setUint32(16, payload.length, true); out.set(payload, ENVELOPE_HEADER_BYTES); return out;\n\
+}\n\
+export function encodeRequestEnvelope(opcode: number, flags: number, requestId: number, payload: Uint8Array): Uint8Array { if (payload.length > MAX_FRAME_BYTES - ENVELOPE_HEADER_BYTES) throw new WireError(\"payload exceeds frame limit\"); return encodeGitEnvelope(REQUEST_MAGIC, opcode, flags, requestId, payload); }\n\
+export function decodeRequestEnvelope(bytes: Uint8Array): GitRequestEnvelope {\n\
+  if (bytes.length > MAX_FRAME_BYTES || bytes.length < ENVELOPE_HEADER_BYTES) throw new Error(\"git wire: invalid frame length\");\n\
+  if (new TextDecoder().decode(bytes.subarray(0, 4)) !== REQUEST_MAGIC) throw new Error(\"git wire: wrong magic\");\n\
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);\n\
+  if (view.getUint16(4, true) !== PROTOCOL_VERSION || view.getUint16(6, true) > PROTOCOL_MINOR) throw new Error(\"git wire: unsupported version\");\n\
+  const payloadLength = view.getUint32(16, true);\n\
+  if (payloadLength > MAX_FRAME_BYTES - ENVELOPE_HEADER_BYTES || ENVELOPE_HEADER_BYTES + payloadLength !== bytes.length) throw new Error(\"git wire: invalid payload length\");\n\
+  return { opcode: view.getUint16(8, true), flags: view.getUint16(10, true), requestId: view.getUint32(12, true), payload: bytes.subarray(ENVELOPE_HEADER_BYTES) };\n\
+}\n\
+export function decodeResponseEnvelope(bytes: Uint8Array): GitResponseEnvelope {\n\
+  if (bytes.length > MAX_RESULT_BYTES || bytes.length < ENVELOPE_HEADER_BYTES) throw new WireError(\"invalid response length\");\n\
+  if (CTL_TEXT_DECODER.decode(bytes.subarray(0, 4)) !== RESPONSE_MAGIC) throw new WireError(\"wrong response magic\");\n\
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); if (view.getUint16(4, true) !== PROTOCOL_VERSION || view.getUint16(6, true) > PROTOCOL_MINOR) throw new WireError(\"unsupported response version\");\n\
+  const len = view.getUint32(16, true); if (ENVELOPE_HEADER_BYTES + len !== bytes.length) throw new WireError(\"invalid response payload length\");\n\
+  return { opcode: view.getUint16(8, true), status: view.getUint16(10, true), requestId: view.getUint32(12, true), payload: bytes.subarray(ENVELOPE_HEADER_BYTES) };\n\
+}\n",
+            ),
             "elixir" => {
-                o.push_str("  def stderr_prefix do\n    %{\n");
-                for c in &sp.children {
-                    let id = c.name.replace('-', "_");
-                    let prefix = c.arg_str(0);
-                    o.push_str(&format!("      {id}: \"{prefix}\",\n"));
-                }
-                o.push_str("    }\n  end\n");
-                o.push_str(
-                    "  def stderr_line(id, detail \\\\ nil) do\n\
-    p = Map.fetch!(stderr_prefix(), id)\n\
-    if is_binary(detail) and detail != \"\" do\n\
-      p <> \" \" <> detail <> \"\\n\"\n\
-    else\n\
-      p <> \"\\n\"\n\
+                assert!(out.ends_with("end\n"));
+                out.truncate(out.len() - 4);
+                out.push_str(
+                    "  def decode_request_envelope(bytes) when is_binary(bytes) and byte_size(bytes) <= @max_frame_bytes do\n\
+    case bytes do\n\
+      <<@request_magic, @protocol_version::little-16, minor::little-16, opcode::little-16, flags::little-16, request_id::little-32, len::little-32, payload::binary-size(len)>>\n\
+      when minor <= @protocol_minor and len <= @max_frame_bytes - @envelope_header_bytes ->\n\
+        {:ok, %{opcode: opcode, flags: flags, request_id: request_id, payload: payload}}\n\
+      _ -> {:error, :invalid_envelope}\n\
     end\n\
-  end\n",
+  end\n\
+  def decode_request_envelope(_), do: {:error, :frame_too_large}\n\
+  def encode_request_envelope(opcode, flags, request_id, payload) when is_binary(payload) and byte_size(payload) <= @max_frame_bytes - @envelope_header_bytes do\n\
+    <<@request_magic, @protocol_version::little-16, @protocol_minor::little-16, opcode::little-16, flags::little-16, request_id::little-32, byte_size(payload)::little-32, payload::binary>>\n\
+  end\n\
+  def decode_response_envelope(bytes) when is_binary(bytes) and byte_size(bytes) <= @max_result_bytes do\n\
+    case bytes do\n\
+      <<@response_magic, @protocol_version::little-16, minor::little-16, opcode::little-16, status::little-16, request_id::little-32, len::little-32, payload::binary-size(len)>> when minor <= @protocol_minor -> {:ok, %{opcode: opcode, status: status, request_id: request_id, payload: payload}}\n\
+      _ -> {:error, :invalid_envelope}\n\
+    end\n\
+  end\n\
+  def decode_response_envelope(_), do: {:error, :frame_too_large}\n\
+end\n",
                 );
             }
-            "md" => {
-                o.push_str("| id | prefix |\n|----|--------|\n");
-                for c in &sp.children {
-                    o.push_str(&format!("| `{}` | `{}` |\n", c.name, c.arg_str(0)));
-                }
-            }
             _ => {}
         }
+        return out;
     }
 
-    // --- algorithms ---
-    let algos: Vec<&Node> = nodes.iter().filter(|n| n.name == "algorithm").collect();
-    if !algos.is_empty() {
-        comment(&mut o, "algorithm step orders");
-        match lang {
-            "ts" => {
-                o.push_str("export const ALGORITHM_STEPS = {\n");
-                for a in &algos {
-                    let name = a.arg_str(0);
-                    if name.is_empty() {
-                        continue;
-                    }
-                    let steps: Vec<String> = a
-                        .children
-                        .iter()
-                        .filter(|c| c.name == "step")
-                        .map(|c| c.arg_str(0).to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    o.push_str(&format!("  {name}: [\n"));
-                    for s in steps {
-                        o.push_str(&format!("    \"{s}\",\n"));
-                    }
-                    o.push_str("  ],\n");
-                }
-                o.push_str("} as const;\n");
-            }
-            "elixir" => {
-                o.push_str("  def algorithm_steps do\n    %{\n");
-                for a in &algos {
-                    let name = a.arg_str(0);
-                    if name.is_empty() {
-                        continue;
-                    }
-                    o.push_str(&format!("      {name}: [\n"));
-                    for c in a.children.iter().filter(|c| c.name == "step") {
-                        let s = c.arg_str(0);
-                        if !s.is_empty() {
-                            o.push_str(&format!("        \"{s}\",\n"));
-                        }
-                    }
-                    o.push_str("      ],\n");
-                }
-                o.push_str("    }\n  end\n");
-            }
-            "md" => {
-                for a in &algos {
-                    let name = a.arg_str(0);
-                    o.push_str(&format!("#### `{name}`\n\n"));
-                    for c in a.children.iter().filter(|c| c.name == "step") {
-                        o.push_str(&format!("1. `{}`\n", c.arg_str(0)));
-                    }
-                    o.push('\n');
-                }
-            }
-            _ => {}
-        }
+    let mut out = String::from(
+        "<!-- generated from git.kdl; do not edit -->\n\n# Git engine protocol\n\n",
+    );
+    out.push_str("Envelope: `AOGQ|AOGR`, version `1.0`, 20-byte little-endian header.\n\n## Operations\n\n| Name | Opcode |\n|---|---:|\n");
+    for node in nodes
+        .iter()
+        .filter(|node| node.name == "constant" && node.arg_str(0).starts_with("OP_"))
+    {
+        out.push_str(&format!(
+            "| `{}` | `0x{:04x}` |\n",
+            node.arg_str(0),
+            node.props.get("value").map(Val::as_int).unwrap_or(0)
+        ));
     }
-
-    // --- response keys ---
-    if let Some(rk) = nodes.iter().find(|n| n.name == "response-keys") {
-        comment(&mut o, "GitResponse required keys");
-        let keys: Vec<&str> = rk.children.iter().map(|c| c.name.as_str()).collect();
-        match lang {
-            "ts" => {
-                o.push_str("export const RESPONSE_KEYS = [\n");
-                for k in &keys {
-                    o.push_str(&format!("  \"{k}\",\n"));
-                }
-                o.push_str("] as const;\n");
-            }
-            "elixir" => {
-                o.push_str("  def response_keys do\n    [\n");
-                for k in &keys {
-                    o.push_str(&format!("      \"{k}\",\n"));
-                }
-                o.push_str("    ]\n  end\n");
-            }
-            "md" => {
-                for k in &keys {
-                    o.push_str(&format!("- `{k}`\n"));
-                }
-            }
-            _ => {}
-        }
+    out.push_str("\n## Payload messages\n\n| Message | ID | Version |\n|---|---:|---:|\n");
+    for message in messages {
+        out.push_str(&format!(
+            "| `{}` | `{}` | `{}` |\n",
+            message.name, message.id, message.version
+        ));
     }
-
-    if lang == "elixir" {
-        o.push_str("end\n");
-    }
-    o
+    out
 }
 
 // ===========================================================================

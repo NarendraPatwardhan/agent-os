@@ -1464,7 +1464,6 @@ fn snapshot_incremental<'a>(
 #[rustler::nif(name = "inject_catalog_nif", schedule = "DirtyCpu")]
 fn inject_catalog<'a>(
     vm: ResourceArc<Vm>,
-    compiler_wasm: Binary,
     generation: u64,
     tools: Vec<String>,
     host_tools: Vec<NifHostTool>,
@@ -1484,7 +1483,6 @@ fn inject_catalog<'a>(
         .collect();
     let status = vm_lock(&vm)?
         .inject_catalog(CatalogInjectOptions {
-            compiler_wasm: compiler_wasm.as_slice().to_vec(),
             connections: build_catalog_connections(connections)?,
             tools,
             host_tools: build_host_tools(host_tools),

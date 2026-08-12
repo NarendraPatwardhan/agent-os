@@ -561,27 +561,25 @@ defmodule AgentOS.Host.Nif do
   def snapshot_incremental(_vm, _base), do: {:error, "incremental snapshot base must be binary"}
 
   @doc """
-  Compile and inject a host-side tool catalog through the wasmtime host. `connections` carry
-  spec/group selectors compiled via `catalog-compiler.wasm`; `host_tools` carry host-call tool
-  definitions (BEAM-relayed) sharded directly without the compiler. `compiler_wasm` may be empty
-  when only `host_tools` are injected.
+  Compile and inject a host-side tool catalog through the native Rust host. `connections` carry
+  spec/group selectors compiled by the linked catalog compiler library; `host_tools` carry
+  host-call tool definitions (BEAM-relayed) sharded directly.
   """
   @spec inject_catalog(
           vm(),
-          binary(),
           [connection_def()],
           [String.t()],
           [map()],
           non_neg_integer()
         ) ::
           {:ok, catalog_status() | nil} | {:error, reason()}
-  def inject_catalog(vm, compiler_wasm, connections, tools, host_tools, generation)
-      when is_binary(compiler_wasm) and is_list(connections) and is_list(tools) and
+  def inject_catalog(vm, connections, tools, host_tools, generation)
+      when is_list(connections) and is_list(tools) and
              is_list(host_tools) and is_integer(generation) and generation >= 0 do
     with {:ok, connections} <- catalog_connections_arg(connections),
          {:ok, tools} <- tools_arg(tools),
          {:ok, host_tools} <- host_tools_arg(host_tools) do
-      case inject_catalog_nif(vm, compiler_wasm, generation, tools, host_tools, connections) do
+      case inject_catalog_nif(vm, generation, tools, host_tools, connections) do
         {:ok, nil} ->
           {:ok, nil}
 
@@ -594,10 +592,10 @@ defmodule AgentOS.Host.Nif do
     end
   end
 
-  def inject_catalog(_vm, _compiler_wasm, _connections, _tools, _host_tools, _generation),
+  def inject_catalog(_vm, _connections, _tools, _host_tools, _generation),
     do:
       {:error,
-       "inject_catalog expects vm, compiler wasm, connections, tools, host_tools, and generation"}
+       "inject_catalog expects vm, connections, tools, host_tools, and generation"}
 
   @doc "Drain the next outbound egress relay event, if any."
   @spec relay_next(vm()) :: {:ok, relay_event() | nil} | {:error, reason()}
@@ -865,7 +863,7 @@ defmodule AgentOS.Host.Nif do
   def snapshot_incremental_nif(_vm, _base), do: nif_not_loaded()
 
   @doc false
-  def inject_catalog_nif(_vm, _compiler_wasm, _generation, _tools, _host_tools, _connections),
+  def inject_catalog_nif(_vm, _generation, _tools, _host_tools, _connections),
     do: nif_not_loaded()
 
   @doc false

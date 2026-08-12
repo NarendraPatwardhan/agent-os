@@ -28,8 +28,7 @@ export interface Permissions {
  *   image: "loom",
  *   git: {
  *     identity: { name: "Agent", email: "agent@example.com" },
- *     sparse: ["src", "docs"],
- *     mounts: [{ path: "/workspace/a" }, { path: "/workspace/b", sparse: ["src"] }],
+ *     mounts: [{ path: "/workspace/a" }, { path: "/workspace/b", readOnly: true }],
  *     durable: { id: "session-1", diskDir: "/var/lib/agentos/git" },
  *   },
  *   connections: [...],
@@ -38,7 +37,8 @@ export interface Permissions {
  */
 export interface GitCreateOptions {
   /**
-   * Optional override: bytes of release `git-engine.tar` (mjs + wasm + notices).
+   * Optional override: bytes of release `git-engine.tar` containing the
+   * zero-import `git_engine.wasm` module.
    * Parallel to `kernel` / `catalogCompiler`. When omitted, the host-artifact
    * resolver uses MC_GIT_ENGINE_TAR, AGENTOS_DIR, cache, or optional fetch.
    */
@@ -47,12 +47,7 @@ export interface GitCreateOptions {
    * Multi-repo mounts. Default when omitted: `[{ path: "/workspace/repo" }]`.
    * Each path owns one engine (single-writer). Duplicate paths fail closed.
    */
-  mounts?: Array<{ path: string; sparse?: string[]; readOnly?: boolean }>;
-  /**
-   * Cone sparse prefixes for the default mount when {@link mounts} is omitted
-   * (e.g. `["src", "docs"]`). Cone-only — not full git sparse-checkout language.
-   */
-  sparse?: string[];
+  mounts?: Array<{ path: string; readOnly?: boolean }>;
   /**
    * When true, default mounts (and engines) reject push (dual-host with BEAM
    * `attach_git(read_only: true)`). Overridable per {@link mounts} entry.
@@ -71,33 +66,8 @@ export interface GitCreateOptions {
    * Empty allowlist + bare URL fails closed.
    */
   allowOrigins?: string[];
-  /**
-   * Hermetic smart-HTTP transport for tests only (not product egress).
-   * Product default is real FetchSmartHttp + connections.
-   */
-  http?: {
-    listRefs: (
-      url: string,
-      auth?: ConnectionAuth,
-    ) => Promise<Array<{ name: string; hash: string; peeled?: string }>>;
-    fetchPacks: (
-      url: string,
-      want: string[],
-      have: string[],
-      depth?: number,
-      auth?: ConnectionAuth,
-    ) => Promise<Uint8Array>;
-    pushPacks?: (
-      url: string,
-      commands: Array<{
-        oldHash: string;
-        newHash: string;
-        name: string;
-      }>,
-      pack: Uint8Array,
-      auth?: ConnectionAuth,
-    ) => Promise<{ ok: boolean; message?: string }>;
-  };
+  /** Generic HTTP executor for engine-emitted effects; useful for hermetic tests. */
+  fetch?: typeof globalThis.fetch;
 }
 
 /** Options for {@link mc.create}. */
@@ -181,7 +151,7 @@ export interface CreateOptions {
    */
   templateFill?: "on_demand" | "prepopulated" | "off";
   /**
-   * Host git (libgit2 via emcc engine tar).
+   * Host Git through the freestanding Gitz Wasm engine.
    *
    * **Presence enables host git**; omit for no host git.
    * - **`true`** — enable with resolved `git-engine.tar` and defaults

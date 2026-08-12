@@ -34,6 +34,7 @@ rust_library(
         "//memcontainers/contracts:env_rust",  # the mc_bridge_table! macro → the host's env impls (B2)
         "//memcontainers/contracts:snapshot_rust",  # MCSN v2 full/incremental framing + validation (B2/A3)
         "//memcontainers/lib/parse:lib",  # curated registry (servers) for host-side origin derivation
+        "//memcontainers/lib/catalog-compiler:lib",  # native server catalog compilation
         "//memcontainers/toolcore:lib",  # the single-source connection-policy engine (no host-local copy)
         "@host_crates//:anyhow",
         "@host_crates//:rand",
@@ -104,7 +105,6 @@ rust_opt_test(
         "//memcontainers/kernel/rust:kernel",
         "//memcontainers/lib/catalog-compiler:data/github_issues.openapi.json",
         "//memcontainers/lib/catalog-compiler:data/graphql.introspection.json",
-        "//memcontainers/lib/catalog-compiler:wasm",
     ],
     edition = "2021",
     deps = [

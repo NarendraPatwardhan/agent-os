@@ -1,6 +1,6 @@
 defmodule AgentOS.Git.Metrics do
   @moduledoc """
-  In-process counters and last-op labels for git remotes / Port lifecycle (R85–R88 / D35–D36).
+  In-process counters and last-op labels for git remotes / Port lifecycle.
 
   Not Prometheus — simple ETS counters with `snapshot/0` and `reset/0` for tests
   and ops inspection. Never stores packs, tokens, or credential material.
@@ -15,8 +15,8 @@ defmodule AgentOS.Git.Metrics do
   * `queue_depth_warn` — times mount remote queue exceeded 32
 
   Last-op labels (overwritten each remote op; never secrets):
-  * `last_duration_ms`, `last_pack_bytes`, `last_origin_redacted`
-  * running totals: `duration_ms_sum`, `pack_bytes_sum`
+  * `last_duration_ms`, `last_response_bytes`, `last_origin_redacted`
+  * running totals: `duration_ms_sum`, `response_bytes_sum`
   * gauge: `queue_depth` (highest per-mount queue length observed since reset)
   """
 
@@ -42,10 +42,10 @@ defmodule AgentOS.Git.Metrics do
 
   @label_keys [
     :last_duration_ms,
-    :last_pack_bytes,
+    :last_response_bytes,
     :last_origin_redacted,
     :duration_ms_sum,
-    :pack_bytes_sum,
+    :response_bytes_sum,
     :queue_depth
   ]
 
@@ -126,7 +126,7 @@ defmodule AgentOS.Git.Metrics do
 
   `meta` keys (all optional):
   * `:duration_ms` — wall time for the op
-  * `:pack_bytes` — upload-pack payload size (0 when N/A)
+  * `:response_bytes` — HTTP effect body size (0 when N/A); `:pack_bytes` is accepted as an alias
   * `:origin_redacted` — scheme://host[:port] only (no path secrets, no userinfo)
   * `:allowlist_deny?` — true when origin policy rejected before dial
   """
@@ -149,7 +149,12 @@ defmodule AgentOS.Git.Metrics do
     end
 
     duration = non_neg(Map.get(meta, :duration_ms) || Map.get(meta, "duration_ms") || 0)
-    pack_bytes = non_neg(Map.get(meta, :pack_bytes) || Map.get(meta, "pack_bytes") || 0)
+
+    response_bytes =
+      non_neg(
+        Map.get(meta, :response_bytes) || Map.get(meta, "response_bytes") ||
+          Map.get(meta, :pack_bytes) || Map.get(meta, "pack_bytes") || 0
+      )
 
     origin =
       case Map.get(meta, :origin_redacted) || Map.get(meta, "origin_redacted") do
@@ -158,10 +163,10 @@ defmodule AgentOS.Git.Metrics do
       end
 
     put_label(:last_duration_ms, duration)
-    put_label(:last_pack_bytes, pack_bytes)
+    put_label(:last_response_bytes, response_bytes)
     put_label(:last_origin_redacted, origin)
     add_label(:duration_ms_sum, duration)
-    add_label(:pack_bytes_sum, pack_bytes)
+    add_label(:response_bytes_sum, response_bytes)
 
     if Map.get(meta, :allowlist_deny?) == true or Map.get(meta, "allowlist_deny?") == true do
       alert_allowlist_deny(origin)

@@ -42,36 +42,15 @@ register_toolchains("//platforms:wasm32_freestanding_zig_toolchain")
 
 register_toolchains("//platforms:wasm32_wasi_zig_toolchain")
 
-# ---------------------------------------------------------------------------
-# Host git engine (SYSTEMS.md §11b) — libgit2 via hermetic zig cc + emsdk for JS wasm.
-# Guest wasm zig toolchains above stay authoritative for kernels/guests. hermetic_cc
-# provides host-native zig-based C for //memcontainers/lib/git-engine and @libgit2 only
-# in practice (do not use freestanding wasm as a product git runner — K25).
-# ---------------------------------------------------------------------------
-bazel_dep(name = "hermetic_cc_toolchain", version = "4.2.0")
-
-hermetic_cc = use_extension("@hermetic_cc_toolchain//toolchain:ext.bzl", "toolchains")
-use_repo(hermetic_cc, "zig_sdk")
-
-register_toolchains(
-    "@zig_sdk//toolchain/...",
-    "@zig_sdk//libc_aware/toolchain/...",
-)
-
-# Emscripten for //memcontainers/lib/git-engine GOOS-style host wasm (product build in PR2).
-# Pin matches git-bazel measured path; retest on upgrade.
-bazel_dep(name = "emsdk", version = "6.0.3")
-
-# libgit2 1.9.2 (BCR). HTTPS/SSH backends stay off by default (SYSTEMS.md §11b L6 / host-mediated remotes).
-bazel_dep(name = "libgit2", version = "1.9.2.bcr.1")
-bazel_dep(name = "zlib", version = "1.3.2")  # pin with libgit2 to avoid resolution skew
-
-# Emscripten size_t overflow builtins (git-bazel / wasm-git). Required before PR2 emcc builds.
-single_version_override(
-    module_name = "libgit2",
-    version = "1.9.2.bcr.1",
-    patches = ["//third_party/libgit2:emscripten_integer.patch"],
-    patch_strip = 1,
+# Gitz — pure-Zig Git library (go-git v5.19.2 port). Remote commit pin via archive_override:
+# content-addressed GitHub source archive, not a tag, not local_path. Bump commit +
+# strip_prefix + integrity together after Gitz ownership/Wasm gates are green.
+bazel_dep(name = "gitz", version = "0.0.0")
+archive_override(
+    module_name = "gitz",
+    integrity = "sha256-+HUfU1PBLf4jWvnFGkU+FPaMjT49KwCcPBh215rBLIk=",
+    strip_prefix = "gitz-24f9a126217b46d6883db28eb881e67b22d379fc",
+    url = "https://github.com/OpytAI/gitz/archive/24f9a126217b46d6883db28eb881e67b22d379fc.tar.gz",
 )
 
 # ---------------------------------------------------------------------------

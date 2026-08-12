@@ -87,11 +87,11 @@ export {
 export type { ArtifactKind } from "./artifacts.js";
 export { FsContentStore, MemoryContentStore, OpfsContentStore, defaultStore } from "./store.js";
 // Host git engine (SYSTEMS.md §11b / docs/git.md) — product-facing surface only. Internals (GitBridge,
-// FixtureSmartHttp, durable classes, pack caches, connection helpers) stay on
+// durable classes and connection helpers) stay on
 // `./git/*` for tests/advanced embeds; do not treat them as stable @mc/core API.
 export {
   GitEngine,
-  GitRemoteOrchestrator,
+  GitRemoteEffectPump,
   gitHostCallHandler,
   registerGitHostCall,
   normalizeGitEngineMap,
@@ -105,7 +105,7 @@ export type {
   GitResponse,
   GitIdentity,
   GitEngineLoadOptions,
-  OrchestratorOptions,
+  RemoteEffectPumpOptions,
   GitEngineMountMap,
   GitHostCallEngines,
   DurableBackend,

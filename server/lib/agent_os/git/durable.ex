@@ -2,8 +2,8 @@ defmodule AgentOS.Git.Durable do
   @moduledoc """
   Server durable engine roots (SYSTEMS.md §11b A8 rebind).
 
-  Primary durable form is a **re-openable libgit2 worktree directory** on disk.
-  The Port child `ge_open`s that absolute path; a second process that starts
+  Primary durable form is a re-openable native Gitz worktree directory on disk.
+  The Port session opens that absolute path; a second process that starts
   with the same root sees the same HEAD + files. The BEAM path does not use a
   blob envelope because the directory itself is the durable store.
 
@@ -190,7 +190,7 @@ defmodule AgentOS.Git.Durable do
   """
   @spec sync_root(String.t()) :: :ok | {:error, term()}
   def sync_root(root) when is_binary(root) do
-    # Product acceptance is a later ge_open of the same root, not a fake fsync.
+    # Product acceptance is a later OP_REPOSITORY_OPEN, not a fake fsync.
     marker = Path.join(root, ".git")
 
     with :ok <- validate_root_components(Path.expand(root), false) do

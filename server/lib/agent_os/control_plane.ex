@@ -251,15 +251,15 @@ defmodule AgentOS.ControlPlane do
   When connections are non-empty, origins/auth come from the matching
   connection — a separate `:allowed_origins` is not required.
 
-  **Legacy:** when `:connections` is empty, `:allowed_origins` / `:auth` still
-  gate remotes (empty/missing origins fail closed).
+  When `:connections` is empty, `:allowed_origins` / `:auth` gate raw HTTP
+  effects (empty or missing origins fail closed).
 
   Multi-mount (R63–R65): call again with a **different** `:mount_path` to attach
   another engine. Same path while live → `{:error, :git_already_attached}`.
 
-  Sparse cone: `:sparse_cone` / `:git_sparse_cone` list of prefixes is
-  stored per mount and applied after clone (`sparse-set`), matching JS
-  JS `git.sparse` / `git.mounts[].sparse`.
+  `:http_effect` may inject a three-argument raw effect handler in tests. It
+  receives the decoded generated `HttpEffect`, drained request body, and host
+  opts; it cannot replace engine Git semantics.
   """
   @spec attach_git(Vm.id(), keyword()) :: :ok | {:error, term()}
   def attach_git(id, opts \\ []), do: with_vm(id, &Vm.attach_git(&1, opts))

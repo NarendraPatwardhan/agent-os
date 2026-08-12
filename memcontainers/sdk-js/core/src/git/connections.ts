@@ -2,29 +2,28 @@
  * Connection-bound git remotes — credential and origin policy.
  *
  * Guest never sees secrets. CLI may pass public `url` and/or `connection` /
- * `agentos` ref. Credential splice is host-only (smart-HTTP headers).
+ * `agentos` ref. Credential splice is host-only on engine-emitted HTTP effects.
  *
  * Origin authorization uses `@mc/host` `originAllowed` (canonical http(s)
  * origin equality; empty origins = fail closed via `.some` on empty list).
  *
  * Dual-host semantic table (JS = reference; BEAM host opts must stay equivalent):
  *
- * | Concern                 | JS (this module + orch)                         | BEAM (`AgentOS.Git.Connections` + orch)         |
+ * | Concern                 | JS (this module + effect pump)                  | BEAM (`Git.Public` / `Git.Transport`)           |
  * |-------------------------|-------------------------------------------------|-------------------------------------------------|
  * | Credential source       | `ConnectionDefinition.auth` only                | connection catalog `:auth` (or bare host `:auth`)|
  * | Guest body secrets      | Reject (`token`/`auth`/… keys) — never splice   | Reject same keys (`:guest_secrets_forbidden`)   |
  * | Connection origins      | `connection.origins` (empty = fail closed)      | same on attach_git `connections:`               |
- * | Bare URL origins        | `allowOrigins` on orch                          | `:allowed_origins` (when connections empty)     |
+ * | Bare URL origins        | `allowOrigins` on the effect pump               | `:allowed_origins` (when connections empty)     |
  * | Push `approve`          | `policies` → `pushAction: "approve"`            | `policies` → `:approve`                         |
  * | Push `require_approval` | `policies` → `"require_approval"` + callback    | `policies` + `:on_push_approval`                |
- * | Push `block`            | `policies` → `"block"` (most restrictive wins)  | same (`git: push blocked by policy`)            |
- * | Auth splice             | `spliceCredentialHeaders` / `Url` host-only     | `SmartHttp.auth_headers` host-only              |
+ * | Push `block`            | `policies` → `"block"` (most restrictive wins)  | same (`Git push is blocked by policy`)          |
+ * | Auth splice             | HTTP effect headers only                         | HTTP effect headers only                         |
  * | Auth kinds (catalog)    | none \| bearer \| header \| basic               | none \| bearer \| header \| basic (query rejected)    |
  * | Userinfo in URL         | Reject                                          | Reject                                          |
- * | Secrets in logs/resp    | `redactRemoteForLog` (kind only)                | `redact_url` / info refs only / no tokens       |
+ * | Secrets in logs/resp    | `redactRemoteForLog` (kind only)                | `redact_origin` / info refs only / no tokens    |
  */
 
-import { GUEST_SECRET_ARG_KEYS as CONTRACT_GUEST_SECRET_KEYS, stderrLine } from "@mc/contracts/git";
 import { originAllowed } from "@mc/host";
 import type {
   ConnectionAuth,
@@ -57,11 +56,17 @@ export interface ResolveRemoteOptions {
 // ── Guest secret keys (fail closed) — contracts/git.kdl ─────────────────────
 
 /**
- * Guest host_call / ctl args must never carry credential material. Host
- * connections catalog + orch opts own secrets; keys come from contracts/git.kdl
- * (dual-host with BEAM AgentOS.Contracts.Git).
+ * Guest host-call arguments must never carry credential material. Host
+ * connections catalog + host opts own secrets; keys match BEAM `Git.Public`
+ * (dual-host with JS `GUEST_SECRET_ARG_KEYS`).
  */
-const GUEST_SECRET_ARG_KEYS = new Set(CONTRACT_GUEST_SECRET_KEYS.map((k) => k.toLowerCase()));
+const GUEST_SECRET_ARG_KEYS = new Set([
+  "auth", "authorization", "token", "password", "credential", "credentials", "secret",
+]);
+
+function stderrLine(code: string, detail?: string): string {
+  return `git: ${code}${detail ? ` ${detail}` : ""}\n`;
+}
 
 /** Maximum nesting depth for secret-key scanning; exceeding it fails closed. */
 const GUEST_SECRET_SCAN_MAX_DEPTH = 8;

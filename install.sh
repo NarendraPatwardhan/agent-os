@@ -351,8 +351,8 @@ mkdir -p "${ABS_DIR}/git-engine"
 if ! tar -xf "${ABS_DIR}/git-engine.tar" -C "${ABS_DIR}/git-engine"; then
   die "failed to extract git-engine.tar"
 fi
-if [ ! -f "${ABS_DIR}/git-engine/git_engine.mjs" ] || [ ! -f "${ABS_DIR}/git-engine/git_engine.wasm" ]; then
-  die "git-engine.tar missing git_engine.mjs or git_engine.wasm after extract"
+if [ ! -f "${ABS_DIR}/git-engine/git_engine.wasm" ]; then
+  die "git-engine.tar missing git_engine.wasm after extract"
 fi
 
 # Seed local artifact cache + env for clean mc.create (no path laundry).

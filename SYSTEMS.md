@@ -1129,16 +1129,17 @@ face built from the same index, serving each leaf as its shard. `call`/`call_ali
 kernel-stamped `CAP_NET`; discovery, `/tools`, and artifact cleanup stay unprivileged.
 
 Catalogs are compiled **on the host, ahead of the request path** — not in the guest. `memcontainers/lib/
-catalog-compiler` builds to a pure-compute `catalog-compiler.wasm` (zero imports) that both hosts
-instantiate outside the VM — the Rust host via Cranelift, the JS host via `WebAssembly` — at native-class
-speed, so the one normalizer never forks into a second implementation. It wraps `memcontainers/lib/parse`
+catalog-compiler` is one Rust compiler core: the server links and calls it natively, while the JS host
+loads its established pure-compute `catalog-compiler.wasm` artifact through `WebAssembly`. The browser
+artifact has zero imports and is not shipped to or configured by the server. Both paths use the same
+compiler and `toolcore` sources, so the normalizer never forks into a second implementation. It wraps `memcontainers/lib/parse`
 (OpenAPI, Microsoft Graph workload filters with a generic path/tag subset filter, Google Discovery, GraphQL,
 remote MCP) plus the curated executor-derived registry, and emits framed, content-addressed,
 **connection-agnostic** bundles: a bundle is a pure function of `(spec, group)`, so it is reused across every
 owner and connection. On `create`, the host resolves each declared connection ref to a registry integration
 and tool groups (explicit selectors like `github/issues`, else sensible defaults), acquires the spec (a
 caller-provided document, or a public fetch cached by content hash), compiles (the bundle cached by the
-compiler-wasm artifact digest + bundle-schema version + source hash + options), re-prefixes the placeholder
+compiler identity + bundle-schema version + source hash + options), re-prefixes the placeholder
 addresses to the connection ref — touching only the index — and injects the sharded tree. A connection-driven
 `create` therefore performs no in-guest compile and no registry round-trip; what was a ~19 s in-VM `wasmi`
 compile plus a ~20 s reparse becomes a sub-second host compile (cached) and a tiny index load. The guest
@@ -1194,95 +1195,111 @@ plane**, same attachment class as credentials, mounts, and sidecars — not a gu
 knowledge of git.
 
 **Thesis:** paths and shell stay Plan-9-native inside the VM; object store, pack apply, and smart-HTTP
-live on the host next to LLB sources, catalog-compiler, and TLS — one engine ABI, host-appropriate
-runners, **libgit2** substrate.
+live on the host next to LLB sources and TLS. One AgentOS Zig core owns the product boundary and uses
+**Gitz** for Git semantics. It is compiled into two host-appropriate artifacts: a zero-import
+`wasm32-freestanding` module for JavaScript and a native Zig executable supervised as a BEAM Port for
+the server. The server does **not** run the Wasm artifact. The two artifacts share command, mount,
+remote-protocol, limit, error, and transaction implementations; only storage/persistence and the thin
+artifact runner differ.
+
+This section defines the product Git host-source plane: one Zig/Gitz core, freestanding Wasm for
+JavaScript, and a native Port for the server.
 
 ### 11b.1 Planes and faces
 
-| Plane                  | Responsibility                                                                                                 |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------- |
-| **Source (host)**      | Engine (libgit2 + `ge_*`), durable packs, `GitRemoteOrchestrator`, smart-HTTP, LLB source ops, SDK `GitEngine` |
-| **Namespace (kernel)** | `MountFs` slot, `CAP_FS_*` / `CAP_NET`, cooperative WouldBlock, snapshot gating on inflight host_call          |
-| **Exec (guest)**       | Shell, editors, thin `/bin/git`                                                                                |
+| Plane                  | Responsibility                                                                                                      |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| **Source (host)**      | Gitz engine, repository/worktree state, Git protocol state machines, durable rebind, host HTTP effects, LLB sources |
+| **Namespace (kernel)** | `MountFs` slot, `CAP_FS_*` / `CAP_NET`, cooperative WouldBlock, snapshot gating on inflight host_call               |
+| **Exec (guest)**       | Shell, editors, thin `/bin/git`                                                                                     |
 
-Three faces over **one** local engine core; remotes add orchestration **outside** the engine:
+Three faces use **one** shared engine core:
 
-| Face  | Path                                                                                                          |
-| ----- | ------------------------------------------------------------------------------------------------------------- |
-| Paths | `GitFsDriver` → MountFs (worktree + synthetic `.git` meta: HEAD/refs/ctl; **no** `.git/objects` façade in v1) |
-| Verbs | ctl for **local** porcelain; host_call name `"git"` for remotes; SDK `GitEngine`                              |
-| CLI   | Thin pure-mc `/bin/git` — argv adapter only, not the internal ABI                                             |
+| Face  | Path                                                                                                                 |
+| ----- | -------------------------------------------------------------------------------------------------------------------- |
+| Paths | thin host mount relay → generated engine mount operations → Gitz worktree; synthetic `.git` metadata only          |
+| Verbs | host_call name `"git"` selects an engine; local verbs execute directly and remotes additionally yield host HTTP effects |
+| CLI   | thin pure-mc `/bin/git` — argv/result renderer only, never the engine ABI                                           |
 
-**Rule:** commands are a shell adapter. Catalog tool `git run` is not productized; guest remotes use
-host_call `"git"` only.
+**Rule:** commands are a shell adapter. Catalog tool `git run` is not productized; guest verbs use
+host_call `"git"`. JavaScript, Elixir, the guest CLI, and mount relays do not implement Git
+semantics independently.
 
 ### 11b.2 Engine and packaging
 
-| Host family                       | Product runner                                                            | Artifact                                                              |
-| --------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| **JS (browser / Node)**           | Emscripten `createGitEngineModule` (MODULARIZE, EXPORT_ES6)               | `git_engine.mjs` + `git_engine.wasm` in release `git-engine.tar`      |
-| **Server (Elixir control plane)** | Native hermetic C **`git-engine` Port** (zig cc; scoped transitions only) | BEAM-owned subprocess; c-shared may package, **product load is Port** |
+| Host family                       | Product runner                                               | Storage/persistence                                      |
+| --------------------------------- | ------------------------------------------------------------ | -------------------------------------------------------- |
+| **JS (browser / Node)**           | standard `WebAssembly`, `wasm32-freestanding`, zero imports | Gitz `memory.Storage` + `fs.Mem`; opaque engine snapshots |
+| **Server (Elixir control plane)** | native Zig **`git-engine` Port**                             | Gitz filesystem storage + `fs.Os`; durable rooted tree    |
 
-Rejected product paths: wasmi-guest VCS, go-git / gojs / `wasm_exec.js`, freestanding engine under
-wasmtime, Go NIF, ambient `~/.git-credentials` into the engine.
+Both are built from the same backend-generic Zig core and immutable, integrity-verified Gitz commit.
+The Wasm entrypoint and native Port loop are scalar/framing adapters with no Git decisions. Actual emitted
+artifacts run the same semantic fixtures; logical repository state must agree even though browser snapshot
+bytes and native directory representation do not.
 
-**ABI (dial-free):** `ge_open` / `ge_close` / `ge_run_json` / `ge_validate_request_json` /
-`ge_import_pack` /
-`ge_import_pack_abort` / `ge_last_error` /
-`ge_free` / `ge_version`. Worktree root is absolute and pre-existing; one `ge_engine` ≈ one gitfs
-mount. Request shape `{ "op", "args" }` only (no top-level cwd/author). JSON carries metadata and small
-results; **packs stay binary** (`ge_import_pack` chunks — never multi‑MB base64 in JSON). Caps:
-interactive pack **64 MiB**, JSON Run args **1 MiB**, Response `stdout` preview **2 KiB**
-(complete overflow body at a token-scoped stream path, capped at **16 MiB**). Emcc exports
-**`ge_*` only** (plus allocator); after wasm-opt the soft gate is **≤2 MiB**
-(measured ~613 KiB). Thin guest CLI soft gate **≤256 KiB**. libgit2 pin **1.9.2**; HTTPS/SSH backends
-**compile-time off**.
+Rejected product paths: libgit2, Emscripten/MEMFS, WASI, a wasmi-guest VCS, server-side Git Wasm,
+go-git/gojs/`wasm_exec.js`, a Git NIF, native shared-library product loading, ambient system `git`,
+ambient `~/.gitconfig`/credential helpers/SSH configuration, and separate browser/server Git logic.
 
-| Component                             | Location                                                                            |
-| ------------------------------------- | ----------------------------------------------------------------------------------- |
-| Engine + fixtures                     | `memcontainers/lib/git-engine/`                                                     |
-| libgit2 pin / NOTICE / patches        | `third_party/libgit2/`                                                              |
-| JS SDK (engine, orch, gitfs, durable) | `memcontainers/sdk-js/core/src/git/`                                                |
-| Thin `/bin/git`                       | `memcontainers/programs/git/` (on **base** image)                                   |
-| Decision contract                     | `memcontainers/contracts/git.kdl` → TS/Elixir projections                           |
-| Dual-host orch goldens                | `memcontainers/lib/git-engine/fixtures/orch/`                                       |
-| BEAM Port + orch                      | `server/lib/agent_os/git_engine.ex`, `git/*`, hooks in `vm.ex` / `control_plane.ex` |
+**Protocol:** `memcontainers/contracts/git.kdl` is the single source for the versioned binary envelope,
+opcodes, fields, limits, errors, mount operations, streams, remote effects, and capabilities. It projects
+bounded codecs into Zig, TypeScript, and Elixir. JSON, base64 pack data, C strings, host-sized integers,
+Zig structs/slices/error unions, and borrowed pointers do not cross the engine boundary. Packs, snapshots,
+file bodies, and large results use generational stream/result handles. The native carrier is only
+`u32le frame_length | generated envelope`; it has no second hand-maintained frame-type protocol.
 
-**License (linking exception):** ship NOTICE + upstream COPYING with every engine artifact set (L4);
-fail-closed CI membership gates (L5); corresponding source = pin + monorepo patches (L1–L3);
-network backends stay off without a separate license review (L6).
+The freestanding module exports only the reviewed `ao_git_*` scalar/length/handle ABI and memory. It has
+zero imports and an allowlisted export audit. The server distribution contains the native executable; the
+browser asset contains the freestanding Wasm module. Neither contains a `.so`, C headers, JS glue, or
+libgit2 source/notices. The outer browser asset may remain a tar only because the existing artifact
+transport accepts tar bytes; it is not an implementation compatibility layer.
+
+| Component                        | Location                                                                            |
+| -------------------------------- | ----------------------------------------------------------------------------------- |
+| Shared engine + artifact tests   | `memcontainers/lib/git-engine/`                                                     |
+| Immutable upstream dependency    | root `MODULE.bazel` Gitz `archive_override`                                         |
+| Generated engine contract        | `memcontainers/contracts/git.kdl` and projections                                  |
+| JS loader/mount/effect adapters  | `memcontainers/sdk-js/core/src/git/`                                                |
+| Thin `/bin/git`                  | `memcontainers/programs/git/` (on **base** image)                                   |
+| BEAM Port/effect owner           | `server/lib/agent_os/git_engine.ex`, `git/*`, hooks in `vm.ex` / `control_plane.ex` |
 
 ### 11b.3 Remotes — host-mediated only
 
-The engine is a pure object DB (apply packs/refs). Remotes are a **host service**: policy, TLS,
-credential splice, ListRefs / FetchPacks / PushPacks → bytes into the engine.
+The engine never dials, terminates TLS, reads credentials, or follows ambient proxy/config policy. That
+does not mean TypeScript and Elixir each implement Git Smart HTTP. Gitz and the shared Zig core own
+advertisement parsing, pkt-line/capabilities, wants/haves, shallow negotiation, sideband, refspecs,
+force-with-lease, pack construction/import, report-status, and repository application.
 
-| Host       | Orchestrator + smart-HTTP                              | Apply                  |
-| ---------- | ------------------------------------------------------ | ---------------------- |
-| **JS**     | TypeScript (`remote-orchestrator.ts`, `smart-http.ts`) | In-process emcc        |
-| **Server** | **BEAM** OTP `:httpc`/ssl — **no Node, no C TLS**      | Port import/apply only |
+Clone/fetch/pull/push are resumable engine state machines. They yield typed HTTP effects containing a
+method, public path/headers, and binary body stream. The host rechecks the approved connection/origin,
+adds credentials after authorization, performs bounded HTTP/TLS, and streams the public response back.
+The engine then advances, yields another effect, or transactionally completes. Browser async I/O never
+appears as a synchronous Wasm import.
 
-Guest remotes require kernel **`CAP_NET`** on `mc_sys_host_call` name `"git"`. Mount/ctl are
-`CAP_FS_*` only — ctl **must not** start smart-HTTP (A9). Secrets never in guest, ctl body, or engine
-args; origins + tokens live on host **connections**. Empty connection `origins` fail closed. Read-only
-mounts reject push. Dual-host **decision** strings live in `git.kdl`; **executable** step parity is
-locked by shared orch goldens (same discipline as dual host faces over one kernel ABI — not a second
-wasmi stack).
+Guest remotes require kernel **`CAP_NET`** on `mc_sys_host_call` name `"git"`. Local verbs use the
+same named host-call without granting the engine network authority. Secrets never enter guest or engine
+arguments; origins + tokens live on host **connections**. Empty connection `origins` fail closed. Read-only
+mounts reject every direct and indirect mutation in the shared core. Host policy is generated/shared;
+Git protocol behavior is single-source rather than duplicated and parity-corrected afterward.
 
-**LLB:** `llb.git` uses the same remote/apply algorithm as interactive clone (`OP_GIT = 15` grammar
-unchanged). Node solve is engine-first (`git-engine.tar` resolve); ambient system `git` only if
-`MC_GIT_USE_SYSTEM=1` (exact).
+**LLB:** `llb.git` uses the same engine remote state machine as interactive clone. Ambient system `git`
+is not a product fallback. Credentials never enter HTTP-effect handling or durable placement keys.
 
 ### 11b.4 Server ownership
 
 For control-plane VMs, **BEAM owns** host_call answers and the engine child. Rust NIF / `BeamHostCall`
-**relays** only — it does not open the C subprocess or answer mount/`git` itself. No new git-specific
+**relays** only — it does not open the Zig subprocess or answer mount/`git` itself. No new git-specific
 NIF exports.
 
-Port protocol: length-prefixed frames `u32le length | u8 type | payload` — type **1** JSON Run, **2**
-pack chunk, **3** pack meta, **4** binary MOUNT_OP, **5** pack-import abort. Port starts with first
-gitfs attach (or boot if declared); stops with the VM. Port crash → fail in-flight handles; subsequent
-git ops surface guest EIO.
+One native process owns one engine session/mount path and one validated repository root. Port starts with
+first gitfs attach (or boot when declared) and stops with the VM. The owning GenServer serializes session
+access. Port exit fails all in-flight result/stream/effect handles and subsequent operations surface EIO;
+it cannot crash the BEAM node. Stdin/stdout are generated protocol only. Diagnostics are bounded and never
+contain credentials or absolute tenant paths.
+
+The native process is a crash boundary, not by itself a complete hostile multi-tenant OS sandbox. §11b.6
+separates engine controls required now from broader Moltres/fleet process isolation retained as future
+infrastructure.
 
 ### 11b.5 Snapshots, durability, create path
 
@@ -1301,39 +1318,93 @@ fetch, or explicit `engine`). Advanced surface; not multi-tenant default-on. Def
 unspecified: `/workspace/repo`. Multi-mount allowed with **distinct** paths (one engine / single-writer
 per path; demux via `args.mount`).
 
-JS blob durability uses the versioned AgentOS Git Snapshot envelope (magic **`AOGS`**, schema **v1**):
-ODB, refs, HEAD, index, sparse metadata, staged/dirty/untracked files, empty directories, modes, and
-symlink identities (targets are stored without traversal). Runtime ctl streams and one-shot pack
-exports are excluded. Only canonical `AOGS` schema v1 is accepted; unknown or corrupt envelopes fail
-closed. A configured Git checkpoint failure fails the enclosing snapshot/close. JS
-host-directory checkpoints stage a complete generation, fsync it, then atomically rename it into
-place. BEAM Port roots are written directly by libgit2; checkpoint validates that the root remains
-present for later reopen and does not claim a portable directory fsync that Erlang cannot perform.
+Browser durability is an opaque, versioned AgentOS envelope around Gitz memory storage + `fs.Mem` state:
+ODB, refs, HEAD, index, sparse metadata, config, staged/dirty/untracked files, empty directories, modes,
+and symlink identities. Restore validates version, repository identity, declared size, digest, and complete
+payload before replacing live state. Runtime handles/streams/effects are never persisted. A configured Git
+checkpoint failure fails the enclosing snapshot/close.
 
-Guest ctl requests require a bounded `client_token`; the ctl file is write-only, responses are read
-from `.git/mc/responses/<token>`, and large stdout from `.git/mc/out/<token>`. Unscoped response and
-stream aliases do not exist.
+Native durability is the Gitz filesystem repository itself. Object, ref, index, config, HEAD, journal, and
+worktree ordering is owned by the engine. Checkpoint is an engine durability barrier, not an Erlang
+directory-exists check. Multi-ref updates use expected-old-value validation and recoverable transaction
+state; startup resolves incomplete transactions before open succeeds. Browser/native persistent bytes need
+not match, but their logical repository state and subsequent commit behavior must.
 
-### 11b.6 Normative invariants
+All guest host-call/mount responses and large bodies use bounded generational handles. Private stream files under
+`.git` are not IPC. Synthetic `.git` exposes only deliberately supported metadata, never the ODB, config
+writes, transaction journals, snapshots, or result streams.
 
-| Invariant                    | Detail                                                        |
-| ---------------------------- | ------------------------------------------------------------- |
-| Host source plane            | Git mechanics on the host, not multi‑MiB wasmi guests         |
-| One Run ABI                  | `ge_run_json` + binary `ge_import_pack` for all faces         |
-| libgit2 + `ge_*`             | Pin 1.9.x; dial-free facade                                   |
-| JS = emcc; server = Port     | No gojs; c-shared packaging-only on server                    |
-| gitfs via MountFs            | Existing Driver / registerRaw — no kernel git ABI             |
-| Thin `/bin/git` on base      | Pure-mc, reduced fail-closed surface                          |
-| Host-mediated remotes        | Engine never dials; CAP_NET + host_call `"git"` for guests    |
-| One engine per mount path    | Multi-mount OK; no multi-writer on one mount                  |
-| ODB outside MCSN             | Durable rebind opt-in (A8)                                    |
-| Dual-host orch + goldens     | TS on JS; BEAM on server; shared algorithm                    |
-| Synthetic `.git` meta only   | No objects façade in v1                                       |
-| Binary packs                 | No JSON pack bodies                                           |
-| BEAM owns Port + answers     | NIF is relay only                                             |
-| License L1–L6                | NOTICE/COPYING/source gates on ship path                      |
-| Host commit identity         | Inject name/email from host policy when request omits them    |
-| Content-addressed pack cache | Shared for LLB + interactive; credentials never in cache keys |
+### 11b.6 Hardening ownership
+
+Hardening has two classes. A control must not be moved between them merely to make an acceptance gate easier.
+All repository paths, refs, configs, objects, deltas, packs, protocol messages, snapshots, and engine frames
+are hostile inputs even after host origin authorization; authorization grants the effect, not trust in its
+bytes.
+
+**Type B — engine/Gitz hardening required by this subsystem now:**
+
+- bounds are checked before allocation; integer/offset arithmetic is checked on wasm32 and native;
+- explicit caps cover frames, fields, handles, packs, expanded objects, object count, delta depth/result,
+  trees, paths, checkout, diff/log output, snapshots, config/refs, and remote exchanges;
+- pack quarantine, checksum/object validation, abort/retry, expected-old ref checks, multi-ref atomicity,
+  native crash journal/recovery, and no partial remote visibility;
+- shared rooted-path and mode policy, symlink-component containment, reserved-name and synthetic `.git`
+  confinement, outside-root tests, read-only enforcement inside the core, and a native storage adapter
+  anchored to a pre-opened root (Linux uses dirfd-relative operations plus `openat2`
+  `RESOLVE_BENEATH`/`RESOLVE_NO_MAGICLINKS` or an equivalent component walk);
+- session-local state and generational handles; no mutable process-global repository/protocol/cache/error
+  state;
+- explicit time/identity/platform/object format; no ambient environment, global config, credentials, SSH,
+  clock, random source, filesystem root, or network transport;
+- cancellation/budget safe points in every potentially long parser/traversal/delta/diff/checkout/snapshot/
+  remote loop, with deterministic cleanup;
+- bounded typed errors contain no secret, authorization header, absolute host path, allocator address, or
+  cross-session detail;
+- safety-enabled plus optimized builds, fuzzing, failure injection, real emitted-module tests, real native
+  Port tests, crash-kill tests, import/linkage audits, and real Smart HTTP peers.
+
+Type B is enforced in Gitz or the shared Zig core/runners and is part of the replacement definition of
+done. If a reusable primitive is missing, it belongs upstream in Gitz rather than in a permanent AgentOS
+fork.
+
+**Type A — deployment/tenant-isolation infrastructure retained for future work:**
+
+- per-tenant Unix identities or user/mount/PID/network namespaces;
+- Landlock, seccomp, `no_new_privs`, privileged fixed-command launchers, and launcher-owned fd/env scrubbing;
+- cgroup v2 CPU/memory/PID/I/O control and process rlimits/core/OOM policy;
+- authoritative filesystem/project quotas for native direct writes;
+- tenant cache placement, admission, concurrency quota, eviction, billing, audit, node scheduling, and
+  host-loss reconciliation.
+
+These controls surround the native process at the Moltres/fleet/container layer and do not block the Gitz
+replacement. Existing host origin policy, tenant root naming, and non-shared mutable cache defaults remain;
+they are not evidence that the complete future sandbox exists. Until Type A is implemented and verified,
+documentation must describe the Port as a process/crash boundary, not a complete hostile-code isolation
+boundary. A cgroup cannot replace a bounded parser, and a namespace cannot replace rooted paths: Type A is
+defense in depth over Type B, never a substitute.
+
+### 11b.7 Normative invariants
+
+| Invariant                         | Detail                                                                  |
+| --------------------------------- | ----------------------------------------------------------------------- |
+| Host source plane                 | Git mechanics on the host, not a multi‑MiB nested wasmi guest           |
+| One Zig/Gitz semantic core        | Commands, mounts, Git protocol, limits, errors, transactions once       |
+| JS = freestanding; server = native | Zero-import Wasm for JS; native Zig Port for BEAM; no server Git Wasm   |
+| One generated binary contract     | KDL-projected Zig/TS/Elixir codecs; binary streams; no engine JSON       |
+| Gitz owns Git                     | Objects/refs/index/worktree/pack/wire protocol; no libgit2 compatibility |
+| gitfs via MountFs                 | Thin relays only; no kernel Git ABI or duplicated host filesystem logic |
+| Thin `/bin/git` on base           | Pure-mc argv/result adapter, reduced fail-closed surface                 |
+| Host-mediated effects             | Engine never dials; CAP_NET + host_call `"git"`; credentials host-only  |
+| One engine per mount path         | Multi-mount OK; no multi-writer or mutable state sharing                 |
+| ODB outside MCSN                  | Durable rebind opt-in (A8)                                              |
+| Browser image; native directory   | Backend-specific bytes, identical logical repository semantics          |
+| Transactional remote apply        | Quarantine + expected refs + no partial visibility + crash recovery     |
+| Synthetic `.git` metadata only    | No objects, config-write, journal, snapshot, or stream façade           |
+| BEAM owns Port + effects          | NIF is relay only                                                       |
+| Type B required; Type A future    | Engine hardening ships now; deployment sandbox remains explicit         |
+| Immutable dependency/provenance   | Remote integrity pin, exact Gitz commit, Apache-2.0 attribution          |
+| Host commit identity              | Explicit/injected policy data; engine invents no identity or time       |
+| Tenant cache policy               | No implicit mutable cross-tenant cache; credentials never cached        |
 
 Product surface (commands, create options, agent constraints, env): **`docs/git.md`**. This section is
 the architecture contract; if product docs and this section disagree, fix both in the same change.
@@ -1533,7 +1604,7 @@ attestable rather than an in-memory `BuildState`.
 The two host families must make _identical_ tool-plane decisions, so the decision logic is **single-source
 by construction, not by parity test**. A `no_std` crate, `toolcore`, holds every consequential choice —
 egress policy resolution (owner/action precedence, connection-granular patterns), tool-address + binding
-validation, the discovery-request builder, and connection-reference parsing. The Rust host links it
+validation and connection-reference parsing. The Rust host links it and the catalog compiler
 natively; the JS host calls the _same_ code compiled into `catalog-compiler.wasm` (`cc_policy_resolve`,
 `cc_validate_address`, `cc_discovery_request`). Neither host re-implements any of it, so the wasmtime host
 and the JS host cannot diverge — A3 enforced at the type level, upstream of the parity test.
@@ -1553,8 +1624,8 @@ that normalizes it. `graphql`/`mcp-remote`
 integrations are **discovered live**: the host issues a GraphQL introspection query, or the remote-MCP
 `initialize → notifications/initialized → tools/list` handshake (threading `Mcp-Session-Id`, parsing SSE),
 as authenticated egress — the credential is applied host-side and never reaches the guest — then compiles
-the response into the catalog. Compilation itself is the host-instantiated `catalog-compiler.wasm` (a pure,
-zero-import module) producing the sharded, content-addressed bundle of §11. The capability surface bottoms
+the response into the catalog. The server calls the native Rust compiler; JavaScript calls the pure,
+zero-import `catalog-compiler.wasm`. Both produce the sharded, content-addressed bundle of §11. The capability surface bottoms
 out in `mc.use("github.issues", token)`: it derives `{ ref: "github.org.main", auth }` and the
 `github/issues` selector and creates a VM in one call.
 
@@ -1727,8 +1798,6 @@ agent-os/                      ← the repository root: a Bazel/deps/docs shell
 ├── third_party/               # ★ vendor LESS — only the dep fetch + patches live here (B3)
 │   ├── binaryen/               #   build definition for the host-only post-link optimizer
 │   ├── luau/  sqlite/          #   build definitions and patches for fetched upstream source
-│   ├── libgit2/               #   pin + NOTICE + patches for host git engine (§11b)
-│   │                          #   The SERVICE GLUE for domain tools lives under memcontainers/programs/.
 │
 ├── server/                    # Elixir/OTP VM control-plane library over the wasmtime NIF
 ├── web/                       # browser workbench; live VMs and executable SDK examples
@@ -1875,7 +1944,7 @@ while the contract is still soft.
 | Wire contract + TypeScript remote client                                                            | Built; requires a conforming served host                               |
 | Generic sidecar contracts, typed browser surfaces, OTP lifecycle, and Firecracker reference runners | Built; served adapter and production runner deployment remain external |
 | JS host family, `@mc/{core,elements}` SDK, web app                                                  | Built and tested with real browser artifacts                           |
-| Host source plane git (libgit2 engine, gitfs, thin CLI, dual-host orch, BEAM Port)                  | Built; product docs `docs/git.md`; architecture §11b                   |
+| Host source plane git (shared Zig/Gitz core; freestanding JS + native BEAM Port)                   | Replacement specified on `feature/gitz`; implementation in progress (§11b) |
 | Zig-kernel experiment                                                                               | Archived on `feature/zig`; not present in `develop` (§14.3)            |
 
 The one-line summary: **the OS core, both embedding host families, the SDK/browser workbench, the
@@ -1934,5 +2003,6 @@ real-artifact conformance tests.
   guest fuel and corrupts the host on a dry-fuel resume.
 - **mc** — the system's identity, frozen into the ABI: the `mc` syscall module, `mc_sys_*`, `mc_ctl_*`, the
   `env` bridge and the `@mc/*` scope. (`agent-os` is the repository and distribution slug.)
-- **host source plane (git)** — optional advanced host attachment: libgit2 + `ge_*` on the host, gitfs via
-  MountFs, thin guest `/bin/git`, remotes only via CAP_NET host_call `"git"`; ODB outside MCSN (§11b).
+- **host source plane (git)** — optional advanced host attachment: one Zig/Gitz semantic core compiled as
+  freestanding Wasm for JavaScript and a native BEAM-owned Port for servers; gitfs via MountFs, thin guest
+  `/bin/git`, host-mediated effects only via CAP_NET host_call `"git"`, and ODB outside MCSN (§11b).

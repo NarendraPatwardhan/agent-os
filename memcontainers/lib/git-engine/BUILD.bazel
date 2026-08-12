@@ -1,368 +1,204 @@
+load("@aspect_rules_js//js:defs.bzl", "js_test")
 load("@bazel_skylib//rules:build_test.bzl", "build_test")
-load("@emsdk//emscripten_toolchain:wasm_rules.bzl", "wasm_cc_binary")
-load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library", "cc_shared_library", "cc_test")
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
-load("//bazel:force_opt.bzl", "force_opt")
-load("//bazel:pick_file.bzl", "pick_file")
-load("//bazel:wasm_opt.bzl", "wasm_opt")
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary", "zig_library", "zig_test")
 load("//bazel/tools/size:defs.bzl", "size_limit")
-load(":ship_gate.bzl", "assert_ship_files")
 
-# Host-side git engine: libgit2 + ge_* Run ABI (see docs/git.md; SYSTEMS.md §11b).
 package(default_visibility = ["//visibility:public"])
 
-# ---------------------------------------------------------------------------
-# Run ABI library + fixtures
-# ---------------------------------------------------------------------------
-
-cc_library(
-    name = "git_engine_lib",
-    srcs = [
-        "src/engine.c",
-        "src/engine_ops_extra.c",
-        "src/ge_engine_priv.h",
-        "src/json_min.c",
-        "src/json_min.h",
-    ],
-    hdrs = ["include/git_engine.h"],
-    includes = [
-        "include",
-        "src",
-    ],
-    deps = ["@libgit2//:libgit2"],
-    copts = [
-        "-Wno-unused-parameter",
-    ],
-    linkstatic = True,
-)
-
-# Port RPC + mount. Remotes are host-mediated (TS/BEAM orch) outside this lib.
-# Not linked into emcc wasm.
-cc_library(
-    name = "git_engine_port_lib",
-    srcs = [
-        "src/port_frame.c",
-        "src/port_handle.c",
-        "src/port_mount.c",
-    ],
-    hdrs = [
-        "include/ge_port.h",
-        "include/git_engine.h",
-    ],
-    includes = [
-        "include",
-        "src",
-    ],
-    deps = [":git_engine_lib"],
-    copts = ["-Wno-unused-parameter"],
-    linkstatic = True,
-)
-
-alias(
-    name = "git_engine",
-    actual = ":git_engine_lib",
-)
-
-# BEAM-owned Port binary (length-prefixed frames on stdin/stdout).
-cc_binary(
-    name = "git-engine",
-    srcs = ["src/port_main.c"],
-    deps = [":git_engine_port_lib"],
-    linkstatic = True,
-    visibility = ["//visibility:public"],
-)
-
-# c-shared packaging only. Product load is the Port binary; do not treat
-# :libgit_engine as an in-process server runner.
-cc_shared_library(
-    name = "libgit_engine",
-    shared_lib_name = "libgit_engine.so",
-    deps = [":git_engine_lib"],
-)
-
-# L4 product ship set for the BEAM Port binary + optional c-shared packaging.
-# NOTICE + upstream COPYING/AUTHORS must ship adjacent to every engine artifact.
-filegroup(
-    name = "git_engine_server_artifacts",
-    srcs = [
-        ":git-engine",
-        ":libgit_engine",
-        "//third_party/libgit2:notices",
-        "//third_party/libgit2:corresponding_source",
-    ],
-    visibility = ["//visibility:public"],
-)
-
-# L5 fail-closed: native Port ship set must keep NOTICE + upstream COPYING/AUTHORS.
-assert_ship_files(
-    name = "git_engine_server_l5_notices_check",
-    ship = ":git_engine_server_artifacts",
-    required = [
-        "NOTICE",
-        "COPYING",
-        "AUTHORS",
-        "git-engine",
-    ],
-)
-
-build_test(
-    name = "git_engine_server_l5_notices",
-    targets = [":git_engine_server_l5_notices_check"],
-)
-
-# Native ABI fixture: init→commit→log + dial refuse.
-cc_test(
-    name = "abi_fixture_test",
-    srcs = ["abi_fixture_test.c"],
-    deps = [":git_engine_lib"],
-    data = glob(["fixtures/abi/**"]),
-    size = "small",
-    linkstatic = True,
-)
-
-# Port frames: Run + binary MOUNT_OP ctl + kill-closed semantics.
-cc_test(
-    name = "port_frame_test",
-    srcs = ["port_frame_test.c"],
-    deps = [":git_engine_port_lib"],
-    size = "small",
-    linkstatic = True,
-)
-
-# Dual-runner native golden (emcc side: //sdk-js/core:git_engine_test).
-cc_test(
-    name = "abi_dual_test",
-    srcs = ["abi_dual_test.c"],
-    deps = [":git_engine_lib"],
-    data = glob(["fixtures/abi/**", "fixtures/orch/**"]),
-    size = "small",
-    linkstatic = True,
-)
-
-# Focused regression fixture for the first Git-hardening category.
-cc_test(
-    name = "git_hardening_test",
-    srcs = ["git_hardening_test.c"],
-    deps = [":git_engine_lib"],
-    size = "small",
-    linkstatic = True,
-)
-
 exports_files([
-    "exported_functions.json",
-    "fixtures/abi/local_init_commit.json",
-    "fixtures/abi/dial_forbidden.json",
-    "fixtures/orch/clone_success_steps.json",
-    "fixtures/orch/clone_empty_pack_fail.json",
-    "fixtures/orch/origin_denied.json",
-    "fixtures/orch/fetch_success_steps.json",
-    "fixtures/orch/pull_ff_steps.json",
-    "fixtures/orch/push_readonly.json",
-    "fixtures/orch/push_success_steps.json",
-    "fixtures/orch/shallow_clone_steps.json",
-    "fixtures/orch/auth_deny_steps.json",
-    "fixtures/orch/pull_not_ff_steps.json",
-    "fixtures/orch/origin_deny_prefix.json",
-    "fixtures/orch/guest_secret_reject.json",
-    "fixtures/orch/query_auth_reject.json",
-    "fixtures/orch/response_schema.json",
     "fixtures/pack/minimal.pack",
     "fixtures/pack/minimal.tip",
     "fixtures/pack/minimal.ref",
 ])
 
 filegroup(
-    name = "license_files",
-    srcs = ["//third_party/libgit2:license_files"],
-)
-
-# Dual-host orch vectors (TS + BEAM load the same JSON).
-filegroup(
-    name = "orch_algorithm_traces",
-    srcs = glob(["fixtures/orch/**"]),
-    visibility = ["//visibility:public"],
-)
-
-filegroup(
     name = "orch_pack_fixtures",
     srcs = glob(["fixtures/pack/**"]),
-    visibility = ["//visibility:public"],
 )
 
-# ---------------------------------------------------------------------------
-# Emscripten host wasm (createGitEngineModule) + monorepo wasm_opt + size gate
-# ---------------------------------------------------------------------------
-
-_WASM_SIZE_COPTS = [
-    "-Os",
-    "-DNDEBUG",
-]
-
-_WASM_LINKOPTS = [
-    "-Os",
-    "--no-entry",
-    "-sMODULARIZE=1",
-    "-sEXPORT_ES6=1",
-    "-sEXPORT_NAME=createGitEngineModule",
-    "-sENVIRONMENT=web,worker,node",
-    "-sALLOW_MEMORY_GROWTH=1",
-    "-sSTACK_SIZE=2MB",
-    "-sASSERTIONS=0",
-    "-sSTACK_OVERFLOW_CHECK=0",
-    "-sFILESYSTEM=1",
-    "-sEXPORTED_FUNCTIONS=@$(location :exported_functions.json)",
-    "-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap','UTF8ToString','stringToUTF8','lengthBytesUTF8','getValue','setValue','HEAPU8','FS','PATH']",
-]
-
-cc_binary(
-    name = "git_engine_wasm_bin",
-    srcs = ["wasm_stub.c"],
-    deps = [":git_engine_lib"],
-    copts = _WASM_SIZE_COPTS,
-    linkopts = _WASM_LINKOPTS,
-    additional_linker_inputs = [":exported_functions.json"],
-    tags = ["manual"],
+zig_library(
+    name = "core",
+    main = "src/core.zig",
+    deps = [
+        "@gitz//src/plumbing/object",
+        "@gitz//src/plumbing",
+        "@gitz//src/plumbing/format/gitignore",
+        "@gitz//src/config",
+        "@gitz//src/fs",
+        "@gitz//src/storage/memory",
+        "@gitz//src/plumbing/protocol/packp",
+        "@gitz//src/worktree",
+        "//memcontainers/contracts:git_zig",
+    ],
 )
 
-wasm_cc_binary(
-    name = "git_engine_wasm_emcc",
-    cc_target = ":git_engine_wasm_bin",
-    outputs = [
-        "git_engine_emcc.js",
-        "git_engine_emcc.wasm",
+zig_library(
+    name = "browser_backend",
+    main = "src/backends/browser.zig",
+    deps = [
+        "@gitz//src/fs",
+        "@gitz//src/plumbing/object",
+        "@gitz//src/persistence",
+        "@gitz//src/plumbing",
+        "@gitz//src/remote",
+        "@gitz//src/repo",
+        "@gitz//src/storage/memory",
+        "//memcontainers/contracts:git_zig",
+    ],
+)
+
+zig_library(
+    name = "native_backend",
+    main = "src/backends/native.zig",
+    deps = [
+        "@gitz//src/fs",
+        "@gitz//src/plumbing",
+        "@gitz//src/remote",
+        "@gitz//src/remote:pack_import_filesystem",
+        "@gitz//src/repo",
+        "@gitz//src/storage/filesystem",
+        "@gitz//src/storage/memory",
+        "//memcontainers/contracts:git_zig",
+    ],
+)
+
+zig_test(
+    name = "core_test",
+    main = "test/core_test.zig",
+    deps = [
+        ":browser_backend",
+        ":core",
+        "@gitz//src/plumbing/object",
+        "//memcontainers/contracts:git_zig",
+    ],
+)
+
+zig_binary(
+    name = "git_engine_wasm_raw",
+    main = "src/wasm_main.zig",
+    linkopts = [
+        "-fno-entry",
+        "-rdynamic",
     ],
     tags = ["manual"],
+    deps = [
+        ":browser_backend",
+        ":core",
+        "//memcontainers/contracts:git_zig",
+    ],
 )
 
-force_opt(
-    name = "git_engine_wasm_emcc_release",
-    target = ":git_engine_wasm_emcc",
-    tags = ["manual"],
+zig_configure_binary(
+    name = "git_engine_wasm_module",
+    actual = ":git_engine_wasm_raw",
+    mode = "release_small",
+    target = "//platforms:wasm32_freestanding",
+    threaded = "single",
 )
 
-pick_file(
-    name = "git_engine_emcc_js",
-    src = ":git_engine_wasm_emcc_release",
-    extension = ".js",
-    out = "git_engine.js",
-    tags = ["manual"],
+zig_configure_binary(
+    name = "git_engine_wasm_debug",
+    actual = ":git_engine_wasm_raw",
+    mode = "debug",
+    target = "//platforms:wasm32_freestanding",
+    threaded = "single",
 )
 
-pick_file(
-    name = "git_engine_emcc_wasm",
-    src = ":git_engine_wasm_emcc_release",
-    extension = ".wasm",
-    out = "git_engine_emcc_raw.wasm",
-    tags = ["manual"],
-)
-
-# Monorepo Binaryen policy (-Oz --converge).
-wasm_opt(
-    name = "git_engine_opt",
-    wasm = ":git_engine_emcc_wasm",
-)
-
-# Optimized product name + emcc's default basename (locateFile("git_engine_wasm_bin.wasm")).
 genrule(
     name = "git_engine_wasm_file",
-    srcs = [":git_engine_opt"],
-    outs = [
-        "git_engine.wasm",
-        "git_engine_wasm_bin.wasm",
-    ],
-    cmd = "cp $< $(location git_engine.wasm) && cp $< $(location git_engine_wasm_bin.wasm)",
-)
-
-# .mjs alias so Node/browsers load EXPORT_ES6 without needing a sibling package.json
-# (rules_js cannot copy cross-package source package.json into js_test runfiles).
-genrule(
-    name = "git_engine_mjs",
-    srcs = [":git_engine_emcc_js"],
-    outs = ["git_engine.mjs"],
+    srcs = [":git_engine_wasm_module"],
+    outs = ["git_engine.wasm"],
     cmd = "cp $< $@",
 )
 
 filegroup(
     name = "git_engine_wasm",
-    srcs = [
-        ":git_engine_emcc_js",
-        ":git_engine_mjs",
-        ":git_engine_wasm_file",
-        "//third_party/libgit2:notices",
+    srcs = [":git_engine.wasm"],
+)
+
+zig_binary(
+    name = "git-engine",
+    main = "src/port_main.zig",
+    deps = [
+        ":core",
+        ":native_backend",
+        "@gitz//src/plumbing/object",
+        "@gitz//src/utils/sync",
+        "//memcontainers/contracts:git_zig",
     ],
 )
 
-# Client release members (flat). Shipped as git-engine.tar for
-#   mc.create({ git: true }) / mc.create({ git: { engine: tarBytes } })
-# Tar is the GitHub/install.sh asset; L5 asserts on this filegroup (not the tar basename).
 filegroup(
-    name = "git_engine_release_files",
+    name = "git_engine_server_artifacts",
     srcs = [
-        ":git_engine_mjs",
-        ":git_engine.wasm",
-        ":git_engine_wasm_bin.wasm",
-        "//third_party/libgit2:NOTICE",
-        "//third_party/libgit2:upstream/COPYING",
-        "//third_party/libgit2:upstream/AUTHORS",
+        ":git-engine",
     ],
 )
 
-# Uploaded as git-engine.tar by //bazel/tools/gh-release:publish; install.sh extracts it.
 pkg_tar(
     name = "git_engine_release",
     files = {
-        ":git_engine_mjs": "git_engine.mjs",
         ":git_engine.wasm": "git_engine.wasm",
-        # emcc MODULARIZE locateFile("git_engine_wasm_bin.wasm") sibling name
-        ":git_engine_wasm_bin.wasm": "git_engine_wasm_bin.wasm",
-        "//third_party/libgit2:NOTICE": "NOTICE",
-        "//third_party/libgit2:upstream/COPYING": "COPYING",
-        "//third_party/libgit2:upstream/AUTHORS": "AUTHORS",
     },
     owner = "0.0",
-    visibility = ["//visibility:public"],
 )
 
-# Soft gate ≤2 MiB on the optimized product wasm (genrule out of :git_engine_wasm_file).
-# Label form — same pattern as //memcontainers/programs/git:git_size_limit (file = ":git").
-# `bazel test //memcontainers/lib/git-engine:git_engine_wasm_size_limit` builds the wasm chain.
+build_test(
+    name = "git_engine_wasm_build_test",
+    targets = [":git_engine_wasm_module"],
+)
+
+build_test(
+    name = "git_engine_native_build_test",
+    targets = [":git-engine"],
+)
+
 size_limit(
     name = "git_engine_wasm_size_limit",
     file = ":git_engine.wasm",
     max_bytes = 2 * 1024 * 1024,
 )
 
-# L5 fail-closed: ship filegroup must keep NOTICE + upstream COPYING/AUTHORS.
-# Analysis-only (cheap) — does not force emcc; drops from :git_engine_wasm fail analysis.
-assert_ship_files(
-    name = "git_engine_wasm_l5_notices_check",
-    ship = ":git_engine_wasm",
-    required = [
-        "NOTICE",
-        "COPYING",
-        "AUTHORS",
+js_test(
+    name = "wasm_runtime_test",
+    data = [
+        ":git_engine_wasm_module",
+        "test/wasm/runtime_test.mjs",
     ],
+    entry_point = "test/wasm/runtime_test.mjs",
+    env = {"AGENTOS_GIT_WASM": "$(rlocationpath :git_engine_wasm_module)"},
 )
 
-build_test(
-    name = "git_engine_wasm_l5_notices",
-    targets = [":git_engine_wasm_l5_notices_check"],
-)
-
-# L5: client release members keep NOTICE + COPYING + AUTHORS + engine glue.
-assert_ship_files(
-    name = "git_engine_release_l5_notices_check",
-    ship = ":git_engine_release_files",
-    required = [
-        "NOTICE",
-        "COPYING",
-        "AUTHORS",
-        "git_engine.mjs",
-        "git_engine.wasm",
+js_test(
+    name = "wasm_debug_runtime_test",
+    data = [
+        ":git_engine_wasm_debug",
+        "test/wasm/runtime_test.mjs",
     ],
+    entry_point = "test/wasm/runtime_test.mjs",
+    env = {"AGENTOS_GIT_WASM": "$(rlocationpath :git_engine_wasm_debug)"},
 )
 
-build_test(
-    name = "git_engine_release_l5_notices",
-    targets = [":git_engine_release_l5_notices_check"],
+js_test(
+    name = "port_runtime_test",
+    data = [
+        ":git-engine",
+        "test/port/runtime_test.mjs",
+    ],
+    entry_point = "test/port/runtime_test.mjs",
+    env = {"AGENTOS_GIT_ENGINE": "$(rlocationpath :git-engine)"},
+)
+
+test_suite(
+    name = "all",
+    tests = [
+        ":core_test",
+        ":git_engine_native_build_test",
+        ":git_engine_wasm_build_test",
+        ":git_engine_wasm_size_limit",
+        ":port_runtime_test",
+        ":wasm_debug_runtime_test",
+        ":wasm_runtime_test",
+    ],
 )

@@ -1,20 +1,15 @@
-//! Thin pure-mc `/bin/git` — reduced guest surface over the host git engine.
+//! Thin pure-mc `/bin/git` — reduced guest surface over the host Git engine.
 //!
-//! # Two paths
-//!
-//! | Class | Transport | When |
-//! |-------|-----------|------|
-//! | **Local porcelain** | gitfs ctl at `/.git/mc/ctl` | Repo present: discover root by walking parents for `.git/mc/ctl` |
-//! | **Remotes** | `host_call` name `"git"` (**CAP_NET**) | clone may run outside a repo; fetch/pull/push include the discovered gitfs mount |
-//!
-//! Local flow: write Request JSON → close write FD → open/read Response (never close-only).
-//! Multi-path `add` / `rm` issue one ctl round-trip per path; `diff` packs path/paths in one request.
+//! Every command uses the `host_call` name `"git"`. The guest owns argv parsing and
+//! output presentation; the host owns repository selection, Git state, and network effects.
 //!
 //! # Surface (not full git-core)
 //!
 //! Local: `init`, `status`, `add`, `rm`, `commit`, `log`, `diff`, `show`, `rev-parse`,
-//! `branch`, `checkout`/`switch`, `reset`, `tag`, `config`, `remote` (config only).
-//! Remotes: `clone [--depth N] [--filter SPEC]`, `fetch`/`pull`/`push` [url].
+//! `branch`, `checkout`/`switch`, `reset`, `tag`, `config`, `remote` (config only),
+//! `check-ignore`, and `submodule list|status`.
+//! Remotes: `clone`, `fetch`, and `pull` accept `--depth`; push requires an explicit refspec;
+//! `submodule update` is host-mediated.
 //! Meta: `version`, `help`. Unknown commands fail closed.
 
 #![no_std]
@@ -22,12 +17,17 @@
 
 use sysroot as rt;
 
+mod argv;
+use argv::{
+    build_local_request, build_remote_request, copy_bytes, fmt_branch_delete, fmt_commit,
+    fmt_config_get, fmt_config_set, fmt_op_name, fmt_op_path, fmt_op_rev, fmt_remote_add,
+    fmt_remote_remove, fmt_reset, fmt_rev_parse, fmt_tag_delete, push, push_escaped,
+};
+
 rt::entry!(main);
 
-const MAX_PATH: usize = 512;
 const MAX_BODY: usize = 8192;
 const MAX_RESP: usize = 16384;
-const MAX_STREAM: usize = 16 * 1024 * 1024;
 const MAX_ARGV: usize = 4096;
 const MAX_ARGS: usize = 16;
 
@@ -63,73 +63,47 @@ fn main() -> i32 {
     let cmd = args[1];
 
     if cmd == b"version" || cmd == b"--version" {
-        print(b"agentos-git 0.1.0 (thin pure-mc; ctl + host-mediated remotes)\n");
+        print(b"agentos-git 0.1.0 (thin pure-mc; host-mediated Git)\n");
         return 0;
     }
     if cmd == b"help" || cmd == b"--help" {
         eprint(
-            b"usage: git <init|status|add|rm|commit|log|diff|show|rev-parse|branch|checkout|switch|reset|tag|config|remote|version|clone|fetch|pull|push>\n",
+            b"usage: git <init|status|add|rm|commit|log|diff|show|rev-parse|branch|checkout|switch|reset|tag|config|remote|check-ignore|submodule|version|clone|fetch|pull|push>\n",
         );
+        eprint(b"all commands use host_call git; clone works outside a repository\n");
         eprint(
-            b"local porcelain via /.git/mc/ctl (needs repo); remotes via host_call git (CAP_NET; clone works outside a repo)\n",
-        );
-        eprint(
-            b"diff [--cached|--staged] [path...]; clone [--depth N] [--filter SPEC] <url>; add -A/--all; branch -d; tag -d; reset --soft|--mixed|--hard\n",
+            b"diff --cached|--staged; clone [--depth N] <url>; push <url> <source:destination>; submodule <list|status|update> [path]\n",
         );
         return 0;
     }
 
-    if cmd == b"clone" {
-        let mut mount = [0u8; MAX_PATH];
-        let mount_len = find_git_root(&mut mount).ok();
-        return remote_host_call(cmd, &args[..argc], mount_len.map(|n| &mount[..n]));
-    }
-    if cmd == b"fetch" || cmd == b"pull" || cmd == b"push" {
-        let mut mount = [0u8; MAX_PATH];
-        let mount_len = match find_git_root(&mut mount) {
+    if cmd == b"clone" || cmd == b"fetch" || cmd == b"pull" || cmd == b"push" {
+        let mut req = [0u8; MAX_BODY];
+        let req_len = match build_remote_request(cmd, &args[..argc], &mut req) {
             Ok(n) => n,
-            Err(_) => {
-                eprint(b"git: not a git repository (remote mount cannot be selected)\n");
-                return 128;
+            Err(code) => {
+                if cmd == b"push" {
+                    eprint(b"usage: git push <url> <source:destination>\n");
+                } else if cmd == b"clone" {
+                    eprint(b"usage: git clone [--depth N] <url>\n");
+                } else {
+                    eprint(b"git: unsupported remote option\n");
+                }
+                return code;
             }
         };
-        return remote_host_call(cmd, &args[..argc], Some(&mount[..mount_len]));
+        return host_git_call(&req[..req_len]);
     }
-
-    let mut root = [0u8; MAX_PATH];
-    let root_len = match find_git_root(&mut root) {
-        Ok(n) => n,
-        Err(_) => {
-            eprint(b"git: not a git repository (or any parent up to mount root)\n");
-            return 128;
-        }
-    };
-
-    let mut ctl_path = [0u8; MAX_PATH];
-    let ctl_len = match join_path(&root[..root_len], b".git/mc/ctl", &mut ctl_path) {
-        Ok(n) => n,
-        Err(_) => {
-            eprint(b"git: path too long\n");
-            return 1;
-        }
-    };
-    let ctl = match core::str::from_utf8(&ctl_path[..ctl_len]) {
-        Ok(s) => s,
-        Err(_) => {
-            eprint(b"git: bad ctl path\n");
-            return 1;
-        }
-    };
 
     // Multi-path / flag-heavy local ops: dedicated builders (engine takes one path per add/rm).
     if cmd == b"rm" {
-        return run_rm(ctl, &args[..argc]);
+        return run_rm(&args[..argc]);
     }
     if cmd == b"add" {
-        return run_add(ctl, &args[..argc]);
+        return run_add(&args[..argc]);
     }
     if cmd == b"diff" {
-        return run_diff(ctl, &args[..argc]);
+        return run_diff(&args[..argc]);
     }
 
     let mut req = [0u8; MAX_BODY];
@@ -137,105 +111,27 @@ fn main() -> i32 {
         Ok(n) => n,
         Err(code) => return code,
     };
-    ctl_roundtrip(ctl, &req[..req_len])
+    host_git_call(&req[..req_len])
 }
 
-// ── Ctl / host_call I/O ──────────────────────────────────────────────────────
+// ── host_call I/O ────────────────────────────────────────────────────────────
 
-/// Write a tokenized Request to ctl, read its dedicated Response, and emit it.
-fn ctl_roundtrip(ctl: &str, req: &[u8]) -> i32 {
-    let mut token = [0u8; 32];
-    let token_len = make_client_token(&mut token);
-    let mut tagged = [0u8; MAX_BODY + 192];
-    let tagged_len = match inject_client_token(req, &token[..token_len], &mut tagged) {
-        Ok(n) => n,
-        Err(_) => {
-            eprint(b"git: ctl request too large\n");
-            return 1;
-        }
-    };
-    let flags = rt::O_WRITE | rt::O_CREATE | rt::O_TRUNC;
-    let fd = match rt::open(ctl, flags) {
-        Ok(f) => f,
-        Err(_) => {
-            eprint(b"git: cannot open ctl for write\n");
-            return 1;
-        }
-    };
-    if rt::write_all(fd, &tagged[..tagged_len]).is_err() {
-        rt::close(fd);
-        eprint(b"git: ctl write failed\n");
-        return 1;
-    }
-    rt::close(fd);
-
-    let mut response_path = [0u8; MAX_PATH + 64];
-    let response_len =
-        match response_path_for_ctl(ctl.as_bytes(), &token[..token_len], &mut response_path) {
-            Ok(n) => n,
-            Err(_) => {
-                eprint(b"git: response path too long\n");
-                return 1;
-            }
-        };
-    let response_path_str = match core::str::from_utf8(&response_path[..response_len]) {
-        Ok(s) => s,
-        Err(_) => return 1,
-    };
-    let fd = match rt::open(response_path_str, rt::O_READ) {
-        Ok(f) => f,
-        Err(_) => {
-            eprint(b"git: cannot open ctl for read\n");
-            return 1;
-        }
-    };
-    let mut resp = [0u8; MAX_RESP];
-    let mut total = 0usize;
-    loop {
-        match rt::read(fd, &mut resp[total..]) {
-            Ok(0) => break,
-            Ok(n) => {
-                total += n;
-                if total >= MAX_RESP {
-                    rt::close(fd);
-                    eprint(b"git: ctl response exceeds envelope limit\n");
-                    return 1;
-                }
-            }
-            Err(_) => {
-                rt::close(fd);
-                eprint(b"git: ctl read failed\n");
-                return 1;
-            }
-        }
-    }
-    rt::close(fd);
-
-    emit_ctl_response(&resp[..total], ctl, &token[..token_len])
-}
-
-/// Remote argv → `mc_sys_host_call` name `git` + Request JSON body (needs CAP_NET).
-fn remote_host_call(cmd: &[u8], args: &[&[u8]], mount: Option<&[u8]>) -> i32 {
-    let mut body = [0u8; MAX_BODY];
-    let body_len = match build_remote_request(cmd, args, mount, &mut body) {
-        Ok(n) => n,
-        Err(code) => return code,
-    };
+fn host_git_call(body: &[u8]) -> i32 {
     // Wire: "git\0" + JSON Request
     let mut req = [0u8; MAX_BODY + 8];
     req[0] = b'g';
     req[1] = b'i';
     req[2] = b't';
     req[3] = 0;
-    if 4 + body_len > req.len() {
-        eprint(b"git: remote request too large\n");
+    if 4 + body.len() > req.len() {
+        eprint(b"git: request too large\n");
         return 1;
     }
-    req[4..4 + body_len].copy_from_slice(&body[..body_len]);
-    let fd = match rt::host_call(&req[..4 + body_len]) {
+    req[4..4 + body.len()].copy_from_slice(body);
+    let fd = match rt::host_call(&req[..4 + body.len()]) {
         Ok(f) => f,
         Err(_) => {
-            eprint(b"git: host_call git failed (need CAP_NET + MapHostCall git)\n");
+            eprint(b"git: host_call git failed\n");
             return 1;
         }
     };
@@ -288,331 +184,25 @@ fn emit_response(body: &[u8]) -> i32 {
     }
 }
 
-fn emit_ctl_response(body: &[u8], ctl: &str, token: &[u8]) -> i32 {
-    if find_sub(body, b"\"truncated\":true").is_none() {
-        return emit_response(body);
-    }
-    let code = parse_code(body).unwrap_or(1);
-    let mut decoded = [0u8; MAX_PATH];
-    let stream = match parse_string_field(body, b"stream_path") {
-        Some(raw) => match json_unescape(raw, &mut decoded) {
-            Ok(n) => &decoded[..n],
-            Err(_) => {
-                eprint(b"git: invalid stdout stream path\n");
-                return 1;
-            }
-        },
-        None => {
-            eprint(b"git: truncated response missing stdout stream\n");
-            return 1;
-        }
-    };
-    let mut expected = [0u8; 192];
-    let mut expected_len = match push(&mut expected, 0, b".git/mc/out/") {
-        Ok(n) => n,
-        Err(_) => return 1,
-    };
-    expected_len = match push(&mut expected, expected_len, token) {
-        Ok(n) => n,
-        Err(_) => return 1,
-    };
-    if stream != &expected[..expected_len] {
-        eprint(b"git: stdout stream path does not match request token\n");
-        return 1;
-    }
-    let suffix = b".git/mc/ctl";
-    let ctlb = ctl.as_bytes();
-    if ctlb.len() < suffix.len() || &ctlb[ctlb.len() - suffix.len()..] != suffix {
-        eprint(b"git: invalid ctl path\n");
-        return 1;
-    }
-    let root = &ctlb[..ctlb.len() - suffix.len()];
-    let mut full = [0u8; MAX_PATH + 64];
-    let n = match join_path(root, stream, &mut full) {
-        Ok(n) => n,
-        Err(_) => return 1,
-    };
-    let path = match core::str::from_utf8(&full[..n]) {
-        Ok(s) => s,
-        Err(_) => return 1,
-    };
-    let fd = match rt::open(path, rt::O_READ) {
-        Ok(fd) => fd,
-        Err(_) => {
-            eprint(b"git: cannot open complete stdout stream\n");
-            return 1;
-        }
-    };
-    let mut chunk = [0u8; 4096];
-    let mut streamed = 0usize;
-    loop {
-        match rt::read(fd, &mut chunk) {
-            Ok(0) => break,
-            Ok(n) => {
-                if streamed > MAX_STREAM - n {
-                    rt::close(fd);
-                    eprint(b"git: stdout stream exceeds 16 MiB limit\n");
-                    return 1;
-                }
-                streamed += n;
-                print(&chunk[..n]);
-            }
-            Err(_) => {
-                rt::close(fd);
-                eprint(b"git: stdout stream read failed\n");
-                return 1;
-            }
-        }
-    }
-    rt::close(fd);
-    let mut err = [0u8; MAX_RESP];
-    if let Some(s) = parse_string_field(body, b"stderr") {
-        match json_unescape(s, &mut err) {
-            Ok(n) => eprint(&err[..n]),
-            Err(_) => eprint(s),
-        }
-    }
-    if code == 0 {
-        0
-    } else if code == 2 {
-        2
-    } else {
-        1
-    }
-}
+// ── Remote request builders ──────────────────────────────────────────────────
 
-// ── Remote request builders (host_call) ──────────────────────────────────────
+// ── Local multi-path / flag commands ─────────────────────────────────────────
 
-fn build_remote_request(
-    cmd: &[u8],
-    args: &[&[u8]],
-    mount: Option<&[u8]>,
-    out: &mut [u8],
-) -> Result<usize, i32> {
-    let argc = args.len();
-    if cmd == b"fetch" || cmd == b"pull" {
-        if argc > 3 {
-            eprint(b"usage: git fetch|pull [url]\n");
-            return Err(2);
-        }
-        return fmt_remote(
-            cmd,
-            if argc == 3 { Some(args[2]) } else { None },
-            mount,
-            out,
-        );
-    }
-    if cmd == b"push" {
-        if argc > 3 {
-            eprint(b"usage: git push [url]\n");
-            return Err(2);
-        }
-        return fmt_remote(
-            b"push",
-            if argc == 3 { Some(args[2]) } else { None },
-            mount,
-            out,
-        );
-    }
-    if cmd == b"clone" {
-        return build_clone(args, mount, out);
-    }
-    Err(2)
-}
-
-/// `git clone [--depth N] [--filter SPEC] <url>`
-fn build_clone(args: &[&[u8]], mount: Option<&[u8]>, out: &mut [u8]) -> Result<usize, i32> {
-    let argc = args.len();
-    let mut depth: Option<&[u8]> = None;
-    let mut filter: Option<&[u8]> = None;
-    let mut url: Option<&[u8]> = None;
-    let mut i = 2usize;
-    while i < argc {
-        let a = args[i];
-        if a == b"--depth" {
-            if i + 1 >= argc {
-                eprint(b"usage: git clone [--depth N] [--filter SPEC] <url>\n");
-                return Err(2);
-            }
-            depth = Some(args[i + 1]);
-            i += 2;
-            continue;
-        }
-        if a == b"--filter" {
-            if i + 1 >= argc {
-                eprint(b"usage: git clone [--depth N] [--filter SPEC] <url>\n");
-                return Err(2);
-            }
-            filter = Some(args[i + 1]);
-            i += 2;
-            continue;
-        }
-        if a.first() == Some(&b'-') {
-            eprint(b"usage: git clone [--depth N] [--filter SPEC] <url>\n");
-            return Err(2);
-        }
-        if url.is_some() {
-            eprint(b"usage: git clone [--depth N] [--filter SPEC] <url>\n");
-            return Err(2);
-        }
-        url = Some(a);
-        i += 1;
-    }
-    let url = match url {
-        Some(u) if !u.is_empty() => u,
-        _ => {
-            eprint(b"usage: git clone [--depth N] [--filter SPEC] <url>\n");
-            return Err(2);
-        }
-    };
-    fmt_clone(url, depth, filter, mount, out)
-}
-
-fn fmt_remote(
-    op: &[u8],
-    url: Option<&[u8]>,
-    mount: Option<&[u8]>,
-    out: &mut [u8],
-) -> Result<usize, i32> {
-    let mut i = 0usize;
-    i = push(out, i, b"{\"op\":\"")?;
-    i = push(out, i, op)?;
-    i = push(out, i, b"\",\"args\":{")?;
-    let mut comma = false;
-    if let Some(url) = url {
-        i = push(out, i, b"\"url\":\"")?;
-        i = push_escaped(out, i, url)?;
-        i = push(out, i, b"\"")?;
-        comma = true;
-    }
-    if let Some(mount) = mount {
-        if comma {
-            i = push(out, i, b",")?;
-        }
-        i = push(out, i, b"\"mount\":\"")?;
-        i = push_escaped(out, i, mount)?;
-        i = push(out, i, b"\"")?;
-    }
-    i = push(out, i, b"}}")?;
-    Ok(i)
-}
-
-fn fmt_clone(
-    url: &[u8],
-    depth: Option<&[u8]>,
-    filter: Option<&[u8]>,
-    mount: Option<&[u8]>,
-    out: &mut [u8],
-) -> Result<usize, i32> {
-    let mut i = 0usize;
-    i = push(out, i, b"{\"op\":\"clone\",\"args\":{\"url\":\"")?;
-    i = push_escaped(out, i, url)?;
-    i = push(out, i, b"\"")?;
-    if let Some(d) = depth {
-        // depth is a JSON number (digits only).
-        for &b in d {
-            if !(b'0'..=b'9').contains(&b) {
-                eprint(b"git: clone --depth must be a non-negative integer\n");
-                return Err(2);
-            }
-        }
-        if d.is_empty() {
-            eprint(b"git: clone --depth must be a non-negative integer\n");
-            return Err(2);
-        }
-        i = push(out, i, b",\"depth\":")?;
-        i = push(out, i, d)?;
-    }
-    if let Some(f) = filter {
-        i = push(out, i, b",\"filter\":\"")?;
-        i = push_escaped(out, i, f)?;
-        i = push(out, i, b"\"")?;
-    }
-    if let Some(mount) = mount {
-        i = push(out, i, b",\"mount\":\"")?;
-        i = push_escaped(out, i, mount)?;
-        i = push(out, i, b"\"")?;
-    }
-    i = push(out, i, b"}}")?;
-    Ok(i)
-}
-
-// ── Local multi-path / flag commands (ctl) ───────────────────────────────────
-
-/// `git diff [--cached|--staged] [path…]` → one ctl Request (`path` or `paths[]`).
-fn run_diff(ctl: &str, args: &[&[u8]]) -> i32 {
+/// `git diff --cached|--staged` returns the engine's bounded staged-change summary.
+fn run_diff(args: &[&[u8]]) -> i32 {
     let mut req = [0u8; MAX_BODY];
-    let n = match build_diff(args, &mut req) {
+    let n = match build_local_request(b"diff", args, &mut req) {
         Ok(n) => n,
-        Err(code) => return code,
+        Err(code) => {
+            eprint(b"usage: git diff --cached|--staged\n");
+            return code;
+        }
     };
-    ctl_roundtrip(ctl, &req[..n])
-}
-
-fn build_diff(args: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
-    let argc = args.len();
-    let mut cached = false;
-    let mut paths: [&[u8]; MAX_ARGS] = [&[]; MAX_ARGS];
-    let mut npaths = 0usize;
-    let mut i = 2usize;
-    while i < argc {
-        let a = args[i];
-        if a == b"--cached" || a == b"--staged" {
-            cached = true;
-            i += 1;
-            continue;
-        }
-        if a.first() == Some(&b'-') {
-            eprint(b"usage: git diff [--cached|--staged] [path...]\n");
-            return Err(2);
-        }
-        if npaths >= MAX_ARGS {
-            eprint(b"git: too many paths\n");
-            return Err(2);
-        }
-        paths[npaths] = a;
-        npaths += 1;
-        i += 1;
-    }
-    fmt_diff(cached, &paths[..npaths], out)
-}
-
-fn fmt_diff(cached: bool, paths: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
-    let mut i = 0usize;
-    i = push(out, i, b"{\"op\":\"diff\",\"args\":{")?;
-    let mut need_comma = false;
-    if cached {
-        i = push(out, i, b"\"cached\":true")?;
-        need_comma = true;
-    }
-    if paths.len() == 1 {
-        if need_comma {
-            i = push(out, i, b",")?;
-        }
-        i = push(out, i, b"\"path\":\"")?;
-        i = push_escaped(out, i, paths[0])?;
-        i = push(out, i, b"\"")?;
-    } else if paths.len() > 1 {
-        if need_comma {
-            i = push(out, i, b",")?;
-        }
-        i = push(out, i, b"\"paths\":[")?;
-        for (pi, p) in paths.iter().enumerate() {
-            if pi > 0 {
-                i = push(out, i, b",")?;
-            }
-            i = push(out, i, b"\"")?;
-            i = push_escaped(out, i, p)?;
-            i = push(out, i, b"\"")?;
-        }
-        i = push(out, i, b"]")?;
-    }
-    i = push(out, i, b"}}")?;
-    Ok(i)
+    host_git_call(&req[..n])
 }
 
 /// `git rm <path…>` → one `{"op":"rm","args":{"path":"…"}}` per path.
-fn run_rm(ctl: &str, args: &[&[u8]]) -> i32 {
+fn run_rm(args: &[&[u8]]) -> i32 {
     let argc = args.len();
     if argc < 3 {
         eprint(b"usage: git rm <path...>\n");
@@ -630,7 +220,7 @@ fn run_rm(ctl: &str, args: &[&[u8]]) -> i32 {
             Ok(n) => n,
             Err(code) => return code,
         };
-        last = ctl_roundtrip(ctl, &req[..n]);
+        last = host_git_call(&req[..n]);
         if last != 0 {
             return last;
         }
@@ -639,7 +229,7 @@ fn run_rm(ctl: &str, args: &[&[u8]]) -> i32 {
 }
 
 /// `git add -A|--all` or `git add <path…>` (not both in one invocation).
-fn run_add(ctl: &str, args: &[&[u8]]) -> i32 {
+fn run_add(args: &[&[u8]]) -> i32 {
     let argc = args.len();
     if argc < 3 {
         eprint(b"usage: git add (-A|--all|<path...>)\n");
@@ -663,7 +253,7 @@ fn run_add(ctl: &str, args: &[&[u8]]) -> i32 {
             eprint(b"usage: git add (-A|--all)  OR  git add <path...>\n");
             return 2;
         }
-        return ctl_roundtrip(ctl, b"{\"op\":\"add\",\"args\":{\"all\":true}}");
+        return host_git_call(b"{\"op\":\"add\",\"args\":{\"all\":true}}");
     }
     if path_count == 0 {
         eprint(b"usage: git add (-A|--all|<path...>)\n");
@@ -680,7 +270,7 @@ fn run_add(ctl: &str, args: &[&[u8]]) -> i32 {
             Ok(n) => n,
             Err(code) => return code,
         };
-        last = ctl_roundtrip(ctl, &req[..n]);
+        last = host_git_call(&req[..n]);
         if last != 0 {
             return last;
         }
@@ -688,7 +278,7 @@ fn run_add(ctl: &str, args: &[&[u8]]) -> i32 {
     last
 }
 
-// ── Local single-request builders (ctl) ──────────────────────────────────────
+// ── Local single-request builders ────────────────────────────────────────────
 
 fn build_request(cmd: &[u8], args: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
     let argc = args.len();
@@ -738,6 +328,16 @@ fn build_request(cmd: &[u8], args: &[&[u8]], out: &mut [u8]) -> Result<usize, i3
     if cmd == b"remote" {
         return build_remote_cfg(args, out);
     }
+    if cmd == b"check-ignore" {
+        if argc != 3 || args[2].first() == Some(&b'-') {
+            eprint(b"usage: git check-ignore <path>\n");
+            return Err(2);
+        }
+        return fmt_op_path(b"check-ignore", args[2], out);
+    }
+    if cmd == b"submodule" {
+        return build_submodule(args, out);
+    }
     if cmd == b"branch" {
         return build_branch(args, out);
     }
@@ -771,6 +371,37 @@ fn build_request(cmd: &[u8], args: &[&[u8]], out: &mut [u8]) -> Result<usize, i3
     // Remotes and multi-path add/rm are handled in main before build_request.
     eprint(b"git: unknown or unsupported command\n");
     Err(2)
+}
+
+fn build_submodule(args: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
+    if args.len() < 3 || args.len() > 4 {
+        eprint(b"usage: git submodule <list|status|update> [path]\n");
+        return Err(2);
+    }
+    let action = args[2];
+    if action != b"list" && action != b"status" && action != b"update" {
+        eprint(b"usage: git submodule <list|status|update> [path]\n");
+        return Err(2);
+    }
+    if action != b"update" && args.len() == 4 {
+        eprint(b"git: submodule path is only valid for update\n");
+        return Err(2);
+    }
+    let mut i = 0usize;
+    i = push(out, i, b"{\"op\":\"submodule\",\"args\":{\"action\":\"")?;
+    i = push(out, i, action)?;
+    i = push(out, i, b"\"")?;
+    if args.len() == 4 {
+        if args[3].is_empty() || args[3].first() == Some(&b'-') {
+            eprint(b"git: invalid submodule path\n");
+            return Err(2);
+        }
+        i = push(out, i, b",\"path\":\"")?;
+        i = push_escaped(out, i, args[3])?;
+        i = push(out, i, b"\"")?;
+    }
+    i = push(out, i, b"}}")?;
+    Ok(i)
 }
 
 fn build_reset(args: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
@@ -931,302 +562,7 @@ fn build_branch(args: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
     }
 }
 
-// ── Format helpers (JSON Request fragments) ──────────────────────────────────
-
-fn fmt_op_path(op: &[u8], path: &[u8], out: &mut [u8]) -> Result<usize, i32> {
-    let mut i = 0usize;
-    i = push(out, i, b"{\"op\":\"")?;
-    i = push(out, i, op)?;
-    i = push(out, i, b"\",\"args\":{\"path\":\"")?;
-    i = push_escaped(out, i, path)?;
-    i = push(out, i, b"\"}}")?;
-    Ok(i)
-}
-
-fn fmt_op_name(op: &[u8], name: &[u8], out: &mut [u8]) -> Result<usize, i32> {
-    let mut i = 0usize;
-    i = push(out, i, b"{\"op\":\"")?;
-    i = push(out, i, op)?;
-    i = push(out, i, b"\",\"args\":{\"name\":\"")?;
-    i = push_escaped(out, i, name)?;
-    i = push(out, i, b"\"}}")?;
-    Ok(i)
-}
-
-fn fmt_op_rev(op: &[u8], rev: &[u8], out: &mut [u8]) -> Result<usize, i32> {
-    let mut i = 0usize;
-    i = push(out, i, b"{\"op\":\"")?;
-    i = push(out, i, op)?;
-    i = push(out, i, b"\",\"args\":{\"rev\":\"")?;
-    i = push_escaped(out, i, rev)?;
-    i = push(out, i, b"\"}}")?;
-    Ok(i)
-}
-
-fn fmt_reset(mode: &[u8], rev: &[u8], out: &mut [u8]) -> Result<usize, i32> {
-    let mut i = 0usize;
-    i = push(out, i, b"{\"op\":\"reset\",\"args\":{\"mode\":\"")?;
-    i = push_escaped(out, i, mode)?;
-    i = push(out, i, b"\",\"rev\":\"")?;
-    i = push_escaped(out, i, rev)?;
-    i = push(out, i, b"\"}}")?;
-    Ok(i)
-}
-
-fn fmt_tag_delete(name: &[u8], out: &mut [u8]) -> Result<usize, i32> {
-    let mut i = 0usize;
-    i = push(out, i, b"{\"op\":\"tag\",\"args\":{\"name\":\"")?;
-    i = push_escaped(out, i, name)?;
-    i = push(out, i, b"\",\"delete\":true}}")?;
-    Ok(i)
-}
-
-fn fmt_branch_delete(name: &[u8], out: &mut [u8]) -> Result<usize, i32> {
-    let mut i = 0usize;
-    i = push(out, i, b"{\"op\":\"branch\",\"args\":{\"name\":\"")?;
-    i = push_escaped(out, i, name)?;
-    i = push(out, i, b"\",\"delete\":true}}")?;
-    Ok(i)
-}
-
-fn fmt_config_get(key: &[u8], out: &mut [u8]) -> Result<usize, i32> {
-    let mut i = 0usize;
-    i = push(
-        out,
-        i,
-        b"{\"op\":\"config\",\"args\":{\"action\":\"get\",\"key\":\"",
-    )?;
-    i = push_escaped(out, i, key)?;
-    i = push(out, i, b"\"}}")?;
-    Ok(i)
-}
-
-fn fmt_config_set(key: &[u8], value: &[u8], out: &mut [u8]) -> Result<usize, i32> {
-    let mut i = 0usize;
-    i = push(
-        out,
-        i,
-        b"{\"op\":\"config\",\"args\":{\"action\":\"set\",\"key\":\"",
-    )?;
-    i = push_escaped(out, i, key)?;
-    i = push(out, i, b"\",\"value\":\"")?;
-    i = push_escaped(out, i, value)?;
-    i = push(out, i, b"\"}}")?;
-    Ok(i)
-}
-
-fn fmt_remote_add(name: &[u8], url: &[u8], out: &mut [u8]) -> Result<usize, i32> {
-    let mut i = 0usize;
-    i = push(
-        out,
-        i,
-        b"{\"op\":\"remote\",\"args\":{\"action\":\"add\",\"name\":\"",
-    )?;
-    i = push_escaped(out, i, name)?;
-    i = push(out, i, b"\",\"url\":\"")?;
-    i = push_escaped(out, i, url)?;
-    i = push(out, i, b"\"}}")?;
-    Ok(i)
-}
-
-fn fmt_remote_remove(name: &[u8], out: &mut [u8]) -> Result<usize, i32> {
-    let mut i = 0usize;
-    i = push(
-        out,
-        i,
-        b"{\"op\":\"remote\",\"args\":{\"action\":\"remove\",\"name\":\"",
-    )?;
-    i = push_escaped(out, i, name)?;
-    i = push(out, i, b"\"}}")?;
-    Ok(i)
-}
-
-fn fmt_commit(msg: &[u8], out: &mut [u8]) -> Result<usize, i32> {
-    let mut i = 0usize;
-    i = push(out, i, b"{\"op\":\"commit\",\"args\":{\"message\":\"")?;
-    i = push_escaped(out, i, msg)?;
-    i = push(out, i, b"\"}}")?;
-    Ok(i)
-}
-
-fn fmt_rev_parse(rev: &[u8], out: &mut [u8]) -> Result<usize, i32> {
-    let mut i = 0usize;
-    i = push(out, i, b"{\"op\":\"rev-parse\",\"args\":{\"rev\":\"")?;
-    i = push_escaped(out, i, rev)?;
-    i = push(out, i, b"\"}}")?;
-    Ok(i)
-}
-
-// ── Path discovery ───────────────────────────────────────────────────────────
-
-fn find_git_root(out: &mut [u8]) -> Result<usize, i32> {
-    let mut cwd = [0u8; MAX_PATH];
-    let mut n = rt::getcwd(&mut cwd).map_err(|_| 1i32)?;
-    if n > 0 && cwd[n - 1] == 0 {
-        n -= 1;
-    }
-    loop {
-        let mut probe = [0u8; MAX_PATH];
-        let pn = join_path(&cwd[..n], b".git/mc/ctl", &mut probe)?;
-        let path = core::str::from_utf8(&probe[..pn]).map_err(|_| 1i32)?;
-        if rt::stat(path).is_ok() {
-            if n > out.len() {
-                return Err(1);
-            }
-            out[..n].copy_from_slice(&cwd[..n]);
-            return Ok(n);
-        }
-        if n <= 1 {
-            return Err(1);
-        }
-        while n > 1 && cwd[n - 1] != b'/' {
-            n -= 1;
-        }
-        if n > 1 {
-            n -= 1;
-        }
-        if n == 0 {
-            cwd[0] = b'/';
-            n = 1;
-        }
-    }
-}
-
-fn join_path(root: &[u8], rel: &[u8], out: &mut [u8]) -> Result<usize, i32> {
-    let need = root.len() + 1 + rel.len();
-    if need > out.len() {
-        return Err(1);
-    }
-    out[..root.len()].copy_from_slice(root);
-    let mut i = root.len();
-    if i == 0 || out[i - 1] != b'/' {
-        out[i] = b'/';
-        i += 1;
-    }
-    out[i..i + rel.len()].copy_from_slice(rel);
-    Ok(i + rel.len())
-}
-
 // ── Byte / JSON helpers + Response parse ─────────────────────────────────────
-
-fn copy_bytes(src: &[u8], out: &mut [u8]) -> Result<usize, i32> {
-    if src.len() > out.len() {
-        return Err(1);
-    }
-    out[..src.len()].copy_from_slice(src);
-    Ok(src.len())
-}
-
-fn push(out: &mut [u8], i: usize, s: &[u8]) -> Result<usize, i32> {
-    if i + s.len() > out.len() {
-        return Err(1);
-    }
-    out[i..i + s.len()].copy_from_slice(s);
-    Ok(i + s.len())
-}
-
-fn push_escaped(out: &mut [u8], mut i: usize, s: &[u8]) -> Result<usize, i32> {
-    for &c in s {
-        match c {
-            b'"' => {
-                i = push(out, i, b"\\\"")?;
-                continue;
-            }
-            b'\\' => {
-                i = push(out, i, b"\\\\")?;
-                continue;
-            }
-            b'\n' => {
-                i = push(out, i, b"\\n")?;
-                continue;
-            }
-            b'\r' => {
-                i = push(out, i, b"\\r")?;
-                continue;
-            }
-            b'\t' => {
-                i = push(out, i, b"\\t")?;
-                continue;
-            }
-            0x08 => {
-                i = push(out, i, b"\\b")?;
-                continue;
-            }
-            0x0c => {
-                i = push(out, i, b"\\f")?;
-                continue;
-            }
-            0x00..=0x1f => {
-                const HEX: &[u8; 16] = b"0123456789abcdef";
-                let esc = [
-                    b'\\',
-                    b'u',
-                    b'0',
-                    b'0',
-                    HEX[(c >> 4) as usize],
-                    HEX[(c & 15) as usize],
-                ];
-                i = push(out, i, &esc)?;
-                continue;
-            }
-            _ => {}
-        }
-        if i >= out.len() {
-            return Err(1);
-        }
-        out[i] = c;
-        i += 1;
-    }
-    Ok(i)
-}
-
-fn make_client_token(out: &mut [u8]) -> usize {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let pid = rt::getpid();
-    if out.len() < 9 {
-        return 0;
-    }
-    out[0] = b'p';
-    for n in 0..8 {
-        let shift = (7 - n) * 4;
-        out[1 + n] = HEX[((pid >> shift) & 0xf) as usize];
-    }
-    9
-}
-
-fn inject_client_token(req: &[u8], token: &[u8], out: &mut [u8]) -> Result<usize, i32> {
-    if req.is_empty() || token.is_empty() || *req.last().unwrap_or(&0) != b'}' {
-        return Err(1);
-    }
-    let token_field = b"\"client_token\":\"";
-    let mut i;
-    if req.len() >= 3 && &req[req.len() - 2..] == b"}}" {
-        i = push(out, 0, &req[..req.len() - 2])?;
-        if req[req.len() - 3] != b'{' {
-            i = push(out, i, b",")?;
-        }
-        i = push(out, i, token_field)?;
-        i = push(out, i, token)?;
-        i = push(out, i, b"\"}}")?;
-    } else {
-        i = push(out, 0, &req[..req.len() - 1])?;
-        i = push(out, i, b",\"args\":{")?;
-        i = push(out, i, token_field)?;
-        i = push(out, i, token)?;
-        i = push(out, i, b"\"}}")?;
-    }
-    Ok(i)
-}
-
-fn response_path_for_ctl(ctl: &[u8], token: &[u8], out: &mut [u8]) -> Result<usize, i32> {
-    if ctl.len() < 3 || &ctl[ctl.len() - 3..] != b"ctl" {
-        return Err(1);
-    }
-    let mut i = push(out, 0, &ctl[..ctl.len() - 3])?;
-    i = push(out, i, b"responses/")?;
-    i = push(out, i, token)?;
-    Ok(i)
-}
 
 /// Unescape a JSON string body (content between quotes) into `dst`.
 /// Supports every JSON escape, including UTF-16 surrogate pairs.

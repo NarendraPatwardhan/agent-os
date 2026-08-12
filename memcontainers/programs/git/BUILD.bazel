@@ -1,14 +1,17 @@
 load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
-load("@rules_rust//rust:defs.bzl", "rust_binary")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 load("//bazel:mc_program.bzl", "mc_rust_program")
 load("//bazel/tools/size:defs.bzl", "size_limit")
 
-# programs/git — thin pure-mc /bin/git . Local porcelain via ctl only.
+# programs/git — thin pure-mc /bin/git over the single host-call boundary.
 # Imports ONLY `mc` (no WASI). Size soft gate ≤256 KiB.
 
 rust_binary(
     name = "git_bin",
-    srcs = ["src/main.rs"],
+    srcs = [
+        "src/argv.rs",
+        "src/main.rs",
+    ],
     crate_root = "src/main.rs",
     edition = "2021",
     tags = ["manual"],
@@ -17,7 +20,17 @@ rust_binary(
     ],
 )
 
-# full tier: local porcelain is fs-only, but remotes use mc_sys_host_call ("git") which needs CAP_NET (A9).
+rust_test(
+    name = "argv_test",
+    srcs = [
+        "src/argv.rs",
+        "test/argv_test.rs",
+    ],
+    crate_root = "test/argv_test.rs",
+    edition = "2021",
+)
+
+# The host call selects the attached repository; only remote effects use network authority.
 mc_rust_program(
     name = "git",
     lib = ":git_bin",
@@ -32,7 +45,7 @@ size_limit(
     max_bytes = 256 * 1024,
 )
 
-# Image layer: /bin/git for local ctl porcelain + CAP_NET remotes .
+# Image layer: /bin/git for host-mediated local and remote verbs.
 # Wired into base (and every flavor that stacks on it) via images/BUILD.bazel deps —
 # same substrate model as /bin/pkgfsd.
 pkg_tar(

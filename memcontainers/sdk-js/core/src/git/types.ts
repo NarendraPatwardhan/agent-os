@@ -1,9 +1,8 @@
 /**
- * Portable Run ABI envelopes shared by engine, gitfs ctl, and host_call.
+ * Public SDK request/response facade rendered outside the typed engine boundary.
  *
- * Request/response shapes are the JSON contract between:
- *   guest ctl write → GitBridge.run → ge_run_json
- *   host_call `"git"` → orchestrator → engine import/apply
+ * These objects are never sent into Wasm. The browser adapter encodes generated
+ * binary requests and renders typed responses for SDK callers.
  */
 
 import type { DurableBackend } from "./durable.js";
@@ -20,31 +19,8 @@ export interface GitResponse {
   code: number;
   stdout?: string;
   stderr?: string;
-  /**
-   * Structured op result. Large-stdout truncation embeds:
-   * `{ truncated: true, stream_path: ".git/mc/out/<token>", stdout_bytes, … }`.
-   * Log bounds: `{ count, max_count, bounded?, more? }`.
-   */
-  result?: GitResultMeta | unknown;
-}
-
-/** Known `result` fields from local porcelain (stdout stream / log bounds). */
-export interface GitResultMeta {
-  truncated?: boolean;
-  /** Worktree-relative path to full stdout body (open via gitfs / readStdoutStream). */
-  stream_path?: string;
-  stdout_bytes?: number;
-  stdout_embed_bytes?: number;
-  stream_bytes?: number;
-  stream_partial?: boolean;
-  /** log: entries returned */
-  count?: number;
-  /** log: effective max_count (clamped to engine hard cap) */
-  max_count?: number;
-  /** log: hit max_count with more commits, or request was clamped */
-  bounded?: boolean;
-  more?: boolean;
-  [key: string]: unknown;
+  /** Generated typed result projected into the public facade. */
+  result?: unknown;
 }
 
 // ── Host policy ─────────────────────────────────────────────────────────────
@@ -62,36 +38,21 @@ export interface GitIdentity {
 
 export interface GitEngineLoadOptions {
   /**
-   * Bytes of release `git-engine.tar` (contains `git_engine.mjs` + `git_engine.wasm`
-   * + notices). When omitted, resolved via the host-artifact cache
+   * Bytes of release `git-engine.tar` (contains only `git_engine.wasm`).
+   * When omitted, resolved via the host-artifact cache
    * (`MC_GIT_ENGINE_TAR` / `AGENTOS_DIR` / optional fetch).
    */
   engine?: Uint8Array;
-  /** Override MEMFS worktree root inside the module (default `/work`). */
+  /** Logical session root. Browser sessions normally use the default empty root. */
   workRoot?: string;
   readOnly?: boolean;
   /**
-   * Default cone prefixes for {@link GitEngine.asMountDriver} when the caller
-   * does not pass `sparseCone`. **Cone-only** (prefix projection) — not full
-   * sparse-checkout pattern parity.
-   */
-  sparseCone?: string[];
-  /**
    * Optional durable store attached to the engine.
    *
-   * * **Directory backends** (`HostDirDurable`, `kind: "directory"`) stage,
-   *   fsync, and atomically swap a complete worktree+`.git` generation.
-   * * **Blob backends** write an AgentOS Git Snapshot preserving ODB,
-   *   refs, index, sparse metadata, staged/dirty/untracked files, and modes.
-   *   Unknown/corrupt blobs fail load rather than silently attaching stale state.
+   * Stores opaque engine-produced snapshot bytes. JavaScript never interprets
+   * repository, index, object database, or worktree state.
    */
   durable?: DurableBackend;
-  /**
-   * Host absolute path for a **directory** durable store (primary path).
-   * Equivalent to `durable: new HostDirDurable(path, path)`. Preferred over
-   * blob backends when a real worktree directory is available.
-   */
-  durableDir?: string;
   /**
    * Host policy identity injected into `commit` when args omit name/email (K28).
    * Never synthesizes a default identity when unset.

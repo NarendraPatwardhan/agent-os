@@ -1,105 +1,426 @@
-// contracts/git.kdl — host source-plane remote orch contract (K16/K20).
-//
-// Single source of truth for dual-host **decisions and envelopes**, not the HTTP
-// stack itself. TS GitRemoteOrchestrator and BEAM AgentOS.Git.Orchestrator both
-// consume projections (gen/git.gen.ts / gen/git.gen.ex). Executable behavior is
-// locked by shared goldens under memcontainers/lib/git-engine/fixtures/orch/.
-//
-// Terse name matches llb.kdl / shell.kdl / wire.kdl.
+// AgentOS Git engine protocol. Numeric IDs are permanent once merged.
+protocol-version 1
+string-constant "REQUEST_MAGIC" value="AOGQ"
+string-constant "RESPONSE_MAGIC" value="AOGR"
+constant "PROTOCOL_MINOR" value=0
+constant "BACKEND_BROWSER" value=1
+constant "BACKEND_NATIVE" value=2
+constant "CAPABILITY_CORE" value=1
+constant "ENVELOPE_HEADER_BYTES" value=20
+constant "MAX_FRAME_BYTES" value=1048576
+constant "MAX_FIELD_BYTES" value=262144
+constant "MAX_PATH_BYTES" value=4096
+constant "MAX_REF_BYTES" value=1024
+constant "MAX_HANDLES" value=4096
+constant "MAX_PACK_BYTES" value=67108864
+constant "MAX_PACK_OBJECTS" value=1000000
+constant "MAX_RESULT_BYTES" value=16777216
+// Guest host-call args must never carry these keys (case-insensitive, recursive).
+// Dual-host: JS `GUEST_SECRET_ARG_KEYS` and BEAM `Git.Public`.
+// auth authorization token password credential credentials secret
 
-// ---------------------------------------------------------------------------
-// Dual-host defaults (product policy)
-// ---------------------------------------------------------------------------
-// max_pack_zero_means_default=1 → args maxPackBytes 0 uses default_max_pack_bytes
-// (never "unlimited"). pack_magic_required=1 → reject non-PACK bodies.
-// redirect_never=1 → never follow 3xx Location.
-// default_fetch_depth=0 → full history when depth omitted on fetch/pull
-// (clone still uses default_clone_depth).
-default {
-    default_clone_depth 1
-    default_fetch_depth 0
-    default_max_pack_bytes 67108864
-    max_pack_zero_means_default 1
-    pack_magic_required 1
-    redirect_never 1
+// Lifecycle 0x0000.
+constant "OP_ENGINE_DESCRIBE" value=1
+constant "OP_SESSION_OPEN" value=2
+constant "OP_SESSION_CLOSE" value=3
+constant "OP_REPOSITORY_INIT" value=16
+constant "OP_REPOSITORY_OPEN" value=17
+
+// Worktree and porcelain 0x0100.
+constant "OP_FILE_STAT" value=256
+constant "OP_FILE_READ" value=257
+constant "OP_FILE_WRITE" value=258
+constant "OP_FILE_REMOVE" value=259
+constant "OP_FILE_RENAME" value=260
+constant "OP_FILE_READDIR" value=261
+constant "OP_STATUS" value=272
+constant "OP_ADD" value=273
+constant "OP_REMOVE" value=274
+constant "OP_COMMIT" value=275
+constant "OP_LOG" value=276
+constant "OP_RESOLVE_REVISION" value=277
+constant "OP_DIFF" value=278
+constant "OP_SHOW" value=279
+constant "OP_CHECKOUT" value=280
+constant "OP_RESET" value=281
+constant "OP_BRANCH" value=282
+constant "OP_TAG" value=283
+constant "OP_CONFIG" value=284
+constant "OP_REMOTE_METADATA" value=285
+constant "OP_IGNORE_QUERY" value=286
+constant "OP_SPARSE" value=287
+constant "OP_SUBMODULE" value=288
+
+// Objects, refs, packs, mounts, remotes, persistence.
+constant "OP_OBJECT" value=512
+constant "OP_REF" value=528
+constant "OP_REF_TRANSACTION" value=529
+constant "OP_PACK_IMPORT" value=544
+constant "OP_PACK_BUILD" value=545
+constant "OP_SHALLOW" value=546
+constant "OP_MOUNT" value=768
+constant "OP_STREAM" value=784
+constant "OP_CLONE" value=1024
+constant "OP_FETCH" value=1025
+constant "OP_PULL" value=1026
+constant "OP_PUSH" value=1027
+constant "OP_HTTP_EFFECT" value=1040
+constant "OP_REMOTE_CANCEL" value=1041
+constant "OP_CHECKPOINT" value=1280
+constant "OP_RESTORE" value=1281
+
+// Operation-local actions. These are the only action discriminants accepted
+// by the corresponding typed request payloads.
+constant "ACTION_LIST" value=1
+constant "ACTION_GET" value=2
+constant "ACTION_CREATE" value=3
+constant "ACTION_UPDATE" value=4
+constant "ACTION_DELETE" value=5
+constant "ACTION_BEGIN" value=6
+constant "ACTION_WRITE" value=7
+constant "ACTION_FINISH" value=8
+constant "ACTION_ABORT" value=9
+constant "ACTION_READ" value=10
+constant "ACTION_CLOSE" value=11
+constant "HTTP_RESPONSE_BEGIN" value=1
+constant "HTTP_RESPONSE_CHUNK" value=2
+constant "HTTP_RESPONSE_END" value=3
+constant "HTTP_RESPONSE_ABORT" value=4
+constant "STREAM_READ" value=1
+constant "STREAM_WRITE" value=2
+constant "STREAM_FINISH" value=3
+constant "STREAM_ABORT" value=4
+constant "STREAM_CLOSE" value=5
+constant "MOUNT_ATTACH" value=1
+constant "MOUNT_DETACH" value=2
+constant "MOUNT_STAT" value=3
+constant "MOUNT_READ" value=4
+constant "MOUNT_WRITE" value=5
+constant "MOUNT_CREATE" value=6
+constant "MOUNT_REMOVE" value=7
+constant "MOUNT_RENAME" value=8
+constant "MOUNT_READDIR" value=9
+constant "MOUNT_CHMOD" value=10
+constant "RESET_SOFT" value=1
+constant "RESET_MIXED" value=2
+constant "RESET_HARD" value=3
+constant "RESET_MERGE" value=4
+
+// Stable status/error domains and retry classes.
+constant "STATUS_OK" value=0
+constant "STATUS_EFFECT" value=1
+constant "STATUS_ERROR" value=2
+constant "RETRY_NEVER" value=0
+constant "RETRY_AFTER_INPUT" value=1
+constant "RETRY_AFTER_REFRESH" value=2
+constant "RETRY_TRANSIENT_HOST" value=3
+constant "ERROR_PROTOCOL" value=1
+constant "ERROR_USAGE" value=2
+constant "ERROR_PATH" value=3
+constant "ERROR_REPOSITORY" value=4
+constant "ERROR_OBJECT" value=5
+constant "ERROR_REFERENCE" value=6
+constant "ERROR_INDEX" value=7
+constant "ERROR_WORKTREE" value=8
+constant "ERROR_PACK" value=9
+constant "ERROR_REMOTE" value=10
+constant "ERROR_TRANSPORT_EFFECT" value=11
+constant "ERROR_PERSISTENCE" value=12
+constant "ERROR_LIMIT" value=13
+constant "ERROR_CANCELLED" value=14
+constant "ERROR_INTERNAL" value=15
+
+// Payload codecs. The outer request/response header is AOGQ/AOGR and carries
+// opcode, request ID, status/flags, and payload length.
+message "SessionConfig" id=1 version=1 {
+  field "backend" type="u16"
+  field "read_only" type="bool"
+  field "root" type="str" max=4096
+  field "restore" type="bytes" max=16777216 opt=1
 }
 
-// Guest host_call body must not carry these keys (fail closed before dial).
-// Dual-host: JS connections.ts + BEAM Connections use this list (case-insensitive).
-guest-secret-keys {
-    token
-    auth
-    authorization
-    password
-    pass
-    bearer
-    secret
-    secrets
-    credentials
-    credential
-    apikey
-    api_key
-    accesstoken
-    access_token
-    privatekey
-    private_key
-    client_secret
-    clientsecret
+message "EngineDescription" id=2 version=1 {
+  field "abi_major" type="u16"
+  field "abi_minor" type="u16"
+  field "build_id" type="str" max=256
+  field "gitz_commit" type="str" max=64
+  field "backend" type="u16"
+  field "capabilities_low" type="u32"
+  field "capabilities_high" type="u32"
+  field "max_frame_bytes" type="u32"
+  field "max_pack_bytes" type="u32"
+  field "max_handles" type="u32"
 }
 
-// Stable stderr prefixes — substring-stable dual-host catalog.
-// Product code must emit these prefixes; do not paraphrase.
-stderr-prefix {
-    unknown_connection "git: unknown connection ref"
-    empty_pack "git: empty pack"
-    origin_not_allowlisted "git: origin not allowlisted"
-    not_fast_forward "git: not fast-forward"
-    guest_auth_secrets "git: guest body must not include auth secrets"
-    push_read_only "git: push rejected (read-only mount)"
-    redirect_not_allowed "git: redirect not allowed"
-    empty_origins "git: empty connection origins"
-    query_auth_unsupported "git: query auth not supported for remotes"
-    invalid_auth "git: invalid connection auth"
+message "ObjectId" id=3 version=1 {
+  field "algorithm" type="u16"
+  field "bytes" type="bytes" max=32
 }
 
-// Algorithm step IDs (shared golden / optional trace). Data only — hosts implement.
-algorithm clone {
-    step resolve_remote_url
-    step origin_allowlist
-    step list_refs
-    step select_head_tip
-    step fetch_packs
-    step import_pack
-    step refs_import
-    step clone_apply
+message "Signature" id=4 version=1 {
+  field "name" type="str" max=1024
+  field "email" type="str" max=1024
+  field "unix_seconds" type="i64"
+  field "timezone_minutes" type="i32"
 }
 
-algorithm fetch {
-    step resolve_remote_url
-    step origin_allowlist
-    step list_local_have
-    step list_refs
-    step fetch_packs
-    step import_pack
-    step refs_import
-    step fetch_apply
+message "PathList" id=5 version=1 {
+  field "paths" type="strmap" max=4096
 }
 
-algorithm push {
-    step resolve_remote_url
-    step origin_allowlist
-    step push_policy
-    step push_prepare
-    step list_refs_lease
-    step pack_build
-    step receive_pack
-    step push_complete
+message "FileRequest" id=6 version=1 {
+  field "path" type="str" max=4096
+  field "other_path" type="str" max=4096 opt=1
+  field "mode" type="u32" opt=1
+  field "offset_low" type="u32" opt=1
+  field "offset_high" type="u32" opt=1
+  field "data" type="bytes" max=262144 opt=1
+  field "handle" type="u32" opt=1
 }
 
-// GitResponse required keys (wire envelope).
-response-keys {
-    ok
-    code
-    stdout
-    stderr
+message "PorcelainRequest" id=7 version=1 {
+  field "action" type="u16"
+  field "flags" type="u32"
+  field "revision" type="str" max=1024 opt=1
+  field "target" type="str" max=1024 opt=1
+  field "message" type="str" max=262144 opt=1
+  field "paths" type="strmap" max=4096
+  field "limit" type="u32" opt=1
+  field "cursor" type="bytes" max=4096 opt=1
+  field "author" type="Signature" opt=1
+  field "committer" type="Signature" opt=1
+}
+
+message "RefUpdate" id=8 version=1 {
+  field "name" type="str" max=1024
+  field "new_value" type="ObjectId" opt=1
+  field "expected_value" type="ObjectId" opt=1
+  field "require_absent" type="bool"
+}
+
+message "StreamRequest" id=10 version=1 {
+  field "action" type="u16"
+  field "handle" type="u32" opt=1
+  field "offset_low" type="u32" opt=1
+  field "offset_high" type="u32" opt=1
+  field "data" type="bytes" max=262144 opt=1
+}
+
+message "RemoteRequest" id=11 version=1 {
+  field "action" type="u16"
+  field "url" type="str" max=4096
+  field "remote" type="str" max=1024 opt=1
+  field "refspecs" type="strmap" max=4096
+  field "depth" type="u32" opt=1
+  field "flags" type="u32"
+}
+
+message "HttpEffect" id=12 version=1 {
+  field "exchange" type="u32"
+  field "method" type="str" max=16
+  field "path" type="str" max=4096
+  field "headers" type="strmap" max=256
+  field "body" type="u32" opt=1
+}
+
+message "HttpResponse" id=13 version=1 {
+  // exchange is the RemoteResult.handle returned by the initiating remote op.
+  // BEGIN and CHUNK return STATUS_OK Result acknowledgements. END returns the
+  // next STATUS_EFFECT HttpEffect or the final response for the original op.
+  field "exchange" type="u32"
+  field "action" type="u16"
+  field "status" type="u16" opt=1
+  field "headers" type="strmap" max=256
+  field "data" type="bytes" max=262144 opt=1
+  field "error_code" type="u16" opt=1
+}
+
+message "EngineError" id=14 version=1 {
+  field "domain" type="u16"
+  field "code" type="u16"
+  field "operation" type="u16"
+  field "retry" type="u16"
+  field "message" type="str" max=4096 opt=1
+  field "detail_kind" type="u16" opt=1
+  field "detail" type="bytes" max=4096 opt=1
+}
+
+message "Result" id=15 version=1 {
+  field "kind" type="u16"
+  field "generation" type="u32"
+  field "handle" type="u32" opt=1
+  field "count" type="u32" opt=1
+  field "data" type="bytes" max=262144 opt=1
+}
+
+message "FileResult" id=16 version=1 {
+  field "path" type="str" max=4096
+  field "mode" type="u32"
+  field "size_low" type="u32"
+  field "size_high" type="u32"
+  field "data" type="bytes" max=262144 opt=1
+}
+
+message "StatusEntry" id=17 version=1 {
+  field "path" type="str" max=4096
+  field "index" type="u16"
+  field "worktree" type="u16"
+}
+
+message "StatusResult" id=18 version=1 {
+  field "generation" type="u32"
+  field "entries" type="list<StatusEntry>" max=4096
+}
+
+message "CommitResult" id=19 version=1 {
+  field "generation" type="u32"
+  field "object_id" type="ObjectId"
+}
+
+message "ResolveResult" id=20 version=1 {
+  field "object_id" type="ObjectId"
+}
+
+message "DirectoryEntry" id=21 version=1 {
+  field "name" type="str" max=4096
+  field "mode" type="u32"
+  field "size_low" type="u32"
+  field "size_high" type="u32"
+}
+
+message "DirectoryResult" id=22 version=1 {
+  field "entries" type="list<DirectoryEntry>" max=4096
+}
+
+message "ReferenceResult" id=23 version=1 {
+  field "name" type="str" max=1024
+  field "kind" type="u16"
+  field "object_id" type="ObjectId" opt=1
+  field "target" type="str" max=1024 opt=1
+}
+
+message "ReferenceList" id=24 version=1 {
+  field "references" type="list<ReferenceResult>" max=4096
+}
+
+message "ObjectRequest" id=25 version=1 {
+  field "action" type="u16"
+  field "kind" type="u16"
+  field "object_id" type="ObjectId" opt=1
+  field "data" type="bytes" max=16777216 opt=1
+}
+
+message "ObjectResult" id=26 version=1 {
+  field "kind" type="u16"
+  field "object_id" type="ObjectId"
+  field "size_low" type="u32"
+  field "size_high" type="u32"
+  field "data" type="bytes" max=16777216 opt=1
+}
+
+message "PackRequest" id=27 version=1 {
+  field "action" type="u16"
+  field "handle" type="u32" opt=1
+  field "wants" type="list<ObjectId>" max=4096
+  field "haves" type="list<ObjectId>" max=4096
+  field "updates" type="list<RefUpdate>" max=4096
+  field "data" type="bytes" max=262144 opt=1
+}
+
+message "PackResult" id=28 version=1 {
+  field "handle" type="u32" opt=1
+  field "object_count" type="u32"
+  field "reference_count" type="u32"
+  field "data" type="bytes" max=16777216 opt=1
+}
+
+message "SnapshotResult" id=29 version=1 {
+  field "generation" type="u32"
+  field "image" type="bytes" max=16777216
+}
+
+message "StreamChunk" id=30 version=1 {
+  field "handle" type="u32"
+  field "offset_low" type="u32"
+  field "offset_high" type="u32"
+  field "data" type="bytes" max=262144
+  field "done" type="bool"
+}
+
+message "MountRequest" id=31 version=1 {
+  field "action" type="u16"
+  field "path" type="str" max=4096 opt=1
+  field "other_path" type="str" max=4096 opt=1
+  field "handle" type="u32" opt=1
+  field "flags" type="u32"
+  field "mode" type="u32" opt=1
+  field "offset_low" type="u32" opt=1
+  field "offset_high" type="u32" opt=1
+  field "data" type="bytes" max=262144 opt=1
+  field "cursor" type="bytes" max=4096 opt=1
+  field "limit" type="u32" opt=1
+}
+
+message "RemoteResult" id=32 version=1 {
+  field "handle" type="u32"
+  field "state" type="u16"
+  field "generation" type="u32"
+  field "updated" type="list<ReferenceResult>" max=4096
+}
+
+message "PathQuery" id=33 version=1 {
+  field "paths" type="strmap" max=4096
+}
+
+message "IgnoreResult" id=34 version=1 {
+  // Matched requested paths are keys. Values are reserved and currently empty.
+  // Unmatched paths are omitted.
+  field "paths" type="strmap" max=4096
+}
+
+message "RefTransactionRequest" id=35 version=1 {
+  // BEGIN validates expected-old values and reserves a transaction handle;
+  // FINISH atomically publishes its updates; ABORT discards it.
+  field "action" type="u16"
+  field "handle" type="u32" opt=1
+  field "updates" type="list<RefUpdate>" max=4096
+}
+
+message "RefTransactionResult" id=36 version=1 {
+  field "handle" type="u32" opt=1
+  field "generation" type="u32"
+  field "count" type="u32"
+}
+
+message "ShallowRequest" id=37 version=1 {
+  // GET reads the boundary; UPDATE atomically replaces it.
+  field "action" type="u16"
+  field "commits" type="list<ObjectId>" max=4096
+}
+
+message "ShallowResult" id=38 version=1 {
+  field "commits" type="list<ObjectId>" max=4096
+}
+
+message "SubmoduleRequest" id=39 version=1 {
+  // LIST and GET are local. UPDATE uses the normal resumable HTTP effect pump.
+  // CREATE stages a gitlink at path and requires object_id.
+  field "action" type="u16"
+  field "path" type="str" max=4096 opt=1
+  field "object_id" type="ObjectId" opt=1
+}
+
+message "SubmoduleEntry" id=40 version=1 {
+  field "name" type="str" max=1024
+  field "path" type="str" max=4096
+  field "url" type="str" max=4096
+  field "gitlink" type="ObjectId" opt=1
+  field "head" type="ObjectId" opt=1
+  // 0 uninitialized, 1 clean, 2 modified.
+  field "state" type="u16"
+}
+
+message "SubmoduleResult" id=41 version=1 {
+  field "generation" type="u32"
+  field "entries" type="list<SubmoduleEntry>" max=4096
 }

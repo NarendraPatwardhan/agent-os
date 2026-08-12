@@ -5,7 +5,7 @@ load(":defs.bzl", "gh_release")
 #
 # Client-side release assets: kernel.wasm, the five SHIPPED flavor tars (minimal, posix, loom, atlas,
 # paper), the self-contained @mc/core ESM bundle (mc-core.mjs), catalog-compiler.wasm, browser-ctl,
-# and git-engine.tar (emcc host git: mjs + wasm + libgit2 NOTICE). The tool also generates and
+# and git-engine.tar (the zero-import freestanding Gitz Wasm module). The tool also generates and
 # uploads a SHA256SUMS over those bytes. Deliberately excluded: base/rootfs (substrate, not a
 # flavor), svc_test, the `mc` host binary, the Elixir/server package (incl. native Port), and a
 # manifest.json index. Adding an asset is one line in `assets`.

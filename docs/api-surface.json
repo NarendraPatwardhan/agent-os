@@ -116,7 +116,7 @@
       { "name": "GitEngine", "level": "advanced", "doc": "git.md" },
       { "name": "registerGitHostCall", "level": "advanced", "doc": "git.md" },
       { "name": "gitHostCallHandler", "level": "advanced", "doc": "git.md" },
-      { "name": "GitRemoteOrchestrator", "level": "advanced", "doc": "git.md" },
+      { "name": "GitRemoteEffectPump", "level": "advanced", "doc": "git.md" },
       { "name": "normalizeGitEngineMap", "level": "advanced", "doc": "git.md" },
       { "name": "mountFromGitRequest", "level": "advanced", "doc": "git.md" },
       { "name": "resolveGitEngineForMount", "level": "advanced", "doc": "git.md" },

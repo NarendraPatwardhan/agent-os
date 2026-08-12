@@ -1,298 +1,434 @@
-/**
- * GitEngine — host-facing facade over the WASM bridge.
- *
- * Single-writer via {@link GitBridge.serial}. Local Run only; remotes are
- * host-mediated (`host_call "git"` → {@link GitRemoteOrchestrator}). Optional
- * durable backends and gitfs mount drivers attach here.
- */
+/** Public browser Git engine backed by the freestanding Gitz Wasm module. */
 
 import type { Driver } from "../types.js";
-import { GitBridge } from "./bridge.js";
 import {
-  decodeDurableTreeBlob,
-  encodeDurableTreeBlob,
-  HostDirDurable,
-  isDirectoryDurable,
-  restoreDurableTreeBlob,
-  type DurableBackend,
-} from "./durable.js";
+  ACTION_CREATE,
+  ACTION_DELETE,
+  ACTION_GET,
+  ACTION_LIST,
+  ACTION_UPDATE,
+  MOUNT_CREATE,
+  MOUNT_READ,
+  MOUNT_READDIR,
+  MOUNT_REMOVE,
+  MOUNT_RENAME,
+  MOUNT_STAT,
+  MOUNT_WRITE,
+  OP_ADD,
+  OP_BRANCH,
+  OP_CHECKOUT,
+  OP_CHECKPOINT,
+  OP_COMMIT,
+  OP_CONFIG,
+  OP_DIFF,
+  OP_ENGINE_DESCRIBE,
+  OP_FILE_READ,
+  OP_FILE_READDIR,
+  OP_FILE_REMOVE,
+  OP_FILE_RENAME,
+  OP_FILE_STAT,
+  OP_FILE_WRITE,
+  OP_IGNORE_QUERY,
+  OP_LOG,
+  OP_MOUNT,
+  OP_REMOTE_METADATA,
+  OP_REMOVE,
+  OP_REPOSITORY_INIT,
+  OP_REPOSITORY_OPEN,
+  OP_RESET,
+  OP_RESOLVE_REVISION,
+  OP_SHOW,
+  OP_STATUS,
+  OP_SUBMODULE,
+  OP_TAG,
+  RESET_HARD,
+  RESET_MERGE,
+  RESET_MIXED,
+  RESET_SOFT,
+  decodeDirectoryResult,
+  decodeFileResult,
+  decodeResult,
+  decodeSnapshotResult,
+  decodeStatusResult,
+  decodeSubmoduleResult,
+  encodeFileRequest,
+  encodeMountRequest,
+  encodePorcelainRequest,
+  encodeSubmoduleRequest,
+  type DirectoryResult,
+  type FileResult,
+  type PorcelainRequest,
+  type Signature,
+} from "@mc/contracts/git";
+import { GitBridge } from "./bridge.js";
+import type { DurableBackend } from "./durable.js";
 import { createGitFsDriver } from "./gitfs.js";
 import type { GitEngineLoadOptions, GitIdentity, GitRequest, GitResponse } from "./types.js";
 
 const REMOTE_OPS = new Set(["clone", "fetch", "pull", "push"]);
+const text = new TextDecoder();
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-function normalizeIdentity(id: GitIdentity | undefined): GitIdentity | undefined {
-  if (!id) return undefined;
-  const name = typeof id.name === "string" ? id.name.trim() : "";
-  const email = typeof id.email === "string" ? id.email.trim() : "";
-  if (!name || !email) return undefined;
-  return { name, email };
+function identity(value: GitIdentity | undefined): GitIdentity | undefined {
+  const name = value?.name?.trim();
+  const email = value?.email?.trim();
+  return name && email ? { name, email } : undefined;
 }
 
-function resolveDurable(opts: GitEngineLoadOptions): DurableBackend | undefined {
-  if (opts.durableDir) {
-    // durableDir wins — primary product path (re-openable libgit2 root).
-    return new HostDirDurable(opts.durableDir, opts.durableDir);
+function signature(value: GitIdentity, args: Record<string, unknown>): Signature {
+  const seconds = numberArg(args, "unix_seconds", "when_unix") ?? Math.floor(Date.now() / 1000);
+  return {
+    name: value.name,
+    email: value.email,
+    unix_seconds: seconds,
+    timezone_minutes: numberArg(args, "timezone_minutes") ?? 0,
+  };
+}
+
+function numberArg(args: Record<string, unknown>, ...keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = args[key];
+    if (typeof value === "number" && Number.isFinite(value)) return Math.trunc(value);
   }
-  return opts.durable;
+  return undefined;
 }
 
-// ── GitEngine ───────────────────────────────────────────────────────────────
+function stringArg(args: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) if (typeof args[key] === "string") return String(args[key]);
+  return undefined;
+}
+
+function pathsArg(args: Record<string, unknown>): Record<string, string> {
+  if (args.all === true) return { ".": "" };
+  const value = args.paths ?? args.path;
+  const values = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
+  return Object.fromEntries(values.map((path) => [String(path), ""]));
+}
+
+function requiredStringArg(args: Record<string, unknown>, ...keys: string[]): string {
+  const value = stringArg(args, ...keys)?.trim();
+  if (!value) throw new Error(`missing ${keys[0]}`);
+  return value;
+}
+
+function namedAction(value: unknown): number {
+  switch (value) {
+    case "list": return ACTION_LIST;
+    case "get": return ACTION_GET;
+    case "add": return ACTION_CREATE;
+    case "set": return ACTION_UPDATE;
+    case "remove": return ACTION_DELETE;
+    default: throw new Error("invalid Git metadata action");
+  }
+}
+
+function resetAction(value: unknown): number {
+  switch (value ?? "mixed") {
+    case "soft": return RESET_SOFT;
+    case "mixed": return RESET_MIXED;
+    case "hard": return RESET_HARD;
+    case "merge": return RESET_MERGE;
+    default: throw new Error("invalid Git reset mode");
+  }
+}
+
+function porcelain(args: Record<string, unknown>, id?: GitIdentity): PorcelainRequest {
+  const authorName = stringArg(args, "name", "author_name") ?? id?.name;
+  const authorEmail = stringArg(args, "email", "author_email") ?? id?.email;
+  const committerName = stringArg(args, "committer_name") ?? authorName;
+  const committerEmail = stringArg(args, "committer_email") ?? authorEmail;
+  const author = authorName && authorEmail ? signature({ name: authorName, email: authorEmail }, args) : undefined;
+  const committer = committerName && committerEmail
+    ? signature({ name: committerName, email: committerEmail }, args)
+    : undefined;
+  return {
+    action: ACTION_GET,
+    flags: numberArg(args, "flags") ?? 0,
+    revision: stringArg(args, "revision", "rev", "name"),
+    target: stringArg(args, "target", "new_name", "value"),
+    message: stringArg(args, "message"),
+    paths: pathsArg(args),
+    limit: numberArg(args, "limit", "max_count"),
+    author,
+    committer,
+  };
+}
 
 export class GitEngine {
-  private readonly durable: DurableBackend | undefined;
-  /** Last AgentOS Git Snapshot bytes produced by checkpoint. */
-  private _durableSnapshot: Uint8Array | null = null;
-  /** Default cone prefixes for asMountDriver (cone-only, not full sparse parity). */
-  private readonly _sparseCone: string[] | undefined;
-  /** Host policy identity for commit inject (K28). */
+  private snapshot: Uint8Array | null = null;
   private readonly identity: GitIdentity | undefined;
-  /** Monotonic scope for direct Run response streams. */
-  private requestGeneration = 0;
-
-  constructor(
+  private constructor(
     readonly bridge: GitBridge,
-    readonly readOnly = false,
-    durable?: DurableBackend,
-    sparseCone?: string[],
-    identity?: GitIdentity,
+    readonly readOnly: boolean,
+    private readonly durable: DurableBackend | undefined,
+    identityValue: GitIdentity | undefined,
   ) {
-    this.durable = durable;
-    this._sparseCone = sparseCone?.length ? sparseCone : undefined;
-    this.identity = normalizeIdentity(identity);
+    this.identity = identity(identityValue);
   }
 
   static async load(opts: GitEngineLoadOptions): Promise<GitEngine> {
-    const durable = resolveDurable(opts);
-    const { resolveGitEngineBaseUrl } = await import("../artifacts.js");
-    const baseUrl = await resolveGitEngineBaseUrl(opts.engine);
-    const bridge = await GitBridge.create(baseUrl, {
+    const durable = opts.durable;
+    const restore = durable ? (await durable.load()) ?? undefined : undefined;
+    const { resolveGitEngineWasm } = await import("../artifacts.js");
+    const bridge = await GitBridge.create(await resolveGitEngineWasm(opts.engine), {
       workRoot: opts.workRoot,
-      durable,
+      readOnly: !!opts.readOnly,
+      restore: restore ? owned(restore) : undefined,
     });
-    const engine = new GitEngine(bridge, !!opts.readOnly, durable, opts.sparseCone, opts.identity);
+    const engine = new GitEngine(bridge, !!opts.readOnly, durable, opts.identity);
+    engine.snapshot = restore?.slice() ?? null;
     try {
-      // Directory backends hydrate in GitBridge.create; ge_open already sees
-      // the restored worktree+odb (or empty dir for first open).
-      if (durable && !isDirectoryDurable(durable)) {
-        const snap = await durable.load();
-        if (snap && snap.byteLength > 0) {
-          const tree = decodeDurableTreeBlob(snap);
-          if (!tree) throw new Error("durable load: unrecognized or corrupt Git snapshot");
-          restoreDurableTreeBlob(tree, bridge.FS, bridge.workRoot);
-          bridge.reopen();
-          engine._durableSnapshot = snap.slice();
-        }
-      }
+      bridge.execute(restore ? OP_REPOSITORY_OPEN : OP_REPOSITORY_INIT);
       return engine;
     } catch (error) {
-      try {
-        bridge.close();
-      } catch {
-        /* preserve the load failure */
-      }
+      bridge.close();
       throw error;
     }
   }
 
-  /**
-   * Last durable snapshot bytes produced by
-   * {@link checkpoint} / {@link close} on **blob** backends). Directory
-   * backends return null — the host path is the store.
-   */
-  get durableSnapshot(): Uint8Array | null {
-    return this._durableSnapshot ? this._durableSnapshot.slice() : null;
-  }
-
-  /**
-   * Host directory path for directory durable backends (`durableDir` /
-   * {@link HostDirDurable}); `undefined` for blob/memory backends.
-   */
-  get durableDir(): string | undefined {
-    if (isDirectoryDurable(this.durable) && this.durable.hostPath) {
-      return this.durable.hostPath;
-    }
-    return undefined;
-  }
-
-  /**
-   * Cone-mode sparse prefixes configured at load (post-clone `sparse-set` +
-   * default gitfs projection). **Cone-only** — not full sparse-checkout parity.
-   * Copy returned; `undefined` when no cone was set.
-   */
-  get sparseCone(): string[] | undefined {
-    return this._sparseCone ? [...this._sparseCone] : undefined;
-  }
-
-  // ── Durability ────────────────────────────────────────────────────────────
-
-  /**
-   * Persist durable state.
-   *
-   * * **Directory backends** — stage MEMFS worktree+`.git`, fsync, and
-   *   atomically swap the complete host-directory generation.
-   * * **Blob backends** — serialize the complete live repository snapshot.
-   */
+  get durableSnapshot(): Uint8Array | null { return this.snapshot?.slice() ?? null; }
   async checkpoint(): Promise<void> {
     if (!this.durable) return;
-    if (isDirectoryDurable(this.durable)) {
-      await this.bridge.serial(async () => {
-        if (typeof this.durable!.dumpFromMemfs === "function") {
-          await this.durable!.dumpFromMemfs!(this.bridge.FS, this.bridge.workRoot);
-        } else if (typeof this.durable!.sync === "function") {
-          await this.durable!.sync!();
-        }
-      });
-      return;
-    }
-    const data = await this.exportDurableSnapshot();
-    const copy = data.slice();
-    await this.durable.save(copy);
-    this._durableSnapshot = copy;
-  }
-
-  // ── Local Run ─────────────────────────────────────────────────────────────
-
-  /** Function face: Run({op,args}) → Response. Remotes fail closed here. */
-  async run(req: GitRequest): Promise<GitResponse> {
-    return this.bridge.serial(() => {
-      const op = String(req.op || "").toLowerCase();
-      if (REMOTE_OPS.has(op)) {
-        return {
-          ok: false,
-          code: 1,
-          stdout: "",
-          stderr: "remotes require host_call git + orchestrator (PR9–PR10); engine must not dial\n",
-        };
-      }
-      return this.bridge.run(this.injectClientToken(this.injectCommitIdentity(req)));
+    await this.bridge.serial(async () => {
+      const result = decodeSnapshotResult(owned(this.bridge.execute(OP_CHECKPOINT).payload));
+      this.snapshot = result.image.slice();
+      await this.durable!.save(this.snapshot);
     });
   }
 
-  /**
-   * Read full stdout body after a truncated Response.
-   *
-   * When `result.truncated` and `result.stream_path` are set, returns the body
-   * written under the engine worktree (≤16 MiB). Returns `null` when the
-   * response does not name a stream or the stream file is missing.
-   */
-  async readStdoutStream(resp: GitResponse): Promise<Uint8Array | null> {
+  async run(request: GitRequest): Promise<GitResponse> {
     return this.bridge.serial(() => {
-      const r = resp;
-      const meta =
-        r?.result && typeof r.result === "object" && !Array.isArray(r.result)
-          ? (r.result as Record<string, unknown>)
-          : null;
-      const pathFromResult =
-        meta && typeof meta.stream_path === "string" ? meta.stream_path.replace(/^\/+/, "") : null;
-      if (!pathFromResult || !/^\.git\/mc\/out\/[A-Za-z0-9_-]{1,127}$/.test(pathFromResult)) {
-        return null;
-      }
-      const rel = pathFromResult;
-      const abs = this.bridge.abs(rel);
+      const op = String(request.op ?? "").toLowerCase();
+      if (REMOTE_OPS.has(op)) return failure("remotes require the host HTTP effect pump");
+      const args = request.args && typeof request.args === "object" && !Array.isArray(request.args)
+        ? request.args as Record<string, unknown>
+        : {};
       try {
-        const st = this.bridge.FS.lstat(abs);
-        if (this.bridge.FS.isLink(st.mode) || this.bridge.FS.isDir(st.mode)) return null;
-        if ((st.size ?? 0) > 16 * 1024 * 1024) return null;
-        const data = this.bridge.FS.readFile(abs);
-        const bytes = data instanceof Uint8Array ? data : new TextEncoder().encode(String(data));
-        return bytes.byteLength <= 16 * 1024 * 1024 ? bytes : null;
+        switch (op) {
+          case "init":
+            this.bridge.execute(OP_REPOSITORY_INIT);
+            return success();
+          case "status": {
+            const result = decodeStatusResult(owned(this.bridge.execute(OP_STATUS).payload));
+            const stdout = result.entries.map((entry) =>
+              `${String.fromCharCode(entry.index)}${String.fromCharCode(entry.worktree)} ${entry.path}\n`,
+            ).join("");
+            return success(stdout, result);
+          }
+          case "add":
+            return resultResponse(owned(this.bridge.execute(OP_ADD, owned(encodePorcelainRequest({
+              ...porcelain(args), action: ACTION_UPDATE,
+            }))).payload));
+          case "rm":
+          case "remove":
+            return resultResponse(owned(this.bridge.execute(OP_REMOVE, owned(encodePorcelainRequest({
+              ...porcelain(args), action: ACTION_UPDATE,
+            }))).payload));
+          case "commit": {
+            const result = this.bridge.commit(OP_COMMIT, {
+              ...porcelain(args, this.identity), action: ACTION_CREATE,
+            });
+            return success(`${objectIdHex(result.object_id.bytes)}\n`, result);
+          }
+          case "rev-parse":
+          case "resolve": {
+            const result = this.bridge.resolve(OP_RESOLVE_REVISION, {
+              ...porcelain(args),
+              action: ACTION_GET,
+              revision: stringArg(args, "rev", "revision") ?? "HEAD",
+            });
+            return success(`${objectIdHex(result.object_id.bytes)}\n`, result);
+          }
+          case "log": return rawPorcelainRequest(this.bridge, OP_LOG, {
+            ...porcelain(args), action: ACTION_LIST, limit: numberArg(args, "max_count", "limit"),
+          });
+          case "diff": return rawPorcelainRequest(this.bridge, OP_DIFF, {
+            ...porcelain(args), action: ACTION_GET, flags: args.cached === true ? 1 : 0,
+          });
+          case "show": return rawPorcelainRequest(this.bridge, OP_SHOW, {
+            ...porcelain(args), action: ACTION_GET,
+            revision: stringArg(args, "rev", "revision") ?? "HEAD",
+          });
+          case "checkout":
+          case "switch": {
+            const name = stringArg(args, "name");
+            const rev = stringArg(args, "rev", "revision");
+            if (!name && !rev) throw new Error("missing name");
+            return rawPorcelainRequest(this.bridge, OP_CHECKOUT, {
+              ...porcelain(args),
+              action: ACTION_UPDATE,
+              target: name,
+              revision: rev,
+            });
+          }
+          case "reset": return rawPorcelainRequest(this.bridge, OP_RESET, {
+            ...porcelain(args),
+            action: resetAction(args.mode),
+            revision: stringArg(args, "rev", "revision") ?? "HEAD",
+          });
+          case "branch": return rawPorcelainRequest(this.bridge, OP_BRANCH, {
+            ...porcelain(args),
+            action: stringArg(args, "name") ? (args.delete === true ? ACTION_DELETE : ACTION_CREATE) : ACTION_LIST,
+            target: stringArg(args, "name"),
+            revision: stringArg(args, "rev", "revision"),
+          });
+          case "tag": return rawPorcelainRequest(this.bridge, OP_TAG, {
+            ...porcelain(args),
+            action: args.delete === true ? ACTION_DELETE : ACTION_CREATE,
+            target: requiredStringArg(args, "name"),
+            revision: stringArg(args, "rev", "revision"),
+          });
+          case "config": return rawPorcelainRequest(this.bridge, OP_CONFIG, {
+            ...porcelain(args),
+            action: namedAction(args.action),
+            target: stringArg(args, "key", "name"),
+            message: stringArg(args, "value"),
+          });
+          case "remote": return rawPorcelainRequest(this.bridge, OP_REMOTE_METADATA, {
+            ...porcelain(args),
+            action: namedAction(args.action),
+            target: stringArg(args, "name"),
+            message: stringArg(args, "url", "value"),
+            revision: stringArg(args, "fetch", "refspec", "rev"),
+          });
+          case "check-ignore": return rawPorcelainRequest(this.bridge, OP_IGNORE_QUERY, {
+            ...porcelain(args), action: ACTION_GET,
+            paths: { [requiredStringArg(args, "path")]: "" },
+          });
+          case "submodule": {
+            const action = stringArg(args, "action") ?? "list";
+            if (action === "update") return failure("submodule update requires the host HTTP effect pump");
+            if (action !== "list" && action !== "status") return failure("unsupported submodule action");
+            const result = decodeSubmoduleResult(owned(this.bridge.execute(OP_SUBMODULE,
+              owned(encodeSubmoduleRequest({
+                action: action === "list" ? ACTION_LIST : ACTION_GET,
+                path: stringArg(args, "path"),
+              }))).payload));
+            return success(submoduleText(result.entries), result);
+          }
+          default: return failure(`unsupported Git operation: ${op}`);
+        }
       } catch (error) {
-        const value = error as { code?: unknown; errno?: unknown };
-        if (value?.code === "ENOENT" || value?.errno === 44) return null;
-        throw error;
+        return failure(error instanceof Error ? error.message : String(error));
       }
     });
   }
 
-  /**
-   * K28: when host identity is configured and commit args omit name/email,
-   * inject them. Never invents a default identity when unset.
-   */
-  private injectCommitIdentity(req: GitRequest): GitRequest {
-    if (!this.identity) return req;
-    const op = String(req.op || "").toLowerCase();
-    if (op !== "commit") return req;
-    if (req.args !== undefined && (typeof req.args !== "object" || Array.isArray(req.args))) {
-      return req;
-    }
-    const args = { ...((req.args ?? {}) as Record<string, unknown>) };
-    if (!Object.prototype.hasOwnProperty.call(args, "name")) args.name = this.identity.name;
-    if (!Object.prototype.hasOwnProperty.call(args, "email")) args.email = this.identity.email;
-    return { ...req, args };
+  async fileStat(path: string): Promise<FileResult> {
+    return this.bridge.serial(() => decodeFileResult(owned(this.bridge.execute(OP_FILE_STAT,
+      owned(encodeFileRequest({ path }))).payload)));
   }
 
-  /** Every native Run gets a private scope; explicit tokens are validated by C. */
-  private injectClientToken(req: GitRequest): GitRequest {
-    if (req.args !== undefined && (typeof req.args !== "object" || Array.isArray(req.args))) {
-      return req;
-    }
-    const args = { ...((req.args ?? {}) as Record<string, unknown>) };
-    if (Object.prototype.hasOwnProperty.call(args, "client_token")) return { ...req, args };
-    args.client_token = `sdk-${++this.requestGeneration}`;
-    return { ...req, args };
-  }
-
-  // ── Pack I/O ──────────────────────────────────────────────────────────────
-
-  async importPack(chunk: Uint8Array, meta: { final?: boolean } = {}): Promise<void> {
+  async fileRead(path: string): Promise<Uint8Array> {
     return this.bridge.serial(() => {
-      this.bridge.importPack(chunk, !!meta.final);
+      const result = decodeFileResult(owned(this.bridge.execute(OP_FILE_READ,
+        owned(encodeFileRequest({ path }))).payload));
+      if (!result.data) return new Uint8Array();
+      return result.data.slice();
     });
   }
 
-  async abortImportPack(): Promise<void> {
-    return this.bridge.serial(() => this.bridge.abortImportPack());
+  async fileWrite(path: string, data: Uint8Array, mode?: number): Promise<void> {
+    await this.bridge.serial(() => this.bridge.execute(OP_FILE_WRITE,
+      owned(encodeFileRequest({ path, data: owned(data), mode }))));
   }
 
-  /**
-   * Build a push pack (objects reachable from tip OIDs) via engine packbuilder.
-   * Optional `haves` are remote tip OIDs already present (lease oldHash) — objects
-   * reachable only from them are omitted (thin-pack / have negotiation).
-   * Empty oids fail closed. Result always starts with PACK magic.
-   */
-  async buildPushPack(oids: string[], haves?: string[]): Promise<Uint8Array> {
-    return this.bridge.serial(() => this.bridge.packBuild(oids, haves));
+  async fileRemove(path: string): Promise<void> {
+    await this.bridge.serial(() => this.bridge.execute(OP_FILE_REMOVE,
+      owned(encodeFileRequest({ path }))));
   }
 
-  // ── Mount / lifecycle ─────────────────────────────────────────────────────
+  async fileRename(from: string, to: string): Promise<void> {
+    await this.bridge.serial(() => this.bridge.execute(OP_FILE_RENAME,
+      owned(encodeFileRequest({ path: from, other_path: to }))));
+  }
 
-  /**
-   * MountFs driver (worktree + ctl). Coherence: close write then status via open.
-   * `sparseCone` overrides load-time default; cone-only projection (not full
-   * sparse-checkout parity).
-   */
-  asMountDriver(opts?: { sparseCone?: string[] }): Driver {
-    return createGitFsDriver(this.bridge, {
-      readOnly: this.readOnly,
-      sparseCone: opts?.sparseCone ?? this._sparseCone,
-      identity: this.identity,
-    });
+  async fileReadDir(path: string): Promise<DirectoryResult> {
+    return this.bridge.serial(() => decodeDirectoryResult(owned(this.bridge.execute(OP_FILE_READDIR,
+      owned(encodeFileRequest({ path }))).payload)));
+  }
+
+  async mountStat(path: string): Promise<FileResult> {
+    return this.bridge.serial(() => decodeFileResult(owned(this.bridge.execute(OP_MOUNT,
+      owned(encodeMountRequest({ action: MOUNT_STAT, path, flags: 0 }))).payload)));
+  }
+
+  async mountRead(path: string): Promise<Uint8Array> {
+    return this.bridge.serial(() => decodeFileResult(owned(this.bridge.execute(OP_MOUNT,
+      owned(encodeMountRequest({ action: MOUNT_READ, path, flags: 0 }))).payload)).data?.slice() ?? new Uint8Array());
+  }
+
+  async mountReadDir(path: string): Promise<DirectoryResult> {
+    return this.bridge.serial(() => decodeDirectoryResult(owned(this.bridge.execute(OP_MOUNT,
+      owned(encodeMountRequest({ action: MOUNT_READDIR, path, flags: 0 }))).payload)));
+  }
+
+  async mountWrite(path: string, data: Uint8Array): Promise<void> {
+    await this.bridge.serial(() => this.bridge.execute(OP_MOUNT,
+      owned(encodeMountRequest({ action: MOUNT_WRITE, path, flags: 0, data: owned(data) }))));
+  }
+
+  async mountMkdir(path: string): Promise<void> {
+    await this.bridge.serial(() => this.bridge.execute(OP_MOUNT,
+      owned(encodeMountRequest({ action: MOUNT_CREATE, path, flags: 1, mode: 0o040000, data: new Uint8Array() }))));
+  }
+
+  async mountRemove(path: string): Promise<void> {
+    await this.bridge.serial(() => this.bridge.execute(OP_MOUNT,
+      owned(encodeMountRequest({ action: MOUNT_REMOVE, path, flags: 0 }))));
+  }
+
+  async mountRename(from: string, to: string): Promise<void> {
+    await this.bridge.serial(() => this.bridge.execute(OP_MOUNT,
+      owned(encodeMountRequest({ action: MOUNT_RENAME, path: from, other_path: to, flags: 0 }))));
+  }
+
+  asMountDriver(): Driver {
+    return createGitFsDriver(this, { readOnly: this.readOnly });
   }
 
   version(): string {
-    return this.bridge.version();
+    const description = this.bridge.describe(OP_ENGINE_DESCRIBE);
+    return `${description.build_id} (${description.gitz_commit})`;
   }
 
   async close(): Promise<void> {
-    try {
-      if (this.durable) await this.checkpoint();
-    } finally {
-      this.bridge.close();
-    }
+    try { await this.checkpoint(); } finally { this.bridge.close(); }
   }
+}
 
-  // ── Snapshot export (blob durability) ─────────────────────────────────────
-
-  /**
-   * Serialize the complete coding state: ODB, refs, HEAD, index, sparse files,
-   * staged/dirty/untracked worktree content, empty directories, and modes.
-   */
-  private async exportDurableSnapshot(): Promise<Uint8Array> {
-    return this.bridge.serial(() => {
-      return encodeDurableTreeBlob(this.bridge.FS, this.bridge.workRoot);
-    });
+function rawPorcelainRequest(bridge: GitBridge, opcode: number, request: PorcelainRequest): GitResponse {
+  const payload = owned(bridge.execute(opcode, owned(encodePorcelainRequest(request))).payload);
+  try {
+    const result = decodeResult(payload);
+    return success(result.data ? text.decode(result.data) : "", result);
+  } catch {
+    return success(text.decode(payload));
   }
+}
+
+function resultResponse(payload: Uint8Array): GitResponse {
+  const result = decodeResult(payload);
+  return success("", result);
+}
+
+function objectIdHex(bytes: Uint8Array): string {
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function submoduleText(entries: Array<{ path: string; gitlink?: { bytes: Uint8Array } | null; head?: { bytes: Uint8Array } | null }>): string {
+  return entries.map((entry) => {
+    const oid = entry.gitlink ? objectIdHex(entry.gitlink.bytes) : "-".repeat(40);
+    const prefix = entry.head && entry.gitlink && objectIdHex(entry.head.bytes) === oid ? " " : "-";
+    return `${prefix}${oid} ${entry.path}\n`;
+  }).join("");
+}
+
+function owned(bytes: Uint8Array): Uint8Array<ArrayBuffer> { return Uint8Array.from(bytes); }
+
+function success(stdout = "", result?: unknown): GitResponse {
+  return { ok: true, code: 0, stdout, stderr: "", result };
+}
+
+function failure(stderr: string): GitResponse {
+  return { ok: false, code: 1, stdout: "", stderr: `${stderr.replace(/\n?$/, "\n")}` };
 }

@@ -5,8 +5,6 @@ use std::sync::{Mutex, OnceLock};
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use wasmtime::{Engine, Instance, Linker, Memory, Module, Store, TypedFunc};
-
 use crate::net::NetCapability;
 use crate::sha256_hex;
 use crate::ConnectionCredential;
@@ -85,7 +83,6 @@ pub struct HostToolDef {
 
 #[derive(Debug, Clone)]
 pub struct CatalogInjectOptions {
-    pub compiler_wasm: Vec<u8>,
     pub connections: Vec<CatalogConnection>,
     pub tools: Vec<String>,
     pub host_tools: Vec<HostToolDef>,
@@ -180,55 +177,15 @@ struct CatalogCache {
 
 static CATALOG_CACHE: OnceLock<Mutex<CatalogCache>> = OnceLock::new();
 
-struct CatalogCompiler {
-    store: Store<()>,
-    memory: Memory,
-    alloc: TypedFunc<u32, u32>,
-    free: TypedFunc<(u32, u32), ()>,
-    registry_resolve: TypedFunc<(u32, u32), i64>,
-    compile: TypedFunc<(u32, u32, u32, u32), i64>,
-    discovery_request: TypedFunc<(u32, u32, u32, u32), i64>,
-    bundle_schema_version: TypedFunc<(), u32>,
-    artifact_digest: String,
-}
+struct CatalogCompiler;
 
 impl CatalogCompiler {
-    fn instantiate(wasm: &[u8]) -> Result<Self> {
-        let artifact_digest = sha256_hex(wasm);
-        let engine = Engine::default();
-        let module = Module::new(&engine, wasm)?;
-        let imports = module.imports().collect::<Vec<_>>();
-        if !imports.is_empty() {
-            return Err(anyhow!(
-                "catalog compiler must be pure wasm; imports={imports:?}"
-            ));
-        }
-        let mut store = Store::new(&engine, ());
-        let linker = Linker::new(&engine);
-        let instance = linker.instantiate(&mut store, &module)?;
-        let memory = instance
-            .get_memory(&mut store, "memory")
-            .ok_or_else(|| anyhow!("catalog compiler is missing memory"))?;
-        Ok(Self {
-            alloc: typed(&instance, &mut store, "cc_alloc")?,
-            free: typed(&instance, &mut store, "cc_free")?,
-            registry_resolve: typed(&instance, &mut store, "cc_registry_resolve")?,
-            compile: typed(&instance, &mut store, "cc_compile")?,
-            discovery_request: typed(&instance, &mut store, "cc_discovery_request")?,
-            bundle_schema_version: typed(&instance, &mut store, "cc_bundle_schema_version")?,
-            store,
-            memory,
-            artifact_digest,
-        })
+    fn native() -> Self {
+        Self
     }
 
     fn registry_resolve(&mut self, id: &str) -> Result<RegistryEntry> {
-        let raw = self.call_with_input(id.as_bytes(), |compiler, ptr, len| {
-            compiler
-                .registry_resolve
-                .call(&mut compiler.store, (ptr, len))
-                .map_err(anyhow::Error::from)
-        })?;
+        let raw = mc_catalog_compiler::registry_resolve_json(id);
         let parsed: Value = serde_json::from_slice(&raw)?;
         if let Some(message) = parsed
             .get("error")
@@ -241,25 +198,7 @@ impl CatalogCompiler {
     }
 
     fn compile(&mut self, source: &[u8], opts_json: &[u8]) -> Result<CompilerEntries> {
-        let src_ptr = self.write(source)?;
-        let opts_ptr = self.write(opts_json)?;
-        let pair = self
-            .compile
-            .call(
-                &mut self.store,
-                (
-                    src_ptr,
-                    source.len() as u32,
-                    opts_ptr,
-                    opts_json.len() as u32,
-                ),
-            )
-            .map_err(anyhow::Error::from);
-        self.free
-            .call(&mut self.store, (src_ptr, source.len() as u32))?;
-        self.free
-            .call(&mut self.store, (opts_ptr, opts_json.len() as u32))?;
-        let raw = self.read_return(pair?)?;
+        let raw = mc_catalog_compiler::compile_bundle(source, opts_json);
         let entries = decode_framed_bundle(&raw)?;
         if let Some(error) = entries.get("error.json") {
             let parsed: Value = serde_json::from_slice(error)?;
@@ -274,68 +213,13 @@ impl CatalogCompiler {
     }
 
     fn discovery_request(&mut self, kind: &str, endpoint: &str) -> Result<DiscoveryRequest> {
-        let kind_bytes = kind.as_bytes();
-        let ep_bytes = endpoint.as_bytes();
-        let kind_ptr = self.write(kind_bytes)?;
-        let ep_ptr = self.write(ep_bytes)?;
-        let pair = self
-            .discovery_request
-            .call(
-                &mut self.store,
-                (
-                    kind_ptr,
-                    kind_bytes.len() as u32,
-                    ep_ptr,
-                    ep_bytes.len() as u32,
-                ),
-            )
-            .map_err(anyhow::Error::from);
-        self.free
-            .call(&mut self.store, (kind_ptr, kind_bytes.len() as u32))?;
-        self.free
-            .call(&mut self.store, (ep_ptr, ep_bytes.len() as u32))?;
-        let raw = self.read_return(pair?)?;
+        let raw = mc_catalog_compiler::discovery_request_json(kind, endpoint);
         Ok(serde_json::from_slice(&raw)?)
     }
 
-    fn schema_version(&mut self) -> Result<u32> {
-        Ok(self.bundle_schema_version.call(&mut self.store, ())?)
+    fn schema_version(&self) -> u32 {
+        mc_catalog_compiler::BUNDLE_SCHEMA_VERSION
     }
-
-    fn call_with_input(
-        &mut self,
-        input: &[u8],
-        f: impl FnOnce(&mut Self, u32, u32) -> Result<i64>,
-    ) -> Result<Vec<u8>> {
-        let ptr = self.write(input)?;
-        let pair = f(self, ptr, input.len() as u32);
-        self.free.call(&mut self.store, (ptr, input.len() as u32))?;
-        self.read_return(pair?)
-    }
-
-    fn write(&mut self, bytes: &[u8]) -> Result<u32> {
-        let ptr = self.alloc.call(&mut self.store, bytes.len() as u32)?;
-        self.memory.write(&mut self.store, ptr as usize, bytes)?;
-        Ok(ptr)
-    }
-
-    fn read_return(&mut self, pair: i64) -> Result<Vec<u8>> {
-        let (ptr, len) = unpack_return(pair);
-        let mut out = vec![0u8; len as usize];
-        self.memory.read(&self.store, ptr as usize, &mut out)?;
-        self.free.call(&mut self.store, (ptr, len))?;
-        Ok(out)
-    }
-}
-
-fn typed<T, U>(instance: &Instance, store: &mut Store<()>, name: &str) -> Result<TypedFunc<T, U>>
-where
-    T: wasmtime::WasmParams,
-    U: wasmtime::WasmResults,
-{
-    instance
-        .get_typed_func(store, name)
-        .map_err(|e| anyhow!("catalog compiler is missing {name}: {e}"))
 }
 
 impl KernelHost {
@@ -352,7 +236,7 @@ impl KernelHost {
         }
         if !opts.connections.is_empty() {
             // Only connection/spec tools need the compiler; host-call tools are sharded directly.
-            let mut compiler = CatalogCompiler::instantiate(&opts.compiler_wasm)?;
+            let mut compiler = CatalogCompiler::native();
             bundles.push(connection_tool_catalog_bundle(
                 &mut compiler,
                 &opts,
@@ -414,20 +298,6 @@ impl KernelHost {
         }
         Ok(())
     }
-}
-
-pub fn read_default_catalog_compiler_wasm() -> Result<Vec<u8>> {
-    let rel = std::env::var("MC_CATALOG_COMPILER_WASM").map_err(|_| {
-        anyhow!("catalog-compiler.wasm not available: set MC_CATALOG_COMPILER_WASM")
-    })?;
-    let path = if rel.starts_with('/') {
-        PathBuf::from(rel)
-    } else if let Ok(runfiles) = std::env::var("RUNFILES_DIR") {
-        PathBuf::from(runfiles).join(rel)
-    } else {
-        PathBuf::from(rel)
-    };
-    std::fs::read(&path).map_err(|e| anyhow!("reading {}: {e}", path.display()))
 }
 
 /// Shard host-call tool definitions into a bundle (mirror of the JS `toolCatalogBundle`): each shard is
@@ -973,13 +843,13 @@ fn compile_cached(
     opts: &Value,
 ) -> Result<BTreeMap<String, Vec<u8>>> {
     let canonical_opts = canonical_json(opts)?;
-    let schema_version = compiler.schema_version()?;
-    // The artifact digest (sha256 of the compiler wasm) is the compiler's identity — it changes
-    // whenever the binary does, fully subsuming any in-wasm version string.
+    let schema_version = compiler.schema_version();
+    // Native builds have no compiler-Wasm digest. This explicit semantic
+    // identity is bumped with native compiler changes that do not alter schema.
     let key = sha256_hex(
         format!(
             "{}\0{}\0{}\0{}",
-            compiler.artifact_digest, schema_version, source.sha, canonical_opts
+            mc_catalog_compiler::NATIVE_COMPILER_ID, schema_version, source.sha, canonical_opts
         )
         .as_bytes(),
     );
@@ -1219,11 +1089,6 @@ fn read_u32(bytes: &[u8], pos: &mut usize) -> Result<u32> {
     let value = u32::from_le_bytes(bytes[*pos..*pos + 4].try_into().unwrap());
     *pos += 4;
     Ok(value)
-}
-
-fn unpack_return(pair: i64) -> (u32, u32) {
-    let raw = pair as u64;
-    ((raw & 0xffff_ffff) as u32, (raw >> 32) as u32)
 }
 
 #[cfg(test)]

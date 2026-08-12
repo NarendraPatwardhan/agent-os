@@ -4,7 +4,6 @@
 // @mc/host → @mc/contracts package deps at RUNTIME — the layer the host-only parity test cannot reach.
 
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -415,24 +414,6 @@ function count<T>(items: readonly T[]): number {
   return items.length;
 }
 
-function runGit(cwd: string, args: string[]): string {
-  const result = spawnSync("git", args, {
-    cwd,
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      GIT_AUTHOR_NAME: "AgentOS Test",
-      GIT_AUTHOR_EMAIL: "agent-os@example.test",
-      GIT_COMMITTER_NAME: "AgentOS Test",
-      GIT_COMMITTER_EMAIL: "agent-os@example.test",
-    },
-  });
-  if (result.status !== 0) {
-    throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
-  }
-  return result.stdout;
-}
-
 async function sha256Digest(bytes: Uint8Array): Promise<string> {
   const digest = await sha256Bytes(bytes);
   let hex = "";
@@ -726,7 +707,7 @@ async function main(): Promise<void> {
       mounts: [{ path: "/mnt/data", driver: dummy, readOnly: true }],
     });
     try {
-      await okVm.fs.stat("/workspace/repo/.git/mc/ctl");
+      await okVm.fs.stat("/workspace/repo");
       await okVm.fs.stat("/mnt/data");
       console.log("phase: git mount collision reject + non-collision OK");
     } finally {
@@ -1804,67 +1785,6 @@ async function main(): Promise<void> {
       await http.close();
     }
     console.log("phase: llb http source verifies digests and round-trips through Definition OK");
-
-    const gitRoot = mkdtempSync(join(tmpdir(), "mc-llb-git-"));
-    runGit(gitRoot, ["init", "--quiet"]);
-    mkdirSync(join(gitRoot, "src"));
-    writeFileSync(join(gitRoot, "src", "app.txt"), "git-v1");
-    writeFileSync(join(gitRoot, "README.md"), "readme-v1");
-    runGit(gitRoot, ["add", "."]);
-    runGit(gitRoot, ["commit", "--quiet", "-m", "v1"]);
-    const commit1 = runGit(gitRoot, ["rev-parse", "HEAD"]).trim();
-    const gitStage = llb.git(gitRoot, { ref: commit1, dest: "/home/user/git-src" });
-    const gitManifest = await llb.commit(gitStage).asImage({ store, kernel });
-    const gitVm = await mc.create({ kernel, image: gitManifest, store, deterministic: true });
-    try {
-      const app = await gitVm.fs.readText("/home/user/git-src/src/app.txt");
-      const readme = await gitVm.fs.readText("/home/user/git-src/README.md");
-      if (app !== "git-v1" || readme !== "readme-v1") {
-        throw new Error(
-          `llb.git bytes mismatch: app=${JSON.stringify(app)} readme=${JSON.stringify(readme)}`,
-        );
-      }
-    } finally {
-      await gitVm.close();
-    }
-    const gitDefinition = await llb.toDefinition(gitStage, { store });
-    const gitFromDefinition = await llb
-      .commit(llb.decodeDefinition(llb.encodeDefinition(gitDefinition)))
-      .asImage({
-        store,
-        kernel,
-      });
-    if (JSON.stringify(gitFromDefinition.layers) !== JSON.stringify(gitManifest.layers)) {
-      throw new Error(
-        `llb.git Definition replay diverged: definition=${JSON.stringify(gitFromDefinition.layers)} direct=${JSON.stringify(gitManifest.layers)}`,
-      );
-    }
-
-    writeFileSync(join(gitRoot, "src", "app.txt"), "git-v2");
-    runGit(gitRoot, ["add", "."]);
-    runGit(gitRoot, ["commit", "--quiet", "-m", "v2"]);
-    const changedGit = llb.git(`file://${gitRoot}`, { ref: "HEAD", dest: "/home/user/git-src" });
-    const changedGitManifest = await llb.commit(changedGit).asImage({ store, kernel });
-    const changedGitVm = await mc.create({
-      kernel,
-      image: changedGitManifest,
-      store,
-      deterministic: true,
-    });
-    try {
-      const app = await changedGitVm.fs.readText("/home/user/git-src/src/app.txt");
-      if (
-        app !== "git-v2" ||
-        JSON.stringify(changedGitManifest.layers) === JSON.stringify(gitManifest.layers)
-      ) {
-        throw new Error(
-          `llb.git cache key ignored resolved commit: app=${JSON.stringify(app)} before=${JSON.stringify(gitManifest.layers)} after=${JSON.stringify(changedGitManifest.layers)}`,
-        );
-      }
-    } finally {
-      await changedGitVm.close();
-    }
-    console.log("phase: llb git source archives refs and round-trips through Definition OK");
 
     const shared = llb.write(base, "/etc/llb-shared", "shared\n");
     store.reset();

@@ -15,6 +15,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 pub const BUNDLE_SCHEMA_VERSION: u32 = 1;
+/// Cache/provenance identity for native consumers. Bump whenever compiler
+/// semantics change without a bundle schema change.
+pub const NATIVE_COMPILER_ID: &str = "mc-catalog-compiler/native-v1";
 const PLACEHOLDER_OWNER: &str = "org";
 const PLACEHOLDER_CONNECTION: &str = "main";
 
@@ -455,6 +458,12 @@ pub unsafe extern "C" fn cc_discovery_request(
 ) -> u64 {
     let kind = str::from_utf8(read(kind_ptr, kind_len)).unwrap_or("");
     let endpoint = str::from_utf8(read(endpoint_ptr, endpoint_len)).unwrap_or("");
+    alloc_return(discovery_request_json(kind, endpoint))
+}
+
+/// Deterministic discovery request shared by native callers and the browser
+/// Wasm ABI. Transport and credentials remain host responsibilities.
+pub fn discovery_request_json(kind: &str, endpoint: &str) -> Vec<u8> {
     let to_str =
         |v: serde_json::Value| serde_json::to_string(&v).expect("discovery body serializes");
     let out = match kind {
@@ -479,7 +488,7 @@ pub unsafe extern "C" fn cc_discovery_request(
         }),
         _ => json!({ "protocol": "static" }),
     };
-    alloc_return(serde_json::to_vec(&out).expect("discovery request serializes"))
+    serde_json::to_vec(&out).expect("discovery request serializes")
 }
 
 fn parse_policy_rules(bytes: &[u8]) -> Result<Vec<toolcore::policy::ConnectionPolicyRule>, String> {

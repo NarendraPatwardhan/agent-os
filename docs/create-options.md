@@ -27,7 +27,7 @@ fields—`mc.use()`. Applicability and defaults vary by runtime.
 | `sidecarHosts`       | host-alias map                           | `{}`                            | Embedded-only private sidecar authority routes       |
 | `sidecars`           | grant-descriptor map                     | `{}`                            | Portable sidecar grants attached at boot             |
 | `deterministic`      | boolean                                  | `false`                         | Repeatable guest clock and random source             |
-| `git`                | `true` \| object (`GitCreateOptions`) | omit (off) | Host git (libgit2 emcc). **Presence enables**. `true` resolves `git-engine.tar`; object for mounts / identity / durable / optional `engine` tar bytes. No public `baseUrl`. See [Git](./git.md) |
+| `git`                | `true` \| object (`GitCreateOptions`) | omit (off) | Host Gitz source plane. **Presence enables**. `true` resolves `git-engine.tar`; object configures mounts, identity, durability, policy, and optional artifact bytes. See [Git](./git.md) |
 
 ## `runtime`
 
@@ -177,7 +177,8 @@ build steps. It does not cache or sanitize external network responses.
 
 ## `git`
 
-Host source-plane git (libgit2 + emcc wasm). **Opt-in by presence** — omit the field for no host git.
+Host source-plane Git using the shared Gitz engine. JavaScript loads its zero-import Wasm artifact;
+the served runtime owns the native executable. **Opt-in by presence** — omit the field for no host Git.
 There is no public `baseUrl` and no separate enable flag. See [Git](./git.md).
 
 | Form | Meaning |
@@ -189,21 +190,21 @@ Object fields:
 
 | Field | Meaning |
 |-------|---------|
-| `engine` | Optional `Uint8Array` of release `git-engine.tar` (mjs + wasm + notices). Parallel to `kernel` / `catalogCompiler`. |
+| `engine` | Optional `Uint8Array` of release `git-engine.tar` containing `git_engine.wasm`. Parallel to `kernel` / `catalogCompiler`. |
 | `mounts` | Multi-repo: `[{ path, sparse?, readOnly? }]`. Default when omitted: `[{ path: "/workspace/repo" }]`. One engine per path; duplicates fail closed. |
 | `sparse` | Cone-mode prefixes for the default mount when `mounts` is omitted (not full sparse-checkout language). |
 | `readOnly` | Reject push on default mounts (overridable per `mounts` entry). |
 | `identity` | Host commit identity `{ name, email }` when commit args omit name/email. |
 | `durable` | `{ id?, diskDir? }` — per-mount durable store for snapshot/restore rebind. MCSN never carries the ODB. |
-| `allowOrigins` / `http` | Bare-URL allowlist and hermetic smart-HTTP (fixture e2e). Product remotes use `connections` + real fetch. |
+| `allowOrigins` / `fetch` | Bare-URL allowlist and host HTTP executor. Product remotes normally use `connections` plus real fetch. |
 
 This is **not** a repository remote URL. Remotes use `connections` + guest `clone`/`fetch`/`push` URLs.
 
 When `git` is set:
 
 - the host resolves/materializes the engine(s), registers MapHostCall name `"git"` for CAP_NET
-  remotes (fresh Memory pack cache per handler by default), and mounts gitfs at `/workspace/repo`
-  unless that path is already present in `mounts` or overridden by `git.mounts`;
+  remotes, and mounts gitfs at `/workspace/repo` unless that path is already present in `mounts`
+  or overridden by `git.mounts`;
 - optional **`sparse`** applies **cone-mode** prefixes to the default mount and to post-clone
   engine `sparse-set`. Multi-pattern strings/arrays and basic `!path` negation are accepted —
   **not** full git sparse-checkout pattern language;
@@ -211,9 +212,8 @@ When `git` is set:
   demux via `args.mount` / `mount` on host_call `"git"`. Duplicate paths fail closed;
 - optional **`identity: { name, email }`** is the host commit identity when commit args omit
   name/email — never invents ambient defaults;
-- optional **`allowOrigins`** / **`http`** inject a bare-URL allowlist and hermetic smart-HTTP
-  transport (fixture e2e only; product default is `FetchSmartHttp` + connection origins / empty
-  bare-URL deny);
+- optional **`allowOrigins`** / **`fetch`** inject a bare-URL allowlist and host HTTP executor
+  (product remotes use `connections` plus real fetch; empty bare-URL origins fail closed);
 - optional **`durable: { id?, diskDir? }`** opens a per-mount durable store. MCSN never carries
   the ODB. When set: each mount uses `durableIdForMount(id, path)`; `vm.snapshot` / `pinBase`
   checkpoint into that store; restore/fork with the **same** `git.durable` reopens and rebinds.

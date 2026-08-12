@@ -1,52 +1,33 @@
-# Host git engine
+# Git engine boundary
 
-libgit2 + thin C `ge_*` Run ABI for the AgentOS host source plane.
-Product surface: `docs/git.md`. Architecture: `SYSTEMS.md` §11b.
+The Git subsystem is one backend-generic Zig engine over Gitz, compiled into two host artifacts:
 
-| Target                          | Role                                                                      |
-| ------------------------------- | ------------------------------------------------------------------------- |
-| `:git_engine_lib`               | Native static library (`ge_open` / Run validation / local Run / pack I/O) |
-| `:git_engine_port_lib`          | Port frames + binary MOUNT_OP                                             |
-| `:git-engine`                   | BEAM-owned Port binary (stdin/stdout length-prefixed frames)              |
-| `:libgit_engine`                | `.so` packaging artifact only — product load path is Port + emcc          |
-| `:port_frame_test`              | Run + mount ctl frames + kill-closed                                      |
-| `:abi_dual_test`                | Native golden dual-runner (emcc via sdk-js tests)                         |
-| `:abi_fixture_test`             | Local porcelain + dial refuse                                             |
-| `:git_engine_wasm`              | Emcc `createGitEngineModule` + monorepo `wasm_opt` + NOTICE               |
-| `:git_engine_wasm_size_limit`   | Soft gate ≤2 MiB on optimized `:git_engine.wasm`                          |
-| `:git_engine_wasm_l5_notices`   | Fail-closed: wasm ship set includes NOTICE/COPYING/AUTHORS                |
-| `:git_engine_server_artifacts`  | Port binary + `.so` + NOTICE/COPYING                                      |
-| `:git_engine_server_l5_notices` | Fail-closed: server ship set includes NOTICE/COPYING/AUTHORS + git-engine |
+- `git_engine.wasm`: zero-import `wasm32-freestanding` for JavaScript/browser hosts, backed by
+  `memory.Storage` and `fs.Mem`;
+- `git-engine`: a native executable supervised as a BEAM Port, backed by filesystem storage and
+  `fs.Os` rooted at the host-authorized repository directory.
 
-**Port wire** (`u32le length | u8 type | payload`):
+Both artifacts use the generated binary contract from `memcontainers/contracts/git.kdl`. The scalar
+Wasm exports and native length-prefixed carrier contain no Git semantics. TLS, credentials, connection
+authorization, HTTP, and durable placement remain host effects; repository, worktree, object, ref,
+pack, and Git wire behavior belong to the shared engine and Gitz.
 
-| Type | Payload                                        |
-| ---- | ---------------------------------------------- |
-| 1    | JSON Run request → JSON Response               |
-| 2    | pack chunk → i32 status                        |
-| 3    | pack meta (u8 final) → i32 status              |
-| 4    | binary MOUNT_OP body → `[i32 status][payload]` |
-| 5    | abort incomplete pack import → i32 status      |
+## Preserve, redesign, delete
 
-**Load (JS):** prefer `git_engine.mjs` (ESM). Elixir: `AgentOS.GitEngine` Port owner; demuxes name `"git"` and gitfs mount path.
+| Concern | Rule |
+| --- | --- |
+| `CAP_NET`, origin policy, credentials, TLS, HTTP | Preserve in host adapters; credentials never enter engine memory. |
+| Guest `/bin/git` and GitFs mount | Preserve product faces; relay typed generated operations only. |
+| Durable repositories | Browser persists opaque engine images; native uses rooted filesystem storage. |
+| Clone/fetch/pull/push | Redesign as resumable Gitz state machines yielding generic HTTP effects. |
+| Engine protocol | Generated binary messages and generated AOGQ/AOGR envelopes only. |
+| Errors/results | Stable typed records; CLI text is rendered outside the engine. |
+| `ge_*`, C headers, JSON dispatch | Deleted; they are not compatibility contracts. |
+| libgit2 and Emscripten/MEMFS | Deleted from the build and product graph. |
+| Old Port frame types | Deleted; native framing is only `u32le length | generated envelope`. |
+| Host pkt-line, wants/haves, refspec, sideband logic | Delete as the shared remote pump replaces it. |
+| `.git/agentos/push.pack` IPC | Delete; binary data crosses bounded stream handles. |
 
-Remotes are host-mediated: **TS orch (JS)** and **BEAM HTTPS orch (server)** → Port apply
-(types 1–5).
-
-### Large stdout
-
-Embed limit **2 KiB** (`GE_STDOUT_MAX_BYTES`). Overflow requires a valid
-`args.client_token` and returns `result.truncated=true` with
-`result.stream_path=".git/mc/out/<client_token>"`; the complete body is written under the
-worktree (cap **16 MiB**). Unscoped stream aliases do not exist.
-Hosts: open that path via gitfs / Port mount, or JS `GitEngine.readStdoutStream`.
-
-### Symlinks
-
-Explicit `write` / `add` of a symlink or special file **fails closed**. `add all=true` **skips**
-symlinks/specials. Never follows links for staging.
-
-### log bounds
-
-Default `max_count=10`, hard cap `GE_LOG_MAX_COUNT` (1000). When more commits remain,
-`result.bounded=true` and a stable stdout footer `# log: bounded max_count=…`.
+Numeric opcodes, limits, message identifiers, status values, error domains, and envelope layout must not
+be copied into handwritten host code. Update `git.kdl`, regenerate all projections, and run their drift
+gates.
