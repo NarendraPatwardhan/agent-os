@@ -10,7 +10,7 @@ defmodule AgentOS.GitGuestTest do
   @moduletag timeout: 180_000
   @url "https://git.test/repo.git"
 
-  test "guest /bin/git execs local porcelain and one CAP_NET clone" do
+  test "guest /bin/git execs porcelain and a host-mediated clone" do
     wasm = runfile!("memcontainers/kernel/rust/kernel.wasm")
     loom = runfile!("memcontainers/images/loom.tar")
     fixture = temp("guest-cgi")

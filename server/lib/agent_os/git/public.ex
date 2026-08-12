@@ -2,7 +2,7 @@ defmodule AgentOS.Git.Public do
   @moduledoc "Public JSON Git host-call adapter. JSON never crosses into the engine."
 
   alias AgentOS.Contracts.Git
-  alias AgentOS.Git.{Json}
+  alias AgentOS.Git.{Json, Transport}
   alias AgentOS.GitEngine
 
   @status_error Git.status_error()
@@ -44,8 +44,9 @@ defmodule AgentOS.Git.Public do
   def call(pid, body, opts) do
     with {:ok, request} <- decode_request(body),
          :ok <- reject_guest_secrets(request),
-         :ok <- authorize_remote(request, opts),
          {:ok, request} <- resolve_remote_url(pid, request, opts),
+         {:ok, request, opts} <- bind_remote(request, opts),
+         :ok <- authorize_remote(request, opts),
          {:ok, opcode, payload} <- translate(request, opts),
          {:ok, response} <- GitEngine.request(pid, opcode, payload, opts) do
       {:ok, public_response(opcode, response, request)}
@@ -122,6 +123,23 @@ defmodule AgentOS.Git.Public do
 
   defp secret_arg_key?(_), do: false
 
+  defp bind_remote(%{"op" => op, "args" => args} = request, opts)
+       when op in ["clone", "fetch", "pull", "push"] do
+    with {:ok, binding} <- Transport.resolve_remote(args, opts) do
+      request = put_in(request, ["args", "url"], binding.url)
+
+      opts =
+        opts
+        |> Keyword.put(:remote_binding, binding)
+        |> Keyword.put(:auth, binding.auth)
+        |> Keyword.put(:allowed_origins, binding.origins)
+
+      {:ok, request, opts}
+    end
+  end
+
+  defp bind_remote(request, opts), do: {:ok, request, opts}
+
   defp authorize_remote(%{"op" => op} = request, opts) when op in ["clone", "fetch", "pull", "push"] do
     cond do
       op == "push" and Keyword.get(opts, :read_only, false) == true ->
@@ -142,9 +160,19 @@ defmodule AgentOS.Git.Public do
   defp authorize_remote(_request, _opts), do: :ok
 
   defp authorize_push(%{"args" => args}, opts) do
+    policies = Keyword.get(opts, :policies, [])
+
+    if not is_list(policies) do
+      {:error, :invalid_policies}
+    else
+      authorize_push_action(args, policies, opts)
+    end
+  end
+
+  defp authorize_push_action(args, policies, opts) do
     ref = connection_ref(args)
 
-    case evaluate_push_policy(ref, Keyword.get(opts, :policies, [])) do
+    case evaluate_push_policy(ref, policies) do
       :block ->
         {:error, :push_blocked}
 
@@ -174,8 +202,8 @@ defmodule AgentOS.Git.Public do
   defp optional_connection_ref(ref), do: ref
 
   @doc false
-  def evaluate_push_policy(_ref, policies) when not is_list(policies) or policies == [],
-    do: :approve
+  def evaluate_push_policy(_ref, policies) when not is_list(policies), do: :block
+  def evaluate_push_policy(_ref, []), do: :approve
 
   def evaluate_push_policy(ref, policies) when is_binary(ref) and is_list(policies) do
     Enum.reduce(policies, :approve, fn rule, worst ->
@@ -212,7 +240,7 @@ defmodule AgentOS.Git.Public do
   defp normalize_push_action("approve"), do: :approve
   defp normalize_push_action("require_approval"), do: :require_approval
   defp normalize_push_action("block"), do: :block
-  defp normalize_push_action(_), do: :approve
+  defp normalize_push_action(_), do: :block
 
   defp policy_field(rule, key) when is_map(rule) do
     Map.get(rule, key, Map.get(rule, Atom.to_string(key)))
@@ -535,6 +563,51 @@ defmodule AgentOS.Git.Public do
   end
   defp object_id_hex(nil), do: nil
   defp object_id_hex(%{bytes: bytes}) when is_binary(bytes), do: Base.encode16(bytes, case: :lower)
+
+  defp error_response(:unknown_connection),
+    do:
+      Json.encode(%{
+        "ok" => false,
+        "code" => 1,
+        "stdout" => "",
+        "stderr" => "git: unknown_connection\n"
+      })
+
+  defp error_response(:origin_not_allowed),
+    do:
+      Json.encode(%{
+        "ok" => false,
+        "code" => 1,
+        "stdout" => "",
+        "stderr" => "git: origin_not_allowlisted\n"
+      })
+
+  defp error_response(:query_auth_unsupported),
+    do:
+      Json.encode(%{
+        "ok" => false,
+        "code" => 1,
+        "stdout" => "",
+        "stderr" => "git: query_auth_unsupported\n"
+      })
+
+  defp error_response(:bad_remote_url),
+    do:
+      Json.encode(%{
+        "ok" => false,
+        "code" => 1,
+        "stdout" => "",
+        "stderr" => "git: remote url must be http(s) without embedded credentials\n"
+      })
+
+  defp error_response(:invalid_policies),
+    do:
+      Json.encode(%{
+        "ok" => false,
+        "code" => 1,
+        "stdout" => "",
+        "stderr" => "git: invalid push policies\n"
+      })
 
   defp error_response(:guest_secrets_forbidden),
     do:

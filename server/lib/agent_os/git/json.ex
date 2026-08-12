@@ -78,7 +78,8 @@ defmodule AgentOS.Git.Json do
       _ -> {:error, :invalid_json}
     end
   end
-  defp take_number(<<c, rest::binary>>, acc) when c in '-0123456789', do: take_number(rest, <<acc::binary, c>>)
+  defp take_number(<<c, rest::binary>>, acc) when c in ~c"-0123456789",
+    do: take_number(rest, <<acc::binary, c>>)
   defp take_number(rest, acc), do: {acc, rest}
 
   defp skip(<<c, rest::binary>>) when c in [32, 9, 10, 13], do: skip(rest)

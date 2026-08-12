@@ -12,17 +12,58 @@ defmodule AgentOS.Git.Transport do
     end
   end
 
+  @doc """
+  Resolve a guest remote the same way JS `resolveGitRemote` does.
+
+  A named `connection` / `agentos` ref binds **that** connection's origins and
+  auth. A bare URL requires `:allowed_origins` even when a connection catalog
+  is attached — catalog secrets are never chosen by effect origin alone.
+  """
+  @spec resolve_remote(map(), keyword()) :: {:ok, map()} | {:error, atom()}
+  def resolve_remote(args, opts) when is_map(args) and is_list(opts) do
+    connections = Keyword.get(opts, :connections, [])
+    connections = if is_list(connections), do: connections, else: []
+    reference = connection_ref(args)
+
+    with {:ok, connection} <- fetch_connection(reference, connections),
+         {:ok, url} <- remote_locator(args, connection),
+         {:ok, origin} <- origin(url),
+         :ok <- authorize_binding(origin, connection, opts),
+         :ok <- reject_query_auth(connection) do
+      {:ok,
+       %{
+         url: url,
+         origin: origin,
+         connection_ref: reference,
+         auth: binding_auth(connection, opts),
+         origins: binding_origins(connection, opts)
+       }}
+    end
+  end
+
   @doc "Resolve host-owned origin and credentials for one effect URL."
   @spec resolve_policy(String.t(), keyword()) :: {:ok, map()} | {:error, atom()}
   def resolve_policy(url, opts) when is_binary(url) do
-    connections = Keyword.get(opts, :connections, [])
+    case Keyword.get(opts, :remote_binding) do
+      %{origins: origins, auth: auth} ->
+        with {:ok, origin} <- origin(url),
+             true <- allowed?(origin, origins) do
+          {:ok, %{origin: origin, auth: auth}}
+        else
+          false -> {:error, :origin_not_allowed}
+          :error -> {:error, :bad_remote_url}
+        end
 
-    if is_list(connections) and connections != [] do
-      resolve_connection_policy(url, connections)
-    else
-      with {:ok, origin} <- ensure_url_allowed(url, opts) do
-        {:ok, %{origin: origin, auth: Keyword.get(opts, :auth)}}
-      end
+      _ ->
+        connections = Keyword.get(opts, :connections, [])
+
+        if is_list(connections) and connections != [] do
+          resolve_connection_policy(url, connections)
+        else
+          with {:ok, origin} <- ensure_url_allowed(url, opts) do
+            {:ok, %{origin: origin, auth: Keyword.get(opts, :auth)}}
+          end
+        end
     end
   end
 
@@ -73,6 +114,71 @@ defmodule AgentOS.Git.Transport do
   end
 
   def allowed?(_, _), do: false
+
+  defp connection_ref(args) do
+    case args["connection"] || args["agentos"] || map_field(args, :connection) ||
+           map_field(args, :agentos) do
+      ref when is_binary(ref) and ref != "" -> ref
+      _ -> nil
+    end
+  end
+
+  defp fetch_connection(nil, _connections), do: {:ok, nil}
+
+  defp fetch_connection(ref, connections) do
+    case Enum.find(connections, fn connection -> map_field(connection, :ref) == ref end) do
+      nil -> {:error, :unknown_connection}
+      connection -> {:ok, connection}
+    end
+  end
+
+  defp remote_locator(args, connection) do
+    case args["url"] do
+      url when is_binary(url) and url != "" ->
+        {:ok, url}
+
+      _ ->
+        spec = if is_map(connection), do: map_field(connection, :spec) || %{}, else: %{}
+
+        case map_field(spec, :url) || map_field(spec, :baseUrl) do
+          url when is_binary(url) and url != "" -> {:ok, url}
+          _ -> {:error, :remote_url_required}
+        end
+    end
+  end
+
+  # Named connection: that connection's origins only. Bare URL: host allowlist,
+  # even when a catalog is attached (JS allowOrigins gate).
+  defp authorize_binding(origin, connection, _opts) when is_map(connection) do
+    origins = map_field(connection, :origins) || []
+    if allowed?(origin, origins), do: :ok, else: {:error, :origin_not_allowed}
+  end
+
+  defp authorize_binding(origin, _connection, opts) do
+    if allowed?(origin, Keyword.get(opts, :allowed_origins, [])),
+      do: :ok,
+      else: {:error, :origin_not_allowed}
+  end
+
+  defp binding_auth(connection, _opts) when is_map(connection),
+    do: map_field(connection, :auth) || %{kind: :none}
+
+  defp binding_auth(_connection, opts), do: Keyword.get(opts, :auth) || %{kind: :none}
+
+  defp binding_origins(connection, _opts) when is_map(connection),
+    do: map_field(connection, :origins) || []
+
+  defp binding_origins(_connection, opts), do: Keyword.get(opts, :allowed_origins, [])
+
+  defp reject_query_auth(connection) when is_map(connection) do
+    case map_field(connection, :auth) do
+      %{kind: kind} when kind in [:query, "query"] -> {:error, :query_auth_unsupported}
+      %{"kind" => kind} when kind in [:query, "query"] -> {:error, :query_auth_unsupported}
+      _ -> :ok
+    end
+  end
+
+  defp reject_query_auth(_), do: :ok
 
   defp resolve_connection_policy(url, connections) do
     case origin(url) do

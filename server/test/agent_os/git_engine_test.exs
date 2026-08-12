@@ -144,13 +144,17 @@ defmodule AgentOS.GitEngineTest do
       })
 
     assert {:ok, blocked} =
-             AgentOS.Git.Public.call(self(), push, policies: [%{pattern: "*", action: :block}])
+             AgentOS.Git.Public.call(self(), push,
+               allowed_origins: ["https://example.com"],
+               policies: [%{pattern: "*", action: :block}]
+             )
 
     assert {:ok, %{"ok" => false, "stderr" => blocked_stderr}} = AgentOS.Git.Json.decode(blocked)
     assert blocked_stderr =~ "blocked by policy"
 
     assert {:ok, need_approval} =
              AgentOS.Git.Public.call(self(), push,
+               allowed_origins: ["https://example.com"],
                policies: [%{pattern: "*", action: "require_approval"}]
              )
 
@@ -164,6 +168,66 @@ defmodule AgentOS.GitEngineTest do
                %{pattern: "github.*", action: :require_approval},
                %{pattern: "*", action: :block}
              ])
+
+    assert :block = AgentOS.Git.Public.evaluate_push_policy("*", :not_a_list)
+    assert :block = AgentOS.Git.Public.evaluate_push_policy("*", [%{pattern: "*", action: "deny"}])
+
+    assert {:ok, unknown} =
+             AgentOS.Git.Public.call(self(), push,
+               allowed_origins: ["https://example.com"],
+               policies: [%{pattern: "*", action: "Block"}]
+             )
+
+    assert {:ok, %{"ok" => false, "stderr" => unknown_stderr}} = AgentOS.Git.Json.decode(unknown)
+    assert unknown_stderr =~ "blocked by policy"
+  end
+
+  test "public remotes bind credentials to the guest connection ref" do
+    github = %{
+      ref: "github.user.work",
+      origins: ["https://github.com"],
+      auth: %{kind: :bearer, token: "gh-token"}
+    }
+
+    gitlab = %{
+      ref: "gitlab.user.work",
+      origins: ["https://gitlab.com"],
+      auth: %{kind: :bearer, token: "gl-token"}
+    }
+
+    assert {:error, :origin_not_allowed} =
+             AgentOS.Git.Transport.resolve_remote(
+               %{"url" => "https://github.com/org/private.git"},
+               connections: [github]
+             )
+
+    assert {:ok, %{auth: %{token: "gh-token"}, connection_ref: "github.user.work"}} =
+             AgentOS.Git.Transport.resolve_remote(
+               %{"url" => "https://github.com/org/private.git", "connection" => "github.user.work"},
+               connections: [github, gitlab]
+             )
+
+    assert {:error, :origin_not_allowed} =
+             AgentOS.Git.Transport.resolve_remote(
+               %{"url" => "https://github.com/org/private.git", "connection" => "gitlab.user.work"},
+               connections: [github, gitlab]
+             )
+
+    assert {:error, :unknown_connection} =
+             AgentOS.Git.Transport.resolve_remote(
+               %{"url" => "https://github.com/org/private.git", "connection" => "missing"},
+               connections: [github]
+             )
+
+    body =
+      AgentOS.Git.Json.encode(%{
+        "op" => "clone",
+        "args" => %{"url" => "https://github.com/org/private.git"}
+      })
+
+    assert {:ok, json} = AgentOS.Git.Public.call(self(), body, connections: [github])
+    assert {:ok, %{"ok" => false, "stderr" => stderr}} = AgentOS.Git.Json.decode(json)
+    assert stderr =~ "origin_not_allowlisted"
   end
 
   test "HTTP transport rejects unallowlisted origins and credentials in URLs" do

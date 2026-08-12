@@ -189,7 +189,13 @@ defmodule AgentOS.GitEngine do
                 do: continue_effect(state3, final, opts),
                 else: {:ok, final, state3}
             end
+
+          {:error, reason, state2} ->
+            abort_effect(state2, pending, reason, opts)
         end
+
+      {:error, reason, state1} ->
+        abort_effect(state1, pending, reason, opts)
     end
   end
 
@@ -197,7 +203,7 @@ defmodule AgentOS.GitEngine do
 
   defp deliver_http_chunks(state, pending, body) do
     size = min(byte_size(body), Git.max_field_bytes())
-    <<chunk::binary-size(size), rest::binary>> = body
+    <<chunk::binary-size(^size), rest::binary>> = body
 
     message = %{
       exchange: effect_exchange(pending.payload),
@@ -211,6 +217,7 @@ defmodule AgentOS.GitEngine do
     case acknowledge_http_effect(state, pending, message) do
       {:ok, state2} -> deliver_http_chunks(state2, pending, rest)
       {:terminal, _response, _state2} = terminal -> terminal
+      {:error, reason, state2} -> {:error, reason, state2}
     end
   end
 
@@ -337,7 +344,6 @@ defmodule AgentOS.GitEngine do
     else
       {:error, reason, state2} -> {:error, reason, state2}
       {:error, reason} -> {:error, reason, state}
-      false -> {:error, :invalid_stream_response, state}
     end
   end
 
@@ -460,7 +466,8 @@ defmodule AgentOS.GitEngine do
       :connections,
       :policies,
       :http_effect,
-      :max_response_bytes
+      :max_response_bytes,
+      :remote_binding
     ])
   end
 

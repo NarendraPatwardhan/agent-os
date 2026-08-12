@@ -272,7 +272,10 @@ function moreRestrictive(
   b: ConnectionPolicyAction,
 ): ConnectionPolicyAction {
   const rank = { approve: 0, require_approval: 1, block: 2 };
-  return rank[b] > rank[a] ? b : a;
+  const left = rank[a];
+  const right = rank[b];
+  if (left === undefined || right === undefined) return "block";
+  return right > left ? b : a;
 }
 
 export function matchConnectionPattern(pattern: string, ref: string): boolean {

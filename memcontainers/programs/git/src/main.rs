@@ -19,9 +19,9 @@ use sysroot as rt;
 
 mod argv;
 use argv::{
-    build_local_request, build_remote_request, copy_bytes, fmt_branch_delete, fmt_commit,
-    fmt_config_get, fmt_config_set, fmt_op_name, fmt_op_path, fmt_op_rev, fmt_remote_add,
-    fmt_remote_remove, fmt_reset, fmt_rev_parse, fmt_tag_delete, push, push_escaped,
+    build_local_request, build_remote_request, copy_bytes, fmt_branch_delete, fmt_config_get,
+    fmt_config_set, fmt_op_name, fmt_op_path, fmt_op_rev, fmt_remote_add, fmt_remote_remove,
+    fmt_reset, fmt_tag_delete, push, push_escaped,
 };
 
 rt::entry!(main);
@@ -281,28 +281,35 @@ fn run_add(args: &[&[u8]]) -> i32 {
 // ── Local single-request builders ────────────────────────────────────────────
 
 fn build_request(cmd: &[u8], args: &[&[u8]], out: &mut [u8]) -> Result<usize, i32> {
+    if cmd == b"init"
+        || cmd == b"status"
+        || cmd == b"log"
+        || cmd == b"commit"
+        || cmd == b"checkout"
+        || cmd == b"switch"
+        || cmd == b"rev-parse"
+    {
+        return match build_local_request(cmd, args, out) {
+            Ok(n) => Ok(n),
+            Err(code) => {
+                if cmd == b"init" {
+                    eprint(b"usage: git init\n");
+                } else if cmd == b"status" {
+                    eprint(b"usage: git status\n");
+                } else if cmd == b"log" {
+                    eprint(b"usage: git log\n");
+                } else if cmd == b"commit" {
+                    eprint(b"usage: git commit -m <message>\n");
+                } else if cmd == b"checkout" || cmd == b"switch" {
+                    eprint(b"usage: git checkout|switch <name>\n");
+                } else if cmd == b"rev-parse" {
+                    eprint(b"usage: git rev-parse [rev]\n");
+                }
+                Err(code)
+            }
+        };
+    }
     let argc = args.len();
-    if cmd == b"init" {
-        if argc != 2 {
-            eprint(b"usage: git init\n");
-            return Err(2);
-        }
-        return copy_bytes(b"{\"op\":\"init\"}", out);
-    }
-    if cmd == b"status" {
-        if argc != 2 {
-            eprint(b"usage: git status\n");
-            return Err(2);
-        }
-        return copy_bytes(b"{\"op\":\"status\",\"args\":{\"short\":false}}", out);
-    }
-    if cmd == b"log" {
-        if argc != 2 {
-            eprint(b"usage: git log\n");
-            return Err(2);
-        }
-        return copy_bytes(b"{\"op\":\"log\",\"args\":{\"max_count\":32}}", out);
-    }
     // diff is handled in main (path / --cached flags).
     if cmd == b"show" {
         if argc > 3 {
@@ -340,33 +347,6 @@ fn build_request(cmd: &[u8], args: &[&[u8]], out: &mut [u8]) -> Result<usize, i3
     }
     if cmd == b"branch" {
         return build_branch(args, out);
-    }
-    if cmd == b"commit" {
-        if argc != 4 || args[2] != b"-m" {
-            eprint(b"usage: git commit -m <message>\n");
-            return Err(2);
-        }
-        return fmt_commit(args[3], out);
-    }
-    if cmd == b"checkout" || cmd == b"switch" {
-        if argc != 3 {
-            eprint(b"usage: git checkout|switch <name>\n");
-            return Err(2);
-        }
-        if args[2].first() == Some(&b'-') {
-            eprint(b"usage: git checkout|switch <name>\n");
-            return Err(2);
-        }
-        // Engine accepts both op names; emit the verb the user typed.
-        return fmt_op_name(cmd, args[2], out);
-    }
-    if cmd == b"rev-parse" {
-        if argc > 3 {
-            eprint(b"usage: git rev-parse [rev]\n");
-            return Err(2);
-        }
-        let rev = if argc >= 3 { args[2] } else { b"HEAD" };
-        return fmt_rev_parse(rev, out);
     }
     // Remotes and multi-path add/rm are handled in main before build_request.
     eprint(b"git: unknown or unsupported command\n");
